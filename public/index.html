@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>E-ZONE Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- PIN GATE -->
+  <div id="pin-screen" class="overlay">
+    <div class="pin-box">
+      <h1>E-ZONE</h1>
+      <p>הזן קוד גישה</p>
+      <input type="password" id="pin-input" inputmode="numeric" maxlength="4" autocomplete="off" />
+      <button id="pin-submit" class="btn primary">כניסה</button>
+      <button id="pin-viewer" class="btn ghost">המשך כצופה בלבד</button>
+      <div id="pin-error" class="error-msg hidden">קוד שגוי</div>
+    </div>
+  </div>
+
+  <!-- LOADING / ERROR BANNERS -->
+  <div id="error-banner" class="error-banner hidden"></div>
+  <div id="loading-banner" class="loading-banner hidden">טוען נתונים...</div>
+
+  <!-- APP -->
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div class="brand">E-ZONE</div>
+      <nav class="tabs">
+        <button class="tab active" data-screen="dashboard">דשבורד</button>
+        <button class="tab" data-screen="leads">לידים</button>
+        <button class="tab" data-screen="occupancy">תפוסה</button>
+      </nav>
+      <div class="user-mode">
+        <span id="mode-label"></span>
+        <button id="logout" class="btn ghost-sm">יציאה</button>
+      </div>
+    </header>
+
+    <!-- ====== DASHBOARD ====== -->
+    <section id="screen-dashboard" class="screen">
+      <h2>דשבורד רשת</h2>
+
+      <div class="cards-row">
+        <div class="card stat">
+          <div class="stat-label">תפוסה רשתית</div>
+          <div class="stat-value" id="stat-occ-pct">0%</div>
+          <div class="progress"><div class="progress-bar" id="stat-occ-bar"></div></div>
+          <div class="stat-sub" id="stat-occ-sub">0 / 0</div>
+        </div>
+
+        <div class="card stat">
+          <div class="stat-label">הכנסות חודשיות</div>
+          <div class="stat-value" id="stat-revenue">₪ 0</div>
+          <div class="stat-sub">סך תשלום חודשי כולל מע"מ</div>
+        </div>
+
+        <div class="card stat">
+          <div class="stat-label">סה"כ דיירים פעילים</div>
+          <div class="stat-value" id="stat-active">0</div>
+          <div class="stat-sub">ברשת</div>
+        </div>
+      </div>
+
+      <h3>מיטות פנויות לפי בית</h3>
+      <div class="houses-grid" id="houses-grid"></div>
+
+      <h3>צינור לידים</h3>
+      <div class="pipeline-row" id="pipeline-row"></div>
+    </section>
+
+    <!-- ====== LEADS ====== -->
+    <section id="screen-leads" class="screen hidden">
+      <div class="screen-head">
+        <h2>ניהול לידים</h2>
+        <div class="actions">
+          <input id="lead-search" type="search" placeholder="חיפוש שם / טלפון / בית" />
+          <button id="add-lead-btn" class="btn primary edit-only">+ ליד חדש</button>
+        </div>
+      </div>
+
+      <div class="kanban" id="kanban"></div>
+    </section>
+
+    <!-- ====== OCCUPANCY ====== -->
+    <section id="screen-occupancy" class="screen hidden">
+      <div class="screen-head">
+        <h2>תפוסה</h2>
+        <div class="actions">
+          <input id="patient-search" type="search" placeholder="חיפוש שם דייר" />
+        </div>
+      </div>
+      <nav class="house-tabs" id="house-tabs"></nav>
+      <div id="patients-list" class="patients-list"></div>
+    </section>
+  </div>
+
+  <!-- ====== MODALS ====== -->
+  <div id="modal-root"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

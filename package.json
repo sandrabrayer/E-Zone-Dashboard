@@ -1,0 +1,12 @@
+{
+  "name": "e-zone-dashboard",
+  "version": "1.0.0",
+  "description": "E-ZONE Dashboard - manage psychiatric residential homes",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

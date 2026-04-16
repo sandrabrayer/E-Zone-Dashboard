@@ -1,0 +1,646 @@
+/* ===== E-ZONE Dashboard — frontend ===== */
+
+const HOUSES = [
+  { id: 'arfoni', name: 'קיסריה עפרוני', capacity: 13 },
+  { id: 'rehab',  name: 'קיסריה ריהאב',  capacity: 12 },
+  { id: 'asher',  name: 'רעננה אשר',      capacity: 16 },
+  { id: 'pardes', name: 'רעננה הפרדס',    capacity: 13 },
+  { id: 'ramot',  name: 'רמות השבים',     capacity: 20 },
+  { id: 'sde',    name: 'שדה אליעזר',     capacity: 16 },
+];
+
+const STAGES = [
+  { id: 'new',         label: 'ליד חדש' },
+  { id: 'visit',       label: 'ביקור נקבע' },
+  { id: 'paid',        label: 'מקדמה שולמה' },
+  { id: 'entry',       label: 'כניסה לבית' },
+];
+const STAGE_IRRELEVANT = { id: 'irrelevant', label: 'לא רלוונטי' };
+const ALL_STAGES_FOR_PIPELINE = [...STAGES, STAGE_IRRELEVANT];
+
+const STATUS_OPTIONS = [
+  { id: 'active',   label: 'פעיל' },
+  { id: 'trial',    label: 'תקופת ניסיון' },
+  { id: 'wait',     label: 'בהמתנה' },
+  { id: 'released', label: 'שוחרר' },
+];
+
+const houseById = id => HOUSES.find(h => h.id === id);
+const houseByName = name => HOUSES.find(h => h.name === name);
+
+const state = {
+  leads: [],
+  patients: [],
+  mode: null, // 'edit' | 'viewer'
+  currentScreen: 'dashboard',
+  currentHouseTab: 'arfoni',
+  leadSearch: '',
+  patientSearch: '',
+};
+
+/* ===== API ===== */
+async function api(params) {
+  const qs = new URLSearchParams(params).toString();
+  const res = await fetch('/api/sheets?' + qs);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.message || ('HTTP ' + res.status));
+  }
+  return res.json();
+}
+
+function showError(msg) {
+  const el = document.getElementById('error-banner');
+  el.textContent = 'שגיאה: ' + msg;
+  el.classList.remove('hidden');
+  setTimeout(() => el.classList.add('hidden'), 6000);
+}
+function setLoading(on) {
+  document.getElementById('loading-banner').classList.toggle('hidden', !on);
+}
+
+/* ===== PIN ===== */
+function initPin() {
+  const saved = sessionStorage.getItem('ezone-mode');
+  if (saved === 'edit' || saved === 'viewer') {
+    enterApp(saved);
+    return;
+  }
+  document.getElementById('pin-screen').classList.remove('hidden');
+  document.getElementById('app').classList.add('hidden');
+
+  const input = document.getElementById('pin-input');
+  const errEl = document.getElementById('pin-error');
+
+  document.getElementById('pin-submit').onclick = tryPin;
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') tryPin(); });
+  document.getElementById('pin-viewer').onclick = () => enterApp('viewer');
+
+  function tryPin() {
+    if (input.value === '2107') {
+      enterApp('edit');
+    } else {
+      errEl.classList.remove('hidden');
+      input.value = '';
+    }
+  }
+}
+
+function enterApp(mode) {
+  state.mode = mode;
+  sessionStorage.setItem('ezone-mode', mode);
+  document.getElementById('pin-screen').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  document.body.classList.toggle('viewer-mode', mode === 'viewer');
+  document.getElementById('mode-label').textContent =
+    mode === 'edit' ? 'מצב עריכה' : 'מצב צפייה';
+
+  document.getElementById('logout').onclick = () => {
+    sessionStorage.removeItem('ezone-mode');
+    location.reload();
+  };
+
+  initTabs();
+  loadAll();
+}
+
+/* ===== Top tabs ===== */
+function initTabs() {
+  document.querySelectorAll('.tabs .tab').forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll('.tabs .tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.currentScreen = btn.dataset.screen;
+      ['dashboard', 'leads', 'occupancy'].forEach(s => {
+        document.getElementById('screen-' + s).classList.toggle('hidden', s !== state.currentScreen);
+      });
+      renderAll();
+    };
+  });
+
+  document.getElementById('lead-search').oninput = e => {
+    state.leadSearch = e.target.value.trim().toLowerCase();
+    renderKanban();
+  };
+  document.getElementById('patient-search').oninput = e => {
+    state.patientSearch = e.target.value.trim().toLowerCase();
+    renderPatients();
+  };
+  document.getElementById('add-lead-btn').onclick = openAddLeadModal;
+}
+
+/* ===== Initial load ===== */
+async function loadAll() {
+  setLoading(true);
+  try {
+    const data = await api({ action: 'getAll' });
+    if (!data || (!Array.isArray(data.leads) && !Array.isArray(data.patients))) {
+      throw new Error('פורמט תגובה לא תקין מהגיליון');
+    }
+    state.leads = (data.leads || []).map(normalizeLead);
+    state.patients = (data.patients || []).map(normalizePatient);
+    renderAll();
+  } catch (e) {
+    showError('טעינת נתונים מהגיליון נכשלה — ' + e.message);
+  } finally {
+    setLoading(false);
+  }
+}
+
+function normalizeLead(l) {
+  return {
+    id: l.id || l.ID || cryptoId(),
+    name: l.name || '',
+    phone: l.phone || '',
+    house: l.house || '',
+    source: l.source || '',
+    note: l.note || '',
+    stage: l.stage || 'new',
+    visitDate: l.visitDate || '',
+    visitTime: l.visitTime || '',
+    entryDate: l.entryDate || '',
+    created: l.created || '',
+  };
+}
+function normalizePatient(p) {
+  return {
+    id: p.id || cryptoId(),
+    houseId: p.houseId || '',
+    name: p.name || '',
+    date: p.date || '',
+    pay: Number(p.pay || 0),
+    adv: Number(p.adv || 0),
+    status: p.status || 'active',
+    fromLead: p.fromLead || '',
+    exitDate: p.exitDate || '',
+  };
+}
+function cryptoId() {
+  return 'id-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+}
+
+/* ===== Render router ===== */
+function renderAll() {
+  renderDashboard();
+  renderKanban();
+  renderHouseTabs();
+  renderPatients();
+}
+
+/* ====================================================
+   DASHBOARD
+   ==================================================== */
+function renderDashboard() {
+  const activePatients = state.patients.filter(p => p.status !== 'released');
+  const totalCap = HOUSES.reduce((s, h) => s + h.capacity, 0);
+  const occupied = activePatients.length;
+  const pct = totalCap ? Math.round((occupied / totalCap) * 100) : 0;
+  document.getElementById('stat-occ-pct').textContent = pct + '%';
+  document.getElementById('stat-occ-bar').style.width = pct + '%';
+  document.getElementById('stat-occ-sub').textContent = `${occupied} / ${totalCap} מיטות`;
+  document.getElementById('stat-active').textContent = occupied;
+
+  const revenue = activePatients.reduce((s, p) => s + (p.pay || 0), 0);
+  document.getElementById('stat-revenue').textContent = '₪ ' + revenue.toLocaleString('he-IL');
+
+  const grid = document.getElementById('houses-grid');
+  grid.innerHTML = '';
+  HOUSES.forEach(h => {
+    const inHouse = activePatients.filter(p => p.houseId === h.id).length;
+    const free = h.capacity - inHouse;
+    const housePct = Math.round((inHouse / h.capacity) * 100);
+    const card = document.createElement('div');
+    card.className = 'house-card';
+    card.innerHTML = `
+      <div class="h-name">${h.name}</div>
+      <div class="h-stats">${inHouse} / ${h.capacity} מאוכלסים</div>
+      <span class="h-beds ${free === 0 ? 'full' : ''}">${free === 0 ? 'מלא' : free + ' מיטות פנויות'}</span>
+      <div class="progress"><div class="progress-bar" style="width:${housePct}%"></div></div>
+    `;
+    grid.appendChild(card);
+  });
+
+  const pipe = document.getElementById('pipeline-row');
+  pipe.innerHTML = '';
+  ALL_STAGES_FOR_PIPELINE.forEach(s => {
+    const count = state.leads.filter(l => l.stage === s.id).length;
+    const el = document.createElement('div');
+    el.className = 'pipe';
+    el.dataset.stage = s.id;
+    el.innerHTML = `<div class="p-name">${s.label}</div><div class="p-count">${count}</div>`;
+    pipe.appendChild(el);
+  });
+}
+
+/* ====================================================
+   LEADS / KANBAN
+   ==================================================== */
+function renderKanban() {
+  const kanban = document.getElementById('kanban');
+  kanban.innerHTML = '';
+  STAGES.forEach(stage => {
+    const col = document.createElement('div');
+    col.className = 'col';
+    col.dataset.stage = stage.id;
+
+    const filtered = filterLeads().filter(l => l.stage === stage.id);
+    col.innerHTML = `
+      <div class="col-head">
+        <span class="col-title">${stage.label}</span>
+        <span class="col-count">${filtered.length}</span>
+      </div>
+    `;
+
+    filtered.forEach(lead => col.appendChild(buildLeadCard(lead)));
+    kanban.appendChild(col);
+  });
+}
+
+function filterLeads() {
+  const q = state.leadSearch;
+  return state.leads.filter(l => {
+    if (l.stage === 'irrelevant') return false; // hidden from board, but counted in pipeline + on dashboard
+    if (!q) return true;
+    return [l.name, l.phone, l.house].some(v => (v || '').toLowerCase().includes(q));
+  });
+}
+
+function buildLeadCard(lead) {
+  const card = document.createElement('div');
+  card.className = 'lead-card';
+  card.dataset.id = lead.id;
+
+  const idx = STAGES.findIndex(s => s.id === lead.stage);
+  const isLast = idx === STAGES.length - 1;
+
+  let stageFields = '';
+  if (lead.stage === 'visit') {
+    stageFields = `
+      <div class="lc-fields edit-only">
+        <input type="date" data-field="visitDate" value="${lead.visitDate || ''}" />
+        <input type="time" data-field="visitTime" value="${lead.visitTime || ''}" />
+      </div>`;
+  } else if (lead.stage === 'paid') {
+    stageFields = `
+      <div class="lc-fields edit-only">
+        <label style="font-size:12px;color:#6b7585;align-self:center;">כניסה מתוכננת</label>
+        <input type="date" data-field="entryDate" value="${lead.entryDate || ''}" />
+      </div>`;
+  }
+
+  card.innerHTML = `
+    <button class="lc-irrelevant edit-only" title="סמן כלא רלוונטי">לא רלוונטי ✕</button>
+    <div class="lc-name">${escapeHtml(lead.name)}</div>
+    <div class="lc-meta">
+      ${escapeHtml(lead.phone)} ${lead.house ? '· ' + escapeHtml(lead.house) : ''}
+      ${lead.source ? '· מקור: ' + escapeHtml(lead.source) : ''}
+    </div>
+    ${lead.note ? `<div class="lc-note">${escapeHtml(lead.note)}</div>` : ''}
+    ${stageFields}
+    <div class="lc-actions edit-only">
+      <button class="btn small" data-action="back" ${idx === 0 ? 'disabled' : ''}>← חזרה</button>
+      <button class="btn small primary" data-action="next">${isLast ? 'הושלם' : 'שלב הבא →'}</button>
+    </div>
+  `;
+
+  card.querySelector('[data-action="next"]').onclick = () => advanceLead(lead);
+  if (idx > 0) card.querySelector('[data-action="back"]').onclick = () => moveLead(lead, STAGES[idx - 1].id);
+  card.querySelector('.lc-irrelevant').onclick = () => moveLead(lead, 'irrelevant');
+
+  card.querySelectorAll('[data-field]').forEach(inp => {
+    inp.onchange = () => updateLead(lead.id, { [inp.dataset.field]: inp.value });
+  });
+
+  return card;
+}
+
+async function advanceLead(lead) {
+  const idx = STAGES.findIndex(s => s.id === lead.stage);
+  if (idx === STAGES.length - 1) {
+    // already entered — nothing to do
+    return;
+  }
+  if (idx === STAGES.length - 2) {
+    // moving from "paid" → "entry": open entry modal
+    openEntryModal(lead);
+    return;
+  }
+  await moveLead(lead, STAGES[idx + 1].id);
+}
+
+async function moveLead(lead, newStage) {
+  const prev = lead.stage;
+  lead.stage = newStage;
+  renderAll();
+  try {
+    await api({ action: 'updateLead', id: lead.id, stage: newStage });
+  } catch (e) {
+    lead.stage = prev;
+    renderAll();
+    showError('עדכון שלב נכשל — ' + e.message);
+  }
+}
+
+async function updateLead(id, fields) {
+  const lead = state.leads.find(l => l.id === id);
+  if (!lead) return;
+  const prev = { ...lead };
+  Object.assign(lead, fields);
+  try {
+    await api({ action: 'updateLead', id, ...fields });
+  } catch (e) {
+    Object.assign(lead, prev);
+    renderAll();
+    showError('עדכון ליד נכשל — ' + e.message);
+  }
+}
+
+/* ===== Add Lead modal ===== */
+function openAddLeadModal() {
+  showModal({
+    title: 'ליד חדש',
+    fields: [
+      { name: 'name', label: 'שם מלא', type: 'text', required: true },
+      { name: 'phone', label: 'טלפון', type: 'tel' },
+      { name: 'house', label: 'בית מועדף', type: 'select',
+        options: [{ value: '', label: '— ללא —' }, ...HOUSES.map(h => ({ value: h.name, label: h.name }))] },
+      { name: 'source', label: 'מקור הפניה', type: 'text' },
+      { name: 'note', label: 'הערות', type: 'textarea' },
+    ],
+    submitLabel: 'הוסף ליד',
+    onSubmit: async values => {
+      if (!values.name) { showError('יש להזין שם'); return false; }
+      const id = cryptoId();
+      const lead = normalizeLead({
+        id, ...values,
+        stage: 'new',
+        created: new Date().toISOString(),
+      });
+      state.leads.unshift(lead);
+      renderAll();
+      try {
+        await api({ action: 'addLead', ...lead });
+      } catch (e) {
+        state.leads = state.leads.filter(l => l.id !== id);
+        renderAll();
+        showError('הוספת ליד נכשלה — ' + e.message);
+      }
+      return true;
+    }
+  });
+}
+
+/* ===== Entry modal: paid → entry, creates patient ===== */
+function openEntryModal(lead) {
+  const preferredHouse = houseByName(lead.house);
+  showModal({
+    title: 'כניסה לבית — ' + lead.name,
+    fields: [
+      { name: 'houseId', label: 'בית', type: 'select', required: true,
+        value: preferredHouse ? preferredHouse.id : '',
+        options: HOUSES.map(h => ({ value: h.id, label: h.name })) },
+      { name: 'date', label: 'תאריך כניסה', type: 'date', required: true,
+        value: lead.entryDate || todayISO() },
+      { name: 'pay', label: 'תשלום חודשי כולל מע"מ (₪)', type: 'number', required: true },
+      { name: 'adv', label: 'מקדמה ששולמה (₪)', type: 'number', required: true, value: '0' },
+      { name: 'status', label: 'סטטוס', type: 'select',
+        value: 'trial',
+        options: STATUS_OPTIONS.filter(s => s.id !== 'released').map(s => ({ value: s.id, label: s.label })) },
+    ],
+    submitLabel: 'אשר כניסה',
+    onSubmit: async v => {
+      if (!v.houseId || !v.date || !v.pay) { showError('שדות חסרים'); return false; }
+      const patient = normalizePatient({
+        id: cryptoId(),
+        houseId: v.houseId,
+        name: lead.name,
+        date: v.date,
+        pay: Number(v.pay),
+        adv: Number(v.adv),
+        status: v.status || 'trial',
+        fromLead: lead.id,
+      });
+      state.patients.unshift(patient);
+      const prevStage = lead.stage;
+      lead.stage = 'entry';
+      lead.entryDate = v.date;
+      renderAll();
+      try {
+        await api({ action: 'addPatient', ...patient });
+        await api({ action: 'updateLead', id: lead.id, stage: 'entry', entryDate: v.date });
+      } catch (e) {
+        state.patients = state.patients.filter(p => p.id !== patient.id);
+        lead.stage = prevStage;
+        renderAll();
+        showError('שמירה נכשלה — ' + e.message);
+        return false;
+      }
+      return true;
+    }
+  });
+}
+
+/* ====================================================
+   OCCUPANCY
+   ==================================================== */
+function renderHouseTabs() {
+  const tabs = document.getElementById('house-tabs');
+  tabs.innerHTML = '';
+  HOUSES.forEach(h => {
+    const t = document.createElement('button');
+    t.className = 'h-tab' + (state.currentHouseTab === h.id ? ' active' : '');
+    const inHouse = state.patients.filter(p => p.houseId === h.id && p.status !== 'released').length;
+    t.textContent = `${h.name} (${inHouse}/${h.capacity})`;
+    t.onclick = () => {
+      state.currentHouseTab = h.id;
+      renderHouseTabs();
+      renderPatients();
+    };
+    tabs.appendChild(t);
+  });
+}
+
+function renderPatients() {
+  const list = document.getElementById('patients-list');
+  list.innerHTML = '';
+  const q = state.patientSearch;
+  const rows = state.patients
+    .filter(p => p.houseId === state.currentHouseTab)
+    .filter(p => !q || (p.name || '').toLowerCase().includes(q));
+
+  if (!rows.length) {
+    list.innerHTML = `<div class="card" style="text-align:center;color:#6b7585;">אין דיירים להצגה</div>`;
+    return;
+  }
+
+  rows.forEach(p => {
+    const isReleased = p.status === 'released';
+    const firstDue = Math.max(0, (p.pay || 0) - (p.adv || 0));
+    const statusInfo = STATUS_OPTIONS.find(s => s.id === p.status) || STATUS_OPTIONS[0];
+    const badgeCls =
+      p.status === 'active' ? 'active' :
+      p.status === 'trial' ? 'trial' :
+      p.status === 'released' ? 'released' : 'wait';
+
+    const row = document.createElement('div');
+    row.className = 'patient-row' + (isReleased ? ' released' : '');
+    row.innerHTML = `
+      <div>
+        <span class="p-label">דייר</span>
+        <span class="p-name">${escapeHtml(p.name)}</span>
+      </div>
+      <div>
+        <span class="p-label">תאריך כניסה</span>
+        <span class="p-val">${formatDate(p.date)}</span>
+      </div>
+      <div>
+        <span class="p-label">תשלום חודשי</span>
+        <span class="p-val">₪ ${(p.pay || 0).toLocaleString('he-IL')}</span>
+      </div>
+      <div>
+        <span class="p-label">מקדמה</span>
+        <span class="p-val">₪ ${(p.adv || 0).toLocaleString('he-IL')}</span>
+      </div>
+      <div>
+        <span class="p-label">תשלום ראשון לגביה</span>
+        <span class="p-val">₪ ${firstDue.toLocaleString('he-IL')}</span>
+      </div>
+      <div>
+        <span class="p-label">סטטוס</span>
+        <span class="badge ${badgeCls}">${statusInfo.label}${isReleased && p.exitDate ? ' · ' + formatDate(p.exitDate) : ''}</span>
+      </div>
+      <div class="row-actions edit-only">
+        ${isReleased ? '' : `<button class="btn small" data-action="release">שחרר</button>`}
+        <button class="btn small danger" data-action="delete" title="מחק לצמיתות">✕</button>
+      </div>
+    `;
+
+    const releaseBtn = row.querySelector('[data-action="release"]');
+    if (releaseBtn) releaseBtn.onclick = () => releasePatient(p);
+    row.querySelector('[data-action="delete"]').onclick = () => deletePatient(p);
+
+    list.appendChild(row);
+  });
+}
+
+function releasePatient(p) {
+  showModal({
+    title: 'שחרור דייר — ' + p.name,
+    fields: [
+      { name: 'exitDate', label: 'תאריך שחרור', type: 'date', required: true, value: todayISO() },
+    ],
+    submitLabel: 'שחרר',
+    onSubmit: async v => {
+      if (!v.exitDate) return false;
+      const prev = { status: p.status, exitDate: p.exitDate };
+      p.status = 'released';
+      p.exitDate = v.exitDate;
+      renderAll();
+      try {
+        await api({ action: 'updatePatient', id: p.id, status: 'released', exitDate: v.exitDate });
+      } catch (e) {
+        Object.assign(p, prev);
+        renderAll();
+        showError('עדכון נכשל — ' + e.message);
+        return false;
+      }
+      return true;
+    }
+  });
+}
+
+async function deletePatient(p) {
+  if (!confirm(`למחוק לצמיתות את ${p.name}?`)) return;
+  const prev = state.patients.slice();
+  state.patients = state.patients.filter(x => x.id !== p.id);
+  renderAll();
+  try {
+    await api({ action: 'deletePatient', id: p.id });
+  } catch (e) {
+    state.patients = prev;
+    renderAll();
+    showError('מחיקה נכשלה — ' + e.message);
+  }
+}
+
+/* ====================================================
+   MODAL
+   ==================================================== */
+function showModal({ title, fields, submitLabel, onSubmit }) {
+  const root = document.getElementById('modal-root');
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+
+  const fieldsHtml = fields.map(f => {
+    const val = f.value !== undefined ? f.value : '';
+    if (f.type === 'select') {
+      return `
+        <div class="form-row">
+          <label>${f.label}${f.required ? ' *' : ''}</label>
+          <select name="${f.name}">
+            ${f.options.map(o => `<option value="${o.value}" ${o.value === val ? 'selected' : ''}>${o.label}</option>`).join('')}
+          </select>
+        </div>`;
+    }
+    if (f.type === 'textarea') {
+      return `
+        <div class="form-row">
+          <label>${f.label}${f.required ? ' *' : ''}</label>
+          <textarea name="${f.name}" rows="3">${escapeHtml(val)}</textarea>
+        </div>`;
+    }
+    return `
+      <div class="form-row">
+        <label>${f.label}${f.required ? ' *' : ''}</label>
+        <input name="${f.name}" type="${f.type}" value="${escapeHtml(val)}" />
+      </div>`;
+  }).join('');
+
+  back.innerHTML = `
+    <div class="modal">
+      <h3>${title}</h3>
+      <form>
+        ${fieldsHtml}
+        <div class="form-actions">
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn primary">${submitLabel}</button>
+        </div>
+      </form>
+    </div>
+  `;
+  root.appendChild(back);
+
+  const close = () => back.remove();
+  back.querySelector('[data-action="cancel"]').onclick = close;
+  back.addEventListener('click', e => { if (e.target === back) close(); });
+  back.querySelector('form').onsubmit = async e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const values = {};
+    fields.forEach(f => { values[f.name] = (fd.get(f.name) || '').toString(); });
+    const ok = await onSubmit(values);
+    if (ok !== false) close();
+  };
+}
+
+/* ===== Helpers ===== */
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function todayISO() {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+function formatDate(s) {
+  if (!s) return '—';
+  const d = new Date(s);
+  if (isNaN(d)) return s;
+  return d.toLocaleDateString('he-IL');
+}
+
+/* ===== Boot ===== */
+document.addEventListener('DOMContentLoaded', initPin);
