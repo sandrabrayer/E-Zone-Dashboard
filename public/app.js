@@ -159,6 +159,7 @@ function normalizeLead(l) {
     visitDate: l.visitDate || '',
     visitTime: l.visitTime || '',
     entryDate: l.entryDate || '',
+    advance: l.advance ? Number(l.advance) : '',
     created: l.created || '',
   };
 }
@@ -283,8 +284,8 @@ function buildLeadCard(lead) {
   } else if (lead.stage === 'paid') {
     stageFields = `
       <div class="lc-fields edit-only">
-        <label style="font-size:12px;color:#6b7585;align-self:center;">כניסה מתוכננת</label>
-        <input type="date" data-field="entryDate" value="${lead.entryDate || ''}" />
+        <label class="lc-field-label">מקדמה ששולמה (₪)</label>
+        <input type="number" min="0" step="50" data-field="advance" value="${lead.advance || ''}" placeholder="סכום" />
       </div>`;
   }
 
@@ -298,8 +299,8 @@ function buildLeadCard(lead) {
     ${lead.note ? `<div class="lc-note">${escapeHtml(lead.note)}</div>` : ''}
     ${stageFields}
     <div class="lc-actions edit-only">
-      <button class="btn small" data-action="back" ${idx === 0 ? 'disabled' : ''}>← חזרה</button>
-      <button class="btn small primary" data-action="next">${isLast ? 'הושלם' : 'שלב הבא →'}</button>
+      <button class="btn small" data-action="back" ${idx === 0 ? 'disabled' : ''}>שלב קודם →</button>
+      <button class="btn small primary" data-action="next">${isLast ? 'הושלם' : '← שלב הבא'}</button>
     </div>
   `;
 
@@ -402,7 +403,8 @@ function openEntryModal(lead) {
       { name: 'date', label: 'תאריך כניסה', type: 'date', required: true,
         value: lead.entryDate || todayISO() },
       { name: 'pay', label: 'תשלום חודשי כולל מע"מ (₪)', type: 'number', required: true },
-      { name: 'adv', label: 'מקדמה ששולמה (₪)', type: 'number', required: true, value: '0' },
+      { name: 'adv', label: 'מקדמה ששולמה (₪)', type: 'number', required: true,
+        value: String(lead.advance || 0) },
       { name: 'status', label: 'סטטוס', type: 'select',
         value: 'trial',
         options: STATUS_OPTIONS.filter(s => s.id !== 'released').map(s => ({ value: s.id, label: s.label })) },
@@ -469,7 +471,7 @@ function renderPatients() {
     .filter(p => !q || (p.name || '').toLowerCase().includes(q));
 
   if (!rows.length) {
-    list.innerHTML = `<div class="card" style="text-align:center;color:#6b7585;">אין דיירים להצגה</div>`;
+    list.innerHTML = `<div class="card" style="text-align:center;color:var(--text-muted);">אין מטופלים להצגה</div>`;
     return;
   }
 
@@ -486,7 +488,7 @@ function renderPatients() {
     row.className = 'patient-row' + (isReleased ? ' released' : '');
     row.innerHTML = `
       <div>
-        <span class="p-label">דייר</span>
+        <span class="p-label">מטופל</span>
         <span class="p-name">${escapeHtml(p.name)}</span>
       </div>
       <div>
@@ -525,7 +527,7 @@ function renderPatients() {
 
 function releasePatient(p) {
   showModal({
-    title: 'שחרור דייר — ' + p.name,
+    title: 'שחרור מטופל — ' + p.name,
     fields: [
       { name: 'exitDate', label: 'תאריך שחרור', type: 'date', required: true, value: todayISO() },
     ],
