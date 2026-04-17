@@ -10,11 +10,16 @@
  *   GET  ?action=saveAll&leads=...&patients=... → {ok:true}
  *
  * Merge semantics (important for the split-save path in server.js):
- *   - leads present and non-empty → replace the entire Leads sheet
+ *   - leads present and non-empty → upsert each lead by id; leads whose id is
+ *     not in the payload are left untouched. This mirrors the patients
+ *     per-houseId behavior and lets the server chunk leads into batches.
  *   - leads missing, empty string, null, or empty array → leave Leads untouched
  *   - patients: for every houseId key present in the payload, that house's
  *     rows are replaced; houses NOT present in the payload are untouched
  *   - patients missing / empty object → leave the Patients sheet untouched
+ *
+ * Note: leads cannot be deleted through saveAll (only marked irrelevant via
+ * the app). A dedicated delete action can be added if that becomes needed.
  */
 
 const LEADS_SHEET    = 'Leads';
@@ -161,9 +166,9 @@ function saveAll_(leads, patients) {
   const lock = LockService.getScriptLock();
   lock.tryLock(10000);
   try {
-    // Leads — only touch if a non-empty array was provided
+    // Leads — upsert by id; leads not in the payload are preserved
     if (Array.isArray(leads) && leads.length > 0) {
-      replaceLeads_(leads);
+      mergeLeads_(leads);
     }
 
     // Patients — only touch houseIds that are present in the payload
@@ -182,12 +187,35 @@ function saveAll_(leads, patients) {
   }
 }
 
-function replaceLeads_(leads) {
+/**
+ * Upsert leads by id. Existing rows whose id is present in the payload are
+ * replaced; rows whose id is NOT in the payload are preserved. New ids are
+ * appended. Same shape as replaceHousePatients_ but keyed on lead.id.
+ */
+function mergeLeads_(leads) {
   const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+  const idColIdx = LEAD_COLUMNS.indexOf('id');
+  const lastRow = sh.getLastRow();
+
+  const incomingIds = {};
+  for (let i = 0; i < leads.length; i++) {
+    const id = leads[i].id;
+    if (id) incomingIds[String(id)] = true;
+  }
+
+  let kept = [];
+  if (lastRow > 1) {
+    const values = sh.getRange(2, 1, lastRow - 1, LEAD_COLUMNS.length).getValues();
+    kept = values.filter(function (row) { return !incomingIds[String(row[idColIdx])]; });
+  }
+
+  const newRows = leads.map(function (l) { return objectToRow_(l, LEAD_COLUMNS); });
+  const finalRows = kept.concat(newRows);
+
   clearBody_(sh, LEAD_COLUMNS.length);
-  if (leads.length === 0) return;
-  const rows = leads.map(function (l) { return objectToRow_(l, LEAD_COLUMNS); });
-  sh.getRange(2, 1, rows.length, LEAD_COLUMNS.length).setValues(rows);
+  if (finalRows.length > 0) {
+    sh.getRange(2, 1, finalRows.length, LEAD_COLUMNS.length).setValues(finalRows);
+  }
 }
 
 /**

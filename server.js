@@ -63,10 +63,12 @@ function fetchSheetsGet(params) {
 }
 
 /* Save the full dataset. If the single GET would overflow the URL limit,
- * split into: one call for leads (empty patients), then one call per house
- * for that house's patients. Each call still uses action=saveAll so the
- * Apps Script's existing handler can upsert per-section without clobbering
- * other sections. */
+ * split into: leads in batches of LEAD_BATCH_SIZE (with merge-by-id on the
+ * Apps Script side), then one call per house for that house's patients.
+ * Each call still uses action=saveAll so the Apps Script's existing handler
+ * can upsert per-section without clobbering other sections. */
+const LEAD_BATCH_SIZE = 10;
+
 async function saveSplit(leads, patients) {
   const safeLeads = Array.isArray(leads) ? leads : [];
   const safePatients = patients && typeof patients === 'object' ? patients : {};
@@ -76,12 +78,8 @@ async function saveSplit(leads, patients) {
     return fetchSheetsGet(singleParams);
   }
 
-  // 1) Leads only
-  const leadsParams = { action: 'saveAll', leads: safeLeads, patients: {} };
-  if (toQueryString(leadsParams).length > MAX_QS_CHARS) {
-    throw new Error('Leads payload exceeds URL limit; further splitting not implemented');
-  }
-  await fetchSheetsGet(leadsParams);
+  // 1) Leads in batches of LEAD_BATCH_SIZE (halve recursively if a batch is still too big)
+  await sendLeadBatches_(safeLeads, LEAD_BATCH_SIZE);
 
   // 2) Each house's patients in its own call (empty leads so we don't overwrite)
   const houseIds = Object.keys(safePatients);
@@ -94,7 +92,28 @@ async function saveSplit(leads, patients) {
     await fetchSheetsGet(houseParams);
   }
 
-  return { ok: true, split: true, chunks: houseIds.length + 1 };
+  return { ok: true, split: true, leadBatches: Math.ceil(safeLeads.length / LEAD_BATCH_SIZE), houseCalls: houseIds.length };
+}
+
+async function sendLeadBatches_(leads, batchSize) {
+  for (let i = 0; i < leads.length; i += batchSize) {
+    await sendLeadBatch_(leads.slice(i, i + batchSize));
+  }
+}
+
+async function sendLeadBatch_(batch) {
+  if (batch.length === 0) return;
+  const params = { action: 'saveAll', leads: batch, patients: {} };
+  if (toQueryString(params).length <= MAX_QS_CHARS) {
+    await fetchSheetsGet(params);
+    return;
+  }
+  if (batch.length === 1) {
+    throw new Error('Single lead exceeds URL limit; cannot split further');
+  }
+  const mid = Math.ceil(batch.length / 2);
+  await sendLeadBatch_(batch.slice(0, mid));
+  await sendLeadBatch_(batch.slice(mid));
 }
 
 /* GET /api/sheets?action=getData — direct pass-through */
