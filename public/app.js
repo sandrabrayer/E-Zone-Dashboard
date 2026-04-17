@@ -67,6 +67,10 @@ function serializePatients() {
   const out = {};
   HOUSES.forEach(h => { out[h.id] = []; });
   state.patients.forEach(p => {
+    if (!p || !p.houseId) {
+      console.warn('[E-ZONE] skipping patient with no houseId', p);
+      return;
+    }
     if (!out[p.houseId]) out[p.houseId] = [];
     out[p.houseId].push(p);
   });
@@ -78,11 +82,32 @@ let savePromise = Promise.resolve();
 /* Save full state to Sheets. Serialized so overlapping calls don't interleave. */
 function saveAll() {
   if (state.mode !== 'edit') return Promise.resolve();
-  const run = () => apiPost({
-    action: 'saveAll',
-    leads: state.leads,
-    patients: serializePatients(),
-  });
+  const run = async () => {
+    const patients = serializePatients();
+    const patientCount = Object.values(patients).reduce((n, arr) => n + arr.length, 0);
+    const byHouse = {};
+    Object.entries(patients).forEach(([k, v]) => { byHouse[k] = v.length; });
+
+    console.log('[E-ZONE] saveAll →', {
+      leadCount: state.leads.length,
+      patientCount,
+      byHouse,
+      stateTotal: state.patients.length,
+    });
+
+    if (state.patients.length > 0 && patientCount === 0) {
+      throw new Error(`state.patients has ${state.patients.length} items but serialized payload is empty — houseId mismatch?`);
+    }
+    if (state.patients.length !== patientCount) {
+      console.warn('[E-ZONE] patient count mismatch — state:', state.patients.length, 'serialized:', patientCount, state.patients);
+    }
+
+    return apiPost({
+      action: 'saveAll',
+      leads: state.leads,
+      patients,
+    });
+  };
   savePromise = savePromise.then(run, run);
   return savePromise;
 }

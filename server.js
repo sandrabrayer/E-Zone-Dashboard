@@ -67,6 +67,25 @@ function followingRequest(opts, targetUrl, payload, resolve, reject, redirects) 
   req.end();
 }
 
+/* Keep the most recent save in memory so /api/debug/last-save can be hit
+ * from a browser without digging through Railway logs. */
+let lastSave = null;
+
+function summarizeBody(body) {
+  const leadCount = Array.isArray(body && body.leads) ? body.leads.length : 0;
+  const byHouse = {};
+  let patientCount = 0;
+  if (body && body.patients && typeof body.patients === 'object') {
+    for (const [hid, arr] of Object.entries(body.patients)) {
+      if (Array.isArray(arr)) {
+        byHouse[hid] = arr.length;
+        patientCount += arr.length;
+      }
+    }
+  }
+  return { action: body && body.action, leadCount, patientCount, byHouse };
+}
+
 /* GET /api/sheets?action=getData — forwarded as GET to Apps Script */
 app.get('/api/sheets', async (req, res) => {
   try {
@@ -82,13 +101,33 @@ app.get('/api/sheets', async (req, res) => {
  * All save operations (saveAll, etc.) use POST so the data never hits the
  * querystring length limit. */
 app.post('/api/sheets', async (req, res) => {
+  const body = req.body || {};
+  const summary = summarizeBody(body);
+  console.log('[sheets POST] →', summary);
   try {
-    const data = await sheetsPost(req.body || {});
+    const data = await sheetsPost(body);
+    console.log('[sheets POST] ←', data && typeof data === 'object' ? data : String(data).slice(0, 300));
+    lastSave = {
+      at: new Date().toISOString(),
+      request: { summary, keys: Object.keys(body) },
+      response: data,
+    };
     res.json(data);
   } catch (err) {
-    console.error('Sheets POST error:', err.message);
+    console.error('[sheets POST] error:', err.message);
+    lastSave = {
+      at: new Date().toISOString(),
+      request: { summary, keys: Object.keys(body) },
+      error: err.message,
+    };
     res.status(502).json({ ok: false, error: 'sheets_unreachable', message: err.message });
   }
+});
+
+/* Diagnostic — the last save's summary + Apps Script response. Not protected
+ * because it never exposes lead/patient contents, only counts. */
+app.get('/api/debug/last-save', (_req, res) => {
+  res.json(lastSave || { empty: true });
 });
 
 app.get('/healthz', (_, res) => res.json({ ok: true }));
