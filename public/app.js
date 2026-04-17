@@ -296,6 +296,47 @@ async function loadAll() {
     state.leads = rawLeads.map(normalizeLead);
     state.patients = parsePatients(rawPatients);
 
+    // ===== Patient-load diagnosis =====
+    // Log the exact rawPatients as received from the server, its shape,
+    // and what parsePatients produced. Also stash on window so Sandra can
+    // inspect it in the DevTools console without re-running anything.
+    const rawType = Array.isArray(rawPatients) ? 'array'
+                  : rawPatients === null ? 'null'
+                  : typeof rawPatients;
+    const rawKeys = rawPatients && typeof rawPatients === 'object' && !Array.isArray(rawPatients)
+                  ? Object.keys(rawPatients) : null;
+    const rawShape = {
+      type: rawType,
+      length: Array.isArray(rawPatients) ? rawPatients.length : undefined,
+      keys: rawKeys,
+      byHouse: rawKeys
+        ? Object.fromEntries(rawKeys.map(k => {
+            const v = rawPatients[k];
+            return [k, Array.isArray(v) ? v.length : typeof v];
+          }))
+        : undefined,
+    };
+    console.log('[E-ZONE] RAW patients from server — shape:', rawShape);
+    console.log('[E-ZONE] RAW patients from server — preview:', JSON.stringify(rawPatients).slice(0, 1000));
+    console.log('[E-ZONE] parsePatients() produced', state.patients.length, 'patient(s)');
+    if (state.patients[0]) console.log('[E-ZONE] first parsed patient:', state.patients[0]);
+
+    window.__ezoneLastLoad = {
+      rawLeads, rawPatients,
+      parsedLeads: state.leads,
+      parsedPatients: state.patients,
+      rawShape,
+    };
+    console.log('[E-ZONE] full raw payload saved to window.__ezoneLastLoad for inspection');
+
+    if (rawPatients && !Array.isArray(rawPatients) && typeof rawPatients === 'object') {
+      const rawTotal = Object.values(rawPatients).reduce(
+        (n, v) => n + (Array.isArray(v) ? v.length : 0), 0);
+      if (rawTotal > 0 && state.patients.length === 0) {
+        console.error('[E-ZONE] BUG: server returned', rawTotal, 'patient rows but parsePatients produced 0');
+      }
+    }
+
     console.log('[E-ZONE] after parse — leads:', state.leads.length, 'patients:', state.patients.length);
     if (state.leads[0])    console.log('[E-ZONE] first lead:', state.leads[0]);
     if (state.patients[0]) console.log('[E-ZONE] first patient:', state.patients[0]);
