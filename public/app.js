@@ -62,18 +62,52 @@ async function apiPost(body) {
   return data;
 }
 
-/* Serialize current state into the shape the Apps Script expects. */
+/* Serialize current state into the shape the Apps Script expects.
+ * The output is ALWAYS an object with all six house keys, each mapping
+ * to an array. We build it explicitly (not via HOUSES.forEach) so the
+ * shape is guaranteed even if HOUSES is ever mutated or mis-ordered. */
 function serializePatients() {
-  const out = {};
-  HOUSES.forEach(h => { out[h.id] = []; });
-  state.patients.forEach(p => {
-    if (!p || !p.houseId) {
-      console.warn('[E-ZONE] skipping patient with no houseId', p);
-      return;
-    }
-    if (!out[p.houseId]) out[p.houseId] = [];
-    out[p.houseId].push(p);
-  });
+  const out = {
+    arfoni: [],
+    rehab:  [],
+    asher:  [],
+    pardes: [],
+    ramot:  [],
+    sde:    [],
+  };
+
+  const src = Array.isArray(state.patients) ? state.patients : [];
+  const invalid = [];
+
+  for (let i = 0; i < src.length; i++) {
+    const p = src[i];
+    if (!p || typeof p !== 'object') { invalid.push({ i, reason: 'not-object', p }); continue; }
+    const hid = p.houseId;
+    if (!hid || typeof hid !== 'string') { invalid.push({ i, reason: 'no-houseId', p }); continue; }
+
+    // Rebuild each record as a plain primitives-only object so nothing
+    // unstringifiable (e.g., a stray Date reference) can poison JSON.stringify.
+    const record = {
+      id:       p.id       ? String(p.id)       : '',
+      houseId:  hid,
+      name:     p.name     ? String(p.name)     : '',
+      date:     p.date     ? String(p.date)     : '',
+      pay:      Number(p.pay) || 0,
+      adv:      Number(p.adv) || 0,
+      status:   p.status   ? String(p.status)   : 'active',
+      fromLead: p.fromLead ? String(p.fromLead) : '',
+      exitDate: p.exitDate ? String(p.exitDate) : '',
+    };
+
+    if (!out[hid]) out[hid] = [];   // unknown houseId — keep the data, don't drop
+    out[hid].push(record);
+  }
+
+  const total = Object.keys(out).reduce((n, k) => n + out[k].length, 0);
+  if (invalid.length) console.warn('[E-ZONE] serializePatients dropped invalid records:', invalid);
+  if (src.length > 0 && total === 0) {
+    console.error('[E-ZONE] serializePatients produced 0 patients from', src.length, 'state entries — sample:', src.slice(0, 3));
+  }
   return out;
 }
 
@@ -202,12 +236,72 @@ async function loadAll() {
     }
     state.leads = Array.isArray(data.leads) ? data.leads.map(normalizeLead) : [];
     state.patients = parsePatients(data.patients);
+
+    const promoted = promoteEnteredLeads();
     renderAll();
+
+    if (promoted.length > 0 && state.mode === 'edit') {
+      console.log(`[E-ZONE] Persisting ${promoted.length} auto-promoted patient(s)...`);
+      saveAll().catch(e => console.warn('[E-ZONE] auto-promote save failed', e.message));
+    }
   } catch (e) {
     showError('טעינת נתונים מהגיליון נכשלה — ' + e.message);
   } finally {
     setLoading(false);
   }
+}
+
+/**
+ * For every lead in stage=entry (or 'entered') that doesn't already have a
+ * patient record, create one using whatever data we have on the lead.
+ * A matching patient is any patient whose fromLead equals the lead id, OR
+ * (as a fallback) whose name+house match the lead's name+house.
+ */
+function promoteEnteredLeads() {
+  const created = [];
+  if (!Array.isArray(state.leads) || state.leads.length === 0) return created;
+
+  const byFromLead = new Set();
+  const byNameHouse = new Set();
+  state.patients.forEach(p => {
+    if (p.fromLead) byFromLead.add(String(p.fromLead));
+    if (p.name && p.houseId) byNameHouse.add(`${p.houseId}::${String(p.name).trim()}`);
+  });
+
+  state.leads.forEach(lead => {
+    const stage = String(lead.stage || '').toLowerCase();
+    if (stage !== 'entry' && stage !== 'entered') return;
+
+    if (lead.id && byFromLead.has(String(lead.id))) return;
+
+    const house = houseByName(lead.house) || houseById(lead.house);
+    if (!house) {
+      console.warn('[E-ZONE] entered lead has no recognizable house, skipping auto-promote:', lead);
+      return;
+    }
+    const key = `${house.id}::${String(lead.name || '').trim()}`;
+    if (byNameHouse.has(key)) return;
+
+    const patient = normalizePatient({
+      id: cryptoId(),
+      houseId: house.id,
+      name: lead.name,
+      date: lead.entryDate || '',
+      pay: 0,
+      adv: Number(lead.advance) || 0,
+      status: 'trial',
+      fromLead: lead.id,
+    });
+    state.patients.push(patient);
+    byFromLead.add(String(lead.id));
+    byNameHouse.add(key);
+    created.push(patient);
+  });
+
+  if (created.length > 0) {
+    console.log(`[E-ZONE] promoted ${created.length} entered lead(s) to patient records`, created.map(p => p.name));
+  }
+  return created;
 }
 
 /* Accept patients as either an array OR an object keyed by houseId. */
