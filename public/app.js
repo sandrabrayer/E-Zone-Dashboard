@@ -39,14 +39,52 @@ const state = {
 };
 
 /* ===== API ===== */
-async function api(params) {
+async function apiGet(params) {
   const qs = new URLSearchParams(params).toString();
   const res = await fetch('/api/sheets?' + qs);
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.message || ('HTTP ' + res.status));
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.message || data.error || ('HTTP ' + res.status));
   }
-  return res.json();
+  return data;
+}
+
+async function apiPost(body) {
+  const res = await fetch('/api/sheets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.message || data.error || ('HTTP ' + res.status));
+  }
+  return data;
+}
+
+/* Serialize current state into the shape the Apps Script expects. */
+function serializePatients() {
+  const out = {};
+  HOUSES.forEach(h => { out[h.id] = []; });
+  state.patients.forEach(p => {
+    if (!out[p.houseId]) out[p.houseId] = [];
+    out[p.houseId].push(p);
+  });
+  return out;
+}
+
+let savePromise = Promise.resolve();
+
+/* Save full state to Sheets. Serialized so overlapping calls don't interleave. */
+function saveAll() {
+  if (state.mode !== 'edit') return Promise.resolve();
+  const run = () => apiPost({
+    action: 'saveAll',
+    leads: state.leads,
+    patients: serializePatients(),
+  });
+  savePromise = savePromise.then(run, run);
+  return savePromise;
 }
 
 function showError(msg) {
@@ -133,18 +171,37 @@ function initTabs() {
 async function loadAll() {
   setLoading(true);
   try {
-    const data = await api({ action: 'getAll' });
-    if (!data || (!Array.isArray(data.leads) && !Array.isArray(data.patients))) {
+    const data = await apiGet({ action: 'getData' });
+    if (!data || typeof data !== 'object') {
       throw new Error('פורמט תגובה לא תקין מהגיליון');
     }
-    state.leads = (data.leads || []).map(normalizeLead);
-    state.patients = (data.patients || []).map(normalizePatient);
+    state.leads = Array.isArray(data.leads) ? data.leads.map(normalizeLead) : [];
+    state.patients = parsePatients(data.patients);
     renderAll();
   } catch (e) {
     showError('טעינת נתונים מהגיליון נכשלה — ' + e.message);
   } finally {
     setLoading(false);
   }
+}
+
+/* Accept patients as either an array OR an object keyed by houseId. */
+function parsePatients(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.map(normalizePatient);
+  if (typeof raw === 'object') {
+    const flat = [];
+    Object.entries(raw).forEach(([key, val]) => {
+      if (Array.isArray(val)) {
+        val.forEach(p => flat.push(normalizePatient({ ...p, houseId: p.houseId || key })));
+      } else if (val && typeof val === 'object') {
+        // object keyed by patient id
+        flat.push(normalizePatient({ ...val, id: val.id || key }));
+      }
+    });
+    return flat;
+  }
+  return [];
 }
 
 function normalizeLead(l) {
@@ -334,7 +391,7 @@ async function moveLead(lead, newStage) {
   lead.stage = newStage;
   renderAll();
   try {
-    await api({ action: 'updateLead', id: lead.id, stage: newStage });
+    await saveAll();
   } catch (e) {
     lead.stage = prev;
     renderAll();
@@ -348,7 +405,7 @@ async function updateLead(id, fields) {
   const prev = { ...lead };
   Object.assign(lead, fields);
   try {
-    await api({ action: 'updateLead', id, ...fields });
+    await saveAll();
   } catch (e) {
     Object.assign(lead, prev);
     renderAll();
@@ -380,7 +437,7 @@ function openAddLeadModal() {
       state.leads.unshift(lead);
       renderAll();
       try {
-        await api({ action: 'addLead', ...lead });
+        await saveAll();
       } catch (e) {
         state.leads = state.leads.filter(l => l.id !== id);
         renderAll();
@@ -428,8 +485,7 @@ function openEntryModal(lead) {
       lead.entryDate = v.date;
       renderAll();
       try {
-        await api({ action: 'addPatient', ...patient });
-        await api({ action: 'updateLead', id: lead.id, stage: 'entry', entryDate: v.date });
+        await saveAll();
       } catch (e) {
         state.patients = state.patients.filter(p => p.id !== patient.id);
         lead.stage = prevStage;
@@ -539,7 +595,7 @@ function releasePatient(p) {
       p.exitDate = v.exitDate;
       renderAll();
       try {
-        await api({ action: 'updatePatient', id: p.id, status: 'released', exitDate: v.exitDate });
+        await saveAll();
       } catch (e) {
         Object.assign(p, prev);
         renderAll();
@@ -557,7 +613,7 @@ async function deletePatient(p) {
   state.patients = state.patients.filter(x => x.id !== p.id);
   renderAll();
   try {
-    await api({ action: 'deletePatient', id: p.id });
+    await saveAll();
   } catch (e) {
     state.patients = prev;
     renderAll();
