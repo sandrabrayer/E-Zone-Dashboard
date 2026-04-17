@@ -67,9 +67,10 @@ function followingRequest(opts, targetUrl, payload, resolve, reject, redirects) 
   req.end();
 }
 
-/* Keep the most recent save in memory so /api/debug/last-save can be hit
+/* Keep the most recent save AND load in memory so /api/debug/* can be hit
  * from a browser without digging through Railway logs. */
 let lastSave = null;
+let lastLoad = null;
 
 function summarizeBody(body) {
   const leadCount = Array.isArray(body && body.leads) ? body.leads.length : 0;
@@ -86,10 +87,51 @@ function summarizeBody(body) {
   return { action: body && body.action, leadCount, patientCount, byHouse };
 }
 
+function summarizeResponse(data) {
+  if (!data || typeof data !== 'object') {
+    return { topType: typeof data, value: String(data).slice(0, 200) };
+  }
+  const out = { topKeys: Object.keys(data) };
+  out.leadsType = Array.isArray(data.leads) ? 'array' : typeof data.leads;
+  out.leadCount = Array.isArray(data.leads) ? data.leads.length : null;
+
+  const p = data.patients;
+  out.patientsType = Array.isArray(p) ? 'array' : p === null ? 'null' : typeof p;
+  if (Array.isArray(p)) {
+    out.patientsLength = p.length;
+    out.firstPatient = p[0] || null;
+  } else if (p && typeof p === 'object') {
+    out.patientsKeys = Object.keys(p);
+    out.patientsByHouse = {};
+    for (const k of out.patientsKeys) {
+      const v = p[k];
+      out.patientsByHouse[k] = Array.isArray(v) ? v.length : typeof v;
+    }
+  }
+  return out;
+}
+
 /* GET /api/sheets?action=getData — forwarded as GET to Apps Script */
 app.get('/api/sheets', async (req, res) => {
   try {
     const data = await sheetsGet(req.query);
+
+    if (req.query && req.query.action === 'getData') {
+      const summary = summarizeResponse(data);
+      console.log('[sheets GET getData] ← response summary:', summary);
+      console.log('[sheets GET getData] ← raw patients field:',
+        data && typeof data === 'object'
+          ? JSON.stringify(data.patients).slice(0, 1500)
+          : '(not an object)');
+      lastLoad = {
+        at: new Date().toISOString(),
+        summary,
+        patientsPreview: data && typeof data === 'object'
+          ? JSON.stringify(data.patients).slice(0, 4000)
+          : null,
+      };
+    }
+
     res.json(data);
   } catch (err) {
     console.error('Sheets GET error:', err.message);
@@ -124,10 +166,12 @@ app.post('/api/sheets', async (req, res) => {
   }
 });
 
-/* Diagnostic — the last save's summary + Apps Script response. Not protected
- * because it never exposes lead/patient contents, only counts. */
+/* Diagnostics — last save and last load, browsable from the live URL. */
 app.get('/api/debug/last-save', (_req, res) => {
   res.json(lastSave || { empty: true });
+});
+app.get('/api/debug/last-load', (_req, res) => {
+  res.json(lastLoad || { empty: true });
 });
 
 app.get('/healthz', (_, res) => res.json({ ok: true }));
