@@ -9,6 +9,19 @@ const PORT = process.env.PORT || 3000;
 const SHEETS_URL = 'https://script.google.com/macros/s/AKfycbyScn2vcaOb_YCiTIRw-I-NugkZ4Zbt0hY5LgrM5D-WroSy-iuNhb9ewxoGcyZW63fsBw/exec';
 
 app.use(express.json({ limit: '10mb' }));
+
+/* Route hit counter — confirms the server is actually receiving any
+ * traffic on /api/sheets at all. Must be registered before the route
+ * handlers so every request passes through it. Browse
+ * /api/debug/routes to see the counts. */
+const routeHits = { 'GET /api/sheets': 0, 'POST /api/sheets': 0, started: new Date().toISOString() };
+app.use('/api/sheets', (req, _res, next) => {
+  const key = `${req.method} /api/sheets`;
+  routeHits[key] = (routeHits[key] || 0) + 1;
+  next();
+});
+app.get('/api/debug/routes', (_req, res) => res.json(routeHits));
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 /* GET the Apps Script with querystring params. Follows Google's 302 → googleusercontent.com. */
@@ -113,31 +126,43 @@ function summarizeResponse(data) {
 
 /* GET /api/sheets?action=getData — forwarded as GET to Apps Script */
 app.get('/api/sheets', async (req, res) => {
+  const action = req.query && req.query.action;
+  console.log('[sheets GET] → action=', JSON.stringify(action), 'fullQuery=', JSON.stringify(req.query));
   try {
     const data = await sheetsGet(req.query);
 
-    if (req.query && req.query.action === 'getData') {
-      const summary = summarizeResponse(data);
-      console.log('[sheets GET getData] ← response summary:', summary);
-      console.log('[sheets GET getData] ← raw patients field:',
-        data && typeof data === 'object'
-          ? JSON.stringify(data.patients).slice(0, 1500)
-          : '(not an object)');
-      lastLoad = {
-        at: new Date().toISOString(),
-        summary,
-        patientsPreview: data && typeof data === 'object'
-          ? JSON.stringify(data.patients).slice(0, 4000)
-          : null,
-      };
-    }
+    const summary = summarizeResponse(data);
+    console.log('[sheets GET] ← response summary:', summary);
+
+    // Record the last load for ANY GET to /api/sheets so we can tell
+    // whether the route is being hit even if the client sends a
+    // different action name.
+    lastLoad = {
+      at: new Date().toISOString(),
+      action: action === undefined ? null : action,
+      query: req.query,
+      summary,
+      patientsPreview: data && typeof data === 'object'
+        ? JSON.stringify(data.patients).slice(0, 4000)
+        : null,
+      leadsPreview: data && typeof data === 'object'
+        ? JSON.stringify(data.leads).slice(0, 1500)
+        : null,
+    };
 
     res.json(data);
   } catch (err) {
-    console.error('Sheets GET error:', err.message);
+    console.error('[sheets GET] error:', err.message);
+    lastLoad = {
+      at: new Date().toISOString(),
+      action: action === undefined ? null : action,
+      query: req.query,
+      error: err.message,
+    };
     res.status(502).json({ ok: false, error: 'sheets_unreachable', message: err.message });
   }
 });
+
 
 /* POST /api/sheets — body is forwarded as POST application/json to Apps Script.
  * All save operations (saveAll, etc.) use POST so the data never hits the
