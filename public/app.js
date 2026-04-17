@@ -136,6 +136,8 @@ function saveAll() {
       console.warn('[E-ZONE] patient count mismatch — state:', state.patients.length, 'serialized:', patientCount, state.patients);
     }
 
+    console.log('[E-ZONE] saveAll sending:', JSON.stringify({leadCount: state.leads.length, patientCount: Object.values(state.patients).flat().length, patients: state.patients}))
+
     return apiPost({
       action: 'saveAll',
       leads: state.leads,
