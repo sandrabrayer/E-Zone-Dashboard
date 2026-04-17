@@ -136,13 +136,33 @@ function saveAll() {
       console.warn('[E-ZONE] patient count mismatch — state:', state.patients.length, 'serialized:', patientCount, state.patients);
     }
 
-    console.log('[E-ZONE] saveAll sending:', JSON.stringify({leadCount: state.leads.length, patientCount: Object.values(state.patients).flat().length, patients: state.patients}))
-
-    return apiPost({
+    const payload = {
       action: 'saveAll',
       leads: state.leads,
       patients,
-    });
+    };
+
+    // Hard guard: patients must be a plain object keyed by houseId, never
+    // an array. serializePatients already guarantees this, but asserting
+    // here makes sure no future refactor can regress the shape.
+    if (Array.isArray(payload.patients) || typeof payload.patients !== 'object' || payload.patients === null) {
+      console.error('[E-ZONE] payload.patients wrong shape, regrouping', payload.patients);
+      payload.patients = serializePatients();
+    }
+
+    // Log the ACTUAL body leaving the browser, not the internal state.
+    // JSON.stringify guarantees what the network sees.
+    console.log('[E-ZONE] saveAll sending payload:', JSON.stringify({
+      action: payload.action,
+      leadCount: payload.leads.length,
+      patientCount,
+      patientsShape: Array.isArray(payload.patients) ? 'ARRAY (BUG!)' : 'object',
+      patientsKeys: Object.keys(payload.patients),
+      patientsByHouse: Object.fromEntries(Object.entries(payload.patients).map(([k, v]) => [k, Array.isArray(v) ? v.length : '(not array)'])),
+    }));
+    console.log('[E-ZONE] saveAll body preview (first 400 chars):', JSON.stringify(payload).slice(0, 400));
+
+    return apiPost(payload);
   };
   savePromise = savePromise.then(run, run);
   return savePromise;

@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <title>E-ZONE Dashboard</title>
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -100,6 +103,9 @@
   <!-- ====== MODALS ====== -->
   <div id="modal-root"></div>
 
-  <script src="app.js"></script>
+  <script>
+    // Cache-bust app.js so each deploy is picked up immediately.
+    document.write('<scr' + 'ipt src="app.js?v=' + Date.now() + '"></scr' + 'ipt>');
+  </script>
 </body>
 </html>
