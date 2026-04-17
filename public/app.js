@@ -371,33 +371,99 @@ function parsePatients(raw) {
   return [];
 }
 
+/* ===== Sheet value normalization ===== */
+
+const STAGE_ALIASES = {
+  'new': 'new', 'ליד חדש': 'new', 'חדש': 'new', 'ליד': 'new',
+  'visit': 'visit', 'ביקור נקבע': 'visit', 'ביקור': 'visit', 'נקבע ביקור': 'visit',
+  'paid': 'paid', 'מקדמה שולמה': 'paid', 'מקדמה': 'paid', 'שילם מקדמה': 'paid',
+  'entry': 'entry', 'entered': 'entry',
+  'כניסה לבית': 'entry', 'נכנס לבית': 'entry', 'נכנס': 'entry', 'כניסה': 'entry',
+  'irrelevant': 'irrelevant', 'לא רלוונטי': 'irrelevant', 'לא_רלוונטי': 'irrelevant',
+};
+
+const STATUS_ALIASES = {
+  'active': 'active', 'פעיל': 'active',
+  'trial': 'trial', 'תקופת ניסיון': 'trial', 'ניסיון': 'trial',
+  'wait': 'wait', 'בהמתנה': 'wait', 'המתנה': 'wait', 'ממתין': 'wait',
+  'released': 'released', 'שוחרר': 'released', 'שחרור': 'released',
+};
+
+function normalizeStage(raw) {
+  if (raw === undefined || raw === null) return 'new';
+  const s = String(raw).trim();
+  if (!s) return 'new';
+  if (STAGE_ALIASES[s]) return STAGE_ALIASES[s];
+  const low = s.toLowerCase();
+  if (STAGE_ALIASES[low]) return STAGE_ALIASES[low];
+  const compact = s.replace(/\s+/g, ' ');
+  if (STAGE_ALIASES[compact]) return STAGE_ALIASES[compact];
+  console.warn('[E-ZONE] unknown stage, defaulting to "new":', JSON.stringify(raw));
+  return 'new';
+}
+
+function normalizeStatus(raw) {
+  if (raw === undefined || raw === null) return 'active';
+  const s = String(raw).trim();
+  if (!s) return 'active';
+  return STATUS_ALIASES[s] || STATUS_ALIASES[s.toLowerCase()] || 'active';
+}
+
+function resolveHouseId(raw) {
+  if (!raw) return '';
+  const s = String(raw).trim();
+  if (HOUSES.some(h => h.id === s)) return s;
+  const byName = HOUSES.find(h => h.name === s);
+  if (byName) return byName.id;
+  const lower = s.toLowerCase();
+  const byLowerId = HOUSES.find(h => h.id.toLowerCase() === lower);
+  if (byLowerId) return byLowerId.id;
+  return s;
+}
+
+/* Pick the first non-empty value from a list of keys. Accepts Hebrew or
+ * English column names so the app works against sheets populated by any
+ * route (original form, manual entry, or this app itself). */
+function pickField(obj, keys) {
+  if (!obj) return '';
+  for (const k of keys) {
+    const v = obj[k];
+    if (v !== undefined && v !== null && v !== '') return v;
+  }
+  return '';
+}
+
 function normalizeLead(l) {
+  if (!l || typeof l !== 'object') l = {};
+  const advRaw = pickField(l, ['advance', 'adv', 'מקדמה', 'מקדמה ששולמה']);
   return {
-    id: l.id || l.ID || cryptoId(),
-    name: l.name || '',
-    phone: l.phone || '',
-    house: l.house || '',
-    source: l.source || '',
-    note: l.note || '',
-    stage: l.stage || 'new',
-    visitDate: l.visitDate || '',
-    visitTime: l.visitTime || '',
-    entryDate: l.entryDate || '',
-    advance: l.advance ? Number(l.advance) : '',
-    created: l.created || '',
+    id:        pickField(l, ['id', 'ID', 'מזהה']) || cryptoId(),
+    name:      pickField(l, ['name', 'שם', 'שם מלא', 'Name']),
+    phone:     pickField(l, ['phone', 'טלפון', 'נייד', 'מספר טלפון', 'Phone']),
+    house:     pickField(l, ['house', 'בית', 'בית מועדף', 'House']),
+    source:    pickField(l, ['source', 'מקור', 'מקור הפניה', 'Source']),
+    note:      pickField(l, ['note', 'notes', 'הערות', 'הערה', 'Note']),
+    stage:     normalizeStage(pickField(l, ['stage', 'שלב', 'סטטוס ליד', 'Stage'])),
+    visitDate: pickField(l, ['visitDate', 'visit_date', 'תאריך ביקור']),
+    visitTime: pickField(l, ['visitTime', 'visit_time', 'שעת ביקור', 'שעה']),
+    entryDate: pickField(l, ['entryDate', 'entry_date', 'תאריך כניסה']),
+    advance:   advRaw === '' ? '' : Number(advRaw) || 0,
+    created:   pickField(l, ['created', 'created_at', 'נוצר', 'נוצר ב', 'תאריך יצירה']),
   };
 }
+
 function normalizePatient(p) {
+  if (!p || typeof p !== 'object') p = {};
   return {
-    id: p.id || cryptoId(),
-    houseId: p.houseId || '',
-    name: p.name || '',
-    date: p.date || '',
-    pay: Number(p.pay || 0),
-    adv: Number(p.adv || 0),
-    status: p.status || 'active',
-    fromLead: p.fromLead || '',
-    exitDate: p.exitDate || '',
+    id:       pickField(p, ['id', 'ID', 'מזהה']) || cryptoId(),
+    houseId:  resolveHouseId(pickField(p, ['houseId', 'house_id', 'בית', 'בית_מזהה'])),
+    name:     pickField(p, ['name', 'שם', 'שם מטופל', 'Name']),
+    date:     pickField(p, ['date', 'תאריך', 'תאריך כניסה', 'entryDate']),
+    pay:      Number(pickField(p, ['pay', 'payment', 'תשלום', 'תשלום חודשי'])) || 0,
+    adv:      Number(pickField(p, ['adv', 'advance', 'מקדמה'])) || 0,
+    status:   normalizeStatus(pickField(p, ['status', 'סטטוס', 'מצב'])),
+    fromLead: pickField(p, ['fromLead', 'from_lead', 'מקור_ליד', 'ליד מקור']),
+    exitDate: pickField(p, ['exitDate', 'exit_date', 'תאריך שחרור', 'שחרור']),
   };
 }
 function cryptoId() {
