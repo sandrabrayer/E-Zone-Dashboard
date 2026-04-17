@@ -230,14 +230,56 @@ function initTabs() {
 async function loadAll() {
   setLoading(true);
   try {
-    const data = await apiGet({ action: 'getData' });
-    if (!data || typeof data !== 'object') {
-      throw new Error('פורמט תגובה לא תקין מהגיליון');
+    let data = await apiGet({ action: 'getData' });
+
+    console.log('[E-ZONE] raw response type:', typeof data);
+    if (data && typeof data === 'object') {
+      console.log('[E-ZONE] raw response keys:', Object.keys(data));
+      console.log('[E-ZONE] raw response preview:', JSON.stringify(data).slice(0, 300));
+    } else {
+      console.log('[E-ZONE] raw response value:', String(data).slice(0, 300));
     }
-    state.leads = Array.isArray(data.leads) ? data.leads.map(normalizeLead) : [];
-    state.patients = parsePatients(data.patients);
+
+    // Apps Script sometimes double-encodes (string → JSON-of-JSON); unwrap once.
+    if (typeof data === 'string') {
+      try { data = JSON.parse(data); console.log('[E-ZONE] unwrapped string response'); }
+      catch (_) { /* fall through to shape check */ }
+    }
+
+    if (!data || typeof data !== 'object') {
+      throw new Error('פורמט תגובה לא תקין מהגיליון — ' + String(data).slice(0, 100));
+    }
+
+    // Locate leads / patients. Accept the expected shape first, then fall
+    // back to common nestings (data.data, data.result, data.payload).
+    let rawLeads = data.leads;
+    let rawPatients = data.patients;
+
+    if (!Array.isArray(rawLeads)) {
+      for (const key of ['data', 'result', 'payload', 'body']) {
+        if (data[key] && typeof data[key] === 'object' && Array.isArray(data[key].leads)) {
+          console.log(`[E-ZONE] leads found under data.${key}`);
+          rawLeads = data[key].leads;
+          rawPatients = data[key].patients;
+          break;
+        }
+      }
+    }
+
+    if (!Array.isArray(rawLeads)) {
+      console.error('[E-ZONE] leads array not found in response:', data);
+      throw new Error(`לא נמצא מערך leads (מפתחות: ${Object.keys(data).join(', ')})`);
+    }
+
+    state.leads = rawLeads.map(normalizeLead);
+    state.patients = parsePatients(rawPatients);
+
+    console.log('[E-ZONE] after parse — leads:', state.leads.length, 'patients:', state.patients.length);
+    if (state.leads[0])    console.log('[E-ZONE] first lead:', state.leads[0]);
+    if (state.patients[0]) console.log('[E-ZONE] first patient:', state.patients[0]);
 
     const promoted = promoteEnteredLeads();
+    console.log('[E-ZONE] after promote — leads:', state.leads.length, 'patients:', state.patients.length, '(+', promoted.length, 'promoted)');
     renderAll();
 
     if (promoted.length > 0 && state.mode === 'edit') {
@@ -245,6 +287,7 @@ async function loadAll() {
       saveAll().catch(e => console.warn('[E-ZONE] auto-promote save failed', e.message));
     }
   } catch (e) {
+    console.error('[E-ZONE] loadAll failed:', e);
     showError('טעינת נתונים מהגיליון נכשלה — ' + e.message);
   } finally {
     setLoading(false);
@@ -310,11 +353,16 @@ function parsePatients(raw) {
   if (Array.isArray(raw)) return raw.map(normalizePatient);
   if (typeof raw === 'object') {
     const flat = [];
+    const knownHouseIds = new Set(HOUSES.map(h => h.id));
     Object.entries(raw).forEach(([key, val]) => {
       if (Array.isArray(val)) {
-        val.forEach(p => flat.push(normalizePatient({ ...p, houseId: p.houseId || key })));
-      } else if (val && typeof val === 'object') {
-        // object keyed by patient id
+        val.forEach(p => {
+          if (p && typeof p === 'object') {
+            flat.push(normalizePatient({ ...p, houseId: p.houseId || key }));
+          }
+        });
+      } else if (val && typeof val === 'object' && knownHouseIds.has(key) === false && (val.name || val.houseId)) {
+        // Treat as a single patient keyed by id only if it looks like a patient record.
         flat.push(normalizePatient({ ...val, id: val.id || key }));
       }
     });
