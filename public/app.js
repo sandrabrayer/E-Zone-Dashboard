@@ -1,4 +1,5 @@
 /* ===== E-ZONE Dashboard — frontend ===== */
+console.log('[E-ZONE] app.js loaded at', new Date().toISOString(), 'origin:', location.origin, 'href:', location.href);
 
 const HOUSES = [
   { id: 'arfoni', name: 'קיסריה עפרוני', capacity: 13 },

@@ -8,19 +8,40 @@ const PORT = process.env.PORT || 3000;
 
 const SHEETS_URL = 'https://script.google.com/macros/s/AKfycbyScn2vcaOb_YCiTIRw-I-NugkZ4Zbt0hY5LgrM5D-WroSy-iuNhb9ewxoGcyZW63fsBw/exec';
 
+const BUILD_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const SERVER_STARTED_AT = new Date().toISOString();
+
 app.use(express.json({ limit: '10mb' }));
 
-/* Route hit counter — confirms the server is actually receiving any
- * traffic on /api/sheets at all. Must be registered before the route
- * handlers so every request passes through it. Browse
- * /api/debug/routes to see the counts. */
-const routeHits = { 'GET /api/sheets': 0, 'POST /api/sheets': 0, started: new Date().toISOString() };
+/* Catch-all request logger — confirms what URLs the server actually
+ * receives. Registered before any route so every request is counted. */
+const allHits = { total: 0, byPath: {} };
+app.use((req, _res, next) => {
+  allHits.total++;
+  const bucket = req.method + ' ' + req.path;
+  allHits.byPath[bucket] = (allHits.byPath[bucket] || 0) + 1;
+  if (req.path.startsWith('/api')) {
+    console.log(`[req] ${req.method} ${req.originalUrl}`);
+  }
+  next();
+});
+
+/* Route hit counter — same idea but scoped to /api/sheets so we can
+ * tell that route apart from /api/debug/* and static requests. */
+const routeHits = { 'GET /api/sheets': 0, 'POST /api/sheets': 0, started: SERVER_STARTED_AT };
 app.use('/api/sheets', (req, _res, next) => {
   const key = `${req.method} /api/sheets`;
   routeHits[key] = (routeHits[key] || 0) + 1;
   next();
 });
-app.get('/api/debug/routes', (_req, res) => res.json(routeHits));
+app.get('/api/debug/routes', (_req, res) => res.json({ routeHits, allHits }));
+app.get('/api/debug/env', (_req, res) => res.json({
+  buildId: BUILD_ID,
+  startedAt: SERVER_STARTED_AT,
+  uptimeSeconds: Math.round(process.uptime()),
+  node: process.version,
+  pid: process.pid,
+}));
 
 app.use(express.static(path.join(__dirname, 'public')));
 
