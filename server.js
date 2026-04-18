@@ -5,7 +5,21 @@ const https = require('https');
 const { URL } = require('url');
 
 const app = express();
+app.disable('etag');
+app.disable('x-powered-by');
 const PORT = process.env.PORT || 3000;
+
+/* Always emit headers that defeat browser caches, CDNs (Cloudflare,
+ * Fastly), and shared proxies for every response the app serves. */
+function noCache(res) {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0, private');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.set('Surrogate-Control', 'no-store');
+  res.set('CDN-Cache-Control', 'no-store');
+  res.set('Cloudflare-CDN-Cache-Control', 'no-store');
+  res.set('Vary', '*');
+}
 
 const SHEETS_URL = 'https://script.google.com/macros/s/AKfycbyScn2vcaOb_YCiTIRw-I-NugkZ4Zbt0hY5LgrM5D-WroSy-iuNhb9ewxoGcyZW63fsBw/exec';
 
@@ -14,16 +28,28 @@ const SERVER_STARTED_AT = new Date().toISOString();
 
 app.use(express.json({ limit: '10mb' }));
 
+/* Apply no-cache headers to every response before any handler runs. */
+app.use((_req, res, next) => { noCache(res); next(); });
+
 /* Catch-all request logger — confirms what URLs the server actually
- * receives. Registered before any route so every request is counted. */
-const allHits = { total: 0, byPath: {} };
+ * receives. Registered before any route so every request is counted.
+ * Keep a rolling list of the last 20 requests for quick debugging. */
+const allHits = { total: 0, byPath: {}, recent: [] };
 app.use((req, _res, next) => {
   allHits.total++;
   const bucket = req.method + ' ' + req.path;
   allHits.byPath[bucket] = (allHits.byPath[bucket] || 0) + 1;
-  if (req.path.startsWith('/api')) {
-    console.log(`[req] ${req.method} ${req.originalUrl}`);
-  }
+  const entry = {
+    at: new Date().toISOString(),
+    method: req.method,
+    url: req.originalUrl,
+    ua: (req.headers['user-agent'] || '').slice(0, 120),
+    xfwd: req.headers['x-forwarded-for'] || null,
+    host: req.headers['host'] || null,
+  };
+  allHits.recent.push(entry);
+  if (allHits.recent.length > 20) allHits.recent.shift();
+  console.log(`[req] ${req.method} ${req.originalUrl}`);
   next();
 });
 
@@ -45,21 +71,35 @@ app.get('/api/debug/env', (_req, res) => res.json({
 }));
 
 /* Serve index.html with BUILD_ID substituted so the script tag is unique
- * per deploy and cannot be cached between deploys. Send no-cache headers
- * on the HTML itself so the browser always asks for a fresh copy.
- * Static assets (app.js, style.css) are still served below; the ?v=BUILD
- * query makes them unique per deploy. */
-const INDEX_HTML = fs.readFileSync(path.join(__dirname, 'public/index.html'), 'utf8');
-function sendIndex(res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
-  res.type('html').send(INDEX_HTML.replace(/__BUILD__/g, BUILD_ID));
+ * per deploy and cannot be cached between deploys. Read from disk on every
+ * request so a hot-redeploy picks up edits immediately. */
+function sendIndex(_req, res) {
+  const html = fs.readFileSync(path.join(__dirname, 'public/index.html'), 'utf8')
+    .replace(/__BUILD__/g, BUILD_ID);
+  console.log(`[req] → serving /index.html (build ${BUILD_ID}, ${html.length} chars)`);
+  noCache(res);
+  res.type('html').send(html);
 }
-app.get('/', (_req, res) => sendIndex(res));
-app.get('/index.html', (_req, res) => sendIndex(res));
+app.get('/', sendIndex);
+app.get('/index.html', sendIndex);
 
-app.use(express.static(path.join(__dirname, 'public')));
+/* Serve app.js and style.css by hand so we control the headers. Each file
+ * is tagged with BUILD_ID in its URL via the HTML, but we ALSO no-cache
+ * the response itself so even an unversioned request doesn't get cached. */
+function sendStatic(relPath, mime) {
+  return (_req, res) => {
+    const full = path.join(__dirname, 'public', relPath);
+    try {
+      const content = fs.readFileSync(full);
+      noCache(res);
+      res.type(mime).send(content);
+    } catch (err) {
+      res.status(404).send('not found: ' + relPath);
+    }
+  };
+}
+app.get('/app.js', sendStatic('app.js', 'application/javascript'));
+app.get('/style.css', sendStatic('style.css', 'text/css'));
 
 /* GET the Apps Script with querystring params. Follows Google's 302 → googleusercontent.com. */
 function sheetsGet(params) {
@@ -238,6 +278,13 @@ app.get('/api/debug/last-load', (_req, res) => {
 
 app.get('/healthz', (_, res) => res.json({ ok: true }));
 
+/* 404 fallback — logs and returns JSON so an unexpected request (e.g.
+ * Sandra typing a stray URL) is visible in the logs. */
+app.use((req, res) => {
+  console.log(`[req] 404 for ${req.method} ${req.originalUrl}`);
+  res.status(404).json({ error: 'not_found', method: req.method, url: req.originalUrl });
+});
+
 app.listen(PORT, () => {
-  console.log(`E-ZONE Dashboard running on port ${PORT}`);
+  console.log(`E-ZONE Dashboard running on port ${PORT} build ${BUILD_ID}`);
 });
