@@ -1,5 +1,6 @@
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const https = require('https');
 const { URL } = require('url');
 
@@ -42,6 +43,21 @@ app.get('/api/debug/env', (_req, res) => res.json({
   node: process.version,
   pid: process.pid,
 }));
+
+/* Serve index.html with BUILD_ID substituted so the script tag is unique
+ * per deploy and cannot be cached between deploys. Send no-cache headers
+ * on the HTML itself so the browser always asks for a fresh copy.
+ * Static assets (app.js, style.css) are still served below; the ?v=BUILD
+ * query makes them unique per deploy. */
+const INDEX_HTML = fs.readFileSync(path.join(__dirname, 'public/index.html'), 'utf8');
+function sendIndex(res) {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.type('html').send(INDEX_HTML.replace(/__BUILD__/g, BUILD_ID));
+}
+app.get('/', (_req, res) => sendIndex(res));
+app.get('/index.html', (_req, res) => sendIndex(res));
 
 app.use(express.static(path.join(__dirname, 'public')));
 

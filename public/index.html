@@ -103,9 +103,9 @@
   <!-- ====== MODALS ====== -->
   <div id="modal-root"></div>
 
-  <script>
-    // Cache-bust app.js so each deploy is picked up immediately.
-    document.write('<scr' + 'ipt src="app.js?v=' + Date.now() + '"></scr' + 'ipt>');
-  </script>
+  <!-- Build marker — shows which deploy this browser is actually running. -->
+  <div id="build-marker" style="position:fixed;bottom:6px;left:6px;font-size:10px;color:#6b7aa0;z-index:10;opacity:.6;font-family:monospace;">build: __BUILD__</div>
+
+  <script src="app.js?v=__BUILD__"></script>
 </body>
 </html>
