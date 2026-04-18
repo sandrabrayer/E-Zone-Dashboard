@@ -970,15 +970,38 @@ function showModal({ title, fields, submitLabel, onSubmit }) {
   root.appendChild(back);
 
   const close = () => back.remove();
-  back.querySelector('[data-action="cancel"]').onclick = close;
+  const cancelBtn = back.querySelector('[data-action="cancel"]');
+  const submitBtn = back.querySelector('button[type="submit"]');
+  const submitOriginalLabel = submitBtn.textContent;
+
+  cancelBtn.onclick = close;
   back.addEventListener('click', e => { if (e.target === back) close(); });
+
+  let submitting = false;
   back.querySelector('form').onsubmit = async e => {
     e.preventDefault();
+    if (submitting) return;              // double-click guard
+    submitting = true;
+    submitBtn.disabled = true;
+    cancelBtn.disabled = true;
+    submitBtn.textContent = 'שומר...';
+
     const fd = new FormData(e.target);
     const values = {};
     fields.forEach(f => { values[f.name] = (fd.get(f.name) || '').toString(); });
-    const ok = await onSubmit(values);
-    if (ok !== false) close();
+
+    try {
+      const ok = await onSubmit(values);
+      if (ok !== false) { close(); return; }
+    } catch (err) {
+      console.error('[E-ZONE] modal submit threw:', err);
+      showError(err.message || 'שמירה נכשלה');
+    }
+    // Save failed or was rejected — re-enable so the user can retry.
+    submitting = false;
+    submitBtn.disabled = false;
+    cancelBtn.disabled = false;
+    submitBtn.textContent = submitOriginalLabel;
   };
 }
 
