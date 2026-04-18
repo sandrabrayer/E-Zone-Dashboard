@@ -35,6 +35,7 @@
         <button class="tab active" data-screen="dashboard">דשבורד</button>
         <button class="tab" data-screen="leads">לידים</button>
         <button class="tab" data-screen="occupancy">תפוסה</button>
+        <button class="tab" data-screen="billing">גבייה</button>
       </nav>
       <div class="user-mode">
         <span id="mode-label"></span>
@@ -97,6 +98,59 @@
       </div>
       <nav class="house-tabs" id="house-tabs"></nav>
       <div id="patients-list" class="patients-list"></div>
+    </section>
+
+    <!-- ====== BILLING ====== -->
+    <section id="screen-billing" class="screen hidden">
+      <div class="screen-head">
+        <h2>גבייה</h2>
+        <div class="actions">
+          <label for="billing-date" class="billing-date-label">תאריך</label>
+          <input id="billing-date" type="date" />
+        </div>
+      </div>
+
+      <div class="cards-row">
+        <div class="card stat">
+          <div class="stat-label">מטופלים לתשלום</div>
+          <div class="stat-value" id="bill-due-count">0</div>
+          <div class="stat-sub">בתאריך הנבחר</div>
+        </div>
+        <div class="card stat">
+          <div class="stat-label">סך לגבייה</div>
+          <div class="stat-value" id="bill-due-total">₪ 0</div>
+          <div class="stat-sub">עבור תשלום חודשי זה</div>
+        </div>
+        <div class="card stat">
+          <div class="stat-label">נגבה בתאריך הנבחר</div>
+          <div class="stat-value" id="bill-due-collected">₪ 0</div>
+          <div class="stat-sub">סכום בפועל ששולם</div>
+        </div>
+      </div>
+
+      <h3>לגבייה בתאריך הנבחר</h3>
+      <div id="billing-due-list" class="billing-list"></div>
+
+      <h3>יתרות פתוחות מתאריכים קודמים</h3>
+      <div id="billing-open-list" class="billing-list"></div>
+
+      <h3>סיכום חודשי</h3>
+      <div class="cards-row">
+        <div class="card stat">
+          <div class="stat-label">נגבה החודש</div>
+          <div class="stat-value" id="bill-month-collected">₪ 0</div>
+          <div class="stat-sub" id="bill-month-label">—</div>
+        </div>
+        <div class="card stat">
+          <div class="stat-label">יתרה פתוחה</div>
+          <div class="stat-value" id="bill-month-outstanding">₪ 0</div>
+          <div class="stat-sub">כל התשלומים שלא נסגרו</div>
+        </div>
+        <div class="card stat">
+          <div class="stat-label">פירוט לפי בית</div>
+          <div class="stat-breakdown" id="bill-month-breakdown"></div>
+        </div>
+      </div>
     </section>
   </div>
 

@@ -26,17 +26,33 @@ const STATUS_OPTIONS = [
   { id: 'released', label: 'שוחרר' },
 ];
 
+/* Payment status values are stored in Hebrew in the Payments sheet so the
+ * sheet is legible to non-developers. Keep the ids in sync with the values
+ * written by savePayment(). */
+const PAYMENT_STATUS = [
+  { id: 'paid',    label: 'שולם' },
+  { id: 'partial', label: 'שולם חלקית' },
+  { id: 'unpaid',  label: 'לא שולם' },
+];
+const PAYMENT_STATUS_ALIASES = {
+  'שולם': 'paid', 'paid': 'paid',
+  'שולם חלקית': 'partial', 'partial': 'partial',
+  'לא שולם': 'unpaid', 'unpaid': 'unpaid',
+};
+
 const houseById = id => HOUSES.find(h => h.id === id);
 const houseByName = name => HOUSES.find(h => h.name === name);
 
 const state = {
   leads: [],
   patients: [],
+  payments: [],
   mode: null, // 'edit' | 'viewer'
   currentScreen: 'dashboard',
   currentHouseTab: 'arfoni',
   leadSearch: '',
   patientSearch: '',
+  billingDate: '',
 };
 
 /* ===== API ===== */
@@ -229,13 +245,15 @@ function enterApp(mode) {
 }
 
 /* ===== Top tabs ===== */
+const SCREENS = ['dashboard', 'leads', 'occupancy', 'billing'];
+
 function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {
     btn.onclick = () => {
       document.querySelectorAll('.tabs .tab').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       state.currentScreen = btn.dataset.screen;
-      ['dashboard', 'leads', 'occupancy'].forEach(s => {
+      SCREENS.forEach(s => {
         document.getElementById('screen-' + s).classList.toggle('hidden', s !== state.currentScreen);
       });
       renderAll();
@@ -251,6 +269,14 @@ function initTabs() {
     renderPatients();
   };
   document.getElementById('add-lead-btn').onclick = openAddLeadModal;
+
+  const billingDateEl = document.getElementById('billing-date');
+  if (!state.billingDate) state.billingDate = todayISO();
+  billingDateEl.value = state.billingDate;
+  billingDateEl.onchange = e => {
+    state.billingDate = e.target.value || todayISO();
+    renderBilling();
+  };
 }
 
 /* ===== Initial load ===== */
@@ -300,6 +326,19 @@ async function loadAll() {
 
     state.leads = rawLeads.map(normalizeLead);
     state.patients = parsePatients(rawPatients);
+
+    // Payments live on their own sheet and their own action. A fresh
+    // install has no Payments sheet yet — treat any failure as "empty
+    // list" so the rest of the app still loads.
+    try {
+      const pr = await apiGet({ action: 'getPayments' });
+      const raw = Array.isArray(pr && pr.payments) ? pr.payments : [];
+      state.payments = raw.map(normalizePayment).filter(p => p.id);
+      console.log('[E-ZONE] getPayments →', state.payments.length, 'records');
+    } catch (err) {
+      console.warn('[E-ZONE] getPayments failed, assuming empty:', err.message);
+      state.payments = [];
+    }
 
     // ===== Patient-load diagnosis =====
     // Log the exact rawPatients as received from the server, its shape,
@@ -544,6 +583,7 @@ function renderAll() {
   renderKanban();
   renderHouseTabs();
   renderPatients();
+  renderBilling();
 }
 
 /* ====================================================
@@ -1003,6 +1043,348 @@ function showModal({ title, fields, submitLabel, onSubmit }) {
     cancelBtn.disabled = false;
     submitBtn.textContent = submitOriginalLabel;
   };
+}
+
+/* ====================================================
+   BILLING
+   ====================================================
+   Each active patient pays monthly on the same day of the month as their
+   entry date (state.patients[].date), one month in advance. A payment is
+   "due on D" when DAY(D) == DAY(entryDate). Each (patient, dueDate) pair
+   maps to a deterministic payment id so toggling status upserts the same
+   sheet row instead of creating duplicates.
+*/
+
+function patientKey(p) {
+  // Stable identifier for a patient across sessions. The sheet doesn't
+  // persist the per-session id; house + name + entry-date is effectively
+  // unique and won't drift under normal edits.
+  return `${p.houseId}::${p.name || ''}::${p.date || ''}`;
+}
+
+function paymentId(patient, dueDateISO) {
+  return `pay::${patientKey(patient)}::${dueDateISO}`;
+}
+
+function normalizePayment(r) {
+  if (!r || typeof r !== 'object') r = {};
+  const rawStatus = String(r.status == null ? '' : r.status).trim();
+  const status = PAYMENT_STATUS_ALIASES[rawStatus]
+              || PAYMENT_STATUS_ALIASES[rawStatus.toLowerCase()]
+              || 'unpaid';
+  const amount     = Number(r.amount) || 0;
+  const amountPaid = Number(r.amountPaid) || 0;
+  const balance    = r.balance !== undefined && r.balance !== ''
+    ? Number(r.balance) || 0
+    : Math.max(0, amount - amountPaid);
+  return {
+    id:          String(r.id || ''),
+    patientId:   String(r.patientId || ''),
+    patientName: String(r.patientName || ''),
+    houseId:     resolveHouseId(r.houseId || ''),
+    dueDate:     isoDate(r.dueDate),
+    amount,
+    status,
+    amountPaid,
+    balance,
+    timestamp:   String(r.timestamp || ''),
+  };
+}
+
+/* Make sure a date coming from the sheet ends up as a YYYY-MM-DD string.
+ * Google Sheets sometimes hands back Date objects (in serialized form as
+ * ISO strings, but occasionally as locale strings). Normalize both. */
+function isoDate(v) {
+  if (!v) return '';
+  if (typeof v === 'string') {
+    // already ISO-ish? keep just the date portion
+    const m = v.match(/^\d{4}-\d{2}-\d{2}/);
+    if (m) return m[0];
+    const d = new Date(v);
+    if (!isNaN(d)) return d.toISOString().slice(0, 10);
+    return v;
+  }
+  const d = new Date(v);
+  if (!isNaN(d)) return d.toISOString().slice(0, 10);
+  return String(v);
+}
+
+function dayOfMonth(iso) {
+  if (!iso) return null;
+  const parts = String(iso).slice(0, 10).split('-');
+  if (parts.length < 3) return null;
+  const day = parseInt(parts[2], 10);
+  return isNaN(day) ? null : day;
+}
+
+function monthKey(iso) {
+  // "YYYY-MM" extracted from an ISO date string.
+  return String(iso || '').slice(0, 7);
+}
+
+/* Build (or reuse) the payment record for a given patient + due date. If
+ * there's no sheet-persisted record yet, return an in-memory "unpaid"
+ * placeholder — not added to state.payments until it's actually saved. */
+function paymentForPatientOnDate(patient, dueDateISO) {
+  const id = paymentId(patient, dueDateISO);
+  const existing = state.payments.find(x => x.id === id);
+  if (existing) return existing;
+  return normalizePayment({
+    id,
+    patientId: patientKey(patient),
+    patientName: patient.name,
+    houseId: patient.houseId,
+    dueDate: dueDateISO,
+    amount: patient.pay || 0,
+    status: 'unpaid',
+    amountPaid: 0,
+    balance: patient.pay || 0,
+  });
+}
+
+function activePatients() {
+  return state.patients.filter(p => p.status !== 'released');
+}
+
+function patientsDueOn(dateISO) {
+  const d = dayOfMonth(dateISO);
+  if (!d) return [];
+  return activePatients().filter(p => {
+    const pd = dayOfMonth(p.date);
+    return pd === d;
+  });
+}
+
+/* The payment may exist on Sheets without a matching patient (e.g., the
+ * patient was released after a payment was recorded). We still want to show
+ * those records in "open balances" so the money isn't forgotten. */
+function findPatientForPayment(pay) {
+  if (pay.patientId) {
+    const direct = state.patients.find(p => patientKey(p) === pay.patientId);
+    if (direct) return direct;
+  }
+  if (pay.patientName && pay.houseId) {
+    return state.patients.find(p => p.houseId === pay.houseId && p.name === pay.patientName);
+  }
+  return null;
+}
+
+function renderBilling() {
+  const selected = state.billingDate || todayISO();
+  const billingDateEl = document.getElementById('billing-date');
+  if (billingDateEl && billingDateEl.value !== selected) billingDateEl.value = selected;
+
+  const due = patientsDueOn(selected).map(p => ({
+    patient: p,
+    payment: paymentForPatientOnDate(p, selected),
+  }));
+
+  const totalDue       = due.reduce((s, d) => s + (d.patient.pay || 0), 0);
+  const totalCollected = due.reduce((s, d) => s + (d.payment.amountPaid || 0), 0);
+
+  document.getElementById('bill-due-count').textContent    = due.length;
+  document.getElementById('bill-due-total').textContent    = '₪ ' + totalDue.toLocaleString('he-IL');
+  document.getElementById('bill-due-collected').textContent = '₪ ' + totalCollected.toLocaleString('he-IL');
+
+  renderBillingDueList(due, selected);
+  renderBillingOpenList(selected);
+  renderBillingMonthlySummary(selected);
+}
+
+function renderBillingDueList(due, selectedISO) {
+  const list = document.getElementById('billing-due-list');
+  list.innerHTML = '';
+  if (!due.length) {
+    list.innerHTML = `<div class="card billing-empty">אין תשלומים לגבייה בתאריך זה</div>`;
+    return;
+  }
+  due.forEach(({ patient, payment }) => {
+    list.appendChild(buildBillingRow(patient, payment, selectedISO, false));
+  });
+}
+
+function renderBillingOpenList(selectedISO) {
+  const list = document.getElementById('billing-open-list');
+  list.innerHTML = '';
+  const open = state.payments
+    .filter(p => (p.status === 'unpaid' || p.status === 'partial') && p.dueDate && p.dueDate < selectedISO)
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+
+  if (!open.length) {
+    list.innerHTML = `<div class="card billing-empty">אין יתרות פתוחות מתאריכים קודמים</div>`;
+    return;
+  }
+  open.forEach(pay => {
+    const patient = findPatientForPayment(pay) || {
+      name: pay.patientName,
+      houseId: pay.houseId,
+      pay: pay.amount,
+      date: '',
+      status: '',
+    };
+    list.appendChild(buildBillingRow(patient, pay, pay.dueDate, true));
+  });
+}
+
+function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
+  const house = houseById(payment.houseId) || houseById(patient.houseId);
+  const houseName = house ? house.name : (patient.houseId || '');
+  const amount = payment.amount || patient.pay || 0;
+
+  const row = document.createElement('div');
+  row.className = 'billing-row' + (isCarryForward ? ' carry' : '');
+  row.dataset.pid = payment.id;
+
+  const statusSelect = PAYMENT_STATUS.map(s =>
+    `<option value="${s.id}" ${payment.status === s.id ? 'selected' : ''}>${s.label}</option>`
+  ).join('');
+
+  row.innerHTML = `
+    <div>
+      <span class="p-label">מטופל</span>
+      <span class="p-name">${escapeHtml(patient.name || payment.patientName)}</span>
+    </div>
+    <div>
+      <span class="p-label">בית</span>
+      <span class="p-val">${escapeHtml(houseName)}</span>
+    </div>
+    <div>
+      <span class="p-label">${isCarryForward ? 'תאריך מקורי' : 'סכום חודשי'}</span>
+      <span class="p-val">${isCarryForward
+        ? formatDate(dueDateISO)
+        : '₪ ' + amount.toLocaleString('he-IL')}</span>
+    </div>
+    <div>
+      <span class="p-label">סטטוס</span>
+      <select class="billing-status" ${state.mode === 'edit' ? '' : 'disabled'}>${statusSelect}</select>
+    </div>
+    <div class="billing-paid-wrap ${payment.status === 'partial' ? '' : 'hidden'}">
+      <span class="p-label">שולם בפועל</span>
+      <input class="billing-paid" type="number" min="0" step="50"
+             value="${payment.amountPaid || 0}" ${state.mode === 'edit' ? '' : 'disabled'} />
+    </div>
+    <div>
+      <span class="p-label">יתרה</span>
+      <span class="p-val billing-balance">₪ ${(payment.balance || 0).toLocaleString('he-IL')}</span>
+    </div>
+  `;
+
+  const statusSel = row.querySelector('.billing-status');
+  const paidWrap  = row.querySelector('.billing-paid-wrap');
+  const paidInput = row.querySelector('.billing-paid');
+  const balanceEl = row.querySelector('.billing-balance');
+
+  const recompute = (newStatus, newAmountPaid) => {
+    let amountPaid = Number(newAmountPaid);
+    if (!Number.isFinite(amountPaid) || amountPaid < 0) amountPaid = 0;
+    if (newStatus === 'paid')   amountPaid = amount;
+    if (newStatus === 'unpaid') amountPaid = 0;
+    const balance = Math.max(0, amount - amountPaid);
+
+    balanceEl.textContent = '₪ ' + balance.toLocaleString('he-IL');
+    paidWrap.classList.toggle('hidden', newStatus !== 'partial');
+    paidInput.value = amountPaid;
+
+    return {
+      ...payment,
+      patientId:   payment.patientId   || patientKey(patient),
+      patientName: payment.patientName || patient.name || '',
+      houseId:     payment.houseId     || patient.houseId || '',
+      dueDate:     dueDateISO,
+      amount,
+      status:      newStatus,
+      amountPaid,
+      balance,
+      timestamp:   new Date().toISOString(),
+    };
+  };
+
+  statusSel.onchange = () => {
+    const updated = recompute(statusSel.value, paidInput.value);
+    savePayment(updated);
+  };
+
+  paidInput.onchange = () => {
+    if (statusSel.value !== 'partial') return;
+    let v = Number(paidInput.value);
+    if (!Number.isFinite(v) || v < 0) v = 0;
+    if (v >= amount) {
+      // Fully paid — flip to "שולם" so the row stops carrying forward.
+      statusSel.value = 'paid';
+      const updated = recompute('paid', amount);
+      savePayment(updated);
+    } else {
+      const updated = recompute('partial', v);
+      savePayment(updated);
+    }
+  };
+
+  return row;
+}
+
+function renderBillingMonthlySummary(selectedISO) {
+  const mk = monthKey(selectedISO);
+  document.getElementById('bill-month-label').textContent = formatMonth(selectedISO);
+
+  const thisMonth = state.payments.filter(p => monthKey(p.dueDate) === mk);
+  const collected   = thisMonth.reduce((s, p) => s + (p.amountPaid || 0), 0);
+  const outstanding = thisMonth
+    .filter(p => p.status !== 'paid')
+    .reduce((s, p) => s + (p.balance || 0), 0);
+
+  document.getElementById('bill-month-collected').textContent   = '₪ ' + collected.toLocaleString('he-IL');
+  document.getElementById('bill-month-outstanding').textContent = '₪ ' + outstanding.toLocaleString('he-IL');
+
+  const breakdownEl = document.getElementById('bill-month-breakdown');
+  breakdownEl.innerHTML = '';
+  HOUSES.forEach(h => {
+    const rows = thisMonth.filter(p => p.houseId === h.id);
+    if (!rows.length) return;
+    const col = rows.reduce((s, p) => s + (p.amountPaid || 0), 0);
+    const out = rows.filter(p => p.status !== 'paid').reduce((s, p) => s + (p.balance || 0), 0);
+    const line = document.createElement('div');
+    line.className = 'bd-line';
+    line.innerHTML = `
+      <span class="bd-house">${escapeHtml(h.name)}</span>
+      <span class="bd-vals">
+        <span class="bd-col">נגבה ₪${col.toLocaleString('he-IL')}</span>
+        <span class="bd-out">יתרה ₪${out.toLocaleString('he-IL')}</span>
+      </span>
+    `;
+    breakdownEl.appendChild(line);
+  });
+  if (!breakdownEl.children.length) {
+    breakdownEl.innerHTML = `<div class="bd-line muted">אין רישומי גבייה החודש</div>`;
+  }
+}
+
+function formatMonth(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return iso || '';
+  return d.toLocaleDateString('he-IL', { month: 'long', year: 'numeric' });
+}
+
+/* Upsert a payment record locally, then persist to the Payments sheet. */
+async function savePayment(payment) {
+  if (state.mode !== 'edit') return;
+  const idx = state.payments.findIndex(x => x.id === payment.id);
+  const prev = idx >= 0 ? { ...state.payments[idx] } : null;
+  if (idx >= 0) state.payments[idx] = payment;
+  else state.payments.push(payment);
+
+  // Re-render the monthly summary right away; the row itself was already
+  // updated in place by buildBillingRow's recompute.
+  renderBillingMonthlySummary(state.billingDate || todayISO());
+
+  try {
+    await apiPost({ action: 'savePayment', payment });
+  } catch (e) {
+    // Roll back local change so the UI doesn't lie about persistence.
+    if (prev) state.payments[idx] = prev;
+    else state.payments = state.payments.filter(x => x.id !== payment.id);
+    renderBilling();
+    showError('שמירת גבייה נכשלה — ' + e.message);
+  }
 }
 
 /* ===== Helpers ===== */

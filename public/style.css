@@ -541,13 +541,80 @@ input:focus, select:focus, textarea:focus {
   margin-top: 18px;
 }
 
+/* ===== Billing ===== */
+.billing-date-label {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+}
+#billing-date { width: 180px; }
+
+.billing-list { display: grid; gap: 10px; margin-bottom: 18px; }
+.billing-empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 22px;
+}
+
+.billing-row {
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr 1.1fr 1.1fr 1fr;
+  align-items: center;
+  gap: 12px;
+  transition: border-color .15s;
+}
+.billing-row:hover { border-color: var(--border-strong); }
+.billing-row.carry {
+  border-right: 3px solid var(--warning);
+}
+.billing-row .p-label {
+  color: var(--text-dim); font-size: 11px;
+  display: block;
+  text-transform: uppercase; letter-spacing: .8px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.billing-row .p-val  { font-size: 14.5px; font-weight: 600; color: var(--text); }
+.billing-row .p-name { font-weight: 700;  font-size: 16px; color: var(--text); }
+
+.billing-row .billing-status,
+.billing-row .billing-paid { width: 100%; font-size: 13.5px; }
+.billing-row .billing-balance { color: var(--warning); }
+
+.stat-breakdown {
+  margin-top: 6px;
+  display: grid;
+  gap: 6px;
+}
+.bd-line {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 13px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.bd-line:last-child { border-bottom: none; }
+.bd-line.muted { color: var(--text-dim); justify-content: center; }
+.bd-house { color: var(--text); font-weight: 600; }
+.bd-vals  { display: flex; gap: 10px; color: var(--text-muted); font-weight: 500; }
+.bd-col   { color: var(--success); }
+.bd-out   { color: var(--warning); }
+
 /* ===== Read-only mode ===== */
 body.viewer-mode .edit-only { display: none !important; }
+body.viewer-mode .billing-status,
+body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
 
 @media (max-width: 900px) {
   .cards-row, .houses-grid { grid-template-columns: 1fr 1fr; }
   .pipeline-row { grid-template-columns: repeat(2, 1fr); }
   .kanban { grid-template-columns: 1fr; }
   .patient-row { grid-template-columns: 1fr 1fr; }
+  .billing-row { grid-template-columns: 1fr 1fr; }
   .actions input[type=search] { width: 100%; }
 }

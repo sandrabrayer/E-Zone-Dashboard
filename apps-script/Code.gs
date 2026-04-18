@@ -8,6 +8,9 @@
  * Endpoints:
  *   GET  ?action=getData                        → {ok, leads:[], patients:{houseId:[...]}}
  *   GET  ?action=saveAll&leads=...&patients=... → {ok:true}
+ *   GET  ?action=getPayments                    → {ok, payments:[...]}
+ *   POST action=savePayment / updatePayment     → {ok, payment, created|updated}
+ *                                                 (upserts by payment.id)
  *
  * Merge semantics (important for the split-save path in server.js):
  *   - leads present and non-empty → upsert each lead by id; leads whose id is
@@ -24,6 +27,7 @@
 
 const LEADS_SHEET    = 'Leads';
 const PATIENTS_SHEET = 'Patients';
+const PAYMENTS_SHEET = 'Payments';
 
 const LEAD_COLUMNS = [
   'id', 'name', 'phone', 'house', 'source', 'note',
@@ -36,6 +40,14 @@ const LEAD_COLUMNS = [
 const PATIENT_COLUMNS = [
   'houseId', 'name', 'date', 'pay', 'adv',
   'status', 'fromLead', 'exitDate'
+];
+
+/* Payments sheet columns. `id` is a deterministic per-patient-per-due-date
+ * string built by the client (see paymentId() in app.js) so the same monthly
+ * payment always upserts into the same row instead of creating duplicates. */
+const PAYMENT_COLUMNS = [
+  'id', 'patientId', 'patientName', 'houseId', 'dueDate',
+  'amount', 'status', 'amountPaid', 'balance', 'timestamp'
 ];
 
 /* ===== Entry points ===== */
@@ -56,6 +68,11 @@ function handle_(params) {
       const leads    = parseJsonParam_(params.leads);
       const patients = parseJsonParam_(params.patients);
       return jsonOut_(saveAll_(leads, patients));
+    }
+    if (action === 'getPayments') return jsonOut_(getPayments_());
+    if (action === 'savePayment' || action === 'updatePayment') {
+      const payment = parseJsonParam_(params.payment);
+      return jsonOut_(upsertPayment_(payment));
     }
     return jsonOut_({ ok: false, error: 'unknown_action', action: action || null });
   } catch (err) {
@@ -246,5 +263,52 @@ function replaceHousePatients_(houseId, patientsArr) {
   clearBody_(sh, PATIENT_COLUMNS.length);
   if (finalRows.length > 0) {
     sh.getRange(2, 1, finalRows.length, PATIENT_COLUMNS.length).setValues(finalRows);
+  }
+}
+
+/* ===== Payments ===== */
+
+function getPayments_() {
+  const sh = getOrCreateSheet_(PAYMENTS_SHEET, PAYMENT_COLUMNS);
+  return { ok: true, payments: readSheet_(sh, PAYMENT_COLUMNS) };
+}
+
+/**
+ * Upsert a single payment row by id. Both `savePayment` and `updatePayment`
+ * route here: if a row with the same id exists it's replaced in place,
+ * otherwise the record is appended. id is required — it's generated client-
+ * side as a deterministic `pay::<houseId>::<name>::<entryDate>::<dueDate>`
+ * string so the same monthly payment always maps to the same row.
+ */
+function upsertPayment_(payment) {
+  if (!payment || typeof payment !== 'object') {
+    return { ok: false, error: 'missing_payment' };
+  }
+  if (!payment.id) {
+    return { ok: false, error: 'missing_id' };
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const sh = getOrCreateSheet_(PAYMENTS_SHEET, PAYMENT_COLUMNS);
+    const idIdx = PAYMENT_COLUMNS.indexOf('id');
+    const lastRow = sh.getLastRow();
+    const row = objectToRow_(payment, PAYMENT_COLUMNS);
+
+    if (lastRow > 1) {
+      const existingIds = sh.getRange(2, idIdx + 1, lastRow - 1, 1).getValues();
+      for (let i = 0; i < existingIds.length; i++) {
+        if (String(existingIds[i][0]) === String(payment.id)) {
+          sh.getRange(i + 2, 1, 1, PAYMENT_COLUMNS.length).setValues([row]);
+          return { ok: true, payment: payment, updated: true };
+        }
+      }
+    }
+
+    sh.appendRow(row);
+    return { ok: true, payment: payment, created: true };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
 }
