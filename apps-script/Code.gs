@@ -30,8 +30,11 @@ const LEAD_COLUMNS = [
   'stage', 'visitDate', 'visitTime', 'entryDate', 'advance', 'created'
 ];
 
+/* Must match the column headers in the Patients sheet exactly, in order.
+ * The client generates a per-session id for each patient but it is NOT
+ * persisted in the sheet — grouping + upserts happen by houseId. */
 const PATIENT_COLUMNS = [
-  'id', 'houseId', 'name', 'date', 'pay', 'adv',
+  'houseId', 'name', 'date', 'pay', 'adv',
   'status', 'fromLead', 'exitDate'
 ];
 
