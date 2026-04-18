@@ -36,10 +36,13 @@ const LEAD_COLUMNS = [
 
 /* Must match the column headers in the Patients sheet exactly, in order.
  * The client generates a per-session id for each patient but it is NOT
- * persisted in the sheet — grouping + upserts happen by houseId. */
+ * persisted in the sheet — grouping + upserts happen by houseId.
+ *
+ * `source` and `notes` were added after the initial release. Sheets that
+ * pre-date this will be backfilled by getOrCreateSheet_ on the next read. */
 const PATIENT_COLUMNS = [
   'houseId', 'name', 'date', 'pay', 'adv',
-  'status', 'fromLead', 'exitDate'
+  'status', 'fromLead', 'exitDate', 'source', 'notes'
 ];
 
 /* Payments sheet columns. `id` is a deterministic per-patient-per-due-date
@@ -120,6 +123,16 @@ function getOrCreateSheet_(name, headers) {
   } else if (sh.getLastRow() === 0) {
     sh.getRange(1, 1, 1, headers.length).setValues([headers]);
     sh.setFrozenRows(1);
+  } else {
+    // Existing sheet — non-destructively extend the header row if the
+    // schema has grown since the sheet was created. Existing columns are
+    // never overwritten, so bumping PATIENT_COLUMNS (or any headers list)
+    // is safe on sheets that are already populated.
+    const lastCol = sh.getLastColumn();
+    if (lastCol < headers.length) {
+      const missing = headers.slice(lastCol);
+      sh.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]);
+    }
   }
   return sh;
 }

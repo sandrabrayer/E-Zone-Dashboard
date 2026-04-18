@@ -118,6 +118,8 @@ function serializePatients() {
       status:   p.status   ? String(p.status)   : 'active',
       fromLead: p.fromLead ? String(p.fromLead) : '',
       exitDate: p.exitDate ? String(p.exitDate) : '',
+      source:   p.source   ? String(p.source)   : 'lead',
+      notes:    p.notes    ? String(p.notes)    : '',
     };
 
     if (!out[hid]) out[hid] = [];   // unknown houseId — keep the data, don't drop
@@ -269,6 +271,7 @@ function initTabs() {
     renderPatients();
   };
   document.getElementById('add-lead-btn').onclick = openAddLeadModal;
+  document.getElementById('add-patient-btn').onclick = openDirectAddPatientModal;
 
   const billingDateEl = document.getElementById('billing-date');
   if (!state.billingDate) state.billingDate = todayISO();
@@ -571,6 +574,8 @@ function normalizePatient(p) {
     status:   normalizeStatus(pickField(p, ['status', 'סטטוס', 'מצב'])),
     fromLead: pickField(p, ['fromLead', 'from_lead', 'מקור_ליד', 'ליד מקור']),
     exitDate: pickField(p, ['exitDate', 'exit_date', 'תאריך שחרור', 'שחרור']),
+    source:   pickField(p, ['source', 'מקור']) || 'lead',
+    notes:    pickField(p, ['notes', 'note', 'הערות', 'הערה']),
   };
 }
 function cryptoId() {
@@ -830,6 +835,68 @@ function openEntryModal(lead) {
       } catch (e) {
         state.patients = state.patients.filter(p => p.id !== patient.id);
         lead.stage = prevStage;
+        renderAll();
+        showError('שמירה נכשלה — ' + e.message);
+        return false;
+      }
+      return true;
+    }
+  });
+}
+
+/* ===== Direct-add patient (admin bypass of the Lead → Patient flow) =====
+ * Used for historical patients who pre-date the app, cross-house transfers,
+ * corrections, and non-lead referrals. Button is hidden in viewer mode via
+ * .edit-only. Saved records are flagged source='direct_admin' so reports
+ * can distinguish them from lead-converted patients; the Billing tab is
+ * source-agnostic and treats them identically. */
+function openDirectAddPatientModal() {
+  showModal({
+    title: 'הוספת מטופל ישירות',
+    fields: [
+      { name: 'name', label: 'שם מטופל', type: 'text', required: true },
+      { name: 'houseId', label: 'בית', type: 'select', required: true,
+        value: state.currentHouseTab || HOUSES[0].id,
+        options: HOUSES.map(h => ({ value: h.id, label: h.name })) },
+      { name: 'date', label: 'תאריך כניסה', type: 'date', required: true,
+        value: todayISO() },
+      { name: 'pay', label: 'סכום חודשי (₪)', type: 'number', required: true,
+        value: '29000' },
+      { name: 'status', label: 'סטטוס', type: 'select',
+        value: 'active',
+        options: [
+          { value: 'active',   label: 'פעיל' },
+          { value: 'released', label: 'יצא' },
+        ] },
+      { name: 'notes', label: 'הערות', type: 'textarea' },
+    ],
+    submitLabel: 'הוסף מטופל',
+    onSubmit: async v => {
+      if (!v.name || !v.houseId || !v.date || !v.pay) {
+        showError('שדות חובה חסרים');
+        return false;
+      }
+      const patient = normalizePatient({
+        id: cryptoId(),
+        houseId: v.houseId,
+        name: v.name.trim(),
+        date: v.date,
+        pay: Number(v.pay) || 0,
+        adv: 0,
+        status: v.status || 'active',
+        fromLead: '',
+        source: 'direct_admin',
+        notes: (v.notes || '').trim(),
+      });
+      state.patients.unshift(patient);
+      // Jump to the house the new patient landed in so the admin can
+      // immediately verify the record appeared.
+      state.currentHouseTab = patient.houseId;
+      renderAll();
+      try {
+        await saveAll();
+      } catch (e) {
+        state.patients = state.patients.filter(x => x.id !== patient.id);
         renderAll();
         showError('שמירה נכשלה — ' + e.message);
         return false;
