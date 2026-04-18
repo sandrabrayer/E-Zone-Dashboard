@@ -49,7 +49,7 @@ app.use((req, _res, next) => {
   };
   allHits.recent.push(entry);
   if (allHits.recent.length > 20) allHits.recent.shift();
-  console.log(`[req] ${req.method} ${req.originalUrl}`);
+  console.log(`[req] ${req.method} ${req.originalUrl} host=${req.headers.host} xfwd=${req.headers['x-forwarded-host'] || '-'}`);
   next();
 });
 
@@ -62,12 +62,16 @@ app.use('/api/sheets', (req, _res, next) => {
   next();
 });
 app.get('/api/debug/routes', (_req, res) => res.json({ routeHits, allHits }));
-app.get('/api/debug/env', (_req, res) => res.json({
+app.get('/api/debug/env', (req, res) => res.json({
   buildId: BUILD_ID,
   startedAt: SERVER_STARTED_AT,
   uptimeSeconds: Math.round(process.uptime()),
   node: process.version,
   pid: process.pid,
+  seenHost: req.headers.host,
+  seenXForwardedHost: req.headers['x-forwarded-host'] || null,
+  railwayStaticUrl: process.env.RAILWAY_STATIC_URL || null,
+  railwayServiceName: process.env.RAILWAY_SERVICE_NAME || null,
 }));
 
 /* Serve index.html with BUILD_ID substituted so the script tag is unique

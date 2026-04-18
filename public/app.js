@@ -42,7 +42,9 @@ const state = {
 /* ===== API ===== */
 async function apiGet(params) {
   const qs = new URLSearchParams(params).toString();
-  const res = await fetch('/api/sheets?' + qs);
+  const url = '/api/sheets?' + qs;
+  console.log('[E-ZONE] GET →', new URL(url, location.origin).href);
+  const res = await fetch(url);
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) {
     throw new Error(data.message || data.error || ('HTTP ' + res.status));
@@ -51,7 +53,9 @@ async function apiGet(params) {
 }
 
 async function apiPost(body) {
-  const res = await fetch('/api/sheets', {
+  const url = '/api/sheets';
+  console.log('[E-ZONE] POST →', new URL(url, location.origin).href);
+  const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
