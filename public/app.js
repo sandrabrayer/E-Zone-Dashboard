@@ -694,6 +694,7 @@ function buildLeadCard(lead) {
 
   card.innerHTML = `
     <button class="lc-irrelevant edit-only" title="סמן כלא רלוונטי">לא רלוונטי ✕</button>
+    <button class="lc-edit edit-only" title="ערוך ליד">✏️</button>
     <div class="lc-name">${escapeHtml(lead.name)}</div>
     <div class="lc-meta">
       ${escapeHtml(lead.phone)} ${lead.house ? '· ' + escapeHtml(lead.house) : ''}
@@ -710,6 +711,7 @@ function buildLeadCard(lead) {
   card.querySelector('[data-action="next"]').onclick = () => advanceLead(lead);
   if (idx > 0) card.querySelector('[data-action="back"]').onclick = () => moveLead(lead, STAGES[idx - 1].id);
   card.querySelector('.lc-irrelevant').onclick = () => moveLead(lead, 'irrelevant');
+  card.querySelector('.lc-edit').onclick = () => openEditLeadModal(lead);
 
   card.querySelectorAll('[data-field]').forEach(inp => {
     inp.onchange = () => updateLead(lead.id, { [inp.dataset.field]: inp.value });
@@ -788,6 +790,47 @@ function openAddLeadModal() {
         state.leads = state.leads.filter(l => l.id !== id);
         renderAll();
         showError('הוספת ליד נכשלה — ' + e.message);
+      }
+      return true;
+    }
+  });
+}
+
+/* ===== Edit existing lead =====
+ * For fixing typos or updating the preferred house / visit slot after a
+ * lead has been created. Stage advancement still goes through the kanban
+ * buttons — this modal only touches descriptive fields. */
+function openEditLeadModal(lead) {
+  showModal({
+    title: 'עריכת ליד',
+    fields: [
+      { name: 'name',  label: 'שם',          type: 'text',     required: true, value: lead.name || '' },
+      { name: 'phone', label: 'טלפון',       type: 'tel',      value: lead.phone || '' },
+      { name: 'house', label: 'בית מועדף',   type: 'select',
+        value: lead.house || '',
+        options: [{ value: '', label: '— ללא —' }, ...HOUSES.map(h => ({ value: h.name, label: h.name }))] },
+      { name: 'visitDate', label: 'תאריך ביקור', type: 'date', value: lead.visitDate || '' },
+      { name: 'visitTime', label: 'שעת ביקור',   type: 'time', value: lead.visitTime || '' },
+      { name: 'note',  label: 'הערות',       type: 'textarea', value: lead.note || '' },
+    ],
+    submitLabel: 'שמור שינויים',
+    onSubmit: async v => {
+      if (!v.name) { showError('יש להזין שם'); return false; }
+      const prev = { ...lead };
+      lead.name      = v.name.trim();
+      lead.phone     = v.phone || '';
+      lead.house     = v.house || '';
+      lead.visitDate = v.visitDate || '';
+      lead.visitTime = v.visitTime || '';
+      lead.note      = (v.note || '').trim();
+      renderAll();
+      try {
+        await saveAll();
+      } catch (e) {
+        Object.assign(lead, prev);
+        renderAll();
+        showError('שמירה נכשלה — ' + e.message);
+        return false;
       }
       return true;
     }
@@ -906,6 +949,65 @@ function openDirectAddPatientModal() {
   });
 }
 
+/* ===== Edit existing patient =====
+ * Lets admins fix typos, shift entry dates, adjust billing amounts, move
+ * patients between houses, or toggle active/paused without deleting and
+ * re-adding. Reuses the same showModal + saveAll plumbing as add-new. */
+function openEditPatientModal(p) {
+  const statusOptions = [
+    { value: 'active', label: 'פעיל' },
+    { value: 'wait',   label: 'הפסקה זמנית' },
+  ];
+  // Preserve any current status that isn't in the two spec'd options so
+  // editing a trial/released patient for a typo doesn't silently reset it.
+  if (p.status && !statusOptions.some(o => o.value === p.status)) {
+    const extra = STATUS_OPTIONS.find(s => s.id === p.status);
+    if (extra) statusOptions.push({ value: extra.id, label: extra.label });
+  }
+
+  showModal({
+    title: 'עריכת מטופל',
+    fields: [
+      { name: 'name', label: 'שם מטופל', type: 'text', required: true, value: p.name || '' },
+      { name: 'houseId', label: 'בית', type: 'select', required: true,
+        value: p.houseId || '',
+        options: HOUSES.map(h => ({ value: h.id, label: h.name })) },
+      { name: 'date', label: 'תאריך כניסה', type: 'date', required: true, value: p.date || '' },
+      { name: 'pay', label: 'תשלום חודשי (₪)', type: 'number', required: true, value: String(p.pay || 0) },
+      { name: 'status', label: 'סטטוס', type: 'select',
+        value: p.status || 'active',
+        options: statusOptions },
+      { name: 'notes', label: 'הערות', type: 'textarea', value: p.notes || '' },
+    ],
+    submitLabel: 'שמור שינויים',
+    onSubmit: async v => {
+      if (!v.name || !v.houseId || !v.date || v.pay === '') {
+        showError('שדות חובה חסרים');
+        return false;
+      }
+      const prev = { ...p };
+      const houseChanged = p.houseId !== v.houseId;
+      p.name    = v.name.trim();
+      p.houseId = v.houseId;
+      p.date    = v.date;
+      p.pay     = Number(v.pay) || 0;
+      p.status  = v.status || 'active';
+      p.notes   = (v.notes || '').trim();
+      if (houseChanged) state.currentHouseTab = p.houseId;
+      renderAll();
+      try {
+        await saveAll();
+      } catch (e) {
+        Object.assign(p, prev);
+        renderAll();
+        showError('שמירה נכשלה — ' + e.message);
+        return false;
+      }
+      return true;
+    }
+  });
+}
+
 /* ====================================================
    OCCUPANCY
    ==================================================== */
@@ -976,11 +1078,13 @@ function renderPatients() {
         <span class="badge ${badgeCls}">${statusInfo.label}${isReleased && p.exitDate ? ' · ' + formatDate(p.exitDate) : ''}</span>
       </div>
       <div class="row-actions edit-only">
+        <button class="btn small" data-action="edit" title="ערוך מטופל">✏️</button>
         ${isReleased ? '' : `<button class="btn small" data-action="release">שחרר</button>`}
         <button class="btn small danger" data-action="delete" title="מחק לצמיתות">✕</button>
       </div>
     `;
 
+    row.querySelector('[data-action="edit"]').onclick = () => openEditPatientModal(p);
     const releaseBtn = row.querySelector('[data-action="release"]');
     if (releaseBtn) releaseBtn.onclick = () => releasePatient(p);
     row.querySelector('[data-action="delete"]').onclick = () => deletePatient(p);
