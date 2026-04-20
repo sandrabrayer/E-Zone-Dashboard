@@ -694,7 +694,6 @@ function buildLeadCard(lead) {
 
   card.innerHTML = `
     <button class="lc-irrelevant edit-only" title="סמן כלא רלוונטי">לא רלוונטי ✕</button>
-    <button class="lc-edit edit-only" title="ערוך ליד">✏️</button>
     <div class="lc-name">${escapeHtml(lead.name)}</div>
     <div class="lc-meta">
       ${escapeHtml(lead.phone)} ${lead.house ? '· ' + escapeHtml(lead.house) : ''}
@@ -705,13 +704,14 @@ function buildLeadCard(lead) {
     <div class="lc-actions edit-only">
       <button class="btn small" data-action="back" ${idx === 0 ? 'disabled' : ''}>שלב קודם →</button>
       <button class="btn small primary" data-action="next">${isLast ? 'הושלם' : '← שלב הבא'}</button>
+      <button class="btn small" data-action="edit" title="ערוך ליד">✏️</button>
     </div>
   `;
 
   card.querySelector('[data-action="next"]').onclick = () => advanceLead(lead);
   if (idx > 0) card.querySelector('[data-action="back"]').onclick = () => moveLead(lead, STAGES[idx - 1].id);
   card.querySelector('.lc-irrelevant').onclick = () => moveLead(lead, 'irrelevant');
-  card.querySelector('.lc-edit').onclick = () => openEditLeadModal(lead);
+  card.querySelector('[data-action="edit"]').onclick = () => openEditLeadModal(lead);
 
   card.querySelectorAll('[data-field]').forEach(inp => {
     inp.onchange = () => updateLead(lead.id, { [inp.dataset.field]: inp.value });
@@ -1078,9 +1078,9 @@ function renderPatients() {
         <span class="badge ${badgeCls}">${statusInfo.label}${isReleased && p.exitDate ? ' · ' + formatDate(p.exitDate) : ''}</span>
       </div>
       <div class="row-actions edit-only">
-        <button class="btn small" data-action="edit" title="ערוך מטופל">✏️</button>
         ${isReleased ? '' : `<button class="btn small" data-action="release">שחרר</button>`}
         <button class="btn small danger" data-action="delete" title="מחק לצמיתות">✕</button>
+        <button class="btn small" data-action="edit" title="ערוך מטופל">✏️</button>
       </div>
     `;
 
