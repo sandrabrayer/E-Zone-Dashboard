@@ -262,10 +262,10 @@ function initTabs() {
     };
   });
 
-  document.getElementById('lead-search').oninput = e => {
-    state.leadSearch = e.target.value.trim().toLowerCase();
+  document.getElementById('lead-search').addEventListener('input', e => {
+    state.leadSearch = String(e.target.value || '').trim().toLowerCase();
     renderKanban();
-  };
+  });
   document.getElementById('patient-search').oninput = e => {
     state.patientSearch = e.target.value.trim().toLowerCase();
     renderPatients();
@@ -665,7 +665,7 @@ function filterLeads() {
   return state.leads.filter(l => {
     if (l.stage === 'irrelevant') return false; // hidden from board, but counted in pipeline + on dashboard
     if (!q) return true;
-    return [l.name, l.phone, l.house].some(v => (v || '').toLowerCase().includes(q));
+    return [l.name, l.phone, l.house].some(v => String(v == null ? '' : v).toLowerCase().includes(q));
   });
 }
 
