@@ -13,7 +13,7 @@ const HOUSES = [
 const STAGES = [
   { id: 'new',         label: 'ליד חדש' },
   { id: 'visit',       label: 'ביקור נקבע' },
-  { id: 'paid',        label: 'מקדמה שולמה' },
+  { id: 'paid',        label: 'בטיפול פעיל' },
   { id: 'entry',       label: 'כניסה לבית' },
 ];
 const STAGE_IRRELEVANT = { id: 'irrelevant', label: 'לא רלוונטי' };
@@ -486,7 +486,7 @@ function parsePatients(raw) {
 const STAGE_ALIASES = {
   'new': 'new', 'ליד חדש': 'new', 'חדש': 'new', 'ליד': 'new',
   'visit': 'visit', 'ביקור נקבע': 'visit', 'ביקור': 'visit', 'נקבע ביקור': 'visit',
-  'paid': 'paid', 'מקדמה שולמה': 'paid', 'מקדמה': 'paid', 'שילם מקדמה': 'paid',
+  'paid': 'paid', 'בטיפול פעיל': 'paid', 'מקדמה שולמה': 'paid', 'מקדמה': 'paid', 'שילם מקדמה': 'paid',
   'entry': 'entry', 'entered': 'entry',
   'כניסה לבית': 'entry', 'נכנס לבית': 'entry', 'נכנס': 'entry', 'כניסה': 'entry',
   'irrelevant': 'irrelevant', 'לא רלוונטי': 'irrelevant', 'לא_רלוונטי': 'irrelevant',

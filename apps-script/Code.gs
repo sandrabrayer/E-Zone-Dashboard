@@ -25,9 +25,10 @@
  * the app). A dedicated delete action can be added if that becomes needed.
  */
 
-const LEADS_SHEET    = 'Leads';
-const PATIENTS_SHEET = 'Patients';
-const PAYMENTS_SHEET = 'Payments';
+const LEADS_SHEET     = 'Leads';
+const RETENTION_SHEET = 'שימור לידים';
+const PATIENTS_SHEET  = 'Patients';
+const PAYMENTS_SHEET  = 'Payments';
 
 const LEAD_COLUMNS = [
   'id', 'name', 'phone', 'house', 'source', 'note',
@@ -175,10 +176,15 @@ function clearBody_(sh, columnCount) {
 /* ===== Read ===== */
 
 function getData_() {
-  const leadsSh    = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
-  const patientsSh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+  const leadsSh     = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+  const retentionSh = getOrCreateSheet_(RETENTION_SHEET, LEAD_COLUMNS);
+  const patientsSh  = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
 
-  const leads       = readSheet_(leadsSh, LEAD_COLUMNS);
+  // Irrelevant leads live in their own sheet for easier review by staff,
+  // but the app still treats them as part of the lead pipeline (counted on
+  // the dashboard, hidden from the kanban). Merge both on read.
+  const leads       = readSheet_(leadsSh, LEAD_COLUMNS)
+    .concat(readSheet_(retentionSh, LEAD_COLUMNS));
   const patientRows = readSheet_(patientsSh, PATIENT_COLUMNS);
 
   const patients = {};
@@ -224,17 +230,44 @@ function saveAll_(leads, patients) {
  * Upsert leads by id. Existing rows whose id is present in the payload are
  * replaced; rows whose id is NOT in the payload are preserved. New ids are
  * appended. Same shape as replaceHousePatients_ but keyed on lead.id.
+ *
+ * Leads with stage='irrelevant' are routed to the RETENTION_SHEET instead of
+ * LEADS_SHEET — and a lead that flips between active/irrelevant is removed
+ * from the other sheet so it never lives in both at once.
  */
 function mergeLeads_(leads) {
-  const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
-  const idColIdx = LEAD_COLUMNS.indexOf('id');
-  const lastRow = sh.getLastRow();
+  const activeSh    = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+  const retentionSh = getOrCreateSheet_(RETENTION_SHEET, LEAD_COLUMNS);
+
+  const active = [];
+  const retention = [];
+  for (let i = 0; i < leads.length; i++) {
+    const l = leads[i];
+    if (String(l.stage || '').toLowerCase() === 'irrelevant') {
+      retention.push(l);
+    } else {
+      active.push(l);
+    }
+  }
 
   const incomingIds = {};
   for (let i = 0; i < leads.length; i++) {
     const id = leads[i].id;
     if (id) incomingIds[String(id)] = true;
   }
+
+  upsertLeadRows_(activeSh, active, incomingIds);
+  upsertLeadRows_(retentionSh, retention, incomingIds);
+}
+
+/**
+ * Replace rows in `sh` whose id is in `incomingIds` with the rows derived
+ * from `leads`; preserve all other rows. Used by mergeLeads_ to write the
+ * active and retention sheets with identical semantics.
+ */
+function upsertLeadRows_(sh, leads, incomingIds) {
+  const idColIdx = LEAD_COLUMNS.indexOf('id');
+  const lastRow = sh.getLastRow();
 
   let kept = [];
   if (lastRow > 1) {
