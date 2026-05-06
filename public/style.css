@@ -169,6 +169,14 @@ input:focus, select:focus, textarea:focus {
   color: var(--text); padding: 9px 18px; border-radius: 10px;
   z-index: 900; box-shadow: var(--shadow);
 }
+.toast-banner {
+  position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+  background: linear-gradient(180deg, #2dd47a, #19a85f);
+  color: #fff;
+  padding: 11px 22px; border-radius: 10px; z-index: 900;
+  box-shadow: 0 8px 24px rgba(45,212,122,.4);
+  font-weight: 600;
+}
 
 /* ===== Layout ===== */
 .topbar {
@@ -605,6 +613,50 @@ input:focus, select:focus, textarea:focus {
 .bd-col   { color: var(--success); }
 .bd-out   { color: var(--warning); }
 
+/* ===== Irrelevant leads ===== */
+.count-pill {
+  display: inline-block;
+  background: var(--surface-3);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 2px 12px;
+  font-size: 14px;
+  font-weight: 700;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+.irrelevant-list { display: grid; gap: 10px; }
+.irrelevant-row {
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr 1fr 1fr auto;
+  align-items: center;
+  gap: 12px;
+  transition: border-color .15s;
+}
+.irrelevant-row:hover { border-color: var(--border-strong); }
+.irrelevant-row .p-label {
+  color: var(--text-dim); font-size: 11px;
+  display: block;
+  text-transform: uppercase; letter-spacing: .8px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.irrelevant-row .p-val  { font-size: 14.5px; font-weight: 600; color: var(--text); }
+.irrelevant-row .p-name { font-weight: 700; font-size: 16px; color: var(--text); }
+.irrelevant-row .row-actions { justify-self: start; }
+
+.confirm-modal { width: 380px; }
+.confirm-modal .confirm-text {
+  margin: 0 0 18px;
+  font-size: 16px; font-weight: 600;
+  color: var(--text);
+  line-height: 1.5;
+}
+
 /* ===== Read-only mode ===== */
 body.viewer-mode .edit-only { display: none !important; }
 body.viewer-mode .billing-status,
@@ -616,5 +668,6 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
   .kanban { grid-template-columns: 1fr; }
   .patient-row { grid-template-columns: 1fr 1fr; }
   .billing-row { grid-template-columns: 1fr 1fr; }
+  .irrelevant-row { grid-template-columns: 1fr 1fr; }
   .actions input[type=search] { width: 100%; }
 }

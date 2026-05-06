@@ -28,11 +28,19 @@
 const LEADS_SHEET    = 'Leads';
 const PATIENTS_SHEET = 'Patients';
 const PAYMENTS_SHEET = 'Payments';
+const IRRELEVANT_LEADS_SHEET = 'לידים לא רלוונטיים';
 
 const LEAD_COLUMNS = [
   'id', 'name', 'phone', 'house', 'source', 'note',
   'stage', 'visitDate', 'visitTime', 'entryDate', 'advance', 'created'
 ];
+
+/* Irrelevant-leads sheet mirrors LEAD_COLUMNS plus two metadata fields:
+ *   originSheet — stable stage id the lead came from ('new'|'visit'|'paid'|'entry')
+ *   movedAt     — ISO timestamp recorded when the lead was marked irrelevant
+ * Storing the stage id (not the Hebrew label) keeps the restore lookup stable
+ * across UI label renames. */
+const IRRELEVANT_LEAD_COLUMNS = LEAD_COLUMNS.concat(['originSheet', 'movedAt']);
 
 /* Must match the column headers in the Patients sheet exactly, in order.
  * The client generates a per-session id for each patient but it is NOT
@@ -76,6 +84,12 @@ function handle_(params) {
     if (action === 'savePayment' || action === 'updatePayment') {
       const payment = parseJsonParam_(params.payment);
       return jsonOut_(upsertPayment_(payment));
+    }
+    if (action === 'moveLeadIrrelevant') {
+      return jsonOut_(moveLeadIrrelevant_(parseJsonParam_(params.lead)));
+    }
+    if (action === 'restoreLead') {
+      return jsonOut_(restoreLead_(parseJsonParam_(params.lead)));
     }
     return jsonOut_({ ok: false, error: 'unknown_action', action: action || null });
   } catch (err) {
@@ -175,11 +189,13 @@ function clearBody_(sh, columnCount) {
 /* ===== Read ===== */
 
 function getData_() {
-  const leadsSh    = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
-  const patientsSh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+  const leadsSh      = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+  const patientsSh   = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+  const irrelevantSh = getOrCreateSheet_(IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS);
 
-  const leads       = readSheet_(leadsSh, LEAD_COLUMNS);
-  const patientRows = readSheet_(patientsSh, PATIENT_COLUMNS);
+  const leads           = readSheet_(leadsSh, LEAD_COLUMNS);
+  const patientRows     = readSheet_(patientsSh, PATIENT_COLUMNS);
+  const irrelevantLeads = readSheet_(irrelevantSh, IRRELEVANT_LEAD_COLUMNS);
 
   const patients = {};
   for (let i = 0; i < patientRows.length; i++) {
@@ -190,7 +206,7 @@ function getData_() {
     patients[hid].push(p);
   }
 
-  return { ok: true, leads: leads, patients: patients };
+  return { ok: true, leads: leads, patients: patients, irrelevantLeads: irrelevantLeads };
 }
 
 /* ===== Write (merge semantics) ===== */
@@ -276,6 +292,91 @@ function replaceHousePatients_(houseId, patientsArr) {
   clearBody_(sh, PATIENT_COLUMNS.length);
   if (finalRows.length > 0) {
     sh.getRange(2, 1, finalRows.length, PATIENT_COLUMNS.length).setValues(finalRows);
+  }
+}
+
+/* ===== Irrelevant leads (move + restore) =====
+ *
+ * One-way automatic move on the move side; explicit restore brings a row back.
+ * Both operations are atomic under a script lock so a concurrent saveAll can't
+ * race a move and resurrect the row in the Leads sheet.
+ */
+
+function deleteRowsById_(sh, columns, idValue) {
+  const idIdx = columns.indexOf('id');
+  if (idIdx < 0) return;
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return;
+  const values = sh.getRange(2, 1, lastRow - 1, columns.length).getValues();
+  const target = String(idValue);
+  const kept = values.filter(function (row) { return String(row[idIdx]) !== target; });
+  if (kept.length === values.length) return;
+  clearBody_(sh, columns.length);
+  if (kept.length > 0) {
+    sh.getRange(2, 1, kept.length, columns.length).setValues(kept);
+  }
+}
+
+function upsertRowById_(sh, columns, obj) {
+  const idIdx = columns.indexOf('id');
+  if (idIdx < 0) return;
+  const row = objectToRow_(obj, columns);
+  const lastRow = sh.getLastRow();
+  if (lastRow > 1) {
+    const existingIds = sh.getRange(2, idIdx + 1, lastRow - 1, 1).getValues();
+    for (let i = 0; i < existingIds.length; i++) {
+      if (String(existingIds[i][0]) === String(obj.id)) {
+        sh.getRange(i + 2, 1, 1, columns.length).setValues([row]);
+        return;
+      }
+    }
+  }
+  sh.appendRow(row);
+}
+
+function moveLeadIrrelevant_(lead) {
+  if (!lead || !lead.id) return { ok: false, error: 'missing_lead' };
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const leadsSh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+    const irrSh   = getOrCreateSheet_(IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS);
+
+    const record = Object.assign({}, lead, {
+      stage:       'irrelevant',
+      originSheet: lead.originSheet || '',
+      movedAt:     lead.movedAt     || new Date().toISOString(),
+    });
+
+    deleteRowsById_(leadsSh, LEAD_COLUMNS, lead.id);
+    upsertRowById_(irrSh, IRRELEVANT_LEAD_COLUMNS, record);
+    return { ok: true, moved: true, lead: record };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+function restoreLead_(lead) {
+  if (!lead || !lead.id) return { ok: false, error: 'missing_lead' };
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const leadsSh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+    const irrSh   = getOrCreateSheet_(IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS);
+
+    // Strip metadata fields when re-inserting into Leads — they only exist on
+    // the irrelevant sheet.
+    const restored = {};
+    for (let i = 0; i < LEAD_COLUMNS.length; i++) {
+      const k = LEAD_COLUMNS[i];
+      restored[k] = lead[k] === undefined ? '' : lead[k];
+    }
+
+    deleteRowsById_(irrSh, IRRELEVANT_LEAD_COLUMNS, lead.id);
+    upsertRowById_(leadsSh, LEAD_COLUMNS, restored);
+    return { ok: true, restored: true, lead: restored };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
 }
 

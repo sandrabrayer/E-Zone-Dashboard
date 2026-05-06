@@ -13,7 +13,9 @@ const HOUSES = [
 const STAGES = [
   { id: 'new',         label: 'ליד חדש' },
   { id: 'visit',       label: 'ביקור נקבע' },
-  { id: 'paid',        label: 'מקדמה שולמה' },
+  /* `paid` keeps its stable id so historical sheet rows still resolve via
+   * STAGE_ALIASES below; only the displayed label was changed to "בטיפול פעיל". */
+  { id: 'paid',        label: 'בטיפול פעיל' },
   { id: 'entry',       label: 'כניסה לבית' },
 ];
 const STAGE_IRRELEVANT = { id: 'irrelevant', label: 'לא רלוונטי' };
@@ -45,6 +47,7 @@ const houseByName = name => HOUSES.find(h => h.name === name);
 
 const state = {
   leads: [],
+  irrelevantLeads: [],
   patients: [],
   payments: [],
   mode: null, // 'edit' | 'viewer'
@@ -247,7 +250,7 @@ function enterApp(mode) {
 }
 
 /* ===== Top tabs ===== */
-const SCREENS = ['dashboard', 'leads', 'occupancy', 'billing'];
+const SCREENS = ['dashboard', 'leads', 'irrelevant', 'occupancy', 'billing'];
 
 function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {
@@ -329,6 +332,10 @@ async function loadAll() {
 
     state.leads = rawLeads.map(normalizeLead);
     state.patients = parsePatients(rawPatients);
+
+    const rawIrrelevant = Array.isArray(data.irrelevantLeads) ? data.irrelevantLeads : [];
+    state.irrelevantLeads = rawIrrelevant.map(normalizeIrrelevantLead);
+    console.log('[E-ZONE] irrelevantLeads loaded:', state.irrelevantLeads.length);
 
     // Payments live on their own sheet and their own action. A fresh
     // install has no Payments sheet yet — treat any failure as "empty
@@ -486,7 +493,7 @@ function parsePatients(raw) {
 const STAGE_ALIASES = {
   'new': 'new', 'ליד חדש': 'new', 'חדש': 'new', 'ליד': 'new',
   'visit': 'visit', 'ביקור נקבע': 'visit', 'ביקור': 'visit', 'נקבע ביקור': 'visit',
-  'paid': 'paid', 'מקדמה שולמה': 'paid', 'מקדמה': 'paid', 'שילם מקדמה': 'paid',
+  'paid': 'paid', 'מקדמה שולמה': 'paid', 'בטיפול פעיל': 'paid', 'מקדמה': 'paid', 'שילם מקדמה': 'paid',
   'entry': 'entry', 'entered': 'entry',
   'כניסה לבית': 'entry', 'נכנס לבית': 'entry', 'נכנס': 'entry', 'כניסה': 'entry',
   'irrelevant': 'irrelevant', 'לא רלוונטי': 'irrelevant', 'לא_רלוונטי': 'irrelevant',
@@ -562,6 +569,16 @@ function normalizeLead(l) {
   };
 }
 
+/* Irrelevant leads carry the same fields as a regular lead plus two metadata
+ * columns (originSheet, movedAt) added when the lead was marked irrelevant. */
+function normalizeIrrelevantLead(l) {
+  const base = normalizeLead(l);
+  base.stage = 'irrelevant';
+  base.originSheet = pickField(l, ['originSheet', 'origin_sheet', 'גיליון מקור']) || '';
+  base.movedAt     = pickField(l, ['movedAt', 'moved_at', 'תאריך העברה']) || '';
+  return base;
+}
+
 function normalizePatient(p) {
   if (!p || typeof p !== 'object') p = {};
   return {
@@ -586,6 +603,7 @@ function cryptoId() {
 function renderAll() {
   renderDashboard();
   renderKanban();
+  renderIrrelevantLeads();
   renderHouseTabs();
   renderPatients();
   renderBilling();
@@ -627,7 +645,11 @@ function renderDashboard() {
   const pipe = document.getElementById('pipeline-row');
   pipe.innerHTML = '';
   ALL_STAGES_FOR_PIPELINE.forEach(s => {
-    const count = state.leads.filter(l => l.stage === s.id).length;
+    // Irrelevant leads now live on their own sheet (state.irrelevantLeads)
+    // after being moved; the pipeline pill should reflect that count.
+    const count = s.id === 'irrelevant'
+      ? (state.irrelevantLeads.length + state.leads.filter(l => l.stage === 'irrelevant').length)
+      : state.leads.filter(l => l.stage === s.id).length;
     const el = document.createElement('div');
     el.className = 'pipe';
     el.dataset.stage = s.id;
@@ -710,7 +732,7 @@ function buildLeadCard(lead) {
 
   card.querySelector('[data-action="next"]').onclick = () => advanceLead(lead);
   if (idx > 0) card.querySelector('[data-action="back"]').onclick = () => moveLead(lead, STAGES[idx - 1].id);
-  card.querySelector('.lc-irrelevant').onclick = () => moveLead(lead, 'irrelevant');
+  card.querySelector('.lc-irrelevant').onclick = () => markLeadIrrelevant(lead);
   card.querySelector('[data-action="edit"]').onclick = () => openEditLeadModal(lead);
 
   card.querySelectorAll('[data-field]').forEach(inp => {
@@ -759,6 +781,180 @@ async function updateLead(id, fields) {
     renderAll();
     showError('עדכון ליד נכשל — ' + e.message);
   }
+}
+
+/* ===== Irrelevant leads — move + restore =====
+ *
+ * Move side: removes the lead from state.leads, stamps it with originSheet
+ * (the stage id it was sitting in) + movedAt, pushes it onto state.irrelevantLeads,
+ * and persists the move atomically via the dedicated backend action so the row
+ * can never end up in both sheets at once. The move is one-way automatic per
+ * spec — even if the lead's stage is later edited, it stays in the irrelevant
+ * sheet until manually restored.
+ *
+ * Restore side: the user clicks "שחזר ליד", confirms the dialog, and the row
+ * is moved back to the Leads sheet with its original stage. If the recorded
+ * origin stage no longer exists in STAGES, the restore is refused.
+ */
+
+function stageLabelById(stageId) {
+  const s = STAGES.find(x => x.id === stageId);
+  return s ? s.label : '';
+}
+
+async function markLeadIrrelevant(lead) {
+  if (state.mode !== 'edit') return;
+
+  const moved = {
+    ...lead,
+    stage: 'irrelevant',
+    originSheet: lead.stage || 'new',
+    movedAt: new Date().toISOString(),
+  };
+
+  // Optimistic UI update
+  state.leads = state.leads.filter(l => l.id !== lead.id);
+  state.irrelevantLeads.unshift(moved);
+  renderAll();
+
+  try {
+    await apiPost({ action: 'moveLeadIrrelevant', lead: moved });
+  } catch (e) {
+    // Roll back on failure
+    state.irrelevantLeads = state.irrelevantLeads.filter(l => l.id !== moved.id);
+    state.leads.unshift(lead);
+    renderAll();
+    showError('סימון כלא רלוונטי נכשל — ' + e.message);
+  }
+}
+
+async function restoreIrrelevantLead(ilead) {
+  if (state.mode !== 'edit') return;
+
+  const originStageId = ilead.originSheet || '';
+  const originLabel   = stageLabelById(originStageId);
+
+  if (!originStageId || !originLabel) {
+    showError('הגיליון המקורי לא קיים יותר — לא ניתן לשחזר');
+    return;
+  }
+
+  showConfirm({
+    text: `להחזיר את הליד לגיליון ${originLabel}?`,
+    onConfirm: async () => {
+      const restored = {
+        ...ilead,
+        stage: originStageId,
+      };
+      delete restored.originSheet;
+      delete restored.movedAt;
+
+      // Optimistic UI update
+      state.irrelevantLeads = state.irrelevantLeads.filter(l => l.id !== ilead.id);
+      state.leads.unshift(restored);
+      renderAll();
+
+      try {
+        await apiPost({ action: 'restoreLead', lead: restored });
+        showToast(`הליד הוחזר לגיליון ${originLabel}`);
+      } catch (e) {
+        state.leads = state.leads.filter(l => l.id !== restored.id);
+        state.irrelevantLeads.unshift(ilead);
+        renderAll();
+        showError('שחזור הליד נכשל — ' + e.message);
+      }
+    }
+  });
+}
+
+function renderIrrelevantLeads() {
+  const list = document.getElementById('irrelevant-list');
+  if (!list) return;
+  list.innerHTML = '';
+
+  const rows = state.irrelevantLeads || [];
+  document.getElementById('irrelevant-count').textContent = rows.length;
+
+  if (!rows.length) {
+    list.innerHTML = `<div class="card billing-empty">אין לידים לא רלוונטיים</div>`;
+    return;
+  }
+
+  rows.forEach(lead => {
+    const originLabel = stageLabelById(lead.originSheet) || '—';
+    const movedLabel  = lead.movedAt ? formatDate(lead.movedAt) : '—';
+
+    const row = document.createElement('div');
+    row.className = 'irrelevant-row';
+    row.dataset.id = lead.id;
+    row.innerHTML = `
+      <div>
+        <span class="p-label">שם</span>
+        <span class="p-name">${escapeHtml(lead.name)}</span>
+      </div>
+      <div>
+        <span class="p-label">טלפון</span>
+        <span class="p-val">${escapeHtml(lead.phone || '—')}</span>
+      </div>
+      <div>
+        <span class="p-label">בית מועדף</span>
+        <span class="p-val">${escapeHtml(lead.house || '—')}</span>
+      </div>
+      <div>
+        <span class="p-label">גיליון מקור</span>
+        <span class="p-val">${escapeHtml(originLabel)}</span>
+      </div>
+      <div>
+        <span class="p-label">תאריך העברה</span>
+        <span class="p-val">${escapeHtml(movedLabel)}</span>
+      </div>
+      <div class="row-actions edit-only">
+        <button class="btn small primary" data-action="restore">שחזר ליד</button>
+      </div>
+    `;
+    row.querySelector('[data-action="restore"]').onclick = () => restoreIrrelevantLead(lead);
+    list.appendChild(row);
+  });
+}
+
+/* Confirm dialog with "אישור" / "ביטול" buttons. Reuses the same backdrop +
+ * surface styling as the form modal but with no fields. */
+function showConfirm({ text, onConfirm }) {
+  const root = document.getElementById('modal-root');
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  back.innerHTML = `
+    <div class="modal confirm-modal">
+      <p class="confirm-text">${escapeHtml(text)}</p>
+      <div class="form-actions">
+        <button type="button" class="btn" data-action="cancel">ביטול</button>
+        <button type="button" class="btn primary" data-action="confirm">אישור</button>
+      </div>
+    </div>
+  `;
+  root.appendChild(back);
+
+  const close = () => back.remove();
+  back.querySelector('[data-action="cancel"]').onclick = close;
+  back.addEventListener('click', e => { if (e.target === back) close(); });
+
+  back.querySelector('[data-action="confirm"]').onclick = async () => {
+    close();
+    try { await onConfirm(); }
+    catch (err) {
+      console.error('[E-ZONE] confirm onConfirm threw:', err);
+      showError(err.message || 'הפעולה נכשלה');
+    }
+  };
+}
+
+function showToast(msg) {
+  const el = document.getElementById('toast-banner');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => el.classList.add('hidden'), 3500);
 }
 
 /* ===== Add Lead modal ===== */

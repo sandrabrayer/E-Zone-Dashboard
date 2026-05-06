@@ -23,9 +23,10 @@
     </div>
   </div>
 
-  <!-- LOADING / ERROR BANNERS -->
+  <!-- LOADING / ERROR / SUCCESS BANNERS -->
   <div id="error-banner" class="error-banner hidden"></div>
   <div id="loading-banner" class="loading-banner hidden">טוען נתונים...</div>
+  <div id="toast-banner" class="toast-banner hidden"></div>
 
   <!-- APP -->
   <div id="app" class="hidden">
@@ -34,6 +35,7 @@
       <nav class="tabs">
         <button class="tab active" data-screen="dashboard">דשבורד</button>
         <button class="tab" data-screen="leads">לידים</button>
+        <button class="tab" data-screen="irrelevant">לידים לא רלוונטיים</button>
         <button class="tab" data-screen="occupancy">תפוסה</button>
         <button class="tab" data-screen="billing">גבייה</button>
       </nav>
@@ -86,6 +88,14 @@
       </div>
 
       <div class="kanban" id="kanban"></div>
+    </section>
+
+    <!-- ====== IRRELEVANT LEADS ====== -->
+    <section id="screen-irrelevant" class="screen hidden">
+      <div class="screen-head">
+        <h2>לידים לא רלוונטיים <span class="count-pill" id="irrelevant-count">0</span></h2>
+      </div>
+      <div id="irrelevant-list" class="irrelevant-list"></div>
     </section>
 
     <!-- ====== OCCUPANCY ====== -->
