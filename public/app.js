@@ -565,7 +565,13 @@ function normalizeLead(l) {
     visitTime: pickField(l, ['visitTime', 'visit_time', 'שעת ביקור', 'שעה']),
     entryDate: pickField(l, ['entryDate', 'entry_date', 'תאריך כניסה']),
     advance:   advRaw === '' ? '' : Number(advRaw) || 0,
-    created:   pickField(l, ['created', 'created_at', 'נוצר', 'נוצר ב', 'תאריך יצירה']),
+    /* Stored as YYYY-MM-DD. Sheets sometimes returns a Date object for date
+     * cells (depending on locale + column type); isoDate normalizes both
+     * Date objects and full ISO timestamps down to a plain date string so
+     * the inline <input type="date"> always has a usable value. Empty string
+     * stays empty — that is the "no original creation timestamp" case for
+     * pre-existing leads, per spec. */
+    created:   isoDate(pickField(l, ['created', 'created_at', 'נוצר', 'נוצר ב', 'תאריך יצירה'])),
   };
 }
 
@@ -670,6 +676,22 @@ function renderKanban() {
     col.dataset.stage = stage.id;
 
     const filtered = filterLeads().filter(l => l.stage === stage.id);
+    /* Default-sort the "ליד חדש" column by creation date, newest first.
+     * Leads with no created timestamp (legacy rows that pre-date the field)
+     * sort to the bottom, which keeps the newest activity at the top of the
+     * board without dropping legacy rows. Other stages keep their existing
+     * insertion order — sorting visit/paid/entry by created date would be
+     * misleading since stage progression is the primary signal there. */
+    if (stage.id === 'new') {
+      filtered.sort((a, b) => {
+        const ac = isoDate(a.created || '') || '';
+        const bc = isoDate(b.created || '') || '';
+        if (!ac && !bc) return 0;
+        if (!ac) return 1;
+        if (!bc) return -1;
+        return bc.localeCompare(ac);
+      });
+    }
     col.innerHTML = `
       <div class="col-head">
         <span class="col-title">${stage.label}</span>
@@ -714,12 +736,30 @@ function buildLeadCard(lead) {
       </div>`;
   }
 
+  /* "נוצר" — date display + inline picker. In edit mode the input uses
+   * lang="he" + dir="rtl" so the native picker honors Hebrew locale; in
+   * viewer mode a static DD/MM/YYYY display, or "—" for legacy rows whose
+   * original creation timestamp doesn't exist. Rendered AFTER the name
+   * + meta block so the lead name keeps the prominent top-of-card title
+   * slot — sitting it above the name made it visually compete with the
+   * title (regression noted 2026-05). */
+  const createdISO = lead.created ? isoDate(lead.created) : '';
+  const createdDisplay = createdISO ? formatDateDDMMYYYY(createdISO) : '—';
+  const createdInner = state.mode === 'edit'
+    ? `<input class="lc-created-input" type="date" lang="he" dir="rtl"
+              data-field="created" value="${escapeHtml(createdISO)}" />`
+    : `<span class="lc-created-value">${escapeHtml(createdDisplay)}</span>`;
+
   card.innerHTML = `
     <button class="lc-irrelevant edit-only" title="סמן כלא רלוונטי">לא רלוונטי ✕</button>
     <div class="lc-name">${escapeHtml(lead.name)}</div>
     <div class="lc-meta">
       ${escapeHtml(lead.phone)} ${lead.house ? '· ' + escapeHtml(lead.house) : ''}
       ${lead.source ? '· מקור: ' + escapeHtml(lead.source) : ''}
+    </div>
+    <div class="lc-created">
+      <span class="lc-created-label">נוצר</span>
+      ${createdInner}
     </div>
     ${lead.note ? `<div class="lc-note">${escapeHtml(lead.note)}</div>` : ''}
     ${stageFields}
@@ -976,7 +1016,11 @@ function openAddLeadModal() {
       const lead = normalizeLead({
         id, ...values,
         stage: 'new',
-        created: new Date().toISOString(),
+        /* todayISO() (YYYY-MM-DD) instead of a full toISOString() timestamp
+         * so the value matches what the inline date picker reads/writes —
+         * mismatched formats round-trip through isoDate() but the local
+         * date field is the source of truth. */
+        created: todayISO(),
       });
       state.leads.unshift(lead);
       renderAll();
@@ -1005,6 +1049,7 @@ function openEditLeadModal(lead) {
       { name: 'house', label: 'בית מועדף',   type: 'select',
         value: lead.house || '',
         options: [{ value: '', label: '— ללא —' }, ...HOUSES.map(h => ({ value: h.name, label: h.name }))] },
+      { name: 'created',   label: 'נוצר',          type: 'date', value: isoDate(lead.created || '') },
       { name: 'visitDate', label: 'תאריך ביקור', type: 'date', value: lead.visitDate || '' },
       { name: 'visitTime', label: 'שעת ביקור',   type: 'time', value: lead.visitTime || '' },
       { name: 'note',  label: 'הערות',       type: 'textarea', value: lead.note || '' },
@@ -1016,6 +1061,7 @@ function openEditLeadModal(lead) {
       lead.name      = v.name.trim();
       lead.phone     = v.phone || '';
       lead.house     = v.house || '';
+      lead.created   = v.created || '';
       lead.visitDate = v.visitDate || '';
       lead.visitTime = v.visitTime || '';
       lead.note      = (v.note || '').trim();
@@ -1771,6 +1817,17 @@ function formatDate(s) {
   const d = new Date(s);
   if (isNaN(d)) return s;
   return d.toLocaleDateString('he-IL');
+}
+/* Strict DD/MM/YYYY (zero-padded, slash-separated) — used for the lead
+ * "נוצר" display. he-IL's default locale format uses dots and no zero
+ * padding (9.5.2026), which the spec rules out. */
+function formatDateDDMMYYYY(s) {
+  if (!s) return '';
+  const iso = isoDate(s);
+  if (!iso) return '';
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return '';
+  return `${m[3]}/${m[2]}/${m[1]}`;
 }
 
 /* ===== Boot ===== */

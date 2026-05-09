@@ -186,6 +186,30 @@ function clearBody_(sh, columnCount) {
   }
 }
 
+/* Today as YYYY-MM-DD in the spreadsheet's timezone — Israel rolls past
+ * midnight ~3 hours before UTC, so a UTC-based stamp would mis-date leads
+ * added late in the evening Israel time. Defensive default for the
+ * `created` column when a payload arrives without one. */
+function todayISODate_() {
+  const tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || 'Asia/Jerusalem';
+  return Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
+}
+
+/* Normalize a Sheets cell value to YYYY-MM-DD. Sheets sometimes hands back
+ * a Date object for cells the user formatted as a date; we want the
+ * persisted/returned value to always be a plain string so the frontend's
+ * <input type="date"> can read it without extra parsing. */
+function asISODate_(v) {
+  if (v === undefined || v === null || v === '') return '';
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    const tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || 'Asia/Jerusalem';
+    return Utilities.formatDate(v, tz, 'yyyy-MM-dd');
+  }
+  const s = String(v);
+  const m = s.match(/^\d{4}-\d{2}-\d{2}/);
+  return m ? m[0] : s;
+}
+
 /* ===== Read ===== */
 
 function getData_() {
@@ -240,10 +264,23 @@ function saveAll_(leads, patients) {
  * Upsert leads by id. Existing rows whose id is present in the payload are
  * replaced; rows whose id is NOT in the payload are preserved. New ids are
  * appended. Same shape as replaceHousePatients_ but keyed on lead.id.
+ *
+ * `created` column semantics (added 2026-05):
+ *   - Incoming lead with non-empty `created` → use as-is (lets the user
+ *     edit a creation date through the dashboard's date picker).
+ *   - Incoming lead with empty `created` AND id is NEW → stamp today.
+ *     This is the defensive default: even if a payload from a non-dashboard
+ *     route forgets the field, a new row never lands without a creation
+ *     date.
+ *   - Incoming lead with empty `created` AND id already exists in the sheet
+ *     → preserve whatever value the sheet currently holds. This is what
+ *     keeps legacy rows blank: editing any other field on a pre-`created`
+ *     lead won't auto-backfill a guess.
  */
 function mergeLeads_(leads) {
   const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
-  const idColIdx = LEAD_COLUMNS.indexOf('id');
+  const idColIdx      = LEAD_COLUMNS.indexOf('id');
+  const createdColIdx = LEAD_COLUMNS.indexOf('created');
   const lastRow = sh.getLastRow();
 
   const incomingIds = {};
@@ -252,13 +289,47 @@ function mergeLeads_(leads) {
     if (id) incomingIds[String(id)] = true;
   }
 
+  // Index existing rows by id so we can both (a) preserve them when they're
+  // not in the payload and (b) read each one's current `created` value
+  // without re-querying the sheet.
+  const existingById = {};
   let kept = [];
   if (lastRow > 1) {
     const values = sh.getRange(2, 1, lastRow - 1, LEAD_COLUMNS.length).getValues();
-    kept = values.filter(function (row) { return !incomingIds[String(row[idColIdx])]; });
+    for (let i = 0; i < values.length; i++) {
+      const row = values[i];
+      const rowId = String(row[idColIdx] || '');
+      if (rowId) existingById[rowId] = row;
+      if (!incomingIds[rowId]) kept.push(row);
+    }
   }
 
-  const newRows = leads.map(function (l) { return objectToRow_(l, LEAD_COLUMNS); });
+  const today = todayISODate_();
+
+  const newRows = leads.map(function (l) {
+    const merged = {};
+    for (let k in l) merged[k] = l[k];
+
+    const incomingCreated = merged.created;
+    const isMissing = (incomingCreated === undefined ||
+                      incomingCreated === null ||
+                      incomingCreated === '');
+
+    if (isMissing) {
+      const existing = existingById[String(merged.id || '')];
+      merged.created = existing
+        ? asISODate_(existing[createdColIdx])  // update path → preserve
+        : today;                               // insert path → stamp today
+    } else {
+      // Round-trip whatever the client sent through asISODate_ so a Date
+      // object (some integrations) becomes the same plain YYYY-MM-DD that
+      // the dashboard writes.
+      merged.created = asISODate_(incomingCreated);
+    }
+
+    return objectToRow_(merged, LEAD_COLUMNS);
+  });
+
   const finalRows = kept.concat(newRows);
 
   clearBody_(sh, LEAD_COLUMNS.length);

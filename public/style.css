@@ -411,6 +411,29 @@ input:focus, select:focus, textarea:focus {
   transition: transform .1s, border-color .15s, box-shadow .15s;
 }
 .lead-card:hover { transform: translateY(-1px); border-color: var(--border-strong); box-shadow: var(--shadow); }
+.lead-card .lc-created {
+  /* Sits below the name + meta block — the name keeps the prominent
+   * top-of-card title slot and this row is supplementary metadata. */
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.lead-card .lc-created-label {
+  font-weight: 600;
+  letter-spacing: .3px;
+}
+.lead-card .lc-created-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.lead-card .lc-created-input {
+  font-size: 12px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: var(--surface);
+  font-variant-numeric: tabular-nums;
+}
 .lead-card .lc-name { font-weight: 700; font-size: 15px; }
 .lead-card .lc-meta { color: var(--text-muted); font-size: 12.5px; margin-top: 4px; }
 .lead-card .lc-note {
