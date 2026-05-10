@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>איזון | דשבורד מנהלים</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    /* Vibrant burgundy red - not aubergine */
+    --bg-darkest: #2D0A14;
+    --bg-dark: #3A0E1A;
+    --bg-card: #421221;
+    --bg-card-hover: #4D1626;
+    --bg-card-dim: #2E0916;
+    --line: rgba(255,107,107,0.15);
+    --line-strong: rgba(255,107,107,0.3);
+    
+    /* Accent palette */
+    --red-bright: #FF6B6B;
+    --red-glow: #FF8585;
+    --red-deep: #DC2626;
+    --pink: #F472B6;
+    --orange: #FB923C;
+    
+    /* Status */
+    --good: #34D399;
+    --good-bright: #10B981;
+    --warn: #FBBF24;
+    --gold: #FCD34D;
+    --gold-bright: #FBBF24;
+    
+    /* Text */
+    --txt: #FFFFFF;
+    --txt-soft: #DCC9CE;
+    --txt-mute: #A88B92;
+    --txt-dim: #6F575D;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Heebo', sans-serif; background: var(--bg-darkest); color: var(--txt); font-size: 14px; line-height: 1.5; min-height: 100vh; -webkit-font-smoothing: antialiased; }
+  .app { max-width: 1080px; margin: 0 auto; min-height: 100vh; padding: 20px; }
+  
+  /* === HEADER === */
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 20px;
+  }
+  .nav { display: flex; gap: 24px; align-items: center; }
+  .nav-link {
+    color: var(--txt-soft);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    padding: 8px 0;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+  }
+  .nav-link.active {
+    color: var(--red-bright);
+    border-bottom-color: var(--red-bright);
+  }
+  .nav-link:hover { color: var(--txt); }
+  
+  .brand-logo {
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: 4px;
+    background: linear-gradient(90deg, var(--red-bright), var(--pink));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  
+  .page-title {
+    font-size: 26px;
+    font-weight: 700;
+    margin-bottom: 6px;
+    text-align: right;
+  }
+  .page-subtitle {
+    font-size: 13px;
+    color: var(--txt-soft);
+    margin-bottom: 20px;
+  }
+  
+  /* === TABS === */
+  .tabs-bar {
+    display: flex;
+    gap: 4px;
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 5px;
+    margin-bottom: 24px;
+    overflow-x: auto;
+  }
+  .tab-btn {
+    background: transparent;
+    border: none;
+    color: var(--txt-soft);
+    padding: 10px 16px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .tab-btn:hover { background: var(--bg-card-hover); color: var(--txt); }
+  .tab-btn.active {
+    background: linear-gradient(135deg, var(--red-deep), var(--red-bright));
+    color: white;
+    font-weight: 600;
+  }
+  .tab-trophy { font-size: 14px; }
+  
+  /* === SUMMARY ROW === */
+  .net-summary {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+  
+  .net-stat {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .net-stat::before {
+    content: '';
+    position: absolute;
+    top: 0; right: 0; left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--red-bright), var(--pink));
+  }
+  .net-stat-label { font-size: 11px; color: var(--txt-soft); margin-bottom: 6px; font-weight: 500; }
+  .net-stat-value { font-size: 32px; font-weight: 700; color: var(--txt); line-height: 1; }
+  .net-stat-detail { font-size: 11px; color: var(--txt-mute); margin-top: 6px; }
+  .net-stat-value.good { color: var(--good); }
+  .net-stat-value.gold { color: var(--gold); }
+  .net-stat-value.red { color: var(--red-bright); }
+  
+  /* === HOUSE CARDS GRID === */
+  .houses-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+  }
+  
+  /* SUCCESS - Above BEP - VIBRANT and BRIGHT */
+  .house-card.success {
+    background: linear-gradient(135deg, rgba(52,211,153,0.18) 0%, rgba(16,185,129,0.10) 100%);
+    border: 2px solid var(--good);
+    box-shadow: 0 0 32px rgba(52,211,153,0.2), inset 0 1px 0 rgba(255,255,255,0.1);
+    position: relative;
+  }
+  .house-card.success::after {
+    content: '';
+    position: absolute;
+    top: 0; right: 0; left: 0; bottom: 0;
+    border-radius: 16px;
+    background: radial-gradient(circle at 80% 20%, rgba(52,211,153,0.15), transparent 60%);
+    pointer-events: none;
+  }
+  
+  /* WARN - Just below */
+  .house-card.warn {
+    background: var(--bg-card);
+    border: 1px solid rgba(251,191,36,0.4);
+  }
+  .house-card.warn::before {
+    content: '';
+    position: absolute;
+    top: 0; right: 0; left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--warn), var(--orange));
+  }
+  
+  /* DANGER - Way below BEP - DIM and SOMBER */
+  .house-card.danger {
+    background: var(--bg-card-dim);
+    border: 1px dashed rgba(255,107,107,0.4);
+    opacity: 0.85;
+  }
+  .house-card.danger::before {
+    content: '';
+    position: absolute;
+    top: 0; right: 0; left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--red-deep), var(--red-bright));
+  }
+  
+  .house-card {
+    border-radius: 16px;
+    padding: 22px;
+    transition: all 0.25s;
+    position: relative;
+    overflow: hidden;
+  }
+  
+  .house-card-trophy {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    font-size: 36px;
+    filter: drop-shadow(0 4px 8px rgba(252,211,77,0.5));
+    animation: bounce 2s ease-in-out infinite;
+    z-index: 2;
+  }
+  @keyframes bounce {
+    0%, 100% { transform: translateY(0) rotate(-5deg); }
+    50% { transform: translateY(-4px) rotate(5deg); }
+  }
+  
+  .house-card-head { margin-bottom: 14px; position: relative; z-index: 1; }
+  .house-card-name { font-size: 20px; font-weight: 700; color: var(--txt); margin-bottom: 4px; }
+  .house-card-mgr { font-size: 12px; color: var(--txt-soft); }
+  
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: 100px;
+    font-size: 11px;
+    font-weight: 700;
+    margin-top: 10px;
+    letter-spacing: 0.3px;
+  }
+  .status-badge.success { background: var(--good); color: #042a1f; }
+  .status-badge.warn { background: rgba(251,191,36,0.2); color: var(--gold); border: 1px solid var(--gold); }
+  .status-badge.danger { background: rgba(255,107,107,0.15); color: var(--red-bright); border: 1px solid rgba(255,107,107,0.4); }
+  
+  .house-card-numbers {
+    display: flex;
+    align-items: flex-end;
+    gap: 16px;
+    margin: 18px 0;
+    padding: 16px 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    position: relative;
+    z-index: 1;
+  }
+  .house-card.success .house-card-numbers {
+    border-top-color: rgba(52,211,153,0.3);
+    border-bottom-color: rgba(52,211,153,0.3);
+  }
+  
+  .house-card-occ { flex: 1; }
+  .house-card-occ-num {
+    font-size: 50px;
+    font-weight: 800;
+    line-height: 1;
+    color: var(--txt);
+  }
+  .house-card.success .house-card-occ-num { color: var(--good); text-shadow: 0 0 12px rgba(52,211,153,0.4); }
+  .house-card.danger .house-card-occ-num { color: var(--txt-mute); }
+  .house-card-occ-cap { font-size: 18px; color: var(--txt-mute); font-weight: 500; }
+  .house-card-occ-label { font-size: 11px; color: var(--txt-soft); margin-top: 4px; }
+  
+  .house-card-bep-info { text-align: left; border-right: 1px solid var(--line); padding-right: 16px; }
+  .house-card-bep-num { font-size: 24px; font-weight: 700; color: var(--txt-soft); }
+  .house-card-bep-label { font-size: 10px; color: var(--txt-mute); letter-spacing: 0.5px; margin-top: 2px; }
+  
+  .house-card-bar {
+    height: 10px;
+    background: rgba(0,0,0,0.25);
+    border-radius: 5px;
+    overflow: visible;
+    position: relative;
+  }
+  .house-card-bar-fill { height: 100%; border-radius: 5px; transition: width 0.6s ease; }
+  .house-card-bar-fill.success { background: linear-gradient(90deg, var(--good-bright), var(--good)); box-shadow: 0 0 12px rgba(52,211,153,0.4); }
+  .house-card-bar-fill.warn { background: linear-gradient(90deg, var(--warn), var(--orange)); }
+  .house-card-bar-fill.danger { background: linear-gradient(90deg, var(--red-deep), var(--red-bright)); }
+  
+  .house-card-bar-mark {
+    position: absolute;
+    top: -3px; bottom: -3px;
+    width: 2px;
+    background: var(--gold);
+    box-shadow: 0 0 6px rgba(252,211,77,0.6);
+  }
+  .house-card-bar-mark::after {
+    content: '★';
+    position: absolute;
+    top: -19px; left: 50%;
+    transform: translateX(-50%);
+    color: var(--gold);
+    font-size: 12px;
+    text-shadow: 0 0 4px rgba(0,0,0,0.5);
+  }
+  
+  .house-card-foot { display: flex; justify-content: space-between; margin-top: 12px; font-size: 11px; color: var(--txt-mute); }
+  
+  /* Bonus area in house card */
+  .house-card-bonus {
+    margin-top: 18px;
+    padding: 14px 16px;
+    border-radius: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    position: relative;
+    z-index: 1;
+  }
+  .house-card.success .house-card-bonus {
+    background: rgba(252,211,77,0.12);
+    border: 1px solid rgba(252,211,77,0.3);
+  }
+  .house-card.warn .house-card-bonus,
+  .house-card.danger .house-card-bonus {
+    background: rgba(0,0,0,0.2);
+    border: 1px dashed rgba(255,107,107,0.3);
+  }
+  
+  .house-card-bonus-info { flex: 1; }
+  .house-card-bonus-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+  .house-card.success .house-card-bonus-label { color: var(--gold); }
+  .house-card.warn .house-card-bonus-label,
+  .house-card.danger .house-card-bonus-label { color: var(--red-bright); }
+  
+  .house-card-bonus-detail {
+    font-size: 10px;
+    color: var(--txt-mute);
+    margin-top: 2px;
+  }
+  
+  .house-card-bonus-amount { text-align: left; }
+  .house-card-bonus-amount-num {
+    font-size: 26px;
+    font-weight: 800;
+    line-height: 1;
+  }
+  .house-card.success .house-card-bonus-amount-num { color: var(--gold); text-shadow: 0 0 12px rgba(252,211,77,0.4); }
+  .house-card.warn .house-card-bonus-amount-num,
+  .house-card.danger .house-card-bonus-amount-num { color: var(--red-bright); }
+  .house-card-bonus-amount-num small { font-size: 14px; opacity: 0.7; }
+  
+  /* === HOUSE DETAIL VIEW === */
+  .detail-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+  .detail-stat {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .detail-stat::before {
+    content: '';
+    position: absolute;
+    top: 0; right: 0; left: 0;
+    height: 3px;
+  }
+  .detail-stat.entries::before { background: linear-gradient(90deg, var(--good-bright), var(--good)); }
+  .detail-stat.exits::before { background: linear-gradient(90deg, var(--orange), var(--gold)); }
+  .detail-stat.tdays::before { background: linear-gradient(90deg, var(--pink), var(--red-bright)); }
+  .detail-stat.bonus::before { background: linear-gradient(90deg, var(--gold), var(--gold-bright)); }
+  
+  .detail-stat-label { font-size: 11px; color: var(--txt-soft); margin-bottom: 6px; font-weight: 500; }
+  .detail-stat-value { font-size: 30px; font-weight: 800; line-height: 1; }
+  .detail-stat-value.green { color: var(--good); }
+  .detail-stat-value.orange { color: var(--orange); }
+  .detail-stat-value.pink { color: var(--pink); }
+  .detail-stat-value.gold { color: var(--gold); }
+  .detail-stat-detail { font-size: 11px; color: var(--txt-mute); margin-top: 4px; }
+  
+  /* Trophy banner */
+  .trophy-banner {
+    background: linear-gradient(135deg, rgba(252,211,77,0.18) 0%, rgba(251,191,36,0.10) 100%);
+    border: 1.5px solid var(--gold);
+    border-radius: 14px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    position: relative;
+    overflow: hidden;
+  }
+  .trophy-banner::before {
+    content: '';
+    position: absolute;
+    top: 0; left: -100%;
+    width: 50%; height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(252,211,77,0.25), transparent);
+    animation: shimmer 3s ease-in-out infinite;
+  }
+  @keyframes shimmer { 0%, 100% { left: -100%; } 50% { left: 200%; } }
+  .trophy-icon-big { font-size: 44px; filter: drop-shadow(0 4px 10px rgba(252,211,77,0.5)); }
+  .trophy-text { flex: 1; }
+  .trophy-title { font-size: 17px; font-weight: 700; color: var(--gold); }
+  .trophy-sub { font-size: 12px; color: var(--txt-soft); margin-top: 4px; }
+  
+  /* Not eligible banner */
+  .not-eligible-banner {
+    background: linear-gradient(135deg, rgba(255,107,107,0.18) 0%, rgba(220,38,38,0.10) 100%);
+    border: 1.5px solid var(--red-bright);
+    border-radius: 14px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .not-eligible-icon {
+    width: 50px; height: 50px;
+    border-radius: 14px;
+    background: var(--red-bright);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .not-eligible-text { flex: 1; }
+  .not-eligible-title { font-size: 17px; font-weight: 700; color: var(--red-bright); }
+  .not-eligible-sub { font-size: 12px; color: var(--txt-soft); margin-top: 4px; }
+  
+  /* Section title */
+  .section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--txt-soft);
+    margin: 28px 0 12px;
+    text-align: right;
+  }
+  
+  /* Bonus breakdown */
+  .breakdown-card {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 4px 20px;
+  }
+  .breakdown-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .breakdown-row:last-child { border-bottom: none; }
+  .breakdown-icon {
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 18px;
+    font-weight: 700;
+  }
+  .breakdown-icon.locked { background: rgba(255,255,255,0.05); color: var(--txt-mute); }
+  .breakdown-icon.active { background: rgba(252,211,77,0.15); color: var(--gold); border: 1px solid rgba(252,211,77,0.3); }
+  .breakdown-icon.done { background: rgba(52,211,153,0.15); color: var(--good); border: 1px solid rgba(52,211,153,0.3); }
+  
+  .breakdown-text { flex: 1; }
+  .breakdown-title { font-size: 14px; font-weight: 600; color: var(--txt); }
+  .breakdown-formula {
+    font-size: 11px;
+    color: var(--txt-mute);
+    margin-top: 4px;
+    font-family: 'Heebo', monospace;
+    background: rgba(0,0,0,0.2);
+    padding: 4px 8px;
+    border-radius: 6px;
+    display: inline-block;
+  }
+  .breakdown-amount {
+    font-size: 18px;
+    font-weight: 700;
+    text-align: left;
+  }
+  .breakdown-amount.locked { color: var(--txt-mute); }
+  .breakdown-amount.active { color: var(--gold); }
+  .breakdown-amount.done { color: var(--good); }
+  
+  /* Total row */
+  .breakdown-total {
+    background: linear-gradient(135deg, rgba(252,211,77,0.10) 0%, transparent 100%);
+    margin: 0 -20px;
+    padding: 16px 20px;
+    border-top: 2px solid var(--gold);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .breakdown-total-label {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--txt);
+    letter-spacing: 0.5px;
+  }
+  .breakdown-total-amount {
+    font-size: 28px;
+    font-weight: 800;
+    color: var(--gold);
+    text-shadow: 0 0 12px rgba(252,211,77,0.4);
+  }
+  .breakdown-total-amount small { font-size: 14px; opacity: 0.7; }
+  
+  /* Activity log */
+  .activity-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  .activity-card {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px 20px;
+  }
+  .activity-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .activity-title { font-size: 14px; font-weight: 600; }
+  .activity-count { font-size: 26px; font-weight: 800; }
+  .activity-count.green { color: var(--good); }
+  .activity-count.orange { color: var(--orange); }
+  
+  .activity-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px dashed var(--line);
+    font-size: 12px;
+  }
+  .activity-item:last-child { border-bottom: none; }
+  .activity-date { color: var(--txt-mute); font-size: 11px; }
+  .activity-name { color: var(--txt); font-weight: 500; }
+  
+  /* Treatment days big chart */
+  .tdays-card {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 22px;
+  }
+  .tdays-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    margin-bottom: 18px;
+  }
+  .tdays-num-big {
+    font-size: 48px;
+    font-weight: 800;
+    color: var(--pink);
+    line-height: 1;
+  }
+  .tdays-num-big small {
+    font-size: 18px;
+    color: var(--txt-mute);
+    font-weight: 500;
+    margin-right: 6px;
+  }
+  .tdays-target-info {
+    text-align: left;
+  }
+  .tdays-target-num { font-size: 20px; font-weight: 700; color: var(--txt-soft); }
+  .tdays-target-lbl { font-size: 10px; color: var(--txt-mute); margin-top: 2px; }
+  
+  .tdays-bar {
+    height: 14px;
+    background: rgba(0,0,0,0.3);
+    border-radius: 7px;
+    overflow: hidden;
+    position: relative;
+  }
+  .tdays-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--pink), var(--red-bright));
+    border-radius: 7px;
+    transition: width 0.6s ease;
+    box-shadow: 0 0 10px rgba(244,114,182,0.4);
+  }
+  .tdays-bar-mark {
+    position: absolute;
+    top: -3px; bottom: -3px;
+    width: 2px;
+    background: var(--gold);
+  }
+  
+  .tdays-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-top: 18px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+  }
+  .tdays-stat { text-align: center; }
+  .tdays-stat-num { font-size: 18px; font-weight: 700; color: var(--txt); }
+  .tdays-stat-lbl { font-size: 10px; color: var(--txt-mute); margin-top: 3px; letter-spacing: 0.3px; }
+  
+  @media (max-width: 768px) {
+    .net-summary { grid-template-columns: 1fr 1fr; }
+    .houses-grid { grid-template-columns: 1fr; }
+    .detail-stats { grid-template-columns: 1fr 1fr; }
+    .activity-grid { grid-template-columns: 1fr; }
+    .nav { gap: 14px; font-size: 12px; }
+    .brand-logo { font-size: 18px; }
+  }
+  @media (max-width: 480px) {
+    .app { padding: 14px; }
+    .net-summary { grid-template-columns: 1fr; }
+    .nav { display: none; }
+    .tabs-bar { padding: 4px; }
+    .tab-btn { padding: 8px 12px; font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  
+  <div class="header">
+    <div class="nav">
+      <span class="nav-link">יציאה</span>
+      <span class="nav-link">מצב עריכה</span>
+      <span class="nav-link">גבייה</span>
+      <span class="nav-link">תפוסה</span>
+      <span class="nav-link">לידים</span>
+      <span class="nav-link">בונוסים</span>
+      <span class="nav-link active">דשבורד</span>
+    </div>
+    <div class="brand-logo">E-ZONE</div>
+  </div>
+  
+  <h1 class="page-title">דשבורד</h1>
+  <div class="page-subtitle" id="page-subtitle">חודש מאי · עדכון אחרון: היום</div>
+  
+  <!-- Tabs -->
+  <div class="tabs-bar" id="tabs-bar"></div>
+  
+  <!-- ============ OVERVIEW ============ -->
+  <div id="overview-view">
+    
+    <!-- Network summary -->
+    <div class="net-summary">
+      <div class="net-stat">
+        <div class="net-stat-label">בתים מעל איזון</div>
+        <div class="net-stat-value good"><span id="net-above">0</span> / 4</div>
+        <div class="net-stat-detail" id="net-above-detail">בתים שזכאים לבונוס</div>
+      </div>
+      <div class="net-stat">
+        <div class="net-stat-label">סה"כ מטופלים</div>
+        <div class="net-stat-value"><span id="net-patients">33</span></div>
+        <div class="net-stat-detail" id="net-patients-detail">מתוך 59 מיטות</div>
+      </div>
+      <div class="net-stat">
+        <div class="net-stat-label">סה"כ בונוס מנהלים</div>
+        <div class="net-stat-value gold"><span id="net-bonus">0</span> ₪</div>
+        <div class="net-stat-detail">החודש</div>
+      </div>
+      <div class="net-stat">
+        <div class="net-stat-label">ימים נותרו</div>
+        <div class="net-stat-value red" id="net-days">12</div>
+        <div class="net-stat-detail" id="net-days-detail">סוף חודש</div>
+      </div>
+    </div>
+    
+    <div class="houses-grid" id="houses-grid"></div>
+  </div>
+  
+  <!-- ============ HOUSE DETAIL ============ -->
+  <div id="detail-view" style="display:none;">
+    
+    <!-- Trophy or not-eligible banner -->
+    <div class="trophy-banner" id="trophy-banner" style="display:none;">
+      <div class="trophy-icon-big">🏆</div>
+      <div class="trophy-text">
+        <div class="trophy-title" id="trophy-title">כל הכבוד! עברת את נקודת האיזון</div>
+        <div class="trophy-sub" id="trophy-sub">הבית זכאי לבונוס מלא · כל מטופל נוסף = רווח ישיר</div>
+      </div>
+    </div>
+    
+    <div class="not-eligible-banner" id="not-eligible-banner" style="display:none;">
+      <div class="not-eligible-icon">!</div>
+      <div class="not-eligible-text">
+        <div class="not-eligible-title">לא זכאי/ת לבונוס</div>
+        <div class="not-eligible-sub" id="not-eligible-sub">חסרים 1 מטופלים להגיע לנקודת האיזון</div>
+      </div>
+    </div>
+    
+    <!-- 4 main stats -->
+    <div class="detail-stats">
+      <div class="detail-stat entries">
+        <div class="detail-stat-label">כניסות החודש</div>
+        <div class="detail-stat-value green" id="ds-entries">5</div>
+        <div class="detail-stat-detail">מטופלים שנקלטו</div>
+      </div>
+      <div class="detail-stat exits">
+        <div class="detail-stat-label">עזיבות החודש</div>
+        <div class="detail-stat-value orange" id="ds-exits">3</div>
+        <div class="detail-stat-detail" id="ds-exits-detail">מתוכם 2 לרצף טיפולי</div>
+      </div>
+      <div class="detail-stat tdays">
+        <div class="detail-stat-label">ימי טיפול מצטברים</div>
+        <div class="detail-stat-value pink" id="ds-tdays">220</div>
+        <div class="detail-stat-detail" id="ds-tdays-detail">מתוך 240 לאיזון</div>
+      </div>
+      <div class="detail-stat bonus">
+        <div class="detail-stat-label">בונוס החודש</div>
+        <div class="detail-stat-value gold" id="ds-bonus">2,500</div>
+        <div class="detail-stat-detail">צבירה כעת</div>
+      </div>
+    </div>
+    
+    <!-- Treatment days chart -->
+    <div class="section-title">מעקב ימי טיפול בחודש</div>
+    <div class="tdays-card">
+      <div class="tdays-head">
+        <div>
+          <div style="font-size:11px;color:var(--txt-soft);letter-spacing:0.5px;font-weight:600;">נצברו עד היום</div>
+          <div class="tdays-num-big"><span id="td-num">220</span><small>ימי טיפול</small></div>
+        </div>
+        <div class="tdays-target-info">
+          <div class="tdays-target-num" id="td-target">240</div>
+          <div class="tdays-target-lbl">יעד לבונוס</div>
+        </div>
+      </div>
+      <div class="tdays-bar">
+        <div class="tdays-bar-fill" id="td-fill"></div>
+        <div class="tdays-bar-mark" id="td-mark"></div>
+      </div>
+      <div class="tdays-stats">
+        <div class="tdays-stat">
+          <div class="tdays-stat-num" id="td-current-occ">9</div>
+          <div class="tdays-stat-lbl">תפוסה כעת</div>
+        </div>
+        <div class="tdays-stat">
+          <div class="tdays-stat-num" id="td-projected">270</div>
+          <div class="tdays-stat-lbl">תחזית סוף חודש</div>
+        </div>
+        <div class="tdays-stat">
+          <div class="tdays-stat-num" id="td-days-left">12</div>
+          <div class="tdays-stat-lbl">ימים נותרו</div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Bonus breakdown -->
+    <div class="section-title">פירוט חישוב הבונוס</div>
+    <div class="breakdown-card" id="breakdown-card"></div>
+    
+    <!-- Activity log -->
+    <div class="section-title">תנועות מטופלים החודש</div>
+    <div class="activity-grid">
+      <div class="activity-card">
+        <div class="activity-card-head">
+          <div class="activity-title">כניסות (קליטות)</div>
+          <div class="activity-count green" id="act-entries-count">5</div>
+        </div>
+        <div id="act-entries-list"></div>
+      </div>
+      <div class="activity-card">
+        <div class="activity-card-head">
+          <div class="activity-title">עזיבות (שחרורים)</div>
+          <div class="activity-count orange" id="act-exits-count">3</div>
+        </div>
+        <div id="act-exits-list"></div>
+      </div>
+    </div>
+    
+  </div>
+  
+</div>
+
+<script>
+const DAYS_IN_MONTH = 30;
+const BASE_BONUS = 2500;
+const PER_DAY_BONUS = 30;
+
+const HOUSES = {
+  raanana: { name: 'רעננה אשר',     manager: 'עידו',  profile: 'בית מאזן',         bep_p: 8,  cap_p: 14 },
+  ramot:   { name: 'רמות השבים',    manager: 'שחר',   profile: 'בית מאזן',         bep_p: 11, cap_p: 20 },
+  efroni:  { name: 'קיסריה עפרוני', manager: 'חנן',   profile: 'תחלואה כפולה',     bep_p: 8,  cap_p: 12 },
+  rehab:   { name: 'קיסריה ריהאב',  manager: 'רנטה',  profile: 'גמילה',             bep_p: 7,  cap_p: 13 }
+};
+
+const today = new Date();
+const dayOfMonth = today.getDate();
+const daysLeft = DAYS_IN_MONTH - dayOfMonth;
+const months = ['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
+
+function genPD(occ, day) {
+  let total = 0;
+  for (let d = 1; d <= day; d++) total += Math.round(occ * (0.7 + 0.3 * d / day));
+  return total;
+}
+
+let state = {
+  view: 'overview',
+  current: 'raanana',
+  occ: { raanana: 9, ramot: 13, efroni: 8, rehab: 3 },
+  pd: {
+    raanana: genPD(9, dayOfMonth),
+    ramot: genPD(13, dayOfMonth),
+    efroni: genPD(8, dayOfMonth),
+    rehab: genPD(3, dayOfMonth)
+  },
+  // Activity log per house
+  entries: {
+    raanana: [
+      { date: '07/05', name: 'מטופל א.כ.' },
+      { date: '04/05', name: 'מטופל ב.ר.' },
+      { date: '02/05', name: 'מטופלת ש.ל.' }
+    ],
+    ramot: [
+      { date: '06/05', name: 'מטופלת ר.מ.' },
+      { date: '03/05', name: 'מטופל י.ק.' }
+    ],
+    efroni: [
+      { date: '05/05', name: 'מטופל א.ב.' }
+    ],
+    rehab: [
+      { date: '04/05', name: 'מטופל ד.ה.' }
+    ]
+  },
+  exits: {
+    raanana: [
+      { date: '06/05', name: 'מטופל מ.ש.', cont: 'מרכז יום ×2' },
+      { date: '02/05', name: 'מטופל י.פ.', cont: 'אחזקתי' }
+    ],
+    ramot: [
+      { date: '05/05', name: 'מטופלת ת.ע.', cont: 'אחזקתי' },
+      { date: '01/05', name: 'מטופל א.ב.', cont: 'מרכז יום יומיומי' }
+    ],
+    efroni: [
+      { date: '03/05', name: 'מטופל ר.כ.', cont: '—' }
+    ],
+    rehab: [
+      { date: '06/05', name: 'מטופל ש.ב.', cont: 'מרכז יום ×2' }
+    ]
+  }
+};
+
+const getH = (k) => HOUSES[k || state.current];
+const getOcc = (k) => state.occ[k || state.current];
+const getPD = (k) => state.pd[k || state.current];
+
+function calcBonus(k) {
+  const h = HOUSES[k || state.current];
+  const occ = getOcc(k);
+  const pd = getPD(k);
+  if (occ < h.bep_p) return { base: 0, marg: 0, total: 0 };
+  const base = BASE_BONUS;
+  const bepDays = h.bep_p * dayOfMonth;
+  const daysAbove = Math.max(0, pd - bepDays);
+  const marg = Math.round(daysAbove * PER_DAY_BONUS);
+  return { base, marg, total: base + marg, daysAbove };
+}
+function isAbove(k) { return getOcc(k) >= HOUSES[k || state.current].bep_p; }
+
+async function loadState() { try { const r = await window.storage?.get('ezone-tabs'); if (r?.value) state = { ...state, ...JSON.parse(r.value) }; } catch(e) {} }
+async function saveState() { try { await window.storage?.set('ezone-tabs', JSON.stringify(state)); } catch(e) {} }
+
+function renderTabs() {
+  const html = `
+    <button class="tab-btn ${state.view === 'overview' ? 'active' : ''}" onclick="setTab('overview')">דשבורד</button>
+    ${Object.entries(HOUSES).map(([key, h]) => {
+      const above = isAbove(key);
+      const trophy = above ? '<span class="tab-trophy">🏆</span>' : '';
+      return `<button class="tab-btn ${state.view === 'detail' && state.current === key ? 'active' : ''}" onclick="setTab('detail', '${key}')">${h.name}${trophy}</button>`;
+    }).join('')}
+  `;
+  document.getElementById('tabs-bar').innerHTML = html;
+}
+
+function setTab(view, key) {
+  state.view = view;
+  if (key) state.current = key;
+  saveState();
+  render();
+  window.scrollTo(0, 0);
+}
+
+function getHouseStatus(key) {
+  const h = HOUSES[key];
+  const occ = getOcc(key);
+  if (occ >= h.bep_p) return 'success';
+  if (occ >= h.bep_p - 2) return 'warn';
+  return 'danger';
+}
+
+function renderOverview() {
+  document.getElementById('overview-view').style.display = 'block';
+  document.getElementById('detail-view').style.display = 'none';
+  document.getElementById('page-subtitle').textContent = `חודש ${months[today.getMonth()]} · עדכון אחרון: היום`;
+  
+  let totalPatients = 0;
+  let totalCapacity = 0;
+  let aboveCount = 0;
+  let totalBonus = 0;
+  
+  Object.keys(HOUSES).forEach(key => {
+    const h = HOUSES[key];
+    totalPatients += getOcc(key);
+    totalCapacity += h.cap_p;
+    if (isAbove(key)) aboveCount++;
+    if (isAbove(key)) totalBonus += calcBonus(key).total;
+  });
+  
+  document.getElementById('net-above').textContent = aboveCount;
+  document.getElementById('net-above-detail').textContent = aboveCount === 4 ? 'כל הבתים זכאים! 🎉' : aboveCount === 0 ? 'אף בית לא זכאי' : `${4-aboveCount} בתים לא זכאים`;
+  document.getElementById('net-patients').textContent = totalPatients;
+  document.getElementById('net-patients-detail').textContent = `מתוך ${totalCapacity} מיטות (${Math.round(totalPatients/totalCapacity*100)}%)`;
+  document.getElementById('net-bonus').textContent = totalBonus.toLocaleString();
+  document.getElementById('net-days').textContent = daysLeft;
+  document.getElementById('net-days-detail').textContent = `סוף חודש ${months[today.getMonth()]}`;
+  
+  const housesHtml = Object.entries(HOUSES).map(([key, h]) => {
+    const occ = getOcc(key);
+    const status = getHouseStatus(key);
+    const above = isAbove(key);
+    const atCap = occ >= h.cap_p;
+    
+    const fillPct = (occ / h.cap_p) * 100;
+    const bepPct = (h.bep_p / h.cap_p) * 100;
+    
+    let statusText, statusClass;
+    if (atCap) { statusText = '★ תפוסה מלאה'; statusClass = 'success'; }
+    else if (above) { statusText = `+${occ - h.bep_p} מעל איזון · זכאי לבונוס`; statusClass = 'success'; }
+    else if (occ === h.bep_p) { statusText = 'בדיוק על איזון · זכאי לבונוס'; statusClass = 'warn'; }
+    else { statusText = `חסרים ${h.bep_p - occ} מטופלים · לא זכאי`; statusClass = status === 'danger' ? 'danger' : 'warn'; }
+    
+    const bonusInfo = above 
+      ? `<div class="house-card-bonus-info">
+           <div class="house-card-bonus-label">בונוס ${h.manager} · החודש</div>
+           <div class="house-card-bonus-detail">${calcBonus(key).base ? '2,500 בסיס' : ''} ${calcBonus(key).marg > 0 ? '+ ' + calcBonus(key).marg.toLocaleString() + ' שולי' : ''}</div>
+         </div>
+         <div class="house-card-bonus-amount">
+           <div class="house-card-bonus-amount-num"><small>₪</small>${calcBonus(key).total.toLocaleString()}</div>
+         </div>`
+      : `<div class="house-card-bonus-info">
+           <div class="house-card-bonus-label">⚠ לא זכאי/ת לבונוס</div>
+           <div class="house-card-bonus-detail">דרושים ${h.bep_p - occ} מטופלים נוספים</div>
+         </div>
+         <div class="house-card-bonus-amount">
+           <div class="house-card-bonus-amount-num">0<small> ₪</small></div>
+         </div>`;
+    
+    return `
+      <div class="house-card ${status}">
+        ${above ? '<div class="house-card-trophy">🏆</div>' : ''}
+        <div class="house-card-head">
+          <div class="house-card-name">${h.name}</div>
+          <div class="house-card-mgr">${h.manager} · ${h.profile}</div>
+          <div class="status-badge ${statusClass}">${statusText}</div>
+        </div>
+        
+        <div class="house-card-numbers">
+          <div class="house-card-occ">
+            <div>
+              <span class="house-card-occ-num">${occ}</span>
+              <span class="house-card-occ-cap">/ ${h.cap_p}</span>
+            </div>
+            <div class="house-card-occ-label">מטופלים בבית</div>
+          </div>
+          <div class="house-card-bep-info">
+            <div class="house-card-bep-num">${h.bep_p}</div>
+            <div class="house-card-bep-label">נקודת איזון</div>
+          </div>
+        </div>
+        
+        <div class="house-card-bar">
+          <div class="house-card-bar-fill ${status}" style="width:${fillPct}%"></div>
+          <div class="house-card-bar-mark" style="right:${100 - bepPct}%"></div>
+        </div>
+        <div class="house-card-foot">
+          <span>0</span>
+          <span>תפוסה ${Math.round(fillPct)}%</span>
+          <span>${h.cap_p}</span>
+        </div>
+        
+        <div class="house-card-bonus">
+          ${bonusInfo}
+        </div>
+      </div>
+    `;
+  }).join('');
+  
+  document.getElementById('houses-grid').innerHTML = housesHtml;
+}
+
+function renderDetail() {
+  document.getElementById('overview-view').style.display = 'none';
+  document.getElementById('detail-view').style.display = 'block';
+  
+  const h = getH();
+  const occ = getOcc();
+  const pd = getPD();
+  const above = isAbove();
+  const bonus = calcBonus();
+  
+  document.getElementById('page-subtitle').textContent = `${h.name} · ${h.manager} · חודש ${months[today.getMonth()]}`;
+  
+  // Trophy or not eligible
+  document.getElementById('trophy-banner').style.display = above ? 'flex' : 'none';
+  document.getElementById('not-eligible-banner').style.display = above ? 'none' : 'flex';
+  
+  if (above) {
+    document.getElementById('trophy-title').textContent = `כל הכבוד, ${h.manager}! עברת את נקודת האיזון`;
+    document.getElementById('trophy-sub').textContent = `${occ} מטופלים = ${occ - h.bep_p} מעל יעד · הבית זכאי לבונוס מלא`;
+  } else {
+    const need = h.bep_p - occ;
+    document.getElementById('not-eligible-sub').textContent = `דרושים עוד ${need} ${need === 1 ? 'מטופל' : 'מטופלים'} כדי להיות זכאי/ת לבונוס בסיס של 2,500 ₪`;
+  }
+  
+  // 4 main stats
+  const entries = state.entries[state.current] || [];
+  const exits = state.exits[state.current] || [];
+  const exitsContinuing = exits.filter(e => e.cont && e.cont !== '—').length;
+  
+  document.getElementById('ds-entries').textContent = entries.length;
+  document.getElementById('ds-exits').textContent = exits.length;
+  document.getElementById('ds-exits-detail').textContent = `מתוכם ${exitsContinuing} לרצף טיפולי`;
+  document.getElementById('ds-tdays').textContent = pd.toLocaleString();
+  document.getElementById('ds-tdays-detail').textContent = `מתוך ${(h.bep_p * DAYS_IN_MONTH).toLocaleString()} לאיזון`;
+  document.getElementById('ds-bonus').textContent = bonus.total.toLocaleString();
+  
+  // Treatment days
+  const bepTotal = h.bep_p * DAYS_IN_MONTH;
+  const capTotal = h.cap_p * DAYS_IN_MONTH;
+  const fillPct = Math.min(100, (pd / capTotal) * 100);
+  const bepPct = (bepTotal / capTotal) * 100;
+  
+  document.getElementById('td-num').textContent = pd.toLocaleString();
+  document.getElementById('td-target').textContent = bepTotal.toLocaleString();
+  document.getElementById('td-fill').style.width = fillPct + '%';
+  document.getElementById('td-mark').style.right = (100 - bepPct) + '%';
+  document.getElementById('td-current-occ').textContent = occ;
+  document.getElementById('td-projected').textContent = (pd + (occ * daysLeft)).toLocaleString();
+  document.getElementById('td-days-left').textContent = daysLeft;
+  
+  // Bonus breakdown
+  renderBreakdown(h, occ, pd, bonus, above);
+  
+  // Activity lists
+  document.getElementById('act-entries-count').textContent = entries.length;
+  document.getElementById('act-exits-count').textContent = exits.length;
+  
+  document.getElementById('act-entries-list').innerHTML = entries.length === 0 
+    ? '<div style="text-align:center;padding:20px;color:var(--txt-mute);font-size:12px;">אין כניסות החודש</div>'
+    : entries.map(e => `
+      <div class="activity-item">
+        <div class="activity-name">${e.name}</div>
+        <div class="activity-date">${e.date}</div>
+      </div>
+    `).join('');
+  
+  document.getElementById('act-exits-list').innerHTML = exits.length === 0
+    ? '<div style="text-align:center;padding:20px;color:var(--txt-mute);font-size:12px;">אין עזיבות החודש</div>'
+    : exits.map(e => `
+      <div class="activity-item">
+        <div>
+          <div class="activity-name">${e.name}</div>
+          <div style="font-size:10px;color:var(--txt-mute);margin-top:2px;">המשך: ${e.cont}</div>
+        </div>
+        <div class="activity-date">${e.date}</div>
+      </div>
+    `).join('');
+}
+
+function renderBreakdown(h, occ, pd, bonus, above) {
+  const rows = [];
+  const bepTotal = h.bep_p * dayOfMonth; // patient-days needed at BEP up to today
+  
+  if (!above) {
+    // Not eligible - show why
+    rows.push({
+      icon: '!',
+      iconClass: 'locked',
+      title: 'בונוס בסיס — לא הופעל',
+      formula: `דרוש: תפוסה ≥ ${h.bep_p} מטופלים · נוכחי: ${occ}`,
+      amount: 0,
+      amountClass: 'locked'
+    });
+    rows.push({
+      icon: '+',
+      iconClass: 'locked',
+      title: 'בונוס יום נוסף — נעול',
+      formula: 'יופעל רק לאחר חציית נקודת האיזון',
+      amount: 0,
+      amountClass: 'locked'
+    });
+  } else {
+    // Eligible - show breakdown
+    rows.push({
+      icon: '✓',
+      iconClass: 'done',
+      title: 'בונוס בסיס',
+      formula: `הגעה ל-${h.bep_p} מטופלים בבית`,
+      amount: BASE_BONUS,
+      amountClass: 'done'
+    });
+    
+    if (bonus.daysAbove > 0) {
+      rows.push({
+        icon: '+',
+        iconClass: 'active',
+        title: 'בונוס יום נוסף',
+        formula: `${bonus.daysAbove.toLocaleString()} ימי טיפול מעל איזון × 30 ₪`,
+        amount: bonus.marg,
+        amountClass: 'active'
+      });
+    } else {
+      rows.push({
+        icon: '+',
+        iconClass: 'active',
+        title: 'בונוס יום נוסף',
+        formula: 'אין עדיין ימי טיפול מצטברים מעל האיזון',
+        amount: 0,
+        amountClass: 'active'
+      });
+    }
+  }
+  
+  // Quarterly stability indicator
+  rows.push({
+    icon: '★',
+    iconClass: 'locked',
+    title: 'בונוס יציבות רבעוני',
+    formula: '5,000 ₪ אחרי 3 חודשים רצופים מעל איזון · מתחיל מיוני',
+    amount: 0,
+    amountClass: 'locked',
+    note: true
+  });
+  
+  // Continuity bonuses placeholder (would be from outpatients data)
+  rows.push({
+    icon: '↻',
+    iconClass: 'locked',
+    title: 'בונוס רצף טיפולי',
+    formula: 'מטופלים שעוזבים וממשיכים בטיפול חוץ · יופיע בנפרד',
+    amount: 0,
+    amountClass: 'locked',
+    note: true
+  });
+  
+  let html = rows.map(r => `
+    <div class="breakdown-row">
+      <div class="breakdown-icon ${r.iconClass}">${r.icon}</div>
+      <div class="breakdown-text">
+        <div class="breakdown-title">${r.title}</div>
+        <div class="breakdown-formula">${r.formula}</div>
+      </div>
+      <div class="breakdown-amount ${r.amountClass}">${r.amount > 0 ? r.amount.toLocaleString() + ' ₪' : '—'}</div>
+    </div>
+  `).join('');
+  
+  // Total
+  html += `
+    <div class="breakdown-total">
+      <div class="breakdown-total-label">סה"כ בונוס החודש</div>
+      <div class="breakdown-total-amount"><small>₪</small>${bonus.total.toLocaleString()}</div>
+    </div>
+  `;
+  
+  document.getElementById('breakdown-card').innerHTML = html;
+}
+
+function render() {
+  renderTabs();
+  if (state.view === 'detail') renderDetail();
+  else renderOverview();
+}
+
+(async function init() {
+  await loadState();
+  render();
+})();
+</script>
+</body>
+</html>
