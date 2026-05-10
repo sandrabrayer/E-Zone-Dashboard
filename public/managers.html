@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <title>E-ZONE — בונוסים</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="managers.css?v=__BUILD__" />
+</head>
+<body class="managers-app">
+
+  <div id="error-banner" class="error-banner hidden"></div>
+  <div id="loading-banner" class="loading-banner hidden">טוען נתונים...</div>
+
+  <header class="topbar">
+    <div class="brand brand-managers">E-ZONE</div>
+    <nav class="tabs">
+      <a class="tab" href="/">דשבורד רשת</a>
+      <a class="tab" href="/#leads">לידים</a>
+      <a class="tab" href="/#occupancy">תפוסה</a>
+      <a class="tab" href="/#billing">גבייה</a>
+      <a class="tab active" href="/managers">בונוסים</a>
+    </nav>
+    <div class="user-mode">
+      <label class="month-picker">
+        חודש
+        <input id="month-picker" type="month" />
+      </label>
+    </div>
+  </header>
+
+  <div id="app">
+    <nav class="house-tabs managers-tabs" id="managers-tabs">
+      <button class="h-tab active" data-house="overview">דשבורד</button>
+      <button class="h-tab" data-house="raanana">רעננה אשר</button>
+      <button class="h-tab" data-house="ramot">רמות השבים</button>
+      <button class="h-tab" data-house="efroni">קיסריה עפרוני</button>
+      <button class="h-tab" data-house="rehab">קיסריה ריהאב</button>
+    </nav>
+
+    <!-- ====== OVERVIEW ====== -->
+    <section id="screen-overview" class="screen">
+      <h2>דשבורד בונוסים — סקירת רשת</h2>
+
+      <div class="cards-row m-network">
+        <div class="card stat m-stat">
+          <div class="stat-label">מטופלים פעילים</div>
+          <div class="stat-value" id="net-active">0</div>
+          <div class="stat-sub" id="net-active-sub">ברשת</div>
+        </div>
+        <div class="card stat m-stat">
+          <div class="stat-label">קיבולת רשת</div>
+          <div class="stat-value" id="net-capacity">0</div>
+          <div class="stat-sub">סה"כ מיטות</div>
+        </div>
+        <div class="card stat m-stat">
+          <div class="stat-label">ימי טיפול בחודש</div>
+          <div class="stat-value" id="net-days">0</div>
+          <div class="stat-sub" id="net-days-sub">סה"כ ימי-מטופל</div>
+        </div>
+        <div class="card stat m-stat m-stat-bonus">
+          <div class="stat-label">סה"כ בונוסים החודש</div>
+          <div class="stat-value" id="net-bonus">₪ 0</div>
+          <div class="stat-sub">לארבעת המנהלים</div>
+        </div>
+      </div>
+
+      <h3>בתי הרשת — מצב בונוסים</h3>
+      <div class="houses-grid m-houses-grid" id="overview-house-cards"></div>
+    </section>
+
+    <!-- ====== HOUSE DETAIL (one element, repopulated per tab) ====== -->
+    <section id="screen-house" class="screen hidden">
+      <div class="screen-head m-house-head">
+        <div>
+          <h2 id="house-title">—</h2>
+          <div class="m-house-sub" id="house-sub">—</div>
+        </div>
+        <div class="m-house-status" id="house-status"></div>
+      </div>
+
+      <div class="cards-row m-house-stats">
+        <div class="card stat m-stat">
+          <div class="stat-label">כניסות החודש</div>
+          <div class="stat-value" id="h-entries">0</div>
+          <div class="stat-sub">מטופלים חדשים</div>
+        </div>
+        <div class="card stat m-stat">
+          <div class="stat-label">יציאות החודש</div>
+          <div class="stat-value" id="h-exits">0</div>
+          <div class="stat-sub">שחרור / סיום</div>
+        </div>
+        <div class="card stat m-stat">
+          <div class="stat-label">ימי טיפול</div>
+          <div class="stat-value" id="h-days">0</div>
+          <div class="stat-sub" id="h-days-sub">ממוצע יומי 0</div>
+        </div>
+        <div class="card stat m-stat m-stat-bonus">
+          <div class="stat-label">בונוס חודשי</div>
+          <div class="stat-value" id="h-bonus">₪ 0</div>
+          <div class="stat-sub" id="h-bonus-sub">סך כל מרכיבי הבונוס</div>
+        </div>
+      </div>
+
+      <h3>תפוסה יומית בחודש</h3>
+      <div class="card chart-card">
+        <div class="chart-legend">
+          <span class="legend-bep"><i></i>BEP <b id="chart-bep">0</b></span>
+          <span class="legend-cap"><i></i>קיבולת <b id="chart-cap">0</b></span>
+        </div>
+        <div class="chart" id="h-chart"></div>
+      </div>
+
+      <h3>פירוק חישוב הבונוס</h3>
+      <div class="card breakdown-card" id="h-breakdown"></div>
+
+      <h3>פעילות החודש</h3>
+      <div class="card activity-card">
+        <div id="h-activity" class="activity-list"></div>
+      </div>
+    </section>
+  </div>
+
+  <div id="build-marker" style="position:fixed;bottom:6px;left:6px;font-size:10px;color:#6b7aa0;z-index:10;opacity:.6;font-family:monospace;">build: __BUILD__</div>
+
+  <script src="managers.js?v=__BUILD__"></script>
+</body>
+</html>

@@ -105,6 +105,21 @@ function sendStatic(relPath, mime) {
 app.get('/app.js', sendStatic('app.js', 'application/javascript'));
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 
+/* Managers (Bonuses) dashboard — same BUILD_ID substitution + cache
+ * busting as the main dashboard so a deploy can never serve a stale
+ * managers.html paired with a fresh managers.js. */
+function sendManagers(_req, res) {
+  const html = fs.readFileSync(path.join(__dirname, 'public/managers.html'), 'utf8')
+    .replace(/__BUILD__/g, BUILD_ID);
+  console.log(`[req] → serving /managers.html (build ${BUILD_ID}, ${html.length} chars)`);
+  noCache(res);
+  res.type('html').send(html);
+}
+app.get('/managers', sendManagers);
+app.get('/managers.html', sendManagers);
+app.get('/managers.js',  sendStatic('managers.js',  'application/javascript'));
+app.get('/managers.css', sendStatic('managers.css', 'text/css'));
+
 /* GET the Apps Script with querystring params. Follows Google's 302 → googleusercontent.com. */
 function sheetsGet(params) {
   return new Promise((resolve, reject) => {

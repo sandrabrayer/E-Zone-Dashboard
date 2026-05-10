@@ -30,6 +30,70 @@ const PATIENTS_SHEET = 'Patients';
 const PAYMENTS_SHEET = 'Payments';
 const IRRELEVANT_LEADS_SHEET = 'לידים לא רלוונטיים';
 
+/* ===== Bonuses module sheets =====
+ *
+ * Managers / BonusConfig / Outpatients power the /managers dashboard.
+ * They are auto-created on first read with the headers below; populate
+ * the rows by hand in the spreadsheet UI.
+ *
+ * Managers — one row per active manager assignment. end_date is left
+ * blank while the assignment is current.
+ *   house | manager_name | start_date | end_date
+ *
+ * BonusConfig — one row per house. bonus_base / bonus_per_day are the
+ * monetary parameters of the model and live in the sheet so they can be
+ * tuned without redeploying the script.
+ *   house | bep_patients | capacity_patients | bonus_base | bonus_per_day | type
+ *
+ * Outpatients — continuity-therapy population. house_of_origin maps the
+ * patient back to the residence whose manager earns the continuity bonus
+ * (use "external" for patients who never lived in the network).
+ * therapy_type ∈ { maintenance | day_2x | day_daily }.
+ *   patient_name | house_of_origin | therapy_type | start_date | end_date | notes
+ *
+ * The bonus dashboard uses the keys raanana / ramot / efroni / rehab,
+ * but the existing Patients sheet was set up with different houseIds
+ * (asher / ramot / arfoni / rehab). MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID
+ * lets us read residence data from the Patients sheet without forcing a
+ * historical rename.
+ */
+const MANAGERS_SHEET     = 'Managers';
+const BONUS_CONFIG_SHEET = 'BonusConfig';
+const OUTPATIENTS_SHEET  = 'Outpatients';
+
+const MANAGER_COLUMNS       = ['house', 'manager_name', 'start_date', 'end_date'];
+const BONUS_CONFIG_COLUMNS  = ['house', 'bep_patients', 'capacity_patients', 'bonus_base', 'bonus_per_day', 'type'];
+const OUTPATIENT_COLUMNS    = ['patient_name', 'house_of_origin', 'therapy_type', 'start_date', 'end_date', 'notes'];
+
+const MANAGER_HOUSES = ['raanana', 'ramot', 'efroni', 'rehab'];
+const MANAGER_HOUSE_NAMES = {
+  raanana: 'רעננה אשר',
+  ramot:   'רמות השבים',
+  efroni:  'קיסריה עפרוני',
+  rehab:   'קיסריה ריהאב',
+};
+const MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID = {
+  raanana: 'asher',
+  ramot:   'ramot',
+  efroni:  'arfoni',
+  rehab:   'rehab',
+};
+
+/* Continuity-therapy rates (₪/patient/month). The keys must match the
+ * therapy_type values in the Outpatients sheet exactly. */
+const CONTINUITY_RATES = {
+  maintenance: 100,
+  day_2x:      500,
+  day_daily:   1000,
+};
+
+/* The quarterly stability bonus only starts being awarded from this
+ * month onwards, even if the three preceding months also met the BEP
+ * threshold. Effective month is May 2026; first eligible award is the
+ * June 2026 calculation. */
+const QUARTERLY_BONUS_AMOUNT = 5000;
+const QUARTERLY_BONUS_FIRST_MONTH = '2026-06';
+
 const LEAD_COLUMNS = [
   'id', 'name', 'phone', 'house', 'source', 'note',
   'stage', 'visitDate', 'visitTime', 'entryDate', 'advance', 'created'
@@ -90,6 +154,12 @@ function handle_(params) {
     }
     if (action === 'restoreLead') {
       return jsonOut_(restoreLead_(parseJsonParam_(params.lead)));
+    }
+    if (action === 'managersOverview') {
+      return jsonOut_(managersOverview_(params.month));
+    }
+    if (action === 'managersHouse') {
+      return jsonOut_(managersHouse_(params.house, params.month));
     }
     return jsonOut_({ ok: false, error: 'unknown_action', action: action || null });
   } catch (err) {
@@ -496,4 +566,425 @@ function upsertPayment_(payment) {
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
+}
+
+/* ===== Bonuses module ===== */
+
+/* "YYYY-MM" for a Date in the spreadsheet's timezone. The script's
+ * timezone is what matters for monthly bucketing — using the JS
+ * runtime's UTC offsets directly would mis-attribute boundary days. */
+function ymOf_(d) {
+  return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM');
+}
+function ymdOf_(d) {
+  return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+/* Parse a value from the sheet into a midnight-local Date or null. The
+ * value can already be a Date (typed cell) or a string in any common
+ * Hebrew/ISO form; we normalize all of them through `new Date(...)`. */
+function parseDate_(v) {
+  if (!v && v !== 0) return null;
+  if (v instanceof Date) {
+    if (isNaN(v.getTime())) return null;
+    return new Date(v.getFullYear(), v.getMonth(), v.getDate());
+  }
+  const s = String(v).trim();
+  if (!s) return null;
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function startOfMonth_(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(y, m - 1, 1);
+}
+function endOfMonth_(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(y, m, 0); // day 0 of next month = last of this month
+}
+function daysInMonth_(ym) {
+  return endOfMonth_(ym).getDate();
+}
+
+/* Returns "YYYY-MM" for the month that is `n` calendar months before
+ * the given month. n=1 → previous month. */
+function offsetMonth_(ym, n) {
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(y, m - 1 - n, 1);
+  return ymOf_(d);
+}
+
+/* The "current month" used for the dashboard if the caller doesn't pass
+ * one. Single source of truth for the default. */
+function defaultMonth_() {
+  return ymOf_(new Date());
+}
+
+/* ----- Sheet readers (with auto-creation) ----- */
+
+function readManagers_() {
+  const sh = getOrCreateSheet_(MANAGERS_SHEET, MANAGER_COLUMNS);
+  return readSheet_(sh, MANAGER_COLUMNS);
+}
+
+function readBonusConfig_() {
+  const sh = getOrCreateSheet_(BONUS_CONFIG_SHEET, BONUS_CONFIG_COLUMNS);
+  return readSheet_(sh, BONUS_CONFIG_COLUMNS);
+}
+
+function readOutpatients_() {
+  const sh = getOrCreateSheet_(OUTPATIENTS_SHEET, OUTPATIENT_COLUMNS);
+  return readSheet_(sh, OUTPATIENT_COLUMNS);
+}
+
+/* Patients with normalized entry/exit Date objects. Pulled once per
+ * request and shared between overview and per-house calls. */
+function readPatientsForBonus_() {
+  const sh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+  const rows = readSheet_(sh, PATIENT_COLUMNS);
+  return rows.map(function (p) {
+    return {
+      houseId:  p.houseId,
+      name:     p.name,
+      entry:    parseDate_(p.date),
+      exit:     parseDate_(p.exitDate),
+      status:   p.status,
+    };
+  });
+}
+
+/* ----- Active manager lookup -----
+ *
+ * Picks the row whose [start_date, end_date] window covers `asOf`. If
+ * end_date is blank the assignment is treated as still current. If
+ * multiple rows match (shouldn't happen, but the sheet is
+ * human-edited), the latest start_date wins. */
+function activeManagerForHouse_(managers, houseKey, asOf) {
+  let best = null;
+  for (let i = 0; i < managers.length; i++) {
+    const m = managers[i];
+    if (m.house !== houseKey) continue;
+    const start = parseDate_(m.start_date);
+    const end   = parseDate_(m.end_date);
+    if (start && asOf < start) continue;
+    if (end && asOf > end) continue;
+    if (!best || (start && parseDate_(best.start_date) && start > parseDate_(best.start_date))) {
+      best = m;
+    }
+  }
+  return best ? best.manager_name : '';
+}
+
+/* ----- Per-day occupancy and patient-day stats for one house/month ----- */
+function computeMonthStats_(patients, patientsHouseId, ym) {
+  const start = startOfMonth_(ym);
+  const end   = endOfMonth_(ym);
+  const nDays = daysInMonth_(ym);
+
+  let treatmentDays = 0;
+  let entriesMonth = 0;
+  let exitsMonth = 0;
+  const dailyCounts = new Array(nDays).fill(0);
+  const activity = [];
+
+  for (let i = 0; i < patients.length; i++) {
+    const p = patients[i];
+    if (p.houseId !== patientsHouseId) continue;
+    if (!p.entry) continue;
+
+    // Effective residency window for this patient: [entry, exit] inclusive.
+    // If exit is missing, the patient is still in residence — treat the
+    // window as open-ended through end-of-month.
+    const winStart = p.entry;
+    const winEnd   = p.exit || end;
+
+    // Skip patients whose window doesn't overlap the month at all.
+    if (winEnd < start || winStart > end) {
+      // not in this month, but we still may want to log nothing
+    } else {
+      const overlapStart = winStart > start ? winStart : start;
+      const overlapEnd   = winEnd   < end   ? winEnd   : end;
+      // Increment per-day counts across the overlap.
+      for (let d = new Date(overlapStart); d <= overlapEnd; d.setDate(d.getDate() + 1)) {
+        const idx = d.getDate() - 1;
+        dailyCounts[idx]++;
+        treatmentDays++;
+      }
+    }
+
+    if (p.entry >= start && p.entry <= end) {
+      entriesMonth++;
+      activity.push({ date: ymdOf_(p.entry), kind: 'entry', name: p.name });
+    }
+    if (p.exit && p.exit >= start && p.exit <= end) {
+      exitsMonth++;
+      activity.push({ date: ymdOf_(p.exit), kind: 'exit', name: p.name });
+    }
+  }
+
+  // Sort newest-first so the activity log reads chronologically downward.
+  activity.sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
+
+  const dailyChart = dailyCounts.map(function (c, i) {
+    return { date: ymdOf_(new Date(start.getFullYear(), start.getMonth(), i + 1)), count: c };
+  });
+
+  return {
+    treatmentDays: treatmentDays,
+    avgDaily: nDays > 0 ? treatmentDays / nDays : 0,
+    entriesMonth: entriesMonth,
+    exitsMonth: exitsMonth,
+    dailyCounts: dailyCounts,
+    dailyChart: dailyChart,
+    activity: activity,
+  };
+}
+
+/* True when the average daily count for `ym` met or exceeded BEP. */
+function houseMetBepInMonth_(patients, patientsHouseId, ym, bep) {
+  const stats = computeMonthStats_(patients, patientsHouseId, ym);
+  return stats.avgDaily >= bep;
+}
+
+/* ----- Continuity bonus (Outpatients) -----
+ *
+ * Counts active outpatients per therapy_type whose residency window
+ * overlaps the month, grouped by house_of_origin. Returns an object
+ * keyed by manager-house with { maintenance, day_2x, day_daily, total }. */
+function computeContinuityByHouse_(outpatients, ym) {
+  const start = startOfMonth_(ym);
+  const end   = endOfMonth_(ym);
+  const out = {};
+  MANAGER_HOUSES.forEach(function (h) {
+    out[h] = { maintenance: 0, day_2x: 0, day_daily: 0, total: 0 };
+  });
+
+  for (let i = 0; i < outpatients.length; i++) {
+    const o = outpatients[i];
+    const houseKey = String(o.house_of_origin || '').trim();
+    if (!out[houseKey]) continue; // "external" or unknown — not bonusable
+    const ttype = String(o.therapy_type || '').trim();
+    if (!CONTINUITY_RATES.hasOwnProperty(ttype)) continue;
+    const oStart = parseDate_(o.start_date);
+    const oEnd   = parseDate_(o.end_date) || end;
+    if (oStart && oStart > end) continue;
+    if (oEnd && oEnd < start) continue;
+    out[houseKey][ttype]++;
+    out[houseKey].total += CONTINUITY_RATES[ttype];
+  }
+  return out;
+}
+
+/* ----- Bonus calculation for one house in one month ----- */
+function calcHouseBonus_(opts) {
+  const cfg = opts.cfg;
+  const stats = opts.stats;
+  const ym = opts.ym;
+  const continuity = opts.continuity || { maintenance: 0, day_2x: 0, day_daily: 0, total: 0 };
+  const consecutiveAboveBep = opts.consecutiveAboveBep || 0;
+
+  const bep = Number(cfg.bep_patients) || 0;
+  const base = Number(cfg.bonus_base) || 0;
+  const perDay = Number(cfg.bonus_per_day) || 0;
+
+  // above-BEP patient-days for the month
+  let aboveBepDays = 0;
+  for (let i = 0; i < stats.dailyCounts.length; i++) {
+    const c = stats.dailyCounts[i];
+    if (c > bep) aboveBepDays += (c - bep);
+  }
+
+  const qualifies = stats.avgDaily >= bep && bep > 0;
+  const baseBonus  = qualifies ? base : 0;
+  const dailyBonus = qualifies ? aboveBepDays * perDay : 0;
+
+  // Quarterly stability — 3 consecutive months above BEP, but not
+  // awarded before QUARTERLY_BONUS_FIRST_MONTH.
+  const quarterlyEligible = consecutiveAboveBep >= 3 && ym >= QUARTERLY_BONUS_FIRST_MONTH && qualifies;
+  const quarterlyBonus = quarterlyEligible ? QUARTERLY_BONUS_AMOUNT : 0;
+
+  // Continuity bonus is only paid if the manager qualifies (i.e., house
+  // is at/above BEP). Otherwise the manager gets 0 across the board.
+  const continuityBonus = qualifies ? continuity.total : 0;
+
+  const total = baseBonus + dailyBonus + quarterlyBonus + continuityBonus;
+
+  return {
+    qualifies: qualifies,
+    bep: bep,
+    avgDaily: stats.avgDaily,
+    aboveBepDays: aboveBepDays,
+    base: baseBonus,
+    daily: dailyBonus,
+    dailyRate: perDay,
+    quarterly: quarterlyBonus,
+    quarterlyEligible: quarterlyEligible,
+    consecutiveAboveBep: consecutiveAboveBep,
+    continuity: {
+      maintenance: continuity.maintenance,
+      day_2x:      continuity.day_2x,
+      day_daily:   continuity.day_daily,
+      total:       continuityBonus,
+      rates:       CONTINUITY_RATES,
+    },
+    total: total,
+  };
+}
+
+/* Walks backwards from the month BEFORE `ym` and counts how many
+ * preceding months had average daily count >= BEP, stopping at the
+ * first miss. Used as input to the quarterly bonus (need 3 consecutive
+ * months including the current one). */
+function consecutiveMonthsAboveBepBefore_(patients, patientsHouseId, ym, bep) {
+  if (!bep) return 0;
+  let n = 0;
+  for (let i = 1; i <= 24; i++) {
+    const prev = offsetMonth_(ym, i);
+    if (houseMetBepInMonth_(patients, patientsHouseId, prev, bep)) {
+      n++;
+    } else {
+      break;
+    }
+  }
+  return n;
+}
+
+/* ----- Endpoints ----- */
+
+function managersOverview_(monthParam) {
+  const ym = monthParam ? String(monthParam) : defaultMonth_();
+  const monthEnd = endOfMonth_(ym);
+
+  const managers    = readManagers_();
+  const configs     = readBonusConfig_();
+  const patients    = readPatientsForBonus_();
+  const outpatients = readOutpatients_();
+  const continuityByHouse = computeContinuityByHouse_(outpatients, ym);
+
+  const configByHouse = {};
+  configs.forEach(function (c) { configByHouse[c.house] = c; });
+
+  const houses = MANAGER_HOUSES.map(function (key) {
+    const cfg = configByHouse[key] || {};
+    const patientsHouseId = MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[key];
+    const stats = computeMonthStats_(patients, patientsHouseId, ym);
+    const bep = Number(cfg.bep_patients) || 0;
+    const consecutive = consecutiveMonthsAboveBepBefore_(patients, patientsHouseId, ym, bep);
+    const bonus = calcHouseBonus_({
+      cfg: cfg,
+      stats: stats,
+      ym: ym,
+      continuity: continuityByHouse[key],
+      consecutiveAboveBep: stats.avgDaily >= bep && bep > 0 ? consecutive + 1 : 0,
+    });
+
+    // Live patient count = number whose window covers month-end.
+    let patientsNow = 0;
+    for (let i = 0; i < patients.length; i++) {
+      const p = patients[i];
+      if (p.houseId !== patientsHouseId) continue;
+      if (!p.entry) continue;
+      const winEnd = p.exit || monthEnd;
+      if (p.entry <= monthEnd && winEnd >= monthEnd) patientsNow++;
+    }
+
+    return {
+      key: key,
+      name: MANAGER_HOUSE_NAMES[key],
+      manager: activeManagerForHouse_(managers, key, monthEnd),
+      type: cfg.type || '',
+      bep: bep,
+      capacity: Number(cfg.capacity_patients) || 0,
+      patientsNow: patientsNow,
+      avgDaily: stats.avgDaily,
+      treatmentDays: stats.treatmentDays,
+      entriesMonth: stats.entriesMonth,
+      exitsMonth: stats.exitsMonth,
+      qualifies: bonus.qualifies,
+      bonus: bonus,
+    };
+  });
+
+  let totalActive = 0;
+  let totalCapacity = 0;
+  let totalTreatmentDays = 0;
+  let totalBonus = 0;
+  houses.forEach(function (h) {
+    totalActive       += h.patientsNow;
+    totalCapacity     += h.capacity;
+    totalTreatmentDays += h.treatmentDays;
+    totalBonus        += h.bonus.total;
+  });
+
+  return {
+    ok: true,
+    month: ym,
+    totals: {
+      activePatients:    totalActive,
+      networkCapacity:   totalCapacity,
+      totalTreatmentDays: totalTreatmentDays,
+      totalBonus:        totalBonus,
+    },
+    houses: houses,
+  };
+}
+
+function managersHouse_(houseKey, monthParam) {
+  const key = String(houseKey || '').trim();
+  if (!MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[key]) {
+    return { ok: false, error: 'unknown_house', house: key };
+  }
+  const ym = monthParam ? String(monthParam) : defaultMonth_();
+  const monthEnd = endOfMonth_(ym);
+
+  const managers    = readManagers_();
+  const configs     = readBonusConfig_();
+  const patients    = readPatientsForBonus_();
+  const outpatients = readOutpatients_();
+  const continuityByHouse = computeContinuityByHouse_(outpatients, ym);
+
+  const cfg = configs.filter(function (c) { return c.house === key; })[0] || {};
+  const patientsHouseId = MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[key];
+  const stats = computeMonthStats_(patients, patientsHouseId, ym);
+  const bep = Number(cfg.bep_patients) || 0;
+  const consecutive = consecutiveMonthsAboveBepBefore_(patients, patientsHouseId, ym, bep);
+  const bonus = calcHouseBonus_({
+    cfg: cfg,
+    stats: stats,
+    ym: ym,
+    continuity: continuityByHouse[key],
+    consecutiveAboveBep: stats.avgDaily >= bep && bep > 0 ? consecutive + 1 : 0,
+  });
+
+  let patientsNow = 0;
+  for (let i = 0; i < patients.length; i++) {
+    const p = patients[i];
+    if (p.houseId !== patientsHouseId) continue;
+    if (!p.entry) continue;
+    const winEnd = p.exit || monthEnd;
+    if (p.entry <= monthEnd && winEnd >= monthEnd) patientsNow++;
+  }
+
+  return {
+    ok: true,
+    month: ym,
+    key: key,
+    name: MANAGER_HOUSE_NAMES[key],
+    manager: activeManagerForHouse_(managers, key, monthEnd),
+    type: cfg.type || '',
+    bep: bep,
+    capacity: Number(cfg.capacity_patients) || 0,
+    bonusBase: Number(cfg.bonus_base) || 0,
+    bonusPerDay: Number(cfg.bonus_per_day) || 0,
+    patientsNow: patientsNow,
+    avgDaily: stats.avgDaily,
+    treatmentDays: stats.treatmentDays,
+    entriesMonth: stats.entriesMonth,
+    exitsMonth: stats.exitsMonth,
+    dailyChart: stats.dailyChart,
+    activity: stats.activity,
+    bonus: bonus,
+  };
 }

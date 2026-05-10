@@ -1,0 +1,428 @@
+/* ===== Managers (Bonuses) dashboard — red/pink accent overlay ======
+ *
+ * Loaded after style.css. Re-binds the accent variables (--primary,
+ * --primary-strong, --primary-glow, --purple) to the red/pink palette
+ * so every shared component (topbar underline, buttons, focus rings,
+ * card top-borders, brand gradient) renders in the new theme without
+ * a fork. Only managers-specific structure is added on top.
+ */
+
+body.managers-app {
+  --primary:        #FF6B6B;
+  --primary-strong: #E03B5C;
+  --primary-glow:   rgba(255, 107, 107, 0.45);
+  --purple:         #F472B6;
+
+  background:
+    radial-gradient(1200px 700px at 80% -200px, #3a1633 0%, transparent 60%),
+    radial-gradient(900px 600px at -10% 110%, #4a1024 0%, transparent 55%),
+    var(--bg);
+  background-attachment: fixed;
+}
+
+/* The brand wordmark uses the new red→pink gradient instead of
+ * blue→purple. The base .brand rule sets the gradient via inline
+ * CSS, so we override it on managers pages only. */
+body.managers-app .brand-managers {
+  background: linear-gradient(90deg, #FF6B6B, #F472B6);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Anchor-style top tabs (rendered as <a> on the managers page so the
+ * back-to-main links work). The base .tabs .tab rule already styles
+ * buttons; we just need to make sure anchors look identical. */
+body.managers-app .tabs .tab {
+  text-decoration: none;
+  display: inline-block;
+}
+
+.month-picker {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text-muted);
+}
+.month-picker input {
+  width: 150px;
+  padding: 7px 10px;
+  font-size: 13.5px;
+}
+
+/* The managers page reuses the patient-tabs strip from style.css
+ * (.house-tabs / .h-tab) and just adds a little padding so the row
+ * doesn't sit flush against the topbar. */
+.managers-tabs {
+  margin: 22px 28px 0;
+  max-width: 1440px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* ===== Network overview ===== */
+.cards-row.m-network {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+/* The bonus stat card gets a stronger gold/pink wash so the headline
+ * number (סה"כ בונוסים) reads as the most important figure on the
+ * overview page. */
+.m-stat-bonus.card.stat::before {
+  background: linear-gradient(90deg, #FFD166, #F472B6);
+}
+.m-stat-bonus .stat-value {
+  background: linear-gradient(90deg, #FFE8A8, #FFD166);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Override .card.stat::before so the gradient strip on every stat
+ * card matches the red theme. */
+body.managers-app .card.stat::before {
+  background: linear-gradient(90deg, var(--primary), var(--purple));
+}
+body.managers-app .m-stat-bonus.card.stat::before {
+  background: linear-gradient(90deg, #FFD166, #F472B6);
+}
+
+/* ===== Overview house cards ===== */
+.m-houses-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+
+/* The two states — qualifies / does not qualify — must read at a
+ * glance from across the room. We use saturation contrast (vibrant
+ * green glow vs. dim/grey) rather than colour alone so the meaning
+ * is clear even on poorly calibrated monitors. */
+.bonus-card {
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 22px;
+  position: relative;
+  overflow: hidden;
+  transition: transform .12s, border-color .15s, box-shadow .15s;
+  cursor: pointer;
+}
+.bonus-card:hover { transform: translateY(-2px); }
+
+.bonus-card.qualifies {
+  border-color: rgba(45, 212, 122, 0.55);
+  box-shadow:
+    0 0 0 1px rgba(45, 212, 122, 0.35) inset,
+    0 0 28px rgba(45, 212, 122, 0.22),
+    var(--shadow);
+  background:
+    radial-gradient(420px 220px at 90% -40%, rgba(45, 212, 122, 0.18) 0%, transparent 70%),
+    linear-gradient(180deg, #16284a 0%, #1a3a4f 100%);
+}
+.bonus-card.qualifies::after {
+  content: '🏆';
+  position: absolute;
+  top: 14px; left: 18px;
+  font-size: 28px;
+  filter: drop-shadow(0 4px 8px rgba(255, 209, 102, 0.6));
+}
+
+.bonus-card.below {
+  opacity: 0.62;
+  filter: saturate(0.55);
+  border-color: rgba(120, 130, 160, 0.35);
+  background: linear-gradient(180deg, #1a1f33 0%, #1c2238 100%);
+}
+.bonus-card.below .bc-bonus {
+  color: var(--text-dim);
+}
+.bonus-card.below .bc-status {
+  color: #ff8b96;
+  background: rgba(255, 77, 94, 0.12);
+  border-color: rgba(255, 77, 94, 0.4);
+}
+
+.bc-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 14px;
+}
+.bc-name {
+  font-weight: 800; font-size: 19px; letter-spacing: -0.3px;
+}
+.bc-manager {
+  color: var(--text-muted);
+  font-size: 13.5px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+.bc-type {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  background: rgba(255, 107, 107, 0.14);
+  border: 1px solid rgba(255, 107, 107, 0.35);
+  color: #ffb1b8;
+  letter-spacing: .4px;
+}
+
+.bc-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.bc-stat-label {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+}
+.bc-stat-value {
+  font-weight: 700;
+  font-size: 18px;
+  margin-top: 3px;
+  color: var(--text);
+}
+
+.bc-bonus {
+  margin-top: 18px;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.4px;
+  background: linear-gradient(90deg, #FFE8A8, #FFD166);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: 0 2px 12px rgba(255, 209, 102, 0.18);
+}
+
+.bc-status {
+  margin-top: 6px;
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  background: rgba(45, 212, 122, 0.16);
+  color: #5fe69b;
+  border: 1px solid rgba(45, 212, 122, 0.4);
+}
+
+/* ===== House detail ===== */
+.cards-row.m-house-stats {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.m-house-head {
+  align-items: flex-start;
+}
+.m-house-sub {
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+.m-house-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.m-house-status .badge {
+  padding: 6px 14px;
+  font-size: 12.5px;
+}
+
+/* ===== Daily-occupancy chart =====
+ *
+ * Pure CSS bar chart — each bar is a flex column with height set
+ * inline. The BEP and capacity reference lines are absolutely
+ * positioned overlays driven by their data-pct value. */
+.chart-card {
+  padding: 20px 22px 12px;
+}
+.chart-legend {
+  display: flex;
+  gap: 18px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+.chart-legend i {
+  display: inline-block;
+  width: 14px; height: 3px;
+  margin-left: 6px;
+  vertical-align: middle;
+  border-radius: 2px;
+}
+.chart-legend .legend-bep i { background: #FFD166; }
+.chart-legend .legend-cap i { background: rgba(255, 255, 255, 0.35); }
+.chart-legend b { color: var(--text); margin-right: 4px; }
+
+.chart {
+  position: relative;
+  height: 220px;
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  padding: 4px 4px 24px;
+  border-bottom: 1px solid var(--border);
+}
+.chart-bar {
+  flex: 1 1 0;
+  min-width: 0;
+  background: linear-gradient(180deg, #FF6B6B 0%, #E03B5C 100%);
+  border-radius: 3px 3px 0 0;
+  position: relative;
+  transition: filter .12s;
+  box-shadow: 0 0 8px rgba(255, 107, 107, 0.25);
+}
+.chart-bar.above-bep {
+  background: linear-gradient(180deg, #5fe69b 0%, #2dd47a 100%);
+  box-shadow: 0 0 10px rgba(45, 212, 122, 0.35);
+}
+.chart-bar:hover { filter: brightness(1.2); }
+.chart-bar .bar-tip {
+  position: absolute;
+  bottom: 100%; left: 50%;
+  transform: translate(-50%, -4px);
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .12s;
+}
+.chart-bar:hover .bar-tip { opacity: 1; }
+
+.chart-line {
+  position: absolute;
+  left: 4px; right: 4px;
+  height: 0;
+  border-top: 2px dashed;
+  pointer-events: none;
+}
+.chart-line.bep { border-color: #FFD166; }
+.chart-line.cap { border-color: rgba(255, 255, 255, 0.35); }
+.chart-line .chart-line-label {
+  position: absolute;
+  top: -8px;
+  background: var(--bg-2);
+  padding: 0 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .4px;
+  color: var(--text-muted);
+}
+.chart-line.bep .chart-line-label { right: 0; color: #FFD166; }
+.chart-line.cap .chart-line-label { right: 0; color: rgba(255, 255, 255, 0.55); }
+
+/* ===== Bonus breakdown ===== */
+.breakdown-card {
+  padding: 20px 24px;
+}
+.bd-line {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.bd-line:last-of-type { border-bottom: none; }
+.bd-title {
+  font-weight: 700; font-size: 14.5px; color: var(--text);
+}
+.bd-formula {
+  color: var(--text-dim); font-size: 12.5px;
+  margin-top: 4px;
+  font-family: "SF Mono", "Consolas", monospace;
+}
+.bd-amount {
+  font-weight: 800; font-size: 18px;
+  color: #FFD166;
+  letter-spacing: -0.3px;
+  white-space: nowrap;
+}
+.bd-amount.zero {
+  color: var(--text-dim);
+}
+.bd-line.total {
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 2px solid var(--border-strong);
+  border-bottom: none;
+}
+.bd-line.total .bd-title { font-size: 16px; }
+.bd-line.total .bd-amount { font-size: 26px; }
+
+.bd-disqualified {
+  text-align: center;
+  padding: 30px 20px;
+  color: #ff8b96;
+  font-size: 15px;
+  font-weight: 600;
+}
+.bd-disqualified .big {
+  font-size: 36px;
+  font-weight: 800;
+  margin-bottom: 8px;
+  color: #ff8b96;
+}
+
+/* ===== Activity log ===== */
+.activity-card { padding: 8px 0; }
+.activity-list {
+  display: flex; flex-direction: column;
+  max-height: 380px;
+  overflow-y: auto;
+}
+.activity-row {
+  display: grid;
+  grid-template-columns: 110px 1fr auto;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 22px;
+  border-bottom: 1px solid var(--border);
+}
+.activity-row:last-child { border-bottom: none; }
+.activity-row .a-date {
+  color: var(--text-muted); font-size: 13px; font-weight: 600;
+}
+.activity-row .a-name { font-weight: 600; font-size: 14px; }
+.activity-row .a-kind {
+  font-size: 11.5px; font-weight: 700;
+  letter-spacing: .5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+.activity-row .a-kind.entry {
+  background: rgba(45, 212, 122, 0.18);
+  color: #5fe69b;
+  border: 1px solid rgba(45, 212, 122, 0.4);
+}
+.activity-row .a-kind.exit {
+  background: rgba(255, 77, 94, 0.16);
+  color: #ff8b96;
+  border: 1px solid rgba(255, 77, 94, 0.4);
+}
+.activity-empty {
+  text-align: center;
+  padding: 30px 20px;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+@media (max-width: 1100px) {
+  .cards-row.m-network,
+  .cards-row.m-house-stats { grid-template-columns: 1fr 1fr; }
+  .m-houses-grid { grid-template-columns: 1fr; }
+}
