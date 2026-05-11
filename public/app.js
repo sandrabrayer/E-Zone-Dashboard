@@ -254,10 +254,6 @@ const SCREENS = ['dashboard', 'leads', 'irrelevant', 'occupancy', 'billing'];
 
 function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {
-    // Anchor tabs (e.g. בונוסים → /managers) own their own navigation
-    // and have no data-screen — skip them so we don't try to swap to a
-    // screen that doesn't exist in this app.
-    if (!btn.dataset.screen) return;
     btn.onclick = () => {
       document.querySelectorAll('.tabs .tab').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');

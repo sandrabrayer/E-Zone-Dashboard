@@ -105,35 +105,6 @@ function sendStatic(relPath, mime) {
 app.get('/app.js', sendStatic('app.js', 'application/javascript'));
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 
-/* Managers (Bonuses) dashboard — same BUILD_ID substitution + cache
- * busting as the main dashboard so a deploy can never serve a stale
- * managers.html paired with a fresh managers.js. */
-function sendManagers(_req, res) {
-  const html = fs.readFileSync(path.join(__dirname, 'public/managers.html'), 'utf8')
-    .replace(/__BUILD__/g, BUILD_ID);
-  console.log(`[req] → serving /managers.html (build ${BUILD_ID}, ${html.length} chars)`);
-  noCache(res);
-  res.type('html').send(html);
-}
-app.get('/managers', sendManagers);
-app.get('/managers.html', sendManagers);
-app.get('/managers.js',  sendStatic('managers.js',  'application/javascript'));
-app.get('/managers.css', sendStatic('managers.css', 'text/css'));
-
-/* PWA support — manifest, service worker, icons. Served from /public so
- * managers can install the dashboard as an app on their phones. */
-app.get('/manifest.json', sendStatic('manifest.json', 'application/manifest+json'));
-app.get('/sw.js',         sendStatic('sw.js',         'application/javascript'));
-app.get('/favicon.svg',   sendStatic('favicon.svg',   'image/svg+xml'));
-app.get('/favicon.ico',   sendStatic('favicon.svg',   'image/svg+xml'));
-app.get('/icons/:name', (req, res) => {
-  const name = String(req.params.name || '');
-  if (!/^[A-Za-z0-9_-]+\.svg$/.test(name)) {
-    return res.status(404).send('not found');
-  }
-  return sendStatic(path.join('icons', name), 'image/svg+xml')(req, res);
-});
-
 /* GET the Apps Script with querystring params. Follows Google's 302 → googleusercontent.com. */
 function sheetsGet(params) {
   return new Promise((resolve, reject) => {
