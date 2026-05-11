@@ -120,6 +120,20 @@ app.get('/managers.html', sendManagers);
 app.get('/managers.js',  sendStatic('managers.js',  'application/javascript'));
 app.get('/managers.css', sendStatic('managers.css', 'text/css'));
 
+/* PWA support — manifest, service worker, icons. Served from /public so
+ * managers can install the dashboard as an app on their phones. */
+app.get('/manifest.json', sendStatic('manifest.json', 'application/manifest+json'));
+app.get('/sw.js',         sendStatic('sw.js',         'application/javascript'));
+app.get('/favicon.svg',   sendStatic('favicon.svg',   'image/svg+xml'));
+app.get('/favicon.ico',   sendStatic('favicon.svg',   'image/svg+xml'));
+app.get('/icons/:name', (req, res) => {
+  const name = String(req.params.name || '');
+  if (!/^[A-Za-z0-9_-]+\.svg$/.test(name)) {
+    return res.status(404).send('not found');
+  }
+  return sendStatic(path.join('icons', name), 'image/svg+xml')(req, res);
+});
+
 /* GET the Apps Script with querystring params. Follows Google's 302 → googleusercontent.com. */
 function sheetsGet(params) {
   return new Promise((resolve, reject) => {

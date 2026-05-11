@@ -1,11 +1,4 @@
-/* ===== Managers (Bonuses) dashboard — red/pink accent overlay ======
- *
- * Loaded after style.css. Re-binds the accent variables (--primary,
- * --primary-strong, --primary-glow, --purple) to the red/pink palette
- * so every shared component (topbar underline, buttons, focus rings,
- * card top-borders, brand gradient) renders in the new theme without
- * a fork. Only managers-specific structure is added on top.
- */
+/* ===== Managers (Bonuses) dashboard — red/pink accent overlay ====== */
 
 body.managers-app {
   --primary:        #FF6B6B;
@@ -20,9 +13,6 @@ body.managers-app {
   background-attachment: fixed;
 }
 
-/* The brand wordmark uses the new red→pink gradient instead of
- * blue→purple. The base .brand rule sets the gradient via inline
- * CSS, so we override it on managers pages only. */
 body.managers-app .brand-managers {
   background: linear-gradient(90deg, #FF6B6B, #F472B6);
   -webkit-background-clip: text;
@@ -30,9 +20,6 @@ body.managers-app .brand-managers {
   color: transparent;
 }
 
-/* Anchor-style top tabs (rendered as <a> on the managers page so the
- * back-to-main links work). The base .tabs .tab rule already styles
- * buttons; we just need to make sure anchors look identical. */
 body.managers-app .tabs .tab {
   text-decoration: none;
   display: inline-block;
@@ -48,24 +35,29 @@ body.managers-app .tabs .tab {
   font-size: 13.5px;
 }
 
-/* The managers page reuses the patient-tabs strip from style.css
- * (.house-tabs / .h-tab) and just adds a little padding so the row
- * doesn't sit flush against the topbar. */
 .managers-tabs {
   margin: 22px 28px 0;
   max-width: 1440px;
   margin-left: auto;
   margin-right: auto;
+  /* Allow horizontal scroll on mobile if the tab row overflows. */
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+.managers-tabs .h-tab {
+  white-space: nowrap;
 }
 
 /* ===== Network overview ===== */
 .cards-row.m-network {
   grid-template-columns: repeat(4, 1fr);
 }
+.cards-row.m-flow {
+  grid-template-columns: repeat(2, 1fr);
+  margin-top: 18px;
+}
 
-/* The bonus stat card gets a stronger gold/pink wash so the headline
- * number (סה"כ בונוסים) reads as the most important figure on the
- * overview page. */
 .m-stat-bonus.card.stat::before {
   background: linear-gradient(90deg, #FFD166, #F472B6);
 }
@@ -76,8 +68,6 @@ body.managers-app .tabs .tab {
   color: transparent;
 }
 
-/* Override .card.stat::before so the gradient strip on every stat
- * card matches the red theme. */
 body.managers-app .card.stat::before {
   background: linear-gradient(90deg, var(--primary), var(--purple));
 }
@@ -93,9 +83,9 @@ body.managers-app .m-stat-bonus.card.stat::before {
 }
 
 /* The two states — qualifies / does not qualify — must read at a
- * glance from across the room. We use saturation contrast (vibrant
- * green glow vs. dim/grey) rather than colour alone so the meaning
- * is clear even on poorly calibrated monitors. */
+ * glance from across the room. Saturation contrast (vibrant green glow
+ * vs. dim/grey dashed) carries the meaning even on poorly calibrated
+ * monitors or when the eye is just scanning. */
 .bonus-card {
   background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
   border: 1px solid var(--border);
@@ -103,48 +93,74 @@ body.managers-app .m-stat-bonus.card.stat::before {
   padding: 22px;
   position: relative;
   overflow: hidden;
-  transition: transform .12s, border-color .15s, box-shadow .15s;
+  transition: transform .12s, border-color .15s, box-shadow .15s, opacity .15s;
   cursor: pointer;
+  min-height: 220px;
 }
 .bonus-card:hover { transform: translateY(-2px); }
+.bonus-card:active { transform: translateY(0); }
 
+/* ----- ABOVE BEP: vibrant green glow ----- */
 .bonus-card.qualifies {
-  border-color: rgba(45, 212, 122, 0.55);
+  border-color: rgba(45, 212, 122, 0.7);
   box-shadow:
-    0 0 0 1px rgba(45, 212, 122, 0.35) inset,
-    0 0 28px rgba(45, 212, 122, 0.22),
+    0 0 0 1px rgba(45, 212, 122, 0.5) inset,
+    0 0 32px rgba(45, 212, 122, 0.32),
     var(--shadow);
   background:
-    radial-gradient(420px 220px at 90% -40%, rgba(45, 212, 122, 0.18) 0%, transparent 70%),
+    radial-gradient(520px 280px at 90% -40%, rgba(45, 212, 122, 0.25) 0%, transparent 70%),
+    radial-gradient(380px 200px at 10% 110%, rgba(255, 209, 102, 0.16) 0%, transparent 70%),
     linear-gradient(180deg, #16284a 0%, #1a3a4f 100%);
 }
-.bonus-card.qualifies::after {
-  content: '🏆';
+
+/* Trophy — a rendered element rather than a pseudo so it can animate
+ * and so we can place a bigger version on the detail screen too. */
+.bc-trophy {
   position: absolute;
   top: 14px; left: 18px;
-  font-size: 28px;
-  filter: drop-shadow(0 4px 8px rgba(255, 209, 102, 0.6));
+  font-size: 38px;
+  line-height: 1;
+  filter: drop-shadow(0 4px 10px rgba(255, 209, 102, 0.65));
+  animation: trophy-bounce 1.6s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 2;
+}
+@keyframes trophy-bounce {
+  0%, 100% { transform: translateY(0)    rotate(-4deg); }
+  40%      { transform: translateY(-10px) rotate(4deg); }
+  60%      { transform: translateY(-6px)  rotate(2deg); }
 }
 
+/* Big trophy in the detail-screen header. */
+.trophy-big {
+  display: inline-block;
+  font-size: 44px;
+  line-height: 1;
+  margin-left: 10px;
+  filter: drop-shadow(0 4px 10px rgba(255, 209, 102, 0.65));
+  animation: trophy-bounce 1.6s ease-in-out infinite;
+}
+
+/* ----- BELOW BEP: dim, dashed, grey ----- */
 .bonus-card.below {
-  opacity: 0.62;
-  filter: saturate(0.55);
-  border-color: rgba(120, 130, 160, 0.35);
+  opacity: 0.7;
+  filter: saturate(0.45);
+  border: 1.5px dashed rgba(150, 160, 180, 0.45);
   background: linear-gradient(180deg, #1a1f33 0%, #1c2238 100%);
+  box-shadow: none;
 }
-.bonus-card.below .bc-bonus {
-  color: var(--text-dim);
-}
-.bonus-card.below .bc-status {
-  color: #ff8b96;
-  background: rgba(255, 77, 94, 0.12);
-  border-color: rgba(255, 77, 94, 0.4);
+.bonus-card.below:hover {
+  opacity: 0.85;
+  filter: saturate(0.7);
 }
 
 .bc-row {
   display: flex; justify-content: space-between; align-items: baseline;
   gap: 14px;
+  margin-right: 56px; /* clear room for the trophy on the left */
 }
+.bonus-card.below .bc-row { margin-right: 0; }
+
 .bc-name {
   font-weight: 800; font-size: 19px; letter-spacing: -0.3px;
 }
@@ -166,6 +182,7 @@ body.managers-app .m-stat-bonus.card.stat::before {
   color: #ffb1b8;
   letter-spacing: .4px;
 }
+.bc-bep-block { text-align: left; }
 
 .bc-stats {
   display: grid;
@@ -191,26 +208,39 @@ body.managers-app .m-stat-bonus.card.stat::before {
 
 .bc-bonus {
   margin-top: 18px;
-  font-size: 28px;
+  font-size: 30px;
   font-weight: 800;
   letter-spacing: -0.4px;
+}
+.bc-bonus.good {
   background: linear-gradient(90deg, #FFE8A8, #FFD166);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  text-shadow: 0 2px 12px rgba(255, 209, 102, 0.18);
+  text-shadow: 0 2px 12px rgba(255, 209, 102, 0.22);
+}
+.bc-bonus.bad {
+  color: #ff4d5e;
+  text-shadow: none;
 }
 
 .bc-status {
   margin-top: 6px;
   display: inline-block;
-  padding: 4px 12px;
+  padding: 5px 13px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 700;
-  background: rgba(45, 212, 122, 0.16);
+}
+.bc-status.status-good {
+  background: rgba(45, 212, 122, 0.18);
   color: #5fe69b;
-  border: 1px solid rgba(45, 212, 122, 0.4);
+  border: 1px solid rgba(45, 212, 122, 0.45);
+}
+.bc-status.status-bad {
+  background: rgba(255, 77, 94, 0.15);
+  color: #ff8b96;
+  border: 1px solid rgba(255, 77, 94, 0.45);
 }
 
 /* ===== House detail ===== */
@@ -235,15 +265,48 @@ body.managers-app .m-stat-bonus.card.stat::before {
   font-weight: 700;
 }
 .m-house-status .badge {
-  padding: 6px 14px;
-  font-size: 12.5px;
+  padding: 7px 16px;
+  font-size: 13px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+.m-house-status .badge.active {
+  background: rgba(45, 212, 122, 0.18);
+  color: #5fe69b;
+  border: 1px solid rgba(45, 212, 122, 0.45);
+}
+.m-house-status .badge.released {
+  background: rgba(255, 77, 94, 0.15);
+  color: #ff8b96;
+  border: 1px solid rgba(255, 77, 94, 0.45);
 }
 
-/* ===== Daily-occupancy chart =====
- *
- * Pure CSS bar chart — each bar is a flex column with height set
- * inline. The BEP and capacity reference lines are absolutely
- * positioned overlays driven by their data-pct value. */
+/* The detail screen reflects qualification status visually too — green-
+ * tinted background when above BEP, dim/desaturated when below. */
+#screen-house.is-qualified .m-stat-bonus.card.stat {
+  box-shadow:
+    0 0 0 1px rgba(45, 212, 122, 0.35) inset,
+    0 0 24px rgba(45, 212, 122, 0.15),
+    var(--shadow);
+}
+#screen-house.is-below .m-stat-bonus.card.stat {
+  filter: saturate(0.55);
+  opacity: 0.85;
+}
+#screen-house .stat-value.value-good {
+  background: linear-gradient(90deg, #FFE8A8, #FFD166);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+#screen-house .stat-value.value-bad {
+  background: none;
+  -webkit-background-clip: initial;
+  background-clip: initial;
+  color: #ff4d5e;
+}
+
+/* ===== Daily-occupancy chart ===== */
 .chart-card {
   padding: 20px 22px 12px;
 }
@@ -253,6 +316,7 @@ body.managers-app .m-stat-bonus.card.stat::before {
   font-size: 12.5px;
   color: var(--text-muted);
   margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 .chart-legend i {
   display: inline-block;
@@ -335,6 +399,7 @@ body.managers-app .m-stat-bonus.card.stat::before {
   display: flex; justify-content: space-between; align-items: baseline;
   padding: 12px 0;
   border-bottom: 1px solid var(--border);
+  gap: 14px;
 }
 .bd-line:last-of-type { border-bottom: none; }
 .bd-title {
@@ -344,6 +409,7 @@ body.managers-app .m-stat-bonus.card.stat::before {
   color: var(--text-dim); font-size: 12.5px;
   margin-top: 4px;
   font-family: "SF Mono", "Consolas", monospace;
+  word-break: break-word;
 }
 .bd-amount {
   font-weight: 800; font-size: 18px;
@@ -383,6 +449,7 @@ body.managers-app .m-stat-bonus.card.stat::before {
   display: flex; flex-direction: column;
   max-height: 380px;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .activity-row {
   display: grid;
@@ -421,8 +488,89 @@ body.managers-app .m-stat-bonus.card.stat::before {
   font-size: 14px;
 }
 
+/* =====================================================================
+ * Responsive — tablet, then phone. Aim: a single column on phones with
+ * comfortable tap targets, but make the most of wider screens.
+ * ===================================================================== */
 @media (max-width: 1100px) {
   .cards-row.m-network,
   .cards-row.m-house-stats { grid-template-columns: 1fr 1fr; }
   .m-houses-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    flex-wrap: wrap;
+    height: auto;
+    padding: 10px 14px;
+    gap: 8px;
+  }
+  .topbar .brand { font-size: 18px; letter-spacing: 2px; }
+  .tabs {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap;
+  }
+  .tabs .tab {
+    padding: 14px 14px;
+    font-size: 13.5px;
+    white-space: nowrap;
+  }
+  .user-mode { width: 100%; justify-content: flex-end; }
+  .month-picker input { width: 130px; }
+
+  .managers-tabs { margin: 14px 12px 0; padding: 0 4px; }
+  .managers-tabs .h-tab {
+    padding: 12px 14px;
+    font-size: 13.5px;
+    min-height: 44px;
+  }
+
+  .screen { padding: 16px 14px; }
+  .screen h2 { font-size: 21px; }
+  .screen h3 { font-size: 12.5px; margin: 22px 0 12px; }
+
+  .cards-row,
+  .cards-row.m-network,
+  .cards-row.m-house-stats,
+  .cards-row.m-flow {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .card.stat { padding: 16px; }
+  .card.stat .stat-value { font-size: 32px; margin: 6px 0; }
+  .card.stat .stat-label { font-size: 11.5px; }
+
+  .bonus-card { padding: 18px; min-height: 0; }
+  .bc-name { font-size: 17px; }
+  .bc-bonus { font-size: 24px; margin-top: 14px; }
+  .bc-row { margin-right: 50px; }
+  .bc-trophy { font-size: 30px; top: 12px; left: 14px; }
+
+  .trophy-big { font-size: 32px; margin-left: 6px; }
+  .m-house-status { flex-wrap: wrap; }
+
+  .chart-card { padding: 14px 14px 8px; }
+  .chart { height: 180px; gap: 2px; padding: 4px 4px 20px; }
+
+  .breakdown-card { padding: 14px 16px; }
+  .bd-line { flex-direction: column; align-items: flex-start; gap: 4px; }
+  .bd-amount { font-size: 18px; }
+  .bd-line.total .bd-amount { font-size: 22px; }
+
+  .activity-row {
+    grid-template-columns: auto 1fr auto;
+    padding: 10px 14px;
+    gap: 10px;
+  }
+  .activity-row .a-date { font-size: 12px; }
+  .activity-row .a-name { font-size: 13.5px; }
+}
+
+/* Slightly larger tap targets and easier scroll on touch devices. */
+@media (hover: none) {
+  .h-tab { min-height: 44px; }
+  .bonus-card:hover { transform: none; }
 }

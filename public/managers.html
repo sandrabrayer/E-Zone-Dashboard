@@ -2,11 +2,22 @@
 <html lang="he" dir="rtl">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>E-ZONE — בונוסים</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#0b1020" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="E-ZONE בונוסים" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.svg" />
+
   <link rel="stylesheet" href="style.css" />
   <link rel="stylesheet" href="managers.css?v=__BUILD__" />
 </head>
@@ -84,6 +95,29 @@
 
       <div class="cards-row m-house-stats">
         <div class="card stat m-stat">
+          <div class="stat-label">נקודת איזון (BEP)</div>
+          <div class="stat-value" id="h-bep">0</div>
+          <div class="stat-sub" id="h-bep-sub">קיבולת מקסימלית 0</div>
+        </div>
+        <div class="card stat m-stat">
+          <div class="stat-label">תפוסה נוכחית</div>
+          <div class="stat-value" id="h-occupancy">0</div>
+          <div class="stat-sub" id="h-occupancy-sub">ממוצע יומי 0</div>
+        </div>
+        <div class="card stat m-stat">
+          <div class="stat-label">ימי טיפול בחודש</div>
+          <div class="stat-value" id="h-days">0</div>
+          <div class="stat-sub" id="h-days-sub">ממוצע יומי 0</div>
+        </div>
+        <div class="card stat m-stat m-stat-bonus">
+          <div class="stat-label">בונוס חודשי</div>
+          <div class="stat-value" id="h-bonus">₪ 0</div>
+          <div class="stat-sub" id="h-bonus-sub">סך כל מרכיבי הבונוס</div>
+        </div>
+      </div>
+
+      <div class="cards-row m-house-stats m-flow">
+        <div class="card stat m-stat">
           <div class="stat-label">כניסות החודש</div>
           <div class="stat-value" id="h-entries">0</div>
           <div class="stat-sub">מטופלים חדשים</div>
@@ -92,16 +126,6 @@
           <div class="stat-label">יציאות החודש</div>
           <div class="stat-value" id="h-exits">0</div>
           <div class="stat-sub">שחרור / סיום</div>
-        </div>
-        <div class="card stat m-stat">
-          <div class="stat-label">ימי טיפול</div>
-          <div class="stat-value" id="h-days">0</div>
-          <div class="stat-sub" id="h-days-sub">ממוצע יומי 0</div>
-        </div>
-        <div class="card stat m-stat m-stat-bonus">
-          <div class="stat-label">בונוס חודשי</div>
-          <div class="stat-value" id="h-bonus">₪ 0</div>
-          <div class="stat-sub" id="h-bonus-sub">סך כל מרכיבי הבונוס</div>
         </div>
       </div>
 
