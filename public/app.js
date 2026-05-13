@@ -3,8 +3,8 @@ console.log('[E-ZONE] app.js loaded at', new Date().toISOString(), 'origin:', lo
 
 const HOUSES = [
   { id: 'arfoni', name: 'קיסריה עפרוני', capacity: 13 },
-  { id: 'rehab',  name: 'קיסריה ריהאב',  capacity: 12 },
-  { id: 'asher',  name: 'רעננה אשר',      capacity: 16 },
+  { id: 'rehab',  name: 'קיסריה ריהאב',  capacity: 13 },
+  { id: 'asher',  name: 'רעננה אשר',      capacity: 14 },
   { id: 'pardes', name: 'רעננה הפרדס',    capacity: 13 },
   { id: 'ramot',  name: 'רמות השבים',     capacity: 20 },
   { id: 'sde',    name: 'שדה אליעזר',     capacity: 16 },
