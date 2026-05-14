@@ -56,7 +56,27 @@ const state = {
   leadSearch: '',
   patientSearch: '',
   billingDate: '',
+  breakeven: null, // loaded from localStorage in initBreakeven()
 };
+
+/* ===== Break-even defaults =====
+ * Default expense data based on the financial analysis (May 2026).
+ * These values are loaded from localStorage and edited from the UI.
+ * Stored per-house under the same houseId used in HOUSES.
+ * `active` controls whether the house participates in the network calculation. */
+const BREAKEVEN_DEFAULTS = {
+  hqCost: 300000,
+  houses: {
+    arfoni: { active: true,  fixed: 147200, variable: 90000 },
+    rehab:  { active: true,  fixed: 130000, variable: 80000 },
+    asher:  { active: true,  fixed: 170000, variable: 140000 },
+    pardes: { active: false, fixed: 0,      variable: 0 },
+    ramot:  { active: true,  fixed: 239000, variable: 217000 },
+    sde:    { active: false, fixed: 147200, variable: 90000 },
+  },
+};
+
+const BREAKEVEN_STORAGE_KEY = 'ezone-breakeven-v1';
 
 /* ===== API ===== */
 async function apiGet(params) {
@@ -250,7 +270,7 @@ function enterApp(mode) {
 }
 
 /* ===== Top tabs ===== */
-const SCREENS = ['dashboard', 'leads', 'irrelevant', 'occupancy', 'billing'];
+const SCREENS = ['dashboard', 'leads', 'irrelevant', 'occupancy', 'billing', 'breakeven'];
 
 function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {
@@ -283,6 +303,8 @@ function initTabs() {
     state.billingDate = e.target.value || todayISO();
     renderBilling();
   };
+
+  initBreakeven();
 }
 
 /* ===== Initial load ===== */
@@ -613,6 +635,7 @@ function renderAll() {
   renderHouseTabs();
   renderPatients();
   renderBilling();
+  renderBreakeven();
 }
 
 /* ====================================================
@@ -1828,6 +1851,484 @@ function formatDateDDMMYYYY(s) {
   const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (!m) return '';
   return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+/* ====================================================
+   BREAK-EVEN MODULE
+   ====================================================
+   Self-contained module: loads expense data from localStorage,
+   computes break-even per house and network-wide, and renders
+   the dedicated screen. No changes to existing sheet data. */
+
+function loadBreakevenFromStorage() {
+  try {
+    const raw = localStorage.getItem(BREAKEVEN_STORAGE_KEY);
+    if (!raw) return JSON.parse(JSON.stringify(BREAKEVEN_DEFAULTS));
+    const parsed = JSON.parse(raw);
+    // Ensure every known house has an entry — handles new houses added to HOUSES later.
+    const merged = { hqCost: parsed.hqCost ?? BREAKEVEN_DEFAULTS.hqCost, houses: {} };
+    HOUSES.forEach(h => {
+      const stored = (parsed.houses || {})[h.id];
+      const def = BREAKEVEN_DEFAULTS.houses[h.id] || { active: false, fixed: 0, variable: 0 };
+      merged.houses[h.id] = stored
+        ? { active: !!stored.active, fixed: Number(stored.fixed) || 0, variable: Number(stored.variable) || 0 }
+        : { ...def };
+    });
+    return merged;
+  } catch (e) {
+    console.warn('[E-ZONE] breakeven load failed, using defaults:', e.message);
+    return JSON.parse(JSON.stringify(BREAKEVEN_DEFAULTS));
+  }
+}
+
+function saveBreakevenToStorage() {
+  try {
+    localStorage.setItem(BREAKEVEN_STORAGE_KEY, JSON.stringify(state.breakeven));
+  } catch (e) {
+    console.warn('[E-ZONE] breakeven save failed:', e.message);
+  }
+}
+
+function initBreakeven() {
+  state.breakeven = loadBreakevenFromStorage();
+
+  const resetBtn = document.getElementById('be-reset-btn');
+  if (resetBtn) {
+    resetBtn.onclick = () => {
+      if (!confirm('לאפס את כל נתוני ההוצאות לברירת מחדל?')) return;
+      state.breakeven = JSON.parse(JSON.stringify(BREAKEVEN_DEFAULTS));
+      saveBreakevenToStorage();
+      renderBreakeven();
+    };
+  }
+}
+
+/* ===== Calculations =====
+ * Per-house metrics use the patient count and average price from live state.
+ * Average price = mean of `pay` across active patients in that house.
+ * Falls back to a sensible default per house if no patients yet. */
+const PRICE_FALLBACKS = {
+  arfoni: 30000, rehab: 30000, asher: 35000,
+  pardes: 35000, ramot: 36000, sde:    30000,
+};
+
+function avgPricePerHouse(houseId) {
+  const inHouse = state.patients.filter(p => p.houseId === houseId && p.status !== 'released' && (p.pay || 0) > 0);
+  if (inHouse.length === 0) return PRICE_FALLBACKS[houseId] || 30000;
+  const total = inHouse.reduce((s, p) => s + (p.pay || 0), 0);
+  return Math.round(total / inHouse.length);
+}
+
+function activeCountPerHouse(houseId) {
+  return state.patients.filter(p => p.houseId === houseId && p.status !== 'released').length;
+}
+
+function computeHouseMetrics(house) {
+  const be = state.breakeven.houses[house.id] || { active: false, fixed: 0, variable: 0 };
+  const fixed = Number(be.fixed) || 0;
+  const variable = Number(be.variable) || 0;
+  const totalExpenses = fixed + variable;
+  const price = avgPricePerHouse(house.id);
+  const currentPatients = activeCountPerHouse(house.id);
+  const capacity = house.capacity;
+
+  // Variable cost per patient — used to compute marginal profit.
+  // Spread the variable line over max capacity so each occupied bed "absorbs"
+  // its expected share. Matches the analysis in the Excel report.
+  const variablePerPatient = capacity > 0 ? variable / capacity : 0;
+  const marginalProfit = Math.max(0, price - variablePerPatient);
+
+  // Break-even = number of patients needed to cover total house expenses.
+  const breakevenPoint = price > 0 ? Math.ceil(totalExpenses / price) : 0;
+
+  const currentRevenue = currentPatients * price;
+  const currentPL = currentRevenue - totalExpenses;
+  const maxRevenue = capacity * price;
+  const maxPL = maxRevenue - totalExpenses;
+
+  const freeBeds = Math.max(0, capacity - currentPatients);
+  const fillPotential = freeBeds * marginalProfit;
+  const gapToBreakeven = Math.max(0, breakevenPoint - currentPatients);
+
+  return {
+    house,
+    active: !!be.active,
+    fixed,
+    variable,
+    totalExpenses,
+    price,
+    currentPatients,
+    capacity,
+    variablePerPatient,
+    marginalProfit,
+    breakevenPoint,
+    currentRevenue,
+    currentPL,
+    maxRevenue,
+    maxPL,
+    freeBeds,
+    fillPotential,
+    gapToBreakeven,
+  };
+}
+
+function computeNetworkMetrics(activeMetrics) {
+  const totalHouseExpenses = activeMetrics.reduce((s, m) => s + m.totalExpenses, 0);
+  const hqCost = Number(state.breakeven.hqCost) || 0;
+  const totalExpenses = totalHouseExpenses + hqCost;
+
+  const totalRevenueCurrent = activeMetrics.reduce((s, m) => s + m.currentRevenue, 0);
+  const totalRevenueMax     = activeMetrics.reduce((s, m) => s + m.maxRevenue, 0);
+  const totalPatientsCurrent = activeMetrics.reduce((s, m) => s + m.currentPatients, 0);
+  const totalCapacity        = activeMetrics.reduce((s, m) => s + m.capacity, 0);
+
+  const networkPL = totalRevenueCurrent - totalExpenses;
+  const networkPLMax = totalRevenueMax - totalExpenses;
+
+  // Weighted average price (revenue at full capacity / total capacity).
+  const avgPrice = totalCapacity > 0 ? totalRevenueMax / totalCapacity : 0;
+  const networkBreakeven = avgPrice > 0 ? Math.ceil(totalExpenses / avgPrice) : 0;
+
+  return {
+    hqCost,
+    totalHouseExpenses,
+    totalExpenses,
+    totalRevenueCurrent,
+    totalRevenueMax,
+    totalPatientsCurrent,
+    totalCapacity,
+    networkPL,
+    networkPLMax,
+    avgPrice,
+    networkBreakeven,
+  };
+}
+
+/* ===== Rendering ===== */
+function renderBreakeven() {
+  if (!state.breakeven) return;
+
+  // Sync HQ input value
+  const hqInput = document.getElementById('be-hq-cost');
+  if (hqInput) {
+    if (document.activeElement !== hqInput) {
+      hqInput.value = state.breakeven.hqCost;
+    }
+    if (state.mode !== 'edit') hqInput.disabled = true;
+    hqInput.oninput = e => {
+      state.breakeven.hqCost = Number(e.target.value) || 0;
+      saveBreakevenToStorage();
+      renderBreakevenSummary();
+    };
+  }
+
+  renderBreakevenActiveHouses();
+  renderBreakevenHousesGrid();
+  renderBreakevenComparisonTable();
+  renderBreakevenActionPlan();
+  renderBreakevenSummary();
+}
+
+function renderBreakevenActiveHouses() {
+  const wrap = document.getElementById('be-active-houses');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  HOUSES.forEach(h => {
+    const be = state.breakeven.houses[h.id];
+    const chip = document.createElement('label');
+    chip.className = 'be-house-toggle' + (be.active ? ' is-active' : '');
+    chip.innerHTML = `
+      <input type="checkbox" ${be.active ? 'checked' : ''} ${state.mode === 'edit' ? '' : 'disabled'} />
+      <span>${escapeHtml(h.name)}</span>
+    `;
+    const cb = chip.querySelector('input');
+    cb.onchange = () => {
+      state.breakeven.houses[h.id].active = cb.checked;
+      saveBreakevenToStorage();
+      renderBreakeven();
+    };
+    wrap.appendChild(chip);
+  });
+}
+
+function renderBreakevenHousesGrid() {
+  const grid = document.getElementById('be-houses-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+
+  const activeMetrics = HOUSES
+    .filter(h => state.breakeven.houses[h.id].active)
+    .map(computeHouseMetrics);
+
+  if (activeMetrics.length === 0) {
+    grid.innerHTML = '<div class="be-empty">לא נבחרו בתים פעילים. סמני בתים בסעיף "בתים פעילים" למעלה.</div>';
+    return;
+  }
+
+  activeMetrics.forEach(m => {
+    const card = document.createElement('div');
+    card.className = 'be-house-card';
+    const plClass = m.currentPL >= 0 ? 'positive' : 'negative';
+    const statusLabel = m.currentPatients >= m.breakevenPoint
+      ? `<span class="be-pill positive">עבר נקודת איזון (+${m.currentPatients - m.breakevenPoint})</span>`
+      : `<span class="be-pill negative">חסרים ${m.breakevenPoint - m.currentPatients} מטופלים לאיזון</span>`;
+
+    card.innerHTML = `
+      <div class="be-house-head">
+        <div class="be-house-name">${escapeHtml(m.house.name)}</div>
+        ${statusLabel}
+      </div>
+
+      <div class="be-grid-2">
+        <div class="be-field">
+          <label class="be-label">הוצאות קבועות (₪)</label>
+          <input class="be-fixed" data-hid="${m.house.id}" type="number" min="0" step="1000" value="${m.fixed}" ${state.mode === 'edit' ? '' : 'disabled'} />
+        </div>
+        <div class="be-field">
+          <label class="be-label">הוצאות משתנות (₪)</label>
+          <input class="be-variable" data-hid="${m.house.id}" type="number" min="0" step="1000" value="${m.variable}" ${state.mode === 'edit' ? '' : 'disabled'} />
+        </div>
+      </div>
+
+      <div class="be-metrics">
+        <div class="be-metric">
+          <div class="be-metric-label">סהכ הוצאות</div>
+          <div class="be-metric-value">₪ ${m.totalExpenses.toLocaleString('he-IL')}</div>
+        </div>
+        <div class="be-metric">
+          <div class="be-metric-label">מחיר ממוצע למטופל</div>
+          <div class="be-metric-value">₪ ${m.price.toLocaleString('he-IL')}</div>
+        </div>
+        <div class="be-metric">
+          <div class="be-metric-label">נקודת איזון</div>
+          <div class="be-metric-value strong">${m.breakevenPoint} מטופלים</div>
+        </div>
+        <div class="be-metric">
+          <div class="be-metric-label">תפוסה נוכחית</div>
+          <div class="be-metric-value">${m.currentPatients} / ${m.capacity}</div>
+        </div>
+        <div class="be-metric">
+          <div class="be-metric-label">רווח שולי למטופל</div>
+          <div class="be-metric-value positive">₪ ${Math.round(m.marginalProfit).toLocaleString('he-IL')}</div>
+        </div>
+        <div class="be-metric">
+          <div class="be-metric-label">רווח/הפסד נוכחי</div>
+          <div class="be-metric-value ${plClass}">₪ ${Math.round(m.currentPL).toLocaleString('he-IL')}</div>
+        </div>
+      </div>
+
+      <div class="be-fill-row">
+        <span class="be-fill-label">מיטות פנויות: <strong>${m.freeBeds}</strong></span>
+        <span class="be-fill-label">פוטנציאל ממילוי: <strong>₪ ${Math.round(m.fillPotential).toLocaleString('he-IL')}</strong></span>
+      </div>
+    `;
+
+    grid.appendChild(card);
+
+    // Wire up input changes
+    const fixedInput = card.querySelector('.be-fixed');
+    const varInput = card.querySelector('.be-variable');
+    fixedInput.oninput = e => {
+      state.breakeven.houses[m.house.id].fixed = Number(e.target.value) || 0;
+      saveBreakevenToStorage();
+      renderBreakevenHousesGrid();
+      renderBreakevenComparisonTable();
+      renderBreakevenActionPlan();
+      renderBreakevenSummary();
+    };
+    varInput.oninput = e => {
+      state.breakeven.houses[m.house.id].variable = Number(e.target.value) || 0;
+      saveBreakevenToStorage();
+      renderBreakevenHousesGrid();
+      renderBreakevenComparisonTable();
+      renderBreakevenActionPlan();
+      renderBreakevenSummary();
+    };
+  });
+}
+
+function renderBreakevenComparisonTable() {
+  const table = document.getElementById('be-comparison-table');
+  if (!table) return;
+  const activeMetrics = HOUSES
+    .filter(h => state.breakeven.houses[h.id].active)
+    .map(computeHouseMetrics);
+
+  if (activeMetrics.length === 0) {
+    table.innerHTML = '';
+    return;
+  }
+
+  const rows = activeMetrics.map(m => {
+    const plClass = m.currentPL >= 0 ? 'positive' : 'negative';
+    return `
+      <tr>
+        <td class="be-td-name">${escapeHtml(m.house.name)}</td>
+        <td>₪ ${m.totalExpenses.toLocaleString('he-IL')}</td>
+        <td>₪ ${m.price.toLocaleString('he-IL')}</td>
+        <td class="be-td-strong">${m.breakevenPoint}</td>
+        <td>${m.currentPatients}</td>
+        <td>${m.gapToBreakeven > 0 ? '+' + m.gapToBreakeven : '✓'}</td>
+        <td class="positive">₪ ${Math.round(m.marginalProfit).toLocaleString('he-IL')}</td>
+        <td class="${plClass}">₪ ${Math.round(m.currentPL).toLocaleString('he-IL')}</td>
+      </tr>
+    `;
+  }).join('');
+
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>בית</th>
+        <th>סהכ הוצאות</th>
+        <th>מחיר ממוצע</th>
+        <th>נקודת איזון</th>
+        <th>נוכחי</th>
+        <th>פער</th>
+        <th>רווח שולי</th>
+        <th>רווח/הפסד</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  `;
+}
+
+function renderBreakevenActionPlan() {
+  const wrap = document.getElementById('be-action-plan');
+  if (!wrap) return;
+  const activeMetrics = HOUSES
+    .filter(h => state.breakeven.houses[h.id].active)
+    .map(computeHouseMetrics);
+
+  if (activeMetrics.length === 0) {
+    wrap.innerHTML = '';
+    return;
+  }
+
+  // Priority algorithm:
+  // 1. First, fill houses below breakeven (sorted by smallest gap → easiest wins)
+  // 2. Then, fill remaining beds in houses with highest marginal profit per patient
+  const belowBE = activeMetrics
+    .filter(m => m.gapToBreakeven > 0)
+    .sort((a, b) => a.gapToBreakeven - b.gapToBreakeven);
+
+  const aboveBE = activeMetrics
+    .filter(m => m.gapToBreakeven === 0 && m.freeBeds > 0)
+    .sort((a, b) => b.marginalProfit - a.marginalProfit);
+
+  const items = [];
+  let priority = 1;
+
+  belowBE.forEach(m => {
+    const addPatients = m.gapToBreakeven;
+    const revenue = addPatients * m.price;
+    items.push({
+      priority: priority++,
+      name: m.house.name,
+      from: m.currentPatients,
+      to: m.breakevenPoint,
+      add: addPatients,
+      revenue,
+      reason: `${m.house.name} - השלמה לנקודת איזון. הפסקת ההפסד החודשי של ₪ ${Math.round(Math.abs(m.currentPL)).toLocaleString('he-IL')}.`,
+    });
+    // Then add remaining beds after reaching breakeven
+    if (m.capacity > m.breakevenPoint) {
+      const addToFull = m.capacity - m.breakevenPoint;
+      const revenueFull = addToFull * m.price;
+      items.push({
+        priority: priority++,
+        name: m.house.name,
+        from: m.breakevenPoint,
+        to: m.capacity,
+        add: addToFull,
+        revenue: revenueFull,
+        reason: `${m.house.name} - השלמה לתפוסה מלאה לאחר איזון. רווח שולי ₪ ${Math.round(m.marginalProfit).toLocaleString('he-IL')} למטופל.`,
+      });
+    }
+  });
+
+  aboveBE.forEach(m => {
+    items.push({
+      priority: priority++,
+      name: m.house.name,
+      from: m.currentPatients,
+      to: m.capacity,
+      add: m.freeBeds,
+      revenue: m.freeBeds * m.price,
+      reason: `${m.house.name} - הבית עבר איזון. כל מטופל נוסף הוא בעיקר רווח. תרומה שולית ₪ ${Math.round(m.marginalProfit).toLocaleString('he-IL')}.`,
+    });
+  });
+
+  if (items.length === 0) {
+    wrap.innerHTML = '<div class="be-empty">כל הבתים מלאים בתפוסה. אין צעדי מילוי להציע.</div>';
+    return;
+  }
+
+  const totalAdd = items.reduce((s, x) => s + x.add, 0);
+  const totalRevenue = items.reduce((s, x) => s + x.revenue, 0);
+
+  const rows = items.map(x => `
+    <tr>
+      <td class="be-td-pri">${x.priority}</td>
+      <td class="be-td-name">${escapeHtml(x.name)}</td>
+      <td>${x.from} → ${x.to}</td>
+      <td>+${x.add}</td>
+      <td class="positive">₪ ${Math.round(x.revenue).toLocaleString('he-IL')}</td>
+      <td class="be-td-reason">${escapeHtml(x.reason)}</td>
+    </tr>
+  `).join('');
+
+  wrap.innerHTML = `
+    <table class="be-table be-action-table">
+      <thead>
+        <tr>
+          <th>עדיפות</th>
+          <th>בית</th>
+          <th>מ → ל</th>
+          <th>תוספת</th>
+          <th>הכנסה חודשית נוספת</th>
+          <th>נימוק</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+      <tfoot>
+        <tr>
+          <td colspan="3" class="be-td-name">סהכ פוטנציאל מילוי</td>
+          <td>+${totalAdd}</td>
+          <td class="positive be-td-strong">₪ ${Math.round(totalRevenue).toLocaleString('he-IL')}</td>
+          <td></td>
+        </tr>
+      </tfoot>
+    </table>
+  `;
+}
+
+function renderBreakevenSummary() {
+  const activeMetrics = HOUSES
+    .filter(h => state.breakeven.houses[h.id].active)
+    .map(computeHouseMetrics);
+  const net = computeNetworkMetrics(activeMetrics);
+
+  const totalEl = document.getElementById('be-total-expenses');
+  const pointEl = document.getElementById('be-network-point');
+  const plEl    = document.getElementById('be-pl');
+  const plSub   = document.getElementById('be-pl-sub');
+
+  if (totalEl) totalEl.textContent = '₪ ' + net.totalExpenses.toLocaleString('he-IL');
+  if (pointEl) pointEl.textContent = net.networkBreakeven.toString();
+  if (plEl) {
+    const v = Math.round(net.networkPL);
+    plEl.textContent = (v >= 0 ? '₪ ' : '-₪ ') + Math.abs(v).toLocaleString('he-IL');
+    plEl.classList.remove('positive', 'negative');
+    plEl.classList.add(v >= 0 ? 'positive' : 'negative');
+  }
+  if (plSub) {
+    const patientGap = net.networkBreakeven - net.totalPatientsCurrent;
+    if (net.networkPL >= 0) {
+      plSub.textContent = `רווח חודשי - ${net.totalPatientsCurrent} מטופלים פעילים`;
+    } else {
+      plSub.textContent = `חסרים ${patientGap} מטופלים לאיזון - ${net.totalPatientsCurrent}/${net.networkBreakeven}`;
+    }
+  }
 }
 
 /* ===== Boot ===== */
