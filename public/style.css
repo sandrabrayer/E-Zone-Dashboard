@@ -685,6 +685,255 @@ body.viewer-mode .edit-only { display: none !important; }
 body.viewer-mode .billing-status,
 body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
 
+/* ===== BREAK-EVEN MODULE ===== */
+.be-hq-row {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px);
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.be-hq-card {
+  padding: 18px 22px;
+}
+.be-label {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+.be-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.be-input-wrap .be-currency {
+  position: absolute;
+  right: 12px;
+  color: var(--text-dim);
+  font-weight: 700;
+  pointer-events: none;
+}
+.be-input-wrap input {
+  width: 100%;
+  padding-right: 30px;
+  font-size: 18px;
+  font-weight: 700;
+}
+.be-hint {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+/* Active houses toggle chips */
+.be-active-houses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.be-house-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted);
+  transition: all .15s;
+}
+.be-house-toggle:hover { border-color: var(--border-strong); }
+.be-house-toggle.is-active {
+  background: rgba(91, 139, 255, .15);
+  border-color: var(--primary);
+  color: var(--text);
+}
+.be-house-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--primary);
+}
+
+/* Per-house grid */
+.be-houses-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+.be-house-card {
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+}
+.be-house-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.be-house-name {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+}
+.be-pill {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.be-pill.positive {
+  background: rgba(45, 212, 122, .15);
+  color: var(--success);
+  border: 1px solid rgba(45, 212, 122, .35);
+}
+.be-pill.negative {
+  background: rgba(255, 77, 94, .15);
+  color: var(--danger);
+  border: 1px solid rgba(255, 77, 94, .35);
+}
+.be-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.be-field input {
+  width: 100%;
+}
+.be-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  padding: 12px;
+  background: rgba(0, 0, 0, .15);
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+.be-metric-label {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+.be-metric-value {
+  font-size: 15px;
+  font-weight: 700;
+  margin-top: 2px;
+  color: var(--text);
+}
+.be-metric-value.strong { color: var(--primary); font-size: 16px; }
+.be-metric-value.positive { color: var(--success); }
+.be-metric-value.negative { color: var(--danger); }
+.be-fill-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.be-fill-label {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.be-fill-label strong { color: var(--text); }
+
+/* Comparison + action plan tables */
+.be-table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+  margin-bottom: 8px;
+}
+.be-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+.be-table th, .be-table td {
+  padding: 11px 14px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+}
+.be-table thead th {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: .5px;
+  text-transform: uppercase;
+}
+.be-table tbody tr:hover {
+  background: rgba(91, 139, 255, .05);
+}
+.be-table tbody tr:last-child td { border-bottom: none; }
+.be-table tfoot td {
+  background: var(--surface-2);
+  font-weight: 700;
+  border-bottom: none;
+  border-top: 2px solid var(--border-strong);
+}
+.be-td-name { font-weight: 700; color: var(--text); }
+.be-td-strong { font-weight: 800; color: var(--primary); }
+.be-td-pri {
+  font-weight: 800;
+  color: var(--primary);
+  width: 60px;
+  text-align: center;
+}
+.be-td-reason { color: var(--text-muted); font-size: 13px; }
+.be-table .positive { color: var(--success); font-weight: 700; }
+.be-table .negative { color: var(--danger); font-weight: 700; }
+
+.be-action-table { width: 100%; }
+.be-action-plan { margin-bottom: 8px; }
+
+.be-empty {
+  padding: 24px;
+  text-align: center;
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.be-help {
+  margin-top: 24px;
+  padding: 16px 20px;
+  background: rgba(91, 139, 255, .06);
+  border: 1px solid rgba(91, 139, 255, .2);
+  border-radius: var(--radius);
+}
+.be-help-title {
+  font-weight: 700;
+  color: var(--primary);
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+.be-help ul {
+  margin: 0;
+  padding-right: 20px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.8;
+}
+
 @media (max-width: 900px) {
   .cards-row, .houses-grid { grid-template-columns: 1fr 1fr; }
   .pipeline-row { grid-template-columns: repeat(2, 1fr); }
@@ -693,4 +942,6 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
   .billing-row { grid-template-columns: 1fr 1fr; }
   .irrelevant-row { grid-template-columns: 1fr 1fr; }
   .actions input[type=search] { width: 100%; }
+  .be-houses-grid { grid-template-columns: 1fr; }
+  .be-metrics { grid-template-columns: 1fr 1fr; }
 }
