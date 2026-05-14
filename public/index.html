@@ -38,6 +38,7 @@
         <button class="tab" data-screen="irrelevant">לידים לא רלוונטיים</button>
         <button class="tab" data-screen="occupancy">תפוסה</button>
         <button class="tab" data-screen="billing">גבייה</button>
+        <button class="tab" data-screen="breakeven">נקודת איזון</button>
       </nav>
       <div class="user-mode">
         <span id="mode-label"></span>
@@ -161,6 +162,76 @@
           <div class="stat-label">פירוט לפי בית</div>
           <div class="stat-breakdown" id="bill-month-breakdown"></div>
         </div>
+      </div>
+    </section>
+
+    <!-- ====== BREAK-EVEN ====== -->
+    <section id="screen-breakeven" class="screen hidden">
+      <div class="screen-head">
+        <h2>נקודת איזון</h2>
+        <div class="actions">
+          <button id="be-reset-btn" class="btn ghost-sm edit-only" title="איפוס נתוני הוצאות לברירת מחדל">איפוס לברירת מחדל</button>
+        </div>
+      </div>
+
+      <!-- Network summary cards -->
+      <div class="cards-row">
+        <div class="card stat">
+          <div class="stat-label">סהכ הוצאות חודשיות</div>
+          <div class="stat-value" id="be-total-expenses">₪ 0</div>
+          <div class="stat-sub">בתים פעילים + מטה</div>
+        </div>
+        <div class="card stat">
+          <div class="stat-label">נקודת איזון רשת</div>
+          <div class="stat-value" id="be-network-point">0</div>
+          <div class="stat-sub">מטופלים נדרשים לכיסוי</div>
+        </div>
+        <div class="card stat">
+          <div class="stat-label">רווח / הפסד חודשי</div>
+          <div class="stat-value" id="be-pl">₪ 0</div>
+          <div class="stat-sub" id="be-pl-sub">מצב נוכחי</div>
+        </div>
+      </div>
+
+      <!-- Headquarters costs -->
+      <h3>הוצאות מטה</h3>
+      <div class="be-hq-row">
+        <div class="card be-hq-card">
+          <label class="be-label">הוצאות מטה חודשיות</label>
+          <div class="be-input-wrap">
+            <span class="be-currency">₪</span>
+            <input id="be-hq-cost" type="number" min="0" step="1000" />
+          </div>
+          <div class="be-hint">תקורה ניהולית כללית - תשתית מטה</div>
+        </div>
+      </div>
+
+      <!-- Active houses toggle -->
+      <h3>בתים פעילים</h3>
+      <div class="be-active-houses" id="be-active-houses"></div>
+
+      <!-- Per-house break-even table -->
+      <h3>ניתוח לפי בית</h3>
+      <div class="be-houses-grid" id="be-houses-grid"></div>
+
+      <!-- Comparison table -->
+      <h3>השוואת נקודות איזון</h3>
+      <div class="be-table-wrap">
+        <table class="be-table" id="be-comparison-table"></table>
+      </div>
+
+      <!-- Action plan -->
+      <h3>תוכנית פעולה למילוי</h3>
+      <div class="be-action-plan" id="be-action-plan"></div>
+
+      <div class="be-help">
+        <div class="be-help-title">איך להשתמש</div>
+        <ul>
+          <li>סמני אילו בתים פעילים כעת - רק בתים פעילים נכללים בחישוב</li>
+          <li>עדכני הוצאות קבועות ומשתנות לכל בית פעיל</li>
+          <li>הנתונים נשמרים מקומית בדפדפן ולא משפיעים על שאר האפליקציה</li>
+          <li>מספר המטופלים והמחיר הממוצע נלקחים אוטומטית ממסך תפוסה</li>
+        </ul>
       </div>
     </section>
   </div>
