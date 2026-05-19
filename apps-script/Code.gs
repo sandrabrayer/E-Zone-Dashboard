@@ -748,7 +748,105 @@ function houseMetBepInMonth_(patients, patientsHouseId, ym, bep) {
   return stats.avgDaily >= bep;
 }
 
-/* ----- Continuity bonus (Outpatients) -----
+/* ----- Outpatient-continuation bonus: pull from OUTPATIENTS app -----
+ *
+ * Policy (2026-05): the outpatient-continuation bonus is 5% of each
+ * continuing patient's upfront monthly package, computed at source in the
+ * OUTPATIENTS app (ezone-outpatient) and exposed by its read-only
+ * `getContinuationBonus` endpoint. This REPLACES the old local flat-rate
+ * model (CONTINUITY_RATES + the hand-maintained Outpatients tab), which is
+ * now unused for bonus money.
+ *
+ * Config via Script Properties (Project Settings → Script Properties):
+ *   OUTPATIENT_BONUS_URL    — the OUTPATIENTS Apps Script /exec URL
+ *   OUTPATIENT_BONUS_SECRET — the shared secret (matches BONUS_SECRET there)
+ *
+ * Fail-safe: if the property is missing, the fetch fails, the response is
+ * not ok, or the month does not match the requested month, this returns
+ * the zeroed shape AND an `error` string. It never throws (the managers
+ * dashboard must keep rendering) and never silently falls back to the old
+ * flat-rate numbers (that would be wrong money).
+ *
+ * Returns the SAME shape computeContinuityByHouse_ returned, so the
+ * downstream calculator (calcHouseBonus_) is unchanged:
+ *   { <house>: { maintenance, day_2x, day_daily, total }, _meta: {...} }
+ * The per-therapy counts are 0 (the source no longer works in therapy
+ * buckets); only `total` carries the 5% figure, which is all
+ * calcHouseBonus_ consumes.
+ */
+function fetchOutpatientContinuity_(ym) {
+  const zero = {};
+  MANAGER_HOUSES.forEach(function (h) {
+    zero[h] = { maintenance: 0, day_2x: 0, day_daily: 0, total: 0 };
+  });
+
+  const props = PropertiesService.getScriptProperties();
+  const url    = props.getProperty('OUTPATIENT_BONUS_URL');
+  const secret = props.getProperty('OUTPATIENT_BONUS_SECRET');
+
+  if (!url || !secret) {
+    zero._meta = { ok: false, error: 'outpatient_bonus_not_configured' };
+    return zero;
+  }
+
+  let payload;
+  try {
+    const sep = url.indexOf('?') === -1 ? '?' : '&';
+    const full = url + sep + 'action=getContinuationBonus&secret=' +
+                 encodeURIComponent(secret);
+    const resp = UrlFetchApp.fetch(full, {
+      method: 'get',
+      muteHttpExceptions: true,
+      followRedirects: true,
+    });
+    if (resp.getResponseCode() !== 200) {
+      zero._meta = { ok: false, error: 'outpatient_http_' + resp.getResponseCode() };
+      return zero;
+    }
+    payload = JSON.parse(resp.getContentText());
+  } catch (err) {
+    zero._meta = { ok: false, error: 'outpatient_fetch_failed',
+                   message: String((err && err.message) || err) };
+    return zero;
+  }
+
+  if (!payload || payload.ok !== true || !payload.byHouse) {
+    zero._meta = { ok: false,
+                   error: (payload && payload.error) || 'outpatient_bad_payload' };
+    return zero;
+  }
+
+  // The source returns the CURRENT month only. If the managers dashboard
+  // is being viewed for a different month, we must NOT attribute the
+  // current-month figure to a historical/future month — that would be
+  // wrong money. Surface a clear, non-fatal mismatch instead.
+  if (payload.month && String(payload.month) !== String(ym)) {
+    zero._meta = { ok: false, error: 'outpatient_month_mismatch',
+                   sourceMonth: payload.month, requestedMonth: ym };
+    return zero;
+  }
+
+  const out = {};
+  MANAGER_HOUSES.forEach(function (h) {
+    const v = Number(payload.byHouse[h]) || 0;
+    out[h] = { maintenance: 0, day_2x: 0, day_daily: 0, total: v };
+  });
+  out._meta = {
+    ok: true,
+    source: 'ezone-outpatient',
+    month: payload.month || ym,
+    ratePct: payload.ratePct,
+    total: Number(payload.total) || 0,
+  };
+  return out;
+}
+
+/* ----- Continuity bonus (Outpatients) — LEGACY local flat-rate model -----
+ *
+ * SUPERSEDED (2026-05) by fetchOutpatientContinuity_, which pulls the 5%
+ * figure from the OUTPATIENTS app. Kept for reference / rollback only; it
+ * is no longer called from the managers endpoints. Do NOT re-wire this
+ * without a money-policy decision — using both is a double-pay bug.
  *
  * Counts active outpatients per therapy_type whose residency window
  * overlaps the month, grouped by house_of_origin. Returns an object
@@ -805,9 +903,13 @@ function calcHouseBonus_(opts) {
   const quarterlyEligible = consecutiveAboveBep >= 3 && ym >= QUARTERLY_BONUS_FIRST_MONTH && qualifies;
   const quarterlyBonus = quarterlyEligible ? QUARTERLY_BONUS_AMOUNT : 0;
 
-  // Continuity bonus is only paid if the manager qualifies (i.e., house
-  // is at/above BEP). Otherwise the manager gets 0 across the board.
-  const continuityBonus = qualifies ? continuity.total : 0;
+  // Outpatient-continuation bonus is paid REGARDLESS of occupancy.
+  // Policy decision (2026-05): the outpatient bonus rewards former
+  // residents who continue treatment after discharge; it is independent
+  // of whether the house is currently at/above BEP. The stability
+  // bonuses (base / daily / quarterly) KEEP their `qualifies` gate above
+  // and are intentionally NOT changed here. Only this line was un-gated.
+  const continuityBonus = continuity.total;
 
   const total = baseBonus + dailyBonus + quarterlyBonus + continuityBonus;
 
@@ -860,8 +962,7 @@ function managersOverview_(monthParam) {
   const managers    = readManagers_();
   const configs     = readBonusConfig_();
   const patients    = readPatientsForBonus_();
-  const outpatients = readOutpatients_();
-  const continuityByHouse = computeContinuityByHouse_(outpatients, ym);
+  const continuityByHouse = fetchOutpatientContinuity_(ym);
 
   const configByHouse = {};
   configs.forEach(function (c) { configByHouse[c.house] = c; });
@@ -928,6 +1029,7 @@ function managersOverview_(monthParam) {
       totalBonus:        totalBonus,
     },
     houses: houses,
+    outpatientFeed: (continuityByHouse && continuityByHouse._meta) || null,
   };
 }
 
@@ -942,8 +1044,7 @@ function managersHouse_(houseKey, monthParam) {
   const managers    = readManagers_();
   const configs     = readBonusConfig_();
   const patients    = readPatientsForBonus_();
-  const outpatients = readOutpatients_();
-  const continuityByHouse = computeContinuityByHouse_(outpatients, ym);
+  const continuityByHouse = fetchOutpatientContinuity_(ym);
 
   const cfg = configs.filter(function (c) { return c.house === key; })[0] || {};
   const patientsHouseId = MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[key];
@@ -986,5 +1087,6 @@ function managersHouse_(houseKey, monthParam) {
     dailyChart: stats.dailyChart,
     activity: stats.activity,
     bonus: bonus,
+    outpatientFeed: (continuityByHouse && continuityByHouse._meta) || null,
   };
 }
