@@ -35,7 +35,7 @@
       <nav class="tabs">
         <button class="tab active" data-screen="dashboard">דשבורד</button>
         <button class="tab" data-screen="leads">לידים</button>
-        <button class="tab" data-screen="irrelevant">לידים לא רלוונטיים</button>
+        <button class="tab" data-screen="retention">שימור לידים</button>
         <button class="tab" data-screen="occupancy">תפוסה</button>
         <button class="tab" data-screen="billing">גבייה</button>
         <button class="tab" data-screen="breakeven">נקודת איזון</button>
@@ -91,12 +91,21 @@
       <div class="kanban" id="kanban"></div>
     </section>
 
-    <!-- ====== IRRELEVANT LEADS ====== -->
-    <section id="screen-irrelevant" class="screen hidden">
+    <!-- ====== RETENTION ====== -->
+    <section id="screen-retention" class="screen hidden">
       <div class="screen-head">
-        <h2>לידים לא רלוונטיים <span class="count-pill" id="irrelevant-count">0</span></h2>
+        <h2>שימור לידים</h2>
       </div>
-      <div id="irrelevant-list" class="irrelevant-list"></div>
+
+      <section class="retention-section">
+        <h3>לא רלוונטים <span class="count-pill" id="irrelevant-count">0</span></h3>
+        <div id="irrelevant-list" class="irrelevant-list"></div>
+      </section>
+
+      <section class="retention-section">
+        <h3>לידים שהוסרו</h3>
+        <div id="removed-list" class="irrelevant-list"></div>
+      </section>
     </section>
 
     <!-- ====== OCCUPANCY ====== -->
