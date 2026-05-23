@@ -29,6 +29,7 @@ const LEADS_SHEET    = 'Leads';
 const PATIENTS_SHEET = 'Patients';
 const PAYMENTS_SHEET = 'Payments';
 const IRRELEVANT_LEADS_SHEET = 'לידים לא רלוונטיים';
+const REMOVED_LEADS_SHEET    = 'לידים שהוסרו';
 
 /* ===== Bonuses module sheets =====
  *
@@ -106,6 +107,14 @@ const LEAD_COLUMNS = [
  * across UI label renames. */
 const IRRELEVANT_LEAD_COLUMNS = LEAD_COLUMNS.concat(['originSheet', 'movedAt']);
 
+/* Removed-leads sheet mirrors LEAD_COLUMNS plus two metadata fields:
+ *   removedAt   — ISO timestamp recorded when the lead was soft-deleted
+ *   originSheet — always 'Leads' in v1; the soft-delete action only fires
+ *                 from the active leads kanban. Carried as a column anyway
+ *                 so future flows (e.g., removing from the irrelevant tab)
+ *                 can populate it without a schema change. */
+const REMOVED_LEAD_COLUMNS = LEAD_COLUMNS.concat(['removedAt', 'originSheet']);
+
 /* Must match the column headers in the Patients sheet exactly, in order.
  * The client generates a per-session id for each patient but it is NOT
  * persisted in the sheet — grouping + upserts happen by houseId.
@@ -154,6 +163,9 @@ function handle_(params) {
     }
     if (action === 'restoreLead') {
       return jsonOut_(restoreLead_(parseJsonParam_(params.lead)));
+    }
+    if (action === 'removeLead') {
+      return jsonOut_(removeLead_(parseJsonParam_(params.lead)));
     }
     if (action === 'managersOverview') {
       return jsonOut_(managersOverview_(params.month));
@@ -286,10 +298,12 @@ function getData_() {
   const leadsSh      = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
   const patientsSh   = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
   const irrelevantSh = getOrCreateSheet_(IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS);
+  const removedSh    = getOrCreateSheet_(REMOVED_LEADS_SHEET, REMOVED_LEAD_COLUMNS);
 
   const leads           = readSheet_(leadsSh, LEAD_COLUMNS);
   const patientRows     = readSheet_(patientsSh, PATIENT_COLUMNS);
   const irrelevantLeads = readSheet_(irrelevantSh, IRRELEVANT_LEAD_COLUMNS);
+  const removedLeads    = readSheet_(removedSh, REMOVED_LEAD_COLUMNS);
 
   const patients = {};
   for (let i = 0; i < patientRows.length; i++) {
@@ -300,7 +314,13 @@ function getData_() {
     patients[hid].push(p);
   }
 
-  return { ok: true, leads: leads, patients: patients, irrelevantLeads: irrelevantLeads };
+  return {
+    ok: true,
+    leads: leads,
+    patients: patients,
+    irrelevantLeads: irrelevantLeads,
+    removedLeads: removedLeads,
+  };
 }
 
 /* ===== Write (merge semantics) ===== */
@@ -516,6 +536,36 @@ function restoreLead_(lead) {
     deleteRowsById_(irrSh, IRRELEVANT_LEAD_COLUMNS, lead.id);
     upsertRowById_(leadsSh, LEAD_COLUMNS, restored);
     return { ok: true, restored: true, lead: restored };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* ===== Soft-delete (remove from Leads → לידים שהוסרו) =====
+ *
+ * The retention tab surfaces removed leads read-only — there is no in-app
+ * restore for soft-deleted rows in v1. Manual restore via Sheets is the
+ * documented recovery path. Mirrors moveLeadIrrelevant_'s structure.
+ */
+function removeLead_(lead) {
+  if (!lead || !lead.id) return { ok: false, error: 'missing_lead' };
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const leadsSh   = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+    const removedSh = getOrCreateSheet_(REMOVED_LEADS_SHEET, REMOVED_LEAD_COLUMNS);
+
+    const record = Object.assign({}, lead, {
+      removedAt:   lead.removedAt   || new Date().toISOString(),
+      originSheet: lead.originSheet || 'Leads',
+    });
+
+    // Append-before-delete order: if the upsert into the removed sheet throws
+    // for any reason, the active row is still intact. The reverse order would
+    // risk losing the row entirely.
+    upsertRowById_(removedSh, REMOVED_LEAD_COLUMNS, record);
+    deleteRowsById_(leadsSh, LEAD_COLUMNS, lead.id);
+    return { ok: true, removed: true, lead: record };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }

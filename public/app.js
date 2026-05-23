@@ -48,6 +48,7 @@ const houseByName = name => HOUSES.find(h => h.name === name);
 const state = {
   leads: [],
   irrelevantLeads: [],
+  removedLeads: [],
   patients: [],
   payments: [],
   mode: null, // 'edit' | 'viewer'
@@ -270,7 +271,7 @@ function enterApp(mode) {
 }
 
 /* ===== Top tabs ===== */
-const SCREENS = ['dashboard', 'leads', 'irrelevant', 'occupancy', 'billing', 'breakeven'];
+const SCREENS = ['dashboard', 'leads', 'retention', 'occupancy', 'billing', 'breakeven'];
 
 function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {
@@ -358,6 +359,10 @@ async function loadAll() {
     const rawIrrelevant = Array.isArray(data.irrelevantLeads) ? data.irrelevantLeads : [];
     state.irrelevantLeads = rawIrrelevant.map(normalizeIrrelevantLead);
     console.log('[E-ZONE] irrelevantLeads loaded:', state.irrelevantLeads.length);
+
+    const rawRemoved = Array.isArray(data.removedLeads) ? data.removedLeads : [];
+    state.removedLeads = rawRemoved.map(normalizeRemovedLead);
+    console.log('[E-ZONE] removedLeads loaded:', state.removedLeads.length);
 
     // Payments live on their own sheet and their own action. A fresh
     // install has no Payments sheet yet — treat any failure as "empty
@@ -607,6 +612,17 @@ function normalizeIrrelevantLead(l) {
   return base;
 }
 
+/* Removed (soft-deleted) leads carry the same fields as a regular lead plus
+ * two metadata columns (removedAt, originSheet) added when the lead was
+ * removed. No stage decoration — removed leads don't participate in the
+ * pipeline; they're surfaced read-only in the retention tab. */
+function normalizeRemovedLead(l) {
+  const base = normalizeLead(l);
+  base.removedAt   = pickField(l, ['removedAt', 'removed_at', 'תאריך הסרה']) || '';
+  base.originSheet = pickField(l, ['originSheet', 'origin_sheet', 'גיליון מקור']) || '';
+  return base;
+}
+
 function normalizePatient(p) {
   if (!p || typeof p !== 'object') p = {};
   return {
@@ -632,6 +648,7 @@ function renderAll() {
   renderDashboard();
   renderKanban();
   renderIrrelevantLeads();
+  renderRemovedLeads();
   renderHouseTabs();
   renderPatients();
   renderBilling();
@@ -775,6 +792,7 @@ function buildLeadCard(lead) {
 
   card.innerHTML = `
     <button class="lc-irrelevant edit-only" title="סמן כלא רלוונטי">לא רלוונטי ✕</button>
+    <button class="lc-irrelevant lc-remove" style="left: auto; right: 8px;" title="הסר ליד">הסר</button>
     <div class="lc-name">${escapeHtml(lead.name)}</div>
     <div class="lc-meta">
       ${escapeHtml(lead.phone)} ${lead.house ? '· ' + escapeHtml(lead.house) : ''}
@@ -795,7 +813,15 @@ function buildLeadCard(lead) {
 
   card.querySelector('[data-action="next"]').onclick = () => advanceLead(lead);
   if (idx > 0) card.querySelector('[data-action="back"]').onclick = () => moveLead(lead, STAGES[idx - 1].id);
-  card.querySelector('.lc-irrelevant').onclick = () => markLeadIrrelevant(lead);
+  card.querySelector('.lc-irrelevant:not(.lc-remove)').onclick = () => markLeadIrrelevant(lead);
+  card.querySelector('.lc-remove').onclick = () => {
+    showConfirm({
+      text: 'להסיר את הליד? פעולה זו תסיר אותו מהמערכת.',
+      confirmLabel: 'כן, הסר',
+      danger: true,
+      onConfirm: () => removeLead(lead),
+    });
+  };
   card.querySelector('[data-action="edit"]').onclick = () => openEditLeadModal(lead);
 
   card.querySelectorAll('[data-field]').forEach(inp => {
@@ -980,18 +1006,119 @@ function renderIrrelevantLeads() {
   });
 }
 
+/* ===== Removed leads — soft-delete =====
+ *
+ * One-way soft-delete: the lead is removed from the kanban and routed to the
+ * "לידים שהוסרו" sheet via the dedicated backend action. Mirrors the move side
+ * of markLeadIrrelevant but is one-way only — there is no in-app restore for
+ * soft-deleted rows in v1. Manual restore via the Sheets UI is the documented
+ * recovery path.
+ *
+ * Viewer mode is silently inert — matches markLeadIrrelevant's behavior. The
+ * הסר button is rendered unconditionally (no edit-only gating), so the runtime
+ * guard here is what actually prevents viewer-mode mutations.
+ */
+async function removeLead(lead) {
+  if (state.mode !== 'edit') return;
+
+  const prev = state.leads.slice();
+  state.leads = state.leads.filter(l => l.id !== lead.id);
+  renderAll();
+
+  try {
+    const res = await apiPost({ action: 'removeLead', lead: lead });
+    /* Backend stamps removedAt + originSheet on the record it persists; prefer
+     * that exact record so the in-memory state matches what's on the sheet.
+     * Fall back to a client-stamped record if the response shape is unexpected
+     * (defensive — moveLeadIrrelevant uses the same pattern). */
+    const stored = (res && res.lead)
+      ? normalizeRemovedLead(res.lead)
+      : normalizeRemovedLead({
+          ...lead,
+          removedAt:   new Date().toISOString(),
+          originSheet: 'Leads',
+        });
+    state.removedLeads.unshift(stored);
+    renderAll();
+    showToast('הליד הוסר');
+  } catch (e) {
+    state.leads = prev;
+    renderAll();
+    showError('הסרת הליד נכשלה — ' + e.message);
+  }
+}
+
+function renderRemovedLeads() {
+  const list = document.getElementById('removed-list');
+  if (!list) return;
+  list.innerHTML = '';
+
+  const rows = state.removedLeads || [];
+
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'card billing-empty';
+    empty.textContent = 'אין לידים שהוסרו';
+    list.appendChild(empty);
+    return;
+  }
+
+  /* Build each row imperatively with textContent for user-entered fields
+   * (name, phone, originSheet) so no markup in those values is ever parsed
+   * as HTML. removedAt goes through formatDate which produces a locale string
+   * from a Date — also safe to set via textContent. */
+  rows.forEach(lead => {
+    const row = document.createElement('div');
+    row.className = 'irrelevant-row';
+    row.dataset.id = lead.id;
+
+    const cells = [
+      { label: 'שם',          value: lead.name  || '—', valueClass: 'p-name' },
+      { label: 'טלפון',        value: lead.phone || '—' },
+      { label: 'גיליון מקור',   value: lead.originSheet || '—' },
+      { label: 'תאריך הסרה',    value: lead.removedAt ? formatDate(lead.removedAt) : '—' },
+    ];
+
+    cells.forEach(c => {
+      const cell = document.createElement('div');
+      const label = document.createElement('span');
+      label.className = 'p-label';
+      label.textContent = c.label;
+      const val = document.createElement('span');
+      val.className = c.valueClass || 'p-val';
+      val.textContent = c.value;
+      cell.appendChild(label);
+      cell.appendChild(val);
+      row.appendChild(cell);
+    });
+
+    list.appendChild(row);
+  });
+}
+
 /* Confirm dialog with "אישור" / "ביטול" buttons. Reuses the same backdrop +
- * surface styling as the form modal but with no fields. */
-function showConfirm({ text, onConfirm }) {
+ * surface styling as the form modal but with no fields.
+ *
+ * Options:
+ *   text          — single-sentence Hebrew prompt (escaped, rendered inside <p>)
+ *   onConfirm     — async callback fired when the user clicks confirm
+ *   confirmLabel  — text on the confirm button (default 'אישור')
+ *   danger        — when true, the confirm button uses .btn.danger (red
+ *                   destructive gradient) instead of .btn.primary
+ *
+ * Backward-compatible with the prior {text, onConfirm} signature — existing
+ * callers (restoreIrrelevantLead) continue to render with 'אישור' / primary. */
+function showConfirm({ text, onConfirm, confirmLabel = 'אישור', danger = false }) {
   const root = document.getElementById('modal-root');
   const back = document.createElement('div');
   back.className = 'modal-backdrop';
+  const confirmClass = danger ? 'btn danger' : 'btn primary';
   back.innerHTML = `
     <div class="modal confirm-modal">
       <p class="confirm-text">${escapeHtml(text)}</p>
       <div class="form-actions">
         <button type="button" class="btn" data-action="cancel">ביטול</button>
-        <button type="button" class="btn primary" data-action="confirm">אישור</button>
+        <button type="button" class="${confirmClass}" data-action="confirm">${escapeHtml(confirmLabel)}</button>
       </div>
     </div>
   `;
