@@ -470,6 +470,9 @@ input:focus, select:focus, textarea:focus {
   border-color: rgba(255,77,94,.4);
   background: rgba(255,77,94,.10);
 }
+.lead-card .lc-actions .lc-irrelevant {
+  position: static; top: auto; left: auto;
+}
 
 .lead-card.irrelevant { opacity: .55; background: var(--surface-2); }
 
