@@ -792,7 +792,7 @@ function buildLeadCard(lead) {
 
   card.innerHTML = `
     <button class="lc-irrelevant edit-only" title="סמן כלא רלוונטי">לא רלוונטי ✕</button>
-    <button class="lc-irrelevant lc-remove" style="left: auto; right: 8px;" title="הסר ליד">הסר</button>
+    <button class="lc-irrelevant lc-remove" style="top: 34px;" title="הסר ליד">הסר</button>
     <div class="lc-name">${escapeHtml(lead.name)}</div>
     <div class="lc-meta">
       ${escapeHtml(lead.phone)} ${lead.house ? '· ' + escapeHtml(lead.house) : ''}
