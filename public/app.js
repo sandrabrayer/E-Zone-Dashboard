@@ -643,6 +643,36 @@ function cryptoId() {
   return 'id-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
 
+/* Canonicalize Israeli phone numbers so different input formats of the same
+ * number collapse to one comparable string. Mirrors the Outpatient app's
+ * helper. Empty / null / undefined returns '' (caller skips dedup). */
+function normalizePhone(raw) {
+  if (!raw) return '';
+  var s = String(raw);
+  s = s.replace(/[\s\-\(\)]/g, '');
+  s = s.replace(/^\+/, '');
+  s = s.replace(/^00/, '');
+  if (s.length > 0 && s[0] === '0') {
+    s = '972' + s.substring(1);
+  }
+  s = s.replace(/\D/g, '');
+  return s;
+}
+
+/* Looks for an existing lead (active or marked-irrelevant) with the same
+ * normalized phone. Removed (soft-deleted) leads are intentionally excluded:
+ * re-adding a contact after retention removal is a legitimate flow. */
+function findDuplicateLeadByPhone(normalizedPhone) {
+  if (!normalizedPhone) return null;
+  var pool = state.leads.concat(state.irrelevantLeads);
+  for (var i = 0; i < pool.length; i++) {
+    if (normalizePhone(pool[i].phone) === normalizedPhone) {
+      return pool[i];
+    }
+  }
+  return null;
+}
+
 /* ===== Render router ===== */
 function renderAll() {
   renderDashboard();
@@ -1162,25 +1192,46 @@ function openAddLeadModal() {
     submitLabel: 'הוסף ליד',
     onSubmit: async values => {
       if (!values.name) { showError('יש להזין שם'); return false; }
-      const id = cryptoId();
-      const lead = normalizeLead({
-        id, ...values,
-        stage: 'new',
-        /* todayISO() (YYYY-MM-DD) instead of a full toISOString() timestamp
-         * so the value matches what the inline date picker reads/writes —
-         * mismatched formats round-trip through isoDate() but the local
-         * date field is the source of truth. */
-        created: todayISO(),
-      });
-      state.leads.unshift(lead);
-      renderAll();
-      try {
-        await saveAll();
-      } catch (e) {
-        state.leads = state.leads.filter(l => l.id !== id);
+
+      const doCreateLead = async vals => {
+        const id = cryptoId();
+        const lead = normalizeLead({
+          id, ...vals,
+          stage: 'new',
+          /* todayISO() (YYYY-MM-DD) instead of a full toISOString() timestamp
+           * so the value matches what the inline date picker reads/writes —
+           * mismatched formats round-trip through isoDate() but the local
+           * date field is the source of truth. */
+          created: todayISO(),
+        });
+        state.leads.unshift(lead);
         renderAll();
-        showError('הוספת ליד נכשלה — ' + e.message);
+        try {
+          await saveAll();
+        } catch (e) {
+          state.leads = state.leads.filter(l => l.id !== id);
+          renderAll();
+          showError('הוספת ליד נכשלה — ' + e.message);
+        }
+      };
+
+      const normalized = normalizePhone(values.phone);
+      if (normalized) {
+        const existing = findDuplicateLeadByPhone(normalized);
+        if (existing) {
+          /* Closes the Add Lead modal (showModal treats any non-false return
+           * as success → calls close()). The user re-confirms in showConfirm;
+           * cancel = no lead created, confirm = doCreateLead runs. */
+          showConfirm({
+            text: 'כבר קיים ליד "' + existing.name + '" עם הטלפון ' + values.phone + '. להוסיף בכל זאת?',
+            confirmLabel: 'הוסף בכל זאת',
+            onConfirm: () => doCreateLead(values),
+          });
+          return true;
+        }
       }
+
+      await doCreateLead(values);
       return true;
     }
   });
