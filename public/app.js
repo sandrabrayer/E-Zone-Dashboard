@@ -791,8 +791,6 @@ function buildLeadCard(lead) {
     : `<span class="lc-created-value">${escapeHtml(createdDisplay)}</span>`;
 
   card.innerHTML = `
-    <button class="lc-irrelevant edit-only" title="סמן כלא רלוונטי">לא רלוונטי ✕</button>
-    <button class="lc-irrelevant lc-remove" style="top: 34px;" title="הסר ליד">הסר</button>
     <div class="lc-name">${escapeHtml(lead.name)}</div>
     <div class="lc-meta">
       ${escapeHtml(lead.phone)} ${lead.house ? '· ' + escapeHtml(lead.house) : ''}
@@ -808,6 +806,8 @@ function buildLeadCard(lead) {
       <button class="btn small" data-action="back" ${idx === 0 ? 'disabled' : ''}>שלב קודם →</button>
       <button class="btn small primary" data-action="next">${isLast ? 'הושלם' : '← שלב הבא'}</button>
       <button class="btn small" data-action="edit" title="ערוך ליד">✏️</button>
+      <button class="lc-irrelevant" title="סמן כלא רלוונטי">לא רלוונטי ✕</button>
+      <button class="lc-irrelevant lc-remove" title="הסר ליד">הסר</button>
     </div>
   `;
 
