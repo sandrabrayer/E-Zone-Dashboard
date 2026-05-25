@@ -675,6 +675,19 @@ input:focus, select:focus, textarea:focus {
 .irrelevant-row .p-name { font-weight: 700; font-size: 16px; color: var(--text); }
 .irrelevant-row .row-actions { justify-self: start; }
 
+/* Phase 2b — reason + free-text note appended below the existing card grid.
+ * grid-column: 1 / -1 makes the meta span all columns as an implicit second
+ * row instead of becoming a 7th cell. */
+.irrelevant-meta {
+  grid-column: 1 / -1;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .confirm-modal { width: 380px; }
 .confirm-modal .confirm-text {
   margin: 0 0 18px;
