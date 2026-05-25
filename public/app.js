@@ -21,6 +21,16 @@ const STAGES = [
 const STAGE_IRRELEVANT = { id: 'irrelevant', label: 'לא רלוונטי' };
 const ALL_STAGES_FOR_PIPELINE = [...STAGES, STAGE_IRRELEVANT];
 
+/* Reason captured when Vered marks a lead as "לא רלוונטי" (Phase 2b).
+ * Keys persist to the irrelevant sheet (not_relevant_reason column) so a UI
+ * label rename never invalidates historical rows. The Hebrew labels are
+ * render-time only. */
+const NOT_RELEVANT_REASON_LABELS = {
+  never_relevant:     'לא היה רלוונטי מלכתחילה',
+  stopped_from_house: 'המשיך מאחד הבתים והפסיק',
+  stopped_new:        'ליד חדש שהתחיל והפסיק',
+};
+
 const STATUS_OPTIONS = [
   { id: 'active',   label: 'פעיל' },
   { id: 'trial',    label: 'תקופת ניסיון' },
@@ -609,6 +619,12 @@ function normalizeIrrelevantLead(l) {
   base.stage = 'irrelevant';
   base.originSheet = pickField(l, ['originSheet', 'origin_sheet', 'גיליון מקור']) || '';
   base.movedAt     = pickField(l, ['movedAt', 'moved_at', 'תאריך העברה']) || '';
+  /* Phase 2b — reason + free-text note captured at לא רלוונטי time. Mirror
+   * the originSheet/movedAt pass-through pattern: without this, the backend
+   * writes the columns but the next getData() round-trip silently drops them
+   * (same bug Outpatient hit in commit 1d2436c). */
+  base.not_relevant_reason = pickField(l, ['not_relevant_reason']) || '';
+  base.not_relevant_note   = pickField(l, ['not_relevant_note']) || '';
   return base;
 }
 
@@ -921,30 +937,40 @@ function stageLabelById(stageId) {
   return s ? s.label : '';
 }
 
-async function markLeadIrrelevant(lead) {
+function markLeadIrrelevant(lead) {
   if (state.mode !== 'edit') return;
 
-  const moved = {
-    ...lead,
-    stage: 'irrelevant',
-    originSheet: lead.stage || 'new',
-    movedAt: new Date().toISOString(),
-  };
+  /* Phase 2b — capture a reason + optional free-text note before the move.
+   * The actual move (optimistic UI + apiPost + rollback) runs inside the
+   * modal's onConfirm callback so cancel = no state mutation at all. */
+  showIrrelevantReasonModal({
+    onConfirm: async ({ reason, note }) => {
+      const moved = {
+        ...lead,
+        stage: 'irrelevant',
+        originSheet: lead.stage || 'new',
+        movedAt: new Date().toISOString(),
+        not_relevant_reason: reason,
+        not_relevant_note: note,
+      };
 
-  // Optimistic UI update
-  state.leads = state.leads.filter(l => l.id !== lead.id);
-  state.irrelevantLeads.unshift(moved);
-  renderAll();
+      // Optimistic UI update
+      state.leads = state.leads.filter(l => l.id !== lead.id);
+      state.irrelevantLeads.unshift(moved);
+      renderAll();
 
-  try {
-    await apiPost({ action: 'moveLeadIrrelevant', lead: moved });
-  } catch (e) {
-    // Roll back on failure
-    state.irrelevantLeads = state.irrelevantLeads.filter(l => l.id !== moved.id);
-    state.leads.unshift(lead);
-    renderAll();
-    showError('סימון כלא רלוונטי נכשל — ' + e.message);
-  }
+      try {
+        await apiPost({ action: 'moveLeadIrrelevant', lead: moved });
+      } catch (e) {
+        // Roll back on failure
+        state.irrelevantLeads = state.irrelevantLeads.filter(l => l.id !== moved.id);
+        state.leads.unshift(lead);
+        renderAll();
+        showError('סימון כלא רלוונטי נכשל — ' + e.message);
+        throw e;                         // keep modal open so the user can retry
+      }
+    },
+  });
 }
 
 async function restoreIrrelevantLead(ilead) {
@@ -1032,6 +1058,46 @@ function renderIrrelevantLeads() {
       </div>
     `;
     row.querySelector('[data-action="restore"]').onclick = () => restoreIrrelevantLead(lead);
+
+    /* Phase 2b — reason + free-text note captured when the lead was marked.
+     * Built imperatively with textContent for both the reason label and the
+     * user-entered note (note is free-text → must not be parsed as HTML).
+     * Legacy rows from before this PR have empty reason+note → meta block
+     * is skipped entirely so the row layout stays compact. */
+    const reasonLabel = lead.not_relevant_reason
+      ? (NOT_RELEVANT_REASON_LABELS[lead.not_relevant_reason] || lead.not_relevant_reason)
+      : '';
+    const noteText = lead.not_relevant_note || '';
+    if (reasonLabel || noteText) {
+      const meta = document.createElement('div');
+      meta.className = 'irrelevant-meta';
+      if (reasonLabel) {
+        const r = document.createElement('div');
+        r.className = 'irrelevant-meta-reason';
+        const rl = document.createElement('span');
+        rl.className = 'irrelevant-meta-label';
+        rl.textContent = 'סיבה: ';
+        const rv = document.createElement('span');
+        rv.textContent = reasonLabel;
+        r.appendChild(rl);
+        r.appendChild(rv);
+        meta.appendChild(r);
+      }
+      if (noteText) {
+        const n = document.createElement('div');
+        n.className = 'irrelevant-meta-note';
+        const nl = document.createElement('span');
+        nl.className = 'irrelevant-meta-label';
+        nl.textContent = 'פירוט: ';
+        const nv = document.createElement('span');
+        nv.textContent = noteText;
+        n.appendChild(nl);
+        n.appendChild(nv);
+        meta.appendChild(n);
+      }
+      row.appendChild(meta);
+    }
+
     list.appendChild(row);
   });
 }
@@ -1164,6 +1230,96 @@ function showConfirm({ text, onConfirm, confirmLabel = 'אישור', danger = fa
     catch (err) {
       console.error('[E-ZONE] confirm onConfirm threw:', err);
       showError(err.message || 'הפעולה נכשלה');
+    }
+  };
+}
+
+/* Reason-capture modal for the "לא רלוונטי" flow (Phase 2b). Mirrors
+ * showConfirm's standalone pattern rather than extending the shared showModal
+ * — radios aren't a field type the generic modal supports, and the wiring
+ * (disable-submit-until-radio-picked) is scoped to this one screen.
+ *
+ * Radio labels are escapeHtml'd even though they come from a static map, just
+ * to keep the "no innerHTML of unsanitized strings" rule uniform across new
+ * code. Reason values are the stable keys (never_relevant / stopped_from_house
+ * / stopped_new) — labels are render-time only. */
+function showIrrelevantReasonModal({ onConfirm }) {
+  const root = document.getElementById('modal-root');
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+
+  const radiosHtml = Object.keys(NOT_RELEVANT_REASON_LABELS).map(key => `
+    <label class="reason-radio">
+      <input type="radio" name="not_relevant_reason" value="${escapeHtml(key)}" />
+      <span>${escapeHtml(NOT_RELEVANT_REASON_LABELS[key])}</span>
+    </label>
+  `).join('');
+
+  back.innerHTML = `
+    <div class="modal">
+      <h3>סימון כלא רלוונטי</h3>
+      <form>
+        <div class="form-row">
+          <fieldset class="reason-fieldset">
+            <legend>סיבה</legend>
+            ${radiosHtml}
+          </fieldset>
+        </div>
+        <div class="form-row">
+          <label>פירוט</label>
+          <textarea name="not_relevant_note" rows="3" maxlength="500"></textarea>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn primary" disabled>אישור</button>
+        </div>
+      </form>
+    </div>
+  `;
+  root.appendChild(back);
+
+  const close = () => back.remove();
+  const cancelBtn = back.querySelector('[data-action="cancel"]');
+  const submitBtn = back.querySelector('button[type="submit"]');
+  const form      = back.querySelector('form');
+  const radios    = back.querySelectorAll('input[name="not_relevant_reason"]');
+
+  cancelBtn.onclick = close;
+  back.addEventListener('click', e => { if (e.target === back) close(); });
+
+  /* Enable submit only once a reason is picked. No default selection per spec
+   * — forces explicit choice. */
+  radios.forEach(r => {
+    r.addEventListener('change', () => {
+      submitBtn.disabled = !Array.from(radios).some(x => x.checked);
+    });
+  });
+
+  let submitting = false;
+  form.onsubmit = async e => {
+    e.preventDefault();
+    if (submitting) return;
+    const picked = Array.from(radios).find(x => x.checked);
+    if (!picked) return;                 // defensive — submit was disabled
+    submitting = true;
+    submitBtn.disabled = true;
+    cancelBtn.disabled = true;
+    submitBtn.textContent = 'שומר...';
+
+    const fd = new FormData(form);
+    const reason = (fd.get('not_relevant_reason') || '').toString();
+    const note   = (fd.get('not_relevant_note')   || '').toString();
+
+    try {
+      await onConfirm({ reason, note });
+      close();
+    } catch (err) {
+      console.error('[E-ZONE] irrelevant-reason onConfirm threw:', err);
+      showError(err.message || 'הפעולה נכשלה');
+      submitting = false;
+      submitBtn.disabled = false;
+      cancelBtn.disabled = false;
+      submitBtn.textContent = 'אישור';
     }
   };
 }

@@ -105,7 +105,7 @@ const LEAD_COLUMNS = [
  *   movedAt     — ISO timestamp recorded when the lead was marked irrelevant
  * Storing the stage id (not the Hebrew label) keeps the restore lookup stable
  * across UI label renames. */
-const IRRELEVANT_LEAD_COLUMNS = LEAD_COLUMNS.concat(['originSheet', 'movedAt']);
+const IRRELEVANT_LEAD_COLUMNS = LEAD_COLUMNS.concat(['originSheet', 'movedAt', 'not_relevant_reason', 'not_relevant_note']);
 
 /* Removed-leads sheet mirrors LEAD_COLUMNS plus two metadata fields:
  *   removedAt   — ISO timestamp recorded when the lead was soft-deleted
@@ -504,9 +504,11 @@ function moveLeadIrrelevant_(lead) {
     const irrSh   = getOrCreateSheet_(IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS);
 
     const record = Object.assign({}, lead, {
-      stage:       'irrelevant',
-      originSheet: lead.originSheet || '',
-      movedAt:     lead.movedAt     || new Date().toISOString(),
+      stage:               'irrelevant',
+      originSheet:         lead.originSheet || '',
+      movedAt:             lead.movedAt     || new Date().toISOString(),
+      not_relevant_reason: lead.not_relevant_reason || '',
+      not_relevant_note:   lead.not_relevant_note   || '',
     });
 
     deleteRowsById_(leadsSh, LEAD_COLUMNS, lead.id);
