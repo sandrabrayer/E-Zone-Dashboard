@@ -598,9 +598,9 @@ function normalizeLead(l) {
     source:    pickField(l, ['source', 'מקור', 'מקור הפניה', 'Source']),
     note:      pickField(l, ['note', 'notes', 'הערות', 'הערה', 'Note']),
     stage:     normalizeStage(pickField(l, ['stage', 'שלב', 'סטטוס ליד', 'Stage'])),
-    visitDate: pickField(l, ['visitDate', 'visit_date', 'תאריך ביקור']),
-    visitTime: pickField(l, ['visitTime', 'visit_time', 'שעת ביקור', 'שעה']),
-    entryDate: pickField(l, ['entryDate', 'entry_date', 'תאריך כניסה']),
+    visitDate: isoDate(pickField(l, ['visitDate', 'visit_date', 'תאריך ביקור'])),
+    visitTime: isoTime(pickField(l, ['visitTime', 'visit_time', 'שעת ביקור', 'שעה'])),
+    entryDate: isoDate(pickField(l, ['entryDate', 'entry_date', 'תאריך כניסה'])),
     advance:   advRaw === '' ? '' : Number(advRaw) || 0,
     /* Stored as YYYY-MM-DD. Sheets sometimes returns a Date object for date
      * cells (depending on locale + column type); isoDate normalizes both
@@ -645,7 +645,7 @@ function normalizePatient(p) {
     id:       pickField(p, ['id', 'ID', 'מזהה']) || cryptoId(),
     houseId:  resolveHouseId(pickField(p, ['houseId', 'house_id', 'בית', 'בית_מזהה'])),
     name:     pickField(p, ['name', 'שם', 'שם מטופל', 'Name']),
-    date:     pickField(p, ['date', 'תאריך', 'תאריך כניסה', 'entryDate']),
+    date:     isoDate(pickField(p, ['date', 'תאריך', 'תאריך כניסה', 'entryDate'])),
     pay:      Number(pickField(p, ['pay', 'payment', 'תשלום', 'תשלום חודשי'])) || 0,
     adv:      Number(pickField(p, ['adv', 'advance', 'מקדמה'])) || 0,
     status:   normalizeStatus(pickField(p, ['status', 'סטטוס', 'מצב'])),
@@ -1877,6 +1877,35 @@ function isoDate(v) {
   const d = new Date(v);
   if (!isNaN(d)) return d.toISOString().slice(0, 10);
   return String(v);
+}
+
+/* Sheets stores time-only cells as a Date anchored on 1899-12-30 UTC. When
+ * the Apps Script readSheet_ uses getValues(), those cells come back as
+ * Date objects (or, after JSON transport, full ISO strings like
+ * "1899-12-30T13:30:00.000Z"). <input type="time"> only accepts "HH:MM",
+ * so without coercion the input silently renders empty. Mirrors isoDate.
+ * UTC getters are deliberate — local-timezone reads would shift the
+ * displayed time by the user's offset since the anchor is UTC. */
+function isoTime(v) {
+  if (!v) return '';
+  if (typeof v === 'string') {
+    const m = v.match(/^(\d{2}):(\d{2})/);
+    if (m) return `${m[1]}:${m[2]}`;
+    const d = new Date(v);
+    if (!isNaN(d)) {
+      const hh = String(d.getUTCHours()).padStart(2, '0');
+      const mm = String(d.getUTCMinutes()).padStart(2, '0');
+      return `${hh}:${mm}`;
+    }
+    return v;
+  }
+  const d = new Date(v);
+  if (!isNaN(d)) {
+    const hh = String(d.getUTCHours()).padStart(2, '0');
+    const mm = String(d.getUTCMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
+  }
+  return '';
 }
 
 function dayOfMonth(iso) {
