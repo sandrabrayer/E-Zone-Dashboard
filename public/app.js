@@ -31,6 +31,16 @@ const NOT_RELEVANT_REASON_LABELS = {
   stopped_new:        'ליד חדש שהתחיל והפסיק',
 };
 
+/* Phase 2d — three-disposition closure model. Splits the single לא רלוונטי
+ * bucket into three first-class outcomes. Stable keys persist to the sheet
+ * (disposition column); Hebrew labels are render-time only so a UI label
+ * rename never invalidates historical rows. Sections render in this order. */
+const DISPOSITION_LABELS = {
+  not_relevant:  'לא רלוונטי',
+  completed:     'סיים טיפול',
+  stopped_early: 'הפסיק לפני הזמן',
+};
+
 const STATUS_OPTIONS = [
   { id: 'active',   label: 'פעיל' },
   { id: 'trial',    label: 'תקופת ניסיון' },
@@ -625,7 +635,26 @@ function normalizeIrrelevantLead(l) {
    * (same bug Outpatient hit in commit 1d2436c). */
   base.not_relevant_reason = pickField(l, ['not_relevant_reason']) || '';
   base.not_relevant_note   = pickField(l, ['not_relevant_note']) || '';
+  /* Phase 2d-1 — disposition pass-through, then lazy migration. New writes
+   * have an explicit disposition column; legacy rows have it empty and
+   * computeDisposition fills it from the Phase 2b reason field. */
+  base.disposition = pickField(l, ['disposition']) || '';
+  base.disposition = computeDisposition(base);
   return base;
+}
+
+/* Phase 2d-1 — derives a row's disposition from either the new explicit
+ * column or, for legacy rows, the Phase 2b not_relevant_reason field. Always
+ * resolves to one of the three stable keys so callers can group safely. */
+function computeDisposition(lead) {
+  const explicit = lead.disposition;
+  if (explicit === 'not_relevant' || explicit === 'completed' || explicit === 'stopped_early') {
+    return explicit;
+  }
+  const reason = lead.not_relevant_reason;
+  if (reason === 'never_relevant') return 'not_relevant';
+  if (reason === 'stopped_from_house' || reason === 'stopped_new') return 'stopped_early';
+  return 'not_relevant';
 }
 
 /* Removed (soft-deleted) leads carry the same fields as a regular lead plus
@@ -952,6 +981,10 @@ function markLeadIrrelevant(lead) {
         movedAt: new Date().toISOString(),
         not_relevant_reason: reason,
         not_relevant_note: note,
+        /* Phase 2d-1 — explicit disposition on new writes via the pre-2d-2
+         * לא רלוונטי button. Backend defaults the same value, but writing it
+         * client-side keeps the in-memory record consistent with the sheet. */
+        disposition: 'not_relevant',
       };
 
       // Optimistic UI update
@@ -1025,81 +1058,127 @@ function renderIrrelevantLeads() {
     return;
   }
 
+  /* Phase 2d-1 — group rows by disposition and render up to three sections
+   * in spec order. Sections with zero rows are skipped so empty headers
+   * don't clutter the tab. */
+  const grouped = { not_relevant: [], completed: [], stopped_early: [] };
   rows.forEach(lead => {
-    const originLabel = stageLabelById(lead.originSheet) || '—';
-    const movedLabel  = lead.movedAt ? formatDate(lead.movedAt) : '—';
-
-    const row = document.createElement('div');
-    row.className = 'irrelevant-row';
-    row.dataset.id = lead.id;
-    row.innerHTML = `
-      <div>
-        <span class="p-label">שם</span>
-        <span class="p-name">${escapeHtml(lead.name)}</span>
-      </div>
-      <div>
-        <span class="p-label">טלפון</span>
-        <span class="p-val">${escapeHtml(lead.phone || '—')}</span>
-      </div>
-      <div>
-        <span class="p-label">בית מועדף</span>
-        <span class="p-val">${escapeHtml(lead.house || '—')}</span>
-      </div>
-      <div>
-        <span class="p-label">גיליון מקור</span>
-        <span class="p-val">${escapeHtml(originLabel)}</span>
-      </div>
-      <div>
-        <span class="p-label">תאריך העברה</span>
-        <span class="p-val">${escapeHtml(movedLabel)}</span>
-      </div>
-      <div class="row-actions edit-only">
-        <button class="btn small primary" data-action="restore">שחזר ליד</button>
-      </div>
-    `;
-    row.querySelector('[data-action="restore"]').onclick = () => restoreIrrelevantLead(lead);
-
-    /* Phase 2b — reason + free-text note captured when the lead was marked.
-     * Built imperatively with textContent for both the reason label and the
-     * user-entered note (note is free-text → must not be parsed as HTML).
-     * Legacy rows from before this PR have empty reason+note → meta block
-     * is skipped entirely so the row layout stays compact. */
-    const reasonLabel = lead.not_relevant_reason
-      ? (NOT_RELEVANT_REASON_LABELS[lead.not_relevant_reason] || lead.not_relevant_reason)
-      : '';
-    const noteText = lead.not_relevant_note || '';
-    if (reasonLabel || noteText) {
-      const meta = document.createElement('div');
-      meta.className = 'irrelevant-meta';
-      if (reasonLabel) {
-        const r = document.createElement('div');
-        r.className = 'irrelevant-meta-reason';
-        const rl = document.createElement('span');
-        rl.className = 'irrelevant-meta-label';
-        rl.textContent = 'סיבה: ';
-        const rv = document.createElement('span');
-        rv.textContent = reasonLabel;
-        r.appendChild(rl);
-        r.appendChild(rv);
-        meta.appendChild(r);
-      }
-      if (noteText) {
-        const n = document.createElement('div');
-        n.className = 'irrelevant-meta-note';
-        const nl = document.createElement('span');
-        nl.className = 'irrelevant-meta-label';
-        nl.textContent = 'פירוט: ';
-        const nv = document.createElement('span');
-        nv.textContent = noteText;
-        n.appendChild(nl);
-        n.appendChild(nv);
-        meta.appendChild(n);
-      }
-      row.appendChild(meta);
-    }
-
-    list.appendChild(row);
+    const key = grouped[lead.disposition] ? lead.disposition : 'not_relevant';
+    grouped[key].push(lead);
   });
+
+  ['not_relevant', 'completed', 'stopped_early'].forEach(key => {
+    const sectionRows = grouped[key];
+    if (!sectionRows.length) return;
+
+    const section = document.createElement('div');
+    section.className = 'closure-section';
+    section.dataset.disposition = key;
+
+    const heading = document.createElement('div');
+    heading.className = 'closure-section-heading';
+    const caret = document.createElement('span');
+    caret.className = 'closure-section-caret';
+    caret.textContent = '▾';
+    const label = document.createElement('span');
+    label.className = 'closure-section-label';
+    label.textContent = DISPOSITION_LABELS[key];
+    const count = document.createElement('span');
+    count.className = 'closure-section-count';
+    count.textContent = '(' + sectionRows.length + ')';
+    heading.appendChild(caret);
+    heading.appendChild(label);
+    heading.appendChild(count);
+    heading.onclick = () => section.classList.toggle('collapsed');
+
+    const body = document.createElement('div');
+    body.className = 'closure-section-body';
+
+    sectionRows.forEach(lead => body.appendChild(buildIrrelevantRow(lead)));
+
+    section.appendChild(heading);
+    section.appendChild(body);
+    list.appendChild(section);
+  });
+}
+
+/* Builds one row card for the שימור לידים tab. Extracted from
+ * renderIrrelevantLeads in Phase 2d-1 so the three disposition sections
+ * share identical row markup (including the Phase 2b meta block). */
+function buildIrrelevantRow(lead) {
+  const originLabel = stageLabelById(lead.originSheet) || '—';
+  const movedLabel  = lead.movedAt ? formatDate(lead.movedAt) : '—';
+
+  const row = document.createElement('div');
+  row.className = 'irrelevant-row';
+  row.dataset.id = lead.id;
+  row.innerHTML = `
+    <div>
+      <span class="p-label">שם</span>
+      <span class="p-name">${escapeHtml(lead.name)}</span>
+    </div>
+    <div>
+      <span class="p-label">טלפון</span>
+      <span class="p-val">${escapeHtml(lead.phone || '—')}</span>
+    </div>
+    <div>
+      <span class="p-label">בית מועדף</span>
+      <span class="p-val">${escapeHtml(lead.house || '—')}</span>
+    </div>
+    <div>
+      <span class="p-label">גיליון מקור</span>
+      <span class="p-val">${escapeHtml(originLabel)}</span>
+    </div>
+    <div>
+      <span class="p-label">תאריך העברה</span>
+      <span class="p-val">${escapeHtml(movedLabel)}</span>
+    </div>
+    <div class="row-actions edit-only">
+      <button class="btn small primary" data-action="restore">שחזר ליד</button>
+    </div>
+  `;
+  row.querySelector('[data-action="restore"]').onclick = () => restoreIrrelevantLead(lead);
+
+  /* Phase 2b — reason + free-text note captured when the lead was marked.
+   * Built imperatively with textContent for both the reason label and the
+   * user-entered note (note is free-text → must not be parsed as HTML).
+   * Legacy rows from before this PR have empty reason+note → meta block
+   * is skipped entirely so the row layout stays compact. */
+  const reasonLabel = lead.not_relevant_reason
+    ? (NOT_RELEVANT_REASON_LABELS[lead.not_relevant_reason] || lead.not_relevant_reason)
+    : '';
+  const noteText = lead.not_relevant_note || '';
+  if (reasonLabel || noteText) {
+    const meta = document.createElement('div');
+    meta.className = 'irrelevant-meta';
+    if (reasonLabel) {
+      const r = document.createElement('div');
+      r.className = 'irrelevant-meta-reason';
+      const rl = document.createElement('span');
+      rl.className = 'irrelevant-meta-label';
+      rl.textContent = 'סיבה: ';
+      const rv = document.createElement('span');
+      rv.textContent = reasonLabel;
+      r.appendChild(rl);
+      r.appendChild(rv);
+      meta.appendChild(r);
+    }
+    if (noteText) {
+      const n = document.createElement('div');
+      n.className = 'irrelevant-meta-note';
+      const nl = document.createElement('span');
+      nl.className = 'irrelevant-meta-label';
+      nl.textContent = 'פירוט: ';
+      const nv = document.createElement('span');
+      nv.textContent = noteText;
+      n.appendChild(nl);
+      n.appendChild(nv);
+      meta.appendChild(n);
+    }
+    row.appendChild(meta);
+  }
+
+  return row;
 }
 
 /* ===== Removed leads — soft-delete =====

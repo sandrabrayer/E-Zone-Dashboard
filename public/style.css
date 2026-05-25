@@ -688,6 +688,42 @@ input:focus, select:focus, textarea:focus {
   line-height: 1.5;
 }
 
+/* Phase 2d-1 — closure dispositions split into three collapsible sections
+ * inside the שימור לידים tab. Foundation for the closure modal in 2d-2.
+ * Reuses existing palette vars; sections default open so no data is hidden
+ * on first load. */
+.closure-section { margin-bottom: 18px; }
+.closure-section:last-child { margin-bottom: 0; }
+
+.closure-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+}
+.closure-section-heading:hover { color: var(--text-dim); }
+.closure-section-caret {
+  font-size: 11px;
+  color: var(--text-dim);
+  transition: transform .15s;
+  display: inline-block;
+}
+.closure-section.collapsed .closure-section-caret { transform: rotate(-90deg); }
+.closure-section-count {
+  color: var(--text-dim);
+  font-weight: 500;
+  font-size: 13px;
+}
+.closure-section-body { display: grid; gap: 10px; }
+.closure-section.collapsed .closure-section-body { display: none; }
+
 /* Phase 2b follow-up — radio rows in showIrrelevantReasonModal.
  * .modal label specificity (0,0,1,1) beats a bare .reason-radio selector,
  * so we scope this to .modal .reason-radio and reset the inherited
