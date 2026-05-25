@@ -688,6 +688,28 @@ input:focus, select:focus, textarea:focus {
   line-height: 1.5;
 }
 
+/* Phase 2b follow-up — radio rows in showIrrelevantReasonModal.
+ * .modal label specificity (0,0,1,1) beats a bare .reason-radio selector,
+ * so we scope this to .modal .reason-radio and reset the inherited
+ * block/uppercase/muted styling that the form-label rule applies. */
+.modal .reason-radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  margin-bottom: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.modal .reason-radio input[type="radio"] {
+  width: auto;
+  margin: 0;
+  flex-shrink: 0;
+}
+
 .confirm-modal { width: 380px; }
 .confirm-modal .confirm-text {
   margin: 0 0 18px;
