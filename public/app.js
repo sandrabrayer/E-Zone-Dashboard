@@ -703,6 +703,7 @@ function normalizeDischargedPatient(p) {
   base.dischargedAt   = pickField(p, ['dischargedAt', 'discharged_at', 'תאריך שחרור']) || '';
   base.disposition    = pickField(p, ['disposition']) || '';
   base.discharge_note = pickField(p, ['discharge_note', 'dischargeNote', 'הערת שחרור']) || '';
+  base.restored       = pickField(p, ['restored', 'משוחזר']);
   return base;
 }
 function cryptoId() {
@@ -1300,7 +1301,11 @@ function renderDischargedPatients() {
   if (!list) return;
   list.innerHTML = '';
 
-  const rows = state.dischargedPatients || [];
+  /* Phase 2e-2: hide rows the user has already restored. Backend writes
+   * restored='TRUE' (string) on restorePatient_; Sheets may coerce to bool
+   * in some configs, so accept both. The audit row stays in the sheet. */
+  const rows = (state.dischargedPatients || [])
+    .filter(d => d.restored !== 'TRUE' && d.restored !== true);
   const countEl = document.getElementById('discharged-patients-count');
   if (countEl) countEl.textContent = rows.length;
 
@@ -1453,22 +1458,32 @@ function showConfirm({ text, onConfirm, confirmLabel = 'אישור', danger = fa
 /* Phase 2d-2 closure modal. Mirrors showIrrelevantReasonModal but driven by
  * DISPOSITION_LABELS (three first-class outcomes: not_relevant / completed
  * / stopped_early) instead of the Phase 2b reason map. Submit stays disabled
- * until a disposition is picked. onConfirm payload: { disposition, note }. */
-function showCloseLeadModal({ onConfirm }) {
+ * until a disposition is picked. onConfirm payload: { disposition, note }.
+ *
+ * Phase 2e-2: accepts optional `dispositions` (array of keys to render —
+ * defaults to all 3 keys of DISPOSITION_LABELS) and `title` (defaults to
+ * 'סגירת ליד'). Patient discharge passes a 2-key subset + 'שחרור מטופל'.
+ * Existing closeLead caller relies on defaults. */
+function showCloseLeadModal({ onConfirm, dispositions, title }) {
   const root = document.getElementById('modal-root');
   const back = document.createElement('div');
   back.className = 'modal-backdrop';
 
-  const radiosHtml = Object.keys(DISPOSITION_LABELS).map(key => `
+  const keys      = Array.isArray(dispositions) && dispositions.length
+                  ? dispositions
+                  : Object.keys(DISPOSITION_LABELS);
+  const heading   = title || 'סגירת ליד';
+
+  const radiosHtml = keys.map(key => `
     <label class="reason-radio">
       <input type="radio" name="disposition" value="${escapeHtml(key)}" />
-      <span>${escapeHtml(DISPOSITION_LABELS[key])}</span>
+      <span>${escapeHtml(DISPOSITION_LABELS[key] || key)}</span>
     </label>
   `).join('');
 
   back.innerHTML = `
     <div class="modal">
-      <h3>סגירת ליד</h3>
+      <h3>${escapeHtml(heading)}</h3>
       <form>
         <div class="form-row">
           <fieldset class="reason-fieldset">
@@ -1896,36 +1911,70 @@ function renderPatients() {
 
     row.querySelector('[data-action="edit"]').onclick = () => openEditPatientModal(p);
     const releaseBtn = row.querySelector('[data-action="release"]');
-    if (releaseBtn) releaseBtn.onclick = () => releasePatient(p);
+    if (releaseBtn) releaseBtn.onclick = () => dischargePatient(p);
     row.querySelector('[data-action="delete"]').onclick = () => deletePatient(p);
 
     list.appendChild(row);
   });
 }
 
-function releasePatient(p) {
-  showModal({
-    title: 'שחרור מטופל — ' + p.name,
-    fields: [
-      { name: 'exitDate', label: 'תאריך שחרור', type: 'date', required: true, value: todayISO() },
-    ],
-    submitLabel: 'שחרר',
-    onSubmit: async v => {
-      if (!v.exitDate) return false;
+/* Phase 2e-2 — שחרר button entry point. Opens the closure modal restricted to
+ * the 2 patient-relevant dispositions (סיים טיפול / הפסיק לפני הזמן) and
+ * performs TWO writes on confirm:
+ *   1. existing release semantics: status='released' + exitDate=today, persisted
+ *      via saveAll → replaceHousePatients_ (no backend change).
+ *   2. additive audit row to DISCHARGED_PATIENTS_SHEET via dischargePatient
+ *      action, carrying disposition + free-text note.
+ * Optimistic UI for both. Rollback restores the patient mutation AND drops
+ * the optimistic discharged row if either write fails. */
+function dischargePatient(p) {
+  if (state.mode !== 'edit') return;
+
+  showCloseLeadModal({
+    title: 'שחרור מטופל',
+    dispositions: ['completed', 'stopped_early'],
+    onConfirm: async ({ disposition, note }) => {
       const prev = { status: p.status, exitDate: p.exitDate };
-      p.status = 'released';
-      p.exitDate = v.exitDate;
+      const exitDate = todayISO();
+
+      const auditRow = {
+        ...p,
+        status:         'released',
+        exitDate:       exitDate,
+        dischargedAt:   new Date().toISOString(),
+        disposition:    disposition,
+        discharge_note: note,
+      };
+
+      p.status   = 'released';
+      p.exitDate = exitDate;
+      state.dischargedPatients = state.dischargedPatients || [];
+      state.dischargedPatients.unshift(auditRow);
       renderAll();
+
       try {
         await saveAll();
       } catch (e) {
         Object.assign(p, prev);
+        state.dischargedPatients = state.dischargedPatients.filter(d => d.id !== auditRow.id);
         renderAll();
-        showError('עדכון נכשל — ' + e.message);
-        return false;
+        showError('שחרור המטופל נכשל — ' + e.message);
+        throw e;
       }
-      return true;
-    }
+
+      try {
+        await apiPost({
+          action: 'dischargePatient',
+          patient: { ...p, disposition: disposition, discharge_note: note },
+        });
+      } catch (e) {
+        Object.assign(p, prev);
+        state.dischargedPatients = state.dischargedPatients.filter(d => d.id !== auditRow.id);
+        renderAll();
+        showError('כתיבת רישום השחרור נכשלה — ' + e.message);
+        throw e;
+      }
+    },
   });
 }
 

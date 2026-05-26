@@ -133,7 +133,7 @@ const PATIENT_COLUMNS = [
  * the client-side patient id is session-local but unique-at-write-time, which
  * is all the audit sheet needs). */
 const DISCHARGED_PATIENT_COLUMNS =
-  ['id'].concat(PATIENT_COLUMNS).concat(['dischargedAt', 'disposition', 'discharge_note']);
+  ['id'].concat(PATIENT_COLUMNS).concat(['dischargedAt', 'disposition', 'discharge_note', 'restored']);
 
 /* Payments sheet columns. `id` is a deterministic per-patient-per-due-date
  * string built by the client (see paymentId() in app.js) so the same monthly
@@ -625,8 +625,10 @@ function dischargePatient_(patient) {
 }
 
 /* Restore turns a discharged patient back into a new lead. The discharge
- * record is preserved as the audit trail — no delete from DISCHARGED. The
- * new lead carries over name/phone/house only; everything else starts
+ * record is preserved as the audit trail — no delete from DISCHARGED — but
+ * Phase 2e-2 marks the source row with restored='TRUE' so renderDischargedPatients
+ * can hide it on the frontend (audit truth preserved, UI rough edge closed).
+ * The new lead carries over name/phone/house only; everything else starts
  * blank with stage='new' and created=now. */
 function restorePatient_(patient) {
   if (!patient || !patient.id) return { ok: false, error: 'missing_patient' };
@@ -648,6 +650,11 @@ function restorePatient_(patient) {
     restored.created = todayISODate_();
 
     upsertRowById_(leadsSh, LEAD_COLUMNS, restored);
+
+    const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
+    const flagged = Object.assign({}, patient, { restored: 'TRUE' });
+    upsertRowById_(dischargedSh, DISCHARGED_PATIENT_COLUMNS, flagged);
+
     return {
       ok: true,
       restored: true,
