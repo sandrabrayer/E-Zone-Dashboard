@@ -881,14 +881,14 @@ function buildLeadCard(lead) {
       <button class="btn small" data-action="back" ${idx === 0 ? 'disabled' : ''}>שלב קודם →</button>
       <button class="btn small primary" data-action="next">${isLast ? 'הושלם' : '← שלב הבא'}</button>
       <button class="btn small" data-action="edit" title="ערוך ליד">✏️</button>
-      <button class="lc-irrelevant" title="סמן כלא רלוונטי">לא רלוונטי ✕</button>
+      <button class="lc-irrelevant" title="סגור ליד">סגירת ליד</button>
       <button class="lc-irrelevant lc-remove" title="הסר ליד">הסר</button>
     </div>
   `;
 
   card.querySelector('[data-action="next"]').onclick = () => advanceLead(lead);
   if (idx > 0) card.querySelector('[data-action="back"]').onclick = () => moveLead(lead, STAGES[idx - 1].id);
-  card.querySelector('.lc-irrelevant:not(.lc-remove)').onclick = () => markLeadIrrelevant(lead);
+  card.querySelector('.lc-irrelevant:not(.lc-remove)').onclick = () => closeLead(lead);
   card.querySelector('.lc-remove').onclick = () => {
     showConfirm({
       text: 'להסיר את הליד? פעולה זו תסיר אותו מהמערכת.',
@@ -966,6 +966,49 @@ function stageLabelById(stageId) {
   return s ? s.label : '';
 }
 
+/* Phase 2d-2 — closure flow. Replaces markLeadIrrelevant. Opens the
+ * three-disposition closure modal, then on confirm performs the same
+ * optimistic-UI-plus-rollback move as the old flow. apiPost still hits
+ * action: 'moveLeadIrrelevant' (backend name unchanged for compatibility);
+ * the payload now carries disposition explicitly and skips the Phase 2b
+ * not_relevant_reason / not_relevant_note fields — those stay blank on
+ * new rows ("dead-but-readable" for legacy data). */
+function closeLead(lead) {
+  if (state.mode !== 'edit') return;
+
+  showCloseLeadModal({
+    onConfirm: async ({ disposition, note }) => {
+      const moved = {
+        ...lead,
+        stage: 'irrelevant',
+        originSheet: lead.stage || 'new',
+        movedAt: new Date().toISOString(),
+        disposition: disposition,
+        not_relevant_note: note,
+      };
+
+      // Optimistic UI update
+      state.leads = state.leads.filter(l => l.id !== lead.id);
+      state.irrelevantLeads.unshift(moved);
+      renderAll();
+
+      try {
+        await apiPost({ action: 'moveLeadIrrelevant', lead: moved });
+      } catch (e) {
+        // Roll back on failure
+        state.irrelevantLeads = state.irrelevantLeads.filter(l => l.id !== moved.id);
+        state.leads.unshift(lead);
+        renderAll();
+        showError('סגירת הליד נכשלה — ' + e.message);
+        throw e;                         // keep modal open so the user can retry
+      }
+    },
+  });
+}
+
+/* @deprecated 2d-2 — replaced by closeLead. Kept for one PR as a
+ * hot-revert safety net. No callers wire to this in 2d-2; remove in the
+ * follow-up cleanup PR. */
 function markLeadIrrelevant(lead) {
   if (state.mode !== 'edit') return;
 
@@ -1009,20 +1052,17 @@ function markLeadIrrelevant(lead) {
 async function restoreIrrelevantLead(ilead) {
   if (state.mode !== 'edit') return;
 
-  const originStageId = ilead.originSheet || '';
-  const originLabel   = stageLabelById(originStageId);
-
-  if (!originStageId || !originLabel) {
-    showError('הגיליון המקורי לא קיים יותר — לא ניתן לשחזר');
-    return;
-  }
-
+  /* Phase 2d-2 — restore always returns to ליד חדש. A returning lead is a
+   * functionally new engagement (new commitment, new schedule, new payment),
+   * so re-entering the pipeline at 'new' is the locked design. The backend
+   * never inspected originSheet during restore — it just writes whatever
+   * stage the payload carries — so this is a frontend-only change. */
   showConfirm({
-    text: `להחזיר את הליד לגיליון ${originLabel}?`,
+    text: 'להחזיר את הליד לגיליון ליד חדש?',
     onConfirm: async () => {
       const restored = {
         ...ilead,
-        stage: originStageId,
+        stage: 'new',
       };
       delete restored.originSheet;
       delete restored.movedAt;
@@ -1034,7 +1074,7 @@ async function restoreIrrelevantLead(ilead) {
 
       try {
         await apiPost({ action: 'restoreLead', lead: restored });
-        showToast(`הליד הוחזר לגיליון ${originLabel}`);
+        showToast('הליד הוחזר לגיליון ליד חדש');
       } catch (e) {
         state.leads = state.leads.filter(l => l.id !== restored.id);
         state.irrelevantLeads.unshift(ilead);
@@ -1054,7 +1094,7 @@ function renderIrrelevantLeads() {
   document.getElementById('irrelevant-count').textContent = rows.length;
 
   if (!rows.length) {
-    list.innerHTML = `<div class="card billing-empty">אין לידים לא רלוונטיים</div>`;
+    list.innerHTML = `<div class="card billing-empty">אין לידים סגורים</div>`;
     return;
   }
 
@@ -1313,7 +1353,96 @@ function showConfirm({ text, onConfirm, confirmLabel = 'אישור', danger = fa
   };
 }
 
-/* Reason-capture modal for the "לא רלוונטי" flow (Phase 2b). Mirrors
+/* Phase 2d-2 closure modal. Mirrors showIrrelevantReasonModal but driven by
+ * DISPOSITION_LABELS (three first-class outcomes: not_relevant / completed
+ * / stopped_early) instead of the Phase 2b reason map. Submit stays disabled
+ * until a disposition is picked. onConfirm payload: { disposition, note }. */
+function showCloseLeadModal({ onConfirm }) {
+  const root = document.getElementById('modal-root');
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+
+  const radiosHtml = Object.keys(DISPOSITION_LABELS).map(key => `
+    <label class="reason-radio">
+      <input type="radio" name="disposition" value="${escapeHtml(key)}" />
+      <span>${escapeHtml(DISPOSITION_LABELS[key])}</span>
+    </label>
+  `).join('');
+
+  back.innerHTML = `
+    <div class="modal">
+      <h3>סגירת ליד</h3>
+      <form>
+        <div class="form-row">
+          <fieldset class="reason-fieldset">
+            <legend>סטטוס סגירה</legend>
+            ${radiosHtml}
+          </fieldset>
+        </div>
+        <div class="form-row">
+          <label>פירוט</label>
+          <textarea name="not_relevant_note" rows="3" maxlength="500"></textarea>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn primary" disabled>אישור</button>
+        </div>
+      </form>
+    </div>
+  `;
+  root.appendChild(back);
+
+  const close = () => back.remove();
+  const cancelBtn = back.querySelector('[data-action="cancel"]');
+  const submitBtn = back.querySelector('button[type="submit"]');
+  const form      = back.querySelector('form');
+  const radios    = back.querySelectorAll('input[name="disposition"]');
+
+  cancelBtn.onclick = close;
+  back.addEventListener('click', e => { if (e.target === back) close(); });
+
+  /* Enable submit only once a disposition is picked. No default selection
+   * per spec — forces explicit choice. */
+  radios.forEach(r => {
+    r.addEventListener('change', () => {
+      submitBtn.disabled = !Array.from(radios).some(x => x.checked);
+    });
+  });
+
+  let submitting = false;
+  form.onsubmit = async e => {
+    e.preventDefault();
+    if (submitting) return;
+    const picked = Array.from(radios).find(x => x.checked);
+    if (!picked) return;                 // defensive — submit was disabled
+    submitting = true;
+    submitBtn.disabled = true;
+    cancelBtn.disabled = true;
+    submitBtn.textContent = 'שומר...';
+
+    const fd = new FormData(form);
+    const disposition = (fd.get('disposition')         || '').toString();
+    const note        = (fd.get('not_relevant_note')   || '').toString();
+
+    try {
+      await onConfirm({ disposition, note });
+      close();
+    } catch (err) {
+      console.error('[E-ZONE] close-lead onConfirm threw:', err);
+      showError(err.message || 'הפעולה נכשלה');
+      submitting = false;
+      submitBtn.disabled = false;
+      cancelBtn.disabled = false;
+      submitBtn.textContent = 'אישור';
+    }
+  };
+}
+
+/* @deprecated 2d-2 — replaced by showCloseLeadModal. Kept for one PR as a
+ * hot-revert safety net. No callers wire to this in 2d-2; remove in the
+ * follow-up cleanup PR.
+ *
+ * Reason-capture modal for the "לא רלוונטי" flow (Phase 2b). Mirrors
  * showConfirm's standalone pattern rather than extending the shared showModal
  * — radios aren't a field type the generic modal supports, and the wiring
  * (disable-submit-until-radio-picked) is scoped to this one screen.
