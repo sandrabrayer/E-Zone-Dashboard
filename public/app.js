@@ -70,6 +70,7 @@ const state = {
   irrelevantLeads: [],
   removedLeads: [],
   patients: [],
+  dischargedPatients: [],
   payments: [],
   mode: null, // 'edit' | 'viewer'
   currentScreen: 'dashboard',
@@ -291,7 +292,7 @@ function enterApp(mode) {
 }
 
 /* ===== Top tabs ===== */
-const SCREENS = ['dashboard', 'leads', 'retention', 'occupancy', 'billing', 'breakeven'];
+const SCREENS = ['dashboard', 'leads', 'retention', 'occupancy', 'discharged-patients', 'billing', 'breakeven'];
 
 function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {
@@ -383,6 +384,13 @@ async function loadAll() {
     const rawRemoved = Array.isArray(data.removedLeads) ? data.removedLeads : [];
     state.removedLeads = rawRemoved.map(normalizeRemovedLead);
     console.log('[E-ZONE] removedLeads loaded:', state.removedLeads.length);
+
+    /* Phase 2e-1 — discharged-patient audit rows. Sheet may not exist yet on
+     * older deploys; treat missing array as empty so the rest of the app
+     * still loads. */
+    const rawDischarged = Array.isArray(data.dischargedPatients) ? data.dischargedPatients : [];
+    state.dischargedPatients = rawDischarged.map(normalizeDischargedPatient);
+    console.log('[E-ZONE] dischargedPatients loaded:', state.dischargedPatients.length);
 
     // Payments live on their own sheet and their own action. A fresh
     // install has no Payments sheet yet — treat any failure as "empty
@@ -684,6 +692,19 @@ function normalizePatient(p) {
     notes:    pickField(p, ['notes', 'note', 'הערות', 'הערה']),
   };
 }
+
+/* Phase 2e-1 — discharged-patient audit rows carry the same fields as a
+ * patient plus three discharge-time metadata columns. Mirror
+ * normalizeIrrelevantLead's pass-through pattern: pickField for each extra
+ * field with multiple aliases so the next getData() round-trip doesn't
+ * silently drop columns (same bug pattern Phase 2b hit). */
+function normalizeDischargedPatient(p) {
+  const base = normalizePatient(p);
+  base.dischargedAt   = pickField(p, ['dischargedAt', 'discharged_at', 'תאריך שחרור']) || '';
+  base.disposition    = pickField(p, ['disposition']) || '';
+  base.discharge_note = pickField(p, ['discharge_note', 'dischargeNote', 'הערת שחרור']) || '';
+  return base;
+}
 function cryptoId() {
   return 'id-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
@@ -726,6 +747,7 @@ function renderAll() {
   renderRemovedLeads();
   renderHouseTabs();
   renderPatients();
+  renderDischargedPatients();
   renderBilling();
   renderBreakeven();
 }
@@ -1265,6 +1287,124 @@ function renderRemovedLeads() {
     });
 
     list.appendChild(row);
+  });
+}
+
+/* Phase 2e-1 — discharged-patients tab. Read-only audit list. Each row has a
+ * "שחזר מטופל" button that posts restorePatient (creates a new lead carrying
+ * over name/house; phone is not stored on patient rows so it starts blank).
+ * Discharge record stays on the sheet as the audit trail — restore is
+ * additive only on the Leads side. */
+function renderDischargedPatients() {
+  const list = document.getElementById('discharged-patients-list');
+  if (!list) return;
+  list.innerHTML = '';
+
+  const rows = state.dischargedPatients || [];
+  const countEl = document.getElementById('discharged-patients-count');
+  if (countEl) countEl.textContent = rows.length;
+
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'card billing-empty';
+    empty.textContent = 'אין מטופלים משוחררים';
+    list.appendChild(empty);
+    return;
+  }
+
+  rows.forEach(p => {
+    const row = document.createElement('div');
+    row.className = 'irrelevant-row';
+    row.dataset.id = p.id;
+
+    const houseName = (houseById(p.houseId) && houseById(p.houseId).name) || p.houseId || '—';
+    const dispLabel = p.disposition && DISPOSITION_LABELS[p.disposition]
+                    ? DISPOSITION_LABELS[p.disposition]
+                    : (p.disposition || '—');
+
+    const cells = [
+      { label: 'שם',          value: p.name || '—', valueClass: 'p-name' },
+      { label: 'בית',          value: houseName },
+      { label: 'תאריך כניסה',   value: p.date ? formatDate(p.date) : '—' },
+      { label: 'תאריך שחרור',   value: p.dischargedAt ? formatDate(p.dischargedAt) : '—' },
+      { label: 'סטטוס סגירה',   value: dispLabel },
+    ];
+    if (p.discharge_note) {
+      cells.push({ label: 'הערה', value: p.discharge_note });
+    }
+
+    cells.forEach(c => {
+      const cell = document.createElement('div');
+      const label = document.createElement('span');
+      label.className = 'p-label';
+      label.textContent = c.label;
+      const val = document.createElement('span');
+      val.className = c.valueClass || 'p-val';
+      val.textContent = c.value;
+      cell.appendChild(label);
+      cell.appendChild(val);
+      row.appendChild(cell);
+    });
+
+    if (state.mode === 'edit') {
+      const actions = document.createElement('div');
+      actions.className = 'irrelevant-actions';
+      const btn = document.createElement('button');
+      btn.className = 'btn small';
+      btn.textContent = 'שחזר מטופל';
+      btn.onclick = () => restorePatient(p);
+      actions.appendChild(btn);
+      row.appendChild(actions);
+    }
+
+    list.appendChild(row);
+  });
+}
+
+async function restorePatient(p) {
+  if (state.mode !== 'edit') return;
+
+  showConfirm({
+    text: 'להחזיר את המטופל למסלול לידים חדש?',
+    onConfirm: async () => {
+      const newLead = {
+        id:       cryptoId(),
+        name:     p.name  || '',
+        phone:    '',
+        house:    (houseById(p.houseId) && houseById(p.houseId).name) || '',
+        source:   '',
+        note:     '',
+        stage:    'new',
+        visitDate: '',
+        visitTime: '',
+        entryDate: '',
+        advance:  0,
+        created:  todayISO(),
+      };
+
+      /* Optimistic UI: hide the discharged row locally + unshift the new
+       * lead onto the kanban. The backend keeps the discharge row as the
+       * audit trail (per Phase 2e spec), so after the next page reload the
+       * discharged row WILL reappear in this tab. That re-show is intended
+       * audit behavior, not a bug — but the "row vanishes then comes back"
+       * UX is a known rough edge. 2e-2 decides the final shape: either a
+       * restored-flag column on the discharged sheet, or delete-on-restore. */
+      const prevDischarged = state.dischargedPatients.slice();
+      const prevLeads      = state.leads.slice();
+      state.dischargedPatients = state.dischargedPatients.filter(d => d.id !== p.id);
+      state.leads.unshift(newLead);
+      renderAll();
+
+      try {
+        await apiPost({ action: 'restorePatient', patient: { ...p, newLeadId: newLead.id } });
+        showToast('המטופל הוחזר למסלול לידים חדש');
+      } catch (e) {
+        state.dischargedPatients = prevDischarged;
+        state.leads = prevLeads;
+        renderAll();
+        showError('שחזור המטופל נכשל — ' + e.message);
+      }
+    },
   });
 }
 
