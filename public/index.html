@@ -37,6 +37,7 @@
         <button class="tab" data-screen="leads">לידים</button>
         <button class="tab" data-screen="retention">שימור לידים</button>
         <button class="tab" data-screen="occupancy">תפוסה</button>
+        <button class="tab" data-screen="discharged-patients">מטופלים משוחררים</button>
         <button class="tab" data-screen="billing">גבייה</button>
         <button class="tab" data-screen="breakeven">נקודת איזון</button>
       </nav>
@@ -119,6 +120,14 @@
       </div>
       <nav class="house-tabs" id="house-tabs"></nav>
       <div id="patients-list" class="patients-list"></div>
+    </section>
+
+    <!-- ====== DISCHARGED PATIENTS (Phase 2e-1) ====== -->
+    <section id="screen-discharged-patients" class="screen hidden">
+      <div class="screen-head">
+        <h2>מטופלים משוחררים <span class="count-pill" id="discharged-patients-count">0</span></h2>
+      </div>
+      <div id="discharged-patients-list" class="irrelevant-list"></div>
     </section>
 
     <!-- ====== BILLING ====== -->

@@ -30,6 +30,7 @@ const PATIENTS_SHEET = 'Patients';
 const PAYMENTS_SHEET = 'Payments';
 const IRRELEVANT_LEADS_SHEET = 'לידים לא רלוונטיים';
 const REMOVED_LEADS_SHEET    = 'לידים שהוסרו';
+const DISCHARGED_PATIENTS_SHEET = 'מטופלים משוחררים';
 
 /* ===== Bonuses module sheets =====
  *
@@ -126,6 +127,14 @@ const PATIENT_COLUMNS = [
   'status', 'fromLead', 'exitDate', 'source', 'notes'
 ];
 
+/* Phase 2e-1 — discharged-patients audit sheet. Mirrors IRRELEVANT_LEAD_COLUMNS
+ * shape: base columns + discharge-time metadata. `id` is prepended so
+ * upsertRowById_ has a key to dedupe by (Patients sheet has no id column;
+ * the client-side patient id is session-local but unique-at-write-time, which
+ * is all the audit sheet needs). */
+const DISCHARGED_PATIENT_COLUMNS =
+  ['id'].concat(PATIENT_COLUMNS).concat(['dischargedAt', 'disposition', 'discharge_note']);
+
 /* Payments sheet columns. `id` is a deterministic per-patient-per-due-date
  * string built by the client (see paymentId() in app.js) so the same monthly
  * payment always upserts into the same row instead of creating duplicates. */
@@ -166,6 +175,12 @@ function handle_(params) {
     }
     if (action === 'removeLead') {
       return jsonOut_(removeLead_(parseJsonParam_(params.lead)));
+    }
+    if (action === 'dischargePatient') {
+      return jsonOut_(dischargePatient_(parseJsonParam_(params.patient)));
+    }
+    if (action === 'restorePatient') {
+      return jsonOut_(restorePatient_(parseJsonParam_(params.patient)));
     }
     if (action === 'managersOverview') {
       return jsonOut_(managersOverview_(params.month));
@@ -299,11 +314,13 @@ function getData_() {
   const patientsSh   = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
   const irrelevantSh = getOrCreateSheet_(IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS);
   const removedSh    = getOrCreateSheet_(REMOVED_LEADS_SHEET, REMOVED_LEAD_COLUMNS);
+  const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
 
-  const leads           = readSheet_(leadsSh, LEAD_COLUMNS);
-  const patientRows     = readSheet_(patientsSh, PATIENT_COLUMNS);
-  const irrelevantLeads = readSheet_(irrelevantSh, IRRELEVANT_LEAD_COLUMNS);
-  const removedLeads    = readSheet_(removedSh, REMOVED_LEAD_COLUMNS);
+  const leads               = readSheet_(leadsSh, LEAD_COLUMNS);
+  const patientRows         = readSheet_(patientsSh, PATIENT_COLUMNS);
+  const irrelevantLeads     = readSheet_(irrelevantSh, IRRELEVANT_LEAD_COLUMNS);
+  const removedLeads        = readSheet_(removedSh, REMOVED_LEAD_COLUMNS);
+  const dischargedPatients  = readSheet_(dischargedSh, DISCHARGED_PATIENT_COLUMNS);
 
   const patients = {};
   for (let i = 0; i < patientRows.length; i++) {
@@ -320,6 +337,7 @@ function getData_() {
     patients: patients,
     irrelevantLeads: irrelevantLeads,
     removedLeads: removedLeads,
+    dischargedPatients: dischargedPatients,
   };
 }
 
@@ -569,6 +587,74 @@ function removeLead_(lead) {
     upsertRowById_(removedSh, REMOVED_LEAD_COLUMNS, record);
     deleteRowsById_(leadsSh, LEAD_COLUMNS, lead.id);
     return { ok: true, removed: true, lead: record };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* ===== Patient discharge (Phase 2e-1) — additive audit only =====
+ *
+ * dischargePatient_ writes to DISCHARGED_PATIENTS_SHEET. It does NOT delete
+ * from the Patients sheet — that side stays on the existing client-driven
+ * saveAll → replaceHousePatients_ path (whole-house-replace, which is how
+ * patient rows are mutated today). 2e-2 will wire the שחרר button to call
+ * both this audit-write AND the existing save flow; this PR is purely
+ * foundation.
+ *
+ * Mirrors moveLeadIrrelevant_'s pattern: record with defaults, lock, upsert.
+ * Append-only on the discharged sheet.
+ */
+function dischargePatient_(patient) {
+  if (!patient || !patient.id) return { ok: false, error: 'missing_patient' };
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
+
+    const record = Object.assign({}, patient, {
+      dischargedAt:   patient.dischargedAt   || new Date().toISOString(),
+      disposition:    patient.disposition    || '',
+      discharge_note: patient.discharge_note || '',
+    });
+
+    upsertRowById_(dischargedSh, DISCHARGED_PATIENT_COLUMNS, record);
+    return { ok: true, discharged: true, patient: record };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* Restore turns a discharged patient back into a new lead. The discharge
+ * record is preserved as the audit trail — no delete from DISCHARGED. The
+ * new lead carries over name/phone/house only; everything else starts
+ * blank with stage='new' and created=now. */
+function restorePatient_(patient) {
+  if (!patient || !patient.id) return { ok: false, error: 'missing_patient' };
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const leadsSh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+
+    const restored = {};
+    for (let i = 0; i < LEAD_COLUMNS.length; i++) {
+      restored[LEAD_COLUMNS[i]] = '';
+    }
+    restored.id      = (patient.newLeadId && String(patient.newLeadId)) ||
+                       ('id-' + Utilities.getUuid().slice(0, 8));
+    restored.name    = patient.name  || '';
+    restored.phone   = patient.phone || '';
+    restored.house   = patient.house || '';
+    restored.stage   = 'new';
+    restored.created = todayISODate_();
+
+    upsertRowById_(leadsSh, LEAD_COLUMNS, restored);
+    return {
+      ok: true,
+      restored: true,
+      newLeadId: restored.id,
+      originalPatientId: patient.id,
+      lead: restored,
+    };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
