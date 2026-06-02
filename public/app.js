@@ -2546,6 +2546,16 @@ function activeCountPerHouse(houseId) {
   return state.patients.filter(p => p.houseId === houseId && p.status !== 'released').length;
 }
 
+/* Actual current revenue for a house: the real sum of each active patient's
+ * `pay` (תשלום חודשי), NOT count × averaged price. Mirrors activeCountPerHouse's
+ * filter exactly — released patients are excluded; active patients with pay 0
+ * still count and contribute 0 to the sum. */
+function actualRevenuePerHouse(houseId) {
+  return state.patients
+    .filter(p => p.houseId === houseId && p.status !== 'released')
+    .reduce((s, p) => s + (Number(p.pay) || 0), 0);
+}
+
 function computeHouseMetrics(house) {
   const be = state.breakeven.houses[house.id] || { active: false, fixed: 0, variable: 0 };
   const fixed = Number(be.fixed) || 0;
@@ -2564,7 +2574,8 @@ function computeHouseMetrics(house) {
   // Break-even = number of patients needed to cover total house expenses.
   const breakevenPoint = price > 0 ? Math.ceil(totalExpenses / price) : 0;
 
-  const currentRevenue = currentPatients * price;
+  // Actual revenue = real sum of active patients' pay, not count × avg price.
+  const currentRevenue = actualRevenuePerHouse(house.id);
   const currentPL = currentRevenue - totalExpenses;
   const maxRevenue = capacity * price;
   const maxPL = maxRevenue - totalExpenses;
