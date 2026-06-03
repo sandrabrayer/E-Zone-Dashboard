@@ -2619,6 +2619,10 @@ function computeNetworkMetrics(activeMetrics) {
   const networkPL = totalRevenueCurrent - totalExpenses;
   const networkPLMax = totalRevenueMax - totalExpenses;
 
+  // Houses-only P-L: the sum of each active house's currentPL. Excludes hqCost
+  // (unlike networkPL, which subtracts it). Identity: housesPL === networkPL + hqCost.
+  const housesPL = totalRevenueCurrent - totalHouseExpenses;
+
   // Weighted average price (revenue at full capacity / total capacity).
   const avgPrice = totalCapacity > 0 ? totalRevenueMax / totalCapacity : 0;
   const networkBreakeven = avgPrice > 0 ? Math.ceil(totalExpenses / avgPrice) : 0;
@@ -2633,6 +2637,7 @@ function computeNetworkMetrics(activeMetrics) {
     totalCapacity,
     networkPL,
     networkPLMax,
+    housesPL,
     avgPrice,
     networkBreakeven,
   };
@@ -2809,6 +2814,11 @@ function renderBreakevenComparisonTable() {
     `;
   }).join('');
 
+  // Display-only summary rows. housesPL is the sum of each active house's
+  // currentPL (excludes hqCost); hqCost is the network HQ cost shown as-is.
+  const net = computeNetworkMetrics(activeMetrics);
+  const housesPLClass = net.housesPL >= 0 ? 'positive' : 'negative';
+
   table.innerHTML = `
     <thead>
       <tr>
@@ -2823,6 +2833,16 @@ function renderBreakevenComparisonTable() {
       </tr>
     </thead>
     <tbody>${rows}</tbody>
+    <tfoot>
+      <tr>
+        <td colspan="7" class="be-td-name">סהכ רווח/הפסד בתים</td>
+        <td class="${housesPLClass}">₪ ${Math.round(net.housesPL).toLocaleString('he-IL')}</td>
+      </tr>
+      <tr>
+        <td colspan="7" class="be-td-name">עלות מטה</td>
+        <td>₪ ${Math.round(net.hqCost).toLocaleString('he-IL')}</td>
+      </tr>
+    </tfoot>
   `;
 }
 
@@ -2904,7 +2924,7 @@ function renderBreakevenActionPlan() {
     <tr>
       <td class="be-td-pri">${x.priority}</td>
       <td class="be-td-name">${escapeHtml(x.name)}</td>
-      <td>${x.from} → ${x.to}</td>
+      <td>${x.to} ← ${x.from}</td>
       <td>+${x.add}</td>
       <td class="positive">₪ ${Math.round(x.revenue).toLocaleString('he-IL')}</td>
       <td class="be-td-reason">${escapeHtml(x.reason)}</td>

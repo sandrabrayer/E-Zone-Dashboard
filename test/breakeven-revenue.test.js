@@ -155,3 +155,31 @@ test('computeNetworkMetrics rolls up the actual per-house revenue', () => {
   // expenses: 150000 + 300000 + hq 10000 = 460000
   assert.strictEqual(net.networkPL, 135000 - 460000);
 });
+
+test('computeNetworkMetrics.housesPL sums per-house currentPL and excludes hqCost', () => {
+  app.setBreakeven({
+    hqCost: 10000,
+    houses: {
+      arfoni: { active: true, fixed: 100000, variable: 50000 },
+      ramot:  { active: true, fixed: 200000, variable: 100000 },
+    },
+  });
+  app.setPatients([
+    patient('arfoni', 30000),
+    patient('arfoni', 45000),
+    patient('ramot', 60000),
+    patient('ramot', 20000, 'released'), // excluded
+  ]);
+  const ms = [
+    app.computeHouseMetrics({ id: 'arfoni', name: 'a', capacity: 13 }),
+    app.computeHouseMetrics({ id: 'ramot', name: 'r', capacity: 20 }),
+  ];
+  const net = app.computeNetworkMetrics(ms);
+  // arfoni currentPL = 75000 - 150000 = -75000; ramot = 60000 - 300000 = -240000.
+  const expectedHousesPL = ms.reduce((s, m) => s + m.currentPL, 0);
+  assert.strictEqual(expectedHousesPL, -315000);
+  assert.strictEqual(net.housesPL, -315000);
+  // housesPL must NOT include the 10000 hqCost — networkPL does.
+  assert.strictEqual(net.housesPL, net.networkPL + net.hqCost);
+  assert.notStrictEqual(net.housesPL, net.networkPL);
+});
