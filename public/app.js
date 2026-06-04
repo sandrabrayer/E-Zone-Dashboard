@@ -1858,6 +1858,7 @@ function renderPatients() {
   list.innerHTML = '';
   const q = state.patientSearch;
   const rows = state.patients
+    .filter(p => p.status !== 'released')
     .filter(p => p.houseId === state.currentHouseTab)
     .filter(p => !q || (p.name || '').toLowerCase().includes(q));
 
