@@ -36,7 +36,10 @@ function loadRoster() {
     };
     globalThis.__test = {
       setFixtures(p, l) { __patients = p || []; __leads = l || []; },
+      setSecret(v) { globalThis.__secret = v; },
       roster() { return getAdmittedRoster_(); },
+      // Drive the real dispatch + auth gate; parse the stubbed jsonOut_ payload.
+      dispatch(params) { return JSON.parse(handle_(params)._text); },
       normalizePhone(v) { return normalizePhone_(v); },
     };
   `;
@@ -45,8 +48,28 @@ function loadRoster() {
   const sandbox = {
     console: { log: noop, warn: noop, error: noop, info: noop },
     JSON, Math, Date, Number, String, Array, Object, RegExp,
+    // Reads the script property the auth gate consults; undefined when unset.
+    PropertiesService: {
+      getScriptProperties() {
+        return {
+          getProperty(key) {
+            return key === 'ADMITTED_ROSTER_SECRET'
+              ? (sandbox.__secret === undefined ? null : sandbox.__secret)
+              : null;
+          },
+        };
+      },
+    },
+    // jsonOut_ wraps the payload in ContentService output; capture the text.
+    ContentService: {
+      MimeType: { JSON: 'application/json' },
+      createTextOutput(text) {
+        return { _text: text, setMimeType() { return this; } };
+      },
+    },
   };
   sandbox.globalThis = sandbox;
+  sandbox.__secret = undefined;
   vm.createContext(sandbox);
   vm.runInContext(src + epilogue, sandbox);
   return sandbox.__test;
@@ -106,6 +129,59 @@ test('recovers phone via fromLead, normalizes, excludes released, no-leak projec
       assert.ok(!(f in row), 'leaked field: ' + f);
     }
   }
+});
+
+test('fail-closed: unset secret property refuses and serves no patient data', () => {
+  api.setSecret(undefined); // ADMITTED_ROSTER_SECRET not configured
+  api.setFixtures(
+    [{ houseId: 'asher', name: 'דנה', fromLead: 'L1', exitDate: '', status: 'active' }],
+    [{ id: 'L1', phone: '0501234567' }]
+  );
+  const res = api.dispatch({ action: 'getAdmittedRoster', secret: 'anything' });
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.error, 'unauthorized');
+  assert.ok(!('patients' in res)); // never serve the roster
+});
+
+test('fail-closed: empty-string secret property refuses', () => {
+  api.setSecret('');
+  api.setFixtures(
+    [{ houseId: 'asher', name: 'דנה', fromLead: 'L1', exitDate: '', status: 'active' }],
+    [{ id: 'L1', phone: '0501234567' }]
+  );
+  const res = api.dispatch({ action: 'getAdmittedRoster', secret: '' });
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.error, 'unauthorized');
+  assert.ok(!('patients' in res));
+});
+
+test('fail-closed: mismatched secret refuses and serves no patient data', () => {
+  api.setSecret('correct-horse');
+  api.setFixtures(
+    [{ houseId: 'asher', name: 'דנה', fromLead: 'L1', exitDate: '', status: 'active' }],
+    [{ id: 'L1', phone: '0501234567' }]
+  );
+  const res = api.dispatch({ action: 'getAdmittedRoster', secret: 'wrong-secret' });
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.error, 'unauthorized');
+  assert.ok(!('patients' in res));
+
+  // Missing secret entirely is also refused.
+  const res2 = api.dispatch({ action: 'getAdmittedRoster' });
+  assert.strictEqual(res2.ok, false);
+  assert.strictEqual(res2.error, 'unauthorized');
+});
+
+test('matching secret authorizes and returns the roster', () => {
+  api.setSecret('correct-horse');
+  api.setFixtures(
+    [{ houseId: 'asher', name: 'דנה', fromLead: 'L1', exitDate: '', status: 'active' }],
+    [{ id: 'L1', phone: '050-123-4567' }]
+  );
+  const res = api.dispatch({ action: 'getAdmittedRoster', secret: 'correct-horse' });
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(res.patients.length, 1);
+  assert.strictEqual(res.patients[0].phone, '0501234567');
 });
 
 test('normalizePhone strips separators and collapses the 972 country code', () => {

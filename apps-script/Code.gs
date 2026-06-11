@@ -692,17 +692,21 @@ function restorePatient_(patient) {
  * field is exposed. test/admitted-roster.test.js locks this no-leak contract
  * against the shipped function.
  *
- * Auth mirrors the sibling cross-app endpoints: an optional shared-secret
- * Script Property. ADMITTED_ROSTER_SECRET is a SEPARATE secret from the other
- * apps' secrets. When the property is set, callers must pass a matching
- * ?secret=; when it is unset the endpoint is open — set the property before
- * relying on it, since the payload is patient PII.
+ * Auth mirrors the sibling cross-app endpoints' shared-secret shape, but is
+ * deliberately FAIL-CLOSED rather than fail-open: this is the first
+ * authenticated endpoint in the repo and it exposes patient names + phones, so
+ * an unconfigured or mismatched secret must never serve data. The roster is
+ * returned only when ADMITTED_ROSTER_SECRET is set AND the request's ?secret=
+ * matches it; otherwise the endpoint refuses. ADMITTED_ROSTER_SECRET is a
+ * SEPARATE secret from the other apps' secrets — it must be set as a Script
+ * Property before the endpoint will return anything.
  */
 const ADMITTED_ROSTER_SECRET_PROP = 'ADMITTED_ROSTER_SECRET';
 
 function admittedRosterAuthOk_(params) {
   const expected = PropertiesService.getScriptProperties().getProperty(ADMITTED_ROSTER_SECRET_PROP);
-  if (!expected) return true; // not configured → open
+  // Fail closed: no secret configured → refuse (never serve patient PII open).
+  if (!expected) return false;
   const got = (params && params.secret) ? String(params.secret) : '';
   return got === expected;
 }

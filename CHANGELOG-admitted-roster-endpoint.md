@@ -19,9 +19,10 @@ Dashboard's Apps Script, adapted to this repo's conventions.
   that lead's phone.
 - **`normalizePhone_(raw)`** — strips non-digits and collapses a leading `972`
   country code to a single leading `0` (e.g. `+972-52-765-4321` → `0527654321`).
-- **`admittedRosterAuthOk_(params)`** — optional shared-secret gate backed by
-  the `ADMITTED_ROSTER_SECRET` Script Property. When set, callers must pass a
-  matching `?secret=`; when unset the endpoint is open.
+- **`admittedRosterAuthOk_(params)`** — **fail-closed** shared-secret gate
+  backed by the `ADMITTED_ROSTER_SECRET` Script Property. The roster is served
+  only when the property is set AND the request's `?secret=` matches it; an
+  unset/empty property or a mismatched secret refuses.
 - **`handle_` dispatch** for `action === 'getAdmittedRoster'`, behind the auth
   check, returning `{ ok:false, error:'unauthorized' }` on mismatch.
 
@@ -37,6 +38,11 @@ Dashboard's Apps Script, adapted to this repo's conventions.
   present on the source rows.
 - Covers phone recovery + normalization, `+972` collapsing, exclusion of
   released patients, and the `direct_admin` (no `fromLead`) → `phone:''` case.
+- **Fail-closed auth tests** drive the real `handle_` dispatch (with stubbed
+  `PropertiesService` / `ContentService`) and assert that an unset secret, an
+  empty-string secret, a mismatched secret, and a missing secret each return
+  `{ ok:false, error:'unauthorized' }` with **no `patients` payload** — and that
+  a matching secret authorizes and returns the roster.
 
 ## Design decisions
 
@@ -56,10 +62,14 @@ Dashboard's Apps Script, adapted to this repo's conventions.
   The therapists side falls back to free-text rather than fabricating a match.
 - **Separate secret.** `ADMITTED_ROSTER_SECRET` is its own Script Property,
   distinct from the other apps' secrets, matching the sibling pattern.
-- **First auth in this repo.** No Dashboard endpoint was authenticated before
-  this. The shared-secret shape follows the documented cross-app pattern;
-  because the payload is patient PII, the secret should be set so the endpoint
-  is not left open.
+- **First auth in this repo, fail-closed.** No Dashboard endpoint was
+  authenticated before this. It borrows the sibling cross-app endpoints'
+  shared-secret *shape* but deliberately diverges from their fail-open-when-unset
+  behavior: because the payload is patient names + phones (PII), an unconfigured
+  or mismatched secret must never serve data. If `ADMITTED_ROSTER_SECRET` is
+  unset/empty, or the request's `?secret=` does not match, the endpoint refuses
+  with `{ ok:false, error:'unauthorized' }` and returns no roster. The secret
+  MUST be set as a Script Property before the endpoint will return anything.
 
 ## Conventions reused
 
@@ -72,6 +82,7 @@ Dashboard's Apps Script, adapted to this repo's conventions.
 1. Redeploy the Dashboard Apps Script as a **new version / new deployment** so
    the new code goes live (the `/exec` URL stays the same).
 2. Set the `ADMITTED_ROSTER_SECRET` Script Property
-   (Project Settings → Script properties).
+   (Project Settings → Script properties). **Required** — until it is set the
+   fail-closed gate refuses every request and the endpoint returns no roster.
 3. Carry the `/exec` URL + secret to the therapists Railway service and the
    therapists Apps Script.
