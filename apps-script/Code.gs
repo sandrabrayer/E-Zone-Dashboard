@@ -11,6 +11,9 @@
  *   GET  ?action=getPayments                    → {ok, payments:[...]}
  *   POST action=savePayment / updatePayment     → {ok, payment, created|updated}
  *                                                 (upserts by payment.id)
+ *   GET  ?action=getAdmittedRoster&secret=...    → {ok, patients:[{sourceApp,name,phone,house}]}
+ *                                                 (cross-app, read-only: currently-admitted
+ *                                                  patients with phone recovered via fromLead)
  *
  * Merge semantics (important for the split-save path in server.js):
  *   - leads present and non-empty → upsert each lead by id; leads whose id is
@@ -157,6 +160,12 @@ function handle_(params) {
   try {
     const action = params.action;
     if (action === 'getData') return jsonOut_(getData_());
+    if (action === 'getAdmittedRoster') {
+      if (!admittedRosterAuthOk_(params)) {
+        return jsonOut_({ ok: false, error: 'unauthorized' });
+      }
+      return jsonOut_(getAdmittedRoster_());
+    }
     if (action === 'saveAll') {
       const leads    = parseJsonParam_(params.leads);
       const patients = parseJsonParam_(params.patients);
@@ -665,6 +674,89 @@ function restorePatient_(patient) {
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
+}
+
+/* ===== Cross-app: admitted roster (read-only) =====
+ *
+ * getAdmittedRoster exposes currently-admitted patients with a recovered,
+ * normalized phone so the E-Zone Therapists app can populate its inpatient
+ * tab. The Patients sheet has no phone column; a phone is recovered by joining
+ * Patients.fromLead → Leads.id and reading that lead's phone. Patients added
+ * directly through the dashboard (source:'direct_admin') carry fromLead:'' and
+ * therefore have no recoverable phone — they are still returned, but with
+ * phone:'' so the therapists side falls back to free-text rather than
+ * fabricating a match.
+ *
+ * Projection is intentionally minimal: { sourceApp, name, phone, house }. No
+ * lead note, stage, advance, pricing, payment, or any other Leads/Patients
+ * field is exposed. test/admitted-roster.test.js locks this no-leak contract
+ * against the shipped function.
+ *
+ * Auth mirrors the sibling cross-app endpoints' shared-secret shape, but is
+ * deliberately FAIL-CLOSED rather than fail-open: this is the first
+ * authenticated endpoint in the repo and it exposes patient names + phones, so
+ * an unconfigured or mismatched secret must never serve data. The roster is
+ * returned only when ADMITTED_ROSTER_SECRET is set AND the request's ?secret=
+ * matches it; otherwise the endpoint refuses. ADMITTED_ROSTER_SECRET is a
+ * SEPARATE secret from the other apps' secrets — it must be set as a Script
+ * Property before the endpoint will return anything.
+ */
+const ADMITTED_ROSTER_SECRET_PROP = 'ADMITTED_ROSTER_SECRET';
+
+function admittedRosterAuthOk_(params) {
+  const expected = PropertiesService.getScriptProperties().getProperty(ADMITTED_ROSTER_SECRET_PROP);
+  // Fail closed: no secret configured → refuse (never serve patient PII open).
+  if (!expected) return false;
+  const got = (params && params.secret) ? String(params.secret) : '';
+  return got === expected;
+}
+
+/* Normalize a phone to canonical Israeli local form: strip every non-digit,
+ * then collapse a leading 972 country code to a single leading 0
+ * (e.g. "+972-52-765-4321" → "0527654321"). Empty/blank → ''. */
+function normalizePhone_(raw) {
+  if (raw === undefined || raw === null) return '';
+  let digits = String(raw).replace(/[^\d]/g, '');
+  if (!digits) return '';
+  if (digits.indexOf('972') === 0) digits = '0' + digits.slice(3);
+  return digits;
+}
+
+function getAdmittedRoster_() {
+  const patientsSh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+  const leadsSh    = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+  const patients   = readSheet_(patientsSh, PATIENT_COLUMNS);
+  const leads      = readSheet_(leadsSh, LEAD_COLUMNS);
+
+  // Index lead phones by lead id for the fromLead join.
+  const phoneByLeadId = {};
+  for (let i = 0; i < leads.length; i++) {
+    const l = leads[i];
+    if (l && l.id !== undefined && l.id !== null && l.id !== '') {
+      phoneByLeadId[String(l.id)] = l.phone || '';
+    }
+  }
+
+  const out = [];
+  for (let p = 0; p < patients.length; p++) {
+    const pt = patients[p];
+    if (!pt || !pt.name) continue;
+    // Admitted = not released. The dashboard sets status='released' AND an
+    // exitDate on release, and the occupancy tab keys on status !== 'released'
+    // (app.js); checking both keeps this consistent with occupancy even for
+    // hand-edited rows where only one field was set.
+    if (String(pt.status || '').trim() === 'released') continue;
+    if (String(pt.exitDate || '').trim() !== '') continue;
+
+    const rawPhone = pt.fromLead ? (phoneByLeadId[String(pt.fromLead)] || '') : '';
+    out.push({
+      sourceApp: 'ezone-dashboard',
+      name:      pt.name || '',
+      phone:     normalizePhone_(rawPhone),
+      house:     pt.houseId || '',
+    });
+  }
+  return { ok: true, patients: out };
 }
 
 /* ===== Payments ===== */
