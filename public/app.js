@@ -2185,16 +2185,27 @@ function normalizePayment(r) {
 function isoDate(v) {
   if (!v) return '';
   if (typeof v === 'string') {
-    // already ISO-ish? keep just the date portion
-    const m = v.match(/^\d{4}-\d{2}-\d{2}/);
+    // Already a bare YYYY-MM-DD (no time / no timezone) — the canonical stored
+    // form. Return it untouched; parsing it through Date would inject UTC
+    // midnight. Anchored to the full string on purpose: a *full timestamp*
+    // ("2026-06-10T21:00:00.000Z") must NOT be caught here — slicing its
+    // leading date portion is the UTC-day bug — it falls through to the
+    // local-part path below instead.
+    const m = v.match(/^\d{4}-\d{2}-\d{2}$/);
     if (m) return m[0];
-    const d = new Date(v);
-    if (!isNaN(d)) return d.toISOString().slice(0, 10);
-    return v;
   }
+  // Full timestamp string (e.g. a Sheets date cell serialized to the client as
+  // "2026-06-10T21:00:00.000Z") or a Date object. Derive the calendar day from
+  // LOCAL parts — NOT toISOString().slice(0, 10). A UTC slice lands on the
+  // previous calendar day for UTC+2/+3 (Israel), drifting the date −1 per
+  // save→read round-trip. getFullYear/getMonth/getDate read the local day, so
+  // an already-drifted date-typed cell renders back on its correct local date.
   const d = new Date(v);
-  if (!isNaN(d)) return d.toISOString().slice(0, 10);
-  return String(v);
+  if (isNaN(d)) return typeof v === 'string' ? v : String(v);
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${mo}-${day}`;
 }
 
 /* Sheets stores time-only cells as a Date anchored on 1899-12-30 UTC. When
