@@ -475,10 +475,28 @@ function replaceHousePatients_(houseId, patientsArr) {
     return objectToRow_(withHouse, PATIENT_COLUMNS);
   });
 
-  const finalRows = kept.concat(newRows);
+  // Canonicalize the entry-date column to a clean YYYY-MM-DD string for BOTH
+  // kept rows (whose cell may already be a coerced Date object from getValues)
+  // and new rows (a string from the client). asISODate_ formats any Date in the
+  // spreadsheet timezone, so the stored value is unambiguous text — mirrors the
+  // treatment leads' `created` column gets in mergeLeads_.
+  const dateColIdx = PATIENT_COLUMNS.indexOf('date');
+  const finalRows = kept.concat(newRows).map(function (row) {
+    if (dateColIdx >= 0) row[dateColIdx] = asISODate_(row[dateColIdx]);
+    return row;
+  });
 
   clearBody_(sh, PATIENT_COLUMNS.length);
   if (finalRows.length > 0) {
+    // Force the entry-date column to plain text BEFORE writing so Sheets never
+    // re-coerces "2026-06-11" into a date-typed cell. A date-typed cell reads
+    // back via getValues() as a Date, serializes to the client as a UTC
+    // timestamp, and drifts the day by one for UTC+2/+3 users. Text storage
+    // keeps the value a stable string end-to-end — no UTC trip, no drift. Scope
+    // is the date column only (single column), never the whole sheet.
+    if (dateColIdx >= 0) {
+      sh.getRange(2, dateColIdx + 1, finalRows.length, 1).setNumberFormat('@');
+    }
     sh.getRange(2, 1, finalRows.length, PATIENT_COLUMNS.length).setValues(finalRows);
   }
 }
