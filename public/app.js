@@ -451,11 +451,12 @@ async function loadAll() {
     if (state.patients[0]) console.log('[E-ZONE] first patient:', state.patients[0]);
 
     const promoted = promoteEnteredLeads();
-    console.log('[E-ZONE] after promote — leads:', state.leads.length, 'patients:', state.patients.length, '(+', promoted.length, 'promoted)');
+    const retired  = retireAdmittedLeads();
+    console.log('[E-ZONE] after promote — leads:', state.leads.length, 'patients:', state.patients.length, '(+', promoted.length, 'promoted,', retired.length, 'retired)');
     renderAll();
 
-    if (promoted.length > 0 && state.mode === 'edit') {
-      console.log(`[E-ZONE] Persisting ${promoted.length} auto-promoted patient(s)...`);
+    if ((promoted.length > 0 || retired.length > 0) && state.mode === 'edit') {
+      console.log(`[E-ZONE] Persisting ${promoted.length} auto-promoted patient(s) + ${retired.length} retired lead(s)...`);
       saveAll().catch(e => console.warn('[E-ZONE] auto-promote save failed', e.message));
     }
   } catch (e) {
@@ -519,6 +520,51 @@ function promoteEnteredLeads() {
   return created;
 }
 
+/**
+ * One-time, idempotent self-heal. Any lead still parked at stage 'entry' /
+ * 'entered' that ALREADY has a matching patient is retired to the terminal
+ * 'admitted' stage so it leaves promoteEnteredLeads' candidate pool and can no
+ * longer re-stamp that patient's (possibly edited) entry date on the next load.
+ *
+ * Matching mirrors promoteEnteredLeads exactly: by the fromLead link, or by
+ * houseId::name. This NEVER creates a patient and NEVER touches a patient's
+ * date — it only flips the lead's stage. Once a lead is 'admitted' it no longer
+ * matches the entry/entered filter, so re-running this on every load is a no-op.
+ *
+ * Run after promoteEnteredLeads so freshly auto-promoted leads (which now have a
+ * matching patient via fromLead) are retired in the same pass.
+ */
+function retireAdmittedLeads() {
+  const retired = [];
+  if (!Array.isArray(state.leads) || state.leads.length === 0) return retired;
+
+  const byFromLead = new Set();
+  const byNameHouse = new Set();
+  state.patients.forEach(p => {
+    if (p.fromLead) byFromLead.add(String(p.fromLead));
+    if (p.name && p.houseId) byNameHouse.add(`${p.houseId}::${String(p.name).trim()}`);
+  });
+
+  state.leads.forEach(lead => {
+    const stage = String(lead.stage || '').toLowerCase();
+    if (stage !== 'entry' && stage !== 'entered') return;
+
+    const matchedByFromLead = lead.id && byFromLead.has(String(lead.id));
+    const house = houseByName(lead.house) || houseById(lead.house);
+    const matchedByNameHouse = house &&
+      byNameHouse.has(`${house.id}::${String(lead.name || '').trim()}`);
+    if (!matchedByFromLead && !matchedByNameHouse) return;
+
+    lead.stage = 'admitted';
+    retired.push(lead);
+  });
+
+  if (retired.length > 0) {
+    console.log(`[E-ZONE] retired ${retired.length} admitted lead(s) to 'admitted' stage`, retired.map(l => l.name));
+  }
+  return retired;
+}
+
 /* Accept patients as either an array OR an object keyed by houseId. */
 function parsePatients(raw) {
   if (!raw) return [];
@@ -551,6 +597,11 @@ const STAGE_ALIASES = {
   'paid': 'paid', 'מקדמה שולמה': 'paid', 'בטיפול פעיל': 'paid', 'מקדמה': 'paid', 'שילם מקדמה': 'paid',
   'entry': 'entry', 'entered': 'entry',
   'כניסה לבית': 'entry', 'נכנס לבית': 'entry', 'נכנס': 'entry', 'כניסה': 'entry',
+  /* Terminal stage: lead has been admitted to a house and a patient record
+   * owns it. Kept out of STAGES so it never renders on the board, but aliased
+   * here so normalizeStage round-trips it on load instead of resetting it to
+   * 'new' (the unknown-stage default), which would resurrect the lead. */
+  'admitted': 'admitted', 'נקלט': 'admitted', 'אושפז': 'admitted',
   'irrelevant': 'irrelevant', 'לא רלוונטי': 'irrelevant', 'לא_רלוונטי': 'irrelevant',
 };
 
@@ -1695,7 +1746,13 @@ function openEntryModal(lead) {
       });
       state.patients.unshift(patient);
       const prevStage = lead.stage;
-      lead.stage = 'entry';
+      /* Retire the lead to the terminal 'admitted' stage instead of leaving it
+       * at 'entry'. An 'entry' lead stays in promoteEnteredLeads' candidate
+       * pool forever and re-stamps this patient's date from lead.entryDate on
+       * every load (clobbering any later edit to the entry date). 'admitted' is
+       * excluded from that pool (and from the board/pipeline), so once the
+       * patient exists the lead can no longer overwrite it. */
+      lead.stage = 'admitted';
       lead.entryDate = v.date;
       renderAll();
       try {
