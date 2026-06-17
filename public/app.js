@@ -14,9 +14,14 @@ const STAGES = [
   { id: 'new',         label: 'ליד חדש' },
   { id: 'visit',       label: 'ביקור נקבע' },
   /* `paid` keeps its stable id so historical sheet rows still resolve via
-   * STAGE_ALIASES below; only the displayed label was changed to "בטיפול פעיל". */
+   * STAGE_ALIASES below; only the displayed label was changed to "בטיפול פעיל".
+   * `paid` is now the LAST board stage: advancing it is the admit action
+   * (openEntryModal → creates the patient → retires the lead to 'admitted').
+   * The old { id: 'entry', label: 'כניסה לבית' } holding column was removed —
+   * it always sat empty (a paid lead enters תפוסה directly). The 'entry'/
+   * 'entered' STAGE_ALIASES stay below so any legacy stored value still
+   * normalizes and is caught by promoteEnteredLeads / retireAdmittedLeads. */
   { id: 'paid',        label: 'בטיפול פעיל' },
-  { id: 'entry',       label: 'כניסה לבית' },
 ];
 const STAGE_IRRELEVANT = { id: 'irrelevant', label: 'לא רלוונטי' };
 const ALL_STAGES_FOR_PIPELINE = [...STAGES, STAGE_IRRELEVANT];
@@ -908,7 +913,11 @@ function buildLeadCard(lead) {
   card.dataset.id = lead.id;
 
   const idx = STAGES.findIndex(s => s.id === lead.stage);
-  const isLast = idx === STAGES.length - 1;
+  /* Label the advance button by stage id, not array position. A paid
+   * (בטיפול פעיל) lead is admitted into a house, so its button is the explicit
+   * admit action "כניסה לבית" (the removed column's name — keeps the action
+   * findable for Vered). All other stages keep the generic next-stage label. */
+  const nextLabel = lead.stage === 'paid' ? 'כניסה לבית' : '← שלב הבא';
 
   let stageFields = '';
   if (lead.stage === 'visit') {
@@ -953,7 +962,7 @@ function buildLeadCard(lead) {
     ${stageFields}
     <div class="lc-actions edit-only">
       <button class="btn small" data-action="back" ${idx === 0 ? 'disabled' : ''}>שלב קודם →</button>
-      <button class="btn small primary" data-action="next">${isLast ? 'הושלם' : '← שלב הבא'}</button>
+      <button class="btn small primary" data-action="next">${nextLabel}</button>
       <button class="btn small" data-action="edit" title="ערוך ליד">✏️</button>
       <button class="lc-irrelevant" title="סגור ליד">סגירת ליד</button>
       <button class="lc-irrelevant lc-remove" title="הסר ליד">הסר</button>
@@ -981,17 +990,24 @@ function buildLeadCard(lead) {
 }
 
 async function advanceLead(lead) {
-  const idx = STAGES.findIndex(s => s.id === lead.stage);
-  if (idx === STAGES.length - 1) {
-    // already entered — nothing to do
-    return;
-  }
-  if (idx === STAGES.length - 2) {
-    // moving from "paid" → "entry": open entry modal
+  // Admit action: advancing a paid (בטיפול פעיל) lead enters it into a house.
+  // openEntryModal creates the patient and retires the lead to 'admitted'.
+  // Keyed on the stage id — NOT array position — so it stays anchored to paid
+  // regardless of how many board columns exist.
+  if (lead.stage === 'paid') {
     openEntryModal(lead);
     return;
   }
-  await moveLead(lead, STAGES[idx + 1].id);
+  // Already admitted, or a stray legacy holding stage. These no longer render a
+  // board column, but guard defensively so a stray lead never crashes or moves.
+  if (lead.stage === 'entry' || lead.stage === 'entered' || lead.stage === 'admitted') {
+    return;
+  }
+  // new / visit → advance to the next board stage by id.
+  const idx = STAGES.findIndex(s => s.id === lead.stage);
+  if (idx >= 0 && idx < STAGES.length - 1) {
+    await moveLead(lead, STAGES[idx + 1].id);
+  }
 }
 
 async function moveLead(lead, newStage) {
