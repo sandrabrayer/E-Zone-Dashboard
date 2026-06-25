@@ -101,7 +101,12 @@ const QUARTERLY_BONUS_FIRST_MONTH = '2026-06';
 
 const LEAD_COLUMNS = [
   'id', 'name', 'phone', 'house', 'source', 'note',
-  'stage', 'visitDate', 'visitTime', 'entryDate', 'advance', 'created'
+  'stage', 'visitDate', 'visitTime', 'entryDate', 'advance', 'created',
+  /* assignedTo (משוייך ל) — who owns the lead. Required on new leads via the
+   * UI; appended LAST so the column lands before the metadata fields that
+   * IRRELEVANT_LEAD_COLUMNS / REMOVED_LEAD_COLUMNS concat on. Pre-existing rows
+   * have no value and stay blank (objectToRow_ defaults missing keys to ''). */
+  'assignedTo'
 ];
 
 /* Irrelevant-leads sheet mirrors LEAD_COLUMNS plus two metadata fields:
