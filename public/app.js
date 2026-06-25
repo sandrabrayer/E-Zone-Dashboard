@@ -10,6 +10,10 @@ const HOUSES = [
   { id: 'sde',    name: 'שדה אליעזר',     capacity: 16 },
 ];
 
+/* assignedTo (משוייך ל) options — the three fixed lead owners. Required on the
+ * add-lead form; rendered on the kanban card. Fixed list (no free text). */
+const ASSIGNEE_OPTIONS = ['ורד', 'שירן', 'יעל'];
+
 const STAGES = [
   { id: 'new',         label: 'ליד חדש' },
   { id: 'visit',       label: 'ביקור נקבע' },
@@ -676,6 +680,11 @@ function normalizeLead(l) {
     visitTime: isoTime(pickField(l, ['visitTime', 'visit_time', 'שעת ביקור', 'שעה'])),
     entryDate: isoDate(pickField(l, ['entryDate', 'entry_date', 'תאריך כניסה'])),
     advance:   advRaw === '' ? '' : Number(advRaw) || 0,
+    /* assignedTo (משוייך ל) — required on new leads via the add-lead form.
+     * pickField returns '' when absent so pre-existing leads (no such column)
+     * stay blank with no backfill, mirroring the originSheet/movedAt
+     * pass-through idiom. */
+    assignedTo: pickField(l, ['assignedTo', 'assigned_to', 'משוייך ל', 'משויך ל']),
     /* Stored as YYYY-MM-DD. Sheets sometimes returns a Date object for date
      * cells (depending on locale + column type); isoDate normalizes both
      * Date objects and full ISO timestamps down to a plain date string so
@@ -954,6 +963,9 @@ function buildLeadCard(lead) {
       ${escapeHtml(lead.phone)} ${lead.house ? '· ' + escapeHtml(lead.house) : ''}
       ${lead.source ? '· מקור: ' + escapeHtml(lead.source) : ''}
     </div>
+    ${lead.assignedTo
+      ? `<div class="lc-assigned"><span class="lc-assigned-label">משוייך ל</span>${escapeHtml(lead.assignedTo)}</div>`
+      : ''}
     <div class="lc-created">
       <span class="lc-created-label">נוצר</span>
       ${createdInner}
@@ -1636,11 +1648,16 @@ function openAddLeadModal() {
       { name: 'house', label: 'בית מועדף', type: 'select',
         options: [{ value: '', label: '— ללא —' }, ...HOUSES.map(h => ({ value: h.name, label: h.name }))] },
       { name: 'source', label: 'מקור הפניה', type: 'text' },
+      /* assignedTo (משוייך ל) — required. Empty placeholder option fails the
+       * !values.assignedTo guard below, matching how `name` is validated. */
+      { name: 'assignedTo', label: 'משוייך ל', type: 'select', required: true,
+        options: [{ value: '', label: '— בחר —' }, ...ASSIGNEE_OPTIONS.map(a => ({ value: a, label: a }))] },
       { name: 'note', label: 'הערות', type: 'textarea' },
     ],
     submitLabel: 'הוסף ליד',
     onSubmit: async values => {
       if (!values.name) { showError('יש להזין שם'); return false; }
+      if (!values.assignedTo) { showError('יש לבחור משוייך ל'); return false; }
 
       const doCreateLead = async vals => {
         const id = cryptoId();
