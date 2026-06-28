@@ -45,10 +45,17 @@ const NOT_RELEVANT_REASON_LABELS = {
  * (disposition column); Hebrew labels are render-time only so a UI label
  * rename never invalidates historical rows. Sections render in this order. */
 const DISPOSITION_LABELS = {
-  not_relevant:  'לא רלוונטי',
-  completed:     'סיים טיפול',
-  stopped_early: 'הפסיק לפני הזמן',
+  not_relevant:        'לא רלוונטי',
+  completed:           'סיים טיפול',
+  stopped_early:       'הפסיק לפני הזמן',
+  released_outpatient: 'משוחרר לטיפול חוץ',
 };
+
+/* The three discharge outcomes offered by the שחרור modal, in render order.
+ * A subset of DISPOSITION_LABELS (excludes the lead-only not_relevant). The
+ * modal is generic over whatever keys it's handed, so this list is the single
+ * source of truth for "which dispositions a discharge can have". */
+const DISCHARGE_DISPOSITIONS = ['completed', 'stopped_early', 'released_outpatient'];
 
 const STATUS_OPTIONS = [
   { id: 'active',   label: 'פעיל' },
@@ -1491,7 +1498,10 @@ function renderDischargedPatients() {
       { label: 'שם',          value: p.name || '—', valueClass: 'p-name' },
       { label: 'בית',          value: houseName },
       { label: 'תאריך כניסה',   value: p.date ? formatDate(p.date) : '—' },
-      { label: 'תאריך שחרור',   value: p.dischargedAt ? formatDate(p.dischargedAt) : '—' },
+      // Prefer the user-chosen discharge date (exitDate); fall back to the
+      // action timestamp (dischargedAt) for rows recorded before the date field.
+      { label: 'תאריך שחרור',   value: (p.exitDate || p.dischargedAt)
+                                  ? formatDate(p.exitDate || p.dischargedAt) : '—' },
       { label: 'סטטוס סגירה',   value: dispLabel },
     ];
     if (p.discharge_note) {
@@ -1623,8 +1633,14 @@ function showConfirm({ text, onConfirm, confirmLabel = 'אישור', danger = fa
  * Phase 2e-2: accepts optional `dispositions` (array of keys to render —
  * defaults to all 3 keys of DISPOSITION_LABELS) and `title` (defaults to
  * 'סגירת ליד'). Patient discharge passes a 2-key subset + 'שחרור מטופל'.
- * Existing closeLead caller relies on defaults. */
-function showCloseLeadModal({ onConfirm, dispositions, title }) {
+ * Existing closeLead caller relies on defaults.
+ *
+ * PR 2 (discharge): accepts optional `dateField` = { name, label }. When given,
+ * an OPTIONAL native <input type="date"> (empty default, never required) is
+ * rendered and its value is added to the onConfirm payload under `name`. Callers
+ * that omit dateField (e.g. closeLead) get the unchanged { disposition, note }
+ * payload and no date row — fully backward-compatible. */
+function showCloseLeadModal({ onConfirm, dispositions, title, dateField }) {
   const root = document.getElementById('modal-root');
   const back = document.createElement('div');
   back.className = 'modal-backdrop';
@@ -1641,6 +1657,16 @@ function showCloseLeadModal({ onConfirm, dispositions, title }) {
     </label>
   `).join('');
 
+  // Optional date row — only when a dateField is supplied. dir="rtl" + lang="he"
+  // so the native picker honors the Hebrew locale, matching the lead "נוצר"
+  // input. Starts empty and carries no `required`, so any disposition can be
+  // confirmed without it.
+  const dateRowHtml = dateField ? `
+        <div class="form-row">
+          <label>${escapeHtml(dateField.label || 'תאריך')}</label>
+          <input type="date" name="${escapeHtml(dateField.name)}" lang="he" dir="rtl" />
+        </div>` : '';
+
   back.innerHTML = `
     <div class="modal">
       <h3>${escapeHtml(heading)}</h3>
@@ -1651,6 +1677,7 @@ function showCloseLeadModal({ onConfirm, dispositions, title }) {
             ${radiosHtml}
           </fieldset>
         </div>
+        ${dateRowHtml}
         <div class="form-row">
           <label>פירוט</label>
           <textarea name="not_relevant_note" rows="3" maxlength="500"></textarea>
@@ -1695,9 +1722,13 @@ function showCloseLeadModal({ onConfirm, dispositions, title }) {
     const fd = new FormData(form);
     const disposition = (fd.get('disposition')         || '').toString();
     const note        = (fd.get('not_relevant_note')   || '').toString();
+    const payload     = { disposition, note };
+    if (dateField) {
+      payload[dateField.name] = (fd.get(dateField.name) || '').toString();
+    }
 
     try {
-      await onConfirm({ disposition, note });
+      await onConfirm(payload);
       close();
     } catch (err) {
       console.error('[E-ZONE] close-lead onConfirm threw:', err);
@@ -2090,33 +2121,48 @@ function renderPatients() {
   });
 }
 
-/* Phase 2e-2 — שחרר button entry point. Opens the closure modal restricted to
- * the 2 patient-relevant dispositions (סיים טיפול / הפסיק לפני הזמן) and
- * performs TWO writes on confirm:
- *   1. existing release semantics: status='released' + exitDate=today, persisted
- *      via saveAll → replaceHousePatients_ (no backend change).
+/* Build the discharged-patient audit row (pure — no DOM, no I/O, so it's unit
+ * tested directly). Resolves the effective discharge date: a user-entered
+ * `dischargeDate` (from the optional date field) wins; an empty field falls
+ * back to today. The resolved date lands in the existing `exitDate` column —
+ * no new sheet column, so this stays frontend-only. `dischargedAt` remains the
+ * true action timestamp, independent of the user-chosen date. */
+function dischargeAuditRow(patient, { disposition, note, dischargeDate }, today) {
+  const picked   = dischargeDate ? isoDate(dischargeDate) : '';
+  const exitDate = picked || today || todayISO();
+  return {
+    ...patient,
+    status:         'released',
+    exitDate:       exitDate,
+    dischargedAt:   new Date().toISOString(),
+    disposition:    disposition,
+    discharge_note: note,
+  };
+}
+
+/* PR 2 — שחרר button entry point. Opens the closure modal with all THREE
+ * discharge dispositions (סיים טיפול / הפסיק לפני הזמן / משוחרר לטיפול חוץ) plus
+ * an optional תאריך שחרור date field, and performs TWO writes on confirm:
+ *   1. existing release semantics: status='released' + exitDate (chosen date or
+ *      today), persisted via saveAll → replaceHousePatients_ (no backend change).
  *   2. additive audit row to DISCHARGED_PATIENTS_SHEET via dischargePatient
- *      action, carrying disposition + free-text note.
+ *      action, carrying disposition + discharge date + free-text note.
  * Optimistic UI for both. Rollback restores the patient mutation AND drops
- * the optimistic discharged row if either write fails. */
+ * the optimistic discharged row if either write fails.
+ * NOTE: the משוחרר לטיפול חוץ option only records the disposition + date here;
+ * the cross-app Outpatient lead creation is PR 3 — intentionally not built. */
 function dischargePatient(p) {
   if (state.mode !== 'edit') return;
 
   showCloseLeadModal({
     title: 'שחרור מטופל',
-    dispositions: ['completed', 'stopped_early'],
-    onConfirm: async ({ disposition, note }) => {
+    dispositions: DISCHARGE_DISPOSITIONS,
+    dateField: { name: 'dischargeDate', label: 'תאריך שחרור' },
+    onConfirm: async ({ disposition, note, dischargeDate }) => {
       const prev = { status: p.status, exitDate: p.exitDate };
-      const exitDate = todayISO();
 
-      const auditRow = {
-        ...p,
-        status:         'released',
-        exitDate:       exitDate,
-        dischargedAt:   new Date().toISOString(),
-        disposition:    disposition,
-        discharge_note: note,
-      };
+      const auditRow = dischargeAuditRow(p, { disposition, note, dischargeDate });
+      const exitDate = auditRow.exitDate;
 
       p.status   = 'released';
       p.exitDate = exitDate;
