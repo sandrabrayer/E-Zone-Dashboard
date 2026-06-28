@@ -23,6 +23,13 @@ function noCache(res) {
 
 const SHEETS_URL = 'https://script.google.com/macros/s/AKfycbyScn2vcaOb_YCiTIRw-I-NugkZ4Zbt0hY5LgrM5D-WroSy-iuNhb9ewxoGcyZW63fsBw/exec';
 
+/* Outpatient cross-app lead write (PR 3). The /exec URL and the shared secret
+ * come from Railway env so the secret never reaches the browser and is never
+ * committed. Both must be set for the endpoint to do anything (fail-closed,
+ * mirroring the getAdmittedRoster secret discipline on the Apps Script side). */
+const OUTPATIENT_LEAD_URL    = process.env.OUTPATIENT_LEAD_URL    || '';
+const OUTPATIENT_LEAD_SECRET = process.env.OUTPATIENT_LEAD_SECRET || '';
+
 const BUILD_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const SERVER_STARTED_AT = new Date().toISOString();
 
@@ -133,6 +140,26 @@ function sheetsPost(body) {
       },
     };
     followingRequest(opts, SHEETS_URL, payload, resolve, reject, 0);
+  });
+}
+
+/* POST a JSON body to the Outpatient app's createLead endpoint. The action is
+ * a query param; the secret travels in the BODY (per the agreed contract) so it
+ * never lands in a URL/log line. Follows the Apps Script 302 like sheetsPost. */
+function outpatientPost(body) {
+  return new Promise((resolve, reject) => {
+    const sep = OUTPATIENT_LEAD_URL.indexOf('?') === -1 ? '?' : '&';
+    const target = OUTPATIENT_LEAD_URL + sep + 'action=createLead';
+    const payload = JSON.stringify(body || {});
+    const opts = {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        'Accept': 'application/json',
+      },
+    };
+    followingRequest(opts, target, payload, resolve, reject, 0);
   });
 }
 
@@ -278,6 +305,37 @@ app.get('/api/debug/last-save', (_req, res) => {
 });
 app.get('/api/debug/last-load', (_req, res) => {
   res.json(lastLoad || { empty: true });
+});
+
+/* POST /api/outpatient-lead — browser sends { name, phone, house, note }; we
+ * inject the shared secret from Railway env (never exposed to the client) and
+ * forward to the Outpatient app's createLead endpoint. Fail-closed: if the URL
+ * or secret isn't configured, refuse without calling out. The Dashboard treats
+ * any non-2xx / { ok:false } here as a NON-FATAL warning — the discharge has
+ * already succeeded locally. The secret is never logged. */
+app.post('/api/outpatient-lead', async (req, res) => {
+  if (!OUTPATIENT_LEAD_URL || !OUTPATIENT_LEAD_SECRET) {
+    return res.status(503).json({ ok: false, error: 'outpatient_not_configured' });
+  }
+  const b = req.body || {};
+  const body = {
+    secret: OUTPATIENT_LEAD_SECRET,
+    name:  b.name  == null ? '' : String(b.name),
+    phone: b.phone == null ? '' : String(b.phone),
+    house: b.house == null ? '' : String(b.house),
+    note:  b.note  == null ? '' : String(b.note),
+  };
+  try {
+    const data = await outpatientPost(body);
+    // Log only the outcome — never the secret or the full forwarded body.
+    console.log('[outpatient-lead] ←', data && typeof data === 'object'
+      ? { ok: data.ok, id: data.id, error: data.error }
+      : String(data).slice(0, 120));
+    res.json(data);
+  } catch (err) {
+    console.error('[outpatient-lead] error:', err.message);
+    res.status(502).json({ ok: false, error: 'outpatient_unreachable', message: err.message });
+  }
 });
 
 app.get('/healthz', (_, res) => res.json({ ok: true }));
