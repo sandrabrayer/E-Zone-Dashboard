@@ -2192,8 +2192,74 @@ function dischargePatient(p) {
         showError('כתיבת רישום השחרור נכשלה — ' + e.message);
         throw e;
       }
+
+      // PR 3 — cross-app effect: a "released to outpatient" discharge also
+      // creates a lead in the Outpatient app. This runs ONLY after the local
+      // discharge has fully persisted, and is deliberately NON-FATAL — a failed
+      // Outpatient write must never roll back the (already saved) discharge.
+      // createOutpatientLead swallows its own errors and warns the user, so we
+      // await it without a try/throw: it cannot break the discharge.
+      if (shouldCreateOutpatientLead(disposition)) {
+        await createOutpatientLead(p);
+      }
     },
   });
+}
+
+/* True only for the "released to outpatient" disposition — the single trigger
+ * for the cross-app Outpatient lead write. The other two dispositions
+ * (completed / stopped_early) do nothing cross-app. Pure + tested. */
+function shouldCreateOutpatientLead(disposition) {
+  return disposition === 'released_outpatient';
+}
+
+/* Build the { name, phone, house, note } payload sent to the Outpatient app.
+ * Pure (no DOM, no I/O) so the field mapping is unit-tested directly:
+ *   - phone is NOT stored on the patient; it's joined from the originating
+ *     lead (patient.fromLead). Hand-entered patients with no lead send ''.
+ *   - house is the stable houseId KEY (e.g. 'arfoni'), NOT the Hebrew display
+ *     name — the Outpatient side maps the key to its own house.
+ *   - note is the patient's source + notes combined (no exit date — the
+ *     discharge date lives on the discharge audit row, not the lead). */
+function outpatientLeadPayload(patient, lead) {
+  const phone = lead && lead.phone ? String(lead.phone) : '';
+  const note  = [patient.source, patient.notes]
+    .filter(s => s != null && String(s).trim() !== '')
+    .map(String)
+    .join(' — ');
+  return {
+    name:  patient.name || '',
+    phone: phone,
+    house: patient.houseId || '',
+    note:  note,
+  };
+}
+
+/* POST the Outpatient lead via the server proxy (/api/outpatient-lead), which
+ * injects the shared secret from Railway env — the secret never reaches the
+ * client. NON-FATAL by contract: this is called after the discharge already
+ * persisted, so it catches every error and only warns; it never throws and
+ * never mutates discharge state, guaranteeing it cannot roll back the
+ * discharge. The Outpatient createLead endpoint + env config are a separate
+ * deploy (see CHANGELOG); until they exist the proxy returns not-configured
+ * and the user is told to add the lead manually. */
+async function createOutpatientLead(patient) {
+  const lead    = (state.leads || []).find(l => String(l.id) === String(patient.fromLead)) || null;
+  const payload = outpatientLeadPayload(patient, lead);
+  try {
+    const res = await fetch('/api/outpatient-lead', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data || data.ok !== true) {
+      throw new Error((data && (data.message || data.error)) || ('HTTP ' + res.status));
+    }
+    showToast('נוצר ליד טיפול חוץ באפליקציית אאוטפיישנט');
+  } catch (e) {
+    showError('יצירת ליד טיפול חוץ נכשלה — יש להוסיף את הליד ידנית באאוטפיישנט. ' + (e.message || ''));
+  }
 }
 
 async function deletePatient(p) {
