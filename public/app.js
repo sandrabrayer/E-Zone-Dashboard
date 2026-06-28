@@ -865,6 +865,87 @@ function renderDashboard() {
     el.innerHTML = `<div class="p-name">${s.label}</div><div class="p-count">${count}</div>`;
     pipe.appendChild(el);
   });
+
+  renderRenewalAlert();
+}
+
+/* Dashboard renewal alert — active patients due to renew within 7 days whose
+ * upcoming cycle isn't already paid. Hidden entirely when the list is empty.
+ * Each row offers RENEW (writes next month's payment) and DISCHARGE (opens the
+ * existing שחרור modal). Action buttons carry `edit-only` so they're hidden in
+ * viewer mode, matching the rest of the app. */
+function renderRenewalAlert() {
+  const wrap    = document.getElementById('renewal-alert');
+  const listEl  = document.getElementById('renewal-alert-list');
+  const countEl = document.getElementById('renewal-alert-count');
+  if (!wrap || !listEl) return;
+
+  const list = patientsNeedingRenewal(todayISO(), 7);
+  if (countEl) countEl.textContent = list.length;
+
+  if (!list.length) {
+    wrap.classList.add('hidden');
+    listEl.innerHTML = '';
+    return;
+  }
+  wrap.classList.remove('hidden');
+  listEl.innerHTML = '';
+
+  list.forEach(({ patient, renewalISO, days }) => {
+    const house = houseById(patient.houseId);
+    const daysLabel = days === 0 ? 'היום' : `בעוד ${days} ימים`;
+    const row = document.createElement('div');
+    row.className = 'renewal-row';
+    row.innerHTML = `
+      <div class="rn-info">
+        <span class="rn-name">${escapeHtml(patient.name)}</span>
+        <span class="rn-house">${escapeHtml(house ? house.name : patient.houseId)}</span>
+      </div>
+      <div class="rn-when">
+        <span class="rn-date">חידוש ${escapeHtml(formatDate(renewalISO))}</span>
+        <span class="rn-days">${escapeHtml(daysLabel)}</span>
+      </div>
+      <div class="rn-actions edit-only">
+        <button class="btn small primary" data-action="renew">חידוש תשלום</button>
+        <button class="btn small" data-action="discharge">שחרור</button>
+      </div>`;
+    row.querySelector('[data-action="renew"]').onclick = () => renewPatient(patient, renewalISO);
+    row.querySelector('[data-action="discharge"]').onclick = () => dischargePatient(patient);
+    listEl.appendChild(row);
+  });
+}
+
+/* RENEW — record next month's charge for `patient` on its renewal due date.
+ * Reuses the billing write path exactly: build the (patient, dueDate) payment
+ * via paymentForPatientOnDate, mark it paid, and persist with savePayment
+ * (which already does optimistic upsert + rollback on failure). Because the
+ * renewal date is derived from the patient's billing schedule, writing this
+ * payment marks the upcoming cycle covered — so the patient drops off the
+ * alert and the next occurrence advances a month automatically. */
+function renewPatient(patient, dueDateISO) {
+  if (state.mode !== 'edit') return;
+
+  const base   = paymentForPatientOnDate(patient, dueDateISO);
+  const amount = base.amount || patient.pay || 0;
+  const payment = normalizePayment({
+    ...base,
+    patientId:   base.patientId   || patientKey(patient),
+    patientName: base.patientName || patient.name || '',
+    houseId:     base.houseId     || patient.houseId || '',
+    amount,
+    status:      'paid',
+    amountPaid:  amount,
+    balance:     0,
+    timestamp:   new Date().toISOString(),
+  });
+
+  // savePayment applies the optimistic local upsert synchronously, then awaits
+  // persistence and rolls back itself on failure. Re-render the dashboard right
+  // away (optimistic — the row disappears), then again after the round-trip so
+  // a rollback re-shows it. Mirrors closeLead's optimistic-then-reconcile move.
+  const saved = savePayment(payment);
+  renderDashboard();
+  Promise.resolve(saved).then(() => renderDashboard());
 }
 
 /* ====================================================
@@ -2314,6 +2395,83 @@ function patientsDueOn(dateISO) {
     const pd = dayOfMonth(p.date);
     return pd === d;
   });
+}
+
+/* ===== Renewal alert =====
+   A renewal is the patient's NEXT monthly billing-day occurrence. It uses the
+   SAME anchor as the גבייה tab: the patient's entry-date day-of-month
+   (dayOfMonth(p.date)) recurring every month — one source of truth with
+   patientsDueOn. We do NOT derive it from "last payment + 1 month"; the entry
+   day-of-month IS the schedule. A patient with no payment history therefore
+   still has a renewal date (their entry day in the current/next month).
+*/
+
+/* Parse a bare YYYY-MM-DD into a local-midnight Date (or null). Local parts —
+ * not new Date(iso), which would parse as UTC and drift the day for Israel. */
+function parseLocalISO(iso) {
+  const m = String(iso == null ? '' : iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+/* Whole calendar days from one ISO date to another (toISO - fromISO).
+ * Both are read as local midnights so the result is an exact integer. */
+function daysBetween(fromISO, toISO) {
+  const a = parseLocalISO(fromISO);
+  const b = parseLocalISO(toISO);
+  if (!a || !b) return NaN;
+  return Math.round((b.getTime() - a.getTime()) / 86400000);
+}
+
+/* The next calendar date on or after `fromISO` whose day-of-month equals the
+ * entry date's day-of-month. Months shorter than the target day clamp to the
+ * month's last day (e.g. an entry day of 31 renews on Feb 28). Returns a Date
+ * or null. Mirrors the day-of-month matching patientsDueOn relies on. */
+function nextBillingDayOnOrAfter(entryISO, fromISO) {
+  const targetDay = dayOfMonth(entryISO);
+  const from = parseLocalISO(fromISO);
+  if (!targetDay || !from) return null;
+  const occ = (year, monthIdx) => {
+    // Normalize year/month so monthIdx overflow (e.g. 12) rolls the year.
+    const first = new Date(year, monthIdx, 1);
+    const yy = first.getFullYear();
+    const mm = first.getMonth();
+    const lastDay = new Date(yy, mm + 1, 0).getDate();
+    return new Date(yy, mm, Math.min(targetDay, lastDay));
+  };
+  let cand = occ(from.getFullYear(), from.getMonth());
+  if (cand.getTime() < from.getTime()) {
+    cand = occ(from.getFullYear(), from.getMonth() + 1);
+  }
+  return cand;
+}
+
+/* ISO (YYYY-MM-DD) of the patient's next billing-day occurrence on or after
+ * `fromISO`, or '' if the entry date is unusable. */
+function renewalDateISO(entryISO, fromISO) {
+  const d = nextBillingDayOnOrAfter(entryISO, fromISO);
+  return d ? isoDate(d) : '';
+}
+
+/* Active patients whose next billing day falls within [today, today+window]
+ * AND whose upcoming cycle is NOT already covered by a paid/partial payment.
+ * Returns [{ patient, renewalISO, days }] sorted by renewal date. */
+function patientsNeedingRenewal(fromISO, windowDays) {
+  const today = fromISO || todayISO();
+  const win = windowDays == null ? 7 : windowDays;
+  const out = [];
+  activePatients().forEach(p => {
+    const renewalISO = renewalDateISO(p.date, today);
+    if (!renewalISO) return;
+    const days = daysBetween(today, renewalISO);
+    if (!(days >= 0 && days <= win)) return;
+    // Cycle coverage: only a paid/partial payment for THIS due date counts as
+    // covered — an unpaid placeholder does not suppress the alert.
+    const pay = paymentForPatientOnDate(p, renewalISO);
+    if (pay.status === 'paid' || pay.status === 'partial') return;
+    out.push({ patient: p, renewalISO, days });
+  });
+  return out.sort((a, b) => a.renewalISO.localeCompare(b.renewalISO));
 }
 
 /* The payment may exist on Sheets without a matching patient (e.g., the

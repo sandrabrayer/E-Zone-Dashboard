@@ -72,6 +72,17 @@
         </div>
       </div>
 
+      <!-- Renewal alert: active patients whose next billing day is within 7
+           days and whose upcoming cycle isn't already paid. Hidden when empty;
+           populated by renderRenewalAlert() in app.js. -->
+      <div class="card renewal-alert hidden" id="renewal-alert">
+        <div class="renewal-alert-head">
+          <span class="renewal-alert-title">חידושי תפוסה — השבוע הקרוב</span>
+          <span class="renewal-alert-count" id="renewal-alert-count">0</span>
+        </div>
+        <div class="renewal-alert-list" id="renewal-alert-list"></div>
+      </div>
+
       <h3>מיטות פנויות לפי בית</h3>
       <div class="houses-grid" id="houses-grid"></div>
 
