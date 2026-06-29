@@ -40,6 +40,7 @@
         <button class="tab" data-screen="discharged-patients">מטופלים משוחררים</button>
         <button class="tab" data-screen="billing">גבייה</button>
         <button class="tab" data-screen="breakeven">נקודת איזון</button>
+        <button class="tab" data-screen="growth">גרף צמיחה</button>
       </nav>
       <div class="user-mode">
         <span id="mode-label"></span>
@@ -262,6 +263,14 @@
           <li>מספר המטופלים והמחיר הממוצע נלקחים אוטומטית ממסך תפוסה</li>
         </ul>
       </div>
+    </section>
+
+    <!-- ====== GROWTH GRAPH (network-wide growth over time) ====== -->
+    <section id="screen-growth" class="screen hidden">
+      <div class="screen-head">
+        <h2>גרף צמיחה</h2>
+      </div>
+      <div id="growth-graphs" class="growth-graphs"></div>
     </section>
   </div>
 
