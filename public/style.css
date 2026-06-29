@@ -1077,3 +1077,14 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
   .be-houses-grid { grid-template-columns: 1fr; }
   .be-metrics { grid-template-columns: 1fr 1fr; }
 }
+
+/* ===== Growth graph (גרף צמיחה) ===== */
+.growth-graphs { display: flex; flex-direction: column; gap: 20px; }
+.growth-card { padding: 16px; }
+.growth-title { font-weight: 600; margin-bottom: 12px; color: var(--text, #1f2a44); }
+.growth-svg { width: 100%; height: auto; display: block; direction: ltr; }
+.growth-line { stroke: #3b6fed; stroke-width: 2; }
+.growth-dot { fill: #3b6fed; }
+.growth-grid { stroke: #e3e8f4; stroke-width: 1; }
+.growth-ylabel, .growth-xlabel { fill: #6b7aa0; font-size: 11px; font-family: inherit; }
+.growth-empty { padding: 24px; text-align: center; color: #6b7aa0; }

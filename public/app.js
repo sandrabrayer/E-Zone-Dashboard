@@ -308,7 +308,7 @@ function enterApp(mode) {
 }
 
 /* ===== Top tabs ===== */
-const SCREENS = ['dashboard', 'leads', 'retention', 'occupancy', 'discharged-patients', 'billing', 'breakeven'];
+const SCREENS = ['dashboard', 'leads', 'retention', 'occupancy', 'discharged-patients', 'billing', 'breakeven', 'growth'];
 
 function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {
@@ -823,6 +823,7 @@ function renderAll() {
   renderDischargedPatients();
   renderBilling();
   renderBreakeven();
+  renderGrowthGraph();
 }
 
 /* ====================================================
@@ -2945,6 +2946,221 @@ async function savePayment(payment) {
     renderBilling();
     showError('שמירת גבייה נכשלה — ' + e.message);
   }
+}
+
+/* ===== Growth graph (גרף צמיחה) — network-wide growth over time =====
+ *
+ * Two stacked time-series over ALL houses combined:
+ *   Graph 1 — active patient count, WEEKLY (Sunday-start) buckets.
+ *   Graph 2 — revenue run-rate, MONTHLY buckets (sum of active patients' pay).
+ *
+ * MANDATORY date handling: a patient's `date` is already isoDate-normalized to
+ * a bare YYYY-MM-DD, but `exitDate` is RAW from getData and may be a full ISO
+ * timestamp ("2026-06-22T21:00:00.000Z"). We normalize BOTH through isoDate()
+ * first (local-day correct, idempotent on bare dates), THEN do all week/month
+ * math on the resulting bare YYYY-MM-DD via parseLocalISO/local Date arithmetic.
+ * This avoids the exitDate raw-timestamp UTC off-by-one (a Z-timestamp at 21:00
+ * UTC is the NEXT local calendar day in Israel). All comparisons below are on
+ * bare YYYY-MM-DD strings, which sort lexicographically == chronologically.
+ *
+ * The functions are pure (no DOM/I/O) so the bucketing is unit-tested directly. */
+
+/* Normalize a patient to { entry, exit, pay } with both dates as local bare
+ * YYYY-MM-DD (exit '' when never released). */
+function growthRecord(p) {
+  return {
+    entry: isoDate((p && p.date) || ''),
+    exit:  p && p.exitDate ? isoDate(p.exitDate) : '',
+    pay:   Number(p && p.pay) || 0,
+  };
+}
+
+/* Local date math on bare YYYY-MM-DD — reuses parseLocalISO + isoDate so the
+ * result is always a clean local bare date (never a UTC-sliced one). */
+function addDaysISO(iso, n) {
+  const d = parseLocalISO(iso);
+  if (!d) return '';
+  d.setDate(d.getDate() + n);
+  return isoDate(d);
+}
+
+/* The Sunday on or before `iso` (Israeli week starts Sunday; getDay() 0=Sun). */
+function weekStartSunday(iso) {
+  const d = parseLocalISO(iso);
+  if (!d) return '';
+  d.setDate(d.getDate() - d.getDay());
+  return isoDate(d);
+}
+
+/* 'YYYY-MM' month key + first/last calendar day of that month (local). */
+function monthKey(iso)      { return String(isoDate(iso)).slice(0, 7); }
+function firstDayOfMonth(k) { return k + '-01'; }
+function lastDayOfMonth(k) {
+  const parts = String(k).split('-');
+  const y = Number(parts[0]); const m = Number(parts[1]);
+  const last = new Date(y, m, 0).getDate();        // day 0 of next month = last day of m
+  return k + '-' + String(last).padStart(2, '0');
+}
+function nextMonthKey(k) {
+  const parts = String(k).split('-');
+  let y = Number(parts[0]); let m = Number(parts[1]) + 1;
+  if (m > 12) { m = 1; y += 1; }
+  return y + '-' + String(m).padStart(2, '0');
+}
+
+/* Earliest entry date across the patient list (local bare YYYY-MM-DD, '' when
+ * the list is empty / has no parseable entry dates). */
+function earliestEntryISO(records) {
+  let min = '';
+  for (let i = 0; i < records.length; i++) {
+    const e = records[i].entry;
+    if (!e) continue;
+    if (!min || e < min) min = e;
+  }
+  return min;
+}
+
+/* Graph 1 — weekly active counts, Sunday-start, from the earliest entry's week
+ * through the week containing today. Active in week [S, E] (E = S+6) iff
+ * entry <= E AND (exit === '' OR exit >= S). Network-wide. */
+function weeklyActiveCounts(patients, todayIso) {
+  const recs = (patients || []).map(growthRecord).filter(r => r.entry);
+  if (!recs.length) return [];
+  const start = weekStartSunday(earliestEntryISO(recs));
+  const lastStart = weekStartSunday(isoDate(todayIso));
+  const out = [];
+  let S = start;
+  let guard = 0;
+  while (S && S <= lastStart && guard++ < 10000) {
+    const E = addDaysISO(S, 6);
+    let count = 0;
+    for (let i = 0; i < recs.length; i++) {
+      const r = recs[i];
+      if (r.entry <= E && (r.exit === '' || r.exit >= S)) count++;
+    }
+    out.push({ weekStart: S, count: count });
+    S = addDaysISO(S, 7);
+  }
+  return out;
+}
+
+/* Graph 2 — monthly revenue run-rate, from the earliest entry's month through
+ * the current month. For month M [F, L], sum (pay || 0) over patients with
+ * entry <= L AND (exit === '' OR exit >= F). Reuses the dashboard card's
+ * sum-of-active-pay; the membership is time-based so EVERY month (incl. the
+ * current one) counts anyone active for any part of the month — so the current
+ * month's point may exceed the live דשבורד card when there were mid-month
+ * releases. Intentional; keeps all buckets consistent. Network-wide. */
+function monthlyRevenue(patients, todayIso) {
+  const recs = (patients || []).map(growthRecord).filter(r => r.entry);
+  if (!recs.length) return [];
+  let k = monthKey(earliestEntryISO(recs));
+  const lastK = monthKey(isoDate(todayIso));
+  const out = [];
+  let guard = 0;
+  while (k && k <= lastK && guard++ < 10000) {
+    const F = firstDayOfMonth(k);
+    const L = lastDayOfMonth(k);
+    let revenue = 0;
+    for (let i = 0; i < recs.length; i++) {
+      const r = recs[i];
+      if (r.entry <= L && (r.exit === '' || r.exit >= F)) revenue += r.pay;
+    }
+    out.push({ month: k, revenue: revenue });
+    k = nextMonthKey(k);
+  }
+  return out;
+}
+
+/* Build an inline-SVG line chart (no lib, no CDN). Pure string output; every
+ * dynamic label is escapeHtml'd. RTL is handled by the container; the SVG plots
+ * time left→right (earliest→latest) which reads naturally under the Hebrew
+ * heading above it. `labelEvery` thins x-labels so they don't overlap. */
+function growthLineChartSVG(series, opts) {
+  const o = opts || {};
+  const W = 760, H = 240, padL = 56, padR = 16, padT = 16, padB = 44;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const n = series.length;
+  if (!n) return '<div class="growth-empty">אין נתונים להצגה</div>';
+
+  const vals = series.map(s => s.value);
+  const maxV = Math.max.apply(null, vals.concat([0]));
+  const yMax = maxV > 0 ? maxV : 1;
+  const x = i => padL + (n === 1 ? innerW / 2 : (innerW * i) / (n - 1));
+  const y = v => padT + innerH - (innerH * v) / yMax;
+
+  const pts = series.map((s, i) => x(i).toFixed(1) + ',' + y(s.value).toFixed(1)).join(' ');
+
+  // y gridlines / labels at 0, 50%, 100%
+  let grid = '';
+  [0, 0.5, 1].forEach(f => {
+    const v = yMax * f;
+    const yy = y(v).toFixed(1);
+    grid += '<line x1="' + padL + '" y1="' + yy + '" x2="' + (W - padR) + '" y2="' + yy +
+            '" class="growth-grid" />';
+    grid += '<text x="' + (padL - 8) + '" y="' + (Number(yy) + 4) +
+            '" class="growth-ylabel" text-anchor="end">' +
+            escapeHtml(o.fmtY ? o.fmtY(v) : String(Math.round(v))) + '</text>';
+  });
+
+  // x labels, thinned
+  const every = Math.max(1, Math.ceil(n / (o.maxXLabels || 8)));
+  let xlabels = '';
+  for (let i = 0; i < n; i++) {
+    if (i % every !== 0 && i !== n - 1) continue;
+    xlabels += '<text x="' + x(i).toFixed(1) + '" y="' + (H - padB + 18) +
+               '" class="growth-xlabel" text-anchor="middle">' +
+               escapeHtml(series[i].label) + '</text>';
+  }
+
+  const dots = series.map((s, i) =>
+    '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(s.value).toFixed(1) +
+    '" r="2.5" class="growth-dot"><title>' +
+    escapeHtml(s.label + ' — ' + (o.fmtY ? o.fmtY(s.value) : s.value)) +
+    '</title></circle>'
+  ).join('');
+
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" class="growth-svg" preserveAspectRatio="xMidYMid meet" role="img">' +
+         grid +
+         '<polyline points="' + pts + '" class="growth-line" fill="none" />' +
+         dots + xlabels +
+         '</svg>';
+}
+
+/* Render the גרף צמיחה screen: two stacked, separately-scaled SVG charts. */
+function renderGrowthGraph() {
+  const host = document.getElementById('growth-graphs');
+  if (!host) return;
+
+  const today = todayISO();
+  const weekly  = weeklyActiveCounts(state.patients || [], today);
+  const monthly = monthlyRevenue(state.patients || [], today);
+
+  if (!weekly.length && !monthly.length) {
+    host.innerHTML = '<div class="card growth-empty">אין נתוני מטופלים להצגה</div>';
+    return;
+  }
+
+  const weeklySeries = weekly.map(w => ({
+    value: w.count,
+    label: formatDateDDMMYYYY(w.weekStart),
+  }));
+  const monthlySeries = monthly.map(m => ({
+    value: m.revenue,
+    label: m.month,
+  }));
+
+  const fmtShekel = v => '₪ ' + Math.round(v).toLocaleString('he-IL');
+
+  host.innerHTML =
+    '<div class="card growth-card">' +
+      '<div class="growth-title">מספר מטופלים פעילים (שבועי)</div>' +
+      growthLineChartSVG(weeklySeries, { maxXLabels: 8 }) +
+    '</div>' +
+    '<div class="card growth-card">' +
+      '<div class="growth-title">הכנסות חודשיות (₪)</div>' +
+      growthLineChartSVG(monthlySeries, { fmtY: fmtShekel, maxXLabels: 8 }) +
+    '</div>';
 }
 
 /* ===== Helpers ===== */
