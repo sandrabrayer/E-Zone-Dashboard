@@ -1524,11 +1524,21 @@ function renderDischargedPatients() {
     if (state.mode === 'edit') {
       const actions = document.createElement('div');
       actions.className = 'irrelevant-actions';
+
       const btn = document.createElement('button');
       btn.className = 'btn small';
       btn.textContent = 'שחזר מטופל';
       btn.onclick = () => restorePatient(p);
       actions.appendChild(btn);
+
+      // Restore-to-active: one-click undo for an accidental discharge. Sits
+      // beside "שחזר מטופל" (which sends the patient back to the leads pipeline).
+      const activeBtn = document.createElement('button');
+      activeBtn.className = 'btn small primary';
+      activeBtn.textContent = 'החזר לסטטוס פעיל';
+      activeBtn.onclick = () => restorePatientToActive(p);
+      actions.appendChild(activeBtn);
+
       row.appendChild(actions);
     }
 
@@ -1581,6 +1591,125 @@ async function restorePatient(p) {
       }
     },
   });
+}
+
+/* ===== Restore to active =====
+ * "החזר לסטטוס פעיל" — a one-click undo for an accidental discharge. Unlike
+ * restorePatient (which spawns a NEW LEAD), this returns the person to ACTIVE
+ * patient status with their original record intact, and flags the audit row so
+ * it leaves the discharged tab. The audit row is KEPT (restored='TRUE' hides
+ * it; it is never deleted).
+ *
+ * The work is split into pure helpers (unit-tested) + a thin optimistic
+ * handler that mirrors restorePatient's optimistic + rollback shape. */
+
+/* Find the patient row this audit row should restore, matched by
+ * houseId + name + date — NOT by id. Patient ids are session-local (the
+ * Patients sheet has no id column; normalizePatient mints a fresh cryptoId on
+ * every load), so the audit row's stored id will not match any state.patients
+ * id after a reload. The three-field key is the stable discriminator. Returns
+ * -1 when no row matches. Pure + tested. */
+function matchActivePatientIndex(patients, audit) {
+  if (!Array.isArray(patients) || !audit) return -1;
+  return patients.findIndex(p =>
+    p && p.houseId === audit.houseId && p.name === audit.name && p.date === audit.date);
+}
+
+/* Reconstruct an ACTIVE patient record from a discharged audit row. Used ONLY
+ * when no existing row matches (e.g. the original row was hard-deleted from the
+ * sheet). Carries every reconstructable field from the audit row, forcing
+ * status='active' and a blank exitDate. Pure + tested. */
+function reconstructActivePatientFromAudit(audit) {
+  const a = audit || {};
+  return {
+    id:       a.id || cryptoId(),
+    houseId:  a.houseId || '',
+    name:     a.name || '',
+    date:     a.date || '',
+    pay:      Number(a.pay) || 0,
+    adv:      Number(a.adv) || 0,
+    status:   'active',
+    fromLead: a.fromLead || '',
+    exitDate: '',
+    source:   a.source || 'lead',
+    notes:    a.notes || '',
+  };
+}
+
+/* Produce the post-restore patients array. If an existing row matches
+ * (houseId+name+date) flip THAT row in place (status='active', exitDate='') —
+ * guaranteeing NO duplicate, even across a reload where ids differ. Otherwise
+ * reconstruct from the audit row and append. Returns a NEW array (the input is
+ * never mutated) so the caller can roll back by restoring the previous
+ * reference. Pure + tested. */
+function buildRestoredToActivePatients(patients, audit) {
+  const src = Array.isArray(patients) ? patients : [];
+  const idx = matchActivePatientIndex(src, audit);
+  if (idx >= 0) {
+    const next = src.slice();
+    next[idx] = Object.assign({}, src[idx], { status: 'active', exitDate: '' });
+    return { patients: next, reconstructed: false, patient: next[idx] };
+  }
+  const rebuilt = reconstructActivePatientFromAudit(audit);
+  return { patients: src.concat([rebuilt]), reconstructed: true, patient: rebuilt };
+}
+
+/* True when the discharge that produced this audit row also created a cross-app
+ * Outpatient lead (disposition === 'released_outpatient'; see PR #24's
+ * createOutpatientLead). Restoring to active does NOT remove that lead, so the
+ * operator is told to remove it manually in the Outpatient app. Pure + tested. */
+function restoreNeedsOutpatientCleanup(audit) {
+  return !!audit && audit.disposition === 'released_outpatient';
+}
+
+function restorePatientToActive(p) {
+  if (state.mode !== 'edit') return;
+  showConfirm({
+    text: 'להחזיר את המטופל לסטטוס פעיל?',
+    onConfirm: () => doRestorePatientToActive(p),
+  });
+}
+
+/* Optimistic restore-to-active. Two persisted writes, in this order:
+ *   1. saveAll() — re-activates the patient row via replaceHousePatients_
+ *      (the Patients sheet has no dedicated action; status flips there). This
+ *      is the IMPORTANT record, so it goes first.
+ *   2. restorePatientToActive action — flags the audit row restored='TRUE' on
+ *      the discharged sheet so it leaves the tab. Cosmetic; goes second.
+ * On any failure BOTH optimistic changes roll back (previous refs restored).
+ * If write 2 fails after write 1 persisted, the patient is already active on
+ * the sheet and the audit row just reappears on reload — re-clicking restore is
+ * idempotent (the match flips an already-active row in place, no duplicate). */
+async function doRestorePatientToActive(p) {
+  const prevPatients   = state.patients;
+  const prevDischarged = state.dischargedPatients.slice();
+
+  const { patients } = buildRestoredToActivePatients(state.patients, p);
+  state.patients = patients;
+  // Flag the audit row locally so renderDischargedPatients' restored-filter
+  // hides it; the row object stays in state as the audit trail.
+  state.dischargedPatients = state.dischargedPatients.map(d =>
+    d.id === p.id ? Object.assign({}, d, { restored: 'TRUE' }) : d);
+  renderAll();
+
+  try {
+    await saveAll();
+    await apiPost({ action: 'restorePatientToActive', patient: { ...p, restored: 'TRUE' } });
+  } catch (e) {
+    state.patients = prevPatients;
+    state.dischargedPatients = prevDischarged;
+    renderAll();
+    showError('החזרת המטופל לסטטוס פעיל נכשלה — ' + e.message);
+    return;
+  }
+
+  showToast('המטופל הוחזר לסטטוס פעיל');
+  // The discharge that produced this row may have created a cross-app Outpatient
+  // lead (released_outpatient, PR #24). Restoring to active does not remove it,
+  // so prompt the operator to clean it up manually in the Outpatient app.
+  if (restoreNeedsOutpatientCleanup(p)) {
+    showToast('שים לב: יש להסיר ידנית את ליד טיפול החוץ באפליקציית אאוטפיישנט');
+  }
 }
 
 /* Confirm dialog with "אישור" / "ביטול" buttons. Reuses the same backdrop +
