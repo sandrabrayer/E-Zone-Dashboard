@@ -196,6 +196,9 @@ function handle_(params) {
     if (action === 'restorePatient') {
       return jsonOut_(restorePatient_(parseJsonParam_(params.patient)));
     }
+    if (action === 'restorePatientToActive') {
+      return jsonOut_(restorePatientToActive_(parseJsonParam_(params.patient)));
+    }
     if (action === 'managersOverview') {
       return jsonOut_(managersOverview_(params.month));
     }
@@ -694,6 +697,26 @@ function restorePatient_(patient) {
       originalPatientId: patient.id,
       lead: restored,
     };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* Restore-to-active companion to restorePatient_. The patient's ACTIVE row is
+ * re-activated by the client's saveAll -> replaceHousePatients_ path (status is
+ * flipped to 'active' there), so this action deliberately does NOT touch the
+ * Patients sheet and creates NO lead. It ONLY flags the discharged audit row
+ * restored='TRUE' (matched by the persisted audit id via upsertRowById_) so the
+ * row leaves the discharged tab. The audit row itself is KEPT as the trail. */
+function restorePatientToActive_(patient) {
+  if (!patient || !patient.id) return { ok: false, error: 'missing_patient' };
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
+    const flagged = Object.assign({}, patient, { restored: 'TRUE' });
+    upsertRowById_(dischargedSh, DISCHARGED_PATIENT_COLUMNS, flagged);
+    return { ok: true, restoredToActive: true, id: patient.id };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
