@@ -953,7 +953,16 @@ function renewPatient(patient, dueDateISO) {
   // a rollback re-shows it. Mirrors closeLead's optimistic-then-reconcile move.
   const saved = savePayment(payment);
   renderDashboard();
-  Promise.resolve(saved).then(() => renderDashboard());
+  Promise.resolve(saved).then(() => {
+    renderDashboard();
+    // Confirm only if the paid record actually survived. savePayment swallows
+    // its own errors (rolls back state.payments + showError on failure), so the
+    // promise resolves either way — check that the paid payment is still in
+    // state before claiming success, mirroring the other write paths' toast.
+    if (state.payments.some(x => x.id === payment.id && x.status === 'paid')) {
+      showToast(`חידוש נרשם — ${patient.name}`);
+    }
+  });
 }
 
 /* ====================================================
