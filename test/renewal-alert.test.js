@@ -180,3 +180,109 @@ test('a paid payment for a DIFFERENT cycle does not suppress the upcoming one', 
   assert.strictEqual(list.length, 1);
   assert.strictEqual(list[0].renewalISO, '2026-06-10');
 });
+
+/* ===== renew-button success confirmation (showToast) =====
+ *
+ * renewPatient touches the DOM (renderDashboard) and the network (apiPost via
+ * savePayment), so unlike the pure-function suite above we load a SECOND
+ * sandbox whose epilogue overrides those side-effecting globals: renders become
+ * no-ops, apiPost is a controllable resolve/reject, and showToast is a spy that
+ * records its message. This exercises the REAL renewPatient + savePayment path,
+ * including savePayment's own rollback-on-failure, and pins that the success
+ * toast fires only when the paid record survives the round-trip. */
+function loadRenew() {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'public', 'app.js'),
+    'utf8'
+  );
+
+  const epilogue = `
+    globalThis.__toasts = [];
+    globalThis.__apiShouldFail = false;
+    state.mode = 'edit';
+    // Silence side effects so we isolate the toast decision. savePayment calls
+    // renderBillingMonthlySummary (and, on rollback, renderBilling + showError);
+    // renewPatient calls renderDashboard. apiPost is the persistence round-trip.
+    showToast = (m) => { globalThis.__toasts.push(m); };
+    showError = () => {};
+    renderDashboard = () => {};
+    renderBilling = () => {};
+    renderBillingMonthlySummary = () => {};
+    apiPost = async () => {
+      if (globalThis.__apiShouldFail) throw new Error('save failed');
+      return {};
+    };
+    globalThis.__renew = {
+      setPatients(a) { state.patients = a; },
+      setPayments(a) { state.payments = a; },
+      getPayments() { return state.payments; },
+      setApiFail(v) { globalThis.__apiShouldFail = v; },
+      resetToasts() { globalThis.__toasts = []; },
+      getToasts() { return globalThis.__toasts; },
+      renewPatient,
+      renewalDateISO,
+      paymentId,
+    };
+  `;
+
+  const noop = () => {};
+  const sandbox = {
+    console: { log: noop, warn: noop, error: noop, info: noop },
+    location: { origin: 'http://test', href: 'http://test/' },
+    document: { addEventListener: noop, getElementById: () => null },
+    localStorage: { getItem: () => null, setItem: noop, removeItem: noop },
+    URLSearchParams,
+    Promise, setTimeout,
+    Math, Date, JSON, Number, String, Array, Object, RegExp,
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(src + epilogue, sandbox);
+  return sandbox.__renew;
+}
+
+const renew = loadRenew();
+// Let the sandbox's microtask chain settle: renewPatient schedules a
+// Promise.resolve(savePayment()).then(...), and savePayment awaits apiPost.
+const flush = () => new Promise(r => setTimeout(r, 0));
+
+test('renew fires a success toast when the paid payment survives the save', async () => {
+  renew.setApiFail(false);
+  renew.resetToasts();
+  const p = patient('arfoni', 'דנה', '2026-01-10'); // → 2026-06-10
+  renew.setPatients([p]);
+  renew.setPayments([]);
+  const due = renew.renewalDateISO(p.date, '2026-06-05');
+
+  renew.renewPatient(p, due);
+  await flush();
+  await flush();
+
+  const toasts = renew.getToasts();
+  assert.strictEqual(toasts.length, 1);
+  assert.strictEqual(toasts[0], `חידוש נרשם — ${p.name}`);
+  // The paid record persisted.
+  const pays = renew.getPayments();
+  assert.strictEqual(pays.length, 1);
+  assert.strictEqual(pays[0].status, 'paid');
+});
+
+test('renew does NOT toast when the save fails and the payment is rolled back', async () => {
+  renew.setApiFail(true);
+  renew.resetToasts();
+  const p = patient('arfoni', 'דנה', '2026-01-10'); // → 2026-06-10
+  renew.setPatients([p]);
+  renew.setPayments([]);
+  const due = renew.renewalDateISO(p.date, '2026-06-05');
+
+  renew.renewPatient(p, due);
+  await flush();
+  await flush();
+
+  // No confirmation, and savePayment rolled the optimistic insert back out.
+  assert.strictEqual(renew.getToasts().length, 0);
+  assert.strictEqual(renew.getPayments().length, 0);
+
+  renew.setApiFail(false); // restore for any later cases
+});
