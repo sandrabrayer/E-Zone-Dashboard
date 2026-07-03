@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const https = require('https');
 const { URL } = require('url');
+const { checkPin } = require('./lib/pin');
 
 const app = express();
 app.disable('etag');
@@ -21,7 +22,15 @@ function noCache(res) {
   res.set('Vary', '*');
 }
 
-const SHEETS_URL = 'https://script.google.com/macros/s/AKfycbyScn2vcaOb_YCiTIRw-I-NugkZ4Zbt0hY5LgrM5D-WroSy-iuNhb9ewxoGcyZW63fsBw/exec';
+/* Apps Script /exec endpoint. Pulled from Railway env — the old value was
+ * hardcoded here and is now burned in git history, so a NEW Apps Script
+ * deployment URL must be issued and set as SHEETS_URL. If it is unset every
+ * /api/sheets call fails-closed (sheetsGet/sheetsPost hit an empty URL) rather
+ * than silently talking to a stale/leaked deployment — that is intended. */
+const SHEETS_URL = process.env.SHEETS_URL || '';
+if (!SHEETS_URL) {
+  console.error('[config] SHEETS_URL is not set — all /api/sheets calls will fail until it is configured.');
+}
 
 /* Outpatient cross-app lead write (PR 3). The /exec URL and the shared secret
  * come from Railway env so the secret never reaches the browser and is never
@@ -29,6 +38,16 @@ const SHEETS_URL = 'https://script.google.com/macros/s/AKfycbyScn2vcaOb_YCiTIRw-
  * mirroring the getAdmittedRoster secret discipline on the Apps Script side). */
 const OUTPATIENT_LEAD_URL    = process.env.OUTPATIENT_LEAD_URL    || '';
 const OUTPATIENT_LEAD_SECRET = process.env.OUTPATIENT_LEAD_SECRET || '';
+
+/* Edit-mode PIN. Verified server-side by POST /api/verify-pin so the value
+ * never reaches the browser (the old PIN was hardcoded in public/app.js and is
+ * now burned in git history — issue a NEW one). Unset means no PIN can match
+ * (checkPin fails closed on the empty string), so edit mode is unreachable
+ * until it is configured. */
+const APP_PIN = process.env.APP_PIN || '';
+if (!APP_PIN) {
+  console.warn('[config] APP_PIN is not set — edit-mode PIN verification will reject every attempt until it is configured.');
+}
 
 const BUILD_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const SERVER_STARTED_AT = new Date().toISOString();
@@ -336,6 +355,48 @@ app.post('/api/outpatient-lead', async (req, res) => {
     console.error('[outpatient-lead] error:', err.message);
     res.status(502).json({ ok: false, error: 'outpatient_unreachable', message: err.message });
   }
+});
+
+/* POST /api/verify-pin — the browser sends { pin } and we compare it, in
+ * constant time, against APP_PIN (which never leaves the server). Rate-limited
+ * to 10 attempts per 15 minutes per client IP to blunt brute-forcing of a
+ * short numeric PIN. A correct PIN resets that IP's counter (200); a wrong one
+ * counts against it (401); exceeding the window is 429 without even checking.
+ * Fail-closed: an unset APP_PIN makes checkPin return false, so every attempt
+ * is a 401. */
+const PIN_RATE_LIMIT = { max: 10, windowMs: 15 * 60 * 1000 };
+const pinAttempts = new Map(); // ip -> { count, resetAt }
+
+function pinClientIp(req) {
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.length) return xff.split(',')[0].trim();
+  return req.ip || req.socket.remoteAddress || 'unknown';
+}
+
+app.post('/api/verify-pin', (req, res) => {
+  const ip = pinClientIp(req);
+  const now = Date.now();
+
+  let rec = pinAttempts.get(ip);
+  if (!rec || now >= rec.resetAt) {
+    rec = { count: 0, resetAt: now + PIN_RATE_LIMIT.windowMs };
+    pinAttempts.set(ip, rec);
+  }
+
+  if (rec.count >= PIN_RATE_LIMIT.max) {
+    const retryAfter = Math.max(1, Math.ceil((rec.resetAt - now) / 1000));
+    res.set('Retry-After', String(retryAfter));
+    return res.status(429).json({ ok: false, error: 'rate_limited', retryAfter });
+  }
+
+  const pin = req.body && req.body.pin;
+  if (checkPin(pin, APP_PIN)) {
+    pinAttempts.delete(ip); // reset the counter on success
+    return res.status(200).json({ ok: true });
+  }
+
+  rec.count++;
+  return res.status(401).json({ ok: false, error: 'invalid_pin' });
 });
 
 app.get('/healthz', (_, res) => res.json({ ok: true }));

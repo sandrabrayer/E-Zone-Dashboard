@@ -274,17 +274,39 @@ function initPin() {
 
   const input = document.getElementById('pin-input');
   const errEl = document.getElementById('pin-error');
+  const submitBtn = document.getElementById('pin-submit');
 
-  document.getElementById('pin-submit').onclick = tryPin;
+  submitBtn.onclick = tryPin;
   input.addEventListener('keydown', e => { if (e.key === 'Enter') tryPin(); });
   document.getElementById('pin-viewer').onclick = () => enterApp('viewer');
 
-  function tryPin() {
-    if (input.value === '2107') {
-      enterApp('edit');
-    } else {
+  /* The PIN is verified server-side (POST /api/verify-pin) so it never lives in
+   * this bundle. Disable the button while the request is in flight so a slow
+   * network can't queue up duplicate attempts against the rate limiter. */
+  let pending = false;
+  async function tryPin() {
+    if (pending) return;
+    pending = true;
+    submitBtn.disabled = true;
+    errEl.classList.add('hidden');
+    try {
+      const res = await fetch('/api/verify-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: input.value }),
+      });
+      if (res.ok) {
+        enterApp('edit');
+        return;
+      }
       errEl.classList.remove('hidden');
       input.value = '';
+    } catch (_) {
+      errEl.classList.remove('hidden');
+      input.value = '';
+    } finally {
+      pending = false;
+      submitBtn.disabled = false;
     }
   }
 }
