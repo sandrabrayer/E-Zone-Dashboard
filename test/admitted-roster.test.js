@@ -8,6 +8,10 @@
  * exercises the REAL shipped function — including the no-leak projection — and
  * not a reimplementation, so the contract is locked against the actual code. */
 
+// asISODate_ formats Date-typed cells via the sheet timezone; pin it so the
+// entryDate assertions are deterministic regardless of the host machine zone.
+process.env.TZ = 'Asia/Jerusalem';
+
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -60,6 +64,21 @@ function loadRoster() {
         };
       },
     },
+    // asISODate_ reads the sheet timezone and formats Date cells; stub both so
+    // the Date→YYYY-MM-DD branch runs (TZ is pinned to Asia/Jerusalem above).
+    SpreadsheetApp: {
+      getActiveSpreadsheet() {
+        return { getSpreadsheetTimeZone() { return 'Asia/Jerusalem'; } };
+      },
+    },
+    Utilities: {
+      formatDate(d) {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+      },
+    },
     // jsonOut_ wraps the payload in ContentService output; capture the text.
     ContentService: {
       MimeType: { JSON: 'application/json' },
@@ -81,14 +100,19 @@ test('recovers phone via fromLead, normalizes, excludes released, no-leak projec
   api.setFixtures(
     [
       // Admitted, from a lead — sensitive fields present to prove they don't leak.
+      // date is a plain YYYY-MM-DD string (the canonicalized column form).
       { houseId: 'asher', name: 'דנה', fromLead: 'L1', exitDate: '', status: 'active',
-        pay: 30000, adv: 5000, notes: 'sensitive note', source: 'lead' },
-      // Admitted, +972 phone to exercise normalization.
-      { houseId: 'ramot', name: 'מאיה', fromLead: 'L2', exitDate: '', status: 'trial' },
+        date: '2026-01-15', pay: 30000, adv: 5000, notes: 'sensitive note', source: 'lead' },
+      // Admitted, +972 phone to exercise normalization; date arrives as a
+      // Date-typed cell (Sheets sometimes hands back Date objects).
+      { houseId: 'ramot', name: 'מאיה', fromLead: 'L2', exitDate: '', status: 'trial',
+        date: new Date(2026, 2, 3) },
       // Released by exitDate AND status — excluded.
       { houseId: 'asher', name: 'יוסי', fromLead: 'L1', exitDate: '2026-05-01', status: 'released' },
-      // direct_admin, no fromLead — admitted but no recoverable phone.
-      { houseId: 'rehab', name: 'דני', fromLead: '', source: 'direct_admin', exitDate: '', status: 'active' },
+      // direct_admin, no fromLead — admitted but no recoverable phone; blank
+      // date must yield entryDate ''.
+      { houseId: 'rehab', name: 'דני', fromLead: '', source: 'direct_admin', exitDate: '', status: 'active',
+        date: '' },
       // Released by status only (blank exitDate) — still excluded.
       { houseId: 'asher', name: 'נועה', fromLead: 'L3', exitDate: '', status: 'released' },
     ],
@@ -113,11 +137,17 @@ test('recovers phone via fromLead, normalizes, excludes released, no-leak projec
   assert.strictEqual(maya.phone, '0527654321');   // 972 country code → leading 0
   assert.strictEqual(dani.phone, '');             // direct_admin → free-text fallback, never fabricated
 
-  // No-leak contract: every row exposes EXACTLY these four keys.
+  // entryDate (admission date) is surfaced for the outpatient מסלול המשך tab.
+  assert.strictEqual(dana.entryDate, '2026-01-15'); // string cell passthrough
+  assert.strictEqual(maya.entryDate, '2026-03-03'); // Date cell → YYYY-MM-DD
+  assert.strictEqual(dani.entryDate, '');           // blank cell → ''
+
+  // No-leak contract: every row exposes EXACTLY these five keys — the derived
+  // entryDate is additive; the raw sensitive columns still never appear.
   for (const row of r) {
     assert.deepStrictEqual(
       Object.keys(row).sort(),
-      ['house', 'name', 'phone', 'sourceApp']
+      ['entryDate', 'house', 'name', 'phone', 'sourceApp']
     );
   }
   // Defense in depth: none of the sensitive Leads/Patients fields appear under

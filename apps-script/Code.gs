@@ -800,6 +800,11 @@ function getAdmittedRoster_() {
       name:      pt.name || '',
       phone:     normalizePhone_(rawPhone),
       house:     pt.houseId || '',
+      // Admission/entry date (PATIENT_COLUMNS 'date' — labelled "תאריך כניסה"
+      // in the dashboard UI). Feeds the outpatient app's מסלול המשך tenure
+      // badges. asISODate_ yields '' for blank/invalid so consumers that
+      // ignore entryDate are unaffected. Additive — nothing else changed.
+      entryDate: asISODate_(pt.date),
     });
   }
   return { ok: true, patients: out };
