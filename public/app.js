@@ -116,6 +116,12 @@ const BREAKEVEN_DEFAULTS = {
 
 const BREAKEVEN_STORAGE_KEY = 'ezone-breakeven-v1';
 
+/* Israeli VAT multiplier (18% as of 2025). Patient payments (`pay`) and the
+ * PRICE_FALLBACKS below are stored VAT-inclusive (the gross amount billed).
+ * The break-even tab reasons about revenue net of VAT, so we divide by this
+ * at point of use in computeHouseMetrics rather than mutating the stored data. */
+const VAT_RATE = 1.18;
+
 /* ===== API ===== */
 async function apiGet(params) {
   const qs = new URLSearchParams(params).toString();
@@ -3309,9 +3315,14 @@ function computeHouseMetrics(house) {
   const fixed = Number(be.fixed) || 0;
   const variable = Number(be.variable) || 0;
   const totalExpenses = fixed + variable;
-  const price = avgPricePerHouse(house.id);
   const currentPatients = activeCountPerHouse(house.id);
   const capacity = house.capacity;
+
+  // Revenue is reasoned about ex-VAT: `pay` and PRICE_FALLBACKS are stored
+  // VAT-inclusive, so divide by VAT_RATE here before any derived math. Every
+  // downstream figure (currentPL, maxRevenue, maxPL, breakevenPoint,
+  // marginalProfit) then follows automatically from the ex-VAT basis.
+  const price = avgPricePerHouse(house.id) / VAT_RATE;
 
   // Variable cost per patient — used to compute marginal profit.
   // Spread the variable line over max capacity so each occupied bed "absorbs"
@@ -3322,9 +3333,13 @@ function computeHouseMetrics(house) {
   // Break-even = number of patients needed to cover total house expenses.
   const breakevenPoint = price > 0 ? Math.ceil(totalExpenses / price) : 0;
 
-  // Actual revenue = real sum of active patients' pay, not count × avg price.
-  const currentRevenue = actualRevenuePerHouse(house.id);
+  // Actual revenue = real sum of active patients' pay, net of VAT.
+  const currentRevenue = actualRevenuePerHouse(house.id) / VAT_RATE;
   const currentPL = currentRevenue - totalExpenses;
+
+  // Gross margin as a percentage of ex-VAT revenue. Null when there is no
+  // revenue to divide by (avoids a divide-by-zero / meaningless -Infinity%).
+  const marginPct = currentRevenue > 0 ? (currentPL / currentRevenue) * 100 : null;
   const maxRevenue = capacity * price;
   const maxPL = maxRevenue - totalExpenses;
 
@@ -3346,6 +3361,7 @@ function computeHouseMetrics(house) {
     breakevenPoint,
     currentRevenue,
     currentPL,
+    marginPct,
     maxRevenue,
     maxPL,
     freeBeds,
@@ -3456,6 +3472,9 @@ function renderBreakevenHousesGrid() {
     const card = document.createElement('div');
     card.className = 'be-house-card';
     const plClass = m.currentPL >= 0 ? 'positive' : 'negative';
+    // Gross margin: one decimal, red when negative, "—" when there's no revenue.
+    const marginClass = m.marginPct != null && m.marginPct < 0 ? 'negative' : 'positive';
+    const marginText = m.marginPct != null ? `${m.marginPct.toFixed(1)}%` : '—';
     const statusLabel = m.currentPatients >= m.breakevenPoint
       ? `<span class="be-pill positive">עבר נקודת איזון (+${m.currentPatients - m.breakevenPoint})</span>`
       : `<span class="be-pill negative">חסרים ${m.breakevenPoint - m.currentPatients} מטופלים לאיזון</span>`;
@@ -3483,8 +3502,8 @@ function renderBreakevenHousesGrid() {
           <div class="be-metric-value">₪ ${m.totalExpenses.toLocaleString('he-IL')}</div>
         </div>
         <div class="be-metric">
-          <div class="be-metric-label">מחיר ממוצע למטופל</div>
-          <div class="be-metric-value">₪ ${m.price.toLocaleString('he-IL')}</div>
+          <div class="be-metric-label">מחיר ממוצע למטופל (ללא מע"מ)</div>
+          <div class="be-metric-value">₪ ${Math.round(m.price).toLocaleString('he-IL')}</div>
         </div>
         <div class="be-metric">
           <div class="be-metric-label">נקודת איזון</div>
@@ -3501,6 +3520,10 @@ function renderBreakevenHousesGrid() {
         <div class="be-metric">
           <div class="be-metric-label">רווח/הפסד נוכחי</div>
           <div class="be-metric-value ${plClass}">₪ ${Math.round(m.currentPL).toLocaleString('he-IL')}</div>
+        </div>
+        <div class="be-metric">
+          <div class="be-metric-label">רווח גולמי</div>
+          <div class="be-metric-value ${marginClass}">${marginText}</div>
         </div>
       </div>
 
@@ -3552,7 +3575,7 @@ function renderBreakevenComparisonTable() {
       <tr>
         <td class="be-td-name">${escapeHtml(m.house.name)}</td>
         <td>₪ ${m.totalExpenses.toLocaleString('he-IL')}</td>
-        <td>₪ ${m.price.toLocaleString('he-IL')}</td>
+        <td>₪ ${Math.round(m.price).toLocaleString('he-IL')}</td>
         <td class="be-td-strong">${m.breakevenPoint}</td>
         <td>${m.currentPatients}</td>
         <td>${m.gapToBreakeven > 0 ? '+' + m.gapToBreakeven : '✓'}</td>
