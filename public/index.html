@@ -7,6 +7,15 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>E-ZONE Dashboard</title>
+
+  <!-- PWA foundation -->
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#0b1020" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="E-Zone" />
+
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -281,5 +290,17 @@
   <div id="build-marker" style="position:fixed;bottom:6px;left:6px;font-size:10px;color:#6b7aa0;z-index:10;opacity:.6;font-family:monospace;">build: __BUILD__</div>
 
   <script src="app.js?v=__BUILD__"></script>
+
+  <!-- Service worker registration (guarded). Registered after load so it never
+       blocks first paint; failures are non-fatal (the app works without it). -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('/sw.js').catch(function (err) {
+          console.warn('[pwa] service worker registration failed:', err);
+        });
+      });
+    }
+  </script>
 </body>
 </html>

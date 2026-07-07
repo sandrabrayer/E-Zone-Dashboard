@@ -611,6 +611,11 @@ input:focus, select:focus, textarea:focus {
   border-radius: 16px;
   padding: 26px;
   width: 440px;
+  /* Never exceed a small (≤400px) viewport — leaves a 12px gutter each side
+     and caps height so the modal scrolls internally instead of overflowing. */
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
   box-shadow: var(--shadow-lg);
 }
 .modal h3 {
@@ -1076,6 +1081,25 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
   .actions input[type=search] { width: 100%; }
   .be-houses-grid { grid-template-columns: 1fr; }
   .be-metrics { grid-template-columns: 1fr 1fr; }
+}
+
+/* ===== PWA foundation: minimal mobile/touch fixes (PR 1) =====
+   Scope limited to tap-target size and table overflow. Does NOT touch the
+   kanban columns or the growth graph — those are PR 2. */
+@media (max-width: 480px) {
+  /* ≥44px touch targets on phones (WCAG 2.5.5 / iOS HIG). Applies to every
+     .btn variant and the top nav tabs; keeps horizontal padding intact. */
+  .btn { min-height: 44px; }
+  .tab { min-height: 44px; }
+
+  /* Any wide data table scrolls sideways instead of forcing the page to
+     scroll horizontally. The comparison table already lives in
+     .be-table-wrap (overflow-x:auto); add momentum scrolling and cover the
+     action-plan table too. */
+  .be-table-wrap, .be-action-plan {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 /* ===== Growth graph (גרף צמיחה) ===== */
