@@ -3109,10 +3109,35 @@ function monthlyRevenue(patients, todayIso) {
   return out;
 }
 
+/* Choose which x-axis data points get a date label. Returns at most `maxTicks`
+ * indices, evenly spaced, ALWAYS including the first (0) and last (n-1) point.
+ * Rounding collisions are de-duplicated, so indices are strictly increasing and
+ * two labels never land on the same point. Capping the count (the caller derives
+ * it from chart width / estimated label width) is what stops the labels — in
+ * particular the last two — from overlapping and clipping at the right edge. */
+function growthTickIndices(n, maxTicks) {
+  if (n <= 0) return [];
+  if (n === 1) return [0];
+  const cap = Math.max(2, Math.floor(maxTicks) || 2);
+  if (n <= cap) {
+    const all = [];
+    for (let i = 0; i < n; i++) all.push(i);
+    return all;
+  }
+  const out = [];
+  let prev = -1;
+  for (let k = 0; k < cap; k++) {
+    const i = Math.round((k * (n - 1)) / (cap - 1));
+    if (i !== prev) { out.push(i); prev = i; }
+  }
+  return out;
+}
+
 /* Build an inline-SVG line chart (no lib, no CDN). Pure string output; every
- * dynamic label is escapeHtml'd. RTL is handled by the container; the SVG plots
- * time left→right (earliest→latest) which reads naturally under the Hebrew
- * heading above it. `labelEvery` thins x-labels so they don't overlap. */
+ * dynamic label is escapeHtml'd. RTL is handled by dir="ltr" on the <svg>; the
+ * chart plots time left→right (earliest→latest) which reads naturally under the
+ * Hebrew heading above it. x-labels are thinned via growthTickIndices so they
+ * never overlap, and the first/last are anchored inward so nothing clips. */
 function growthLineChartSVG(series, opts) {
   const o = opts || {};
   const W = 760, H = 240, padL = 56, padR = 16, padT = 16, padB = 44;
@@ -3140,15 +3165,20 @@ function growthLineChartSVG(series, opts) {
             escapeHtml(o.fmtY ? o.fmtY(v) : String(Math.round(v))) + '</text>';
   });
 
-  // x labels, thinned
-  const every = Math.max(1, Math.ceil(n / (o.maxXLabels || 8)));
+  // x labels: evenly spaced, count capped so labels never collide. Budget one
+  // label per ~70px of plot width, then honor an optional caller cap. First and
+  // last points are always labelled and anchored inward (start / end) so no text
+  // renders past the viewBox edge; interior labels stay centered.
+  const LABEL_W = 70;
+  const widthCap = Math.max(2, Math.floor(innerW / LABEL_W));
+  const cap = o.maxXLabels ? Math.min(widthCap, o.maxXLabels) : widthCap;
   let xlabels = '';
-  for (let i = 0; i < n; i++) {
-    if (i % every !== 0 && i !== n - 1) continue;
+  growthTickIndices(n, cap).forEach(i => {
+    const anchor = i === 0 ? 'start' : (i === n - 1 ? 'end' : 'middle');
     xlabels += '<text x="' + x(i).toFixed(1) + '" y="' + (H - padB + 18) +
-               '" class="growth-xlabel" text-anchor="middle">' +
+               '" class="growth-xlabel" text-anchor="' + anchor + '">' +
                escapeHtml(series[i].label) + '</text>';
-  }
+  });
 
   const dots = series.map((s, i) =>
     '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(s.value).toFixed(1) +
@@ -3157,7 +3187,10 @@ function growthLineChartSVG(series, opts) {
     '</title></circle>'
   ).join('');
 
-  return '<svg viewBox="0 0 ' + W + ' ' + H + '" class="growth-svg" preserveAspectRatio="xMidYMid meet" role="img">' +
+  // dir="ltr": the app runs RTL, but the chart's x-axis and numeric/date labels
+  // are inherently left-to-right — without this the bidi algorithm can mirror
+  // label order and reorder the digits/slashes in the date strings.
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" class="growth-svg" dir="ltr" preserveAspectRatio="xMidYMid meet" role="img">' +
          grid +
          '<polyline points="' + pts + '" class="growth-line" fill="none" />' +
          dots + xlabels +
