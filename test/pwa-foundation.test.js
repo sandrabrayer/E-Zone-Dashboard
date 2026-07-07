@@ -107,6 +107,14 @@ test('cache name is versioned and carries the version string', () => {
   assert.match(sw.CACHE_NAME, /^ezone-dashboard-v\d+$/);
 });
 
+test('cache version has been bumped to v2 (purges old icons/style.css)', () => {
+  // PWA follow-up: the SW cache version must advance past v1 so the previously
+  // cached (regenerated) icons and style.css are evicted on activate. Locking
+  // the exact value makes an accidental revert to v1 fail loudly.
+  assert.strictEqual(sw.CACHE_VERSION, 'v2');
+  assert.strictEqual(sw.CACHE_NAME, 'ezone-dashboard-v2');
+});
+
 /* ---------- service worker: sheets / data exclusion ---------- */
 
 test('shouldCache is NETWORK-ONLY (false) for any URL containing "sheets"', () => {
