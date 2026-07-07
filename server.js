@@ -131,6 +131,17 @@ function sendStatic(relPath, mime) {
 app.get('/app.js', sendStatic('app.js', 'application/javascript'));
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 
+/* PWA assets. Without these explicit routes they hit the 404 fallback, because
+ * serving is hand-rolled (no express.static). The no-cache headers set above
+ * are correct here too: sw.js in particular must NOT be HTTP-cached so a new
+ * deploy's worker is always fetched; the worker does its own client-side
+ * caching. Icons are tiny and versioned by filename. */
+app.get('/manifest.json', sendStatic('manifest.json', 'application/manifest+json'));
+app.get('/sw.js', sendStatic('sw.js', 'application/javascript'));
+app.get('/icons/icon-192.png', sendStatic('icons/icon-192.png', 'image/png'));
+app.get('/icons/icon-512.png', sendStatic('icons/icon-512.png', 'image/png'));
+app.get('/icons/icon-maskable-512.png', sendStatic('icons/icon-maskable-512.png', 'image/png'));
+
 /* GET the Apps Script with querystring params. Follows Google's 302 → googleusercontent.com. */
 function sheetsGet(params) {
   return new Promise((resolve, reject) => {
