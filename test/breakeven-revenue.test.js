@@ -58,6 +58,17 @@ function loadApp() {
 
 const app = loadApp();
 
+// Break-even metrics reason about revenue ex-VAT (pay is stored VAT-inclusive).
+// Must match VAT_RATE in public/app.js. actualRevenuePerHouse itself stays
+// VAT-inclusive — only computeHouseMetrics / network roll-ups divide.
+const VAT_RATE = 1.18;
+
+// Cross-order floating arithmetic (dividing per house, then summing) can differ
+// from the implementation's summation by a ULP, so compare with a tolerance.
+function approx(actual, expected, msg) {
+  assert.ok(Math.abs(actual - expected) < 1e-6, msg || `${actual} ≈ ${expected}`);
+}
+
 function patient(houseId, pay, status = 'active') {
   return { houseId, pay, status };
 }
@@ -127,8 +138,9 @@ test('computeHouseMetrics.currentRevenue uses the actual sum', () => {
     patient('arfoni', 999999, 'released'), // excluded
   ]);
   const m = app.computeHouseMetrics({ id: 'arfoni', name: 'x', capacity: 13 });
-  assert.strictEqual(m.currentRevenue, 75000);          // 30000 + 45000
-  assert.strictEqual(m.currentPL, 75000 - 150000);      // revenue - (fixed+variable)
+  // currentRevenue is the actual sum (30000 + 45000 = 75000) net of VAT.
+  assert.strictEqual(m.currentRevenue, 75000 / VAT_RATE);
+  assert.strictEqual(m.currentPL, 75000 / VAT_RATE - 150000); // revenue - (fixed+variable)
 });
 
 test('computeNetworkMetrics rolls up the actual per-house revenue', () => {
@@ -150,10 +162,11 @@ test('computeNetworkMetrics rolls up the actual per-house revenue', () => {
     app.computeHouseMetrics({ id: 'ramot', name: 'r', capacity: 20 }),
   ];
   const net = app.computeNetworkMetrics(ms);
-  // arfoni 75000 + ramot 60000 = 135000
-  assert.strictEqual(net.totalRevenueCurrent, 135000);
+  // arfoni 75000 + ramot 60000 = 135000 gross → ex-VAT via per-house division.
+  const expRevenue = 75000 / VAT_RATE + 60000 / VAT_RATE;
+  approx(net.totalRevenueCurrent, expRevenue);
   // expenses: 150000 + 300000 + hq 10000 = 460000
-  assert.strictEqual(net.networkPL, 135000 - 460000);
+  approx(net.networkPL, expRevenue - 460000);
 });
 
 test('computeNetworkMetrics.housesPL sums per-house currentPL and excludes hqCost', () => {
@@ -175,11 +188,11 @@ test('computeNetworkMetrics.housesPL sums per-house currentPL and excludes hqCos
     app.computeHouseMetrics({ id: 'ramot', name: 'r', capacity: 20 }),
   ];
   const net = app.computeNetworkMetrics(ms);
-  // arfoni currentPL = 75000 - 150000 = -75000; ramot = 60000 - 300000 = -240000.
+  // Ex-VAT: arfoni currentPL = 75000/1.18 - 150000; ramot = 60000/1.18 - 300000.
   const expectedHousesPL = ms.reduce((s, m) => s + m.currentPL, 0);
-  assert.strictEqual(expectedHousesPL, -315000);
-  assert.strictEqual(net.housesPL, -315000);
+  approx(expectedHousesPL, 135000 / VAT_RATE - 450000);
+  approx(net.housesPL, expectedHousesPL);
   // housesPL must NOT include the 10000 hqCost — networkPL does.
-  assert.strictEqual(net.housesPL, net.networkPL + net.hqCost);
+  approx(net.housesPL, net.networkPL + net.hqCost);
   assert.notStrictEqual(net.housesPL, net.networkPL);
 });
