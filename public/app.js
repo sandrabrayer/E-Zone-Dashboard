@@ -899,6 +899,18 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 /* ====================================================
    DASHBOARD
    ==================================================== */
+/* Dashboard "הכנסות חודשיות" KPI, ex-VAT. `pay` (תשלום חודשי) is stored
+ * VAT-inclusive, so sum active patients' pay and divide by the shared VAT_RATE,
+ * then round. Pure + testable, and it reconciles with the per-house ex-VAT
+ * revenue on the נקודת איזון tab (each house = actualRevenuePerHouse / VAT_RATE):
+ * the sum of the per-house revenues equals this total, rounding aside. */
+function dashboardMonthlyRevenueExVat(patients) {
+  const inclVat = (patients || [])
+    .filter(p => p.status !== 'released')
+    .reduce((s, p) => s + (Number(p.pay) || 0), 0);
+  return Math.round(inclVat / VAT_RATE);
+}
+
 function renderDashboard() {
   const activePatients = state.patients.filter(p => p.status !== 'released');
   const totalCap = HOUSES.reduce((s, h) => s + h.capacity, 0);
@@ -909,7 +921,7 @@ function renderDashboard() {
   document.getElementById('stat-occ-sub').textContent = `${occupied} / ${totalCap} מיטות`;
   document.getElementById('stat-active').textContent = occupied;
 
-  const revenue = activePatients.reduce((s, p) => s + (p.pay || 0), 0);
+  const revenue = dashboardMonthlyRevenueExVat(state.patients);
   document.getElementById('stat-revenue').textContent = '₪ ' + revenue.toLocaleString('he-IL');
 
   const grid = document.getElementById('houses-grid');
@@ -3630,6 +3642,10 @@ function renderBreakevenHousesGrid() {
         <div class="be-metric">
           <div class="be-metric-label">רווח שולי למטופל</div>
           <div class="be-metric-value positive"><span class="num-ltr">₪ ${Math.round(m.marginalProfit).toLocaleString('he-IL')}</span></div>
+        </div>
+        <div class="be-metric">
+          <div class="be-metric-label">הכנסה נוכחית (ללא מע"מ)</div>
+          <div class="be-metric-value"><span class="num-ltr">₪ ${Math.round(m.currentRevenue).toLocaleString('he-IL')}</span></div>
         </div>
         <div class="be-metric">
           <div class="be-metric-label">רווח/הפסד נוכחי</div>
