@@ -1088,22 +1088,28 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
   .be-houses-grid { grid-template-columns: 1fr; }
   .be-metrics { grid-template-columns: 1fr 1fr; }
 
-  /* Root cause of the RTL horizontal offset: the 8-tab nav is ~707px wide and,
-     as a no-wrap flex row, pushed the whole page sideways. Let the tab bar take
-     the space between brand and user-mode and scroll horizontally WITHIN the
-     topbar (tabs stay full-size and swipeable) instead of overflowing the page.
-     min-width:0 lets the flex child actually shrink below its content width. */
-  .topbar { padding: 0 12px; gap: 8px; }
-  .brand { white-space: nowrap; flex: 0 0 auto; } /* never wrap the wordmark */
-  .tabs {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none; /* Firefox: hide the strip's scrollbar */
+  /* Mobile top nav. The earlier approach squeezed the 8-tab bar into the sliver
+     of topbar left between the brand and the user-mode block (~187px at 390px),
+     so only 2 tabs showed with no cue that more existed. Instead let the topbar
+     WRAP: brand + user-mode stay on row 1, and the tab bar drops to its own
+     full-width row 2 and wraps, so ALL tabs are visible and reachable — no
+     horizontal scroll, no RTL scroll-position quirk. Still no page overflow
+     (wrapping stays within width; the html/body overflow-x guard remains). */
+  .topbar {
+    flex-wrap: wrap;
+    height: auto;
+    padding: 8px 12px;
+    row-gap: 6px;
   }
-  .tabs::-webkit-scrollbar { height: 0; } /* WebKit: hide it too */
-  .tabs .tab { flex: 0 0 auto; white-space: nowrap; padding: 20px 14px; }
+  .brand { order: 1; white-space: nowrap; flex: 0 0 auto; } /* never wrap the wordmark */
+  .user-mode { order: 2; }
+  .tabs {
+    order: 3;
+    flex: 1 0 100%;   /* own row, full width */
+    flex-wrap: wrap;  /* every tab visible, no scrolling */
+    gap: 2px 4px;
+  }
+  .tabs .tab { flex: 0 0 auto; white-space: nowrap; padding: 10px 12px; min-height: 40px; }
 }
 
 /* ===== PWA foundation: minimal mobile/touch fixes (PR 1) =====

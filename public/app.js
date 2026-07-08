@@ -323,8 +323,6 @@ function enterApp(mode) {
   document.getElementById('pin-screen').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
   document.body.classList.toggle('viewer-mode', mode === 'viewer');
-  document.getElementById('mode-label').textContent =
-    mode === 'edit' ? 'מצב עריכה' : 'מצב צפייה';
 
   document.getElementById('logout').onclick = () => {
     sessionStorage.removeItem('ezone-mode');
