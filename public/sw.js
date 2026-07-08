@@ -22,7 +22,10 @@
 // Bump on any static-asset change (icons, style.css, shell) so old caches are
 // purged on activate. v1 → v2: PWA follow-up (icon parity + RTL/overflow CSS).
 // v2 → v3: icon rebrand (white bg + #5b8bff letter) — evict old green icons.
-var CACHE_VERSION = 'v3';
+// v3 → v4: icon redesign — the original E-Zone brand logo recoloured to #0055ff
+// with a white contour halo on the original dark #071410 background — evict the
+// old v3 icons.
+var CACHE_VERSION = 'v4';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

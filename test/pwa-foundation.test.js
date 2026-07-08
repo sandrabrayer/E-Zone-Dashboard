@@ -108,13 +108,19 @@ test('cache name is versioned and carries the version string', () => {
   assert.match(sw.CACHE_NAME, /^ezone-dashboard-v\d+$/);
 });
 
-test('cache version has been bumped to v3 (purges old green icons)', () => {
-  // Icon rebrand: the SW cache version must advance past v2 so the previously
-  // cached green-on-dark icons are evicted on activate and the new white +
-  // #5b8bff icons take their place. Locking the exact value makes an accidental
-  // revert to an older version fail loudly.
-  assert.strictEqual(sw.CACHE_VERSION, 'v3');
-  assert.strictEqual(sw.CACHE_NAME, 'ezone-dashboard-v3');
+test('cache version is at or above the v4 floor (purges pre-redesign icons)', () => {
+  // Icon redesign: the SW cache version must be at least v4 so every earlier
+  // cached icon set (green-on-dark v2, and the #5b8bff v3 rebrand) is evicted
+  // on activate and the new bold #2962ff E takes its place. A FLOOR (not a
+  // locked exact value) makes an accidental revert to an older version fail
+  // loudly while still allowing future bumps.
+  const CACHE_FLOOR = 4;
+  const n = Number(String(sw.CACHE_VERSION).replace(/^v/, ''));
+  assert.ok(
+    Number.isInteger(n) && n >= CACHE_FLOOR,
+    'CACHE_VERSION (' + sw.CACHE_VERSION + ') must be >= v' + CACHE_FLOOR
+  );
+  assert.strictEqual(sw.CACHE_NAME, 'ezone-dashboard-' + sw.CACHE_VERSION);
 });
 
 /* ---------- service worker: sheets / data exclusion ---------- */
@@ -204,11 +210,12 @@ function decodePng(file) {
 
 const REBRAND_ICONS = ['icon-192.png', 'icon-512.png', 'icon-maskable-512.png'];
 
-test('rebrand icons have a fully-opaque white background (maskable safe zone included)', () => {
+test('redesign icons have a fully-opaque dark background (maskable safe zone included)', () => {
   REBRAND_ICONS.forEach((name) => {
     const { w, h, px } = decodePng(path.join(__dirname, '..', 'public', 'icons', name));
-    // Corner (top-left) is always background: must be pure white + opaque.
-    assert.deepStrictEqual([px[0], px[1], px[2], px[3]], [255, 255, 255, 255], name + ' corner');
+    // Corner (top-left) is always background: must be the original dark #071410
+    // and fully opaque.
+    assert.deepStrictEqual([px[0], px[1], px[2], px[3]], [0x07, 0x14, 0x10, 255], name + ' corner');
     // No pixel may be even partially transparent — a transparent maskable safe
     // zone would read as cropped on Android's mask.
     let nonOpaque = 0;
@@ -217,17 +224,58 @@ test('rebrand icons have a fully-opaque white background (maskable safe zone inc
   });
 });
 
-test('rebrand icons use the #5b8bff letter and drop the old green', () => {
+test('redesign icons use #0055ff on #071410 with a white halo, dropping earlier marks', () => {
   REBRAND_ICONS.forEach((name) => {
     const { px } = decodePng(path.join(__dirname, '..', 'public', 'icons', name));
-    let blue = 0, oldGreen = 0;
+    let bg = 0, blue = 0, white = 0, oldGreen = 0, prevBlue = 0;
     for (let i = 0; i < px.length; i += 4) {
       const r = px[i], g = px[i + 1], b = px[i + 2];
-      if (r === 0x5b && g === 0x8b && b === 0xff) blue++;
-      // old letter was #2dd47a (41,212,136); flag anything near it.
+      if (r === 0x07 && g === 0x14 && b === 0x10) bg++; // #071410 dark bg
+      if (r === 0x00 && g === 0x55 && b === 0xff) blue++; // #0055ff logo
+      if (r === 0xff && g === 0xff && b === 0xff) white++; // #ffffff halo
+      // original green logo #29d488 (41,212,136) must be fully recoloured away;
+      // flag anything near it.
       if (Math.abs(r - 41) < 12 && Math.abs(g - 212) < 12 && Math.abs(b - 136) < 12) oldGreen++;
+      // earlier block-E rebrand fills #5b8bff and #2962ff must be gone.
+      if (r === 0x5b && g === 0x8b && b === 0xff) prevBlue++;
+      if (r === 0x29 && g === 0x62 && b === 0xff) prevBlue++;
     }
-    assert.ok(blue > 0, name + ' contains #5b8bff letter pixels');
-    assert.strictEqual(oldGreen, 0, name + ' still has ' + oldGreen + ' old-green px');
+    assert.ok(bg > 0, name + ' contains #071410 background pixels');
+    assert.ok(blue > 0, name + ' contains #0055ff logo pixels');
+    assert.ok(white > 0, name + ' contains white (#ffffff) halo outline pixels');
+    assert.strictEqual(oldGreen, 0, name + ' still has ' + oldGreen + ' original-green px');
+    assert.strictEqual(prevBlue, 0, name + ' still has ' + prevBlue + ' earlier-blue px');
+  });
+});
+
+/* ---------- icon redesign: logo-presence guard ---------- */
+
+// The icons are built from the recovered E-Zone brand logo (a stylised "e"
+// wordmark), recoloured to #0055ff. This guard asserts the recoloured logo
+// actually made it onto the canvas — a meaningful amount of blue "ink" — so a
+// blank / all-background regeneration (or a mis-keyed recolour that leaves the
+// logo invisible) fails loudly. It is intentionally a low floor (>5%): unlike
+// the old block-E boldness guard it does NOT constrain glyph weight, only that
+// the logo is present. Measured coverage is ~10% (192/512) and ~7% (maskable).
+function coloredInk(px) {
+  let ink = 0;
+  for (let i = 0; i < px.length; i += 4) {
+    // "ink" = meaningfully blue logo body (low red + high blue); excludes the
+    // dark #071410 background (low blue) and the white #ffffff halo (high red).
+    if (px[i] < 160 && px[i + 2] > 200) ink++;
+  }
+  return ink / (px.length / 4);
+}
+
+test('redesign icons carry the recoloured logo — colored ink > 5%', () => {
+  const FLOOR = 0.05;
+  REBRAND_ICONS.forEach((name) => {
+    const { px } = decodePng(path.join(__dirname, '..', 'public', 'icons', name));
+    const cov = coloredInk(px);
+    assert.ok(
+      cov > FLOOR,
+      name + ' colored-ink ' + (cov * 100).toFixed(1) + '% is not above the ' +
+        (FLOOR * 100) + '% logo-presence floor'
+    );
   });
 });
