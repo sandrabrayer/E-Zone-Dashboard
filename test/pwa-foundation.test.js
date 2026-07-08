@@ -108,13 +108,19 @@ test('cache name is versioned and carries the version string', () => {
   assert.match(sw.CACHE_NAME, /^ezone-dashboard-v\d+$/);
 });
 
-test('cache version has been bumped to v3 (purges old green icons)', () => {
-  // Icon rebrand: the SW cache version must advance past v2 so the previously
-  // cached green-on-dark icons are evicted on activate and the new white +
-  // #5b8bff icons take their place. Locking the exact value makes an accidental
-  // revert to an older version fail loudly.
-  assert.strictEqual(sw.CACHE_VERSION, 'v3');
-  assert.strictEqual(sw.CACHE_NAME, 'ezone-dashboard-v3');
+test('cache version is at or above the v4 floor (purges pre-redesign icons)', () => {
+  // Icon redesign: the SW cache version must be at least v4 so every earlier
+  // cached icon set (green-on-dark v2, and the #5b8bff v3 rebrand) is evicted
+  // on activate and the new bold #2962ff E takes its place. A FLOOR (not a
+  // locked exact value) makes an accidental revert to an older version fail
+  // loudly while still allowing future bumps.
+  const CACHE_FLOOR = 4;
+  const n = Number(String(sw.CACHE_VERSION).replace(/^v/, ''));
+  assert.ok(
+    Number.isInteger(n) && n >= CACHE_FLOOR,
+    'CACHE_VERSION (' + sw.CACHE_VERSION + ') must be >= v' + CACHE_FLOOR
+  );
+  assert.strictEqual(sw.CACHE_NAME, 'ezone-dashboard-' + sw.CACHE_VERSION);
 });
 
 /* ---------- service worker: sheets / data exclusion ---------- */
@@ -217,17 +223,55 @@ test('rebrand icons have a fully-opaque white background (maskable safe zone inc
   });
 });
 
-test('rebrand icons use the #5b8bff letter and drop the old green', () => {
+test('redesign icons use the #2962ff letter and drop the earlier marks', () => {
   REBRAND_ICONS.forEach((name) => {
     const { px } = decodePng(path.join(__dirname, '..', 'public', 'icons', name));
-    let blue = 0, oldGreen = 0;
+    let blue = 0, oldGreen = 0, oldBlue = 0;
     for (let i = 0; i < px.length; i += 4) {
       const r = px[i], g = px[i + 1], b = px[i + 2];
-      if (r === 0x5b && g === 0x8b && b === 0xff) blue++;
-      // old letter was #2dd47a (41,212,136); flag anything near it.
+      if (r === 0x29 && g === 0x62 && b === 0xff) blue++; // new #2962ff
+      // old green letter #2dd47a (41,212,136); flag anything near it.
       if (Math.abs(r - 41) < 12 && Math.abs(g - 212) < 12 && Math.abs(b - 136) < 12) oldGreen++;
+      // previous rebrand letter #5b8bff (91,139,255); flag its exact fill.
+      if (r === 0x5b && g === 0x8b && b === 0xff) oldBlue++;
     }
-    assert.ok(blue > 0, name + ' contains #5b8bff letter pixels');
+    assert.ok(blue > 0, name + ' contains #2962ff letter pixels');
     assert.strictEqual(oldGreen, 0, name + ' still has ' + oldGreen + ' old-green px');
+    assert.strictEqual(oldBlue, 0, name + ' still has ' + oldBlue + ' old-#5b8bff px');
+  });
+});
+
+/* ---------- icon redesign: boldness guard ---------- */
+
+// Ink-coverage floor: the fraction of pixels that are meaningfully "letter ink"
+// (heavily blue) must clear a threshold, so a thin / hairline glyph can never
+// silently regress the bold block "E". Measured coverage of the shipped icons
+// is ~34% (192/512) and ~19% (maskable, glyph shrunk to the safe zone); the
+// floors sit comfortably below those so anti-aliasing jitter won't flake, but
+// well above what any thin-stroke letterform could reach.
+function inkCoverage(px, w, h) {
+  let ink = 0;
+  for (let i = 0; i < px.length; i += 4) {
+    // Ink = a pixel the letter covers by more than ~half: strongly blue, and
+    // clearly not the white/near-white background.
+    if (px[i] < 160 && px[i + 2] > 200) ink++;
+  }
+  return ink / (w * h);
+}
+
+test('redesign icons are BOLD — letter ink coverage clears the floor', () => {
+  const FLOORS = {
+    'icon-192.png': 0.25,
+    'icon-512.png': 0.25,
+    'icon-maskable-512.png': 0.14, // glyph deliberately shrunk into safe zone
+  };
+  REBRAND_ICONS.forEach((name) => {
+    const { w, h, px } = decodePng(path.join(__dirname, '..', 'public', 'icons', name));
+    const cov = inkCoverage(px, w, h);
+    assert.ok(
+      cov >= FLOORS[name],
+      name + ' ink coverage ' + (cov * 100).toFixed(1) + '% is below the ' +
+        (FLOORS[name] * 100) + '% boldness floor'
+    );
   });
 });

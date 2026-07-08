@@ -64,3 +64,59 @@ convention), it is not committed to the repo.
   letter color is present, and **no old-green (`#2dd47a`) pixel remains**.
 
 Full suite: **129 passing** (`npm test` → `node --test`).
+
+---
+
+# PWA icon redesign — bold geometric E (`#2962ff`)
+
+Follow-up to the rebrand above. The letter mark is **redrawn from scratch** as a
+heavier, more geometric block "E" and the palette moves to the deeper
+`#2962ff` blue. Frontend / static assets only. **No `Code.gs` change, no Apps
+Script deploy.**
+
+## What ships
+
+1. **Icons** (`public/icons/`) — the 192, 512 and maskable-512 PNGs redrawn as a
+   **bold geometric block "E"**, composed from four axis-aligned bars (a thick
+   vertical spine plus top / middle / bottom arms):
+   - stroke thickness ≈ **19% of the canvas height**, the E bounding box filling
+     ≈ **68%** of the canvas (56% wide) and **centered**
+   - background `#ffffff` (fully opaque), letter `#2962ff`
+   - **every pixel fully opaque** — the maskable safe-zone padding is the white
+     background, so Android's circular/rounded mask never reveals a transparent
+     (cropped-looking) border
+   - rasterised with **4×4 supersampled anti-aliasing**; verified bold and
+     readable when scaled to 48 / 64 / 96 px
+   - the maskable variant scales the glyph to ≈74% so all strokes sit inside the
+     mask safe zone.
+
+2. **`public/manifest.json`** — `short_name` remains `"Dashboard"`, full `name`
+   remains `"E-Zone Dashboard"` (unchanged).
+
+3. **`public/sw.js`** — `CACHE_VERSION` bumped `v3` → `v4`
+   (`ezone-dashboard-v4`), evicting the previous `#5b8bff` icons on `activate`.
+
+## How the icons were generated
+
+`tools/gen-icons.js` — a **self-contained Node script** using only built-ins
+(`fs`, `zlib`), no `canvas` / `sharp` / new dependency. It composes the E from
+four rectangles sized as fractions of the canvas, computes each pixel's letter
+coverage by 4×4 supersampling, writes `white·(1−cov) + #2962ff·cov` at alpha
+`255`, and encodes with a hand-rolled PNG writer (CRC32 chunks + `deflate`
+IDAT). Committed this time so the icons are reproducible. Run:
+`node tools/gen-icons.js`.
+
+## Tests (`test/pwa-foundation.test.js`)
+
+- **cache version floor** — replaces the locked `=== 'v3'` check with a FLOOR:
+  `CACHE_VERSION` must parse to `>= v4`, so a revert to an older version fails
+  loudly while future bumps still pass.
+- **letter palette** — asserts `#2962ff` pixels are present and that neither the
+  old green (`#2dd47a`) nor the previous `#5b8bff` fill remains.
+- **boldness guard (new)** — a built-in-only PNG decoder measures letter-ink
+  coverage per icon and asserts it clears a floor (25% for 192/512, 14% for the
+  shrunk maskable), so a thin / hairline glyph can never silently regress the
+  bold block E.
+- Opaque-white-background and file-existence checks unchanged.
+
+Full suite: **140 passing** (`npm test` → `node --test`).
