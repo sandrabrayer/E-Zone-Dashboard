@@ -3109,10 +3109,42 @@ function monthlyRevenue(patients, todayIso) {
   return out;
 }
 
+/* Choose which x-axis tick indices to label so labels never collide or spill
+ * past the plot. Returns evenly-spaced indices across [0, n-1] with the first
+ * (0) and last (n-1) ALWAYS included.
+ *
+ * Collision guarantee: labels are ~labelWidth wide and data points sit
+ * plotWidth/(n-1) apart, so adjacent labels must be at least
+ *   minDelta = ceil(labelWidth / pxPerStep)
+ * data indices apart. We pick at most floor((n-1)/minDelta)+1 evenly-spaced
+ * ticks; because that keeps the even step >= minDelta, integer rounding can
+ * never place two chosen ticks closer than minDelta — so no overlap, even for
+ * narrow charts (which fall back to just [0, n-1]).
+ *
+ * Pure function (no globals) so it is unit-testable. */
+function pickTickIndices(n, plotWidth, labelWidth) {
+  if (!n || n < 1) return [];
+  if (n === 1) return [0];
+  const lw = labelWidth || 100;
+  const pxPerStep = plotWidth / (n - 1);              // px between adjacent points
+  const minDelta = Math.max(1, Math.ceil(lw / pxPerStep));
+  let maxTicks = Math.floor((n - 1) / minDelta) + 1;  // fenceposts, not fences
+  if (maxTicks < 2) maxTicks = 2;                     // always at least first + last
+  if (maxTicks >= n) return Array.from({ length: n }, (_, i) => i);
+  const out = [];
+  for (let t = 0; t < maxTicks; t++) {
+    out.push(Math.round((t * (n - 1)) / (maxTicks - 1)));
+  }
+  // Rounding can repeat an index; dedupe while preserving order (values are
+  // non-decreasing). First is 0 and last is n-1 by construction.
+  return out.filter((v, i) => i === 0 || v !== out[i - 1]);
+}
+
 /* Build an inline-SVG line chart (no lib, no CDN). Pure string output; every
- * dynamic label is escapeHtml'd. RTL is handled by the container; the SVG plots
- * time left→right (earliest→latest) which reads naturally under the Hebrew
- * heading above it. `labelEvery` thins x-labels so they don't overlap. */
+ * dynamic label is escapeHtml'd. The container is dir="ltr" so RTL layout never
+ * mirrors the plot; the SVG plots time left→right (earliest→latest) which reads
+ * naturally under the Hebrew heading above it. x-labels are thinned by
+ * pickTickIndices and the extreme labels are edge-anchored so none clip. */
 function growthLineChartSVG(series, opts) {
   const o = opts || {};
   const W = 760, H = 240, padL = 56, padR = 16, padT = 16, padB = 44;
@@ -3140,15 +3172,17 @@ function growthLineChartSVG(series, opts) {
             escapeHtml(o.fmtY ? o.fmtY(v) : String(Math.round(v))) + '</text>';
   });
 
-  // x labels, thinned
-  const every = Math.max(1, Math.ceil(n / (o.maxXLabels || 8)));
+  // x labels — evenly spaced so they never collide (see pickTickIndices), with
+  // the first anchored "start" and the last "end" so neither renders outside
+  // the viewBox; middle labels stay centered on their tick.
+  const tickIdx = pickTickIndices(n, innerW, o.labelWidth || 100);
   let xlabels = '';
-  for (let i = 0; i < n; i++) {
-    if (i % every !== 0 && i !== n - 1) continue;
+  tickIdx.forEach(i => {
+    const anchor = i === 0 ? 'start' : (i === n - 1 ? 'end' : 'middle');
     xlabels += '<text x="' + x(i).toFixed(1) + '" y="' + (H - padB + 18) +
-               '" class="growth-xlabel" text-anchor="middle">' +
+               '" class="growth-xlabel" text-anchor="' + anchor + '">' +
                escapeHtml(series[i].label) + '</text>';
-  }
+  });
 
   const dots = series.map((s, i) =>
     '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(s.value).toFixed(1) +
@@ -3157,7 +3191,7 @@ function growthLineChartSVG(series, opts) {
     '</title></circle>'
   ).join('');
 
-  return '<svg viewBox="0 0 ' + W + ' ' + H + '" class="growth-svg" preserveAspectRatio="xMidYMid meet" role="img">' +
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" class="growth-svg" dir="ltr" preserveAspectRatio="xMidYMid meet" role="img">' +
          grid +
          '<polyline points="' + pts + '" class="growth-line" fill="none" />' +
          dots + xlabels +
@@ -3192,11 +3226,11 @@ function renderGrowthGraph() {
   host.innerHTML =
     '<div class="card growth-card">' +
       '<div class="growth-title">מספר מטופלים פעילים (שבועי)</div>' +
-      growthLineChartSVG(weeklySeries, { maxXLabels: 8 }) +
+      growthLineChartSVG(weeklySeries) +
     '</div>' +
     '<div class="card growth-card">' +
       '<div class="growth-title">הכנסות חודשיות (₪)</div>' +
-      growthLineChartSVG(monthlySeries, { fmtY: fmtShekel, maxXLabels: 8 }) +
+      growthLineChartSVG(monthlySeries, { fmtY: fmtShekel }) +
     '</div>';
 }
 
