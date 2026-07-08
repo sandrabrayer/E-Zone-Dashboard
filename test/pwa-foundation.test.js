@@ -210,11 +210,12 @@ function decodePng(file) {
 
 const REBRAND_ICONS = ['icon-192.png', 'icon-512.png', 'icon-maskable-512.png'];
 
-test('rebrand icons have a fully-opaque white background (maskable safe zone included)', () => {
+test('redesign icons have a fully-opaque dark background (maskable safe zone included)', () => {
   REBRAND_ICONS.forEach((name) => {
     const { w, h, px } = decodePng(path.join(__dirname, '..', 'public', 'icons', name));
-    // Corner (top-left) is always background: must be pure white + opaque.
-    assert.deepStrictEqual([px[0], px[1], px[2], px[3]], [255, 255, 255, 255], name + ' corner');
+    // Corner (top-left) is always background: must be the original dark #071410
+    // and fully opaque.
+    assert.deepStrictEqual([px[0], px[1], px[2], px[3]], [0x07, 0x14, 0x10, 255], name + ' corner');
     // No pixel may be even partially transparent — a transparent maskable safe
     // zone would read as cropped on Android's mask.
     let nonOpaque = 0;
@@ -223,21 +224,26 @@ test('rebrand icons have a fully-opaque white background (maskable safe zone inc
   });
 });
 
-test('redesign icons use the #2962ff letter and drop the earlier marks', () => {
+test('redesign icons use #0055ff on #071410 with a white halo, dropping earlier marks', () => {
   REBRAND_ICONS.forEach((name) => {
     const { px } = decodePng(path.join(__dirname, '..', 'public', 'icons', name));
-    let blue = 0, oldGreen = 0, oldBlue = 0;
+    let bg = 0, blue = 0, white = 0, oldGreen = 0, prevBlue = 0;
     for (let i = 0; i < px.length; i += 4) {
       const r = px[i], g = px[i + 1], b = px[i + 2];
-      if (r === 0x29 && g === 0x62 && b === 0xff) blue++; // new #2962ff
+      if (r === 0x07 && g === 0x14 && b === 0x10) bg++; // #071410 dark bg
+      if (r === 0x00 && g === 0x55 && b === 0xff) blue++; // #0055ff letter
+      if (r === 0xff && g === 0xff && b === 0xff) white++; // #ffffff halo
       // old green letter #2dd47a (41,212,136); flag anything near it.
       if (Math.abs(r - 41) < 12 && Math.abs(g - 212) < 12 && Math.abs(b - 136) < 12) oldGreen++;
-      // previous rebrand letter #5b8bff (91,139,255); flag its exact fill.
-      if (r === 0x5b && g === 0x8b && b === 0xff) oldBlue++;
+      // earlier rebrand fills #5b8bff and #2962ff must be gone.
+      if (r === 0x5b && g === 0x8b && b === 0xff) prevBlue++;
+      if (r === 0x29 && g === 0x62 && b === 0xff) prevBlue++;
     }
-    assert.ok(blue > 0, name + ' contains #2962ff letter pixels');
+    assert.ok(bg > 0, name + ' contains #071410 background pixels');
+    assert.ok(blue > 0, name + ' contains #0055ff letter pixels');
+    assert.ok(white > 0, name + ' contains white (#ffffff) halo outline pixels');
     assert.strictEqual(oldGreen, 0, name + ' still has ' + oldGreen + ' old-green px');
-    assert.strictEqual(oldBlue, 0, name + ' still has ' + oldBlue + ' old-#5b8bff px');
+    assert.strictEqual(prevBlue, 0, name + ' still has ' + prevBlue + ' earlier-blue px');
   });
 });
 
@@ -252,8 +258,9 @@ test('redesign icons use the #2962ff letter and drop the earlier marks', () => {
 function inkCoverage(px, w, h) {
   let ink = 0;
   for (let i = 0; i < px.length; i += 4) {
-    // Ink = a pixel the letter covers by more than ~half: strongly blue, and
-    // clearly not the white/near-white background.
+    // Ink = a pixel the blue letter covers by more than ~half: low red + high
+    // blue. This excludes both the dark #071410 background (low blue) and the
+    // white #ffffff halo (high red), so only the letter body is counted.
     if (px[i] < 160 && px[i + 2] > 200) ink++;
   }
   return ink / (w * h);

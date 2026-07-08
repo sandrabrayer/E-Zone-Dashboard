@@ -67,12 +67,13 @@ Full suite: **129 passing** (`npm test` → `node --test`).
 
 ---
 
-# PWA icon redesign — bold geometric E (`#2962ff`)
+# PWA icon redesign — bold geometric E, `#0055ff` on dark with a white halo
 
 Follow-up to the rebrand above. The letter mark is **redrawn from scratch** as a
-heavier, more geometric block "E" and the palette moves to the deeper
-`#2962ff` blue. Frontend / static assets only. **No `Code.gs` change, no Apps
-Script deploy.**
+heavier, more geometric block "E" and the palette returns to the **original dark
+`#071410` background** with a **`#0055ff`** blue glyph, now wrapped in a **white
+contour halo** so the logo pops against the dark field. Frontend / static assets
+only. **No `Code.gs` change, no Apps Script deploy.**
 
 ## What ships
 
@@ -81,14 +82,20 @@ Script deploy.**
    vertical spine plus top / middle / bottom arms):
    - stroke thickness ≈ **19% of the canvas height**, the E bounding box filling
      ≈ **68%** of the canvas (56% wide) and **centered**
-   - background `#ffffff` (fully opaque), letter `#2962ff`
-   - **every pixel fully opaque** — the maskable safe-zone padding is the white
+   - background `#071410` (original dark, fully opaque), letter `#0055ff`
+   - **white `#ffffff` contour halo** — the glyph's own coverage mask **dilated
+     by ≈2% of the canvas** (≈10 px @512, ≈4 px @192) via a true **Euclidean
+     distance field** to the union of the bars, painted beneath the blue glyph.
+     It follows the letter's **exact contour** (rounded at corners,
+     anti-aliased) — a real halo, not a rectangular box.
+   - **every pixel fully opaque** — the maskable safe-zone padding is the dark
      background, so Android's circular/rounded mask never reveals a transparent
      (cropped-looking) border
-   - rasterised with **4×4 supersampled anti-aliasing**; verified bold and
-     readable when scaled to 48 / 64 / 96 px
-   - the maskable variant scales the glyph to ≈74% so all strokes sit inside the
-     mask safe zone.
+   - rasterised with **6×6 supersampled anti-aliasing**; verified bold and
+     readable, with the halo reading as a clean outline, when scaled to
+     48 / 64 / 96 px
+   - the maskable variant scales the glyph **and its halo** to ≈74% so both sit
+     inside the mask safe zone.
 
 2. **`public/manifest.json`** — `short_name` remains `"Dashboard"`, full `name`
    remains `"E-Zone Dashboard"` (unchanged).
@@ -100,10 +107,12 @@ Script deploy.**
 
 `tools/gen-icons.js` — a **self-contained Node script** using only built-ins
 (`fs`, `zlib`), no `canvas` / `sharp` / new dependency. It composes the E from
-four rectangles sized as fractions of the canvas, computes each pixel's letter
-coverage by 4×4 supersampling, writes `white·(1−cov) + #2962ff·cov` at alpha
-`255`, and encodes with a hand-rolled PNG writer (CRC32 chunks + `deflate`
-IDAT). Committed this time so the icons are reproducible. Run:
+four rectangles sized as fractions of the canvas; for each pixel it supersamples
+(6×6) the **distance to the union of the bars**, deriving both the glyph
+coverage (distance 0) and the halo coverage (distance ≤ ring width) so the white
+outline follows the contour exactly; composites `bg → white·halo → blue·glyph`
+at alpha `255`; and encodes with a hand-rolled PNG writer (CRC32 chunks +
+`deflate` IDAT). Committed so the icons are reproducible. Run:
 `node tools/gen-icons.js`.
 
 ## Tests (`test/pwa-foundation.test.js`)
@@ -111,12 +120,14 @@ IDAT). Committed this time so the icons are reproducible. Run:
 - **cache version floor** — replaces the locked `=== 'v3'` check with a FLOOR:
   `CACHE_VERSION` must parse to `>= v4`, so a revert to an older version fails
   loudly while future bumps still pass.
-- **letter palette** — asserts `#2962ff` pixels are present and that neither the
-  old green (`#2dd47a`) nor the previous `#5b8bff` fill remains.
-- **boldness guard (new)** — a built-in-only PNG decoder measures letter-ink
-  coverage per icon and asserts it clears a floor (25% for 192/512, 14% for the
-  shrunk maskable), so a thin / hairline glyph can never silently regress the
-  bold block E.
-- Opaque-white-background and file-existence checks unchanged.
+- **palette** — asserts each icon contains `#071410` background, `#0055ff`
+  letter, and white `#ffffff` halo pixels, and that no earlier mark remains
+  (old green `#2dd47a`, previous blues `#5b8bff` / `#2962ff`).
+- **opaque dark background** — the top-left corner is exactly `#071410` and
+  fully opaque, and no pixel anywhere is even partially transparent.
+- **boldness guard** — a built-in-only PNG decoder measures letter-ink coverage
+  per icon and asserts it clears a floor (25% for 192/512, 14% for the shrunk
+  maskable), so a thin / hairline glyph can never silently regress the bold
+  block E.
 
 Full suite: **140 passing** (`npm test` → `node --test`).

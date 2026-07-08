@@ -1,23 +1,34 @@
 /* Self-contained PWA icon generator for the E-Zone Dashboard.
  *
  * Draws a BOLD geometric letter "E" from scratch (four axis-aligned bars:
- * a thick vertical spine plus top / middle / bottom arms) and rasterises it
- * with supersampled anti-aliasing onto an opaque white canvas. No canvas,
- * sharp, or any other dependency — only Node built-ins (`fs`, `zlib`), using a
- * hand-rolled PNG writer (CRC32 chunks + deflate IDAT).
+ * a thick vertical spine plus top / middle / bottom arms) on the original dark
+ * brand background, wraps it in a white contour halo, and rasterises the whole
+ * thing with supersampled anti-aliasing. No canvas, sharp, or any other
+ * dependency — only Node built-ins (`fs`, `zlib`), using a hand-rolled PNG
+ * writer (CRC32 chunks + deflate IDAT).
  *
- *   background : #ffffff (fully opaque, every pixel)
- *   letter     : #2962ff
+ *   background : #071410 (original dark, fully opaque, every pixel)
+ *   letter     : #0055ff
+ *   outline    : #ffffff — a halo that follows the glyph's EXACT contour
+ *
+ * The white halo is the glyph's own coverage mask DILATED by RING_F·N (≈2% of
+ * the canvas ≈ 10 px @512, ≈ 4 px @192) and painted beneath the blue glyph, so
+ * it hugs the letter's outline (rounded at corners, anti-aliased) rather than
+ * being a rectangular box. Dilation is done with a true Euclidean distance
+ * field to the union of the bars, so the ring width is uniform along the
+ * contour.
  *
  * Geometry (fractions of the canvas edge N):
  *   stroke  ≈ 0.19 · N   (≈18-20% of canvas height — heavy, blocky strokes)
  *   height  ≈ 0.68 · N   (E fills ~65-70% of the canvas)
  *   width   ≈ 0.56 · N
+ *   ring    ≈ 0.02 · N   (white halo thickness)
  *   centred on the canvas.
  *
- * The maskable variant scales the whole glyph by MASK_SAFE (0.74) so all
- * strokes sit inside Android's mask safe zone; the padding it leaves is the
- * white background, so no pixel is ever transparent (no "cropped" border).
+ * The maskable variant scales the whole glyph by MASK_SAFE (0.74) so the glyph
+ * plus its halo sit inside Android's mask safe zone; the padding it leaves is
+ * the opaque dark background, so no pixel is ever transparent (no "cropped"
+ * border).
  *
  * Run:  node tools/gen-icons.js
  * Writes public/icons/icon-192.png, icon-512.png, icon-maskable-512.png.
@@ -30,15 +41,17 @@ const path = require('path');
 const zlib = require('zlib');
 
 // ---- palette ---------------------------------------------------------------
-const BG = [0xff, 0xff, 0xff]; // #ffffff opaque white
-const FG = [0x29, 0x62, 0xff]; // #2962ff bold blue
+const BG = [0x07, 0x14, 0x10]; // #071410 original dark background (opaque)
+const FG = [0x00, 0x55, 0xff]; // #0055ff bold blue letter
+const OUTLINE = [0xff, 0xff, 0xff]; // #ffffff halo
 
 // ---- glyph geometry (fractions of canvas edge) -----------------------------
 const STROKE_F = 0.19; // stroke thickness ≈ 19% of canvas height
 const HEIGHT_F = 0.68; // E bounding-box height ≈ 68% of canvas
 const WIDTH_F = 0.56; // E bounding-box width  ≈ 56% of canvas
-const MASK_SAFE = 0.74; // maskable glyph shrink so strokes stay in safe zone
-const SS = 4; // supersampling grid per axis (4×4 samples/pixel)
+const RING_F = 0.02; // white halo ≈ 2% of canvas (≈10px @512, ≈4px @192)
+const MASK_SAFE = 0.74; // maskable glyph shrink so glyph+halo stay in safe zone
+const SS = 6; // supersampling grid per axis (6×6 samples/pixel)
 
 /* Build the four rectangles [x0, y0, x1, y1] (in pixels) that compose the E,
  * centred on an N×N canvas, optionally scaled by `scale` (for the maskable
@@ -62,38 +75,57 @@ function eRects(N, scale) {
   ];
 }
 
-/* Coverage of pixel (px, py) by the union of `rects`, sampled on an SS×SS
- * grid → anti-aliased edges. Returns a value in [0, 1]. */
-function coverage(px, py, rects) {
-  let hits = 0;
-  for (let sy = 0; sy < SS; sy++) {
-    const y = py + (sy + 0.5) / SS;
-    for (let sx = 0; sx < SS; sx++) {
-      const x = px + (sx + 0.5) / SS;
-      for (let r = 0; r < rects.length; r++) {
-        const [x0, y0, x1, y1] = rects[r];
-        if (x >= x0 && x < x1 && y >= y0 && y < y1) {
-          hits++;
-          break; // union — one hit is enough for this sample
-        }
-      }
-    }
+/* Euclidean distance from point (x, y) to the union of `rects` (0 when the
+ * point is inside any rect). Distance to a single axis-aligned rect is the
+ * length of the componentwise overshoot outside it; the union is the min. This
+ * is what makes the dilated halo follow the exact contour with rounded corners
+ * instead of forming a box. */
+function distToRects(x, y, rects) {
+  let best = Infinity;
+  for (let r = 0; r < rects.length; r++) {
+    const [x0, y0, x1, y1] = rects[r];
+    const dx = Math.max(x0 - x, 0, x - x1);
+    const dy = Math.max(y0 - y, 0, y - y1);
+    const d = dx === 0 && dy === 0 ? 0 : Math.hypot(dx, dy);
+    if (d < best) best = d;
+    if (best === 0) break; // inside a rect — can't get closer
   }
-  return hits / (SS * SS);
+  return best;
 }
 
-/* Render an N×N RGBA buffer of the E. `scale` shrinks the glyph. */
+/* Render an N×N RGBA buffer: dark background, white halo (glyph dilated by
+ * `ring`), blue glyph on top. `scale` shrinks the glyph+halo. Both the glyph
+ * edge and the halo edge are anti-aliased by SS×SS supersampling. */
 function render(N, scale) {
   const rects = eRects(N, scale);
+  const ring = RING_F * N; // halo thickness stays ≈2% of the canvas
   const buf = Buffer.alloc(N * N * 4);
+  const samples = SS * SS;
+
   for (let y = 0; y < N; y++) {
     for (let x = 0; x < N; x++) {
-      const cov = coverage(x, y, rects);
+      let glyphHits = 0; // subsamples inside the letter
+      let haloHits = 0; // subsamples inside the dilated (glyph+ring) mask
+      for (let sy = 0; sy < SS; sy++) {
+        const py = y + (sy + 0.5) / SS;
+        for (let sx = 0; sx < SS; sx++) {
+          const px = x + (sx + 0.5) / SS;
+          const d = distToRects(px, py, rects);
+          if (d === 0) glyphHits++;
+          if (d <= ring) haloHits++;
+        }
+      }
+      const glyphCov = glyphHits / samples;
+      const haloCov = haloHits / samples;
+
+      // Composite: bg → white·haloCov → blue·glyphCov. alpha always opaque.
       const i = (y * N + x) * 4;
-      // white·(1−cov) + blue·cov, rounded; alpha always fully opaque.
-      buf[i] = Math.round(BG[0] * (1 - cov) + FG[0] * cov);
-      buf[i + 1] = Math.round(BG[1] * (1 - cov) + FG[1] * cov);
-      buf[i + 2] = Math.round(BG[2] * (1 - cov) + FG[2] * cov);
+      for (let c = 0; c < 3; c++) {
+        let v = BG[c];
+        v = v * (1 - haloCov) + OUTLINE[c] * haloCov; // white halo over bg
+        v = v * (1 - glyphCov) + FG[c] * glyphCov; // blue glyph over halo
+        buf[i + c] = Math.round(v);
+      }
       buf[i + 3] = 255;
     }
   }
@@ -157,7 +189,7 @@ function encodePng(N, rgba) {
 function inkCoverage(N, rgba) {
   let ink = 0;
   for (let i = 0; i < rgba.length; i += 4) {
-    // "ink" = meaningfully blue (more than half covered by the letter).
+    // "ink" = meaningfully blue (letter body, not white halo / dark bg).
     if (rgba[i] < 160 && rgba[i + 2] > 200) ink++;
   }
   return ink / (N * N);
@@ -178,7 +210,7 @@ for (const t of targets) {
   fs.writeFileSync(path.join(outDir, t.file), encodePng(t.N, rgba));
   const cov = inkCoverage(t.N, rgba);
   console.log(
-    `${t.file}: ${t.N}x${t.N} scale=${t.scale}  ink=${(cov * 100).toFixed(1)}%`
+    `${t.file}: ${t.N}x${t.N} scale=${t.scale} ring=${(RING_F * t.N).toFixed(1)}px  ink=${(cov * 100).toFixed(1)}%`
   );
 }
 console.log('done.');
