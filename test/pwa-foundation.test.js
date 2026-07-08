@@ -65,7 +65,8 @@ function loadManifest() {
 test('manifest.json is valid JSON with the required PWA fields', () => {
   const m = loadManifest();
   assert.strictEqual(m.name, 'E-Zone Dashboard');
-  assert.strictEqual(m.short_name, 'E-Zone');
+  // Icon rebrand: short_name shortened to "Dashboard" (full name unchanged).
+  assert.strictEqual(m.short_name, 'Dashboard');
   assert.strictEqual(m.display, 'standalone');
   assert.strictEqual(m.dir, 'rtl');
   assert.strictEqual(m.lang, 'he');
@@ -107,12 +108,13 @@ test('cache name is versioned and carries the version string', () => {
   assert.match(sw.CACHE_NAME, /^ezone-dashboard-v\d+$/);
 });
 
-test('cache version has been bumped to v2 (purges old icons/style.css)', () => {
-  // PWA follow-up: the SW cache version must advance past v1 so the previously
-  // cached (regenerated) icons and style.css are evicted on activate. Locking
-  // the exact value makes an accidental revert to v1 fail loudly.
-  assert.strictEqual(sw.CACHE_VERSION, 'v2');
-  assert.strictEqual(sw.CACHE_NAME, 'ezone-dashboard-v2');
+test('cache version has been bumped to v3 (purges old green icons)', () => {
+  // Icon rebrand: the SW cache version must advance past v2 so the previously
+  // cached green-on-dark icons are evicted on activate and the new white +
+  // #5b8bff icons take their place. Locking the exact value makes an accidental
+  // revert to an older version fail loudly.
+  assert.strictEqual(sw.CACHE_VERSION, 'v3');
+  assert.strictEqual(sw.CACHE_NAME, 'ezone-dashboard-v3');
 });
 
 /* ---------- service worker: sheets / data exclusion ---------- */
@@ -146,4 +148,86 @@ test('shouldCache is NOT cache-first for the shell (network-first handled separa
   // and could be served stale after a deploy.
   assert.strictEqual(sw.shouldCache('https://app.test/'), false);
   assert.strictEqual(sw.shouldCache('https://app.test/index.html'), false);
+});
+
+/* ---------- icon rebrand: palette of the generated PNGs ---------- */
+
+// Minimal 8-bit RGBA, non-interlaced PNG decoder (built-ins only) so the tests
+// can assert the ACTUAL pixels of the regenerated icons — not just that files
+// exist. Mirrors the decode step of the self-contained generator.
+function decodePng(file) {
+  const zlib = require('node:zlib');
+  const b = fs.readFileSync(file);
+  let o = 8, w = 0, h = 0;
+  const idat = [];
+  while (o < b.length) {
+    const len = b.readUInt32BE(o);
+    const type = b.toString('ascii', o + 4, o + 8);
+    const data = b.slice(o + 8, o + 8 + len);
+    if (type === 'IHDR') { w = data.readUInt32BE(0); h = data.readUInt32BE(4); }
+    else if (type === 'IDAT') idat.push(data);
+    else if (type === 'IEND') break;
+    o += 12 + len;
+  }
+  const raw = zlib.inflateSync(Buffer.concat(idat));
+  const stride = w * 4;
+  const px = Buffer.alloc(w * h * 4);
+  let pos = 0;
+  for (let y = 0; y < h; y++) {
+    const ft = raw[pos++];
+    for (let x = 0; x < stride; x++) {
+      const a = raw[pos + x];
+      const bpp = 4;
+      const left = x >= bpp ? px[y * stride + x - bpp] : 0;
+      const up = y > 0 ? px[(y - 1) * stride + x] : 0;
+      const ul = (x >= bpp && y > 0) ? px[(y - 1) * stride + x - bpp] : 0;
+      let v;
+      switch (ft) {
+        case 0: v = a; break;
+        case 1: v = a + left; break;
+        case 2: v = a + up; break;
+        case 3: v = a + ((left + up) >> 1); break;
+        case 4: {
+          const p = left + up - ul;
+          const pa = Math.abs(p - left), pb = Math.abs(p - up), pc = Math.abs(p - ul);
+          const pr = (pa <= pb && pa <= pc) ? left : (pb <= pc ? up : ul);
+          v = a + pr; break;
+        }
+        default: v = a;
+      }
+      px[y * stride + x] = v & 255;
+    }
+    pos += stride;
+  }
+  return { w, h, px };
+}
+
+const REBRAND_ICONS = ['icon-192.png', 'icon-512.png', 'icon-maskable-512.png'];
+
+test('rebrand icons have a fully-opaque white background (maskable safe zone included)', () => {
+  REBRAND_ICONS.forEach((name) => {
+    const { w, h, px } = decodePng(path.join(__dirname, '..', 'public', 'icons', name));
+    // Corner (top-left) is always background: must be pure white + opaque.
+    assert.deepStrictEqual([px[0], px[1], px[2], px[3]], [255, 255, 255, 255], name + ' corner');
+    // No pixel may be even partially transparent — a transparent maskable safe
+    // zone would read as cropped on Android's mask.
+    let nonOpaque = 0;
+    for (let i = 3; i < px.length; i += 4) if (px[i] !== 255) nonOpaque++;
+    assert.strictEqual(nonOpaque, 0, name + ' has ' + nonOpaque + ' non-opaque px');
+  });
+});
+
+test('rebrand icons use the #5b8bff letter and drop the old green', () => {
+  REBRAND_ICONS.forEach((name) => {
+    const { px } = decodePng(path.join(__dirname, '..', 'public', 'icons', name));
+    let blue = 0, oldGreen = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      const r = px[i], g = px[i + 1], b = px[i + 2];
+      if (r === 0x5b && g === 0x8b && b === 0xff) blue++;
+      // old letter was #2dd47a (41,212,136); flag anything near it.
+      if (Math.abs(r - 41) < 12 && Math.abs(g - 212) < 12 && Math.abs(b - 136) < 12) oldGreen++;
+    }
+    assert.ok(blue > 0, name + ' contains #5b8bff letter pixels');
+    assert.strictEqual(oldGreen, 0, name + ' still has ' + oldGreen + ' old-green px');
+  });
 });

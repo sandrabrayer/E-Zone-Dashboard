@@ -1,6 +1,6 @@
 {
   "name": "E-Zone Dashboard",
-  "short_name": "E-Zone",
+  "short_name": "Dashboard",
   "description": "E-ZONE Dashboard — ניהול רשת בתי החלמה",
   "start_url": "/",
   "scope": "/",
