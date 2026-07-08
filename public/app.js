@@ -3138,7 +3138,15 @@ function growthTickIndices(n, maxTicks) {
  * never overlap, and the first/last are anchored inward so nothing clips. */
 function growthLineChartSVG(series, opts) {
   const o = opts || {};
-  const W = 760, H = 240, padL = 56, padR = 16, padT = 16, padB = 44;
+  // Width-aware: the caller measures the container and passes its width; 760 is
+  // the desktop fallback (and keeps the historical 760×240 coordinate box). The
+  // viewBox scales to the container via CSS, but the coordinate WIDTH still
+  // drives how many x-labels fit — a narrow phone box yields fewer ticks. Height
+  // tracks width (~0.316 → 240 at 760) but never drops below 200 so the plot
+  // stays legible on a phone. Clamp W to a sane floor so labels never collapse.
+  const W = Math.max(280, Math.round(o.width) || 760);
+  const H = Math.max(200, Math.round(W * 0.316));
+  const padL = 56, padR = 16, padT = 16, padB = 44;
   const innerW = W - padL - padR, innerH = H - padT - padB;
   const n = series.length;
   if (!n) return '<div class="growth-empty">אין נתונים להצגה</div>';
@@ -3220,15 +3228,45 @@ function renderGrowthGraph() {
 
   const fmtShekel = v => '₪ ' + Math.round(v).toLocaleString('he-IL');
 
+  // Build the card shells first (empty chart slots), then measure each slot's
+  // real width and render the SVG into it. Measuring only works once the slot is
+  // in the DOM, so this is a two-pass render. maxXLabels: 8 stays as an upper
+  // cap for wide desktops; on a narrow phone the width-derived cap dominates.
   host.innerHTML =
     '<div class="card growth-card">' +
       '<div class="growth-title">מספר מטופלים פעילים (שבועי)</div>' +
-      growthLineChartSVG(weeklySeries, { maxXLabels: 8 }) +
+      '<div class="growth-chart" data-chart="weekly"></div>' +
     '</div>' +
     '<div class="card growth-card">' +
       '<div class="growth-title">הכנסות חודשיות (₪)</div>' +
-      growthLineChartSVG(monthlySeries, { fmtY: fmtShekel, maxXLabels: 8 }) +
+      '<div class="growth-chart" data-chart="monthly"></div>' +
     '</div>';
+
+  const weeklyHost  = host.querySelector('[data-chart="weekly"]');
+  const monthlyHost = host.querySelector('[data-chart="monthly"]');
+  weeklyHost.innerHTML  = growthLineChartSVG(weeklySeries,  { maxXLabels: 8, width: growthChartWidth(weeklyHost) });
+  monthlyHost.innerHTML = growthLineChartSVG(monthlySeries, { fmtY: fmtShekel, maxXLabels: 8, width: growthChartWidth(monthlyHost) });
+}
+
+/* Measured inner width of a chart slot, with a 760 fallback for when the element
+ * isn't laid out yet (clientWidth 0) — e.g. the growth screen is still hidden. */
+function growthChartWidth(el) {
+  const w = el && el.clientWidth ? el.clientWidth : 0;
+  return w > 0 ? w : 760;
+}
+
+/* Re-render the growth charts on viewport changes so the width-aware SVGs pick
+ * up the new container size. Debounced (resize fires in bursts) and gated on the
+ * growth screen being the active one, so we don't do work while it's hidden. */
+let _growthResizeTimer = null;
+function onGrowthViewportChange() {
+  if (state.currentScreen !== 'growth') return;
+  clearTimeout(_growthResizeTimer);
+  _growthResizeTimer = setTimeout(renderGrowthGraph, 150);
+}
+if (typeof window !== 'undefined' && window.addEventListener) {
+  window.addEventListener('resize', onGrowthViewportChange);
+  window.addEventListener('orientationchange', onGrowthViewportChange);
 }
 
 /* ===== Helpers ===== */

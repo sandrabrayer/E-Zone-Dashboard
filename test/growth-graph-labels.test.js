@@ -19,7 +19,7 @@ const vm = require('node:vm');
 function loadApp() {
   const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
   const epilogue = `
-    globalThis.__test = { growthTickIndices };
+    globalThis.__test = { growthTickIndices, growthLineChartSVG };
   `;
   const noop = () => {};
   const sandbox = {
@@ -102,4 +102,81 @@ test('degenerate inputs', () => {
   assert.strictEqual(idx(1, 8), '0');      // single point
   assert.strictEqual(idx(5, 1), '0,4');    // cap floored up to 2 -> first & last
   assert.strictEqual(idx(5, 0), '0,4');    // cap 0 -> min 2
+});
+
+/* ===== width-aware growthLineChartSVG (PWA PR 2 mobile) ===== */
+
+// A realistic weekly series (26 points) — more than any narrow phone can label,
+// so the width cap is what limits them.
+function weeklySeries(n) {
+  return Array.from({ length: n }, (_, i) => ({
+    value: 10 + (i % 7),
+    // dd/mm/yyyy date labels, the widest thing on the axis (~70px).
+    label: String((i % 28) + 1).padStart(2, '0') + '/0' + ((i % 9) + 1) + '/2026',
+  }));
+}
+
+// Pull every x-label's x + text-anchor out of the rendered SVG string.
+function xLabels(svg) {
+  return [...svg.matchAll(/x="([\d.]+)" y="\d+" class="growth-xlabel" text-anchor="(\w+)"/g)]
+    .map(m => ({ x: Number(m[1]), anchor: m[2] }));
+}
+
+// Every numeric x-ish coordinate in the SVG (label x, dot cx, gridline x2,
+// polyline point xs) — used to prove nothing is drawn past the right edge.
+function allXCoords(svg) {
+  const xs = [];
+  for (const m of svg.matchAll(/(?:^|\s)(?:x|x1|x2|cx)="([\d.]+)"/g)) xs.push(Number(m[1]));
+  for (const m of svg.matchAll(/points="([^"]+)"/g)) {
+    for (const pair of m[1].trim().split(/\s+/)) xs.push(Number(pair.split(',')[0]));
+  }
+  return xs;
+}
+
+function viewBoxW(svg) {
+  return Number(svg.match(/viewBox="0 0 ([\d.]+) [\d.]+"/)[1]);
+}
+
+test('narrow 360px container renders ~4-5 labels, none clipped', () => {
+  const svg = app.growthLineChartSVG(weeklySeries(26), { maxXLabels: 8, width: 360 });
+  const W = viewBoxW(svg);
+  assert.strictEqual(W, 360, 'viewBox width should equal the measured width');
+  const labels = xLabels(svg);
+  // innerW = 360-56-16 = 288; 288/70 = 4.11 -> 4 labels (never colliding).
+  assert.ok(labels.length >= 4 && labels.length <= 5, `got ${labels.length} labels on 360px`);
+  // No coordinate may exceed the viewBox width (that would clip at the edge).
+  for (const c of allXCoords(svg)) {
+    assert.ok(c <= W, `coord ${c} exceeds W=${W}`);
+  }
+  // First anchored start, last anchored end -> text stays inside the box.
+  assert.strictEqual(labels[0].anchor, 'start');
+  assert.strictEqual(labels[labels.length - 1].anchor, 'end');
+});
+
+test('narrow 414px container: few labels, nothing exceeds W', () => {
+  const svg = app.growthLineChartSVG(weeklySeries(26), { maxXLabels: 8, width: 414 });
+  const W = viewBoxW(svg);
+  assert.strictEqual(W, 414);
+  const labels = xLabels(svg);
+  // innerW = 414-72 = 342; 342/70 = 4.88 -> 4 labels.
+  assert.ok(labels.length >= 4 && labels.length <= 5, `got ${labels.length} labels on 414px`);
+  for (const c of allXCoords(svg)) {
+    assert.ok(c <= W, `coord ${c} exceeds W=${W}`);
+  }
+  assert.strictEqual(labels[labels.length - 1].anchor, 'end');
+});
+
+test('width fallback + clamp: missing width -> 760, tiny width floored to 280', () => {
+  assert.strictEqual(viewBoxW(app.growthLineChartSVG(weeklySeries(10), {})), 760);
+  // A 120px measurement (e.g. a barely-laid-out container) is clamped to 280 so
+  // labels never collapse on top of each other.
+  assert.strictEqual(viewBoxW(app.growthLineChartSVG(weeklySeries(10), { width: 120 })), 280);
+});
+
+test('desktop 760 default still yields 8 labels, last end-anchored, none clipped', () => {
+  const svg = app.growthLineChartSVG(weeklySeries(26), { maxXLabels: 8, width: 760 });
+  const labels = xLabels(svg);
+  assert.strictEqual(labels.length, 8);            // unchanged from the 760 fallback
+  assert.strictEqual(labels[labels.length - 1].anchor, 'end');
+  for (const c of allXCoords(svg)) assert.ok(c <= 760, `coord ${c} exceeds 760`);
 });
