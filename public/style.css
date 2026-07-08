@@ -269,9 +269,20 @@ input:focus, select:focus, textarea:focus {
   letter-spacing: 1.2px;
 }
 .card.stat .stat-value {
-  font-size: 42px; font-weight: 800;
+  /* Responsive so large currency figures don't overflow the card and get
+     clipped by .card { overflow:hidden } on narrow screens. clamp() gives a
+     sensible baseline; the JS fitStatText() pass then guarantees the FULL
+     number fits at any width. Never wrap a number onto two lines. */
+  font-size: clamp(22px, 6vw, 42px); font-weight: 800;
   margin: 10px 0 8px;
   letter-spacing: -1px;
+  white-space: nowrap;
+  /* The value is always a plain number (₪, %, or a count). Force an LTR,
+     isolated run so the RTL page can't clip or reorder its leading digits —
+     this is the "wrap the number in dir=ltr" fix applied at the element. */
+  direction: ltr;
+  unicode-bidi: isolate;
+  text-align: right;   /* keep the RTL card's right-aligned position */
   background: linear-gradient(90deg, #ffffff, #c5d2ff);
   -webkit-background-clip: text;
   background-clip: text;
@@ -977,6 +988,15 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
   font-weight: 700;
   margin-top: 2px;
   color: var(--text);
+  white-space: nowrap;   /* keep currency on one line for the fit pass */
+}
+/* An isolated left-to-right numeric run. Wrap currency values in this so the
+   RTL layout never clips or reorders their leading digits. Used for the
+   per-house metric currency values, which sit in mixed Hebrew+number cells. */
+.num-ltr {
+  direction: ltr;
+  unicode-bidi: isolate;
+  white-space: nowrap;
 }
 .be-metric-value.strong { color: var(--primary); font-size: 16px; }
 .be-metric-value.positive { color: var(--success); }
@@ -1129,6 +1149,15 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
   }
+}
+
+/* Phones: stack the KPI/summary stat cards full-width instead of 2-up. This
+   gives large currency values (e.g. ₪1,513,200) the room they need so they are
+   never clipped. Both the dashboard and the נקודת איזון summary use .cards-row.
+   (The ≤900px rule above sets these to 1fr 1fr for tablets; this narrows it
+   further for phones.) */
+@media (max-width: 560px) {
+  .cards-row { grid-template-columns: 1fr; }
 }
 
 /* ===== PWA PR 2: kanban mobile + growth graph =====
