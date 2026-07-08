@@ -1131,8 +1131,39 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
   }
 }
 
+/* ===== PWA PR 2: kanban mobile + growth graph =====
+   The board is 4 equal grid columns on desktop (unchanged). At ≤768px that
+   grid would either squeeze all four into an unusable width or — via the
+   ≤900px rule above — stack them into one very long vertical scroll. Instead
+   turn the board into a horizontal, one-column-at-a-time carousel: each column
+   is ~88vw so the next column's edge peeks (a cue that more exist), and
+   scroll-snap locks each column to the start edge. Leads move between stages
+   with the on-card buttons (there is no drag-and-drop), so horizontal swipe
+   never fights a drag gesture. */
+@media (max-width: 768px) {
+  .kanban {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: visible;              /* vertical swipes fall through to the page */
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch; /* momentum on iOS */
+    overscroll-behavior-x: contain;    /* no back-nav / page bounce at the ends */
+    scroll-padding-inline: 0;
+    gap: 12px;
+    padding-bottom: 6px;               /* breathing room for the scroll indicator */
+  }
+  .kanban .col {
+    scroll-snap-align: start;
+    flex: 0 0 88vw;                    /* one column per view; next edge peeks */
+    max-width: 88vw;
+    min-height: 0;                     /* don't force tall empty columns on a phone */
+  }
+}
+
 /* ===== Growth graph (גרף צמיחה) ===== */
 .growth-graphs { display: flex; flex-direction: column; gap: 20px; }
+.growth-chart { width: 100%; }
 .growth-card { padding: 16px; }
 .growth-title { font-weight: 600; margin-bottom: 12px; color: var(--text, #1f2a44); }
 .growth-svg { width: 100%; height: auto; display: block; direction: ltr; }
