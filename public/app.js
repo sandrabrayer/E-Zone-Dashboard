@@ -853,6 +853,50 @@ function renderAll() {
 }
 
 /* ====================================================
+   NUMBER FIT — never clip a KPI value
+   ==================================================== */
+/* Shrink one value element's font-size until its single-line content fits its
+ * box. Large currency figures (e.g. ₪1,513,200) otherwise overflow a narrow
+ * card and get clipped by `.card { overflow:hidden }` — in RTL that cuts the
+ * LEADING digits, so ₪1,513,200 read as "₪3,200". Starts from the CSS font-size
+ * and steps down to a floor. No-op when the element isn't laid out yet
+ * (clientWidth 0, e.g. a hidden screen) or already fits — so it's cheap and
+ * safe to call after every render. */
+function fitStatText(el, minPx) {
+  if (!el || !el.clientWidth) return;
+  const floor = minPx || 14;
+  el.style.fontSize = '';                       // reset to the CSS-driven size
+  if (typeof getComputedStyle !== 'function') return;
+  let size = parseFloat(getComputedStyle(el).fontSize) || 0;
+  if (!size) return;
+  let guard = 80;                               // bounded loop (42px→14px is ~28 steps)
+  while (el.scrollWidth > el.clientWidth && size > floor && guard-- > 0) {
+    size -= 1;
+    el.style.fontSize = size + 'px';
+  }
+}
+
+/* Fit every currency/number value on the dashboard and the נקודת איזון tab. */
+function fitAllStatText(root) {
+  const scope = root || document;
+  if (!scope.querySelectorAll) return;
+  scope.querySelectorAll('.card.stat .stat-value, .be-metric-value')
+    .forEach(el => fitStatText(el));
+}
+
+/* Re-fit on viewport changes (rotation / resize) so a value that fit in one
+ * orientation isn't clipped in another. Debounced; safe when nothing matches. */
+let _statFitTimer = null;
+function onStatViewportChange() {
+  clearTimeout(_statFitTimer);
+  _statFitTimer = setTimeout(() => fitAllStatText(), 150);
+}
+if (typeof window !== 'undefined' && window.addEventListener) {
+  window.addEventListener('resize', onStatViewportChange);
+  window.addEventListener('orientationchange', onStatViewportChange);
+}
+
+/* ====================================================
    DASHBOARD
    ==================================================== */
 function renderDashboard() {
@@ -900,6 +944,7 @@ function renderDashboard() {
     pipe.appendChild(el);
   });
 
+  fitAllStatText(); // scale KPI values down to fit narrow cards (no clipping)
   renderRenewalAlert();
 }
 
@@ -3568,11 +3613,11 @@ function renderBreakevenHousesGrid() {
       <div class="be-metrics">
         <div class="be-metric">
           <div class="be-metric-label">סהכ הוצאות</div>
-          <div class="be-metric-value">₪ ${m.totalExpenses.toLocaleString('he-IL')}</div>
+          <div class="be-metric-value"><span class="num-ltr">₪ ${m.totalExpenses.toLocaleString('he-IL')}</span></div>
         </div>
         <div class="be-metric">
           <div class="be-metric-label">מחיר ממוצע למטופל (ללא מע"מ)</div>
-          <div class="be-metric-value">₪ ${Math.round(m.price).toLocaleString('he-IL')}</div>
+          <div class="be-metric-value"><span class="num-ltr">₪ ${Math.round(m.price).toLocaleString('he-IL')}</span></div>
         </div>
         <div class="be-metric">
           <div class="be-metric-label">נקודת איזון</div>
@@ -3584,11 +3629,11 @@ function renderBreakevenHousesGrid() {
         </div>
         <div class="be-metric">
           <div class="be-metric-label">רווח שולי למטופל</div>
-          <div class="be-metric-value positive">₪ ${Math.round(m.marginalProfit).toLocaleString('he-IL')}</div>
+          <div class="be-metric-value positive"><span class="num-ltr">₪ ${Math.round(m.marginalProfit).toLocaleString('he-IL')}</span></div>
         </div>
         <div class="be-metric">
           <div class="be-metric-label">רווח/הפסד נוכחי</div>
-          <div class="be-metric-value ${plClass}">₪ ${Math.round(m.currentPL).toLocaleString('he-IL')}</div>
+          <div class="be-metric-value ${plClass}"><span class="num-ltr">₪ ${Math.round(m.currentPL).toLocaleString('he-IL')}</span></div>
         </div>
         <div class="be-metric">
           <div class="be-metric-label">רווח גולמי</div>
@@ -3624,6 +3669,8 @@ function renderBreakevenHousesGrid() {
       renderBreakevenSummary();
     };
   });
+
+  fitAllStatText(); // scale per-house currency metrics to fit their cells
 }
 
 function renderBreakevenComparisonTable() {
@@ -3823,6 +3870,8 @@ function renderBreakevenSummary() {
       plSub.textContent = `חסרים ${patientGap} מטופלים לאיזון - ${net.totalPatientsCurrent}/${net.networkBreakeven}`;
     }
   }
+
+  fitAllStatText(); // scale the network summary KPI values to fit
 }
 
 /* ===== Boot ===== */
