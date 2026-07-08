@@ -64,3 +64,45 @@ convention), it is not committed to the repo.
   letter color is present, and **no old-green (`#2dd47a`) pixel remains**.
 
 Full suite: **129 passing** (`npm test` → `node --test`).
+
+---
+
+# PWA icon redesign — bold block E, letter #2962ff (follow-up)
+
+Refines the rebrand above: same **bold block-E** approach, but the letter color
+moves to **`#2962ff`** (a deeper, higher-contrast blue) and the boldness is now
+enforced by a test so it can't silently regress. Frontend / static assets only —
+**no `Code.gs` change, no Apps Script deploy.**
+
+## What ships
+
+1. **Icons** (`public/icons/`) — 192, 512 and maskable-512 redrawn from scratch
+   as a **bold geometric block "E"** (thick vertical spine + three thick equal
+   arms; stroke ≈ **19% of canvas height**, E filling ≈ **70%**, centered, 8×8
+   supersampled AA). Background `#ffffff` (opaque), letter **`#2962ff`**. The
+   maskable keeps the glyph inside the mask safe zone with white padding to the
+   edge. Verified bold and readable at **48 / 64 / 96 px**. Measured ink
+   coverage: ≈36% (192/512), ≈20% (maskable).
+
+2. **`public/manifest.json`** — `short_name` stays `"Dashboard"` (`name`
+   `"E-Zone Dashboard"` unchanged).
+
+3. **`public/sw.js`** — `CACHE_VERSION` bumped `v3` → `v4`
+   (`ezone-dashboard-v4`), so the interim `#5b8bff` icons are evicted on
+   `activate`.
+
+## Tests
+
+`test/pwa-foundation.test.js`:
+
+- **cache version floor** — the locked-value check becomes a *floor*: the
+  version number must be `≥ 4` and `CACHE_NAME` must embed it, so the version
+  can advance later but never regress below the redesign.
+- **boldness guard (new)** — decodes each icon and asserts letter ink coverage
+  stays above a floor (25% for 192/512, 13% for maskable), well below the
+  measured actuals — a regression to a thin glyph fails loudly.
+- **palette** — the letter-color check now requires `#2962ff` present and
+  asserts **both** superseded colors (green `#2dd47a`, interim `#5b8bff`) are
+  fully gone; opaque-white-background / no-transparent-maskable checks unchanged.
+
+Full suite: **130 passing** (`npm test` → `node --test`).

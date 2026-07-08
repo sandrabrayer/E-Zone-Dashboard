@@ -108,13 +108,15 @@ test('cache name is versioned and carries the version string', () => {
   assert.match(sw.CACHE_NAME, /^ezone-dashboard-v\d+$/);
 });
 
-test('cache version has been bumped to v3 (purges old green icons)', () => {
-  // Icon rebrand: the SW cache version must advance past v2 so the previously
-  // cached green-on-dark icons are evicted on activate and the new white +
-  // #5b8bff icons take their place. Locking the exact value makes an accidental
-  // revert to an older version fail loudly.
-  assert.strictEqual(sw.CACHE_VERSION, 'v3');
-  assert.strictEqual(sw.CACHE_NAME, 'ezone-dashboard-v3');
+test('cache version is at or above the v4 floor (never regresses)', () => {
+  // Each icon change must advance the SW cache version so stale icons are
+  // evicted on activate. This is a FLOOR, not an exact lock: the version may go
+  // higher on later changes, but must never drop below v4 (the #2962ff bold-E
+  // rebrand), so an accidental revert to an older cached icon set fails loudly.
+  const n = Number(String(sw.CACHE_VERSION).replace(/^v/, ''));
+  assert.ok(Number.isInteger(n), 'CACHE_VERSION looks like v<N>');
+  assert.ok(n >= 4, 'CACHE_VERSION ' + sw.CACHE_VERSION + ' is below the v4 floor');
+  assert.strictEqual(sw.CACHE_NAME, 'ezone-dashboard-' + sw.CACHE_VERSION);
 });
 
 /* ---------- service worker: sheets / data exclusion ---------- */
@@ -217,17 +219,42 @@ test('rebrand icons have a fully-opaque white background (maskable safe zone inc
   });
 });
 
-test('rebrand icons use the #5b8bff letter and drop the old green', () => {
+test('rebrand icons use the #2962ff letter and drop the superseded colors', () => {
   REBRAND_ICONS.forEach((name) => {
     const { px } = decodePng(path.join(__dirname, '..', 'public', 'icons', name));
-    let blue = 0, oldGreen = 0;
+    let letter = 0, stale = 0;
     for (let i = 0; i < px.length; i += 4) {
       const r = px[i], g = px[i + 1], b = px[i + 2];
-      if (r === 0x5b && g === 0x8b && b === 0xff) blue++;
-      // old letter was #2dd47a (41,212,136); flag anything near it.
-      if (Math.abs(r - 41) < 12 && Math.abs(g - 212) < 12 && Math.abs(b - 136) < 12) oldGreen++;
+      if (r === 0x29 && g === 0x62 && b === 0xff) letter++;
+      // superseded letter colors that must be fully gone: the old green
+      // #2dd47a (41,212,136) and the interim blue #5b8bff (91,139,255).
+      const nearGreen = Math.abs(r - 41) < 12 && Math.abs(g - 212) < 12 && Math.abs(b - 136) < 12;
+      const nearInterim = r === 0x5b && g === 0x8b && b === 0xff;
+      if (nearGreen || nearInterim) stale++;
     }
-    assert.ok(blue > 0, name + ' contains #5b8bff letter pixels');
-    assert.strictEqual(oldGreen, 0, name + ' still has ' + oldGreen + ' old-green px');
+    assert.ok(letter > 0, name + ' contains #2962ff letter pixels');
+    assert.strictEqual(stale, 0, name + ' still has ' + stale + ' superseded-color px');
+  });
+});
+
+test('icons are BOLD — letter ink coverage stays above the floor', () => {
+  // Boldness guard: a thin-stroke glyph would ink only a small fraction of the
+  // canvas. The bold block-E inks ~36% of the full-size icons and ~20% of the
+  // (smaller, safe-zone-fit) maskable. Flooring coverage well below those
+  // actuals makes any regression to a thin glyph fail loudly.
+  const FLOOR = { 'icon-192.png': 0.25, 'icon-512.png': 0.25, 'icon-maskable-512.png': 0.13 };
+  REBRAND_ICONS.forEach((name) => {
+    const { w, h, px } = decodePng(path.join(__dirname, '..', 'public', 'icons', name));
+    let ink = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      // any non-white pixel is letter ink (background is pure opaque white).
+      if (!(px[i] === 255 && px[i + 1] === 255 && px[i + 2] === 255)) ink++;
+    }
+    const coverage = ink / (w * h);
+    assert.ok(
+      coverage >= FLOOR[name],
+      name + ' ink coverage ' + (coverage * 100).toFixed(1) + '% is below the ' +
+        (FLOOR[name] * 100) + '% boldness floor'
+    );
   });
 });
