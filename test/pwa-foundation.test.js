@@ -231,54 +231,51 @@ test('redesign icons use #0055ff on #071410 with a white halo, dropping earlier 
     for (let i = 0; i < px.length; i += 4) {
       const r = px[i], g = px[i + 1], b = px[i + 2];
       if (r === 0x07 && g === 0x14 && b === 0x10) bg++; // #071410 dark bg
-      if (r === 0x00 && g === 0x55 && b === 0xff) blue++; // #0055ff letter
+      if (r === 0x00 && g === 0x55 && b === 0xff) blue++; // #0055ff logo
       if (r === 0xff && g === 0xff && b === 0xff) white++; // #ffffff halo
-      // old green letter #2dd47a (41,212,136); flag anything near it.
+      // original green logo #29d488 (41,212,136) must be fully recoloured away;
+      // flag anything near it.
       if (Math.abs(r - 41) < 12 && Math.abs(g - 212) < 12 && Math.abs(b - 136) < 12) oldGreen++;
-      // earlier rebrand fills #5b8bff and #2962ff must be gone.
+      // earlier block-E rebrand fills #5b8bff and #2962ff must be gone.
       if (r === 0x5b && g === 0x8b && b === 0xff) prevBlue++;
       if (r === 0x29 && g === 0x62 && b === 0xff) prevBlue++;
     }
     assert.ok(bg > 0, name + ' contains #071410 background pixels');
-    assert.ok(blue > 0, name + ' contains #0055ff letter pixels');
+    assert.ok(blue > 0, name + ' contains #0055ff logo pixels');
     assert.ok(white > 0, name + ' contains white (#ffffff) halo outline pixels');
-    assert.strictEqual(oldGreen, 0, name + ' still has ' + oldGreen + ' old-green px');
+    assert.strictEqual(oldGreen, 0, name + ' still has ' + oldGreen + ' original-green px');
     assert.strictEqual(prevBlue, 0, name + ' still has ' + prevBlue + ' earlier-blue px');
   });
 });
 
-/* ---------- icon redesign: boldness guard ---------- */
+/* ---------- icon redesign: logo-presence guard ---------- */
 
-// Ink-coverage floor: the fraction of pixels that are meaningfully "letter ink"
-// (heavily blue) must clear a threshold, so a thin / hairline glyph can never
-// silently regress the bold block "E". Measured coverage of the shipped icons
-// is ~34% (192/512) and ~19% (maskable, glyph shrunk to the safe zone); the
-// floors sit comfortably below those so anti-aliasing jitter won't flake, but
-// well above what any thin-stroke letterform could reach.
-function inkCoverage(px, w, h) {
+// The icons are built from the recovered E-Zone brand logo (a stylised "e"
+// wordmark), recoloured to #0055ff. This guard asserts the recoloured logo
+// actually made it onto the canvas — a meaningful amount of blue "ink" — so a
+// blank / all-background regeneration (or a mis-keyed recolour that leaves the
+// logo invisible) fails loudly. It is intentionally a low floor (>5%): unlike
+// the old block-E boldness guard it does NOT constrain glyph weight, only that
+// the logo is present. Measured coverage is ~10% (192/512) and ~7% (maskable).
+function coloredInk(px) {
   let ink = 0;
   for (let i = 0; i < px.length; i += 4) {
-    // Ink = a pixel the blue letter covers by more than ~half: low red + high
-    // blue. This excludes both the dark #071410 background (low blue) and the
-    // white #ffffff halo (high red), so only the letter body is counted.
+    // "ink" = meaningfully blue logo body (low red + high blue); excludes the
+    // dark #071410 background (low blue) and the white #ffffff halo (high red).
     if (px[i] < 160 && px[i + 2] > 200) ink++;
   }
-  return ink / (w * h);
+  return ink / (px.length / 4);
 }
 
-test('redesign icons are BOLD — letter ink coverage clears the floor', () => {
-  const FLOORS = {
-    'icon-192.png': 0.25,
-    'icon-512.png': 0.25,
-    'icon-maskable-512.png': 0.14, // glyph deliberately shrunk into safe zone
-  };
+test('redesign icons carry the recoloured logo — colored ink > 5%', () => {
+  const FLOOR = 0.05;
   REBRAND_ICONS.forEach((name) => {
-    const { w, h, px } = decodePng(path.join(__dirname, '..', 'public', 'icons', name));
-    const cov = inkCoverage(px, w, h);
+    const { px } = decodePng(path.join(__dirname, '..', 'public', 'icons', name));
+    const cov = coloredInk(px);
     assert.ok(
-      cov >= FLOORS[name],
-      name + ' ink coverage ' + (cov * 100).toFixed(1) + '% is below the ' +
-        (FLOORS[name] * 100) + '% boldness floor'
+      cov > FLOOR,
+      name + ' colored-ink ' + (cov * 100).toFixed(1) + '% is not above the ' +
+        (FLOOR * 100) + '% logo-presence floor'
     );
   });
 });
