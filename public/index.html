@@ -7,6 +7,11 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>E-ZONE Dashboard</title>
+  <!-- Deploy verification: the running build id, substituted server-side. Kept
+       in <head> (not a visible overlay) so it can be confirmed via view-source
+       or document.querySelector('meta[name=build]').content without rendering
+       over the UI. -->
+  <meta name="build" content="__BUILD__" />
 
   <!-- PWA foundation -->
   <link rel="manifest" href="/manifest.json" />
@@ -285,8 +290,11 @@
   <!-- ====== MODALS ====== -->
   <div id="modal-root"></div>
 
-  <!-- Build marker — shows which deploy this browser is actually running. -->
-  <div id="build-marker" style="position:fixed;bottom:6px;left:6px;font-size:10px;color:#6b7aa0;z-index:10;opacity:.6;font-family:monospace;">build: __BUILD__</div>
+  <!-- Build marker — which deploy this browser is running. Kept in the DOM for
+       inspection (devtools / document.getElementById('build-marker')) but
+       `hidden` so it never renders as an overlay over the cards on any viewport.
+       The mirror <meta name="build"> in <head> is the primary lookup handle. -->
+  <div id="build-marker" hidden data-build="__BUILD__">build: __BUILD__</div>
 
   <script src="app.js?v=__BUILD__"></script>
 
