@@ -1104,6 +1104,14 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
   .patient-row { grid-template-columns: 1fr 1fr; }
   .billing-row { grid-template-columns: 1fr 1fr; }
   .irrelevant-row { grid-template-columns: 1fr 1fr; }
+  /* Renewal-alert cards (dashboard "חידושי תפוסה"): the desktop grid is
+     `1.6fr 1fr auto`, whose `auto` actions column (the חידוש תשלום / שחרור
+     buttons) can't shrink and pushed the row past the viewport — clipped off
+     the LEFT edge in RTL by the html/body overflow-x guard. Collapse to a
+     single column so info / date / actions stack full-width and never overflow.
+     Scoped to .renewal-row only; .irrelevant-row (retention) is handled above. */
+  .renewal-row { grid-template-columns: 1fr; }
+  .renewal-row .rn-actions { justify-self: stretch; }
   .actions input[type=search] { width: 100%; }
   .be-houses-grid { grid-template-columns: 1fr; }
   .be-metrics { grid-template-columns: 1fr 1fr; }
