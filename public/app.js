@@ -526,11 +526,29 @@ function promoteEnteredLeads() {
     if (p.name && p.houseId) byNameHouse.add(`${p.houseId}::${String(p.name).trim()}`);
   });
 
+  /* Guard 1 (discharge re-promotion fix): a released patient's SOURCE lead can
+   * still sit at stage 'entry'/'entered' — dischargePatient never retired it on
+   * older records, and if the released patient row was dropped by the
+   * whole-house-replace path there is no ACTIVE patient to match either. Without
+   * this guard promoteEnteredLeads would re-promote her as a fresh 'trial'
+   * patient, so Vered's discharge "doesn't stick". Skip any lead that already
+   * has a NON-RESTORED discharged audit row, matched by the SAME two keys as
+   * the active-patient match above. restored==='TRUE' rows are intentionally
+   * NOT indexed so restore-to-lead still re-promotes. */
+  const dischargedByFromLead = new Set();
+  const dischargedByNameHouse = new Set();
+  (state.dischargedPatients || []).forEach(d => {
+    if (d.restored === 'TRUE' || d.restored === true) return;
+    if (d.fromLead) dischargedByFromLead.add(String(d.fromLead));
+    if (d.name && d.houseId) dischargedByNameHouse.add(`${d.houseId}::${String(d.name).trim()}`);
+  });
+
   state.leads.forEach(lead => {
     const stage = String(lead.stage || '').toLowerCase();
     if (stage !== 'entry' && stage !== 'entered') return;
 
     if (lead.id && byFromLead.has(String(lead.id))) return;
+    if (lead.id && dischargedByFromLead.has(String(lead.id))) return;
 
     const house = houseByName(lead.house) || houseById(lead.house);
     if (!house) {
@@ -539,6 +557,7 @@ function promoteEnteredLeads() {
     }
     const key = `${house.id}::${String(lead.name || '').trim()}`;
     if (byNameHouse.has(key)) return;
+    if (dischargedByNameHouse.has(key)) return;
 
     const patient = normalizePatient({
       id: cryptoId(),
@@ -2381,13 +2400,37 @@ function dischargePatient(p) {
     dispositions: DISCHARGE_DISPOSITIONS,
     dateField: { name: 'dischargeDate', label: 'תאריך שחרור' },
     onConfirm: async ({ disposition, note, dischargeDate }) => {
-      const prev = { status: p.status, exitDate: p.exitDate };
+      // Guard 2 (discharge re-promotion fix, insurance): retire the source lead
+      // to the terminal 'admitted' stage (the same value retireAdmittedLeads
+      // uses) so a later loadAll's promoteEnteredLeads can't re-create this
+      // just-discharged patient from a lead still parked at 'entry'/'entered'.
+      // Only a fromLead that resolves to a REAL lead is touched; hand-entered
+      // patients (no fromLead) are covered by Guard 1. `prev` also captures the
+      // lead's prior stage so a failed persist rolls the lead back with the
+      // patient.
+      const sourceLead = p.fromLead
+        ? (state.leads || []).find(l => String(l.id) === String(p.fromLead)) || null
+        : null;
+      const prev = {
+        status: p.status,
+        exitDate: p.exitDate,
+        lead: sourceLead,
+        leadStage: sourceLead ? sourceLead.stage : undefined,
+      };
 
       const auditRow = dischargeAuditRow(p, { disposition, note, dischargeDate });
       const exitDate = auditRow.exitDate;
+      const rollback = () => {
+        p.status = prev.status;
+        p.exitDate = prev.exitDate;
+        if (prev.lead) prev.lead.stage = prev.leadStage;
+        state.dischargedPatients = state.dischargedPatients.filter(d => d.id !== auditRow.id);
+        renderAll();
+      };
 
       p.status   = 'released';
       p.exitDate = exitDate;
+      if (sourceLead) sourceLead.stage = 'admitted';
       state.dischargedPatients = state.dischargedPatients || [];
       state.dischargedPatients.unshift(auditRow);
       renderAll();
@@ -2395,9 +2438,7 @@ function dischargePatient(p) {
       try {
         await saveAll();
       } catch (e) {
-        Object.assign(p, prev);
-        state.dischargedPatients = state.dischargedPatients.filter(d => d.id !== auditRow.id);
-        renderAll();
+        rollback();
         showError('שחרור המטופל נכשל — ' + e.message);
         throw e;
       }
@@ -2408,9 +2449,7 @@ function dischargePatient(p) {
           patient: { ...p, disposition: disposition, discharge_note: note },
         });
       } catch (e) {
-        Object.assign(p, prev);
-        state.dischargedPatients = state.dischargedPatients.filter(d => d.id !== auditRow.id);
-        renderAll();
+        rollback();
         showError('כתיבת רישום השחרור נכשלה — ' + e.message);
         throw e;
       }
