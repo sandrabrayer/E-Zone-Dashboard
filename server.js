@@ -262,6 +262,25 @@ function summarizeResponse(data) {
   return out;
 }
 
+/* Build the truncated patients/leads previews stored on `lastLoad` for the
+ * /api/debug/last-load diagnostics endpoint. Pure + defensive: only responses
+ * that actually carry a `patients` / `leads` field get a preview; anything
+ * else (e.g. the getPayments response `{ok:true, payments:[...]}`, which has
+ * neither) yields null. Guarding on `!== undefined` is the fix for the
+ * getPayments 502: JSON.stringify(undefined) returns undefined, so calling
+ * .slice() on it threw and bubbled up to the 502 handler. */
+function buildLoadPreviews(data) {
+  const isObj = data && typeof data === 'object';
+  return {
+    patientsPreview: isObj && data.patients !== undefined
+      ? JSON.stringify(data.patients).slice(0, 4000)
+      : null,
+    leadsPreview: isObj && data.leads !== undefined
+      ? JSON.stringify(data.leads).slice(0, 1500)
+      : null,
+  };
+}
+
 /* GET /api/sheets?action=getData — forwarded as GET to Apps Script */
 app.get('/api/sheets', async (req, res) => {
   const action = req.query && req.query.action;
@@ -280,12 +299,7 @@ app.get('/api/sheets', async (req, res) => {
       action: action === undefined ? null : action,
       query: req.query,
       summary,
-      patientsPreview: data && typeof data === 'object'
-        ? JSON.stringify(data.patients).slice(0, 4000)
-        : null,
-      leadsPreview: data && typeof data === 'object'
-        ? JSON.stringify(data.leads).slice(0, 1500)
-        : null,
+      ...buildLoadPreviews(data),
     };
 
     res.json(data);
@@ -419,6 +433,13 @@ app.use((req, res) => {
   res.status(404).json({ error: 'not_found', method: req.method, url: req.originalUrl });
 });
 
-app.listen(PORT, () => {
-  console.log(`E-ZONE Dashboard running on port ${PORT} build ${BUILD_ID}`);
-});
+/* Only bind the port when run directly (node server.js / Procfile `web`).
+ * When required from a test, skip listen so the pure helpers above can be
+ * exercised without opening a socket. */
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`E-ZONE Dashboard running on port ${PORT} build ${BUILD_ID}`);
+  });
+}
+
+module.exports = { buildLoadPreviews };
