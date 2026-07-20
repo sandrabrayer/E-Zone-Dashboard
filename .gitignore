@@ -3,3 +3,8 @@ node_modules/
 *.log
 .env
 .claude/settings.local.json
+
+# clasp / Apps Script credentials — NEVER commit. These hold OAuth tokens.
+# (.clasp.json IS committed — it holds only the non-secret Script ID.)
+.clasprc.json
+.clasp.local.json
