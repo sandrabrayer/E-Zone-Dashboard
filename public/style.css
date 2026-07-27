@@ -196,11 +196,20 @@ input:focus, select:focus, textarea:focus {
   position: sticky; top: 0; z-index: 50;
 }
 .brand {
+  display: flex; align-items: center; gap: 10px;
+  flex: 0 0 auto; white-space: nowrap; /* never crowd the nav / never wrap */
+}
+.brand-logo {
+  width: 30px; height: 30px; flex: 0 0 auto; display: block;
+}
+.brand-name {
+  /* Wordmark type/colors kept exactly as the old E-ZONE text — no recolor. */
   font-weight: 800; font-size: 22px; letter-spacing: 3px;
   background: linear-gradient(90deg, #5b8bff, #a779ff);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+  white-space: nowrap;
 }
 .tabs { display: flex; gap: 2px; }
 .tabs .tab {
@@ -1130,6 +1139,7 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
     row-gap: 6px;
   }
   .brand { order: 1; white-space: nowrap; flex: 0 0 auto; } /* never wrap the wordmark */
+  .brand-logo { width: 28px; height: 28px; } /* slightly smaller emblem on phones */
   .user-mode { order: 2; }
   .tabs {
     order: 3;
