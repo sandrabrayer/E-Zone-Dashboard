@@ -52,12 +52,13 @@
       <nav class="tabs">
         <button class="tab active" data-screen="dashboard">דשבורד</button>
         <button class="tab" data-screen="leads">לידים</button>
-        <button class="tab" data-screen="retention">שימור לידים</button>
+        <button class="tab" data-screen="meetings">לוח פגישות</button>
         <button class="tab" data-screen="occupancy">תפוסה</button>
         <button class="tab" data-screen="discharged-patients">מטופלים משוחררים</button>
         <button class="tab" data-screen="billing">גבייה</button>
         <button class="tab" data-screen="breakeven">נקודת איזון</button>
         <button class="tab" data-screen="growth">גרף צמיחה</button>
+        <button class="tab" data-screen="retention">שימור לידים</button>
       </nav>
       <div class="user-mode">
         <button id="logout" class="btn ghost-sm">יציאה</button>
@@ -120,21 +121,15 @@
       <div class="kanban" id="kanban"></div>
     </section>
 
-    <!-- ====== RETENTION ====== -->
-    <section id="screen-retention" class="screen hidden">
+    <!-- ====== MEETINGS BOARD (לוח פגישות) — empty shell only ======
+         Placeholder screen: renders the section heading and an empty
+         container that later work will populate. No data, no logic, and no
+         Code.gs backend — see CHANGELOG-meetings-tab-shell.md. -->
+    <section id="screen-meetings" class="screen hidden">
       <div class="screen-head">
-        <h2>שימור לידים</h2>
+        <h2>לוח פגישות</h2>
       </div>
-
-      <section class="retention-section">
-        <h3>סגורים <span class="count-pill" id="irrelevant-count">0</span></h3>
-        <div id="irrelevant-list" class="irrelevant-list"></div>
-      </section>
-
-      <section class="retention-section">
-        <h3>לידים שהוסרו</h3>
-        <div id="removed-list" class="irrelevant-list"></div>
-      </section>
+      <div id="meetings-board" class="meetings-board"></div>
     </section>
 
     <!-- ====== OCCUPANCY ====== -->
@@ -287,6 +282,23 @@
         <h2>גרף צמיחה</h2>
       </div>
       <div id="growth-graphs" class="growth-graphs"></div>
+    </section>
+
+    <!-- ====== RETENTION (שימור לידים) — last tab ====== -->
+    <section id="screen-retention" class="screen hidden">
+      <div class="screen-head">
+        <h2>שימור לידים</h2>
+      </div>
+
+      <section class="retention-section">
+        <h3>סגורים <span class="count-pill" id="irrelevant-count">0</span></h3>
+        <div id="irrelevant-list" class="irrelevant-list"></div>
+      </section>
+
+      <section class="retention-section">
+        <h3>לידים שהוסרו</h3>
+        <div id="removed-list" class="irrelevant-list"></div>
+      </section>
     </section>
   </div>
 

@@ -334,7 +334,10 @@ function enterApp(mode) {
 }
 
 /* ===== Top tabs ===== */
-const SCREENS = ['dashboard', 'leads', 'retention', 'occupancy', 'discharged-patients', 'billing', 'breakeven', 'growth'];
+/* Tab / screen order. Mirrors the .tabs nav in index.html exactly (each id has a
+ * matching <section id="screen-<id>">). `meetings` is an empty placeholder shell
+ * (see index.html #screen-meetings); `retention` is intentionally last. */
+const SCREENS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'breakeven', 'growth', 'retention'];
 
 function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {

@@ -1,7 +1,7 @@
 /* Regression guards for two frontend fixes:
  *
  *  1. Mobile top-nav tabs: at <=900px the tab bar must wrap onto its own
- *     full-width row (so all 8 tabs are visible) instead of being an
+ *     full-width row (so all 9 tabs are visible) instead of being an
  *     internally-scrollable strip squeezed into the topbar (which showed only
  *     2 tabs at 390px with no scroll cue).
  *  2. Edit-mode label removal: the "מצב עריכה"/"מצב צפייה" indicator is gone,
@@ -42,12 +42,12 @@ test('.tabs is no longer an internally-scrollable strip', () => {
     '.tabs must not scroll horizontally (that hid tabs in RTL)');
 });
 
-test('all 8 screen tabs are still present in the markup', () => {
+test('all 9 screen tabs are still present in the markup', () => {
   const tabs = html.match(/class="tab[ "]/g) || [];
-  // one active + seven inactive = 8 buttons
+  // one active + eight inactive = 9 buttons (meetings tab added after leads)
   const count = (html.match(/data-screen="/g) || []).length;
-  assert.strictEqual(count, 8, 'expected 8 tab buttons');
-  assert.ok(tabs.length >= 8);
+  assert.strictEqual(count, 9, 'expected 9 tab buttons');
+  assert.ok(tabs.length >= 9);
 });
 
 /* ---------- Fix 2: label removed, access control preserved ---------- */
