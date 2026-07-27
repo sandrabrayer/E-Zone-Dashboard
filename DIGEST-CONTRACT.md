@@ -21,19 +21,27 @@ and the contract is locked by
 
 ## Contents
 
-- One row per lead currently in stage **`בטיפול פעיל`** (stable id `paid` — the
-  last kanban column: patients in active treatment who have not yet been
-  admitted into a house).
+- One row per **patient currently in active treatment in a house** — a
+  `Patients`-sheet resident whose status is **`active`** (בטיפול פעיל / פעיל).
+  This is the same population the dashboard's per-house occupancy board shows,
+  so the digest's per-house row counts match the board.
 - The digest is **rebuilt in full** on every rebuild — never incremental. A rows
   set that no longer qualifies simply disappears on the next rebuild.
+
+> **History.** The digest originally sourced from the pre-admission `paid`
+> kanban leads — the column labelled "בטיפול פעיל". That was wrong: that column
+> holds a handful of leads who have paid an advance but are **not yet in a
+> house** (most with no house set), so the feed was near-empty and skewed to a
+> single house. The patients coordinators need — "in active treatment, in every
+> house" — are the admitted residents, which is what the digest now exports.
 
 ## Columns (FROZEN CONTRACT — append-only; never reorder or remove)
 
 | # | Column        | Description                                                        |
 |---|---------------|--------------------------------------------------------------------|
 | 1 | `house`       | Canonical house id: `ramot` \| `raanana` \| `efroni` \| `rehab`.   |
-| 2 | `patientName` | Lead display name.                                                 |
-| 3 | `patientId`   | The lead's stable id (`Leads.id`).                                 |
+| 2 | `patientName` | Patient display name.                                              |
+| 3 | `patientId`   | Stable per-patient key. The `Patients` sheet has **no** persisted id column, so this is derived deterministically from the patient's identifying fields (`houseId` + name + entry date) — the same patient yields the same id across rebuilds. |
 | 4 | `updatedAt`   | ISO 8601 **UTC** timestamp of the rebuild that produced the row.   |
 
 **Append-only rule:** new columns may only be added to the right of column 4.
@@ -48,9 +56,11 @@ above and nothing else.
 
 ## House encoding
 
-House labels are encoded as canonical ids. Only these four houses are exported;
-any house outside them (e.g. `pardes`, `sde`, or an unknown value) is
-**excluded**, not renamed.
+A patient's house comes from the `Patients` sheet `houseId` (a dashboard
+internal id). It is encoded as a canonical id. Only these four houses are
+exported; any house outside them (e.g. `pardes`, `sde`, or an unknown/blank
+value) is **excluded**, not renamed. A Hebrew display name is also accepted so
+mixed/legacy rows still resolve.
 
 | Dashboard internal id | Hebrew display name | Canonical digest id |
 |-----------------------|---------------------|---------------------|
@@ -63,12 +73,18 @@ any house outside them (e.g. `pardes`, `sde`, or an unknown value) is
 
 ## Rebuild cadence
 
-- **On change:** rebuilt (best-effort, fail-soft) at the end of every
-  lead-mutating request — `saveAll` (kanban stage changes ride this),
-  `moveLeadIrrelevant`, `restoreLead`, `removeLead`. A digest failure can never
-  break the primary read/write path.
+- **On change:** rebuilt (best-effort, fail-soft) at the end of every request
+  that can change the active-resident population — `saveAll` (admissions and
+  patient status/house changes ride this), `dischargePatient`, `restorePatient`,
+  `restorePatientToActive`, plus the lead paths (`moveLeadIrrelevant`,
+  `restoreLead`, `removeLead`). A digest failure can never break the primary
+  read/write path.
 - **Backstop:** an hourly time-based trigger (`rebuildActivePatientsDigest`)
   rebuilds the digest even if a mutation path is ever missed.
+- **Diagnostics:** run **`diagnoseActivePatientsDigest`** from the editor to see,
+  read-only, the resident count per status and — among active residents — the
+  per-house kept count plus every dropped row with its exclusion reason (so a
+  missing/unknown house is visible, never silently dropped).
 
 ## One-time setup
 

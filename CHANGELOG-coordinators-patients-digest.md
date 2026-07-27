@@ -6,6 +6,11 @@ spreadsheet. Follows the digest pattern proven with logistics + kitchen: a small
 separate spreadsheet that this app creates and owns as the **sole writer**,
 shared read-only with the coordinators reviewer.
 
+> **Superseded (source fix):** the digest originally read the pre-admission
+> `paid` kanban leads; it now reads the active resident population. See
+> [`CHANGELOG-activepatients-digest-source-fix.md`](CHANGELOG-activepatients-digest-source-fix.md).
+> The sections below describe the original feature.
+
 ## What it does
 
 - Maintains an **`ActivePatients`** tab in a dedicated digest spreadsheet,
