@@ -757,6 +757,18 @@ function managerOptions(managers) {
   return seen;
 }
 
+/* Decide what meetingWith becomes when the house changes in the add-lead modal.
+ * The house's manager auto-fills — but only while the user hasn't manually
+ * touched meetingWith (`dirty`). Returns:
+ *   - null   → leave meetingWith as-is (user override wins);
+ *   - ''     → clear it (houses with no manager: pardes/sde/external);
+ *   - name   → the matching manager.
+ * Pure (roster injectable) so the autofill rule is unit-tested without a DOM. */
+function autofillMeetingWith(newHouse, dirty, managers) {
+  if (dirty) return null;
+  return managerForHouse(newHouse, managers);
+}
+
 /* Build the meetingWith modal field. `preselect` is the resolved default (the
  * house manager, or '' → the blank placeholder). Shared by the add and edit
  * lead modals so the option list and blank-default behaviour stay identical. */
@@ -2183,22 +2195,38 @@ function showToast(msg) {
 
 /* ===== Add Lead modal ===== */
 function openAddLeadModal() {
+  /* Tracks whether the user has manually picked a meetingWith value. Once
+   * dirty, changing the house no longer overwrites their choice (see
+   * autofillMeetingWith). Programmatic `.value =` from the house autofill does
+   * not fire 'change', so it never flips this flag. */
+  let meetingDirty = false;
+
   showModal({
     title: 'ליד חדש',
     fields: [
       { name: 'name', label: 'שם מלא', type: 'text', required: true },
       { name: 'phone', label: 'טלפון', type: 'tel' },
+      /* Changing the house auto-fills נפגש עם with that house's manager, unless
+       * the user already set it. Houses with no manager (pardes/sde/external)
+       * clear it. resolveHouseId maps the Hebrew label options below. */
       { name: 'house', label: 'בית מועדף', type: 'select',
-        options: [{ value: '', label: '— ללא —' }, ...HOUSES.map(h => ({ value: h.name, label: h.name }))] },
+        options: [{ value: '', label: '— ללא —' }, ...HOUSES.map(h => ({ value: h.name, label: h.name }))],
+        onChange: (houseVal, form) => {
+          const next = autofillMeetingWith(houseVal, meetingDirty, state.houseManagers);
+          if (next === null) return;
+          const sel = form.querySelector('[name="meetingWith"]');
+          if (sel) sel.value = next;
+        } },
       { name: 'source', label: 'מקור הפניה', type: 'text' },
       /* assignedTo (משוייך ל) — required. Empty placeholder option fails the
        * !values.assignedTo guard below, matching how `name` is validated. */
       { name: 'assignedTo', label: 'משוייך ל', type: 'select', required: true,
         options: [{ value: '', label: '— בחר —' }, ...ASSIGNEE_OPTIONS.map(a => ({ value: a, label: a }))] },
       /* meetingWith (נפגש עם) — house manager. No house is chosen yet at add
-       * time, so the default resolves to '' (blank); Vered can pick any of the
-       * four. Options come from state.houseManagers — never hardcoded. */
-      meetingWithField(managerForHouse('')),
+       * time, so the default resolves to '' (blank); it auto-fills when a house
+       * is picked. A manual pick sets meetingDirty so the house autofill stops
+       * overwriting it. Options come from state.houseManagers — never hardcoded. */
+      { ...meetingWithField(managerForHouse('')), onChange: () => { meetingDirty = true; } },
       { name: 'note', label: 'הערות', type: 'textarea' },
     ],
     submitLabel: 'הוסף ליד',
@@ -2781,6 +2809,19 @@ function showModal({ title, fields, submitLabel, onSubmit }) {
     </div>
   `;
   root.appendChild(back);
+
+  const formEl = back.querySelector('form');
+
+  /* Opt-in per-field change hook. A field may declare `onChange(value, form)`;
+   * it fires on the field's native 'change' event (user interaction only —
+   * programmatic `.value =` assignments do NOT dispatch 'change', so a handler
+   * updating a sibling field can't loop back on itself). Fields without an
+   * onChange are untouched, so existing modals are unaffected. */
+  fields.forEach(f => {
+    if (typeof f.onChange !== 'function') return;
+    const el = formEl.querySelector(`[name="${f.name}"]`);
+    if (el) el.addEventListener('change', () => f.onChange(el.value, formEl));
+  });
 
   const close = () => back.remove();
   const cancelBtn = back.querySelector('[data-action="cancel"]');
