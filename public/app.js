@@ -88,9 +88,16 @@ const state = {
   patients: [],
   dischargedPatients: [],
   payments: [],
+  /* House-id → manager-name roster returned by getData (HOUSE_MANAGERS in
+   * Code.gs). Populated in loadAll; the meetingWith dropdown and the meetings
+   * board read it instead of hardcoding names. '{}' until the first load. */
+  houseManagers: {},
   mode: null, // 'edit' | 'viewer'
   currentScreen: 'dashboard',
   currentHouseTab: 'arfoni',
+  /* Sunday (bare YYYY-MM-DD) anchoring the visible week on the meetings board.
+   * Defaults to the current week on first render (see renderMeetings). */
+  meetingsWeekStart: '',
   leadSearch: '',
   patientSearch: '',
   billingDate: '',
@@ -422,6 +429,15 @@ async function loadAll() {
     state.leads = rawLeads.map(normalizeLead);
     state.patients = parsePatients(rawPatients);
 
+    /* House-manager roster (HOUSE_MANAGERS, exported by getData_). Keyed by
+     * house id. Missing/invalid on older deploys → empty object, so the
+     * meetingWith dropdown falls back to a blank default with no options and
+     * the meetings board still renders (just no manager names). */
+    state.houseManagers = (data.houseManagers && typeof data.houseManagers === 'object' && !Array.isArray(data.houseManagers))
+      ? data.houseManagers
+      : {};
+    console.log('[E-ZONE] houseManagers loaded:', Object.keys(state.houseManagers).length, 'houses');
+
     const rawIrrelevant = Array.isArray(data.irrelevantLeads) ? data.irrelevantLeads : [];
     state.irrelevantLeads = rawIrrelevant.map(normalizeIrrelevantLead);
     console.log('[E-ZONE] irrelevantLeads loaded:', state.irrelevantLeads.length);
@@ -708,6 +724,50 @@ function resolveHouseId(raw) {
   return s;
 }
 
+/* ===== House-manager resolution (meetingWith) =====
+ * The roster comes from getData (HOUSE_MANAGERS in Code.gs), keyed by house id.
+ * Names are never hardcoded here — callers pass the roster or fall back to
+ * state.houseManagers. Kept pure (roster injectable) so the resolution is
+ * unit-tested without touching state. */
+
+/* Manager name for a lead's house. `house` may be a Hebrew label or an internal
+ * id (resolveHouseId maps both). Returns '' for houses with no manager
+ * (pardes/sde), an unknown/external house, or no house at all — those get a
+ * blank default and the full override list. */
+function managerForHouse(house, managers) {
+  const roster = managers || state.houseManagers || {};
+  const id = resolveHouseId(house);
+  return (id && roster[id]) || '';
+}
+
+/* The distinct manager names offered in the meetingWith dropdown, in a stable
+ * order (HOUSES order first, then any roster entry not tied to a known house).
+ * Vered can pick any of them regardless of the lead's house. */
+function managerOptions(managers) {
+  const roster = managers || state.houseManagers || {};
+  const seen = [];
+  HOUSES.forEach(h => {
+    const m = roster[h.id];
+    if (m && seen.indexOf(m) === -1) seen.push(m);
+  });
+  Object.keys(roster).forEach(k => {
+    const m = roster[k];
+    if (m && seen.indexOf(m) === -1) seen.push(m);
+  });
+  return seen;
+}
+
+/* Build the meetingWith modal field. `preselect` is the resolved default (the
+ * house manager, or '' → the blank placeholder). Shared by the add and edit
+ * lead modals so the option list and blank-default behaviour stay identical. */
+function meetingWithField(preselect) {
+  return {
+    name: 'meetingWith', label: 'נפגש עם', type: 'select',
+    value: preselect || '',
+    options: [{ value: '', label: '— ללא —' }, ...managerOptions().map(m => ({ value: m, label: m }))],
+  };
+}
+
 /* Pick the first non-empty value from a list of keys. Accepts Hebrew or
  * English column names so the app works against sheets populated by any
  * route (original form, manual entry, or this app itself). */
@@ -866,9 +926,131 @@ function findDuplicateLeadByPhone(normalizedPhone) {
 }
 
 /* ===== Render router ===== */
+/* ====================================================
+   MEETINGS BOARD (לוח פגישות) — weekly, list grouped by day
+   ==================================================== */
+/* Hebrew weekday names, indexed by getDay() (0 = Sunday). The board is
+ * Sunday-anchored, so day index i (0..6) from the week start maps directly. */
+const HEBREW_DAYS = [
+  'יום ראשון', 'יום שני', 'יום שלישי', 'יום רביעי', 'יום חמישי', 'יום שישי', 'יום שבת',
+];
+
+/* Pure bucketing for the meetings board. Given the lead list and any date in
+ * the target week, returns the week's meetings grouped by day.
+ *
+ *   - A "meeting" is any lead with a non-empty visitDate that falls within the
+ *     Sunday–Saturday week containing weekAnchorISO (inclusive both ends).
+ *   - Days are returned in Sun→Sat order; empty days are omitted.
+ *   - Within a day, timed meetings sort by visitTime ascending (HH:MM sorts
+ *     lexicographically == chronologically), name as tiebreak; leads with a
+ *     date but NO time are collected separately (noTime) so the renderer can
+ *     place them last under a "ללא שעה" grouping.
+ *
+ * Pure (no DOM / no state): weekStartSunday/addDaysISO/isoDate/isoTime do all
+ * the date normalization, so bucketing is unit-tested directly. */
+function meetingsForWeek(leads, weekAnchorISO) {
+  const start = weekStartSunday(weekAnchorISO);
+  const end = start ? addDaysISO(start, 6) : '';
+  const byIso = {};
+  if (start) {
+    (leads || []).forEach(l => {
+      const v = isoDate(l && l.visitDate);
+      if (!v) return;
+      if (v < start || v > end) return;          // bare YYYY-MM-DD sorts chronologically
+      const h = houseByName(l.house) || houseById(resolveHouseId(l.house));
+      const meeting = {
+        id: l.id || '',
+        time: isoTime(l.visitTime || ''),
+        name: l.name || '',
+        house: l.house || '',
+        houseLabel: h ? h.name : (l.house || ''),
+        meetingWith: l.meetingWith || '',
+      };
+      (byIso[v] || (byIso[v] = [])).push(meeting);
+    });
+  }
+
+  const byName = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const iso = addDaysISO(start, i);
+    const list = byIso[iso] || [];
+    if (!list.length) continue;
+    const timed = list.filter(m => m.time)
+      .sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : byName(a, b)));
+    const noTime = list.filter(m => !m.time).sort(byName);
+    days.push({ iso: iso, dow: i, timed: timed, noTime: noTime });
+  }
+  const total = days.reduce((n, d) => n + d.timed.length + d.noTime.length, 0);
+  return { weekStart: start, weekEnd: end, days: days, total: total };
+}
+
+/* Render one meeting row (RTL). Missing fields render as an em dash so columns
+ * stay aligned. */
+function meetingRowHTML(m, timeText) {
+  return `
+    <div class="mtg-row">
+      <span class="mtg-time">${escapeHtml(timeText || m.time || '—')}</span>
+      <span class="mtg-name">${escapeHtml(m.name || '—')}</span>
+      <span class="mtg-house">${escapeHtml(m.houseLabel || '—')}</span>
+      <span class="mtg-with">${escapeHtml(m.meetingWith || '—')}</span>
+    </div>`;
+}
+
+function renderMeetings() {
+  const board = document.getElementById('meetings-board');
+  if (!board) return;
+
+  if (!state.meetingsWeekStart) state.meetingsWeekStart = weekStartSunday(todayISO());
+  const wk = meetingsForWeek(state.leads, state.meetingsWeekStart);
+
+  const rangeLabel = `${formatDateDDMMYYYY(wk.weekStart)} – ${formatDateDDMMYYYY(wk.weekEnd)}`;
+
+  let body;
+  if (wk.total === 0) {
+    body = `<div class="mtg-empty">אין פגישות מתוזמנות לשבוע זה</div>`;
+  } else {
+    body = wk.days.map(d => {
+      const rows = d.timed.map(m => meetingRowHTML(m)).join('');
+      const noTimeBlock = d.noTime.length
+        ? `<div class="mtg-notime-head">ללא שעה</div>` +
+          d.noTime.map(m => meetingRowHTML(m, '—')).join('')
+        : '';
+      return `
+        <section class="mtg-day">
+          <h3 class="mtg-day-head">${escapeHtml(HEBREW_DAYS[d.dow])} · ${escapeHtml(formatDateDDMMYYYY(d.iso))}</h3>
+          <div class="mtg-rows">${rows}${noTimeBlock}</div>
+        </section>`;
+    }).join('');
+  }
+
+  board.innerHTML = `
+    <div class="mtg-nav">
+      <button type="button" class="btn" data-mtg="prev">← שבוע קודם</button>
+      <button type="button" class="btn" data-mtg="today">השבוע</button>
+      <button type="button" class="btn" data-mtg="next">שבוע הבא →</button>
+      <span class="mtg-range">${escapeHtml(rangeLabel)}</span>
+    </div>
+    <div class="mtg-list">${body}</div>`;
+
+  board.querySelector('[data-mtg="prev"]').onclick = () => {
+    state.meetingsWeekStart = addDaysISO(state.meetingsWeekStart, -7);
+    renderMeetings();
+  };
+  board.querySelector('[data-mtg="next"]').onclick = () => {
+    state.meetingsWeekStart = addDaysISO(state.meetingsWeekStart, 7);
+    renderMeetings();
+  };
+  board.querySelector('[data-mtg="today"]').onclick = () => {
+    state.meetingsWeekStart = weekStartSunday(todayISO());
+    renderMeetings();
+  };
+}
+
 function renderAll() {
   renderDashboard();
   renderKanban();
+  renderMeetings();
   renderIrrelevantLeads();
   renderRemovedLeads();
   renderHouseTabs();
@@ -2013,6 +2195,10 @@ function openAddLeadModal() {
        * !values.assignedTo guard below, matching how `name` is validated. */
       { name: 'assignedTo', label: 'משוייך ל', type: 'select', required: true,
         options: [{ value: '', label: '— בחר —' }, ...ASSIGNEE_OPTIONS.map(a => ({ value: a, label: a }))] },
+      /* meetingWith (נפגש עם) — house manager. No house is chosen yet at add
+       * time, so the default resolves to '' (blank); Vered can pick any of the
+       * four. Options come from state.houseManagers — never hardcoded. */
+      meetingWithField(managerForHouse('')),
       { name: 'note', label: 'הערות', type: 'textarea' },
     ],
     submitLabel: 'הוסף ליד',
@@ -2080,19 +2266,23 @@ function openEditLeadModal(lead) {
       { name: 'created',   label: 'נוצר',          type: 'date', value: isoDate(lead.created || '') },
       { name: 'visitDate', label: 'תאריך ביקור', type: 'date', value: lead.visitDate || '' },
       { name: 'visitTime', label: 'שעת ביקור',   type: 'time', value: lead.visitTime || '' },
+      /* meetingWith (נפגש עם) — keep an existing choice, otherwise default to
+       * the manager of the lead's house. '' for pardes/sde/external. */
+      meetingWithField(lead.meetingWith || managerForHouse(lead.house)),
       { name: 'note',  label: 'הערות',       type: 'textarea', value: lead.note || '' },
     ],
     submitLabel: 'שמור שינויים',
     onSubmit: async v => {
       if (!v.name) { showError('יש להזין שם'); return false; }
       const prev = { ...lead };
-      lead.name      = v.name.trim();
-      lead.phone     = v.phone || '';
-      lead.house     = v.house || '';
-      lead.created   = v.created || '';
-      lead.visitDate = v.visitDate || '';
-      lead.visitTime = v.visitTime || '';
-      lead.note      = (v.note || '').trim();
+      lead.name        = v.name.trim();
+      lead.phone       = v.phone || '';
+      lead.house       = v.house || '';
+      lead.created     = v.created || '';
+      lead.visitDate   = v.visitDate || '';
+      lead.visitTime   = v.visitTime || '';
+      lead.meetingWith = v.meetingWith || '';
+      lead.note        = (v.note || '').trim();
       renderAll();
       try {
         await saveAll();
