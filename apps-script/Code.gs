@@ -193,9 +193,14 @@ function handle_(params) {
       const leads    = parseJsonParam_(params.leads);
       const patients = parseJsonParam_(params.patients);
       const res = saveAll_(leads, patients);
-      // A kanban stage change (incl. into/out of בטיפול פעיל) rides saveAll, so
-      // refresh the coordinators digest after leads settle. Fail-soft.
-      if (Array.isArray(leads) && leads.length > 0) refreshDigestBestEffort_();
+      // The digest is the active-resident population, which an admission or a
+      // patient status/house change (both ride saveAll's patients payload)
+      // mutates; lead edits can too. Refresh when either bucket is present.
+      // Fail-soft.
+      if ((Array.isArray(leads) && leads.length > 0) ||
+          (patients && typeof patients === 'object' && Object.keys(patients).length > 0)) {
+        refreshDigestBestEffort_();
+      }
       return jsonOut_(res);
     }
     if (action === 'getPayments') return jsonOut_(getPayments_());
@@ -219,13 +224,21 @@ function handle_(params) {
       return jsonOut_(res);
     }
     if (action === 'dischargePatient') {
-      return jsonOut_(dischargePatient_(parseJsonParam_(params.patient)));
+      const res = dischargePatient_(parseJsonParam_(params.patient));
+      // A discharge drops a resident out of the active population. Fail-soft.
+      refreshDigestBestEffort_();
+      return jsonOut_(res);
     }
     if (action === 'restorePatient') {
-      return jsonOut_(restorePatient_(parseJsonParam_(params.patient)));
+      const res = restorePatient_(parseJsonParam_(params.patient));
+      refreshDigestBestEffort_();
+      return jsonOut_(res);
     }
     if (action === 'restorePatientToActive') {
-      return jsonOut_(restorePatientToActive_(parseJsonParam_(params.patient)));
+      const res = restorePatientToActive_(parseJsonParam_(params.patient));
+      // Restoring a patient to active adds them back to the digest. Fail-soft.
+      refreshDigestBestEffort_();
+      return jsonOut_(res);
     }
     if (action === 'managersOverview') {
       return jsonOut_(managersOverview_(params.month));
@@ -1315,15 +1328,27 @@ function managersHouse_(houseKey, monthParam) {
  * spreadsheet. This mirrors the digest pattern proven with logistics + kitchen.
  *
  * WHAT IT CONTAINS
- *   One row per lead currently in stage "בטיפול פעיל" (stable id `paid` — the
- *   last kanban column, i.e. patients in active treatment who have not yet been
- *   admitted into a house). Rebuilt in full on every rebuild; never incremental.
+ *   One row per patient currently in active treatment in a house — i.e. a
+ *   Patients-sheet resident whose status is `active` (פעיל). This is the same
+ *   population the dashboard's per-house occupancy board shows, so the digest's
+ *   per-house row counts match the board. Rebuilt in full on every rebuild;
+ *   never incremental.
+ *
+ *   NOTE — this used to source from pre-admission `paid` kanban leads ("בטיפול
+ *   פעיל" is the label on that column). That was wrong: the paid column holds a
+ *   handful of leads who have paid an advance but are NOT yet in a house, most
+ *   with no house set, so the feed was near-empty and skewed to one house. The
+ *   patients coordinators need — "in active treatment, in every house" — are the
+ *   admitted residents, which is what this now exports.
  *
  * FROZEN COLUMN CONTRACT (append-only — never reorder or remove; see
  * DIGEST-CONTRACT.md at the repo root, which is the authoritative copy):
  *   house       — canonical house id: ramot | raanana | efroni | rehab
- *   patientName — lead display name
- *   patientId   — the lead's stable id (Leads.id)
+ *   patientName — patient display name
+ *   patientId   — stable per-patient key. The Patients sheet has no persisted id
+ *                 column, so this is derived deterministically from the patient's
+ *                 identifying fields (houseId + name + entry date); the same
+ *                 patient yields the same id across rebuilds.
  *   updatedAt   — ISO 8601 UTC timestamp of the rebuild that produced the row
  *
  * HARD RULE: the digest carries NO financial fields — no billing, debt, rates,
@@ -1335,11 +1360,12 @@ function managersHouse_(houseKey, monthParam) {
  * house ids (and their Hebrew display names) map to canonical ids below; houses
  * outside the four (pardes, sde, anything unknown) are excluded, not renamed.
  *
- * WRITE TRIGGERS: rebuilt best-effort at the end of every lead-mutating request
- * (see refreshDigestBestEffort_ wired into handle_) so a stage change is
- * reflected promptly, plus an hourly time-based trigger as a backstop in case a
- * mutation path is ever missed. The in-request rebuild is fail-soft: a digest
- * error can never break the primary read/write path.
+ * WRITE TRIGGERS: rebuilt best-effort at the end of every lead/patient-mutating
+ * request (see refreshDigestBestEffort_ wired into handle_) so an admission,
+ * discharge, or status change is reflected promptly, plus an hourly time-based
+ * trigger as a backstop in case a mutation path is ever missed. The in-request
+ * rebuild is fail-soft: a digest error can never break the primary read/write
+ * path.
  */
 const DIGEST_TAB                = 'ActivePatients';
 const DIGEST_COLUMNS            = ['house', 'patientName', 'patientId', 'updatedAt'];
@@ -1360,8 +1386,9 @@ const DIGEST_INTERNAL_TO_CANONICAL = {
   rehab:  'rehab',
 };
 
-/* Hebrew display name (as stored on a lead's `house` field) → internal id.
- * Mirrors HOUSES in public/app.js. */
+/* Hebrew display name (as it may appear in a `houseId`/`house` field) → internal
+ * id. Mirrors HOUSES in public/app.js. Patients store the internal id directly,
+ * but a name is accepted too so mixed/legacy rows still resolve. */
 const DIGEST_HOUSE_NAME_TO_INTERNAL = {
   'קיסריה עפרוני': 'arfoni',
   'קיסריה ריהאב':  'rehab',
@@ -1371,26 +1398,25 @@ const DIGEST_HOUSE_NAME_TO_INTERNAL = {
   'שדה אליעזר':     'sde',
 };
 
-/* Stage tokens that mean "בטיפול פעיל" (stable id `paid`). Mirrors the `paid`
- * entries in STAGE_ALIASES in public/app.js so a lead stored under either the
- * id or any legacy Hebrew label is recognized. */
-const DIGEST_ACTIVE_STAGE_ALIASES = {
-  'paid':          true,
-  'בטיפול פעיל':   true,
-  'מקדמה שולמה':   true,
-  'מקדמה':         true,
-  'שילם מקדמה':    true,
+/* Status tokens that mean "in active treatment" (בטיפול פעיל / פעיל). Mirrors
+ * the `active` entries in STATUS_ALIASES in public/app.js so a patient stored
+ * under either the id or the Hebrew label is recognized. A resident counts as
+ * active-treatment when their status is `active`; released residents (and the
+ * trial/wait pre-active states) are not exported. */
+const DIGEST_ACTIVE_STATUS_ALIASES = {
+  'active': true,
+  'פעיל':   true,
 };
 
-function digestStageIsActive_(rawStage) {
-  if (rawStage === undefined || rawStage === null) return false;
-  const s = String(rawStage).trim();
+function digestStatusIsActive_(rawStatus) {
+  if (rawStatus === undefined || rawStatus === null) return false;
+  const s = String(rawStatus).trim();
   if (!s) return false;
-  if (DIGEST_ACTIVE_STAGE_ALIASES[s]) return true;
-  return DIGEST_ACTIVE_STAGE_ALIASES[s.toLowerCase()] === true;
+  if (DIGEST_ACTIVE_STATUS_ALIASES[s]) return true;
+  return DIGEST_ACTIVE_STATUS_ALIASES[s.toLowerCase()] === true;
 }
 
-/* Resolve a lead's stored house (internal id, Hebrew display name, or an
+/* Resolve a patient's stored house (internal id, Hebrew display name, or an
  * already-canonical id) to a canonical digest house id, or '' when the house is
  * outside the four exported houses. */
 function canonicalDigestHouse_(rawHouse) {
@@ -1404,25 +1430,40 @@ function canonicalDigestHouse_(rawHouse) {
   return '';                                                // pardes / sde / unknown → excluded
 }
 
-/* PURE projection: leads → digest rows. Each row is built from exactly the four
- * contract columns, so no financial or other Leads field can leak. `nowIso` is
+/* Deterministic stable id for an active patient. The Patients sheet has no
+ * persisted id column (see PATIENT_COLUMNS), so we derive one from the fields
+ * that identify a resident — canonical house, name, and entry date. The same
+ * patient produces the same id on every rebuild, which is all a read-only feed
+ * needs for a stable key. Prefixed so it is visibly a derived key, not a
+ * Leads.id. */
+function digestPatientKey_(canonHouse, name, patient) {
+  const date = String(
+    (patient && (patient.date !== undefined && patient.date !== null ? patient.date : '')) || ''
+  ).trim();
+  return 'ap:' + canonHouse + ':' + name + ':' + date;
+}
+
+/* PURE projection: active-treatment patients → digest rows. Each row is built
+ * from exactly the four contract columns, so no financial field (pay, adv, …)
+ * can leak. A patient is exported when their status is active (בטיפול פעיל /
+ * פעיל) and their house maps to one of the four canonical houses. `nowIso` is
  * the rebuild timestamp stamped onto every row's updatedAt (passed in so the
  * function stays deterministic and testable). */
-function buildActivePatientsRows_(leads, nowIso) {
+function buildActivePatientsRows_(patients, nowIso) {
   const out = [];
-  if (!Array.isArray(leads)) return out;
-  for (let i = 0; i < leads.length; i++) {
-    const lead = leads[i];
-    if (!lead) continue;
-    if (!digestStageIsActive_(lead.stage)) continue;
-    const house = canonicalDigestHouse_(lead.house);
+  if (!Array.isArray(patients)) return out;
+  for (let i = 0; i < patients.length; i++) {
+    const p = patients[i];
+    if (!p) continue;
+    if (!digestStatusIsActive_(p.status)) continue;
+    const house = canonicalDigestHouse_(p.houseId);
     if (!house) continue; // outside the four canonical houses
-    const name = String(lead.name === undefined || lead.name === null ? '' : lead.name).trim();
+    const name = String(p.name === undefined || p.name === null ? '' : p.name).trim();
     if (!name) continue;  // a digest row must name a patient
     out.push({
       house:       house,
       patientName: name,
-      patientId:   (lead.id === undefined || lead.id === null) ? '' : String(lead.id),
+      patientId:   digestPatientKey_(house, name, p),
       updatedAt:   nowIso,
     });
   }
@@ -1464,17 +1505,70 @@ function writeDigestRows_(ssId, rows) {
   }
 }
 
-/* Rebuild the whole digest from the current Leads sheet. Returns a small status
- * object; no-ops with a clear error if setup hasn't run yet. */
+/* Rebuild the whole digest from the current Patients sheet (active residents).
+ * Returns a small status object; no-ops with a clear error if setup hasn't run
+ * yet. */
 function rebuildActivePatientsDigest_() {
   const ssId = getDigestSpreadsheetId_();
   if (!ssId) return { ok: false, error: 'digest_not_configured' };
-  const leadsSh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
-  const leads   = readSheet_(leadsSh, LEAD_COLUMNS);
-  const nowIso  = new Date().toISOString();
-  const rows    = buildActivePatientsRows_(leads, nowIso);
+  const patientsSh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+  const patients   = readSheet_(patientsSh, PATIENT_COLUMNS);
+  const nowIso     = new Date().toISOString();
+  const rows       = buildActivePatientsRows_(patients, nowIso);
   writeDigestRows_(ssId, rows);
   return { ok: true, count: rows.length, updatedAt: nowIso };
+}
+
+/* DIAGNOSTIC — run manually from the editor (or read its return value) to see
+ * exactly why the digest contains what it does. Reports, from the live Patients
+ * sheet: the count of residents per status, and among active-treatment
+ * residents the per-canonical-house kept count plus every dropped row with the
+ * reason it was excluded (unknown/absent house, or a house outside the four
+ * canonical ones). This is what makes the previously-silent exclusions visible.
+ * Read-only: it never writes the digest. */
+function diagnoseActivePatientsDigest() {
+  const patientsSh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+  const patients   = readSheet_(patientsSh, PATIENT_COLUMNS);
+
+  const byStatus = {};
+  const keptByHouse = {};
+  const dropped = [];
+  let activeCount = 0;
+
+  for (let i = 0; i < patients.length; i++) {
+    const p = patients[i];
+    if (!p) continue;
+    const status = String(p.status === undefined || p.status === null ? '' : p.status).trim() || '(blank)';
+    byStatus[status] = (byStatus[status] || 0) + 1;
+    if (!digestStatusIsActive_(p.status)) continue;
+    activeCount++;
+    const name  = String(p.name === undefined || p.name === null ? '' : p.name).trim();
+    const house = canonicalDigestHouse_(p.houseId);
+    if (!house) {
+      dropped.push({ name: name, houseId: p.houseId, reason: 'house_not_canonical_or_missing' });
+      continue;
+    }
+    if (!name) {
+      dropped.push({ name: name, houseId: p.houseId, reason: 'missing_name' });
+      continue;
+    }
+    keptByHouse[house] = (keptByHouse[house] || 0) + 1;
+  }
+
+  const keptTotal = Object.keys(keptByHouse).reduce(function (s, k) { return s + keptByHouse[k]; }, 0);
+  const report = {
+    ok: true,
+    source: PATIENTS_SHEET,
+    totalPatients: patients.length,
+    byStatus: byStatus,
+    activeResidents: activeCount,
+    keptByHouse: keptByHouse,
+    keptTotal: keptTotal,
+    droppedCount: dropped.length,
+    dropped: dropped,
+  };
+  Logger.log('[digest] diagnostics: ' + JSON.stringify(report, null, 2));
+  return report;
 }
 
 /* Public entry point for the time-based trigger (triggers call by name). */
