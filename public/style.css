@@ -261,12 +261,62 @@ input:focus, select:focus, textarea:focus {
  * row stays above the fold on a 1366×768 laptop. */
 .cards-row .card { padding: 16px; }
 
-/* Meetings board (לוח פגישות) — empty placeholder shell only. A dashed
- * container marks where the future board will render; no data yet. */
-.meetings-board {
-  min-height: 220px;
+/* Meetings board (לוח פגישות) — weekly, read-only list grouped by day.
+ * RTL throughout (inherits the page dir); rows are a 4-column grid:
+ * time · name · house · meetingWith. */
+.meetings-board { min-height: 220px; }
+
+.mtg-nav {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.mtg-range { color: var(--text-muted); font-weight: 600; margin-inline-start: auto; }
+
+.mtg-empty {
   border: 1px dashed var(--border);
   border-radius: var(--radius-lg);
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.mtg-list { display: flex; flex-direction: column; gap: 18px; }
+
+.mtg-day {
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.mtg-day-head {
+  margin: 0;
+  padding: 10px 16px;
+  font-size: 14px;
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--border);
+}
+.mtg-rows { display: flex; flex-direction: column; }
+
+.mtg-row {
+  display: grid;
+  grid-template-columns: 68px 1.4fr 1fr 1fr;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 16px;
+  font-size: 13.5px;
+}
+.mtg-row + .mtg-row { border-top: 1px solid var(--border); }
+.mtg-time { font-variant-numeric: tabular-nums; font-weight: 600; }
+.mtg-name { font-weight: 600; }
+.mtg-house, .mtg-with { color: var(--text-muted); }
+
+.mtg-notime-head {
+  padding: 8px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border-top: 1px solid var(--border);
 }
 .card {
   background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
