@@ -174,7 +174,11 @@ function handle_(params) {
     if (action === 'saveAll') {
       const leads    = parseJsonParam_(params.leads);
       const patients = parseJsonParam_(params.patients);
-      return jsonOut_(saveAll_(leads, patients));
+      const res = saveAll_(leads, patients);
+      // A kanban stage change (incl. into/out of בטיפול פעיל) rides saveAll, so
+      // refresh the coordinators digest after leads settle. Fail-soft.
+      if (Array.isArray(leads) && leads.length > 0) refreshDigestBestEffort_();
+      return jsonOut_(res);
     }
     if (action === 'getPayments') return jsonOut_(getPayments_());
     if (action === 'savePayment' || action === 'updatePayment') {
@@ -182,13 +186,19 @@ function handle_(params) {
       return jsonOut_(upsertPayment_(payment));
     }
     if (action === 'moveLeadIrrelevant') {
-      return jsonOut_(moveLeadIrrelevant_(parseJsonParam_(params.lead)));
+      const res = moveLeadIrrelevant_(parseJsonParam_(params.lead));
+      refreshDigestBestEffort_();
+      return jsonOut_(res);
     }
     if (action === 'restoreLead') {
-      return jsonOut_(restoreLead_(parseJsonParam_(params.lead)));
+      const res = restoreLead_(parseJsonParam_(params.lead));
+      refreshDigestBestEffort_();
+      return jsonOut_(res);
     }
     if (action === 'removeLead') {
-      return jsonOut_(removeLead_(parseJsonParam_(params.lead)));
+      const res = removeLead_(parseJsonParam_(params.lead));
+      refreshDigestBestEffort_();
+      return jsonOut_(res);
     }
     if (action === 'dischargePatient') {
       return jsonOut_(dischargePatient_(parseJsonParam_(params.patient)));
@@ -1275,5 +1285,269 @@ function managersHouse_(houseKey, monthParam) {
     dailyChart: stats.dailyChart,
     activity: stats.activity,
     bonus: bonus,
+  };
+}
+
+/* ===== Coordinators digest: ActivePatients feed (read-only export) =====
+ *
+ * A separate, small spreadsheet that THIS app creates and owns (sole writer)
+ * so downstream apps (coordinators) can read the currently-active patient
+ * population without touching — or being coupled to — the main dashboard
+ * spreadsheet. This mirrors the digest pattern proven with logistics + kitchen.
+ *
+ * WHAT IT CONTAINS
+ *   One row per lead currently in stage "בטיפול פעיל" (stable id `paid` — the
+ *   last kanban column, i.e. patients in active treatment who have not yet been
+ *   admitted into a house). Rebuilt in full on every rebuild; never incremental.
+ *
+ * FROZEN COLUMN CONTRACT (append-only — never reorder or remove; see
+ * DIGEST-CONTRACT.md at the repo root, which is the authoritative copy):
+ *   house       — canonical house id: ramot | raanana | efroni | rehab
+ *   patientName — lead display name
+ *   patientId   — the lead's stable id (Leads.id)
+ *   updatedAt   — ISO 8601 UTC timestamp of the rebuild that produced the row
+ *
+ * HARD RULE: the digest carries NO financial fields — no billing, debt, rates,
+ * advance, or payment data. The projection below builds each row from exactly
+ * the four columns above and nothing else; the test locks this no-leak contract
+ * against the shipped function.
+ *
+ * HOUSES: only the four canonical houses are exported. The dashboard's internal
+ * house ids (and their Hebrew display names) map to canonical ids below; houses
+ * outside the four (pardes, sde, anything unknown) are excluded, not renamed.
+ *
+ * WRITE TRIGGERS: rebuilt best-effort at the end of every lead-mutating request
+ * (see refreshDigestBestEffort_ wired into handle_) so a stage change is
+ * reflected promptly, plus an hourly time-based trigger as a backstop in case a
+ * mutation path is ever missed. The in-request rebuild is fail-soft: a digest
+ * error can never break the primary read/write path.
+ */
+const DIGEST_TAB                = 'ActivePatients';
+const DIGEST_COLUMNS            = ['house', 'patientName', 'patientId', 'updatedAt'];
+const DIGEST_SPREADSHEET_ID_PROP = 'DIGEST_SPREADSHEET_ID';
+const DIGEST_SPREADSHEET_NAME    = 'E-Zone Dashboard — ActivePatients digest';
+const DIGEST_VIEWER_EMAIL        = 'brayersandra@gmail.com';
+const DIGEST_REBUILD_HANDLER     = 'rebuildActivePatientsDigest';
+
+/* Canonical house set the digest is allowed to emit. */
+const DIGEST_CANONICAL_HOUSES = { ramot: true, raanana: true, efroni: true, rehab: true };
+
+/* Dashboard internal house id → canonical digest house id. pardes and sde are
+ * intentionally ABSENT so they resolve to '' and are excluded from the feed. */
+const DIGEST_INTERNAL_TO_CANONICAL = {
+  asher:  'raanana',
+  ramot:  'ramot',
+  arfoni: 'efroni',
+  rehab:  'rehab',
+};
+
+/* Hebrew display name (as stored on a lead's `house` field) → internal id.
+ * Mirrors HOUSES in public/app.js. */
+const DIGEST_HOUSE_NAME_TO_INTERNAL = {
+  'קיסריה עפרוני': 'arfoni',
+  'קיסריה ריהאב':  'rehab',
+  'רעננה אשר':      'asher',
+  'רעננה הפרדס':    'pardes',
+  'רמות השבים':     'ramot',
+  'שדה אליעזר':     'sde',
+};
+
+/* Stage tokens that mean "בטיפול פעיל" (stable id `paid`). Mirrors the `paid`
+ * entries in STAGE_ALIASES in public/app.js so a lead stored under either the
+ * id or any legacy Hebrew label is recognized. */
+const DIGEST_ACTIVE_STAGE_ALIASES = {
+  'paid':          true,
+  'בטיפול פעיל':   true,
+  'מקדמה שולמה':   true,
+  'מקדמה':         true,
+  'שילם מקדמה':    true,
+};
+
+function digestStageIsActive_(rawStage) {
+  if (rawStage === undefined || rawStage === null) return false;
+  const s = String(rawStage).trim();
+  if (!s) return false;
+  if (DIGEST_ACTIVE_STAGE_ALIASES[s]) return true;
+  return DIGEST_ACTIVE_STAGE_ALIASES[s.toLowerCase()] === true;
+}
+
+/* Resolve a lead's stored house (internal id, Hebrew display name, or an
+ * already-canonical id) to a canonical digest house id, or '' when the house is
+ * outside the four exported houses. */
+function canonicalDigestHouse_(rawHouse) {
+  if (rawHouse === undefined || rawHouse === null) return '';
+  const s = String(rawHouse).trim();
+  if (!s) return '';
+  if (DIGEST_CANONICAL_HOUSES[s]) return s;                 // already canonical
+  if (DIGEST_INTERNAL_TO_CANONICAL[s]) return DIGEST_INTERNAL_TO_CANONICAL[s]; // internal id
+  const internal = DIGEST_HOUSE_NAME_TO_INTERNAL[s];        // Hebrew display name
+  if (internal) return DIGEST_INTERNAL_TO_CANONICAL[internal] || '';
+  return '';                                                // pardes / sde / unknown → excluded
+}
+
+/* PURE projection: leads → digest rows. Each row is built from exactly the four
+ * contract columns, so no financial or other Leads field can leak. `nowIso` is
+ * the rebuild timestamp stamped onto every row's updatedAt (passed in so the
+ * function stays deterministic and testable). */
+function buildActivePatientsRows_(leads, nowIso) {
+  const out = [];
+  if (!Array.isArray(leads)) return out;
+  for (let i = 0; i < leads.length; i++) {
+    const lead = leads[i];
+    if (!lead) continue;
+    if (!digestStageIsActive_(lead.stage)) continue;
+    const house = canonicalDigestHouse_(lead.house);
+    if (!house) continue; // outside the four canonical houses
+    const name = String(lead.name === undefined || lead.name === null ? '' : lead.name).trim();
+    if (!name) continue;  // a digest row must name a patient
+    out.push({
+      house:       house,
+      patientName: name,
+      patientId:   (lead.id === undefined || lead.id === null) ? '' : String(lead.id),
+      updatedAt:   nowIso,
+    });
+  }
+  return out;
+}
+
+function getDigestSpreadsheetId_() {
+  return PropertiesService.getScriptProperties().getProperty(DIGEST_SPREADSHEET_ID_PROP) || '';
+}
+
+/* Get (creating if absent) the ActivePatients tab in the digest spreadsheet,
+ * with the frozen header row set to the column contract. */
+function ensureDigestTab_(ss) {
+  let sh = ss.getSheetByName(DIGEST_TAB);
+  if (!sh) sh = ss.insertSheet(DIGEST_TAB);
+  sh.getRange(1, 1, 1, DIGEST_COLUMNS.length).setValues([DIGEST_COLUMNS]);
+  sh.setFrozenRows(1);
+  return sh;
+}
+
+/* Whole-tab replace: clear the body and write the current row set. Locked so a
+ * request-driven rebuild and the hourly trigger can't interleave writes. */
+function writeDigestRows_(ssId, rows) {
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const ss = SpreadsheetApp.openById(ssId);
+    const sh = ensureDigestTab_(ss);
+    const lastRow = sh.getLastRow();
+    if (lastRow > 1) {
+      sh.getRange(2, 1, lastRow - 1, DIGEST_COLUMNS.length).clearContent();
+    }
+    if (rows.length > 0) {
+      const values = rows.map(function (r) { return objectToRow_(r, DIGEST_COLUMNS); });
+      sh.getRange(2, 1, values.length, DIGEST_COLUMNS.length).setValues(values);
+    }
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* Rebuild the whole digest from the current Leads sheet. Returns a small status
+ * object; no-ops with a clear error if setup hasn't run yet. */
+function rebuildActivePatientsDigest_() {
+  const ssId = getDigestSpreadsheetId_();
+  if (!ssId) return { ok: false, error: 'digest_not_configured' };
+  const leadsSh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+  const leads   = readSheet_(leadsSh, LEAD_COLUMNS);
+  const nowIso  = new Date().toISOString();
+  const rows    = buildActivePatientsRows_(leads, nowIso);
+  writeDigestRows_(ssId, rows);
+  return { ok: true, count: rows.length, updatedAt: nowIso };
+}
+
+/* Public entry point for the time-based trigger (triggers call by name). */
+function rebuildActivePatientsDigest() {
+  return rebuildActivePatientsDigest_();
+}
+
+/* Best-effort rebuild invoked from the request path after a lead mutation. A
+ * failure here (e.g. deployment not yet re-authorized for the wider scopes, or
+ * setup not yet run) must NEVER surface to the caller or abort the write. */
+function refreshDigestBestEffort_() {
+  try {
+    if (!getDigestSpreadsheetId_()) return; // setup hasn't run — nothing to update
+    rebuildActivePatientsDigest_();
+  } catch (err) {
+    try { console.warn('[digest] rebuild skipped: ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
+  }
+}
+
+/* Share the digest spreadsheet read-only with the coordinators reviewer. */
+function shareDigestReadOnly_(ssId) {
+  try {
+    DriveApp.getFileById(ssId).addViewer(DIGEST_VIEWER_EMAIL);
+  } catch (err) {
+    try { console.warn('[digest] share failed: ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
+  }
+}
+
+/* Install the hourly backstop trigger once (idempotent). */
+function installDigestTrigger_() {
+  const existing = ScriptApp.getProjectTriggers();
+  for (let i = 0; i < existing.length; i++) {
+    if (existing[i].getHandlerFunction() === DIGEST_REBUILD_HANDLER) return; // already installed
+  }
+  ScriptApp.newTrigger(DIGEST_REBUILD_HANDLER).timeBased().everyHours(1).create();
+}
+
+/**
+ * ONE-TIME SETUP — run this manually from the Apps Script editor once.
+ *
+ * Creates the digest spreadsheet (or reuses the one already recorded in the
+ * DIGEST_SPREADSHEET_ID script property), creates the ActivePatients tab with
+ * the frozen column contract, shares it read-only with the coordinators
+ * reviewer, installs the hourly backstop trigger, does an initial rebuild, and
+ * prints the spreadsheet id + URL to the execution log.
+ *
+ * Idempotent: safe to run more than once. The printed id is the value to record
+ * (it is also persisted in the script property, so the request path and trigger
+ * find it automatically).
+ */
+function setupActivePatientsDigest() {
+  const props = PropertiesService.getScriptProperties();
+  let ssId = props.getProperty(DIGEST_SPREADSHEET_ID_PROP);
+  let ss;
+
+  if (ssId) {
+    ss = SpreadsheetApp.openById(ssId); // reuse the app-owned spreadsheet
+  } else {
+    ss = SpreadsheetApp.create(DIGEST_SPREADSHEET_NAME);
+    ssId = ss.getId();
+    props.setProperty(DIGEST_SPREADSHEET_ID_PROP, ssId);
+  }
+
+  ensureDigestTab_(ss);
+
+  // A freshly created spreadsheet ships with a default "Sheet1"; remove it so
+  // the digest spreadsheet holds only the ActivePatients tab.
+  const sheets = ss.getSheets();
+  for (let i = 0; i < sheets.length; i++) {
+    const name = sheets[i].getName();
+    if (name !== DIGEST_TAB && sheets.length > 1) {
+      try { ss.deleteSheet(sheets[i]); } catch (_) { /* keep going */ }
+    }
+  }
+
+  shareDigestReadOnly_(ssId);
+  installDigestTrigger_();
+  const result = rebuildActivePatientsDigest_();
+
+  Logger.log('ActivePatients digest spreadsheet id: ' + ssId);
+  Logger.log('URL: ' + ss.getUrl());
+  Logger.log('Tab: ' + DIGEST_TAB);
+  Logger.log('Columns: ' + DIGEST_COLUMNS.join(', '));
+  Logger.log('Initial rebuild: ' + JSON.stringify(result));
+
+  return {
+    ok: true,
+    spreadsheetId: ssId,
+    url: ss.getUrl(),
+    tab: DIGEST_TAB,
+    columns: DIGEST_COLUMNS,
+    sharedWith: DIGEST_VIEWER_EMAIL,
+    rebuild: result,
   };
 }
