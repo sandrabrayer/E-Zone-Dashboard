@@ -191,7 +191,7 @@ input:focus, select:focus, textarea:focus {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   padding: 0 28px;
-  height: 64px;
+  height: 54px;
   border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 50;
 }
@@ -214,7 +214,7 @@ input:focus, select:focus, textarea:focus {
 .tabs { display: flex; gap: 2px; }
 .tabs .tab {
   background: transparent; border: none;
-  padding: 22px 22px;
+  padding: 14px 20px;
   font-size: 15px; color: var(--text-muted);
   border-bottom: 3px solid transparent;
   font-weight: 500;
@@ -228,9 +228,11 @@ input:focus, select:focus, textarea:focus {
 }
 .user-mode { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--text-muted); }
 
-.screen { padding: 28px; max-width: 1440px; margin: 0 auto; }
+/* Top padding tightened so the first KPI card row clears the fold on a
+ * 1366×768 laptop; sides/bottom unchanged. */
+.screen { padding: 16px 28px 28px; max-width: 1440px; margin: 0 auto; }
 .screen h2 {
-  margin: 0 0 22px;
+  margin: 0 0 14px;
   font-size: 26px; font-weight: 700;
   letter-spacing: -0.5px;
 }
@@ -253,7 +255,18 @@ input:focus, select:focus, textarea:focus {
 .cards-row {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 18px;
+  gap: 14px;
+}
+/* KPI stat cards run a tighter vertical box than content cards so the first
+ * row stays above the fold on a 1366×768 laptop. */
+.cards-row .card { padding: 16px; }
+
+/* Meetings board (לוח פגישות) — empty placeholder shell only. A dashed
+ * container marks where the future board will render; no data yet. */
+.meetings-board {
+  min-height: 220px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
 }
 .card {
   background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
