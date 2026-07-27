@@ -84,6 +84,17 @@ const MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID = {
   rehab:   'rehab',
 };
 
+/* House managers keyed by patients-sheet house id. Names only — no phone
+ * numbers. Exported by getData_ so the frontend can look up who runs each
+ * house without a second round-trip. Exactly these four houses; keep in sync
+ * with the patients-house ids above if the roster changes. */
+const HOUSE_MANAGERS = {
+  arfoni: 'חנן',
+  rehab:  'רנטה',
+  asher:  'עידו',
+  ramot:  'אורן',
+};
+
 /* Continuity-therapy rates (₪/patient/month). The keys must match the
  * therapy_type values in the Outpatients sheet exactly. */
 const CONTINUITY_RATES = {
@@ -106,7 +117,14 @@ const LEAD_COLUMNS = [
    * UI; appended LAST so the column lands before the metadata fields that
    * IRRELEVANT_LEAD_COLUMNS / REMOVED_LEAD_COLUMNS concat on. Pre-existing rows
    * have no value and stay blank (objectToRow_ defaults missing keys to ''). */
-  'assignedTo'
+  'assignedTo',
+  /* meetingWith — who the lead is meeting with (the house manager). APPEND
+   * ONLY: readSheet_ maps cells to keys by POSITION, so this must stay last and
+   * nothing above it may be reordered or inserted mid-array. Pre-existing rows
+   * have no such column and stay blank (objectToRow_ defaults missing keys to
+   * '', and normalizeLead reads it via pickField defaulting to ''). No backfill,
+   * mirroring the assignedTo append. */
+  'meetingWith'
 ];
 
 /* Irrelevant-leads sheet mirrors LEAD_COLUMNS plus two metadata fields:
@@ -365,6 +383,7 @@ function getData_() {
     irrelevantLeads: irrelevantLeads,
     removedLeads: removedLeads,
     dischargedPatients: dischargedPatients,
+    houseManagers: HOUSE_MANAGERS,
   };
 }
 

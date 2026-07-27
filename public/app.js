@@ -737,6 +737,11 @@ function normalizeLead(l) {
      * stay blank with no backfill, mirroring the originSheet/movedAt
      * pass-through idiom. */
     assignedTo: pickField(l, ['assignedTo', 'assigned_to', 'משוייך ל', 'משויך ל']),
+    /* meetingWith — the house manager the lead is meeting with. Schema-only
+     * pass-through: no UI, no dropdown, nothing rendered. pickField returns ''
+     * when absent so pre-existing leads (no such column) stay blank with no
+     * backfill, mirroring the assignedTo idiom. */
+    meetingWith: pickField(l, ['meetingWith', 'meeting_with', 'נפגש עם']),
     /* Stored as YYYY-MM-DD. Sheets sometimes returns a Date object for date
      * cells (depending on locale + column type); isoDate normalizes both
      * Date objects and full ISO timestamps down to a plain date string so
