@@ -790,6 +790,52 @@ function meetingWithSelectHTML(lead, managers) {
   return `<select class="lc-meeting-with" data-field="meetingWith" title="נפגש עם">${optsHtml}</select>`;
 }
 
+/* Visit-stage leads whose meetingWith is empty but whose house resolves to a
+ * manager — the set the card renders a correct default for but never persisted
+ * (the select only saves on user change). Pure so the selection is unit-tested.
+ * A lead with a value, a blank-resolving house (pardes/sde/external), or a
+ * non-visit stage is excluded. */
+function leadsNeedingMeetingWithDefault(leads, roster) {
+  const map = roster || {};
+  return (leads || []).filter(l =>
+    l && l.stage === 'visit' && !l.meetingWith && managerForHouse(l.house, map)
+  );
+}
+
+/* Backfill the house-default meetingWith for the leads above and persist it, so
+ * the meetings board shows the manager instead of '—'. Applies the default to
+ * EVERY qualifying lead in one pass and persists with a SINGLE saveAll (the same
+ * persistence updateLead relies on) — so N cards rendering at once is one save,
+ * not a storm. Guards:
+ *   - edit mode only (saveAll no-ops for viewers; they never write);
+ *   - `_autosaveMeetingWithBusy` blocks re-entry — renderAll calls this, and the
+ *     failure-rollback re-render path could otherwise loop;
+ *   - idempotent — once a lead's meetingWith is set it no longer qualifies, so a
+ *     successful save never re-triggers and a later re-render doesn't re-save;
+ *   - on save failure, roll the in-memory assignments back to '' (no phantom
+ *     values, nothing persisted) and refresh only the board — never renderKanban
+ *     / renderAll, which would re-enter. Returns the save promise so callers
+ *     (and tests) can await; renderAll fires it and forgets. */
+let _autosaveMeetingWithBusy = false;
+function autosaveMeetingWithDefaults() {
+  if (_autosaveMeetingWithBusy) return Promise.resolve();
+  if (state.mode !== 'edit') return Promise.resolve();
+  const pending = leadsNeedingMeetingWithDefault(state.leads, state.houseManagers);
+  if (!pending.length) return Promise.resolve();
+
+  _autosaveMeetingWithBusy = true;
+  const applied = pending.map(l => ({ lead: l, prev: l.meetingWith }));
+  applied.forEach(({ lead }) => { lead.meetingWith = managerForHouse(lead.house, state.houseManagers); });
+  renderMeetings();                                  // board: '—' → manager name, immediately
+
+  return saveAll()
+    .catch(() => {
+      applied.forEach(({ lead, prev }) => { lead.meetingWith = prev || ''; });
+      renderMeetings();                              // revert the board; no kanban re-render
+    })
+    .finally(() => { _autosaveMeetingWithBusy = false; });
+}
+
 /* Decide what meetingWith becomes when the house changes in the add-lead modal.
  * The house's manager auto-fills — but only while the user hasn't manually
  * touched meetingWith (`dirty`). Returns:
@@ -1142,6 +1188,10 @@ function renderAll() {
   renderBilling();
   renderBreakeven();
   renderGrowthGraph();
+  /* Backfill + persist any visit-stage lead whose meetingWith default was only
+   * rendered, never saved. Fire-and-forget: one batched saveAll, re-entry- and
+   * idempotency-guarded so it never loops or storms. */
+  autosaveMeetingWithDefaults();
 }
 
 /* ====================================================
