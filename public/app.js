@@ -769,6 +769,27 @@ function managerOptions(managers) {
   return seen;
 }
 
+/* Inline meetingWith <select> for a lead card. Carries data-field="meetingWith"
+ * so buildLeadCard's generic [data-field] handler persists it through the same
+ * single-field save path (updateLead → saveAll) the visitDate/visitTime inputs
+ * use. Options come from the roster (state.houseManagers by default) — no
+ * hardcoded names. The pre-selected default is the lead's existing meetingWith,
+ * or — when empty — the manager of the lead's house (or blank for
+ * pardes/sde/external). Rendering it selected does NOT save; the value only
+ * persists when the user changes the select (onchange), matching the other
+ * inline fields. Roster injectable so the render is unit-tested without state. */
+function meetingWithSelectHTML(lead, managers) {
+  const roster = managers || state.houseManagers || {};
+  const selected = (lead && lead.meetingWith) || managerForHouse(lead && lead.house, roster);
+  const opts = [{ value: '', label: '— ללא —' }].concat(
+    managerOptions(roster).map(m => ({ value: m, label: m }))
+  );
+  const optsHtml = opts.map(o =>
+    `<option value="${escapeHtml(o.value)}" ${o.value === selected ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
+  ).join('');
+  return `<select class="lc-meeting-with" data-field="meetingWith" title="נפגש עם">${optsHtml}</select>`;
+}
+
 /* Decide what meetingWith becomes when the house changes in the add-lead modal.
  * The house's manager auto-fills — but only while the user hasn't manually
  * touched meetingWith (`dirty`). Returns:
@@ -1386,6 +1407,7 @@ function buildLeadCard(lead) {
       <div class="lc-fields edit-only">
         <input type="date" data-field="visitDate" value="${lead.visitDate || ''}" />
         <input type="time" data-field="visitTime" value="${lead.visitTime || ''}" />
+        ${meetingWithSelectHTML(lead)}
       </div>`;
   } else if (lead.stage === 'paid') {
     stageFields = `
