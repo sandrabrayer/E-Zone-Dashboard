@@ -95,6 +95,34 @@ const HOUSE_MANAGERS = {
   ramot:  'אורן',
 };
 
+/* Manager WhatsApp phone numbers, keyed by manager NAME (not house). meetingWith
+ * stores the name and Vered can override it to any manager, so the lookup must be
+ * by name. Values are E.164 without the '+' (wa.me format). These constants are
+ * the fallback; the live values are read from Script Properties (key
+ * MANAGER_PHONE_<name>, e.g. MANAGER_PHONE_חנן) so a number can be corrected
+ * without a code deploy. Exported by getData_ as managerPhones. */
+const MANAGER_PHONES = {
+  'חנן':  '972527046671',
+  'רנטה': '972526765261',
+  'עידו': '972524669814',
+  'אורן': '972507580152',
+};
+
+/* Resolve the manager→phone map, letting a Script Property override each default.
+ * For every known manager name, a property named 'MANAGER_PHONE_<name>' (if set
+ * and non-empty) replaces the constant; otherwise the constant is used. Never
+ * throws if PropertiesService is unavailable — falls back to the constants. */
+function managerPhones_() {
+  const out = {};
+  var props = null;
+  try { props = PropertiesService.getScriptProperties(); } catch (_) { props = null; }
+  Object.keys(MANAGER_PHONES).forEach(function (name) {
+    var override = props ? props.getProperty('MANAGER_PHONE_' + name) : null;
+    out[name] = (override && String(override).trim()) || MANAGER_PHONES[name];
+  });
+  return out;
+}
+
 /* Continuity-therapy rates (₪/patient/month). The keys must match the
  * therapy_type values in the Outpatients sheet exactly. */
 const CONTINUITY_RATES = {
@@ -397,6 +425,7 @@ function getData_() {
     removedLeads: removedLeads,
     dischargedPatients: dischargedPatients,
     houseManagers: HOUSE_MANAGERS,
+    managerPhones: managerPhones_(),
   };
 }
 
