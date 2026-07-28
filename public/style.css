@@ -299,7 +299,7 @@ input:focus, select:focus, textarea:focus {
 
 .mtg-row {
   display: grid;
-  grid-template-columns: 68px 1.4fr 1fr 1fr;
+  grid-template-columns: 68px 1.4fr 1fr 1fr auto;
   gap: 12px;
   align-items: center;
   padding: 10px 16px;
@@ -309,6 +309,32 @@ input:focus, select:focus, textarea:focus {
 .mtg-time { font-variant-numeric: tabular-nums; font-weight: 600; }
 .mtg-name { font-weight: 600; }
 .mtg-house, .mtg-with { color: var(--text-muted); }
+
+/* WhatsApp cell — a link when a phone resolves, a disabled button otherwise.
+ * Same box either way so the column stays aligned. */
+.mtg-wa {
+  display: inline-block;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+  text-align: center;
+  white-space: nowrap;
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  border: 1px solid #1f9d55;
+  background: #25d366;
+  color: #0b3d1e;
+  cursor: pointer;
+}
+.mtg-wa:hover { filter: brightness(1.05); }
+.mtg-wa[disabled] {
+  background: var(--surface-3);
+  border-color: var(--border);
+  color: var(--text-muted);
+  opacity: .55;
+  cursor: not-allowed;
+}
 
 .mtg-notime-head {
   padding: 8px 16px;

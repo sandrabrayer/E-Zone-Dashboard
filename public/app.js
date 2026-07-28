@@ -92,6 +92,10 @@ const state = {
    * Code.gs). Populated in loadAll; the meetingWith dropdown and the meetings
    * board read it instead of hardcoding names. '{}' until the first load. */
   houseManagers: {},
+  /* Manager-name → WhatsApp phone map returned by getData (MANAGER_PHONES in
+   * Code.gs). Keyed by NAME because meetingWith stores the name. Drives the
+   * meetings-board WhatsApp button; '{}' until the first load (button disabled). */
+  managerPhones: {},
   mode: null, // 'edit' | 'viewer'
   currentScreen: 'dashboard',
   currentHouseTab: 'arfoni',
@@ -438,6 +442,14 @@ async function loadAll() {
       : {};
     console.log('[E-ZONE] houseManagers loaded:', Object.keys(state.houseManagers).length, 'houses');
 
+    /* Manager-name → WhatsApp phone map (MANAGER_PHONES, exported by getData_).
+     * Missing/invalid on older deploys → empty object, so the WhatsApp button
+     * renders disabled (no phone resolves). */
+    state.managerPhones = (data.managerPhones && typeof data.managerPhones === 'object' && !Array.isArray(data.managerPhones))
+      ? data.managerPhones
+      : {};
+    console.log('[E-ZONE] managerPhones loaded:', Object.keys(state.managerPhones).length, 'managers');
+
     const rawIrrelevant = Array.isArray(data.irrelevantLeads) ? data.irrelevantLeads : [];
     state.irrelevantLeads = rawIrrelevant.map(normalizeIrrelevantLead);
     console.log('[E-ZONE] irrelevantLeads loaded:', state.irrelevantLeads.length);
@@ -769,6 +781,36 @@ function autofillMeetingWith(newHouse, dirty, managers) {
   return managerForHouse(newHouse, managers);
 }
 
+/* ===== Meetings-board WhatsApp link =====
+ * meetingWith stores the manager NAME, so the phone lookup is by name. The map
+ * comes from getData (MANAGER_PHONES in Code.gs); callers pass it or fall back
+ * to state.managerPhones. Pure (map injectable) so URL/message building is
+ * unit-tested without state or a DOM. */
+
+/* wa.me phone digits for a manager NAME. '' when the name is empty or unknown
+ * (no entry in the map) — which disables the button. */
+function phoneForManager(name, phones) {
+  const map = phones || state.managerPhones || {};
+  return (name && map[name]) || '';
+}
+
+/* Hebrew WhatsApp message for a meeting. The " בשעה <שעה>" clause is dropped
+ * entirely when the meeting has no time (m.time === ''). Date via
+ * formatDateDDMMYYYY, time is already isoTime-normalized in meetingsForWeek. */
+function meetingWhatsappMessage(m) {
+  const base = `נקבעה פגישה: ${m.name || ''}, ${m.houseLabel || ''}, ${formatDateDDMMYYYY(m.date || '')}`;
+  return m.time ? `${base} בשעה ${m.time}` : base;
+}
+
+/* wa.me URL for a meeting, or '' when the button must render disabled: no
+ * meetingWith (incl. blank-house leads), or no phone resolves for that name —
+ * so we never link to nobody. */
+function meetingWhatsappUrl(m, phones) {
+  const phone = phoneForManager(m.meetingWith, phones);
+  if (!m.meetingWith || !phone) return '';
+  return `https://wa.me/${phone}?text=${encodeURIComponent(meetingWhatsappMessage(m))}`;
+}
+
 /* Build the meetingWith modal field. `preselect` is the resolved default (the
  * house manager, or '' → the blank placeholder). Shared by the add and edit
  * lead modals so the option list and blank-default behaviour stay identical. */
@@ -972,6 +1014,7 @@ function meetingsForWeek(leads, weekAnchorISO) {
       const h = houseByName(l.house) || houseById(resolveHouseId(l.house));
       const meeting = {
         id: l.id || '',
+        date: v,                                  // bucket key: local bare YYYY-MM-DD
         time: isoTime(l.visitTime || ''),
         name: l.name || '',
         house: l.house || '',
@@ -998,14 +1041,21 @@ function meetingsForWeek(leads, weekAnchorISO) {
 }
 
 /* Render one meeting row (RTL). Missing fields render as an em dash so columns
- * stay aligned. */
+ * stay aligned. The WhatsApp cell is a real link when meetingWith resolves to a
+ * phone, otherwise a disabled button (never a link to nobody). Read-only —
+ * clicking opens WhatsApp in a new tab and never writes. */
 function meetingRowHTML(m, timeText) {
+  const url = meetingWhatsappUrl(m);
+  const wa = url
+    ? `<a class="mtg-wa" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">WhatsApp</a>`
+    : `<button type="button" class="mtg-wa" disabled title="אין מספר להצגה">WhatsApp</button>`;
   return `
     <div class="mtg-row">
       <span class="mtg-time">${escapeHtml(timeText || m.time || '—')}</span>
       <span class="mtg-name">${escapeHtml(m.name || '—')}</span>
       <span class="mtg-house">${escapeHtml(m.houseLabel || '—')}</span>
       <span class="mtg-with">${escapeHtml(m.meetingWith || '—')}</span>
+      ${wa}
     </div>`;
 }
 
