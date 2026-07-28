@@ -139,13 +139,16 @@ test('shouldCache is NETWORK-ONLY (false) for any /api/ request', () => {
   assert.strictEqual(sw.shouldCache('https://app.test/api/debug/env'), false);
 });
 
-test('shouldCache is CACHE-FIRST (true) for versioned static assets', () => {
-  assert.strictEqual(sw.shouldCache('https://app.test/app.js'), true);
-  assert.strictEqual(sw.shouldCache('https://app.test/app.js?v=1751900000-abc123'), true);
-  assert.strictEqual(sw.shouldCache('https://app.test/style.css'), true);
+test('shouldCache is CACHE-FIRST (true) only for versioned-by-filename assets', () => {
+  // Icons + manifest stay cache-first (evicted by CACHE_VERSION).
   assert.strictEqual(sw.shouldCache('https://app.test/manifest.json'), true);
   assert.strictEqual(sw.shouldCache('https://app.test/icons/icon-192.png'), true);
   assert.strictEqual(sw.shouldCache('https://app.test/icons/icon-maskable-512.png'), true);
+  // app.js / style.css are now NETWORK-FIRST (not cache-first), so the ?v=
+  // cache-bust is honored and a new deploy is never pinned to a stale bundle.
+  assert.strictEqual(sw.shouldCache('https://app.test/app.js'), false);
+  assert.strictEqual(sw.shouldCache('https://app.test/app.js?v=1751900000-abc123'), false);
+  assert.strictEqual(sw.shouldCache('https://app.test/style.css'), false);
 });
 
 test('shouldCache is NOT cache-first for the shell (network-first handled separately)', () => {
