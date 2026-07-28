@@ -878,6 +878,26 @@ function meetingWhatsappUrl(m, phones) {
   return `https://wa.me/${phone}?text=${encodeURIComponent(meetingWhatsappMessage(m))}`;
 }
 
+/* Open a wa.me link so it also works OUTSIDE a normal browser tab. In an
+ * installed standalone PWA a plain <a target="_blank"> to an external origin is
+ * silently dropped, so the row's click handler calls this instead: try
+ * window.open in a new tab first, and when it returns null (blocked, or a
+ * standalone window with nowhere to put a tab) fall back to a same-window
+ * navigation. The <a href> stays in the markup for hover-preview and
+ * right-click-copy — this only supplements the click. `opener`/`setHref` are
+ * injected so the fallback rule is unit-tested without a real window.
+ * Returns 'window' when a new context opened, 'href' when it fell back. */
+function openWhatsAppLink(url, opener, setHref) {
+  const open = opener || ((typeof window !== 'undefined' && window.open)
+    ? window.open.bind(window) : function () { return null; });
+  const w = open(url, '_blank', 'noopener');
+  if (!w) {
+    (setHref || function (u) { location.href = u; })(url);
+    return 'href';
+  }
+  return 'window';
+}
+
 /* Build the meetingWith modal field. `preselect` is the resolved default (the
  * house manager, or '' → the blank placeholder). Shared by the add and edit
  * lead modals so the option list and blank-default behaviour stay identical. */
@@ -1174,6 +1194,19 @@ function renderMeetings() {
     state.meetingsWeekStart = weekStartSunday(todayISO());
     renderMeetings();
   };
+
+  /* Supplement each WhatsApp link's click so it works in a standalone PWA
+   * (where <a target="_blank"> to an external origin is silently dropped). The
+   * anchor stays for hover-preview / right-click-copy; here we take over the
+   * click and route through openWhatsAppLink (window.open → location fallback). */
+  board.querySelectorAll('a.mtg-wa').forEach(a => {
+    a.addEventListener('click', e => {
+      const url = a.getAttribute('href');
+      if (!url) return;
+      e.preventDefault();
+      openWhatsAppLink(url);
+    });
+  });
 }
 
 function renderAll() {
