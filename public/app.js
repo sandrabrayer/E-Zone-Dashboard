@@ -1159,15 +1159,18 @@ function renderMeetings() {
   if (wk.total === 0) {
     body = `<div class="mtg-empty">אין פגישות מתוזמנות לשבוע זה</div>`;
   } else {
+    const today = todayISO();
     body = wk.days.map(d => {
+      const isToday = d.iso === today;
       const rows = d.timed.map(m => meetingRowHTML(m)).join('');
       const noTimeBlock = d.noTime.length
         ? `<div class="mtg-notime-head">ללא שעה</div>` +
           d.noTime.map(m => meetingRowHTML(m, '—')).join('')
         : '';
+      const todayBadge = isToday ? `<span class="mtg-today-badge">היום</span>` : '';
       return `
-        <section class="mtg-day">
-          <h3 class="mtg-day-head">${escapeHtml(HEBREW_DAYS[d.dow])} · ${escapeHtml(formatDateDDMMYYYY(d.iso))}</h3>
+        <section class="mtg-day${isToday ? ' mtg-today' : ''}">
+          <h3 class="mtg-day-head">${escapeHtml(HEBREW_DAYS[d.dow])} · ${escapeHtml(formatDateDDMMYYYY(d.iso))}${todayBadge}</h3>
           <div class="mtg-rows">${rows}${noTimeBlock}</div>
         </section>`;
     }).join('');
@@ -1489,7 +1492,7 @@ function buildLeadCard(lead) {
     stageFields = `
       <div class="lc-fields edit-only">
         <input type="date" data-field="visitDate" value="${lead.visitDate || ''}" />
-        <input type="time" data-field="visitTime" value="${lead.visitTime || ''}" />
+        <input type="time" step="900" data-field="visitTime" value="${lead.visitTime || ''}" />
         ${meetingWithSelectHTML(lead)}
       </div>`;
   } else if (lead.stage === 'paid') {
@@ -2448,7 +2451,7 @@ function openEditLeadModal(lead) {
         options: [{ value: '', label: '— ללא —' }, ...HOUSES.map(h => ({ value: h.name, label: h.name }))] },
       { name: 'created',   label: 'נוצר',          type: 'date', value: isoDate(lead.created || '') },
       { name: 'visitDate', label: 'תאריך ביקור', type: 'date', value: lead.visitDate || '' },
-      { name: 'visitTime', label: 'שעת ביקור',   type: 'time', value: lead.visitTime || '' },
+      { name: 'visitTime', label: 'שעת ביקור',   type: 'time', step: 900, value: lead.visitTime || '' },
       /* meetingWith (נפגש עם) — keep an existing choice, otherwise default to
        * the manager of the lead's house. '' for pardes/sde/external. */
       meetingWithField(lead.meetingWith || managerForHouse(lead.house)),
@@ -2947,7 +2950,7 @@ function showModal({ title, fields, submitLabel, onSubmit }) {
     return `
       <div class="form-row">
         <label>${f.label}${f.required ? ' *' : ''}</label>
-        <input name="${f.name}" type="${f.type}" value="${escapeHtml(val)}" />
+        <input name="${f.name}" type="${f.type}"${f.step ? ` step="${escapeHtml(f.step)}"` : ''} value="${escapeHtml(val)}" />
       </div>`;
   }).join('');
 
