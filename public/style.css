@@ -631,6 +631,8 @@ input:focus, select:focus, textarea:focus {
   display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
 }
 .lead-card .lc-fields input { font-size: 12.5px; padding: 5px 8px; flex: 1; min-width: 80px; }
+/* Inline visitTime select — same box as the date input so they share the row. */
+.lead-card .lc-fields .lc-visit-time { font-size: 12.5px; padding: 5px 8px; flex: 1; min-width: 80px; }
 /* Inline נפגש עם select — matches the date/time inputs' box so the row stays
  * even. Takes the full width on its own line (flex-basis 100%) so the manager
  * name isn't cramped next to the date + time fields. */
