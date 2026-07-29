@@ -110,15 +110,19 @@ test('a meeting with no time drops the " בשעה <שעה>" clause', () => {
   assert.strictEqual(decodeURIComponent(url.split('?text=')[1]), msg);
 });
 
-/* ===== Epoch-artifact visitTime renders as HH:MM ===== */
-test('epoch-artifact visitTime (1899-12-30T07:18:20.000Z) renders as 07:18', () => {
-  assert.strictEqual(app.isoTime('1899-12-30T07:18:20.000Z'), '07:18');
+/* ===== A normalized visitTime flows through to the message ===== */
+test('a server-normalized visitTime (HH:MM) buckets and renders correctly', () => {
+  // The Sheets epoch artifact (1899-12-30T…Z) is now normalized to 'HH:MM'
+  // SERVER-SIDE by asISOTime_ in the spreadsheet timezone (see
+  // visittime-corruption-fix.test.js) before it reaches the client, so the
+  // client receives a clean 'HH:MM'. isoTime's fast path passes it through.
+  assert.strictEqual(app.isoTime('07:18'), '07:18');
 
-  // End-to-end through meetingsForWeek: a lead whose visitTime is the Sheets
-  // epoch artifact buckets with time '07:18', and the message reads בשעה 07:18.
+  // End-to-end through meetingsForWeek: the timed meeting buckets at '07:18' and
+  // the message reads בשעה 07:18.
   const wk = app.meetingsForWeek([{
     id: 'e', name: 'ליד', house: 'רמות השבים', meetingWith: 'אורן',
-    visitDate: '2026-07-27', visitTime: '1899-12-30T07:18:20.000Z',
+    visitDate: '2026-07-27', visitTime: '07:18',
   }], '2026-07-27');
   const m = wk.days[0].timed[0];
   assert.strictEqual(m.time, '07:18');
