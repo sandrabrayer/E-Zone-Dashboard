@@ -729,15 +729,22 @@ function upsertRowById_(sh, columns, obj) {
   sh.getRange(target, 1, 1, columns.length).setValues([row]);
 }
 
-/* ONE-TIME MANUAL REPAIR — run from the Apps Script editor only. NOT wired to any
- * endpoint (handle_/doGet/doPost never call it).
+/* ONE-TIME MANUAL REPAIR — run from the Apps Script editor.
+ *
+ * Intentionally PUBLIC (no trailing underscore): Apps Script hides underscore-
+ * suffixed functions from the editor's Run dropdown, so a private name could
+ * never be executed by hand — which is this function's entire purpose. Being
+ * public does NOT expose it over HTTP: the web app only serves doGet/doPost, and
+ * handle_ dispatches on a fixed allow-list of `action` string literals (ending in
+ * 'unknown_action') that never names this function — so no request can reach it.
+ * It is also not attached to any trigger.
  *
  * The legacy visitTime values were corrupted by repeated timezone round-trips and
  * are unrecoverable, so this BLANKS every existing visitTime and leaves the reader
  * to re-enter them by hand. visitDate is left intact. It also (re)forces the two
  * columns to plain text so subsequent writes stay clean. Logs how many rows were
  * blanked. Returns that count. Idempotent (a second run blanks 0). */
-function repairLeadVisitTimes_() {
+function repairLeadVisitTimes() {
   const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
   // getOrCreateSheet_ already text-formats visitDate/visitTime, but do it here
   // too so the repair is self-contained if the ensure step ever changes.
@@ -746,7 +753,7 @@ function repairLeadVisitTimes_() {
   const vTimeIdx = LEAD_COLUMNS.indexOf('visitTime');
   const lastRow = sh.getLastRow();
   if (vTimeIdx < 0 || lastRow < 2) {
-    Logger.log('repairLeadVisitTimes_: nothing to blank (data rows=' + Math.max(0, lastRow - 1) + ').');
+    Logger.log('repairLeadVisitTimes: nothing to blank (data rows=' + Math.max(0, lastRow - 1) + ').');
     return 0;
   }
 
@@ -758,7 +765,7 @@ function repairLeadVisitTimes_() {
     return [''];
   });
   rng.setValues(cleared);
-  Logger.log('repairLeadVisitTimes_: blanked ' + blanked + ' visitTime value(s); visitDate left intact.');
+  Logger.log('repairLeadVisitTimes: blanked ' + blanked + ' visitTime value(s); visitDate left intact.');
   return blanked;
 }
 

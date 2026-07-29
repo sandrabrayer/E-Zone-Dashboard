@@ -22,7 +22,9 @@ created via `asISODate_`, visitTime via `asISOTime_`) and `setLeadDateColsText_`
 next row explicitly (not `appendRow`) so the format is applied before the value
 lands. Safe on any `columns` list — absent names are skipped.
 
-## 3. `apps-script/Code.gs` — one-time manual repair `repairLeadVisitTimes_`
+## 3. `apps-script/Code.gs` — one-time manual repair `repairLeadVisitTimes`
+> Note: originally named `repairLeadVisitTimes_`; renamed to `repairLeadVisitTimes`
+> (no trailing underscore) in a follow-up so it appears in the editor Run dropdown.
 Runnable **from the Apps Script editor only** — it is **not** wired to any
 endpoint (`handle_`/`doGet`/`doPost` never call it). The legacy `visitTime` values
 were corrupted beyond recovery by repeated tz round-trips, so it **blanks every
@@ -49,7 +51,7 @@ The mobile native time picker ignores `step`, so `visitTime` is now a `<select>`
 - An off-step value (`08:18`) is added as an extra option, sorted between
   `08:15` and `08:30`, renders selected, and round-trips through the lead card
   and the edit modal.
-- `repairLeadVisitTimes_` blanks `visitTime`, leaves `visitDate` untouched, and
+- `repairLeadVisitTimes` blanks `visitTime`, leaves `visitDate` untouched, and
   logs/returns the count.
 - `upsertRowById_` normalizes date/time cells and text-formats them **before**
   `setValues` (order asserted), and `getOrCreateSheet_` text-formats the whole
@@ -60,5 +62,5 @@ updated to the new `<select>` contract.
 
 ## Deploy note
 Parts 1–3 are in `apps-script/Code.gs` (deployed separately). After the Apps
-Script redeploy, run `repairLeadVisitTimes_` **once** from the editor to blank the
+Script redeploy, run `repairLeadVisitTimes` **once** from the editor to blank the
 corrupted times; from then on the text columns keep new writes clean.
