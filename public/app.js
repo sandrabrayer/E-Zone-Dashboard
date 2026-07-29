@@ -790,6 +790,41 @@ function meetingWithSelectHTML(lead, managers) {
   return `<select class="lc-meeting-with" data-field="meetingWith" title="נפגש עם">${optsHtml}</select>`;
 }
 
+/* ===== visitTime quarter-hour select =====
+ * The native <input type="time"> shows 1-minute increments on mobile (the OS
+ * picker ignores step="900"), so visitTime is a <select> of quarter-hours. */
+const QUARTER_HOUR_TIMES = (() => {
+  const out = [];
+  for (let h = 0; h < 24; h++) {
+    for (const m of [0, 15, 30, 45]) {
+      out.push(String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0'));
+    }
+  }
+  return out;
+})();
+
+/* Option list for a visitTime select: a blank placeholder plus every quarter
+ * hour (00:00…23:45). A non-empty, non-quarter stored value (e.g. a legacy
+ * '08:18') is added as an extra option, sorted into place, so it still displays
+ * and round-trips instead of being silently dropped. Pure — unit-tested. */
+function visitTimeOptions(value) {
+  const v = value || '';
+  const times = QUARTER_HOUR_TIMES.slice();
+  if (v && times.indexOf(v) === -1) { times.push(v); times.sort(); }  // HH:MM sorts chronologically
+  return [{ value: '', label: '— בחר —' }].concat(times.map(t => ({ value: t, label: t })));
+}
+
+/* Inline visitTime <select> for the lead card. Carries data-field="visitTime" so
+ * buildLeadCard's generic [data-field] handler persists it through the same
+ * single-field save path the other inline fields use — no wiring change. */
+function visitTimeSelectHTML(value) {
+  const v = value || '';
+  const optsHtml = visitTimeOptions(v).map(o =>
+    `<option value="${escapeHtml(o.value)}" ${o.value === v ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
+  ).join('');
+  return `<select class="lc-visit-time" data-field="visitTime" title="שעת ביקור">${optsHtml}</select>`;
+}
+
 /* Visit-stage leads whose meetingWith is empty but whose house resolves to a
  * manager — the set the card renders a correct default for but never persisted
  * (the select only saves on user change). Pure so the selection is unit-tested.
@@ -1504,7 +1539,7 @@ function buildLeadCard(lead) {
     stageFields = `
       <div class="lc-fields edit-only">
         <input type="date" data-field="visitDate" value="${lead.visitDate || ''}" />
-        <input type="time" step="900" data-field="visitTime" value="${lead.visitTime || ''}" />
+        ${visitTimeSelectHTML(lead.visitTime)}
         ${meetingWithSelectHTML(lead)}
       </div>`;
   } else if (lead.stage === 'paid') {
@@ -2463,7 +2498,10 @@ function openEditLeadModal(lead) {
         options: [{ value: '', label: '— ללא —' }, ...HOUSES.map(h => ({ value: h.name, label: h.name }))] },
       { name: 'created',   label: 'נוצר',          type: 'date', value: isoDate(lead.created || '') },
       { name: 'visitDate', label: 'תאריך ביקור', type: 'date', value: lead.visitDate || '' },
-      { name: 'visitTime', label: 'שעת ביקור',   type: 'time', step: 900, value: lead.visitTime || '' },
+      /* Quarter-hour <select> (native time picker ignores step on mobile). An
+       * off-step legacy value is preserved as an extra option (visitTimeOptions). */
+      { name: 'visitTime', label: 'שעת ביקור',   type: 'select', value: lead.visitTime || '',
+        options: visitTimeOptions(lead.visitTime) },
       /* meetingWith (נפגש עם) — keep an existing choice, otherwise default to
        * the manager of the lead's house. '' for pardes/sde/external. */
       meetingWithField(lead.meetingWith || managerForHouse(lead.house)),

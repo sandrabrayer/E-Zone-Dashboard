@@ -331,7 +331,27 @@ function getOrCreateSheet_(name, headers) {
       sh.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]);
     }
   }
+  // Leads sheet: force the WHOLE visitDate + visitTime columns to plain text so
+  // any write — present or future, via any path (mergeLeads_, upsertRowById_,
+  // manual edit) — lands in a text cell and Sheets can never coerce "08:18" or
+  // "2026-06-11" into a Date/time-typed cell (the coercion that drifted values
+  // through the getValues→UTC round-trip). Done once at sheet-ensure time rather
+  // than per-write. Idempotent.
+  if (name === LEADS_SHEET) {
+    forceColumnsText_(sh, LEAD_COLUMNS, ['visitDate', 'visitTime']);
+  }
   return sh;
+}
+
+/* Force the ENTIRE named columns (by position in `columns`) of `sh` to the
+ * plain-text ('@') number format — the whole column, so rows added later inherit
+ * it too. Absent names are skipped. */
+function forceColumnsText_(sh, columns, names) {
+  const maxRows = sh.getMaxRows();
+  for (let k = 0; k < names.length; k++) {
+    const idx = columns.indexOf(names[k]);
+    if (idx >= 0) sh.getRange(1, idx + 1, maxRows, 1).setNumberFormat('@');
+  }
 }
 
 function readSheet_(sh, columns) {
@@ -413,6 +433,37 @@ function asISOTime_(v) {
   if (m) return m[1] + ':' + m[2];
   const d = new Date(s);
   return isNaN(d) ? '' : Utilities.formatDate(d, tz, 'HH:mm');
+}
+
+/* The date columns and the time column present in a leads-shaped `columns` list.
+ * Safe on any columns list — absent names are simply skipped. Used to normalize
+ * and text-format lead writes so a value can't be coerced into a Date cell. */
+function leadDateColIdxs_(columns) {
+  const out = [];
+  ['visitDate', 'entryDate', 'created'].forEach(function (n) {
+    const i = columns.indexOf(n);
+    if (i >= 0) out.push(i);
+  });
+  return out;
+}
+function leadTimeColIdx_(columns) { return columns.indexOf('visitTime'); }
+
+/* Normalize a row array's date/time cells in place (returns the same row):
+ * date columns via asISODate_, the time column via asISOTime_. */
+function normalizeLeadRowDates_(row, columns) {
+  leadDateColIdxs_(columns).forEach(function (i) { row[i] = asISODate_(row[i]); });
+  const t = leadTimeColIdx_(columns);
+  if (t >= 0) row[t] = asISOTime_(row[t]);
+  return row;
+}
+
+/* Force the date/time columns of a single-row range to plain text BEFORE writing
+ * it, so setValues can't be re-coerced into a Date cell. */
+function setLeadDateColsText_(sh, columns, rowNumber) {
+  const idxs = leadDateColIdxs_(columns);
+  const t = leadTimeColIdx_(columns);
+  if (t >= 0) idxs.push(t);
+  idxs.forEach(function (i) { sh.getRange(rowNumber, i + 1, 1, 1).setNumberFormat('@'); });
 }
 
 /* ===== Read ===== */
@@ -655,18 +706,60 @@ function deleteRowsById_(sh, columns, idValue) {
 function upsertRowById_(sh, columns, obj) {
   const idIdx = columns.indexOf('id');
   if (idIdx < 0) return;
-  const row = objectToRow_(obj, columns);
+  // Normalize the date/time cells and, at the target row, force those columns to
+  // text BEFORE setValues — the same treatment mergeLeads_ gives its writes, so a
+  // restore/move/remove can't re-coerce visitDate/visitTime into a Date cell.
+  const row = normalizeLeadRowDates_(objectToRow_(obj, columns), columns);
   const lastRow = sh.getLastRow();
   if (lastRow > 1) {
     const existingIds = sh.getRange(2, idIdx + 1, lastRow - 1, 1).getValues();
     for (let i = 0; i < existingIds.length; i++) {
       if (String(existingIds[i][0]) === String(obj.id)) {
-        sh.getRange(i + 2, 1, 1, columns.length).setValues([row]);
+        const r = i + 2;
+        setLeadDateColsText_(sh, columns, r);
+        sh.getRange(r, 1, 1, columns.length).setValues([row]);
         return;
       }
     }
   }
-  sh.appendRow(row);
+  // Insert: write at the next row (not appendRow) so the text format is applied
+  // BEFORE the value lands.
+  const target = sh.getLastRow() + 1;
+  setLeadDateColsText_(sh, columns, target);
+  sh.getRange(target, 1, 1, columns.length).setValues([row]);
+}
+
+/* ONE-TIME MANUAL REPAIR — run from the Apps Script editor only. NOT wired to any
+ * endpoint (handle_/doGet/doPost never call it).
+ *
+ * The legacy visitTime values were corrupted by repeated timezone round-trips and
+ * are unrecoverable, so this BLANKS every existing visitTime and leaves the reader
+ * to re-enter them by hand. visitDate is left intact. It also (re)forces the two
+ * columns to plain text so subsequent writes stay clean. Logs how many rows were
+ * blanked. Returns that count. Idempotent (a second run blanks 0). */
+function repairLeadVisitTimes_() {
+  const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+  // getOrCreateSheet_ already text-formats visitDate/visitTime, but do it here
+  // too so the repair is self-contained if the ensure step ever changes.
+  forceColumnsText_(sh, LEAD_COLUMNS, ['visitDate', 'visitTime']);
+
+  const vTimeIdx = LEAD_COLUMNS.indexOf('visitTime');
+  const lastRow = sh.getLastRow();
+  if (vTimeIdx < 0 || lastRow < 2) {
+    Logger.log('repairLeadVisitTimes_: nothing to blank (data rows=' + Math.max(0, lastRow - 1) + ').');
+    return 0;
+  }
+
+  const rng = sh.getRange(2, vTimeIdx + 1, lastRow - 1, 1);
+  const vals = rng.getValues();
+  let blanked = 0;
+  const cleared = vals.map(function (r) {
+    if (r[0] !== '' && r[0] !== null && r[0] !== undefined) blanked++;
+    return [''];
+  });
+  rng.setValues(cleared);
+  Logger.log('repairLeadVisitTimes_: blanked ' + blanked + ' visitTime value(s); visitDate left intact.');
+  return blanked;
 }
 
 function moveLeadIrrelevant_(lead) {

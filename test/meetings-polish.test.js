@@ -81,21 +81,25 @@ function visitLead(over) {
   );
 }
 
-/* ===== 1. step="900" on the rendered visitTime inputs ===== */
+/* ===== 1. visitTime renders as a quarter-hour <select> ===== */
+/* The <input type="time" step="900"> was replaced by a <select> of quarter-hour
+ * options because the mobile native time picker ignores `step`. See
+ * visittime-text-columns-and-quarter-select.test.js for the option-list contract;
+ * here we just confirm both surfaces render a select carrying data-field. */
 
-test('lead-card inline visitTime input carries step="900"', () => {
+test('lead-card inline visitTime renders a <select> with data-field="visitTime"', () => {
   const { app } = loadApp();
   const card = app.buildLeadCard(visitLead());
-  assert.match(card.innerHTML, /data-field="visitTime"/);
-  assert.match(card.innerHTML, /<input type="time" step="900" data-field="visitTime"/);
+  assert.match(card.innerHTML, /<select class="lc-visit-time" data-field="visitTime"/);
+  assert.doesNotMatch(card.innerHTML, /<input type="time"/, 'no native time input remains');
 });
 
-test('edit-modal visitTime field renders step="900"', () => {
+test('edit-modal visitTime field renders a <select>', () => {
   const { app, created } = loadApp();
   app.openEditLeadModal(visitLead());
   const html = created().innerHTML;
-  // Generic input renderer emits: <input name="visitTime" type="time" step="900" value="08:18" />
-  assert.match(html, /name="visitTime" type="time" step="900"/);
+  assert.match(html, /<select name="visitTime">/);
+  assert.doesNotMatch(html, /name="visitTime" type="time"/, 'no native time input remains');
 });
 
 /* ===== isoTime round-trips a non-quarter value unchanged ===== */
