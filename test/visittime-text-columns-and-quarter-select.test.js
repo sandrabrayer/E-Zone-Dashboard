@@ -1,6 +1,6 @@
 /* Tests for the visitTime text-columns + quarter-hour select PR.
  *
- *   Code.gs  — repairLeadVisitTimes_ blanks visitTime, leaves visitDate; and
+ *   Code.gs  — repairLeadVisitTimes blanks visitTime, leaves visitDate; and
  *              upsertRowById_ normalizes date/time cells and writes them into
  *              text-formatted cells (setNumberFormat('@') BEFORE setValues).
  *   app.js   — visitTimeOptions / visitTimeSelectHTML emit every quarter hour for
@@ -76,7 +76,7 @@ function loadCode() {
   sandbox.globalThis = sandbox;
   const epilogue = `globalThis.__test = {
     LEAD_COLUMNS: LEAD_COLUMNS, LEADS_SHEET: LEADS_SHEET,
-    repair: () => repairLeadVisitTimes_(),
+    repair: () => repairLeadVisitTimes(),
     upsert: (sh, cols, obj) => upsertRowById_(sh, cols, obj),
     ensure: () => getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS),
   };`;
@@ -179,7 +179,7 @@ test('the edit modal renders the visitTime select with the off-step value preser
 });
 
 /* ===== Part 3 — repair blanks visitTime, leaves visitDate ===== */
-test('repairLeadVisitTimes_ blanks visitTime, leaves visitDate, logs the count', () => {
+test('repairLeadVisitTimes blanks visitTime, leaves visitDate, logs the count', () => {
   const { code, sandbox, logLines } = loadCode();
   const LC = arr(code.LEAD_COLUMNS);
   const vDate = LC.indexOf('visitDate');
