@@ -393,6 +393,28 @@ function asISODate_(v) {
   return m ? m[0] : s;
 }
 
+/* Normalize a Sheets cell value to 'HH:MM' — the symmetric counterpart to
+ * asISODate_. Sheets coerces a time string like "08:18" into a time-typed cell,
+ * which getValues() hands back as a Date object anchored on the sheet epoch. We
+ * extract the time in the SPREADSHEET timezone (never UTC): getValues built that
+ * Date as the wall-clock time in the sheet tz, so formatting it back in the SAME
+ * tz recovers the original "08:18" exactly — the UTC round-trip is what drifted
+ * the value. A plain "HH:MM" string passes through unchanged (fast path). A
+ * parseable timestamp string is formatted in the sheet tz too; anything
+ * unrecognized returns '' rather than emitting a bogus time. */
+function asISOTime_(v) {
+  if (v === undefined || v === null || v === '') return '';
+  const tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || 'Asia/Jerusalem';
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    return Utilities.formatDate(v, tz, 'HH:mm');
+  }
+  const s = String(v);
+  const m = s.match(/^(\d{2}):(\d{2})/);
+  if (m) return m[1] + ':' + m[2];
+  const d = new Date(s);
+  return isNaN(d) ? '' : Utilities.formatDate(d, tz, 'HH:mm');
+}
+
 /* ===== Read ===== */
 
 function getData_() {
@@ -403,6 +425,14 @@ function getData_() {
   const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
 
   const leads               = readSheet_(leadsSh, LEAD_COLUMNS);
+  // Normalize visitTime on the way out: a legacy cell coerced to a time-typed
+  // value (before the text-format fix in mergeLeads_) reads back from getValues
+  // as a Date; asISOTime_ converts it to 'HH:MM' in the SPREADSHEET timezone so
+  // it no longer drifts through the UTC round-trip. A clean 'HH:MM' text cell
+  // passes through unchanged.
+  for (let i = 0; i < leads.length; i++) {
+    leads[i].visitTime = asISOTime_(leads[i].visitTime);
+  }
   const patientRows         = readSheet_(patientsSh, PATIENT_COLUMNS);
   const irrelevantLeads     = readSheet_(irrelevantSh, IRRELEVANT_LEAD_COLUMNS);
   const removedLeads        = readSheet_(removedSh, REMOVED_LEAD_COLUMNS);
@@ -526,10 +556,30 @@ function mergeLeads_(leads) {
     return objectToRow_(merged, LEAD_COLUMNS);
   });
 
-  const finalRows = kept.concat(newRows);
+  // Canonicalize the date/time columns to clean text for BOTH kept rows (whose
+  // cells may already be coerced Date objects from getValues) and new rows, then
+  // force those columns to plain text BEFORE writing. Without this Sheets coerces
+  // "08:18" into a time-typed cell and "2026-06-11" into a date-typed cell; such
+  // cells read back via getValues() as Date objects, serialize to the client as
+  // UTC timestamps, and drift the value on every save→read cycle. Text storage
+  // keeps them stable strings end-to-end. Mirrors replaceHousePatients_ exactly,
+  // extended from one date column to all four date/time columns of the lead row.
+  const vDateIdx = LEAD_COLUMNS.indexOf('visitDate');
+  const vTimeIdx = LEAD_COLUMNS.indexOf('visitTime');
+  const entryIdx = LEAD_COLUMNS.indexOf('entryDate');
+  const dateColIdxs = [vDateIdx, entryIdx, createdColIdx].filter(function (i) { return i >= 0; });
+  const finalRows = kept.concat(newRows).map(function (row) {
+    dateColIdxs.forEach(function (i) { row[i] = asISODate_(row[i]); });
+    if (vTimeIdx >= 0) row[vTimeIdx] = asISOTime_(row[vTimeIdx]);
+    return row;
+  });
 
   clearBody_(sh, LEAD_COLUMNS.length);
   if (finalRows.length > 0) {
+    const textColIdxs = dateColIdxs.concat(vTimeIdx >= 0 ? [vTimeIdx] : []);
+    textColIdxs.forEach(function (i) {
+      sh.getRange(2, i + 1, finalRows.length, 1).setNumberFormat('@');
+    });
     sh.getRange(2, 1, finalRows.length, LEAD_COLUMNS.length).setValues(finalRows);
   }
 }

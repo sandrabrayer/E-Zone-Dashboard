@@ -814,13 +814,22 @@ function leadsNeedingMeetingWithDefault(leads, roster) {
  *     successful save never re-triggers and a later re-render doesn't re-save;
  *   - on save failure, roll the in-memory assignments back to '' (no phantom
  *     values, nothing persisted) and refresh only the board — never renderKanban
- *     / renderAll, which would re-enter. Returns the save promise so callers
- *     (and tests) can await; renderAll fires it and forgets. */
+ *     / renderAll, which would re-enter;
+ *   - per-lead failure guard — a lead whose autosave save already FAILED this
+ *     session is recorded in `_meetingWithAutosaveFailed` and skipped on every
+ *     later render. Without this, the failure rollback (meetingWith → '') leaves
+ *     the lead permanently "pending", so a failing backend would make this
+ *     re-fire saveAll on every renderAll — an infinite write loop. The guard
+ *     caps it at one attempt per lead per session.
+ * Returns the save promise so callers (and tests) can await; renderAll fires it
+ * and forgets. */
 let _autosaveMeetingWithBusy = false;
+const _meetingWithAutosaveFailed = new Set();
 function autosaveMeetingWithDefaults() {
   if (_autosaveMeetingWithBusy) return Promise.resolve();
   if (state.mode !== 'edit') return Promise.resolve();
-  const pending = leadsNeedingMeetingWithDefault(state.leads, state.houseManagers);
+  const pending = leadsNeedingMeetingWithDefault(state.leads, state.houseManagers)
+    .filter(l => !_meetingWithAutosaveFailed.has(l.id));
   if (!pending.length) return Promise.resolve();
 
   _autosaveMeetingWithBusy = true;
@@ -830,7 +839,10 @@ function autosaveMeetingWithDefaults() {
 
   return saveAll()
     .catch(() => {
-      applied.forEach(({ lead, prev }) => { lead.meetingWith = prev || ''; });
+      applied.forEach(({ lead, prev }) => {
+        lead.meetingWith = prev || '';
+        _meetingWithAutosaveFailed.add(lead.id);     // don't retry this lead again this session
+      });
       renderMeetings();                              // revert the board; no kanban re-render
     })
     .finally(() => { _autosaveMeetingWithBusy = false; });
@@ -3092,13 +3104,15 @@ function isoDate(v) {
   return `${y}-${mo}-${day}`;
 }
 
-/* Sheets stores time-only cells as a Date anchored on 1899-12-30 UTC. When
- * the Apps Script readSheet_ uses getValues(), those cells come back as
- * Date objects (or, after JSON transport, full ISO strings like
- * "1899-12-30T13:30:00.000Z"). <input type="time"> only accepts "HH:MM",
- * so without coercion the input silently renders empty. Mirrors isoDate.
- * UTC getters are deliberate — local-timezone reads would shift the
- * displayed time by the user's offset since the anchor is UTC. */
+/* Sheets stores time-only cells as a Date anchored on 1899-12-30. When the Apps
+ * Script readSheet_ uses getValues(), those cells come back as Date objects (or,
+ * after JSON transport, full ISO strings). The server now normalizes visitTime
+ * to a plain "HH:MM" string (asISOTime_ in the spreadsheet timezone), so the
+ * fast path below handles the normal case; the Date/string fallbacks use LOCAL
+ * getters — consistent with the isoDate rule — so a timestamp that still slips
+ * through is read on the user's wall clock, not shifted by the UTC offset (the
+ * mismatched-tz UTC read is what drifted the value save→save). <input type=time>
+ * only accepts "HH:MM". */
 function isoTime(v) {
   if (!v) return '';
   if (typeof v === 'string') {
@@ -3106,16 +3120,16 @@ function isoTime(v) {
     if (m) return `${m[1]}:${m[2]}`;
     const d = new Date(v);
     if (!isNaN(d)) {
-      const hh = String(d.getUTCHours()).padStart(2, '0');
-      const mm = String(d.getUTCMinutes()).padStart(2, '0');
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mm = String(d.getMinutes()).padStart(2, '0');
       return `${hh}:${mm}`;
     }
     return v;
   }
   const d = new Date(v);
   if (!isNaN(d)) {
-    const hh = String(d.getUTCHours()).padStart(2, '0');
-    const mm = String(d.getUTCMinutes()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
     return `${hh}:${mm}`;
   }
   return '';

@@ -105,8 +105,15 @@ test('isoTime round-trips a non-quarter value (08:18) unchanged', () => {
   assert.strictEqual(app.isoTime('08:18'), '08:18');
   assert.strictEqual(app.isoTime('13:07'), '13:07');
   assert.strictEqual(app.isoTime('23:59'), '23:59');
-  // The Sheets epoch artifact still normalizes to HH:MM.
-  assert.strictEqual(app.isoTime('1899-12-30T08:18:20.000Z'), '08:18');
+  // After the visitTime corruption fix, isoTime uses LOCAL getters (consistent
+  // with isoDate). The Sheets epoch artifact is normalized server-side now
+  // (asISOTime_ in the spreadsheet tz — see visittime-corruption-fix.test.js);
+  // a raw timestamp that still reaches the client is read on the local wall
+  // clock, not via a UTC extraction. Expected value computed the same way the
+  // implementation does, so this stays correct in any host timezone.
+  const d = new Date('1899-12-30T08:18:20.000Z');
+  const local = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  assert.strictEqual(app.isoTime('1899-12-30T08:18:20.000Z'), local);
 });
 
 /* ===== 2. today-group class on the correct day only ===== */
