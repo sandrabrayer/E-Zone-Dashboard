@@ -333,6 +333,22 @@ input:focus, select:focus, textarea:focus {
 .mtg-name { font-weight: 600; color: var(--text); }
 .mtg-house, .mtg-with { color: var(--text-muted); }
 
+/* Actions cell — WhatsApp link + edit button kept together in the last column
+ * so the grid stays a single track for both. */
+.mtg-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.mtg-edit {
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  padding: 5px 9px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--text);
+  cursor: pointer;
+}
+.mtg-edit:hover { filter: brightness(1.05); }
+
 /* Today's group stands out: --primary border + glow, brighter header band. */
 .mtg-day.mtg-today {
   border-color: var(--primary);
@@ -362,8 +378,8 @@ input:focus, select:focus, textarea:focus {
   .mtg-name  { grid-column: 2; }
   .mtg-house { grid-column: 2; font-size: 12px; }
   .mtg-with  { grid-column: 2; font-size: 12px; }
-  .mtg-time  { grid-row: 1 / span 3; align-self: start; }
-  .mtg-wa    { grid-column: 3; grid-row: 1 / span 3; align-self: center; }
+  .mtg-time    { grid-row: 1 / span 3; align-self: start; }
+  .mtg-actions { grid-column: 3; grid-row: 1 / span 3; align-self: center; }
 }
 
 /* WhatsApp cell — a link when a phone resolves, a disabled button otherwise.

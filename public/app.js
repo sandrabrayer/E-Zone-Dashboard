@@ -945,6 +945,59 @@ function openWhatsAppLink(url, opener, setHref) {
   return 'window';
 }
 
+/* ===== Meeting invite / update WhatsApp messages =====
+ * Addressed to the LEAD (by name) and sent to the LEAD's phone — distinct from
+ * the meetings-board manager link above (that one pings the manager). Pure
+ * (no state / no DOM) so the two Hebrew templates are unit-tested directly. */
+
+/* Bare Hebrew weekday names (no "יום " prefix) so the "ביום <שם>" / "ליום <שם>"
+ * clauses read naturally. HEBREW_DAYS carries the prefixed form used as day
+ * headings; these are the un-prefixed names the message templates need. */
+const HEBREW_WEEKDAY_NAMES = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+
+/* Hebrew weekday name for a bare YYYY-MM-DD, derived from LOCAL date parts
+ * (parseLocalISO) — never UTC parsing, per the isoDate timezone rule. '' when
+ * the date can't be parsed. */
+function hebrewWeekday(dateISO) {
+  const d = parseLocalISO(dateISO);
+  if (!d) return '';
+  return HEBREW_WEEKDAY_NAMES[d.getDay()] || '';
+}
+
+/* House display name (e.g. "קיסריה עפרוני") for a house key / label / id.
+ * Resolves canonical keys (arfoni…), Hebrew labels, and ids alike; falls back
+ * to the raw value for an unknown house so the message never renders blank. */
+function houseDisplayName(house) {
+  const h = houseByName(house) || houseById(resolveHouseId(house));
+  return h ? h.name : (house || '');
+}
+
+/* Hebrew invite/update message for a meeting, addressed to the lead by name.
+ *   type 'invite': שלום <שם>, נקבעה פגישה עם <מנהל> ביום <יום> <תאריך> בשעה <שעה> בבית <בית>.
+ *   type 'update': שלום <שם>, הפגישה שונתה ליום <יום> <תאריך> בשעה <שעה> עם <מנהל> בבית <בית>.
+ * The " בשעה <שעה>" clause is dropped cleanly (no double space) when time is
+ * empty/missing. [יום] is the Hebrew weekday from LOCAL parts; [תאריך] is
+ * DD/MM/YYYY; [בית] is the house DISPLAY name, not the canonical key. Pure. */
+function buildMeetingMessage({ type, name, manager, house, dateISO, time }) {
+  const day = hebrewWeekday(dateISO);
+  const date = formatDateDDMMYYYY(dateISO);
+  const houseLabel = houseDisplayName(house);
+  const timeClause = time ? ` בשעה ${time}` : '';
+  if (type === 'update') {
+    return `שלום ${name || ''}, הפגישה שונתה ליום ${day} ${date}${timeClause} עם ${manager || ''} בבית ${houseLabel}.`;
+  }
+  return `שלום ${name || ''}, נקבעה פגישה עם ${manager || ''} ביום ${day} ${date}${timeClause} בבית ${houseLabel}.`;
+}
+
+/* wa.me deep link to a phone with a pre-filled message. Reuses normalizePhone
+ * (the same normalization the duplicate-check uses) and the same wa.me
+ * construction as meetingWhatsappUrl — not reimplemented. Digits may be ''
+ * (no/blank phone) → wa.me/?text=… which lets the sender pick the recipient. */
+function meetingInviteWaUrl(rawPhone, message) {
+  const digits = normalizePhone(rawPhone);
+  return `https://wa.me/${digits}?text=${encodeURIComponent(message)}`;
+}
+
 /* Build the meetingWith modal field. `preselect` is the resolved default (the
  * house manager, or '' → the blank placeholder). Shared by the add and edit
  * lead modals so the option list and blank-default behaviour stay identical. */
@@ -1183,13 +1236,19 @@ function meetingRowHTML(m, timeText) {
   const wa = url
     ? `<a class="mtg-wa" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">WhatsApp</a>`
     : `<button type="button" class="mtg-wa" disabled title="אין מספר להצגה">WhatsApp</button>`;
+  /* Edit (✏️) — edit mode only (it writes via updateLead→saveAll, which no-ops
+   * for viewers). data-mtg-edit carries the lead id so renderMeetings can wire
+   * the click without threading the meeting object through the HTML. */
+  const edit = state.mode === 'edit'
+    ? `<button type="button" class="mtg-edit" data-mtg-edit="${escapeHtml(m.id || '')}" title="ערוך פגישה">✏️</button>`
+    : '';
   return `
     <div class="mtg-row">
       <span class="mtg-time">${escapeHtml(timeText || m.time || '—')}</span>
       <span class="mtg-name">${escapeHtml(m.name || '—')}</span>
       <span class="mtg-house">${escapeHtml(m.houseLabel || '—')}</span>
       <span class="mtg-with">${escapeHtml(m.meetingWith || '—')}</span>
-      ${wa}
+      <span class="mtg-actions">${wa}${edit}</span>
     </div>`;
 }
 
@@ -1257,6 +1316,114 @@ function renderMeetings() {
       openWhatsAppLink(url);
     });
   });
+
+  /* Edit (✏️) — open the per-meeting edit modal. Look the meeting up by lead id
+   * from the week's buckets so the modal pre-fills from the same normalized data
+   * the row rendered. Edit buttons only exist in edit mode (see meetingRowHTML). */
+  const meetingsById = {};
+  wk.days.forEach(d => d.timed.concat(d.noTime).forEach(m => { meetingsById[m.id] = m; }));
+  board.querySelectorAll('.mtg-edit').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const m = meetingsById[btn.getAttribute('data-mtg-edit')];
+      if (m) openMeetingEditModal(m);
+    });
+  });
+}
+
+/* Per-meeting edit modal (meetings board). Edits map to the underlying lead's
+ * visitDate / visitTime / meetingWith and persist through the SAME per-row save
+ * path the lead-card inline fields use (updateLead → saveAll) — no new endpoint.
+ * The modal also carries a "שלח עדכון" WhatsApp button that builds the 'update'
+ * message from the modal's CURRENT (live) field values and sends it to the lead.
+ * On a successful save the board re-renders so the row reflects the change. */
+function openMeetingEditModal(m) {
+  const lead = state.leads.find(l => l.id === m.id);
+  if (!lead) return;
+
+  const root = document.getElementById('modal-root');
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+
+  const timeOptsHtml = visitTimeOptions(m.time).map(o =>
+    `<option value="${escapeHtml(o.value)}" ${o.value === (m.time || '') ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
+  ).join('');
+  const withOptsHtml = [{ value: '', label: '— ללא —' }]
+    .concat(managerOptions().map(name => ({ value: name, label: name })))
+    .map(o => `<option value="${escapeHtml(o.value)}" ${o.value === (m.meetingWith || '') ? 'selected' : ''}>${escapeHtml(o.label)}</option>`)
+    .join('');
+
+  back.innerHTML = `
+    <div class="modal">
+      <h3>עריכת פגישה</h3>
+      <form>
+        <div class="form-row">
+          <label>תאריך</label>
+          <input type="date" name="visitDate" lang="he" dir="rtl" value="${escapeHtml(m.date || '')}" />
+        </div>
+        <div class="form-row">
+          <label>שעה</label>
+          <select name="visitTime">${timeOptsHtml}</select>
+        </div>
+        <div class="form-row">
+          <label>נפגש עם</label>
+          <select name="meetingWith">${withOptsHtml}</select>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="mtg-wa mtg-update-wa" title="שלח עדכון בוואטסאפ">שלח עדכון</button>
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn primary">שמור</button>
+        </div>
+      </form>
+    </div>
+  `;
+  root.appendChild(back);
+
+  const form      = back.querySelector('form');
+  const dateInp   = form.querySelector('[name="visitDate"]');
+  const timeInp   = form.querySelector('[name="visitTime"]');
+  const withInp   = form.querySelector('[name="meetingWith"]');
+  const updateBtn = form.querySelector('.mtg-update-wa');
+  const cancelBtn = back.querySelector('[data-action="cancel"]');
+  const submitBtn = back.querySelector('button[type="submit"]');
+
+  const close = () => back.remove();
+  cancelBtn.onclick = close;
+  back.addEventListener('click', e => { if (e.target === back) close(); });
+
+  /* "שלח עדכון" — build the update message from the modal's LIVE values (not the
+   * pre-edit meeting), so sending after changing a field reflects the new plan
+   * even before saving. Sent to the lead's phone via the shared PWA-safe opener. */
+  updateBtn.onclick = () => {
+    const msg = buildMeetingMessage({
+      type: 'update', name: lead.name, manager: withInp.value,
+      house: lead.house, dateISO: dateInp.value, time: timeInp.value,
+    });
+    openWhatsAppLink(meetingInviteWaUrl(lead.phone, msg));
+  };
+
+  let submitting = false;
+  form.onsubmit = async e => {
+    e.preventDefault();
+    if (submitting) return;
+    submitting = true;
+    submitBtn.disabled = true;
+    cancelBtn.disabled = true;
+    submitBtn.textContent = 'שומר...';
+
+    const ok = await updateLead(m.id, {
+      visitDate: dateInp.value, visitTime: timeInp.value, meetingWith: withInp.value,
+    });
+    if (ok) {
+      close();
+      renderMeetings();
+      return;
+    }
+    // updateLead already rolled back + surfaced the error; re-enable for retry.
+    submitting = false;
+    submitBtn.disabled = false;
+    cancelBtn.disabled = false;
+    submitBtn.textContent = 'שמור';
+  };
 }
 
 function renderAll() {
@@ -1536,11 +1703,17 @@ function buildLeadCard(lead) {
 
   let stageFields = '';
   if (lead.stage === 'visit') {
+    /* "שלח הזמנה" — opens a WhatsApp invite to the LEAD. Enabled only when
+     * visitDate + visitTime + meetingWith are all set (see refreshInvite
+     * below). Reuses the shared .mtg-wa green styling. No data-field, so the
+     * generic autosave handler never touches it — it can't perturb the busy
+     * flag / autosave loop guard. */
     stageFields = `
       <div class="lc-fields edit-only">
         <input type="date" data-field="visitDate" value="${lead.visitDate || ''}" />
         ${visitTimeSelectHTML(lead.visitTime)}
         ${meetingWithSelectHTML(lead)}
+        <button type="button" class="mtg-wa lc-wa-invite" title="שלח הזמנה בוואטסאפ">שלח הזמנה</button>
       </div>`;
   } else if (lead.stage === 'paid') {
     stageFields = `
@@ -1605,6 +1778,35 @@ function buildLeadCard(lead) {
     inp.onchange = () => updateLead(lead.id, { [inp.dataset.field]: inp.value });
   });
 
+  /* WhatsApp invite button (visit stage only). Reads the three inline fields
+   * LIVE from the DOM — not from `lead` — so it reflects the user's current
+   * selections regardless of whether updateLead's async save has run yet, and
+   * stays correct even though a successful save does not re-render the card.
+   * A separate 'change' listener (addEventListener, so it never clobbers the
+   * autosave .onchange above) keeps its enabled state in sync. */
+  const inviteBtn = card.querySelector('.lc-wa-invite');
+  if (inviteBtn) {
+    const dateInp = card.querySelector('[data-field="visitDate"]');
+    const timeInp = card.querySelector('[data-field="visitTime"]');
+    const withInp = card.querySelector('[data-field="meetingWith"]');
+    const refreshInvite = () => {
+      const ready = !!((dateInp && dateInp.value) && (timeInp && timeInp.value) && (withInp && withInp.value));
+      inviteBtn.disabled = !ready;
+    };
+    refreshInvite();
+    [dateInp, timeInp, withInp].forEach(el => el && el.addEventListener('change', refreshInvite));
+    inviteBtn.onclick = () => {
+      const dateISO = dateInp ? dateInp.value : '';
+      const time    = timeInp ? timeInp.value : '';
+      const manager = withInp ? withInp.value : '';
+      if (!dateISO || !time || !manager) return;   // defensive — button was disabled
+      const msg = buildMeetingMessage({
+        type: 'invite', name: lead.name, manager, house: lead.house, dateISO, time,
+      });
+      openWhatsAppLink(meetingInviteWaUrl(lead.phone, msg));
+    };
+  }
+
   return card;
 }
 
@@ -1644,15 +1846,17 @@ async function moveLead(lead, newStage) {
 
 async function updateLead(id, fields) {
   const lead = state.leads.find(l => l.id === id);
-  if (!lead) return;
+  if (!lead) return false;
   const prev = { ...lead };
   Object.assign(lead, fields);
   try {
     await saveAll();
+    return true;
   } catch (e) {
     Object.assign(lead, prev);
     renderAll();
     showError('עדכון ליד נכשל — ' + e.message);
+    return false;
   }
 }
 
