@@ -553,6 +553,17 @@ async function loadAll() {
   }
 }
 
+/* The meetingOutcome to record when a lead is admitted into a house. A lead
+ * that had a meeting (visitDate set) converts to 'entered' — overwriting any
+ * earlier outcome (e.g. 'thinking'), because entering treatment is the final
+ * word on that meeting. A lead with NO meeting returns null: it must not get an
+ * outcome, or a manager's conversion stats would count a meeting that never
+ * happened. Pure — unit-tested directly and shared by both admission paths
+ * (openEntryModal + promoteEnteredLeads). */
+function admissionMeetingOutcome(lead) {
+  return (lead && lead.visitDate) ? 'entered' : null;
+}
+
 /**
  * For every lead in stage=entry (or 'entered') that doesn't already have a
  * patient record, create one using whatever data we have on the lead.
@@ -614,6 +625,12 @@ function promoteEnteredLeads() {
       fromLead: lead.id,
     });
     state.patients.push(patient);
+    /* Record the conversion on the source lead when it had a meeting, so the
+     * per-manager conversion metric captures auto-promoted admissions too. Gated
+     * on visitDate (no meeting → no outcome). Persisted by loadAll's post-promote
+     * saveAll (edit mode). Mirrors the manual openEntryModal admit. */
+    const outcome = admissionMeetingOutcome(lead);
+    if (outcome) lead.meetingOutcome = outcome;
     byFromLead.add(String(lead.id));
     byNameHouse.add(key);
     created.push(patient);
@@ -1226,6 +1243,7 @@ function meetingsForWeek(leads, weekAnchorISO) {
         house: l.house || '',
         houseLabel: h ? h.name : (l.house || ''),
         meetingWith: l.meetingWith || '',
+        meetingOutcome: l.meetingOutcome || '',    // pre-selects the row's outcome <select>
       };
       (byIso[v] || (byIso[v] = [])).push(meeting);
     });
@@ -1246,11 +1264,103 @@ function meetingsForWeek(leads, weekAnchorISO) {
   return { weekStart: start, weekEnd: end, days: days, total: total };
 }
 
+/* Whether a meeting on bare local date `dateISO` is eligible for an outcome
+ * selector — i.e. it has already happened (today or earlier). Comparison is on
+ * bare YYYY-MM-DD strings (local date parts, never UTC), mirroring
+ * meetingsForWeek's own bucket-range check; `todayISO()` builds today from local
+ * getFullYear/getMonth/getDate. Future-dated meetings return false → no selector.
+ * Pure (todayISOStr is injectable) so the date predicate is unit-tested directly. */
+function meetingOutcomeEligible(dateISO, todayISOStr) {
+  const d = isoDate(dateISO);
+  if (!d) return false;
+  return d <= (todayISOStr || todayISO());
+}
+
+/* Outcome <select> for a past/today meeting row. Option values are the stable
+ * MEETING_OUTCOME_LABELS keys; labels come from that map (single source of
+ * truth). Two optgroups split "the meeting was held" (התקיימה) from "it wasn't"
+ * (לא התקיימה). Pre-selects the lead's current meetingOutcome. data-mtg-outcome
+ * carries the lead id so renderMeetings can wire the change without threading
+ * the meeting object through the HTML. Rendered only for eligible rows. */
+function meetingOutcomeSelectHTML(m) {
+  const cur = (m && m.meetingOutcome) || '';
+  const opt = (val) =>
+    `<option value="${escapeHtml(val)}"${val === cur ? ' selected' : ''}>${escapeHtml(MEETING_OUTCOME_LABELS[val])}</option>`;
+  return `
+    <select class="mtg-outcome" data-mtg-outcome="${escapeHtml(m.id || '')}" title="תוצאת פגישה">
+      <option value=""${cur === '' ? ' selected' : ''}>— תוצאה —</option>
+      <optgroup label="התקיימה">${opt('not_relevant')}${opt('thinking')}${opt('entered')}</optgroup>
+      <optgroup label="לא התקיימה">${opt('postponed')}${opt('cancelled')}</optgroup>
+    </select>`;
+}
+
+/* The meetingOutcome keys that count as "the meeting was held" (התקיימו) — the
+ * denominator of the conversion rate. postponed/cancelled are outcomes too (they
+ * count toward `total`) but the meeting did not take place, so they are excluded
+ * from `held` and from the rate. */
+const HELD_OUTCOMES = ['not_relevant', 'thinking', 'entered'];
+/* Stable bucket for leads that have an outcome but no meetingWith — they still
+ * count (never silently dropped); rendered under this label. */
+const MANAGER_CONVERSION_UNASSIGNED = 'ללא מנהל';
+
+/* Per-manager meeting→treatment conversion over ALL leads (all-time, not just
+ * the displayed week) — the real conversion metric the Managers app will reuse.
+ * A meeting "counts" once its lead has a (valid) meetingOutcome. Returns one row
+ * per manager that has at least one such lead:
+ *   total     = leads with ANY valid outcome (incl. postponed/cancelled)
+ *   held      = outcomes in HELD_OUTCOMES ("התקיימו")
+ *   converted = outcomes === 'entered' ("נכנסו")
+ *   rate      = round(converted / held * 100); 0 when held === 0 (no div-by-zero)
+ * Leads with an outcome but a blank meetingWith are grouped under
+ * MANAGER_CONVERSION_UNASSIGNED. Sorted by held desc, then name asc. Pure — no
+ * DOM, no state — so it is unit-tested directly. */
+function computeManagerConversion(leads) {
+  const by = new Map();
+  (leads || []).forEach(l => {
+    const outcome = l && l.meetingOutcome;
+    if (!outcome || !MEETING_OUTCOME_LABELS[outcome]) return;   // no/invalid outcome → ignored
+    const mgr = (l.meetingWith && String(l.meetingWith).trim()) || MANAGER_CONVERSION_UNASSIGNED;
+    let row = by.get(mgr);
+    if (!row) { row = { manager: mgr, total: 0, held: 0, converted: 0 }; by.set(mgr, row); }
+    row.total += 1;
+    if (HELD_OUTCOMES.indexOf(outcome) !== -1) row.held += 1;
+    if (outcome === 'entered') row.converted += 1;
+  });
+  const rows = Array.from(by.values()).map(r => Object.assign({}, r, {
+    rate: r.held === 0 ? 0 : Math.round((r.converted / r.held) * 100),
+  }));
+  rows.sort((a, b) => (b.held - a.held) ||
+    (a.manager < b.manager ? -1 : a.manager > b.manager ? 1 : 0));
+  return rows;
+}
+
+/* Compact per-manager conversion strip rendered above the board. Returns '' when
+ * no manager has an outcome yet (nothing to show). RTL-safe; styling reuses the
+ * board's surface/border tokens. */
+function meetingsSummaryHTML(leads) {
+  const rows = computeManagerConversion(leads);
+  if (!rows.length) return '';
+  const items = rows.map(r => `
+      <div class="mtg-sum-row">
+        <span class="mtg-sum-mgr">${escapeHtml(r.manager)}</span>
+        <span class="mtg-sum-sep">·</span><span class="mtg-sum-stat">פגישות: <b>${r.total}</b></span>
+        <span class="mtg-sum-sep">·</span><span class="mtg-sum-stat">התקיימו: <b>${r.held}</b></span>
+        <span class="mtg-sum-sep">·</span><span class="mtg-sum-stat">נכנסו: <b>${r.converted}</b></span>
+        <span class="mtg-sum-sep">·</span><span class="mtg-sum-rate">${r.rate}%</span>
+      </div>`).join('');
+  return `
+    <div class="mtg-summary">
+      <div class="mtg-summary-head">המרת פגישות למנהל</div>
+      ${items}
+    </div>`;
+}
+
 /* Render one meeting row (RTL). Missing fields render as an em dash so columns
  * stay aligned. The WhatsApp cell is a real link when meetingWith resolves to a
  * phone, otherwise a disabled button (never a link to nobody). Read-only —
- * clicking opens WhatsApp in a new tab and never writes. */
-function meetingRowHTML(m, timeText) {
+ * clicking opens WhatsApp in a new tab and never writes. `showOutcome` gates the
+ * outcome <select> (true only for today-or-earlier rows; see renderMeetings). */
+function meetingRowHTML(m, timeText, showOutcome) {
   const url = meetingWhatsappUrl(m);
   const wa = url
     ? `<a class="mtg-wa" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">WhatsApp</a>`
@@ -1261,13 +1371,16 @@ function meetingRowHTML(m, timeText) {
   const edit = state.mode === 'edit'
     ? `<button type="button" class="mtg-edit" data-mtg-edit="${escapeHtml(m.id || '')}" title="ערוך פגישה">✏️</button>`
     : '';
+  /* Outcome selector — only on today-or-earlier rows, and only in edit mode
+   * (viewers never write; saveAll no-ops for them and there is nothing to pick). */
+  const outcome = (showOutcome && state.mode === 'edit') ? meetingOutcomeSelectHTML(m) : '';
   return `
     <div class="mtg-row">
       <span class="mtg-time">${escapeHtml(timeText || m.time || '—')}</span>
       <span class="mtg-name">${escapeHtml(m.name || '—')}</span>
       <span class="mtg-house">${escapeHtml(m.houseLabel || '—')}</span>
       <span class="mtg-with">${escapeHtml(m.meetingWith || '—')}</span>
-      <span class="mtg-actions">${wa}${edit}</span>
+      <span class="mtg-actions">${outcome}${wa}${edit}</span>
     </div>`;
 }
 
@@ -1280,17 +1393,21 @@ function renderMeetings() {
 
   const rangeLabel = `${formatDateDDMMYYYY(wk.weekStart)} – ${formatDateDDMMYYYY(wk.weekEnd)}`;
 
+  /* Per-manager conversion strip — computed over ALL leads (all-time), so it
+   * renders even in a week with no meetings and reflects every recorded outcome. */
+  const summary = meetingsSummaryHTML(state.leads);
+
+  const today = todayISO();
   let body;
   if (wk.total === 0) {
     body = `<div class="mtg-empty">אין פגישות מתוזמנות לשבוע זה</div>`;
   } else {
-    const today = todayISO();
     body = wk.days.map(d => {
       const isToday = d.iso === today;
-      const rows = d.timed.map(m => meetingRowHTML(m)).join('');
+      const rows = d.timed.map(m => meetingRowHTML(m, undefined, meetingOutcomeEligible(m.date, today))).join('');
       const noTimeBlock = d.noTime.length
         ? `<div class="mtg-notime-head">ללא שעה</div>` +
-          d.noTime.map(m => meetingRowHTML(m, '—')).join('')
+          d.noTime.map(m => meetingRowHTML(m, '—', meetingOutcomeEligible(m.date, today))).join('')
         : '';
       const todayBadge = isToday ? `<span class="mtg-today-badge">היום</span>` : '';
       return `
@@ -1308,6 +1425,7 @@ function renderMeetings() {
       <button type="button" class="btn" data-mtg="next">שבוע הבא →</button>
       <span class="mtg-range">${escapeHtml(rangeLabel)}</span>
     </div>
+    ${summary}
     <div class="mtg-list">${body}</div>`;
 
   board.querySelector('[data-mtg="prev"]').onclick = () => {
@@ -1345,6 +1463,21 @@ function renderMeetings() {
     btn.addEventListener('click', () => {
       const m = meetingsById[btn.getAttribute('data-mtg-edit')];
       if (m) openMeetingEditModal(m);
+    });
+  });
+
+  /* Outcome <select> — persist the picked value through the SAME per-row path
+   * the lead-card inline fields use (updateLead → saveAll, optimistic + rollback).
+   * On success re-render the board only (updates the summary strip + the row's
+   * selected value); NOT renderAll — that would fire autosaveMeetingWithDefaults
+   * and its busy-flag guard, which this edit must not perturb. On failure
+   * updateLead already rolled back and surfaced the error. */
+  board.querySelectorAll('.mtg-outcome').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const id = sel.getAttribute('data-mtg-outcome');
+      if (!id) return;
+      const ok = await updateLead(id, { meetingOutcome: sel.value });
+      if (ok) renderMeetings();
     });
   });
 }
@@ -2789,6 +2922,7 @@ function openEntryModal(lead) {
       });
       state.patients.unshift(patient);
       const prevStage = lead.stage;
+      const prevOutcome = lead.meetingOutcome;
       /* Retire the lead to the terminal 'admitted' stage instead of leaving it
        * at 'entry'. An 'entry' lead stays in promoteEnteredLeads' candidate
        * pool forever and re-stamps this patient's date from lead.entryDate on
@@ -2797,12 +2931,18 @@ function openEntryModal(lead) {
        * patient exists the lead can no longer overwrite it. */
       lead.stage = 'admitted';
       lead.entryDate = v.date;
+      /* Record the meeting's conversion in the SAME save: a lead admitted after
+       * a meeting (visitDate set) flips to 'entered', overwriting any prior
+       * outcome. A lead with no meeting gets nothing (must not pollute stats). */
+      const admitOutcome = admissionMeetingOutcome(lead);
+      if (admitOutcome) lead.meetingOutcome = admitOutcome;
       renderAll();
       try {
         await saveAll();
       } catch (e) {
         state.patients = state.patients.filter(p => p.id !== patient.id);
         lead.stage = prevStage;
+        lead.meetingOutcome = prevOutcome;
         renderAll();
         showError('שמירה נכשלה — ' + e.message);
         return false;

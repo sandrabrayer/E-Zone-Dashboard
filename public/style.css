@@ -416,6 +416,64 @@ input:focus, select:focus, textarea:focus {
   background: var(--surface-2);
   border-top: 1px solid var(--border);
 }
+
+/* Outcome <select> on a past/today row — compact, sits in the actions cell
+ * before the WhatsApp button. Neutral surface so it doesn't fight the green WA. */
+.mtg-outcome {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--text);
+  cursor: pointer;
+  max-width: 150px;
+}
+.mtg-outcome:hover { filter: brightness(1.05); }
+
+/* Per-manager conversion strip above the board. One row per manager; wraps
+ * gracefully on narrow screens. RTL-safe (inherits the app's dir=rtl). */
+.mtg-summary {
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+.mtg-summary-head {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.mtg-sum-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 0;
+  font-size: 13px;
+  color: var(--text);
+}
+.mtg-sum-row + .mtg-sum-row { border-top: 1px solid var(--border); }
+.mtg-sum-mgr { font-weight: 700; }
+.mtg-sum-sep { color: var(--text-muted); }
+.mtg-sum-stat { color: var(--text-muted); }
+.mtg-sum-stat b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+.mtg-sum-rate {
+  margin-inline-start: auto;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--primary);
+  background: var(--primary-glow);
+  padding: 1px 10px;
+  border-radius: 999px;
+}
+
 .card {
   background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
   border: 1px solid var(--border);
