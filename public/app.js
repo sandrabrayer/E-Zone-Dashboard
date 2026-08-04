@@ -1028,6 +1028,83 @@ function meetingInviteWaUrl(rawPhone, message) {
   return `https://wa.me/${digits}?text=${encodeURIComponent(message)}`;
 }
 
+/* ===== Billing / contact phone helpers =====
+ *
+ * A lead's name/phone are the PATIENT (פרטי המטופל). contactName/contactPhone/
+ * contactRelation are the REFERRER (פרטי הפונה). billingPhone (טלפון לגבייה
+ * ועדכונים) is the default number for OUTGOING communication; Vered picks it per
+ * lead. It stores a RESOLVED phone STRING (never a reference), so downstream —
+ * WhatsApp links, search — treats it like any other phone. All pure + testable. */
+
+/* The phone to use for outgoing communication: the explicit billingPhone if set,
+ * otherwise fall back to the patient phone. Never throws on a missing lead. */
+function leadBillingPhone(lead) {
+  if (!lead) return '';
+  const bill = String(lead.billingPhone == null ? '' : lead.billingPhone).trim();
+  return bill || String(lead.phone == null ? '' : lead.phone).trim();
+}
+
+/* Resolve the billing selector choice into the actual phone string to STORE.
+ *   'patient' (default) → the patient phone
+ *   'contact'           → the referrer (contact) phone
+ *   'other'             → a free-typed number
+ * Trims so a blank selection doesn't store stray whitespace. */
+function resolveBillingPhone(mode, patientPhone, contactPhone, otherPhone) {
+  const t = (v) => String(v == null ? '' : v).trim();
+  if (mode === 'contact') return t(contactPhone);
+  if (mode === 'other')   return t(otherPhone);
+  return t(patientPhone); // 'patient' (default)
+}
+
+/* Which selector mode + free-input value a stored billingPhone corresponds to,
+ * for initializing the selector in edit mode. Compares by NORMALIZED phone so a
+ * formatting difference (spaces/dashes/+972) doesn't force 'אחר'. Unset billing
+ * → default 'patient' (matches leadBillingPhone's fallback). Patient is checked
+ * before contact, so when both phones are equal it reads as 'patient'. */
+function billingModeForLead(lead) {
+  const bill = String((lead && lead.billingPhone) == null ? '' : lead.billingPhone).trim();
+  if (!bill) return { mode: 'patient', other: '' };
+  const b = normalizePhone(bill);
+  const p = normalizePhone(lead && lead.phone);
+  const c = normalizePhone(lead && lead.contactPhone);
+  if (b && p && b === p) return { mode: 'patient', other: '' };
+  if (b && c && b === c) return { mode: 'contact', other: '' };
+  return { mode: 'other', other: bill };
+}
+
+/* Whether a lead's billing number is genuinely a DIFFERENT number than the
+ * patient phone (normalized) — drives the subtle "גבייה" marker in the card. An
+ * unset or patient-equal billingPhone returns false (the default case, no mark). */
+function leadBillingDiffersFromPatient(lead) {
+  const b = normalizePhone(lead && lead.billingPhone);
+  if (!b) return false;
+  return b !== normalizePhone(lead && lead.phone);
+}
+
+/* Shared billing-selector field defs for the add + edit lead modals, so both
+ * stay identical. `lead` initializes the mode + free input in edit mode (null in
+ * add mode → default 'patient'). Resolve the choice on submit with
+ * resolveBillingPhone() over the sibling phone / contactPhone values. */
+function billingSelectorFields(lead) {
+  const init = billingModeForLead(lead || {});
+  return [
+    { name: 'billingMode', label: 'טלפון לגבייה ועדכונים', type: 'select',
+      value: init.mode,
+      options: [
+        { value: 'patient', label: 'מטופל' },
+        { value: 'contact', label: 'פונה' },
+        { value: 'other',   label: 'אחר' },
+      ],
+      onChange: (val, form) => {
+        const inp = form.querySelector('[name="billingOther"]');
+        if (inp) inp.closest('.form-row').style.display = (val === 'other') ? '' : 'none';
+      } },
+    { name: 'billingOther', label: 'מספר טלפון אחר', type: 'tel',
+      value: init.mode === 'other' ? init.other : '',
+      hidden: init.mode !== 'other' },
+  ];
+}
+
 /* Build the meetingWith modal field. `preselect` is the resolved default (the
  * house manager, or '' → the blank placeholder). Shared by the add and edit
  * lead modals so the option list and blank-default behaviour stay identical. */
@@ -1556,13 +1633,14 @@ function openMeetingEditModal(m) {
 
   /* "שלח עדכון" — build the update message from the modal's LIVE values (not the
    * pre-edit meeting), so sending after changing a field reflects the new plan
-   * even before saving. Sent to the lead's phone via the shared PWA-safe opener. */
+   * even before saving. Sent to the lead's billing/updates phone (falls back to
+   * the patient phone) via the shared PWA-safe opener. */
   updateBtn.onclick = () => {
     const msg = buildMeetingMessage({
       type: 'update', name: lead.name, manager: withInp.value,
       house: lead.house, dateISO: dateInp.value, time: timeInp.value,
     });
-    openWhatsAppLink(meetingInviteWaUrl(lead.phone, msg));
+    openWhatsAppLink(meetingInviteWaUrl(leadBillingPhone(lead), msg));
   };
 
   let submitting = false;
@@ -1844,13 +1922,82 @@ function renderKanban() {
   });
 }
 
+/* Whether a lead matches the search box query `q` (already trimmed+lowercased by
+ * the input handler). Pure + exported for tests. Text fields (name, house,
+ * contactName) match by lowercased substring — today's behavior for name/house,
+ * now extended to the referrer name. Phone fields (patient phone, contactPhone,
+ * billingPhone) match either by raw lowercased substring (unchanged patient-phone
+ * behavior — a partial as-displayed still hits) OR by normalized-digit substring,
+ * so "050-12" and "+97250 12" find the same lead regardless of formatting. */
+function leadMatchesQuery(lead, q) {
+  if (!q) return true;
+  const ql = String(q).toLowerCase();
+  const text = [lead.name, lead.house, lead.contactName];
+  if (text.some(v => String(v == null ? '' : v).toLowerCase().includes(ql))) return true;
+  const qDigits = normalizePhone(q);
+  return [lead.phone, lead.contactPhone, lead.billingPhone].some(p => {
+    const s = String(p == null ? '' : p).toLowerCase();
+    if (s.includes(ql)) return true;
+    return !!qDigits && normalizePhone(p).includes(qDigits);
+  });
+}
+
 function filterLeads() {
   const q = state.leadSearch;
   return state.leads.filter(l => {
     if (l.stage === 'irrelevant') return false; // hidden from board, but counted in pipeline + on dashboard
-    if (!q) return true;
-    return [l.name, l.phone, l.house].some(v => String(v == null ? '' : v).toLowerCase().includes(q));
+    return leadMatchesQuery(l, q);
   });
+}
+
+/* Compact "פונה" line for a lead card (view mode). Rendered only when the
+ * referrer has a name or phone; empty parts are omitted cleanly. A subtle
+ * "גבייה" tag sits next to the contact phone when billingPhone resolves to it. */
+function leadContactLineHTML(lead) {
+  const name  = lead.contactName || '';
+  const phone = lead.contactPhone || '';
+  const rel   = lead.contactRelation || '';
+  if (!name && !phone) return '';
+  const billOnContact = leadBillingDiffersFromPatient(lead) &&
+    normalizePhone(lead.billingPhone) === normalizePhone(lead.contactPhone);
+  const billTag = billOnContact ? ' <span class="lc-bill-tag">גבייה</span>' : '';
+  const parts = [];
+  if (name)  parts.push(escapeHtml(name));
+  if (phone) parts.push(escapeHtml(phone) + billTag);
+  let line = parts.join(' · ');
+  if (rel) line += ` (${escapeHtml(rel)})`;
+  return `<div class="lc-contact"><span class="lc-contact-label">פונה:</span> ${line}</div>`;
+}
+
+/* Separate billing line for the case where billingPhone is an "אחר" number —
+ * one that is neither the patient phone nor the contact phone, so it isn't shown
+ * anywhere else. When billing resolves to the patient (default) or the contact
+ * phone, nothing renders here (the contact-line tag covers the contact case). */
+function leadBillingLineHTML(lead) {
+  if (!leadBillingDiffersFromPatient(lead)) return '';
+  const b = normalizePhone(lead.billingPhone);
+  if (b && b === normalizePhone(lead.contactPhone)) return '';
+  return `<div class="lc-billing"><span class="lc-bill-tag">גבייה</span> ${escapeHtml(lead.billingPhone)}</div>`;
+}
+
+/* Edit-mode inline block: פרטי הפונה fields + the billing selector, all inside
+ * the card. contactName/contactPhone/contactRelation use the generic
+ * [data-field] → updateLead autosave path; the billing mode select + free input
+ * are wired separately in buildLeadCard (they resolve to a single billingPhone
+ * string, so they can't use the 1:1 data-field mapping). */
+function leadContactEditHTML(lead) {
+  const init = billingModeForLead(lead);
+  const modeOpt = (v, label) => `<option value="${v}"${init.mode === v ? ' selected' : ''}>${label}</option>`;
+  return `
+    <div class="lc-contact-edit edit-only">
+      <div class="lc-section-head">פרטי הפונה</div>
+      <input type="text" data-field="contactName"     value="${escapeHtml(lead.contactName || '')}"     placeholder="שם הפונה" />
+      <input type="tel"  data-field="contactPhone"    value="${escapeHtml(lead.contactPhone || '')}"    placeholder="טלפון הפונה" />
+      <input type="text" data-field="contactRelation" value="${escapeHtml(lead.contactRelation || '')}" placeholder="קשר למטופל" />
+      <label class="lc-field-label">טלפון לגבייה ועדכונים</label>
+      <select class="lc-billing-mode">${modeOpt('patient', 'מטופל')}${modeOpt('contact', 'פונה')}${modeOpt('other', 'אחר')}</select>
+      <input type="tel" class="lc-billing-other" value="${escapeHtml(init.mode === 'other' ? init.other : '')}" placeholder="מספר טלפון אחר"${init.mode === 'other' ? '' : ' style="display:none"'} />
+    </div>`;
 }
 
 function buildLeadCard(lead) {
@@ -1907,6 +2054,8 @@ function buildLeadCard(lead) {
       ${escapeHtml(lead.phone)} ${lead.house ? '· ' + escapeHtml(lead.house) : ''}
       ${lead.source ? '· מקור: ' + escapeHtml(lead.source) : ''}
     </div>
+    ${state.mode === 'edit' ? '' : leadContactLineHTML(lead)}
+    ${state.mode === 'edit' ? '' : leadBillingLineHTML(lead)}
     ${lead.assignedTo
       ? `<div class="lc-assigned"><span class="lc-assigned-label">משוייך ל</span>${escapeHtml(lead.assignedTo)}</div>`
       : ''}
@@ -1916,6 +2065,7 @@ function buildLeadCard(lead) {
     </div>
     ${lead.note ? `<div class="lc-note">${escapeHtml(lead.note)}</div>` : ''}
     ${stageFields}
+    ${state.mode === 'edit' ? leadContactEditHTML(lead) : ''}
     <div class="lc-actions edit-only">
       <button class="btn small" data-action="back" ${idx === 0 ? 'disabled' : ''}>שלב קודם →</button>
       <button class="btn small primary" data-action="next">${nextLabel}</button>
@@ -1942,6 +2092,27 @@ function buildLeadCard(lead) {
     inp.onchange = () => updateLead(lead.id, { [inp.dataset.field]: inp.value });
   });
 
+  /* Billing selector (edit mode) — compound: the mode <select> + free-input
+   * resolve to ONE billingPhone string, so they can't use the 1:1 data-field
+   * mapping above. Wire them separately (addEventListener, so nothing clobbers
+   * the data-field .onchange handlers) and persist via updateLead → saveAll,
+   * exactly like the other inline fields. On success updateLead does NOT
+   * re-render, so the autosave busy-flag guard is never perturbed. contactPhone
+   * is read LIVE from its inline input so a just-typed number resolves correctly. */
+  const billMode  = card.querySelector('.lc-billing-mode');
+  const billOther = card.querySelector('.lc-billing-other');
+  if (billMode && billOther) {
+    const applyBilling = () => {
+      billOther.style.display = billMode.value === 'other' ? '' : 'none';
+      const contactInp = card.querySelector('[data-field="contactPhone"]');
+      const contactVal = contactInp ? contactInp.value : lead.contactPhone;
+      const resolved = resolveBillingPhone(billMode.value, lead.phone, contactVal, billOther.value);
+      updateLead(lead.id, { billingPhone: resolved });
+    };
+    billMode.addEventListener('change', applyBilling);
+    billOther.addEventListener('change', applyBilling);
+  }
+
   /* WhatsApp invite button (visit stage only). Reads the three inline fields
    * LIVE from the DOM — not from `lead` — so it reflects the user's current
    * selections regardless of whether updateLead's async save has run yet, and
@@ -1967,7 +2138,9 @@ function buildLeadCard(lead) {
       const msg = buildMeetingMessage({
         type: 'invite', name: lead.name, manager, house: lead.house, dateISO, time,
       });
-      openWhatsAppLink(meetingInviteWaUrl(lead.phone, msg));
+      /* Outgoing communication targets the billing/updates phone (falls back to
+       * the patient phone when billingPhone is unset — see leadBillingPhone). */
+      openWhatsAppLink(meetingInviteWaUrl(leadBillingPhone(lead), msg));
     };
   }
 
@@ -2777,8 +2950,21 @@ function openAddLeadModal() {
   showModal({
     title: 'ליד חדש',
     fields: [
+      /* פרטי המטופל — the patient. name/phone are unchanged from the original
+       * form, so existing leads and the duplicate-phone check keep working. */
+      { type: 'section', label: 'פרטי המטופל' },
       { name: 'name', label: 'שם מלא', type: 'text', required: true },
       { name: 'phone', label: 'טלפון', type: 'tel' },
+      /* פרטי הפונה — the referrer. All optional; a lead with only patient
+       * name+phone stays fully valid. */
+      { type: 'section', label: 'פרטי הפונה' },
+      { name: 'contactName',     label: 'שם', type: 'text' },
+      { name: 'contactPhone',    label: 'טלפון', type: 'tel' },
+      { name: 'contactRelation', label: 'קשר למטופל', type: 'text' },
+      /* billingPhone selector — default מטופל. Resolved to a plain phone string
+       * on submit (see resolveBillingPhone). */
+      ...billingSelectorFields(null),
+      { type: 'section', label: 'פרטים נוספים' },
       /* Changing the house auto-fills נפגש עם with that house's manager, unless
        * the user already set it. Houses with no manager (pardes/sde/external)
        * clear it. resolveHouseId maps the Hebrew label options below. */
@@ -2809,8 +2995,13 @@ function openAddLeadModal() {
 
       const doCreateLead = async vals => {
         const id = cryptoId();
+        /* Resolve the billing selector into the stored phone string. billingMode
+         * / billingOther are selector-only and not lead fields — normalizeLead
+         * ignores them; the explicit billingPhone below is what persists. */
+        const billingPhone = resolveBillingPhone(
+          vals.billingMode, vals.phone, vals.contactPhone, vals.billingOther);
         const lead = normalizeLead({
-          id, ...vals,
+          id, ...vals, billingPhone,
           stage: 'new',
           /* todayISO() (YYYY-MM-DD) instead of a full toISOString() timestamp
            * so the value matches what the inline date picker reads/writes —
@@ -2859,8 +3050,17 @@ function openEditLeadModal(lead) {
   showModal({
     title: 'עריכת ליד',
     fields: [
+      { type: 'section', label: 'פרטי המטופל' },
       { name: 'name',  label: 'שם',          type: 'text',     required: true, value: lead.name || '' },
       { name: 'phone', label: 'טלפון',       type: 'tel',      value: lead.phone || '' },
+      { type: 'section', label: 'פרטי הפונה' },
+      { name: 'contactName',     label: 'שם',          type: 'text', value: lead.contactName || '' },
+      { name: 'contactPhone',    label: 'טלפון',       type: 'tel',  value: lead.contactPhone || '' },
+      { name: 'contactRelation', label: 'קשר למטופל',  type: 'text', value: lead.contactRelation || '' },
+      /* Billing selector initialized from the stored billingPhone (matches
+       * patient → מטופל, matches contact → פונה, else אחר with the value). */
+      ...billingSelectorFields(lead),
+      { type: 'section', label: 'פרטים נוספים' },
       { name: 'house', label: 'בית מועדף',   type: 'select',
         value: lead.house || '',
         options: [{ value: '', label: '— ללא —' }, ...HOUSES.map(h => ({ value: h.name, label: h.name }))] },
@@ -2887,6 +3087,11 @@ function openEditLeadModal(lead) {
       lead.visitTime   = v.visitTime || '';
       lead.meetingWith = v.meetingWith || '';
       lead.note        = (v.note || '').trim();
+      lead.contactName     = (v.contactName || '').trim();
+      lead.contactPhone    = (v.contactPhone || '').trim();
+      lead.contactRelation = (v.contactRelation || '').trim();
+      lead.billingPhone    = resolveBillingPhone(
+        v.billingMode, v.phone, v.contactPhone, v.billingOther);
       renderAll();
       try {
         await saveAll();
@@ -3356,9 +3561,17 @@ function showModal({ title, fields, submitLabel, onSubmit }) {
 
   const fieldsHtml = fields.map(f => {
     const val = f.value !== undefined ? f.value : '';
+    /* Section header — a non-input divider label (no `name`, excluded from value
+     * collection and onChange wiring). Lets a modal group fields visually. */
+    if (f.type === 'section') {
+      return `<div class="form-section-head">${escapeHtml(f.label)}</div>`;
+    }
+    // A field may render its row initially hidden (f.hidden); an onChange on a
+    // sibling can reveal it. Kept as an inline style so no CSS class is needed.
+    const rowStyle = f.hidden ? ' style="display:none"' : '';
     if (f.type === 'select') {
       return `
-        <div class="form-row">
+        <div class="form-row"${rowStyle}>
           <label>${f.label}${f.required ? ' *' : ''}</label>
           <select name="${f.name}">
             ${f.options.map(o => `<option value="${o.value}" ${o.value === val ? 'selected' : ''}>${o.label}</option>`).join('')}
@@ -3367,13 +3580,13 @@ function showModal({ title, fields, submitLabel, onSubmit }) {
     }
     if (f.type === 'textarea') {
       return `
-        <div class="form-row">
+        <div class="form-row"${rowStyle}>
           <label>${f.label}${f.required ? ' *' : ''}</label>
           <textarea name="${f.name}" rows="3">${escapeHtml(val)}</textarea>
         </div>`;
     }
     return `
-      <div class="form-row">
+      <div class="form-row"${rowStyle}>
         <label>${f.label}${f.required ? ' *' : ''}</label>
         <input name="${f.name}" type="${f.type}"${f.step ? ` step="${escapeHtml(f.step)}"` : ''} value="${escapeHtml(val)}" />
       </div>`;
@@ -3425,7 +3638,10 @@ function showModal({ title, fields, submitLabel, onSubmit }) {
 
     const fd = new FormData(e.target);
     const values = {};
-    fields.forEach(f => { values[f.name] = (fd.get(f.name) || '').toString(); });
+    fields.forEach(f => {
+      if (!f.name) return;   // section headers carry no value
+      values[f.name] = (fd.get(f.name) || '').toString();
+    });
 
     try {
       const ok = await onSubmit(values);
