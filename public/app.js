@@ -116,6 +116,7 @@ const state = {
    * Defaults to the current week on first render (see renderMeetings). */
   meetingsWeekStart: '',
   leadSearch: '',
+  retentionSearch: '',
   patientSearch: '',
   billingDate: '',
   breakeven: null, // loaded from localStorage in initBreakeven()
@@ -384,6 +385,15 @@ function initTabs() {
     state.patientSearch = e.target.value.trim().toLowerCase();
     renderPatients();
   };
+  /* שימור לידים tab search — same immediate-on-input behavior as the leads tab;
+   * filters the closed-lead disposition groups (see renderIrrelevantLeads). */
+  const retentionSearchEl = document.getElementById('retention-search');
+  if (retentionSearchEl) {
+    retentionSearchEl.addEventListener('input', e => {
+      state.retentionSearch = String(e.target.value || '').trim().toLowerCase();
+      renderIrrelevantLeads();
+    });
+  }
   document.getElementById('add-lead-btn').onclick = openAddLeadModal;
   document.getElementById('add-patient-btn').onclick = openDirectAddPatientModal;
 
@@ -2292,32 +2302,69 @@ async function restoreIrrelevantLead(ilead) {
   });
 }
 
+/* Disposition sections for the שימור לידים tab, in the fixed render order. */
+const IRRELEVANT_SECTION_ORDER = ['not_relevant', 'completed', 'stopped_early'];
+
+/* Thin per-tab search wrapper over the shared leadMatchesQuery: a closed lead
+ * also matches on its origin sheet (the stage it was closed from — shown in the
+ * row's meta), by both the stable stage id and its Hebrew label. leadMatchesQuery
+ * is NOT modified; this only widens matching for this tab. Pure + testable. */
+function irrelevantLeadMatchesQuery(lead, q) {
+  if (!q) return true;
+  if (leadMatchesQuery(lead, q)) return true;
+  const ql = String(q).toLowerCase();
+  const origin = String(lead.originSheet == null ? '' : lead.originSheet).toLowerCase();
+  if (origin.includes(ql)) return true;
+  return String(stageLabelById(lead.originSheet) || '').toLowerCase().includes(ql);
+}
+
+/* Group closed leads into the three disposition sections (spec order) and apply
+ * the search query inside each group. Returns [{ key, rows }] for non-empty
+ * groups only, so a group with zero matches is dropped while a query is active.
+ * An unknown/blank disposition falls into 'not_relevant' (matches the pre-search
+ * grouping). Empty query → every row matches → the current unfiltered grouping.
+ * Pure (no DOM / no state) so grouping + filtering + zero-match exclusion are
+ * unit-tested directly. */
+function filterIrrelevantGroups(rows, q) {
+  const grouped = { not_relevant: [], completed: [], stopped_early: [] };
+  (rows || []).forEach(lead => {
+    const key = grouped[lead.disposition] ? lead.disposition : 'not_relevant';
+    if (irrelevantLeadMatchesQuery(lead, q)) grouped[key].push(lead);
+  });
+  return IRRELEVANT_SECTION_ORDER
+    .map(key => ({ key: key, rows: grouped[key] }))
+    .filter(g => g.rows.length > 0);
+}
+
 function renderIrrelevantLeads() {
   const list = document.getElementById('irrelevant-list');
   if (!list) return;
   list.innerHTML = '';
 
   const rows = state.irrelevantLeads || [];
-  document.getElementById('irrelevant-count').textContent = rows.length;
 
   if (!rows.length) {
+    document.getElementById('irrelevant-count').textContent = 0;
     list.innerHTML = `<div class="card billing-empty">אין לידים סגורים</div>`;
     return;
   }
 
-  /* Phase 2d-1 — group rows by disposition and render up to three sections
-   * in spec order. Sections with zero rows are skipped so empty headers
-   * don't clutter the tab. */
-  const grouped = { not_relevant: [], completed: [], stopped_early: [] };
-  rows.forEach(lead => {
-    const key = grouped[lead.disposition] ? lead.disposition : 'not_relevant';
-    grouped[key].push(lead);
-  });
+  /* Phase 2d-1 — group rows by disposition and render up to three sections in
+   * spec order (empty groups skipped). The search box (retentionSearch) filters
+   * inside each group; the count pill + per-group counts reflect the FILTERED
+   * result so "clearing restores the full list" is exact. */
+  const q = state.retentionSearch;
+  const groups = filterIrrelevantGroups(rows, q);
+  const shown = groups.reduce((n, g) => n + g.rows.length, 0);
+  document.getElementById('irrelevant-count').textContent = shown;
 
-  ['not_relevant', 'completed', 'stopped_early'].forEach(key => {
-    const sectionRows = grouped[key];
-    if (!sectionRows.length) return;
+  if (!groups.length) {
+    // Non-empty collection, but the active query matched nothing.
+    list.innerHTML = `<div class="card billing-empty">לא נמצאו לידים סגורים לחיפוש זה</div>`;
+    return;
+  }
 
+  groups.forEach(({ key, rows: sectionRows }) => {
     const section = document.createElement('div');
     section.className = 'closure-section';
     section.dataset.disposition = key;
