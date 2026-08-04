@@ -14,8 +14,11 @@
  *
  * The contract locked here:
  *   - LEAD_COLUMNS keeps its existing columns in the same order and appends
- *     meetingWith LAST (readSheet_ maps cells to keys by position, so any
- *     reorder or mid-array insert would silently corrupt reads);
+ *     meetingWith immediately after the assignedTo block (readSheet_ maps cells
+ *     to keys by position, so any reorder or mid-array insert would silently
+ *     corrupt reads). Later append-only additions (e.g. meetingOutcome) extend
+ *     the array further, so meetingWith's position is asserted relative to
+ *     assignedTo, not as the terminal column;
  *   - normalizeLead defaults meetingWith to present-but-blank '' on legacy rows
  *     (no such column, no backfill);
  *   - HOUSE_MANAGERS covers exactly the four house keys and no others. */
@@ -77,7 +80,7 @@ function loadApp() {
 const code = loadCode();
 const app = loadApp();
 
-test('LEAD_COLUMNS keeps existing column order and appends meetingWith last', () => {
+test('LEAD_COLUMNS keeps existing column order and appends meetingWith after assignedTo', () => {
   // LEAD_COLUMNS is created in the Code.gs vm realm; copy into a plain
   // test-realm array so deepStrictEqual compares contents, not cross-realm
   // Array prototypes.
@@ -94,13 +97,21 @@ test('LEAD_COLUMNS keeps existing column order and appends meetingWith last', ()
     expectedThroughAssignedTo,
     'existing LEAD_COLUMNS order must be unchanged'
   );
+  // meetingWith is appended immediately after the assignedTo block. Later
+  // append-only additions (e.g. meetingOutcome) extend the array further, so
+  // this asserts meetingWith's position relative to assignedTo — not that it is
+  // the terminal column.
   assert.strictEqual(
-    cols[cols.length - 1],
+    cols[expectedThroughAssignedTo.length],
     'meetingWith',
-    'meetingWith must be the last column'
+    'meetingWith must be appended immediately after assignedTo'
   );
-  // Append-only: exactly one new column beyond the previous schema.
-  assert.strictEqual(cols.length, expectedThroughAssignedTo.length + 1);
+  // Append-only: meetingWith appears exactly once.
+  assert.strictEqual(
+    cols.filter((c) => c === 'meetingWith').length,
+    1,
+    'meetingWith must appear exactly once'
+  );
 });
 
 test('normalizeLead defaults meetingWith to present-but-blank on legacy rows', () => {

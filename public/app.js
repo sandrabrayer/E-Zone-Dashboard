@@ -57,6 +57,19 @@ const DISPOSITION_LABELS = {
  * source of truth for "which dispositions a discharge can have". */
 const DISCHARGE_DISPOSITIONS = ['completed', 'stopped_early', 'released_outpatient'];
 
+/* Meeting-outcome closure model — the outcome recorded after a lead's meeting.
+ * Stable keys persist to the sheet (meetingOutcome column via LEAD_COLUMNS);
+ * Hebrew labels are render-time only so a UI label rename never invalidates
+ * historical rows. Mirrors the DISPOSITION_LABELS precedent. Foundation only —
+ * no UI consumes this map yet; it ships now so the next PR can render it. */
+const MEETING_OUTCOME_LABELS = {
+  not_relevant: 'לא רלוונטי',
+  thinking:     'חושבים על זה',
+  entered:      'נכנסים לטיפול',
+  postponed:    'נדחה',
+  cancelled:    'התבטל',
+};
+
 const STATUS_OPTIONS = [
   { id: 'active',   label: 'פעיל' },
   { id: 'trial',    label: 'תקופת ניסיון' },
@@ -1046,6 +1059,12 @@ function normalizeLead(l) {
      * when absent so pre-existing leads (no such column) stay blank with no
      * backfill, mirroring the assignedTo idiom. */
     meetingWith: pickField(l, ['meetingWith', 'meeting_with', 'נפגש עם']),
+    /* meetingOutcome — the outcome of the lead's meeting (stable key; see
+     * MEETING_OUTCOME_LABELS). Foundation-only schema pass-through: no UI,
+     * nothing rendered. pickField returns '' when absent so pre-existing leads
+     * (no such column) stay blank with no backfill, mirroring the meetingWith
+     * idiom. */
+    meetingOutcome: pickField(l, ['meetingOutcome', 'meeting_outcome', 'תוצאת פגישה']),
     /* Stored as YYYY-MM-DD. Sheets sometimes returns a Date object for date
      * cells (depending on locale + column type); isoDate normalizes both
      * Date objects and full ISO timestamps down to a plain date string so
