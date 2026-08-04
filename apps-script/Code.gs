@@ -162,7 +162,28 @@ const LEAD_COLUMNS = [
    * normalizeLead reads it via pickField defaulting to ''). Foundation only —
    * no UI yet; the field flows through save/load untouched. Mirrors the
    * meetingWith append. */
-  'meetingOutcome'
+  'meetingOutcome',
+  /* Lead contact fields (foundation). The lead's name/phone now semantically
+   * mean the PATIENT (פרטי המטופל); these carry the REFERRER's contact details
+   * (פרטי הפונה) plus a dedicated billing/updates phone (טלפון לגבייה ועדכונים)
+   * the user sets per lead:
+   *   contactName     — referrer's name
+   *   contactPhone    — referrer's phone
+   *   contactRelation — referrer's relation to the patient
+   *   billingPhone    — phone for billing + updates
+   * APPEND ONLY, in this exact order: readSheet_ maps cells to keys by POSITION,
+   * so these must stay last and nothing above them may be reordered or inserted
+   * mid-array. Pre-existing rows have no such columns and stay blank
+   * (getOrCreateSheet_ appends the missing headers non-destructively,
+   * objectToRow_ defaults missing keys to '', and normalizeLead reads each via
+   * pickField defaulting to ''). Foundation only — no UI yet; the fields flow
+   * through save/load untouched. Mirrors the meetingOutcome append. They flow
+   * automatically into IRRELEVANT_LEAD_COLUMNS / REMOVED_LEAD_COLUMNS below,
+   * which derive from LEAD_COLUMNS via .concat(). */
+  'contactName',
+  'contactPhone',
+  'contactRelation',
+  'billingPhone'
 ];
 
 /* Irrelevant-leads sheet mirrors LEAD_COLUMNS plus two metadata fields:

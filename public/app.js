@@ -1082,6 +1082,18 @@ function normalizeLead(l) {
      * (no such column) stay blank with no backfill, mirroring the meetingWith
      * idiom. */
     meetingOutcome: pickField(l, ['meetingOutcome', 'meeting_outcome', 'תוצאת פגישה']),
+    /* Lead contact fields (foundation). name/phone above now mean the PATIENT
+     * (פרטי המטופל); these carry the REFERRER's details (פרטי הפונה) and a
+     * dedicated billing/updates phone (טלפון לגבייה ועדכונים). Schema-only
+     * pass-through: no UI, nothing rendered. pickField returns '' when absent so
+     * pre-existing leads (no such columns) stay blank with no backfill,
+     * mirroring the meetingOutcome idiom. These also flow through
+     * normalizeIrrelevantLead / normalizeRemovedLead, which build on this
+     * function's output (base = normalizeLead(l)). */
+    contactName:     pickField(l, ['contactName', 'contact_name', 'שם הפונה', 'שם פונה']),
+    contactPhone:    pickField(l, ['contactPhone', 'contact_phone', 'טלפון הפונה', 'טלפון פונה']),
+    contactRelation: pickField(l, ['contactRelation', 'contact_relation', 'קשר', 'קרבה']),
+    billingPhone:    pickField(l, ['billingPhone', 'billing_phone', 'טלפון לגבייה', 'טלפון לגבייה ועדכונים']),
     /* Stored as YYYY-MM-DD. Sheets sometimes returns a Date object for date
      * cells (depending on locale + column type); isoDate normalizes both
      * Date objects and full ISO timestamps down to a plain date string so
