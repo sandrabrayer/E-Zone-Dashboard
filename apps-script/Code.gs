@@ -152,7 +152,17 @@ const LEAD_COLUMNS = [
    * have no such column and stay blank (objectToRow_ defaults missing keys to
    * '', and normalizeLead reads it via pickField defaulting to ''). No backfill,
    * mirroring the assignedTo append. */
-  'meetingWith'
+  'meetingWith',
+  /* meetingOutcome — the outcome of the lead's meeting (stable key, e.g.
+   * 'entered'|'thinking'|'postponed'|'cancelled'|'not_relevant'). APPEND ONLY:
+   * readSheet_ maps cells to keys by POSITION, so this must stay last and
+   * nothing above it may be reordered or inserted mid-array. Pre-existing rows
+   * have no such column and stay blank (getOrCreateSheet_ appends the missing
+   * header non-destructively, objectToRow_ defaults missing keys to '', and
+   * normalizeLead reads it via pickField defaulting to ''). Foundation only —
+   * no UI yet; the field flows through save/load untouched. Mirrors the
+   * meetingWith append. */
+  'meetingOutcome'
 ];
 
 /* Irrelevant-leads sheet mirrors LEAD_COLUMNS plus two metadata fields:
