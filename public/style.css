@@ -718,6 +718,49 @@ input:focus, select:focus, textarea:focus {
   font-weight: 600; width: 100%;
   text-transform: uppercase; letter-spacing: .8px;
 }
+
+/* View-mode "פונה" (referrer) line + optional "אחר" billing line. Compact, muted,
+ * sits just under the patient meta line. RTL-safe (inherits the app's dir=rtl). */
+.lead-card .lc-contact,
+.lead-card .lc-billing {
+  color: var(--text-muted); font-size: 12.5px; margin-top: 4px;
+}
+.lead-card .lc-contact-label {
+  font-size: 10.5px; font-weight: 600; color: var(--text-muted);
+  margin-inline-end: 4px;
+}
+/* Subtle "גבייה" tag marking which number outgoing communication uses. */
+.lead-card .lc-bill-tag {
+  font-size: 10px; font-weight: 700; color: var(--primary);
+  background: var(--primary-glow);
+  padding: 0 6px; border-radius: 999px;
+  margin-inline-start: 4px; vertical-align: middle;
+}
+/* Edit-mode פרטי הפונה block — stacks the contact inputs + billing selector. */
+.lead-card .lc-contact-edit {
+  margin-top: 10px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.lead-card .lc-contact-edit input,
+.lead-card .lc-contact-edit select {
+  font-size: 12.5px; padding: 5px 8px; width: 100%;
+}
+.lead-card .lc-section-head {
+  font-size: 11.5px; color: var(--text-muted);
+  font-weight: 700; letter-spacing: .6px;
+  margin-top: 2px;
+}
+
+/* Modal section divider (showModal `type:'section'`). Separates the patient /
+ * referrer / extra groups without heavy chrome. */
+.modal .form-section-head {
+  font-size: 12px; font-weight: 700; color: var(--text);
+  margin: 16px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.modal .form-section-head:first-child { margin-top: 0; }
+
 .lead-card .lc-actions {
   display: flex; justify-content: flex-start; align-items: center;
   margin-top: 12px; gap: 6px;
