@@ -76,17 +76,18 @@ function loadApp() {
 const code = loadCode();
 const app = loadApp();
 
-test('LEAD_COLUMNS appends meetingOutcome last, after meetingWith', () => {
+test('LEAD_COLUMNS appends meetingOutcome immediately after meetingWith', () => {
   // Copy into a plain test-realm array so deepStrictEqual compares contents,
   // not cross-realm Array prototypes.
   const cols = Array.from(code.LEAD_COLUMNS);
+  // meetingOutcome is appended immediately after meetingWith. Later append-only
+  // additions (e.g. the contact fields) extend the array further, so this
+  // asserts meetingOutcome's position RELATIVE to meetingWith — not that it is
+  // the terminal column (mirrors the meetingWith-after-assignedTo fix).
+  const owIdx = cols.indexOf('meetingOutcome');
+  assert.ok(owIdx > 0, 'meetingOutcome must be present');
   assert.strictEqual(
-    cols[cols.length - 1],
-    'meetingOutcome',
-    'meetingOutcome must be the last column'
-  );
-  assert.strictEqual(
-    cols[cols.length - 2],
+    cols[owIdx - 1],
     'meetingWith',
     'meetingOutcome must be appended immediately after meetingWith'
   );
