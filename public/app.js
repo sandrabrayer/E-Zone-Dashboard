@@ -109,7 +109,12 @@ const state = {
    * Code.gs). Keyed by NAME because meetingWith stores the name. Drives the
    * meetings-board WhatsApp button; '{}' until the first load (button disabled). */
   managerPhones: {},
-  mode: null, // 'edit' | 'viewer'
+  /* Render mode. Historically 'edit' | 'viewer'; viewer mode was removed with
+   * the API-auth change, so 'edit' is now the only reachable value (an
+   * authenticated user is an editor). The mode machinery is retained because the
+   * `state.mode === 'edit'` checks are woven through many render sites — they all
+   * simply evaluate true now. */
+  mode: null,
   currentScreen: 'dashboard',
   currentHouseTab: 'arfoni',
   /* Sunday (bare YYYY-MM-DD) anchoring the visible week on the meetings board.
@@ -153,6 +158,7 @@ async function apiGet(params) {
   const url = '/api/sheets?' + qs;
   console.log('[E-ZONE] GET →', new URL(url, location.origin).href);
   const res = await fetch(url);
+  if (res.status === 401) { showPinScreen(); throw new Error('unauthorized'); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) {
     throw new Error(data.message || data.error || ('HTTP ' + res.status));
@@ -168,6 +174,7 @@ async function apiPost(body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+  if (res.status === 401) { showPinScreen(); throw new Error('unauthorized'); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) {
     throw new Error(data.message || data.error || ('HTTP ' + res.status));
@@ -293,69 +300,83 @@ function setLoading(on) {
   document.getElementById('loading-banner').classList.toggle('hidden', !on);
 }
 
-/* ===== PIN ===== */
-function initPin() {
-  const saved = sessionStorage.getItem('ezone-mode');
-  if (saved === 'edit' || saved === 'viewer') {
-    enterApp(saved);
-    return;
-  }
-  document.getElementById('pin-screen').classList.remove('hidden');
-  document.getElementById('app').classList.add('hidden');
+/* ===== PIN / session =====
+ *
+ * Auth is a server-signed HttpOnly cookie minted by POST /api/verify-pin. There
+ * is no client-trusted "logged in" flag: on load we reveal the app shell and
+ * attempt the initial data load; the cookie rides the fetch automatically. If it
+ * is missing or expired the server answers 401 and apiGet flips to the PIN
+ * screen (see apiGet/apiPost). A correct PIN sets the cookie and re-enters.
+ * Single mode — being authenticated means edit access; viewer mode was removed. */
 
+/* Reveal the PIN overlay and hide the app. Called at startup only implicitly
+ * (via a 401) and whenever a session expires mid-use. */
+function showPinScreen() {
+  const pin = document.getElementById('pin-screen');
+  const app = document.getElementById('app');
+  if (pin) pin.classList.remove('hidden');
+  if (app) app.classList.add('hidden');
+  const input = document.getElementById('pin-input');
+  if (input) { input.value = ''; try { input.focus(); } catch (_) { /* no-op */ } }
+}
+
+function revealApp() {
+  document.getElementById('pin-screen').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+}
+
+let _pinPending = false;
+async function tryPin() {
   const input = document.getElementById('pin-input');
   const errEl = document.getElementById('pin-error');
   const submitBtn = document.getElementById('pin-submit');
-
-  submitBtn.onclick = tryPin;
-  input.addEventListener('keydown', e => { if (e.key === 'Enter') tryPin(); });
-  document.getElementById('pin-viewer').onclick = () => enterApp('viewer');
-
-  /* The PIN is verified server-side (POST /api/verify-pin) so it never lives in
-   * this bundle. Disable the button while the request is in flight so a slow
-   * network can't queue up duplicate attempts against the rate limiter. */
-  let pending = false;
-  async function tryPin() {
-    if (pending) return;
-    pending = true;
-    submitBtn.disabled = true;
-    errEl.classList.add('hidden');
-    try {
-      const res = await fetch('/api/verify-pin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin: input.value }),
-      });
-      if (res.ok) {
-        enterApp('edit');
-        return;
-      }
-      errEl.classList.remove('hidden');
-      input.value = '';
-    } catch (_) {
-      errEl.classList.remove('hidden');
-      input.value = '';
-    } finally {
-      pending = false;
-      submitBtn.disabled = false;
+  if (_pinPending) return;
+  _pinPending = true;
+  submitBtn.disabled = true;
+  errEl.classList.add('hidden');
+  try {
+    const res = await fetch('/api/verify-pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin: input.value }),
+    });
+    if (res.ok) {          // cookie is now set → enter the app
+      enterApp();
+      return;
     }
+    errEl.classList.remove('hidden');
+    input.value = '';
+  } catch (_) {
+    errEl.classList.remove('hidden');
+    input.value = '';
+  } finally {
+    _pinPending = false;
+    submitBtn.disabled = false;
   }
 }
 
-function enterApp(mode) {
-  state.mode = mode;
-  sessionStorage.setItem('ezone-mode', mode);
-  document.getElementById('pin-screen').classList.add('hidden');
-  document.getElementById('app').classList.remove('hidden');
-  document.body.classList.toggle('viewer-mode', mode === 'viewer');
+/* Startup: wire the PIN form + logout + tabs once, then attempt the authorized
+ * initial load. No stored-flag trust — the cookie is the only source of truth. */
+function initPin() {
+  const input = document.getElementById('pin-input');
+  const submitBtn = document.getElementById('pin-submit');
+  submitBtn.onclick = tryPin;
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') tryPin(); });
 
-  document.getElementById('logout').onclick = () => {
-    sessionStorage.removeItem('ezone-mode');
+  const logoutBtn = document.getElementById('logout');
+  if (logoutBtn) logoutBtn.onclick = async () => {
+    try { await fetch('/api/logout', { method: 'POST' }); } catch (_) { /* reload anyway */ }
     location.reload();
   };
 
   initTabs();
-  loadAll();
+  enterApp();
+}
+
+function enterApp() {
+  state.mode = 'edit';   // single mode: an authenticated user is an editor
+  revealApp();
+  loadAll();             // getData rides the cookie; a 401 flips to the PIN screen
 }
 
 /* ===== Top tabs ===== */

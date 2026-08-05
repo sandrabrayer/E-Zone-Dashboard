@@ -4,6 +4,7 @@ const fs = require('fs');
 const https = require('https');
 const { URL } = require('url');
 const { checkPin } = require('./lib/pin');
+const { createSessionToken, verifySessionToken } = require('./lib/session');
 
 const app = express();
 app.disable('etag');
@@ -49,56 +50,36 @@ if (!APP_PIN) {
   console.warn('[config] APP_PIN is not set — edit-mode PIN verification will reject every attempt until it is configured.');
 }
 
+/* Session-cookie signing secret. A correct PIN mints an HttpOnly session cookie
+ * signed with this; every data route (/api/sheets, /api/outpatient-lead, the
+ * data-bearing /api/debug/* endpoints) requires a valid cookie. FAIL-CLOSED: if
+ * SESSION_SECRET is unset the server still boots and serves the static app +
+ * /api/verify-pin, but the guarded routes return 503 (never open access) so a
+ * misconfiguration can never silently expose the data. */
+const SESSION_SECRET = process.env.SESSION_SECRET || '';
+if (!SESSION_SECRET) {
+  console.error('[config] SESSION_SECRET is not set — /api/sheets and the data-bearing /api/debug/* routes will return 503 until it is configured (fail-closed).');
+}
+
+const SESSION_COOKIE = 'ezone_session';
+const SESSION_MAX_AGE = 7 * 24 * 60 * 60; // 604800 seconds (7 days), matches the token TTL
+
 const BUILD_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-const SERVER_STARTED_AT = new Date().toISOString();
 
 app.use(express.json({ limit: '10mb' }));
 
 /* Apply no-cache headers to every response before any handler runs. */
 app.use((_req, res, next) => { noCache(res); next(); });
 
-/* Catch-all request logger — confirms what URLs the server actually
- * receives. Registered before any route so every request is counted.
- * Keep a rolling list of the last 20 requests for quick debugging. */
-const allHits = { total: 0, byPath: {}, recent: [] };
+/* Catch-all request logger — confirms what URLs the server actually receives,
+ * visible in the Railway logs. Registered before any route so every request is
+ * logged. (The in-memory hit counters + the /api/debug/routes and /api/debug/env
+ * endpoints that exposed them were removed with the API-auth change: they leaked
+ * infra metadata unauthenticated and had no consumer.) */
 app.use((req, _res, next) => {
-  allHits.total++;
-  const bucket = req.method + ' ' + req.path;
-  allHits.byPath[bucket] = (allHits.byPath[bucket] || 0) + 1;
-  const entry = {
-    at: new Date().toISOString(),
-    method: req.method,
-    url: req.originalUrl,
-    ua: (req.headers['user-agent'] || '').slice(0, 120),
-    xfwd: req.headers['x-forwarded-for'] || null,
-    host: req.headers['host'] || null,
-  };
-  allHits.recent.push(entry);
-  if (allHits.recent.length > 20) allHits.recent.shift();
   console.log(`[req] ${req.method} ${req.originalUrl} host=${req.headers.host} xfwd=${req.headers['x-forwarded-host'] || '-'}`);
   next();
 });
-
-/* Route hit counter — same idea but scoped to /api/sheets so we can
- * tell that route apart from /api/debug/* and static requests. */
-const routeHits = { 'GET /api/sheets': 0, 'POST /api/sheets': 0, started: SERVER_STARTED_AT };
-app.use('/api/sheets', (req, _res, next) => {
-  const key = `${req.method} /api/sheets`;
-  routeHits[key] = (routeHits[key] || 0) + 1;
-  next();
-});
-app.get('/api/debug/routes', (_req, res) => res.json({ routeHits, allHits }));
-app.get('/api/debug/env', (req, res) => res.json({
-  buildId: BUILD_ID,
-  startedAt: SERVER_STARTED_AT,
-  uptimeSeconds: Math.round(process.uptime()),
-  node: process.version,
-  pid: process.pid,
-  seenHost: req.headers.host,
-  seenXForwardedHost: req.headers['x-forwarded-host'] || null,
-  railwayStaticUrl: process.env.RAILWAY_STATIC_URL || null,
-  railwayServiceName: process.env.RAILWAY_SERVICE_NAME || null,
-}));
 
 /* Serve index.html with BUILD_ID substituted so the script tag is unique
  * per deploy and cannot be cached between deploys. Read from disk on every
@@ -281,8 +262,75 @@ function buildLoadPreviews(data) {
   };
 }
 
+/* ===== Session auth =====
+ *
+ * A correct PIN (POST /api/verify-pin) mints a signed HttpOnly cookie; every
+ * data route requires it. No cookie-parser dependency — the one cookie we read
+ * is pulled from the raw header. */
+
+/* Extract the session token from a Cookie header, or '' if absent. */
+function parseSessionCookie(cookieHeader) {
+  if (typeof cookieHeader !== 'string' || !cookieHeader) return '';
+  const parts = cookieHeader.split(';');
+  const prefix = SESSION_COOKIE + '=';
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i].trim();
+    if (p.indexOf(prefix) === 0) return p.slice(prefix.length);
+  }
+  return '';
+}
+
+/* Pure auth decision, so every branch is unit-testable with an explicit secret:
+ *   'not_configured' → SESSION_SECRET unset (fail-closed → 503)
+ *   'ok'             → a valid, unexpired, correctly-signed cookie is present
+ *   'unauthorized'   → missing / malformed / tampered / expired cookie (→ 401) */
+function sessionAuthStatus(cookieHeader, secret) {
+  if (typeof secret !== 'string' || secret.length === 0) return 'not_configured';
+  const token = parseSessionCookie(cookieHeader);
+  if (token && verifySessionToken(token, secret)) return 'ok';
+  return 'unauthorized';
+}
+
+/* Express middleware guarding the data routes. Fail-closed: an unset
+ * SESSION_SECRET yields 503 (never open). A missing/invalid cookie yields 401. */
+function requireSession(req, res, next) {
+  const status = sessionAuthStatus(req.headers.cookie, SESSION_SECRET);
+  if (status === 'not_configured') {
+    return res.status(503).json({
+      ok: false,
+      error: 'session_not_configured',
+      message: 'SESSION_SECRET is not set — data routes are closed by design (fail-closed).',
+    });
+  }
+  if (status === 'unauthorized') {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  return next();
+}
+
+/* Whether the ORIGINAL client request reached us over HTTPS. Railway terminates
+ * TLS and forwards x-forwarded-proto=https; plain-HTTP localhost dev has neither,
+ * so the Secure attribute is omitted there (a Secure cookie would never be sent
+ * back over http and would break local dev). */
+function requestIsHttps(req) {
+  return req.headers['x-forwarded-proto'] === 'https' || req.secure === true;
+}
+
+/* Build the Set-Cookie value for a freshly-minted session token. */
+function buildSessionCookie(token, isHttps) {
+  const parts = [
+    `${SESSION_COOKIE}=${token}`,
+    'HttpOnly',
+    'SameSite=Strict',
+    'Path=/',
+    `Max-Age=${SESSION_MAX_AGE}`,
+  ];
+  if (isHttps) parts.push('Secure');
+  return parts.join('; ');
+}
+
 /* GET /api/sheets?action=getData — forwarded as GET to Apps Script */
-app.get('/api/sheets', async (req, res) => {
+app.get('/api/sheets', requireSession, async (req, res) => {
   const action = req.query && req.query.action;
   console.log('[sheets GET] → action=', JSON.stringify(action), 'fullQuery=', JSON.stringify(req.query));
   try {
@@ -319,7 +367,7 @@ app.get('/api/sheets', async (req, res) => {
 /* POST /api/sheets — body is forwarded as POST application/json to Apps Script.
  * All save operations (saveAll, etc.) use POST so the data never hits the
  * querystring length limit. */
-app.post('/api/sheets', async (req, res) => {
+app.post('/api/sheets', requireSession, async (req, res) => {
   const body = req.body || {};
   const summary = summarizeBody(body);
   console.log('[sheets POST] →', summary);
@@ -343,11 +391,12 @@ app.post('/api/sheets', async (req, res) => {
   }
 });
 
-/* Diagnostics — last save and last load, browsable from the live URL. */
-app.get('/api/debug/last-save', (_req, res) => {
+/* Diagnostics — last save and last load. These echo lead/patient previews, so
+ * they are gated behind the session cookie like the data routes. */
+app.get('/api/debug/last-save', requireSession, (_req, res) => {
   res.json(lastSave || { empty: true });
 });
-app.get('/api/debug/last-load', (_req, res) => {
+app.get('/api/debug/last-load', requireSession, (_req, res) => {
   res.json(lastLoad || { empty: true });
 });
 
@@ -357,7 +406,7 @@ app.get('/api/debug/last-load', (_req, res) => {
  * or secret isn't configured, refuse without calling out. The Dashboard treats
  * any non-2xx / { ok:false } here as a NON-FATAL warning — the discharge has
  * already succeeded locally. The secret is never logged. */
-app.post('/api/outpatient-lead', async (req, res) => {
+app.post('/api/outpatient-lead', requireSession, async (req, res) => {
   if (!OUTPATIENT_LEAD_URL || !OUTPATIENT_LEAD_SECRET) {
     return res.status(503).json({ ok: false, error: 'outpatient_not_configured' });
   }
@@ -417,11 +466,35 @@ app.post('/api/verify-pin', (req, res) => {
   const pin = req.body && req.body.pin;
   if (checkPin(pin, APP_PIN)) {
     pinAttempts.delete(ip); // reset the counter on success
+    /* Mint the session cookie so subsequent data requests are authorized. Only
+     * possible when SESSION_SECRET is configured; if it isn't, the PIN is still
+     * accepted (200) but no usable cookie is issued, so the data routes stay
+     * 503 — the fail-closed state, surfaced to the operator, not to an attacker. */
+    if (SESSION_SECRET) {
+      const token = createSessionToken(SESSION_SECRET);
+      res.set('Set-Cookie', buildSessionCookie(token, requestIsHttps(req)));
+    }
     return res.status(200).json({ ok: true });
   }
 
   rec.count++;
   return res.status(401).json({ ok: false, error: 'invalid_pin' });
+});
+
+/* POST /api/logout — clear the session cookie (expire it immediately). Open
+ * route: clearing a credential never needs one. The client reloads afterward,
+ * which re-hits getData, gets 401, and shows the PIN screen. */
+app.post('/api/logout', (req, res) => {
+  const parts = [
+    `${SESSION_COOKIE}=`,
+    'HttpOnly',
+    'SameSite=Strict',
+    'Path=/',
+    'Max-Age=0',
+  ];
+  if (requestIsHttps(req)) parts.push('Secure');
+  res.set('Set-Cookie', parts.join('; '));
+  res.status(200).json({ ok: true });
 });
 
 app.get('/healthz', (_, res) => res.json({ ok: true }));
@@ -442,4 +515,11 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildLoadPreviews };
+module.exports = {
+  buildLoadPreviews,
+  parseSessionCookie,
+  sessionAuthStatus,
+  requireSession,
+  buildSessionCookie,
+  requestIsHttps,
+};
