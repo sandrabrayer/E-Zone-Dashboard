@@ -4,8 +4,11 @@
  *     full-width row (so all 9 tabs are visible) instead of being an
  *     internally-scrollable strip squeezed into the topbar (which showed only
  *     2 tabs at 390px with no scroll cue).
- *  2. Edit-mode label removal: the "מצב עריכה"/"מצב צפייה" indicator is gone,
- *     but the edit/viewer ACCESS CONTROL it labelled must remain intact.
+ *  2. Edit-mode label removal: the "מצב עריכה"/"מצב צפייה" indicator is gone.
+ *     (The viewer ACCESS tier it labelled was later removed entirely by the
+ *     API-auth change — a single PIN now gates everything and an authenticated
+ *     user is always an editor. The runtime edit-mode MACHINERY is retained, so
+ *     the gates still exist and simply evaluate true; see the updated test.)
  *
  * These are CSS/markup/source changes, so — like the PWA tests — they are
  * verified by reading the shipped source rather than executing a browser. */
@@ -59,21 +62,20 @@ test('the "מצב עריכה" / "מצב צפייה" label indicator is fully rem
   assert.ok(!appjs.includes('מצב צפייה'), 'view-mode label text removed');
 });
 
-test('edit/viewer access control is still intact (Option A, not B)', () => {
-  // viewer-mode is still applied to the body...
-  assert.match(appjs, /classList\.toggle\('viewer-mode'/,
-    'viewer-mode toggle must remain');
-  // ...the PIN "viewer" entry path still exists...
-  assert.match(appjs, /pin-viewer/, 'viewer entry path must remain');
-  // ...edit-only UI hiding is still declared...
-  assert.match(css, /body\.viewer-mode \.edit-only\s*\{\s*display:\s*none/,
-    'edit-only hiding must remain');
-  assert.match(html, /class="[^"]*edit-only/, 'edit-only buttons must remain');
-  // ...and the runtime mode gates are still in place — both the early-return
-  // guards (state.mode !== 'edit') and the conditional-enable checks
-  // (state.mode === 'edit'). 18 total at time of writing; assert a floor so an
-  // accidental mass-removal fails loudly.
+test('viewer mode is removed; edit is the only reachable mode, gates retained', () => {
+  // The viewer ENTRY path and the body viewer-mode toggle are gone with the
+  // API-auth change (single PIN, no viewer tier).
+  assert.ok(!appjs.includes('pin-viewer'), 'viewer entry path must be removed');
+  assert.doesNotMatch(appjs, /classList\.toggle\('viewer-mode'/,
+    'viewer-mode body toggle must be removed');
+  assert.doesNotMatch(html, /id="pin-viewer"/, 'viewer button markup must be removed');
+  // The runtime mode MACHINERY is retained (edit is always-on now, so the
+  // state.mode === 'edit' checks simply evaluate true rather than being ripped
+  // out of ~10 render sites). Assert a floor so an accidental mass-removal — or
+  // a silent reintroduction of a second mode — fails loudly.
   const guards = (appjs.match(/state\.mode (?:!==|===) 'edit'/g) || []).length;
-  assert.ok(guards >= 15,
-    `expected the ~18 edit-mode gates to remain, found ${guards}`);
+  assert.ok(guards >= 10,
+    `expected the edit-mode gates to remain, found ${guards}`);
+  // edit-only affordances still exist in the markup.
+  assert.match(html, /class="[^"]*edit-only/, 'edit-only buttons must remain');
 });
