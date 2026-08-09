@@ -204,6 +204,95 @@ function followingRequest(opts, targetUrl, payload, resolve, reject, redirects) 
 let lastSave = null;
 let lastLoad = null;
 
+/* ===== Write & handoff diagnostics =====
+ *
+ * The next time a "save didn't stick" / "handoff didn't happen" symptom shows
+ * up, /api/debug/last-save should answer the question by itself — no live
+ * DevTools repro needed. Everything here is in-memory (resets on redeploy,
+ * like lastSave/lastLoad) and behind requireSession.
+ *
+ *  - writeLog: ring buffer of the last WRITE_LOG_MAX write attempts that PASSED
+ *    auth (newest first): action, http status returned to the client, error if
+ *    any, a truncated+redacted response preview, and — for saveAll — per-house
+ *    patient counts SENT vs ACKNOWLEDGED by the backend (catches a silent
+ *    serialize/houseId drop).
+ *  - authFailures: counts every requireSession 401 with timestamps + paths. A
+ *    write that dies at the auth gate never reaches a route handler, so it can
+ *    never appear in writeLog — this counter is how the "session cookie
+ *    rejected" hypothesis shows up without a live repro. */
+const WRITE_LOG_MAX = 20;
+const writeLog = [];
+const authFailures = { total: 0, lastAt: null, byPath: {}, recent: [] };
+
+/* Push a write record onto the ring buffer (newest first, capped). */
+function recordWrite(entry) {
+  writeLog.unshift(entry);
+  if (writeLog.length > WRITE_LOG_MAX) writeLog.length = WRITE_LOG_MAX;
+  return entry;
+}
+
+/* Count a requireSession 401. Timestamps are capped like the write log so the
+ * store can't grow unbounded. */
+function noteAuthFailure(path) {
+  authFailures.total += 1;
+  authFailures.lastAt = new Date().toISOString();
+  const p = typeof path === 'string' && path ? path : '(unknown)';
+  authFailures.byPath[p] = (authFailures.byPath[p] || 0) + 1;
+  authFailures.recent.unshift({ at: authFailures.lastAt, path: p });
+  if (authFailures.recent.length > WRITE_LOG_MAX) authFailures.recent.length = WRITE_LOG_MAX;
+}
+
+/* Replace every occurrence of each non-empty secret in `text` with [REDACTED].
+ * Applied to every stored response preview so a far side that echoes a secret
+ * back (or an error message that embeds one) can never park it in the debug
+ * store. Pure — split/join, no regex, so secret characters can't be
+ * misinterpreted as patterns. */
+function redactSecrets(text, secrets) {
+  let out = String(text == null ? '' : text);
+  for (const s of secrets || []) {
+    if (typeof s === 'string' && s.length > 0) out = out.split(s).join('[REDACTED]');
+  }
+  return out;
+}
+
+/* The secrets that must never appear in a stored debug record. */
+function debugSecretList() {
+  return [OUTPATIENT_LEAD_SECRET, SESSION_SECRET];
+}
+
+/* Truncated, redacted preview of an upstream response for the write log. */
+function responsePreview(data, max) {
+  const cap = max || 2000;
+  let str;
+  if (typeof data === 'string') str = data;
+  else {
+    try { str = JSON.stringify(data); } catch (_) { str = String(data); }
+  }
+  return redactSecrets(String(str == null ? '' : str).slice(0, cap), debugSecretList());
+}
+
+/* Compare the per-house patient counts the client SENT (summarizeBody's
+ * byHouse) with the counts the backend ACKNOWLEDGED writing (saveAll_'s
+ * `written` — present once the matching Code.gs deploys). Pure:
+ *   - acknowledged missing/invalid → { match: null } (older backend, no verdict)
+ *   - otherwise match=true only when every house count agrees both ways;
+ *     mismatches lists each disagreeing house as { sent, acknowledged }. */
+function compareSaveAllCounts(sentByHouse, ackByHouse) {
+  if (!ackByHouse || typeof ackByHouse !== 'object' || Array.isArray(ackByHouse)) {
+    return { match: null, mismatches: null };
+  }
+  const sent = (sentByHouse && typeof sentByHouse === 'object') ? sentByHouse : {};
+  const mismatches = {};
+  const houses = new Set([...Object.keys(sent), ...Object.keys(ackByHouse)]);
+  for (const hid of houses) {
+    const s = Number(sent[hid] || 0);
+    const a = Number(ackByHouse[hid] || 0);
+    if (s !== a) mismatches[hid] = { sent: s, acknowledged: a };
+  }
+  const match = Object.keys(mismatches).length === 0;
+  return { match, mismatches: match ? null : mismatches };
+}
+
 function summarizeBody(body) {
   const leadCount = Array.isArray(body && body.leads) ? body.leads.length : 0;
   const byHouse = {};
@@ -303,6 +392,10 @@ function requireSession(req, res, next) {
     });
   }
   if (status === 'unauthorized') {
+    // Count it: a request that dies here never reaches a route handler, so
+    // this counter (surfaced on /api/debug/last-save) is the only trace a
+    // rejected-cookie write leaves behind.
+    noteAuthFailure(req.originalUrl || req.url || req.path);
     return res.status(401).json({ error: 'unauthorized' });
   }
   return next();
@@ -379,6 +472,26 @@ app.post('/api/sheets', requireSession, async (req, res) => {
       request: { summary, keys: Object.keys(body) },
       response: data,
     };
+    // saveAll only: compare per-house patient counts sent vs acknowledged by
+    // the backend (`written` in the saveAll_ response — null verdict until the
+    // matching Code.gs deploys). A false match pinpoints a silent
+    // serialize/houseId drop without a live repro.
+    const counts = summary.action === 'saveAll'
+      ? compareSaveAllCounts(summary.byHouse, data && data.written)
+      : null;
+    recordWrite({
+      at: lastSave.at,
+      route: '/api/sheets',
+      action: summary.action || null,
+      auth: 'ok',
+      httpStatus: 200,
+      okFromBackend: !(data && data.ok === false),
+      summary,
+      acknowledged: (data && data.written) || null,
+      countsMatch: counts ? counts.match : null,
+      countMismatches: counts ? counts.mismatches : null,
+      responsePreview: responsePreview(data, 1000),
+    });
     res.json(data);
   } catch (err) {
     console.error('[sheets POST] error:', err.message);
@@ -387,14 +500,35 @@ app.post('/api/sheets', requireSession, async (req, res) => {
       request: { summary, keys: Object.keys(body) },
       error: err.message,
     };
+    recordWrite({
+      at: lastSave.at,
+      route: '/api/sheets',
+      action: summary.action || null,
+      auth: 'ok',
+      httpStatus: 502,
+      error: redactSecrets(err.message, debugSecretList()),
+      summary,
+    });
     res.status(502).json({ ok: false, error: 'sheets_unreachable', message: err.message });
   }
 });
 
 /* Diagnostics — last save and last load. These echo lead/patient previews, so
- * they are gated behind the session cookie like the data routes. */
+ * they are gated behind the session cookie like the data routes.
+ *
+ * last-save now also carries:
+ *   writes       — ring buffer of the last WRITE_LOG_MAX auth-passed write
+ *                  attempts (newest first): action, http status, saveAll
+ *                  sent-vs-acknowledged counts, outpatient response body.
+ *   authFailures — every requireSession 401 (total, per path, recent
+ *                  timestamps) — the trace a rejected-cookie write leaves.
+ * The legacy lastSave shape is preserved under `lastSave`. */
 app.get('/api/debug/last-save', requireSession, (_req, res) => {
-  res.json(lastSave || { empty: true });
+  res.json({
+    lastSave: lastSave || { empty: true },
+    writes: writeLog,
+    authFailures,
+  });
 });
 app.get('/api/debug/last-load', requireSession, (_req, res) => {
   res.json(lastLoad || { empty: true });
@@ -407,7 +541,16 @@ app.get('/api/debug/last-load', requireSession, (_req, res) => {
  * any non-2xx / { ok:false } here as a NON-FATAL warning — the discharge has
  * already succeeded locally. The secret is never logged. */
 app.post('/api/outpatient-lead', requireSession, async (req, res) => {
+  const startedAt = new Date().toISOString();
   if (!OUTPATIENT_LEAD_URL || !OUTPATIENT_LEAD_SECRET) {
+    recordWrite({
+      at: startedAt,
+      route: '/api/outpatient-lead',
+      action: 'createOutpatientLead',
+      auth: 'ok',
+      httpStatus: 503,
+      error: 'outpatient_not_configured',
+    });
     return res.status(503).json({ ok: false, error: 'outpatient_not_configured' });
   }
   const b = req.body || {};
@@ -424,9 +567,34 @@ app.post('/api/outpatient-lead', requireSession, async (req, res) => {
     console.log('[outpatient-lead] ←', data && typeof data === 'object'
       ? { ok: data.ok, id: data.id, error: data.error }
       : String(data).slice(0, 120));
+    // Record the FULL far-side response (truncated + redacted). A {ok:false}
+    // from the Outpatient Apps Script used to be invisible; after this, one
+    // discharge test shows exactly what Outpatient said (unauthorized vs
+    // validation error vs unexpected shape).
+    recordWrite({
+      at: startedAt,
+      route: '/api/outpatient-lead',
+      action: 'createOutpatientLead',
+      auth: 'ok',
+      httpStatus: 200,
+      okFromBackend: !!(data && data.ok === true),
+      outpatientResponse: responsePreview(data, 2000),
+    });
     res.json(data);
   } catch (err) {
+    // The rejection message embeds the far side's HTTP status + body slice
+    // ("Apps Script HTTP 401: …" / "…returned non-JSON…: <html>…"), so storing
+    // it captures the Google-HTML-page and non-2xx signatures too.
     console.error('[outpatient-lead] error:', err.message);
+    recordWrite({
+      at: startedAt,
+      route: '/api/outpatient-lead',
+      action: 'createOutpatientLead',
+      auth: 'ok',
+      httpStatus: 502,
+      error: 'outpatient_unreachable',
+      outpatientResponse: redactSecrets(String(err.message).slice(0, 2000), debugSecretList()),
+    });
     res.status(502).json({ ok: false, error: 'outpatient_unreachable', message: err.message });
   }
 });
@@ -522,4 +690,14 @@ module.exports = {
   requireSession,
   buildSessionCookie,
   requestIsHttps,
+  // Write & handoff diagnostics (in-memory state exposed for the test harness;
+  // the running server mutates the same objects the tests inspect).
+  recordWrite,
+  noteAuthFailure,
+  redactSecrets,
+  responsePreview,
+  compareSaveAllCounts,
+  writeLog,
+  authFailures,
+  WRITE_LOG_MAX,
 };

@@ -552,17 +552,21 @@ function saveAll_(leads, patients) {
       mergeLeads_(leads);
     }
 
-    // Patients — only touch houseIds that are present in the payload
+    // Patients — only touch houseIds that are present in the payload.
+    // `written` echoes, per house, how many patient rows were actually written
+    // — backend truth the server-side diagnostics compare against the counts
+    // the client SENT, to catch a silent serialize/houseId drop.
+    const written = {};
     if (patients && typeof patients === 'object' && !Array.isArray(patients)) {
       const houseIds = Object.keys(patients);
       for (let i = 0; i < houseIds.length; i++) {
         const hid = houseIds[i];
         const arr = patients[hid];
-        replaceHousePatients_(hid, Array.isArray(arr) ? arr : []);
+        written[hid] = replaceHousePatients_(hid, Array.isArray(arr) ? arr : []);
       }
     }
 
-    return { ok: true };
+    return { ok: true, written: written };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
@@ -668,7 +672,9 @@ function mergeLeads_(leads) {
 
 /**
  * Replace only the patients whose houseId matches `houseId`. Rows for other
- * houses are preserved untouched.
+ * houses are preserved untouched. Returns the number of rows written for this
+ * house (backend truth for the saveAll_ `written` echo). Backward-compatible:
+ * the only pre-existing caller ignored the return value.
  */
 function replaceHousePatients_(houseId, patientsArr) {
   const sh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
@@ -710,6 +716,7 @@ function replaceHousePatients_(houseId, patientsArr) {
     }
     sh.getRange(2, 1, finalRows.length, PATIENT_COLUMNS.length).setValues(finalRows);
   }
+  return newRows.length;
 }
 
 /* ===== Irrelevant leads (move + restore) =====
