@@ -1286,6 +1286,10 @@ function normalizeDischargedPatient(p) {
   base.disposition    = pickField(p, ['disposition']) || '';
   base.discharge_note = pickField(p, ['discharge_note', 'dischargeNote', 'הערת שחרור']) || '';
   base.restored       = pickField(p, ['restored', 'משוחזר']);
+  /* Status at the moment of discharge (restore-choice modal). Legacy rows
+   * (recorded before the column existed) stay blank — priorStatusFromAudit
+   * falls back to 'active' for them. */
+  base.prior_status   = pickField(p, ['prior_status', 'priorStatus', 'סטטוס קודם']) || '';
   return base;
 }
 function cryptoId() {
@@ -2587,10 +2591,9 @@ function renderRemovedLeads() {
 }
 
 /* Phase 2e-1 — discharged-patients tab. Read-only audit list. Each row has a
- * "שחזר מטופל" button that posts restorePatient (creates a new lead carrying
- * over name/house; phone is not stored on patient rows so it starts blank).
- * Discharge record stays on the sheet as the audit trail — restore is
- * additive only on the Leads side. */
+ * single שחזר button opening the restore-choice modal
+ * (showRestorePatientChoiceModal): prior-status restore (default) or a new
+ * lead. The discharge record stays on the sheet as the audit trail either way. */
 function renderDischargedPatients() {
   const list = document.getElementById('discharged-patients-list');
   if (!list) return;
@@ -2653,19 +2656,15 @@ function renderDischargedPatients() {
       const actions = document.createElement('div');
       actions.className = 'irrelevant-actions';
 
+      /* ONE שחזר button → the restore-choice modal. The old two-button pair
+       * ("שחזר מטופל" = new lead, "החזר לסטטוס פעיל" = undo) was a label trap:
+       * the new-lead button read like the default restore. The modal makes the
+       * choice explicit, with prior-status restore pre-selected. */
       const btn = document.createElement('button');
-      btn.className = 'btn small';
-      btn.textContent = 'שחזר מטופל';
-      btn.onclick = () => restorePatient(p);
+      btn.className = 'btn small primary';
+      btn.textContent = 'שחזר';
+      btn.onclick = () => showRestorePatientChoiceModal(p);
       actions.appendChild(btn);
-
-      // Restore-to-active: one-click undo for an accidental discharge. Sits
-      // beside "שחזר מטופל" (which sends the patient back to the leads pipeline).
-      const activeBtn = document.createElement('button');
-      activeBtn.className = 'btn small primary';
-      activeBtn.textContent = 'החזר לסטטוס פעיל';
-      activeBtn.onclick = () => restorePatientToActive(p);
-      actions.appendChild(activeBtn);
 
       row.appendChild(actions);
     }
@@ -2674,62 +2673,56 @@ function renderDischargedPatients() {
   });
 }
 
-async function restorePatient(p) {
+/* Restore path A — back into the leads pipeline as a NEW LEAD. The restore-
+ * choice modal is the confirmation step, so this worker runs unconditionally.
+ * Optimistic + rollback; errors are handled here (toast) and never thrown. */
+async function doRestorePatientAsNewLead(p) {
   if (state.mode !== 'edit') return;
+  const newLead = {
+    id:       cryptoId(),
+    name:     p.name  || '',
+    phone:    '',
+    house:    (houseById(p.houseId) && houseById(p.houseId).name) || '',
+    source:   '',
+    note:     '',
+    stage:    'new',
+    visitDate: '',
+    visitTime: '',
+    entryDate: '',
+    advance:  0,
+    created:  todayISO(),
+  };
 
-  showConfirm({
-    text: 'להחזיר את המטופל למסלול לידים חדש?',
-    onConfirm: async () => {
-      const newLead = {
-        id:       cryptoId(),
-        name:     p.name  || '',
-        phone:    '',
-        house:    (houseById(p.houseId) && houseById(p.houseId).name) || '',
-        source:   '',
-        note:     '',
-        stage:    'new',
-        visitDate: '',
-        visitTime: '',
-        entryDate: '',
-        advance:  0,
-        created:  todayISO(),
-      };
+  /* Optimistic UI: hide the discharged row locally + unshift the new
+   * lead onto the kanban. The backend keeps the discharge row as the
+   * audit trail (per Phase 2e spec) and flags it restored='TRUE'. */
+  const prevDischarged = state.dischargedPatients.slice();
+  const prevLeads      = state.leads.slice();
+  state.dischargedPatients = state.dischargedPatients.filter(d => d.id !== p.id);
+  state.leads.unshift(newLead);
+  renderAll();
 
-      /* Optimistic UI: hide the discharged row locally + unshift the new
-       * lead onto the kanban. The backend keeps the discharge row as the
-       * audit trail (per Phase 2e spec), so after the next page reload the
-       * discharged row WILL reappear in this tab. That re-show is intended
-       * audit behavior, not a bug — but the "row vanishes then comes back"
-       * UX is a known rough edge. 2e-2 decides the final shape: either a
-       * restored-flag column on the discharged sheet, or delete-on-restore. */
-      const prevDischarged = state.dischargedPatients.slice();
-      const prevLeads      = state.leads.slice();
-      state.dischargedPatients = state.dischargedPatients.filter(d => d.id !== p.id);
-      state.leads.unshift(newLead);
-      renderAll();
-
-      try {
-        await apiPost({ action: 'restorePatient', patient: { ...p, newLeadId: newLead.id } });
-        showToast('המטופל הוחזר למסלול לידים חדש');
-      } catch (e) {
-        state.dischargedPatients = prevDischarged;
-        state.leads = prevLeads;
-        renderAll();
-        showError('שחזור המטופל נכשל — ' + e.message);
-      }
-    },
-  });
+  try {
+    await apiPost({ action: 'restorePatient', patient: { ...p, newLeadId: newLead.id } });
+    showToast('המטופל הוחזר למסלול לידים חדש');
+  } catch (e) {
+    state.dischargedPatients = prevDischarged;
+    state.leads = prevLeads;
+    renderAll();
+    showError('שחזור המטופל נכשל — ' + e.message);
+  }
 }
 
-/* ===== Restore to active =====
- * "החזר לסטטוס פעיל" — a one-click undo for an accidental discharge. Unlike
- * restorePatient (which spawns a NEW LEAD), this returns the person to ACTIVE
- * patient status with their original record intact, and flags the audit row so
- * it leaves the discharged tab. The audit row is KEPT (restored='TRUE' hides
- * it; it is never deleted).
+/* ===== Restore to previous status =====
+ * The restore-choice modal's default path — the undo for an accidental
+ * discharge. Unlike doRestorePatientAsNewLead (which spawns a NEW LEAD), this
+ * returns the person to their PRE-DISCHARGE status (prior_status; legacy rows →
+ * active) with their original record intact, and flags the audit row so it
+ * leaves the discharged tab. The audit row is KEPT (restored='TRUE' hides it;
+ * it is never deleted).
  *
  * The work is split into pure helpers (unit-tested) + a thin optimistic
- * handler that mirrors restorePatient's optimistic + rollback shape. */
+ * handler that mirrors doRestorePatientAsNewLead's optimistic + rollback shape. */
 
 /* Find the patient row this audit row should restore, matched by
  * houseId + name + date — NOT by id. Patient ids are session-local (the
@@ -2743,10 +2736,22 @@ function matchActivePatientIndex(patients, audit) {
     p && p.houseId === audit.houseId && p.name === audit.name && p.date === audit.date);
 }
 
-/* Reconstruct an ACTIVE patient record from a discharged audit row. Used ONLY
+/* The status a restore-to-previous-status should give back. The audit row's
+ * prior_status column holds the status at the MOMENT of discharge (captured by
+ * dischargeAuditRow before the released flip). Only the three live statuses are
+ * honored; anything else — blank (legacy rows recorded before the column
+ * existed), 'released', or junk — falls back to 'active'. Pure + tested. */
+function priorStatusFromAudit(audit) {
+  const s = audit && audit.prior_status;
+  if (s === 'active' || s === 'trial' || s === 'wait') return s;
+  return 'active';
+}
+
+/* Reconstruct a live patient record from a discharged audit row. Used ONLY
  * when no existing row matches (e.g. the original row was hard-deleted from the
- * sheet). Carries every reconstructable field from the audit row, forcing
- * status='active' and a blank exitDate. Pure + tested. */
+ * sheet). Carries every reconstructable field from the audit row, restoring the
+ * PRE-DISCHARGE status (prior_status, fallback 'active') and a blank exitDate.
+ * Pure + tested. */
 function reconstructActivePatientFromAudit(audit) {
   const a = audit || {};
   return {
@@ -2756,7 +2761,7 @@ function reconstructActivePatientFromAudit(audit) {
     date:     a.date || '',
     pay:      Number(a.pay) || 0,
     adv:      Number(a.adv) || 0,
-    status:   'active',
+    status:   priorStatusFromAudit(a),
     fromLead: a.fromLead || '',
     exitDate: '',
     source:   a.source || 'lead',
@@ -2765,8 +2770,8 @@ function reconstructActivePatientFromAudit(audit) {
 }
 
 /* Produce the post-restore patients array. If an existing row matches
- * (houseId+name+date) flip THAT row in place (status='active', exitDate='') —
- * guaranteeing NO duplicate, even across a reload where ids differ. Otherwise
+ * (houseId+name+date) flip THAT row in place (status=prior status, exitDate='')
+ * — guaranteeing NO duplicate, even across a reload where ids differ. Otherwise
  * reconstruct from the audit row and append. Returns a NEW array (the input is
  * never mutated) so the caller can roll back by restoring the previous
  * reference. Pure + tested. */
@@ -2775,7 +2780,7 @@ function buildRestoredToActivePatients(patients, audit) {
   const idx = matchActivePatientIndex(src, audit);
   if (idx >= 0) {
     const next = src.slice();
-    next[idx] = Object.assign({}, src[idx], { status: 'active', exitDate: '' });
+    next[idx] = Object.assign({}, src[idx], { status: priorStatusFromAudit(audit), exitDate: '' });
     return { patients: next, reconstructed: false, patient: next[idx] };
   }
   const rebuilt = reconstructActivePatientFromAudit(audit);
@@ -2790,12 +2795,78 @@ function restoreNeedsOutpatientCleanup(audit) {
   return !!audit && audit.disposition === 'released_outpatient';
 }
 
-function restorePatientToActive(p) {
+/* ===== Restore-choice modal =====
+ * The single שחזר button on a discharged row opens this modal: an explicit
+ * choice between the two restore paths, radio-style (mirrors the
+ * showCloseLeadModal look), with prior-status restore pre-selected as the
+ * common case (undoing a discharge):
+ *   ⦿ החזרה לסטטוס הקודם — flips the original patient row back to its
+ *      pre-discharge status (prior_status; legacy rows → active) in their house.
+ *   ○ פתיחת ליד חדש     — sends the person back into the leads pipeline as a
+ *      brand-new lead (the original Phase 2e-2 behavior).
+ * The modal IS the confirmation — the workers run without their own confirm.
+ * Both workers handle rollback + error toasts themselves and never throw. */
+function showRestorePatientChoiceModal(p) {
   if (state.mode !== 'edit') return;
-  showConfirm({
-    text: 'להחזיר את המטופל לסטטוס פעיל?',
-    onConfirm: () => doRestorePatientToActive(p),
-  });
+  const root = document.getElementById('modal-root');
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+
+  const prior      = priorStatusFromAudit(p);
+  const priorInfo  = STATUS_OPTIONS.find(s => s.id === prior);
+  const priorLabel = priorInfo ? priorInfo.label : 'פעיל';
+
+  back.innerHTML = `
+    <div class="modal">
+      <h3>שחזור מטופל — ${escapeHtml(p.name || '')}</h3>
+      <form>
+        <div class="form-row">
+          <fieldset class="reason-fieldset">
+            <legend>לאן לשחזר?</legend>
+            <label class="reason-radio">
+              <input type="radio" name="restoreChoice" value="prev_status" checked />
+              <span>החזרה לסטטוס הקודם (${escapeHtml(priorLabel)})</span>
+            </label>
+            <label class="reason-radio">
+              <input type="radio" name="restoreChoice" value="new_lead" />
+              <span>פתיחת ליד חדש</span>
+            </label>
+          </fieldset>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn primary">אישור</button>
+        </div>
+      </form>
+    </div>
+  `;
+  root.appendChild(back);
+
+  const close     = () => back.remove();
+  const cancelBtn = back.querySelector('[data-action="cancel"]');
+  const submitBtn = back.querySelector('button[type="submit"]');
+  const form      = back.querySelector('form');
+
+  cancelBtn.onclick = close;
+  back.addEventListener('click', e => { if (e.target === back) close(); });
+
+  let submitting = false;
+  form.onsubmit = async e => {
+    e.preventDefault();
+    if (submitting) return;
+    submitting = true;
+    submitBtn.disabled = true;
+    cancelBtn.disabled = true;
+    submitBtn.textContent = 'שומר...';
+
+    const choice = (new FormData(form).get('restoreChoice') || 'prev_status').toString();
+    if (choice === 'new_lead') {
+      await doRestorePatientAsNewLead(p);
+    } else {
+      await doRestorePatientToActive(p);
+    }
+    close();
+  };
 }
 
 /* Optimistic restore-to-active. Two persisted writes, in this order:
@@ -2827,11 +2898,12 @@ async function doRestorePatientToActive(p) {
     state.patients = prevPatients;
     state.dischargedPatients = prevDischarged;
     renderAll();
-    showError('החזרת המטופל לסטטוס פעיל נכשלה — ' + e.message);
+    showError('החזרת המטופל לסטטוס הקודם נכשלה — ' + e.message);
     return;
   }
 
-  showToast('המטופל הוחזר לסטטוס פעיל');
+  const restoredInfo = STATUS_OPTIONS.find(s => s.id === priorStatusFromAudit(p));
+  showToast('המטופל הוחזר לסטטוס ' + (restoredInfo ? restoredInfo.label : 'פעיל'));
   // The discharge that produced this row may have created a cross-app Outpatient
   // lead (released_outpatient, PR #24). Restoring to active does not remove it,
   // so prompt the operator to clean it up manually in the Outpatient app.
@@ -3456,6 +3528,11 @@ function dischargeAuditRow(patient, { disposition, note, dischargeDate }, today)
   return {
     ...patient,
     status:         'released',
+    /* The status at the MOMENT of discharge — dischargePatient builds this row
+     * BEFORE flipping p.status to 'released', so patient.status here is the
+     * pre-discharge value (active/trial/wait). Restore-to-previous-status reads
+     * it back; legacy audit rows (recorded before this field) have it blank. */
+    prior_status:   patient.status || '',
     exitDate:       exitDate,
     dischargedAt:   new Date().toISOString(),
     disposition:    disposition,
