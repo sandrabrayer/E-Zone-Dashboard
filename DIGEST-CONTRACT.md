@@ -105,3 +105,82 @@ Run **`setupActivePatientsDigest`** once from the Apps Script editor. It:
 > editor triggers the consent prompt for the deploying account; the web-app
 > deployment must be re-authorized once so its request-path rebuilds succeed
 > (until then they are silently skipped by the fail-soft guard).
+
+---
+
+# OpenTickets feed — inclusion rule (E-Zone Dashboard → Coordinators)
+
+A second coordinators-facing digest population: the **open requests
+("tickets")** a coordinator raises against the dashboard, plus a short archive
+tail of the ones that were just resolved so the coordinator can still see the
+outcome. This section is the authoritative copy of the **inclusion rule** — which
+tickets belong in the feed at a given moment. The producing code lives in
+[`apps-script/Code.gs`](apps-script/Code.gs) ("Coordinators digest: OpenTickets
+feed — inclusion rule") and the contract is locked by
+[`test/opentickets-digest-rejected-retention.test.js`](test/opentickets-digest-rejected-retention.test.js).
+
+> **Scope of this section.** It defines the inclusion rule and the row
+> projection (`isDigestTicket` / `digestIncludeTicket_` / `buildOpenTicketsRows_`)
+> as pure, deterministic helpers — the same pure/IO split the ActivePatients
+> digest uses. Wiring the rows to a source sheet and an output tab follows the
+> ActivePatients I/O pattern (`ensureDigestTab_` / `writeDigestRows_`).
+
+## Tab
+
+- Tab name: **`OpenTickets`** (row 1 is a frozen header).
+
+## Columns (FROZEN CONTRACT — append-only; never reorder or remove)
+
+| # | Column        | Description                                                             |
+|---|---------------|-------------------------------------------------------------------------|
+| 1 | `house`       | Canonical house id (`ramot` \| `raanana` \| `efroni` \| `rehab`) or `` when the ticket is not house-scoped. Uses the same house encoding as the ActivePatients feed. |
+| 2 | `ticketId`    | Stable ticket key (the ticket's `id`; falls back to a `tk:`-prefixed key derived from the subject when no id is stored). |
+| 3 | `subject`     | Ticket subject / title.                                                 |
+| 4 | `status`      | Canonical status class: `open` \| `completed` \| `closed` \| `rejected`. |
+| 5 | `statusColor` | Consumer UI hint. `rejected` → **`red`** (a denied request must read as denied); other states → `` (no override). |
+| 6 | `updatedAt`   | ISO 8601 **UTC** timestamp of the rebuild that produced the row.        |
+
+## Inclusion rule
+
+A ticket appears in the `OpenTickets` feed when it is:
+
+- **`open`** (`פתוח`) — **always**, regardless of age. This is the base
+  population the feed is named for.
+- **`completed`** (`הושלם`) / **`closed`** (`סגור`) — for **`archive_after_days`**
+  days after it reached that terminal state, **then it drops out**.
+- **`rejected`** (`לא אושר`) — for the **same `archive_after_days` window** as
+  completed/closed, **then it drops out**.
+
+`archive_after_days` is **7 days** (`DIGEST_TICKET_ARCHIVE_AFTER_DAYS`). The
+window is half-open: a ticket is visible while `now − terminalTimestamp <
+archive_after_days`, and drops at/after exactly that many days.
+
+### Rejected retention (behavior)
+
+A rejected request **does not vanish the instant it is rejected**. It remains in
+the digest for the 7-day archive window — carrying its **red** `rejected` status
+— so a coordinator can **see that their request was denied** rather than have it
+silently disappear. After the window it ages out, exactly like completed/closed.
+
+### Aging timestamp
+
+A terminal ticket ages from its **dedicated per-state timestamp** when present —
+`rejectedAt` (rejected), `completedAt` (completed), `closedAt` (closed);
+snake_case variants (`rejected_at`, …) are accepted too — falling back to
+**`updated_at` / `updatedAt`** when there is no dedicated field. A terminal
+ticket with **no parseable timestamp** is **kept** (fail-open to visible) so a
+request can never silently vanish, and a future-dated stamp (clock skew) is
+treated as fresh.
+
+## Status encoding
+
+Status is matched case-insensitively against Hebrew labels and English/id
+aliases, then reduced to a canonical class. Any status outside the set below is
+**not a digest ticket** and is excluded (never renamed).
+
+| Canonical class | Accepted tokens                     |
+|-----------------|-------------------------------------|
+| `open`          | `open`, `פתוח`                       |
+| `completed`     | `completed`, `הושלם`, `בוצע`         |
+| `closed`        | `closed`, `סגור`                     |
+| `rejected`      | `rejected`, `לא אושר`, `נדחה`        |

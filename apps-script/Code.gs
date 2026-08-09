@@ -1874,3 +1874,164 @@ function setupActivePatientsDigest() {
     rebuild: result,
   };
 }
+
+/* ===== Coordinators digest: OpenTickets feed — inclusion rule ==========
+ *
+ * A second coordinators-facing digest population: the OPEN requests ("tickets")
+ * a coordinator raises against the dashboard, plus a short archive tail of the
+ * ones that have just been resolved so a coordinator can still see the outcome.
+ * This section defines only the INCLUSION RULE (which tickets belong in the feed
+ * at a given moment) as pure, deterministic helpers — the same split the
+ * ActivePatients digest uses (buildActivePatientsRows_ is pure; the sheet I/O is
+ * separate). Wiring these rows to a source sheet and an output tab follows the
+ * ActivePatients I/O pattern above (ensureDigestTab_ / writeDigestRows_) and is
+ * not part of this inclusion-rule change.
+ *
+ * INCLUSION RULE
+ *   - open (פתוח) ............. always in the digest (the base "OpenTickets"
+ *                              population), regardless of age.
+ *   - completed (הושלם) ...... in the digest for `archive_after_days` days after
+ *   - closed (סגור) .........  it reached that terminal state, THEN it drops.
+ *   - rejected (לא אושר) ..... SAME `archive_after_days` window as completed /
+ *                              closed — visible for the window after rejection,
+ *                              THEN it drops. It does NOT vanish the instant it
+ *                              is rejected: a coordinator must SEE that their
+ *                              request was denied (and it reads RED), not have it
+ *                              silently disappear.
+ *
+ * AGING TIMESTAMP
+ *   A terminal ticket ages from its dedicated per-state timestamp when present
+ *   (rejectedAt / completedAt / closedAt, snake_case accepted too), falling back
+ *   to updated_at / updatedAt. A terminal ticket with no parseable timestamp is
+ *   kept (fail-open to visible) so a request can never silently vanish.
+ *
+ * See DIGEST-CONTRACT.md ("OpenTickets feed") for the authoritative contract.
+ */
+const OPEN_TICKETS_TAB     = 'OpenTickets';
+const OPEN_TICKETS_COLUMNS = ['house', 'ticketId', 'subject', 'status', 'statusColor', 'updatedAt'];
+
+/* How long a resolved ticket (completed / closed / rejected) stays visible after
+ * reaching its terminal state before it drops out. One window for all three. */
+const DIGEST_TICKET_ARCHIVE_AFTER_DAYS = 7;
+const DIGEST_DAY_MS = 24 * 60 * 60 * 1000;
+
+/* Status token → canonical class. Hebrew labels + English/id aliases, mirroring
+ * the alias style elsewhere so a ticket stored under either form resolves. */
+const DIGEST_TICKET_STATUS_ALIASES = {
+  'open':      'open',
+  'פתוח':      'open',
+  'completed': 'completed',
+  'הושלם':     'completed',
+  'בוצע':      'completed',
+  'closed':    'closed',
+  'סגור':      'closed',
+  'rejected':  'rejected',
+  'לא אושר':   'rejected',
+  'נדחה':      'rejected',
+};
+
+/* Terminal states share the archive window; open is the always-in base state. */
+const DIGEST_TICKET_TERMINAL_CLASSES = { completed: true, closed: true, rejected: true };
+
+function digestTicketStatusClass_(rawStatus) {
+  if (rawStatus === undefined || rawStatus === null) return '';
+  const s = String(rawStatus).trim();
+  if (!s) return '';
+  if (DIGEST_TICKET_STATUS_ALIASES[s]) return DIGEST_TICKET_STATUS_ALIASES[s];
+  return DIGEST_TICKET_STATUS_ALIASES[s.toLowerCase()] || '';
+}
+
+/* Base membership: an OPEN ticket — the population the feed is named for. Open
+ * tickets are always in the digest, regardless of age. */
+function isDigestTicket(ticket) {
+  return !!ticket && digestTicketStatusClass_(ticket.status) === 'open';
+}
+
+/* Parse a Date / ISO string / epoch-ms into epoch-ms, or NaN when unparseable. */
+function digestParseMs_(v) {
+  if (v === undefined || v === null || v === '') return NaN;
+  if (v instanceof Date) return v.getTime();
+  if (typeof v === 'number') return v;
+  const t = Date.parse(String(v));
+  return isNaN(t) ? NaN : t;
+}
+
+/* The timestamp a terminal ticket ages from: the dedicated per-state field when
+ * present, else updated_at / updatedAt. Rejected uses rejectedAt (or updatedAt),
+ * matching the retention rule for completed/closed. */
+function digestTicketTerminalTs_(ticket, statusClass) {
+  const fallback = digestParseMs_(ticket.updatedAt !== undefined ? ticket.updatedAt : ticket.updated_at);
+  let dedicated = NaN;
+  if (statusClass === 'rejected') {
+    dedicated = digestParseMs_(ticket.rejectedAt !== undefined ? ticket.rejectedAt : ticket.rejected_at);
+  } else if (statusClass === 'completed') {
+    dedicated = digestParseMs_(ticket.completedAt !== undefined ? ticket.completedAt : ticket.completed_at);
+  } else if (statusClass === 'closed') {
+    dedicated = digestParseMs_(ticket.closedAt !== undefined ? ticket.closedAt : ticket.closed_at);
+  }
+  return isNaN(dedicated) ? fallback : dedicated;
+}
+
+/* Aging test: within [ts, ts + archiveAfterDays) → still visible. A terminal
+ * ticket with no parseable timestamp is kept (fail-open to visible) so a request
+ * can never SILENTLY vanish — the point of the retention rule. */
+function digestTicketWithinArchiveWindow_(tsMs, nowMs, archiveAfterDays) {
+  if (isNaN(tsMs)) return true;
+  const ageMs = nowMs - tsMs;
+  if (ageMs < 0) return true; // clock skew / future stamp — treat as fresh
+  return ageMs < archiveAfterDays * DIGEST_DAY_MS;
+}
+
+/* THE INCLUSION RULE. A ticket appears in the OpenTickets digest when it is:
+ *   - open (always), OR
+ *   - completed / closed / rejected AND still inside the archive window
+ *     (archiveAfterDays after it reached that terminal state).
+ * Rejected (לא אושר) is included on the SAME window as completed/closed — a
+ * coordinator must SEE that their request was denied, not have it silently
+ * disappear the moment it is rejected. After the window it drops out. */
+function digestIncludeTicket_(ticket, nowMs, archiveAfterDays) {
+  if (!ticket) return false;
+  const cls = digestTicketStatusClass_(ticket.status);
+  if (!cls) return false;          // unknown status — not a digest ticket
+  if (cls === 'open') return true; // open tickets always in
+  if (!DIGEST_TICKET_TERMINAL_CLASSES[cls]) return false;
+  const days = (archiveAfterDays === undefined || archiveAfterDays === null)
+    ? DIGEST_TICKET_ARCHIVE_AFTER_DAYS : archiveAfterDays;
+  return digestTicketWithinArchiveWindow_(digestTicketTerminalTs_(ticket, cls), nowMs, days);
+}
+
+/* Consumer UI hint: rejected renders RED (a denied request must read as denied);
+ * other states carry no override. */
+function digestTicketStatusColor_(statusClass) {
+  return statusClass === 'rejected' ? 'red' : '';
+}
+
+/* PURE projection: tickets → OpenTickets digest rows, applying the inclusion
+ * rule above. `nowIso` is the rebuild timestamp (stamped on updatedAt and used
+ * as "now" for aging, passed in so the function stays deterministic/testable).
+ * `archiveAfterDays` defaults to the 7-day contract window. */
+function buildOpenTicketsRows_(tickets, nowIso, archiveAfterDays) {
+  const out = [];
+  if (!Array.isArray(tickets)) return out;
+  const nowMs = digestParseMs_(nowIso);
+  const days = (archiveAfterDays === undefined || archiveAfterDays === null)
+    ? DIGEST_TICKET_ARCHIVE_AFTER_DAYS : archiveAfterDays;
+  for (let i = 0; i < tickets.length; i++) {
+    const t = tickets[i];
+    if (!t) continue;
+    if (!digestIncludeTicket_(t, nowMs, days)) continue;
+    const cls = digestTicketStatusClass_(t.status);
+    const id = String(t.id === undefined || t.id === null ? '' : t.id).trim();
+    const subject = String(t.subject === undefined || t.subject === null ? '' : t.subject).trim();
+    if (!id && !subject) continue; // a digest row must identify a ticket
+    out.push({
+      house:       canonicalDigestHouse_(t.house !== undefined ? t.house : t.houseId),
+      ticketId:    id || ('tk:' + subject),
+      subject:     subject,
+      status:      cls,
+      statusColor: digestTicketStatusColor_(cls),
+      updatedAt:   nowIso,
+    });
+  }
+  return out;
+}
