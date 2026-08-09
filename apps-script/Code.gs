@@ -506,6 +506,16 @@ function getData_() {
   const removedSh    = getOrCreateSheet_(REMOVED_LEADS_SHEET, REMOVED_LEAD_COLUMNS);
   const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
 
+  // Heal blank id cells BEFORE reading, so the ids returned to the client are
+  // the same ones now stored on the sheet — client and sheet agree on the
+  // delete/update key. Only the two sheets that are targets of delete-by-id are
+  // healed: Leads (removeLead_ / moveLeadIrrelevant_) and the irrelevant-leads
+  // sheet (restoreLead_). The Patients sheet has no id column; the removed and
+  // discharged sheets are written with client-stamped ids and are not
+  // delete-by-id targets, so they need no backfill (see CHANGELOG for the audit).
+  backfillMissingIds_(leadsSh, LEAD_COLUMNS);
+  backfillMissingIds_(irrelevantSh, IRRELEVANT_LEAD_COLUMNS);
+
   const leads               = readSheet_(leadsSh, LEAD_COLUMNS);
   // Normalize visitTime on the way out: a legacy cell coerced to a time-typed
   // value (before the text-format fix in mergeLeads_) reads back from getValues
@@ -719,19 +729,80 @@ function replaceHousePatients_(houseId, patientsArr) {
  * race a move and resurrect the row in the Leads sheet.
  */
 
+/* Count the rows whose id column equals `idValue` — the read-only peek that
+ * opens removeLead_'s peek → append → delete sequence. 0 means the id isn't on
+ * the sheet (e.g. a client-invented random id for a blank-id row) and the
+ * caller must refuse to proceed without touching anything. */
+function countRowsById_(sh, columns, idValue) {
+  const idIdx = columns.indexOf('id');
+  if (idIdx < 0) return 0;
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return 0;
+  const ids = sh.getRange(2, idIdx + 1, lastRow - 1, 1).getValues();
+  const target = String(idValue);
+  let n = 0;
+  for (let i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]) === target) n++;
+  }
+  return n;
+}
+
+/* Delete every row whose id column equals `idValue`. Returns the NUMBER of rows
+ * removed (0 when nothing matched) so callers can distinguish a real delete from
+ * a no-op — e.g. removeLead_ refuses to append a phantom "removed" row when the
+ * id never matched. Backward-compatible: existing callers that ignore the return
+ * value are unaffected. */
 function deleteRowsById_(sh, columns, idValue) {
   const idIdx = columns.indexOf('id');
-  if (idIdx < 0) return;
+  if (idIdx < 0) return 0;
   const lastRow = sh.getLastRow();
-  if (lastRow < 2) return;
+  if (lastRow < 2) return 0;
   const values = sh.getRange(2, 1, lastRow - 1, columns.length).getValues();
   const target = String(idValue);
   const kept = values.filter(function (row) { return String(row[idIdx]) !== target; });
-  if (kept.length === values.length) return;
+  const removed = values.length - kept.length;
+  if (removed === 0) return 0;
   clearBody_(sh, columns.length);
   if (kept.length > 0) {
     sh.getRange(2, 1, kept.length, columns.length).setValues(kept);
   }
+  return removed;
+}
+
+/* Heal an id-keyed sheet in place: any row that has content but a BLANK id cell
+ * gets a freshly generated id written back to that single cell (per-row single-
+ * cell write — never a whole-sheet rewrite). This closes the blank-id bug: a
+ * blank-id row makes the client's normalizeLead invent a random cryptoId, which
+ * then never matches for delete/update-by-id (removeLead / moveLeadIrrelevant /
+ * restoreLead), so the operation silently no-ops and the row reappears on reload.
+ * After backfill, client and sheet agree on the key. Idempotent — a sheet with
+ * every id present performs ZERO writes. Fully-empty trailing rows are skipped
+ * (readSheet_ ignores them). Returns the count backfilled. No-op if `columns`
+ * has no id column. */
+function backfillMissingIds_(sh, columns) {
+  const idIdx = columns.indexOf('id');
+  if (idIdx < 0) return 0;
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return 0;
+  const values = sh.getRange(2, 1, lastRow - 1, columns.length).getValues();
+  const idCol = idIdx + 1;
+  let filled = 0;
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const cur = String(row[idIdx] == null ? '' : row[idIdx]).trim();
+    if (cur !== '') continue;
+    let hasContent = false;
+    for (let j = 0; j < row.length; j++) {
+      if (row[j] !== '' && row[j] !== null) { hasContent = true; break; }
+    }
+    if (!hasContent) continue; // fully-empty row — leave it alone
+    const newId = 'id-' + Utilities.getUuid();
+    const cell = sh.getRange(i + 2, idCol, 1, 1);
+    cell.setNumberFormat('@');   // ids are opaque text — never let Sheets coerce
+    cell.setValue(newId);
+    filled++;
+  }
+  return filled;
 }
 
 function upsertRowById_(sh, columns, obj) {
@@ -868,9 +939,22 @@ function removeLead_(lead) {
       originSheet: lead.originSheet || 'Leads',
     });
 
-    // Append-before-delete order: if the upsert into the removed sheet throws
-    // for any reason, the active row is still intact. The reverse order would
-    // risk losing the row entirely.
+    // Safe sequence: peek → append → delete. The old UNCONDITIONAL
+    // append-before-delete meant a blank-id lead (whose client-side random id
+    // matches nothing here) left a phantom "removed" row AND the still-present
+    // active row — the lead reappeared on reload.
+    //   1. Peek FIRST (countRowsById_, read-only): 0 matches → refuse, touch
+    //      NOTHING. The client surfaces the error and rolls back; getData_
+    //      backfills blank ids on read, so after one reload the retry carries
+    //      a real id and matches.
+    //   2. Append to the removed sheet — BEFORE the delete, so if the append
+    //      throws the active row is still intact (nothing is ever lost).
+    //   3. Delete the matched row(s) from Leads.
+    // All three steps run under the script lock, so no writer can slip between
+    // the peek and the delete.
+    if (countRowsById_(leadsSh, LEAD_COLUMNS, lead.id) < 1) {
+      return { ok: false, error: 'lead_id_not_found' };
+    }
     upsertRowById_(removedSh, REMOVED_LEAD_COLUMNS, record);
     deleteRowsById_(leadsSh, LEAD_COLUMNS, lead.id);
     return { ok: true, removed: true, lead: record };
