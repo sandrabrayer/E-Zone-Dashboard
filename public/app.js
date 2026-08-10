@@ -1884,8 +1884,8 @@ function renderRenewalAlert() {
         <button class="btn small primary" data-action="renew">חידוש תשלום</button>
         <button class="btn small" data-action="discharge">שחרור</button>
       </div>`;
-    row.querySelector('[data-action="renew"]').onclick = e =>
-      withBusyButton(e.currentTarget, () => renewPatient(patient, renewalISO));
+    row.querySelector('[data-action="renew"]').onclick = () =>
+      confirmRenewPatient(patient, renewalISO);
     row.querySelector('[data-action="discharge"]').onclick = () => dischargePatient(patient);
     listEl.appendChild(row);
   });
@@ -1898,11 +1898,41 @@ function renderRenewalAlert() {
  * renewal date is derived from the patient's billing schedule, writing this
  * payment marks the upcoming cycle covered — so the patient drops off the
  * alert and the next occurrence advances a month automatically. */
+/* The amount a renewal will charge for (patient, dueDate) — the existing
+ * payment record's amount when one exists, else the patient's base pay. Shared
+ * by the confirm-modal text and the actual write so they can never disagree.
+ * Pure + tested. */
+function renewalAmount(patient, dueDateISO) {
+  const base = paymentForPatientOnDate(patient, dueDateISO);
+  return base.amount || patient.pay || 0;
+}
+
+/* חידוש תשלום entry point — a renewal now requires explicit confirmation
+ * (Sandra accidentally renewed a real patient off the one-click button).
+ * Opens the standard confirm dialog naming the patient, the amount, and the
+ * due date; only אישור fires the write.
+ *
+ * This is ALSO the spinner fix: renewPatient's optimistic update re-renders
+ * the renewals list synchronously, which destroys the clicked row button in
+ * the same tick — so a busy state on the ROW button (the R3 approach) never
+ * survived to a paint. showConfirm's busy discipline lives on the modal's
+ * confirm button inside #modal-root, which no list re-render touches, so the
+ * spinner now stays visible for the whole round-trip (renewPatient returns
+ * its settle promise; the dialog stays open + frozen until it resolves). */
+function confirmRenewPatient(patient, dueDateISO) {
+  if (state.mode !== 'edit') return;
+  const amount = renewalAmount(patient, dueDateISO);
+  showConfirm({
+    text: `לחדש תשלום עבור ${patient.name || ''} — ${amount.toLocaleString('he-IL')} ₪ לתאריך ${formatDate(dueDateISO)}?`,
+    onConfirm: () => renewPatient(patient, dueDateISO),
+  });
+}
+
 function renewPatient(patient, dueDateISO) {
   if (state.mode !== 'edit') return;
 
   const base   = paymentForPatientOnDate(patient, dueDateISO);
-  const amount = base.amount || patient.pay || 0;
+  const amount = renewalAmount(patient, dueDateISO);
   const payment = normalizePayment({
     ...base,
     patientId:   base.patientId   || patientKey(patient),
