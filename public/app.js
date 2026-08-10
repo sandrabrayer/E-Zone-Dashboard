@@ -4101,14 +4101,44 @@ function monthKey(iso) {
   return String(iso || '').slice(0, 7);
 }
 
+/* The override record for (patientId, 'YYYY-MM'), or null. Pure. */
+function billingOverrideFor(overrides, patientId, month) {
+  if (!Array.isArray(overrides)) return null;
+  return overrides.find(o => o && o.patientId === patientId && o.month === month) || null;
+}
+
+/* Overlay a per-month billing override onto a payment record. Pure — returns a
+ * NEW object when an overlay applies, the input untouched otherwise.
+ *   - paid / partial records are HISTORY: money already moved at a recorded
+ *     amount — never rewritten by an override.
+ *   - unpaid records (persisted or in-memory placeholders): the override for
+ *     the record's due-date month replaces `amount`, and `balance` is
+ *     recomputed. This is the single rule that routes the override into the
+ *     row display, יתרה, the due-list KPI totals, the monthly-summary
+ *     outstanding figure, and the renewal write. */
+function applyBillingOverride(payment, overrides) {
+  if (!payment || payment.status === 'paid' || payment.status === 'partial') return payment;
+  const ovr = billingOverrideFor(overrides, payment.patientId, monthKey(payment.dueDate));
+  if (!ovr) return payment;
+  const amount = Number(ovr.amount) || 0;
+  return {
+    ...payment,
+    amount,
+    balance: Math.max(0, amount - (payment.amountPaid || 0)),
+  };
+}
+
 /* Build (or reuse) the payment record for a given patient + due date. If
  * there's no sheet-persisted record yet, return an in-memory "unpaid"
- * placeholder — not added to state.payments until it's actually saved. */
+ * placeholder — not added to state.payments until it's actually saved. Either
+ * way the result carries the per-month override overlay (unpaid only), so
+ * every consumer — billing rows, KPI totals, the renewal confirm + write —
+ * sees the effective amount for that month. */
 function paymentForPatientOnDate(patient, dueDateISO) {
   const id = paymentId(patient, dueDateISO);
   const existing = state.payments.find(x => x.id === id);
-  if (existing) return existing;
-  return normalizePayment({
+  if (existing) return applyBillingOverride(existing, state.billingOverrides);
+  return applyBillingOverride(normalizePayment({
     id,
     patientId: patientKey(patient),
     patientName: patient.name,
@@ -4118,7 +4148,7 @@ function paymentForPatientOnDate(patient, dueDateISO) {
     status: 'unpaid',
     amountPaid: 0,
     balance: patient.pay || 0,
-  });
+  }), state.billingOverrides);
 }
 
 function activePatients() {
@@ -4235,7 +4265,10 @@ function renderBilling() {
     payment: paymentForPatientOnDate(p, selected),
   }));
 
-  const totalDue       = due.reduce((s, d) => s + (d.patient.pay || 0), 0);
+  // KPI totals sum the payment records' EFFECTIVE amounts (override-aware via
+  // paymentForPatientOnDate) — previously totalDue summed the base pay directly,
+  // which would have ignored per-month overrides.
+  const totalDue       = due.reduce((s, d) => s + (d.payment.amount || 0), 0);
   const totalCollected = due.reduce((s, d) => s + (d.payment.amountPaid || 0), 0);
 
   document.getElementById('bill-due-count').textContent    = due.length;
@@ -4270,7 +4303,11 @@ function renderBillingOpenList(selectedISO) {
     list.innerHTML = `<div class="card billing-empty">אין יתרות פתוחות מתאריכים קודמים</div>`;
     return;
   }
-  open.forEach(pay => {
+  open.forEach(rawPay => {
+    // Carry-forward rows read straight from state.payments — overlay the
+    // per-month override here too so a past unpaid month edited by Sandra
+    // shows (and balances at) its effective amount.
+    const pay = applyBillingOverride(rawPay, state.billingOverrides);
     const patient = findPatientForPayment(pay) || {
       name: pay.patientName,
       houseId: pay.houseId,
@@ -4295,6 +4332,28 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
     `<option value="${s.id}" ${payment.status === s.id ? 'selected' : ''}>${s.label}</option>`
   ).join('');
 
+  /* Per-month amount override (this row's due-date month). The badge marks an
+   * active override; the pencil opens the inline editor (edit mode, current
+   * rows only — carry-forward rows show their original date in this cell);
+   * paid/partial rows are history and not editable. */
+  const hasOverride = !isCarryForward &&
+    !!billingOverrideFor(state.billingOverrides, payment.patientId, monthKey(dueDateISO));
+  const amountEditable = !isCarryForward && state.mode === 'edit' &&
+    payment.status !== 'paid' && payment.status !== 'partial';
+  const amountCellHtml = isCarryForward
+    ? `<span class="p-val">${formatDate(dueDateISO)}</span>`
+    : `
+      <span class="p-val bill-amount-view">₪ ${amount.toLocaleString('he-IL')}
+        ${hasOverride ? '<span class="badge override" title="סכום מותאם לחודש זה">מותאם</span>' : ''}
+        ${amountEditable ? '<button class="bill-amount-edit-btn" title="עריכת הסכום לחודש זה בלבד">✏️</button>' : ''}
+        ${amountEditable && hasOverride ? '<button class="bill-amount-clear-btn" title="ביטול ההתאמה — חזרה לסכום הבסיס">↩</button>' : ''}
+      </span>
+      <span class="bill-amount-edit hidden">
+        <input class="bill-amount-input" type="number" min="0" step="50" value="${amount}" />
+        <button class="btn small primary bill-amount-save">שמור</button>
+        <button class="btn small bill-amount-cancel">ביטול</button>
+      </span>`;
+
   row.innerHTML = `
     <div>
       <span class="p-label">מטופל</span>
@@ -4304,11 +4363,9 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
       <span class="p-label">בית</span>
       <span class="p-val">${escapeHtml(houseName)}</span>
     </div>
-    <div>
+    <div class="bill-amount-cell">
       <span class="p-label">${isCarryForward ? 'תאריך מקורי' : 'סכום חודשי'}</span>
-      <span class="p-val">${isCarryForward
-        ? formatDate(dueDateISO)
-        : '₪ ' + amount.toLocaleString('he-IL')}</span>
+      ${amountCellHtml}
     </div>
     <div>
       <span class="p-label">סטטוס</span>
@@ -4391,6 +4448,40 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
     }
   };
 
+  /* Per-month amount editor wiring (present only when amountEditable). The
+   * save/clear workers are optimistic — their renderBilling() rebuilds this
+   * row with the new amount + badge, which IS the visual feedback;
+   * withBusyButton guards double-fire until the rebuild lands. */
+  const amountEditBtn = row.querySelector('.bill-amount-edit-btn');
+  if (amountEditBtn) {
+    const view     = row.querySelector('.bill-amount-view');
+    const editWrap = row.querySelector('.bill-amount-edit');
+    const input    = row.querySelector('.bill-amount-input');
+    amountEditBtn.onclick = () => {
+      view.classList.add('hidden');
+      editWrap.classList.remove('hidden');
+      if (input.focus) input.focus();
+    };
+    row.querySelector('.bill-amount-cancel').onclick = () => {
+      editWrap.classList.add('hidden');
+      view.classList.remove('hidden');
+    };
+    row.querySelector('.bill-amount-save').onclick = e =>
+      withBusyButton(e.currentTarget, () => {
+        const v = Number(input.value);
+        if (!Number.isFinite(v) || v < 0) {
+          showError('סכום לא תקין');
+          return Promise.resolve();
+        }
+        return saveBillingOverride(patient, dueDateISO, v);
+      });
+  }
+  const amountClearBtn = row.querySelector('.bill-amount-clear-btn');
+  if (amountClearBtn) {
+    amountClearBtn.onclick = e =>
+      withBusyButton(e.currentTarget, () => clearBillingOverride(patient, dueDateISO));
+  }
+
   return row;
 }
 
@@ -4398,7 +4489,12 @@ function renderBillingMonthlySummary(selectedISO) {
   const mk = monthKey(selectedISO);
   document.getElementById('bill-month-label').textContent = formatMonth(selectedISO);
 
-  const thisMonth = state.payments.filter(p => monthKey(p.dueDate) === mk);
+  // Overlay per-month overrides so the outstanding figure + per-house
+  // breakdown reflect effective amounts (collected sums amountPaid — the
+  // overlay never touches paid/partial history).
+  const thisMonth = state.payments
+    .filter(p => monthKey(p.dueDate) === mk)
+    .map(p => applyBillingOverride(p, state.billingOverrides));
   const collected   = thisMonth.reduce((s, p) => s + (p.amountPaid || 0), 0);
   const outstanding = thisMonth
     .filter(p => p.status !== 'paid')
@@ -4456,6 +4552,63 @@ async function savePayment(payment) {
     else state.payments = state.payments.filter(x => x.id !== payment.id);
     renderBilling();
     showError('שמירת גבייה נכשלה — ' + e.message);
+  }
+}
+
+/* Persist a per-month amount override for (patient, dueDate's month). The
+ * patient's base pay is NEVER touched — the override lives in its own sheet
+ * and only shapes this month's figures. Optimistic + rollback, matching the
+ * closeLead/dischargePatient pattern. Re-writing the same (patient, month)
+ * replaces the amount (deterministic id, backend upsert semantics). */
+async function saveBillingOverride(patient, dueDateISO, newAmount) {
+  if (state.mode !== 'edit') return;
+  const month = monthKey(dueDateISO);
+  const pid   = patientKey(patient);
+  const record = {
+    id: billingOverrideId(pid, month),
+    patientId: pid,
+    month,
+    amount: Number(newAmount) || 0,
+    created: todayISO(),
+  };
+
+  const prev = state.billingOverrides.slice();
+  const idx = state.billingOverrides.findIndex(o => o && o.id === record.id);
+  state.billingOverrides = idx >= 0
+    ? state.billingOverrides.map((o, i) => (i === idx ? record : o))
+    : prev.concat([record]);
+  renderBilling();
+
+  try {
+    await apiPost({ action: 'upsertBillingOverride', override: record });
+    showToast('הסכום עודכן לחודש ' + formatMonth(dueDateISO));
+  } catch (e) {
+    state.billingOverrides = prev;
+    renderBilling();
+    showError('עדכון הסכום נכשל — ' + e.message);
+  }
+}
+
+/* Remove the (patient, month) override — the row reverts to the base amount.
+ * Optimistic + rollback, same shape as saveBillingOverride. */
+async function clearBillingOverride(patient, dueDateISO) {
+  if (state.mode !== 'edit') return;
+  const month = monthKey(dueDateISO);
+  const pid   = patientKey(patient);
+  const existing = billingOverrideFor(state.billingOverrides, pid, month);
+  if (!existing) return;
+
+  const prev = state.billingOverrides.slice();
+  state.billingOverrides = state.billingOverrides.filter(o => o !== existing);
+  renderBilling();
+
+  try {
+    await apiPost({ action: 'deleteBillingOverride', override: { id: existing.id, patientId: pid, month } });
+    showToast('הסכום הוחזר לסכום הבסיס');
+  } catch (e) {
+    state.billingOverrides = prev;
+    renderBilling();
+    showError('ביטול ההתאמה נכשל — ' + e.message);
   }
 }
 
