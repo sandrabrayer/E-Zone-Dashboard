@@ -250,6 +250,15 @@ input:focus, select:focus, textarea:focus {
 .screen-head h2 { margin: 0; }
 .actions { display: flex; gap: 10px; align-items: center; }
 .actions input[type=search] { width: 280px; }
+/* תפוסה: session-only "הצג משוחררים" display toggle. RTL-safe: inline-flex +
+ * gap needs no directional margins. Muted so it reads as a view option, not an
+ * action. */
+.show-released-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--text-muted); font-size: 13px; cursor: pointer;
+  user-select: none; white-space: nowrap;
+}
+.show-released-toggle input { accent-color: var(--accent, #5b8bff); }
 
 /* ===== Cards ===== */
 .cards-row {
