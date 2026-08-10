@@ -1884,7 +1884,8 @@ function renderRenewalAlert() {
         <button class="btn small primary" data-action="renew">חידוש תשלום</button>
         <button class="btn small" data-action="discharge">שחרור</button>
       </div>`;
-    row.querySelector('[data-action="renew"]').onclick = () => renewPatient(patient, renewalISO);
+    row.querySelector('[data-action="renew"]').onclick = e =>
+      withBusyButton(e.currentTarget, () => renewPatient(patient, renewalISO));
     row.querySelector('[data-action="discharge"]').onclick = () => dischargePatient(patient);
     listEl.appendChild(row);
   });
@@ -1918,9 +1919,10 @@ function renewPatient(patient, dueDateISO) {
   // persistence and rolls back itself on failure. Re-render the dashboard right
   // away (optimistic — the row disappears), then again after the round-trip so
   // a rollback re-shows it. Mirrors closeLead's optimistic-then-reconcile move.
+  // Return the settle promise so the renew button's busy wrapper can track it.
   const saved = savePayment(payment);
   renderDashboard();
-  Promise.resolve(saved).then(() => {
+  return Promise.resolve(saved).then(() => {
     renderDashboard();
     // Confirm only if the paid record actually survived. savePayment swallows
     // its own errors (rolls back state.payments + showError on failure), so the
@@ -2961,6 +2963,24 @@ async function doRestorePatientToActive(p) {
   }
 }
 
+/* Run an async action with the triggering button disabled and marked busy
+ * (.busy adds the inline spinner), so a slow Apps Script round-trip can't be
+ * double-fired. Restores the button's state when the action settles — success
+ * or failure alike; a rejection propagates to the caller after the restore.
+ * No-op passthrough when btn is falsy. */
+async function withBusyButton(btn, fn) {
+  if (!btn) return fn();
+  const prevDisabled = btn.disabled;
+  btn.disabled = true;
+  btn.classList.add('busy');
+  try {
+    return await fn();
+  } finally {
+    btn.disabled = prevDisabled;
+    btn.classList.remove('busy');
+  }
+}
+
 /* Confirm dialog with "אישור" / "ביטול" buttons. Reuses the same backdrop +
  * surface styling as the form modal but with no fields.
  *
@@ -2990,16 +3010,29 @@ function showConfirm({ text, onConfirm, confirmLabel = 'אישור', danger = fa
   root.appendChild(back);
 
   const close = () => back.remove();
-  back.querySelector('[data-action="cancel"]').onclick = close;
-  back.addEventListener('click', e => { if (e.target === back) close(); });
+  const cancelBtn  = back.querySelector('[data-action="cancel"]');
+  const confirmBtn = back.querySelector('[data-action="confirm"]');
+  /* Busy discipline (async-button pass): the dialog used to close IMMEDIATELY
+   * and run onConfirm untracked, leaving no feedback during a slow round-trip
+   * and letting the underlying row button be re-clicked. Now the dialog stays
+   * open with both buttons disabled + a spinner until onConfirm settles, then
+   * closes (the workers own rollback/toasts; errors are still caught here). */
+  let busy = false;
+  cancelBtn.onclick = () => { if (!busy) close(); };
+  back.addEventListener('click', e => { if (e.target === back && !busy) close(); });
 
-  back.querySelector('[data-action="confirm"]').onclick = async () => {
-    close();
+  confirmBtn.onclick = async () => {
+    if (busy) return;
+    busy = true;
+    cancelBtn.disabled = true;
+    confirmBtn.disabled = true;
+    confirmBtn.classList.add('busy');
     try { await onConfirm(); }
     catch (err) {
       console.error('[E-ZONE] confirm onConfirm threw:', err);
       showError(err.message || 'הפעולה נכשלה');
     }
+    close();
   };
 }
 
@@ -3582,7 +3615,8 @@ function renderPatients() {
     const restoreBtn = row.querySelector('[data-action="restore"]');
     if (restoreBtn) restoreBtn.onclick = () =>
       showRestorePatientChoiceModal(auditRowForReleasedPatient(p, state.dischargedPatients));
-    row.querySelector('[data-action="delete"]').onclick = () => deletePatient(p);
+    row.querySelector('[data-action="delete"]').onclick = e =>
+      withBusyButton(e.currentTarget, () => deletePatient(p));
 
     list.appendChild(row);
   });
@@ -4248,9 +4282,25 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
     };
   };
 
+  /* Busy discipline (async-button pass): both controls freeze (and the row
+   * dims) while savePayment's round-trip is in flight, so the status can't be
+   * flipped again mid-save. savePayment owns rollback + the error toast; a
+   * failure re-renders the whole billing tab, so re-enabling a detached row is
+   * harmless. */
+  const setRowSaving = saving => {
+    statusSel.disabled = saving || state.mode !== 'edit';
+    paidInput.disabled = saving || state.mode !== 'edit';
+    row.classList.toggle('saving', saving);
+  };
+  const saveRow = async updated => {
+    setRowSaving(true);
+    try { await savePayment(updated); }
+    finally { setRowSaving(false); }
+  };
+
   statusSel.onchange = () => {
     const updated = recompute(statusSel.value, paidInput.value);
-    savePayment(updated);
+    saveRow(updated);
   };
 
   paidInput.onchange = () => {
@@ -4261,10 +4311,10 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
       // Fully paid — flip to "שולם" so the row stops carrying forward.
       statusSel.value = 'paid';
       const updated = recompute('paid', amount);
-      savePayment(updated);
+      saveRow(updated);
     } else {
       const updated = recompute('partial', v);
-      savePayment(updated);
+      saveRow(updated);
     }
   };
 
