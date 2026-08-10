@@ -123,6 +123,13 @@ const state = {
   leadSearch: '',
   retentionSearch: '',
   patientSearch: '',
+  /* תפוסה tab: reveal released patients in the LIST (dimmed, with a שחזר
+   * button). SESSION-ONLY by design — never persisted (no localStorage), so
+   * every fresh load starts with released patients hidden. Display-only:
+   * released patients stay excluded from every occupancy count and KPI
+   * regardless of this flag (houseOccupancyCount and the dashboard/billing
+   * filters ignore it). */
+  showReleasedPatients: false,
   billingDate: '',
   breakeven: null, // loaded from localStorage in initBreakeven()
 };
@@ -406,6 +413,14 @@ function initTabs() {
     state.patientSearch = e.target.value.trim().toLowerCase();
     renderPatients();
   };
+  /* הצג משוחררים — session-only display toggle (state, never localStorage). */
+  const showReleasedEl = document.getElementById('show-released-toggle');
+  if (showReleasedEl) {
+    showReleasedEl.onchange = e => {
+      state.showReleasedPatients = !!e.target.checked;
+      renderPatients();
+    };
+  }
   /* שימור לידים tab search — same immediate-on-input behavior as the leads tab;
    * filters the closed-lead disposition groups (see renderIrrelevantLeads). */
   const retentionSearchEl = document.getElementById('retention-search');
@@ -2795,6 +2810,40 @@ function restoreNeedsOutpatientCleanup(audit) {
   return !!audit && audit.disposition === 'released_outpatient';
 }
 
+/* Bridge a released PATIENT row (the house view under הצג משוחררים) to the
+ * discharged-audit record the restore-choice modal + workers operate on.
+ * Prefers the matching NON-RESTORED audit row — same houseId+name+date key as
+ * matchActivePatientIndex — so prior_status (and the audit id the restored
+ * flag writes against) come from the real record. A released row with no audit
+ * match (legacy release predating Phase 2e) gets a synthesized audit object:
+ * prior_status '' → restores to active; the restorePatientToActive write then
+ * appends a restored='TRUE' audit row for it, which is invisible (the tab
+ * filters restored rows) and simply documents the restore. Pure + tested. */
+function auditRowForReleasedPatient(p, dischargedPatients) {
+  const match = (Array.isArray(dischargedPatients) ? dischargedPatients : []).find(d =>
+    d && d.restored !== 'TRUE' && d.restored !== true &&
+    d.houseId === p.houseId && d.name === p.name && d.date === p.date);
+  if (match) return match;
+  return {
+    id:           p.id || cryptoId(),
+    houseId:      p.houseId || '',
+    name:         p.name || '',
+    date:         p.date || '',
+    pay:          Number(p.pay) || 0,
+    adv:          Number(p.adv) || 0,
+    status:       'released',
+    fromLead:     p.fromLead || '',
+    exitDate:     p.exitDate || '',
+    source:       p.source || '',
+    notes:        p.notes || '',
+    dischargedAt: '',
+    disposition:  '',
+    discharge_note: '',
+    restored:     '',
+    prior_status: '',
+  };
+}
+
 /* ===== Restore-choice modal =====
  * The single שחזר button on a discharged row opens this modal: an explicit
  * choice between the two restore paths, radio-style (mirrors the
@@ -3433,13 +3482,31 @@ function openEditPatientModal(p) {
 /* ====================================================
    OCCUPANCY
    ==================================================== */
+/* Occupancy headcount for a house — released patients NEVER count, regardless
+ * of the הצג משוחררים display toggle. Single source of truth for the house-tab
+ * (N/capacity) figures. Pure + tested. */
+function houseOccupancyCount(patients, houseId) {
+  return (Array.isArray(patients) ? patients : [])
+    .filter(p => p && p.houseId === houseId && p.status !== 'released').length;
+}
+
+/* The rows the תפוסה list shows for a house: released patients are excluded
+ * unless `showReleased` (the session-only toggle) is on; the search query
+ * applies either way. Display-only — counts/KPIs never use this. Pure + tested. */
+function visibleOccupancyRows(patients, houseId, query, showReleased) {
+  return (Array.isArray(patients) ? patients : [])
+    .filter(p => p && (showReleased || p.status !== 'released'))
+    .filter(p => p.houseId === houseId)
+    .filter(p => !query || (p.name || '').toLowerCase().includes(query));
+}
+
 function renderHouseTabs() {
   const tabs = document.getElementById('house-tabs');
   tabs.innerHTML = '';
   HOUSES.forEach(h => {
     const t = document.createElement('button');
     t.className = 'h-tab' + (state.currentHouseTab === h.id ? ' active' : '');
-    const inHouse = state.patients.filter(p => p.houseId === h.id && p.status !== 'released').length;
+    const inHouse = houseOccupancyCount(state.patients, h.id);
     t.textContent = `${h.name} (${inHouse}/${h.capacity})`;
     t.onclick = () => {
       state.currentHouseTab = h.id;
@@ -3454,10 +3521,8 @@ function renderPatients() {
   const list = document.getElementById('patients-list');
   list.innerHTML = '';
   const q = state.patientSearch;
-  const rows = state.patients
-    .filter(p => p.status !== 'released')
-    .filter(p => p.houseId === state.currentHouseTab)
-    .filter(p => !q || (p.name || '').toLowerCase().includes(q));
+  const rows = visibleOccupancyRows(
+    state.patients, state.currentHouseTab, q, state.showReleasedPatients);
 
   if (!rows.length) {
     list.innerHTML = `<div class="card" style="text-align:center;color:var(--text-muted);">אין מטופלים להצגה</div>`;
@@ -3501,7 +3566,9 @@ function renderPatients() {
         <span class="badge ${badgeCls}">${statusInfo.label}${isReleased && p.exitDate ? ' · ' + formatDate(p.exitDate) : ''}</span>
       </div>
       <div class="row-actions edit-only">
-        ${isReleased ? '' : `<button class="btn small" data-action="release">שחרר</button>`}
+        ${isReleased
+          ? `<button class="btn small primary" data-action="restore">שחזר</button>`
+          : `<button class="btn small" data-action="release">שחרר</button>`}
         <button class="btn small danger" data-action="delete" title="מחק לצמיתות">✕</button>
         <button class="btn small" data-action="edit" title="ערוך מטופל">✏️</button>
       </div>
@@ -3510,6 +3577,11 @@ function renderPatients() {
     row.querySelector('[data-action="edit"]').onclick = () => openEditPatientModal(p);
     const releaseBtn = row.querySelector('[data-action="release"]');
     if (releaseBtn) releaseBtn.onclick = () => dischargePatient(p);
+    /* Released rows (visible only under הצג משוחררים) restore through the SAME
+     * choice modal as the discharged tab, bridged to that row's audit record. */
+    const restoreBtn = row.querySelector('[data-action="restore"]');
+    if (restoreBtn) restoreBtn.onclick = () =>
+      showRestorePatientChoiceModal(auditRowForReleasedPatient(p, state.dischargedPatients));
     row.querySelector('[data-action="delete"]').onclick = () => deletePatient(p);
 
     list.appendChild(row);
