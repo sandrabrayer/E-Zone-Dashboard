@@ -104,7 +104,8 @@ test('a matched unpaid carry row renders the editor, with the original date fold
 test('editing a carry row targets the RECORD\'s own month, not the selected billing date', () => {
   app.setState({ mode: 'edit', payments: [], billingOverrides: [] });
   const calls = [];
-  app.setSaveBillingOverride(async (patient, dueDateISO, v) => calls.push([dueDateISO, v]));
+  // Single-identity-source signature: the worker receives the payment record.
+  app.setSaveBillingOverride(async (payment, v) => calls.push([payment.dueDate, v]));
   // renderBillingOpenList passes the record's own dueDate as dueDateISO — build
   // the row exactly as it does.
   const row = app.buildBillingRow(PATIENT, juneCarry(), '2026-06-05', true);

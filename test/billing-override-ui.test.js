@@ -168,7 +168,7 @@ test('saveBillingOverride writes the upsert action and applies optimistically', 
   app.setApiPost(async (b) => { posts.push(b); });
   app.setRenderBilling(() => {});
   app.setShowToast(() => {});
-  await app.saveBillingOverride(PATIENT, '2026-08-05', 4200);
+  await app.saveBillingOverride({ patientId: PID, dueDate: '2026-08-05' }, 4200);
   assert.strictEqual(posts.length, 1);
   assert.strictEqual(posts[0].action, 'upsertBillingOverride');
   assert.strictEqual(posts[0].override.patientId, PID);
@@ -176,7 +176,7 @@ test('saveBillingOverride writes the upsert action and applies optimistically', 
   assert.strictEqual(posts[0].override.amount, 4200);
   assert.strictEqual(app.getState().billingOverrides.length, 1);
   // Re-saving the same month replaces, never duplicates.
-  await app.saveBillingOverride(PATIENT, '2026-08-20', 3900);
+  await app.saveBillingOverride({ patientId: PID, dueDate: '2026-08-20' }, 3900);
   assert.strictEqual(app.getState().billingOverrides.length, 1);
   assert.strictEqual(app.getState().billingOverrides[0].amount, 3900);
 });
@@ -187,7 +187,7 @@ test('saveBillingOverride rolls back on failure', async () => {
   app.setApiPost(async () => { throw new Error('נכשל'); });
   app.setRenderBilling(() => {});
   app.setShowError(m => errors.push(m));
-  await app.saveBillingOverride(PATIENT, '2026-08-05', 4200);
+  await app.saveBillingOverride({ patientId: PID, dueDate: '2026-08-05' }, 4200);
   assert.strictEqual(app.getState().billingOverrides.length, 0, 'optimistic write rolled back');
   assert.strictEqual(errors.length, 1);
 });
@@ -198,7 +198,7 @@ test('clearBillingOverride deletes and restores base; rolls back on failure', as
   app.setApiPost(async (b) => { posts.push(b); });
   app.setRenderBilling(() => {});
   app.setShowToast(() => {});
-  await app.clearBillingOverride(PATIENT, '2026-08-05');
+  await app.clearBillingOverride({ patientId: PID, dueDate: '2026-08-05' });
   assert.strictEqual(posts[0].action, 'deleteBillingOverride');
   assert.strictEqual(app.getState().billingOverrides.length, 0);
   assert.strictEqual(app.paymentForPatientOnDate(PATIENT, '2026-08-05').amount, 9000, 'base restored');
@@ -207,7 +207,7 @@ test('clearBillingOverride deletes and restores base; rolls back on failure', as
   app.setState({ billingOverrides: [{ ...OVR_AUG }] });
   app.setApiPost(async () => { throw new Error('x'); });
   app.setShowError(() => {});
-  await app.clearBillingOverride(PATIENT, '2026-08-05');
+  await app.clearBillingOverride({ patientId: PID, dueDate: '2026-08-05' });
   assert.strictEqual(app.getState().billingOverrides.length, 1, 'delete rolled back');
 });
 
