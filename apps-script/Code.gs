@@ -31,6 +31,10 @@
 const LEADS_SHEET    = 'Leads';
 const PATIENTS_SHEET = 'Patients';
 const PAYMENTS_SHEET = 'Payments';
+/* Internal sheet — per-patient, per-month override of the monthly billing
+ * amount (סכום חודשי). Not surfaced in the Hebrew UI as its own tab; it backs
+ * the inline per-month amount edit in the גבייה tab. */
+const BILLING_OVERRIDES_SHEET = 'BillingOverrides';
 const IRRELEVANT_LEADS_SHEET = 'לידים לא רלוונטיים';
 const REMOVED_LEADS_SHEET    = 'לידים שהוסרו';
 const DISCHARGED_PATIENTS_SHEET = 'מטופלים משוחררים';
@@ -232,6 +236,16 @@ const PAYMENT_COLUMNS = [
   'amount', 'status', 'amountPaid', 'balance', 'timestamp'
 ];
 
+/* BillingOverrides sheet columns. One row per (patientId, month); `id` is a
+ * deterministic `ovr::<patientId>::<month>` string built by the client (see
+ * billingOverrideId() in app.js) so re-writing the same pair REPLACES the
+ * amount instead of appending a duplicate. `month` is 'YYYY-MM' and `amount`
+ * a number, but BOTH are persisted in plain-text ('@') cells — getOrCreateSheet_
+ * force-texts these two columns at ensure time. Sheets would otherwise coerce
+ * "2026-08" into a date and drift the number's format, the same corruption class
+ * the Leads visitDate/visitTime text-column fix guards against. */
+const BILLING_OVERRIDE_COLUMNS = ['id', 'patientId', 'month', 'amount', 'created'];
+
 /* ===== Entry points ===== */
 
 function doGet(e) {
@@ -270,6 +284,12 @@ function handle_(params) {
     if (action === 'savePayment' || action === 'updatePayment') {
       const payment = parseJsonParam_(params.payment);
       return jsonOut_(upsertPayment_(payment));
+    }
+    if (action === 'upsertBillingOverride') {
+      return jsonOut_(upsertBillingOverride_(parseJsonParam_(params.override)));
+    }
+    if (action === 'deleteBillingOverride') {
+      return jsonOut_(deleteBillingOverride_(parseJsonParam_(params.override)));
     }
     if (action === 'moveLeadIrrelevant') {
       const res = moveLeadIrrelevant_(parseJsonParam_(params.lead));
@@ -374,6 +394,13 @@ function getOrCreateSheet_(name, headers) {
   // than per-write. Idempotent.
   if (name === LEADS_SHEET) {
     forceColumnsText_(sh, LEAD_COLUMNS, ['visitDate', 'visitTime']);
+  }
+  // BillingOverrides: force month + amount to plain text for the same reason —
+  // "2026-08" must not coerce into a date and the amount must not pick up a
+  // locale number format that a later read could reinterpret. Whole-column,
+  // idempotent, so rows appended later inherit it.
+  if (name === BILLING_OVERRIDES_SHEET) {
+    forceColumnsText_(sh, BILLING_OVERRIDE_COLUMNS, ['month', 'amount']);
   }
   return sh;
 }
@@ -509,6 +536,7 @@ function getData_() {
   const irrelevantSh = getOrCreateSheet_(IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS);
   const removedSh    = getOrCreateSheet_(REMOVED_LEADS_SHEET, REMOVED_LEAD_COLUMNS);
   const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
+  const overridesSh  = getOrCreateSheet_(BILLING_OVERRIDES_SHEET, BILLING_OVERRIDE_COLUMNS);
 
   // Heal blank id cells BEFORE reading, so the ids returned to the client are
   // the same ones now stored on the sheet — client and sheet agree on the
@@ -533,6 +561,7 @@ function getData_() {
   const irrelevantLeads     = readSheet_(irrelevantSh, IRRELEVANT_LEAD_COLUMNS);
   const removedLeads        = readSheet_(removedSh, REMOVED_LEAD_COLUMNS);
   const dischargedPatients  = readSheet_(dischargedSh, DISCHARGED_PATIENT_COLUMNS);
+  const billingOverrides    = readSheet_(overridesSh, BILLING_OVERRIDE_COLUMNS);
 
   const patients = {};
   for (let i = 0; i < patientRows.length; i++) {
@@ -550,6 +579,7 @@ function getData_() {
     irrelevantLeads: irrelevantLeads,
     removedLeads: removedLeads,
     dischargedPatients: dischargedPatients,
+    billingOverrides: billingOverrides,
     houseManagers: HOUSE_MANAGERS,
     managerPhones: managerPhones_(),
   };
@@ -1199,6 +1229,108 @@ function upsertPayment_(payment) {
 
     sh.appendRow(row);
     return { ok: true, payment: payment, created: true };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* ===== Billing overrides ===== */
+
+/* Deterministic id for a (patientId, month) override — the single row-key both
+ * the upsert and the delete resolve against. Mirrors billingOverrideId() in
+ * app.js exactly; the client normally sends the id, but building it here too
+ * keeps the server robust to a client that only sends patientId+month. */
+function billingOverrideId_(patientId, month) {
+  return 'ovr::' + patientId + '::' + month;
+}
+
+/**
+ * Upsert a single billing-amount override by (patientId, month) — one override
+ * per patient per month, so re-writing the same pair REPLACES the amount rather
+ * than appending. Keyed on the deterministic id above. `month` must be 'YYYY-MM'.
+ * The month + amount cells of the target row are set to plain text BEFORE the
+ * write (belt-and-suspenders over the whole-column format getOrCreateSheet_
+ * already applies) so Sheets can't coerce them.
+ */
+function upsertBillingOverride_(override) {
+  if (!override || typeof override !== 'object') {
+    return { ok: false, error: 'missing_override' };
+  }
+  const patientId = String(override.patientId == null ? '' : override.patientId).trim();
+  const month     = String(override.month == null ? '' : override.month).trim();
+  if (!patientId) return { ok: false, error: 'missing_patientId' };
+  if (!/^\d{4}-\d{2}$/.test(month)) return { ok: false, error: 'bad_month' };
+
+  const amount = Number(override.amount);
+  if (!isFinite(amount) || amount < 0) return { ok: false, error: 'bad_amount' };
+
+  const id = override.id ? String(override.id) : billingOverrideId_(patientId, month);
+  const record = {
+    id:        id,
+    patientId: patientId,
+    month:     month,
+    amount:    amount,
+    created:   override.created ? String(override.created) : todayISODate_(),
+  };
+
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const sh = getOrCreateSheet_(BILLING_OVERRIDES_SHEET, BILLING_OVERRIDE_COLUMNS);
+    const idIdx     = BILLING_OVERRIDE_COLUMNS.indexOf('id');
+    const monthIdx  = BILLING_OVERRIDE_COLUMNS.indexOf('month');
+    const amountIdx = BILLING_OVERRIDE_COLUMNS.indexOf('amount');
+    const row = objectToRow_(record, BILLING_OVERRIDE_COLUMNS);
+    const lastRow = sh.getLastRow();
+
+    if (lastRow > 1) {
+      const existingIds = sh.getRange(2, idIdx + 1, lastRow - 1, 1).getValues();
+      for (let i = 0; i < existingIds.length; i++) {
+        if (String(existingIds[i][0]) === String(id)) {
+          const r = i + 2;
+          sh.getRange(r, monthIdx + 1, 1, 1).setNumberFormat('@');
+          sh.getRange(r, amountIdx + 1, 1, 1).setNumberFormat('@');
+          sh.getRange(r, 1, 1, BILLING_OVERRIDE_COLUMNS.length).setValues([row]);
+          return { ok: true, override: record, updated: true };
+        }
+      }
+    }
+
+    // Insert at the next row (not appendRow) so the text format lands BEFORE the
+    // value — the same ordering upsertRowById_ relies on.
+    const target = sh.getLastRow() + 1;
+    sh.getRange(target, monthIdx + 1, 1, 1).setNumberFormat('@');
+    sh.getRange(target, amountIdx + 1, 1, 1).setNumberFormat('@');
+    sh.getRange(target, 1, 1, BILLING_OVERRIDE_COLUMNS.length).setValues([row]);
+    return { ok: true, override: record, created: true };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/**
+ * Delete a billing override, restoring the patient's base amount for that month.
+ * Resolves the row by id — either the explicit `id` or one rebuilt from
+ * (patientId, month). Reuses deleteRowsById_ (the established per-row delete).
+ */
+function deleteBillingOverride_(override) {
+  if (!override || typeof override !== 'object') {
+    return { ok: false, error: 'missing_override' };
+  }
+  let id = override.id ? String(override.id) : '';
+  if (!id) {
+    const patientId = String(override.patientId == null ? '' : override.patientId).trim();
+    const month     = String(override.month == null ? '' : override.month).trim();
+    if (!patientId || !month) return { ok: false, error: 'missing_id' };
+    id = billingOverrideId_(patientId, month);
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const sh = getOrCreateSheet_(BILLING_OVERRIDES_SHEET, BILLING_OVERRIDE_COLUMNS);
+    deleteRowsById_(sh, BILLING_OVERRIDE_COLUMNS, id);
+    return { ok: true, deleted: true, id: id };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
