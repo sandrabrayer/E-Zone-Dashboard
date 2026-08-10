@@ -438,6 +438,18 @@ function initTabs() {
   document.getElementById('add-lead-btn').onclick = openAddLeadModal;
   document.getElementById('add-patient-btn').onclick = openDirectAddPatientModal;
 
+  /* Overdue strip (dashboard) → navigate to the גבייה tab. Invoking the tab
+   * button's own onclick runs the exact switch logic wired above (active
+   * class, screen toggle, renderAll). */
+  const overdueStrip = document.getElementById('overdue-alert');
+  if (overdueStrip) {
+    overdueStrip.onclick = () => {
+      const billingTab = document.querySelector('.tabs .tab[data-screen="billing"]');
+      if (billingTab && typeof billingTab.onclick === 'function') billingTab.onclick();
+      else if (billingTab && billingTab.click) billingTab.click();
+    };
+  }
+
   const billingDateEl = document.getElementById('billing-date');
   if (!state.billingDate) state.billingDate = todayISO();
   billingDateEl.value = state.billingDate;
@@ -1857,6 +1869,7 @@ function renderDashboard() {
 
   fitAllStatText(); // scale KPI values down to fit narrow cards (no clipping)
   renderRenewalAlert();
+  renderOverdueAlert();
 }
 
 /* Dashboard renewal alert — active patients due to renew within 7 days whose
@@ -4220,6 +4233,70 @@ function renewalDateISO(entryISO, fromISO) {
   return d ? isoDate(d) : '';
 }
 
+/* The MOST RECENT billing-day occurrence ON OR BEFORE `fromISO` — the current
+ * cycle's due date. Mirror image of nextBillingDayOnOrAfter with the same
+ * entry-day anchor and the same short-month clamp (entry day 29/30/31 in a
+ * shorter month → that month's last day). Returns a Date or null. */
+function lastBillingDayOnOrBefore(entryISO, fromISO) {
+  const targetDay = dayOfMonth(entryISO);
+  const from = parseLocalISO(fromISO);
+  if (!targetDay || !from) return null;
+  const occ = (year, monthIdx) => {
+    // Normalize year/month so monthIdx underflow (e.g. -1) rolls the year.
+    const first = new Date(year, monthIdx, 1);
+    const yy = first.getFullYear();
+    const mm = first.getMonth();
+    const lastDay = new Date(yy, mm + 1, 0).getDate();
+    return new Date(yy, mm, Math.min(targetDay, lastDay));
+  };
+  let cand = occ(from.getFullYear(), from.getMonth());
+  if (cand.getTime() > from.getTime()) {
+    cand = occ(from.getFullYear(), from.getMonth() - 1);
+  }
+  return cand;
+}
+
+/* ===== Overdue-payment alert =====
+ * A patient is OVERDUE when the current cycle's due date has arrived
+ * (today >= their most recent billing-day occurrence — entry-day anchor,
+ * short-month clamped) AND no payment is recorded for that cycle. A recorded
+ * paid/partial payment clears the alert immediately (the same coverage rule
+ * patientsNeedingRenewal uses). Released patients are excluded via
+ * activePatients(). Returns [{ patient, dueISO }] sorted oldest-due first. */
+function overduePatients(fromISO) {
+  const today = fromISO || todayISO();
+  const out = [];
+  activePatients().forEach(p => {
+    const d = lastBillingDayOnOrBefore(p.date, today);
+    if (!d) return;
+    const dueISO = isoDate(d);
+    // A brand-new patient whose first cycle hasn't started yet: the computed
+    // occurrence predates their entry date — no cycle exists, nothing overdue.
+    if (dueISO < isoDate(p.date)) return;
+    const pay = paymentForPatientOnDate(p, dueISO);
+    if (pay.status === 'paid' || pay.status === 'partial') return;
+    out.push({ patient: p, dueISO });
+  });
+  return out.sort((a, b) => a.dueISO.localeCompare(b.dueISO));
+}
+
+/* Dashboard strip — "X מטופלים ממתינים לתשלום". Hidden at zero; the click
+ * navigation to the גבייה tab is wired once in initTabs. */
+function renderOverdueAlert() {
+  const wrap    = document.getElementById('overdue-alert');
+  const countEl = document.getElementById('overdue-alert-count');
+  const textEl  = document.getElementById('overdue-alert-text');
+  if (!wrap) return;
+  const list = overduePatients(todayISO());
+  if (!list.length) {
+    wrap.classList.add('hidden');
+    return;
+  }
+  wrap.classList.remove('hidden');
+  if (countEl) countEl.textContent = list.length;
+  if (textEl)  textEl.textContent = `${list.length} מטופלים ממתינים לתשלום`;
+}
+
 /* Active patients whose next billing day falls within [today, today+window]
  * AND whose upcoming cycle is NOT already covered by a paid/partial payment.
  * Returns [{ patient, renewalISO, days }] sorted by renewal date. */
@@ -4325,7 +4402,11 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   const amount = payment.amount || patient.pay || 0;
 
   const row = document.createElement('div');
-  row.className = 'billing-row' + (isCarryForward ? ' carry' : '');
+  /* Overdue highlight: an unpaid current-list row whose due date has arrived.
+   * Carry-forward rows keep their existing amber treatment (same warning
+   * language) and are skipped here. */
+  const isOverdue = !isCarryForward && payment.status === 'unpaid' && dueDateISO <= todayISO();
+  row.className = 'billing-row' + (isCarryForward ? ' carry' : '') + (isOverdue ? ' overdue' : '');
   row.dataset.pid = payment.id;
 
   const statusSelect = PAYMENT_STATUS.map(s =>
