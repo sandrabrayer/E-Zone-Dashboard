@@ -3999,9 +3999,25 @@ function normalizePayment(r) {
   const balance    = r.balance !== undefined && r.balance !== ''
     ? Number(r.balance) || 0
     : Math.max(0, amount - amountPaid);
+  const id = String(r.id || '');
+  /* Heal a blank patientId cell from the deterministic id. Live sheets contain
+   * records whose id is well-formed (pay::<houseId>::<name>::<entryDate>::<dueDate>)
+   * but whose patientId cell is blank — recompute()'s save-time backfill and
+   * findPatientForPayment's fallbacks exist precisely because of them. Deriving
+   * it here makes payment.patientId the SINGLE source of identity for every
+   * consumer at once: the override overlay lookup, the row editor's match
+   * guard, and the override write. A non-blank cell is preserved as-is; an id
+   * that doesn't parse to the 5-part shape leaves it blank (a true orphan). */
+  let patientId = String(r.patientId || '');
+  if (!patientId) {
+    const parts = id.split('::');
+    if (parts.length === 5 && parts[0] === 'pay') {
+      patientId = parts.slice(1, 4).join('::');
+    }
+  }
   return {
-    id:          String(r.id || ''),
-    patientId:   String(r.patientId || ''),
+    id:          id,
+    patientId:   patientId,
     patientName: String(r.patientName || ''),
     houseId:     resolveHouseId(r.houseId || ''),
     dueDate:     isoDate(r.dueDate),
@@ -4425,7 +4441,12 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
    *     record doesn't carry, so it could never overlay this row. */
   const hasOverride =
     !!billingOverrideFor(state.billingOverrides, payment.patientId, monthKey(dueDateISO));
-  const patientMatched = patientKey(patient) === payment.patientId;
+  /* Due-list rows are matched BY CONSTRUCTION — the payment was looked up (or
+   * built) from an id derived from THIS patient, so the strict key equality is
+   * redundant there and, worse, broke on live records whose patientId cell was
+   * blank (now healed in normalizePayment, kept as belt-and-suspenders). Carry
+   * rows keep the equality guard so true orphans get no editor. */
+  const patientMatched = !isCarryForward || patientKey(patient) === payment.patientId;
   const amountEditable = state.mode === 'edit' &&
     payment.status !== 'paid' && payment.status !== 'partial' &&
     patientMatched;
@@ -4566,13 +4587,13 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
           showError('סכום לא תקין');
           return Promise.resolve();
         }
-        return saveBillingOverride(patient, dueDateISO, v);
+        return saveBillingOverride(payment, v);
       });
   }
   const amountClearBtn = row.querySelector('.bill-amount-clear-btn');
   if (amountClearBtn) {
     amountClearBtn.onclick = e =>
-      withBusyButton(e.currentTarget, () => clearBillingOverride(patient, dueDateISO));
+      withBusyButton(e.currentTarget, () => clearBillingOverride(payment));
   }
 
   return row;
@@ -4648,15 +4669,20 @@ async function savePayment(payment) {
   }
 }
 
-/* Persist a per-month amount override for (patient, dueDate's month). The
- * patient's base pay is NEVER touched — the override lives in its own sheet
- * and only shapes this month's figures. Optimistic + rollback, matching the
- * closeLead/dischargePatient pattern. Re-writing the same (patient, month)
+/* Persist a per-month amount override for the payment record's (patientId,
+ * month). SINGLE IDENTITY SOURCE: both key parts come from the normalized
+ * payment record itself — patientId (healed in normalizePayment) and
+ * monthKey(payment.dueDate) — the exact keys applyBillingOverride looks up
+ * with, so the save-key and the overlay lookup-key can never diverge. The
+ * workers never recompute patientKey(patient) on their own. The patient's base
+ * pay is NEVER touched. Optimistic + rollback, matching the
+ * closeLead/dischargePatient pattern; re-writing the same (patientId, month)
  * replaces the amount (deterministic id, backend upsert semantics). */
-async function saveBillingOverride(patient, dueDateISO, newAmount) {
+async function saveBillingOverride(payment, newAmount) {
   if (state.mode !== 'edit') return;
-  const month = monthKey(dueDateISO);
-  const pid   = patientKey(patient);
+  const pid = payment && payment.patientId;
+  if (!pid) return; // no resolvable identity — nothing safe to write
+  const month = monthKey(payment.dueDate);
   const record = {
     id: billingOverrideId(pid, month),
     patientId: pid,
@@ -4674,7 +4700,7 @@ async function saveBillingOverride(patient, dueDateISO, newAmount) {
 
   try {
     await apiPost({ action: 'upsertBillingOverride', override: record });
-    showToast('הסכום עודכן לחודש ' + formatMonth(dueDateISO));
+    showToast('הסכום עודכן לחודש ' + formatMonth(payment.dueDate));
   } catch (e) {
     state.billingOverrides = prev;
     renderBilling();
@@ -4682,12 +4708,14 @@ async function saveBillingOverride(patient, dueDateISO, newAmount) {
   }
 }
 
-/* Remove the (patient, month) override — the row reverts to the base amount.
- * Optimistic + rollback, same shape as saveBillingOverride. */
-async function clearBillingOverride(patient, dueDateISO) {
+/* Remove the payment record's (patientId, month) override — the row reverts
+ * to the base amount. Same single-identity-source rule and optimistic +
+ * rollback shape as saveBillingOverride. */
+async function clearBillingOverride(payment) {
   if (state.mode !== 'edit') return;
-  const month = monthKey(dueDateISO);
-  const pid   = patientKey(patient);
+  const pid = payment && payment.patientId;
+  if (!pid) return;
+  const month = monthKey(payment.dueDate);
   const existing = billingOverrideFor(state.billingOverrides, pid, month);
   if (!existing) return;
 
