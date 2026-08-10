@@ -226,11 +226,15 @@ test('row shows the מותאם badge + clear control only when an override is ac
   assert.ok(without.innerHTML.includes('bill-amount-edit-btn'), 'edit pencil still offered');
 });
 
-test('paid rows and carry-forward rows offer no amount editing', () => {
+test('paid rows offer no amount editing; carry rows with a matched patient DO (carry-edit fix)', () => {
   app.setState({ mode: 'edit', payments: [], billingOverrides: [] });
   const paidRow = app.buildBillingRow(
     PATIENT, unpaidPayment({ status: 'paid', amountPaid: 9000, balance: 0 }), '2026-08-05', false);
   assert.ok(!paidRow.innerHTML.includes('bill-amount-edit-btn'), 'paid history not editable');
-  const carryRow = app.buildBillingRow(PATIENT, unpaidPayment(), '2026-07-05', true);
-  assert.ok(!carryRow.innerHTML.includes('bill-amount-edit-btn'), 'carry-forward rows not editable');
+  /* Changed by the carry-edit fix: an unpaid carry-forward row whose patient is
+   * really matched now offers the editor (the original reachability gap made
+   * the override editor unreachable for most unpaid rows). Deep coverage lives
+   * in billing-override-carry-edit.test.js. */
+  const carryRow = app.buildBillingRow(PATIENT, unpaidPayment(), '2026-08-05', true);
+  assert.ok(carryRow.innerHTML.includes('bill-amount-edit-btn'), 'matched unpaid carry rows are editable now');
 });
