@@ -4413,27 +4413,39 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
     `<option value="${s.id}" ${payment.status === s.id ? 'selected' : ''}>${s.label}</option>`
   ).join('');
 
-  /* Per-month amount override (this row's due-date month). The badge marks an
-   * active override; the pencil opens the inline editor (edit mode, current
-   * rows only — carry-forward rows show their original date in this cell);
-   * paid/partial rows are history and not editable. */
-  const hasOverride = !isCarryForward &&
+  /* Per-month amount override (this row's OWN due-date month — for a
+   * carry-forward row that is the record's original month, so an edit there
+   * targets that month, never the selected one). The badge marks an active
+   * override; the pencil opens the inline editor. Editable when:
+   *   - edit mode, and the row is not paid/partial history, and
+   *   - the row's patient is REALLY matched (patientKey === payment.patientId).
+   *     Carry rows for an orphaned payment (patient released/renamed — the
+   *     findPatientForPayment fallback pseudo-patient) must not offer the
+   *     editor: the override it would write would key on a patientId that the
+   *     record doesn't carry, so it could never overlay this row. */
+  const hasOverride =
     !!billingOverrideFor(state.billingOverrides, payment.patientId, monthKey(dueDateISO));
-  const amountEditable = !isCarryForward && state.mode === 'edit' &&
-    payment.status !== 'paid' && payment.status !== 'partial';
-  const amountCellHtml = isCarryForward
-    ? `<span class="p-val">${formatDate(dueDateISO)}</span>`
-    : `
+  const patientMatched = patientKey(patient) === payment.patientId;
+  const amountEditable = state.mode === 'edit' &&
+    payment.status !== 'paid' && payment.status !== 'partial' &&
+    patientMatched;
+  /* Carry rows fold the original due date into the label line so the amount —
+   * override-aware, same as due rows — can occupy the value line with its
+   * editor. Due rows keep the plain סכום חודשי label. */
+  const amountCellLabel = isCarryForward
+    ? `תאריך מקורי · ${escapeHtml(formatDate(dueDateISO))}`
+    : 'סכום חודשי';
+  const amountCellHtml = `
       <span class="p-val bill-amount-view">₪ ${amount.toLocaleString('he-IL')}
         ${hasOverride ? '<span class="badge override" title="סכום מותאם לחודש זה">מותאם</span>' : ''}
         ${amountEditable ? '<button class="bill-amount-edit-btn" title="עריכת הסכום לחודש זה בלבד">✏️</button>' : ''}
         ${amountEditable && hasOverride ? '<button class="bill-amount-clear-btn" title="ביטול ההתאמה — חזרה לסכום הבסיס">↩</button>' : ''}
       </span>
-      <span class="bill-amount-edit hidden">
+      ${amountEditable ? `<span class="bill-amount-edit hidden">
         <input class="bill-amount-input" type="number" min="0" step="50" value="${amount}" />
         <button class="btn small primary bill-amount-save">שמור</button>
         <button class="btn small bill-amount-cancel">ביטול</button>
-      </span>`;
+      </span>` : ''}`;
 
   row.innerHTML = `
     <div>
@@ -4445,7 +4457,7 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
       <span class="p-val">${escapeHtml(houseName)}</span>
     </div>
     <div class="bill-amount-cell">
-      <span class="p-label">${isCarryForward ? 'תאריך מקורי' : 'סכום חודשי'}</span>
+      <span class="p-label">${amountCellLabel}</span>
       ${amountCellHtml}
     </div>
     <div>
