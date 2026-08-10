@@ -260,6 +260,20 @@ input:focus, select:focus, textarea:focus {
 }
 .show-released-toggle input { accent-color: var(--accent, #5b8bff); }
 
+/* Busy async button (withBusyButton / modal saves): dimmed + inline spinner.
+ * Logical properties (inline-start) keep the spinner on the correct side in
+ * RTL. pointer-events guards browsers that ignore `disabled` styling races. */
+.btn.busy { opacity: .65; pointer-events: none; }
+.btn.busy::after {
+  content: ''; display: inline-block; width: 10px; height: 10px;
+  border: 2px solid currentColor; border-inline-start-color: transparent;
+  border-radius: 50%; margin-inline-start: 6px; vertical-align: -1px;
+  animation: btn-busy-spin .7s linear infinite;
+}
+@keyframes btn-busy-spin { to { transform: rotate(360deg); } }
+/* Billing row frozen while its savePayment round-trip is in flight. */
+.billing-row.saving { opacity: .65; }
+
 /* ===== Cards ===== */
 .cards-row {
   display: grid;
