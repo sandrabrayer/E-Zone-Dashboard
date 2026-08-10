@@ -274,6 +274,23 @@ input:focus, select:focus, textarea:focus {
 /* Billing row frozen while its savePayment round-trip is in flight. */
 .billing-row.saving { opacity: .65; }
 
+/* Per-month amount override (billing rows). RTL-safe: inline-flex + gap, no
+ * directional margins. The badge reuses the .badge base with a blue accent so
+ * "מותאם" reads as informational, not a warning. */
+.badge.override {
+  background: rgba(91,139,255,.18); color: #9db9ff;
+  border-color: rgba(91,139,255,.45); font-size: 11px;
+}
+.bill-amount-view { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.bill-amount-edit-btn, .bill-amount-clear-btn {
+  background: none; border: none; cursor: pointer; padding: 0 2px;
+  font-size: 13px; line-height: 1; color: var(--text-muted);
+}
+.bill-amount-edit-btn:hover, .bill-amount-clear-btn:hover { color: var(--text); }
+.bill-amount-edit { display: inline-flex; align-items: center; gap: 6px; }
+.bill-amount-edit.hidden { display: none; }
+.bill-amount-input { width: 110px; }
+
 /* ===== Cards ===== */
 .cards-row {
   display: grid;
