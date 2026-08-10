@@ -100,6 +100,14 @@
         <div class="renewal-alert-list" id="renewal-alert-list"></div>
       </div>
 
+      <!-- Overdue-payment strip: "X מטופלים ממתינים לתשלום". Hidden at zero;
+           clicking navigates to the גבייה tab. -->
+      <button class="card overdue-strip hidden" id="overdue-alert" type="button">
+        <span class="renewal-alert-count" id="overdue-alert-count">0</span>
+        <span class="overdue-strip-text" id="overdue-alert-text">מטופלים ממתינים לתשלום</span>
+        <span class="overdue-strip-cta">למעבר לגבייה ←</span>
+      </button>
+
       <h3>מיטות פנויות לפי בית</h3>
       <div class="houses-grid" id="houses-grid"></div>
 
