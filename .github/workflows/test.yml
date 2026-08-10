@@ -1,0 +1,46 @@
+name: Tests
+
+# Runs the full mocked test suite (node --test, ~425+ tests — vm-sandboxed
+# Code.gs/app.js + server.js helpers; no live calls, no secrets needed) on:
+#   - every pull request (any base), and
+#   - every push to the DEPLOYED branch.
+#
+# This repo has NO `main` branch. The Railway/production branch is
+# claude/build-ezone-dashboard-QOg5s (see EZONE-ECOSYSTEM-STATUS.md) — never
+# reference `main` here. Deliberately separate from deploy-apps-script.yml
+# (the clasp deploy pipeline), which this workflow does not touch or gate.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - claude/build-ezone-dashboard-QOg5s
+
+permissions:
+  contents: read
+
+# A newer push to the same PR/branch supersedes an in-flight run.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          # Matches the toolchain the repo already standardizes on (the clasp
+          # workflow runs its tooling on Node 22; package.json requires >=18).
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the test suite
+        run: npm test
