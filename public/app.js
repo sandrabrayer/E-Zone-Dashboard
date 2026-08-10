@@ -101,6 +101,11 @@ const state = {
   patients: [],
   dischargedPatients: [],
   payments: [],
+  /* Per-patient, per-month overrides of the monthly billing amount (סכום חודשי),
+   * returned by getData as `billingOverrides`. One entry per (patientId, month).
+   * Foundation phase: populated on load and plumbed through state only — no UI
+   * reads it yet. Empty until the first load / on older deploys. */
+  billingOverrides: [],
   /* House-id → manager-name roster returned by getData (HOUSE_MANAGERS in
    * Code.gs). Populated in loadAll; the meetingWith dropdown and the meetings
    * board read it instead of hardcoding names. '{}' until the first load. */
@@ -523,6 +528,16 @@ async function loadAll() {
     const rawDischarged = Array.isArray(data.dischargedPatients) ? data.dischargedPatients : [];
     state.dischargedPatients = rawDischarged.map(normalizeDischargedPatient);
     console.log('[E-ZONE] dischargedPatients loaded:', state.dischargedPatients.length);
+
+    /* Billing overrides (per patient, per month). Sheet may not exist yet on
+     * older deploys; treat a missing array as empty so the rest of the app
+     * still loads. Foundation phase: state only, nothing renders it. Rows
+     * without a patientId+month are dropped (can't key a valid override). */
+    const rawOverrides = Array.isArray(data.billingOverrides) ? data.billingOverrides : [];
+    state.billingOverrides = rawOverrides
+      .map(normalizeBillingOverride)
+      .filter(o => o.patientId && o.month);
+    console.log('[E-ZONE] billingOverrides loaded:', state.billingOverrides.length);
 
     // Payments live on their own sheet and their own action. A fresh
     // install has no Payments sheet yet — treat any failure as "empty
@@ -3982,6 +3997,34 @@ function normalizePayment(r) {
     amountPaid,
     balance,
     timestamp:   String(r.timestamp || ''),
+  };
+}
+
+/* Deterministic id for a per-patient, per-month billing-amount override.
+ * Mirrors billingOverrideId_() in Code.gs exactly so a client-built id upserts
+ * into the same row the server would compute. `month` is 'YYYY-MM'. */
+function billingOverrideId(patientId, month) {
+  return `ovr::${patientId}::${month}`;
+}
+
+/* Defensive normalizer for a billing-override row from getData — same pickField
+ * idiom as normalizePayment/normalizeLead. `month` is clamped to 'YYYY-MM'
+ * (slice(0,7)) so a stray full date can't leak day precision into the key;
+ * `amount` is coerced to a number; a missing `id` is rebuilt deterministically
+ * from (patientId, month). Rows missing patientId or month are filtered out by
+ * the caller. */
+function normalizeBillingOverride(r) {
+  if (!r || typeof r !== 'object') r = {};
+  const patientId = String(pickField(r, ['patientId', 'patient_id', 'מזהה מטופל']) || '');
+  const month     = String(pickField(r, ['month', 'חודש']) || '').slice(0, 7);
+  const amountRaw = pickField(r, ['amount', 'סכום']);
+  const id        = String(pickField(r, ['id', 'ID', 'מזהה']) || '');
+  return {
+    id:        id || (patientId && month ? billingOverrideId(patientId, month) : ''),
+    patientId,
+    month,
+    amount:    Number(amountRaw) || 0,
+    created:   String(pickField(r, ['created', 'created_at', 'נוצר']) || ''),
   };
 }
 
