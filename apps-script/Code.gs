@@ -217,8 +217,12 @@ const PATIENT_COLUMNS = [
  * upsertRowById_ has a key to dedupe by (Patients sheet has no id column;
  * the client-side patient id is session-local but unique-at-write-time, which
  * is all the audit sheet needs). */
+/* `prior_status` (append-only, added with the restore-choice modal): the
+ * patient's status at the MOMENT of discharge (active/trial/wait), captured by
+ * the client's dischargeAuditRow before the released flip. Restore-to-previous-
+ * status reads it; legacy rows have it blank and fall back to 'active'. */
 const DISCHARGED_PATIENT_COLUMNS =
-  ['id'].concat(PATIENT_COLUMNS).concat(['dischargedAt', 'disposition', 'discharge_note', 'restored']);
+  ['id'].concat(PATIENT_COLUMNS).concat(['dischargedAt', 'disposition', 'discharge_note', 'restored', 'prior_status']);
 
 /* Payments sheet columns. `id` is a deterministic per-patient-per-due-date
  * string built by the client (see paymentId() in app.js) so the same monthly

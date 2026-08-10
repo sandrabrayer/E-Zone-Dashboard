@@ -158,6 +158,20 @@ every consumer breaks).
   TREATMENT_PLANS_SECRET, OCCUPANCY_SECRET, OUTPATIENT_LEAD_SECRET,
   WINBACK_SOURCE_SECRET, APP_PIN (Railway).
 
+## Dashboard git history: the deploy branch is an ORPHAN SNAPSHOT (verified Aug 9, 2026)
+
+`claude/build-ezone-dashboard-QOg5s`'s root commit (`62f5f7b`, "Merge pull
+request #18", June 17 2026) has **no parents** — the branch began life that day
+as a flattened snapshot of everything through PR #18. The original PR #1–#18
+history (phase-2a…2e work) is git-disconnected from it; the old `feature/phase-2*`
+and early `claude/*` branches still carry that severed line, which is why they
+show alarming "50–64 commits not on the deploy branch" counts. **This is an
+artifact, not lost work** — an Aug 9 audit verified the snapshot contains the
+full pre-#18 content and that every documented feature since is present at HEAD.
+Do not launch a lost-work hunt (or merge one of those stale branches) because of
+those counts; content-level comparison, not commit ancestry, is the correct
+check against pre-June-17 branches.
+
 ## Known pitfalls (hard-won, extended July 4)
 
 - **[OBSOLETE for routine deploys — Apps Script now deploys automatically via
