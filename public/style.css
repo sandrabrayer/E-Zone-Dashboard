@@ -23,6 +23,7 @@
 
   --stage-new:        #5b8bff;
   --stage-visit:      #ffb020;
+  --stage-waitlist:   #19c8e0;
   --stage-paid:       #a779ff;
   --stage-entry:      #2dd47a;
   --stage-irrelevant: #6b7aa0;
@@ -628,6 +629,7 @@ input:focus, select:focus, textarea:focus {
 }
 .pipe[data-stage="new"]::before        { background: var(--stage-new); }
 .pipe[data-stage="visit"]::before      { background: var(--stage-visit); }
+.pipe[data-stage="waitlist"]::before   { background: var(--stage-waitlist); }
 .pipe[data-stage="paid"]::before       { background: var(--stage-paid); }
 .pipe[data-stage="entry"]::before      { background: var(--stage-entry); }
 .pipe[data-stage="irrelevant"]::before { background: var(--stage-irrelevant); }
@@ -643,6 +645,7 @@ input:focus, select:focus, textarea:focus {
 }
 .pipe[data-stage="new"]   .p-count { color: var(--stage-new); }
 .pipe[data-stage="visit"] .p-count { color: var(--stage-visit); }
+.pipe[data-stage="waitlist"] .p-count { color: var(--stage-waitlist); }
 .pipe[data-stage="paid"]  .p-count { color: var(--stage-paid); }
 .pipe[data-stage="entry"] .p-count { color: var(--stage-entry); }
 
@@ -677,11 +680,13 @@ input:focus, select:focus, textarea:focus {
 }
 .col[data-stage="new"]   .col-title { color: var(--stage-new); }
 .col[data-stage="visit"] .col-title { color: var(--stage-visit); }
+.col[data-stage="waitlist"] .col-title { color: var(--stage-waitlist); }
 .col[data-stage="paid"]  .col-title { color: var(--stage-paid); }
 .col[data-stage="entry"] .col-title { color: var(--stage-entry); }
 
 .col[data-stage="new"]   { border-top: 3px solid var(--stage-new); }
 .col[data-stage="visit"] { border-top: 3px solid var(--stage-visit); }
+.col[data-stage="waitlist"] { border-top: 3px solid var(--stage-waitlist); }
 .col[data-stage="paid"]  { border-top: 3px solid var(--stage-paid); }
 .col[data-stage="entry"] { border-top: 3px solid var(--stage-entry); }
 
@@ -775,6 +780,17 @@ input:focus, select:focus, textarea:focus {
   background: var(--primary-glow);
   padding: 0 6px; border-radius: 999px;
   margin-inline-start: 4px; vertical-align: middle;
+}
+/* Waiting-duration pill on רשימת המתנה cards ("ממתין X ימים"). Rendered only
+   in the waitlist column and only when waitlistedAt is set. */
+.lead-card .lc-wait-badge {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 11.5px; font-weight: 700;
+  color: var(--stage-waitlist);
+  background: rgba(25, 200, 224, 0.12);
+  border: 1px solid rgba(25, 200, 224, 0.35);
+  padding: 2px 9px; border-radius: 999px;
 }
 /* Edit-mode פרטי הפונה block — stacks the contact inputs + billing selector. */
 .lead-card .lc-contact-edit {

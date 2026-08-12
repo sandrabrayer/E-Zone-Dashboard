@@ -66,7 +66,9 @@ function loadApp() {
 const app = loadApp();
 
 test('the entry column is removed from STAGES', () => {
-  assert.strictEqual(app.stageIdsJSON(), JSON.stringify(['new', 'visit', 'paid']));
+  // waitlist (רשימת המתנה) joined the board between visit and paid; entry
+  // stays gone — that's the contract this file guards.
+  assert.strictEqual(app.stageIdsJSON(), JSON.stringify(['new', 'visit', 'waitlist', 'paid']));
   assert.ok(!app.stageIdsJSON().includes('entry'), 'entry must no longer be a board stage');
 });
 
@@ -76,13 +78,22 @@ test('advanceLead on a paid lead triggers admit (openEntryModal)', async () => {
   assert.strictEqual(app.callsJSON(), JSON.stringify([['admit', 'L1']]));
 });
 
-test('advanceLead on a visit lead moves it to paid, NEVER to admit', async () => {
+test('advanceLead on a visit lead moves it to the next stage, NEVER to admit', async () => {
   app.reset();
   await app.advance({ id: 'L2', stage: 'visit' });
-  // The exact regression the trace warned about: visit must advance to paid,
-  // not open the admit modal.
-  assert.strictEqual(app.callsJSON(), JSON.stringify([['move', 'L2', 'paid']]));
+  // The exact regression the trace warned about: visit must advance one stage
+  // (waitlist, since רשימת המתנה joined the board), not open the admit modal.
+  assert.strictEqual(app.callsJSON(), JSON.stringify([['move', 'L2', 'waitlist']]));
   assert.ok(!app.callsJSON().includes('admit'), 'visit must not trigger admit');
+});
+
+test('advanceLead on a waitlist lead moves it to paid, NEVER to admit', async () => {
+  app.reset();
+  await app.advance({ id: 'L7', stage: 'waitlist' });
+  // Same positional-math regression guard for the inserted stage: only paid
+  // (keyed by id) may open the admit modal.
+  assert.strictEqual(app.callsJSON(), JSON.stringify([['move', 'L7', 'paid']]));
+  assert.ok(!app.callsJSON().includes('admit'), 'waitlist must not trigger admit');
 });
 
 test('advanceLead on a new lead moves it to visit', async () => {

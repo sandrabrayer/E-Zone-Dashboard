@@ -232,25 +232,7 @@ test('normalizeStage round-trips waitlist instead of resetting it to "new"', () 
   assert.strictEqual(app.normalizeStage('definitely-not-a-stage'), 'new');
 });
 
-/* ===== Zero-UI-change gate ===== */
-
-test('waitlist is NOT in the rendered stage lists (kanban board + pipeline strip)', () => {
-  assert.ok(!arr(app.STAGES).some((s) => s.id === 'waitlist'),
-    'STAGES must not include waitlist in this PR');
-  assert.ok(!arr(app.ALL_STAGES_FOR_PIPELINE).some((s) => s.id === 'waitlist'),
-    'ALL_STAGES_FOR_PIPELINE must not include waitlist in this PR');
-});
-
-test('the ACTUAL rendered kanban has exactly the three pre-existing columns, no waitlist', () => {
-  const { app, byId } = loadApp();
-  app.state.leads = [
-    app.normalizeLead({ id: 'L1', name: 'א', stage: 'new' }),
-    app.normalizeLead({ id: 'L2', name: 'ב', stage: 'waitlist', waitlistedAt: '2026-08-12T09:30:00.000Z' }),
-  ];
-  app.renderKanban();
-  const cols = byId['kanban'].children;
-  assert.deepStrictEqual(cols.map((c) => c.dataset.stage), ['new', 'visit', 'paid'],
-    'board must render exactly the pre-existing columns, in order');
-  assert.ok(cols.every((c) => !c.innerHTML.includes('רשימת המתנה')),
-    'no column header may mention the waitlist label');
-});
+/* The PR-1 "zero-UI-change gate" tests that lived here (waitlist absent from
+ * STAGES / ALL_STAGES_FOR_PIPELINE and from the rendered board) were removed
+ * by the UI PR, which deliberately un-gates the stage. The rendered-board
+ * contract now lives in test/waitlist-ui.test.js. */

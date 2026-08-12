@@ -14,9 +14,24 @@ const HOUSES = [
  * add-lead form; rendered on the kanban card. Fixed list (no free text). */
 const ASSIGNEE_OPTIONS = ['ורד', 'שירן', 'יעל'];
 
+/* רשימת המתנה — a potential patient waiting for a spot; the lead's existing
+ * `house` field is the house they are waiting for. Entering the stage stamps
+ * `waitlistedAt` (ISO timestamp string, schema shipped in the foundation PR);
+ * leaving clears it — both handled in moveLead, the single choke point for
+ * board stage changes. */
+const STAGE_WAITLIST = { id: 'waitlist', label: 'רשימת המתנה' };
+
 const STAGES = [
   { id: 'new',         label: 'ליד חדש' },
   { id: 'visit',       label: 'ביקור נקבע' },
+  /* Waitlist sits between ביקור נקבע and בטיפול פעיל: a lead that visited and
+   * is waiting for a spot to open before it can start active care. This slot
+   * also keeps every generic stage-move path working with no special cases —
+   * visit's שלב הבא enters the waitlist, waitlist's שלב הבא reaches paid, and
+   * paid's admit action (keyed on the stage ID, not array position) is
+   * untouched. Placed LAST it would be unreachable: paid's next button is the
+   * admit action, so no button path would ever move a lead in. */
+  STAGE_WAITLIST,
   /* `paid` keeps its stable id so historical sheet rows still resolve via
    * STAGE_ALIASES below; only the displayed label was changed to "בטיפול פעיל".
    * `paid` is now the LAST board stage: advancing it is the admit action
@@ -28,14 +43,6 @@ const STAGES = [
   { id: 'paid',        label: 'בטיפול פעיל' },
 ];
 const STAGE_IRRELEVANT = { id: 'irrelevant', label: 'לא רלוונטי' };
-/* רשימת המתנה — a potential patient waiting for a spot; the lead's existing
- * `house` field is the house they are waiting for. Foundation only: the
- * constant ships now (with its STAGE_ALIASES entries and the waitlistedAt
- * column pass-through in normalizeLead) but is deliberately NOT included in
- * STAGES or ALL_STAGES_FOR_PIPELINE, so neither the kanban board nor the
- * pipeline strip renders it — zero user-facing change until the next PR wires
- * it in. Mirrors the MEETING_OUTCOME_LABELS ship-now/render-later precedent. */
-const STAGE_WAITLIST = { id: 'waitlist', label: 'רשימת המתנה' };
 const ALL_STAGES_FOR_PIPELINE = [...STAGES, STAGE_IRRELEVANT];
 
 /* Reason captured when Vered marks a lead as "לא רלוונטי" (Phase 2b).
@@ -806,10 +813,6 @@ const STAGE_ALIASES = {
    * 'new' (the unknown-stage default), which would resurrect the lead. */
   'admitted': 'admitted', 'נקלט': 'admitted', 'אושפז': 'admitted',
   'irrelevant': 'irrelevant', 'לא רלוונטי': 'irrelevant', 'לא_רלוונטי': 'irrelevant',
-  /* Waitlist stage (foundation). Not in STAGES yet, so it renders nowhere;
-   * aliased here — like 'admitted' above — so a stored 'waitlist' value
-   * round-trips on load instead of resetting to 'new' (the unknown-stage
-   * default). The next PR adds the board column. */
   'waitlist': 'waitlist', 'רשימת המתנה': 'waitlist', 'רשימת_המתנה': 'waitlist',
 };
 
@@ -2132,6 +2135,39 @@ function leadContactEditHTML(lead) {
     </div>`;
 }
 
+/* ===== Waitlist waiting-duration badge ===== */
+
+/* Whole days the lead has been waiting: a calendar-date diff (not an hour
+ * diff) from waitlistedAt to today. isoDate collapses both a bare YYYY-MM-DD
+ * and a full ISO timestamp to the LOCAL calendar day (its bare-date regex is
+ * anchored on purpose — prefix-matching a timestamp is the UTC-day bug); the
+ * diff itself is then computed in UTC space so a DST transition inside the
+ * span can't produce an off-by-one. Returns null when waitlistedAt is blank
+ * or unparseable (legacy/edge rows) — callers render no badge, never NaN. A
+ * future-dated stamp (clock skew) clamps to 0. `now` is injectable for tests;
+ * production callers omit it. Pure. */
+function waitlistDayCount(waitlistedAt, now) {
+  const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+  const start = DATE_RE.exec(isoDate(waitlistedAt || ''));
+  if (!start) return null;
+  const today = DATE_RE.exec(isoDate(now || new Date()));
+  if (!today) return null;
+  const ms = Date.UTC(+today[1], +today[2] - 1, +today[3]) -
+             Date.UTC(+start[1], +start[2] - 1, +start[3]);
+  return Math.max(0, Math.round(ms / 86400000));
+}
+
+/* Hebrew waiting-duration label for a waitlist card: day 0 → "ממתין מהיום",
+ * one day → "ממתין יום אחד", N days → "ממתין N ימים". '' (no badge) when the
+ * day count is null. Pure. */
+function waitlistBadgeText(waitlistedAt, now) {
+  const days = waitlistDayCount(waitlistedAt, now);
+  if (days === null) return '';
+  if (days === 0) return 'ממתין מהיום';
+  if (days === 1) return 'ממתין יום אחד';
+  return `ממתין ${days} ימים`;
+}
+
 function buildLeadCard(lead) {
   const card = document.createElement('div');
   card.className = 'lead-card';
@@ -2180,12 +2216,18 @@ function buildLeadCard(lead) {
               data-field="created" value="${escapeHtml(createdISO)}" />`
     : `<span class="lc-created-value">${escapeHtml(createdDisplay)}</span>`;
 
+  /* Waiting-duration badge (waitlist column only). The card's meta line above
+   * it already shows the house — that IS "which house they're waiting for".
+   * Blank waitlistedAt (legacy/edge row) renders no badge at all. */
+  const waitBadge = lead.stage === 'waitlist' ? waitlistBadgeText(lead.waitlistedAt) : '';
+
   card.innerHTML = `
     <div class="lc-name">${escapeHtml(lead.name)}</div>
     <div class="lc-meta">
       ${escapeHtml(lead.phone)} ${lead.house ? '· ' + escapeHtml(lead.house) : ''}
       ${lead.source ? '· מקור: ' + escapeHtml(lead.source) : ''}
     </div>
+    ${waitBadge ? `<div class="lc-wait-badge">${waitBadge}</div>` : ''}
     ${state.mode === 'edit' ? '' : leadContactLineHTML(lead)}
     ${state.mode === 'edit' ? '' : leadBillingLineHTML(lead)}
     ${lead.assignedTo
@@ -2302,12 +2344,24 @@ async function advanceLead(lead) {
 
 async function moveLead(lead, newStage) {
   const prev = lead.stage;
+  const prevWaitlistedAt = lead.waitlistedAt;
   lead.stage = newStage;
+  /* Waitlist stamp: entering רשימת המתנה records now as an ISO timestamp
+   * (text-safe column — see LEAD_COLUMNS in Code.gs); leaving clears it so a
+   * future re-entry restamps. Every board stage change funnels through
+   * moveLead (the on-card שלב הבא/קודם buttons — there is no drag-and-drop),
+   * so this is the single stamp point. Rollback below restores both fields. */
+  if (newStage === 'waitlist' && prev !== 'waitlist') {
+    lead.waitlistedAt = new Date().toISOString();
+  } else if (prev === 'waitlist' && newStage !== 'waitlist') {
+    lead.waitlistedAt = '';
+  }
   renderAll();
   try {
     await saveAll();
   } catch (e) {
     lead.stage = prev;
+    lead.waitlistedAt = prevWaitlistedAt;
     renderAll();
     showError('עדכון שלב נכשל — ' + e.message);
   }
