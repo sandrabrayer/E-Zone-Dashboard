@@ -28,6 +28,14 @@ const STAGES = [
   { id: 'paid',        label: 'בטיפול פעיל' },
 ];
 const STAGE_IRRELEVANT = { id: 'irrelevant', label: 'לא רלוונטי' };
+/* רשימת המתנה — a potential patient waiting for a spot; the lead's existing
+ * `house` field is the house they are waiting for. Foundation only: the
+ * constant ships now (with its STAGE_ALIASES entries and the waitlistedAt
+ * column pass-through in normalizeLead) but is deliberately NOT included in
+ * STAGES or ALL_STAGES_FOR_PIPELINE, so neither the kanban board nor the
+ * pipeline strip renders it — zero user-facing change until the next PR wires
+ * it in. Mirrors the MEETING_OUTCOME_LABELS ship-now/render-later precedent. */
+const STAGE_WAITLIST = { id: 'waitlist', label: 'רשימת המתנה' };
 const ALL_STAGES_FOR_PIPELINE = [...STAGES, STAGE_IRRELEVANT];
 
 /* Reason captured when Vered marks a lead as "לא רלוונטי" (Phase 2b).
@@ -798,6 +806,11 @@ const STAGE_ALIASES = {
    * 'new' (the unknown-stage default), which would resurrect the lead. */
   'admitted': 'admitted', 'נקלט': 'admitted', 'אושפז': 'admitted',
   'irrelevant': 'irrelevant', 'לא רלוונטי': 'irrelevant', 'לא_רלוונטי': 'irrelevant',
+  /* Waitlist stage (foundation). Not in STAGES yet, so it renders nowhere;
+   * aliased here — like 'admitted' above — so a stored 'waitlist' value
+   * round-trips on load instead of resetting to 'new' (the unknown-stage
+   * default). The next PR adds the board column. */
+  'waitlist': 'waitlist', 'רשימת המתנה': 'waitlist', 'רשימת_המתנה': 'waitlist',
 };
 
 const STATUS_ALIASES = {
@@ -1244,6 +1257,15 @@ function normalizeLead(l) {
     contactPhone:    pickField(l, ['contactPhone', 'contact_phone', 'טלפון הפונה', 'טלפון פונה']),
     contactRelation: pickField(l, ['contactRelation', 'contact_relation', 'קשר', 'קרבה']),
     billingPhone:    pickField(l, ['billingPhone', 'billing_phone', 'טלפון לגבייה', 'טלפון לגבייה ועדכונים']),
+    /* waitlistedAt — ISO timestamp string recorded when the lead entered the
+     * רשימת המתנה (waitlist) stage. Foundation-only schema pass-through: no UI,
+     * nothing rendered. Kept verbatim (no isoDate) — the column is text-forced
+     * at sheet-ensure time so it arrives as the string that was written.
+     * pickField returns '' when absent so pre-existing leads (no such column)
+     * stay blank with no backfill, mirroring the meetingOutcome idiom. Flows
+     * through normalizeIrrelevantLead / normalizeRemovedLead automatically
+     * (base = normalizeLead(l)). */
+    waitlistedAt: pickField(l, ['waitlistedAt', 'waitlisted_at']),
     /* Stored as YYYY-MM-DD. Sheets sometimes returns a Date object for date
      * cells (depending on locale + column type); isoDate normalizes both
      * Date objects and full ISO timestamps down to a plain date string so

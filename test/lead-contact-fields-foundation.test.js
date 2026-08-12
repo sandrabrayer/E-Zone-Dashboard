@@ -93,15 +93,15 @@ const app = loadApp();
 
 /* ===== Backend schema ===== */
 
-test('LEAD_COLUMNS ends with the four contact fields in order, after meetingOutcome', () => {
+test('LEAD_COLUMNS carries the four contact fields contiguously, after meetingOutcome', () => {
   const cols = Array.from(code.LEAD_COLUMNS);
-  // The four new columns are the terminal slice, in the specified order.
-  assert.deepStrictEqual(cols.slice(-4), NEW_FIELDS);
-  // Immediately after meetingOutcome (append-only: no gap, right order).
+  // Immediately after meetingOutcome, contiguous and in the specified order
+  // (append-only: no gap, no reorder). Originally the terminal slice; later
+  // appends (waitlistedAt) may follow, but nothing may come between them.
   const owIdx = cols.indexOf('meetingOutcome');
   assert.ok(owIdx > 0, 'meetingOutcome must still be present');
-  assert.strictEqual(cols[owIdx + 1], 'contactName',
-    'contactName must be appended immediately after meetingOutcome');
+  assert.deepStrictEqual(cols.slice(owIdx + 1, owIdx + 1 + NEW_FIELDS.length), NEW_FIELDS,
+    'the four contact fields must sit contiguously right after meetingOutcome');
   // Each new column appears exactly once (no accidental duplicate).
   NEW_FIELDS.forEach((f) => {
     assert.strictEqual(cols.filter((c) => c === f).length, 1, `${f} must appear exactly once`);
