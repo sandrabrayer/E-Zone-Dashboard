@@ -187,7 +187,21 @@ const LEAD_COLUMNS = [
   'contactName',
   'contactPhone',
   'contactRelation',
-  'billingPhone'
+  'billingPhone',
+  /* waitlistedAt — ISO timestamp string recorded when a lead enters the
+   * רשימת המתנה (waitlist) stage; the lead's existing `house` field is the
+   * house it is waiting for. APPEND ONLY: readSheet_ maps cells to keys by
+   * POSITION, so this must stay last and nothing above it may be reordered or
+   * inserted mid-array. Pre-existing rows have no such column and stay blank
+   * (getOrCreateSheet_ appends the missing header non-destructively,
+   * objectToRow_ defaults missing keys to '', and normalizeLead reads it via
+   * pickField defaulting to ''). The column is forced to plain text ('@') at
+   * sheet-ensure time so Sheets never coerces the ISO string into a Date cell
+   * (the same coercion that corrupted visitDate/visitTime). Foundation only —
+   * no UI yet; the field flows through save/load untouched. Mirrors the
+   * meetingOutcome append. Flows automatically into IRRELEVANT_LEAD_COLUMNS /
+   * REMOVED_LEAD_COLUMNS below, which derive from LEAD_COLUMNS via .concat(). */
+  'waitlistedAt'
 ];
 
 /* Irrelevant-leads sheet mirrors LEAD_COLUMNS plus two metadata fields:
@@ -386,14 +400,14 @@ function getOrCreateSheet_(name, headers) {
       sh.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]);
     }
   }
-  // Leads sheet: force the WHOLE visitDate + visitTime columns to plain text so
-  // any write — present or future, via any path (mergeLeads_, upsertRowById_,
-  // manual edit) — lands in a text cell and Sheets can never coerce "08:18" or
-  // "2026-06-11" into a Date/time-typed cell (the coercion that drifted values
-  // through the getValues→UTC round-trip). Done once at sheet-ensure time rather
-  // than per-write. Idempotent.
+  // Leads sheet: force the WHOLE visitDate + visitTime + waitlistedAt columns to
+  // plain text so any write — present or future, via any path (mergeLeads_,
+  // upsertRowById_, manual edit) — lands in a text cell and Sheets can never
+  // coerce "08:18", "2026-06-11" or an ISO timestamp into a Date/time-typed cell
+  // (the coercion that drifted values through the getValues→UTC round-trip).
+  // Done once at sheet-ensure time rather than per-write. Idempotent.
   if (name === LEADS_SHEET) {
-    forceColumnsText_(sh, LEAD_COLUMNS, ['visitDate', 'visitTime']);
+    forceColumnsText_(sh, LEAD_COLUMNS, ['visitDate', 'visitTime', 'waitlistedAt']);
   }
   // BillingOverrides: force month + amount to plain text for the same reason —
   // "2026-08" must not coerce into a date and the amount must not pick up a
