@@ -144,6 +144,7 @@ const state = {
   retentionSearch: '',
   patientSearch: '',
   dischargedSearch: '',
+  billingSearch: '',
   /* תפוסה tab: reveal released patients in the LIST (dimmed, with a שחזר
    * button). SESSION-ONLY by design — never persisted (no localStorage), so
    * every fresh load starts with released patients hidden. Display-only:
@@ -458,6 +459,16 @@ function initTabs() {
     dischargedSearchEl.addEventListener('input', e => {
       state.dischargedSearch = String(e.target.value || '').trim().toLowerCase();
       renderDischargedPatients();
+    });
+  }
+  /* גבייה tab search — same immediate-on-input behavior as the other tabs;
+   * filters both billing lists (due + carry-forward) by name / phone / house.
+   * The KPI cards recompute from the filtered due list (renderBilling). */
+  const billingSearchEl = document.getElementById('billing-search');
+  if (billingSearchEl) {
+    billingSearchEl.addEventListener('input', e => {
+      state.billingSearch = String(e.target.value || '').trim().toLowerCase();
+      renderBilling();
     });
   }
   document.getElementById('add-lead-btn').onclick = openAddLeadModal;
@@ -4533,15 +4544,39 @@ function findPatientForPayment(pay) {
   return null;
 }
 
+/* Billing-tab search: same matching semantics as the discharged-tab search —
+ * dischargedPatientMatchesQuery is the shared core (name + house label by
+ * lowercased substring, phone by raw substring OR normalized digits via
+ * normalizePhone). A billing row's identity is split across the patient (which
+ * may be findPatientForPayment's fallback pseudo-patient) and the payment
+ * record, so both are consulted for name/house. House label resolution mirrors
+ * buildBillingRow exactly, so what the row displays is what matches. Patients
+ * carry no phone in the schema today; the phone leg is defensive and matches
+ * whenever a phone field is present. Pure + exported for tests. */
+function billingRowMatchesQuery(patient, payment, q) {
+  if (!q) return true;
+  const name  = (patient && patient.name) || (payment && payment.patientName) || '';
+  const phone = (patient && patient.phone) || (payment && payment.phone) || '';
+  const house = houseById(payment && payment.houseId) || houseById(patient && patient.houseId);
+  const houseLabel = house ? house.name : ((patient && patient.houseId) || '');
+  return dischargedPatientMatchesQuery({ name, phone }, q, houseLabel);
+}
+
 function renderBilling() {
   const selected = state.billingDate || todayISO();
   const billingDateEl = document.getElementById('billing-date');
   if (billingDateEl && billingDateEl.value !== selected) billingDateEl.value = selected;
 
-  const due = patientsDueOn(selected).map(p => ({
+  const dueAll = patientsDueOn(selected).map(p => ({
     patient: p,
     payment: paymentForPatientOnDate(p, selected),
   }));
+
+  /* Live search (name / phone / house). The KPI cards recompute from the
+   * FILTERED due list — same "counts match what the list shows" rule as the
+   * discharged tab — so while searching they read as the subset's totals. */
+  const q = state.billingSearch;
+  const due = dueAll.filter(d => billingRowMatchesQuery(d.patient, d.payment, q));
 
   // KPI totals sum the payment records' EFFECTIVE amounts (override-aware via
   // paymentForPatientOnDate) — previously totalDue summed the base pay directly,
@@ -4553,16 +4588,19 @@ function renderBilling() {
   document.getElementById('bill-due-total').textContent    = '₪ ' + totalDue.toLocaleString('he-IL');
   document.getElementById('bill-due-collected').textContent = '₪ ' + totalCollected.toLocaleString('he-IL');
 
-  renderBillingDueList(due, selected);
+  renderBillingDueList(due, selected, dueAll.length);
   renderBillingOpenList(selected);
   renderBillingMonthlySummary(selected);
 }
 
-function renderBillingDueList(due, selectedISO) {
+function renderBillingDueList(due, selectedISO, unfilteredCount) {
   const list = document.getElementById('billing-due-list');
   list.innerHTML = '';
   if (!due.length) {
-    list.innerHTML = `<div class="card billing-empty">אין תשלומים לגבייה בתאריך זה</div>`;
+    /* Rows exist but the search filtered them all → "no results"; genuinely
+     * nothing due on this date → the original empty message. */
+    const msg = unfilteredCount ? 'לא נמצאו תוצאות' : 'אין תשלומים לגבייה בתאריך זה';
+    list.innerHTML = `<div class="card billing-empty">${msg}</div>`;
     return;
   }
   due.forEach(({ patient, payment }) => {
@@ -4573,26 +4611,32 @@ function renderBillingDueList(due, selectedISO) {
 function renderBillingOpenList(selectedISO) {
   const list = document.getElementById('billing-open-list');
   list.innerHTML = '';
-  const open = state.payments
+  const openAll = state.payments
     .filter(p => (p.status === 'unpaid' || p.status === 'partial') && p.dueDate && p.dueDate < selectedISO)
-    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+    .map(rawPay => {
+      // Carry-forward rows read straight from state.payments — overlay the
+      // per-month override here too so a past unpaid month edited by Sandra
+      // shows (and balances at) its effective amount.
+      const pay = applyBillingOverride(rawPay, state.billingOverrides);
+      const patient = findPatientForPayment(pay) || {
+        name: pay.patientName,
+        houseId: pay.houseId,
+        pay: pay.amount,
+        date: '',
+        status: '',
+      };
+      return { patient, pay };
+    });
+
+  const open = openAll.filter(o => billingRowMatchesQuery(o.patient, o.pay, state.billingSearch));
 
   if (!open.length) {
-    list.innerHTML = `<div class="card billing-empty">אין יתרות פתוחות מתאריכים קודמים</div>`;
+    const msg = openAll.length ? 'לא נמצאו תוצאות' : 'אין יתרות פתוחות מתאריכים קודמים';
+    list.innerHTML = `<div class="card billing-empty">${msg}</div>`;
     return;
   }
-  open.forEach(rawPay => {
-    // Carry-forward rows read straight from state.payments — overlay the
-    // per-month override here too so a past unpaid month edited by Sandra
-    // shows (and balances at) its effective amount.
-    const pay = applyBillingOverride(rawPay, state.billingOverrides);
-    const patient = findPatientForPayment(pay) || {
-      name: pay.patientName,
-      houseId: pay.houseId,
-      pay: pay.amount,
-      date: '',
-      status: '',
-    };
+  open.forEach(({ patient, pay }) => {
     list.appendChild(buildBillingRow(patient, pay, pay.dueDate, true));
   });
 }
