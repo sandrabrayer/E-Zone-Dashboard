@@ -143,6 +143,7 @@ const state = {
   leadSearch: '',
   retentionSearch: '',
   patientSearch: '',
+  dischargedSearch: '',
   /* תפוסה tab: reveal released patients in the LIST (dimmed, with a שחזר
    * button). SESSION-ONLY by design — never persisted (no localStorage), so
    * every fresh load starts with released patients hidden. Display-only:
@@ -448,6 +449,15 @@ function initTabs() {
     retentionSearchEl.addEventListener('input', e => {
       state.retentionSearch = String(e.target.value || '').trim().toLowerCase();
       renderIrrelevantLeads();
+    });
+  }
+  /* מטופלים משוחררים tab search — same immediate-on-input behavior as the
+   * other tabs; filters the audit rows by name / phone / house label. */
+  const dischargedSearchEl = document.getElementById('discharged-search');
+  if (dischargedSearchEl) {
+    dischargedSearchEl.addEventListener('input', e => {
+      state.dischargedSearch = String(e.target.value || '').trim().toLowerCase();
+      renderDischargedPatients();
     });
   }
   document.getElementById('add-lead-btn').onclick = openAddLeadModal;
@@ -1397,6 +1407,10 @@ function normalizePatient(p) {
  * silently drop columns (same bug pattern Phase 2b hit). */
 function normalizeDischargedPatient(p) {
   const base = normalizePatient(p);
+  /* Phone is not part of the patient schema (normalizePatient drops it), but
+   * audit rows that DO carry a phone column (same aliases as normalizeLead)
+   * keep it here so the discharged-tab search can match on it. */
+  base.phone          = pickField(p, ['phone', 'טלפון', 'נייד', 'מספר טלפון', 'Phone']) || '';
   base.dischargedAt   = pickField(p, ['dischargedAt', 'discharged_at', 'תאריך שחרור']) || '';
   base.disposition    = pickField(p, ['disposition']) || '';
   base.discharge_note = pickField(p, ['discharge_note', 'dischargeNote', 'הערת שחרור']) || '';
@@ -2789,6 +2803,32 @@ function renderRemovedLeads() {
   });
 }
 
+/* House label as the discharged tab displays it: resolved house name, falling
+ * back to the raw houseId. Injected into the search matcher so what the user
+ * sees on the card is what the query matches. '' (not '—') when both are
+ * missing, so the placeholder dash never satisfies a search. */
+function dischargedHouseLabel(p) {
+  const h = houseById(p && p.houseId);
+  return (h && h.name) || (p && p.houseId) || '';
+}
+
+/* Whether a discharged audit row matches the search query `q` (already
+ * trimmed+lowercased by the input handler). Mirrors leadMatchesQuery: text
+ * fields (name, house label) match by lowercased substring; the phone matches
+ * either by raw lowercased substring (a partial as-displayed still hits) OR by
+ * normalized-digit substring via normalizePhone, so "050-12" and "+97250 12"
+ * find the same row regardless of formatting. Pure + exported for tests. */
+function dischargedPatientMatchesQuery(p, q, houseLabel) {
+  if (!q) return true;
+  const ql = String(q).toLowerCase();
+  const text = [p && p.name, houseLabel];
+  if (text.some(v => String(v == null ? '' : v).toLowerCase().includes(ql))) return true;
+  const phone = String((p && p.phone) == null ? '' : p.phone).toLowerCase();
+  if (phone.includes(ql)) return true;
+  const qDigits = normalizePhone(q);
+  return !!qDigits && normalizePhone(phone).includes(qDigits);
+}
+
 /* Phase 2e-1 — discharged-patients tab. Read-only audit list. Each row has a
  * single שחזר button opening the restore-choice modal
  * (showRestorePatientChoiceModal): prior-status restore (default) or a new
@@ -2801,15 +2841,20 @@ function renderDischargedPatients() {
   /* Phase 2e-2: hide rows the user has already restored. Backend writes
    * restored='TRUE' (string) on restorePatient_; Sheets may coerce to bool
    * in some configs, so accept both. The audit row stays in the sheet. */
-  const rows = (state.dischargedPatients || [])
+  const allRows = (state.dischargedPatients || [])
     .filter(d => d.restored !== 'TRUE' && d.restored !== true);
+
+  /* Live search (name / phone / house). The count pill reflects the FILTERED
+   * count, matching what the list actually shows. */
+  const q = state.dischargedSearch;
+  const rows = allRows.filter(p => dischargedPatientMatchesQuery(p, q, dischargedHouseLabel(p)));
   const countEl = document.getElementById('discharged-patients-count');
   if (countEl) countEl.textContent = rows.length;
 
   if (!rows.length) {
     const empty = document.createElement('div');
     empty.className = 'card billing-empty';
-    empty.textContent = 'אין מטופלים משוחררים';
+    empty.textContent = allRows.length ? 'לא נמצאו תוצאות' : 'אין מטופלים משוחררים';
     list.appendChild(empty);
     return;
   }
