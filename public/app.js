@@ -626,11 +626,14 @@ async function loadAll() {
 
     const promoted = promoteEnteredLeads();
     const retired  = retireAdmittedLeads();
-    console.log('[E-ZONE] after promote — leads:', state.leads.length, 'patients:', state.patients.length, '(+', promoted.length, 'promoted,', retired.length, 'retired)');
+    /* Discharge-persistence heal — after promote/retire so a freshly promoted
+     * patient is also checked against the audit sheet in the same pass. */
+    const healed   = healClobberedDischarges();
+    console.log('[E-ZONE] after promote — leads:', state.leads.length, 'patients:', state.patients.length, '(+', promoted.length, 'promoted,', retired.length, 'retired,', healed.length, 'healed)');
     renderAll();
 
-    if ((promoted.length > 0 || retired.length > 0) && state.mode === 'edit') {
-      console.log(`[E-ZONE] Persisting ${promoted.length} auto-promoted patient(s) + ${retired.length} retired lead(s)...`);
+    if ((promoted.length > 0 || retired.length > 0 || healed.length > 0) && state.mode === 'edit') {
+      console.log(`[E-ZONE] Persisting ${promoted.length} auto-promoted patient(s) + ${retired.length} retired lead(s) + ${healed.length} healed discharge(s)...`);
       saveAll().catch(e => console.warn('[E-ZONE] auto-promote save failed', e.message));
     }
   } catch (e) {
@@ -773,6 +776,51 @@ function retireAdmittedLeads() {
     console.log(`[E-ZONE] retired ${retired.length} admitted lead(s) to 'admitted' stage`, retired.map(l => l.name));
   }
   return retired;
+}
+
+/**
+ * Load-time self-heal (discharge-persistence fix): re-release any ACTIVE
+ * patient whose discharge is recorded on the discharged-audit sheet.
+ *
+ * Why this exists: the Patients sheet is written by saveAll's WHOLE-HOUSE
+ * REPLACE (replaceHousePatients_) — last writer wins. A stale session (a
+ * second tab, a PWA resumed from background with old in-memory state) that
+ * saves ANYTHING silently resurrects a discharged patient as active. The
+ * discharged-audit row, by contrast, is a keyed upsert on its own sheet that
+ * saveAll never touches — it survives every clobber. So on every load, a
+ * NON-restored audit row whose patient shows up active means the discharge
+ * was clobbered (or its saveAll half failed): flip the row back to released
+ * and restore the exit date from the audit record.
+ *
+ * Matching is the SAME identity key the restore flow uses
+ * (matchActivePatientIndex: houseId + name + date) — the Patients sheet has
+ * no id column, so this triple IS row identity. `date` in the key is what
+ * keeps a genuine re-admission safe: a patient re-admitted after a discharge
+ * gets a NEW entry date, so the old audit row no longer matches and the new
+ * stay is never touched. restored==='TRUE' rows are skipped so both restore
+ * paths (to-active / to-lead) keep working — a restored patient stays active.
+ *
+ * Mirrors the promoteEnteredLeads / retireAdmittedLeads self-heal precedent:
+ * runs on every load, idempotent (a released patient no longer matches the
+ * status filter), persisted by loadAll's existing post-promote saveAll.
+ */
+function healClobberedDischarges() {
+  const healed = [];
+  const audits = Array.isArray(state.dischargedPatients) ? state.dischargedPatients : [];
+  audits.forEach(d => {
+    if (!d || d.restored === 'TRUE' || d.restored === true) return;
+    const idx = matchActivePatientIndex(state.patients, d);
+    if (idx < 0) return;
+    const p = state.patients[idx];
+    if (p.status === 'released') return;
+    p.status   = 'released';
+    p.exitDate = p.exitDate || d.exitDate || '';
+    healed.push(p);
+  });
+  if (healed.length > 0) {
+    console.log(`[E-ZONE] healed ${healed.length} clobbered discharge(s) back to released`, healed.map(p => p.name));
+  }
+  return healed;
 }
 
 /* Accept patients as either an array OR an object keyed by houseId. */
@@ -3834,22 +3882,38 @@ function dischargePatient(p) {
       state.dischargedPatients.unshift(auditRow);
       renderAll();
 
+      /* WRITE ORDER MATTERS (discharge-persistence fix). The audit row goes
+       * FIRST: it is a keyed upsert on its own sheet that no saveAll can ever
+       * clobber, so once it lands the discharge intent is durable — if the
+       * saveAll below then fails, healClobberedDischarges completes the
+       * release from the audit row on the next load. The old order (saveAll
+       * first) had the fatal inverse: a failed audit write rolled the LOCAL
+       * patient back to active while the sheet already said released, and the
+       * session's next saveAll silently re-activated the sheet — the
+       * discharge evaporated with nothing but a 6-second toast.
+       *
+       * The payload is the full auditRow (not {...p}): it carries
+       * prior_status + exitDate + dischargedAt, which the old payload dropped
+       * — persisted audit rows always had a blank prior_status, so
+       * restore-to-previous-status silently fell back to 'active'. */
       try {
-        await saveAll();
+        await apiPost({ action: 'dischargePatient', patient: auditRow });
       } catch (e) {
+        // Nothing persisted yet — a full rollback is truthful.
         rollback();
-        showError('שחרור המטופל נכשל — ' + e.message);
+        showError('שחרור המטופל נכשל — לא נשמר. ' + e.message);
         throw e;
       }
 
       try {
-        await apiPost({
-          action: 'dischargePatient',
-          patient: { ...p, disposition: disposition, discharge_note: note },
-        });
+        await saveAll();
       } catch (e) {
+        /* The audit row IS persisted; only the status flip failed. Roll the
+         * UI back so it reflects the Patients sheet (still active), and let
+         * the load-time heal finish the release — the discharge converges to
+         * the user's intent instead of silently disappearing. */
         rollback();
-        showError('כתיבת רישום השחרור נכשלה — ' + e.message);
+        showError('שחרור המטופל נשמר חלקית — הסטטוס יתעדכן בטעינה הבאה. ' + e.message);
         throw e;
       }
 
