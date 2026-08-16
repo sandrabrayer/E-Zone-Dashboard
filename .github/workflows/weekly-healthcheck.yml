@@ -1,0 +1,48 @@
+name: Weekly Healthcheck
+
+# Checks the LIVE app (Railway) every Saturday evening, Israel time, plus
+# on-demand manual runs. A failed run = GitHub emails Sandra — and it fails
+# ONLY on real breakage (app shell down, PIN login broken, getData returning
+# HTML/garbage, missing top-level keys, stale Apps Script deployment missing
+# merged columns). Data-quality issues (blank ids, malformed dates, duplicate
+# discharge-audit rows) are WARNINGS in the job summary and never fail the run.
+#
+# ⛔ This workflow must NEVER be added to branch-protection required checks —
+# it probes a live deployment on a schedule and must never gate merges.
+#
+# Requires the APP_PIN repository secret (Settings → Secrets and variables →
+# Actions). The script fails with a clear message when it is missing and never
+# prints its value.
+
+on:
+  schedule:
+    # Saturday 18:00 UTC = 20:00 (winter, UTC+2) / 21:00 (summer, UTC+3) Israel.
+    - cron: '0 18 * * 6'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A manual run during a scheduled run just queues — never cancel a probe midway.
+concurrency:
+  group: weekly-healthcheck
+  cancel-in-progress: false
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+
+      # No npm install — the script uses only Node built-ins (global fetch).
+      - name: Run healthcheck against the live app
+        run: node scripts/healthcheck.js
+        env:
+          APP_PIN: ${{ secrets.APP_PIN }}
