@@ -39,7 +39,7 @@ and the contract is locked by
 
 | # | Column        | Description                                                        |
 |---|---------------|--------------------------------------------------------------------|
-| 1 | `house`       | Canonical house id: `ramot` \| `raanana` \| `efroni` \| `rehab`.   |
+| 1 | `house`       | Canonical house id: `ramot` \| `raanana` \| `efroni` \| `rehab` \| `pardes`. |
 | 2 | `patientName` | Patient display name.                                              |
 | 3 | `patientId`   | Stable per-patient key. The `Patients` sheet has **no** persisted id column, so this is derived deterministically from the patient's identifying fields (`houseId` + name + entry date) — the same patient yields the same id across rebuilds. |
 | 4 | `updatedAt`   | ISO 8601 **UTC** timestamp of the rebuild that produced the row.   |
@@ -57,9 +57,9 @@ above and nothing else.
 ## House encoding
 
 A patient's house comes from the `Patients` sheet `houseId` (a dashboard
-internal id). It is encoded as a canonical id. Only these four houses are
-exported; any house outside them (e.g. `pardes`, `sde`, or an unknown/blank
-value) is **excluded**, not renamed. A Hebrew display name is also accepted so
+internal id). It is encoded as a canonical id. Only these five houses are
+exported; any house outside them (e.g. `sde`, or an unknown/blank value) is
+**excluded**, not renamed. A Hebrew display name is also accepted so
 mixed/legacy rows still resolve.
 
 | Dashboard internal id | Hebrew display name | Canonical digest id |
@@ -68,8 +68,13 @@ mixed/legacy rows still resolve.
 | `ramot`               | רמות השבים          | `ramot`             |
 | `arfoni`              | קיסריה עפרוני        | `efroni`            |
 | `rehab`               | קיסריה ריהאב         | `rehab`             |
-| `pardes`              | רעננה הפרדס          | *(excluded)*        |
+| `pardes`              | רעננה הפרדס          | `pardes`            |
 | `sde`                 | שדה אליעזר           | *(excluded)*        |
+
+> `pardes` (רעננה הפרדס) became canonical in 2026-08 when the house went live.
+> A canonical house with **zero** active residents simply has no rows in the
+> feed — consumers (coordinators) render their own empty state for it; absence
+> of rows is a valid, honest result, never an error.
 
 ## Rebuild cadence
 

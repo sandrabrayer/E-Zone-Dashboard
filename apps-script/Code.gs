@@ -60,10 +60,11 @@ const DISCHARGED_PATIENTS_SHEET = 'מטופלים משוחררים';
  * therapy_type ∈ { maintenance | day_2x | day_daily }.
  *   patient_name | house_of_origin | therapy_type | start_date | end_date | notes
  *
- * The bonus dashboard uses the keys raanana / ramot / efroni / rehab,
- * but the existing Patients sheet was set up with different houseIds
- * (asher / ramot / arfoni / rehab). MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID
- * lets us read residence data from the Patients sheet without forcing a
+ * The bonus dashboard uses the keys raanana / ramot / efroni / rehab /
+ * pardes, but the existing Patients sheet was set up with different
+ * houseIds (asher / ramot / arfoni / rehab; pardes, added 2026-08, uses
+ * the same id on both sides). MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID lets us
+ * read residence data from the Patients sheet without forcing a
  * historical rename.
  */
 const MANAGERS_SHEET     = 'Managers';
@@ -74,24 +75,28 @@ const MANAGER_COLUMNS       = ['house', 'manager_name', 'start_date', 'end_date'
 const BONUS_CONFIG_COLUMNS  = ['house', 'bep_patients', 'capacity_patients', 'bonus_base', 'bonus_per_day', 'type'];
 const OUTPATIENT_COLUMNS    = ['patient_name', 'house_of_origin', 'therapy_type', 'start_date', 'end_date', 'notes'];
 
-const MANAGER_HOUSES = ['raanana', 'ramot', 'efroni', 'rehab'];
+const MANAGER_HOUSES = ['raanana', 'ramot', 'efroni', 'rehab', 'pardes'];
 const MANAGER_HOUSE_NAMES = {
   raanana: 'רעננה אשר',
   ramot:   'רמות השבים',
   efroni:  'קיסריה עפרוני',
   rehab:   'קיסריה ריהאב',
+  pardes:  'רעננה הפרדס',
 };
 const MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID = {
   raanana: 'asher',
   ramot:   'ramot',
   efroni:  'arfoni',
   rehab:   'rehab',
+  pardes:  'pardes',
 };
 
 /* House managers keyed by patients-sheet house id. Names only — no phone
  * numbers. Exported by getData_ so the frontend can look up who runs each
- * house without a second round-trip. Exactly these four houses; keep in sync
- * with the patients-house ids above if the roster changes. */
+ * house without a second round-trip. pardes is intentionally absent until a
+ * manager is named for it — every consumer renders a blank manager for a
+ * missing key. Keep in sync with the patients-house ids above if the roster
+ * changes. */
 const HOUSE_MANAGERS = {
   arfoni: 'חנן',
   rehab:  'רנטה',
@@ -1794,7 +1799,7 @@ function managersHouse_(houseKey, monthParam) {
  *
  * FROZEN COLUMN CONTRACT (append-only — never reorder or remove; see
  * DIGEST-CONTRACT.md at the repo root, which is the authoritative copy):
- *   house       — canonical house id: ramot | raanana | efroni | rehab
+ *   house       — canonical house id: ramot | raanana | efroni | rehab | pardes
  *   patientName — patient display name
  *   patientId   — stable per-patient key. The Patients sheet has no persisted id
  *                 column, so this is derived deterministically from the patient's
@@ -1807,9 +1812,10 @@ function managersHouse_(houseKey, monthParam) {
  * the four columns above and nothing else; the test locks this no-leak contract
  * against the shipped function.
  *
- * HOUSES: only the four canonical houses are exported. The dashboard's internal
- * house ids (and their Hebrew display names) map to canonical ids below; houses
- * outside the four (pardes, sde, anything unknown) are excluded, not renamed.
+ * HOUSES: only the canonical houses are exported (ramot, raanana, efroni,
+ * rehab, and — since 2026-08 — pardes). The dashboard's internal house ids
+ * (and their Hebrew display names) map to canonical ids below; houses outside
+ * the canonical set (sde, anything unknown) are excluded, not renamed.
  *
  * WRITE TRIGGERS: rebuilt best-effort at the end of every lead/patient-mutating
  * request (see refreshDigestBestEffort_ wired into handle_) so an admission,
@@ -1826,15 +1832,17 @@ const DIGEST_VIEWER_EMAIL        = 'brayersandra@gmail.com';
 const DIGEST_REBUILD_HANDLER     = 'rebuildActivePatientsDigest';
 
 /* Canonical house set the digest is allowed to emit. */
-const DIGEST_CANONICAL_HOUSES = { ramot: true, raanana: true, efroni: true, rehab: true };
+const DIGEST_CANONICAL_HOUSES = { ramot: true, raanana: true, efroni: true, rehab: true, pardes: true };
 
-/* Dashboard internal house id → canonical digest house id. pardes and sde are
- * intentionally ABSENT so they resolve to '' and are excluded from the feed. */
+/* Dashboard internal house id → canonical digest house id. pardes (added
+ * 2026-08) uses the same id on both sides. sde is intentionally ABSENT so it
+ * resolves to '' and is excluded from the feed. */
 const DIGEST_INTERNAL_TO_CANONICAL = {
   asher:  'raanana',
   ramot:  'ramot',
   arfoni: 'efroni',
   rehab:  'rehab',
+  pardes: 'pardes',
 };
 
 /* Hebrew display name (as it may appear in a `houseId`/`house` field) → internal
@@ -1869,7 +1877,7 @@ function digestStatusIsActive_(rawStatus) {
 
 /* Resolve a patient's stored house (internal id, Hebrew display name, or an
  * already-canonical id) to a canonical digest house id, or '' when the house is
- * outside the four exported houses. */
+ * outside the exported houses. */
 function canonicalDigestHouse_(rawHouse) {
   if (rawHouse === undefined || rawHouse === null) return '';
   const s = String(rawHouse).trim();
@@ -1878,7 +1886,7 @@ function canonicalDigestHouse_(rawHouse) {
   if (DIGEST_INTERNAL_TO_CANONICAL[s]) return DIGEST_INTERNAL_TO_CANONICAL[s]; // internal id
   const internal = DIGEST_HOUSE_NAME_TO_INTERNAL[s];        // Hebrew display name
   if (internal) return DIGEST_INTERNAL_TO_CANONICAL[internal] || '';
-  return '';                                                // pardes / sde / unknown → excluded
+  return '';                                                // sde / unknown → excluded
 }
 
 /* Deterministic stable id for an active patient. The Patients sheet has no
@@ -1897,7 +1905,7 @@ function digestPatientKey_(canonHouse, name, patient) {
 /* PURE projection: active-treatment patients → digest rows. Each row is built
  * from exactly the four contract columns, so no financial field (pay, adv, …)
  * can leak. A patient is exported when their status is active (בטיפול פעיל /
- * פעיל) and their house maps to one of the four canonical houses. `nowIso` is
+ * פעיל) and their house maps to one of the canonical houses. `nowIso` is
  * the rebuild timestamp stamped onto every row's updatedAt (passed in so the
  * function stays deterministic and testable). */
 function buildActivePatientsRows_(patients, nowIso) {
@@ -1908,7 +1916,7 @@ function buildActivePatientsRows_(patients, nowIso) {
     if (!p) continue;
     if (!digestStatusIsActive_(p.status)) continue;
     const house = canonicalDigestHouse_(p.houseId);
-    if (!house) continue; // outside the four canonical houses
+    if (!house) continue; // outside the canonical houses
     const name = String(p.name === undefined || p.name === null ? '' : p.name).trim();
     if (!name) continue;  // a digest row must name a patient
     out.push({
@@ -1974,8 +1982,8 @@ function rebuildActivePatientsDigest_() {
  * exactly why the digest contains what it does. Reports, from the live Patients
  * sheet: the count of residents per status, and among active-treatment
  * residents the per-canonical-house kept count plus every dropped row with the
- * reason it was excluded (unknown/absent house, or a house outside the four
- * canonical ones). This is what makes the previously-silent exclusions visible.
+ * reason it was excluded (unknown/absent house, or a house outside the
+ * canonical set). This is what makes the previously-silent exclusions visible.
  * Read-only: it never writes the digest. */
 function diagnoseActivePatientsDigest() {
   const patientsSh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
