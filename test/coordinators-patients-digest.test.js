@@ -150,10 +150,11 @@ test('house encoding maps internal ids + Hebrew names to canonical, excludes the
   assert.strictEqual(api.canonicalHouse('קיסריה ריהאב'), 'rehab');
   // Already-canonical passes through.
   assert.strictEqual(api.canonicalHouse('efroni'), 'efroni');
-  // Houses outside the four are excluded, never renamed.
-  assert.strictEqual(api.canonicalHouse('pardes'), '');
+  // pardes (canonical since 2026-08) uses the same id on both sides.
+  assert.strictEqual(api.canonicalHouse('pardes'), 'pardes');
+  assert.strictEqual(api.canonicalHouse('רעננה הפרדס'), 'pardes');
+  // Houses outside the canonical set are excluded, never renamed.
   assert.strictEqual(api.canonicalHouse('sde'), '');
-  assert.strictEqual(api.canonicalHouse('רעננה הפרדס'), '');
   assert.strictEqual(api.canonicalHouse('שדה אליעזר'), '');
   assert.strictEqual(api.canonicalHouse('whatever'), '');
   assert.strictEqual(api.canonicalHouse(''), '');
@@ -169,8 +170,11 @@ test('projection: only active, in-scope, named patients become rows with the 4-c
       { houseId: 'asher', name: 'דנה', status: 'active', date: '2026-06-01', pay: 41300, adv: 5000 },
       // Active + Hebrew-named house → mapped.
       { houseId: 'רמות השבים', name: 'מאיה', status: 'פעיל', date: '2026-06-10' },
-      // Active but excluded house (pardes) → dropped.
+      // Active + pardes (canonical since 2026-08) → included, even with no
+      // entry date yet (a brand-new house starts with sparse rows).
       { houseId: 'pardes', name: 'יוסי', status: 'active' },
+      // Active but excluded house (sde) → dropped.
+      { houseId: 'sde', name: 'גיל', status: 'active' },
       // Released (left active treatment) → dropped.
       { houseId: 'ramot', name: 'נועה', status: 'released' },
       // Active + in-scope but no name → dropped (a row must name a patient).
@@ -181,15 +185,19 @@ test('projection: only active, in-scope, named patients become rows with the 4-c
     now
   );
 
-  assert.strictEqual(rows.length, 2);
-  const dana = rows.find((r) => r.patientName === 'דנה');
-  const maya = rows.find((r) => r.patientName === 'מאיה');
+  assert.strictEqual(rows.length, 3);
+  const dana  = rows.find((r) => r.patientName === 'דנה');
+  const maya  = rows.find((r) => r.patientName === 'מאיה');
+  const yossi = rows.find((r) => r.patientName === 'יוסי');
   // patientId is a deterministic derived key (Patients sheet has no id column).
   assert.deepStrictEqual(plain(dana), {
     house: 'raanana', patientName: 'דנה', patientId: 'ap:raanana:דנה:2026-06-01', updatedAt: now,
   });
   assert.deepStrictEqual(plain(maya), {
     house: 'ramot', patientName: 'מאיה', patientId: 'ap:ramot:מאיה:2026-06-10', updatedAt: now,
+  });
+  assert.deepStrictEqual(plain(yossi), {
+    house: 'pardes', patientName: 'יוסי', patientId: 'ap:pardes:יוסי:', updatedAt: now,
   });
 
   // No-leak contract: every row exposes EXACTLY the four contract keys.
@@ -218,12 +226,13 @@ test('rebuild writes the frozen header + body to the ActivePatients tab', () => 
     { houseId: 'asher', name: 'דנה', status: 'active', date: '2026-06-01', pay: 41300 },
     { houseId: 'רמות השבים', name: 'מאיה', status: 'פעיל', date: '2026-06-10' },
     { houseId: 'pardes', name: 'יוסי', status: 'active' },
+    { houseId: 'sde', name: 'גיל', status: 'active' },
     { houseId: 'ramot', name: 'נועה', status: 'released' },
   ]);
 
   const res = api.rebuild();
   assert.strictEqual(res.ok, true);
-  assert.strictEqual(res.count, 2);
+  assert.strictEqual(res.count, 3);
   assert.match(res.updatedAt, /^\d{4}-\d{2}-\d{2}T.*Z$/); // ISO 8601 UTC
 
   const tab = api.tab();
@@ -231,9 +240,27 @@ test('rebuild writes the frozen header + body to the ActivePatients tab', () => 
   assert.deepStrictEqual(plain(tab._header), plain(api.columns()));
   assert.deepStrictEqual(plain(tab._header), ['house', 'patientName', 'patientId', 'updatedAt']);
   // Body: one row per included patient, columns positional, no financial data.
-  assert.strictEqual(tab._body.length, 2);
+  assert.strictEqual(tab._body.length, 3);
   assert.deepStrictEqual(plain(tab._body[0]), ['raanana', 'דנה', 'ap:raanana:דנה:2026-06-01', res.updatedAt]);
   assert.deepStrictEqual(plain(tab._body[1]), ['ramot', 'מאיה', 'ap:ramot:מאיה:2026-06-10', res.updatedAt]);
+  assert.deepStrictEqual(plain(tab._body[2]), ['pardes', 'יוסי', 'ap:pardes:יוסי:', res.updatedAt]);
+});
+
+test('a house with zero active residents (pardes today) yields no rows and no error', () => {
+  api.setDigestConfigured(true);
+  api.resetTab();
+  // Real current state: pardes is live but empty — every resident is elsewhere.
+  api.setPatients([
+    { houseId: 'asher', name: 'דנה', status: 'active', date: '2026-06-01' },
+  ]);
+
+  const res = api.rebuild();
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(res.count, 1);
+  // No pardes rows — the coordinators app renders its own empty state for a
+  // canonical house that is simply absent from the feed. Absence, not an error.
+  const houses = api.tab()._body.map((r) => r[0]);
+  assert.ok(!houses.includes('pardes'));
 });
 
 test('rebuild replaces the body (stale rows disappear on the next rebuild)', () => {

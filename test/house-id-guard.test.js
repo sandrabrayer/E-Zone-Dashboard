@@ -38,15 +38,21 @@ const EXPECTED_HOUSES = [
   { id: 'sde',    name: 'שדה אליעזר' },
 ];
 
-/* Internal id → canonical digest/bonus id, for the four houses Code.gs carries.
- * pardes and sde are intentionally absent (excluded from the digest, never
- * renamed). Enumerated explicitly so a mapping edit fails CI. */
+/* Internal id → canonical digest/bonus id, for the houses Code.gs carries.
+ * pardes (added 2026-08) uses the same id on both sides; sde is intentionally
+ * absent (excluded from the digest, never renamed). Enumerated explicitly so a
+ * mapping edit fails CI. */
 const EXPECTED_INTERNAL_TO_CANONICAL = {
   arfoni: 'efroni',
   asher:  'raanana',
+  pardes: 'pardes',
   ramot:  'ramot',
   rehab:  'rehab',
 };
+
+/* The canonical house-id list every enumeration must cover — digest canonical
+ * set, manager (bonus) house list, and manager display names alike. */
+const EXPECTED_CANONICAL_IDS = ['efroni', 'pardes', 'raanana', 'ramot', 'rehab'];
 
 function loadApp() {
   const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
@@ -80,6 +86,7 @@ function loadCode() {
       canonicalHouses: () => DIGEST_CANONICAL_HOUSES,
       managerToPatients: () => MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID,
       managerHouseNames: () => MANAGER_HOUSE_NAMES,
+      managerHouses: () => MANAGER_HOUSES,
       canonicalHouse: (v) => canonicalDigestHouse_(v),
     };
   `;
@@ -139,15 +146,17 @@ test('Code.gs Hebrew-name → internal-id map mirrors HOUSES id ↔ label exactl
   );
 });
 
-test('internal → canonical mapping is the exact four-house set, pardes/sde excluded', () => {
+test('internal → canonical mapping is the exact five-house set, sde excluded', () => {
   assert.deepStrictEqual(plain(code.internalToCanonical()), EXPECTED_INTERNAL_TO_CANONICAL);
-  // The four canonical ids are locked too.
+  // The canonical ids are locked too.
   assert.deepStrictEqual(
     Object.keys(plain(code.canonicalHouses())).sort(),
-    ['efroni', 'raanana', 'ramot', 'rehab']
+    EXPECTED_CANONICAL_IDS
   );
-  // pardes and sde exist in HOUSES but resolve to '' (excluded, never renamed).
-  assert.strictEqual(code.canonicalHouse('pardes'), '');
+  // pardes resolves to itself (same id on both sides — no historical rename).
+  assert.strictEqual(code.canonicalHouse('pardes'), 'pardes');
+  assert.strictEqual(code.canonicalHouse('רעננה הפרדס'), 'pardes');
+  // sde exists in HOUSES but resolves to '' (excluded, never renamed).
   assert.strictEqual(code.canonicalHouse('sde'), '');
 });
 
@@ -157,6 +166,27 @@ test('manager (bonus) side maps canonical efroni/raanana back to internal arfoni
   assert.strictEqual(managerToPatients.raanana, 'asher');
   assert.strictEqual(managerToPatients.ramot, 'ramot');
   assert.strictEqual(managerToPatients.rehab, 'rehab');
+  assert.strictEqual(managerToPatients.pardes, 'pardes');
   // The bonus display name for efroni matches the app.js label for arfoni.
   assert.strictEqual(plain(code.managerHouseNames()).efroni, 'קיסריה עפרוני');
+  // The bonus display name for pardes matches the app.js label for pardes.
+  assert.strictEqual(plain(code.managerHouseNames()).pardes, 'רעננה הפרדס');
+});
+
+test('every house enumeration covers the full canonical house list (incl. pardes)', () => {
+  // Digest canonical set.
+  assert.deepStrictEqual(Object.keys(plain(code.canonicalHouses())).sort(), EXPECTED_CANONICAL_IDS);
+  // Values of the internal → canonical map.
+  assert.deepStrictEqual(
+    Array.from(new Set(Object.values(plain(code.internalToCanonical())))).sort(),
+    EXPECTED_CANONICAL_IDS
+  );
+  // Manager (bonus) house list, display names, and the patients-sheet id map.
+  assert.deepStrictEqual(plain(code.managerHouses()).slice().sort(), EXPECTED_CANONICAL_IDS);
+  assert.deepStrictEqual(Object.keys(plain(code.managerHouseNames())).sort(), EXPECTED_CANONICAL_IDS);
+  assert.deepStrictEqual(Object.keys(plain(code.managerToPatients())).sort(), EXPECTED_CANONICAL_IDS);
+  // The bonus endpoints resolve a patients-sheet house id for every canonical house.
+  for (const key of plain(code.managerHouses())) {
+    assert.ok(plain(code.managerToPatients())[key], `manager house '${key}' must map to a patients-sheet house id`);
+  }
 });
