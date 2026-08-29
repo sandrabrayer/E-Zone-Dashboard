@@ -1,0 +1,179 @@
+/* Meeting-report form (PR 2) — standalone mobile-first stylesheet. No
+ * dependency on style.css (the page must not pull the dashboard bundle);
+ * the palette tokens are copied from style.css — keep them in sync. */
+
+:root {
+  --bg: #0b1020;
+  --bg-2: #0f172e;
+  --surface: #182142;
+  --surface-2: #1f2a52;
+  --surface-3: #25315e;
+  --border: #2c3a6b;
+  --border-strong: #3b4d8a;
+  --text: #f1f5ff;
+  --text-muted: #98a3c7;
+  --text-dim: #6b7aa0;
+  --primary: #5b8bff;
+  --primary-strong: #3a6dff;
+  --primary-glow: rgba(91, 139, 255, 0.45);
+  --success: #2dd47a;
+  --danger: #ff4d5e;
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  font-family: "Heebo", "Segoe UI", "Arial Hebrew", Arial, sans-serif;
+  background: radial-gradient(1200px 700px at 80% -200px, #1c2956 0%, transparent 60%),
+              var(--bg);
+  background-attachment: fixed;
+  color: var(--text);
+  direction: rtl;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+.hidden { display: none !important; }
+
+.mr-wrap {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 18px 14px 40px;
+}
+.mr-header {
+  text-align: center;
+  margin-bottom: 18px;
+}
+.mr-header h1 {
+  margin: 0 0 4px;
+  font-size: 24px;
+  background: linear-gradient(90deg, #5b8bff, #a779ff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-weight: 800;
+}
+.mr-header p { margin: 0; color: var(--text-muted); font-size: 13px; }
+
+.mr-field { margin-bottom: 18px; }
+.mr-field > label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+input, select, textarea {
+  font-family: inherit;
+  font-size: 16px; /* ≥16px keeps iOS from zooming on focus */
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-glow);
+}
+textarea { min-height: 96px; resize: vertical; }
+
+.mr-toggle {
+  background: none; border: none;
+  color: var(--primary);
+  font-family: inherit; font-size: 13px;
+  padding: 6px 0; cursor: pointer;
+}
+
+/* Outcome — 4 large tap targets. */
+.mr-choices { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.mr-choice {
+  font-family: inherit; font-size: 16px; font-weight: 600;
+  padding: 14px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  text-align: center;
+}
+.mr-choice.selected {
+  background: linear-gradient(180deg, var(--primary) 0%, var(--primary-strong) 100%);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 6px 16px var(--primary-glow);
+}
+
+/* Companion chips. */
+.mr-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.mr-chip {
+  font-family: inherit; font-size: 15px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.mr-chip.selected {
+  background: linear-gradient(180deg, var(--primary) 0%, var(--primary-strong) 100%);
+  border-color: transparent;
+  color: #fff;
+}
+#mr-companion-other-wrap { margin-top: 10px; }
+
+.mr-submit {
+  width: 100%;
+  font-family: inherit; font-size: 17px; font-weight: 700;
+  padding: 15px;
+  border: none; border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--primary) 0%, var(--primary-strong) 100%);
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 6px 16px var(--primary-glow);
+}
+.mr-submit:disabled { opacity: .45; cursor: not-allowed; }
+
+.error-msg { color: var(--danger); margin-top: 12px; font-size: 14px; font-weight: 600; text-align: center; }
+
+/* Confirmation screen. */
+.mr-done { text-align: center; }
+.mr-done h2 { color: var(--success); font-size: 22px; margin: 24px 0 16px; }
+.mr-summary {
+  text-align: right;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 20px;
+  font-size: 15px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.mr-summary span { color: var(--text-muted); font-weight: 600; }
+.mr-wa {
+  display: block;
+  text-decoration: none;
+  font-size: 16px; font-weight: 700;
+  padding: 14px;
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #2dd47a 0%, #1fae61 100%);
+  color: #fff;
+  margin-bottom: 12px;
+  box-shadow: 0 6px 16px rgba(45, 212, 122, .35);
+}
+.mr-again {
+  width: 100%;
+  font-family: inherit; font-size: 15px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+}

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="robots" content="noindex" />
+  <title>דיווח פגישה — E-Zone</title>
+  <link rel="stylesheet" href="/meeting-report.css?v=__BUILD__" />
+</head>
+<body>
+  <div class="mr-wrap">
+    <header class="mr-header">
+      <h1>דיווח פגישה</h1>
+      <p>E-Zone — דיווח מנהלי בתים</p>
+    </header>
+
+    <div id="mr-form">
+      <div class="mr-field">
+        <label for="mr-reporter">מדווח/ת</label>
+        <select id="mr-reporter"></select>
+      </div>
+
+      <div class="mr-field">
+        <label for="mr-lead">ליד</label>
+        <select id="mr-lead"></select>
+        <button type="button" id="mr-lead-toggle" class="mr-toggle">לא מוצא את הליד?</button>
+      </div>
+
+      <div class="mr-field">
+        <label>תוצאה</label>
+        <div id="mr-outcomes" class="mr-choices"></div>
+      </div>
+
+      <div class="mr-field">
+        <label>מי הגיע איתו</label>
+        <div id="mr-companions" class="mr-chips"></div>
+        <div id="mr-companion-other-wrap" class="hidden">
+          <input type="text" id="mr-companion-other" maxlength="100" placeholder="מי הגיע? (טקסט חופשי)" />
+        </div>
+      </div>
+
+      <div class="mr-field">
+        <label for="mr-note">פירוט</label>
+        <textarea id="mr-note" maxlength="2000" placeholder="מה דובר בפגישה…"></textarea>
+      </div>
+
+      <button type="button" id="mr-submit" class="mr-submit">שליחת דיווח</button>
+      <div id="mr-error" class="error-msg hidden"></div>
+    </div>
+
+    <div id="mr-done" class="mr-done hidden">
+      <h2>✓ הדיווח נשמר</h2>
+      <div id="mr-summary" class="mr-summary"></div>
+      <a id="mr-whatsapp" class="mr-wa" href="#" target="_blank" rel="noopener">שלח לקבוצה</a>
+      <button type="button" id="mr-again" class="mr-again">דיווח נוסף</button>
+    </div>
+  </div>
+
+  <script src="/meeting-report.js?v=__BUILD__"></script>
+</body>
+</html>
