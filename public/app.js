@@ -85,6 +85,36 @@ const MEETING_OUTCOME_LABELS = {
   cancelled:    'התבטל',
 };
 
+/* Meeting-report model (foundation) — house managers report what happened in a
+ * lead meeting (today reported only in a WhatsApp group). DISTINCT from the
+ * meetings-board MEETING_OUTCOME_LABELS above, which is a separate live feature
+ * with its own key set — hence the meetingReportOutcome column name. Stable
+ * keys persist to the sheet (meetingReportOutcome via LEAD_COLUMNS); Hebrew
+ * labels are render-time only so a UI label rename never invalidates stored
+ * rows. Foundation only — no UI consumes these maps yet; the manager form
+ * ships in PR 2 and Vered's view in PR 3. */
+const MEETING_REPORT_OUTCOME_LABELS = Object.freeze({
+  advancing: 'התקיימה — מתקדם לכניסה',
+  undecided: 'התקיימה — מתלבט',
+  not_fit:   'התקיימה — לא מתאים',
+  no_show:   'לא הגיע / בוטל',
+});
+
+/* Companion display rule (used in later PRs): if meetingCompanion matches a
+ * key in MEETING_COMPANION_LABELS, show the label; otherwise show the raw
+ * value — free text entered via אחר is stored as-is in meetingCompanion (no
+ * 'other:' prefix) and rendered verbatim. */
+const MEETING_COMPANION_LABELS = Object.freeze({
+  mother:  'אמא',
+  father:  'אבא',
+  parents: 'הורים',
+  partner: 'בן/בת זוג',
+  sibling: 'אח/אחות',
+  friend:  'חבר',
+  alone:   'לבד',
+  other:   'אחר',
+});
+
 const STATUS_OPTIONS = [
   { id: 'active',   label: 'פעיל' },
   { id: 'trial',    label: 'תקופת ניסיון' },
@@ -1338,6 +1368,21 @@ function normalizeLead(l) {
      * through normalizeIrrelevantLead / normalizeRemovedLead automatically
      * (base = normalizeLead(l)). */
     waitlistedAt: pickField(l, ['waitlistedAt', 'waitlisted_at']),
+    /* Meeting-report fields (foundation) — see MEETING_REPORT_OUTCOME_LABELS /
+     * MEETING_COMPANION_LABELS. Schema-only pass-through: no UI, nothing
+     * rendered. pickField returns '' when absent so pre-existing leads (no such
+     * columns) stay blank with no backfill, mirroring the waitlistedAt idiom —
+     * without this, upsertRowById_ round-trips would silently drop the values.
+     * meetingReportedAt and meetingSeen are kept verbatim (no isoDate): both
+     * columns are text-forced at sheet-ensure time so they arrive as the
+     * strings that were written. All six flow through normalizeIrrelevantLead /
+     * normalizeRemovedLead automatically (base = normalizeLead(l)). */
+    meetingReportOutcome: pickField(l, ['meetingReportOutcome', 'meeting_report_outcome']),
+    meetingCompanion:     pickField(l, ['meetingCompanion', 'meeting_companion']),
+    meetingNote:          pickField(l, ['meetingNote', 'meeting_note']),
+    meetingReporter:      pickField(l, ['meetingReporter', 'meeting_reporter']),
+    meetingReportedAt:    pickField(l, ['meetingReportedAt', 'meeting_reported_at']),
+    meetingSeen:          pickField(l, ['meetingSeen', 'meeting_seen']),
     /* Stored as YYYY-MM-DD. Sheets sometimes returns a Date object for date
      * cells (depending on locale + column type); isoDate normalizes both
      * Date objects and full ISO timestamps down to a plain date string so
