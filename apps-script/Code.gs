@@ -376,6 +376,18 @@ function handle_(params) {
       refreshDigestBestEffort_();
       return jsonOut_(res);
     }
+    if (action === 'meetingReportLeads') {
+      if (!meetingReportAuthOk_(params)) {
+        return jsonOut_({ ok: false, error: 'unauthorized' });
+      }
+      return jsonOut_(meetingReportLeads_());
+    }
+    if (action === 'submitMeetingReport') {
+      if (!meetingReportAuthOk_(params)) {
+        return jsonOut_({ ok: false, error: 'unauthorized' });
+      }
+      return jsonOut_(submitMeetingReport_(parseJsonParam_(params.report)));
+    }
     if (action === 'managersOverview') {
       return jsonOut_(managersOverview_(params.month));
     }
@@ -1242,6 +1254,136 @@ function getAdmittedRoster_() {
     });
   }
   return { ok: true, patients: out };
+}
+
+/* ===== Meeting reports (PR 2 — manager form endpoint) =====
+ *
+ * House managers report what happened in a lead meeting from a standalone
+ * mobile page (served by the Railway proxy at /meeting-report). Two actions,
+ * both fail-closed behind MEETING_REPORT_SECRET — a Script Property mirroring
+ * the ADMITTED_ROSTER_SECRET discipline: unset or mismatched secret means
+ * refuse, never serve. The proxy injects the secret server-side (POST body,
+ * never a URL), so it never reaches a browser. */
+const MEETING_REPORT_SECRET_PROP = 'MEETING_REPORT_SECRET';
+
+function meetingReportAuthOk_(params) {
+  const expected = PropertiesService.getScriptProperties().getProperty(MEETING_REPORT_SECRET_PROP);
+  // Fail closed: no secret configured → refuse (never serve lead data open).
+  if (!expected) return false;
+  const got = (params && params.secret) ? String(params.secret) : '';
+  return got === expected;
+}
+
+/* The stable outcome keys a report may carry — must match
+ * MEETING_REPORT_OUTCOME_LABELS in public/app.js (PR 1). */
+const MEETING_REPORT_OUTCOMES = ['advancing', 'undecided', 'not_fit', 'no_show'];
+
+/* Preset companion keys — must match MEETING_COMPANION_LABELS in public/app.js
+ * (PR 1). A companion value outside this list is the אחר flow: raw free text,
+ * stored as-is (capped at 100 chars by validation). */
+const MEETING_COMPANION_KEYS =
+  ['mother', 'father', 'parents', 'partner', 'sibling', 'friend', 'alone', 'other'];
+
+/* An "open" lead is a row of the Leads sheet still in the pipeline: admitted
+ * leads (kept on the sheet with stage 'admitted' so the Patients record owns
+ * them) and any stray irrelevant-stage rows are closed. The stage cell may
+ * hold a stable id or a legacy Hebrew label — cover both, mirroring the
+ * STAGE_ALIASES treatment in app.js. */
+function isOpenLeadStage_(stage) {
+  const s = String(stage == null ? '' : stage).trim();
+  const closed = ['admitted', 'נקלט', 'אושפז', 'irrelevant', 'לא רלוונטי', 'לא_רלוונטי'];
+  return closed.indexOf(s) === -1;
+}
+
+/* Open leads from the Leads sheet, unfiltered columns. */
+function openLeads_() {
+  const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+  return readSheet_(sh, LEAD_COLUMNS).filter(function (l) {
+    return l && isOpenLeadStage_(l.stage);
+  });
+}
+
+/* meetingReportLeads — the minimal picker list for the reporting form. ONLY
+ * { id, name, house, visitDate } per lead: no phones, no notes, no contact or
+ * billing fields, deliberately — the reporting PIN must expose as little as
+ * possible. visitDate is normalized to YYYY-MM-DD (asISODate_) so the form's
+ * "visited already" filter can compare plain strings. */
+function meetingReportLeads_() {
+  const leads = openLeads_().map(function (l) {
+    return {
+      id:        l.id == null ? '' : String(l.id),
+      name:      l.name || '',
+      house:     l.house || '',
+      visitDate: asISODate_(l.visitDate),
+    };
+  });
+  return { ok: true, leads: leads };
+}
+
+/* submitMeetingReport — validate and persist one meeting report onto its lead
+ * row. Payload: { leadId, outcome, companion, note, reporter }. Rejects (never
+ * partially writes) on: unknown/closed leadId, outcome outside
+ * MEETING_REPORT_OUTCOMES, companion free text over 100 chars, note over 2000
+ * chars, or a blank/oversized reporter. On success the five report fields are
+ * written via upsertRowById_ (read-merge-write: the full existing row is
+ * preserved, only the meeting-report fields change) and meetingSeen resets to
+ * '' so Vered's PR-3 view surfaces the new report as unseen. A resubmission
+ * for the same lead overwrites the previous report — last write wins. */
+function submitMeetingReport_(report) {
+  if (!report || typeof report !== 'object') {
+    return { ok: false, error: 'bad_request', message: 'missing report payload' };
+  }
+  const leadId    = report.leadId    == null ? '' : String(report.leadId).trim();
+  const outcome   = report.outcome   == null ? '' : String(report.outcome).trim();
+  const companion = report.companion == null ? '' : String(report.companion).trim();
+  const note      = report.note      == null ? '' : String(report.note);
+  const reporter  = report.reporter  == null ? '' : String(report.reporter).trim();
+
+  if (!leadId) return { ok: false, error: 'bad_lead', message: 'leadId is required' };
+  if (MEETING_REPORT_OUTCOMES.indexOf(outcome) === -1) {
+    return { ok: false, error: 'bad_outcome', message: 'outcome must be one of ' + MEETING_REPORT_OUTCOMES.join('|') };
+  }
+  // Preset key, or the אחר flow: raw free text capped at 100 chars.
+  if (MEETING_COMPANION_KEYS.indexOf(companion) === -1 && companion.length > 100) {
+    return { ok: false, error: 'bad_companion', message: 'companion free text is limited to 100 chars' };
+  }
+  if (note.length > 2000) {
+    return { ok: false, error: 'bad_note', message: 'note is limited to 2000 chars' };
+  }
+  if (!reporter || reporter.length > 100) {
+    return { ok: false, error: 'bad_reporter', message: 'reporter is required (max 100 chars)' };
+  }
+
+  const leads = openLeads_();
+  let lead = null;
+  for (let i = 0; i < leads.length; i++) {
+    if (String(leads[i].id) === leadId) { lead = leads[i]; break; }
+  }
+  if (!lead) return { ok: false, error: 'lead_not_found', message: 'no open lead with that id' };
+
+  // Read-merge-write: upsertRowById_ replaces the ENTIRE row from the object,
+  // so start from the lead as read and change only the report fields.
+  const reportedAt = new Date().toISOString(); // plain-text column ('@'), read back verbatim
+  lead.meetingReportOutcome = outcome;
+  lead.meetingCompanion     = companion;
+  lead.meetingNote          = note;
+  lead.meetingReporter      = reporter;
+  lead.meetingReportedAt    = reportedAt;
+  lead.meetingSeen          = ''; // new/updated report → unseen for Vered (PR 3)
+
+  const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+  upsertRowById_(sh, LEAD_COLUMNS, lead);
+
+  return {
+    ok: true,
+    saved: {
+      leadId: leadId,
+      outcome: outcome,
+      companion: companion,
+      reporter: reporter,
+      reportedAt: reportedAt,
+    },
+  };
 }
 
 /* ===== Payments ===== */

@@ -64,6 +64,32 @@ if (!SESSION_SECRET) {
 const SESSION_COOKIE = 'ezone_session';
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60; // 604800 seconds (7 days), matches the token TTL
 
+/* ===== Meeting-report micro-app config =====
+ *
+ * House managers report meeting outcomes on a standalone mobile page
+ * (/meeting-report) gated by its OWN PIN — deliberately NOT the main-app PIN,
+ * so a manager holding the reporting PIN gains zero access to the dashboard.
+ * Its session cookie is signed with the same SESSION_SECRET but in the
+ * 'meeting-report' token scope (see lib/session.js), so neither cookie can
+ * ever unlock the other's routes. Fail-closed: with MEETING_REPORT_PIN unset
+ * the page and its API return 503, never open access. */
+const MEETING_REPORT_PIN = process.env.MEETING_REPORT_PIN || '';
+if (!MEETING_REPORT_PIN) {
+  console.warn('[config] MEETING_REPORT_PIN is not set — /meeting-report will return 503 until it is configured (fail-closed).');
+}
+
+/* Shared secret injected into every meeting-report Apps Script call (body-only,
+ * mirroring the OUTPATIENT_LEAD_SECRET contract so it never lands in a URL or
+ * log line, and never reaches the browser). The Apps Script side requires the
+ * same value from Script Properties. Fail-closed: unset → the API routes 503. */
+const MEETING_REPORT_SECRET = process.env.MEETING_REPORT_SECRET || '';
+if (!MEETING_REPORT_SECRET) {
+  console.warn('[config] MEETING_REPORT_SECRET is not set — the /api/meeting-report routes will return 503 until it is configured (fail-closed).');
+}
+
+const MR_SESSION_COOKIE = 'mr_session';
+const MR_SESSION_SCOPE = 'meeting-report';
+
 const BUILD_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 app.use(express.json({ limit: '10mb' }));
@@ -257,7 +283,7 @@ function redactSecrets(text, secrets) {
 
 /* The secrets that must never appear in a stored debug record. */
 function debugSecretList() {
-  return [OUTPATIENT_LEAD_SECRET, SESSION_SECRET];
+  return [OUTPATIENT_LEAD_SECRET, SESSION_SECRET, MEETING_REPORT_SECRET];
 }
 
 /* Truncated, redacted preview of an upstream response for the write log. */
@@ -357,16 +383,26 @@ function buildLoadPreviews(data) {
  * data route requires it. No cookie-parser dependency — the one cookie we read
  * is pulled from the raw header. */
 
-/* Extract the session token from a Cookie header, or '' if absent. */
-function parseSessionCookie(cookieHeader) {
+/* Extract a named cookie's value from a Cookie header, or '' if absent. */
+function parseCookieValue(cookieHeader, name) {
   if (typeof cookieHeader !== 'string' || !cookieHeader) return '';
   const parts = cookieHeader.split(';');
-  const prefix = SESSION_COOKIE + '=';
+  const prefix = name + '=';
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i].trim();
     if (p.indexOf(prefix) === 0) return p.slice(prefix.length);
   }
   return '';
+}
+
+/* Extract the session token from a Cookie header, or '' if absent. */
+function parseSessionCookie(cookieHeader) {
+  return parseCookieValue(cookieHeader, SESSION_COOKIE);
+}
+
+/* Extract the meeting-report session token, or '' if absent. */
+function parseMeetingReportCookie(cookieHeader) {
+  return parseCookieValue(cookieHeader, MR_SESSION_COOKIE);
 }
 
 /* Pure auth decision, so every branch is unit-testable with an explicit secret:
@@ -401,6 +437,52 @@ function requireSession(req, res, next) {
   return next();
 }
 
+/* ===== Meeting-report session auth =====
+ *
+ * Same design as the main-app session above, but a SEPARATE cookie
+ * (mr_session) whose token is signed in the 'meeting-report' scope. A valid
+ * ezone_session value pasted into mr_session verifies against a different HMAC
+ * message and fails — and vice versa — so holding one credential never grants
+ * the other surface. */
+
+/* Pure auth decision for the meeting-report session (mirrors sessionAuthStatus):
+ *   'not_configured' → SESSION_SECRET unset (fail-closed → 503)
+ *   'ok'             → a valid, unexpired, meeting-report-scoped cookie
+ *   'unauthorized'   → missing / malformed / tampered / expired / wrong-scope */
+function mrSessionAuthStatus(cookieHeader, secret) {
+  if (typeof secret !== 'string' || secret.length === 0) return 'not_configured';
+  const token = parseMeetingReportCookie(cookieHeader);
+  if (token && verifySessionToken(token, secret, MR_SESSION_SCOPE)) return 'ok';
+  return 'unauthorized';
+}
+
+/* Express middleware guarding the meeting-report API routes. Fail-closed on
+ * BOTH the session secret and the reporting PIN: with either unset the whole
+ * micro-app is closed (503), never open. A missing/invalid/wrong-scope cookie
+ * — including a perfectly valid MAIN-APP cookie — yields 401. */
+function requireMeetingReportSession(req, res, next) {
+  if (!MEETING_REPORT_PIN) {
+    return res.status(503).json({
+      ok: false,
+      error: 'meeting_report_not_configured',
+      message: 'MEETING_REPORT_PIN is not set — the meeting-report routes are closed by design (fail-closed).',
+    });
+  }
+  const status = mrSessionAuthStatus(req.headers.cookie, SESSION_SECRET);
+  if (status === 'not_configured') {
+    return res.status(503).json({
+      ok: false,
+      error: 'session_not_configured',
+      message: 'SESSION_SECRET is not set — the meeting-report routes are closed by design (fail-closed).',
+    });
+  }
+  if (status === 'unauthorized') {
+    noteAuthFailure(req.originalUrl || req.url || req.path);
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  return next();
+}
+
 /* Whether the ORIGINAL client request reached us over HTTPS. Railway terminates
  * TLS and forwards x-forwarded-proto=https; plain-HTTP localhost dev has neither,
  * so the Secure attribute is omitted there (a Secure cookie would never be sent
@@ -413,6 +495,22 @@ function requestIsHttps(req) {
 function buildSessionCookie(token, isHttps) {
   const parts = [
     `${SESSION_COOKIE}=${token}`,
+    'HttpOnly',
+    'SameSite=Strict',
+    'Path=/',
+    `Max-Age=${SESSION_MAX_AGE}`,
+  ];
+  if (isHttps) parts.push('Secure');
+  return parts.join('; ');
+}
+
+/* Build the Set-Cookie value for a meeting-report session token. Same
+ * attributes as the main cookie (HttpOnly, Strict, 7 days); Path stays '/'
+ * because the cookie must ride both /meeting-report and /api/meeting-report/*.
+ * Sending it on main-app routes is harmless — the scope check rejects it there. */
+function buildMeetingReportCookie(token, isHttps) {
+  const parts = [
+    `${MR_SESSION_COOKIE}=${token}`,
     'HttpOnly',
     'SameSite=Strict',
     'Path=/',
@@ -665,6 +763,147 @@ app.post('/api/logout', (req, res) => {
   res.status(200).json({ ok: true });
 });
 
+/* ===== Meeting-report micro-app routes =====
+ *
+ * A standalone mobile page for house managers to report meeting outcomes.
+ * Own PIN (MEETING_REPORT_PIN), own scoped session cookie (mr_session) — a
+ * manager with the reporting PIN can never reach the main dashboard, and a
+ * dashboard session can never call the meeting-report API. */
+
+/* GET /meeting-report — serve the form page to a valid meeting-report session,
+ * the PIN entry page otherwise. Fail-closed 503 when MEETING_REPORT_PIN or
+ * SESSION_SECRET is unset: the page itself is gated, not just the API. */
+function handleMeetingReportPage(req, res) {
+  if (!MEETING_REPORT_PIN || !SESSION_SECRET) {
+    return res.status(503).json({
+      ok: false,
+      error: 'meeting_report_not_configured',
+      message: 'MEETING_REPORT_PIN / SESSION_SECRET is not set — /meeting-report is closed by design (fail-closed).',
+    });
+  }
+  const authed = mrSessionAuthStatus(req.headers.cookie, SESSION_SECRET) === 'ok';
+  const file = authed ? 'meeting-report.html' : 'meeting-report-pin.html';
+  const html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
+    .replace(/__BUILD__/g, BUILD_ID);
+  noCache(res);
+  return res.type('html').send(html);
+}
+app.get('/meeting-report', handleMeetingReportPage);
+
+/* The form's own JS/CSS — served only to a valid meeting-report session (the
+ * form page is gated, so its assets are too; the PIN page is self-contained). */
+app.get('/meeting-report.js', requireMeetingReportSession, sendStatic('meeting-report.js', 'application/javascript'));
+app.get('/meeting-report.css', requireMeetingReportSession, sendStatic('meeting-report.css', 'text/css'));
+
+/* POST /api/meeting-report/verify-pin — mirrors /api/verify-pin (constant-time
+ * compare, per-IP rate limit with its OWN counter map) but checks
+ * MEETING_REPORT_PIN and mints the meeting-report-scoped cookie. Fail-closed:
+ * an unset MEETING_REPORT_PIN makes checkPin reject every attempt. */
+const mrPinAttempts = new Map(); // ip -> { count, resetAt }
+
+app.post('/api/meeting-report/verify-pin', (req, res) => {
+  const ip = pinClientIp(req);
+  const now = Date.now();
+
+  let rec = mrPinAttempts.get(ip);
+  if (!rec || now >= rec.resetAt) {
+    rec = { count: 0, resetAt: now + PIN_RATE_LIMIT.windowMs };
+    mrPinAttempts.set(ip, rec);
+  }
+
+  if (rec.count >= PIN_RATE_LIMIT.max) {
+    const retryAfter = Math.max(1, Math.ceil((rec.resetAt - now) / 1000));
+    res.set('Retry-After', String(retryAfter));
+    return res.status(429).json({ ok: false, error: 'rate_limited', retryAfter });
+  }
+
+  const pin = req.body && req.body.pin;
+  if (checkPin(pin, MEETING_REPORT_PIN)) {
+    mrPinAttempts.delete(ip);
+    /* Same fail-closed shape as the main verify-pin: without SESSION_SECRET the
+     * PIN is accepted but no usable cookie can be minted, so the routes stay
+     * 503 — surfaced to the operator, not to an attacker. */
+    if (SESSION_SECRET) {
+      const token = createSessionToken(SESSION_SECRET, undefined, MR_SESSION_SCOPE);
+      res.set('Set-Cookie', buildMeetingReportCookie(token, requestIsHttps(req)));
+    }
+    return res.status(200).json({ ok: true });
+  }
+
+  rec.count++;
+  return res.status(401).json({ ok: false, error: 'invalid_pin' });
+});
+
+/* GET /api/meeting-report/leads — minimal open-lead list for the picker:
+ * { id, name, house, visitDate } ONLY (no phones, no notes, no billing).
+ * The field whitelist is enforced on the Apps Script side (meetingReportLeads_)
+ * AND re-applied here, so a backend regression can never widen the exposure.
+ * The shared secret rides the POST body (never a URL, never the browser). */
+app.get('/api/meeting-report/leads', requireMeetingReportSession, async (_req, res) => {
+  if (!MEETING_REPORT_SECRET) {
+    return res.status(503).json({ ok: false, error: 'meeting_report_not_configured' });
+  }
+  try {
+    const data = await sheetsPost({ action: 'meetingReportLeads', secret: MEETING_REPORT_SECRET });
+    if (!data || data.ok !== true || !Array.isArray(data.leads)) {
+      const preview = redactSecrets(responsePreview(data, 300), [MEETING_REPORT_SECRET]);
+      console.error('[meeting-report leads] backend refused:', preview);
+      return res.status(502).json({ ok: false, error: 'backend_refused' });
+    }
+    const leads = data.leads.map((l) => ({
+      id:        l && l.id        != null ? String(l.id)        : '',
+      name:      l && l.name      != null ? String(l.name)      : '',
+      house:     l && l.house     != null ? String(l.house)     : '',
+      visitDate: l && l.visitDate != null ? String(l.visitDate) : '',
+    }));
+    res.json({ ok: true, leads });
+  } catch (err) {
+    console.error('[meeting-report leads] error:', redactSecrets(err.message, [MEETING_REPORT_SECRET]));
+    res.status(502).json({ ok: false, error: 'sheets_unreachable' });
+  }
+});
+
+/* POST /api/meeting-report/submit — forward the report to Apps Script with the
+ * shared secret attached server-side. Validation is authoritative on the Apps
+ * Script side (submitMeetingReport_); the browser only ever sees ok/error. */
+app.post('/api/meeting-report/submit', requireMeetingReportSession, async (req, res) => {
+  if (!MEETING_REPORT_SECRET) {
+    return res.status(503).json({ ok: false, error: 'meeting_report_not_configured' });
+  }
+  const b = req.body || {};
+  const report = {
+    leadId:    b.leadId    == null ? '' : String(b.leadId),
+    outcome:   b.outcome   == null ? '' : String(b.outcome),
+    companion: b.companion == null ? '' : String(b.companion),
+    note:      b.note      == null ? '' : String(b.note),
+    reporter:  b.reporter  == null ? '' : String(b.reporter),
+  };
+  try {
+    const data = await sheetsPost({ action: 'submitMeetingReport', secret: MEETING_REPORT_SECRET, report });
+    recordWrite({
+      at: new Date().toISOString(),
+      route: '/api/meeting-report/submit',
+      action: 'submitMeetingReport',
+      auth: 'ok',
+      httpStatus: 200,
+      okFromBackend: !!(data && data.ok === true),
+      responsePreview: redactSecrets(responsePreview(data, 1000), [MEETING_REPORT_SECRET]),
+    });
+    res.json(data);
+  } catch (err) {
+    console.error('[meeting-report submit] error:', redactSecrets(err.message, [MEETING_REPORT_SECRET]));
+    recordWrite({
+      at: new Date().toISOString(),
+      route: '/api/meeting-report/submit',
+      action: 'submitMeetingReport',
+      auth: 'ok',
+      httpStatus: 502,
+      error: redactSecrets(err.message, debugSecretList().concat([MEETING_REPORT_SECRET])),
+    });
+    res.status(502).json({ ok: false, error: 'sheets_unreachable' });
+  }
+});
+
 app.get('/healthz', (_, res) => res.json({ ok: true }));
 
 /* 404 fallback — logs and returns JSON so an unexpected request (e.g.
@@ -690,6 +929,12 @@ module.exports = {
   requireSession,
   buildSessionCookie,
   requestIsHttps,
+  // Meeting-report micro-app (see test/meeting-report-server.test.js).
+  parseMeetingReportCookie,
+  mrSessionAuthStatus,
+  requireMeetingReportSession,
+  buildMeetingReportCookie,
+  handleMeetingReportPage,
   // Write & handoff diagnostics (in-memory state exposed for the test harness;
   // the running server mutates the same objects the tests inspect).
   recordWrite,

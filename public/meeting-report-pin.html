@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="robots" content="noindex" />
+  <title>דיווח פגישה — E-Zone</title>
+  <!-- Self-contained PIN entry page for /meeting-report (mirrors the main
+       app's #pin-screen pattern, but the PIN here is MEETING_REPORT_PIN and a
+       correct entry mints the meeting-report-scoped mr_session cookie — it
+       grants NOTHING on the main dashboard). Inline CSS/JS on purpose: the
+       gated form assets must not be referenced before a session exists. -->
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      font-family: "Heebo", "Segoe UI", "Arial Hebrew", Arial, sans-serif;
+      direction: rtl; min-height: 100vh; color: #f1f5ff;
+      background:
+        radial-gradient(700px 500px at 30% 30%, rgba(91,139,255,.35) 0%, transparent 70%),
+        radial-gradient(800px 600px at 80% 80%, rgba(167,121,255,.30) 0%, transparent 70%),
+        linear-gradient(135deg, #0a0f24 0%, #161e44 100%);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .pin-box {
+      background: linear-gradient(180deg, #182142 0%, #1f2a52 100%);
+      padding: 40px 44px;
+      border: 1px solid #3b4d8a;
+      border-radius: 20px;
+      width: 340px;
+      max-width: calc(100vw - 24px);
+      text-align: center;
+      box-shadow: 0 14px 40px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.04) inset;
+    }
+    .pin-box h1 {
+      margin: 0 0 8px; font-size: 28px; letter-spacing: 2px;
+      background: linear-gradient(90deg, #5b8bff, #a779ff);
+      -webkit-background-clip: text; background-clip: text;
+      color: transparent; font-weight: 800;
+    }
+    .pin-box p { margin: 0 0 22px; color: #98a3c7; font-size: 14px; }
+    .pin-box input {
+      width: 100%; text-align: center; font-size: 26px;
+      letter-spacing: 12px; padding: 14px; margin-bottom: 14px;
+      background: #0f172e; border: 1px solid #2c3a6b; border-radius: 10px;
+      color: #f1f5ff; outline: none; font-family: inherit;
+    }
+    .pin-box input:focus { border-color: #5b8bff; box-shadow: 0 0 0 3px rgba(91,139,255,.45); }
+    .pin-box button {
+      width: 100%; padding: 12px; font-family: inherit;
+      font-size: 15px; font-weight: 600; border: none; border-radius: 10px;
+      background: linear-gradient(180deg, #5b8bff 0%, #3a6dff 100%);
+      color: #fff; cursor: pointer;
+      box-shadow: 0 6px 16px rgba(91,139,255,.45);
+    }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    .error-msg { color: #ff4d5e; margin-top: 12px; font-size: 14px; font-weight: 600; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="pin-box">
+    <h1>דיווח פגישה</h1>
+    <p>הזינו את קוד הדיווח</p>
+    <input type="password" id="pin-input" inputmode="numeric" maxlength="6" autocomplete="off" />
+    <button id="pin-submit">כניסה</button>
+    <div id="pin-error" class="error-msg hidden">קוד שגוי</div>
+  </div>
+  <script>
+    (function () {
+      var input = document.getElementById('pin-input');
+      var btn = document.getElementById('pin-submit');
+      var err = document.getElementById('pin-error');
+      function submit() {
+        var pin = input.value.trim();
+        if (!pin) return;
+        btn.disabled = true;
+        err.classList.add('hidden');
+        fetch('/api/meeting-report/verify-pin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin: pin }),
+        }).then(function (res) {
+          if (res.ok) { location.reload(); return; }
+          err.textContent = res.status === 429 ? 'יותר מדי ניסיונות — נסו שוב מאוחר יותר' : 'קוד שגוי';
+          err.classList.remove('hidden');
+          btn.disabled = false;
+          input.value = '';
+          input.focus();
+        }).catch(function () {
+          err.textContent = 'שגיאת רשת — נסו שוב';
+          err.classList.remove('hidden');
+          btn.disabled = false;
+        });
+      }
+      btn.addEventListener('click', submit);
+      input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(); });
+      input.focus();
+    })();
+  </script>
+</body>
+</html>
