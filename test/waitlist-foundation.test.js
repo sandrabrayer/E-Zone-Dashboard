@@ -142,16 +142,20 @@ const { app } = loadApp();
 
 /* ===== Backend schema ===== */
 
-test('LEAD_COLUMNS appends waitlistedAt LAST, immediately after billingPhone', () => {
+test('LEAD_COLUMNS appends waitlistedAt immediately after billingPhone', () => {
   const cols = arr(code.LEAD_COLUMNS);
-  assert.strictEqual(cols[cols.length - 1], 'waitlistedAt',
-    'waitlistedAt must be the terminal column (readSheet_ maps by position — append only)');
-  assert.strictEqual(cols[cols.length - 2], 'billingPhone',
+  // waitlistedAt sits immediately after billingPhone. Later append-only
+  // additions (the meeting-report fields) extend the array further, so this
+  // asserts waitlistedAt's position RELATIVE to billingPhone — not that it is
+  // the terminal column (mirrors the meetingWith-after-assignedTo fix).
+  const wlIdx = cols.indexOf('waitlistedAt');
+  assert.ok(wlIdx > 0, 'waitlistedAt must be present');
+  assert.strictEqual(cols[wlIdx - 1], 'billingPhone',
     'waitlistedAt must sit immediately after billingPhone (no mid-array insert)');
   assert.strictEqual(cols.filter((c) => c === 'waitlistedAt').length, 1,
     'waitlistedAt must appear exactly once');
   // The pre-existing prefix is untouched, in its exact historical order.
-  assert.deepStrictEqual(cols.slice(0, -1), [
+  assert.deepStrictEqual(cols.slice(0, wlIdx), [
     'id', 'name', 'phone', 'house', 'source', 'note',
     'stage', 'visitDate', 'visitTime', 'entryDate', 'advance', 'created',
     'assignedTo', 'meetingWith', 'meetingOutcome',
@@ -169,16 +173,17 @@ test('derived irrelevant/removed schemas inherit waitlistedAt', () => {
 test('getOrCreateSheet_ appends the missing waitlistedAt header and text-forces the column', () => {
   const { code, sandbox } = loadCode();
   const LC = arr(code.LEAD_COLUMNS);
+  const wlIdx = LC.indexOf('waitlistedAt');
   // Simulate a pre-existing sheet created BEFORE this PR: header row lacks
-  // the new terminal column.
-  const legacyHeader = LC.slice(0, -1);
+  // waitlistedAt and everything appended after it (the meeting-report fields).
+  const legacyHeader = LC.slice(0, wlIdx);
   const row = legacyHeader.map(() => ''); row[0] = 'L1';
   sandbox.__leadsSheet = fakeSheet(legacyHeader, [row]);
 
   const sh = code.ensure();
 
-  // Non-destructive header extension: waitlistedAt appended in the last slot.
-  assert.strictEqual(sh.grid[0][LC.length - 1], 'waitlistedAt',
+  // Non-destructive header extension: waitlistedAt appended in its slot.
+  assert.strictEqual(sh.grid[0][wlIdx], 'waitlistedAt',
     'missing header must be appended non-destructively');
   assert.strictEqual(sh.grid[1][0], 'L1', 'existing data rows untouched');
   // The whole waitlistedAt column is forced to plain text ('@') so Sheets can

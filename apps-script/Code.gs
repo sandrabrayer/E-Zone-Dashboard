@@ -206,7 +206,41 @@ const LEAD_COLUMNS = [
    * no UI yet; the field flows through save/load untouched. Mirrors the
    * meetingOutcome append. Flows automatically into IRRELEVANT_LEAD_COLUMNS /
    * REMOVED_LEAD_COLUMNS below, which derive from LEAD_COLUMNS via .concat(). */
-  'waitlistedAt'
+  'waitlistedAt',
+  /* Meeting-report fields (foundation) — house managers report what happened
+   * in a lead meeting (today reported only in a WhatsApp group). Distinct from
+   * the meetings-board `meetingOutcome` above, which is a separate live feature
+   * with its own key set; hence the distinct meetingReportOutcome name.
+   *   meetingReportOutcome — stable key: 'advancing' | 'undecided' | 'not_fit'
+   *                          | 'no_show' ('' = no report yet)
+   *   meetingCompanion     — stable key: 'mother' | 'father' | 'parents' |
+   *                          'partner' | 'sibling' | 'friend' | 'alone' |
+   *                          'other'; when the companion doesn't match a preset
+   *                          key the RAW free text is stored here as-is (no
+   *                          'other:' prefix) and rendered verbatim
+   *   meetingNote          — free text (what was discussed)
+   *   meetingReporter      — house manager name (from dropdown)
+   *   meetingReportedAt    — ISO timestamp string; plain text, NOT a Sheets
+   *                          date — the column is forced to '@' at sheet-ensure
+   *                          time (same guard as waitlistedAt) so Sheets never
+   *                          coerces it into a Date cell
+   *   meetingSeen          — '' or '1' (Vered's mark-seen flag; used in PR 3);
+   *                          also text-forced so '1' never coerces to number 1
+   * APPEND ONLY, in this exact order: readSheet_ maps cells to keys by
+   * POSITION, so these must stay last and nothing above them may be reordered
+   * or inserted mid-array. Pre-existing rows have no such columns and stay
+   * blank (getOrCreateSheet_ appends the missing headers non-destructively,
+   * objectToRow_ defaults missing keys to '', and normalizeLead reads each via
+   * pickField defaulting to ''). Foundation only — no UI yet; the fields flow
+   * through save/load untouched. UI ships in PR 2 (manager form) and PR 3
+   * (Vered's view). Flow automatically into IRRELEVANT_LEAD_COLUMNS /
+   * REMOVED_LEAD_COLUMNS below, which derive from LEAD_COLUMNS via .concat(). */
+  'meetingReportOutcome',
+  'meetingCompanion',
+  'meetingNote',
+  'meetingReporter',
+  'meetingReportedAt',
+  'meetingSeen'
 ];
 
 /* Irrelevant-leads sheet mirrors LEAD_COLUMNS plus two metadata fields:
@@ -412,7 +446,11 @@ function getOrCreateSheet_(name, headers) {
   // (the coercion that drifted values through the getValues→UTC round-trip).
   // Done once at sheet-ensure time rather than per-write. Idempotent.
   if (name === LEADS_SHEET) {
-    forceColumnsText_(sh, LEAD_COLUMNS, ['visitDate', 'visitTime', 'waitlistedAt']);
+    // meetingReportedAt: ISO timestamp that must survive as a string (same
+    // guard as waitlistedAt). meetingSeen: '' | '1' flag — text-forced so
+    // Sheets never coerces '1' into the number 1.
+    forceColumnsText_(sh, LEAD_COLUMNS,
+      ['visitDate', 'visitTime', 'waitlistedAt', 'meetingReportedAt', 'meetingSeen']);
   }
   // BillingOverrides: force month + amount to plain text for the same reason —
   // "2026-08" must not coerce into a date and the amount must not pick up a

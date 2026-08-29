@@ -57,6 +57,8 @@ const LEAD_COLUMNS = [
   'assignedTo', 'meetingWith', 'meetingOutcome',
   'contactName', 'contactPhone', 'contactRelation', 'billingPhone',
   'waitlistedAt',
+  'meetingReportOutcome', 'meetingCompanion', 'meetingNote',
+  'meetingReporter', 'meetingReportedAt', 'meetingSeen',
 ];
 
 /* Duplicated from PATIENT_COLUMNS in apps-script/Code.gs (keep in sync).
