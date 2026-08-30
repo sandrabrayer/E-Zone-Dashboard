@@ -124,6 +124,33 @@ function mrWhatsAppLink(text) {
   return 'https://wa.me/?text=' + encodeURIComponent(String(text == null ? '' : text));
 }
 
+/* Hebrew error text for a failed submit, keyed by the backend's stable error
+ * code (submitMeetingReport_ in Code.gs / the proxy routes). Surfacing the
+ * specific reason — with the raw code appended for a phone screenshot — is
+ * what keeps a backend-level refusal VISIBLE at the form: the confirmation
+ * screen renders only on { ok: true }, never on a 200 that carries an error. */
+var MR_SUBMIT_ERROR_TEXTS = {
+  bad_lead:       'נא לבחור ליד',
+  bad_outcome:    'לא נבחרה תוצאה תקינה',
+  bad_companion:  'הטקסט בשדה "הגיע/ה עם" ארוך מדי (עד 100 תווים)',
+  bad_note:       'הפירוט ארוך מדי (עד 2000 תווים)',
+  bad_reporter:   'נא לבחור מדווח/ת',
+  lead_not_found: 'הליד כבר לא ברשימת הלידים הפתוחים — רעננו את הדף ונסו שוב',
+  unauthorized:   'השרת דחה את הדיווח (בעיית הרשאה) — פנו לסנדרה',
+  meeting_report_not_configured: 'השרת אינו מוגדר לדיווחי פגישות — פנו לסנדרה',
+  sheets_unreachable:  'אין חיבור לגיליון — נסו שוב בעוד רגע',
+  write_verify_failed: 'הדיווח לא נשמר בגיליון — נסו שוב, ואם זה חוזר פנו לסנדרה',
+  exception:      'שגיאה בשרת הנתונים — נסו שוב, ואם זה חוזר פנו לסנדרה',
+};
+
+function mrSubmitErrorText(code) {
+  var c = String(code == null ? '' : code);
+  var known = MR_SUBMIT_ERROR_TEXTS[c];
+  if (known) return known + ' (' + c + ')';
+  if (c && c !== 'submit_failed') return 'השליחה נכשלה — הדיווח לא נשמר (' + c + ')';
+  return 'השליחה נכשלה — הדיווח לא נשמר, נסו שוב';
+}
+
 function mrEscapeHtml(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -145,6 +172,8 @@ if (typeof module !== 'undefined' && module.exports) {
     mrWhatsAppMessage: mrWhatsAppMessage,
     mrWhatsAppLink: mrWhatsAppLink,
     mrEscapeHtml: mrEscapeHtml,
+    MR_SUBMIT_ERROR_TEXTS: MR_SUBMIT_ERROR_TEXTS,
+    mrSubmitErrorText: mrSubmitErrorText,
   };
 }
 
@@ -290,8 +319,8 @@ if (typeof module !== 'undefined' && module.exports) {
           note: note,
           reporter: reporter,
         });
-      }).catch(function () {
-        showError('השליחה נכשלה — נסו שוב');
+      }).catch(function (err) {
+        showError(mrSubmitErrorText(err && err.message));
       });
     });
   }

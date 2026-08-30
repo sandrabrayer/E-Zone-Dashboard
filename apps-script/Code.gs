@@ -734,6 +734,7 @@ function mergeLeads_(leads) {
   const newRows = leads.map(function (l) {
     const merged = {};
     for (let k in l) merged[k] = l[k];
+    const existing = existingById[String(merged.id || '')];
 
     const incomingCreated = merged.created;
     const isMissing = (incomingCreated === undefined ||
@@ -741,7 +742,6 @@ function mergeLeads_(leads) {
                       incomingCreated === '');
 
     if (isMissing) {
-      const existing = existingById[String(merged.id || '')];
       merged.created = existing
         ? asISODate_(existing[createdColIdx])  // update path → preserve
         : today;                               // insert path → stamp today
@@ -751,6 +751,8 @@ function mergeLeads_(leads) {
       // the dashboard writes.
       merged.created = asISODate_(incomingCreated);
     }
+
+    preserveNewerMeetingReport_(merged, existing);
 
     return objectToRow_(merged, LEAD_COLUMNS);
   });
@@ -781,6 +783,66 @@ function mergeLeads_(leads) {
     });
     sh.getRange(2, 1, finalRows.length, LEAD_COLUMNS.length).setValues(finalRows);
   }
+}
+
+/* The six lead columns owned by the manager reporting form (submitMeetingReport_
+ * writes five of them + resets meetingSeen). mergeLeads_ must never let a
+ * dashboard payload regress them — see preserveNewerMeetingReport_. */
+const MEETING_REPORT_LEAD_FIELDS = [
+  'meetingReportOutcome',
+  'meetingCompanion',
+  'meetingNote',
+  'meetingReporter',
+  'meetingReportedAt',
+  'meetingSeen',
+];
+
+/* A timestamp cell as a comparable string: '' when empty, ISO for a Date cell
+ * (legacy coercion), the raw string otherwise. ISO strings from
+ * new Date().toISOString() compare correctly as plain strings. */
+function asTimestampText_(v) {
+  if (v === undefined || v === null || v === '') return '';
+  if (Object.prototype.toString.call(v) === '[object Date]') return v.toISOString();
+  return String(v);
+}
+
+/* Guard against the meeting-report lost-update clobber: the manager form writes
+ * the meetingReport* fields OUT-OF-BAND (submitMeetingReport_ → upsertRowById_),
+ * while every dashboard save (saveAll → mergeLeads_) rewrites each lead row
+ * wholesale from the CLIENT's in-memory copy — which is frozen at page-load
+ * time. A tab loaded before a manager reported therefore carried '' in all six
+ * fields and erased the report on its next save (any inline edit, the
+ * meetingWith autosave, auto-promote). The rule, keyed on meetingReportedAt
+ * (only the backend ever stamps it):
+ *   - sheet has a report and the incoming lead's reportedAt is OLDER (or
+ *     empty) → the client predates the report: keep all six fields from the
+ *     sheet, take the client's copy for everything else;
+ *   - same reportedAt → same report: the client's copy stands (this is how
+ *     Vered's mark-seen persists meetingSeen='1'), except meetingSeen is
+ *     sticky — once the sheet says '1' for THIS report, a peer tab that
+ *     hasn't seen the click can't flip it back to unseen. Only a manager
+ *     resubmission (a NEWER reportedAt via submitMeetingReport_) resets it;
+ *   - incoming NEWER than the sheet → client wins (can only mean the sheet
+ *     lost data the client still holds — the write restores it).
+ * Mutates and returns `merged`. No-op for new leads (no existing row). */
+function preserveNewerMeetingReport_(merged, existingRow) {
+  if (!existingRow) return merged;
+  const atIdx = LEAD_COLUMNS.indexOf('meetingReportedAt');
+  if (atIdx < 0) return merged;
+  const sheetAt = asTimestampText_(existingRow[atIdx]);
+  if (!sheetAt) return merged; // no report on the sheet — nothing to protect
+  const clientAt = asTimestampText_(merged.meetingReportedAt);
+  if (clientAt < sheetAt) {
+    MEETING_REPORT_LEAD_FIELDS.forEach(function (f) {
+      merged[f] = existingRow[LEAD_COLUMNS.indexOf(f)];
+    });
+  } else if (clientAt === sheetAt) {
+    const seenIdx = LEAD_COLUMNS.indexOf('meetingSeen');
+    if (String(existingRow[seenIdx] == null ? '' : existingRow[seenIdx]) === '1') {
+      merged.meetingSeen = '1';
+    }
+  }
+  return merged;
 }
 
 /**
@@ -1373,6 +1435,23 @@ function submitMeetingReport_(report) {
 
   const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
   upsertRowById_(sh, LEAD_COLUMNS, lead);
+
+  // Read-back verification: a confirmation screen must mean the report is ON
+  // THE SHEET, not merely that no exception was thrown. Re-read the row and
+  // require the exact reportedAt just stamped; anything else is a silent write
+  // failure surfaced as an explicit error the form shows the manager.
+  const after = readSheet_(sh, LEAD_COLUMNS);
+  let persisted = null;
+  for (let j = 0; j < after.length; j++) {
+    if (String(after[j].id) === leadId) { persisted = after[j]; break; }
+  }
+  if (!persisted || asTimestampText_(persisted.meetingReportedAt) !== reportedAt) {
+    return {
+      ok: false,
+      error: 'write_verify_failed',
+      message: 'the report did not land on the Leads sheet — nothing was saved',
+    };
+  }
 
   return {
     ok: true,
