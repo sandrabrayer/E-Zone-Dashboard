@@ -14,6 +14,9 @@
  *   GET  ?action=getAdmittedRoster&secret=...    → {ok, patients:[{sourceApp,name,phone,house}]}
  *                                                 (cross-app, read-only: currently-admitted
  *                                                  patients with phone recovered via fromLead)
+ *   POST action=deletePatientRow&patient=...     → {ok, deleted, key}
+ *                                                 (permanent patient-row delete by identity
+ *                                                  key; tombstones BEFORE deleting)
  *
  * Merge semantics (important for the split-save path in server.js):
  *   - leads present and non-empty → upsert each lead by id; leads whose id is
@@ -21,7 +24,13 @@
  *     per-houseId behavior and lets the server chunk leads into batches.
  *   - leads missing, empty string, null, or empty array → leave Leads untouched
  *   - patients: for every houseId key present in the payload, that house's
- *     rows are replaced; houses NOT present in the payload are untouched
+ *     rows are MERGED by the identity triple houseId::name::entryDate
+ *     (patientKey_): matched rows are replaced, new rows appended, and sheet
+ *     rows ABSENT from the payload are KEPT — never dropped by omission, so a
+ *     stale tab can no longer clobber rows it never loaded. Every kept-but-
+ *     omitted row is echoed per house in the response's `preserved` map and
+ *     audited to the PatientsTombstones sheet. Houses NOT present in the
+ *     payload are untouched.
  *   - patients missing / empty object → leave the Patients sheet untouched
  *
  * Note: leads cannot be deleted through saveAll (only marked irrelevant via
@@ -38,6 +47,12 @@ const BILLING_OVERRIDES_SHEET = 'BillingOverrides';
 const IRRELEVANT_LEADS_SHEET = 'לידים לא רלוונטיים';
 const REMOVED_LEADS_SHEET    = 'לידים שהוסרו';
 const DISCHARGED_PATIENTS_SHEET = 'מטופלים משוחררים';
+/* Append-only audit of Patients rows that a saveAll payload OMITTED while
+ * writing their house (merge-don't-drop). The rows are KEPT on the Patients
+ * sheet by replaceHousePatients_'s merge; each is also copied here so a stale
+ * save leaves a durable, queryable trace independent of Sheets version
+ * history. Never read by the app; recovery/inspection is manual. */
+const PATIENTS_TOMBSTONES_SHEET = 'PatientsTombstones';
 
 /* ===== Bonuses module sheets =====
  *
@@ -269,6 +284,40 @@ const PATIENT_COLUMNS = [
   'status', 'fromLead', 'exitDate', 'source', 'notes'
 ];
 
+/* PatientsTombstones columns: a full patient row snapshot + audit metadata.
+ * OWN literal list, deliberately NOT derived from PATIENT_COLUMNS via concat —
+ * a future PATIENT_COLUMNS append must not silently shift these audit columns;
+ * the write maps values by name through objectToRow_, so the two lists may
+ * even diverge safely. Metadata:
+ *   droppedAt     — ISO timestamp of the save whose payload omitted the row
+ *                   (text-forced at sheet-ensure time, same guard as
+ *                   waitlistedAt, so Sheets never coerces it to a Date cell)
+ *   reason        — why the row was recorded:
+ *                   'saveAll-omitted-preserved' — the merge KEPT the row on
+ *                   the Patients sheet; this entry is the audit trace of the
+ *                   stale save that omitted it;
+ *                   'user-delete' — the row was PERMANENTLY deleted via the
+ *                   dedicated deletePatientRow action; this entry is the
+ *                   recovery copy (written before the delete, fail-hard)
+ *   savedByAction — the endpoint that produced the entry ('saveAll' /
+ *                   'deletePatientRow') */
+const PATIENT_TOMBSTONE_COLUMNS = [
+  'houseId', 'name', 'date', 'pay', 'adv',
+  'status', 'fromLead', 'exitDate', 'source', 'notes',
+  'droppedAt', 'reason', 'savedByAction'
+];
+
+/* How long a 'user-delete' tombstone SUPPRESSES the deleted identity key in
+ * the saveAll merge (see recentUserDeleteKeys_): a stale tab still carrying
+ * the deleted patient would otherwise re-APPEND it on its next save. The
+ * Patients sheet has no per-row edit timestamp to compare against, so the
+ * suppression is time-bounded instead: within this window a payload row whose
+ * key matches the tombstone (and is no longer on the sheet) is dropped; after
+ * it, a deliberate re-add of the identical houseId+name+entryDate works
+ * again. 24h is generous — the visibilitychange reload (app.js) refreshes any
+ * refocused tab, so a tab can hardly stay stale for a day AND save. */
+const USER_DELETE_SUPPRESS_MS = 24 * 60 * 60 * 1000;
+
 /* Phase 2e-1 — discharged-patients audit sheet. Mirrors IRRELEVANT_LEAD_COLUMNS
  * shape: base columns + discharge-time metadata. `id` is prepended so
  * upsertRowById_ has a key to dedupe by (Patients sheet has no id column;
@@ -356,6 +405,13 @@ function handle_(params) {
     }
     if (action === 'removeLead') {
       const res = removeLead_(parseJsonParam_(params.lead));
+      refreshDigestBestEffort_();
+      return jsonOut_(res);
+    }
+    if (action === 'deletePatientRow') {
+      const res = deletePatientRow_(parseJsonParam_(params.patient));
+      // A permanent delete drops a resident out of the active population.
+      // Fail-soft, mirroring dischargePatient.
       refreshDigestBestEffort_();
       return jsonOut_(res);
     }
@@ -476,6 +532,11 @@ function getOrCreateSheet_(name, headers) {
   if (name === BILLING_OVERRIDES_SHEET) {
     forceColumnsText_(sh, BILLING_OVERRIDE_COLUMNS, ['month', 'amount']);
   }
+  // PatientsTombstones: entry date and droppedAt must survive as plain strings
+  // (same coercion class as the Leads visitDate/waitlistedAt guards).
+  if (name === PATIENTS_TOMBSTONES_SHEET) {
+    forceColumnsText_(sh, PATIENT_TOMBSTONE_COLUMNS, ['date', 'droppedAt']);
+  }
   return sh;
 }
 
@@ -516,13 +577,6 @@ function objectToRow_(obj, columns) {
     row[i] = (v === undefined || v === null) ? '' : v;
   }
   return row;
-}
-
-function clearBody_(sh, columnCount) {
-  const lastRow = sh.getLastRow();
-  if (lastRow > 1) {
-    sh.getRange(2, 1, lastRow - 1, columnCount).clearContent();
-  }
 }
 
 /* Today as YYYY-MM-DD in the spreadsheet's timezone — Israel rolls past
@@ -681,17 +735,39 @@ function saveAll_(leads, patients) {
     // `written` echoes, per house, how many patient rows were actually written
     // — backend truth the server-side diagnostics compare against the counts
     // the client SENT, to catch a silent serialize/houseId drop.
+    // `preserved` lists, per house, the identity keys of sheet rows the
+    // payload OMITTED but the merge KEPT (merge-don't-drop): non-empty means
+    // the saving client's in-memory state is stale and it should reload
+    // instead of trusting its copy. Houses with nothing preserved are absent.
+    // `deletedSuppressed` lists, per house, payload rows the merge DROPPED
+    // because their identity key carries a fresh 'user-delete' tombstone — a
+    // stale tab trying to resurrect a permanently deleted patient. Note these
+    // rows are excluded from `written`, so the server diagnostics'
+    // sent-vs-written comparison flags such a save; deletedSuppressed in the
+    // recorded response preview is the explanation.
     const written = {};
+    const preserved = {};
+    const deletedSuppressed = {};
     if (patients && typeof patients === 'object' && !Array.isArray(patients)) {
       const houseIds = Object.keys(patients);
+      const userDeleteKeys = houseIds.length > 0 ? recentUserDeleteKeys_() : {};
       for (let i = 0; i < houseIds.length; i++) {
         const hid = houseIds[i];
         const arr = patients[hid];
-        written[hid] = replaceHousePatients_(hid, Array.isArray(arr) ? arr : []);
+        const res = replaceHousePatients_(hid, Array.isArray(arr) ? arr : [], userDeleteKeys);
+        written[hid] = res.written;
+        if (res.preservedKeys.length > 0) preserved[hid] = res.preservedKeys;
+        if (res.suppressedKeys.length > 0) deletedSuppressed[hid] = res.suppressedKeys;
       }
     }
 
-    return { ok: true, written: written, reportConflicts: reportConflicts };
+    return {
+      ok: true,
+      written: written,
+      preserved: preserved,
+      deletedSuppressed: deletedSuppressed,
+      reportConflicts: reportConflicts,
+    };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
@@ -797,13 +873,20 @@ function mergeLeads_(leads) {
     return row;
   });
 
-  clearBody_(sh, LEAD_COLUMNS.length);
+  // WRITE-THEN-TRIM (not clear-then-write): write the final row set first,
+  // then clear only the surplus tail rows. A crash between the two steps can
+  // leave duplicate tail rows (visible, fixable) but can no longer leave the
+  // Leads sheet empty the way an exception between a body-clear and the
+  // rewrite could.
   if (finalRows.length > 0) {
     const textColIdxs = dateColIdxs.concat(vTimeIdx >= 0 ? [vTimeIdx] : []);
     textColIdxs.forEach(function (i) {
       sh.getRange(2, i + 1, finalRows.length, 1).setNumberFormat('@');
     });
     sh.getRange(2, 1, finalRows.length, LEAD_COLUMNS.length).setValues(finalRows);
+  }
+  if (lastRow > finalRows.length + 1) {
+    sh.getRange(finalRows.length + 2, 1, lastRow - finalRows.length - 1, LEAD_COLUMNS.length).clearContent();
   }
 
   return reportConflicts;
@@ -872,40 +955,154 @@ function preserveNewerMeetingReport_(merged, existingRow) {
   return merged;
 }
 
+/* Identity key for a Patients row. The sheet has no id column, so this triple
+ * IS row identity — the same key the client's matchActivePatientIndex, the
+ * discharge heal, and digestPatientKey_ already rely on. `date` goes through
+ * asISODate_ so a legacy Date-typed cell and the client's 'YYYY-MM-DD' string
+ * compare equal. */
+function patientKey_(houseId, name, date) {
+  return String(houseId == null ? '' : houseId).trim() + '::' +
+         String(name    == null ? '' : name).trim()    + '::' +
+         asISODate_(date);
+}
+
+/* Low-level PatientsTombstones writer: snapshot each raw patient row + audit
+ * metadata. THROWS on failure — each caller decides whether that is fatal.
+ * Callers run inside a script lock. */
+function appendPatientTombstones_(rows, reason, savedByAction) {
+  if (!rows || rows.length === 0) return;
+  const sh = getOrCreateSheet_(PATIENTS_TOMBSTONES_SHEET, PATIENT_TOMBSTONE_COLUMNS);
+  const nowIso = new Date().toISOString();
+  const out = rows.map(function (row) {
+    const obj = {};
+    for (let i = 0; i < PATIENT_COLUMNS.length; i++) obj[PATIENT_COLUMNS[i]] = row[i];
+    obj.date          = asISODate_(obj.date);
+    obj.droppedAt     = nowIso;
+    obj.reason        = reason;
+    obj.savedByAction = savedByAction;
+    return objectToRow_(obj, PATIENT_TOMBSTONE_COLUMNS);
+  });
+  // Write at the next row (not appendRow) so the whole-column text formats
+  // getOrCreateSheet_ applied are already in place when the values land.
+  const target = sh.getLastRow() + 1;
+  sh.getRange(target, 1, out.length, PATIENT_TOMBSTONE_COLUMNS.length).setValues(out);
+}
+
+/* Copy omitted-but-kept patient rows to the PatientsTombstones audit sheet.
+ * FAIL-SOFT by contract: the rows are already being KEPT on the Patients
+ * sheet by the merge, so an audit failure must never block or fail the save.
+ * (Contrast deletePatientRow_, where the tombstone is fail-HARD because the
+ * row is about to be destroyed.) Only caller is replaceHousePatients_. */
+function tombstonePreservedPatients_(rows, savedByAction) {
+  try {
+    appendPatientTombstones_(rows, 'saveAll-omitted-preserved', savedByAction || 'saveAll');
+  } catch (err) {
+    try { console.warn('[tombstone] audit write skipped: ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
+  }
+}
+
 /**
- * Replace only the patients whose houseId matches `houseId`. Rows for other
- * houses are preserved untouched. Returns the number of rows written for this
- * house (backend truth for the saveAll_ `written` echo). Backward-compatible:
- * the only pre-existing caller ignored the return value.
+ * MERGE the payload's patients into the house's rows — merge-don't-drop.
+ * Rows for other houses are untouched, exactly as before. Within the house:
+ *   - payload row matches a sheet row by patientKey_ → the sheet row is
+ *     replaced by the payload row (field edits, status flips, exitDate all
+ *     behave as they always did — per-row last-writer-wins);
+ *   - payload row matches nothing → appended (admission);
+ *   - sheet row ABSENT from the payload → KEPT. Genuine deletion goes through
+ *     the dedicated deletePatientRow action (discharge is a status flip), so
+ *     a saveAll omission is never a legitimate deletion — it is a stale tab
+ *     that loaded before the row existed. Kept rows are copied to the
+ *     PatientsTombstones audit sheet (fail-soft, before the rewrite) and
+ *     their keys returned so the response can tell the client to resync.
+ * Accepted trade-off (documented, locked by test): editing a patient's name
+ * or entry date changes the identity key, so the old row is preserved and the
+ * edit lands as a new row — a visible, mergeable duplicate instead of silent
+ * loss. Duplicate keys consume matches one payload row per sheet row, in
+ * sheet order.
+ *
+ * `suppressedDeleteKeys` (optional, from recentUserDeleteKeys_): identity
+ * keys with a FRESH 'user-delete' tombstone. A payload row whose key is in
+ * that set and matches no current sheet row is DROPPED, not appended — it is
+ * a stale tab resurrecting a permanently deleted patient. A key that IS back
+ * on the sheet (deliberately re-added) is matched normally, never dropped.
+ *
+ * Returns { written, preservedKeys, suppressedKeys }: `written` counts the
+ * rows actually written for the house (payload count minus suppressed), so
+ * the saveAll_ `written` echo stays honest for the server diagnostics.
+ *
+ * Write order is WRITE-THEN-TRIM, not clear-then-write: the final row set is
+ * written first, then only surplus tail rows are cleared. A crash between the
+ * two steps can leave duplicate tail rows (visible, fixable) but can no
+ * longer empty the sheet. Note the merge means the Patients sheet never
+ * shrinks through this path, so the trim is a pure safety net here.
  */
-function replaceHousePatients_(houseId, patientsArr) {
+function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys) {
   const sh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
   const houseColIdx = PATIENT_COLUMNS.indexOf('houseId');
+  const nameColIdx  = PATIENT_COLUMNS.indexOf('name');
+  const dateColIdx  = PATIENT_COLUMNS.indexOf('date');
   const lastRow = sh.getLastRow();
 
-  let kept = [];
+  const kept = [];       // other houses' rows, original order — untouched
+  const houseRows = [];  // this house's current sheet rows, sheet order
   if (lastRow > 1) {
     const values = sh.getRange(2, 1, lastRow - 1, PATIENT_COLUMNS.length).getValues();
-    kept = values.filter(function (row) { return row[houseColIdx] !== houseId; });
+    for (let i = 0; i < values.length; i++) {
+      if (values[i][houseColIdx] === houseId) houseRows.push(values[i]);
+      else kept.push(values[i]);
+    }
   }
 
-  const newRows = patientsArr.map(function (p) {
-    const withHouse = Object.assign({}, p, { houseId: houseId });
-    return objectToRow_(withHouse, PATIENT_COLUMNS);
-  });
+  // Index this house's sheet rows by identity key; duplicate keys queue up.
+  const byKey = {};
+  for (let i = 0; i < houseRows.length; i++) {
+    const key = patientKey_(houseId, houseRows[i][nameColIdx], houseRows[i][dateColIdx]);
+    if (!byKey[key]) byKey[key] = [];
+    byKey[key].push(i);
+  }
 
-  // Canonicalize the entry-date column to a clean YYYY-MM-DD string for BOTH
-  // kept rows (whose cell may already be a coerced Date object from getValues)
-  // and new rows (a string from the client). asISODate_ formats any Date in the
-  // spreadsheet timezone, so the stored value is unambiguous text — mirrors the
-  // treatment leads' `created` column gets in mergeLeads_.
-  const dateColIdx = PATIENT_COLUMNS.indexOf('date');
-  const finalRows = kept.concat(newRows).map(function (row) {
+  const suppressed = suppressedDeleteKeys || {};
+  const suppressedKeys = [];
+  const consumed = {};
+  const newRows = [];
+  for (let i = 0; i < patientsArr.length; i++) {
+    const withHouse = Object.assign({}, patientsArr[i], { houseId: houseId });
+    const key = patientKey_(houseId, withHouse.name, withHouse.date);
+    const queue = byKey[key];
+    if (queue && queue.length > 0) {
+      // On the sheet → normal replace, even if the key was once user-deleted
+      // (a row that is back on the sheet was re-added deliberately).
+      consumed[queue.shift()] = true;
+    } else if (suppressed[key]) {
+      // Not on the sheet + fresh user-delete tombstone → a stale tab trying
+      // to resurrect a deleted patient. Drop the row, tell the caller.
+      suppressedKeys.push(key);
+      continue;
+    }
+    newRows.push(objectToRow_(withHouse, PATIENT_COLUMNS));
+  }
+
+  // Sheet rows the payload did not carry: KEEP them, audit each one.
+  const preservedRows = [];
+  const preservedKeys = [];
+  for (let i = 0; i < houseRows.length; i++) {
+    if (consumed[i]) continue;
+    preservedRows.push(houseRows[i]);
+    preservedKeys.push(patientKey_(houseId, houseRows[i][nameColIdx], houseRows[i][dateColIdx]));
+  }
+  tombstonePreservedPatients_(preservedRows, 'saveAll');
+
+  // Canonicalize the entry-date column to a clean YYYY-MM-DD string for ALL
+  // rows — kept/preserved rows (whose cell may already be a coerced Date
+  // object from getValues) and new rows (a string from the client) alike.
+  // asISODate_ formats any Date in the spreadsheet timezone, so the stored
+  // value is unambiguous text — mirrors the treatment leads' `created` column
+  // gets in mergeLeads_.
+  const finalRows = kept.concat(preservedRows).concat(newRows).map(function (row) {
     if (dateColIdx >= 0) row[dateColIdx] = asISODate_(row[dateColIdx]);
     return row;
   });
 
-  clearBody_(sh, PATIENT_COLUMNS.length);
   if (finalRows.length > 0) {
     // Force the entry-date column to plain text BEFORE writing so Sheets never
     // re-coerces "2026-06-11" into a date-typed cell. A date-typed cell reads
@@ -918,7 +1115,105 @@ function replaceHousePatients_(houseId, patientsArr) {
     }
     sh.getRange(2, 1, finalRows.length, PATIENT_COLUMNS.length).setValues(finalRows);
   }
-  return newRows.length;
+  // Trim only the surplus tail AFTER the write (write-then-trim).
+  if (lastRow > finalRows.length + 1) {
+    sh.getRange(finalRows.length + 2, 1, lastRow - finalRows.length - 1, PATIENT_COLUMNS.length).clearContent();
+  }
+  return { written: newRows.length, preservedKeys: preservedKeys, suppressedKeys: suppressedKeys };
+}
+
+/* Identity keys of FRESH 'user-delete' tombstones (droppedAt within
+ * USER_DELETE_SUPPRESS_MS), as a {key: true} set for the saveAll merge. Read
+ * once per saveAll_, inside its lock. FAIL-OPEN by contract: an unreadable
+ * tombstone sheet or an unparseable droppedAt must never fail the save and
+ * never permanently block a key — the row is then merely appendable again,
+ * and the visibilitychange reload remains the outer defense. */
+function recentUserDeleteKeys_() {
+  const out = {};
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sh = ss.getSheetByName(PATIENTS_TOMBSTONES_SHEET);
+    if (!sh) return out;
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return out;
+    const values = sh.getRange(2, 1, lastRow - 1, PATIENT_TOMBSTONE_COLUMNS.length).getValues();
+    const hIdx = PATIENT_TOMBSTONE_COLUMNS.indexOf('houseId');
+    const nIdx = PATIENT_TOMBSTONE_COLUMNS.indexOf('name');
+    const dIdx = PATIENT_TOMBSTONE_COLUMNS.indexOf('date');
+    const rIdx = PATIENT_TOMBSTONE_COLUMNS.indexOf('reason');
+    const aIdx = PATIENT_TOMBSTONE_COLUMNS.indexOf('droppedAt');
+    const now = Date.now();
+    for (let i = 0; i < values.length; i++) {
+      const row = values[i];
+      if (String(row[rIdx]) !== 'user-delete') continue;
+      const at = Date.parse(asTimestampText_(row[aIdx]));
+      if (!isFinite(at) || now - at > USER_DELETE_SUPPRESS_MS) continue;
+      out[patientKey_(row[hIdx], row[nIdx], row[dIdx])] = true;
+    }
+  } catch (err) {
+    try { console.warn('[tombstone] user-delete key scan skipped: ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
+  }
+  return out;
+}
+
+/* ===== Permanent patient-row delete (dedicated action) =====
+ *
+ * The occupancy tab's ✕ button used to delete by OMISSION — drop the patient
+ * from the client's list and let saveAll's whole-house replace lose the row.
+ * Merge-don't-drop closed that channel (omission now preserves), so genuine
+ * deletion is a first-class action, mirroring removeLead_'s safe sequence but
+ * keyed by patientKey_ (the Patients sheet has no id column):
+ *   1. Peek FIRST (read-only): no row matches the key → refuse, touch
+ *      NOTHING. The client surfaces the error and rolls its state back.
+ *   2. Tombstone the matched row(s) — reason 'user-delete' — BEFORE the
+ *      delete, FAIL-HARD: if the audit write throws, the delete is aborted
+ *      and the row survives. Nothing is ever destroyed without its recovery
+ *      copy. (Deliberate opposite of tombstonePreservedPatients_'s fail-soft
+ *      contract, where the row is being kept anyway.)
+ *   3. Rewrite the kept rows, then trim the surplus tail (write-then-trim).
+ * All under the script lock. Duplicate identity keys delete ALL matching rows
+ * — they are indistinguishable by construction. For USER_DELETE_SUPPRESS_MS
+ * afterwards, the saveAll merge drops stale payload rows carrying this key so
+ * another open tab can't resurrect the patient. */
+function deletePatientRow_(patient) {
+  if (!patient || !patient.houseId || !patient.name) {
+    return { ok: false, error: 'missing_patient' };
+  }
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const sh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+    const houseColIdx = PATIENT_COLUMNS.indexOf('houseId');
+    const nameColIdx  = PATIENT_COLUMNS.indexOf('name');
+    const dateColIdx  = PATIENT_COLUMNS.indexOf('date');
+    const key = patientKey_(patient.houseId, patient.name, patient.date);
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return { ok: false, error: 'patient_not_found' };
+
+    const values = sh.getRange(2, 1, lastRow - 1, PATIENT_COLUMNS.length).getValues();
+    const kept = [];
+    const matched = [];
+    for (let i = 0; i < values.length; i++) {
+      const row = values[i];
+      if (patientKey_(row[houseColIdx], row[nameColIdx], row[dateColIdx]) === key) matched.push(row);
+      else kept.push(row);
+    }
+    if (matched.length === 0) return { ok: false, error: 'patient_not_found' };
+
+    // Tombstone BEFORE delete — fail-HARD (no catch): an audit failure aborts
+    // the whole action via handle_'s exception envelope and the row survives.
+    appendPatientTombstones_(matched, 'user-delete', 'deletePatientRow');
+
+    if (kept.length > 0) {
+      sh.getRange(2, 1, kept.length, PATIENT_COLUMNS.length).setValues(kept);
+    }
+    if (lastRow > kept.length + 1) {
+      sh.getRange(kept.length + 2, 1, lastRow - kept.length - 1, PATIENT_COLUMNS.length).clearContent();
+    }
+    return { ok: true, deleted: matched.length, key: key };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
 }
 
 /* ===== Irrelevant leads (move + restore) =====
@@ -961,9 +1256,14 @@ function deleteRowsById_(sh, columns, idValue) {
   const kept = values.filter(function (row) { return String(row[idIdx]) !== target; });
   const removed = values.length - kept.length;
   if (removed === 0) return 0;
-  clearBody_(sh, columns.length);
+  // WRITE-THEN-TRIM: rewrite the kept rows first, then clear only the surplus
+  // tail. A crash between the two steps leaves stale duplicate tail rows
+  // (visible, re-deletable) instead of an emptied sheet.
   if (kept.length > 0) {
     sh.getRange(2, 1, kept.length, columns.length).setValues(kept);
+  }
+  if (lastRow > kept.length + 1) {
+    sh.getRange(kept.length + 2, 1, lastRow - kept.length - 1, columns.length).clearContent();
   }
   return removed;
 }

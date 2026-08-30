@@ -209,7 +209,7 @@ function loadCode() {
   return { code: sandbox.__test, registry };
 }
 
-test('saveAll_ echoes per-house written counts; replaceHousePatients_ returns rows written', () => {
+test('saveAll_ echoes per-house written counts; replaceHousePatients_ returns {written, preservedKeys}', () => {
   const { code, registry } = loadCode();
   const PC = Array.from(code.PATIENT_COLUMNS);
   registry[code.PATIENTS_SHEET] = fakeSheet(PC, []);
@@ -222,8 +222,20 @@ test('saveAll_ echoes per-house written counts; replaceHousePatients_ returns ro
   });
   assert.strictEqual(res.ok, true);
   assert.deepStrictEqual({ ...res.written }, { arfoni: 2, ramot: 1, sde: 0 });
+  // Sheet started empty → the merge preserved nothing, and empty houses are
+  // absent from the echo.
+  assert.deepStrictEqual({ ...res.preserved }, {});
 
-  // direct return value
-  assert.strictEqual(code.replaceHouse('ramot', [{ houseId: 'ramot', name: 'ד', date: '', pay: 0 }]), 1);
-  assert.strictEqual(code.replaceHouse('ramot', []), 0);
+  // Direct return value (merge-don't-drop): the payload omits ג, so the merge
+  // KEEPS her row and reports its identity key; `written` echoes the payload
+  // row count exactly as before.
+  const r1 = code.replaceHouse('ramot', [{ houseId: 'ramot', name: 'ד', date: '', pay: 0 }]);
+  assert.strictEqual(r1.written, 1);
+  assert.deepStrictEqual(Array.from(r1.preservedKeys), ['ramot::ג::2026-01-03']);
+
+  // Empty payload for the house: nothing written, BOTH rows kept + reported —
+  // an empty stale save can no longer wipe a house.
+  const r2 = code.replaceHouse('ramot', []);
+  assert.strictEqual(r2.written, 0);
+  assert.deepStrictEqual(Array.from(r2.preservedKeys).sort(), ['ramot::ג::2026-01-03', 'ramot::ד::']);
 });

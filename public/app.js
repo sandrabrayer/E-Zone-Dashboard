@@ -294,6 +294,48 @@ function serializePatients() {
 
 let savePromise = Promise.resolve();
 
+/* ===== Merge-don't-drop, client side (stale-tab resync) =====
+ *
+ * The backend's saveAll MERGES patients per house instead of whole-house
+ * replacing: sheet rows this tab's payload omitted (its in-memory state
+ * predates them) are KEPT on the sheet and their identity keys echoed back
+ * under `preserved`. A non-empty echo means THIS tab's memory is stale by
+ * definition — reload from the sheet instead of trusting it, or the missing
+ * rows never render here and every subsequent save keeps re-reporting them.
+ * Guards: one resync at a time, and a 30s floor between resyncs so a
+ * pathological backend echo can't loop reloads. */
+function saveAllResponseNeedsResync(res) {
+  if (!res || typeof res !== 'object') return false;
+  const nonEmpty = (m) => !!m && typeof m === 'object' && !Array.isArray(m) &&
+    Object.keys(m).some(h => Array.isArray(m[h]) && m[h].length > 0);
+  // preserved: rows this tab's payload omitted (it never loaded them).
+  // deletedSuppressed: rows this tab tried to resurrect past a user-delete
+  // tombstone. Either way the tab's memory is stale — reload.
+  return nonEmpty(res.preserved) || nonEmpty(res.deletedSuppressed);
+}
+
+let _preservedResyncBusy = false;
+let _preservedResyncLastAt = 0;
+function maybeResyncPreservedPatients(res) {
+  if (!saveAllResponseNeedsResync(res)) return;
+  const now = Date.now();
+  if (_preservedResyncBusy || now - _preservedResyncLastAt < 30000) return;
+  _preservedResyncBusy = true;
+  _preservedResyncLastAt = now;
+  console.warn('[E-ZONE] stale save detected — resyncing from sheet. preserved:',
+    res.preserved, 'deletedSuppressed:', res.deletedSuppressed);
+  showToast('זוהה מידע לא מעודכן — מרענן נתונים מהגיליון');
+  // Fire-and-forget: loadAll re-chains any follow-up save onto savePromise.
+  Promise.resolve()
+    .then(() => loadAll())
+    .catch(e => console.warn('[E-ZONE] preserved-rows resync failed:', e.message))
+    .finally(() => { _preservedResyncBusy = false; });
+}
+
+/* Saves currently in flight — the visibilitychange resync (see loadAll's
+ * listener) skips reloading while a write is mid-air. */
+let _savesInFlight = 0;
+
 /* Save full state to Sheets. Serialized so overlapping calls don't interleave. */
 function saveAll() {
   if (state.mode !== 'edit') return Promise.resolve();
@@ -343,7 +385,14 @@ function saveAll() {
     }));
     console.log('[E-ZONE] saveAll body preview (first 400 chars):', JSON.stringify(payload).slice(0, 400));
 
-    return apiPost(payload);
+    _savesInFlight++;
+    try {
+      const res = await apiPost(payload);
+      maybeResyncPreservedPatients(res);
+      return res;
+    } finally {
+      _savesInFlight--;
+    }
   };
   savePromise = savePromise.then(run, run);
   return savePromise;
@@ -528,7 +577,27 @@ function initTabs() {
 }
 
 /* ===== Initial load ===== */
+
+/* Stale-tab prevention (merge-don't-drop C2): the app otherwise loads data
+ * ONCE per page life, and every save writes full in-memory state — so a PWA
+ * resumed from background or a tab refocused hours later saves a snapshot of
+ * the past. Reload from the sheet when the tab becomes visible again.
+ * Guards: skipped while any save is mid-air (never yank state under a write),
+ * and floored at 60s since the last completed load start so quick tab
+ * flips don't hammer getData. Every edit in this app persists immediately via
+ * saveAll, so in-memory state is never legitimately AHEAD of the sheet
+ * outside an in-flight save — reloading loses nothing. */
+let _lastLoadAllAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (_savesInFlight > 0) return;
+  if (Date.now() - _lastLoadAllAt < 60000) return;
+  console.log('[E-ZONE] tab visible again — refreshing from sheet');
+  loadAll().catch(e => console.warn('[E-ZONE] visibility resync failed:', e.message));
+});
+
 async function loadAll() {
+  _lastLoadAllAt = Date.now();
   setLoading(true);
   try {
     let data = await apiGet({ action: 'getData' });
@@ -4548,13 +4617,28 @@ async function createOutpatientLead(patient) {
   }
 }
 
+/* Permanent delete — a DEDICATED backend action (deletePatientRow), NOT a
+ * saveAll omission. The merge-don't-drop backend KEEPS rows a saveAll payload
+ * omits, so deletion-by-omission stopped being a thing; the dedicated action
+ * tombstones the row (reason 'user-delete', written BEFORE the delete, fail-
+ * hard) and then removes it, and the backend merge suppresses stale payloads
+ * carrying the deleted key for 24h so another open tab can't resurrect it.
+ * Local state drops the row WITHOUT a full saveAll — the action IS the whole
+ * delete; on failure the optimistic removal rolls back. */
 async function deletePatient(p) {
   if (!confirm(`למחוק לצמיתות את ${p.name}?`)) return;
   const prev = state.patients.slice();
   state.patients = state.patients.filter(x => x.id !== p.id);
   renderAll();
   try {
-    await saveAll();
+    const res = await apiPost({
+      action: 'deletePatientRow',
+      patient: { houseId: p.houseId, name: p.name, date: p.date },
+    });
+    if (!res || res.ok !== true) {
+      throw new Error((res && (res.message || res.error)) || 'delete_failed');
+    }
+    showToast(`${p.name} נמחק לצמיתות`);
   } catch (e) {
     state.patients = prev;
     renderAll();
