@@ -222,6 +222,21 @@ input:focus, select:focus, textarea:focus {
   transition: color .15s, border-color .15s;
 }
 .tabs .tab:hover { color: var(--text); }
+/* Unseen manager-report count on the לוח פגישות tab. Hidden at zero. */
+.tab-badge {
+  display: inline-block;
+  min-width: 18px;
+  margin-inline-start: 6px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--warning);
+  color: #201400;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  vertical-align: middle;
+}
 .tabs .tab.active {
   color: var(--text);
   border-bottom-color: var(--primary);
@@ -364,6 +379,56 @@ input:focus, select:focus, textarea:focus {
 }
 .mtg-row + .mtg-row { border-top: 1px solid var(--border); }
 .mtg-row:hover { background: var(--surface-3); }
+/* A manager-report block sits between rows; restore the row divider after it. */
+.mrv-report + .mtg-row { border-top: 1px solid var(--border); }
+
+/* ===== Manager meeting report — Vered's read-only view (PR 3) =====
+ * Purple accent on purpose: visually apart from Vered's own outcome <select>
+ * (primary blue) so the manager's report is never mistaken for her outcome. */
+.mrv-report {
+  margin: 0 16px 8px;
+  border: 1px solid var(--border);
+  border-inline-start: 3px solid var(--purple);
+  border-radius: 10px;
+  background: rgba(167, 121, 255, .07);
+  cursor: pointer;
+  font-size: 13px;
+}
+.lead-card .mrv-report { margin: 8px 0; }
+.mrv-report.mrv-unseen {
+  border-inline-start-color: var(--warning);
+  background: rgba(255, 176, 32, .10);
+}
+.mrv-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+}
+.mrv-dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--warning);
+  box-shadow: 0 0 6px rgba(255, 176, 32, .8);
+  flex: 0 0 auto;
+}
+.mrv-title { font-weight: 700; color: var(--purple); }
+.mrv-outcome { color: var(--text); }
+.mrv-chevron {
+  margin-inline-start: auto;
+  color: var(--text-dim);
+  transition: transform .15s;
+}
+.mrv-report.open .mrv-chevron { transform: rotate(180deg); }
+.mrv-detail {
+  display: none;
+  padding: 0 12px 10px;
+  color: var(--text-muted);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.mrv-report.open .mrv-detail { display: block; }
+.mrv-label { color: var(--text-dim); font-weight: 600; }
 /* Time anchors each row: bold, bright, tabular so columns line up. */
 .mtg-time {
   font-variant-numeric: tabular-nums;
