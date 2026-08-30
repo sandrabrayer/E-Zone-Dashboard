@@ -86,6 +86,19 @@ function mrLeadsForPicker(leads, todayISO, showAll) {
   });
 }
 
+/* Picker date: 'YYYY-MM-DD' → 'DD/MM', wrapped in a Unicode LTR isolate
+ * (U+2066 LRI … U+2069 PDI) so the digit run cannot be bidi-reordered inside
+ * the RTL option label. An ISO value renders as DD/MM; a non-empty legacy
+ * value that isn't ISO is shown verbatim but still isolated; empty → ''
+ * (the label omits the date segment entirely). */
+function mrPickerDate(v) {
+  var s = String(v == null ? '' : v);
+  if (!s) return '';
+  var m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  var text = m ? m[3] + '/' + m[2] : s;
+  return '\u2066' + text + '\u2069';
+}
+
 /* The companion value to SUBMIT: the chip key, except אחר ('other') where the
  * free text becomes the value (trimmed). Empty free text falls back to the
  * 'other' key itself so the report still records that someone else came. */
@@ -124,6 +137,33 @@ function mrWhatsAppLink(text) {
   return 'https://wa.me/?text=' + encodeURIComponent(String(text == null ? '' : text));
 }
 
+/* Hebrew error text for a failed submit, keyed by the backend's stable error
+ * code (submitMeetingReport_ in Code.gs / the proxy routes). Surfacing the
+ * specific reason — with the raw code appended for a phone screenshot — is
+ * what keeps a backend-level refusal VISIBLE at the form: the confirmation
+ * screen renders only on { ok: true }, never on a 200 that carries an error. */
+var MR_SUBMIT_ERROR_TEXTS = {
+  bad_lead:       'נא לבחור ליד',
+  bad_outcome:    'לא נבחרה תוצאה תקינה',
+  bad_companion:  'הטקסט בשדה "הגיע/ה עם" ארוך מדי (עד 100 תווים)',
+  bad_note:       'הפירוט ארוך מדי (עד 2000 תווים)',
+  bad_reporter:   'נא לבחור מדווח/ת',
+  lead_not_found: 'הליד כבר לא ברשימת הלידים הפתוחים — רעננו את הדף ונסו שוב',
+  unauthorized:   'השרת דחה את הדיווח (בעיית הרשאה) — פנו לסנדרה',
+  meeting_report_not_configured: 'השרת אינו מוגדר לדיווחי פגישות — פנו לסנדרה',
+  sheets_unreachable:  'אין חיבור לגיליון — נסו שוב בעוד רגע',
+  write_verify_failed: 'הדיווח לא נשמר בגיליון — נסו שוב, ואם זה חוזר פנו לסנדרה',
+  exception:      'שגיאה בשרת הנתונים — נסו שוב, ואם זה חוזר פנו לסנדרה',
+};
+
+function mrSubmitErrorText(code) {
+  var c = String(code == null ? '' : code);
+  var known = MR_SUBMIT_ERROR_TEXTS[c];
+  if (known) return known + ' (' + c + ')';
+  if (c && c !== 'submit_failed') return 'השליחה נכשלה — הדיווח לא נשמר (' + c + ')';
+  return 'השליחה נכשלה — הדיווח לא נשמר, נסו שוב';
+}
+
 function mrEscapeHtml(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -139,12 +179,15 @@ if (typeof module !== 'undefined' && module.exports) {
     MR_COMPANION_LABELS: MR_COMPANION_LABELS,
     mrTodayISO: mrTodayISO,
     mrLeadsForPicker: mrLeadsForPicker,
+    mrPickerDate: mrPickerDate,
     mrCompanionValue: mrCompanionValue,
     mrCompanionDisplay: mrCompanionDisplay,
     mrHouseLabel: mrHouseLabel,
     mrWhatsAppMessage: mrWhatsAppMessage,
     mrWhatsAppLink: mrWhatsAppLink,
     mrEscapeHtml: mrEscapeHtml,
+    MR_SUBMIT_ERROR_TEXTS: MR_SUBMIT_ERROR_TEXTS,
+    mrSubmitErrorText: mrSubmitErrorText,
   };
 }
 
@@ -204,7 +247,8 @@ if (typeof module !== 'undefined' && module.exports) {
     var list = mrLeadsForPicker(state.leads, mrTodayISO(), state.showAll);
     var opts = ['<option value="">בחר/י ליד…</option>'];
     list.forEach(function (l) {
-      var label = l.name + ' — ' + mrHouseLabel(l.house) + (l.visitDate ? ' — ' + l.visitDate : '');
+      var d = mrPickerDate(l.visitDate);
+      var label = l.name + ' — ' + mrHouseLabel(l.house) + (d ? ' — ' + d : '');
       opts.push('<option value="' + mrEscapeHtml(l.id) + '">' + mrEscapeHtml(label) + '</option>');
     });
     sel.innerHTML = opts.join('');
@@ -290,8 +334,8 @@ if (typeof module !== 'undefined' && module.exports) {
           note: note,
           reporter: reporter,
         });
-      }).catch(function () {
-        showError('השליחה נכשלה — נסו שוב');
+      }).catch(function (err) {
+        showError(mrSubmitErrorText(err && err.message));
       });
     });
   }
