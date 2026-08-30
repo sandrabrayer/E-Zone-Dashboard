@@ -429,6 +429,26 @@ input:focus, select:focus, textarea:focus {
 }
 .mrv-report.open .mrv-detail { display: block; }
 .mrv-label { color: var(--text-dim); font-weight: 600; }
+/* PR 4 — edit/delete actions on the expanded block (edit mode only). */
+.mrv-actions { display: flex; gap: 8px; margin-top: 8px; }
+/* PR 4 — companion chips in the edit modal (mirrors the manager form's
+ * .mr-chip, restyled to the dashboard modal's scale). */
+.modal .mrv-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.modal .mrv-chip {
+  font-family: inherit; font-size: 13px;
+  padding: 7px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.modal .mrv-chip.selected {
+  background: linear-gradient(180deg, var(--primary) 0%, var(--primary-strong) 100%);
+  border-color: transparent;
+  color: #fff;
+}
+.modal .mrv-other-wrap { margin-top: 8px; }
 /* Time anchors each row: bold, bright, tabular so columns line up. */
 .mtg-time {
   font-variant-numeric: tabular-nums;
