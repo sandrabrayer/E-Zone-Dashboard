@@ -1661,11 +1661,26 @@ function meetingReportWhenText(iso) {
  * report seen (see wireMeetingReportToggle). data-mrv-toggle carries the lead
  * id. All free text is escaped. Deliberately styled apart from Vered's own
  * .mtg-outcome selector — this is upstream context, never her outcome. */
+/* The outcome badge's color class, keyed by the report outcome: advancing →
+ * green (success), undecided → amber (warning), not_fit → red (danger),
+ * no_show → gray (neutral). An unknown/legacy value gets the neutral class so
+ * the badge always renders legibly. Pure — unit-tested. */
+function meetingReportOutcomeBadgeClass(outcome) {
+  const map = {
+    advancing: 'mrv-badge-advancing',
+    undecided: 'mrv-badge-undecided',
+    not_fit:   'mrv-badge-not_fit',
+    no_show:   'mrv-badge-no_show',
+  };
+  return map[outcome] || 'mrv-badge-neutral';
+}
+
 function meetingReportBlockHTML(lead) {
   if (!lead || !lead.meetingReportedAt) return '';
   const unseen = meetingReportUnseen(lead);
   const outcomeLabel =
     MEETING_REPORT_OUTCOME_LABELS[lead.meetingReportOutcome] || lead.meetingReportOutcome || '—';
+  const badgeClass = meetingReportOutcomeBadgeClass(lead.meetingReportOutcome);
   const dot = unseen ? '<span class="mrv-dot" title="דיווח חדש"></span>' : '';
   /* Edit / delete (PR 4) — edit mode only, same gating as mark-seen (both write
    * via updateLead→saveAll, which is pointless for viewers). Vered-side only:
@@ -1680,7 +1695,7 @@ function meetingReportBlockHTML(lead) {
     <div class="mrv-report${unseen ? ' mrv-unseen' : ''}" data-mrv-toggle="${escapeHtml(lead.id || '')}">
       <div class="mrv-head">
         ${dot}<span class="mrv-title">דיווח מנהל</span>
-        <span class="mrv-outcome">${escapeHtml(outcomeLabel)}</span>
+        <span class="mrv-outcome-badge ${badgeClass}">${escapeHtml(outcomeLabel)}</span>
         <span class="mrv-chevron">▾</span>
       </div>
       <div class="mrv-detail">
@@ -1872,41 +1887,84 @@ function meetingReportEditModalHTML(lead) {
 /* Persist an edited report. Edit-mode gated like mark-seen; refuses values
  * that would fail the backend caps (mirrored client-side — showError, no
  * write). Writes ONLY the three content fields, so meetingReporter /
- * meetingReportedAt / meetingSeen ride through updateLead untouched (original
- * attribution + timestamp kept). Returns updateLead's promise (false on
- * refusal) so callers/tests can await the outcome. */
+ * meetingReportedAt / meetingSeen ride through untouched (original
+ * attribution + timestamp kept) — and the unchanged timestamp is exactly what
+ * lets the edit through mergeLeads_'s report guard (equal timestamps → the
+ * client's content wins).
+ *
+ * The race the guard can't let through silently: a manager RESUBMITTED (or
+ * the report was deleted) after the modal opened, so this save carries a
+ * timestamp that no longer matches the sheet's. The guard then keeps the
+ * sheet's report and flags the leadId in the saveAll response's
+ * `reportConflicts`; we surface that as a Hebrew conflict message and refresh
+ * the data instead of pretending the edit saved. Returns true (saved),
+ * 'conflict' (newer report won — data refreshed), or false (refused/failed —
+ * rolled back). */
 function saveMeetingReportEdit(leadId, { outcome, companion, note }) {
   if (state.mode !== 'edit') return Promise.resolve(false);
   const lead = state.leads.find(l => l.id === leadId);
   if (!lead || !lead.meetingReportedAt) return Promise.resolve(false);
   const err = validateMeetingReportEdit({ outcome, companion, note });
   if (err) { showError(err); return Promise.resolve(false); }
-  return updateLead(leadId, {
+
+  // updateLead's optimistic pattern, inlined so the saveAll RESPONSE (which
+  // carries reportConflicts) is visible — updateLead swallows it.
+  const prev = { ...lead };
+  Object.assign(lead, {
     meetingReportOutcome: outcome,
     meetingCompanion: String(companion || ''),
     meetingNote: String(note || ''),
   });
+  return (async () => {
+    try {
+      const res = await saveAll();
+      const conflicts = (res && res.reportConflicts) || [];
+      if (conflicts.indexOf(String(leadId)) !== -1) {
+        showError('דיווח המנהל השתנה בזמן העריכה (דיווח חדש או מחיקה) — העריכה לא נשמרה, הנתונים רועננו');
+        await loadAll(); // pull the sheet's newer report state and re-render
+        return 'conflict';
+      }
+      return true;
+    } catch (e) {
+      Object.assign(lead, prev);
+      renderAll();
+      showError('עדכון הדיווח נכשל — ' + e.message);
+      return false;
+    }
+  })();
 }
 
-/* Remove a report: ALL six report fields cleared to '' in one optimistic
- * write (full row otherwise untouched). The badge recomputes immediately —
- * a deleted report can't count as unseen (meetingReportedAt is now empty) —
- * exactly like markMeetingReportSeen's optimistic badge refresh; a failed
- * save rolls the fields back and re-renders via updateLead. */
+/* Remove a report — a DEDICATED backend action, not a saveAll field-clear.
+ * Since the mergeLeads_ report guard (write-clobber fix), a saveAll carrying
+ * empty report fields against a sheet row with a non-empty timestamp is a
+ * stale echo by definition and the sheet wins — so clearing client-side would
+ * silently no-op. deleteMeetingReport (Code.gs) clears the six fields on the
+ * sheet row itself; on success the LOCAL copy is cleared too, so this tab's
+ * next saveAll echoes the deletion (equal empty timestamps → guard inert) and
+ * the badge recomputes optimistically. Failure rolls the local fields back
+ * and re-renders. */
 function deleteMeetingReport(leadId) {
   if (state.mode !== 'edit') return Promise.resolve(false);
   const lead = state.leads.find(l => l.id === leadId);
   if (!lead || !lead.meetingReportedAt) return Promise.resolve(false);
-  const p = updateLead(leadId, {
-    meetingReportOutcome: '',
-    meetingCompanion:     '',
-    meetingNote:          '',
-    meetingReporter:      '',
-    meetingReportedAt:    '',
-    meetingSeen:          '',
-  });
+
+  const prev = { ...lead };
+  ['meetingReportOutcome', 'meetingCompanion', 'meetingNote',
+   'meetingReporter', 'meetingReportedAt', 'meetingSeen'].forEach(f => { lead[f] = ''; });
   renderMeetingsUnseenBadge();
-  return p;
+
+  return (async () => {
+    try {
+      await apiPost({ action: 'deleteMeetingReport', leadId: String(leadId) });
+      return true;
+    } catch (e) {
+      Object.assign(lead, prev);
+      renderMeetingsUnseenBadge();
+      renderAll();
+      showError('מחיקת הדיווח נכשלה — ' + e.message);
+      return false;
+    }
+  })();
 }
 
 /* Re-render one block in place after a successful edit (board and lead card
@@ -1977,6 +2035,10 @@ function showMeetingReportEditModal(lead, onSaved) {
     const note      = (fd.get('mrvNote') || '').toString().trim();
 
     const ok = await saveMeetingReportEdit(lead.id, { outcome, companion, note });
+    // A raced manager resubmit/delete: the edit did NOT save; loadAll already
+    // refreshed everything (this block's DOM included), so just close — the
+    // modal's content is built on a report that no longer exists as-was.
+    if (ok === 'conflict') { close(); return; }
     if (ok) { close(); if (onSaved) onSaved(); return; }
     // Refused or failed — error already shown; re-enable so Vered can retry.
     submitting = false;

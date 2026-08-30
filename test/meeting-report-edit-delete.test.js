@@ -43,14 +43,34 @@ function loadApp() {
       setLeads(ls) { state.leads = ls; },
       setMode(m) { state.mode = m; },
       getLead(id) { return state.leads.find(l => l.id === id); },
+      meetingReportOutcomeBadgeClass: (k) => meetingReportOutcomeBadgeClass(k),
       /* Capture what saveAll would persist (deep copy of state.leads at call
-       * time) — proves edit/delete carry the WHOLE row. */
-      stubSaveAll(fail) {
+       * time) — proves an edit carries the WHOLE row. Resolves the shape the
+       * real saveAll_ now returns; conflicts simulates the merge guard
+       * flagging leadIds (a raced manager resubmit/delete). */
+      stubSaveAll(fail, conflicts) {
         const calls = [];
         saveAll = async () => {
           calls.push(JSON.parse(JSON.stringify(state.leads)));
           if (fail) throw new Error('save failed');
+          return { ok: true, written: {}, reportConflicts: conflicts || [] };
         };
+        return calls;
+      },
+      /* Capture apiPost bodies — the delete path's dedicated backend action. */
+      stubApiPost(fail) {
+        const calls = [];
+        apiPost = async (body) => {
+          calls.push(JSON.parse(JSON.stringify(body)));
+          if (fail) throw new Error('action failed');
+          return { ok: true };
+        };
+        return calls;
+      },
+      /* Capture loadAll calls — the edit-conflict path refreshes via loadAll. */
+      stubLoadAll() {
+        const calls = [];
+        loadAll = async () => { calls.push(1); };
         return calls;
       },
       /* The rollback path calls renderAll + showError; neither has a DOM here. */
@@ -280,34 +300,39 @@ test('an invalid edit is refused before any save fires, surfacing a Hebrew error
 
 /* ===== delete ===== */
 
-test('delete clears exactly the six report fields; the rest of the lead is untouched', async () => {
+test('delete calls the dedicated backend action and clears the six local fields', async () => {
   app.setMode('edit');
   const original = reportedLead({ id: 'L1' });
   app.setLeads([JSON.parse(JSON.stringify(original))]);
-  const calls = app.stubSaveAll(false);
+  const saves = app.stubSaveAll(false);
+  const actions = app.stubApiPost(false);
 
   const ok = await app.deleteMeetingReport('L1');
   assert.strictEqual(ok, true);
-  assert.strictEqual(calls.length, 1, 'exactly one save');
 
+  // A dedicated action — NOT a saveAll field-clear (the merge guard would
+  // resurrect the report from the sheet's newer timestamp).
+  assert.strictEqual(saves.length, 0, 'no saveAll fired');
+  assert.strictEqual(actions.length, 1, 'exactly one backend action');
+  assert.strictEqual(actions[0].action, 'deleteMeetingReport');
+  assert.strictEqual(actions[0].leadId, 'L1');
+
+  // Local state cleared too, so this tab's next saveAll echoes the deletion
+  // (empty timestamp on both sides → the guard is inert) instead of
+  // re-sending the stale report values.
   const lead = app.getLead('L1');
   REPORT_FIELDS.forEach(f => assert.strictEqual(lead[f], '', `${f} cleared`));
   Object.keys(original).forEach(k => {
     if (REPORT_FIELDS.includes(k)) return;
     assert.strictEqual(lead[k], original[k], `${k} untouched`);
   });
-  // The persisted snapshot carries the cleared report on the full row.
-  const sent = calls[0].find(l => l.id === 'L1');
-  REPORT_FIELDS.forEach(f => assert.strictEqual(sent[f], '', `${f} cleared in save`));
-  assert.strictEqual(sent.name, 'דני');
-  assert.strictEqual(sent.contactPhone, '0521111111');
 });
 
 test('after delete the lead can never count as unseen, and the badge recomputes optimistically', () => {
   app.setMode('edit');
   // An UNSEEN report — the strictest case: deleting it must drop the count.
   app.setLeads([reportedLead({ id: 'L1', meetingSeen: '' })]);
-  app.stubSaveAll(false);
+  app.stubApiPost(false);
   app.renderMeetingsUnseenBadge();
   const badge = byId['meetings-unseen-badge'];
   assert.strictEqual(badge.textContent, '1', 'unseen before delete');
@@ -315,27 +340,30 @@ test('after delete the lead can never count as unseen, and the badge recomputes 
   const p = app.deleteMeetingReport('L1');          // not awaited yet
   assert.strictEqual(app.meetingReportUnseen(app.getLead('L1')), false,
     'deleted report is not unseen');
-  assert.strictEqual(badge.textContent, '0', 'badge recomputed before the save resolves');
+  assert.strictEqual(badge.textContent, '0', 'badge recomputed before the action resolves');
   assert.strictEqual(badge.classList.contains('hidden'), true, 'badge hidden at zero');
   return p;
 });
 
-test('delete rolls back all six fields on a failed save', async () => {
+test('delete rolls back all six fields (and the badge) on a failed backend action', async () => {
   app.setMode('edit');
   app.stubRenderAll();
-  const original = reportedLead({ id: 'L1' });
+  const original = reportedLead({ id: 'L1', meetingSeen: '' }); // unseen → badge visible
   app.setLeads([JSON.parse(JSON.stringify(original))]);
-  app.stubSaveAll(true);
+  app.stubApiPost(true);
+  app.renderMeetingsUnseenBadge();
+  const badge = byId['meetings-unseen-badge'];
 
   const ok = await app.deleteMeetingReport('L1');
   assert.strictEqual(ok, false);
   const lead = app.getLead('L1');
   REPORT_FIELDS.forEach(f => assert.strictEqual(lead[f], original[f], `${f} restored`));
+  assert.strictEqual(badge.textContent, '1', 'badge restored with the report');
 });
 
-test('delete is gated: viewers and report-less leads never write', async () => {
+test('delete is gated: viewers and report-less leads never call the backend', async () => {
   app.setLeads([reportedLead({ id: 'L1' }), reportedLead({ id: 'L2', meetingReportedAt: '' })]);
-  const calls = app.stubSaveAll(false);
+  const actions = app.stubApiPost(false);
 
   app.setMode('view');
   assert.strictEqual(await app.deleteMeetingReport('L1'), false, 'viewer never writes');
@@ -343,7 +371,58 @@ test('delete is gated: viewers and report-less leads never write', async () => {
   app.setMode('edit');
   assert.strictEqual(await app.deleteMeetingReport('L2'), false, 'no report → nothing to delete');
   assert.strictEqual(await app.deleteMeetingReport('nope'), false, 'unknown lead');
-  assert.strictEqual(calls.length, 0, 'no saves fired');
+  assert.strictEqual(actions.length, 0, 'no backend actions fired');
+});
+
+/* ===== the resubmit-during-edit race (merge-guard conflict) ===== */
+
+test('edit save surfaces a conflict when the guard kept a newer report, and refreshes', async () => {
+  app.setMode('edit');
+  app.setLeads([reportedLead({ id: 'L1' })]);
+  // The backend flags L1: its report timestamp no longer matches what the
+  // edit carried (manager resubmitted or the report was deleted mid-edit).
+  app.stubSaveAll(false, ['L1']);
+  const loads = app.stubLoadAll();
+  const errs = app.captureErrors();
+
+  const res = await app.saveMeetingReportEdit('L1', {
+    outcome: 'no_show', companion: 'father', note: 'לא יישמר',
+  });
+  assert.strictEqual(res, 'conflict');
+  assert.strictEqual(errs.length, 1, 'a visible Hebrew message, not silent success');
+  assert.ok(/דיווח/.test(errs[0]) && /לא נשמר/.test(errs[0]), 'message says the edit did not save');
+  assert.strictEqual(loads.length, 1, 'data refreshed to show the newer report');
+});
+
+test('edit save ignores conflicts flagged for OTHER leads (routine stale echoes)', async () => {
+  app.setMode('edit');
+  app.setLeads([reportedLead({ id: 'L1' })]);
+  app.stubSaveAll(false, ['L-other']);
+  const loads = app.stubLoadAll();
+
+  const res = await app.saveMeetingReportEdit('L1', {
+    outcome: 'undecided', companion: 'mother', note: 'נשמר',
+  });
+  assert.strictEqual(res, true);
+  assert.strictEqual(loads.length, 0, 'no refresh — this edit saved fine');
+});
+
+/* ===== outcome badge (PR 4 prominence) ===== */
+
+test('meetingReportOutcomeBadgeClass: color per outcome key, neutral fallback', () => {
+  assert.strictEqual(app.meetingReportOutcomeBadgeClass('advancing'), 'mrv-badge-advancing');
+  assert.strictEqual(app.meetingReportOutcomeBadgeClass('undecided'), 'mrv-badge-undecided');
+  assert.strictEqual(app.meetingReportOutcomeBadgeClass('not_fit'),   'mrv-badge-not_fit');
+  assert.strictEqual(app.meetingReportOutcomeBadgeClass('no_show'),   'mrv-badge-no_show');
+  assert.strictEqual(app.meetingReportOutcomeBadgeClass(''),          'mrv-badge-neutral');
+  assert.strictEqual(app.meetingReportOutcomeBadgeClass('legacy???'), 'mrv-badge-neutral');
+});
+
+test('the block renders the outcome as a color-coded badge', () => {
+  app.setMode('view');
+  const html = app.meetingReportBlockHTML(reportedLead({ meetingReportOutcome: 'not_fit' }));
+  assert.ok(html.includes('mrv-outcome-badge mrv-badge-not_fit'), 'badge class per outcome');
+  assert.ok(html.includes('התקיימה — לא מתאים'), 'outcome label inside the badge');
 });
 
 /* ===== action buttons render in edit mode only ===== */
