@@ -34,10 +34,14 @@ function navTabs() {
   const nav = INDEX_HTML.match(/<nav class="tabs">([\s\S]*?)<\/nav>/);
   assert.ok(nav, 'index.html must contain a <nav class="tabs"> block');
   const tabs = [];
-  const re = /<button[^>]*\bdata-screen="([^"]+)"[^>]*>([^<]*)<\/button>/g;
+  /* A tab's body may carry nested elements (e.g. the meetings tab's unseen
+   * report count badge <span>, PR 3) — capture the full body and strip any
+   * nested element WITH its content, leaving just the tab's own label text. */
+  const re = /<button[^>]*\bdata-screen="([^"]+)"[^>]*>([\s\S]*?)<\/button>/g;
   let m;
   while ((m = re.exec(nav[1])) !== null) {
-    tabs.push({ screen: m[1], label: m[2].trim() });
+    const label = m[2].replace(/<(\w+)[^>]*>[\s\S]*?<\/\1>/g, '').trim();
+    tabs.push({ screen: m[1], label });
   }
   return tabs;
 }

@@ -1553,6 +1553,15 @@ function meetingsForWeek(leads, weekAnchorISO) {
         houseLabel: h ? h.name : (l.house || ''),
         meetingWith: l.meetingWith || '',
         meetingOutcome: l.meetingOutcome || '',    // pre-selects the row's outcome <select>
+        /* Manager-report fields (PR 3) — carried so the row can render the
+         * read-only דיווח מנהל block + unseen cue. Display-only here; the
+         * mark-seen write goes through updateLead against state.leads. */
+        meetingReportOutcome: l.meetingReportOutcome || '',
+        meetingCompanion:     l.meetingCompanion || '',
+        meetingNote:          l.meetingNote || '',
+        meetingReporter:      l.meetingReporter || '',
+        meetingReportedAt:    l.meetingReportedAt || '',
+        meetingSeen:          l.meetingSeen || '',
       };
       (byIso[v] || (byIso[v] = [])).push(meeting);
     });
@@ -1601,6 +1610,128 @@ function meetingOutcomeSelectHTML(m) {
       <optgroup label="התקיימה">${opt('not_relevant')}${opt('thinking')}${opt('entered')}</optgroup>
       <optgroup label="לא התקיימה">${opt('postponed')}${opt('cancelled')}</optgroup>
     </select>`;
+}
+
+/* ===== Manager meeting reports — Vered's view (PR 3) =====
+ *
+ * Managers submit reports from the standalone /meeting-report form (PR 2) into
+ * the six meetingReport* lead fields (PR 1). Vered sees each report where she
+ * already works — on the meetings-board row and the lead card — as READ-ONLY
+ * context (a "דיווח מנהל" block), visually distinct from her own authoritative
+ * meetingOutcome selector. A report is UNSEEN until she expands it; expanding
+ * writes meetingSeen='1' through the normal updateLead→saveAll path. A manager
+ * resubmission resets meetingSeen to '' (PR 2), so the cue reappears. */
+
+/* Unseen = a report exists (meetingReportedAt non-empty) that Vered hasn't
+ * opened yet (meetingSeen !== '1'). Pure. */
+function meetingReportUnseen(lead) {
+  if (!lead || !lead.meetingReportedAt) return false;
+  return String(lead.meetingSeen || '') !== '1';
+}
+
+/* How many leads carry an unseen manager report — drives the tab badge. Pure. */
+function countUnseenMeetingReports(leads) {
+  return (Array.isArray(leads) ? leads : []).filter(meetingReportUnseen).length;
+}
+
+/* Companion display rule (PR 1): a preset key renders its Hebrew label; any
+ * other value is raw free text from the manager form's אחר flow, shown
+ * verbatim (CALLERS ESCAPE — this returns plain text). Blank → em dash. */
+function meetingReportCompanionDisplay(value) {
+  if (value === undefined || value === null || value === '') return '—';
+  return MEETING_COMPANION_LABELS[value] || String(value);
+}
+
+/* Human display for the report's ISO timestamp: "DD/MM/YYYY HH:MM" in LOCAL
+ * time (isoDate collapses the timestamp to the local calendar day; hours from
+ * the local Date). Unparseable input falls back to the raw string. Pure. */
+function meetingReportWhenText(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${formatDateDDMMYYYY(isoDate(iso))} ${hh}:${mm}`;
+}
+
+/* The read-only "דיווח מנהל" block for one lead. '' when the lead has no
+ * report (meetingReportedAt empty) — nothing renders at all. Collapsed by
+ * default: the head shows the title + outcome label (+ unseen dot); clicking
+ * toggles the detail open (companion / note / reporter / when) and marks the
+ * report seen (see wireMeetingReportToggle). data-mrv-toggle carries the lead
+ * id. All free text is escaped. Deliberately styled apart from Vered's own
+ * .mtg-outcome selector — this is upstream context, never her outcome. */
+function meetingReportBlockHTML(lead) {
+  if (!lead || !lead.meetingReportedAt) return '';
+  const unseen = meetingReportUnseen(lead);
+  const outcomeLabel =
+    MEETING_REPORT_OUTCOME_LABELS[lead.meetingReportOutcome] || lead.meetingReportOutcome || '—';
+  const dot = unseen ? '<span class="mrv-dot" title="דיווח חדש"></span>' : '';
+  return `
+    <div class="mrv-report${unseen ? ' mrv-unseen' : ''}" data-mrv-toggle="${escapeHtml(lead.id || '')}">
+      <div class="mrv-head">
+        ${dot}<span class="mrv-title">דיווח מנהל</span>
+        <span class="mrv-outcome">${escapeHtml(outcomeLabel)}</span>
+        <span class="mrv-chevron">▾</span>
+      </div>
+      <div class="mrv-detail">
+        <div><span class="mrv-label">הגיע/ה עם:</span> ${escapeHtml(meetingReportCompanionDisplay(lead.meetingCompanion))}</div>
+        ${lead.meetingNote ? `<div><span class="mrv-label">פירוט:</span> ${escapeHtml(lead.meetingNote)}</div>` : ''}
+        <div class="mrv-byline"><span class="mrv-label">דווח ע"י:</span> ${escapeHtml(lead.meetingReporter || '—')} · ${escapeHtml(meetingReportWhenText(lead.meetingReportedAt))}</div>
+      </div>
+    </div>`;
+}
+
+/* Mark a lead's manager report seen. Edit-mode only (saveAll no-ops for
+ * viewers) and only when actually unseen — re-opening a seen report is a pure
+ * UI toggle, no write. Optimistic via the SAME updateLead→saveAll path every
+ * lead-card inline field uses: updateLead assigns meetingSeen synchronously
+ * (cue-clearing callers see the new state immediately), saves, and on failure
+ * rolls the lead back + renderAll (which re-renders the dots and the badge) +
+ * shows the error. The write preserves the whole row: state.leads carries
+ * every lead field (normalizeLead pass-through) and mergeLeads_ writes the
+ * full client row — nothing drops. Returns updateLead's promise (false on
+ * no-op) so tests can await the outcome. */
+function markMeetingReportSeen(leadId) {
+  if (state.mode !== 'edit') return Promise.resolve(false);
+  const lead = state.leads.find(l => l.id === leadId);
+  if (!lead || !meetingReportUnseen(lead)) return Promise.resolve(false);
+  const p = updateLead(leadId, { meetingSeen: '1' });
+  // State is already updated (optimistic) — refresh the tab badge now; a
+  // failed save renders everything back via updateLead's rollback path.
+  renderMeetingsUnseenBadge();
+  return p;
+}
+
+/* The unseen-report count badge on the לוח פגישות tab. Hidden at zero. Called
+ * from renderMeetings (so every renderAll / board refresh updates it) and
+ * directly after a mark-seen. */
+function renderMeetingsUnseenBadge() {
+  const el = document.getElementById('meetings-unseen-badge');
+  if (!el) return;
+  const n = countUnseenMeetingReports(state.leads);
+  el.textContent = String(n);
+  el.classList.toggle('hidden', n === 0);
+}
+
+/* Wire one rendered report block: click toggles the detail open/closed; the
+ * transition to OPEN on an unseen report marks it seen (optimistic — the dot
+ * and unseen tint clear in place, no re-render, so the just-opened detail
+ * stays open). */
+function wireMeetingReportToggle(el) {
+  el.addEventListener('click', () => {
+    const opening = !el.classList.contains('open');
+    el.classList.toggle('open');
+    if (!opening) return;
+    const id = el.getAttribute('data-mrv-toggle');
+    if (!id) return;
+    const lead = state.leads.find(l => l.id === id);
+    if (!lead || !meetingReportUnseen(lead)) return;
+    markMeetingReportSeen(id);
+    // Clear the cue in place (state already reflects seen; rollback re-renders).
+    el.classList.remove('mrv-unseen');
+    el.querySelectorAll('.mrv-dot').forEach(d => d.remove());
+  });
 }
 
 /* The meetingOutcome keys that count as "the meeting was held" (התקיימו) — the
@@ -1683,6 +1814,8 @@ function meetingRowHTML(m, timeText, showOutcome) {
   /* Outcome selector — only on today-or-earlier rows, and only in edit mode
    * (viewers never write; saveAll no-ops for them and there is nothing to pick). */
   const outcome = (showOutcome && state.mode === 'edit') ? meetingOutcomeSelectHTML(m) : '';
+  /* Manager report (PR 3): the read-only דיווח מנהל block renders directly
+   * under the row it belongs to — '' when the lead has no report. */
   return `
     <div class="mtg-row">
       <span class="mtg-time">${escapeHtml(timeText || m.time || '—')}</span>
@@ -1690,7 +1823,7 @@ function meetingRowHTML(m, timeText, showOutcome) {
       <span class="mtg-house">${escapeHtml(m.houseLabel || '—')}</span>
       <span class="mtg-with">${escapeHtml(m.meetingWith || '—')}</span>
       <span class="mtg-actions">${outcome}${wa}${edit}</span>
-    </div>`;
+    </div>${meetingReportBlockHTML(m)}`;
 }
 
 function renderMeetings() {
@@ -1789,6 +1922,13 @@ function renderMeetings() {
       if (ok) renderMeetings();
     });
   });
+
+  /* Manager-report blocks (PR 3): click to expand the detail; opening an
+   * unseen report marks it seen in place (see wireMeetingReportToggle). */
+  board.querySelectorAll('[data-mrv-toggle]').forEach(wireMeetingReportToggle);
+
+  /* Keep the tab badge in step with every board refresh (renderAll included). */
+  renderMeetingsUnseenBadge();
 }
 
 /* Per-meeting edit modal (meetings board). Edits map to the underlying lead's
@@ -2356,6 +2496,7 @@ function buildLeadCard(lead) {
       ${createdInner}
     </div>
     ${lead.note ? `<div class="lc-note">${escapeHtml(lead.note)}</div>` : ''}
+    ${meetingReportBlockHTML(lead)}
     ${stageFields}
     ${state.mode === 'edit' ? leadContactEditHTML(lead) : ''}
     <div class="lc-actions edit-only">
@@ -2379,6 +2520,12 @@ function buildLeadCard(lead) {
     });
   };
   card.querySelector('[data-action="edit"]').onclick = () => openEditLeadModal(lead);
+
+  /* Manager-report block (PR 3): expand/collapse + mark-seen on first open. */
+  const mrvEl = card.querySelector('[data-mrv-toggle]');
+  if (mrvEl && mrvEl.getAttribute && mrvEl.getAttribute('data-mrv-toggle')) {
+    wireMeetingReportToggle(mrvEl);
+  }
 
   card.querySelectorAll('[data-field]').forEach(inp => {
     inp.onchange = () => updateLead(lead.id, { [inp.dataset.field]: inp.value });
