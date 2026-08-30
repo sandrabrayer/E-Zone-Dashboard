@@ -443,16 +443,22 @@ input:focus, select:focus, textarea:focus {
   transition: transform .15s;
 }
 .mrv-report.open .mrv-chevron { transform: rotate(180deg); }
+/* Readability pass (Sandra's live feedback): the report BODY is real content
+ * — הגיע/ה עם + a possibly multi-line clinical פירוט — so it gets the app's
+ * primary text color, not muted. Muted is reserved for the byline (reporter +
+ * timestamp metadata); labels sit between at --text-muted so field names stay
+ * distinguishable from values without vanishing like --text-dim did. */
 .mrv-detail {
   display: none;
   padding: 0 14px 12px;
-  color: var(--text-muted);
+  color: var(--text);
   font-size: 14px;
   line-height: 1.7;
   overflow-wrap: anywhere;
 }
 .mrv-report.open .mrv-detail { display: block; }
-.mrv-label { color: var(--text-dim); font-weight: 600; }
+.mrv-label { color: var(--text-muted); font-weight: 600; }
+.mrv-byline { color: var(--text-muted); font-size: 13px; }
 /* PR 4 — edit/delete actions on the expanded block (edit mode only). */
 .mrv-actions { display: flex; gap: 8px; margin-top: 8px; }
 /* PR 4 — companion chips in the edit modal (mirrors the manager form's
@@ -480,8 +486,12 @@ input:focus, select:focus, textarea:focus {
   font-size: 14px;
   color: var(--text);
 }
-.mtg-name { font-weight: 600; color: var(--text); }
-.mtg-house, .mtg-with { color: var(--text-muted); }
+/* Readability pass (Sandra's live feedback): the three fields Vered scans for
+ * — lead name, house, manager — must read at a glance on the dark surfaces.
+ * Name anchors the row alongside the time (same size + weight); house and
+ * manager step down in weight only, NOT to muted color. Controls stay last. */
+.mtg-name { font-weight: 700; font-size: 14px; color: var(--text); }
+.mtg-house, .mtg-with { font-weight: 500; color: var(--text); }
 
 /* Actions cell — WhatsApp link + edit button kept together in the last column
  * so the grid stays a single track for both. */
