@@ -376,6 +376,11 @@ function handle_(params) {
       refreshDigestBestEffort_();
       return jsonOut_(res);
     }
+    if (action === 'deleteMeetingReport') {
+      // Dashboard-side (Vered) action, same trust model as saveAll/removeLead:
+      // reached only through the session-authed /api/sheets proxy.
+      return jsonOut_(deleteMeetingReport_(params.leadId));
+    }
     if (action === 'meetingReportLeads') {
       if (!meetingReportAuthOk_(params)) {
         return jsonOut_({ ok: false, error: 'unauthorized' });
@@ -660,9 +665,16 @@ function saveAll_(leads, patients) {
   const lock = LockService.getScriptLock();
   lock.tryLock(10000);
   try {
-    // Leads — upsert by id; leads not in the payload are preserved
+    // Leads — upsert by id; leads not in the payload are preserved.
+    // `reportConflicts` lists the leadIds whose meetingReport* fields the
+    // merge guard kept from the SHEET instead of the payload (the client's
+    // copy carried a different report timestamp — stale echo, or an edit that
+    // raced a manager resubmission/deletion). The dashboard's edit flow
+    // checks its own leadId here to surface the conflict instead of
+    // pretending the edit saved.
+    let reportConflicts = [];
     if (Array.isArray(leads) && leads.length > 0) {
-      mergeLeads_(leads);
+      reportConflicts = mergeLeads_(leads);
     }
 
     // Patients — only touch houseIds that are present in the payload.
@@ -679,7 +691,7 @@ function saveAll_(leads, patients) {
       }
     }
 
-    return { ok: true, written: written };
+    return { ok: true, written: written, reportConflicts: reportConflicts };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
@@ -731,6 +743,12 @@ function mergeLeads_(leads) {
 
   const today = todayISODate_();
 
+  // leadIds whose meetingReport* fields the guard kept from the sheet instead
+  // of the payload (detected as: the guard changed the row's reportedAt away
+  // from what the client sent). Returned to saveAll_ → the save response, so
+  // the dashboard's edit flow can detect a raced manager resubmit/delete.
+  const reportConflicts = [];
+
   const newRows = leads.map(function (l) {
     const merged = {};
     for (let k in l) merged[k] = l[k];
@@ -752,7 +770,11 @@ function mergeLeads_(leads) {
       merged.created = asISODate_(incomingCreated);
     }
 
+    const sentAt = asTimestampText_(merged.meetingReportedAt);
     preserveNewerMeetingReport_(merged, existing);
+    if (asTimestampText_(merged.meetingReportedAt) !== sentAt) {
+      reportConflicts.push(String(merged.id == null ? '' : merged.id));
+    }
 
     return objectToRow_(merged, LEAD_COLUMNS);
   });
@@ -783,6 +805,8 @@ function mergeLeads_(leads) {
     });
     sh.getRange(2, 1, finalRows.length, LEAD_COLUMNS.length).setValues(finalRows);
   }
+
+  return reportConflicts;
 }
 
 /* The six lead columns owned by the manager reporting form (submitMeetingReport_
@@ -813,30 +837,33 @@ function asTimestampText_(v) {
  * time. A tab loaded before a manager reported therefore carried '' in all six
  * fields and erased the report on its next save (any inline edit, the
  * meetingWith autosave, auto-promote). The rule, keyed on meetingReportedAt
- * (only the backend ever stamps it):
- *   - sheet has a report and the incoming lead's reportedAt is OLDER (or
- *     empty) → the client predates the report: keep all six fields from the
- *     sheet, take the client's copy for everything else;
+ * (only the backend ever stamps it — submitMeetingReport_ / deleteMeetingReport_
+ * bypass this merge entirely):
+ *   - the incoming lead's reportedAt DIFFERS from the sheet's (older, newer,
+ *     or the sheet has no report at all) → the sheet's six fields win, the
+ *     client's copy wins everywhere else. No legitimate saveAll can carry a
+ *     report state the sheet doesn't already hold: reports are created only
+ *     by submitMeetingReport_ and removed only by deleteMeetingReport_, so a
+ *     differing timestamp always means a stale echo — including a stale tab
+ *     trying to resurrect a report onto a row deleteMeetingReport_ already
+ *     cleared (sheetAt '' beats a non-empty clientAt);
  *   - same reportedAt → same report: the client's copy stands (this is how
- *     Vered's mark-seen persists meetingSeen='1'), except meetingSeen is
+ *     Vered's content edit and mark-seen persist), except meetingSeen is
  *     sticky — once the sheet says '1' for THIS report, a peer tab that
  *     hasn't seen the click can't flip it back to unseen. Only a manager
- *     resubmission (a NEWER reportedAt via submitMeetingReport_) resets it;
- *   - incoming NEWER than the sheet → client wins (can only mean the sheet
- *     lost data the client still holds — the write restores it).
+ *     resubmission (a NEWER reportedAt via submitMeetingReport_) resets it.
  * Mutates and returns `merged`. No-op for new leads (no existing row). */
 function preserveNewerMeetingReport_(merged, existingRow) {
   if (!existingRow) return merged;
   const atIdx = LEAD_COLUMNS.indexOf('meetingReportedAt');
   if (atIdx < 0) return merged;
   const sheetAt = asTimestampText_(existingRow[atIdx]);
-  if (!sheetAt) return merged; // no report on the sheet — nothing to protect
   const clientAt = asTimestampText_(merged.meetingReportedAt);
-  if (clientAt < sheetAt) {
+  if (clientAt !== sheetAt) {
     MEETING_REPORT_LEAD_FIELDS.forEach(function (f) {
       merged[f] = existingRow[LEAD_COLUMNS.indexOf(f)];
     });
-  } else if (clientAt === sheetAt) {
+  } else if (sheetAt) {
     const seenIdx = LEAD_COLUMNS.indexOf('meetingSeen');
     if (String(existingRow[seenIdx] == null ? '' : existingRow[seenIdx]) === '1') {
       merged.meetingSeen = '1';
@@ -1463,6 +1490,52 @@ function submitMeetingReport_(report) {
       reportedAt: reportedAt,
     },
   };
+}
+
+/* deleteMeetingReport — Vered removes a manager's report from a lead (PR 4).
+ * A DASHBOARD action (dispatched without the MEETING_REPORT_SECRET, like
+ * saveAll/removeLead — the session-authed proxy is the trust boundary), not a
+ * manager-form action. Clearing the six fields client-side through saveAll
+ * cannot work since the merge guard: the sheet's non-empty reportedAt beats
+ * the incoming empty one and the report resurrects. So the delete clears the
+ * fields DIRECTLY on the sheet row (read-merge-write via upsertRowById_,
+ * whole row preserved), after which the guard treats the row as report-less
+ * and stale echoes can no longer bring the report back (differing timestamp →
+ * sheet wins). Idempotent: deleting a report-less lead is ok:true. Verifies
+ * the write landed, mirroring submitMeetingReport_. */
+function deleteMeetingReport_(leadId) {
+  const id = leadId == null ? '' : String(leadId).trim();
+  if (!id) return { ok: false, error: 'bad_lead', message: 'leadId is required' };
+
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+    const rows = readSheet_(sh, LEAD_COLUMNS);
+    let lead = null;
+    for (let i = 0; i < rows.length; i++) {
+      if (String(rows[i].id) === id) { lead = rows[i]; break; }
+    }
+    if (!lead) return { ok: false, error: 'lead_not_found', message: 'no lead with that id' };
+
+    MEETING_REPORT_LEAD_FIELDS.forEach(function (f) { lead[f] = ''; });
+    upsertRowById_(sh, LEAD_COLUMNS, lead);
+
+    // Read-back verification — ok must mean the report is OFF the sheet.
+    const after = readSheet_(sh, LEAD_COLUMNS);
+    for (let j = 0; j < after.length; j++) {
+      if (String(after[j].id) === id) {
+        if (asTimestampText_(after[j].meetingReportedAt) !== '') {
+          return { ok: false, error: 'write_verify_failed', message: 'the report is still on the Leads sheet' };
+        }
+        break;
+      }
+    }
+
+    return { ok: true, deleted: { leadId: id } };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
 }
 
 /* ===== Payments ===== */

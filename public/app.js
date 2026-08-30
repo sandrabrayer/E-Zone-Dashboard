@@ -1661,23 +1661,48 @@ function meetingReportWhenText(iso) {
  * report seen (see wireMeetingReportToggle). data-mrv-toggle carries the lead
  * id. All free text is escaped. Deliberately styled apart from Vered's own
  * .mtg-outcome selector — this is upstream context, never her outcome. */
+/* The outcome badge's color class, keyed by the report outcome: advancing →
+ * green (success), undecided → amber (warning), not_fit → red (danger),
+ * no_show → gray (neutral). An unknown/legacy value gets the neutral class so
+ * the badge always renders legibly. Pure — unit-tested. */
+function meetingReportOutcomeBadgeClass(outcome) {
+  const map = {
+    advancing: 'mrv-badge-advancing',
+    undecided: 'mrv-badge-undecided',
+    not_fit:   'mrv-badge-not_fit',
+    no_show:   'mrv-badge-no_show',
+  };
+  return map[outcome] || 'mrv-badge-neutral';
+}
+
 function meetingReportBlockHTML(lead) {
   if (!lead || !lead.meetingReportedAt) return '';
   const unseen = meetingReportUnseen(lead);
   const outcomeLabel =
     MEETING_REPORT_OUTCOME_LABELS[lead.meetingReportOutcome] || lead.meetingReportOutcome || '—';
+  const badgeClass = meetingReportOutcomeBadgeClass(lead.meetingReportOutcome);
   const dot = unseen ? '<span class="mrv-dot" title="דיווח חדש"></span>' : '';
+  /* Edit / delete (PR 4) — edit mode only, same gating as mark-seen (both write
+   * via updateLead→saveAll, which is pointless for viewers). Vered-side only:
+   * managers' own correction path stays resubmit-overwrite on /meeting-report. */
+  const actions = state.mode === 'edit'
+    ? `<div class="mrv-actions">
+          <button type="button" class="btn small" data-mrv-edit="${escapeHtml(lead.id || '')}">עריכה</button>
+          <button type="button" class="btn small danger" data-mrv-delete="${escapeHtml(lead.id || '')}">מחיקת דיווח</button>
+        </div>`
+    : '';
   return `
     <div class="mrv-report${unseen ? ' mrv-unseen' : ''}" data-mrv-toggle="${escapeHtml(lead.id || '')}">
       <div class="mrv-head">
         ${dot}<span class="mrv-title">דיווח מנהל</span>
-        <span class="mrv-outcome">${escapeHtml(outcomeLabel)}</span>
+        <span class="mrv-outcome-badge ${badgeClass}">${escapeHtml(outcomeLabel)}</span>
         <span class="mrv-chevron">▾</span>
       </div>
       <div class="mrv-detail">
         <div><span class="mrv-label">הגיע/ה עם:</span> ${escapeHtml(meetingReportCompanionDisplay(lead.meetingCompanion))}</div>
         ${lead.meetingNote ? `<div><span class="mrv-label">פירוט:</span> ${escapeHtml(lead.meetingNote)}</div>` : ''}
         <div class="mrv-byline"><span class="mrv-label">דווח ע"י:</span> ${escapeHtml(lead.meetingReporter || '—')} · ${escapeHtml(meetingReportWhenText(lead.meetingReportedAt))}</div>
+        ${actions}
       </div>
     </div>`;
 }
@@ -1719,7 +1744,9 @@ function renderMeetingsUnseenBadge() {
  * and unseen tint clear in place, no re-render, so the just-opened detail
  * stays open). */
 function wireMeetingReportToggle(el) {
-  el.addEventListener('click', () => {
+  el.addEventListener('click', e => {
+    // Clicks on the edit/delete actions act, never collapse the block.
+    if (e.target && e.target.closest && e.target.closest('.mrv-actions')) return;
     const opening = !el.classList.contains('open');
     el.classList.toggle('open');
     if (!opening) return;
@@ -1732,6 +1759,293 @@ function wireMeetingReportToggle(el) {
     el.classList.remove('mrv-unseen');
     el.querySelectorAll('.mrv-dot').forEach(d => d.remove());
   });
+
+  /* Edit / delete actions (PR 4) — present only when the block rendered in
+   * edit mode (see meetingReportBlockHTML). Edit opens the pre-filled modal
+   * and swaps the block in place on success; delete confirms, clears the six
+   * report fields and removes the block. */
+  const editBtn = el.querySelector('[data-mrv-edit]');
+  if (editBtn) {
+    editBtn.addEventListener('click', () => {
+      const lead = state.leads.find(l => l.id === editBtn.getAttribute('data-mrv-edit'));
+      if (lead) showMeetingReportEditModal(lead, () => refreshMeetingReportBlock(el, lead.id));
+    });
+  }
+  const delBtn = el.querySelector('[data-mrv-delete]');
+  if (delBtn) {
+    delBtn.addEventListener('click', () => {
+      const id = delBtn.getAttribute('data-mrv-delete');
+      showConfirm({
+        text: 'למחוק את דיווח המנהל? הדיווח יוסר מהליד ולא ניתן יהיה לשחזר אותו.',
+        confirmLabel: 'כן, מחק',
+        danger: true,
+        onConfirm: async () => {
+          const ok = await deleteMeetingReport(id);
+          // The block is gone from state; drop it from the DOM in place (a
+          // failed save already re-rendered everything back via rollback).
+          if (ok) el.remove();
+        },
+      });
+    });
+  }
+}
+
+/* ===== Manager meeting reports — edit / delete (PR 4, Vered-side only) =====
+ *
+ * Vered can correct or remove a manager's report from the expanded דיווח מנהל
+ * block. EDIT rewrites content only (outcome / companion / note) — it never
+ * touches meetingReporter, meetingReportedAt or meetingSeen, so the report
+ * keeps its original attribution and timestamp: Vered is correcting, not
+ * re-reporting (managers' own correction path stays resubmit-overwrite via
+ * /meeting-report). DELETE clears ALL six report fields to '', so the block
+ * disappears and the unseen dot / tab badge recompute (an empty
+ * meetingReportedAt can never count as unseen). Both write through the same
+ * optimistic updateLead→saveAll path as every inline lead edit — full row
+ * preserved, rollback + renderAll + error on failure. */
+
+/* Client-side mirror of the PR-2 submit constraints (submitMeetingReport_ in
+ * Code.gs): outcome must be one of the 4 MEETING_REPORT_OUTCOME_LABELS keys,
+ * companion is a preset key or אחר free text capped at 100 chars, note capped
+ * at 2000. Keep in sync with the backend caps. */
+const MEETING_REPORT_COMPANION_MAX = 100;
+const MEETING_REPORT_NOTE_MAX = 2000;
+
+/* '' when the edited values are saveable, otherwise a Hebrew error. Pure. */
+function validateMeetingReportEdit({ outcome, companion, note }) {
+  if (!outcome || !MEETING_REPORT_OUTCOME_LABELS[outcome]) return 'נא לבחור תוצאה';
+  const comp = String(companion || '');
+  if (!MEETING_COMPANION_LABELS[comp] && comp.length > MEETING_REPORT_COMPANION_MAX) {
+    return `הטקסט של "מי הגיע איתו" מוגבל ל-${MEETING_REPORT_COMPANION_MAX} תווים`;
+  }
+  if (String(note || '').length > MEETING_REPORT_NOTE_MAX) {
+    return `הפירוט מוגבל ל-${MEETING_REPORT_NOTE_MAX} תווים`;
+  }
+  return '';
+}
+
+/* How the edit modal opens from the stored values: a preset meetingCompanion
+ * key selects its chip; any other non-empty value is the אחר flow — the אחר
+ * chip selected with the raw text in the free-text input; blank selects no
+ * chip. Pure. */
+function meetingReportEditPrefill(lead) {
+  const companion = String((lead && lead.meetingCompanion) || '');
+  let chip = '', otherText = '';
+  if (MEETING_COMPANION_LABELS[companion]) chip = companion;
+  else if (companion) { chip = 'other'; otherText = companion; }
+  return {
+    outcome: (lead && lead.meetingReportOutcome) || '',
+    chip,
+    otherText,
+    note: (lead && lead.meetingNote) || '',
+  };
+}
+
+/* The edit modal's markup, pre-filled from the lead (checked outcome radio,
+ * selected companion chip, populated אחר input + note). Pure — built apart
+ * from showMeetingReportEditModal so tests can assert the pre-fill without a
+ * DOM. Same structure as showCloseLeadModal (radio fieldset + note textarea);
+ * the chips mirror the manager form's. All values escaped. */
+function meetingReportEditModalHTML(lead) {
+  const pre = meetingReportEditPrefill(lead);
+  const radios = Object.keys(MEETING_REPORT_OUTCOME_LABELS).map(key => `
+    <label class="reason-radio">
+      <input type="radio" name="mrvOutcome" value="${escapeHtml(key)}"${key === pre.outcome ? ' checked' : ''} />
+      <span>${escapeHtml(MEETING_REPORT_OUTCOME_LABELS[key])}</span>
+    </label>`).join('');
+  const chips = Object.keys(MEETING_COMPANION_LABELS).map(key =>
+    `<button type="button" class="mrv-chip${key === pre.chip ? ' selected' : ''}" data-mrv-chip="${escapeHtml(key)}">${escapeHtml(MEETING_COMPANION_LABELS[key])}</button>`
+  ).join('');
+  return `
+    <div class="modal">
+      <h3>עריכת דיווח מנהל</h3>
+      <form>
+        <div class="form-row">
+          <fieldset class="reason-fieldset">
+            <legend>תוצאה</legend>
+            ${radios}
+          </fieldset>
+        </div>
+        <div class="form-row">
+          <label>מי הגיע איתו</label>
+          <div class="mrv-chips">${chips}</div>
+          <div class="mrv-other-wrap${pre.chip === 'other' ? '' : ' hidden'}">
+            <input name="mrvCompanionOther" type="text" maxlength="${MEETING_REPORT_COMPANION_MAX}" placeholder="מי הגיע איתו?" value="${escapeHtml(pre.otherText)}" />
+          </div>
+        </div>
+        <div class="form-row">
+          <label>פירוט</label>
+          <textarea name="mrvNote" rows="3" maxlength="${MEETING_REPORT_NOTE_MAX}">${escapeHtml(pre.note)}</textarea>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn primary">שמירה</button>
+        </div>
+      </form>
+    </div>`;
+}
+
+/* Persist an edited report. Edit-mode gated like mark-seen; refuses values
+ * that would fail the backend caps (mirrored client-side — showError, no
+ * write). Writes ONLY the three content fields, so meetingReporter /
+ * meetingReportedAt / meetingSeen ride through untouched (original
+ * attribution + timestamp kept) — and the unchanged timestamp is exactly what
+ * lets the edit through mergeLeads_'s report guard (equal timestamps → the
+ * client's content wins).
+ *
+ * The race the guard can't let through silently: a manager RESUBMITTED (or
+ * the report was deleted) after the modal opened, so this save carries a
+ * timestamp that no longer matches the sheet's. The guard then keeps the
+ * sheet's report and flags the leadId in the saveAll response's
+ * `reportConflicts`; we surface that as a Hebrew conflict message and refresh
+ * the data instead of pretending the edit saved. Returns true (saved),
+ * 'conflict' (newer report won — data refreshed), or false (refused/failed —
+ * rolled back). */
+function saveMeetingReportEdit(leadId, { outcome, companion, note }) {
+  if (state.mode !== 'edit') return Promise.resolve(false);
+  const lead = state.leads.find(l => l.id === leadId);
+  if (!lead || !lead.meetingReportedAt) return Promise.resolve(false);
+  const err = validateMeetingReportEdit({ outcome, companion, note });
+  if (err) { showError(err); return Promise.resolve(false); }
+
+  // updateLead's optimistic pattern, inlined so the saveAll RESPONSE (which
+  // carries reportConflicts) is visible — updateLead swallows it.
+  const prev = { ...lead };
+  Object.assign(lead, {
+    meetingReportOutcome: outcome,
+    meetingCompanion: String(companion || ''),
+    meetingNote: String(note || ''),
+  });
+  return (async () => {
+    try {
+      const res = await saveAll();
+      const conflicts = (res && res.reportConflicts) || [];
+      if (conflicts.indexOf(String(leadId)) !== -1) {
+        showError('דיווח המנהל השתנה בזמן העריכה (דיווח חדש או מחיקה) — העריכה לא נשמרה, הנתונים רועננו');
+        await loadAll(); // pull the sheet's newer report state and re-render
+        return 'conflict';
+      }
+      return true;
+    } catch (e) {
+      Object.assign(lead, prev);
+      renderAll();
+      showError('עדכון הדיווח נכשל — ' + e.message);
+      return false;
+    }
+  })();
+}
+
+/* Remove a report — a DEDICATED backend action, not a saveAll field-clear.
+ * Since the mergeLeads_ report guard (write-clobber fix), a saveAll carrying
+ * empty report fields against a sheet row with a non-empty timestamp is a
+ * stale echo by definition and the sheet wins — so clearing client-side would
+ * silently no-op. deleteMeetingReport (Code.gs) clears the six fields on the
+ * sheet row itself; on success the LOCAL copy is cleared too, so this tab's
+ * next saveAll echoes the deletion (equal empty timestamps → guard inert) and
+ * the badge recomputes optimistically. Failure rolls the local fields back
+ * and re-renders. */
+function deleteMeetingReport(leadId) {
+  if (state.mode !== 'edit') return Promise.resolve(false);
+  const lead = state.leads.find(l => l.id === leadId);
+  if (!lead || !lead.meetingReportedAt) return Promise.resolve(false);
+
+  const prev = { ...lead };
+  ['meetingReportOutcome', 'meetingCompanion', 'meetingNote',
+   'meetingReporter', 'meetingReportedAt', 'meetingSeen'].forEach(f => { lead[f] = ''; });
+  renderMeetingsUnseenBadge();
+
+  return (async () => {
+    try {
+      await apiPost({ action: 'deleteMeetingReport', leadId: String(leadId) });
+      return true;
+    } catch (e) {
+      Object.assign(lead, prev);
+      renderMeetingsUnseenBadge();
+      renderAll();
+      showError('מחיקת הדיווח נכשלה — ' + e.message);
+      return false;
+    }
+  })();
+}
+
+/* Re-render one block in place after a successful edit (board and lead card
+ * alike — no full re-render, so nothing else on screen is perturbed). Keeps
+ * the open/collapsed state; removes the block when the lead no longer has a
+ * report. */
+function refreshMeetingReportBlock(el, leadId) {
+  const lead = state.leads.find(l => l.id === leadId);
+  const html = lead ? meetingReportBlockHTML(lead) : '';
+  if (!html) { el.remove(); renderMeetingsUnseenBadge(); return; }
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const fresh = tmp.firstElementChild;
+  if (el.classList.contains('open')) fresh.classList.add('open');
+  el.replaceWith(fresh);
+  wireMeetingReportToggle(fresh);
+}
+
+/* The edit modal itself. Hand-rolled on the showCloseLeadModal pattern (the
+ * showModal field list can't express chips / a segmented radio group): chip
+ * clicks re-select in place and toggle the אחר free-text row; submit resolves
+ * the companion (chip key, or the trimmed free text under אחר), validates,
+ * and saves via saveMeetingReportEdit. The submitting flag + disabled buttons
+ * are the modal-form equivalent of withBusyButton — no double-fire. On a
+ * refused validation or a failed save the modal stays open for retry
+ * (updateLead already rolled back and surfaced the error). */
+function showMeetingReportEditModal(lead, onSaved) {
+  const root = document.getElementById('modal-root');
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  back.innerHTML = meetingReportEditModalHTML(lead);
+  root.appendChild(back);
+
+  const form       = back.querySelector('form');
+  const cancelBtn  = back.querySelector('[data-action="cancel"]');
+  const submitBtn  = back.querySelector('button[type="submit"]');
+  const otherWrap  = back.querySelector('.mrv-other-wrap');
+  const otherInput = back.querySelector('[name="mrvCompanionOther"]');
+  let chip = meetingReportEditPrefill(lead).chip;
+
+  back.querySelectorAll('[data-mrv-chip]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      chip = btn.getAttribute('data-mrv-chip');
+      back.querySelectorAll('[data-mrv-chip]').forEach(b => b.classList.toggle('selected', b === btn));
+      otherWrap.classList.toggle('hidden', chip !== 'other');
+      if (chip === 'other') otherInput.focus();
+    });
+  });
+
+  const close = () => back.remove();
+  cancelBtn.onclick = close;
+  back.addEventListener('click', e => { if (e.target === back) close(); });
+
+  let submitting = false;
+  form.onsubmit = async e => {
+    e.preventDefault();
+    if (submitting) return;              // double-click guard
+    submitting = true;
+    submitBtn.disabled = true;
+    cancelBtn.disabled = true;
+    submitBtn.textContent = 'שומר...';
+
+    const fd = new FormData(form);
+    const outcome   = (fd.get('mrvOutcome') || '').toString();
+    const companion = chip === 'other'
+      ? (fd.get('mrvCompanionOther') || '').toString().trim()
+      : chip;
+    const note      = (fd.get('mrvNote') || '').toString().trim();
+
+    const ok = await saveMeetingReportEdit(lead.id, { outcome, companion, note });
+    // A raced manager resubmit/delete: the edit did NOT save; loadAll already
+    // refreshed everything (this block's DOM included), so just close — the
+    // modal's content is built on a report that no longer exists as-was.
+    if (ok === 'conflict') { close(); return; }
+    if (ok) { close(); if (onSaved) onSaved(); return; }
+    // Refused or failed — error already shown; re-enable so Vered can retry.
+    submitting = false;
+    submitBtn.disabled = false;
+    cancelBtn.disabled = false;
+    submitBtn.textContent = 'שמירה';
+  };
 }
 
 /* The meetingOutcome keys that count as "the meeting was held" (התקיימו) — the

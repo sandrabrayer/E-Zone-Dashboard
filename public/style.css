@@ -382,38 +382,61 @@ input:focus, select:focus, textarea:focus {
 /* A manager-report block sits between rows; restore the row divider after it. */
 .mrv-report + .mtg-row { border-top: 1px solid var(--border); }
 
-/* ===== Manager meeting report — Vered's read-only view (PR 3) =====
+/* ===== Manager meeting report — Vered's view (PR 3, upgraded PR 4) =====
  * Purple accent on purpose: visually apart from Vered's own outcome <select>
- * (primary blue) so the manager's report is never mistaken for her outcome. */
+ * (primary blue) so the manager's report is never mistaken for her outcome.
+ * PR 4 prominence pass (Sandra's live feedback): the block reads as its OWN
+ * CARD, not a caption — heavier accent border, stronger tint, more padding,
+ * the outcome as a large color-coded badge. Unseen scales the treatment up
+ * (amber accent + tint + glowing dot) so it can't be missed at a glance. */
 .mrv-report {
-  margin: 0 16px 8px;
-  border: 1px solid var(--border);
-  border-inline-start: 3px solid var(--purple);
-  border-radius: 10px;
-  background: rgba(167, 121, 255, .07);
+  margin: 6px 16px 10px;
+  border: 1px solid var(--border-strong);
+  border-inline-start: 5px solid var(--purple);
+  border-radius: 12px;
+  background: rgba(167, 121, 255, .12);
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
 }
-.lead-card .mrv-report { margin: 8px 0; }
+.lead-card .mrv-report { margin: 10px 0; }
 .mrv-report.mrv-unseen {
   border-inline-start-color: var(--warning);
-  background: rgba(255, 176, 32, .10);
+  border-color: rgba(255, 176, 32, .55);
+  background: rgba(255, 176, 32, .14);
+  box-shadow: 0 0 0 1px rgba(255, 176, 32, .25);
 }
 .mrv-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  flex-wrap: wrap;             /* badge drops to its own line at narrow widths */
+  gap: 8px 10px;
+  padding: 11px 14px;
 }
 .mrv-dot {
-  width: 9px; height: 9px;
+  width: 11px; height: 11px;
   border-radius: 50%;
   background: var(--warning);
-  box-shadow: 0 0 6px rgba(255, 176, 32, .8);
+  box-shadow: 0 0 8px rgba(255, 176, 32, .9);
   flex: 0 0 auto;
 }
-.mrv-title { font-weight: 700; color: var(--purple); }
-.mrv-outcome { color: var(--text); }
+.mrv-title { font-weight: 800; font-size: 14px; color: var(--purple); }
+.mrv-report.mrv-unseen .mrv-title { color: var(--warning); }
+/* The headline: the outcome as a big color-coded badge (PR 4). */
+.mrv-outcome-badge {
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.35;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  max-width: 100%;
+  overflow-wrap: anywhere;     /* long legacy values wrap inside the pill */
+}
+.mrv-badge-advancing { color: var(--success); background: rgba(45, 212, 122, .14); border-color: rgba(45, 212, 122, .5); }
+.mrv-badge-undecided { color: var(--warning); background: rgba(255, 176, 32, .14); border-color: rgba(255, 176, 32, .5); }
+.mrv-badge-not_fit   { color: var(--danger);  background: rgba(255, 77, 94, .14);  border-color: rgba(255, 77, 94, .5); }
+.mrv-badge-no_show   { color: var(--text-muted); background: var(--surface-2); border-color: var(--border-strong); }
+.mrv-badge-neutral   { color: var(--text-muted); background: var(--surface-2); border-color: var(--border-strong); }
 .mrv-chevron {
   margin-inline-start: auto;
   color: var(--text-dim);
@@ -422,13 +445,34 @@ input:focus, select:focus, textarea:focus {
 .mrv-report.open .mrv-chevron { transform: rotate(180deg); }
 .mrv-detail {
   display: none;
-  padding: 0 12px 10px;
+  padding: 0 14px 12px;
   color: var(--text-muted);
+  font-size: 14px;
   line-height: 1.7;
   overflow-wrap: anywhere;
 }
 .mrv-report.open .mrv-detail { display: block; }
 .mrv-label { color: var(--text-dim); font-weight: 600; }
+/* PR 4 — edit/delete actions on the expanded block (edit mode only). */
+.mrv-actions { display: flex; gap: 8px; margin-top: 8px; }
+/* PR 4 — companion chips in the edit modal (mirrors the manager form's
+ * .mr-chip, restyled to the dashboard modal's scale). */
+.modal .mrv-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.modal .mrv-chip {
+  font-family: inherit; font-size: 13px;
+  padding: 7px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.modal .mrv-chip.selected {
+  background: linear-gradient(180deg, var(--primary) 0%, var(--primary-strong) 100%);
+  border-color: transparent;
+  color: #fff;
+}
+.modal .mrv-other-wrap { margin-top: 8px; }
 /* Time anchors each row: bold, bright, tabular so columns line up. */
 .mtg-time {
   font-variant-numeric: tabular-nums;
