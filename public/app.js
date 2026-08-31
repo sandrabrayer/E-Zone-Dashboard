@@ -2163,13 +2163,16 @@ function computeManagerConversion(leads) {
 function meetingsSummaryHTML(leads) {
   const rows = computeManagerConversion(leads);
   if (!rows.length) return '';
+  /* Band class for the percentage pill: ≥80 green, 50–79 amber, <50 red
+   * (style.css .mtg-sum-rate.rate-*). Pure presentation — rate math unchanged. */
+  const band = rate => (rate >= 80 ? 'rate-high' : rate >= 50 ? 'rate-mid' : 'rate-low');
   const items = rows.map(r => `
       <div class="mtg-sum-row">
         <span class="mtg-sum-mgr">${escapeHtml(r.manager)}</span>
         <span class="mtg-sum-sep">·</span><span class="mtg-sum-stat">פגישות: <b>${r.total}</b></span>
         <span class="mtg-sum-sep">·</span><span class="mtg-sum-stat">התקיימו: <b>${r.held}</b></span>
         <span class="mtg-sum-sep">·</span><span class="mtg-sum-stat">נכנסו: <b>${r.converted}</b></span>
-        <span class="mtg-sum-sep">·</span><span class="mtg-sum-rate">${r.rate}%</span>
+        <span class="mtg-sum-sep">·</span><span class="mtg-sum-rate ${band(r.rate)}">${r.rate}%</span>
       </div>`).join('');
   return `
     <div class="mtg-summary">
