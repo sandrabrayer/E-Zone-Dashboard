@@ -1744,9 +1744,14 @@ function meetingReportOutcomeBadgeClass(outcome) {
   return map[outcome] || 'mrv-badge-neutral';
 }
 
-function meetingReportBlockHTML(lead) {
+/* opts.readOnly (patient card): no unseen dot/tint (the cue belongs to the
+ * lead surface), no edit/delete actions regardless of mode, and an EMPTY
+ * data-mrv-toggle id — wireMeetingReportToggle still expands/collapses but
+ * bails before mark-seen, so viewing a report on a patient never writes. */
+function meetingReportBlockHTML(lead, opts) {
   if (!lead || !lead.meetingReportedAt) return '';
-  const unseen = meetingReportUnseen(lead);
+  const readOnly = !!(opts && opts.readOnly);
+  const unseen = !readOnly && meetingReportUnseen(lead);
   const outcomeLabel =
     MEETING_REPORT_OUTCOME_LABELS[lead.meetingReportOutcome] || lead.meetingReportOutcome || '—';
   const badgeClass = meetingReportOutcomeBadgeClass(lead.meetingReportOutcome);
@@ -1754,14 +1759,14 @@ function meetingReportBlockHTML(lead) {
   /* Edit / delete (PR 4) — edit mode only, same gating as mark-seen (both write
    * via updateLead→saveAll, which is pointless for viewers). Vered-side only:
    * managers' own correction path stays resubmit-overwrite on /meeting-report. */
-  const actions = state.mode === 'edit'
+  const actions = (!readOnly && state.mode === 'edit')
     ? `<div class="mrv-actions">
           <button type="button" class="btn small" data-mrv-edit="${escapeHtml(lead.id || '')}">עריכה</button>
           <button type="button" class="btn small danger" data-mrv-delete="${escapeHtml(lead.id || '')}">מחיקת דיווח</button>
         </div>`
     : '';
   return `
-    <div class="mrv-report${unseen ? ' mrv-unseen' : ''}" data-mrv-toggle="${escapeHtml(lead.id || '')}">
+    <div class="mrv-report${unseen ? ' mrv-unseen' : ''}" data-mrv-toggle="${readOnly ? '' : escapeHtml(lead.id || '')}">
       <div class="mrv-head">
         ${dot}<span class="mrv-title">דיווח מנהל</span>
         <span class="mrv-outcome-badge ${badgeClass}">${escapeHtml(outcomeLabel)}</span>
@@ -1774,6 +1779,29 @@ function meetingReportBlockHTML(lead) {
         ${actions}
       </div>
     </div>`;
+}
+
+/* The report follows the patient: resolve a patient's originating lead (the
+ * fromLead link both admit paths write — openEntryModal and
+ * promoteEnteredLeads) and return it when it carries a manager report.
+ * Retiring a lead to 'admitted' only flips its stage, so the lead row and its
+ * meetingReport* fields stay readable in state.leads. Hand-entered patients
+ * (fromLead '') and dangling links return null. Pure. */
+function patientMeetingReportLead(patient, leads) {
+  const id = patient && patient.fromLead;
+  if (!id) return null;
+  const lead = (Array.isArray(leads) ? leads : []).find(l => l && String(l.id) === String(id)) || null;
+  return (lead && lead.meetingReportedAt) ? lead : null;
+}
+
+/* The דיווח מנהל block for a patient row: the SAME shared block, read-only
+ * (no unseen cue, no edit/delete — those stay on the lead surface), wrapped
+ * in a full-width grid cell so the .patient-row grid keeps its columns.
+ * '' when the patient has no linked report. Pure HTML. */
+function patientReportBlockHTML(patient, leads) {
+  const lead = patientMeetingReportLead(patient, leads);
+  if (!lead) return '';
+  return `<div class="pt-report">${meetingReportBlockHTML(lead, { readOnly: true })}</div>`;
 }
 
 /* Mark a lead's manager report seen. Edit-mode only (saveAll no-ops for
@@ -4418,7 +4446,14 @@ function renderPatients() {
         <button class="btn small danger" data-action="delete" title="מחק לצמיתות">✕</button>
         <button class="btn small" data-action="edit" title="ערוך מטופל">✏️</button>
       </div>
+      ${patientReportBlockHTML(p, state.leads)}
     `;
+
+    /* Read-only manager report carried over from the originating lead —
+     * expand/collapse only (the empty toggle id makes wireMeetingReportToggle
+     * skip mark-seen, and the read-only block renders no edit/delete). */
+    const mrvEl = row.querySelector('.mrv-report');
+    if (mrvEl) wireMeetingReportToggle(mrvEl);
 
     row.querySelector('[data-action="edit"]').onclick = () => openEditPatientModal(p);
     const releaseBtn = row.querySelector('[data-action="release"]');
