@@ -207,6 +207,12 @@ function followingRequest(opts, targetUrl, payload, resolve, reject, redirects) 
       res.resume();
       return followingRequest({ method: 'GET' }, res.headers.location, null, resolve, reject, redirects + 1);
     }
+    /* utf8 BEFORE reading: without it each chunk Buffer is decoded on its own
+     * by the `data += c` implicit toString, and a multibyte character split
+     * across a chunk boundary (every 2-byte Hebrew letter is a candidate)
+     * decodes as two U+FFFD replacement chars. setEncoding routes the stream
+     * through a StringDecoder, which buffers partial sequences across chunks. */
+    res.setEncoding('utf8');
     let data = '';
     res.on('data', (c) => (data += c));
     res.on('end', () => {
@@ -924,6 +930,7 @@ if (require.main === module) {
 
 module.exports = {
   buildLoadPreviews,
+  followingRequest,
   parseSessionCookie,
   sessionAuthStatus,
   requireSession,
