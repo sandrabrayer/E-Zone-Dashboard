@@ -2755,3 +2755,493 @@ function setupActivePatientsDigest() {
     rebuild: result,
   };
 }
+
+/* ===== Nightly integrity job (detection + backup) ===========================
+ *
+ * Second layer of defense after the merge-don't-drop guard (PR #96): a
+ * time-driven job (~2:30 AM, project timezone Asia/Jerusalem — pinned in
+ * appsscript.json; offset from the outpatient app's 2:00 job so the two
+ * never load Drive/Sheets at the same minute) that DETECTS silent
+ * patient-row loss and keeps a daily off-spreadsheet backup, independent of
+ * any save path. Mirror of the outpatient app's nightlyIntegrityJob adapted
+ * to this app's data model: Patients rows have NO id column — identity is
+ * the triple key houseId::name::entryDate (patientKey_), and recorded
+ * removals live in the PatientsTombstones sheet (any reason: 'user-delete'
+ * or 'saveAll-omitted-preserved').
+ *
+ * READ-ONLY contract: this job NEVER writes to the live Patients / Leads /
+ * Payments / BillingOverrides / PatientsTombstones sheets — not even a
+ * header backfill, which is why every live read goes through getSheetByName
+ * (never getOrCreateSheet_). Its only writes are Script Properties, the
+ * separate EZONE-Backups spreadsheet, and the alert email.
+ *
+ * Three checks, in a FIXED ORDER (locked by test/nightly-integrity.test.js):
+ *   1. Patient-roster sentinel — the previous run's full key list (chunked
+ *      Script Properties) vs the live Patients keys; a key gone WITHOUT a
+ *      PatientsTombstones entry is the silent-loss signature. Discharge is a
+ *      status flip (dischargePatient_ is append-only to the audit sheet) and
+ *      a client rename appends a new-key row while the merge KEEPS the old
+ *      one, so deletePatientRow_ — which tombstones fail-hard BEFORE
+ *      deleting — is the ONLY legitimate row removal; no other whitelist
+ *      exists. Runs BEFORE check 3 so a same-day snapshot overwrite can
+ *      never mask what yesterday's backup still holds.
+ *   2. Orphan sweep — every Payments row and BillingOverrides row keyed to a
+ *      patient (patientId column = the same triple key, healed from the
+ *      deterministic row id when blank, mirroring app.js normalizePayment /
+ *      normalizeBillingOverride) must match a live Patients row or a
+ *      tombstone; unmatched → alert.
+ *   3. Daily snapshot — values-only copies of Patients AND Leads (covers the
+ *      lead-resurrection blind spot for cheap) into the SAME EZONE-Backups
+ *      spreadsheet the outpatient job owns: stored id first, then DriveApp
+ *      lookup BY NAME, and only if truly absent SpreadsheetApp.create. One
+ *      sheet per day per source ('dashboard-patients-YYYY-MM-DD' /
+ *      'dashboard-leads-YYYY-MM-DD'); retention deletes ONLY names strictly
+ *      matching those dashboard- prefixes and older than 30 days — the
+ *      outpatient app's 'outpatient-*' sheets and any other tab are
+ *      untouchable by construction.
+ *
+ * Alerting: ONE email per run, ONLY when something is wrong (no daily
+ * noise), to the ALERT_EMAIL Script Property (a per-project property — set
+ * it in THIS project even though the outpatient project has its own).
+ * Fail-open: no property / send failure → Logger.log, never throw.
+ *
+ * Install once by running setupIntegrityTrigger() from the editor. */
+
+/* Previous-run roster keys, chunked: the full key list is JSON already
+ * ~6.6KB UTF-8 at 144 rows and grows monotonically (released rows stay on
+ * the sheet), so a single property would cross the ~9KB per-value limit.
+ * INTEGRITY_LAST_PATIENT_KEYS_CHUNKS holds the chunk count; the JSON string
+ * is split across INTEGRITY_LAST_PATIENT_KEYS_0..N-1. 3000 chars per chunk
+ * stays under 9KB even if every char is a 3-byte code point. */
+const INTEGRITY_PROP_KEY_CHUNK_COUNT  = 'INTEGRITY_LAST_PATIENT_KEYS_CHUNKS';
+const INTEGRITY_PROP_KEY_CHUNK_PREFIX = 'INTEGRITY_LAST_PATIENT_KEYS_';
+const INTEGRITY_KEY_CHUNK_CHARS       = 3000;
+const INTEGRITY_PROP_LAST_RUN    = 'INTEGRITY_LAST_RUN';
+const INTEGRITY_PROP_BACKUP_SSID = 'INTEGRITY_BACKUP_SSID';
+const INTEGRITY_PROP_ALERT_EMAIL = 'ALERT_EMAIL';
+const INTEGRITY_BACKUP_NAME      = 'EZONE-Backups';
+const INTEGRITY_RETENTION_DAYS   = 30;
+const INTEGRITY_ALERT_SUBJECT    = '⚠️ E-ZONE Dashboard: אי-התאמה בנתוני מטופלים';
+/* Snapshot sheet names are app-prefixed: EZONE-Backups is SHARED with the
+ * outpatient app's job ('outpatient-YYYY-MM-DD' sheets), so each app's
+ * snapshots and retention must never collide. Keep the prefixes and the
+ * STRICT matcher in sync — the round-trip test locks them together. */
+const INTEGRITY_PATIENTS_SNAPSHOT_PREFIX = 'dashboard-patients-';
+const INTEGRITY_LEADS_SNAPSHOT_PREFIX    = 'dashboard-leads-';
+const INTEGRITY_SNAPSHOT_RE = /^dashboard-(?:patients|leads)-(\d{4})-(\d{2})-(\d{2})$/;
+
+/* ---- pure helpers (no GAS services — exercised directly by node --test) ---- */
+
+/* Re-key a stored triple ('houseId::name::YYYY-MM-DD', from a payments /
+ * overrides patientId cell or a persisted snapshot) through patientKey_ so
+ * both sides of every comparison share trimming + date normalization. The
+ * date is the LAST segment (a name containing '::' keeps working); anything
+ * with fewer than 3 segments is returned trimmed — it can never match a
+ * live key, which is exactly the alert we want for a malformed cell. */
+function integrityNormalizeKey_(key) {
+  const parts = String(key == null ? '' : key).split('::');
+  if (parts.length < 3) return String(key == null ? '' : key).trim();
+  return patientKey_(parts[0], parts.slice(1, parts.length - 1).join('::'), parts[parts.length - 1]);
+}
+
+/* Keys present in the previous run's list but absent from the current one.
+ * Both sides normalized; blanks ignored. */
+function integrityDiffMissingKeys_(prevKeys, currentKeys) {
+  const cur = {};
+  for (let i = 0; i < (currentKeys || []).length; i++) {
+    const ck = integrityNormalizeKey_(currentKeys[i]);
+    if (ck) cur[ck] = true;
+  }
+  const missing = [];
+  const seen = {};
+  for (let j = 0; j < (prevKeys || []).length; j++) {
+    const pk = integrityNormalizeKey_(prevKeys[j]);
+    if (pk && !cur[pk] && !seen[pk]) { seen[pk] = true; missing.push(pk); }
+  }
+  return missing;
+}
+
+/* patientId out of a Payments row id — 'pay::<houseId>::<name>::<date>::<dueDate>'
+ * (paymentId() in app.js). Mirrors the parts.slice(1, 4) heal in
+ * normalizePayment. Non-conforming → '' (caller falls back nowhere: the
+ * patientId column is authoritative and this parse is ITS fallback). */
+function integrityParsePaymentPatientId_(paymentId) {
+  const parts = String(paymentId == null ? '' : paymentId).split('::');
+  if (parts.length < 5 || parts[0] !== 'pay') return '';
+  return parts.slice(1, 4).join('::');
+}
+
+/* patientId out of a BillingOverrides row id — 'ovr::<patientId>::<YYYY-MM>'
+ * where <patientId> is itself the triple (billingOverrideId() in app.js), so
+ * the month is the LAST segment and the id has exactly 5. */
+function integrityParseOverridePatientId_(overrideId) {
+  const parts = String(overrideId == null ? '' : overrideId).split('::');
+  if (parts.length < 5 || parts[0] !== 'ovr') return '';
+  return parts.slice(1, parts.length - 1).join('::');
+}
+
+/* Unique normalized patient keys across `rows` with NEITHER a live Patients
+ * row NOR a tombstone. Key resolution mirrors app.js: the patientId column
+ * wins, a blank cell is healed by parsing the row id via parseIdFn. Rows
+ * that yield no key at all are skipped (nothing to attribute). */
+function integrityOrphanKeys_(rows, parseIdFn, liveKeySet, tombstoneKeySet) {
+  const seen = {};
+  const orphans = [];
+  for (let i = 0; i < (rows || []).length; i++) {
+    const row = rows[i] || {};
+    let pid = row.patientId == null ? '' : String(row.patientId).trim();
+    if (!pid) pid = parseIdFn(row.id);
+    if (!pid) continue;
+    const key = integrityNormalizeKey_(pid);
+    if (!key || seen[key]) continue;
+    seen[key] = true;
+    if (!liveKeySet[key] && !tombstoneKeySet[key]) orphans.push(key);
+  }
+  return orphans;
+}
+
+/* '<prefix>YYYY-MM-DD' from a Date's LOCAL parts — the runtime clock is the
+ * project timezone (Asia/Jerusalem), so the day rolls at local midnight. */
+function integritySnapshotName_(prefix, date) {
+  const m = date.getMonth() + 1;
+  const d = date.getDate();
+  return prefix + date.getFullYear() +
+    '-' + (m < 10 ? '0' + m : String(m)) +
+    '-' + (d < 10 ? '0' + d : String(d));
+}
+
+/* Retention date math over SHEET NAMES. Strict: only names matching the
+ * dashboard- prefixed snapshot format can ever expire — every other sheet
+ * (the outpatient app's outpatient-* snapshots, a manual tab, a malformed
+ * name) is untouchable. Expired = strictly older than retentionDays days
+ * before today's snapshot name. */
+function integrityIsExpiredSnapshot_(sheetName, todayName, retentionDays) {
+  const m = INTEGRITY_SNAPSHOT_RE.exec(String(sheetName == null ? '' : sheetName));
+  if (!m) return false;
+  const t = INTEGRITY_SNAPSHOT_RE.exec(String(todayName == null ? '' : todayName));
+  if (!t) return false;
+  const ageDays = (Date.UTC(+t[1], +t[2] - 1, +t[3]) - Date.UTC(+m[1], +m[2] - 1, +m[3])) / 86400000;
+  return ageDays > retentionDays;
+}
+
+/* Split a string into fixed-size slices ('' → no chunks). Pure counterpart
+ * of the chunked key-list storage. */
+function integritySplitChunks_(str, size) {
+  const out = [];
+  const s = String(str == null ? '' : str);
+  for (let i = 0; i < s.length; i += size) out.push(s.slice(i, i + size));
+  return out;
+}
+
+/* 'houseId — name — entryDate' for the alert body — the triple disambiguates
+ * duplicate names; a non-triple string is shown as-is. */
+function integrityKeyDisplay_(key) {
+  const parts = String(key == null ? '' : key).split('::');
+  if (parts.length < 3) return String(key == null ? '' : key);
+  return parts[0] + ' — ' + parts.slice(1, parts.length - 1).join('::') + ' — ' + parts[parts.length - 1];
+}
+
+/* Hebrew alert body from a plain report object (pure — unit-tested). */
+function integrityAlertBody_(report) {
+  const lines = [];
+  lines.push('בדיקת שלמות הנתונים הלילית (nightlyIntegrityJob) מצאה אי-התאמות:');
+  if (report.missing && report.missing.length) {
+    lines.push('');
+    lines.push('שורות מטופלים שנעלמו מגיליון Patients ללא רישום ב-PatientsTombstones:');
+    for (let i = 0; i < report.missing.length; i++) {
+      lines.push('  • ' + integrityKeyDisplay_(report.missing[i]));
+    }
+    lines.push('מספר שורות בריצה הקודמת: ' + report.prevCount + ' | מספר נוכחי: ' + report.currentCount);
+  }
+  if (report.orphanPayments && report.orphanPayments.length) {
+    lines.push('');
+    lines.push('תשלומים (Payments) ללא שורת מטופל חיה וללא רישום ב-PatientsTombstones:');
+    for (let j = 0; j < report.orphanPayments.length; j++) {
+      lines.push('  • ' + integrityKeyDisplay_(report.orphanPayments[j]));
+    }
+  }
+  if (report.orphanOverrides && report.orphanOverrides.length) {
+    lines.push('');
+    lines.push('עקיפות חיוב (BillingOverrides) ללא שורת מטופל חיה וללא רישום ב-PatientsTombstones:');
+    for (let k = 0; k < report.orphanOverrides.length; k++) {
+      lines.push('  • ' + integrityKeyDisplay_(report.orphanOverrides[k]));
+    }
+  }
+  if (report.errors && report.errors.length) {
+    lines.push('');
+    lines.push('שגיאות פנימיות במהלך הבדיקה:');
+    for (let e = 0; e < report.errors.length; e++) {
+      lines.push('  • ' + report.errors[e]);
+    }
+  }
+  return lines.join('\n');
+}
+
+/* ---- Script Properties chunk store (props-only — testable with a fake) ---- */
+
+/* Persist the full key list as JSON split across chunk properties, then
+ * delete any stale higher-numbered chunks a previously longer list left
+ * behind (probe until the first gap — chunks are always written densely). */
+function integrityStoreKeys_(props, keys) {
+  const chunks = integritySplitChunks_(JSON.stringify(keys || []), INTEGRITY_KEY_CHUNK_CHARS);
+  for (let i = 0; i < chunks.length; i++) {
+    props.setProperty(INTEGRITY_PROP_KEY_CHUNK_PREFIX + i, chunks[i]);
+  }
+  props.setProperty(INTEGRITY_PROP_KEY_CHUNK_COUNT, String(chunks.length));
+  for (let j = chunks.length; ; j++) {
+    if (props.getProperty(INTEGRITY_PROP_KEY_CHUNK_PREFIX + j) === null) break;
+    props.deleteProperty(INTEGRITY_PROP_KEY_CHUNK_PREFIX + j);
+  }
+}
+
+/* Previous run's key list, or null when there is no usable snapshot (first
+ * run, a missing chunk, corrupt JSON). null tells the sentinel to SKIP the
+ * diff — never to treat "no baseline" as "everything vanished". */
+function integrityLoadKeys_(props) {
+  const countRaw = props.getProperty(INTEGRITY_PROP_KEY_CHUNK_COUNT);
+  if (countRaw === null) return null;
+  const count = Number(countRaw);
+  if (!isFinite(count) || count < 0) return null;
+  let json = '';
+  for (let i = 0; i < count; i++) {
+    const chunk = props.getProperty(INTEGRITY_PROP_KEY_CHUNK_PREFIX + i);
+    if (chunk === null) return null;
+    json += chunk;
+  }
+  try {
+    const keys = JSON.parse(json || '[]');
+    return Array.isArray(keys) ? keys : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/* ---- GAS-facing helpers (backup spreadsheet only — never the live one) ---- */
+
+/* Open the shared backup spreadsheet WITHOUT creating it: stored id first,
+ * then a DriveApp lookup by name (the outpatient app's job may already own
+ * EZONE-Backups — creating a second one would fork the backups), persisting
+ * a found id. null → check 3 may create as a last resort. */
+function integrityOpenBackupSpreadsheet_(props, errors) {
+  const ssid = props.getProperty(INTEGRITY_PROP_BACKUP_SSID);
+  if (ssid) {
+    try { return SpreadsheetApp.openById(ssid); }
+    catch (err) { errors.push('פתיחת גיליון הגיבוי (' + ssid + ') נכשלה: ' + err); }
+  }
+  try {
+    const files = DriveApp.getFilesByName(INTEGRITY_BACKUP_NAME);
+    while (files.hasNext()) {
+      const file = files.next();
+      if (file.isTrashed()) continue;
+      const ss = SpreadsheetApp.openById(file.getId());
+      props.setProperty(INTEGRITY_PROP_BACKUP_SSID, ss.getId());
+      return ss;
+    }
+  } catch (err) { errors.push('חיפוש גיליון הגיבוי בדרייב נכשל: ' + err); }
+  return null;
+}
+
+/* Write a values-only snapshot into the BACKUP spreadsheet (only — never the
+ * live one). Idempotent for a same-day re-run: an existing sheet with the
+ * name is cleared and rewritten in place (never deleted first, so this also
+ * works when it is the spreadsheet's only sheet). */
+function integrityWriteSnapshot_(backupSs, snapName, grid) {
+  let sh = backupSs.getSheetByName(snapName);
+  if (sh) sh.clear();
+  else sh = backupSs.insertSheet(snapName);
+  if (grid && grid.length) {
+    sh.getRange(1, 1, grid.length, grid[0].length).setValues(grid);
+  }
+  // A just-created backup spreadsheet's default sheet is dead weight once a
+  // snapshot exists; drop it (guarded — never a snapshot, never the last sheet).
+  const def = backupSs.getSheetByName('Sheet1') || backupSs.getSheetByName('גיליון1');
+  if (def && !INTEGRITY_SNAPSHOT_RE.test(def.getName()) && backupSs.getSheets().length > 1) {
+    backupSs.deleteSheet(def);
+  }
+  return sh;
+}
+
+/* Delete OUR expired snapshot sheets from the backup spreadsheet. Strictly
+ * name-matched via integrityIsExpiredSnapshot_ — the outpatient app's
+ * sheets and any non-conforming name can never be selected; never deletes
+ * the last remaining sheet (Sheets requires >= 1). */
+function integrityApplyRetention_(backupSs, todayName, retentionDays) {
+  const sheets = backupSs.getSheets();
+  const deleted = [];
+  for (let i = 0; i < sheets.length; i++) {
+    if (backupSs.getSheets().length <= 1) break;
+    const name = sheets[i].getName();
+    if (integrityIsExpiredSnapshot_(name, todayName, retentionDays)) {
+      backupSs.deleteSheet(sheets[i]);
+      deleted.push(name);
+    }
+  }
+  return deleted;
+}
+
+/* One email per run, only when called (i.e. something is wrong). Fail-open:
+ * no ALERT_EMAIL property, or a send failure → Logger.log the report and
+ * return false; NEVER throw (an alerting failure must not kill the job). */
+function integritySendAlert_(body) {
+  let email = '';
+  try {
+    email = PropertiesService.getScriptProperties().getProperty(INTEGRITY_PROP_ALERT_EMAIL) || '';
+  } catch (_) { /* fall through to the log-only path */ }
+  if (!email) {
+    Logger.log('INTEGRITY ALERT (no ' + INTEGRITY_PROP_ALERT_EMAIL + ' Script Property — email not sent):\n' + body);
+    return false;
+  }
+  try {
+    MailApp.sendEmail(email, INTEGRITY_ALERT_SUBJECT, body);
+    return true;
+  } catch (err) {
+    Logger.log('INTEGRITY ALERT send failed (' + err + '):\n' + body);
+    return false;
+  }
+}
+
+/* The nightly trigger handler. Each check runs in its own try/catch so one
+ * failure never silences the others; internal errors join the alert. */
+function nightlyIntegrityJob() {
+  const props = PropertiesService.getScriptProperties();
+  const errors = [];
+
+  // ---- read-only reads of the live data (getSheetByName, NEVER
+  //      getOrCreateSheet_: this job must not write to Patients / Leads /
+  //      Payments / BillingOverrides, not even a header backfill) ----
+  let patientRows = [], patientsGrid = null, patientsReadOk = false;
+  try {
+    const patientsSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PATIENTS_SHEET);
+    if (patientsSh) {
+      patientRows = readSheet_(patientsSh, PATIENT_COLUMNS);
+      patientsGrid = patientsSh.getDataRange().getValues();
+    }
+    patientsReadOk = true;
+  } catch (err) { errors.push('קריאת Patients נכשלה: ' + err); }
+
+  let leadsGrid = null;
+  try {
+    const leadsSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LEADS_SHEET);
+    if (leadsSh) leadsGrid = leadsSh.getDataRange().getValues();
+  } catch (err) { errors.push('קריאת Leads נכשלה: ' + err); }
+
+  let paymentRows = [];
+  try {
+    const paymentsSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PAYMENTS_SHEET);
+    if (paymentsSh) paymentRows = readSheet_(paymentsSh, PAYMENT_COLUMNS);
+  } catch (err) { errors.push('קריאת Payments נכשלה: ' + err); }
+
+  let overrideRows = [];
+  try {
+    const overridesSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(BILLING_OVERRIDES_SHEET);
+    if (overridesSh) overrideRows = readSheet_(overridesSh, BILLING_OVERRIDE_COLUMNS);
+  } catch (err) { errors.push('קריאת BillingOverrides נכשלה: ' + err); }
+
+  // A tombstone with ANY reason ('user-delete' or 'saveAll-omitted-preserved')
+  // means the disappearance was RECORDED — only an unrecorded one alerts.
+  const tombstoneKeySet = {};
+  try {
+    const tombSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PATIENTS_TOMBSTONES_SHEET);
+    const tombs = tombSh ? readSheet_(tombSh, PATIENT_TOMBSTONE_COLUMNS) : [];
+    for (let t = 0; t < tombs.length; t++) {
+      const tk = patientKey_(tombs[t].houseId, tombs[t].name, tombs[t].date);
+      if (tk) tombstoneKeySet[tk] = true;
+    }
+  } catch (err) { errors.push('קריאת PatientsTombstones נכשלה: ' + err); }
+
+  const currentKeys = [], liveKeySet = {};
+  for (let c = 0; c < patientRows.length; c++) {
+    const key = patientKey_(patientRows[c].houseId, patientRows[c].name, patientRows[c].date);
+    if (key && key !== '::::') { currentKeys.push(key); liveKeySet[key] = true; }
+  }
+
+  // ---- CHECK 1: patient-roster sentinel (ALWAYS before the check-3 snapshot
+  //      overwrite — yesterday's backup must still hold the missing rows) ----
+  let missing = [];
+  let prevKeys = null;
+  try {
+    prevKeys = integrityLoadKeys_(props);
+    if (patientsReadOk && prevKeys) {
+      const gone = integrityDiffMissingKeys_(prevKeys, currentKeys);
+      for (let m = 0; m < gone.length; m++) {
+        if (!tombstoneKeySet[gone[m]]) missing.push(gone[m]);
+      }
+    }
+  } catch (err) { errors.push('בדיקת רשימת המטופלים נכשלה: ' + err); }
+
+  // ---- CHECK 2: orphan sweep (Payments + BillingOverrides) ----
+  let orphanPayments = [], orphanOverrides = [];
+  try {
+    orphanPayments = integrityOrphanKeys_(paymentRows, integrityParsePaymentPatientId_, liveKeySet, tombstoneKeySet);
+  } catch (err) { errors.push('בדיקת תשלומים יתומים נכשלה: ' + err); }
+  try {
+    orphanOverrides = integrityOrphanKeys_(overrideRows, integrityParseOverridePatientId_, liveKeySet, tombstoneKeySet);
+  } catch (err) { errors.push('בדיקת עקיפות חיוב יתומות נכשלה: ' + err); }
+
+  // ---- CHECK 3: daily snapshot + retention (AFTER check 1) ----
+  try {
+    if ((patientsGrid && patientsGrid.length) || (leadsGrid && leadsGrid.length)) {
+      // Lookup (stored id, then Drive BY NAME) BEFORE any create — the
+      // outpatient job already owns EZONE-Backups; never fork a second one.
+      let backupSs = integrityOpenBackupSpreadsheet_(props, errors);
+      if (!backupSs) {
+        backupSs = SpreadsheetApp.create(INTEGRITY_BACKUP_NAME);
+        props.setProperty(INTEGRITY_PROP_BACKUP_SSID, backupSs.getId());
+      }
+      const now = new Date();
+      const todayPatientsName = integritySnapshotName_(INTEGRITY_PATIENTS_SNAPSHOT_PREFIX, now);
+      if (patientsGrid && patientsGrid.length) {
+        integrityWriteSnapshot_(backupSs, todayPatientsName, patientsGrid);
+      }
+      if (leadsGrid && leadsGrid.length) {
+        integrityWriteSnapshot_(backupSs, integritySnapshotName_(INTEGRITY_LEADS_SNAPSHOT_PREFIX, now), leadsGrid);
+      }
+      const deletedNames = integrityApplyRetention_(backupSs, todayPatientsName, INTEGRITY_RETENTION_DAYS);
+      if (deletedNames.length) Logger.log('nightlyIntegrityJob: retention deleted %s', deletedNames.join(', '));
+    }
+  } catch (err) { errors.push('הגיבוי היומי נכשל: ' + err); }
+
+  // ---- alert: one email per run, ONLY when something is wrong ----
+  if (missing.length || orphanPayments.length || orphanOverrides.length || errors.length) {
+    integritySendAlert_(integrityAlertBody_({
+      missing: missing,
+      orphanPayments: orphanPayments,
+      orphanOverrides: orphanOverrides,
+      errors: errors,
+      prevCount: prevKeys === null ? '?' : String(prevKeys.length),
+      currentCount: String(currentKeys.length)
+    }));
+  } else {
+    Logger.log('nightlyIntegrityJob: ok (patients=%s, payments=%s, overrides=%s)',
+      String(currentKeys.length), String(paymentRows.length), String(overrideRows.length));
+  }
+
+  // ---- persist the sentinel state for tomorrow's run — but only off a
+  //      SUCCESSFUL Patients read: seeding an empty list after a failed read
+  //      would hide a real loss AND fire false orphan-style alerts later ----
+  if (patientsReadOk) {
+    integrityStoreKeys_(props, currentKeys);
+    props.setProperty(INTEGRITY_PROP_LAST_RUN, new Date().toISOString());
+  }
+}
+
+/* One-time installer (run from the Apps Script editor). Idempotent: deletes
+ * every existing trigger bound to nightlyIntegrityJob before creating the
+ * single daily ~2:30 AM trigger (project timezone: Asia/Jerusalem —
+ * nearMinute(30) staggers this job off the outpatient app's 2:00 run; if the
+ * runtime rejects it, plain atHour(2) is the accepted fallback). */
+function setupIntegrityTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  for (let i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'nightlyIntegrityJob') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  try {
+    ScriptApp.newTrigger('nightlyIntegrityJob').timeBased().everyDays(1).atHour(2).nearMinute(30).create();
+    return { ok: true, installed: 'nightlyIntegrityJob @ ~02:30' };
+  } catch (_) {
+    ScriptApp.newTrigger('nightlyIntegrityJob').timeBased().everyDays(1).atHour(2).create();
+    return { ok: true, installed: 'nightlyIntegrityJob @ 02:00' };
+  }
+}
