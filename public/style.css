@@ -20,6 +20,12 @@
   --danger: #ff4d5e;
   --info: #19c8e0;
   --purple: #a779ff;
+  /* Fuchsia — the דיווח מנהל accent (Sandra: purple was too weak on the
+   * dark-blue surfaces). Tuned against --surface/--surface-2; the matching
+   * tint/glow rgba values below derive from this hex. */
+  --fuchsia: #e040fb;
+  --fuchsia-tint: rgba(224, 64, 251, .13);
+  --fuchsia-glow: rgba(224, 64, 251, .45);
 
   --stage-new:        #5b8bff;
   --stage-visit:      #ffb020;
@@ -392,9 +398,9 @@ input:focus, select:focus, textarea:focus {
 .mrv-report {
   margin: 6px 16px 10px;
   border: 1px solid var(--border-strong);
-  border-inline-start: 5px solid var(--purple);
+  border-inline-start: 5px solid var(--fuchsia);
   border-radius: 12px;
-  background: rgba(167, 121, 255, .12);
+  background: var(--fuchsia-tint);
   cursor: pointer;
   font-size: 14px;
 }
@@ -419,14 +425,19 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 8px rgba(255, 176, 32, .9);
   flex: 0 0 auto;
 }
-.mrv-title { font-weight: 800; font-size: 14px; color: var(--purple); }
+/* Header text is WHITE on the fuchsia-accented surface (Sandra: colored text
+ * on the tint was still too weak) — the fuchsia identity lives in the accent
+ * bar, border and tint, not in the type. */
+.mrv-title { font-weight: 800; font-size: 16px; color: var(--text); }
 .mrv-report.mrv-unseen .mrv-title { color: var(--warning); }
-/* The headline: the outcome as a big color-coded badge (PR 4). */
+/* The headline: the outcome as a big color-coded badge (PR 4; scaled up in
+ * the fuchsia pass — it's the block's headline and must read from across the
+ * room). flex-wrap on .mrv-head + overflow-wrap keep it clean on mobile. */
 .mrv-outcome-badge {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 800;
   line-height: 1.35;
-  padding: 4px 12px;
+  padding: 6px 14px;
   border-radius: 999px;
   border: 1px solid transparent;
   max-width: 100%;
@@ -483,15 +494,15 @@ input:focus, select:focus, textarea:focus {
 .mtg-time {
   font-variant-numeric: tabular-nums;
   font-weight: 700;
-  font-size: 14px;
+  font-size: 15px;
   color: var(--text);
 }
 /* Readability pass (Sandra's live feedback): the three fields Vered scans for
  * — lead name, house, manager — must read at a glance on the dark surfaces.
  * Name anchors the row alongside the time (same size + weight); house and
  * manager step down in weight only, NOT to muted color. Controls stay last. */
-.mtg-name { font-weight: 700; font-size: 14px; color: var(--text); }
-.mtg-house, .mtg-with { font-weight: 500; color: var(--text); }
+.mtg-name { font-weight: 700; font-size: 15px; color: var(--text); }
+.mtg-house, .mtg-with { font-weight: 600; font-size: 14px; color: var(--text); }
 
 /* Actions cell — WhatsApp link + edit button kept together in the last column
  * so the grid stays a single track for both. */
@@ -536,8 +547,8 @@ input:focus, select:focus, textarea:focus {
     row-gap: 2px;
   }
   .mtg-name  { grid-column: 2; }
-  .mtg-house { grid-column: 2; font-size: 12px; }
-  .mtg-with  { grid-column: 2; font-size: 12px; }
+  .mtg-house { grid-column: 2; font-size: 13px; }
+  .mtg-with  { grid-column: 2; font-size: 13px; }
   .mtg-time    { grid-row: 1 / span 3; align-self: start; }
   .mtg-actions { grid-column: 3; grid-row: 1 / span 3; align-self: center; }
 }
@@ -620,19 +631,26 @@ input:focus, select:focus, textarea:focus {
   color: var(--text);
 }
 .mtg-sum-row + .mtg-sum-row { border-top: 1px solid var(--border); }
-.mtg-sum-mgr { font-weight: 700; }
+.mtg-sum-mgr { font-weight: 800; font-size: 14px; color: var(--text); }
 .mtg-sum-sep { color: var(--text-muted); }
 .mtg-sum-stat { color: var(--text-muted); }
 .mtg-sum-stat b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+/* The percentage is the ANCHOR of each conversion row (Sandra: the pills were
+ * dim and small) — big, bold, and color-coded by band via a rate-* class from
+ * meetingsSummaryHTML: ≥80% green, 50–79% amber, <50% red. */
 .mtg-sum-rate {
   margin-inline-start: auto;
-  font-weight: 700;
+  font-weight: 800;
+  font-size: 15px;
   font-variant-numeric: tabular-nums;
   color: var(--primary);
   background: var(--primary-glow);
-  padding: 1px 10px;
+  padding: 3px 12px;
   border-radius: 999px;
 }
+.mtg-sum-rate.rate-high { color: var(--success); background: rgba(45, 212, 122, .16); }
+.mtg-sum-rate.rate-mid  { color: var(--warning); background: rgba(255, 176, 32, .16); }
+.mtg-sum-rate.rate-low  { color: var(--danger);  background: rgba(255, 77, 94, .16); }
 
 .card {
   background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
