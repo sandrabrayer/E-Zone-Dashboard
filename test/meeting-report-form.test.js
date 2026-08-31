@@ -83,12 +83,24 @@ test('MR_COMPANION_LABELS matches MEETING_COMPANION_LABELS in app.js exactly', (
   Object.keys(a).forEach((k) => assert.strictEqual(mr.MR_COMPANION_LABELS[k], a[k], k));
 });
 
-test('MR_HOUSE_LABELS + MEETING_REPORTERS cover exactly the HOUSES in app.js', () => {
+test('MR_HOUSE_LABELS covers exactly the HOUSES in app.js', () => {
   const houseIds = Array.from(app.HOUSES).map((h) => h.id).sort();
   assert.deepStrictEqual(Object.keys(mr.MR_HOUSE_LABELS).sort(), houseIds);
-  assert.deepStrictEqual(Object.keys(mr.MEETING_REPORTERS).sort(), houseIds, 'one reporter entry per house');
   Array.from(app.HOUSES).forEach((h) =>
     assert.strictEqual(mr.MR_HOUSE_LABELS[h.id], h.name, 'label for ' + h.id));
+});
+
+test('MEETING_REPORTERS holds the real managers, keyed by valid house ids', () => {
+  const houseIds = new Set(Array.from(app.HOUSES).map((h) => h.id));
+  assert.deepStrictEqual(mr.MEETING_REPORTERS, {
+    arfoni: 'חנן',
+    rehab:  'רנטה',
+    asher:  'שחר/אורן',
+    pardes: 'חן',
+    ramot:  'אורן',
+  });
+  Object.keys(mr.MEETING_REPORTERS).forEach((k) =>
+    assert.ok(houseIds.has(k), k + ' is a real house id'));
 });
 
 /* ===== lead picker filter ===== */

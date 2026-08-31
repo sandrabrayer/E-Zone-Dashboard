@@ -17,17 +17,16 @@ var MR_HOUSE_LABELS = {
   sde:    'שדה אליעזר',
 };
 
-/* מדווח/ת options — one entry per house, keyed by the house id.
- * PLACEHOLDERS: Sandra replaces the values with the real manager names
- * (a small follow-up commit is fine). The SELECTED VALUE (the name) is what
- * gets stored in the lead's meetingReporter column. */
+/* מדווח/ת options — the real house managers, keyed by the house id (a house
+ * with no reporting manager — e.g. sde — has no entry and that's fine: the
+ * dropdown is a flat list of names, not filtered by house). The SELECTED
+ * VALUE (the name) is what gets stored in the lead's meetingReporter column. */
 var MEETING_REPORTERS = Object.freeze({
-  arfoni: 'מנהל/ת קיסריה עפרוני',
-  rehab:  'מנהל/ת קיסריה ריהאב',
-  asher:  'מנהל/ת רעננה אשר',
-  pardes: 'מנהל/ת רעננה הפרדס',
-  ramot:  'מנהל/ת רמות השבים',
-  sde:    'מנהל/ת שדה אליעזר',
+  arfoni: 'חנן',
+  rehab:  'רנטה',
+  asher:  'שחר/אורן',
+  pardes: 'חן',
+  ramot:  'אורן',
 });
 
 /* Outcome keys + Hebrew labels. KEEP IN SYNC with
