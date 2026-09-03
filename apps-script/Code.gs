@@ -1818,11 +1818,16 @@ function corruptionMatchOne_(corrupted, candidates) {
 
 /* Locate snapshot spreadsheets: every Drive spreadsheet whose name starts
  * with SNAPSHOT_NAME_PREFIX, READ-ONLY (opened, never written). Priority
- * order is OLDEST-modified first — newest-modified last — because an older
- * copy is the more likely to pre-date the corruption. Fail-soft everywhere:
- * no Drive access / no snapshot / a non-spreadsheet name-collision just
- * shrinks the list (tiers 2–3 run regardless). The live spreadsheet itself
- * is excluded even if it were renamed to match the prefix. */
+ * order is OLDEST content first — a snapshot whose name ends in an encoded
+ * yyyy-MM-dd date (the harvested EZONE-SNAPSHOT-AUTO-<date> files) sorts by
+ * THAT date, because all harvested files are CREATED at harvest time and
+ * their lastUpdated says nothing about content age; a snapshot without an
+ * encoded date (the manual EZONE-SNAPSHOT copy) keeps lastUpdated as its
+ * key. Older content first — the more likely to pre-date the corruption.
+ * Fail-soft everywhere: no Drive access / no snapshot / a non-spreadsheet
+ * name-collision just shrinks the list (tiers 2–3 run regardless). The live
+ * spreadsheet itself is excluded even if it were renamed to match the
+ * prefix. */
 function corruptionSnapshots_() {
   const found = [];
   const seen = {};
@@ -1838,7 +1843,9 @@ function corruptionSnapshots_() {
       seen[id] = true;
       let updated = 0;
       try { updated = f.getLastUpdated().getTime(); } catch (_) { /* keep 0 → highest priority */ }
-      found.push({ id: id, name: name, updated: updated });
+      const encoded = name.match(/(\d{4}-\d{2}-\d{2})$/);
+      const encodedMs = encoded ? Date.parse(encoded[1]) : NaN;
+      found.push({ id: id, name: name, sortKey: isNaN(encodedMs) ? updated : encodedMs });
     }
   };
   try {
@@ -1847,7 +1854,7 @@ function corruptionSnapshots_() {
     // Drive search unavailable — fall back to the exact-name lookup.
     try { collect(DriveApp.getFilesByName(SNAPSHOT_NAME_PREFIX)); } catch (_) { /* no Drive at all */ }
   }
-  found.sort(function (a, b) { return a.updated - b.updated; });
+  found.sort(function (a, b) { return a.sortKey - b.sortKey; });
   const out = [];
   found.forEach(function (f) {
     try {
@@ -1857,6 +1864,269 @@ function corruptionSnapshots_() {
     }
   });
   return out;
+}
+
+/* ---- Automated revision harvesting (feeds tier 1 with many snapshots) ----
+ *
+ * A single pre-bug snapshot covers only rows created before 2026-07-27, but
+ * corruption happened on read→rewrite cycles throughout 2026-07-27 →
+ * 2026-08-31 — each row's LAST CLEAN value lives in a different revision,
+ * the one just before that row's first corrupting rewrite. Instead of Sandra
+ * making many Version-history copies by hand, harvestRevisionSnapshotsNow
+ * lists the container spreadsheet's Drive revisions, picks a spread of them
+ * across the corruption window, exports each as xlsx, and rebuilds each as a
+ * real Google Sheet named EZONE-SNAPSHOT-AUTO-<yyyy-MM-dd> — exactly what
+ * corruptionSnapshots_'s prefix discovery already consumes (and orders by
+ * the encoded date). deleteAutoSnapshotsNow cleans them all up afterwards,
+ * never touching the manual EZONE-SNAPSHOT copy. Both are PUBLIC (Run
+ * dropdown) and unreachable over HTTP — handle_ never names them
+ * (guard-tested, same as the three cleanup entry points). */
+
+const AUTO_SNAPSHOT_PREFIX = SNAPSHOT_NAME_PREFIX + '-AUTO-'; // EZONE-SNAPSHOT-AUTO-
+const CORRUPTION_BUG_LIVE_DATE = '2026-07-27';  // server.js chunk-split went live (PR #49)
+const CORRUPTION_WINDOW_END_DATE = '2026-09-01'; // day after the fix deployed (PR #102, 2026-08-31)
+const XLSX_EXPORT_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+/* Normalize Drive revision metadata across API shapes (v3: revisions[] with
+ * modifiedTime; v2: items[] with modifiedDate) into
+ * {id, modified(ms), exportLinks}, ascending by modified. Undatable entries
+ * are dropped — the selector can only place a revision it can date. */
+function normalizeRevisions_(rawList) {
+  const out = [];
+  (rawList || []).forEach(function (r) {
+    if (!r) return;
+    const modified = Date.parse(r.modifiedTime || r.modifiedDate || '');
+    const id = String(r.id == null ? '' : r.id);
+    if (!id || isNaN(modified)) return;
+    out.push({ id: id, modified: modified, exportLinks: r.exportLinks || null });
+  });
+  out.sort(function (a, b) { return a.modified - b.modified; });
+  return out;
+}
+
+/* List ALL revisions of a file. Advanced Drive service first (v2/v3 shapes
+ * both handled, fields:* so exportLinks come along); UrlFetchApp against the
+ * Drive v3 REST API with the script's own OAuth token as the fallback. */
+function listSpreadsheetRevisions_(fileId) {
+  let raw = [];
+  try {
+    if (typeof Drive !== 'undefined' && Drive.Revisions && Drive.Revisions.list) {
+      let pageToken = null;
+      do {
+        const args = { fields: '*', pageSize: 200 };
+        if (pageToken) args.pageToken = pageToken;
+        const resp = Drive.Revisions.list(fileId, args);
+        raw = raw.concat(resp.revisions || resp.items || []);
+        pageToken = resp.nextPageToken || null;
+      } while (pageToken);
+      return normalizeRevisions_(raw);
+    }
+    Logger.log('Drive advanced service not enabled — falling back to the REST API');
+  } catch (e) {
+    Logger.log('advanced Drive revision listing failed (' + e + ') — falling back to the REST API');
+  }
+  raw = [];
+  let pageToken = null;
+  do {
+    let url = 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) +
+      '/revisions?fields=*&pageSize=200';
+    if (pageToken) url += '&pageToken=' + encodeURIComponent(pageToken);
+    const resp = UrlFetchApp.fetch(url, {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true,
+    });
+    if (resp.getResponseCode() !== 200) {
+      throw new Error('revision list failed: HTTP ' + resp.getResponseCode());
+    }
+    const body = JSON.parse(resp.getContentText());
+    raw = raw.concat(body.revisions || []);
+    pageToken = body.nextPageToken || null;
+  } while (pageToken);
+  return normalizeRevisions_(raw);
+}
+
+/* Pick which revisions to harvest. PURE (no services) so it is directly
+ * testable. Selection: the newest revision strictly BEFORE the bug went
+ * live (the clean baseline), plus the latest revision inside each ~6-day
+ * bucket across the corruption window, plus the newest pre-fix revision —
+ * deduped by revision id and then by calendar day (latest per day wins,
+ * since the harvested file name encodes only the date), capped at `cap` by
+ * evenly thinning the middle while always keeping the first and last.
+ * Revisions may be sparse (Google consolidates old ones): empty buckets are
+ * simply skipped — take what exists. Returns [{id, modified, exportLinks,
+ * dateLabel}] ascending; dateLabel is the UTC yyyy-MM-dd used in the file
+ * name. */
+function selectHarvestRevisions_(revisions, opts) {
+  opts = opts || {};
+  const bugLive = Date.parse((opts.bugLive || CORRUPTION_BUG_LIVE_DATE) + 'T00:00:00Z');
+  const windowEnd = Date.parse((opts.windowEnd || CORRUPTION_WINDOW_END_DATE) + 'T00:00:00Z');
+  const stepMs = (opts.stepDays || 6) * 24 * 60 * 60 * 1000;
+  const cap = opts.cap || 10;
+
+  const sorted = (revisions || []).slice().sort(function (a, b) { return a.modified - b.modified; });
+  const pickedIds = {};
+  let picked = [];
+  const add = function (rev) {
+    if (!rev || pickedIds[rev.id]) return;
+    pickedIds[rev.id] = true;
+    picked.push(rev);
+  };
+
+  let baseline = null;
+  sorted.forEach(function (r) { if (r.modified < bugLive) baseline = r; });
+  add(baseline);
+  for (let start = bugLive; start < windowEnd; start += stepMs) {
+    const end = Math.min(start + stepMs, windowEnd);
+    let inBucket = null;
+    sorted.forEach(function (r) { if (r.modified >= start && r.modified < end) inBucket = r; });
+    add(inBucket);
+  }
+  let preFix = null;
+  sorted.forEach(function (r) { if (r.modified < windowEnd) preFix = r; });
+  add(preFix);
+
+  picked.sort(function (a, b) { return a.modified - b.modified; });
+  // One file per calendar day (the name encodes only the date): latest wins.
+  const byLabel = {};
+  const labels = [];
+  picked.forEach(function (r) {
+    const label = new Date(r.modified).toISOString().slice(0, 10);
+    if (!byLabel[label]) labels.push(label);
+    byLabel[label] = { id: r.id, modified: r.modified, exportLinks: r.exportLinks, dateLabel: label };
+  });
+  let out = labels.map(function (l) { return byLabel[l]; });
+
+  if (out.length > cap) {
+    const kept = [out[0]];
+    const middle = out.slice(1, out.length - 1);
+    const slots = cap - 2;
+    for (let i = 0; i < slots; i++) {
+      kept.push(middle[Math.round(i * (middle.length - 1) / Math.max(slots - 1, 1))]);
+    }
+    kept.push(out[out.length - 1]);
+    const seenOut = {};
+    out = kept.filter(function (r) {
+      if (seenOut[r.id]) return false;
+      seenOut[r.id] = true;
+      return true;
+    });
+  }
+  return out;
+}
+
+/* Export one revision as an xlsx blob via its exportLinks, fetched with the
+ * script's own OAuth token. When the listed revision came without
+ * exportLinks, the single revision is re-fetched with fields:* first. */
+function exportRevisionXlsxBlob_(fileId, rev) {
+  let url = rev.exportLinks && rev.exportLinks[XLSX_EXPORT_MIME];
+  if (!url) {
+    const meta = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' +
+      encodeURIComponent(fileId) + '/revisions/' + encodeURIComponent(rev.id) + '?fields=*', {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true,
+    });
+    if (meta.getResponseCode() === 200) {
+      const body = JSON.parse(meta.getContentText());
+      url = body.exportLinks && body.exportLinks[XLSX_EXPORT_MIME];
+    }
+  }
+  if (!url) throw new Error('no xlsx exportLink for revision ' + rev.id);
+  const resp = UrlFetchApp.fetch(url, {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true,
+  });
+  if (resp.getResponseCode() !== 200) {
+    throw new Error('xlsx export of revision ' + rev.id + ' failed: HTTP ' + resp.getResponseCode());
+  }
+  return resp.getBlob();
+}
+
+/* Rebuild an xlsx blob as a real Google Sheet named `name` via the Drive
+ * advanced service — v3 Files.create converts when the target mimeType is
+ * the Google Sheets type; v2 Files.insert uses convert:true. */
+function createSpreadsheetFromXlsx_(blob, name) {
+  if (typeof Drive === 'undefined' || !Drive.Files) {
+    throw new Error('Drive advanced service unavailable — enable it in appsscript.json');
+  }
+  if (Drive.Files.create) {
+    return Drive.Files.create({ name: name, mimeType: 'application/vnd.google-apps.spreadsheet' }, blob);
+  }
+  if (Drive.Files.insert) {
+    return Drive.Files.insert({ title: name, mimeType: 'application/vnd.google-apps.spreadsheet' }, blob, { convert: true });
+  }
+  throw new Error('Drive advanced service exposes neither Files.create (v3) nor Files.insert (v2)');
+}
+
+/* Harvest revision snapshots of THIS spreadsheet for the tier-1 repair.
+ * PUBLIC (Run dropdown), never dispatchable via handle_. Idempotent: a date
+ * whose EZONE-SNAPSHOT-AUTO-<date> file already exists is skipped, so
+ * re-running only fills gaps. Per-revision try/catch: one failed export
+ * neither kills the harvest nor blocks the rest. Read-only toward the live
+ * spreadsheet; creates only the AUTO-named snapshot files. */
+function harvestRevisionSnapshotsNow() {
+  const fileId = SpreadsheetApp.getActiveSpreadsheet().getId();
+  const revisions = listSpreadsheetRevisions_(fileId);
+  Logger.log('harvestRevisionSnapshotsNow: ' + revisions.length + ' revision(s) found for this spreadsheet.');
+  const selected = selectHarvestRevisions_(revisions);
+  Logger.log('Selected ' + selected.length + ' revision(s): ' +
+    selected.map(function (r) { return r.dateLabel + ' (rev ' + r.id + ')'; }).join(', '));
+
+  let harvested = 0, skipped = 0, failed = 0;
+  selected.forEach(function (rev) {
+    const name = AUTO_SNAPSHOT_PREFIX + rev.dateLabel;
+    try {
+      if (DriveApp.getFilesByName(name).hasNext()) {
+        skipped++;
+        Logger.log('SKIP ' + name + ' — already harvested.');
+        return;
+      }
+      const blob = exportRevisionXlsxBlob_(fileId, rev);
+      createSpreadsheetFromXlsx_(blob, name);
+      harvested++;
+      Logger.log('HARVESTED ' + name + ' from revision ' + rev.id + '.');
+    } catch (e) {
+      failed++;
+      Logger.log('FAILED ' + name + ' (revision ' + rev.id + '): ' + e);
+    }
+  });
+  const summary = { found: revisions.length, selected: selected.length,
+                    harvested: harvested, skipped: skipped, failed: failed };
+  Logger.log('harvestRevisionSnapshotsNow: ' + revisions.length + ' revision(s) found, ' +
+    selected.length + ' selected, ' + harvested + ' harvested, ' + skipped +
+    ' skipped (already present), ' + failed + ' failed. Next: run scanCorruptedRowsNow / ' +
+    'writeRepairPlanNow — the EZONE-SNAPSHOT-AUTO-* files feed tier 1 automatically.');
+  return summary;
+}
+
+/* Trash every harvested EZONE-SNAPSHOT-AUTO-* file — cleanup for after the
+ * repair is done. PUBLIC (Run dropdown), never dispatchable via handle_.
+ * The manually created EZONE-SNAPSHOT copy (no -AUTO-) is NEVER touched:
+ * only names starting with the full AUTO prefix qualify. Trash, not delete —
+ * recoverable from the Drive trash for 30 days. */
+function deleteAutoSnapshotsNow() {
+  let trashed = 0;
+  let iter = null;
+  try {
+    iter = DriveApp.searchFiles('title contains "' + AUTO_SNAPSHOT_PREFIX + '"');
+  } catch (e) {
+    Logger.log('deleteAutoSnapshotsNow: Drive search failed (' + e + ') — nothing trashed.');
+    return { trashed: 0 };
+  }
+  while (iter.hasNext()) {
+    const f = iter.next();
+    const name = String(f.getName());
+    if (name.indexOf(AUTO_SNAPSHOT_PREFIX) !== 0) continue; // never the manual snapshot
+    try {
+      f.setTrashed(true);
+      trashed++;
+      Logger.log('TRASHED ' + name + '.');
+    } catch (e) {
+      Logger.log('FAILED to trash ' + name + ': ' + e);
+    }
+  }
+  Logger.log('deleteAutoSnapshotsNow: ' + trashed + ' auto-snapshot(s) trashed. ' +
+    'The manual ' + SNAPSHOT_NAME_PREFIX + ' copy is never touched.');
+  return { trashed: trashed };
 }
 
 /* Read one snapshot sheet's data rows keyed by ITS OWN header row — the
@@ -1930,7 +2200,13 @@ function corruptionSnapshotIndex_(snap) {
  * row's own sheet is searched first; only if it yields nothing do the other
  * patients-family sheets get a turn (a live discharged row may have been an
  * active patient at snapshot time). 2+ candidates in whichever pool answered
- * → ambiguous: {row:null, why} and NO proposal — a machine must not guess. */
+ * → ambiguous: {row:null, why} and NO proposal — a machine must not guess…
+ * with ONE exception on the fallback key (live finding: houseId+entryDate+pay
+ * collisions are common): when the live row's NAME is corrupted, its
+ * surviving characters disambiguate under the same in-order wildcard rule
+ * the enum/roster tiers use — exactly one candidate with a clean, compatible
+ * name → that candidate is the match; zero or 2+ compatible → still
+ * ambiguous, unchanged behavior. */
 function corruptionSnapshotMatchPatient_(idx, liveSheet, rowObj) {
   const order = [liveSheet].concat(
     [PATIENTS_SHEET, DISCHARGED_PATIENTS_SHEET, PATIENTS_TOMBSTONES_SHEET]
@@ -1957,6 +2233,19 @@ function corruptionSnapshotMatchPatient_(idx, liveSheet, rowObj) {
     const cand = matchIn(idx.patients[order[i]]);
     if (cand.length === 1) return { row: cand[0], sheet: order[i], why: '' };
     if (cand.length > 1) {
+      // Fallback-key collisions only: let the corrupted name's surviving
+      // characters break the tie (same wildcard rule as enum/roster).
+      if (!fl) {
+        const liveName = String(rowObj.name == null ? '' : rowObj.name);
+        if (liveName !== '' && hasCorruption_(liveName)) {
+          const re = corruptionWildcardRegex_(liveName);
+          const compatible = cand.filter(function (r) {
+            const nm = String(r.obj.name == null ? '' : r.obj.name);
+            return nm !== '' && !hasCorruption_(nm) && re.test(nm);
+          });
+          if (compatible.length === 1) return { row: compatible[0], sheet: order[i], why: '' };
+        }
+      }
       return { row: null, sheet: '', why: cand.length + ' rows in ' + order[i] +
         (fl ? ' share fromLead ' + fl : ' share houseId+entryDate+pay') + ' — ambiguous, no proposal' };
     }
