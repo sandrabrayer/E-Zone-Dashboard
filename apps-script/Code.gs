@@ -363,6 +363,26 @@ const BILLING_OVERRIDE_COLUMNS = ['id', 'patientId', 'month', 'amount', 'created
 const AUDIT_LOG_SHEET = 'AuditLog';
 const AUDIT_LOG_COLUMNS = ['timestamp', 'action', 'fn', 'patientId', 'name', 'details'];
 
+/* RepairPlan sheet — the human-approval gate for the corrupted-rows cleanup
+ * (U+FFFD Hebrew-name corruption, see CHANGELOG-corrupted-rows-cleanup.md).
+ * writeRepairPlanNow fills it from the dry-run scan with approved=FALSE;
+ * Sandra reviews and flips approved to TRUE per row; only then does
+ * applyCorruptedRowRepairsNow touch data. Hidden sheet, never read by any
+ * HTTP endpoint. APPEND-ONLY contract, same rule as LEAD_COLUMNS — never
+ * insert/delete/reorder; new columns go at the END. Guard-tested.
+ *   sheet    — target sheet name
+ *   row      — 1-based sheet row number at scan time (drift-checked at apply)
+ *   column   — target column name (per that sheet's schema)
+ *   newValue — proposed replacement ('' when no source was found — Sandra
+ *              fills it in by hand before approving)
+ *   action   — 'repair' (single-cell write) | 'delete' (tombstone-then-delete
+ *              of a corrupted exact-duplicate Patients twin)
+ *   approved — 'FALSE' as written by the scan; Sandra flips to TRUE
+ *   oldValue — the corrupted value the scan saw; apply re-verifies the cell
+ *              still holds EXACTLY this before writing (row-drift guard) */
+const REPAIR_PLAN_SHEET = 'RepairPlan';
+const REPAIR_PLAN_COLUMNS = ['sheet', 'row', 'column', 'newValue', 'action', 'approved', 'oldValue'];
+
 /* ===== Entry points ===== */
 
 function doGet(e) {
@@ -556,6 +576,12 @@ function getOrCreateSheet_(name, headers) {
   // droppedAt); details is JSON text that must never be reinterpreted.
   if (name === AUDIT_LOG_SHEET) {
     forceColumnsText_(sh, AUDIT_LOG_COLUMNS, ['timestamp', 'details']);
+  }
+  // RepairPlan: old/new values must survive byte-for-byte as plain text — the
+  // apply step compares oldValue against the live cell EXACTLY, so Sheets must
+  // never coerce either (a value like "050..." would lose its leading zero).
+  if (name === REPAIR_PLAN_SHEET) {
+    forceColumnsText_(sh, REPAIR_PLAN_COLUMNS, ['newValue', 'oldValue', 'approved']);
   }
   return sh;
 }
@@ -1617,6 +1643,408 @@ function findDuplicatePatientIdsNow() {
   });
   Logger.log('findDuplicatePatientIdsNow: ' + dupes.length + ' duplicate id(s) across ' + values.length + ' data rows. No writes performed.');
   return dupes;
+}
+
+/* ===== Corrupted-rows cleanup (U+FFFD Hebrew-name corruption) =====
+ *
+ * The server.js UTF-8 chunk-split bug (fixed in PR #102) wrote U+FFFD
+ * replacement characters into Hebrew free text between 2026-07-27 and the
+ * fix, and the resulting name changes also spawned duplicate Patients rows
+ * (name is part of row identity). These utilities find the damage, PROPOSE
+ * repairs from cross-reference sources, and apply ONLY what Sandra has
+ * explicitly approved row-by-row in the hidden RepairPlan sheet. All three
+ * entry points are PUBLIC (Run dropdown) and unreachable over HTTP —
+ * handle_'s fixed action allow-list never names them (same non-exposure
+ * argument as repairLeadVisitTimes; guard-tested).
+ *
+ * Workflow: scanCorruptedRowsNow (dry run, read-only) → writeRepairPlanNow
+ * (fills RepairPlan, approved=FALSE) → Sandra reviews/edits/approves →
+ * applyCorruptedRowRepairsNow (executes approved rows only). */
+
+const CORRUPTION_MARK = '�';
+
+function hasCorruption_(v) {
+  return typeof v === 'string' ? v.indexOf(CORRUPTION_MARK) >= 0 :
+    String(v == null ? '' : v).indexOf(CORRUPTION_MARK) >= 0;
+}
+
+/* Phone key for cross-reference matching, per the ecosystem rule: normalize
+ * (strip non-digits, 972→0 via normalizePhone_), then heal the
+ * Sheets-dropped-leading-zero case (9 digits not starting with 0 → prepend
+ * '0'), and accept ONLY a full /^0\d{9}$/ match — anything else returns ''
+ * and never participates in matching. LOCAL to the cleanup: the admitted
+ * roster's normalizePhone_ contract is untouched. */
+function corruptionPhoneKey_(raw) {
+  let digits = normalizePhone_(raw);
+  if (/^\d{9}$/.test(digits) && digits.charAt(0) !== '0') digits = '0' + digits;
+  return /^0\d{9}$/.test(digits) ? digits : '';
+}
+
+/* The sheets + columns where free-text Hebrew lives — the scan targets.
+ * Stable-key columns (stage, status, disposition, meetingOutcome, …) and
+ * date/number columns are deliberately absent: U+FFFD cannot appear in them
+ * unless the row is damaged beyond what a text repair fixes.
+ *   textCols  — columns scanned for U+FFFD
+ *   phoneCols — columns whose digits feed the phone cross-reference
+ *   leadIdCol — column holding the Leads id ('' when the sheet has none)
+ *   nameCol   — the sheet's person-name column (lead/phone repairs propose
+ *               values only for THIS column; other text columns have no
+ *               trustworthy cross-source and fall back to manual) */
+function corruptionScanTargets_() {
+  const leadText = ['name', 'house', 'source', 'note', 'assignedTo', 'meetingWith',
+    'meetingCompanion', 'meetingNote', 'meetingReporter', 'contactName', 'contactRelation'];
+  const leadPhones = ['phone', 'contactPhone', 'billingPhone'];
+  return [
+    { sheet: PATIENTS_SHEET,             columns: PATIENT_COLUMNS,           textCols: ['name', 'notes'],                        phoneCols: [],         leadIdCol: 'fromLead', nameCol: 'name' },
+    { sheet: LEADS_SHEET,                columns: LEAD_COLUMNS,              textCols: leadText,                                 phoneCols: leadPhones, leadIdCol: 'id',       nameCol: 'name' },
+    { sheet: IRRELEVANT_LEADS_SHEET,     columns: IRRELEVANT_LEAD_COLUMNS,   textCols: leadText.concat(['not_relevant_note']),   phoneCols: leadPhones, leadIdCol: 'id',       nameCol: 'name' },
+    { sheet: REMOVED_LEADS_SHEET,        columns: REMOVED_LEAD_COLUMNS,      textCols: leadText,                                 phoneCols: leadPhones, leadIdCol: 'id',       nameCol: 'name' },
+    { sheet: DISCHARGED_PATIENTS_SHEET,  columns: DISCHARGED_PATIENT_COLUMNS, textCols: ['name', 'notes', 'discharge_note'],     phoneCols: [],         leadIdCol: 'fromLead', nameCol: 'name' },
+    { sheet: PATIENTS_TOMBSTONES_SHEET,  columns: PATIENT_TOMBSTONE_COLUMNS, textCols: ['name', 'notes'],                        phoneCols: [],         leadIdCol: 'fromLead', nameCol: 'name' },
+    { sheet: PAYMENTS_SHEET,             columns: PAYMENT_COLUMNS,           textCols: ['patientName'],                          phoneCols: [],         leadIdCol: '',         nameCol: 'patientName' },
+    { sheet: MANAGERS_SHEET,             columns: MANAGER_COLUMNS,           textCols: ['manager_name'],                         phoneCols: [],         leadIdCol: '',         nameCol: 'manager_name' },
+    { sheet: OUTPATIENTS_SHEET,          columns: OUTPATIENT_COLUMNS,        textCols: ['patient_name', 'house_of_origin', 'therapy_type', 'notes'], phoneCols: [], leadIdCol: '', nameCol: 'patient_name' },
+  ];
+}
+
+/* Read a target sheet's data rows WITH their 1-based sheet row numbers.
+ * getSheetByName only — the scanner must not even create a sheet. Fully-empty
+ * rows are skipped (mirrors readSheet_) but row numbers stay true. */
+function corruptionReadRows_(target) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(target.sheet);
+  if (!sh) return null;
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return [];
+  const values = sh.getRange(2, 1, lastRow - 1, target.columns.length).getValues();
+  const rows = [];
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    let hasContent = false;
+    for (let j = 0; j < row.length; j++) {
+      if (row[j] !== '' && row[j] !== null) { hasContent = true; break; }
+    }
+    if (!hasContent) continue;
+    const obj = {};
+    for (let j = 0; j < target.columns.length; j++) obj[target.columns[j]] = row[j];
+    rows.push({ rowNumber: i + 2, obj: obj });
+  }
+  return rows;
+}
+
+/* The shared scan engine behind scanCorruptedRowsNow / writeRepairPlanNow.
+ * READ-ONLY. Returns:
+ *   cells    — [{sheet,row,column,value,proposal,source,newValue}] one per
+ *              corrupted cell; proposal ∈ 'repair from twin' | 'repair from
+ *              lead' | 'repair from phone match' | 'no source — manual'
+ *   deletes  — [{row,name,houseId,date,fromLead}] corrupted Patients rows
+ *              whose clean twin makes them EXACT duplicates (same fromLead +
+ *              house + entryDate + status) → proposed 'delete corrupted twin'
+ *   keepBoth — [{fromLead,rows,reason}] same-fromLead pairs that differ in
+ *              entryDate or status (the readmission pattern) or are both
+ *              corrupted: NEVER proposed for delete — repair only, keep both
+ *   summary  — counts */
+function corruptionScan_() {
+  const targets = corruptionScanTargets_();
+  const bySheet = {};
+  targets.forEach(function (t) { bySheet[t.sheet] = { target: t, rows: corruptionReadRows_(t) }; });
+
+  // Cross-reference sources. (a) Leads-family rows by lead id — clean name +
+  // phone; first clean hit wins. (b) normalized phone → clean name.
+  const leadById = {};
+  const phoneToName = {};
+  [LEADS_SHEET, IRRELEVANT_LEADS_SHEET, REMOVED_LEADS_SHEET].forEach(function (name) {
+    const entry = bySheet[name];
+    if (!entry || !entry.rows) return;
+    entry.rows.forEach(function (r) {
+      const id = String(r.obj.id == null ? '' : r.obj.id).trim();
+      const leadName = String(r.obj.name == null ? '' : r.obj.name);
+      const cleanName = leadName !== '' && !hasCorruption_(leadName);
+      if (id && !leadById[id]) {
+        leadById[id] = { name: leadName, cleanName: cleanName, phone: r.obj.phone };
+      }
+      if (cleanName) {
+        entry.target.phoneCols.forEach(function (pc) {
+          const key = corruptionPhoneKey_(r.obj[pc]);
+          if (key && !phoneToName[key]) phoneToName[key] = leadName;
+        });
+      }
+    });
+  });
+
+  // (c) clean same-fromLead Patients twins, per column.
+  const patientsEntry = bySheet[PATIENTS_SHEET];
+  const patientsByFromLead = {};
+  if (patientsEntry && patientsEntry.rows) {
+    patientsEntry.rows.forEach(function (r) {
+      const fl = String(r.obj.fromLead == null ? '' : r.obj.fromLead).trim();
+      if (!fl) return;
+      if (!patientsByFromLead[fl]) patientsByFromLead[fl] = [];
+      patientsByFromLead[fl].push(r);
+    });
+  }
+
+  const cells = [];
+  targets.forEach(function (t) {
+    const entry = bySheet[t.sheet];
+    if (!entry.rows) return; // sheet absent — nothing to scan
+    entry.rows.forEach(function (r) {
+      t.textCols.forEach(function (col) {
+        const v = r.obj[col];
+        if (!hasCorruption_(v)) return;
+        const finding = { sheet: t.sheet, row: r.rowNumber, column: col,
+                          value: String(v), proposal: 'no source — manual', source: '', newValue: '' };
+        const leadId = t.leadIdCol ? String(r.obj[t.leadIdCol] == null ? '' : r.obj[t.leadIdCol]).trim() : '';
+
+        // (a) clean same-fromLead Patients twin — same column, clean value.
+        if (t.sheet === PATIENTS_SHEET && leadId && patientsByFromLead[leadId]) {
+          const twin = patientsByFromLead[leadId].find(function (tw) {
+            const tv = tw.obj[col];
+            return tw.rowNumber !== r.rowNumber && tv !== '' && tv != null && !hasCorruption_(tv);
+          });
+          if (twin) {
+            finding.proposal = 'repair from twin';
+            finding.source = t.sheet + ' row ' + twin.rowNumber;
+            finding.newValue = String(twin.obj[col]);
+            cells.push(finding);
+            return;
+          }
+        }
+        // (b) the Leads-family row with the same lead id — name column only.
+        // (A corrupted Leads row can never propose itself: its own name fails
+        // the clean check, so leadById only offers rows that are clean.)
+        if (col === t.nameCol && leadId &&
+            leadById[leadId] && leadById[leadId].cleanName) {
+          finding.proposal = 'repair from lead';
+          finding.source = 'lead ' + leadId;
+          finding.newValue = leadById[leadId].name;
+          cells.push(finding);
+          return;
+        }
+        // (c) a clean row elsewhere sharing this row's phone — name column only.
+        if (col === t.nameCol) {
+          const phones = [];
+          t.phoneCols.forEach(function (pc) {
+            const key = corruptionPhoneKey_(r.obj[pc]);
+            if (key) phones.push(key);
+          });
+          if (phones.length === 0 && leadId && leadById[leadId]) {
+            const key = corruptionPhoneKey_(leadById[leadId].phone);
+            if (key) phones.push(key);
+          }
+          for (let p = 0; p < phones.length; p++) {
+            const candidate = phoneToName[phones[p]];
+            if (candidate && !hasCorruption_(candidate) && candidate !== String(v)) {
+              finding.proposal = 'repair from phone match';
+              finding.source = 'phone ' + phones[p];
+              finding.newValue = candidate;
+              break;
+            }
+          }
+        }
+        cells.push(finding);
+      });
+    });
+  });
+
+  // Duplicate-pair analysis (Patients only). Delete is proposed ONLY for the
+  // exact-duplicate signature: same fromLead + houseId + entryDate + status,
+  // one side corrupted and the other clean. A pair differing in entryDate or
+  // status is the READMISSION pattern (e.g. released 2026-01-12 + active
+  // 2026-08-15) — never a delete candidate: repair only, keep both.
+  const deletes = [];
+  const keepBoth = [];
+  Object.keys(patientsByFromLead).forEach(function (fl) {
+    const group = patientsByFromLead[fl];
+    if (group.length < 2) return;
+    const describe = group.map(function (g) {
+      return { row: g.rowNumber, name: String(g.obj.name), houseId: String(g.obj.houseId),
+               date: asISODate_(g.obj.date), status: String(g.obj.status) };
+    });
+    if (group.length > 2) {
+      keepBoth.push({ fromLead: fl, rows: describe, reason: 'more than 2 rows — manual review' });
+      return;
+    }
+    const a = group[0], b = group[1];
+    const aCor = hasCorruption_(a.obj.name), bCor = hasCorruption_(b.obj.name);
+    const exactTwin = String(a.obj.houseId) === String(b.obj.houseId) &&
+                      asISODate_(a.obj.date) === asISODate_(b.obj.date) &&
+                      String(a.obj.status) === String(b.obj.status);
+    if (exactTwin && aCor !== bCor) {
+      const bad = aCor ? a : b;
+      deletes.push({ row: bad.rowNumber, name: String(bad.obj.name), houseId: String(bad.obj.houseId),
+                     date: asISODate_(bad.obj.date), fromLead: fl });
+    } else if (aCor || bCor) {
+      keepBoth.push({ fromLead: fl, rows: describe,
+        reason: exactTwin ? 'both corrupted — repair only' : 'entryDate/status differ (readmission pattern) — repair only, keep both' });
+    }
+  });
+
+  return {
+    cells: cells,
+    deletes: deletes,
+    keepBoth: keepBoth,
+    summary: { corruptedCells: cells.length, proposedDeletes: deletes.length, keepBothPairs: keepBoth.length },
+  };
+}
+
+/* DRY RUN — run from the Apps Script editor. READ-ONLY (getSheetByName only;
+ * cannot even create a sheet): scans every target sheet/column for U+FFFD and
+ * Logger.logs each hit with its PROPOSED action and source, plus the
+ * duplicate-pair verdicts. NOTHING is written; use writeRepairPlanNow to turn
+ * these proposals into the reviewable RepairPlan sheet. */
+function scanCorruptedRowsNow() {
+  const res = corruptionScan_();
+  res.cells.forEach(function (c) {
+    Logger.log('CORRUPTED ' + c.sheet + ' row ' + c.row + ' [' + c.column + '] "' + c.value + '" → ' +
+      c.proposal + (c.newValue ? ' ("' + c.newValue + '" from ' + c.source + ')' : ''));
+  });
+  res.deletes.forEach(function (d) {
+    Logger.log('DUPLICATE-TWIN ' + PATIENTS_SHEET + ' row ' + d.row + ' "' + d.name + '" (fromLead ' + d.fromLead +
+      ') is an exact corrupted duplicate of a clean twin → proposed delete corrupted twin');
+  });
+  res.keepBoth.forEach(function (k) {
+    Logger.log('KEEP-BOTH fromLead ' + k.fromLead + ': ' + k.reason + ' — ' + JSON.stringify(k.rows));
+  });
+  Logger.log('scanCorruptedRowsNow: ' + res.summary.corruptedCells + ' corrupted cell(s), ' +
+    res.summary.proposedDeletes + ' proposed delete(s), ' + res.summary.keepBothPairs +
+    ' keep-both pair(s). NO WRITES performed.');
+  return res;
+}
+
+/* Populate the hidden RepairPlan sheet from the scan, every row with
+ * approved=FALSE — Sandra reviews, edits newValue where the scan found no
+ * source, and flips approved to TRUE per row she wants executed. FULL
+ * REWRITE on each run (write-then-trim), so re-running RESETS approvals —
+ * run it once, review, apply. Writes ONLY to RepairPlan. */
+function writeRepairPlanNow() {
+  const res = corruptionScan_();
+  const sh = getOrCreateSheet_(REPAIR_PLAN_SHEET, REPAIR_PLAN_COLUMNS);
+  try { if (!sh.isSheetHidden()) sh.hideSheet(); } catch (_) { /* no-op */ }
+
+  const planRows = [];
+  res.cells.forEach(function (c) {
+    planRows.push(objectToRow_({ sheet: c.sheet, row: c.row, column: c.column,
+      newValue: c.newValue, action: 'repair', approved: 'FALSE', oldValue: c.value }, REPAIR_PLAN_COLUMNS));
+  });
+  res.deletes.forEach(function (d) {
+    planRows.push(objectToRow_({ sheet: PATIENTS_SHEET, row: d.row, column: 'name',
+      newValue: '', action: 'delete', approved: 'FALSE', oldValue: d.name }, REPAIR_PLAN_COLUMNS));
+  });
+
+  const lastRow = sh.getLastRow();
+  if (planRows.length > 0) {
+    sh.getRange(2, 1, planRows.length, REPAIR_PLAN_COLUMNS.length).setValues(planRows);
+  }
+  if (lastRow > planRows.length + 1) {
+    sh.getRange(planRows.length + 2, 1, lastRow - planRows.length - 1, REPAIR_PLAN_COLUMNS.length).clearContent();
+  }
+  Logger.log('writeRepairPlanNow: wrote ' + planRows.length + ' plan row(s) (' + res.cells.length +
+    ' repair, ' + res.deletes.length + ' delete), ALL approved=FALSE. Review the hidden RepairPlan sheet, ' +
+    'fill any blank newValue, flip approved to TRUE per row, then run applyCorruptedRowRepairsNow.');
+  return planRows.length;
+}
+
+/* Execute ONLY the approved=TRUE rows of RepairPlan, under the script lock.
+ * Repairs run before deletes (a delete rewrites the Patients sheet and
+ * shifts row numbers; the drift guard would then rightly skip stale rows).
+ *   repair — re-verify the target cell still holds EXACTLY oldValue AND that
+ *            it is still corrupted; then write newValue to that single cell.
+ *            Any mismatch (drift), unknown sheet/column, or blank newValue →
+ *            SKIP + log, touch nothing.
+ *   delete — Patients only. The stored row number is only a hint: the name
+ *            cell there must still equal oldValue; the row is then deleted BY
+ *            IDENTITY through deletePatientRow_ (peek → tombstone fail-hard →
+ *            write-then-trim), so history is preserved and a shifted sheet
+ *            can never delete the wrong row.
+ * Every applied change is audit-logged (corruption_repair /
+ * corruption_delete, old→new in details) — fail-soft as always. */
+function applyCorruptedRowRepairsNow() {
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const planSh = ss.getSheetByName(REPAIR_PLAN_SHEET);
+    if (!planSh) {
+      Logger.log('applyCorruptedRowRepairsNow: no RepairPlan sheet — run writeRepairPlanNow first.');
+      return { applied: 0, deleted: 0, skipped: 0 };
+    }
+    const lastRow = planSh.getLastRow();
+    if (lastRow < 2) {
+      Logger.log('applyCorruptedRowRepairsNow: RepairPlan is empty.');
+      return { applied: 0, deleted: 0, skipped: 0 };
+    }
+    const values = planSh.getRange(2, 1, lastRow - 1, REPAIR_PLAN_COLUMNS.length).getValues();
+    const plan = values.map(function (row) {
+      const obj = {};
+      for (let j = 0; j < REPAIR_PLAN_COLUMNS.length; j++) obj[REPAIR_PLAN_COLUMNS[j]] = row[j];
+      return obj;
+    }).filter(function (p) {
+      return String(p.approved).toUpperCase() === 'TRUE';
+    });
+
+    const targetsBySheet = {};
+    corruptionScanTargets_().forEach(function (t) { targetsBySheet[t.sheet] = t; });
+
+    let applied = 0, deleted = 0, skipped = 0;
+    const skip = function (p, why) {
+      skipped++;
+      Logger.log('SKIP ' + p.action + ' ' + p.sheet + ' row ' + p.row + ' [' + p.column + ']: ' + why);
+    };
+
+    const repairs = plan.filter(function (p) { return String(p.action) === 'repair'; });
+    const deletes = plan.filter(function (p) { return String(p.action) === 'delete'; });
+    plan.filter(function (p) { return String(p.action) !== 'repair' && String(p.action) !== 'delete'; })
+      .forEach(function (p) { skip(p, 'unknown action "' + p.action + '"'); });
+
+    repairs.forEach(function (p) {
+      const target = targetsBySheet[String(p.sheet)];
+      if (!target) return skip(p, 'unknown sheet');
+      const colIdx = target.columns.indexOf(String(p.column));
+      if (colIdx < 0) return skip(p, 'unknown column');
+      const rowNum = Number(p.row);
+      if (!isFinite(rowNum) || rowNum < 2) return skip(p, 'bad row number');
+      const newValue = String(p.newValue == null ? '' : p.newValue);
+      if (newValue === '' || hasCorruption_(newValue)) return skip(p, 'newValue blank or corrupted — fill it in before approving');
+      const sh = ss.getSheetByName(target.sheet);
+      if (!sh) return skip(p, 'sheet missing');
+      const cell = sh.getRange(rowNum, colIdx + 1, 1, 1);
+      const current = String(cell.getValue());
+      if (current !== String(p.oldValue) || !hasCorruption_(current)) {
+        return skip(p, 'cell no longer holds the expected corrupted value (row drift or already repaired)');
+      }
+      cell.setValue(newValue);
+      applied++;
+      logAudit_('corruption_repair', 'applyCorruptedRowRepairsNow', '', newValue, { sheet: target.sheet, row: rowNum, column: String(p.column), oldValue: current, newValue: newValue });
+    });
+
+    deletes.forEach(function (p) {
+      if (String(p.sheet) !== PATIENTS_SHEET) return skip(p, 'delete is only supported for the Patients sheet');
+      const rowNum = Number(p.row);
+      if (!isFinite(rowNum) || rowNum < 2) return skip(p, 'bad row number');
+      const sh = ss.getSheetByName(PATIENTS_SHEET);
+      if (!sh) return skip(p, 'Patients sheet missing');
+      if (rowNum > sh.getLastRow()) return skip(p, 'row beyond sheet (drift)');
+      const rowVals = sh.getRange(rowNum, 1, 1, PATIENT_COLUMNS.length).getValues()[0];
+      const obj = {};
+      for (let j = 0; j < PATIENT_COLUMNS.length; j++) obj[PATIENT_COLUMNS[j]] = rowVals[j];
+      if (String(obj.name) !== String(p.oldValue) || !hasCorruption_(String(obj.name))) {
+        return skip(p, 'row no longer holds the expected corrupted name (row drift or already handled)');
+      }
+      // Identity-keyed delete: tombstone fail-hard first, then write-then-trim
+      // — exactly deletePatientRow_'s contract. Row number was only the hint.
+      const res = deletePatientRow_({ houseId: obj.houseId, name: obj.name, date: obj.date });
+      if (!res || res.ok !== true) return skip(p, 'delete refused: ' + ((res && res.error) || 'unknown'));
+      deleted++;
+      logAudit_('corruption_delete', 'applyCorruptedRowRepairsNow', String(obj.fromLead || ''), String(obj.name), { key: res.key, deleted: res.deleted, oldValue: String(p.oldValue) });
+    });
+
+    Logger.log('applyCorruptedRowRepairsNow: ' + applied + ' repair(s) applied, ' + deleted +
+      ' delete(s) applied, ' + skipped + ' skipped. Approved rows only; see AuditLog for the trail.');
+    return { applied: applied, deleted: deleted, skipped: skipped };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
 }
 
 function moveLeadIrrelevant_(lead) {
