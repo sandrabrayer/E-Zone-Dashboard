@@ -379,9 +379,16 @@ const AUDIT_LOG_COLUMNS = ['timestamp', 'action', 'fn', 'patientId', 'name', 'de
  *              of a corrupted exact-duplicate Patients twin)
  *   approved — 'FALSE' as written by the scan; Sandra flips to TRUE
  *   oldValue — the corrupted value the scan saw; apply re-verifies the cell
- *              still holds EXACTLY this before writing (row-drift guard) */
+ *              still holds EXACTLY this before writing (row-drift guard)
+ *   source   — which repair tier proposed newValue plus its provenance (e.g.
+ *              'repair from snapshot — EZONE-SNAPSHOT Patients row 12'), so
+ *              Sandra can judge each proposal's trustworthiness while
+ *              reviewing. Informational only — apply never reads it. APPENDED
+ *              AT THE END per the append-only contract above; sheets created
+ *              before it exist get the header backfilled non-destructively by
+ *              getOrCreateSheet_. */
 const REPAIR_PLAN_SHEET = 'RepairPlan';
-const REPAIR_PLAN_COLUMNS = ['sheet', 'row', 'column', 'newValue', 'action', 'approved', 'oldValue'];
+const REPAIR_PLAN_COLUMNS = ['sheet', 'row', 'column', 'newValue', 'action', 'approved', 'oldValue', 'source'];
 
 /* ===== Entry points ===== */
 
@@ -1651,11 +1658,41 @@ function findDuplicatePatientIdsNow() {
  * replacement characters into Hebrew free text between 2026-07-27 and the
  * fix, and the resulting name changes also spawned duplicate Patients rows
  * (name is part of row identity). These utilities find the damage, PROPOSE
- * repairs from cross-reference sources, and apply ONLY what Sandra has
- * explicitly approved row-by-row in the hidden RepairPlan sheet. All three
- * entry points are PUBLIC (Run dropdown) and unreachable over HTTP —
- * handle_'s fixed action allow-list never names them (same non-exposure
- * argument as repairLeadVisitTimes; guard-tested).
+ * repairs, and apply ONLY what Sandra has explicitly approved row-by-row in
+ * the hidden RepairPlan sheet. All three entry points are PUBLIC (Run
+ * dropdown) and unreachable over HTTP — handle_'s fixed action allow-list
+ * never names them (same non-exposure argument as repairLeadVisitTimes;
+ * guard-tested).
+ *
+ * Proposal tiers, in priority order (first tier that yields a proposal wins;
+ * the live scan showed the in-spreadsheet cross-references rarely fire, so
+ * the snapshot tier is the workhorse):
+ *   tier 0 — in-spreadsheet cross-references (PR #105, unchanged): a clean
+ *            same-fromLead Patients twin ('repair from twin'), the lead row
+ *            with the same id ('repair from lead'), a clean row sharing the
+ *            phone ('repair from phone match').
+ *   tier 1 — SNAPSHOT ('repair from snapshot'): rows created before the bug
+ *            went live (2026-07-27) were written clean and corrupted later by
+ *            full-house rewrites, so their clean values exist in a pre-bug
+ *            copy of this spreadsheet. Sandra creates it manually via
+ *            File → Version history → Make a copy, named EZONE-SNAPSHOT (any
+ *            name with that prefix counts; see corruptionSnapshots_).
+ *            Snapshots are READ-ONLY — never written. Covers ALL scanned text
+ *            columns, notes/free text included, guarded by a compatibility
+ *            check (corruptionWildcardRegex_). An incompatible snapshot value
+ *            classifies the cell 'snapshot mismatch — manual' (the live value
+ *            was edited after the snapshot — a machine must not pick sides).
+ *   tier 2 — closed value sets ('repair from enum'): house / source /
+ *            manager-name-like columns; a corrupted value whose surviving
+ *            characters match exactly ONE legal value is repaired to it.
+ *   tier 3 — name roster ('repair from roster'): clean person names pooled
+ *            from every sheet AND every snapshot; exactly-one match wins.
+ *            Bonus: two same-fromLead Patients rows corrupted in DIFFERENT
+ *            positions whose union reconstructs a full clean string
+ *            ('repair from twin-merge').
+ * Enum/roster tiers NEVER touch notes/meetingNote/long-free-text columns —
+ * those repair only from a snapshot (or by hand). Everything still lands in
+ * RepairPlan as approved=FALSE; applyCorruptedRowRepairsNow is unchanged.
  *
  * Workflow: scanCorruptedRowsNow (dry run, read-only) → writeRepairPlanNow
  * (fills RepairPlan, approved=FALSE) → Sandra reviews/edits/approves →
@@ -1687,23 +1724,34 @@ function corruptionPhoneKey_(raw) {
  *   textCols  — columns scanned for U+FFFD
  *   phoneCols — columns whose digits feed the phone cross-reference
  *   leadIdCol — column holding the Leads id ('' when the sheet has none)
- *   nameCol   — the sheet's person-name column (lead/phone repairs propose
- *               values only for THIS column; other text columns have no
- *               trustworthy cross-source and fall back to manual) */
+ *   nameCol   — the sheet's person-name column (lead/phone/roster repairs
+ *               propose values only for THIS column)
+ *   snapshotMatch — how tier 1 relocates this sheet's rows in a snapshot:
+ *               'patient' (by fromLead, else houseId+entryDate+pay) | 'lead'
+ *               (by lead id) | '' (no reliable row identity — Payments'
+ *               patientId is session-local per the PR #105 findings, and
+ *               Managers/Outpatients have no key; roster still covers their
+ *               name columns)
+ *   enumCols  — {column: valueClass} closed-set columns tier 2 may repair;
+ *               valueClass keys corruptionEnumSets_'s legal-value pools.
+ *               Free-text columns (note/notes/meetingNote/…) are deliberately
+ *               absent — enum/roster never touch them. */
 function corruptionScanTargets_() {
   const leadText = ['name', 'house', 'source', 'note', 'assignedTo', 'meetingWith',
     'meetingCompanion', 'meetingNote', 'meetingReporter', 'contactName', 'contactRelation'];
   const leadPhones = ['phone', 'contactPhone', 'billingPhone'];
+  const leadEnums = { house: 'house', source: 'source', assignedTo: 'assignee',
+    meetingWith: 'manager', meetingReporter: 'manager' };
   return [
-    { sheet: PATIENTS_SHEET,             columns: PATIENT_COLUMNS,           textCols: ['name', 'notes'],                        phoneCols: [],         leadIdCol: 'fromLead', nameCol: 'name' },
-    { sheet: LEADS_SHEET,                columns: LEAD_COLUMNS,              textCols: leadText,                                 phoneCols: leadPhones, leadIdCol: 'id',       nameCol: 'name' },
-    { sheet: IRRELEVANT_LEADS_SHEET,     columns: IRRELEVANT_LEAD_COLUMNS,   textCols: leadText.concat(['not_relevant_note']),   phoneCols: leadPhones, leadIdCol: 'id',       nameCol: 'name' },
-    { sheet: REMOVED_LEADS_SHEET,        columns: REMOVED_LEAD_COLUMNS,      textCols: leadText,                                 phoneCols: leadPhones, leadIdCol: 'id',       nameCol: 'name' },
-    { sheet: DISCHARGED_PATIENTS_SHEET,  columns: DISCHARGED_PATIENT_COLUMNS, textCols: ['name', 'notes', 'discharge_note'],     phoneCols: [],         leadIdCol: 'fromLead', nameCol: 'name' },
-    { sheet: PATIENTS_TOMBSTONES_SHEET,  columns: PATIENT_TOMBSTONE_COLUMNS, textCols: ['name', 'notes'],                        phoneCols: [],         leadIdCol: 'fromLead', nameCol: 'name' },
-    { sheet: PAYMENTS_SHEET,             columns: PAYMENT_COLUMNS,           textCols: ['patientName'],                          phoneCols: [],         leadIdCol: '',         nameCol: 'patientName' },
-    { sheet: MANAGERS_SHEET,             columns: MANAGER_COLUMNS,           textCols: ['manager_name'],                         phoneCols: [],         leadIdCol: '',         nameCol: 'manager_name' },
-    { sheet: OUTPATIENTS_SHEET,          columns: OUTPATIENT_COLUMNS,        textCols: ['patient_name', 'house_of_origin', 'therapy_type', 'notes'], phoneCols: [], leadIdCol: '', nameCol: 'patient_name' },
+    { sheet: PATIENTS_SHEET,             columns: PATIENT_COLUMNS,           textCols: ['name', 'notes'],                        phoneCols: [],         leadIdCol: 'fromLead', nameCol: 'name', snapshotMatch: 'patient', enumCols: {} },
+    { sheet: LEADS_SHEET,                columns: LEAD_COLUMNS,              textCols: leadText,                                 phoneCols: leadPhones, leadIdCol: 'id',       nameCol: 'name', snapshotMatch: 'lead',    enumCols: leadEnums },
+    { sheet: IRRELEVANT_LEADS_SHEET,     columns: IRRELEVANT_LEAD_COLUMNS,   textCols: leadText.concat(['not_relevant_note']),   phoneCols: leadPhones, leadIdCol: 'id',       nameCol: 'name', snapshotMatch: 'lead',    enumCols: leadEnums },
+    { sheet: REMOVED_LEADS_SHEET,        columns: REMOVED_LEAD_COLUMNS,      textCols: leadText,                                 phoneCols: leadPhones, leadIdCol: 'id',       nameCol: 'name', snapshotMatch: 'lead',    enumCols: leadEnums },
+    { sheet: DISCHARGED_PATIENTS_SHEET,  columns: DISCHARGED_PATIENT_COLUMNS, textCols: ['name', 'notes', 'discharge_note'],     phoneCols: [],         leadIdCol: 'fromLead', nameCol: 'name', snapshotMatch: 'patient', enumCols: {} },
+    { sheet: PATIENTS_TOMBSTONES_SHEET,  columns: PATIENT_TOMBSTONE_COLUMNS, textCols: ['name', 'notes'],                        phoneCols: [],         leadIdCol: 'fromLead', nameCol: 'name', snapshotMatch: 'patient', enumCols: {} },
+    { sheet: PAYMENTS_SHEET,             columns: PAYMENT_COLUMNS,           textCols: ['patientName'],                          phoneCols: [],         leadIdCol: '',         nameCol: 'patientName', snapshotMatch: '', enumCols: {} },
+    { sheet: MANAGERS_SHEET,             columns: MANAGER_COLUMNS,           textCols: ['manager_name'],                         phoneCols: [],         leadIdCol: '',         nameCol: 'manager_name', snapshotMatch: '', enumCols: { manager_name: 'manager' } },
+    { sheet: OUTPATIENTS_SHEET,          columns: OUTPATIENT_COLUMNS,        textCols: ['patient_name', 'house_of_origin', 'therapy_type', 'notes'], phoneCols: [], leadIdCol: '', nameCol: 'patient_name', snapshotMatch: '', enumCols: { house_of_origin: 'house' } },
   ];
 }
 
@@ -1732,11 +1780,323 @@ function corruptionReadRows_(target) {
   return rows;
 }
 
+/* ---- Tier 1–3 machinery: snapshot / enum / roster / twin-merge ---- */
+
+/* Any spreadsheet whose NAME starts with this prefix is a repair snapshot —
+ * a pre-bug copy Sandra creates via File → Version history → Make a copy. */
+const SNAPSHOT_NAME_PREFIX = 'EZONE-SNAPSHOT';
+
+/* The shared compatibility/wildcard rule for every tier: split the corrupted
+ * value on runs of U+FFFD, and require the surviving segments to appear IN
+ * ORDER in the candidate with each U+FFFD run standing for 1+ characters
+ * (a run always replaced at least one original character — a Hebrew char is
+ * 2 UTF-8 bytes, so a run may stand for FEWER chars than its length, never
+ * zero). Anchored: surviving leading/trailing text must lead/trail the
+ * candidate too. This is both tier 1's sanity guard and tiers 2–3's matcher. */
+function corruptionWildcardRegex_(corrupted) {
+  const parts = String(corrupted).split(/�+/);
+  const esc = parts.map(function (s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); });
+  return new RegExp('^' + esc.join('[\\s\\S]+') + '$');
+}
+
+/* Exactly-one-match helper for the enum and roster tiers: returns
+ * {count, value} where value is set only when EXACTLY ONE candidate matches
+ * the corrupted value under the wildcard rule. 0 or 2+ → manual (the caller
+ * must not guess). */
+function corruptionMatchOne_(corrupted, candidates) {
+  const re = corruptionWildcardRegex_(corrupted);
+  let hit = '';
+  let count = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    if (re.test(candidates[i])) {
+      count++;
+      if (count === 1) hit = candidates[i]; else break;
+    }
+  }
+  return { count: count, value: count === 1 ? hit : '' };
+}
+
+/* Locate snapshot spreadsheets: every Drive spreadsheet whose name starts
+ * with SNAPSHOT_NAME_PREFIX, READ-ONLY (opened, never written). Priority
+ * order is OLDEST-modified first — newest-modified last — because an older
+ * copy is the more likely to pre-date the corruption. Fail-soft everywhere:
+ * no Drive access / no snapshot / a non-spreadsheet name-collision just
+ * shrinks the list (tiers 2–3 run regardless). The live spreadsheet itself
+ * is excluded even if it were renamed to match the prefix. */
+function corruptionSnapshots_() {
+  const found = [];
+  const seen = {};
+  let activeId = '';
+  try { activeId = SpreadsheetApp.getActiveSpreadsheet().getId(); } catch (_) { /* fake env */ }
+  const collect = function (iter) {
+    while (iter && iter.hasNext()) {
+      const f = iter.next();
+      const name = String(f.getName());
+      if (name.indexOf(SNAPSHOT_NAME_PREFIX) !== 0) continue;
+      const id = String(f.getId());
+      if (seen[id] || id === activeId) continue;
+      seen[id] = true;
+      let updated = 0;
+      try { updated = f.getLastUpdated().getTime(); } catch (_) { /* keep 0 → highest priority */ }
+      found.push({ id: id, name: name, updated: updated });
+    }
+  };
+  try {
+    collect(DriveApp.searchFiles('title contains "' + SNAPSHOT_NAME_PREFIX + '"'));
+  } catch (e) {
+    // Drive search unavailable — fall back to the exact-name lookup.
+    try { collect(DriveApp.getFilesByName(SNAPSHOT_NAME_PREFIX)); } catch (_) { /* no Drive at all */ }
+  }
+  found.sort(function (a, b) { return a.updated - b.updated; });
+  const out = [];
+  found.forEach(function (f) {
+    try {
+      out.push({ name: f.name, ss: SpreadsheetApp.openById(f.id) });
+    } catch (e) {
+      Logger.log('snapshot "' + f.name + '" could not be opened as a spreadsheet — skipped (' + e + ')');
+    }
+  });
+  return out;
+}
+
+/* Read one snapshot sheet's data rows keyed by ITS OWN header row — the
+ * column-position tolerance: the snapshot pre-dates later schema appends, so
+ * it may have fewer columns than the live schema; since every schema is
+ * append-only, mapping by the snapshot's headers lines each logical column up
+ * with today's name, and a column the snapshot lacks simply reads as
+ * undefined. READ-ONLY. Returns null when the sheet is absent. */
+function corruptionSnapshotRows_(ss, sheetName) {
+  let sh = null;
+  try { sh = ss.getSheetByName(sheetName); } catch (_) { sh = null; }
+  if (!sh) return null;
+  const lastRow = sh.getLastRow();
+  const lastCol = sh.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return [];
+  const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) { return String(h); });
+  const values = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  const rows = [];
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    let hasContent = false;
+    for (let j = 0; j < row.length; j++) {
+      if (row[j] !== '' && row[j] !== null) { hasContent = true; break; }
+    }
+    if (!hasContent) continue;
+    const obj = {};
+    for (let j = 0; j < headers.length; j++) {
+      if (headers[j] !== '') obj[headers[j]] = row[j];
+    }
+    rows.push({ rowNumber: i + 2, obj: obj });
+  }
+  return rows;
+}
+
+/* Index one snapshot for matching: patients-family rows per sheet, leads
+ * rows per sheet by id, and every clean person name (for the roster tier). */
+function corruptionSnapshotIndex_(snap) {
+  const idx = { name: snap.name, patients: {}, leads: {}, names: [], namesSeen: {} };
+  const addName = function (v) {
+    const s = String(v == null ? '' : v).trim();
+    if (s === '' || hasCorruption_(s) || idx.namesSeen[s]) return;
+    idx.namesSeen[s] = true;
+    idx.names.push(s);
+  };
+  [PATIENTS_SHEET, DISCHARGED_PATIENTS_SHEET, PATIENTS_TOMBSTONES_SHEET].forEach(function (nm) {
+    const rows = corruptionSnapshotRows_(snap.ss, nm);
+    if (!rows) return;
+    idx.patients[nm] = rows;
+    rows.forEach(function (r) { addName(r.obj.name); });
+  });
+  [LEADS_SHEET, IRRELEVANT_LEADS_SHEET, REMOVED_LEADS_SHEET].forEach(function (nm) {
+    const rows = corruptionSnapshotRows_(snap.ss, nm);
+    if (!rows) return;
+    const byId = {};
+    rows.forEach(function (r) {
+      addName(r.obj.name);
+      const id = String(r.obj.id == null ? '' : r.obj.id).trim();
+      if (!id) return;
+      if (!byId[id]) byId[id] = [];
+      byId[id].push(r);
+    });
+    idx.leads[nm] = byId;
+  });
+  const payRows = corruptionSnapshotRows_(snap.ss, PAYMENTS_SHEET);
+  if (payRows) payRows.forEach(function (r) { addName(r.obj.patientName); });
+  return idx;
+}
+
+/* Find THE snapshot row for a live patients-family row: by fromLead when it
+ * is non-empty, else by houseId + entryDate + monthly amount (pay). The live
+ * row's own sheet is searched first; only if it yields nothing do the other
+ * patients-family sheets get a turn (a live discharged row may have been an
+ * active patient at snapshot time). 2+ candidates in whichever pool answered
+ * → ambiguous: {row:null, why} and NO proposal — a machine must not guess. */
+function corruptionSnapshotMatchPatient_(idx, liveSheet, rowObj) {
+  const order = [liveSheet].concat(
+    [PATIENTS_SHEET, DISCHARGED_PATIENTS_SHEET, PATIENTS_TOMBSTONES_SHEET]
+      .filter(function (nm) { return nm !== liveSheet; }));
+  const fl = String(rowObj.fromLead == null ? '' : rowObj.fromLead).trim();
+  const houseId = String(rowObj.houseId == null ? '' : rowObj.houseId).trim();
+  const date = asISODate_(rowObj.date);
+  const pay = String(rowObj.pay == null ? '' : rowObj.pay).trim();
+  const matchIn = function (rows) {
+    if (!rows) return [];
+    if (fl) {
+      return rows.filter(function (r) {
+        return String(r.obj.fromLead == null ? '' : r.obj.fromLead).trim() === fl;
+      });
+    }
+    if (!houseId || !date) return []; // too little identity to match on
+    return rows.filter(function (r) {
+      return String(r.obj.houseId == null ? '' : r.obj.houseId).trim() === houseId &&
+             asISODate_(r.obj.date) === date &&
+             String(r.obj.pay == null ? '' : r.obj.pay).trim() === pay;
+    });
+  };
+  for (let i = 0; i < order.length; i++) {
+    const cand = matchIn(idx.patients[order[i]]);
+    if (cand.length === 1) return { row: cand[0], sheet: order[i], why: '' };
+    if (cand.length > 1) {
+      return { row: null, sheet: '', why: cand.length + ' rows in ' + order[i] +
+        (fl ? ' share fromLead ' + fl : ' share houseId+entryDate+pay') + ' — ambiguous, no proposal' };
+    }
+  }
+  return { row: null, sheet: '', why: '' };
+}
+
+/* Find THE snapshot row for a live leads-family row by lead id — own sheet
+ * first, then the other leads-family sheets (the lead may have moved sheets
+ * since the snapshot). Same 2+ → ambiguous rule. */
+function corruptionSnapshotMatchLead_(idx, liveSheet, rowObj, leadIdCol) {
+  const id = String(rowObj[leadIdCol] == null ? '' : rowObj[leadIdCol]).trim();
+  if (!id) return { row: null, sheet: '', why: '' };
+  const order = [liveSheet].concat(
+    [LEADS_SHEET, IRRELEVANT_LEADS_SHEET, REMOVED_LEADS_SHEET]
+      .filter(function (nm) { return nm !== liveSheet; }));
+  for (let i = 0; i < order.length; i++) {
+    const byId = idx.leads[order[i]];
+    if (!byId || !byId[id]) continue;
+    if (byId[id].length === 1) return { row: byId[id][0], sheet: order[i], why: '' };
+    return { row: null, sheet: '', why: byId[id].length + ' rows in ' + order[i] +
+      ' share lead id ' + id + ' — ambiguous, no proposal' };
+  }
+  return { row: null, sheet: '', why: '' };
+}
+
+/* Tier 1 for one corrupted cell: walk the snapshots in priority order; the
+ * first matched row whose value in the SAME LOGICAL COLUMN is clean and
+ * passes the compatibility guard wins. A clean-but-incompatible value sets
+ * mismatch=true — the caller classifies 'snapshot mismatch — manual' and
+ * does NOT fall through to enum/roster (the value visibly changed after the
+ * snapshot; guessing from weaker sources would be worse, not better). */
+function corruptionSnapshotProposal_(snapIndexes, t, r, col) {
+  const res = { newValue: '', source: '', mismatch: false, notes: [] };
+  const corrupted = String(r.obj[col]);
+  for (let i = 0; i < snapIndexes.length; i++) {
+    const idx = snapIndexes[i];
+    let m;
+    if (t.snapshotMatch === 'patient') m = corruptionSnapshotMatchPatient_(idx, t.sheet, r.obj);
+    else if (t.snapshotMatch === 'lead') m = corruptionSnapshotMatchLead_(idx, t.sheet, r.obj, t.leadIdCol);
+    else return res; // no row identity in this sheet (Payments/Managers/Outpatients)
+    if (!m.row) {
+      if (m.why) res.notes.push(idx.name + ': ' + m.why);
+      continue;
+    }
+    const v = m.row.obj[col];
+    if (v === undefined || v === null || v === '') continue; // snapshot lacks the column/value
+    const sv = String(v);
+    if (hasCorruption_(sv)) continue; // snapshot row corrupted too (post-bug copy?)
+    if (corruptionWildcardRegex_(corrupted).test(sv)) {
+      res.newValue = sv;
+      res.source = idx.name + ' ' + m.sheet + ' row ' + m.row.rowNumber;
+      return res;
+    }
+    res.mismatch = true;
+    res.notes.push(idx.name + ': snapshot value "' + sv + '" is incompatible with the corrupted cell');
+  }
+  return res;
+}
+
+/* Tier 2 legal-value pools, keyed by the valueClass names used in
+ * corruptionScanTargets_'s enumCols. Seeded from the in-code closed sets
+ * (house display names; manager names) and extended with every clean value
+ * observed in the live enum columns themselves — that is where free-but-
+ * closed sets like source (מקור הפניה) and assignedTo get their values. */
+function corruptionEnumSets_(bySheet, targets) {
+  const sets = { house: {}, manager: {}, source: {}, assignee: {} };
+  Object.keys(MANAGER_HOUSE_NAMES).forEach(function (k) { sets.house[MANAGER_HOUSE_NAMES[k]] = true; });
+  Object.keys(HOUSE_MANAGERS).forEach(function (k) { sets.manager[HOUSE_MANAGERS[k]] = true; });
+  Object.keys(MANAGER_PHONES).forEach(function (name) { sets.manager[name] = true; });
+  targets.forEach(function (t) {
+    const entry = bySheet[t.sheet];
+    if (!entry || !entry.rows) return;
+    Object.keys(t.enumCols || {}).forEach(function (col) {
+      const cls = t.enumCols[col];
+      if (!sets[cls]) sets[cls] = {};
+      entry.rows.forEach(function (r) {
+        const v = String(r.obj[col] == null ? '' : r.obj[col]).trim();
+        if (v !== '' && !hasCorruption_(v)) sets[cls][v] = true;
+      });
+    });
+  });
+  const out = {};
+  Object.keys(sets).forEach(function (cls) { out[cls] = Object.keys(sets[cls]); });
+  return out;
+}
+
+/* Tier 3 roster: every clean person name from every live target sheet's
+ * nameCol plus every snapshot's names. */
+function corruptionRoster_(bySheet, targets, snapIndexes) {
+  const seen = {};
+  const names = [];
+  const add = function (v) {
+    const s = String(v == null ? '' : v).trim();
+    if (s === '' || hasCorruption_(s) || seen[s]) return;
+    seen[s] = true;
+    names.push(s);
+  };
+  targets.forEach(function (t) {
+    const entry = bySheet[t.sheet];
+    if (!entry || !entry.rows || !t.nameCol) return;
+    entry.rows.forEach(function (r) { add(r.obj[t.nameCol]); });
+  });
+  snapIndexes.forEach(function (idx) { idx.names.forEach(add); });
+  return names;
+}
+
+/* Tier 3 bonus — merge two same-length strings corrupted in DIFFERENT
+ * positions: where one has U+FFFD the other must be clean, and where both
+ * are clean they must agree. Returns the reconstructed string, or '' when
+ * the union cannot fully reconstruct (overlapping corruption, conflicting
+ * clean chars, or differing lengths — U+FFFD-run length need not equal the
+ * original char count, so differing lengths are simply not mergeable). */
+function corruptionTwinMerge_(a, b) {
+  a = String(a);
+  b = String(b);
+  if (a.length === 0 || a.length !== b.length) return '';
+  let out = '';
+  for (let i = 0; i < a.length; i++) {
+    const ca = a.charAt(i);
+    const cb = b.charAt(i);
+    if (ca === CORRUPTION_MARK && cb === CORRUPTION_MARK) return '';
+    if (ca !== CORRUPTION_MARK && cb !== CORRUPTION_MARK && ca !== cb) return '';
+    out += (ca === CORRUPTION_MARK) ? cb : ca;
+  }
+  return out;
+}
+
 /* The shared scan engine behind scanCorruptedRowsNow / writeRepairPlanNow.
- * READ-ONLY. Returns:
- *   cells    — [{sheet,row,column,value,proposal,source,newValue}] one per
- *              corrupted cell; proposal ∈ 'repair from twin' | 'repair from
- *              lead' | 'repair from phone match' | 'no source — manual'
+ * READ-ONLY (snapshots included — they are opened and read, never written).
+ * Returns:
+ *   cells    — [{sheet,row,column,value,proposal,source,newValue,note}] one
+ *              per corrupted cell; proposal ∈ 'repair from twin' | 'repair
+ *              from lead' | 'repair from phone match' | 'repair from
+ *              snapshot' | 'repair from enum' | 'repair from roster' |
+ *              'repair from twin-merge' | 'snapshot mismatch — manual' |
+ *              'no source — manual'; note carries why weaker outcomes were
+ *              reached (ambiguous snapshot match, 2+ enum/roster hits, …)
+ *   snapshots— snapshot spreadsheet names in priority order ([] when none
+ *              was found — tiers 2–3 still ran)
  *   deletes  — [{row,name,houseId,date,fromLead}] corrupted Patients rows
  *              whose clean twin makes them EXACT duplicates (same fromLead +
  *              house + entryDate + status) → proposed 'delete corrupted twin'
@@ -1784,6 +2144,15 @@ function corruptionScan_() {
     });
   }
 
+  // Tier 1–3 sources, computed once for the whole scan. All READ-ONLY.
+  const snapshots = corruptionSnapshots_();
+  const snapIndexes = snapshots.map(corruptionSnapshotIndex_);
+  const enumSets = corruptionEnumSets_(bySheet, targets);
+  const roster = corruptionRoster_(bySheet, targets, snapIndexes);
+  const addNote = function (finding, note) {
+    finding.note = finding.note ? finding.note + '; ' + note : note;
+  };
+
   const cells = [];
   targets.forEach(function (t) {
     const entry = bySheet[t.sheet];
@@ -1793,9 +2162,11 @@ function corruptionScan_() {
         const v = r.obj[col];
         if (!hasCorruption_(v)) return;
         const finding = { sheet: t.sheet, row: r.rowNumber, column: col,
-                          value: String(v), proposal: 'no source — manual', source: '', newValue: '' };
+                          value: String(v), proposal: 'no source — manual', source: '', newValue: '', note: '' };
         const leadId = t.leadIdCol ? String(r.obj[t.leadIdCol] == null ? '' : r.obj[t.leadIdCol]).trim() : '';
+        const manual = function () { return finding.proposal === 'no source — manual'; };
 
+        // Tier 0 (PR #105, unchanged behavior) —
         // (a) clean same-fromLead Patients twin — same column, clean value.
         if (t.sheet === PATIENTS_SHEET && leadId && patientsByFromLead[leadId]) {
           const twin = patientsByFromLead[leadId].find(function (tw) {
@@ -1806,23 +2177,19 @@ function corruptionScan_() {
             finding.proposal = 'repair from twin';
             finding.source = t.sheet + ' row ' + twin.rowNumber;
             finding.newValue = String(twin.obj[col]);
-            cells.push(finding);
-            return;
           }
         }
         // (b) the Leads-family row with the same lead id — name column only.
         // (A corrupted Leads row can never propose itself: its own name fails
         // the clean check, so leadById only offers rows that are clean.)
-        if (col === t.nameCol && leadId &&
+        if (manual() && col === t.nameCol && leadId &&
             leadById[leadId] && leadById[leadId].cleanName) {
           finding.proposal = 'repair from lead';
           finding.source = 'lead ' + leadId;
           finding.newValue = leadById[leadId].name;
-          cells.push(finding);
-          return;
         }
         // (c) a clean row elsewhere sharing this row's phone — name column only.
-        if (col === t.nameCol) {
+        if (manual() && col === t.nameCol) {
           const phones = [];
           t.phoneCols.forEach(function (pc) {
             const key = corruptionPhoneKey_(r.obj[pc]);
@@ -1838,6 +2205,63 @@ function corruptionScan_() {
               finding.proposal = 'repair from phone match';
               finding.source = 'phone ' + phones[p];
               finding.newValue = candidate;
+              break;
+            }
+          }
+        }
+
+        // Tier 1 — snapshot (all text columns, notes included).
+        if (manual() && snapIndexes.length > 0 && t.snapshotMatch) {
+          const sp = corruptionSnapshotProposal_(snapIndexes, t, r, col);
+          if (sp.notes.length > 0) addNote(finding, sp.notes.join('; '));
+          if (sp.newValue) {
+            finding.proposal = 'repair from snapshot';
+            finding.source = sp.source;
+            finding.newValue = sp.newValue;
+          } else if (sp.mismatch) {
+            // A clean snapshot value exists but fails the compatibility
+            // guard: the live value was edited after the snapshot. Manual —
+            // and the weaker tiers must not have a go either.
+            finding.proposal = 'snapshot mismatch — manual';
+          }
+        }
+        // Tier 2 — closed value sets (enum columns only, never free text).
+        if (manual() && t.enumCols && t.enumCols[col] && enumSets[t.enumCols[col]]) {
+          const em = corruptionMatchOne_(String(v), enumSets[t.enumCols[col]]);
+          if (em.count === 1) {
+            finding.proposal = 'repair from enum';
+            finding.source = t.enumCols[col] + ' value set';
+            finding.newValue = em.value;
+          } else if (em.count > 1) {
+            addNote(finding, em.count + ' legal ' + t.enumCols[col] + ' values match — manual');
+          }
+        }
+        // Tier 3 — name roster (name columns only, never free text).
+        if (manual() && col === t.nameCol) {
+          const rm = corruptionMatchOne_(String(v), roster);
+          if (rm.count === 1) {
+            finding.proposal = 'repair from roster';
+            finding.source = 'name roster (' + roster.length + ' names)';
+            finding.newValue = rm.value;
+          } else if (rm.count > 1) {
+            addNote(finding, rm.count + ' roster names match — manual');
+          }
+        }
+        // Tier 3 bonus — corrupted-twin merge (Patients only): two rows for
+        // the same logical entity corrupted in DIFFERENT positions whose
+        // union reconstructs the full clean string.
+        if (manual() && t.sheet === PATIENTS_SHEET && leadId && patientsByFromLead[leadId]) {
+          const group = patientsByFromLead[leadId];
+          for (let g = 0; g < group.length; g++) {
+            const tw = group[g];
+            if (tw.rowNumber === r.rowNumber) continue;
+            const tv = tw.obj[col];
+            if (tv === undefined || tv === null || !hasCorruption_(tv)) continue;
+            const merged = corruptionTwinMerge_(String(v), String(tv));
+            if (merged !== '') {
+              finding.proposal = 'repair from twin-merge';
+              finding.source = t.sheet + ' rows ' + r.rowNumber + '+' + tw.rowNumber;
+              finding.newValue = merged;
               break;
             }
           }
@@ -1880,12 +2304,31 @@ function corruptionScan_() {
     }
   });
 
+  const byProposal = {};
+  cells.forEach(function (c) { byProposal[c.proposal] = (byProposal[c.proposal] || 0) + 1; });
+
   return {
     cells: cells,
     deletes: deletes,
     keepBoth: keepBoth,
-    summary: { corruptedCells: cells.length, proposedDeletes: deletes.length, keepBothPairs: keepBoth.length },
+    snapshots: snapshots.map(function (s) { return s.name; }),
+    summary: { corruptedCells: cells.length, proposedDeletes: deletes.length,
+               keepBothPairs: keepBoth.length, byProposal: byProposal },
   };
+}
+
+/* One Logger line describing snapshot availability — shared by both public
+ * scan/plan entry points so the log always states clearly whether tier 1 ran. */
+function logSnapshotStatus_(res) {
+  if (res.snapshots.length === 0) {
+    Logger.log('NO SNAPSHOT FOUND — no spreadsheet named "' + SNAPSHOT_NAME_PREFIX +
+      '*" is visible in Drive, so tier 1 (snapshot repair) was skipped; the enum and roster tiers still ran. ' +
+      'To enable it: File → Version history → pick a pre-2026-07-27 version → Make a copy, name it ' +
+      SNAPSHOT_NAME_PREFIX + ', then re-run.');
+  } else {
+    Logger.log('Snapshot(s) used for tier 1, in priority order (oldest-modified first): ' +
+      res.snapshots.join(', ') + '. Snapshots are read-only — never written.');
+  }
 }
 
 /* DRY RUN — run from the Apps Script editor. READ-ONLY (getSheetByName only;
@@ -1895,9 +2338,11 @@ function corruptionScan_() {
  * these proposals into the reviewable RepairPlan sheet. */
 function scanCorruptedRowsNow() {
   const res = corruptionScan_();
+  logSnapshotStatus_(res);
   res.cells.forEach(function (c) {
     Logger.log('CORRUPTED ' + c.sheet + ' row ' + c.row + ' [' + c.column + '] "' + c.value + '" → ' +
-      c.proposal + (c.newValue ? ' ("' + c.newValue + '" from ' + c.source + ')' : ''));
+      c.proposal + (c.newValue ? ' ("' + c.newValue + '" from ' + c.source + ')' : '') +
+      (c.note ? ' [' + c.note + ']' : ''));
   });
   res.deletes.forEach(function (d) {
     Logger.log('DUPLICATE-TWIN ' + PATIENTS_SHEET + ' row ' + d.row + ' "' + d.name + '" (fromLead ' + d.fromLead +
@@ -1908,7 +2353,7 @@ function scanCorruptedRowsNow() {
   });
   Logger.log('scanCorruptedRowsNow: ' + res.summary.corruptedCells + ' corrupted cell(s), ' +
     res.summary.proposedDeletes + ' proposed delete(s), ' + res.summary.keepBothPairs +
-    ' keep-both pair(s). NO WRITES performed.');
+    ' keep-both pair(s). By tier: ' + JSON.stringify(res.summary.byProposal) + '. NO WRITES performed.');
   return res;
 }
 
@@ -1919,17 +2364,20 @@ function scanCorruptedRowsNow() {
  * run it once, review, apply. Writes ONLY to RepairPlan. */
 function writeRepairPlanNow() {
   const res = corruptionScan_();
+  logSnapshotStatus_(res);
   const sh = getOrCreateSheet_(REPAIR_PLAN_SHEET, REPAIR_PLAN_COLUMNS);
   try { if (!sh.isSheetHidden()) sh.hideSheet(); } catch (_) { /* no-op */ }
 
   const planRows = [];
   res.cells.forEach(function (c) {
     planRows.push(objectToRow_({ sheet: c.sheet, row: c.row, column: c.column,
-      newValue: c.newValue, action: 'repair', approved: 'FALSE', oldValue: c.value }, REPAIR_PLAN_COLUMNS));
+      newValue: c.newValue, action: 'repair', approved: 'FALSE', oldValue: c.value,
+      source: c.proposal + (c.source ? ' — ' + c.source : '') }, REPAIR_PLAN_COLUMNS));
   });
   res.deletes.forEach(function (d) {
     planRows.push(objectToRow_({ sheet: PATIENTS_SHEET, row: d.row, column: 'name',
-      newValue: '', action: 'delete', approved: 'FALSE', oldValue: d.name }, REPAIR_PLAN_COLUMNS));
+      newValue: '', action: 'delete', approved: 'FALSE', oldValue: d.name,
+      source: 'delete corrupted twin' }, REPAIR_PLAN_COLUMNS));
   });
 
   const lastRow = sh.getLastRow();
