@@ -174,8 +174,9 @@ const CLEAN = 'הדס חלמיש';
 test('RepairPlan column order is PINNED — append-only, same rule as LEAD_COLUMNS', () => {
   const { code } = loadCode();
   assert.deepStrictEqual(arr(code.REPAIR_PLAN_COLUMNS),
-    ['sheet', 'row', 'column', 'newValue', 'action', 'approved', 'oldValue'],
-    'never insert/delete/reorder RepairPlan columns — new columns go at the END');
+    ['sheet', 'row', 'column', 'newValue', 'action', 'approved', 'oldValue', 'source'],
+    'never insert/delete/reorder RepairPlan columns — new columns go at the END ' +
+    '(`source` was appended by the snapshot-repair follow-up)');
 });
 
 /* ===== phone normalization (ecosystem rule) ===== */
@@ -285,11 +286,11 @@ test('writeRepairPlanNow fills the hidden RepairPlan with approved=FALSE rows (r
   const repair = rows.find((r) => r.action === 'repair');
   const del = rows.find((r) => r.action === 'delete');
   assert.deepStrictEqual(
-    { sheet: repair.sheet, column: repair.column, newValue: repair.newValue, oldValue: repair.oldValue },
-    { sheet: code.PATIENTS_SHEET, column: 'name', newValue: CLEAN, oldValue: CORRUPT });
+    { sheet: repair.sheet, column: repair.column, newValue: repair.newValue, oldValue: repair.oldValue, source: repair.source },
+    { sheet: code.PATIENTS_SHEET, column: 'name', newValue: CLEAN, oldValue: CORRUPT, source: 'repair from twin' });
   assert.deepStrictEqual(
-    { sheet: del.sheet, column: del.column, oldValue: del.oldValue },
-    { sheet: code.PATIENTS_SHEET, column: 'name', oldValue: CORRUPT });
+    { sheet: del.sheet, column: del.column, oldValue: del.oldValue, source: del.source },
+    { sheet: code.PATIENTS_SHEET, column: 'name', oldValue: CORRUPT, source: 'delete corrupted twin' });
 });
 
 /* ===== C. applyCorruptedRowRepairsNow ===== */
