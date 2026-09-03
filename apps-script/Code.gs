@@ -348,6 +348,21 @@ const PAYMENT_COLUMNS = [
  * the Leads visitDate/visitTime text-column fix guards against. */
 const BILLING_OVERRIDE_COLUMNS = ['id', 'patientId', 'month', 'amount', 'created'];
 
+/* AuditLog sheet — append-only, hidden. One row per Patients-sheet write event
+ * (promotion created/skipped, direct add, edit, discharge, delete, restore),
+ * written by logAudit_ ONLY. APPEND-ONLY contract, same rule as LEAD_COLUMNS:
+ * never insert/delete/reorder — new columns go at the END. Guard-tested.
+ *   timestamp — ISO string (text-forced at ensure time, same coercion guard as
+ *               the tombstones' droppedAt)
+ *   action    — event name, e.g. 'promote_created', 'promote_skipped_duplicate'
+ *   fn        — the backend function that wrote the event
+ *   patientId — the row's fromLead lead-id when it has one, else the discharge
+ *               audit id, else '' (the Patients sheet itself has no id column)
+ *   name      — patient name
+ *   details   — compact JSON string (houseId, identity key, skip reason, …) */
+const AUDIT_LOG_SHEET = 'AuditLog';
+const AUDIT_LOG_COLUMNS = ['timestamp', 'action', 'fn', 'patientId', 'name', 'details'];
+
 /* ===== Entry points ===== */
 
 function doGet(e) {
@@ -536,6 +551,11 @@ function getOrCreateSheet_(name, headers) {
   // (same coercion class as the Leads visitDate/waitlistedAt guards).
   if (name === PATIENTS_TOMBSTONES_SHEET) {
     forceColumnsText_(sh, PATIENT_TOMBSTONE_COLUMNS, ['date', 'droppedAt']);
+  }
+  // AuditLog: the ISO timestamp must survive as a plain string (same guard as
+  // droppedAt); details is JSON text that must never be reinterpreted.
+  if (name === AUDIT_LOG_SHEET) {
+    forceColumnsText_(sh, AUDIT_LOG_COLUMNS, ['timestamp', 'details']);
   }
   return sh;
 }
@@ -745,19 +765,28 @@ function saveAll_(leads, patients) {
     // rows are excluded from `written`, so the server diagnostics'
     // sent-vs-written comparison flags such a save; deletedSuppressed in the
     // recorded response preview is the explanation.
+    // `promoteSkipped` lists, per house, payload rows the promotion dedupe
+    // guard REFUSED to append: their fromLead already has a Patients row
+    // (released included) or a non-restored discharged-audit row — a lead
+    // being promoted a second time (typically after its name was edited, so
+    // the name-keyed merge couldn't match). Skipped rows are excluded from
+    // `written` and each skip is audit-logged (promote_skipped_duplicate).
     const written = {};
     const preserved = {};
     const deletedSuppressed = {};
+    const promoteSkipped = {};
     if (patients && typeof patients === 'object' && !Array.isArray(patients)) {
       const houseIds = Object.keys(patients);
       const userDeleteKeys = houseIds.length > 0 ? recentUserDeleteKeys_() : {};
+      const dischargedIds = houseIds.length > 0 ? dischargedFromLeadIds_() : {};
       for (let i = 0; i < houseIds.length; i++) {
         const hid = houseIds[i];
         const arr = patients[hid];
-        const res = replaceHousePatients_(hid, Array.isArray(arr) ? arr : [], userDeleteKeys);
+        const res = replaceHousePatients_(hid, Array.isArray(arr) ? arr : [], userDeleteKeys, dischargedIds);
         written[hid] = res.written;
         if (res.preservedKeys.length > 0) preserved[hid] = res.preservedKeys;
         if (res.suppressedKeys.length > 0) deletedSuppressed[hid] = res.suppressedKeys;
+        if (res.skippedPromotes.length > 0) promoteSkipped[hid] = res.skippedPromotes;
       }
     }
 
@@ -766,6 +795,7 @@ function saveAll_(leads, patients) {
       written: written,
       preserved: preserved,
       deletedSuppressed: deletedSuppressed,
+      promoteSkipped: promoteSkipped,
       reportConflicts: reportConflicts,
     };
   } finally {
@@ -1001,6 +1031,57 @@ function tombstonePreservedPatients_(rows, savedByAction) {
   }
 }
 
+/* Append one event row to the hidden AuditLog sheet. FAIL-SOFT by hard
+ * contract (locked by test): audit logging must NEVER break or fail the main
+ * operation — every failure is swallowed. `details` may be an object (JSON-
+ * stringified compactly) or a ready string. The sheet is ensured on first use
+ * and kept hidden — Vered sees nothing new. Callers keep their call ONE line. */
+function logAudit_(action, fn, patientId, name, details) {
+  try {
+    const sh = getOrCreateSheet_(AUDIT_LOG_SHEET, AUDIT_LOG_COLUMNS);
+    try { if (!sh.isSheetHidden()) sh.hideSheet(); } catch (_) { /* no-op */ }
+    const row = objectToRow_({
+      timestamp: new Date().toISOString(),
+      action:    String(action == null ? '' : action),
+      fn:        String(fn == null ? '' : fn),
+      patientId: String(patientId == null ? '' : patientId),
+      name:      String(name == null ? '' : name),
+      details:   typeof details === 'string' ? details : JSON.stringify(details || {}),
+    }, AUDIT_LOG_COLUMNS);
+    // Write at the next row (not appendRow) so the whole-column text formats
+    // applied at ensure time are already in place — same pattern as the
+    // tombstones writer.
+    sh.getRange(sh.getLastRow() + 1, 1, 1, AUDIT_LOG_COLUMNS.length).setValues([row]);
+  } catch (err) {
+    try { console.warn('[audit] log skipped: ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
+  }
+}
+
+/* fromLead lead-ids of NON-restored discharged-audit rows, as a {id: true} set
+ * for the promotion dedupe guard — the server-side mirror of the client's
+ * dischargedByFromLead guard (discharge-loop pattern: a released patient's
+ * lead must not re-promote; restored==='TRUE' rows are excluded so both
+ * restore paths keep re-promoting). Read once per saveAll_, inside its lock.
+ * FAIL-OPEN like recentUserDeleteKeys_: an unreadable sheet must never fail
+ * the save — the guard is then merely inactive for that save. */
+function dischargedFromLeadIds_() {
+  const out = {};
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sh = ss.getSheetByName(DISCHARGED_PATIENTS_SHEET);
+    if (!sh) return out;
+    const rows = readSheet_(sh, DISCHARGED_PATIENT_COLUMNS);
+    for (let i = 0; i < rows.length; i++) {
+      if (String(rows[i].restored) === 'TRUE' || rows[i].restored === true) continue;
+      const fl = String(rows[i].fromLead == null ? '' : rows[i].fromLead).trim();
+      if (fl) out[fl] = true;
+    }
+  } catch (err) {
+    try { console.warn('[audit] discharged-id scan skipped: ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
+  }
+  return out;
+}
+
 /**
  * MERGE the payload's patients into the house's rows — merge-don't-drop.
  * Rows for other houses are untouched, exactly as before. Within the house:
@@ -1026,9 +1107,30 @@ function tombstonePreservedPatients_(rows, savedByAction) {
  * a stale tab resurrecting a permanently deleted patient. A key that IS back
  * on the sheet (deliberately re-added) is matched normally, never dropped.
  *
- * Returns { written, preservedKeys, suppressedKeys }: `written` counts the
- * rows actually written for the house (payload count minus suppressed), so
- * the saveAll_ `written` echo stays honest for the server diagnostics.
+ * `dischargedFromLeads` (optional, from dischargedFromLeadIds_): fromLead
+ * lead-ids with a NON-restored discharged-audit row.
+ *
+ * PROMOTION DEDUPE GUARD (the הדס duplicate fix): a payload row that would be
+ * APPENDED (no patientKey_ match) and that carries a non-empty fromLead is
+ * checked against the fromLead of EVERY row currently on the Patients sheet —
+ * all houses, released included — plus rows appended earlier in this save. A
+ * hit means the lead was already promoted (the classic trigger: the lead's
+ * name was edited between two promotions, so the name-keyed match missed):
+ * the row is SKIPPED, audit-logged as 'promote_skipped_duplicate', and echoed
+ * in skippedPromotes. Same skip when the fromLead has a non-restored
+ * discharged-audit row (discharge-loop guard, mirroring the client's
+ * dischargedByFromLead). This is server-side truth read at write time, so a
+ * stale tab whose in-memory guards missed can no longer create a second row
+ * for the same lead. Accepted, documented consequence: a name/entry-date edit
+ * of a lead-linked patient no longer lands as an appended duplicate — the
+ * stale-looking append is refused (visible in the audit log + response) and
+ * the sheet's row stands. Hand-entered patients (fromLead '') keep the old
+ * rename trade-off unchanged.
+ *
+ * Returns { written, preservedKeys, suppressedKeys, skippedPromotes }:
+ * `written` counts the rows actually written for the house (payload count
+ * minus suppressed minus skipped), so the saveAll_ `written` echo stays
+ * honest for the server diagnostics.
  *
  * Write order is WRITE-THEN-TRIM, not clear-then-write: the final row set is
  * written first, then only surplus tail rows are cleared. A crash between the
@@ -1036,11 +1138,12 @@ function tombstonePreservedPatients_(rows, savedByAction) {
  * longer empty the sheet. Note the merge means the Patients sheet never
  * shrinks through this path, so the trim is a pure safety net here.
  */
-function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys) {
+function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, dischargedFromLeads) {
   const sh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
   const houseColIdx = PATIENT_COLUMNS.indexOf('houseId');
   const nameColIdx  = PATIENT_COLUMNS.indexOf('name');
   const dateColIdx  = PATIENT_COLUMNS.indexOf('date');
+  const fromLeadIdx = PATIENT_COLUMNS.indexOf('fromLead');
   const lastRow = sh.getLastRow();
 
   const kept = [];       // other houses' rows, original order — untouched
@@ -1061,8 +1164,22 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys) {
     byKey[key].push(i);
   }
 
+  // fromLead → name of every row currently ON the sheet (all houses,
+  // released included) — the existence set the promotion dedupe guard checks
+  // appends against. Extended as this save appends, so the same lead can't
+  // land twice even within one payload.
+  const fromLeadOnSheet = {};
+  const indexFromLead = function (row) {
+    const fl = fromLeadIdx >= 0 ? String(row[fromLeadIdx] == null ? '' : row[fromLeadIdx]).trim() : '';
+    if (fl && !(fl in fromLeadOnSheet)) fromLeadOnSheet[fl] = String(row[nameColIdx] == null ? '' : row[nameColIdx]);
+  };
+  for (let i = 0; i < kept.length; i++) indexFromLead(kept[i]);
+  for (let i = 0; i < houseRows.length; i++) indexFromLead(houseRows[i]);
+
+  const discharged = dischargedFromLeads || {};
   const suppressed = suppressedDeleteKeys || {};
   const suppressedKeys = [];
+  const skippedPromotes = [];
   const consumed = {};
   const newRows = [];
   for (let i = 0; i < patientsArr.length; i++) {
@@ -1072,13 +1189,40 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys) {
     if (queue && queue.length > 0) {
       // On the sheet → normal replace, even if the key was once user-deleted
       // (a row that is back on the sheet was re-added deliberately).
-      consumed[queue.shift()] = true;
-    } else if (suppressed[key]) {
+      const rowIdx = queue.shift();
+      consumed[rowIdx] = true;
+      const newRow = objectToRow_(withHouse, PATIENT_COLUMNS);
+      const changed = [];
+      for (let c = 0; c < PATIENT_COLUMNS.length; c++) {
+        const dateLike = (c === dateColIdx || PATIENT_COLUMNS[c] === 'exitDate');
+        const before = dateLike ? asISODate_(houseRows[rowIdx][c]) : String(houseRows[rowIdx][c] == null ? '' : houseRows[rowIdx][c]);
+        const after  = dateLike ? asISODate_(newRow[c])            : String(newRow[c] == null ? '' : newRow[c]);
+        if (before !== after) changed.push(PATIENT_COLUMNS[c]);
+      }
+      if (changed.length > 0) logAudit_('patient_edited', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { key: key, changed: changed });
+      newRows.push(newRow);
+      continue;
+    }
+    if (suppressed[key]) {
       // Not on the sheet + fresh user-delete tombstone → a stale tab trying
       // to resurrect a deleted patient. Drop the row, tell the caller.
       suppressedKeys.push(key);
       continue;
     }
+    // APPEND path — promotion dedupe guard (see contract comment above).
+    const fl = String(withHouse.fromLead == null ? '' : withHouse.fromLead).trim();
+    if (fl && (fl in fromLeadOnSheet)) {
+      skippedPromotes.push({ fromLead: fl, name: String(withHouse.name || ''), reason: 'existing_patient_row' });
+      logAudit_('promote_skipped_duplicate', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, key: key, existingName: fromLeadOnSheet[fl], reason: 'existing_patient_row' });
+      continue;
+    }
+    if (fl && discharged[fl]) {
+      skippedPromotes.push({ fromLead: fl, name: String(withHouse.name || ''), reason: 'discharged_not_restored' });
+      logAudit_('promote_skipped_duplicate', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, key: key, reason: 'discharged_not_restored' });
+      continue;
+    }
+    if (fl) fromLeadOnSheet[fl] = String(withHouse.name || '');
+    logAudit_(fl ? 'promote_created' : 'patient_added', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, key: key, status: String(withHouse.status || ''), source: String(withHouse.source || '') });
     newRows.push(objectToRow_(withHouse, PATIENT_COLUMNS));
   }
 
@@ -1119,7 +1263,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys) {
   if (lastRow > finalRows.length + 1) {
     sh.getRange(finalRows.length + 2, 1, lastRow - finalRows.length - 1, PATIENT_COLUMNS.length).clearContent();
   }
-  return { written: newRows.length, preservedKeys: preservedKeys, suppressedKeys: suppressedKeys };
+  return { written: newRows.length, preservedKeys: preservedKeys, suppressedKeys: suppressedKeys, skippedPromotes: skippedPromotes };
 }
 
 /* Identity keys of FRESH 'user-delete' tombstones (droppedAt within
@@ -1210,6 +1354,7 @@ function deletePatientRow_(patient) {
     if (lastRow > kept.length + 1) {
       sh.getRange(kept.length + 2, 1, lastRow - kept.length - 1, PATIENT_COLUMNS.length).clearContent();
     }
+    logAudit_('patient_deleted', 'deletePatientRow_', patient.fromLead || '', patient.name || '', { key: key, deleted: matched.length });
     return { ok: true, deleted: matched.length, key: key };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
@@ -1370,6 +1515,58 @@ function repairLeadVisitTimes() {
   return blanked;
 }
 
+/* ONE-TIME MANUAL DETECTION — run from the Apps Script editor (Run dropdown).
+ *
+ * READ-ONLY: scans the Patients sheet and Logger.logs every lead-id (fromLead)
+ * that appears on MORE than one row — the הדס duplicate class — with each
+ * row's sheet row number, name, status and entry date, so the surplus row can
+ * be cleaned by hand (dashboard ✕ / deletePatientRow). Performs ZERO writes
+ * (reads via getSheetByName, never the ensure path, so it cannot even create
+ * a sheet). Intentionally PUBLIC (no trailing underscore) so it shows in the
+ * editor's Run dropdown — same rationale and same non-exposure argument as
+ * repairLeadVisitTimes above: handle_'s fixed action allow-list never names
+ * it, so no HTTP request can reach it. Returns the duplicate groups (also
+ * handy for tests). */
+function findDuplicatePatientIdsNow() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(PATIENTS_SHEET);
+  if (!sh) {
+    Logger.log('findDuplicatePatientIdsNow: no Patients sheet.');
+    return [];
+  }
+  const fromLeadIdx = PATIENT_COLUMNS.indexOf('fromLead');
+  const nameIdx     = PATIENT_COLUMNS.indexOf('name');
+  const statusIdx   = PATIENT_COLUMNS.indexOf('status');
+  const dateIdx     = PATIENT_COLUMNS.indexOf('date');
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) {
+    Logger.log('findDuplicatePatientIdsNow: no data rows.');
+    return [];
+  }
+  const values = sh.getRange(2, 1, lastRow - 1, PATIENT_COLUMNS.length).getValues();
+  const byId = {};
+  for (let i = 0; i < values.length; i++) {
+    const fl = String(values[i][fromLeadIdx] == null ? '' : values[i][fromLeadIdx]).trim();
+    if (!fl) continue; // hand-entered rows have no lead id — nothing to key on
+    if (!byId[fl]) byId[fl] = [];
+    byId[fl].push({
+      row:    i + 2, // 1-based sheet row (header is row 1)
+      name:   String(values[i][nameIdx] == null ? '' : values[i][nameIdx]),
+      status: String(values[i][statusIdx] == null ? '' : values[i][statusIdx]),
+      date:   asISODate_(values[i][dateIdx]),
+    });
+  }
+  const dupes = [];
+  Object.keys(byId).forEach(function (fl) {
+    if (byId[fl].length < 2) return;
+    dupes.push({ fromLead: fl, rows: byId[fl] });
+    Logger.log('DUPLICATE patient id ' + fl + ' on ' + byId[fl].length + ' rows: ' +
+      byId[fl].map(function (r) { return 'row ' + r.row + ' "' + r.name + '" (' + r.status + ', ' + r.date + ')'; }).join('; '));
+  });
+  Logger.log('findDuplicatePatientIdsNow: ' + dupes.length + ' duplicate id(s) across ' + values.length + ' data rows. No writes performed.');
+  return dupes;
+}
+
 function moveLeadIrrelevant_(lead) {
   if (!lead || !lead.id) return { ok: false, error: 'missing_lead' };
   const lock = LockService.getScriptLock();
@@ -1488,6 +1685,7 @@ function dischargePatient_(patient) {
     });
 
     upsertRowById_(dischargedSh, DISCHARGED_PATIENT_COLUMNS, record);
+    logAudit_('patient_discharged', 'dischargePatient_', record.fromLead || record.id || '', record.name || '', { id: record.id, houseId: record.houseId || '', disposition: record.disposition || '' });
     return { ok: true, discharged: true, patient: record };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
@@ -1525,6 +1723,7 @@ function restorePatient_(patient) {
     const flagged = Object.assign({}, patient, { restored: 'TRUE' });
     upsertRowById_(dischargedSh, DISCHARGED_PATIENT_COLUMNS, flagged);
 
+    logAudit_('patient_restored_to_lead', 'restorePatient_', patient.fromLead || patient.id, patient.name || '', { id: patient.id, newLeadId: restored.id });
     return {
       ok: true,
       restored: true,
@@ -1551,6 +1750,7 @@ function restorePatientToActive_(patient) {
     const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
     const flagged = Object.assign({}, patient, { restored: 'TRUE' });
     upsertRowById_(dischargedSh, DISCHARGED_PATIENT_COLUMNS, flagged);
+    logAudit_('patient_restored_active', 'restorePatientToActive_', patient.fromLead || patient.id, patient.name || '', { id: patient.id });
     return { ok: true, restoredToActive: true, id: patient.id };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
