@@ -10,11 +10,13 @@
  *
  * The fix under test (this PR):
  *   A. Server-side promotion dedupe guard in replaceHousePatients_: a payload
- *      row that would be APPENDED and carries a non-empty fromLead is refused
- *      when that fromLead already exists on ANY Patients row (all houses,
- *      released included) or has a NON-restored discharged-audit row
- *      (discharge-loop guard). Skips are echoed in the saveAll response
- *      (promoteSkipped), excluded from `written`, and audit-logged.
+ *      row that would be APPENDED and carries a non-empty fromLead is
+ *      resolved against the sheet: a SAME-house fromLead match is a rename /
+ *      entry-date edit → updated in place (rename-guard follow-up; see
+ *      test/rename-guard-followup.test.js); a match anywhere else (other
+ *      house, released included) or a NON-restored discharged-audit row is
+ *      refused (discharge-loop guard). Skips are echoed in the saveAll
+ *      response (promoteSkipped), excluded from `written`, and audit-logged.
  *   B. Hidden append-only AuditLog sheet (timestamp|action|fn|patientId|name|
  *      details — APPEND-ONLY, order guard-tested here) written by logAudit_,
  *      which is FAIL-SOFT: a logging failure never breaks the main operation.
@@ -185,30 +187,32 @@ test('AuditLog column order is PINNED — append-only, same rule as LEAD_COLUMNS
 
 /* ===== A. promotion dedupe guard ===== */
 
-test('the הדס duplicate: a re-promotion under a NEW name with an existing fromLead is SKIPPED', () => {
+test('the הדס class, SAME house: a fromLead-carrying append UPDATES the existing row in place — never a second row', () => {
+  // Since the rename-guard follow-up, a same-house fromLead match is resolved
+  // as a rename/entry-date edit (update in place, patient_renamed_via_fromLead)
+  // rather than refused — the refusal (promote_skipped_duplicate) now fires
+  // only cross-house and for discharged-non-restored leads. Either way the
+  // core invariant of the original הדס fix holds: ONE row per fromLead.
   const { code, sandbox } = withPatients(SEED);
-  // A stale tab promotes the (renamed) lead again: same fromLead, new name.
   const res = code.saveAll(null, {
     ramot: [{ houseId: 'ramot', name: 'הדס חלמיש', date: '2026-09-01', pay: 0,
               status: 'trial', source: 'lead', fromLead: LEAD_ID }],
   });
   assert.strictEqual(res.ok, true);
-  assert.deepStrictEqual({ ...res.written }, { ramot: 0 }, 'skipped row excluded from written');
-  assert.deepStrictEqual(plain(res.promoteSkipped.ramot),
-    [{ fromLead: LEAD_ID, name: 'הדס חלמיש', reason: 'existing_patient_row' }]);
+  assert.deepStrictEqual({ ...res.written }, { ramot: 1 }, 'the update counts as written');
+  assert.deepStrictEqual({ ...res.promoteSkipped }, {}, 'same-house match is not a refusal');
 
   const after = patientsOf(code, sandbox);
-  assert.deepStrictEqual(arr(after).map((p) => p.name).sort(), ['הדס', 'שרה'],
-    'no second row for the same lead id — the sheet row stands');
+  assert.deepStrictEqual(arr(after).map((p) => p.name).sort(), ['הדס חלמיש', 'שרה'],
+    'no second row for the same lead id — the existing row was renamed in place');
 
   const audit = auditOf(code, sandbox);
-  const skip = audit.find((a) => a.action === 'promote_skipped_duplicate');
-  assert.ok(skip, 'the skip is audit-logged');
-  assert.strictEqual(skip.patientId, LEAD_ID);
-  assert.strictEqual(skip.name, 'הדס חלמיש');
-  const details = JSON.parse(skip.details);
-  assert.strictEqual(details.reason, 'existing_patient_row');
-  assert.strictEqual(details.existingName, 'הדס', 'details name the row that already holds the id');
+  const renamed = audit.find((a) => a.action === 'patient_renamed_via_fromLead');
+  assert.ok(renamed, 'the in-place update is audit-logged');
+  assert.strictEqual(renamed.patientId, LEAD_ID);
+  const details = JSON.parse(renamed.details);
+  assert.deepStrictEqual({ oldName: details.oldName, newName: details.newName, ambiguous: details.ambiguous },
+    { oldName: 'הדס', newName: 'הדס חלמיש', ambiguous: false });
 });
 
 test('guard sees the WHOLE sheet: released rows and rows in OTHER houses both block re-promotion', () => {

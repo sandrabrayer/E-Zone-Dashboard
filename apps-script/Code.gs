@@ -766,11 +766,13 @@ function saveAll_(leads, patients) {
     // sent-vs-written comparison flags such a save; deletedSuppressed in the
     // recorded response preview is the explanation.
     // `promoteSkipped` lists, per house, payload rows the promotion dedupe
-    // guard REFUSED to append: their fromLead already has a Patients row
-    // (released included) or a non-restored discharged-audit row — a lead
-    // being promoted a second time (typically after its name was edited, so
-    // the name-keyed merge couldn't match). Skipped rows are excluded from
-    // `written` and each skip is audit-logged (promote_skipped_duplicate).
+    // guard REFUSED to append: their fromLead already has a Patients row in
+    // ANOTHER house (or earlier in this same save), or a non-restored
+    // discharged-audit row — the true duplicate-promotion signatures. (A
+    // SAME-house fromLead match is a rename/entry-date edit and is updated
+    // in place instead — see replaceHousePatients_.) Skipped rows are
+    // excluded from `written`, audit-logged (promote_skipped_duplicate), and
+    // surfaced by the client as an error toast so no refusal is silent.
     const written = {};
     const preserved = {};
     const deletedSuppressed = {};
@@ -1110,22 +1112,31 @@ function dischargedFromLeadIds_() {
  * `dischargedFromLeads` (optional, from dischargedFromLeadIds_): fromLead
  * lead-ids with a NON-restored discharged-audit row.
  *
- * PROMOTION DEDUPE GUARD (the הדס duplicate fix): a payload row that would be
- * APPENDED (no patientKey_ match) and that carries a non-empty fromLead is
- * checked against the fromLead of EVERY row currently on the Patients sheet —
- * all houses, released included — plus rows appended earlier in this save. A
- * hit means the lead was already promoted (the classic trigger: the lead's
- * name was edited between two promotions, so the name-keyed match missed):
- * the row is SKIPPED, audit-logged as 'promote_skipped_duplicate', and echoed
- * in skippedPromotes. Same skip when the fromLead has a non-restored
- * discharged-audit row (discharge-loop guard, mirroring the client's
- * dischargedByFromLead). This is server-side truth read at write time, so a
- * stale tab whose in-memory guards missed can no longer create a second row
- * for the same lead. Accepted, documented consequence: a name/entry-date edit
- * of a lead-linked patient no longer lands as an appended duplicate — the
- * stale-looking append is refused (visible in the audit log + response) and
- * the sheet's row stands. Hand-entered patients (fromLead '') keep the old
- * rename trade-off unchanged.
+ * PROMOTION DEDUPE GUARD (the הדס duplicate fix) + RENAME-IN-PLACE: a payload
+ * row that would be APPENDED (no patientKey_ match) and carries a non-empty
+ * fromLead is resolved in this order:
+ *   1. An unconsumed SAME-HOUSE sheet row carries that fromLead (and its own
+ *      identity key is not claimed by another payload row) → this is Vered's
+ *      legitimate name/entry-date edit arriving under a new identity key: the
+ *      existing row is UPDATED IN PLACE (all fields overwritten from the
+ *      incoming row), audit-logged as 'patient_renamed_via_fromLead' with
+ *      old→new name. If MORE than one such row exists (a pre-existing
+ *      duplicate, the הדס state), the FIRST in sheet order is updated —
+ *      deterministic, never both — and the ambiguity is flagged in the audit
+ *      details (matches>1, ambiguous:true).
+ *   2. The fromLead exists anywhere ELSE on the sheet (another house,
+ *      released included) or on a row appended earlier in this save → the
+ *      true duplicate-promotion signature: SKIPPED, audit-logged
+ *      'promote_skipped_duplicate', echoed in skippedPromotes.
+ *   3. The fromLead has a non-restored discharged-audit row → same skip
+ *      (discharge-loop guard, mirroring the client's dischargedByFromLead).
+ * All read from the sheet at write time, so a stale tab whose in-memory
+ * guards missed can no longer create a second row for the same lead — while
+ * an edit-modal rename lands instead of being dropped. Note a HOUSE-MOVE of a
+ * lead-linked patient also arrives as an append (houseId is in the key) and
+ * falls under rule 2 — refused, surfaced by the client's promoteSkipped
+ * toast. Hand-entered patients (fromLead '') keep the old rename trade-off
+ * (old row kept + edit appended) unchanged.
  *
  * Returns { written, preservedKeys, suppressedKeys, skippedPromotes }:
  * `written` counts the rows actually written for the house (payload count
@@ -1176,6 +1187,27 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   for (let i = 0; i < kept.length; i++) indexFromLead(kept[i]);
   for (let i = 0; i < houseRows.length; i++) indexFromLead(houseRows[i]);
 
+  // THIS house's sheet rows by fromLead (indices, sheet order) — the
+  // rename-in-place lookup. Separate from fromLeadOnSheet so a same-house
+  // match can be told apart from a cross-house one.
+  const houseRowsByFromLead = {};
+  for (let i = 0; i < houseRows.length; i++) {
+    const fl = fromLeadIdx >= 0 ? String(houseRows[i][fromLeadIdx] == null ? '' : houseRows[i][fromLeadIdx]).trim() : '';
+    if (!fl) continue;
+    if (!houseRowsByFromLead[fl]) houseRowsByFromLead[fl] = [];
+    houseRowsByFromLead[fl].push(i);
+  }
+
+  // Identity keys the payload itself claims. A sheet row whose key another
+  // payload row will key-match must never be consumed by the rename-in-place
+  // branch — that would double-consume it and let the payload land two rows
+  // for one fromLead.
+  const payloadKeys = {};
+  for (let i = 0; i < patientsArr.length; i++) {
+    const p = patientsArr[i] || {};
+    payloadKeys[patientKey_(houseId, p.name, p.date)] = true;
+  }
+
   const discharged = dischargedFromLeads || {};
   const suppressed = suppressedDeleteKeys || {};
   const suppressedKeys = [];
@@ -1209,8 +1241,28 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
       suppressedKeys.push(key);
       continue;
     }
-    // APPEND path — promotion dedupe guard (see contract comment above).
+    // APPEND path — rename-in-place, then dedupe guard (contract comment above).
     const fl = String(withHouse.fromLead == null ? '' : withHouse.fromLead).trim();
+    if (fl) {
+      // Rule 1: unconsumed SAME-HOUSE row with this fromLead whose own key no
+      // payload row claims → a rename / entry-date edit. Update it in place:
+      // consume the old row and write the incoming row over it. First match
+      // in sheet order when the fromLead is (pre-existing-bug) duplicated —
+      // deterministic, never both; ambiguity flagged in the audit details.
+      const matches = (houseRowsByFromLead[fl] || []).filter(function (idx) {
+        return !consumed[idx] &&
+          !payloadKeys[patientKey_(houseId, houseRows[idx][nameColIdx], houseRows[idx][dateColIdx])];
+      });
+      if (matches.length > 0) {
+        const idx = matches[0];
+        consumed[idx] = true;
+        const oldName = String(houseRows[idx][nameColIdx] == null ? '' : houseRows[idx][nameColIdx]);
+        const oldKey = patientKey_(houseId, houseRows[idx][nameColIdx], houseRows[idx][dateColIdx]);
+        logAudit_('patient_renamed_via_fromLead', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, oldName: oldName, newName: String(withHouse.name || ''), oldKey: oldKey, newKey: key, matches: matches.length, ambiguous: matches.length > 1 });
+        newRows.push(objectToRow_(withHouse, PATIENT_COLUMNS));
+        continue;
+      }
+    }
     if (fl && (fl in fromLeadOnSheet)) {
       skippedPromotes.push({ fromLead: fl, name: String(withHouse.name || ''), reason: 'existing_patient_row' });
       logAudit_('promote_skipped_duplicate', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, key: key, existingName: fromLeadOnSheet[fl], reason: 'existing_patient_row' });

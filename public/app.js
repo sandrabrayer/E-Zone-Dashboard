@@ -314,6 +314,26 @@ function saveAllResponseNeedsResync(res) {
   return nonEmpty(res.preserved) || nonEmpty(res.deletedSuppressed);
 }
 
+/* Hebrew error message when the backend's promotion dedupe guard refused
+ * rows (saveAll response carries a non-empty promoteSkipped map); null when
+ * nothing was refused. The refusal must NEVER be silent — a refused row means
+ * something this tab tried to write did not land (a duplicate promotion, a
+ * house-move of a lead-linked patient, a discharged lead re-promotion).
+ * Pure — unit-tested; tolerant of old backends that don't send the field. */
+function promoteSkippedMessage(res) {
+  if (!res || typeof res !== 'object') return null;
+  const m = res.promoteSkipped;
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return null;
+  const names = [];
+  Object.keys(m).forEach(h => {
+    (Array.isArray(m[h]) ? m[h] : []).forEach(s => {
+      if (s && s.name) names.push(String(s.name));
+    });
+  });
+  if (names.length === 0) return null;
+  return 'שורה לא נשמרה — כפילות זוהתה: ' + names.join(', ');
+}
+
 let _preservedResyncBusy = false;
 let _preservedResyncLastAt = 0;
 function maybeResyncPreservedPatients(res) {
@@ -389,6 +409,8 @@ function saveAll() {
     try {
       const res = await apiPost(payload);
       maybeResyncPreservedPatients(res);
+      const skippedMsg = promoteSkippedMessage(res);
+      if (skippedMsg) showError(skippedMsg);
       return res;
     } finally {
       _savesInFlight--;
