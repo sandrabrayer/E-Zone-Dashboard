@@ -1021,10 +1021,6 @@ input:focus, select:focus, textarea:focus {
 }
 .patient-row .p-val { font-size: 14.5px; font-weight: 600; color: var(--text); }
 .patient-row .p-name { font-weight: 700; font-size: 16px; color: var(--text); }
-/* Manager report carried over from the originating lead (read-only): spans
- * the whole patient-row grid so the data columns above keep their tracks. */
-.patient-row .pt-report { grid-column: 1 / -1; }
-.patient-row .mrv-report { margin: 0; }
 
 .badge {
   display: inline-block;
