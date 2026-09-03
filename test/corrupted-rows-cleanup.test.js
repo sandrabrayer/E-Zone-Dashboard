@@ -174,7 +174,9 @@ const CLEAN = 'הדס חלמיש';
 test('RepairPlan column order is PINNED — append-only, same rule as LEAD_COLUMNS', () => {
   const { code } = loadCode();
   assert.deepStrictEqual(arr(code.REPAIR_PLAN_COLUMNS),
-    ['sheet', 'row', 'column', 'newValue', 'action', 'approved', 'oldValue'],
+    // 'source' (the proposing repair tier + provenance) was APPENDED at the
+    // END with the snapshot-repair tiers — the append-only contract in action.
+    ['sheet', 'row', 'column', 'newValue', 'action', 'approved', 'oldValue', 'source'],
     'never insert/delete/reorder RepairPlan columns — new columns go at the END');
 });
 
