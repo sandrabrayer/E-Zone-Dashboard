@@ -647,22 +647,27 @@ function getOrCreateSheet_(name, headers) {
   if (name === BILLING_OVERRIDES_SHEET) {
     forceColumnsText_(sh, BILLING_OVERRIDE_COLUMNS, ['month', 'amount']);
   }
-  // Patients: the updatedAt ISO timestamp must survive as a plain string
-  // (same coercion class as droppedAt/waitlistedAt); updatedBy is opaque
-  // text. (`id` needs no format — 'id-…' strings never coerce; the entry
-  // date is text-forced per-write by replaceHousePatients_.)
+  // Patients: the entry date AND exitDate must survive as plain 'YYYY-MM-DD'
+  // strings — a date-typed cell reads back as a Date, serializes as a UTC
+  // timestamp and drifts the day −1 for Israel (the exitDate timezone-drift
+  // bug; replaceHousePatients_ ALSO forces both per-write, exactly like the
+  // entry date always was). The updatedAt ISO timestamp is the same coercion
+  // class as droppedAt/waitlistedAt; updatedBy is opaque text. (`id` needs no
+  // format — 'id-…' strings never coerce.)
   if (name === PATIENTS_SHEET) {
-    forceColumnsText_(sh, PATIENT_COLUMNS, ['updatedAt', 'updatedBy']);
+    forceColumnsText_(sh, PATIENT_COLUMNS, ['date', 'exitDate', 'updatedAt', 'updatedBy']);
   }
-  // PatientsTombstones: entry date and droppedAt must survive as plain strings
-  // (same coercion class as the Leads visitDate/waitlistedAt guards) — and the
-  // snapshot's who/when stamps for the same reasons as on Patients.
+  // PatientsTombstones: entry date, exitDate and droppedAt must survive as
+  // plain strings (same coercion class as the Leads visitDate/waitlistedAt
+  // guards) — and the snapshot's who/when stamps for the same reasons as on
+  // Patients.
   if (name === PATIENTS_TOMBSTONES_SHEET) {
-    forceColumnsText_(sh, PATIENT_TOMBSTONE_COLUMNS, ['date', 'droppedAt', 'updatedAt', 'updatedBy']);
+    forceColumnsText_(sh, PATIENT_TOMBSTONE_COLUMNS, ['date', 'exitDate', 'droppedAt', 'updatedAt', 'updatedBy']);
   }
-  // Discharged patients: same guard for the appended who/when stamps.
+  // Discharged patients: entry date + exitDate (the audit row carries the
+  // patient's dates) and the appended who/when stamps.
   if (name === DISCHARGED_PATIENTS_SHEET) {
-    forceColumnsText_(sh, DISCHARGED_PATIENT_COLUMNS, ['updatedAt', 'updatedBy']);
+    forceColumnsText_(sh, DISCHARGED_PATIENT_COLUMNS, ['date', 'exitDate', 'updatedAt', 'updatedBy']);
   }
   // AuditLog: the ISO timestamp must survive as a plain string (same guard as
   // droppedAt); details is JSON text that must never be reinterpreted.
@@ -717,6 +722,17 @@ function objectToRow_(obj, columns) {
   return row;
 }
 
+/* In-place: `date` and `exitDate` of every row object (readSheet_ output)
+ * rendered as local 'YYYY-MM-DD' text via asISODate_ (blank stays blank).
+ * Returns the same array. */
+function normalizePatientDates_(rows) {
+  for (let i = 0; i < rows.length; i++) {
+    rows[i].date     = asISODate_(rows[i].date);
+    rows[i].exitDate = asISODate_(rows[i].exitDate);
+  }
+  return rows;
+}
+
 /* Today as YYYY-MM-DD in the spreadsheet's timezone — Israel rolls past
  * midnight ~3 hours before UTC, so a UTC-based stamp would mis-date leads
  * added late in the evening Israel time. Defensive default for the
@@ -729,16 +745,62 @@ function todayISODate_() {
 /* Normalize a Sheets cell value to YYYY-MM-DD. Sheets sometimes hands back
  * a Date object for cells the user formatted as a date; we want the
  * persisted/returned value to always be a plain string so the frontend's
- * <input type="date"> can read it without extra parsing. */
+ * <input type="date"> can read it without extra parsing.
+ *
+ * Every form derives the calendar day from the SPREADSHEET timezone
+ * (Asia/Jerusalem), never from UTC parts — Israel is UTC+2/+3, so local
+ * midnight is 21:00/22:00 UTC of the PREVIOUS day and a UTC slice drifts the
+ * day −1 (the entry-date and exitDate timezone bugs):
+ *   - Date object (a date-typed cell via getValues) → formatted in the sheet tz;
+ *   - Number: a Sheets date SERIAL (days since 1899-12-30) — what getValues
+ *     hands back for a date-valued cell whose format was switched to plain
+ *     text; the day is exact, converted directly (no timezone involved);
+ *   - 'YYYY-MM-DDTHH:mm…' string carrying a timezone marker (trailing 'Z' or
+ *     ±hh:mm — a Date that went through JSON.stringify/toISOString and was
+ *     persisted as text) → parsed and formatted in the sheet tz, so
+ *     '2026-05-06T21:00:00.000Z' yields '2026-05-07', not the sliced UTC day;
+ *   - any other string: the leading YYYY-MM-DD if present (a bare date passes
+ *     through unchanged; a tz-less 'YYYY-MM-DDT…' is wall-clock), else as-is;
+ *   - blank / null / undefined → ''. */
 function asISODate_(v) {
   if (v === undefined || v === null || v === '') return '';
+  // The spreadsheet timezone is resolved lazily: only the Date and tz-marked
+  // timestamp branches need it, so a bare 'YYYY-MM-DD' (the common case)
+  // never touches a GAS service.
+  const sheetTz = function () {
+    return SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || 'Asia/Jerusalem';
+  };
   if (Object.prototype.toString.call(v) === '[object Date]') {
-    const tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || 'Asia/Jerusalem';
-    return Utilities.formatDate(v, tz, 'yyyy-MM-dd');
+    return isNaN(v.getTime()) ? '' : Utilities.formatDate(v, sheetTz(), 'yyyy-MM-dd');
+  }
+  if (typeof v === 'number' && isSheetDateSerial_(v)) {
+    return sheetSerialToISODate_(v);
   }
   const s = String(v);
   const m = s.match(/^\d{4}-\d{2}-\d{2}/);
+  // Only a timestamp with an explicit timezone marker (trailing 'Z' or a
+  // ±hh:mm / ±hhmm offset) is re-localized; a tz-less 'YYYY-MM-DDT…' string
+  // is a wall-clock value whose leading date is already the intended day.
+  if (m && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/.test(s)) {
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) return Utilities.formatDate(d, sheetTz(), 'yyyy-MM-dd');
+  }
   return m ? m[0] : s;
+}
+
+/* Sheets date serials: days since 1899-12-30 (serial 25569 = 1970-01-01).
+ * The plausible window (1950-01-01 … 2199-12-31) keeps an ordinary number
+ * such as a payment amount from being mistaken for a date. */
+const SHEET_SERIAL_MIN = 18264;  // 1950-01-01
+const SHEET_SERIAL_MAX = 109574; // 2199-12-31
+function isSheetDateSerial_(n) {
+  return isFinite(n) && n >= SHEET_SERIAL_MIN && n <= SHEET_SERIAL_MAX;
+}
+function sheetSerialToISODate_(n) {
+  // The serial's integer part IS the calendar day; the epoch arithmetic is
+  // done in UTC on purpose so no host/script timezone can shift it.
+  const ms = (Math.floor(n) - 25569) * 86400000;
+  return Utilities.formatDate(new Date(ms), 'UTC', 'yyyy-MM-dd');
 }
 
 /* Normalize a Sheets cell value to 'HH:MM' — the symmetric counterpart to
@@ -763,12 +825,20 @@ function asISOTime_(v) {
   return isNaN(d) ? '' : Utilities.formatDate(d, tz, 'HH:mm');
 }
 
-/* The date columns and the time column present in a leads-shaped `columns` list.
- * Safe on any columns list — absent names are simply skipped. Used to normalize
- * and text-format lead writes so a value can't be coerced into a Date cell. */
+/* Every date-like column name any row-level writer (upsertRowById_) may meet:
+ * the leads' three date columns plus the patients' entry date and exitDate —
+ * the DischargedPatients rows written by dischargePatient_ / the restore
+ * flows carry both. Each is normalized through asISODate_ and text-forced at
+ * the target row before the write, so no date value can be coerced into a
+ * Date cell (the exitDate timezone-drift class). */
+const DATE_LIKE_COLUMNS = ['visitDate', 'entryDate', 'created', 'date', 'exitDate'];
+
+/* The date columns and the time column present in a `columns` list. Safe on
+ * any columns list — absent names are simply skipped. Used to normalize and
+ * text-format row writes so a value can't be coerced into a Date cell. */
 function leadDateColIdxs_(columns) {
   const out = [];
-  ['visitDate', 'entryDate', 'created'].forEach(function (n) {
+  DATE_LIKE_COLUMNS.forEach(function (n) {
     const i = columns.indexOf(n);
     if (i >= 0) out.push(i);
   });
@@ -833,6 +903,15 @@ function getData_() {
   const removedLeads        = readSheet_(removedSh, REMOVED_LEAD_COLUMNS);
   const dischargedPatients  = readSheet_(dischargedSh, DISCHARGED_PATIENT_COLUMNS);
   const billingOverrides    = readSheet_(overridesSh, BILLING_OVERRIDE_COLUMNS);
+  // Normalize the patient dates on the way out — same treatment visitTime
+  // gets above. A legacy date-typed (or serial-numbered) exitDate / entry
+  // date cell would otherwise serialize to the client as a UTC timestamp
+  // ('2026-05-06T21:00:00.000Z' for a 2026-05-07 discharge) and drift the
+  // day; asISODate_ renders it as the local 'YYYY-MM-DD' so the client can
+  // never see the drifted form, even before repairPatientExitDatesNow runs.
+  // Clean text cells pass through unchanged.
+  normalizePatientDates_(patientRows);
+  normalizePatientDates_(dischargedPatients);
 
   const patients = {};
   for (let i = 0; i < patientRows.length; i++) {
@@ -1171,6 +1250,7 @@ function appendPatientTombstones_(rows, reason, savedByAction, deletedBy) {
     const obj = {};
     for (let i = 0; i < PATIENT_COLUMNS.length; i++) obj[PATIENT_COLUMNS[i]] = row[i];
     obj.date          = asISODate_(obj.date);
+    obj.exitDate      = asISODate_(obj.exitDate);
     obj.droppedAt     = nowIso;
     obj.reason        = reason;
     obj.savedByAction = savedByAction;
@@ -1346,6 +1426,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   const houseColIdx = PATIENT_COLUMNS.indexOf('houseId');
   const nameColIdx  = PATIENT_COLUMNS.indexOf('name');
   const dateColIdx  = PATIENT_COLUMNS.indexOf('date');
+  const exitDateColIdx = PATIENT_COLUMNS.indexOf('exitDate');
   const fromLeadIdx = PATIENT_COLUMNS.indexOf('fromLead');
   const idIdx       = PATIENT_COLUMNS.indexOf('id');
   const updatedAtIdx = PATIENT_COLUMNS.indexOf('updatedAt');
@@ -1660,26 +1741,32 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   }
   tombstonePreservedPatients_(preservedRows, 'saveAll');
 
-  // Canonicalize the entry-date column to a clean YYYY-MM-DD string for ALL
-  // rows — kept/preserved rows (whose cell may already be a coerced Date
-  // object from getValues) and new rows (a string from the client) alike.
-  // asISODate_ formats any Date in the spreadsheet timezone, so the stored
-  // value is unambiguous text — mirrors the treatment leads' `created` column
-  // gets in mergeLeads_.
+  // Canonicalize the entry-date AND exitDate columns to a clean YYYY-MM-DD
+  // string for ALL rows — kept/preserved rows (whose cell may already be a
+  // coerced Date object from getValues) and new rows (a string from the
+  // client — possibly a full ISO timestamp echoed from a legacy read) alike.
+  // asISODate_ renders any Date / tz-marked timestamp in the spreadsheet
+  // timezone, so the stored value is unambiguous local-day text — mirrors the
+  // treatment leads' `created` column gets in mergeLeads_. Blank stays blank.
   const finalRows = kept.concat(preservedRows).concat(newRows).map(function (row) {
     if (dateColIdx >= 0) row[dateColIdx] = asISODate_(row[dateColIdx]);
+    if (exitDateColIdx >= 0) row[exitDateColIdx] = asISODate_(row[exitDateColIdx]);
     return row;
   });
 
   if (finalRows.length > 0) {
-    // Force the entry-date column to plain text BEFORE writing so Sheets never
-    // re-coerces "2026-06-11" into a date-typed cell. A date-typed cell reads
-    // back via getValues() as a Date, serializes to the client as a UTC
-    // timestamp, and drifts the day by one for UTC+2/+3 users. Text storage
-    // keeps the value a stable string end-to-end — no UTC trip, no drift. Scope
-    // is the date column only (single column), never the whole sheet.
+    // Force the entry-date and exitDate columns to plain text BEFORE writing
+    // so Sheets never re-coerces "2026-06-11" into a date-typed cell. A
+    // date-typed cell reads back via getValues() as a Date, serializes to the
+    // client as a UTC timestamp, and drifts the day by one for UTC+2/+3 users
+    // (exitDate: a 2026-05-07 discharge stored as 2026-05-06T21:00:00.000Z).
+    // Text storage keeps the value a stable string end-to-end — no UTC trip,
+    // no drift. Scope is the two date columns only, never the whole sheet.
     if (dateColIdx >= 0) {
       sh.getRange(2, dateColIdx + 1, finalRows.length, 1).setNumberFormat('@');
+    }
+    if (exitDateColIdx >= 0) {
+      sh.getRange(2, exitDateColIdx + 1, finalRows.length, 1).setNumberFormat('@');
     }
     sh.getRange(2, 1, finalRows.length, PATIENT_COLUMNS.length).setValues(finalRows);
   }
@@ -1990,6 +2077,155 @@ function repairLeadVisitTimes() {
   rng.setValues(cleared);
   Logger.log('repairLeadVisitTimes: blanked ' + blanked + ' visitTime value(s); visitDate left intact.');
   return blanked;
+}
+
+/* ===== ONE-TIME MANUAL REPAIR — patient exitDate timezone drift =====
+ *
+ * The bug: replaceHousePatients_ text-forced the `date` column before writing
+ * but NOT `exitDate`, so Sheets coerced a discharge date such as "2026-05-07"
+ * into a date-typed cell at local midnight; getValues() handed it back as a
+ * Date, JSON serialized it as UTC ("2026-05-06T21:00:00.000Z" — Israel is
+ * UTC+2/+3) and the day drifted −1. The same value could then be persisted
+ * as that timestamp TEXT by a later save. The prevention (text-force +
+ * asISODate_ on every write and read) ships alongside; these two functions
+ * clean the cells already on the sheets.
+ *
+ * Both are PUBLIC (Run dropdown — Apps Script hides underscore names from
+ * the editor) and NOT reachable over HTTP: handle_ dispatches on a fixed
+ * allow-list of `action` literals that never names them (guard-tested, same
+ * argument as repairLeadVisitTimes). Neither is attached to any trigger.
+ *
+ * Scope: the `exitDate` column — and, in the same pass, the entry `date`
+ * column — of Patients, DischargedPatients and PatientsTombstones. `date`
+ * rides along because this change also text-forces it at sheet-ensure time
+ * on the discharged sheet (where it was never forced): a whole-column plain-
+ * text format makes Sheets hand a legacy date-typed cell back as a numeric
+ * SERIAL, so every such cell must be rewritten as text too, not just read
+ * defensively. A cell is DRIFTED when it holds a Date object, a Sheets date
+ * serial number, or text matching /^\d{4}-\d{2}-\d{2}T/ (an ISO timestamp).
+ * Each drifted cell is rewritten as the LOCAL (Asia/Jerusalem — the
+ * spreadsheet timezone) 'YYYY-MM-DD' via asISODate_, the column having been
+ * forced to plain text FIRST so the string cannot be re-coerced. Clean
+ * 'YYYY-MM-DD' text and blank cells are never touched.
+ *
+ * This is a FORMAT fix, not an edit: updatedAt/updatedBy are deliberately
+ * NOT re-stamped (the row's content — the discharge day the user chose —
+ * does not change; only its storage form does). Runs under the script lock
+ * so it cannot race a saveAll rewrite. Idempotent: a second run rewrites 0
+ * cells and logs nothing to the AuditLog. Logger summary per sheet (rows
+ * scanned / rewritten / examples) and one 'exit_date_repaired' AuditLog
+ * event with the counts when anything was rewritten. Returns the summary.
+ *
+ * previewPatientExitDatesNow is the same scan with ZERO writes (no format
+ * change, no values, no audit row): run it first to see what the repair
+ * would do, and again afterwards to confirm 0. */
+function repairPatientExitDatesNow() {
+  return runPatientExitDateRepair_(false);
+}
+function previewPatientExitDatesNow() {
+  return runPatientExitDateRepair_(true);
+}
+
+/* The three sheets the repair covers, with their positional column lists. */
+function exitDateRepairTargets_() {
+  return [
+    { name: PATIENTS_SHEET,            columns: PATIENT_COLUMNS },
+    { name: DISCHARGED_PATIENTS_SHEET, columns: DISCHARGED_PATIENT_COLUMNS },
+    { name: PATIENTS_TOMBSTONES_SHEET, columns: PATIENT_TOMBSTONE_COLUMNS },
+  ];
+}
+/* The date columns the repair rewrites on each target sheet. */
+const EXIT_DATE_REPAIR_COLUMNS = ['exitDate', 'date'];
+
+/* Is this date cell value in the drifted class the repair rewrites? */
+function isDriftedExitDateCell_(v) {
+  if (v === undefined || v === null || v === '') return false;
+  if (Object.prototype.toString.call(v) === '[object Date]') return true;
+  if (typeof v === 'number') return isSheetDateSerial_(v);
+  return /^\d{4}-\d{2}-\d{2}T/.test(String(v));
+}
+
+function runPatientExitDateRepair_(dryRun) {
+  const tag = dryRun ? 'previewPatientExitDatesNow' : 'repairPatientExitDatesNow';
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const summary = { dryRun: !!dryRun, sheets: {}, scanned: 0, rewritten: 0 };
+    exitDateRepairTargets_().forEach(function (t) {
+      const per = { scanned: 0, rewritten: 0, examples: [], columns: {} };
+      summary.sheets[t.name] = per;
+      const sh = ss.getSheetByName(t.name);
+      if (!sh) {
+        Logger.log(tag + ': ' + t.name + ' — sheet absent, skipped.');
+        return;
+      }
+      const lastRow = sh.getLastRow();
+      if (lastRow < 2) {
+        Logger.log(tag + ': ' + t.name + ' — no data rows.');
+        return;
+      }
+      EXIT_DATE_REPAIR_COLUMNS.forEach(function (colName) {
+        const colIdx = t.columns.indexOf(colName);
+        if (colIdx < 0) return;
+        const col = { scanned: 0, rewritten: 0 };
+        per.columns[colName] = col;
+        // Read the raw cells FIRST (a Date-typed cell must be seen as a Date
+        // before any format change), then decide, then force text, then write.
+        const vals = sh.getRange(2, colIdx + 1, lastRow - 1, 1).getValues();
+        const fixes = [];
+        for (let i = 0; i < vals.length; i++) {
+          const v = vals[i][0];
+          if (v === '' || v === null || v === undefined) continue;
+          col.scanned++;
+          if (!isDriftedExitDateCell_(v)) continue;
+          const fixed = asISODate_(v);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(fixed)) continue; // unrecoverable — leave it
+          fixes.push({ row: i + 2, before: v, after: fixed });
+        }
+        col.rewritten = fixes.length;
+        fixes.slice(0, 5).forEach(function (f) {
+          per.examples.push({ column: colName, row: f.row, before: asTimestampText_(f.before), after: f.after });
+        });
+        if (!dryRun && fixes.length > 0) {
+          // Whole column to plain text first (idempotent, same guard the
+          // ensure step applies), then each drifted cell alone — never a
+          // whole-column rewrite, so clean cells and every other column stay
+          // byte-for-byte untouched; updatedAt/updatedBy are NOT re-stamped.
+          forceColumnsText_(sh, t.columns, [colName]);
+          fixes.forEach(function (f) {
+            const cell = sh.getRange(f.row, colIdx + 1, 1, 1);
+            cell.setNumberFormat('@');
+            cell.setValue(f.after);
+          });
+        }
+        per.scanned += col.scanned;
+        per.rewritten += col.rewritten;
+      });
+      summary.scanned += per.scanned;
+      summary.rewritten += per.rewritten;
+      Logger.log(tag + ': ' + t.name + ' — ' + per.scanned + ' non-blank date cell(s) scanned (' +
+        Object.keys(per.columns).map(function (c) { return c + ' ' + per.columns[c].scanned + '/' + per.columns[c].rewritten; }).join(', ') +
+        ' scanned/drifted), ' + per.rewritten + (dryRun ? ' would be rewritten' : ' rewritten') +
+        (per.examples.length ? '. Examples: ' + JSON.stringify(per.examples) : '.'));
+    });
+    if (!dryRun && summary.rewritten > 0) {
+      logAudit_('exit_date_repaired', 'repairPatientExitDatesNow', '', '', {
+        scanned: summary.scanned,
+        rewritten: summary.rewritten,
+        perSheet: Object.keys(summary.sheets).reduce(function (acc, k) {
+          acc[k] = { scanned: summary.sheets[k].scanned, rewritten: summary.sheets[k].rewritten, columns: summary.sheets[k].columns };
+          return acc;
+        }, {}),
+        stampsRestamped: false,
+      });
+    }
+    Logger.log(tag + ': total ' + summary.scanned + ' scanned, ' + summary.rewritten +
+      (dryRun ? ' would be rewritten (no writes performed).' : ' rewritten.'));
+    return summary;
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
 }
 
 /* ONE-TIME MANUAL DETECTION — run from the Apps Script editor (Run dropdown).
@@ -4117,6 +4353,13 @@ function parseDate_(v) {
   if (v instanceof Date) {
     if (isNaN(v.getTime())) return null;
     return new Date(v.getFullYear(), v.getMonth(), v.getDate());
+  }
+  // A Sheets date serial (a date-valued cell read back under a plain-text
+  // format — see asISODate_): `new Date(46149)` would be 1970-01-01 + 46s,
+  // so convert the serial's exact calendar day instead.
+  if (typeof v === 'number' && isSheetDateSerial_(v)) {
+    const p = sheetSerialToISODate_(v).split('-').map(Number);
+    return new Date(p[0], p[1] - 1, p[2]);
   }
   const s = String(v).trim();
   if (!s) return null;
