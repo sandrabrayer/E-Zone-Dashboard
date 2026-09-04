@@ -900,6 +900,10 @@ function saveAll_(leads, patients, user) {
     const preserved = {};
     const deletedSuppressed = {};
     const promoteSkipped = {};
+    // Stale-stamp refusals aggregated across houses (id-match branch only) —
+    // additive: absent from the response when no save conflicted, so old
+    // clients and the Managers consumer see nothing new.
+    const conflicts = [];
     if (patients && typeof patients === 'object' && !Array.isArray(patients)) {
       const houseIds = Object.keys(patients);
       const userDeleteKeys = houseIds.length > 0 ? recentUserDeleteKeys_() : {};
@@ -912,10 +916,11 @@ function saveAll_(leads, patients, user) {
         if (res.preservedKeys.length > 0) preserved[hid] = res.preservedKeys;
         if (res.suppressedKeys.length > 0) deletedSuppressed[hid] = res.suppressedKeys;
         if (res.skippedPromotes.length > 0) promoteSkipped[hid] = res.skippedPromotes;
+        for (let c = 0; c < res.conflicts.length; c++) conflicts.push(res.conflicts[c]);
       }
     }
 
-    return {
+    const out = {
       ok: true,
       written: written,
       preserved: preserved,
@@ -923,6 +928,8 @@ function saveAll_(leads, patients, user) {
       promoteSkipped: promoteSkipped,
       reportConflicts: reportConflicts,
     };
+    if (conflicts.length > 0) out.conflicts = conflicts;
+    return out;
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
@@ -1463,6 +1470,9 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   const suppressed = suppressedDeleteKeys || {};
   const suppressedKeys = [];
   const skippedPromotes = [];
+  // Stale-stamp refusals from the id-match branch (see there) — additive
+  // response data; empty on every save with no conflict.
+  const conflicts = [];
   const consumed = {};
   // ORIGINAL sheet content of every row this save consumes, indexed by the
   // consumed row's own identity key — the exact-duplicate dedupe below
@@ -1487,10 +1497,38 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
       const oldKey = patientKey_(houseId, houseRows[rowIdx][nameColIdx], houseRows[rowIdx][dateColIdx]);
       consumed[rowIdx] = true;
       recordConsumed(rowIdx);
+      // The stamp this tab LOADED, as echoed by the round-trip — captured
+      // BEFORE carryStamps overwrites it with the sheet's value. It is the
+      // conflict-refusal witness: differing from the sheet's current stamp
+      // means someone else saved after this tab loaded.
+      const seenStamp = String(withHouse.updatedAt == null ? '' : withHouse.updatedAt).trim();
+      const sheetStamp = String(houseRows[rowIdx][updatedAtIdx] == null ? '' : houseRows[rowIdx][updatedAtIdx]).trim();
       assignId(withHouse, incomingId);
       carryStamps(withHouse, houseRows[rowIdx]);
       let newRow = objectToRow_(withHouse, PATIENT_COLUMNS);
       const changed = patientRowDiffCols_(houseRows[rowIdx], newRow);
+      // CONFLICT REFUSAL (id-match only): this tab loaded an OLDER version of
+      // the row (its echoed updatedAt differs from the sheet's) AND wants to
+      // change real content → do NOT write. The sheet row is kept
+      // byte-for-byte and the refusal is surfaced in the response's
+      // `conflicts` so the client can tell the user and reload. Rows with an
+      // empty seenStamp (pre-stamping tabs) or an empty sheetStamp (row
+      // never stamped) keep today's last-writer-wins behavior — no refusal.
+      if (changed.length > 0 && sheetStamp !== '' && seenStamp !== '' && seenStamp !== sheetStamp) {
+        const conflict = {
+          id: incomingId,
+          name: String(houseRows[rowIdx][nameColIdx] == null ? '' : houseRows[rowIdx][nameColIdx]),
+          houseId: houseId,
+          sheetUpdatedAt: sheetStamp,
+          sheetUpdatedBy: String(houseRows[rowIdx][updatedByIdx] == null ? '' : houseRows[rowIdx][updatedByIdx]),
+          changed: changed,
+        };
+        conflicts.push(conflict);
+        logAudit_('patient_save_conflict', 'replaceHousePatients_', withHouse.fromLead || '', conflict.name,
+          Object.assign({ seenUpdatedAt: seenStamp, updatedBy: stampUser }, conflict));
+        newRows.push(houseRows[rowIdx]); // the sheet's version survives untouched
+        continue;
+      }
       if (changed.length > 0) {
         stampNow(withHouse);
         newRow = objectToRow_(withHouse, PATIENT_COLUMNS);
@@ -1649,7 +1687,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   if (lastRow > finalRows.length + 1) {
     sh.getRange(finalRows.length + 2, 1, lastRow - finalRows.length - 1, PATIENT_COLUMNS.length).clearContent();
   }
-  return { written: newRows.length, preservedKeys: preservedKeys, suppressedKeys: suppressedKeys, skippedPromotes: skippedPromotes };
+  return { written: newRows.length, preservedKeys: preservedKeys, suppressedKeys: suppressedKeys, skippedPromotes: skippedPromotes, conflicts: conflicts };
 }
 
 /* Identity keys of FRESH 'user-delete' tombstones (droppedAt within

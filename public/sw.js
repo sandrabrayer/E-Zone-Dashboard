@@ -31,7 +31,7 @@
 // v4 → v5: cache-strategy change — app.js/style.css move from cache-first to
 // network-first; bump to evict any bundle pinned in a v4 cache under the old
 // cache-first + ignoreSearch policy.
-var CACHE_VERSION = 'v5';
+var CACHE_VERSION = 'v6'; // v5→v6: name-picker overlay + whoami header (index.html/style.css/app.js)
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

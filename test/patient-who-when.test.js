@@ -218,11 +218,15 @@ test('APPEND via handle_ stamps updatedAt/updatedBy from the proxy-injected user
   assert.strictEqual(JSON.parse(added.details).updatedBy, 'ורד');
 });
 
-test('ID MATCH with a content change re-stamps from the user; forged payload stamps never land', () => {
+test('ID MATCH with a content change re-stamps from the user; a forged payload updatedBy never lands', () => {
   const { code, sandbox } = loadCode();
   seedSheet(code, sandbox, code.PATIENTS_SHEET, arr(code.PATIENT_COLUMNS), [SARA]);
+  // The tab echoes the CORRECT updatedAt it loaded (so this is a fresh save,
+  // not a stale-stamp conflict — that refusal has its own tests in
+  // name-picker-conflicts) but forges updatedBy; the forgery is discarded
+  // and the edit is stamped from the cookie user.
   code.saveAll(null, { ramot: [
-    Object.assign({}, SARA, { pay: 9500, updatedAt: '1999-01-01T00:00:00.000Z', updatedBy: 'האקר' }),
+    Object.assign({}, SARA, { pay: 9500, updatedBy: 'האקר' }),
   ] }, 'דנה');
   const after = patientsOf(code, sandbox)[0];
   assert.strictEqual(after.pay, 9500);
@@ -420,9 +424,10 @@ test('sessionUserFromRequest reads only a VERIFIED cookie; legacy cookie → bla
   assert.strictEqual(called, true, 'a user-less cookie authorizes exactly as today');
 });
 
-test('source-scan: verify-pin stores the sanitized user in the signed cookie; /api/me is session-gated; the proxy ALWAYS overwrites body.user', () => {
+test('source-scan: verify-pin stores the validated user in the signed cookie; /api/me is session-gated; the proxy ALWAYS overwrites body.user', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  assert.ok(/sanitizeSessionUser\(req\.body && req\.body\.user\)/.test(src));
+  // validateSessionUser = sanitize + SESSION_USERS allow-list (name picker).
+  assert.ok(/validateSessionUser\(req\.body && req\.body\.user\)/.test(src));
   assert.ok(/createSessionToken\(SESSION_SECRET, undefined, undefined, user\)/.test(src));
   assert.ok(/app\.get\('\/api\/me', requireSession/.test(src));
   assert.ok(/body\.user = sessionUserFromRequest\(req\)/.test(src),
