@@ -1031,6 +1031,24 @@ function patientKey_(houseId, name, date) {
          asISODate_(date);
 }
 
+/* Column names where two raw Patients row arrays differ — the SAME
+ * normalization replaceHousePatients_'s changed-columns diff has always used
+ * (asISODate_ for the date-like columns so a legacy Date-typed cell and a
+ * 'YYYY-MM-DD' string compare equal; plain String elsewhere). An empty result
+ * means the rows are byte-identical for every purpose this file has: the
+ * dedupe utilities collapse only what this says is equal. */
+function patientRowDiffCols_(a, b) {
+  const dateColIdx = PATIENT_COLUMNS.indexOf('date');
+  const diff = [];
+  for (let c = 0; c < PATIENT_COLUMNS.length; c++) {
+    const dateLike = (c === dateColIdx || PATIENT_COLUMNS[c] === 'exitDate');
+    const av = dateLike ? asISODate_(a[c]) : String(a[c] == null ? '' : a[c]);
+    const bv = dateLike ? asISODate_(b[c]) : String(b[c] == null ? '' : b[c]);
+    if (av !== bv) diff.push(PATIENT_COLUMNS[c]);
+  }
+  return diff;
+}
+
 /* Low-level PatientsTombstones writer: snapshot each raw patient row + audit
  * metadata. THROWS on failure — each caller decides whether that is fatal.
  * Callers run inside a script lock. */
@@ -1130,6 +1148,12 @@ function dischargedFromLeadIds_() {
  *     that loaded before the row existed. Kept rows are copied to the
  *     PatientsTombstones audit sheet (fail-soft, before the rewrite) and
  *     their keys returned so the response can tell the client to resync.
+ *     EXCEPTION (identical-key dedupe): a leftover that shares its identity
+ *     key with a row this save consumed AND is byte-identical to that
+ *     consumed row's original sheet content is tombstoned
+ *     ('dedupe-identical-key') and dropped, not preserved — see the preserve
+ *     loop. Differing same-key leftovers are still preserved
+ *     (collapseDuplicatePatientKeysNow handles those explicitly).
  * Accepted trade-off (documented, locked by test): editing a patient's name
  * or entry date changes the identity key, so the old row is preserved and the
  * edit lands as a new row — a visible, mergeable duplicate instead of silent
@@ -1246,6 +1270,15 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   const suppressedKeys = [];
   const skippedPromotes = [];
   const consumed = {};
+  // ORIGINAL sheet content of every row this save consumes, indexed by the
+  // consumed row's own identity key — the exact-duplicate dedupe below
+  // compares unconsumed leftovers against these.
+  const consumedOriginalsByKey = {};
+  const recordConsumed = function (rowIdx) {
+    const k = patientKey_(houseId, houseRows[rowIdx][nameColIdx], houseRows[rowIdx][dateColIdx]);
+    if (!consumedOriginalsByKey[k]) consumedOriginalsByKey[k] = [];
+    consumedOriginalsByKey[k].push(houseRows[rowIdx]);
+  };
   const newRows = [];
   for (let i = 0; i < patientsArr.length; i++) {
     const withHouse = Object.assign({}, patientsArr[i], { houseId: houseId });
@@ -1256,14 +1289,9 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
       // (a row that is back on the sheet was re-added deliberately).
       const rowIdx = queue.shift();
       consumed[rowIdx] = true;
+      recordConsumed(rowIdx);
       const newRow = objectToRow_(withHouse, PATIENT_COLUMNS);
-      const changed = [];
-      for (let c = 0; c < PATIENT_COLUMNS.length; c++) {
-        const dateLike = (c === dateColIdx || PATIENT_COLUMNS[c] === 'exitDate');
-        const before = dateLike ? asISODate_(houseRows[rowIdx][c]) : String(houseRows[rowIdx][c] == null ? '' : houseRows[rowIdx][c]);
-        const after  = dateLike ? asISODate_(newRow[c])            : String(newRow[c] == null ? '' : newRow[c]);
-        if (before !== after) changed.push(PATIENT_COLUMNS[c]);
-      }
+      const changed = patientRowDiffCols_(houseRows[rowIdx], newRow);
       if (changed.length > 0) logAudit_('patient_edited', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { key: key, changed: changed });
       newRows.push(newRow);
       continue;
@@ -1289,6 +1317,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
       if (matches.length > 0) {
         const idx = matches[0];
         consumed[idx] = true;
+        recordConsumed(idx);
         const oldName = String(houseRows[idx][nameColIdx] == null ? '' : houseRows[idx][nameColIdx]);
         const oldKey = patientKey_(houseId, houseRows[idx][nameColIdx], houseRows[idx][dateColIdx]);
         logAudit_('patient_renamed_via_fromLead', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, oldName: oldName, newName: String(withHouse.name || ''), oldKey: oldKey, newKey: key, matches: matches.length, ambiguous: matches.length > 1 });
@@ -1311,13 +1340,41 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
     newRows.push(objectToRow_(withHouse, PATIENT_COLUMNS));
   }
 
-  // Sheet rows the payload did not carry: KEEP them, audit each one.
+  // Sheet rows the payload did not carry: KEEP them, audit each one — with
+  // ONE exception. A leftover that shares its identity key with a row this
+  // save CONSUMED and is byte-identical to that consumed row's ORIGINAL sheet
+  // content carries zero information of its own: it is the immortal-duplicate
+  // artifact (the corruption-repair pipeline collapsing repaired names onto
+  // an existing key), and preserving it would resurrect it on every save
+  // forever — the payload can never carry enough same-key rows to consume it.
+  // Such a row is tombstoned ('dedupe-identical-key') and DROPPED. The
+  // tombstone comes first and a failed tombstone falls back to preserving
+  // (nothing is ever destroyed without its recovery copy, and an audit
+  // failure must never fail the save). Same-key leftovers that DIFFER in any
+  // column keep today's preserve behavior — collapseDuplicatePatientKeysNow
+  // handles those explicitly, with the differences audited.
   const preservedRows = [];
   const preservedKeys = [];
   for (let i = 0; i < houseRows.length; i++) {
     if (consumed[i]) continue;
+    const rowKey = patientKey_(houseId, houseRows[i][nameColIdx], houseRows[i][dateColIdx]);
+    const consumedTwins = consumedOriginalsByKey[rowKey];
+    if (consumedTwins && consumedTwins.some(function (t) { return patientRowDiffCols_(houseRows[i], t).length === 0; })) {
+      let dropped = false;
+      try {
+        appendPatientTombstones_([houseRows[i]], 'dedupe-identical-key', 'replaceHousePatients_');
+        dropped = true;
+      } catch (err) {
+        try { console.warn('[dedupe] tombstone failed — leftover duplicate preserved instead: ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
+      }
+      if (dropped) {
+        const fl = fromLeadIdx >= 0 ? String(houseRows[i][fromLeadIdx] == null ? '' : houseRows[i][fromLeadIdx]).trim() : '';
+        logAudit_('patient_dedupe_collapsed', 'replaceHousePatients_', fl, String(houseRows[i][nameColIdx] == null ? '' : houseRows[i][nameColIdx]), { houseId: houseId, key: rowKey, removed: 1, byteIdentical: true });
+        continue;
+      }
+    }
     preservedRows.push(houseRows[i]);
-    preservedKeys.push(patientKey_(houseId, houseRows[i][nameColIdx], houseRows[i][dateColIdx]));
+    preservedKeys.push(rowKey);
   }
   tombstonePreservedPatients_(preservedRows, 'saveAll');
 
@@ -1649,7 +1706,209 @@ function findDuplicatePatientIdsNow() {
       byId[fl].map(function (r) { return 'row ' + r.row + ' "' + r.name + '" (' + r.status + ', ' + r.date + ')'; }).join('; '));
   });
   Logger.log('findDuplicatePatientIdsNow: ' + dupes.length + ' duplicate id(s) across ' + values.length + ' data rows. No writes performed.');
+  Logger.log('Note: this scanner groups by fromLead only — rows sharing the same IDENTITY KEY ' +
+    '(houseId::name::entryDate) with blank or differing fromLead are invisible to it; ' +
+    'run findDuplicatePatientKeysNow for those.');
   return dupes;
+}
+
+/* Group a Patients values array (data rows, no header) by identity key.
+ * Returns only the DUPLICATE groups — [{key, indexes}] with `indexes` into
+ * `values`, sheet order — in first-seen order. Shared by the two dedupe
+ * entry points below. */
+function patientKeyGroups_(values) {
+  const houseIdx = PATIENT_COLUMNS.indexOf('houseId');
+  const nameIdx  = PATIENT_COLUMNS.indexOf('name');
+  const dateIdx  = PATIENT_COLUMNS.indexOf('date');
+  const byKey = {};
+  const order = [];
+  for (let i = 0; i < values.length; i++) {
+    // Fully-empty rows (cleared tails, stray blanks) are not patients —
+    // skip them so they can never group under the empty key (mirrors
+    // corruptionReadRows_ / readSheet_).
+    let hasContent = false;
+    for (let j = 0; j < values[i].length; j++) {
+      if (values[i][j] !== '' && values[i][j] !== null) { hasContent = true; break; }
+    }
+    if (!hasContent) continue;
+    const key = patientKey_(values[i][houseIdx], values[i][nameIdx], values[i][dateIdx]);
+    if (!byKey[key]) { byKey[key] = []; order.push(key); }
+    byKey[key].push(i);
+  }
+  const groups = [];
+  order.forEach(function (key) {
+    if (byKey[key].length > 1) groups.push({ key: key, indexes: byKey[key] });
+  });
+  return groups;
+}
+
+/* Which row of a same-key duplicate group a collapse KEEPS: the first row
+ * (sheet order) carrying a non-empty fromLead — the lead link is the only
+ * identity the rows can differ in that other features (promotion dedupe,
+ * discharge heal) rely on — else simply the first row. `rows` are raw
+ * Patients row arrays; returns an index INTO THE GROUP. */
+function dedupeKeepIndex_(rows) {
+  const flIdx = PATIENT_COLUMNS.indexOf('fromLead');
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][flIdx] == null ? '' : rows[i][flIdx]).trim() !== '') return i;
+  }
+  return 0;
+}
+
+/* MANUAL DETECTION, DRY RUN — run from the Apps Script editor (Run dropdown).
+ *
+ * READ-ONLY companion to findDuplicatePatientIdsNow for the OTHER duplicate
+ * class: rows sharing the same IDENTITY KEY (houseId::name::entryDate, the
+ * Patients sheet's only row identity). These were minted when the corruption
+ * repair collapsed a repaired name onto a key that already existed, have
+ * blank/differing fromLead (so the id scanner never sees them), survive every
+ * saveAll (the merge preserves unconsumed same-key rows), and ✕ on any one
+ * card would delete them all (deletePatientRow_ deletes by key). Logs every
+ * group of 2+ same-key rows — row numbers, fromLead, status, whether the
+ * rows are byte-identical (patientRowDiffCols_ empty — the same date-aware
+ * normalization the saveAll changed-columns diff uses), and which row
+ * collapseDuplicatePatientKeysNow would KEEP. ZERO writes (getSheetByName
+ * only — cannot even create a sheet). Intentionally PUBLIC (no trailing
+ * underscore) so it shows in the editor's Run dropdown; NOT exposed over
+ * HTTP — handle_'s fixed action allow-list never names it (guard-tested,
+ * same non-exposure argument as repairLeadVisitTimes). Returns the groups
+ * (also handy for tests). */
+function findDuplicatePatientKeysNow() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(PATIENTS_SHEET);
+  if (!sh) {
+    Logger.log('findDuplicatePatientKeysNow: no Patients sheet.');
+    return [];
+  }
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) {
+    Logger.log('findDuplicatePatientKeysNow: no data rows.');
+    return [];
+  }
+  const values = sh.getRange(2, 1, lastRow - 1, PATIENT_COLUMNS.length).getValues();
+  const flIdx = PATIENT_COLUMNS.indexOf('fromLead');
+  const stIdx = PATIENT_COLUMNS.indexOf('status');
+  const groups = patientKeyGroups_(values);
+  let surplus = 0;
+  const out = groups.map(function (g) {
+    const rows = g.indexes.map(function (i) { return values[i]; });
+    const keep = dedupeKeepIndex_(rows);
+    const keepRow = g.indexes[keep] + 2;
+    const identical = rows.every(function (row) { return patientRowDiffCols_(row, rows[keep]).length === 0; });
+    surplus += rows.length - 1;
+    const describe = g.indexes.map(function (i) {
+      return { row: i + 2, // 1-based sheet row (header is row 1)
+               fromLead: String(values[i][flIdx] == null ? '' : values[i][flIdx]).trim(),
+               status:   String(values[i][stIdx] == null ? '' : values[i][stIdx]) };
+    });
+    Logger.log('DUPLICATE KEY ' + g.key + ' on ' + rows.length + ' rows: ' +
+      describe.map(function (r) { return 'row ' + r.row + ' (fromLead "' + r.fromLead + '", ' + r.status + ')'; }).join('; ') +
+      ' — ' + (identical ? 'byte-identical' : 'NOT byte-identical (differing columns beyond the key)') +
+      '; a collapse would KEEP row ' + keepRow + '.');
+    return { key: g.key, rows: describe, identical: identical, keepRow: keepRow };
+  });
+  Logger.log('findDuplicatePatientKeysNow: ' + out.length + ' duplicate key group(s) across ' + values.length +
+    ' data rows (' + surplus + ' surplus row(s) a collapse would remove). No writes performed. ' +
+    'To collapse: run collapseDuplicatePatientKeysNow.');
+  return out;
+}
+
+/* MANUAL REPAIR — run from the Apps Script editor (Run dropdown) after
+ * reviewing findDuplicatePatientKeysNow's log.
+ *
+ * Collapses every same-identity-key duplicate group on the Patients sheet to
+ * ONE row: keeps the first row (sheet order) with a non-empty fromLead, else
+ * the first row (dedupeKeepIndex_). Every removed row is tombstoned FIRST via
+ * appendPatientTombstones_ (reason 'dedupe-identical-key') — fail-HARD, the
+ * same contract as deletePatientRow_: if the tombstone write throws, nothing
+ * has been removed. The sheet is then rewritten without the removed rows
+ * (write-then-trim — a crash between the two steps leaves duplicate tail
+ * rows, visible and re-collapsible, never an emptied sheet). Groups whose
+ * rows are NOT byte-identical are still collapsed — nothing is lost, the
+ * tombstones hold the full rows — but the differing columns are named in the
+ * audit details so they can be consulted. One 'patient_dedupe_collapsed'
+ * audit event per group (key, kept row, removed count). Runs under the
+ * script lock. PUBLIC (Run dropdown) and NOT exposed over HTTP — handle_'s
+ * fixed action allow-list never names it (guard-tested). Idempotent: a
+ * second run finds 0 groups. */
+function collapseDuplicatePatientKeysNow() {
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sh = ss.getSheetByName(PATIENTS_SHEET);
+    if (!sh) {
+      Logger.log('collapseDuplicatePatientKeysNow: no Patients sheet.');
+      return { groups: 0, removed: 0 };
+    }
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) {
+      Logger.log('collapseDuplicatePatientKeysNow: no data rows.');
+      return { groups: 0, removed: 0 };
+    }
+    const values = sh.getRange(2, 1, lastRow - 1, PATIENT_COLUMNS.length).getValues();
+    const flIdx   = PATIENT_COLUMNS.indexOf('fromLead');
+    const nameIdx = PATIENT_COLUMNS.indexOf('name');
+    const groups = patientKeyGroups_(values);
+    if (groups.length === 0) {
+      Logger.log('collapseDuplicatePatientKeysNow: no duplicate identity keys — nothing to collapse.');
+      return { groups: 0, removed: 0 };
+    }
+
+    const removeIdx = {};
+    const auditEntries = [];
+    groups.forEach(function (g) {
+      const rows = g.indexes.map(function (i) { return values[i]; });
+      const keep = dedupeKeepIndex_(rows);
+      const keptRow = values[g.indexes[keep]];
+      const differing = {};
+      g.indexes.forEach(function (idx, j) {
+        if (j === keep) return;
+        removeIdx[idx] = true;
+        patientRowDiffCols_(values[idx], keptRow).forEach(function (c) { differing[c] = true; });
+      });
+      auditEntries.push({
+        key: g.key,
+        keptRow: g.indexes[keep] + 2,
+        removed: g.indexes.length - 1,
+        fromLead: String(keptRow[flIdx] == null ? '' : keptRow[flIdx]).trim(),
+        name: String(keptRow[nameIdx] == null ? '' : keptRow[nameIdx]),
+        differingColumns: Object.keys(differing),
+      });
+    });
+
+    const removedRows = [];
+    const kept = [];
+    for (let i = 0; i < values.length; i++) {
+      if (removeIdx[i]) removedRows.push(values[i]); else kept.push(values[i]);
+    }
+
+    // Tombstone BEFORE the rewrite — fail-HARD (no catch): if this throws,
+    // the Patients sheet has not been touched and every row survives.
+    appendPatientTombstones_(removedRows, 'dedupe-identical-key', 'collapseDuplicatePatientKeysNow');
+
+    if (kept.length > 0) {
+      sh.getRange(2, 1, kept.length, PATIENT_COLUMNS.length).setValues(kept);
+    }
+    if (lastRow > kept.length + 1) {
+      sh.getRange(kept.length + 2, 1, lastRow - kept.length - 1, PATIENT_COLUMNS.length).clearContent();
+    }
+
+    auditEntries.forEach(function (e) {
+      logAudit_('patient_dedupe_collapsed', 'collapseDuplicatePatientKeysNow', e.fromLead, e.name, {
+        key: e.key, keptRow: e.keptRow, removed: e.removed,
+        byteIdentical: e.differingColumns.length === 0,
+        differingColumns: e.differingColumns,
+      });
+    });
+
+    Logger.log('collapseDuplicatePatientKeysNow: ' + groups.length + ' duplicate key group(s) found, ' +
+      removedRows.length + ' surplus row(s) removed (each tombstoned first, reason dedupe-identical-key). ' +
+      'See the AuditLog sheet for the per-group trail.');
+    return { groups: groups.length, removed: removedRows.length };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
 }
 
 /* ===== Corrupted-rows cleanup (U+FFFD Hebrew-name corruption) =====
@@ -2382,13 +2641,21 @@ function corruptionTwinMerge_(a, b) {
  *              from lead' | 'repair from phone match' | 'repair from
  *              snapshot' | 'repair from enum' | 'repair from roster' |
  *              'repair from twin-merge' | 'snapshot mismatch — manual' |
- *              'no source — manual'; note carries why weaker outcomes were
- *              reached (ambiguous snapshot match, 2+ enum/roster hits, …)
+ *              'no source — manual' | 'key collision — delete corrupted
+ *              twin' | 'key collision — manual'; note carries why weaker
+ *              outcomes were reached (ambiguous snapshot match, 2+
+ *              enum/roster hits, post-repair key already taken, …). The two
+ *              'key collision' outcomes come from the identity-key guard: a
+ *              Patients name/date repair whose post-repair key already
+ *              belongs to another row is never proposed as a repair
  *   snapshots— snapshot spreadsheet names in priority order ([] when none
  *              was found — tiers 2–3 still ran)
- *   deletes  — [{row,name,houseId,date,fromLead}] corrupted Patients rows
- *              whose clean twin makes them EXACT duplicates (same fromLead +
- *              house + entryDate + status) → proposed 'delete corrupted twin'
+ *   deletes  — [{row,name,houseId,date,fromLead,source?}] corrupted Patients
+ *              rows whose clean twin makes them EXACT duplicates (same
+ *              fromLead + house + entryDate + status) → proposed 'delete
+ *              corrupted twin'; the key-collision guard adds its own with
+ *              source 'key collision — delete corrupted twin' (deduped by
+ *              row — one delete proposal per row)
  *   keepBoth — [{fromLead,rows,reason}] same-fromLead pairs that differ in
  *              entryDate or status (the readmission pattern) or are both
  *              corrupted: NEVER proposed for delete — repair only, keep both
@@ -2432,6 +2699,24 @@ function corruptionScan_() {
       patientsByFromLead[fl].push(r);
     });
   }
+
+  // Patients rows by CURRENT identity key — the key-collision guard's lookup.
+  // A repair that changes name (or date) changes the row's key; if the
+  // repaired key already belongs to another row, applying the repair would
+  // mint identical-key duplicates (the immortal-duplicate class — see
+  // findDuplicatePatientKeysNow), so such a repair is never proposed.
+  const patientsByKey = {};
+  if (patientsEntry && patientsEntry.rows) {
+    patientsEntry.rows.forEach(function (r) {
+      const k = patientKey_(r.obj.houseId, r.obj.name, r.obj.date);
+      if (!patientsByKey[k]) patientsByKey[k] = [];
+      patientsByKey[k].push(r);
+    });
+  }
+  // Declared before the cells loop: the collision guard adds delete
+  // proposals; the fromLead duplicate-pair analysis below adds its own,
+  // deduped by row number against these.
+  const deletes = [];
 
   // Tier 1–3 sources, computed once for the whole scan. All READ-ONLY.
   const snapshots = corruptionSnapshots_();
@@ -2555,6 +2840,44 @@ function corruptionScan_() {
             }
           }
         }
+
+        // KEY-COLLISION GUARD (Patients identity columns only): whatever tier
+        // proposed the value, a repair whose post-repair identity key already
+        // belongs to ANOTHER Patients row is never proposed as 'repair' —
+        // applying it would create identical-key duplicate rows that saveAll
+        // preserves forever (deletePatientRow_ would then delete all of them
+        // at once). When the colliding row shares this row's houseId +
+        // entryDate + status, the corrupted row is an exact twin of an
+        // already-clean row → propose DELETE of the corrupted row instead.
+        // Anything else (e.g. differing status) → manual, no newValue.
+        if (t.sheet === PATIENTS_SHEET && (col === 'name' || col === 'date') && finding.newValue !== '') {
+          const repairedKey = patientKey_(r.obj.houseId,
+            col === 'name' ? finding.newValue : r.obj.name,
+            col === 'date' ? finding.newValue : r.obj.date);
+          const collisions = (patientsByKey[repairedKey] || []).filter(function (o) { return o.rowNumber !== r.rowNumber; });
+          if (collisions.length > 0) {
+            addNote(finding, 'post-repair key "' + repairedKey + '" already on row ' +
+              collisions.map(function (o) { return o.rowNumber; }).join('+'));
+            finding.newValue = '';
+            finding.source = '';
+            const twin = collisions.find(function (o) {
+              return String(o.obj.houseId == null ? '' : o.obj.houseId).trim() === String(r.obj.houseId == null ? '' : r.obj.houseId).trim() &&
+                     asISODate_(o.obj.date) === asISODate_(r.obj.date) &&
+                     String(o.obj.status) === String(r.obj.status);
+            });
+            if (twin) {
+              finding.proposal = 'key collision — delete corrupted twin';
+              if (!deletes.some(function (d) { return d.row === r.rowNumber; })) {
+                deletes.push({ row: r.rowNumber, name: String(r.obj.name), houseId: String(r.obj.houseId),
+                               date: asISODate_(r.obj.date),
+                               fromLead: String(r.obj.fromLead == null ? '' : r.obj.fromLead).trim(),
+                               source: 'key collision — delete corrupted twin' });
+              }
+            } else {
+              finding.proposal = 'key collision — manual';
+            }
+          }
+        }
         cells.push(finding);
       });
     });
@@ -2565,7 +2888,6 @@ function corruptionScan_() {
   // one side corrupted and the other clean. A pair differing in entryDate or
   // status is the READMISSION pattern (e.g. released 2026-01-12 + active
   // 2026-08-15) — never a delete candidate: repair only, keep both.
-  const deletes = [];
   const keepBoth = [];
   Object.keys(patientsByFromLead).forEach(function (fl) {
     const group = patientsByFromLead[fl];
@@ -2585,8 +2907,12 @@ function corruptionScan_() {
                       String(a.obj.status) === String(b.obj.status);
     if (exactTwin && aCor !== bCor) {
       const bad = aCor ? a : b;
-      deletes.push({ row: bad.rowNumber, name: String(bad.obj.name), houseId: String(bad.obj.houseId),
-                     date: asISODate_(bad.obj.date), fromLead: fl });
+      // The collision guard may already carry this row (same signature seen
+      // through the repaired key) — one delete proposal per row, never two.
+      if (!deletes.some(function (d) { return d.row === bad.rowNumber; })) {
+        deletes.push({ row: bad.rowNumber, name: String(bad.obj.name), houseId: String(bad.obj.houseId),
+                       date: asISODate_(bad.obj.date), fromLead: fl });
+      }
     } else if (aCor || bCor) {
       keepBoth.push({ fromLead: fl, rows: describe,
         reason: exactTwin ? 'both corrupted — repair only' : 'entryDate/status differ (readmission pattern) — repair only, keep both' });
@@ -2635,7 +2961,7 @@ function scanCorruptedRowsNow() {
   });
   res.deletes.forEach(function (d) {
     Logger.log('DUPLICATE-TWIN ' + PATIENTS_SHEET + ' row ' + d.row + ' "' + d.name + '" (fromLead ' + d.fromLead +
-      ') is an exact corrupted duplicate of a clean twin → proposed delete corrupted twin');
+      ') is an exact corrupted duplicate of a clean twin → proposed ' + (d.source || 'delete corrupted twin'));
   });
   res.keepBoth.forEach(function (k) {
     Logger.log('KEEP-BOTH fromLead ' + k.fromLead + ': ' + k.reason + ' — ' + JSON.stringify(k.rows));
@@ -2659,6 +2985,10 @@ function writeRepairPlanNow() {
 
   const planRows = [];
   res.cells.forEach(function (c) {
+    // A cell whose collision guard replaced the repair with a delete proposal
+    // is carried by its delete row below — a blank repair row alongside it
+    // would only invite hand-filling a value that recreates the collision.
+    if (c.proposal === 'key collision — delete corrupted twin') return;
     planRows.push(objectToRow_({ sheet: c.sheet, row: c.row, column: c.column,
       newValue: c.newValue, action: 'repair', approved: 'FALSE', oldValue: c.value,
       source: c.proposal + (c.source ? ' — ' + c.source : '') }, REPAIR_PLAN_COLUMNS));
@@ -2666,7 +2996,7 @@ function writeRepairPlanNow() {
   res.deletes.forEach(function (d) {
     planRows.push(objectToRow_({ sheet: PATIENTS_SHEET, row: d.row, column: 'name',
       newValue: '', action: 'delete', approved: 'FALSE', oldValue: d.name,
-      source: 'delete corrupted twin' }, REPAIR_PLAN_COLUMNS));
+      source: d.source || 'delete corrupted twin' }, REPAIR_PLAN_COLUMNS));
   });
 
   const lastRow = sh.getLastRow();
@@ -2676,7 +3006,8 @@ function writeRepairPlanNow() {
   if (lastRow > planRows.length + 1) {
     sh.getRange(planRows.length + 2, 1, lastRow - planRows.length - 1, REPAIR_PLAN_COLUMNS.length).clearContent();
   }
-  Logger.log('writeRepairPlanNow: wrote ' + planRows.length + ' plan row(s) (' + res.cells.length +
+  Logger.log('writeRepairPlanNow: wrote ' + planRows.length + ' plan row(s) (' +
+    (planRows.length - res.deletes.length) +
     ' repair, ' + res.deletes.length + ' delete), ALL approved=FALSE. Review the hidden RepairPlan sheet, ' +
     'fill any blank newValue, flip approved to TRUE per row, then run applyCorruptedRowRepairsNow.');
   return planRows.length;
@@ -2749,6 +3080,28 @@ function applyCorruptedRowRepairsNow() {
       const current = String(cell.getValue());
       if (current !== String(p.oldValue) || !hasCorruption_(current)) {
         return skip(p, 'cell no longer holds the expected corrupted value (row drift or already repaired)');
+      }
+      // KEY-COLLISION GUARD at apply time (Patients identity columns): the
+      // sheet may have changed since the plan was written — and earlier
+      // repairs in THIS run (e.g. two twin-merge repairs converging on the
+      // same clean name) change it too — so re-check that the repaired key
+      // is not already held by another row. A duplicate key is never written.
+      if (target.sheet === PATIENTS_SHEET && (String(p.column) === 'name' || String(p.column) === 'date')) {
+        const hIdx = PATIENT_COLUMNS.indexOf('houseId');
+        const nIdx = PATIENT_COLUMNS.indexOf('name');
+        const dIdx = PATIENT_COLUMNS.indexOf('date');
+        const rowVals = sh.getRange(rowNum, 1, 1, PATIENT_COLUMNS.length).getValues()[0];
+        const repairedKey = patientKey_(rowVals[hIdx],
+          String(p.column) === 'name' ? newValue : rowVals[nIdx],
+          String(p.column) === 'date' ? newValue : rowVals[dIdx]);
+        const sheetLast = sh.getLastRow();
+        const all = sheetLast > 1 ? sh.getRange(2, 1, sheetLast - 1, PATIENT_COLUMNS.length).getValues() : [];
+        for (let i = 0; i < all.length; i++) {
+          if (i + 2 === rowNum) continue;
+          if (patientKey_(all[i][hIdx], all[i][nIdx], all[i][dIdx]) === repairedKey) {
+            return skip(p, 'key collision: row ' + (i + 2) + ' already holds key "' + repairedKey + '" — repairing would create identical-key duplicates');
+          }
+        }
       }
       cell.setValue(newValue);
       applied++;

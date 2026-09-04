@@ -268,15 +268,26 @@ test('exact corrupted duplicate (same fromLead+house+entryDate+status, clean twi
 
 /* ===== B. writeRepairPlanNow ===== */
 
-test('writeRepairPlanNow fills the hidden RepairPlan with approved=FALSE rows (repairs + deletes)', () => {
+test('writeRepairPlanNow fills the hidden RepairPlan with approved=FALSE rows (collision → delete-only, no repair)', () => {
   const { code, sandbox } = loadCode();
   const PC = arr(code.PATIENT_COLUMNS);
+  // The exact-twin state: repairing CORRUPT to CLEAN would give the row the
+  // clean twin's IDENTITY KEY — the key-collision guard therefore replaces
+  // the repair proposal with a single delete of the corrupted twin. (Before
+  // the guard this wrote a repair row + a delete row; applying the repair
+  // minted identical-key duplicate rows — the immortal-duplicate bug.)
   seedSheet(code, sandbox, code.PATIENTS_SHEET, PC, [
     { houseId: 'ramot', name: CORRUPT, date: '2026-08-15', status: 'active', fromLead: 'id-dup' },
     { houseId: 'ramot', name: CLEAN, date: '2026-08-15', status: 'active', fromLead: 'id-dup' },
   ]);
+  // A second corrupted row whose twin repair does NOT collide (different
+  // entryDate) still gets a normal repair row.
+  const patientsSh = sandbox.__sheets[code.PATIENTS_SHEET];
+  patientsSh.grid.push(rowOf(PC, { houseId: 'ramot', name: 'רו' + FFFD, date: '2026-08-01', status: 'active', fromLead: 'id-dup2' }));
+  patientsSh.grid.push(rowOf(PC, { houseId: 'ramot', name: 'רותם', date: '2026-08-02', status: 'active', fromLead: 'id-dup2' }));
+
   const n = code.writePlan();
-  assert.strictEqual(n, 2, 'one repair row + one delete row');
+  assert.strictEqual(n, 2, 'one delete row (collision) + one repair row (no collision)');
 
   const planSh = sandbox.__sheets[code.REPAIR_PLAN_SHEET];
   assert.ok(planSh, 'RepairPlan created');
@@ -288,10 +299,12 @@ test('writeRepairPlanNow fills the hidden RepairPlan with approved=FALSE rows (r
   const del = rows.find((r) => r.action === 'delete');
   assert.deepStrictEqual(
     { sheet: repair.sheet, column: repair.column, newValue: repair.newValue, oldValue: repair.oldValue },
-    { sheet: code.PATIENTS_SHEET, column: 'name', newValue: CLEAN, oldValue: CORRUPT });
+    { sheet: code.PATIENTS_SHEET, column: 'name', newValue: 'רותם', oldValue: 'רו' + FFFD },
+    'the non-colliding repair proposal is unchanged');
   assert.deepStrictEqual(
-    { sheet: del.sheet, column: del.column, oldValue: del.oldValue },
-    { sheet: code.PATIENTS_SHEET, column: 'name', oldValue: CORRUPT });
+    { sheet: del.sheet, column: del.column, oldValue: del.oldValue, source: del.source },
+    { sheet: code.PATIENTS_SHEET, column: 'name', oldValue: CORRUPT, source: 'key collision — delete corrupted twin' },
+    'the colliding repair became a delete of the corrupted twin — never a repair row to hand-fill');
 });
 
 /* ===== C. applyCorruptedRowRepairsNow ===== */
