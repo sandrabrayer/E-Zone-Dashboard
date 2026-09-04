@@ -278,6 +278,11 @@ function serializePatients() {
       exitDate: p.exitDate ? String(p.exitDate) : '',
       source:   p.source   ? String(p.source)   : 'lead',
       notes:    p.notes    ? String(p.notes)    : '',
+      /* Who/when round-trip: echo the server-owned stamps unchanged (the
+       * server discards them on a matched replace and re-stamps real edits;
+       * dropping them here would look like data loss to the diff). */
+      updatedAt: p.updatedAt ? String(p.updatedAt) : '',
+      updatedBy: p.updatedBy ? String(p.updatedBy) : '',
     };
 
     if (!out[hid]) out[hid] = [];   // unknown houseId — keep the data, don't drop
@@ -1544,6 +1549,12 @@ function normalizePatient(p) {
     exitDate: pickField(p, ['exitDate', 'exit_date', 'תאריך שחרור', 'שחרור']),
     source:   pickField(p, ['source', 'מקור']) || 'lead',
     notes:    pickField(p, ['notes', 'note', 'הערות', 'הערה']),
+    /* Who/when stamps (server-owned; the client only echoes them back so a
+     * saveAll never drops them — same defensive pickField pattern as
+     * prior_status). The server ignores client-supplied stamps and always
+     * overwrites on a real change; blanks are legacy rows. */
+    updatedAt: pickField(p, ['updatedAt', 'updated_at']) || '',
+    updatedBy: pickField(p, ['updatedBy', 'updated_by']) || '',
   };
 }
 
