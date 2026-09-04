@@ -69,6 +69,7 @@ const LEAD_COLUMNS = [
 const PATIENT_COLUMNS = [
   'houseId', 'name', 'date', 'pay', 'adv',
   'status', 'fromLead', 'exitDate', 'source', 'notes',
+  'patientId', 'updatedAt', 'updatedBy',
 ];
 
 /* Anchored plain-date shape. A non-empty date field that fails this leaked

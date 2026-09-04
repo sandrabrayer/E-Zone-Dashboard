@@ -278,6 +278,12 @@ function serializePatients() {
       exitDate: p.exitDate ? String(p.exitDate) : '',
       source:   p.source   ? String(p.source)   : 'lead',
       notes:    p.notes    ? String(p.notes)    : '',
+      /* Identity-foundation round-trip: echo the server-owned fields so the
+       * merge sees them unchanged (the server ignores client values on a
+       * real edit and re-stamps; dropping them here would look like data). */
+      patientId: p.patientId ? String(p.patientId) : '',
+      updatedAt: p.updatedAt ? String(p.updatedAt) : '',
+      updatedBy: p.updatedBy ? String(p.updatedBy) : '',
     };
 
     if (!out[hid]) out[hid] = [];   // unknown houseId — keep the data, don't drop
@@ -1544,6 +1550,14 @@ function normalizePatient(p) {
     exitDate: pickField(p, ['exitDate', 'exit_date', 'תאריך שחרור', 'שחרור']),
     source:   pickField(p, ['source', 'מקור']) || 'lead',
     notes:    pickField(p, ['notes', 'note', 'הערות', 'הערה']),
+    /* Identity-foundation round-trip fields (server-owned; the client only
+     * echoes them back so a saveAll never drops them — same defensive
+     * pickField pattern as prior_status). patientId is the PERSISTENT
+     * server-assigned row id; the session-local `id` above stays what it was.
+     * NOT used for matching yet — identity is still houseId::name::date. */
+    patientId: pickField(p, ['patientId', 'patient_id']) || '',
+    updatedAt: pickField(p, ['updatedAt', 'updated_at']) || '',
+    updatedBy: pickField(p, ['updatedBy', 'updated_by']) || '',
   };
 }
 

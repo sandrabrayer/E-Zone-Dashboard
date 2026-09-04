@@ -169,10 +169,14 @@ test('normalizeDischargedPatient round-trips prior_status and leaves legacy rows
 
 /* ===== Code.gs column contract ===== */
 
-test('DISCHARGED_PATIENT_COLUMNS appends prior_status LAST, after restored', () => {
+test('DISCHARGED_PATIENT_COLUMNS keeps prior_status after restored; identity columns appended at the very END', () => {
   const cols = loadCodeColumns();
-  assert.strictEqual(cols[cols.length - 1], 'prior_status');
-  assert.strictEqual(cols[cols.length - 2], 'restored');
+  // The identity-foundation columns were APPENDED after prior_status (the
+  // append-only sheet contract — existing sheets already store prior_status
+  // at its position, so new columns can only go after it).
+  assert.deepStrictEqual(cols.slice(-6),
+    ['discharge_note', 'restored', 'prior_status', 'patientId', 'updatedAt', 'updatedBy'],
+    'tail order: prior_status still directly after restored, then the appended identity columns');
   assert.strictEqual(cols.filter(c => c === 'prior_status').length, 1);
 });
 

@@ -479,13 +479,16 @@ test('Script Property keys are pinned', () => {
   assert.ok(GS.includes("const INTEGRITY_BACKUP_NAME      = 'EZONE-Backups';"));
 });
 
-test('PATIENT_COLUMNS untouched', () => {
+test('PATIENT_COLUMNS order is PINNED — append-only, identity columns at the END', () => {
   const m = GS.match(/const PATIENT_COLUMNS = \[([\s\S]*?)\];/);
   assert.ok(m, 'PATIENT_COLUMNS not found');
   const cols = m[1].match(/'[^']+'/g).map((s) => s.slice(1, -1));
   assert.deepEqual(cols, [
     'houseId', 'name', 'date', 'pay', 'adv',
     'status', 'fromLead', 'exitDate', 'source', 'notes',
+    // Identity foundation: APPENDED at the END (append-only contract) —
+    // never insert/delete/reorder; the next append goes after updatedBy.
+    'patientId', 'updatedAt', 'updatedBy',
   ]);
 });
 

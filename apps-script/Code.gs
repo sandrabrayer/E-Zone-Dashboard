@@ -278,11 +278,33 @@ const REMOVED_LEAD_COLUMNS = LEAD_COLUMNS.concat(['removedAt', 'originSheet']);
  * persisted in the sheet — grouping + upserts happen by houseId.
  *
  * `source` and `notes` were added after the initial release. Sheets that
- * pre-date this will be backfilled by getOrCreateSheet_ on the next read. */
+ * pre-date this will be backfilled by getOrCreateSheet_ on the next read.
+ *
+ * Identity-foundation columns (APPENDED at the END, append-only contract —
+ * never insert/delete/reorder; guard-tested):
+ *   patientId — persistent server-assigned row id ('id-<uuid>', same style as
+ *               the Leads backfill). Assigned on APPEND when the incoming row
+ *               has none; backfilled once via backfillPatientIdsNow. In THIS
+ *               phase it only round-trips (server → getData → client →
+ *               saveAll → server) — patientKey_ REMAINS row identity; the
+ *               identity flip to patientId is the follow-up PR.
+ *   updatedAt — ISO timestamp of the last server-side write that CHANGED the
+ *               row (text-forced at ensure time so Sheets never coerces it).
+ *   updatedBy — who made that change: the `user` name the proxy injects from
+ *               the signed session cookie (never client-supplied). Blank for
+ *               writes from sessions whose cookie pre-dates the user field. */
 const PATIENT_COLUMNS = [
   'houseId', 'name', 'date', 'pay', 'adv',
-  'status', 'fromLead', 'exitDate', 'source', 'notes'
+  'status', 'fromLead', 'exitDate', 'source', 'notes',
+  'patientId', 'updatedAt', 'updatedBy'
 ];
+
+/* The SERVER-OWNED identity/stamp columns of PATIENT_COLUMNS. Excluded from
+ * the "did this save really change the row" diff in replaceHousePatients_,
+ * and never taken from the payload on a key-matched replace — the sheet's
+ * values win and only a real edit re-stamps them, so a client can neither
+ * forge updatedBy nor churn updatedAt by echoing stale stamps. */
+const PATIENT_META_COLUMNS = ['patientId', 'updatedAt', 'updatedBy'];
 
 /* PatientsTombstones columns: a full patient row snapshot + audit metadata.
  * OWN literal list, deliberately NOT derived from PATIENT_COLUMNS via concat —
@@ -301,10 +323,15 @@ const PATIENT_COLUMNS = [
  *                   recovery copy (written before the delete, fail-hard)
  *   savedByAction — the endpoint that produced the entry ('saveAll' /
  *                   'deletePatientRow') */
+/* patientId/updatedAt/updatedBy: appended at the END (append-only contract) so
+ * the snapshot carries the row's persistent id and last-write stamps too —
+ * NOT re-ordered to mirror PATIENT_COLUMNS, because existing tombstone sheets
+ * already store droppedAt/reason/savedByAction at their current positions. */
 const PATIENT_TOMBSTONE_COLUMNS = [
   'houseId', 'name', 'date', 'pay', 'adv',
   'status', 'fromLead', 'exitDate', 'source', 'notes',
-  'droppedAt', 'reason', 'savedByAction'
+  'droppedAt', 'reason', 'savedByAction',
+  'patientId', 'updatedAt', 'updatedBy'
 ];
 
 /* How long a 'user-delete' tombstone SUPPRESSES the deleted identity key in
@@ -327,8 +354,21 @@ const USER_DELETE_SUPPRESS_MS = 24 * 60 * 60 * 1000;
  * patient's status at the MOMENT of discharge (active/trial/wait), captured by
  * the client's dischargeAuditRow before the released flip. Restore-to-previous-
  * status reads it; legacy rows have it blank and fall back to 'active'. */
-const DISCHARGED_PATIENT_COLUMNS =
-  ['id'].concat(PATIENT_COLUMNS).concat(['dischargedAt', 'disposition', 'discharge_note', 'restored', 'prior_status']);
+/* NOW AN OWN LITERAL LIST, deliberately NOT derived from PATIENT_COLUMNS (the
+ * tombstone-columns precedent): existing discharged sheets store
+ * dischargedAt…prior_status at their current positions, so a PATIENT_COLUMNS
+ * append must land at the END here — deriving via concat would inject new
+ * patient columns MID-list and misalign every existing sheet (reads and the
+ * header-extend in getOrCreateSheet_ are positional). Writes map values by
+ * name through objectToRow_, so the two lists may diverge safely.
+ * patientId/updatedAt/updatedBy appended at the END (identity foundation). */
+const DISCHARGED_PATIENT_COLUMNS = [
+  'id',
+  'houseId', 'name', 'date', 'pay', 'adv',
+  'status', 'fromLead', 'exitDate', 'source', 'notes',
+  'dischargedAt', 'disposition', 'discharge_note', 'restored', 'prior_status',
+  'patientId', 'updatedAt', 'updatedBy'
+];
 
 /* Payments sheet columns. `id` is a deterministic per-patient-per-due-date
  * string built by the client (see paymentId() in app.js) so the same monthly
@@ -413,7 +453,7 @@ function handle_(params) {
     if (action === 'saveAll') {
       const leads    = parseJsonParam_(params.leads);
       const patients = parseJsonParam_(params.patients);
-      const res = saveAll_(leads, patients);
+      const res = saveAll_(leads, patients, requestUser_(params));
       // The digest is the active-resident population, which an admission or a
       // patient status/house change (both ride saveAll's patients payload)
       // mutates; lead edits can too. Refresh when either bucket is present.
@@ -451,25 +491,25 @@ function handle_(params) {
       return jsonOut_(res);
     }
     if (action === 'deletePatientRow') {
-      const res = deletePatientRow_(parseJsonParam_(params.patient));
+      const res = deletePatientRow_(parseJsonParam_(params.patient), requestUser_(params));
       // A permanent delete drops a resident out of the active population.
       // Fail-soft, mirroring dischargePatient.
       refreshDigestBestEffort_();
       return jsonOut_(res);
     }
     if (action === 'dischargePatient') {
-      const res = dischargePatient_(parseJsonParam_(params.patient));
+      const res = dischargePatient_(parseJsonParam_(params.patient), requestUser_(params));
       // A discharge drops a resident out of the active population. Fail-soft.
       refreshDigestBestEffort_();
       return jsonOut_(res);
     }
     if (action === 'restorePatient') {
-      const res = restorePatient_(parseJsonParam_(params.patient));
+      const res = restorePatient_(parseJsonParam_(params.patient), requestUser_(params));
       refreshDigestBestEffort_();
       return jsonOut_(res);
     }
     if (action === 'restorePatientToActive') {
-      const res = restorePatientToActive_(parseJsonParam_(params.patient));
+      const res = restorePatientToActive_(parseJsonParam_(params.patient), requestUser_(params));
       // Restoring a patient to active adds them back to the digest. Fail-soft.
       refreshDigestBestEffort_();
       return jsonOut_(res);
@@ -517,6 +557,17 @@ function collectParams_(e) {
     } catch (_) { /* body wasn't JSON — ignore */ }
   }
   return out;
+}
+
+/* The authenticated user name for who/when stamping (updatedBy). The Railway
+ * proxy injects `user` into every /api/sheets POST body FROM THE SIGNED
+ * SESSION COOKIE, overwriting anything the browser sent — so this value is
+ * never client-controlled. Blank for sessions whose cookie pre-dates the
+ * user field (allowed by contract). Defensive normalization here too:
+ * trimmed, capped at 40 chars, angle brackets stripped. */
+function requestUser_(params) {
+  return String(params && params.user != null ? params.user : '')
+    .replace(/[<>]/g, '').trim().slice(0, 40);
 }
 
 function parseJsonParam_(v) {
@@ -574,10 +625,22 @@ function getOrCreateSheet_(name, headers) {
   if (name === BILLING_OVERRIDES_SHEET) {
     forceColumnsText_(sh, BILLING_OVERRIDE_COLUMNS, ['month', 'amount']);
   }
+  // Patients: the identity-foundation updatedAt ISO timestamp must survive as
+  // a plain string (same coercion class as droppedAt/waitlistedAt); patientId
+  // is opaque text that must never be reinterpreted. (The entry-date column is
+  // already text-forced per-write by replaceHousePatients_.)
+  if (name === PATIENTS_SHEET) {
+    forceColumnsText_(sh, PATIENT_COLUMNS, ['patientId', 'updatedAt']);
+  }
   // PatientsTombstones: entry date and droppedAt must survive as plain strings
-  // (same coercion class as the Leads visitDate/waitlistedAt guards).
+  // (same coercion class as the Leads visitDate/waitlistedAt guards) — and the
+  // snapshot's patientId/updatedAt for the same reasons as on Patients.
   if (name === PATIENTS_TOMBSTONES_SHEET) {
-    forceColumnsText_(sh, PATIENT_TOMBSTONE_COLUMNS, ['date', 'droppedAt']);
+    forceColumnsText_(sh, PATIENT_TOMBSTONE_COLUMNS, ['date', 'droppedAt', 'patientId', 'updatedAt']);
+  }
+  // Discharged patients: same guard for the appended identity columns.
+  if (name === DISCHARGED_PATIENTS_SHEET) {
+    forceColumnsText_(sh, DISCHARGED_PATIENT_COLUMNS, ['patientId', 'updatedAt']);
   }
   // AuditLog: the ISO timestamp must survive as a plain string (same guard as
   // droppedAt); details is JSON text that must never be reinterpreted.
@@ -768,7 +831,7 @@ function getData_() {
 
 /* ===== Write (merge semantics) ===== */
 
-function saveAll_(leads, patients) {
+function saveAll_(leads, patients, user) {
   const lock = LockService.getScriptLock();
   lock.tryLock(10000);
   try {
@@ -817,7 +880,7 @@ function saveAll_(leads, patients) {
       for (let i = 0; i < houseIds.length; i++) {
         const hid = houseIds[i];
         const arr = patients[hid];
-        const res = replaceHousePatients_(hid, Array.isArray(arr) ? arr : [], userDeleteKeys, dischargedIds);
+        const res = replaceHousePatients_(hid, Array.isArray(arr) ? arr : [], userDeleteKeys, dischargedIds, user);
         written[hid] = res.written;
         if (res.preservedKeys.length > 0) preserved[hid] = res.preservedKeys;
         if (res.suppressedKeys.length > 0) deletedSuppressed[hid] = res.suppressedKeys;
@@ -1206,12 +1269,16 @@ function dischargedFromLeadIds_() {
  * longer empty the sheet. Note the merge means the Patients sheet never
  * shrinks through this path, so the trim is a pure safety net here.
  */
-function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, dischargedFromLeads) {
+function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, dischargedFromLeads, user) {
   const sh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
   const houseColIdx = PATIENT_COLUMNS.indexOf('houseId');
   const nameColIdx  = PATIENT_COLUMNS.indexOf('name');
   const dateColIdx  = PATIENT_COLUMNS.indexOf('date');
   const fromLeadIdx = PATIENT_COLUMNS.indexOf('fromLead');
+  const patientIdIdx = PATIENT_COLUMNS.indexOf('patientId');
+  const updatedAtIdx = PATIENT_COLUMNS.indexOf('updatedAt');
+  const updatedByIdx = PATIENT_COLUMNS.indexOf('updatedBy');
+  const stampUser = String(user == null ? '' : user);
   const lastRow = sh.getLastRow();
 
   const kept = [];       // other houses' rows, original order — untouched
@@ -1290,9 +1357,25 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
       const rowIdx = queue.shift();
       consumed[rowIdx] = true;
       recordConsumed(rowIdx);
-      const newRow = objectToRow_(withHouse, PATIENT_COLUMNS);
-      const changed = patientRowDiffCols_(houseRows[rowIdx], newRow);
-      if (changed.length > 0) logAudit_('patient_edited', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { key: key, changed: changed });
+      // Identity + stamps are SERVER-OWNED: the sheet row's patientId always
+      // wins (a payload value is used only where the sheet has none — the
+      // pre-backfill echo), and updatedAt/updatedBy start from the sheet so a
+      // client can neither forge updatedBy nor churn updatedAt. A real edit
+      // (any non-meta column changed) then re-stamps both.
+      const sheetPatientId = String(houseRows[rowIdx][patientIdIdx] == null ? '' : houseRows[rowIdx][patientIdIdx]).trim();
+      withHouse.patientId = sheetPatientId || String(withHouse.patientId == null ? '' : withHouse.patientId).trim();
+      withHouse.updatedAt = houseRows[rowIdx][updatedAtIdx];
+      withHouse.updatedBy = houseRows[rowIdx][updatedByIdx];
+      let newRow = objectToRow_(withHouse, PATIENT_COLUMNS);
+      const changed = patientRowDiffCols_(houseRows[rowIdx], newRow).filter(function (c) {
+        return PATIENT_META_COLUMNS.indexOf(c) < 0;
+      });
+      if (changed.length > 0) {
+        withHouse.updatedAt = new Date().toISOString();
+        withHouse.updatedBy = stampUser;
+        newRow = objectToRow_(withHouse, PATIENT_COLUMNS);
+        logAudit_('patient_edited', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { key: key, changed: changed, updatedBy: stampUser });
+      }
       newRows.push(newRow);
       continue;
     }
@@ -1320,7 +1403,15 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
         recordConsumed(idx);
         const oldName = String(houseRows[idx][nameColIdx] == null ? '' : houseRows[idx][nameColIdx]);
         const oldKey = patientKey_(houseId, houseRows[idx][nameColIdx], houseRows[idx][dateColIdx]);
-        logAudit_('patient_renamed_via_fromLead', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, oldName: oldName, newName: String(withHouse.name || ''), oldKey: oldKey, newKey: key, matches: matches.length, ambiguous: matches.length > 1 });
+        // A rename keeps the row's PERSISTENT identity: inherit the sheet
+        // row's patientId (assign a fresh one only when neither side has
+        // any). A rename is always a real edit — stamp it.
+        const renamedId = String(houseRows[idx][patientIdIdx] == null ? '' : houseRows[idx][patientIdIdx]).trim() ||
+                          String(withHouse.patientId == null ? '' : withHouse.patientId).trim();
+        withHouse.patientId = renamedId || ('id-' + Utilities.getUuid());
+        withHouse.updatedAt = new Date().toISOString();
+        withHouse.updatedBy = stampUser;
+        logAudit_('patient_renamed_via_fromLead', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, oldName: oldName, newName: String(withHouse.name || ''), oldKey: oldKey, newKey: key, matches: matches.length, ambiguous: matches.length > 1, updatedBy: stampUser });
         newRows.push(objectToRow_(withHouse, PATIENT_COLUMNS));
         continue;
       }
@@ -1336,7 +1427,15 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
       continue;
     }
     if (fl) fromLeadOnSheet[fl] = String(withHouse.name || '');
-    logAudit_(fl ? 'promote_created' : 'patient_added', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, key: key, status: String(withHouse.status || ''), source: String(withHouse.source || '') });
+    // APPEND: assign the persistent patientId when the incoming row has none
+    // (same id style as the Leads backfill — a row that already carries one
+    // never gets a new one), and stamp who/when.
+    if (!String(withHouse.patientId == null ? '' : withHouse.patientId).trim()) {
+      withHouse.patientId = 'id-' + Utilities.getUuid();
+    }
+    withHouse.updatedAt = new Date().toISOString();
+    withHouse.updatedBy = stampUser;
+    logAudit_(fl ? 'promote_created' : 'patient_added', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, key: key, status: String(withHouse.status || ''), source: String(withHouse.source || ''), updatedBy: stampUser });
     newRows.push(objectToRow_(withHouse, PATIENT_COLUMNS));
   }
 
@@ -1461,7 +1560,7 @@ function recentUserDeleteKeys_() {
  * — they are indistinguishable by construction. For USER_DELETE_SUPPRESS_MS
  * afterwards, the saveAll merge drops stale payload rows carrying this key so
  * another open tab can't resurrect the patient. */
-function deletePatientRow_(patient) {
+function deletePatientRow_(patient, user) {
   if (!patient || !patient.houseId || !patient.name) {
     return { ok: false, error: 'missing_patient' };
   }
@@ -1496,7 +1595,7 @@ function deletePatientRow_(patient) {
     if (lastRow > kept.length + 1) {
       sh.getRange(kept.length + 2, 1, lastRow - kept.length - 1, PATIENT_COLUMNS.length).clearContent();
     }
-    logAudit_('patient_deleted', 'deletePatientRow_', patient.fromLead || '', patient.name || '', { key: key, deleted: matched.length });
+    logAudit_('patient_deleted', 'deletePatientRow_', patient.fromLead || '', patient.name || '', { key: key, deleted: matched.length, updatedBy: String(user == null ? '' : user) });
     return { ok: true, deleted: matched.length, key: key };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
@@ -1906,6 +2005,117 @@ function collapseDuplicatePatientKeysNow() {
       removedRows.length + ' surplus row(s) removed (each tombstoned first, reason dedupe-identical-key). ' +
       'See the AuditLog sheet for the per-group trail.');
     return { groups: groups.length, removed: removedRows.length };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* ONE-TIME MANUAL BACKFILL — run from the Apps Script editor (Run dropdown).
+ *
+ * Assigns a persistent patientId ('id-' + UUID, the Leads backfill style) to
+ * every Patients row that lacks one — deterministic per run order (top to
+ * bottom), per-row single-cell writes (never a whole-sheet rewrite), each
+ * cell text-forced first so the id can never be reinterpreted. Then copies
+ * ids onto the DISCHARGED audit sheet and the PatientsTombstones snapshot,
+ * but ONLY where a row matches exactly ONE live Patients row by patientKey_
+ * — an ambiguous key (2+ live rows, the duplicate class
+ * findDuplicatePatientKeysNow reports) or a key with no live row is LEFT
+ * BLANK and logged; a machine must not guess identity. IDEMPOTENT: a second
+ * run performs zero writes — a row that already has an id NEVER gets a new
+ * one. Under the script lock; audit-logged ('patient_id_backfilled' with
+ * per-sheet counts). Intentionally PUBLIC (no trailing underscore, Run
+ * dropdown) and NOT exposed over HTTP — handle_'s fixed action allow-list
+ * never names it (guard-tested, same non-exposure argument as
+ * repairLeadVisitTimes). */
+function backfillPatientIdsNow() {
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    // getOrCreateSheet_ (not getSheetByName): this utility WRITES, and the
+    // ensure path extends pre-append sheets' headers + text-forces the new
+    // columns so the ids land in clean text cells.
+    const patientsSh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+    const hasContent = function (row) {
+      for (let j = 0; j < row.length; j++) {
+        if (row[j] !== '' && row[j] !== null) return true;
+      }
+      return false;
+    };
+
+    // 1. Patients — assign missing ids, and index key → id for step 2.
+    const pIdIdx = PATIENT_COLUMNS.indexOf('patientId');
+    const pHouse = PATIENT_COLUMNS.indexOf('houseId');
+    const pName  = PATIENT_COLUMNS.indexOf('name');
+    const pDate  = PATIENT_COLUMNS.indexOf('date');
+    let patientsFilled = 0;
+    const keyToId = {};
+    const keyCount = {};
+    const pLast = patientsSh.getLastRow();
+    if (pLast > 1) {
+      const values = patientsSh.getRange(2, 1, pLast - 1, PATIENT_COLUMNS.length).getValues();
+      for (let i = 0; i < values.length; i++) {
+        if (!hasContent(values[i])) continue;
+        let id = String(values[i][pIdIdx] == null ? '' : values[i][pIdIdx]).trim();
+        if (id === '') {
+          id = 'id-' + Utilities.getUuid();
+          const cell = patientsSh.getRange(i + 2, pIdIdx + 1, 1, 1);
+          cell.setNumberFormat('@'); // ids are opaque text — never coerced
+          cell.setValue(id);
+          values[i][pIdIdx] = id;
+          patientsFilled++;
+        }
+        const key = patientKey_(values[i][pHouse], values[i][pName], values[i][pDate]);
+        keyCount[key] = (keyCount[key] || 0) + 1;
+        keyToId[key] = id;
+      }
+    }
+
+    // 2. Audit sheets — copy the live row's id where the key match is
+    //    unambiguous; otherwise leave blank and log.
+    let ambiguous = 0;
+    let unmatched = 0;
+    const fillFromKeys = function (sh, columns, label) {
+      const idIdx = columns.indexOf('patientId');
+      const hIdx = columns.indexOf('houseId');
+      const nIdx = columns.indexOf('name');
+      const dIdx = columns.indexOf('date');
+      let filled = 0;
+      const lastRow = sh.getLastRow();
+      if (lastRow < 2) return filled;
+      const values = sh.getRange(2, 1, lastRow - 1, columns.length).getValues();
+      for (let i = 0; i < values.length; i++) {
+        if (!hasContent(values[i])) continue;
+        if (String(values[i][idIdx] == null ? '' : values[i][idIdx]).trim() !== '') continue;
+        const key = patientKey_(values[i][hIdx], values[i][nIdx], values[i][dIdx]);
+        if (!(key in keyToId)) { unmatched++; continue; }
+        if (keyCount[key] > 1) {
+          ambiguous++;
+          Logger.log('AMBIGUOUS ' + label + ' row ' + (i + 2) + ': key ' + key + ' matches ' +
+            keyCount[key] + ' live Patients rows — patientId left blank (collapse the duplicates first).');
+          continue;
+        }
+        const cell = sh.getRange(i + 2, idIdx + 1, 1, 1);
+        cell.setNumberFormat('@');
+        cell.setValue(keyToId[key]);
+        filled++;
+      }
+      return filled;
+    };
+    const dischargedFilled = fillFromKeys(
+      getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS),
+      DISCHARGED_PATIENT_COLUMNS, DISCHARGED_PATIENTS_SHEET);
+    const tombstonesFilled = fillFromKeys(
+      getOrCreateSheet_(PATIENTS_TOMBSTONES_SHEET, PATIENT_TOMBSTONE_COLUMNS),
+      PATIENT_TOMBSTONE_COLUMNS, PATIENTS_TOMBSTONES_SHEET);
+
+    const summary = { patients: patientsFilled, discharged: dischargedFilled,
+                      tombstones: tombstonesFilled, ambiguous: ambiguous, unmatched: unmatched };
+    logAudit_('patient_id_backfilled', 'backfillPatientIdsNow', '', '', summary);
+    Logger.log('backfillPatientIdsNow: ' + patientsFilled + ' Patients id(s) assigned, ' +
+      dischargedFilled + ' discharged row(s) + ' + tombstonesFilled + ' tombstone row(s) matched by key, ' +
+      ambiguous + ' ambiguous (left blank), ' + unmatched + ' with no live match (left blank). ' +
+      'Idempotent — a second run writes nothing.');
+    return summary;
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
@@ -3241,7 +3451,7 @@ function removeLead_(lead) {
  * Mirrors moveLeadIrrelevant_'s pattern: record with defaults, lock, upsert.
  * Append-only on the discharged sheet.
  */
-function dischargePatient_(patient) {
+function dischargePatient_(patient, user) {
   if (!patient || !patient.id) return { ok: false, error: 'missing_patient' };
   const lock = LockService.getScriptLock();
   lock.tryLock(10000);
@@ -3252,10 +3462,13 @@ function dischargePatient_(patient) {
       dischargedAt:   patient.dischargedAt   || new Date().toISOString(),
       disposition:    patient.disposition    || '',
       discharge_note: patient.discharge_note || '',
+      // Who/when stamps are SERVER-owned — never taken from the client copy.
+      updatedAt:      new Date().toISOString(),
+      updatedBy:      String(user == null ? '' : user),
     });
 
     upsertRowById_(dischargedSh, DISCHARGED_PATIENT_COLUMNS, record);
-    logAudit_('patient_discharged', 'dischargePatient_', record.fromLead || record.id || '', record.name || '', { id: record.id, houseId: record.houseId || '', disposition: record.disposition || '' });
+    logAudit_('patient_discharged', 'dischargePatient_', record.fromLead || record.id || '', record.name || '', { id: record.id, houseId: record.houseId || '', disposition: record.disposition || '', updatedBy: record.updatedBy });
     return { ok: true, discharged: true, patient: record };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
@@ -3268,7 +3481,7 @@ function dischargePatient_(patient) {
  * can hide it on the frontend (audit truth preserved, UI rough edge closed).
  * The new lead carries over name/phone/house only; everything else starts
  * blank with stage='new' and created=now. */
-function restorePatient_(patient) {
+function restorePatient_(patient, user) {
   if (!patient || !patient.id) return { ok: false, error: 'missing_patient' };
   const lock = LockService.getScriptLock();
   lock.tryLock(10000);
@@ -3290,10 +3503,11 @@ function restorePatient_(patient) {
     upsertRowById_(leadsSh, LEAD_COLUMNS, restored);
 
     const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
-    const flagged = Object.assign({}, patient, { restored: 'TRUE' });
+    const flagged = Object.assign({}, patient, { restored: 'TRUE',
+      updatedAt: new Date().toISOString(), updatedBy: String(user == null ? '' : user) });
     upsertRowById_(dischargedSh, DISCHARGED_PATIENT_COLUMNS, flagged);
 
-    logAudit_('patient_restored_to_lead', 'restorePatient_', patient.fromLead || patient.id, patient.name || '', { id: patient.id, newLeadId: restored.id });
+    logAudit_('patient_restored_to_lead', 'restorePatient_', patient.fromLead || patient.id, patient.name || '', { id: patient.id, newLeadId: restored.id, updatedBy: flagged.updatedBy });
     return {
       ok: true,
       restored: true,
@@ -3312,15 +3526,16 @@ function restorePatient_(patient) {
  * Patients sheet and creates NO lead. It ONLY flags the discharged audit row
  * restored='TRUE' (matched by the persisted audit id via upsertRowById_) so the
  * row leaves the discharged tab. The audit row itself is KEPT as the trail. */
-function restorePatientToActive_(patient) {
+function restorePatientToActive_(patient, user) {
   if (!patient || !patient.id) return { ok: false, error: 'missing_patient' };
   const lock = LockService.getScriptLock();
   lock.tryLock(10000);
   try {
     const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
-    const flagged = Object.assign({}, patient, { restored: 'TRUE' });
+    const flagged = Object.assign({}, patient, { restored: 'TRUE',
+      updatedAt: new Date().toISOString(), updatedBy: String(user == null ? '' : user) });
     upsertRowById_(dischargedSh, DISCHARGED_PATIENT_COLUMNS, flagged);
-    logAudit_('patient_restored_active', 'restorePatientToActive_', patient.fromLead || patient.id, patient.name || '', { id: patient.id });
+    logAudit_('patient_restored_active', 'restorePatientToActive_', patient.fromLead || patient.id, patient.name || '', { id: patient.id, updatedBy: flagged.updatedBy });
     return { ok: true, restoredToActive: true, id: patient.id };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
