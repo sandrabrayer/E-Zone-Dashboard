@@ -149,7 +149,11 @@ test('the audit row preserves the original patient fields', () => {
     { disposition: 'completed', note: '', dischargeDate: '2026-07-15' },
     '2026-06-28'
   );
-  assert.strictEqual(row.id, 'P1');
+  // Patient identity foundation: the patient's id is persisted on the
+  // Patients sheet now, so the audit row carries its OWN fresh id (a second
+  // discharge after a restore must not upsert over the first audit row).
+  assert.notStrictEqual(row.id, 'P1');
+  assert.match(String(row.id), /^id-/);
   assert.strictEqual(row.houseId, 'arfoni');
   assert.strictEqual(row.name, 'דנה כהן');
   assert.strictEqual(row.pay, 30000);

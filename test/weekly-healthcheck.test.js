@@ -29,6 +29,7 @@ function healthyData() {
   for (const c of hc.PATIENT_COLUMNS) patient[c] = '';
   patient.houseId = 'ramot';
   patient.date = '2026-08-02';
+  patient.id = 'P1'; // persisted patient id (identity foundation) — blank is a warning
 
   return {
     ok: true,

@@ -62,13 +62,13 @@ const LEAD_COLUMNS = [
 ];
 
 /* Duplicated from PATIENT_COLUMNS in apps-script/Code.gs (keep in sync).
- * NOTE: the Patients sheet deliberately has NO id column — the client
- * generates a per-session id that is never persisted (see the comment above
- * PATIENT_COLUMNS in Code.gs) — so the blank-id warning below applies to
- * leads and dischargedPatients (which DO persist ids), not active patients. */
+ * `id` (last) is the persisted patient id from the patient identity
+ * foundation: getData_ backfills it on the first read after the column lands,
+ * so a blank one on a live row is a data-quality warning (see warnBlankIds). */
 const PATIENT_COLUMNS = [
   'houseId', 'name', 'date', 'pay', 'adv',
   'status', 'fromLead', 'exitDate', 'source', 'notes',
+  'id',
 ];
 
 /* Anchored plain-date shape. A non-empty date field that fails this leaked
@@ -231,12 +231,21 @@ function isBlank(v) {
   return v == null || String(v).trim() === '';
 }
 
-/* Blank/missing persisted ids. Applies to leads and dischargedPatients — the
- * Patients sheet has no id column by design (see PATIENT_COLUMNS note above),
- * so active patients are exempt. Offenders are reported by 0-based position
- * (the id itself is blank, so position is the only handle). */
+/* Blank/missing persisted ids on leads, dischargedPatients and — since the
+ * patient identity foundation — active patients (getData_ backfills them, so
+ * a blank one means the deployed Apps Script pre-dates the column or a writer
+ * bypassed the merge). Offenders are reported by 0-based position (patients:
+ * houseId + position) — the id itself is blank, so position is the only
+ * handle; never by name. */
 function warnBlankIds(data) {
   const warnings = [];
+  const blankPatients = [];
+  flattenPatients(data && data.patients).forEach(({ houseId, index, row }) => {
+    if (isBlank(row && row.id)) blankPatients.push(`house ${houseId} position ${index}`);
+  });
+  if (blankPatients.length) {
+    warnings.push(`Blank patient id: ${blankPatients.length} patient row(s) with blank/missing id, at ${blankPatients.join(', ')}.`);
+  }
   const leads = Array.isArray(data && data.leads) ? data.leads : [];
   const blankLeads = [];
   leads.forEach((l, i) => { if (isBlank(l && l.id)) blankLeads.push(i); });

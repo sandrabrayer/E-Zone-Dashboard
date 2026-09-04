@@ -14,9 +14,10 @@
  *   GET  ?action=getAdmittedRoster&secret=...    → {ok, patients:[{sourceApp,name,phone,house}]}
  *                                                 (cross-app, read-only: currently-admitted
  *                                                  patients with phone recovered via fromLead)
- *   POST action=deletePatientRow&patient=...     → {ok, deleted, key}
- *                                                 (permanent patient-row delete by identity
- *                                                  key; tombstones BEFORE deleting)
+ *   POST action=deletePatientRow&patient=...     → {ok, deleted, key, id, matchedBy}
+ *                                                 (permanent patient-row delete by persisted
+ *                                                  id, else by identity key; tombstones
+ *                                                  BEFORE deleting)
  *
  * Merge semantics (important for the split-save path in server.js):
  *   - leads present and non-empty → upsert each lead by id; leads whose id is
@@ -24,8 +25,10 @@
  *     per-houseId behavior and lets the server chunk leads into batches.
  *   - leads missing, empty string, null, or empty array → leave Leads untouched
  *   - patients: for every houseId key present in the payload, that house's
- *     rows are MERGED by the identity triple houseId::name::entryDate
- *     (patientKey_): matched rows are replaced, new rows appended, and sheet
+ *     rows are MERGED — by the persisted patient `id` first, else by the
+ *     identity triple houseId::name::entryDate (patientKey_): matched rows
+ *     are replaced (an id match survives a rename / entry-date edit in
+ *     place), new rows appended, and sheet
  *     rows ABSENT from the payload are KEPT — never dropped by omission, so a
  *     stale tab can no longer clobber rows it never loaded. Every kept-but-
  *     omitted row is echoed per house in the response's `preserved` map and
@@ -274,14 +277,34 @@ const IRRELEVANT_LEAD_COLUMNS = LEAD_COLUMNS.concat(['originSheet', 'movedAt', '
 const REMOVED_LEAD_COLUMNS = LEAD_COLUMNS.concat(['removedAt', 'originSheet']);
 
 /* Must match the column headers in the Patients sheet exactly, in order.
- * The client generates a per-session id for each patient but it is NOT
- * persisted in the sheet — grouping + upserts happen by houseId.
  *
  * `source` and `notes` were added after the initial release. Sheets that
- * pre-date this will be backfilled by getOrCreateSheet_ on the next read. */
+ * pre-date this will be backfilled by getOrCreateSheet_ on the next read.
+ *
+ * `id` — PATIENT IDENTITY FOUNDATION (appended LAST; append-only contract,
+ * getOrCreateSheet_ extends a live sheet's header non-destructively). A
+ * stable, opaque per-row identifier ('id-…'), the first persisted identity a
+ * Patients row has ever had. Until now the client minted a fresh session id
+ * on every load and a row's only identity was the triple
+ * houseId::name::entryDate (patientKey_) — which is why a rename or an
+ * entry-date edit landed as a NEW row and why identical-key duplicates were
+ * indistinguishable. Rules (locked by test/patient-identity-foundation.test.js):
+ *   - minted server-side for any row that lacks one (getData_ backfill under
+ *     the script lock; the saveAll merge for rows it writes or preserves)
+ *     and ADOPTED from the client for a genuinely new row that carries one
+ *     (the client already stamps cryptoId() on every new patient);
+ *   - IMMUTABLE once on a row: a payload row that matches an existing sheet
+ *     row keeps the SHEET's id whatever the payload carried — a stale tab's
+ *     session id never overwrites a persisted one;
+ *   - UNIQUE across the whole sheet: an incoming id already held by another
+ *     row is re-minted for the incoming row (audited), never duplicated;
+ *   - the triple key stays the FALLBACK identity for rows and payloads
+ *     without an id (legacy tabs, cross-app writers) — nothing regresses.
+ * Opaque 'id-' text: no Sheets coercion risk, so no whole-column format. */
 const PATIENT_COLUMNS = [
   'houseId', 'name', 'date', 'pay', 'adv',
-  'status', 'fromLead', 'exitDate', 'source', 'notes'
+  'status', 'fromLead', 'exitDate', 'source', 'notes',
+  'id'
 ];
 
 /* PatientsTombstones columns: a full patient row snapshot + audit metadata.
@@ -300,11 +323,16 @@ const PATIENT_COLUMNS = [
  *                   dedicated deletePatientRow action; this entry is the
  *                   recovery copy (written before the delete, fail-hard)
  *   savedByAction — the endpoint that produced the entry ('saveAll' /
- *                   'deletePatientRow') */
+ *                   'deletePatientRow')
+ *   id            — the row's persisted patient id (appended LAST, after the
+ *                   metadata, so the live tombstone sheet's layout is
+ *                   untouched; blank on entries that pre-date the identity
+ *                   foundation) */
 const PATIENT_TOMBSTONE_COLUMNS = [
   'houseId', 'name', 'date', 'pay', 'adv',
   'status', 'fromLead', 'exitDate', 'source', 'notes',
-  'droppedAt', 'reason', 'savedByAction'
+  'droppedAt', 'reason', 'savedByAction',
+  'id'
 ];
 
 /* How long a 'user-delete' tombstone SUPPRESSES the deleted identity key in
@@ -319,16 +347,18 @@ const PATIENT_TOMBSTONE_COLUMNS = [
 const USER_DELETE_SUPPRESS_MS = 24 * 60 * 60 * 1000;
 
 /* Phase 2e-1 — discharged-patients audit sheet. Mirrors IRRELEVANT_LEAD_COLUMNS
- * shape: base columns + discharge-time metadata. `id` is prepended so
- * upsertRowById_ has a key to dedupe by (Patients sheet has no id column;
- * the client-side patient id is session-local but unique-at-write-time, which
- * is all the audit sheet needs). */
+ * shape: base columns + discharge-time metadata. The LEADING `id` is the
+ * AUDIT row's own key (upsertRowById_ dedupes by it; the client mints a fresh
+ * one per discharge). The Patients `id` column is deliberately EXCLUDED from
+ * the base slice so the live sheet's positional layout stays byte-identical
+ * to the pre-identity-foundation one (readSheet_ maps by position). */
 /* `prior_status` (append-only, added with the restore-choice modal): the
  * patient's status at the MOMENT of discharge (active/trial/wait), captured by
  * the client's dischargeAuditRow before the released flip. Restore-to-previous-
  * status reads it; legacy rows have it blank and fall back to 'active'. */
 const DISCHARGED_PATIENT_COLUMNS =
-  ['id'].concat(PATIENT_COLUMNS).concat(['dischargedAt', 'disposition', 'discharge_note', 'restored', 'prior_status']);
+  ['id'].concat(PATIENT_COLUMNS.filter(function (c) { return c !== 'id'; }))
+        .concat(['dischargedAt', 'disposition', 'discharge_note', 'restored', 'prior_status']);
 
 /* Payments sheet columns. `id` is a deterministic per-patient-per-due-date
  * string built by the client (see paymentId() in app.js) so the same monthly
@@ -357,7 +387,8 @@ const BILLING_OVERRIDE_COLUMNS = ['id', 'patientId', 'month', 'amount', 'created
  *   action    — event name, e.g. 'promote_created', 'promote_skipped_duplicate'
  *   fn        — the backend function that wrote the event
  *   patientId — the row's fromLead lead-id when it has one, else the discharge
- *               audit id, else '' (the Patients sheet itself has no id column)
+ *               audit id, else ''. The persisted Patients `id` travels in
+ *               `details.id` where the event has one.
  *   name      — patient name
  *   details   — compact JSON string (houseId, identity key, skip reason, …) */
 const AUDIT_LOG_SHEET = 'AuditLog';
@@ -722,12 +753,17 @@ function getData_() {
   // Heal blank id cells BEFORE reading, so the ids returned to the client are
   // the same ones now stored on the sheet — client and sheet agree on the
   // delete/update key. Only the two sheets that are targets of delete-by-id are
-  // healed: Leads (removeLead_ / moveLeadIrrelevant_) and the irrelevant-leads
-  // sheet (restoreLead_). The Patients sheet has no id column; the removed and
-  // discharged sheets are written with client-stamped ids and are not
-  // delete-by-id targets, so they need no backfill (see CHANGELOG for the audit).
+  // healed: Leads (removeLead_ / moveLeadIrrelevant_), the irrelevant-leads
+  // sheet (restoreLead_), and — patient identity foundation — the Patients
+  // sheet (deletePatientRow_ by id; the saveAll merge matches by id first).
+  // The patients backfill is one-time (the first read after the `id` column
+  // lands) and takes the script lock so it cannot race a saveAll rewrite;
+  // with every id present it performs ZERO writes and takes no lock. The
+  // removed and discharged sheets are written with client-stamped ids and
+  // are not delete-by-id targets, so they need no backfill.
   backfillMissingIds_(leadsSh, LEAD_COLUMNS);
   backfillMissingIds_(irrelevantSh, IRRELEVANT_LEAD_COLUMNS);
+  backfillPatientIdsLocked_(patientsSh);
 
   const leads               = readSheet_(leadsSh, LEAD_COLUMNS);
   // Normalize visitTime on the way out: a legacy cell coerced to a time-typed
@@ -1020,11 +1056,14 @@ function preserveNewerMeetingReport_(merged, existingRow) {
   return merged;
 }
 
-/* Identity key for a Patients row. The sheet has no id column, so this triple
- * IS row identity — the same key the client's matchActivePatientIndex, the
- * discharge heal, and digestPatientKey_ already rely on. `date` goes through
- * asISODate_ so a legacy Date-typed cell and the client's 'YYYY-MM-DD' string
- * compare equal. */
+/* Identity KEY for a Patients row: the triple houseId::name::entryDate. Since
+ * the patient identity foundation the persisted `id` column is the PRIMARY
+ * identity wherever a row/payload carries one; this triple is the fallback
+ * identity and stays the compatibility key the client's
+ * matchActivePatientIndex, the discharge heal, digestPatientKey_, the payment
+ * ids and the user-delete suppression rely on. `date` goes through asISODate_
+ * so a legacy Date-typed cell and the client's 'YYYY-MM-DD' string compare
+ * equal. */
 function patientKey_(houseId, name, date) {
   return String(houseId == null ? '' : houseId).trim() + '::' +
          String(name    == null ? '' : name).trim()    + '::' +
@@ -1041,6 +1080,11 @@ function patientRowDiffCols_(a, b) {
   const dateColIdx = PATIENT_COLUMNS.indexOf('date');
   const diff = [];
   for (let c = 0; c < PATIENT_COLUMNS.length; c++) {
+    // `id` is identity, not content: two rows that differ ONLY in id are the
+    // same patient content-wise. The dedupe utilities must keep seeing the
+    // repaired-twin duplicates as byte-identical after each row got its own
+    // id, and a payload whose id the merge ignores must not read as an edit.
+    if (PATIENT_COLUMNS[c] === 'id') continue;
     const dateLike = (c === dateColIdx || PATIENT_COLUMNS[c] === 'exitDate');
     const av = dateLike ? asISODate_(a[c]) : String(a[c] == null ? '' : a[c]);
     const bv = dateLike ? asISODate_(b[c]) : String(b[c] == null ? '' : b[c]);
@@ -1138,9 +1182,18 @@ function dischargedFromLeadIds_() {
 /**
  * MERGE the payload's patients into the house's rows — merge-don't-drop.
  * Rows for other houses are untouched, exactly as before. Within the house:
- *   - payload row matches a sheet row by patientKey_ → the sheet row is
+ *   - payload row carries a persisted `id` held by an unconsumed row of THIS
+ *     house → ID MATCH: that sheet row is replaced by the payload row WHATEVER
+ *     its name/entry date say — a rename or an entry-date edit is an in-place
+ *     update for every patient, hand-entered included (audited
+ *     'patient_rekeyed_via_id' when the key changed, 'patient_edited'
+ *     otherwise). The id is immutable: the row keeps it;
+ *   - else payload row matches a sheet row by patientKey_ → the sheet row is
  *     replaced by the payload row (field edits, status flips, exitDate all
- *     behave as they always did — per-row last-writer-wins);
+ *     behave as they always did — per-row last-writer-wins); the SHEET row's
+ *     id wins over whatever the payload carried (a stale tab's session id
+ *     never overwrites a persisted one); a sheet row without an id adopts
+ *     the payload's (if unused) or gets one minted;
  *   - payload row matches nothing → appended (admission);
  *   - sheet row ABSENT from the payload → KEPT. Genuine deletion goes through
  *     the dedicated deletePatientRow action (discharge is a status flip), so
@@ -1154,11 +1207,22 @@ function dischargedFromLeadIds_() {
  *     ('dedupe-identical-key') and dropped, not preserved — see the preserve
  *     loop. Differing same-key leftovers are still preserved
  *     (collapseDuplicatePatientKeysNow handles those explicitly).
- * Accepted trade-off (documented, locked by test): editing a patient's name
- * or entry date changes the identity key, so the old row is preserved and the
- * edit lands as a new row — a visible, mergeable duplicate instead of silent
- * loss. Duplicate keys consume matches one payload row per sheet row, in
- * sheet order.
+ * Remaining trade-off (documented, locked by test): a payload row WITHOUT a
+ * persisted id (legacy tab, cross-app writer) whose name or entry date was
+ * edited changes the identity key, so the old row is preserved and the edit
+ * lands as a new row — a visible, mergeable duplicate instead of silent loss.
+ * Duplicate keys consume matches one payload row per sheet row, in sheet
+ * order; a sheet row whose id ANOTHER payload row claims is reserved for that
+ * id match and is never key-consumed.
+ *
+ * ID UNIQUENESS: every id written by this save is checked against every id
+ * on the sheet (all houses) plus the ids assigned earlier in the save. An
+ * incoming id already held elsewhere — a HOUSE MOVE (the old house's row is
+ * preserved by merge-don't-drop and keeps the id), a duplicated client
+ * object, or an id whose row this save already consumed — is re-minted for
+ * the incoming row and audited 'patient_id_reminted'. Preserved (omitted)
+ * rows that still lack an id get one minted here too, so the sheet converges
+ * to fully-identified rows through ordinary saves.
  *
  * `suppressedDeleteKeys` (optional, from recentUserDeleteKeys_): identity
  * keys with a FRESH 'user-delete' tombstone. A payload row whose key is in
@@ -1212,6 +1276,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   const nameColIdx  = PATIENT_COLUMNS.indexOf('name');
   const dateColIdx  = PATIENT_COLUMNS.indexOf('date');
   const fromLeadIdx = PATIENT_COLUMNS.indexOf('fromLead');
+  const idIdx       = PATIENT_COLUMNS.indexOf('id');
   const lastRow = sh.getLastRow();
 
   const kept = [];       // other houses' rows, original order — untouched
@@ -1223,6 +1288,56 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
       else kept.push(values[i]);
     }
   }
+
+  // Persisted ids. idsInUse: every id on the sheet (ALL houses) — the
+  // uniqueness set every assignment below checks against, extended as this
+  // save assigns ids. houseRowByIdIdx: THIS house's rows by id — the primary
+  // match (first in sheet order if an id is, pre-existing-bug, duplicated).
+  const rowId = function (row) { return String(row[idIdx] == null ? '' : row[idIdx]).trim(); };
+  const idsInUse = {};
+  const houseRowByIdIdx = {};
+  for (let i = 0; i < kept.length; i++) { const id = rowId(kept[i]); if (id) idsInUse[id] = true; }
+  for (let i = 0; i < houseRows.length; i++) {
+    const id = rowId(houseRows[i]);
+    if (!id) continue;
+    idsInUse[id] = true;
+    if (!(id in houseRowByIdIdx)) houseRowByIdIdx[id] = i;
+  }
+  // Ids the payload claims. A sheet row holding one is RESERVED for its id
+  // match: neither the key-match queue nor the fromLead rename branch may
+  // consume it for a different payload row.
+  const payloadIds = {};
+  for (let i = 0; i < patientsArr.length; i++) {
+    const p = patientsArr[i] || {};
+    const id = String(p.id == null ? '' : p.id).trim();
+    if (id) payloadIds[id] = true;
+  }
+  const reservedByPayloadId = function (rowIdx) {
+    const id = rowId(houseRows[rowIdx]);
+    return !!id && !!payloadIds[id];
+  };
+  // The id a written row ends up with (stamped onto `withHouse`, recorded in
+  // idsInUse): the consumed sheet row's own id is immutable and wins; else
+  // the payload's id is adopted when no other row holds it; else a fresh id
+  // is minted (audited when the payload's id had to be discarded).
+  const assignId = function (withHouse, sheetId, context) {
+    const incoming = String(withHouse.id == null ? '' : withHouse.id).trim();
+    let id;
+    if (sheetId) {
+      id = sheetId;
+    } else if (incoming && !idsInUse[incoming]) {
+      id = incoming;
+    } else {
+      id = 'id-' + Utilities.getUuid();
+      if (incoming) {
+        logAudit_('patient_id_reminted', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '',
+          Object.assign({ houseId: houseId, incomingId: incoming, newId: id }, context || {}));
+      }
+    }
+    idsInUse[id] = true;
+    withHouse.id = id;
+    return id;
+  };
 
   // Index this house's sheet rows by identity key; duplicate keys queue up.
   const byKey = {};
@@ -1283,16 +1398,43 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   for (let i = 0; i < patientsArr.length; i++) {
     const withHouse = Object.assign({}, patientsArr[i], { houseId: houseId });
     const key = patientKey_(houseId, withHouse.name, withHouse.date);
+    const incomingId = String(withHouse.id == null ? '' : withHouse.id).trim();
+
+    // ID MATCH (primary identity, contract comment above): the payload's
+    // persisted id names an unconsumed row of THIS house → replace it in
+    // place whatever the name/entry date say.
+    if (incomingId && (incomingId in houseRowByIdIdx) && !consumed[houseRowByIdIdx[incomingId]]) {
+      const rowIdx = houseRowByIdIdx[incomingId];
+      const oldKey = patientKey_(houseId, houseRows[rowIdx][nameColIdx], houseRows[rowIdx][dateColIdx]);
+      consumed[rowIdx] = true;
+      recordConsumed(rowIdx);
+      assignId(withHouse, incomingId);
+      const newRow = objectToRow_(withHouse, PATIENT_COLUMNS);
+      const changed = patientRowDiffCols_(houseRows[rowIdx], newRow);
+      if (oldKey !== key) {
+        logAudit_('patient_rekeyed_via_id', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { houseId: houseId, id: incomingId, oldKey: oldKey, newKey: key, changed: changed });
+      } else if (changed.length > 0) {
+        logAudit_('patient_edited', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { key: key, id: incomingId, changed: changed });
+      }
+      newRows.push(newRow);
+      continue;
+    }
+
+    // KEY MATCH (fallback identity). Rows already consumed (by an id match
+    // under a different key) or reserved for another payload row's id match
+    // are skipped in the queue.
     const queue = byKey[key];
+    while (queue && queue.length > 0 && (consumed[queue[0]] || reservedByPayloadId(queue[0]))) queue.shift();
     if (queue && queue.length > 0) {
       // On the sheet → normal replace, even if the key was once user-deleted
       // (a row that is back on the sheet was re-added deliberately).
       const rowIdx = queue.shift();
       consumed[rowIdx] = true;
       recordConsumed(rowIdx);
+      assignId(withHouse, rowId(houseRows[rowIdx]), { via: 'key' });
       const newRow = objectToRow_(withHouse, PATIENT_COLUMNS);
       const changed = patientRowDiffCols_(houseRows[rowIdx], newRow);
-      if (changed.length > 0) logAudit_('patient_edited', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { key: key, changed: changed });
+      if (changed.length > 0) logAudit_('patient_edited', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { key: key, id: withHouse.id, changed: changed });
       newRows.push(newRow);
       continue;
     }
@@ -1311,16 +1453,17 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
       // in sheet order when the fromLead is (pre-existing-bug) duplicated —
       // deterministic, never both; ambiguity flagged in the audit details.
       const matches = (houseRowsByFromLead[fl] || []).filter(function (idx) {
-        return !consumed[idx] &&
+        return !consumed[idx] && !reservedByPayloadId(idx) &&
           !payloadKeys[patientKey_(houseId, houseRows[idx][nameColIdx], houseRows[idx][dateColIdx])];
       });
       if (matches.length > 0) {
         const idx = matches[0];
         consumed[idx] = true;
         recordConsumed(idx);
+        assignId(withHouse, rowId(houseRows[idx]), { via: 'fromLead' });
         const oldName = String(houseRows[idx][nameColIdx] == null ? '' : houseRows[idx][nameColIdx]);
         const oldKey = patientKey_(houseId, houseRows[idx][nameColIdx], houseRows[idx][dateColIdx]);
-        logAudit_('patient_renamed_via_fromLead', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, oldName: oldName, newName: String(withHouse.name || ''), oldKey: oldKey, newKey: key, matches: matches.length, ambiguous: matches.length > 1 });
+        logAudit_('patient_renamed_via_fromLead', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, id: withHouse.id, oldName: oldName, newName: String(withHouse.name || ''), oldKey: oldKey, newKey: key, matches: matches.length, ambiguous: matches.length > 1 });
         newRows.push(objectToRow_(withHouse, PATIENT_COLUMNS));
         continue;
       }
@@ -1336,7 +1479,8 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
       continue;
     }
     if (fl) fromLeadOnSheet[fl] = String(withHouse.name || '');
-    logAudit_(fl ? 'promote_created' : 'patient_added', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, key: key, status: String(withHouse.status || ''), source: String(withHouse.source || '') });
+    assignId(withHouse, '', { via: 'append' });
+    logAudit_(fl ? 'promote_created' : 'patient_added', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, key: key, id: withHouse.id, status: String(withHouse.status || ''), source: String(withHouse.source || '') });
     newRows.push(objectToRow_(withHouse, PATIENT_COLUMNS));
   }
 
@@ -1372,6 +1516,15 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
         logAudit_('patient_dedupe_collapsed', 'replaceHousePatients_', fl, String(houseRows[i][nameColIdx] == null ? '' : houseRows[i][nameColIdx]), { houseId: houseId, key: rowKey, removed: 1, byteIdentical: true });
         continue;
       }
+    }
+    // A preserved row that still lacks a persisted id gets one minted here
+    // (unique by construction — a fresh UUID checked into idsInUse), so the
+    // sheet converges to fully-identified rows through ordinary saves. The
+    // tombstone below then carries the id the row will have.
+    if (idIdx >= 0 && !rowId(houseRows[i])) {
+      const minted = 'id-' + Utilities.getUuid();
+      houseRows[i][idIdx] = minted;
+      idsInUse[minted] = true;
     }
     preservedRows.push(houseRows[i]);
     preservedKeys.push(rowKey);
@@ -1447,8 +1600,13 @@ function recentUserDeleteKeys_() {
  * The occupancy tab's ✕ button used to delete by OMISSION — drop the patient
  * from the client's list and let saveAll's whole-house replace lose the row.
  * Merge-don't-drop closed that channel (omission now preserves), so genuine
- * deletion is a first-class action, mirroring removeLead_'s safe sequence but
- * keyed by patientKey_ (the Patients sheet has no id column):
+ * deletion is a first-class action, mirroring removeLead_'s safe sequence,
+ * keyed by the persisted patient `id` first and by patientKey_ as fallback:
+ *   0. `patient.id` given and held by a row of the given house → EXACTLY that
+ *      row (matchedBy 'id') — one of several identical-key duplicates can now
+ *      be deleted on its own. An id seen only in ANOTHER house, or not on the
+ *      sheet at all (stale tab, pre-foundation row), falls through to the key
+ *      path — never a cross-house delete.
  *   1. Peek FIRST (read-only): no row matches the key → refuse, touch
  *      NOTHING. The client surfaces the error and rolls its state back.
  *   2. Tombstone the matched row(s) — reason 'user-delete' — BEFORE the
@@ -1457,8 +1615,9 @@ function recentUserDeleteKeys_() {
  *      copy. (Deliberate opposite of tombstonePreservedPatients_'s fail-soft
  *      contract, where the row is being kept anyway.)
  *   3. Rewrite the kept rows, then trim the surplus tail (write-then-trim).
- * All under the script lock. Duplicate identity keys delete ALL matching rows
- * — they are indistinguishable by construction. For USER_DELETE_SUPPRESS_MS
+ * All under the script lock. On the KEY path duplicate identity keys delete
+ * ALL matching rows — without an id they are indistinguishable by
+ * construction. For USER_DELETE_SUPPRESS_MS
  * afterwards, the saveAll merge drops stale payload rows carrying this key so
  * another open tab can't resurrect the patient. */
 function deletePatientRow_(patient) {
@@ -1472,17 +1631,33 @@ function deletePatientRow_(patient) {
     const houseColIdx = PATIENT_COLUMNS.indexOf('houseId');
     const nameColIdx  = PATIENT_COLUMNS.indexOf('name');
     const dateColIdx  = PATIENT_COLUMNS.indexOf('date');
+    const idIdx       = PATIENT_COLUMNS.indexOf('id');
     const key = patientKey_(patient.houseId, patient.name, patient.date);
+    const wantId = String(patient.id == null ? '' : patient.id).trim();
+    const wantHouse = String(patient.houseId == null ? '' : patient.houseId).trim();
     const lastRow = sh.getLastRow();
     if (lastRow < 2) return { ok: false, error: 'patient_not_found' };
 
     const values = sh.getRange(2, 1, lastRow - 1, PATIENT_COLUMNS.length).getValues();
-    const kept = [];
-    const matched = [];
-    for (let i = 0; i < values.length; i++) {
-      const row = values[i];
-      if (patientKey_(row[houseColIdx], row[nameColIdx], row[dateColIdx]) === key) matched.push(row);
-      else kept.push(row);
+    let kept = [];
+    let matched = [];
+    let matchedBy = 'key';
+    if (wantId && idIdx >= 0) {
+      for (let i = 0; i < values.length; i++) {
+        const row = values[i];
+        const rid = String(row[idIdx] == null ? '' : row[idIdx]).trim();
+        if (rid === wantId && String(row[houseColIdx] == null ? '' : row[houseColIdx]).trim() === wantHouse) matched.push(row);
+        else kept.push(row);
+      }
+      if (matched.length > 0) matchedBy = 'id';
+      else { kept = []; matched = []; }
+    }
+    if (matchedBy === 'key') {
+      for (let i = 0; i < values.length; i++) {
+        const row = values[i];
+        if (patientKey_(row[houseColIdx], row[nameColIdx], row[dateColIdx]) === key) matched.push(row);
+        else kept.push(row);
+      }
     }
     if (matched.length === 0) return { ok: false, error: 'patient_not_found' };
 
@@ -1496,8 +1671,8 @@ function deletePatientRow_(patient) {
     if (lastRow > kept.length + 1) {
       sh.getRange(kept.length + 2, 1, lastRow - kept.length - 1, PATIENT_COLUMNS.length).clearContent();
     }
-    logAudit_('patient_deleted', 'deletePatientRow_', patient.fromLead || '', patient.name || '', { key: key, deleted: matched.length });
-    return { ok: true, deleted: matched.length, key: key };
+    logAudit_('patient_deleted', 'deletePatientRow_', patient.fromLead || '', patient.name || '', { key: key, id: matchedBy === 'id' ? wantId : '', matchedBy: matchedBy, deleted: matched.length });
+    return { ok: true, deleted: matched.length, key: key, id: matchedBy === 'id' ? wantId : '', matchedBy: matchedBy };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
@@ -1589,6 +1764,36 @@ function backfillMissingIds_(sh, columns) {
     filled++;
   }
   return filled;
+}
+
+/* Patient identity foundation — Patients-sheet twin of the lead-id backfill
+ * above. Only if at least one content row has a blank `id` does it take the
+ * script lock and delegate to backfillMissingIds_ (so a concurrent saveAll
+ * rewrite cannot shift rows under the per-cell writes); with every id present
+ * it performs ZERO writes and takes no lock — the steady state after the
+ * first read following the column's arrival. Returns the count backfilled. */
+function backfillPatientIdsLocked_(sh) {
+  const idIdx = PATIENT_COLUMNS.indexOf('id');
+  if (idIdx < 0) return 0;
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return 0;
+  const values = sh.getRange(2, 1, lastRow - 1, PATIENT_COLUMNS.length).getValues();
+  let needs = false;
+  for (let i = 0; i < values.length && !needs; i++) {
+    const row = values[i];
+    if (String(row[idIdx] == null ? '' : row[idIdx]).trim() !== '') continue;
+    for (let j = 0; j < row.length; j++) {
+      if (row[j] !== '' && row[j] !== null) { needs = true; break; }
+    }
+  }
+  if (!needs) return 0;
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    return backfillMissingIds_(sh, PATIENT_COLUMNS);
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
 }
 
 function upsertRowById_(sh, columns, obj) {
