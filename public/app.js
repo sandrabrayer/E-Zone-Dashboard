@@ -14,6 +14,13 @@ const HOUSES = [
  * add-lead form; rendered on the kanban card. Fixed list (no free text). */
 const ASSIGNEE_OPTIONS = ['ורד', 'שירן', 'יעל'];
 
+/* Session-user names (the login name picker) — the same three people as
+ * ASSIGNEE_OPTIONS, kept as a SEPARATE constant so the two lists can evolve
+ * independently. MUST stay equal to lib/users.js SESSION_USERS (the server's
+ * validation list for /api/verify-pin's `user`) — a guard test pins the two
+ * equal, so they can never drift silently. */
+const SESSION_USERS = ['ורד', 'שירן', 'יעל'];
+
 /* רשימת המתנה — a potential patient waiting for a spot; the lead's existing
  * `house` field is the house they are waiting for. Entering the stage stamps
  * `waitlistedAt` (ISO timestamp string, schema shipped in the foundation PR);
@@ -315,8 +322,11 @@ function saveAllResponseNeedsResync(res) {
     Object.keys(m).some(h => Array.isArray(m[h]) && m[h].length > 0);
   // preserved: rows this tab's payload omitted (it never loaded them).
   // deletedSuppressed: rows this tab tried to resurrect past a user-delete
-  // tombstone. Either way the tab's memory is stale — reload.
-  return nonEmpty(res.preserved) || nonEmpty(res.deletedSuppressed);
+  // tombstone. conflicts: rows the backend REFUSED because this tab loaded
+  // an older version someone else has since updated (stale-stamp refusal).
+  // Any of them means the tab's memory is stale — reload.
+  return nonEmpty(res.preserved) || nonEmpty(res.deletedSuppressed) ||
+    (Array.isArray(res.conflicts) && res.conflicts.length > 0);
 }
 
 /* Hebrew error message when the backend's promotion dedupe guard refused
@@ -337,6 +347,30 @@ function promoteSkippedMessage(res) {
   });
   if (names.length === 0) return null;
   return 'שורה לא נשמרה — כפילות זוהתה: ' + names.join(', ');
+}
+
+/* Hebrew error message when the backend REFUSED stale saves — the saveAll
+ * response carries a non-empty `conflicts` array (the id-match branch found
+ * this tab loaded an OLDER version of a row someone else has since updated);
+ * null when none. The refusal is never silent and never retried
+ * automatically: the banner tells who saved first, and the resync (same
+ * mechanism as `preserved`) reloads the sheet's version. Pure — unit-tested;
+ * tolerant of old backends without the field (precedent:
+ * promoteSkippedMessage). */
+function conflictsMessage(res) {
+  if (!res || typeof res !== 'object') return null;
+  if (!Array.isArray(res.conflicts) || res.conflicts.length === 0) return null;
+  const names = [];
+  const by = [];
+  res.conflicts.forEach(c => {
+    const n = c && c.name ? String(c.name) : '';
+    if (n && names.indexOf(n) < 0) names.push(n);
+    const u = c && c.sheetUpdatedBy ? String(c.sheetUpdatedBy) : '';
+    if (u && by.indexOf(u) < 0) by.push(u);
+  });
+  const who = by.length > 0 ? by.join(', ') : 'משתמש/ת אחר/ת';
+  return 'השינוי ל־' + (names.length ? names.join(', ') : 'מטופל/ת') +
+    ' לא נשמר — ' + who + ' עדכן/ה קודם. הנתונים רועננו.';
 }
 
 let _preservedResyncBusy = false;
@@ -416,6 +450,10 @@ function saveAll() {
       maybeResyncPreservedPatients(res);
       const skippedMsg = promoteSkippedMessage(res);
       if (skippedMsg) showError(skippedMsg);
+      // Stale-save refusal: tell the user whose edit won; the resync above
+      // already reloads the sheet's version. Never retried automatically.
+      const conflictMsg = conflictsMessage(res);
+      if (conflictMsg) showError(conflictMsg);
       return res;
     } finally {
       _savesInFlight--;
@@ -470,13 +508,15 @@ async function tryPin() {
   submitBtn.disabled = true;
   errEl.classList.add('hidden');
   try {
+    const pin = input.value; // held in memory ONLY for this login flow
     const res = await fetch('/api/verify-pin', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pin: input.value }),
+      body: JSON.stringify({ pin: pin }),
     });
-    if (res.ok) {          // cookie is now set → enter the app
-      enterApp();
+    if (res.ok) {          // cookie is now set → name check, then the app
+      input.value = '';
+      await afterPinSuccess(pin);
       return;
     }
     errEl.classList.remove('hidden');
@@ -488,6 +528,122 @@ async function tryPin() {
     _pinPending = false;
     submitBtn.disabled = false;
   }
+}
+
+/* ===== Name picker (מי מתחבר/ת) =====
+ *
+ * Each person identifies once per device: after a correct PIN, a session
+ * whose cookie carries no name gets a one-screen picker (fixed SESSION_USERS
+ * buttons, no free text). Picking RE-ISSUES the cookie via /api/verify-pin
+ * with { pin, user } — the PIN is held in a closure only for that one call,
+ * never persisted anywhere. The name then rides inside the signed cookie for
+ * its whole lifetime (7 days) and the server stamps updatedBy from it.
+ * Switching (החלף) = logout → PIN → picker, since a re-issue needs the PIN. */
+
+/* The session's user name via /api/me: '' when the cookie carries none,
+ * null when the answer is not a clean 200 (unauthenticated / network) —
+ * callers must not block entry on null. */
+async function fetchSessionUser() {
+  try {
+    const res = await fetch('/api/me');
+    if (!res.ok) return null;
+    const data = await res.json();
+    return typeof data.user === 'string' ? data.user : '';
+  } catch (_) {
+    return null;
+  }
+}
+
+/* After a correct PIN: no name on the fresh cookie → picker (needs the PIN
+ * for the re-issue); otherwise straight into the app with the header line. */
+async function afterPinSuccess(pin) {
+  const user = await fetchSessionUser();
+  _sessionUserChecked = true; // this WAS the check — enterApp must not redo it
+  if (user === '') {
+    showUserPicker(pin);
+    return;
+  }
+  renderWhoami(user || '');
+  enterApp();
+}
+
+function showUserPicker(pin) {
+  document.getElementById('pin-screen').classList.add('hidden');
+  const screen = document.getElementById('user-screen');
+  const box = document.getElementById('user-options');
+  const errEl = document.getElementById('user-error');
+  errEl.classList.add('hidden');
+  box.innerHTML = '';
+  SESSION_USERS.forEach(name => {
+    const btn = document.createElement('button');
+    btn.className = 'btn primary user-option';
+    btn.textContent = name;
+    btn.onclick = async () => {
+      errEl.classList.add('hidden');
+      try {
+        const res = await fetch('/api/verify-pin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin: pin, user: name }),
+        });
+        if (!res.ok) { errEl.classList.remove('hidden'); return; }
+        screen.classList.add('hidden');
+        renderWhoami(name);
+        enterApp();
+      } catch (_) {
+        errEl.classList.remove('hidden');
+      }
+    };
+    box.appendChild(btn);
+  });
+  screen.classList.remove('hidden');
+}
+
+/* Header line 'מחובר/ת כ: <name> · החלף'. Hidden when the session has no
+ * name (legacy cookie). החלף goes through logout → PIN → picker, because
+ * re-issuing the cookie with a different name needs the PIN again. */
+function renderWhoami(name) {
+  const el = document.getElementById('whoami');
+  if (!el) return;
+  if (!name) {
+    el.classList.add('hidden');
+    el.textContent = '';
+    return;
+  }
+  el.textContent = '';
+  el.appendChild(document.createTextNode('מחובר/ת כ: '));
+  const b = document.createElement('b');
+  b.textContent = name;
+  el.appendChild(b);
+  el.appendChild(document.createTextNode(' · '));
+  const sw = document.createElement('button');
+  sw.className = 'link-btn';
+  sw.textContent = 'החלף';
+  sw.onclick = async () => {
+    try { await fetch('/api/logout', { method: 'POST' }); } catch (_) { /* reload anyway */ }
+    location.reload();
+  };
+  el.appendChild(sw);
+  el.classList.remove('hidden');
+}
+
+/* Startup / existing sessions: an authenticated (clean 200) /api/me with an
+ * EMPTY user means this device's cookie pre-dates the name picker — route it
+ * through the PIN form once so the pick can re-issue the cookie (the
+ * re-issue needs the PIN; see showUserPicker). A named session just renders
+ * the header line. null (unauthenticated / network) changes nothing — the
+ * normal 401 flow owns those cases. Runs once per page load. */
+let _sessionUserChecked = false;
+async function checkSessionUser() {
+  if (_sessionUserChecked) return;
+  _sessionUserChecked = true;
+  const user = await fetchSessionUser();
+  if (user === null) return;
+  if (user === '') {
+    showPinScreen();
+    return;
+  }
+  renderWhoami(user);
 }
 
 /* Startup: wire the PIN form + logout + tabs once, then attempt the authorized
@@ -512,6 +668,7 @@ function enterApp() {
   state.mode = 'edit';   // single mode: an authenticated user is an editor
   revealApp();
   loadAll();             // getData rides the cookie; a 401 flips to the PIN screen
+  checkSessionUser();    // fire-and-forget: whoami line / one-time picker routing
 }
 
 /* ===== Top tabs ===== */

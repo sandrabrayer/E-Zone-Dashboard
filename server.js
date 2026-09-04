@@ -5,6 +5,7 @@ const https = require('https');
 const { URL } = require('url');
 const { checkPin } = require('./lib/pin');
 const { createSessionToken, verifySessionToken, readSessionUser } = require('./lib/session');
+const { SESSION_USERS } = require('./lib/users');
 
 const app = express();
 app.disable('etag');
@@ -434,6 +435,16 @@ function sanitizeSessionUser(raw) {
   return raw.replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 40);
 }
 
+/* The `user` a login may embed in its session cookie: sanitized, then
+ * accepted ONLY if it is one of the fixed SESSION_USERS names (the same
+ * three names as the leads assignedTo dropdown). Anything else — unknown
+ * name, free text, empty — returns '' and the cookie stays user-less, so
+ * updatedBy can never carry an arbitrary string. */
+function validateSessionUser(raw) {
+  const user = sanitizeSessionUser(raw);
+  return SESSION_USERS.indexOf(user) >= 0 ? user : '';
+}
+
 /* The user name embedded in the request's VERIFIED session cookie, '' when
  * the cookie is a legacy user-less token (or absent/invalid — callers behind
  * requireSession never see that case). This — never a client-supplied body
@@ -768,11 +779,12 @@ app.post('/api/verify-pin', (req, res) => {
      * accepted (200) but no usable cookie is issued, so the data routes stay
      * 503 — the fail-closed state, surfaced to the operator, not to an attacker. */
     if (SESSION_SECRET) {
-      // Optional `user` (who/when stamping): a Hebrew display name the login
-      // may attach; it rides INSIDE the signed token so it cannot be changed
-      // without breaking the HMAC. Absent/empty → the legacy user-less
-      // token, byte-for-byte as before. No login-form change in this PR.
-      const user = sanitizeSessionUser(req.body && req.body.user);
+      // Optional `user` (who/when stamping): a display name the login may
+      // attach — accepted ONLY from the fixed SESSION_USERS list (the name
+      // picker's buttons); anything else falls back to the legacy user-less
+      // token. It rides INSIDE the signed token so it cannot be changed
+      // without breaking the HMAC.
+      const user = validateSessionUser(req.body && req.body.user);
       const token = createSessionToken(SESSION_SECRET, undefined, undefined, user);
       res.set('Set-Cookie', buildSessionCookie(token, requestIsHttps(req)));
     }
@@ -977,6 +989,8 @@ module.exports = {
   // Who/when stamping (see test/patient-who-when.test.js).
   sanitizeSessionUser,
   sessionUserFromRequest,
+  // Name picker (see test/name-picker-conflicts.test.js).
+  validateSessionUser,
   // Meeting-report micro-app (see test/meeting-report-server.test.js).
   parseMeetingReportCookie,
   mrSessionAuthStatus,

@@ -36,6 +36,16 @@
     </div>
   </div>
 
+  <!-- USER PICKER (shown once after PIN when the session has no name yet) -->
+  <div id="user-screen" class="overlay hidden">
+    <div class="pin-box">
+      <h1>E-ZONE</h1>
+      <p>מי מתחבר/ת?</p>
+      <div id="user-options" class="user-options"></div>
+      <div id="user-error" class="error-msg hidden">בחירת השם נכשלה — נסו שוב</div>
+    </div>
+  </div>
+
   <!-- LOADING / ERROR / SUCCESS BANNERS -->
   <div id="error-banner" class="error-banner hidden"></div>
   <div id="loading-banner" class="loading-banner hidden">טוען נתונים...</div>
@@ -60,6 +70,7 @@
         <button class="tab" data-screen="retention">שימור לידים</button>
       </nav>
       <div class="user-mode">
+        <span id="whoami" class="whoami hidden"></span>
         <button id="logout" class="btn ghost-sm">יציאה</button>
       </div>
     </header>
