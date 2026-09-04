@@ -935,8 +935,8 @@ function retireAdmittedLeads() {
  * and restore the exit date from the audit record.
  *
  * Matching is the SAME identity key the restore flow uses
- * (matchActivePatientIndex: houseId + name + date) — the Patients sheet has
- * no id column, so this triple IS row identity. `date` in the key is what
+ * (matchActivePatientIndex: houseId + name + date) — the audit row's id is
+ * its own key, not the patient's, so the triple is the link. `date` in the key is what
  * keeps a genuine re-admission safe: a patient re-admitted after a discharge
  * gets a NEW entry date, so the old audit row no longer matches and the new
  * stay is never touched. restored==='TRUE' rows are skipped so both restore
@@ -3586,11 +3586,11 @@ async function doRestorePatientAsNewLead(p) {
  * handler that mirrors doRestorePatientAsNewLead's optimistic + rollback shape. */
 
 /* Find the patient row this audit row should restore, matched by
- * houseId + name + date — NOT by id. Patient ids are session-local (the
- * Patients sheet has no id column; normalizePatient mints a fresh cryptoId on
- * every load), so the audit row's stored id will not match any state.patients
- * id after a reload. The three-field key is the stable discriminator. Returns
- * -1 when no row matches. Pure + tested. */
+ * houseId + name + date — NOT by id. The audit row's id is the AUDIT record's
+ * own key (a fresh cryptoId per discharge — see dischargeAuditRow), never the
+ * patient's, and legacy audit rows predate the persisted patient id anyway, so
+ * the three-field key is the stable discriminator. Returns -1 when no row
+ * matches. Pure + tested. */
 function matchActivePatientIndex(patients, audit) {
   if (!Array.isArray(patients) || !audit) return -1;
   return patients.findIndex(p =>
@@ -4477,6 +4477,13 @@ function dischargeAuditRow(patient, { disposition, note, dischargeDate }, today)
   const exitDate = picked || today || todayISO();
   return {
     ...patient,
+    /* Patient identity foundation: the patient's `id` is now PERSISTED on the
+     * Patients sheet and survives reloads, so the audit row must carry its
+     * OWN fresh id — otherwise a second discharge after a restore would upsert
+     * over the first discharge's audit row (upsertRowById_) and erase that
+     * history. The audit ↔ patient link stays the houseId+name+date key the
+     * restore flows already use (matchActivePatientIndex). */
+    id:             cryptoId(),
     status:         'released',
     /* The status at the MOMENT of discharge — dischargePatient builds this row
      * BEFORE flipping p.status to 'released', so patient.status here is the
@@ -4662,9 +4669,13 @@ async function deletePatient(p) {
   state.patients = state.patients.filter(x => x.id !== p.id);
   renderAll();
   try {
+    /* Patient identity foundation: the persisted id is sent alongside the
+     * identity key. The backend deletes EXACTLY the row holding that id
+     * (one of several identical-key duplicates can now go on its own) and
+     * falls back to the key when the id isn't on the sheet (stale tab). */
     const res = await apiPost({
       action: 'deletePatientRow',
-      patient: { houseId: p.houseId, name: p.name, date: p.date },
+      patient: { id: p.id ? String(p.id) : '', houseId: p.houseId, name: p.name, date: p.date },
     });
     if (!res || res.ok !== true) {
       throw new Error((res && (res.message || res.error)) || 'delete_failed');
@@ -4795,9 +4806,11 @@ function showModal({ title, fields, submitLabel, onSubmit }) {
 */
 
 function patientKey(p) {
-  // Stable identifier for a patient across sessions. The sheet doesn't
-  // persist the per-session id; house + name + entry-date is effectively
-  // unique and won't drift under normal edits.
+  // Billing/payment identity for a patient across sessions: house + name +
+  // entry-date. Kept as the payment/override key even now that the Patients
+  // sheet persists a per-row `id` (patient identity foundation) — every
+  // existing payment and override row is keyed on this triple, so switching
+  // it would orphan them; a keyed migration is a separate, later change.
   return `${p.houseId}::${p.name || ''}::${p.date || ''}`;
 }
 
