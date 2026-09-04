@@ -4,7 +4,7 @@ const fs = require('fs');
 const https = require('https');
 const { URL } = require('url');
 const { checkPin } = require('./lib/pin');
-const { createSessionToken, verifySessionToken } = require('./lib/session');
+const { createSessionToken, verifySessionToken, readSessionUser } = require('./lib/session');
 
 const app = express();
 app.disable('etag');
@@ -422,6 +422,26 @@ function sessionAuthStatus(cookieHeader, secret) {
   return 'unauthorized';
 }
 
+/* Normalize the optional user name a login may attach to its session
+ * (who/when stamping): trim, strip control characters and angle brackets
+ * (defense-in-depth against a name ever being interpolated into HTML), cap
+ * at 40 characters. Hebrew names with quotes (ד"ר …) survive. '' (no
+ * name) is always allowed — the cookie then keeps the legacy user-less
+ * format and everything behaves exactly as before. */
+function sanitizeSessionUser(raw) {
+  if (typeof raw !== 'string') return '';
+  // eslint-disable-next-line no-control-regex
+  return raw.replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 40);
+}
+
+/* The user name embedded in the request's VERIFIED session cookie, '' when
+ * the cookie is a legacy user-less token (or absent/invalid — callers behind
+ * requireSession never see that case). This — never a client-supplied body
+ * field — is the only source of the `user` the sheets proxy forwards. */
+function sessionUserFromRequest(req) {
+  if (!SESSION_SECRET) return '';
+  return readSessionUser(parseSessionCookie(req.headers.cookie), SESSION_SECRET);
+}
 /* Express middleware guarding the data routes. Fail-closed: an unset
  * SESSION_SECRET yields 503 (never open). A missing/invalid cookie yields 401. */
 function requireSession(req, res, next) {
@@ -566,6 +586,11 @@ app.get('/api/sheets', requireSession, async (req, res) => {
  * querystring length limit. */
 app.post('/api/sheets', requireSession, async (req, res) => {
   const body = req.body || {};
+  // Who/when stamping: the `user` the Apps Script writes into updatedBy
+  // comes ONLY from the signed session cookie. ALWAYS overwritten — a
+  // client-supplied body.user is never trusted; '' (legacy user-less cookie)
+  // is forwarded as-is and stamps blank, which is allowed by contract.
+  body.user = sessionUserFromRequest(req);
   const summary = summarizeBody(body);
   console.log('[sheets POST] →', summary);
   try {
@@ -743,7 +768,12 @@ app.post('/api/verify-pin', (req, res) => {
      * accepted (200) but no usable cookie is issued, so the data routes stay
      * 503 — the fail-closed state, surfaced to the operator, not to an attacker. */
     if (SESSION_SECRET) {
-      const token = createSessionToken(SESSION_SECRET);
+      // Optional `user` (who/when stamping): a Hebrew display name the login
+      // may attach; it rides INSIDE the signed token so it cannot be changed
+      // without breaking the HMAC. Absent/empty → the legacy user-less
+      // token, byte-for-byte as before. No login-form change in this PR.
+      const user = sanitizeSessionUser(req.body && req.body.user);
+      const token = createSessionToken(SESSION_SECRET, undefined, undefined, user);
       res.set('Set-Cookie', buildSessionCookie(token, requestIsHttps(req)));
     }
     return res.status(200).json({ ok: true });
@@ -751,6 +781,14 @@ app.post('/api/verify-pin', (req, res) => {
 
   rec.count++;
   return res.status(401).json({ ok: false, error: 'invalid_pin' });
+});
+
+/* GET /api/me — the display name embedded in this session's signed cookie
+ * (who/when stamping). Session-gated like every data route; a legacy
+ * user-less cookie answers { user: '' } and everything keeps working. The
+ * frontend reads this in the follow-up PR (name picker) — no UI uses it yet. */
+app.get('/api/me', requireSession, (req, res) => {
+  res.status(200).json({ ok: true, user: sessionUserFromRequest(req) });
 });
 
 /* POST /api/logout — clear the session cookie (expire it immediately). Open
@@ -936,6 +974,9 @@ module.exports = {
   requireSession,
   buildSessionCookie,
   requestIsHttps,
+  // Who/when stamping (see test/patient-who-when.test.js).
+  sanitizeSessionUser,
+  sessionUserFromRequest,
   // Meeting-report micro-app (see test/meeting-report-server.test.js).
   parseMeetingReportCookie,
   mrSessionAuthStatus,

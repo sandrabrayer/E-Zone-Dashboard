@@ -196,36 +196,40 @@ const SARA = { houseId: 'ramot',  name: 'שרה לוי', date: '2026-02-01', pay
 
 /* ===== A. Schema ===== */
 
-test('PATIENT_COLUMNS keeps the legacy prefix byte-for-byte and gains `id` exactly once, LAST', () => {
+test('PATIENT_COLUMNS keeps the legacy prefix byte-for-byte; `id` then the who/when stamps appended LAST', () => {
   const { code } = loadCode();
   const cols = arr(code.PATIENT_COLUMNS);
   assert.deepStrictEqual(cols.slice(0, LEGACY_PATIENT_COLUMNS.length), LEGACY_PATIENT_COLUMNS);
-  assert.deepStrictEqual(cols.slice(LEGACY_PATIENT_COLUMNS.length), ['id']);
+  assert.deepStrictEqual(cols.slice(LEGACY_PATIENT_COLUMNS.length), ['id', 'updatedAt', 'updatedBy']);
   assert.strictEqual(cols.filter((c) => c === 'id').length, 1);
 });
 
-test('PATIENT_TOMBSTONE_COLUMNS keeps its legacy layout and appends `id` LAST (own literal list, not derived)', () => {
+test('PATIENT_TOMBSTONE_COLUMNS keeps its legacy layout; `id` + stamps appended LAST (own literal list, not derived)', () => {
   const { code } = loadCode();
   const cols = arr(code.PATIENT_TOMBSTONE_COLUMNS);
   assert.deepStrictEqual(cols.slice(0, LEGACY_TOMBSTONE_COLUMNS.length), LEGACY_TOMBSTONE_COLUMNS);
-  assert.deepStrictEqual(cols.slice(LEGACY_TOMBSTONE_COLUMNS.length), ['id']);
+  assert.deepStrictEqual(cols.slice(LEGACY_TOMBSTONE_COLUMNS.length), ['id', 'updatedAt', 'updatedBy']);
   assert.ok(/const PATIENT_TOMBSTONE_COLUMNS = \[\s*'houseId'/.test(GS_SRC), 'still its own literal list');
 });
 
-test('DISCHARGED_PATIENT_COLUMNS positional layout is byte-identical to before (Patients id excluded; leading id = audit key)', () => {
+test('DISCHARGED_PATIENT_COLUMNS keeps the legacy positional layout (Patients id excluded); stamps appended LAST', () => {
   const { code } = loadCode();
-  assert.deepStrictEqual(arr(code.DISCHARGED_PATIENT_COLUMNS), LEGACY_DISCHARGED_COLUMNS);
-  assert.strictEqual(arr(code.DISCHARGED_PATIENT_COLUMNS).filter((c) => c === 'id').length, 1, 'no duplicate id header');
+  const cols = arr(code.DISCHARGED_PATIENT_COLUMNS);
+  assert.deepStrictEqual(cols.slice(0, LEGACY_DISCHARGED_COLUMNS.length), LEGACY_DISCHARGED_COLUMNS,
+    'the pre-stamp prefix is byte-identical (now a FROZEN literal, no longer derived)');
+  assert.deepStrictEqual(cols.slice(LEGACY_DISCHARGED_COLUMNS.length), ['updatedAt', 'updatedBy']);
+  assert.strictEqual(cols.filter((c) => c === 'id').length, 1, 'no duplicate id header');
 });
 
-test('a legacy 10-column live Patients sheet gets the `id` header appended non-destructively', () => {
+test('a legacy 10-column live Patients sheet gets the id + stamp headers appended non-destructively', () => {
   const { code, sandbox } = loadCode();
   const sh = seedSheet(sandbox, code.PATIENTS_SHEET, LEGACY_PATIENT_COLUMNS, [DANA]);
   code.ensure(code.PATIENTS_SHEET, arr(code.PATIENT_COLUMNS));
   assert.deepStrictEqual(sh.grid[0], arr(code.PATIENT_COLUMNS), 'header extended');
   assert.deepStrictEqual(sh.grid[1].slice(0, 10), rowOf(LEGACY_PATIENT_COLUMNS, DANA), 'existing row untouched');
   const sets = sh.ops.filter((o) => o.op === 'set');
-  assert.deepStrictEqual(sets.map((o) => [o.r, o.c, o.nr, o.nc]), [[1, 11, 1, 1]], 'ONLY the missing header cell was written');
+  assert.deepStrictEqual(sets.map((o) => [o.r, o.c, o.nr, o.nc]), [[1, 11, 1, 3]],
+    'ONLY the three missing header cells were written, in one write');
 });
 
 /* ===== B. getData_ backfill ===== */
@@ -531,7 +535,7 @@ test('client: deletePatient sends the persisted id alongside the identity key (s
 
 test('healthcheck: a blank patient id is a warning by house + position (never a critical); present ids are quiet', () => {
   const hc = require('../scripts/healthcheck');
-  assert.deepStrictEqual(hc.PATIENT_COLUMNS, LEGACY_PATIENT_COLUMNS.concat(['id']));
+  assert.deepStrictEqual(hc.PATIENT_COLUMNS, LEGACY_PATIENT_COLUMNS.concat(['id', 'updatedAt', 'updatedBy']));
   const patient = {};
   for (const c of hc.PATIENT_COLUMNS) patient[c] = '';
   patient.houseId = 'ramot'; patient.date = '2026-08-02';
