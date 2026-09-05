@@ -5701,13 +5701,30 @@ function setupIntegrityTrigger() {
  *     id, so a stale id would leave the row invisible to its patient and a
  *     duplicate would be minted). amount / dueDate / status / amountPaid /
  *     balance / timestamp are never touched; nothing is re-stamped (Payments
- *     carries no updatedAt; `timestamp` is left as-is). A rewritten id that
- *     would COLLIDE with another row's id (the client already minted the
- *     canonical payment for that month) is SKIPPED untouched — a duplicate
- *     to resolve by hand, never silently merged.
- *   → exactly one canonical name but NO candidate at that entry date:
- *     SKIPPED (logged 'name matched at a different entry date') — could be
- *     an entry-date edit or a readmission; a machine must not pick.
+ *     carries no updatedAt; `timestamp` is left as-is).
+ *   → DUPLICATE (follow-up to PR #118): the rewritten id would COLLIDE with a
+ *     row already on the sheet (the client already minted the canonical
+ *     payment for that month) or with a same-key twin renamed in this run.
+ *     The corrupted row and its twin are compared on every PAYMENT_COLUMNS
+ *     field EXCEPT the identity columns (id / patientId / patientName) and
+ *     the stamp columns (ORPHAN_PAYMENT_DUP_IGNORE — `timestamp`, plus
+ *     updatedAt/updatedBy should Payments ever grow them): strings trimmed +
+ *     normalizeNameKey_, amounts numerically coerced, dueDate through
+ *     asISODate_, status through the client's alias table. ALL equal → the
+ *     corrupted row is a stray twin and is DELETED (deleteRow, bottom-up so
+ *     row numbers stay valid; the deleted values ride in the AuditLog
+ *     payload so the row is recoverable). ANY difference → SKIPPED with
+ *     reason 'duplicate row differs' and the differing fields + both values
+ *     in detail — never deleted, never merged.
+ *   → REKEY (follow-up to PR #118): exactly one canonical name but NO
+ *     candidate at the payment's entry date. When that name belongs to a
+ *     LIVE Patients row with exactly one distinct entry date (an entry-date
+ *     edit — the payment followed the old key), the payment is re-keyed to
+ *     the patient's CURRENT date: patientId / patientName / id rewritten
+ *     (single cells, same collision guard → duplicate rules above);
+ *     dueDate and every other column untouched. When the only match is a
+ *     DischargedPatients row or a tombstone (or live rows disagree on the
+ *     date — a readmission), SKIPPED: a machine must not pick.
  *   → zero or 2+ canonical names: one PatientsTombstones row per orphan key
  *     — house, the payment's name AS-IS, the payment's entry date, reason
  *     ORPHAN_PAYMENT_TOMBSTONE_REASON ('legacy_orphan_payment'),
@@ -5715,12 +5732,24 @@ function setupIntegrityTrigger() {
  *     ids and why (no candidate / the ambiguous candidates). Existing
  *     PATIENT_TOMBSTONE_COLUMNS, values mapped by name — no schema change.
  *     The checker then treats the key as recorded (any reason silences).
- * Nothing is ever deleted. One 'orphan_payments_reconciled' AuditLog event
- * per run that wrote anything. */
+ * Nothing but a byte-equivalent stray twin is ever deleted, and its values
+ * are audited first. One 'orphan_payments_reconciled' AuditLog event per run
+ * that wrote anything. */
 
 const ORPHAN_PAYMENT_TOMBSTONE_REASON = 'legacy_orphan_payment';
 const ORPHAN_PAYMENT_RECONCILE_FN     = 'reconcileOrphanPaymentsNow';
 const ORPHAN_PAYMENT_PREVIEW_FN       = 'previewOrphanPaymentsNow';
+/* Columns the duplicate check IGNORES: identity (rewritten by the rename
+ * itself) and stamps (who/when — not content). Everything else in
+ * PAYMENT_COLUMNS must agree before a stray twin may be deleted. */
+const ORPHAN_PAYMENT_DUP_IGNORE = ['id', 'patientId', 'patientName', 'timestamp', 'updatedAt', 'updatedBy'];
+/* Mirror of app.js PAYMENT_STATUS_ALIASES — 'שולם' and 'paid' are the same
+ * status for the duplicate comparison. */
+const ORPHAN_PAYMENT_STATUS_ALIASES = {
+  'שולם': 'paid', 'paid': 'paid',
+  'שולם חלקית': 'partial', 'partial': 'partial',
+  'לא שולם': 'unpaid', 'unpaid': 'unpaid',
+};
 
 /* ---- pure helpers (no GAS services — exercised directly by node --test) ---- */
 
@@ -5749,9 +5778,11 @@ function orphanPaymentNameRegex_(name) {
 /* Distinct canonical names (normalized) among same-house clean candidates
  * that the payment name resolves to: the exact normalized match when there
  * is one, else the wildcard matches when the name is corrupted. Returns
- * [{norm, raw, sameDate}] — raw is the sheet spelling to WRITE (the first
- * same-date candidate's, else the first seen), sameDate whether any
- * candidate with that name carries the payment's entry date. */
+ * [{norm, raw, sameDate, liveDates}] — raw is the sheet spelling to WRITE
+ * (the first same-date candidate's, else the first seen), sameDate whether
+ * any candidate with that name carries the payment's entry date, liveDates
+ * the distinct 'YYYY-MM-DD' entry dates of the LIVE Patients rows carrying
+ * that name (the rekey targets; discharged / tombstone rows never count). */
 function orphanPaymentMatches_(paymentName, paymentDateISO, houseCandidates) {
   const want = normalizeNameKey_(paymentName);
   const byNorm = {};
@@ -5759,10 +5790,15 @@ function orphanPaymentMatches_(paymentName, paymentDateISO, houseCandidates) {
   for (let i = 0; i < houseCandidates.length; i++) {
     const c = houseCandidates[i];
     const norm = c.norm;
-    if (!byNorm[norm]) { byNorm[norm] = { norm: norm, raw: c.raw, sameDate: false }; order.push(norm); }
-    if (c.date === paymentDateISO && !byNorm[norm].sameDate) {
-      byNorm[norm].sameDate = true;
-      byNorm[norm].raw = c.raw; // prefer the same-date row's spelling
+    if (!byNorm[norm]) { byNorm[norm] = { norm: norm, raw: c.raw, sameDate: false, liveDates: [], liveRawByDate: {} }; order.push(norm); }
+    const m = byNorm[norm];
+    if (c.date === paymentDateISO && !m.sameDate) {
+      m.sameDate = true;
+      m.raw = c.raw; // prefer the same-date row's spelling
+    }
+    if (c.live && c.date && m.liveDates.indexOf(c.date) < 0) {
+      m.liveDates.push(c.date);
+      m.liveRawByDate[c.date] = c.raw;
     }
   }
   if (byNorm[want]) return [byNorm[want]];
@@ -5775,25 +5811,58 @@ function orphanPaymentMatches_(paymentName, paymentDateISO, houseCandidates) {
   return out;
 }
 
+/* Comparable form of one Payments cell for the duplicate check. */
+function orphanPaymentFieldKey_(column, v) {
+  if (column === 'amount' || column === 'amountPaid' || column === 'balance') return Number(v) || 0;
+  if (column === 'dueDate') return asISODate_(v);
+  if (column === 'status') {
+    const raw = normalizeNameKey_(v);
+    return ORPHAN_PAYMENT_STATUS_ALIASES[raw] || ORPHAN_PAYMENT_STATUS_ALIASES[raw.toLowerCase()] || raw.toLowerCase();
+  }
+  return normalizeNameKey_(v);
+}
+
+/* Fields on which two Payments row objects DIFFER, ignoring identity and
+ * stamp columns (ORPHAN_PAYMENT_DUP_IGNORE). [] → byte-equivalent twins. */
+function orphanPaymentDiffFields_(a, b) {
+  const diffs = [];
+  for (let i = 0; i < PAYMENT_COLUMNS.length; i++) {
+    const col = PAYMENT_COLUMNS[i];
+    if (ORPHAN_PAYMENT_DUP_IGNORE.indexOf(col) >= 0) continue;
+    const av = orphanPaymentFieldKey_(col, a[col]);
+    const bv = orphanPaymentFieldKey_(col, b[col]);
+    if (av !== bv) diffs.push({ field: col, row: a[col] == null ? '' : a[col], twin: b[col] == null ? '' : b[col] });
+  }
+  return diffs;
+}
+
+
 /* Build the reconcile plan. Pure.
  *   paymentRows — [{rowNumber, obj}] Payments rows (corruptionReadRows_ shape)
- *   candidates  — [{houseId, name, date}] Patients ∪ DischargedPatients ∪
- *                 PatientsTombstones rows (date already 'YYYY-MM-DD')
+ *   candidates  — [{houseId, name, date, source?}] Patients ∪
+ *                 DischargedPatients ∪ PatientsTombstones rows (date already
+ *                 'YYYY-MM-DD'; source = sheet name, absent → live Patients)
  *   knownKeySet — {rawKey: true} over the same rows (patientKey_, trim-only)
- * Returns {scanned, orphanKeys, renames, tombstones, skipped}:
+ * Returns {scanned, orphanKeys, renames, rekeys, duplicates, tombstones, skipped}:
  *   renames    — [{rowNumber, key, newKey, oldName, newName, cells:[{column,from,to}]}]
+ *   rekeys     — same shape + oldDate, newDate (entry date changed)
+ *   duplicates — [{rowNumber, twinRowNumber, key, twinId, values}] rows to
+ *                DELETE (values = the row in PAYMENT_COLUMNS order, for the audit)
  *   tombstones — [{houseId, name, date, key, paymentIds, why}]
  *   skipped    — [{key, rowNumber?, reason, detail}] */
 function orphanPaymentsPlan_(paymentRows, candidates, knownKeySet) {
-  const plan = { scanned: 0, orphanKeys: 0, renames: [], tombstones: [], skipped: [] };
+  const plan = { scanned: 0, orphanKeys: 0, renames: [], rekeys: [], duplicates: [], tombstones: [], skipped: [] };
   const rows = paymentRows || [];
   plan.scanned = rows.length;
 
-  // Every id currently on the sheet — the rename's collision guard.
-  const idsOnSheet = {};
+  // Every id currently on the sheet → its first row — the rename's collision
+  // guard AND the duplicate check's twin lookup. A rename planned in this run
+  // registers its target id too, so a same-key twin with the same dueDate
+  // compares against its renamed sibling instead of getting the same id.
+  const rowById = {};
   for (let r = 0; r < rows.length; r++) {
     const idv = String(rows[r].obj.id == null ? '' : rows[r].obj.id).trim();
-    if (idv) idsOnSheet[idv] = (idsOnSheet[idv] || 0) + 1;
+    if (idv && !rowById[idv]) rowById[idv] = rows[r];
   }
 
   // Same-house clean candidate pools, keyed by trimmed houseId.
@@ -5804,7 +5873,8 @@ function orphanPaymentsPlan_(paymentRows, candidates, knownKeySet) {
     const raw = String(cand.name == null ? '' : cand.name).trim();
     if (!house || !raw || hasCorruption_(raw)) continue;
     if (!poolByHouse[house]) poolByHouse[house] = [];
-    poolByHouse[house].push({ norm: normalizeNameKey_(raw), raw: raw, date: asISODate_(cand.date) });
+    const live = cand.source === undefined || cand.source === null || cand.source === '' || cand.source === PATIENTS_SHEET;
+    poolByHouse[house].push({ norm: normalizeNameKey_(raw), raw: raw, date: asISODate_(cand.date), live: live });
   }
 
   // Group orphan payment rows by RAW key (the checker's rule, un-normalized).
@@ -5830,6 +5900,50 @@ function orphanPaymentsPlan_(paymentRows, candidates, knownKeySet) {
   }
   plan.orphanKeys = keyOrder.length;
 
+  // Plan the identity rewrite of every row of an orphan key to (newName,
+  // newDate). bucket = 'renames' | 'rekeys'. A target id already held by
+  // another row (on the sheet, or claimed earlier in this run) routes the row
+  // through the duplicate rules instead.
+  const planRewrite = function (key, g, newName, newDate, bucket) {
+    const newKey = patientKey_(g.houseId, newName, newDate);
+    for (let r = 0; r < g.rows.length; r++) {
+      const row = g.rows[r];
+      const obj = row.obj;
+      const cells = [];
+      const curPid = String(obj.patientId == null ? '' : obj.patientId);
+      if (curPid !== newKey) cells.push({ column: 'patientId', from: curPid, to: newKey });
+      const curName = String(obj.patientName == null ? '' : obj.patientName);
+      if (curName !== newName) cells.push({ column: 'patientName', from: curName, to: newName });
+      const curId = String(obj.id == null ? '' : obj.id);
+      const idParts = curId.split('::');
+      if (idParts.length === 5 && idParts[0] === 'pay') {
+        const newId = ['pay', g.houseId, newName, newDate, idParts[4]].join('::');
+        if (newId !== curId) {
+          const twin = rowById[newId];
+          if (twin) {
+            const diffs = orphanPaymentDiffFields_(obj, twin.obj);
+            if (diffs.length === 0) {
+              plan.duplicates.push({ rowNumber: row.rowNumber, twinRowNumber: twin.rowNumber, key: key, twinId: newId, values: objectToRow_(obj, PAYMENT_COLUMNS) });
+            } else {
+              plan.skipped.push({
+                key: key, rowNumber: row.rowNumber, reason: 'duplicate row differs',
+                detail: 'twin row ' + twin.rowNumber + ' (' + newId + '): ' +
+                  diffs.map(function (d) { return d.field + ' ' + JSON.stringify(d.row) + ' vs ' + JSON.stringify(d.twin); }).join('; '),
+              });
+            }
+            continue;
+          }
+          cells.push({ column: 'id', from: curId, to: newId });
+          rowById[newId] = row; // claim it: a same-key twin with the same dueDate compares against this row
+        }
+      }
+      if (cells.length === 0) continue; // nothing to change on this row
+      const entry = { rowNumber: row.rowNumber, key: key, newKey: newKey, oldName: g.name, newName: newName, cells: cells };
+      if (bucket === 'rekeys') { entry.oldDate = g.date; entry.newDate = newDate; }
+      plan[bucket].push(entry);
+    }
+  };
+
   for (let k = 0; k < keyOrder.length; k++) {
     const key = keyOrder[k];
     const g = byKey[key];
@@ -5838,36 +5952,25 @@ function orphanPaymentsPlan_(paymentRows, candidates, knownKeySet) {
 
     if (matches.length === 1) {
       const m = matches[0];
-      if (!m.sameDate) {
-        plan.skipped.push({ key: key, reason: 'name matched at a different entry date — review manually', detail: m.raw });
+      if (m.sameDate) {
+        planRewrite(key, g, m.raw, g.date, 'renames');
         continue;
       }
-      const newName = m.raw;
-      const newKey = patientKey_(g.houseId, newName, g.date);
-      for (let r = 0; r < g.rows.length; r++) {
-        const row = g.rows[r];
-        const obj = row.obj;
-        const cells = [];
-        const curPid = String(obj.patientId == null ? '' : obj.patientId);
-        if (curPid !== newKey) cells.push({ column: 'patientId', from: curPid, to: newKey });
-        const curName = String(obj.patientName == null ? '' : obj.patientName);
-        if (curName !== newName) cells.push({ column: 'patientName', from: curName, to: newName });
-        const curId = String(obj.id == null ? '' : obj.id);
-        const idParts = curId.split('::');
-        if (idParts.length === 5 && idParts[0] === 'pay') {
-          const newId = ['pay', g.houseId, newName, g.date, idParts[4]].join('::');
-          if (newId !== curId) {
-            if (idsOnSheet[newId]) {
-              plan.skipped.push({ key: key, rowNumber: row.rowNumber, reason: 'canonical payment id already exists — duplicate row, review manually', detail: newId });
-              continue;
-            }
-            cells.push({ column: 'id', from: curId, to: newId });
-            idsOnSheet[newId] = 1; // a same-key twin with the same dueDate must not get the same id
-          }
-        }
-        if (cells.length === 0) continue; // nothing to change on this row
-        plan.renames.push({ rowNumber: row.rowNumber, key: key, newKey: newKey, oldName: g.name, newName: newName, cells: cells });
+      if (m.liveDates.length === 1) {
+        // Entry-date edit: the LIVE patient carries the name at one other
+        // date — the payment follows it. Discharged / tombstone rows never
+        // supply a target date.
+        const newDate = m.liveDates[0];
+        planRewrite(key, g, m.liveRawByDate[newDate], newDate, 'rekeys');
+        continue;
       }
+      plan.skipped.push({
+        key: key,
+        reason: m.liveDates.length === 0
+          ? 'name matched at a different entry date — only a discharged / tombstone row, review manually'
+          : 'name matched at a different entry date — live rows disagree on the date (' + m.liveDates.join(', ') + '), review manually',
+        detail: m.raw,
+      });
       continue;
     }
 
@@ -5878,6 +5981,7 @@ function orphanPaymentsPlan_(paymentRows, candidates, knownKeySet) {
   }
   return plan;
 }
+
 
 /* ---- GAS-backed pieces ---- */
 
@@ -5941,6 +6045,13 @@ function runOrphanPaymentsReconcile_(dryRun) {
       return 'row ' + r.rowNumber + ': "' + r.oldName + '" → "' + r.newName + '" [' +
         r.cells.map(function (c) { return c.column; }).join(', ') + ']';
     });
+    const rekeyExamples = plan.rekeys.slice(0, 10).map(function (r) {
+      return 'row ' + r.rowNumber + ': ' + r.key + ' → ' + r.newKey + ' [' +
+        r.cells.map(function (c) { return c.column; }).join(', ') + ']';
+    });
+    const dupExamples = plan.duplicates.slice(0, 10).map(function (d) {
+      return 'row ' + d.rowNumber + (dryRun ? ' would be deleted' : ' deleted') + ' (stray twin of row ' + d.twinRowNumber + ', ' + d.twinId + ')';
+    });
     const tombExamples = plan.tombstones.slice(0, 10).map(function (t) {
       return t.key + ' (' + t.why + '; ' + t.paymentIds.length + ' row(s))';
     });
@@ -5949,17 +6060,24 @@ function runOrphanPaymentsReconcile_(dryRun) {
     });
 
     if (!dryRun) {
-      if (plan.renames.length) {
-        const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PAYMENTS_SHEET);
-        plan.renames.forEach(function (r) {
-          r.cells.forEach(function (c) {
-            const colIdx = PAYMENT_COLUMNS.indexOf(c.column);
-            if (colIdx < 0) return;
-            sh.getRange(r.rowNumber, colIdx + 1, 1, 1).setValue(c.to);
-          });
+      const sh = (plan.renames.length || plan.rekeys.length || plan.duplicates.length)
+        ? SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PAYMENTS_SHEET) : null;
+      // Single-cell identity rewrites first (row numbers are still the ones
+      // the plan was built on) …
+      plan.renames.concat(plan.rekeys).forEach(function (r) {
+        r.cells.forEach(function (c) {
+          const colIdx = PAYMENT_COLUMNS.indexOf(c.column);
+          if (colIdx < 0) return;
+          sh.getRange(r.rowNumber, colIdx + 1, 1, 1).setValue(c.to);
         });
-      }
+      });
       appendOrphanPaymentTombstones_(plan.tombstones);
+      // … and the stray-twin deletes LAST, bottom-up, so every row number
+      // above a deleted row stays valid while the deletes run.
+      plan.duplicates
+        .map(function (d) { return d.rowNumber; })
+        .sort(function (x, y) { return y - x; })
+        .forEach(function (rowNumber) { sh.deleteRow(rowNumber); });
     }
 
     const summary = {
@@ -5967,30 +6085,44 @@ function runOrphanPaymentsReconcile_(dryRun) {
       scanned: plan.scanned,
       orphanKeys: plan.orphanKeys,
       renamed: plan.renames.length,
+      rekeyed: plan.rekeys.length,
+      deleted: plan.duplicates.length,
       tombstoned: plan.tombstones.length,
       skipped: plan.skipped.length,
       renames: plan.renames,
+      rekeys: plan.rekeys,
+      duplicates: plan.duplicates,
       tombstones: plan.tombstones,
       skippedRows: plan.skipped,
     };
     Logger.log(tag + ': ' + plan.scanned + ' payment row(s) scanned, ' + plan.orphanKeys + ' orphan key(s): ' +
       plan.renames.length + (dryRun ? ' row(s) would be renamed' : ' row(s) renamed') + ', ' +
+      plan.rekeys.length + (dryRun ? ' row(s) would be re-keyed' : ' row(s) re-keyed') + ', ' +
+      plan.duplicates.length + (dryRun ? ' stray twin row(s) would be deleted' : ' stray twin row(s) deleted') + ', ' +
       plan.tombstones.length + (dryRun ? ' key(s) would be tombstoned' : ' key(s) tombstoned') + ' (reason ' +
       ORPHAN_PAYMENT_TOMBSTONE_REASON + '), ' + plan.skipped.length + ' skipped.' +
       (dryRun ? ' No writes performed.' : ''));
     if (renameExamples.length) Logger.log(tag + ' renames: ' + renameExamples.join('; '));
+    if (rekeyExamples.length)  Logger.log(tag + ' rekeys: ' + rekeyExamples.join('; '));
+    if (dupExamples.length)    Logger.log(tag + ' duplicates: ' + dupExamples.join('; '));
     if (tombExamples.length)   Logger.log(tag + ' tombstones: ' + tombExamples.join('; '));
     if (skipExamples.length)   Logger.log(tag + ' skipped: ' + skipExamples.join('; '));
 
-    if (!dryRun && (plan.renames.length || plan.tombstones.length)) {
+    if (!dryRun && (plan.renames.length || plan.rekeys.length || plan.duplicates.length || plan.tombstones.length)) {
       logAudit_('orphan_payments_reconciled', ORPHAN_PAYMENT_RECONCILE_FN, '', '', {
         scanned: plan.scanned,
         orphanKeys: plan.orphanKeys,
         renamed: plan.renames.length,
+        rekeyed: plan.rekeys.length,
+        deleted: plan.duplicates.length,
         tombstoned: plan.tombstones.length,
         skipped: plan.skipped.length,
         tombstoneReason: ORPHAN_PAYMENT_TOMBSTONE_REASON,
-        examples: { renames: renameExamples, tombstones: tombExamples, skipped: skipExamples },
+        // Recoverable copies of every deleted stray twin (PAYMENT_COLUMNS order)
+        // and the exact old → new key of every rekey.
+        deletedRows: plan.duplicates.map(function (d) { return { rowNumber: d.rowNumber, twinRowNumber: d.twinRowNumber, values: d.values }; }),
+        rekeys: plan.rekeys.map(function (r) { return { rowNumber: r.rowNumber, from: r.key, to: r.newKey }; }),
+        examples: { renames: renameExamples, rekeys: rekeyExamples, duplicates: dupExamples, tombstones: tombExamples, skipped: skipExamples },
         stampsRestamped: false,
       });
     }

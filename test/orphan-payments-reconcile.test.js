@@ -16,9 +16,18 @@
  *   - nightlyIntegrityJob: compares integrityKey_ (normalized names) on both
  *     sides, accepts DischargedPatients rows as known, and a
  *     'legacy_orphan_payment' tombstone silences the payment;
+ *   - follow-up buckets (CHANGELOG-orphan-payments-duplicates.md):
+ *     `duplicates` — a corrupted row whose canonical id already exists is a
+ *     stray twin: byte-equivalent on every non-identity / non-stamp field →
+ *     deleted bottom-up, values audited; any difference → skipped
+ *     'duplicate row differs'. `rekeys` — a name matched only at another
+ *     entry date on a LIVE Patients row → the three key cells follow the
+ *     patient's current date; discharged / tombstone-only matches stay
+ *     skipped; a colliding rekey target falls under the duplicate rules;
  *   - guards: neither entry point is dispatchable via handle_; the
- *     reconciler never deletes; PATIENT/PAYMENT/TOMBSTONE column contracts
- *     are unchanged.
+ *     reconciler deletes ONLY planned stray twins (deleteRow, last,
+ *     bottom-up — never clearContent / a whole-row rewrite);
+ *     PATIENT/PAYMENT/TOMBSTONE column contracts are unchanged.
  *
  * vm-sandbox on the REAL shipped Code.gs, per repo convention (no Jest).
  */
@@ -49,7 +58,7 @@ function fakeSheet(headerRow, dataRows) {
     hideSheet() { hidden = true; },
     isSheetHidden() { return hidden; },
     appendRow(row) { ops.push({ op: 'append', seq: ++opSeq }); grid.push(row.slice()); },
-    deleteRow() { ops.push({ op: 'deleteRow', seq: ++opSeq }); },
+    deleteRow(r) { ops.push({ op: 'deleteRow', seq: ++opSeq, r }); grid.splice(r - 1, 1); },
     getRange(r, c, nr, nc) {
       nr = nr || 1; nc = nc || 1;
       return {
@@ -134,6 +143,7 @@ function loadCode() {
     AUDIT_LOG_COLUMNS, AUDIT_LOG_SHEET,
     LEAD_COLUMNS,
     ORPHAN_PAYMENT_TOMBSTONE_REASON,
+    ORPHAN_PAYMENT_DUP_IGNORE,
     readSheet: (sh, cols) => readSheet_(sh, cols),
     normalizeNameKey: (s) => normalizeNameKey_(s),
     nameRegex: (s) => orphanPaymentNameRegex_(s),
@@ -319,32 +329,127 @@ test('plan: a clean name that matches nothing → tombstone (true legacy orphan)
   assert.equal(plan.tombstones[0].name, 'יוסי לוי');
 });
 
-test('plan: name matched only at a DIFFERENT entry date → skipped, no write, no tombstone', () => {
+test('plan: name matched only at a DIFFERENT entry date on a LIVE patient → REKEY of the three key cells; dueDate untouched', () => {
   const { code } = loadCode();
   const rows = planRows([pay('ramot', TALIA_BAD, '2025-12-01', '2026-01-01')]);
   const plan = code.plan(rows, CANDS, knownOf(code, CANDS));
   assert.equal(plan.renames.length, 0);
   assert.equal(plan.tombstones.length, 0);
-  assert.equal(plan.skipped.length, 1);
-  assert.match(plan.skipped[0].reason, /different entry date/);
-  assert.equal(plan.skipped[0].detail, TALIA);
+  assert.equal(plan.skipped.length, 0);
+  assert.equal(plan.rekeys.length, 1);
+  const r = plan.rekeys[0];
+  assert.equal(r.key, 'ramot::' + TALIA_BAD + '::2025-12-01');
+  assert.equal(r.newKey, 'ramot::' + TALIA + '::2026-03-01');
+  assert.equal(r.oldDate, '2025-12-01');
+  assert.equal(r.newDate, '2026-03-01');
+  assert.deepEqual(plain(r.cells.map((c) => c.column).sort()), ['id', 'patientId', 'patientName']);
+  assert.equal(r.cells.find((c) => c.column === 'patientId').to, 'ramot::' + TALIA + '::2026-03-01');
+  assert.equal(r.cells.find((c) => c.column === 'id').to, 'pay::ramot::' + TALIA + '::2026-03-01::2026-01-01', 'dueDate segment kept');
 });
 
-test('plan: rewritten id would collide with an existing row → that row is skipped untouched', () => {
+test('plan: rekey blocked when the only match is a DISCHARGED row or a TOMBSTONE — skipped, no write', () => {
+  const { code } = loadCode();
+  for (const source of [code.DISCHARGED_PATIENTS_SHEET, code.PATIENTS_TOMBSTONES_SHEET]) {
+    const cands = [{ houseId: 'ramot', name: TALIA, date: '2026-03-01', source }];
+    const rows = planRows([pay('ramot', TALIA_BAD, '2025-12-01', '2026-01-01')]);
+    const plan = code.plan(rows, cands, knownOf(code, cands));
+    assert.equal(plan.rekeys.length, 0, source);
+    assert.equal(plan.renames.length, 0, source);
+    assert.equal(plan.tombstones.length, 0, source);
+    assert.equal(plan.skipped.length, 1, source);
+    assert.match(plan.skipped[0].reason, /different entry date/);
+    assert.match(plan.skipped[0].reason, /discharged \/ tombstone/);
+    assert.equal(plan.skipped[0].detail, TALIA);
+  }
+  // a discharged row at the SAME date still renames (sameDate wins), as before
+  const cands2 = [{ houseId: 'ramot', name: TALIA, date: '2025-12-01', source: code.DISCHARGED_PATIENTS_SHEET }];
+  const plan2 = code.plan(planRows([pay('ramot', TALIA_BAD, '2025-12-01', '2026-01-01')]), cands2, knownOf(code, cands2));
+  assert.equal(plan2.renames.length, 1);
+});
+
+test('plan: live rows that DISAGREE on the entry date (readmission) → skipped, never guessed', () => {
+  const { code } = loadCode();
+  const cands = [
+    { houseId: 'ramot', name: TALIA, date: '2026-03-01' },
+    { houseId: 'ramot', name: TALIA, date: '2026-07-01' },
+  ];
+  const plan = code.plan(planRows([pay('ramot', TALIA_BAD, '2025-12-01', '2026-01-01')]), cands, knownOf(code, cands));
+  assert.equal(plan.rekeys.length, 0);
+  assert.equal(plan.skipped.length, 1);
+  assert.match(plan.skipped[0].reason, /disagree on the date/);
+});
+
+test('plan: rewritten id collides with a byte-equivalent twin → DELETE planned (values kept for the audit); twin untouched', () => {
   const { code } = loadCode();
   const rows = planRows([
-    pay('ramot', TALIA_BAD, '2026-03-01', '2026-04-01'),   // collides with the canonical row below
-    pay('ramot', TALIA, '2026-03-01', '2026-04-01'),       // already canonical (not an orphan)
+    pay('ramot', TALIA_BAD, '2026-03-01', '2026-04-01', { status: 'שולם', amountPaid: 5000, balance: 0, timestamp: '2026-02-02T00:00:00.000Z' }), // stray twin of row 3
+    pay('ramot', TALIA, '2026-03-01', '2026-04-01', { status: 'paid', amountPaid: '5000', balance: '0' }),  // canonical (not an orphan)
     pay('ramot', TALIA_BAD, '2026-03-01', '2026-05-01'),   // no collision → renamed
-    pay('ramot', TALIA_BAD, '2026-03-01', '2026-05-01'),   // corrupted TWIN of row 4 → would get the same new id → skipped
+    pay('ramot', TALIA_BAD, '2026-03-01', '2026-05-01'),   // corrupted TWIN of row 4 → same new id → duplicate of the renamed sibling
   ]);
   const plan = code.plan(rows, CANDS, knownOf(code, CANDS));
   assert.equal(plan.renames.length, 1);
   assert.equal(plan.renames[0].rowNumber, 4);
-  assert.equal(plan.skipped.length, 2);
-  assert.deepEqual(plain(plan.skipped.map((s) => s.rowNumber)), [2, 5]);
-  assert.ok(plan.skipped.every((s) => /duplicate/.test(s.reason)));
+  assert.equal(plan.skipped.length, 0);
   assert.equal(plan.tombstones.length, 0);
+  assert.equal(plan.duplicates.length, 2);
+  const d = plan.duplicates[0];
+  assert.equal(d.rowNumber, 2);
+  assert.equal(d.twinRowNumber, 3);
+  assert.equal(d.twinId, 'pay::ramot::' + TALIA + '::2026-03-01::2026-04-01');
+  assert.equal(d.values.length, arr(code.PAYMENT_COLUMNS).length, 'the whole row rides along in PAYMENT_COLUMNS order');
+  assert.equal(d.values[arr(code.PAYMENT_COLUMNS).indexOf('id')], 'pay::ramot::' + TALIA_BAD + '::2026-03-01::2026-04-01');
+  assert.equal(plan.duplicates[1].rowNumber, 5);
+  assert.equal(plan.duplicates[1].twinRowNumber, 4, 'compared against the sibling renamed in this run');
+  // the twin (row 3) is never in any write bucket
+  assert.ok(!plan.renames.concat(plan.rekeys, plan.duplicates).some((x) => x.rowNumber === 3));
+});
+
+test('plan: duplicate differing in amount → skipped "duplicate row differs", detail names the field and both values', () => {
+  const { code } = loadCode();
+  const rows = planRows([
+    pay('ramot', TALIA_BAD, '2026-03-01', '2026-04-01', { amount: 4500 }),
+    pay('ramot', TALIA, '2026-03-01', '2026-04-01', { amount: 5000 }),
+  ]);
+  const plan = code.plan(rows, CANDS, knownOf(code, CANDS));
+  assert.equal(plan.duplicates.length, 0);
+  assert.equal(plan.renames.length, 0);
+  assert.equal(plan.skipped.length, 1);
+  assert.equal(plan.skipped[0].rowNumber, 2);
+  assert.equal(plan.skipped[0].reason, 'duplicate row differs');
+  assert.match(plan.skipped[0].detail, /twin row 3/);
+  assert.match(plan.skipped[0].detail, /amount 4500 vs 5000/);
+  assert.ok(!/status|dueDate|balance/.test(plan.skipped[0].detail), 'only the differing field is named');
+});
+
+test('plan: duplicate check ignores identity + stamp columns, coerces amounts, aliases status, normalizes strings', () => {
+  const { code } = loadCode();
+  const twin = pay('ramot', TALIA, '2026-03-01', '2026-04-01', { amount: 5000, status: 'paid', amountPaid: 5000, balance: 0, timestamp: 'A' });
+  const same = pay('ramot', TALIA_BAD, '2026-03-01', '2026-04-01', { amount: '5000', status: ' שולם ', amountPaid: '5000.0', balance: '', timestamp: 'B', houseId: ' ramot ' });
+  const plan = code.plan(planRows([same, twin]), CANDS, knownOf(code, CANDS));
+  assert.equal(plan.duplicates.length, 1, 'timestamp / whitespace / numeric form / status alias differences are not differences');
+  const differs = pay('ramot', TALIA_BAD, '2026-03-01', '2026-04-01', { amount: 5000, status: 'unpaid', amountPaid: 5000, balance: 0 });
+  const plan2 = code.plan(planRows([differs, twin]), CANDS, knownOf(code, CANDS));
+  assert.equal(plan2.duplicates.length, 0);
+  assert.match(plan2.skipped[0].detail, /status/);
+});
+
+test('plan: a rekey whose target id already exists falls under the duplicate rules', () => {
+  const { code } = loadCode();
+  const rows = planRows([
+    pay('ramot', TALIA_BAD, '2025-12-01', '2026-01-01'),                 // old key → rekey target collides with row 3
+    pay('ramot', TALIA, '2026-03-01', '2026-01-01'),                     // canonical row the client already minted
+    pay('ramot', TALIA_BAD, '2025-12-01', '2026-02-01', { amount: 1 }),  // rekey target collides with row 5, but differs
+    pay('ramot', TALIA, '2026-03-01', '2026-02-01'),
+  ]);
+  const plan = code.plan(rows, CANDS, knownOf(code, CANDS));
+  assert.equal(plan.rekeys.length, 0);
+  assert.equal(plan.duplicates.length, 1);
+  assert.equal(plan.duplicates[0].rowNumber, 2);
+  assert.equal(plan.duplicates[0].twinRowNumber, 3);
+  assert.equal(plan.skipped.length, 1);
+  assert.equal(plan.skipped[0].rowNumber, 4);
+  assert.equal(plan.skipped[0].reason, 'duplicate row differs');
 });
 
 test('plan: known payments are untouched; blank patientId is healed from the id; unattributable rows skipped silently', () => {
@@ -499,13 +604,18 @@ test('reconcile: ambiguous / wrong-house / different-date cases through the real
     { houseId: 'ramot', name: 'טוביה שוחט', date: '2026-03-01', status: 'active' },
     { houseId: 'ramot', name: 'דנה כהן', date: '2026-06-01', status: 'active' },
   ]);
+  seedSheet(sandbox, code.DISCHARGED_PATIENTS_SHEET, code.DISCHARGED_PATIENT_COLUMNS, [
+    { id: 'd-1', houseId: 'ramot', name: 'רון לוי', date: '2026-02-01', status: 'released' },
+  ]);
   const payments = seedSheet(sandbox, code.PAYMENTS_SHEET, code.PAYMENT_COLUMNS, [
     pay('ramot', TALIA_BAD, '2026-03-01', '2026-04-01'),     // ambiguous → tombstone
     pay('pardes', 'דנה כהן', '2026-06-01', '2026-07-01'),     // wrong house → tombstone
-    pay('ramot', 'דנה כהן', '2025-06-01', '2025-07-01'),      // different date → skipped
+    pay('ramot', 'רון לוי', '2025-06-01', '2025-07-01'),      // different date, discharged only → skipped
   ]);
   const s = code.reconcile();
   assert.equal(s.renamed, 0);
+  assert.equal(s.rekeyed, 0);
+  assert.equal(s.deleted, 0);
   assert.equal(s.tombstoned, 2);
   assert.equal(s.skipped, 1);
   assert.equal(writeOps(payments).length, 0, 'no payment cell is written');
@@ -519,7 +629,104 @@ test('reconcile: ambiguous / wrong-house / different-date cases through the real
   const opsBefore = allWriteOps(sandbox);
   const s2 = code.reconcile();
   assert.equal(s2.tombstoned, 0);
-  assert.equal(s2.skipped, 1, 'the different-date row stays a logged skip');
+  assert.equal(s2.skipped, 1, 'the discharged-only different-date row stays a logged skip');
+  assert.equal(allWriteOps(sandbox), opsBefore);
+});
+
+test('reconcile: two stray twins in one run are deleted BOTTOM-UP, both gone, every other row intact; values audited; idempotent', () => {
+  const { code, sandbox } = loadCode();
+  const YC = arr(code.PAYMENT_COLUMNS);
+  seedSheet(sandbox, code.PATIENTS_SHEET, code.PATIENT_COLUMNS, [
+    { houseId: 'ramot', name: TALIA, date: '2026-03-01', status: 'active' },
+    { houseId: 'ramot', name: ORNA, date: '2026-05-01', status: 'active' },
+  ]);
+  const payments = seedSheet(sandbox, code.PAYMENTS_SHEET, YC, [
+    pay('ramot', TALIA_BAD, '2026-03-01', '2026-04-01'),                     // row 2: stray twin of row 3 → delete
+    pay('ramot', TALIA, '2026-03-01', '2026-04-01'),                         // row 3: canonical
+    pay('ramot', ORNA, '2026-05-01', '2026-06-01', { status: 'paid', amountPaid: 5000, balance: 0 }), // row 4: canonical
+    pay('ramot', TALIA_BAD, '2026-03-01', '2026-07-01'),                     // row 5: corrupted, no twin → rename
+    pay('ramot', ORNA_BAD, '2026-05-01', '2026-06-01', { status: 'שולם', amountPaid: '5000', balance: '0' }), // row 6: stray twin of row 4 → delete
+    pay('ramot', ORNA, '2026-05-01', '2026-07-01'),                          // row 7: canonical
+  ]);
+  const s = code.reconcile();
+  assert.equal(s.deleted, 2);
+  assert.equal(s.renamed, 1);
+  assert.equal(s.skipped, 0);
+  // order: the rename's single-cell writes first, then deletes, highest row first
+  const ops = writeOps(payments);
+  const dels = ops.filter((o) => o.op === 'deleteRow');
+  assert.deepEqual(plain(dels.map((o) => o.r)), [6, 2], 'bottom-up');
+  assert.ok(ops.every((o) => o.op === 'setcell' || o.op === 'deleteRow'), 'only single-cell writes and row deletes');
+  assert.ok(ops.findIndex((o) => o.op === 'deleteRow') > ops.filter((o) => o.op === 'setcell').length - 1, 'deletes run last');
+  const after = code.readSheet(payments, YC);
+  assert.equal(after.length, 4);
+  assert.deepEqual(plain(after.map((r) => r.id)), [
+    'pay::ramot::' + TALIA + '::2026-03-01::2026-04-01',
+    'pay::ramot::' + ORNA + '::2026-05-01::2026-06-01',
+    'pay::ramot::' + TALIA + '::2026-03-01::2026-07-01', // renamed row 5, still in place
+    'pay::ramot::' + ORNA + '::2026-05-01::2026-07-01',
+  ]);
+  assert.equal(after[1].status, 'paid', 'the surviving twin keeps its own values');
+  assert.equal(String(after[1].amountPaid), '5000');
+  // audit carries the recoverable copies
+  const audit = code.readSheet(sandbox.__sheets[code.AUDIT_LOG_SHEET], arr(code.AUDIT_LOG_COLUMNS));
+  assert.equal(audit.length, 1);
+  const details = JSON.parse(audit[0].details);
+  assert.equal(details.deleted, 2);
+  assert.equal(details.renamed, 1);
+  assert.equal(details.rekeyed, 0);
+  assert.deepEqual(details.deletedRows.map((d) => d.rowNumber), [2, 6]);
+  assert.equal(details.deletedRows[0].values[YC.indexOf('id')], 'pay::ramot::' + TALIA_BAD + '::2026-03-01::2026-04-01');
+  assert.equal(details.deletedRows[1].values[YC.indexOf('status')], 'שולם');
+  assert.ok(Array.isArray(details.examples.duplicates) && details.examples.duplicates.length === 2);
+  // idempotent
+  const opsBefore = allWriteOps(sandbox);
+  const s2 = code.reconcile();
+  assert.equal(s2.orphanKeys, 0);
+  assert.equal(s2.deleted, 0);
+  assert.equal(allWriteOps(sandbox), opsBefore, 'second run performs zero writes');
+  assert.equal(sandbox.__sheets[code.AUDIT_LOG_SHEET].grid.length, 2, 'no second audit row');
+});
+
+test('reconcile: rekey on the real sheets rewrites exactly the three key cells, leaves dueDate/amount/status alone; preview writes nothing; idempotent', () => {
+  const { code, sandbox } = loadCode();
+  const YC = arr(code.PAYMENT_COLUMNS);
+  seedSheet(sandbox, code.PATIENTS_SHEET, code.PATIENT_COLUMNS, [
+    { houseId: 'rehab', name: 'אביעד חביבאן', date: '2026-08-20', status: 'active' }, // entry date was edited
+  ]);
+  const payments = seedSheet(sandbox, code.PAYMENTS_SHEET, YC, [
+    pay('rehab', 'אביעד חביבאן', '2026-08-16', '2026-09-16', { status: 'paid', amountPaid: 5000, balance: 0 }), // keyed on the OLD date
+    pay('rehab', 'אביעד חביבאן', '2026-08-20', '2026-10-20'),                                                  // already on the new key
+  ]);
+  const before = payments.grid.map((r) => r.slice());
+  const p = code.preview();
+  assert.equal(p.rekeyed, 1);
+  assert.equal(allWriteOps(sandbox), 0, 'preview writes nothing');
+  assert.ok(sandbox.__logs.some((l) => /rekeys: row 2: rehab::אביעד חביבאן::2026-08-16 → rehab::אביעד חביבאן::2026-08-20/.test(l)), 'old → new key logged');
+
+  const s = code.reconcile();
+  assert.equal(s.rekeyed, 1);
+  assert.equal(s.renamed, 0);
+  assert.equal(s.deleted, 0);
+  assert.equal(s.skipped, 0);
+  const ops = writeOps(payments);
+  assert.equal(ops.length, 2, 'patientId + id (patientName already canonical)');
+  assert.ok(ops.every((o) => o.op === 'setcell' && o.r === 2));
+  assert.deepEqual(plain(ops.map((o) => YC[o.c - 1]).sort()), ['id', 'patientId']);
+  const after = code.readSheet(payments, YC);
+  assert.equal(after[0].patientId, 'rehab::אביעד חביבאן::2026-08-20');
+  assert.equal(after[0].id, 'pay::rehab::אביעד חביבאן::2026-08-20::2026-09-16');
+  assert.equal(after[0].dueDate, '2026-09-16', 'dueDate untouched');
+  assert.equal(after[0].status, 'paid');
+  assert.equal(String(after[0].amount), String(before[1][YC.indexOf('amount')]));
+  assert.deepEqual(plain(payments.grid[2]), plain(before[2]), 'the other row is byte-identical');
+  const details = JSON.parse(code.readSheet(sandbox.__sheets[code.AUDIT_LOG_SHEET], arr(code.AUDIT_LOG_COLUMNS))[0].details);
+  assert.equal(details.rekeyed, 1);
+  assert.deepEqual(details.rekeys, [{ rowNumber: 2, from: 'rehab::אביעד חביבאן::2026-08-16', to: 'rehab::אביעד חביבאן::2026-08-20' }]);
+  // idempotent
+  const opsBefore = allWriteOps(sandbox);
+  const s2 = code.reconcile();
+  assert.equal(s2.orphanKeys, 0);
   assert.equal(allWriteOps(sandbox), opsBefore);
 });
 
@@ -576,18 +783,26 @@ test('both entry points are public (Run dropdown) and NEVER dispatchable via han
   }
 });
 
-test('reconciler never deletes or clears anything, never rewrites a whole payment row', () => {
+test('reconciler deletes ONLY planned stray twins (deleteRow, last, bottom-up); never clears, never rewrites a whole payment row', () => {
   for (const name of ['runOrphanPaymentsReconcile_', 'appendOrphanPaymentTombstones_', 'orphanPaymentCandidates_']) {
     const src = gsFunction(name);
-    for (const forbidden of ['deleteRow', 'deleteRows', 'clearContent', 'clear(', 'deleteRowsById_', 'deletePatientRow_', 'replaceHousePatients_', 'upsertPayment_']) {
+    for (const forbidden of ['deleteRows(', 'clearContent', 'clear(', 'deleteRowsById_', 'deletePatientRow_', 'replaceHousePatients_', 'upsertPayment_']) {
       assert.ok(!src.includes(forbidden), name + ' must not contain ' + forbidden);
     }
+  }
+  for (const name of ['appendOrphanPaymentTombstones_', 'orphanPaymentCandidates_', 'orphanPaymentsPlan_']) {
+    assert.ok(!gsFunction(name).includes('deleteRow'), name + ' must not delete');
   }
   const run = gsFunction('runOrphanPaymentsReconcile_');
   assert.ok(run.includes('.setValue(c.to)'), 'payment cells are written one at a time');
   assert.ok(!run.includes('setValues('), 'no multi-cell payment write');
+  assert.equal((run.match(/deleteRow\(/g) || []).length, 1, 'exactly one delete call site');
+  assert.match(run, /plan\.duplicates[\s\S]*sort\(function \(x, y\) \{ return y - x; \}\)[\s\S]*deleteRow\(rowNumber\)/, 'deletes come from the duplicates bucket, sorted bottom-up');
+  assert.ok(run.indexOf('.setValue(c.to)') < run.indexOf('deleteRow('), 'identity rewrites before deletes');
+  assert.ok(run.indexOf('appendOrphanPaymentTombstones_(') < run.indexOf('deleteRow('), 'tombstones before deletes');
   assert.ok(run.includes('LockService.getScriptLock()'));
   assert.ok(run.includes("logAudit_('orphan_payments_reconciled'"));
+  assert.ok(run.includes('deletedRows:'), 'deleted values are audited');
 });
 
 test('column contracts unchanged: PATIENT_COLUMNS, PAYMENT_COLUMNS, PATIENT_TOMBSTONE_COLUMNS pinned; LEAD_COLUMNS not shrunk', () => {
@@ -605,4 +820,5 @@ test('column contracts unchanged: PATIENT_COLUMNS, PAYMENT_COLUMNS, PATIENT_TOMB
   const leadCols = arr(code.LEAD_COLUMNS);
   assert.ok(leadCols.length >= 26 && leadCols[0] === 'id' && leadCols.includes('name'), 'LEAD_COLUMNS untouched (' + leadCols.length + ' cols)');
   assert.equal(code.ORPHAN_PAYMENT_TOMBSTONE_REASON, 'legacy_orphan_payment');
+  assert.deepEqual(arr(code.ORPHAN_PAYMENT_DUP_IGNORE), ['id', 'patientId', 'patientName', 'timestamp', 'updatedAt', 'updatedBy']);
 });
