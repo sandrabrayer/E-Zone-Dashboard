@@ -63,7 +63,15 @@ function loadCode() {
     console: { log: noop, warn: noop, error: noop, info: noop },
     JSON, Math, Date, Number, String, Array, Object, RegExp,
     Logger: { log: (m) => logLines.push(String(m)) },
-    Utilities: { formatDate: (d, tz, fmt) => (fmt === 'HH:mm' ? '00:00' : '1899-12-30') },
+    // Timezone-aware stand-in for Utilities.formatDate (yyyy-MM-dd / HH:mm in
+    // `tz`): asISODate_ now re-localizes a tz-marked timestamp string, so a
+    // constant-returning stub would no longer exercise the real path.
+    Utilities: { formatDate: (d, tz, fmt) => {
+      const parts = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(d);
+      const get = (t) => parts.find((x) => x.type === t).value;
+      if (fmt === 'HH:mm') return get('hour').replace(/^24$/, '00') + ':' + get('minute');
+      return get('year') + '-' + get('month') + '-' + get('day');
+    } },
     __leadsSheet: null,
   };
   sandbox.SpreadsheetApp = {
@@ -208,8 +216,11 @@ test('upsertRowById_ normalizes date/time cells and text-formats them before set
   const existing = LC.map(() => ''); existing[idIdx] = 'L1';
   const sh = fakeSheet(LC, [existing]);
 
-  // visitDate as a full ISO string proves asISODate_ ran (it slices to the date);
-  // visitTime '08:18' passes through asISOTime_ unchanged.
+  // visitDate as a full UTC timestamp proves asISODate_ ran: 21:00Z is local
+  // midnight of the NEXT day in Asia/Jerusalem (UTC+3), so the bare date it
+  // yields is 2026-07-28 — the local day, never the sliced UTC one (the
+  // exitDate timezone-drift fix). visitTime '08:18' passes through asISOTime_
+  // unchanged.
   code.upsert(sh, code.LEAD_COLUMNS, { id: 'L1', visitDate: '2026-07-27T21:00:00.000Z', visitTime: '08:18' });
 
   const setOp = sh.ops.find((o) => o.op === 'set');
@@ -220,7 +231,7 @@ test('upsertRowById_ normalizes date/time cells and text-formats them before set
   // ...and BEFORE the setValues (order in the ops log).
   assert.ok(sh.ops.indexOf(fmtOps[0]) < sh.ops.indexOf(setOp), 'format precedes write');
   // Written values are normalized.
-  assert.strictEqual(setOp.vals[0][vDate], '2026-07-27', 'visitDate normalized to a bare date');
+  assert.strictEqual(setOp.vals[0][vDate], '2026-07-28', 'visitDate normalized to the LOCAL bare date');
   assert.strictEqual(setOp.vals[0][vTime], '08:18', 'visitTime passthrough');
 });
 
