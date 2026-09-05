@@ -67,8 +67,9 @@ function gsConstDecl(name) {
 }
 
 /* Eval the real helpers in one scope. integrityNormalizeKey_ goes through
- * patientKey_ → asISODate_ (whose Date branch touches GAS services but is
- * never hit for the string inputs these tests use). */
+ * integrityKey_ → normalizeNameKey_ + patientKey_ → asISODate_ (whose Date
+ * branch touches GAS services but is never hit for the string inputs these
+ * tests use). */
 const HELPERS = [
   gsConstDecl('INTEGRITY_PROP_KEY_CHUNK_COUNT'),
   gsConstDecl('INTEGRITY_PROP_KEY_CHUNK_PREFIX'),
@@ -83,6 +84,9 @@ const HELPERS = [
   gsConstDecl('INTEGRITY_SNAPSHOT_RE'),
   gsFunction('asISODate_'),
   gsFunction('patientKey_'),
+  gsFunction('normalizeNameKey_'),
+  gsFunction('integrityKey_'),
+  gsFunction('integritySplitKey_'),
   gsFunction('integrityNormalizeKey_'),
   gsFunction('integrityDiffMissingKeys_'),
   gsFunction('integrityParsePaymentPatientId_'),

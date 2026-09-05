@@ -5141,8 +5141,10 @@ function setupActivePatientsDigest() {
  *   2. Orphan sweep — every Payments row and BillingOverrides row keyed to a
  *      patient (patientId column = the same triple key, healed from the
  *      deterministic row id when blank, mirroring app.js normalizePayment /
- *      normalizeBillingOverride) must match a live Patients row or a
- *      tombstone; unmatched → alert.
+ *      normalizeBillingOverride) must match a live Patients row, a
+ *      DischargedPatients row or a tombstone (names compared through
+ *      normalizeNameKey_ on both sides); unmatched → alert. The orphan
+ *      list is worked down by reconcileOrphanPaymentsNow (below).
  *   3. Daily snapshot — values-only copies of Patients AND Leads (covers the
  *      lead-resurrection blind spot for cheap) into the SAME EZONE-Backups
  *      spreadsheet the outpatient job owns: stored id first, then DriveApp
@@ -5185,16 +5187,46 @@ const INTEGRITY_SNAPSHOT_RE = /^dashboard-(?:patients|leads)-(\d{4})-(\d{2})-(\d
 
 /* ---- pure helpers (no GAS services — exercised directly by node --test) ---- */
 
-/* Re-key a stored triple ('houseId::name::YYYY-MM-DD', from a payments /
- * overrides patientId cell or a persisted snapshot) through patientKey_ so
- * both sides of every comparison share trimming + date normalization. The
- * date is the LAST segment (a name containing '::' keeps working); anything
- * with fewer than 3 segments is returned trimmed — it can never match a
- * live key, which is exactly the alert we want for a malformed cell. */
-function integrityNormalizeKey_(key) {
+/* Shared NAME normalizer for the integrity checker and the orphan-payments
+ * reconciler (NOT for row identity — patientKey_ / the saveAll merge keep
+ * comparing the raw trimmed name, so a whitespace edit still behaves as it
+ * always did): NFC, every internal whitespace run collapsed to one space,
+ * trimmed. 'אורנה  אשכנזי' (double space) and 'אורנה אשכנזי' compare equal;
+ * a decomposed and a precomposed form of the same glyph compare equal. */
+function normalizeNameKey_(s) {
+  let str = String(s == null ? '' : s);
+  if (typeof str.normalize === 'function') str = str.normalize('NFC');
+  return str.replace(/\s+/g, ' ').trim();
+}
+
+/* The integrity checker's comparison key: patientKey_ over the NORMALIZED
+ * name (normalizeNameKey_). Every set the checker builds (live, discharged,
+ * tombstones) and every key it looks up (sentinel list, Payments /
+ * BillingOverrides patientId) goes through this, so whitespace drift alone
+ * can never read as an orphan or a lost row. */
+function integrityKey_(houseId, name, date) {
+  return patientKey_(houseId, normalizeNameKey_(name), date);
+}
+
+/* Split a stored triple ('houseId::name::YYYY-MM-DD') into its parts. The
+ * date is the LAST segment (a name containing '::' keeps working); fewer
+ * than 3 segments → null (malformed). */
+function integritySplitKey_(key) {
   const parts = String(key == null ? '' : key).split('::');
-  if (parts.length < 3) return String(key == null ? '' : key).trim();
-  return patientKey_(parts[0], parts.slice(1, parts.length - 1).join('::'), parts[parts.length - 1]);
+  if (parts.length < 3) return null;
+  return { houseId: parts[0], name: parts.slice(1, parts.length - 1).join('::'), date: parts[parts.length - 1] };
+}
+
+/* Re-key a stored triple ('houseId::name::YYYY-MM-DD', from a payments /
+ * overrides patientId cell or a persisted snapshot) through integrityKey_ so
+ * both sides of every comparison share trimming + name normalization + date
+ * normalization. Anything with fewer than 3 segments is returned trimmed —
+ * it can never match a live key, which is exactly the alert we want for a
+ * malformed cell. */
+function integrityNormalizeKey_(key) {
+  const parts = integritySplitKey_(key);
+  if (!parts) return String(key == null ? '' : key).trim();
+  return integrityKey_(parts.houseId, parts.name, parts.date);
 }
 
 /* Keys present in the previous run's list but absent from the current one.
@@ -5490,23 +5522,41 @@ function nightlyIntegrityJob() {
     if (overridesSh) overrideRows = readSheet_(overridesSh, BILLING_OVERRIDE_COLUMNS);
   } catch (err) { errors.push('קריאת BillingOverrides נכשלה: ' + err); }
 
-  // A tombstone with ANY reason ('user-delete' or 'saveAll-omitted-preserved')
-  // means the disappearance was RECORDED — only an unrecorded one alerts.
+  // A tombstone with ANY reason ('user-delete', 'saveAll-omitted-preserved',
+  // or the reconciler's 'legacy_orphan_payment') means the disappearance was
+  // RECORDED — only an unrecorded one alerts. Keys are integrityKey_ (name
+  // normalized) on EVERY side below, so whitespace drift never alerts.
   const tombstoneKeySet = {};
   try {
     const tombSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PATIENTS_TOMBSTONES_SHEET);
     const tombs = tombSh ? readSheet_(tombSh, PATIENT_TOMBSTONE_COLUMNS) : [];
     for (let t = 0; t < tombs.length; t++) {
-      const tk = patientKey_(tombs[t].houseId, tombs[t].name, tombs[t].date);
+      const tk = integrityKey_(tombs[t].houseId, tombs[t].name, tombs[t].date);
       if (tk) tombstoneKeySet[tk] = true;
     }
   } catch (err) { errors.push('קריאת PatientsTombstones נכשלה: ' + err); }
 
   const currentKeys = [], liveKeySet = {};
   for (let c = 0; c < patientRows.length; c++) {
-    const key = patientKey_(patientRows[c].houseId, patientRows[c].name, patientRows[c].date);
+    const key = integrityKey_(patientRows[c].houseId, patientRows[c].name, patientRows[c].date);
     if (key && key !== '::::') { currentKeys.push(key); liveKeySet[key] = true; }
   }
+
+  // DischargedPatients rows are KNOWN patients for the orphan sweep (check 2)
+  // — a payment keyed to a discharged patient is history, not an orphan.
+  // Deliberately NOT part of the sentinel (check 1): discharge is a status
+  // flip that keeps the Patients row, so a live row vanishing is still a
+  // loss even when a discharge audit row exists for it.
+  const knownKeySet = {};
+  for (const lk in liveKeySet) knownKeySet[lk] = true;
+  try {
+    const dischargedSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(DISCHARGED_PATIENTS_SHEET);
+    const discharged = dischargedSh ? readSheet_(dischargedSh, DISCHARGED_PATIENT_COLUMNS) : [];
+    for (let d = 0; d < discharged.length; d++) {
+      const dk = integrityKey_(discharged[d].houseId, discharged[d].name, discharged[d].date);
+      if (dk && dk !== '::::') knownKeySet[dk] = true;
+    }
+  } catch (err) { errors.push('קריאת DischargedPatients נכשלה: ' + err); }
 
   // ---- CHECK 1: patient-roster sentinel (ALWAYS before the check-3 snapshot
   //      overwrite — yesterday's backup must still hold the missing rows) ----
@@ -5525,10 +5575,10 @@ function nightlyIntegrityJob() {
   // ---- CHECK 2: orphan sweep (Payments + BillingOverrides) ----
   let orphanPayments = [], orphanOverrides = [];
   try {
-    orphanPayments = integrityOrphanKeys_(paymentRows, integrityParsePaymentPatientId_, liveKeySet, tombstoneKeySet);
+    orphanPayments = integrityOrphanKeys_(paymentRows, integrityParsePaymentPatientId_, knownKeySet, tombstoneKeySet);
   } catch (err) { errors.push('בדיקת תשלומים יתומים נכשלה: ' + err); }
   try {
-    orphanOverrides = integrityOrphanKeys_(overrideRows, integrityParseOverridePatientId_, liveKeySet, tombstoneKeySet);
+    orphanOverrides = integrityOrphanKeys_(overrideRows, integrityParseOverridePatientId_, knownKeySet, tombstoneKeySet);
   } catch (err) { errors.push('בדיקת עקיפות חיוב יתומות נכשלה: ' + err); }
 
   // ---- CHECK 3: daily snapshot + retention (AFTER check 1) ----
@@ -5597,4 +5647,367 @@ function setupIntegrityTrigger() {
     ScriptApp.newTrigger('nightlyIntegrityJob').timeBased().everyDays(1).atHour(2).create();
     return { ok: true, installed: 'nightlyIntegrityJob @ 02:00' };
   }
+}
+
+/* ===== Orphan-payments reconciler (Run dropdown only) =======================
+ *
+ * Works down nightlyIntegrityJob's "Payments rows with no live Patients row
+ * and no PatientsTombstones row" list. The live list is dominated by three
+ * causes, none of which is a real data loss:
+ *   1. the payment's patientId / id / patientName still carry a U+FFFD
+ *      spelling (the name-repair pipeline, PRs #105–#108, rewrote Patients
+ *      but Payments had no row identity to relocate by — its rows were
+ *      classified 'manual' and never touched);
+ *   2. whitespace drift (a double space inside the name) — the checker used
+ *      to compare exact strings;
+ *   3. true legacy orphans — patients deleted / collapsed before the
+ *      PatientsTombstones sheet existed.
+ *
+ * Two PUBLIC entry points (Run dropdown), unreachable over HTTP — handle_'s
+ * fixed action allow-list never names them (guard-tested, same non-exposure
+ * argument as scanCorruptedRowsNow / repairPatientExitDatesNow):
+ *   previewOrphanPaymentsNow   — ZERO writes; Logger.logs the exact plan.
+ *   reconcileOrphanPaymentsNow — the same plan, executed under the script
+ *                                lock. Idempotent: a second run plans and
+ *                                writes NOTHING (no cell, no tombstone, no
+ *                                AuditLog row).
+ *
+ * Detection = the checker's rule on RAW keys: a payment's patientId triple
+ * (healed from the deterministic 'pay::…' id when blank, exactly as
+ * integrityOrphanKeys_ does) that matches no Patients, DischargedPatients or
+ * PatientsTombstones key. Raw (patientKey_, trim-only) rather than the
+ * checker's normalized key ON PURPOSE: the hardened checker already tolerates
+ * whitespace drift, but the drifted cells stay wrong on the sheet and the
+ * client (app.js patientKey / paymentId, exact strings) still cannot match
+ * them to their patient — the reconciler fixes the cells.
+ *
+ * Per orphan key (house::name::date), candidates = Patients ∪
+ * DischargedPatients ∪ PatientsTombstones rows of the SAME house whose name
+ * is clean (no U+FFFD — a corrupted candidate can never be canonical, and a
+ * 'legacy_orphan_payment' tombstone carrying an as-is corrupted name must not
+ * pollute the pool). Names compare through normalizeNameKey_:
+ *   - exact normalized match (whitespace-only drift), else
+ *   - the U+FFFD wildcard: orphanPaymentNameRegex_ — corruptionWildcardRegex_'s
+ *     run rule (a run of replacement characters stands for 1+ original
+ *     characters, ordered, anchored), tightened so a run of N stands for at
+ *     most N characters (each lost byte produced ONE U+FFFD, and a character
+ *     is at least one byte — so a run can never stand for MORE characters
+ *     than its length).
+ *   → exactly ONE distinct canonical name, with a candidate at the payment's
+ *     entry date: RENAME — single-cell writes of patientId (the new triple),
+ *     patientName (the canonical name) and, when the deterministic id parses
+ *     and embeds the old name, id ('pay::house::canonical::date::dueDate' —
+ *     the client's upsert key, paymentForPatientOnDate looks payments up BY
+ *     id, so a stale id would leave the row invisible to its patient and a
+ *     duplicate would be minted). amount / dueDate / status / amountPaid /
+ *     balance / timestamp are never touched; nothing is re-stamped (Payments
+ *     carries no updatedAt; `timestamp` is left as-is). A rewritten id that
+ *     would COLLIDE with another row's id (the client already minted the
+ *     canonical payment for that month) is SKIPPED untouched — a duplicate
+ *     to resolve by hand, never silently merged.
+ *   → exactly one canonical name but NO candidate at that entry date:
+ *     SKIPPED (logged 'name matched at a different entry date') — could be
+ *     an entry-date edit or a readmission; a machine must not pick.
+ *   → zero or 2+ canonical names: one PatientsTombstones row per orphan key
+ *     — house, the payment's name AS-IS, the payment's entry date, reason
+ *     ORPHAN_PAYMENT_TOMBSTONE_REASON ('legacy_orphan_payment'),
+ *     savedByAction 'reconcileOrphanPaymentsNow', notes naming the payment
+ *     ids and why (no candidate / the ambiguous candidates). Existing
+ *     PATIENT_TOMBSTONE_COLUMNS, values mapped by name — no schema change.
+ *     The checker then treats the key as recorded (any reason silences).
+ * Nothing is ever deleted. One 'orphan_payments_reconciled' AuditLog event
+ * per run that wrote anything. */
+
+const ORPHAN_PAYMENT_TOMBSTONE_REASON = 'legacy_orphan_payment';
+const ORPHAN_PAYMENT_RECONCILE_FN     = 'reconcileOrphanPaymentsNow';
+const ORPHAN_PAYMENT_PREVIEW_FN       = 'previewOrphanPaymentsNow';
+
+/* ---- pure helpers (no GAS services — exercised directly by node --test) ---- */
+
+/* Anchored regex from a (possibly corrupted) payment name, applied to
+ * NORMALIZED names on both sides: every clean character is escaped and
+ * matched literally; a run of N U+FFFD stands for 1..N arbitrary
+ * characters. A clean name yields an exact-match regex. */
+function orphanPaymentNameRegex_(name) {
+  const n = normalizeNameKey_(name);
+  let src = '^';
+  let run = 0;
+  const flush = function () {
+    if (run > 0) src += '[\\s\\S]{1,' + run + '}';
+    run = 0;
+  };
+  for (let i = 0; i < n.length; i++) {
+    const ch = n.charAt(i);
+    if (ch === CORRUPTION_MARK) { run++; continue; }
+    flush();
+    src += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  flush();
+  return new RegExp(src + '$');
+}
+
+/* Distinct canonical names (normalized) among same-house clean candidates
+ * that the payment name resolves to: the exact normalized match when there
+ * is one, else the wildcard matches when the name is corrupted. Returns
+ * [{norm, raw, sameDate}] — raw is the sheet spelling to WRITE (the first
+ * same-date candidate's, else the first seen), sameDate whether any
+ * candidate with that name carries the payment's entry date. */
+function orphanPaymentMatches_(paymentName, paymentDateISO, houseCandidates) {
+  const want = normalizeNameKey_(paymentName);
+  const byNorm = {};
+  const order = [];
+  for (let i = 0; i < houseCandidates.length; i++) {
+    const c = houseCandidates[i];
+    const norm = c.norm;
+    if (!byNorm[norm]) { byNorm[norm] = { norm: norm, raw: c.raw, sameDate: false }; order.push(norm); }
+    if (c.date === paymentDateISO && !byNorm[norm].sameDate) {
+      byNorm[norm].sameDate = true;
+      byNorm[norm].raw = c.raw; // prefer the same-date row's spelling
+    }
+  }
+  if (byNorm[want]) return [byNorm[want]];
+  if (!hasCorruption_(want)) return [];
+  const re = orphanPaymentNameRegex_(want);
+  const out = [];
+  for (let j = 0; j < order.length; j++) {
+    if (re.test(order[j])) out.push(byNorm[order[j]]);
+  }
+  return out;
+}
+
+/* Build the reconcile plan. Pure.
+ *   paymentRows — [{rowNumber, obj}] Payments rows (corruptionReadRows_ shape)
+ *   candidates  — [{houseId, name, date}] Patients ∪ DischargedPatients ∪
+ *                 PatientsTombstones rows (date already 'YYYY-MM-DD')
+ *   knownKeySet — {rawKey: true} over the same rows (patientKey_, trim-only)
+ * Returns {scanned, orphanKeys, renames, tombstones, skipped}:
+ *   renames    — [{rowNumber, key, newKey, oldName, newName, cells:[{column,from,to}]}]
+ *   tombstones — [{houseId, name, date, key, paymentIds, why}]
+ *   skipped    — [{key, rowNumber?, reason, detail}] */
+function orphanPaymentsPlan_(paymentRows, candidates, knownKeySet) {
+  const plan = { scanned: 0, orphanKeys: 0, renames: [], tombstones: [], skipped: [] };
+  const rows = paymentRows || [];
+  plan.scanned = rows.length;
+
+  // Every id currently on the sheet — the rename's collision guard.
+  const idsOnSheet = {};
+  for (let r = 0; r < rows.length; r++) {
+    const idv = String(rows[r].obj.id == null ? '' : rows[r].obj.id).trim();
+    if (idv) idsOnSheet[idv] = (idsOnSheet[idv] || 0) + 1;
+  }
+
+  // Same-house clean candidate pools, keyed by trimmed houseId.
+  const poolByHouse = {};
+  for (let c = 0; c < (candidates || []).length; c++) {
+    const cand = candidates[c];
+    const house = String(cand.houseId == null ? '' : cand.houseId).trim();
+    const raw = String(cand.name == null ? '' : cand.name).trim();
+    if (!house || !raw || hasCorruption_(raw)) continue;
+    if (!poolByHouse[house]) poolByHouse[house] = [];
+    poolByHouse[house].push({ norm: normalizeNameKey_(raw), raw: raw, date: asISODate_(cand.date) });
+  }
+
+  // Group orphan payment rows by RAW key (the checker's rule, un-normalized).
+  const byKey = {};
+  const keyOrder = [];
+  for (let i = 0; i < rows.length; i++) {
+    const obj = rows[i].obj || {};
+    let pid = obj.patientId == null ? '' : String(obj.patientId).trim();
+    if (!pid) pid = integrityParsePaymentPatientId_(obj.id);
+    if (!pid) continue; // nothing to attribute — the checker skips it too
+    const parts = integritySplitKey_(pid);
+    if (!parts) {
+      plan.skipped.push({ key: pid, rowNumber: rows[i].rowNumber, reason: 'malformed patientId', detail: pid });
+      continue;
+    }
+    const key = patientKey_(parts.houseId, parts.name, parts.date);
+    if (knownKeySet[key]) continue; // not an orphan
+    if (!byKey[key]) {
+      byKey[key] = { houseId: String(parts.houseId).trim(), name: String(parts.name).trim(), date: asISODate_(parts.date), rows: [] };
+      keyOrder.push(key);
+    }
+    byKey[key].rows.push(rows[i]);
+  }
+  plan.orphanKeys = keyOrder.length;
+
+  for (let k = 0; k < keyOrder.length; k++) {
+    const key = keyOrder[k];
+    const g = byKey[key];
+    const paymentIds = g.rows.map(function (r) { return String(r.obj.id == null ? '' : r.obj.id); });
+    const matches = orphanPaymentMatches_(g.name, g.date, poolByHouse[g.houseId] || []);
+
+    if (matches.length === 1) {
+      const m = matches[0];
+      if (!m.sameDate) {
+        plan.skipped.push({ key: key, reason: 'name matched at a different entry date — review manually', detail: m.raw });
+        continue;
+      }
+      const newName = m.raw;
+      const newKey = patientKey_(g.houseId, newName, g.date);
+      for (let r = 0; r < g.rows.length; r++) {
+        const row = g.rows[r];
+        const obj = row.obj;
+        const cells = [];
+        const curPid = String(obj.patientId == null ? '' : obj.patientId);
+        if (curPid !== newKey) cells.push({ column: 'patientId', from: curPid, to: newKey });
+        const curName = String(obj.patientName == null ? '' : obj.patientName);
+        if (curName !== newName) cells.push({ column: 'patientName', from: curName, to: newName });
+        const curId = String(obj.id == null ? '' : obj.id);
+        const idParts = curId.split('::');
+        if (idParts.length === 5 && idParts[0] === 'pay') {
+          const newId = ['pay', g.houseId, newName, g.date, idParts[4]].join('::');
+          if (newId !== curId) {
+            if (idsOnSheet[newId]) {
+              plan.skipped.push({ key: key, rowNumber: row.rowNumber, reason: 'canonical payment id already exists — duplicate row, review manually', detail: newId });
+              continue;
+            }
+            cells.push({ column: 'id', from: curId, to: newId });
+            idsOnSheet[newId] = 1; // a same-key twin with the same dueDate must not get the same id
+          }
+        }
+        if (cells.length === 0) continue; // nothing to change on this row
+        plan.renames.push({ rowNumber: row.rowNumber, key: key, newKey: newKey, oldName: g.name, newName: newName, cells: cells });
+      }
+      continue;
+    }
+
+    const why = matches.length === 0
+      ? 'no candidate'
+      : 'ambiguous: ' + matches.map(function (m) { return m.raw; }).join(' | ');
+    plan.tombstones.push({ houseId: g.houseId, name: g.name, date: g.date, key: key, paymentIds: paymentIds, why: why });
+  }
+  return plan;
+}
+
+/* ---- GAS-backed pieces ---- */
+
+/* Candidate rows + the raw known-key set from Patients ∪ DischargedPatients ∪
+ * PatientsTombstones. getSheetByName only — a missing sheet contributes
+ * nothing and is never created here. */
+function orphanPaymentCandidates_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const candidates = [];
+  const knownKeySet = {};
+  const sources = [
+    { sheet: PATIENTS_SHEET,            columns: PATIENT_COLUMNS },
+    { sheet: DISCHARGED_PATIENTS_SHEET, columns: DISCHARGED_PATIENT_COLUMNS },
+    { sheet: PATIENTS_TOMBSTONES_SHEET, columns: PATIENT_TOMBSTONE_COLUMNS },
+  ];
+  sources.forEach(function (src) {
+    const sh = ss.getSheetByName(src.sheet);
+    if (!sh) return;
+    const rows = readSheet_(sh, src.columns);
+    for (let i = 0; i < rows.length; i++) {
+      const date = asISODate_(rows[i].date);
+      candidates.push({ houseId: rows[i].houseId, name: rows[i].name, date: date, source: src.sheet });
+      const key = patientKey_(rows[i].houseId, rows[i].name, date);
+      if (key && key !== '::::') knownKeySet[key] = true;
+    }
+  });
+  return { candidates: candidates, knownKeySet: knownKeySet };
+}
+
+/* Append the plan's tombstone rows to PatientsTombstones (existing columns,
+ * mapped by name via objectToRow_; the sheet is ensured so its text-forced
+ * date/droppedAt columns are in place before the values land). */
+function appendOrphanPaymentTombstones_(entries) {
+  if (!entries || entries.length === 0) return;
+  const sh = getOrCreateSheet_(PATIENTS_TOMBSTONES_SHEET, PATIENT_TOMBSTONE_COLUMNS);
+  const nowIso = new Date().toISOString();
+  const out = entries.map(function (e) {
+    return objectToRow_({
+      houseId:       e.houseId,
+      name:          e.name,
+      date:          e.date,
+      notes:         'orphan payment (' + e.why + '); ' + e.paymentIds.length + ' payment row(s): ' + e.paymentIds.join(', '),
+      droppedAt:     nowIso,
+      reason:        ORPHAN_PAYMENT_TOMBSTONE_REASON,
+      savedByAction: ORPHAN_PAYMENT_RECONCILE_FN,
+    }, PATIENT_TOMBSTONE_COLUMNS);
+  });
+  sh.getRange(sh.getLastRow() + 1, 1, out.length, PATIENT_TOMBSTONE_COLUMNS.length).setValues(out);
+}
+
+function runOrphanPaymentsReconcile_(dryRun) {
+  const tag = dryRun ? ORPHAN_PAYMENT_PREVIEW_FN : ORPHAN_PAYMENT_RECONCILE_FN;
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(30000) === false) throw new Error(tag + ': could not acquire the script lock — try again.');
+  try {
+    const paymentRows = corruptionReadRows_({ sheet: PAYMENTS_SHEET, columns: PAYMENT_COLUMNS }) || [];
+    const cand = orphanPaymentCandidates_();
+    const plan = orphanPaymentsPlan_(paymentRows, cand.candidates, cand.knownKeySet);
+
+    const renameExamples = plan.renames.slice(0, 10).map(function (r) {
+      return 'row ' + r.rowNumber + ': "' + r.oldName + '" → "' + r.newName + '" [' +
+        r.cells.map(function (c) { return c.column; }).join(', ') + ']';
+    });
+    const tombExamples = plan.tombstones.slice(0, 10).map(function (t) {
+      return t.key + ' (' + t.why + '; ' + t.paymentIds.length + ' row(s))';
+    });
+    const skipExamples = plan.skipped.slice(0, 10).map(function (s) {
+      return (s.rowNumber ? 'row ' + s.rowNumber + ' ' : '') + s.key + ': ' + s.reason + (s.detail ? ' (' + s.detail + ')' : '');
+    });
+
+    if (!dryRun) {
+      if (plan.renames.length) {
+        const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PAYMENTS_SHEET);
+        plan.renames.forEach(function (r) {
+          r.cells.forEach(function (c) {
+            const colIdx = PAYMENT_COLUMNS.indexOf(c.column);
+            if (colIdx < 0) return;
+            sh.getRange(r.rowNumber, colIdx + 1, 1, 1).setValue(c.to);
+          });
+        });
+      }
+      appendOrphanPaymentTombstones_(plan.tombstones);
+    }
+
+    const summary = {
+      dryRun: !!dryRun,
+      scanned: plan.scanned,
+      orphanKeys: plan.orphanKeys,
+      renamed: plan.renames.length,
+      tombstoned: plan.tombstones.length,
+      skipped: plan.skipped.length,
+      renames: plan.renames,
+      tombstones: plan.tombstones,
+      skippedRows: plan.skipped,
+    };
+    Logger.log(tag + ': ' + plan.scanned + ' payment row(s) scanned, ' + plan.orphanKeys + ' orphan key(s): ' +
+      plan.renames.length + (dryRun ? ' row(s) would be renamed' : ' row(s) renamed') + ', ' +
+      plan.tombstones.length + (dryRun ? ' key(s) would be tombstoned' : ' key(s) tombstoned') + ' (reason ' +
+      ORPHAN_PAYMENT_TOMBSTONE_REASON + '), ' + plan.skipped.length + ' skipped.' +
+      (dryRun ? ' No writes performed.' : ''));
+    if (renameExamples.length) Logger.log(tag + ' renames: ' + renameExamples.join('; '));
+    if (tombExamples.length)   Logger.log(tag + ' tombstones: ' + tombExamples.join('; '));
+    if (skipExamples.length)   Logger.log(tag + ' skipped: ' + skipExamples.join('; '));
+
+    if (!dryRun && (plan.renames.length || plan.tombstones.length)) {
+      logAudit_('orphan_payments_reconciled', ORPHAN_PAYMENT_RECONCILE_FN, '', '', {
+        scanned: plan.scanned,
+        orphanKeys: plan.orphanKeys,
+        renamed: plan.renames.length,
+        tombstoned: plan.tombstones.length,
+        skipped: plan.skipped.length,
+        tombstoneReason: ORPHAN_PAYMENT_TOMBSTONE_REASON,
+        examples: { renames: renameExamples, tombstones: tombExamples, skipped: skipExamples },
+        stampsRestamped: false,
+      });
+    }
+    return summary;
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* Run from the Apps Script editor (Run dropdown). ZERO writes — logs the
+ * plan reconcileOrphanPaymentsNow would execute. */
+function previewOrphanPaymentsNow() {
+  return runOrphanPaymentsReconcile_(true);
+}
+
+/* Run from the Apps Script editor (Run dropdown). Executes the plan under
+ * the script lock; idempotent (second run = 0 writes). */
+function reconcileOrphanPaymentsNow() {
+  return runOrphanPaymentsReconcile_(false);
 }
