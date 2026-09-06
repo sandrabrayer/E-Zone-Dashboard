@@ -5,7 +5,9 @@ name: Weekly Healthcheck
 # ONLY on real breakage (app shell down, PIN login broken, getData returning
 # HTML/garbage, missing top-level keys, stale Apps Script deployment missing
 # merged columns). Data-quality issues (blank ids, malformed dates, duplicate
-# discharge-audit rows) are WARNINGS in the job summary and never fail the run.
+# discharge-audit rows, a Railway build whose /healthz commit differs from the
+# deploy-branch head this run checked out) are WARNINGS in the job summary and
+# never fail the run.
 #
 # ⛔ This workflow must NEVER be added to branch-protection required checks —
 # it probes a live deployment on a schedule and must never gate merges.

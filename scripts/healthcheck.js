@@ -7,6 +7,10 @@
  * issues are reported as WARNINGS and never fail the run.
  *
  * The script replicates exactly what the frontend does (public/app.js):
+ *   0. GET  /healthz                   → deploy identity {commit, branch}
+ *      (server.js healthzBody — compared with GITHUB_SHA, the commit this
+ *      workflow run checked out; a mismatch is the Railway
+ *      "Redeploy-doesn't-pull" stale-build signature, reported as a WARNING)
  *   1. GET  /                          → the HTML shell (index.html)
  *   2. POST /api/verify-pin {pin}      → 200 + Set-Cookie: ezone_session=…
  *      (server.js app.post('/api/verify-pin') — mints the signed HttpOnly
@@ -360,6 +364,62 @@ function collectWarnings(data) {
   ];
 }
 
+/* ===== Deploy identity (WARNING only) ===== */
+
+/* Shape of a git sha as /healthz reports it (server.js DEPLOY_SHA_RE). */
+const SHA_RE = /^[0-9a-f]{7,40}$/i;
+
+/* Compare the commit the live server was built from (/healthz `commit`, from
+ * Railway's RAILWAY_GIT_COMMIT_SHA) with the commit this workflow run checked
+ * out (GITHUB_SHA — the deploy branch head on a scheduled run). Returns
+ * { warnings, notes }; never a critical:
+ *   - both known and different → WARNING (stale Railway build — the known
+ *     Redeploy-doesn't-pull quirk; the fix is a redeploy from the branch head);
+ *   - both known and equal → note;
+ *   - either side unknown (older server without the field, RAILWAY_* unset,
+ *     a local run without GITHUB_SHA, non-JSON /healthz) → note only.
+ * A short sha on either side is compared as a prefix, so a 7-char sha and the
+ * full 40-char one agree. */
+function checkDeployIdentity(status, bodyText, expectedSha) {
+  const warnings = [];
+  const notes = [];
+  const text = String(bodyText == null ? '' : bodyText);
+  if (status !== 200) {
+    warnings.push(`Deploy identity: GET /healthz returned HTTP ${status} (expected 200) — stale-build check skipped.`);
+    return { warnings, notes };
+  }
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch (_) {
+    notes.push('Deploy identity: /healthz did not return JSON — stale-build check skipped (server pre-dates the deploy-identity field?).');
+    return { warnings, notes };
+  }
+  const live = String(body && body.commit ? body.commit : '').trim().toLowerCase();
+  const branch = String(body && body.branch ? body.branch : '').trim();
+  const expected = String(expectedSha == null ? '' : expectedSha).trim().toLowerCase();
+  const liveLabel = live ? `${live.slice(0, 12)}${branch ? ' (' + branch + ')' : ''}` : '';
+  if (!SHA_RE.test(live)) {
+    notes.push('Deploy identity: /healthz reports no commit (RAILWAY_GIT_COMMIT_SHA unset, or the deployed server pre-dates this check) — stale-build check skipped.');
+    return { warnings, notes };
+  }
+  if (!SHA_RE.test(expected)) {
+    notes.push(`Deploy identity: live server built from ${liveLabel}; no GITHUB_SHA to compare against (local run).`);
+    return { warnings, notes };
+  }
+  const n = Math.min(live.length, expected.length);
+  if (live.slice(0, n) === expected.slice(0, n)) {
+    notes.push(`Deploy identity: live server built from ${liveLabel} — matches this run's checkout.`);
+  } else {
+    warnings.push(
+      `Deploy identity: the live server was built from commit ${liveLabel} but this run checked out ` +
+      `${expected.slice(0, 12)} — Railway is running a STALE build (the Redeploy-doesn't-pull quirk). ` +
+      'Redeploy from the latest commit of the deploy branch in the Railway dashboard.'
+    );
+  }
+  return { warnings, notes };
+}
+
 /* ===== Reporting ===== */
 
 function buildReport(criticals, warnings, notes) {
@@ -405,6 +465,16 @@ async function run(env, fetchFn) {
   } catch (err) {
     console.error(err.message);
     return 1;
+  }
+
+  // 0. Deploy identity — warning only, never critical.
+  try {
+    const res = await timedFetch(f, config.appUrl + '/healthz');
+    const id = checkDeployIdentity(res.status, await res.text(), e.GITHUB_SHA);
+    warnings.push(...id.warnings);
+    notes.push(...id.notes);
+  } catch (err) {
+    warnings.push(`Deploy identity: GET /healthz failed: ${err.message} — stale-build check skipped.`);
   }
 
   // a. HTML shell
@@ -504,6 +574,7 @@ module.exports = {
   warnMalformedDates,
   warnDuplicateDischargeAudit,
   collectWarnings,
+  checkDeployIdentity,
   buildReport,
   run,
 };

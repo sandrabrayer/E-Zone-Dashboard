@@ -960,7 +960,38 @@ app.post('/api/meeting-report/submit', requireMeetingReportSession, async (req, 
   }
 });
 
-app.get('/healthz', (_, res) => res.json({ ok: true }));
+/* Deploy identity — which git commit / branch this process was built from.
+ * Railway injects RAILWAY_GIT_COMMIT_SHA and RAILWAY_GIT_BRANCH at build time;
+ * outside Railway (local, tests) both are blank and the fields are ''.
+ * Pure: reads only the two named keys of the env it is given, so nothing else
+ * from the environment (secrets included) can ever ride along. The commit is
+ * accepted only as a 7–40 hex-char sha and the branch is trimmed and capped —
+ * the values are echoed to an unauthenticated endpoint, so they are validated
+ * rather than passed through. */
+const DEPLOY_SHA_RE = /^[0-9a-f]{7,40}$/i;
+const DEPLOY_BRANCH_MAX = 200;
+function deployIdentity(env) {
+  const e = env && typeof env === 'object' ? env : {};
+  const rawSha = e.RAILWAY_GIT_COMMIT_SHA == null ? '' : String(e.RAILWAY_GIT_COMMIT_SHA).trim();
+  const rawBranch = e.RAILWAY_GIT_BRANCH == null ? '' : String(e.RAILWAY_GIT_BRANCH).trim();
+  return {
+    commit: DEPLOY_SHA_RE.test(rawSha) ? rawSha.toLowerCase() : '',
+    branch: rawBranch.slice(0, DEPLOY_BRANCH_MAX),
+  };
+}
+
+/* /healthz body. `ok` is unchanged (Railway's healthcheck and the helpdesk
+ * monitor key on it); `commit` / `branch` answer "is Railway running the
+ * latest deploy branch?" from a browser — the known Redeploy-doesn't-pull
+ * quirk was otherwise unverifiable from outside (issue #120 investigation).
+ * `build` is the per-process BUILD_ID already embedded in the served HTML, so
+ * a restart is visible without a redeploy. No secret is ever part of this. */
+function healthzBody(env) {
+  const id = deployIdentity(env || process.env);
+  return { ok: true, commit: id.commit, branch: id.branch, build: BUILD_ID };
+}
+
+app.get('/healthz', (_, res) => res.json(healthzBody()));
 
 /* 404 fallback — logs and returns JSON so an unexpected request (e.g.
  * Sandra typing a stray URL) is visible in the logs. */
@@ -979,6 +1010,9 @@ if (require.main === module) {
 }
 
 module.exports = {
+  // Deploy identity on /healthz (see test/healthz-deploy-identity.test.js).
+  deployIdentity,
+  healthzBody,
   buildLoadPreviews,
   followingRequest,
   parseSessionCookie,
