@@ -17,7 +17,12 @@
  *     createdAt/By + updatedAt/By from the signed-cookie user, keeps
  *     calculatedAmount/basis/creation stamps immutable on edit, and refuses a
  *     stale edit (differing updatedAt) with `conflicts`;
- *   - suggestCredits: dailyRate = amountPaid / 30 (fixed, both facilities);
+ *   - suggestCredits credits PER PAYMENT ROW on its coverage window
+ *     [dueDate, dueDate + 1 month − 1 day]: unusedDays = window days strictly
+ *     after the exit (never a day another window already credited),
+ *     rate = that row's amountPaid / 30, classified by the window (starts on/
+ *     before the exit → days_unused, after → prepaid_return); allocationMonth
+ *     is reporting metadata only;
  *     residential pro-rata at any tenure except the last-7-days window;
  *     detox_dual pro-rata under 14 days, 0 at 14+ (discretionary);
  *     prepaid_return for later billed months regardless of everything;
@@ -506,8 +511,8 @@ test('the SAME discharge under both facility types gives different results: 20-d
   assert.strictEqual(dtx.basis.facilityType, 'detox_dual');
   assert.strictEqual(res.basis.tenureDays, 20);
   assert.strictEqual(dtx.basis.tenureDays, 20);
-  assert.strictEqual(res.basis.daysStayed, 21);
-  assert.strictEqual(res.basis.daysNotStayed, 9);
+  assert.strictEqual(res.basis.classification, 'window_contains_exit');
+  assert.strictEqual(res.basis.unusedDays, 9, 'Sep 22–30');
   assert.strictEqual(res.basis.dailyRate, 300);
   assert.strictEqual(res.calculatedAmount, 2700, 'residential: pro-rata at any tenure');
   assert.strictEqual(res.basis.rule, 'residential_prorata');
@@ -529,9 +534,8 @@ test('detox_dual at 13, 14 and 15 days: pro-rata under 14, zero at 14 and 15 —
   assert.strictEqual(s13.basis.tenureDays, 13);
   assert.strictEqual(s13.basis.eligible, true);
   assert.strictEqual(s13.basis.rule, 'detox_prorata');
-  assert.strictEqual(s13.basis.daysPaidFor, 30, 'Sep 1 → Sep 30 (D + 1 month − 1 day)');
-  assert.strictEqual(s13.basis.daysStayed, 14, 'exit day counts as stayed');
-  assert.strictEqual(s13.basis.daysNotStayed, 16);
+  assert.strictEqual(s13.basis.windowDays, 30, 'Sep 1 → Sep 30 (D + 1 month − 1 day)');
+  assert.strictEqual(s13.basis.unusedDays, 16, 'Sep 15–30 — strictly after the exit');
   assert.strictEqual(s13.calculatedAmount, 4800);   // 9000/30 × 16
   const s14 = app.suggestCredit(DTX, '2026-09-15', payments);
   assert.strictEqual(s14.basis.tenureDays, 14);
@@ -552,8 +556,8 @@ test('residential last-7-days window, inside and outside, in 28 / 30 / 31 day mo
   assert.strictEqual(f21.basis.exitMonthDays, 28);
   assert.strictEqual(f21.basis.inLastDaysWindow, false);
   assert.strictEqual(f21.basis.rule, 'residential_prorata');
-  assert.strictEqual(f21.basis.daysPaidFor, 28);
-  assert.strictEqual(f21.basis.daysNotStayed, 7);
+  assert.strictEqual(f21.basis.windowDays, 28);
+  assert.strictEqual(f21.basis.unusedDays, 7);
   assert.strictEqual(f21.calculatedAmount, 2100);            // 9000/30 × 7
   const f22 = run('2026-02-01', '2026-02-22');
   assert.strictEqual(f22.basis.inLastDaysWindow, true);
@@ -572,15 +576,16 @@ test('residential last-7-days window, inside and outside, in 28 / 30 / 31 day mo
   const a24 = run('2026-08-01', '2026-08-24');
   assert.strictEqual(a24.basis.exitMonthDays, 31);
   assert.strictEqual(a24.basis.inLastDaysWindow, false);
-  assert.strictEqual(a24.basis.daysPaidFor, 31);
+  assert.strictEqual(a24.basis.windowDays, 31);
   assert.strictEqual(a24.calculatedAmount, 2100);            // 31 − 24 = 7 → 9000/30 × 7
   const a25 = run('2026-08-01', '2026-08-25');
   assert.strictEqual(a25.basis.inLastDaysWindow, true);
   assert.strictEqual(a25.calculatedAmount, 0);
-  // the window is about the EXIT's month, even when the credited month differs (paid Jul 20, exit Aug 25)
+  // the last-7 rule is about the EXIT's month, even when the row's allocationMonth differs (paid Jul 20 covers to Aug 19; exit Aug 25 after it)
   const cross = scenario('asher', '2026-07-20', {});
   const c = app.suggestCredit(cross.p, '2026-08-25', cross.payments);
-  assert.strictEqual(c.allocationMonth, '2026-07');
+  assert.strictEqual(c.allocationMonth, '2026-07', 'reporting metadata from the latest row');
+  assert.strictEqual(c.basis.classification, 'no_unused_window');
   assert.strictEqual(c.basis.inLastDaysWindow, true);
   assert.strictEqual(c.calculatedAmount, 0);
 });
@@ -592,12 +597,12 @@ test('divisor is 30 regardless of month length: identical daily rate in Feb, Sep
     const s = app.suggestCredit(sc.p, entry.slice(0, 8) + '05', sc.payments);   // exit on the 5th: stayed 5
     assert.strictEqual(s.basis.divisor, 30);
     assert.strictEqual(s.basis.dailyRate, 300, entry);
-    assert.strictEqual(s.calculatedAmount, 300 * s.basis.daysNotStayed, entry);
+    assert.strictEqual(s.calculatedAmount, 300 * s.basis.unusedDays, entry);
   });
   const feb = scenario('asher', '2026-02-01', {}); const f = app.suggestCredit(feb.p, '2026-02-05', feb.payments);
   const aug = scenario('asher', '2026-08-01', {}); const a = app.suggestCredit(aug.p, '2026-08-05', aug.payments);
-  assert.strictEqual(f.basis.daysNotStayed, 23); assert.strictEqual(f.calculatedAmount, 6900);   // 28-day coverage
-  assert.strictEqual(a.basis.daysNotStayed, 26); assert.strictEqual(a.calculatedAmount, 7800);   // 31-day coverage
+  assert.strictEqual(f.basis.unusedDays, 23); assert.strictEqual(f.calculatedAmount, 6900);   // 28-day window
+  assert.strictEqual(a.basis.unusedDays, 26); assert.strictEqual(a.calculatedAmount, 7800);   // 31-day window
   assert.notStrictEqual(Math.round(9000 / 28 * 100) / 100, f.basis.dailyRate, 'not 9000/28');
   assert.notStrictEqual(Math.round(9000 / 31 * 100) / 100, a.basis.dailyRate, 'not 9000/31');
 });
@@ -611,13 +616,15 @@ test('prepaid_return fires regardless of the rules: tenure 40 (detox zero) AND r
   assert.strictEqual(all[0].creditType, 'days_unused');
   assert.strictEqual(all[0].basis.tenureDays, 40);
   assert.strictEqual(all[0].calculatedAmount, 0);
-  assert.strictEqual(all[0].allocationMonth, '2026-09', 'credited month = the row covering the exit');
+  assert.strictEqual(all[0].allocationMonth, '2026-09', 'the row whose window contains the exit (Aug 1–31 is fully used and silent)');
+  assert.strictEqual(all[0].basis.uncappedAmount, 6000, '9000/30 × 20 unused days — on record for the override');
   assert.deepStrictEqual(plain(all.slice(1).map((s) => [s.creditType, s.allocationMonth, s.calculatedAmount])), [
     ['prepaid_return', '2026-10', 9000],
     ['prepaid_return', '2026-11', 4500],
   ]);
-  assert.strictEqual(all[2].basis.uncappedAmount, 9000, 'billed figure kept in basis');
-  assert.strictEqual(all[2].basis.capped, true);
+  assert.strictEqual(all[2].basis.billedAmount, 9000, 'billed figure kept in basis');
+  assert.strictEqual(all[2].basis.fullReturn, true);
+  assert.strictEqual(all[2].basis.unusedDays, 30, 'Nov 1–30, the whole window');
   // residential, exit Sep 27 (inside the window → days_unused 0) with October prepaid
   const res = scenario('ramot', '2026-09-01', {});
   res.payments.push(payFor(res.key, { dueDate: '2026-10-01' }));
@@ -625,9 +632,10 @@ test('prepaid_return fires regardless of the rules: tenure 40 (detox zero) AND r
   assert.strictEqual(r[0].calculatedAmount, 0);
   assert.strictEqual(r[0].basis.rule, 'residential_last_days_zero');
   assert.deepStrictEqual(plain(r.slice(1).map((s) => [s.creditType, s.allocationMonth, s.calculatedAmount])), [['prepaid_return', '2026-10', 9000]]);
-  // a same-month row due after the exit is NOT a later billed month — not emitted (literal rule)
+  // classification is by the WINDOW: a same-month row whose window starts after the exit is prepaid_return
   const same = app.suggestCredits(res.p, '2026-09-10', [payFor(res.key, { dueDate: '2026-09-01' }), payFor(res.key, { dueDate: '2026-09-25' })]);
-  assert.strictEqual(same.length, 1);
+  assert.deepStrictEqual(plain(same.map((s) => [s.creditType, s.allocationMonth, s.calculatedAmount])), [['days_unused', '2026-09', 6000], ['prepaid_return', '2026-09', 9000]]);
+  assert.strictEqual(same[1].basis.classification, 'window_after_exit');
 });
 
 test('exitDate arrives as a raw ISO timestamp: month boundary + DST (March and October) — no −1 day drift, tenure exact', () => {
@@ -639,7 +647,7 @@ test('exitDate arrives as a raw ISO timestamp: month boundary + DST (March and O
   assert.notStrictEqual(bnd.basis.exitDate, '2026-08-31T21:00:00.000Z'.slice(0, 10));
   assert.strictEqual(bnd.basis.inLastDaysWindow, false, 'Sep 1, not Aug 31');
   assert.strictEqual(bnd.basis.tenureDays, 0);
-  assert.strictEqual(bnd.basis.daysStayed, 1);
+  assert.strictEqual(bnd.basis.unusedDays, 29, 'Sep 2–30');
   assert.strictEqual(bnd.allocationMonth, '2026-09');
   assert.strictEqual(bnd.calculatedAmount, 8700);   // 29 × 300
 
@@ -651,9 +659,9 @@ test('exitDate arrives as a raw ISO timestamp: month boundary + DST (March and O
   assert.strictEqual(m.allocationMonth, '2026-03');
   assert.strictEqual(m.basis.coverageStart, '2026-03-20');
   assert.strictEqual(m.basis.coverageEnd, '2026-04-19');
-  assert.strictEqual(m.basis.daysPaidFor, 31);
-  assert.strictEqual(m.basis.daysStayed, 13);
-  assert.strictEqual(m.basis.daysNotStayed, 18);
+  assert.strictEqual(m.basis.windowDays, 31);
+  assert.strictEqual(m.basis.unusedDays, 18, 'Apr 2 → Apr 19');
+  assert.strictEqual(m.basis.creditedFrom, '2026-04-02');
   assert.strictEqual(m.basis.dailyRate, 310);
   assert.strictEqual(m.calculatedAmount, 5580);
 
@@ -662,7 +670,7 @@ test('exitDate arrives as a raw ISO timestamp: month boundary + DST (March and O
   const o = app.suggestCredit(oct.p, '2026-10-31T22:00:00.000Z', oct.payments);
   assert.strictEqual(o.basis.exitDate, '2026-11-01');
   assert.strictEqual(o.basis.tenureDays, 12);
-  assert.strictEqual(o.basis.daysStayed, 13);
+  assert.strictEqual(o.basis.unusedDays, 18, 'Nov 2 → Nov 19');
 
   const a = app.localDateFromISO('2026-03-20'), b = app.localDateFromISO('2026-04-01');
   assert.strictEqual(app.diffWholeDays(a, b), 12);
@@ -688,23 +696,25 @@ test('cap at money received: the rate is built from amountPaid (partial 3000 of 
   const s = app.suggestCredit(sc.p, '2026-09-06', sc.payments);
   assert.strictEqual(s.basis.amountPaid, 3000);
   assert.strictEqual(s.basis.dailyRate, 100);
-  assert.strictEqual(s.basis.daysNotStayed, 24);
+  assert.strictEqual(s.basis.unusedDays, 24);
   assert.strictEqual(s.calculatedAmount, 2400);
   assert.ok(s.calculatedAmount <= 3000);
-  // the cap itself (pure) and a scenario where the uncapped figure exceeds amountPaid:
-  // a 31-day coverage with a data error (entry after exit → 0 days stayed) → 31/30 × paid
+  // the cap itself (pure)
   assert.deepStrictEqual(plain(app.applyCreditCap(7200, 3000)), { calculatedAmount: 3000, capped: true });
   assert.deepStrictEqual(plain(app.applyCreditCap(2400, 3000)), { calculatedAmount: 2400, capped: false });
-  const bad = { id: 'id-x', houseId: 'asher', name: 'דנה', date: '2026-08-20', pay: 9000 };
-  const badKey = 'asher::דנה::2026-08-20';
-  const x = app.suggestCredit(bad, '2026-08-10', [payFor(badKey, { dueDate: '2026-08-01', amountPaid: 3000, status: 'partial' })]);
-  assert.strictEqual(x.basis.daysStayed, 0);
-  assert.strictEqual(x.basis.daysNotStayed, 31);
+  // a 31-day window entirely after the exit: raw 3000/30 × 31 = 3100 exceeds the 3000 received → the row's
+  // amountPaid is the ceiling (prepaid_return is a full return of what was paid, never more)
+  const fut = scenario('asher', '2026-07-01', {});
+  fut.payments.push(payFor(fut.key, { dueDate: '2026-08-01', amount: 9000, amountPaid: 3000, status: 'partial' }));
+  const x = app.suggestCredits(fut.p, '2026-07-20', fut.payments).find((c) => c.creditType === 'prepaid_return');
+  assert.strictEqual(x.basis.windowDays, 31);
+  assert.strictEqual(x.basis.unusedDays, 31);
   assert.strictEqual(x.basis.uncappedAmount, 3100, '31 × 100 exceeds the 3000 received');
   assert.strictEqual(x.basis.capped, true);
   assert.strictEqual(x.calculatedAmount, 3000, 'never more than was received');
-  const text = app.creditBasisText('days_unused', x.basis);
-  assert.ok(text.includes('3100') && text.includes('3000') && text.includes('הוגבל לסכום ששולם'), text);
+  // days_unused (window starts on/before the exit) can never exceed 30 unused days, so raw ≤ amountPaid there.
+  const text = app.creditBasisText('days_unused', s.basis);
+  assert.ok(text.includes('2400') && text.includes('3000'), text);
 });
 
 test('amountPaid 0 (row exists, unpaid) → dailyRate 0, calculatedAmount 0, suggestion still emitted', () => {
@@ -716,7 +726,8 @@ test('amountPaid 0 (row exists, unpaid) → dailyRate 0, calculatedAmount 0, sug
   assert.strictEqual(all[0].basis.amountPaid, 0);
   assert.strictEqual(all[0].basis.dailyRate, 0);
   assert.strictEqual(all[0].basis.uncappedAmount, 0);
-  assert.strictEqual(all[0].basis.coverageSource, 'payment');
+  assert.strictEqual(all[0].basis.classification, 'window_contains_exit');
+  assert.strictEqual(all[0].basis.unusedDays, 24);
   assert.strictEqual(all[0].basis.eligible, true, 'residential, outside the window — the rule allowed it; the money did not');
   assert.strictEqual(app.validateCreditLine({ creditType: 'days_unused', allocationMonth: '2026-09', calculatedAmount: 0, amount: 0 }), null, 'a zero credit is saveable');
 });
@@ -725,18 +736,84 @@ test('no payment row for the month at all → full calendar month fallback, noth
   const { app } = loadApp();
   const s = app.suggestCredit(RES, '2026-09-10', []);
   assert.strictEqual(s.allocationMonth, '2026-09');
+  assert.strictEqual(s.basis.classification, 'no_unused_window');
   assert.strictEqual(s.basis.coverageSource, 'calendar_month');
   assert.strictEqual(s.basis.coverageStart, '2026-09-01');
   assert.strictEqual(s.basis.coverageEnd, '2026-09-30');
-  assert.strictEqual(s.basis.daysPaidFor, 30);
-  assert.strictEqual(s.basis.daysStayed, 10);
-  assert.strictEqual(s.basis.daysNotStayed, 20);
+  assert.strictEqual(s.basis.windowDays, 30);
+  assert.strictEqual(s.basis.unusedDays, 20);
   assert.strictEqual(s.basis.amountPaid, 0);
   assert.strictEqual(s.calculatedAmount, 0);
   const s2 = app.suggestCredit(RES, '2026-09-10', [payFor('asher::אחר::2026-09-01', { dueDate: '2026-09-01' })]);
-  assert.strictEqual(s2.basis.coverageSource, 'calendar_month');
+  assert.strictEqual(s2.basis.classification, 'no_unused_window');
   assert.strictEqual(s2.calculatedAmount, 0);
   assert.deepStrictEqual(plain(app.suggestCredits(RES, '', [])), [], 'no exit date → nothing to compute');
+});
+
+test('billing day 20, exit on the 5th of the following month: the spillover days (6th → 19th) are credited and classified days_unused; allocationMonth is the row month', () => {
+  const { app } = loadApp();
+  const sc = scenario('asher', '2026-08-20', {});                 // paid Aug 20 → window Aug 20 … Sep 19
+  const all = app.suggestCredits(sc.p, '2026-09-05', sc.payments);
+  assert.strictEqual(all.length, 1);
+  const s = all[0];
+  assert.strictEqual(s.creditType, 'days_unused');
+  assert.strictEqual(s.basis.classification, 'window_contains_exit');
+  assert.strictEqual(s.basis.coverageStart, '2026-08-20');
+  assert.strictEqual(s.basis.coverageEnd, '2026-09-19');
+  assert.strictEqual(s.basis.creditedFrom, '2026-09-06');
+  assert.strictEqual(s.basis.unusedDays, 14);
+  assert.strictEqual(s.basis.dailyRate, 300);
+  assert.strictEqual(s.calculatedAmount, 4200);
+  assert.strictEqual(s.allocationMonth, '2026-08', 'monthKey(dueDate) — reporting only; the September days are credited regardless');
+  // detox_dual with the same dates: tenure 16 → discretionary zero, same figure on record
+  const d = scenario('rehab', '2026-08-20', {});
+  const dz = app.suggestCredit(d.p, '2026-09-05', d.payments);
+  assert.strictEqual(dz.basis.tenureDays, 16);
+  assert.strictEqual(dz.calculatedAmount, 0);
+  assert.strictEqual(dz.basis.uncappedAmount, 4200);
+});
+
+test('billing day 20, exit BEFORE the window starts: the row is prepaid_return in full — even though its month key equals the exit month', () => {
+  const { app } = loadApp();
+  const sc = scenario('asher', '2026-08-20', {});                 // Aug 20 row: window Aug 20 … Sep 19 (contains the exit)
+  sc.payments.push(payFor(sc.key, { dueDate: '2026-09-20' }));   // Sep 20 row: window Sep 20 … Oct 19 (starts after the exit)
+  const all = app.suggestCredits(sc.p, '2026-09-05', sc.payments);
+  assert.deepStrictEqual(plain(all.map((s) => [s.creditType, s.allocationMonth, s.calculatedAmount])), [
+    ['days_unused', '2026-08', 4200],
+    ['prepaid_return', '2026-09', 9000],
+  ]);
+  assert.strictEqual(all[1].basis.classification, 'window_after_exit');
+  assert.strictEqual(all[1].basis.coverageStart, '2026-09-20');
+  assert.strictEqual(all[1].basis.unusedDays, 30);
+  assert.strictEqual(all[1].basis.fullReturn, true);
+  // exempt from the residential last-7 rule: exit Sep 27 zeroes days_unused, the prepaid row still returns
+  const late = app.suggestCredits(sc.p, '2026-09-27', [payFor(sc.key, { dueDate: '2026-09-28' })]);
+  assert.deepStrictEqual(plain(late.map((s) => [s.creditType, s.calculatedAmount])), [['days_unused', 0], ['prepaid_return', 9000]]);
+});
+
+test('two payment rows with overlapping windows never credit the same day twice', () => {
+  const { app } = loadApp();
+  const sc = scenario('asher', '2026-08-20', {});                 // window Aug 20 … Sep 19
+  sc.payments.push(payFor(sc.key, { dueDate: '2026-09-01' }));   // window Sep 1 … Sep 30 — overlaps Sep 1–19
+  const all = app.suggestCredits(sc.p, '2026-09-05', sc.payments);
+  assert.strictEqual(all.length, 2);
+  assert.strictEqual(all[0].basis.paymentDueDate, '2026-08-20');
+  assert.strictEqual(all[0].basis.creditedFrom, '2026-09-06');
+  assert.strictEqual(all[0].basis.unusedDays, 14, 'Sep 6 → Sep 19');
+  assert.strictEqual(all[0].calculatedAmount, 4200);
+  assert.strictEqual(all[1].basis.paymentDueDate, '2026-09-01');
+  assert.strictEqual(all[1].basis.alreadyCreditedThrough, '2026-09-19');
+  assert.strictEqual(all[1].basis.creditedFrom, '2026-09-20', 'resumes the day after the first window ended');
+  assert.strictEqual(all[1].basis.unusedDays, 11, 'Sep 20 → Sep 30 only — Sep 6–19 not counted again');
+  assert.strictEqual(all[1].calculatedAmount, 3300);
+  const totalDays = all.reduce((n, s) => n + s.basis.unusedDays, 0);
+  assert.strictEqual(totalDays, 25, 'Sep 6 → Sep 30 = 25 distinct days');
+  // a second overlapping window with nothing left to credit is a zero row, not a duplicate credit
+  const three = app.suggestCredits(sc.p, '2026-09-05', sc.payments.concat([payFor(sc.key, { dueDate: '2026-09-02', amount: 9000, amountPaid: 9000 })]));
+  const sep2 = three.find((s) => s.basis.paymentDueDate === '2026-09-02');
+  assert.strictEqual(sep2.creditType, 'days_unused');
+  assert.strictEqual(sep2.basis.unusedDays, 1, 'Oct 1 only — everything through Sep 30 was credited by earlier windows');
+  assert.strictEqual(three.reduce((n, s) => n + s.basis.unusedDays, 0), 26);
 });
 
 test('payoutDateFor (client mirror): 14th → 15th same month, 15th → 15th same month, 16th → 15th next month; pendingCreditsByPayout groups + totals', () => {

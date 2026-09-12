@@ -67,13 +67,48 @@ the editable (VAT-inclusive) amount input; the payout view shows both.
 
 ## Calculation — `suggestCredits(patient, exitDate, payments)` (pure, app.js)
 
-Returns an array of `{ creditType, calculatedAmount, allocationMonth, basis }`.
+Returns an array of `{ creditType, calculatedAmount, allocationMonth, basis }`
+— **one entry per payment row** whose coverage window still has days after
+the exit (plus a single zero `days_unused` entry when no window does).
 
 `exitDate` is normalized through the existing `isoDate()` **before any date
 math** — legacy rows carry a full ISO timestamp, and a naive `slice(0,10)`
 drifts −1 day in Israel. All arithmetic uses local
 `getFullYear/getMonth/getDate` parts; day spans use `Math.round` so a DST
 switch between two local midnights never shifts a day.
+
+### Coverage windows — the unit of credit
+
+For **every** Payments row of the patient (joined on `patientKey`), in
+`dueDate` order:
+
+- **window** = `[dueDate, dueDate + 1 month − 1 day]` (local parts,
+  day-of-month clamped: Jan 31 → Feb 27/28). We never look ahead to a
+  "next payment row" — it is usually absent at discharge.
+- **unusedDays** = days in that window **strictly after** `exitDate`
+  (0 if none), minus any day an earlier row's window already credited —
+  overlapping windows never credit the same day twice
+  (`basis.creditedFrom`, `basis.alreadyCreditedThrough`).
+- **rate** = **that row's** `amountPaid` / `CREDIT_DAYS_DIVISOR`.
+- **raw** = rate × unusedDays, capped at that row's `amountPaid`.
+
+`allocationMonth` = `monthKey(dueDate)` is **reporting metadata only** —
+it never enters the math. There is no "amountPaid for the credited month"
+lookup anywhere; every figure comes from the row itself.
+
+### Classification — by the window, not the month key
+
+- **window starts on or before `exitDate`** → `days_unused`, then the
+  facility rule below. A window that ended before the exit is fully used
+  and produces nothing. (Example: billing day 20, exit on the 5th of the
+  next month → the 6th–19th spill-over days are credited as `days_unused`
+  under the August row.)
+- **window starts after `exitDate`** → `prepaid_return`: the whole window
+  is unearned, so the row's **full `amountPaid`** returns (the ÷30 raw and
+  the billed amount are recorded in basis; a 31-day window's raw exceeds
+  amountPaid and is capped to it — `basis.fullReturn = true`). A row due
+  in the exit's own month whose window starts after the exit is still
+  `prepaid_return`.
 
 ### The ÷30 constant
 
@@ -82,43 +117,30 @@ switch between two local midnights never shifts a day.
 const CREDIT_DAYS_DIVISOR = 30;
 ```
 
-`dailyRate = amountPaid for the credited month / CREDIT_DAYS_DIVISOR` — for
-**both** facility types, fixed 30, **never** the calendar day count of the
-month. A 28-day February and a 31-day August produce the same daily rate for
+`rate = amountPaid of the row / CREDIT_DAYS_DIVISOR` — for **both** facility
+types, fixed 30, **never** the calendar day count of the month. A 28-day
+February window and a 31-day August window produce the same daily rate for
 the same money received.
-
-### Coverage period
-
-A payment row with `dueDate` D covers D through **D + 1 month − 1 day**
-(local parts, day-of-month clamped: Jan 31 → Feb 27/28). We never look ahead
-to a "next payment row" — it is usually absent at discharge. The **credited
-month** is the billed month (`monthKey(dueDate)`) of the *latest* Payments
-row for this `patientKey` with `dueDate ≤ exitDate`; when no such row exists
-the fallback is the exit date's **full calendar month** with `amountPaid = 0`.
-
-`daysNotStayed = daysPaidFor − daysStayed` inside that period (the exit day
-counts as stayed). `uncapped = dailyRate × daysNotStayed`.
 
 ### The amountPaid cap
 
-`calculatedAmount = min(uncapped, amountPaid for the credited month)`. Never
-more than was actually received; `amountPaid = 0` ⇒ `0`. The uncapped figure
-is always kept in `basis.uncappedAmount` (with `basis.capped`) and written
-into `reason`, so the cap is visible, never silent. Because the rate itself
-is built from `amountPaid`, the cap binds only when `daysNotStayed > 30`
-(a 31-day coverage with no days stayed, i.e. bad data) — it is a safety net.
+`raw` is capped at the row's own `amountPaid`. Never more than was actually
+received; `amountPaid = 0` ⇒ `0`. The uncapped figure is always kept in
+`basis.uncappedAmount` (with `basis.capped`) and written into `reason`, so
+the cap is visible, never silent. A `days_unused` window can hold at most
+30 unused days, so the cap binds only on 31-day `prepaid_return` windows.
 
-### Residential policy (אשר, רמות)
+### Residential policy (אשר, רמות) — `days_unused` rows
 
 Pro-rata refund of unused days at **any tenure** — no tenure cutoff.
 **Except:** an exit inside the **last 7 calendar days of its month**
 (`dayOfMonth > daysInMonth − 7`: days 22–28 in February, 24–30 in a 30-day
 month, 25–31 in a 31-day month) ⇒ `calculatedAmount = 0`. The row is still
-emitted (`days_unused`) with `basis.rule = 'residential_last_days_zero'` and
-the uncapped figure it would have been. The window is judged on the **exit
-date's** month even when the credited (billed) month is earlier.
+emitted with `basis.rule = 'residential_last_days_zero'` and the uncapped
+figure it would have been. The window is judged on the **exit date's**
+month, whatever the row's `allocationMonth`.
 
-### Detox / dual policy (ריהאב, הפרדס, עפרוני, שדה אליעזר)
+### Detox / dual policy (ריהאב, הפרדס, עפרוני, שדה אליעזר) — `days_unused` rows
 
 `tenureDays = exitDate − entryDate` (whole days). Under 14 days ⇒ pro-rata
 as above. **14 days or more ⇒ `calculatedAmount = 0`.** This is a
@@ -132,14 +154,19 @@ An unknown `houseId` falls back to the stricter detox policy in the
 suggestion (`basis.facilityKnown = false`); the server refuses to store a
 row for it (`bad_houseId`).
 
-### prepaid_return — independent of both policies
+### `prepaid_return` — exempt from both policies
 
-Regardless of tenure, facility type or the last-7-days window: one credit
-per **billed month later than the discharge month** among the patient's
-Payments rows, `calculatedAmount = amountPaid` for that month — never the
-billed `amount`, which is kept in `basis.uncappedAmount`. Unearned future
-money always returns. (A same-month row due *after* the exit is not a later
-billed month and is not emitted — see the PR notes.)
+Regardless of tenure, facility type or the last-7-days window, every row
+whose window starts after the exit returns in full. Unearned future money
+always returns.
+
+### Zero rows
+
+When no window has days after the exit, one zero `days_unused` entry is
+still emitted (`basis.classification = 'no_unused_window'`): under the
+latest row whose window started on/before the exit, else — no payment rows
+at all — the exit's full calendar month with nothing received. "No refund
+owed" is a recorded decision.
 
 ### `other`
 
@@ -215,7 +242,7 @@ Credits **pay out on the 15th**, never at discharge.
   even on HTTP 200 and carries the parsed body (`err.data`) so the conflict
   details reach the banner; a 200 without the echoed credit is a failure.
 
-## Tests — `test/credits-ledger.test.js` (30, vm-sandbox on the shipped files, TZ = Asia/Jerusalem)
+## Tests — `test/credits-ledger.test.js` (33, vm-sandbox on the shipped files, TZ = Asia/Jerusalem)
 
 Backend: pinned 24-column order + facility map; sheet auto-create with the
 six text-forced columns; server-minted id + seq; stamps from `body.user`;
@@ -241,7 +268,7 @@ same-month row not emitted; raw-ISO exit at a **month boundary** (Aug 31
 21:00Z is Sep 1, not inside the August window) and across the **March and
 October DST** switches; coverage clamping; partial payment (rate from
 `amountPaid`) and a cap-binding case with the figure in basis + trail;
-**`amountPaid` 0**; **no payment row**; `payoutDateFor` client mirror +
+**`amountPaid` 0**; **no payment row**; **billing day 20 with an exit on the 5th of the next month** (spill-over days credited as `days_unused`, under both facility types); **billing day 20 with an exit before the window starts** (`prepaid_return` in full, even in the exit's own month, exempt from the last-7 rule); **two rows with overlapping windows** (no day credited twice; a third window with nothing left yields one day, not a duplicate); `payoutDateFor` client mirror +
 `pendingCreditsByPayout` grouping/totals; `validateCreditLine` override and
 paid rules; `normalizeCredit` / `creditsForPatient` / `buildCreditLines`.
 

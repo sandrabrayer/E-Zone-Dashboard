@@ -4931,28 +4931,32 @@ function applyCreditCap(uncapped, amountPaid) {
 }
 
 /* Pure. The credit suggestions for a discharge — an array of
- * { creditType, calculatedAmount, allocationMonth, basis }:
+ * { creditType, calculatedAmount, allocationMonth, basis }, ONE PER PAYMENT
+ * ROW whose coverage window still has days after the exit (plus one zero
+ * days_unused row when no window does, so "no refund owed" is recorded).
  *
- *   [0]   days_unused — ALWAYS present (a zero is still a decision).
- *           credited month = billed month of the LATEST payment row whose
- *           dueDate ≤ exitDate (the row covering the stay's end); no such row →
- *           the exit date's calendar month, covering the FULL calendar month.
- *           dailyRate = amountPaid for that month / CREDIT_DAYS_DIVISOR (30,
- *           both facility types, never the calendar day count).
- *           daysNotStayed = days paid for in the coverage period − days stayed
- *           in it (the exit day counts as stayed).
- *           uncapped = dailyRate × daysNotStayed, then per facility type:
- *             residential — pro-rata at ANY tenure, EXCEPT an exit inside the
- *               last 7 calendar days of its month (dayOfMonth > daysInMonth − 7)
- *               → 0, basis records the rule and the uncapped figure;
- *             detox_dual  — tenure < 14 days → pro-rata; ≥ 14 → 0. A
- *               DISCRETIONARY cutoff: the override path carries exceptions.
- *           CAP: never more than amountPaid; amountPaid 0 → 0.
- *   [1..]  prepaid_return — one per billed month of the payment rows whose
- *           billed month is LATER than the discharge month. Independent of
- *           tenure, facility type and the last-7-days window. Amount =
- *           amountPaid for that month, never the billed amount (kept in
- *           basis.uncappedAmount).
+ * For every Payments row of the patient (joined on patientKey), in dueDate
+ * order:
+ *   window      = [dueDate, dueDate + 1 month − 1 day] (local parts, day
+ *                 clamped) — never "until the next payment row".
+ *   unusedDays  = days in that window STRICTLY AFTER exitDate, minus any day
+ *                 an earlier row's window already credited (overlapping
+ *                 windows never credit the same day twice).
+ *   rate        = THAT ROW's amountPaid / CREDIT_DAYS_DIVISOR (30).
+ *   raw         = rate × unusedDays, capped at that row's amountPaid.
+ *   classification is by the WINDOW, not the month key:
+ *     window starts on or before exitDate → days_unused, then the facility
+ *       rule: residential — 0 when the exit is inside the last 7 calendar
+ *       days of its month; detox_dual — 0 when tenure ≥ 14 days
+ *       (DISCRETIONARY: the override path carries exceptions). The raw
+ *       figure stays in basis.uncappedAmount either way.
+ *     window starts after exitDate → prepaid_return: the whole window is
+ *       unearned, so the row's full amountPaid returns — exempt from both
+ *       rules (raw / unusedDays are still recorded in basis).
+ *   allocationMonth = monthKey(dueDate): REPORTING METADATA ONLY — it never
+ *   enters the math (no "amountPaid for the credited month" anywhere).
+ * Windows that ended before the exit are fully used and produce nothing.
+ * No rows at all → one zero days_unused row for the exit's calendar month.
  *
  * exitDate is normalized through isoDate() FIRST (legacy rows carry a full
  * ISO timestamp; a naive slice drifts −1 day in Israel), then every date is
@@ -4964,40 +4968,14 @@ function suggestCredits(patient, exitDate, payments) {
   const entryISO = isoDate(patient.date);
   const entry    = localDateFromISO(entryISO);
   const key      = patientKey(patient);
-  const facilityType = facilityTypeFor(patient.houseId) || 'detox_dual';   // unknown house → the stricter policy, recorded in basis
-
-  const rows = (Array.isArray(payments) ? payments : [])
-    .filter(r => r && r.patientId === key && r.dueDate)
-    .map(r => Object.assign({}, r, { dueDate: isoDate(r.dueDate) }))
-    .filter(r => /^\d{4}-\d{2}-\d{2}$/.test(r.dueDate))
-    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
-
-  const before   = rows.filter(r => r.dueDate <= exitISO);
-  const covering = before.length ? before[before.length - 1] : null;
-  const allocationMonth = covering ? monthKey(covering.dueDate) : exitISO.slice(0, 7);
-  const ay = Number(allocationMonth.slice(0, 4)), am = Number(allocationMonth.slice(5, 7));
-
-  const monthRows  = rows.filter(r => monthKey(r.dueDate) === allocationMonth);
-  const amountPaid = roundMoney(monthRows.reduce((s, r) => s + (Number(r.amountPaid) || 0), 0));
-  const dailyRate  = amountPaid / CREDIT_DAYS_DIVISOR;
-
-  let start, end, coverageSource;
-  if (covering) {
-    const cov = paymentCoverage(covering);
-    start = cov.start; end = cov.end; coverageSource = 'payment';
-  } else {
-    start = new Date(ay, am - 1, 1); end = new Date(ay, am - 1, daysInCalendarMonth(ay, am)); coverageSource = 'calendar_month';
-  }
-  const daysPaidFor   = diffWholeDays(start, end) + 1;
-  const stayStart     = entry && entry > start ? entry : start;
-  const daysStayed    = exit < stayStart ? 0 : Math.min(daysPaidFor, diffWholeDays(stayStart, exit) + 1);
-  const daysNotStayed = Math.max(0, daysPaidFor - daysStayed);
+  const facilityKnown = !!facilityTypeFor(patient.houseId);
+  const facilityType  = facilityTypeFor(patient.houseId) || 'detox_dual';   // unknown house → the stricter policy, recorded in basis
   const tenureDays    = entry ? diffWholeDays(entry, exit) : null;
-  const uncapped      = roundMoney(dailyRate * daysNotStayed);
 
   const exitDayOfMonth = exit.getDate();
   const exitMonthDays  = daysInCalendarMonth(exit.getFullYear(), exit.getMonth() + 1);
   const inLastDaysWindow = exitDayOfMonth > exitMonthDays - CREDIT_RESIDENTIAL_LAST_DAYS;
+  // The facility rule for days_unused — patient-level, same for every row.
   let rule, eligible;
   if (facilityType === 'residential') {
     eligible = !inLastDaysWindow;
@@ -5006,48 +4984,90 @@ function suggestCredits(patient, exitDate, payments) {
     eligible = tenureDays !== null && tenureDays < CREDIT_DETOX_TENURE_CUTOFF_DAYS;
     rule = eligible ? 'detox_prorata' : 'detox_tenure_cutoff_zero';
   }
-  const cap = applyCreditCap(uncapped, amountPaid);
-  const calculated = eligible ? cap.calculatedAmount : 0;
+  const common = {
+    facilityType, facilityKnown, entryDate: entryISO, exitDate: exitISO, tenureDays,
+    tenureCutoffDays: CREDIT_DETOX_TENURE_CUTOFF_DAYS, exitDayOfMonth, exitMonthDays,
+    lastDaysWindow: CREDIT_RESIDENTIAL_LAST_DAYS, inLastDaysWindow, divisor: CREDIT_DAYS_DIVISOR,
+  };
 
-  const out = [{
-    creditType: 'days_unused',
-    allocationMonth,
-    calculatedAmount: calculated,
-    basis: {
-      facilityType, facilityKnown: !!facilityTypeFor(patient.houseId), rule, eligible,
-      discretionary: rule === 'detox_tenure_cutoff_zero',
-      entryDate: entryISO, exitDate: exitISO, tenureDays, tenureCutoffDays: CREDIT_DETOX_TENURE_CUTOFF_DAYS,
-      exitDayOfMonth, exitMonthDays, lastDaysWindow: CREDIT_RESIDENTIAL_LAST_DAYS, inLastDaysWindow,
-      divisor: CREDIT_DAYS_DIVISOR, dailyRate: roundMoney(dailyRate),
-      coverageSource, paymentDueDate: covering ? covering.dueDate : '',
-      coverageStart: isoFromLocalDate(start), coverageEnd: isoFromLocalDate(end),
-      daysPaidFor, daysStayed, daysNotStayed,
-      uncappedAmount: uncapped, amountPaid, capped: eligible && cap.capped,
-    },
-  }];
+  const rows = (Array.isArray(payments) ? payments : [])
+    .filter(r => r && r.patientId === key && r.dueDate)
+    .map(r => Object.assign({}, r, { dueDate: isoDate(r.dueDate) }))
+    .filter(r => /^\d{4}-\d{2}-\d{2}$/.test(r.dueDate))
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
 
-  // prepaid_return — billed month strictly later than the discharge month.
-  const dischargeMonth = exitISO.slice(0, 7);
-  const byMonth = {};
-  rows.filter(r => monthKey(r.dueDate) > dischargeMonth).forEach(r => {
-    const mk = monthKey(r.dueDate);
-    if (!byMonth[mk]) byMonth[mk] = { dueDates: [], billed: 0, paid: 0 };
-    byMonth[mk].dueDates.push(r.dueDate);
-    byMonth[mk].billed += Number(r.amount) || 0;
-    byMonth[mk].paid   += Number(r.amountPaid) || 0;
-  });
-  Object.keys(byMonth).sort().forEach(mk => {
-    const g = byMonth[mk];
+  const out = [];
+  let creditedThrough = null;   // last day already credited by an earlier window (local Date)
+  let latestUsedRow = null;     // the latest row whose window started on/before the exit
+  rows.forEach(r => {
+    const cov = paymentCoverage(r);
+    const start = cov.start, end = cov.end;
+    const windowDays = diffWholeDays(start, end) + 1;
+    const amountPaid = roundMoney(Number(r.amountPaid) || 0);
+    const rate = amountPaid / CREDIT_DAYS_DIVISOR;
+    const allocationMonth = monthKey(r.dueDate);   // reporting only
+    const rowBasis = {
+      paymentDueDate: r.dueDate, coverageStart: isoFromLocalDate(start), coverageEnd: isoFromLocalDate(end),
+      windowDays, billedAmount: roundMoney(Number(r.amount) || 0), amountPaid, dailyRate: roundMoney(rate),
+    };
+
+    if (start > exit) {
+      // Whole window after the exit → unearned in full.
+      const raw = roundMoney(rate * windowDays);
+      out.push({
+        creditType: 'prepaid_return', allocationMonth, calculatedAmount: amountPaid,
+        basis: Object.assign({}, common, rowBasis, {
+          rule: 'prepaid_return', eligible: true, classification: 'window_after_exit',
+          unusedDays: windowDays, uncappedAmount: raw, capped: raw > amountPaid, fullReturn: true,
+        }),
+      });
+      return;
+    }
+
+    latestUsedRow = { r, start, end, windowDays, amountPaid, rate, allocationMonth, rowBasis };
+    if (end <= exit) return;   // fully used — nothing to decide
+    // Days strictly after the exit, not yet credited by an earlier window.
+    let from = addDays(exit, 1);
+    if (creditedThrough && creditedThrough >= from) from = addDays(creditedThrough, 1);
+    const unusedDays = from > end ? 0 : diffWholeDays(from, end) + 1;
+    const alreadyCreditedThrough = creditedThrough ? isoFromLocalDate(creditedThrough) : '';
+    if (unusedDays > 0) creditedThrough = end;
+    const raw = roundMoney(rate * unusedDays);
+    const cap = applyCreditCap(raw, amountPaid);
     out.push({
-      creditType: 'prepaid_return',
-      allocationMonth: mk,
-      calculatedAmount: roundMoney(g.paid),
-      basis: {
-        facilityType, rule: 'prepaid_return', exitDate: exitISO, dischargeMonth, dueDates: g.dueDates,
-        uncappedAmount: roundMoney(g.billed), amountPaid: roundMoney(g.paid), capped: g.paid < g.billed,
-      },
+      creditType: 'days_unused', allocationMonth, calculatedAmount: eligible ? cap.calculatedAmount : 0,
+      basis: Object.assign({}, common, rowBasis, {
+        rule, eligible, discretionary: rule === 'detox_tenure_cutoff_zero', classification: 'window_contains_exit',
+        creditedFrom: unusedDays > 0 ? isoFromLocalDate(from) : '', alreadyCreditedThrough,
+        unusedDays, uncappedAmount: raw, capped: eligible && cap.capped,
+      }),
     });
   });
+
+  if (!out.some(o => o.creditType === 'days_unused')) {
+    // Nothing left to credit for days — still one auditable zero row: the
+    // latest window that started on/before the exit, else the exit's
+    // calendar month (no payment rows at all, nothing received).
+    let allocationMonth, rowBasis, amountPaid, rate, unusedDays, coverageSource;
+    if (latestUsedRow) {
+      allocationMonth = latestUsedRow.allocationMonth; rowBasis = latestUsedRow.rowBasis;
+      amountPaid = latestUsedRow.amountPaid; rate = latestUsedRow.rate; unusedDays = 0; coverageSource = 'payment';
+    } else {
+      const y = exit.getFullYear(), m1 = exit.getMonth() + 1;
+      const start = new Date(y, m1 - 1, 1), end = new Date(y, m1 - 1, exitMonthDays);
+      allocationMonth = exitISO.slice(0, 7); amountPaid = 0; rate = 0; coverageSource = 'calendar_month';
+      unusedDays = diffWholeDays(exit, end);
+      rowBasis = { paymentDueDate: '', coverageStart: isoFromLocalDate(start), coverageEnd: isoFromLocalDate(end),
+        windowDays: exitMonthDays, billedAmount: 0, amountPaid: 0, dailyRate: 0 };
+    }
+    out.unshift({
+      creditType: 'days_unused', allocationMonth, calculatedAmount: 0,
+      basis: Object.assign({}, common, rowBasis, {
+        rule, eligible, discretionary: rule === 'detox_tenure_cutoff_zero', classification: 'no_unused_window', coverageSource,
+        creditedFrom: '', alreadyCreditedThrough: '', unusedDays, uncappedAmount: roundMoney(rate * unusedDays), capped: false,
+      }),
+    });
+  }
   return out;
 }
 
@@ -5070,25 +5090,26 @@ const CREDIT_RULE_LABELS = {
   residential_last_days_zero: 'מגורים — שחרור בשבוע האחרון של החודש: אין זיכוי ימים',
   detox_prorata:              'גמילה/דואלי — שהות מתחת ל־14 יום: זיכוי יחסי',
   detox_tenure_cutoff_zero:   'גמילה/דואלי — שהות 14 יום ומעלה: אין זיכוי (חיתוך לשיקול דעת, חריגה באישור סנדרה)',
-  prepaid_return:             'תשלום מראש לחודש שאחרי חודש השחרור — מוחזר במלואו',
+  prepaid_return:             'תשלום מראש — חלון הכיסוי מתחיל אחרי השחרור, מוחזר במלואו',
 };
 
 /* Human-readable calculation trail persisted in the row's `reason` column at
  * creation (the machine copy is the `basis` JSON column). */
 function creditBasisText(creditType, basis) {
   if (!basis) return '';
+  const windowText = `חלון כיסוי ${basis.coverageStart} → ${basis.coverageEnd} (${basis.windowDays} ימים${basis.paymentDueDate ? ', תשלום ' + basis.paymentDueDate : ' — חודש קלנדרי, אין שורת תשלום'})`;
   if (creditType === 'days_unused') {
     return [
       CREDIT_RULE_LABELS[basis.rule] || basis.rule,
       `שהות ${basis.tenureDays == null ? '?' : basis.tenureDays} ימים (${basis.entryDate || '?'} → ${basis.exitDate}), יום ${basis.exitDayOfMonth} מתוך ${basis.exitMonthDays}`,
-      `תקופה ששולמה ${basis.coverageStart} → ${basis.coverageEnd} (${basis.coverageSource === 'payment' ? 'לפי תשלום ' + basis.paymentDueDate : 'חודש קלנדרי מלא — אין שורת תשלום'})`,
-      `שולם בפועל ${basis.amountPaid} / ${basis.divisor} = תעריף יומי ${basis.dailyRate}; ימים ששולמו ${basis.daysPaidFor}, ימי שהות ${basis.daysStayed}, לא נוצלו ${basis.daysNotStayed}`,
-      `סכום לפני תקרה/כלל ${basis.uncappedAmount}` + (basis.capped ? ' — הוגבל לסכום ששולם' : '') + (!basis.eligible ? ' — אופס לפי הכלל' : ''),
+      windowText,
+      `ימים לא מנוצלים אחרי השחרור ${basis.unusedDays}` + (basis.alreadyCreditedThrough ? ` (עד ${basis.alreadyCreditedThrough} כבר זוכה בשורה קודמת)` : ''),
+      `שולם בשורה ${basis.amountPaid} / ${basis.divisor} = תעריף יומי ${basis.dailyRate}; סכום לפני תקרה/כלל ${basis.uncappedAmount}` +
+        (basis.capped ? ' — הוגבל לסכום ששולם' : '') + (!basis.eligible ? ' — אופס לפי הכלל' : ''),
     ].join(' | ');
   }
   if (creditType === 'prepaid_return') {
-    return `${CREDIT_RULE_LABELS.prepaid_return} (שחרור ${basis.exitDate}); מועדי חיוב ${(basis.dueDates || []).join(', ')}; חויב ${basis.uncappedAmount}, שולם בפועל ${basis.amountPaid}` +
-      (basis.capped ? ' — הוחזר רק מה ששולם' : '');
+    return `${CREDIT_RULE_LABELS.prepaid_return} (שחרור ${basis.exitDate}); ${windowText}; חויב ${basis.billedAmount}, שולם בפועל ${basis.amountPaid} — מוחזר במלואו`;
   }
   return '';
 }
