@@ -153,6 +153,9 @@ const state = {
   patients: [],
   dischargedPatients: [],
   payments: [],
+  /* Credits / refunds ledger rows (Credits sheet), loaded by getCredits in
+   * loadAll. Empty on a fresh install or an older deploy. */
+  credits: [],
   /* Per-patient, per-month overrides of the monthly billing amount (סכום חודשי),
    * returned by getData as `billingOverrides`. One entry per (patientId, month).
    * Foundation phase: populated on load and plumbed through state only — no UI
@@ -243,7 +246,12 @@ async function apiPost(body) {
   if (res.status === 401) { showPinScreen(); throw new Error('unauthorized'); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) {
-    throw new Error(data.message || data.error || ('HTTP ' + res.status));
+    // A HTTP 200 carrying {ok:false} is a FAILURE — never swallowed. The parsed
+    // body rides on the error so callers can read structured refusals (e.g. a
+    // stale-save `conflicts` list) instead of only the message string.
+    const err = new Error(data.message || data.error || ('HTTP ' + res.status));
+    err.data = data;
+    throw err;
   }
   return data;
 }
@@ -881,6 +889,18 @@ async function loadAll() {
     } catch (err) {
       console.warn('[E-ZONE] getPayments failed, assuming empty:', err.message);
       state.payments = [];
+    }
+
+    // Credits ledger — own sheet, own action (same fail-soft rule as payments:
+    // an older backend without getCredits must not block the app).
+    try {
+      const cr = await apiGet({ action: 'getCredits' });
+      const rawCredits = Array.isArray(cr && cr.credits) ? cr.credits : [];
+      state.credits = rawCredits.map(normalizeCredit).filter(c => c.id);
+      console.log('[E-ZONE] getCredits →', state.credits.length, 'records');
+    } catch (err) {
+      console.warn('[E-ZONE] getCredits failed, assuming empty:', err.message);
+      state.credits = [];
     }
 
     // ===== Patient-load diagnosis =====
@@ -3695,6 +3715,16 @@ function renderDischargedPatients() {
       btn.onclick = () => showRestorePatientChoiceModal(p);
       actions.appendChild(btn);
 
+      /* Credits / refunds — create or edit without touching the discharge
+       * record (recovery path for a failed or deferred credit). The count pill
+       * shows how many ledger rows already exist for this patient. */
+      const nCredits = creditsForPatient(state.credits, '', patientKey(p)).length;
+      const creditBtn = document.createElement('button');
+      creditBtn.className = 'btn small';
+      creditBtn.textContent = nCredits ? `זיכויים (${nCredits})` : 'זיכויים';
+      creditBtn.onclick = () => openCreditsForDischarged(p);
+      actions.appendChild(creditBtn);
+
       row.appendChild(actions);
     }
 
@@ -4763,8 +4793,559 @@ function dischargePatient(p) {
       if (shouldCreateOutpatientLead(disposition)) {
         await createOutpatientLead(p);
       }
+
+      // Credits / refunds — a SEPARATE write, offered only once BOTH discharge
+      // writes above have succeeded. Nothing here can roll the discharge back:
+      // the modal's save failures surface the Hebrew error banner and leave
+      // the discharge intact; a deferred or failed credit is recoverable from
+      // the מטופלים משוחררים tab (openCreditsForDischarged).
+      try {
+        showCreditsModal({
+          patient: p, patientId: p.id ? String(p.id) : '', patientKey: patientKey(p), exitDate: exitDate,
+        });
+      } catch (e) {
+        console.warn('[E-ZONE] credits modal failed to open:', e && e.message);
+        showError('לא ניתן לפתוח את חלון הזיכויים — ניתן ליצור זיכוי מלשונית מטופלים משוחררים. ' + (e && e.message || ''));
+      }
     },
   });
+}
+
+/* ====================================================
+   CREDITS / REFUNDS LEDGER
+   ====================================================
+   Sheet: Credits (CREDIT_COLUMNS in Code.gs). Every amount is stored
+   VAT-INCLUSIVE (the `pay` / Payments convention); displays divide by
+   VAT_RATE. Two identity keys ride on every row — patientId (the persisted
+   Patients id) and patientKey (the legacy triple that keys Payments) — both
+   stored, neither derived from the other at read time. */
+
+const CREDIT_TYPE_LABELS = {
+  days_unused:    'ימים שלא נוצלו',
+  prepaid_return: 'החזר תשלום מראש',
+  other:          'זיכוי אחר',
+};
+const CREDIT_STATUS_LABELS = { pending: 'ממתין', paid: 'שולם', cancelled: 'בוטל' };
+const CREDIT_TYPES = Object.keys(CREDIT_TYPE_LABELS);
+
+/* Tenure (whole days, exit − entry) at or beyond which a days_unused credit is
+ * ZERO. Below it, the unused remainder of the paid coverage period is credited
+ * pro-rata. prepaid_return is independent of this rule. */
+const CREDIT_MIN_TENURE_DAYS = 14;
+
+/* Display mirror of creditId_() in Code.gs. The SERVER mints every persisted
+ * id (it owns the seq counter under the lock); this exists for tests + logs. */
+function creditId(patientId, allocationMonth, seq) {
+  return `credit::${patientId}::${allocationMonth}::${seq}`;
+}
+
+/* 'YYYY-MM-DD' → local-midnight Date (getFullYear/getMonth/getDate parts —
+ * never Date.parse, which would read the string as UTC midnight and drift the
+ * day −1 in Israel). null for anything that is not a bare ISO date. */
+function localDateFromISO(iso) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+function isoFromLocalDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+/* Calendar days in a month (month1 is 1-based). */
+function daysInCalendarMonth(year, month1) {
+  return new Date(year, month1, 0).getDate();
+}
+/* Whole calendar days from a to b (local midnights). Math.round absorbs the
+ * ±1h a DST change injects between two local midnights, so a span across the
+ * March / October switch still counts exact days — no drift. */
+function diffWholeDays(a, b) {
+  return Math.round((b.getTime() - a.getTime()) / 86400000);
+}
+/* d + n months with the day-of-month CLAMPED to the target month's length
+ * (Jan 31 + 1 → Feb 28/29, never a March overflow). Local parts throughout. */
+function addMonthsClamped(d, n) {
+  const y = d.getFullYear(), m = d.getMonth() + n, day = d.getDate();
+  const last = new Date(y, m + 1, 0).getDate();
+  return new Date(y, m, Math.min(day, last));
+}
+function addDays(d, n) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+}
+function roundMoney(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+/* The period a payment row pays for: dueDate D through D + 1 month − 1 day
+ * (local parts; Amendment B — never "until the next payment row", which is
+ * usually absent at discharge). { start, end } as local Dates. */
+function paymentCoverage(payment) {
+  const start = localDateFromISO(isoDate(payment && payment.dueDate));
+  if (!start) return null;
+  return { start, end: addDays(addMonthsClamped(start, 1), -1) };
+}
+
+/* Pure. The credit suggestions for a discharge:
+ *   [0]   days_unused    — ALWAYS present (a zero is still a decision):
+ *           credited month = billed month of the LATEST payment row whose
+ *           dueDate ≤ exitDate (the row covering the stay's end); no such row →
+ *           the exit date's calendar month, covering the FULL calendar month.
+ *           dailyRate = monthlyRate / DAYS_IN_MONTH (the named divisor below —
+ *           the actual calendar day count of the credited month).
+ *           unusedDays = days paid for in the coverage period − days stayed in
+ *           it (exit day counts as stayed). tenure ≥ CREDIT_MIN_TENURE_DAYS →
+ *           0. CAP: never more than amountPaid received for that month; the
+ *           uncapped figure is kept in basis.uncappedAmount so the cap is
+ *           visible, never silent.
+ *   [1..]  prepaid_return — one per billed month of the payment rows whose
+ *           dueDate is AFTER exitDate (coverage never began — this is the
+ *           "billed month later than the discharge month" rule, and it also
+ *           catches a same-month row due after the exit). Independent of the
+ *           14-day rule. Amount = amountPaid for that month, never the billed
+ *           amount; the billed figure is basis.uncappedAmount.
+ * exitDate is normalized through isoDate() FIRST (it may arrive as a raw ISO
+ * timestamp; a naive slice would drift −1 day in Israel), then every date is
+ * handled via local parts. Amounts are VAT-inclusive like their inputs. */
+function suggestCredits(patient, exitDate, payments) {
+  const exitISO  = isoDate(exitDate);
+  const exit     = localDateFromISO(exitISO);
+  if (!patient || !exit) return [];
+  const entryISO = isoDate(patient.date);
+  const entry    = localDateFromISO(entryISO);
+  const key      = patientKey(patient);
+
+  const rows = (Array.isArray(payments) ? payments : [])
+    .filter(r => r && r.patientId === key && r.dueDate)
+    .map(r => Object.assign({}, r, { dueDate: isoDate(r.dueDate) }))
+    .filter(r => /^\d{4}-\d{2}-\d{2}$/.test(r.dueDate))
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+
+  const before   = rows.filter(r => r.dueDate <= exitISO);
+  const covering = before.length ? before[before.length - 1] : null;
+  const allocationMonth = covering ? monthKey(covering.dueDate) : exitISO.slice(0, 7);
+  const ay = Number(allocationMonth.slice(0, 4)), am = Number(allocationMonth.slice(5, 7));
+
+  /* >>> DIVISOR BASIS — the single place to change the daily-rate rule. <<<
+   * Today: the actual calendar day count of the credited month (28/29/30/31). */
+  const DAYS_IN_MONTH = daysInCalendarMonth(ay, am);
+
+  const monthRows   = rows.filter(r => monthKey(r.dueDate) === allocationMonth);
+  const amountPaid  = roundMoney(monthRows.reduce((s, r) => s + (Number(r.amountPaid) || 0), 0));
+  const monthlyRate = covering && Number(covering.amount) > 0 ? Number(covering.amount) : (Number(patient.pay) || 0);
+  const dailyRate   = monthlyRate / DAYS_IN_MONTH;
+
+  let start, end, coverageSource;
+  if (covering) {
+    const cov = paymentCoverage(covering);
+    start = cov.start; end = cov.end; coverageSource = 'payment';
+  } else {
+    start = new Date(ay, am - 1, 1); end = new Date(ay, am - 1, DAYS_IN_MONTH); coverageSource = 'calendar_month';
+  }
+  const daysPaidFor = diffWholeDays(start, end) + 1;
+  const stayStart   = entry && entry > start ? entry : start;
+  const daysStayed  = exit < stayStart ? 0 : Math.min(daysPaidFor, diffWholeDays(stayStart, exit) + 1);
+  const unusedDays  = Math.max(0, daysPaidFor - daysStayed);
+  const tenureDays  = entry ? diffWholeDays(entry, exit) : null;
+  const eligible    = tenureDays !== null && tenureDays < CREDIT_MIN_TENURE_DAYS;
+  const uncapped    = eligible ? roundMoney(dailyRate * unusedDays) : 0;
+  const calculated  = roundMoney(Math.min(uncapped, amountPaid));
+
+  const out = [{
+    creditType: 'days_unused',
+    allocationMonth,
+    calculatedAmount: calculated,
+    basis: {
+      entryDate: entryISO, exitDate: exitISO, tenureDays, minTenureDays: CREDIT_MIN_TENURE_DAYS, eligible,
+      monthlyRate, daysInMonth: DAYS_IN_MONTH, dailyRate: roundMoney(dailyRate),
+      coverageSource, paymentDueDate: covering ? covering.dueDate : '',
+      coverageStart: isoFromLocalDate(start), coverageEnd: isoFromLocalDate(end),
+      daysPaidFor, daysStayed, unusedDays,
+      uncappedAmount: uncapped, amountPaid, capped: uncapped > amountPaid,
+    },
+  }];
+
+  // prepaid_return — grouped per billed month, ascending.
+  const future = rows.filter(r => r.dueDate > exitISO);
+  const byMonth = {};
+  future.forEach(r => {
+    const mk = monthKey(r.dueDate);
+    if (!byMonth[mk]) byMonth[mk] = { dueDates: [], billed: 0, paid: 0 };
+    byMonth[mk].dueDates.push(r.dueDate);
+    byMonth[mk].billed += Number(r.amount) || 0;
+    byMonth[mk].paid   += Number(r.amountPaid) || 0;
+  });
+  Object.keys(byMonth).sort().forEach(mk => {
+    const g = byMonth[mk];
+    out.push({
+      creditType: 'prepaid_return',
+      allocationMonth: mk,
+      calculatedAmount: roundMoney(g.paid),
+      basis: {
+        exitDate: exitISO, dischargeMonth: exitISO.slice(0, 7), dueDates: g.dueDates,
+        uncappedAmount: roundMoney(g.billed), amountPaid: roundMoney(g.paid), capped: g.paid < g.billed,
+      },
+    });
+  });
+  return out;
+}
+
+/* The days_unused suggestion alone — { creditType, calculatedAmount,
+ * allocationMonth, basis }. Convenience over suggestCredits()[0]. */
+function suggestCredit(patient, exitDate, payments) {
+  const all = suggestCredits(patient, exitDate, payments);
+  return all.length ? all[0] : null;
+}
+
+/* Amount ÷ VAT_RATE for display — every credit figure is stored VAT-inclusive. */
+function exVat(amount) {
+  return Math.round((Number(amount) || 0) / VAT_RATE);
+}
+function fmtShekel(n) {
+  return '₪ ' + (Number(n) || 0).toLocaleString('he-IL');
+}
+
+/* Human-readable calculation trail persisted in the row's `reason` column at
+ * creation, so the cap and the rule are visible in the sheet itself. */
+function creditBasisText(creditType, basis) {
+  if (!basis) return '';
+  if (creditType === 'days_unused') {
+    const parts = [
+      `שהות ${basis.tenureDays == null ? '?' : basis.tenureDays} ימים (${basis.entryDate || '?'} → ${basis.exitDate})`,
+      basis.eligible
+        ? `תעריף יומי ${basis.dailyRate} = ${basis.monthlyRate} / ${basis.daysInMonth} ימים בחודש ${basis.allocationMonth || ''}`.trim()
+        : `שהות של ${basis.minTenureDays} ימים ומעלה — אין זיכוי ימים`,
+      `תקופה ששולמה ${basis.coverageStart} → ${basis.coverageEnd} (${basis.coverageSource === 'payment' ? 'לפי תשלום ' + basis.paymentDueDate : 'חודש קלנדרי מלא — אין שורת תשלום'})`,
+      `ימים ששולמו ${basis.daysPaidFor}, ימי שהות ${basis.daysStayed}, לא נוצלו ${basis.unusedDays}`,
+      `סכום לפני תקרה ${basis.uncappedAmount}; שולם בפועל ${basis.amountPaid}` + (basis.capped ? ' — הוגבל לסכום ששולם' : ''),
+    ];
+    return parts.join(' | ');
+  }
+  if (creditType === 'prepaid_return') {
+    return `תשלום מראש לחודש שאחרי השחרור (${basis.exitDate}); מועדי חיוב ${(basis.dueDates || []).join(', ')}; חויב ${basis.uncappedAmount}, שולם בפועל ${basis.amountPaid}` +
+      (basis.capped ? ' — הוחזר רק מה ששולם' : '');
+  }
+  return '';
+}
+
+/* Pure. null when the line may be saved, else the Hebrew refusal:
+ *   - amount must be a finite number ≥ 0 (0 is valid — a zero credit is a row);
+ *   - amount ≠ calculatedAmount REQUIRES a non-empty overrideReason;
+ *   - creditType must be one of CREDIT_TYPES; allocationMonth 'YYYY-MM';
+ *   - 'other' requires a free-text reason. */
+function validateCreditLine(line) {
+  if (!line || typeof line !== 'object') return 'שורת זיכוי לא תקינה';
+  if (CREDIT_TYPES.indexOf(line.creditType) < 0) return 'סוג זיכוי לא מוכר';
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(line.allocationMonth || ''))) return 'חודש הזיכוי חסר או לא תקין (YYYY-MM)';
+  const amount = Number(line.amount);
+  const calculated = Number(line.calculatedAmount);
+  if (line.amount === '' || line.amount === null || line.amount === undefined || !isFinite(amount) || amount < 0) return 'סכום הזיכוי חסר או לא תקין';
+  if (!isFinite(calculated) || calculated < 0) return 'הסכום המחושב לא תקין';
+  if (roundMoney(amount) !== roundMoney(calculated) && !String(line.overrideReason || '').trim()) {
+    return 'הסכום שונה מהסכום המחושב — יש למלא נימוק לשינוי';
+  }
+  if (line.creditType === 'other' && !String(line.reason || '').trim()) return 'זיכוי אחר דורש סיבה';
+  return null;
+}
+
+/* One Credits-sheet row → the client shape. Both identity keys are read
+ * AS STORED (never derived from each other). */
+function normalizeCredit(r) {
+  if (!r || typeof r !== 'object') r = {};
+  const type = String(r.creditType || '').trim();
+  const status = String(r.status || '').trim();
+  return {
+    id:               String(r.id || ''),
+    patientId:        String(r.patientId || ''),
+    patientKey:       String(r.patientKey || ''),
+    patientName:      String(r.patientName || ''),
+    houseId:          resolveHouseId(r.houseId || ''),
+    creditType:       CREDIT_TYPES.indexOf(type) >= 0 ? type : 'other',
+    allocationMonth:  String(r.allocationMonth || '').slice(0, 7),
+    calculatedAmount: Number(r.calculatedAmount) || 0,
+    amount:           Number(r.amount) || 0,
+    overrideReason:   String(r.overrideReason || ''),
+    reason:           String(r.reason || ''),
+    approvedBy:       String(r.approvedBy || ''),
+    status:           CREDIT_STATUS_LABELS[status] ? status : 'pending',
+    paymentDate:      r.paymentDate ? isoDate(r.paymentDate) : '',
+    method:           String(r.method || ''),
+    notes:            String(r.notes || ''),
+    createdAt:        String(r.createdAt || ''),
+    createdBy:        String(r.createdBy || ''),
+    updatedAt:        String(r.updatedAt || ''),
+    updatedBy:        String(r.updatedBy || ''),
+  };
+}
+
+/* Credits for a patient — matched on EITHER stored key (a row written before
+ * an identity migration still joins by patientKey; a renamed patient still
+ * joins by patientId). */
+function creditsForPatient(credits, patientId, pKey) {
+  return (Array.isArray(credits) ? credits : []).filter(c =>
+    c && ((patientId && c.patientId === patientId) || (pKey && c.patientKey === pKey)));
+}
+
+/* Persist one credit line (create when `id` is blank — the server mints it;
+ * edit otherwise). Backend refusals are NEVER silent: apiPost throws on
+ * {ok:false}; a stale-save `conflict` is rendered through the same Hebrew
+ * banner the Patients merge uses (conflictsMessage) and re-thrown flagged
+ * `handled` so the caller does not double-report it. A 200 whose body lacks
+ * the echoed credit is treated as a failure too. Updates state.credits. */
+/* Re-read the Credits sheet into state (best-effort; a failure leaves the
+ * current list in place and returns false). Used after a stale-save refusal
+ * so the banner's "הנתונים רועננו" is true for credits too. */
+async function reloadCredits() {
+  try {
+    const cr = await apiGet({ action: 'getCredits' });
+    const raw = Array.isArray(cr && cr.credits) ? cr.credits : [];
+    state.credits = raw.map(normalizeCredit).filter(c => c.id);
+    return true;
+  } catch (e) {
+    console.warn('[E-ZONE] credits reload failed:', e && e.message);
+    return false;
+  }
+}
+
+async function saveCredit(credit) {
+  if (state.mode !== 'edit') throw new Error('שמירת זיכוי אפשרית רק בעריכה');
+  let res;
+  try {
+    res = await apiPost({ action: 'saveCredit', credit });
+  } catch (e) {
+    if (e && e.data && e.data.error === 'conflict') {
+      // Refresh FIRST so the banner's "refreshed" claim holds, then refuse.
+      await reloadCredits();
+      const msg = conflictsMessage({ conflicts: e.data.conflicts }) || 'הזיכוי לא נשמר — עודכן קודם על ידי משתמש/ת אחר/ת';
+      showError(msg);
+      const err = new Error(msg); err.handled = true; err.conflict = true;
+      throw err;
+    }
+    throw e;
+  }
+  if (!res || res.ok !== true || !res.credit || !res.credit.id) {
+    throw new Error('תשובת שרת לא תקינה בשמירת זיכוי');
+  }
+  const saved = normalizeCredit(res.credit);
+  state.credits = Array.isArray(state.credits) ? state.credits : [];
+  const idx = state.credits.findIndex(c => c.id === saved.id);
+  if (idx >= 0) state.credits[idx] = saved; else state.credits.push(saved);
+  return saved;
+}
+
+/* Build the editable lines for the credits modal: every EXISTING row for the
+ * patient first, then any suggestion for a (creditType, allocationMonth) pair
+ * that has no row yet — so re-opening after a partial save never proposes a
+ * duplicate of a credit already on the sheet. */
+function buildCreditLines(existing, suggestions) {
+  const lines = (existing || []).map(c => Object.assign({}, c, { isNew: false, basis: null }));
+  (suggestions || []).forEach(s => {
+    const dup = lines.some(l => l.creditType === s.creditType && l.allocationMonth === s.allocationMonth);
+    if (dup) return;
+    lines.push({
+      id: '', isNew: true, creditType: s.creditType, allocationMonth: s.allocationMonth,
+      calculatedAmount: s.calculatedAmount, amount: s.calculatedAmount, overrideReason: '',
+      reason: creditBasisText(s.creditType, Object.assign({ allocationMonth: s.allocationMonth }, s.basis)),
+      approvedBy: '', status: 'pending', paymentDate: '', method: '', notes: '', updatedAt: '', basis: s.basis,
+    });
+  });
+  return lines;
+}
+
+/* Hebrew RTL modal: the credit lines for one patient — suggestions after a
+ * discharge and/or the existing rows (recovery / edit path). Vered can accept
+ * or edit each amount; an amount that differs from calculatedAmount demands
+ * an overrideReason before save (validateCreditLine, then again server-side).
+ * calculatedAmount is displayed, never overwritten. Save is guarded by
+ * withBusyButton; lines are written one by one and a failure stops the run
+ * with the error banner, keeping the modal open (already-saved lines are
+ * marked so a retry edits instead of duplicating). */
+function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
+  const root = document.getElementById('modal-root');
+  if (!root) return;
+  const suggestions = exitDate ? suggestCredits(patient, exitDate, state.payments) : [];
+  const existing    = creditsForPatient(state.credits, patientId, pKey);
+  const lines       = buildCreditLines(existing, suggestions);
+
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+
+  const lineHtml = (l, i) => {
+    const typeLabel = CREDIT_TYPE_LABELS[l.creditType] || l.creditType;
+    const statusOpts = Object.keys(CREDIT_STATUS_LABELS).map(s =>
+      `<option value="${s}" ${l.status === s ? 'selected' : ''}>${CREDIT_STATUS_LABELS[s]}</option>`).join('');
+    const isOther = l.creditType === 'other';
+    return `
+      <fieldset class="credit-line" data-line="${i}">
+        <legend>${escapeHtml(typeLabel)}${l.isNew ? ' <span class="credit-new">חדש</span>' : ''}</legend>
+        <div class="form-row credit-inline">
+          <label>חודש</label>
+          ${isOther && l.isNew
+            ? `<input type="month" name="allocationMonth" value="${escapeHtml(l.allocationMonth)}" dir="ltr" required />`
+            : `<span class="p-val" dir="ltr">${escapeHtml(l.allocationMonth || '—')}</span>`}
+        </div>
+        ${isOther ? '' : `
+        <div class="credit-calc">
+          מחושב: <b>${fmtShekel(l.calculatedAmount)}</b>
+          <span class="credit-exvat">(${fmtShekel(exVat(l.calculatedAmount))} ללא מע"מ)</span>
+          ${l.basis && l.basis.capped ? `<span class="credit-cap">הוגבל לסכום ששולם — לפני תקרה ${fmtShekel(l.basis.uncappedAmount)}</span>` : ''}
+        </div>`}
+        <div class="form-row">
+          <label>סכום הזיכוי (כולל מע"מ)</label>
+          <input type="number" name="amount" min="0" step="1" value="${escapeHtml(String(l.amount))}" dir="ltr" required />
+          <span class="credit-exvat" data-role="amount-exvat">${fmtShekel(exVat(l.amount))} ללא מע"מ</span>
+        </div>
+        <div class="form-row credit-override" ${roundMoney(l.amount) !== roundMoney(l.calculatedAmount) || isOther ? '' : 'hidden'}>
+          <label>${isOther ? 'סיבת הזיכוי' : 'נימוק לשינוי הסכום'}</label>
+          <input type="text" name="${isOther ? 'reason' : 'overrideReason'}" maxlength="300" value="${escapeHtml(isOther ? l.reason : l.overrideReason)}" />
+        </div>
+        <div class="form-row credit-inline">
+          <label>סטטוס</label>
+          <select name="status">${statusOpts}</select>
+        </div>
+        <div class="form-row">
+          <label>הערות</label>
+          <input type="text" name="notes" maxlength="500" value="${escapeHtml(l.notes || '')}" />
+        </div>
+        ${l.reason && !isOther ? `<div class="credit-basis">${escapeHtml(l.reason)}</div>` : ''}
+      </fieldset>`;
+  };
+
+  const render = () => {
+    back.innerHTML = `
+      <div class="modal credits-modal">
+        <h3>זיכויים והחזרים — ${escapeHtml((patient && patient.name) || '')}</h3>
+        <form>
+          <div class="credit-lines">${lines.map(lineHtml).join('')}</div>
+          <button type="button" class="btn small" data-action="add-other">+ זיכוי ידני</button>
+          <div class="form-actions">
+            <button type="button" class="btn" data-action="cancel">ביטול</button>
+            <button type="submit" class="btn primary">שמור זיכויים</button>
+          </div>
+        </form>
+      </div>`;
+    wire();
+  };
+
+  const close = () => back.remove();
+
+  /* Pull the current field values back into `lines` (before a re-render or a
+   * save). calculatedAmount is NEVER read from the form. */
+  const collect = () => {
+    back.querySelectorAll('.credit-line').forEach(fs => {
+      const l = lines[Number(fs.dataset.line)];
+      if (!l) return;
+      const val = (n) => { const el = fs.querySelector(`[name="${n}"]`); return el ? el.value : undefined; };
+      const amount = val('amount');
+      if (amount !== undefined) l.amount = amount === '' ? '' : Number(amount);
+      if (val('overrideReason') !== undefined) l.overrideReason = val('overrideReason');
+      if (val('reason') !== undefined) l.reason = val('reason');
+      if (val('status') !== undefined) l.status = val('status');
+      if (val('notes') !== undefined) l.notes = val('notes');
+      if (val('allocationMonth') !== undefined) l.allocationMonth = val('allocationMonth');
+      if (l.creditType === 'other' && l.isNew) l.calculatedAmount = l.amount === '' ? 0 : Number(l.amount);
+    });
+  };
+
+  const wire = () => {
+    back.querySelector('[data-action="cancel"]').onclick = close;
+    back.querySelector('[data-action="add-other"]').onclick = () => {
+      collect();
+      lines.push({
+        id: '', isNew: true, creditType: 'other', allocationMonth: (isoDate(exitDate) || todayISO()).slice(0, 7),
+        calculatedAmount: 0, amount: 0, overrideReason: '', reason: '', approvedBy: '', status: 'pending',
+        paymentDate: '', method: '', notes: '', updatedAt: '', basis: null,
+      });
+      render();
+    };
+    // Live: reveal the override-reason row + refresh the ex-VAT echo as the
+    // amount changes.
+    back.querySelectorAll('.credit-line').forEach(fs => {
+      const l = lines[Number(fs.dataset.line)];
+      const amountEl = fs.querySelector('[name="amount"]');
+      const ovr = fs.querySelector('.credit-override');
+      const ex = fs.querySelector('[data-role="amount-exvat"]');
+      if (!amountEl) return;
+      amountEl.addEventListener('input', () => {
+        const v = Number(amountEl.value);
+        if (ex) ex.textContent = fmtShekel(exVat(v)) + ' ללא מע"מ';
+        if (ovr && l.creditType !== 'other') ovr.hidden = roundMoney(v) === roundMoney(l.calculatedAmount);
+      });
+    });
+    const form = back.querySelector('form');
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      const submitBtn = back.querySelector('button[type="submit"]');
+      withBusyButton(submitBtn, async () => {
+        collect();
+        // Validate EVERY line before the first write — no partial run on a
+        // refusable payload.
+        for (let i = 0; i < lines.length; i++) {
+          const err = validateCreditLine(lines[i]);
+          if (err) { showError(`${CREDIT_TYPE_LABELS[lines[i].creditType] || ''} ${lines[i].allocationMonth || ''}: ${err}`); return; }
+        }
+        let saved = 0;
+        for (let i = 0; i < lines.length; i++) {
+          const l = lines[i];
+          const payload = {
+            id: l.id || '', patientId, patientKey: pKey,
+            patientName: (patient && patient.name) || '', houseId: (patient && patient.houseId) || '',
+            creditType: l.creditType, allocationMonth: l.allocationMonth,
+            calculatedAmount: roundMoney(l.calculatedAmount), amount: roundMoney(l.amount),
+            overrideReason: roundMoney(l.amount) !== roundMoney(l.calculatedAmount) ? String(l.overrideReason || '').trim() : '',
+            reason: l.reason || '', approvedBy: l.approvedBy || '', status: l.status || 'pending',
+            paymentDate: l.paymentDate || '', method: l.method || '', notes: l.notes || '',
+            updatedAt: l.updatedAt || '',
+          };
+          try {
+            const row = await saveCredit(payload);
+            Object.assign(l, row, { isNew: false });
+            saved++;
+          } catch (err) {
+            if (!(err && err.handled)) showError('שמירת הזיכוי נכשלה — ' + (err && err.message || 'שגיאה'));
+            if (err && err.conflict) {
+              // The sheet's version won: rebuild the lines from the reloaded
+              // state so Vered edits what is actually there, not her stale copy.
+              const fresh = buildCreditLines(creditsForPatient(state.credits, patientId, pKey), suggestions);
+              lines.splice(0, lines.length, ...fresh);
+            }
+            render();       // keep the modal open with what did / did not land
+            renderAll();
+            return;
+          }
+        }
+        showToast(saved === 1 ? 'הזיכוי נשמר' : `נשמרו ${saved} זיכויים`);
+        close();
+        renderAll();
+      }).catch(err => {
+        if (!(err && err.handled)) showError(err && err.message || 'הפעולה נכשלה');
+      });
+    };
+  };
+
+  render();
+  root.appendChild(back);
+}
+
+/* Recovery / edit entry point from the מטופלים משוחררים tab: create or edit
+ * credits for an ALREADY-discharged patient without touching the discharge
+ * record. The persisted patientId comes from the live Patients row (matched by
+ * the same houseId+name+entryDate key the restore flows use — discharge never
+ * deletes the row); a patient with no matching row can still edit credits
+ * already keyed to the triple. Neither key is derived from the other. */
+function openCreditsForDischarged(audit) {
+  if (state.mode !== 'edit') return;
+  const idx = matchActivePatientIndex(state.patients, audit);
+  const row = idx >= 0 ? state.patients[idx] : null;
+  const pKey = patientKey(audit);
+  let patientId = row && row.id ? String(row.id) : '';
+  if (!patientId) {
+    const byKey = creditsForPatient(state.credits, '', pKey).find(c => c.patientId);
+    patientId = byKey ? byKey.patientId : '';
+  }
+  if (!patientId) {
+    showError('לא נמצאה שורת מטופל תואמת בגיליון המטופלים — לא ניתן ליצור זיכוי');
+    return;
+  }
+  const patient = Object.assign({}, audit, row || {}, { name: audit.name, houseId: audit.houseId, date: audit.date });
+  showCreditsModal({ patient, patientId, patientKey: pKey, exitDate: audit.exitDate || audit.dischargedAt || '' });
 }
 
 /* True only for the "released to outpatient" disposition — the single trigger

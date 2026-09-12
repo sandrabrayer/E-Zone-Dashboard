@@ -11,6 +11,11 @@
  *   GET  ?action=getPayments                    → {ok, payments:[...]}
  *   POST action=savePayment / updatePayment     → {ok, payment, created|updated}
  *                                                 (upserts by payment.id)
+ *   GET  ?action=getCredits                     → {ok, credits:[...]}
+ *   POST action=saveCredit&credit=...            → {ok, credit, created|updated}
+ *                                                 (credits/refunds ledger; id
+ *                                                  minted server-side on create,
+ *                                                  stale edits refused)
  *   GET  ?action=getAdmittedRoster&secret=...    → {ok, patients:[{sourceApp,name,phone,house}]}
  *                                                 (cross-app, read-only: currently-admitted
  *                                                  patients with phone recovered via fromLead)
@@ -409,6 +414,78 @@ const PAYMENT_COLUMNS = [
  * the Leads visitDate/visitTime text-column fix guards against. */
 const BILLING_OVERRIDE_COLUMNS = ['id', 'patientId', 'month', 'amount', 'created'];
 
+/* ===== Credits sheet — credits / refunds ledger =====
+ *
+ * One row per credit decision (a refund owed — or explicitly NOT owed — to a
+ * patient on discharge, or a manual credit). APPEND-ONLY contract, same rule
+ * as LEAD_COLUMNS / PAYMENT_COLUMNS: never insert/delete/reorder — position IS
+ * the data contract (readSheet_ maps by position); new columns go at the END.
+ * Guard-tested (test/credits-ledger.test.js). Auto-created on first use via
+ * getOrCreateSheet_.
+ *
+ *   id               — deterministic 'credit::<patientId>::<allocationMonth>::<seq>',
+ *                      MINTED SERVER-SIDE under the script lock (seq = 1-based
+ *                      count of rows already carrying that patientId+month).
+ *                      A client never mints ids; an unknown client id is refused.
+ *   patientId        — the PERSISTED Patients `id` (PATIENT_COLUMNS position 11)
+ *                      — joins to Patients, survives the identity migration.
+ *   patientKey       — the legacy triple houseId::name::entryDate (patientKey()
+ *                      in app.js) — joins to Payments (whose patientId column
+ *                      is this triple). BOTH keys are stored on every row and
+ *                      neither is ever derived from the other at read time.
+ *   patientName, houseId — denormalized display copies.
+ *   creditType       — one of CREDIT_TYPES, validated server-side:
+ *                        days_unused    — pro-rata for days paid but not stayed
+ *                                         (tenure < 14 days), capped at money
+ *                                         actually received for the month;
+ *                        prepaid_return — a payment whose coverage begins AFTER
+ *                                         the discharge date, returned in full
+ *                                         (amountPaid — never the billed amount);
+ *                        other          — manual credit; calculatedAmount is
+ *                                         the entered amount, `reason` required.
+ *   allocationMonth  — plain-text 'YYYY-MM' (the billed month the credit
+ *                      belongs to). Column text-forced ('@') at ensure time so
+ *                      Sheets never coerces it into a date.
+ *   calculatedAmount — what the rule computed (VAT-INCLUSIVE, like `pay` and
+ *                      Payments.amount). IMMUTABLE after creation: an edit never
+ *                      overwrites it — the override lives in `amount`.
+ *   amount           — the credit actually granted (VAT-inclusive). Defaults to
+ *                      calculatedAmount; when it differs, overrideReason is
+ *                      REQUIRED (server-enforced, not only in the UI).
+ *   overrideReason   — why amount ≠ calculatedAmount ('' when equal).
+ *   reason           — the calculation trail written at creation (daily rate,
+ *                      days, the UNCAPPED figure and the cap) for calculated
+ *                      types; the free-text justification for 'other'.
+ *                      Immutable after creation.
+ *   approvedBy       — free text, who approved the refund.
+ *   status           — one of CREDIT_STATUSES: pending | paid | cancelled.
+ *   paymentDate      — 'YYYY-MM-DD' the refund was paid out ('' until then).
+ *   method           — how it was paid (free text).
+ *   notes            — free text (editable).
+ *   createdAt/createdBy — SERVER-owned stamps of the first write (ISO server
+ *                      clock + the user from the SIGNED SESSION COOKIE via
+ *                      requestUser_ — never a client value). Immutable.
+ *   updatedAt/updatedBy — SERVER-owned stamps of the last write. The client
+ *                      echoes updatedAt back on an edit; a differing sheet stamp
+ *                      REFUSES the write (stale-save conflict, same rule as the
+ *                      Patients id-match branch).
+ *
+ * Every figure is stored VAT-inclusive (the existing revenue convention);
+ * displays divide by VAT_RATE (1.18) in app.js. A ZERO credit is still a row:
+ * "no refund owed" is an auditable decision, never silence. */
+const CREDITS_SHEET = 'Credits';
+const CREDIT_COLUMNS = [
+  'id', 'patientId', 'patientKey', 'patientName', 'houseId', 'creditType', 'allocationMonth',
+  'calculatedAmount', 'amount', 'overrideReason', 'reason', 'approvedBy', 'status',
+  'paymentDate', 'method', 'notes', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+];
+const CREDIT_TYPES    = ['days_unused', 'prepaid_return', 'other'];
+const CREDIT_STATUSES = ['pending', 'paid', 'cancelled'];
+/* Columns a later edit may change. Everything else on an existing row is
+ * carried from the SHEET, whatever the payload says (identity, the computed
+ * figure, the calculation trail and the creation stamps are immutable). */
+const CREDIT_EDITABLE_COLUMNS = ['amount', 'overrideReason', 'approvedBy', 'status', 'paymentDate', 'method', 'notes'];
+
 /* AuditLog sheet — append-only, hidden. One row per Patients-sheet write event
  * (promotion created/skipped, direct add, edit, discharge, delete, restore),
  * written by logAudit_ ONLY. APPEND-ONLY contract, same rule as LEAD_COLUMNS:
@@ -496,6 +573,13 @@ function handle_(params) {
     }
     if (action === 'deleteBillingOverride') {
       return jsonOut_(deleteBillingOverride_(parseJsonParam_(params.override)));
+    }
+    // Credits ledger. Same trust model as savePayment: reached only through
+    // the session-authed /api/sheets proxy (no new unauthenticated endpoint);
+    // the stamping user comes from the signed cookie via requestUser_.
+    if (action === 'getCredits') return jsonOut_(getCredits_());
+    if (action === 'saveCredit') {
+      return jsonOut_(upsertCredit_(parseJsonParam_(params.credit), requestUser_(params)));
     }
     if (action === 'moveLeadIrrelevant') {
       const res = moveLeadIrrelevant_(parseJsonParam_(params.lead));
@@ -646,6 +730,11 @@ function getOrCreateSheet_(name, headers) {
   // idempotent, so rows appended later inherit it.
   if (name === BILLING_OVERRIDES_SHEET) {
     forceColumnsText_(sh, BILLING_OVERRIDE_COLUMNS, ['month', 'amount']);
+  }
+  // Credits: allocationMonth ('YYYY-MM') must never coerce into a date; the
+  // paymentDate + ISO stamp columns are the same coercion class as droppedAt.
+  if (name === CREDITS_SHEET) {
+    forceColumnsText_(sh, CREDIT_COLUMNS, ['allocationMonth', 'paymentDate', 'createdAt', 'updatedAt']);
   }
   // Patients: the entry date AND exitDate must survive as plain 'YYYY-MM-DD'
   // strings — a date-typed cell reads back as a Date, serializes as a UTC
@@ -4226,6 +4315,173 @@ function upsertPayment_(payment) {
 
     sh.appendRow(row);
     return { ok: true, payment: payment, created: true };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* ===== Credits ledger ===== */
+
+function getCredits_() {
+  const sh = getOrCreateSheet_(CREDITS_SHEET, CREDIT_COLUMNS);
+  return { ok: true, credits: readSheet_(sh, CREDIT_COLUMNS) };
+}
+
+/* Deterministic credit id. Mirrors creditId() in app.js (display only there —
+ * the SERVER mints every persisted id, under the lock, from the row count). */
+function creditId_(patientId, allocationMonth, seq) {
+  return 'credit::' + patientId + '::' + allocationMonth + '::' + seq;
+}
+
+function creditStr_(v, max) {
+  return String(v == null ? '' : v).replace(/[<>]/g, '').trim().slice(0, max);
+}
+function creditAmount_(v) {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Number(v);
+  if (!isFinite(n) || n < 0) return null;
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * Create or edit ONE credit row. Every field is validated here — the client
+ * value is never trusted:
+ *   - creditType ∈ CREDIT_TYPES, status ∈ CREDIT_STATUSES, allocationMonth
+ *     'YYYY-MM', amounts finite and ≥ 0, both identity keys present;
+ *   - amount ≠ calculatedAmount without a non-empty overrideReason → refused
+ *     (override_reason_required); 'other' without a reason → refused;
+ *   - CREATE (no id in the payload): id minted here; createdAt/By +
+ *     updatedAt/By stamped from the server clock + the signed-cookie user;
+ *   - EDIT (id present): the row must exist (unknown_credit otherwise — a
+ *     client never mints ids); only CREDIT_EDITABLE_COLUMNS are taken from the
+ *     payload, everything else is carried from the sheet (calculatedAmount is
+ *     never overwritten by the edited amount); a payload updatedAt that
+ *     differs from the sheet's REFUSES the write with the same `conflicts`
+ *     shape the Patients merge uses (stale tab — someone saved first).
+ * Zero amounts are valid rows ("no refund owed" is a decision, not silence).
+ */
+function upsertCredit_(credit, user) {
+  if (!credit || typeof credit !== 'object') return { ok: false, error: 'missing_credit' };
+  const stampUser = String(user == null ? '' : user);
+
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const sh = getOrCreateSheet_(CREDITS_SHEET, CREDIT_COLUMNS);
+    const idIdx = CREDIT_COLUMNS.indexOf('id');
+    const lastRow = sh.getLastRow();
+    const nowIso = new Date().toISOString();
+    const existing = lastRow > 1
+      ? sh.getRange(2, 1, lastRow - 1, CREDIT_COLUMNS.length).getValues()
+      : [];
+
+    const wantId = creditStr_(credit.id, 200);
+    let record, targetRow = 0;
+
+    if (wantId) {
+      // ---- EDIT ----
+      let rowIdx = -1;
+      for (let i = 0; i < existing.length; i++) {
+        if (String(existing[i][idIdx]) === wantId) { rowIdx = i; break; }
+      }
+      if (rowIdx < 0) return { ok: false, error: 'unknown_credit', id: wantId };
+      const sheetObj = {};
+      for (let c = 0; c < CREDIT_COLUMNS.length; c++) sheetObj[CREDIT_COLUMNS[c]] = existing[rowIdx][c];
+
+      // Stale-save refusal: the stamp this tab loaded vs the sheet's now.
+      const seenStamp  = creditStr_(credit.updatedAt, 60);
+      const sheetStamp = creditStr_(sheetObj.updatedAt, 60);
+      if (sheetStamp !== '' && seenStamp !== '' && seenStamp !== sheetStamp) {
+        const conflict = {
+          id: wantId, name: String(sheetObj.patientName || ''), houseId: String(sheetObj.houseId || ''),
+          sheetUpdatedAt: sheetStamp, sheetUpdatedBy: String(sheetObj.updatedBy || ''),
+        };
+        logAudit_('credit_save_conflict', 'upsertCredit_', String(sheetObj.patientId || ''), conflict.name,
+          Object.assign({ seenUpdatedAt: seenStamp, updatedBy: stampUser }, conflict));
+        return { ok: false, error: 'conflict', conflicts: [conflict] };
+      }
+
+      record = Object.assign({}, sheetObj);
+      for (let k = 0; k < CREDIT_EDITABLE_COLUMNS.length; k++) {
+        const col = CREDIT_EDITABLE_COLUMNS[k];
+        if (credit[col] !== undefined) record[col] = credit[col];
+      }
+      targetRow = rowIdx + 2;
+    } else {
+      // ---- CREATE ----
+      record = Object.assign({}, credit);
+      record.createdAt = nowIso;
+      record.createdBy = stampUser;
+    }
+
+    // ---- Validation (both paths; on an edit the immutable fields are the sheet's) ----
+    const patientId  = creditStr_(record.patientId, 200);
+    const patientKey = creditStr_(record.patientKey, 300);
+    const month      = creditStr_(record.allocationMonth, 7);
+    const creditType = creditStr_(record.creditType, 40);
+    const status     = creditStr_(record.status, 20) || 'pending';
+    if (!patientId)  return { ok: false, error: 'missing_patientId' };
+    if (!patientKey) return { ok: false, error: 'missing_patientKey' };
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return { ok: false, error: 'bad_month' };
+    if (CREDIT_TYPES.indexOf(creditType) < 0)    return { ok: false, error: 'bad_creditType', creditType: creditType };
+    if (CREDIT_STATUSES.indexOf(status) < 0)     return { ok: false, error: 'bad_status', status: status };
+    const calculated = creditAmount_(record.calculatedAmount);
+    const amount     = creditAmount_(record.amount === undefined || record.amount === '' ? record.calculatedAmount : record.amount);
+    if (calculated === null || amount === null) return { ok: false, error: 'bad_amount' };
+    const overrideReason = creditStr_(record.overrideReason, 300);
+    const reason         = creditStr_(record.reason, 500);
+    if (amount !== calculated && !overrideReason) return { ok: false, error: 'override_reason_required' };
+    if (creditType === 'other' && !reason)        return { ok: false, error: 'reason_required' };
+
+    const out = {
+      id:               wantId,
+      patientId:        patientId,
+      patientKey:       patientKey,
+      patientName:      creditStr_(record.patientName, 120),
+      houseId:          creditStr_(record.houseId, 40),
+      creditType:       creditType,
+      allocationMonth:  month,
+      calculatedAmount: calculated,
+      amount:           amount,
+      overrideReason:   amount !== calculated ? overrideReason : '',
+      reason:           reason,
+      approvedBy:       creditStr_(record.approvedBy, 40),
+      status:           status,
+      paymentDate:      record.paymentDate ? asISODate_(record.paymentDate) : '',
+      method:           creditStr_(record.method, 40),
+      notes:            creditStr_(record.notes, 500),
+      createdAt:        String(record.createdAt || nowIso),
+      createdBy:        String(record.createdBy == null ? '' : record.createdBy),
+      updatedAt:        nowIso,
+      updatedBy:        stampUser,
+    };
+
+    if (!targetRow) {
+      // Mint: seq = rows already carrying this patientId + month, plus one.
+      const pIdx = CREDIT_COLUMNS.indexOf('patientId');
+      const mIdx = CREDIT_COLUMNS.indexOf('allocationMonth');
+      let seq = 1;
+      for (let i = 0; i < existing.length; i++) {
+        if (String(existing[i][pIdx]) === patientId && String(existing[i][mIdx]) === month) seq++;
+      }
+      out.id = creditId_(patientId, month, seq);
+      targetRow = sh.getLastRow() + 1;
+    }
+
+    // Belt-and-suspenders over the whole-column '@' format getOrCreateSheet_
+    // applies: force the text cells of THIS row before the values land.
+    ['allocationMonth', 'paymentDate', 'createdAt', 'updatedAt'].forEach(function (col) {
+      const c = CREDIT_COLUMNS.indexOf(col);
+      if (c >= 0) sh.getRange(targetRow, c + 1, 1, 1).setNumberFormat('@');
+    });
+    sh.getRange(targetRow, 1, 1, CREDIT_COLUMNS.length).setValues([objectToRow_(out, CREDIT_COLUMNS)]);
+
+    logAudit_(wantId ? 'credit_updated' : 'credit_created', 'upsertCredit_', patientId, out.patientName, {
+      id: out.id, patientKey: patientKey, creditType: creditType, allocationMonth: month,
+      calculatedAmount: calculated, amount: amount, override: amount !== calculated,
+      status: status, updatedBy: stampUser,
+    });
+    return wantId ? { ok: true, credit: out, updated: true } : { ok: true, credit: out, created: true };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
