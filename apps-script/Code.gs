@@ -414,6 +414,27 @@ const PAYMENT_COLUMNS = [
  * the Leads visitDate/visitTime text-column fix guards against. */
 const BILLING_OVERRIDE_COLUMNS = ['id', 'patientId', 'month', 'amount', 'created'];
 
+/* ===== Facility types =====
+ * Patients-sheet houseId (HOUSES in app.js) → billing-policy family used by
+ * the credits ledger. Mirrors FACILITY_TYPE_BY_HOUSE in app.js EXACTLY; the
+ * SERVER derives facilityType from houseId on every credit write — the client
+ * value is never trusted.
+ *   residential — asher (רעננה אשר), ramot (רמות השבים)
+ *   detox_dual  — rehab (קיסריה ריהאב), pardes (רעננה הפרדס),
+ *                 arfoni (קיסריה עפרוני), sde (שדה אליעזר) */
+const FACILITY_TYPE_BY_HOUSE = {
+  asher:  'residential',
+  ramot:  'residential',
+  rehab:  'detox_dual',
+  pardes: 'detox_dual',
+  arfoni: 'detox_dual',
+  sde:    'detox_dual',
+};
+const FACILITY_TYPES = ['residential', 'detox_dual'];
+function facilityTypeFor_(houseId) {
+  return FACILITY_TYPE_BY_HOUSE[String(houseId == null ? '' : houseId).trim()] || '';
+}
+
 /* ===== Credits sheet — credits / refunds ledger =====
  *
  * One row per credit decision (a refund owed — or explicitly NOT owed — to a
@@ -421,7 +442,7 @@ const BILLING_OVERRIDE_COLUMNS = ['id', 'patientId', 'month', 'amount', 'created
  * as LEAD_COLUMNS / PAYMENT_COLUMNS: never insert/delete/reorder — position IS
  * the data contract (readSheet_ maps by position); new columns go at the END.
  * Guard-tested (test/credits-ledger.test.js). Auto-created on first use via
- * getOrCreateSheet_.
+ * getOrCreateSheet_. Rules: CHANGELOG-credits-ledger.md.
  *
  *   id               — deterministic 'credit::<patientId>::<allocationMonth>::<seq>',
  *                      MINTED SERVER-SIDE under the script lock (seq = 1-based
@@ -434,18 +455,21 @@ const BILLING_OVERRIDE_COLUMNS = ['id', 'patientId', 'month', 'amount', 'created
  *                      is this triple). BOTH keys are stored on every row and
  *                      neither is ever derived from the other at read time.
  *   patientName, houseId — denormalized display copies.
+ *   facilityType     — residential | detox_dual, DERIVED from houseId here.
  *   creditType       — one of CREDIT_TYPES, validated server-side:
  *                        days_unused    — pro-rata for days paid but not stayed
- *                                         (tenure < 14 days), capped at money
- *                                         actually received for the month;
- *                        prepaid_return — a payment whose coverage begins AFTER
- *                                         the discharge date, returned in full
+ *                                         (residential: any tenure except an
+ *                                         exit in the last 7 days of the month;
+ *                                         detox_dual: tenure < 14 days, a
+ *                                         DISCRETIONARY cutoff the override
+ *                                         path carries), capped at amountPaid;
+ *                        prepaid_return — a payment billed for a month AFTER
+ *                                         the discharge month, returned in full
  *                                         (amountPaid — never the billed amount);
  *                        other          — manual credit; calculatedAmount is
  *                                         the entered amount, `reason` required.
  *   allocationMonth  — plain-text 'YYYY-MM' (the billed month the credit
- *                      belongs to). Column text-forced ('@') at ensure time so
- *                      Sheets never coerces it into a date.
+ *                      belongs to). Column text-forced ('@') at ensure time.
  *   calculatedAmount — what the rule computed (VAT-INCLUSIVE, like `pay` and
  *                      Payments.amount). IMMUTABLE after creation: an edit never
  *                      overwrites it — the override lives in `amount`.
@@ -453,15 +477,24 @@ const BILLING_OVERRIDE_COLUMNS = ['id', 'patientId', 'month', 'amount', 'created
  *                      calculatedAmount; when it differs, overrideReason is
  *                      REQUIRED (server-enforced, not only in the UI).
  *   overrideReason   — why amount ≠ calculatedAmount ('' when equal).
- *   reason           — the calculation trail written at creation (daily rate,
- *                      days, the UNCAPPED figure and the cap) for calculated
- *                      types; the free-text justification for 'other'.
- *                      Immutable after creation.
- *   approvedBy       — free text, who approved the refund.
+ *   reason           — human-readable calculation trail written at creation;
+ *                      the free-text justification for 'other'. Immutable.
+ *   approvedBy       — free text, who approved the credit.
+ *   decidedDate      — 'YYYY-MM-DD' the credit was decided/approved (defaults
+ *                      to the save day in the spreadsheet timezone).
+ *   payoutDate       — SERVER-DERIVED: the 15th of the next month on or after
+ *                      decidedDate (payoutDateFor_). Credits pay out on the
+ *                      15th, never at discharge.
  *   status           — one of CREDIT_STATUSES: pending | paid | cancelled.
- *   paymentDate      — 'YYYY-MM-DD' the refund was paid out ('' until then).
+ *                      'paid' is an EXPLICIT action: it requires paidDate AND
+ *                      method (never flipped automatically when payoutDate
+ *                      passes).
+ *   paidDate         — 'YYYY-MM-DD' the refund was actually paid out.
  *   method           — how it was paid (free text).
  *   notes            — free text (editable).
+ *   basis            — compact JSON of the calculation inputs/outputs (rule,
+ *                      facilityType, tenure, days, divisor, UNCAPPED figure,
+ *                      cap) written at creation. Immutable.
  *   createdAt/createdBy — SERVER-owned stamps of the first write (ISO server
  *                      clock + the user from the SIGNED SESSION COOKIE via
  *                      requestUser_ — never a client value). Immutable.
@@ -475,16 +508,22 @@ const BILLING_OVERRIDE_COLUMNS = ['id', 'patientId', 'month', 'amount', 'created
  * "no refund owed" is an auditable decision, never silence. */
 const CREDITS_SHEET = 'Credits';
 const CREDIT_COLUMNS = [
-  'id', 'patientId', 'patientKey', 'patientName', 'houseId', 'creditType', 'allocationMonth',
-  'calculatedAmount', 'amount', 'overrideReason', 'reason', 'approvedBy', 'status',
-  'paymentDate', 'method', 'notes', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+  'id', 'patientId', 'patientKey', 'patientName', 'houseId', 'facilityType', 'creditType',
+  'allocationMonth', 'calculatedAmount', 'amount', 'overrideReason', 'reason',
+  'approvedBy', 'decidedDate', 'payoutDate', 'status', 'paidDate', 'method', 'notes',
+  'basis', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
 ];
 const CREDIT_TYPES    = ['days_unused', 'prepaid_return', 'other'];
 const CREDIT_STATUSES = ['pending', 'paid', 'cancelled'];
+/* Day of month credits pay out on. */
+const CREDIT_PAYOUT_DAY = 15;
+/* Text-forced columns (whole column at ensure time + the target row per write). */
+const CREDIT_TEXT_COLUMNS = ['allocationMonth', 'decidedDate', 'payoutDate', 'paidDate', 'createdAt', 'updatedAt'];
 /* Columns a later edit may change. Everything else on an existing row is
- * carried from the SHEET, whatever the payload says (identity, the computed
- * figure, the calculation trail and the creation stamps are immutable). */
-const CREDIT_EDITABLE_COLUMNS = ['amount', 'overrideReason', 'approvedBy', 'status', 'paymentDate', 'method', 'notes'];
+ * carried from the SHEET, whatever the payload says (identity, facilityType,
+ * the computed figure, the trail, the basis and the creation stamps are
+ * immutable; payoutDate is re-derived from decidedDate). */
+const CREDIT_EDITABLE_COLUMNS = ['amount', 'overrideReason', 'approvedBy', 'decidedDate', 'status', 'paidDate', 'method', 'notes'];
 
 /* AuditLog sheet — append-only, hidden. One row per Patients-sheet write event
  * (promotion created/skipped, direct add, edit, discharge, delete, restore),
@@ -732,9 +771,9 @@ function getOrCreateSheet_(name, headers) {
     forceColumnsText_(sh, BILLING_OVERRIDE_COLUMNS, ['month', 'amount']);
   }
   // Credits: allocationMonth ('YYYY-MM') must never coerce into a date; the
-  // paymentDate + ISO stamp columns are the same coercion class as droppedAt.
+  // decided/payout/paid dates + ISO stamps are the same coercion class as droppedAt.
   if (name === CREDITS_SHEET) {
-    forceColumnsText_(sh, CREDIT_COLUMNS, ['allocationMonth', 'paymentDate', 'createdAt', 'updatedAt']);
+    forceColumnsText_(sh, CREDIT_COLUMNS, CREDIT_TEXT_COLUMNS);
   }
   // Patients: the entry date AND exitDate must survive as plain 'YYYY-MM-DD'
   // strings — a date-typed cell reads back as a Date, serializes as a UTC
@@ -4333,6 +4372,18 @@ function creditId_(patientId, allocationMonth, seq) {
   return 'credit::' + patientId + '::' + allocationMonth + '::' + seq;
 }
 
+/* The 15th of the next month on or after decidedDate ('YYYY-MM-DD'):
+ * decided on the 1st–15th → the 15th of that month; the 16th onward → the
+ * 15th of the following month. Pure string arithmetic on the date parts (no
+ * Date object, so no timezone can shift it). Mirrors payoutDateFor() in app.js. */
+function payoutDateFor_(decidedISO) {
+  const m = String(decidedISO || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return '';
+  let y = Number(m[1]), mo = Number(m[2]);
+  if (Number(m[3]) > CREDIT_PAYOUT_DAY) { mo += 1; if (mo > 12) { mo = 1; y += 1; } }
+  return y + '-' + String(mo).padStart(2, '0') + '-' + String(CREDIT_PAYOUT_DAY).padStart(2, '0');
+}
+
 function creditStr_(v, max) {
   return String(v == null ? '' : v).replace(/[<>]/g, '').trim().slice(0, max);
 }
@@ -4342,16 +4393,27 @@ function creditAmount_(v) {
   if (!isFinite(n) || n < 0) return null;
   return Math.round(n * 100) / 100;
 }
+/* '' or a valid 'YYYY-MM-DD' (via asISODate_); null when unparseable. */
+function creditDate_(v) {
+  if (v === undefined || v === null || v === '') return '';
+  const iso = asISODate_(v);
+  return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso : null;
+}
 
 /**
  * Create or edit ONE credit row. Every field is validated here — the client
  * value is never trusted:
  *   - creditType ∈ CREDIT_TYPES, status ∈ CREDIT_STATUSES, allocationMonth
- *     'YYYY-MM', amounts finite and ≥ 0, both identity keys present;
+ *     'YYYY-MM', amounts finite and ≥ 0, both identity keys present, houseId
+ *     in FACILITY_TYPE_BY_HOUSE (facilityType is DERIVED from it);
  *   - amount ≠ calculatedAmount without a non-empty overrideReason → refused
  *     (override_reason_required); 'other' without a reason → refused;
- *   - CREATE (no id in the payload): id minted here; createdAt/By +
- *     updatedAt/By stamped from the server clock + the signed-cookie user;
+ *   - status 'paid' without paidDate AND method → refused (marking paid is an
+ *     explicit action, never automatic); a non-paid status carries no paidDate;
+ *   - decidedDate defaults to today (spreadsheet tz); payoutDate is always
+ *     re-derived from it (payoutDateFor_);
+ *   - CREATE (no id in the payload): id minted here; basis stored as JSON;
+ *     createdAt/By + updatedAt/By stamped from the server clock + cookie user;
  *   - EDIT (id present): the row must exist (unknown_credit otherwise — a
  *     client never mints ids); only CREDIT_EDITABLE_COLUMNS are taken from the
  *     payload, everything else is carried from the sheet (calculatedAmount is
@@ -4412,16 +4474,20 @@ function upsertCredit_(credit, user) {
       record = Object.assign({}, credit);
       record.createdAt = nowIso;
       record.createdBy = stampUser;
+      record.basis = typeof credit.basis === 'string' ? credit.basis : JSON.stringify(credit.basis || {});
     }
 
     // ---- Validation (both paths; on an edit the immutable fields are the sheet's) ----
     const patientId  = creditStr_(record.patientId, 200);
     const patientKey = creditStr_(record.patientKey, 300);
+    const houseId    = creditStr_(record.houseId, 40);
+    const facilityType = facilityTypeFor_(houseId);
     const month      = creditStr_(record.allocationMonth, 7);
     const creditType = creditStr_(record.creditType, 40);
     const status     = creditStr_(record.status, 20) || 'pending';
     if (!patientId)  return { ok: false, error: 'missing_patientId' };
     if (!patientKey) return { ok: false, error: 'missing_patientKey' };
+    if (!facilityType) return { ok: false, error: 'bad_houseId', houseId: houseId };
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return { ok: false, error: 'bad_month' };
     if (CREDIT_TYPES.indexOf(creditType) < 0)    return { ok: false, error: 'bad_creditType', creditType: creditType };
     if (CREDIT_STATUSES.indexOf(status) < 0)     return { ok: false, error: 'bad_status', status: status };
@@ -4429,16 +4495,24 @@ function upsertCredit_(credit, user) {
     const amount     = creditAmount_(record.amount === undefined || record.amount === '' ? record.calculatedAmount : record.amount);
     if (calculated === null || amount === null) return { ok: false, error: 'bad_amount' };
     const overrideReason = creditStr_(record.overrideReason, 300);
-    const reason         = creditStr_(record.reason, 500);
+    const reason         = creditStr_(record.reason, 1000);
     if (amount !== calculated && !overrideReason) return { ok: false, error: 'override_reason_required' };
     if (creditType === 'other' && !reason)        return { ok: false, error: 'reason_required' };
+    const decidedRaw = creditDate_(record.decidedDate);
+    if (decidedRaw === null) return { ok: false, error: 'bad_decidedDate' };
+    const decidedDate = decidedRaw || todayISODate_();   // blank → today; invalid → refused above
+    const paidDate = creditDate_(record.paidDate);
+    if (paidDate === null) return { ok: false, error: 'bad_paidDate' };
+    const method = creditStr_(record.method, 40);
+    if (status === 'paid' && (!paidDate || !method)) return { ok: false, error: 'paid_requires_paidDate_method' };
 
     const out = {
       id:               wantId,
       patientId:        patientId,
       patientKey:       patientKey,
       patientName:      creditStr_(record.patientName, 120),
-      houseId:          creditStr_(record.houseId, 40),
+      houseId:          houseId,
+      facilityType:     facilityType,
       creditType:       creditType,
       allocationMonth:  month,
       calculatedAmount: calculated,
@@ -4446,10 +4520,13 @@ function upsertCredit_(credit, user) {
       overrideReason:   amount !== calculated ? overrideReason : '',
       reason:           reason,
       approvedBy:       creditStr_(record.approvedBy, 40),
+      decidedDate:      decidedDate,
+      payoutDate:       payoutDateFor_(decidedDate),
       status:           status,
-      paymentDate:      record.paymentDate ? asISODate_(record.paymentDate) : '',
-      method:           creditStr_(record.method, 40),
+      paidDate:         status === 'paid' ? paidDate : '',
+      method:           method,
       notes:            creditStr_(record.notes, 500),
+      basis:            String(record.basis == null ? '' : record.basis).slice(0, 4000),
       createdAt:        String(record.createdAt || nowIso),
       createdBy:        String(record.createdBy == null ? '' : record.createdBy),
       updatedAt:        nowIso,
@@ -4470,16 +4547,16 @@ function upsertCredit_(credit, user) {
 
     // Belt-and-suspenders over the whole-column '@' format getOrCreateSheet_
     // applies: force the text cells of THIS row before the values land.
-    ['allocationMonth', 'paymentDate', 'createdAt', 'updatedAt'].forEach(function (col) {
+    CREDIT_TEXT_COLUMNS.forEach(function (col) {
       const c = CREDIT_COLUMNS.indexOf(col);
       if (c >= 0) sh.getRange(targetRow, c + 1, 1, 1).setNumberFormat('@');
     });
     sh.getRange(targetRow, 1, 1, CREDIT_COLUMNS.length).setValues([objectToRow_(out, CREDIT_COLUMNS)]);
 
     logAudit_(wantId ? 'credit_updated' : 'credit_created', 'upsertCredit_', patientId, out.patientName, {
-      id: out.id, patientKey: patientKey, creditType: creditType, allocationMonth: month,
+      id: out.id, patientKey: patientKey, facilityType: facilityType, creditType: creditType, allocationMonth: month,
       calculatedAmount: calculated, amount: amount, override: amount !== calculated,
-      status: status, updatedBy: stampUser,
+      status: status, payoutDate: out.payoutDate, paidDate: out.paidDate, updatedBy: stampUser,
     });
     return wantId ? { ok: true, credit: out, updated: true } : { ok: true, credit: out, created: true };
   } finally {

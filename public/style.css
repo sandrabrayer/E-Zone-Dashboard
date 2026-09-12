@@ -1739,8 +1739,9 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
   color: var(--text-muted);
 }
 .credit-inline { display: flex; align-items: center; gap: 10px; }
-.credit-inline label { margin: 0; min-width: 52px; }
-.credit-inline .p-val, .credit-inline select { flex: 1; }
+.credit-inline label { margin: 0; min-width: 84px; }
+.credit-inline .p-val, .credit-inline select, .credit-inline input { flex: 1; width: auto; min-width: 0; }
+.credit-inline .credit-exvat { white-space: nowrap; }
 .credit-calc {
   margin: 0 0 12px;
   font-size: 13.5px;
@@ -1760,3 +1761,21 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
   color: var(--text-muted);
   word-break: break-word;
 }
+.credit-rule {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.credit-paid { border-inline-start: 2px solid var(--border-strong); padding-inline-start: 10px; }
+.credit-paid .credit-inline { margin-bottom: 8px; }
+
+/* ===== Credits payout view (גבייה) ===== */
+.credit-payout-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px;
+  padding: 6px 4px 0;
+  font-size: 13.5px;
+  color: var(--text-muted);
+}
+.credit-payout-head b { color: var(--text); font-size: 15px; }
+.credit-payout-row .irrelevant-actions { display: flex; gap: 8px; }
