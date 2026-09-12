@@ -1712,3 +1712,70 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
 .growth-grid { stroke: #e3e8f4; stroke-width: 1; }
 .growth-ylabel, .growth-xlabel { fill: #6b7aa0; font-size: 11px; font-family: inherit; }
 .growth-empty { padding: 24px; text-align: center; color: #6b7aa0; }
+
+/* ===== Credits / refunds modal ===== */
+.credits-modal { width: 520px; }
+.credit-lines { display: flex; flex-direction: column; gap: 14px; }
+.credit-line {
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 12px 14px 6px;
+  margin: 0;
+  min-width: 0;
+}
+.credit-line legend {
+  padding: 0 6px;
+  font-size: 13.5px;
+  font-weight: 700;
+}
+.credit-new {
+  display: inline-block;
+  margin-inline-start: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+.credit-inline { display: flex; align-items: center; gap: 10px; }
+.credit-inline label { margin: 0; min-width: 84px; }
+.credit-inline .p-val, .credit-inline select, .credit-inline input { flex: 1; width: auto; min-width: 0; }
+.credit-inline .credit-exvat { white-space: nowrap; }
+.credit-calc {
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  color: var(--text);
+}
+.credit-exvat { color: var(--text-muted); font-size: 12px; margin-inline-start: 6px; }
+.credit-cap {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--warning, #d68b00);
+}
+.credit-basis {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+.credit-rule {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.credit-paid { border-inline-start: 2px solid var(--border-strong); padding-inline-start: 10px; }
+.credit-paid .credit-inline { margin-bottom: 8px; }
+
+/* ===== Credits payout view (גבייה) ===== */
+.credit-payout-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px;
+  padding: 6px 4px 0;
+  font-size: 13.5px;
+  color: var(--text-muted);
+}
+.credit-payout-head b { color: var(--text); font-size: 15px; }
+.credit-payout-row .irrelevant-actions { display: flex; gap: 8px; }
