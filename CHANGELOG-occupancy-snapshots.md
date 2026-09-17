@@ -147,3 +147,21 @@ as a new version — **the `/exec` URL does not change**, so all three consumers
 keep working. After the deploy, run `installOccupancySnapshotTrigger()` once and
 then `backfillOccupancySnapshotsNow()` from the editor — see `DEPLOY.md` →
 "Occupancy snapshots".
+
+## Operational status — September 17, 2026
+
+Live. PR #125 merged to `claude/build-ezone-dashboard-QOg5s`, clasp CI redeployed
+the existing deployment (`/exec` URL unchanged), the monthly trigger is installed
+(1st of each month, 03:00–04:00 Asia/Jerusalem) and **May–Aug 2026 is backfilled**.
+
+Two Apps Script projects are named "ezone dashboard" — that is **intentional**, not
+a mistake to clean up. The CI/live one, shared by Dashboard, Managers and
+Therapists, is scriptId
+`1cY1qkZoAExfkX2NZsB-UCQs7lnSy2RyWC_6UVAYjCnELWkEp9KQvVlOT` — the id in this
+repo's `.clasp.json`, i.e. the project clasp CI pushes to. Check that id before
+running anything from the editor, so an editor run can't land on the other project.
+
+If `backfillOccupancySnapshotsNow()` hits the Apps Script execution time limit
+part-way through, **just run it again** — it is idempotent, months already
+captured are skipped, and it resumes where it stopped. Nothing needs cleaning up
+first.

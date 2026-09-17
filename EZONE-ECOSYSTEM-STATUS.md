@@ -313,6 +313,12 @@ for the running month, wrong as a history.)
 - Tests: **983 green** (`node --test`), 37 of them new in
   `test/occupancy-snapshots.test.js`. Details: `CHANGELOG-occupancy-snapshots.md`;
   the two post-deploy editor runs are in `DEPLOY.md` → "Occupancy snapshots".
+- **LIVE as of Sep 17, 2026** — OccupancySnapshots: monthly trigger installed
+  (1st, 03:00–04:00 Asia/Jerusalem), May–Aug 2026 backfilled. **Two Apps Script
+  projects are named "ezone dashboard" (intentional); the CI/live one is
+  scriptId `1cY1qkZoAExfkX2NZsB-UCQs7lnSy2RyWC_6UVAYjCnELWkEp9KQvVlOT`**
+  (shared — it is the id in this repo's `.clasp.json`, the one clasp CI pushes
+  to). If the backfill times out, just re-run it — it is idempotent.
 
 ## Apps Script topology (July 4)
 
