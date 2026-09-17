@@ -54,6 +54,19 @@ var MR_COMPANION_LABELS = {
 var MR_COMPANION_ORDER =
   ['mother', 'father', 'parents', 'partner', 'sibling', 'friend', 'alone', 'other'];
 
+/* The ONLY cap on the report's פירוט free text — raised 2000 → 5000 (Sandra,
+ * Sep 2026: managers write a full meeting summary there). KEEP IN SYNC with
+ * MANAGER_REPORT_MAX_CHARS in public/app.js, server.js and apps-script/Code.gs
+ * (this page must never load the dashboard bundle, so the value is duplicated
+ * rather than imported); test/manager-report-length.test.js fails if the four
+ * drift apart or if any other numeric literal caps this field.
+ * Over the cap REFUSES the submit — the text is never truncated. */
+var MANAGER_REPORT_MAX_CHARS = 5000;
+
+/* Where the live counter turns amber: derived from the cap (90% = 4500), so
+ * raising the cap moves the warning with it and no second literal exists. */
+var MANAGER_REPORT_WARN_CHARS = Math.round(MANAGER_REPORT_MAX_CHARS * 0.9);
+
 /* ===== Pure helpers (unit-tested in test/meeting-report-form.test.js) ===== */
 
 /* Today as YYYY-MM-DD from LOCAL date parts (never UTC — Israel rolls past
@@ -117,6 +130,33 @@ function mrHouseLabel(houseId) {
   return MR_HOUSE_LABELS[houseId] || String(houseId == null ? '' : houseId);
 }
 
+/* Live counter text under the פירוט textarea: 'X / 5000', wrapped in a Unicode
+ * LTR isolate (U+2066 LRI … U+2069 PDI) exactly like mrPickerDate — without it
+ * the two digit runs around the slash are re-ordered by the RTL page and the
+ * counter reads '5000 / 0'. Pure. */
+function mrNoteCounterText(len) {
+  var n = Number(len);
+  if (!isFinite(n) || n < 0) n = 0;
+  return '\u2066' + n + ' / ' + MANAGER_REPORT_MAX_CHARS + '\u2069';
+}
+
+/* true once the counter should go amber (strictly ABOVE the warn threshold).
+ * Pure. */
+function mrNoteCounterWarn(len) {
+  return Number(len) > MANAGER_REPORT_WARN_CHARS;
+}
+
+/* '' when the פירוט is submittable, otherwise the Hebrew refusal. Mirrors
+ * submitMeetingReport_'s cap (and server.js's pre-check) so an over-long note
+ * is refused at the form instead of travelling to the sheet. Never truncates;
+ * the message carries lengths only, never the text. Pure. */
+function mrNoteError(note) {
+  var len = String(note == null ? '' : note).length;
+  return len > MANAGER_REPORT_MAX_CHARS
+    ? 'הפירוט מוגבל ל-' + MANAGER_REPORT_MAX_CHARS + ' תווים (נכתבו ' + len + ')'
+    : '';
+}
+
 /* The WhatsApp group message. `saved` carries what was actually submitted:
  * { name, house, outcome, companion, note, reporter }. */
 function mrWhatsAppMessage(saved) {
@@ -131,9 +171,38 @@ function mrWhatsAppMessage(saved) {
   ].join('\n');
 }
 
-/* wa.me chat-picker link — no phone number, the manager picks the group. */
+/* wa.me chat-picker link — no phone number, the manager picks the group.
+ *
+ * WhatsApp (and the browsers/OS handlers in front of it) choke on very long
+ * deep links, and a 5,000-char פירוט encodes to ~15,000 chars of %D7%.. — so
+ * the MESSAGE (only the message) is cut to fit MR_WA_URL_MAX and marked with
+ * '…'. The report ON THE SHEET is always the full text; this shortening exists
+ * solely so the share button keeps working. */
+var MR_WA_BASE = 'https://wa.me/?text=';
+var MR_WA_URL_MAX = 2000;
+
+/* Cut a string to `n` characters without splitting a surrogate pair (a lone
+ * high surrogate would make encodeURIComponent throw). Pure. */
+function mrSafeCut(s, n) {
+  var out = String(s == null ? '' : s).slice(0, Math.max(0, n));
+  var last = out.charCodeAt(out.length - 1);
+  if (out.length && last >= 0xD800 && last <= 0xDBFF) out = out.slice(0, out.length - 1);
+  return out;
+}
+
 function mrWhatsAppLink(text) {
-  return 'https://wa.me/?text=' + encodeURIComponent(String(text == null ? '' : text));
+  var s = String(text == null ? '' : text);
+  var url = MR_WA_BASE + encodeURIComponent(s);
+  if (url.length <= MR_WA_URL_MAX) return url;
+  // Longest prefix whose encoded link still fits, found by bisection (encoded
+  // length is monotonic in the prefix length).
+  var lo = 0, hi = s.length;
+  while (lo < hi) {
+    var mid = Math.ceil((lo + hi) / 2);
+    var candidate = MR_WA_BASE + encodeURIComponent(mrSafeCut(s, mid) + '…');
+    if (candidate.length <= MR_WA_URL_MAX) lo = mid; else hi = mid - 1;
+  }
+  return MR_WA_BASE + encodeURIComponent(mrSafeCut(s, lo) + '…');
 }
 
 /* Hebrew error text for a failed submit, keyed by the backend's stable error
@@ -145,7 +214,7 @@ var MR_SUBMIT_ERROR_TEXTS = {
   bad_lead:       'נא לבחור ליד',
   bad_outcome:    'לא נבחרה תוצאה תקינה',
   bad_companion:  'הטקסט בשדה "הגיע/ה עם" ארוך מדי (עד 100 תווים)',
-  bad_note:       'הפירוט ארוך מדי (עד 2000 תווים)',
+  bad_note:       'הפירוט ארוך מדי (עד ' + MANAGER_REPORT_MAX_CHARS + ' תווים)',
   bad_reporter:   'נא לבחור מדווח/ת',
   lead_not_found: 'הליד כבר לא ברשימת הלידים הפתוחים — רעננו את הדף ונסו שוב',
   unauthorized:   'השרת דחה את הדיווח (בעיית הרשאה) — פנו לסנדרה',
@@ -184,6 +253,13 @@ if (typeof module !== 'undefined' && module.exports) {
     mrHouseLabel: mrHouseLabel,
     mrWhatsAppMessage: mrWhatsAppMessage,
     mrWhatsAppLink: mrWhatsAppLink,
+    mrSafeCut: mrSafeCut,
+    MR_WA_URL_MAX: MR_WA_URL_MAX,
+    MANAGER_REPORT_MAX_CHARS: MANAGER_REPORT_MAX_CHARS,
+    MANAGER_REPORT_WARN_CHARS: MANAGER_REPORT_WARN_CHARS,
+    mrNoteCounterText: mrNoteCounterText,
+    mrNoteCounterWarn: mrNoteCounterWarn,
+    mrNoteError: mrNoteError,
     mrEscapeHtml: mrEscapeHtml,
     MR_SUBMIT_ERROR_TEXTS: MR_SUBMIT_ERROR_TEXTS,
     mrSubmitErrorText: mrSubmitErrorText,
@@ -305,6 +381,11 @@ if (typeof module !== 'undefined' && module.exports) {
     if (!reporter) return showError('נא לבחור מדווח/ת');
     if (!lead) return showError('נא לבחור ליד');
     if (!state.outcome) return showError('נא לבחור תוצאה');
+    // maxlength already stops typing/pasting past the cap in every browser we
+    // support; this is the belt-and-braces refusal (and the one a scripted or
+    // autofilled value hits) — refuse, never trim.
+    var noteErr = mrNoteError(note);
+    if (noteErr) return showError(noteErr);
     var companion = mrCompanionValue(state.companion, el('mr-companion-other').value);
     var payload = {
       leadId: lead.id,
@@ -347,7 +428,9 @@ if (typeof module !== 'undefined' && module.exports) {
       '<div><span>ליד:</span> ' + mrEscapeHtml(saved.name) + ' (' + mrEscapeHtml(mrHouseLabel(saved.house)) + ')</div>',
       '<div><span>תוצאה:</span> ' + mrEscapeHtml(MR_OUTCOME_LABELS[saved.outcome] || saved.outcome) + '</div>',
       '<div><span>הגיע/ה עם:</span> ' + mrEscapeHtml(mrCompanionDisplay(saved.companion)) + '</div>',
-      saved.note ? '<div><span>פירוט:</span> ' + mrEscapeHtml(saved.note) + '</div>' : '',
+      // pre-wrap span (.mr-note-text): the manager's line breaks survive and a
+      // 5,000-char summary wraps in full — never clipped, never scrolled away.
+      saved.note ? '<div><span>פירוט:</span> <span class="mr-note-text">' + mrEscapeHtml(saved.note) + '</span></div>' : '',
       '<div><span>דווח ע"י:</span> ' + mrEscapeHtml(saved.reporter) + '</div>',
     ].join('');
     el('mr-whatsapp').href = mrWhatsAppLink(mrWhatsAppMessage(saved));
@@ -359,6 +442,7 @@ if (typeof module !== 'undefined' && module.exports) {
     el('mr-lead').value = '';
     el('mr-note').value = '';
     el('mr-companion-other').value = '';
+    syncNote();
     renderOutcomes();
     renderCompanions();
     el('mr-done').classList.add('hidden');
@@ -366,6 +450,26 @@ if (typeof module !== 'undefined' && module.exports) {
     clearError();
     loadLeads(); // refresh — the just-reported lead may have new state
   }
+
+  /* The פירוט textarea: live 'X / 5000' counter (amber past the warn
+   * threshold) and auto-grow, so a long report is written and re-read in one
+   * box instead of a 3-row peephole. The counter never blocks anything — the
+   * cap is enforced by maxlength + mrNoteError + the backend. */
+  var MR_NOTE_MAX_HEIGHT = 520; // px — beyond this the textarea scrolls itself
+  function syncNote() {
+    var ta = el('mr-note');
+    var counter = el('mr-note-count');
+    if (!ta) return;
+    var len = ta.value.length;
+    if (counter) {
+      counter.textContent = mrNoteCounterText(len);
+      counter.classList.toggle('warn', mrNoteCounterWarn(len));
+    }
+    // Auto-grow: collapse to the content height, capped so the page stays usable.
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, MR_NOTE_MAX_HEIGHT) + 'px';
+  }
+  el('mr-note').addEventListener('input', syncNote);
 
   el('mr-outcomes').addEventListener('click', function (ev) {
     var b = ev.target.closest('[data-outcome]');
@@ -389,5 +493,6 @@ if (typeof module !== 'undefined' && module.exports) {
   renderReporters();
   renderOutcomes();
   renderCompanions();
+  syncNote();
   loadLeads();
 })();

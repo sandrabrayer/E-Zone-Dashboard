@@ -17,6 +17,7 @@
   --primary-strong: #3a6dff;
   --primary-glow: rgba(91, 139, 255, 0.45);
   --success: #2dd47a;
+  --warning: #ffb020;   /* the פירוט counter past 4,500 chars */
   --danger: #ff4d5e;
   --radius: 12px;
 }
@@ -82,6 +83,22 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 0 3px var(--primary-glow);
 }
 textarea { min-height: 96px; resize: vertical; }
+/* פירוט is a full meeting summary (up to 5,000 chars): it auto-grows from JS,
+ * so no fixed height traps the text, and overflow-wrap keeps a long unbroken
+ * run inside the box. */
+#mr-note { overflow-wrap: anywhere; line-height: 1.6; }
+/* Live 'X / 5000' counter under the textarea. text-align: start keeps it on
+ * the RTL side; the digits themselves are LTR-isolated in mrNoteCounterText. */
+.mr-count {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: start;
+}
+.mr-count.warn { color: var(--warning); font-weight: 700; }
+/* The saved report on the confirmation screen: line breaks preserved, full
+ * text shown — never clipped. */
+.mr-note-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .mr-toggle {
   background: none; border: none;

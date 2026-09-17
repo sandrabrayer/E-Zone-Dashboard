@@ -1985,7 +1985,7 @@ function meetingReportBlockHTML(lead) {
       </div>
       <div class="mrv-detail">
         <div><span class="mrv-label">הגיע/ה עם:</span> ${escapeHtml(meetingReportCompanionDisplay(lead.meetingCompanion))}</div>
-        ${lead.meetingNote ? `<div><span class="mrv-label">פירוט:</span> ${escapeHtml(lead.meetingNote)}</div>` : ''}
+        ${lead.meetingNote ? `<div><span class="mrv-label">פירוט:</span> <span class="mrv-note">${escapeHtml(lead.meetingNote)}</span></div>` : ''}
         <div class="mrv-byline"><span class="mrv-label">דווח ע"י:</span> ${escapeHtml(lead.meetingReporter || '—')} · ${escapeHtml(meetingReportWhenText(lead.meetingReportedAt))}</div>
         ${actions}
       </div>
@@ -2091,9 +2091,33 @@ function wireMeetingReportToggle(el) {
 /* Client-side mirror of the PR-2 submit constraints (submitMeetingReport_ in
  * Code.gs): outcome must be one of the 4 MEETING_REPORT_OUTCOME_LABELS keys,
  * companion is a preset key or אחר free text capped at 100 chars, note capped
- * at 2000. Keep in sync with the backend caps. */
+ * at MANAGER_REPORT_MAX_CHARS. Keep in sync with the backend caps. */
 const MEETING_REPORT_COMPANION_MAX = 100;
-const MEETING_REPORT_NOTE_MAX = 2000;
+
+/* The ONLY cap on the manager report's פירוט free text — raised 2000 → 5000
+ * (Sandra, Sep 2026). KEEP IN SYNC with MANAGER_REPORT_MAX_CHARS in
+ * public/meeting-report.js, server.js and apps-script/Code.gs;
+ * test/manager-report-length.test.js fails if the four drift apart or if any
+ * other numeric literal caps this field. Over the cap REFUSES the save — the
+ * text is never truncated. */
+const MANAGER_REPORT_MAX_CHARS = 5000;
+
+/* Where the live counter turns amber: derived from the cap (90% = 4500), so
+ * raising the cap moves the warning with it and no second literal exists. */
+const MANAGER_REPORT_WARN_CHARS = Math.round(MANAGER_REPORT_MAX_CHARS * 0.9);
+
+/* Counter text under the פירוט textarea: 'X / 5000' inside a Unicode LTR
+ * isolate (U+2066 … U+2069) so the RTL modal cannot re-order the two digit
+ * runs around the slash. Pure. */
+function managerReportCounterText(len) {
+  const n = Number(len) > 0 ? Number(len) : 0;
+  return `\u2066${n} / ${MANAGER_REPORT_MAX_CHARS}\u2069`;
+}
+
+/* true once the counter should go amber (strictly ABOVE the threshold). Pure. */
+function managerReportCounterWarn(len) {
+  return Number(len) > MANAGER_REPORT_WARN_CHARS;
+}
 
 /* '' when the edited values are saveable, otherwise a Hebrew error. Pure. */
 function validateMeetingReportEdit({ outcome, companion, note }) {
@@ -2102,8 +2126,10 @@ function validateMeetingReportEdit({ outcome, companion, note }) {
   if (!MEETING_COMPANION_LABELS[comp] && comp.length > MEETING_REPORT_COMPANION_MAX) {
     return `הטקסט של "מי הגיע איתו" מוגבל ל-${MEETING_REPORT_COMPANION_MAX} תווים`;
   }
-  if (String(note || '').length > MEETING_REPORT_NOTE_MAX) {
-    return `הפירוט מוגבל ל-${MEETING_REPORT_NOTE_MAX} תווים`;
+  const noteLen = String(note || '').length;
+  if (noteLen > MANAGER_REPORT_MAX_CHARS) {
+    // Refuse, never trim — and report lengths only, never the text itself.
+    return `הפירוט מוגבל ל-${MANAGER_REPORT_MAX_CHARS} תווים (נכתבו ${noteLen})`;
   }
   return '';
 }
@@ -2159,7 +2185,8 @@ function meetingReportEditModalHTML(lead) {
         </div>
         <div class="form-row">
           <label>פירוט</label>
-          <textarea name="mrvNote" rows="3" maxlength="${MEETING_REPORT_NOTE_MAX}">${escapeHtml(pre.note)}</textarea>
+          <textarea name="mrvNote" class="mrv-note-input" rows="6" maxlength="${MANAGER_REPORT_MAX_CHARS}">${escapeHtml(pre.note)}</textarea>
+          <div class="mrv-note-count" aria-live="polite">${escapeHtml(managerReportCounterText(String(pre.note || '').length))}</div>
         </div>
         <div class="form-actions">
           <button type="button" class="btn" data-action="cancel">ביטול</button>
@@ -2298,6 +2325,25 @@ function showMeetingReportEditModal(lead, onSaved) {
       if (chip === 'other') otherInput.focus();
     });
   });
+
+  /* פירוט: live 'X / 5000' counter (amber past MANAGER_REPORT_WARN_CHARS) and
+   * auto-grow, so Vered can read and correct a full 5,000-char report without
+   * scrolling a 3-row box. Nothing here blocks a save — the cap is enforced by
+   * maxlength + validateMeetingReportEdit + the backend. */
+  const noteInput = back.querySelector('[name="mrvNote"]');
+  const noteCount = back.querySelector('.mrv-note-count');
+  const MRV_NOTE_MAX_HEIGHT = 420; // px — past this the textarea scrolls itself
+  const syncNote = () => {
+    if (!noteInput) return;
+    const len = noteInput.value.length;
+    if (noteCount) {
+      noteCount.textContent = managerReportCounterText(len);
+      noteCount.classList.toggle('warn', managerReportCounterWarn(len));
+    }
+    noteInput.style.height = 'auto';
+    noteInput.style.height = Math.min(noteInput.scrollHeight, MRV_NOTE_MAX_HEIGHT) + 'px';
+  };
+  if (noteInput) { noteInput.addEventListener('input', syncNote); syncNote(); }
 
   const close = () => back.remove();
   cancelBtn.onclick = close;
