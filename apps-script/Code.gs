@@ -682,6 +682,11 @@ function handle_(params) {
     if (action === 'managersHouse') {
       return jsonOut_(managersHouse_(params.house, params.month));
     }
+    // Read-only permanent occupancy history. Same access model as
+    // managersOverview above: no new secret, no financial data.
+    if (action === 'occupancySnapshots') {
+      return jsonOut_(occupancySnapshots_());
+    }
     return jsonOut_({ ok: false, error: 'unknown_action', action: action || null });
   } catch (err) {
     return jsonOut_({ ok: false, error: 'exception', message: String((err && err.message) || err) });
@@ -5092,6 +5097,461 @@ function managersHouse_(houseKey, monthParam) {
     activity: stats.activity,
     bonus: bonus,
   };
+}
+
+/* ===== Monthly occupancy snapshots (permanent, append-only) ================
+ *
+ * WHY
+ *   managersOverview_ recomputes a month's occupancy from the LIVE Patients
+ *   sheet every time it is called. That is correct for the running month, but
+ *   it means a finished month's numbers silently change whenever a historical
+ *   patient row is edited, merged, repaired or discharged after the fact. This
+ *   module writes each finished month's per-house occupancy into the
+ *   `OccupancySnapshots` sheet ONCE, so the settled history stays settled.
+ *
+ * THE SHEET IS APPEND-ONLY
+ *   Rows are never overwritten and never deleted — the only write in this
+ *   module is a block appended below the last row. A (month, houseId) pair
+ *   that is already present is SKIPPED, which makes every entry point
+ *   idempotent: a second run of the same month appends zero rows. The
+ *   existing-key check is re-read INSIDE the script lock so two concurrent
+ *   runs (the monthly trigger and a manual backfill) can't both decide the
+ *   same month is missing.
+ *
+ * NO DUPLICATED MATH
+ *   snapshotMonth_ does NOT recompute occupancy. It calls managersOverview_ —
+ *   the exact computation the Managers app reads — and projects its per-house
+ *   numbers into snapshot rows. If the bonus/occupancy math ever changes,
+ *   snapshots follow it automatically; there is no second implementation to
+ *   drift.
+ *
+ * FINISHED MONTHS ONLY
+ *   The running month is REFUSED (`month_not_finished`), because its
+ *   occupancy is still accruing — a snapshot taken mid-month would freeze a
+ *   partial figure permanently. Months are compared as 'YYYY-MM' strings,
+ *   which orders correctly, against defaultMonth_() (Asia/Jerusalem — the
+ *   project timezone pinned in appsscript.json).
+ *
+ * HOUSES AND CAPACITY
+ *   Capacity is PINNED here rather than read from BonusConfig: a snapshot is
+ *   a permanent historical record, and a later edit to the config sheet must
+ *   not change what a past month's occupancy percentage meant. `houseId` uses
+ *   the ids the ecosystem records for this feed (efroni's backend id is
+ *   `arfoni`); managerHouse is the managersOverview_ key the row is read from.
+ *
+ * NO NEW SECRET, NO FINANCIAL DATA
+ *   `doGet?action=occupancySnapshots` is read-only and sits on exactly the
+ *   same access model as `managersOverview` — no new Script Property, no new
+ *   auth check. The column contract below carries occupancy only: no billing,
+ *   debt, rates, bonus or payment fields.
+ */
+
+const OCCUPANCY_SNAPSHOTS_SHEET = 'OccupancySnapshots';
+
+/* FROZEN COLUMN CONTRACT — append-only. Never reorder or remove a column;
+ * add new ones at the END only (getOrCreateSheet_ backfills the header row
+ * non-destructively on the first write after deploy). */
+const OCCUPANCY_SNAPSHOT_COLUMNS = [
+  'month',         // 'YYYY-MM', stored as TEXT (the column is pinned to '@')
+  'houseId',
+  'treatmentDays',
+  'daysInMonth',
+  'avgDaily',
+  'capacity',
+  'occupancyPct',
+  'manager',
+  'capturedAt',    // ISO 8601 UTC timestamp of the run that wrote the row
+];
+
+/* The first month the snapshot history starts from — the same May 2026 anchor
+ * the Managers app uses for its quarterly windows and history pickers. */
+const OCCUPANCY_SNAPSHOT_FIRST_MONTH = '2026-05';
+
+const OCCUPANCY_SNAPSHOT_TRIGGER_HANDLER = 'runMonthlyOccupancySnapshot';
+
+/* Snapshot houses, with the capacity each occupancyPct is measured against.
+ * managerHouse is the key in managersOverview_'s `houses` array. */
+const OCCUPANCY_SNAPSHOT_HOUSES = [
+  { houseId: 'raanana', managerHouse: 'raanana', capacity: 14 },
+  { houseId: 'ramot',   managerHouse: 'ramot',   capacity: 20 },
+  { houseId: 'arfoni',  managerHouse: 'efroni',  capacity: 13 },
+  { houseId: 'rehab',   managerHouse: 'rehab',   capacity: 13 },
+  { houseId: 'pardes',  managerHouse: 'pardes',  capacity: 13 },
+];
+
+/* ----- Pure helpers (no GAS services — unit-tested directly) ----- */
+
+function occupancySnapshotValidMonth_(ym) {
+  return /^\d{4}-(0[1-9]|1[0-2])$/.test(String(ym == null ? '' : ym).trim());
+}
+
+/* True only for a month that is strictly BEFORE the current one. The running
+ * month and any future month are refused. */
+function occupancySnapshotIsFinishedMonth_(ym, currentYm) {
+  if (!occupancySnapshotValidMonth_(ym)) return false;
+  if (!occupancySnapshotValidMonth_(currentYm)) return false;
+  return String(ym).trim() < String(currentYm).trim();
+}
+
+function occupancySnapshotRound_(n, decimals) {
+  const v = Number(n);
+  if (!isFinite(v)) return 0;
+  const f = Math.pow(10, decimals);
+  return Math.round(v * f) / f;
+}
+
+/* occupancyPct = avgDaily ÷ capacity × 100, rounded to ONE decimal. A missing
+ * or zero capacity yields 0 rather than Infinity/NaN. */
+function occupancyPct_(avgDaily, capacity) {
+  const cap = Number(capacity);
+  if (!isFinite(cap) || cap <= 0) return 0;
+  return occupancySnapshotRound_((Number(avgDaily) / cap) * 100, 1);
+}
+
+/* Identity of a snapshot row: one row per month per house, forever. */
+function occupancySnapshotKey_(month, houseId) {
+  return String(month == null ? '' : month).trim() + '::' +
+         String(houseId == null ? '' : houseId).trim();
+}
+
+/* Normalize a `month` cell back to 'YYYY-MM' text. The column is written as
+ * text, but a human could reformat the sheet and hand us a Date — in which
+ * case the LOCAL calendar month is the right reading (never a UTC slice). */
+function occupancySnapshotMonthText_(v) {
+  if (v === undefined || v === null) return '';
+  // Object.prototype.toString rather than `instanceof Date`: a Date handed
+  // back by Sheets does not always share this script's Date prototype.
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    if (isNaN(v.getTime())) return '';
+    const m = v.getMonth() + 1;
+    return String(v.getFullYear()) + '-' + (m < 10 ? '0' + m : String(m));
+  }
+  const s = String(v).trim();
+  const m = s.match(/^(\d{4})-(\d{2})/);
+  return m ? m[1] + '-' + m[2] : s;
+}
+
+/* { 'YYYY-MM::houseId': true } for every row already on the sheet. */
+function occupancySnapshotExistingKeys_(rows) {
+  const seen = {};
+  const list = rows || [];
+  for (let i = 0; i < list.length; i++) {
+    const r = list[i] || {};
+    seen[occupancySnapshotKey_(occupancySnapshotMonthText_(r.month), r.houseId)] = true;
+  }
+  return seen;
+}
+
+/* The idempotency filter: drop every candidate whose month+house is already
+ * on the sheet, and de-duplicate within the candidate list itself. */
+function occupancySnapshotNewRows_(candidateRows, existingKeys) {
+  const out = [];
+  const seen = {};
+  const list = candidateRows || [];
+  for (let i = 0; i < list.length; i++) {
+    const r = list[i];
+    if (!r) continue;
+    const k = occupancySnapshotKey_(r.month, r.houseId);
+    if (existingKeys && existingKeys[k]) continue;
+    if (seen[k]) continue;
+    seen[k] = true;
+    out.push(r);
+  }
+  return out;
+}
+
+/* Project a managersOverview_ payload into snapshot rows. This is the ONLY
+ * place snapshot numbers come from — treatmentDays and avgDaily are read off
+ * the overview, not recomputed. A house that is absent from the payload, or
+ * that had no patient-days at all that month, yields NO ROW. */
+function occupancySnapshotRowsFromOverview_(ym, overview, capturedAt) {
+  const rows = [];
+  if (!overview || overview.ok === false || !Array.isArray(overview.houses)) return rows;
+
+  const byKey = {};
+  for (let i = 0; i < overview.houses.length; i++) {
+    const h = overview.houses[i];
+    if (h && h.key) byKey[String(h.key)] = h;
+  }
+
+  const nDays = daysInMonth_(String(ym));
+  for (let i = 0; i < OCCUPANCY_SNAPSHOT_HOUSES.length; i++) {
+    const spec = OCCUPANCY_SNAPSHOT_HOUSES[i];
+    const h = byKey[spec.managerHouse];
+    if (!h) continue;                                  // house missing from this month
+    const treatmentDays = Number(h.treatmentDays) || 0;
+    if (treatmentDays <= 0) continue;                  // no data for this house
+    const avgDaily = occupancySnapshotRound_(Number(h.avgDaily) || 0, 2);
+    rows.push({
+      month:         String(ym),
+      houseId:       spec.houseId,
+      treatmentDays: treatmentDays,
+      daysInMonth:   nDays,
+      avgDaily:      avgDaily,
+      capacity:      spec.capacity,
+      occupancyPct:  occupancyPct_(avgDaily, spec.capacity),
+      manager:       String((h && h.manager) || ''),
+      capturedAt:    String(capturedAt || ''),
+    });
+  }
+  return rows;
+}
+
+/* Stable read order for the feed: month ascending, then houseId ascending. */
+function occupancySnapshotSortRows_(rows) {
+  return (rows || []).slice().sort(function (a, b) {
+    const am = String((a && a.month) || ''), bm = String((b && b.month) || '');
+    if (am !== bm) return am < bm ? -1 : 1;
+    const ah = String((a && a.houseId) || ''), bh = String((b && b.houseId) || '');
+    if (ah !== bh) return ah < bh ? -1 : 1;
+    return 0;
+  });
+}
+
+/* Inclusive 'YYYY-MM' range. Empty when `lastYm` precedes `firstYm` (which is
+ * what a backfill run before the anchor month must do — nothing). */
+function occupancySnapshotMonthRange_(firstYm, lastYm) {
+  const out = [];
+  if (!occupancySnapshotValidMonth_(firstYm)) return out;
+  if (!occupancySnapshotValidMonth_(lastYm)) return out;
+  const first = String(firstYm).trim();
+  const last  = String(lastYm).trim();
+  if (last < first) return out;
+  let y = Number(first.slice(0, 4));
+  let m = Number(first.slice(5, 7));
+  for (let guard = 0; guard < 1200; guard++) {
+    const ym = String(y) + '-' + (m < 10 ? '0' + m : String(m));
+    out.push(ym);
+    if (ym === last) break;
+    m++;
+    if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+
+/* ----- Sheet access ----- */
+
+function occupancySnapshotSheet_() {
+  return getOrCreateSheet_(OCCUPANCY_SNAPSHOTS_SHEET, OCCUPANCY_SNAPSHOT_COLUMNS);
+}
+
+function readOccupancySnapshots_() {
+  const rows = readSheet_(occupancySnapshotSheet_(), OCCUPANCY_SNAPSHOT_COLUMNS);
+  return rows.map(function (r) {
+    return {
+      month:         occupancySnapshotMonthText_(r.month),
+      houseId:       String(r.houseId == null ? '' : r.houseId).trim(),
+      treatmentDays: Number(r.treatmentDays) || 0,
+      daysInMonth:   Number(r.daysInMonth) || 0,
+      avgDaily:      Number(r.avgDaily) || 0,
+      capacity:      Number(r.capacity) || 0,
+      occupancyPct:  Number(r.occupancyPct) || 0,
+      manager:       String(r.manager == null ? '' : r.manager),
+      capturedAt:    String(r.capturedAt == null ? '' : r.capturedAt),
+    };
+  });
+}
+
+/* APPEND-ONLY write. Nothing here clears, overwrites or deletes a row: the
+ * single setValues call targets getLastRow() + 1 and below. Wrapped in the
+ * script lock, and the existing-key set is re-read inside it so a trigger run
+ * and a manual backfill can never double-write the same month. */
+function appendOccupancySnapshotRows_(rows) {
+  const wanted = rows || [];
+  if (wanted.length === 0) return { appended: 0, skipped: 0, rows: [] };
+
+  const lock = LockService.getScriptLock();
+  lock.tryLock(30000);
+  try {
+    const sh = occupancySnapshotSheet_();
+    const existingKeys = occupancySnapshotExistingKeys_(
+      readSheet_(sh, OCCUPANCY_SNAPSHOT_COLUMNS));
+    const fresh = occupancySnapshotNewRows_(wanted, existingKeys);
+    if (fresh.length === 0) {
+      return { appended: 0, skipped: wanted.length, rows: [] };
+    }
+
+    const monthIdx    = OCCUPANCY_SNAPSHOT_COLUMNS.indexOf('month');
+    const capturedIdx = OCCUPANCY_SNAPSHOT_COLUMNS.indexOf('capturedAt');
+    const target = sh.getLastRow() + 1;
+    // Pin the text columns BEFORE the values land, so Sheets can never coerce
+    // '2026-06' into a date-typed cell (the ordering upsertRowById_ relies on).
+    sh.getRange(target, monthIdx + 1, fresh.length, 1).setNumberFormat('@');
+    sh.getRange(target, capturedIdx + 1, fresh.length, 1).setNumberFormat('@');
+
+    const values = fresh.map(function (r) {
+      return objectToRow_(r, OCCUPANCY_SNAPSHOT_COLUMNS);
+    });
+    sh.getRange(target, 1, values.length, OCCUPANCY_SNAPSHOT_COLUMNS.length).setValues(values);
+    return { appended: fresh.length, skipped: wanted.length - fresh.length, rows: fresh };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* ----- The snapshot itself ----- */
+
+/**
+ * Snapshot one FINISHED month. Idempotent — a month+house already on the
+ * sheet is skipped, never rewritten.
+ *
+ * @param {string} yyyyMm  month to snapshot, 'YYYY-MM'.
+ * @param {{dryRun:boolean}=} opts  dry run reports what WOULD be written.
+ */
+function snapshotMonth_(yyyyMm, opts) {
+  const ym = String(yyyyMm == null ? '' : yyyyMm).trim();
+  const dryRun = !!(opts && opts.dryRun);
+
+  if (!occupancySnapshotValidMonth_(ym)) {
+    return { ok: false, error: 'bad_month', month: ym, appended: 0, wouldAppend: 0, skipped: 0, rows: [] };
+  }
+  const currentMonth = defaultMonth_();
+  if (!occupancySnapshotIsFinishedMonth_(ym, currentMonth)) {
+    return {
+      ok: false, error: 'month_not_finished', month: ym, currentMonth: currentMonth,
+      appended: 0, wouldAppend: 0, skipped: 0, rows: [],
+    };
+  }
+
+  // THE shared computation — no second occupancy implementation exists.
+  const overview = managersOverview_(ym);
+  const candidates = occupancySnapshotRowsFromOverview_(ym, overview, new Date().toISOString());
+
+  if (dryRun) {
+    const fresh = occupancySnapshotNewRows_(
+      candidates, occupancySnapshotExistingKeys_(readOccupancySnapshots_()));
+    return {
+      ok: true, month: ym, dryRun: true,
+      appended: 0, wouldAppend: fresh.length,
+      skipped: candidates.length - fresh.length, rows: fresh,
+    };
+  }
+
+  const res = appendOccupancySnapshotRows_(candidates);
+  return {
+    ok: true, month: ym, dryRun: false,
+    appended: res.appended, wouldAppend: res.appended,
+    skipped: res.skipped, rows: res.rows,
+  };
+}
+
+/**
+ * TRIGGER HANDLER — snapshots the PREVIOUS month. Runs on the 1st of each
+ * month (see installOccupancySnapshotTrigger), by which time the previous
+ * month is finished. Asia/Jerusalem, via defaultMonth_/offsetMonth_.
+ */
+function runMonthlyOccupancySnapshot() {
+  const month = offsetMonth_(defaultMonth_(), 1);
+  const res = snapshotMonth_(month);
+  Logger.log('[occupancy-snapshot] monthly run ' + month + ': appended ' + res.appended +
+             ', skipped ' + res.skipped + (res.error ? ' — ' + res.error : ''));
+  return res;
+}
+
+/**
+ * ONE-TIME SETUP — run from the Apps Script editor. Idempotent: deletes EVERY
+ * existing trigger bound to runMonthlyOccupancySnapshot (so duplicates from a
+ * repeated run are removed) and installs exactly one time-driven trigger on
+ * day 1 of each month, in the 03:00–04:00 slot (project timezone
+ * Asia/Jerusalem). Apps Script schedules hourly time-driven triggers within
+ * the requested hour, so atHour(3) means "some minute between 03:00 and
+ * 04:00" — off the nightly integrity job's ~02:30 run.
+ */
+function installOccupancySnapshotTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+  for (let i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === OCCUPANCY_SNAPSHOT_TRIGGER_HANDLER) {
+      ScriptApp.deleteTrigger(triggers[i]);
+      removed++;
+    }
+  }
+  ScriptApp.newTrigger(OCCUPANCY_SNAPSHOT_TRIGGER_HANDLER)
+    .timeBased()
+    .onMonthDay(1)
+    .atHour(3)
+    .create();
+
+  const res = {
+    ok: true,
+    handler: OCCUPANCY_SNAPSHOT_TRIGGER_HANDLER,
+    removed: removed,
+    installed: 1,
+    monthDay: 1,
+    hour: 3,
+  };
+  Logger.log('[occupancy-snapshot] trigger installed: removed ' + removed +
+             ' existing trigger(s), exactly one monthly trigger now runs ' +
+             OCCUPANCY_SNAPSHOT_TRIGGER_HANDLER + ' on day 1 @ 03:00–04:00 (Asia/Jerusalem).');
+  return res;
+}
+
+/* Shared body of the backfill / preview pair. Walks
+ * OCCUPANCY_SNAPSHOT_FIRST_MONTH → the last FINISHED month and logs one line
+ * per month. Idempotent in both modes. */
+function occupancySnapshotBackfill_(dryRun) {
+  const currentMonth = defaultMonth_();
+  const lastFinished = offsetMonth_(currentMonth, 1);
+  const months = occupancySnapshotMonthRange_(OCCUPANCY_SNAPSHOT_FIRST_MONTH, lastFinished);
+  const label = dryRun ? '[occupancy-snapshot] (dry run) ' : '[occupancy-snapshot] ';
+
+  const summary = [];
+  let appended = 0;
+  let skipped = 0;
+
+  for (let i = 0; i < months.length; i++) {
+    const month = months[i];
+    const res = snapshotMonth_(month, { dryRun: !!dryRun });
+    const n = dryRun ? (res.wouldAppend || 0) : (res.appended || 0);
+    appended += n;
+    skipped  += (res.skipped || 0);
+    summary.push({
+      month: month,
+      ok: res.ok !== false,
+      appended: n,
+      skipped: res.skipped || 0,
+      error: res.error || null,
+    });
+    Logger.log(label + month + ': ' + (dryRun ? 'would append ' : 'appended ') + n +
+               ' row(s), skipped ' + (res.skipped || 0) +
+               (res.error ? ' — ' + res.error : ''));
+  }
+
+  Logger.log(label + 'TOTAL ' + OCCUPANCY_SNAPSHOT_FIRST_MONTH + ' → ' + lastFinished +
+             ': ' + months.length + ' month(s), ' +
+             (dryRun ? 'would append ' : 'appended ') + appended +
+             ' row(s), skipped ' + skipped + '.');
+
+  return {
+    ok: true,
+    dryRun: !!dryRun,
+    firstMonth: OCCUPANCY_SNAPSHOT_FIRST_MONTH,
+    lastMonth: lastFinished,
+    currentMonth: currentMonth,
+    months: months.length,
+    appended: appended,
+    skipped: skipped,
+    summary: summary,
+  };
+}
+
+/* PUBLIC (Run dropdown) — writes 2026-05 → the last finished month. Safe to
+ * re-run: months already on the sheet are skipped. */
+function backfillOccupancySnapshotsNow() {
+  return occupancySnapshotBackfill_(false);
+}
+
+/* PUBLIC (Run dropdown) — same walk, DRY RUN. Writes nothing. */
+function previewOccupancySnapshotsNow() {
+  return occupancySnapshotBackfill_(true);
+}
+
+/* ----- Read-only feed ----- */
+
+/* doGet?action=occupancySnapshots → { ok:true, rows:[...] }, sorted by month
+ * then houseId. Read-only; same access model as managersOverview. */
+function occupancySnapshots_() {
+  return { ok: true, rows: occupancySnapshotSortRows_(readOccupancySnapshots_()) };
 }
 
 /* ===== Coordinators digest: ActivePatients feed (read-only export) =====
