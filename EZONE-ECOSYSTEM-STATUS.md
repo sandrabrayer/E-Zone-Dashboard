@@ -277,6 +277,43 @@ table) drifts.
 - Efroni's backend house-id is `arfoni` (data-entry app and backend agree);
   the frontend key is `efroni`.
 
+## Dashboard Apps Script: permanent monthly occupancy snapshots (September 17, 2026)
+
+The shared dashboard Apps Script now keeps a **permanent, append-only** record of
+each finished month's occupancy per house, so a settled month stops changing when
+a historical patient row is edited, merged, repaired or discharged later.
+(`managersOverview` recomputes from the LIVE Patients sheet on every call — right
+for the running month, wrong as a history.)
+
+- **New sheet `OccupancySnapshots`** — append-only headers `month` (YYYY-MM,
+  stored as TEXT) · `houseId` · `treatmentDays` · `daysInMonth` · `avgDaily` ·
+  `capacity` · `occupancyPct` · `manager` · `capturedAt`. Rows are **never
+  overwritten and never deleted**; an existing month+house row is SKIPPED, so
+  every entry point is idempotent. The write is wrapped in `LockService` and
+  re-reads the existing keys inside the lock. Houses/capacity are pinned in code
+  (a later `BonusConfig` edit must not change what a past month meant): raanana
+  14 · ramot 20 · **arfoni** 13 (Efroni's backend id) · rehab 13 · pardes 13. No
+  financial data.
+- **No duplicated math** — `snapshotMonth_(yyyyMm)` calls `managersOverview_`
+  and projects its per-house numbers; there is no second occupancy
+  implementation to drift. **Finished months only**: the running month is refused
+  (`month_not_finished`), Asia/Jerusalem. A house with no data → no row.
+- **New monthly trigger** — `runMonthlyOccupancySnapshot` snapshots the PREVIOUS
+  month; `installOccupancySnapshotTrigger()` (editor-run, idempotent) leaves
+  exactly one time-driven trigger on the 1st of each month, 03:00–04:00, and
+  removes duplicates. `backfillOccupancySnapshotsNow()` writes 2026-05 → the last
+  finished month (the same May 2026 anchor the Managers app uses);
+  `previewOccupancySnapshotsNow()` is its dry run. None of the four is reachable
+  over HTTP.
+- **New read-only action** `doGet?action=occupancySnapshots` →
+  `{ ok:true, rows:[...] }`, sorted by month then houseId. **Same access model as
+  `managersOverview`** — no new secret, no new Script Property. No existing
+  action's response shape changed (this backend is shared by Dashboard, Managers
+  and Therapists).
+- Tests: **983 green** (`node --test`), 37 of them new in
+  `test/occupancy-snapshots.test.js`. Details: `CHANGELOG-occupancy-snapshots.md`;
+  the two post-deploy editor runs are in `DEPLOY.md` → "Occupancy snapshots".
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);

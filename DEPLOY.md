@@ -48,6 +48,68 @@ especially risky — if the live project differs, run `clasp pull` locally and
 commit the real manifest first. Flipping access off "Anyone" breaks every
 consumer.
 
+## Occupancy snapshots
+
+The `OccupancySnapshots` sheet is a **permanent, append-only** monthly occupancy
+record per house (see `CHANGELOG-occupancy-snapshots.md`). Code deploys with the
+rest of `apps-script/**`, but two things must be run **once, by hand, from the
+Apps Script editor** after that deploy lands — a web request can never trigger
+them (`handle_` does not route to either).
+
+Open the script project (`clasp open`, or the Script ID in `.clasp.json`), pick
+the function in the **Run** dropdown, press Run, and read the **Execution log**.
+
+### 1. Install the monthly trigger
+
+```
+installOccupancySnapshotTrigger
+```
+
+Installs exactly one time-driven trigger: `runMonthlyOccupancySnapshot` on **day
+1 of each month, 03:00–04:00** (project timezone **Asia/Jerusalem**), which
+snapshots the **previous** month.
+
+**Idempotent** — it deletes every existing trigger bound to
+`runMonthlyOccupancySnapshot` before creating the new one, so running it twice
+leaves one trigger, not two. Triggers belonging to other jobs (e.g. the ~02:30
+`nightlyIntegrityJob`) are never touched. Verify afterwards under **Triggers** in
+the editor sidebar: one row for `runMonthlyOccupancySnapshot`.
+
+> The first run asks for authorization (the trigger scope). Approve it with the
+> same Google account that owns the deployment.
+
+### 2. Backfill the history
+
+Dry run first — it writes **nothing** and logs, per month, what it would write:
+
+```
+previewOccupancySnapshotsNow
+```
+
+Then the real backfill (`2026-05` → the last finished month):
+
+```
+backfillOccupancySnapshotsNow
+```
+
+**Idempotent** — a `month` + `houseId` row that already exists is skipped, so a
+second run appends 0 rows. Rows are never overwritten and never deleted; the
+running month is always refused (`month_not_finished`). Safe to re-run at any
+time, including after a later month has already been captured by the trigger.
+
+Expect one log line per month plus a `TOTAL` line, e.g.
+`[occupancy-snapshot] 2026-06: appended 5 row(s), skipped 0`.
+
+### 3. Check the feed
+
+```
+<the /exec URL>?action=occupancySnapshots
+```
+
+Returns `{ ok: true, rows: [...] }`, sorted by month then houseId. Read-only,
+**same access model as `managersOverview`** — no new secret, no Script Property
+to set, no financial data.
+
 ## Security
 
 - Credentials live **only** in GitHub Secrets — never committed, never printed;
