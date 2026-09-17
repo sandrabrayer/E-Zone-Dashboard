@@ -4152,6 +4152,14 @@ const MEETING_REPORT_OUTCOMES = ['advancing', 'undecided', 'not_fit', 'no_show']
 const MEETING_COMPANION_KEYS =
   ['mother', 'father', 'parents', 'partner', 'sibling', 'friend', 'alone', 'other'];
 
+/* The ONLY cap on the manager report's פירוט (meetingNote) free text. Raised
+ * 2000 → 5000 (Sandra, Sep 2026: managers write a full meeting summary there).
+ * KEEP IN SYNC with MANAGER_REPORT_MAX_CHARS in public/meeting-report.js,
+ * public/app.js and server.js — test/manager-report-length.test.js fails if
+ * the four drift apart or if any other numeric literal caps this field.
+ * The limit REJECTS; nothing on the write path ever truncates the text. */
+const MANAGER_REPORT_MAX_CHARS = 5000;
+
 /* An "open" lead is a row of the Leads sheet still in the pipeline: admitted
  * leads (kept on the sheet with stage 'admitted' so the Patients record owns
  * them) and any stray irrelevant-stage rows are closed. The stage cell may
@@ -4191,10 +4199,11 @@ function meetingReportLeads_() {
 /* submitMeetingReport — validate and persist one meeting report onto its lead
  * row. Payload: { leadId, outcome, companion, note, reporter }. Rejects (never
  * partially writes) on: unknown/closed leadId, outcome outside
- * MEETING_REPORT_OUTCOMES, companion free text over 100 chars, note over 2000
- * chars, or a blank/oversized reporter. On success the five report fields are
- * written via upsertRowById_ (read-merge-write: the full existing row is
- * preserved, only the meeting-report fields change) and meetingSeen resets to
+ * MEETING_REPORT_OUTCOMES, companion free text over 100 chars, note over
+ * MANAGER_REPORT_MAX_CHARS (5000) chars, or a blank/oversized reporter. On
+ * success the five report fields are written via upsertRowById_
+ * (read-merge-write: the full existing row is preserved, only the
+ * meeting-report fields change) and meetingSeen resets to
  * '' so Vered's PR-3 view surfaces the new report as unseen. A resubmission
  * for the same lead overwrites the previous report — last write wins. */
 function submitMeetingReport_(report) {
@@ -4215,8 +4224,15 @@ function submitMeetingReport_(report) {
   if (MEETING_COMPANION_KEYS.indexOf(companion) === -1 && companion.length > 100) {
     return { ok: false, error: 'bad_companion', message: 'companion free text is limited to 100 chars' };
   }
-  if (note.length > 2000) {
-    return { ok: false, error: 'bad_note', message: 'note is limited to 2000 chars' };
+  // Over the cap is REFUSED, never trimmed: a silently truncated clinical
+  // summary is worse than a visible refusal. The message carries lengths only
+  // — report text is never echoed into a response or a log.
+  if (note.length > MANAGER_REPORT_MAX_CHARS) {
+    return {
+      ok: false,
+      error: 'bad_note',
+      message: 'הפירוט מוגבל ל-' + MANAGER_REPORT_MAX_CHARS + ' תווים (נשלחו ' + note.length + ')',
+    };
   }
   if (!reporter || reporter.length > 100) {
     return { ok: false, error: 'bad_reporter', message: 'reporter is required (max 100 chars)' };
