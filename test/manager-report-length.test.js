@@ -242,7 +242,7 @@ test('the source scan would CATCH a re-introduced hard-coded cap (guard self-che
   // …while these must NOT trip it (they are not caps on this field).
   ["return res.status(400).json({ ok: false, error: 'bad_note' });",
    'var MR_NOTE_MAX_HEIGHT = 520;',
-   'var MR_WA_URL_MAX = 2000;'].forEach((line) => {
+   'var MR_WA_URL_MAX = 60000;'].forEach((line) => {
     const inScope = FIELD_LINE.test(line) && LIMIT_WORD.test(line) && /\b\d{3,}\b/.test(line);
     assert.strictEqual(inScope, false, 'must stay out of scope: ' + line);
   });
@@ -268,11 +268,12 @@ test('source scan: the old 2,000 cap is gone from every פירוט path', () => 
   assert.ok(!/2000 תווים/.test(formJs), 'no Hebrew message still promises 2,000 chars');
   assert.ok(!/2000 תווים/.test(appJs), 'no Hebrew message still promises 2,000 chars');
 
-  // The only surviving 2000 in the form bundle is the wa.me URL budget, which
-  // caps the SHARE LINK — not the stored report.
-  (formJs.match(/^.*\b2000\b.*$/gm) || []).forEach((line) => {
-    assert.match(line, /MR_WA_URL_MAX/, 'a stray 2000 outside MR_WA_URL_MAX: ' + line.trim());
-  });
+  // Nothing in the form bundle's CODE says 2000 any more: the field cap is
+  // 5,000 and the wa.me budget is MR_WA_URL_MAX (60,000 encoded chars).
+  assert.deepStrictEqual(
+    formJs.match(/^.*\b2000\b.*$/gm), null,
+    'no 2000 left anywhere in the form bundle'
+  );
 });
 
 test('the textarea maxlength mirrors the constant in both UIs', () => {
@@ -450,31 +451,132 @@ test('the form page carries the textarea + the live counter element', () => {
   assert.match(appJs, /class="mrv-note-count"/, 'the edit modal carries a counter too');
 });
 
-/* ===== 7. WhatsApp: only the MESSAGE is shortened ===== */
+/* ===== 7. WhatsApp: the note is the ONLY thing that can ever be shortened =====
+ *
+ * The regression this section exists to prevent (PR #127, fixed here): the cap
+ * counted ENCODED url characters while the budget was sized as if it counted
+ * raw ones. A Hebrew letter costs SIX characters percent-encoded, so a 2,000
+ * cap left room for ~260 characters of פירוט — and because the truncation was
+ * applied to the assembled MESSAGE, everything after the cut, «דווח ע"י»
+ * included, silently vanished. Every assertion below uses REAL Hebrew. */
 
-test('a short report produces the full, untouched wa.me message', () => {
-  const saved = { name: 'דני', house: 'ramot', outcome: 'advancing', companion: 'mother', note: 'שיחה טובה', reporter: 'אורן' };
-  const url = mr.mrWhatsAppLink(mr.mrWhatsAppMessage(saved));
-  assert.ok(url.length <= mr.MR_WA_URL_MAX);
-  assert.strictEqual(decodeURIComponent(url.split('?text=')[1]), mr.mrWhatsAppMessage(saved), 'nothing was cut');
-  assert.ok(url.indexOf('…') === -1 && url.indexOf('%E2%80%A6') === -1, 'no ellipsis on a short message');
+/* A realistic manager's summary — Hebrew sentences with punctuation and line
+ * breaks, cut to exactly n characters. Not a repeated single letter: the
+ * encoded cost of real text (letters at 6, spaces/commas/newlines at 3) is what
+ * the cap actually has to survive. */
+const REPORT_UNIT =
+  'הפגישה התקיימה בבית, נכחו דני והוריו. דובר על תהליך הקליטה, סדר היום, ' +
+  'הטיפול התרופתי והליווי הפרטני. המשפחה שאלה על ביקורים ועל עלויות.\n';
+function hebReport(n) {
+  let s = '';
+  while (s.length < n) s += REPORT_UNIT;
+  return s.slice(0, n);
+}
+const savedWith = (note) => ({
+  name: 'דני כהן', house: 'ramot', outcome: 'advancing',
+  companion: 'parents', note, reporter: 'אורן',
+});
+/* The text WhatsApp would actually receive, decoded back out of the href. */
+const sentText = (saved) => decodeURIComponent(mr.mrWhatsAppShareUrl(saved).split('?text=')[1]);
+/* Just the פירוט segment of a message — between its label and the footer. */
+function noteSegment(message) {
+  const after = message.split('פירוט: ')[1];
+  return after === undefined ? '' : after.split('\nדווח ע"י: ')[0];
+}
+
+test('the encoded-cost assumption the cap rests on: one Hebrew letter = 6 URL chars', () => {
+  assert.strictEqual(encodeURIComponent('א').length, 6, "'א' → '%D7%90'");
+  assert.strictEqual(encodeURIComponent('ש').length, 6);
+  assert.strictEqual(encodeURIComponent(' ').length, 3);
+  assert.strictEqual(encodeURIComponent('\n').length, 3);
+  // Which is why the cap must clear ~6 × MANAGER_REPORT_MAX_CHARS, not 1 ×.
+  assert.ok(
+    mr.MR_WA_URL_MAX > 6 * MAX,
+    'MR_WA_URL_MAX (' + mr.MR_WA_URL_MAX + ') must exceed 6 × ' + MAX + ' = ' + (6 * MAX)
+  );
+  assert.strictEqual(mr.MR_WA_URL_MAX, 60000);
 });
 
-test('a 5,000-char report shortens ONLY the WhatsApp message, marked with …', () => {
-  const note = heb(MAX);
-  const saved = { name: 'דני', house: 'ramot', outcome: 'advancing', companion: 'mother', note, reporter: 'אורן' };
-  const message = mr.mrWhatsAppMessage(saved);
-  assert.ok(message.indexOf(note) !== -1, 'the message builder itself carries the FULL note');
+test('a 400-char Hebrew report goes out IN FULL, with the דווח ע"י line intact', () => {
+  // The exact case the old 2,000 cap silently mutilated: 400 chars of Hebrew
+  // encode to ~2,400 — over the old budget, nowhere near the new one.
+  const note = hebReport(400);
+  const saved = savedWith(note);
+  const text = sentText(saved);
 
-  const url = mr.mrWhatsAppLink(message);
-  assert.ok(url.length <= mr.MR_WA_URL_MAX, 'the encoded wa.me URL fits (' + url.length + ' ≤ ' + mr.MR_WA_URL_MAX + ')');
-  assert.ok(url.length > mr.MR_WA_URL_MAX - 60, 'and it uses nearly all of the budget — not over-trimmed');
-  const text = decodeURIComponent(url.split('?text=')[1]);
-  assert.ok(text.endsWith('…'), 'the shortened message is visibly marked');
-  assert.ok(text.startsWith('דיווח פגישה — E-Zone'), 'the header survives the cut');
+  assert.ok(text.indexOf(note) !== -1, 'the WHOLE 400-char note is in the message');
+  assert.strictEqual(noteSegment(text), note, 'the פירוט segment is the note, unmodified');
+  assert.ok(text.indexOf('דווח ע"י: אורן') !== -1, 'the reporter line survives');
+  assert.ok(text.indexOf('…') === -1, 'nothing was shortened');
+  assert.ok(mr.mrWhatsAppShareUrl(saved).length <= mr.MR_WA_URL_MAX);
+});
 
-  // The report itself is untouched — shortening lives in the link builder only.
-  assert.strictEqual(saved.note.length, MAX, 'the saved report is still the full 5,000 chars');
+test('1,300-char and 5,000-char Hebrew reports go out in full, footer intact, under the cap', () => {
+  [1300, MAX].forEach((n) => {
+    const note = hebReport(n);
+    const saved = savedWith(note);
+    const text = sentText(saved);
+    const url = mr.mrWhatsAppShareUrl(saved);
+
+    assert.strictEqual(noteSegment(text), note, n + '-char note delivered in full');
+    assert.ok(text.startsWith('דיווח פגישה — E-Zone'), n + ': header line 1 intact');
+    assert.ok(text.indexOf('ליד: דני כהן (רמות השבים)') !== -1, n + ': header line 2 intact');
+    assert.ok(text.indexOf('תוצאה: התקיימה — מתקדם לכניסה') !== -1, n + ': header line 3 intact');
+    assert.ok(text.indexOf('הגיע/ה עם: הורים') !== -1, n + ': header line 4 intact');
+    assert.ok(text.endsWith('דווח ע"י: אורן'), n + ': the footer is the LAST line');
+    assert.ok(text.indexOf('…') === -1, n + ': no ellipsis — nothing was cut');
+    assert.ok(url.length <= mr.MR_WA_URL_MAX, n + ': url ' + url.length + ' ≤ ' + mr.MR_WA_URL_MAX);
+  });
+});
+
+test('past the cap: ONLY the note is shortened — headers and דווח ע"י still intact', () => {
+  // Far beyond anything the field itself allows, purely to drive the cap.
+  const note = hebReport(60000);
+  const saved = savedWith(note);
+  const text = sentText(saved);
+  const url = mr.mrWhatsAppShareUrl(saved);
+
+  assert.ok(url.length <= mr.MR_WA_URL_MAX, 'the url fits (' + url.length + ')');
+  assert.ok(url.length > mr.MR_WA_URL_MAX - 200, 'and uses nearly all of it — not over-trimmed');
+
+  assert.ok(text.startsWith('דיווח פגישה — E-Zone\nליד: דני כהן (רמות השבים)'), 'headers intact');
+  assert.ok(text.indexOf('תוצאה: התקיימה — מתקדם לכניסה') !== -1, 'outcome intact');
+  assert.ok(text.indexOf('הגיע/ה עם: הורים') !== -1, 'companion intact');
+  assert.ok(text.endsWith('דווח ע"י: אורן'), 'the footer is still the last line — NOT cut off');
+
+  const seg = noteSegment(text);
+  assert.ok(seg.endsWith('…'), 'the note — and only the note — carries the ellipsis');
+  assert.strictEqual((text.match(/…/g) || []).length, 1, 'exactly one ellipsis, inside the note');
+  assert.ok(seg.length > 9000, 'the surviving note is thousands of chars, not a few hundred: ' + seg.length);
+  assert.ok(note.startsWith(seg.slice(0, -1)), 'what survived is a real prefix of the report');
+
+  assert.strictEqual(saved.note.length, 60000, 'the stored report is untouched');
+});
+
+test('the share message equals the plain message whenever it fits', () => {
+  const saved = savedWith(hebReport(MAX));
+  assert.strictEqual(
+    mr.mrWhatsAppShareMessage(saved), mr.mrWhatsAppMessage(saved),
+    'no rewriting at all in the normal case'
+  );
+  assert.strictEqual(
+    mr.mrWhatsAppShareUrl(saved), mr.mrWhatsAppLink(mr.mrWhatsAppMessage(saved))
+  );
+});
+
+test('mrWhatsAppLink itself never truncates — it only encodes', () => {
+  const long = hebReport(MAX);
+  assert.strictEqual(decodeURIComponent(mr.mrWhatsAppLink(long).split('?text=')[1]), long);
+  assert.ok(mr.mrWhatsAppLink(long).startsWith('https://wa.me/?text='), 'chat picker, no phone');
+});
+
+test('mrWithNote swaps the note without mutating the caller', () => {
+  const saved = savedWith('מקורי');
+  const copy = mr.mrWithNote(saved, 'חדש');
+  assert.strictEqual(saved.note, 'מקורי', 'the original is untouched');
+  assert.strictEqual(copy.note, 'חדש');
+  assert.strictEqual(copy.reporter, 'אורן', 'every other field rides along');
+  assert.strictEqual(copy.house, 'ramot');
 });
 
 test('mrSafeCut never splits a surrogate pair (an emoji cannot break the link)', () => {
@@ -483,17 +585,20 @@ test('mrSafeCut never splits a surrogate pair (an emoji cannot break the link)',
   assert.strictEqual(mr.mrSafeCut(withEmoji, 6), 'שלום ', 'a lone high surrogate is dropped');
   assert.strictEqual(mr.mrSafeCut(withEmoji, 7), withEmoji, 'the whole pair is kept');
   assert.doesNotThrow(() => encodeURIComponent(mr.mrSafeCut(withEmoji, 6)));
-  // And end to end: an emoji-laden 5,000-char report still yields a valid link.
-  const note = '👍🙂'.repeat(1250).slice(0, MAX);
-  assert.doesNotThrow(() => mr.mrWhatsAppLink(mr.mrWhatsAppMessage({ name: 'א', house: 'ramot', outcome: 'advancing', companion: 'alone', note, reporter: 'אורן' })));
+  // And end to end: an emoji-laden report past the cap still yields a valid link.
+  const note = '👍🙂'.repeat(20000);
+  assert.doesNotThrow(() => mr.mrWhatsAppShareUrl(savedWith(note)));
+  const text = sentText(savedWith(note));
+  assert.ok(text.endsWith('דווח ע"י: אורן'), 'footer intact even with emoji');
+  assert.ok(text.indexOf('\uFFFD') === -1, 'no replacement char from a split pair');
 });
 
 /* ===== 8. the service worker was bumped for the asset change ===== */
 
-test('the SW cache version is at least v7 (the assets in this change must be evicted)', () => {
+test('the SW cache version is at least v8 (the assets in this change must be evicted)', () => {
   const sw = read('public', 'sw.js');
   const m = sw.match(/var CACHE_VERSION = 'v(\d+)'/);
   assert.ok(m, 'CACHE_VERSION is declared once');
   assert.strictEqual((sw.match(/var CACHE_VERSION =/g) || []).length, 1, 'declared exactly once');
-  assert.ok(Number(m[1]) >= 7, 'CACHE_VERSION must be >= v7, got v' + m[1]);
+  assert.ok(Number(m[1]) >= 8, 'CACHE_VERSION must be >= v8, got v' + m[1]);
 });
