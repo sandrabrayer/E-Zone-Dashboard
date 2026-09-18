@@ -12,7 +12,7 @@
  *     recomputes optimistically;
  *   - rollback on a failed save for both edit and delete;
  *   - client-side validation mirroring the PR-2 backend caps (outcome key,
- *     companion free text ≤ 100, note ≤ 2000);
+ *     companion free text ≤ 100, note ≤ 5000);
  *   - edit-mode gating (same as mark-seen) + the action buttons rendering
  *     only in edit mode.
  *
@@ -187,7 +187,7 @@ test('modal HTML: the four outcome radios and every companion chip render', () =
   ['mother', 'father', 'parents', 'partner', 'sibling', 'friend', 'alone', 'other'].forEach(k =>
     assert.ok(html.includes(`data-mrv-chip="${k}"`), `companion chip ${k}`));
   assert.ok(html.includes('maxlength="100"'), 'companion input capped at 100');
-  assert.ok(html.includes('maxlength="2000"'), 'note capped at 2000');
+  assert.ok(html.includes('maxlength="5000"'), 'note capped at MANAGER_REPORT_MAX_CHARS (5000)');
 });
 
 /* ===== edit save ===== */
@@ -274,12 +274,12 @@ test('validateMeetingReportEdit: outcome must be one of the 4 report keys', () =
     'a meetings-board outcome key is NOT a report outcome key');
 });
 
-test('validateMeetingReportEdit: companion free text ≤ 100, note ≤ 2000 (presets exempt)', () => {
+test('validateMeetingReportEdit: companion free text ≤ 100, note ≤ 5000 (presets exempt)', () => {
   const v = (companion, note) => app.validateMeetingReportEdit({ outcome: 'advancing', companion, note });
   assert.strictEqual(v('א'.repeat(100), ''), '', '100-char free text allowed');
   assert.notStrictEqual(v('א'.repeat(101), ''), '', '101 chars refused');
-  assert.strictEqual(v('mother', 'ב'.repeat(2000)), '', '2000-char note allowed');
-  assert.notStrictEqual(v('mother', 'ב'.repeat(2001)), '', '2001 chars refused');
+  assert.strictEqual(v('mother', 'ב'.repeat(5000)), '', '5000-char note allowed');
+  assert.notStrictEqual(v('mother', 'ב'.repeat(5001)), '', '5001 chars refused');
   assert.strictEqual(v('', ''), '', 'blank companion allowed (form allows it)');
 });
 

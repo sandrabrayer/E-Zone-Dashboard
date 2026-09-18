@@ -31,7 +31,10 @@
 // v4 → v5: cache-strategy change — app.js/style.css move from cache-first to
 // network-first; bump to evict any bundle pinned in a v4 cache under the old
 // cache-first + ignoreSearch policy.
-var CACHE_VERSION = 'v6'; // v5→v6: name-picker overlay + whoami header (index.html/style.css/app.js)
+// v5 → v6: name-picker overlay + whoami header (index.html/style.css/app.js).
+// v6 → v7: the manager report's פירוט cap goes 2,000 → 5,000 chars — app.js,
+// style.css and the meeting-report page assets all changed, so evict v6.
+var CACHE_VERSION = 'v7';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

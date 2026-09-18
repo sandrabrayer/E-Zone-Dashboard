@@ -218,7 +218,7 @@ test('companion: preset keys and ≤100-char free text pass; >100 chars rejected
 
 test('rejects an oversized note and a blank/oversized reporter', () => {
   const { code } = withLeads(OPEN_LEADS);
-  assert.strictEqual(code.submitMeetingReport({ ...VALID, note: 'x'.repeat(2001) }).error, 'bad_note');
+  assert.strictEqual(code.submitMeetingReport({ ...VALID, note: 'x'.repeat(5001) }).error, 'bad_note');
   assert.strictEqual(code.submitMeetingReport({ ...VALID, reporter: '' }).error, 'bad_reporter');
   assert.strictEqual(code.submitMeetingReport({ ...VALID, reporter: 'x'.repeat(101) }).error, 'bad_reporter');
   assert.strictEqual(code.submitMeetingReport(null).error, 'bad_request');

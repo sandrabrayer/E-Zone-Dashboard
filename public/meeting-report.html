@@ -41,7 +41,10 @@
 
       <div class="mr-field">
         <label for="mr-note">פירוט</label>
-        <textarea id="mr-note" maxlength="2000" placeholder="מה דובר בפגישה…"></textarea>
+        <!-- maxlength mirrors MANAGER_REPORT_MAX_CHARS (public/meeting-report.js);
+             the counter below is filled by syncNote() and goes amber past 4,500. -->
+        <textarea id="mr-note" maxlength="5000" placeholder="מה דובר בפגישה…"></textarea>
+        <div id="mr-note-count" class="mr-count" aria-live="polite"></div>
       </div>
 
       <button type="button" id="mr-submit" class="mr-submit">שליחת דיווח</button>

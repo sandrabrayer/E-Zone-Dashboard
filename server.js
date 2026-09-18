@@ -919,6 +919,24 @@ app.get('/api/meeting-report/leads', requireMeetingReportSession, async (_req, r
   }
 });
 
+/* The ONLY cap on the manager report's פירוט free text — raised 2000 → 5000
+ * (Sandra, Sep 2026). KEEP IN SYNC with MANAGER_REPORT_MAX_CHARS in
+ * apps-script/Code.gs, public/meeting-report.js and public/app.js;
+ * test/manager-report-length.test.js fails if the four drift apart or if any
+ * other numeric literal caps this field. */
+const MANAGER_REPORT_MAX_CHARS = 5000;
+
+/* '' when the report's note is within the cap, otherwise the Hebrew refusal.
+ * A pre-check in front of the Apps Script round trip (Code.gs stays the
+ * authority): it REFUSES — it never truncates — and it names lengths only, so
+ * no report text ever reaches a response body or the write log. Pure. */
+function meetingReportNoteError(note) {
+  const len = String(note == null ? '' : note).length;
+  return len > MANAGER_REPORT_MAX_CHARS
+    ? `הפירוט מוגבל ל-${MANAGER_REPORT_MAX_CHARS} תווים (נשלחו ${len})`
+    : '';
+}
+
 /* POST /api/meeting-report/submit — forward the report to Apps Script with the
  * shared secret attached server-side. Validation is authoritative on the Apps
  * Script side (submitMeetingReport_); the browser only ever sees ok/error. */
@@ -934,6 +952,20 @@ app.post('/api/meeting-report/submit', requireMeetingReportSession, async (req, 
     note:      b.note      == null ? '' : String(b.note),
     reporter:  b.reporter  == null ? '' : String(b.reporter),
   };
+  const noteError = meetingReportNoteError(report.note);
+  if (noteError) {
+    recordWrite({
+      at: new Date().toISOString(),
+      route: '/api/meeting-report/submit',
+      action: 'submitMeetingReport',
+      auth: 'ok',
+      httpStatus: 400,
+      okFromBackend: false,
+      error: 'bad_note',
+      noteLength: report.note.length,   // length only — never the text
+    });
+    return res.status(400).json({ ok: false, error: 'bad_note', message: noteError });
+  }
   try {
     const data = await sheetsPost({ action: 'submitMeetingReport', secret: MEETING_REPORT_SECRET, report });
     recordWrite({
@@ -1031,6 +1063,8 @@ module.exports = {
   requireMeetingReportSession,
   buildMeetingReportCookie,
   handleMeetingReportPage,
+  MANAGER_REPORT_MAX_CHARS,
+  meetingReportNoteError,
   // Write & handoff diagnostics (in-memory state exposed for the test harness;
   // the running server mutates the same objects the tests inspect).
   recordWrite,
