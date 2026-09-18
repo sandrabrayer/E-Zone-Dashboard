@@ -37,7 +37,10 @@
 // v7 → v8: the wa.me share link's cap is fixed (encoded-length arithmetic) —
 // meeting-report.js changed, so no phone may keep serving the v7 copy that
 // still cuts a 400-char report down to ~260.
-var CACHE_VERSION = 'v8';
+// v8 → v9: the shared loading-spinner pattern — busyButton() + the .is-busy
+// spinner land in app.js, meeting-report.js, style.css AND meeting-report.css,
+// so every cached copy of all four must go.
+var CACHE_VERSION = 'v9';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

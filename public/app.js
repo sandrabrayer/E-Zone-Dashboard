@@ -2349,33 +2349,37 @@ function showMeetingReportEditModal(lead, onSaved) {
   cancelBtn.onclick = close;
   back.addEventListener('click', e => { if (e.target === back) close(); });
 
-  let submitting = false;
-  form.onsubmit = async e => {
+  /* Busy discipline via the shared busyButton pattern: the save button goes
+   * disabled + aria-busy + spinner + «שומר…» for the whole round-trip and is
+   * restored by busyButton's finally on every exit — saved, conflicted,
+   * refused by validation, or a thrown save. A second submit while busy is
+   * dropped by busyButton itself, so no local `submitting` flag is needed.
+   * ביטול is frozen alongside it (and thawed in the same finally) so the modal
+   * cannot be dismissed out from under an in-flight write. */
+  form.onsubmit = e => {
     e.preventDefault();
-    if (submitting) return;              // double-click guard
-    submitting = true;
-    submitBtn.disabled = true;
-    cancelBtn.disabled = true;
-    submitBtn.textContent = 'שומר...';
+    return busyButton(submitBtn, 'save', async () => {
+      cancelBtn.disabled = true;
+      try {
+        const fd = new FormData(form);
+        const outcome   = (fd.get('mrvOutcome') || '').toString();
+        const companion = chip === 'other'
+          ? (fd.get('mrvCompanionOther') || '').toString().trim()
+          : chip;
+        const note      = (fd.get('mrvNote') || '').toString().trim();
 
-    const fd = new FormData(form);
-    const outcome   = (fd.get('mrvOutcome') || '').toString();
-    const companion = chip === 'other'
-      ? (fd.get('mrvCompanionOther') || '').toString().trim()
-      : chip;
-    const note      = (fd.get('mrvNote') || '').toString().trim();
-
-    const ok = await saveMeetingReportEdit(lead.id, { outcome, companion, note });
-    // A raced manager resubmit/delete: the edit did NOT save; loadAll already
-    // refreshed everything (this block's DOM included), so just close — the
-    // modal's content is built on a report that no longer exists as-was.
-    if (ok === 'conflict') { close(); return; }
-    if (ok) { close(); if (onSaved) onSaved(); return; }
-    // Refused or failed — error already shown; re-enable so Vered can retry.
-    submitting = false;
-    submitBtn.disabled = false;
-    cancelBtn.disabled = false;
-    submitBtn.textContent = 'שמירה';
+        const ok = await saveMeetingReportEdit(lead.id, { outcome, companion, note });
+        // A raced manager resubmit/delete: the edit did NOT save; loadAll already
+        // refreshed everything (this block's DOM included), so just close — the
+        // modal's content is built on a report that no longer exists as-was.
+        if (ok === 'conflict') { close(); return; }
+        if (ok) { close(); if (onSaved) onSaved(); return; }
+        // Refused or failed — the error is already shown and the modal stays
+        // open; busyButton's finally hands the button back for a retry.
+      } finally {
+        cancelBtn.disabled = false;
+      }
+    });
   };
 }
 
@@ -4069,6 +4073,74 @@ async function withBusyButton(btn, fn) {
     btn.classList.remove('busy');
   }
 }
+
+/* ===== BUSY-BUTTON PATTERN — START (duplicated verbatim; keep in sync) =====
+ *
+ * ONE loading-spinner pattern for the whole product: every async user action
+ * runs through busyButton(), so the control the user actually pressed freezes,
+ * announces itself to assistive tech and says in Hebrew what it is doing for
+ * as long as the round-trip is in flight.
+ *
+ * It is DUPLICATED, not imported, on purpose: /meeting-report must never load
+ * the dashboard bundle (house managers get a small standalone page, not the
+ * 350 KB app), so the identical block lives in BOTH public/app.js and
+ * public/meeting-report.js under the SAME name. test/loading-spinners.test.js
+ * extracts the text between these two markers out of both files and fails the
+ * build if they drift by a single character — and separately fails if
+ * meeting-report.html ever pulls app.js or style.css.
+ *
+ * Contract:
+ *   - busy = disabled + aria-busy="true" + class 'is-busy' (the pure-CSS
+ *     spinner, rendered BEFORE the label in the inline direction so it is
+ *     RTL-correct, and static rather than animated under
+ *     prefers-reduced-motion) + the label swapped to the Hebrew busy word for
+ *     the kind of work: 'save' → שומר…, 'load' → טוען…, 'delete' → מוחק…;
+ *   - a second click while busy does NOTHING — it never reaches `fn`, so a
+ *     double tap on a slow phone can never fire two writes;
+ *   - the button is restored in a finally, so a success, a rejected fetch and
+ *     a validation refusal all end with a usable button carrying its original
+ *     label and its original disabled state;
+ *   - a falsy button is a passthrough (fn still runs), so a caller whose
+ *     trigger was re-rendered away never silently loses its action.
+ *
+ * ES5 (var/function, no arrows, no template literals) because the two copies
+ * must be byte-identical and public/meeting-report.js is ES5 throughout.
+ */
+var BUSY_LABELS = {
+  save: 'שומר…',
+  load: 'טוען…',
+  'delete': 'מוחק…'
+};
+
+function busyLabelFor(kind) {
+  return BUSY_LABELS[kind] || BUSY_LABELS.save;
+}
+
+/* true while `btn` is mid-action. Read off the DOM (aria-busy), never a
+ * closure flag, so the guard, the CSS and assistive tech all read the same
+ * single source of truth — and a caller that re-enters from a different
+ * handler sees it too. */
+function busyButtonActive(btn) {
+  return !!(btn && btn.getAttribute && btn.getAttribute('aria-busy') === 'true');
+}
+
+function busyButton(btn, kind, fn) {
+  if (!btn) return Promise.resolve().then(fn);
+  if (busyButtonActive(btn)) return Promise.resolve(undefined);
+  var prevLabel = btn.textContent;
+  var prevDisabled = btn.disabled;
+  btn.setAttribute('aria-busy', 'true');
+  btn.disabled = true;
+  btn.classList.add('is-busy');
+  btn.textContent = busyLabelFor(kind);
+  return Promise.resolve().then(fn).finally(function () {
+    btn.removeAttribute('aria-busy');
+    btn.classList.remove('is-busy');
+    btn.disabled = prevDisabled;
+    btn.textContent = prevLabel;
+  });
+}
+/* ===== BUSY-BUTTON PATTERN — END ===== */
 
 /* Confirm dialog with "אישור" / "ביטול" buttons. Reuses the same backdrop +
  * surface styling as the form modal but with no fields.

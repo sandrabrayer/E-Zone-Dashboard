@@ -156,6 +156,49 @@ textarea { min-height: 96px; resize: vertical; }
 }
 .mr-submit:disabled { opacity: .45; cursor: not-allowed; }
 
+/* ===== BUSY-BUTTON SPINNER — START (duplicated verbatim; keep in sync) =====
+ *
+ * The single loading indicator behind busyButton() (public/app.js and the
+ * identical helper in public/meeting-report.js). Pure CSS — no dependency, no
+ * image, nothing to download — and duplicated into both stylesheets because
+ * /meeting-report must never pull style.css; test/loading-spinners.test.js
+ * fails the build if the two copies drift.
+ *
+ * ::before, not ::after, so the spinner sits BEFORE the label in the inline
+ * direction — to the RIGHT of the text on these RTL pages — and the logical
+ * margin-inline-end keeps the gap on the correct side either way.
+ *
+ * prefers-reduced-motion: no rotation at all. The ring closes into a complete
+ * static circle so the control still reads as "working", which a vestibular
+ * user needs just as much as everyone else.
+ */
+.is-busy {
+  opacity: .7;
+  cursor: progress;
+  pointer-events: none;
+}
+.is-busy::before {
+  content: '';
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  vertical-align: -1px;
+  margin-inline-end: 7px;
+  border: 2px solid currentColor;
+  border-inline-start-color: transparent;
+  border-radius: 50%;
+  animation: ezone-busy-spin .7s linear infinite;
+}
+@keyframes ezone-busy-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .is-busy::before {
+    animation: none;
+    border-inline-start-color: currentColor;
+    opacity: .55;
+  }
+}
+/* ===== BUSY-BUTTON SPINNER — END ===== */
+
 .error-msg { color: var(--danger); margin-top: 12px; font-size: 14px; font-weight: 600; text-align: center; }
 
 /* Confirmation screen. */
