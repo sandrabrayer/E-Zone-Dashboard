@@ -34,7 +34,10 @@
 // v5 → v6: name-picker overlay + whoami header (index.html/style.css/app.js).
 // v6 → v7: the manager report's פירוט cap goes 2,000 → 5,000 chars — app.js,
 // style.css and the meeting-report page assets all changed, so evict v6.
-var CACHE_VERSION = 'v7';
+// v7 → v8: the wa.me share link's cap is fixed (encoded-length arithmetic) —
+// meeting-report.js changed, so no phone may keep serving the v7 copy that
+// still cuts a 400-char report down to ~260.
+var CACHE_VERSION = 'v8';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

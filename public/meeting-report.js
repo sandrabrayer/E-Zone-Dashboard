@@ -171,15 +171,24 @@ function mrWhatsAppMessage(saved) {
   ].join('\n');
 }
 
-/* wa.me chat-picker link — no phone number, the manager picks the group.
+/* ===== The wa.me share link =====
  *
- * WhatsApp (and the browsers/OS handlers in front of it) choke on very long
- * deep links, and a 5,000-char פירוט encodes to ~15,000 chars of %D7%.. — so
- * the MESSAGE (only the message) is cut to fit MR_WA_URL_MAX and marked with
- * '…'. The report ON THE SHEET is always the full text; this shortening exists
- * solely so the share button keeps working. */
+ * MR_WA_URL_MAX counts ENCODED URL characters, and that is the whole subtlety:
+ * a Hebrew letter costs SIX characters once percent-encoded ('א' → '%D7%90'),
+ * so a 5,000-char Hebrew report is ~30,000 characters of URL, not 5,000. The
+ * first version of this cap (2,000, PR #127) was sized as if the two were the
+ * same — it left room for barely ~260 characters of פירוט and silently cut the
+ * message off mid-sentence, taking the «דווח ע"י» line with it. 60,000 fits a
+ * full 5,000-char Hebrew report with headroom; wa.me deep links and every
+ * browser/OS handler in front of them carry that comfortably.
+ *
+ * The cap is a LAST RESORT, and it never eats the message's structure: only the
+ * note segment is ever shortened (see mrWhatsAppShareMessage) — the four header
+ * lines and the «דווח ע"י» footer always survive intact. The report ON THE
+ * SHEET is untouched either way; this shortening exists solely so the share
+ * button keeps working. */
 var MR_WA_BASE = 'https://wa.me/?text=';
-var MR_WA_URL_MAX = 2000;
+var MR_WA_URL_MAX = 60000;
 
 /* Cut a string to `n` characters without splitting a surrogate pair (a lone
  * high surrogate would make encodeURIComponent throw). Pure. */
@@ -190,19 +199,52 @@ function mrSafeCut(s, n) {
   return out;
 }
 
+/* wa.me chat-picker link — no phone number, the manager picks the group. Plain
+ * encoding, nothing removed: what goes in is what the recipient reads. Pure. */
 function mrWhatsAppLink(text) {
-  var s = String(text == null ? '' : text);
-  var url = MR_WA_BASE + encodeURIComponent(s);
-  if (url.length <= MR_WA_URL_MAX) return url;
-  // Longest prefix whose encoded link still fits, found by bisection (encoded
-  // length is monotonic in the prefix length).
-  var lo = 0, hi = s.length;
+  return MR_WA_BASE + encodeURIComponent(String(text == null ? '' : text));
+}
+
+/* `saved` with a different note — never mutates the caller's object. Pure. */
+function mrWithNote(saved, note) {
+  var s = saved || {};
+  return {
+    name: s.name, house: s.house, outcome: s.outcome,
+    companion: s.companion, note: note, reporter: s.reporter,
+  };
+}
+
+/* The message as it will actually be SENT: the full report when its link fits
+ * (the normal case, including a 5,000-char Hebrew report), otherwise the same
+ * message with ONLY the note shortened and marked '…'.
+ *
+ * The bisection runs over the NOTE's length, re-assembling the whole message
+ * each time, so the header lines and the «דווח ע"י» footer are never candidates
+ * for the cut — they are fixed overhead on both sides of the note. (A report
+ * whose header alone would blow the cap is not reachable: the note is capped at
+ * MANAGER_REPORT_MAX_CHARS and the rest is a handful of names. Even then the
+ * note would shrink to '…' and the structure would still be intact.) Pure. */
+function mrWhatsAppShareMessage(saved) {
+  var s = saved || {};
+  var note = String(s.note == null ? '' : s.note);
+  var full = mrWhatsAppMessage(s);
+  if (mrWhatsAppLink(full).length <= MR_WA_URL_MAX) return full;
+
+  var fits = function (n) {
+    return mrWhatsAppLink(mrWhatsAppMessage(mrWithNote(s, mrSafeCut(note, n) + '…'))).length
+      <= MR_WA_URL_MAX;
+  };
+  var lo = 0, hi = note.length;
   while (lo < hi) {
     var mid = Math.ceil((lo + hi) / 2);
-    var candidate = MR_WA_BASE + encodeURIComponent(mrSafeCut(s, mid) + '…');
-    if (candidate.length <= MR_WA_URL_MAX) lo = mid; else hi = mid - 1;
+    if (fits(mid)) lo = mid; else hi = mid - 1;
   }
-  return MR_WA_BASE + encodeURIComponent(mrSafeCut(s, lo) + '…');
+  return mrWhatsAppMessage(mrWithNote(s, mrSafeCut(note, lo) + '…'));
+}
+
+/* The href the «שלח לקבוצה» button gets: the share message, encoded. Pure. */
+function mrWhatsAppShareUrl(saved) {
+  return mrWhatsAppLink(mrWhatsAppShareMessage(saved));
 }
 
 /* Hebrew error text for a failed submit, keyed by the backend's stable error
@@ -253,6 +295,9 @@ if (typeof module !== 'undefined' && module.exports) {
     mrHouseLabel: mrHouseLabel,
     mrWhatsAppMessage: mrWhatsAppMessage,
     mrWhatsAppLink: mrWhatsAppLink,
+    mrWhatsAppShareMessage: mrWhatsAppShareMessage,
+    mrWhatsAppShareUrl: mrWhatsAppShareUrl,
+    mrWithNote: mrWithNote,
     mrSafeCut: mrSafeCut,
     MR_WA_URL_MAX: MR_WA_URL_MAX,
     MANAGER_REPORT_MAX_CHARS: MANAGER_REPORT_MAX_CHARS,
@@ -433,7 +478,7 @@ if (typeof module !== 'undefined' && module.exports) {
       saved.note ? '<div><span>פירוט:</span> <span class="mr-note-text">' + mrEscapeHtml(saved.note) + '</span></div>' : '',
       '<div><span>דווח ע"י:</span> ' + mrEscapeHtml(saved.reporter) + '</div>',
     ].join('');
-    el('mr-whatsapp').href = mrWhatsAppLink(mrWhatsAppMessage(saved));
+    el('mr-whatsapp').href = mrWhatsAppShareUrl(saved);
   }
 
   function resetForm() {
