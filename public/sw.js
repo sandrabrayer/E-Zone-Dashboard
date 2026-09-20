@@ -44,7 +44,10 @@
 // faded to invisibility by the :disabled rule, and that copy is still the
 // OFFLINE fallback on any device that installed v9 — evict it so no phone can
 // fall back to the broken ring.
-var CACHE_VERSION = 'v10';
+// v10 → v11: «קשר למטופל» becomes a dropdown — app.js changed (the option list,
+// the אחר free-text escape and the legacy-value pinning all live there), so no
+// phone may keep serving the v10 bundle that still renders a free-text input.
+var CACHE_VERSION = 'v11';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

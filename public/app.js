@@ -122,6 +122,79 @@ const MEETING_COMPANION_LABELS = Object.freeze({
   other:   'אחר',
 });
 
+/* ===== קשר למטופל (contactRelation) — fixed options + free-text escape =====
+ *
+ * Same shape as MEETING_COMPANION_LABELS / meetingCompanion directly above: a
+ * frozen list, an «אחר» escape whose TYPED TEXT is what gets stored (never the
+ * literal 'אחר'), and a display rule that renders anything off-list verbatim.
+ *
+ * ONE deliberate difference from the companion pattern. meetingCompanion stores
+ * stable English KEYS ('mother') and maps them to Hebrew only for display.
+ * contactRelation cannot: production column R has held free Hebrew text since
+ * PR #67 (אמא · אבא · אחות · חברה · אישתו · בעל · בת זוג · סבתא · המטופל ·
+ * עו"ס …), so the STORED value has to stay the Hebrew string itself or every
+ * existing row would stop matching its own option. The option value therefore
+ * IS the label, which makes this an ordered ARRAY rather than a key→label map —
+ * and it carries its own order, so no separate *_ORDER array is needed.
+ *
+ * NOTHING here migrates, normalizes or rewrites data. A stored value that is
+ * not on the list is surfaced as an extra option pinned at the top and already
+ * selected (see contactRelationOptions), so opening a legacy lead and saving it
+ * round-trips the value byte for byte. אישתו stays אישתו. */
+const CONTACT_RELATION_OTHER = 'אחר';
+const CONTACT_RELATION_LABELS = Object.freeze([
+  'מטופל',
+  'אמא',
+  'אבא',
+  'אח/אחות',
+  'בן/בת',
+  'בן/בת זוג',
+  'סבא/סבתא',
+  'קרוב משפחה',
+  'חבר/חברה',
+  'עו"ס',
+  CONTACT_RELATION_OTHER,
+]);
+
+/* Blank placeholder — the field is optional and must stay optional. */
+const CONTACT_RELATION_BLANK_LABEL = '— ללא —';
+
+/* true when `value` is one of the fixed options (so it needs no extra option). */
+function isContactRelationPreset(value) {
+  return CONTACT_RELATION_LABELS.indexOf(String(value == null ? '' : value)) !== -1;
+}
+
+/* The option list for a lead's stored value: the blank placeholder, then the
+ * LEGACY value pinned at the top when the stored value is off-list and
+ * non-empty, then the fixed options in order. Pure — shared by the inline card
+ * select and both modals so the three surfaces cannot drift. */
+function contactRelationOptions(stored) {
+  const v = String(stored == null ? '' : stored);
+  const legacy = (v && !isContactRelationPreset(v)) ? [{ value: v, label: v }] : [];
+  return [{ value: '', label: CONTACT_RELATION_BLANK_LABEL }]
+    .concat(legacy)
+    .concat(CONTACT_RELATION_LABELS.map(label => ({ value: label, label: label })));
+}
+
+/* What a (selection, free text) pair actually stores. Mirrors mrCompanionValue:
+ * the selection itself, except under אחר where the TRIMMED free text wins.
+ * Empty free text under אחר falls back to 'אחר' — the same fallback the
+ * companion flow uses, and what lets a legacy row literally holding 'אחר'
+ * round-trip unchanged. Pure. */
+function resolveContactRelation(selected, freeText) {
+  const sel = String(selected == null ? '' : selected);
+  if (sel !== CONTACT_RELATION_OTHER) return sel;
+  const typed = String(freeText == null ? '' : freeText).trim();
+  return typed || CONTACT_RELATION_OTHER;
+}
+
+/* Display rule, mirroring meetingReportCompanionDisplay: the value is already
+ * the Hebrew string, so it renders verbatim (CALLERS ESCAPE). Kept as a named
+ * function so the lead card reads the same way the report block does. */
+function contactRelationDisplay(value) {
+  return String(value == null ? '' : value);
+}
+
 const STATUS_OPTIONS = [
   { id: 'active',   label: 'פעיל' },
   { id: 'trial',    label: 'תקופת ניסיון' },
@@ -1563,6 +1636,30 @@ function billingSelectorFields(lead) {
     { name: 'billingOther', label: 'מספר טלפון אחר', type: 'tel',
       value: init.mode === 'other' ? init.other : '',
       hidden: init.mode !== 'other' },
+  ];
+}
+
+/* The קשר למטופל pair for a showModal field list — the select plus its אחר
+ * free-text row, mirroring billingSelectorFields above (same hidden-row +
+ * onChange mechanics). Shared by the add and edit lead modals so the option
+ * list and the legacy-value handling stay identical in both.
+ *
+ * `lead` is null for the add form. The free-text row starts hidden unless the
+ * stored value is literally 'אחר'; an off-list LEGACY value selects its own
+ * pinned option instead of routing through אחר, which is what preserves it. */
+function contactRelationFields(lead) {
+  const stored = (lead && lead.contactRelation) || '';
+  return [
+    { name: 'contactRelation', label: 'קשר למטופל', type: 'select',
+      value: stored,
+      options: contactRelationOptions(stored),
+      onChange: (val, form) => {
+        const inp = form.querySelector('[name="contactRelationOther"]');
+        if (inp) inp.closest('.form-row').style.display = (val === CONTACT_RELATION_OTHER) ? '' : 'none';
+      } },
+    { name: 'contactRelationOther', label: 'קשר אחר', type: 'text',
+      value: '',
+      hidden: stored !== CONTACT_RELATION_OTHER },
   ];
 }
 
@@ -3026,6 +3123,17 @@ function leadBillingLineHTML(lead) {
   return `<div class="lc-billing"><span class="lc-bill-tag">גבייה</span> ${escapeHtml(lead.billingPhone)}</div>`;
 }
 
+/* <option> markup for the inline card's קשר למטופל select, built from the same
+ * contactRelationOptions the modals use so the surfaces cannot drift. The
+ * stored value is always among them (an off-list legacy value gets its own
+ * pinned option), so `selected` can never fall through to the blank. */
+function contactRelationOptionsHTML(stored) {
+  const v = String(stored == null ? '' : stored);
+  return contactRelationOptions(v).map(o =>
+    `<option value="${escapeHtml(o.value)}"${o.value === v ? ' selected' : ''}>${escapeHtml(o.label)}</option>`
+  ).join('');
+}
+
 /* Edit-mode inline block: פרטי הפונה fields + the billing selector, all inside
  * the card. contactName/contactPhone/contactRelation use the generic
  * [data-field] → updateLead autosave path; the billing mode select + free input
@@ -3039,7 +3147,9 @@ function leadContactEditHTML(lead) {
       <div class="lc-section-head">פרטי הפונה</div>
       <input type="text" data-field="contactName"     value="${escapeHtml(lead.contactName || '')}"     placeholder="שם הפונה" />
       <input type="tel"  data-field="contactPhone"    value="${escapeHtml(lead.contactPhone || '')}"    placeholder="טלפון הפונה" />
-      <input type="text" data-field="contactRelation" value="${escapeHtml(lead.contactRelation || '')}" placeholder="קשר למטופל" />
+      <label class="lc-field-label">קשר למטופל</label>
+      <select class="lc-relation" data-field="contactRelation">${contactRelationOptionsHTML(lead.contactRelation)}</select>
+      <input type="text" class="lc-relation-other" value="" placeholder="קשר אחר"${lead.contactRelation === CONTACT_RELATION_OTHER ? '' : ' style="display:none"'} />
       <label class="lc-field-label">טלפון לגבייה ועדכונים</label>
       <select class="lc-billing-mode">${modeOpt('patient', 'מטופל')}${modeOpt('contact', 'פונה')}${modeOpt('other', 'אחר')}</select>
       <input type="tel" class="lc-billing-other" value="${escapeHtml(init.mode === 'other' ? init.other : '')}" placeholder="מספר טלפון אחר"${init.mode === 'other' ? '' : ' style="display:none"'} />
@@ -3183,6 +3293,25 @@ function buildLeadCard(lead) {
   card.querySelectorAll('[data-field]').forEach(inp => {
     inp.onchange = () => updateLead(lead.id, { [inp.dataset.field]: inp.value });
   });
+
+  /* קשר למטופל (edit mode) — the <select> carries data-field, so the generic
+   * autosave above already persists every ordinary choice with no extra code.
+   * Only the אחר free input is compound: reveal it when אחר is picked and
+   * persist the TYPED text through the same updateLead path. addEventListener,
+   * so the data-field .onchange handler is never clobbered. Picking אחר stores
+   * 'אחר' via the generic handler and the typed text replaces it on the next
+   * change — both are values resolveContactRelation itself would produce, so no
+   * intermediate state is ever wrong. */
+  const relSel   = card.querySelector('.lc-relation');
+  const relOther = card.querySelector('.lc-relation-other');
+  if (relSel && relOther) {
+    relSel.addEventListener('change', () => {
+      relOther.style.display = relSel.value === CONTACT_RELATION_OTHER ? '' : 'none';
+    });
+    relOther.addEventListener('change', () => {
+      updateLead(lead.id, { contactRelation: resolveContactRelation(relSel.value, relOther.value) });
+    });
+  }
 
   /* Billing selector (edit mode) — compound: the mode <select> + free-input
    * resolve to ONE billingPhone string, so they can't use the 1:1 data-field
@@ -4343,7 +4472,7 @@ function openAddLeadModal() {
       { type: 'section', label: 'פרטי הפונה' },
       { name: 'contactName',     label: 'שם', type: 'text' },
       { name: 'contactPhone',    label: 'טלפון', type: 'tel' },
-      { name: 'contactRelation', label: 'קשר למטופל', type: 'text' },
+      ...contactRelationFields(null),
       /* billingPhone selector — default מטופל. Resolved to a plain phone string
        * on submit (see resolveBillingPhone). */
       ...billingSelectorFields(null),
@@ -4383,8 +4512,14 @@ function openAddLeadModal() {
          * ignores them; the explicit billingPhone below is what persists. */
         const billingPhone = resolveBillingPhone(
           vals.billingMode, vals.phone, vals.contactPhone, vals.billingOther);
+        /* קשר למטופל resolves BEFORE normalizeLead, exactly like billingPhone:
+         * under אחר the stored value is the typed text, never the literal
+         * 'אחר'. The selector-only contactRelationOther is not a lead field —
+         * normalizeLead builds an explicit object, so it is dropped here. */
+        const contactRelation = resolveContactRelation(
+          vals.contactRelation, vals.contactRelationOther);
         const lead = normalizeLead({
-          id, ...vals, billingPhone,
+          id, ...vals, billingPhone, contactRelation,
           stage: 'new',
           /* todayISO() (YYYY-MM-DD) instead of a full toISOString() timestamp
            * so the value matches what the inline date picker reads/writes —
@@ -4439,7 +4574,7 @@ function openEditLeadModal(lead) {
       { type: 'section', label: 'פרטי הפונה' },
       { name: 'contactName',     label: 'שם',          type: 'text', value: lead.contactName || '' },
       { name: 'contactPhone',    label: 'טלפון',       type: 'tel',  value: lead.contactPhone || '' },
-      { name: 'contactRelation', label: 'קשר למטופל',  type: 'text', value: lead.contactRelation || '' },
+      ...contactRelationFields(lead),
       /* Billing selector initialized from the stored billingPhone (matches
        * patient → מטופל, matches contact → פונה, else אחר with the value). */
       ...billingSelectorFields(lead),
@@ -4472,7 +4607,10 @@ function openEditLeadModal(lead) {
       lead.note        = (v.note || '').trim();
       lead.contactName     = (v.contactName || '').trim();
       lead.contactPhone    = (v.contactPhone || '').trim();
-      lead.contactRelation = (v.contactRelation || '').trim();
+      /* Under אחר the typed text is what persists (resolveContactRelation
+       * trims it); every other selection — including an off-list legacy value
+       * carried on its own pinned option — stores exactly what was selected. */
+      lead.contactRelation = resolveContactRelation(v.contactRelation, v.contactRelationOther);
       lead.billingPhone    = resolveBillingPhone(
         v.billingMode, v.phone, v.contactPhone, v.billingOther);
       renderAll();
