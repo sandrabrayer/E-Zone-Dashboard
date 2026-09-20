@@ -51,7 +51,13 @@
 // action and a new inline marker covers the [data-field] autosave, so app.js,
 // meeting-report.js and style.css all changed — evict v11 so no phone keeps
 // serving a bundle where half the actions still give no feedback at all.
-var CACHE_VERSION = 'v12';
+// v12 → v13: the optimistic-trigger gap. v12 wired the stage buttons, the
+// patient delete and the two billing-override buttons through busyButton, but
+// each of those workers re-renders before it awaits, so that busy state was
+// measured painting in 0 of ~90 frames. app.js now raises the page-level
+// banner for those four round-trips — evict v12 so no phone keeps serving a
+// bundle where they still look inert.
+var CACHE_VERSION = 'v13';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
