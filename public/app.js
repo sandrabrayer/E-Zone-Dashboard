@@ -554,8 +554,62 @@ function showError(msg) {
   el.classList.remove('hidden');
   setTimeout(() => el.classList.add('hidden'), 6000);
 }
+/* ===== The page-level busy banner (#loading-banner) =====
+ *
+ * setLoading(on) — «טוען נתונים…», a whole-page READ. Unchanged in meaning;
+ *                  it is only reference-counted now (see below).
+ * setSaving(on)  — «שומר נתונים…», for the four OPTIMISTIC writes whose
+ *                  trigger is detached before the browser can paint a busy
+ *                  state on it.
+ *
+ * WHY setSaving EXISTS, given busyButton is the pattern everywhere else.
+ * moveLead, deletePatient, saveBillingOverride and clearBillingOverride each
+ * call renderAll()/renderBilling() BEFORE they await. busyButton sets its class
+ * synchronously but runs `fn` on a microtask, so class-set → worker entered →
+ * node detached all complete inside ONE task, with no paint in between: the
+ * busy state on those four triggers never reaches a frame. That is the same
+ * failure #130 diagnosed for the renew button, where the fix was to move the
+ * indicator onto a control the re-render cannot touch.
+ *
+ * Measured, not assumed: test/optimistic-gap-browser.test.js drives the real
+ * app in Chromium, samples every animation frame for the whole round-trip, and
+ * fails if a trigger's feedback paints in zero of them. Against the code before
+ * this change all four painted 0/~90 frames, while a modal button (which no
+ * list re-render touches) painted 43/43.
+ *
+ * #loading-banner is that untouchable control: it is a fixed element outside
+ * every re-rendered region, it already exists, and it already carries the
+ * .loading-banner style — so this adds no second indicator and no CSS.
+ *
+ * REFERENCE-COUNTED, both of them. loadAll awaits getPayments and getCredits
+ * inside its own banner and reloadCredits can run while another read is in
+ * flight, so a plain boolean lets an inner operation's `false` hide the banner
+ * while the outer one is still working. The counters floor at zero, so a stray
+ * unwind is inert rather than corrupting. A read outranks a write when both are
+ * up: a reload replaces everything on screen, which is the bigger news. */
+const BANNER_LOADING = 'טוען נתונים…';
+const BANNER_SAVING  = 'שומר נתונים…';
+let _loadingCount = 0;
+let _savingCount  = 0;
+
+function syncBusyBanner() {
+  const el = document.getElementById('loading-banner');
+  if (!el) return;
+  const msg = _loadingCount > 0 ? BANNER_LOADING
+            : _savingCount  > 0 ? BANNER_SAVING
+            : '';
+  if (msg) el.textContent = msg;
+  el.classList.toggle('hidden', !msg);
+}
+
 function setLoading(on) {
-  document.getElementById('loading-banner').classList.toggle('hidden', !on);
+  _loadingCount = on ? _loadingCount + 1 : Math.max(0, _loadingCount - 1);
+  syncBusyBanner();
+}
+
+function setSaving(on) {
+  _savingCount = on ? _savingCount + 1 : Math.max(0, _savingCount - 1);
+  syncBusyBanner();
 }
 
 /* ===== PIN / session =====
@@ -3435,6 +3489,12 @@ async function moveLead(lead, newStage) {
     lead.waitlistedAt = '';
   }
   renderAll();
+  /* The renderAll() above has already detached the שלב הבא/קודם button that
+   * was pressed, so its busyButton state cannot paint. Raise the page-level
+   * banner AFTER the re-render — it lives outside every re-rendered region, so
+   * this is the indicator the round-trip actually gets. The optimistic move and
+   * the rollback below are untouched. */
+  setSaving(true);
   try {
     await saveAll();
   } catch (e) {
@@ -3442,6 +3502,8 @@ async function moveLead(lead, newStage) {
     lead.waitlistedAt = prevWaitlistedAt;
     renderAll();
     showError('עדכון שלב נכשל — ' + e.message);
+  } finally {
+    setSaving(false);
   }
 }
 
@@ -6021,6 +6083,9 @@ async function deletePatient(p) {
   const prev = state.patients.slice();
   state.patients = state.patients.filter(x => x.id !== p.id);
   renderAll();
+  // The row (and its ✕) is gone by here, so the banner is what reports the
+  // round-trip. The native confirm() above is left exactly as it is.
+  setSaving(true);
   try {
     /* Patient identity foundation: the persisted id is sent alongside the
      * identity key. The backend deletes EXACTLY the row holding that id
@@ -6038,6 +6103,8 @@ async function deletePatient(p) {
     state.patients = prev;
     renderAll();
     showError('מחיקה נכשלה — ' + e.message);
+  } finally {
+    setSaving(false);
   }
 }
 
@@ -7633,6 +7700,9 @@ async function saveBillingOverride(payment, newAmount) {
     : prev.concat([record]);
   renderBilling();
 
+  // renderBilling() above rebuilt this row, detaching the שמור button that was
+  // pressed; the banner is the indicator that survives.
+  setSaving(true);
   try {
     await apiPost({ action: 'upsertBillingOverride', override: record });
     showToast('הסכום עודכן לחודש ' + formatMonth(payment.dueDate));
@@ -7640,6 +7710,8 @@ async function saveBillingOverride(payment, newAmount) {
     state.billingOverrides = prev;
     renderBilling();
     showError('עדכון הסכום נכשל — ' + e.message);
+  } finally {
+    setSaving(false);
   }
 }
 
@@ -7658,6 +7730,8 @@ async function clearBillingOverride(payment) {
   state.billingOverrides = state.billingOverrides.filter(o => o !== existing);
   renderBilling();
 
+  // Same detachment as saveBillingOverride — the ↩ button is gone by here.
+  setSaving(true);
   try {
     await apiPost({ action: 'deleteBillingOverride', override: { id: existing.id, patientId: pid, month } });
     showToast('הסכום הוחזר לסכום הבסיס');
@@ -7665,6 +7739,8 @@ async function clearBillingOverride(payment) {
     state.billingOverrides = prev;
     renderBilling();
     showError('ביטול ההתאמה נכשל — ' + e.message);
+  } finally {
+    setSaving(false);
   }
 }
 
