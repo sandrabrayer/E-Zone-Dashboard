@@ -44,9 +44,9 @@ every other verdict is void.
 | Trigger | Before | After |
 |---|---|---|
 | «← שלב הבא» → `moveLead` | **0 / 89 frames** | 88 / 89 |
-| «שלב קודם →» → `moveLead` | **0 / 87 frames** | 87 / 87 |
-| מחק לצמיתות ✕ → `deletePatient` | **0 / 87 frames** | 89 / 89 |
-| billing שמור → `saveBillingOverride` | **0 / 92 frames** | 88 / 89 |
+| «שלב קודם →» → `moveLead` | **0 / 90 frames** | 87 / 87 |
+| מחק לצמיתות ✕ → `deletePatient` | **0 / 88 frames** | 89 / 89 |
+| billing שמור → `saveBillingOverride` | **0 / 90 frames** | 88 / 89 |
 | billing ↩ → `clearBillingOverride` | **0 / 89 frames** | 89 / 90 |
 | *control* — close-lead modal אישור | *43 / 43* | *43 / 43* |
 
