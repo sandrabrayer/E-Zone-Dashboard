@@ -36,7 +36,14 @@ function fakeClassList() {
   };
 }
 function fakeButton() {
-  return { disabled: false, textContent: '', onclick: null, classList: fakeClassList() };
+  /* Attribute API included: busyButton reads/writes aria-busy on the button. */
+  return {
+    disabled: false, textContent: '', onclick: null, classList: fakeClassList(),
+    _attrs: {},
+    getAttribute(k) { return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null; },
+    setAttribute(k, v) { this._attrs[k] = String(v); },
+    removeAttribute(k) { delete this._attrs[k]; },
+  };
 }
 function fakeContainerEl() {
   return {
@@ -153,15 +160,20 @@ test('אישור fires the write; the dialog stays open + frozen for the round-t
   const cancelBtn  = back.querySelector('[data-action="cancel"]');
 
   const clicked = confirmBtn.onclick();
+  // The busy state is applied synchronously, at the tap...
+  assert.strictEqual(confirmBtn.disabled, true, 'confirm frozen');
+  assert.strictEqual(confirmBtn.getAttribute('aria-busy'), 'true');
+  assert.strictEqual(confirmBtn.classList.contains('is-busy'), true, 'spinner class present');
+  // ...and the worker itself runs on a microtask (busyButton wraps it in
+  // Promise.resolve().then), so give it one before asserting the write.
+  await settle();
   assert.ok(saved, 'savePayment fired on אישור');
   assert.strictEqual(saved.status, 'paid');
   assert.ok(dashboardRenders >= 1, 'optimistic re-render ran while the request is pending');
   // The heart of the fix: while the network write is still pending, the busy
   // state is alive on the modal button — NOT on a destroyed row button.
   assert.strictEqual(back.removed, false, 'dialog still open while pending');
-  assert.strictEqual(confirmBtn.disabled, true, 'confirm frozen');
   assert.strictEqual(cancelBtn.disabled, true, 'cancel frozen');
-  assert.strictEqual(confirmBtn.classList.contains('busy'), true, 'spinner class present');
 
   d.resolve();
   await clicked;

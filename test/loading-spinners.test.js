@@ -134,15 +134,18 @@ COPIES.forEach(([where, api]) => {
     assert.strictEqual(api.busyLabelFor('save'), 'שומר…');
     assert.strictEqual(api.busyLabelFor('load'), 'טוען…');
     assert.strictEqual(api.busyLabelFor('delete'), 'מוחק…');
+    assert.strictEqual(api.busyLabelFor('send'), 'שולח…');
     // Unknown / omitted kind falls back to the save wording rather than blanking.
     assert.strictEqual(api.busyLabelFor('nonsense'), 'שומר…');
     assert.strictEqual(api.busyLabelFor(undefined), 'שומר…');
     // Key-by-key: the app.js copy comes out of a vm realm, so its Object
     // prototype is not this realm's and deepStrictEqual would reject it.
-    assert.deepStrictEqual(Object.keys(api.BUSY_LABELS).sort(), ['delete', 'load', 'save']);
+    assert.deepStrictEqual(Object.keys(api.BUSY_LABELS).sort(),
+      ['delete', 'load', 'save', 'send']);
     assert.strictEqual(api.BUSY_LABELS.save, 'שומר…');
     assert.strictEqual(api.BUSY_LABELS.load, 'טוען…');
     assert.strictEqual(api.BUSY_LABELS['delete'], 'מוחק…');
+    assert.strictEqual(api.BUSY_LABELS.send, 'שולח…');
   });
 
   test(`[${where}] a second click while busy does nothing — fn never runs twice`, async () => {
@@ -301,7 +304,8 @@ test('[meeting-report] clicking שליחת דיווח puts the button in the bus
   assert.strictEqual(btn.disabled, true);
   assert.strictEqual(btn.getAttribute('aria-busy'), 'true');
   assert.strictEqual(btn.classList.contains('is-busy'), true);
-  assert.strictEqual(btn.textContent, 'שומר…');
+  assert.strictEqual(btn.textContent, 'שולח…',
+    'submitting a report is a SEND, so it says שולח… not שומר…');
 
   await tick();
   assert.strictEqual(page.submitCalls().length, 1);
@@ -641,8 +645,8 @@ test('/meeting-report never loads the dashboard bundle', () => {
 
 test('both save paths actually go through busyButton', () => {
   const mrJs = read('public', 'meeting-report.js');
-  assert.match(mrJs, /busyButton\(el\('mr-submit'\), 'save'/,
-    'the meeting-report submit must run through busyButton');
+  assert.match(mrJs, /busyButton\(el\('mr-submit'\), 'send'/,
+    'the meeting-report submit must run through busyButton, as a send');
   assert.ok(!/function withBusy\(/.test(mrJs), 'the page-local withBusy helper is replaced');
 
   const appJs = read('public', 'app.js');
