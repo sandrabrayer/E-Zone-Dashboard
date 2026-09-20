@@ -280,6 +280,74 @@ function mrEscapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+/* ===== BUSY-BUTTON PATTERN — START (duplicated verbatim; keep in sync) =====
+ *
+ * ONE loading-spinner pattern for the whole product: every async user action
+ * runs through busyButton(), so the control the user actually pressed freezes,
+ * announces itself to assistive tech and says in Hebrew what it is doing for
+ * as long as the round-trip is in flight.
+ *
+ * It is DUPLICATED, not imported, on purpose: /meeting-report must never load
+ * the dashboard bundle (house managers get a small standalone page, not the
+ * 350 KB app), so the identical block lives in BOTH public/app.js and
+ * public/meeting-report.js under the SAME name. test/loading-spinners.test.js
+ * extracts the text between these two markers out of both files and fails the
+ * build if they drift by a single character — and separately fails if
+ * meeting-report.html ever pulls app.js or style.css.
+ *
+ * Contract:
+ *   - busy = disabled + aria-busy="true" + class 'is-busy' (the pure-CSS
+ *     spinner, rendered BEFORE the label in the inline direction so it is
+ *     RTL-correct, and static rather than animated under
+ *     prefers-reduced-motion) + the label swapped to the Hebrew busy word for
+ *     the kind of work: 'save' → שומר…, 'load' → טוען…, 'delete' → מוחק…;
+ *   - a second click while busy does NOTHING — it never reaches `fn`, so a
+ *     double tap on a slow phone can never fire two writes;
+ *   - the button is restored in a finally, so a success, a rejected fetch and
+ *     a validation refusal all end with a usable button carrying its original
+ *     label and its original disabled state;
+ *   - a falsy button is a passthrough (fn still runs), so a caller whose
+ *     trigger was re-rendered away never silently loses its action.
+ *
+ * ES5 (var/function, no arrows, no template literals) because the two copies
+ * must be byte-identical and public/meeting-report.js is ES5 throughout.
+ */
+var BUSY_LABELS = {
+  save: 'שומר…',
+  load: 'טוען…',
+  'delete': 'מוחק…'
+};
+
+function busyLabelFor(kind) {
+  return BUSY_LABELS[kind] || BUSY_LABELS.save;
+}
+
+/* true while `btn` is mid-action. Read off the DOM (aria-busy), never a
+ * closure flag, so the guard, the CSS and assistive tech all read the same
+ * single source of truth — and a caller that re-enters from a different
+ * handler sees it too. */
+function busyButtonActive(btn) {
+  return !!(btn && btn.getAttribute && btn.getAttribute('aria-busy') === 'true');
+}
+
+function busyButton(btn, kind, fn) {
+  if (!btn) return Promise.resolve().then(fn);
+  if (busyButtonActive(btn)) return Promise.resolve(undefined);
+  var prevLabel = btn.textContent;
+  var prevDisabled = btn.disabled;
+  btn.setAttribute('aria-busy', 'true');
+  btn.disabled = true;
+  btn.classList.add('is-busy');
+  btn.textContent = busyLabelFor(kind);
+  return Promise.resolve().then(fn).finally(function () {
+    btn.removeAttribute('aria-busy');
+    btn.classList.remove('is-busy');
+    btn.disabled = prevDisabled;
+    btn.textContent = prevLabel;
+  });
+}
+/* ===== BUSY-BUTTON PATTERN — END ===== */
+
 // Expose for the test harness (Node vm sandbox) without affecting the browser.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
@@ -308,6 +376,10 @@ if (typeof module !== 'undefined' && module.exports) {
     mrEscapeHtml: mrEscapeHtml,
     MR_SUBMIT_ERROR_TEXTS: MR_SUBMIT_ERROR_TEXTS,
     mrSubmitErrorText: mrSubmitErrorText,
+    BUSY_LABELS: BUSY_LABELS,
+    busyLabelFor: busyLabelFor,
+    busyButtonActive: busyButtonActive,
+    busyButton: busyButton,
   };
 }
 
@@ -323,27 +395,9 @@ if (typeof module !== 'undefined' && module.exports) {
     showAll: false,
     outcome: '',
     companion: '',
-    busy: false,
   };
 
   var el = function (id) { return document.getElementById(id); };
-
-  /* Local equivalent of app.js's withBusyButton: disable + label swap while an
-   * async submit runs, so a double tap can never fire twice. */
-  function withBusy(btn, busyLabel, fn) {
-    if (state.busy) return Promise.resolve();
-    state.busy = true;
-    var prev = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = busyLabel;
-    return Promise.resolve()
-      .then(fn)
-      .finally(function () {
-        state.busy = false;
-        btn.disabled = false;
-        btn.textContent = prev;
-      });
-  }
 
   function showError(msg) {
     var e = el('mr-error');
@@ -418,28 +472,32 @@ if (typeof module !== 'undefined' && module.exports) {
     return null;
   }
 
+  /* The whole submit — VALIDATION INCLUDED — runs inside busyButton, so the
+   * button is frozen from the moment of the tap and is restored by the same
+   * finally whether the report saved, the network failed, or a missing field
+   * refused it before any request left the phone. */
   function submit() {
-    clearError();
-    var lead = selectedLead();
-    var reporter = el('mr-reporter').value;
-    var note = el('mr-note').value.trim();
-    if (!reporter) return showError('נא לבחור מדווח/ת');
-    if (!lead) return showError('נא לבחור ליד');
-    if (!state.outcome) return showError('נא לבחור תוצאה');
-    // maxlength already stops typing/pasting past the cap in every browser we
-    // support; this is the belt-and-braces refusal (and the one a scripted or
-    // autofilled value hits) — refuse, never trim.
-    var noteErr = mrNoteError(note);
-    if (noteErr) return showError(noteErr);
-    var companion = mrCompanionValue(state.companion, el('mr-companion-other').value);
-    var payload = {
-      leadId: lead.id,
-      outcome: state.outcome,
-      companion: companion,
-      note: note,
-      reporter: reporter,
-    };
-    return withBusy(el('mr-submit'), 'שולח…', function () {
+    return busyButton(el('mr-submit'), 'save', function () {
+      clearError();
+      var lead = selectedLead();
+      var reporter = el('mr-reporter').value;
+      var note = el('mr-note').value.trim();
+      if (!reporter) return showError('נא לבחור מדווח/ת');
+      if (!lead) return showError('נא לבחור ליד');
+      if (!state.outcome) return showError('נא לבחור תוצאה');
+      // maxlength already stops typing/pasting past the cap in every browser we
+      // support; this is the belt-and-braces refusal (and the one a scripted or
+      // autofilled value hits) — refuse, never trim.
+      var noteErr = mrNoteError(note);
+      if (noteErr) return showError(noteErr);
+      var companion = mrCompanionValue(state.companion, el('mr-companion-other').value);
+      var payload = {
+        leadId: lead.id,
+        outcome: state.outcome,
+        companion: companion,
+        note: note,
+        reporter: reporter,
+      };
       return fetch('/api/meeting-report/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
