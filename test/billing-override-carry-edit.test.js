@@ -32,6 +32,12 @@ function fakeClassList() {
 function fakeEl() {
   const el = {
     className: '', _html: '', dataset: {}, textContent: '', value: '', disabled: false,
+    /* busyButton reads/writes aria-busy on the trigger, as it does on any real
+     * <button>; the fake needs the same attribute API. */
+    _attrs: {},
+    getAttribute(k) { return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null; },
+    setAttribute(k, v) { this._attrs[k] = String(v); },
+    removeAttribute(k) { delete this._attrs[k]; },
     set innerHTML(v) { this._html = v; },
     get innerHTML() { return this._html; },
     classList: fakeClassList(), children: [],

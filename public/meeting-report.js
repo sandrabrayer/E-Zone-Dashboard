@@ -300,7 +300,8 @@ function mrEscapeHtml(s) {
  *     spinner, rendered BEFORE the label in the inline direction so it is
  *     RTL-correct, and static rather than animated under
  *     prefers-reduced-motion) + the label swapped to the Hebrew busy word for
- *     the kind of work: 'save' → שומר…, 'load' → טוען…, 'delete' → מוחק…;
+ *     the kind of work: 'save' → שומר…, 'load' → טוען…, 'delete' → מוחק…,
+ *     'send' → שולח…;
  *   - a second click while busy does NOTHING — it never reaches `fn`, so a
  *     double tap on a slow phone can never fire two writes;
  *   - the button is restored in a finally, so a success, a rejected fetch and
@@ -315,7 +316,8 @@ function mrEscapeHtml(s) {
 var BUSY_LABELS = {
   save: 'שומר…',
   load: 'טוען…',
-  'delete': 'מוחק…'
+  'delete': 'מוחק…',
+  send: 'שולח…'
 };
 
 function busyLabelFor(kind) {
@@ -448,7 +450,18 @@ if (typeof module !== 'undefined' && module.exports) {
     el('mr-companion-other-wrap').classList.toggle('hidden', state.companion !== 'other');
   }
 
+  /* The picker used to sit empty and unexplained while this request was in
+   * flight — a manager on a slow phone could not tell it apart from "there are
+   * no leads". A single disabled «טוען…» option says which it is, using the
+   * same Hebrew word the buttons use (BUSY_LABELS.load); renderLeads replaces
+   * it wholesale, and the catch below restores a usable empty state. */
+  function showLeadsLoading() {
+    var sel = el('mr-lead');
+    if (sel) sel.innerHTML = '<option value="">' + mrEscapeHtml(busyLabelFor('load')) + '</option>';
+  }
+
   function loadLeads() {
+    showLeadsLoading();
     return fetch('/api/meeting-report/leads')
       .then(function (res) {
         if (res.status === 401) { location.reload(); throw new Error('unauthorized'); }
@@ -460,6 +473,7 @@ if (typeof module !== 'undefined' && module.exports) {
         renderLeads();
       })
       .catch(function () {
+        renderLeads();   // clear «טוען…» — never leave the picker looking busy
         showError('טעינת הלידים נכשלה — נסו לרענן את הדף');
       });
   }
@@ -477,7 +491,7 @@ if (typeof module !== 'undefined' && module.exports) {
    * finally whether the report saved, the network failed, or a missing field
    * refused it before any request left the phone. */
   function submit() {
-    return busyButton(el('mr-submit'), 'save', function () {
+    return busyButton(el('mr-submit'), 'send', function () {
       clearError();
       var lead = selectedLead();
       var reporter = el('mr-reporter').value;
@@ -551,7 +565,8 @@ if (typeof module !== 'undefined' && module.exports) {
     el('mr-done').classList.add('hidden');
     form.classList.remove('hidden');
     clearError();
-    loadLeads(); // refresh — the just-reported lead may have new state
+    // Returned so «דיווח נוסף»'s busy state tracks the refresh to completion.
+    return loadLeads(); // refresh — the just-reported lead may have new state
   }
 
   /* The פירוט textarea: live 'X / 5000' counter (amber past the warn
@@ -591,7 +606,10 @@ if (typeof module !== 'undefined' && module.exports) {
     renderLeads();
   });
   el('mr-submit').addEventListener('click', submit);
-  el('mr-again').addEventListener('click', resetForm);
+  /* «דיווח נוסף» re-fetches the lead list, so it is a load like any other. */
+  el('mr-again').addEventListener('click', function () {
+    return busyButton(el('mr-again'), 'load', resetForm);
+  });
 
   renderReporters();
   renderOutcomes();

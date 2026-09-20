@@ -1,8 +1,6 @@
 /* Tests for the async-button busy-state pass (PR-R3).
  *
- *   app.js — withBusyButton (disable + .busy for the duration of an async
- *            action, restore on settle, propagate rejections);
- *            showConfirm busy discipline (stays open + frozen while an async
+ *   app.js — showConfirm busy discipline (stays open + frozen while an async
  *            onConfirm runs; double-click and backdrop-close guarded);
  *            renewPatient returns its settle promise (so the renew button's
  *            busy wrapper can track it);
@@ -34,10 +32,24 @@ function fakeClassList() {
   };
 }
 function fakeButton() {
-  return { disabled: false, textContent: '', onclick: null, classList: fakeClassList() };
+  /* A real <button> carries the attribute API busyButton uses for its aria-busy
+   * guard, so the fake carries it too. */
+  return {
+    disabled: false, textContent: '', onclick: null, classList: fakeClassList(),
+    _attrs: {},
+    getAttribute(k) { return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null; },
+    setAttribute(k, v) { this._attrs[k] = String(v); },
+    removeAttribute(k) { delete this._attrs[k]; },
+  };
 }
 function fakeControl() {
-  return { disabled: false, value: '', onchange: null, classList: fakeClassList() };
+  return {
+    disabled: false, value: '', onchange: null, classList: fakeClassList(),
+    _attrs: {},
+    getAttribute(k) { return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null; },
+    setAttribute(k, v) { this._attrs[k] = String(v); },
+    removeAttribute(k) { delete this._attrs[k]; },
+  };
 }
 function fakeContainerEl() {
   const el = {
@@ -70,7 +82,6 @@ function loadApp() {
   const epilogue = `
     globalThis.__test = {
       setState(s) { Object.assign(state, s); },
-      withBusyButton,
       showConfirm,
       renewPatient,
       buildBillingRow,
@@ -106,37 +117,12 @@ function loadApp() {
 
 const { app, holder } = loadApp();
 
-/* ===== withBusyButton ===== */
-
-test('withBusyButton disables + marks busy during the action, restores after', async () => {
-  const btn = fakeButton();
-  const d = deferred();
-  const run = app.withBusyButton(btn, () => d.promise);
-  assert.strictEqual(btn.disabled, true, 'disabled while pending');
-  assert.strictEqual(btn.classList.contains('busy'), true, 'busy class while pending');
-  d.resolve('done');
-  assert.strictEqual(await run, 'done', 'return value passes through');
-  assert.strictEqual(btn.disabled, false, 're-enabled after settle');
-  assert.strictEqual(btn.classList.contains('busy'), false, 'busy class removed');
-});
-
-test('withBusyButton restores the button and propagates a rejection', async () => {
-  const btn = fakeButton();
-  await assert.rejects(
-    () => app.withBusyButton(btn, () => Promise.reject(new Error('boom'))),
-    /boom/
-  );
-  assert.strictEqual(btn.disabled, false);
-  assert.strictEqual(btn.classList.contains('busy'), false);
-});
-
-test('withBusyButton preserves a pre-disabled button and passes through a falsy button', async () => {
-  const btn = fakeButton();
-  btn.disabled = true;
-  await app.withBusyButton(btn, async () => {});
-  assert.strictEqual(btn.disabled, true, 'previously-disabled stays disabled');
-  assert.strictEqual(await app.withBusyButton(null, async () => 42), 42);
-});
+/* withBusyButton is GONE — the loading-feedback rollout retired it and moved
+ * its five callers onto the shared busyButton, which is unit-tested against
+ * BOTH shipped copies in test/loading-spinners.test.js. What is still this
+ * file's own subject, and is asserted below, is the BEHAVIOUR those callers
+ * depend on: showConfirm's dialog discipline, renewPatient returning its settle
+ * promise, and the billing row freeze. */
 
 /* ===== showConfirm busy discipline ===== */
 
@@ -152,7 +138,8 @@ test('showConfirm stays open + frozen while async onConfirm runs, closes after',
   const clicked = confirmBtn.onclick();
   assert.strictEqual(confirmBtn.disabled, true, 'confirm frozen while pending');
   assert.strictEqual(cancelBtn.disabled, true, 'cancel frozen while pending');
-  assert.strictEqual(confirmBtn.classList.contains('busy'), true);
+  assert.strictEqual(confirmBtn.classList.contains('is-busy'), true);
+  assert.strictEqual(confirmBtn.getAttribute('aria-busy'), 'true');
   assert.strictEqual(back.removed, false, 'dialog still open while pending');
 
   // double-click during busy is a no-op

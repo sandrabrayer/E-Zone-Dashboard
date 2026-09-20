@@ -183,11 +183,14 @@ textarea { min-height: 96px; resize: vertical; }
  * anyway, because the spinner, the Hebrew busy label and cursor:progress
  * already say the control is not clickable.
  *
- * Why the OLDER `.btn.busy` spinner never showed this symptom, for anyone
- * tempted to "simplify" the selector back: `.btn.busy` is TWO compounds, so it
- * ties `.btn:disabled` and wins on source order (it is declared later),
+ * Why the older `.btn.busy` spinner never showed this symptom, for anyone
+ * tempted to "simplify" the selector back: `.btn.busy` was TWO compounds, so it
+ * tied `.btn:disabled` and won on source order (it was declared later),
  * landing .65 — dimmed but legible. `.is-busy` is ONE, so it simply loses.
- * That single-compound-vs-two difference is the whole regression.
+ * That single-compound-vs-two difference was the whole regression. (The
+ * `.btn.busy` rules themselves are gone — the loading-feedback rollout retired
+ * withBusyButton, their only caller — but the cascade lesson still applies to
+ * this block.)
  *
  * The ring's colour is currentColor ON PURPOSE: every button variant sets its
  * own `color` to contrast its own `background` (#fff on the blue primary, the

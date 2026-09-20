@@ -21,7 +21,16 @@ const vm = require('node:vm');
 
 /* ---------- minimal DOM for the modal ---------- */
 function fakeButton() {
-  return { disabled: false, textContent: '', onclick: null };
+  /* Attribute API + classList: busyButton sets aria-busy and the is-busy class. */
+  return {
+    disabled: false, textContent: '', onclick: null,
+    classList: { _s: new Set(), add(c) { this._s.add(c); }, remove(c) { this._s.delete(c); },
+                 contains(c) { return this._s.has(c); } },
+    _attrs: {},
+    getAttribute(k) { return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null; },
+    setAttribute(k, v) { this._attrs[k] = String(v); },
+    removeAttribute(k) { delete this._attrs[k]; },
+  };
 }
 function fakeModalEl() {
   const el = {

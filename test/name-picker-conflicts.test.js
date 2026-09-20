@@ -334,6 +334,12 @@ function fakeEl(id) {
     value: '',
     disabled: false,
     onclick: null,
+    /* Attribute API: busyButton guards re-entry on aria-busy, which a real
+     * <button> supports and this fake must too. */
+    _attrs: {},
+    getAttribute(k) { return Object.prototype.hasOwnProperty.call(el._attrs, k) ? el._attrs[k] : null; },
+    setAttribute(k, v) { el._attrs[k] = String(v); },
+    removeAttribute(k) { delete el._attrs[k]; },
   };
   return el;
 }

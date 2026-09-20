@@ -293,17 +293,6 @@ input:focus, select:focus, textarea:focus {
 }
 .show-released-toggle input { accent-color: var(--accent, #5b8bff); }
 
-/* Busy async button (withBusyButton / modal saves): dimmed + inline spinner.
- * Logical properties (inline-start) keep the spinner on the correct side in
- * RTL. pointer-events guards browsers that ignore `disabled` styling races. */
-.btn.busy { opacity: .65; pointer-events: none; }
-.btn.busy::after {
-  content: ''; display: inline-block; width: 10px; height: 10px;
-  border: 2px solid currentColor; border-inline-start-color: transparent;
-  border-radius: 50%; margin-inline-start: 6px; vertical-align: -1px;
-  animation: btn-busy-spin .7s linear infinite;
-}
-@keyframes btn-busy-spin { to { transform: rotate(360deg); } }
 /* Billing row frozen while its savePayment round-trip is in flight. */
 .billing-row.saving { opacity: .65; }
 
@@ -334,11 +323,14 @@ input:focus, select:focus, textarea:focus {
  * anyway, because the spinner, the Hebrew busy label and cursor:progress
  * already say the control is not clickable.
  *
- * Why the OLDER `.btn.busy` spinner never showed this symptom, for anyone
- * tempted to "simplify" the selector back: `.btn.busy` is TWO compounds, so it
- * ties `.btn:disabled` and wins on source order (it is declared later),
+ * Why the older `.btn.busy` spinner never showed this symptom, for anyone
+ * tempted to "simplify" the selector back: `.btn.busy` was TWO compounds, so it
+ * tied `.btn:disabled` and won on source order (it was declared later),
  * landing .65 — dimmed but legible. `.is-busy` is ONE, so it simply loses.
- * That single-compound-vs-two difference is the whole regression.
+ * That single-compound-vs-two difference was the whole regression. (The
+ * `.btn.busy` rules themselves are gone — the loading-feedback rollout retired
+ * withBusyButton, their only caller — but the cascade lesson still applies to
+ * this block.)
  *
  * The ring's colour is currentColor ON PURPOSE: every button variant sets its
  * own `color` to contrast its own `background` (#fff on the blue primary, the
@@ -381,6 +373,22 @@ input:focus, select:focus, textarea:focus {
   }
 }
 /* ===== BUSY-BUTTON SPINNER — END ===== */
+
+/* Inline field saving marker (withFieldSaving in public/app.js). It carries the
+ * `is-busy` class above, so the ring and the reduced-motion behaviour are the
+ * SAME rule — this adds only the sizing and spacing an inline marker needs next
+ * to a form control, because browsers do not render pseudo-elements on
+ * <input>/<select> themselves. Not duplicated into meeting-report.css: that
+ * page has no inline autosave. */
+.field-saving {
+  display: inline-flex;
+  align-items: center;
+  margin-inline-start: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  vertical-align: middle;
+}
 
 /* Per-month amount override (billing rows). RTL-safe: inline-flex + gap, no
  * directional margins. The badge reuses the .badge base with a blue accent so

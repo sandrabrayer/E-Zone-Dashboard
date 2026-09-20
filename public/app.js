@@ -579,14 +579,17 @@ function revealApp() {
   document.getElementById('app').classList.remove('hidden');
 }
 
-let _pinPending = false;
-async function tryPin() {
+/* The PIN submit runs through busyButton like every other button: it owns the
+ * re-entry guard (so the old _pinPending flag is gone), the «טוען…» label and
+ * the restore on both exits. */
+function tryPin() {
+  const submitBtn = document.getElementById('pin-submit');
+  return busyButton(submitBtn, 'load', tryPinWorker);
+}
+
+async function tryPinWorker() {
   const input = document.getElementById('pin-input');
   const errEl = document.getElementById('pin-error');
-  const submitBtn = document.getElementById('pin-submit');
-  if (_pinPending) return;
-  _pinPending = true;
-  submitBtn.disabled = true;
   errEl.classList.add('hidden');
   try {
     const pin = input.value; // held in memory ONLY for this login flow
@@ -605,9 +608,6 @@ async function tryPin() {
   } catch (_) {
     errEl.classList.remove('hidden');
     input.value = '';
-  } finally {
-    _pinPending = false;
-    submitBtn.disabled = false;
   }
 }
 
@@ -659,7 +659,7 @@ function showUserPicker(pin) {
     const btn = document.createElement('button');
     btn.className = 'btn primary user-option';
     btn.textContent = name;
-    btn.onclick = async () => {
+    btn.onclick = () => busyButton(btn, 'load', async () => {
       errEl.classList.add('hidden');
       try {
         const res = await fetch('/api/verify-pin', {
@@ -674,7 +674,7 @@ function showUserPicker(pin) {
       } catch (_) {
         errEl.classList.remove('hidden');
       }
-    };
+    });
     box.appendChild(btn);
   });
   screen.classList.remove('hidden');
@@ -700,10 +700,10 @@ function renderWhoami(name) {
   const sw = document.createElement('button');
   sw.className = 'link-btn';
   sw.textContent = 'החלף';
-  sw.onclick = async () => {
+  sw.onclick = () => busyButton(sw, 'load', async () => {
     try { await fetch('/api/logout', { method: 'POST' }); } catch (_) { /* reload anyway */ }
     location.reload();
-  };
+  });
   el.appendChild(sw);
   el.classList.remove('hidden');
 }
@@ -736,10 +736,10 @@ function initPin() {
   input.addEventListener('keydown', e => { if (e.key === 'Enter') tryPin(); });
 
   const logoutBtn = document.getElementById('logout');
-  if (logoutBtn) logoutBtn.onclick = async () => {
+  if (logoutBtn) logoutBtn.onclick = () => busyButton(logoutBtn, 'load', async () => {
     try { await fetch('/api/logout', { method: 'POST' }); } catch (_) { /* reload anyway */ }
     location.reload();
-  };
+  });
 
   initTabs();
   enterApp();
@@ -2136,7 +2136,11 @@ function wireMeetingReportToggle(el) {
     if (!id) return;
     const lead = state.leads.find(l => l.id === id);
     if (!lead || !meetingReportUnseen(lead)) return;
-    markMeetingReportSeen(id);
+    /* Mark-seen is a real write, so it gets the same indicator as every other
+     * inline save — brief, and only on the FIRST expand of an unseen report.
+     * The optimistic cue-clearing below is unchanged; a failed write still
+     * rolls back and re-renders the block with its dot restored. */
+    withFieldSaving(el, 'save', () => markMeetingReportSeen(id));
     // Clear the cue in place (state already reflects seen; rollback re-renders).
     el.classList.remove('mrv-unseen');
     el.querySelectorAll('.mrv-dot').forEach(d => d.remove());
@@ -2397,7 +2401,7 @@ function refreshMeetingReportBlock(el, leadId) {
  * clicks re-select in place and toggle the אחר free-text row; submit resolves
  * the companion (chip key, or the trimmed free text under אחר), validates,
  * and saves via saveMeetingReportEdit. The submitting flag + disabled buttons
- * are the modal-form equivalent of withBusyButton — no double-fire. On a
+ * are the modal-form equivalent of busyButton — no double-fire. On a
  * refused validation or a failed save the modal stays open for retry
  * (updateLead already rolled back and surfaced the error). */
 function showMeetingReportEditModal(lead, onSaved) {
@@ -2664,12 +2668,12 @@ function renderMeetings() {
    * and its busy-flag guard, which this edit must not perturb. On failure
    * updateLead already rolled back and surfaced the error. */
   board.querySelectorAll('.mtg-outcome').forEach(sel => {
-    sel.addEventListener('change', async () => {
+    sel.addEventListener('change', () => withFieldSaving(sel, 'save', async () => {
       const id = sel.getAttribute('data-mtg-outcome');
       if (!id) return;
       const ok = await updateLead(id, { meetingOutcome: sel.value });
       if (ok) renderMeetings();
-    });
+    }));
   });
 
   /* Manager-report blocks (PR 3): click to expand the detail; opening an
@@ -2752,28 +2756,21 @@ function openMeetingEditModal(m) {
     openWhatsAppLink(meetingInviteWaUrl(leadBillingPhone(lead), msg));
   };
 
-  let submitting = false;
-  form.onsubmit = async e => {
+  form.onsubmit = e => {
     e.preventDefault();
-    if (submitting) return;
-    submitting = true;
-    submitBtn.disabled = true;
-    cancelBtn.disabled = true;
-    submitBtn.textContent = 'שומר...';
-
-    const ok = await updateLead(m.id, {
-      visitDate: dateInp.value, visitTime: timeInp.value, meetingWith: withInp.value,
+    return busyButton(submitBtn, 'save', async () => {
+      cancelBtn.disabled = true;
+      try {
+        const ok = await updateLead(m.id, {
+          visitDate: dateInp.value, visitTime: timeInp.value, meetingWith: withInp.value,
+        });
+        if (ok) { close(); renderMeetings(); }
+        // Refused/failed: updateLead already rolled back and surfaced the error,
+        // and busyButton's finally hands the button back for a retry.
+      } finally {
+        cancelBtn.disabled = false;
+      }
     });
-    if (ok) {
-      close();
-      renderMeetings();
-      return;
-    }
-    // updateLead already rolled back + surfaced the error; re-enable for retry.
-    submitting = false;
-    submitBtn.disabled = false;
-    cancelBtn.disabled = false;
-    submitBtn.textContent = 'שמור';
   };
 }
 
@@ -3271,8 +3268,13 @@ function buildLeadCard(lead) {
     </div>
   `;
 
-  card.querySelector('[data-action="next"]').onclick = () => advanceLead(lead);
-  if (idx > 0) card.querySelector('[data-action="back"]').onclick = () => moveLead(lead, STAGES[idx - 1].id);
+  /* Stage changes: both write through saveAll, both re-render the board on
+   * success (which destroys this very button), so the busy state only has to
+   * survive the round-trip — busyButton's restore on a detached node is inert. */
+  card.querySelector('[data-action="next"]').onclick = e =>
+    busyButton(e.currentTarget, 'save', () => advanceLead(lead));
+  if (idx > 0) card.querySelector('[data-action="back"]').onclick = e =>
+    busyButton(e.currentTarget, 'save', () => moveLead(lead, STAGES[idx - 1].id));
   card.querySelector('.lc-irrelevant:not(.lc-remove)').onclick = () => closeLead(lead);
   card.querySelector('.lc-remove').onclick = () => {
     showConfirm({
@@ -3290,8 +3292,14 @@ function buildLeadCard(lead) {
     wireMeetingReportToggle(mrvEl);
   }
 
+  /* Inline autosave. These are <input>/<select> change events, not buttons, so
+   * busyButton has no label to swap — withFieldSaving attaches the SAME ring
+   * and the SAME Hebrew word beside the control instead. updateLead's optimistic
+   * write, rollback and error banner are untouched: a failed save re-renders the
+   * card with the previous value, so the field is never left looking saved. */
   card.querySelectorAll('[data-field]').forEach(inp => {
-    inp.onchange = () => updateLead(lead.id, { [inp.dataset.field]: inp.value });
+    inp.onchange = () => withFieldSaving(inp, 'save',
+      () => updateLead(lead.id, { [inp.dataset.field]: inp.value }));
   });
 
   /* קשר למטופל (edit mode) — the <select> carries data-field, so the generic
@@ -3308,9 +3316,8 @@ function buildLeadCard(lead) {
     relSel.addEventListener('change', () => {
       relOther.style.display = relSel.value === CONTACT_RELATION_OTHER ? '' : 'none';
     });
-    relOther.addEventListener('change', () => {
-      updateLead(lead.id, { contactRelation: resolveContactRelation(relSel.value, relOther.value) });
-    });
+    relOther.addEventListener('change', () => withFieldSaving(relOther, 'save',
+      () => updateLead(lead.id, { contactRelation: resolveContactRelation(relSel.value, relOther.value) })));
   }
 
   /* Billing selector (edit mode) — compound: the mode <select> + free-input
@@ -3323,15 +3330,15 @@ function buildLeadCard(lead) {
   const billMode  = card.querySelector('.lc-billing-mode');
   const billOther = card.querySelector('.lc-billing-other');
   if (billMode && billOther) {
-    const applyBilling = () => {
+    const applyBilling = (el) => {
       billOther.style.display = billMode.value === 'other' ? '' : 'none';
       const contactInp = card.querySelector('[data-field="contactPhone"]');
       const contactVal = contactInp ? contactInp.value : lead.contactPhone;
       const resolved = resolveBillingPhone(billMode.value, lead.phone, contactVal, billOther.value);
-      updateLead(lead.id, { billingPhone: resolved });
+      return withFieldSaving(el, 'save', () => updateLead(lead.id, { billingPhone: resolved }));
     };
-    billMode.addEventListener('change', applyBilling);
-    billOther.addEventListener('change', applyBilling);
+    billMode.addEventListener('change', () => applyBilling(billMode));
+    billOther.addEventListener('change', () => applyBilling(billOther));
   }
 
   /* WhatsApp invite button (visit stage only). Reads the three inline fields
@@ -4123,22 +4130,22 @@ function showRestorePatientChoiceModal(p) {
   cancelBtn.onclick = close;
   back.addEventListener('click', e => { if (e.target === back) close(); });
 
-  let submitting = false;
-  form.onsubmit = async e => {
+  form.onsubmit = e => {
     e.preventDefault();
-    if (submitting) return;
-    submitting = true;
-    submitBtn.disabled = true;
-    cancelBtn.disabled = true;
-    submitBtn.textContent = 'שומר...';
-
-    const choice = (new FormData(form).get('restoreChoice') || 'prev_status').toString();
-    if (choice === 'new_lead') {
-      await doRestorePatientAsNewLead(p);
-    } else {
-      await doRestorePatientToActive(p);
-    }
-    close();
+    return busyButton(submitBtn, 'save', async () => {
+      cancelBtn.disabled = true;
+      try {
+        const choice = (new FormData(form).get('restoreChoice') || 'prev_status').toString();
+        if (choice === 'new_lead') {
+          await doRestorePatientAsNewLead(p);
+        } else {
+          await doRestorePatientToActive(p);
+        }
+        close();
+      } finally {
+        cancelBtn.disabled = false;
+      }
+    });
   };
 }
 
@@ -4185,24 +4192,6 @@ async function doRestorePatientToActive(p) {
   }
 }
 
-/* Run an async action with the triggering button disabled and marked busy
- * (.busy adds the inline spinner), so a slow Apps Script round-trip can't be
- * double-fired. Restores the button's state when the action settles — success
- * or failure alike; a rejection propagates to the caller after the restore.
- * No-op passthrough when btn is falsy. */
-async function withBusyButton(btn, fn) {
-  if (!btn) return fn();
-  const prevDisabled = btn.disabled;
-  btn.disabled = true;
-  btn.classList.add('busy');
-  try {
-    return await fn();
-  } finally {
-    btn.disabled = prevDisabled;
-    btn.classList.remove('busy');
-  }
-}
-
 /* ===== BUSY-BUTTON PATTERN — START (duplicated verbatim; keep in sync) =====
  *
  * ONE loading-spinner pattern for the whole product: every async user action
@@ -4223,7 +4212,8 @@ async function withBusyButton(btn, fn) {
  *     spinner, rendered BEFORE the label in the inline direction so it is
  *     RTL-correct, and static rather than animated under
  *     prefers-reduced-motion) + the label swapped to the Hebrew busy word for
- *     the kind of work: 'save' → שומר…, 'load' → טוען…, 'delete' → מוחק…;
+ *     the kind of work: 'save' → שומר…, 'load' → טוען…, 'delete' → מוחק…,
+ *     'send' → שולח…;
  *   - a second click while busy does NOTHING — it never reaches `fn`, so a
  *     double tap on a slow phone can never fire two writes;
  *   - the button is restored in a finally, so a success, a rejected fetch and
@@ -4238,7 +4228,8 @@ async function withBusyButton(btn, fn) {
 var BUSY_LABELS = {
   save: 'שומר…',
   load: 'טוען…',
-  'delete': 'מוחק…'
+  'delete': 'מוחק…',
+  send: 'שולח…'
 };
 
 function busyLabelFor(kind) {
@@ -4270,6 +4261,55 @@ function busyButton(btn, kind, fn) {
   });
 }
 /* ===== BUSY-BUTTON PATTERN — END ===== */
+
+/* ===== Inline field saving indicator =====
+ *
+ * busyButton swaps a BUTTON's label. An <input> or <select> has no label to
+ * swap — and browsers do not render ::before/::after on form controls at all —
+ * so an inline autosave (the [data-field] pattern on the lead card, the
+ * meetings-board outcome select, the billing row controls) needs its own
+ * affordance.
+ *
+ * This is NOT a second spinner. The marker it inserts carries the very same
+ * `is-busy` class the button helper uses, so it renders the identical ring from
+ * the identical CSS, followed by the identical Hebrew word out of BUSY_LABELS.
+ * One vocabulary, one stylesheet rule; only the attachment differs.
+ *
+ * Contract, matching busyButton:
+ *   - a second change while the first is in flight does NOTHING (the guard is
+ *     aria-busy read off the DOM, so it cannot double-write);
+ *   - the marker is removed in a finally — success, rejected fetch and
+ *     validation refusal alike — so a field is NEVER left looking mid-save;
+ *   - a failed save is not left looking saved either: the worker's own rollback
+ *     restores the previous value and surfaces the Hebrew error (updateLead and
+ *     savePayment already do exactly this, and this helper does not touch that
+ *     logic);
+ *   - a falsy element is a passthrough, and a detached node (a re-render can
+ *     replace the field mid-flight) is tolerated rather than thrown on. */
+var FIELD_SAVING_CLASS = 'field-saving';
+
+/* Insert the marker after `el`, or return null when the node has no parent
+ * (already detached by a re-render — nothing to attach to, and that is fine). */
+function fieldSavingMarker(el, kind) {
+  if (!el || !el.parentNode || typeof document === 'undefined') return null;
+  var span = document.createElement('span');
+  span.className = FIELD_SAVING_CLASS + ' is-busy';
+  span.setAttribute('aria-busy', 'true');
+  span.textContent = busyLabelFor(kind);
+  el.parentNode.insertBefore(span, el.nextSibling);
+  return span;
+}
+
+function withFieldSaving(el, kind, fn) {
+  if (!el) return Promise.resolve().then(fn);
+  if (el.getAttribute && el.getAttribute('aria-busy') === 'true') return Promise.resolve(undefined);
+  if (el.setAttribute) el.setAttribute('aria-busy', 'true');
+  var marker = fieldSavingMarker(el, kind);
+  return Promise.resolve().then(fn).finally(function () {
+    if (el.removeAttribute) el.removeAttribute('aria-busy');
+    if (marker && marker.parentNode) marker.parentNode.removeChild(marker);
+  });
+}
 
 /* Confirm dialog with "אישור" / "ביטול" buttons. Reuses the same backdrop +
  * surface styling as the form modal but with no fields.
@@ -4307,22 +4347,33 @@ function showConfirm({ text, onConfirm, confirmLabel = 'אישור', danger = fa
    * and letting the underlying row button be re-clicked. Now the dialog stays
    * open with both buttons disabled + a spinner until onConfirm settles, then
    * closes (the workers own rollback/toasts; errors are still caught here). */
-  let busy = false;
-  cancelBtn.onclick = () => { if (!busy) close(); };
-  back.addEventListener('click', e => { if (e.target === back && !busy) close(); });
+  /* The busy state belongs HERE, on the dialog's action button, not on the row
+   * button that opened it: an optimistic worker re-renders the list and destroys
+   * that trigger mid-flight, while #modal-root is untouched by any re-render.
+   * busyButton owns the double-click guard, the label swap and the restore;
+   * `busyConfirm` mirrors its aria-busy so cancel and the backdrop stay locked
+   * for exactly as long. A destructive dialog says «מוחק…», any other «שומר…». */
+  const busyConfirm = () => confirmBtn.getAttribute('aria-busy') === 'true';
+  cancelBtn.onclick = () => { if (!busyConfirm()) close(); };
+  back.addEventListener('click', e => { if (e.target === back && !busyConfirm()) close(); });
 
-  confirmBtn.onclick = async () => {
-    if (busy) return;
-    busy = true;
+  confirmBtn.onclick = () => {
+    // ביטול freezes SYNCHRONOUSLY, at the tap — busyButton runs its worker on a
+    // microtask, and the cancel button must not stay live for even that long.
+    // A second click is dropped by busyButton before the worker runs, so this
+    // redundant re-freeze cannot unfreeze the first one.
     cancelBtn.disabled = true;
-    confirmBtn.disabled = true;
-    confirmBtn.classList.add('busy');
-    try { await onConfirm(); }
-    catch (err) {
-      console.error('[E-ZONE] confirm onConfirm threw:', err);
-      showError(err.message || 'הפעולה נכשלה');
-    }
-    close();
+    return busyButton(confirmBtn, danger ? 'delete' : 'save', async () => {
+      try { await onConfirm(); }
+      catch (err) {
+        console.error('[E-ZONE] confirm onConfirm threw:', err);
+        showError(err.message || 'הפעולה נכשלה');
+      }
+      // Closes on success AND on a handled failure, exactly as before — the
+      // workers own rollback and their own Hebrew error.
+      cancelBtn.disabled = false;
+      close();
+    });
   };
 }
 
@@ -4409,36 +4460,34 @@ function showCloseLeadModal({ onConfirm, dispositions, title, dateField }) {
     });
   });
 
-  let submitting = false;
-  form.onsubmit = async e => {
+  /* closeLead and dischargePatient both run behind this modal, and both are
+   * optimistic-with-rollback. NOTHING about that changes here — the worker
+   * still throws on failure, still rolls back, still surfaces its own Hebrew
+   * error, and the modal still stays open for a retry. busyButton only adds the
+   * spinner, the label and the double-submit guard on top. */
+  form.onsubmit = e => {
     e.preventDefault();
-    if (submitting) return;
     const picked = Array.from(radios).find(x => x.checked);
     if (!picked) return;                 // defensive — submit was disabled
-    submitting = true;
-    submitBtn.disabled = true;
-    cancelBtn.disabled = true;
-    submitBtn.textContent = 'שומר...';
-
-    const fd = new FormData(form);
-    const disposition = (fd.get('disposition')         || '').toString();
-    const note        = (fd.get('not_relevant_note')   || '').toString();
-    const payload     = { disposition, note };
-    if (dateField) {
-      payload[dateField.name] = (fd.get(dateField.name) || '').toString();
-    }
-
-    try {
-      await onConfirm(payload);
-      close();
-    } catch (err) {
-      console.error('[E-ZONE] close-lead onConfirm threw:', err);
-      showError(err.message || 'הפעולה נכשלה');
-      submitting = false;
-      submitBtn.disabled = false;
-      cancelBtn.disabled = false;
-      submitBtn.textContent = 'אישור';
-    }
+    return busyButton(submitBtn, 'save', async () => {
+      cancelBtn.disabled = true;
+      try {
+        const fd = new FormData(form);
+        const disposition = (fd.get('disposition')         || '').toString();
+        const note        = (fd.get('not_relevant_note')   || '').toString();
+        const payload     = { disposition, note };
+        if (dateField) {
+          payload[dateField.name] = (fd.get(dateField.name) || '').toString();
+        }
+        await onConfirm(payload);
+        close();
+      } catch (err) {
+        console.error('[E-ZONE] close-lead onConfirm threw:', err);
+        showError(err.message || 'הפעולה נכשלה');
+      } finally {
+        cancelBtn.disabled = false;
+      }
+    });
   };
 }
 
@@ -4915,7 +4964,7 @@ function renderPatients() {
     if (restoreBtn) restoreBtn.onclick = () =>
       showRestorePatientChoiceModal(auditRowForReleasedPatient(p, state.dischargedPatients));
     row.querySelector('[data-action="delete"]').onclick = e =>
-      withBusyButton(e.currentTarget, () => deletePatient(p));
+      busyButton(e.currentTarget, 'delete', () => deletePatient(p));
 
     list.appendChild(row);
   });
@@ -5458,6 +5507,11 @@ function pendingCreditsByPayout(credits) {
  * current list in place and returns false). Used after a stale-save refusal
  * so the banner's "הנתונים רועננו" is true for credits too. */
 async function reloadCredits() {
+  /* A whole-data reload that used to run completely silently. It fires after a
+   * stale-save refusal, i.e. exactly when the user is already confused about
+   * what the screen shows — so it raises the same #loading-banner loadAll does,
+   * cleared in a finally so a failed reload cannot strand it on screen. */
+  setLoading(true);
   try {
     const cr = await apiGet({ action: 'getCredits' });
     const raw = Array.isArray(cr && cr.credits) ? cr.credits : [];
@@ -5466,6 +5520,8 @@ async function reloadCredits() {
   } catch (e) {
     console.warn('[E-ZONE] credits reload failed:', e && e.message);
     return false;
+  } finally {
+    setLoading(false);
   }
 }
 
@@ -5528,7 +5584,7 @@ function buildCreditLines(existing, suggestions, today) {
  * an overrideReason before save (validateCreditLine, then again server-side).
  * calculatedAmount is displayed, never overwritten. The override input is
  * never disabled — the detox_dual 14-day zero is discretionary. Save is
- * guarded by withBusyButton; lines are written one by one and a failure stops
+ * guarded by busyButton; lines are written one by one and a failure stops
  * the run with the error banner, keeping the modal open (already-saved lines
  * are marked so a retry edits instead of duplicating). */
 function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
@@ -5683,7 +5739,7 @@ function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
     form.onsubmit = (e) => {
       e.preventDefault();
       const submitBtn = back.querySelector('button[type="submit"]');
-      withBusyButton(submitBtn, async () => {
+      busyButton(submitBtn, 'save', async () => {
         collect();
         // Validate EVERY line before the first write — no partial run on a
         // refusable payload.
@@ -5802,7 +5858,7 @@ function showMarkCreditPaidModal(c) {
     const method = String(fd.get('method') || '').trim();
     const err = validateCreditLine(Object.assign({}, c, { status: 'paid', paidDate, method }));
     if (err) { showError(err); return; }
-    withBusyButton(back.querySelector('button[type="submit"]'), async () => {
+    busyButton(back.querySelector('button[type="submit"]'), 'save', async () => {
       await saveCredit({ id: c.id, updatedAt: c.updatedAt, status: 'paid', paidDate, method });
       showToast('הזיכוי סומן כשולם');
       close();
@@ -6032,39 +6088,37 @@ function showModal({ title, fields, submitLabel, onSubmit }) {
   const close = () => back.remove();
   const cancelBtn = back.querySelector('[data-action="cancel"]');
   const submitBtn = back.querySelector('button[type="submit"]');
-  const submitOriginalLabel = submitBtn.textContent;
 
   cancelBtn.onclick = close;
   back.addEventListener('click', e => { if (e.target === back) close(); });
 
-  let submitting = false;
-  back.querySelector('form').onsubmit = async e => {
+  /* Every showModal caller (add/edit lead, admit, add/edit patient) shares this
+   * one submit. busyButton owns the double-click guard, the «שומר…» label and
+   * the restore on all three exits — saved, refused (onSubmit returned false)
+   * and thrown — so the per-caller rollback logic is untouched. */
+  back.querySelector('form').onsubmit = e => {
     e.preventDefault();
-    if (submitting) return;              // double-click guard
-    submitting = true;
-    submitBtn.disabled = true;
-    cancelBtn.disabled = true;
-    submitBtn.textContent = 'שומר...';
-
-    const fd = new FormData(e.target);
-    const values = {};
-    fields.forEach(f => {
-      if (!f.name) return;   // section headers carry no value
-      values[f.name] = (fd.get(f.name) || '').toString();
+    const formTarget = e.target;
+    return busyButton(submitBtn, 'save', async () => {
+      cancelBtn.disabled = true;
+      try {
+        const fd = new FormData(formTarget);
+        const values = {};
+        fields.forEach(f => {
+          if (!f.name) return;   // section headers carry no value
+          values[f.name] = (fd.get(f.name) || '').toString();
+        });
+        const ok = await onSubmit(values);
+        if (ok !== false) close();
+        // ok === false → the caller refused and already showed why; the modal
+        // stays open and busyButton hands the button back for a retry.
+      } catch (err) {
+        console.error('[E-ZONE] modal submit threw:', err);
+        showError(err.message || 'שמירה נכשלה');
+      } finally {
+        cancelBtn.disabled = false;
+      }
     });
-
-    try {
-      const ok = await onSubmit(values);
-      if (ok !== false) { close(); return; }
-    } catch (err) {
-      console.error('[E-ZONE] modal submit threw:', err);
-      showError(err.message || 'שמירה נכשלה');
-    }
-    // Save failed or was rejected — re-enable so the user can retry.
-    submitting = false;
-    submitBtn.disabled = false;
-    cancelBtn.disabled = false;
-    submitBtn.textContent = submitOriginalLabel;
   };
 }
 
@@ -6672,15 +6726,25 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
     paidInput.disabled = saving || state.mode !== 'edit';
     row.classList.toggle('saving', saving);
   };
-  const saveRow = async updated => {
+  /* The row freeze (both controls disabled + the row dimmed) predates the shared
+   * pattern and stays — it is what stops the OTHER control being touched
+   * mid-save. withFieldSaving adds the shared ring + «שומר…» beside the control
+   * the user actually changed, so this row speaks the same language as every
+   * other inline save. `el` is that control. */
+  const saveRow = (el, updated) => {
+    /* Re-entry guard FIRST: without it a second change would fall through to
+     * the finally below and unfreeze the row while the first save is still in
+     * flight. Then freeze synchronously — the row must be frozen at the tap,
+     * not a microtask later when withFieldSaving's worker starts. */
+    if (el && el.getAttribute && el.getAttribute('aria-busy') === 'true') return Promise.resolve();
     setRowSaving(true);
-    try { await savePayment(updated); }
-    finally { setRowSaving(false); }
+    return withFieldSaving(el, 'save', () => savePayment(updated))
+      .finally(() => setRowSaving(false));
   };
 
   statusSel.onchange = () => {
     const updated = recompute(statusSel.value, paidInput.value);
-    saveRow(updated);
+    saveRow(statusSel, updated);
   };
 
   paidInput.onchange = () => {
@@ -6691,17 +6755,17 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
       // Fully paid — flip to "שולם" so the row stops carrying forward.
       statusSel.value = 'paid';
       const updated = recompute('paid', amount);
-      saveRow(updated);
+      saveRow(paidInput, updated);
     } else {
       const updated = recompute('partial', v);
-      saveRow(updated);
+      saveRow(paidInput, updated);
     }
   };
 
   /* Per-month amount editor wiring (present only when amountEditable). The
    * save/clear workers are optimistic — their renderBilling() rebuilds this
    * row with the new amount + badge, which IS the visual feedback;
-   * withBusyButton guards double-fire until the rebuild lands. */
+   * busyButton guards double-fire until the rebuild lands. */
   const amountEditBtn = row.querySelector('.bill-amount-edit-btn');
   if (amountEditBtn) {
     const view     = row.querySelector('.bill-amount-view');
@@ -6717,7 +6781,7 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
       view.classList.remove('hidden');
     };
     row.querySelector('.bill-amount-save').onclick = e =>
-      withBusyButton(e.currentTarget, () => {
+      busyButton(e.currentTarget, 'save', () => {
         const v = Number(input.value);
         if (!Number.isFinite(v) || v < 0) {
           showError('סכום לא תקין');
@@ -6729,7 +6793,7 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   const amountClearBtn = row.querySelector('.bill-amount-clear-btn');
   if (amountClearBtn) {
     amountClearBtn.onclick = e =>
-      withBusyButton(e.currentTarget, () => clearBillingOverride(payment));
+      busyButton(e.currentTarget, 'delete', () => clearBillingOverride(payment));
   }
 
   return row;

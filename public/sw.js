@@ -47,7 +47,11 @@
 // v10 → v11: «קשר למטופל» becomes a dropdown — app.js changed (the option list,
 // the אחר free-text escape and the legacy-value pinning all live there), so no
 // phone may keep serving the v10 bundle that still renders a free-text input.
-var CACHE_VERSION = 'v11';
+// v11 → v12: the loading-feedback rollout. busyButton now drives every button
+// action and a new inline marker covers the [data-field] autosave, so app.js,
+// meeting-report.js and style.css all changed — evict v11 so no phone keeps
+// serving a bundle where half the actions still give no feedback at all.
+var CACHE_VERSION = 'v12';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
