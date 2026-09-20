@@ -1875,3 +1875,75 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
 }
 .credit-payout-head b { color: var(--text); font-size: 15px; }
 .credit-payout-row .irrelevant-actions { display: flex; gap: 8px; }
+
+/* ===== הכנסות חודשיות — monthly revenue screen ===========================
+ * A separate screen from the daily גבייה worklist; nothing here touches the
+ * .billing-row rules that screen uses, except additively via .rev-detail-row.
+ *
+ * The colour language carries the screen's whole point: נגבה is green (money),
+ * צפוי is blue (a forecast), זיכויים amber (money going out), נטו purple
+ * (the projection that combines them). Two different certainties must not look
+ * alike. */
+.rev-month-label { color: var(--text-muted); font-size: 15px; font-weight: 600; }
+.rev-sub { color: var(--text-dim); font-size: 13px; font-weight: 500; }
+
+.rev-vat-note {
+  display: inline-block;
+  color: var(--text-muted); font-size: 12.5px;
+  border: 1px dashed var(--border-strong); border-radius: 8px;
+  padding: 5px 12px; margin-bottom: 14px;
+}
+
+.cards-row.rev-cards-2 { margin-top: 14px; }
+
+/* נגבה — money in hand. */
+.card.stat.rev-stat-received::before { background: var(--success); }
+.card.stat.rev-stat-received .stat-value { color: var(--success); }
+/* צפוי — a forecast. Deliberately NOT green: it is not money. */
+.card.stat.rev-stat-expected::before { background: var(--primary); }
+.card.stat.rev-stat-expected .stat-value { color: var(--primary); }
+/* זיכויים — money going back out. */
+.card.stat.rev-stat-credits::before { background: var(--warning); }
+.card.stat.rev-stat-credits .stat-value { color: var(--warning); }
+/* נטו — the only place the two meet, and a projection by construction. */
+.card.stat.rev-stat-net::before { background: var(--purple); }
+.card.stat.rev-stat-net .stat-value { color: var(--purple); }
+
+.rev-basis-note {
+  margin: 18px 0 8px;
+  color: var(--text-muted); font-size: 13px; line-height: 1.75;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 16px;
+}
+.rev-basis-note b { color: var(--text); }
+
+.bd-line.rev-warn { border-bottom-color: var(--warning); }
+.rev-exp   { color: var(--primary); }
+.rev-count { color: var(--text-dim); }
+
+.rev-detail-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin: 20px 0 8px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px; font-weight: 700; color: var(--text);
+}
+.rev-detail-head:first-child { margin-top: 0; }
+
+/* One more column than a גבייה row (the month share). */
+.billing-row.rev-detail-row {
+  grid-template-columns: 1.6fr .9fr 1.5fr 1.1fr 1fr 1.1fr;
+}
+.billing-row.rev-detail-row.rev-warn { border-right: 3px solid var(--warning); }
+.billing-row .rev-portion { color: var(--success); font-weight: 800; }
+.rev-chip {
+  display: inline-block; margin-inline-start: 8px;
+  padding: 2px 9px; border-radius: 999px;
+  background: var(--surface-3); border: 1px solid var(--border);
+  color: var(--text-muted); font-size: 11px; font-weight: 600;
+  vertical-align: middle;
+}
+.rev-chip-soft { opacity: .8; font-style: italic; }
+
+@media (max-width: 900px) {
+  .billing-row.rev-detail-row { grid-template-columns: 1fr 1fr; }
+}

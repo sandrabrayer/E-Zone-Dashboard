@@ -266,6 +266,10 @@ const state = {
    * filters ignore it). */
   showReleasedPatients: false,
   billingDate: '',
+  /* הכנסות חודשיות — its OWN month + search, so changing either here
+   * never disturbs the daily גבייה screen's date above. */
+  revenueMonth: '',    // 'YYYY-MM'; defaults to the current month
+  revenueSearch: '',
   breakeven: null, // loaded from localStorage in initBreakeven()
 };
 
@@ -756,7 +760,7 @@ function enterApp() {
 /* Tab / screen order. Mirrors the .tabs nav in index.html exactly (each id has a
  * matching <section id="screen-<id>">). `meetings` is an empty placeholder shell
  * (see index.html #screen-meetings); `retention` is intentionally last. */
-const SCREENS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'breakeven', 'growth', 'retention'];
+const SCREENS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'revenue', 'breakeven', 'growth', 'retention'];
 
 function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {
@@ -837,6 +841,25 @@ function initTabs() {
     state.billingDate = e.target.value || todayISO();
     renderBilling();
   };
+
+  /* הכנסות חודשיות — month picker + search. Separate state from the daily
+   * גבייה screen, so the two never move each other. */
+  const revenueMonthEl = document.getElementById('revenue-month');
+  if (revenueMonthEl) {
+    if (!state.revenueMonth) state.revenueMonth = monthKey(todayISO());
+    revenueMonthEl.value = state.revenueMonth;
+    revenueMonthEl.onchange = e => {
+      state.revenueMonth = e.target.value || monthKey(todayISO());
+      renderMonthlyRevenue();
+    };
+  }
+  const revenueSearchEl = document.getElementById('revenue-search');
+  if (revenueSearchEl) {
+    revenueSearchEl.addEventListener('input', e => {
+      state.revenueSearch = String(e.target.value || '').trim().toLowerCase();
+      renderMonthlyRevenue();
+    });
+  }
 
   initBreakeven();
 }
@@ -2788,6 +2811,7 @@ function renderAll() {
   renderDischargedPatients();
   renderBilling();
   renderCreditsPayouts();
+  renderMonthlyRevenue();
   renderBreakeven();
   renderGrowthGraph();
   /* Backfill + persist any visit-stage lead whose meetingWith default was only
@@ -6228,10 +6252,15 @@ function dayOfMonth(iso) {
   return isNaN(day) ? null : day;
 }
 
-function monthKey(iso) {
-  // "YYYY-MM" extracted from an ISO date string.
-  return String(iso || '').slice(0, 7);
-}
+/* monthKey lives ONCE, further down beside firstDayOfMonth/lastDayOfMonth.
+ * There used to be a second declaration right here whose body sliced the raw
+ * string without isoDate(). Two function declarations in one script scope are
+ * not two functions: the later one silently overwrote this one at hoist time,
+ * so the isoDate-routed version below is what has always run and the copy here
+ * was dead code that merely looked authoritative. Removing it changes no
+ * behaviour — it removes the chance of "fixing" the dead one and wondering why
+ * nothing moved. monthly-revenue's guard test now pins each shared date
+ * primitive to exactly one declaration so the twin cannot come back. */
 
 /* The override record for (patientId, 'YYYY-MM'), or null. Pure. */
 function billingOverrideFor(overrides, patientId, month) {
@@ -6780,6 +6809,712 @@ function formatMonth(iso) {
   const d = new Date(iso);
   if (isNaN(d)) return iso || '';
   return d.toLocaleDateString('he-IL', { month: 'long', year: 'numeric' });
+}
+
+/* ====================================================
+   הכנסות חודשיות — MONTHLY REVENUE ALLOCATION
+   ====================================================
+   THE QUESTION THIS ANSWERS: "how much revenue belongs to month X" — NOT
+   "how much cash arrived during month X". The גבייה tab above answers neither:
+   it is a daily worklist ("who is due today"), and its סיכום חודשי panel
+   buckets rows by monthKey(dueDate) — the month a cycle STARTED in, not the
+   month the money was earned in. A patient billed on the 20th has two thirds
+   of every cycle falling in the next month, so that panel is systematically
+   wrong about which month owns the revenue.
+
+   This is the SAME CONTRACT as ezone-outpatient's public/monthly-revenue.js
+   (PR #109). The two apps' figures are meant to be added together into a
+   network total, so the allocation rule, the four figures, the never-blend
+   rule and the ex-VAT basis must agree exactly. Divergences forced by this
+   repo are marked >>> DIVERGES <<< below and listed in
+   CHANGELOG-monthly-revenue.md.
+
+   ALLOCATION — BY COVERAGE WINDOW, DAY BY DAY
+   A payment's coverage window is [dueDate, dueDate + 1 month − 1 day] — the
+   window paymentCoverage() already computes for credits, REUSED, not copied.
+   A window straddling a month boundary contributes to BOTH months, split by
+   the number of its days in each:
+
+       ₪3,000 covering 20 Jan – 19 Feb  (31 days)
+         → January   12/31 × 3,000 = ₪1,161.29
+         → February  19/31 × 3,000 = ₪1,838.71
+
+   monthKey(dueDate) takes NO part in the allocation.
+
+   >>> DIVERGES from #109: there is no payment-date column here at all.
+   PAYMENT_COLUMNS is id, patientId, patientName, houseId, dueDate, amount,
+   status, amountPaid, balance, timestamp — `timestamp` is the row's write
+   time, not when money changed hands. The outpatient app has a real
+   paymentDate and shows it in the drill-down (labelled "never moved a
+   shekel"). Here there is nothing to show and nothing that could have leaked
+   into the maths. The rule is identical; only the reassurance is missing.
+
+   THE FOUR FIGURES
+     נגבה בפועל (RECEIVED) — cash collected, allocated by the window above.
+     צפוי (EXPECTED)       — contracted money for the month NOT yet in hand.
+     זיכויים (CREDITS)     — refunds allocated to the month, as a NEGATIVE.
+     נטו (NET)             — received + expected − credits.
+
+   RECEIVED AND EXPECTED ARE NEVER SUMMED INTO ONE FIGURE. One is money, the
+   other a forecast; a blended "revenue" number launders the forecast into the
+   bank balance. They are separate fields with no combined accessor, separate
+   cards coloured apart, and NET is the one place they meet — labelled as the
+   projection it is.
+
+   NO DOUBLE COUNTING. Each day of the month is either a paid coverage day or
+   a scheduled-but-unbilled day, never both. On a partly-paid row amountPaid
+   goes to RECEIVED and the shortfall to EXPECTED over the SAME window with
+   the SAME day weights, so the two partition the row's contracted amount
+   exactly; a cycle that already has a Payments row is never also projected.
+
+   VAT. `pay`, PRICE_FALLBACKS and every Payments amount are stored
+   VAT-INCLUSIVE; displays divide by VAT_RATE. Same basis and same divisor as
+   the outpatient app, so a consolidated total is sound. Every bucket carries
+   BOTH `.inclVat` (stored, untouched) and `.exVat`.
+
+   Ex-VAT is taken PER ROW at 2dp via revenueExVat() and a bucket total is the
+   SUM OF ITS ROWS, so a drill-down always adds up to the figure printed above
+   it. >>> DIVERGES from the existing exVat() in this file, which rounds to a
+   whole shekel: summing whole-shekel rows drifts from a separately-rounded
+   total by up to half a shekel per row. exVat() is left exactly as it is —
+   the credits UI depends on it — and this view uses its own 2dp helper.
+
+   PURE. Everything down to buildMonthlyRevenue() takes its inputs as
+   arguments and touches no DOM and no `state`; the renderers below are the
+   only part that reads either. */
+
+/* Ex-VAT at 2dp, for a figure stored VAT-inclusive. Distinct from exVat()
+ * above (whole shekels) so drill-down rows reconcile with their total. */
+function revenueExVat(inclVat) {
+  return roundMoney((Number(inclVat) || 0) / VAT_RATE);
+}
+
+/* Patient statuses that stop billing. 'released' is the only one this repo
+ * has; activePatients() applies the same rule for every other view. */
+function isBillablePatient(patient) {
+  return !!patient && patient.status !== 'released';
+}
+
+/* Bucket for a payment or credit whose house cannot be resolved. Never '' —
+ * an unlabelled breakdown row reads as a rendering bug. */
+const REVENUE_NO_HOUSE = 'ללא בית';
+
+function isMonthKey(v) {
+  return /^\d{4}-(0[1-9]|1[0-2])$/.test(String(v == null ? '' : v).trim());
+}
+
+/* 'YYYY-MM' → { key, start, end, days, startISO, endISO }, or null for
+ * anything that is not a month key. Refused, never guessed at. */
+function revenueMonthBounds(key) {
+  const k = String(key == null ? '' : key).trim();
+  if (!isMonthKey(k)) return null;
+  const y = Number(k.slice(0, 4));
+  const m1 = Number(k.slice(5, 7));
+  const days = new Date(y, m1, 0).getDate();      // day 0 of next month
+  const start = new Date(y, m1 - 1, 1);
+  const end = new Date(y, m1 - 1, days);
+  return {
+    key: k, start, end, days,
+    startISO: isoFromLocalDate(start), endISO: isoFromLocalDate(end),
+  };
+}
+function revenueMonthLabel(key) {
+  const b = revenueMonthBounds(key);
+  if (!b) return String(key || '');
+  return b.start.toLocaleDateString('he-IL', { month: 'long', year: 'numeric' });
+}
+function revenueShiftMonth(key, n) {
+  if (!isMonthKey(key)) return '';
+  const d = new Date(Number(key.slice(0, 4)), Number(key.slice(5, 7)) - 1 + n, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/* Whole days of [winStart, winEnd] falling inside the month. Both ends
+ * inclusive; 0 when the window misses the month entirely. */
+function revenueOverlapDays(winStart, winEnd, bounds) {
+  if (!winStart || !winEnd || !bounds) return 0;
+  const from = winStart > bounds.start ? winStart : bounds.start;
+  const to   = winEnd   < bounds.end   ? winEnd   : bounds.end;
+  if (from > to) return 0;
+  return diffWholeDays(from, to) + 1;
+}
+
+/* revenueAllocate(amount, win, bounds, effectiveEnd) →
+ *   { amount, daysInMonth, windowDays, share }
+ *
+ * The ONE place a sum is divided between months. A window with no days in the
+ * month yields a zero slice, never null, so callers can sum blindly.
+ *
+ * `effectiveEnd` truncates the window WITHOUT changing the denominator — used
+ * when a patient is discharged mid-cycle, so days after the exit earn nothing
+ * while the remaining days keep their true daily rate. Shortening the
+ * denominator instead would silently RAISE the daily rate and charge the same
+ * money for fewer days. */
+function revenueAllocate(amount, win, bounds, effectiveEnd) {
+  const zero = { amount: 0, daysInMonth: 0, windowDays: 0, share: 0 };
+  if (!win || !win.start || !win.end || !bounds) return zero;
+  const windowDays = diffWholeDays(win.start, win.end) + 1;
+  if (windowDays <= 0) return zero;
+  const lastDay = (effectiveEnd && effectiveEnd < win.end) ? effectiveEnd : win.end;
+  if (lastDay < win.start) return { amount: 0, daysInMonth: 0, windowDays, share: 0 };
+  const inMonth = revenueOverlapDays(win.start, lastDay, bounds);
+  if (!inMonth) return { amount: 0, daysInMonth: 0, windowDays, share: 0 };
+  const share = inMonth / windowDays;
+  return { amount: roundMoney((Number(amount) || 0) * share), daysInMonth: inMonth, windowDays, share };
+}
+
+/* ---- billing-cycle projection -------------------------------------------
+ * >>> DIVERGES from #109: the outpatient app stores an explicit
+ * nextBillingDate per client. Here the schedule IS the patient's ENTRY
+ * day-of-month, recurring monthly — the same anchor patientsDueOn(),
+ * nextBillingDayOnOrAfter() and lastBillingDayOnOrBefore() use, so this view
+ * and the גבייה tab agree on when a cycle falls due. The day-of-month is
+ * re-clamped from the ORIGINAL entry date every month (entry day 31 → Feb
+ * 28/29), never walked forward from the previous occurrence, which would
+ * migrate the cycle earlier for good. */
+function patientBillingAnchorISO(patient) {
+  return isoDate(patient && patient.date);
+}
+function revenueOccurrenceIn(year, monthIdx, anchorDay) {
+  const first = new Date(year, monthIdx, 1);
+  const y = first.getFullYear(), m = first.getMonth();
+  const last = new Date(y, m + 1, 0).getDate();
+  return new Date(y, m, Math.min(anchorDay, last));
+}
+/* Every cycle due-date whose coverage window INTERSECTS the month. A cycle
+ * starting the month before still pays for days inside it, so the walk starts
+ * one month early.
+ *
+ * Bounded by the patient's own stay: never before their entry date, and never
+ * on/after their exit date. A cycle STRADDLING a discharge is kept and
+ * clipped at the exit by the caller — the days up to the exit were earned;
+ * the days after it are the credits ledger's business, not this view's. */
+function projectedCycleDueDates(patient, bounds) {
+  const anchorISO = patientBillingAnchorISO(patient);
+  const anchor = localDateFromISO(anchorISO);
+  if (!anchor || !bounds) return [];
+  const anchorDay = anchor.getDate();
+  const exitISO = isoDate(patient && patient.exitDate);
+  const out = [];
+  for (let n = -1; n <= 0; n++) {
+    const probe = new Date(bounds.start.getFullYear(), bounds.start.getMonth() + n, 1);
+    const occ = revenueOccurrenceIn(probe.getFullYear(), probe.getMonth(), anchorDay);
+    const occISO = isoFromLocalDate(occ);
+    if (anchorISO && occISO < anchorISO) continue;
+    if (exitISO && occISO >= exitISO) continue;
+    const win = paymentCoverage({ dueDate: occISO });
+    if (!win || !revenueOverlapDays(win.start, win.end, bounds)) continue;
+    if (out.indexOf(occISO) === -1) out.push(occISO);
+  }
+  return out.sort();
+}
+
+/* ---- credits -------------------------------------------------------------
+ * The span a credit actually refunds, which is NOT its allocationMonth — that
+ * column is documented in suggestCredits() as reporting metadata that never
+ * enters the math, and using it here would contradict the module that wrote it.
+ *
+ *   prepaid_return — the whole coverage window was unearned.
+ *   days_unused    — only the credited tail, creditedFrom..coverageEnd. The
+ *                    days BEFORE the exit were used and never refunded.
+ *
+ * A credit whose basis carries no usable span (a manual `other` credit, or a
+ * legacy row saved before basis was written) falls back to its
+ * allocationMonth and lands whole in it — the only honest thing to do with a
+ * figure that has no window. `spanSource` records which path was taken so the
+ * drill-down can say so rather than implying a precision it lacks. */
+function creditRefundSpan(credit) {
+  const basis = (credit && credit.basis) || {};
+  const endISO = isoDate(basis.coverageEnd);
+  const startISO = String(credit && credit.creditType) === 'prepaid_return'
+    ? isoDate(basis.coverageStart)
+    : isoDate(basis.creditedFrom);
+  if (startISO && endISO && startISO <= endISO) {
+    const s = localDateFromISO(startISO), e = localDateFromISO(endISO);
+    if (s && e) return { start: s, end: e, source: 'coverage_window' };
+  }
+  const mb = revenueMonthBounds(String((credit && credit.allocationMonth) || '').slice(0, 7));
+  if (mb) return { start: mb.start, end: mb.end, source: 'allocation_month' };
+  return null;
+}
+
+/* Is this payment row the patient's base monthly cycle? Every Payments row in
+ * this repo is (there are no extra-charge rows — see the DIVERGES note in the
+ * changelog), so this exists to make the intent explicit and to give the
+ * projection something to match against. */
+function revenuePaymentHouse(payment, patient) {
+  const house = houseById(payment && payment.houseId) || houseById(patient && patient.houseId);
+  return house ? house.name : REVENUE_NO_HOUSE;
+}
+
+/**
+ * buildMonthlyRevenue(opts) → the whole month, or null for an unusable key.
+ *
+ * opts: month ('YYYY-MM'), patients, payments, credits, overrides
+ *       (BillingOverrides rows), today ('YYYY-MM-DD', injected so a report
+ *       reruns identically).
+ *
+ * PURE — no DOM, no state, no network.
+ */
+function buildMonthlyRevenue(opts) {
+  opts = opts || {};
+  const bounds = revenueMonthBounds(opts.month);
+  if (!bounds) return null;
+
+  const patients  = Array.isArray(opts.patients) ? opts.patients : [];
+  const payments  = Array.isArray(opts.payments) ? opts.payments : [];
+  const credits   = Array.isArray(opts.credits) ? opts.credits : [];
+  const overrides = Array.isArray(opts.overrides) ? opts.overrides : [];
+  const todayISOv = isoDate(opts.today) || isoFromLocalDate(new Date());
+
+  const patientById = {};
+  patients.forEach(p => { if (p) patientById[patientKey(p)] = p; });
+
+  const receivedRows = [];
+  const expectedRows = [];
+  const creditRows   = [];
+
+  /* --- RECEIVED, and the billed half of EXPECTED ------------------------
+   * One pass over the payment rows. applyBillingOverride() supplies the
+   * EFFECTIVE amount due, so a per-month edit Sandra made on the גבייה tab is
+   * the figure this view forecasts against too — a naive p.amount would
+   * ignore it. The overlay never touches paid/partial history, so RECEIVED is
+   * always the real amountPaid. */
+  payments.forEach(raw => {
+    if (!raw) return;
+    const dueISO = isoDate(raw.dueDate);
+    if (!dueISO) return;
+    const win = paymentCoverage({ dueDate: dueISO });
+    if (!win) return;
+
+    const p = applyBillingOverride(raw, overrides);
+    const patient = patientById[String(p.patientId || '')] || findPatientForPaymentIn(patients, p);
+    const billed = roundMoney(Number(p.amount) || 0);
+    const paid   = roundMoney(Number(p.amountPaid) || 0);
+    const shortfall = roundMoney(Math.max(0, billed - paid));
+
+    const base = {
+      paymentId: String(p.id || ''),
+      patientId: String(p.patientId || ''),
+      patientName: String(p.patientName || '') || (patient && patient.name) || '',
+      house: revenuePaymentHouse(p, patient),
+      houseId: String((p.houseId || (patient && patient.houseId)) || ''),
+      status: String(p.status || ''),
+      dueDate: dueISO,
+      coverageStart: isoFromLocalDate(win.start),
+      coverageEnd: isoFromLocalDate(win.end),
+      billedAmount: billed,
+      amountPaid: paid,
+      overridden: !!billingOverrideFor(overrides, p.patientId, monthKey(dueISO)),
+    };
+
+    if (paid > 0) {
+      const a = revenueAllocate(paid, win, bounds);
+      if (a.daysInMonth > 0) {
+        receivedRows.push(Object.assign({}, base, {
+          fullAmount: paid, amountInMonth: a.amount,
+          amountInMonthExVat: revenueExVat(a.amount),
+          daysInMonth: a.daysInMonth, windowDays: a.windowDays, share: a.share,
+        }));
+      }
+    }
+    if (shortfall > 0) {
+      const b = revenueAllocate(shortfall, win, bounds);
+      if (b.daysInMonth > 0) {
+        expectedRows.push(Object.assign({}, base, {
+          kind: 'billed_unpaid', fullAmount: shortfall, amountInMonth: b.amount,
+          amountInMonthExVat: revenueExVat(b.amount),
+          daysInMonth: b.daysInMonth, windowDays: b.windowDays, share: b.share,
+        }));
+      }
+    }
+  });
+
+  /* --- the projected half of EXPECTED -----------------------------------
+   * Active patients whose cycle covers days of this month with NO payment row
+   * behind it. A cycle that already has a row was fully handled above (paid
+   * part + shortfall), so it is skipped here — that skip is the only thing
+   * standing between this view and double counting. */
+  const billedCycleKeys = {};
+  payments.forEach(p => {
+    if (!p) return;
+    const dueISO = isoDate(p.dueDate);
+    if (!dueISO) return;
+    const pid = String(p.patientId || '');
+    billedCycleKeys[pid + '|' + dueISO] = true;
+    // Also key by month: a stored row whose dueDate drifted a day or two from
+    // the entry-day anchor is still THAT cycle, not a second one.
+    billedCycleKeys[pid + '|m|' + dueISO.slice(0, 7)] = true;
+  });
+
+  patients.forEach(patient => {
+    if (!isBillablePatient(patient)) return;
+    const key = patientKey(patient);
+    // The contracted rate, override-aware: the same effective amount the
+    // גבייה tab would bill for that month, not the raw p.pay.
+    const exitDay = localDateFromISO(isoDate(patient.exitDate));
+    projectedCycleDueDates(patient, bounds).forEach(dueISO => {
+      if (billedCycleKeys[key + '|' + dueISO]) return;
+      if (billedCycleKeys[key + '|m|' + dueISO.slice(0, 7)]) return;
+      const contracted = roundMoney(Number(
+        applyBillingOverride({
+          id: paymentId(patient, dueISO), patientId: key, patientName: patient.name,
+          houseId: patient.houseId, dueDate: dueISO, amount: patient.pay || 0,
+          status: 'unpaid', amountPaid: 0, balance: patient.pay || 0,
+        }, overrides).amount
+      ) || 0);
+      if (contracted <= 0) return;
+      const win = paymentCoverage({ dueDate: dueISO });
+      const a = revenueAllocate(contracted, win, bounds, exitDay);
+      if (!a.daysInMonth) return;
+      const house = houseById(patient.houseId);
+      expectedRows.push({
+        /* A cycle still ahead of us is a forecast; one whose date has gone by
+         * with no row is a recording gap wearing a forecast's clothes. Same
+         * money, very different confidence — so they are named apart and the
+         * UI flags the second in amber. */
+        kind: dueISO > todayISOv ? 'projected' : 'unbilled_past',
+        paymentId: '', patientId: key, patientName: String(patient.name || ''),
+        house: house ? house.name : REVENUE_NO_HOUSE,
+        houseId: String(patient.houseId || ''),
+        status: '', dueDate: dueISO,
+        coverageStart: isoFromLocalDate(win.start),
+        coverageEnd: isoFromLocalDate(win.end),
+        billedAmount: contracted, amountPaid: 0,
+        overridden: !!billingOverrideFor(overrides, key, monthKey(dueISO)),
+        fullAmount: contracted, amountInMonth: a.amount,
+        amountInMonthExVat: revenueExVat(a.amount),
+        daysInMonth: a.daysInMonth, windowDays: a.windowDays, share: a.share,
+      });
+    });
+  });
+
+  /* --- CREDITS ----------------------------------------------------------
+   * pending and paid both reduce the month's revenue: the money is owed back
+   * either way, and when it was actually handed over is no more relevant than
+   * when a payment arrived. cancelled is a void decision and counts for
+   * nothing. */
+  credits.forEach(c => {
+    if (!c || c.status === 'cancelled') return;
+    const amount = roundMoney(Number(c.amount) || 0);
+    if (!amount) return;
+    const span = creditRefundSpan(c);
+    if (!span) return;
+    const a = revenueAllocate(amount, span, bounds);
+    if (!a.daysInMonth) return;
+    const patient = patientById[String(c.patientKey || '')] || null;
+    const house = houseById(c.houseId) || houseById(patient && patient.houseId);
+    creditRows.push({
+      creditId: String(c.id || ''), patientId: String(c.patientId || ''),
+      patientName: String(c.patientName || '') || (patient && patient.name) || '',
+      house: house ? house.name : REVENUE_NO_HOUSE,
+      houseId: String(c.houseId || ''),
+      creditType: String(c.creditType || ''), status: String(c.status || ''),
+      allocationMonth: String(c.allocationMonth || ''),
+      payoutDate: isoDate(c.payoutDate),
+      coverageStart: isoFromLocalDate(span.start),
+      coverageEnd: isoFromLocalDate(span.end),
+      spanSource: span.source,
+      fullAmount: amount, amountInMonth: a.amount,
+      amountInMonthExVat: revenueExVat(a.amount),
+      daysInMonth: a.daysInMonth, windowDays: a.windowDays, share: a.share,
+    });
+  });
+
+  /* --- totals: rows first, totals from the rows, so every figure on screen
+   * is the sum of things you can click through to. */
+  const received = revenueBucket(receivedRows);
+  const expected = revenueBucket(expectedRows);
+  const creditsB = revenueBucket(creditRows);
+  const byKind = k => revenueBucket(expectedRows.filter(r => r.kind === k));
+
+  revenueSortRows(receivedRows); revenueSortRows(expectedRows); revenueSortRows(creditRows);
+
+  return {
+    month: bounds.key,
+    monthLabel: revenueMonthLabel(bounds.key),
+    monthStart: bounds.startISO,
+    monthEnd: bounds.endISO,
+    daysInMonth: bounds.days,
+    vatRate: VAT_RATE,
+
+    received: Object.assign(received, { rows: receivedRows }),
+    expected: Object.assign(expected, {
+      rows: expectedRows,
+      /* The three confidences inside EXPECTED, kept visible rather than
+       * blended: a receivable on a cycle already billed, a forecast that
+       * assumes the patient stays, and a cycle nobody ever recorded. */
+      billedUnpaid: byKind('billed_unpaid'),
+      projected: byKind('projected'),
+      unbilledPast: byKind('unbilled_past'),
+    }),
+    credits: Object.assign(creditsB, { rows: creditRows }),
+
+    /* NET is the ONLY place received and expected meet, and it is a
+     * projection by construction — never quote it as cash. */
+    net: {
+      inclVat: roundMoney(received.inclVat + expected.inclVat - creditsB.inclVat),
+      exVat: roundMoney(received.exVat + expected.exVat - creditsB.exVat),
+    },
+
+    byHouse: revenueBreakdownByHouse(receivedRows, expectedRows, creditRows),
+  };
+}
+
+/* A payment whose patient is gone still counts — money is money. Mirrors
+ * findPatientForPayment() but over an explicit list, so buildMonthlyRevenue
+ * stays pure. */
+function findPatientForPaymentIn(patients, pay) {
+  if (!pay) return null;
+  if (pay.patientId) {
+    const direct = patients.find(p => p && patientKey(p) === pay.patientId);
+    if (direct) return direct;
+  }
+  if (pay.patientName && pay.houseId) {
+    return patients.find(p => p && p.houseId === pay.houseId && p.name === pay.patientName) || null;
+  }
+  return null;
+}
+
+/* Sum a row list into { inclVat, exVat, count }. exVat is the SUM OF THE ROWS'
+ * own ex-VAT figures, so a drill-down reconciles with its header. */
+function revenueBucket(rows) {
+  let incl = 0, ex = 0;
+  rows.forEach(r => {
+    incl = roundMoney(incl + r.amountInMonth);
+    ex = roundMoney(ex + r.amountInMonthExVat);
+  });
+  return { inclVat: incl, exVat: ex, count: rows.length };
+}
+
+/* Newest cycle first, then by patient name (he collation). */
+function revenueSortRows(rows) {
+  rows.sort((a, b) => {
+    const d = String(b.dueDate || b.coverageStart || '').localeCompare(String(a.dueDate || a.coverageStart || ''));
+    if (d) return d;
+    return String(a.patientName || '').localeCompare(String(b.patientName || ''), 'he');
+  });
+}
+
+/* BREAKDOWN DIMENSION: house. Sorted by NET descending so the houses carrying
+ * the month lead; all-zero rows are dropped as noise. */
+function revenueBreakdownByHouse(receivedRows, expectedRows, creditRows) {
+  const by = {};
+  const slot = name => {
+    const k = name || REVENUE_NO_HOUSE;
+    if (!by[k]) {
+      by[k] = {
+        house: k,
+        received: { inclVat: 0, exVat: 0, count: 0 },
+        expected: { inclVat: 0, exVat: 0, count: 0 },
+        credits:  { inclVat: 0, exVat: 0, count: 0 },
+      };
+    }
+    return by[k];
+  };
+  const add = (target, r) => {
+    target.inclVat = roundMoney(target.inclVat + r.amountInMonth);
+    target.exVat = roundMoney(target.exVat + r.amountInMonthExVat);
+    target.count += 1;
+  };
+  receivedRows.forEach(r => add(slot(r.house).received, r));
+  expectedRows.forEach(r => add(slot(r.house).expected, r));
+  creditRows.forEach(r => add(slot(r.house).credits, r));
+
+  return Object.keys(by).map(k => {
+    const b = by[k];
+    b.net = {
+      inclVat: roundMoney(b.received.inclVat + b.expected.inclVat - b.credits.inclVat),
+      exVat: roundMoney(b.received.exVat + b.expected.exVat - b.credits.exVat),
+    };
+    return b;
+  }).filter(b => b.received.count || b.expected.count || b.credits.count)
+    .sort((a, b) => (b.net.exVat !== a.net.exVat)
+      ? b.net.exVat - a.net.exVat
+      : String(a.house).localeCompare(String(b.house), 'he'));
+}
+
+/* Display helper: whole shekels, like every other figure in this app and like
+ * money() in ezone-outpatient #109. The underlying figures keep 2dp — that is
+ * what makes a bucket total equal the sum of its rows — and only the PRINTED
+ * value is rounded. Rounding the data instead would drift a drill-down from
+ * its own header by up to half a shekel per row. */
+function revMoney(exVatAmount) {
+  return fmtShekel(Math.round(Number(exVatAmount) || 0));
+}
+
+/* ---- הכנסות חודשיות — rendering ------------------------------------------
+ * Read-only. Adds no endpoint and no write path: every figure is derived in
+ * the browser from data already loaded for the other tabs (state.patients,
+ * state.payments, state.billingOverrides, state.credits). The daily גבייה
+ * screen is not touched by anything here — separate state, separate renderer,
+ * separate screen.
+ *
+ * Every figure printed is EX-VAT, via revenueExVat() at 2dp. */
+function renderMonthlyRevenue() {
+  const monthEl = document.getElementById('revenue-month');
+  if (!state.revenueMonth) state.revenueMonth = monthKey(todayISO());
+  if (monthEl && monthEl.value !== state.revenueMonth) monthEl.value = state.revenueMonth;
+
+  const model = buildMonthlyRevenue({
+    month: state.revenueMonth,
+    patients: state.patients,
+    payments: state.payments,
+    credits: Array.isArray(state.credits) ? state.credits : [],
+    overrides: state.billingOverrides,
+    today: todayISO(),
+  });
+  if (!model) return;
+
+  const labelEl = document.getElementById('rev-month-label');
+  if (labelEl) labelEl.textContent = model.monthLabel;
+
+  const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+  set('rev-received', revMoney(model.received.exVat));
+  set('rev-expected', revMoney(model.expected.exVat));
+  // Credits are a deduction; the minus sign is part of the figure so the card
+  // cannot be misread as income.
+  set('rev-credits', model.credits.exVat ? '−' + revMoney(model.credits.exVat) : revMoney(0));
+  set('rev-net', revMoney(model.net.exVat));
+
+  renderRevenueExpectedComposition(model);
+  renderRevenueByHouse(model);
+  renderRevenueDetail(model);
+  fitAllStatText();   // scale the KPI values to fit, like every other stat card
+}
+
+/* The three confidences inside צפוי, kept apart on screen because they are not
+ * equally believable: a cycle already billed, a cycle still ahead, and a cycle
+ * whose date passed with nothing recorded — that last usually means a missing
+ * payment row rather than future income, so it is flagged. */
+function renderRevenueExpectedComposition(model) {
+  const el = document.getElementById('rev-expected-breakdown');
+  if (!el) return;
+  el.innerHTML = '';
+  const parts = [
+    { b: model.expected.billedUnpaid, label: 'חויב וטרם נגבה', warn: false },
+    { b: model.expected.projected,    label: 'טרם חויב — מחזור עתידי', warn: false },
+    { b: model.expected.unbilledPast, label: 'מחזור שחלף ללא רישום תשלום', warn: true },
+  ];
+  parts.forEach(p => {
+    if (!p.b.count) return;
+    const line = document.createElement('div');
+    line.className = 'bd-line' + (p.warn ? ' rev-warn' : '');
+    line.innerHTML = `
+      <span class="bd-house">${escapeHtml(p.label)}</span>
+      <span class="bd-vals">
+        <span class="${p.warn ? 'bd-out' : 'bd-col'}">${revMoney(p.b.exVat)}</span>
+        <span class="rev-count">${p.b.count} שורות</span>
+      </span>
+    `;
+    el.appendChild(line);
+  });
+  if (!el.children.length) {
+    el.innerHTML = `<div class="bd-line muted">אין הכנסה צפויה בחודש זה</div>`;
+  }
+}
+
+/* BREAKDOWN DIMENSION: house — the same dimension the גבייה monthly summary and
+ * the נקודת איזון tab use, and the one ezone-outpatient's location breakdown
+ * lines up with per site. */
+function renderRevenueByHouse(model) {
+  const el = document.getElementById('rev-by-house');
+  if (!el) return;
+  el.innerHTML = '';
+  model.byHouse.forEach(b => {
+    const line = document.createElement('div');
+    line.className = 'bd-line';
+    line.innerHTML = `
+      <span class="bd-house">${escapeHtml(b.house)}</span>
+      <span class="bd-vals">
+        <span class="bd-col">נגבה ${revMoney(b.received.exVat)}</span>
+        <span class="rev-exp">צפוי ${revMoney(b.expected.exVat)}</span>
+        ${b.credits.exVat ? `<span class="bd-out">זיכויים −${revMoney(b.credits.exVat)}</span>` : ''}
+        <b>נטו ${revMoney(b.net.exVat)}</b>
+      </span>
+    `;
+    el.appendChild(line);
+  });
+  if (!el.children.length) {
+    el.innerHTML = `<div class="bd-line muted">אין נתונים לחודש זה</div>`;
+  }
+}
+
+const REVENUE_KIND_LABELS = {
+  billed_unpaid: 'חויב וטרם נגבה',
+  projected: 'טרם חויב — מחזור עתידי',
+  unbilled_past: 'מחזור שחלף ללא רישום תשלום',
+};
+
+/* Drill-down: every payment, and WHICH PORTION of it landed in this month.
+ * The window and the day count ride on the row, so the arithmetic is visible
+ * rather than asserted. */
+function renderRevenueDetail(model) {
+  const list = document.getElementById('rev-detail');
+  if (!list) return;
+  list.innerHTML = '';
+  const q = state.revenueSearch;
+  const match = r => !q || String(r.patientName || '').toLowerCase().indexOf(q) !== -1;
+
+  const groups = [
+    { key: 'received', title: 'נגבה בפועל', rows: model.received.rows.filter(match), sign: '' },
+    { key: 'expected', title: 'צפוי',        rows: model.expected.rows.filter(match), sign: '' },
+    { key: 'credits',  title: 'זיכויים',     rows: model.credits.rows.filter(match),  sign: '−' },
+  ];
+  let any = false;
+  groups.forEach(g => {
+    if (!g.rows.length) return;
+    any = true;
+    const sum = roundMoney(g.rows.reduce((s, r) => s + r.amountInMonthExVat, 0));
+    const head = document.createElement('div');
+    head.className = 'rev-detail-head';
+    head.innerHTML = `<span>${escapeHtml(g.title)}</span><span>${g.sign}${revMoney(sum)}</span>`;
+    list.appendChild(head);
+    g.rows.forEach(r => list.appendChild(buildRevenueDetailRow(r, g.key, g.sign)));
+  });
+  if (!any) {
+    const msg = (model.received.count || model.expected.count || model.credits.count)
+      ? 'לא נמצאו תוצאות'
+      : 'אין תנועות בחודש זה';
+    list.innerHTML = `<div class="card billing-empty">${msg}</div>`;
+  }
+}
+
+function buildRevenueDetailRow(row, groupKey, sign) {
+  const el = document.createElement('div');
+  el.className = 'billing-row rev-detail-row'
+    + (row.kind === 'unbilled_past' ? ' rev-warn' : '');
+
+  const windowText = `${row.coverageStart} → ${row.coverageEnd}`;
+  // The split, shown as the fraction it is: 12 מתוך 31 ימים.
+  const daysText = `${row.daysInMonth} מתוך ${row.windowDays} ימים`;
+
+  let chips = '';
+  if (groupKey === 'expected' && REVENUE_KIND_LABELS[row.kind]) {
+    chips += `<span class="rev-chip">${escapeHtml(REVENUE_KIND_LABELS[row.kind])}</span>`;
+  }
+  if (groupKey === 'credits') {
+    const typeLabel = CREDIT_TYPE_LABELS[row.creditType] || row.creditType || '';
+    chips += `<span class="rev-chip">${escapeHtml(typeLabel)}</span>`;
+    // A credit with no usable coverage window fell back to its allocationMonth
+    // — say so rather than implying a day-level split.
+    if (row.spanSource === 'allocation_month') {
+      chips += `<span class="rev-chip rev-chip-soft">לפי חודש שיוך</span>`;
+    }
+  }
+  // A per-month billing override is visible on the row it changed, so the
+  // forecast never differs from the גבייה tab without saying why.
+  if (row.overridden) chips += `<span class="rev-chip rev-chip-soft">סכום מותאם</span>`;
+
+  el.innerHTML = `
+    <div><span class="p-label">מטופל</span><span class="p-name">${escapeHtml(row.patientName || '—')}</span>${chips}</div>
+    <div><span class="p-label">בית</span><span class="p-val">${escapeHtml(row.house || '')}</span></div>
+    <div><span class="p-label">חלון כיסוי</span><span class="p-val" dir="ltr">${escapeHtml(windowText)}</span></div>
+    <div><span class="p-label">בחודש זה</span><span class="p-val">${escapeHtml(daysText)}</span></div>
+    <div><span class="p-label">סכום מלא</span><span class="p-val">${revMoney(revenueExVat(row.fullAmount))}</span></div>
+    <div><span class="p-label">שיוך לחודש</span><span class="p-val rev-portion">${sign}${revMoney(row.amountInMonthExVat)}</span></div>
+  `;
+  return el;
 }
 
 /* Upsert a payment record locally, then persist to the Payments sheet. */

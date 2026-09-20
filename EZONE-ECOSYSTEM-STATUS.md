@@ -320,6 +320,52 @@ for the running month, wrong as a history.)
   (shared — it is the id in this repo's `.clasp.json`, the one clasp CI pushes
   to). If the backfill times out, just re-run it — it is idempotent.
 
+## Monthly revenue: a CROSS-APP contract between Dashboard and Outpatient (September 20, 2026)
+
+Both apps now have a **הכנסות חודשיות** screen answering "how much revenue
+belongs to month X", independent of when the cash arrived. Outpatient shipped
+first (`ezone-outpatient` PR #109, `public/monthly-revenue.js`); the Dashboard
+followed with the same contract inside `public/app.js`. Full rules in each
+repo's `CHANGELOG-monthly-revenue.md`.
+
+**These two are meant to be ADDED TOGETHER into a network total, so they must
+agree.** Four things are the contract — change one and you must change both, or
+a consolidated figure is silently wrong:
+
+1. **Allocation by coverage window, day by day.** A payment covers
+   `[dueDate, dueDate + 1 month − 1 day]`; a window straddling a month boundary
+   contributes to both months split by day count. ₪3,000 covering 20 Jan – 19 Feb
+   gives January 12/31 and February 19/31. **Neither the payment date nor
+   `monthKey(dueDate)` takes any part.**
+2. **Four figures, and RECEIVED + EXPECTED are never summed into one.** Money in
+   hand and a forecast are different certainties; NET is the only place they
+   meet and is labelled a projection. Neither app exposes a combined accessor.
+3. **Ex-VAT display, ÷1.18**, over amounts stored VAT-INCLUSIVE in both apps.
+   Ex-VAT is taken **per row at 2dp** and a bucket total is the sum of its rows,
+   so a drill-down reconciles with its header; only the printed value rounds.
+4. **Credits split by the span they actually refund** (`creditedFrom..coverageEnd`
+   for `days_unused`, the whole window for `prepaid_return`), falling back to
+   `allocationMonth` only when the basis is unusable. `allocationMonth` is
+   reporting metadata in both ledgers and never enters the math. `pending` and
+   `paid` count; `cancelled` does not.
+
+**Both repos assert the SAME worked example numerically** — ₪2,542 ex-VAT for a
+₪3,000/month patient billed on the 20th whose December and January cycles are
+both paid — in a unit test and again in a real-browser test. If the two ever
+diverge, one of those goes red.
+
+**Known asymmetries (deliberate, documented in each changelog):** Outpatient has
+a real `paymentDate` column and one-time extra charges; the Dashboard has
+neither, and anchors cycles on the patient's **entry day-of-month** rather than a
+stored `nextBillingDate`. Outpatient breaks down by `location`, the Dashboard by
+`houseId` — the same physical sites, so they line up per site.
+
+**Pitfall this surfaced:** `public/app.js` is one flat script scope, so two
+`function foo()` declarations are not two functions — the later silently
+overwrites the earlier at hoist time. `monthKey` had been declared twice for a
+long time; the copy that looked authoritative was dead code. A guard test now
+pins each shared date primitive to exactly one declaration in that file.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);

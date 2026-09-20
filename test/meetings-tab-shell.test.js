@@ -26,7 +26,9 @@ const INDEX_HTML = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.h
 /* The canonical tab order after this change, enumerated explicitly. */
 const EXPECTED_TAB_ORDER = [
   'dashboard', 'leads', 'meetings', 'occupancy',
-  'discharged-patients', 'billing', 'breakeven', 'growth', 'retention',
+  // 'revenue' (הכנסות חודשיות) sits directly after 'billing': it is the monthly
+  // companion to the daily גבייה worklist, so the two read as a pair in the nav.
+  'discharged-patients', 'billing', 'revenue', 'breakeven', 'growth', 'retention',
 ];
 
 /* Parse the <nav class="tabs"> block into an ordered [{ screen, label }]. */
