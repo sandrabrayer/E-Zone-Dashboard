@@ -319,21 +319,54 @@ input:focus, select:focus, textarea:focus {
  * direction — to the RIGHT of the text on these RTL pages — and the logical
  * margin-inline-end keeps the gap on the correct side either way.
  *
+ * THE OPACITY RULE BELOW IS LOAD-BEARING — do not drop it, and do not weaken
+ * it back to a bare `.is-busy`. busyButton() always sets `disabled` alongside
+ * the class, and both pages fade a disabled control: `.btn:disabled` to .35
+ * (public/style.css) and `.mr-submit:disabled` to .45
+ * (public/meeting-report.css). Those are two-compound selectors, so they
+ * outranked the single-class `.is-busy { opacity: .7 }` this block shipped
+ * with, and the fade landed on the WHOLE button — label and ring together. The
+ * ring survived in the box model (11x11, 2px, currentColor, animating) but its
+ * peak contrast against the primary fill measured only ~66/255 across a 2px
+ * stroke: invisible on a phone. That was the "no spinner glyph appears" bug.
+ * `[aria-busy="true"]` matches exactly the state the helper sets, so the reset
+ * cannot leak onto an ordinarily-disabled button; and the dim was redundant
+ * anyway, because the spinner, the Hebrew busy label and cursor:progress
+ * already say the control is not clickable.
+ *
+ * Why the OLDER `.btn.busy` spinner never showed this symptom, for anyone
+ * tempted to "simplify" the selector back: `.btn.busy` is TWO compounds, so it
+ * ties `.btn:disabled` and wins on source order (it is declared later),
+ * landing .65 — dimmed but legible. `.is-busy` is ONE, so it simply loses.
+ * That single-compound-vs-two difference is the whole regression.
+ *
+ * The ring's colour is currentColor ON PURPOSE: every button variant sets its
+ * own `color` to contrast its own `background` (#fff on the blue primary, the
+ * red danger and the green WhatsApp surface; --text on the dark secondary
+ * surfaces), so the ring inherits a contrasting ink for free and keeps doing so
+ * when a new variant is added. test/spinner-glyph.test.js resolves the real
+ * cascade per variant and fails if any of them lands a ring that is not clearly
+ * distinct from its own fill.
+ *
  * prefers-reduced-motion: no rotation at all. The ring closes into a complete
  * static circle so the control still reads as "working", which a vestibular
- * user needs just as much as everyone else.
+ * user needs just as much as everyone else. (It carried an extra opacity: .55
+ * before this fix, which halved the static ring on top of the disabled fade —
+ * dropped, for the same visibility reason.)
  */
 .is-busy {
-  opacity: .7;
   cursor: progress;
   pointer-events: none;
+}
+.is-busy[aria-busy="true"] {
+  opacity: 1;
 }
 .is-busy::before {
   content: '';
   display: inline-block;
-  width: 11px;
-  height: 11px;
-  vertical-align: -1px;
+  width: 13px;
+  height: 13px;
+  vertical-align: -2px;
   margin-inline-end: 7px;
   border: 2px solid currentColor;
   border-inline-start-color: transparent;
@@ -345,7 +378,6 @@ input:focus, select:focus, textarea:focus {
   .is-busy::before {
     animation: none;
     border-inline-start-color: currentColor;
-    opacity: .55;
   }
 }
 /* ===== BUSY-BUTTON SPINNER — END ===== */
