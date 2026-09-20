@@ -45,12 +45,23 @@ test('.tabs is no longer an internally-scrollable strip', () => {
     '.tabs must not scroll horizontally (that hid tabs in RTL)');
 });
 
-test('all 9 screen tabs are still present in the markup', () => {
+test('every screen tab is still present in the markup, and none was dropped', () => {
+  // This guards the MOBILE TAB FIX: the bug was tabs being hidden, so what
+  // matters is that every screen still has a reachable button. The exact COUNT
+  // is deliberately not pinned — a later PR adding a screen is not a
+  // regression in the mobile tab strip, and an equality here would fail every
+  // such PR for no reason (the monthly-revenue screen is the one that proved
+  // it). meetings-tab-shell.test.js owns the authoritative order.
   const tabs = html.match(/class="tab[ "]/g) || [];
-  // one active + eight inactive = 9 buttons (meetings tab added after leads)
-  const count = (html.match(/data-screen="/g) || []).length;
-  assert.strictEqual(count, 9, 'expected 9 tab buttons');
-  assert.ok(tabs.length >= 9);
+  const screens = (html.match(/data-screen="([^"]+)"/g) || [])
+    .map((m) => m.match(/data-screen="([^"]+)"/)[1]);
+  for (const id of ['dashboard', 'leads', 'meetings', 'occupancy',
+                    'discharged-patients', 'billing', 'breakeven', 'growth',
+                    'retention']) {
+    assert.ok(screens.includes(id), `tab still present: ${id}`);
+  }
+  assert.ok(screens.length >= 9, `no tab was dropped, got ${screens.length}`);
+  assert.ok(tabs.length >= screens.length);
 });
 
 /* ---------- Fix 2: label removed, access control preserved ---------- */

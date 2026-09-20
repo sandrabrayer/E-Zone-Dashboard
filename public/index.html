@@ -66,6 +66,7 @@
         <button class="tab" data-screen="occupancy">תפוסה</button>
         <button class="tab" data-screen="discharged-patients">מטופלים משוחררים</button>
         <button class="tab" data-screen="billing">גבייה</button>
+        <button class="tab" data-screen="revenue">הכנסות חודשיות</button>
         <button class="tab" data-screen="breakeven">נקודת איזון</button>
         <button class="tab" data-screen="growth">גרף צמיחה</button>
         <button class="tab" data-screen="retention">שימור לידים</button>
@@ -235,6 +236,75 @@
           <div class="stat-breakdown" id="bill-month-breakdown"></div>
         </div>
       </div>
+    </section>
+
+    <!-- ====== MONTHLY REVENUE (הכנסות חודשיות) ======
+         A SEPARATE screen from the daily גבייה worklist above, which is
+         untouched. That one answers "who do I collect from today"; this one
+         answers "how much revenue BELONGS to month X" — allocated by each
+         payment's coverage window, so a cycle straddling a month boundary
+         lands partly in each and monthKey(dueDate) never decides.
+
+         Same contract as ezone-outpatient PR #109, so the two apps' figures
+         can be added into a network total: same allocation rule, same four
+         figures, same never-blend rule, same ex-VAT basis (÷1.18). -->
+    <section id="screen-revenue" class="screen hidden">
+      <div class="screen-head">
+        <h2>הכנסות חודשיות <span class="rev-month-label" id="rev-month-label"></span></h2>
+        <div class="actions">
+          <input id="revenue-search" type="search" placeholder="חיפוש מטופל..." />
+          <label for="revenue-month" class="billing-date-label">חודש</label>
+          <input id="revenue-month" type="month" />
+        </div>
+      </div>
+
+      <div class="rev-vat-note">כל הסכומים ללא מע&quot;מ</div>
+
+      <div class="cards-row rev-cards">
+        <div class="card stat rev-stat-received">
+          <div class="stat-label">נגבה בפועל</div>
+          <div class="stat-value" id="rev-received">₪ 0</div>
+          <div class="stat-sub">כסף שהתקבל ומשויך לחודש זה</div>
+        </div>
+        <div class="card stat rev-stat-expected">
+          <div class="stat-label">צפוי</div>
+          <div class="stat-value" id="rev-expected">₪ 0</div>
+          <div class="stat-sub">מטופלים פעילים × תשלום חודשי, טרם נגבה</div>
+        </div>
+        <div class="card stat rev-stat-credits">
+          <div class="stat-label">זיכויים</div>
+          <div class="stat-value" id="rev-credits">₪ 0</div>
+          <div class="stat-sub">מוחזר למטופלים — מקטין את ההכנסה</div>
+        </div>
+      </div>
+
+      <div class="cards-row rev-cards-2">
+        <div class="card stat rev-stat-net">
+          <div class="stat-label">נטו</div>
+          <div class="stat-value" id="rev-net">₪ 0</div>
+          <div class="stat-sub">נגבה + צפוי − זיכויים (תחזית)</div>
+        </div>
+        <div class="card stat">
+          <div class="stat-label">הרכב הצפוי</div>
+          <div class="stat-breakdown" id="rev-expected-breakdown"></div>
+        </div>
+        <div class="card stat">
+          <div class="stat-label">פירוט לפי בית</div>
+          <div class="stat-breakdown" id="rev-by-house"></div>
+        </div>
+      </div>
+
+      <!-- Two different certainties. Spelled out rather than implied: the most
+           expensive mistake this screen can invite is reading the forecast as
+           cash. -->
+      <div class="rev-basis-note">
+        <b>נגבה בפועל</b> הוא כסף שכבר בקופה. <b>צפוי</b> הוא הנחה שהמטופלים יישארו וישלמו.
+        השניים לעולם אינם מוצגים כמספר אחד — רק <b>נטו</b> מחבר ביניהם, והוא תחזית.
+      </div>
+
+      <h3>פירוט תשלומים <span class="rev-sub">החלק מכל תשלום שנפל בחודש זה</span></h3>
+      <p class="billing-date-label">לפי חלון הכיסוי של כל תשלום — לא לפי חודש התאריך לתשלום</p>
+      <div id="rev-detail" class="billing-list"></div>
     </section>
 
     <!-- ====== BREAK-EVEN ====== -->
