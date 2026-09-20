@@ -650,8 +650,17 @@ test('both save paths actually go through busyButton', () => {
     'the dashboard edit-report save must run through busyButton');
 });
 
-test('sw.js CACHE_VERSION is bumped to v9 for the new assets', () => {
+/* Originally pinned to the literal 'v9' this PR shipped, which made every later
+ * bump a test failure (it broke on the very next one — the spinner-glyph fix).
+ * What is actually worth guarding is the repo's DISCIPLINE: the version is a
+ * vN string, and whoever bumps it leaves the `vN-1 → vN:` comment line
+ * explaining why. That holds at every version. */
+test('sw.js CACHE_VERSION carries a version and its bump comment', () => {
   const sw = read('public', 'sw.js');
-  assert.match(sw, /var CACHE_VERSION = 'v9';/);
-  assert.match(sw, /v8 → v9:/, 'the bump needs its comment line in the existing style');
+  const m = sw.match(/var CACHE_VERSION = 'v(\d+)';/);
+  assert.ok(m, 'CACHE_VERSION must be a vN string');
+  const n = Number(m[1]);
+  assert.ok(n >= 9, `the spinner assets landed in v9; found v${n}`);
+  assert.ok(sw.includes(`v${n - 1} \u2192 v${n}:`),
+    `the bump to v${n} needs its comment line in the existing style`);
 });

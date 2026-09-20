@@ -40,7 +40,11 @@
 // v8 → v9: the shared loading-spinner pattern — busyButton() + the .is-busy
 // spinner land in app.js, meeting-report.js, style.css AND meeting-report.css,
 // so every cached copy of all four must go.
-var CACHE_VERSION = 'v9';
+// v9 → v10: the spinner glyph fix. v9 precached a /style.css whose busy ring was
+// faded to invisibility by the :disabled rule, and that copy is still the
+// OFFLINE fallback on any device that installed v9 — evict it so no phone can
+// fall back to the broken ring.
+var CACHE_VERSION = 'v10';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
