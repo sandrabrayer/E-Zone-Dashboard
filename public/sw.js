@@ -64,7 +64,12 @@
 // and it is the OFFLINE fallback on any device that installed v13 — evict it so
 // no phone keeps serving the copy where the גבייה / הכנסות חודשיות pickers still
 // have an invisible icon.
-var CACHE_VERSION = 'v14';
+// v14 → v15: the תקופת כיסוי cell on גבייה gains the month split and switches
+// its dates to the app-wide human format. app.js and style.css both changed —
+// evict v14 so no phone keeps serving the bundle whose row still reads
+// "2026-09-06 → 2026-10-05" and says nothing about which month the money
+// lands in.
+var CACHE_VERSION = 'v15';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
