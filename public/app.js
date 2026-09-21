@@ -5294,13 +5294,153 @@ function roundMoney(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
 
-/* The period a payment row pays for: dueDate D through D + 1 month − 1 day
- * (local parts) — never "until the next payment row", which is usually
- * absent at discharge. { start, end } as local Dates. */
-function paymentCoverage(payment) {
+/* Longest period one payment row may claim to cover. A cycle is a month; a
+ * year is already absurd. This exists so a mistyped year ('2027-01-05' for
+ * '2026-01-05') is refused at the keyboard instead of quietly swallowing a
+ * whole year of allocation. */
+const COVERAGE_MAX_DAYS = 366;
+
+/* Validate a recorded coverage period. '' when acceptable, otherwise the
+ * Hebrew reason — the SAME function the editor calls before saving and the
+ * same rule coveragePeriodError_() enforces in Code.gs on write, so the
+ * client can never talk the server into storing something it would refuse.
+ *
+ * DELIBERATELY NOT REFUSED: overlaps and gaps BETWEEN rows. Both are real
+ * — two months paid at once overlap nothing wrongly, a patient who skipped a
+ * month leaves a genuine gap, and a re-dated cycle legitimately overlaps its
+ * neighbour. The credits ledger already de-duplicates overlapping days
+ * (creditedThrough), so an overlap costs nothing there; refusing one would
+ * force the recorder to lie about what the money bought. What IS refused is
+ * a period that cannot be true of a single row: half-filled, malformed,
+ * backwards, or longer than a year. */
+/* Normalize one coverage-period value to bare 'YYYY-MM-DD'.
+ *   ''   — blank / absent (legal: it means "infer")
+ *   null — present but unusable (the caller refuses)
+ *
+ * EXACT MIRROR of coverageDateISO_() in Code.gs, including what it does NOT
+ * accept. Three shapes only: a bare ISO date naming a REAL day, a full ISO
+ * timestamp (read by its LOCAL parts — never toISOString().slice(), which
+ * lands a day early for Israel), and a Date object. Everything else is
+ * refused rather than handed to `new Date()`, whose tolerance for loose
+ * strings is engine-dependent and would let '2026-1-5' mean one thing here
+ * and another on the server. A parity sweep over both implementations is
+ * asserted in test/payment-coverage-period.test.js. */
+function coverageDateISO(v) {
+  if (v === null || v === undefined || v === '') return '';
+  if (typeof v === 'string') {
+    const t = v.trim();
+    if (!t) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) {
+      /* Shape is not enough: '2026-02-30' matches and would roll over into
+       * March 2. Insist the parts survive the round-trip, so a day that does
+       * not exist is refused instead of silently becoming another one. */
+      const d = localDateFromISO(t);
+      return (d && isoFromLocalDate(d) === t) ? t : null;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}T/.test(t)) return null;      // not a date we recognize
+    const ts = new Date(t);
+    return isNaN(ts.getTime()) ? null : isoFromLocalDate(ts);
+  }
+  // A number, a boolean or a plain object is NOT a date and is refused rather
+  // than coerced (new Date(0) would read as 1970-01-01).
+  if (!(v instanceof Date) || isNaN(v.getTime())) return null;
+  return isoFromLocalDate(v);
+}
+
+function coveragePeriodError(startISO, endISO) {
+  /* PRESENCE first, then validity — the same order as coveragePeriodError_().
+   * Deciding "half-filled" from the PARSED value would report '' + 'garbage'
+   * as a malformed date on one side and a missing date on the other. */
+  const rawS = String(startISO == null ? '' : startISO).trim();
+  const rawE = String(endISO == null ? '' : endISO).trim();
+  if (!rawS && !rawE) return '';                            // blank pair → infer, the default
+  if (!rawS || !rawE) return 'יש למלא גם תאריך התחלה וגם תאריך סיום לתקופת הכיסוי';
+  const s = coverageDateISO(startISO), e = coverageDateISO(endISO);
+  if (!s || !e) return 'תאריך לא תקין בתקופת הכיסוי';
+  const ds = localDateFromISO(s), de = localDateFromISO(e);
+  if (de < ds) return 'תאריך הסיום מוקדם מתאריך ההתחלה';
+  const days = diffWholeDays(ds, de) + 1;
+  if (days > COVERAGE_MAX_DAYS) return 'תקופת כיסוי ארוכה מדי (' + days + ' ימים, המקסימום ' + COVERAGE_MAX_DAYS + ')';
+  return '';
+}
+
+/* The period a payment row pays for, INFERRED from its due date: dueDate D
+ * through D + 1 month − 1 day (local parts) — never "until the next payment
+ * row", which is usually absent at discharge. This was the whole rule before
+ * coverageStart/coverageEnd existed, and it is still the DEFAULT offered when
+ * a payment is recorded and the fallback for every row that carries none. */
+function inferredCoverage(payment) {
   const start = localDateFromISO(isoDate(payment && payment.dueDate));
   if (!start) return null;
   return { start, end: addDays(addMonthsClamped(start, 1), -1) };
+}
+
+/* The period a payment row RECORDS, or null when it records none (blank
+ * pair) or records something unusable. An unusable stored pair is treated as
+ * absent rather than thrown: a row corrupted by a manual sheet edit must
+ * still produce a window, and the inferred one is the honest fallback. */
+function recordedCoverage(payment) {
+  if (!payment) return null;
+  if (coveragePeriodError(payment.coverageStart, payment.coverageEnd)) return null;
+  const s = coverageDateISO(payment.coverageStart), e = coverageDateISO(payment.coverageEnd);
+  if (!s || !e) return null;                                // blank pair — nothing recorded
+  const start = localDateFromISO(s), end = localDateFromISO(e);
+  if (!start || !end) return null;
+  return { start, end };
+}
+
+/* THE ONE SOURCE OF TRUTH for "what period does this payment pay for", shared
+ * by all three consumers: the credits ledger (suggestCredits), the
+ * הכנסות חודשיות allocation (buildMonthlyRevenue) and the גבייה row editor.
+ *
+ * THE RECORDED PERIOD WINS. coverageStart/coverageEnd are columns on the
+ * payment row: when both are stored and usable they ARE the answer — the
+ * person who took the money said what it bought, and an assumption does not
+ * get to overrule them. When they are absent — every row written before this
+ * PR — the period is inferred exactly as it always was, DERIVED ON READ. No
+ * old row is ever rewritten, so history reads today exactly as it read
+ * yesterday.
+ *
+ * → { start, end, source } as local Dates; source is 'recorded' | 'inferred',
+ *   carried so a drill-down can say which it is rather than implying a
+ *   precision it lacks. null only when there is neither a usable recorded
+ *   pair nor a due date. */
+function paymentCoverage(payment) {
+  const rec = recordedCoverage(payment);
+  if (rec) return { start: rec.start, end: rec.end, source: 'recorded' };
+  const inf = inferredCoverage(payment);
+  if (!inf) return null;
+  return { start: inf.start, end: inf.end, source: 'inferred' };
+}
+
+/* Does this row's recorded period DIFFER from the cycle that would have been
+ * inferred for it? Drives the "תקופה מותאמת" badge. A row that records
+ * exactly the default is not marked — the badge means "somebody decided
+ * otherwise", and a badge on every row would mean nothing. */
+function coverageDiffersFromDefault(payment) {
+  const rec = recordedCoverage(payment);
+  if (!rec) return false;
+  const inf = inferredCoverage(payment);
+  if (!inf) return true;   // recorded a period for a row that has no cycle to infer
+  return isoFromLocalDate(rec.start) !== isoFromLocalDate(inf.start)
+      || isoFromLocalDate(rec.end)   !== isoFromLocalDate(inf.end);
+}
+
+/* Stamp the inferred cycle onto a payment that records no period, so the
+ * value lands in the sheet as a FACT instead of being re-derived from an
+ * assumption on every future read. Called from savePayment(), i.e. on every
+ * write path there is — so "accept the default" costs the recorder zero
+ * clicks and changes zero figures (the default IS what was being inferred).
+ * A row that already records a period is returned untouched. */
+function withDefaultCoverage(payment) {
+  if (!payment) return payment;
+  if (recordedCoverage(payment)) return payment;
+  const inf = inferredCoverage(payment);
+  if (!inf) return payment;
+  return Object.assign({}, payment, {
+    coverageStart: isoFromLocalDate(inf.start),
+    coverageEnd:   isoFromLocalDate(inf.end),
+  });
 }
 
 /* The 15th of the next month on or after decidedDate: decided on the 1st–15th
@@ -5383,6 +5523,8 @@ function suggestCredits(patient, exitDate, payments) {
 
   const rows = (Array.isArray(payments) ? payments : [])
     .filter(r => r && r.patientId === key && r.dueDate)
+    // Object.assign keeps every column of the row, coverageStart/coverageEnd
+    // included, so paymentCoverage() below sees the recorded period.
     .map(r => Object.assign({}, r, { dueDate: isoDate(r.dueDate) }))
     .filter(r => /^\d{4}-\d{2}-\d{2}$/.test(r.dueDate))
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
@@ -5399,6 +5541,13 @@ function suggestCredits(patient, exitDate, payments) {
     const allocationMonth = monthKey(r.dueDate);   // reporting only
     const rowBasis = {
       paymentDueDate: r.dueDate, coverageStart: isoFromLocalDate(start), coverageEnd: isoFromLocalDate(end),
+      /* Which window the credit was computed against: the period the row
+       * RECORDS, or the cycle inferred from its due date. Basis is the audit
+       * trail for a refund decision, so it must say which. Named apart from
+       * the existing `coverageSource` on the zero row below, which answers a
+       * different question (which FALLBACK that row took). The ARITHMETIC is
+       * untouched — only where [start, end] came from changed. */
+      coverageWindowSource: cov.source,
       windowDays, billedAmount: roundMoney(Number(r.amount) || 0), amountPaid, dailyRate: roundMoney(rate),
     };
 
@@ -5449,6 +5598,7 @@ function suggestCredits(patient, exitDate, payments) {
       allocationMonth = exitISO.slice(0, 7); amountPaid = 0; rate = 0; coverageSource = 'calendar_month';
       unusedDays = diffWholeDays(exit, end);
       rowBasis = { paymentDueDate: '', coverageStart: isoFromLocalDate(start), coverageEnd: isoFromLocalDate(end),
+        coverageWindowSource: 'calendar_month',
         windowDays: exitMonthDays, billedAmount: 0, amountPaid: 0, dailyRate: 0 };
     }
     out.unshift({
@@ -5488,7 +5638,13 @@ const CREDIT_RULE_LABELS = {
  * creation (the machine copy is the `basis` JSON column). */
 function creditBasisText(creditType, basis) {
   if (!basis) return '';
-  const windowText = `חלון כיסוי ${basis.coverageStart} → ${basis.coverageEnd} (${basis.windowDays} ימים${basis.paymentDueDate ? ', תשלום ' + basis.paymentDueDate : ' — חודש קלנדרי, אין שורת תשלום'})`;
+  /* Where the window came from belongs in a refund's audit trail: a credit
+   * computed against a period somebody RECORDED must not read the same as one
+   * computed against the assumed billing cycle. A row whose period was merely
+   * inferred says nothing extra — that is the norm, and labelling every row
+   * would bury the ones that matter. */
+  const windowSourceText = basis.coverageWindowSource === 'recorded' ? ', תקופה שנרשמה על התשלום' : '';
+  const windowText = `חלון כיסוי ${basis.coverageStart} → ${basis.coverageEnd} (${basis.windowDays} ימים${basis.paymentDueDate ? ', תשלום ' + basis.paymentDueDate : ' — חודש קלנדרי, אין שורת תשלום'}${windowSourceText})`;
   if (creditType === 'days_unused') {
     return [
       CREDIT_RULE_LABELS[basis.rule] || basis.rule,
@@ -6274,6 +6430,15 @@ function normalizePayment(r) {
     amountPaid,
     balance,
     timestamp:   String(r.timestamp || ''),
+    /* The RECORDED coverage period (appended columns). Kept verbatim — blank
+     * stays blank, and paymentCoverage() falls back to the inferred cycle for
+     * it. isoDate() normalizes a full timestamp or a Sheets Date cell to its
+     * LOCAL day, the same guard dueDate gets, so a period read back from the
+     * sheet can never drift −1 day in Israel. An unusable pair is left as-is
+     * here and treated as absent by recordedCoverage() — normalizing is not
+     * this function's job to refuse. */
+    coverageStart: isoDate(r.coverageStart),
+    coverageEnd:   isoDate(r.coverageEnd),
   };
 }
 
@@ -6742,6 +6907,47 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   const amountCellLabel = isCarryForward
     ? `תאריך מקורי · ${escapeHtml(formatDate(dueDateISO))}`
     : 'סכום חודשי';
+  /* ---- תקופת כיסוי (the recorded coverage period) -------------------
+   * WHERE IT LIVES: its own cell on the row, right after the amount — the
+   * two facts a recorder decides together ("how much, for what period") sit
+   * side by side, and the row already carries the due date, so the period
+   * reads as a refinement of it rather than a new concept elsewhere.
+   *
+   * WHEN IT IS EDITABLE: edit mode, and the payment row actually EXISTS in
+   * the sheet. That second condition is deliberate and differs from the
+   * amount editor, twice over:
+   *   - Paid and partial rows ARE editable here. The amount override is
+   *     refused on them because it would rewrite settled money; the period
+   *     is the opposite — a payment already taken is exactly the one whose
+   *     period must be correctable, since that is the row the revenue screen
+   *     allocates.
+   *   - A due-list row that has never been saved is NOT editable. Its
+   *     payment is an in-memory placeholder (paymentForPatientOnDate), so
+   *     writing a period would conjure an unpaid Payments row that does not
+   *     exist today. Record the payment first, then adjust its period.
+   * No patientMatched guard is needed: unlike an override, these columns
+   * live ON the payment row and are keyed by payment.id, so an orphaned
+   * carry row can still say what its own money covered. */
+  const paymentPersisted = state.payments.some(x => x && x.id === payment.id);
+  const coverageEditable = state.mode === 'edit' && paymentPersisted;
+  const cov = paymentCoverage(payment);
+  const covStart = cov ? isoFromLocalDate(cov.start) : '';
+  const covEnd   = cov ? isoFromLocalDate(cov.end) : '';
+  const covAdjusted = coverageDiffersFromDefault(payment);
+  const covText = cov ? `${covStart} → ${covEnd}` : '—';
+  const coverageCellHtml = `
+      <span class="p-val bill-cov-view" dir="ltr">${escapeHtml(covText)}
+        ${covAdjusted ? '<span class="badge override" title="תקופה שנרשמה ידנית, שונה ממחזור החיוב הרגיל">מותאמת</span>' : ''}
+        ${coverageEditable ? '<button class="bill-cov-edit-btn" title="עריכת תקופת הכיסוי של תשלום זה">✏️</button>' : ''}
+        ${coverageEditable && covAdjusted ? '<button class="bill-cov-reset-btn" title="חזרה למחזור החיוב הרגיל">↩</button>' : ''}
+      </span>
+      ${coverageEditable ? `<span class="bill-cov-edit hidden">
+        <input class="bill-cov-start" type="date" value="${escapeHtml(covStart)}" />
+        <input class="bill-cov-end" type="date" value="${escapeHtml(covEnd)}" />
+        <button class="btn small primary bill-cov-save">שמור</button>
+        <button class="btn small bill-cov-cancel">ביטול</button>
+      </span>` : ''}`;
+
   const amountCellHtml = `
       <span class="p-val bill-amount-view">₪ ${amount.toLocaleString('he-IL')}
         ${hasOverride ? '<span class="badge override" title="סכום מותאם לחודש זה">מותאם</span>' : ''}
@@ -6766,6 +6972,10 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
     <div class="bill-amount-cell">
       <span class="p-label">${amountCellLabel}</span>
       ${amountCellHtml}
+    </div>
+    <div class="bill-cov-cell">
+      <span class="p-label">תקופת כיסוי</span>
+      ${coverageCellHtml}
     </div>
     <div>
       <span class="p-label">סטטוס</span>
@@ -6886,6 +7096,40 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
         return saveBillingOverride(payment, v);
       });
   }
+  /* Coverage-period editor wiring (present only when coverageEditable).
+   * Writes through savePayment() like every other payment edit — optimistic
+   * upsert, rollback + שמירת גבייה נכשלה on failure — so the period
+   * cannot be persisted by a path the rest of the app does not know about.
+   * Validation is the SHARED coveragePeriodError(); the server re-checks it. */
+  const covEditBtn = row.querySelector('.bill-cov-edit-btn');
+  if (covEditBtn) {
+    const covView  = row.querySelector('.bill-cov-view');
+    const covWrap  = row.querySelector('.bill-cov-edit');
+    const startIn  = row.querySelector('.bill-cov-start');
+    const endIn    = row.querySelector('.bill-cov-end');
+    covEditBtn.onclick = () => {
+      covView.classList.add('hidden');
+      covWrap.classList.remove('hidden');
+      if (startIn.focus) startIn.focus();
+    };
+    row.querySelector('.bill-cov-cancel').onclick = () => {
+      covWrap.classList.add('hidden');
+      covView.classList.remove('hidden');
+      // Discard the half-typed values — reopening must show what is stored.
+      startIn.value = covStart;
+      endIn.value = covEnd;
+    };
+    row.querySelector('.bill-cov-save').onclick = e =>
+      busyButton(e.currentTarget, 'save', () => saveCoveragePeriod(payment, startIn.value, endIn.value));
+  }
+  const covResetBtn = row.querySelector('.bill-cov-reset-btn');
+  if (covResetBtn) {
+    // Back to the billing cycle: clear the stored pair and let savePayment's
+    // withDefaultCoverage() re-stamp the inferred window.
+    covResetBtn.onclick = e =>
+      busyButton(e.currentTarget, 'save', () => saveCoveragePeriod(payment, '', ''));
+  }
+
   const amountClearBtn = row.querySelector('.bill-amount-clear-btn');
   if (amountClearBtn) {
     amountClearBtn.onclick = e =>
@@ -7215,7 +7459,12 @@ function buildMonthlyRevenue(opts) {
     if (!raw) return;
     const dueISO = isoDate(raw.dueDate);
     if (!dueISO) return;
-    const win = paymentCoverage({ dueDate: dueISO });
+    /* THE WHOLE ROW, not a { dueDate } stub: the stub threw away any recorded
+     * coverageStart/coverageEnd and re-inferred the cycle, which is exactly
+     * the assumption this screen now stops making. paymentCoverage() picks
+     * the recorded period when the row has one and infers when it does not,
+     * so this screen and the credits ledger read the identical window. */
+    const win = paymentCoverage(raw);
     if (!win) return;
 
     const p = applyBillingOverride(raw, overrides);
@@ -7234,6 +7483,10 @@ function buildMonthlyRevenue(opts) {
       dueDate: dueISO,
       coverageStart: isoFromLocalDate(win.start),
       coverageEnd: isoFromLocalDate(win.end),
+      /* 'recorded' — the row says what it covered; 'inferred' — the cycle was
+       * assumed from the due date. Reported, never used in the arithmetic. */
+      coverageWindowSource: win.source,
+      coverageAdjusted: coverageDiffersFromDefault(raw),
       billedAmount: billed,
       amountPaid: paid,
       overridden: !!billingOverrideFor(overrides, p.patientId, monthKey(dueISO)),
@@ -7311,6 +7564,9 @@ function buildMonthlyRevenue(opts) {
         status: '', dueDate: dueISO,
         coverageStart: isoFromLocalDate(win.start),
         coverageEnd: isoFromLocalDate(win.end),
+        // A projected cycle has no payment row, so there is nothing recorded
+        // to honour — inferred by construction, and said so.
+        coverageWindowSource: win.source, coverageAdjusted: false,
         billedAmount: contracted, amountPaid: 0,
         overridden: !!billingOverrideFor(overrides, key, monthKey(dueISO)),
         fullAmount: contracted, amountInMonth: a.amount,
@@ -7636,6 +7892,12 @@ function buildRevenueDetailRow(row, groupKey, sign) {
   // A per-month billing override is visible on the row it changed, so the
   // forecast never differs from the גבייה tab without saying why.
   if (row.overridden) chips += `<span class="rev-chip rev-chip-soft">סכום מותאם</span>`;
+  /* The period this row was allocated by was RECORDED and differs from the
+   * billing cycle. Without this chip the row's window would silently
+   * contradict the due date printed beside it, which is precisely the
+   * "money in the wrong month with no way to tell" this change exists to
+   * end — so the screen says which rows are not on their default cycle. */
+  if (row.coverageAdjusted) chips += `<span class="rev-chip rev-chip-soft">תקופה מותאמת</span>`;
 
   el.innerHTML = `
     <div><span class="p-label">מטופל</span><span class="p-name">${escapeHtml(row.patientName || '—')}</span>${chips}</div>
@@ -7648,9 +7910,21 @@ function buildRevenueDetailRow(row, groupKey, sign) {
   return el;
 }
 
-/* Upsert a payment record locally, then persist to the Payments sheet. */
+/* Upsert a payment record locally, then persist to the Payments sheet.
+ *
+ * THE ONE WRITE PATH for a payment row — the גבייה status/שולם בפועל
+ * controls, the חידוש renewal write and the coverage-period editor all
+ * funnel here, which is why the coverage default is stamped HERE and nowhere
+ * else: every payment written from today forward carries an explicit period,
+ * and a recorder who never looks at the field gets exactly the cycle that
+ * used to be inferred for it. The client-side refusal below mirrors
+ * coveragePeriodError_() in Code.gs — the server is the authority and
+ * re-validates every write; this only spares the user a round-trip. */
 async function savePayment(payment) {
   if (state.mode !== 'edit') return;
+  const covErr = coveragePeriodError(payment && payment.coverageStart, payment && payment.coverageEnd);
+  if (covErr) { showError(covErr); return; }
+  payment = withDefaultCoverage(payment);
   const idx = state.payments.findIndex(x => x.id === payment.id);
   const prev = idx >= 0 ? { ...state.payments[idx] } : null;
   if (idx >= 0) state.payments[idx] = payment;
@@ -7668,6 +7942,48 @@ async function savePayment(payment) {
     else state.payments = state.payments.filter(x => x.id !== payment.id);
     renderBilling();
     showError('שמירת גבייה נכשלה — ' + e.message);
+  }
+}
+
+/* Record what a payment ACTUALLY covered.
+ *
+ * Writes the two columns on the payment row itself — no override sheet, no
+ * second identity — through savePayment(), so this shares the optimistic
+ * upsert, the rollback and the error toast with every other payment edit.
+ * Blank/blank means "back to the billing cycle": savePayment() re-stamps the
+ * inferred window, so the row keeps an explicit period rather than reverting
+ * to a blank cell somebody would have to interpret later.
+ *
+ * The period is validated HERE (shared rule, immediate feedback) and AGAIN in
+ * upsertPayment_() on the server, which is the authority — a hand-built
+ * request never reaches the sheet unchecked. Only the two columns change:
+ * amount, status, amountPaid and balance ride through untouched, so this can
+ * never move money, only say which month it belongs to. */
+async function saveCoveragePeriod(payment, startISO, endISO) {
+  if (state.mode !== 'edit') return;
+  const start = String(startISO || '').trim();
+  const end   = String(endISO || '').trim();
+  const err = coveragePeriodError(start, end);
+  if (err) { showError(err); return; }
+  const updated = Object.assign({}, payment, {
+    coverageStart: start,
+    coverageEnd: end,
+    timestamp: new Date().toISOString(),
+  });
+  /* What the row must read back as if the write landed. A blank pair is not
+   * stored blank — withDefaultCoverage() stamps the inferred cycle — so the
+   * reset case expects that window, not ''. */
+  const stamped = withDefaultCoverage(updated);
+  const expectStart = isoDate(stamped.coverageStart);
+  const expectEnd   = isoDate(stamped.coverageEnd);
+
+  await savePayment(updated);
+  // savePayment() swallows its own failure (it rolls state back and shows
+  // שמירת גבייה נכשלה), so confirm only against what survived in state.
+  const live = state.payments.find(x => x && x.id === payment.id);
+  renderBilling();
+  if (live && isoDate(live.coverageStart) === expectStart && isoDate(live.coverageEnd) === expectEnd) {
+    showToast(start ? 'תקופת הכיסוי עודכנה' : 'תקופת הכיסוי הוחזרה למחזור החיוב');
   }
 }
 

@@ -366,6 +366,34 @@ overwrites the earlier at hoist time. `monthKey` had been declared twice for a
 long time; the copy that looked authoritative was dead code. A guard test now
 pins each shared date primitive to exactly one declaration in that file.
 
+### The coverage period is now RECORDED, not assumed (Dashboard, September 21, 2026)
+
+Contract point 1 above said a payment covers `[dueDate, dueDate + 1 month − 1
+day]`. In the Dashboard that was an **assumption** — the patient's entry
+day-of-month plus "one month paid in advance" — and nothing on the row recorded
+whether it was true.
+
+`PAYMENT_COLUMNS` now **appends** `coverageStart` / `coverageEnd`, so the period
+is an explicit fact on the payment row. Rules: `CHANGELOG-payment-coverage-period.md`.
+
+- **The cross-app contract is unchanged.** The window rule above is still the
+  DEFAULT, stamped onto every payment on write, so nothing in a consolidated
+  total moves. The ₪2,542 worked example is untouched and still asserted in
+  both apps.
+- **Where it comes from changed, not how it is used.** `paymentCoverage()` is
+  still the one shared primitive; it now answers from the recorded period when
+  the row has one and infers when it does not. Credits arithmetic and the
+  monthly view's arithmetic are byte-for-byte the same.
+- **Nothing was backfilled.** Historical rows carry blank cells and read
+  exactly as before, derived on read.
+- **A deliberately edited period is flagged on both screens** — a `מותאמת`
+  badge on the גבייה row, a `תקופה מותאמת` chip in the revenue drill-down — so
+  a row whose window disagrees with its due date always says so.
+- **Outpatient has not adopted this.** It stores a real `nextBillingDate` per
+  client and does not have the entry-day inference this fixes. If it ever does
+  gain a recorded period, the two must agree on the same default or contract
+  point 1 forks.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);

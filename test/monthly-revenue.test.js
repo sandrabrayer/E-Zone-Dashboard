@@ -57,6 +57,9 @@ function loadApp() {
       revenueBreakdownByHouse, isBillablePatient, REVENUE_NO_HOUSE,
       paymentCoverage, patientKey, paymentId, monthKey, isoDate, exVat,
       roundMoney, isoFromLocalDate, VAT_RATE,
+      // The credits ledger, so the no-fork guard can prove both consumers
+      // really do read the same window off the same row.
+      suggestCredits,
     };
   `;
   const noop = () => {};
@@ -603,6 +606,13 @@ test('H: every shared coverage-window primitive is declared EXACTLY ONCE in app.
     'paymentCoverage', 'localDateFromISO', 'isoFromLocalDate', 'diffWholeDays',
     'addMonthsClamped', 'addDays', 'roundMoney', 'monthKey', 'isoDate',
     'applyBillingOverride', 'billingOverrideFor', 'patientKey', 'exVat',
+    /* The recorded-coverage-period pieces. paymentCoverage() is now a CHOICE
+     * between a recorded period and an inferred one, so the three functions
+     * that choice is made of are shared primitives in their own right: a
+     * second copy of any of them is a second answer to "what did this
+     * payment cover", which is exactly the fork this guard exists to stop. */
+    'recordedCoverage', 'inferredCoverage', 'coveragePeriodError',
+    'coverageDateISO', 'coverageDiffersFromDefault', 'withDefaultCoverage',
   ];
   for (const name of shared) {
     const hits = APP.match(new RegExp('^function\\s+' + name + '\\s*\\(', 'gm')) || [];
@@ -613,7 +623,19 @@ test('H: every shared coverage-window primitive is declared EXACTLY ONCE in app.
 test('H: the monthly-revenue code REUSES those primitives rather than shadowing them', () => {
   // It calls the shared window function…
   const build_ = fnSource(APP, 'buildMonthlyRevenue');
-  assert.match(build_, /paymentCoverage\(\{ dueDate: dueISO \}\)/);
+  /* …and for a REAL payment row it hands over THE WHOLE ROW. A
+   * `{ dueDate }` stub would drop coverageStart/coverageEnd on the floor and
+   * silently re-infer the cycle — the row would say one thing and this
+   * screen would allocate by another. */
+  assert.match(build_, /const win = paymentCoverage\(raw\);/,
+    'the payments pass reads the window from the row itself');
+  assert.doesNotMatch(build_.slice(0, build_.indexOf('the projected half')),
+    /paymentCoverage\(\{ dueDate: dueISO \}\)/,
+    'no { dueDate } stub in the pass over stored payment rows');
+  /* The PROJECTED pass is the one legitimate stub: a projected cycle has no
+   * payment row, so there is nothing recorded to honour. */
+  assert.match(build_, /paymentCoverage\(\{ dueDate: dueISO \}\)/,
+    'projected cycles still infer, having no row to read');
   assert.match(build_, /applyBillingOverride\(raw, overrides\)/,
     'RECEIVED/EXPECTED read the effective amount, not the raw one');
   // …and its own helpers are named apart, so none can shadow a shared one.
@@ -627,6 +649,47 @@ test('H: the monthly-revenue code REUSES those primitives rather than shadowing 
   const mine = app.paymentCoverage({ dueDate: '2026-01-31' });
   assert.equal(app.isoFromLocalDate(mine.end), '2026-02-27',
     'Jan 31 + 1 month clamps to Feb 28, minus a day');
+  assert.equal(mine.source, 'inferred', 'a row with no recorded period infers');
+  // A RECORDED period overrules the inference — for every consumer at once,
+  // because they all come through this one function.
+  const rec = app.paymentCoverage({
+    dueDate: '2026-01-31', coverageStart: '2026-03-01', coverageEnd: '2026-03-31',
+  });
+  assert.equal(app.isoFromLocalDate(rec.start), '2026-03-01');
+  assert.equal(app.isoFromLocalDate(rec.end), '2026-03-31');
+  assert.equal(rec.source, 'recorded');
+});
+
+test('H: the credits ledger and the revenue screen read the SAME recorded period', () => {
+  /* THE POINT of the whole change: three consumers, one source of truth.
+   * A payment whose recorded period sits a month away from its due date must
+   * move BOTH the credit window and the revenue allocation, together — if
+   * one of them re-inferred, the two would disagree about which month owns
+   * the money and neither screen would say so. */
+  const p = patient({ name: 'רות', date: '2026-01-20', pay: 3100, houseId: 'ramot' });
+  const pay = Object.assign(
+    payment({ dueDate: '2026-01-20', amount: 3100, amountPaid: 3100, status: 'paid' }),
+    { id: 'p1', patientId: app.patientKey(p), houseId: 'ramot',
+      coverageStart: '2026-03-01', coverageEnd: '2026-03-31' });
+
+  // The revenue screen: not a shekel in January, the whole 3,100 in March.
+  const jan = build({ month: '2026-01', patients: [p], payments: [pay] });
+  assert.equal(jan.received.inclVat, 0, 'January owns none of it');
+  const mar = build({ month: '2026-03', patients: [p], payments: [pay] });
+  assert.equal(mar.received.inclVat, 3100, 'March owns all of it');
+  assert.equal(mar.received.rows[0].coverageStart, '2026-03-01');
+  assert.equal(mar.received.rows[0].coverageEnd, '2026-03-31');
+  assert.equal(mar.received.rows[0].coverageWindowSource, 'recorded');
+  assert.equal(mar.received.rows[0].coverageAdjusted, true);
+
+  // The credits ledger, on the very same row: a discharge on 10 Feb leaves
+  // the WHOLE March window unearned — prepaid_return, not a Jan/Feb prorata.
+  const credits = app.suggestCredits(p, '2026-02-10', [pay]);
+  const pre = credits.find((c) => c.creditType === 'prepaid_return');
+  assert.ok(pre, 'the March window is entirely after the exit');
+  assert.equal(pre.basis.coverageStart, '2026-03-01');
+  assert.equal(pre.basis.coverageEnd, '2026-03-31');
+  assert.equal(pre.basis.coverageWindowSource, 'recorded');
 });
 
 test('H: the dead monthKey twin is gone, and its removal is explained in place', () => {

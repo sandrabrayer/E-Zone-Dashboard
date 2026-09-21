@@ -110,6 +110,21 @@ Returns `{ ok: true, rows: [...] }`, sorted by month then houseId. Read-only,
 **same access model as `managersOverview`** — no new secret, no Script Property
 to set, no financial data.
 
+## Payments sheet — coverage-period columns
+
+The `Payments` sheet gained two APPENDED columns, `coverageStart` and
+`coverageEnd` (positions 11 and 12), recording the period a payment covers.
+Rules: `CHANGELOG-payment-coverage-period.md`.
+
+**No manual step is needed.** `getOrCreateSheet_` backfills the header and
+force-formats the two columns to plain text (`'@'`) on the first read after
+deploy, and blank cells are legal — a row without them reads as the inferred
+billing cycle, exactly as before. Nothing is written to existing rows.
+
+One thing to **not** do: never insert or reorder a Payments column.
+`readSheet_` maps by position, so a shift re-reads every historical row
+against the wrong field. New columns go at the end.
+
 ## Security
 
 - Credentials live **only** in GitHub Secrets — never committed, never printed;

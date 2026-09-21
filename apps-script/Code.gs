@@ -398,11 +398,34 @@ const DISCHARGED_PATIENT_COLUMNS = [
 
 /* Payments sheet columns. `id` is a deterministic per-patient-per-due-date
  * string built by the client (see paymentId() in app.js) so the same monthly
- * payment always upserts into the same row instead of creating duplicates. */
+ * payment always upserts into the same row instead of creating duplicates.
+ *
+ * APPEND-ONLY, same contract as LEAD_COLUMNS / CREDIT_COLUMNS: readSheet_
+ * maps by POSITION, so inserting or reordering a column silently re-reads
+ * every historical row against the wrong field. New columns go at the END.
+ *
+ * coverageStart / coverageEnd (appended) — the period the payment ACTUALLY
+ * covers, as 'YYYY-MM-DD' text. Until these existed the period was inferred
+ * from the due date plus "one month paid in advance", and nothing recorded
+ * whether that was true. They are written on every save from the client's
+ * default (the inferred cycle, so nothing changes) and editable when it was
+ * wrong. BLANK IS LEGAL and is what every pre-existing row carries: readers
+ * fall back to the inferred cycle (paymentCoverage() in app.js), so no old
+ * row is ever rewritten. Validated on write by coveragePeriodError_(). */
 const PAYMENT_COLUMNS = [
   'id', 'patientId', 'patientName', 'houseId', 'dueDate',
-  'amount', 'status', 'amountPaid', 'balance', 'timestamp'
+  'amount', 'status', 'amountPaid', 'balance', 'timestamp',
+  'coverageStart', 'coverageEnd'
 ];
+/* Longest period a single payment row may claim. Mirrors COVERAGE_MAX_DAYS in
+ * app.js. A mistyped year would otherwise swallow a year of allocation. */
+const COVERAGE_MAX_DAYS = 366;
+/* The two coverage columns are plain 'YYYY-MM-DD' text and must stay that
+ * way: a date-TYPED cell reads back as a Date, serializes as a UTC timestamp
+ * and drifts the day −1 for Israel — the exact exitDate bug, and here it
+ * would move money between months. Only the NEW columns are forced; the
+ * existing ones keep whatever format they already have. */
+const PAYMENT_TEXT_COLUMNS = ['coverageStart', 'coverageEnd'];
 
 /* BillingOverrides sheet columns. One row per (patientId, month); `id` is a
  * deterministic `ovr::<patientId>::<month>` string built by the client (see
@@ -774,6 +797,14 @@ function getOrCreateSheet_(name, headers) {
   // idempotent, so rows appended later inherit it.
   if (name === BILLING_OVERRIDES_SHEET) {
     forceColumnsText_(sh, BILLING_OVERRIDE_COLUMNS, ['month', 'amount']);
+  }
+  // Payments: the two APPENDED coverage columns only. They carry plain
+  // 'YYYY-MM-DD' strings that must never coerce into date-typed cells (the
+  // exitDate −1-day drift class — here it would move revenue between
+  // months). The pre-existing columns are deliberately left alone: changing
+  // a live column's format is a migration, not a guard.
+  if (name === PAYMENTS_SHEET) {
+    forceColumnsText_(sh, PAYMENT_COLUMNS, PAYMENT_TEXT_COLUMNS);
   }
   // Credits: allocationMonth ('YYYY-MM') must never coerce into a date; the
   // decided/payout/paid dates + ISO stamps are the same coercion class as droppedAt.
@@ -4335,6 +4366,97 @@ function deleteMeetingReport_(leadId) {
 
 /* ===== Payments ===== */
 
+/* Normalize a coverage-period cell to bare 'YYYY-MM-DD', or '' when it is
+ * blank / unusable. Accepts what the sheet or the client may hand over: a
+ * bare ISO date (kept verbatim), or a Date object / ISO timestamp, read by
+ * its LOCAL parts — never toISOString().slice(0,10), which lands a day early
+ * for Israel. Anything else is rejected by the caller, not silently coerced. */
+function coverageDateISO_(v) {
+  if (v === null || v === undefined || v === '') return '';
+  if (typeof v === 'string') {
+    var t = v.trim();
+    if (!t) return '';
+    var m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    // Shape is not enough: '2026-13-45' matches the pattern and would roll
+    // over into a different, valid-looking day. The parts must be a REAL
+    // calendar date — round-trip them through a local Date and insist the
+    // parts come back unchanged.
+    if (m) return isRealCalendarDate_(Number(m[1]), Number(m[2]), Number(m[3])) ? t : null;
+    /* A full ISO timestamp, and ONLY that. Handing an arbitrary string to
+     * `new Date()` would accept loose forms like '2026-1-5' whose parsing is
+     * engine-dependent — and the client mirror would reject them, forking
+     * the rule. Anything unrecognized is refused. */
+    if (!/^\d{4}-\d{2}-\d{2}T/.test(t)) return null;
+    var ts = new Date(t);
+    if (isNaN(ts.getTime())) return null;            // unusable — caller refuses
+    return localPartsISO_(ts);
+  }
+  // A Sheets date cell. A number, a boolean or an object is NOT a date and
+  // is refused rather than coerced (new Date(0) would read as 1970-01-01).
+  if (!(v instanceof Date)) return null;
+  if (isNaN(v.getTime())) return null;
+  return localPartsISO_(v);
+}
+
+/* A Date's LOCAL calendar day as 'YYYY-MM-DD' — never toISOString().slice(),
+ * which lands a day early for Israel. */
+function localPartsISO_(d) {
+  return d.getFullYear() + '-' +
+    ('0' + (d.getMonth() + 1)).slice(-2) + '-' +
+    ('0' + d.getDate()).slice(-2);
+}
+
+/* Do (y, m1, day) name a day that actually exists? Feb 30 and month 13 do
+ * not; Date rolls both over silently, so the parts are compared back. */
+function isRealCalendarDate_(y, m1, day) {
+  if (!(m1 >= 1 && m1 <= 12) || !(day >= 1 && day <= 31)) return false;
+  var d = new Date(y, m1 - 1, day);
+  return d.getFullYear() === y && d.getMonth() === m1 - 1 && d.getDate() === day;
+}
+
+/* SERVER-SIDE validation of a payment's recorded coverage period — the
+ * authority, mirroring coveragePeriodError() in app.js. The client checks the
+ * same rule for immediate feedback, but a hand-built POST bypasses the client
+ * entirely, so nothing reaches the Payments sheet without passing here.
+ *
+ * Returns '' when acceptable, otherwise the Hebrew reason, surfaced to the
+ * caller as { ok:false, error } — never swallowed, never "fixed" by writing
+ * a guessed period.
+ *
+ * REFUSED: a half-filled pair, a malformed date, an end before its start, a
+ * span longer than COVERAGE_MAX_DAYS.
+ * NOT REFUSED: a blank pair (means "use the inferred cycle" — what every
+ * historical row carries), and overlaps or gaps against OTHER rows, which
+ * are legitimate (two months paid at once, a skipped month, a re-dated
+ * cycle) and which the credits ledger already de-duplicates day by day. */
+function coveragePeriodError_(startRaw, endRaw) {
+  /* PRESENCE first, then validity — the same order as the client. Deciding
+   * "half-filled" from the PARSED value would report '' + 'garbage' as a
+   * malformed date on the server and as a missing date on the client, and
+   * the two messages must match (parity is asserted in
+   * test/payment-coverage-period.test.js). */
+  var rawS = (startRaw === null || startRaw === undefined) ? '' : String(startRaw).trim();
+  var rawE = (endRaw === null || endRaw === undefined) ? '' : String(endRaw).trim();
+  if (!rawS && !rawE) return '';
+  if (!rawS || !rawE) return 'יש למלא גם תאריך התחלה וגם תאריך סיום לתקופת הכיסוי';
+  var s = coverageDateISO_(startRaw);
+  var e = coverageDateISO_(endRaw);
+  if (!s || !e) return 'תאריך לא תקין בתקופת הכיסוי';
+  // Local-midnight Dates from the parts — never Date.parse, which reads a
+  // bare ISO date as UTC midnight.
+  var sp = s.split('-'), ep = e.split('-');
+  var ds = new Date(Number(sp[0]), Number(sp[1]) - 1, Number(sp[2]));
+  var de = new Date(Number(ep[0]), Number(ep[1]) - 1, Number(ep[2]));
+  if (isNaN(ds.getTime()) || isNaN(de.getTime())) return 'תאריך לא תקין בתקופת הכיסוי';
+  if (de.getTime() < ds.getTime()) return 'תאריך הסיום מוקדם מתאריך ההתחלה';
+  // Math.round absorbs the ±1h a DST switch injects between local midnights.
+  var days = Math.round((de.getTime() - ds.getTime()) / 86400000) + 1;
+  if (days > COVERAGE_MAX_DAYS) {
+    return 'תקופת כיסוי ארוכה מדי (' + days + ' ימים, המקסימום ' + COVERAGE_MAX_DAYS + ')';
+  }
+  return '';
+}
+
 function getPayments_() {
   const sh = getOrCreateSheet_(PAYMENTS_SHEET, PAYMENT_COLUMNS);
   return { ok: true, payments: readSheet_(sh, PAYMENT_COLUMNS) };
@@ -4354,6 +4476,23 @@ function upsertPayment_(payment) {
   if (!payment.id) {
     return { ok: false, error: 'missing_id' };
   }
+  /* Coverage period: validated BEFORE the lock is taken and before a single
+   * cell is touched, so a bad period is refused outright rather than
+   * half-written. The client validates the same rule, but this is the
+   * authority — savePayment is reachable by any caller holding the API key,
+   * and a wrong period here silently moves money between months on the
+   * הכנסות חודשיות screen. The reason is returned verbatim, not
+   * swallowed: the client surfaces it. */
+  const coverageError = coveragePeriodError_(payment.coverageStart, payment.coverageEnd);
+  if (coverageError) {
+    return { ok: false, error: coverageError };
+  }
+  /* Store the NORMALIZED pair, so a Date-typed cell or an ISO timestamp from
+   * any caller lands as the same bare 'YYYY-MM-DD' text every reader
+   * expects. A blank pair stays blank — it means "infer", and writing a
+   * guessed period would be exactly the assumption this column replaces. */
+  payment.coverageStart = coverageDateISO_(payment.coverageStart) || '';
+  payment.coverageEnd   = coverageDateISO_(payment.coverageEnd) || '';
 
   const lock = LockService.getScriptLock();
   lock.tryLock(10000);
