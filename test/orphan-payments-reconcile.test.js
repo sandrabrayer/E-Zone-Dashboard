@@ -810,8 +810,16 @@ test('column contracts unchanged: PATIENT_COLUMNS, PAYMENT_COLUMNS, PATIENT_TOMB
   assert.deepEqual(arr(code.PATIENT_COLUMNS), [
     'houseId', 'name', 'date', 'pay', 'adv', 'status', 'fromLead', 'exitDate', 'source', 'notes', 'id', 'updatedAt', 'updatedBy',
   ]);
-  assert.deepEqual(arr(code.PAYMENT_COLUMNS), [
+  /* APPEND-ONLY: the original ten columns keep their exact positions (readSheet_
+   * maps by position, so a shift re-reads every historical row against the wrong
+   * field) and coverageStart/coverageEnd were added at the END. */
+  const payCols = arr(code.PAYMENT_COLUMNS);
+  assert.deepEqual(payCols.slice(0, 10), [
     'id', 'patientId', 'patientName', 'houseId', 'dueDate', 'amount', 'status', 'amountPaid', 'balance', 'timestamp',
+  ], 'the original ten columns are unmoved');
+  assert.deepEqual(payCols, [
+    'id', 'patientId', 'patientName', 'houseId', 'dueDate', 'amount', 'status', 'amountPaid', 'balance', 'timestamp',
+    'coverageStart', 'coverageEnd',
   ]);
   assert.deepEqual(arr(code.PATIENT_TOMBSTONE_COLUMNS), [
     'houseId', 'name', 'date', 'pay', 'adv', 'status', 'fromLead', 'exitDate', 'source', 'notes',

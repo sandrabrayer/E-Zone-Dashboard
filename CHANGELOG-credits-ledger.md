@@ -9,7 +9,19 @@ reason), schedules the payout for the 15th, and keeps every decision —
 including a zero — as an auditable row.
 
 The Patients and Payments sheet structures are **not** modified. The
-Outpatient repo is untouched. Apps Script must be redeployed (New version →
+Outpatient repo is untouched.
+
+> **Later amendment — see `CHANGELOG-payment-coverage-period.md`.** The
+> Payments sheet has since gained two APPENDED columns (`coverageStart`,
+> `coverageEnd`) recording what a payment actually covered. Every coverage
+> window described below is now read through the same `paymentCoverage()`,
+> which prefers the recorded period and falls back to the
+> `[dueDate, dueDate + 1 month − 1 day]` rule for rows that carry none —
+> which is every row written before that change. **The credits arithmetic on
+> this page is unchanged**: same `amountPaid / 30` divisor, same
+> classification by where the window starts relative to the exit, same cap,
+> same overlapping-window de-duplication. Only where `[start, end]` comes from
+> changed, and `basis.coverageWindowSource` now records which it was. Apps Script must be redeployed (New version →
 Deploy) for the two new actions to exist; until then the client fails soft
 (empty ledger, everything else loads).
 

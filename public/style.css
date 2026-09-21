@@ -406,6 +406,21 @@ input:focus, select:focus, textarea:focus {
 .bill-amount-edit { display: inline-flex; align-items: center; gap: 6px; }
 .bill-amount-edit.hidden { display: none; }
 .bill-amount-input { width: 110px; }
+/* תקופת כיסוי — the recorded coverage period. Same affordances as the amount
+   editor above (pencil to open, ↩ to return to the billing cycle), so the two
+   editable facts on a payment row read as one pattern rather than two. */
+.bill-cov-view { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.bill-cov-edit-btn, .bill-cov-reset-btn {
+  background: none; border: none; cursor: pointer; padding: 0 2px;
+  font-size: 13px; line-height: 1; color: var(--text-muted);
+}
+.bill-cov-edit-btn:hover, .bill-cov-reset-btn:hover { color: var(--text); }
+/* Two dates side by side, שמור / ביטול beneath them — a 2×2 grid rather than
+   a wrapping flex row, so the editor keeps the same shape at every width
+   instead of reflowing into a ragged stack. */
+.bill-cov-edit { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.bill-cov-edit.hidden { display: none; }
+.bill-cov-start, .bill-cov-end { width: 100%; min-width: 0; font-size: 13px; }
 
 /* ===== Cards ===== */
 .cards-row {
@@ -1277,7 +1292,10 @@ input:focus, select:focus, textarea:focus {
   border-radius: var(--radius);
   padding: 14px 18px;
   display: grid;
-  grid-template-columns: 1.4fr 1fr 1fr 1.1fr 1.1fr 1fr;
+  /* מטופל · בית · סכום · תקופת כיסוי · סטטוס · שולם בפועל · יתרה.
+     The coverage cell is the widest of the middle columns: it prints two
+     ISO dates side by side and must not wrap mid-window. */
+  grid-template-columns: 1.2fr .85fr .95fr 2fr 1fr .95fr .85fr;
   align-items: center;
   gap: 12px;
   transition: border-color .15s;

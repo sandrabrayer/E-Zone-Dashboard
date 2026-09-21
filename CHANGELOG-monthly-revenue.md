@@ -28,6 +28,16 @@ separate question.
 
 ## The allocation rule
 
+> **Superseded in part — see `CHANGELOG-payment-coverage-period.md`.** The
+> window below is now the **default**, not the only answer. A payment row can
+> RECORD what it actually covered (`coverageStart` / `coverageEnd`), and
+> `paymentCoverage()` honours that when present. Rows written before that
+> change carry blank cells and still read exactly as described here, so every
+> figure and worked example on this page is unchanged. The pass over stored
+> payment rows in `buildMonthlyRevenue` now hands `paymentCoverage()` the whole
+> row rather than a `{ dueDate }` stub; the projected pass still uses the stub,
+> having no row to read.
+
 A payment's coverage window is `[dueDate, dueDate + 1 month − 1 day]` — the
 window `paymentCoverage()` already computes for credits. A window straddling a
 month boundary contributes to **both** months, split by the number of its days
