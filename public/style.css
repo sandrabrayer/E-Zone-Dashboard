@@ -79,6 +79,82 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 0 3px var(--primary-glow);
 }
 
+/* ---------------------------------------------------------------------------
+ * NATIVE DATE / MONTH PICKERS
+ *
+ * Every <input type="date"> and <input type="month"> in the app (the גבייה date,
+ * the הכנסות חודשיות month, the lead visit/created dates, the זיכויים
+ * month/decided/paid dates, the תקופת כיסוי start/end pair) sits on --surface,
+ * #182142.
+ * The browser draws its own calendar glyph for the UA's colour scheme, and with
+ * no `color-scheme` declared that scheme is LIGHT — so the glyph is painted
+ * near-black on a near-black field and is all but invisible. Measured in
+ * Chromium before this rule: the glyph's own pixels are #000000 against a
+ * #182142 field, a peak channel distance of 66. After it: #5b8bff, distance
+ * 189. (test/date-picker-icon-browser.test.js is where those numbers come from.)
+ *
+ * Two declarations, because they cover different engines:
+ *
+ *  1. `color-scheme: dark` tells the engine the control lives on a dark surface.
+ *     It is what fixes Firefox and the dropdown calendar panel itself (which is
+ *     UA-rendered and NOT stylable), and it is the fallback anywhere the
+ *     WebKit pseudo-element below is unsupported.
+ *
+ *  2. The ::-webkit-calendar-picker-indicator rule replaces the UA glyph outright
+ *     in Chromium/WebKit, so the icon is not merely legible but drawn in the same
+ *     accent blue the rest of these screens already use. It is MASKED rather than
+ *     recoloured with a filter: the glyph's paint is `background-color`, so it is
+ *     literally var(--primary) and keeps following the token instead of freezing
+ *     a hex into a filter matrix.
+ *
+ * Deliberately scoped to date/month rather than the bare pseudo-element:
+ * ::-webkit-calendar-picker-indicator also exists on <input list> (datalist), and
+ * this app must not repaint a dropdown arrow as a calendar. */
+input[type="date"],
+input[type="month"] {
+  color-scheme: dark;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="month"]::-webkit-calendar-picker-indicator {
+  /* The UA glyph is a background-image on this pseudo-element; drop it and paint
+     our own through the mask instead. */
+  background-image: none;
+  background-color: var(--primary);
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='5' width='18' height='16' rx='2'/%3E%3Cpath d='M3 10h18M8 3v4M16 3v4'/%3E%3C/svg%3E");
+          mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='5' width='18' height='16' rx='2'/%3E%3Cpath d='M3 10h18M8 3v4M16 3v4'/%3E%3C/svg%3E");
+  -webkit-mask-repeat: no-repeat;
+          mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+          mask-position: center;
+  -webkit-mask-size: 16px 16px;
+          mask-size: 16px 16px;
+  /* 18px box / 16px glyph: 18 is the width Chromium's own indicator occupies, so
+     replacing it costs the control exactly 0px — measured, the גבייה date field
+     stays 156px and the הכנסות חודשיות month field stays 176px. Sizing the box to
+     the glyph instead (16px) narrowed both by 2px for no gain. */
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  /* The UA fades its own glyph; ours is already a deliberate colour. */
+  opacity: 1;
+  cursor: pointer;
+  transition: background-color .15s;
+}
+
+/* Brighten on hover and while the field is focused — same "accent → --text"
+   lift the icon buttons on these screens use (.bill-cov-edit-btn:hover). */
+input[type="date"]:hover::-webkit-calendar-picker-indicator,
+input[type="month"]:hover::-webkit-calendar-picker-indicator,
+input[type="date"]:focus::-webkit-calendar-picker-indicator,
+input[type="month"]:focus::-webkit-calendar-picker-indicator {
+  background-color: var(--text);
+}
+
+/* No :disabled variant on purpose — Chromium hides the picker indicator entirely
+   on a disabled date/month field (verified), and the app never disables one
+   anyway: the billing row freeze disables a <select> and a number input. */
+
 .hidden { display: none !important; }
 
 .btn {

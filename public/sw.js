@@ -57,7 +57,14 @@
 // measured painting in 0 of ~90 frames. app.js now raises the page-level
 // banner for those four round-trips — evict v12 so no phone keeps serving a
 // bundle where they still look inert.
-var CACHE_VERSION = 'v13';
+// v13 → v14: the native date/month picker icon. style.css now declares
+// `color-scheme: dark` on every <input type="date"|"month"> and repaints the
+// WebKit calendar indicator in --primary, so the glyph is no longer drawn
+// near-black on the near-black field. style.css is the only file that changed
+// and it is the OFFLINE fallback on any device that installed v13 — evict it so
+// no phone keeps serving the copy where the גבייה / הכנסות חודשיות pickers still
+// have an invisible icon.
+var CACHE_VERSION = 'v14';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
