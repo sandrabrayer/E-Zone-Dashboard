@@ -496,7 +496,31 @@ const PAYMENT_COLUMNS = [
   'chargedAt', 'chargedBy', 'sourceUpdatedAt', 'sourceVersion',
   'linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt'
 ];
-const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient'];
+const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient', 'duplicate'];
+
+/* ===== VOID =====
+ * The status of a payment row that was entered TWICE — the patient renamed
+ * after the first entry, the first row detached, the money recorded again
+ * under the new name. THE ROW IS NEVER DELETED: it keeps its amount, its
+ * amountPaid and its dates as the only evidence that the money was entered
+ * twice rather than collected twice, and every figure in the client steps
+ * over it (isVoidPayment in app.js).
+ *
+ * It must be ALIASED, not merely allowed: paymentStatus_ maps an unknown
+ * status to 'unpaid', so a void row read back would silently un-void itself
+ * and re-enter the accounting feed as money owed. */
+const PAYMENT_VOID_STATUS = 'void';
+
+/* Who may UNDO a void. Marking a duplicate is ordinary daily work; unmarking
+ * one puts a second payment back into every revenue and debt figure, which is
+ * a money decision. The name comes from the SIGNED SESSION COOKIE via
+ * requestUser_ — never from the request body — so this is the authority and
+ * the client's matching list only decides whether to offer the control.
+ *
+ * NOTE: 'סנדרה' is not in SESSION_USERS today, so no current login can reverse
+ * a void. That is deliberate — the reversal is hers — and adding her as a
+ * session user is a separate decision about who may log in at all. */
+const PAYMENT_VOID_REVERSERS = ['סנדרה'];
 const PAYMENT_LINK_NOTE_MAX = 300;
 const PAYMENT_LINK_UID_MAX = 100;
 
@@ -537,7 +561,11 @@ const PAYMENT_STATUS_ALIASES_ = {
   'שולם': 'paid', 'paid': 'paid',
   'שולם חלקית': 'partial', 'partial': 'partial',
   'לא שולם': 'unpaid', 'unpaid': 'unpaid',
+  'מבוטל': PAYMENT_VOID_STATUS, 'void': PAYMENT_VOID_STATUS,
 };
+function isVoidStatus_(raw) {
+  return paymentStatus_(raw) === PAYMENT_VOID_STATUS;
+}
 function paymentStatus_(raw) {
   const t = String(raw == null ? '' : raw).trim();
   return PAYMENT_STATUS_ALIASES_[t] || PAYMENT_STATUS_ALIASES_[t.toLowerCase()] || 'unpaid';
@@ -4958,6 +4986,22 @@ function upsertPayment_(payment, user) {
   if (payment.linkStatus === 'linked' && !payment.linkPatientUid) {
     return { ok: false, error: 'שיוך ידני מחייב מזהה מטופל קבוע' };
   }
+  /* ---- the void, and the two things that may never be separated ----------
+   * A void row must carry the DECISION that voided it and the REASON for it.
+   * Refusing the pair here is what stops a status of 'void' ever appearing on
+   * the sheet with nothing behind it — which would read, a year from now,
+   * exactly like a row somebody mistyped. */
+  if (isVoidStatus_(payment.status) && payment.linkStatus !== 'duplicate') {
+    return { ok: false, error: 'ביטול שורה מחייב סימון ככפילות' };
+  }
+  if (payment.linkStatus === 'duplicate') {
+    if (!isVoidStatus_(payment.status)) {
+      return { ok: false, error: 'סימון ככפילות מחייב סטטוס מבוטל' };
+    }
+    if (!payment.linkNote) {
+      return { ok: false, error: 'יש לציין סיבה לסימון ככפילות' };
+    }
+  }
 
   /* The stamping user. NEVER params.user as the browser sent it: the Railway
    * proxy overwrites body.user from the SIGNED SESSION COOKIE on every
@@ -4991,13 +5035,25 @@ function upsertPayment_(payment, user) {
       }
     }
 
+    /* UN-VOIDING IS SANDRA'S ALONE. Checked HERE, against the row the sheet
+     * actually holds, and against the name in the SIGNED SESSION COOKIE — not
+     * against anything the caller sent. Marking a duplicate is daily work;
+     * unmarking one puts a second payment back into every revenue and debt
+     * figure, which is a money decision. Refused before a single cell moves. */
+    if (hadRow && isVoidStatus_(prev.status) && !isVoidStatus_(payment.status)
+        && PAYMENT_VOID_REVERSERS.indexOf(stampUser) < 0) {
+      return { ok: false, error: 'החזרת כפילות מותרת לסנדרה בלבד' };
+    }
+
     const out = stampPaymentRow_(payment, prev, hadRow, stampUser);
     const row = objectToRow_(out, PAYMENT_COLUMNS);
+    const unvoided = hadRow && isVoidStatus_(prev.status) && !isVoidStatus_(out.status);
 
     if (targetRow) {
       setPaymentRowTextCols_(sh, targetRow);
       sh.getRange(targetRow, 1, 1, PAYMENT_COLUMNS.length).setValues([row]);
       logPaymentLink_(out, prev, 'update');
+      if (unvoided) logPaymentVoidReversed_(out, prev, stampUser);
       return { ok: true, payment: out, updated: true };
     }
 
@@ -5172,6 +5228,26 @@ function stampPaymentRow_(payment, prev, hadRow, stampUser, now) {
       ? '' : prev.sourceVersion;
   }
   return out;
+}
+
+/* The reversal of a void gets its OWN audit row, not just the link row above:
+ * un-voiding is the rarer and more consequential of the two, and searching the
+ * log for it should not mean filtering a link decision by what it used to be.
+ * Fail-soft, like every logAudit_ caller. */
+function logPaymentVoidReversed_(out, prev, user) {
+  logAudit_('payment_void_reversed', 'upsertPayment_',
+    String(out.patientUid || ''), String(out.patientName || ''), {
+      paymentId: String(out.id || ''),
+      paymentUid: String(out.paymentUid || ''),
+      patientId: String(out.patientId || ''),
+      dueDate: String(out.dueDate || ''),
+      amount: out.amount,
+      amountPaid: out.amountPaid,
+      restoredStatus: String(out.status || ''),
+      previousNote: String((prev && prev.linkNote) || ''),
+      by: String(user == null ? '' : user),
+      at: israelTimestamp_(),
+    });
 }
 
 /* One AuditLog row per LINK DECISION — never for an ordinary payment save.
