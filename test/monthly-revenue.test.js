@@ -131,11 +131,20 @@ function credit(over) {
     calculatedAmount: 1000, amount: 1000, status: 'pending', basis: {},
   }, over || {});
 }
-/** Build a month with everything defaulted, so each test states only its point. */
+/** Build a month with everything defaulted, so each test states only its point.
+ *
+ * `recordsFrom` is pinned well before these fixtures on purpose. This suite is
+ * about the ALLOCATION — which day belongs to which month — and its January
+ * 2026 fixtures predate the records cutoff this app now ships
+ * (RECORDS_COMPLETE_FROM = '2026-07-01'), which would route every projected
+ * cycle here into the לפני תחילת הרישום bucket and test nothing about the
+ * arithmetic. The cutoff has its own suite, test/stay-window-records-cutoff.test.js,
+ * which exercises the real default AND pins that nothing in the app passes an
+ * override — so production can only ever read the constant. */
 function build(over) {
   return app.buildMonthlyRevenue(Object.assign({
     month: '2026-01', patients: [], payments: [], credits: [], overrides: [],
-    today: '2026-01-15',
+    today: '2026-01-15', recordsFrom: '2025-01-01',
   }, over || {}));
 }
 

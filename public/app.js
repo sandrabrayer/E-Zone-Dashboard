@@ -298,6 +298,43 @@ const BREAKEVEN_STORAGE_KEY = 'ezone-breakeven-v1';
  * at point of use in computeHouseMetrics rather than mutating the stored data. */
 const VAT_RATE = 1.18;
 
+/* ===== RECORDS CUTOFF =====
+ * The first date from which this app's payment records are COMPLETE.
+ *
+ * Payments were not entered here before July 2026: of the 27 patients admitted
+ * in June, not one has a first payment recorded. The cycles are real — the
+ * patients were in the house and the money was collected — but the ROWS were
+ * never created, so every screen that infers a cycle from a patient's entry
+ * day was reading that absence as unpaid debt and forecasting revenue that had
+ * already been earned and banked elsewhere.
+ *
+ * A cycle whose due date falls before this line is therefore neither EXPECTED
+ * nor DEBT. It is not hidden either — hiding it would be the same silent
+ * assumption in the other direction — it goes to its own bucket,
+ * "לפני תחילת הרישום", which no total sums.
+ *
+ * One constant, one date, deliberately configurable: when the historical rows
+ * are eventually backfilled, moving this line earlier is the whole migration.
+ * Bare 'YYYY-MM-DD', compared as a string against isoDate()-normalized dates —
+ * never parsed, so no timezone can move it. */
+const RECORDS_COMPLETE_FROM = '2026-07-01';
+
+/* Is this cycle's due date before the records cutoff? `dueISO` is normalized
+ * through isoDate() first: a date-typed sheet cell arrives as a UTC timestamp
+ * and a raw string compare would put 2026-07-01T21:00:00Z on the wrong side of
+ * the line — the same one-day drift this app has fixed in five other places.
+ *
+ * `from` overrides the constant. It exists for buildMonthlyRevenue(), which is
+ * a PURE function its tests drive over arbitrary months — a suite pinned to a
+ * calendar would otherwise start failing the day the cutoff moves. Nothing in
+ * the app passes it: every screen reads RECORDS_COMPLETE_FROM, and a guard
+ * test asserts renderMonthlyRevenue() hands over no override. */
+function isPreRecordsCycle(dueISO, from) {
+  const line = isoDate(from) || RECORDS_COMPLETE_FROM;
+  const d = isoDate(dueISO);
+  return !!d && d < line;
+}
+
 /* ===== API ===== */
 async function apiGet(params) {
   const qs = new URLSearchParams(params).toString();
@@ -6530,9 +6567,18 @@ function isoTime(v) {
   return '';
 }
 
+/* The day-of-month a billing cycle is anchored to.
+ *
+ * ROUTED THROUGH isoDate(). It used to slice the raw string, which is correct
+ * only for a value already stored as bare 'YYYY-MM-DD'. A date-TYPED sheet
+ * cell reaches the client as "2026-09-06T21:00:00.000Z"; slicing that gives
+ * day 6, while the calendar day in Israel is the 7th. The anchor would then be
+ * one day early for every such patient — and, because the whole billing
+ * schedule hangs off this number, so would every due date, every renewal and
+ * every inferred coverage window. isoDate() reads the LOCAL parts, which is
+ * the same rule every other date on this screen already goes through. */
 function dayOfMonth(iso) {
-  if (!iso) return null;
-  const parts = String(iso).slice(0, 10).split('-');
+  const parts = String(isoDate(iso) || '').split('-');
   if (parts.length < 3) return null;
   const day = parseInt(parts[2], 10);
   return isNaN(day) ? null : day;
@@ -6602,13 +6648,70 @@ function activePatients() {
   return state.patients.filter(p => p.status !== 'released');
 }
 
-function patientsDueOn(dateISO) {
+/* ===== THE STAY WINDOW =====
+ * ONE rule, shared by every screen that asks "was this patient in the house
+ * then": the daily גבייה list and its KPI cards, יתרות פתוחות, the old
+ * סיכום חודשי and הכנסות חודשיות.
+ *
+ * THE BUG IT CLOSES. Being due was decided by DAY-OF-MONTH alone. עמית
+ * בורנשטיין entered on 7.9.2026 and appeared on the גבייה list for 07/07/2026
+ * — two months before he arrived — along with ניר כהן, אבי משען, בן שלום,
+ * שחר חיון and גיל, every one of them a September admission showing on a July
+ * date. The day matched; nothing asked whether the stay did.
+ *
+ * Every date is normalized through isoDate() before it is compared. Comparing
+ * raw stored strings is how a date-typed cell's UTC timestamp lands on the
+ * wrong side of a boundary — a one-day drift that would move a patient's first
+ * or last cycle by a whole month at the edges. */
+
+/* The day a patient's stay ended, or '' while they are still in the house. */
+function patientExitISO(patient) {
+  return isoDate((patient && (patient.exitDate || patient.dischargedAt)) || '');
+}
+
+/* Did this patient's stay cover `dateISO`?
+ *   entryDate <= date  AND  (exitDate empty OR exitDate >= date)
+ *
+ * A released patient with NO exit date recorded is the one case the dates
+ * cannot answer. The conservative reading is taken — they are treated as no
+ * longer in the house — because status is then the only signal there is, and
+ * inventing a stay would re-create the very "billed for a period they were not
+ * here" this function exists to stop. */
+function patientStayCoversDate(patient, dateISO) {
+  const date = isoDate(dateISO);
+  if (!patient || !date) return false;
+  const entry = isoDate(patient.date);
+  if (!entry || entry > date) return false;
+  const exit = patientExitISO(patient);
+  if (exit) return exit >= date;
+  return isBillablePatient(patient);
+}
+
+/* Did the stay cover ANY day of [fromISO, toISO]? The month-level form of the
+ * rule above: a patient discharged in August was in the house in July, so
+ * their July cycles are July's business whatever their status reads today. */
+function patientStayOverlapsRange(patient, fromISO, toISO) {
+  const from = isoDate(fromISO), to = isoDate(toISO);
+  if (!patient || !from || !to) return false;
+  const entry = isoDate(patient.date);
+  if (!entry || entry > to) return false;
+  const exit = patientExitISO(patient);
+  if (exit) return exit >= from;
+  return isBillablePatient(patient);
+}
+
+/* A patient is due on a date when their billing anchor falls on it AND their
+ * stay covered it. Both halves, always — the day-of-month half alone is the
+ * bug above. */
+function patientDueOnDate(patient, dateISO) {
   const d = dayOfMonth(dateISO);
-  if (!d) return [];
-  return activePatients().filter(p => {
-    const pd = dayOfMonth(p.date);
-    return pd === d;
-  });
+  if (!d || !patientStayCoversDate(patient, dateISO)) return false;
+  return dayOfMonth(patient && patient.date) === d;
+}
+
+function patientsDueOn(dateISO) {
+  if (!dayOfMonth(dateISO)) return [];
+  return state.patients.filter(p => patientDueOnDate(p, dateISO));
 }
 
 /* ===== Renewal alert =====
@@ -6800,19 +6903,54 @@ function renderBilling() {
   const q = state.billingSearch;
   const due = dueAll.filter(d => billingRowMatchesQuery(d.patient, d.payment, q));
 
-  // KPI totals sum the payment records' EFFECTIVE amounts (override-aware via
-  // paymentForPatientOnDate) — previously totalDue summed the base pay directly,
-  // which would have ignored per-month overrides.
-  const totalDue       = due.reduce((s, d) => s + (d.payment.amount || 0), 0);
+  /* KPI totals sum the payment records' EFFECTIVE amounts (override-aware via
+   * paymentForPatientOnDate) — previously totalDue summed the base pay
+   * directly, which would have ignored per-month overrides.
+   *
+   * סך לגבייה is a DEBT figure, so a cycle before the records cutoff is left
+   * out of it: nobody entered payments here before RECORDS_COMPLETE_FROM, and
+   * counting those cycles as owed invents debt that was in fact collected and
+   * recorded elsewhere. The rows are still listed and still counted — they are
+   * real cycles — and a note under the cards says how many were excluded, so
+   * the difference between the list and the total is stated rather than left
+   * to be discovered.
+   *
+   * נגבה is NOT filtered: an amountPaid on a row is money somebody recorded,
+   * and money that arrived is money whatever the cutoff says about forecasts. */
+  const preRecordsDue  = due.filter(d => isPreRecordsCycle(selected));
+  const countableDue   = due.filter(d => !isPreRecordsCycle(selected));
+  const totalDue       = countableDue.reduce((s, d) => s + (d.payment.amount || 0), 0);
   const totalCollected = due.reduce((s, d) => s + (d.payment.amountPaid || 0), 0);
 
   document.getElementById('bill-due-count').textContent    = due.length;
   document.getElementById('bill-due-total').textContent    = '₪ ' + totalDue.toLocaleString('he-IL');
   document.getElementById('bill-due-collected').textContent = '₪ ' + totalCollected.toLocaleString('he-IL');
+  renderPreRecordsNote(preRecordsDue.length);
 
   renderBillingDueList(due, selected, dueAll.length);
   renderBillingOpenList(selected);
   renderBillingMonthlySummary(selected);
+}
+
+/* Says, under the גבייה KPI cards, that N cycles on this date predate the
+ * records cutoff and are therefore not in סך לגבייה. Built by the renderer
+ * (no static markup to drift), hidden at zero, and it names the date so the
+ * rule is legible rather than magic. */
+function renderPreRecordsNote(count) {
+  const cards = document.getElementById('bill-due-total');
+  const host = cards && cards.closest ? cards.closest('.cards-row') : null;
+  if (!host || !host.parentNode) return;
+  let el = document.getElementById('bill-pre-records-note');
+  if (!count) { if (el) el.remove(); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'bill-pre-records-note';
+    el.className = 'rev-basis-note pre-records-note';
+    host.parentNode.insertBefore(el, host.nextSibling);
+  }
+  el.innerHTML = `<b>לפני תחילת הרישום</b> — ${count} ${count === 1 ? 'מחזור' : 'מחזורים'} `
+    + `בתאריך זה קודמים ל־${escapeHtml(formatDate(RECORDS_COMPLETE_FROM))}, `
+    + `המועד שממנו רישום התשלומים במערכת מלא. הם מוצגים אך אינם נספרים כחוב.`;
 }
 
 function renderBillingDueList(due, selectedISO, unfilteredCount) {
@@ -6851,9 +6989,15 @@ function renderBillingOpenList(selectedISO) {
       return { patient, pay };
     });
 
-  const open = openAll.filter(o => billingRowMatchesQuery(o.patient, o.pay, state.billingSearch));
+  const matched = openAll.filter(o => billingRowMatchesQuery(o.patient, o.pay, state.billingSearch));
+  /* Cycles before the records cutoff are not debt (see RECORDS_COMPLETE_FROM).
+   * They are still LISTED — under their own heading, after the real balances —
+   * because a cycle that vanishes from every screen is indistinguishable from
+   * one that was never there. Nothing above this line sums them. */
+  const open = matched.filter(o => !isPreRecordsCycle(o.pay.dueDate));
+  const pre  = matched.filter(o => isPreRecordsCycle(o.pay.dueDate));
 
-  if (!open.length) {
+  if (!open.length && !pre.length) {
     const msg = openAll.length ? 'לא נמצאו תוצאות' : 'אין יתרות פתוחות מתאריכים קודמים';
     list.innerHTML = `<div class="card billing-empty">${msg}</div>`;
     return;
@@ -6861,6 +7005,16 @@ function renderBillingOpenList(selectedISO) {
   open.forEach(({ patient, pay }) => {
     list.appendChild(buildBillingRow(patient, pay, pay.dueDate, true));
   });
+  if (pre.length) {
+    const head = document.createElement('div');
+    head.className = 'rev-detail-head pre-records-head';
+    head.innerHTML = `<span>לפני תחילת הרישום — אינו נספר כחוב</span>`
+      + `<span>עד ${escapeHtml(formatDate(RECORDS_COMPLETE_FROM))}</span>`;
+    list.appendChild(head);
+    pre.forEach(({ patient, pay }) => {
+      list.appendChild(buildBillingRow(patient, pay, pay.dueDate, true));
+    });
+  }
 }
 
 function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
@@ -6873,6 +7027,19 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
    * Carry-forward rows keep their existing amber treatment (same warning
    * language) and are skipped here. */
   const isOverdue = !isCarryForward && payment.status === 'unpaid' && dueDateISO <= todayISO();
+  /* Two facts about the CYCLE rather than the money, both said on the row
+   * instead of silently changing a total somewhere else:
+   *   - before the records cutoff → not counted as debt (see
+   *     RECORDS_COMPLETE_FROM); the row is still shown, because the cycle was
+   *     real even though nobody entered a payment for it here;
+   *   - outside the patient's stay → the row should not exist at all. Rows
+   *     like this are the residue of the day-of-month-only due list that
+   *     patientDueOnDate now replaces: a recorded row is never hidden or
+   *     rewritten (it may be money somebody really took), it is FLAGGED so
+   *     Sandra can correct it. */
+  const preRecords = isPreRecordsCycle(dueDateISO);
+  const outsideStay = !!(patient && isoDate(patient.date))
+    && !patientStayCoversDate(patient, dueDateISO);
   row.className = 'billing-row' + (isCarryForward ? ' carry' : '') + (isOverdue ? ' overdue' : '');
   row.dataset.pid = payment.id;
 
@@ -6964,6 +7131,8 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
     <div>
       <span class="p-label">מטופל</span>
       <span class="p-name">${escapeHtml(patient.name || payment.patientName)}</span>
+      ${preRecords ? `<span class="badge pre-records" title="מחזור שקדם ל־${escapeHtml(formatDate(RECORDS_COMPLETE_FROM))} — רישום התשלומים במערכת אינו מלא לפני מועד זה, ולכן אינו נספר כחוב">לפני תחילת הרישום</span>` : ''}
+      ${outsideStay ? `<span class="badge warn" title="תאריך החיוב אינו בתוך תקופת השהות של המטופל (כניסה ${escapeHtml(formatDate(isoDate(patient.date)))}${patientExitISO(patient) ? ', שחרור ' + escapeHtml(formatDate(patientExitISO(patient))) : ''})">מחוץ לתקופת השהות</span>` : ''}
     </div>
     <div>
       <span class="p-label">בית</span>
@@ -7149,8 +7318,16 @@ function renderBillingMonthlySummary(selectedISO) {
   const thisMonth = state.payments
     .filter(p => monthKey(p.dueDate) === mk)
     .map(p => applyBillingOverride(p, state.billingOverrides));
+  /* יתרה is a DEBT figure, so it honours the records cutoff exactly as the
+   * גבייה KPI card does: a cycle before RECORDS_COMPLETE_FROM is not owed, it
+   * is unrecorded. נגבה is untouched — money that was entered arrived,
+   * whatever the cutoff says about what was NOT entered. RECORDS_COMPLETE_FROM
+   * is a month boundary, so a month is wholly on one side of it; the note
+   * below says so when the whole panel is on the earlier side. */
+  const preRecordsRows = thisMonth.filter(p => isPreRecordsCycle(p.dueDate));
+  const debtRows = thisMonth.filter(p => !isPreRecordsCycle(p.dueDate));
   const collected   = thisMonth.reduce((s, p) => s + (p.amountPaid || 0), 0);
-  const outstanding = thisMonth
+  const outstanding = debtRows
     .filter(p => p.status !== 'paid')
     .reduce((s, p) => s + (p.balance || 0), 0);
 
@@ -7163,7 +7340,8 @@ function renderBillingMonthlySummary(selectedISO) {
     const rows = thisMonth.filter(p => p.houseId === h.id);
     if (!rows.length) return;
     const col = rows.reduce((s, p) => s + (p.amountPaid || 0), 0);
-    const out = rows.filter(p => p.status !== 'paid').reduce((s, p) => s + (p.balance || 0), 0);
+    const out = rows.filter(p => p.status !== 'paid' && !isPreRecordsCycle(p.dueDate))
+      .reduce((s, p) => s + (p.balance || 0), 0);
     const line = document.createElement('div');
     line.className = 'bd-line';
     line.innerHTML = `
@@ -7175,6 +7353,14 @@ function renderBillingMonthlySummary(selectedISO) {
     `;
     breakdownEl.appendChild(line);
   });
+  if (preRecordsRows.length) {
+    const line = document.createElement('div');
+    line.className = 'bd-line muted pre-records-line';
+    line.innerHTML = `<span class="bd-house">לפני תחילת הרישום `
+      + `(${escapeHtml(formatDate(RECORDS_COMPLETE_FROM))})</span>`
+      + `<span class="bd-vals"><span class="rev-count">${preRecordsRows.length} שורות — לא נספרות ביתרה</span></span>`;
+    breakdownEl.appendChild(line);
+  }
   if (!breakdownEl.children.length) {
     breakdownEl.innerHTML = `<div class="bd-line muted">אין רישומי גבייה החודש</div>`;
   }
@@ -7441,6 +7627,10 @@ function buildMonthlyRevenue(opts) {
   const credits   = Array.isArray(opts.credits) ? opts.credits : [];
   const overrides = Array.isArray(opts.overrides) ? opts.overrides : [];
   const todayISOv = isoDate(opts.today) || isoFromLocalDate(new Date());
+  /* The records cutoff in force for this build. Defaults to the app-wide
+   * constant; see isPreRecordsCycle() for why it is overridable at all. */
+  const recordsFrom = isoDate(opts.recordsFrom) || RECORDS_COMPLETE_FROM;
+  const preRecords = dueISO => isPreRecordsCycle(dueISO, recordsFrom);
 
   const patientById = {};
   patients.forEach(p => { if (p) patientById[patientKey(p)] = p; });
@@ -7448,6 +7638,11 @@ function buildMonthlyRevenue(opts) {
   const receivedRows = [];
   const expectedRows = [];
   const creditRows   = [];
+  /* Cycles before RECORDS_COMPLETE_FROM. Their own array from the start, so
+   * there is no moment at which they are inside EXPECTED and have to be
+   * subtracted back out — a bucket you have to remember to exclude is a bucket
+   * that will eventually be included by accident. */
+  const preRecordsRows = [];
 
   /* --- RECEIVED, and the billed half of EXPECTED ------------------------
    * One pass over the payment rows. applyBillingOverride() supplies the
@@ -7532,7 +7727,16 @@ function buildMonthlyRevenue(opts) {
   });
 
   patients.forEach(patient => {
-    if (!isBillablePatient(patient)) return;
+    /* THE STAY WINDOW, not the current status. This pass used to start with
+     * isBillablePatient(), i.e. "is this patient active TODAY" — which silently
+     * erased a discharged patient's whole billing history: somebody discharged
+     * in August was in the house all July, and their July cycles are July's
+     * revenue no matter what their row says in September. projectedCycleDueDates
+     * already clips each cycle at entry and exit, and revenueAllocate()
+     * truncates a straddling cycle at the exit day, so the stay is respected
+     * day by day; what was missing was letting the patient into the pass at
+     * all. */
+    if (!patientStayOverlapsRange(patient, bounds.startISO, bounds.endISO)) return;
     const key = patientKey(patient);
     // The contracted rate, override-aware: the same effective amount the
     // גבייה tab would bill for that month, not the raw p.pay.
@@ -7552,12 +7756,18 @@ function buildMonthlyRevenue(opts) {
       const a = revenueAllocate(contracted, win, bounds, exitDay);
       if (!a.daysInMonth) return;
       const house = houseById(patient.houseId);
-      expectedRows.push({
+      /* A cycle before the records cutoff is not a forecast and not a debt —
+       * it is a gap in the RECORDS, not in the money. It goes to its own
+       * bucket, which no total sums, rather than being dropped: the cycle
+       * happened, and a screen that quietly omits it is making the same
+       * unstated assumption in the opposite direction. */
+      (preRecords(dueISO) ? preRecordsRows : expectedRows).push({
         /* A cycle still ahead of us is a forecast; one whose date has gone by
          * with no row is a recording gap wearing a forecast's clothes. Same
          * money, very different confidence — so they are named apart and the
          * UI flags the second in amber. */
-        kind: dueISO > todayISOv ? 'projected' : 'unbilled_past',
+        kind: preRecords(dueISO) ? 'pre_records'
+            : (dueISO > todayISOv ? 'projected' : 'unbilled_past'),
         paymentId: '', patientId: key, patientName: String(patient.name || ''),
         house: house ? house.name : REVENUE_NO_HOUSE,
         houseId: String(patient.houseId || ''),
@@ -7613,9 +7823,11 @@ function buildMonthlyRevenue(opts) {
   const received = revenueBucket(receivedRows);
   const expected = revenueBucket(expectedRows);
   const creditsB = revenueBucket(creditRows);
+  const preRecordsB = revenueBucket(preRecordsRows);
   const byKind = k => revenueBucket(expectedRows.filter(r => r.kind === k));
 
-  revenueSortRows(receivedRows); revenueSortRows(expectedRows); revenueSortRows(creditRows);
+  revenueSortRows(receivedRows); revenueSortRows(expectedRows);
+  revenueSortRows(creditRows); revenueSortRows(preRecordsRows);
 
   return {
     month: bounds.key,
@@ -7636,6 +7848,14 @@ function buildMonthlyRevenue(opts) {
       unbilledPast: byKind('unbilled_past'),
     }),
     credits: Object.assign(creditsB, { rows: creditRows }),
+
+    /* Cycles that fall before RECORDS_COMPLETE_FROM. Reported so the money is
+     * not forgotten, and summed into NOTHING: not EXPECTED, not NET, not the
+     * per-house breakdown. The bucket is the whole point — a figure you can
+     * see and choose to act on, rather than debt the screen asserts. */
+    preRecords: Object.assign(preRecordsB, {
+      rows: preRecordsRows, from: recordsFrom,
+    }),
 
     /* NET is the ONLY place received and expected meet, and it is a
      * projection by construction — never quote it as cash. */
@@ -7796,6 +8016,22 @@ function renderRevenueExpectedComposition(model) {
     `;
     el.appendChild(line);
   });
+  /* Named on the same panel, but outside the list above and outside every
+   * figure it adds up to: this is what the screen is NOT claiming. Stating it
+   * beside צפוי is the point — a bucket nobody ever sees is indistinguishable
+   * from data that was quietly dropped. */
+  if (model.preRecords && model.preRecords.count) {
+    const line = document.createElement('div');
+    line.className = 'bd-line pre-records-line';
+    line.innerHTML = `
+      <span class="bd-house">לפני תחילת הרישום <span class="rev-count">(לא נכלל בצפוי ובנטו)</span></span>
+      <span class="bd-vals">
+        <span class="bd-muted">${revMoney(model.preRecords.exVat)}</span>
+        <span class="rev-count">${model.preRecords.count} שורות</span>
+      </span>
+    `;
+    el.appendChild(line);
+  }
   if (!el.children.length) {
     el.innerHTML = `<div class="bd-line muted">אין הכנסה צפויה בחודש זה</div>`;
   }
@@ -7831,6 +8067,7 @@ const REVENUE_KIND_LABELS = {
   billed_unpaid: 'חויב וטרם נגבה',
   projected: 'טרם חויב — מחזור עתידי',
   unbilled_past: 'מחזור שחלף ללא רישום תשלום',
+  pre_records: 'לפני תחילת הרישום',
 };
 
 /* Drill-down: every payment, and WHICH PORTION of it landed in this month.
@@ -7847,6 +8084,14 @@ function renderRevenueDetail(model) {
     { key: 'received', title: 'נגבה בפועל', rows: model.received.rows.filter(match), sign: '' },
     { key: 'expected', title: 'צפוי',        rows: model.expected.rows.filter(match), sign: '' },
     { key: 'credits',  title: 'זיכויים',     rows: model.credits.rows.filter(match),  sign: '−' },
+    /* Listed last, and its heading says the rule rather than a total, because
+     * the figure beside a group heading everywhere else on this screen IS part
+     * of a total and this one is not. */
+    {
+      key: 'preRecords',
+      title: `לפני תחילת הרישום — לא נספר (עד ${formatDate(RECORDS_COMPLETE_FROM)})`,
+      rows: (model.preRecords ? model.preRecords.rows : []).filter(match), sign: '',
+    },
   ];
   let any = false;
   groups.forEach(g => {
@@ -7860,7 +8105,8 @@ function renderRevenueDetail(model) {
     g.rows.forEach(r => list.appendChild(buildRevenueDetailRow(r, g.key, g.sign)));
   });
   if (!any) {
-    const msg = (model.received.count || model.expected.count || model.credits.count)
+    const msg = (model.received.count || model.expected.count || model.credits.count
+                 || (model.preRecords && model.preRecords.count))
       ? 'לא נמצאו תוצאות'
       : 'אין תנועות בחודש זה';
     list.innerHTML = `<div class="card billing-empty">${msg}</div>`;
@@ -7870,14 +8116,15 @@ function renderRevenueDetail(model) {
 function buildRevenueDetailRow(row, groupKey, sign) {
   const el = document.createElement('div');
   el.className = 'billing-row rev-detail-row'
-    + (row.kind === 'unbilled_past' ? ' rev-warn' : '');
+    + (row.kind === 'unbilled_past' ? ' rev-warn' : '')
+    + (row.kind === 'pre_records' ? ' rev-pre-records' : '');
 
   const windowText = `${row.coverageStart} → ${row.coverageEnd}`;
   // The split, shown as the fraction it is: 12 מתוך 31 ימים.
   const daysText = `${row.daysInMonth} מתוך ${row.windowDays} ימים`;
 
   let chips = '';
-  if (groupKey === 'expected' && REVENUE_KIND_LABELS[row.kind]) {
+  if ((groupKey === 'expected' || groupKey === 'preRecords') && REVENUE_KIND_LABELS[row.kind]) {
     chips += `<span class="rev-chip">${escapeHtml(REVENUE_KIND_LABELS[row.kind])}</span>`;
   }
   if (groupKey === 'credits') {

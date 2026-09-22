@@ -164,7 +164,14 @@ test('the monthly revenue screen renders the four figures in Chromium', { skip }
   }
 });
 
-test('February shows cash and forecast as two distinct figures', { skip }, async () => {
+/* A month that carries cash from the previous cycle AND a forecast for its own.
+ *
+ * Dated AFTER the records cutoff (RECORDS_COMPLETE_FROM = '2026-07-01') on
+ * purpose: a forecast is exactly what the cutoff suppresses, so a fixture in
+ * January 2026 would be testing the cutoff rather than the two-figures rule.
+ * August 2026 is the same shape the January fixture used to be — a paid cycle
+ * spilling in from the month before, and an unrecorded cycle of its own. */
+test('a month shows cash and forecast as two distinct figures', { skip }, async () => {
   const { server, port } = await serve();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
@@ -172,13 +179,19 @@ test('February shows cash and forecast as two distinct figures', { skip }, async
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e)));
     await openSeeded(page, port);
-    await page.evaluate(`state.revenueMonth = '2026-02'; renderMonthlyRevenue();`);
+    await page.evaluate(`
+      const K = patientKey(state.patients[0]);
+      state.payments = [{ id: 'c', patientId: K, patientName: 'דנה כהן', houseId: 'arfoni',
+        dueDate: '2026-07-20', amount: 3000, amountPaid: 3000, status: 'paid', balance: 0 }];
+      state.revenueMonth = '2026-08';
+      renderMonthlyRevenue();
+    `);
 
     const num = async (sel) => Number((await page.$eval(sel, (el) => el.textContent)).replace(/[^\d]/g, ''));
     const received = await num('#rev-received');
     const expected = await num('#rev-expected');
-    assert.ok(received > 0, 'February carries cash from the January cycle');
-    assert.ok(expected > 0, 'and a forecast for the February one');
+    assert.ok(received > 0, 'August carries cash from the July cycle');
+    assert.ok(expected > 0, 'and a forecast for the August one');
     assert.notStrictEqual(received, expected, 'they are different figures');
     // They are never printed as one number: NET is the only place they meet,
     // and it is labelled a projection right under the card.
