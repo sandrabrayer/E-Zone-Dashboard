@@ -26,7 +26,6 @@ function loadApp() {
       hebrewWeekday,
       houseDisplayName,
       meetingInviteWaUrl,
-      // formatDateDDMMYYYY was folded into the one formatter, formatDateHe.
       formatDateHe,
       normalizePhone,
     };

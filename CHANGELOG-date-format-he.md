@@ -175,13 +175,44 @@ it without re-escaping. Its escaping is asserted directly, including an
 | file | why |
 |---|---|
 | `test/meeting-whatsapp-invites.test.js` | exported `formatDateDDMMYYYY` by name; now exports `formatDateHe` (assertions unchanged — the output was already `DD/MM/YYYY`) |
-| `test/meetings-polish.test.js` | same, via its epilogue alias |
+| `test/meetings-polish.test.js` | same — the epilogue alias and both call sites now use `formatDateHe` directly |
 | `test/payment-coverage-period.test.js` | the escaping guard asserted `escapeHtml(covText)`; now asserts the window comes from `dateRangeHeHtml` **and** that no raw ISO reaches the markup outside an `input value=` |
 | `test/monthly-revenue.test.js` | same guard, same treatment, for `windowHtml` |
 | `test/payment-coverage-period-browser.test.js` | real-Chromium assertions on the rendered window: `20/01/2026 – 19/02/2026`, **two `<bdi>` elements**, and the **first one in source order is the start date**. The POSTed payload assertions (`coverageStart: '2026-01-20'`) are untouched — that is what proves this is display-only. |
 | `test/monthly-revenue-browser.test.js` | the drill-down window, plus a new assertion that **no `YYYY-MM-DD` appears anywhere on the screen** |
 | `test/stay-window-records-cutoff-browser.test.js` | the pre-records note now names `01/07/2026` instead of `1.7.2026` |
 | `test/sw-install-fix.test.js` | its two `v15` pins were version-specific; now version-agnostic (`≥ v15`, name derived from the version), so a routine bump no longer breaks them |
+
+### Pre-merge review
+
+Three checks before merge, each with a change behind it:
+
+1. **`git grep -n "formatDateDDMMYYYY" -- ':!CHANGELOG*'` must be empty.** It
+   was not: `test/meetings-polish.test.js` still aliased the deleted name in
+   its epilogue (`formatDateDDMMYYYY: (v) => formatDateHe(v)`) and called it
+   twice, and two explanatory comments mentioned it. All five references are
+   gone — the epilogue now exports `formatDateHe` and the two call sites use
+   it directly. The grep is now empty (exit 1).
+
+2. **Every value `dateRangeHeHtml` interpolates goes through `escapeHtml`.**
+   Confirmed by reading the helper and now pinned two ways: a test that walks
+   every `${…}` in the helper's source and asserts each contains
+   `escapeHtml(`, and a payload test below.
+
+3. **The escaping test now uses `<img src=x onerror=alert(1)>` on BOTH sides
+   at once**, so neither position can be the one that leaks, plus each side
+   alone and the single-date branch. It asserts the output contains no
+   `<img`, that the payload appears escaped **twice**, and — a tag census —
+   that the only tags in the output are the two `<bdi>` pairs the helper
+   writes itself:
+
+   ```js
+   assert.deepEqual(both.match(/<[^>]+>/g), ['<bdi>', '</bdi>', '<bdi>', '</bdi>']);
+   ```
+
+   The payload's *characters* do survive as text (`&lt;img src=x
+   onerror=alert(1)&gt;`) — that is correct and harmless: with `<` and `>`
+   escaped it can never become a tag or an attribute.
 
 ### Full suite
 

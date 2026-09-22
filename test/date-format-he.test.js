@@ -184,10 +184,38 @@ test('C: a half-blank range renders the one date it has; fully blank renders not
 });
 
 test('C: a range escapes an unparseable value rather than injecting it', () => {
-  const html = app.dateRangeHeHtml('<img src=x onerror=alert(1)>', '2026-10-21');
-  assert.ok(!html.includes('<img'), 'markup must not survive: ' + html);
-  assert.match(html, /&lt;img/);
+  const PAYLOAD = '<img src=x onerror=alert(1)>';
+
+  /* BOTH sides at once — each date must pass through escapeHtml on its own,
+   * so neither position can be the one that leaks. */
+  const both = app.dateRangeHeHtml(PAYLOAD, PAYLOAD);
+  assert.ok(!both.includes('<img'), 'markup must not survive: ' + both);
+  /* The payload's CHARACTERS survive as text — that is correct and harmless:
+   * with < and > escaped it can never become a tag or an attribute. What must
+   * not survive is the MARKUP, asserted above and by the tag census below. */
+  assert.equal((both.match(/&lt;img src=x onerror=alert\(1\)&gt;/g) || []).length, 2,
+    'both dates are escaped, not just one: ' + both);
+  // The only tags left are the two <bdi> wrappers this helper writes itself.
+  assert.deepEqual(both.match(/<[^>]+>/g), ['<bdi>', '</bdi>', '<bdi>', '</bdi>']);
+
+  // …and each side alone.
+  for (const html of [app.dateRangeHeHtml(PAYLOAD, '2026-10-21'),
+                      app.dateRangeHeHtml('2026-09-22', PAYLOAD)]) {
+    assert.ok(!html.includes('<img'), 'markup must not survive: ' + html);
+    assert.match(html, /&lt;img/);
+  }
+  // The single-date branch (one side blank) escapes too.
+  const lone = app.dateRangeHeHtml(PAYLOAD, '');
+  assert.ok(!lone.includes('<img'), 'markup must not survive: ' + lone);
+  assert.match(lone, /^<bdi>&lt;img/);
+
   assert.equal(app.escapeHtml('<b>'), '&lt;b&gt;');
+  // Every value the helper interpolates goes through escapeHtml in the source.
+  const src = APP_SRC.slice(APP_SRC.indexOf('function dateRangeHeHtml('));
+  const body = src.slice(0, src.indexOf('\n}') + 2);
+  (body.match(/\$\{[^}]*\}/g) || []).forEach((expr) => {
+    assert.match(expr, /escapeHtml\(/, 'unescaped interpolation in dateRangeHeHtml: ' + expr);
+  });
 });
 
 test('C: both range call sites dropped dir="ltr" — the isolation is per-date now', () => {
