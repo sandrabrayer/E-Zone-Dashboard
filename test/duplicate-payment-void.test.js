@@ -468,7 +468,10 @@ test('E: the note names the original, so the pair survives this screen', () => {
   const note = app.duplicateVoidNote(dupe(), original(), patient());
   assert.match(note, /כפילות של pay::arfoni::עמית בורנשטיין::2026-09-07::2026-09-07/);
   assert.match(note, /עמית בורנשטיין/);
-  assert.match(note, /7\.9\.2026/);
+  /* DD/MM/YYYY — the app-wide people-facing format (PR #143). The note is
+   * read by a person, so it follows the same rule as every other date on
+   * screen; the row IDS beside it keep their ISO, because those are keys. */
+  assert.match(note, /07\/09\/2026/);
   assert.match(note, /30,000/);
 });
 
