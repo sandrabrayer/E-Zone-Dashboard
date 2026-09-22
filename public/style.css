@@ -1241,6 +1241,17 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
 .badge.trial    { background: rgba(255,176,32,.18); color: #ffc55a; border-color: rgba(255,176,32,.45); }
 .badge.wait     { background: rgba(151,163,191,.18); color: #c0cae3; border-color: rgba(151,163,191,.40); }
 .badge.released { background: rgba(255,77,94,.18); color: #ff8b96; border-color: rgba(255,77,94,.45); }
+/* לפני תחילת הרישום — a cycle before RECORDS_COMPLETE_FROM. Deliberately
+   NEUTRAL, not a warning: nobody did anything wrong, the app simply was not
+   keeping payment records yet. It is toned down so it reads as context rather
+   than as a problem to chase. */
+.badge.pre-records {
+  background: var(--surface-3); color: var(--text-muted); border-color: var(--border-strong);
+}
+/* מחוץ לתקופת השהות — a recorded row whose due date sits outside the patient's
+   stay. This one IS a problem: amber, the same warning language carry and
+   overdue rows use. */
+.badge.warn { background: rgba(255,176,32,.18); color: #ffc55a; border-color: rgba(255,176,32,.45); }
 
 .row-actions { display: flex; gap: 6px; }
 
@@ -1400,6 +1411,18 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
 .billing-row .billing-status,
 .billing-row .billing-paid { width: 100%; font-size: 13.5px; }
 .billing-row .billing-balance { color: var(--warning); }
+
+/* ===== RECORDS CUTOFF (לפני תחילת הרישום) =====
+   Everything that says "this is shown but not counted" shares one muted
+   treatment, so the rule reads the same on all four screens it touches. */
+.pre-records-note { border-right: 3px solid var(--border-strong); }
+.rev-detail-head.pre-records-head { color: var(--text-muted); opacity: .9; }
+.bd-line.pre-records-line .bd-house { color: var(--text-muted); }
+.bd-line .bd-muted { color: var(--text-muted); font-weight: 600; }
+/* A pre-records row in the drill-down: legible, but visibly not part of a
+   total. Muted rather than amber — unbilled_past (rev-warn) means "somebody
+   should have recorded this"; this means "the app was not recording yet". */
+.billing-row.rev-pre-records { opacity: .72; border-style: dashed; }
 
 .stat-breakdown {
   margin-top: 6px;
