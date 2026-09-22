@@ -394,6 +394,50 @@ is an explicit fact on the payment row. Rules: `CHANGELOG-payment-coverage-perio
   gain a recorded period, the two must agree on the same default or contract
   point 1 forks.
 
+## Dashboard → accounting app: a read-only source feed (September 22, 2026)
+
+An external **accounting-control app** reconciles what Vered reported as
+collected against what actually reached the bank. Dashboard is the SOURCE and
+holds **no accounting state** — no confirmation flag, no queue, no invoice.
+Vered's workflow is unchanged: she marks a payment paid, and Ortal verifies it
+in the accounting app. Full contract: `CHANGELOG-accounting-source-feed.md`.
+
+- **Stable keys.** `PAYMENT_COLUMNS` appends `paymentUid` (`pmt-<uuid>`, minted
+  once and permanent), `patientUid` (the persisted Patients `id`, joined on the
+  exact billing triple — never by name; ambiguous or unresolved stays blank) and
+  a nullable `payerUid`. `CREDIT_COLUMNS` appends `creditUid`. Backfilled under
+  the script lock with the `backfillPatientIdsLocked_` pattern: idempotent,
+  zero writes and no lock at rest. **The existing `id` schemes are unchanged** —
+  billing overrides and the reconcile still key on them.
+- **`payerUid` is ALWAYS NULL.** Dashboard has no payer / billing-party entity;
+  nothing records who actually pays. The accounting app needs its own explicit
+  crosswalk from `patientUid` → billing party. Payer identity is never inferred
+  from a name.
+- **Charge stamp.** `chargedAt` / `chargedBy` are server-owned, Israel time with
+  an explicit offset, from the SIGNED SESSION COOKIE (the who/when rule).
+  **`chargedAt` means "reported paid by Vered", NOT "confirmed in the bank".**
+  Re-stamped when `amountPaid` moves; **historical rows stay blank and no stamp
+  is ever derived**; reads never stamp.
+- **Endpoint.** Two READ-ONLY actions on the existing Dashboard `/exec`:
+  `accountingPayments` and `accountingCredits`, behind their OWN Script
+  Property **`ACCOUNTING_SECRET`** (separate from `ADMITTED_ROSTER_SECRET` /
+  `MEETING_REPORT_SECRET`, fail-closed, no write action reachable). Incremental
+  via `updatedSince` + an opaque `cursor`, `limit` ≤ 500. Amounts stay
+  VAT-INCLUSIVE — do not convert twice. **No clinical data**: the projection is
+  an allow-list and drops even the credits' free-text fields.
+- **Historical flood guard.** Rows never written since the contract shipped come
+  back `historical: true` with `sourceUpdatedAt: null`, and an incremental read
+  excludes them by construction. At activation: one full sync → import
+  `historical` rows straight to settled, record `serverTime` as the watermark,
+  then poll with `updatedSince`.
+- **Deletions.** A new `PaymentsTombstones` sheet records the repo's only
+  payment-delete path (the orphan-reconcile stray-twin removal) and the feed
+  serves them; the recovery copy of the row is never served.
+- `server.js`, `public/app.js` and the client are untouched. Known pre-existing
+  limitation, deliberately not changed: the web app is `ANYONE_ANONYMOUS`, so
+  the `/exec` URL already reaches the write actions — a separate read-only
+  deployment is the proper fix and is follow-up work.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);
@@ -406,7 +450,9 @@ is an explicit fact on the payment row. Rules: `CHANGELOG-payment-coverage-perio
   both outpatient+therapists), CREATE_LEAD_SECRET (outpatient — set it to
   enable Dashboard→Outpatient lead handoff), DEBT_STATUS_SECRET,
   TREATMENT_PLANS_SECRET, OCCUPANCY_SECRET, OUTPATIENT_LEAD_SECRET,
-  WINBACK_SOURCE_SECRET, APP_PIN (Railway; Logistics uses SHARED_ACCESS_CODE —
+  WINBACK_SOURCE_SECRET, ACCOUNTING_SECRET (Dashboard — unlocks ONLY the
+  read-only accountingPayments / accountingCredits feed; see the Sep 22 section
+  above), APP_PIN (Railway; Logistics uses SHARED_ACCESS_CODE —
   its shared login code, which replaced APP_PIN there). Coordinators' staffing
   pair (STAFFING_SHEETS_URL / STAFFING_GUIDES_SECRET) and staffing's
   COORDINATORS_READ_SECRET: see the Sep 10 coordinators section above.

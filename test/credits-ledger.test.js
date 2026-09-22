@@ -142,11 +142,15 @@ function auditOf(code, sandbox) {
   return sh ? code.readSheet(sh, arr(code.AUDIT_LOG_COLUMNS)) : [];
 }
 
+/* APPEND-ONLY: `creditUid` was appended at the END for the accounting
+ * source-feed contract (CHANGELOG-accounting-source-feed.md). The 24 original
+ * columns keep their exact positions — readSheet_ maps by position. */
 const EXPECTED_COLUMNS = [
   'id', 'patientId', 'patientKey', 'patientName', 'houseId', 'facilityType', 'creditType',
   'allocationMonth', 'calculatedAmount', 'amount', 'overrideReason', 'reason',
   'approvedBy', 'decidedDate', 'payoutDate', 'status', 'paidDate', 'method', 'notes',
   'basis', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
+  'creditUid',
 ];
 const FACILITY_MAP = { asher: 'residential', ramot: 'residential', rehab: 'detox_dual', pardes: 'detox_dual', arfoni: 'detox_dual', sde: 'detox_dual' };
 const PID = 'id-sara-7f3';
@@ -160,10 +164,13 @@ const BASE = {
 
 /* ===== A. schema + sheet ensure ===== */
 
-test('CREDIT_COLUMNS order is PINNED — 24 columns, both identity keys, stamps last; facility map covers the six house ids', () => {
+test('CREDIT_COLUMNS order is PINNED — the original 24 unmoved, creditUid appended; facility map covers the six house ids', () => {
   const { code } = loadCode();
   assert.deepStrictEqual(arr(code.CREDIT_COLUMNS), EXPECTED_COLUMNS);
-  assert.strictEqual(code.CREDIT_COLUMNS.length, 24);
+  assert.deepStrictEqual(arr(code.CREDIT_COLUMNS).slice(0, 24), EXPECTED_COLUMNS.slice(0, 24),
+    'position IS the data contract — the original 24 are untouched');
+  assert.strictEqual(code.CREDIT_COLUMNS.length, 25);
+  assert.strictEqual(code.CREDIT_COLUMNS[24], 'creditUid');
   assert.deepStrictEqual(plain(code.FACILITY_TYPE_BY_HOUSE), FACILITY_MAP);
   assert.strictEqual(code.facilityTypeFor('asher'), 'residential');
   assert.strictEqual(code.facilityTypeFor('sde'), 'detox_dual');

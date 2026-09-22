@@ -820,6 +820,10 @@ test('column contracts unchanged: PATIENT_COLUMNS, PAYMENT_COLUMNS, PATIENT_TOMB
   assert.deepEqual(payCols, [
     'id', 'patientId', 'patientName', 'houseId', 'dueDate', 'amount', 'status', 'amountPaid', 'balance', 'timestamp',
     'coverageStart', 'coverageEnd',
+    // Appended for the accounting source feed — again at the END, again
+    // moving nothing (CHANGELOG-accounting-source-feed.md).
+    'paymentUid', 'patientUid', 'payerUid',
+    'chargedAt', 'chargedBy', 'sourceUpdatedAt', 'sourceVersion',
   ]);
   assert.deepEqual(arr(code.PATIENT_TOMBSTONE_COLUMNS), [
     'houseId', 'name', 'date', 'pay', 'adv', 'status', 'fromLead', 'exitDate', 'source', 'notes',
