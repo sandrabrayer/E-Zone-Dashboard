@@ -69,7 +69,10 @@
 // handler below), so v5…v14 exist on every installed device as EMPTY shells
 // that activate never got to delete. The bump forces a clean current name, and
 // the now-reachable activate purges all of them on the first load after deploy.
-var CACHE_VERSION = 'v15';
+// v15 → v16: every displayed date becomes DD/MM/YYYY (formatDateHe). app.js is
+// the only file that changed, and the v15 copy is the OFFLINE fallback on any
+// device that installed it — evict it so no phone keeps rendering ISO dates.
+var CACHE_VERSION = 'v16';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

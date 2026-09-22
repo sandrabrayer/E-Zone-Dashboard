@@ -260,11 +260,15 @@ test('D: activate deletes every cache whose name is not the current one, then cl
   assert.equal(calls.claim, 1, 'clients.claim() is called once');
 });
 
-test('D: the cache version was bumped off the stuck value', () => {
+test('D: the cache version is off the stuck value and still climbing', () => {
   const { exports: sw } = loadSw();
-  assert.notEqual(sw.CACHE_VERSION, 'v14', 'v14 is the version that could never install');
-  assert.equal(sw.CACHE_VERSION, 'v15');
-  assert.equal(sw.CACHE_NAME, 'ezone-dashboard-v15');
+  /* Version-agnostic on purpose: routine bumps ship with ordinary changes
+   * (v15 → v16 came with the DD/MM/YYYY date display). What must never come
+   * back is v14 or lower — v14 is the version that could not install, and the
+   * cleanup that clears v4…v14 depends on the current name being past it. */
+  const n = Number(/^v(\d+)$/.exec(sw.CACHE_VERSION)[1]);
+  assert.ok(n >= 15, 'CACHE_VERSION must be v15 or later, got ' + sw.CACHE_VERSION);
+  assert.equal(sw.CACHE_NAME, 'ezone-dashboard-' + sw.CACHE_VERSION);
 });
 
 /* ================= F. the fetch handler, now that it actually runs =========
@@ -396,7 +400,9 @@ test('E: /sw.js is served unauthenticated, 200, JS, with Cache-Control no-cache'
     assert.match(String(res.headers['content-type']), /javascript/);
     assert.match(String(res.headers['cache-control']), /no-cache/,
       'the worker script must never be HTTP-cached across deploys');
-    assert.match(res.body, /CACHE_VERSION = 'v15'/, 'it serves the real file');
+    assert.match(res.body, /CACHE_VERSION = 'v\d+'/, 'it serves the real file');
+    assert.ok(res.body.includes(fs.readFileSync(path.join(ROOT, 'public', 'sw.js'), 'utf8').trim().slice(-60)),
+      'byte-for-byte the file on disk');
     // The route is registered plainly, with no auth middleware.
     assert.ok(SERVER_SRC.includes("app.get('/sw.js', sendStatic('sw.js', 'application/javascript'));"));
     assert.ok(!/app\.get\('\/sw\.js',\s*require/.test(SERVER_SRC));
