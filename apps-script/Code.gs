@@ -412,11 +412,103 @@ const DISCHARGED_PATIENT_COLUMNS = [
  * wrong. BLANK IS LEGAL and is what every pre-existing row carries: readers
  * fall back to the inferred cycle (paymentCoverage() in app.js), so no old
  * row is ever rewritten. Validated on write by coveragePeriodError_(). */
+/* ACCOUNTING SOURCE-DATA COLUMNS (appended at the END, append-only contract
+ * above — the twelve existing columns keep their exact positions).
+ *
+ * These exist for ONE reason: an external accounting-control app has to be
+ * able to say "this source payment is the one I already confirmed" without
+ * re-deriving identity from data that legitimately changes (a corrected
+ * patient name, a re-dated cycle, an edited amount all rewrite the `id`'s
+ * inputs). Dashboard itself does not read them for any user-visible purpose.
+ *
+ *   paymentUid      — 'pmt-<uuid>', MINTED ONCE per row and then PERMANENT.
+ *                     Never derived at read time, never re-minted, never
+ *                     changed when patientName / dueDate / amount / status
+ *                     change. Backfilled onto existing rows by
+ *                     backfillPaymentIdentityLocked_ under the script lock
+ *                     (the backfillPatientIdsLocked_ pattern, PR #112).
+ *                     The existing `id` scheme is DELIBERATELY UNCHANGED:
+ *                     billing overrides, the orphan-payments reconcile, the
+ *                     integrity job and the client all still key on it.
+ *   patientUid      — the PERSISTED Patients `id` (PATIENT_COLUMNS position
+ *                     11). Resolved ONCE, by an EXACT match of this row's
+ *                     `patientId` cell (the houseId::name::entryDate billing
+ *                     triple) against the same triple computed from the
+ *                     Patients sheet — never a name lookup, never a fuzzy or
+ *                     partial match. Unresolvable → BLANK, never guessed.
+ *   payerUid        — RESERVED AND ALWAYS BLANK. Dashboard has no payer /
+ *                     billing-party entity: nothing records who actually pays
+ *                     (a parent, a fund, a municipality). The column exists so
+ *                     the accounting contract has a stable slot; the
+ *                     accounting app needs its own explicit crosswalk. Payer
+ *                     identity is NEVER inferred from a name here.
+ *   chargedAt       — SERVER-generated Israel-time timestamp with an explicit
+ *                     offset ('2026-09-22T14:03:11+03:00') of the moment the
+ *                     row was REPORTED PAID (status paid/partial) by the
+ *                     dashboard user. It means "reported paid by Vered",
+ *                     NOT "confirmed in the bank" — the accounting app owns
+ *                     bank confirmation and Dashboard stores none of it.
+ *   chargedBy       — WHO reported it: requestUser_, i.e. the name inside the
+ *                     SIGNED SESSION COOKIE (the PR #113 stamping rule). A
+ *                     client-supplied user is never trusted, ever.
+ *   sourceUpdatedAt — SERVER Israel-time stamp of the last write that actually
+ *                     CHANGED the row's content. (`timestamp` is the client's
+ *                     clock and moves on every save, so it cannot serve.)
+ *   sourceVersion   — integer, incremented by that same write. 1 on the first
+ *                     content write after this column landed.
+ *
+ * BLANK IS LEGAL on all seven and is what every pre-existing row carries
+ * until it is next written. A blank sourceUpdatedAt marks a HISTORICAL row:
+ * no charge stamp is ever invented for it, because nobody recorded when or by
+ * whom it was reported. */
 const PAYMENT_COLUMNS = [
   'id', 'patientId', 'patientName', 'houseId', 'dueDate',
   'amount', 'status', 'amountPaid', 'balance', 'timestamp',
-  'coverageStart', 'coverageEnd'
+  'coverageStart', 'coverageEnd',
+  'paymentUid', 'patientUid', 'payerUid',
+  'chargedAt', 'chargedBy', 'sourceUpdatedAt', 'sourceVersion'
 ];
+
+/* SERVER-OWNED payment columns: upsertPayment_ DELETES whatever the payload
+ * carries for these before writing, so a hand-built POST can never set its own
+ * uid or claim a charge stamp. Mirrors PATIENT_META_COLUMNS' intent. */
+const PAYMENT_SERVER_COLUMNS = [
+  'paymentUid', 'patientUid', 'payerUid',
+  'chargedAt', 'chargedBy', 'sourceUpdatedAt', 'sourceVersion'
+];
+
+/* Columns that do NOT count as a content change when deciding whether to bump
+ * sourceUpdatedAt / sourceVersion. `timestamp` is excluded because the client
+ * restamps it on every save — including saves that change nothing — and a
+ * version that ticks on every no-op would flood the accounting app's queue.
+ * `patientUid` is deliberately NOT excluded: healing a blank patient link IS a
+ * change the accounting app must see. */
+const PAYMENT_VERSION_IGNORED_COLUMNS = [
+  'paymentUid', 'payerUid', 'chargedAt', 'chargedBy',
+  'sourceUpdatedAt', 'sourceVersion', 'timestamp'
+];
+
+/* The two payment statuses that mean money was reported as received. */
+const PAYMENT_CHARGED_STATUSES = ['paid', 'partial'];
+
+/* Legacy Hebrew status labels live on the sheet alongside the canonical keys
+ * (the client has always canonicalized on READ via PAYMENT_STATUS_ALIASES in
+ * app.js — this is the server mirror, and it MUST stay in sync). It matters
+ * for more than display: without it a legacy 'שולם' row would read as
+ * not-previously-paid, and an unrelated edit would stamp a charge time onto a
+ * historical row that nobody ever reported. Unknown → 'unpaid'. */
+const PAYMENT_STATUS_ALIASES_ = {
+  'שולם': 'paid', 'paid': 'paid',
+  'שולם חלקית': 'partial', 'partial': 'partial',
+  'לא שולם': 'unpaid', 'unpaid': 'unpaid',
+};
+function paymentStatus_(raw) {
+  const t = String(raw == null ? '' : raw).trim();
+  return PAYMENT_STATUS_ALIASES_[t] || PAYMENT_STATUS_ALIASES_[t.toLowerCase()] || 'unpaid';
+}
+
+const PAYMENT_UID_PREFIX = 'pmt-';
+const CREDIT_UID_PREFIX  = 'crd-';
 /* Longest period a single payment row may claim. Mirrors COVERAGE_MAX_DAYS in
  * app.js. A mistyped year would otherwise swallow a year of allocation. */
 const COVERAGE_MAX_DAYS = 366;
@@ -425,7 +517,43 @@ const COVERAGE_MAX_DAYS = 366;
  * and drifts the day −1 for Israel — the exact exitDate bug, and here it
  * would move money between months. Only the NEW columns are forced; the
  * existing ones keep whatever format they already have. */
-const PAYMENT_TEXT_COLUMNS = ['coverageStart', 'coverageEnd'];
+/* `sourceVersion` is deliberately NOT text-forced — it is a small integer and
+ * reads back as a number. Everything else appended is opaque text or an ISO
+ * timestamp, the same coercion class as coverageStart/coverageEnd. */
+const PAYMENT_TEXT_COLUMNS = [
+  'coverageStart', 'coverageEnd',
+  'paymentUid', 'patientUid', 'payerUid',
+  'chargedAt', 'chargedBy', 'sourceUpdatedAt'
+];
+
+/* PaymentsTombstones — the recoverable record of a DELETED Payments row.
+ *
+ * Nothing in the dashboard UI deletes a payment; the single delete path in the
+ * whole repo is runOrphanPaymentsReconcile_'s stray-twin removal (a manual
+ * repair run from the Apps Script editor). Until now that delete left only an
+ * AuditLog entry, which no external reader can page through. The accounting
+ * app has to be able to tell "this source record was deleted" apart from "this
+ * source record was never in my window", so every such delete now also lands
+ * here and is served by the accounting endpoint.
+ *
+ * APPEND-ONLY, same contract as every other sheet: new columns go at the END.
+ *   paymentUid / sourceRecordId — the deleted row's stable uid and its `id`.
+ *   deletedAt  — Israel-time ISO stamp with offset.
+ *   deletedBy  — '' for a repair run from the editor (there is no signed
+ *                session behind it); the function name travels in deletedByFn.
+ *   reason     — why it was deleted.
+ *   values     — compact JSON of the whole deleted row (PAYMENT_COLUMNS order),
+ *                so the delete is recoverable. NEVER served by the endpoint. */
+const PAYMENTS_TOMBSTONES_SHEET = 'PaymentsTombstones';
+const PAYMENT_TOMBSTONE_COLUMNS = [
+  'paymentUid', 'sourceRecordId', 'patientUid', 'houseId', 'dueDate',
+  'amount', 'amountPaid', 'status',
+  'deletedAt', 'deletedBy', 'deletedByFn', 'reason', 'values'
+];
+const PAYMENT_TOMBSTONE_TEXT_COLUMNS = [
+  'paymentUid', 'sourceRecordId', 'patientUid', 'dueDate', 'deletedAt', 'deletedBy'
+];
+const PAYMENT_DELETE_REASON_STRAY_TWIN = 'orphan_reconcile_stray_twin';
 
 /* BillingOverrides sheet columns. One row per (patientId, month); `id` is a
  * deterministic `ovr::<patientId>::<month>` string built by the client (see
@@ -530,11 +658,19 @@ function facilityTypeFor_(houseId) {
  * displays divide by VAT_RATE (1.18) in app.js. A ZERO credit is still a row:
  * "no refund owed" is an auditable decision, never silence. */
 const CREDITS_SHEET = 'Credits';
+/* creditUid — APPENDED for the accounting contract, minted once and then
+ * permanent. The existing `id` is 'credit::<patientId>::<allocationMonth>::<seq>':
+ * a COMPOSITE of mutable inputs (patientId is the houseId::name::entryDate
+ * triple; seq is a row count at mint time), so it is a good in-app key but a
+ * poor external one. creditUid is 'crd-<uuid>', carries no data, and is never
+ * re-minted or rewritten. `id` behaviour is UNCHANGED — the client, the ledger
+ * UI and the edit path all still key on it. */
 const CREDIT_COLUMNS = [
   'id', 'patientId', 'patientKey', 'patientName', 'houseId', 'facilityType', 'creditType',
   'allocationMonth', 'calculatedAmount', 'amount', 'overrideReason', 'reason',
   'approvedBy', 'decidedDate', 'payoutDate', 'status', 'paidDate', 'method', 'notes',
-  'basis', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+  'basis', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
+  'creditUid'
 ];
 const CREDIT_TYPES    = ['days_unused', 'prepaid_return', 'other'];
 const CREDIT_STATUSES = ['pending', 'paid', 'cancelled'];
@@ -628,7 +764,10 @@ function handle_(params) {
     if (action === 'getPayments') return jsonOut_(getPayments_());
     if (action === 'savePayment' || action === 'updatePayment') {
       const payment = parseJsonParam_(params.payment);
-      return jsonOut_(upsertPayment_(payment));
+      // chargedBy comes from the SIGNED SESSION COOKIE via requestUser_, the
+      // same rule saveAll / discharge / saveCredit already follow. A
+      // client-supplied user name never reaches the Payments sheet.
+      return jsonOut_(upsertPayment_(payment, requestUser_(params)));
     }
     if (action === 'upsertBillingOverride') {
       return jsonOut_(upsertBillingOverride_(parseJsonParam_(params.override)));
@@ -709,6 +848,19 @@ function handle_(params) {
     // managersOverview above: no new secret, no financial data.
     if (action === 'occupancySnapshots') {
       return jsonOut_(occupancySnapshots_());
+    }
+    /* ===== Accounting source feed (READ-ONLY) =====
+     * Two read actions behind their OWN least-privilege secret. There is no
+     * write action on this secret and never will be — see the contract block
+     * above accountingAuthOk_. Fail-closed: an unset or mismatched secret
+     * refuses, exactly as getAdmittedRoster / meetingReport do. */
+    if (action === 'accountingPayments' || action === 'accountingCredits') {
+      if (!accountingAuthOk_(params)) {
+        return jsonOut_({ ok: false, error: 'unauthorized' });
+      }
+      return jsonOut_(action === 'accountingPayments'
+        ? accountingPayments_(params)
+        : accountingCredits_(params));
     }
     return jsonOut_({ ok: false, error: 'unknown_action', action: action || null });
   } catch (err) {
@@ -805,6 +957,11 @@ function getOrCreateSheet_(name, headers) {
   // a live column's format is a migration, not a guard.
   if (name === PAYMENTS_SHEET) {
     forceColumnsText_(sh, PAYMENT_COLUMNS, PAYMENT_TEXT_COLUMNS);
+  }
+  // PaymentsTombstones: opaque uids, a bare due date and two ISO stamps —
+  // the same coercion class the Payments coverage columns are guarded for.
+  if (name === PAYMENTS_TOMBSTONES_SHEET) {
+    forceColumnsText_(sh, PAYMENT_TOMBSTONE_COLUMNS, PAYMENT_TOMBSTONE_TEXT_COLUMNS);
   }
   // Credits: allocationMonth ('YYYY-MM') must never coerce into a date; the
   // decided/payout/paid dates + ISO stamps are the same coercion class as droppedAt.
@@ -2172,6 +2329,210 @@ function backfillPatientIdsLocked_(sh) {
   lock.tryLock(10000);
   try {
     return backfillMissingIds_(sh, PATIENT_COLUMNS);
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* ===== Stable source identity for the accounting contract =====
+ *
+ * Everything below follows the backfillPatientIdsLocked_ discipline from
+ * PR #112 exactly, because the failure it prevents is the same one:
+ *   - PRE-SCAN WITHOUT THE LOCK. If every cell is already filled the function
+ *     performs ZERO writes and takes NO lock — the steady state, hit on every
+ *     read after the first one following the column's arrival.
+ *   - Only when something is missing does it take the SCRIPT lock and re-read
+ *     inside it, so a concurrent upsert/rewrite cannot shift rows under the
+ *     per-cell writes.
+ *   - PER-CELL writes, never a whole-sheet rewrite.
+ *   - IDEMPOTENT: a second run fills 0. A value already present is NEVER
+ *     overwritten — that is what "minted once, then permanent" means.
+ *   - Fully-empty trailing rows are skipped (readSheet_ ignores them too).
+ */
+
+/* Now, as an Israel-time ISO-8601 timestamp WITH AN EXPLICIT OFFSET:
+ * '2026-09-22T14:03:11+03:00'. Deliberately not new Date().toISOString() (the
+ * repo's older stamps): a bare 'Z' timestamp forces every reader to know the
+ * Israel offset AND which side of the DST switch the instant fell on. With the
+ * offset written down the value is unambiguous to a human and to Date.parse.
+ * The project timezone is pinned to Asia/Jerusalem in appsscript.json; the
+ * spreadsheet timezone is preferred so a stamp and a sheet date agree. */
+function israelTimestamp_(now) {
+  var tz;
+  try {
+    tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || 'Asia/Jerusalem';
+  } catch (_) { tz = 'Asia/Jerusalem'; }
+  var d = (now instanceof Date && !isNaN(now.getTime())) ? now : new Date();
+  /* RFC-822 offset ('+0300') rather than SimpleDateFormat's ISO 'XXX' token:
+   * 'Z' is supported by every SimpleDateFormat there has ever been, so the
+   * stamp cannot depend on the runtime's pattern vocabulary. The colon is
+   * inserted here to make it ISO-8601 — the form Date.parse and a human both
+   * read without ambiguity. */
+  var s = Utilities.formatDate(d, tz, "yyyy-MM-dd'T'HH:mm:ssZ");
+  return String(s).replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
+}
+
+/* How many cells one invocation may mint. The Patients backfill needs no such
+ * bound — that sheet holds tens of rows — but Payments holds one row per
+ * patient per month for years, and the per-cell writes this pattern mandates
+ * are ~20ms each. An unbounded first read after deploy could therefore run
+ * into the Apps Script 6-minute execution limit, and getPayments_ is the read
+ * behind Vered's גבייה tab: a timeout there looks exactly like an outage.
+ * Bounded, it converges over the next few reads instead and then performs zero
+ * writes forever. Idempotent either way. */
+const IDENTITY_BACKFILL_MAX_PER_RUN = 1000;
+
+/* Mint a fresh opaque uid into every content row whose `column` cell is blank.
+ * The twin of backfillMissingIds_, generalized to a named column + prefix so
+ * Payments (paymentUid) and Credits (creditUid) share ONE implementation
+ * rather than two that can drift. Stops after `max` cells (see above).
+ * Returns the count filled. */
+function backfillMissingUids_(sh, columns, column, prefix, max) {
+  const cap = (max === undefined || max === null) ? IDENTITY_BACKFILL_MAX_PER_RUN : max;
+  const idx = columns.indexOf(column);
+  if (idx < 0) return 0;
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return 0;
+  const values = sh.getRange(2, 1, lastRow - 1, columns.length).getValues();
+  const col = idx + 1;
+  let filled = 0;
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    if (String(row[idx] == null ? '' : row[idx]).trim() !== '') continue;
+    let hasContent = false;
+    for (let j = 0; j < row.length; j++) {
+      if (row[j] !== '' && row[j] !== null) { hasContent = true; break; }
+    }
+    if (!hasContent) continue; // fully-empty row — leave it alone
+    const cell = sh.getRange(i + 2, col, 1, 1);
+    cell.setNumberFormat('@');  // uids are opaque text — never let Sheets coerce
+    cell.setValue(prefix + Utilities.getUuid());
+    filled++;
+    if (filled >= cap) break;
+  }
+  return filled;
+}
+
+/* houseId::name::entryDate  →  the PERSISTED Patients `id`, for every row of
+ * the Patients sheet that has both. This is the ONLY join used to fill
+ * patientUid, and it is an EXACT match on the full billing triple that the
+ * Payments `patientId` cell already stores — not a name lookup. A key claimed
+ * by two patient rows is dropped from the index entirely: an ambiguous link is
+ * worse than no link, and no link is what a blank patientUid means. */
+function patientUidIndexByKey_() {
+  const sh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+  const rows = readSheet_(sh, PATIENT_COLUMNS);
+  const index = {};
+  const ambiguous = {};
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const uid = String(r.id == null ? '' : r.id).trim();
+    if (!uid) continue;
+    const key = patientKey_(r.houseId, r.name, asISODate_(r.date));
+    if (!key || key === '::::') continue;
+    if (index[key] !== undefined && index[key] !== uid) { ambiguous[key] = true; continue; }
+    index[key] = uid;
+  }
+  Object.keys(ambiguous).forEach(function (k) { delete index[k]; });
+  return index;
+}
+
+/* Fill the blank patientUid cells of the Payments sheet from that index.
+ * Called only from inside the locked backfill below. A row whose triple
+ * resolves to nothing is LEFT BLANK — never guessed, never name-matched. */
+function fillPaymentPatientUids_(sh, max) {
+  const cap = (max === undefined || max === null) ? IDENTITY_BACKFILL_MAX_PER_RUN : max;
+  const uidIdx = PAYMENT_COLUMNS.indexOf('patientUid');
+  const keyIdx = PAYMENT_COLUMNS.indexOf('patientId');
+  if (uidIdx < 0 || keyIdx < 0) return 0;
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return 0;
+  const values = sh.getRange(2, 1, lastRow - 1, PAYMENT_COLUMNS.length).getValues();
+  let index = null;
+  let filled = 0;
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    if (String(row[uidIdx] == null ? '' : row[uidIdx]).trim() !== '') continue;
+    const key = String(row[keyIdx] == null ? '' : row[keyIdx]).trim();
+    if (!key) continue;
+    if (index === null) index = patientUidIndexByKey_();  // read Patients at most once
+    const uid = index[key];
+    if (!uid) continue;
+    const cell = sh.getRange(i + 2, uidIdx + 1, 1, 1);
+    cell.setNumberFormat('@');
+    cell.setValue(uid);
+    filled++;
+    if (filled >= cap) break;
+  }
+  return filled;
+}
+
+/* Does the Payments sheet have any content row missing a paymentUid, or any
+ * with a resolvable-but-blank patientUid? Cheap pre-scan, no lock, no writes. */
+function paymentIdentityNeedsBackfill_(sh) {
+  const pIdx = PAYMENT_COLUMNS.indexOf('paymentUid');
+  const uIdx = PAYMENT_COLUMNS.indexOf('patientUid');
+  const kIdx = PAYMENT_COLUMNS.indexOf('patientId');
+  if (pIdx < 0 || uIdx < 0 || kIdx < 0) return false;
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return false;
+  const values = sh.getRange(2, 1, lastRow - 1, PAYMENT_COLUMNS.length).getValues();
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    let hasContent = false;
+    for (let j = 0; j < row.length; j++) {
+      if (row[j] !== '' && row[j] !== null) { hasContent = true; break; }
+    }
+    if (!hasContent) continue;
+    if (String(row[pIdx] == null ? '' : row[pIdx]).trim() === '') return true;
+    if (String(row[uIdx] == null ? '' : row[uIdx]).trim() === '' &&
+        String(row[kIdx] == null ? '' : row[kIdx]).trim() !== '') return true;
+  }
+  return false;
+}
+
+/* Payments identity foundation — the Payments-sheet twin of
+ * backfillPatientIdsLocked_ (PR #112), same contract to the letter.
+ * Returns { paymentUids, patientUids } counts. */
+function backfillPaymentIdentityLocked_(sh) {
+  if (!paymentIdentityNeedsBackfill_(sh)) return { paymentUids: 0, patientUids: 0 };
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    return {
+      paymentUids: backfillMissingUids_(sh, PAYMENT_COLUMNS, 'paymentUid', PAYMENT_UID_PREFIX),
+      patientUids: fillPaymentPatientUids_(sh),
+    };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* Credits identity foundation — same contract again. Credit behaviour is
+ * otherwise untouched: `id`, the edit rules, the stale-save refusal and every
+ * figure stay exactly as they were. */
+function creditUidsNeedBackfill_(sh) {
+  const idx = CREDIT_COLUMNS.indexOf('creditUid');
+  if (idx < 0) return false;
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return false;
+  const values = sh.getRange(2, 1, lastRow - 1, CREDIT_COLUMNS.length).getValues();
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    if (String(row[idx] == null ? '' : row[idx]).trim() !== '') continue;
+    for (let j = 0; j < row.length; j++) {
+      if (row[j] !== '' && row[j] !== null) return true;
+    }
+  }
+  return false;
+}
+
+function backfillCreditUidsLocked_(sh) {
+  if (!creditUidsNeedBackfill_(sh)) return 0;
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    return backfillMissingUids_(sh, CREDIT_COLUMNS, 'creditUid', CREDIT_UID_PREFIX);
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
@@ -4459,6 +4820,12 @@ function coveragePeriodError_(startRaw, endRaw) {
 
 function getPayments_() {
   const sh = getOrCreateSheet_(PAYMENTS_SHEET, PAYMENT_COLUMNS);
+  /* Heal the stable-identity cells BEFORE reading, exactly as getData_ heals
+   * the Patients `id` column: the uids handed to any reader are then the ones
+   * now stored on the sheet. One-time (the first read after the columns land);
+   * ZERO writes and no lock once every cell is filled. It mints identity only
+   * — it never touches an amount, a status or a charge stamp. */
+  backfillPaymentIdentityLocked_(sh);
   return { ok: true, payments: readSheet_(sh, PAYMENT_COLUMNS) };
 }
 
@@ -4469,7 +4836,7 @@ function getPayments_() {
  * side as a deterministic `pay::<houseId>::<name>::<entryDate>::<dueDate>`
  * string so the same monthly payment always maps to the same row.
  */
-function upsertPayment_(payment) {
+function upsertPayment_(payment, user) {
   if (!payment || typeof payment !== 'object') {
     return { ok: false, error: 'missing_payment' };
   }
@@ -4494,35 +4861,187 @@ function upsertPayment_(payment) {
   payment.coverageStart = coverageDateISO_(payment.coverageStart) || '';
   payment.coverageEnd   = coverageDateISO_(payment.coverageEnd) || '';
 
+  /* The stamping user. NEVER params.user as the browser sent it: the Railway
+   * proxy overwrites body.user from the SIGNED SESSION COOKIE on every
+   * /api/sheets POST, handle_ re-normalizes it through requestUser_, and this
+   * is the value that lands in chargedBy. The PR #113 rule, applied to money.
+   * Blank for a legacy user-less cookie — allowed by contract, and blank is
+   * honest where a guessed name would not be. */
+  const stampUser = String(user == null ? '' : user);
+
   const lock = LockService.getScriptLock();
   lock.tryLock(10000);
   try {
     const sh = getOrCreateSheet_(PAYMENTS_SHEET, PAYMENT_COLUMNS);
     const idIdx = PAYMENT_COLUMNS.indexOf('id');
     const lastRow = sh.getLastRow();
-    const row = objectToRow_(payment, PAYMENT_COLUMNS);
 
+    // Find the existing row (if any) and read it WHOLE — every server-owned
+    // decision below is made against the SHEET, never against the payload.
+    let targetRow = 0;
+    const prev = {};
+    let hadRow = false;
     if (lastRow > 1) {
-      const existingIds = sh.getRange(2, idIdx + 1, lastRow - 1, 1).getValues();
-      for (let i = 0; i < existingIds.length; i++) {
-        if (String(existingIds[i][0]) === String(payment.id)) {
-          sh.getRange(i + 2, 1, 1, PAYMENT_COLUMNS.length).setValues([row]);
-          return { ok: true, payment: payment, updated: true };
+      const existing = sh.getRange(2, 1, lastRow - 1, PAYMENT_COLUMNS.length).getValues();
+      for (let i = 0; i < existing.length; i++) {
+        if (String(existing[i][idIdx]) === String(payment.id)) {
+          targetRow = i + 2;
+          hadRow = true;
+          for (let c = 0; c < PAYMENT_COLUMNS.length; c++) prev[PAYMENT_COLUMNS[c]] = existing[i][c];
+          break;
         }
       }
     }
 
-    sh.appendRow(row);
-    return { ok: true, payment: payment, created: true };
+    const out = stampPaymentRow_(payment, prev, hadRow, stampUser);
+    const row = objectToRow_(out, PAYMENT_COLUMNS);
+
+    if (targetRow) {
+      setPaymentRowTextCols_(sh, targetRow);
+      sh.getRange(targetRow, 1, 1, PAYMENT_COLUMNS.length).setValues([row]);
+      return { ok: true, payment: out, updated: true };
+    }
+
+    // Insert at the next row (not appendRow) so the text format is applied
+    // BEFORE the value lands — the treatment upsertRowById_ gives its writes.
+    const insertAt = sh.getLastRow() + 1;
+    setPaymentRowTextCols_(sh, insertAt);
+    sh.getRange(insertAt, 1, 1, PAYMENT_COLUMNS.length).setValues([row]);
+    return { ok: true, payment: out, created: true };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
+}
+
+/* Belt-and-suspenders over the whole-column '@' format getOrCreateSheet_
+ * applies: force THIS row's text cells before the values land (the same guard
+ * upsertCredit_ uses). */
+function setPaymentRowTextCols_(sh, rowNumber) {
+  for (let k = 0; k < PAYMENT_TEXT_COLUMNS.length; k++) {
+    const c = PAYMENT_COLUMNS.indexOf(PAYMENT_TEXT_COLUMNS[k]);
+    if (c >= 0) sh.getRange(rowNumber, c + 1, 1, 1).setNumberFormat('@');
+  }
+}
+
+function paymentIsCharged_(status) {
+  return PAYMENT_CHARGED_STATUSES.indexOf(paymentStatus_(status)) >= 0;
+}
+
+/* Comparable form of a cell for the content-change test: a number read back
+ * from Sheets and the same number sent as JSON must compare equal. */
+function paymentCell_(v) {
+  return String(v === null || v === undefined ? '' : v).trim();
+}
+
+/* Did this write CHANGE the row's content? Server-owned bookkeeping and the
+ * client's `timestamp` are excluded (PAYMENT_VERSION_IGNORED_COLUMNS) — a
+ * version that ticked on every no-op save would hand the accounting app a
+ * queue full of rows that did not move. */
+function paymentContentChanged_(prev, next) {
+  for (let i = 0; i < PAYMENT_COLUMNS.length; i++) {
+    const col = PAYMENT_COLUMNS[i];
+    if (PAYMENT_VERSION_IGNORED_COLUMNS.indexOf(col) >= 0) continue;
+    if (paymentCell_(prev[col]) !== paymentCell_(next[col])) return true;
+  }
+  return false;
+}
+
+/**
+ * Build the row that will actually be written: the caller's content columns,
+ * plus the SEVEN server-owned accounting columns decided here and nowhere else.
+ *
+ * `prev` is the sheet row as an object ({} for an insert); `hadRow` says which.
+ * PURE — no sheet access, no clock beyond israelTimestamp_ — so the rules
+ * below are directly testable.
+ *
+ * IDENTITY
+ *   paymentUid : the sheet's, or one freshly minted. Once set it is carried
+ *                verbatim forever — a renamed patient, a corrected due date,
+ *                an edited amount and a status flip all leave it alone.
+ *   patientUid : the sheet's if present; otherwise resolved ONCE by an exact
+ *                match of the billing triple (never by name). Unresolved
+ *                stays blank.
+ *   payerUid   : carried; never minted here (see PAYMENT_COLUMNS).
+ *
+ * CHARGE STAMP — "reported paid by Vered", not "confirmed in the bank".
+ *   Stamped when the row is paid/partial AND either it was not paid/partial
+ *   before (a real report event) or amountPaid MOVED (a correction to the
+ *   reported figure, which the accounting app must re-verify).
+ *   Carried unchanged on a re-save that reports the same figure — which is
+ *   exactly why a HISTORICAL paid row stays BLANK: its stamp is '' on the
+ *   sheet, nothing about it changed, so '' is what gets carried. No stamp is
+ *   ever derived from `timestamp`, `dueDate` or anything else: nobody recorded
+ *   who reported those rows, and inventing an answer would be a lie an
+ *   accountant would act on.
+ *   Cleared when the row leaves paid/partial: a row reverted to unpaid was not
+ *   reported paid, and "stamped but unpaid" is a state no reader should have
+ *   to interpret. The sourceVersion bump is what tells the accounting app the
+ *   record changed after it confirmed.
+ *
+ * CHANGE TRACKING
+ *   sourceUpdatedAt/sourceVersion move together, and only on a real content
+ *   change (or an insert). Version 1 is the first content write after these
+ *   columns shipped; a blank pair means the row has not been written since.
+ */
+function stampPaymentRow_(payment, prev, hadRow, stampUser, now) {
+  prev = prev || {};
+  const out = {};
+  const keys = Object.keys(payment);
+  for (let i = 0; i < keys.length; i++) out[keys[i]] = payment[keys[i]];
+  // A hand-built POST may not set its own uid, its own charge stamp or its
+  // own version. Drop them before anything else looks at `out`.
+  for (let i = 0; i < PAYMENT_SERVER_COLUMNS.length; i++) delete out[PAYMENT_SERVER_COLUMNS[i]];
+
+  const prevUid = paymentCell_(prev.paymentUid);
+  out.paymentUid = prevUid || (PAYMENT_UID_PREFIX + Utilities.getUuid());
+
+  const prevPatientUid = paymentCell_(prev.patientUid);
+  if (prevPatientUid) {
+    out.patientUid = prevPatientUid;   // immutable once resolved
+  } else {
+    const key = paymentCell_(out.patientId);
+    let resolved = '';
+    if (key) {
+      const index = patientUidIndexByKey_();
+      resolved = index[key] || '';
+    }
+    out.patientUid = resolved;
+  }
+
+  out.payerUid = paymentCell_(prev.payerUid);
+
+  const nowStamp = israelTimestamp_(now);
+
+  const chargedNow = paymentIsCharged_(out.status);
+  const chargedBefore = hadRow && paymentIsCharged_(prev.status);
+  const paidChanged = paymentCell_(prev.amountPaid) !== paymentCell_(out.amountPaid);
+  if (!chargedNow) {
+    out.chargedAt = '';
+    out.chargedBy = '';
+  } else if (!chargedBefore || paidChanged) {
+    out.chargedAt = nowStamp;
+    out.chargedBy = stampUser;
+  } else {
+    out.chargedAt = paymentCell_(prev.chargedAt);
+    out.chargedBy = paymentCell_(prev.chargedBy);
+  }
+
+  if (!hadRow || paymentContentChanged_(prev, out)) {
+    out.sourceUpdatedAt = nowStamp;
+    out.sourceVersion   = (Number(prev.sourceVersion) || 0) + 1;
+  } else {
+    out.sourceUpdatedAt = paymentCell_(prev.sourceUpdatedAt);
+    out.sourceVersion   = prev.sourceVersion === '' || prev.sourceVersion === undefined || prev.sourceVersion === null
+      ? '' : prev.sourceVersion;
+  }
+  return out;
 }
 
 /* ===== Credits ledger ===== */
 
 function getCredits_() {
   const sh = getOrCreateSheet_(CREDITS_SHEET, CREDIT_COLUMNS);
+  backfillCreditUidsLocked_(sh);   // same one-time, zero-writes-in-steady-state rule
   return { ok: true, credits: readSheet_(sh, CREDIT_COLUMNS) };
 }
 
@@ -4691,6 +5210,11 @@ function upsertCredit_(credit, user) {
       createdBy:        String(record.createdBy == null ? '' : record.createdBy),
       updatedAt:        nowIso,
       updatedBy:        stampUser,
+      /* Stable external key. On an EDIT the sheet's value is carried verbatim
+       * (record is a copy of the sheet row); on a CREATE — and on an edit of a
+       * legacy row that pre-dates the column — one is minted. Never re-minted
+       * once present, whatever else the edit changes. */
+      creditUid:        creditStr_(record.creditUid, 60) || (CREDIT_UID_PREFIX + Utilities.getUuid()),
     };
 
     if (!targetRow) {
@@ -6980,11 +7504,56 @@ function appendOrphanPaymentTombstones_(entries) {
   sh.getRange(sh.getLastRow() + 1, 1, out.length, PATIENT_TOMBSTONE_COLUMNS.length).setValues(out);
 }
 
+/* Append one PaymentsTombstones row per deleted Payments row. `entries` are
+ * the reconcile plan's duplicate entries — each carries `values`, the whole
+ * deleted row in PAYMENT_COLUMNS order. deletedBy is '' because a repair run
+ * from the Apps Script editor has no signed session behind it; the function
+ * name travels in deletedByFn instead of a name nobody authenticated. */
+function appendPaymentTombstones_(entries, reason, fnName) {
+  if (!entries || entries.length === 0) return 0;
+  const sh = getOrCreateSheet_(PAYMENTS_TOMBSTONES_SHEET, PAYMENT_TOMBSTONE_COLUMNS);
+  const deletedAt = israelTimestamp_();
+  const col = function (values, name) {
+    const i = PAYMENT_COLUMNS.indexOf(name);
+    if (i < 0 || !values || values[i] === undefined || values[i] === null) return '';
+    return values[i];
+  };
+  const out = entries.map(function (e) {
+    const v = e && e.values;
+    return objectToRow_({
+      paymentUid:     col(v, 'paymentUid'),
+      sourceRecordId: col(v, 'id'),
+      patientUid:     col(v, 'patientUid'),
+      houseId:        col(v, 'houseId'),
+      dueDate:        col(v, 'dueDate'),
+      amount:         col(v, 'amount'),
+      amountPaid:     col(v, 'amountPaid'),
+      status:         col(v, 'status'),
+      deletedAt:      deletedAt,
+      deletedBy:      '',
+      deletedByFn:    String(fnName || ''),
+      reason:         String(reason || ''),
+      values:         JSON.stringify(v || []).slice(0, 4000),
+    }, PAYMENT_TOMBSTONE_COLUMNS);
+  });
+  sh.getRange(sh.getLastRow() + 1, 1, out.length, PAYMENT_TOMBSTONE_COLUMNS.length).setValues(out);
+  return out.length;
+}
+
 function runOrphanPaymentsReconcile_(dryRun) {
   const tag = dryRun ? ORPHAN_PAYMENT_PREVIEW_FN : ORPHAN_PAYMENT_RECONCILE_FN;
   const lock = LockService.getScriptLock();
   if (lock.tryLock(30000) === false) throw new Error(tag + ': could not acquire the script lock — try again.');
   try {
+    /* DELIBERATELY NOT backfilling identity here. This repair's guarantees are
+     * "single-cell writes to the three identity cells only" and "a dry run
+     * performs ZERO writes"; minting uids inside it would widen both for a
+     * function that runs by hand, rarely, on a corrupted sheet. getPayments_
+     * mints them on every dashboard load, so in practice every row already
+     * carries one by the time anyone runs this; a row that somehow does not
+     * still tombstones with its sourceRecordId, which names it just as well.
+     * (Operational note in CHANGELOG-accounting-source-feed.md: open the
+     * dashboard once before running the repair.) */
     const paymentRows = corruptionReadRows_({ sheet: PAYMENTS_SHEET, columns: PAYMENT_COLUMNS }) || [];
     const cand = orphanPaymentCandidates_();
     const plan = orphanPaymentsPlan_(paymentRows, cand.candidates, cand.knownKeySet);
@@ -7020,6 +7589,13 @@ function runOrphanPaymentsReconcile_(dryRun) {
         });
       });
       appendOrphanPaymentTombstones_(plan.tombstones);
+      /* Record the stray twins BEFORE they are deleted. This is the only path
+       * in the repo that removes a Payments row, so it is the only place a
+       * payment tombstone can be written — and without one an external reader
+       * cannot tell a deleted source record from one that simply fell outside
+       * its window. Recoverable: the whole row rides along as JSON. */
+      appendPaymentTombstones_(plan.duplicates, PAYMENT_DELETE_REASON_STRAY_TWIN,
+        ORPHAN_PAYMENT_RECONCILE_FN);
       // … and the stray-twin deletes LAST, bottom-up, so every row number
       // above a deleted row stays valid while the deletes run.
       plan.duplicates
@@ -7090,4 +7666,463 @@ function previewOrphanPaymentsNow() {
  * the script lock; idempotent (second run = 0 writes). */
 function reconcileOrphanPaymentsNow() {
   return runOrphanPaymentsReconcile_(false);
+}
+
+/* ===================================================================== *
+ *  ACCOUNTING SOURCE FEED — read-only, own secret, no clinical data
+ * ===================================================================== *
+ *
+ * WHAT THIS IS. An external accounting-control app reconciles what Vered
+ * reported as collected against what actually reached the bank. It needs to
+ * PULL source payment records, incrementally, and it needs each record to
+ * carry a key that survives every legitimate edit to the row. That is the
+ * whole job. Dashboard stores NO accounting state: no confirmation flag, no
+ * queue, no invoice, no "verified by Ortal". Vered's workflow is unchanged —
+ * she marks a payment paid, exactly as before.
+ *
+ * AUTH. Its OWN Script Property, ACCOUNTING_SECRET, separate from
+ * ADMITTED_ROSTER_SECRET and MEETING_REPORT_SECRET, so the accounting app's
+ * credential unlocks nothing else and can be rotated on its own. FAIL-CLOSED,
+ * the discipline every authenticated endpoint here follows: unset or
+ * mismatched → { ok:false, error:'unauthorized' }, never data.
+ *
+ * READ-ONLY. The two actions below return data and nothing else. They perform
+ * no business write. The one thing they CAN cause is the idempotent identity
+ * backfill (minting paymentUid / creditUid into blank cells, under the script
+ * lock) — that is what makes the feed self-sufficient, it never touches an
+ * amount, a status, a date or a charge stamp, and in the steady state it
+ * performs zero writes and takes no lock.
+ *
+ * KNOWN, PRE-EXISTING, DELIBERATELY NOT CHANGED HERE: the Apps Script web app
+ * is deployed ANYONE_ANONYMOUS, so anyone holding the /exec URL can already
+ * reach the session-gated write actions — that is true today of every
+ * cross-app integration this repo has (ezone-outpatient holds the same URL for
+ * getAdmittedRoster). This endpoint adds no write surface and no new exposure,
+ * but handing the URL to one more app widens who holds it. The proper fix is a
+ * separate deployment for cross-app reads; it is a migration, not a column,
+ * and it is called out in CHANGELOG-accounting-source-feed.md as follow-up.
+ *
+ * NO CLINICAL DATA. The projection is an explicit allow-list, not a filtered
+ * copy of the row. Nothing from Patients.notes, the discharge note, the
+ * disposition, a meeting report or a lead note can reach it, and the credit
+ * projection deliberately drops the free-text `reason`, `overrideReason`,
+ * `notes` and `basis` fields — they are financial justification, but they are
+ * free text staff type, and free text is where clinical detail leaks. The
+ * structured creditType says why the credit exists without the prose.
+ * test/accounting-source-feed.test.js locks this against the shipped code. */
+
+const ACCOUNTING_SECRET_PROP    = 'ACCOUNTING_SECRET';
+const ACCOUNTING_SOURCE_APP     = 'ezone-dashboard';
+const ACCOUNTING_SCHEMA_VERSION = 1;
+const ACCOUNTING_PAGE_DEFAULT   = 200;
+const ACCOUNTING_PAGE_MAX       = 500;
+/* Deletions are rare (one manual repair path in the whole repo), so tombstones
+ * are not paginated — they ride the FIRST page of a sync, capped, with a flag
+ * if the cap was hit. */
+const ACCOUNTING_TOMBSTONE_MAX  = 500;
+
+function accountingAuthOk_(params) {
+  const expected = PropertiesService.getScriptProperties().getProperty(ACCOUNTING_SECRET_PROP);
+  // Fail closed: no secret configured → refuse (never serve financial data open).
+  if (!expected) return false;
+  const got = (params && params.secret) ? String(params.secret) : '';
+  return got === expected;
+}
+
+function accStr_(v) {
+  return String(v === null || v === undefined ? '' : v).trim();
+}
+function accNum_(v) {
+  const n = Number(v);
+  return isFinite(n) ? n : 0;
+}
+/* A cell that is blank on the sheet is null in the feed, never '' — the
+ * accounting app must be able to tell "no value recorded" from "empty string"
+ * without guessing. */
+function accOrNull_(v) {
+  const t = accStr_(v);
+  return t === '' ? null : t;
+}
+
+/* Every timestamp the feed emits is rendered as Israel time WITH an explicit
+ * offset, whatever form the cell holds. The Payments stamps are written that
+ * way already (idempotent here); the Credits stamps are the repo's older UTC
+ * 'Z' ISO strings and are converted — the same instant, stated unambiguously,
+ * so one consumer never has to handle two conventions. Unparseable → null. */
+function accIsraelStamp_(v) {
+  const t = accStr_(v);
+  if (!t) return null;
+  const ms = Date.parse(t);
+  if (isNaN(ms)) return null;
+  return israelTimestamp_(new Date(ms));
+}
+
+/* Sort/filter key for a source timestamp. Israel-time ISO strings WITH an
+ * offset parse exactly; a blank (historical) row sorts to 0, i.e. first, and
+ * is excluded by any updatedSince. Never lexicographic: the autumn DST switch
+ * makes two same-day stamps sort wrongly as strings. */
+function accountingSortMs_(iso) {
+  const t = accStr_(iso);
+  if (!t) return 0;
+  const ms = Date.parse(t);
+  return isNaN(ms) ? 0 : ms;
+}
+
+/* Cursor: OPAQUE to the caller (do not parse it — the format may change).
+ * Internally '<sortMs>|<uid>', the exact (timestamp, tie-break) pair the page
+ * ended on, so a resumed sync can never skip or repeat a row. */
+function accountingCursorOf_(sortMs, uid) {
+  return String(sortMs) + '|' + String(uid);
+}
+function accountingCursorParse_(raw) {
+  const t = accStr_(raw);
+  if (!t) return { ok: true, cursor: null };
+  const i = t.indexOf('|');
+  if (i < 0) return { ok: false };
+  const ms = Number(t.slice(0, i));
+  if (!isFinite(ms)) return { ok: false };
+  return { ok: true, cursor: { ms: ms, uid: t.slice(i + 1) } };
+}
+
+/* Shared page mechanics for both actions: filter by updatedSince, sort by
+ * (sortMs, uid), resume at the cursor, cut at the limit. `items` are
+ * { sortMs, uid, value } triples. */
+function accountingPage_(items, sinceMs, cursor, limit) {
+  const kept = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (sinceMs !== null && it.sortMs < sinceMs) continue;
+    if (cursor && !(it.sortMs > cursor.ms || (it.sortMs === cursor.ms && it.uid > cursor.uid))) continue;
+    kept.push(it);
+  }
+  kept.sort(function (a, b) {
+    if (a.sortMs !== b.sortMs) return a.sortMs - b.sortMs;
+    return a.uid < b.uid ? -1 : (a.uid > b.uid ? 1 : 0);
+  });
+  const page = kept.slice(0, limit);
+  const hasMore = kept.length > page.length;
+  const last = page.length ? page[page.length - 1] : null;
+  return {
+    values: page.map(function (x) { return x.value; }),
+    hasMore: hasMore,
+    nextCursor: hasMore && last ? accountingCursorOf_(last.sortMs, last.uid) : null,
+  };
+}
+
+function accountingLimit_(raw) {
+  const n = Math.floor(Number(raw));
+  if (!isFinite(n) || n <= 0) return ACCOUNTING_PAGE_DEFAULT;
+  return Math.min(n, ACCOUNTING_PAGE_MAX);
+}
+
+/* updatedSince → epoch ms, or null for "everything" (a full sync).
+ * A value we cannot parse is REFUSED rather than silently treated as a full
+ * sync: an accounting app that mistypes its watermark must not be handed the
+ * entire history and flood its own queue. */
+function accountingSince_(raw) {
+  const t = accStr_(raw);
+  if (!t) return { ok: true, ms: null };
+  const ms = Date.parse(t);
+  if (isNaN(ms)) return { ok: false };
+  return { ok: true, ms: ms };
+}
+
+/* ---- coverage window + day/month allocation (SERVER mirror) -------------
+ * The same rule paymentCoverage() and the הכנסות חודשיות allocation apply in
+ * app.js: the RECORDED coverageStart/coverageEnd win; a row that records none falls
+ * back to the inferred cycle [dueDate, dueDate + 1 month − 1 day]. The window
+ * is then split across the calendar months it touches, day by day.
+ * `source` is carried so the accounting app can say which it is instead of
+ * implying a precision the row does not have. */
+function accDateFromISO_(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(accStr_(iso));
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return isNaN(d.getTime()) ? null : d;
+}
+/* Math.round absorbs the ±1h a DST switch injects between two local midnights. */
+function accDiffDays_(a, b) { return Math.round((b.getTime() - a.getTime()) / 86400000); }
+function accAddMonthsClamped_(d, n) {
+  const y = d.getFullYear(), m = d.getMonth() + n, day = d.getDate();
+  const last = new Date(y, m + 1, 0).getDate();
+  return new Date(y, m, Math.min(day, last));
+}
+function accAddDays_(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n); }
+function accRoundMoney_(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+
+function accountingCoverage_(row) {
+  const recS = coverageDateISO_(row.coverageStart);
+  const recE = coverageDateISO_(row.coverageEnd);
+  if (recS && recE && !coveragePeriodError_(recS, recE)) {
+    const s = accDateFromISO_(recS), e = accDateFromISO_(recE);
+    if (s && e) return { start: s, end: e, source: 'recorded' };
+  }
+  const dueISO = asISODate_(row.dueDate);
+  const start = accDateFromISO_(dueISO);
+  if (!start) return null;
+  return { start: start, end: accAddDays_(accAddMonthsClamped_(start, 1), -1), source: 'inferred' };
+}
+
+/* The window split across the calendar months it touches. Each entry carries
+ * its day count, its share of the window and that share of BOTH the billed
+ * amount and the amount actually reported paid. Shares sum to 1 and the
+ * per-month amounts sum to the row total up to 2dp rounding, so a consolidated
+ * figure always adds up to the row it came from. */
+function accountingAllocation_(cov, amount, amountPaid) {
+  if (!cov) return [];
+  const total = accDiffDays_(cov.start, cov.end) + 1;
+  if (total <= 0) return [];
+  const out = [];
+  let cur = new Date(cov.start.getFullYear(), cov.start.getMonth(), 1);
+  let guard = 0;
+  while (cur.getTime() <= cov.end.getTime() && guard++ < 400) {
+    const mStart = new Date(cur.getFullYear(), cur.getMonth(), 1);
+    const mEnd   = new Date(cur.getFullYear(), cur.getMonth() + 1, 0);
+    const s = mStart.getTime() > cov.start.getTime() ? mStart : cov.start;
+    const e = mEnd.getTime()   < cov.end.getTime()   ? mEnd   : cov.end;
+    const days = accDiffDays_(s, e) + 1;
+    if (days > 0) {
+      out.push({
+        month:      localPartsISO_(mStart).slice(0, 7),
+        days:       days,
+        share:      Math.round((days / total) * 1e6) / 1e6,
+        amount:     accRoundMoney_(amount * days / total),
+        amountPaid: accRoundMoney_(amountPaid * days / total),
+      });
+    }
+    cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+  }
+  return out;
+}
+
+/* ---- projections (ALLOW-LISTS — see the no-clinical-data note above) ---- */
+
+function accountingCreditView_(c) {
+  return {
+    sourceApp:       ACCOUNTING_SOURCE_APP,
+    sourceRecordId:  accStr_(c.id),
+    creditUid:       accOrNull_(c.creditUid),
+    patientUid:      accOrNull_(c.patientId),   // Credits.patientId IS the persisted Patients id
+    patientKey:      accOrNull_(c.patientKey),  // the billing triple, for the Payments join
+    payerUid:        null,
+    house:           accStr_(c.houseId),
+    creditType:      accStr_(c.creditType),
+    allocationMonth: accStr_(c.allocationMonth),
+    calculatedAmount: accNum_(c.calculatedAmount),
+    amount:          accNum_(c.amount),
+    currency:        'ILS',
+    vatInclusive:    true,
+    status:          accStr_(c.status),
+    decidedDate:     accOrNull_(c.decidedDate),
+    payoutDate:      accOrNull_(c.payoutDate),
+    paidDate:        accOrNull_(c.paidDate),
+    sourceUpdatedAt: accIsraelStamp_(c.updatedAt),
+    sourceCreatedAt: accIsraelStamp_(c.createdAt),
+  };
+}
+
+function accountingPaymentView_(r, creditsByLink) {
+  const amount     = accNum_(r.amount);
+  const amountPaid = accNum_(r.amountPaid);
+  const cov = accountingCoverage_(r);
+  const dueISO = asISODate_(r.dueDate);
+  const linkKey = accStr_(r.patientId) + '|' + String(dueISO || '').slice(0, 7);
+  const sourceUpdatedAt = accIsraelStamp_(r.sourceUpdatedAt);
+  return {
+    sourceApp:      ACCOUNTING_SOURCE_APP,
+    sourceRecordId: accStr_(r.id),
+    paymentUid:     accOrNull_(r.paymentUid),
+    patientUid:     accOrNull_(r.patientUid),
+    /* ALWAYS null today: Dashboard has no payer entity. The accounting app
+     * needs its own crosswalk from patientUid to the party it bills. Never
+     * inferred from a name here. */
+    payerUid:       accOrNull_(r.payerUid),
+    patientName:    accStr_(r.patientName),
+    house:          accStr_(r.houseId),
+    dueDate:        dueISO || null,
+    amount:         amount,
+    amountPaid:     amountPaid,
+    balance:        accNum_(r.balance),
+    /* VAT-INCLUSIVE AT THE SOURCE, like every other figure in this repo
+     * (`pay`, Payments.amount, every credit). Do NOT apply a second VAT
+     * conversion downstream. */
+    currency:       'ILS',
+    vatInclusive:   true,
+    status:         paymentStatus_(r.status),
+    statusRaw:      accStr_(r.status),
+    /* "Reported paid by Vered", NOT "confirmed in the bank". */
+    chargedAt:      accIsraelStamp_(r.chargedAt),
+    chargedBy:      accOrNull_(r.chargedBy),
+    coverageStart:  cov ? localPartsISO_(cov.start) : null,
+    coverageEnd:    cov ? localPartsISO_(cov.end) : null,
+    coverageSource: cov ? cov.source : null,
+    coverageDays:   cov ? accDiffDays_(cov.start, cov.end) + 1 : 0,
+    coverageAllocation: accountingAllocation_(cov, amount, amountPaid),
+    sourceUpdatedAt: sourceUpdatedAt,
+    sourceVersion:   r.sourceVersion === '' || r.sourceVersion === null || r.sourceVersion === undefined
+      ? null : accNum_(r.sourceVersion),
+    /* TRUE for a row that has not been written since this contract shipped —
+     * i.e. a payment Vered reported BEFORE the accounting app was activated.
+     * This is the flag that keeps a historical import out of a confirmation
+     * queue: see "avoiding a historical flood" in the changelog. */
+    historical:     !sourceUpdatedAt,
+    deleted:        false,
+    /* DERIVED link, not a stored one: Dashboard has no payment↔credit foreign
+     * key. A credit is attached here when its patientKey matches this row's
+     * billing key AND its allocationMonth is this row's due-date month. A
+     * credit that matches no payment row is still returned in full by
+     * accountingCredits, which is the authoritative list — dedupe on
+     * creditUid. */
+    creditLinkBasis: 'derived:patientKey+allocationMonth==dueDateMonth',
+    credits: (creditsByLink && creditsByLink[linkKey]) || [],
+  };
+}
+
+function accountingTombstoneView_(t) {
+  return {
+    sourceApp:      ACCOUNTING_SOURCE_APP,
+    sourceRecordId: accStr_(t.sourceRecordId),
+    paymentUid:     accOrNull_(t.paymentUid),
+    patientUid:     accOrNull_(t.patientUid),
+    house:          accStr_(t.houseId),
+    dueDate:        accOrNull_(t.dueDate),
+    amount:         accNum_(t.amount),
+    amountPaid:     accNum_(t.amountPaid),
+    status:         paymentStatus_(t.status),
+    deletedAt:      accIsraelStamp_(t.deletedAt),
+    deletedBy:      accOrNull_(t.deletedBy),
+    reason:         accStr_(t.reason),
+    deleted:        true,
+  };
+  /* `values` (the recovery copy of the whole deleted row) is deliberately NOT
+   * projected — it is for a human restoring data, not for an external app. */
+}
+
+function accountingTombstones_(sinceMs) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(PAYMENTS_TOMBSTONES_SHEET);
+  if (!sh) return { tombstones: [], truncated: false };   // never created one → nothing deleted
+  const rows = readSheet_(sh, PAYMENT_TOMBSTONE_COLUMNS);
+  const out = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (sinceMs !== null && accountingSortMs_(rows[i].deletedAt) < sinceMs) continue;
+    out.push(rows[i]);
+  }
+  out.sort(function (a, b) { return accountingSortMs_(a.deletedAt) - accountingSortMs_(b.deletedAt); });
+  const truncated = out.length > ACCOUNTING_TOMBSTONE_MAX;
+  return {
+    tombstones: out.slice(0, ACCOUNTING_TOMBSTONE_MAX).map(accountingTombstoneView_),
+    truncated: truncated,
+  };
+}
+
+/* ---- the two actions ---------------------------------------------------- */
+
+function accountingPayments_(params) {
+  const since = accountingSince_(params && params.updatedSince);
+  if (!since.ok) return { ok: false, error: 'bad_updatedSince' };
+  const cur = accountingCursorParse_(params && params.cursor);
+  if (!cur.ok) return { ok: false, error: 'bad_cursor' };
+  const limit = accountingLimit_(params && params.limit);
+
+  const sh = getOrCreateSheet_(PAYMENTS_SHEET, PAYMENT_COLUMNS);
+  // Identity only — see the read-only note at the top of this section.
+  backfillPaymentIdentityLocked_(sh);
+  const rows = readSheet_(sh, PAYMENT_COLUMNS);
+
+  // Credits, grouped by the derived link key, so each payment carries its own.
+  const creditsSh = getOrCreateSheet_(CREDITS_SHEET, CREDIT_COLUMNS);
+  backfillCreditUidsLocked_(creditsSh);
+  const creditRows = readSheet_(creditsSh, CREDIT_COLUMNS);
+  const creditsByLink = {};
+  for (let i = 0; i < creditRows.length; i++) {
+    const c = creditRows[i];
+    const key = accStr_(c.patientKey) + '|' + accStr_(c.allocationMonth);
+    if (!creditsByLink[key]) creditsByLink[key] = [];
+    creditsByLink[key].push(accountingCreditView_(c));
+  }
+
+  const items = [];
+  let identityPending = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!accStr_(r.paymentUid)) identityPending++;
+    const uid = accStr_(r.paymentUid) || accStr_(r.id);
+    if (!uid) continue;   // a row with no identity at all is not exportable
+    items.push({
+      sortMs: accountingSortMs_(r.sourceUpdatedAt),
+      uid: uid,
+      value: accountingPaymentView_(r, creditsByLink),
+    });
+  }
+
+  const page = accountingPage_(items, since.ms, cur.cursor, limit);
+  // Tombstones ride the FIRST page of a sync only (no cursor), so a paging
+  // client does not receive the same deletions on every page.
+  const tomb = cur.cursor ? { tombstones: [], truncated: false } : accountingTombstones_(since.ms);
+
+  return {
+    ok: true,
+    sourceApp: ACCOUNTING_SOURCE_APP,
+    schemaVersion: ACCOUNTING_SCHEMA_VERSION,
+    serverTime: israelTimestamp_(),
+    payments: page.values,
+    /* Rows still awaiting their permanent paymentUid. The identity backfill is
+     * bounded per invocation (IDENTITY_BACKFILL_MAX_PER_RUN) so a first read
+     * after deploy on a large sheet cannot hit the execution limit; it
+     * converges over the next few reads. NON-ZERO means: do not treat this
+     * sync as complete — such rows come back with paymentUid null and must not
+     * be imported under a substitute key. Read again until it reaches 0, which
+     * it then stays at forever. */
+    identityPending: identityPending,
+    tombstones: tomb.tombstones,
+    tombstonesTruncated: tomb.truncated,
+    page: {
+      limit: limit,
+      count: page.values.length,
+      hasMore: page.hasMore,
+      nextCursor: page.nextCursor,
+      updatedSince: accOrNull_(params && params.updatedSince),
+    },
+  };
+}
+
+function accountingCredits_(params) {
+  const since = accountingSince_(params && params.updatedSince);
+  if (!since.ok) return { ok: false, error: 'bad_updatedSince' };
+  const cur = accountingCursorParse_(params && params.cursor);
+  if (!cur.ok) return { ok: false, error: 'bad_cursor' };
+  const limit = accountingLimit_(params && params.limit);
+
+  const sh = getOrCreateSheet_(CREDITS_SHEET, CREDIT_COLUMNS);
+  backfillCreditUidsLocked_(sh);
+  const rows = readSheet_(sh, CREDIT_COLUMNS);
+
+  const items = [];
+  for (let i = 0; i < rows.length; i++) {
+    const c = rows[i];
+    const uid = accStr_(c.creditUid) || accStr_(c.id);
+    if (!uid) continue;
+    items.push({
+      sortMs: accountingSortMs_(c.updatedAt),
+      uid: uid,
+      value: accountingCreditView_(c),
+    });
+  }
+
+  const page = accountingPage_(items, since.ms, cur.cursor, limit);
+  return {
+    ok: true,
+    sourceApp: ACCOUNTING_SOURCE_APP,
+    schemaVersion: ACCOUNTING_SCHEMA_VERSION,
+    serverTime: israelTimestamp_(),
+    credits: page.values,
+    page: {
+      limit: limit,
+      count: page.values.length,
+      hasMore: page.hasMore,
+      nextCursor: page.nextCursor,
+      updatedSince: accOrNull_(params && params.updatedSince),
+    },
+  };
 }
