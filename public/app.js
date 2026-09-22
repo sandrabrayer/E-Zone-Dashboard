@@ -5487,6 +5487,22 @@ function withDefaultCoverage(payment) {
   });
 }
 
+/* A coverage window as PEOPLE read it: the app's own date format on both ends,
+ * never ISO. formatDate() is the one the rest of the app already prints a
+ * person's dates with (תאריך כניסה on תפוסה, תאריך שחרור on שחרורים) — reused
+ * here rather than twinned, so a date does not change shape between screens.
+ *
+ * DISPLAY ONLY. coverageStart / coverageEnd are stored, validated and fed to
+ * the native <input type="date"> as bare 'YYYY-MM-DD' text exactly as before;
+ * this function is never on a write path.
+ *
+ * A single-day period prints once — "22.9.2026 – 22.9.2026" reads as a bug. */
+function coveragePeriodText(win) {
+  if (!win || !win.start || !win.end) return '—';
+  const a = isoFromLocalDate(win.start), b = isoFromLocalDate(win.end);
+  return a === b ? formatDate(a) : `${formatDate(a)} – ${formatDate(b)}`;
+}
+
 /* The 15th of the next month on or after decidedDate: decided on the 1st–15th
  * → the 15th of that month; the 16th onward → the 15th of the following
  * month. String arithmetic on the parts (no Date, no timezone). Mirrors
@@ -5688,7 +5704,7 @@ function creditBasisText(creditType, basis) {
    * inferred says nothing extra — that is the norm, and labelling every row
    * would bury the ones that matter. */
   const windowSourceText = basis.coverageWindowSource === 'recorded' ? ', תקופה שנרשמה על התשלום' : '';
-  const windowText = `חלון כיסוי ${basis.coverageStart} → ${basis.coverageEnd} (${basis.windowDays} ימים${basis.paymentDueDate ? ', תשלום ' + basis.paymentDueDate : ' — חודש קלנדרי, אין שורת תשלום'}${windowSourceText})`;
+  const windowText = `חלון כיסוי ${formatDate(basis.coverageStart)} → ${formatDate(basis.coverageEnd)} (${basis.windowDays} ימים${basis.paymentDueDate ? ', תשלום ' + basis.paymentDueDate : ' — חודש קלנדרי, אין שורת תשלום'}${windowSourceText})`;
   if (creditType === 'days_unused') {
     return [
       CREDIT_RULE_LABELS[basis.rule] || basis.rule,
@@ -7545,6 +7561,41 @@ function renderBillingOpenList(selectedISO) {
   }
 }
 
+/* The month-by-month split of `amount` over a payment's coverage window, as
+ * the lines printed under the period on its גבייה row:
+ *
+ *     ספטמבר · 9 ימים · ₪ 11,100      אוקטובר · 21 ימים · ₪ 25,900 [נדחה]
+ *
+ * This is the figure that decides which month the money lands in, so it is
+ * spelled out on the row rather than hidden in a tooltip. The arithmetic is
+ * splitByMonth() → revenueAllocate(), i.e. literally the function הכנסות
+ * חודשיות allocates with; nothing here re-derives a day-split.
+ *
+ * `startISO` / `endISO` override the stored pair so the strip can follow the
+ * two date inputs LIVE while a period is being edited — the split is the
+ * consequence the recorder is actually deciding about. An impossible period
+ * shows the shared refusal reason instead of a window. */
+function coverageSplitHtml(payment, amount, startISO, endISO) {
+  let probe = payment;
+  if (startISO !== undefined || endISO !== undefined) {
+    const err = coveragePeriodError(startISO, endISO);
+    if (err) return `<span class="bill-cov-split-err">${escapeHtml(err)}</span>`;
+    probe = { ...payment, coverageStart: startISO || '', coverageEnd: endISO || '' };
+  }
+  const split = paymentMonthSplit(probe, amount);
+  if (!split || !split.months.length) return '';
+  /* Inside one year the month name alone reads cleanest; a window crossing
+   * December must say which year, or two lines look identical. */
+  const oneYear = split.months.every(m => m.month.slice(0, 4) === split.months[0].month.slice(0, 4));
+  return split.months.map(m => `<span class="bill-cov-part${m.deferred ? ' deferred' : ''}"${
+    m.deferred ? ' title="נדחה: הכסף נגבה עכשיו ונזקף לחודש הבא"' : ''}>`
+    + `<span class="cov-part-month">${escapeHtml(oneYear ? m.monthName : m.label)}</span>`
+    + `<span class="cov-part-days">${m.daysInMonth} ימים</span>`
+    + `<span class="cov-part-amount">${escapeHtml(fmtShekel(m.amount))}</span>`
+    + (m.deferred ? '<span class="cov-part-tag">נדחה</span>' : '')
+    + '</span>').join('');
+}
+
 function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   const house = houseById(payment.houseId) || houseById(patient.houseId);
   const houseName = house ? house.name : (patient.houseId || '');
@@ -7629,7 +7680,11 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   const covStart = cov ? isoFromLocalDate(cov.start) : '';
   const covEnd   = cov ? isoFromLocalDate(cov.end) : '';
   const covAdjusted = coverageDiffersFromDefault(payment);
-  const covText = cov ? `${covStart} → ${covEnd}` : '—';
+  /* PEOPLE-FACING on the row, ISO only in the inputs below: the window reads
+   * in the app's own date format (coveragePeriodText → formatDate, the same
+   * shape תאריך כניסה has on תפוסה). The stored values, the validation and
+   * the native date inputs are untouched — covStart/covEnd stay bare ISO. */
+  const covText = coveragePeriodText(cov);
   const coverageCellHtml = `
       <span class="p-val bill-cov-view" dir="ltr">${escapeHtml(covText)}
         ${covAdjusted ? '<span class="badge override" title="תקופה שנרשמה ידנית, שונה ממחזור החיוב הרגיל">מותאמת</span>' : ''}
@@ -7686,6 +7741,10 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
     <div>
       <span class="p-label">יתרה</span>
       <span class="p-val billing-balance">₪ ${(payment.balance || 0).toLocaleString('he-IL')}</span>
+    </div>
+    <div class="bill-cov-split">
+      <span class="p-label">פיצול לפי חודשים</span>
+      <span class="bill-cov-parts">${coverageSplitHtml(payment, amount)}</span>
     </div>
   `;
 
@@ -7798,23 +7857,36 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
    * upsert, rollback + שמירת גבייה נכשלה on failure — so the period
    * cannot be persisted by a path the rest of the app does not know about.
    * Validation is the SHARED coveragePeriodError(); the server re-checks it. */
+  const covPartsEl = row.querySelector('.bill-cov-parts');
   const covEditBtn = row.querySelector('.bill-cov-edit-btn');
   if (covEditBtn) {
     const covView  = row.querySelector('.bill-cov-view');
     const covWrap  = row.querySelector('.bill-cov-edit');
     const startIn  = row.querySelector('.bill-cov-start');
     const endIn    = row.querySelector('.bill-cov-end');
+    /* The strip follows the two inputs LIVE: the month split is the actual
+     * consequence of the period being typed, so it must not wait for a save
+     * to show what that period would do to the money. Display only — nothing
+     * here writes, and an impossible pair renders the refusal reason. */
+    const previewSplit = () => {
+      if (covPartsEl) covPartsEl.innerHTML = coverageSplitHtml(payment, amount, startIn.value, endIn.value);
+    };
     covEditBtn.onclick = () => {
       covView.classList.add('hidden');
       covWrap.classList.remove('hidden');
       if (startIn.focus) startIn.focus();
     };
+    startIn.oninput  = previewSplit;
+    endIn.oninput    = previewSplit;
+    startIn.onchange = previewSplit;
+    endIn.onchange   = previewSplit;
     row.querySelector('.bill-cov-cancel').onclick = () => {
       covWrap.classList.add('hidden');
       covView.classList.remove('hidden');
       // Discard the half-typed values — reopening must show what is stored.
       startIn.value = covStart;
       endIn.value = covEnd;
+      previewSplit();
     };
     row.querySelector('.bill-cov-save').onclick = e =>
       busyButton(e.currentTarget, 'save', () => saveCoveragePeriod(payment, startIn.value, endIn.value));
@@ -8050,6 +8122,99 @@ function revenueAllocate(amount, win, bounds, effectiveEnd) {
   if (!inMonth) return { amount: 0, daysInMonth: 0, windowDays, share: 0 };
   const share = inMonth / windowDays;
   return { amount: roundMoney((Number(amount) || 0) * share), daysInMonth: inMonth, windowDays, share };
+}
+
+/* splitByMonth(amount, win) →
+ *   { months: [{ month, label, monthName, daysInMonth, windowDays, share,
+ *                allocated, amount, deferred }],
+ *     windowDays, total, residual }
+ *
+ * A window's own calendar-month split, month by month, through
+ * revenueAllocate() — THE SAME function הכנסות חודשיות allocates with, so the
+ * split printed on a גבייה row is the very arithmetic that screen reports and
+ * not a second opinion about it. Re-implementing the day-split here is the
+ * fork this reuse exists to prevent; the no-fork guard pins it.
+ *
+ * The denominator is the WINDOW's own length, never the calendar month's:
+ * 9 of 30 days of a ₪37,000 window is ₪11,100, whatever September is worth.
+ *
+ * VAT-INCLUSIVE, like the amount stored on the payment row and like the amount
+ * printed beside it (הכנסות חודשיות is the one screen that divides by VAT, and
+ * it says so on every figure).
+ *
+ * `allocated` is exactly what the monthly view puts in that month.
+ * `amount` is what is DISPLAYED: the same figure, except that the last agora
+ * of rounding drift is absorbed by the longest month so the printed lines add
+ * up to the payment exactly. Independently rounding each month's share can
+ * leave ₪0.01 unaccounted for (₪100 over three equal months → 33.33 × 3 =
+ * 99.99), and a split that does not sum to the row's own amount reads as a bug
+ * to the person checking it. Both figures are returned so neither truth is
+ * hidden: `allocated` reconciles with the monthly view, `amount` with the row.
+ *
+ * `deferred` marks every month AFTER the one the window starts in — the money
+ * is collected now and earned then. Deliberately clock-independent: a row's
+ * split must not change meaning because the calendar turned over. */
+function splitByMonth(amount, win) {
+  if (!win || !win.start || !win.end) return null;
+  const total = roundMoney(Number(amount) || 0);
+  const windowDays = diffWholeDays(win.start, win.end) + 1;
+  if (windowDays <= 0) return null;
+
+  const firstKey = monthKey(isoFromLocalDate(win.start));
+  const lastKey  = monthKey(isoFromLocalDate(win.end));
+  const months = [];
+  let key = firstKey;
+  /* 24 is a hard stop, not a policy: coveragePeriodError() already refuses a
+   * span over 366 days, so a real window spans at most 13 months. */
+  for (let guard = 0; key && guard < 24; guard++) {
+    const bounds = revenueMonthBounds(key);
+    if (!bounds) break;
+    const a = revenueAllocate(total, win, bounds);
+    if (a.daysInMonth > 0) {
+      months.push({
+        month: key,
+        label: revenueMonthLabel(key),
+        monthName: bounds.start.toLocaleDateString('he-IL', { month: 'long' }),
+        daysInMonth: a.daysInMonth,
+        windowDays: a.windowDays,
+        share: a.share,
+        allocated: a.amount,
+        amount: a.amount,
+        deferred: months.length > 0,
+      });
+    }
+    if (key === lastKey) break;
+    key = revenueShiftMonth(key, 1);
+  }
+  if (!months.length) return null;
+
+  /* The rounding residual, parked on the month carrying the most days — where
+   * an agora is least visible, and deterministically chosen (ties go to the
+   * earlier month) so the same payment always splits identically. */
+  let sum = 0;
+  months.forEach(m => { sum = roundMoney(sum + m.allocated); });
+  const residual = roundMoney(total - sum);
+  if (residual) {
+    let target = 0;
+    for (let i = 1; i < months.length; i++) {
+      if (months[i].daysInMonth > months[target].daysInMonth) target = i;
+    }
+    months[target].amount = roundMoney(months[target].allocated + residual);
+  }
+  return { months, windowDays, total, residual };
+}
+
+/* paymentMonthSplit(payment, amount) → splitByMonth() over THAT payment's
+ * coverage window — recorded when the row records one, inferred otherwise,
+ * via the one paymentCoverage() every consumer reads.
+ *
+ * `amount` is passed in rather than read off the row because the גבייה row
+ * shows the EFFECTIVE amount (the per-month סכום מותאם override layer), and
+ * the split must match the figure printed beside it. */
+function paymentMonthSplit(payment, amount) {
+  const win = paymentCoverage(payment);
+  if (!win) return null;
+  return splitByMonth(amount, win);
 }
 
 /* ---- billing-cycle projection -------------------------------------------
@@ -8642,7 +8807,10 @@ function buildRevenueDetailRow(row, groupKey, sign) {
     + (row.kind === 'unbilled_past' ? ' rev-warn' : '')
     + (row.kind === 'pre_records' ? ' rev-pre-records' : '');
 
-  const windowText = `${row.coverageStart} → ${row.coverageEnd}`;
+  /* The same people-facing date format the גבייה row prints the period in —
+   * a coverage window must not read as ISO on one screen and as a date on the
+   * other. row.coverageStart/End stay bare ISO in the model. */
+  const windowText = `${formatDate(row.coverageStart)} → ${formatDate(row.coverageEnd)}`;
   // The split, shown as the fraction it is: 12 מתוך 31 ימים.
   const daysText = `${row.daysInMonth} מתוך ${row.windowDays} ימים`;
 

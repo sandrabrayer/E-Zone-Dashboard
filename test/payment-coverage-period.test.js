@@ -55,6 +55,10 @@ function loadApp() {
       coverageDiffersFromDefault, withDefaultCoverage, COVERAGE_MAX_DAYS,
       normalizePayment, suggestCredits, buildMonthlyRevenue,
       patientKey, isoFromLocalDate, isoDate, roundMoney,
+      // The display layer + the month split (this PR).
+      coveragePeriodText, formatDate, splitByMonth, paymentMonthSplit,
+      coverageSplitHtml, revenueAllocate, revenueMonthBounds, localDateFromISO,
+      creditBasisText, escapeHtml,
     };
   `;
   const noop = () => {};
@@ -681,7 +685,7 @@ test('G: the period has its own cell on the גבייה row, next to the amount',
     'the coverage cell follows the amount cell directly');
   // The row grid grew a column to hold it.
   assert.match(CSS, /grid-template-columns: 1\.2fr \.85fr \.95fr 2fr 1fr \.95fr \.85fr;/,
-    'seven columns — the coverage cell is the widest, it prints two ISO dates');
+    'seven columns — the coverage cell is the widest, it prints two dates');
   assert.match(CSS, /\.bill-cov-view \{/);
   assert.match(CSS, /\.bill-cov-edit\.hidden \{ display: none; \}/);
 });
@@ -752,7 +756,7 @@ test('H: no new endpoint, and server.js is untouched by this change', () => {
   ].sort());
 });
 
-test('H: every coverage value reaching the DOM is escaped or a bare ISO date', () => {
+test('H: every coverage value reaching the DOM is escaped', () => {
   const row = fnSource(APP, 'buildBillingRow');
   // The displayed window and both input values go through escapeHtml.
   assert.match(row, /\$\{escapeHtml\(covText\)\}/);

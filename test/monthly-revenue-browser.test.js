@@ -150,9 +150,12 @@ test('the monthly revenue screen renders the four figures in Chromium', { skip }
     assert.match(detail, /12 מתוך 31 ימים/, 'the January cycle contributes 12 of its 31 days');
     assert.match(detail, /19 מתוך 31 ימים/, 'the December cycle contributes 19');
     assert.match(detail, /נגבה בפועל/, 'the group heading is rendered');
-    // Both coverage windows are printed, so the reader can check the maths.
-    assert.match(detail, /2026-01-20 → 2026-02-19/);
-    assert.match(detail, /2025-12-20 → 2026-01-19/);
+    /* Both coverage windows are printed, so the reader can check the maths —
+       in the app's people-facing date format, the same one the גבייה row
+       prints the period in. ISO is storage, and stays off the screen. */
+    assert.match(detail, /20\.1\.2026 → 19\.2\.2026/);
+    assert.match(detail, /20\.12\.2025 → 19\.1\.2026/);
+    assert.doesNotMatch(detail, /\d{4}-\d{2}-\d{2}/, 'no ISO date reaches the drill-down');
 
     // The house breakdown resolves the id to its display name.
     assert.match(await text('#rev-by-house'), /קיסריה עפרוני/);
