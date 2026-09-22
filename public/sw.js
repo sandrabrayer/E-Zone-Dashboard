@@ -64,7 +64,12 @@
 // and it is the OFFLINE fallback on any device that installed v13 — evict it so
 // no phone keeps serving the copy where the גבייה / הכנסות חודשיות pickers still
 // have an invisible icon.
-var CACHE_VERSION = 'v14';
+// v14 → v15: the stuck-install fix. No v14 cache was ever POPULATED — every
+// precache write was rejected by the Cache API (`Vary: *`, see the install
+// handler below), so v5…v14 exist on every installed device as EMPTY shells
+// that activate never got to delete. The bump forces a clean current name, and
+// the now-reachable activate purges all of them on the first load after deploy.
+var CACHE_VERSION = 'v15';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
@@ -127,25 +132,52 @@ if (typeof module !== 'undefined' && module.exports) {
   };
 }
 
+/* INSTALL — must ALWAYS settle.
+ *
+ * The bug this replaces: the old handler ran six concurrent `cache.add()`
+ * calls on one Cache and swallowed each rejection with `.catch(){}`. Every one
+ * of those adds was rejected by the Cache API with
+ *   TypeError: Failed to execute 'add' on 'Cache': Vary header contains *
+ * because server.js stamped `Vary: *` on every response. Concurrent failing
+ * adds on the same Cache left the last three (the icons) permanently
+ * unsettled, so `Promise.all` never settled, `event.waitUntil()` stayed
+ * pending, and the worker sat in `installing` forever — which meant `activate`
+ * never ran and no old cache was ever deleted. The per-add `.catch()`, written
+ * to make a single 404 non-fatal, is what hid the real error for ten versions.
+ *
+ * The rule now: this promise ALWAYS settles.
+ *   - one `cache.addAll(PRECACHE_URLS)` — one operation, one promise;
+ *   - a precache failure is logged and SWALLOWED ON PURPOSE, so the worker
+ *     still reaches `activate` and still purges the stale caches. Losing the
+ *     offline shell is a degraded PWA; never activating is a broken one, and
+ *     that is the failure we are fixing. test/sw-install-fix.test.js is what
+ *     catches a bad precache list — at CI time, not on a user's phone;
+ *   - `skipWaiting()` is awaited INSIDE waitUntil so activation follows the
+ *     precache deterministically. */
 self.addEventListener('install', function (event) {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(function (cache) {
-      // addAll is atomic-ish; ignore individual failures so a single 404
-      // (e.g. an icon rename) doesn't block the whole install.
-      return Promise.all(PRECACHE_URLS.map(function (u) {
-        return cache.add(u).catch(function () { /* non-fatal */ });
-      }));
-    })
+    caches.open(CACHE_NAME)
+      .then(function (cache) { return cache.addAll(PRECACHE_URLS); })
+      .catch(function (err) {
+        // Never leave waitUntil pending. Activate anyway: the cache cleanup
+        // below matters more than the offline fallback.
+        console.error('[sw] precache failed, activating without it:', err);
+      })
+      .then(function () {
+        // Activate immediately without waiting for old tabs to close.
+        return self.skipWaiting();
+      })
   );
-  // Activate this SW immediately without waiting for old tabs to close.
-  self.skipWaiting();
 });
 
+/* ACTIVATE — delete EVERY cache that is not the current one, then claim.
+ * Unchanged in behaviour; it simply never got to run before. On the first load
+ * after this deploy it is what clears the v5…v14 pile-up. */
 self.addEventListener('activate', function (event) {
   event.waitUntil(
     caches.keys().then(function (keys) {
       return Promise.all(keys.map(function (key) {
-        if (key !== CACHE_NAME) return caches.delete(key);
+        return key === CACHE_NAME ? Promise.resolve(false) : caches.delete(key);
       }));
     }).then(function () {
       // Take control of all open clients right away.
