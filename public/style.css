@@ -498,6 +498,43 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
 .bill-cov-edit.hidden { display: none; }
 .bill-cov-start, .bill-cov-end { width: 100%; min-width: 0; font-size: 13px; }
 
+/* פיצול לפי חודשים — the automatic split of the payment across the calendar
+   months its coverage window touches. This is the figure that decides which
+   month the money lands in, so it gets the full width of the row under the
+   period rather than a tooltip: one pill per month, days and shekels spelled
+   out. */
+.billing-row .bill-cov-split {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin-top: 6px; padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.billing-row .bill-cov-split .p-label { margin-bottom: 0; }
+.billing-row .bill-cov-parts { display: flex; flex-wrap: wrap; gap: 8px; }
+.billing-row .bill-cov-part {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px;
+  background: rgba(45, 212, 122, .13);
+  border: 1px solid var(--success);
+  font-size: 13px; font-weight: 600; color: var(--text);
+}
+/* A month the money has NOT been earned in yet reads as deferred: muted and
+   labelled, so nobody reads the whole payment as this month's revenue. */
+.billing-row .bill-cov-part.deferred {
+  background: var(--surface-2); border-color: var(--border);
+  color: var(--text-muted); font-weight: 500;
+}
+.billing-row .bill-cov-part .cov-part-month { font-weight: 700; }
+.billing-row .bill-cov-part .cov-part-days { color: var(--text-muted); font-size: 12px; }
+.billing-row .bill-cov-part.deferred .cov-part-amount { color: var(--text-muted); }
+.billing-row .bill-cov-part .cov-part-tag {
+  font-size: 10px; letter-spacing: .4px; color: var(--warning);
+  border: 1px solid var(--warning); border-radius: 999px; padding: 0 6px;
+}
+/* An impossible period being typed shows the shared refusal reason in place
+   of the split — the same rule the server enforces, said where it is caused. */
+.billing-row .bill-cov-split-err { color: var(--danger); font-size: 12px; font-weight: 600; }
+
 /* ===== Cards ===== */
 .cards-row {
   display: grid;
@@ -1368,9 +1405,10 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
   border-radius: var(--radius);
   padding: 14px 18px;
   display: grid;
-  /* מטופל · בית · סכום · תקופת כיסוי · סטטוס · שולם בפועל · יתרה.
+  /* מטופל · בית · סכום · תקופת כיסוי · סטטוס · שולם בפועל · יתרה, with the
+     month-split strip spanning the full width beneath them (.bill-cov-split).
      The coverage cell is the widest of the middle columns: it prints two
-     ISO dates side by side and must not wrap mid-window. */
+     dates side by side and must not wrap mid-window. */
   grid-template-columns: 1.2fr .85fr .95fr 2fr 1fr .95fr .85fr;
   align-items: center;
   gap: 12px;

@@ -57,6 +57,8 @@ function loadApp() {
       revenueBreakdownByHouse, isBillablePatient, REVENUE_NO_HOUSE,
       paymentCoverage, patientKey, paymentId, monthKey, isoDate, exVat,
       roundMoney, isoFromLocalDate, VAT_RATE,
+      // The גבייה row's month split — the third consumer of the allocation.
+      splitByMonth, paymentMonthSplit,
       // The credits ledger, so the no-fork guard can prove both consumers
       // really do read the same window off the same row.
       suggestCredits,
@@ -613,6 +615,13 @@ test('H: every shared coverage-window primitive is declared EXACTLY ONCE in app.
      * payment cover", which is exactly the fork this guard exists to stop. */
     'recordedCoverage', 'inferredCoverage', 'coveragePeriodError',
     'coverageDateISO', 'coverageDiffersFromDefault', 'withDefaultCoverage',
+    /* The month-split consumer. The גבייה row prints the payment divided
+     * between calendar months; a second copy of splitByMonth — or a
+     * hand-rolled day-split living in the renderer — would be a second answer
+     * to "which month owns this shekel", printed a centimetre away from the
+     * period it claims to explain. Both go through revenueAllocate(), which
+     * the next test pins. */
+    'splitByMonth', 'paymentMonthSplit', 'coverageSplitHtml', 'coveragePeriodText',
   ];
   for (const name of shared) {
     const hits = APP.match(new RegExp('^function\\s+' + name + '\\s*\\(', 'gm')) || [];
@@ -645,6 +654,24 @@ test('H: the monthly-revenue code REUSES those primitives rather than shadowing 
     const hits = APP.match(new RegExp('^function\\s+' + name + '\\s*\\(', 'gm')) || [];
     assert.equal(hits.length, 1, `${name} must be declared exactly once`);
   }
+  /* The THIRD consumer: the month split under a גבייה row divides the money
+   * with revenueAllocate() and reads its window with paymentCoverage(), so a
+   * row's split cannot drift from what this screen will report for it. */
+  const split_ = fnSource(APP, 'splitByMonth');
+  assert.match(split_, /revenueAllocate\(total, win, bounds\)/,
+    'the split allocates with the ONE allocation primitive');
+  assert.match(split_, /revenueMonthBounds\(key\)/);
+  assert.match(split_, /revenueShiftMonth\(key, 1\)/);
+  assert.match(fnSource(APP, 'paymentMonthSplit'), /paymentCoverage\(payment\)/,
+    'and reads the window from the ONE window function');
+  /* No hand-rolled day arithmetic anywhere in the split: the moment it starts
+   * counting days itself, it is a fork. */
+  for (const forked of ['getDate()', 'getMonth()', '86400', '/ 30', '* 30']) {
+    assert.ok(!split_.includes(forked), 'splitByMonth must not re-derive days: ' + forked);
+  }
+  assert.doesNotMatch(fnSource(APP, 'coverageSplitHtml'), /daysInMonth =|windowDays =/,
+    'the renderer displays the split, it does not compute one');
+
   // And it really is the same window the credits ledger uses for credits.
   const mine = app.paymentCoverage({ dueDate: '2026-01-31' });
   assert.equal(app.isoFromLocalDate(mine.end), '2026-02-27',
@@ -690,6 +717,34 @@ test('H: the credits ledger and the revenue screen read the SAME recorded period
   assert.equal(pre.basis.coverageStart, '2026-03-01');
   assert.equal(pre.basis.coverageEnd, '2026-03-31');
   assert.equal(pre.basis.coverageWindowSource, 'recorded');
+});
+
+test('H: a row\'s month split EQUALS this screen\'s allocation, month for month', () => {
+  /* The guard above proves the split calls the same functions. This proves
+   * the numbers land in the same place — the two are asserted separately on
+   * purpose: reuse can be preserved while a wrapper quietly rounds
+   * differently, and a figure that matches today can start matching by
+   * coincidence tomorrow. */
+  const p = patient({ name: 'דנה', date: '2026-09-22', pay: 37000, houseId: 'ramot' });
+  const pay = Object.assign(
+    payment({ dueDate: '2026-09-22', amount: 37000, amountPaid: 37000, status: 'paid' }),
+    { id: 'p1', patientId: app.patientKey(p), houseId: 'ramot' });
+
+  const split = app.paymentMonthSplit(pay, 37000);
+  assert.deepEqual(plain(split.months.map((m) => [m.month, m.daysInMonth, m.allocated])),
+    [['2026-09', 9, 11100], ['2026-10', 21, 25900]],
+    '22 Sep – 21 Oct on ₪37,000: 9 days in September, 21 in October');
+
+  for (const m of split.months) {
+    const model = build({ month: m.month, patients: [p], payments: [pay], today: '2026-10-25' });
+    const row = model.received.rows.find((r) => r.paymentId === 'p1');
+    assert.ok(row, 'this screen allocates the payment to ' + m.month);
+    assert.equal(m.allocated, row.amountInMonth, m.month + ': same shekels');
+    assert.equal(m.daysInMonth, row.daysInMonth, m.month + ': same days');
+    assert.equal(m.windowDays, row.windowDays, m.month + ': same denominator');
+  }
+  // The displayed figures still add up to the payment exactly.
+  assert.equal(split.months.reduce((t, m) => t + m.amount, 0), 37000);
 });
 
 test('H: the dead monthKey twin is gone, and its removal is explained in place', () => {

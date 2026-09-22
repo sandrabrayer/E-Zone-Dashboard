@@ -136,8 +136,14 @@ test('the coverage period renders on the גבייה row, defaulted to the inferr
     await withPage(async ({ page, port }) => {
       await open(page, port);
       const cell = await page.$eval('.billing-row .bill-cov-view', (el) => el.textContent.trim());
-      // The row records nothing, so the cycle is inferred: 20 Jan → 19 Feb.
-      assert.match(cell, /2026-01-20 → 2026-02-19/, 'got ' + cell);
+      /* The row records nothing, so the cycle is inferred: 20 Jan → 19 Feb —
+         printed in the app's PEOPLE-facing date format (formatDate), not ISO.
+         ISO survives only where it belongs: the two date inputs below. */
+      assert.match(cell, /20\.1\.2026 – 19\.2\.2026/, 'got ' + cell);
+      assert.doesNotMatch(cell, /2026-01-20/, 'ISO is storage, not display');
+      assert.strictEqual(await page.$eval('.bill-cov-start', (el) => el.value), '2026-01-20',
+        'the native date input still takes bare ISO');
+      assert.strictEqual(await page.$eval('.bill-cov-end', (el) => el.value), '2026-02-19');
       // Nothing was decided differently, so no badge.
       assert.strictEqual(await page.$$eval('.bill-cov-view .badge.override', (e) => e.length), 0);
       assert.ok(await page.$('.bill-cov-edit-btn'), 'the pencil is offered on a persisted row in edit mode');
@@ -171,7 +177,7 @@ test('editing the period persists BOTH columns and marks the row as adjusted',
 
       // And the row now says it differs from the billing cycle.
       await page.waitForSelector('.bill-cov-view .badge.override');
-      assert.match(await page.$eval('.bill-cov-view', (el) => el.textContent), /2026-03-01 → 2026-03-31/);
+      assert.match(await page.$eval('.bill-cov-view', (el) => el.textContent), /1\.3\.2026 – 31\.3\.2026/);
       assert.ok(await page.$('.bill-cov-reset-btn'), 'and offers a way back to the cycle');
     });
   });
@@ -190,7 +196,8 @@ test('the recorded period moves the money on הכנסות חודשיות, and sa
     // ₪3,000 incl. VAT ÷ 1.18 = ₪2,542 — all of it, in March.
     assert.strictEqual(await inMonth('2026-03'), '2542');
     const detail = await page.$eval('#rev-detail', (el) => el.textContent);
-    assert.match(detail, /2026-03-01 → 2026-03-31/, 'the window is printed');
+    assert.match(detail, /1\.3\.2026 → 31\.3\.2026/, 'the window is printed, in the app date format');
+    assert.doesNotMatch(detail, /2026-03-01/, 'the drill-down speaks the same date format as the row');
     assert.match(detail, /תקופה מותאמת/, 'and flagged as not the default cycle');
   });
 });
@@ -204,7 +211,7 @@ test('resetting returns the row to the billing cycle', { skip }, async () => {
        synchronously, so a state-only wait races the re-render that follows
        the round-trip. */
     await page.waitForFunction(
-      `document.querySelector('.bill-cov-view').textContent.includes('2026-01-20 \u2192 2026-02-19')`);
+      `document.querySelector('.bill-cov-view').textContent.includes('20.1.2026 \u2013 19.2.2026')`);
     const post = state.posts.filter((p) => p && p.action === 'savePayment').pop();
     /* Reset does not write blanks: savePayment re-stamps the inferred cycle,
      * so the row keeps an explicit period rather than reverting to a cell
