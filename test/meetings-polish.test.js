@@ -52,7 +52,7 @@ function loadApp() {
       todayISO: () => todayISO(),
       weekStartSunday: (v) => weekStartSunday(v),
       addDaysISO: (v, n) => addDaysISO(v, n),
-      formatDateDDMMYYYY: (v) => formatDateDDMMYYYY(v),
+      formatDateHe: (v) => formatDateHe(v),
       // Mutate the real app.js state object so renderMeetings reads our fixtures.
       seedState: (patch) => { Object.assign(state, patch); },
     };
@@ -145,13 +145,13 @@ test('mtg-today class + badge go on today\'s section and no other', () => {
   assert.strictEqual((html.match(/class="mtg-day">/g) || []).length, 1, 'one non-today section');
   // Exactly one "היום" badge, immediately after today's date.
   assert.strictEqual((html.match(/mtg-today-badge/g) || []).length, 1);
-  const todayDate = app.formatDateDDMMYYYY(today);
+  const todayDate = app.formatDateHe(today);
   assert.ok(
     html.includes(`${todayDate}<span class="mtg-today-badge">היום</span>`),
     'today badge follows today\'s date'
   );
   // The other day's date is NOT followed by the badge.
-  const otherDate = app.formatDateDDMMYYYY(otherDay);
+  const otherDate = app.formatDateHe(otherDay);
   assert.ok(
     !html.includes(`${otherDate}<span class="mtg-today-badge">`),
     'other day has no today badge'

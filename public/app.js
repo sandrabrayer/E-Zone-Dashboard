@@ -1646,9 +1646,9 @@ function phoneForManager(name, phones) {
 
 /* Hebrew WhatsApp message for a meeting. The " בשעה <שעה>" clause is dropped
  * entirely when the meeting has no time (m.time === ''). Date via
- * formatDateDDMMYYYY, time is already isoTime-normalized in meetingsForWeek. */
+ * formatDateHe, time is already isoTime-normalized in meetingsForWeek. */
 function meetingWhatsappMessage(m) {
-  const base = `נקבעה פגישה: ${m.name || ''}, ${m.houseLabel || ''}, ${formatDateDDMMYYYY(m.date || '')}`;
+  const base = `נקבעה פגישה: ${m.name || ''}, ${m.houseLabel || ''}, ${formatDateHe(m.date || '')}`;
   return m.time ? `${base} בשעה ${m.time}` : base;
 }
 
@@ -1716,7 +1716,7 @@ function houseDisplayName(house) {
  * DD/MM/YYYY; [בית] is the house DISPLAY name, not the canonical key. Pure. */
 function buildMeetingMessage({ type, name, manager, house, dateISO, time }) {
   const day = hebrewWeekday(dateISO);
-  const date = formatDateDDMMYYYY(dateISO);
+  const date = formatDateHe(dateISO);
   const houseLabel = houseDisplayName(house);
   const timeClause = time ? ` בשעה ${time}` : '';
   if (type === 'update') {
@@ -2205,7 +2205,7 @@ function meetingReportWhenText(iso) {
   if (isNaN(d.getTime())) return String(iso);
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${formatDateDDMMYYYY(isoDate(iso))} ${hh}:${mm}`;
+  return `${formatDateHe(isoDate(iso))} ${hh}:${mm}`;
 }
 
 /* The read-only "דיווח מנהל" block for one lead. '' when the lead has no
@@ -2764,7 +2764,7 @@ function renderMeetings() {
   if (!state.meetingsWeekStart) state.meetingsWeekStart = weekStartSunday(todayISO());
   const wk = meetingsForWeek(state.leads, state.meetingsWeekStart);
 
-  const rangeLabel = `${formatDateDDMMYYYY(wk.weekStart)} – ${formatDateDDMMYYYY(wk.weekEnd)}`;
+  const rangeLabel = `${formatDateHe(wk.weekStart)} – ${formatDateHe(wk.weekEnd)}`;
 
   /* Per-manager conversion strip — computed over ALL leads (all-time), so it
    * renders even in a week with no meetings and reflects every recorded outcome. */
@@ -2785,7 +2785,7 @@ function renderMeetings() {
       const todayBadge = isToday ? `<span class="mtg-today-badge">היום</span>` : '';
       return `
         <section class="mtg-day${isToday ? ' mtg-today' : ''}">
-          <h3 class="mtg-day-head">${escapeHtml(HEBREW_DAYS[d.dow])} · ${escapeHtml(formatDateDDMMYYYY(d.iso))}${todayBadge}</h3>
+          <h3 class="mtg-day-head">${escapeHtml(HEBREW_DAYS[d.dow])} · ${escapeHtml(formatDateHe(d.iso))}${todayBadge}</h3>
           <div class="mtg-rows">${rows}${noTimeBlock}</div>
         </section>`;
     }).join('');
@@ -3408,7 +3408,7 @@ function buildLeadCard(lead) {
    * slot — sitting it above the name made it visually compete with the
    * title (regression noted 2026-05). */
   const createdISO = lead.created ? isoDate(lead.created) : '';
-  const createdDisplay = createdISO ? formatDateDDMMYYYY(createdISO) : '—';
+  const createdDisplay = createdISO ? formatDateHe(createdISO) : '—';
   const createdInner = state.mode === 'edit'
     ? `<input class="lc-created-input" type="date" lang="he" dir="rtl"
               data-field="created" value="${escapeHtml(createdISO)}" />`
@@ -5984,7 +5984,7 @@ function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
         <div class="form-row credit-inline">
           <label>תאריך החלטה</label>
           <input type="date" name="decidedDate" value="${escapeHtml(l.decidedDate || '')}" dir="ltr" />
-          <span class="credit-exvat" data-role="payout">ישולם ב־${escapeHtml(l.payoutDate || payoutDateFor(l.decidedDate) || '—')}</span>
+          <span class="credit-exvat" data-role="payout">ישולם ב־${escapeHtml(formatDateHe(l.payoutDate || payoutDateFor(l.decidedDate)) || '—')}</span>
         </div>
         <div class="form-row credit-inline">
           <label>סטטוס</label>
@@ -6078,7 +6078,7 @@ function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
       const decidedEl = fs.querySelector('[name="decidedDate"]');
       const payoutEl = fs.querySelector('[data-role="payout"]');
       if (decidedEl && payoutEl) decidedEl.addEventListener('change', () => {
-        payoutEl.textContent = 'ישולם ב־' + (payoutDateFor(decidedEl.value) || '—');
+        payoutEl.textContent = 'ישולם ב־' + (formatDateHe(payoutDateFor(decidedEl.value)) || '—');
       });
     });
     const form = back.querySelector('form');
@@ -6235,7 +6235,7 @@ function renderCreditsPayouts() {
   groups.forEach(g => {
     const head = document.createElement('div');
     head.className = 'credit-payout-head';
-    head.innerHTML = `<span dir="ltr">${escapeHtml(g.payoutDate)}</span><span>${g.credits.length} זיכויים</span><b>${fmtShekel(g.total)}</b><span class="credit-exvat">(${fmtShekel(exVat(g.total))} ללא מע"מ)</span>`;
+    head.innerHTML = `<span><bdi>${escapeHtml(formatDateHe(g.payoutDate))}</bdi></span><span>${g.credits.length} זיכויים</span><b>${fmtShekel(g.total)}</b><span class="credit-exvat">(${fmtShekel(exVat(g.total))} ללא מע"מ)</span>`;
     list.appendChild(head);
     g.credits.forEach(c => {
       const row = document.createElement('div');
@@ -7915,9 +7915,11 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   const covStart = cov ? isoFromLocalDate(cov.start) : '';
   const covEnd   = cov ? isoFromLocalDate(cov.end) : '';
   const covAdjusted = coverageDiffersFromDefault(payment);
-  const covText = cov ? `${covStart} → ${covEnd}` : '—';
+  /* Display only. covStart/covEnd stay ISO below — they are the two
+   * <input type="date"> values and what saveCoveragePeriod persists. */
+  const covHtml = cov ? dateRangeHeHtml(covStart, covEnd) : '—';
   const coverageCellHtml = `
-      <span class="p-val bill-cov-view" dir="ltr">${escapeHtml(covText)}
+      <span class="p-val bill-cov-view">${covHtml}
         ${covAdjusted ? '<span class="badge override" title="תקופה שנרשמה ידנית, שונה ממחזור החיוב הרגיל">מותאמת</span>' : ''}
         ${coverageEditable ? '<button class="bill-cov-edit-btn" title="עריכת תקופת הכיסוי של תשלום זה">✏️</button>' : ''}
         ${coverageEditable && covAdjusted ? '<button class="bill-cov-reset-btn" title="חזרה למחזור החיוב הרגיל">↩</button>' : ''}
@@ -8951,7 +8953,8 @@ function buildRevenueDetailRow(row, groupKey, sign) {
     + (row.kind === 'unbilled_past' ? ' rev-warn' : '')
     + (row.kind === 'pre_records' ? ' rev-pre-records' : '');
 
-  const windowText = `${row.coverageStart} → ${row.coverageEnd}`;
+  // Display only — row.coverageStart/End stay ISO for the allocation maths.
+  const windowHtml = dateRangeHeHtml(row.coverageStart, row.coverageEnd);
   // The split, shown as the fraction it is: 12 מתוך 31 ימים.
   const daysText = `${row.daysInMonth} מתוך ${row.windowDays} ימים`;
 
@@ -8981,7 +8984,7 @@ function buildRevenueDetailRow(row, groupKey, sign) {
   el.innerHTML = `
     <div><span class="p-label">מטופל</span><span class="p-name">${escapeHtml(row.patientName || '—')}</span>${chips}</div>
     <div><span class="p-label">בית</span><span class="p-val">${escapeHtml(row.house || '')}</span></div>
-    <div><span class="p-label">חלון כיסוי</span><span class="p-val" dir="ltr">${escapeHtml(windowText)}</span></div>
+    <div><span class="p-label">חלון כיסוי</span><span class="p-val">${windowHtml}</span></div>
     <div><span class="p-label">בחודש זה</span><span class="p-val">${escapeHtml(daysText)}</span></div>
     <div><span class="p-label">סכום מלא</span><span class="p-val">${revMoney(revenueExVat(row.fullAmount))}</span></div>
     <div><span class="p-label">שיוך לחודש</span><span class="p-val rev-portion">${sign}${revMoney(row.amountInMonthExVat)}</span></div>
@@ -9416,7 +9419,7 @@ function renderGrowthGraph() {
 
   const weeklySeries = weekly.map(w => ({
     value: w.count,
-    label: formatDateDDMMYYYY(w.weekStart),
+    label: formatDateHe(w.weekStart),
   }));
   const monthlySeries = monthly.map(m => ({
     value: m.revenue,
@@ -9478,22 +9481,74 @@ function todayISO() {
   const day = String(d.getDate()).padStart(2, '0');
   return `${d.getFullYear()}-${m}-${day}`;
 }
+/* ===== THE date display formatter =====================================
+ *
+ * formatDateHe(value) → 'DD/MM/YYYY', the Israeli reading order. This is the
+ * ONE place a calendar date becomes text for a human, so the whole app reads
+ * the same way and a future change happens once.
+ *
+ * Accepts a bare 'YYYY-MM-DD', a full ISO timestamp, or a Date object.
+ *   - '' for null / undefined / '' — a blank date renders blank, and the
+ *     caller decides whether that becomes a '—' placeholder;
+ *   - the ORIGINAL value back, unchanged, when it cannot be parsed. Never
+ *     'NaN', never 'Invalid Date': showing the raw cell is how somebody
+ *     notices a corrupted value instead of a plausible-looking wrong date.
+ *
+ * NO TIMEZONE SHIFT. A bare 'YYYY-MM-DD' is split on its own digits and never
+ * handed to `new Date(...)`, which parses that form as UTC MIDNIGHT — and for
+ * Israel (UTC+2/+3) renders as the PREVIOUS day. That is the exact −1-day
+ * drift this repo has fixed twice already (exitDate, coverage period), and it
+ * must not be reintroduced at the display layer. Anything that is not a bare
+ * date goes through isoDate(), which reads a timestamp's LOCAL calendar day —
+ * the same rule every other reader in this file follows.
+ *
+ * DISPLAY ONLY. Never call this for a value that is stored in state, posted to
+ * /api/sheets, written to Sheets, or put in an <input type="date">: those stay
+ * ISO, and isoDate()/isoTime() remain the canonical converters for them. */
+function formatDateHe(value) {
+  if (value === null || value === undefined || value === '') return '';
+  if (typeof value === 'string') {
+    const bare = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (bare) return `${bare[3]}/${bare[2]}/${bare[1]}`;
+  }
+  const iso = isoDate(value);
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  /* Unparseable. A STRING comes back exactly as given, so a corrupted cell is
+   * visible rather than disguised. Anything else (an invalid Date, a number, an
+   * object) has no honest text form — String() would print 'Invalid Date' or
+   * '[object Object]', which is the very output this must never produce — so it
+   * renders BLANK and the caller's own '—' placeholder takes over. */
+  return typeof value === 'string' ? value : '';
+}
+
+/* A date RANGE for display — 'start – end' as ESCAPED HTML.
+ *
+ * The start is written FIRST, so in the app's RTL flow it reads on the RIGHT:
+ *
+ *     ‏<bdi>22/09/2026</bdi> – <bdi>21/10/2026</bdi>
+ *      ←—————— reads this way ——————
+ *
+ * Each date is wrapped in <bdi> so the bidi algorithm treats its digits and
+ * slashes as one isolated run and can never reorder them against the Hebrew
+ * around it — which is what a bare `dir="ltr"` span used to paper over at the
+ * cost of flipping the whole range to start-on-the-left.
+ *
+ * Returns HTML that is ALREADY escaped — the caller must not escape it again.
+ * One blank side renders the other date alone; both blank renders ''. */
+function dateRangeHeHtml(startValue, endValue) {
+  const a = formatDateHe(startValue);
+  const b = formatDateHe(endValue);
+  if (!a && !b) return '';
+  if (!a || !b) return `<bdi>${escapeHtml(a || b)}</bdi>`;
+  return `<bdi>${escapeHtml(a)}</bdi> – <bdi>${escapeHtml(b)}</bdi>`;
+}
+
+/* formatDateHe with a '—' placeholder for a blank date. Kept as its own name
+ * because ~20 call sites read better with the placeholder built in. */
 function formatDate(s) {
   if (!s) return '—';
-  const d = new Date(s);
-  if (isNaN(d)) return s;
-  return d.toLocaleDateString('he-IL');
-}
-/* Strict DD/MM/YYYY (zero-padded, slash-separated) — used for the lead
- * "נוצר" display. he-IL's default locale format uses dots and no zero
- * padding (9.5.2026), which the spec rules out. */
-function formatDateDDMMYYYY(s) {
-  if (!s) return '';
-  const iso = isoDate(s);
-  if (!iso) return '';
-  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (!m) return '';
-  return `${m[3]}/${m[2]}/${m[1]}`;
+  return formatDateHe(s) || '—';
 }
 
 /* ====================================================

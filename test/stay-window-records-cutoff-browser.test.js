@@ -170,7 +170,9 @@ test('a pre-cutoff cycle is listed, badged, and left out of סך לגבייה', 
     assert.strictEqual(await digits(page, '#bill-due-total'), 0, 'but not a debt');
     // The note under the cards states the rule and names the date.
     const note = await page.$eval('#bill-pre-records-note', (el) => el.textContent);
-    assert.match(note, /1\.7\.2026/, 'got ' + note);
+    // DD/MM/YYYY, the Israeli display form (formatDateHe) — not the he-IL
+    // locale default "1.7.2026" this used to assert.
+    assert.match(note, /01\/07\/2026/, 'got ' + note);
     assert.match(note, /אינם נספרים כחוב/);
 
     // A post-cutoff date has no note at all.

@@ -801,9 +801,17 @@ test('J: the allocation is PURE — no DOM, no state, no network', () => {
 
 test('J: every interpolated value is escaped — no sheet data reaches innerHTML raw', () => {
   const row = fnSource(APP, 'buildRevenueDetailRow');
-  for (const field of ["row.patientName || '—'", "row.house || ''", 'windowText', 'daysText', 'typeLabel']) {
+  for (const field of ["row.patientName || '—'", "row.house || ''", 'daysText', 'typeLabel']) {
     assert.ok(row.includes(`escapeHtml(${field})`), 'unescaped interpolation of ' + field);
   }
+  /* חלון כיסוי is now built by dateRangeHeHtml (DD/MM/YYYY, each date in its
+   * own <bdi>), which escapes both dates internally and returns ready-made
+   * HTML — so it is deliberately not re-escaped here. Its escaping is asserted
+   * in test/date-format-he.test.js, including an <img onerror> payload. */
+  assert.ok(row.includes('const windowHtml = dateRangeHeHtml(row.coverageStart, row.coverageEnd);'),
+    'the window must come from the escaping range helper');
+  assert.ok(!/\$\{row\.coverageStart\}|\$\{row\.coverageEnd\}/.test(row),
+    'no raw coverage value may reach innerHTML');
   for (const name of ['renderRevenueExpectedComposition', 'renderRevenueByHouse']) {
     const body = fnSource(APP, name);
     const interps = body.match(/\$\{([^}]+)\}/g) || [];
