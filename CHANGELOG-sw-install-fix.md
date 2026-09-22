@@ -180,9 +180,70 @@ sample and `{"ezone-dashboard-v14": []}`.
 
 ---
 
+## 3b. Pre-merge review of the fetch handler
+
+The worker has not controlled a page in ten versions, so every routing path
+below was unreachable in practice and is reachable from the next deploy on.
+Reviewed against `cacheStrategy()` and the `fetch` listener:
+
+| request | strategy | verdict |
+|---|---|---|
+| `/`, `/index.html` (the shell) | **network-first** | already correct — a deploy can never be masked by a stale shell; the cache is an offline-only fallback keyed to the precached `'/'` |
+| any other navigation (`/meeting-report`, …) | `network` | not intercepted at all; no shell is ever substituted |
+| `/style.css`, `/app.js` | **network-first** | already correct, so **no version-bump-pinning test is needed** — the cached copy is only the offline fallback, never the served bundle. This is the simpler of the two options the review offered, and it is what the code already does. |
+| `/manifest.json`, `/icons/*` | cache-first | correct: versioned by filename, evicted wholesale by the version bump |
+| `/api/*`, any URL containing `sheets` | **network-only** | `return`s before `respondWith`, so the worker never touches the request and no cache write is reachable. Patient and lead data still never land in a cache. |
+| any non-GET | — | returned before the strategy is consulted |
+
+**One real defect found and fixed: `cacheFirst` did not degrade gracefully.**
+On a cache miss with the network down, `fetch(req)` rejected and nothing caught
+it, so the promise handed to `event.respondWith()` *rejected* — an unhandled
+rejection inside the worker and a bare network error in the page. It never
+returned `undefined`, but it was not a graceful fallback either. It now ends
+the same way `networkFirst` already did:
+
+```js
+  }).catch(function () {
+    // Cache miss AND the network is gone (or the cache lookup itself failed).
+    return Response.error();
+  });
+```
+
+Also hardened, for the same "it actually runs now" reason: both fire-and-forget
+`cache.put` calls are wrapped in their own `.catch()`. `cache.put` rejects for a
+redirected or opaque response and when the storage quota is exhausted; an
+unhandled rejection in a live worker is noise at best, and a failed cache
+refresh must never disturb the response being returned.
+
+`CACHE_VERSION` is **not** bumped again for this — `v15` has not shipped; it is
+still the same unreleased worker.
+
+## 3c. `noCache()` after removing `Vary: *`
+
+Confirmed against the running server, not by reading the source: every response
+— the precached statics, `/sw.js`, `/app.js`, a data endpoint's 401, `/healthz`
+and the 404 fallback — still carries
+
+```
+Cache-Control: no-store, no-cache, must-revalidate, max-age=0, private
+Pragma: no-cache
+Expires: 0
+Surrogate-Control: no-store
+CDN-Cache-Control: no-store
+Cloudflare-CDN-Cache-Control: no-store
+```
+
+`/api/*` is unchanged: `no-store` **and** `private`, and still 401 without a
+session. Pinned by `test E: noCache() still sets no-store, no-cache AND private
+on every response`, which asserts all six headers on thirteen representative
+paths and that `app.use((_req, res, next) => { noCache(res); next(); })` still
+runs before every route.
+
+---
+
 ## 4. Tests
 
-### `test/sw-install-fix.test.js` — 12 tests (node, no browser)
+### `test/sw-install-fix.test.js` — 19 tests (node, no browser)
 
 Loads the real `public/sw.js` in a vm sandbox that **captures** the `install`
 and `activate` handlers, then drives each one and awaits its `waitUntil`
@@ -205,10 +266,20 @@ hanging the run.
 - **E** boots the **real `server.js`** on an ephemeral port: `/sw.js` returns
   **200 with no cookie** (not PIN-gated), `Content-Type: */javascript`,
   `Cache-Control` containing `no-cache`; **no response carries `Vary: *`**;
-  every precache URL is reachable unauthenticated and storable; and
+  every precache URL is reachable unauthenticated and storable; all six
+  no-cache headers survive on thirteen representative paths (§3c); and
   `/api/sheets` + `/api/me` still return **401** unauthenticated.
+- **F** the fetch handler, driven end to end against a fake network and cache
+  (§3b): the shell and `/style.css` + `/app.js` are served from the **network**
+  even when a cached copy exists; other navigations and every `/api/` or
+  `sheets` URL are **not intercepted at all** and write nothing; a cache miss
+  with the network down yields `Response.error()` on **both** strategies —
+  never `undefined`, never a rejection; a cached copy is served when offline; a
+  failing `cache.put` never disturbs the response; non-GET is never
+  intercepted.
 
-7 of the 12 fail against the pre-fix code, including both root-cause guards.
+9 of the 19 fail against the pre-fix code, including both root-cause guards and
+both `cacheFirst` hardening guards.
 
 ### `test/sw-install-browser.test.js` — 3 tests (real Chromium)
 
@@ -226,7 +297,7 @@ same gate the other browser tests here use.
 ### Full suite
 
 ```
-npm test  →  1359 tests, 1359 pass, 0 fail, 0 skipped
+npm test  →  1366 tests, 1366 pass, 0 fail, 0 skipped
 ```
 
 ---

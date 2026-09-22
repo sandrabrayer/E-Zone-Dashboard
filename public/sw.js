@@ -196,27 +196,49 @@ function networkFirst(req, cacheKey) {
   return fetch(req).then(function (res) {
     if (res && res.status === 200) {
       var copy = res.clone();
-      caches.open(CACHE_NAME).then(function (cache) { cache.put(key, copy); });
+      // Fire-and-forget, but NEVER unguarded: cache.put rejects for a
+      // redirected or opaque response and when the quota is exhausted, and an
+      // unhandled rejection inside a worker that now actually runs is noise
+      // at best. A failed refresh must not disturb the response we return.
+      caches.open(CACHE_NAME)
+        .then(function (cache) { return cache.put(key, copy); })
+        .catch(function () { /* cache refresh is best-effort */ });
     }
     return res;
   }).catch(function () {
+    // Offline. Serve the last-cached copy; if there is none, a proper network
+    // error — never undefined, which respondWith() would treat as a bug.
     return caches.match(key, { ignoreSearch: true }).then(function (hit) {
       return hit || Response.error();
-    });
+    }).catch(function () { return Response.error(); });
   });
 }
 
-/* CACHE-FIRST: serve the cached copy if present, else fetch and cache it. */
+/* CACHE-FIRST: serve the cached copy if present, else fetch and cache it.
+ *
+ * ALWAYS RESOLVES TO A RESPONSE. The miss-plus-offline path used to have no
+ * catch at all: `fetch` rejected, the rejection propagated out of cacheFirst,
+ * and the promise handed to event.respondWith() rejected — an unhandled
+ * rejection in the worker and a bare network error in the page. It never
+ * returned undefined, but it was not a graceful fallback either. It now
+ * degrades the same way networkFirst does: cached copy → network →
+ * Response.error(). This path was unreachable for ten versions because the
+ * worker never activated; it is reachable now. */
 function cacheFirst(req) {
   return caches.match(req, { ignoreSearch: true }).then(function (hit) {
     if (hit) return hit;
     return fetch(req).then(function (res) {
       if (res && res.status === 200) {
         var copy = res.clone();
-        caches.open(CACHE_NAME).then(function (cache) { cache.put(req, copy); });
+        caches.open(CACHE_NAME)
+          .then(function (cache) { return cache.put(req, copy); })
+          .catch(function () { /* cache write is best-effort */ });
       }
       return res;
     });
+  }).catch(function () {
+    // Cache miss AND the network is gone (or the cache lookup itself failed).
+    return Response.error();
   });
 }
 

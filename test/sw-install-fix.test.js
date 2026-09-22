@@ -43,7 +43,7 @@ const SERVER_SRC = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
 function loadSw(opts) {
   opts = opts || {};
   const handlers = {};
-  const calls = { skipWaiting: 0, claim: 0, addAll: [], deleted: [], opened: [] };
+  const calls = { skipWaiting: 0, claim: 0, addAll: [], deleted: [], opened: [], put: [], fetched: [] };
   const noop = () => {};
   const moduleObj = { exports: {} };
 
@@ -55,8 +55,18 @@ function loadSw(opts) {
         ? Promise.reject(new TypeError('Vary header contains *'))
         : Promise.resolve();
     },
-    put: () => Promise.resolve(),
+    put: (key, res) => {
+      calls.put.push(String(key && key.url ? key.url : key));
+      return opts.putRejects ? Promise.reject(new TypeError('Response is a redirect')) : Promise.resolve();
+    },
   };
+
+  /* A stand-in Response. `Response.error()` is what a service worker hands to
+   * respondWith() when it has nothing to serve — the graceful failure, as
+   * opposed to undefined or a rejected promise. */
+  function FakeResponse(tag) { this.tag = tag; this.status = tag === 'error' ? 0 : 200; this.type = tag; }
+  FakeResponse.prototype.clone = function () { return new FakeResponse(this.tag); };
+  FakeResponse.error = () => new FakeResponse('error');
 
   const sandbox = {
     self: {
@@ -68,9 +78,17 @@ function loadSw(opts) {
       open: (name) => { calls.opened.push(name); return Promise.resolve(cacheObj); },
       keys: () => Promise.resolve(opts.existingCaches || []),
       delete: (key) => { calls.deleted.push(key); return Promise.resolve(true); },
-      match: () => Promise.resolve(undefined),
+      // A cache HIT only when the test asks for one.
+      match: () => Promise.resolve(opts.cacheHit ? new FakeResponse('cached') : undefined),
     },
-    Promise, URL, TypeError, Array,
+    // `offline: true` makes every network attempt reject, as it does with no
+    // connection. Otherwise the network answers 200.
+    fetch: (req) => {
+      calls.fetched.push(String(req && req.url ? req.url : req));
+      return opts.offline ? Promise.reject(new TypeError('Failed to fetch')) : Promise.resolve(new FakeResponse('network'));
+    },
+    Response: FakeResponse,
+    Promise, URL, TypeError, Array, String,
     console: { log: noop, warn: noop, error: noop },
     module: moduleObj,
   };
@@ -78,6 +96,23 @@ function loadSw(opts) {
   vm.createContext(sandbox);
   vm.runInContext(SW_SRC, sandbox);
   return { handlers, calls, exports: moduleObj.exports };
+}
+
+/* Drive the fetch handler for one GET url and return what it served:
+ * a FakeResponse, the string 'NOT INTERCEPTED' (no respondWith — the browser
+ * goes straight to the network), or 'REJECTED: …' / 'UNDEFINED', both of which
+ * are bugs. */
+function serve(handlers, url) {
+  let promise = 'NOT INTERCEPTED';
+  handlers.fetch({
+    request: { method: 'GET', url: url },
+    respondWith: (p) => { promise = p; },
+  });
+  if (promise === 'NOT INTERCEPTED') return Promise.resolve(promise);
+  return Promise.resolve(promise).then(
+    (r) => (r === undefined ? 'UNDEFINED' : r),
+    (e) => 'REJECTED: ' + e,
+  );
 }
 
 /* Drive one lifecycle event and return the promise it passed to waitUntil.
@@ -232,6 +267,125 @@ test('D: the cache version was bumped off the stuck value', () => {
   assert.equal(sw.CACHE_NAME, 'ezone-dashboard-v15');
 });
 
+/* ================= F. the fetch handler, now that it actually runs =========
+ * The worker has not controlled a page in ten versions. Everything below was
+ * unreachable in practice and is reachable from the next deploy on. */
+
+test('F(a): the shell and navigations are NETWORK-FIRST — a deploy is never masked', async () => {
+  const sw = loadSw().exports;
+  assert.equal(sw.cacheStrategy('https://x/'), 'network-first');
+  assert.equal(sw.cacheStrategy('https://x/index.html'), 'network-first');
+  // Online: the network answer is served and the cache is refreshed under the
+  // precached '/' key, whichever of the two paths was requested.
+  for (const url of ['https://x/', 'https://x/index.html']) {
+    const { handlers, calls } = loadSw();
+    const res = await serve(handlers, url);
+    assert.equal(res.tag, 'network', url + ' must be served from the network while online');
+    assert.deepEqual(calls.put, ['/'], 'the shell is refreshed under its precached key');
+  }
+  // Any other navigation is passed straight through — no shell is substituted.
+  assert.equal(sw.cacheStrategy('https://x/meeting-report'), 'network');
+  const { handlers } = loadSw();
+  assert.equal(await serve(handlers, 'https://x/meeting-report'), 'NOT INTERCEPTED');
+});
+
+test('F(b): /style.css and /app.js are NETWORK-FIRST, not cache-first', async () => {
+  const sw = loadSw().exports;
+  assert.equal(sw.cacheStrategy('https://x/style.css'), 'network-first');
+  assert.equal(sw.cacheStrategy('https://x/app.js'), 'network-first');
+  // Even with a cached copy present, the network answer wins while online —
+  // which is why no test needs to pin "bump sw.js when style.css changes":
+  // the cached copy is an OFFLINE fallback, never the served bundle.
+  for (const url of ['https://x/style.css', 'https://x/app.js?v=build-123']) {
+    const { handlers } = loadSw({ cacheHit: true });
+    const res = await serve(handlers, url);
+    assert.equal(res.tag, 'network', url + ' must not be served from cache while online');
+  }
+  assert.ok(!/path === '\/app\.js'[\s\S]{0,60}'cache-first'/.test(SW_SRC));
+});
+
+test('F(c): /api/ and Sheets are NETWORK-ONLY — never intercepted, never cached', async () => {
+  const sw = loadSw().exports;
+  /* The browser only ever reaches Apps Script through the /api/sheets proxy —
+   * server.js holds the /exec URL; nothing in the page calls script.google.com
+   * directly. Both rules are exercised: the '/api/' path test and the literal
+   * 'sheets' substring test. */
+  const dataUrls = [
+    'https://x/api/sheets?action=getData',
+    'https://x/api/me',
+    'https://x/api/verify-pin',
+    'https://x/api/debug/last-save',
+    'https://x/some/proxy/sheets?action=saveAll',
+  ];
+  for (const url of dataUrls) {
+    assert.equal(sw.cacheStrategy(url), 'network-only', url);
+    const { handlers, calls } = loadSw({ cacheHit: true });
+    assert.equal(await serve(handlers, url), 'NOT INTERCEPTED',
+      url + ' must never be handled by the worker');
+    assert.deepEqual(calls.put, [], 'and nothing is ever written to the cache for it');
+  }
+  // Belt and braces: no cache-writing helper can ever be reached for them.
+  assert.ok(!PRECACHE.some((u) => u.indexOf('/api/') === 0));
+  /* An unrecognized URL routes to 'network' — also pass-through, also never
+   * cached. Only 'network-first' and 'cache-first' ever call respondWith. */
+  assert.equal(sw.cacheStrategy('https://script.google.com/macros/s/AK/exec'), 'network');
+  const { handlers, calls } = loadSw({ cacheHit: true });
+  assert.equal(await serve(handlers, 'https://script.google.com/macros/s/AK/exec'), 'NOT INTERCEPTED');
+  assert.deepEqual(calls.put, []);
+});
+
+test('F(d): a cache miss with the network down degrades gracefully — never undefined, never a rejection', async () => {
+  // network-first, offline, nothing cached → Response.error()
+  {
+    const { handlers } = loadSw({ offline: true, cacheHit: false });
+    const res = await serve(handlers, 'https://x/style.css');
+    assert.notEqual(res, 'UNDEFINED');
+    assert.ok(typeof res !== 'string', 'must not reject: ' + res);
+    assert.equal(res.tag, 'error');
+  }
+  // network-first, offline, cached → the cached copy
+  {
+    const { handlers } = loadSw({ offline: true, cacheHit: true });
+    const res = await serve(handlers, 'https://x/style.css');
+    assert.equal(res.tag, 'cached', 'the offline fallback is the point of precaching');
+  }
+  // cache-first, offline, nothing cached → Response.error() (this is the path
+  // that used to reject with no catch at all)
+  for (const url of ['https://x/icons/icon-512.png', 'https://x/manifest.json']) {
+    const { handlers } = loadSw({ offline: true, cacheHit: false });
+    const res = await serve(handlers, url);
+    assert.notEqual(res, 'UNDEFINED', url);
+    assert.ok(typeof res !== 'string', url + ' must not reject: ' + res);
+    assert.equal(res.tag, 'error', url);
+  }
+  // cache-first, offline, cached → the cached copy
+  {
+    const { handlers } = loadSw({ offline: true, cacheHit: true });
+    assert.equal((await serve(handlers, 'https://x/icons/icon-512.png')).tag, 'cached');
+  }
+});
+
+test('F(d): a failing cache.put never disturbs the response or leaks a rejection', async () => {
+  for (const url of ['https://x/style.css', 'https://x/icons/icon-512.png']) {
+    const { handlers } = loadSw({ putRejects: true });
+    const res = await serve(handlers, url);
+    assert.ok(typeof res !== 'string', url + ' must still be served: ' + res);
+    assert.equal(res.tag, 'network');
+  }
+  // Both put sites are guarded in the source.
+  const puts = SW_SRC.match(/cache\.put\([^)]*\)/g) || [];
+  assert.equal(puts.length, 2, 'exactly the two cache.put call sites');
+  assert.equal((SW_SRC.match(/cache refresh is best-effort|cache write is best-effort/g) || []).length, 2,
+    'each one carries its own catch');
+});
+
+test('F: non-GET requests are never intercepted', () => {
+  const { handlers } = loadSw();
+  let responded = false;
+  handlers.fetch({ request: { method: 'POST', url: 'https://x/api/sheets' }, respondWith: () => { responded = true; } });
+  assert.equal(responded, false);
+});
+
 /* ================= E. how the server serves it ================= */
 
 test('E: /sw.js is served unauthenticated, 200, JS, with Cache-Control no-cache', async () => {
@@ -269,6 +423,39 @@ test('E: the precache URLs are all reachable unauthenticated and cacheable', asy
       assert.notEqual(res.headers.vary, '*', `${url} must be storable by the Cache API`);
     }
   });
+});
+
+test('E: noCache() still sets no-store, no-cache AND private on every response', async () => {
+  /* Removing `Vary: *` must not have weakened the no-caching posture. This is
+   * asserted on what the server actually EMITS, across every kind of route:
+   * the precached statics, the worker script, a data endpoint's 401 and the
+   * unauthenticated health check. */
+  await withServer(async (port) => {
+    const paths = [
+      '/', '/index.html', '/sw.js', '/app.js', '/style.css', '/manifest.json',
+      '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-maskable-512.png',
+      '/api/sheets?action=getData', '/api/me', '/healthz', '/definitely-not-a-route',
+    ];
+    for (const p of paths) {
+      const res = await get(port, p);
+      const cc = String(res.headers['cache-control'] || '');
+      assert.match(cc, /\bno-store\b/, `${p} lost no-store`);
+      assert.match(cc, /\bno-cache\b/, `${p} lost no-cache`);
+      assert.match(cc, /\bprivate\b/, `${p} lost private`);
+      assert.match(cc, /\bmust-revalidate\b/, `${p} lost must-revalidate`);
+      assert.match(cc, /\bmax-age=0\b/, `${p} lost max-age=0`);
+      assert.equal(res.headers.pragma, 'no-cache', `${p} lost Pragma`);
+      assert.equal(res.headers.expires, '0', `${p} lost Expires`);
+      // The CDN directives are the ones that actually replaced Vary: *'s job.
+      assert.equal(res.headers['surrogate-control'], 'no-store', `${p} lost Surrogate-Control`);
+      assert.equal(res.headers['cdn-cache-control'], 'no-store', `${p} lost CDN-Cache-Control`);
+      assert.equal(res.headers['cloudflare-cdn-cache-control'], 'no-store', `${p} lost Cloudflare-CDN-Cache-Control`);
+      assert.notEqual(res.headers.vary, '*', `${p} still sends Vary: *`);
+    }
+  });
+  // …and noCache is still applied to EVERY response, before any route runs.
+  assert.match(SERVER_SRC, /app\.use\(\(_req, res, next\) => \{ noCache\(res\); next\(\); \}\);/);
+  assert.match(SERVER_SRC, /res\.set\('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0, private'\);/);
 });
 
 test('E: /api/ routes are still session-gated (the fix weakened nothing)', async () => {
