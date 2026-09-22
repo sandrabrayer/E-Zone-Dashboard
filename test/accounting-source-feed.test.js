@@ -255,11 +255,18 @@ test('A: PAYMENT_COLUMNS appends seven accounting columns and moves nothing', ()
     'amount', 'status', 'amountPaid', 'balance', 'timestamp',
     'coverageStart', 'coverageEnd',
   ], 'position IS the data contract — every pre-existing column is unmoved');
-  assert.deepEqual(cols.slice(12), [
+  assert.deepEqual(cols.slice(12, 19), [
     'paymentUid', 'patientUid', 'payerUid',
     'chargedAt', 'chargedBy', 'sourceUpdatedAt', 'sourceVersion',
+  ], 'the accounting seven keep positions 13-19');
+  /* Later work appended the five MANUAL LINK columns after them (see
+   * CHANGELOG-detached-payments.md): what a person decided about a row whose
+   * triple is too damaged for the exact match above to resolve. Append-only is
+   * the contract, so the assertion is "the seven are at 13-19", not "the list
+   * ends there". */
+  assert.deepEqual(cols.slice(19), [
+    'linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt',
   ]);
-  assert.equal(cols.length, 19);
 });
 
 test('A: CREDIT_COLUMNS appends creditUid at the END, nothing else moves', () => {
@@ -281,8 +288,9 @@ test('A: the appended text columns are force-formatted at ensure; the original t
     .map((o) => cols[o.c - 1]).sort();
   assert.deepEqual(forced, [
     'chargedAt', 'chargedBy', 'coverageEnd', 'coverageStart',
+    'linkNote', 'linkPatientUid', 'linkStatus', 'linkedAt', 'linkedBy',
     'patientUid', 'payerUid', 'paymentUid', 'sourceUpdatedAt',
-  ]);
+  ].sort());
   ['id', 'patientId', 'patientName', 'houseId', 'dueDate',
    'amount', 'status', 'amountPaid', 'balance', 'timestamp'].forEach((c) => {
     assert.ok(forced.indexOf(c) < 0, c + ' is LIVE — re-formatting it would be a migration');

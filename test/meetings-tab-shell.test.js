@@ -28,7 +28,10 @@ const EXPECTED_TAB_ORDER = [
   'dashboard', 'leads', 'meetings', 'occupancy',
   // 'revenue' (הכנסות חודשיות) sits directly after 'billing': it is the monthly
   // companion to the daily גבייה worklist, so the two read as a pair in the nav.
-  'discharged-patients', 'billing', 'revenue', 'breakeven', 'growth', 'retention',
+  // 'reconnect' (שיוך תשלומים) follows them both: it is the exception list for
+  // the payment rows those two screens cannot place, so it reads as their
+  // tail rather than as a separate concern.
+  'discharged-patients', 'billing', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention',
 ];
 
 /* Parse the <nav class="tabs"> block into an ordered [{ screen, label }]. */

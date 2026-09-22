@@ -1412,6 +1412,51 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
 .billing-row .billing-paid { width: 100%; font-size: 13.5px; }
 .billing-row .billing-balance { color: var(--warning); }
 
+/* ===== שיוך תשלומים — the reconnect tool =====
+   One card per payment row that matches no current patient: the row as the
+   SHEET holds it, then the candidates it might belong to, each carrying the
+   reasons it is offered. Nothing here is styled to look decided — the screen's
+   whole job is to make an undecided row impossible to overlook. */
+.reconnect-row { margin-bottom: 12px; }
+.reconnect-head {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin-bottom: 6px;
+}
+.reconnect-head .p-name { font-weight: 700; font-size: 16px; color: var(--text); }
+/* The stored patientId, verbatim and LTR — a triple that matches nobody is
+   the evidence, so it is shown rather than summarized. */
+.reconnect-id {
+  direction: ltr; text-align: left; font-size: 11.5px;
+  color: var(--text-dim); font-family: ui-monospace, Menlo, Consolas, monospace;
+  margin-bottom: 8px; overflow-wrap: anywhere;
+}
+.reconnect-cands { display: flex; flex-direction: column; gap: 6px; }
+.reconnect-cand {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  padding: 8px 10px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+.reconnect-cand .cand-name { font-weight: 700; }
+.reconnect-cand .cand-meta { color: var(--text-muted); font-size: 12.5px; }
+.reconnect-cand .cand-why { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.reconnect-cand .cand-link { margin-inline-start: auto; }
+/* A possible double entry: amber, stated, and NOT blocking. Whether the two
+   rows are one payment recorded twice or two real payments is a question only
+   a person can answer. */
+.reconnect-cand.has-dup { border-color: var(--warning); }
+.reconnect-cand .cand-warn {
+  color: var(--warning); font-size: 12px; font-weight: 600;
+  flex-basis: 100%; order: 9;
+}
+.reconnect-empty { color: var(--text-muted); font-size: 13px; padding: 6px 0; }
+.reconnect-dismiss {
+  display: flex; align-items: center; gap: 8px; margin-top: 10px;
+  padding-top: 10px; border-top: 1px dashed var(--border);
+}
+.reconnect-dismiss .reconnect-note { flex: 1; min-width: 0; font-size: 13px; }
+.reconnect-row.decided { opacity: .8; }
+.reconnect-note-shown { font-size: 13px; color: var(--text); margin-bottom: 4px; }
+
 /* ===== RECORDS CUTOFF (לפני תחילת הרישום) =====
    Everything that says "this is shown but not counted" shares one muted
    treatment, so the rule reads the same on all four screens it touches. */

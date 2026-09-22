@@ -851,7 +851,7 @@ function enterApp() {
 /* Tab / screen order. Mirrors the .tabs nav in index.html exactly (each id has a
  * matching <section id="screen-<id>">). `meetings` is an empty placeholder shell
  * (see index.html #screen-meetings); `retention` is intentionally last. */
-const SCREENS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'revenue', 'breakeven', 'growth', 'retention'];
+const SCREENS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention'];
 
 function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {
@@ -1928,7 +1928,13 @@ function normalizePatient(p) {
   return {
     id:       pickField(p, ['id', 'ID', 'מזהה']) || cryptoId(),
     houseId:  resolveHouseId(pickField(p, ['houseId', 'house_id', 'בית', 'בית_מזהה'])),
-    name:     pickField(p, ['name', 'שם', 'שם מטופל', 'Name']),
+    /* TRIMMED. A stray space is invisible on screen and fatal to the
+     * payment link: "שחר חיון " and "שחר חיון" are two different patients to
+     * houseId::name::entryDate, and the live sheet holds a payment row proving
+     * it. Trimming HERE covers every write path at once — the add and edit
+     * forms, the lead promotion, and any saveAll echo — because every patient
+     * object in state goes through this function. */
+    name:     trimName(pickField(p, ['name', 'שם', 'שם מטופל', 'Name'])),
     date:     isoDate(pickField(p, ['date', 'תאריך', 'תאריך כניסה', 'entryDate'])),
     pay:      Number(pickField(p, ['pay', 'payment', 'תשלום', 'תשלום חודשי'])) || 0,
     adv:      Number(pickField(p, ['adv', 'advance', 'מקדמה'])) || 0,
@@ -2900,6 +2906,7 @@ function renderAll() {
   renderBilling();
   renderCreditsPayouts();
   renderMonthlyRevenue();
+  renderReconnect();
   renderBreakeven();
   renderGrowthGraph();
   /* Backfill + persist any visit-stage lead whose meetingWith default was only
@@ -6416,13 +6423,98 @@ function showModal({ title, fields, submitLabel, onSubmit }) {
    sheet row instead of creating duplicates.
 */
 
+/* ===== PAYMENT ↔ PATIENT IDENTITY =====
+ *
+ * THE PROBLEM. A payment was linked to a patient by houseId::name::entryDate.
+ * Any change to any of the three DETACHES it, silently, for good. Found in the
+ * live sheet: "שחר חיון " with a trailing space; "אביב שבתאי" carrying
+ * invisible characters; נועם אשבל's payment left behind on her ריהאב record
+ * after she moved to הפרדס; and four rows — "עמית יעקובי", "ערן", "עדי" and
+ * שחר's — attached to no patient at all.
+ *
+ * THE FIX, in three parts:
+ *   1. patientUid — the PERSISTED Patients-sheet id — is stamped on every new
+ *      payment row and matched FIRST. It survives a rename and a house
+ *      transfer, because it is not made of either.
+ *   2. Names are trimmed at every write, client and server, so the triple
+ *      stops acquiring new variants.
+ *   3. The triple is still read, as a FALLBACK, in two flavours: exactly as
+ *      stored, then normalized — so a row already carrying "שחר חיון " keeps
+ *      matching the patient whose name is now stored trimmed.
+ *
+ * Nothing here rewrites an existing patientId. The triple on a historical row
+ * is left exactly as it is; what changes is what we are willing to RECOGNIZE. */
+
+/* One trim, used by every patient-name write path. */
+function trimName(v) {
+  return String(v == null ? '' : v).trim();
+}
+
+/* Characters that make two identical-LOOKING names different strings: the
+ * zero-width space/joiners, the bidi embedding and override marks, the word
+ * joiner and the BOM. Hebrew text pasted out of WhatsApp, Word or a PDF
+ * carries them routinely, and "אביב שבתאי" in the live sheet does. They are
+ * stripped for MATCHING only — never from what is stored, because removing
+ * characters from somebody's recorded name is a data edit, not a comparison. */
+const NAME_INVISIBLES = /[\u200b-\u200f\u202a-\u202e\u2060\ufeff]/g;
+
+/* A name reduced to what two humans would call "the same name": trimmed,
+ * Unicode-composed, invisibles gone, inner whitespace runs collapsed, case
+ * folded. MATCHING ONLY. */
+function normalizeNameForMatch(v) {
+  return trimName(v).normalize('NFC').replace(NAME_INVISIBLES, '')
+    .replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/* The PERSISTED Patients-sheet row id (patient identity foundation). This is
+ * the identity that survives every edit; `patientKey` is the one that does
+ * not. Blank for a pseudo-patient built by findPatientForPayment. */
+function patientUid(p) {
+  return String((p && p.id) || '').trim();
+}
+/* The uid a payment ROW claims.
+ *
+ * TWO COLUMNS, one answer. `patientUid` is SERVER-OWNED (PR #139): the server
+ * resolves it from an EXACT match of the row's triple and leaves it blank
+ * when it cannot. `linkPatientUid` is what a PERSON decided on the reconnect
+ * screen, and the server lets it win. Reading the decision first also makes
+ * the optimistic local row correct in the moment between the click and the
+ * server's echo. */
+function paymentPatientUid(pay) {
+  if (!pay) return '';
+  return String(pay.linkPatientUid || pay.patientUid || '').trim();
+}
+
 function patientKey(p) {
-  // Billing/payment identity for a patient across sessions: house + name +
-  // entry-date. Kept as the payment/override key even now that the Patients
-  // sheet persists a per-row `id` (patient identity foundation) — every
-  // existing payment and override row is keyed on this triple, so switching
-  // it would orphan them; a keyed migration is a separate, later change.
-  return `${p.houseId}::${p.name || ''}::${p.date || ''}`;
+  /* Billing/payment identity for a patient across sessions: house + name +
+   * entry-date. Kept as the payment/override key even now that the Patients
+   * sheet persists a per-row `id` — every existing payment and override row is
+   * keyed on this triple, so switching it would orphan them; patientUid is
+   * added ALONGSIDE it and consulted first, rather than replacing it.
+   *
+   * The name is trimmed, mirroring patientKey_() in Code.gs, which has always
+   * trimmed. The two disagreeing is how a payment row came to hold
+   * "…::שחר חיון ::…" while the server's own key for the same row was
+   * "…::שחר חיון::…". */
+  return `${p.houseId}::${trimName(p.name)}::${p.date || ''}`;
+}
+
+/* The triple, reduced for MATCHING: house, normalized name, normalized date.
+ * Built from a patient, or from a stored `patientId` string, so both sides of
+ * a comparison go through the same reduction. */
+function patientMatchKey(houseId, name, dateISO) {
+  return `${resolveHouseId(houseId || '')}::${normalizeNameForMatch(name)}::${isoDate(dateISO)}`;
+}
+function patientMatchKeyOf(p) {
+  return p ? patientMatchKey(p.houseId, p.name, p.date) : '';
+}
+/* A stored 'houseId::name::entryDate' put through the same reduction. Returns
+ * '' for anything that is not that shape — an unparseable id is a true orphan
+ * and must not be coerced into looking like a match. */
+function patientMatchKeyFromId(patientId) {
+  const parts = String(patientId == null ? '' : patientId).split('::');
+  if (parts.length !== 3) return '';
+  return patientMatchKey(parts[0], parts[1], parts[2]);
 }
 
 function paymentId(patient, dueDateISO) {
@@ -6476,8 +6568,35 @@ function normalizePayment(r) {
      * this function's job to refuse. */
     coverageStart: isoDate(r.coverageStart),
     coverageEnd:   isoDate(r.coverageEnd),
+    /* The identity + link columns (appended; see PAYMENT_COLUMNS in Code.gs).
+     *
+     *   patientUid     — SERVER-OWNED (PR #139): the persisted Patients id,
+     *                    resolved from an EXACT triple match and left blank
+     *                    when that fails. Carried here so the client reads
+     *                    the same answer the accounting feed does; never sent.
+     *   linkPatientUid — what a PERSON decided on the reconnect screen. The
+     *                    one client-writable input to the link, and the only
+     *                    thing that may override the automatic resolution.
+     *   linkStatus     — '' (never reviewed) | 'linked' | 'not_a_patient'.
+     *   linkNote       — the reason, required for 'not_a_patient'.
+     *   linkedBy/At    — who decided and when. SERVER-STAMPED; a client value
+     *                    is dropped on write and only echoed back on read. */
+    patientUid:     String(r.patientUid || '').trim(),
+    linkPatientUid: String(r.linkPatientUid || '').trim(),
+    linkStatus: PAYMENT_LINK_STATUSES.indexOf(String(r.linkStatus || '').trim()) >= 0
+      ? String(r.linkStatus).trim() : '',
+    linkNote:   String(r.linkNote || ''),
+    linkedBy:   String(r.linkedBy || ''),
+    linkedAt:   String(r.linkedAt || ''),
   };
 }
+
+/* The only values linkStatus may hold. Mirrors PAYMENT_LINK_STATUSES in
+ * Code.gs, which is the authority on write. '' means "nobody has looked at
+ * this row yet" and is what every historical row carries. */
+const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient'];
+/* Longest note the reconnect screen will store. Mirrors the server cap. */
+const PAYMENT_LINK_NOTE_MAX = 300;
 
 /* Deterministic id for a per-patient, per-month billing-amount override.
  * Mirrors billingOverrideId_() in Code.gs exactly so a client-built id upserts
@@ -6634,7 +6753,11 @@ function paymentForPatientOnDate(patient, dueDateISO) {
   return applyBillingOverride(normalizePayment({
     id,
     patientId: patientKey(patient),
-    patientName: patient.name,
+    /* patientUid is SERVER-OWNED (PR #139) — it is resolved from the triple
+     * on write, so a placeholder does not claim one. What the placeholder DOES
+     * carry is a trimmed name, so the triple it is born with is the same one
+     * the server's index is built from. */
+    patientName: trimName(patient.name),
     houseId: patient.houseId,
     dueDate: dueDateISO,
     amount: patient.pay || 0,
@@ -6855,19 +6978,424 @@ function patientsNeedingRenewal(fromISO, windowDays) {
   return out.sort((a, b) => a.renewalISO.localeCompare(b.renewalISO));
 }
 
+/* ===== MATCHING A PAYMENT TO A PATIENT =====
+ *
+ * FOUR TIERS, most durable first. The tier is REPORTED, not just used: the
+ * reconnect screen shows how a row is holding on, and `matchPatientForPayment`
+ * is the one place the order is written down.
+ *
+ *   1. patientUid    — the persisted Patients id. Survives a rename AND a
+ *                      house transfer, because it is made of neither.
+ *   2. triple_exact  — houseId::name::entryDate exactly as the row stores it.
+ *                      What every historical row has, and all it has.
+ *   3. triple_loose  — the same triple with the name normalized (trimmed,
+ *                      invisibles stripped, case folded). This is what keeps
+ *                      "שחר חיון " attached to שחר חיון.
+ *   4. house_name    — house + normalized name, no date, and ONLY when exactly
+ *                      one patient matches. A second candidate means we cannot
+ *                      tell them apart, and guessing is how a payment ends up
+ *                      on the wrong person's ledger.
+ *
+ * Returns { patient, via } or null. Pure over the `patients` list it is
+ * given — buildMonthlyRevenue and the reconnect screen both drive it over
+ * their own arrays. */
+const PAYMENT_MATCH_TIERS = ['patientUid', 'triple_exact', 'triple_loose', 'house_name'];
+
+function matchPatientForPayment(pay, patients) {
+  if (!pay || !Array.isArray(patients)) return null;
+
+  const uid = paymentPatientUid(pay);
+  if (uid) {
+    const byUid = patients.find(p => p && patientUid(p) === uid);
+    if (byUid) return { patient: byUid, via: 'patientUid' };
+    /* A uid that names nobody is a DECISION that has gone stale (the patient
+     * row was deleted). It is not a licence to fall through to a name match —
+     * that would quietly re-link the money to somebody else. Send it to the
+     * reconnect screen instead. */
+    return null;
+  }
+
+  const storedId = String(pay.patientId || '');
+  if (storedId) {
+    /* AMBIGUITY IS REFUSED AT EVERY TIER, this one included. Two patients CAN
+     * share a triple — the same person readmitted on the same day into the
+     * same house, or a genuine namesake — and `find` would silently hand back
+     * whichever the array happened to hold first. That is a coin flip
+     * deciding whose ledger a payment lands on. */
+    const exactHits = patients.filter(p => p && patientKey(p) === storedId);
+    if (exactHits.length === 1) return { patient: exactHits[0], via: 'triple_exact' };
+    if (exactHits.length > 1) return null;
+    const loose = patientMatchKeyFromId(storedId);
+    if (loose) {
+      const hits = patients.filter(p => p && patientMatchKeyOf(p) === loose);
+      if (hits.length === 1) return { patient: hits[0], via: 'triple_loose' };
+      if (hits.length > 1) return null;   // ambiguous — never guess
+    }
+  }
+
+  if (pay.patientName && pay.houseId) {
+    const house = resolveHouseId(pay.houseId);
+    const name = normalizeNameForMatch(pay.patientName);
+    const hits = patients.filter(p => p
+      && resolveHouseId(p.houseId) === house
+      && normalizeNameForMatch(p.name) === name);
+    if (hits.length === 1) return { patient: hits[0], via: 'house_name' };
+  }
+  return null;
+}
+
 /* The payment may exist on Sheets without a matching patient (e.g., the
  * patient was released after a payment was recorded). We still want to show
  * those records in "open balances" so the money isn't forgotten. */
 function findPatientForPayment(pay) {
-  if (pay.patientId) {
-    const direct = state.patients.find(p => patientKey(p) === pay.patientId);
-    if (direct) return direct;
-  }
-  if (pay.patientName && pay.houseId) {
-    return state.patients.find(p => p.houseId === pay.houseId && p.name === pay.patientName);
-  }
-  return null;
+  const m = matchPatientForPayment(pay, state.patients);
+  return m ? m.patient : null;
 }
+
+/* ====================================================
+   שיוך תשלומים — THE RECONNECT TOOL
+   ====================================================
+   Every payment row that matches NO current patient, with the candidates it
+   might belong to, for a person to decide. NOTHING here reconnects on its own:
+   the engine ranks, the screen presents, Sandra chooses.
+
+   The rows this was built for, found in the live sheet:
+     "שחר חיון " (trailing space)   07/09  ₪35,000  עפרוני
+     "עמית יעקובי"                  07/09  ₪30,000  עפרוני — attached to nobody,
+       while עמית בורנשטיין (עפרוני, entered 7.9) has his OWN ₪30,000 that day.
+       A rename, or a double entry. The tool REFUSES to decide which: it shows
+       both, warns that the cycle is already paid, and waits.
+     "אביב שבתאי" (invisible chars)  13/07  ₪18,000  ריהאב
+     "ערן"                           09/08  ₪35,000  עפרוני
+     "עדי"                           14/09  ₪35,000  ריהאב
+     נועם אשבל — moved ריהאב → הפרדס; her payment stayed on the ריהאב record. */
+
+/* Rows a person still has to look at: no current patient, and no decision
+ * recorded. A row marked 'not_a_patient' has been decided and drops out — it
+ * is not a loose end, it is a documented non-patient. Pure. */
+function detachedPayments(payments, patients) {
+  if (!Array.isArray(payments)) return [];
+  const list = Array.isArray(patients) ? patients : [];
+  return payments.filter(pay => pay
+    && pay.linkStatus !== 'not_a_patient'
+    && !matchPatientForPayment(pay, list));
+}
+
+/* Whole days between two ISO dates, or null when either is unusable. Used for
+ * the ±1 day entry-date proximity below; daysBetween() is the shared one. */
+function candidateDayGap(aISO, bISO) {
+  const n = daysBetween(isoDate(aISO), isoDate(bISO));
+  return Number.isFinite(n) ? Math.abs(n) : null;
+}
+
+/* Do two names look like the same person? Deliberately CONSERVATIVE — this
+ * only decides what to SHOW Sandra, never what to write:
+ *   - identical after normalization (the trailing-space and invisibles cases);
+ *   - one is a prefix of the other ("ערן" vs "ערן כהן", "עדי" vs "עדי לוי") —
+ *     the live sheet's single-word rows are exactly this shape;
+ *   - they share a whole word (a first or last name in common). */
+function namesLookAlike(a, b) {
+  const x = normalizeNameForMatch(a), y = normalizeNameForMatch(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  if (x.indexOf(y) === 0 || y.indexOf(x) === 0) return true;
+  const xw = x.split(' ').filter(Boolean), yw = y.split(' ').filter(Boolean);
+  return xw.some(w => w.length > 1 && yw.indexOf(w) !== -1);
+}
+
+/* Candidate patients for a detached payment, best first, each carrying the
+ * REASONS it is offered so the screen can show them rather than a bare score.
+ *
+ * The four signals, in the order they are trusted:
+ *   uid          — the row's patientUid names this patient, but the tiers
+ *                  above rejected it (a stale decision). Strongest signal
+ *                  there is, and the one case where the row already told us.
+ *   same_house   — the payment's house is this patient's house.
+ *   name         — the names look alike (see namesLookAlike).
+ *   entry_date   — the payment's due date is within ONE DAY of the patient's
+ *                  entry date. A first payment is taken on admission, so this
+ *                  is how "עמית יעקובי, 07/09" finds עמית בורנשטיין, who
+ *                  entered on 7.9.
+ *
+ * A candidate needs at least ONE of name / entry_date / uid: house alone would
+ * offer every resident of עפרוני and teach Sandra to ignore the list. */
+function reconnectCandidates(pay, patients) {
+  if (!pay || !Array.isArray(patients)) return [];
+  const payHouse = resolveHouseId(pay.houseId || '');
+  const uid = paymentPatientUid(pay);
+  const dueISO = isoDate(pay.dueDate);
+  const out = [];
+  patients.forEach(p => {
+    if (!p) return;
+    const reasons = [];
+    let score = 0;
+    if (uid && patientUid(p) === uid) { reasons.push('uid'); score += 100; }
+    if (payHouse && resolveHouseId(p.houseId) === payHouse) { reasons.push('same_house'); score += 10; }
+    if (namesLookAlike(pay.patientName, p.name)) { reasons.push('name'); score += 40; }
+    const gap = candidateDayGap(dueISO, p.date);
+    if (gap !== null && gap <= 1) { reasons.push('entry_date'); score += 30; }
+    /* The stay window (PR 1's rule): a patient whose stay covered the due date
+     * is a likelier owner of the money than one who was not in the house. Not
+     * required — a payment can legitimately precede an entry by a day — but it
+     * ranks. */
+    if (patientStayCoversDate(p, dueISO)) { reasons.push('in_house'); score += 5; }
+    if (!reasons.some(r => r === 'name' || r === 'entry_date' || r === 'uid')) return;
+    out.push({ patient: p, patientUid: patientUid(p), score, reasons });
+  });
+  return out.sort((a, b) => (b.score - a.score)
+    || String(a.patient.name || '').localeCompare(String(b.patient.name || ''), 'he'));
+}
+
+/* Would linking this payment to this patient create a SECOND payment for a
+ * cycle they already have? Returns the colliding rows, never blocks: the
+ * "עמית יעקובי / עמית בורנשטיין" pair is either a rename (one row is a
+ * duplicate to be removed later) or a genuine double entry, and only a person
+ * knows which. Two rows are the same cycle when their due dates fall in the
+ * same month — a stored due date that drifted a day or two from the entry-day
+ * anchor is still THAT cycle, the same rule buildMonthlyRevenue uses. */
+function reconnectDoubleEntry(pay, patient, payments) {
+  if (!pay || !patient || !Array.isArray(payments)) return [];
+  const mk = monthKey(pay.dueDate);
+  if (!mk) return [];
+  /* "Already this patient's" by EITHER half of the link: a row carrying their
+   * uid, or one carrying their triple. Checking only the uid would miss every
+   * historical row, which is most of them. */
+  const belongs = other => !!matchPatientForPayment(other, [patient]);
+  return payments.filter(other => other
+    && other.id !== pay.id
+    && monthKey(other.dueDate) === mk
+    && belongs(other));
+}
+
+/* THE BACKFILL PLAN (never the write). The rows the server's exact match
+ * left blank and the NORMALIZED triple can place without a judgement call —
+ * the same rule withPatientUid() applies at write time, read over the whole
+ * sheet so the existing rows can be caught up in one go.
+ *
+ * It deliberately does NOT re-do PR #139's work: a row whose triple is intact
+ * is the server's to resolve (on write, and by its own locked backfill), and
+ * planning it here would be a second writer racing the first for no gain.
+ *
+ * Pure: returns [{ payment, patient, via }] and writes nothing. */
+function planPatientUidBackfill(payments, patients) {
+  if (!Array.isArray(payments)) return [];
+  const list = Array.isArray(patients) ? patients : [];
+  const out = [];
+  payments.forEach(pay => {
+    if (!pay || paymentPatientUid(pay)) return;
+    const m = matchPatientForPayment(pay, list);
+    if (!m || m.via !== 'triple_loose') return;
+    const uid = patientUid(m.patient);
+    if (!uid) return;
+    out.push({ payment: pay, patient: m.patient, via: m.via });
+  });
+  return out;
+}
+
+/* ---- the three writes -----------------------------------------------------
+ * All three go through savePayment(), the ONE payment write path — optimistic
+ * upsert, rollback and the שמירת גבייה נכשלה toast included — so a link can
+ * never be persisted by a route the rest of the app does not know about. Only
+ * the link columns move: amount, status, amountPaid, balance and the coverage
+ * period ride through untouched, so a reconnection can never move money.
+ *
+ * linkedBy / linkedAt are never sent. upsertPayment_() stamps them from the
+ * signed session cookie and its own clock, because a client that can post a
+ * payment can post any name and any date it likes. savePayment() adopts the
+ * server's echo, so the decided row shows the real who-and-when without a
+ * reload. */
+
+async function reconnectPaymentToPatient(pay, patient) {
+  if (state.mode !== 'edit') return;
+  const uid = patientUid(patient);
+  if (!uid) { showError('למטופל זה אין מזהה קבוע — יש לשמור אותו שוב לפני השיוך'); return; }
+  await savePayment(Object.assign({}, pay, {
+    linkPatientUid: uid,
+    linkStatus: 'linked',
+    linkNote: '',
+  }));
+  renderReconnect();
+}
+
+/* "This is not a patient" — a refund, a supplier, a test row, a duplicate.
+ * A REASON IS REQUIRED: a row dismissed without one is indistinguishable next
+ * year from a row nobody ever looked at, which is the state this whole screen
+ * exists to get out of. */
+async function markPaymentNotAPatient(pay, note) {
+  if (state.mode !== 'edit') return;
+  const reason = String(note || '').trim().slice(0, PAYMENT_LINK_NOTE_MAX);
+  if (!reason) { showError('יש לציין סיבה לסימון "לא מטופל"'); return; }
+  await savePayment(Object.assign({}, pay, {
+    linkPatientUid: '',
+    linkStatus: 'not_a_patient',
+    linkNote: reason,
+  }));
+  renderReconnect();
+}
+
+/* The backfill (PR 2C). Writes a uid ONLY where the triple names exactly one
+ * current patient — planPatientUidBackfill() is the rule, and it is pure.
+ *
+ * ON DEMAND, never on load. A write that runs by itself when a screen opens is
+ * a write nobody chose, and this one touches every historical payment row. The
+ * button says how many rows it will change before it changes them. */
+async function runPatientUidBackfill() {
+  if (state.mode !== 'edit') return;
+  const plan = planPatientUidBackfill(state.payments, state.patients);
+  if (!plan.length) { showError('אין שורות להשלמה — כל השורות כבר משויכות או דורשות הכרעה'); return; }
+  let done = 0;
+  for (const item of plan) {
+    /* Sequential on purpose: savePayment() is an optimistic upsert into a
+     * shared array, and a parallel storm would race its own rollbacks. */
+    // eslint-disable-next-line no-await-in-loop
+    await savePayment(Object.assign({}, item.payment, {
+      linkPatientUid: patientUid(item.patient),
+      linkStatus: 'linked',
+    }));
+    done += 1;
+  }
+  showToast(`הושלם שיוך ל־${done} שורות תשלום`);
+  renderReconnect();
+}
+
+/* ---- the screen ---------------------------------------------------------- */
+
+function renderReconnect() {
+  const list = document.getElementById('reconnect-list');
+  if (!list) return;
+  const rows = detachedPayments(state.payments, state.patients);
+  const plan = planPatientUidBackfill(state.payments, state.patients);
+
+  const countEl = document.getElementById('reconnect-count');
+  if (countEl) countEl.textContent = rows.length;
+  /* The nav badge: detached money is not something to go looking for. Hidden
+   * at zero, like the meetings badge. */
+  const badge = document.getElementById('reconnect-badge');
+  if (badge) {
+    badge.textContent = rows.length;
+    badge.classList.toggle('hidden', !rows.length);
+  }
+  const linkedEl = document.getElementById('reconnect-linked-count');
+  if (linkedEl) {
+    linkedEl.textContent = state.payments.filter(p => p && paymentPatientUid(p)).length;
+  }
+  const backfillEl = document.getElementById('reconnect-backfill');
+  if (backfillEl) {
+    backfillEl.textContent = plan.length
+      ? `השלמת שיוך ל־${plan.length} שורות חד־משמעיות`
+      : 'אין שורות חד־משמעיות להשלמה';
+    backfillEl.disabled = !plan.length || state.mode !== 'edit';
+    backfillEl.onclick = e => busyButton(e.currentTarget, 'save', () => runPatientUidBackfill());
+  }
+
+  list.innerHTML = '';
+  if (!rows.length) {
+    list.innerHTML = '<div class="card billing-empty">כל התשלומים משויכים למטופל</div>';
+  } else {
+    rows.forEach(pay => list.appendChild(buildReconnectRow(pay)));
+  }
+
+  /* The decisions already taken. Shown — not archived out of sight — because
+   * "who decided this, and when" is the half of an audit trail a person can
+   * actually act on, and a row marked "not a patient" by mistake would
+   * otherwise be unreachable. */
+  const decided = state.payments.filter(p => p && p.linkStatus === 'not_a_patient');
+  if (decided.length) {
+    const head = document.createElement('div');
+    head.className = 'rev-detail-head';
+    head.innerHTML = `<span>סומנו כ"לא מטופל"</span><span>${decided.length}</span>`;
+    list.appendChild(head);
+    decided.forEach(pay => {
+      const el = document.createElement('div');
+      el.className = 'card reconnect-row decided';
+      el.innerHTML = `
+        <div class="reconnect-head">
+          <span class="p-name">${escapeHtml(String(pay.patientName || '')) || '<i>ללא שם</i>'}</span>
+          <span class="rev-chip">${escapeHtml(formatDate(pay.dueDate))}</span>
+          <span class="rev-chip">${escapeHtml(fmtShekel(pay.amount || 0))}</span>
+        </div>
+        <div class="reconnect-note-shown">${escapeHtml(pay.linkNote || '')}</div>
+        <div class="reconnect-id">${escapeHtml(pay.linkedBy || '—')} · ${escapeHtml(formatDate(pay.linkedAt) || '—')}</div>
+        <button class="btn small reconnect-undo" ${state.mode === 'edit' ? '' : 'disabled'}>החזרה לבדיקה</button>
+      `;
+      el.querySelector('.reconnect-undo').onclick = e =>
+        busyButton(e.currentTarget, 'save', async () => {
+          await savePayment(Object.assign({}, pay, {
+            linkPatientUid: '', linkStatus: '', linkNote: '',
+          }));
+          renderReconnect();
+        });
+      list.appendChild(el);
+    });
+  }
+}
+
+function buildReconnectRow(pay) {
+  const el = document.createElement('div');
+  el.className = 'card reconnect-row';
+  const house = houseById(pay.houseId);
+  const candidates = reconnectCandidates(pay, state.patients).slice(0, 5);
+  const editable = state.mode === 'edit';
+
+  /* The row as the SHEET holds it — name verbatim, so a trailing space or an
+   * invisible character is visible rather than merely implied. */
+  const rawName = String(pay.patientName || '');
+  const odd = rawName !== trimName(rawName) || NAME_INVISIBLES.test(rawName);
+  NAME_INVISIBLES.lastIndex = 0;   // the regex is /g; leaving lastIndex set would flip the next test
+
+  el.innerHTML = `
+    <div class="reconnect-head">
+      <span class="p-name">${escapeHtml(rawName) || '<i>ללא שם</i>'}</span>
+      ${odd ? '<span class="badge warn" title="השם מכיל רווח מיותר או תו בלתי נראה — זו הסיבה שהשורה התנתקה">תו חריג בשם</span>' : ''}
+      <span class="rev-chip">${escapeHtml(house ? house.name : (pay.houseId || 'ללא בית'))}</span>
+      <span class="rev-chip">${escapeHtml(formatDate(pay.dueDate))}</span>
+      <span class="rev-chip">${escapeHtml(fmtShekel(pay.amount || 0))}</span>
+      ${pay.amountPaid ? `<span class="rev-chip">שולם ${escapeHtml(fmtShekel(pay.amountPaid))}</span>` : ''}
+    </div>
+    <div class="reconnect-id" dir="ltr">${escapeHtml(pay.patientId || '—')}</div>
+    <div class="reconnect-cands"></div>
+    <div class="reconnect-dismiss">
+      <input class="reconnect-note" type="text" maxlength="${PAYMENT_LINK_NOTE_MAX}"
+             placeholder="סיבה — למה זו אינה שורת מטופל" ${editable ? '' : 'disabled'} />
+      <button class="btn small reconnect-not-patient" ${editable ? '' : 'disabled'}>לא מטופל</button>
+    </div>
+  `;
+
+  const cands = el.querySelector('.reconnect-cands');
+  if (!candidates.length) {
+    cands.innerHTML = '<div class="reconnect-empty">לא נמצאו מועמדים — יש לבדוק ידנית</div>';
+  }
+  candidates.forEach(c => {
+    const dup = reconnectDoubleEntry(pay, c.patient, state.payments);
+    const line = document.createElement('div');
+    line.className = 'reconnect-cand' + (dup.length ? ' has-dup' : '');
+    line.innerHTML = `
+      <span class="cand-name">${escapeHtml(c.patient.name || '')}</span>
+      <span class="cand-meta">${escapeHtml((houseById(c.patient.houseId) || {}).name || c.patient.houseId || '')}
+        · כניסה ${escapeHtml(formatDate(c.patient.date))}</span>
+      <span class="cand-why">${c.reasons.map(r =>
+        `<span class="rev-chip rev-chip-soft">${escapeHtml(RECONNECT_REASON_LABELS[r] || r)}</span>`).join('')}</span>
+      ${dup.length ? `<span class="cand-warn" title="${escapeHtml(dup.map(d => formatDate(d.dueDate)).join(', '))}">⚠ ייתכן רישום כפול — כבר קיים תשלום לאותו מחזור</span>` : ''}
+      <button class="btn small primary cand-link" ${editable ? '' : 'disabled'}>שייך</button>
+    `;
+    line.querySelector('.cand-link').onclick = e =>
+      busyButton(e.currentTarget, 'save', () => reconnectPaymentToPatient(pay, c.patient));
+    cands.appendChild(line);
+  });
+
+  el.querySelector('.reconnect-not-patient').onclick = e =>
+    busyButton(e.currentTarget, 'save', () =>
+      markPaymentNotAPatient(pay, el.querySelector('.reconnect-note').value));
+  return el;
+}
+
+const RECONNECT_REASON_LABELS = {
+  uid: 'מזהה קבוע תואם',
+  same_house: 'אותו בית',
+  name: 'שם דומה',
+  entry_date: 'תאריך כניסה ±יום',
+  in_house: 'שהה בבית באותו תאריך',
+};
 
 /* Billing-tab search: same matching semantics as the discharged-tab search —
  * dischargedPatientMatchesQuery is the shared core (name + house label by
@@ -7868,19 +8396,14 @@ function buildMonthlyRevenue(opts) {
   };
 }
 
-/* A payment whose patient is gone still counts — money is money. Mirrors
- * findPatientForPayment() but over an explicit list, so buildMonthlyRevenue
- * stays pure. */
+/* A payment whose patient is gone still counts — money is money. The SAME
+ * four-tier rule as findPatientForPayment(), over an explicit list so
+ * buildMonthlyRevenue stays pure. One rule, two entry points: a payment that
+ * the גבייה tab considers attached and the revenue screen does not is exactly
+ * the class of disagreement this change exists to end. */
 function findPatientForPaymentIn(patients, pay) {
-  if (!pay) return null;
-  if (pay.patientId) {
-    const direct = patients.find(p => p && patientKey(p) === pay.patientId);
-    if (direct) return direct;
-  }
-  if (pay.patientName && pay.houseId) {
-    return patients.find(p => p && p.houseId === pay.houseId && p.name === pay.patientName) || null;
-  }
-  return null;
+  const m = matchPatientForPayment(pay, patients);
+  return m ? m.patient : null;
 }
 
 /* Sum a row list into { inclVat, exVat, count }. exVat is the SUM OF THE ROWS'
@@ -8172,6 +8695,7 @@ async function savePayment(payment) {
   const covErr = coveragePeriodError(payment && payment.coverageStart, payment && payment.coverageEnd);
   if (covErr) { showError(covErr); return; }
   payment = withDefaultCoverage(payment);
+  payment = withPatientUid(payment, state.patients);
   const idx = state.payments.findIndex(x => x.id === payment.id);
   const prev = idx >= 0 ? { ...state.payments[idx] } : null;
   if (idx >= 0) state.payments[idx] = payment;
@@ -8182,7 +8706,17 @@ async function savePayment(payment) {
   renderBillingMonthlySummary(state.billingDate || todayISO());
 
   try {
-    await apiPost({ action: 'savePayment', payment });
+    const res = await apiPost({ action: 'savePayment', payment });
+    /* ADOPT THE SERVER'S COPY when it echoes one. The link columns
+     * (linkedBy / linkedAt) are stamped SERVER-SIDE from the signed session
+     * cookie and the server's clock — the client cannot know them, and must
+     * not be trusted with them. Reading them back here is what puts the real
+     * "who and when" on screen without a reload. Everything else in the echo
+     * is what we just sent, so adopting it changes nothing. */
+    if (res && res.payment && res.payment.id === payment.id) {
+      const at = state.payments.findIndex(x => x.id === payment.id);
+      if (at >= 0) state.payments[at] = normalizePayment(res.payment);
+    }
   } catch (e) {
     // Roll back local change so the UI doesn't lie about persistence.
     if (prev) state.payments[idx] = prev;
@@ -8190,6 +8724,36 @@ async function savePayment(payment) {
     renderBilling();
     showError('שמירת גבייה נכשלה — ' + e.message);
   }
+}
+
+/* Record the link for a row the SERVER's exact match cannot resolve.
+ *
+ * The division of labour with PR #139: the server resolves `patientUid` from
+ * an EXACT triple match, on every write and by a locked backfill over the
+ * whole sheet, and leaves the cell blank rather than guess. That covers every
+ * row whose triple is intact — which is most of them, and none of the six the
+ * reconnect screen exists for.
+ *
+ * What this adds is the NORMALIZED triple: same house, same entry date, and a
+ * name that differs only by a stray space, an invisible character or a case
+ * fold. `"שחר חיון "` is that row. It is a match a person would make without
+ * hesitating, and it is one the exact matcher will never make, so it is
+ * written down as a decision (linkPatientUid) rather than smuggled in as if
+ * the triple had been fine all along.
+ *
+ * DELIBERATELY NOT the house+name tier: it has no date in it, and two
+ * admissions of the same person are exactly what it cannot tell apart. Those
+ * rows go to the reconnect screen, where a person decides.
+ *
+ * Returns a COPY when it links, the input untouched otherwise. Never
+ * overwrites a link already on the row — that was somebody's decision. */
+function withPatientUid(payment, patients) {
+  if (!payment || paymentPatientUid(payment)) return payment;
+  const m = matchPatientForPayment(payment, Array.isArray(patients) ? patients : []);
+  if (!m || m.via !== 'triple_loose') return payment;
+  const uid = patientUid(m.patient);
+  if (!uid) return payment;
+  return Object.assign({}, payment, { linkPatientUid: uid, linkStatus: 'linked' });
 }
 
 /* Record what a payment ACTUALLY covered.

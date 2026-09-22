@@ -824,6 +824,10 @@ test('column contracts unchanged: PATIENT_COLUMNS, PAYMENT_COLUMNS, PATIENT_TOMB
     // moving nothing (CHANGELOG-accounting-source-feed.md).
     'paymentUid', 'patientUid', 'payerUid',
     'chargedAt', 'chargedBy', 'sourceUpdatedAt', 'sourceVersion',
+    // And again for the MANUAL LINK — what a person decided about a row whose
+    // triple the exact match above cannot resolve
+    // (CHANGELOG-detached-payments.md).
+    'linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt',
   ]);
   assert.deepEqual(arr(code.PATIENT_TOMBSTONE_COLUMNS), [
     'houseId', 'name', 'date', 'pay', 'adv', 'status', 'fromLead', 'exitDate', 'source', 'notes',
