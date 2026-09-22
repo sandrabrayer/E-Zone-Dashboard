@@ -18,31 +18,58 @@ Six proofs, from the live sheet:
 
 ---
 
+## What PR #139 already did, and where this picks up
+
+**PR #139 (the accounting source feed) landed while this was being written**,
+and it had already put `patientUid` — the persisted Patients-sheet id — on the
+payment row. It resolves it **server-side**, from an **exact** match of the
+row's `houseId::name::entryDate` triple against an index built from the
+Patients sheet, on every write **and** through its own locked backfill over
+the whole sheet. When the triple does not resolve, it leaves the cell **blank**
+rather than guess.
+
+That is the right default, and it is exactly right for every row whose triple
+is intact. It is also, by construction, of no help to the six rows above: their
+triples are *damaged*. An exact matcher will never place `"שחר חיון "`, and it
+should not try.
+
+So this change **reuses `patientUid` rather than adding a second one** — two
+columns of the same name on a sheet read by position would be a data-contract
+disaster — and adds what an exact matcher cannot supply: the normalized match,
+and a person.
+
 ## A. Prevention
 
-### 1. `patientUid` — a link that is not made of editable facts
+### 1. The manual link, beside the automatic one
 
-The **persisted Patients-sheet id** (`PATIENT_COLUMNS.id`) is now appended to
-`PAYMENT_COLUMNS` and written on every new payment row. It is matched **first**.
-A rename cannot break it and neither can a house transfer, because it is made
-of neither.
-
-Five columns are appended (append-only is the standing contract — `readSheet_`
-maps by **position**, so inserting or reordering silently re-reads every
-historical row against the wrong field):
+Five columns are appended **after** PR #139's seven (append-only is the
+standing contract — `readSheet_` maps by **position**, so inserting or
+reordering silently re-reads every historical row against the wrong field):
 
 | Column | Meaning |
 | --- | --- |
-| `patientUid` | the persisted patient id this row belongs to. **Blank is legal** and is what every historical row carries |
+| `linkPatientUid` | the patient a **person** (or the client's normalized-triple match) says this row belongs to. The **only client-writable input** to `patientUid`, and the only thing that may override an automatic resolution |
 | `linkStatus` | `''` (nobody has reviewed this row) · `linked` · `not_a_patient` |
 | `linkNote` | the reason a row was marked `not_a_patient`. **Required** for it |
-| `linkedBy` | **who** decided — server-stamped from the signed session cookie |
-| `linkedAt` | **when** — server-stamped from the server clock |
+| `linkedBy` | **who** decided — server-owned, from the signed session cookie |
+| `linkedAt` | **when** — server-owned, from the server clock |
 
-All five are **text-forced**. A persisted id is an opaque string; left to
-Sheets, one that looks like a date or a long number is coerced — the same
-corruption class the coverage columns are forced against, and here it would
-silently re-point money at nobody.
+All five are **text-forced**, for the same reason `patientUid` is: a persisted
+id left to Sheets can be coerced into a date or a number, on the one column
+that decides whose money a row is.
+
+`stampPaymentRow_` resolves `patientUid` in this order:
+
+1. **the manual decision** (`linkStatus === 'linked'` with a validated
+   `linkPatientUid`) — a person who looked at the row beats a triple that did
+   not parse, and a correction nobody may apply is not a correction;
+2. `linkStatus === 'not_a_patient'` → **cleared**. Leaving an automatic patient
+   link on a row somebody declared is not a patient's money is exactly the
+   wrong-ledger outcome these columns exist to prevent. This is the one case
+   where `patientUid` is not immutable, and the decision that cleared it is
+   recorded in the three columns beside it;
+3. otherwise PR #139's rule, unchanged: the previous value if there is one,
+   else the exact-triple resolution, else blank.
 
 ### 2. Names are trimmed at every write, client and server
 
@@ -147,17 +174,19 @@ server-stamped who-and-when on screen without a reload.
 ## C. The backfill
 
 `planPatientUidBackfill(payments, patients)` — **pure**, returns a plan and
-writes nothing. A row is in the plan only when its triple names **exactly one**
-current patient: tiers 1–3, and each of those already refuses on ambiguity.
+writes nothing. A row is in the plan only when the **normalized** triple places
+it: same house, same entry date, and a name differing only by a stray space, an
+invisible character or a case fold. `"שחר חיון "` is that row.
 
-The `house_name` tier is **excluded**. It has no date in it; it is good enough
-to keep a row *readable* on screen, and not good enough to write a permanent
-identity from, because two admissions of the same person are exactly what it
-cannot tell apart. Everything it does not cover goes to the reconnect screen.
+It deliberately does **not** re-do PR #139's work. A row whose triple is intact
+is the server's to resolve — on write, and by its own locked backfill — and
+planning it here would be a second writer racing the first for no gain. The
+`house_name` tier is excluded too: no date in it, and two admissions of the
+same person are exactly what it cannot tell apart.
 
-The same rule runs at write time: `withPatientUid()` stamps a uid onto a
+The same rule runs at write time: `withPatientUid()` records the decision on a
 payment being saved only under those same conditions, and **never overwrites**
-a uid the row already has — that was somebody's decision, and only the
+a link the row already has — that was somebody's decision, and only the
 reconnect screen may change it.
 
 ### Conservative choices, flagged
@@ -165,6 +194,11 @@ reconnect screen may change it.
 1. **The backfill runs on demand, never on load.** A write that fires when a
    screen opens is a write nobody chose, and this one touches every historical
    payment row. The button states the count before it changes anything.
+1b. **`not_a_patient` clears `patientUid`**, which is the one place this change
+   bends PR #139's "immutable once resolved". Leaving an automatic link on a
+   row a person declared is not a patient's money is the worse of the two
+   outcomes, and the clearing decision is recorded beside it with who and when.
+   The accounting app now has `linkStatus` to read for exactly this case.
 2. **No existing `patientId` is ever rewritten.** A house transfer leaves the
    triple on old payment rows stale; the uid is what keeps them attached. The
    alternative — rewriting historical triples — is a migration, and this is not
@@ -188,15 +222,20 @@ reconnect screen may change it.
   the only actions that touch a payment row — asserted. `server.js` is
   unchanged and has never heard of `patientUid`.
 * **The server is the authority on every link value.** `upsertPayment_()`
-  sanitizes before the lock is taken: `patientUid` must be a plain id (≤100
+  sanitizes before the lock is taken: `linkPatientUid` must be a plain id (≤100
   chars, no control characters) or it is dropped; `linkStatus` must be on the
   enum or it is dropped; `linkNote` is stripped of control characters and of a
-  leading `=`/`+`/`@`/`-` and capped at 300. `not_a_patient` without a note is
-  **refused outright**, with the reason returned verbatim.
-* **`linkedBy` / `linkedAt` are never read off the request.** They are
-  overwritten from `requestUser_(params)` — the signed session cookie the proxy
-  injects — and from the server clock. A client that can post a payment can
-  post any name and any date it likes.
+  leading `=`/`+`/`@`/`-` and capped at 300. **Two refusals**, both returned
+  verbatim: `not_a_patient` without a note, and `linked` without a patient id —
+  a link with nothing behind it is not a link, and downgrading it silently
+  would let a caller believe it recorded a decision the sheet does not hold.
+* **`linkedBy` / `linkedAt` are never read off the request.** They are in
+  `PAYMENT_SERVER_COLUMNS`, so `stampPaymentRow_` deletes whatever the payload
+  carried before anything looks at it, and writes them from
+  `requestUser_(params)` — the signed session cookie — and `israelTimestamp_`,
+  the same stamp PR #139 writes to `chargedAt`. They are re-stamped only when
+  the **decision itself** changed: re-stamping on an unrelated save would turn
+  the audit trail into a record of the last time anybody touched the row.
 * **Every decision is audit-logged.** One `AuditLog` row per link decision
   (`payment_link_linked` / `payment_link_not_a_patient`) with the payment id,
   the triple, the house, the due date, the amount, the note, and who/when. The
@@ -217,10 +256,10 @@ reconnect screen may change it.
 | `public/app.js` | `trimName` / `normalizeNameForMatch` / `patientUid` / `paymentPatientUid` / `patientMatchKey*`; `patientKey` trims; `matchPatientForPayment` and the two finders that now delegate to it; the five link columns in `normalizePayment`; `withPatientUid` on the write path; `detachedPayments`, `namesLookAlike`, `reconnectCandidates`, `reconnectDoubleEntry`, `planPatientUidBackfill`; the three writes and the שיוך תשלומים screen; `savePayment` adopts the server echo |
 | `public/index.html` | the nav tab (with an unplaced-rows badge) and the `screen-reconnect` section |
 | `public/style.css` | the reconnect cards, candidate rows, the double-entry warning |
-| `apps-script/Code.gs` | five appended `PAYMENT_COLUMNS` + text-forcing; `paymentUidClean_` / `paymentLinkNoteClean_` / `paymentLinkStatusClean_`; sanitization, the `not_a_patient` refusal and the server stamps in `upsertPayment_`; `forcePaymentLinkTextCells_`; `logPaymentLink_`; the dispatcher passes `requestUser_`; names trimmed in `replaceHousePatients_` |
+| `apps-script/Code.gs` | five appended `PAYMENT_COLUMNS` (after PR #139's seven) + text-forcing + `linkedBy`/`linkedAt` in `PAYMENT_SERVER_COLUMNS`; `paymentLinkUidClean_` / `paymentLinkNoteClean_` / `paymentLinkStatusClean_`; the two refusals in `upsertPayment_`; the decision-first `patientUid` resolution and the decision-only stamps in `stampPaymentRow_`; `logPaymentLink_`; names trimmed in `replaceHousePatients_` |
 | `test/detached-payments.test.js` | **new** — 26 tests |
 | `test/detached-payments-browser.test.js` | **new** — 5 Playwright/Chromium tests |
-| `test/orphan-payments-reconcile.test.js`, `test/payment-coverage-period.test.js` | the pinned column lists gain the append |
+| `test/orphan-payments-reconcile.test.js`, `test/payment-coverage-period.test.js`, `test/accounting-source-feed.test.js` | the pinned column lists gain the append |
 | `test/meetings-tab-shell.test.js`, `test/monthly-revenue.test.js` | the nav/router order gains `reconnect` |
 
 ## Tests
@@ -230,18 +269,21 @@ reconnect screen may change it.
 
 * **A** trimming, client and server, and the two `patientKey` implementations
   proven to agree.
-* **B** the durable link — the schema append and text-forcing, a new row born
-  with its uid, a **rename** and a **house transfer** (נועם אשבל) that no longer
-  detach, the **trailing-space** row (שחר חיון) and the **invisible-character**
-  row (אביב שבתאי) still matching, the four tiers in order, ambiguity refused,
-  and one matching rule shared by both screens.
+* **B** the durable link — the schema append (with **exactly one**
+  `patientUid`, PR #139's, reused rather than duplicated), text-forcing, a new
+  row born with a trimmed triple and claiming no uid, a **rename** and a
+  **house transfer** (נועם אשבל) that no longer detach, the
+  **trailing-space** row (שחר חיון) and the **invisible-character** row
+  (אביב שבתאי) still matching, the four tiers in order, ambiguity refused, and
+  one matching rule shared by both screens.
 * **C** the reconnect tool — the detached list, candidate ranking with a bare
   house match excluded, the single-word rows (ערן, עדי) finding their owners,
   the **עמית יעקובי / עמית בורנשטיין** pair warned about and not resolved,
   nothing reconnecting automatically, and the required reason.
-* **D** the writes — the uid written and no money touched, who/when stamped
-  server-side and never from the body, the audit row, and the sanitizer driven
-  with a control character, an off-enum status and a formula.
+* **D** the writes — the decision written and no money touched, the decision
+  overruling the automatic resolution, `not_a_patient` clearing it, who/when
+  stamped server-side and never from the body, the audit row, and the
+  sanitizer driven with a control character, an off-enum status and a formula.
 * **E** the backfill — only unambiguous rows planned, `house_name` never
   backfilled, on demand only, never overwriting.
 * **F** scope + security — no new endpoint, everything escaped, the screen
@@ -253,7 +295,7 @@ the nav badge, the candidate's reasons and the amber double-entry warning
 moved, "not a patient" refused without a reason and recorded with one, and the
 backfill button stating its count and only writing on a click.
 
-Full suite: **1,335 passing**.
+Full suite: **1,391 passing**.
 
 ## Deploy note
 
@@ -262,3 +304,5 @@ does this on push to the configured branch — see `DEPLOY.md`). The five column
 are added to the `Payments` sheet automatically on the next
 `getOrCreateSheet_` call. **No migration and no backfill runs by itself** —
 existing rows keep blank link columns and read exactly as they did before.
+(PR #139's own `patientUid` backfill is unchanged and keeps running as it
+already does.)

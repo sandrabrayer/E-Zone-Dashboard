@@ -817,17 +817,17 @@ test('column contracts unchanged: PATIENT_COLUMNS, PAYMENT_COLUMNS, PATIENT_TOMB
   assert.deepEqual(payCols.slice(0, 10), [
     'id', 'patientId', 'patientName', 'houseId', 'dueDate', 'amount', 'status', 'amountPaid', 'balance', 'timestamp',
   ], 'the original ten columns are unmoved');
-  assert.deepEqual(payCols.slice(0, 12), [
-    'id', 'patientId', 'patientName', 'houseId', 'dueDate', 'amount', 'status', 'amountPaid', 'balance', 'timestamp',
-    'coverageStart', 'coverageEnd',
-  ], 'the coverage pair is unmoved too');
-  /* The five LINK columns, appended after them: patientUid is the durable
-   * payment↔patient link (a rename or a house transfer cannot break it), and
-   * the four beside it record the decision and who made it. */
   assert.deepEqual(payCols, [
     'id', 'patientId', 'patientName', 'houseId', 'dueDate', 'amount', 'status', 'amountPaid', 'balance', 'timestamp',
     'coverageStart', 'coverageEnd',
-    'patientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt',
+    // Appended for the accounting source feed — again at the END, again
+    // moving nothing (CHANGELOG-accounting-source-feed.md).
+    'paymentUid', 'patientUid', 'payerUid',
+    'chargedAt', 'chargedBy', 'sourceUpdatedAt', 'sourceVersion',
+    // And again for the MANUAL LINK — what a person decided about a row whose
+    // triple the exact match above cannot resolve
+    // (CHANGELOG-detached-payments.md).
+    'linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt',
   ]);
   assert.deepEqual(arr(code.PATIENT_TOMBSTONE_COLUMNS), [
     'houseId', 'name', 'date', 'pay', 'adv', 'status', 'fromLead', 'exitDate', 'source', 'notes',

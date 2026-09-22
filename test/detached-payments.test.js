@@ -170,9 +170,10 @@ function loadCode() {
     handle: (params) => handle_(params).json,
     ensure: (name, cols) => getOrCreateSheet_(name, cols),
     upsert: (p, user) => upsertPayment_(p, user),
-    PAYMENT_LINK_STATUSES, PAYMENT_LINK_NOTE_MAX, PAYMENT_UID_MAX,
+    PAYMENT_LINK_STATUSES, PAYMENT_LINK_NOTE_MAX, PAYMENT_LINK_UID_MAX,
+    PAYMENT_SERVER_COLUMNS, PATIENTS_SHEET, PATIENT_COLUMNS,
     AUDIT_LOG_SHEET, AUDIT_LOG_COLUMNS,
-    uidClean: (v) => paymentUidClean_(v),
+    uidClean: (v) => paymentLinkUidClean_(v),
     noteClean: (v) => paymentLinkNoteClean_(v),
     statusClean: (v) => paymentLinkStatusClean_(v),
     patientKey_: (h, n, d) => patientKey_(h, n, d),
@@ -197,7 +198,8 @@ const payment = (over) => Object.assign({
   patientId: 'arfoni::עמית בורנשטיין::2026-09-07',
   patientName: 'עמית בורנשטיין', houseId: 'arfoni', dueDate: '2026-09-07',
   amount: 30000, amountPaid: 30000, status: 'paid', balance: 0,
-  patientUid: '', linkStatus: '', linkNote: '', linkedBy: '', linkedAt: '',
+  patientUid: '', linkPatientUid: '', linkStatus: '', linkNote: '',
+  linkedBy: '', linkedAt: '',
 }, over || {});
 
 /* ================= A. prevention — trimming ================= */
@@ -217,6 +219,10 @@ test('A: a patient name is TRIMMED at every write — the client side', () => {
 
 test('A: and the SERVER side, which is the authority', () => {
   const { code } = loadCode();
+  /* This matters more since PR #139: patientUidIndexByKey_() builds its index
+   * from the TRIMMED key while a payment row holds the untrimmed one, so a
+   * stray space is precisely why the server's exact match leaves such a row
+   * blank. Trimming what is stored removes the disagreement at the source. */
   assert.match(fnSource(GS_SRC, 'replaceHousePatients_'),
     /withHouse\.name = String\(withHouse\.name == null \? '' : withHouse\.name\)\.trim\(\);/);
   /* patientKey_() has ALWAYS trimmed, while the client's patientKey() did not
@@ -233,32 +239,52 @@ test('A: and the SERVER side, which is the authority', () => {
 
 /* ================= B. the durable link ================= */
 
-test('B: patientUid is appended to the schema and text-forced', () => {
+test('B: the five LINK columns are appended, text-forced, and do not duplicate #139', () => {
   const { code } = loadCode();
   const cols = arr(code.PAYMENT_COLUMNS);
-  assert.deepEqual(cols.slice(0, 12), [
+  assert.deepEqual(cols.slice(0, 19), [
     'id', 'patientId', 'patientName', 'houseId', 'dueDate',
     'amount', 'status', 'amountPaid', 'balance', 'timestamp',
     'coverageStart', 'coverageEnd',
+    'paymentUid', 'patientUid', 'payerUid',
+    'chargedAt', 'chargedBy', 'sourceUpdatedAt', 'sourceVersion',
   ], 'position IS the data contract — nothing before the append moved');
-  assert.deepEqual(cols.slice(12), ['patientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt']);
-  /* Text-forced. A persisted id is an opaque string; left to Sheets, one that
-   * looks like a date or a long number is coerced, and this column decides
-   * WHOSE money a row is. */
-  for (const c of ['patientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt']) {
+  assert.deepEqual(cols.slice(19),
+    ['linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt']);
+  /* ONE patientUid, not two. PR #139 already put the persisted patient id on
+   * the payment row; this change REUSES it and adds the manual decision
+   * beside it. A second column of the same name would be a data-contract
+   * disaster on a sheet read by position. */
+  assert.equal(cols.filter((c) => c === 'patientUid').length, 1);
+  /* Text-forced, for the same reason patientUid is: an opaque id that looks
+   * like a date or a long number is coerced by Sheets. */
+  for (const c of ['linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt']) {
     assert.ok(arr(code.PAYMENT_TEXT_COLUMNS).indexOf(c) >= 0, c + ' must be text-forced');
   }
+  /* The DECISION is the client's to send; its provenance never is. */
+  const serverOwned = arr(code.PAYMENT_SERVER_COLUMNS);
+  assert.ok(serverOwned.indexOf('linkedBy') >= 0);
+  assert.ok(serverOwned.indexOf('linkedAt') >= 0);
+  assert.ok(serverOwned.indexOf('patientUid') >= 0, 'still #139\'s to resolve');
+  assert.ok(serverOwned.indexOf('linkPatientUid') < 0, 'but the decision is not');
 });
 
-test('B: a new payment row is born with the uid on it', () => {
+test('B: a new payment row is born with a TRIMMED triple, and claims no uid', () => {
+  /* patientUid is SERVER-OWNED (PR #139): it is resolved from the triple on
+   * write. What the client can do is make sure the triple it hands over is
+   * the same one the server's index is built from — i.e. trimmed. */
   const prev = app.state.patients;
-  app.state.patients = [patient()];
+  app.state.patients = [app.normalizePatient({
+    id: 'id-amit', houseId: 'arfoni', name: ' עמית בורנשטיין ', date: '2026-09-07', pay: 30000,
+  })];
   try {
-    const pay = app.paymentForPatientOnDate(patient(), '2026-10-07');
-    assert.equal(pay.patientUid, 'id-amit');
-    assert.equal(pay.patientId, 'arfoni::עמית בורנשטיין::2026-09-07', 'the triple still rides along');
+    const p = app.state.patients[0];
+    const pay = app.paymentForPatientOnDate(p, '2026-10-07');
+    assert.equal(pay.patientId, 'arfoni::עמית בורנשטיין::2026-09-07', 'no stray space in the key');
+    assert.equal(pay.patientName, 'עמית בורנשטיין');
+    assert.equal(pay.patientUid, '', 'the server resolves it, not the client');
   } finally { app.state.patients = prev; }
-  assert.match(fnSource(APP, 'paymentForPatientOnDate'), /patientUid: patientUid\(patient\)/);
+  assert.match(fnSource(APP, 'paymentForPatientOnDate'), /patientName: trimName\(patient\.name\)/);
   assert.match(fnSource(APP, 'savePayment'), /payment = withPatientUid\(payment, state\.patients\);/);
 });
 
@@ -467,15 +493,23 @@ test('C: "not a patient" REQUIRES a reason — client and server', () => {
   }), 'ורד');
   assert.equal(res.ok, false);
   assert.match(res.error, /סיבה/);
+  /* And the mirror refusal: a link with no patient behind it is not a link.
+   * Refused rather than silently downgraded, so a caller never believes it
+   * recorded a decision the sheet does not hold. */
+  const noUid = code.upsert(payment({ id: 'p-nouid', linkStatus: 'linked', linkPatientUid: '' }), 'ורד');
+  assert.equal(noUid.ok, false);
+  assert.match(noUid.error, /מזהה מטופל/);
   /* A dismissal with no reason is indistinguishable next year from a row
    * nobody ever looked at — which is the state this screen exists to end. */
 });
 
 /* ================= D. the writes ================= */
 
-test('D: a reconnection writes the uid and NOTHING about the money', () => {
+test('D: a reconnection writes the DECISION and NOTHING about the money', () => {
   const src = fnSource(APP, 'reconnectPaymentToPatient');
-  assert.match(src, /patientUid: uid,/);
+  assert.match(src, /linkPatientUid: uid,/);
+  assert.ok(!/[^k]patientUid: uid/.test(src),
+    'patientUid is the server\'s to resolve — the client sends the decision');
   assert.match(src, /linkStatus: 'linked',/);
   assert.match(src, /await savePayment\(/, 'the ONE payment write path');
   for (const money of ['amount:', 'amountPaid:', 'balance:', 'status:', 'coverageStart:']) {
@@ -489,26 +523,44 @@ test('D: a reconnection writes the uid and NOTHING about the money', () => {
 test('D: WHO and WHEN are stamped by the SERVER, never by the caller', () => {
   const { code } = loadCode();
   const res = code.upsert(payment({
-    id: 'p-link', patientUid: 'id-amit', linkStatus: 'linked',
+    id: 'p-link', linkPatientUid: 'id-amit', linkStatus: 'linked',
     linkedBy: 'מישהו אחר', linkedAt: '1999-01-01T00:00:00.000Z',
   }), 'ורד');
   assert.equal(res.ok, true);
   assert.equal(res.payment.linkedBy, 'ורד', 'from the signed session cookie, not the body');
   assert.notEqual(res.payment.linkedAt, '1999-01-01T00:00:00.000Z');
-  assert.match(res.payment.linkedAt, /^\d{4}-\d{2}-\d{2}T/);
-  // The dispatcher is what supplies it, from requestUser_ — not the payload.
+  /* israelTimestamp_ — the same stamp #139 writes to chargedAt, so the link
+   * trail and the accounting trail read in one timezone. (The harness's
+   * Utilities.formatDate stub truncates to the date; the shape is what is
+   * being asserted, not the clock.) */
+  assert.match(res.payment.linkedAt, /^\d{4}-\d{2}-\d{2}/);
+  /* THE DECISION WINS over #139's automatic resolution: the reconnect screen
+   * exists because the triple can be wrong, and a correction nobody may apply
+   * is not a correction. */
+  assert.equal(res.payment.patientUid, 'id-amit');
+  // The dispatcher is what supplies the user, from requestUser_ — not the payload.
   assert.match(GS_SRC, /upsertPayment_\(payment, requestUser_\(params\)\)/);
   // An UNDECIDED row carries no stamps at all: blank means "nobody looked".
   const plainRes = code.upsert(payment({ id: 'p-plain' }), 'ורד');
   assert.equal(plainRes.payment.linkStatus, '');
   assert.equal(plainRes.payment.linkedBy, '');
   assert.equal(plainRes.payment.linkedAt, '');
+  /* "Not a patient" CLEARS the automatic link. Leaving one on a row a person
+   * declared is not a patient's money is exactly the wrong-ledger outcome
+   * these columns exist to prevent — the one case where patientUid is not
+   * immutable, and the decision that cleared it is recorded beside it. */
+  const not = code.upsert(payment({
+    id: 'p-not', linkStatus: 'not_a_patient', linkNote: 'החזר לספק',
+  }), 'ורד');
+  assert.equal(not.ok, true);
+  assert.equal(not.payment.patientUid, '');
+  assert.equal(not.payment.linkedBy, 'ורד');
 });
 
 test('D: every decision is logged to the AuditLog with who, when and what', () => {
   const { code, sandbox } = loadCode();
   code.upsert(payment({
-    id: 'p-link', patientUid: 'id-amit', linkStatus: 'linked',
+    id: 'p-link', linkPatientUid: 'id-amit', linkStatus: 'linked',
   }), 'ורד');
   const log = sandbox.__sheets[code.AUDIT_LOG_SHEET];
   assert.ok(log, 'the AuditLog sheet was written');
@@ -518,8 +570,9 @@ test('D: every decision is logged to the AuditLog with who, when and what', () =
   assert.equal(row[cols.indexOf('patientId')], 'id-amit');
   const details = JSON.parse(row[cols.indexOf('details')]);
   assert.equal(details.paymentId, 'p-link');
+  assert.equal(details.linkPatientUid, 'id-amit');
   assert.equal(details.by, 'ורד');
-  assert.match(details.at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(details.at, /^\d{4}-\d{2}-\d{2}/);
   /* The row's five columns hold the LATEST decision; the AuditLog holds the
    * history of them, and survives the payment row being edited again. */
   const before = log.grid.length;
@@ -531,7 +584,7 @@ test('D: the server sanitizes what it stores — nothing is trusted as sent', ()
   const { code } = loadCode();
   assert.equal(code.uidClean('  id-amit  '), 'id-amit');
   assert.equal(code.uidClean('id\u0000-amit'), '', 'a control character is not an id');
-  assert.equal(code.uidClean('x'.repeat(code.PAYMENT_UID_MAX + 1)), '');
+  assert.equal(code.uidClean('x'.repeat(code.PAYMENT_LINK_UID_MAX + 1)), '');
   assert.equal(code.uidClean(null), '');
   assert.equal(code.statusClean('linked'), 'linked');
   assert.equal(code.statusClean('<script>'), '', 'off the enum — dropped, not stored');
@@ -542,10 +595,10 @@ test('D: the server sanitizes what it stores — nothing is trusted as sent', ()
   assert.equal(code.noteClean('x'.repeat(400)).length, code.PAYMENT_LINK_NOTE_MAX);
   // And through the real write path.
   const res = code.upsert(payment({
-    id: 'p-dirty', patientUid: 'id\u0001bad', linkStatus: 'whatever', linkNote: '=1+1',
+    id: 'p-dirty', linkPatientUid: 'id\u0001bad', linkStatus: 'whatever', linkNote: '=1+1',
   }), 'ורד');
   assert.equal(res.ok, true);
-  assert.equal(res.payment.patientUid, '');
+  assert.equal(res.payment.linkPatientUid, '');
   assert.equal(res.payment.linkStatus, '');
   assert.equal(res.payment.linkNote, '1+1');
 });
@@ -567,8 +620,11 @@ test('E: the backfill plans ONLY unambiguous rows', () => {
     payment({ id: 'already', patientUid: 'id-amit' }),                              // has one
   ];
   const plan = app.planPatientUidBackfill(rows, [amit, shachar, twinA, twinB]);
+  /* ONLY the normalized-triple row. The 'exact' one is PR #139's to resolve —
+   * its server does that on write and by its own locked backfill over the
+   * whole sheet — and planning it here would be a second writer racing the
+   * first for no gain. */
   assert.deepEqual(plain(plan.map((x) => [x.payment.id, x.patient.id, x.via])), [
-    ['exact', 'id-amit', 'triple_exact'],
     ['loose', 'id-shachar', 'triple_loose'],
   ]);
   /* Everything else goes to the reconnect screen, where a person decides. The
@@ -589,9 +645,12 @@ test('E: a house+name-only match is NEVER backfilled', () => {
                         patientName: 'ערן כהן', houseId: 'arfoni' });
   assert.equal(app.matchPatientForPayment(pay, [p]).via, 'house_name', 'it still READS as attached');
   assert.deepEqual(plain(app.planPatientUidBackfill([pay], [p])), [], 'but it is not WRITTEN');
-  assert.equal(app.withPatientUid(pay, [p]), pay, 'and savePayment stamps nothing either');
-  assert.match(fnSource(APP, 'withPatientUid'), /m\.via === 'house_name'/);
-  assert.match(fnSource(APP, 'planPatientUidBackfill'), /m\.via === 'house_name'/);
+  assert.equal(app.withPatientUid(pay, [p]), pay, 'and savePayment records nothing either');
+  /* Both gates say the same thing in the same words: only the normalized
+   * triple — same house, same entry date, a name differing by a space or an
+   * invisible character — is written without a person. */
+  assert.match(fnSource(APP, 'withPatientUid'), /m\.via !== 'triple_loose'/);
+  assert.match(fnSource(APP, 'planPatientUidBackfill'), /m\.via !== 'triple_loose'/);
 });
 
 test('E: the backfill runs ON DEMAND, never on load, and never overwrites', () => {
@@ -618,7 +677,11 @@ test('F: no new endpoint — the link rides the existing savePayment', () => {
   assert.ok(!SERVER.includes('reconnect'));
   const dispatch = GS_SRC.slice(GS_SRC.indexOf('function handle_'), GS_SRC.indexOf('function handle_') + 6000);
   const payActions = (dispatch.match(/action === '(\w+)'/g) || []).filter((a) => /Payment/i.test(a));
-  assert.deepEqual(payActions.sort(), [
+  /* accountingPayments is PR #139's READ-only feed and predates this change;
+   * the three WRITE-capable actions are still exactly the three that existed
+   * before, and this change adds none. */
+  assert.deepEqual(plain(Array.from(new Set(payActions)).sort()), [
+    "action === 'accountingPayments'",
     "action === 'getPayments'", "action === 'savePayment'", "action === 'updatePayment'",
   ].sort());
   for (const name of ['reconnectPaymentToPatient', 'markPaymentNotAPatient', 'runPatientUidBackfill']) {

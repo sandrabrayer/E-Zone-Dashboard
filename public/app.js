@@ -6472,10 +6472,17 @@ function normalizeNameForMatch(v) {
 function patientUid(p) {
   return String((p && p.id) || '').trim();
 }
-/* The uid a payment ROW claims. Separate function so a reader never has to
- * remember which side of the link they are on. */
+/* The uid a payment ROW claims.
+ *
+ * TWO COLUMNS, one answer. `patientUid` is SERVER-OWNED (PR #139): the server
+ * resolves it from an EXACT match of the row's triple and leaves it blank
+ * when it cannot. `linkPatientUid` is what a PERSON decided on the reconnect
+ * screen, and the server lets it win. Reading the decision first also makes
+ * the optimistic local row correct in the moment between the click and the
+ * server's echo. */
 function paymentPatientUid(pay) {
-  return String((pay && pay.patientUid) || '').trim();
+  if (!pay) return '';
+  return String(pay.linkPatientUid || pay.patientUid || '').trim();
 }
 
 function patientKey(p) {
@@ -6561,15 +6568,21 @@ function normalizePayment(r) {
      * this function's job to refuse. */
     coverageStart: isoDate(r.coverageStart),
     coverageEnd:   isoDate(r.coverageEnd),
-    /* The link columns (appended; see PAYMENT_COLUMNS in Code.gs).
-     *   patientUid  — the persisted Patients id this row belongs to. Blank on
-     *                 every historical row; matched FIRST when present, so a
-     *                 rename or a house transfer cannot detach the row.
-     *   linkStatus  — '' (never reviewed) | 'linked' | 'not_a_patient'.
-     *   linkNote    — Sandra's reason, required for 'not_a_patient'.
-     *   linkedBy/At — who decided and when. SERVER-STAMPED; a client value is
-     *                 ignored on write and only echoed back on read. */
-    patientUid: String(r.patientUid || '').trim(),
+    /* The identity + link columns (appended; see PAYMENT_COLUMNS in Code.gs).
+     *
+     *   patientUid     — SERVER-OWNED (PR #139): the persisted Patients id,
+     *                    resolved from an EXACT triple match and left blank
+     *                    when that fails. Carried here so the client reads
+     *                    the same answer the accounting feed does; never sent.
+     *   linkPatientUid — what a PERSON decided on the reconnect screen. The
+     *                    one client-writable input to the link, and the only
+     *                    thing that may override the automatic resolution.
+     *   linkStatus     — '' (never reviewed) | 'linked' | 'not_a_patient'.
+     *   linkNote       — the reason, required for 'not_a_patient'.
+     *   linkedBy/At    — who decided and when. SERVER-STAMPED; a client value
+     *                    is dropped on write and only echoed back on read. */
+    patientUid:     String(r.patientUid || '').trim(),
+    linkPatientUid: String(r.linkPatientUid || '').trim(),
     linkStatus: PAYMENT_LINK_STATUSES.indexOf(String(r.linkStatus || '').trim()) >= 0
       ? String(r.linkStatus).trim() : '',
     linkNote:   String(r.linkNote || ''),
@@ -6740,10 +6753,10 @@ function paymentForPatientOnDate(patient, dueDateISO) {
   return applyBillingOverride(normalizePayment({
     id,
     patientId: patientKey(patient),
-    /* The durable half of the link, stamped from the start: this placeholder
-     * becomes a real row the moment Sandra touches it, and a row born without
-     * a uid is a row one rename away from being orphaned. */
-    patientUid: patientUid(patient),
+    /* patientUid is SERVER-OWNED (PR #139) — it is resolved from the triple
+     * on write, so a placeholder does not claim one. What the placeholder DOES
+     * carry is a trimmed name, so the triple it is born with is the same one
+     * the server's index is built from. */
     patientName: trimName(patient.name),
     houseId: patient.houseId,
     dueDate: dueDateISO,
@@ -7154,13 +7167,14 @@ function reconnectDoubleEntry(pay, patient, payments) {
     && belongs(other));
 }
 
-/* THE BACKFILL PLAN (never the write). Existing rows that should carry a uid
- * and do not, paired with the patient the triple unambiguously names.
+/* THE BACKFILL PLAN (never the write). The rows the server's exact match
+ * left blank and the NORMALIZED triple can place without a judgement call —
+ * the same rule withPatientUid() applies at write time, read over the whole
+ * sheet so the existing rows can be caught up in one go.
  *
- * "Unambiguously" is the whole contract: tiers 1-3 only, and tier 3 already
- * refuses when more than one patient normalizes to the same triple. The loose
- * house+name tier is excluded — no date, no backfill. Everything it does not
- * cover is left for the reconnect screen, where a person decides.
+ * It deliberately does NOT re-do PR #139's work: a row whose triple is intact
+ * is the server's to resolve (on write, and by its own locked backfill), and
+ * planning it here would be a second writer racing the first for no gain.
  *
  * Pure: returns [{ payment, patient, via }] and writes nothing. */
 function planPatientUidBackfill(payments, patients) {
@@ -7170,7 +7184,7 @@ function planPatientUidBackfill(payments, patients) {
   payments.forEach(pay => {
     if (!pay || paymentPatientUid(pay)) return;
     const m = matchPatientForPayment(pay, list);
-    if (!m || m.via === 'house_name') return;
+    if (!m || m.via !== 'triple_loose') return;
     const uid = patientUid(m.patient);
     if (!uid) return;
     out.push({ payment: pay, patient: m.patient, via: m.via });
@@ -7196,7 +7210,7 @@ async function reconnectPaymentToPatient(pay, patient) {
   const uid = patientUid(patient);
   if (!uid) { showError('למטופל זה אין מזהה קבוע — יש לשמור אותו שוב לפני השיוך'); return; }
   await savePayment(Object.assign({}, pay, {
-    patientUid: uid,
+    linkPatientUid: uid,
     linkStatus: 'linked',
     linkNote: '',
   }));
@@ -7212,7 +7226,7 @@ async function markPaymentNotAPatient(pay, note) {
   const reason = String(note || '').trim().slice(0, PAYMENT_LINK_NOTE_MAX);
   if (!reason) { showError('יש לציין סיבה לסימון "לא מטופל"'); return; }
   await savePayment(Object.assign({}, pay, {
-    patientUid: '',
+    linkPatientUid: '',
     linkStatus: 'not_a_patient',
     linkNote: reason,
   }));
@@ -7235,7 +7249,7 @@ async function runPatientUidBackfill() {
      * shared array, and a parallel storm would race its own rollbacks. */
     // eslint-disable-next-line no-await-in-loop
     await savePayment(Object.assign({}, item.payment, {
-      patientUid: patientUid(item.patient),
+      linkPatientUid: patientUid(item.patient),
       linkStatus: 'linked',
     }));
     done += 1;
@@ -7306,7 +7320,9 @@ function renderReconnect() {
       `;
       el.querySelector('.reconnect-undo').onclick = e =>
         busyButton(e.currentTarget, 'save', async () => {
-          await savePayment(Object.assign({}, pay, { linkStatus: '', linkNote: '' }));
+          await savePayment(Object.assign({}, pay, {
+            linkPatientUid: '', linkStatus: '', linkNote: '',
+          }));
           renderReconnect();
         });
       list.appendChild(el);
@@ -8710,24 +8726,34 @@ async function savePayment(payment) {
   }
 }
 
-/* Stamp the persisted patient id onto a payment that does not carry one yet.
+/* Record the link for a row the SERVER's exact match cannot resolve.
  *
- * THE SAME RULE AS THE BACKFILL, applied at write time: a uid is stamped only
- * when the row's own triple identifies EXACTLY ONE current patient — tiers 1-3
- * of matchPatientForPayment(). The loose house+name tier is deliberately NOT
- * enough: it has no date in it, and writing a durable identity off a guess is
- * worse than leaving the row for the reconnect screen, where a person decides.
+ * The division of labour with PR #139: the server resolves `patientUid` from
+ * an EXACT triple match, on every write and by a locked backfill over the
+ * whole sheet, and leaves the cell blank rather than guess. That covers every
+ * row whose triple is intact — which is most of them, and none of the six the
+ * reconnect screen exists for.
  *
- * Returns a COPY when it stamps, the input untouched otherwise. Never
- * overwrites a uid the row already has — that decision was somebody's, and
- * only the reconnect screen may change it. */
+ * What this adds is the NORMALIZED triple: same house, same entry date, and a
+ * name that differs only by a stray space, an invisible character or a case
+ * fold. `"שחר חיון "` is that row. It is a match a person would make without
+ * hesitating, and it is one the exact matcher will never make, so it is
+ * written down as a decision (linkPatientUid) rather than smuggled in as if
+ * the triple had been fine all along.
+ *
+ * DELIBERATELY NOT the house+name tier: it has no date in it, and two
+ * admissions of the same person are exactly what it cannot tell apart. Those
+ * rows go to the reconnect screen, where a person decides.
+ *
+ * Returns a COPY when it links, the input untouched otherwise. Never
+ * overwrites a link already on the row — that was somebody's decision. */
 function withPatientUid(payment, patients) {
   if (!payment || paymentPatientUid(payment)) return payment;
   const m = matchPatientForPayment(payment, Array.isArray(patients) ? patients : []);
-  if (!m || m.via === 'house_name') return payment;
+  if (!m || m.via !== 'triple_loose') return payment;
   const uid = patientUid(m.patient);
   if (!uid) return payment;
-  return Object.assign({}, payment, { patientUid: uid });
+  return Object.assign({}, payment, { linkPatientUid: uid, linkStatus: 'linked' });
 }
 
 /* Record what a payment ACTUALLY covered.

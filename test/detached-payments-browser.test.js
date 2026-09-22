@@ -95,7 +95,7 @@ function seedScript() {
         date: '2026-09-07', pay: 35000, status: 'active', exitDate: '' }),
     ];
     state.payments = [
-      normalizePayment({ id: 'pay-amit', patientUid: 'id-amit',
+      normalizePayment({ id: 'pay-amit', patientUid: 'id-amit',   // server-resolved, as getPayments returns it
         patientId: 'arfoni::עמית בורנשטיין::2026-09-07', patientName: 'עמית בורנשטיין',
         houseId: 'arfoni', dueDate: '2026-09-07', amount: 30000, amountPaid: 30000,
         status: 'paid', balance: 0 }),
@@ -177,16 +177,19 @@ test('the candidate carries its reasons, and a possible double entry is warned a
     });
   });
 
-test('linking writes patientUid through savePayment, and moves no money', { skip }, async () => {
+test('linking records the decision through savePayment, and moves no money', { skip }, async () => {
   await withPage(async ({ page, state }) => {
     const row = await rowFor(page, 'עמית יעקובי');
     await (await row.$('.cand-link')).click();
-    await page.waitForFunction(`state.payments.find(p => p.id === 'pay-yaakovi').patientUid === 'id-amit'`);
+    await page.waitForFunction(
+      `state.payments.find(p => p.id === 'pay-yaakovi').linkPatientUid === 'id-amit'`);
 
     const post = state.posts.find((p) => p && p.action === 'savePayment');
     assert.ok(post, 'it went through the one payment write path');
     assert.strictEqual(post.payment.id, 'pay-yaakovi');
-    assert.strictEqual(post.payment.patientUid, 'id-amit');
+    /* The DECISION is what the client sends. `patientUid` is the server's to
+       resolve (PR #139) and the server lets this decision win. */
+    assert.strictEqual(post.payment.linkPatientUid, 'id-amit');
     assert.strictEqual(post.payment.linkStatus, 'linked');
     // Not one shekel moved.
     assert.strictEqual(post.payment.amount, 30000);
@@ -246,9 +249,9 @@ test('the backfill button says what it will do, and only runs on a click', { ski
 
     await page.click('#reconnect-backfill');
     await page.waitForFunction(
-      `state.payments.find(p => p.id === 'pay-shachar').patientUid === 'id-shachar'`);
+      `state.payments.find(p => p.id === 'pay-shachar').linkPatientUid === 'id-shachar'`);
     const post = state.posts.filter((p) => p && p.action === 'savePayment').pop();
-    assert.strictEqual(post.payment.patientUid, 'id-shachar');
+    assert.strictEqual(post.payment.linkPatientUid, 'id-shachar');
     assert.strictEqual(post.payment.amountPaid, 35000, 'the backfill moves no money');
   });
 });

@@ -203,12 +203,16 @@ test('A: PAYMENT_COLUMNS appends the two coverage columns and moves nothing', ()
     'id', 'patientId', 'patientName', 'houseId', 'dueDate',
     'amount', 'status', 'amountPaid', 'balance', 'timestamp',
   ], 'position IS the data contract — the original ten are untouched');
-  assert.deepEqual(cols.slice(10, 12), ['coverageStart', 'coverageEnd'],
-    'the coverage pair keeps positions 11-12');
-  /* Later work appended the five payment↔patient LINK columns after them
-   * (see CHANGELOG-detached-payments.md). Append-only is the contract, so the
-   * assertion is "the pair is at 11-12", not "the list ends there". */
-  assert.deepEqual(cols.slice(12), ['patientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt']);
+  assert.deepEqual(cols.slice(10, 12), ['coverageStart', 'coverageEnd']);
+  /* The accounting source-feed columns were appended AFTER these two
+   * (CHANGELOG-accounting-source-feed.md) — again at the end, again moving
+   * nothing. The coverage pair's positions are what this test guards. */
+  assert.deepEqual(cols.slice(12), [
+    'paymentUid', 'patientUid', 'payerUid',
+    'chargedAt', 'chargedBy', 'sourceUpdatedAt', 'sourceVersion',
+    'linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt',
+  ]);
+  assert.equal(cols.length, 24);
 });
 
 test('A: the two new columns are text-forced at sheet-ensure, the old ones are left alone', () => {
@@ -224,13 +228,19 @@ test('A: the two new columns are text-forced at sheet-ensure, the old ones are l
    * a Date, serializes as a UTC timestamp and drifts −1 day for Israel — here
    * that would move revenue between months. Re-formatting a LIVE column would
    * be a migration, so dueDate/timestamp keep whatever they have. */
-  assert.ok(forced.indexOf('coverageStart') >= 0 && forced.indexOf('coverageEnd') >= 0,
-    'the appended pair is forced');
-  for (const live of ['dueDate', 'timestamp', 'amount', 'status']) {
-    assert.ok(forced.indexOf(live) === -1, live + ' is a LIVE column — re-formatting it is a migration');
-  }
-  assert.deepEqual(arr(code.PAYMENT_TEXT_COLUMNS).slice().sort(), forced.slice().sort(),
-    'every text column is forced, and only those');
+  /* The coverage pair plus the appended accounting columns — all of them
+   * text or ISO stamps. The ORIGINAL ten are still untouched, which is the
+   * assertion that matters here. */
+  assert.deepEqual(forced.sort(), [
+    'chargedAt', 'chargedBy', 'coverageEnd', 'coverageStart',
+    'linkNote', 'linkPatientUid', 'linkStatus', 'linkedAt', 'linkedBy',
+    'patientUid', 'payerUid', 'paymentUid', 'sourceUpdatedAt',
+  ].sort());
+  assert.deepEqual(arr(code.PAYMENT_TEXT_COLUMNS).slice().sort(), forced.sort());
+  ['id', 'patientId', 'patientName', 'houseId', 'dueDate',
+   'amount', 'status', 'amountPaid', 'balance', 'timestamp'].forEach((c) => {
+    assert.ok(forced.indexOf(c) < 0, c + ' is a LIVE column — re-formatting it would be a migration');
+  });
 });
 
 /* ================= B. one primitive, two answers ================= */
@@ -732,7 +742,12 @@ test('H: no new endpoint, and server.js is untouched by this change', () => {
   const dispatch = GS_SRC.slice(GS_SRC.indexOf('function handle_'), GS_SRC.indexOf('function handle_') + 6000);
   const payActions = (dispatch.match(/action === '(\w+)'/g) || [])
     .filter((a) => /Payment/i.test(a));
-  assert.deepEqual(payActions.sort(), [
+  /* accountingPayments was added later (CHANGELOG-accounting-source-feed.md).
+   * It is READ-ONLY and gated by its own secret; the set of actions that can
+   * WRITE a payment row is still exactly the two that always could. */
+  const unique = Array.from(new Set(payActions)).sort();
+  assert.deepEqual(unique, [
+    "action === 'accountingPayments'",
     "action === 'getPayments'", "action === 'savePayment'", "action === 'updatePayment'",
   ].sort());
 });
