@@ -205,16 +205,66 @@ const STATUS_OPTIONS = [
 /* Payment status values are stored in Hebrew in the Payments sheet so the
  * sheet is legible to non-developers. Keep the ids in sync with the values
  * written by savePayment(). */
+/* The three statuses a recorder CHOOSES, and the only ones in the גבייה
+ * dropdown. 'void' is deliberately absent: voiding is a decision taken on the
+ * שיוך תשלומים screen, against a named original, with a reason — never a
+ * fourth option one click away from "לא שולם". */
 const PAYMENT_STATUS = [
   { id: 'paid',    label: 'שולם' },
   { id: 'partial', label: 'שולם חלקית' },
   { id: 'unpaid',  label: 'לא שולם' },
 ];
+
+/* ===== VOID =====
+ * A payment row that was entered TWICE — the patient was renamed after the
+ * first entry, the first row detached, and somebody recorded the money again
+ * under the new name. Three confirmed pairs in the live sheet:
+ *
+ *   arfoni::ערן::2026-08-09        ₪35,000  duplicates  arfoni::ערן יצחק חונה::2026-08-09
+ *   rehab::עדי::2026-09-14         ₪35,000  duplicates  rehab::עדי עמית::2026-09-14
+ *   arfoni::עמית יעקובי::2026-09-07 ₪30,000  duplicates  arfoni::עמית בורנשטיין::2026-09-07
+ *
+ * THE ROW IS NEVER DELETED. Deleting it would destroy the evidence that the
+ * money was entered twice — which is the only way anyone could later tell a
+ * double entry from a payment that really was collected twice. It is marked
+ * VOID: it keeps its amount, its amountPaid and its dates exactly as recorded,
+ * and every figure in the app steps over it.
+ *
+ * 'void' is a real, aliased status, NOT an unknown one: normalizePayment maps
+ * an unrecognized status to 'unpaid', so a void row read back from the sheet
+ * would silently un-void itself. Mirrored by PAYMENT_STATUS_ALIASES_ in
+ * Code.gs for the same reason. */
+const PAYMENT_VOID_STATUS = 'void';
+const PAYMENT_VOID_LABEL = 'מבוטל';
+
 const PAYMENT_STATUS_ALIASES = {
   'שולם': 'paid', 'paid': 'paid',
   'שולם חלקית': 'partial', 'partial': 'partial',
   'לא שולם': 'unpaid', 'unpaid': 'unpaid',
+  'מבוטל': 'void', 'void': 'void',
 };
+
+/* THE ONE QUESTION every revenue, debt and alert figure asks before counting a
+ * payment row. One predicate, so "excluded everywhere" is a property of the
+ * code rather than a promise in a changelog: a new consumer that forgets it is
+ * the bug this function exists to make findable. */
+function isVoidPayment(pay) {
+  return !!pay && String(pay.status || '') === PAYMENT_VOID_STATUS;
+}
+
+/* Who may UNDO a void. Not a role system — this app has none — but the name
+ * the repo already uses for the person who decides exceptions (see
+ * CREDIT_RULE_LABELS' "חריגה באישור סנדרה" and meeting-report's "פנו לסנדרה").
+ *
+ * Marking a duplicate is ordinary daily work; UNMARKING one puts a second
+ * payment back into the revenue and debt figures, which is a money decision.
+ * The SERVER is the authority (PAYMENT_VOID_REVERSERS in Code.gs); this copy
+ * only decides whether the control is offered, so the refusal never has to be
+ * discovered by clicking. */
+const PAYMENT_VOID_REVERSERS = ['סנדרה'];
+function canReverseVoid() {
+  return PAYMENT_VOID_REVERSERS.indexOf(String(state.sessionUser || '').trim()) >= 0;
+}
 
 const houseById = id => HOUSES.find(h => h.id === id);
 const houseByName = name => HOUSES.find(h => h.name === name);
@@ -225,6 +275,9 @@ const state = {
   removedLeads: [],
   patients: [],
   dischargedPatients: [],
+  /* The name inside the signed session cookie, echoed by /api/me. Display and
+   * control-gating only; every server-side decision reads the cookie itself. */
+  sessionUser: '',
   payments: [],
   /* Credits / refunds ledger rows (Credits sheet), loaded by getCredits in
    * loadAll. Empty on a fresh install or an older deploy. */
@@ -779,6 +832,11 @@ function showUserPicker(pin) {
  * name (legacy cookie). החלף goes through logout → PIN → picker, because
  * re-issuing the cookie with a different name needs the PIN again. */
 function renderWhoami(name) {
+  /* Remembered so canReverseVoid() can decide whether to OFFER the un-void
+   * control. It is never the authority — upsertPayment_() re-checks against
+   * the signed session cookie — but a control that always fails is worse than
+   * one that is not shown. */
+  state.sessionUser = String(name || '');
   const el = document.getElementById('whoami');
   if (!el) return;
   if (!name) {
@@ -5566,7 +5624,9 @@ function suggestCredits(patient, exitDate, payments) {
   };
 
   const rows = (Array.isArray(payments) ? payments : [])
-    .filter(r => r && r.patientId === key && r.dueDate)
+    /* A VOID row is a double entry, not money: crediting against it would
+     * refund a patient for a payment they never made twice. */
+    .filter(r => r && !isVoidPayment(r) && r.patientId === key && r.dueDate)
     // Object.assign keeps every column of the row, coverageStart/coverageEnd
     // included, so paymentCoverage() below sees the recorded period.
     .map(r => Object.assign({}, r, { dueDate: isoDate(r.dueDate) }))
@@ -6594,7 +6654,9 @@ function normalizePayment(r) {
 /* The only values linkStatus may hold. Mirrors PAYMENT_LINK_STATUSES in
  * Code.gs, which is the authority on write. '' means "nobody has looked at
  * this row yet" and is what every historical row carries. */
-const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient'];
+/* 'duplicate' is a link decision like the other two — it says what this row
+ * IS — and it is the only one that also changes the row's payment status. */
+const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient', 'duplicate'];
 /* Longest note the reconnect screen will store. Mirrors the server cap. */
 const PAYMENT_LINK_NOTE_MAX = 300;
 
@@ -6923,6 +6985,15 @@ function lastBillingDayOnOrBefore(entryISO, fromISO) {
  * paid/partial payment clears the alert immediately (the same coverage rule
  * patientsNeedingRenewal uses). Released patients are excluded via
  * activePatients(). Returns [{ patient, dueISO }] sorted oldest-due first. */
+/* Does this payment row COVER its cycle — i.e. does it silence the overdue
+ * and renewal alerts? Only money actually recorded does, and a VOID row is
+ * not money: it is the second copy of a sum already counted on its twin.
+ * Shared by both alerts so they cannot drift apart. */
+function paymentCoversCycle(pay) {
+  if (!pay || isVoidPayment(pay)) return false;
+  return pay.status === 'paid' || pay.status === 'partial';
+}
+
 function overduePatients(fromISO) {
   const today = fromISO || todayISO();
   const out = [];
@@ -6934,7 +7005,7 @@ function overduePatients(fromISO) {
     // occurrence predates their entry date — no cycle exists, nothing overdue.
     if (dueISO < isoDate(p.date)) return;
     const pay = paymentForPatientOnDate(p, dueISO);
-    if (pay.status === 'paid' || pay.status === 'partial') return;
+    if (paymentCoversCycle(pay)) return;
     out.push({ patient: p, dueISO });
   });
   return out.sort((a, b) => a.dueISO.localeCompare(b.dueISO));
@@ -6972,7 +7043,7 @@ function patientsNeedingRenewal(fromISO, windowDays) {
     // Cycle coverage: only a paid/partial payment for THIS due date counts as
     // covered — an unpaid placeholder does not suppress the alert.
     const pay = paymentForPatientOnDate(p, renewalISO);
-    if (pay.status === 'paid' || pay.status === 'partial') return;
+    if (paymentCoversCycle(pay)) return;
     out.push({ patient: p, renewalISO, days });
   });
   return out.sort((a, b) => a.renewalISO.localeCompare(b.renewalISO));
@@ -7071,13 +7142,16 @@ function findPatientForPayment(pay) {
      נועם אשבל — moved ריהאב → הפרדס; her payment stayed on the ריהאב record. */
 
 /* Rows a person still has to look at: no current patient, and no decision
- * recorded. A row marked 'not_a_patient' has been decided and drops out — it
- * is not a loose end, it is a documented non-patient. Pure. */
+ * recorded. A row marked 'not_a_patient' or voided as a 'duplicate' has been
+ * decided and drops out — it is not a loose end, it is a documented one.
+ * Both stay visible further down the screen, under their own headings. Pure. */
+const RECONNECT_DECIDED_STATUSES = ['not_a_patient', 'duplicate'];
 function detachedPayments(payments, patients) {
   if (!Array.isArray(payments)) return [];
   const list = Array.isArray(patients) ? patients : [];
   return payments.filter(pay => pay
-    && pay.linkStatus !== 'not_a_patient'
+    && RECONNECT_DECIDED_STATUSES.indexOf(pay.linkStatus) < 0
+    && !isVoidPayment(pay)
     && !matchPatientForPayment(pay, list));
 }
 
@@ -7233,6 +7307,70 @@ async function markPaymentNotAPatient(pay, note) {
   renderReconnect();
 }
 
+/* "This row is the same money, entered twice" — the third resolution.
+ *
+ * IT NEVER DELETES THE ROW. The row keeps its amount, its amountPaid, its due
+ * date and its stored triple, and is marked VOID: that record is the only
+ * evidence anyone will ever have that the money was entered twice rather than
+ * collected twice. What changes is that every revenue, debt and alert figure
+ * steps over it (isVoidPayment), and the screen says who decided, when, and
+ * against WHICH original.
+ *
+ * `original` is the surviving payment row — the one attached to the current
+ * patient — and it is named in the note so the pair can be reconstructed from
+ * the sheet alone, long after this screen has forgotten them. */
+function duplicateVoidNote(pay, original, patient) {
+  const who = (patient && patient.name) || (original && original.patientName) || '';
+  return `כפילות של ${original ? original.id : ''}`
+    + (who ? ` (${who}` : '')
+    + (original ? `, ${formatDate(original.dueDate)}, ${fmtShekel(original.amount || 0)}` : '')
+    + (who ? ')' : '');
+}
+
+async function markPaymentDuplicate(pay, original, note) {
+  if (state.mode !== 'edit') return;
+  if (!original || !original.id) { showError('אין שורה מקורית לסמן מולה כפילות'); return; }
+  if (original.id === pay.id) { showError('לא ניתן לסמן שורה ככפילות של עצמה'); return; }
+  const reason = String(note || '').trim().slice(0, PAYMENT_LINK_NOTE_MAX);
+  if (!reason) { showError('יש לציין סיבה לסימון ככפילות'); return; }
+  await savePayment(Object.assign({}, pay, {
+    /* The MONEY columns are untouched — amount, amountPaid, balance and the
+     * coverage period all ride through exactly as recorded. Only the status
+     * and the decision change. */
+    status: PAYMENT_VOID_STATUS,
+    linkPatientUid: '',
+    linkStatus: 'duplicate',
+    linkNote: reason,
+  }));
+  renderReconnect();
+}
+
+/* Undo a void: the row goes back to being an undecided detached payment, and
+ * its money re-enters every figure. SANDRA ONLY — see PAYMENT_VOID_REVERSERS.
+ * The server refuses anyone else outright; this check only decides whether the
+ * control is offered.
+ *
+ * The restored status is DERIVED from the amounts the row still carries, which
+ * is exact precisely because voiding never touched them. */
+function statusFromAmounts(pay) {
+  const amount = Number(pay && pay.amount) || 0;
+  const paid = Number(pay && pay.amountPaid) || 0;
+  if (paid <= 0) return 'unpaid';
+  return paid >= amount ? 'paid' : 'partial';
+}
+
+async function reversePaymentVoid(pay) {
+  if (state.mode !== 'edit') return;
+  if (!canReverseVoid()) { showError('החזרת כפילות מותרת לסנדרה בלבד'); return; }
+  await savePayment(Object.assign({}, pay, {
+    status: statusFromAmounts(pay),
+    linkPatientUid: '',
+    linkStatus: '',
+    linkNote: '',
+  }));
+  renderReconnect();
+}
+
 /* The backfill (PR 2C). Writes a uid ONLY where the triple names exactly one
  * current patient — planPatientUidBackfill() is the rule, and it is pure.
  *
@@ -7299,35 +7437,150 @@ function renderReconnect() {
    * "who decided this, and when" is the half of an audit trail a person can
    * actually act on, and a row marked "not a patient" by mistake would
    * otherwise be unreachable. */
-  const decided = state.payments.filter(p => p && p.linkStatus === 'not_a_patient');
-  if (decided.length) {
+  const decidedRow = (pay, extraClass) => {
+    const el = document.createElement('div');
+    el.className = 'card reconnect-row decided' + (extraClass ? ' ' + extraClass : '');
+    el.innerHTML = `
+      <div class="reconnect-head">
+        <span class="p-name">${escapeHtml(String(pay.patientName || '')) || '<i>ללא שם</i>'}</span>
+        <span class="rev-chip">${escapeHtml(formatDate(pay.dueDate))}</span>
+        <span class="rev-chip">${escapeHtml(fmtShekel(pay.amount || 0))}</span>
+        ${pay.amountPaid ? `<span class="rev-chip">שולם ${escapeHtml(fmtShekel(pay.amountPaid))}</span>` : ''}
+      </div>
+      <div class="reconnect-note-shown">${escapeHtml(pay.linkNote || '')}</div>
+      <div class="reconnect-id">${escapeHtml(pay.linkedBy || '—')} · ${escapeHtml(formatDate(pay.linkedAt) || '—')}</div>
+    `;
+    return el;
+  };
+
+  const notPatient = state.payments.filter(p => p && p.linkStatus === 'not_a_patient');
+  if (notPatient.length) {
     const head = document.createElement('div');
     head.className = 'rev-detail-head';
-    head.innerHTML = `<span>סומנו כ"לא מטופל"</span><span>${decided.length}</span>`;
+    head.innerHTML = `<span>סומנו כ"לא מטופל"</span><span>${notPatient.length}</span>`;
     list.appendChild(head);
-    decided.forEach(pay => {
-      const el = document.createElement('div');
-      el.className = 'card reconnect-row decided';
-      el.innerHTML = `
-        <div class="reconnect-head">
-          <span class="p-name">${escapeHtml(String(pay.patientName || '')) || '<i>ללא שם</i>'}</span>
-          <span class="rev-chip">${escapeHtml(formatDate(pay.dueDate))}</span>
-          <span class="rev-chip">${escapeHtml(fmtShekel(pay.amount || 0))}</span>
-        </div>
-        <div class="reconnect-note-shown">${escapeHtml(pay.linkNote || '')}</div>
-        <div class="reconnect-id">${escapeHtml(pay.linkedBy || '—')} · ${escapeHtml(formatDate(pay.linkedAt) || '—')}</div>
-        <button class="btn small reconnect-undo" ${state.mode === 'edit' ? '' : 'disabled'}>החזרה לבדיקה</button>
-      `;
-      el.querySelector('.reconnect-undo').onclick = e =>
-        busyButton(e.currentTarget, 'save', async () => {
-          await savePayment(Object.assign({}, pay, {
-            linkPatientUid: '', linkStatus: '', linkNote: '',
-          }));
-          renderReconnect();
-        });
+    notPatient.forEach(pay => {
+      const el = decidedRow(pay);
+      const btn = document.createElement('button');
+      btn.className = 'btn small reconnect-undo';
+      btn.textContent = 'החזרה לבדיקה';
+      btn.disabled = state.mode !== 'edit';
+      btn.onclick = e => busyButton(e.currentTarget, 'save', async () => {
+        await savePayment(Object.assign({}, pay, {
+          linkPatientUid: '', linkStatus: '', linkNote: '',
+        }));
+        renderReconnect();
+      });
+      el.appendChild(btn);
       list.appendChild(el);
     });
   }
+
+  /* The voided duplicates. Kept on screen for the same reason the row is kept
+   * on the sheet: a decision nobody can see again is a decision nobody can
+   * check. Undoing one is SANDRA'S ALONE — it puts a second payment back into
+   * the revenue and debt figures — so everyone else is told whom to ask
+   * instead of being handed a button that will be refused. */
+  const voided = state.payments.filter(p => p && isVoidPayment(p));
+  if (voided.length) {
+    const head = document.createElement('div');
+    head.className = 'rev-detail-head';
+    head.innerHTML = `<span>סומנו ככפילות (${escapeHtml(PAYMENT_VOID_LABEL)})</span><span>${voided.length}</span>`;
+    list.appendChild(head);
+    voided.forEach(pay => {
+      const el = decidedRow(pay, 'voided');
+      if (canReverseVoid()) {
+        const btn = document.createElement('button');
+        btn.className = 'btn small reconnect-unvoid';
+        btn.textContent = 'ביטול סימון הכפילות';
+        btn.disabled = state.mode !== 'edit';
+        btn.onclick = e => busyButton(e.currentTarget, 'save', () => reversePaymentVoid(pay));
+        el.appendChild(btn);
+      } else {
+        const note = document.createElement('div');
+        note.className = 'reconnect-locked';
+        note.textContent = 'לביטול הסימון — פנו לסנדרה';
+        el.appendChild(note);
+      }
+      list.appendChild(el);
+    });
+  }
+}
+
+/* One payment, rendered as the sheet holds it — for the side-by-side panel.
+ * Verbatim on purpose: a trailing space or an invisible character in the name
+ * is the whole reason the pair exists, and the comparison is worthless if the
+ * two sides are prettied up into looking identical. */
+function duplicatePanelHtml(pay, title, cls) {
+  const house = houseById(pay.houseId);
+  const rows = [
+    ['שם כפי שנרשם', String(pay.patientName || '') || '—'],
+    ['בית', (house && house.name) || pay.houseId || '—'],
+    ['תאריך לתשלום', formatDate(pay.dueDate)],
+    ['סכום', fmtShekel(pay.amount || 0)],
+    ['שולם בפועל', fmtShekel(pay.amountPaid || 0)],
+    ['סטטוס', (PAYMENT_STATUS.find(x => x.id === pay.status) || {}).label || pay.status || '—'],
+  ];
+  return `<div class="dup-panel ${cls}">
+    <div class="dup-panel-title">${escapeHtml(title)}</div>
+    ${rows.map(([k, v]) =>
+      `<div class="dup-field"><span class="dup-k">${escapeHtml(k)}</span>`
+      + `<span class="dup-v">${escapeHtml(String(v))}</span></div>`).join('')}
+    <div class="dup-field"><span class="dup-k">מזהה שורה</span>
+      <span class="dup-v mono" dir="ltr">${escapeHtml(pay.id || '—')}</span></div>
+    <div class="dup-field"><span class="dup-k">שיוך מאוחסן</span>
+      <span class="dup-v mono" dir="ltr">${escapeHtml(pay.patientId || '—')}</span></div>
+  </div>`;
+}
+
+/* CONFIRM BEFORE VOIDING, with both rows on screen at once.
+ *
+ * The two payments are shown SIDE BY SIDE, field for field, because the only
+ * way to tell a duplicate from two genuine payments in the same month is to
+ * read them against each other — same amount, same due date, same house, a
+ * name that differs. Voiding on the strength of a warning chip alone is how
+ * real money disappears from a month's revenue. */
+function showDuplicateConfirm({ pay, original, patient, onConfirm }) {
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  const sameAmount = Number(pay.amount || 0) === Number(original.amount || 0);
+  const sameMonth = monthKey(pay.dueDate) === monthKey(original.dueDate);
+  back.innerHTML = `
+    <div class="modal dup-modal">
+      <h3>סימון כפילות</h3>
+      <p class="dup-lead">השורה הימנית תסומן <b>${escapeHtml(PAYMENT_VOID_LABEL)}</b> — היא נשמרת בגיליון
+        כרישום, ואינה נספרת בשום חישוב הכנסה, חוב או התראה. <b>שום שורה אינה נמחקת.</b></p>
+      <div class="dup-compare">
+        ${duplicatePanelHtml(pay, 'תסומן ככפילות', 'dup-void')}
+        ${duplicatePanelHtml(original, 'המקור שנשאר', 'dup-keep')}
+      </div>
+      <div class="dup-flags">
+        <span class="rev-chip ${sameAmount ? 'rev-chip-soft' : 'dup-flag-warn'}">
+          ${sameAmount ? 'אותו סכום' : 'סכומים שונים — לבדוק'}</span>
+        <span class="rev-chip ${sameMonth ? 'rev-chip-soft' : 'dup-flag-warn'}">
+          ${sameMonth ? 'אותו מחזור' : 'מחזורים שונים — לבדוק'}</span>
+      </div>
+      <div class="form-row">
+        <label>סיבה (נשמרת ביומן)</label>
+        <input type="text" class="dup-note" maxlength="${PAYMENT_LINK_NOTE_MAX}" />
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn" data-action="cancel">ביטול</button>
+        <button type="button" class="btn primary" data-action="confirm">סמן ככפילות</button>
+      </div>
+    </div>`;
+  const noteEl = back.querySelector('.dup-note');
+  noteEl.value = duplicateVoidNote(pay, original, patient);
+  const close = () => back.remove();
+  back.querySelector('[data-action="cancel"]').onclick = close;
+  back.onclick = e => { if (e.target === back) close(); };
+  back.querySelector('[data-action="confirm"]').onclick = e =>
+    busyButton(e.currentTarget, 'save', async () => {
+      await onConfirm(noteEl.value);
+      close();
+    });
+  document.body.appendChild(back);
+  if (noteEl.focus) noteEl.focus();
 }
 
 function buildReconnectRow(pay) {
@@ -7376,10 +7629,24 @@ function buildReconnectRow(pay) {
       <span class="cand-why">${c.reasons.map(r =>
         `<span class="rev-chip rev-chip-soft">${escapeHtml(RECONNECT_REASON_LABELS[r] || r)}</span>`).join('')}</span>
       ${dup.length ? `<span class="cand-warn" title="${escapeHtml(dup.map(d => formatDate(d.dueDate)).join(', '))}">⚠ ייתכן רישום כפול — כבר קיים תשלום לאותו מחזור</span>` : ''}
-      <button class="btn small primary cand-link" ${editable ? '' : 'disabled'}>שייך</button>
+      ${dup.length ? `<button class="btn small primary cand-dup" ${editable ? '' : 'disabled'}>כפילות</button>` : ''}
+      <button class="btn small ${dup.length ? '' : 'primary'} cand-link" ${editable ? '' : 'disabled'}>שייך</button>
     `;
+    /* WHERE THE WARNING IS, THE WARNING LEADS. A candidate that already has a
+     * payment for this cycle is far more often a double entry than a second
+     * real payment, so כפילות becomes the primary action and שייך steps down
+     * to secondary — offered, never removed, because the pair CAN be a rename
+     * whose first row was simply never linked. Only a person knows which, and
+     * the side-by-side confirm is where they find out. */
     line.querySelector('.cand-link').onclick = e =>
       busyButton(e.currentTarget, 'save', () => reconnectPaymentToPatient(pay, c.patient));
+    const dupBtn = line.querySelector('.cand-dup');
+    if (dupBtn) {
+      dupBtn.onclick = () => showDuplicateConfirm({
+        pay, original: dup[0], patient: c.patient,
+        onConfirm: note => markPaymentDuplicate(pay, dup[0], note),
+      });
+    }
     cands.appendChild(line);
   });
 
@@ -7445,10 +7712,15 @@ function renderBilling() {
    *
    * נגבה is NOT filtered: an amountPaid on a row is money somebody recorded,
    * and money that arrived is money whatever the cutoff says about forecasts. */
-  const preRecordsDue  = due.filter(d => isPreRecordsCycle(selected));
-  const countableDue   = due.filter(d => !isPreRecordsCycle(selected));
+  const preRecordsDue  = due.filter(d => isPreRecordsCycle(selected) && !isVoidPayment(d.payment));
+  /* VOID rows count toward nothing. They are still LISTED — the row carries a
+   * מבוטל badge — because a duplicate that vanishes from every screen is
+   * indistinguishable from one that was deleted, and deleting is exactly what
+   * this feature refuses to do. */
+  const countableDue   = due.filter(d => !isPreRecordsCycle(selected) && !isVoidPayment(d.payment));
   const totalDue       = countableDue.reduce((s, d) => s + (d.payment.amount || 0), 0);
-  const totalCollected = due.reduce((s, d) => s + (d.payment.amountPaid || 0), 0);
+  const totalCollected = due.filter(d => !isVoidPayment(d.payment))
+    .reduce((s, d) => s + (d.payment.amountPaid || 0), 0);
 
   document.getElementById('bill-due-count').textContent    = due.length;
   document.getElementById('bill-due-total').textContent    = '₪ ' + totalDue.toLocaleString('he-IL');
@@ -7500,7 +7772,11 @@ function renderBillingOpenList(selectedISO) {
   const list = document.getElementById('billing-open-list');
   list.innerHTML = '';
   const openAll = state.payments
-    .filter(p => (p.status === 'unpaid' || p.status === 'partial') && p.dueDate && p.dueDate < selectedISO)
+    /* isVoidPayment is redundant beside the status whitelist and kept anyway:
+     * this is a DEBT list, and the whitelist is one refactor away from being
+     * "not paid" instead of "unpaid or partial". */
+    .filter(p => !isVoidPayment(p)
+      && (p.status === 'unpaid' || p.status === 'partial') && p.dueDate && p.dueDate < selectedISO)
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
     .map(rawPay => {
       // Carry-forward rows read straight from state.payments — overlay the
@@ -7565,13 +7841,23 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
    *     patientDueOnDate now replaces: a recorded row is never hidden or
    *     rewritten (it may be money somebody really took), it is FLAGGED so
    *     Sandra can correct it. */
+  /* A VOID row is still SHOWN — never deleted, never hidden — and says what
+   * it is. Its select is disabled too: the way back from a void is the
+   * שיוך תשלומים screen, where the decision was taken and where the audit
+   * trail lives, not a dropdown on a row. */
+  const isVoid = isVoidPayment(payment);
   const preRecords = isPreRecordsCycle(dueDateISO);
   const outsideStay = !!(patient && isoDate(patient.date))
     && !patientStayCoversDate(patient, dueDateISO);
   row.className = 'billing-row' + (isCarryForward ? ' carry' : '') + (isOverdue ? ' overdue' : '');
   row.dataset.pid = payment.id;
 
-  const statusSelect = PAYMENT_STATUS.map(s =>
+  /* A void row's own status is not in PAYMENT_STATUS (voiding is not a
+   * dropdown choice), so it is pinned on as a disabled option rather than
+   * silently rendering as whichever option happens to be first. */
+  const statusSelect = (isVoid
+    ? [{ id: PAYMENT_VOID_STATUS, label: PAYMENT_VOID_LABEL }].concat(PAYMENT_STATUS)
+    : PAYMENT_STATUS).map(s =>
     `<option value="${s.id}" ${payment.status === s.id ? 'selected' : ''}>${s.label}</option>`
   ).join('');
 
@@ -7660,6 +7946,7 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
       <span class="p-label">מטופל</span>
       <span class="p-name">${escapeHtml(patient.name || payment.patientName)}</span>
       ${preRecords ? `<span class="badge pre-records" title="מחזור שקדם ל־${escapeHtml(formatDate(RECORDS_COMPLETE_FROM))} — רישום התשלומים במערכת אינו מלא לפני מועד זה, ולכן אינו נספר כחוב">לפני תחילת הרישום</span>` : ''}
+      ${isVoid ? `<span class="badge void" title="שורה שסומנה ככפילות — נשמרת כרישום, ואינה נספרת בשום חישוב הכנסה, חוב או התראה">${escapeHtml(PAYMENT_VOID_LABEL)}</span>` : ''}
       ${outsideStay ? `<span class="badge warn" title="תאריך החיוב אינו בתוך תקופת השהות של המטופל (כניסה ${escapeHtml(formatDate(isoDate(patient.date)))}${patientExitISO(patient) ? ', שחרור ' + escapeHtml(formatDate(patientExitISO(patient))) : ''})">מחוץ לתקופת השהות</span>` : ''}
     </div>
     <div>
@@ -7676,7 +7963,7 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
     </div>
     <div>
       <span class="p-label">סטטוס</span>
-      <select class="billing-status" ${state.mode === 'edit' ? '' : 'disabled'}>${statusSelect}</select>
+      <select class="billing-status" ${state.mode === 'edit' && !isVoid ? '' : 'disabled'}>${statusSelect}</select>
     </div>
     <div class="billing-paid-wrap ${payment.status === 'partial' ? '' : 'hidden'}">
       <span class="p-label">שולם בפועל</span>
@@ -7725,8 +8012,9 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
    * failure re-renders the whole billing tab, so re-enabling a detached row is
    * harmless. */
   const setRowSaving = saving => {
-    statusSel.disabled = saving || state.mode !== 'edit';
-    paidInput.disabled = saving || state.mode !== 'edit';
+    // A void row's controls stay disabled through the whole cycle.
+    statusSel.disabled = saving || state.mode !== 'edit' || isVoid;
+    paidInput.disabled = saving || state.mode !== 'edit' || isVoid;
     row.classList.toggle('saving', saving);
   };
   /* The row freeze (both controls disabled + the row dimmed) predates the shared
@@ -7852,9 +8140,15 @@ function renderBillingMonthlySummary(selectedISO) {
    * whatever the cutoff says about what was NOT entered. RECORDS_COMPLETE_FROM
    * is a month boundary, so a month is wholly on one side of it; the note
    * below says so when the whole panel is on the earlier side. */
-  const preRecordsRows = thisMonth.filter(p => isPreRecordsCycle(p.dueDate));
-  const debtRows = thisMonth.filter(p => !isPreRecordsCycle(p.dueDate));
-  const collected   = thisMonth.reduce((s, p) => s + (p.amountPaid || 0), 0);
+  /* VOID first, and for BOTH figures: a double entry is neither money that
+   * arrived nor money that is owed. Unlike the records cutoff — which leaves
+   * נגבה alone because a recorded payment did arrive — a void row's amountPaid
+   * is the second copy of a sum already counted on its twin. */
+  const liveRows = thisMonth.filter(p => !isVoidPayment(p));
+  const voidRows = thisMonth.filter(p => isVoidPayment(p));
+  const preRecordsRows = liveRows.filter(p => isPreRecordsCycle(p.dueDate));
+  const debtRows = liveRows.filter(p => !isPreRecordsCycle(p.dueDate));
+  const collected   = liveRows.reduce((s, p) => s + (p.amountPaid || 0), 0);
   const outstanding = debtRows
     .filter(p => p.status !== 'paid')
     .reduce((s, p) => s + (p.balance || 0), 0);
@@ -7865,7 +8159,7 @@ function renderBillingMonthlySummary(selectedISO) {
   const breakdownEl = document.getElementById('bill-month-breakdown');
   breakdownEl.innerHTML = '';
   HOUSES.forEach(h => {
-    const rows = thisMonth.filter(p => p.houseId === h.id);
+    const rows = liveRows.filter(p => p.houseId === h.id);
     if (!rows.length) return;
     const col = rows.reduce((s, p) => s + (p.amountPaid || 0), 0);
     const out = rows.filter(p => p.status !== 'paid' && !isPreRecordsCycle(p.dueDate))
@@ -7881,6 +8175,13 @@ function renderBillingMonthlySummary(selectedISO) {
     `;
     breakdownEl.appendChild(line);
   });
+  if (voidRows.length) {
+    const line = document.createElement('div');
+    line.className = 'bd-line muted void-line';
+    line.innerHTML = `<span class="bd-house">${escapeHtml(PAYMENT_VOID_LABEL)} — כפילויות</span>`
+      + `<span class="bd-vals"><span class="rev-count">${voidRows.length} שורות — לא נספרות כלל</span></span>`;
+    breakdownEl.appendChild(line);
+  }
   if (preRecordsRows.length) {
     const line = document.createElement('div');
     line.className = 'bd-line muted pre-records-line';
@@ -8179,7 +8480,10 @@ function buildMonthlyRevenue(opts) {
    * ignore it. The overlay never touches paid/partial history, so RECEIVED is
    * always the real amountPaid. */
   payments.forEach(raw => {
-    if (!raw) return;
+    /* VOID — a row entered twice. It keeps its amount and its amountPaid on
+     * the sheet as the evidence of the double entry, and contributes to no
+     * figure on this screen: not RECEIVED, not EXPECTED, not NET. */
+    if (!raw || isVoidPayment(raw)) return;
     const dueISO = isoDate(raw.dueDate);
     if (!dueISO) return;
     /* THE WHOLE ROW, not a { dueDate } stub: the stub threw away any recorded
@@ -8244,7 +8548,12 @@ function buildMonthlyRevenue(opts) {
    * standing between this view and double counting. */
   const billedCycleKeys = {};
   payments.forEach(p => {
-    if (!p) return;
+    /* A VOID row is not a billing record, so it must not claim its cycle
+     * either: if the only row for a cycle was voided as a duplicate, that
+     * cycle has no payment behind it and belongs back in the projected pass.
+     * (In the duplicate case the surviving twin keeps the key, so nothing
+     * moves — which is the point.) */
+    if (!p || isVoidPayment(p)) return;
     const dueISO = isoDate(p.dueDate);
     if (!dueISO) return;
     const pid = String(p.patientId || '');
