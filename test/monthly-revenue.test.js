@@ -744,7 +744,7 @@ test('I: the daily גבייה screen is added ALONGSIDE, not modified', () => {
 });
 
 test('I: the new screen is registered in the router and has a matching section', () => {
-  assert.match(APP, /'billing', 'revenue', 'breakeven'/, 'SCREENS carries it, after billing');
+  assert.match(APP, /'billing', 'revenue', 'reconnect'/, 'SCREENS carries it, after billing');
   assert.match(APP, /renderMonthlyRevenue\(\);/);
   // The tab needs no bespoke click handler: initTabs wires every .tabs .tab
   // through one loop, and the router toggles screen-<id> for each SCREENS

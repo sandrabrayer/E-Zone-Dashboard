@@ -203,8 +203,12 @@ test('A: PAYMENT_COLUMNS appends the two coverage columns and moves nothing', ()
     'id', 'patientId', 'patientName', 'houseId', 'dueDate',
     'amount', 'status', 'amountPaid', 'balance', 'timestamp',
   ], 'position IS the data contract — the original ten are untouched');
-  assert.deepEqual(cols.slice(10), ['coverageStart', 'coverageEnd']);
-  assert.equal(cols.length, 12);
+  assert.deepEqual(cols.slice(10, 12), ['coverageStart', 'coverageEnd'],
+    'the coverage pair keeps positions 11-12');
+  /* Later work appended the five payment↔patient LINK columns after them
+   * (see CHANGELOG-detached-payments.md). Append-only is the contract, so the
+   * assertion is "the pair is at 11-12", not "the list ends there". */
+  assert.deepEqual(cols.slice(12), ['patientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt']);
 });
 
 test('A: the two new columns are text-forced at sheet-ensure, the old ones are left alone', () => {
@@ -220,8 +224,13 @@ test('A: the two new columns are text-forced at sheet-ensure, the old ones are l
    * a Date, serializes as a UTC timestamp and drifts −1 day for Israel — here
    * that would move revenue between months. Re-formatting a LIVE column would
    * be a migration, so dueDate/timestamp keep whatever they have. */
-  assert.deepEqual(forced.sort(), ['coverageEnd', 'coverageStart']);
-  assert.deepEqual(arr(code.PAYMENT_TEXT_COLUMNS).slice().sort(), forced.sort());
+  assert.ok(forced.indexOf('coverageStart') >= 0 && forced.indexOf('coverageEnd') >= 0,
+    'the appended pair is forced');
+  for (const live of ['dueDate', 'timestamp', 'amount', 'status']) {
+    assert.ok(forced.indexOf(live) === -1, live + ' is a LIVE column — re-formatting it is a migration');
+  }
+  assert.deepEqual(arr(code.PAYMENT_TEXT_COLUMNS).slice().sort(), forced.slice().sort(),
+    'every text column is forced, and only those');
 });
 
 /* ================= B. one primitive, two answers ================= */

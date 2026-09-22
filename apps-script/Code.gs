@@ -415,8 +415,37 @@ const DISCHARGED_PATIENT_COLUMNS = [
 const PAYMENT_COLUMNS = [
   'id', 'patientId', 'patientName', 'houseId', 'dueDate',
   'amount', 'status', 'amountPaid', 'balance', 'timestamp',
-  'coverageStart', 'coverageEnd'
+  'coverageStart', 'coverageEnd',
+  'patientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt'
 ];
+
+/* ===== THE LINK COLUMNS (appended) =====
+ *
+ * A payment was attached to a patient by houseId::name::entryDate alone, so
+ * ANY edit to the name, the house or the entry date detached it, silently and
+ * permanently. The live sheet holds the proof: "שחר חיון " with a trailing
+ * space, "אביב שבתאי" carrying invisible characters, and נועם אשבל's payment
+ * left behind on her ריהאב record after she moved to הפרדס.
+ *
+ *   patientUid — the PERSISTED Patients-sheet id (PATIENT_COLUMNS.id). Written
+ *                on every new payment row and matched FIRST, so a rename or a
+ *                house transfer cannot break the link: it is made of neither.
+ *                BLANK IS LEGAL and is what every historical row carries — the
+ *                triple is still read as a fallback, so no old row is orphaned
+ *                by this column existing.
+ *   linkStatus — '' (nobody has reviewed this row) | 'linked' | 'not_a_patient'.
+ *   linkNote   — the reason a row was marked not_a_patient. Required for it.
+ *   linkedBy   — WHO decided. SERVER-STAMPED from the signed session cookie;
+ *                a client-supplied value is discarded.
+ *   linkedAt   — WHEN. SERVER-STAMPED from the server clock, same reason.
+ *
+ * All five are plain text. patientUid especially: an id like '2026-09-07' or
+ * a long digit string would otherwise be coerced into a date or a number by
+ * Sheets — the same corruption class the coverage columns are forced against,
+ * and here it would silently re-point money at nobody. */
+const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient'];
+const PAYMENT_LINK_NOTE_MAX = 300;
+const PAYMENT_UID_MAX = 100;
 /* Longest period a single payment row may claim. Mirrors COVERAGE_MAX_DAYS in
  * app.js. A mistyped year would otherwise swallow a year of allocation. */
 const COVERAGE_MAX_DAYS = 366;
@@ -425,7 +454,10 @@ const COVERAGE_MAX_DAYS = 366;
  * and drifts the day −1 for Israel — the exact exitDate bug, and here it
  * would move money between months. Only the NEW columns are forced; the
  * existing ones keep whatever format they already have. */
-const PAYMENT_TEXT_COLUMNS = ['coverageStart', 'coverageEnd'];
+const PAYMENT_TEXT_COLUMNS = [
+  'coverageStart', 'coverageEnd',
+  'patientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt',
+];
 
 /* BillingOverrides sheet columns. One row per (patientId, month); `id` is a
  * deterministic `ovr::<patientId>::<month>` string built by the client (see
@@ -628,7 +660,10 @@ function handle_(params) {
     if (action === 'getPayments') return jsonOut_(getPayments_());
     if (action === 'savePayment' || action === 'updatePayment') {
       const payment = parseJsonParam_(params.payment);
-      return jsonOut_(upsertPayment_(payment));
+      /* The stamping user comes from the SIGNED session cookie via
+       * requestUser_ — never from the payment body. Same trust model as
+       * saveCredit and dischargePatient. */
+      return jsonOut_(upsertPayment_(payment, requestUser_(params)));
     }
     if (action === 'upsertBillingOverride') {
       return jsonOut_(upsertBillingOverride_(parseJsonParam_(params.override)));
@@ -1730,7 +1765,16 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   };
   const newRows = [];
   for (let i = 0; i < patientsArr.length; i++) {
+    /* THE NAME IS TRIMMED ON EVERY WRITE. patientKey_() has always trimmed,
+     * so a stored "שחר חיון " already produced a DIFFERENT key on the server
+     * than the client's untrimmed patientKey() computed for the same row —
+     * which is exactly how a payment row ends up holding a triple that
+     * matches no patient. Trimming what is STORED closes the gap at the
+     * source: from here on the two sides cannot disagree, because there is no
+     * stray space left to disagree about. Only leading/trailing whitespace is
+     * removed; nothing inside the name is touched. */
     const withHouse = Object.assign({}, patientsArr[i], { houseId: houseId });
+    withHouse.name = String(withHouse.name == null ? '' : withHouse.name).trim();
     const key = patientKey_(houseId, withHouse.name, withHouse.date);
     const incomingId = String(withHouse.id == null ? '' : withHouse.id).trim();
 
@@ -4469,7 +4513,36 @@ function getPayments_() {
  * side as a deterministic `pay::<houseId>::<name>::<entryDate>::<dueDate>`
  * string so the same monthly payment always maps to the same row.
  */
-function upsertPayment_(payment) {
+/* A persisted patient id, or '' — and NOTHING else reaches a cell.
+ *
+ * The id is minted server-side as 'id-<uuid>' (see assignId in
+ * replaceHousePatients_), so anything with a control character, a line break
+ * or a formula lead-in is not an id: it is either a bug or somebody probing.
+ * savePayment is reachable by any caller holding the API key, and this column
+ * decides which patient a sum of money belongs to — so it is validated HERE,
+ * where it is written, not only in the browser. */
+function paymentUidClean_(v) {
+  var s = String(v == null ? '' : v).trim();
+  if (!s) return '';
+  if (s.length > PAYMENT_UID_MAX) return '';
+  if (/[\u0000-\u001f\u007f]/.test(s)) return '';
+  return s;
+}
+/* A one-line note, cap-limited, with control characters and a leading '=' or
+ * '+' stripped — a text-forced cell will not evaluate a formula, but the note
+ * is also rendered on screen and exported, so it never leaves here carrying
+ * one. */
+function paymentLinkNoteClean_(v) {
+  var s = String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+  s = s.replace(/^[=+@-]+/, '').trim();
+  return s.slice(0, PAYMENT_LINK_NOTE_MAX);
+}
+function paymentLinkStatusClean_(v) {
+  var s = String(v == null ? '' : v).trim();
+  return PAYMENT_LINK_STATUSES.indexOf(s) >= 0 ? s : '';
+}
+
+function upsertPayment_(payment, user) {
   if (!payment || typeof payment !== 'object') {
     return { ok: false, error: 'missing_payment' };
   }
@@ -4494,6 +4567,35 @@ function upsertPayment_(payment) {
   payment.coverageStart = coverageDateISO_(payment.coverageStart) || '';
   payment.coverageEnd   = coverageDateISO_(payment.coverageEnd) || '';
 
+  /* ---- the link columns --------------------------------------------------
+   * patientUid, linkStatus and linkNote are SANITIZED, never trusted as sent.
+   * linkedBy and linkedAt are OVERWRITTEN: who decided comes from the signed
+   * session cookie the proxy injects, and when comes from this clock. A
+   * client that can post a payment can post any name and any date it likes,
+   * so neither is ever read off the request — the PR #124 rule, applied to
+   * the one column pair that is an audit trail.
+   *
+   * A blank/blank/blank link is left blank: that is what every historical row
+   * carries and what "nobody has looked at this yet" means. The stamps are
+   * written only when there is a DECISION to stamp. */
+  var uidBefore = paymentUidClean_(payment.patientUid);
+  payment.patientUid = uidBefore;
+  payment.linkStatus = paymentLinkStatusClean_(payment.linkStatus);
+  payment.linkNote   = paymentLinkNoteClean_(payment.linkNote);
+  /* "Not a patient" without a reason is a dismissal nobody can audit — and is
+   * indistinguishable next year from a row that was never reviewed. Refused
+   * here as well as in the browser, because the browser is not the authority. */
+  if (payment.linkStatus === 'not_a_patient' && !payment.linkNote) {
+    return { ok: false, error: 'יש לציין סיבה לסימון "לא מטופל"' };
+  }
+  if (payment.linkStatus) {
+    payment.linkedBy = String(user == null ? '' : user);
+    payment.linkedAt = new Date().toISOString();
+  } else {
+    payment.linkedBy = '';
+    payment.linkedAt = '';
+  }
+
   const lock = LockService.getScriptLock();
   lock.tryLock(10000);
   try {
@@ -4507,16 +4609,58 @@ function upsertPayment_(payment) {
       for (let i = 0; i < existingIds.length; i++) {
         if (String(existingIds[i][0]) === String(payment.id)) {
           sh.getRange(i + 2, 1, 1, PAYMENT_COLUMNS.length).setValues([row]);
+          logPaymentLink_(payment, 'update');
           return { ok: true, payment: payment, updated: true };
         }
       }
     }
 
     sh.appendRow(row);
+    /* A NEW row is force-texted before anything else reads it: appendRow lands
+     * values in cells whose format was set at ensure time for the columns that
+     * existed THEN, so a sheet created before these five columns did has them
+     * unformatted. Same guard the coverage columns get. */
+    forcePaymentLinkTextCells_(sh, sh.getLastRow());
+    logPaymentLink_(payment, 'create');
     return { ok: true, payment: payment, created: true };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
+}
+
+/* Force the five link columns of ONE written row to plain text. Fail-soft: a
+ * formatting failure must never fail the write that already landed. */
+function forcePaymentLinkTextCells_(sh, rowIndex) {
+  try {
+    for (var i = 0; i < PAYMENT_TEXT_COLUMNS.length; i++) {
+      var col = PAYMENT_COLUMNS.indexOf(PAYMENT_TEXT_COLUMNS[i]);
+      if (col < 0) continue;
+      sh.getRange(rowIndex, col + 1).setNumberFormat('@');
+    }
+  } catch (err) {
+    try { console.warn('[payment-link] text format skipped: ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
+  }
+}
+
+/* One AuditLog row per LINK DECISION — never for an ordinary payment save.
+ * "Logged with who and when" has to survive the payment row itself being
+ * edited again later, and the five columns on the row cannot do that: they
+ * hold the LATEST decision, not the history of them. Fail-soft by the
+ * logAudit_ contract: audit logging never breaks the operation it records. */
+function logPaymentLink_(payment, how) {
+  if (!payment || !payment.linkStatus) return;
+  logAudit_('payment_link_' + payment.linkStatus, 'upsertPayment_',
+    String(payment.patientUid || ''), String(payment.patientName || ''), {
+      how: String(how || ''),
+      paymentId: String(payment.id || ''),
+      patientId: String(payment.patientId || ''),
+      houseId: String(payment.houseId || ''),
+      dueDate: String(payment.dueDate || ''),
+      amount: payment.amount,
+      note: String(payment.linkNote || ''),
+      by: String(payment.linkedBy || ''),
+      at: String(payment.linkedAt || ''),
+    });
 }
 
 /* ===== Credits ledger ===== */
