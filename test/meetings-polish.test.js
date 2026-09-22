@@ -52,7 +52,8 @@ function loadApp() {
       todayISO: () => todayISO(),
       weekStartSunday: (v) => weekStartSunday(v),
       addDaysISO: (v, n) => addDaysISO(v, n),
-      formatDateDDMMYYYY: (v) => formatDateDDMMYYYY(v),
+      // formatDateDDMMYYYY was folded into the one formatter, formatDateHe.
+      formatDateDDMMYYYY: (v) => formatDateHe(v),
       // Mutate the real app.js state object so renderMeetings reads our fixtures.
       seedState: (patch) => { Object.assign(state, patch); },
     };

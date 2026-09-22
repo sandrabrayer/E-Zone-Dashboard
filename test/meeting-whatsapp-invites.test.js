@@ -3,7 +3,7 @@
  * Same vm-sandbox load as meetings-whatsapp.test.js. buildMeetingMessage is a
  * pure function that composes the two Hebrew templates ('invite' / 'update')
  * from the real shipped helpers — hebrewWeekday (LOCAL date parts, per the
- * isoDate timezone rule), formatDateDDMMYYYY (DD/MM/YYYY), and houseDisplayName
+ * isoDate timezone rule), formatDateHe (DD/MM/YYYY), and houseDisplayName
  * (canonical key / label / id → display name). meetingInviteWaUrl reuses
  * normalizePhone + the wa.me construction. We exercise the REAL code, never a
  * reimplementation.
@@ -26,7 +26,8 @@ function loadApp() {
       hebrewWeekday,
       houseDisplayName,
       meetingInviteWaUrl,
-      formatDateDDMMYYYY,
+      // formatDateDDMMYYYY was folded into the one formatter, formatDateHe.
+      formatDateHe,
       normalizePhone,
     };
   `;
@@ -124,10 +125,10 @@ test('hebrewWeekday reads a full ISO timestamp on its LOCAL day (no UTC drift)',
 });
 
 /* ===== DD/MM/YYYY formatting ===== */
-test('formatDateDDMMYYYY renders zero-padded slash-separated DD/MM/YYYY', () => {
-  assert.strictEqual(app.formatDateDDMMYYYY('2026-07-27'), '27/07/2026');
-  assert.strictEqual(app.formatDateDDMMYYYY('2026-01-05'), '05/01/2026');
-  assert.strictEqual(app.formatDateDDMMYYYY(''), '');
+test('formatDateHe renders zero-padded slash-separated DD/MM/YYYY', () => {
+  assert.strictEqual(app.formatDateHe('2026-07-27'), '27/07/2026');
+  assert.strictEqual(app.formatDateHe('2026-01-05'), '05/01/2026');
+  assert.strictEqual(app.formatDateHe(''), '');
 });
 
 /* ===== house display-name resolution ===== */

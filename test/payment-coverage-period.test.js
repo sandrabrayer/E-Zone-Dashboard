@@ -754,8 +754,15 @@ test('H: no new endpoint, and server.js is untouched by this change', () => {
 
 test('H: every coverage value reaching the DOM is escaped or a bare ISO date', () => {
   const row = fnSource(APP, 'buildBillingRow');
-  // The displayed window and both input values go through escapeHtml.
-  assert.match(row, /\$\{escapeHtml\(covText\)\}/);
+  /* The DISPLAYED window is now built by dateRangeHeHtml (DD/MM/YYYY, each
+   * date in its own <bdi>), which escapes both dates internally and returns
+   * ready-made HTML — so the interpolation is deliberately un-re-escaped.
+   * test/date-format-he.test.js asserts the escaping inside that helper. */
+  assert.match(row, /const covHtml = cov \? dateRangeHeHtml\(covStart, covEnd\) : '—';/);
+  assert.match(row, /\$\{covHtml\}/);
+  assert.ok(!/\$\{covStart\}|\$\{covEnd\}/.test(row.replace(/value="[^"]*"/g, '')),
+    'neither raw ISO value reaches the markup outside an input value=');
+  // Both INPUT values stay ISO and still go through escapeHtml.
   assert.match(row, /value="\$\{escapeHtml\(covStart\)\}"/);
   assert.match(row, /value="\$\{escapeHtml\(covEnd\)\}"/);
   // covStart/covEnd are produced by isoFromLocalDate, so they cannot carry
