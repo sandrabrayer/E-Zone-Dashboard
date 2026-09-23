@@ -622,6 +622,11 @@ test('H: every shared coverage-window primitive is declared EXACTLY ONCE in app.
      * payment cover", which is exactly the fork this guard exists to stop. */
     'recordedCoverage', 'inferredCoverage', 'coveragePeriodError',
     'coverageDateISO', 'coverageDiffersFromDefault', 'withDefaultCoverage',
+    /* The DISPLAY of a coverage period. Two screens print the window — the
+     * גבייה row and the הכנסות חודשיות drill-down — and both go through
+     * the one range helper. A second copy of it is a second date format,
+     * which is how the ISO/human split would quietly reopen on one screen. */
+    'dateRangeHeHtml', 'formatDateHe', 'formatDate',
   ];
   for (const name of shared) {
     const hits = APP.match(new RegExp('^function\\s+' + name + '\\s*\\(', 'gm')) || [];
@@ -650,7 +655,13 @@ test('H: the monthly-revenue code REUSES those primitives rather than shadowing 
   // …and its own helpers are named apart, so none can shadow a shared one.
   for (const name of ['revenueAllocate', 'revenueOverlapDays', 'revenueMonthBounds',
                       'revenueExVat', 'buildMonthlyRevenue', 'creditRefundSpan',
-                      'projectedCycleDueDates', 'revenueBreakdownByHouse']) {
+                      'projectedCycleDueDates', 'revenueBreakdownByHouse',
+                      /* The גבייה row's month split — a FOURTH consumer of
+                       * revenueAllocate, added after this guard was written.
+                       * It prints a per-month division directly on the row, so
+                       * a second implementation of the split would put two
+                       * different answers on two screens for the same payment. */
+                      'coverageMonthSplit', 'coverageMonthKeys']) {
     const hits = APP.match(new RegExp('^function\\s+' + name + '\\s*\\(', 'gm')) || [];
     assert.equal(hits.length, 1, `${name} must be declared exactly once`);
   }
@@ -667,6 +678,25 @@ test('H: the monthly-revenue code REUSES those primitives rather than shadowing 
   assert.equal(app.isoFromLocalDate(rec.start), '2026-03-01');
   assert.equal(app.isoFromLocalDate(rec.end), '2026-03-31');
   assert.equal(rec.source, 'recorded');
+});
+
+test('H: the גבייה row split is the SAME allocation, not a second one', () => {
+  /* The row now prints how a payment divides across calendar months. That is
+   * the fourth consumer of the coverage window and the SECOND place a division
+   * appears on screen, so it is the likeliest place for the rule to fork — a
+   * row saying 25/5 days beside a monthly view saying something else is worse
+   * than the row saying nothing at all.
+   *
+   * It must therefore call revenueAllocate with the shared bounds and own no
+   * day arithmetic of its own. test/coverage-month-split.test.js runs the two
+   * against each other on real numbers; this is the structural half. */
+  const src = fnSource(APP, 'coverageMonthSplit');
+  assert.match(src, /revenueAllocate\(amount, win, revenueMonthBounds\(key\)\)/,
+    'every slice comes from the shared allocator');
+  assert.doesNotMatch(src, /diffWholeDays|86400000/,
+    'the split must not know how to divide — revenueAllocate does');
+  // The window it divides comes from the shared primitive too, never re-derived.
+  assert.match(fnSource(APP, 'buildBillingRow'), /const cov = paymentCoverage\(payment\);/);
 });
 
 test('H: the credits ledger and the revenue screen read the SAME recorded period', () => {

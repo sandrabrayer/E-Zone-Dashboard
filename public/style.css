@@ -498,6 +498,52 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
 .bill-cov-edit.hidden { display: none; }
 .bill-cov-start, .bill-cov-end { width: 100%; min-width: 0; font-size: 13px; }
 
+/* ---- the month split, under the coverage period -------------------------
+ * THE KEY FACT ON THE ROW, not a footnote: how the one amount above divides
+ * across the calendar months it actually buys. Sized and weighted to be read,
+ * not skimmed past — heavier than the .p-label it sits under, and never
+ * muted for the month in view.
+ *
+ * Two states, both from the existing palette, no new colour system:
+ *   - the month the גבייה screen is showing → --primary, the same accent the
+ *     מותאמת badge and the focus ring already use on this row;
+ *   - every other month → --warning, this screen's existing "later / needs
+ *     your attention" language (carry rows, overdue rows and the יתרה figure
+ *     are all amber), dimmed a touch so the two states separate at a glance
+ *     without either becoming unreadable. */
+.bill-cov-split {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
+}
+.bill-cov-split:empty { display: none; }
+.cov-split-line {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  flex-wrap: wrap;
+  /* Just under the row's own .p-val (14.5px): unmistakably a primary fact on
+     the row, still subordinate to the period it explains. */
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--primary);
+  /* An accent bar on the inline start, so the block reads as one grouped
+     statement about the row rather than two loose lines of text. */
+  border-inline-start: 3px solid var(--primary);
+  padding-inline-start: 7px;
+}
+.cov-split-line.deferred {
+  color: var(--warning);
+  border-inline-start-color: var(--warning);
+  opacity: .88;
+}
+.cov-split-month { font-weight: 700; }
+.cov-split-sep { color: var(--text-dim); font-weight: 400; }
+.cov-split-days { font-weight: 500; }
+.cov-split-amount { font-weight: 700; font-variant-numeric: tabular-nums; }
+
 /* ===== Cards ===== */
 .cards-row {
   display: grid;
@@ -1381,7 +1427,9 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
   display: grid;
   /* מטופל · בית · סכום · תקופת כיסוי · סטטוס · שולם בפועל · יתרה.
      The coverage cell is the widest of the middle columns: it prints two
-     ISO dates side by side and must not wrap mid-window. */
+     dates side by side and must not wrap mid-window, and it now carries the
+     month split underneath them (.bill-cov-split), which is the tallest thing
+     on the row. */
   grid-template-columns: 1.2fr .85fr .95fr 2fr 1fr .95fr .85fr;
   align-items: center;
   gap: 12px;

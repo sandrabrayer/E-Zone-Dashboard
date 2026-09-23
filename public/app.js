@@ -5487,6 +5487,11 @@ function withDefaultCoverage(payment) {
   });
 }
 
+/* The coverage period's DISPLAY format lives in dateRangeHeHtml() (below,
+ * with the rest of the date helpers). This file deliberately has no second
+ * coverage-date formatter: the גבייה row and the הכנסות חודשיות
+ * drill-down both call that one helper, so they cannot drift apart. */
+
 /* The 15th of the next month on or after decidedDate: decided on the 1st–15th
  * → the 15th of that month; the 16th onward → the 15th of the following
  * month. String arithmetic on the parts (no Date, no timezone). Mirrors
@@ -7545,6 +7550,38 @@ function renderBillingOpenList(selectedISO) {
   }
 }
 
+/* The month split, rendered. THE KEY FACT ON THE ROW: a payment is one number
+ * but it almost never buys one calendar month, and until now the row said
+ * nothing about where the money actually lands — you had to open
+ * הכנסות חודשיות to find out. Now it is stated where the decision is made.
+ *
+ * `currentKey` is the month the גבייה screen is showing. That month is the
+ * money you are looking at; every other month in the window is revenue this
+ * row DEFERS, and is dimmed and marked so it reads that way at a glance. When
+ * a recorded period sits entirely outside the selected month, every line reads
+ * deferred — which is the honest answer, and the מותאמת badge above already
+ * says why.
+ *
+ * A single-month window renders ONE line: there is no division to show, and a
+ * split with one row in it would imply there was.
+ *
+ * Figures are VAT-inclusive, matching the סכום חודשי directly above them. */
+function coverageSplitHtml(amount, win, currentKey) {
+  const parts = coverageMonthSplit(amount, win);
+  if (!parts.length) return '';
+  return parts.map(p => {
+    const deferred = p.key !== currentKey;
+    return `<span class="cov-split-line${deferred ? ' deferred' : ''}"${
+      deferred ? ' title="נדחה לחודש אחר — הכנסה שאינה שייכת לחודש המוצג"' : ''}>
+      <span class="cov-split-month">${escapeHtml(p.label)}</span>
+      <span class="cov-split-sep">·</span>
+      <span class="cov-split-days">${p.days} ימים</span>
+      <span class="cov-split-sep">·</span>
+      <span class="cov-split-amount">₪ ${p.amount.toLocaleString('he-IL')}</span>
+    </span>`;
+  }).join('');
+}
+
 function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   const house = houseById(payment.houseId) || houseById(patient.houseId);
   const houseName = house ? house.name : (patient.houseId || '');
@@ -7632,6 +7669,9 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   /* Display only. covStart/covEnd stay ISO below — they are the two
    * <input type="date"> values and what saveCoveragePeriod persists. */
   const covHtml = cov ? dateRangeHeHtml(covStart, covEnd) : '—';
+  /* The month the גבייה screen is currently showing. Everything else in the
+   * split is money this row defers to another month, and reads as such. */
+  const covCurrentKey = monthKey(state.billingDate || todayISO());
   const coverageCellHtml = `
       <span class="p-val bill-cov-view">${covHtml}
         ${covAdjusted ? '<span class="badge override" title="תקופה שנרשמה ידנית, שונה ממחזור החיוב הרגיל">מותאמת</span>' : ''}
@@ -7643,7 +7683,8 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
         <input class="bill-cov-end" type="date" value="${escapeHtml(covEnd)}" />
         <button class="btn small primary bill-cov-save">שמור</button>
         <button class="btn small bill-cov-cancel">ביטול</button>
-      </span>` : ''}`;
+      </span>` : ''}
+      <span class="bill-cov-split">${coverageSplitHtml(amount, cov, covCurrentKey)}</span>`;
 
   const amountCellHtml = `
       <span class="p-val bill-amount-view">₪ ${amount.toLocaleString('he-IL')}
@@ -7806,6 +7847,30 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
     const covWrap  = row.querySelector('.bill-cov-edit');
     const startIn  = row.querySelector('.bill-cov-start');
     const endIn    = row.querySelector('.bill-cov-end');
+    const covSplit = row.querySelector('.bill-cov-split');
+    /* Repaint the split from the values CURRENTLY in the two inputs, before
+     * anything is saved — the whole point of the split is to answer "what
+     * does this period do to my months?" while you are still choosing it.
+     *
+     * The preview is not a second opinion: it runs the typed pair through
+     * withDefaultCoverage() + paymentCoverage(), exactly the pair savePayment()
+     * would store and exactly the window every consumer would then read. A
+     * blank pair therefore previews the inferred cycle — which is what the
+     * ↩ reset writes — rather than an empty split.
+     *
+     * A half-typed or invalid pair repaints nothing and leaves the last good
+     * split on screen: the row must not flash to '—' between two keystrokes,
+     * and coveragePeriodError() already owns saying what is wrong. */
+    const repaintSplit = () => {
+      if (!covSplit) return;
+      if (coveragePeriodError(startIn.value, endIn.value)) return;
+      const win = paymentCoverage(withDefaultCoverage(Object.assign({}, payment, {
+        coverageStart: startIn.value, coverageEnd: endIn.value,
+      })));
+      covSplit.innerHTML = coverageSplitHtml(amount, win, covCurrentKey);
+    };
+    startIn.oninput = repaintSplit;
+    endIn.oninput = repaintSplit;
     covEditBtn.onclick = () => {
       covView.classList.add('hidden');
       covWrap.classList.remove('hidden');
@@ -7817,6 +7882,8 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
       // Discard the half-typed values — reopening must show what is stored.
       startIn.value = covStart;
       endIn.value = covEnd;
+      // …and put the split back to the stored period along with them.
+      repaintSplit();
     };
     row.querySelector('.bill-cov-save').onclick = e =>
       busyButton(e.currentTarget, 'save', () => saveCoveragePeriod(payment, startIn.value, endIn.value));
@@ -8052,6 +8119,82 @@ function revenueAllocate(amount, win, bounds, effectiveEnd) {
   if (!inMonth) return { amount: 0, daysInMonth: 0, windowDays, share: 0 };
   const share = inMonth / windowDays;
   return { amount: roundMoney((Number(amount) || 0) * share), daysInMonth: inMonth, windowDays, share };
+}
+
+/* Every 'YYYY-MM' key a coverage window touches, in month order. Pure.
+ *
+ * The 14-iteration bound is a guard, not a limit: coveragePeriodError caps a
+ * recorded window at COVERAGE_MAX_DAYS (366) = 13 calendar months at worst, so
+ * a longer walk means a pair that reached here corrupted, and a corrupted pair
+ * must not spin the render loop. */
+function coverageMonthKeys(win) {
+  if (!win || !win.start || !win.end || win.end < win.start) return [];
+  const keys = [];
+  let y = win.start.getFullYear(), m = win.start.getMonth();
+  const lastY = win.end.getFullYear(), lastM = win.end.getMonth();
+  for (let i = 0; i < 14 && (y < lastY || (y === lastY && m <= lastM)); i++) {
+    keys.push(`${y}-${String(m + 1).padStart(2, '0')}`);
+    m += 1;
+    if (m > 11) { m = 0; y += 1; }
+  }
+  return keys;
+}
+
+/* How ONE payment divides across the calendar months its coverage window
+ * touches — the split shown under the period on the גבייה row.
+ *
+ * IT DIVIDES NOTHING ITSELF. Every slice comes from revenueAllocate() — the
+ * same function, the same window, the same per-month bounds that
+ * הכנסות חודשיות uses for the identical payment — so the denominator is the
+ * WINDOW's own length (not the calendar month's) and the two screens cannot
+ * drift: a change to the split rule lands on both at once. The no-fork guard
+ * in test/monthly-revenue.test.js names this as the third consumer, and
+ * test/coverage-month-split.test.js pins a row's split against the monthly
+ * view's allocation for the same payment.
+ *
+ * WHAT IT DOES ADD is DISPLAY ROUNDING. revenueAllocate rounds each slice to
+ * 2dp independently and this row prints whole shekels, so three slices of
+ * 9,666.66… would read 9,667 ×3 = 29,001 directly beneath an amount of 29,000.
+ * `amount` is therefore the largest-remainder reconciliation of `exact`: floor
+ * every slice, then hand the leftover shekels to the largest fractions, ties
+ * by month order so a re-render can never move a shekel between months. The
+ * slices sum to the payment amount exactly, always.
+ *
+ * VAT: none applied, deliberately. The גבייה screen is VAT-INCLUSIVE — the
+ * ₪29,000 this sits under is — so the split is stated in that same basis.
+ * הכנסות חודשיות shows the identical slices ex-VAT through revenueExVat(),
+ * one conversion at the edge, which is where it belongs.
+ *
+ * → [{ key, label, days, windowDays, share, exact, amount }] in month order,
+ *   months the window misses dropped; [] when there is no usable window. A
+ *   window inside a single month yields ONE part — the caller shows that one
+ *   month rather than a split implying a division that did not happen. */
+function coverageMonthSplit(amount, win) {
+  const parts = [];
+  coverageMonthKeys(win).forEach(key => {
+    const a = revenueAllocate(amount, win, revenueMonthBounds(key));
+    if (!a.daysInMonth) return;
+    parts.push({
+      key, label: revenueMonthLabel(key), days: a.daysInMonth,
+      windowDays: a.windowDays, share: a.share, exact: a.amount,
+      amount: Math.floor(a.amount),
+    });
+  });
+  if (!parts.length) return parts;
+
+  let residual = Math.round(Number(amount) || 0) - parts.reduce((s, p) => s + p.amount, 0);
+  const order = parts
+    .map((p, i) => ({ i, frac: p.exact - Math.floor(p.exact) }))
+    .sort((a, b) => (b.frac - a.frac) || (a.i - b.i));
+  const step = residual < 0 ? -1 : 1;
+  /* |residual| < parts.length whenever the slices really do sum to `amount`,
+   * so one pass over `order` always suffices; the bound just makes
+   * termination independent of that argument. */
+  for (let k = 0; residual !== 0 && k < order.length * 2; k++) {
+    parts[order[k % order.length].i].amount += step;
+    residual -= step;
+  }
+  return parts;
 }
 
 /* ---- billing-cycle projection -------------------------------------------

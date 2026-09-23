@@ -72,7 +72,10 @@
 // v15 → v16: every displayed date becomes DD/MM/YYYY (formatDateHe). app.js is
 // the only file that changed, and the v15 copy is the OFFLINE fallback on any
 // device that installed it — evict it so no phone keeps rendering ISO dates.
-var CACHE_VERSION = 'v16';
+// v16 → v17: the תקופת כיסוי cell on גבייה gains the month split. app.js and
+// style.css both changed — evict v16 so no phone keeps serving the bundle whose
+// row says nothing about which month the money lands in.
+var CACHE_VERSION = 'v17';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

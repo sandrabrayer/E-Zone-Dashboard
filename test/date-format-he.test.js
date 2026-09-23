@@ -329,6 +329,10 @@ test('E: month-year labels are untouched (they are not DD/MM/YYYY dates)', () =>
 
 test('E: the service worker cache version was bumped for the app.js change', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
-  assert.notEqual(v, 'v15', 'v15 is the version that still served ISO dates');
-  assert.equal(v, 'v16');
+  /* What matters is that v15 — the last version that served ISO dates — is
+   * evicted, not that the counter stopped at v16. Pinning the exact number
+   * made every later asset change break this test (sw-install-fix.test.js was
+   * already made version-agnostic for the same reason). */
+  assert.ok(Number(v.slice(1)) >= 16,
+    `v15 served ISO dates and must be superseded; found ${v}`);
 });
