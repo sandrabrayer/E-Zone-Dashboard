@@ -8,53 +8,45 @@ only** — no stored data, no payment, no credit and no arithmetic on
 
 ## 1. The period reads like a date, not a database field
 
-It printed ISO: `2026-09-06 → 2026-10-05`.
+**Superseded by PR #143 while this branch was open.** When this work started the
+row printed ISO — `2026-09-06 → 2026-10-05` — and this PR added two helpers
+(`coverageDateText` / `coverageWindowText`) that put it through `formatDate()`.
 
-It now prints `6.9.2026 → 5.10.2026` — through the **same `formatDate()`**
-(`app.js:8524`) that תאריך כניסה already goes through on תפוסה
-(`app.js:3953`, `app.js:5017`). No second formatter was written; the no-fork
-guard now pins `formatDate` to a single definition alongside the other shared
-primitives.
+PR #143 then did the same job app-wide and better: every displayed date became
+`DD/MM/YYYY` through `formatDateHe()`, and the two coverage ranges specifically
+got `dateRangeHeHtml()`, which writes the **start first** so the range reads on
+the right in an RTL screen and isolates each date in its own `<bdi>` so the bidi
+algorithm cannot reorder the digits.
 
-Two new one-line helpers, so the two screens that print a window cannot drift
-into different formats:
-
-| | |
-| --- | --- |
-| `coverageDateText(v)` | one date, `app.js:5459` |
-| `coverageWindowText(start, end)` | both ends and the arrow, `app.js:5465` |
-
-`coverageDateText` converts a bare ISO string to a **local** Date before
-handing it over. `formatDate`'s own `new Date('2026-09-06')` parses as UTC
-midnight, which renders a day early anywhere west of Greenwich —
-`localDateFromISO` reads the parts instead. The גבייה row already holds local
-Dates and passes them straight through; the drill-down holds ISO strings and
-goes the other way. A test asserts the two routes produce the identical string.
-
-### Applied everywhere a coverage window is *displayed*
+On merging the base in, **this PR's two helpers were deleted rather than
+reconciled.** Keeping them would have been a second coverage-date formatter
+beside the app-wide one — precisely the fork the no-fork guard exists to stop,
+and the source scan #143 added would have flagged it. Both display sites now
+call `dateRangeHeHtml`:
 
 | site | source | |
 | --- | --- | --- |
-| גבייה row | `app.js:6994` | ✅ changed |
-| הכנסות חודשיות drill-down | `app.js:8038` | ✅ changed |
-| `creditBasisText` | `app.js:5662` | ❌ deliberately left on ISO |
+| גבייה row | `app.js:7671` | via `dateRangeHeHtml` (#143) |
+| הכנסות חודשיות drill-down | `app.js:8791` | via `dateRangeHeHtml` (#143) |
+| `creditBasisText` | `app.js` | ❌ deliberately left on ISO, by both PRs |
 
-**Why the credits audit trail keeps ISO.** `creditBasisText`'s output is not
-display — it is **persisted** into the Credits row's `reason` column at
-creation (`app.js:5838`, pinned by `test/payment-coverage-period.test.js` §E).
-Reformatting it would rewrite stored audit text, which this change explicitly
-does not do. A test in the new file says so out loud so the omission reads as
-a decision rather than a miss.
+The reason `creditBasisText` keeps ISO is unchanged and worth restating: its
+output is not display — it is **persisted** into the Credits row's `reason`
+column at creation, so reformatting it would rewrite stored audit text.
+
+What survives from this PR's side of section 1 is the **guard**: the no-fork
+list now pins `dateRangeHeHtml`, `formatDateHe` and `formatDate` to a single
+definition each, and `coverage-month-split.test.js` §F asserts that no
+`coverageDateText` / `coverageWindowText` ever comes back.
 
 ### Storage is untouched
-
-The claim is asserted directly, because it is the whole safety story:
 
 - the stored pair stays bare `YYYY-MM-DD` (`withDefaultCoverage` unchanged);
 - the native `<input type="date">` values stay ISO — formatting them would
   blank the control silently, the one way a display change could break
   editing;
-- `Code.gs` has no formatter, and `PAYMENT_TEXT_COLUMNS` is unchanged.
+- `Code.gs` has no formatter, and the two coverage columns are still
+  text-forced.
 
 ---
 
@@ -72,7 +64,7 @@ the row said nothing about where the money actually lands — you had to open
 
 ### It does not divide anything itself
 
-`coverageMonthSplit(amount, win)` (`app.js:7476`) takes **every slice from
+`coverageMonthSplit(amount, win)` (`app.js:8172`) takes **every slice from
 `revenueAllocate()`** — the same function, the same window, the same
 `revenueMonthBounds()` that הכנסות חודשיות calls for the identical payment. It
 owns no day arithmetic at all; a test greps its body for `diffWholeDays` /
@@ -82,7 +74,7 @@ So the denominator is the **window's own length**, not the calendar month's —
 25/30 and 5/30 above, never 25/31. And the two screens cannot disagree: a
 change to the split rule lands on both at once.
 
-`coverageMonthKeys(win)` (`app.js:7434`) enumerates the months the window
+`coverageMonthKeys(win)` (`app.js:8130`) enumerates the months the window
 touches. Its 14-iteration bound is a guard, not a limit — `COVERAGE_MAX_DAYS`
 caps a window at 366 days (13 months at worst), so a longer walk means a pair
 that reached the renderer corrupted, and a corrupted pair must not spin the
@@ -164,9 +156,9 @@ no raw hexes.
 
 | file | change |
 | --- | --- |
-| `public/app.js` | +166 / −3 — the two display helpers, `coverageMonthKeys`, `coverageMonthSplit`, `coverageSplitHtml`, the row wiring and the two call sites |
+| `public/app.js` | `coverageMonthKeys`, `coverageMonthSplit`, `coverageSplitHtml`, the row wiring and the `covCurrentKey` it needs |
 | `public/style.css` | +49 / −1 — the split block, and the grid comment it invalidated |
-| `public/sw.js` | `CACHE_VERSION` v14 → v15 |
+| `public/sw.js` | `CACHE_VERSION` v16 → v17 |
 | `test/coverage-month-split.test.js` | new — 32 tests, runs in CI |
 | `test/coverage-month-split-browser.test.js` | new — 8 tests, skipped without a browser |
 | `test/monthly-revenue.test.js` | +31 — the no-fork guard's new consumer |
@@ -194,13 +186,38 @@ present, so it is inert under `npm ci`.
 
 **`test/monthly-revenue.test.js`** — the no-fork guard grows: `coverageMonthSplit`
 and `coverageMonthKeys` join the "declared exactly once" list as the fourth
-consumer of `revenueAllocate`, `coverageDateText` / `coverageWindowText` /
+consumer of `revenueAllocate`, `dateRangeHeHtml` / `formatDateHe` /
 `formatDate` join it for the display format, and a new §H test asserts the
 split calls the shared allocator and owns no day arithmetic.
 
-Full suite: **1,329 passing** (1,323 + 6 skipped where no browser is available).
+Full suite: **1,479 passing**, 0 skipped (browser present).
 
 ## Service worker
 
-`CACHE_VERSION` v14 → v15. `app.js` and `style.css` both changed and are the
+`CACHE_VERSION` v16 → v17. `app.js` and `style.css` both changed and are the
 offline fallback for any device that installed v14.
+
+---
+
+## Merging the base in (2026-09-23)
+
+The base branch moved a long way while this PR sat open — PRs #139, #140, #141,
+#142 and #143. Four files conflicted:
+
+| file | resolution |
+| --- | --- |
+| `public/app.js` | **base wins on the date format.** Took `dateRangeHeHtml` at both call sites and deleted this PR's `coverageDateText` / `coverageWindowText`; kept this PR's `covCurrentKey` line, which the split needs. |
+| `public/sw.js` | both sides bumped to `v15` from different starting points. Base reached `v16`; this change is the next asset change, so **v17**, with both comment trails kept. |
+| `test/monthly-revenue-browser.test.js`, `test/payment-coverage-period-browser.test.js` | base wins — same superseded format. Their **storage** assertions were identical on both sides and are unchanged. |
+
+Two further test edits the merge forced, neither a conflict:
+
+- `coverage-month-split.test.js` §F was rewritten against `dateRangeHeHtml`
+  (start-first, two `<bdi>`s, no ISO on screen) and now also asserts the two
+  deleted helpers stay deleted. Its `PAYMENT_TEXT_COLUMNS` assertion pinned the
+  whole literal, which #139/#141 grew; it now pins the coverage pair only.
+- `date-format-he.test.js` §E pinned `CACHE_VERSION === 'v16'` exactly, so any
+  later asset change breaks it. Made it `>= v16` — the same treatment #143 gave
+  `sw-install-fix.test.js`'s two v15 pins, for the same reason.
+
+Full suite after the merge: **1,479 passing, 0 failing, 0 skipped.**

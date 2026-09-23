@@ -13,7 +13,25 @@ app.disable('x-powered-by');
 const PORT = process.env.PORT || 3000;
 
 /* Always emit headers that defeat browser caches, CDNs (Cloudflare,
- * Fastly), and shared proxies for every response the app serves. */
+ * Fastly), and shared proxies for every response the app serves.
+ *
+ * `Vary: *` USED TO BE SET HERE AND IS DELIBERATELY GONE. It broke the service
+ * worker outright: the Cache API refuses to STORE any response whose Vary
+ * header contains '*' (Cache.add/addAll/put reject with a TypeError), so every
+ * single precache write failed and sw.js could never finish installing. See
+ * CHANGELOG-sw-install-fix.md.
+ *
+ * Nothing is weakened by its removal. `Vary: *` only ever told a SHARED cache
+ * "never reuse this response for anyone" — which the four directives below
+ * already say, more explicitly and to more caches:
+ *   Cache-Control: no-store    — do not write it down, anywhere
+ *                  no-cache    — never serve without revalidating
+ *                  must-revalidate, max-age=0
+ *                  private     — never store in a shared cache
+ *   Surrogate-Control / CDN-Cache-Control / Cloudflare-CDN-Cache-Control:
+ *                  no-store    — the same instruction to CDNs specifically
+ * `Vary: *` added no protection on top of `no-store`; it only broke the one
+ * cache we actually want: the app's own offline shell. */
 function noCache(res) {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0, private');
   res.set('Pragma', 'no-cache');
@@ -21,7 +39,6 @@ function noCache(res) {
   res.set('Surrogate-Control', 'no-store');
   res.set('CDN-Cache-Control', 'no-store');
   res.set('Cloudflare-CDN-Cache-Control', 'no-store');
-  res.set('Vary', '*');
 }
 
 /* Apps Script /exec endpoint. Pulled from Railway env — the old value was

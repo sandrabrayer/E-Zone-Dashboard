@@ -153,7 +153,7 @@ test('the month split renders on the row: 25 / 5 days, 24,167 + 4,833',
       assert.match(lines[1].text, /4,833/);
       // And the period above them reads as a person reads a date.
       const cell = await page.$eval('.bill-cov-view', (el) => el.textContent);
-      assert.match(cell, /6\.9\.2026 → 5\.10\.2026/, 'human format, not ISO');
+      assert.match(cell, /06\/09\/2026 – 05\/10\/2026/, 'human format, not ISO');
       assert.doesNotMatch(cell, /2026-09-06/, 'no ISO left on screen');
     });
   });

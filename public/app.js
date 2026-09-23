@@ -298,6 +298,43 @@ const BREAKEVEN_STORAGE_KEY = 'ezone-breakeven-v1';
  * at point of use in computeHouseMetrics rather than mutating the stored data. */
 const VAT_RATE = 1.18;
 
+/* ===== RECORDS CUTOFF =====
+ * The first date from which this app's payment records are COMPLETE.
+ *
+ * Payments were not entered here before July 2026: of the 27 patients admitted
+ * in June, not one has a first payment recorded. The cycles are real — the
+ * patients were in the house and the money was collected — but the ROWS were
+ * never created, so every screen that infers a cycle from a patient's entry
+ * day was reading that absence as unpaid debt and forecasting revenue that had
+ * already been earned and banked elsewhere.
+ *
+ * A cycle whose due date falls before this line is therefore neither EXPECTED
+ * nor DEBT. It is not hidden either — hiding it would be the same silent
+ * assumption in the other direction — it goes to its own bucket,
+ * "לפני תחילת הרישום", which no total sums.
+ *
+ * One constant, one date, deliberately configurable: when the historical rows
+ * are eventually backfilled, moving this line earlier is the whole migration.
+ * Bare 'YYYY-MM-DD', compared as a string against isoDate()-normalized dates —
+ * never parsed, so no timezone can move it. */
+const RECORDS_COMPLETE_FROM = '2026-07-01';
+
+/* Is this cycle's due date before the records cutoff? `dueISO` is normalized
+ * through isoDate() first: a date-typed sheet cell arrives as a UTC timestamp
+ * and a raw string compare would put 2026-07-01T21:00:00Z on the wrong side of
+ * the line — the same one-day drift this app has fixed in five other places.
+ *
+ * `from` overrides the constant. It exists for buildMonthlyRevenue(), which is
+ * a PURE function its tests drive over arbitrary months — a suite pinned to a
+ * calendar would otherwise start failing the day the cutoff moves. Nothing in
+ * the app passes it: every screen reads RECORDS_COMPLETE_FROM, and a guard
+ * test asserts renderMonthlyRevenue() hands over no override. */
+function isPreRecordsCycle(dueISO, from) {
+  const line = isoDate(from) || RECORDS_COMPLETE_FROM;
+  const d = isoDate(dueISO);
+  return !!d && d < line;
+}
+
 /* ===== API ===== */
 async function apiGet(params) {
   const qs = new URLSearchParams(params).toString();
@@ -814,7 +851,7 @@ function enterApp() {
 /* Tab / screen order. Mirrors the .tabs nav in index.html exactly (each id has a
  * matching <section id="screen-<id>">). `meetings` is an empty placeholder shell
  * (see index.html #screen-meetings); `retention` is intentionally last. */
-const SCREENS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'revenue', 'breakeven', 'growth', 'retention'];
+const SCREENS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention'];
 
 function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {
@@ -1551,9 +1588,9 @@ function phoneForManager(name, phones) {
 
 /* Hebrew WhatsApp message for a meeting. The " בשעה <שעה>" clause is dropped
  * entirely when the meeting has no time (m.time === ''). Date via
- * formatDateDDMMYYYY, time is already isoTime-normalized in meetingsForWeek. */
+ * formatDateHe, time is already isoTime-normalized in meetingsForWeek. */
 function meetingWhatsappMessage(m) {
-  const base = `נקבעה פגישה: ${m.name || ''}, ${m.houseLabel || ''}, ${formatDateDDMMYYYY(m.date || '')}`;
+  const base = `נקבעה פגישה: ${m.name || ''}, ${m.houseLabel || ''}, ${formatDateHe(m.date || '')}`;
   return m.time ? `${base} בשעה ${m.time}` : base;
 }
 
@@ -1621,7 +1658,7 @@ function houseDisplayName(house) {
  * DD/MM/YYYY; [בית] is the house DISPLAY name, not the canonical key. Pure. */
 function buildMeetingMessage({ type, name, manager, house, dateISO, time }) {
   const day = hebrewWeekday(dateISO);
-  const date = formatDateDDMMYYYY(dateISO);
+  const date = formatDateHe(dateISO);
   const houseLabel = houseDisplayName(house);
   const timeClause = time ? ` בשעה ${time}` : '';
   if (type === 'update') {
@@ -1891,7 +1928,13 @@ function normalizePatient(p) {
   return {
     id:       pickField(p, ['id', 'ID', 'מזהה']) || cryptoId(),
     houseId:  resolveHouseId(pickField(p, ['houseId', 'house_id', 'בית', 'בית_מזהה'])),
-    name:     pickField(p, ['name', 'שם', 'שם מטופל', 'Name']),
+    /* TRIMMED. A stray space is invisible on screen and fatal to the
+     * payment link: "שחר חיון " and "שחר חיון" are two different patients to
+     * houseId::name::entryDate, and the live sheet holds a payment row proving
+     * it. Trimming HERE covers every write path at once — the add and edit
+     * forms, the lead promotion, and any saveAll echo — because every patient
+     * object in state goes through this function. */
+    name:     trimName(pickField(p, ['name', 'שם', 'שם מטופל', 'Name'])),
     date:     isoDate(pickField(p, ['date', 'תאריך', 'תאריך כניסה', 'entryDate'])),
     pay:      Number(pickField(p, ['pay', 'payment', 'תשלום', 'תשלום חודשי'])) || 0,
     adv:      Number(pickField(p, ['adv', 'advance', 'מקדמה'])) || 0,
@@ -2104,7 +2147,7 @@ function meetingReportWhenText(iso) {
   if (isNaN(d.getTime())) return String(iso);
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${formatDateDDMMYYYY(isoDate(iso))} ${hh}:${mm}`;
+  return `${formatDateHe(isoDate(iso))} ${hh}:${mm}`;
 }
 
 /* The read-only "דיווח מנהל" block for one lead. '' when the lead has no
@@ -2663,7 +2706,7 @@ function renderMeetings() {
   if (!state.meetingsWeekStart) state.meetingsWeekStart = weekStartSunday(todayISO());
   const wk = meetingsForWeek(state.leads, state.meetingsWeekStart);
 
-  const rangeLabel = `${formatDateDDMMYYYY(wk.weekStart)} – ${formatDateDDMMYYYY(wk.weekEnd)}`;
+  const rangeLabel = `${formatDateHe(wk.weekStart)} – ${formatDateHe(wk.weekEnd)}`;
 
   /* Per-manager conversion strip — computed over ALL leads (all-time), so it
    * renders even in a week with no meetings and reflects every recorded outcome. */
@@ -2684,7 +2727,7 @@ function renderMeetings() {
       const todayBadge = isToday ? `<span class="mtg-today-badge">היום</span>` : '';
       return `
         <section class="mtg-day${isToday ? ' mtg-today' : ''}">
-          <h3 class="mtg-day-head">${escapeHtml(HEBREW_DAYS[d.dow])} · ${escapeHtml(formatDateDDMMYYYY(d.iso))}${todayBadge}</h3>
+          <h3 class="mtg-day-head">${escapeHtml(HEBREW_DAYS[d.dow])} · ${escapeHtml(formatDateHe(d.iso))}${todayBadge}</h3>
           <div class="mtg-rows">${rows}${noTimeBlock}</div>
         </section>`;
     }).join('');
@@ -2863,6 +2906,7 @@ function renderAll() {
   renderBilling();
   renderCreditsPayouts();
   renderMonthlyRevenue();
+  renderReconnect();
   renderBreakeven();
   renderGrowthGraph();
   /* Backfill + persist any visit-stage lead whose meetingWith default was only
@@ -3306,7 +3350,7 @@ function buildLeadCard(lead) {
    * slot — sitting it above the name made it visually compete with the
    * title (regression noted 2026-05). */
   const createdISO = lead.created ? isoDate(lead.created) : '';
-  const createdDisplay = createdISO ? formatDateDDMMYYYY(createdISO) : '—';
+  const createdDisplay = createdISO ? formatDateHe(createdISO) : '—';
   const createdInner = state.mode === 'edit'
     ? `<input class="lc-created-input" type="date" lang="he" dir="rtl"
               data-field="created" value="${escapeHtml(createdISO)}" />`
@@ -5443,28 +5487,10 @@ function withDefaultCoverage(payment) {
   });
 }
 
-/* ---- coverage period, as a PERSON reads it ------------------------------
- * DISPLAY ONLY. The stored pair stays bare 'YYYY-MM-DD' text, text-forced in
- * the sheet, and the native date inputs keep their ISO `value` — nothing
- * below is ever written anywhere.
- *
- * The format is not a new one: formatDate() is the same call תאריך כניסה goes
- * through on תפוסה (15.9.2026), so a coverage period now reads like every
- * other date the app shows a person.
- *
- * A bare ISO string is turned into a LOCAL Date first. formatDate's own
- * `new Date('2026-09-06')` parses as UTC midnight, which renders a day early
- * anywhere west of Greenwich; localDateFromISO reads the parts, so the day is
- * the day regardless of where the browser thinks it is. */
-function coverageDateText(v) {
-  if (v instanceof Date) return formatDate(v);
-  return formatDate(localDateFromISO(isoDate(v)));
-}
-/* Both ends, one arrow. Used by the גבייה row AND the הכנסות חודשיות
- * drill-down, so the two cannot drift into different date formats. */
-function coverageWindowText(start, end) {
-  return `${coverageDateText(start)} → ${coverageDateText(end)}`;
-}
+/* The coverage period's DISPLAY format lives in dateRangeHeHtml() (below,
+ * with the rest of the date helpers). This file deliberately has no second
+ * coverage-date formatter: the גבייה row and the הכנסות חודשיות
+ * drill-down both call that one helper, so they cannot drift apart. */
 
 /* The 15th of the next month on or after decidedDate: decided on the 1st–15th
  * → the 15th of that month; the 16th onward → the 15th of the following
@@ -5903,7 +5929,7 @@ function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
         <div class="form-row credit-inline">
           <label>תאריך החלטה</label>
           <input type="date" name="decidedDate" value="${escapeHtml(l.decidedDate || '')}" dir="ltr" />
-          <span class="credit-exvat" data-role="payout">ישולם ב־${escapeHtml(l.payoutDate || payoutDateFor(l.decidedDate) || '—')}</span>
+          <span class="credit-exvat" data-role="payout">ישולם ב־${escapeHtml(formatDateHe(l.payoutDate || payoutDateFor(l.decidedDate)) || '—')}</span>
         </div>
         <div class="form-row credit-inline">
           <label>סטטוס</label>
@@ -5997,7 +6023,7 @@ function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
       const decidedEl = fs.querySelector('[name="decidedDate"]');
       const payoutEl = fs.querySelector('[data-role="payout"]');
       if (decidedEl && payoutEl) decidedEl.addEventListener('change', () => {
-        payoutEl.textContent = 'ישולם ב־' + (payoutDateFor(decidedEl.value) || '—');
+        payoutEl.textContent = 'ישולם ב־' + (formatDateHe(payoutDateFor(decidedEl.value)) || '—');
       });
     });
     const form = back.querySelector('form');
@@ -6154,7 +6180,7 @@ function renderCreditsPayouts() {
   groups.forEach(g => {
     const head = document.createElement('div');
     head.className = 'credit-payout-head';
-    head.innerHTML = `<span dir="ltr">${escapeHtml(g.payoutDate)}</span><span>${g.credits.length} זיכויים</span><b>${fmtShekel(g.total)}</b><span class="credit-exvat">(${fmtShekel(exVat(g.total))} ללא מע"מ)</span>`;
+    head.innerHTML = `<span><bdi>${escapeHtml(formatDateHe(g.payoutDate))}</bdi></span><span>${g.credits.length} זיכויים</span><b>${fmtShekel(g.total)}</b><span class="credit-exvat">(${fmtShekel(exVat(g.total))} ללא מע"מ)</span>`;
     list.appendChild(head);
     g.credits.forEach(c => {
       const row = document.createElement('div');
@@ -6402,13 +6428,98 @@ function showModal({ title, fields, submitLabel, onSubmit }) {
    sheet row instead of creating duplicates.
 */
 
+/* ===== PAYMENT ↔ PATIENT IDENTITY =====
+ *
+ * THE PROBLEM. A payment was linked to a patient by houseId::name::entryDate.
+ * Any change to any of the three DETACHES it, silently, for good. Found in the
+ * live sheet: "שחר חיון " with a trailing space; "אביב שבתאי" carrying
+ * invisible characters; נועם אשבל's payment left behind on her ריהאב record
+ * after she moved to הפרדס; and four rows — "עמית יעקובי", "ערן", "עדי" and
+ * שחר's — attached to no patient at all.
+ *
+ * THE FIX, in three parts:
+ *   1. patientUid — the PERSISTED Patients-sheet id — is stamped on every new
+ *      payment row and matched FIRST. It survives a rename and a house
+ *      transfer, because it is not made of either.
+ *   2. Names are trimmed at every write, client and server, so the triple
+ *      stops acquiring new variants.
+ *   3. The triple is still read, as a FALLBACK, in two flavours: exactly as
+ *      stored, then normalized — so a row already carrying "שחר חיון " keeps
+ *      matching the patient whose name is now stored trimmed.
+ *
+ * Nothing here rewrites an existing patientId. The triple on a historical row
+ * is left exactly as it is; what changes is what we are willing to RECOGNIZE. */
+
+/* One trim, used by every patient-name write path. */
+function trimName(v) {
+  return String(v == null ? '' : v).trim();
+}
+
+/* Characters that make two identical-LOOKING names different strings: the
+ * zero-width space/joiners, the bidi embedding and override marks, the word
+ * joiner and the BOM. Hebrew text pasted out of WhatsApp, Word or a PDF
+ * carries them routinely, and "אביב שבתאי" in the live sheet does. They are
+ * stripped for MATCHING only — never from what is stored, because removing
+ * characters from somebody's recorded name is a data edit, not a comparison. */
+const NAME_INVISIBLES = /[\u200b-\u200f\u202a-\u202e\u2060\ufeff]/g;
+
+/* A name reduced to what two humans would call "the same name": trimmed,
+ * Unicode-composed, invisibles gone, inner whitespace runs collapsed, case
+ * folded. MATCHING ONLY. */
+function normalizeNameForMatch(v) {
+  return trimName(v).normalize('NFC').replace(NAME_INVISIBLES, '')
+    .replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/* The PERSISTED Patients-sheet row id (patient identity foundation). This is
+ * the identity that survives every edit; `patientKey` is the one that does
+ * not. Blank for a pseudo-patient built by findPatientForPayment. */
+function patientUid(p) {
+  return String((p && p.id) || '').trim();
+}
+/* The uid a payment ROW claims.
+ *
+ * TWO COLUMNS, one answer. `patientUid` is SERVER-OWNED (PR #139): the server
+ * resolves it from an EXACT match of the row's triple and leaves it blank
+ * when it cannot. `linkPatientUid` is what a PERSON decided on the reconnect
+ * screen, and the server lets it win. Reading the decision first also makes
+ * the optimistic local row correct in the moment between the click and the
+ * server's echo. */
+function paymentPatientUid(pay) {
+  if (!pay) return '';
+  return String(pay.linkPatientUid || pay.patientUid || '').trim();
+}
+
 function patientKey(p) {
-  // Billing/payment identity for a patient across sessions: house + name +
-  // entry-date. Kept as the payment/override key even now that the Patients
-  // sheet persists a per-row `id` (patient identity foundation) — every
-  // existing payment and override row is keyed on this triple, so switching
-  // it would orphan them; a keyed migration is a separate, later change.
-  return `${p.houseId}::${p.name || ''}::${p.date || ''}`;
+  /* Billing/payment identity for a patient across sessions: house + name +
+   * entry-date. Kept as the payment/override key even now that the Patients
+   * sheet persists a per-row `id` — every existing payment and override row is
+   * keyed on this triple, so switching it would orphan them; patientUid is
+   * added ALONGSIDE it and consulted first, rather than replacing it.
+   *
+   * The name is trimmed, mirroring patientKey_() in Code.gs, which has always
+   * trimmed. The two disagreeing is how a payment row came to hold
+   * "…::שחר חיון ::…" while the server's own key for the same row was
+   * "…::שחר חיון::…". */
+  return `${p.houseId}::${trimName(p.name)}::${p.date || ''}`;
+}
+
+/* The triple, reduced for MATCHING: house, normalized name, normalized date.
+ * Built from a patient, or from a stored `patientId` string, so both sides of
+ * a comparison go through the same reduction. */
+function patientMatchKey(houseId, name, dateISO) {
+  return `${resolveHouseId(houseId || '')}::${normalizeNameForMatch(name)}::${isoDate(dateISO)}`;
+}
+function patientMatchKeyOf(p) {
+  return p ? patientMatchKey(p.houseId, p.name, p.date) : '';
+}
+/* A stored 'houseId::name::entryDate' put through the same reduction. Returns
+ * '' for anything that is not that shape — an unparseable id is a true orphan
+ * and must not be coerced into looking like a match. */
+function patientMatchKeyFromId(patientId) {
+  const parts = String(patientId == null ? '' : patientId).split('::');
+  if (parts.length !== 3) return '';
+  return patientMatchKey(parts[0], parts[1], parts[2]);
 }
 
 function paymentId(patient, dueDateISO) {
@@ -6462,8 +6573,35 @@ function normalizePayment(r) {
      * this function's job to refuse. */
     coverageStart: isoDate(r.coverageStart),
     coverageEnd:   isoDate(r.coverageEnd),
+    /* The identity + link columns (appended; see PAYMENT_COLUMNS in Code.gs).
+     *
+     *   patientUid     — SERVER-OWNED (PR #139): the persisted Patients id,
+     *                    resolved from an EXACT triple match and left blank
+     *                    when that fails. Carried here so the client reads
+     *                    the same answer the accounting feed does; never sent.
+     *   linkPatientUid — what a PERSON decided on the reconnect screen. The
+     *                    one client-writable input to the link, and the only
+     *                    thing that may override the automatic resolution.
+     *   linkStatus     — '' (never reviewed) | 'linked' | 'not_a_patient'.
+     *   linkNote       — the reason, required for 'not_a_patient'.
+     *   linkedBy/At    — who decided and when. SERVER-STAMPED; a client value
+     *                    is dropped on write and only echoed back on read. */
+    patientUid:     String(r.patientUid || '').trim(),
+    linkPatientUid: String(r.linkPatientUid || '').trim(),
+    linkStatus: PAYMENT_LINK_STATUSES.indexOf(String(r.linkStatus || '').trim()) >= 0
+      ? String(r.linkStatus).trim() : '',
+    linkNote:   String(r.linkNote || ''),
+    linkedBy:   String(r.linkedBy || ''),
+    linkedAt:   String(r.linkedAt || ''),
   };
 }
+
+/* The only values linkStatus may hold. Mirrors PAYMENT_LINK_STATUSES in
+ * Code.gs, which is the authority on write. '' means "nobody has looked at
+ * this row yet" and is what every historical row carries. */
+const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient'];
+/* Longest note the reconnect screen will store. Mirrors the server cap. */
+const PAYMENT_LINK_NOTE_MAX = 300;
 
 /* Deterministic id for a per-patient, per-month billing-amount override.
  * Mirrors billingOverrideId_() in Code.gs exactly so a client-built id upserts
@@ -6553,9 +6691,18 @@ function isoTime(v) {
   return '';
 }
 
+/* The day-of-month a billing cycle is anchored to.
+ *
+ * ROUTED THROUGH isoDate(). It used to slice the raw string, which is correct
+ * only for a value already stored as bare 'YYYY-MM-DD'. A date-TYPED sheet
+ * cell reaches the client as "2026-09-06T21:00:00.000Z"; slicing that gives
+ * day 6, while the calendar day in Israel is the 7th. The anchor would then be
+ * one day early for every such patient — and, because the whole billing
+ * schedule hangs off this number, so would every due date, every renewal and
+ * every inferred coverage window. isoDate() reads the LOCAL parts, which is
+ * the same rule every other date on this screen already goes through. */
 function dayOfMonth(iso) {
-  if (!iso) return null;
-  const parts = String(iso).slice(0, 10).split('-');
+  const parts = String(isoDate(iso) || '').split('-');
   if (parts.length < 3) return null;
   const day = parseInt(parts[2], 10);
   return isNaN(day) ? null : day;
@@ -6611,7 +6758,11 @@ function paymentForPatientOnDate(patient, dueDateISO) {
   return applyBillingOverride(normalizePayment({
     id,
     patientId: patientKey(patient),
-    patientName: patient.name,
+    /* patientUid is SERVER-OWNED (PR #139) — it is resolved from the triple
+     * on write, so a placeholder does not claim one. What the placeholder DOES
+     * carry is a trimmed name, so the triple it is born with is the same one
+     * the server's index is built from. */
+    patientName: trimName(patient.name),
     houseId: patient.houseId,
     dueDate: dueDateISO,
     amount: patient.pay || 0,
@@ -6625,13 +6776,70 @@ function activePatients() {
   return state.patients.filter(p => p.status !== 'released');
 }
 
-function patientsDueOn(dateISO) {
+/* ===== THE STAY WINDOW =====
+ * ONE rule, shared by every screen that asks "was this patient in the house
+ * then": the daily גבייה list and its KPI cards, יתרות פתוחות, the old
+ * סיכום חודשי and הכנסות חודשיות.
+ *
+ * THE BUG IT CLOSES. Being due was decided by DAY-OF-MONTH alone. עמית
+ * בורנשטיין entered on 7.9.2026 and appeared on the גבייה list for 07/07/2026
+ * — two months before he arrived — along with ניר כהן, אבי משען, בן שלום,
+ * שחר חיון and גיל, every one of them a September admission showing on a July
+ * date. The day matched; nothing asked whether the stay did.
+ *
+ * Every date is normalized through isoDate() before it is compared. Comparing
+ * raw stored strings is how a date-typed cell's UTC timestamp lands on the
+ * wrong side of a boundary — a one-day drift that would move a patient's first
+ * or last cycle by a whole month at the edges. */
+
+/* The day a patient's stay ended, or '' while they are still in the house. */
+function patientExitISO(patient) {
+  return isoDate((patient && (patient.exitDate || patient.dischargedAt)) || '');
+}
+
+/* Did this patient's stay cover `dateISO`?
+ *   entryDate <= date  AND  (exitDate empty OR exitDate >= date)
+ *
+ * A released patient with NO exit date recorded is the one case the dates
+ * cannot answer. The conservative reading is taken — they are treated as no
+ * longer in the house — because status is then the only signal there is, and
+ * inventing a stay would re-create the very "billed for a period they were not
+ * here" this function exists to stop. */
+function patientStayCoversDate(patient, dateISO) {
+  const date = isoDate(dateISO);
+  if (!patient || !date) return false;
+  const entry = isoDate(patient.date);
+  if (!entry || entry > date) return false;
+  const exit = patientExitISO(patient);
+  if (exit) return exit >= date;
+  return isBillablePatient(patient);
+}
+
+/* Did the stay cover ANY day of [fromISO, toISO]? The month-level form of the
+ * rule above: a patient discharged in August was in the house in July, so
+ * their July cycles are July's business whatever their status reads today. */
+function patientStayOverlapsRange(patient, fromISO, toISO) {
+  const from = isoDate(fromISO), to = isoDate(toISO);
+  if (!patient || !from || !to) return false;
+  const entry = isoDate(patient.date);
+  if (!entry || entry > to) return false;
+  const exit = patientExitISO(patient);
+  if (exit) return exit >= from;
+  return isBillablePatient(patient);
+}
+
+/* A patient is due on a date when their billing anchor falls on it AND their
+ * stay covered it. Both halves, always — the day-of-month half alone is the
+ * bug above. */
+function patientDueOnDate(patient, dateISO) {
   const d = dayOfMonth(dateISO);
-  if (!d) return [];
-  return activePatients().filter(p => {
-    const pd = dayOfMonth(p.date);
-    return pd === d;
-  });
+  if (!d || !patientStayCoversDate(patient, dateISO)) return false;
+  return dayOfMonth(patient && patient.date) === d;
+}
+
+function patientsDueOn(dateISO) {
+  if (!dayOfMonth(dateISO)) return [];
+  return state.patients.filter(p => patientDueOnDate(p, dateISO));
 }
 
 /* ===== Renewal alert =====
@@ -6775,19 +6983,424 @@ function patientsNeedingRenewal(fromISO, windowDays) {
   return out.sort((a, b) => a.renewalISO.localeCompare(b.renewalISO));
 }
 
+/* ===== MATCHING A PAYMENT TO A PATIENT =====
+ *
+ * FOUR TIERS, most durable first. The tier is REPORTED, not just used: the
+ * reconnect screen shows how a row is holding on, and `matchPatientForPayment`
+ * is the one place the order is written down.
+ *
+ *   1. patientUid    — the persisted Patients id. Survives a rename AND a
+ *                      house transfer, because it is made of neither.
+ *   2. triple_exact  — houseId::name::entryDate exactly as the row stores it.
+ *                      What every historical row has, and all it has.
+ *   3. triple_loose  — the same triple with the name normalized (trimmed,
+ *                      invisibles stripped, case folded). This is what keeps
+ *                      "שחר חיון " attached to שחר חיון.
+ *   4. house_name    — house + normalized name, no date, and ONLY when exactly
+ *                      one patient matches. A second candidate means we cannot
+ *                      tell them apart, and guessing is how a payment ends up
+ *                      on the wrong person's ledger.
+ *
+ * Returns { patient, via } or null. Pure over the `patients` list it is
+ * given — buildMonthlyRevenue and the reconnect screen both drive it over
+ * their own arrays. */
+const PAYMENT_MATCH_TIERS = ['patientUid', 'triple_exact', 'triple_loose', 'house_name'];
+
+function matchPatientForPayment(pay, patients) {
+  if (!pay || !Array.isArray(patients)) return null;
+
+  const uid = paymentPatientUid(pay);
+  if (uid) {
+    const byUid = patients.find(p => p && patientUid(p) === uid);
+    if (byUid) return { patient: byUid, via: 'patientUid' };
+    /* A uid that names nobody is a DECISION that has gone stale (the patient
+     * row was deleted). It is not a licence to fall through to a name match —
+     * that would quietly re-link the money to somebody else. Send it to the
+     * reconnect screen instead. */
+    return null;
+  }
+
+  const storedId = String(pay.patientId || '');
+  if (storedId) {
+    /* AMBIGUITY IS REFUSED AT EVERY TIER, this one included. Two patients CAN
+     * share a triple — the same person readmitted on the same day into the
+     * same house, or a genuine namesake — and `find` would silently hand back
+     * whichever the array happened to hold first. That is a coin flip
+     * deciding whose ledger a payment lands on. */
+    const exactHits = patients.filter(p => p && patientKey(p) === storedId);
+    if (exactHits.length === 1) return { patient: exactHits[0], via: 'triple_exact' };
+    if (exactHits.length > 1) return null;
+    const loose = patientMatchKeyFromId(storedId);
+    if (loose) {
+      const hits = patients.filter(p => p && patientMatchKeyOf(p) === loose);
+      if (hits.length === 1) return { patient: hits[0], via: 'triple_loose' };
+      if (hits.length > 1) return null;   // ambiguous — never guess
+    }
+  }
+
+  if (pay.patientName && pay.houseId) {
+    const house = resolveHouseId(pay.houseId);
+    const name = normalizeNameForMatch(pay.patientName);
+    const hits = patients.filter(p => p
+      && resolveHouseId(p.houseId) === house
+      && normalizeNameForMatch(p.name) === name);
+    if (hits.length === 1) return { patient: hits[0], via: 'house_name' };
+  }
+  return null;
+}
+
 /* The payment may exist on Sheets without a matching patient (e.g., the
  * patient was released after a payment was recorded). We still want to show
  * those records in "open balances" so the money isn't forgotten. */
 function findPatientForPayment(pay) {
-  if (pay.patientId) {
-    const direct = state.patients.find(p => patientKey(p) === pay.patientId);
-    if (direct) return direct;
-  }
-  if (pay.patientName && pay.houseId) {
-    return state.patients.find(p => p.houseId === pay.houseId && p.name === pay.patientName);
-  }
-  return null;
+  const m = matchPatientForPayment(pay, state.patients);
+  return m ? m.patient : null;
 }
+
+/* ====================================================
+   שיוך תשלומים — THE RECONNECT TOOL
+   ====================================================
+   Every payment row that matches NO current patient, with the candidates it
+   might belong to, for a person to decide. NOTHING here reconnects on its own:
+   the engine ranks, the screen presents, Sandra chooses.
+
+   The rows this was built for, found in the live sheet:
+     "שחר חיון " (trailing space)   07/09  ₪35,000  עפרוני
+     "עמית יעקובי"                  07/09  ₪30,000  עפרוני — attached to nobody,
+       while עמית בורנשטיין (עפרוני, entered 7.9) has his OWN ₪30,000 that day.
+       A rename, or a double entry. The tool REFUSES to decide which: it shows
+       both, warns that the cycle is already paid, and waits.
+     "אביב שבתאי" (invisible chars)  13/07  ₪18,000  ריהאב
+     "ערן"                           09/08  ₪35,000  עפרוני
+     "עדי"                           14/09  ₪35,000  ריהאב
+     נועם אשבל — moved ריהאב → הפרדס; her payment stayed on the ריהאב record. */
+
+/* Rows a person still has to look at: no current patient, and no decision
+ * recorded. A row marked 'not_a_patient' has been decided and drops out — it
+ * is not a loose end, it is a documented non-patient. Pure. */
+function detachedPayments(payments, patients) {
+  if (!Array.isArray(payments)) return [];
+  const list = Array.isArray(patients) ? patients : [];
+  return payments.filter(pay => pay
+    && pay.linkStatus !== 'not_a_patient'
+    && !matchPatientForPayment(pay, list));
+}
+
+/* Whole days between two ISO dates, or null when either is unusable. Used for
+ * the ±1 day entry-date proximity below; daysBetween() is the shared one. */
+function candidateDayGap(aISO, bISO) {
+  const n = daysBetween(isoDate(aISO), isoDate(bISO));
+  return Number.isFinite(n) ? Math.abs(n) : null;
+}
+
+/* Do two names look like the same person? Deliberately CONSERVATIVE — this
+ * only decides what to SHOW Sandra, never what to write:
+ *   - identical after normalization (the trailing-space and invisibles cases);
+ *   - one is a prefix of the other ("ערן" vs "ערן כהן", "עדי" vs "עדי לוי") —
+ *     the live sheet's single-word rows are exactly this shape;
+ *   - they share a whole word (a first or last name in common). */
+function namesLookAlike(a, b) {
+  const x = normalizeNameForMatch(a), y = normalizeNameForMatch(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  if (x.indexOf(y) === 0 || y.indexOf(x) === 0) return true;
+  const xw = x.split(' ').filter(Boolean), yw = y.split(' ').filter(Boolean);
+  return xw.some(w => w.length > 1 && yw.indexOf(w) !== -1);
+}
+
+/* Candidate patients for a detached payment, best first, each carrying the
+ * REASONS it is offered so the screen can show them rather than a bare score.
+ *
+ * The four signals, in the order they are trusted:
+ *   uid          — the row's patientUid names this patient, but the tiers
+ *                  above rejected it (a stale decision). Strongest signal
+ *                  there is, and the one case where the row already told us.
+ *   same_house   — the payment's house is this patient's house.
+ *   name         — the names look alike (see namesLookAlike).
+ *   entry_date   — the payment's due date is within ONE DAY of the patient's
+ *                  entry date. A first payment is taken on admission, so this
+ *                  is how "עמית יעקובי, 07/09" finds עמית בורנשטיין, who
+ *                  entered on 7.9.
+ *
+ * A candidate needs at least ONE of name / entry_date / uid: house alone would
+ * offer every resident of עפרוני and teach Sandra to ignore the list. */
+function reconnectCandidates(pay, patients) {
+  if (!pay || !Array.isArray(patients)) return [];
+  const payHouse = resolveHouseId(pay.houseId || '');
+  const uid = paymentPatientUid(pay);
+  const dueISO = isoDate(pay.dueDate);
+  const out = [];
+  patients.forEach(p => {
+    if (!p) return;
+    const reasons = [];
+    let score = 0;
+    if (uid && patientUid(p) === uid) { reasons.push('uid'); score += 100; }
+    if (payHouse && resolveHouseId(p.houseId) === payHouse) { reasons.push('same_house'); score += 10; }
+    if (namesLookAlike(pay.patientName, p.name)) { reasons.push('name'); score += 40; }
+    const gap = candidateDayGap(dueISO, p.date);
+    if (gap !== null && gap <= 1) { reasons.push('entry_date'); score += 30; }
+    /* The stay window (PR 1's rule): a patient whose stay covered the due date
+     * is a likelier owner of the money than one who was not in the house. Not
+     * required — a payment can legitimately precede an entry by a day — but it
+     * ranks. */
+    if (patientStayCoversDate(p, dueISO)) { reasons.push('in_house'); score += 5; }
+    if (!reasons.some(r => r === 'name' || r === 'entry_date' || r === 'uid')) return;
+    out.push({ patient: p, patientUid: patientUid(p), score, reasons });
+  });
+  return out.sort((a, b) => (b.score - a.score)
+    || String(a.patient.name || '').localeCompare(String(b.patient.name || ''), 'he'));
+}
+
+/* Would linking this payment to this patient create a SECOND payment for a
+ * cycle they already have? Returns the colliding rows, never blocks: the
+ * "עמית יעקובי / עמית בורנשטיין" pair is either a rename (one row is a
+ * duplicate to be removed later) or a genuine double entry, and only a person
+ * knows which. Two rows are the same cycle when their due dates fall in the
+ * same month — a stored due date that drifted a day or two from the entry-day
+ * anchor is still THAT cycle, the same rule buildMonthlyRevenue uses. */
+function reconnectDoubleEntry(pay, patient, payments) {
+  if (!pay || !patient || !Array.isArray(payments)) return [];
+  const mk = monthKey(pay.dueDate);
+  if (!mk) return [];
+  /* "Already this patient's" by EITHER half of the link: a row carrying their
+   * uid, or one carrying their triple. Checking only the uid would miss every
+   * historical row, which is most of them. */
+  const belongs = other => !!matchPatientForPayment(other, [patient]);
+  return payments.filter(other => other
+    && other.id !== pay.id
+    && monthKey(other.dueDate) === mk
+    && belongs(other));
+}
+
+/* THE BACKFILL PLAN (never the write). The rows the server's exact match
+ * left blank and the NORMALIZED triple can place without a judgement call —
+ * the same rule withPatientUid() applies at write time, read over the whole
+ * sheet so the existing rows can be caught up in one go.
+ *
+ * It deliberately does NOT re-do PR #139's work: a row whose triple is intact
+ * is the server's to resolve (on write, and by its own locked backfill), and
+ * planning it here would be a second writer racing the first for no gain.
+ *
+ * Pure: returns [{ payment, patient, via }] and writes nothing. */
+function planPatientUidBackfill(payments, patients) {
+  if (!Array.isArray(payments)) return [];
+  const list = Array.isArray(patients) ? patients : [];
+  const out = [];
+  payments.forEach(pay => {
+    if (!pay || paymentPatientUid(pay)) return;
+    const m = matchPatientForPayment(pay, list);
+    if (!m || m.via !== 'triple_loose') return;
+    const uid = patientUid(m.patient);
+    if (!uid) return;
+    out.push({ payment: pay, patient: m.patient, via: m.via });
+  });
+  return out;
+}
+
+/* ---- the three writes -----------------------------------------------------
+ * All three go through savePayment(), the ONE payment write path — optimistic
+ * upsert, rollback and the שמירת גבייה נכשלה toast included — so a link can
+ * never be persisted by a route the rest of the app does not know about. Only
+ * the link columns move: amount, status, amountPaid, balance and the coverage
+ * period ride through untouched, so a reconnection can never move money.
+ *
+ * linkedBy / linkedAt are never sent. upsertPayment_() stamps them from the
+ * signed session cookie and its own clock, because a client that can post a
+ * payment can post any name and any date it likes. savePayment() adopts the
+ * server's echo, so the decided row shows the real who-and-when without a
+ * reload. */
+
+async function reconnectPaymentToPatient(pay, patient) {
+  if (state.mode !== 'edit') return;
+  const uid = patientUid(patient);
+  if (!uid) { showError('למטופל זה אין מזהה קבוע — יש לשמור אותו שוב לפני השיוך'); return; }
+  await savePayment(Object.assign({}, pay, {
+    linkPatientUid: uid,
+    linkStatus: 'linked',
+    linkNote: '',
+  }));
+  renderReconnect();
+}
+
+/* "This is not a patient" — a refund, a supplier, a test row, a duplicate.
+ * A REASON IS REQUIRED: a row dismissed without one is indistinguishable next
+ * year from a row nobody ever looked at, which is the state this whole screen
+ * exists to get out of. */
+async function markPaymentNotAPatient(pay, note) {
+  if (state.mode !== 'edit') return;
+  const reason = String(note || '').trim().slice(0, PAYMENT_LINK_NOTE_MAX);
+  if (!reason) { showError('יש לציין סיבה לסימון "לא מטופל"'); return; }
+  await savePayment(Object.assign({}, pay, {
+    linkPatientUid: '',
+    linkStatus: 'not_a_patient',
+    linkNote: reason,
+  }));
+  renderReconnect();
+}
+
+/* The backfill (PR 2C). Writes a uid ONLY where the triple names exactly one
+ * current patient — planPatientUidBackfill() is the rule, and it is pure.
+ *
+ * ON DEMAND, never on load. A write that runs by itself when a screen opens is
+ * a write nobody chose, and this one touches every historical payment row. The
+ * button says how many rows it will change before it changes them. */
+async function runPatientUidBackfill() {
+  if (state.mode !== 'edit') return;
+  const plan = planPatientUidBackfill(state.payments, state.patients);
+  if (!plan.length) { showError('אין שורות להשלמה — כל השורות כבר משויכות או דורשות הכרעה'); return; }
+  let done = 0;
+  for (const item of plan) {
+    /* Sequential on purpose: savePayment() is an optimistic upsert into a
+     * shared array, and a parallel storm would race its own rollbacks. */
+    // eslint-disable-next-line no-await-in-loop
+    await savePayment(Object.assign({}, item.payment, {
+      linkPatientUid: patientUid(item.patient),
+      linkStatus: 'linked',
+    }));
+    done += 1;
+  }
+  showToast(`הושלם שיוך ל־${done} שורות תשלום`);
+  renderReconnect();
+}
+
+/* ---- the screen ---------------------------------------------------------- */
+
+function renderReconnect() {
+  const list = document.getElementById('reconnect-list');
+  if (!list) return;
+  const rows = detachedPayments(state.payments, state.patients);
+  const plan = planPatientUidBackfill(state.payments, state.patients);
+
+  const countEl = document.getElementById('reconnect-count');
+  if (countEl) countEl.textContent = rows.length;
+  /* The nav badge: detached money is not something to go looking for. Hidden
+   * at zero, like the meetings badge. */
+  const badge = document.getElementById('reconnect-badge');
+  if (badge) {
+    badge.textContent = rows.length;
+    badge.classList.toggle('hidden', !rows.length);
+  }
+  const linkedEl = document.getElementById('reconnect-linked-count');
+  if (linkedEl) {
+    linkedEl.textContent = state.payments.filter(p => p && paymentPatientUid(p)).length;
+  }
+  const backfillEl = document.getElementById('reconnect-backfill');
+  if (backfillEl) {
+    backfillEl.textContent = plan.length
+      ? `השלמת שיוך ל־${plan.length} שורות חד־משמעיות`
+      : 'אין שורות חד־משמעיות להשלמה';
+    backfillEl.disabled = !plan.length || state.mode !== 'edit';
+    backfillEl.onclick = e => busyButton(e.currentTarget, 'save', () => runPatientUidBackfill());
+  }
+
+  list.innerHTML = '';
+  if (!rows.length) {
+    list.innerHTML = '<div class="card billing-empty">כל התשלומים משויכים למטופל</div>';
+  } else {
+    rows.forEach(pay => list.appendChild(buildReconnectRow(pay)));
+  }
+
+  /* The decisions already taken. Shown — not archived out of sight — because
+   * "who decided this, and when" is the half of an audit trail a person can
+   * actually act on, and a row marked "not a patient" by mistake would
+   * otherwise be unreachable. */
+  const decided = state.payments.filter(p => p && p.linkStatus === 'not_a_patient');
+  if (decided.length) {
+    const head = document.createElement('div');
+    head.className = 'rev-detail-head';
+    head.innerHTML = `<span>סומנו כ"לא מטופל"</span><span>${decided.length}</span>`;
+    list.appendChild(head);
+    decided.forEach(pay => {
+      const el = document.createElement('div');
+      el.className = 'card reconnect-row decided';
+      el.innerHTML = `
+        <div class="reconnect-head">
+          <span class="p-name">${escapeHtml(String(pay.patientName || '')) || '<i>ללא שם</i>'}</span>
+          <span class="rev-chip">${escapeHtml(formatDate(pay.dueDate))}</span>
+          <span class="rev-chip">${escapeHtml(fmtShekel(pay.amount || 0))}</span>
+        </div>
+        <div class="reconnect-note-shown">${escapeHtml(pay.linkNote || '')}</div>
+        <div class="reconnect-id">${escapeHtml(pay.linkedBy || '—')} · ${escapeHtml(formatDate(pay.linkedAt) || '—')}</div>
+        <button class="btn small reconnect-undo" ${state.mode === 'edit' ? '' : 'disabled'}>החזרה לבדיקה</button>
+      `;
+      el.querySelector('.reconnect-undo').onclick = e =>
+        busyButton(e.currentTarget, 'save', async () => {
+          await savePayment(Object.assign({}, pay, {
+            linkPatientUid: '', linkStatus: '', linkNote: '',
+          }));
+          renderReconnect();
+        });
+      list.appendChild(el);
+    });
+  }
+}
+
+function buildReconnectRow(pay) {
+  const el = document.createElement('div');
+  el.className = 'card reconnect-row';
+  const house = houseById(pay.houseId);
+  const candidates = reconnectCandidates(pay, state.patients).slice(0, 5);
+  const editable = state.mode === 'edit';
+
+  /* The row as the SHEET holds it — name verbatim, so a trailing space or an
+   * invisible character is visible rather than merely implied. */
+  const rawName = String(pay.patientName || '');
+  const odd = rawName !== trimName(rawName) || NAME_INVISIBLES.test(rawName);
+  NAME_INVISIBLES.lastIndex = 0;   // the regex is /g; leaving lastIndex set would flip the next test
+
+  el.innerHTML = `
+    <div class="reconnect-head">
+      <span class="p-name">${escapeHtml(rawName) || '<i>ללא שם</i>'}</span>
+      ${odd ? '<span class="badge warn" title="השם מכיל רווח מיותר או תו בלתי נראה — זו הסיבה שהשורה התנתקה">תו חריג בשם</span>' : ''}
+      <span class="rev-chip">${escapeHtml(house ? house.name : (pay.houseId || 'ללא בית'))}</span>
+      <span class="rev-chip">${escapeHtml(formatDate(pay.dueDate))}</span>
+      <span class="rev-chip">${escapeHtml(fmtShekel(pay.amount || 0))}</span>
+      ${pay.amountPaid ? `<span class="rev-chip">שולם ${escapeHtml(fmtShekel(pay.amountPaid))}</span>` : ''}
+    </div>
+    <div class="reconnect-id" dir="ltr">${escapeHtml(pay.patientId || '—')}</div>
+    <div class="reconnect-cands"></div>
+    <div class="reconnect-dismiss">
+      <input class="reconnect-note" type="text" maxlength="${PAYMENT_LINK_NOTE_MAX}"
+             placeholder="סיבה — למה זו אינה שורת מטופל" ${editable ? '' : 'disabled'} />
+      <button class="btn small reconnect-not-patient" ${editable ? '' : 'disabled'}>לא מטופל</button>
+    </div>
+  `;
+
+  const cands = el.querySelector('.reconnect-cands');
+  if (!candidates.length) {
+    cands.innerHTML = '<div class="reconnect-empty">לא נמצאו מועמדים — יש לבדוק ידנית</div>';
+  }
+  candidates.forEach(c => {
+    const dup = reconnectDoubleEntry(pay, c.patient, state.payments);
+    const line = document.createElement('div');
+    line.className = 'reconnect-cand' + (dup.length ? ' has-dup' : '');
+    line.innerHTML = `
+      <span class="cand-name">${escapeHtml(c.patient.name || '')}</span>
+      <span class="cand-meta">${escapeHtml((houseById(c.patient.houseId) || {}).name || c.patient.houseId || '')}
+        · כניסה ${escapeHtml(formatDate(c.patient.date))}</span>
+      <span class="cand-why">${c.reasons.map(r =>
+        `<span class="rev-chip rev-chip-soft">${escapeHtml(RECONNECT_REASON_LABELS[r] || r)}</span>`).join('')}</span>
+      ${dup.length ? `<span class="cand-warn" title="${escapeHtml(dup.map(d => formatDate(d.dueDate)).join(', '))}">⚠ ייתכן רישום כפול — כבר קיים תשלום לאותו מחזור</span>` : ''}
+      <button class="btn small primary cand-link" ${editable ? '' : 'disabled'}>שייך</button>
+    `;
+    line.querySelector('.cand-link').onclick = e =>
+      busyButton(e.currentTarget, 'save', () => reconnectPaymentToPatient(pay, c.patient));
+    cands.appendChild(line);
+  });
+
+  el.querySelector('.reconnect-not-patient').onclick = e =>
+    busyButton(e.currentTarget, 'save', () =>
+      markPaymentNotAPatient(pay, el.querySelector('.reconnect-note').value));
+  return el;
+}
+
+const RECONNECT_REASON_LABELS = {
+  uid: 'מזהה קבוע תואם',
+  same_house: 'אותו בית',
+  name: 'שם דומה',
+  entry_date: 'תאריך כניסה ±יום',
+  in_house: 'שהה בבית באותו תאריך',
+};
 
 /* Billing-tab search: same matching semantics as the discharged-tab search —
  * dischargedPatientMatchesQuery is the shared core (name + house label by
@@ -6823,19 +7436,54 @@ function renderBilling() {
   const q = state.billingSearch;
   const due = dueAll.filter(d => billingRowMatchesQuery(d.patient, d.payment, q));
 
-  // KPI totals sum the payment records' EFFECTIVE amounts (override-aware via
-  // paymentForPatientOnDate) — previously totalDue summed the base pay directly,
-  // which would have ignored per-month overrides.
-  const totalDue       = due.reduce((s, d) => s + (d.payment.amount || 0), 0);
+  /* KPI totals sum the payment records' EFFECTIVE amounts (override-aware via
+   * paymentForPatientOnDate) — previously totalDue summed the base pay
+   * directly, which would have ignored per-month overrides.
+   *
+   * סך לגבייה is a DEBT figure, so a cycle before the records cutoff is left
+   * out of it: nobody entered payments here before RECORDS_COMPLETE_FROM, and
+   * counting those cycles as owed invents debt that was in fact collected and
+   * recorded elsewhere. The rows are still listed and still counted — they are
+   * real cycles — and a note under the cards says how many were excluded, so
+   * the difference between the list and the total is stated rather than left
+   * to be discovered.
+   *
+   * נגבה is NOT filtered: an amountPaid on a row is money somebody recorded,
+   * and money that arrived is money whatever the cutoff says about forecasts. */
+  const preRecordsDue  = due.filter(d => isPreRecordsCycle(selected));
+  const countableDue   = due.filter(d => !isPreRecordsCycle(selected));
+  const totalDue       = countableDue.reduce((s, d) => s + (d.payment.amount || 0), 0);
   const totalCollected = due.reduce((s, d) => s + (d.payment.amountPaid || 0), 0);
 
   document.getElementById('bill-due-count').textContent    = due.length;
   document.getElementById('bill-due-total').textContent    = '₪ ' + totalDue.toLocaleString('he-IL');
   document.getElementById('bill-due-collected').textContent = '₪ ' + totalCollected.toLocaleString('he-IL');
+  renderPreRecordsNote(preRecordsDue.length);
 
   renderBillingDueList(due, selected, dueAll.length);
   renderBillingOpenList(selected);
   renderBillingMonthlySummary(selected);
+}
+
+/* Says, under the גבייה KPI cards, that N cycles on this date predate the
+ * records cutoff and are therefore not in סך לגבייה. Built by the renderer
+ * (no static markup to drift), hidden at zero, and it names the date so the
+ * rule is legible rather than magic. */
+function renderPreRecordsNote(count) {
+  const cards = document.getElementById('bill-due-total');
+  const host = cards && cards.closest ? cards.closest('.cards-row') : null;
+  if (!host || !host.parentNode) return;
+  let el = document.getElementById('bill-pre-records-note');
+  if (!count) { if (el) el.remove(); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'bill-pre-records-note';
+    el.className = 'rev-basis-note pre-records-note';
+    host.parentNode.insertBefore(el, host.nextSibling);
+  }
+  el.innerHTML = `<b>לפני תחילת הרישום</b> — ${count} ${count === 1 ? 'מחזור' : 'מחזורים'} `
+    + `בתאריך זה קודמים ל־${escapeHtml(formatDate(RECORDS_COMPLETE_FROM))}, `
+    + `המועד שממנו רישום התשלומים במערכת מלא. הם מוצגים אך אינם נספרים כחוב.`;
 }
 
 function renderBillingDueList(due, selectedISO, unfilteredCount) {
@@ -6874,9 +7522,15 @@ function renderBillingOpenList(selectedISO) {
       return { patient, pay };
     });
 
-  const open = openAll.filter(o => billingRowMatchesQuery(o.patient, o.pay, state.billingSearch));
+  const matched = openAll.filter(o => billingRowMatchesQuery(o.patient, o.pay, state.billingSearch));
+  /* Cycles before the records cutoff are not debt (see RECORDS_COMPLETE_FROM).
+   * They are still LISTED — under their own heading, after the real balances —
+   * because a cycle that vanishes from every screen is indistinguishable from
+   * one that was never there. Nothing above this line sums them. */
+  const open = matched.filter(o => !isPreRecordsCycle(o.pay.dueDate));
+  const pre  = matched.filter(o => isPreRecordsCycle(o.pay.dueDate));
 
-  if (!open.length) {
+  if (!open.length && !pre.length) {
     const msg = openAll.length ? 'לא נמצאו תוצאות' : 'אין יתרות פתוחות מתאריכים קודמים';
     list.innerHTML = `<div class="card billing-empty">${msg}</div>`;
     return;
@@ -6884,6 +7538,16 @@ function renderBillingOpenList(selectedISO) {
   open.forEach(({ patient, pay }) => {
     list.appendChild(buildBillingRow(patient, pay, pay.dueDate, true));
   });
+  if (pre.length) {
+    const head = document.createElement('div');
+    head.className = 'rev-detail-head pre-records-head';
+    head.innerHTML = `<span>לפני תחילת הרישום — אינו נספר כחוב</span>`
+      + `<span>עד ${escapeHtml(formatDate(RECORDS_COMPLETE_FROM))}</span>`;
+    list.appendChild(head);
+    pre.forEach(({ patient, pay }) => {
+      list.appendChild(buildBillingRow(patient, pay, pay.dueDate, true));
+    });
+  }
 }
 
 /* The month split, rendered. THE KEY FACT ON THE ROW: a payment is one number
@@ -6928,6 +7592,19 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
    * Carry-forward rows keep their existing amber treatment (same warning
    * language) and are skipped here. */
   const isOverdue = !isCarryForward && payment.status === 'unpaid' && dueDateISO <= todayISO();
+  /* Two facts about the CYCLE rather than the money, both said on the row
+   * instead of silently changing a total somewhere else:
+   *   - before the records cutoff → not counted as debt (see
+   *     RECORDS_COMPLETE_FROM); the row is still shown, because the cycle was
+   *     real even though nobody entered a payment for it here;
+   *   - outside the patient's stay → the row should not exist at all. Rows
+   *     like this are the residue of the day-of-month-only due list that
+   *     patientDueOnDate now replaces: a recorded row is never hidden or
+   *     rewritten (it may be money somebody really took), it is FLAGGED so
+   *     Sandra can correct it. */
+  const preRecords = isPreRecordsCycle(dueDateISO);
+  const outsideStay = !!(patient && isoDate(patient.date))
+    && !patientStayCoversDate(patient, dueDateISO);
   row.className = 'billing-row' + (isCarryForward ? ' carry' : '') + (isOverdue ? ' overdue' : '');
   row.dataset.pid = payment.id;
 
@@ -6989,14 +7666,14 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   const covStart = cov ? isoFromLocalDate(cov.start) : '';
   const covEnd   = cov ? isoFromLocalDate(cov.end) : '';
   const covAdjusted = coverageDiffersFromDefault(payment);
-  /* DISPLAY format only — covStart/covEnd above stay ISO and are what the
-   * native date inputs and every write path carry. */
-  const covText = cov ? coverageWindowText(cov.start, cov.end) : '—';
+  /* Display only. covStart/covEnd stay ISO below — they are the two
+   * <input type="date"> values and what saveCoveragePeriod persists. */
+  const covHtml = cov ? dateRangeHeHtml(covStart, covEnd) : '—';
   /* The month the גבייה screen is currently showing. Everything else in the
    * split is money this row defers to another month, and reads as such. */
   const covCurrentKey = monthKey(state.billingDate || todayISO());
   const coverageCellHtml = `
-      <span class="p-val bill-cov-view" dir="ltr">${escapeHtml(covText)}
+      <span class="p-val bill-cov-view">${covHtml}
         ${covAdjusted ? '<span class="badge override" title="תקופה שנרשמה ידנית, שונה ממחזור החיוב הרגיל">מותאמת</span>' : ''}
         ${coverageEditable ? '<button class="bill-cov-edit-btn" title="עריכת תקופת הכיסוי של תשלום זה">✏️</button>' : ''}
         ${coverageEditable && covAdjusted ? '<button class="bill-cov-reset-btn" title="חזרה למחזור החיוב הרגיל">↩</button>' : ''}
@@ -7025,6 +7702,8 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
     <div>
       <span class="p-label">מטופל</span>
       <span class="p-name">${escapeHtml(patient.name || payment.patientName)}</span>
+      ${preRecords ? `<span class="badge pre-records" title="מחזור שקדם ל־${escapeHtml(formatDate(RECORDS_COMPLETE_FROM))} — רישום התשלומים במערכת אינו מלא לפני מועד זה, ולכן אינו נספר כחוב">לפני תחילת הרישום</span>` : ''}
+      ${outsideStay ? `<span class="badge warn" title="תאריך החיוב אינו בתוך תקופת השהות של המטופל (כניסה ${escapeHtml(formatDate(isoDate(patient.date)))}${patientExitISO(patient) ? ', שחרור ' + escapeHtml(formatDate(patientExitISO(patient))) : ''})">מחוץ לתקופת השהות</span>` : ''}
     </div>
     <div>
       <span class="p-label">בית</span>
@@ -7236,8 +7915,16 @@ function renderBillingMonthlySummary(selectedISO) {
   const thisMonth = state.payments
     .filter(p => monthKey(p.dueDate) === mk)
     .map(p => applyBillingOverride(p, state.billingOverrides));
+  /* יתרה is a DEBT figure, so it honours the records cutoff exactly as the
+   * גבייה KPI card does: a cycle before RECORDS_COMPLETE_FROM is not owed, it
+   * is unrecorded. נגבה is untouched — money that was entered arrived,
+   * whatever the cutoff says about what was NOT entered. RECORDS_COMPLETE_FROM
+   * is a month boundary, so a month is wholly on one side of it; the note
+   * below says so when the whole panel is on the earlier side. */
+  const preRecordsRows = thisMonth.filter(p => isPreRecordsCycle(p.dueDate));
+  const debtRows = thisMonth.filter(p => !isPreRecordsCycle(p.dueDate));
   const collected   = thisMonth.reduce((s, p) => s + (p.amountPaid || 0), 0);
-  const outstanding = thisMonth
+  const outstanding = debtRows
     .filter(p => p.status !== 'paid')
     .reduce((s, p) => s + (p.balance || 0), 0);
 
@@ -7250,7 +7937,8 @@ function renderBillingMonthlySummary(selectedISO) {
     const rows = thisMonth.filter(p => p.houseId === h.id);
     if (!rows.length) return;
     const col = rows.reduce((s, p) => s + (p.amountPaid || 0), 0);
-    const out = rows.filter(p => p.status !== 'paid').reduce((s, p) => s + (p.balance || 0), 0);
+    const out = rows.filter(p => p.status !== 'paid' && !isPreRecordsCycle(p.dueDate))
+      .reduce((s, p) => s + (p.balance || 0), 0);
     const line = document.createElement('div');
     line.className = 'bd-line';
     line.innerHTML = `
@@ -7262,6 +7950,14 @@ function renderBillingMonthlySummary(selectedISO) {
     `;
     breakdownEl.appendChild(line);
   });
+  if (preRecordsRows.length) {
+    const line = document.createElement('div');
+    line.className = 'bd-line muted pre-records-line';
+    line.innerHTML = `<span class="bd-house">לפני תחילת הרישום `
+      + `(${escapeHtml(formatDate(RECORDS_COMPLETE_FROM))})</span>`
+      + `<span class="bd-vals"><span class="rev-count">${preRecordsRows.length} שורות — לא נספרות ביתרה</span></span>`;
+    breakdownEl.appendChild(line);
+  }
   if (!breakdownEl.children.length) {
     breakdownEl.innerHTML = `<div class="bd-line muted">אין רישומי גבייה החודש</div>`;
   }
@@ -7604,6 +8300,10 @@ function buildMonthlyRevenue(opts) {
   const credits   = Array.isArray(opts.credits) ? opts.credits : [];
   const overrides = Array.isArray(opts.overrides) ? opts.overrides : [];
   const todayISOv = isoDate(opts.today) || isoFromLocalDate(new Date());
+  /* The records cutoff in force for this build. Defaults to the app-wide
+   * constant; see isPreRecordsCycle() for why it is overridable at all. */
+  const recordsFrom = isoDate(opts.recordsFrom) || RECORDS_COMPLETE_FROM;
+  const preRecords = dueISO => isPreRecordsCycle(dueISO, recordsFrom);
 
   const patientById = {};
   patients.forEach(p => { if (p) patientById[patientKey(p)] = p; });
@@ -7611,6 +8311,11 @@ function buildMonthlyRevenue(opts) {
   const receivedRows = [];
   const expectedRows = [];
   const creditRows   = [];
+  /* Cycles before RECORDS_COMPLETE_FROM. Their own array from the start, so
+   * there is no moment at which they are inside EXPECTED and have to be
+   * subtracted back out — a bucket you have to remember to exclude is a bucket
+   * that will eventually be included by accident. */
+  const preRecordsRows = [];
 
   /* --- RECEIVED, and the billed half of EXPECTED ------------------------
    * One pass over the payment rows. applyBillingOverride() supplies the
@@ -7695,7 +8400,16 @@ function buildMonthlyRevenue(opts) {
   });
 
   patients.forEach(patient => {
-    if (!isBillablePatient(patient)) return;
+    /* THE STAY WINDOW, not the current status. This pass used to start with
+     * isBillablePatient(), i.e. "is this patient active TODAY" — which silently
+     * erased a discharged patient's whole billing history: somebody discharged
+     * in August was in the house all July, and their July cycles are July's
+     * revenue no matter what their row says in September. projectedCycleDueDates
+     * already clips each cycle at entry and exit, and revenueAllocate()
+     * truncates a straddling cycle at the exit day, so the stay is respected
+     * day by day; what was missing was letting the patient into the pass at
+     * all. */
+    if (!patientStayOverlapsRange(patient, bounds.startISO, bounds.endISO)) return;
     const key = patientKey(patient);
     // The contracted rate, override-aware: the same effective amount the
     // גבייה tab would bill for that month, not the raw p.pay.
@@ -7715,12 +8429,18 @@ function buildMonthlyRevenue(opts) {
       const a = revenueAllocate(contracted, win, bounds, exitDay);
       if (!a.daysInMonth) return;
       const house = houseById(patient.houseId);
-      expectedRows.push({
+      /* A cycle before the records cutoff is not a forecast and not a debt —
+       * it is a gap in the RECORDS, not in the money. It goes to its own
+       * bucket, which no total sums, rather than being dropped: the cycle
+       * happened, and a screen that quietly omits it is making the same
+       * unstated assumption in the opposite direction. */
+      (preRecords(dueISO) ? preRecordsRows : expectedRows).push({
         /* A cycle still ahead of us is a forecast; one whose date has gone by
          * with no row is a recording gap wearing a forecast's clothes. Same
          * money, very different confidence — so they are named apart and the
          * UI flags the second in amber. */
-        kind: dueISO > todayISOv ? 'projected' : 'unbilled_past',
+        kind: preRecords(dueISO) ? 'pre_records'
+            : (dueISO > todayISOv ? 'projected' : 'unbilled_past'),
         paymentId: '', patientId: key, patientName: String(patient.name || ''),
         house: house ? house.name : REVENUE_NO_HOUSE,
         houseId: String(patient.houseId || ''),
@@ -7776,9 +8496,11 @@ function buildMonthlyRevenue(opts) {
   const received = revenueBucket(receivedRows);
   const expected = revenueBucket(expectedRows);
   const creditsB = revenueBucket(creditRows);
+  const preRecordsB = revenueBucket(preRecordsRows);
   const byKind = k => revenueBucket(expectedRows.filter(r => r.kind === k));
 
-  revenueSortRows(receivedRows); revenueSortRows(expectedRows); revenueSortRows(creditRows);
+  revenueSortRows(receivedRows); revenueSortRows(expectedRows);
+  revenueSortRows(creditRows); revenueSortRows(preRecordsRows);
 
   return {
     month: bounds.key,
@@ -7800,6 +8522,14 @@ function buildMonthlyRevenue(opts) {
     }),
     credits: Object.assign(creditsB, { rows: creditRows }),
 
+    /* Cycles that fall before RECORDS_COMPLETE_FROM. Reported so the money is
+     * not forgotten, and summed into NOTHING: not EXPECTED, not NET, not the
+     * per-house breakdown. The bucket is the whole point — a figure you can
+     * see and choose to act on, rather than debt the screen asserts. */
+    preRecords: Object.assign(preRecordsB, {
+      rows: preRecordsRows, from: recordsFrom,
+    }),
+
     /* NET is the ONLY place received and expected meet, and it is a
      * projection by construction — never quote it as cash. */
     net: {
@@ -7811,19 +8541,14 @@ function buildMonthlyRevenue(opts) {
   };
 }
 
-/* A payment whose patient is gone still counts — money is money. Mirrors
- * findPatientForPayment() but over an explicit list, so buildMonthlyRevenue
- * stays pure. */
+/* A payment whose patient is gone still counts — money is money. The SAME
+ * four-tier rule as findPatientForPayment(), over an explicit list so
+ * buildMonthlyRevenue stays pure. One rule, two entry points: a payment that
+ * the גבייה tab considers attached and the revenue screen does not is exactly
+ * the class of disagreement this change exists to end. */
 function findPatientForPaymentIn(patients, pay) {
-  if (!pay) return null;
-  if (pay.patientId) {
-    const direct = patients.find(p => p && patientKey(p) === pay.patientId);
-    if (direct) return direct;
-  }
-  if (pay.patientName && pay.houseId) {
-    return patients.find(p => p && p.houseId === pay.houseId && p.name === pay.patientName) || null;
-  }
-  return null;
+  const m = matchPatientForPayment(pay, patients);
+  return m ? m.patient : null;
 }
 
 /* Sum a row list into { inclVat, exVat, count }. exVat is the SUM OF THE ROWS'
@@ -7959,6 +8684,22 @@ function renderRevenueExpectedComposition(model) {
     `;
     el.appendChild(line);
   });
+  /* Named on the same panel, but outside the list above and outside every
+   * figure it adds up to: this is what the screen is NOT claiming. Stating it
+   * beside צפוי is the point — a bucket nobody ever sees is indistinguishable
+   * from data that was quietly dropped. */
+  if (model.preRecords && model.preRecords.count) {
+    const line = document.createElement('div');
+    line.className = 'bd-line pre-records-line';
+    line.innerHTML = `
+      <span class="bd-house">לפני תחילת הרישום <span class="rev-count">(לא נכלל בצפוי ובנטו)</span></span>
+      <span class="bd-vals">
+        <span class="bd-muted">${revMoney(model.preRecords.exVat)}</span>
+        <span class="rev-count">${model.preRecords.count} שורות</span>
+      </span>
+    `;
+    el.appendChild(line);
+  }
   if (!el.children.length) {
     el.innerHTML = `<div class="bd-line muted">אין הכנסה צפויה בחודש זה</div>`;
   }
@@ -7994,6 +8735,7 @@ const REVENUE_KIND_LABELS = {
   billed_unpaid: 'חויב וטרם נגבה',
   projected: 'טרם חויב — מחזור עתידי',
   unbilled_past: 'מחזור שחלף ללא רישום תשלום',
+  pre_records: 'לפני תחילת הרישום',
 };
 
 /* Drill-down: every payment, and WHICH PORTION of it landed in this month.
@@ -8010,6 +8752,14 @@ function renderRevenueDetail(model) {
     { key: 'received', title: 'נגבה בפועל', rows: model.received.rows.filter(match), sign: '' },
     { key: 'expected', title: 'צפוי',        rows: model.expected.rows.filter(match), sign: '' },
     { key: 'credits',  title: 'זיכויים',     rows: model.credits.rows.filter(match),  sign: '−' },
+    /* Listed last, and its heading says the rule rather than a total, because
+     * the figure beside a group heading everywhere else on this screen IS part
+     * of a total and this one is not. */
+    {
+      key: 'preRecords',
+      title: `לפני תחילת הרישום — לא נספר (עד ${formatDate(RECORDS_COMPLETE_FROM)})`,
+      rows: (model.preRecords ? model.preRecords.rows : []).filter(match), sign: '',
+    },
   ];
   let any = false;
   groups.forEach(g => {
@@ -8023,7 +8773,8 @@ function renderRevenueDetail(model) {
     g.rows.forEach(r => list.appendChild(buildRevenueDetailRow(r, g.key, g.sign)));
   });
   if (!any) {
-    const msg = (model.received.count || model.expected.count || model.credits.count)
+    const msg = (model.received.count || model.expected.count || model.credits.count
+                 || (model.preRecords && model.preRecords.count))
       ? 'לא נמצאו תוצאות'
       : 'אין תנועות בחודש זה';
     list.innerHTML = `<div class="card billing-empty">${msg}</div>`;
@@ -8033,14 +8784,16 @@ function renderRevenueDetail(model) {
 function buildRevenueDetailRow(row, groupKey, sign) {
   const el = document.createElement('div');
   el.className = 'billing-row rev-detail-row'
-    + (row.kind === 'unbilled_past' ? ' rev-warn' : '');
+    + (row.kind === 'unbilled_past' ? ' rev-warn' : '')
+    + (row.kind === 'pre_records' ? ' rev-pre-records' : '');
 
-  const windowText = coverageWindowText(row.coverageStart, row.coverageEnd);
+  // Display only — row.coverageStart/End stay ISO for the allocation maths.
+  const windowHtml = dateRangeHeHtml(row.coverageStart, row.coverageEnd);
   // The split, shown as the fraction it is: 12 מתוך 31 ימים.
   const daysText = `${row.daysInMonth} מתוך ${row.windowDays} ימים`;
 
   let chips = '';
-  if (groupKey === 'expected' && REVENUE_KIND_LABELS[row.kind]) {
+  if ((groupKey === 'expected' || groupKey === 'preRecords') && REVENUE_KIND_LABELS[row.kind]) {
     chips += `<span class="rev-chip">${escapeHtml(REVENUE_KIND_LABELS[row.kind])}</span>`;
   }
   if (groupKey === 'credits') {
@@ -8065,7 +8818,7 @@ function buildRevenueDetailRow(row, groupKey, sign) {
   el.innerHTML = `
     <div><span class="p-label">מטופל</span><span class="p-name">${escapeHtml(row.patientName || '—')}</span>${chips}</div>
     <div><span class="p-label">בית</span><span class="p-val">${escapeHtml(row.house || '')}</span></div>
-    <div><span class="p-label">חלון כיסוי</span><span class="p-val" dir="ltr">${escapeHtml(windowText)}</span></div>
+    <div><span class="p-label">חלון כיסוי</span><span class="p-val">${windowHtml}</span></div>
     <div><span class="p-label">בחודש זה</span><span class="p-val">${escapeHtml(daysText)}</span></div>
     <div><span class="p-label">סכום מלא</span><span class="p-val">${revMoney(revenueExVat(row.fullAmount))}</span></div>
     <div><span class="p-label">שיוך לחודש</span><span class="p-val rev-portion">${sign}${revMoney(row.amountInMonthExVat)}</span></div>
@@ -8088,6 +8841,7 @@ async function savePayment(payment) {
   const covErr = coveragePeriodError(payment && payment.coverageStart, payment && payment.coverageEnd);
   if (covErr) { showError(covErr); return; }
   payment = withDefaultCoverage(payment);
+  payment = withPatientUid(payment, state.patients);
   const idx = state.payments.findIndex(x => x.id === payment.id);
   const prev = idx >= 0 ? { ...state.payments[idx] } : null;
   if (idx >= 0) state.payments[idx] = payment;
@@ -8098,7 +8852,17 @@ async function savePayment(payment) {
   renderBillingMonthlySummary(state.billingDate || todayISO());
 
   try {
-    await apiPost({ action: 'savePayment', payment });
+    const res = await apiPost({ action: 'savePayment', payment });
+    /* ADOPT THE SERVER'S COPY when it echoes one. The link columns
+     * (linkedBy / linkedAt) are stamped SERVER-SIDE from the signed session
+     * cookie and the server's clock — the client cannot know them, and must
+     * not be trusted with them. Reading them back here is what puts the real
+     * "who and when" on screen without a reload. Everything else in the echo
+     * is what we just sent, so adopting it changes nothing. */
+    if (res && res.payment && res.payment.id === payment.id) {
+      const at = state.payments.findIndex(x => x.id === payment.id);
+      if (at >= 0) state.payments[at] = normalizePayment(res.payment);
+    }
   } catch (e) {
     // Roll back local change so the UI doesn't lie about persistence.
     if (prev) state.payments[idx] = prev;
@@ -8106,6 +8870,36 @@ async function savePayment(payment) {
     renderBilling();
     showError('שמירת גבייה נכשלה — ' + e.message);
   }
+}
+
+/* Record the link for a row the SERVER's exact match cannot resolve.
+ *
+ * The division of labour with PR #139: the server resolves `patientUid` from
+ * an EXACT triple match, on every write and by a locked backfill over the
+ * whole sheet, and leaves the cell blank rather than guess. That covers every
+ * row whose triple is intact — which is most of them, and none of the six the
+ * reconnect screen exists for.
+ *
+ * What this adds is the NORMALIZED triple: same house, same entry date, and a
+ * name that differs only by a stray space, an invisible character or a case
+ * fold. `"שחר חיון "` is that row. It is a match a person would make without
+ * hesitating, and it is one the exact matcher will never make, so it is
+ * written down as a decision (linkPatientUid) rather than smuggled in as if
+ * the triple had been fine all along.
+ *
+ * DELIBERATELY NOT the house+name tier: it has no date in it, and two
+ * admissions of the same person are exactly what it cannot tell apart. Those
+ * rows go to the reconnect screen, where a person decides.
+ *
+ * Returns a COPY when it links, the input untouched otherwise. Never
+ * overwrites a link already on the row — that was somebody's decision. */
+function withPatientUid(payment, patients) {
+  if (!payment || paymentPatientUid(payment)) return payment;
+  const m = matchPatientForPayment(payment, Array.isArray(patients) ? patients : []);
+  if (!m || m.via !== 'triple_loose') return payment;
+  const uid = patientUid(m.patient);
+  if (!uid) return payment;
+  return Object.assign({}, payment, { linkPatientUid: uid, linkStatus: 'linked' });
 }
 
 /* Record what a payment ACTUALLY covered.
@@ -8459,7 +9253,7 @@ function renderGrowthGraph() {
 
   const weeklySeries = weekly.map(w => ({
     value: w.count,
-    label: formatDateDDMMYYYY(w.weekStart),
+    label: formatDateHe(w.weekStart),
   }));
   const monthlySeries = monthly.map(m => ({
     value: m.revenue,
@@ -8521,22 +9315,74 @@ function todayISO() {
   const day = String(d.getDate()).padStart(2, '0');
   return `${d.getFullYear()}-${m}-${day}`;
 }
+/* ===== THE date display formatter =====================================
+ *
+ * formatDateHe(value) → 'DD/MM/YYYY', the Israeli reading order. This is the
+ * ONE place a calendar date becomes text for a human, so the whole app reads
+ * the same way and a future change happens once.
+ *
+ * Accepts a bare 'YYYY-MM-DD', a full ISO timestamp, or a Date object.
+ *   - '' for null / undefined / '' — a blank date renders blank, and the
+ *     caller decides whether that becomes a '—' placeholder;
+ *   - the ORIGINAL value back, unchanged, when it cannot be parsed. Never
+ *     'NaN', never 'Invalid Date': showing the raw cell is how somebody
+ *     notices a corrupted value instead of a plausible-looking wrong date.
+ *
+ * NO TIMEZONE SHIFT. A bare 'YYYY-MM-DD' is split on its own digits and never
+ * handed to `new Date(...)`, which parses that form as UTC MIDNIGHT — and for
+ * Israel (UTC+2/+3) renders as the PREVIOUS day. That is the exact −1-day
+ * drift this repo has fixed twice already (exitDate, coverage period), and it
+ * must not be reintroduced at the display layer. Anything that is not a bare
+ * date goes through isoDate(), which reads a timestamp's LOCAL calendar day —
+ * the same rule every other reader in this file follows.
+ *
+ * DISPLAY ONLY. Never call this for a value that is stored in state, posted to
+ * /api/sheets, written to Sheets, or put in an <input type="date">: those stay
+ * ISO, and isoDate()/isoTime() remain the canonical converters for them. */
+function formatDateHe(value) {
+  if (value === null || value === undefined || value === '') return '';
+  if (typeof value === 'string') {
+    const bare = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (bare) return `${bare[3]}/${bare[2]}/${bare[1]}`;
+  }
+  const iso = isoDate(value);
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  /* Unparseable. A STRING comes back exactly as given, so a corrupted cell is
+   * visible rather than disguised. Anything else (an invalid Date, a number, an
+   * object) has no honest text form — String() would print 'Invalid Date' or
+   * '[object Object]', which is the very output this must never produce — so it
+   * renders BLANK and the caller's own '—' placeholder takes over. */
+  return typeof value === 'string' ? value : '';
+}
+
+/* A date RANGE for display — 'start – end' as ESCAPED HTML.
+ *
+ * The start is written FIRST, so in the app's RTL flow it reads on the RIGHT:
+ *
+ *     ‏<bdi>22/09/2026</bdi> – <bdi>21/10/2026</bdi>
+ *      ←—————— reads this way ——————
+ *
+ * Each date is wrapped in <bdi> so the bidi algorithm treats its digits and
+ * slashes as one isolated run and can never reorder them against the Hebrew
+ * around it — which is what a bare `dir="ltr"` span used to paper over at the
+ * cost of flipping the whole range to start-on-the-left.
+ *
+ * Returns HTML that is ALREADY escaped — the caller must not escape it again.
+ * One blank side renders the other date alone; both blank renders ''. */
+function dateRangeHeHtml(startValue, endValue) {
+  const a = formatDateHe(startValue);
+  const b = formatDateHe(endValue);
+  if (!a && !b) return '';
+  if (!a || !b) return `<bdi>${escapeHtml(a || b)}</bdi>`;
+  return `<bdi>${escapeHtml(a)}</bdi> – <bdi>${escapeHtml(b)}</bdi>`;
+}
+
+/* formatDateHe with a '—' placeholder for a blank date. Kept as its own name
+ * because ~20 call sites read better with the placeholder built in. */
 function formatDate(s) {
   if (!s) return '—';
-  const d = new Date(s);
-  if (isNaN(d)) return s;
-  return d.toLocaleDateString('he-IL');
-}
-/* Strict DD/MM/YYYY (zero-padded, slash-separated) — used for the lead
- * "נוצר" display. he-IL's default locale format uses dots and no zero
- * padding (9.5.2026), which the spec rules out. */
-function formatDateDDMMYYYY(s) {
-  if (!s) return '';
-  const iso = isoDate(s);
-  if (!iso) return '';
-  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (!m) return '';
-  return `${m[3]}/${m[2]}/${m[1]}`;
+  return formatDateHe(s) || '—';
 }
 
 /* ====================================================

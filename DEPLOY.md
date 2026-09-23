@@ -125,6 +125,57 @@ One thing to **not** do: never insert or reorder a Payments column.
 `readSheet_` maps by position, so a shift re-reads every historical row
 against the wrong field. New columns go at the end.
 
+## Accounting source feed — one Script Property to set
+
+The Dashboard Apps Script gained two READ-ONLY actions for the external
+accounting-control app: `accountingPayments` and `accountingCredits`. Full
+contract, example request/response, errors and retry policy:
+`CHANGELOG-accounting-source-feed.md`.
+
+**One manual step after deploy.** In the Apps Script editor →
+**Project Settings → Script Properties**, add:
+
+| Property | Value |
+|---|---|
+| `ACCOUNTING_SECRET` | a freshly generated random string |
+
+It is a **separate** secret from `ADMITTED_ROSTER_SECRET` and
+`MEETING_REPORT_SECRET`, so it unlocks nothing else and can be rotated on its
+own. Until it is set the endpoint refuses every request (**fail-closed**) —
+which is the safe default, not a bug.
+
+Check the feed:
+
+```
+curl -sS -L -X POST "<the /exec URL>" \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"accountingPayments","secret":"<ACCOUNTING_SECRET>","limit":5}'
+```
+
+`-L` matters: `/exec` answers with a redirect. Expect
+`{ "ok": true, "sourceApp": "ezone-dashboard", "schemaVersion": 1, ... }`.
+Without the secret you should get `{"ok":false,"error":"unauthorized"}` — verify
+that too. Offline equivalent, no deployment needed: `npm run smoke:accounting`.
+
+### Payments / Credits sheets — the appended identity columns
+
+`Payments` gained `paymentUid`, `patientUid`, `payerUid`, `chargedAt`,
+`chargedBy`, `sourceUpdatedAt`, `sourceVersion` (positions 13–19); `Credits`
+gained `creditUid` (position 25). A new `PaymentsTombstones` sheet is created
+lazily, only if a payment row is ever deleted.
+
+**No manual step is needed.** `getOrCreateSheet_` backfills the headers and
+force-formats the text columns on the first read after deploy. The first
+dashboard load (or the first authenticated feed call) mints every uid under the
+script lock, **up to 1000 cells per call** so a big Payments sheet cannot time
+the read out; it converges over the next few reads and then performs zero
+writes forever. `accountingPayments` reports `identityPending` — tell the
+accounting app to wait for it to reach 0 before its first full sync. Blank cells are legal and
+are what every historical row carries — nothing is rewritten, and **no charge
+stamp is ever invented for a historical row**.
+
+Same rule as always: never insert or reorder a Payments or Credits column.
+
 ## Security
 
 - Credentials live **only** in GitHub Secrets — never committed, never printed;

@@ -45,7 +45,7 @@ function loadApp() {
   const epilogue = `
     globalThis.__test = {
       coverageMonthSplit, coverageMonthKeys, coverageSplitHtml,
-      coverageDateText, coverageWindowText,
+      dateRangeHeHtml, formatDateHe,
       paymentCoverage, withDefaultCoverage, coverageDiffersFromDefault,
       revenueAllocate, revenueMonthBounds, revenueMonthLabel, revenueExVat,
       buildMonthlyRevenue, patientKey, monthKey, isoDate, isoFromLocalDate,
@@ -335,8 +335,7 @@ test('E: coverageMonthSplit calls revenueAllocate and re-derives nothing', () =>
   // No hand-rolled day arithmetic: the split must not know how to divide.
   assert.doesNotMatch(src, /diffWholeDays|86400000|getDate\(\)/,
     'no day arithmetic of its own — that lives in revenueAllocate/revenueOverlapDays');
-  for (const name of ['coverageMonthSplit', 'coverageMonthKeys', 'coverageSplitHtml',
-                      'coverageDateText', 'coverageWindowText']) {
+  for (const name of ['coverageMonthSplit', 'coverageMonthKeys', 'coverageSplitHtml']) {
     const hits = APP.match(new RegExp('^function\\s+' + name + '\\s*\\(', 'gm')) || [];
     assert.equal(hits.length, 1, `${name} must be declared exactly once, found ${hits.length}`);
   }
@@ -344,40 +343,40 @@ test('E: coverageMonthSplit calls revenueAllocate and re-derives nothing', () =>
 
 /* ================= F. THE DATE FORMAT ================= */
 
-test('F: a coverage date renders like every other date the app shows a person', () => {
-  /* he-IL short form — 15.9.2026 — the same string תאריך כניסה prints on
-   * תפוסה, because it is the same formatDate() call. */
-  assert.equal(app.coverageDateText('2026-09-06'), '6.9.2026');
-  assert.equal(app.coverageDateText('2026-10-05'), '5.10.2026');
-  assert.equal(app.coverageDateText('2026-09-15'), app.formatDate('2026-09-15'));
-  assert.equal(app.coverageWindowText('2026-09-06', '2026-10-05'), '6.9.2026 → 5.10.2026');
-  // Local Dates (what the גבייה row has in hand) format identically to the
-  // ISO strings (what the drill-down has) — the two call sites cannot drift.
-  assert.equal(
-    app.coverageWindowText(app.localDateFromISO('2026-09-06'), app.localDateFromISO('2026-10-05')),
-    app.coverageWindowText('2026-09-06', '2026-10-05'));
-  // Nothing to show stays an em-dash, never 'Invalid Date' or a bare ''.
-  assert.equal(app.coverageDateText(''), '—');
-  assert.equal(app.coverageDateText(null), '—');
-  assert.equal(app.coverageDateText('nonsense'), '—');
+test('F: a coverage window renders like every other date the app shows a person', () => {
+  /* DD/MM/YYYY — the app-wide Israeli form, the same string תאריך כניסה
+   * prints on תפוסה, because it is the same formatDateHe() call. */
+  assert.equal(app.formatDateHe('2026-09-06'), '06/09/2026');
+  assert.equal(app.formatDateHe('2026-10-05'), '05/10/2026');
+  const html = app.dateRangeHeHtml('2026-09-06', '2026-10-05');
+  /* The START is written first, so in the RTL row it lands on the right; each
+   * date sits in its own <bdi> so the bidi algorithm cannot reorder digits. */
+  const bdis = html.match(/<bdi>([^<]*)<\/bdi>/g) || [];
+  assert.equal(bdis.length, 2);
+  assert.match(bdis[0], />06\/09\/2026</);
+  assert.match(bdis[1], />05\/10\/2026</);
+  // No ISO pair reaches a reader.
+  assert.doesNotMatch(html, /\d{4}-\d{2}-\d{2}/);
 });
 
-test('F: it REUSES formatDate rather than defining a second date format', () => {
-  const src = fnSource(APP, 'coverageDateText');
-  assert.match(src, /formatDate\(/, 'goes through the app-wide formatter');
-  assert.doesNotMatch(src, /toLocaleDateString|padStart|getFullYear/,
-    'no second formatting implementation');
-  const hits = APP.match(/^function\s+formatDate\s*\(/gm) || [];
-  assert.equal(hits.length, 1, 'formatDate itself must stay a single definition');
+test('F: there is ONE coverage-date formatter, not a second one for this row', () => {
+  /* This PR deliberately adds no coverage-date formatter of its own: the row
+   * and the drill-down both call dateRangeHeHtml, so they cannot drift. */
+  assert.doesNotMatch(APP, /function\s+coverageDateText\s*\(/);
+  assert.doesNotMatch(APP, /function\s+coverageWindowText\s*\(/);
+  for (const name of ['dateRangeHeHtml', 'formatDateHe', 'formatDate']) {
+    const hits = APP.match(new RegExp('^function\\s+' + name + '\\s*\\(', 'gm')) || [];
+    assert.equal(hits.length, 1, `${name} must stay a single definition`);
+  }
 });
 
-test('F: both display sites go through coverageWindowText', () => {
+test('F: both display sites go through dateRangeHeHtml', () => {
   // The גבייה row…
   assert.match(fnSource(APP, 'buildBillingRow'),
-    /coverageWindowText\(cov\.start, cov\.end\)/);
+    /dateRangeHeHtml\(covStart, covEnd\)/);
   // …and the הכנסות חודשיות drill-down.
   assert.match(fnSource(APP, 'buildRevenueDetailRow'),
-    /coverageWindowText\(row\.coverageStart, row\.coverageEnd\)/);
+    /dateRangeHeHtml\(row\.coverageStart, row\.coverageEnd\)/);
   // Neither prints a raw ISO pair any more.
   assert.doesNotMatch(fnSource(APP, 'buildRevenueDetailRow'),
     /\$\{row\.coverageStart\} → \$\{row\.coverageEnd\}/);
@@ -416,9 +415,10 @@ test('G: the Apps Script side is unchanged — no formatting reached the backend
    * coverageDateISO_ is the normalizer #135 built and this PR does not touch. */
   assert.match(GS, /function coverageDateISO_/);
   assert.doesNotMatch(GS, /toLocaleDateString/);
-  assert.doesNotMatch(GS, /coverageWindowText|coverageMonthSplit|coverageDateText/);
-  // The two columns are still the text-forced pair.
-  assert.match(GS, /const PAYMENT_TEXT_COLUMNS = \['coverageStart', 'coverageEnd'\]/);
+  assert.doesNotMatch(GS, /coverageMonthSplit|coverageSplitHtml|dateRangeHeHtml/);
+  /* The two coverage columns are still text-forced. The list itself has since
+   * grown other columns, so pin the pair rather than the whole literal. */
+  assert.match(GS, /const PAYMENT_TEXT_COLUMNS = \[\s*'coverageStart', 'coverageEnd',/);
 });
 
 test("G: the credits audit trail keeps its ISO dates — it is PERSISTED, not display", () => {
@@ -429,7 +429,7 @@ test("G: the credits audit trail keeps its ISO dates — it is PERSISTED, not di
   const src = fnSource(APP, 'creditBasisText');
   assert.match(src, /\$\{basis\.coverageStart\} → \$\{basis\.coverageEnd\}/,
     'the persisted audit string still records the raw ISO window');
-  assert.doesNotMatch(src, /coverageWindowText|coverageDateText/);
+  assert.doesNotMatch(src, /dateRangeHeHtml|formatDateHe/);
 });
 
 /* ================= H. THE ROW ================= */

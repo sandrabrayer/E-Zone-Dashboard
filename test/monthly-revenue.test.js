@@ -131,11 +131,20 @@ function credit(over) {
     calculatedAmount: 1000, amount: 1000, status: 'pending', basis: {},
   }, over || {});
 }
-/** Build a month with everything defaulted, so each test states only its point. */
+/** Build a month with everything defaulted, so each test states only its point.
+ *
+ * `recordsFrom` is pinned well before these fixtures on purpose. This suite is
+ * about the ALLOCATION — which day belongs to which month — and its January
+ * 2026 fixtures predate the records cutoff this app now ships
+ * (RECORDS_COMPLETE_FROM = '2026-07-01'), which would route every projected
+ * cycle here into the לפני תחילת הרישום bucket and test nothing about the
+ * arithmetic. The cutoff has its own suite, test/stay-window-records-cutoff.test.js,
+ * which exercises the real default AND pins that nothing in the app passes an
+ * override — so production can only ever read the constant. */
 function build(over) {
   return app.buildMonthlyRevenue(Object.assign({
     month: '2026-01', patients: [], payments: [], credits: [], overrides: [],
-    today: '2026-01-15',
+    today: '2026-01-15', recordsFrom: '2025-01-01',
   }, over || {}));
 }
 
@@ -614,10 +623,10 @@ test('H: every shared coverage-window primitive is declared EXACTLY ONCE in app.
     'recordedCoverage', 'inferredCoverage', 'coveragePeriodError',
     'coverageDateISO', 'coverageDiffersFromDefault', 'withDefaultCoverage',
     /* The DISPLAY of a coverage period. Two screens print the window — the
-     * גבייה row and the הכנסות חודשיות drill-down — and a second copy of
-     * either of these is a second date format, which is how the ISO/human
-     * split this PR closes would quietly reopen on one screen only. */
-    'coverageDateText', 'coverageWindowText', 'formatDate',
+     * גבייה row and the הכנסות חודשיות drill-down — and both go through
+     * the one range helper. A second copy of it is a second date format,
+     * which is how the ISO/human split would quietly reopen on one screen. */
+    'dateRangeHeHtml', 'formatDateHe', 'formatDate',
   ];
   for (const name of shared) {
     const hits = APP.match(new RegExp('^function\\s+' + name + '\\s*\\(', 'gm')) || [];
@@ -765,7 +774,7 @@ test('I: the daily גבייה screen is added ALONGSIDE, not modified', () => {
 });
 
 test('I: the new screen is registered in the router and has a matching section', () => {
-  assert.match(APP, /'billing', 'revenue', 'breakeven'/, 'SCREENS carries it, after billing');
+  assert.match(APP, /'billing', 'revenue', 'reconnect'/, 'SCREENS carries it, after billing');
   assert.match(APP, /renderMonthlyRevenue\(\);/);
   // The tab needs no bespoke click handler: initTabs wires every .tabs .tab
   // through one loop, and the router toggles screen-<id> for each SCREENS
@@ -822,9 +831,17 @@ test('J: the allocation is PURE — no DOM, no state, no network', () => {
 
 test('J: every interpolated value is escaped — no sheet data reaches innerHTML raw', () => {
   const row = fnSource(APP, 'buildRevenueDetailRow');
-  for (const field of ["row.patientName || '—'", "row.house || ''", 'windowText', 'daysText', 'typeLabel']) {
+  for (const field of ["row.patientName || '—'", "row.house || ''", 'daysText', 'typeLabel']) {
     assert.ok(row.includes(`escapeHtml(${field})`), 'unescaped interpolation of ' + field);
   }
+  /* חלון כיסוי is now built by dateRangeHeHtml (DD/MM/YYYY, each date in its
+   * own <bdi>), which escapes both dates internally and returns ready-made
+   * HTML — so it is deliberately not re-escaped here. Its escaping is asserted
+   * in test/date-format-he.test.js, including an <img onerror> payload. */
+  assert.ok(row.includes('const windowHtml = dateRangeHeHtml(row.coverageStart, row.coverageEnd);'),
+    'the window must come from the escaping range helper');
+  assert.ok(!/\$\{row\.coverageStart\}|\$\{row\.coverageEnd\}/.test(row),
+    'no raw coverage value may reach innerHTML');
   for (const name of ['renderRevenueExpectedComposition', 'renderRevenueByHouse']) {
     const body = fnSource(APP, name);
     const interps = body.match(/\$\{([^}]+)\}/g) || [];

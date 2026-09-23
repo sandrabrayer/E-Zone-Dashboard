@@ -150,12 +150,12 @@ test('the monthly revenue screen renders the four figures in Chromium', { skip }
     assert.match(detail, /12 מתוך 31 ימים/, 'the January cycle contributes 12 of its 31 days');
     assert.match(detail, /19 מתוך 31 ימים/, 'the December cycle contributes 19');
     assert.match(detail, /נגבה בפועל/, 'the group heading is rendered');
-    /* Both coverage windows are printed, so the reader can check the maths —
-       in the app-wide human date format (formatDate), the same one the גבייה
-       row uses for the same window. Only the DISPLAY changed: the underlying
-       row.coverageStart / coverageEnd are still bare ISO. */
-    assert.match(detail, /20\.1\.2026 → 19\.2\.2026/);
-    assert.match(detail, /20\.12\.2025 → 19\.1\.2026/);
+    // Both coverage windows are printed, so the reader can check the maths.
+    /* חלון כיסוי is rendered DD/MM/YYYY with the START first, so it reads on
+     * the RIGHT in the RTL drill-down (formatDateHe / dateRangeHeHtml). */
+    assert.match(detail, /20\/01\/2026 – 19\/02\/2026/);
+    assert.match(detail, /20\/12\/2025 – 19\/01\/2026/);
+    assert.ok(!/\d{4}-\d{2}-\d{2}/.test(detail), 'no ISO date reaches the screen: ' + detail);
 
     // The house breakdown resolves the id to its display name.
     assert.match(await text('#rev-by-house'), /קיסריה עפרוני/);
@@ -167,7 +167,14 @@ test('the monthly revenue screen renders the four figures in Chromium', { skip }
   }
 });
 
-test('February shows cash and forecast as two distinct figures', { skip }, async () => {
+/* A month that carries cash from the previous cycle AND a forecast for its own.
+ *
+ * Dated AFTER the records cutoff (RECORDS_COMPLETE_FROM = '2026-07-01') on
+ * purpose: a forecast is exactly what the cutoff suppresses, so a fixture in
+ * January 2026 would be testing the cutoff rather than the two-figures rule.
+ * August 2026 is the same shape the January fixture used to be — a paid cycle
+ * spilling in from the month before, and an unrecorded cycle of its own. */
+test('a month shows cash and forecast as two distinct figures', { skip }, async () => {
   const { server, port } = await serve();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
@@ -175,13 +182,19 @@ test('February shows cash and forecast as two distinct figures', { skip }, async
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e)));
     await openSeeded(page, port);
-    await page.evaluate(`state.revenueMonth = '2026-02'; renderMonthlyRevenue();`);
+    await page.evaluate(`
+      const K = patientKey(state.patients[0]);
+      state.payments = [{ id: 'c', patientId: K, patientName: 'דנה כהן', houseId: 'arfoni',
+        dueDate: '2026-07-20', amount: 3000, amountPaid: 3000, status: 'paid', balance: 0 }];
+      state.revenueMonth = '2026-08';
+      renderMonthlyRevenue();
+    `);
 
     const num = async (sel) => Number((await page.$eval(sel, (el) => el.textContent)).replace(/[^\d]/g, ''));
     const received = await num('#rev-received');
     const expected = await num('#rev-expected');
-    assert.ok(received > 0, 'February carries cash from the January cycle');
-    assert.ok(expected > 0, 'and a forecast for the February one');
+    assert.ok(received > 0, 'August carries cash from the July cycle');
+    assert.ok(expected > 0, 'and a forecast for the August one');
     assert.notStrictEqual(received, expected, 'they are different figures');
     // They are never printed as one number: NET is the only place they meet,
     // and it is labelled a projection right under the card.

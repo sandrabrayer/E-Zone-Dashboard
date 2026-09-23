@@ -67,6 +67,7 @@
         <button class="tab" data-screen="discharged-patients">מטופלים משוחררים</button>
         <button class="tab" data-screen="billing">גבייה</button>
         <button class="tab" data-screen="revenue">הכנסות חודשיות</button>
+        <button class="tab" data-screen="reconnect">שיוך תשלומים<span id="reconnect-badge" class="tab-badge hidden">0</span></button>
         <button class="tab" data-screen="breakeven">נקודת איזון</button>
         <button class="tab" data-screen="growth">גרף צמיחה</button>
         <button class="tab" data-screen="retention">שימור לידים</button>
@@ -269,7 +270,7 @@
         <div class="card stat rev-stat-expected">
           <div class="stat-label">צפוי</div>
           <div class="stat-value" id="rev-expected">₪ 0</div>
-          <div class="stat-sub">מטופלים פעילים × תשלום חודשי, טרם נגבה</div>
+          <div class="stat-sub">מחזורים בתוך תקופת השהות × תשלום חודשי, טרם נגבה</div>
         </div>
         <div class="card stat rev-stat-credits">
           <div class="stat-label">זיכויים</div>
@@ -305,6 +306,40 @@
       <h3>פירוט תשלומים <span class="rev-sub">החלק מכל תשלום שנפל בחודש זה</span></h3>
       <p class="billing-date-label">לפי חלון הכיסוי של כל תשלום — לא לפי חודש התאריך לתשלום</p>
       <div id="rev-detail" class="billing-list"></div>
+    </section>
+
+    <!-- ====== שיוך תשלומים — the reconnect tool ======
+         Every payment row that matches no current patient, with the candidates
+         it might belong to. Nothing here reconnects automatically: the engine
+         ranks, this screen presents, a person decides. -->
+    <section id="screen-reconnect" class="screen hidden">
+      <div class="screen-head">
+        <h2>שיוך תשלומים</h2>
+        <div class="actions">
+          <button id="reconnect-backfill" class="btn small primary"></button>
+        </div>
+      </div>
+
+      <div class="cards-row">
+        <div class="card stat">
+          <div class="stat-label">דורשים הכרעה</div>
+          <div class="stat-value" id="reconnect-count">0</div>
+          <div class="stat-sub">שורות תשלום שאינן משויכות לאף מטופל קיים</div>
+        </div>
+        <div class="card stat">
+          <div class="stat-label">משויכות במזהה קבוע</div>
+          <div class="stat-value" id="reconnect-linked-count">0</div>
+          <div class="stat-sub">שורות שנושאות patientUid — עמידות לשינוי שם או מעבר בית</div>
+        </div>
+      </div>
+
+      <div class="rev-basis-note">
+        תשלום נקשר למטופל לפי <b>מזהה קבוע</b> (patientUid), ורק כגיבוי לפי
+        בית·שם·תאריך כניסה. שינוי שם, בית או תאריך כניסה מנתק שורה שאין לה מזהה
+        קבוע. <b>שום שורה אינה משויכת אוטומטית</b> — הרשימה מציעה מועמדים, ההכרעה ידנית.
+      </div>
+
+      <div id="reconnect-list" class="billing-list"></div>
     </section>
 
     <!-- ====== BREAK-EVEN ====== -->
