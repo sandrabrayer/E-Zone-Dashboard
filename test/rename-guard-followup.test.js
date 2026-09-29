@@ -347,5 +347,7 @@ test('source-scan: saveAll surfaces promoteSkipped through showError — refusal
   assert.ok(start >= 0);
   const body = src.slice(start, src.indexOf('\n}', start + 1) + 2);
   assert.ok(/promoteSkippedMessage\(res\)/.test(body), 'saveAll routes the response through promoteSkippedMessage');
-  assert.ok(/showError\(skippedMsg\)/.test(body), 'a non-empty refusal shows the error banner');
+  // The banner may carry a duration (refusals stay up longer since the
+  // house-move fix) — what matters is that the message is shown.
+  assert.ok(/showError\(skippedMsg[,)]/.test(body), 'a non-empty refusal shows the error banner');
 });
