@@ -72,11 +72,7 @@
 // v15 → v16: every displayed date becomes DD/MM/YYYY (formatDateHe). app.js is
 // the only file that changed, and the v15 copy is the OFFLINE fallback on any
 // device that installed it — evict it so no phone keeps rendering ISO dates.
-// v16 → v17: a re-activated patient no longer vanishes from the house tab (the
-// ✏️ / re-add / admit / restore paths close the stay's open discharge rows, and
-// the load-time heal announces itself). app.js is the only file that changed —
-// evict the v16 offline copy so no phone keeps the silent re-release.
-var CACHE_VERSION = 'v17';
+var CACHE_VERSION = 'v16';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
