@@ -39,6 +39,12 @@
  *     omitted row is echoed per house in the response's `preserved` map and
  *     audited to the PatientsTombstones sheet. Houses NOT present in the
  *     payload are untouched.
+ *   - a patient row carrying `movedFrom` (the ✏ modal's deliberate house
+ *     move) is MOVED: its row leaves the old house and lands in the new one
+ *     with the same id — or the move is refused with a reason in
+ *     `conflicts[].move` (stale stamp / moved elsewhere / deleted) and nothing
+ *     changes. Landed moves are echoed in `moved`; fresh who/when stamps the
+ *     client did not hold yet in `stamps`. See replaceHousePatients_.
  *   - patients missing / empty object → leave the Patients sheet untouched
  *
  * Note: leads cannot be deleted through saveAll (only marked irrelevant via
@@ -1341,23 +1347,35 @@ function saveAll_(leads, patients, user) {
     const preserved = {};
     const deletedSuppressed = {};
     const promoteSkipped = {};
-    // Stale-stamp refusals aggregated across houses (id-match branch only) —
-    // additive: absent from the response when no save conflicted, so old
-    // clients and the Managers consumer see nothing new.
+    // Stale-stamp refusals aggregated across houses (the id-match branch and
+    // refused house moves) — additive: absent from the response when no save
+    // conflicted, so old clients and the Managers consumer see nothing new.
     const conflicts = [];
+    // Deliberate house moves that LANDED ({id, name, fromHouseId, toHouseId})
+    // and the fresh who/when stamps of rows this save wrote whose stamp the
+    // client did not already hold ({id: {updatedAt, updatedBy}}). Both are
+    // additive and absent when empty.
+    const moved = [];
+    const stamps = {};
     if (patients && typeof patients === 'object' && !Array.isArray(patients)) {
       const houseIds = Object.keys(patients);
       const userDeleteKeys = houseIds.length > 0 ? recentUserDeleteKeys_() : {};
       const dischargedIds = houseIds.length > 0 ? dischargedFromLeadIds_() : {};
+      // Collected from the WHOLE payload before any house is written, so the
+      // house a patient is leaving and the house it is joining both know about
+      // the move, whichever of the two passes runs first.
+      const moves = houseIds.length > 0 ? collectHouseMoves_(patients) : {};
       for (let i = 0; i < houseIds.length; i++) {
         const hid = houseIds[i];
         const arr = patients[hid];
-        const res = replaceHousePatients_(hid, Array.isArray(arr) ? arr : [], userDeleteKeys, dischargedIds, user);
+        const res = replaceHousePatients_(hid, Array.isArray(arr) ? arr : [], userDeleteKeys, dischargedIds, user, moves);
         written[hid] = res.written;
         if (res.preservedKeys.length > 0) preserved[hid] = res.preservedKeys;
         if (res.suppressedKeys.length > 0) deletedSuppressed[hid] = res.suppressedKeys;
         if (res.skippedPromotes.length > 0) promoteSkipped[hid] = res.skippedPromotes;
         for (let c = 0; c < res.conflicts.length; c++) conflicts.push(res.conflicts[c]);
+        for (let m = 0; m < res.moved.length; m++) moved.push(res.moved[m]);
+        Object.keys(res.stamps).forEach(function (id) { stamps[id] = res.stamps[id]; });
       }
     }
 
@@ -1370,6 +1388,8 @@ function saveAll_(leads, patients, user) {
       reportConflicts: reportConflicts,
     };
     if (conflicts.length > 0) out.conflicts = conflicts;
+    if (moved.length > 0) out.moved = moved;
+    if (Object.keys(stamps).length > 0) out.stamps = stamps;
     return out;
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
@@ -1692,6 +1712,37 @@ function dischargedFromLeadIds_() {
   return out;
 }
 
+/* Deliberate house moves in a saveAll payload, as {id: {from, to}}.
+ *
+ * The ✏ edit modal marks a patient whose house it changed with `movedFrom`
+ * (the house the patient is leaving); the row then arrives under the NEW
+ * house's key still carrying its persisted id. That explicit intent is the
+ * only thing that makes a cross-house id legitimate: without it, the same
+ * payload shape is a stale tab or an old client, and the legacy rules apply
+ * unchanged (fromLead guard refuses, id re-minted). A payload row counts as a
+ * move when it has an id and a non-blank movedFrom that differs from the
+ * house it arrived under. The same id claimed as moving by two payload rows
+ * is ambiguous (a duplicated client object), so neither is treated as a move.
+ * `movedFrom` itself is never written: it is not a PATIENT_COLUMNS column.
+ * Pure. */
+function collectHouseMoves_(patients) {
+  const out = {};
+  const ambiguous = {};
+  Object.keys(patients || {}).forEach(function (hid) {
+    const arr = Array.isArray(patients[hid]) ? patients[hid] : [];
+    for (let i = 0; i < arr.length; i++) {
+      const p = arr[i] || {};
+      const id = String(p.id == null ? '' : p.id).trim();
+      const from = String(p.movedFrom == null ? '' : p.movedFrom).trim();
+      if (!id || !from || from === hid) continue;
+      if (id in out) { ambiguous[id] = true; continue; }
+      out[id] = { from: from, to: hid };
+    }
+  });
+  Object.keys(ambiguous).forEach(function (id) { delete out[id]; });
+  return out;
+}
+
 /**
  * MERGE the payload's patients into the house's rows — merge-don't-drop.
  * Rows for other houses are untouched, exactly as before. Within the house:
@@ -1730,12 +1781,42 @@ function dischargedFromLeadIds_() {
  *
  * ID UNIQUENESS: every id written by this save is checked against every id
  * on the sheet (all houses) plus the ids assigned earlier in the save. An
- * incoming id already held elsewhere — a HOUSE MOVE (the old house's row is
+ * incoming id already held elsewhere — a house move WITHOUT the explicit
+ * movedFrom intent (an old client or a stale tab: the old house's row is
  * preserved by merge-don't-drop and keeps the id), a duplicated client
  * object, or an id whose row this save already consumed — is re-minted for
  * the incoming row and audited 'patient_id_reminted'. Preserved (omitted)
  * rows that still lack an id get one minted here too, so the sheet converges
  * to fully-identified rows through ordinary saves.
+ *
+ * DELIBERATE HOUSE MOVE (`moves`, from collectHouseMoves_: the ✏ modal's
+ * explicit `movedFrom` intent). A payload row whose id `moves` names with
+ * to === this house, and which is NOT already a row of this house, is
+ * resolved BEFORE the id / key match, against the row that holds its id in
+ * another house:
+ *   - the row sits in the house the tab says it is leaving AND its updatedAt
+ *     is exactly the stamp the tab loaded (blank === blank) → MOVED: that row
+ *     is removed from its old house and the payload row written here with
+ *     the SAME id and the sheet's own fromLead, re-stamped, audited
+ *     'patient_moved_house', echoed in `moved`. One row before, one after —
+ *     never a duplicate, never a second row for the lead;
+ *   - the stamps differ (someone saved the patient after this tab loaded),
+ *     the row is in a THIRD house (someone moved it meanwhile), or no row
+ *     holds the id any more (deleted) → REFUSED: nothing is written, the old
+ *     row stays byte-for-byte, and a `conflicts` entry carrying
+ *     `move: {from, to, reason, currentHouseId}` tells the client why
+ *     (audited 'patient_move_refused'). A stale tab can therefore never
+ *     drag a patient back, and a deleted patient is never resurrected.
+ * On the LEAVING house's own pass the row is reserved for the move: it is
+ * neither key-consumed nor preserved/tombstoned as a stale omission — it is
+ * kept untouched, so a refused move leaves it exactly where it was.
+ * The destination pass drops the old row and adds the new one in the SAME
+ * setValues of the sheet, so the two can never both exist or both be missing.
+ *
+ * STAMP ECHO: every row written from the payload whose final updatedAt
+ * differs from the one the payload carried is returned in `stamps`
+ * ({id: {updatedAt, updatedBy}}). The client adopts them, so its OWN next
+ * edit of the same patient is not mistaken for a stale save.
  *
  * `suppressedDeleteKeys` (optional, from recentUserDeleteKeys_): identity
  * keys with a FRESH 'user-delete' tombstone. A payload row whose key is in
@@ -1766,16 +1847,20 @@ function dischargedFromLeadIds_() {
  *      (discharge-loop guard, mirroring the client's dischargedByFromLead).
  * All read from the sheet at write time, so a stale tab whose in-memory
  * guards missed can no longer create a second row for the same lead — while
- * an edit-modal rename lands instead of being dropped. Note a HOUSE-MOVE of a
- * lead-linked patient also arrives as an append (houseId is in the key) and
- * falls under rule 2 — refused, surfaced by the client's promoteSkipped
- * toast. Hand-entered patients (fromLead '') keep the old rename trade-off
- * (old row kept + edit appended) unchanged.
+ * an edit-modal rename lands instead of being dropped. A house move that
+ * carries the ✏ modal's explicit intent never reaches these rules (see
+ * DELIBERATE HOUSE MOVE above). WITHOUT that intent — an old client, or a
+ * stale tab that still holds the patient in a house it has since left — a
+ * lead-linked row arriving in a new house is still an append and falls under
+ * rule 2: refused, surfaced by the client's promoteSkipped message. That is
+ * the stale-tab protection, and it is unchanged. Hand-entered patients
+ * (fromLead '') keep the old rename trade-off (old row kept + edit appended)
+ * unchanged.
  *
- * Returns { written, preservedKeys, suppressedKeys, skippedPromotes }:
- * `written` counts the rows actually written for the house (payload count
- * minus suppressed minus skipped), so the saveAll_ `written` echo stays
- * honest for the server diagnostics.
+ * Returns { written, preservedKeys, suppressedKeys, skippedPromotes,
+ * conflicts, moved, stamps }: `written` counts the rows actually written for
+ * the house (payload count minus suppressed, skipped and refused-move rows),
+ * so the saveAll_ `written` echo stays honest for the server diagnostics.
  *
  * Write order is WRITE-THEN-TRIM, not clear-then-write: the final row set is
  * written first, then only surplus tail rows are cleared. A crash between the
@@ -1783,7 +1868,7 @@ function dischargedFromLeadIds_() {
  * longer empty the sheet. Note the merge means the Patients sheet never
  * shrinks through this path, so the trim is a pure safety net here.
  */
-function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, dischargedFromLeads, user) {
+function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, dischargedFromLeads, user, moves) {
   const sh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
   const houseColIdx = PATIENT_COLUMNS.indexOf('houseId');
   const nameColIdx  = PATIENT_COLUMNS.indexOf('name');
@@ -1832,6 +1917,21 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
     idsInUse[id] = true;
     if (!(id in houseRowByIdIdx)) houseRowByIdIdx[id] = i;
   }
+  // OTHER houses' rows by id (first in sheet order) — where a deliberate
+  // house move finds the row it is taking over.
+  const keptRowByIdIdx = {};
+  for (let i = 0; i < kept.length; i++) {
+    const id = rowId(kept[i]);
+    if (id && !(id in keptRowByIdIdx)) keptRowByIdIdx[id] = i;
+  }
+  // Deliberate moves of the WHOLE payload (collectHouseMoves_). A row of THIS
+  // house whose id is moving out is reserved for that move: no payload row of
+  // this house may consume it, and it is not a stale omission to preserve.
+  const moveIntents = moves || {};
+  const leavingThisHouse = function (id) {
+    const mv = id ? moveIntents[id] : null;
+    return !!mv && mv.from === houseId && mv.to !== houseId;
+  };
   // Ids the payload claims. A sheet row holding one is RESERVED for its id
   // match: neither the key-match queue nor the fromLead rename branch may
   // consume it for a different payload row.
@@ -1843,7 +1943,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   }
   const reservedByPayloadId = function (rowIdx) {
     const id = rowId(houseRows[rowIdx]);
-    return !!id && !!payloadIds[id];
+    return !!id && (!!payloadIds[id] || leavingThisHouse(id));
   };
   // The id a written row ends up with (stamped onto `withHouse`, recorded in
   // idsInUse): the consumed sheet row's own id is immutable and wins; else
@@ -1913,9 +2013,25 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   const suppressed = suppressedDeleteKeys || {};
   const suppressedKeys = [];
   const skippedPromotes = [];
-  // Stale-stamp refusals from the id-match branch (see there) — additive
-  // response data; empty on every save with no conflict.
+  // Stale-stamp refusals from the id-match branch and refused house moves
+  // (see there) — additive response data; empty on every save with no
+  // conflict.
   const conflicts = [];
+  // Deliberate house moves that landed here, and `kept` indices of the rows
+  // they took over (dropped from their old house at write time).
+  const moved = [];
+  const movedOutOfKept = {};
+  // STAMP ECHO (contract comment above): id → the stamps this save wrote,
+  // for every payload row whose final updatedAt differs from the one it
+  // carried in. `seen` is the payload's own updatedAt, trimmed.
+  const stamps = {};
+  const echoStamp = function (withHouse, seen) {
+    const id = String(withHouse.id == null ? '' : withHouse.id).trim();
+    const at = String(withHouse.updatedAt == null ? '' : withHouse.updatedAt).trim();
+    if (id && at !== seen) {
+      stamps[id] = { updatedAt: at, updatedBy: String(withHouse.updatedBy == null ? '' : withHouse.updatedBy) };
+    }
+  };
   const consumed = {};
   // ORIGINAL sheet content of every row this save consumes, indexed by the
   // consumed row's own identity key — the exact-duplicate dedupe below
@@ -1940,6 +2056,58 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
     withHouse.name = String(withHouse.name == null ? '' : withHouse.name).trim();
     const key = patientKey_(houseId, withHouse.name, withHouse.date);
     const incomingId = String(withHouse.id == null ? '' : withHouse.id).trim();
+    // The stamp this tab LOADED, as echoed by the round-trip — captured
+    // BEFORE any branch overwrites it (carryStamps / stampNow). It is the
+    // conflict-refusal witness: differing from the sheet's current stamp
+    // means someone else saved after this tab loaded.
+    const seenStamp = String(withHouse.updatedAt == null ? '' : withHouse.updatedAt).trim();
+
+    // DELIBERATE HOUSE MOVE (contract comment above): the ✏ modal moved this
+    // patient here from `mv.from`, and the id is not (yet) a row of this
+    // house. Resolved against the row that holds the id elsewhere.
+    const mv = incomingId ? moveIntents[incomingId] : null;
+    if (mv && mv.to === houseId && !(incomingId in houseRowByIdIdx)) {
+      const srcIdx = keptRowByIdIdx[incomingId];
+      const src = srcIdx === undefined ? null : kept[srcIdx];
+      const srcHouse = src ? String(src[houseColIdx] == null ? '' : src[houseColIdx]) : '';
+      const srcStamp = src ? String(src[updatedAtIdx] == null ? '' : src[updatedAtIdx]).trim() : '';
+      const reason = !src ? 'source_missing'
+        : srcHouse !== mv.from ? 'moved_elsewhere'
+          : srcStamp !== seenStamp ? 'stale'
+            : '';
+      if (reason) {
+        // REFUSED: nothing is written and the row stays where it is.
+        const refusal = {
+          id: incomingId,
+          name: src ? String(src[nameColIdx] == null ? '' : src[nameColIdx]) : withHouse.name,
+          houseId: houseId,
+          sheetUpdatedAt: srcStamp,
+          sheetUpdatedBy: src ? String(src[updatedByIdx] == null ? '' : src[updatedByIdx]) : '',
+          changed: ['houseId'],
+          move: { from: mv.from, to: houseId, reason: reason, currentHouseId: srcHouse },
+        };
+        conflicts.push(refusal);
+        logAudit_('patient_move_refused', 'replaceHousePatients_', withHouse.fromLead || '', refusal.name,
+          Object.assign({ seenUpdatedAt: seenStamp, updatedBy: stampUser }, refusal));
+        continue;
+      }
+      // MOVED: the old house's row is dropped at write time and the payload row
+      // lands here with the SAME id and the sheet's own lead link.
+      movedOutOfKept[srcIdx] = true;
+      if (fromLeadIdx >= 0) withHouse.fromLead = src[fromLeadIdx];
+      assignId(withHouse, incomingId, { via: 'move' });
+      stampNow(withHouse); // a house move is always a real edit
+      const movedRow = objectToRow_(withHouse, PATIENT_COLUMNS);
+      moved.push({ id: incomingId, name: withHouse.name, fromHouseId: mv.from, toHouseId: houseId });
+      logAudit_('patient_moved_house', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', {
+        id: incomingId, fromHouseId: mv.from, toHouseId: houseId,
+        oldKey: patientKey_(mv.from, src[nameColIdx], src[dateColIdx]), newKey: key,
+        changed: patientRowDiffCols_(src, movedRow), updatedBy: stampUser,
+      });
+      echoStamp(withHouse, seenStamp);
+      newRows.push(movedRow);
+      continue;
+    }
 
     // ID MATCH (primary identity, contract comment above): the payload's
     // persisted id names an unconsumed row of THIS house → replace it in
@@ -1949,11 +2117,6 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
       const oldKey = patientKey_(houseId, houseRows[rowIdx][nameColIdx], houseRows[rowIdx][dateColIdx]);
       consumed[rowIdx] = true;
       recordConsumed(rowIdx);
-      // The stamp this tab LOADED, as echoed by the round-trip — captured
-      // BEFORE carryStamps overwrites it with the sheet's value. It is the
-      // conflict-refusal witness: differing from the sheet's current stamp
-      // means someone else saved after this tab loaded.
-      const seenStamp = String(withHouse.updatedAt == null ? '' : withHouse.updatedAt).trim();
       const sheetStamp = String(houseRows[rowIdx][updatedAtIdx] == null ? '' : houseRows[rowIdx][updatedAtIdx]).trim();
       assignId(withHouse, incomingId);
       carryStamps(withHouse, houseRows[rowIdx]);
@@ -1990,6 +2153,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
       } else if (changed.length > 0) {
         logAudit_('patient_edited', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { key: key, id: incomingId, changed: changed, updatedBy: stampUser });
       }
+      echoStamp(withHouse, seenStamp);
       newRows.push(newRow);
       continue;
     }
@@ -2014,6 +2178,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
         newRow = objectToRow_(withHouse, PATIENT_COLUMNS);
         logAudit_('patient_edited', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { key: key, id: withHouse.id, changed: changed, updatedBy: stampUser });
       }
+      echoStamp(withHouse, seenStamp);
       newRows.push(newRow);
       continue;
     }
@@ -2044,6 +2209,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
         const oldName = String(houseRows[idx][nameColIdx] == null ? '' : houseRows[idx][nameColIdx]);
         const oldKey = patientKey_(houseId, houseRows[idx][nameColIdx], houseRows[idx][dateColIdx]);
         logAudit_('patient_renamed_via_fromLead', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, id: withHouse.id, oldName: oldName, newName: String(withHouse.name || ''), oldKey: oldKey, newKey: key, matches: matches.length, ambiguous: matches.length > 1, updatedBy: stampUser });
+        echoStamp(withHouse, seenStamp);
         newRows.push(objectToRow_(withHouse, PATIENT_COLUMNS));
         continue;
       }
@@ -2062,6 +2228,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
     assignId(withHouse, '', { via: 'append' });
     stampNow(withHouse); // a new row's first write is its first edit
     logAudit_(fl ? 'promote_created' : 'patient_added', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, key: key, id: withHouse.id, status: String(withHouse.status || ''), source: String(withHouse.source || ''), updatedBy: stampUser });
+    echoStamp(withHouse, seenStamp);
     newRows.push(objectToRow_(withHouse, PATIENT_COLUMNS));
   }
 
@@ -2080,8 +2247,14 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   // handles those explicitly, with the differences audited.
   const preservedRows = [];
   const preservedKeys = [];
+  // Rows leaving this house through a deliberate move (the destination pass
+  // takes them over, or refuses and leaves them here): written back exactly
+  // as they are — not a stale omission, so neither tombstoned nor echoed in
+  // `preserved`.
+  const leavingRows = [];
   for (let i = 0; i < houseRows.length; i++) {
     if (consumed[i]) continue;
+    if (leavingThisHouse(rowId(houseRows[i]))) { leavingRows.push(houseRows[i]); continue; }
     const rowKey = patientKey_(houseId, houseRows[i][nameColIdx], houseRows[i][dateColIdx]);
     const consumedTwins = consumedOriginalsByKey[rowKey];
     if (consumedTwins && consumedTwins.some(function (t) { return patientRowDiffCols_(houseRows[i], t).length === 0; })) {
@@ -2119,7 +2292,8 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   // asISODate_ renders any Date / tz-marked timestamp in the spreadsheet
   // timezone, so the stored value is unambiguous local-day text — mirrors the
   // treatment leads' `created` column gets in mergeLeads_. Blank stays blank.
-  const finalRows = kept.concat(preservedRows).concat(newRows).map(function (row) {
+  const keptStaying = kept.filter(function (_, idx) { return !movedOutOfKept[idx]; });
+  const finalRows = keptStaying.concat(preservedRows).concat(leavingRows).concat(newRows).map(function (row) {
     if (dateColIdx >= 0) row[dateColIdx] = asISODate_(row[dateColIdx]);
     if (exitDateColIdx >= 0) row[exitDateColIdx] = asISODate_(row[exitDateColIdx]);
     return row;
@@ -2145,7 +2319,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   if (lastRow > finalRows.length + 1) {
     sh.getRange(finalRows.length + 2, 1, lastRow - finalRows.length - 1, PATIENT_COLUMNS.length).clearContent();
   }
-  return { written: newRows.length, preservedKeys: preservedKeys, suppressedKeys: suppressedKeys, skippedPromotes: skippedPromotes, conflicts: conflicts };
+  return { written: newRows.length, preservedKeys: preservedKeys, suppressedKeys: suppressedKeys, skippedPromotes: skippedPromotes, conflicts: conflicts, moved: moved, stamps: stamps };
 }
 
 /* Identity keys of FRESH 'user-delete' tombstones (droppedAt within

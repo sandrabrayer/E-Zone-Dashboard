@@ -413,6 +413,11 @@ function serializePatients() {
       updatedAt: p.updatedAt ? String(p.updatedAt) : '',
       updatedBy: p.updatedBy ? String(p.updatedBy) : '',
     };
+    /* A deliberate house move from the ✏ modal: the house this patient is
+     * LEAVING, sent only while the move is pending. It is what lets the
+     * backend move the row (same id, one row) instead of reading a patient
+     * that shows up in a new house as a duplicate admission. Never stored. */
+    if (p.movedFrom) record.movedFrom = String(p.movedFrom);
 
     if (!out[hid]) out[hid] = [];   // unknown houseId — keep the data, don't drop
     out[hid].push(record);
@@ -482,17 +487,117 @@ function promoteSkippedMessage(res) {
 function conflictsMessage(res) {
   if (!res || typeof res !== 'object') return null;
   if (!Array.isArray(res.conflicts) || res.conflicts.length === 0) return null;
-  const names = [];
-  const by = [];
-  res.conflicts.forEach(c => {
-    const n = c && c.name ? String(c.name) : '';
-    if (n && names.indexOf(n) < 0) names.push(n);
-    const u = c && c.sheetUpdatedBy ? String(c.sheetUpdatedBy) : '';
-    if (u && by.indexOf(u) < 0) by.push(u);
+  // A refused HOUSE MOVE says so in its own words (moveRefusalMessage);
+  // every other refusal keeps the one combined sentence below.
+  const parts = res.conflicts.filter(c => c && c.move).map(moveRefusalMessage);
+  const edits = res.conflicts.filter(c => !(c && c.move));
+  if (edits.length > 0) {
+    const names = [];
+    const by = [];
+    edits.forEach(c => {
+      const n = c && c.name ? String(c.name) : '';
+      if (n && names.indexOf(n) < 0) names.push(n);
+      const u = c && c.sheetUpdatedBy ? String(c.sheetUpdatedBy) : '';
+      if (u && by.indexOf(u) < 0) by.push(u);
+    });
+    const who = by.length > 0 ? by.join(', ') : 'משתמש/ת אחר/ת';
+    parts.push('השינוי ל־' + (names.length ? names.join(', ') : 'מטופל/ת') +
+      ' לא נשמר — ' + who + ' עדכן/ה קודם. הנתונים רועננו.');
+  }
+  return parts.join(' ');
+}
+
+/* A house label for messages: the Hebrew name, or the raw id when the house
+ * is unknown. */
+function houseLabel(id) {
+  const h = houseById(resolveHouseId(id));
+  return h ? h.name : String(id || '');
+}
+
+/* The Hebrew message for ONE refused house move — a `conflicts` entry that
+ * carries `move: {from, to, reason, currentHouseId}` (replaceHousePatients_).
+ * Says what was refused, why, and where the patient actually is. Pure. */
+function moveRefusalMessage(c) {
+  const name = c && c.name ? String(c.name) : 'המטופל/ת';
+  const m = (c && c.move) || {};
+  const to = houseLabel(m.to);
+  const who = c && c.sheetUpdatedBy ? String(c.sheetUpdatedBy) : 'משתמש/ת אחר/ת';
+  if (m.reason === 'moved_elsewhere') {
+    return 'המעבר של ' + name + ' ל' + to + ' לא נשמר — ' + name + ' כבר נמצא/ת ב' +
+      houseLabel(m.currentHouseId) + ' (' + who + ' העביר/ה קודם). הנתונים רועננו.';
+  }
+  if (m.reason === 'source_missing') {
+    return 'המעבר של ' + name + ' ל' + to + ' לא נשמר — הרשומה כבר לא קיימת בגיליון. הנתונים רועננו.';
+  }
+  return 'המעבר של ' + name + ' ל' + to + ' לא נשמר — ' + who + ' עדכן/ה את הרשומה בינתיים, ו' +
+    name + ' נשאר/ה ב' + houseLabel(m.from) + '. הנתונים רועננו — אפשר לנסות שוב.';
+}
+
+/* The Hebrew message when a house move got NO answer from the backend —
+ * neither landed (`moved`) nor refused with a reason. That is an older
+ * backend, or a save that never reached the sheet. Pure. */
+function moveNotSavedMessage(name, fromHouseId, toHouseId) {
+  const who = name ? String(name) : 'המטופל/ת';
+  return 'המעבר של ' + who + ' ל' + houseLabel(toHouseId) + ' לא נשמר — ' + who +
+    ' נשאר/ה ב' + houseLabel(fromHouseId) + '.';
+}
+
+/* What one saveAll SENT, per patient id: the object and the updatedAt it
+ * carried. Built from the same state the payload was serialized from, in the
+ * same tick. An id held by two objects is ambiguous and left out. */
+function sentPatientsById(patients) {
+  const out = new Map();
+  const dup = new Set();
+  (Array.isArray(patients) ? patients : []).forEach(p => {
+    const id = p && p.id ? String(p.id) : '';
+    if (!id) return;
+    if (out.has(id)) { dup.add(id); return; }
+    out.set(id, { obj: p, stamp: String(p.updatedAt || '') });
   });
-  const who = by.length > 0 ? by.join(', ') : 'משתמש/ת אחר/ת';
-  return 'השינוי ל־' + (names.length ? names.join(', ') : 'מטופל/ת') +
-    ' לא נשמר — ' + who + ' עדכן/ה קודם. הנתונים רועננו.';
+  dup.forEach(id => out.delete(id));
+  return out;
+}
+
+/* Apply a saveAll response to the patient objects that save SENT (`sent`,
+ * from sentPatientsById):
+ *   - `stamps`: adopt the who/when stamps the backend just wrote, but only
+ *     on an object that still holds the stamp it was sent with — so this
+ *     tab's OWN next edit of the patient is not refused as stale, while an
+ *     object a reload has replaced (or that changed hands) is never touched;
+ *   - `moved`: a house move landed — the pending movedFrom intent is done;
+ *   - a refused move (a `conflicts` entry with `move`): the object goes back
+ *     to the house the patient is really in, the intent is dropped, and the
+ *     refusal is recorded on it (`_moveRefused`) for the ✏ modal. Reverting
+ *     here, not in the modal, matters: a later queued save must never send
+ *     the patient under the new house WITHOUT the intent.
+ * Returns what it did, for tests. Tolerant of old backends (fields absent). */
+function applySaveOutcome(sent, res) {
+  const out = { stamped: [], moved: [], refused: [] };
+  if (!(sent instanceof Map) || !res || typeof res !== 'object') return out;
+  const stamps = res.stamps && typeof res.stamps === 'object' && !Array.isArray(res.stamps) ? res.stamps : {};
+  Object.keys(stamps).forEach(id => {
+    const e = sent.get(id);
+    const s = stamps[id] || {};
+    if (!e || String(e.obj.updatedAt || '') !== e.stamp || !s.updatedAt) return;
+    e.obj.updatedAt = String(s.updatedAt);
+    e.obj.updatedBy = String(s.updatedBy == null ? '' : s.updatedBy);
+    out.stamped.push(id);
+  });
+  (Array.isArray(res.moved) ? res.moved : []).forEach(m => {
+    const e = m && sent.get(String(m.id || ''));
+    if (!e) return;
+    delete e.obj.movedFrom;
+    out.moved.push(String(m.id));
+  });
+  (Array.isArray(res.conflicts) ? res.conflicts : []).forEach(c => {
+    const e = c && c.move && sent.get(String(c.id || ''));
+    if (!e || !e.obj.movedFrom) return;
+    e.obj.houseId = c.move.currentHouseId || c.move.from || e.obj.movedFrom;
+    delete e.obj.movedFrom;
+    e.obj._moveRefused = c;
+    out.refused.push(String(c.id));
+  });
+  return out;
 }
 
 let _preservedResyncBusy = false;
@@ -522,6 +627,10 @@ function saveAll() {
   if (state.mode !== 'edit') return Promise.resolve();
   const run = async () => {
     const patients = serializePatients();
+    // The objects this save is sending, with the stamps they carry — read in
+    // the same tick as the payload, so the response is applied to exactly
+    // what was sent (applySaveOutcome).
+    const sent = sentPatientsById(state.patients);
     const patientCount = Object.values(patients).reduce((n, arr) => n + arr.length, 0);
     const byHouse = {};
     Object.entries(patients).forEach(([k, v]) => { byHouse[k] = v.length; });
@@ -569,13 +678,16 @@ function saveAll() {
     _savesInFlight++;
     try {
       const res = await apiPost(payload);
+      // Fresh stamps, landed moves, refused moves — applied BEFORE any resync
+      // so a later queued save never re-sends a refused move without intent.
+      applySaveOutcome(sent, res);
       maybeResyncPreservedPatients(res);
       const skippedMsg = promoteSkippedMessage(res);
-      if (skippedMsg) showError(skippedMsg);
+      if (skippedMsg) showError(skippedMsg, REFUSAL_BANNER_MS);
       // Stale-save refusal: tell the user whose edit won; the resync above
       // already reloads the sheet's version. Never retried automatically.
       const conflictMsg = conflictsMessage(res);
-      if (conflictMsg) showError(conflictMsg);
+      if (conflictMsg) showError(conflictMsg, REFUSAL_BANNER_MS);
       return res;
     } finally {
       _savesInFlight--;
@@ -585,11 +697,17 @@ function saveAll() {
   return savePromise;
 }
 
-function showError(msg) {
+/* A refusal (something the user did was NOT saved) stays on screen long
+ * enough to be read on a phone; ordinary errors keep the 6 s banner. */
+const REFUSAL_BANNER_MS = 15000;
+
+function showError(msg, ms) {
   const el = document.getElementById('error-banner');
   el.textContent = 'שגיאה: ' + msg;
   el.classList.remove('hidden');
-  setTimeout(() => el.classList.add('hidden'), 6000);
+  // One timer: an older banner's timeout must not hide a newer message early.
+  clearTimeout(showError._t);
+  showError._t = setTimeout(() => el.classList.add('hidden'), ms || 6000);
 }
 /* ===== The page-level busy banner (#loading-banner) =====
  *
@@ -4975,19 +5093,63 @@ function openEditPatientModal(p) {
       p.pay     = Number(v.pay) || 0;
       p.status  = v.status || 'active';
       p.notes   = (v.notes || '').trim();
-      if (houseChanged) state.currentHouseTab = p.houseId;
+      if (houseChanged) {
+        // The explicit move intent (serializePatients → collectHouseMoves_ in
+        // Code.gs). Without it the backend cannot tell this deliberate move
+        // from a stale tab, and refuses a lead-linked patient in a new house.
+        // While an earlier move of this patient is still pending, the house it
+        // is really leaving is still that move's origin; moving back there
+        // cancels the move instead of sending one.
+        const origin = p.movedFrom || prev.houseId;
+        if (origin === v.houseId) delete p.movedFrom; else p.movedFrom = origin;
+        state.currentHouseTab = p.houseId;
+      }
       renderAll();
       try {
         await saveAll();
       } catch (e) {
         Object.assign(p, prev);
+        if (prev.movedFrom === undefined) delete p.movedFrom;
         renderAll();
         showError('שמירה נכשלה — ' + e.message);
         return false;
       }
+      if (houseChanged) {
+        const verdict = houseMoveVerdict(p);
+        if (verdict === 'moved') {
+          showToast(p.name + ' הועבר/ה ל' + houseLabel(p.houseId));
+        } else if (verdict === 'refused') {
+          // saveAll already showed why (moveRefusalMessage), put the patient
+          // back in the house they are really in, and is reloading the sheet.
+          delete p._moveRefused;
+          state.currentHouseTab = p.houseId;
+          renderAll();
+        } else {
+          // Neither landed nor refused: an older backend, or a save that never
+          // reached the sheet. Never leave the screen claiming a move that
+          // did not happen — undo it here and say so.
+          Object.assign(p, prev);
+          delete p.movedFrom;
+          state.currentHouseTab = p.houseId;
+          renderAll();
+          showError(moveNotSavedMessage(p.name, prev.houseId, v.houseId), REFUSAL_BANNER_MS);
+        }
+      }
       return true;
     }
   });
+}
+
+/* How a house move requested from the ✏ modal ended, read off the patient
+ * object after its save settled (applySaveOutcome marks it):
+ *   'moved'   — the backend confirmed it (the movedFrom intent was cleared);
+ *   'refused' — the backend refused it with a reason (`_moveRefused`);
+ *   'pending' — no save answered for it (an older backend / no save ran).
+ * Pure. */
+function houseMoveVerdict(p) {
+  if (!p) return 'pending';
+  if (p._moveRefused) return 'refused';
+  return p.movedFrom ? 'pending' : 'moved';
 }
 
 /* ====================================================
