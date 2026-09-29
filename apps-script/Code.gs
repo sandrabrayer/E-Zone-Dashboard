@@ -9155,3 +9155,48 @@ function diagNameFlags_(name) {
   if (!s.trim()) flags.push('BLANK NAME');
   return flags.length ? ' [' + flags.join(', ') + ']' : '';
 }
+
+/* ===== Missing-patient diagnostic → a private Google Doc (run from the editor) =====
+ *
+ * diagnoseRamotPatientsToDocNow() runs diagnoseRamotPatientsNow() — READ-ONLY
+ * and unchanged — and copies its report.lines into ONE new Google Doc, one
+ * paragraph per line, so the findings can be read, searched and kept without
+ * copying the Executions log. The Doc is named
+ *   "E-Zone ramot diagnostic YYYY-MM-DD HH:mm"   (Israel time)
+ * and its URL is logged after the diagnostic's own lines.
+ *
+ * Its ONLY writes are DocumentApp.create (a new Doc in the My Drive of whoever
+ * runs it) and body.appendParagraph on that Doc. Nothing is written to the
+ * spreadsheet, and the Doc is never shared, moved or published: no DriveApp,
+ * no Drive advanced service, no add-editor/viewer call. It holds patient
+ * names, so it stays in the runner's Drive; delete it when you are done.
+ * If filling the Doc fails part-way, the error still surfaces and the partial
+ * Doc's URL is logged first, so it can be found and deleted.
+ *
+ * Needs the https://www.googleapis.com/auth/documents scope (appsscript.json).
+ * Intentionally PUBLIC (Run dropdown) and NOT reachable over HTTP: handle_'s
+ * fixed action allow-list never names it. */
+function diagnoseRamotPatientsToDocNow() {
+  const report = diagnoseRamotPatientsNow();
+  const lines = (report && Array.isArray(report.lines)) ? report.lines : [];
+  let tz = 'Asia/Jerusalem';
+  try {
+    tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || tz;
+  } catch (_) { /* keep the project default */ }
+  const name = 'E-Zone ramot diagnostic ' + Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd HH:mm');
+  const doc = DocumentApp.create(name);
+  const url = doc.getUrl();
+  try {
+    const body = doc.getBody();
+    for (let i = 0; i < lines.length; i++) {
+      body.appendParagraph(String(lines[i] == null ? '' : lines[i]));
+    }
+  } catch (err) {
+    Logger.log('diagnoseRamotPatientsToDocNow — FAILED while filling the new Doc "' + name +
+      '". It is private and only partly filled; delete it: ' + url);
+    throw err;
+  }
+  Logger.log('diagnoseRamotPatientsToDocNow — ' + lines.length + ' line(s) written to a new private Doc "' +
+    name + '": ' + url);
+  return { name: name, url: url, paragraphs: lines.length };
+}
