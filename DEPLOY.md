@@ -176,6 +176,19 @@ stamp is ever invented for a historical row**.
 
 Same rule as always: never insert or reorder a Payments or Credits column.
 
+## Missing-patient diagnostic (read-only)
+
+`diagnoseRamotPatientsNow()` is an editor-run diagnostic for the
+missing-ramot-patient investigation. It is **read-only**: it takes no lock and
+sets no property, it never creates or formats a tab, and it is not reachable
+over HTTP. There is nothing to set up. After the deploy lands, run it from the
+Apps Script editor: pick `diagnoseRamotPatientsNow` → **Run** → **View →
+Executions log**. Besides the ramot sections, section (e) lists — for ANY
+house — every Patients / PatientsTombstones row whose house no Dashboard tab
+can show, and every permanent delete (✕) recorded in the last 60 days. What
+each log section means and how to read it:
+`CHANGELOG-ramot-diagnostic-reland.md`.
+
 ## Security
 
 - Credentials live **only** in GitHub Secrets — never committed, never printed;

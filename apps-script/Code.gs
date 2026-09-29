@@ -8319,7 +8319,18 @@ function accountingCredits_(params) {
  *   (c) every id / normalized phone seen more than once (in one tab or across
  *       tabs), plus ramot identity-key and fromLead twins in Patients (rows the
  *       discharge heal and the key-delete cannot tell apart).
- *   (d) SUMMARY — ramot counts per tab and per status / stage.
+ *   (e) ANY house, not only ramot, in two parts:
+ *       - every Patients and PatientsTombstones row whose house resolves to NO
+ *         known house id (app.js resolveHouseId: no house tab can ever show
+ *         such a row), blank houses included, each with the one known house
+ *         it most likely means when exactly one fits;
+ *       - every PatientsTombstones 'user-delete' row (the recovery copy the ✕
+ *         permanent delete writes) whose droppedAt is within the last 60 days
+ *         — who deleted it and when, and whether that patient is back on
+ *         Patients. An unreadable droppedAt is listed too, never hidden.
+ *       Printed BEFORE (d), so the SUMMARY stays the last log line.
+ *   (d) SUMMARY — ramot counts per tab and per status / stage, plus the (e)
+ *       counts.
  * Returns the report object as well. Intentionally PUBLIC (Run dropdown) and
  * NOT reachable over HTTP: handle_'s fixed action allow-list never names it. */
 function diagnoseRamotPatientsNow() {
@@ -8327,7 +8338,8 @@ function diagnoseRamotPatientsNow() {
   const RAMOT = MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID.ramot;
   const lines = [];
   const say = function (s) { lines.push(s); Logger.log(s); };
-  const report = { headers: [], ramotRows: [], blankHouseRows: [], corruptedNames: [], duplicates: [], twins: [], summary: {} };
+  const report = { headers: [], ramotRows: [], blankHouseRows: [], corruptedNames: [], duplicates: [], twins: [],
+    unresolvedHouseRows: [], recentUserDeletes: [], summary: {} };
 
   say('diagnoseRamotPatientsNow — READ-ONLY: no cell, tab, lock or property is written. House: ' +
     RAMOT + ' / ' + MANAGER_HOUSE_NAMES.ramot + '.');
@@ -8347,7 +8359,8 @@ function diagnoseRamotPatientsNow() {
     }
     const f = {};
     ['id', 'name', 'phone', 'house', 'stage', 'status', 'disposition', 'dischargedAt', 'restored', 'removedAt',
-      'date', 'exitDate', 'fromLead', 'prior_status', 'reason', 'droppedAt', 'movedAt', 'updatedAt', 'updatedBy']
+      'date', 'exitDate', 'fromLead', 'prior_status', 'reason', 'droppedAt', 'movedAt', 'updatedAt', 'updatedBy',
+      'savedByAction']
       .forEach(function (k) { f[k] = diagColumnFor_(d.columns, k); });
     tabs[t.sheet] = { spec: t, data: d, f: f };
     const drift = t.columns ? diagHeaderDrift_(d.header, t.columns) : [];
@@ -8581,6 +8594,116 @@ function diagnoseRamotPatientsNow() {
   }
   if (report.duplicates.length === 0 && report.twins.length === 0) say('(c) none.');
 
+  // ---- (e) ANY house: houses that resolve to no known id; recent user deletes ----
+  // Printed before (d) so the SUMMARY stays the last line of the log.
+  const known = diagKnownHouseIds_();
+  const tomb = tabs[PATIENTS_TOMBSTONES_SHEET];
+  const USER_DELETE_DAYS = 60;
+  const nowMs = new Date().getTime();
+  const sinceMs = nowMs - USER_DELETE_DAYS * 24 * 60 * 60 * 1000;
+  const field = function (tab, r, k, label) {
+    return tab.f[k] ? ' | ' + (label || k) + ' ' + diagVisible_(cell(tab, r, k)) : '';
+  };
+  // Where a tombstoned patient is NOW on Patients: its id first, else its stay.
+  const patientRowById = {};
+  const patientRowByStay = {};
+  if (pat) {
+    pat.data.rows.forEach(function (r) {
+      const id = text(cell(pat, r, 'id'));
+      if (id && !(id in patientRowById)) patientRowById[id] = r.rowNumber;
+      const k = stayKey(diagClientHouseId_(cell(pat, r, 'house')), cell(pat, r, 'name'), cell(pat, r, 'date'));
+      if (!(k in patientRowByStay)) patientRowByStay[k] = r.rowNumber;
+    });
+  }
+  const unresolved = {};
+  say('(e) Patients / PatientsTombstones rows in ANY house whose house resolves to no known house id (' +
+    known.join(', ') + '):');
+  [PATIENTS_SHEET, PATIENTS_TOMBSTONES_SHEET].forEach(function (name) {
+    const tab = tabs[name];
+    if (!tab) { say('(e) ' + name + ': no such tab — skipped.'); return; }
+    unresolved[name] = 0;
+    const preservedCopies = {};   // merge-don't-drop audit copies, per house + name
+    const copyOrder = [];
+    tab.data.rows.forEach(function (r) {
+      const raw = cell(tab, r, 'house');
+      const resolved = diagClientHouseId_(raw);
+      if (known.indexOf(resolved) >= 0) return;
+      unresolved[name]++;
+      const nm = String(cell(tab, r, 'name') == null ? '' : cell(tab, r, 'name'));
+      const reason = text(cell(tab, r, 'reason'));
+      const blank = text(raw) === '';
+      const look = blank ? '' : diagHouseLookalike_(raw);
+      report.unresolvedHouseRows.push({
+        sheet: name, row: r.rowNumber, house: String(raw == null ? '' : raw), resolved: resolved,
+        lookalike: look, id: text(cell(tab, r, 'id')), name: nm, reason: reason,
+      });
+      if (name === PATIENTS_TOMBSTONES_SHEET && reason === 'saveAll-omitted-preserved') {
+        const k = JSON.stringify([String(raw == null ? '' : raw), nm]);
+        if (!preservedCopies[k]) { preservedCopies[k] = { raw: raw, name: nm, rows: [], last: '' }; copyOrder.push(k); }
+        preservedCopies[k].rows.push(r.rowNumber);
+        const at = text(cell(tab, r, 'droppedAt'));
+        if (at > preservedCopies[k].last) preservedCopies[k].last = at;
+        return;
+      }
+      let line = '(e) ' + name + ' row ' + r.rowNumber + ' | house ' + diagVisible_(raw) +
+        (blank ? ' [NO HOUSE]' : ' → ' + diagVisible_(resolved) + ' [no such house' + (look ? '; looks like ' + look : '') + ']') +
+        ' | id ' + diagVisible_(text(cell(tab, r, 'id'))) + ' | name ' + diagVisible_(nm) + diagNameFlags_(nm) +
+        field(tab, r, 'status') + field(tab, r, 'date', 'entryDate') + field(tab, r, 'exitDate') + field(tab, r, 'fromLead') +
+        field(tab, r, 'reason') + field(tab, r, 'droppedAt') + field(tab, r, 'savedByAction') +
+        field(tab, r, 'updatedAt') + field(tab, r, 'updatedBy');
+      if (name === PATIENTS_SHEET) {
+        line += blank ? ' || DASHBOARD: DROPPED by getData_ (blank houseId) — invisible in every tab'
+          : ' || DASHBOARD: INVISIBLE — no house tab shows house ' + diagVisible_(resolved);
+      }
+      say(line);
+    });
+    copyOrder.forEach(function (k) {
+      const c = preservedCopies[k];
+      say('(e) ' + name + ' | saveAll-omitted-preserved ×' + c.rows.length + ' for house ' + diagVisible_(c.raw) +
+        ' name ' + diagVisible_(c.name) + ' (rows ' + c.rows.join(', ') + '; audit copies of rows KEPT on Patients; last ' +
+        (c.last || '?') + ')');
+    });
+    if (unresolved[name] === 0) say('(e) ' + name + ': none.');
+  });
+
+  say('(e) PatientsTombstones user-delete rows from the last ' + USER_DELETE_DAYS + ' days (droppedAt since ' +
+    new Date(sinceMs).toISOString() + '):');
+  let olderDeletes = 0;
+  if (!tomb) {
+    say('(e) PatientsTombstones: no such tab — no user-delete has ever been recorded.');
+  } else {
+    tomb.data.rows.forEach(function (r) {
+      if (text(cell(tomb, r, 'reason')) !== 'user-delete') return;
+      const at = cell(tomb, r, 'droppedAt');
+      const ms = diagTimeMs_(at);
+      const readable = !isNaN(ms);
+      if (readable && ms < sinceMs) { olderDeletes++; return; }
+      const raw = cell(tomb, r, 'house');
+      const resolved = diagClientHouseId_(raw);
+      const id = text(cell(tomb, r, 'id'));
+      const nm = String(cell(tomb, r, 'name') == null ? '' : cell(tomb, r, 'name'));
+      const stay = stayKey(resolved, nm, cell(tomb, r, 'date'));
+      const now = !pat ? 'Patients tab missing'
+        : id && (id in patientRowById) ? 'BACK on Patients row ' + patientRowById[id] + ' (same id)'
+          : (stay in patientRowByStay) ? 'BACK on Patients row ' + patientRowByStay[stay] + ' (same house + name + entry date)'
+            : 'not on Patients';
+      const by = text(cell(tomb, r, 'updatedBy'));
+      report.recentUserDeletes.push({
+        row: r.rowNumber, droppedAt: String(at == null ? '' : at), readable: readable, house: String(raw == null ? '' : raw),
+        resolved: resolved, id: id, name: nm, deletedBy: by, now: now,
+      });
+      say('(e) user-delete PatientsTombstones row ' + r.rowNumber + ' | droppedAt ' + diagVisible_(at) +
+        (readable ? ' (' + Math.floor((nowMs - ms) / 86400000) + ' day(s) ago)' : ' (UNREADABLE date — listed so nothing is hidden)') +
+        ' | house ' + diagVisible_(raw) + (known.indexOf(resolved) >= 0 ? ' [' + resolved + ']' : ' [NO KNOWN HOUSE]') +
+        ' | id ' + diagVisible_(id) + ' | name ' + diagVisible_(nm) + diagNameFlags_(nm) +
+        field(tomb, r, 'date', 'entryDate') + field(tomb, r, 'status') + field(tomb, r, 'fromLead') +
+        ' | deleted by ' + (by ? diagVisible_(by) : '(not recorded)') + ' at ' + diagVisible_(cell(tomb, r, 'updatedAt')) +
+        ' || now: ' + now);
+    });
+    if (report.recentUserDeletes.length === 0) say('(e) no user-delete in the last ' + USER_DELETE_DAYS + ' days.');
+    if (olderDeletes > 0) say('(e) ' + olderDeletes + ' older user-delete row(s) not listed (droppedAt before the window).');
+  }
+
   // ---- (d) summary ----
   const verdicts = report.ramotRows.filter(function (e) { return e.sheet === PATIENTS_SHEET; }).map(function (e) { return e.verdict; });
   const tally = function (re) { return verdicts.filter(function (v) { return re.test(v); }).length; };
@@ -8599,14 +8722,21 @@ function diagnoseRamotPatientsNow() {
     duplicateIds: report.duplicates.filter(function (d) { return d.kind === 'id'; }).length,
     duplicatePhones: report.duplicates.filter(function (d) { return d.kind === 'phone'; }).length,
     headerDrift: report.headers.filter(function (h) { return h.drift.length > 0; }).map(function (h) { return h.sheet; }),
+    unresolvedHouse: unresolved,
+    recentUserDeletes: report.recentUserDeletes.length,
+    olderUserDeletes: olderDeletes,
+    userDeleteWindowDays: USER_DELETE_DAYS,
   };
   const s = report.summary;
+  const unresolvedParts = Object.keys(unresolved).map(function (name) { return name + ' ' + unresolved[name]; });
   say('(d) SUMMARY ramot — ' + (parts.length ? parts.join(' | ') : 'no ramot rows in any tab') +
     ' || Dashboard ramot tab: shows ' + s.dashboardVisible + ', hides ' + s.hiddenReleased + ' released, ' +
     s.hiddenHouse + ' with an unresolvable house; ' + s.healPending + ' will be released by the next load\'s heal' +
     ' || Patients rows with NO house: ' + s.blankHouse + ' || U+FFFD names: ' + s.corruptedNames +
     ' || duplicate ids: ' + s.duplicateIds + ', duplicate phones: ' + s.duplicatePhones +
-    ' || header drift: ' + (s.headerDrift.length ? s.headerDrift.join(', ') : 'none') + '. No writes performed.');
+    ' || header drift: ' + (s.headerDrift.length ? s.headerDrift.join(', ') : 'none') +
+    ' || (e) any house resolving to no known id: ' + (unresolvedParts.length ? unresolvedParts.join(', ') : 'tabs missing') +
+    '; user-deletes in the last ' + USER_DELETE_DAYS + ' days: ' + s.recentUserDeletes + '. No writes performed.');
   report.lines = lines;
   return report;
 }
@@ -8748,6 +8878,46 @@ function diagClientHouseId_(raw) {
   const lower = s.toLowerCase();
   for (let i = 0; i < ids.length; i++) if (ids[i].toLowerCase() === lower) return ids[i];
   return s;
+}
+
+/* Every house id a Patients row may resolve to — public/app.js HOUSES,
+ * mirrored by DIGEST_HOUSE_NAME_TO_INTERNAL (pinned equal by test). A row whose
+ * house resolves to anything else is shown by no house tab. Pure. */
+function diagKnownHouseIds_() {
+  return Object.keys(DIGEST_HOUSE_NAME_TO_INTERNAL).map(function (k) { return DIGEST_HOUSE_NAME_TO_INTERNAL[k]; });
+}
+
+/* For a stored house that resolves to NO known id: the ONE known house it most
+ * likely means — its id or Hebrew label once invisible marks / NBSP / padding /
+ * case / hyphens are reduced, or (U+FFFD damage, at least two characters
+ * surviving) the house whose id or label the surviving characters fit. '' when
+ * none or more than one house fits: a hint, never a guess. Pure. */
+function diagHouseLookalike_(raw) {
+  const s = String(raw == null ? '' : raw);
+  const n = diagNormText_(s);
+  if (!n) return '';
+  const loose = n.replace(/[-_\u05be\x27\x22\u05f3\u05f4.,]/g, ' ').replace(/\s+/g, ' ').trim();
+  const damaged = hasCorruption_(s) && n.split(CORRUPTION_MARK).join('').replace(/\s/g, '').length >= 2;
+  const re = damaged ? corruptionWildcardRegex_(n) : null;
+  const hits = [];
+  Object.keys(DIGEST_HOUSE_NAME_TO_INTERNAL).forEach(function (label) {
+    const id = DIGEST_HOUSE_NAME_TO_INTERNAL[label];
+    const labelN = diagNormText_(label);
+    const fits = n === id || n === labelN || loose === id || loose === labelN ||
+      (re !== null && (re.test(id) || re.test(labelN)));
+    if (fits && hits.indexOf(id) < 0) hits.push(id);
+  });
+  return hits.length === 1 ? hits[0] : '';
+}
+
+/* A timestamp cell as epoch ms: a Date cell, or ISO-8601 text as the app
+ * writes droppedAt (new Date().toISOString()). NaN for blank or anything else
+ * — the caller lists such a row rather than silently dropping it. Pure. */
+function diagTimeMs_(v) {
+  if (v === null || v === undefined || v === '') return NaN;
+  if (Object.prototype.toString.call(v) === '[object Date]') return v.getTime();
+  const s = String(v).trim();
+  return /^\d{4}-\d{2}-\d{2}/.test(s) ? new Date(s).getTime() : NaN;
 }
 
 /* The status public/app.js normalizeStatus() gives a stored value (its

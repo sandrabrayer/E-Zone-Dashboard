@@ -18,6 +18,15 @@
  *   4. Its verdicts mirror public/app.js exactly (resolveHouseId,
  *      normalizeStatus), so "VISIBLE / HIDDEN" in the log is what the
  *      Dashboard really does.
+ *   5. Section (e), ANY house: every Patients / PatientsTombstones row whose
+ *      house resolves to no known house id (with a one-house "looks like"
+ *      hint, never a guess), and every PatientsTombstones 'user-delete' row
+ *      from the last 60 days (frozen clock) — deleter, date, and whether the
+ *      patient is back on Patients; older ones counted, unreadable dates
+ *      listed. The SUMMARY stays the last line and carries the (e) counts.
+ *   6. The re-land is ADDITIVE only: every diag helper name is declared once
+ *      in Code.gs (Apps Script lets a second declaration silently replace the
+ *      first), and the section runs nothing at script load.
  * All names, ids and phone numbers are SYNTHETIC. */
 
 const { test } = require('node:test');
@@ -77,7 +86,17 @@ function roSheet(name, header, rows, attempts) {
   }, 'Sheet(' + name + ')', attempts);
 }
 
-function loadCode(tabs) {
+/* A Date whose no-argument form is pinned to `iso` — section (e)'s 60-day
+ * window is relative to "now", so its tests freeze the clock. */
+function frozenDate(iso) {
+  const fixed = new Date(iso).getTime();
+  return class FrozenDate extends Date {
+    constructor(...a) { if (a.length === 0) super(fixed); else super(...a); }
+    static now() { return fixed; }
+  };
+}
+
+function loadCode(tabs, nowIso) {
   const attempts = [];
   const logs = [];
   const sheets = (tabs || []).map((t) => roSheet(t.name, t.header, t.rows, attempts));
@@ -88,7 +107,7 @@ function loadCode(tabs) {
   }, 'Spreadsheet', attempts);
   const sandbox = {
     console: { log() {}, warn() {}, error() {}, info() {} },
-    JSON, Math, Date, Number, String, Array, Object, RegExp, isFinite,
+    JSON, Math, Date: nowIso ? frozenDate(nowIso) : Date, Number, String, Array, Object, RegExp, isFinite,
     Logger: { log: (m) => logs.push(String(m)) },
     SpreadsheetApp: { getActiveSpreadsheet: () => ss },
     Utilities: { formatDate: (d) => d.toISOString().slice(0, 10), getUuid: () => { attempts.push('Utilities.getUuid'); return 'x'; } },
@@ -222,7 +241,8 @@ test('...and neither does ANY Code.gs helper it reaches — nor any other mutato
   const names = Object.keys(fns);
   // It really does lean on shared helpers, so the closure is meaningful.
   ['diagReadSheet_', 'diagRamotHouseMatch_', 'diagClientHouseId_', 'diagClientStatus_', 'hasCorruption_',
-    'corruptionWildcardRegex_', 'normalizePhone_', 'asISODate_'].forEach((n) => {
+    'corruptionWildcardRegex_', 'normalizePhone_', 'asISODate_',
+    'diagKnownHouseIds_', 'diagHouseLookalike_', 'diagTimeMs_'].forEach((n) => {
     assert.ok(names.includes(n), 'expected the diagnostic to reach ' + n);
   });
   const FORBIDDEN = [
@@ -460,4 +480,189 @@ test('diagPhoneKey_: dashes, +972 and a Sheets-dropped leading zero all collapse
   assert.strictEqual(k(500000001), '0500000001', 'a number-typed cell lost its leading 0');
   assert.strictEqual(k('03-0000000'), '030000000', 'a 9-digit landline');
   ['', null, undefined, '12', 'לא ידוע'].forEach((v) => assert.strictEqual(k(v), '', JSON.stringify(v)));
+});
+
+/* ===== 5. section (e) — ANY house ===== */
+
+const NOW = '2026-09-29T12:00:00.000Z';
+const DAY = 24 * 60 * 60 * 1000;
+const daysAgo = (d) => new Date(new Date(NOW).getTime() - d * DAY).toISOString();
+
+/* A dedicated spreadsheet for (e): other houses, known-but-oddly-written
+ * houses (NOT listed), unresolvable ones (listed), and user-delete tombstones
+ * inside, at the edge of, and outside the 60-day window. */
+function worldE() {
+  const { C } = loadCode([]);
+  const P = (f) => rowOf(C.PATIENT_COLUMNS, f);
+  const T = (f) => rowOf(C.PATIENT_TOMBSTONE_COLUMNS, f);
+  const base = { date: '2026-05-01', pay: 9000, status: 'active', source: 'direct_admin' };
+  return [
+    { name: C.PATIENTS_SHEET, header: arr(C.PATIENT_COLUMNS), rows: [
+      P({ ...base, id: 'id-e2', houseId: 'asher', name: 'אלף' }),                                   // row 2  known
+      P({ ...base, id: 'id-e3', houseId: 'רעננה אשר', name: 'בית' }),                                // row 3  known (label)
+      P({ ...base, id: 'id-e4', houseId: ' Pardes ', name: 'גימל' }),                                // row 4  known (trim + case)
+      P({ ...base, id: 'id-e5', houseId: 'SDE', name: 'דלת' }),                                      // row 5  known (case)
+      P({ ...base, id: 'id-e6', houseId: 'asherr', name: 'הא' }),                                    // row 6  UNRESOLVED, no lookalike
+      P({ ...base, id: 'id-e7', houseId: 'רעננה  אשר', name: 'וו' }),                               // row 7  UNRESOLVED → asher
+      P({ ...base, id: 'id-e8', houseId: 'arfoni' + RLM, name: 'זין', fromLead: 'lead-e8' }),       // row 8  UNRESOLVED → arfoni
+      P({ ...base, id: 'id-e9', houseId: 'קיסריה ר' + FFFD + 'האב', name: 'חית' }),                  // row 9  UNRESOLVED → rehab
+      P({ ...base, id: 'id-e10', houseId: FFFD, name: 'טית' }),                                      // row 10 UNRESOLVED, no lookalike
+      P({ ...base, id: 'id-e11', houseId: '', name: 'יוד' }),                                        // row 11 NO HOUSE
+      P({ ...base, id: 'id-back', houseId: 'ramot', name: 'שב לבית', date: '2026-04-01' }),          // row 12 re-added (same id)
+      P({ ...base, id: 'id-new', houseId: 'arfoni', name: 'שב שוב', date: '2026-04-02' }),           // row 13 re-added (same stay)
+    ] },
+    { name: C.PATIENTS_TOMBSTONES_SHEET, header: arr(C.PATIENT_TOMBSTONE_COLUMNS), rows: [
+      T({ ...base, houseId: 'ramot', name: 'נמחק לאחרונה', reason: 'user-delete', savedByAction: 'deletePatientRow',
+        droppedAt: daysAgo(9), id: 'id-d2', updatedAt: daysAgo(9), updatedBy: 'ורד' }),             // row 2  listed (9 days)
+      T({ ...base, houseId: 'asher', name: 'בקצה החלון', reason: 'user-delete', droppedAt: daysAgo(60), id: 'id-d3' }), // row 3 listed (exactly 60)
+      T({ ...base, houseId: 'asher', name: 'ישן', reason: 'user-delete', droppedAt: daysAgo(61), id: 'id-d4' }), // row 4 older → counted only
+      T({ ...base, houseId: 'rehab', name: 'תאריך חסר', reason: 'user-delete', droppedAt: '', id: 'id-d5' }), // row 5 UNREADABLE → listed
+      T({ ...base, houseId: 'ramot', name: 'שב לבית', date: '2026-04-01', reason: 'user-delete',
+        droppedAt: new Date(new Date(NOW).getTime() - 3 * DAY), id: 'id-back' }),                   // row 6 Date cell; back by id
+      T({ ...base, houseId: 'arfoni', name: 'שב שוב', date: '2026-04-02', reason: 'user-delete',
+        droppedAt: daysAgo(2), id: '' }),                                                             // row 7 back by stay (no id)
+      T({ ...base, houseId: 'asherr', name: 'הא', reason: 'saveAll-omitted-preserved', droppedAt: daysAgo(1) }), // row 8  aggregated
+      T({ ...base, houseId: 'asherr', name: 'הא', reason: 'saveAll-omitted-preserved', droppedAt: daysAgo(0) }), // row 9  aggregated
+      T({ ...base, houseId: 'אשר ' + FFFD, name: 'כף', reason: 'dedupe-identical-key', droppedAt: daysAgo(5), id: 'id-d10' }), // row 10 UNRESOLVED
+      T({ ...base, houseId: 'rehab', name: 'למד', reason: 'saveAll-omitted-preserved', droppedAt: daysAgo(1) }), // row 11 known, not user-delete
+      T({ ...base, houseId: '', name: 'מם', reason: 'user-delete', droppedAt: daysAgo(4), id: 'id-d12' }), // row 12 NO HOUSE + recent delete
+    ] },
+  ];
+}
+
+function runE(tabs) {
+  const h = loadCode(tabs || worldE(), NOW);
+  const report = h.sandbox.diagnoseRamotPatientsNow();
+  return Object.assign(h, { report: JSON.parse(JSON.stringify(report)) });
+}
+
+test('(e) lists every Patients and PatientsTombstones row, ANY house, whose house resolves to no known id — and nothing that resolves', () => {
+  const { report, logs } = runE();
+  const where = report.unresolvedHouseRows.map((e) => e.sheet + ':' + e.row);
+  assert.deepStrictEqual(where, [
+    'Patients:6', 'Patients:7', 'Patients:8', 'Patients:9', 'Patients:10', 'Patients:11',
+    'PatientsTombstones:8', 'PatientsTombstones:9', 'PatientsTombstones:10', 'PatientsTombstones:12',
+  ], 'id / label / padded / cased houses resolve (rows 2–5, 12, 13) and are NOT listed');
+  const look = Object.fromEntries(report.unresolvedHouseRows.map((e) => [e.sheet + ':' + e.row, e.lookalike]));
+  assert.strictEqual(look['Patients:6'], '', 'a typo that fits no house gets no guess');
+  assert.strictEqual(look['Patients:7'], 'asher', 'a doubled inner space still reads as רעננה אשר');
+  assert.strictEqual(look['Patients:8'], 'arfoni', 'an invisible RTL mark');
+  assert.strictEqual(look['Patients:9'], 'rehab', 'U+FFFD damage the surviving letters pin to one house');
+  assert.strictEqual(look['Patients:10'], '', 'a lone U+FFFD fits every house — no guess');
+  assert.strictEqual(look['Patients:11'], '', 'a blank house');
+  const line = (re) => logs.filter((l) => re.test(l));
+  assert.strictEqual(line(/^\(e\) Patients row 8 /).length, 1);
+  assert.ok(line(/^\(e\) Patients row 8 /)[0].includes('house "arfoni\\u200f" → "arfoni\\u200f" [no such house; looks like arfoni]'),
+    'the invisible mark is printed visibly: ' + line(/^\(e\) Patients row 8 /)[0]);
+  assert.match(line(/^\(e\) Patients row 8 /)[0], /\| fromLead "lead-e8" .*\|\| DASHBOARD: INVISIBLE — no house tab shows house/);
+  assert.match(line(/^\(e\) Patients row 11 /)[0], /house "" \[NO HOUSE\] .*DASHBOARD: DROPPED by getData_ \(blank houseId\)/);
+  assert.match(line(/^\(e\) PatientsTombstones row 10 /)[0], /\| reason "dedupe-identical-key" \| droppedAt "[^"]+" \| savedByAction ""/);
+  const agg = line(/^\(e\) PatientsTombstones \| saveAll-omitted-preserved/);
+  assert.strictEqual(agg.length, 1, 'merge-don\'t-drop audit copies are one line per house + name, every row number on it');
+  assert.match(agg[0], /×2 for house "asherr" name "הא" \(rows 8, 9;/);
+  assert.deepStrictEqual(report.summary.unresolvedHouse, { Patients: 6, PatientsTombstones: 4 });
+});
+
+test('(e) every user-delete tombstone from the last 60 days: who, when, and whether the patient is back — older ones counted, unreadable dates listed', () => {
+  const { report, logs } = runE();
+  assert.deepStrictEqual(report.recentUserDeletes.map((d) => d.row), [2, 3, 5, 6, 7, 12],
+    'rows 2 (9 days), 3 (exactly 60 days), 5 (unreadable), 6 (Date cell), 7, 12 — not row 4 (61 days), not the non-delete rows');
+  const byRow = Object.fromEntries(report.recentUserDeletes.map((d) => [d.row, d]));
+  assert.strictEqual(byRow[2].deletedBy, 'ורד');
+  assert.strictEqual(byRow[2].now, 'not on Patients');
+  assert.strictEqual(byRow[5].readable, false);
+  assert.strictEqual(byRow[6].now, 'BACK on Patients row 12 (same id)');
+  assert.strictEqual(byRow[7].now, 'BACK on Patients row 13 (same house + name + entry date)');
+  assert.strictEqual(byRow[12].resolved, '');
+  const line = (row) => logs.find((l) => l.startsWith('(e) user-delete PatientsTombstones row ' + row + ' '));
+  assert.match(line(2), /droppedAt "[^"]+" \(9 day\(s\) ago\) \| house "ramot" \[ramot\] \| id "id-d2" \| name "נמחק לאחרונה"/);
+  assert.match(line(2), /\| deleted by "ורד" at "[^"]+" \|\| now: not on Patients$/);
+  assert.match(line(3), /\(60 day\(s\) ago\)/, 'the window edge is inside');
+  assert.match(line(5), /droppedAt "" \(UNREADABLE date — listed so nothing is hidden\)/);
+  assert.match(line(5), /deleted by \(not recorded\)/, 'a legacy tombstone without the deleter says so');
+  assert.match(line(6), /\(date cell\) \(3 day\(s\) ago\)/, 'a Sheets-coerced Date cell is read too');
+  assert.match(line(12), /house "" \[NO KNOWN HOUSE\]/);
+  assert.ok(logs.includes('(e) 1 older user-delete row(s) not listed (droppedAt before the window).'));
+  assert.ok(logs.some((l) => l.startsWith('(e) PatientsTombstones user-delete rows from the last 60 days (droppedAt since ' + daysAgo(60) + ')')));
+  assert.strictEqual(report.summary.recentUserDeletes, 6);
+  assert.strictEqual(report.summary.olderUserDeletes, 1);
+  assert.strictEqual(report.summary.userDeleteWindowDays, 60);
+});
+
+test('(e) is read-only too, and the SUMMARY stays the last line and carries the (e) counts', () => {
+  const { attempts, logs } = runE();
+  assert.deepStrictEqual(attempts, [], 'no write / lock / property / uuid attempt of any kind');
+  const last = logs[logs.length - 1];
+  assert.match(last, /^\(d\) SUMMARY ramot/);
+  assert.match(last, / \|\| \(e\) any house resolving to no known id: Patients 6, PatientsTombstones 4; user-deletes in the last 60 days: 6\. No writes performed\.$/);
+  const firstE = logs.findIndex((l) => l.startsWith('(e)'));
+  const lastC = logs.map((l) => l.startsWith('(c)')).lastIndexOf(true);
+  assert.ok(firstE > lastC, '(e) prints after (c)…');
+  assert.ok(logs.slice(firstE, -1).every((l) => l.startsWith('(e)')), '…and right before the summary');
+});
+
+test('(e) says "none" when nothing matches, and missing tabs are reported, not crashed on', () => {
+  const { C } = loadCode([]);
+  const clean = runE([
+    { name: C.PATIENTS_SHEET, header: arr(C.PATIENT_COLUMNS), rows: [rowOf(C.PATIENT_COLUMNS, { houseId: 'ramot', name: 'אלף', date: '2026-05-01' })] },
+    { name: C.PATIENTS_TOMBSTONES_SHEET, header: arr(C.PATIENT_TOMBSTONE_COLUMNS), rows: [] },
+  ]);
+  assert.ok(clean.logs.includes('(e) Patients: none.'));
+  assert.ok(clean.logs.includes('(e) PatientsTombstones: none.'));
+  assert.ok(clean.logs.includes('(e) no user-delete in the last 60 days.'));
+  const empty = runE([]);
+  assert.deepStrictEqual(empty.attempts, [], 'getOrCreateSheet_ would have inserted the tabs');
+  assert.ok(empty.logs.includes('(e) Patients: no such tab — skipped.'));
+  assert.ok(empty.logs.includes('(e) PatientsTombstones: no such tab — no user-delete has ever been recorded.'));
+  assert.match(empty.logs[empty.logs.length - 1], /\(e\) any house resolving to no known id: tabs missing; user-deletes in the last 60 days: 0\. No writes performed\.$/);
+});
+
+test('diagKnownHouseIds_ is exactly the app.js HOUSES ids — the houses a tab exists for', () => {
+  const app = loadApp();
+  const { sandbox } = loadCode([]);
+  assert.deepStrictEqual(arr(sandbox.diagKnownHouseIds_()).slice().sort(), arr(app.HOUSES).map((h) => h.id).sort());
+});
+
+test('diagHouseLookalike_: exactly one house or none — a hint, never a guess', () => {
+  const { sandbox } = loadCode([]);
+  const l = (v) => sandbox.diagHouseLookalike_(v);
+  assert.strictEqual(l('ASHER' + RLM), 'asher');
+  assert.strictEqual(l('רמות-השבים'), 'ramot');
+  assert.strictEqual(l('רעננה' + String.fromCharCode(0xa0) + 'הפרדס'), 'pardes', 'an NBSP inside the label');
+  assert.strictEqual(l('ש' + FFFD + 'ה אליעזר'), 'sde');
+  assert.strictEqual(l('רעננה ' + FFFD + FFFD), '', 'fits both Raanana houses — ambiguous, no guess');
+  assert.strictEqual(l(FFFD + FFFD), '', 'nothing survived');
+  ['', null, undefined, 'unknown', 'asherr', 'external'].forEach((v) => assert.strictEqual(l(v), '', JSON.stringify(v)));
+});
+
+test('diagTimeMs_: Date cells and ISO text; NaN for blank or anything else', () => {
+  const { sandbox } = loadCode([]);
+  assert.strictEqual(sandbox.diagTimeMs_('2026-09-10T08:00:00.000Z'), Date.parse('2026-09-10T08:00:00.000Z'));
+  assert.strictEqual(sandbox.diagTimeMs_(new Date('2026-09-10T08:00:00.000Z')), Date.parse('2026-09-10T08:00:00.000Z'));
+  ['', null, undefined, 'לא ידוע', 45000, 'yesterday'].forEach((v) => assert.ok(Number.isNaN(sandbox.diagTimeMs_(v)), JSON.stringify(v)));
+});
+
+/* ===== 6. additive only — the re-land cannot change what any other function does ===== */
+
+const DIAG_START = GS_SRC.indexOf('/* ===== Missing-patient diagnostic (READ-ONLY');
+
+test('the diagnostic section declares only functions (nothing runs at script load), each name new to Code.gs', () => {
+  assert.ok(DIAG_START > 0, 'the diagnostic section is in Code.gs');
+  const section = stripStrings(stripComments(GS_SRC.slice(DIAG_START)));
+  // Top-level statements are the lines at column 0 that are not inside a function body.
+  let depth = 0;
+  const topLevel = [];
+  section.split('\n').forEach((ln) => {
+    if (depth === 0 && ln.trim()) topLevel.push(ln.trim());
+    for (const ch of ln) { if (ch === '{') depth++; else if (ch === '}') depth--; }
+  });
+  topLevel.forEach((ln) => {
+    assert.match(ln, /^(function [A-Za-z_$][\w$]*\s*\(|\}$)/, 'only function declarations at the top level: ' + ln);
+  });
+  const names = topLevel.map((ln) => (ln.match(/^function ([A-Za-z_$][\w$]*)/) || [])[1]).filter(Boolean);
+  assert.ok(names.includes('diagnoseRamotPatientsNow') && names.length >= 10, names.join(', '));
+  names.forEach((n) => {
+    const decl = GS_SRC.match(new RegExp('(^|\\n)\\s*(function\\s+|(const|let|var)\\s+)' + n.replace(/\$/g, '\\$') + '\\b', 'g')) || [];
+    assert.strictEqual(decl.length, 1, n + ' must be declared exactly once in Code.gs — a second declaration would silently replace the first in Apps Script');
+  });
 });
