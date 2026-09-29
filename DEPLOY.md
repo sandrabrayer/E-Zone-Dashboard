@@ -176,17 +176,6 @@ stamp is ever invented for a historical row**.
 
 Same rule as always: never insert or reorder a Payments or Credits column.
 
-## Missing-patient diagnostic (read-only)
-
-`diagnoseRamotPatientsNow()` is an editor-run diagnostic for the
-missing-ramot-patient investigation. It is **read-only**: it takes no lock and
-sets no property, it never creates or formats a tab, and it is not reachable
-over HTTP. There is nothing to set up. After the deploy lands, run it from the
-Apps Script editor: pick `diagnoseRamotPatientsNow` → **Run** → **View →
-Executions log**. What each log section means and how to read it:
-`CHANGELOG-missing-patient-diagnostic.md`. The findings table is in
-`docs/missing-patient-investigation.md`.
-
 ## Security
 
 - Credentials live **only** in GitHub Secrets — never committed, never printed;
