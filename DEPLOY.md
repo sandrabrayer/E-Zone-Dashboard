@@ -189,6 +189,27 @@ can show, and every permanent delete (✕) recorded in the last 60 days. What
 each log section means and how to read it:
 `CHANGELOG-ramot-diagnostic-reland.md`.
 
+### The same report as a Google Doc — `diagnoseRamotPatientsToDocNow`
+
+Run `diagnoseRamotPatientsToDocNow` instead to read the findings without
+copying the log. It runs the same read-only diagnostic, then creates **one new
+Google Doc** in your My Drive — «E-Zone ramot diagnostic YYYY-MM-DD HH:mm»
+(Israel time), one paragraph per log line. The Doc's link is the **last line
+of the Executions log**. It writes nothing to the spreadsheet, and it never
+shares, moves or publishes the Doc (a new file starts private unless your
+Workspace admin set another default). The Doc holds patient names — keep it
+to yourself and delete it when you are done. Details:
+`CHANGELOG-diagnostic-to-doc.md`.
+
+> ⚠️ **One-time re-authorization.** This change added the
+> `https://www.googleapis.com/auth/documents` scope to `appsscript.json`.
+> Merge it when you can act right away: as soon as the **Deploy Apps Script**
+> run for it finishes, open the editor, run `diagnoseRamotPatientsToDocNow`
+> once and approve Google's permission screen (it asks to see, edit, create
+> and delete your Google Docs). The web app runs as you, so until you approve
+> the new scope its requests may fail with «Authorization is required». Then
+> reload the Dashboard to confirm it loads normally.
+
 ## Security
 
 - Credentials live **only** in GitHub Secrets — never committed, never printed;
