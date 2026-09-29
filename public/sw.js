@@ -72,7 +72,11 @@
 // v15 → v16: every displayed date becomes DD/MM/YYYY (formatDateHe). app.js is
 // the only file that changed, and the v15 copy is the OFFLINE fallback on any
 // device that installed it — evict it so no phone keeps rendering ISO dates.
-var CACHE_VERSION = 'v16';
+// v17 → v18: v17 is SKIPPED on purpose. It was PR #145's version; #146
+// reverted that PR, and phones still hold a v17 cache, so reusing the number
+// could leave them on it. The first public/ change after the revert ships as
+// v18 and the activate step evicts both v16 and the orphaned v17.
+var CACHE_VERSION = 'v18';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

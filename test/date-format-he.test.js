@@ -330,5 +330,7 @@ test('E: month-year labels are untouched (they are not DD/MM/YYYY dates)', () =>
 test('E: the service worker cache version was bumped for the app.js change', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
   assert.notEqual(v, 'v15', 'v15 is the version that still served ISO dates');
-  assert.equal(v, 'v16');
+  // Was pinned to exactly 'v16', which made the next bump a failure; what
+  // matters is that the DD/MM/YYYY bundle's version was not rolled back.
+  assert.ok(Number(v.slice(1)) >= 16, 'at least v16, found ' + v);
 });
