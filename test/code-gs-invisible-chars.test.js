@@ -283,8 +283,10 @@ GS_FILES.forEach((file) => {
     regions.forEach((r) => { assert.strictEqual(r.start, at, 'regions are contiguous'); at = r.end; });
     assert.strictEqual(at, src.length, 'regions cover the whole file');
     const count = (k) => regions.filter((r) => r.kind === k).length;
-    assert.ok(count('string') > 100 && count('comment') > 100 && count('regex') > 0 || file !== 'Code.gs',
-      'Code.gs has many strings and comments and some regex literals — the scanner saw them');
+    if (file === 'Code.gs') {
+      assert.ok(count('string') > 100 && count('comment') > 100 && count('regex') > 0,
+        'Code.gs has many strings and comments and some regex literals — the scanner saw them');
+    }
   });
 
   test('apps-script/' + file + ': NO raw invisible or control character outside a string literal', () => {
@@ -301,11 +303,9 @@ GS_FILES.forEach((file) => {
     const stray = [];
     regions.forEach((r) => {
       if (r.kind === 'string' || r.kind === 'template' || r.kind === 'regex') return;
-      const k = src.slice(r.start, r.end).indexOf('�');
+      const k = src.slice(r.start, r.end).indexOf('\ufffd');
       if (k >= 0) stray.push(r.kind + ' at offset ' + (r.start + k));
     });
     assert.deepStrictEqual(stray, [], 'U+FFFD outside a literal is encoding damage (and a SyntaxError in code)');
   });
 });
-
-module.exports = { scanRegions, findInvisibles };

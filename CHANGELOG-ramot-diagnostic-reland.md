@@ -121,7 +121,8 @@ only inside a string or regex literal.
 
 Writing this test surfaced a real hazard in how these edits are made: an
 escape typed as `\u05be` in an editing tool can land in the file as the raw
-character. Two such spots in this PR's own drafts were caught and written
+character. Several such spots in this PR's own drafts (a regex in
+`Code.gs`, and a few test-file literals and comments) were caught and written
 back as escapes. That is exactly what the guard is for.
 
 ## Tests
