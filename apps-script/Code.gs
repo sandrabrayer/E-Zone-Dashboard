@@ -9155,3 +9155,1084 @@ function diagNameFlags_(name) {
   if (!s.trim()) flags.push('BLANK NAME');
   return flags.length ? ' [' + flags.join(', ') + ']' : '';
 }
+
+/* ===== Reconciliation report (READ-ONLY on the spreadsheet — run from the editor) =====
+ *
+ * reconciliationReportNow() cross-checks Leads, Patients, מטופלים משוחררים,
+ * PatientsTombstones, Payments, Credits and BillingOverrides and writes what
+ * does not add up into ONE new, private Google Doc
+ * ("E-Zone דוח פערים YYYY-MM-DD HH:mm"), right-to-left, whose URL it logs.
+ *
+ * THE SPREADSHEET IS NEVER WRITTEN. Tabs are opened with getSheetByName only
+ * (never getOrCreateSheet_, which can insert a tab, extend a header row and
+ * re-format columns), cells are read with getValues, and there is no lock, no
+ * AuditLog row and no property. The ONLY write in the whole run is
+ * DocumentApp.create + that document's own body; the document is not shared
+ * and not moved (it lands in the runner's My Drive root, visible to them
+ * alone). test/reconciliation-report.test.js source-scans this function and
+ * every Code.gs helper it reaches, and runs it against a spreadsheet whose
+ * every mutator throws.
+ *
+ * THE SAME RULES AS THE APP. Every rule that decides "whose money is this" or
+ * "what was owed" lives in public/app.js; the ones this report needs are
+ * ported below as pure rec*_ helpers, and the test runs each port and its
+ * app.js original on the same fixtures (parity):
+ *   - identity: the four payment-match tiers (persisted uid, exact triple,
+ *     normalized triple, house + name when exactly one fits — ambiguity is
+ *     refused at every tier), the look-alike-name rule and the ranked
+ *     reconnect candidates of the שיוך תשלומים screen;
+ *   - the stay window (entry <= date <= exit, both ends inclusive; released
+ *     with no exit date = no longer in the house);
+ *   - the records cutoff: a cycle due before 2026-07-01 is neither expected
+ *     nor debt — it is reported in its own column, summed into no gap;
+ *   - cycles anchored on the ENTRY day-of-month, clamped in short months,
+ *     none before entry, none on/after exit;
+ *   - a payment's period: the recorded coverageStart/coverageEnd when usable,
+ *     else dueDate .. dueDate + 1 month − 1 day (accountingCoverage_);
+ *   - billing overrides replace the amount of an UNPAID cycle for their
+ *     month; paid / partial rows are history and keep their amount;
+ *   - amounts are stored VAT-inclusive; ex-VAT is per row at 2dp (÷1.18);
+ *   - a payment status of 'void' / 'מבוטל' (the duplicate-void marking of
+ *     PR #144) is excluded from every paid / owed figure and shown apart.
+ *
+ * Intentionally PUBLIC (Run dropdown) and NOT reachable over HTTP: handle_'s
+ * fixed action allow-list never names it. Returns the report object. */
+function reconciliationReportNow() {
+  const data = recCollect_();
+  const report = recBuildReport_(data.tabs, data.todayISO);
+  report.missingTabs = data.missing;
+  report.headerDrift = data.drift;
+  const title = 'E-Zone דוח פערים ' + data.stamp;
+  const out = recWriteDoc_(report, title);
+  report.title = title;
+  report.url = out.url;
+  Logger.log('reconciliationReportNow — READ-ONLY on the spreadsheet (no cell, tab, lock or property written). ' +
+    'Report: ' + title + ' — ' + out.url);
+  Logger.log('Summary: ' + report.summary.map(function (s) {
+    return s.letter + ' ' + s.count + (s.money ? ' (₪' + recMoneyText_(s.money) + ')' : '');
+  }).join(' | '));
+  return report;
+}
+
+/* ---------------- reading (getSheetByName + getValues only) ---------------- */
+
+/* The tabs the report reads, with the positional columns the app reads each
+ * one with (readSheet_ maps BY POSITION). */
+function recTargets_() {
+  return [
+    { key: 'leads',       sheet: LEADS_SHEET,               columns: LEAD_COLUMNS },
+    { key: 'irrelevant',  sheet: IRRELEVANT_LEADS_SHEET,    columns: IRRELEVANT_LEAD_COLUMNS },
+    { key: 'removed',     sheet: REMOVED_LEADS_SHEET,       columns: REMOVED_LEAD_COLUMNS },
+    { key: 'patients',    sheet: PATIENTS_SHEET,            columns: PATIENT_COLUMNS },
+    { key: 'discharged',  sheet: DISCHARGED_PATIENTS_SHEET, columns: DISCHARGED_PATIENT_COLUMNS },
+    { key: 'tombstones',  sheet: PATIENTS_TOMBSTONES_SHEET, columns: PATIENT_TOMBSTONE_COLUMNS },
+    { key: 'payments',    sheet: PAYMENTS_SHEET,            columns: PAYMENT_COLUMNS },
+    { key: 'credits',     sheet: CREDITS_SHEET,             columns: CREDIT_COLUMNS },
+    { key: 'overrides',   sheet: BILLING_OVERRIDES_SHEET,   columns: BILLING_OVERRIDE_COLUMNS },
+  ];
+}
+
+/* Every target tab as { key: {sheet, header, columns, rows} }; a missing tab
+ * is listed, never created. Also today (script timezone) and the title stamp. */
+function recCollect_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const tabs = {};
+  const missing = [];
+  const drift = [];
+  recTargets_().forEach(function (t) {
+    const sh = ss.getSheetByName(t.sheet);
+    if (!sh) { missing.push(t.sheet); tabs[t.key] = { sheet: t.sheet, header: [], columns: t.columns, rows: [] }; return; }
+    const d = recReadSheet_(sh, t.columns);
+    d.sheet = t.sheet;
+    tabs[t.key] = d;
+    const dr = diagHeaderDrift_(d.header, t.columns);
+    if (dr.length) drift.push({ sheet: t.sheet, drift: dr });
+  });
+  const now = new Date();
+  const two = function (n) { return ('0' + n).slice(-2); };
+  return {
+    tabs: tabs, missing: missing, drift: drift,
+    todayISO: localPartsISO_(now),
+    stamp: localPartsISO_(now) + ' ' + two(now.getHours()) + ':' + two(now.getMinutes()),
+  };
+}
+
+/* Rows of `sh` as {rowNumber, obj}, fully-empty rows skipped. The app's
+ * columns name the first positions; any column to their right keeps its own
+ * header (a hand-added 'טלפון' or 'אמצעי תשלום' column on Payments is read,
+ * not ignored). READ-ONLY. */
+function recReadSheet_(sh, columns) {
+  const lastRow = sh.getLastRow();
+  const lastCol = sh.getLastColumn();
+  const header = (lastRow >= 1 && lastCol >= 1)
+    ? sh.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) { return String(h == null ? '' : h).trim(); })
+    : [];
+  const cols = columns.slice();
+  for (let j = cols.length; j < header.length; j++) cols.push(header[j] || ('col' + (j + 1)));
+  const width = Math.min(cols.length, sh.getMaxColumns());
+  const rows = [];
+  if (lastRow >= 2 && width >= 1) {
+    const values = sh.getRange(2, 1, lastRow - 1, width).getValues();
+    for (let i = 0; i < values.length; i++) {
+      const row = values[i];
+      let hasContent = false;
+      for (let j = 0; j < row.length; j++) {
+        if (row[j] !== '' && row[j] !== null) { hasContent = true; break; }
+      }
+      if (!hasContent) continue;
+      const obj = {};
+      for (let j = 0; j < cols.length; j++) {
+        if (!(cols[j] in obj)) obj[cols[j]] = j < row.length ? row[j] : '';
+      }
+      rows.push({ rowNumber: i + 2, obj: obj });
+    }
+  }
+  return { header: header, columns: cols, rows: rows };
+}
+
+/* ---------------- ports of the app.js rules (pure) ---------------- */
+
+/* The records cutoff — app.js's constant of the same meaning (pinned equal by
+ * the parity test). A cycle due before it is not expected and not debt. */
+function recRecordsCutoff_() { return '2026-07-01'; }
+/* app.js VAT_RATE — amounts are stored VAT-inclusive. */
+function recVatRate_() { return 1.18; }
+function recRound2_(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+/* Ex-VAT at 2dp, per row (app.js revenueExVat). */
+function recExVat_(inclVat) { return recRound2_((Number(inclVat) || 0) / recVatRate_()); }
+function recText_(v) { return String(v == null ? '' : v).trim(); }
+function recNum_(v) { return Number(v) || 0; }
+
+/* app.js normalizeStage: blank / unknown → 'new'. */
+function recStage_(raw) {
+  const aliases = {
+    'new': 'new', 'ליד חדש': 'new', 'חדש': 'new', 'ליד': 'new',
+    'visit': 'visit', 'ביקור נקבע': 'visit', 'ביקור': 'visit', 'נקבע ביקור': 'visit',
+    'paid': 'paid', 'מקדמה שולמה': 'paid', 'בטיפול פעיל': 'paid', 'מקדמה': 'paid', 'שילם מקדמה': 'paid',
+    'entry': 'entry', 'entered': 'entry',
+    'כניסה לבית': 'entry', 'נכנס לבית': 'entry', 'נכנס': 'entry', 'כניסה': 'entry',
+    'admitted': 'admitted', 'נקלט': 'admitted', 'אושפז': 'admitted',
+    'irrelevant': 'irrelevant', 'לא רלוונטי': 'irrelevant', 'לא_רלוונטי': 'irrelevant',
+    'waitlist': 'waitlist', 'רשימת המתנה': 'waitlist', 'רשימת_המתנה': 'waitlist',
+  };
+  if (raw === undefined || raw === null) return 'new';
+  const s = String(raw).trim();
+  if (!s) return 'new';
+  return aliases[s] || aliases[s.toLowerCase()] || aliases[s.replace(/\s+/g, ' ')] || 'new';
+}
+
+/* A payment status: 'void' for the duplicate-void marking (PR #144 — kept
+ * apart so its money is never counted twice), otherwise paymentStatus_ —
+ * app.js normalizePayment's aliases, unknown → 'unpaid'. */
+function recPaymentStatus_(raw) {
+  const t = recText_(raw);
+  if (t.toLowerCase() === 'void' || t === 'מבוטל') return 'void';
+  return paymentStatus_(raw);
+}
+
+/* app.js normalizeNameForMatch (trim, NFC, invisibles out, whitespace runs
+ * collapsed, case folded) — that is exactly diagNormText_. */
+function recNameKey_(v) { return diagNormText_(v); }
+
+/* app.js patientKey: resolved house :: trimmed name :: entry date. */
+function recPatientKey_(p) {
+  return (p.houseId || '') + '::' + recText_(p.name) + '::' + (p.date || '');
+}
+/* app.js patientMatchKey — the triple reduced for MATCHING. */
+function recMatchKey_(houseId, name, date) {
+  return diagClientHouseId_(houseId || '') + '::' + recNameKey_(name) + '::' + asISODate_(date);
+}
+/* app.js patientMatchKeyFromId: '' for anything that is not a triple. */
+function recMatchKeyFromId_(patientId) {
+  const parts = String(patientId == null ? '' : patientId).split('::');
+  if (parts.length !== 3) return '';
+  return recMatchKey_(parts[0], parts[1], parts[2]);
+}
+/* app.js paymentPatientUid: the person's link wins over the server's. */
+function recPaymentUid_(pay) {
+  if (!pay) return '';
+  return String(pay.linkPatientUid || pay.patientUid || '').trim();
+}
+
+/* app.js matchPatientForPayment — the four tiers, most durable first, and
+ * ambiguity refused at every tier. → { patient, via } or null. */
+function recMatchPatient_(pay, patients) {
+  if (!pay || !Array.isArray(patients)) return null;
+  const uid = recPaymentUid_(pay);
+  if (uid) {
+    for (let i = 0; i < patients.length; i++) {
+      if (patients[i] && recText_(patients[i].id) === uid) return { patient: patients[i], via: 'patientUid' };
+    }
+    return null;   // a uid that names nobody is a stale decision, not a licence to guess
+  }
+  const storedId = String(pay.patientId || '');
+  if (storedId) {
+    const exact = patients.filter(function (p) { return p && recPatientKey_(p) === storedId; });
+    if (exact.length === 1) return { patient: exact[0], via: 'triple_exact' };
+    if (exact.length > 1) return null;
+    const loose = recMatchKeyFromId_(storedId);
+    if (loose) {
+      const hits = patients.filter(function (p) { return p && recMatchKey_(p.houseId, p.name, p.date) === loose; });
+      if (hits.length === 1) return { patient: hits[0], via: 'triple_loose' };
+      if (hits.length > 1) return null;
+    }
+  }
+  if (pay.patientName && pay.houseId) {
+    const house = diagClientHouseId_(pay.houseId);
+    const name = recNameKey_(pay.patientName);
+    const hits2 = patients.filter(function (p) {
+      return p && diagClientHouseId_(p.houseId) === house && recNameKey_(p.name) === name;
+    });
+    if (hits2.length === 1) return { patient: hits2[0], via: 'house_name' };
+  }
+  return null;
+}
+
+/* app.js namesLookAlike — identical, a prefix, or a shared whole word. */
+function recNamesLookAlike_(a, b) {
+  const x = recNameKey_(a), y = recNameKey_(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  if (x.indexOf(y) === 0 || y.indexOf(x) === 0) return true;
+  const xw = x.split(' ').filter(Boolean), yw = y.split(' ').filter(Boolean);
+  return xw.some(function (w) { return w.length > 1 && yw.indexOf(w) !== -1; });
+}
+
+/* 'YYYY-MM-DD' → local-midnight Date, or null. */
+function recDate_(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+/* Whole days from a to b (ISO), or NaN. */
+function recDaysBetween_(aISO, bISO) {
+  const a = recDate_(asISODate_(aISO)), b = recDate_(asISODate_(bISO));
+  if (!a || !b) return NaN;
+  return Math.round((b.getTime() - a.getTime()) / 86400000);
+}
+
+/* app.js: the day a stay ended ('' while still in the house). */
+function recExitISO_(p) {
+  return asISODate_((p && (p.exitDate || p.dischargedAt)) || '');
+}
+/* app.js: released stops billing. */
+function recIsBillable_(p) { return !!p && p.status !== 'released'; }
+/* app.js stay window: entry <= date AND (no exit OR exit >= date); released
+ * with no exit date recorded → no longer in the house. */
+function recStayCovers_(p, dateISO) {
+  const date = asISODate_(dateISO);
+  if (!p || !date) return false;
+  const entry = asISODate_(p.date);
+  if (!entry || entry > date) return false;
+  const exit = recExitISO_(p);
+  if (exit) return exit >= date;
+  return recIsBillable_(p);
+}
+/* app.js: is this cycle before the records cutoff? */
+function recBeforeCutoff_(dueISO, from) {
+  const line = asISODate_(from) || recRecordsCutoff_();
+  const d = asISODate_(dueISO);
+  return !!d && d < line;
+}
+
+/* app.js reconnectCandidates — ranked, each with its reasons. A candidate
+ * needs a name, entry-date or uid signal: house alone is never offered. */
+function recCandidates_(pay, patients) {
+  if (!pay || !Array.isArray(patients)) return [];
+  const payHouse = diagClientHouseId_(pay.houseId || '');
+  const uid = recPaymentUid_(pay);
+  const dueISO = asISODate_(pay.dueDate);
+  const out = [];
+  patients.forEach(function (p) {
+    if (!p) return;
+    const reasons = [];
+    let score = 0;
+    if (uid && recText_(p.id) === uid) { reasons.push('uid'); score += 100; }
+    if (payHouse && diagClientHouseId_(p.houseId) === payHouse) { reasons.push('same_house'); score += 10; }
+    if (recNamesLookAlike_(pay.patientName, p.name)) { reasons.push('name'); score += 40; }
+    const gap = Math.abs(recDaysBetween_(dueISO, p.date));
+    if (isFinite(gap) && gap <= 1) { reasons.push('entry_date'); score += 30; }
+    if (recStayCovers_(p, dueISO)) { reasons.push('in_house'); score += 5; }
+    if (!reasons.some(function (r) { return r === 'name' || r === 'entry_date' || r === 'uid'; })) return;
+    out.push({ patient: p, score: score, reasons: reasons });
+  });
+  return out.sort(function (a, b) {
+    return (b.score - a.score) || String(a.patient.name || '').localeCompare(String(b.patient.name || ''), 'he');
+  });
+}
+
+/* app.js billingOverrideFor / applyBillingOverride: an override replaces the
+ * amount of an UNPAID row for its due-date month; paid / partial (and void)
+ * rows are history and are returned untouched. */
+function recOverrideFor_(overrides, patientId, month) {
+  if (!Array.isArray(overrides)) return null;
+  for (let i = 0; i < overrides.length; i++) {
+    const o = overrides[i];
+    if (o && o.patientId === patientId && o.month === month) return o;
+  }
+  return null;
+}
+function recApplyOverride_(payment, overrides) {
+  if (!payment || payment.status === 'paid' || payment.status === 'partial' || payment.status === 'void') return payment;
+  const ovr = recOverrideFor_(overrides, payment.patientId, String(asISODate_(payment.dueDate)).slice(0, 7));
+  if (!ovr) return payment;
+  const amount = Number(ovr.amount) || 0;
+  const copy = {};
+  Object.keys(payment).forEach(function (k) { copy[k] = payment[k]; });
+  copy.amount = amount;
+  copy.balance = Math.max(0, amount - (payment.amountPaid || 0));
+  return copy;
+}
+
+/* app.js revenueOccurrenceIn — the anchor day clamped to the month's length. */
+function recOccurrence_(year, monthIdx, anchorDay) {
+  const first = new Date(year, monthIdx, 1);
+  const y = first.getFullYear(), m = first.getMonth();
+  const last = new Date(y, m + 1, 0).getDate();
+  return new Date(y, m, Math.min(anchorDay, last));
+}
+
+/* Every cycle due date of a stay up to today: anchored on the entry
+ * day-of-month (clamped), none before entry, none on/after exit (app.js
+ * projectedCycleDueDates' bounds), none after today. */
+function recCycleDueDates_(p, todayISO) {
+  const anchorISO = asISODate_(p && p.date);
+  const anchor = recDate_(anchorISO);
+  const today = asISODate_(todayISO);
+  if (!anchor || !today) return [];
+  const exit = recExitISO_(p);
+  const out = [];
+  let y = anchor.getFullYear(), m = anchor.getMonth();
+  let guard = 0;
+  while (guard++ < 600) {
+    const occISO = localPartsISO_(recOccurrence_(y, m, anchor.getDate()));
+    if (occISO > today) break;
+    if (occISO >= anchorISO && !(exit && occISO >= exit)) out.push(occISO);
+    m++; if (m > 11) { m = 0; y++; }
+  }
+  return out;
+}
+
+/* ---------------- normalizing the tabs ---------------- */
+
+function recLead_(r, sheet) {
+  const o = r.obj;
+  return {
+    sheet: sheet, row: r.rowNumber, id: recText_(o.id), name: recText_(o.name),
+    phone: recText_(o.phone), phoneKey: diagPhoneKey_(o.phone),
+    house: recText_(o.house), houseId: diagClientHouseId_(o.house),
+    stage: recStage_(o.stage), rawStage: recText_(o.stage),
+    meetingOutcome: recText_(o.meetingOutcome),
+    created: asISODate_(o.created), visitDate: asISODate_(o.visitDate), entryDate: asISODate_(o.entryDate),
+    advance: recNum_(o.advance),
+  };
+}
+function recPatient_(r, sheet) {
+  const o = r.obj;
+  return {
+    sheet: sheet, row: r.rowNumber, id: recText_(o.id), houseId: diagClientHouseId_(o.houseId),
+    rawName: o.name, name: recText_(o.name), date: asISODate_(o.date), pay: recNum_(o.pay),
+    status: diagClientStatus_(o.status), fromLead: recText_(o.fromLead),
+    exitDate: asISODate_(o.exitDate), dischargedAt: o.dischargedAt ? asISODate_(o.dischargedAt) : '',
+    restored: o.restored, reason: recText_(o.reason), droppedAt: recText_(o.droppedAt),
+  };
+}
+/* app.js normalizePayment's fields, plus row number and any hand-added
+ * phone / method column. A blank patientId is healed from the 5-part id. */
+function recPayment_(r) {
+  const o = r.obj;
+  const id = String(o.id == null ? '' : o.id);
+  let patientId = String(o.patientId == null ? '' : o.patientId);
+  if (!patientId) {
+    const parts = id.split('::');
+    if (parts.length === 5 && parts[0] === 'pay') patientId = parts.slice(1, 4).join('::');
+  }
+  const extra = function (names) {
+    const want = names.map(function (n) { return diagNormText_(n); });
+    const keys = Object.keys(o);
+    for (let i = 0; i < keys.length; i++) {
+      if (PAYMENT_COLUMNS.indexOf(keys[i]) < 0 && want.indexOf(diagNormText_(keys[i])) >= 0) return recText_(o[keys[i]]);
+    }
+    return '';
+  };
+  return {
+    row: r.rowNumber, id: id, patientId: patientId, patientName: String(o.patientName == null ? '' : o.patientName),
+    houseId: diagClientHouseId_(o.houseId), dueDate: asISODate_(o.dueDate),
+    amount: recNum_(o.amount), status: recPaymentStatus_(o.status), rawStatus: recText_(o.status),
+    amountPaid: recNum_(o.amountPaid),
+    coverageStart: o.coverageStart, coverageEnd: o.coverageEnd,
+    patientUid: recText_(o.patientUid), linkPatientUid: recText_(o.linkPatientUid),
+    linkStatus: recText_(o.linkStatus), linkNote: recText_(o.linkNote),
+    phone: extra(['phone', 'טלפון', 'נייד', 'מספר טלפון']),
+    method: extra(['method', 'אמצעי תשלום', 'אמצעי', 'paymentMethod']),
+  };
+}
+function recCredit_(r) {
+  const o = r.obj;
+  const status = recText_(o.status);
+  return {
+    row: r.rowNumber, id: recText_(o.id), patientId: recText_(o.patientId), patientKey: recText_(o.patientKey),
+    patientName: recText_(o.patientName), houseId: diagClientHouseId_(o.houseId),
+    amount: recNum_(o.amount), creditType: recText_(o.creditType),
+    status: CREDIT_STATUSES.indexOf(status) >= 0 ? status : 'pending',
+    allocationMonth: String(o.allocationMonth == null ? '' : o.allocationMonth).slice(0, 7),
+  };
+}
+function recOverride_(r) {
+  const o = r.obj;
+  return { patientId: String(o.patientId == null ? '' : o.patientId), month: String(o.month == null ? '' : o.month).slice(0, 7), amount: recNum_(o.amount) };
+}
+
+/* The whole data set, normalized. Pure over the read tabs. */
+function recModel_(tabs, todayISO) {
+  const rows = function (k) { return (tabs[k] && tabs[k].rows) || []; };
+  const name = function (k) { return (tabs[k] && tabs[k].sheet) || k; };
+  const leads = rows('leads').map(function (r) { return recLead_(r, name('leads')); });
+  const closedLeads = rows('irrelevant').map(function (r) { return recLead_(r, name('irrelevant')); })
+    .concat(rows('removed').map(function (r) { return recLead_(r, name('removed')); }));
+  const allLeads = leads.concat(closedLeads);
+  const leadById = {};
+  allLeads.forEach(function (l) { if (l.id && !(l.id in leadById)) leadById[l.id] = l; });
+  const patients = rows('patients').map(function (r) { return recPatient_(r, name('patients')); });
+  const payments = rows('payments').map(function (r) { return recPayment_(r); });
+  const m = {
+    todayISO: asISODate_(todayISO), leads: leads, closedLeads: closedLeads, allLeads: allLeads, leadById: leadById,
+    patients: patients,
+    active: patients.filter(function (p) { return recIsBillable_(p); }),
+    audits: rows('discharged').map(function (r) { return recPatient_(r, name('discharged')); }),
+    tombs: rows('tombstones').map(function (r) { return recPatient_(r, name('tombstones')); }),
+    payments: payments,
+    credits: rows('credits').map(function (r) { return recCredit_(r); }),
+    overrides: rows('overrides').map(function (r) { return recOverride_(r); }).filter(function (o) { return o.patientId && o.month; }),
+  };
+  // Each payment's owner, by the app's own four tiers over ALL patients.
+  m.payOwner = payments.map(function (p) { return recMatchPatient_(p, patients); });
+  return m;
+}
+
+/* A patient's phone: Patients rows carry none, so it is the phone of the lead
+ * they came from (getAdmittedRoster_'s fromLead join). */
+function recPatientPhoneKey_(p, m) {
+  const l = p && p.fromLead ? m.leadById[p.fromLead] : null;
+  return l ? l.phoneKey : '';
+}
+function recRef_(sheet, row) { return sheet + ' שורה ' + row; }
+function recPayMoney_(p) { return p.amountPaid > 0 ? p.amountPaid : p.amount; }
+function recByMoney_(a, b) { return (b.money || 0) - (a.money || 0); }
+
+/* The Patients rows a lead already has — by fromLead, then by phone, then by
+ * name + house. → { patient, via } or null. */
+function recLeadPatient_(lead, m) {
+  const byLead = m.patients.filter(function (p) { return lead.id && p.fromLead === lead.id; });
+  if (byLead.length) return { patient: byLead[0], via: 'fromLead' };
+  if (lead.phoneKey) {
+    const byPhone = m.patients.filter(function (p) { return recPatientPhoneKey_(p, m) === lead.phoneKey; });
+    if (byPhone.length) return { patient: byPhone[0], via: 'phone' };
+  }
+  const nk = recNameKey_(lead.name);
+  if (nk && lead.houseId) {
+    const byName = m.patients.filter(function (p) { return recNameKey_(p.name) === nk && p.houseId === lead.houseId; });
+    if (byName.length) return { patient: byName[0], via: 'name_house' };
+  }
+  return null;
+}
+
+/* ---------------- sections ---------------- */
+
+/* A. Leads that paid / were admitted / are entering treatment, with no
+ * Patients row. */
+function recSectionA_(m) {
+  const out = [];
+  m.leads.forEach(function (l) {
+    const outcome = l.meetingOutcome;
+    const entering = outcome === 'entered' || outcome === 'נכנסים לטיפול';
+    if (!(l.stage === 'paid' || l.stage === 'admitted' || entering)) return;
+    if (recLeadPatient_(l, m)) return;
+    const notes = [];
+    m.audits.forEach(function (a) {
+      if ((l.id && a.fromLead === l.id) || (recNameKey_(a.name) === recNameKey_(l.name) && a.houseId === l.houseId)) {
+        notes.push('קיים ב' + recRef_(a.sheet, a.row));
+      }
+    });
+    m.tombs.forEach(function (t) {
+      if ((l.id && t.fromLead === l.id) || (recNameKey_(t.name) === recNameKey_(l.name) && t.houseId === l.houseId)) {
+        notes.push('נמחק — ' + recRef_(t.sheet, t.row) + (t.reason ? ' (' + t.reason + ')' : ''));
+      }
+    });
+    out.push({ ref: recRef_(l.sheet, l.row), lead: l, why: entering && l.stage !== 'paid' && l.stage !== 'admitted' ? 'נכנסים לטיפול' : l.stage,
+      notes: notes, money: l.advance });
+  });
+  return out.sort(function (a, b) { return recByMoney_(a, b) || String(b.lead.created).localeCompare(String(a.lead.created)); });
+}
+
+/* B. Active patients that appear more than once. */
+function recSectionB_(m) {
+  const groups = {};
+  const add = function (kind, key, p) {
+    if (!key) return;
+    const k = kind + '|' + key;
+    if (!groups[k]) groups[k] = { kind: kind, key: key, rows: [] };
+    groups[k].rows.push(p);
+  };
+  m.active.forEach(function (p) {
+    add('key', recMatchKey_(p.houseId, p.name, p.date), p);
+    add('fromLead', p.fromLead, p);
+    add('phone', recPatientPhoneKey_(p, m), p);
+  });
+  return Object.keys(groups).map(function (k) { return groups[k]; })
+    .filter(function (g) { return g.rows.length > 1; })
+    .map(function (g) {
+      return { kind: g.kind, key: g.key, rows: g.rows, refs: g.rows.map(function (p) { return recRef_(p.sheet, p.row); }),
+        money: g.rows.reduce(function (s, p) { return s + p.pay; }, 0) - Math.max.apply(null, g.rows.map(function (p) { return p.pay; })) };
+    })
+    .sort(function (a, b) { return recByMoney_(a, b); });
+}
+
+/* C. Open discharge audit rows whose stay is still an ACTIVE patient. */
+function recSectionC_(m) {
+  const out = [];
+  m.audits.forEach(function (a) {
+    if (diagIsRestored_(a.restored)) return;
+    const key = recMatchKey_(a.houseId, a.name, a.date);
+    m.active.forEach(function (p) {
+      let via = '';
+      if (a.fromLead && p.fromLead === a.fromLead) via = 'fromLead';
+      else if (recMatchKey_(p.houseId, p.name, p.date) === key) via = 'house_name_date';
+      else if (a.id && p.id && a.id === p.id) via = 'id';
+      if (via) out.push({ audit: a, patient: p, via: via, money: p.pay });
+    });
+  });
+  return out.sort(function (a, b) { return recByMoney_(a, b); });
+}
+
+/* D. Names holding U+FFFD, with a proposed clean name from the same id /
+ * fromLead / phone elsewhere, and a confidence level. */
+function recSectionD_(m) {
+  const clean = function (n) { return n && !hasCorruption_(n); };
+  const namesById = {};
+  m.patients.concat(m.tombs).forEach(function (p) { if (p.id && clean(p.name)) (namesById[p.id] = namesById[p.id] || []).push(p.name); });
+  const leadNamesById = {};
+  m.allLeads.forEach(function (l) { if (l.id && clean(l.name)) (leadNamesById[l.id] = leadNamesById[l.id] || []).push(l.name); });
+  const patientNamesByLead = {};
+  m.patients.concat(m.audits, m.tombs).forEach(function (p) { if (p.fromLead && clean(p.name)) (patientNamesByLead[p.fromLead] = patientNamesByLead[p.fromLead] || []).push(p.name); });
+  const leadNamesByPhone = {};
+  m.allLeads.forEach(function (l) { if (l.phoneKey && clean(l.name)) (leadNamesByPhone[l.phoneKey] = leadNamesByPhone[l.phoneKey] || []).push(l.name); });
+
+  const items = [];
+  const consider = function (sheet, row, name, house, cands) {
+    if (!hasCorruption_(name)) return;
+    const re = corruptionWildcardRegex_(recText_(name));
+    const seen = {};
+    const list = [];
+    cands.forEach(function (c) {
+      (c.names || []).forEach(function (n) {
+        const k = c.via + '|' + n;
+        if (seen[k]) return;
+        seen[k] = true;
+        list.push({ name: n, via: c.via, fits: re.test(n) });
+      });
+    });
+    const fitting = list.filter(function (c) { return c.fits; });
+    const distinct = fitting.map(function (c) { return c.name; }).filter(function (n, i, a) { return a.indexOf(n) === i; });
+    let proposal = '', via = '', confidence = 'אין הצעה';
+    if (distinct.length === 1) {
+      proposal = distinct[0];
+      const strong = fitting.some(function (c) { return c.name === proposal && (c.via === 'id' || c.via === 'fromLead'); });
+      via = fitting.filter(function (c) { return c.name === proposal; }).map(function (c) { return c.via; }).join('+');
+      confidence = strong ? 'גבוהה' : 'בינונית';
+    } else if (distinct.length > 1) {
+      proposal = distinct.join(' / '); via = 'כמה מועמדים'; confidence = 'נמוכה';
+    } else if (list.length) {
+      proposal = list[0].name; via = list[0].via + ' (לא תואם לתבנית)'; confidence = 'נמוכה';
+    } else {
+      // Nothing linked: a unique clean name in the same house that fits the pattern.
+      const pool = m.patients.concat(m.allLeads).filter(function (p) {
+        return clean(p.name) && (!house || (p.houseId || '') === house);
+      }).map(function (p) { return p.name; }).filter(function (n, i, a) { return a.indexOf(n) === i; });
+      const one = corruptionMatchOne_(recText_(name), pool);
+      if (one.value) { proposal = one.value; via = 'תבנית בלבד'; confidence = 'נמוכה'; }
+    }
+    items.push({ ref: recRef_(sheet, row), sheet: sheet, row: row, name: String(name), proposal: proposal, via: via, confidence: confidence });
+  };
+  m.patients.concat(m.audits, m.tombs).forEach(function (p) {
+    const phone = recPatientPhoneKey_(p, m);
+    consider(p.sheet, p.row, p.name, p.houseId, [
+      // A discharge audit row's id is the AUDIT's own key, not a patient id.
+      { via: 'id', names: m.audits.indexOf(p) >= 0 ? [] : namesById[p.id] },
+      { via: 'fromLead', names: (leadNamesById[p.fromLead] || []).concat(patientNamesByLead[p.fromLead] || []) },
+      { via: 'phone', names: phone ? leadNamesByPhone[phone] : [] },
+    ]);
+  });
+  m.allLeads.forEach(function (l) {
+    consider(l.sheet, l.row, l.name, l.houseId, [
+      { via: 'id', names: leadNamesById[l.id] },
+      { via: 'fromLead', names: patientNamesByLead[l.id] },
+      { via: 'phone', names: l.phoneKey ? leadNamesByPhone[l.phoneKey] : [] },
+    ]);
+  });
+  m.payments.forEach(function (p, i) {
+    const owner = m.payOwner[i];
+    const uid = recPaymentUid_(p);
+    consider(PAYMENTS_SHEET, p.row, p.patientName, p.houseId, [
+      { via: 'id', names: (uid ? namesById[uid] : []) || [] },
+      { via: 'id', names: owner && clean(owner.patient.name) ? [owner.patient.name] : [] },
+    ]);
+  });
+  m.credits.forEach(function (c) {
+    consider(CREDITS_SHEET, c.row, c.patientName, c.houseId, [
+      { via: 'id', names: namesById[c.patientId] || [] },
+    ]);
+  });
+  const rank = { 'גבוהה': 0, 'בינונית': 1, 'נמוכה': 2, 'אין הצעה': 3 };
+  return items.sort(function (a, b) { return (rank[a.confidence] - rank[b.confidence]) || a.ref.localeCompare(b.ref); });
+}
+
+/* Hebrew labels for the app's match reasons. */
+function recReasonText_(reasons) {
+  const he = { uid: 'מזהה', same_house: 'אותו בית', name: 'שם דומה', entry_date: 'תאריך כניסה ±יום', in_house: 'בתוך תקופת השהייה' };
+  return reasons.map(function (r) { return he[r] || r; }).join(', ');
+}
+
+/* The leads a detached payment may belong to: phone (when Payments has a
+ * phone column), then an identical or look-alike name — look-alike only in
+ * the same house. Leads that already have a Patients row are skipped. */
+function recLeadCandidates_(pay, m) {
+  const phoneKey = diagPhoneKey_(pay.phone);
+  const nk = recNameKey_(pay.patientName);
+  const out = [];
+  m.allLeads.forEach(function (l) {
+    const reasons = [];
+    if (phoneKey && l.phoneKey === phoneKey) reasons.push('טלפון');
+    if (nk && recNameKey_(l.name) === nk) reasons.push('שם זהה');
+    else if (recNamesLookAlike_(pay.patientName, l.name) && pay.houseId && l.houseId === pay.houseId) reasons.push('שם דומה + אותו בית');
+    if (!reasons.length) return;
+    out.push({ lead: l, reasons: reasons, score: (reasons.indexOf('טלפון') >= 0 ? 100 : 0) + (reasons.indexOf('שם זהה') >= 0 ? 40 : 20) });
+  });
+  return out.sort(function (a, b) { return b.score - a.score; });
+}
+
+/* E. Payments attached to no existing Patients row. */
+function recSectionE_(m) {
+  const out = [];
+  m.payments.forEach(function (p, i) {
+    if (p.status === 'void' || m.payOwner[i]) return;
+    const uid = recPaymentUid_(p);
+    const tombNotes = [];
+    const loose = recMatchKeyFromId_(p.patientId);
+    m.tombs.forEach(function (t) {
+      if ((uid && t.id === uid) || (loose && recMatchKey_(t.houseId, t.name, t.date) === loose)) {
+        tombNotes.push('מצביע על מטופל שנמחק — ' + recRef_(t.sheet, t.row) + (t.reason ? ' (' + t.reason + ')' : ''));
+      }
+    });
+    if (uid && !tombNotes.length) tombNotes.push('מזהה ' + uid + ' לא קיים ב-Patients');
+    const cands = recCandidates_(p, m.patients);
+    let best = '', reason = '';
+    if (cands.length) {
+      best = cands[0].patient.name + ' — ' + recRef_(cands[0].patient.sheet, cands[0].patient.row);
+      reason = recReasonText_(cands[0].reasons) + (cands.length > 1 ? ' (+' + (cands.length - 1) + ' מועמדים)' : '');
+    } else {
+      const lc = recLeadCandidates_(p, m);
+      if (lc.length) {
+        best = 'ליד: ' + lc[0].lead.name + ' — ' + recRef_(lc[0].lead.sheet, lc[0].lead.row);
+        reason = lc[0].reasons.join(', ');
+      }
+    }
+    let phone = p.phone;
+    if (!phone && cands.length) {
+      const k = recPatientPhoneKey_(cands[0].patient, m);
+      if (k) phone = k + ' (מהליד)';
+    }
+    if (p.linkStatus === 'not_a_patient') tombNotes.push('סומן "לא מטופל"' + (p.linkNote ? ': ' + p.linkNote : ''));
+    out.push({ ref: recRef_(PAYMENTS_SHEET, p.row), payment: p, phone: phone, best: best, reason: reason,
+      notes: tombNotes, money: recPayMoney_(p) });
+  });
+  return out.sort(function (a, b) { return recByMoney_(a, b); });
+}
+
+/* F. Detached payments that match a LEAD with no patient record — paid but
+ * not admitted. */
+function recSectionF_(m, e) {
+  const out = [];
+  e.forEach(function (item) {
+    recLeadCandidates_(item.payment, m).forEach(function (c) {
+      if (recLeadPatient_(c.lead, m)) return;
+      out.push({ ref: item.ref, payment: item.payment, lead: c.lead, reason: c.reasons.join(', '), money: item.money });
+    });
+  });
+  return out.sort(function (a, b) { return recByMoney_(a, b); });
+}
+
+/* H. Per active patient: the stay's cycles against what was paid. */
+function recSectionH_(m) {
+  const cutoff = recRecordsCutoff_();
+  return m.active.map(function (p) {
+    const key = recPatientKey_(p);
+    const own = [];
+    m.payments.forEach(function (pay, i) {
+      if (pay.status !== 'void' && m.payOwner[i] && m.payOwner[i].patient === p) own.push(pay);
+    });
+    const totalPaid = recRound2_(own.reduce(function (s, x) { return s + x.amountPaid; }, 0));
+    const cycles = recCycleDueDates_(p, m.todayISO);
+    let before = 0, covered = 0, partial = 0, missing = 0, expected = 0, gap = 0;
+    const gaps = [];
+    cycles.forEach(function (due) {
+      if (recBeforeCutoff_(due, cutoff)) { before++; return; }
+      const rows = own.filter(function (x) { return String(x.dueDate).slice(0, 7) === due.slice(0, 7); });
+      const byWindow = own.some(function (x) {
+        const w = accountingCoverage_(x);
+        return w && w.source === 'recorded' && x.amountPaid > 0 && localPartsISO_(w.start) <= due && localPartsISO_(w.end) >= due;
+      });
+      let billed, paid;
+      if (rows.length) {
+        billed = Math.max.apply(null, rows.map(function (x) { return recApplyOverride_(x, m.overrides).amount; }));
+        paid = rows.reduce(function (s, x) { return s + x.amountPaid; }, 0);
+      } else {
+        const ovr = recOverrideFor_(m.overrides, key, due.slice(0, 7));
+        billed = ovr ? ovr.amount : p.pay;
+        paid = 0;
+      }
+      if (!rows.length && byWindow) { covered++; expected += billed; return; }
+      expected += billed;
+      const short = recRound2_(Math.max(0, billed - paid));
+      if (short <= 0) covered++;
+      else if (paid > 0) { partial++; gap += short; gaps.push(due + ' (חלקי ₪' + recMoneyText_(short) + ')'); }
+      else { missing++; gap += short; gaps.push(due); }
+    });
+    gap = recRound2_(gap);
+    return {
+      ref: recRef_(p.sheet, p.row), patient: p, entry: p.date, end: recExitISO_(p) || m.todayISO,
+      stayMonths: cycles.length, beforeCutoff: before, covered: covered, partial: partial, missing: missing,
+      monthly: p.pay, monthlyExVat: recExVat_(p.pay), expected: recRound2_(expected), totalPaid: totalPaid,
+      gapMonths: partial + missing, gap: gap, gapExVat: recExVat_(gap), gapDues: gaps, payments: own.length, money: gap,
+    };
+  }).sort(function (a, b) { return recByMoney_(a, b) || b.monthly - a.monthly; });
+}
+
+/* G. Active patients with no payment at all (from H's own figures). */
+function recSectionG_(h) {
+  return h.filter(function (x) { return x.payments === 0; })
+    .map(function (x) { return { ref: x.ref, h: x, money: x.gap || x.monthly }; })
+    .sort(function (a, b) { return recByMoney_(a, b); });
+}
+
+/* I. Suspected duplicate payments: the same owner and amount, due dates
+ * within 7 days. Voided rows are listed apart with the twin they void. */
+function recSectionI_(m) {
+  const owners = {};
+  const ownerKey = function (p, i) {
+    const o = m.payOwner[i];
+    return o ? 'p:' + o.patient.sheet + ':' + o.patient.row : 'd:' + p.houseId + '::' + recNameKey_(p.patientName);
+  };
+  m.payments.forEach(function (p, i) {
+    if (p.status === 'void') return;
+    const k = ownerKey(p, i);
+    (owners[k] = owners[k] || []).push({ p: p, i: i });
+  });
+  const pairs = [];
+  Object.keys(owners).forEach(function (k) {
+    const list = owners[k];
+    for (let a = 0; a < list.length; a++) {
+      for (let b = a + 1; b < list.length; b++) {
+        const x = list[a].p, y = list[b].p;
+        if (!(x.amount > 0) || x.amount !== y.amount) continue;
+        const d = Math.abs(recDaysBetween_(x.dueDate, y.dueDate));
+        if (!isFinite(d) || d > 7) continue;
+        const o = m.payOwner[list[a].i];
+        pairs.push({ a: x, b: y, days: d, owner: o ? o.patient.name + ' — ' + recRef_(o.patient.sheet, o.patient.row) : 'לא משויך: ' + x.patientName,
+          money: x.amount });
+      }
+    }
+  });
+  const voided = m.payments.filter(function (p) { return p.status === 'void'; }).map(function (v) {
+    const twin = m.payments.filter(function (p, i) {
+      if (p === v || p.status === 'void' || p.amount !== v.amount) return false;
+      const d = Math.abs(recDaysBetween_(p.dueDate, v.dueDate));
+      return isFinite(d) && d <= 7 && (diagClientHouseId_(p.houseId) === diagClientHouseId_(v.houseId));
+    });
+    return { payment: v, twins: twin, money: v.amount };
+  }).sort(function (a, b) { return recByMoney_(a, b); });
+  return { pairs: pairs.sort(function (a, b) { return recByMoney_(a, b); }), voided: voided };
+}
+
+/* J. Credits not attached to a patient, or larger than that patient's total
+ * payments. Cancelled credits count for nothing (the app's rule). */
+function recSectionJ_(m) {
+  const out = [];
+  const byPatient = {};
+  m.credits.forEach(function (c) {
+    if (c.status === 'cancelled') return;
+    let p = null;
+    for (let i = 0; i < m.patients.length && !p; i++) {
+      const q = m.patients[i];
+      if ((c.patientId && q.id === c.patientId) || (c.patientKey && recPatientKey_(q) === c.patientKey)) p = q;
+    }
+    if (!p) {
+      const loose = recMatchKeyFromId_(c.patientKey) || recMatchKeyFromId_(c.patientId);
+      const hits = loose ? m.patients.filter(function (q) { return recMatchKey_(q.houseId, q.name, q.date) === loose; }) : [];
+      if (hits.length === 1) p = hits[0];
+    }
+    if (!p) { out.push({ kind: 'unattached', credits: [c], refs: [recRef_(CREDITS_SHEET, c.row)], name: c.patientName, money: c.amount }); return; }
+    const k = p.sheet + ':' + p.row;
+    if (!byPatient[k]) byPatient[k] = { patient: p, credits: [] };
+    byPatient[k].credits.push(c);
+  });
+  Object.keys(byPatient).forEach(function (k) {
+    const g = byPatient[k];
+    const credited = recRound2_(g.credits.reduce(function (s, c) { return s + c.amount; }, 0));
+    let paid = 0;
+    m.payments.forEach(function (pay, i) {
+      if (pay.status !== 'void' && m.payOwner[i] && m.payOwner[i].patient === g.patient) paid += pay.amountPaid;
+    });
+    paid = recRound2_(paid);
+    if (credited > paid) {
+      out.push({ kind: 'exceeds', credits: g.credits, refs: g.credits.map(function (c) { return recRef_(CREDITS_SHEET, c.row); }),
+        patient: g.patient, name: g.patient.name, credited: credited, paid: paid, money: recRound2_(credited - paid) });
+    }
+  });
+  return out.sort(function (a, b) { return recByMoney_(a, b); });
+}
+
+/* K. Payments dated after the patient's exit, and payment amounts more than
+ * 5% away from the patient's monthly pay (override-aware; both sides are
+ * VAT-inclusive — an amount that equals the pay ÷1.18 is called out). */
+function recSectionK_(m) {
+  const after = [], off = [];
+  m.payments.forEach(function (p, i) {
+    const o = m.payOwner[i];
+    if (!o || p.status === 'void') return;
+    const pt = o.patient;
+    const exit = recExitISO_(pt);
+    if (exit && p.dueDate && p.dueDate > exit) {
+      after.push({ ref: recRef_(PAYMENTS_SHEET, p.row), payment: p, patient: pt, exit: exit, money: recPayMoney_(p) });
+    }
+    if (!(p.amount > 0)) return;
+    const ovr = recOverrideFor_(m.overrides, recPatientKey_(pt), String(p.dueDate).slice(0, 7));
+    const expected = ovr ? ovr.amount : pt.pay;
+    let note = '';
+    if (!(expected > 0)) note = 'אין תעריף חודשי למטופל';
+    else {
+      const ratio = Math.abs(p.amount - expected) / expected;
+      if (ratio <= 0.05) return;
+      if (Math.abs(p.amount - expected / recVatRate_()) <= expected * 0.01) note = 'נראה כסכום ללא מע״מ';
+      else if (Math.abs(p.amount - expected * recVatRate_()) <= expected * 0.01) note = 'נראה כתעריף ללא מע״מ בכרטיס המטופל';
+      else note = Math.round(ratio * 100) + '% הפרש';
+      if (ovr) note += ' (מול חריגת חיוב לחודש)';
+    }
+    off.push({ ref: recRef_(PAYMENTS_SHEET, p.row), payment: p, patient: pt, expected: expected, note: note,
+      money: recRound2_(Math.abs(p.amount - (expected || 0))) });
+  });
+  return { after: after.sort(function (a, b) { return recByMoney_(a, b); }), off: off.sort(function (a, b) { return recByMoney_(a, b); }) };
+}
+
+/* The whole report — pure over the read tabs. */
+function recBuildReport_(tabs, todayISO) {
+  const m = recModel_(tabs, todayISO);
+  const s = {};
+  s.A = recSectionA_(m);
+  s.B = recSectionB_(m);
+  s.C = recSectionC_(m);
+  s.D = recSectionD_(m);
+  s.E = recSectionE_(m);
+  s.F = recSectionF_(m, s.E);
+  s.H = recSectionH_(m);
+  s.G = recSectionG_(s.H);
+  s.I = recSectionI_(m);
+  s.J = recSectionJ_(m);
+  s.K = recSectionK_(m);
+  const sum = function (list) { return recRound2_(list.reduce(function (t, x) { return t + (x.money || 0); }, 0)); };
+  const hGap = s.H.filter(function (x) { return x.gap > 0; });
+  const summary = [
+    { letter: 'A', count: s.A.length, money: 0 },
+    { letter: 'B', count: s.B.length, money: 0 },
+    { letter: 'C', count: s.C.length, money: 0 },
+    { letter: 'D', count: s.D.length, money: 0 },
+    { letter: 'E', count: s.E.length, money: sum(s.E) },
+    { letter: 'F', count: s.F.length, money: sum(s.F) },
+    { letter: 'G', count: s.G.length, money: sum(s.G.map(function (x) { return { money: x.h.gap }; })) },
+    { letter: 'H', count: hGap.length, money: sum(hGap) },
+    { letter: 'I', count: s.I.pairs.length + s.I.voided.length, money: sum(s.I.pairs) },
+    { letter: 'J', count: s.J.length, money: sum(s.J) },
+    { letter: 'K', count: s.K.after.length + s.K.off.length, money: sum(s.K.after) },
+  ];
+  return {
+    todayISO: m.todayISO, cutoff: recRecordsCutoff_(), sections: s, summary: summary,
+    counts: { leads: m.leads.length, patients: m.patients.length, active: m.active.length, payments: m.payments.length,
+      credits: m.credits.length, overrides: m.overrides.length, audits: m.audits.length, tombstones: m.tombs.length },
+  };
+}
+
+/* ---------------- the document (the ONLY write path) ---------------- */
+
+function recMoneyText_(n) {
+  const v = Math.round(Number(n) || 0);
+  return (v < 0 ? '-' : '') + String(Math.abs(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+function recShekel_(n) { return '₪' + recMoneyText_(n); }
+/* 'YYYY-MM-DD' → 'DD/MM/YYYY' (the app's formatDateHe); anything else as-is. */
+function recDateText_(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+  return m ? m[3] + '/' + m[2] + '/' + m[1] : String(iso || '');
+}
+function recStatusText_(s) {
+  return { paid: 'שולם', partial: 'שולם חלקית', unpaid: 'לא שולם', 'void': 'מבוטל' }[s] || s;
+}
+function recStageText_(s) {
+  return { 'new': 'ליד חדש', visit: 'ביקור נקבע', paid: 'מקדמה שולמה', entry: 'כניסה לבית', admitted: 'נקלט',
+    irrelevant: 'לא רלוונטי', waitlist: 'רשימת המתנה', 'נכנסים לטיפול': 'נכנסים לטיפול' }[s] || s;
+}
+
+/* Table rows (header first) per section, in LOGICAL order (first column =
+ * rightmost once written). Pure. */
+function recSectionTables_(report) {
+  const s = report.sections;
+  const t = {};
+  t.A = [['גיליון ושורה', 'מזהה ליד', 'שם', 'טלפון', 'בית', 'שלב', 'נוצר', 'ביקור', 'כניסה', 'מקדמה', 'הערות']].concat(s.A.map(function (x) {
+    const l = x.lead;
+    return [x.ref, l.id, l.name, l.phone, l.house, recStageText_(x.why), recDateText_(l.created), recDateText_(l.visitDate),
+      recDateText_(l.entryDate), l.advance ? recShekel_(l.advance) : '', x.notes.join('; ')];
+  }));
+  const kindB = { key: 'בית+שם+תאריך', fromLead: 'אותו ליד (fromLead)', phone: 'אותו טלפון' };
+  t.B = [['סוג כפילות', 'ערך משותף', 'שורות', 'שמות', 'תאריכי כניסה', 'תשלום חודשי']].concat(s.B.map(function (x) {
+    return [kindB[x.kind], x.key, x.refs.join(', '), x.rows.map(function (p) { return p.name; }).join(' | '),
+      x.rows.map(function (p) { return recDateText_(p.date); }).join(' | '), x.rows.map(function (p) { return recShekel_(p.pay); }).join(' | ')];
+  }));
+  const viaC = { fromLead: 'אותו ליד', house_name_date: 'בית+שם+תאריך', id: 'אותו מזהה' };
+  t.C = [['שורת שחרור', 'שם', 'בית', 'כניסה', 'שוחרר ב', 'מטופל פעיל', 'התאמה']].concat(s.C.map(function (x) {
+    return [recRef_(x.audit.sheet, x.audit.row), x.audit.name, x.audit.houseId, recDateText_(x.audit.date),
+      recDateText_(x.audit.dischargedAt || x.audit.exitDate), recRef_(x.patient.sheet, x.patient.row) + ' — ' + x.patient.name, viaC[x.via]];
+  }));
+  t.D = [['גיליון ושורה', 'שם פגום', 'שם מוצע', 'מקור ההצעה', 'רמת ביטחון']].concat(s.D.map(function (x) {
+    return [x.ref, x.name, x.proposal, x.via, x.confidence];
+  }));
+  t.E = [['שורת תשלום', 'שם משלם/מטופל', 'בית', 'תאריך', 'סכום', 'שולם', 'סטטוס', 'טלפון', 'אמצעי תשלום', 'מועמד מוביל', 'סיבה', 'הערות']].concat(s.E.map(function (x) {
+    const p = x.payment;
+    return [x.ref, p.patientName, p.houseId, recDateText_(p.dueDate), recShekel_(p.amount), recShekel_(p.amountPaid), recStatusText_(p.status),
+      x.phone || '', p.method || '', x.best || 'אין', x.reason, x.notes.join('; ')];
+  }));
+  t.F = [['שורת תשלום', 'שם בתשלום', 'תאריך', 'סכום', 'ליד', 'שם הליד', 'טלפון', 'שלב', 'התאמה']].concat(s.F.map(function (x) {
+    return [x.ref, x.payment.patientName, recDateText_(x.payment.dueDate), recShekel_(recPayMoney_(x.payment)),
+      recRef_(x.lead.sheet, x.lead.row) + ' (' + x.lead.id + ')', x.lead.name, x.lead.phone, recStageText_(x.lead.stage), x.reason];
+  }));
+  t.G = [['שורה', 'שם', 'בית', 'כניסה', 'תשלום חודשי', 'מחזורים לגבייה', 'לפני תחילת הרישום', 'פער ₪ (כולל מע״מ)']].concat(s.G.map(function (x) {
+    const h = x.h;
+    return [x.ref, h.patient.name, h.patient.houseId, recDateText_(h.entry), recShekel_(h.monthly),
+      String(h.stayMonths - h.beforeCutoff), String(h.beforeCutoff), recShekel_(h.gap)];
+  }));
+  t.H = [['שורה', 'שם', 'בית', 'כניסה', 'עד', 'חודשי שהייה', 'לפני הרישום', 'מכוסים', 'חסרים', 'חלקיים',
+    'חודשי כולל מע״מ', 'חודשי ללא מע״מ', 'צפוי', 'שולם', 'פער חודשים', 'פער ₪ כולל מע״מ', 'פער ₪ ללא מע״מ', 'מחזורים חסרים']].concat(s.H.map(function (x) {
+    return [x.ref, x.patient.name, x.patient.houseId, recDateText_(x.entry), recDateText_(x.end), String(x.stayMonths),
+      String(x.beforeCutoff), String(x.covered), String(x.missing), String(x.partial), recShekel_(x.monthly), recShekel_(x.monthlyExVat),
+      recShekel_(x.expected), recShekel_(x.totalPaid), String(x.gapMonths), recShekel_(x.gap), recShekel_(x.gapExVat),
+      x.gapDues.map(function (d) { return recDateText_(d.slice(0, 10)) + d.slice(10); }).join(', ')];
+  }));
+  t.I = [['תשלום א', 'תשלום ב', 'מטופל', 'תאריכים', 'סכום', 'ימים ביניהם']].concat(s.I.pairs.map(function (x) {
+    return [recRef_(PAYMENTS_SHEET, x.a.row), recRef_(PAYMENTS_SHEET, x.b.row), x.owner,
+      recDateText_(x.a.dueDate) + ' / ' + recDateText_(x.b.dueDate), recShekel_(x.a.amount), String(x.days)];
+  }));
+  t.Ivoid = [['שורת תשלום מבוטל', 'שם', 'תאריך', 'סכום', 'תאום אפשרי']].concat(s.I.voided.map(function (x) {
+    return [recRef_(PAYMENTS_SHEET, x.payment.row), x.payment.patientName, recDateText_(x.payment.dueDate), recShekel_(x.payment.amount),
+      x.twins.map(function (p) { return recRef_(PAYMENTS_SHEET, p.row) + ' ' + p.patientName; }).join('; ') || 'לא נמצא'];
+  }));
+  t.J = [['שורות זיכוי', 'שם', 'סוג', 'סכום זיכוי', 'סך תשלומים', 'חריגה ₪']].concat(s.J.map(function (x) {
+    return [x.refs.join(', '), x.name, x.kind === 'unattached' ? 'לא משויך למטופל' : 'גדול מסך התשלומים',
+      recShekel_(x.kind === 'unattached' ? x.money : x.credited), x.kind === 'unattached' ? '' : recShekel_(x.paid), recShekel_(x.money)];
+  }));
+  t.Kafter = [['שורת תשלום', 'מטופל', 'תאריך תשלום', 'תאריך שחרור', 'סכום', 'שולם']].concat(s.K.after.map(function (x) {
+    return [x.ref, x.patient.name + ' — ' + recRef_(x.patient.sheet, x.patient.row), recDateText_(x.payment.dueDate), recDateText_(x.exit),
+      recShekel_(x.payment.amount), recShekel_(x.payment.amountPaid)];
+  }));
+  t.Koff = [['שורת תשלום', 'מטופל', 'תאריך', 'סכום בתשלום', 'תשלום חודשי צפוי', 'הפרש ₪', 'הערה']].concat(s.K.off.map(function (x) {
+    return [x.ref, x.patient.name + ' — ' + recRef_(x.patient.sheet, x.patient.row), recDateText_(x.payment.dueDate),
+      recShekel_(x.payment.amount), recShekel_(x.expected), recShekel_(x.money), x.note];
+  }));
+  return t;
+}
+
+function recSectionTitles_() {
+  return {
+    A: 'A. לידים ששילמו / נקלטו / נכנסים לטיפול — ללא שורת מטופל',
+    B: 'B. מטופלים פעילים כפולים',
+    C: 'C. רשומות שחרור פתוחות של מטופל שעדיין פעיל',
+    D: 'D. שמות פגומים (U+FFFD) והצעת תיקון',
+    E: 'E. תשלומים שאינם משויכים לאף מטופל',
+    F: 'F. שולם אך לא נקלט — תשלום שמתאים לליד ללא רשומת מטופל',
+    G: 'G. מטופלים פעילים ללא אף תשלום',
+    H: 'H. כיסוי חודשים מול תשלומים — לכל מטופל פעיל',
+    I: 'I. חשד לתשלום כפול',
+    J: 'J. זיכויים ללא מטופל או גדולים מסך התשלומים',
+    K: 'K. תשלומים אחרי השחרור, וסכומים החורגים ביותר מ-5% מהתשלום החודשי',
+  };
+}
+
+/* Writes the report into ONE new Google Doc and returns { url }. Nothing is
+ * shared, moved or written anywhere else. */
+function recWriteDoc_(report, title) {
+  const doc = DocumentApp.create(title);
+  const body = doc.getBody();
+  const first = body.getParagraphs();
+  for (let i = 0; i < first.length; i++) first[i].setLeftToRight(false);
+  recDocPara_(body, title, DocumentApp.ParagraphHeading.TITLE);
+  recDocPara_(body, 'דוח לקריאה בלבד: הגיליון לא שונה. תאריך: ' + recDateText_(report.todayISO) +
+    '. תחילת הרישום: ' + recDateText_(report.cutoff) + ' — מחזורים שלפניה אינם נחשבים כחוב. ' +
+    'כל הסכומים כוללים מע״מ (18%) אלא אם צוין אחרת.', null);
+  recDocPara_(body, 'נקראו: ' + report.counts.leads + ' לידים, ' + report.counts.patients + ' מטופלים (' + report.counts.active +
+    ' פעילים), ' + report.counts.payments + ' תשלומים, ' + report.counts.credits + ' זיכויים, ' + report.counts.overrides +
+    ' חריגות חיוב, ' + report.counts.audits + ' רשומות שחרור, ' + report.counts.tombstones + ' רשומות מחיקה.', null);
+  if (report.missingTabs && report.missingTabs.length) recDocPara_(body, 'לשוניות חסרות: ' + report.missingTabs.join(', '), null);
+  (report.headerDrift || []).forEach(function (d) {
+    recDocPara_(body, 'אזהרה — כותרות לא תואמות ב-' + d.sheet + ': ' + d.drift.join('; '), null);
+  });
+  const titles = recSectionTitles_();
+  recDocPara_(body, 'סיכום', DocumentApp.ParagraphHeading.HEADING1);
+  recDocTable_(body, [['סעיף', 'מספר פריטים', 'השפעה כספית']].concat(report.summary.map(function (x) {
+    return [titles[x.letter], String(x.count), x.money ? recShekel_(x.money) : ''];
+  })));
+  const tables = recSectionTables_(report);
+  const parts = [['A', 'A'], ['B', 'B'], ['C', 'C'], ['D', 'D'], ['E', 'E'], ['F', 'F'], ['G', 'G'], ['H', 'H'],
+    ['I', 'I'], ['I', 'Ivoid'], ['J', 'J'], ['K', 'Kafter'], ['K', 'Koff']];
+  const sub = { Ivoid: 'תשלומים שכבר סומנו כמבוטלים (כפילות)', Kafter: 'תשלומים אחרי תאריך השחרור', Koff: 'סכום שונה מהתשלום החודשי' };
+  let last = '';
+  parts.forEach(function (pt) {
+    if (pt[0] !== last) { recDocPara_(body, titles[pt[0]], DocumentApp.ParagraphHeading.HEADING1); last = pt[0]; }
+    if (sub[pt[1]]) recDocPara_(body, sub[pt[1]], DocumentApp.ParagraphHeading.HEADING2);
+    const rows = tables[pt[1]];
+    if (rows.length <= 1) { recDocPara_(body, 'אין פריטים.', null); return; }
+    const cap = 300;
+    recDocTable_(body, rows.slice(0, cap + 1));
+    if (rows.length - 1 > cap) recDocPara_(body, 'מוצגים ' + cap + ' מתוך ' + (rows.length - 1) + ' (הגדולים ביותר ראשונים).', null);
+  });
+  doc.saveAndClose();
+  return { url: doc.getUrl(), id: doc.getId() };
+}
+
+/* One right-to-left paragraph. */
+function recDocPara_(body, text, heading) {
+  const p = body.appendParagraph(String(text));
+  if (heading) p.setHeading(heading);
+  p.setLeftToRight(false);
+  p.setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
+  return p;
+}
+
+/* One table, header row bold. Docs lays table columns out left-to-right, so
+ * each row is reversed: the first logical column sits on the RIGHT, as a
+ * Hebrew reader expects, and every cell's text runs right-to-left. */
+function recDocTable_(body, rows) {
+  const cells = rows.map(function (r) { return r.map(function (c) { return String(c == null ? '' : c); }).reverse(); });
+  const table = body.appendTable(cells);
+  for (let r = 0; r < table.getNumRows(); r++) {
+    const row = table.getRow(r);
+    for (let c = 0; c < row.getNumCells(); c++) {
+      const cell = row.getCell(c);
+      for (let k = 0; k < cell.getNumChildren(); k++) {
+        const ch = cell.getChild(k);
+        if (ch.getType() === DocumentApp.ElementType.PARAGRAPH) {
+          const p = ch.asParagraph();
+          p.setLeftToRight(false);
+          p.setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
+        }
+      }
+    }
+  }
+  if (table.getNumRows() > 0) table.getRow(0).editAsText().setBold(true);
+  return table;
+}
