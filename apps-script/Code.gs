@@ -638,7 +638,9 @@ const PAYMENT_DELETE_REASON_STRAY_TWIN = 'orphan_reconcile_stray_twin';
  * force-texts these two columns at ensure time. Sheets would otherwise coerce
  * "2026-08" into a date and drift the number's format, the same corruption class
  * the Leads visitDate/visitTime text-column fix guards against. */
-const BILLING_OVERRIDE_COLUMNS = ['id', 'patientId', 'month', 'amount', 'created'];
+/* `updatedBy` (appended, Phase 0b-3 PR A): the session user of the last
+ * upsert. APPEND-ONLY. */
+const BILLING_OVERRIDE_COLUMNS = ['id', 'patientId', 'month', 'amount', 'created', 'updatedBy'];
 
 /* ===== Facility types =====
  * Patients-sheet houseId (HOUSES in app.js) → billing-policy family used by
@@ -773,7 +775,10 @@ const CREDIT_EDITABLE_COLUMNS = ['amount', 'overrideReason', 'approvedBy', 'deci
  *   name      — patient name
  *   details   — compact JSON string (houseId, identity key, skip reason, …) */
 const AUDIT_LOG_SHEET = 'AuditLog';
-const AUDIT_LOG_COLUMNS = ['timestamp', 'action', 'fn', 'patientId', 'name', 'details'];
+/* `actor` (appended, Phase 0b-3 PR A): who did it — the session user the
+ * proxy sent (requestUser_). Blank on rows written before it existed.
+ * APPEND-ONLY: never insert / delete / reorder. */
+const AUDIT_LOG_COLUMNS = ['timestamp', 'action', 'fn', 'patientId', 'name', 'details', 'actor'];
 
 /* RepairPlan sheet — the human-approval gate for the corrupted-rows cleanup
  * (U+FFFD Hebrew-name corruption, see CHANGELOG-corrupted-rows-cleanup.md).
@@ -859,6 +864,110 @@ const PROXY_SECRET_PROP      = 'PROXY_SECRET';
 const PROXY_SECRET_MODE_PROP = 'PROXY_SECRET_MODE';
 const PROXY_SECRET_FIELD     = 'proxySecret';
 const PROXY_USER_FIELD       = 'proxyUser';
+const PROXY_ROLES_FIELD      = 'proxyRoles';
+/* Internal: set by proxyGate_ ONLY for a request whose PROXY_SECRET verifies.
+ * collectParams_ drops any copy a caller sends (query or body). */
+const VERIFIED_ACTOR_FIELD   = '_verifiedActor';
+
+/* ===== Roles (Phase 0b-3, PR A — DEFINED, NOT ENFORCED) =====
+ *
+ * docs/billing-control-plan.md §11.3, decided 01/10/2026. The Railway proxy
+ * sends `proxyRoles` with the session user (server.js buildAppsScriptBody).
+ * They are granted ONLY when the request's PROXY_SECRET verifies
+ * (proxyGate_ → VERIFIED_ACTOR_FIELD); an open-action, no-secret or
+ * wrong-secret caller has NO roles, whatever its body says. Today every
+ * Dashboard session is a shared-PIN session → ['staff'].
+ *
+ * KNOWN_ROLES mirrors lib/users.js ROLES and APPROVER_USER_NAME mirrors the
+ * name of lib/users.js APPROVER_USER_ID; test/personal-pins-foundation.test.js
+ * pins both. `approver` is PINNED to Sandra here as well: a verified request
+ * claiming it for anyone else does not get it (defense in depth on top of
+ * the server's startup validator). */
+const KNOWN_ROLES = ['staff', 'reporter', 'deleter', 'approver', 'viewer', 'controller'];
+const APPROVER_USER_NAME = 'סנדרה';
+
+/* Every handle_ action that DELETES (or hides) a record. Each will require
+ * the `deleter` role once enforcement lands (Sandra and Vered; never Shiran,
+ * Yael or a shared APP_PIN session). Every future billing delete is added
+ * here. test/personal-pins-foundation.test.js scans handle_ and fails if a
+ * dispatched action whose name says delete / remove / void / purge / cancel /
+ * drop / wipe is missing from this list. Each of these records its actor. */
+const DELETE_ACTIONS = ['removeLead', 'deleteMeetingReport', 'deletePatientRow', 'deleteBillingOverride'];
+
+/* Deletes / voids that ride INSIDE a write action (a status transition, not
+ * an action name) — the same `deleter` role:
+ *   payment_void  — savePayment / updatePayment setting status 'void'
+ *                   (marking a duplicate, PR #144)
+ *   credit_cancel — saveCredit setting status 'cancelled' */
+const DELETE_OPERATIONS = ['payment_void', 'credit_cancel'];
+
+/* Sandra-only money decisions (`approver`, pinned to APPROVER_USER_NAME):
+ *   payment_unvoid            — savePayment / updatePayment taking a payment
+ *                               OUT of 'void' (already enforced by name via
+ *                               PAYMENT_VOID_REVERSERS since PR #144)
+ *   credit_exception          — saveCredit with amount > 0 where the policy
+ *                               gives zero (plan §8.5, phase 1)
+ *   opening_balance_write_off — OpeningBalances item closed as written_off
+ *   opening_balance_accept    — OpeningBalances item closed as accepted
+ *                               (plan §9, phase 2 — no action exists yet) */
+const APPROVER_ACTIONS = ['payment_unvoid', 'credit_exception', 'opening_balance_write_off', 'opening_balance_accept'];
+
+/* Roles from the proxy's `proxyRoles` (an array, or its JSON string): only
+ * KNOWN_ROLES, de-duplicated; `approver` dropped unless the user is Sandra.
+ * Pure. */
+function sanitizeProxyRoles_(raw, user) {
+  let list = raw;
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list); } catch (_) { list = []; }
+  }
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  list.forEach(function (r) {
+    const role = String(r == null ? '' : r);
+    if (KNOWN_ROLES.indexOf(role) < 0 || out.indexOf(role) >= 0) return;
+    if (role === 'approver' && user !== APPROVER_USER_NAME) return;
+    out.push(role);
+  });
+  return out;
+}
+
+/* The VERIFIED acting user: the proxy's session user when PROXY_SECRET
+ * verified, '' otherwise (no secret, wrong secret, open action — in log mode
+ * those still carry a legacy body `user` for stamping via requestUser_, but
+ * it is never an identity a role can hang on). */
+function actingUser_(params) {
+  const a = params && params[VERIFIED_ACTOR_FIELD];
+  return a && typeof a === 'object' && typeof a.user === 'string' ? a.user : '';
+}
+
+/* True iff the VERIFIED actor holds `role`. `approver` additionally requires
+ * the actor to be Sandra. Never true for a request without a valid secret. */
+function hasRole_(params, role) {
+  const a = params && params[VERIFIED_ACTOR_FIELD];
+  if (!a || typeof a !== 'object' || !Array.isArray(a.roles)) return false;
+  if (a.roles.indexOf(role) < 0) return false;
+  if (role === 'approver' && a.user !== APPROVER_USER_NAME) return false;
+  return true;
+}
+
+/* The role an action or operation key needs: 'deleter' | 'approver' | ''. */
+function requiredRoleFor_(key) {
+  if (DELETE_ACTIONS.indexOf(key) >= 0 || DELETE_OPERATIONS.indexOf(key) >= 0) return 'deleter';
+  if (APPROVER_ACTIONS.indexOf(key) >= 0) return 'approver';
+  return '';
+}
+
+/* The role check for one action / operation key → { ok, role, error? }.
+ * DEFINED, NOT ENFORCED: nothing in handle_ calls this in PR A. The
+ * enforcement PR calls it before the write and returns the error with
+ * nothing written. */
+function roleCheck_(params, key) {
+  const role = requiredRoleFor_(key);
+  if (!role) return { ok: true, role: '' };
+  if (hasRole_(params, role)) return { ok: true, role: role };
+  return { ok: false, role: role, error: role === 'approver' ? 'requires_approver' : 'requires_deleter' };
+}
+
 /* The ONLY actions served without PROXY_SECRET, in log AND enforce mode.
  * From the consumers' deployed code (2026-10-01, see
  * CHANGELOG-open-actions-gate.md):
@@ -947,8 +1056,11 @@ function proxyGate_(params, method) {
   const presented = typeof p[PROXY_SECRET_FIELD] === 'string' ? p[PROXY_SECRET_FIELD] : '';
   const proxyUser = p[PROXY_USER_FIELD];
   const hasProxyUser = Object.prototype.hasOwnProperty.call(p, PROXY_USER_FIELD);
+  const proxyRoles = p[PROXY_ROLES_FIELD];
   delete p[PROXY_SECRET_FIELD];
   delete p[PROXY_USER_FIELD];
+  delete p[PROXY_ROLES_FIELD];
+  delete p[VERIFIED_ACTOR_FIELD]; // only this function may set it, below
 
   const action = String(p.action == null ? '' : p.action);
   const props = PropertiesService.getScriptProperties();
@@ -965,6 +1077,8 @@ function proxyGate_(params, method) {
       securityLogOnce_(action, method, true, 'user_mismatch');
     }
     p.user = trusted;
+    // Roles exist ONLY here: the proxy secret verified.
+    p[VERIFIED_ACTOR_FIELD] = { user: trusted, roles: sanitizeProxyRoles_(proxyRoles, trusted) };
     return { ok: true, params: p };
   }
 
@@ -1161,10 +1275,10 @@ function handle_(params) {
       return jsonOut_(upsertPayment_(payment, requestUser_(params)));
     }
     if (action === 'upsertBillingOverride') {
-      return jsonOut_(upsertBillingOverride_(parseJsonParam_(params.override)));
+      return jsonOut_(upsertBillingOverride_(parseJsonParam_(params.override), requestUser_(params)));
     }
     if (action === 'deleteBillingOverride') {
-      return jsonOut_(deleteBillingOverride_(parseJsonParam_(params.override)));
+      return jsonOut_(deleteBillingOverride_(parseJsonParam_(params.override), requestUser_(params)));
     }
     // Credits ledger. Same trust model as savePayment: reached only through
     // the session-authed /api/sheets proxy (no new unauthenticated endpoint);
@@ -1174,17 +1288,17 @@ function handle_(params) {
       return jsonOut_(upsertCredit_(parseJsonParam_(params.credit), requestUser_(params)));
     }
     if (action === 'moveLeadIrrelevant') {
-      const res = moveLeadIrrelevant_(parseJsonParam_(params.lead));
+      const res = moveLeadIrrelevant_(parseJsonParam_(params.lead), requestUser_(params));
       refreshDigestBestEffort_();
       return jsonOut_(res);
     }
     if (action === 'restoreLead') {
-      const res = restoreLead_(parseJsonParam_(params.lead));
+      const res = restoreLead_(parseJsonParam_(params.lead), requestUser_(params));
       refreshDigestBestEffort_();
       return jsonOut_(res);
     }
     if (action === 'removeLead') {
-      const res = removeLead_(parseJsonParam_(params.lead));
+      const res = removeLead_(parseJsonParam_(params.lead), requestUser_(params));
       refreshDigestBestEffort_();
       return jsonOut_(res);
     }
@@ -1215,7 +1329,7 @@ function handle_(params) {
     if (action === 'deleteMeetingReport') {
       // Dashboard-side (Vered) action, same trust model as saveAll/removeLead:
       // reached only through the session-authed /api/sheets proxy.
-      return jsonOut_(deleteMeetingReport_(params.leadId));
+      return jsonOut_(deleteMeetingReport_(params.leadId, requestUser_(params)));
     }
     if (action === 'meetingReportLeads') {
       if (!meetingReportAuthOk_(params)) {
@@ -1265,7 +1379,8 @@ function collectParams_(e) {
     Object.keys(e.parameter).forEach(function (k) {
       // The proxy secret / proxy user are accepted from the POST body ONLY —
       // a value in the querystring is dropped (it would sit in a URL).
-      if (k === PROXY_SECRET_FIELD || k === PROXY_USER_FIELD) return;
+      if (k === PROXY_SECRET_FIELD || k === PROXY_USER_FIELD || k === PROXY_ROLES_FIELD) return;
+      if (k === VERIFIED_ACTOR_FIELD) return;
       out[k] = e.parameter[k];
     });
   }
@@ -1273,7 +1388,11 @@ function collectParams_(e) {
     try {
       const body = JSON.parse(e.postData.contents);
       if (body && typeof body === 'object') {
-        Object.keys(body).forEach(function (k) { out[k] = body[k]; });
+        Object.keys(body).forEach(function (k) {
+          // Never caller-settable: proxyGate_ alone writes it.
+          if (k === VERIFIED_ACTOR_FIELD) return;
+          out[k] = body[k];
+        });
       }
     } catch (_) { /* body wasn't JSON — ignore */ }
   }
@@ -1292,6 +1411,12 @@ function collectParams_(e) {
 function requestUser_(params) {
   return String(params && params.user != null ? params.user : '')
     .replace(/[<>]/g, '').trim().slice(0, 40);
+}
+
+/* A stamp value from a user argument: '' for null/undefined, trimmed, capped
+ * at 40, angle brackets stripped (the requestUser_ normalization). */
+function actorText_(user) {
+  return String(user == null ? '' : user).replace(/[<>]/g, '').trim().slice(0, 40);
 }
 
 function parseJsonParam_(v) {
@@ -1392,7 +1517,7 @@ function getOrCreateSheet_(name, headers) {
   // AuditLog: the ISO timestamp must survive as a plain string (same guard as
   // droppedAt); details is JSON text that must never be reinterpreted.
   if (name === AUDIT_LOG_SHEET) {
-    forceColumnsText_(sh, AUDIT_LOG_COLUMNS, ['timestamp', 'details']);
+    forceColumnsText_(sh, AUDIT_LOG_COLUMNS, ['timestamp', 'details', 'actor']);
   }
   // RepairPlan: old/new values must survive byte-for-byte as plain text — the
   // apply step compares oldValue against the live cell EXACTLY, so Sheets must
@@ -2180,7 +2305,7 @@ function tombstonePreservedPatients_(rows, savedByAction) {
  * operation — every failure is swallowed. `details` may be an object (JSON-
  * stringified compactly) or a ready string. The sheet is ensured on first use
  * and kept hidden — Vered sees nothing new. Callers keep their call ONE line. */
-function logAudit_(action, fn, patientId, name, details) {
+function logAudit_(action, fn, patientId, name, details, actor) {
   try {
     const sh = getOrCreateSheet_(AUDIT_LOG_SHEET, AUDIT_LOG_COLUMNS);
     try { if (!sh.isSheetHidden()) sh.hideSheet(); } catch (_) { /* no-op */ }
@@ -2191,6 +2316,7 @@ function logAudit_(action, fn, patientId, name, details) {
       patientId: String(patientId == null ? '' : patientId),
       name:      String(name == null ? '' : name),
       details:   typeof details === 'string' ? details : JSON.stringify(details || {}),
+      actor:     auditActor_(actor, details),
     }, AUDIT_LOG_COLUMNS);
     // Write at the next row (not appendRow) so the whole-column text formats
     // applied at ensure time are already in place — same pattern as the
@@ -2199,6 +2325,16 @@ function logAudit_(action, fn, patientId, name, details) {
   } catch (err) {
     try { console.warn('[audit] log skipped: ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
   }
+}
+
+/* The actor of an audit row: the explicit `actor` argument, else the
+ * who-field the caller already put in `details` (updatedBy / by / deletedBy),
+ * so every pre-existing call site fills the new column too. Pure. */
+function auditActor_(actor, details) {
+  if (actor != null && String(actor) !== '') return String(actor).slice(0, 40);
+  const d = details && typeof details === 'object' ? details : {};
+  const v = d.updatedBy || d.by || d.deletedBy || '';
+  return String(v == null ? '' : v).slice(0, 40);
 }
 
 /* fromLead lead-ids of NON-restored discharged-audit rows, as a {id: true} set
@@ -4974,7 +5110,7 @@ function applyCorruptedRowRepairsNow() {
   }
 }
 
-function moveLeadIrrelevant_(lead) {
+function moveLeadIrrelevant_(lead, user) {
   if (!lead || !lead.id) return { ok: false, error: 'missing_lead' };
   const lock = LockService.getScriptLock();
   if (lock.tryLock(10000) !== true) return lockBusy_('moveLeadIrrelevant_');
@@ -4993,13 +5129,15 @@ function moveLeadIrrelevant_(lead) {
 
     deleteRowsById_(leadsSh, LEAD_COLUMNS, lead.id);
     upsertRowById_(irrSh, IRRELEVANT_LEAD_COLUMNS, record);
+    logAudit_('lead_moved_irrelevant', 'moveLeadIrrelevant_', String(lead.id), String(lead.name || ''),
+      { reason: String(record.not_relevant_reason || '') }, actorText_(user));
     return { ok: true, moved: true, lead: record };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
 }
 
-function restoreLead_(lead) {
+function restoreLead_(lead, user) {
   if (!lead || !lead.id) return { ok: false, error: 'missing_lead' };
   const lock = LockService.getScriptLock();
   if (lock.tryLock(10000) !== true) return lockBusy_('restoreLead_');
@@ -5017,6 +5155,7 @@ function restoreLead_(lead) {
 
     deleteRowsById_(irrSh, IRRELEVANT_LEAD_COLUMNS, lead.id);
     upsertRowById_(leadsSh, LEAD_COLUMNS, restored);
+    logAudit_('lead_restored', 'restoreLead_', String(lead.id), String(lead.name || ''), {}, actorText_(user));
     return { ok: true, restored: true, lead: restored };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
@@ -5029,7 +5168,7 @@ function restoreLead_(lead) {
  * restore for soft-deleted rows in v1. Manual restore via Sheets is the
  * documented recovery path. Mirrors moveLeadIrrelevant_'s structure.
  */
-function removeLead_(lead) {
+function removeLead_(lead, user) {
   if (!lead || !lead.id) return { ok: false, error: 'missing_lead' };
   const lock = LockService.getScriptLock();
   if (lock.tryLock(10000) !== true) return lockBusy_('removeLead_');
@@ -5060,6 +5199,7 @@ function removeLead_(lead) {
     }
     upsertRowById_(removedSh, REMOVED_LEAD_COLUMNS, record);
     deleteRowsById_(leadsSh, LEAD_COLUMNS, lead.id);
+    logAudit_('lead_removed', 'removeLead_', String(lead.id), String(lead.name || ''), {}, actorText_(user));
     return { ok: true, removed: true, lead: record };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
@@ -5431,7 +5571,7 @@ function submitMeetingReport_(report) {
  * and stale echoes can no longer bring the report back (differing timestamp →
  * sheet wins). Idempotent: deleting a report-less lead is ok:true. Verifies
  * the write landed, mirroring submitMeetingReport_. */
-function deleteMeetingReport_(leadId) {
+function deleteMeetingReport_(leadId, user) {
   const id = leadId == null ? '' : String(leadId).trim();
   if (!id) return { ok: false, error: 'bad_lead', message: 'leadId is required' };
 
@@ -5460,6 +5600,7 @@ function deleteMeetingReport_(leadId) {
       }
     }
 
+    logAudit_('meeting_report_deleted', 'deleteMeetingReport_', id, String(lead.name || ''), {}, actorText_(user));
     return { ok: true, deleted: { leadId: id } };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
@@ -6386,7 +6527,7 @@ function billingOverrideId_(patientId, month) {
  * write (belt-and-suspenders over the whole-column format getOrCreateSheet_
  * already applies) so Sheets can't coerce them.
  */
-function upsertBillingOverride_(override) {
+function upsertBillingOverride_(override, user) {
   if (!override || typeof override !== 'object') {
     return { ok: false, error: 'missing_override' };
   }
@@ -6405,6 +6546,8 @@ function upsertBillingOverride_(override) {
     month:     month,
     amount:    amount,
     created:   override.created ? String(override.created) : todayISODate_(),
+    // Server-owned: the session user, never a payload value.
+    updatedBy: actorText_(user),
   };
 
   const lock = LockService.getScriptLock();
@@ -6425,6 +6568,7 @@ function upsertBillingOverride_(override) {
           sh.getRange(r, monthIdx + 1, 1, 1).setNumberFormat('@');
           sh.getRange(r, amountIdx + 1, 1, 1).setNumberFormat('@');
           sh.getRange(r, 1, 1, BILLING_OVERRIDE_COLUMNS.length).setValues([row]);
+          logBillingOverride_('billing_override_updated', record);
           return { ok: true, override: record, updated: true };
         }
       }
@@ -6436,10 +6580,18 @@ function upsertBillingOverride_(override) {
     sh.getRange(target, monthIdx + 1, 1, 1).setNumberFormat('@');
     sh.getRange(target, amountIdx + 1, 1, 1).setNumberFormat('@');
     sh.getRange(target, 1, 1, BILLING_OVERRIDE_COLUMNS.length).setValues([row]);
+    logBillingOverride_('billing_override_created', record);
     return { ok: true, override: record, created: true };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
+}
+
+/* One AuditLog row per billing-override write, with its actor. */
+function logBillingOverride_(action, record) {
+  logAudit_(action, action === 'billing_override_deleted' ? 'deleteBillingOverride_' : 'upsertBillingOverride_',
+    String(record.patientId || ''), '', { id: String(record.id || ''), month: String(record.month || ''), amount: record.amount, removed: record.removed },
+    record.updatedBy);
 }
 
 /**
@@ -6447,7 +6599,7 @@ function upsertBillingOverride_(override) {
  * Resolves the row by id — either the explicit `id` or one rebuilt from
  * (patientId, month). Reuses deleteRowsById_ (the established per-row delete).
  */
-function deleteBillingOverride_(override) {
+function deleteBillingOverride_(override, user) {
   if (!override || typeof override !== 'object') {
     return { ok: false, error: 'missing_override' };
   }
@@ -6463,7 +6615,11 @@ function deleteBillingOverride_(override) {
   if (lock.tryLock(10000) !== true) return lockBusy_('deleteBillingOverride_');
   try {
     const sh = getOrCreateSheet_(BILLING_OVERRIDES_SHEET, BILLING_OVERRIDE_COLUMNS);
-    deleteRowsById_(sh, BILLING_OVERRIDE_COLUMNS, id);
+    const removed = deleteRowsById_(sh, BILLING_OVERRIDE_COLUMNS, id);
+    logBillingOverride_('billing_override_deleted', {
+      id: id, removed: removed, patientId: String(override.patientId == null ? '' : override.patientId),
+      month: String(override.month == null ? '' : override.month), updatedBy: actorText_(user),
+    });
     return { ok: true, deleted: true, id: id };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
