@@ -1,8 +1,8 @@
 # Proxy secret — TRANSITION mode (Phase 0b-1)
 
 Plan: `docs/billing-control-plan.md` §11.1 and §14 (phase 0b). Base branch
-`claude/build-ezone-dashboard-QOg5s`. No `public/` change, so no
-`CACHE_VERSION` bump.
+`claude/build-ezone-dashboard-QOg5s`. `public/app.js` changed (the busy-lock
+handling below), so `CACHE_VERSION` in `public/sw.js` is bumped v18 → v19.
 
 ## Why
 
@@ -107,6 +107,53 @@ see exactly which actions they call before anything is blocked.
 - 20 existing vm sandboxes stubbed `tryLock: noop` (returns `undefined`). The
   real API returns a boolean, and `undefined` now (correctly) reads as "not
   acquired", so those stubs now return `true` — no assertion changed.
+
+### Frontend: busy lock (`public/app.js`, `public/sw.js` v18 → v19)
+
+**Before:** `apiPost` threw on any `{ok:false}`, so a busy lock reached every
+write path's `catch` as the server's English text (`…נכשלה — could not acquire
+the script lock — try again.`). The optimistic change was rolled back at once,
+nothing was retried, and two background `saveAll` paths (the loadAll
+auto-promote save and the meetingWith autosave) failed with **no message at
+all**. The autosave also blacklisted the lead for the rest of the session.
+
+**Now:**
+- `apiPost` sees `error:'lock_busy'`, waits **2 s** (`LOCK_BUSY_RETRY_MS`)
+  and re-sends the **identical** body **once**. This is safe because Code.gs
+  answers `lock_busy` before writing anything. If the retry succeeds, the user
+  sees nothing.
+- If the lock is still busy, it throws **«המערכת עסוקה, נסו שוב»**
+  (`LOCK_BUSY_MESSAGE_HE`, flagged `lockBusy:true`). Every caller's existing
+  `showError(prefix + e.message)` shows it, e.g. «שגיאה: שמירת גבייה נכשלה —
+  המערכת עסוקה, נסו שוב». The server's English text never reaches the user.
+- Other refusals (`conflict`, `exception`, …) are not retried and behave
+  exactly as before.
+- The two background paths now show the message on a busy lock. The
+  auto-promoted rows stay in state for the next save. The autosave no longer
+  blacklists a lead for a busy lock, so the next pass retries it.
+
+What the user sees when the lock is still busy after the retry:
+
+| Write | Result |
+|---|---|
+| Edit lead / edit patient / add lead / admit / direct add (`saveAll`) | Hebrew message; the **modal stays open with the typed values** (handler returns `false`); local state rolled back to what the sheet holds |
+| `dischargePatient` | Hebrew message; the **discharge modal stays open** (onConfirm rethrows); nothing was persisted, so the rollback is truthful |
+| `moveLeadIrrelevant` (close lead) | Hebrew message; the **close modal stays open** |
+| `saveCredit` | Hebrew message; the **credits modal stays open with every line** (`render(); return;`) |
+| `savePayment`, `upsertBillingOverride`, `deleteBillingOverride` | Hebrew message; row back to its saved value; re-enter and save again |
+| `restorePatient`, `restorePatientToActive`, `restoreLead`, `removeLead`, `deletePatientRow`, `deleteMeetingReport` | Hebrew message; the item is back where it was (nothing was written); press again |
+| meetingWith autosave (background) | Hebrew message; retried on the next pass |
+| loadAll auto-promote (background) | Hebrew message; rows stay on screen and ride the next save |
+
+`test/lock-busy-frontend.test.js` (34 tests) drives the real `app.js` per
+write path, each with two cases:
+- busy → ok: retried once after 2000 ms with a byte-identical body, the change
+  lands, no error
+- busy → busy: exactly two sends, the Hebrew message shown, no English text
+
+It also checks that no other code reaches `/api/sheets`, that every
+`apiPost({action:…})` site has a test, and the `apiPost` contract. Against
+the previous `app.js`, 33 of the 34 fail.
 
 ## Deploy
 
