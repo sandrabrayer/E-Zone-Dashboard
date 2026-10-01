@@ -708,9 +708,11 @@ function facilityTypeFor_(houseId) {
  *   approvedBy       — free text, who approved the credit.
  *   decidedDate      — 'YYYY-MM-DD' the credit was decided/approved (defaults
  *                      to the save day in the spreadsheet timezone).
- *   payoutDate       — SERVER-DERIVED: the 15th of the next month on or after
- *                      decidedDate (payoutDateFor_). Credits pay out on the
- *                      15th, never at discharge.
+ *   payoutDate       — SERVER-DERIVED from decidedDate (refundPayoutDate_):
+ *                      decided on the 1st–10th → the 15th of that month,
+ *                      the 11th onward → the 15th of the next month. Credits
+ *                      pay out on the 15th, never at discharge. Set once: an
+ *                      edit that keeps decidedDate keeps the stored payoutDate.
  *   status           — one of CREDIT_STATUSES: pending | paid | cancelled.
  *                      'paid' is an EXPLICIT action: it requires paidDate AND
  *                      method (never flipped automatically when payoutDate
@@ -875,7 +877,7 @@ const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
 const PROXY_KNOWN_ACTIONS = [
   'getData', 'getAdmittedRoster', 'saveAll', 'getPayments', 'savePayment',
   'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
-  'getCredits', 'saveCredit', 'moveLeadIrrelevant', 'restoreLead',
+  'getCredits', 'saveCredit', 'suggestRefunds', 'moveLeadIrrelevant', 'restoreLead',
   'removeLead', 'deletePatientRow', 'dischargePatient', 'restorePatient',
   'restorePatientToActive', 'deleteMeetingReport', 'meetingReportLeads',
   'submitMeetingReport', 'managersOverview', 'managersHouse',
@@ -1170,6 +1172,9 @@ function handle_(params) {
     // the session-authed /api/sheets proxy (no new unauthenticated endpoint);
     // the stamping user comes from the signed cookie via requestUser_.
     if (action === 'getCredits') return jsonOut_(getCredits_());
+    // Refund suggestion for a discharge: READ-ONLY (no sheet write, no lock),
+    // gated by PROXY_SECRET like every non-OPEN_ACTIONS action.
+    if (action === 'suggestRefunds') return jsonOut_(suggestRefunds_(params));
     if (action === 'saveCredit') {
       return jsonOut_(upsertCredit_(parseJsonParam_(params.credit), requestUser_(params)));
     }
@@ -5954,23 +5959,13 @@ function creditId_(patientId, allocationMonth, seq) {
   return 'credit::' + patientId + '::' + allocationMonth + '::' + seq;
 }
 
-/* The 15th of the next month on or after decidedDate ('YYYY-MM-DD'):
- * decided on the 1st–15th → the 15th of that month; the 16th onward → the
- * 15th of the following month. Pure string arithmetic on the date parts (no
- * Date object, so no timezone can shift it). Mirrors payoutDateFor() in app.js. */
-function payoutDateFor_(decidedISO) {
-  const m = String(decidedISO || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return '';
-  let y = Number(m[1]), mo = Number(m[2]);
-  if (Number(m[3]) > CREDIT_PAYOUT_DAY) { mo += 1; if (mo > 12) { mo = 1; y += 1; } }
-  return y + '-' + String(mo).padStart(2, '0') + '-' + String(CREDIT_PAYOUT_DAY).padStart(2, '0');
-}
-
-/* ===== Refund calculation — Phase 1 foundation (docs/billing-control-plan.md §8) =====
- * PURE functions: no sheet read or write, no lock, no endpoint. Nothing calls
- * them yet; the live credits path (suggestCredits in app.js, payoutDateFor_ /
- * upsertCredit_ here) is unchanged until a later phase wires these in.
- * See CHANGELOG-refund-logic-foundation.md.
+/* ===== Refund calculation (docs/billing-control-plan.md §8) =====
+ * PURE functions: no sheet read or write, no lock. THE source of the refund
+ * rules: the suggestRefunds read action (suggestRefunds_ → refundSuggestionsFor_)
+ * builds every credit suggestion from computeRefund_, and upsertCredit_
+ * derives every payoutDate from refundPayoutDate_. app.js holds no copy of the
+ * rules (its payoutDateFor() is a display echo with a parity test).
+ * See CHANGELOG-refund-logic-foundation.md, CHANGELOG-refund-logic-wiring.md.
  *
  * Rules (Sandra, 01/10/2026):
  *   - cycle      = the patient's OWN month, anchored on the entry date: cycle k
@@ -6063,7 +6058,7 @@ function refundRound2_(n) {
 /* The refund payout date for a decision date. Decided on the 1st–10th → the
  * 15th of that month; the 11th onward → the 15th of the next month (December
  * rolls into January of the next year). Throws bad_date on an unreadable date.
- * Replaces payoutDateFor_ (cutoff on the 15th) once a later phase wires it in. */
+ * Replaced payoutDateFor_ (cutoff on the 15th) in the wiring PR. */
 function refundPayoutDate_(decided) {
   const iso = refundDateIso_(decided, 'decidedDate');
   let y = Number(iso.slice(0, 4)), mo = Number(iso.slice(5, 7));
@@ -6183,6 +6178,167 @@ function computeRefund_(input) {
   };
 }
 
+/* ===== Refund suggestions for a discharge (the live path) =====
+ * Pure. Every credit suggestion the credits modal offers, built from
+ * computeRefund_ over the patient's Payments rows — the server is the only
+ * place the rules live (CHANGELOG-refund-logic-wiring.md).
+ *
+ * input: { houseId, entryDate, exitDate, patientKey } — patientKey is the
+ *   'houseId::name::entryDate' triple that keys Payments.patientId.
+ * rows: raw Payments rows (readSheet_ objects). A row belongs to the patient
+ *   when its patientId cell — or, when blank, the triple inside its
+ *   'pay::h::n::d::due' id (the normalizePayment() rule) — equals patientKey.
+ *   VOID rows are skipped (a double entry is not money).
+ * todayIso: the decision day (Asia/Jerusalem).
+ *
+ * Per row, in dueDate order, its window is:
+ *   - the RECORDED coverageStart/coverageEnd when both are usable;
+ *   - else the entry-anchored cycle starting on dueDate;
+ *   - else (a dueDate that is not a cycle start) dueDate … dueDate + 1 month − 1.
+ * computeRefund_ decides the rule and the figure. A window that ended before
+ * the exit produces nothing. Days already credited by an earlier row's window
+ * are never credited twice (alreadyCreditedThrough). When no row yields a
+ * days_unused line, ONE zero days_unused line is still returned — "no refund
+ * owed" is a recorded decision — from the latest used row, else from the
+ * cycle that holds the exit with nothing paid.
+ *
+ * Each suggestion: { creditType, allocationMonth, calculatedAmount, basis }.
+ * basis = computeRefund_'s breakdown (basisVersion 2) plus the fields the
+ * revenue screen allocates by (coverageStart, coverageEnd, creditedFrom).
+ * Throws (err.code) on any bad input — never a silent 0. */
+function refundSuggestionsFor_(input, rows, todayIso) {
+  const x = input || {};
+  const key = String(x.patientKey == null ? '' : x.patientKey);
+  if (!key) throw refundError_('missing_patientKey', 'patientKey');
+  const base = { houseId: x.houseId, entryDate: x.entryDate, exitDate: x.exitDate, decidedDate: todayIso };
+  // Validates house and dates up front, and is the "nothing paid" fallback.
+  const probe = computeRefund_(Object.assign({}, base, { amountPaid: 0 }));
+  const exitN = refundDayNum_(probe.exitDate);
+  const tryIso = function (v) { try { return refundDateIso_(v, 'date'); } catch (_) { return ''; } };
+  const rowKey = function (r) {
+    const pid = String(r.patientId == null ? '' : r.patientId);
+    if (pid) return pid;
+    const parts = String(r.id == null ? '' : r.id).split('::');
+    return parts.length === 5 && parts[0] === 'pay' ? parts.slice(1, 4).join('::') : '';
+  };
+
+  const mine = (Array.isArray(rows) ? rows : [])
+    .filter(function (r) { return r && rowKey(r) === key && !isVoidStatus_(r.status); })
+    .map(function (r) { return { r: r, due: tryIso(r.dueDate) }; })
+    .filter(function (o) { return o.due !== ''; })
+    .sort(function (a, b) { return a.due < b.due ? -1 : a.due > b.due ? 1 : 0; });
+
+  const out = [];
+  let creditedThroughN = null;
+  let latestUsed = null;
+  mine.forEach(function (o) {
+    const r = o.r;
+    const amountPaid = (r.amountPaid === '' || r.amountPaid == null) ? 0 : r.amountPaid;
+    const one = Object.assign({}, base, { amountPaid: amountPaid });
+    const cs = tryIso(r.coverageStart), ce = tryIso(r.coverageEnd);
+    let b, windowSource;
+    if (cs && ce && refundDayNum_(ce) >= refundDayNum_(cs)) {
+      b = computeRefund_(Object.assign(one, { coverageStart: cs, coverageEnd: ce }));
+      windowSource = 'recorded';
+    } else {
+      try {
+        b = computeRefund_(Object.assign({}, one, { cycleStart: o.due }));
+        windowSource = 'inferred';
+      } catch (e) {
+        if (!e || e.code !== 'cycle_not_aligned') throw e;
+        const end = refundIsoFromDayNum_(refundDayNum_(refundAddMonths_(o.due, 1)) - 1);
+        b = computeRefund_(Object.assign({}, one, { coverageStart: o.due, coverageEnd: end }));
+        windowSource = 'due_date';
+      }
+    }
+    const extra = { paymentDueDate: o.due, billedAmount: refundRound2_(Number(r.amount) || 0), coverageWindowSource: windowSource };
+    if (b.rule === 'cycle_fully_used') { latestUsed = { b: b, extra: extra, due: o.due }; return; }
+    if (b.rule === 'prepaid_return') {
+      out.push(refundSuggestion_(b, Object.assign(extra, { creditedDays: b.daysNotStayed, creditedFrom: '', alreadyCreditedThrough: '' }), o.due.slice(0, 7)));
+      return;
+    }
+    // The cycle that holds the exit: days after the exit, minus any day an
+    // earlier window already credited.
+    latestUsed = { b: b, extra: extra, due: o.due };
+    const endN = refundDayNum_(b.cycleEnd);
+    const fromN = Math.max(exitN, creditedThroughN === null ? exitN : creditedThroughN) + 1;
+    const creditedDays = Math.max(0, endN - fromN + 1);
+    const already = creditedThroughN !== null && creditedThroughN > exitN ? refundIsoFromDayNum_(creditedThroughN) : '';
+    if (creditedDays > 0) creditedThroughN = endN;
+    const adj = Object.assign({}, b);
+    if (creditedDays !== b.daysNotStayed && b.refund > 0) {
+      adj.refund = Math.min(refundRound2_(b.amountPaid / CREDIT_DAYS_DIVISOR * creditedDays), b.amountPaid);
+    }
+    out.push(refundSuggestion_(adj, Object.assign(extra, {
+      creditedDays: creditedDays,
+      creditedFrom: creditedDays > 0 ? refundIsoFromDayNum_(fromN) : '',
+      alreadyCreditedThrough: already,
+    }), o.due.slice(0, 7)));
+  });
+
+  if (!out.some(function (s) { return s.creditType === 'days_unused'; })) {
+    const zero = latestUsed
+      ? refundSuggestion_(Object.assign({}, latestUsed.b, { refund: 0 }),
+          Object.assign({}, latestUsed.extra, { creditedDays: 0, creditedFrom: '', alreadyCreditedThrough: '' }), latestUsed.due.slice(0, 7))
+      : refundSuggestion_(probe, { paymentDueDate: '', billedAmount: 0, coverageWindowSource: 'no_payment_row',
+          creditedDays: 0, creditedFrom: '', alreadyCreditedThrough: '' }, probe.exitDate.slice(0, 7));
+    zero.creditType = 'days_unused';
+    zero.basis.creditType = 'days_unused';
+    out.unshift(zero);
+  }
+  return out;
+}
+
+/* One suggestion from a computeRefund_ breakdown + the row's extras. */
+function refundSuggestion_(b, extra, allocationMonth) {
+  const basis = Object.assign({ basisVersion: 2 }, b, extra, {
+    coverageStart: b.cycleStart,
+    coverageEnd:   b.cycleEnd,
+    unusedDays:    extra.creditedDays,
+    eligible:      b.rule === 'residential_prorata' || b.rule === 'detox_prorata' || b.rule === 'prepaid_return',
+  });
+  return { creditType: b.creditType, allocationMonth: allocationMonth, calculatedAmount: b.refund, basis: basis };
+}
+
+/* action=suggestRefunds — READ-ONLY. Reads the Payments sheet (never creates
+ * it, never backfills, no lock) and returns the suggestions for one
+ * discharge. Gated by PROXY_SECRET (not in OPEN_ACTIONS).
+ * → { ok:true, decidedDate, payoutDate, facilityType, suggestions }
+ *   | { ok:false, error:<code>, field } — e.g. unknown_house. The error names
+ *   a field, never a patient. */
+function suggestRefunds_(params) {
+  const p = params || {};
+  try {
+    const today = Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'yyyy-MM-dd');
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PAYMENTS_SHEET);
+    const rows = sh ? readSheet_(sh, PAYMENT_COLUMNS) : [];
+    const input = {
+      houseId:    creditStr_(p.houseId, 40),
+      entryDate:  creditStr_(p.entryDate, 40),
+      exitDate:   creditStr_(p.exitDate, 40),
+      patientKey: String(p.patientKey == null ? '' : p.patientKey).slice(0, 300),
+    };
+    const suggestions = refundSuggestionsFor_(input, rows, today);
+    return {
+      ok: true, decidedDate: today, payoutDate: refundPayoutDate_(today),
+      facilityType: facilityTypeFor_(input.houseId), suggestions: suggestions,
+    };
+  } catch (e) {
+    if (e && e.code) return { ok: false, error: e.code, field: e.field || '' };
+    return { ok: false, error: 'refund_failed' };
+  }
+}
+
+/* The payoutDate a credit save writes. A CREATE, or an edit that changes the
+ * decision date, gets refundPayoutDate_(decidedDate) — the 10th cutoff. An
+ * edit that keeps the stored decidedDate keeps the stored payoutDate, so a
+ * credit decided under the old 15th cutoff is never re-dated by a re-save
+ * (saved credits are not recalculated). */
+function creditPayoutDate_(decidedDate, existing) {
+  if (existing && existing.payoutDate && existing.decidedDate === decidedDate) return existing.payoutDate;
+  return refundPayoutDate_(decidedDate);
+}
+
 function creditStr_(v, max) {
   return String(v == null ? '' : v).replace(/[<>]/g, '').trim().slice(0, max);
 }
@@ -6209,8 +6365,10 @@ function creditDate_(v) {
  *     (override_reason_required); 'other' without a reason → refused;
  *   - status 'paid' without paidDate AND method → refused (marking paid is an
  *     explicit action, never automatic); a non-paid status carries no paidDate;
- *   - decidedDate defaults to today (spreadsheet tz); payoutDate is always
- *     re-derived from it (payoutDateFor_);
+ *   - decidedDate defaults to today (spreadsheet tz); payoutDate is derived
+ *     from it (refundPayoutDate_: cutoff on the 10th). An EDIT that keeps the
+ *     stored decidedDate keeps the stored payoutDate — a credit saved under
+ *     the old 15th cutoff is never moved by a re-save;
  *   - CREATE (no id in the payload): id minted here; basis stored as JSON;
  *     createdAt/By + updatedAt/By stamped from the server clock + cookie user;
  *   - EDIT (id present): the row must exist (unknown_credit otherwise — a
@@ -6238,6 +6396,8 @@ function upsertCredit_(credit, user) {
 
     const wantId = creditStr_(credit.id, 200);
     let record, targetRow = 0;
+    // EDIT only: the stored { decidedDate, payoutDate } before this edit.
+    let existingPayout = null;
 
     if (wantId) {
       // ---- EDIT ----
@@ -6263,6 +6423,7 @@ function upsertCredit_(credit, user) {
       }
 
       record = Object.assign({}, sheetObj);
+      existingPayout = { decidedDate: creditDate_(sheetObj.decidedDate), payoutDate: creditDate_(sheetObj.payoutDate) };
       for (let k = 0; k < CREDIT_EDITABLE_COLUMNS.length; k++) {
         const col = CREDIT_EDITABLE_COLUMNS[k];
         if (credit[col] !== undefined) record[col] = credit[col];
@@ -6320,7 +6481,7 @@ function upsertCredit_(credit, user) {
       reason:           reason,
       approvedBy:       creditStr_(record.approvedBy, 40),
       decidedDate:      decidedDate,
-      payoutDate:       payoutDateFor_(decidedDate),
+      payoutDate:       creditPayoutDate_(decidedDate, wantId ? existingPayout : null),
       status:           status,
       paidDate:         status === 'paid' ? paidDate : '',
       method:           method,
