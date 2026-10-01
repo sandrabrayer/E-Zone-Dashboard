@@ -5899,6 +5899,223 @@ function payoutDateFor_(decidedISO) {
   return y + '-' + String(mo).padStart(2, '0') + '-' + String(CREDIT_PAYOUT_DAY).padStart(2, '0');
 }
 
+/* ===== Refund calculation — Phase 1 foundation (docs/billing-control-plan.md §8) =====
+ * PURE functions: no sheet read or write, no lock, no endpoint. Nothing calls
+ * them yet; the live credits path (suggestCredits in app.js, payoutDateFor_ /
+ * upsertCredit_ here) is unchanged until a later phase wires these in.
+ * See CHANGELOG-refund-logic-foundation.md.
+ *
+ * Rules (Sandra, 01/10/2026):
+ *   - cycle      = the patient's OWN month, anchored on the entry date: cycle k
+ *                  starts at entry + k months (day clamped to the target
+ *                  month's length: 31 Jan → 28/29 Feb) and ends the day before
+ *                  cycle k+1 starts. A recorded coverageStart/coverageEnd wins
+ *                  over the derived cycle (plan §8.1).
+ *   - rate       = amountPaid / 30 (CREDIT_DAYS_DIVISOR), whatever the cycle's
+ *                  length; refund = rate × days not stayed, capped at amountPaid.
+ *                  The exit day counts as stayed (entry day is day 1).
+ *   - residential (asher, ramot): exit within the last 7 days of the cycle
+ *                  (cycle end and the 6 days before it) → 0 for that cycle.
+ *   - detox_dual (rehab, pardes, arfoni, sde): exit on stay day 14 or later
+ *                  (entry day = day 1) → 0 for the current cycle.
+ *   - a cycle that had not started at the exit → amountPaid back in full, in
+ *     every house (prepaid_return).
+ *   - payout: decided on or before the 10th → the 15th of that month; after
+ *     the 10th → the 15th of the next month (refundPayoutDate_).
+ * Dates are Asia/Jerusalem calendar days. Arithmetic is on day numbers
+ * (UTC epoch days), so no runtime or sheet timezone can shift a day.
+ *
+ * TODO(Phase 0b-3, personal PINs): exceptions / write-offs (a refund > 0 where
+ * the policy gives 0) are Sandra-only, enforced on the server against the
+ * signed-cookie user. Deliberately NO override parameter here until the user
+ * can no longer be spoofed. */
+const CREDIT_DAYS_DIVISOR             = 30;
+const CREDIT_RESIDENTIAL_LAST_DAYS    = 7;
+const CREDIT_DETOX_TENURE_CUTOFF_DAYS = 14;   // stay day, entry day = day 1
+const CREDIT_DECISION_CUTOFF_DAY      = 10;
+const REFUND_MAX_CYCLES               = 1200; // 100 years — a guard, never a real stay
+
+/* An Error carrying a machine code. Messages name the field, never a patient. */
+function refundError_(code, field) {
+  const e = new Error('refund: ' + code + (field ? ' (' + field + ')' : ''));
+  e.code = code;
+  if (field) e.field = field;
+  return e;
+}
+
+/* Any accepted date input → 'YYYY-MM-DD' (Asia/Jerusalem calendar day), or
+ * throws bad_date. Accepted:
+ *   - a Date (a Sheets date cell): formatted in Asia/Jerusalem EXPLICITLY, not
+ *     in the spreadsheet's zone — a Jerusalem-midnight cell under a UTC sheet
+ *     must stay on its own day (same trap as managerDateIso_);
+ *   - a Sheets date serial (the day is exact, no timezone involved);
+ *   - a timestamp string with a timezone marker (Z / ±hh:mm) → its Jerusalem day;
+ *   - a bare 'YYYY-MM-DD' that is a real calendar date. */
+function refundDateIso_(v, field) {
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    if (isNaN(v.getTime())) throw refundError_('bad_date', field);
+    return Utilities.formatDate(v, 'Asia/Jerusalem', 'yyyy-MM-dd');
+  }
+  if (typeof v === 'number' && isSheetDateSerial_(v)) return sheetSerialToISODate_(v);
+  const s = String(v == null ? '' : v).trim();
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/.test(s)) {
+    const d = new Date(s);
+    if (isNaN(d.getTime())) throw refundError_('bad_date', field);
+    return Utilities.formatDate(d, 'Asia/Jerusalem', 'yyyy-MM-dd');
+  }
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) throw refundError_('bad_date', field);
+  if (refundIsoFromDayNum_(refundDayNum_(s)) !== s) throw refundError_('bad_date', field);   // 2026-02-30
+  return s;
+}
+
+/* 'YYYY-MM-DD' ↔ whole days since 1970-01-01 (UTC epoch days: no DST, no zone). */
+function refundDayNum_(iso) {
+  const p = iso.split('-');
+  return Math.round(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2])) / 86400000);
+}
+function refundIsoFromDayNum_(n) {
+  return new Date(n * 86400000).toISOString().slice(0, 10);
+}
+
+/* iso + n months, day CLAMPED to the target month (31 Jan + 1 → 28/29 Feb).
+ * Always stepped from the anchor (the entry date), never chained, so a
+ * 31 Jan entry gives 28 Feb, then 31 Mar — not 28 Mar. */
+function refundAddMonths_(iso, n) {
+  const p = iso.split('-');
+  const y = Number(p[0]), m0 = Number(p[1]) - 1 + n, d = Number(p[2]);
+  const ty = y + Math.floor(m0 / 12), tm = ((m0 % 12) + 12) % 12;
+  const last = new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate();
+  return ty + '-' + String(tm + 1).padStart(2, '0') + '-' + String(Math.min(d, last)).padStart(2, '0');
+}
+
+function refundRound2_(n) {
+  return Math.round(n * 100) / 100;
+}
+
+/* The refund payout date for a decision date. Decided on the 1st–10th → the
+ * 15th of that month; the 11th onward → the 15th of the next month (December
+ * rolls into January of the next year). Throws bad_date on an unreadable date.
+ * Replaces payoutDateFor_ (cutoff on the 15th) once a later phase wires it in. */
+function refundPayoutDate_(decided) {
+  const iso = refundDateIso_(decided, 'decidedDate');
+  let y = Number(iso.slice(0, 4)), mo = Number(iso.slice(5, 7));
+  if (Number(iso.slice(8, 10)) > CREDIT_DECISION_CUTOFF_DAY) { mo += 1; if (mo > 12) { mo = 1; y += 1; } }
+  return y + '-' + String(mo).padStart(2, '0') + '-' + String(CREDIT_PAYOUT_DAY).padStart(2, '0');
+}
+
+/* Pure. The refund for ONE paid billing cycle of a discharged patient, with
+ * the full breakdown. Throws (err.code) on any bad input — never a silent 0.
+ *
+ * input:
+ *   houseId      — Patients-sheet house id; unknown → unknown_house
+ *   entryDate    — first day of the stay (day 1)
+ *   exitDate     — last day of the stay (counts as stayed); before entry → exit_before_entry
+ *   amountPaid   — VAT-inclusive ₪ received for this cycle, ≥ 0 → else bad_amount
+ *   decidedDate  — the day the refund is decided (drives payoutDate)
+ *   cycleStart   — optional: which cycle, as its start date. Must be an
+ *                  entry-anchored cycle start (else cycle_not_aligned).
+ *                  Omitted → the cycle that contains the exit.
+ *   coverageStart / coverageEnd — optional, together: the period the payment
+ *                  row RECORDS. Wins over the derived cycle (plan §8.1).
+ *
+ * output: { houseId, facilityType, entryDate, exitDate, stayDay, cycleStart,
+ *   cycleEnd, cycleSource, cycleDays, daysStayed, daysNotStayed, divisor,
+ *   amountPaid, dailyRate, uncappedRefund, capped, lastDaysFrom, lastDaysTo,
+ *   rule, creditType, refund, decidedDate, payoutDate }
+ *   rule ∈ residential_prorata | residential_last_days_zero | detox_prorata |
+ *          detox_tenure_cutoff_zero | prepaid_return | cycle_fully_used
+ *   refund is computed from the unrounded rate; dailyRate is rounded for display. */
+function computeRefund_(input) {
+  const x = input || {};
+  const houseId = String(x.houseId == null ? '' : x.houseId).trim();
+  const facilityType = facilityTypeFor_(houseId);
+  if (!facilityType) throw refundError_('unknown_house', 'houseId');
+
+  const entryDate = refundDateIso_(x.entryDate, 'entryDate');
+  const exitDate = refundDateIso_(x.exitDate, 'exitDate');
+  const decidedDate = refundDateIso_(x.decidedDate, 'decidedDate');
+  const entryN = refundDayNum_(entryDate), exitN = refundDayNum_(exitDate);
+  if (exitN < entryN) throw refundError_('exit_before_entry', 'exitDate');
+
+  if (x.amountPaid === '' || x.amountPaid === null || x.amountPaid === undefined || typeof x.amountPaid === 'boolean') {
+    throw refundError_('bad_amount', 'amountPaid');
+  }
+  const paidNum = Number(x.amountPaid);
+  if (!isFinite(paidNum) || paidNum < 0) throw refundError_('bad_amount', 'amountPaid');
+  const amountPaid = refundRound2_(paidNum);
+
+  // The cycle: recorded coverage, else entry-anchored (given, or the one holding the exit).
+  let cycleStart, cycleEnd, cycleSource;
+  const hasCovStart = !(x.coverageStart === '' || x.coverageStart == null);
+  const hasCovEnd = !(x.coverageEnd === '' || x.coverageEnd == null);
+  if (hasCovStart || hasCovEnd) {
+    if (!hasCovStart || !hasCovEnd) throw refundError_('coverage_incomplete', hasCovStart ? 'coverageEnd' : 'coverageStart');
+    cycleStart = refundDateIso_(x.coverageStart, 'coverageStart');
+    cycleEnd = refundDateIso_(x.coverageEnd, 'coverageEnd');
+    if (refundDayNum_(cycleEnd) < refundDayNum_(cycleStart)) throw refundError_('bad_coverage', 'coverageEnd');
+    cycleSource = 'recorded_coverage';
+  } else {
+    const wanted = (x.cycleStart === '' || x.cycleStart == null) ? null : refundDayNum_(refundDateIso_(x.cycleStart, 'cycleStart'));
+    const target = wanted === null ? exitN : wanted;
+    let k = -1;
+    for (let i = 0; i <= REFUND_MAX_CYCLES; i++) {
+      const s = refundDayNum_(refundAddMonths_(entryDate, i));
+      if (s > target) break;
+      if (wanted === null || s === wanted) k = i;
+      if (s === target) break;
+    }
+    if (k < 0 || (wanted !== null && refundDayNum_(refundAddMonths_(entryDate, k)) !== wanted)) {
+      throw refundError_(wanted === null ? 'cycle_out_of_range' : 'cycle_not_aligned', wanted === null ? 'exitDate' : 'cycleStart');
+    }
+    cycleStart = refundAddMonths_(entryDate, k);
+    cycleEnd = refundIsoFromDayNum_(refundDayNum_(refundAddMonths_(entryDate, k + 1)) - 1);
+    cycleSource = 'entry_anchored';
+  }
+  const startN = refundDayNum_(cycleStart), endN = refundDayNum_(cycleEnd);
+  const cycleDays = endN - startN + 1;
+  const stayDay = exitN - entryN + 1;
+  const rate = amountPaid / CREDIT_DAYS_DIVISOR;
+  const residential = facilityType === 'residential';
+  const lastDaysFromN = endN - (CREDIT_RESIDENTIAL_LAST_DAYS - 1);
+
+  let daysStayed, daysNotStayed, rule, creditType = 'days_unused', uncapped, refund;
+  if (startN > exitN) {
+    // Prepaid and not started at the exit: unearned in full, in every house.
+    daysStayed = 0; daysNotStayed = cycleDays;
+    rule = 'prepaid_return'; creditType = 'prepaid_return';
+    uncapped = amountPaid; refund = amountPaid;
+  } else if (endN < exitN) {
+    // Ended before the exit: fully used.
+    daysStayed = cycleDays; daysNotStayed = 0;
+    rule = 'cycle_fully_used'; uncapped = 0; refund = 0;
+  } else {
+    // The current cycle: the facility rule applies.
+    daysStayed = exitN - startN + 1; daysNotStayed = endN - exitN;
+    uncapped = refundRound2_(rate * daysNotStayed);
+    const prorata = Math.min(uncapped, amountPaid);
+    if (residential) {
+      rule = exitN >= lastDaysFromN ? 'residential_last_days_zero' : 'residential_prorata';
+    } else {
+      rule = stayDay >= CREDIT_DETOX_TENURE_CUTOFF_DAYS ? 'detox_tenure_cutoff_zero' : 'detox_prorata';
+    }
+    refund = (rule === 'residential_prorata' || rule === 'detox_prorata') ? prorata : 0;
+  }
+
+  return {
+    houseId: houseId, facilityType: facilityType,
+    entryDate: entryDate, exitDate: exitDate, stayDay: stayDay,
+    cycleStart: cycleStart, cycleEnd: cycleEnd, cycleSource: cycleSource, cycleDays: cycleDays,
+    daysStayed: daysStayed, daysNotStayed: daysNotStayed,
+    divisor: CREDIT_DAYS_DIVISOR, amountPaid: amountPaid, dailyRate: refundRound2_(rate),
+    uncappedRefund: uncapped, capped: uncapped > amountPaid,
+    lastDaysFrom: residential ? refundIsoFromDayNum_(lastDaysFromN) : '',
+    lastDaysTo: residential ? cycleEnd : '',
+    rule: rule, creditType: creditType, refund: refund,
+    decidedDate: decidedDate, payoutDate: refundPayoutDate_(decidedDate),
+  };
+}
+
 function creditStr_(v, max) {
   return String(v == null ? '' : v).replace(/[<>]/g, '').trim().slice(0, max);
 }
