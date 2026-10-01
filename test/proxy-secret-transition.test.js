@@ -606,8 +606,9 @@ function sessionCookie(user) {
 
 test('server.js buildAppsScriptBody: proxy fields go LAST, so a client can never override them', () => {
   const { mod } = freshServer({ PROXY_SECRET: SECRET, SESSION_SECRET, SHEETS_URL });
-  const b = mod.buildAppsScriptBody({ action: 'x', proxySecret: 'evil', proxyUser: 'סנדרה', user: 'סנדרה' }, 'ורד', SECRET);
-  assert.deepStrictEqual(b, { action: 'x', proxySecret: SECRET, proxyUser: 'ורד', user: 'ורד' });
+  const b = mod.buildAppsScriptBody({ action: 'x', proxySecret: 'evil', proxyUser: 'סנדרה', user: 'סנדרה', proxyRoles: ['approver'] }, 'ורד', SECRET);
+  // proxyRoles (Phase 0b-3 PR A) is proxy-owned too: no roles given → [].
+  assert.deepStrictEqual(b, { action: 'x', proxySecret: SECRET, proxyUser: 'ורד', user: 'ורד', proxyRoles: [] });
   assert.deepStrictEqual(mod.readParamsToBody({ a: '1', b: ['x', 'y'], c: null, d: { e: 1 } }),
     { a: '1', b: '["x","y"]', d: '{"e":1}' });
 });

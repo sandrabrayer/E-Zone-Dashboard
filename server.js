@@ -4,11 +4,32 @@ const fs = require('fs');
 const https = require('https');
 const { checkPin } = require('./lib/pin');
 const { createSessionToken, verifySessionToken, readSessionUser } = require('./lib/session');
-const { SESSION_USERS } = require('./lib/users');
+const { SESSION_USERS, ROLES, SHARED_SESSION_ROLES, APPROVER_USER_ID } = require('./lib/users');
+const { validateUserPinConfig, hasApprover, buildUserRecord, withRecord } = require('./lib/user-pins');
+const { pinWeakness, isValidPepper } = require('./lib/pin-hash');
+const { FixedWindowLimiter } = require('./lib/rate-limit');
 
 const app = express();
 app.disable('etag');
 app.disable('x-powered-by');
+
+/* Client IP for the PIN rate limits (Phase 0b-3, PR A). Railway's edge proxy
+ * is the ONE hop in front of this app and APPENDS the real client address to
+ * X-Forwarded-For. 'trust proxy' = 1 makes Express take req.ip from that
+ * right-most entry (the one Railway wrote). The left-most entry — which the
+ * old pinClientIp used — is whatever the CLIENT sent, so a fresh fake value
+ * per request reset the counter. Honest clients send no X-Forwarded-For of
+ * their own, so for them both readings are the same address.
+ * TRUST_PROXY_HOPS (Railway variable, integer 1–5, default 1) exists only so a
+ * wrong hop count can be fixed without a code deploy: if Railway ever put a
+ * second proxy in front, every client would share one address and one
+ * counter. Anything else falls back to 1. */
+function trustProxyHops(raw) {
+  const n = /^[1-5]$/.test(String(raw == null ? '' : raw).trim()) ? Number(String(raw).trim()) : 1;
+  return n;
+}
+const TRUST_PROXY_HOPS = trustProxyHops(process.env.TRUST_PROXY_HOPS);
+app.set('trust proxy', TRUST_PROXY_HOPS);
 const PORT = process.env.PORT || 3000;
 
 /* Always emit headers that defeat browser caches, CDNs (Cloudflare,
@@ -92,6 +113,43 @@ if (!SESSION_SECRET) {
 
 const SESSION_COOKIE = 'ezone_session';
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60; // 604800 seconds (7 days), matches the token TTL
+
+/* ===== Personal PINs (Phase 0b-3, PR A — foundation, not wired to login) =====
+ *
+ * PIN_PEPPER       — server secret mixed into every PIN hash (lib/pin-hash.js).
+ *                    Never logged, never sent anywhere.
+ * USER_PIN_HASHES  — the personal-PIN records (lib/user-pins.js). May be unset.
+ *                    Malformed (bad JSON, unknown role, an approver other than
+ *                    Sandra, a bad hash, records without a pepper) → the
+ *                    server REFUSES TO START. Railway's /healthz check then
+ *                    keeps the previous deployment serving, so a bad paste can
+ *                    never take the dashboard down or start it half-configured.
+ * BOOTSTRAP_TOKEN  — one-time: lets Sandra create her OWN record without local
+ *                    Node (POST /api/bootstrap-pin below). Disabled for good
+ *                    once any approver record exists. */
+const PIN_PEPPER = process.env.PIN_PEPPER || '';
+if (PIN_PEPPER && !isValidPepper(PIN_PEPPER)) {
+  console.error('[config] PIN_PEPPER is shorter than 32 characters — it is ignored; personal PINs stay unavailable.');
+}
+const USER_PIN_CONFIG = validateUserPinConfig(process.env.USER_PIN_HASHES, PIN_PEPPER);
+if (!USER_PIN_CONFIG.ok) {
+  USER_PIN_CONFIG.errors.forEach((e) => console.error('[config] ' + e));
+  console.error('[config] USER_PIN_HASHES is invalid — the server refuses to start. Fix the Railway variable; the previous deployment keeps serving.');
+  if (require.main === module) process.exit(1);
+}
+const USER_PIN_RECORDS = USER_PIN_CONFIG.records;
+
+const BOOTSTRAP_TOKEN = process.env.BOOTSTRAP_TOKEN || '';
+const BOOTSTRAP_MIN_TOKEN_LENGTH = 32;
+if (BOOTSTRAP_TOKEN) {
+  if (hasApprover(USER_PIN_RECORDS)) {
+    console.warn('[config] BOOTSTRAP_TOKEN is still set, but an approver record exists so /api/bootstrap-pin is disabled. Delete BOOTSTRAP_TOKEN from Railway.');
+  } else if (BOOTSTRAP_TOKEN.length < BOOTSTRAP_MIN_TOKEN_LENGTH) {
+    console.warn('[config] BOOTSTRAP_TOKEN is shorter than ' + BOOTSTRAP_MIN_TOKEN_LENGTH + ' characters — /api/bootstrap-pin stays closed.');
+  } else {
+    console.warn('[config] BOOTSTRAP_TOKEN is set — the one-time /api/bootstrap-pin is OPEN. Delete BOOTSTRAP_TOKEN from Railway as soon as Sandra\'s record is pasted.');
+  }
+}
 
 /* ===== Meeting-report micro-app config =====
  *
@@ -199,10 +257,18 @@ function readParamsToBody(params) {
  *   user        — the session user (kept for a Code.gs that predates 0b-1)
  *   proxyUser   — the session user, which Code.gs trusts once the secret
  *                 verifies (a contradicting `user` is ignored + logged)
- *   proxySecret — PROXY_SECRET. Body only: never in a URL. Pure. */
-function buildAppsScriptBody(fields, user, secret) {
+ *   proxyRoles  — the session's roles (Phase 0b-3), filtered to the known
+ *                 lib/users.js ROLES. Code.gs grants them ONLY to a request
+ *                 whose proxySecret verifies; a client value is overwritten.
+ *   proxySecret — PROXY_SECRET. Body only: never in a URL. Pure.
+ * `_verifiedActor` is Code.gs's internal field; a client copy is dropped here
+ * too (Code.gs also strips it). */
+function buildAppsScriptBody(fields, user, secret, roles) {
   const u = typeof user === 'string' ? user : '';
-  return Object.assign({}, fields || {}, { user: u, proxyUser: u, proxySecret: String(secret || '') });
+  const r = Array.isArray(roles) ? roles.filter((x) => ROLES.indexOf(x) >= 0) : [];
+  const out = Object.assign({}, fields || {});
+  delete out._verifiedActor;
+  return Object.assign(out, { user: u, proxyUser: u, proxyRoles: r, proxySecret: String(secret || '') });
 }
 
 /* A READ (the browser's GET /api/sheets) — sent to Apps Script as a POST
@@ -210,20 +276,21 @@ function buildAppsScriptBody(fields, user, secret) {
  * headers and a querystring would put the secret in a URL. doGet and doPost
  * both route through the same gate + handle_, so the result is identical.
  * Follows Google's 302 → googleusercontent.com. */
-function sheetsGet(params, user) {
-  return sheetsPost(Object.assign(readParamsToBody(params), { user: typeof user === 'string' ? user : '' }));
+function sheetsGet(params, user, roles) {
+  return sheetsPost(Object.assign(readParamsToBody(params), { user: typeof user === 'string' ? user : '' }), roles);
 }
 
 /* POST a JSON body to the Apps Script, with the proxy secret attached here —
  * the ONE place every Apps Script call goes through. Follows the 302 as GET
  * (standard Apps Script behavior — the redirect target serves the precomputed
  * doPost response). Fail-closed: no PROXY_SECRET → rejects WITHOUT any
- * network call. `body.user` is the session user the route resolved. */
-function sheetsPost(body) {
+ * network call. `body.user` is the session user the route resolved; `roles`
+ * are the session's roles (sessionRolesFromRequest) — never read from body. */
+function sheetsPost(body, roles) {
   return new Promise((resolve, reject) => {
     if (!PROXY_SECRET) return reject(new Error(PROXY_NOT_CONFIGURED));
     const b = body || {};
-    const payload = JSON.stringify(buildAppsScriptBody(b, b.user, PROXY_SECRET));
+    const payload = JSON.stringify(buildAppsScriptBody(b, b.user, PROXY_SECRET, roles));
     const opts = {
       method: 'POST',
       headers: {
@@ -345,7 +412,7 @@ function redactSecrets(text, secrets) {
 
 /* The secrets that must never appear in a stored debug record. */
 function debugSecretList() {
-  return [OUTPATIENT_LEAD_SECRET, SESSION_SECRET, MEETING_REPORT_SECRET, PROXY_SECRET];
+  return [OUTPATIENT_LEAD_SECRET, SESSION_SECRET, MEETING_REPORT_SECRET, PROXY_SECRET, PIN_PEPPER, BOOTSTRAP_TOKEN];
 }
 
 /* An error message safe to log or return: every configured secret redacted
@@ -536,6 +603,17 @@ function sessionUserFromRequest(req) {
   if (!SESSION_SECRET) return '';
   return readSessionUser(parseSessionCookie(req.headers.cookie), SESSION_SECRET);
 }
+
+/* The roles the request's VERIFIED session carries. Every session today is a
+ * shared-PIN (APP_PIN) session, so a valid cookie → SHARED_SESSION_ROLES
+ * (['staff']: never deleter, never approver). No valid cookie → []. Personal
+ * sessions (PR B) will return their USER_PIN_HASHES record's roles. Nothing
+ * enforces roles yet; Code.gs only receives them. */
+function sessionRolesFromRequest(req) {
+  if (sessionAuthStatus(req.headers.cookie, SESSION_SECRET) !== 'ok') return [];
+  return SHARED_SESSION_ROLES.slice();
+}
+
 /* Express middleware guarding the data routes. Fail-closed: an unset
  * SESSION_SECRET yields 503 (never open). A missing/invalid cookie yields 401. */
 function requireSession(req, res, next) {
@@ -647,7 +725,7 @@ app.get('/api/sheets', requireSession, requireProxySecret, async (req, res) => {
   // The action name only — never the query values or a response body.
   console.log('[sheets GET] → action=', JSON.stringify(typeof action === 'string' ? action.slice(0, 60) : null));
   try {
-    const data = await sheetsGet(req.query, sessionUserFromRequest(req));
+    const data = await sheetsGet(req.query, sessionUserFromRequest(req), sessionRolesFromRequest(req));
 
     const summary = summarizeResponse(data);
     console.log('[sheets GET] ← response summary:', summary);
@@ -691,7 +769,7 @@ app.post('/api/sheets', requireSession, requireProxySecret, async (req, res) => 
   const summary = summarizeBody(body);
   console.log('[sheets POST] →', summary);
   try {
-    const data = await sheetsPost(body);
+    const data = await sheetsPost(body, sessionRolesFromRequest(req));
     // Outcome only — the response can carry patient / payment data, so it is
     // never written to the log.
     console.log('[sheets POST] ←', data && typeof data === 'object'
@@ -839,33 +917,30 @@ app.post('/api/outpatient-lead', requireSession, async (req, res) => {
  * Fail-closed: an unset APP_PIN makes checkPin return false, so every attempt
  * is a 401. */
 const PIN_RATE_LIMIT = { max: 10, windowMs: 15 * 60 * 1000 };
-const pinAttempts = new Map(); // ip -> { count, resetAt }
+/* Bounded counters (lib/rate-limit.js): expired windows are pruned and the
+ * key count is capped, so a flood of addresses cannot grow memory. */
+const pinAttempts = new FixedWindowLimiter(PIN_RATE_LIMIT); // per client IP
 
+/* The client address for rate limiting: req.ip, which — with 'trust proxy'
+ * set to Railway's one hop (top of file) — is the address RAILWAY saw, not
+ * the left-most X-Forwarded-For entry a client can forge. */
 function pinClientIp(req) {
-  const xff = req.headers['x-forwarded-for'];
-  if (typeof xff === 'string' && xff.length) return xff.split(',')[0].trim();
-  return req.ip || req.socket.remoteAddress || 'unknown';
+  return req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 }
 
 app.post('/api/verify-pin', (req, res) => {
   const ip = pinClientIp(req);
   const now = Date.now();
 
-  let rec = pinAttempts.get(ip);
-  if (!rec || now >= rec.resetAt) {
-    rec = { count: 0, resetAt: now + PIN_RATE_LIMIT.windowMs };
-    pinAttempts.set(ip, rec);
-  }
-
-  if (rec.count >= PIN_RATE_LIMIT.max) {
-    const retryAfter = Math.max(1, Math.ceil((rec.resetAt - now) / 1000));
-    res.set('Retry-After', String(retryAfter));
-    return res.status(429).json({ ok: false, error: 'rate_limited', retryAfter });
+  const gate = pinAttempts.blocked(ip, now);
+  if (gate.blocked) {
+    res.set('Retry-After', String(gate.retryAfter));
+    return res.status(429).json({ ok: false, error: 'rate_limited', retryAfter: gate.retryAfter });
   }
 
   const pin = req.body && req.body.pin;
   if (checkPin(pin, APP_PIN)) {
-    pinAttempts.delete(ip); // reset the counter on success
+    pinAttempts.reset(ip); // reset the counter on success
     /* Mint the session cookie so subsequent data requests are authorized. Only
      * possible when SESSION_SECRET is configured; if it isn't, the PIN is still
      * accepted (200) but no usable cookie is issued, so the data routes stay
@@ -883,8 +958,72 @@ app.post('/api/verify-pin', (req, res) => {
     return res.status(200).json({ ok: true });
   }
 
-  rec.count++;
+  pinAttempts.fail(ip, now);
   return res.status(401).json({ ok: false, error: 'invalid_pin' });
+});
+
+/* POST /api/bootstrap-pin — ONE-TIME creation of Sandra's own personal-PIN
+ * record, so she needs no local Node (decided 01/10/2026). Body:
+ * { token, pin }. Answers the record line and the full USER_PIN_HASHES value
+ * to paste into Railway; the PIN itself is hashed and dropped — never stored,
+ * logged or echoed. The record is ALWAYS Sandra's (APPROVER_USER_ID): the id
+ * is not a request field.
+ *
+ *   404 not_found                — BOOTSTRAP_TOKEN unset (the endpoint is off)
+ *   429 rate_limited             — 5 wrong tokens per IP per 15 minutes
+ *   410 bootstrap_disabled       — an approver record already exists, or this
+ *                                  process already produced one (once only; a
+ *                                  lost answer = change the token → restart)
+ *   503 bootstrap_not_configured — token shorter than 32, or PIN_PEPPER
+ *                                  missing / short
+ *   403 forbidden                — wrong token (counts against the limit)
+ *   400 weak_pin                 — not 6 digits / all-same / sequential
+ *   200 { ok, id, record, value }
+ * The token is compared in constant time (checkPin). */
+const BOOTSTRAP_RATE_LIMIT = { max: 5, windowMs: 15 * 60 * 1000 };
+const bootstrapAttempts = new FixedWindowLimiter(BOOTSTRAP_RATE_LIMIT);
+let bootstrapUsed = false;
+
+function bootstrapState() {
+  if (!BOOTSTRAP_TOKEN) return 'absent';
+  if (bootstrapUsed || hasApprover(USER_PIN_RECORDS)) return 'disabled';
+  if (BOOTSTRAP_TOKEN.length < BOOTSTRAP_MIN_TOKEN_LENGTH || !isValidPepper(PIN_PEPPER)) return 'not_configured';
+  return 'open';
+}
+
+app.post('/api/bootstrap-pin', (req, res) => {
+  const state = bootstrapState();
+  if (state === 'absent') return res.status(404).json({ ok: false, error: 'not_found' });
+
+  const ip = pinClientIp(req);
+  const now = Date.now();
+  const gate = bootstrapAttempts.blocked(ip, now);
+  if (gate.blocked) {
+    res.set('Retry-After', String(gate.retryAfter));
+    return res.status(429).json({ ok: false, error: 'rate_limited', retryAfter: gate.retryAfter });
+  }
+  if (state === 'disabled') return res.status(410).json({ ok: false, error: 'bootstrap_disabled' });
+  if (state === 'not_configured') return res.status(503).json({ ok: false, error: 'bootstrap_not_configured' });
+
+  const body = req.body || {};
+  if (!checkPin(typeof body.token === 'string' ? body.token : '', BOOTSTRAP_TOKEN)) {
+    bootstrapAttempts.fail(ip, now);
+    console.warn('[bootstrap-pin] refused: wrong token');
+    return res.status(403).json({ ok: false, error: 'forbidden' });
+  }
+  const weak = pinWeakness(typeof body.pin === 'string' ? body.pin : '');
+  if (weak) return res.status(400).json({ ok: false, error: 'weak_pin', reason: weak });
+
+  const record = buildUserRecord(APPROVER_USER_ID, body.pin, PIN_PEPPER, 1);
+  bootstrapUsed = true;
+  bootstrapAttempts.reset(ip);
+  console.log('[bootstrap-pin] record created for ' + APPROVER_USER_ID + ' — paste USER_PIN_HASHES into Railway, then delete BOOTSTRAP_TOKEN.');
+  return res.status(200).json({
+    ok: true,
+    id: APPROVER_USER_ID,
+    record: JSON.stringify(record),
+    value: withRecord(USER_PIN_RECORDS, record),
+  });
 });
 
 /* GET /api/me — the display name embedded in this session's signed cookie
@@ -947,27 +1086,21 @@ app.get('/meeting-report.css', requireMeetingReportSession, sendStatic('meeting-
  * compare, per-IP rate limit with its OWN counter map) but checks
  * MEETING_REPORT_PIN and mints the meeting-report-scoped cookie. Fail-closed:
  * an unset MEETING_REPORT_PIN makes checkPin reject every attempt. */
-const mrPinAttempts = new Map(); // ip -> { count, resetAt }
+const mrPinAttempts = new FixedWindowLimiter(PIN_RATE_LIMIT); // per client IP
 
 app.post('/api/meeting-report/verify-pin', (req, res) => {
   const ip = pinClientIp(req);
   const now = Date.now();
 
-  let rec = mrPinAttempts.get(ip);
-  if (!rec || now >= rec.resetAt) {
-    rec = { count: 0, resetAt: now + PIN_RATE_LIMIT.windowMs };
-    mrPinAttempts.set(ip, rec);
-  }
-
-  if (rec.count >= PIN_RATE_LIMIT.max) {
-    const retryAfter = Math.max(1, Math.ceil((rec.resetAt - now) / 1000));
-    res.set('Retry-After', String(retryAfter));
-    return res.status(429).json({ ok: false, error: 'rate_limited', retryAfter });
+  const gate = mrPinAttempts.blocked(ip, now);
+  if (gate.blocked) {
+    res.set('Retry-After', String(gate.retryAfter));
+    return res.status(429).json({ ok: false, error: 'rate_limited', retryAfter: gate.retryAfter });
   }
 
   const pin = req.body && req.body.pin;
   if (checkPin(pin, MEETING_REPORT_PIN)) {
-    mrPinAttempts.delete(ip);
+    mrPinAttempts.reset(ip);
     /* Same fail-closed shape as the main verify-pin: without SESSION_SECRET the
      * PIN is accepted but no usable cookie can be minted, so the routes stay
      * 503 — surfaced to the operator, not to an attacker. */
@@ -978,7 +1111,7 @@ app.post('/api/meeting-report/verify-pin', (req, res) => {
     return res.status(200).json({ ok: true });
   }
 
-  rec.count++;
+  mrPinAttempts.fail(ip, now);
   return res.status(401).json({ ok: false, error: 'invalid_pin' });
 });
 
@@ -1156,6 +1289,14 @@ module.exports = {
   // Who/when stamping (see test/patient-who-when.test.js).
   sanitizeSessionUser,
   sessionUserFromRequest,
+  // Personal PINs, Phase 0b-3 PR A (see test/personal-pins-foundation.test.js).
+  sessionRolesFromRequest,
+  pinClientIp,
+  pinAttempts,
+  bootstrapState,
+  USER_PIN_CONFIG,
+  TRUST_PROXY_HOPS,
+  trustProxyHops,
   // Name picker (see test/name-picker-conflicts.test.js).
   validateSessionUser,
   // Meeting-report micro-app (see test/meeting-report-server.test.js).

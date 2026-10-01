@@ -485,6 +485,42 @@ nothing needs to be set.**
 - The roster, meeting-report and accounting secret checks are now
   constant-time.
 
+## Dashboard: personal PINs — foundation (October 1, 2026 — Phase 0b-3, PR A)
+
+Detail: `CHANGELOG-personal-pins-foundation.md`; plan §11.2–11.3 and §14.2.
+**No user-facing change.** Login is still the shared `APP_PIN` + name picker.
+
+- **Decisions locked by Sandra:**
+  - Login = tap your name, then a 6-digit PIN.
+  - Roles: Sandra = staff + deleter + approver + viewer; Vered = staff +
+    reporter + deleter; Shiran and Yael = staff + reporter (no deleter);
+    Ortal = controller only, `inactive` until phase 4.
+  - `approver` is pinned to Sandra's id (`sandra`).
+  - A shared `APP_PIN` session gets `staff` only.
+- **New Railway variables (Dashboard), all optional in PR A:**
+  - `PIN_PEPPER` (≥ 32 chars; mixed into every PIN hash).
+  - `USER_PIN_HASHES` (one JSON line, an array of
+    `{id,name,roles,status,pinVersion,hash}`, scrypt + per-user 16-byte salt).
+    An invalid value makes the server refuse to start, and Railway keeps the
+    previous deployment.
+  - `BOOTSTRAP_TOKEN` (one-time; `POST /api/bootstrap-pin` returns Sandra's
+    record only and is disabled once an approver exists). Delete it right
+    after use.
+- **Active now:** the PIN rate limits take the client IP from `req.ip`
+  (`trust proxy` = Railway's one hop), not the forgeable left-most
+  `X-Forwarded-For`; the counter maps are bounded. The optional Railway
+  variable `TRUST_PROXY_HOPS` (1–5, default 1) corrects the hop count without
+  a code deploy.
+- **Code.gs:**
+  - `proxyRoles` from the proxy are granted ONLY when `PROXY_SECRET`
+    verifies (`actingUser_` / `hasRole_`).
+  - `DELETE_ACTIONS` and `APPROVER_ACTIONS` are defined (`roleCheck_`) but
+    **not enforced**.
+  - `AuditLog` gains an appended `actor` column; `BillingOverrides` gains an
+    appended `updatedBy`.
+  - Lead move / restore / remove, meeting-report delete and billing-override
+    writes now log their actor.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);
@@ -547,7 +583,10 @@ check against pre-June-17 branches.
 - Claude Code opens PRs against the repo DEFAULT branch — always verify PR base
   = the deployed branch. PRs #33/#55 were closed for this; #56 was correct.
 - Railway variable changes apply only to deployments started after saving.
-- PIN inputs have maxlength (Outpatient 6, Dashboard 6) — keep APP_PIN within.
+- PIN inputs have maxlength (Outpatient 6, **Dashboard 4** — `public/index.html`
+  `maxlength="4"`; corrected 01/10/2026, it was wrongly listed as 6; the
+  meeting-report PIN page is 6) — keep APP_PIN within. Personal PINs (Phase
+  0b-3 PR B) raise the Dashboard box to 6.
 
 ## Next tracks (in priority order)
 

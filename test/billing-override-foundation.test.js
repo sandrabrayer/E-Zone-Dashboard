@@ -148,10 +148,11 @@ function seedOverrides(rows) {
 
 /* ===== Code.gs — column contract ===== */
 
-test('BILLING_OVERRIDE_COLUMNS is exactly [id, patientId, month, amount, created]', () => {
+test('BILLING_OVERRIDE_COLUMNS is exactly [id, patientId, month, amount, created, updatedBy] (append-only)', () => {
+  // `updatedBy` appended by Phase 0b-3 PR A (personal-pins foundation).
   assert.deepStrictEqual(
     arr(code.BILLING_OVERRIDE_COLUMNS),
-    ['id', 'patientId', 'month', 'amount', 'created']
+    ['id', 'patientId', 'month', 'amount', 'created', 'updatedBy']
   );
 });
 
