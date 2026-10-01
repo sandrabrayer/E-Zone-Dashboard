@@ -1602,10 +1602,13 @@ function getData_() {
  * sources, first one that has data wins:
  *
  *   1. 'managers'    — the Managers tab (house | manager_name | start_date |
- *                      end_date). A row is CURRENT when end_date is blank or
- *                      today-or-later (Asia/Jerusalem). Used whenever the tab
- *                      has at least one named row — even if every row has
- *                      ended (then no house has a current manager).
+ *                      end_date). A row is CURRENT only when
+ *                        (start_date blank OR start_date <= today) AND
+ *                        (end_date blank OR end_date >= today),
+ *                      today in Asia/Jerusalem. A future start_date is NOT
+ *                      current yet. Used whenever the tab has at least one
+ *                      named row — even if no row is current (then no house
+ *                      has a current manager).
  *   2. 'bonusconfig' — only when the Managers tab is missing or has no named
  *                      row: the `manager` column of the bonusconfig tab.
  *   3. 'default'     — when neither has a name: exactly what getData has always
@@ -1686,9 +1689,16 @@ function managerHouseToPatientsId_(raw) {
 
 /* A Managers-tab date cell → 'YYYY-MM-DD', or '' when blank or unreadable.
  * Accepts a real date cell, 'YYYY-MM-DD…' and a hand-typed DD/MM/YYYY (or
- * DD.MM.YYYY). An unreadable end_date reads as '' — the row stays CURRENT, so
- * a typo never hides a manager. */
+ * DD.MM.YYYY). An unreadable start_date or end_date reads as '' — i.e. blank,
+ * so the row stays CURRENT and a typo never hides a manager.
+ * A Date cell is formatted in Asia/Jerusalem explicitly — the same zone as
+ * `today` — NOT the spreadsheet's zone (asISODate_), which would turn a
+ * Jerusalem-midnight date into the previous day under UTC or any zone west
+ * of Israel. */
 function managerDateIso_(v) {
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    return isNaN(v.getTime()) ? '' : Utilities.formatDate(v, 'Asia/Jerusalem', 'yyyy-MM-dd');
+  }
   const iso = asISODate_(v);
   if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
   const m = String(iso).trim().match(/^(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})$/);
@@ -1706,9 +1716,11 @@ function managersTabCurrent_(ss, today) {
   rows.forEach(function (r) {
     const house = managerHouseToPatientsId_(r.house);
     if (!house) return;
+    const start = managerDateIso_(r.start_date);
     const end = managerDateIso_(r.end_date);
+    if (start && start > today) return;        // starts after today → not current yet
     if (end && end < today) return;            // ended before today → not current
-    out.push({ house: house, name: String(r.manager_name).trim(), start: managerDateIso_(r.start_date) });
+    out.push({ house: house, name: String(r.manager_name).trim(), start: start });
   });
   out.sort(function (a, b) {
     if (a.house !== b.house) return a.house < b.house ? -1 : 1;
