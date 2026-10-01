@@ -50,10 +50,6 @@ if (!SHEETS_URL) {
   console.error('[config] SHEETS_URL is not set — all /api/sheets calls will fail until it is configured.');
 }
 
-/* Outpatient cross-app lead write (PR 3). The /exec URL and the shared secret
- * come from Railway env so the secret never reaches the browser and is never
- * committed. Both must be set for the endpoint to do anything (fail-closed,
- * mirroring the getAdmittedRoster secret discipline on the Apps Script side). */
 /* Proxy secret (Phase 0b-1, docs/billing-control-plan.md §11.1). Sent on
  * EVERY call to this app's Apps Script backend (SHEETS_URL), in the POST body
  * only — never in a URL, a log line or an error message. Code.gs compares it in
@@ -66,6 +62,10 @@ if (!PROXY_SECRET) {
   console.error('[config] PROXY_SECRET is not set — the server REFUSES to proxy to Apps Script: /api/sheets and /api/meeting-report/* will return 503 until it is configured (fail-closed). See DEPLOY.md → "Proxy secret".');
 }
 
+/* Outpatient cross-app lead write (PR 3). The /exec URL and the shared secret
+ * come from Railway env so the secret never reaches the browser and is never
+ * committed. Both must be set for the endpoint to do anything (fail-closed,
+ * mirroring the getAdmittedRoster secret discipline on the Apps Script side). */
 const OUTPATIENT_LEAD_URL    = process.env.OUTPATIENT_LEAD_URL    || '';
 const OUTPATIENT_LEAD_SECRET = process.env.OUTPATIENT_LEAD_SECRET || '';
 
@@ -640,7 +640,8 @@ function buildMeetingReportCookie(token, isHttps) {
   return parts.join('; ');
 }
 
-/* GET /api/sheets?action=getData — forwarded as GET to Apps Script */
+/* GET /api/sheets?action=getData — forwarded to Apps Script as a POST whose
+ * body carries the params + proxy secret (see sheetsGet). */
 app.get('/api/sheets', requireSession, requireProxySecret, async (req, res) => {
   const action = req.query && req.query.action;
   // The action name only — never the query values or a response body.
