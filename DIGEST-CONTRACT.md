@@ -83,9 +83,13 @@ mixed/legacy rows still resolve.
   patient status/house changes ride this), `dischargePatient`, `restorePatient`,
   `restorePatientToActive`, plus the lead paths (`moveLeadIrrelevant`,
   `restoreLead`, `removeLead`). A digest failure can never break the primary
-  read/write path.
+  read/write path. The rows are recomputed in full every time; when they are
+  identical to what the tab already holds, the write itself is skipped (most
+  saves do not change the active population), so the tab's rows — and their
+  `updatedAt` — stay those of the last write.
 - **Backstop:** an hourly time-based trigger (`rebuildActivePatientsDigest`)
-  rebuilds the digest even if a mutation path is ever missed.
+  rebuilds the digest even if a mutation path is ever missed. It always writes,
+  so `updatedAt` is never more than about an hour old.
 - **Diagnostics:** run **`diagnoseActivePatientsDigest`** from the editor to see,
   read-only, the resident count per status and — among active residents — the
   per-house kept count plus every dropped row with its exclusion reason (so a

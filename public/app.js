@@ -1151,11 +1151,41 @@ document.addEventListener('visibilitychange', () => {
   loadAll().catch(e => console.warn('[E-ZONE] visibility resync failed:', e.message));
 });
 
+/* Milliseconds for the load timing — performance.now() where the browser has
+ * it, Date.now() otherwise. */
+function perfNow() {
+  return (typeof performance !== 'undefined' && performance && typeof performance.now === 'function')
+    ? performance.now() : Date.now();
+}
+
+/* Start one read now and settle it into { ok, value | error, ms } — it never
+ * rejects, so a read nobody has awaited yet can't become an unhandled
+ * rejection, and `ms` is that request's own round trip. */
+function startTimedRead(params) {
+  const t0 = perfNow();
+  return apiGet(params).then(
+    value => ({ ok: true, value, ms: Math.round(perfNow() - t0) }),
+    error => ({ ok: false, error, ms: Math.round(perfNow() - t0) })
+  );
+}
+
 async function loadAll() {
   _lastLoadAllAt = Date.now();
   setLoading(true);
+  const t0 = perfNow();
+  // The three reads are independent: start them TOGETHER, so the page waits
+  // for the slowest one instead of the sum of all three. getPayments and
+  // getCredits stay fail-soft exactly as before (see below); a getData
+  // failure still fails the whole load.
+  const dataRead     = startTimedRead({ action: 'getData' });
+  const paymentsRead = startTimedRead({ action: 'getPayments' });
+  const creditsRead  = startTimedRead({ action: 'getCredits' });
+  const timing = {};
   try {
-    let data = await apiGet({ action: 'getData' });
+    const d = await dataRead;
+    timing.getData = d.ms;
+    if (!d.ok) throw d.error;
+    let data = d.value;
 
     console.log('[E-ZONE] raw response type:', typeof data);
     if (data && typeof data === 'object') {
@@ -1245,26 +1275,33 @@ async function loadAll() {
     // install has no Payments sheet yet — treat any failure as "empty
     // list" so the rest of the app still loads.
     try {
-      const pr = await apiGet({ action: 'getPayments' });
+      const got = await paymentsRead;
+      timing.getPayments = got.ms;
+      if (!got.ok) throw got.error;
+      const pr = got.value;
       const raw = Array.isArray(pr && pr.payments) ? pr.payments : [];
       state.payments = raw.map(normalizePayment).filter(p => p.id);
       console.log('[E-ZONE] getPayments →', state.payments.length, 'records');
     } catch (err) {
-      console.warn('[E-ZONE] getPayments failed, assuming empty:', err.message);
+      console.warn('[E-ZONE] getPayments failed, assuming empty:', err && err.message);
       state.payments = [];
     }
 
     // Credits ledger — own sheet, own action (same fail-soft rule as payments:
     // an older backend without getCredits must not block the app).
     try {
-      const cr = await apiGet({ action: 'getCredits' });
+      const got = await creditsRead;
+      timing.getCredits = got.ms;
+      if (!got.ok) throw got.error;
+      const cr = got.value;
       const rawCredits = Array.isArray(cr && cr.credits) ? cr.credits : [];
       state.credits = rawCredits.map(normalizeCredit).filter(c => c.id);
       console.log('[E-ZONE] getCredits →', state.credits.length, 'records');
     } catch (err) {
-      console.warn('[E-ZONE] getCredits failed, assuming empty:', err.message);
+      console.warn('[E-ZONE] getCredits failed, assuming empty:', err && err.message);
       state.credits = [];
     }
+    timing.fetched = Math.round(perfNow() - t0);
 
     // ===== Patient-load diagnosis =====
     // Log the exact rawPatients as received from the server, its shape,
@@ -1328,6 +1365,15 @@ async function loadAll() {
     showError('טעינת נתונים מהגיליון נכשלה — ' + e.message);
   } finally {
     setLoading(false);
+    // One line per load, console only: each read's own round trip (they run
+    // in parallel, so the wait is the slowest, not the sum), all three
+    // fetched, and the whole load including parse + render. Milliseconds only.
+    timing.total = Math.round(perfNow() - t0);
+    console.log('[E-ZONE][perf] loadAll ' + timing.total + 'ms | ' +
+      ['getData', 'getPayments', 'getCredits', 'fetched']
+        .filter(k => timing[k] !== undefined)
+        .map(k => k + '=' + timing[k])
+        .join(' '));
   }
 }
 
