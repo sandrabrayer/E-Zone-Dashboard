@@ -6681,7 +6681,7 @@ function buildPayoutForecastCsv(data, generatedAt) {
     L.push(csvLine(['מטופל', 'בית', 'תאריך יציאה', 'סיבה']));
     un.rows.forEach(r => L.push(csvLine([r.patientName, house(r.houseId), day(r.exitDate), payoutForecastErrorText(r.error)])));
   }
-  return '﻿' + L.join('\r\n') + '\r\n';
+  return '\uFEFF' + L.join('\r\n') + '\r\n';
 }
 
 function payoutForecastStamp(d) {
