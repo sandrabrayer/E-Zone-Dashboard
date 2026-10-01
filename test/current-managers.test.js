@@ -65,7 +65,14 @@ function fakeSheet(name, header, rows) {
 
 /* `tabs`: { tabName: sheet }. getSheetByName is EXACT (like the real API is
  * for our purposes); getSheets lists every tab for the case-insensitive scan. */
-function loadGs(tabs) {
+/* Utilities.formatDate's real contract: the date as seen in `tz`. */
+function formatInTz(d, tz) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+
+/* `opts.sheetTz` — the spreadsheet's own zone (what asISODate_ formats in). */
+function loadGs(tabs, opts) {
+  const sheetTz = (opts && opts.sheetTz) || 'Asia/Jerusalem';
   const registry = Object.assign({}, tabs || {});
   const inserted = [];
   const tzSeen = [];
@@ -77,8 +84,9 @@ function loadGs(tabs) {
     Utilities: {
       formatDate: (d, tz, fmt) => {
         tzSeen.push(tz);
+        // "now" is pinned to TODAY so the suite does not depend on the clock.
         if (fmt === 'yyyy-MM-dd' && tz === 'Asia/Jerusalem' && Date.now() - d.getTime() < 60000) return TODAY;
-        return d.toISOString().slice(0, 10);
+        return formatInTz(d, tz);
       },
       getUuid: () => 'uuid',
     },
@@ -90,7 +98,7 @@ function loadGs(tabs) {
       getSheetByName: (n) => registry[n] || null,
       getSheets: () => Object.values(registry),
       insertSheet: (n) => { inserted.push(n); return (registry[n] = fakeSheet(n, [], [])); },
-      getSpreadsheetTimeZone: () => 'Asia/Jerusalem',
+      getSpreadsheetTimeZone: () => sheetTz,
     }),
   };
   sandbox.globalThis = sandbox;
@@ -98,6 +106,7 @@ function loadGs(tabs) {
   vm.runInContext(GS_SRC + `
     globalThis.__t = {
       current: (d) => currentManagers_(d),
+      managerDateIso: (v) => managerDateIso_(v),
       getData: () => getData_(),
       HOUSE_MANAGERS: HOUSE_MANAGERS,
     };`, sandbox);
@@ -403,4 +412,99 @@ test('app.js autosave: the meetingWith default written for a visit lead is the C
   await app.autosaveMeetingWithDefaults();
   assert.strictEqual(app.state.leads[0].meetingWith, 'דנה');
   assert.strictEqual(saves.length, 1);
+});
+
+/* ===== start_date (review follow-up) =====
+ * CURRENT = (start_date blank OR start_date <= today) AND
+ *           (end_date blank OR end_date >= today), today in Asia/Jerusalem. */
+
+test('Code.gs: a FUTURE start_date is NOT current (and the tab still wins — no fallback)', () => {
+  const { gs } = loadGs({
+    Managers: fakeSheet('Managers', MANAGERS_HEADER, [
+      ['ramot', 'עתידי', '2026-10-02', ''],               // starts tomorrow
+      ['rehab', 'עתידית', '15/11/2026', '2027-01-01'],    // DD/MM future start
+    ]),
+    bonusconfig: bonusconfig(),
+  });
+  const out = gs.current(TODAY);
+  assert.strictEqual(out.source, 'managers');
+  assert.deepStrictEqual(arr(out.managers), []);
+});
+
+test('Code.gs: a BLANK start_date is current', () => {
+  const { gs } = loadGs({ Managers: fakeSheet('Managers', MANAGERS_HEADER, [['ramot', 'דנה', '', '']]) });
+  assert.deepStrictEqual(arr(gs.current(TODAY).managers), [{ house: 'ramot', name: 'דנה' }]);
+});
+
+test('Code.gs: start_date = today is current (string and Date cell)', () => {
+  const { gs } = loadGs({
+    Managers: fakeSheet('Managers', MANAGERS_HEADER, [
+      ['ramot', 'דנה', TODAY, ''],
+      ['rehab', 'רנטה', new Date('2026-10-01T00:00:00+03:00'), ''],
+    ]),
+  }, { sheetTz: 'UTC' });
+  assert.deepStrictEqual(arr(gs.current(TODAY).managers), [{ house: 'ramot', name: 'דנה' }, { house: 'rehab', name: 'רנטה' }]);
+});
+
+test('Code.gs: an UNREADABLE start_date counts as blank → current', () => {
+  const { gs } = loadGs({ Managers: fakeSheet('Managers', MANAGERS_HEADER, [['ramot', 'דנה', 'בקרוב', '']]) });
+  assert.deepStrictEqual(arr(gs.current(TODAY).managers), [{ house: 'ramot', name: 'דנה' }]);
+});
+
+test('Code.gs: start and end together — the row must satisfy BOTH bounds', () => {
+  const { gs } = loadGs({
+    Managers: fakeSheet('Managers', MANAGERS_HEADER, [
+      ['ramot',  'בטווח',  '2026-09-01', '2026-12-31'],   // inside → current
+      ['rehab',  'עבר',    '2026-01-01', '2026-09-30'],   // ended → no
+      ['efroni', 'עתיד',   '2026-11-01', '2026-12-31'],   // not started → no
+      ['pardes', 'יום',    TODAY,        TODAY],          // one-day assignment today → current
+    ]),
+  });
+  assert.deepStrictEqual(arr(gs.current(TODAY).managers), [{ house: 'pardes', name: 'יום' }, { house: 'ramot', name: 'בטווח' }]);
+});
+
+test('Code.gs managerDateIso_: a Date cell at 00:00 Asia/Jerusalem is that day — never the previous day, whatever the sheet zone', () => {
+  const midnight = new Date('2026-10-01T00:00:00+03:00');   // = 2026-09-30T21:00:00Z
+  for (const sheetTz of ['Asia/Jerusalem', 'UTC', 'America/New_York', 'Europe/London']) {
+    const { gs } = loadGs({}, { sheetTz });
+    assert.strictEqual(gs.managerDateIso(midnight), '2026-10-01', 'sheet zone ' + sheetTz);
+  }
+  const { gs } = loadGs({}, { sheetTz: 'UTC' });
+  assert.strictEqual(gs.managerDateIso(new Date('2026-10-01T23:59:00+03:00')), '2026-10-01', 'late evening stays the same day');
+  assert.strictEqual(gs.managerDateIso(new Date('invalid')), '');
+  assert.strictEqual(gs.managerDateIso('2026-10-01'), '2026-10-01');
+  assert.strictEqual(gs.managerDateIso('1/10/2026'), '2026-10-01');
+});
+
+test('Code.gs: an end_date Date cell at Jerusalem midnight TODAY keeps the manager current under a UTC sheet', () => {
+  const { gs } = loadGs({
+    Managers: fakeSheet('Managers', MANAGERS_HEADER, [['ramot', 'דנה', '', new Date('2026-10-01T00:00:00+03:00')]]),
+  }, { sheetTz: 'UTC' });
+  assert.deepStrictEqual(arr(gs.current(TODAY).managers), [{ house: 'ramot', name: 'דנה' }],
+    'read as 2026-09-30 it would wrongly hide her a day early');
+});
+
+/* ===== rehab / רנטה end to end ===== */
+
+test("rehab / 'רנטה': from the Managers tab, through getData's currentManagers, into the summary strip filter (exact string)", () => {
+  const { gs } = loadGs({
+    Managers: fakeSheet('Managers', MANAGERS_HEADER, [
+      ['rehab', 'רנטה', '2025-01-01', ''],
+      ['ramot', 'דנה',  '2026-09-01', ''],
+    ]),
+  });
+  const data = gs.getData();
+  assert.strictEqual(data.currentManagersSource, 'managers');
+  assert.ok(data.currentManagers.some((m) => m.house === 'rehab' && m.name === 'רנטה'), 'rehab → רנטה in currentManagers');
+
+  const { app } = loadApp();
+  applyCurrent(app, arr(data.currentManagers));
+  assert.ok(arr(app.managerOptions()).includes('רנטה'), 'רנטה is in the filter list, exact string');
+  assert.strictEqual(app.managerForHouse('קיסריה ריהאב'), 'רנטה');
+  const html = app.meetingsSummaryHTML([
+    { id: '1', meetingWith: 'רנטה', meetingOutcome: 'entered' },
+    { id: '2', meetingWith: 'רנטה ', meetingOutcome: 'entered' },   // trailing space: counted under רנטה
+  ]);
+  assert.ok(html.includes('<span class="mtg-sum-mgr">רנטה</span>'), 'the strip has a רנטה row');
+  assert.match(html, /נכנסו: <b>2<\/b>/);
 });

@@ -24,10 +24,11 @@ Sandra keeps.
   Managers or Therapists read changes. The bonus logic (`readManagers_`,
   `readBonusConfig_`, `managersOverview_`, `managersHouse_`) is untouched.
 - `currentManagers_()` takes the first source that has data:
-  1. **Managers tab.** A row is current when `end_date` is blank or today or
-     later. "Today" is computed in **Asia/Jerusalem**. This source is used
-     whenever the tab has at least one row with a name, even if every row has
-     ended; in that case no house has a current manager.
+  1. **Managers tab.** A row is current only when **`start_date` is blank or
+     today or earlier** and **`end_date` is blank or today or later**. "Today"
+     is computed in **Asia/Jerusalem**. This source is used whenever the tab
+     has at least one row with a name, even if no row is current; in that case
+     no house has a current manager.
   2. **bonusconfig `manager` column**, used only when the Managers tab is
      missing or has no named row. The live tab is the lowercase
      `bonusconfig`, with `manager` in column K.
@@ -42,8 +43,10 @@ Sandra keeps.
   Within a house, the newest `start_date` comes first, and that manager is the
   default.
 - **Dates:** a real date cell, `YYYY-MM-DD`, or a hand-typed `DD/MM/YYYY` all
-  work. An unreadable `end_date` keeps the row current, so a typo never hides
-  a manager.
+  work. A date cell is read in **Asia/Jerusalem**, the same zone as "today",
+  not in the spreadsheet's own zone. Otherwise, under a UTC sheet, a date
+  entered as 1 October (midnight in Israel) would read as 30 September. An
+  unreadable `start_date` or `end_date` counts as blank.
 - **Read-only.** It never calls `getOrCreateSheet_`, so a missing tab is not
   created. It writes no cell, header or format, and never throws: a read error
   falls through to the next source.
@@ -65,16 +68,52 @@ Sandra keeps.
 - **Per-house default** (new lead, card default, background autosave) is the
   house's current manager.
 
+### Choices (decided in review)
+
+| Case | Result |
+|---|---|
+| `start_date` blank, or today or earlier | may be current (then `end_date` decides) |
+| `start_date` after today | **not current yet** |
+| `end_date` blank, or today or later | may be current (then `start_date` decides) |
+| `end_date` before today | not current |
+| `start_date` and `end_date` both today | current (a one-day assignment) |
+| Unreadable `start_date` or `end_date` | counts as blank, so a typo never hides a manager |
+| The Managers tab has named rows but none is current | no house has a current manager; **no** fallback to bonusconfig (fallback only when the tab is missing or empty) |
+| Two current managers in one house | both are offered in the dropdown; the newer `start_date` is the default |
+| A date cell | read in Asia/Jerusalem, whatever the spreadsheet's zone |
+
 ### Tests
 
-`test/current-managers.test.js` (23 tests). 21 of them fail against the
-previous code; the other 2 are guards that must hold before and after (no tab
-is created, the bonus readers are unchanged). They cover:
+`test/current-managers.test.js` (31 tests).
+
+The first 23 shipped with the PR: 21 fail against the previous code, and the
+other 2 are guards that must hold before and after (no tab is created, the
+bonus readers are unchanged).
+
+The review follow-up added 8 more:
+- future `start_date` → not current
+- blank `start_date` → current
+- `start_date` = today → current, as a string and as a Date cell
+- unreadable `start_date` → current
+- both bounds together
+- `managerDateIso_` returns `2026-10-01` for a Date at 00:00 Asia/Jerusalem
+  (`new Date('2026-10-01T00:00:00+03:00')`) under Asia/Jerusalem, UTC,
+  New York and London sheet zones
+- an `end_date` of today at Jerusalem midnight keeps the manager under a UTC
+  sheet
+- `rehab` / `'רנטה'` end to end: Managers tab → `getData` `currentManagers`
+  → the summary-strip filter, exact string
+
+The sandbox's `Utilities.formatDate` now honours the time zone, which is how
+the midnight shift was caught. Against the previous code, 4 of the 8 fail.
+
+The suite covers:
 - empty or missing Managers → bonusconfig fallback
 - no Managers rows and no bonusconfig → exactly `houseManagers`
 - bonusconfig without a `manager` header → default
 - case-insensitive tab and header lookup
 - end date in the past → hidden; today, future or blank → current
+- start date in the future → hidden; today, past or blank → current
 - `DD/MM/YYYY` dates and real date cells
 - all rows ended → no fallback
 - house ids `asher` / `ramot` / `arfoni` / `rehab` / `pardes`
@@ -86,7 +125,7 @@ is created, the bonus readers are unchanged). They cover:
 - dropdowns keep a saved former manager
 - the per-house default and autosave use the current manager
 
-Full suite: 1651/1651.
+Full suite: 1659/1659.
 
 ## For Sandra
 
@@ -95,4 +134,5 @@ dashboard uses the `manager` column of `bonusconfig`. Once you add rows to
 `Managers`, it switches to them on the next load. To end an assignment, put
 the last day in `end_date`: from the next day that manager disappears from
 the strip and the dropdown. Leads already saved with that manager keep the
-name.
+name. A new manager can be added ahead of time with a future `start_date`;
+they appear on that day, not before.
