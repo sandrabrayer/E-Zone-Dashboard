@@ -464,6 +464,24 @@ steps: `DEPLOY.md` → "Proxy secret".
 - Every `LockService.tryLock` result in the Dashboard `Code.gs` is now checked;
   a busy lock returns `{ok:false,error:'lock_busy'}` and writes nothing.
 
+## Dashboard Apps Script: scoped caller secrets, LOG mode (October 1, 2026 — Phase 0b-2a)
+
+Detail: `CHANGELOG-scoped-caller-secrets.md`. **Nothing is rejected yet.**
+
+- **New Script Properties (Dashboard Apps Script):** `MANAGERS_CALLER_SECRET`
+  and `THERAPISTS_CALLER_SECRET`. Create them with the editor-run
+  `generateCallerSecretsNow()`, which never overwrites and never logs a value.
+- **Scopes** (`CALLER_SCOPES` in `Code.gs`, from each consumer's deployed code):
+  - Managers: `managersOverview`, `managersHouse`, `occupancySnapshots`
+  - Therapists: `getAdmittedRoster`
+- **`SecurityLog`** gains an appended `callerClass` column (proxy / managers /
+  therapists / none / wrong / out_of_scope). `securityCallersReportNow`
+  groups by action × class.
+- **Consumers are not changed yet.** The scoped secret travels like
+  `PROXY_SECRET`: `proxySecret` in a POST body. Managers and Therapists still
+  call with GET, so each needs a small PR (Phase 0b-2b) before enforcement
+  (0b-3).
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);
