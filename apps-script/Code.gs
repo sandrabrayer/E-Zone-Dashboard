@@ -837,18 +837,37 @@ function doPost(e) {
  * `proxyUser` (server.js reads it from the signed session cookie). A body
  * `user` that contradicts it is ignored and recorded as 'user_mismatch'.
  *
- * Exempt: the actions that carry their OWN least-privilege secret
- * (PROXY_SECRET_EXEMPT_ACTIONS) are not gated here — their callers
- * (Outpatient, Accounting, the meeting-report page) never hold PROXY_SECRET,
- * and their own fail-closed checks still run inside handle_. */
+ * ===== Open actions (Phase 0b-2) =====
+ *
+ * Managers and Therapists call this same backend WITHOUT PROXY_SECRET and
+ * must need zero changes. OPEN_ACTIONS is the fixed list they call; those
+ * actions are served without PROXY_SECRET in BOTH modes (getAdmittedRoster
+ * still requires its own ADMITTED_ROSTER_SECRET inside handle_). EVERY other
+ * action — GET or POST, getData, every write, every future billing action —
+ * is gated by PROXY_SECRET under PROXY_SECRET_MODE.
+ *
+ * Every request gets a caller class (callerClass_):
+ *   proxy — a valid PROXY_SECRET (the Dashboard)
+ *   open  — no valid PROXY_SECRET, on an OPEN_ACTIONS action
+ *   none  — no secret, on a gated action
+ *   wrong — a secret that is not PROXY_SECRET, on a gated action
+ * SecurityLog records open / none / wrong (column callerClass, appended);
+ * proxy traffic stays unlogged. securityCallersReportNow counts
+ * "non-open actions without a valid secret" — it must be 0 before
+ * PROXY_SECRET_MODE is set to 'enforce' (Phase 0b-3). */
 const PROXY_SECRET_PROP      = 'PROXY_SECRET';
 const PROXY_SECRET_MODE_PROP = 'PROXY_SECRET_MODE';
 const PROXY_SECRET_FIELD     = 'proxySecret';
 const PROXY_USER_FIELD       = 'proxyUser';
-const PROXY_SECRET_EXEMPT_ACTIONS = [
-  'getAdmittedRoster', 'meetingReportLeads', 'submitMeetingReport',
-  'accountingPayments', 'accountingCredits',
-];
+/* The ONLY actions served without PROXY_SECRET, in log AND enforce mode.
+ * From the consumers' deployed code (2026-10-01, see
+ * CHANGELOG-open-actions-gate.md):
+ *   ezone-managers @ main               — managersOverview, managersHouse,
+ *                                          occupancySnapshots
+ *   ezone-therapists @ claude/inspiring-tesla-jipobw — getAdmittedRoster
+ * test/open-actions-gate.test.js pins exactly these four. */
+const OPEN_ACTIONS = ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster'];
+const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
 /* Every action handle_ dispatches. An action name is caller-controlled, so
  * SecurityLog records only these; anything else is logged as '(unknown)' —
  * an attacker can neither spam distinct rows nor inject a formula.
@@ -872,9 +891,12 @@ const PROXY_KNOWN_ACTIONS = [
  *   secretPresent — 'yes' | 'no' (whether ANY proxySecret was sent; the
  *                   value itself is never written anywhere)
  *   callerType    — 'no_secret' | 'bad_secret' | 'user_mismatch'
- *   hourKey       — 'YYYY-MM-DDTHH' (UTC), the dedupe bucket */
+ *   hourKey       — 'YYYY-MM-DDTHH' (UTC), the dedupe bucket
+ *   callerClass   — appended in 0b-2: 'proxy' | 'open' | 'none' | 'wrong'
+ *                   (see callerClass_). Blank on rows written before it; the
+ *                   report derives it. */
 const SECURITY_LOG_SHEET   = 'SecurityLog';
-const SECURITY_LOG_COLUMNS = ['timestamp', 'action', 'method', 'secretPresent', 'callerType', 'hourKey'];
+const SECURITY_LOG_COLUMNS = ['timestamp', 'action', 'method', 'secretPresent', 'callerType', 'hourKey', 'callerClass'];
 /* How many trailing rows the once-per-hour dedupe re-reads under the lock. */
 const SECURITY_LOG_SCAN_ROWS = 500;
 
@@ -929,12 +951,10 @@ function proxyGate_(params, method) {
   delete p[PROXY_USER_FIELD];
 
   const action = String(p.action == null ? '' : p.action);
-  if (PROXY_SECRET_EXEMPT_ACTIONS.indexOf(action) >= 0) return { ok: true, params: p };
-
   const props = PropertiesService.getScriptProperties();
   const expected = String(props.getProperty(PROXY_SECRET_PROP) || '');
-  const mode = proxySecretMode_(props.getProperty(PROXY_SECRET_MODE_PROP));
-  const valid = expected !== '' && presented !== '' && constantTimeEquals_(presented, expected);
+  const cls = callerClass_(action, presented, expected);
+  const valid = cls === 'proxy';
 
   if (valid) {
     // The proxy's session user is the ONLY identity. A body `user` that
@@ -948,24 +968,47 @@ function proxyGate_(params, method) {
     return { ok: true, params: p };
   }
 
+  // Open actions: served without PROXY_SECRET in BOTH modes, exactly as
+  // today (getAdmittedRoster's own secret is still checked in handle_).
+  if (cls === 'open') {
+    securityLogOnce_(action, method, presented !== '', 'open');
+    return { ok: true, params: p };
+  }
+
+  const mode = proxySecretMode_(props.getProperty(PROXY_SECRET_MODE_PROP));
   if (mode === 'enforce') return { ok: false };
-  securityLogOnce_(action, method, presented !== '', presented !== '' ? 'bad_secret' : 'no_secret');
+  securityLogOnce_(action, method, presented !== '', cls);
   return { ok: true, params: p };
+}
+
+/* The caller class of one request (see the Open actions block above):
+ * 'proxy' | 'open' | 'none' | 'wrong'. `expected` is PROXY_SECRET; when it
+ * is unset nothing can be 'proxy'. Constant-time compare. Pure. */
+function callerClass_(action, presented, expected) {
+  const got = String(presented == null ? '' : presented);
+  const want = String(expected == null ? '' : expected);
+  if (want !== '' && got !== '' && constantTimeEquals_(got, want)) return 'proxy';
+  if (OPEN_ACTIONS.indexOf(String(action)) >= 0) return 'open';
+  return got === '' ? 'none' : 'wrong';
 }
 
 /* Append one SecurityLog row unless the same (event, action, hour) bucket
  * already has one. Fail-soft: a logging problem never blocks or breaks the
  * request. Never receives — and so can never write — the secret or a body. */
-function securityLogOnce_(action, method, secretPresent, callerType) {
+function securityLogOnce_(action, method, secretPresent, clsOrEvent) {
   try {
     const now = new Date();
     const hourKey = now.toISOString().slice(0, 13);
     const act = action === '' ? '(none)'
       : (PROXY_KNOWN_ACTIONS.indexOf(action) >= 0 ? action : '(unknown)');
     const meth = method === 'POST' ? 'POST' : 'GET';
-    const type = callerType === 'user_mismatch' ? 'user_mismatch'
-      : (callerType === 'bad_secret' ? 'bad_secret' : 'no_secret');
-    const bucket = securityLogBucket_(act, type, hourKey);
+    // callerType keeps its 0b-1 meaning (was a secret sent at all?);
+    // callerClass carries the class.
+    const type = clsOrEvent === 'user_mismatch' ? 'user_mismatch'
+      : (secretPresent ? 'bad_secret' : 'no_secret');
+    const klass = clsOrEvent === 'user_mismatch' ? 'proxy'
+      : (CALLER_CLASSES.indexOf(clsOrEvent) >= 0 ? clsOrEvent : (secretPresent ? 'wrong' : 'none'));
+    const bucket = securityLogBucket_(act, type, hourKey, klass);
 
     let cache = null;
     try { cache = CacheService.getScriptCache(); } catch (_) { cache = null; }
@@ -985,13 +1028,13 @@ function securityLogOnce_(action, method, secretPresent, callerType) {
       if (n > 0) {
         const rows = sh.getRange(lastRow - n + 1, 1, n, SECURITY_LOG_COLUMNS.length).getValues();
         for (let i = 0; i < rows.length; i++) {
-          if (securityLogBucket_(String(rows[i][1]), String(rows[i][4]), String(rows[i][5])) === bucket) {
+          if (securityLogBucket_(String(rows[i][1]), String(rows[i][4]), String(rows[i][5]), String(rows[i][6] || '')) === bucket) {
             if (cache) cache.put(bucket, '1', 3600);
             return false;
           }
         }
       }
-      sh.appendRow([now.toISOString(), act, meth, secretPresent ? 'yes' : 'no', type, hourKey]);
+      sh.appendRow([now.toISOString(), act, meth, secretPresent ? 'yes' : 'no', type, hourKey, klass]);
       if (cache) cache.put(bucket, '1', 3600);
       return true;
     } finally {
@@ -1002,30 +1045,48 @@ function securityLogOnce_(action, method, secretPresent, callerType) {
   }
 }
 
-/* Dedupe bucket: unauthenticated requests share one bucket per action-hour
- * (no_secret and bad_secret alike — "at most one row per action per hour");
- * user_mismatch has its own. */
-function securityLogBucket_(action, callerType, hourKey) {
-  const event = callerType === 'user_mismatch' ? 'user_mismatch' : 'no_valid_secret';
+/* Dedupe bucket, one row per (bucket, action, hour):
+ *   'open'            — open-action traffic (class open)
+ *   'user_mismatch'   — a valid proxy request with a contradicting body user
+ *   'no_valid_secret' — none and wrong on a gated action share one bucket,
+ *                       "at most one row per action per hour" as in 0b-1.
+ * A pre-0b-2 row has no callerClass and dedupes as before. */
+function securityLogBucket_(action, callerType, hourKey, callerClass) {
+  let event = 'no_valid_secret';
+  if (callerType === 'user_mismatch') event = 'user_mismatch';
+  else if (callerClass === 'open') event = 'open';
   return 'seclog|' + event + '|' + action + '|' + hourKey;
 }
 
+/* The class of a SecurityLog row; a pre-0b-2 row (no callerClass) is derived
+ * from its action and callerType. */
+function securityLogRowClass_(action, callerType, callerClass) {
+  const c = String(callerClass || '');
+  if (CALLER_CLASSES.indexOf(c) >= 0) return c;
+  if (callerType === 'user_mismatch') return 'proxy';
+  if (OPEN_ACTIONS.indexOf(String(action)) >= 0) return 'open';
+  return callerType === 'bad_secret' ? 'wrong' : 'none';
+}
+
 /**
- * Editor-run, READ-ONLY: who calls this backend without the proxy secret?
- * Summarizes SecurityLog for the last 7 days by action × callerType so the
- * Managers / Therapists traffic (which never carries PROXY_SECRET) is
- * visible before PROXY_SECRET_MODE is switched to 'enforce'. Each row is one
+ * Editor-run, READ-ONLY: who calls this backend, and is it safe to enforce?
+ * Summarizes SecurityLog for the last 7 days by action × callerClass
+ * (open / none / wrong, and proxy for a user_mismatch event). Each row is one
  * active hour, so `hours` = in how many distinct hours that action was hit.
+ * The summary line "non-open actions without a valid secret: N" counts the
+ * none / wrong hours on actions outside OPEN_ACTIONS — every one of them
+ * would be REFUSED in enforce mode, so N must be 0 before Phase 0b-3.
  * Writes nothing: no cell, no tab, no lock, no property.
  */
 function securityCallersReportNow() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sh = ss.getSheetByName(SECURITY_LOG_SHEET);
-  const report = { since: '', rows: 0, summary: [] };
+  const report = { since: '', rows: 0, summary: [], nonOpenWithoutSecret: 0 };
   const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   report.since = cutoff.toISOString();
   if (!sh || sh.getLastRow() < 2) {
-    Logger.log('securityCallersReportNow: SecurityLog is empty — no request without a valid proxy secret in the log.');
+    Logger.log('securityCallersReportNow: SecurityLog is empty — nothing but valid Dashboard (proxy) traffic so far.');
+    Logger.log('non-open actions without a valid secret: 0');
     return report;
   }
   const values = sh.getRange(2, 1, sh.getLastRow() - 1, SECURITY_LOG_COLUMNS.length).getValues();
@@ -1035,11 +1096,14 @@ function securityCallersReportNow() {
     const ts = r[0] instanceof Date ? r[0] : new Date(String(r[0]));
     if (isNaN(ts.getTime()) || ts < cutoff) continue;
     report.rows++;
-    const key = String(r[1]) + '|' + String(r[4]);
+    const klass = securityLogRowClass_(String(r[1]), String(r[4]), r[6]);
+    const key = String(r[1]) + '|' + klass;
     const g = groups[key] || (groups[key] = {
-      action: String(r[1]), callerType: String(r[4]), hours: 0, methods: {}, firstSeen: '', lastSeen: '',
+      action: String(r[1]), callerClass: klass, hours: 0, userMismatchHours: 0, methods: {}, firstSeen: '', lastSeen: '',
     });
     g.hours++;
+    if (String(r[4]) === 'user_mismatch') g.userMismatchHours++;
+    if ((klass === 'none' || klass === 'wrong') && OPEN_ACTIONS.indexOf(String(r[1])) < 0) report.nonOpenWithoutSecret++;
     g.methods[String(r[2])] = true;
     const iso = ts.toISOString();
     if (!g.firstSeen || iso < g.firstSeen) g.firstSeen = iso;
@@ -1048,16 +1112,19 @@ function securityCallersReportNow() {
   report.summary = Object.keys(groups).map(function (k) {
     const g = groups[k];
     return {
-      action: g.action, callerType: g.callerType, hours: g.hours,
+      action: g.action, callerClass: g.callerClass, hours: g.hours, userMismatchHours: g.userMismatchHours,
       methods: Object.keys(g.methods).sort().join('+'), firstSeen: g.firstSeen, lastSeen: g.lastSeen,
     };
   }).sort(function (a, b) { return b.hours - a.hours || (a.action < b.action ? -1 : a.action > b.action ? 1 : 0); });
   Logger.log('securityCallersReportNow — READ-ONLY. Last 7 days (since ' + report.since + '): ' +
     report.rows + ' row(s).');
   report.summary.forEach(function (s) {
-    Logger.log(s.action + ' · ' + s.callerType + ' · ' + s.hours + ' hour(s) · ' + s.methods +
+    Logger.log(s.action + ' · ' + s.callerClass + ' · ' + s.hours + ' hour(s)' +
+      (s.userMismatchHours ? ' (' + s.userMismatchHours + ' with user_mismatch)' : '') + ' · ' + s.methods +
       ' · first ' + s.firstSeen + ' · last ' + s.lastSeen);
   });
+  // Must be 0 before PROXY_SECRET_MODE = 'enforce' (Phase 0b-3).
+  Logger.log('non-open actions without a valid secret: ' + report.nonOpenWithoutSecret);
   return report;
 }
 
@@ -5134,7 +5201,7 @@ function admittedRosterAuthOk_(params) {
   // Fail closed: no secret configured → refuse (never serve patient PII open).
   if (!expected) return false;
   const got = (params && params.secret) ? String(params.secret) : '';
-  return got === expected;
+  return constantTimeEquals_(got, expected);   // constant-time (0b-2)
 }
 
 /* Normalize a phone to canonical Israeli local form: strip every non-digit,
@@ -5205,7 +5272,7 @@ function meetingReportAuthOk_(params) {
   // Fail closed: no secret configured → refuse (never serve lead data open).
   if (!expected) return false;
   const got = (params && params.secret) ? String(params.secret) : '';
-  return got === expected;
+  return constantTimeEquals_(got, expected);   // constant-time (0b-2)
 }
 
 /* The stable outcome keys a report may carry — must match
@@ -8562,7 +8629,7 @@ function accountingAuthOk_(params) {
   // Fail closed: no secret configured → refuse (never serve financial data open).
   if (!expected) return false;
   const got = (params && params.secret) ? String(params.secret) : '';
-  return got === expected;
+  return constantTimeEquals_(got, expected);   // constant-time (0b-2)
 }
 
 function accStr_(v) {

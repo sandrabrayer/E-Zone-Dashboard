@@ -198,7 +198,10 @@ test('Code.gs log mode (the default): missing secret → served AND logged once 
   assert.strictEqual(hourKey, '2026-10-01T09');
   assert.strictEqual(ts, '2026-10-01T09:15:00.000Z');
   assert.deepStrictEqual(g.sandbox.__sheets.SecurityLog.grid[0],
-    ['timestamp', 'action', 'method', 'secretPresent', 'callerType', 'hourKey']);
+    ['timestamp', 'action', 'method', 'secretPresent', 'callerType', 'hourKey', 'callerClass']);
+  // Phase 0b-2: the appended callerClass column; managersOverview is an
+  // OPEN_ACTIONS action.
+  assert.strictEqual(rows[0][6], 'open');
 });
 
 test('Code.gs log mode: a wrong secret → served, logged as bad_secret with secretPresent=yes', () => {
@@ -301,15 +304,27 @@ test('Code.gs: an unrecognised PROXY_SECRET_MODE value fails CLOSED (treated as 
   assert.strictEqual(lg.post({ action: 'getData' }).json.ok, true, "' Log ' normalises to log");
 });
 
-test('Code.gs enforce mode: actions with their OWN secret are not gated (Outpatient / Accounting / meeting-report keep working)', () => {
+test('Code.gs enforce mode (Phase 0b-2): only OPEN_ACTIONS bypass PROXY_SECRET; the other own-secret actions are now gated too', () => {
   const g = loadGs({ props: { PROXY_SECRET: SECRET, PROXY_SECRET_MODE: 'enforce' } });
-  for (const action of ['getAdmittedRoster', 'meetingReportLeads', 'submitMeetingReport', 'accountingPayments', 'accountingCredits']) {
-    assert.strictEqual(g.post({ action, secret: 'own-secret' }).json.served, action);
+  // getAdmittedRoster is open: served without PROXY_SECRET (its own secret
+  // is still checked in handle_).
+  assert.strictEqual(g.post({ action: 'getAdmittedRoster', secret: 'own-secret' }).json.served, 'getAdmittedRoster');
+  // meeting-report + accounting are no longer exempt: without PROXY_SECRET
+  // they are refused in enforce mode and nothing is written …
+  for (const action of ['meetingReportLeads', 'submitMeetingReport', 'accountingPayments', 'accountingCredits']) {
+    assert.deepStrictEqual(g.post({ action, secret: 'own-secret' }).json, { ok: false, error: 'unauthorized' }, action);
   }
-  assert.deepStrictEqual(g.securityRows(), [], 'exempt actions are not logged');
-  // …and their own fail-closed check still runs in the REAL handle_.
+  assert.deepStrictEqual(g.securityRows().map((r) => [r[1], r[6]]), [['getAdmittedRoster', 'open']],
+    'only the served open request is logged; refused ones write nothing');
+  // … and WITH PROXY_SECRET (what Dashboard server.js sends on every call,
+  // meeting-report included) they are served.
+  for (const action of ['meetingReportLeads', 'submitMeetingReport', 'accountingPayments', 'accountingCredits']) {
+    assert.strictEqual(g.post({ action, secret: 'own-secret', proxySecret: SECRET }).json.served, action);
+  }
+  // Their own fail-closed check still runs in the REAL handle_.
   const real = loadGs({ props: { PROXY_SECRET: SECRET, PROXY_SECRET_MODE: 'enforce' }, realHandle: true });
-  assert.deepStrictEqual(real.post({ action: 'accountingPayments', secret: 'x' }).json, { ok: false, error: 'unauthorized' });
+  assert.deepStrictEqual(real.post({ action: 'accountingPayments', secret: 'x', proxySecret: SECRET }).json, { ok: false, error: 'unauthorized' });
+  assert.deepStrictEqual(real.post({ action: 'getAdmittedRoster', secret: 'x' }).json, { ok: false, error: 'unauthorized' });
 });
 
 /* ---------- acting user ---------- */
@@ -402,8 +417,18 @@ test('Code.gs constantTimeEquals_: the work done is independent of where the str
   const src = gsFunction('constantTimeEquals_');
   const loop = src.slice(src.indexOf('for ('), src.lastIndexOf('return'));
   assert.ok(!/return|break/.test(loop), 'no early exit inside the loop');
-  assert.ok(/proxyGate_[\s\S]*constantTimeEquals_\(presented, expected\)/.test(GS_SRC));
-  assert.ok(!/presented\s*===\s*expected|expected\s*===\s*presented/.test(GS_SRC), 'no plain === compare of the secret');
+  // Phase 0b-2: the gate compares through callerClass_, and EVERY secret
+  // check in Code.gs (proxy, roster, meeting report, accounting) is
+  // constant-time — no plain === / !== between a presented and an expected
+  // secret anywhere in the file.
+  assert.ok(/proxyGate_[\s\S]*callerClass_\(action, presented, expected\)/.test(GS_SRC));
+  assert.ok(/function callerClass_[\s\S]*constantTimeEquals_\(got, want\)/.test(GS_SRC));
+  assert.ok(!/\b(presented|got|want|expected)\s*[!=]==\s*(presented|got|want|expected)\b/.test(GS_SRC),
+    'no plain === compare of a secret anywhere in Code.gs');
+  for (const fn of ['admittedRosterAuthOk_', 'meetingReportAuthOk_', 'accountingAuthOk_']) {
+    assert.ok(/return constantTimeEquals_\(got, expected\);/.test(gsFunction(fn)), fn + ' compares in constant time');
+    assert.ok(/if \(!expected\) return false;/.test(gsFunction(fn)), fn + ' still fails closed when unset');
+  }
 });
 
 /* ---------- tryLock is always checked ---------- */
@@ -435,16 +460,16 @@ test('Code.gs: a busy lock fails cleanly — writers return lock_busy and write 
 
 /* ---------- registry + report ---------- */
 
-test('Code.gs: PROXY_KNOWN_ACTIONS lists every action handle_ dispatches; exempt actions are a subset', () => {
+test('Code.gs: PROXY_KNOWN_ACTIONS lists every action handle_ dispatches; OPEN_ACTIONS are a subset', () => {
   const h = gsFunction('handle_');
   const dispatched = new Set([...h.matchAll(/action === '([A-Za-z]+)'/g)].map((m) => m[1]));
   const g = loadGs({});
   const known = new Set(Array.from(gsConst(g, 'PROXY_KNOWN_ACTIONS')));
   assert.deepStrictEqual([...dispatched].sort(), [...known].sort());
-  for (const a of Array.from(gsConst(g, 'PROXY_SECRET_EXEMPT_ACTIONS'))) assert.ok(known.has(a), a);
+  for (const a of Array.from(gsConst(g, 'OPEN_ACTIONS'))) assert.ok(known.has(a), a);
 });
 
-test('Code.gs securityCallersReportNow: last-7-days summary by action × callerType, READ-ONLY', () => {
+test('Code.gs securityCallersReportNow: last-7-days summary by action × callerClass, READ-ONLY', () => {
   const now = Date.UTC(2026, 9, 8, 12, 0, 0);
   const g = loadGs({ now });
   const sh = fakeSheet(['timestamp', 'action', 'method', 'secretPresent', 'callerType', 'hourKey']);
@@ -457,11 +482,15 @@ test('Code.gs securityCallersReportNow: last-7-days summary by action × callerT
   const before = JSON.stringify(sh.grid);
   const r = g.sandbox.securityCallersReportNow();
   assert.strictEqual(r.rows, 4);
+  // Phase 0b-2: grouped by action × callerClass. These pre-0b-2 rows have no
+  // callerClass; it is derived (managers* are OPEN_ACTIONS → open,
+  // user_mismatch → proxy).
   assert.deepStrictEqual(JSON.parse(JSON.stringify(r.summary)), [
-    { action: 'managersOverview', callerType: 'no_secret', hours: 2, methods: 'GET+POST', firstSeen: '2026-10-02T08:00:00.000Z', lastSeen: '2026-10-03T09:00:00.000Z' },
-    { action: 'managersHouse', callerType: 'no_secret', hours: 1, methods: 'GET', firstSeen: '2026-10-07T07:00:00.000Z', lastSeen: '2026-10-07T07:00:00.000Z' },
-    { action: 'savePayment', callerType: 'user_mismatch', hours: 1, methods: 'POST', firstSeen: '2026-10-07T07:30:00.000Z', lastSeen: '2026-10-07T07:30:00.000Z' },
+    { action: 'managersOverview', callerClass: 'open', hours: 2, userMismatchHours: 0, methods: 'GET+POST', firstSeen: '2026-10-02T08:00:00.000Z', lastSeen: '2026-10-03T09:00:00.000Z' },
+    { action: 'managersHouse', callerClass: 'open', hours: 1, userMismatchHours: 0, methods: 'GET', firstSeen: '2026-10-07T07:00:00.000Z', lastSeen: '2026-10-07T07:00:00.000Z' },
+    { action: 'savePayment', callerClass: 'proxy', hours: 1, userMismatchHours: 1, methods: 'POST', firstSeen: '2026-10-07T07:30:00.000Z', lastSeen: '2026-10-07T07:30:00.000Z' },
   ]);
+  assert.strictEqual(r.nonOpenWithoutSecret, 0, 'open + proxy traffic only → safe to enforce');
   assert.strictEqual(JSON.stringify(sh.grid), before, 'no cell changed');
   assert.deepStrictEqual(sh.ops, [], 'no write / format op');
   assert.strictEqual(g.sandbox.__lockCalls, 0, 'no lock');
