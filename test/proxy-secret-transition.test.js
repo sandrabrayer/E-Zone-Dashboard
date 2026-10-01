@@ -198,7 +198,8 @@ test('Code.gs log mode (the default): missing secret → served AND logged once 
   assert.strictEqual(hourKey, '2026-10-01T09');
   assert.strictEqual(ts, '2026-10-01T09:15:00.000Z');
   assert.deepStrictEqual(g.sandbox.__sheets.SecurityLog.grid[0],
-    ['timestamp', 'action', 'method', 'secretPresent', 'callerType', 'hourKey']);
+    ['timestamp', 'action', 'method', 'secretPresent', 'callerType', 'hourKey', 'callerClass']);
+  assert.strictEqual(rows[0][6], 'none', 'Phase 0b-2a: the appended callerClass column');
 });
 
 test('Code.gs log mode: a wrong secret → served, logged as bad_secret with secretPresent=yes', () => {
@@ -306,7 +307,11 @@ test('Code.gs enforce mode: actions with their OWN secret are not gated (Outpati
   for (const action of ['getAdmittedRoster', 'meetingReportLeads', 'submitMeetingReport', 'accountingPayments', 'accountingCredits']) {
     assert.strictEqual(g.post({ action, secret: 'own-secret' }).json.served, action);
   }
-  assert.deepStrictEqual(g.securityRows(), [], 'exempt actions are not logged');
+  // Phase 0b-2a: exempt actions are still never refused here, but they ARE
+  // classified and logged (that is how a consumer's own-secret traffic, e.g.
+  // Therapists' getAdmittedRoster, becomes visible). One row per action-hour.
+  assert.deepStrictEqual(g.securityRows().map((r) => [r[1], r[6]]),
+    ['getAdmittedRoster', 'meetingReportLeads', 'submitMeetingReport', 'accountingPayments', 'accountingCredits'].map((a) => [a, 'none']));
   // …and their own fail-closed check still runs in the REAL handle_.
   const real = loadGs({ props: { PROXY_SECRET: SECRET, PROXY_SECRET_MODE: 'enforce' }, realHandle: true });
   assert.deepStrictEqual(real.post({ action: 'accountingPayments', secret: 'x' }).json, { ok: false, error: 'unauthorized' });
@@ -402,8 +407,13 @@ test('Code.gs constantTimeEquals_: the work done is independent of where the str
   const src = gsFunction('constantTimeEquals_');
   const loop = src.slice(src.indexOf('for ('), src.lastIndexOf('return'));
   assert.ok(!/return|break/.test(loop), 'no early exit inside the loop');
-  assert.ok(/proxyGate_[\s\S]*constantTimeEquals_\(presented, expected\)/.test(GS_SRC));
-  assert.ok(!/presented\s*===\s*expected|expected\s*===\s*presented/.test(GS_SRC), 'no plain === compare of the secret');
+  // Phase 0b-2a: the gate classifies through callerClass_, which compares
+  // the presented value against every configured secret in constant time.
+  assert.ok(/proxyGate_[\s\S]*callerClass_\(action, presented, props\)/.test(GS_SRC));
+  assert.ok(/function callerClass_[\s\S]*constantTimeEquals_\(got, expected\)/.test(GS_SRC));
+  for (const fn of ['proxyGate_', 'callerClass_']) {
+    assert.ok(!/(presented|got)\s*===\s*expected|expected\s*===\s*(presented|got)/.test(gsFunction(fn)), fn + ': no plain === compare of a secret');
+  }
 });
 
 /* ---------- tryLock is always checked ---------- */
@@ -458,9 +468,11 @@ test('Code.gs securityCallersReportNow: last-7-days summary by action × callerT
   const r = g.sandbox.securityCallersReportNow();
   assert.strictEqual(r.rows, 4);
   assert.deepStrictEqual(JSON.parse(JSON.stringify(r.summary)), [
-    { action: 'managersOverview', callerType: 'no_secret', hours: 2, methods: 'GET+POST', firstSeen: '2026-10-02T08:00:00.000Z', lastSeen: '2026-10-03T09:00:00.000Z' },
-    { action: 'managersHouse', callerType: 'no_secret', hours: 1, methods: 'GET', firstSeen: '2026-10-07T07:00:00.000Z', lastSeen: '2026-10-07T07:00:00.000Z' },
-    { action: 'savePayment', callerType: 'user_mismatch', hours: 1, methods: 'POST', firstSeen: '2026-10-07T07:30:00.000Z', lastSeen: '2026-10-07T07:30:00.000Z' },
+    // Phase 0b-2a: grouped by action × callerClass; these pre-0b-2a rows have
+    // no callerClass, so it is derived from callerType.
+    { action: 'managersOverview', callerClass: 'none', hours: 2, userMismatchHours: 0, methods: 'GET+POST', firstSeen: '2026-10-02T08:00:00.000Z', lastSeen: '2026-10-03T09:00:00.000Z' },
+    { action: 'managersHouse', callerClass: 'none', hours: 1, userMismatchHours: 0, methods: 'GET', firstSeen: '2026-10-07T07:00:00.000Z', lastSeen: '2026-10-07T07:00:00.000Z' },
+    { action: 'savePayment', callerClass: 'proxy', hours: 1, userMismatchHours: 1, methods: 'POST', firstSeen: '2026-10-07T07:30:00.000Z', lastSeen: '2026-10-07T07:30:00.000Z' },
   ]);
   assert.strictEqual(JSON.stringify(sh.grid), before, 'no cell changed');
   assert.deepStrictEqual(sh.ops, [], 'no write / format op');
