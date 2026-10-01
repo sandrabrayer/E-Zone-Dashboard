@@ -438,6 +438,32 @@ in the accounting app. Full contract: `CHANGELOG-accounting-source-feed.md`.
   the `/exec` URL already reaches the write actions — a separate read-only
   deployment is the proper fix and is follow-up work.
 
+## Dashboard Apps Script: proxy secret in TRANSITION mode (October 1, 2026 — Phase 0b-1)
+
+The Dashboard `/exec` now checks a shared **`PROXY_SECRET`** (billing-control
+plan §11.1). Full detail: `CHANGELOG-proxy-secret-transition.md`; Sandra's
+steps: `DEPLOY.md` → "Proxy secret".
+
+- **New Railway variable (Dashboard):** `PROXY_SECRET`. The server sends it in
+  the POST body of every call to its Apps Script (reads are now forwarded as
+  POST too — never in a URL). Unset → the server refuses to proxy (503).
+- **New Script Properties (Dashboard Apps Script):** `PROXY_SECRET` (same
+  value) and `PROXY_SECRET_MODE` = `log` (default) | `enforce`.
+- **New tab:** `SecurityLog` (append-only; ≤ 1 row per action per hour for
+  calls without a valid secret; never the value).
+- **New editor-run:** `securityCallersReportNow()` — read-only 7-day summary
+  by action × caller type.
+- **⚠️ Managers (`APPS_SCRIPT_URL`) and Therapists (`DASHBOARD_SHEETS_URL`)
+  are NOT affected in this phase** — `log` mode serves them and records their
+  actions. They WILL break if `PROXY_SECRET_MODE` is set to `enforce` before
+  they are given the secret (or a separate read-only deployment). That is the
+  coordination step of phase 0b.
+- Unchanged and not gated: the actions with their own secret
+  (`getAdmittedRoster`, `meetingReportLeads`, `submitMeetingReport`,
+  `accountingPayments`, `accountingCredits`).
+- Every `LockService.tryLock` result in the Dashboard `Code.gs` is now checked;
+  a busy lock returns `{ok:false,error:'lock_busy'}` and writes nothing.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);
