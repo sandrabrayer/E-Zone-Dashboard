@@ -464,23 +464,26 @@ steps: `DEPLOY.md` → "Proxy secret".
 - Every `LockService.tryLock` result in the Dashboard `Code.gs` is now checked;
   a busy lock returns `{ok:false,error:'lock_busy'}` and writes nothing.
 
-## Dashboard Apps Script: scoped caller secrets, LOG mode (October 1, 2026 — Phase 0b-2a)
+## Dashboard Apps Script: open-actions allowlist, LOG mode (October 1, 2026 — Phase 0b-2)
 
-Detail: `CHANGELOG-scoped-caller-secrets.md`. **Nothing is rejected yet.**
+Detail: `CHANGELOG-open-actions-gate.md`. **Nothing is refused yet, and
+nothing needs to be set.**
 
-- **New Script Properties (Dashboard Apps Script):** `MANAGERS_CALLER_SECRET`
-  and `THERAPISTS_CALLER_SECRET`. Create them with the editor-run
-  `generateCallerSecretsNow()`, which never overwrites and never logs a value.
-- **Scopes** (`CALLER_SCOPES` in `Code.gs`, from each consumer's deployed code):
-  - Managers: `managersOverview`, `managersHouse`, `occupancySnapshots`
-  - Therapists: `getAdmittedRoster`
-- **`SecurityLog`** gains an appended `callerClass` column (proxy / managers /
-  therapists / none / wrong / out_of_scope). `securityCallersReportNow`
-  groups by action × class.
-- **Consumers are not changed yet.** The scoped secret travels like
-  `PROXY_SECRET`: `proxySecret` in a POST body. Managers and Therapists still
-  call with GET, so each needs a small PR (Phase 0b-2b) before enforcement
-  (0b-3).
+- `OPEN_ACTIONS` = `managersOverview`, `managersHouse`, `occupancySnapshots`
+  (Managers) and `getAdmittedRoster` (Therapists, still with its own secret).
+  These are served without `PROXY_SECRET` in log and enforce mode, so
+  **Managers and Therapists need no change**.
+- **Every other action** (`getData`, all writes, the accounting feed, future
+  billing actions) is gated by `PROXY_SECRET` under `PROXY_SECRET_MODE`.
+- **⚠ Accounting feed:** `accountingPayments` / `accountingCredits` will be
+  refused in enforce mode unless the accounting app sends `PROXY_SECRET`.
+  Decide before 0b-3.
+- **`SecurityLog`** gains an appended `callerClass` column
+  (proxy / open / none / wrong). `securityCallersReportNow` prints
+  `non-open actions without a valid secret: N`, which **must be 0 before
+  0b-3**.
+- The roster, meeting-report and accounting secret checks are now
+  constant-time.
 
 ## Apps Script topology (July 4)
 
