@@ -64,7 +64,7 @@ function loadCode() {
     JSON, Math, Date, Number, String, Array, Object, RegExp, isFinite,
     Logger: { log: noop },
     Utilities: { formatDate: () => '2026-08-10', getUuid: () => 'uuid' + (++uuid) },
-    LockService: { getScriptLock: () => ({ tryLock: noop, releaseLock: noop }) },
+    LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: noop }) },
     PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty() { return this; } }) },
     __registry: registry,
   };

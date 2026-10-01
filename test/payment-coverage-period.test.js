@@ -156,7 +156,7 @@ function loadCode() {
     MimeType: { JSON: 'json' },
   };
   sandbox.Utilities = { getUuid: () => 'uuid', formatDate: (d) => d.toISOString().slice(0, 10) };
-  sandbox.LockService = { getScriptLock: () => ({ tryLock: noop, releaseLock: noop }) };
+  sandbox.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: noop }) };
   sandbox.globalThis = sandbox;
   const epilogue = `globalThis.__test = {
     PAYMENT_COLUMNS, PAYMENTS_SHEET, PAYMENT_TEXT_COLUMNS, COVERAGE_MAX_DAYS,

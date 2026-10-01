@@ -116,7 +116,7 @@ function loadCode() {
     MimeType: { JSON: 'json' },
   };
   sandbox.Utilities = { getUuid: () => 'uuid', formatDate: (d) => d.toISOString().slice(0, 10) };
-  sandbox.LockService = { getScriptLock: () => ({ tryLock: noop, releaseLock: noop }) };
+  sandbox.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: noop }) };
   sandbox.globalThis = sandbox;
   const epilogue = `globalThis.__test = {
     CREDIT_COLUMNS, CREDITS_SHEET, CREDIT_TYPES, CREDIT_STATUSES, CREDIT_EDITABLE_COLUMNS, CREDIT_TEXT_COLUMNS, FACILITY_TYPE_BY_HOUSE,
