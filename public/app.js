@@ -5562,7 +5562,7 @@ function dischargePatient(p) {
       // the discharge intact; a deferred or failed credit is recoverable from
       // the מטופלים משוחררים tab (openCreditsForDischarged).
       try {
-        showCreditsModal({
+        await showCreditsModal({
           patient: p, patientId: p.id ? String(p.id) : '', patientKey: patientKey(p), exitDate: exitDate,
         });
       } catch (e) {
@@ -5607,19 +5607,15 @@ const CREDIT_TYPE_LABELS = {
 const CREDIT_STATUS_LABELS = { pending: 'ממתין', paid: 'שולם', cancelled: 'בוטל' };
 const CREDIT_TYPES = Object.keys(CREDIT_TYPE_LABELS);
 
-/* >>> DIVISOR — the single named constant behind the daily rate. <<<
- * dailyRate = amountPaid for the credited month / CREDIT_DAYS_DIVISOR, for
- * BOTH facility types. Fixed 30 — never the calendar day count of the month. */
-const CREDIT_DAYS_DIVISOR = 30;
-/* detox_dual: tenure (whole days) at or beyond which days_unused is ZERO. A
- * DISCRETIONARY cutoff — Sandra approves exceptions through the override
- * path, which is never disabled for it. */
-const CREDIT_DETOX_TENURE_CUTOFF_DAYS = 14;
-/* residential: an exit inside the last N calendar days of its month zeroes
- * days_unused (dayOfMonth > daysInMonth − N). */
-const CREDIT_RESIDENTIAL_LAST_DAYS = 7;
+/* The refund RULES live on the server only (computeRefund_ /
+ * refundSuggestionsFor_ in Code.gs, reached through action=suggestRefunds).
+ * This file holds no copy of them — see CHANGELOG-refund-logic-wiring.md. */
 /* Credits pay out on this day of the month, never at discharge. */
 const CREDIT_PAYOUT_DAY = 15;
+/* A decision on or before this day of the month pays out on that month's
+ * 15th; after it, on the next month's. Mirrors CREDIT_DECISION_CUTOFF_DAY in
+ * Code.gs (test/refund-logic-wiring.test.js checks parity day by day). */
+const CREDIT_DECISION_CUTOFF_DAY = 10;
 
 /* Display mirror of creditId_() in Code.gs. The SERVER mints every persisted
  * id (it owns the seq counter under the lock); this exists for tests + logs. */
@@ -5637,12 +5633,6 @@ function localDateFromISO(iso) {
 }
 function isoFromLocalDate(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-/* Calendar days in a month (month1 is 1-based). Used for the residential
- * last-7-days window and the calendar-month coverage fallback — NOT for the
- * daily rate (see CREDIT_DAYS_DIVISOR). */
-function daysInCalendarMonth(year, month1) {
-  return new Date(year, month1, 0).getDate();
 }
 /* Whole calendar days from a to b (local midnights). Math.round absorbs the
  * ±1h a DST change injects between two local midnights, so a span across the
@@ -5760,7 +5750,7 @@ function recordedCoverage(payment) {
 }
 
 /* THE ONE SOURCE OF TRUTH for "what period does this payment pay for", shared
- * by all three consumers: the credits ledger (suggestCredits), the
+ * by all three consumers: the credits ledger (via the server's suggestRefunds), the
  * הכנסות חודשיות allocation (buildMonthlyRevenue) and the גבייה row editor.
  *
  * THE RECORDED PERIOD WINS. coverageStart/coverageEnd are columns on the
@@ -5813,181 +5803,18 @@ function withDefaultCoverage(payment) {
   });
 }
 
-/* The 15th of the next month on or after decidedDate: decided on the 1st–15th
- * → the 15th of that month; the 16th onward → the 15th of the following
- * month. String arithmetic on the parts (no Date, no timezone). Mirrors
- * payoutDateFor_() in Code.gs, which is the authoritative copy on write. */
+/* DISPLAY ECHO of refundPayoutDate_() in Code.gs, which is authoritative:
+ * the server derives every stored payoutDate (upsertCredit_). Kept here only
+ * so the modal can show the date live while Vered edits the decision date.
+ * Decided on the 1st–10th → the 15th of that month; the 11th onward → the
+ * 15th of the next month. String arithmetic on the parts (no Date, no
+ * timezone). Parity with Code.gs is tested for every day of a year. */
 function payoutDateFor(decidedISO) {
   const m = String(decidedISO || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return '';
   let y = Number(m[1]), mo = Number(m[2]);
-  if (Number(m[3]) > CREDIT_PAYOUT_DAY) { mo += 1; if (mo > 12) { mo = 1; y += 1; } }
+  if (Number(m[3]) > CREDIT_DECISION_CUTOFF_DAY) { mo += 1; if (mo > 12) { mo = 1; y += 1; } }
   return `${y}-${String(mo).padStart(2, '0')}-${String(CREDIT_PAYOUT_DAY).padStart(2, '0')}`;
-}
-
-/* Never credit more than was actually received. Pure. */
-function applyCreditCap(uncapped, amountPaid) {
-  const u = roundMoney(uncapped), p = roundMoney(amountPaid);
-  return { calculatedAmount: Math.min(u, p), capped: u > p };
-}
-
-/* Pure. The credit suggestions for a discharge — an array of
- * { creditType, calculatedAmount, allocationMonth, basis }, ONE PER PAYMENT
- * ROW whose coverage window still has days after the exit (plus one zero
- * days_unused row when no window does, so "no refund owed" is recorded).
- *
- * For every Payments row of the patient (joined on patientKey), in dueDate
- * order:
- *   window      = [dueDate, dueDate + 1 month − 1 day] (local parts, day
- *                 clamped) — never "until the next payment row".
- *   unusedDays  = days in that window STRICTLY AFTER exitDate, minus any day
- *                 an earlier row's window already credited (overlapping
- *                 windows never credit the same day twice).
- *   rate        = THAT ROW's amountPaid / CREDIT_DAYS_DIVISOR (30).
- *   raw         = rate × unusedDays, capped at that row's amountPaid.
- *   classification is by the WINDOW, not the month key:
- *     window starts on or before exitDate → days_unused, then the facility
- *       rule: residential — 0 when the exit is inside the last 7 calendar
- *       days of its month; detox_dual — 0 when tenure ≥ 14 days
- *       (DISCRETIONARY: the override path carries exceptions). The raw
- *       figure stays in basis.uncappedAmount either way.
- *     window starts after exitDate → prepaid_return: the whole window is
- *       unearned, so the row's full amountPaid returns — exempt from both
- *       rules (raw / unusedDays are still recorded in basis).
- *   allocationMonth = monthKey(dueDate): REPORTING METADATA ONLY — it never
- *   enters the math (no "amountPaid for the credited month" anywhere).
- * Windows that ended before the exit are fully used and produce nothing.
- * No rows at all → one zero days_unused row for the exit's calendar month.
- *
- * exitDate is normalized through isoDate() FIRST (legacy rows carry a full
- * ISO timestamp; a naive slice drifts −1 day in Israel), then every date is
- * handled via local parts. Amounts are VAT-inclusive like their inputs. */
-function suggestCredits(patient, exitDate, payments) {
-  const exitISO  = isoDate(exitDate);
-  const exit     = localDateFromISO(exitISO);
-  if (!patient || !exit) return [];
-  const entryISO = isoDate(patient.date);
-  const entry    = localDateFromISO(entryISO);
-  const key      = patientKey(patient);
-  const facilityKnown = !!facilityTypeFor(patient.houseId);
-  const facilityType  = facilityTypeFor(patient.houseId) || 'detox_dual';   // unknown house → the stricter policy, recorded in basis
-  const tenureDays    = entry ? diffWholeDays(entry, exit) : null;
-
-  const exitDayOfMonth = exit.getDate();
-  const exitMonthDays  = daysInCalendarMonth(exit.getFullYear(), exit.getMonth() + 1);
-  const inLastDaysWindow = exitDayOfMonth > exitMonthDays - CREDIT_RESIDENTIAL_LAST_DAYS;
-  // The facility rule for days_unused — patient-level, same for every row.
-  let rule, eligible;
-  if (facilityType === 'residential') {
-    eligible = !inLastDaysWindow;
-    rule = eligible ? 'residential_prorata' : 'residential_last_days_zero';
-  } else {
-    eligible = tenureDays !== null && tenureDays < CREDIT_DETOX_TENURE_CUTOFF_DAYS;
-    rule = eligible ? 'detox_prorata' : 'detox_tenure_cutoff_zero';
-  }
-  const common = {
-    facilityType, facilityKnown, entryDate: entryISO, exitDate: exitISO, tenureDays,
-    tenureCutoffDays: CREDIT_DETOX_TENURE_CUTOFF_DAYS, exitDayOfMonth, exitMonthDays,
-    lastDaysWindow: CREDIT_RESIDENTIAL_LAST_DAYS, inLastDaysWindow, divisor: CREDIT_DAYS_DIVISOR,
-  };
-
-  const rows = (Array.isArray(payments) ? payments : [])
-    /* A VOID row is a double entry, not money: crediting against it would
-     * refund a patient for a payment they never made twice. */
-    .filter(r => r && !isVoidPayment(r) && r.patientId === key && r.dueDate)
-    // Object.assign keeps every column of the row, coverageStart/coverageEnd
-    // included, so paymentCoverage() below sees the recorded period.
-    .map(r => Object.assign({}, r, { dueDate: isoDate(r.dueDate) }))
-    .filter(r => /^\d{4}-\d{2}-\d{2}$/.test(r.dueDate))
-    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
-
-  const out = [];
-  let creditedThrough = null;   // last day already credited by an earlier window (local Date)
-  let latestUsedRow = null;     // the latest row whose window started on/before the exit
-  rows.forEach(r => {
-    const cov = paymentCoverage(r);
-    const start = cov.start, end = cov.end;
-    const windowDays = diffWholeDays(start, end) + 1;
-    const amountPaid = roundMoney(Number(r.amountPaid) || 0);
-    const rate = amountPaid / CREDIT_DAYS_DIVISOR;
-    const allocationMonth = monthKey(r.dueDate);   // reporting only
-    const rowBasis = {
-      paymentDueDate: r.dueDate, coverageStart: isoFromLocalDate(start), coverageEnd: isoFromLocalDate(end),
-      /* Which window the credit was computed against: the period the row
-       * RECORDS, or the cycle inferred from its due date. Basis is the audit
-       * trail for a refund decision, so it must say which. Named apart from
-       * the existing `coverageSource` on the zero row below, which answers a
-       * different question (which FALLBACK that row took). The ARITHMETIC is
-       * untouched — only where [start, end] came from changed. */
-      coverageWindowSource: cov.source,
-      windowDays, billedAmount: roundMoney(Number(r.amount) || 0), amountPaid, dailyRate: roundMoney(rate),
-    };
-
-    if (start > exit) {
-      // Whole window after the exit → unearned in full.
-      const raw = roundMoney(rate * windowDays);
-      out.push({
-        creditType: 'prepaid_return', allocationMonth, calculatedAmount: amountPaid,
-        basis: Object.assign({}, common, rowBasis, {
-          rule: 'prepaid_return', eligible: true, classification: 'window_after_exit',
-          unusedDays: windowDays, uncappedAmount: raw, capped: raw > amountPaid, fullReturn: true,
-        }),
-      });
-      return;
-    }
-
-    latestUsedRow = { r, start, end, windowDays, amountPaid, rate, allocationMonth, rowBasis };
-    if (end <= exit) return;   // fully used — nothing to decide
-    // Days strictly after the exit, not yet credited by an earlier window.
-    let from = addDays(exit, 1);
-    if (creditedThrough && creditedThrough >= from) from = addDays(creditedThrough, 1);
-    const unusedDays = from > end ? 0 : diffWholeDays(from, end) + 1;
-    const alreadyCreditedThrough = creditedThrough ? isoFromLocalDate(creditedThrough) : '';
-    if (unusedDays > 0) creditedThrough = end;
-    const raw = roundMoney(rate * unusedDays);
-    const cap = applyCreditCap(raw, amountPaid);
-    out.push({
-      creditType: 'days_unused', allocationMonth, calculatedAmount: eligible ? cap.calculatedAmount : 0,
-      basis: Object.assign({}, common, rowBasis, {
-        rule, eligible, discretionary: rule === 'detox_tenure_cutoff_zero', classification: 'window_contains_exit',
-        creditedFrom: unusedDays > 0 ? isoFromLocalDate(from) : '', alreadyCreditedThrough,
-        unusedDays, uncappedAmount: raw, capped: eligible && cap.capped,
-      }),
-    });
-  });
-
-  if (!out.some(o => o.creditType === 'days_unused')) {
-    // Nothing left to credit for days — still one auditable zero row: the
-    // latest window that started on/before the exit, else the exit's
-    // calendar month (no payment rows at all, nothing received).
-    let allocationMonth, rowBasis, amountPaid, rate, unusedDays, coverageSource;
-    if (latestUsedRow) {
-      allocationMonth = latestUsedRow.allocationMonth; rowBasis = latestUsedRow.rowBasis;
-      amountPaid = latestUsedRow.amountPaid; rate = latestUsedRow.rate; unusedDays = 0; coverageSource = 'payment';
-    } else {
-      const y = exit.getFullYear(), m1 = exit.getMonth() + 1;
-      const start = new Date(y, m1 - 1, 1), end = new Date(y, m1 - 1, exitMonthDays);
-      allocationMonth = exitISO.slice(0, 7); amountPaid = 0; rate = 0; coverageSource = 'calendar_month';
-      unusedDays = diffWholeDays(exit, end);
-      rowBasis = { paymentDueDate: '', coverageStart: isoFromLocalDate(start), coverageEnd: isoFromLocalDate(end),
-        coverageWindowSource: 'calendar_month',
-        windowDays: exitMonthDays, billedAmount: 0, amountPaid: 0, dailyRate: 0 };
-    }
-    out.unshift({
-      creditType: 'days_unused', allocationMonth, calculatedAmount: 0,
-      basis: Object.assign({}, common, rowBasis, {
-        rule, eligible, discretionary: rule === 'detox_tenure_cutoff_zero', classification: 'no_unused_window', coverageSource,
-        creditedFrom: '', alreadyCreditedThrough: '', unusedDays, uncappedAmount: roundMoney(rate * unusedDays), capped: false,
-      }),
-    });
-  }
-  return out;
-}
-
-/* The days_unused suggestion alone. Convenience over suggestCredits()[0]. */
-function suggestCredit(patient, exitDate, payments) {
-  const all = suggestCredits(patient, exitDate, payments);
-  return all.length ? all[0] : null;
 }
 
 /* Amount ÷ VAT_RATE for display — every credit figure is stored VAT-inclusive. */
@@ -5998,39 +5825,113 @@ function fmtShekel(n) {
   return '₪ ' + (Number(n) || 0).toLocaleString('he-IL');
 }
 
+/* Hebrew label per rule, for suggestions built by the server (basis
+ * basisVersion 2 — computeRefund_ in Code.gs). */
 const CREDIT_RULE_LABELS = {
+  residential_prorata:        'מגורים — זיכוי יחסי על הימים שלא שהה',
+  residential_last_days_zero: '7 הימים האחרונים במחזור — ללא זיכוי',
+  detox_prorata:              'גמילה/דואלי — יציאה עד יום 13 — זיכוי יחסי',
+  detox_tenure_cutoff_zero:   'יום 14 ומעלה — ללא זיכוי',
+  prepaid_return:             'מחזור ששולם מראש ולא התחיל — החזר מלא',
+  cycle_fully_used:           'המחזור הסתיים לפני היציאה — ללא זיכוי',
+};
+/* Labels of the rules a credit SAVED BEFORE the wiring PR was decided under
+ * (calendar-month last 7 days, tenure counted from day 0). Display only, so a
+ * saved credit still reads as what was decided at the time — never relabelled
+ * with today's rule. */
+const CREDIT_RULE_LABELS_LEGACY = {
   residential_prorata:        'מגורים — זיכוי יחסי בכל אורך שהות',
   residential_last_days_zero: 'מגורים — שחרור בשבוע האחרון של החודש: אין זיכוי ימים',
   detox_prorata:              'גמילה/דואלי — שהות מתחת ל־14 יום: זיכוי יחסי',
   detox_tenure_cutoff_zero:   'גמילה/דואלי — שהות 14 יום ומעלה: אין זיכוי (חיתוך לשיקול דעת, חריגה באישור סנדרה)',
   prepaid_return:             'תשלום מראש — חלון הכיסוי מתחיל אחרי השחרור, מוחזר במלואו',
 };
+function isServerBasis(basis) {
+  return !!basis && Number(basis.basisVersion) === 2;
+}
+function creditRuleLabel(basis) {
+  if (!basis || !basis.rule) return '';
+  const map = isServerBasis(basis) ? CREDIT_RULE_LABELS : CREDIT_RULE_LABELS_LEGACY;
+  return map[basis.rule] || String(basis.rule);
+}
 
 /* Human-readable calculation trail persisted in the row's `reason` column at
- * creation (the machine copy is the `basis` JSON column). */
+ * creation (the machine copy is the `basis` JSON column). Built from the
+ * server's breakdown; '' for anything else. Plain text — escaped on render. */
 function creditBasisText(creditType, basis) {
-  if (!basis) return '';
-  /* Where the window came from belongs in a refund's audit trail: a credit
-   * computed against a period somebody RECORDED must not read the same as one
-   * computed against the assumed billing cycle. A row whose period was merely
-   * inferred says nothing extra — that is the norm, and labelling every row
-   * would bury the ones that matter. */
-  const windowSourceText = basis.coverageWindowSource === 'recorded' ? ', תקופה שנרשמה על התשלום' : '';
-  const windowText = `חלון כיסוי ${basis.coverageStart} → ${basis.coverageEnd} (${basis.windowDays} ימים${basis.paymentDueDate ? ', תשלום ' + basis.paymentDueDate : ' — חודש קלנדרי, אין שורת תשלום'}${windowSourceText})`;
-  if (creditType === 'days_unused') {
-    return [
-      CREDIT_RULE_LABELS[basis.rule] || basis.rule,
-      `שהות ${basis.tenureDays == null ? '?' : basis.tenureDays} ימים (${basis.entryDate || '?'} → ${basis.exitDate}), יום ${basis.exitDayOfMonth} מתוך ${basis.exitMonthDays}`,
-      windowText,
-      `ימים לא מנוצלים אחרי השחרור ${basis.unusedDays}` + (basis.alreadyCreditedThrough ? ` (עד ${basis.alreadyCreditedThrough} כבר זוכה בשורה קודמת)` : ''),
-      `שולם בשורה ${basis.amountPaid} / ${basis.divisor} = תעריף יומי ${basis.dailyRate}; סכום לפני תקרה/כלל ${basis.uncappedAmount}` +
-        (basis.capped ? ' — הוגבל לסכום ששולם' : '') + (!basis.eligible ? ' — אופס לפי הכלל' : ''),
-    ].join(' | ');
+  if (!isServerBasis(basis)) return '';
+  const windowSource = basis.coverageWindowSource === 'recorded' ? ', תקופה שנרשמה על התשלום'
+    : basis.coverageWindowSource === 'no_payment_row' ? ', אין שורת תשלום' : '';
+  const parts = [
+    creditRuleLabel(basis),
+    `מחזור ${basis.cycleStart} → ${basis.cycleEnd} (${basis.cycleDays} ימים${basis.paymentDueDate ? ', תשלום ' + basis.paymentDueDate : ''}${windowSource})`,
+    `כניסה ${basis.entryDate}, יציאה ${basis.exitDate} (יום שהייה ${basis.stayDay})`,
+    `ימים ששהה במחזור ${basis.daysStayed}, ימים שלא שהה ${basis.daysNotStayed}` +
+      (basis.alreadyCreditedThrough ? ` (עד ${basis.alreadyCreditedThrough} כבר זוכה בשורה קודמת)` : ''),
+    `שולם ${basis.amountPaid} / ${basis.divisor} = תעריף יומי ${basis.dailyRate}; לפני הכלל ${basis.uncappedRefund}` +
+      (basis.capped ? ' — הוגבל לסכום ששולם' : ''),
+  ];
+  if (creditType === 'prepaid_return') parts.push('מוחזר במלואו');
+  return parts.join(' | ');
+}
+
+/* Hebrew message for a suggestRefunds refusal. Never a silent 0: the modal
+ * shows this instead of a suggested amount. */
+const REFUND_ERROR_MESSAGES = {
+  unknown_house:      'לא ניתן לחשב זיכוי: הבית של המטופל לא מוכר במערכת. לא הוצע סכום — אפשר להוסיף זיכוי ידני.',
+  exit_before_entry:  'לא ניתן לחשב זיכוי: תאריך היציאה לפני תאריך הכניסה.',
+  bad_date:           'לא ניתן לחשב זיכוי: תאריך כניסה, יציאה או תשלום לא תקין.',
+  bad_amount:         'לא ניתן לחשב זיכוי: סכום ששולם לא תקין באחת משורות התשלום.',
+  bad_coverage:       'לא ניתן לחשב זיכוי: תקופת כיסוי לא תקינה בשורת תשלום.',
+  missing_patientKey: 'לא ניתן לחשב זיכוי: חסר מזהה מטופל.',
+  lock_busy:          LOCK_BUSY_MESSAGE_HE,
+};
+function refundErrorMessage(code) {
+  return REFUND_ERROR_MESSAGES[code] || 'לא ניתן לחשב זיכוי כרגע — לא הוצע סכום. אפשר לנסות שוב או להוסיף זיכוי ידני.';
+}
+
+/* The server's refund suggestions for one discharge (action=suggestRefunds,
+ * POST so no patient name rides a URL). → { suggestions, error } — error is a
+ * code ('unknown_house', …, or 'network') and suggestions is [] with it.
+ * Never throws. */
+async function fetchRefundSuggestions(patient, pKey, exitDate) {
+  try {
+    const res = await apiPost({
+      action: 'suggestRefunds',
+      houseId: (patient && patient.houseId) || '',
+      entryDate: isoDate(patient && patient.date) || '',
+      exitDate: isoDate(exitDate) || '',
+      patientKey: pKey || '',
+    });
+    const list = Array.isArray(res && res.suggestions) ? res.suggestions : null;
+    if (!list) return { suggestions: [], error: 'refund_failed' };
+    return { suggestions: list, error: '' };
+  } catch (e) {
+    if (isLockBusyError(e)) return { suggestions: [], error: 'lock_busy' };
+    const code = e && e.data && e.data.error ? String(e.data.error) : 'network';
+    return { suggestions: [], error: code };
   }
-  if (creditType === 'prepaid_return') {
-    return `${CREDIT_RULE_LABELS.prepaid_return} (שחרור ${basis.exitDate}); ${windowText}; חויב ${basis.billedAmount}, שולם בפועל ${basis.amountPaid} — מוחזר במלואו`;
+}
+
+/* The breakdown Vered reads under a suggested amount (server basis only).
+ * Every value goes through escapeHtml. */
+function creditBreakdownHtml(basis) {
+  if (!isServerBasis(basis)) return '';
+  const row = (k, v) => `<div class="credit-bd-row"><span class="credit-bd-k">${escapeHtml(k)}</span> <span class="credit-bd-v">${escapeHtml(v)}</span></div>`;
+  const d = (iso) => formatDateHe(iso) || String(iso || '—');
+  const rows = [
+    row('מחזור:', `${d(basis.cycleStart)} – ${d(basis.cycleEnd)} (${basis.cycleDays} ימים)`),
+    row('ימים ששהה במחזור:', String(basis.daysStayed)),
+    row('ימים שלא שהה:', String(basis.daysNotStayed)),
+    row('תעריף יומי:', `${fmtShekel(basis.dailyRate)} (${fmtShekel(basis.amountPaid)} ÷ ${basis.divisor})`),
+  ];
+  if (basis.facilityType === 'detox_dual') rows.push(row('יום שהייה ביציאה:', String(basis.stayDay)));
+  if (basis.facilityType === 'residential' && basis.lastDaysFrom) {
+    rows.push(row('7 הימים האחרונים במחזור:', `${d(basis.lastDaysFrom)} – ${d(basis.lastDaysTo)}`));
   }
-  return '';
+  if (basis.alreadyCreditedThrough) rows.push(row('כבר זוכה עד:', d(basis.alreadyCreditedThrough)));
+  rows.push(row('כלל:', creditRuleLabel(basis)));
+  return `<div class="credit-breakdown">${rows.join('')}</div>`;
 }
 
 /* Pure. null when the line may be saved, else the Hebrew refusal:
@@ -6177,7 +6078,11 @@ async function saveCredit(credit) {
  * duplicate of a credit already on the sheet. */
 function buildCreditLines(existing, suggestions, today) {
   const decided = today || todayISO();
-  const lines = (existing || []).map(c => Object.assign({}, c, { isNew: false }));
+  /* A saved credit keeps its STORED payoutDate (origPayoutDate) unless Vered
+   * changes its decision date — the server does the same (creditPayoutDate_). */
+  const lines = (existing || []).map(c => Object.assign({}, c, {
+    isNew: false, origDecidedDate: c.decidedDate || '', origPayoutDate: c.payoutDate || '',
+  }));
   (suggestions || []).forEach(s => {
     const dup = lines.some(l => l.creditType === s.creditType && l.allocationMonth === s.allocationMonth);
     if (dup) return;
@@ -6192,6 +6097,14 @@ function buildCreditLines(existing, suggestions, today) {
   return lines;
 }
 
+/* The payout date a line shows for a decision date: a SAVED credit whose
+ * decision date is unchanged keeps its stored payoutDate (never re-dated);
+ * anything else gets the display echo of the server rule. */
+function linePayoutDate(line, decidedDate) {
+  if (line && !line.isNew && line.origPayoutDate && decidedDate === line.origDecidedDate) return line.origPayoutDate;
+  return payoutDateFor(decidedDate);
+}
+
 /* Hebrew RTL modal: the credit lines for one patient — suggestions after a
  * discharge and/or the existing rows (recovery / edit path). Vered can accept
  * or edit each amount; an amount that differs from calculatedAmount demands
@@ -6201,10 +6114,24 @@ function buildCreditLines(existing, suggestions, today) {
  * guarded by busyButton; lines are written one by one and a failure stops
  * the run with the error banner, keeping the modal open (already-saved lines
  * are marked so a retry edits instead of duplicating). */
-function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
+async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
   const root = document.getElementById('modal-root');
   if (!root) return;
-  const suggestions = exitDate ? suggestCredits(patient, exitDate, state.payments) : [];
+  // The suggestion comes from the SERVER (computeRefund_). A refusal is shown
+  // as a Hebrew error in the modal — never replaced by a silent 0.
+  let suggestions = [];
+  let suggestionError = '';
+  if (exitDate) {
+    setLoading(true);
+    try {
+      const got = await fetchRefundSuggestions(patient, pKey, exitDate);
+      suggestions = got.suggestions;
+      suggestionError = got.error;
+    } finally {
+      setLoading(false);
+    }
+    if (suggestionError) showError(refundErrorMessage(suggestionError));
+  }
   const existing    = creditsForPatient(state.credits, patientId, pKey);
   const lines       = buildCreditLines(existing, suggestions);
   const facility    = facilityTypeFor(patient && patient.houseId);
@@ -6218,7 +6145,8 @@ function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
       `<option value="${s}" ${l.status === s ? 'selected' : ''}>${CREDIT_STATUS_LABELS[s]}</option>`).join('');
     const isOther = l.creditType === 'other';
     const b = l.basis;
-    const ruleLabel = b && b.rule ? (CREDIT_RULE_LABELS[b.rule] || b.rule) : '';
+    const ruleLabel = creditRuleLabel(b);
+    const serverBasis = isServerBasis(b);
     return `
       <fieldset class="credit-line" data-line="${i}">
         <legend>${escapeHtml(typeLabel)}${l.isNew ? ' <span class="credit-new">חדש</span>' : ''}</legend>
@@ -6233,8 +6161,11 @@ function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
           מחושב: <b>${fmtShekel(l.calculatedAmount)}</b>
           <span class="credit-exvat">(${fmtShekel(exVat(l.calculatedAmount))} ללא מע"מ)</span>
           ${ruleLabel ? `<span class="credit-rule">${escapeHtml(ruleLabel)}</span>` : ''}
-          ${b && b.eligible === false && b.uncappedAmount > 0 ? `<span class="credit-cap">לפני הכלל: ${fmtShekel(b.uncappedAmount)}${b.discretionary ? ' — ניתן לאשר חריגה בשדה הסכום עם נימוק' : ''}</span>` : ''}
-          ${b && b.eligible !== false && b.capped ? `<span class="credit-cap">הוגבל לסכום ששולם — לפני ${l.creditType === 'prepaid_return' ? 'החזר מלא' : 'תקרה'} ${fmtShekel(b.uncappedAmount)}</span>` : ''}
+          ${serverBasis
+            ? `${b.eligible === false && b.uncappedRefund > 0 ? `<span class="credit-cap">לפני הכלל: ${escapeHtml(fmtShekel(b.uncappedRefund))}</span>` : ''}
+               ${creditBreakdownHtml(b)}`
+            : `${b && b.eligible === false && b.uncappedAmount > 0 ? `<span class="credit-cap">לפני הכלל: ${fmtShekel(b.uncappedAmount)}${b.discretionary ? ' — ניתן לאשר חריגה בשדה הסכום עם נימוק' : ''}</span>` : ''}
+               ${b && b.eligible !== false && b.capped ? `<span class="credit-cap">הוגבל לסכום ששולם — לפני ${l.creditType === 'prepaid_return' ? 'החזר מלא' : 'תקרה'} ${fmtShekel(b.uncappedAmount)}</span>` : ''}`}
         </div>`}
         <div class="form-row">
           <label>סכום הזיכוי (כולל מע"מ)</label>
@@ -6252,7 +6183,7 @@ function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
         <div class="form-row credit-inline">
           <label>תאריך החלטה</label>
           <input type="date" name="decidedDate" value="${escapeHtml(l.decidedDate || '')}" dir="ltr" />
-          <span class="credit-exvat" data-role="payout">ישולם ב־${escapeHtml(formatDateHe(l.payoutDate || payoutDateFor(l.decidedDate)) || '—')}</span>
+          <span class="credit-exvat" data-role="payout">ישולם ב־${escapeHtml(formatDateHe(linePayoutDate(l, l.decidedDate)) || '—')}</span>
         </div>
         <div class="form-row credit-inline">
           <label>סטטוס</label>
@@ -6280,6 +6211,7 @@ function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
     back.innerHTML = `
       <div class="modal credits-modal">
         <h3>זיכויים והחזרים — ${escapeHtml((patient && patient.name) || '')}${facility ? ` <span class="credit-new">${escapeHtml(FACILITY_TYPE_LABELS[facility])}</span>` : ''}</h3>
+        ${suggestionError ? `<div class="credit-error" role="alert">${escapeHtml(refundErrorMessage(suggestionError))}</div>` : ''}
         <form>
           <div class="credit-lines">${lines.map(lineHtml).join('')}</div>
           <button type="button" class="btn small" data-action="add-other">+ זיכוי ידני</button>
@@ -6306,7 +6238,7 @@ function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
       ['overrideReason', 'reason', 'status', 'notes', 'allocationMonth', 'approvedBy', 'decidedDate', 'paidDate', 'method'].forEach(n => {
         if (val(n) !== undefined) l[n] = val(n);
       });
-      l.payoutDate = payoutDateFor(l.decidedDate);
+      l.payoutDate = linePayoutDate(l, l.decidedDate);
       if (l.creditType === 'other' && l.isNew) l.calculatedAmount = l.amount === '' ? 0 : Number(l.amount);
     });
   };
@@ -6346,7 +6278,7 @@ function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
       const decidedEl = fs.querySelector('[name="decidedDate"]');
       const payoutEl = fs.querySelector('[data-role="payout"]');
       if (decidedEl && payoutEl) decidedEl.addEventListener('change', () => {
-        payoutEl.textContent = 'ישולם ב־' + (formatDateHe(payoutDateFor(decidedEl.value)) || '—');
+        payoutEl.textContent = 'ישולם ב־' + (formatDateHe(linePayoutDate(l, decidedEl.value)) || '—');
       });
     });
     const form = back.querySelector('form');
@@ -6426,7 +6358,8 @@ function openCreditsForDischarged(audit) {
     return;
   }
   const patient = Object.assign({}, audit, row || {}, { name: audit.name, houseId: audit.houseId, date: audit.date });
-  showCreditsModal({ patient, patientId, patientKey: pKey, exitDate: audit.exitDate || audit.dischargedAt || '' });
+  Promise.resolve(showCreditsModal({ patient, patientId, patientKey: pKey, exitDate: audit.exitDate || audit.dischargedAt || '' }))
+    .catch(e => showError('לא ניתן לפתוח את חלון הזיכויים — ' + (e && e.message || '')));
 }
 
 /* Edit entry point from the payout view: the same modal, keyed by the row's
@@ -6435,7 +6368,8 @@ function openCreditsForCredit(c) {
   if (state.mode !== 'edit' || !c) return;
   const parts = String(c.patientKey || '').split('::');
   const patient = { id: c.patientId, houseId: c.houseId, name: c.patientName || parts[1] || '', date: parts[2] || '' };
-  showCreditsModal({ patient, patientId: c.patientId, patientKey: c.patientKey, exitDate: '' });
+  Promise.resolve(showCreditsModal({ patient, patientId: c.patientId, patientKey: c.patientKey, exitDate: '' }))
+    .catch(e => showError('לא ניתן לפתוח את חלון הזיכויים — ' + (e && e.message || '')));
 }
 
 /* "סמן כשולם" — the EXPLICIT mark-paid action: method + paidDate, then a
@@ -8671,7 +8605,7 @@ function projectedCycleDueDates(patient, bounds) {
 
 /* ---- credits -------------------------------------------------------------
  * The span a credit actually refunds, which is NOT its allocationMonth — that
- * column is documented in suggestCredits() as reporting metadata that never
+ * column is documented in refundSuggestionsFor_() (Code.gs) as reporting metadata that never
  * enters the math, and using it here would contradict the module that wrote it.
  *
  *   prepaid_return — the whole coverage window was unearned.

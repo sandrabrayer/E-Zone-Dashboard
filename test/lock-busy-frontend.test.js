@@ -55,7 +55,9 @@ function loadApp(script) {
       const body = raw ? JSON.parse(raw) : null;
       calls.push({ raw, body });
       const action = body && body.action;
-      const list = (script && script[action]) || [{ ok: true }];
+      // suggestRefunds is the credits modal's READ (the discharge path opens
+      // the modal); unscripted it answers an empty suggestion list.
+      const list = (script && script[action]) || (action === 'suggestRefunds' ? [{ ok: true, suggestions: [] }] : [{ ok: true }]);
       const i = used[action] = (used[action] || 0) + 1;
       const payload = typeof list[Math.min(i, list.length) - 1] === 'function'
         ? list[Math.min(i, list.length) - 1](body)
@@ -84,6 +86,7 @@ function loadApp(script) {
       savePayment: (p) => savePayment(p),
       saveCredit: (c) => saveCredit(c),
       dischargePatient: (p) => dischargePatient(p),
+      showCreditsModal: (o) => showCreditsModal(o),
       doRestorePatientAsNewLead: (p) => doRestorePatientAsNewLead(p),
       doRestorePatientToActive: (p) => doRestorePatientToActive(p),
       restoreIrrelevantLead: (l) => restoreIrrelevantLead(l),
@@ -151,6 +154,16 @@ const PATHS = [
     landed: (app) => { assert.strictEqual(app.state.patients[0].status, 'released'); },
     // onConfirm rethrows so the modal STAYS OPEN with the user's choices.
     rejects: true,
+  },
+  {
+    // A READ sent through apiPost (no patient name in a URL). The server never
+    // answers lock_busy for it (no lock), but the client handles one the same
+    // way as every write: one retry, then the Hebrew message in the modal.
+    name: 'suggestRefunds (the credits modal\'s refund suggestion)',
+    action: 'suggestRefunds',
+    okResponse: { ok: true, suggestions: [] },
+    run: (app) => app.showCreditsModal({ patient: app.normalizePatient({ ...PATIENT, status: 'released', exitDate: '2026-08-10' }), patientId: 'pt-1', patientKey: 'ramot::דנה::2026-07-01', exitDate: '2026-08-10' }),
+    landed: () => {},
   },
   {
     name: 'restorePatient (restore as a new lead)',

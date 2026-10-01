@@ -53,7 +53,7 @@ function loadApp() {
       paymentCoverage, recordedCoverage, inferredCoverage, coveragePeriodError,
       coverageDateISO,
       coverageDiffersFromDefault, withDefaultCoverage, COVERAGE_MAX_DAYS,
-      normalizePayment, suggestCredits, buildMonthlyRevenue,
+      normalizePayment, buildMonthlyRevenue,
       patientKey, isoFromLocalDate, isoDate, roundMoney,
     };
   `;
@@ -388,7 +388,6 @@ test('D: reading a blank row WRITES nothing back to it — the input object is u
   app.recordedCoverage(row);
   app.coverageDiffersFromDefault(row);
   build({ payments: [row] });
-  app.suggestCredits(PAT, '2026-02-01', [row]);
   assert.equal(JSON.stringify(row), snapshot,
     'derive on read — a historical row is never rewritten');
   // withDefaultCoverage is the one stamper, and it too returns a COPY.
@@ -435,65 +434,11 @@ test('E: the ARITHMETIC is untouched — only where the window came from changed
   }
 });
 
-test('E: the CREDITS ledger reads the same recorded window', () => {
-  /* A payment recorded as covering all of March, and a discharge on 10 March.
-   * The credit must be 21 unused days of the RECORDED window — not the 30 the
-   * Jan-20 cycle would have inferred, and not zero. */
-  const p = Object.assign({}, PAT, { houseId: 'ramot', date: '2026-01-20' });   // residential
-  const row = Object.assign(pay({ coverageStart: '2026-03-01', coverageEnd: '2026-03-31' }),
-    { patientId: app.patientKey(p), houseId: 'ramot' });
-  const got = app.suggestCredits(p, '2026-03-10', [row]);
-  const du = got.find((c) => c.creditType === 'days_unused');
-  assert.ok(du, 'the recorded window straddles the exit');
-  assert.equal(du.basis.coverageStart, '2026-03-01');
-  assert.equal(du.basis.coverageEnd, '2026-03-31');
-  assert.equal(du.basis.coverageWindowSource, 'recorded');
-  assert.equal(du.basis.unusedDays, 21, '11–31 March');
-  // rate = amountPaid / 30, unchanged: the divisor is not the window length.
-  assert.equal(du.basis.dailyRate, 100);
-  assert.equal(du.calculatedAmount, 2100);
-});
-
-test('E: a blank-coverage row credits exactly what it always did', () => {
-  const p = Object.assign({}, PAT, { houseId: 'ramot', date: '2026-01-20' });
-  const row = Object.assign(pay(), { patientId: app.patientKey(p), houseId: 'ramot' });
-  const got = app.suggestCredits(p, '2026-02-01', [row]);
-  const du = got.find((c) => c.creditType === 'days_unused');
-  assert.equal(du.basis.coverageStart, '2026-01-20');
-  assert.equal(du.basis.coverageEnd, '2026-02-19');
-  assert.equal(du.basis.coverageWindowSource, 'inferred');
-  assert.equal(du.basis.unusedDays, 18, '2–19 February');
-});
-
-test('E: OVERLAPPING recorded windows still credit no day twice', () => {
-  /* Two rows both recorded as covering March — a legitimate double-charge
-   * correction, or two months paid at once and re-dated. The ledger's
-   * creditedThrough de-duplication is what makes refusing overlaps at the
-   * keyboard unnecessary, so this proves it still holds on recorded windows. */
-  const p = Object.assign({}, PAT, { houseId: 'ramot', date: '2026-01-20' });
-  const k = app.patientKey(p);
-  const a = Object.assign(pay({ dueDate: '2026-02-20', coverageStart: '2026-03-01', coverageEnd: '2026-03-31' }),
-    { id: 'a', patientId: k, houseId: 'ramot' });
-  // Both windows START on or before the exit, so both take the days_unused
-  // path where the de-duplication lives (a window starting AFTER the exit is
-  // prepaid_return, which is a full return by design and exempt).
-  const b = Object.assign(pay({ dueDate: '2026-03-01', coverageStart: '2026-03-03', coverageEnd: '2026-04-09' }),
-    { id: 'b', patientId: k, houseId: 'ramot' });
-  const got = app.suggestCredits(p, '2026-03-05', [a, b]);
-  const unused = got.filter((c) => c.creditType === 'days_unused');
-  const days = unused.reduce((s, c) => s + c.basis.unusedDays, 0);
-  assert.equal(got.filter((c) => c.creditType === 'prepaid_return').length, 0,
-    'neither window starts after the exit');
-  /* Row a credits 6–31 March (26 days). Row b's window runs to 9 April but
-   * 6–31 March is already credited, so it adds only 1–9 April (9). 35 days,
-   * never 26 + 35 — the overlap costs nothing, which is WHY overlaps are not
-   * refused at the keyboard. */
-  assert.equal(days, 35, 'got ' + JSON.stringify(got.map((c) => [c.creditType, c.basis.unusedDays])));
-  // JSON round-trip: values built inside the vm carry the VM's Array
-  // prototype, which deepEqual's reference check rejects.
-  assert.equal(JSON.stringify(unused.map((c) => c.basis.unusedDays).sort((x, y) => x - y)), '[9,26]');
-  assert.equal(unused.every((c) => c.basis.coverageWindowSource === 'recorded'), true);
-});
+/* The CREDITS consumer moved to the server in the wiring PR: the suggestion
+ * comes from suggestRefunds → refundSuggestionsFor_ (Code.gs), which reads the
+ * same recorded-period-wins rule. Its three window tests (recorded window,
+ * blank-coverage row, overlapping recorded windows crediting no day twice)
+ * are ported with the same fixtures to test/refund-logic-wiring.test.js. */
 
 test("E: a credit's audit trail SAYS the window was recorded, not assumed", () => {
   /* creditBasisText is persisted into the Credits row's `reason` column at

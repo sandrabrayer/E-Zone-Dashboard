@@ -48,7 +48,6 @@ function loadGs() {
       payoutDate: (d) => refundPayoutDate_(d),
       cutoffDays: () => CREDIT_DETOX_TENURE_CUTOFF_DAYS,
       asISODate: (v) => asISODate_(v),
-      legacyPayoutDate: (d) => payoutDateFor_(d),
     };`, sandbox);
   return sandbox.__t;
 }
@@ -350,13 +349,21 @@ test('no override parameter: exception fields in the input are ignored (Phase 0b
   assert.match(GS_SRC, /TODO\(Phase 0b-3, personal PINs\)/);
 });
 
-test('not wired: only the definitions mention the new functions; the live payoutDateFor_ is unchanged', () => {
-  const refs = (name) => (GS_SRC.match(new RegExp('\\b' + name + '\\(', 'g')) || []).length;
-  assert.strictEqual(refs('computeRefund_'), 1, 'computeRefund_ is defined, never called');
-  // refundPayoutDate_: its definition + the one call inside computeRefund_.
-  assert.strictEqual(refs('refundPayoutDate_'), 2);
-  assert.ok(!/['"]computeRefund['"]/.test(GS_SRC), 'no handle_ action for it');
-  const appSrc = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
-  assert.ok(!/computeRefund_|refundPayoutDate_/.test(appSrc), 'nothing in public/');
-  assert.strictEqual(gs.legacyPayoutDate('2026-10-11'), '2026-10-15', 'live cutoff stays on the 15th until wired');
+/* Superseded by the wiring PR (CHANGELOG-refund-logic-wiring.md): the
+ * functions are now the live path. This test used to pin "not wired"; it now
+ * pins where they are wired, and that the old 15th cutoff is gone. The full
+ * wiring contract is in test/refund-logic-wiring.test.js. */
+test('wired: computeRefund_ feeds refundSuggestionsFor_, refundPayoutDate_ feeds upsertCredit_; payoutDateFor_ is retired', () => {
+  const body = (name) => {
+    const at = GS_SRC.indexOf('function ' + name + '(');
+    assert.ok(at >= 0, name + ' exists');
+    return GS_SRC.slice(at, GS_SRC.indexOf('\n}\n', at));
+  };
+  assert.match(body('refundSuggestionsFor_'), /computeRefund_\(/);
+  assert.match(body('creditPayoutDate_'), /refundPayoutDate_\(/);
+  assert.match(body('upsertCredit_'), /creditPayoutDate_\(/);
+  assert.ok(!/function payoutDateFor_\(|payoutDateFor_\(/.test(GS_SRC), 'the 15th-cutoff payoutDateFor_ is gone');
+  const appCode = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  assert.ok(!/computeRefund_|refundPayoutDate_/.test(appCode), 'app.js calls no server function (comments aside)');
 });

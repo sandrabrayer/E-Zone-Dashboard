@@ -257,11 +257,10 @@ const ALLOWLIST = [
   'return `ovr::${patientId}::${month}`;',
   // isoFromLocalDate IS the ISO producer; it must emit ISO.
   "return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;",
-  // creditBasisText is PERSISTED to the Sheets `reason` column verbatim.
-  // Reformatting it would change stored data, which this change must not do.
-  'const windowText = `חלון כיסוי ${basis.coverageStart} → ${basis.coverageEnd}',
-  '`שהות ${basis.tenureDays == null ? \'?\' : basis.tenureDays} ימים',
-  'return `${CREDIT_RULE_LABELS.prepaid_return} (שחרור ${basis.exitDate});',
+  // creditBasisText is PERSISTED to the Sheets `reason` column verbatim (an
+  // audit trail, ISO by design — the same rule the pre-wiring trail followed).
+  // The modal's breakdown (creditBreakdownHtml) formats every date.
+  '`כניסה ${basis.entryDate}, יציאה ${basis.exitDate} (יום שהייה ${basis.stayDay})`,',
   '(עד ${basis.alreadyCreditedThrough} כבר זוכה בשורה קודמת)',
 ];
 

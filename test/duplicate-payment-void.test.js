@@ -61,7 +61,7 @@ function loadApp() {
       RECONNECT_DECIDED_STATUSES, duplicateVoidNote,
       normalizePayment, normalizePatient, patientKey, paymentId,
       detachedPayments, reconnectDoubleEntry, reconnectCandidates,
-      buildMonthlyRevenue, suggestCredits, overduePatients, patientsNeedingRenewal,
+      buildMonthlyRevenue, overduePatients, patientsNeedingRenewal,
       isoDate, monthKey, roundMoney,
     };
   `;
@@ -279,7 +279,7 @@ test('A: ONE predicate, and every figure asks it', () => {
     'declared exactly once — app.js is one flat script scope');
   /* Named, so a new consumer that forgets it is findable by grep rather than
    * by a wrong number on a screen. */
-  for (const consumer of ['buildMonthlyRevenue', 'suggestCredits', 'renderBilling',
+  for (const consumer of ['buildMonthlyRevenue', 'renderBilling',
                           'renderBillingOpenList', 'renderBillingMonthlySummary',
                           'paymentCoversCycle', 'buildBillingRow', 'detachedPayments']) {
     assert.match(fnSource(APP, consumer), /isVoidPayment\(/, consumer + ' must ask');
@@ -325,23 +325,9 @@ test('B: a void row does not CLAIM its cycle — the surviving twin does', () =>
   assert.match(fnSource(APP, 'buildMonthlyRevenue'), /if \(!p \|\| isVoidPayment\(p\)\) return;/);
 });
 
-test('B: a voided payment refunds nothing — the credits ledger skips it', () => {
-  /* suggestCredits divides amountPaid to compute a refund. Against a void row
-   * it would refund a patient for money they never paid twice. */
-  const p = patient({ id: 'id-dana', name: 'דנה כהן', date: '2026-09-01', pay: 30000 });
-  const key = app.patientKey(p);
-  const pay = (over) => app.normalizePayment(Object.assign({
-    id: 'c1', patientId: key, patientName: 'דנה כהן', houseId: 'arfoni',
-    dueDate: '2026-09-01', amount: 30000, amountPaid: 30000, balance: 0, status: 'paid',
-  }, over || {}));
-  /* Discharged on the 10th — a 9-day stay, under the detox tenure cutoff, so
-   * the days-unused rule actually pays out and the void has something to
-   * suppress. */
-  const live = app.suggestCredits(p, '2026-09-10', [pay()]);
-  assert.ok(live.some((c) => c.calculatedAmount > 0), 'a real payment does refund');
-  const dead = app.suggestCredits(p, '2026-09-10', [pay({ status: 'void' })]);
-  assert.ok(!dead.some((c) => c.calculatedAmount > 0), 'a void one does not');
-});
+/* B (credits): the refund suggestion is computed on the SERVER since the
+ * wiring PR (refundSuggestionsFor_ skips a void row through isVoidStatus_).
+ * Ported with this fixture to test/refund-logic-wiring.test.js. */
 
 /* ================= C. excluded from debt ================= */
 
