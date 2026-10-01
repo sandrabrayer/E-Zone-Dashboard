@@ -25,3 +25,26 @@ changes: the document describes tests to be written in later phases.
 5. **Refund exceptions and write-offs:** Sandra only, enforced on the server.
 
 Phases, acceptance tests and open questions were updated to match.
+
+## Sandra's final answers applied (01/10/2026, second round)
+
+- **A. Strict payment report.** Required: patient (from the list only),
+  amount (> 0, ₪), payment date (valid, not in the future, not before entry),
+  method (fixed list of six; "אחר" needs a note), payer name, billing cycle
+  (preselected), and a receipt photo or reference number. Validated in the UI
+  (send disabled + Hebrew message naming the field) and on the server (rejected,
+  nothing written). Validation table R0–R12 with a test per rule. The old
+  "שולם" select now opens the report form instead of saving directly.
+- **B. Ortal owns follow-up.** Every alert, reminder and escalation goes to
+  Ortal (Vered gets her own tasks). No automatic escalation to Sandra. Sandra
+  gets a read-only "חריגים פתוחים" view (age, owner, next step).
+- **C. No long-term receipt retention.** Receipts are deleted automatically
+  once confirmed and the month is closed; the deletion is logged and the
+  reference number kept. The 7-year rule is dropped (חשבשבת is the record).
+- **D.** Entry day = day 1 for the 14-day rule, which makes the current code
+  wrong (a correction to the previous round); refund payout cutoff moves to
+  the 10th; a fully prepaid cycle after the exit is always refunded; opening
+  balance frozen as of the run date; payer is free text; personal PINs replace
+  the shared PIN in the security phase; undoing a void is Sandra only; no
+  change to the shared revenue rules or Outpatient in this phase.
+- All open questions removed; five assumptions listed in §15.
