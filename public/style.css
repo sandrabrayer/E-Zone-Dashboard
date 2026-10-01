@@ -1457,6 +1457,47 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
 .reconnect-row.decided { opacity: .8; }
 .reconnect-note-shown { font-size: 13px; color: var(--text); margin-bottom: 4px; }
 
+/* ===== VOID — a payment entered twice =====
+   Marked, never deleted. Grey rather than red: nobody did anything wrong, the
+   same money was simply recorded twice, and the row survives as the evidence
+   of that. It must read as "not counted", not as "error". */
+.badge.void {
+  background: var(--surface-3); color: var(--text-muted);
+  border-color: var(--border-strong); text-decoration: line-through;
+}
+.reconnect-row.voided { opacity: .75; border-right: 3px solid var(--border-strong); }
+.reconnect-locked { color: var(--text-muted); font-size: 12.5px; margin-top: 8px; }
+.bd-line.void-line .bd-house { color: var(--text-muted); text-decoration: line-through; }
+
+/* The side-by-side comparison. Two panels, same fields in the same order, so
+   the eye can run down them: the only way to tell a duplicate from two real
+   payments is to read them against each other. */
+.dup-modal { max-width: 720px; }
+.dup-lead { font-size: 13.5px; color: var(--text-muted); margin: 0 0 12px; line-height: 1.6; }
+.dup-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.dup-panel {
+  padding: 10px 12px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+/* The one that will be voided is marked, and the one that survives is the
+   calm side — so a mis-click is visible before it is confirmed, not after. */
+.dup-panel.dup-void { border-color: var(--warning); background: rgba(255,176,32,.07); }
+.dup-panel.dup-keep { border-color: var(--success); background: rgba(45,212,122,.07); }
+.dup-panel-title { font-weight: 700; font-size: 13px; margin-bottom: 8px; }
+.dup-panel.dup-void .dup-panel-title { color: var(--warning); }
+.dup-panel.dup-keep .dup-panel-title { color: var(--success); }
+.dup-field { display: flex; gap: 8px; justify-content: space-between; padding: 3px 0; font-size: 13px; }
+.dup-field .dup-k { color: var(--text-dim); white-space: nowrap; }
+.dup-field .dup-v { font-weight: 600; text-align: left; overflow-wrap: anywhere; }
+.dup-field .dup-v.mono {
+  direction: ltr; font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px; font-weight: 500; color: var(--text-muted);
+}
+.dup-flags { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 4px; }
+/* A mismatch is the thing worth noticing, so it gets the warning colour. */
+.rev-chip.dup-flag-warn { color: var(--warning); border-color: var(--warning); }
+@media (max-width: 640px) { .dup-compare { grid-template-columns: 1fr; } }
+
 /* ===== RECORDS CUTOFF (לפני תחילת הרישום) =====
    Everything that says "this is shown but not counted" shares one muted
    treatment, so the rule reads the same on all four screens it touches. */

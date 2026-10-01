@@ -460,10 +460,14 @@ test('C: the עמית יעקובי / עמית בורנשטיין pair is WARNED 
   // A different month is a different cycle, and no warning.
   const nextMonth = Object.assign({}, his, { id: 'pay-oct', dueDate: '2026-10-07' });
   assert.equal(app.reconnectDoubleEntry(stray, amit, [nextMonth]).length, 0);
-  // It is a WARNING: the screen renders it and still offers the button.
+  /* It is a WARNING, never a block. שייך is still offered on a flagged
+   * candidate — the pair CAN be a rename whose first row was never linked —
+   * it just steps down to secondary while כפילות leads. */
   const row = fnSource(APP, 'buildReconnectRow');
   assert.match(row, /ייתכן רישום כפול/);
-  assert.match(row, /class="btn small primary cand-link"/);
+  assert.match(row, /class="btn small \$\{dup\.length \? '' : 'primary'\} cand-link"/);
+  assert.match(row, /dup\.length \? `<button class="btn small primary cand-dup"/,
+    'and כפילות is the PRIMARY action exactly where the warning is');
   assert.ok(!/dup\.length \? ' disabled'/.test(row), 'a possible double entry must not block the link');
 });
 

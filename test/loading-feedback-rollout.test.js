@@ -590,6 +590,11 @@ const ASYNC_MARKERS = [
 const FEEDBACK_MARKERS = [
   'busyButton(', 'withFieldSaving(', 'setLoading(', 'setRowSaving(',
   'showConfirm(', 'showModal(', 'showCloseLeadModal(', 'showRestorePatientChoiceModal(',
+  /* Same architecture as the four above: opening the side-by-side duplicate
+   * comparison IS the instant feedback, and its own "סמן ככפילות" button
+   * carries the busy state. Asserted below, so trusting it here is not a
+   * hole. */
+  'showDuplicateConfirm(',
 ];
 
 /* Extract each handler's FULL source: everything from the trigger to the end of
@@ -672,6 +677,23 @@ test('COVERAGE GUARD actually bites — a stripped handler is detected', () => {
   const text = reachableText(src, stripped);
   assert.ok(ASYNC_MARKERS.some((mk) => text.includes(mk)), 'async work is seen');
   assert.ok(!FEEDBACK_MARKERS.some((mk) => stripped.includes(mk)), 'and no feedback in the handler');
+});
+
+test('COVERAGE GUARD: the duplicate-confirm modal carries its own busy state', () => {
+  /* showDuplicateConfirm is in FEEDBACK_MARKERS, which is only sound while its
+   * confirm button actually wraps the write. Opening the dialog is instant;
+   * the network call happens one click later, inside it. */
+  /* Scoped to the function's own text. bodyOf() cannot be used here: it takes
+   * the first `{` after the name, which for this signature is the destructured
+   * parameter object, not the body. */
+  const src = read('public', 'app.js');
+  const at = src.indexOf('function showDuplicateConfirm(');
+  assert.ok(at > 0, 'showDuplicateConfirm exists');
+  const body = src.slice(at, src.indexOf('\nfunction ', at + 10));
+  assert.match(body, /\[data-action="confirm"\]'\)\.onclick = e =>\s*\n\s*busyButton\(e\.currentTarget, 'save'/);
+  assert.match(body, /await onConfirm\(noteEl\.value\)/);
+  // And the row button that OPENS it does no async work of its own.
+  assert.match(src, /dupBtn\.onclick = \(\) => showDuplicateConfirm\(\{/);
 });
 
 test('COVERAGE GUARD: the meeting-report page has feedback on both its triggers', () => {
