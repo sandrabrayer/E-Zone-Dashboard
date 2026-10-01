@@ -1575,6 +1575,8 @@ function getData_() {
     patients[hid].push(p);
   }
 
+  const cm = currentManagers_();
+
   return {
     ok: true,
     leads: leads,
@@ -1585,7 +1587,167 @@ function getData_() {
     billingOverrides: billingOverrides,
     houseManagers: HOUSE_MANAGERS,
     managerPhones: managerPhones_(),
+    // Additive (append-only contract): who manages each house TODAY. Read
+    // only — see currentManagers_. houseManagers above is unchanged for every
+    // other consumer.
+    currentManagers: cm.managers,
+    currentManagersSource: cm.source,
   };
+}
+
+/* ===== Current house managers (READ-ONLY) =====
+ *
+ * Who manages each house today, for the dashboard's meetings summary strip,
+ * the meetingWith dropdown and the per-house meetingWith default. Three
+ * sources, first one that has data wins:
+ *
+ *   1. 'managers'    — the Managers tab (house | manager_name | start_date |
+ *                      end_date). A row is CURRENT only when
+ *                        (start_date blank OR start_date <= today) AND
+ *                        (end_date blank OR end_date >= today),
+ *                      today in Asia/Jerusalem. A future start_date is NOT
+ *                      current yet. Used whenever the tab has at least one
+ *                      named row — even if no row is current (then no house
+ *                      has a current manager).
+ *   2. 'bonusconfig' — only when the Managers tab is missing or has no named
+ *                      row: the `manager` column of the bonusconfig tab.
+ *   3. 'default'     — when neither has a name: exactly what getData has always
+ *                      sent as houseManagers (HOUSE_MANAGERS). No new behavior.
+ *
+ * Tabs are found by name case-insensitively ('bonusconfig' = 'BonusConfig')
+ * and columns by their HEADER text, never by position. Nothing is written:
+ * no getOrCreateSheet_ (it would create a missing tab), no header backfill,
+ * no format. House keys are returned as Patients-sheet ids
+ * (raanana→asher, efroni→arfoni, …) via MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID;
+ * an unknown house is skipped. Within a house the most recent start_date
+ * comes first, so the first entry per house is the default. Never throws:
+ * any read problem falls through to the next source. */
+function currentManagers_(todayIso) {
+  const today = todayIso || Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'yyyy-MM-dd');
+  let ss = null;
+  try { ss = SpreadsheetApp.getActiveSpreadsheet(); } catch (_) { ss = null; }
+
+  try {
+    const fromManagers = managersTabCurrent_(ss, today);
+    if (fromManagers) return { source: 'managers', managers: fromManagers };
+  } catch (_) { /* fall through */ }
+
+  try {
+    const fromConfig = bonusConfigManagers_(ss);
+    if (fromConfig && fromConfig.length) return { source: 'bonusconfig', managers: fromConfig };
+  } catch (_) { /* fall through */ }
+
+  return {
+    source: 'default',
+    managers: Object.keys(HOUSE_MANAGERS).map(function (h) { return { house: h, name: HOUSE_MANAGERS[h] }; }),
+  };
+}
+
+/* A tab by name, ignoring case and surrounding spaces. null when absent.
+ * Read-only lookup — never creates. */
+function findSheetByNameCI_(ss, name) {
+  if (!ss) return null;
+  const exact = ss.getSheetByName(name);
+  if (exact) return exact;
+  if (typeof ss.getSheets !== 'function') return null;
+  const want = String(name).trim().toLowerCase();
+  const sheets = ss.getSheets() || [];
+  for (let i = 0; i < sheets.length; i++) {
+    if (String(sheets[i].getName()).trim().toLowerCase() === want) return sheets[i];
+  }
+  return null;
+}
+
+/* Every data row of a tab as objects keyed by its lower-cased header text.
+ * [] for a missing or header-only tab. Read-only. */
+function readTabByHeader_(sh) {
+  if (!sh) return [];
+  const lastRow = sh.getLastRow();
+  const lastCol = sh.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return [];
+  const header = sh.getRange(1, 1, 1, lastCol).getValues()[0]
+    .map(function (h) { return String(h == null ? '' : h).trim().toLowerCase(); });
+  const values = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  return values.map(function (row) {
+    const o = {};
+    for (let j = 0; j < header.length; j++) if (header[j]) o[header[j]] = row[j];
+    return o;
+  });
+}
+
+/* A Managers-tab / bonusconfig house key → Patients-sheet house id, or ''.
+ * Accepts the bonus keys (raanana/efroni/…) and the Patients ids themselves. */
+function managerHouseToPatientsId_(raw) {
+  const k = String(raw == null ? '' : raw).trim().toLowerCase();
+  if (!k) return '';
+  if (MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[k]) return MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[k];
+  for (const key in MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID) {
+    if (MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[key] === k) return k;
+  }
+  return '';
+}
+
+/* A Managers-tab date cell → 'YYYY-MM-DD', or '' when blank or unreadable.
+ * Accepts a real date cell, 'YYYY-MM-DD…' and a hand-typed DD/MM/YYYY (or
+ * DD.MM.YYYY). An unreadable start_date or end_date reads as '' — i.e. blank,
+ * so the row stays CURRENT and a typo never hides a manager.
+ * A Date cell is formatted in Asia/Jerusalem explicitly — the same zone as
+ * `today` — NOT the spreadsheet's zone (asISODate_), which would turn a
+ * Jerusalem-midnight date into the previous day under UTC or any zone west
+ * of Israel. */
+function managerDateIso_(v) {
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    return isNaN(v.getTime()) ? '' : Utilities.formatDate(v, 'Asia/Jerusalem', 'yyyy-MM-dd');
+  }
+  const iso = asISODate_(v);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+  const m = String(iso).trim().match(/^(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})$/);
+  if (!m) return '';
+  return m[3] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[1]).slice(-2);
+}
+
+/* Current managers from the Managers tab, or null when the tab is missing or
+ * has no row with a name (→ caller falls back). */
+function managersTabCurrent_(ss, today) {
+  const rows = readTabByHeader_(findSheetByNameCI_(ss, MANAGERS_SHEET))
+    .filter(function (r) { return String(r.manager_name == null ? '' : r.manager_name).trim() !== ''; });
+  if (!rows.length) return null;
+  const out = [];
+  rows.forEach(function (r) {
+    const house = managerHouseToPatientsId_(r.house);
+    if (!house) return;
+    const start = managerDateIso_(r.start_date);
+    const end = managerDateIso_(r.end_date);
+    if (start && start > today) return;        // starts after today → not current yet
+    if (end && end < today) return;            // ended before today → not current
+    out.push({ house: house, name: String(r.manager_name).trim(), start: start });
+  });
+  out.sort(function (a, b) {
+    if (a.house !== b.house) return a.house < b.house ? -1 : 1;
+    return a.start < b.start ? 1 : a.start > b.start ? -1 : 0;   // newest start first
+  });
+  const seen = {};
+  return out.filter(function (m) {
+    const k = m.house + '|' + m.name;
+    if (seen[k]) return false;
+    seen[k] = true;
+    return true;
+  }).map(function (m) { return { house: m.house, name: m.name }; });
+}
+
+/* The `manager` column of the bonusconfig tab, one entry per house that has
+ * a name. [] when the tab or the column is missing. */
+function bonusConfigManagers_(ss) {
+  const out = [];
+  const seen = {};
+  readTabByHeader_(findSheetByNameCI_(ss, BONUS_CONFIG_SHEET)).forEach(function (r) {
+    const house = managerHouseToPatientsId_(r.house);
+    const name = String(r.manager == null ? '' : r.manager).trim();
+    if (!house || !name || seen[house]) return;
+    seen[house] = true;
+    out.push({ house: house, name: name });
+  });
+  return out;
 }
 
 /* ===== Write (merge semantics) ===== */
