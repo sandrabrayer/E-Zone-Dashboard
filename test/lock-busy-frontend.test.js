@@ -85,6 +85,7 @@ function loadApp(script) {
       updateLead: (id, f) => updateLead(id, f),
       savePayment: (p) => savePayment(p),
       saveCredit: (c) => saveCredit(c),
+      loadPayoutForecast: () => loadPayoutForecast(),
       dischargePatient: (p) => dischargePatient(p),
       showCreditsModal: (o) => showCreditsModal(o),
       doRestorePatientAsNewLead: (p) => doRestorePatientAsNewLead(p),
@@ -164,6 +165,17 @@ const PATHS = [
     okResponse: { ok: true, suggestions: [] },
     run: (app) => app.showCreditsModal({ patient: app.normalizePatient({ ...PATIENT, status: 'released', exitDate: '2026-08-10' }), patientId: 'pt-1', patientKey: 'ramot::דנה::2026-07-01', exitDate: '2026-08-10' }),
     landed: () => {},
+  },
+  {
+    // A READ sent through apiPost (the גבייה payout forecast). Never locked on
+    // the server, but a busy answer is handled like every other path.
+    name: 'refundPayoutForecast (the גבייה payout forecast)',
+    action: 'refundPayoutForecast',
+    okResponse: { ok: true, decided: { count: 0, total: 0, byPayoutDate: [], byHouse: [] },
+      awaiting_decision: { count: 0, total: 0, byPayoutDate: [], byHouse: [] },
+      missing_payment_data: { count: 0, rows: [] }, unresolved: { count: 0, rows: [] } },
+    run: (app) => app.loadPayoutForecast(),
+    landed: (app) => { assert.strictEqual(app.state.payoutForecast.status, 'ok'); },
   },
   {
     name: 'restorePatient (restore as a new lead)',

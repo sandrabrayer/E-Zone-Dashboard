@@ -2107,6 +2107,18 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
 .credit-payout-head b { color: var(--text); font-size: 15px; }
 .credit-payout-row .irrelevant-actions { display: flex; gap: 8px; }
 
+/* Refund payout forecast — the two sections under the payout view. Awaiting
+ * a decision is muted (not money to pay); missing data reads as a warning. */
+.forecast-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
+.forecast-title { margin: 18px 0 4px; font-size: 15px; }
+.forecast-awaiting { color: var(--text-muted); }
+.forecast-awaiting-row { opacity: 0.85; border-inline-start: 2px dashed var(--border-strong); }
+.forecast-missing { color: #f5b041; }
+.forecast-missing-row { border-inline-start: 2px solid #f5b041; }
+.forecast-check { color: #f5b041; font-weight: 600; }
+.forecast-totals { display: flex; flex-wrap: wrap; gap: 12px; padding: 6px 4px; font-size: 13px; color: var(--text-muted); }
+.forecast-error { color: #ff6b6b; }
+
 /* ===== הכנסות חודשיות — monthly revenue screen ===========================
  * A separate screen from the daily גבייה worklist; nothing here touches the
  * .billing-row rules that screen uses, except additively via .rev-detail-row.

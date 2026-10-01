@@ -88,7 +88,10 @@
 // (suggestRefunds → computeRefund_) and shows the breakdown; the old-rule
 // suggestCredits is gone and the payout echo uses the 10th cutoff. app.js and
 // style.css changed — evict v20 so no phone keeps suggesting old-rule refunds.
-var CACHE_VERSION = 'v21';
+// v21 → v22: the גבייה payout view gains the refund payout forecast (ממתין
+// להחלטה / חסרים נתוני תשלום) and the «ייצוא להנהלת חשבונות» CSV. app.js,
+// index.html and style.css changed — evict v21 so no phone keeps the old view.
+var CACHE_VERSION = 'v22';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
