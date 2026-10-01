@@ -291,6 +291,10 @@ const state = {
    * Code.gs). Populated in loadAll; the meetingWith dropdown and the meetings
    * board read it instead of hardcoding names. '{}' until the first load. */
   houseManagers: {},
+  /* Who manages each house TODAY: [{ house, name }] from getData's
+   * currentManagers (Managers tab → bonusconfig → houseManagers, see
+   * currentManagers_ in Code.gs). null until a backend that sends it loads. */
+  currentManagers: null,
   /* Manager-name → WhatsApp phone map returned by getData (MANAGER_PHONES in
    * Code.gs). Keyed by NAME because meetingWith stores the name. Drives the
    * meetings-board WhatsApp button; '{}' until the first load (button disabled). */
@@ -1251,7 +1255,14 @@ async function loadAll() {
     state.houseManagers = (data.houseManagers && typeof data.houseManagers === 'object' && !Array.isArray(data.houseManagers))
       ? data.houseManagers
       : {};
-    console.log('[E-ZONE] houseManagers loaded:', Object.keys(state.houseManagers).length, 'houses');
+    /* Current managers (additive getData key). When present it is THE roster:
+     * the per-house default, the meetingWith dropdown and the summary strip
+     * all read state.houseManagers / state.currentManagers. An older backend
+     * that does not send it keeps the houseManagers above — no change. */
+    state.currentManagers = normalizeCurrentManagers(data.currentManagers);
+    if (state.currentManagers) state.houseManagers = rosterFromCurrentManagers(state.currentManagers);
+    console.log('[E-ZONE] houseManagers loaded:', Object.keys(state.houseManagers).length, 'houses',
+      'source:', data.currentManagersSource || '(houseManagers)');
 
     /* Manager-name → WhatsApp phone map (MANAGER_PHONES, exported by getData_).
      * Missing/invalid on older deploys → empty object, so the WhatsApp button
@@ -1656,9 +1667,31 @@ function managerForHouse(house, managers) {
   return (id && roster[id]) || '';
 }
 
+/* getData's currentManagers → [{ house, name }] (trimmed, blanks dropped), or
+ * null when the field is absent / not an array (an older backend). An EMPTY
+ * array is kept: it means "no house has a current manager". Pure. */
+function normalizeCurrentManagers(raw) {
+  if (!Array.isArray(raw)) return null;
+  return raw
+    .map(m => ({
+      house: String((m && m.house) == null ? '' : m.house).trim(),
+      name:  String((m && m.name)  == null ? '' : m.name).trim(),
+    }))
+    .filter(m => m.house && m.name);
+}
+
+/* { houseId: name } for the per-house default — the FIRST current manager of
+ * each house (the server lists the most recent start first). Pure. */
+function rosterFromCurrentManagers(list) {
+  const out = {};
+  (list || []).forEach(m => { if (m && m.house && m.name && !out[m.house]) out[m.house] = m.name; });
+  return out;
+}
+
 /* The distinct manager names offered in the meetingWith dropdown, in a stable
  * order (HOUSES order first, then any roster entry not tied to a known house).
- * Vered can pick any of them regardless of the lead's house. */
+ * Vered can pick any of them regardless of the lead's house. With no explicit
+ * roster it also lists every CURRENT manager (a house can briefly have two). */
 function managerOptions(managers) {
   const roster = managers || state.houseManagers || {};
   const seen = [];
@@ -1670,7 +1703,21 @@ function managerOptions(managers) {
     const m = roster[k];
     if (m && seen.indexOf(m) === -1) seen.push(m);
   });
+  if (!managers && Array.isArray(state.currentManagers)) {
+    state.currentManagers.forEach(m => { if (m.name && seen.indexOf(m.name) === -1) seen.push(m.name); });
+  }
   return seen;
+}
+
+/* The meetingWith dropdown's names: the current managers, plus the lead's
+ * SAVED value pinned at the end when it is not one of them (a former
+ * manager). Without the pin the select would fall to "— ללא —" and the next
+ * save of that form would silently erase the stored name. Pure. */
+function meetingWithOptionNames(saved, managers) {
+  const names = managerOptions(managers);
+  const v = String(saved == null ? '' : saved).trim();
+  if (v && names.indexOf(v) === -1) names.push(v);
+  return names;
 }
 
 /* Inline meetingWith <select> for a lead card. Carries data-field="meetingWith"
@@ -1686,7 +1733,7 @@ function meetingWithSelectHTML(lead, managers) {
   const roster = managers || state.houseManagers || {};
   const selected = (lead && lead.meetingWith) || managerForHouse(lead && lead.house, roster);
   const opts = [{ value: '', label: '— ללא —' }].concat(
-    managerOptions(roster).map(m => ({ value: m, label: m }))
+    meetingWithOptionNames(lead && lead.meetingWith, managers).map(m => ({ value: m, label: m }))
   );
   const optsHtml = opts.map(o =>
     `<option value="${escapeHtml(o.value)}" ${o.value === selected ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
@@ -2014,7 +2061,7 @@ function meetingWithField(preselect) {
   return {
     name: 'meetingWith', label: 'נפגש עם', type: 'select',
     value: preselect || '',
-    options: [{ value: '', label: '— ללא —' }, ...managerOptions().map(m => ({ value: m, label: m }))],
+    options: [{ value: '', label: '— ללא —' }, ...meetingWithOptionNames(preselect).map(m => ({ value: m, label: m }))],
   };
 }
 
@@ -2877,8 +2924,13 @@ function computeManagerConversion(leads) {
 /* Compact per-manager conversion strip rendered above the board. Returns '' when
  * no manager has an outcome yet (nothing to show). RTL-safe; styling reuses the
  * board's surface/border tokens. */
-function meetingsSummaryHTML(leads) {
-  const rows = computeManagerConversion(leads);
+function meetingsSummaryHTML(leads, managers) {
+  /* CURRENT managers only (state.currentManagers / houseManagers): a former
+   * manager's row and the ללא מנהל bucket are not shown. The counts are
+   * computeManagerConversion's, unchanged — this only picks which rows to show. */
+  const current = managerOptions(managers);
+  const rows = computeManagerConversion(leads)
+    .filter(r => r.manager !== MANAGER_CONVERSION_UNASSIGNED && current.indexOf(r.manager) !== -1);
   if (!rows.length) return '';
   /* Band class for the percentage pill: ≥80 green, 50–79 amber, <50 red
    * (style.css .mtg-sum-rate.rate-*). Pure presentation — rate math unchanged. */
@@ -3052,7 +3104,7 @@ function openMeetingEditModal(m) {
     `<option value="${escapeHtml(o.value)}" ${o.value === (m.time || '') ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
   ).join('');
   const withOptsHtml = [{ value: '', label: '— ללא —' }]
-    .concat(managerOptions().map(name => ({ value: name, label: name })))
+    .concat(meetingWithOptionNames(m.meetingWith).map(name => ({ value: name, label: name })))
     .map(o => `<option value="${escapeHtml(o.value)}" ${o.value === (m.meetingWith || '') ? 'selected' : ''}>${escapeHtml(o.label)}</option>`)
     .join('');
 

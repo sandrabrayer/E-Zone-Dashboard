@@ -80,7 +80,11 @@
 // retried once after 2 s and otherwise reported as «המערכת עסוקה, נסו שוב».
 // app.js is the only asset that changed — evict v18 so no phone keeps a bundle
 // that shows the server's English text and never retries.
-var CACHE_VERSION = 'v19';
+// v19 → v20: the meetings summary strip, the meetingWith dropdowns and the
+// per-house meetingWith default read the CURRENT managers (getData
+// currentManagers); a saved former-manager value stays selectable. app.js is
+// the only asset that changed — evict v19 so no phone keeps the old roster.
+var CACHE_VERSION = 'v20';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
