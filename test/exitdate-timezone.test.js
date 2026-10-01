@@ -146,7 +146,7 @@ function loadCode() {
   };
   sandbox.Utilities = { getUuid: () => 'uuid-' + (++uuid), formatDate: formatDateStub };
   sandbox.Session = { getScriptTimeZone: () => 'Asia/Jerusalem' };
-  sandbox.LockService = { getScriptLock: () => ({ tryLock: noop, releaseLock: noop }) };
+  sandbox.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: noop }) };
   sandbox.globalThis = sandbox;
   const epilogue = `globalThis.__test = {
     PATIENT_COLUMNS, PATIENTS_SHEET,

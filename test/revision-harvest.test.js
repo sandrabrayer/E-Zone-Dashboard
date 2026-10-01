@@ -181,7 +181,7 @@ function loadCode() {
     getUuid: () => 'uuid-' + (++uuid),
     formatDate: (d) => d.toISOString().slice(0, 10),
   };
-  sandbox.LockService = { getScriptLock: () => ({ tryLock: noop, releaseLock: noop }) };
+  sandbox.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: noop }) };
   sandbox.globalThis = sandbox;
   const epilogue = `globalThis.__test = {
     PATIENT_COLUMNS: PATIENT_COLUMNS,

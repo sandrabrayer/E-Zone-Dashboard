@@ -805,11 +805,260 @@ const REPAIR_PLAN_COLUMNS = ['sheet', 'row', 'column', 'newValue', 'action', 'ap
 /* ===== Entry points ===== */
 
 function doGet(e) {
-  return handle_(collectParams_(e));
+  return gatedEntry_(e, 'GET');
 }
 
 function doPost(e) {
-  return handle_(collectParams_(e));
+  return gatedEntry_(e, 'POST');
+}
+
+/* ===== Proxy secret (Phase 0b-1 — TRANSITION) =====
+ *
+ * The Railway proxy (server.js) sends PROXY_SECRET on EVERY call to this
+ * backend, in the POST body only — never in a URL. doGet/doPost verify it
+ * here, before any action runs, against Script Property PROXY_SECRET with a
+ * constant-time compare. The secret is read from the POST body ONLY:
+ * collectParams_ drops proxySecret / proxyUser from the querystring, so a
+ * secret pasted into a URL counts as missing.
+ *
+ * Script Property PROXY_SECRET_MODE:
+ *   unset / 'log' → TRANSITION (the default for this PR). A request without a
+ *                   valid secret is still served, but recorded in the
+ *                   append-only SecurityLog tab (timestamp, action, method,
+ *                   whether a secret was present — NEVER its value) at most
+ *                   once per action per hour.
+ *   'enforce'     → a request without a valid secret is refused with
+ *                   {ok:false,error:'unauthorized'} and NOTHING is written.
+ *   anything else → treated as 'enforce' (a typo must fail closed, not open).
+ * With PROXY_SECRET itself unset no request can be valid: 'log' records
+ * everything, 'enforce' refuses everything (fail-closed).
+ *
+ * Acting user: for a request WITH a valid secret the user is the proxy's
+ * `proxyUser` (server.js reads it from the signed session cookie). A body
+ * `user` that contradicts it is ignored and recorded as 'user_mismatch'.
+ *
+ * Exempt: the actions that carry their OWN least-privilege secret
+ * (PROXY_SECRET_EXEMPT_ACTIONS) are not gated here — their callers
+ * (Outpatient, Accounting, the meeting-report page) never hold PROXY_SECRET,
+ * and their own fail-closed checks still run inside handle_. */
+const PROXY_SECRET_PROP      = 'PROXY_SECRET';
+const PROXY_SECRET_MODE_PROP = 'PROXY_SECRET_MODE';
+const PROXY_SECRET_FIELD     = 'proxySecret';
+const PROXY_USER_FIELD       = 'proxyUser';
+const PROXY_SECRET_EXEMPT_ACTIONS = [
+  'getAdmittedRoster', 'meetingReportLeads', 'submitMeetingReport',
+  'accountingPayments', 'accountingCredits',
+];
+/* Every action handle_ dispatches. An action name is caller-controlled, so
+ * SecurityLog records only these; anything else is logged as '(unknown)' —
+ * an attacker can neither spam distinct rows nor inject a formula.
+ * test/proxy-secret-transition.test.js checks this list against handle_. */
+const PROXY_KNOWN_ACTIONS = [
+  'getData', 'getAdmittedRoster', 'saveAll', 'getPayments', 'savePayment',
+  'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
+  'getCredits', 'saveCredit', 'moveLeadIrrelevant', 'restoreLead',
+  'removeLead', 'deletePatientRow', 'dischargePatient', 'restorePatient',
+  'restorePatientToActive', 'deleteMeetingReport', 'meetingReportLeads',
+  'submitMeetingReport', 'managersOverview', 'managersHouse',
+  'occupancySnapshots', 'accountingPayments', 'accountingCredits',
+];
+
+/* SecurityLog — append-only, one row per (event, action, hour) at most.
+ * APPEND-ONLY contract, same rule as AUDIT_LOG_COLUMNS: never insert /
+ * delete / reorder; new columns go at the END.
+ *   timestamp     — ISO string of the first such request in that hour
+ *   action        — a PROXY_KNOWN_ACTIONS name, or '(unknown)' / '(none)'
+ *   method        — 'GET' | 'POST'
+ *   secretPresent — 'yes' | 'no' (whether ANY proxySecret was sent; the
+ *                   value itself is never written anywhere)
+ *   callerType    — 'no_secret' | 'bad_secret' | 'user_mismatch'
+ *   hourKey       — 'YYYY-MM-DDTHH' (UTC), the dedupe bucket */
+const SECURITY_LOG_SHEET   = 'SecurityLog';
+const SECURITY_LOG_COLUMNS = ['timestamp', 'action', 'method', 'secretPresent', 'callerType', 'hourKey'];
+/* How many trailing rows the once-per-hour dedupe re-reads under the lock. */
+const SECURITY_LOG_SCAN_ROWS = 500;
+
+const LOCK_BUSY_MESSAGE = 'could not acquire the script lock — try again.';
+
+/* The clean refusal every request-path writer returns when the script lock
+ * is busy: nothing has been written, the caller may retry. */
+function lockBusy_(_fn) {
+  return { ok: false, error: 'lock_busy', message: LOCK_BUSY_MESSAGE };
+}
+
+function gatedEntry_(e, method) {
+  const params = collectParams_(e);
+  const gate = proxyGate_(params, method);
+  if (!gate.ok) return jsonOut_({ ok: false, error: 'unauthorized' });
+  return handle_(gate.params);
+}
+
+/* 'log' | 'enforce' from the Script Property value (see the block above). */
+function proxySecretMode_(raw) {
+  const v = String(raw == null ? '' : raw).trim().toLowerCase();
+  if (v === '' || v === 'log') return 'log';
+  return 'enforce';
+}
+
+/* Constant-time string equality: always walks the FULL length of the longer
+ * input and folds every difference (length included) into one accumulator,
+ * so the running time does not reveal how many leading characters matched.
+ * No early return inside the loop. */
+function constantTimeEquals_(a, b) {
+  const x = String(a == null ? '' : a);
+  const y = String(b == null ? '' : b);
+  const n = Math.max(x.length, y.length);
+  let diff = x.length ^ y.length;
+  for (let i = 0; i < n; i++) {
+    const cx = i < x.length ? x.charCodeAt(i) : 0;
+    const cy = i < y.length ? y.charCodeAt(i) : 0;
+    diff |= cx ^ cy;
+  }
+  return diff === 0;
+}
+
+/* Decide one request. ALWAYS strips proxySecret / proxyUser from params, so
+ * no handler, response or error message can ever see the secret.
+ * → { ok:true, params } to serve, { ok:false } to refuse (enforce mode). */
+function proxyGate_(params, method) {
+  const p = params || {};
+  const presented = typeof p[PROXY_SECRET_FIELD] === 'string' ? p[PROXY_SECRET_FIELD] : '';
+  const proxyUser = p[PROXY_USER_FIELD];
+  const hasProxyUser = Object.prototype.hasOwnProperty.call(p, PROXY_USER_FIELD);
+  delete p[PROXY_SECRET_FIELD];
+  delete p[PROXY_USER_FIELD];
+
+  const action = String(p.action == null ? '' : p.action);
+  if (PROXY_SECRET_EXEMPT_ACTIONS.indexOf(action) >= 0) return { ok: true, params: p };
+
+  const props = PropertiesService.getScriptProperties();
+  const expected = String(props.getProperty(PROXY_SECRET_PROP) || '');
+  const mode = proxySecretMode_(props.getProperty(PROXY_SECRET_MODE_PROP));
+  const valid = expected !== '' && presented !== '' && constantTimeEquals_(presented, expected);
+
+  if (valid) {
+    // The proxy's session user is the ONLY identity. A body `user` that
+    // contradicts it is ignored (overwritten) and recorded.
+    const trusted = requestUser_({ user: hasProxyUser ? proxyUser : '' });
+    const bodyUserRaw = p.user == null ? '' : String(p.user);
+    if (bodyUserRaw !== '' && requestUser_(p) !== trusted) {
+      securityLogOnce_(action, method, true, 'user_mismatch');
+    }
+    p.user = trusted;
+    return { ok: true, params: p };
+  }
+
+  if (mode === 'enforce') return { ok: false };
+  securityLogOnce_(action, method, presented !== '', presented !== '' ? 'bad_secret' : 'no_secret');
+  return { ok: true, params: p };
+}
+
+/* Append one SecurityLog row unless the same (event, action, hour) bucket
+ * already has one. Fail-soft: a logging problem never blocks or breaks the
+ * request. Never receives — and so can never write — the secret or a body. */
+function securityLogOnce_(action, method, secretPresent, callerType) {
+  try {
+    const now = new Date();
+    const hourKey = now.toISOString().slice(0, 13);
+    const act = action === '' ? '(none)'
+      : (PROXY_KNOWN_ACTIONS.indexOf(action) >= 0 ? action : '(unknown)');
+    const meth = method === 'POST' ? 'POST' : 'GET';
+    const type = callerType === 'user_mismatch' ? 'user_mismatch'
+      : (callerType === 'bad_secret' ? 'bad_secret' : 'no_secret');
+    const bucket = securityLogBucket_(act, type, hourKey);
+
+    let cache = null;
+    try { cache = CacheService.getScriptCache(); } catch (_) { cache = null; }
+    if (cache && cache.get(bucket)) return false;
+
+    const lock = LockService.getScriptLock();
+    if (lock.tryLock(2000) !== true) return false;   // busy → skip; nothing written
+    try {
+      const sh = getOrCreateSheet_(SECURITY_LOG_SHEET, SECURITY_LOG_COLUMNS);
+      const lastRow = sh.getLastRow();
+      if (lastRow <= 1) {
+        // Fresh tab: keep timestamp + hourKey as plain text so Sheets never
+        // re-types them as dates.
+        sh.getRange(2, 1, 1000, SECURITY_LOG_COLUMNS.length).setNumberFormat('@');
+      }
+      const n = Math.min(SECURITY_LOG_SCAN_ROWS, Math.max(0, lastRow - 1));
+      if (n > 0) {
+        const rows = sh.getRange(lastRow - n + 1, 1, n, SECURITY_LOG_COLUMNS.length).getValues();
+        for (let i = 0; i < rows.length; i++) {
+          if (securityLogBucket_(String(rows[i][1]), String(rows[i][4]), String(rows[i][5])) === bucket) {
+            if (cache) cache.put(bucket, '1', 3600);
+            return false;
+          }
+        }
+      }
+      sh.appendRow([now.toISOString(), act, meth, secretPresent ? 'yes' : 'no', type, hourKey]);
+      if (cache) cache.put(bucket, '1', 3600);
+      return true;
+    } finally {
+      try { lock.releaseLock(); } catch (_) { /* no-op */ }
+    }
+  } catch (_) {
+    return false;
+  }
+}
+
+/* Dedupe bucket: unauthenticated requests share one bucket per action-hour
+ * (no_secret and bad_secret alike — "at most one row per action per hour");
+ * user_mismatch has its own. */
+function securityLogBucket_(action, callerType, hourKey) {
+  const event = callerType === 'user_mismatch' ? 'user_mismatch' : 'no_valid_secret';
+  return 'seclog|' + event + '|' + action + '|' + hourKey;
+}
+
+/**
+ * Editor-run, READ-ONLY: who calls this backend without the proxy secret?
+ * Summarizes SecurityLog for the last 7 days by action × callerType so the
+ * Managers / Therapists traffic (which never carries PROXY_SECRET) is
+ * visible before PROXY_SECRET_MODE is switched to 'enforce'. Each row is one
+ * active hour, so `hours` = in how many distinct hours that action was hit.
+ * Writes nothing: no cell, no tab, no lock, no property.
+ */
+function securityCallersReportNow() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(SECURITY_LOG_SHEET);
+  const report = { since: '', rows: 0, summary: [] };
+  const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  report.since = cutoff.toISOString();
+  if (!sh || sh.getLastRow() < 2) {
+    Logger.log('securityCallersReportNow: SecurityLog is empty — no request without a valid proxy secret in the log.');
+    return report;
+  }
+  const values = sh.getRange(2, 1, sh.getLastRow() - 1, SECURITY_LOG_COLUMNS.length).getValues();
+  const groups = {};
+  for (let i = 0; i < values.length; i++) {
+    const r = values[i];
+    const ts = r[0] instanceof Date ? r[0] : new Date(String(r[0]));
+    if (isNaN(ts.getTime()) || ts < cutoff) continue;
+    report.rows++;
+    const key = String(r[1]) + '|' + String(r[4]);
+    const g = groups[key] || (groups[key] = {
+      action: String(r[1]), callerType: String(r[4]), hours: 0, methods: {}, firstSeen: '', lastSeen: '',
+    });
+    g.hours++;
+    g.methods[String(r[2])] = true;
+    const iso = ts.toISOString();
+    if (!g.firstSeen || iso < g.firstSeen) g.firstSeen = iso;
+    if (!g.lastSeen || iso > g.lastSeen) g.lastSeen = iso;
+  }
+  report.summary = Object.keys(groups).map(function (k) {
+    const g = groups[k];
+    return {
+      action: g.action, callerType: g.callerType, hours: g.hours,
+      methods: Object.keys(g.methods).sort().join('+'), firstSeen: g.firstSeen, lastSeen: g.lastSeen,
+    };
+  }).sort(function (a, b) { return b.hours - a.hours || (a.action < b.action ? -1 : a.action > b.action ? 1 : 0); });
+  Logger.log('securityCallersReportNow — READ-ONLY. Last 7 days (since ' + report.since + '): ' +
+    report.rows + ' row(s).');
+  report.summary.forEach(function (s) {
+    Logger.log(s.action + ' · ' + s.callerType + ' · ' + s.hours + ' hour(s) · ' + s.methods +
+      ' · first ' + s.firstSeen + ' · last ' + s.lastSeen);
+  });
+  return report;
 }
 
 function handle_(params) {
@@ -946,7 +1195,12 @@ function handle_(params) {
 function collectParams_(e) {
   const out = {};
   if (e && e.parameter) {
-    Object.keys(e.parameter).forEach(function (k) { out[k] = e.parameter[k]; });
+    Object.keys(e.parameter).forEach(function (k) {
+      // The proxy secret / proxy user are accepted from the POST body ONLY —
+      // a value in the querystring is dropped (it would sit in a URL).
+      if (k === PROXY_SECRET_FIELD || k === PROXY_USER_FIELD) return;
+      out[k] = e.parameter[k];
+    });
   }
   if (e && e.postData && e.postData.contents) {
     try {
@@ -962,7 +1216,10 @@ function collectParams_(e) {
 /* The authenticated user name for who/when stamping (updatedBy). The Railway
  * proxy sets `user` on every /api/sheets POST body FROM THE SIGNED SESSION
  * COOKIE, overwriting anything the browser sent — so this value is never
- * client-controlled. Blank for sessions whose cookie pre-dates the user
+ * client-controlled. Since Phase 0b-1, a request carrying a VALID proxy
+ * secret has params.user replaced by the proxy's `proxyUser` in proxyGate_
+ * before handle_ runs (a contradicting body user is ignored + logged).
+ * Blank for sessions whose cookie pre-dates the user
  * field (allowed by contract). Defensive normalization here too: trimmed,
  * capped at 40 chars, angle brackets stripped. */
 function requestUser_(params) {
@@ -1335,7 +1592,7 @@ function getData_() {
 
 function saveAll_(leads, patients, user) {
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) return lockBusy_('saveAll_');
   try {
     // Leads — upsert by id; leads not in the payload are preserved.
     // `reportConflicts` lists the leadIds whose meetingReport* fields the
@@ -2414,7 +2671,7 @@ function deletePatientRow_(patient, user) {
     return { ok: false, error: 'missing_patient' };
   }
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) return lockBusy_('deletePatientRow_');
   try {
     const sh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
     const houseColIdx = PATIENT_COLUMNS.indexOf('houseId');
@@ -2578,7 +2835,8 @@ function backfillPatientIdsLocked_(sh) {
   }
   if (!needs) return 0;
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  // Busy lock → skip this pass (nothing written); the next read retries.
+  if (lock.tryLock(10000) !== true) return 0;
   try {
     return backfillMissingIds_(sh, PATIENT_COLUMNS);
   } finally {
@@ -2749,7 +3007,8 @@ function paymentIdentityNeedsBackfill_(sh) {
 function backfillPaymentIdentityLocked_(sh) {
   if (!paymentIdentityNeedsBackfill_(sh)) return { paymentUids: 0, patientUids: 0 };
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  // Busy lock → skip this pass (nothing written); the next read retries.
+  if (lock.tryLock(10000) !== true) return { paymentUids: 0, patientUids: 0 };
   try {
     return {
       paymentUids: backfillMissingUids_(sh, PAYMENT_COLUMNS, 'paymentUid', PAYMENT_UID_PREFIX),
@@ -2782,7 +3041,8 @@ function creditUidsNeedBackfill_(sh) {
 function backfillCreditUidsLocked_(sh) {
   if (!creditUidsNeedBackfill_(sh)) return 0;
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  // Busy lock → skip this pass (nothing written); the next read retries.
+  if (lock.tryLock(10000) !== true) return 0;
   try {
     return backfillMissingUids_(sh, CREDIT_COLUMNS, 'creditUid', CREDIT_UID_PREFIX);
   } finally {
@@ -2925,7 +3185,7 @@ function isDriftedExitDateCell_(v) {
 function runPatientExitDateRepair_(dryRun) {
   const tag = dryRun ? 'previewPatientExitDatesNow' : 'repairPatientExitDatesNow';
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) throw new Error('runPatientExitDateRepair_: ' + LOCK_BUSY_MESSAGE);
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const summary = { dryRun: !!dryRun, sheets: {}, scanned: 0, rewritten: 0 };
@@ -3181,7 +3441,7 @@ function findDuplicatePatientKeysNow() {
  * second run finds 0 groups. */
 function collapseDuplicatePatientKeysNow() {
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) throw new Error('collapseDuplicatePatientKeysNow: ' + LOCK_BUSY_MESSAGE);
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const sh = ss.getSheetByName(PATIENTS_SHEET);
@@ -4377,7 +4637,7 @@ function writeRepairPlanNow() {
  * corruption_delete, old→new in details) — fail-soft as always. */
 function applyCorruptedRowRepairsNow() {
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) throw new Error('applyCorruptedRowRepairsNow: ' + LOCK_BUSY_MESSAGE);
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const planSh = ss.getSheetByName(REPAIR_PLAN_SHEET);
@@ -4488,7 +4748,7 @@ function applyCorruptedRowRepairsNow() {
 function moveLeadIrrelevant_(lead) {
   if (!lead || !lead.id) return { ok: false, error: 'missing_lead' };
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) return lockBusy_('moveLeadIrrelevant_');
   try {
     const leadsSh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
     const irrSh   = getOrCreateSheet_(IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS);
@@ -4513,7 +4773,7 @@ function moveLeadIrrelevant_(lead) {
 function restoreLead_(lead) {
   if (!lead || !lead.id) return { ok: false, error: 'missing_lead' };
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) return lockBusy_('restoreLead_');
   try {
     const leadsSh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
     const irrSh   = getOrCreateSheet_(IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS);
@@ -4543,7 +4803,7 @@ function restoreLead_(lead) {
 function removeLead_(lead) {
   if (!lead || !lead.id) return { ok: false, error: 'missing_lead' };
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) return lockBusy_('removeLead_');
   try {
     const leadsSh   = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
     const removedSh = getOrCreateSheet_(REMOVED_LEADS_SHEET, REMOVED_LEAD_COLUMNS);
@@ -4592,7 +4852,7 @@ function removeLead_(lead) {
 function dischargePatient_(patient, user) {
   if (!patient || !patient.id) return { ok: false, error: 'missing_patient' };
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) return lockBusy_('dischargePatient_');
   try {
     const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
 
@@ -4622,7 +4882,7 @@ function dischargePatient_(patient, user) {
 function restorePatient_(patient, user) {
   if (!patient || !patient.id) return { ok: false, error: 'missing_patient' };
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) return lockBusy_('restorePatient_');
   try {
     const leadsSh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
 
@@ -4667,7 +4927,7 @@ function restorePatient_(patient, user) {
 function restorePatientToActive_(patient, user) {
   if (!patient || !patient.id) return { ok: false, error: 'missing_patient' };
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) return lockBusy_('restorePatientToActive_');
   try {
     const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
     const flagged = Object.assign({}, patient, { restored: 'TRUE',
@@ -4947,7 +5207,7 @@ function deleteMeetingReport_(leadId) {
   if (!id) return { ok: false, error: 'bad_lead', message: 'leadId is required' };
 
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) return lockBusy_('deleteMeetingReport_');
   try {
     const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
     const rows = readSheet_(sh, LEAD_COLUMNS);
@@ -5186,7 +5446,7 @@ function upsertPayment_(payment, user) {
   const stampUser = String(user == null ? '' : user);
 
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) return lockBusy_('upsertPayment_');
   try {
     const sh = getOrCreateSheet_(PAYMENTS_SHEET, PAYMENT_COLUMNS);
     const idIdx = PAYMENT_COLUMNS.indexOf('id');
@@ -5520,7 +5780,7 @@ function upsertCredit_(credit, user) {
   const stampUser = String(user == null ? '' : user);
 
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) return lockBusy_('upsertCredit_');
   try {
     const sh = getOrCreateSheet_(CREDITS_SHEET, CREDIT_COLUMNS);
     const idIdx = CREDIT_COLUMNS.indexOf('id');
@@ -5702,7 +5962,7 @@ function upsertBillingOverride_(override) {
   };
 
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) return lockBusy_('upsertBillingOverride_');
   try {
     const sh = getOrCreateSheet_(BILLING_OVERRIDES_SHEET, BILLING_OVERRIDE_COLUMNS);
     const idIdx     = BILLING_OVERRIDE_COLUMNS.indexOf('id');
@@ -5754,7 +6014,7 @@ function deleteBillingOverride_(override) {
   }
 
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) return lockBusy_('deleteBillingOverride_');
   try {
     const sh = getOrCreateSheet_(BILLING_OVERRIDES_SHEET, BILLING_OVERRIDE_COLUMNS);
     deleteRowsById_(sh, BILLING_OVERRIDE_COLUMNS, id);
@@ -6454,7 +6714,7 @@ function appendOccupancySnapshotRows_(rows) {
   if (wanted.length === 0) return { appended: 0, skipped: 0, rows: [] };
 
   const lock = LockService.getScriptLock();
-  lock.tryLock(30000);
+  if (lock.tryLock(30000) !== true) throw new Error('appendOccupancySnapshotRows_: ' + LOCK_BUSY_MESSAGE);
   try {
     const sh = occupancySnapshotSheet_();
     const existingKeys = occupancySnapshotExistingKeys_(
@@ -6818,7 +7078,7 @@ function ensureDigestTab_(ss) {
  * request-driven rebuild and the hourly trigger can't interleave writes. */
 function writeDigestRows_(ssId, rows) {
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
+  if (lock.tryLock(10000) !== true) throw new Error('writeDigestRows_: ' + LOCK_BUSY_MESSAGE);
   try {
     const ss = SpreadsheetApp.openById(ssId);
     const sh = ensureDigestTab_(ss);
@@ -7957,7 +8217,7 @@ function appendPaymentTombstones_(entries, reason, fnName) {
 function runOrphanPaymentsReconcile_(dryRun) {
   const tag = dryRun ? ORPHAN_PAYMENT_PREVIEW_FN : ORPHAN_PAYMENT_RECONCILE_FN;
   const lock = LockService.getScriptLock();
-  if (lock.tryLock(30000) === false) throw new Error(tag + ': could not acquire the script lock — try again.');
+  if (lock.tryLock(30000) !== true) throw new Error(tag + ': ' + LOCK_BUSY_MESSAGE);
   try {
     /* DELIBERATELY NOT backfilling identity here. This repair's guarantees are
      * "single-cell writes to the three identity cells only" and "a dry run

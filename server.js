@@ -2,7 +2,6 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
-const { URL } = require('url');
 const { checkPin } = require('./lib/pin');
 const { createSessionToken, verifySessionToken, readSessionUser } = require('./lib/session');
 const { SESSION_USERS } = require('./lib/users');
@@ -49,6 +48,18 @@ function noCache(res) {
 const SHEETS_URL = process.env.SHEETS_URL || '';
 if (!SHEETS_URL) {
   console.error('[config] SHEETS_URL is not set — all /api/sheets calls will fail until it is configured.');
+}
+
+/* Proxy secret (Phase 0b-1, docs/billing-control-plan.md §11.1). Sent on
+ * EVERY call to this app's Apps Script backend (SHEETS_URL), in the POST body
+ * only — never in a URL, a log line or an error message. Code.gs compares it in
+ * constant time against Script Property PROXY_SECRET. FAIL-CLOSED: unset means
+ * the server refuses to proxy at all (every Apps Script route answers 503
+ * proxy_not_configured and no request leaves the server). It is NOT sent to the
+ * Outpatient backend (a different app with its own secret). */
+const PROXY_SECRET = process.env.PROXY_SECRET || '';
+if (!PROXY_SECRET) {
+  console.error('[config] PROXY_SECRET is not set — the server REFUSES to proxy to Apps Script: /api/sheets and /api/meeting-report/* will return 503 until it is configured (fail-closed). See DEPLOY.md → "Proxy secret".');
 }
 
 /* Outpatient cross-app lead write (PR 3). The /exec URL and the shared secret
@@ -121,7 +132,8 @@ app.use((_req, res, next) => { noCache(res); next(); });
  * endpoints that exposed them were removed with the API-auth change: they leaked
  * infra metadata unauthenticated and had no consumer.) */
 app.use((req, _res, next) => {
-  console.log(`[req] ${req.method} ${req.originalUrl} host=${req.headers.host} xfwd=${req.headers['x-forwarded-host'] || '-'}`);
+  // Path only — the querystring can carry request data and is never logged.
+  console.log(`[req] ${req.method} ${req.path} host=${req.headers.host} xfwd=${req.headers['x-forwarded-host'] || '-'}`);
   next();
 });
 
@@ -167,25 +179,51 @@ app.get('/icons/icon-192.png', sendStatic('icons/icon-192.png', 'image/png'));
 app.get('/icons/icon-512.png', sendStatic('icons/icon-512.png', 'image/png'));
 app.get('/icons/icon-maskable-512.png', sendStatic('icons/icon-maskable-512.png', 'image/png'));
 
-/* GET the Apps Script with querystring params. Follows Google's 302 → googleusercontent.com. */
-function sheetsGet(params) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(SHEETS_URL);
-    Object.entries(params || {}).forEach(([k, v]) => {
-      if (v === undefined || v === null) return;
-      const str = typeof v === 'object' ? JSON.stringify(v) : String(v);
-      url.searchParams.append(k, str);
-    });
-    followingRequest({ method: 'GET' }, url.toString(), null, resolve, reject, 0);
+/* Thrown (never sent anywhere) when PROXY_SECRET is unset. */
+const PROXY_NOT_CONFIGURED = 'proxy_not_configured';
+
+/* The read params a browser GET carries, converted exactly as the old
+ * querystring forwarding did (objects JSON-stringified, everything else
+ * String()), so Code.gs sees the same values. Pure. */
+function readParamsToBody(params) {
+  const out = {};
+  Object.entries(params || {}).forEach(([k, v]) => {
+    if (v === undefined || v === null) return;
+    out[k] = typeof v === 'object' ? JSON.stringify(v) : String(v);
   });
+  return out;
 }
 
-/* POST a JSON body to the Apps Script. Follows the 302 as GET (standard
- * Apps Script behavior — the redirect target serves the precomputed doPost
- * response). */
+/* The exact JSON body sent to Apps Script: the caller's fields, then the
+ * proxy-owned fields LAST so nothing a client sends can override them.
+ *   user        — the session user (kept for a Code.gs that predates 0b-1)
+ *   proxyUser   — the session user, which Code.gs trusts once the secret
+ *                 verifies (a contradicting `user` is ignored + logged)
+ *   proxySecret — PROXY_SECRET. Body only: never in a URL. Pure. */
+function buildAppsScriptBody(fields, user, secret) {
+  const u = typeof user === 'string' ? user : '';
+  return Object.assign({}, fields || {}, { user: u, proxyUser: u, proxySecret: String(secret || '') });
+}
+
+/* A READ (the browser's GET /api/sheets) — sent to Apps Script as a POST
+ * whose JSON body carries the params, because Apps Script exposes no request
+ * headers and a querystring would put the secret in a URL. doGet and doPost
+ * both route through the same gate + handle_, so the result is identical.
+ * Follows Google's 302 → googleusercontent.com. */
+function sheetsGet(params, user) {
+  return sheetsPost(Object.assign(readParamsToBody(params), { user: typeof user === 'string' ? user : '' }));
+}
+
+/* POST a JSON body to the Apps Script, with the proxy secret attached here —
+ * the ONE place every Apps Script call goes through. Follows the 302 as GET
+ * (standard Apps Script behavior — the redirect target serves the precomputed
+ * doPost response). Fail-closed: no PROXY_SECRET → rejects WITHOUT any
+ * network call. `body.user` is the session user the route resolved. */
 function sheetsPost(body) {
   return new Promise((resolve, reject) => {
-    const payload = JSON.stringify(body || {});
+    if (!PROXY_SECRET) return reject(new Error(PROXY_NOT_CONFIGURED));
+    const b = body || {};
+    const payload = JSON.stringify(buildAppsScriptBody(b, b.user, PROXY_SECRET));
     const opts = {
       method: 'POST',
       headers: {
@@ -307,7 +345,35 @@ function redactSecrets(text, secrets) {
 
 /* The secrets that must never appear in a stored debug record. */
 function debugSecretList() {
-  return [OUTPATIENT_LEAD_SECRET, SESSION_SECRET, MEETING_REPORT_SECRET];
+  return [OUTPATIENT_LEAD_SECRET, SESSION_SECRET, MEETING_REPORT_SECRET, PROXY_SECRET];
+}
+
+/* An error message safe to log or return: every configured secret redacted
+ * and capped. Every Apps Script error path goes through this. */
+function safeErrorMessage(err) {
+  return redactSecrets(String((err && err.message) || err || '').slice(0, 500), debugSecretList());
+}
+
+/* Send an Apps Script response to the browser with PROXY_SECRET redacted.
+ * Code.gs strips the secret before any handler runs, so this is
+ * defense-in-depth: even a backend that echoed it could never hand it to a
+ * browser. One split/join over the serialized body. */
+function sendAppsScriptJson(res, data) {
+  const text = JSON.stringify(data === undefined ? null : data);
+  res.type('application/json').send(redactSecrets(text, [PROXY_SECRET]));
+}
+
+/* Express middleware: refuse to proxy when PROXY_SECRET is unset
+ * (fail-closed, 503, no outbound request). */
+function requireProxySecret(_req, res, next) {
+  if (!PROXY_SECRET) {
+    return res.status(503).json({
+      ok: false,
+      error: PROXY_NOT_CONFIGURED,
+      message: 'PROXY_SECRET is not set — the server refuses to proxy to Apps Script (fail-closed).',
+    });
+  }
+  return next();
 }
 
 /* Truncated, redacted preview of an upstream response for the write log. */
@@ -574,12 +640,14 @@ function buildMeetingReportCookie(token, isHttps) {
   return parts.join('; ');
 }
 
-/* GET /api/sheets?action=getData — forwarded as GET to Apps Script */
-app.get('/api/sheets', requireSession, async (req, res) => {
+/* GET /api/sheets?action=getData — forwarded to Apps Script as a POST whose
+ * body carries the params + proxy secret (see sheetsGet). */
+app.get('/api/sheets', requireSession, requireProxySecret, async (req, res) => {
   const action = req.query && req.query.action;
-  console.log('[sheets GET] → action=', JSON.stringify(action), 'fullQuery=', JSON.stringify(req.query));
+  // The action name only — never the query values or a response body.
+  console.log('[sheets GET] → action=', JSON.stringify(typeof action === 'string' ? action.slice(0, 60) : null));
   try {
-    const data = await sheetsGet(req.query);
+    const data = await sheetsGet(req.query, sessionUserFromRequest(req));
 
     const summary = summarizeResponse(data);
     console.log('[sheets GET] ← response summary:', summary);
@@ -595,16 +663,17 @@ app.get('/api/sheets', requireSession, async (req, res) => {
       ...buildLoadPreviews(data),
     };
 
-    res.json(data);
+    sendAppsScriptJson(res, data);
   } catch (err) {
-    console.error('[sheets GET] error:', err.message);
+    const message = safeErrorMessage(err);
+    console.error('[sheets GET] error:', message);
     lastLoad = {
       at: new Date().toISOString(),
       action: action === undefined ? null : action,
       query: req.query,
-      error: err.message,
+      error: message,
     };
-    res.status(502).json({ ok: false, error: 'sheets_unreachable', message: err.message });
+    res.status(502).json({ ok: false, error: 'sheets_unreachable', message });
   }
 });
 
@@ -612,7 +681,7 @@ app.get('/api/sheets', requireSession, async (req, res) => {
 /* POST /api/sheets — body is forwarded as POST application/json to Apps Script.
  * All save operations (saveAll, etc.) use POST so the data never hits the
  * querystring length limit. */
-app.post('/api/sheets', requireSession, async (req, res) => {
+app.post('/api/sheets', requireSession, requireProxySecret, async (req, res) => {
   const body = req.body || {};
   // Who/when stamping: the `user` the Apps Script writes into updatedBy
   // comes ONLY from the signed session cookie. ALWAYS overwritten — a
@@ -623,11 +692,16 @@ app.post('/api/sheets', requireSession, async (req, res) => {
   console.log('[sheets POST] →', summary);
   try {
     const data = await sheetsPost(body);
-    console.log('[sheets POST] ←', data && typeof data === 'object' ? data : String(data).slice(0, 300));
+    // Outcome only — the response can carry patient / payment data, so it is
+    // never written to the log.
+    console.log('[sheets POST] ←', data && typeof data === 'object'
+      ? { ok: data.ok, error: data.error }
+      : { type: typeof data });
     lastSave = {
       at: new Date().toISOString(),
       request: { summary, keys: Object.keys(body) },
-      response: data,
+      // Truncated + redacted preview, never the raw response object.
+      response: responsePreview(data, 1000),
     };
     // saveAll only: compare per-house patient counts sent vs acknowledged by
     // the backend (`written` in the saveAll_ response — null verdict until the
@@ -649,13 +723,14 @@ app.post('/api/sheets', requireSession, async (req, res) => {
       countMismatches: counts ? counts.mismatches : null,
       responsePreview: responsePreview(data, 1000),
     });
-    res.json(data);
+    sendAppsScriptJson(res, data);
   } catch (err) {
-    console.error('[sheets POST] error:', err.message);
+    const message = safeErrorMessage(err);
+    console.error('[sheets POST] error:', message);
     lastSave = {
       at: new Date().toISOString(),
       request: { summary, keys: Object.keys(body) },
-      error: err.message,
+      error: message,
     };
     recordWrite({
       at: lastSave.at,
@@ -663,10 +738,10 @@ app.post('/api/sheets', requireSession, async (req, res) => {
       action: summary.action || null,
       auth: 'ok',
       httpStatus: 502,
-      error: redactSecrets(err.message, debugSecretList()),
+      error: message,
       summary,
     });
-    res.status(502).json({ ok: false, error: 'sheets_unreachable', message: err.message });
+    res.status(502).json({ ok: false, error: 'sheets_unreachable', message });
   }
 });
 
@@ -742,7 +817,7 @@ app.post('/api/outpatient-lead', requireSession, async (req, res) => {
     // The rejection message embeds the far side's HTTP status + body slice
     // ("Apps Script HTTP 401: …" / "…returned non-JSON…: <html>…"), so storing
     // it captures the Google-HTML-page and non-2xx signatures too.
-    console.error('[outpatient-lead] error:', err.message);
+    console.error('[outpatient-lead] error:', safeErrorMessage(err));
     recordWrite({
       at: startedAt,
       route: '/api/outpatient-lead',
@@ -752,7 +827,7 @@ app.post('/api/outpatient-lead', requireSession, async (req, res) => {
       error: 'outpatient_unreachable',
       outpatientResponse: redactSecrets(String(err.message).slice(0, 2000), debugSecretList()),
     });
-    res.status(502).json({ ok: false, error: 'outpatient_unreachable', message: err.message });
+    res.status(502).json({ ok: false, error: 'outpatient_unreachable', message: safeErrorMessage(err) });
   }
 });
 
@@ -912,7 +987,7 @@ app.post('/api/meeting-report/verify-pin', (req, res) => {
  * The field whitelist is enforced on the Apps Script side (meetingReportLeads_)
  * AND re-applied here, so a backend regression can never widen the exposure.
  * The shared secret rides the POST body (never a URL, never the browser). */
-app.get('/api/meeting-report/leads', requireMeetingReportSession, async (_req, res) => {
+app.get('/api/meeting-report/leads', requireMeetingReportSession, requireProxySecret, async (_req, res) => {
   if (!MEETING_REPORT_SECRET) {
     return res.status(503).json({ ok: false, error: 'meeting_report_not_configured' });
   }
@@ -931,7 +1006,7 @@ app.get('/api/meeting-report/leads', requireMeetingReportSession, async (_req, r
     }));
     res.json({ ok: true, leads });
   } catch (err) {
-    console.error('[meeting-report leads] error:', redactSecrets(err.message, [MEETING_REPORT_SECRET]));
+    console.error('[meeting-report leads] error:', safeErrorMessage(err));
     res.status(502).json({ ok: false, error: 'sheets_unreachable' });
   }
 });
@@ -957,7 +1032,7 @@ function meetingReportNoteError(note) {
 /* POST /api/meeting-report/submit — forward the report to Apps Script with the
  * shared secret attached server-side. Validation is authoritative on the Apps
  * Script side (submitMeetingReport_); the browser only ever sees ok/error. */
-app.post('/api/meeting-report/submit', requireMeetingReportSession, async (req, res) => {
+app.post('/api/meeting-report/submit', requireMeetingReportSession, requireProxySecret, async (req, res) => {
   if (!MEETING_REPORT_SECRET) {
     return res.status(503).json({ ok: false, error: 'meeting_report_not_configured' });
   }
@@ -994,16 +1069,16 @@ app.post('/api/meeting-report/submit', requireMeetingReportSession, async (req, 
       okFromBackend: !!(data && data.ok === true),
       responsePreview: redactSecrets(responsePreview(data, 1000), [MEETING_REPORT_SECRET]),
     });
-    res.json(data);
+    sendAppsScriptJson(res, data);
   } catch (err) {
-    console.error('[meeting-report submit] error:', redactSecrets(err.message, [MEETING_REPORT_SECRET]));
+    console.error('[meeting-report submit] error:', safeErrorMessage(err));
     recordWrite({
       at: new Date().toISOString(),
       route: '/api/meeting-report/submit',
       action: 'submitMeetingReport',
       auth: 'ok',
       httpStatus: 502,
-      error: redactSecrets(err.message, debugSecretList().concat([MEETING_REPORT_SECRET])),
+      error: safeErrorMessage(err),
     });
     res.status(502).json({ ok: false, error: 'sheets_unreachable' });
   }
@@ -1045,7 +1120,7 @@ app.get('/healthz', (_, res) => res.json(healthzBody()));
 /* 404 fallback — logs and returns JSON so an unexpected request (e.g.
  * Sandra typing a stray URL) is visible in the logs. */
 app.use((req, res) => {
-  console.log(`[req] 404 for ${req.method} ${req.originalUrl}`);
+  console.log(`[req] 404 for ${req.method} ${req.path}`);
   res.status(404).json({ error: 'not_found', method: req.method, url: req.originalUrl });
 });
 
@@ -1059,6 +1134,15 @@ if (require.main === module) {
 }
 
 module.exports = {
+  // Proxy secret, Phase 0b-1 (see test/proxy-secret-transition.test.js).
+  app,
+  PROXY_NOT_CONFIGURED,
+  readParamsToBody,
+  buildAppsScriptBody,
+  sheetsGet,
+  sheetsPost,
+  requireProxySecret,
+  safeErrorMessage,
   // Deploy identity on /healthz (see test/healthz-deploy-identity.test.js).
   deployIdentity,
   healthzBody,

@@ -402,16 +402,47 @@ async function apiGet(params) {
   return data;
 }
 
+/* ===== Busy script lock (lock_busy) =====
+ *
+ * Every Apps Script writer answers {ok:false, error:'lock_busy'} when it could
+ * not take the script lock — BEFORE writing anything (see lockBusy_ in
+ * Code.gs). So the exact same request is safe to send again: apiPost waits
+ * LOCK_BUSY_RETRY_MS and retries ONCE. If the lock is still busy it throws an
+ * error whose message is the Hebrew LOCK_BUSY_MESSAGE_HE (never the server's
+ * English text) and carries lockBusy:true, so every caller's existing
+ * showError(prefix + e.message) tells the user what happened.
+ * test/lock-busy-frontend.test.js covers every write path. */
+const LOCK_BUSY_ERROR = 'lock_busy';
+const LOCK_BUSY_MESSAGE_HE = 'המערכת עסוקה, נסו שוב';
+const LOCK_BUSY_RETRY_MS = 2000;
+
+/* The 2 s pause before the one automatic retry. A separate function so the
+ * tests can run it instantly. */
+function lockBusyDelay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/* True for an error apiPost threw because the script lock stayed busy. */
+function isLockBusyError(e) {
+  return !!(e && e.lockBusy === true);
+}
+
 async function apiPost(body) {
   const url = '/api/sheets';
-  console.log('[E-ZONE] POST →', new URL(url, location.origin).href);
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (res.status === 401) { showPinScreen(); throw new Error('unauthorized'); }
-  const data = await res.json().catch(() => ({}));
+  const payload = JSON.stringify(body);
+  let { res, data } = await apiPostOnce(url, payload);
+  if (data && data.error === LOCK_BUSY_ERROR) {
+    // Nothing was written — wait, then send the SAME body once more.
+    console.warn('[E-ZONE] script lock busy — retrying once in', LOCK_BUSY_RETRY_MS, 'ms');
+    await lockBusyDelay(LOCK_BUSY_RETRY_MS);
+    ({ res, data } = await apiPostOnce(url, payload));
+    if (data && data.error === LOCK_BUSY_ERROR) {
+      const err = new Error(LOCK_BUSY_MESSAGE_HE);
+      err.data = data;
+      err.lockBusy = true;
+      throw err;
+    }
+  }
   if (!res.ok || data.ok === false) {
     // A HTTP 200 carrying {ok:false} is a FAILURE — never swallowed. The parsed
     // body rides on the error so callers can read structured refusals (e.g. a
@@ -421,6 +452,20 @@ async function apiPost(body) {
     throw err;
   }
   return data;
+}
+
+/* One POST round-trip: the response plus its parsed body. A 401 shows the PIN
+ * screen and throws, exactly as before. */
+async function apiPostOnce(url, payload) {
+  console.log('[E-ZONE] POST →', new URL(url, location.origin).href);
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: payload,
+  });
+  if (res.status === 401) { showPinScreen(); throw new Error('unauthorized'); }
+  const data = await res.json().catch(() => ({}));
+  return { res, data };
 }
 
 /* Serialize current state into the shape the Apps Script expects.
@@ -1321,7 +1366,12 @@ async function loadAll() {
 
     if ((promoted.length > 0 || retired.length > 0 || healed.length > 0) && state.mode === 'edit') {
       console.log(`[E-ZONE] Persisting ${promoted.length} auto-promoted patient(s) + ${retired.length} retired lead(s) + ${healed.length} healed discharge(s)...`);
-      saveAll().catch(e => console.warn('[E-ZONE] auto-promote save failed', e.message));
+      saveAll().catch(e => {
+        console.warn('[E-ZONE] auto-promote save failed', e.message);
+        // The promoted / healed rows stay on screen (state is untouched) and
+        // ride the next saveAll; a busy lock is said out loud, never silent.
+        if (isLockBusyError(e)) showError(LOCK_BUSY_MESSAGE_HE);
+      });
     }
   } catch (e) {
     console.error('[E-ZONE] loadAll failed:', e);
@@ -1727,12 +1777,16 @@ function autosaveMeetingWithDefaults() {
   renderMeetings();                                  // board: '—' → manager name, immediately
 
   return saveAll()
-    .catch(() => {
+    .catch((e) => {
+      const busy = isLockBusyError(e);
       applied.forEach(({ lead, prev }) => {
         lead.meetingWith = prev || '';
-        _meetingWithAutosaveFailed.add(lead.id);     // don't retry this lead again this session
+        // don't retry this lead again this session — unless the lock was
+        // merely busy: then the next autosave pass tries it again.
+        if (!busy) _meetingWithAutosaveFailed.add(lead.id);
       });
       renderMeetings();                              // revert the board; no kanban re-render
+      if (busy) showError(LOCK_BUSY_MESSAGE_HE);
     })
     .finally(() => { _autosaveMeetingWithBusy = false; });
 }

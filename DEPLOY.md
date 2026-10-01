@@ -189,12 +189,130 @@ can show, and every permanent delete (✕) recorded in the last 60 days. What
 each log section means and how to read it:
 `CHANGELOG-ramot-diagnostic-reland.md`.
 
+## Proxy secret (Phase 0b-1, TRANSITION mode) — Sandra's steps
+
+From this release the Railway server sends a shared secret, `PROXY_SECRET`, on
+**every** call to the Dashboard Apps Script. It travels in the request body only
+— never in a URL, a log line or an error message. The Apps Script checks it.
+
+In this phase the check is in **log mode**: a request without the secret
+(today: Managers and Therapists, which call the same `/exec`) is **still
+served**, and one row per action per hour goes into a new tab, `SecurityLog`. Nothing is blocked yet. Blocking (`enforce`) comes in a later
+phase, only after Managers and Therapists have been given the secret.
+
+> **Order matters.** The new `server.js` **refuses to proxy** when
+> `PROXY_SECRET` is missing (fail-closed): the dashboard would show no data.
+> So set the Railway variable (step 2) **before** this PR is merged.
+
+### Step 1 — Generate the secret (once, on your own computer)
+
+Open a terminal and run **one** of these:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+```
+
+```bash
+openssl rand -hex 32
+```
+
+Copy the line it prints (43 or 64 characters). That is the secret.
+
+- Do **not** paste it into WhatsApp, email, a ticket, a GitHub comment or a
+  chat with Claude. Keep it only in the two places below (and your password
+  manager, if you use one).
+- Do **not** reuse `SESSION_SECRET`, `ACCOUNTING_SECRET`,
+  `MEETING_REPORT_SECRET` or any other existing secret. This one is new.
+
+### Step 2 — Railway (before merging the PR)
+
+1. Railway → the **E-Zone Dashboard** project → the web service →
+   **Variables** tab.
+2. **New Variable** → name `PROXY_SECRET`, value = the secret from step 1.
+   No quotes, no spaces, no newline at the end.
+3. Save. Railway redeploys the *current* code, which simply ignores the new
+   variable — nothing changes for users yet.
+
+### Step 3 — Apps Script (before or after merging — either is safe)
+
+1. Open the Apps Script project (Script ID in `.clasp.json`, or `clasp open`).
+2. ⚙️ **Project Settings** (left sidebar) → scroll to **Script Properties** →
+   **Edit script properties** → **Add script property**:
+
+   | Property | Value |
+   |---|---|
+   | `PROXY_SECRET` | the **same** secret as in Railway, character for character |
+   | `PROXY_SECRET_MODE` | `log` |
+
+3. **Save script properties**.
+
+`PROXY_SECRET_MODE` may also be left out: unset means `log`. Any value other
+than `log` (or empty) is treated as `enforce` — a typo fails **closed**, so type
+exactly `log`.
+
+### Step 4 — Merge the PR
+
+Railway deploys the new `server.js`; GitHub Actions (clasp) deploys the new
+`Code.gs` to the same `/exec` URL. Either may land first; both orders are safe:
+
+| Lands first | What happens in between |
+|---|---|
+| new `server.js` | the old `Code.gs` ignores the extra fields; everything works |
+| new `Code.gs` | the old server sends no secret → served + logged in `SecurityLog` |
+
+### Step 5 — Check it (about 5 minutes after both deploys)
+
+1. Open the dashboard, enter the PIN, open a house, open Payments. Everything
+   loads as before.
+2. In the spreadsheet, the `SecurityLog` tab appears **only** when something
+   called without the secret. Rows with `callerType` = `no_secret` for actions
+   like `managersOverview` / `managersHouse` / `occupancySnapshots` are
+   Managers and Therapists — expected in this phase.
+3. A row for `getData`, `saveAll`, `savePayment` etc. **from the dashboard
+   itself** with `bad_secret` means the two values differ: copy the secret
+   again into both places (step 2 + step 3).
+4. Railway → **Deployments → logs** must **not** show
+   `[config] PROXY_SECRET is not set`. If it does, step 2 was missed: add the
+   variable and Railway redeploys.
+
+### Step 6 — After a few days: who calls without the secret?
+
+In the Apps Script editor pick **`securityCallersReportNow`** → **Run** →
+**Execution log**. It is read-only (writes nothing: no cell, tab, lock or
+property). It lists, for the last 7 days, each `action · callerType · hours ·
+GET/POST · first/last seen`. `hours` = in how many distinct hours that action
+was called without a valid secret. Send this list (it contains no names, no
+data and no secret) — it is what we need to plan the Managers / Therapists
+change before `enforce`.
+
+### Do NOT do yet
+
+- Do **not** set `PROXY_SECRET_MODE` to `enforce`. Managers and Therapists
+  would stop working. That switch is a later phase.
+
+### Rollback / emergency
+
+- Something breaks after the merge and the Railway log says `PROXY_SECRET is
+  not set` → add the Railway variable (step 2).
+- `enforce` was set by mistake → change `PROXY_SECRET_MODE` back to `log` in
+  Script Properties. It takes effect on the next request; no deploy needed.
+
+### Rotating the secret later
+
+1. Generate a new one (step 1).
+2. Set it in Apps Script first (with `PROXY_SECRET_MODE` = `log`), then in
+   Railway. Between the two, dashboard requests are served and logged as
+   `bad_secret` — not blocked.
+3. In `enforce` mode, switch to `log` before rotating and back afterwards.
+
 ## Security
 
 - Credentials live **only** in GitHub Secrets — never committed, never printed;
   the runner's `~/.clasprc.json` is deleted at job end (`if: always()`).
 - `.clasprc.json` / `.clasp.local.json` are git-ignored. The Script ID in
   `.clasp.json` is an identifier, not a secret.
+- `PROXY_SECRET` lives only in Railway **Variables** and Apps Script **Script
+  Properties** — see "Proxy secret" above.
 
 ## Manual fallback
 

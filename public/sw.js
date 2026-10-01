@@ -76,7 +76,11 @@
 // reverted that PR, and phones still hold a v17 cache, so reusing the number
 // could leave them on it. The first public/ change after the revert ships as
 // v18 and the activate step evicts both v16 and the orphaned v17.
-var CACHE_VERSION = 'v18';
+// v18 → v19: a busy Apps Script lock ({ok:false, error:'lock_busy'}) is now
+// retried once after 2 s and otherwise reported as «המערכת עסוקה, נסו שוב».
+// app.js is the only asset that changed — evict v18 so no phone keeps a bundle
+// that shows the server's English text and never retries.
+var CACHE_VERSION = 'v19';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

@@ -74,7 +74,7 @@ function loadCode() {
     JSON, Math, Date, Number, String, Array, Object, RegExp, isFinite,
     Logger: { log: noop },
     Utilities: { formatDate: () => '2026-08-09' },
-    LockService: { getScriptLock: () => ({ tryLock: noop, releaseLock: noop }) },
+    LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: noop }) },
     __registry: registry,
   };
   sandbox.SpreadsheetApp = {
