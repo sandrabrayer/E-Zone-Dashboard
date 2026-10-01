@@ -62,7 +62,9 @@ function loadApp(routes) {
       const body = opts && opts.body ? JSON.parse(opts.body) : null;
       calls.push(body);
       const handler = body && routes && routes[body.action];
-      const payload = handler ? handler(body) : { ok: true };
+      // suggestRefunds: the credits modal's read after a discharge — an empty
+      // suggestion list unless a test routes it.
+      const payload = handler ? handler(body) : (body && body.action === 'suggestRefunds' ? { ok: true, suggestions: [] } : { ok: true });
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload) });
     },
   };

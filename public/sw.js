@@ -84,7 +84,11 @@
 // per-house meetingWith default read the CURRENT managers (getData
 // currentManagers); a saved former-manager value stays selectable. app.js is
 // the only asset that changed — evict v19 so no phone keeps the old roster.
-var CACHE_VERSION = 'v20';
+// v20 → v21: the credits modal takes its refund suggestion from the server
+// (suggestRefunds → computeRefund_) and shows the breakdown; the old-rule
+// suggestCredits is gone and the payout echo uses the 10th cutoff. app.js and
+// style.css changed — evict v20 so no phone keeps suggesting old-rule refunds.
+var CACHE_VERSION = 'v21';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

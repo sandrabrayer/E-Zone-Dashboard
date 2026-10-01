@@ -59,7 +59,6 @@ function loadApp() {
       roundMoney, isoFromLocalDate, VAT_RATE,
       // The credits ledger, so the no-fork guard can prove both consumers
       // really do read the same window off the same row.
-      suggestCredits,
     };
   `;
   const noop = () => {};
@@ -427,7 +426,7 @@ test('D: a prepaid_return credit is split over the WHOLE window it returns', () 
 });
 
 test('D: allocationMonth is NOT the allocator — the window overrides it', () => {
-  // suggestCredits documents allocationMonth as reporting metadata that never
+  // refundSuggestionsFor_ (Code.gs) documents allocationMonth as reporting metadata that never
   // enters the math. A credit keyed to January whose refunded span is entirely
   // in February belongs to February.
   const c = credit({
@@ -691,14 +690,9 @@ test('H: the credits ledger and the revenue screen read the SAME recorded period
   assert.equal(mar.received.rows[0].coverageWindowSource, 'recorded');
   assert.equal(mar.received.rows[0].coverageAdjusted, true);
 
-  // The credits ledger, on the very same row: a discharge on 10 Feb leaves
-  // the WHOLE March window unearned — prepaid_return, not a Jan/Feb prorata.
-  const credits = app.suggestCredits(p, '2026-02-10', [pay]);
-  const pre = credits.find((c) => c.creditType === 'prepaid_return');
-  assert.ok(pre, 'the March window is entirely after the exit');
-  assert.equal(pre.basis.coverageStart, '2026-03-01');
-  assert.equal(pre.basis.coverageEnd, '2026-03-31');
-  assert.equal(pre.basis.coverageWindowSource, 'recorded');
+  // The credits side of the same row (a discharge on 10 Feb → the whole
+  // recorded March window is prepaid_return) is computed on the SERVER since
+  // the wiring PR; ported with this fixture to test/refund-logic-wiring.test.js.
 });
 
 test('H: the dead monthKey twin is gone, and its removal is explained in place', () => {
