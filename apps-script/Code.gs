@@ -837,62 +837,37 @@ function doPost(e) {
  * `proxyUser` (server.js reads it from the signed session cookie). A body
  * `user` that contradicts it is ignored and recorded as 'user_mismatch'.
  *
- * Exempt: the actions that carry their OWN least-privilege secret
- * (PROXY_SECRET_EXEMPT_ACTIONS) are not gated here — their callers
- * (Outpatient, Accounting, the meeting-report page) never hold PROXY_SECRET,
- * and their own fail-closed checks still run inside handle_. Since Phase
- * 0b-2a they ARE classified and logged (below), never refused here.
+ * ===== Open actions (Phase 0b-2) =====
  *
- * ===== Scoped caller secrets (Phase 0b-2a — LOG mode) =====
+ * Managers and Therapists call this same backend WITHOUT PROXY_SECRET and
+ * must need zero changes. OPEN_ACTIONS is the fixed list they call; those
+ * actions are served without PROXY_SECRET in BOTH modes (getAdmittedRoster
+ * still requires its own ADMITTED_ROSTER_SECRET inside handle_). EVERY other
+ * action — GET or POST, getData, every write, every future billing action —
+ * is gated by PROXY_SECRET under PROXY_SECRET_MODE.
  *
- * The same backend serves two other apps, which must never hold the
- * Dashboard's full-access PROXY_SECRET. Each gets its own Script Property
- * that unlocks ONLY its allowlist in CALLER_SCOPES:
- *   MANAGERS_CALLER_SECRET   → CALLER_SCOPES.managers
- *   THERAPISTS_CALLER_SECRET → CALLER_SCOPES.therapists
- * Same field (proxySecret) and transport (POST body only) as PROXY_SECRET, so
- * a client sends one value either way. Constant-time compare; an UNSET
- * property matches nothing (fail-closed).
- *
- * Every request is classified (callerClass_):
- *   proxy        — PROXY_SECRET (the Dashboard; full access)
- *   managers     — MANAGERS_CALLER_SECRET on an action in its scope
- *   therapists   — THERAPISTS_CALLER_SECRET on an action in its scope
- *   out_of_scope — a valid scoped secret on an action OUTSIDE its scope
- *   wrong        — a secret that matches nothing
- *   none         — no secret at all
- * The class is written to SecurityLog (column callerClass) for every class
- * except proxy (the Dashboard's own traffic stays unlogged, as in 0b-1).
- * LOG MODE ONLY: the class changes NOTHING about how a request is served —
- * a scoped secret is not a proxy secret, so its requests take exactly the
- * path they took before. Enforcing the scopes is Phase 0b-3. */
+ * Every request gets a caller class (callerClass_):
+ *   proxy — a valid PROXY_SECRET (the Dashboard)
+ *   open  — no valid PROXY_SECRET, on an OPEN_ACTIONS action
+ *   none  — no secret, on a gated action
+ *   wrong — a secret that is not PROXY_SECRET, on a gated action
+ * SecurityLog records open / none / wrong (column callerClass, appended);
+ * proxy traffic stays unlogged. securityCallersReportNow counts
+ * "non-open actions without a valid secret" — it must be 0 before
+ * PROXY_SECRET_MODE is set to 'enforce' (Phase 0b-3). */
 const PROXY_SECRET_PROP      = 'PROXY_SECRET';
 const PROXY_SECRET_MODE_PROP = 'PROXY_SECRET_MODE';
-
-/* Scoped caller secrets: Script Property per consumer. */
-const CALLER_SECRET_PROPS = {
-  managers:   'MANAGERS_CALLER_SECRET',
-  therapists: 'THERAPISTS_CALLER_SECRET',
-};
-/* The ONLY actions each consumer calls on this backend — read from their
- * deployed code on 2026-10-01 (see CHANGELOG-scoped-caller-secrets.md):
- *   ezone-managers @ main: public/app.js → server.js GET /api/sheets proxy
- *     (managersOverview, managersHouse, occupancySnapshots). No Apps Script.
- *   ezone-therapists @ claude/inspiring-tesla-jipobw: server.js proxyGet
- *     (getAdmittedRoster). Its apps-script/Code.gs UrlFetchApp calls go to
- *     Outpatient and Staffing only — none to this backend.
- * test/scoped-caller-secrets.test.js pins these lists. */
-const CALLER_SCOPES = {
-  managers:   ['managersOverview', 'managersHouse', 'occupancySnapshots'],
-  therapists: ['getAdmittedRoster'],
-};
-const CALLER_CLASSES = ['proxy', 'managers', 'therapists', 'none', 'wrong', 'out_of_scope'];
 const PROXY_SECRET_FIELD     = 'proxySecret';
 const PROXY_USER_FIELD       = 'proxyUser';
-const PROXY_SECRET_EXEMPT_ACTIONS = [
-  'getAdmittedRoster', 'meetingReportLeads', 'submitMeetingReport',
-  'accountingPayments', 'accountingCredits',
-];
+/* The ONLY actions served without PROXY_SECRET, in log AND enforce mode.
+ * From the consumers' deployed code (2026-10-01, see
+ * CHANGELOG-open-actions-gate.md):
+ *   ezone-managers @ main               — managersOverview, managersHouse,
+ *                                          occupancySnapshots
+ *   ezone-therapists @ claude/inspiring-tesla-jipobw — getAdmittedRoster
+ * test/open-actions-gate.test.js pins exactly these four. */
+const OPEN_ACTIONS = ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster'];
+const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
 /* Every action handle_ dispatches. An action name is caller-controlled, so
  * SecurityLog records only these; anything else is logged as '(unknown)' —
  * an attacker can neither spam distinct rows nor inject a formula.
@@ -915,12 +890,11 @@ const PROXY_KNOWN_ACTIONS = [
  *   method        — 'GET' | 'POST'
  *   secretPresent — 'yes' | 'no' (whether ANY proxySecret was sent; the
  *                   value itself is never written anywhere)
- *   callerType    — 'no_secret' | 'bad_secret' | 'user_mismatch' |
- *                   'scoped_secret' (0b-2a: a valid scoped caller secret)
+ *   callerType    — 'no_secret' | 'bad_secret' | 'user_mismatch'
  *   hourKey       — 'YYYY-MM-DDTHH' (UTC), the dedupe bucket
- *   callerClass   — appended in 0b-2a: proxy | managers | therapists | none |
- *                   wrong | out_of_scope (see callerClass_). Blank on rows
- *                   written before it; the report derives it from callerType. */
+ *   callerClass   — appended in 0b-2: 'proxy' | 'open' | 'none' | 'wrong'
+ *                   (see callerClass_). Blank on rows written before it; the
+ *                   report derives it. */
 const SECURITY_LOG_SHEET   = 'SecurityLog';
 const SECURITY_LOG_COLUMNS = ['timestamp', 'action', 'method', 'secretPresent', 'callerType', 'hourKey', 'callerClass'];
 /* How many trailing rows the once-per-hour dedupe re-reads under the lock. */
@@ -978,16 +952,8 @@ function proxyGate_(params, method) {
 
   const action = String(p.action == null ? '' : p.action);
   const props = PropertiesService.getScriptProperties();
-  const cls = callerClass_(action, presented, props);
-
-  if (PROXY_SECRET_EXEMPT_ACTIONS.indexOf(action) >= 0) {
-    // Own-secret actions: never refused here (handle_ checks their secret).
-    // Classified + logged so a consumer's traffic on them is visible.
-    if (cls !== 'proxy') securityLogOnce_(action, method, presented !== '', cls);
-    return { ok: true, params: p };
-  }
-
-  const mode = proxySecretMode_(props.getProperty(PROXY_SECRET_MODE_PROP));
+  const expected = String(props.getProperty(PROXY_SECRET_PROP) || '');
+  const cls = callerClass_(action, presented, expected);
   const valid = cls === 'proxy';
 
   if (valid) {
@@ -1002,53 +968,28 @@ function proxyGate_(params, method) {
     return { ok: true, params: p };
   }
 
+  // Open actions: served without PROXY_SECRET in BOTH modes, exactly as
+  // today (getAdmittedRoster's own secret is still checked in handle_).
+  if (cls === 'open') {
+    securityLogOnce_(action, method, presented !== '', 'open');
+    return { ok: true, params: p };
+  }
+
+  const mode = proxySecretMode_(props.getProperty(PROXY_SECRET_MODE_PROP));
   if (mode === 'enforce') return { ok: false };
   securityLogOnce_(action, method, presented !== '', cls);
   return { ok: true, params: p };
 }
 
-/* Which caller sent this request (see the block above CALLER_SCOPES).
- * Compares the presented value against EVERY configured secret — no early
- * exit, so the time taken does not say which one (if any) matched. An unset
- * or blank property is skipped: it can never match, not even an empty value. */
-function callerClass_(action, presented, props) {
+/* The caller class of one request (see the Open actions block above):
+ * 'proxy' | 'open' | 'none' | 'wrong'. `expected` is PROXY_SECRET; when it
+ * is unset nothing can be 'proxy'. Constant-time compare. Pure. */
+function callerClass_(action, presented, expected) {
   const got = String(presented == null ? '' : presented);
-  if (got === '') return 'none';
-  const proxy = String(props.getProperty(PROXY_SECRET_PROP) || '');
-  const matches = {};
-  let any = false;
-  ['proxy'].concat(Object.keys(CALLER_SECRET_PROPS)).forEach(function (name) {
-    const expected = name === 'proxy' ? proxy : String(props.getProperty(CALLER_SECRET_PROPS[name]) || '');
-    const hit = expected !== '' && constantTimeEquals_(got, expected);
-    matches[name] = hit;
-    any = any || hit;
-  });
-  if (!any) return 'wrong';
-  if (matches.proxy) return 'proxy';
-  const scopes = Object.keys(CALLER_SCOPES);
-  for (let i = 0; i < scopes.length; i++) {
-    if (matches[scopes[i]]) {
-      return CALLER_SCOPES[scopes[i]].indexOf(String(action)) >= 0 ? scopes[i] : 'out_of_scope';
-    }
-  }
-  return 'wrong';
-}
-
-/* The legacy callerType column (0b-1) for a class / event. */
-function legacyCallerType_(clsOrEvent) {
-  if (clsOrEvent === 'user_mismatch') return 'user_mismatch';
-  if (clsOrEvent === 'wrong' || clsOrEvent === 'bad_secret') return 'bad_secret';
-  if (clsOrEvent === 'none' || clsOrEvent === 'no_secret') return 'no_secret';
-  return 'scoped_secret';
-}
-
-/* The callerClass column for a class / event (user_mismatch happens only
- * WITH a valid PROXY_SECRET, so its class is proxy). */
-function callerClassFor_(clsOrEvent) {
-  if (clsOrEvent === 'user_mismatch') return 'proxy';
-  if (clsOrEvent === 'bad_secret') return 'wrong';
-  if (clsOrEvent === 'no_secret') return 'none';
-  return CALLER_CLASSES.indexOf(clsOrEvent) >= 0 ? clsOrEvent : 'none';
+  const want = String(expected == null ? '' : expected);
+  if (want !== '' && got !== '' && constantTimeEquals_(got, want)) return 'proxy';
+  if (OPEN_ACTIONS.indexOf(String(action)) >= 0) return 'open';
+  return got === '' ? 'none' : 'wrong';
 }
 
 /* Append one SecurityLog row unless the same (event, action, hour) bucket
@@ -1061,8 +1002,12 @@ function securityLogOnce_(action, method, secretPresent, clsOrEvent) {
     const act = action === '' ? '(none)'
       : (PROXY_KNOWN_ACTIONS.indexOf(action) >= 0 ? action : '(unknown)');
     const meth = method === 'POST' ? 'POST' : 'GET';
-    const type = legacyCallerType_(clsOrEvent);
-    const klass = callerClassFor_(clsOrEvent);
+    // callerType keeps its 0b-1 meaning (was a secret sent at all?);
+    // callerClass carries the class.
+    const type = clsOrEvent === 'user_mismatch' ? 'user_mismatch'
+      : (secretPresent ? 'bad_secret' : 'no_secret');
+    const klass = clsOrEvent === 'user_mismatch' ? 'proxy'
+      : (CALLER_CLASSES.indexOf(clsOrEvent) >= 0 ? clsOrEvent : (secretPresent ? 'wrong' : 'none'));
     const bucket = securityLogBucket_(act, type, hourKey, klass);
 
     let cache = null;
@@ -1100,37 +1045,48 @@ function securityLogOnce_(action, method, secretPresent, clsOrEvent) {
   }
 }
 
-/* Dedupe bucket: unauthenticated requests (none / wrong — callerType
- * no_secret / bad_secret) share one bucket per action-hour, "at most one row
- * per action per hour" as in 0b-1; user_mismatch has its own; each scoped
- * class (managers / therapists / out_of_scope) has its own. A pre-0b-2a row
- * has no callerClass and dedupes as before. */
+/* Dedupe bucket, one row per (bucket, action, hour):
+ *   'open'            — open-action traffic (class open)
+ *   'user_mismatch'   — a valid proxy request with a contradicting body user
+ *   'no_valid_secret' — none and wrong on a gated action share one bucket,
+ *                       "at most one row per action per hour" as in 0b-1.
+ * A pre-0b-2 row has no callerClass and dedupes as before. */
 function securityLogBucket_(action, callerType, hourKey, callerClass) {
   let event = 'no_valid_secret';
   if (callerType === 'user_mismatch') event = 'user_mismatch';
-  else if (callerType === 'scoped_secret') event = 'scoped:' + (callerClass || '');
+  else if (callerClass === 'open') event = 'open';
   return 'seclog|' + event + '|' + action + '|' + hourKey;
 }
 
+/* The class of a SecurityLog row; a pre-0b-2 row (no callerClass) is derived
+ * from its action and callerType. */
+function securityLogRowClass_(action, callerType, callerClass) {
+  const c = String(callerClass || '');
+  if (CALLER_CLASSES.indexOf(c) >= 0) return c;
+  if (callerType === 'user_mismatch') return 'proxy';
+  if (OPEN_ACTIONS.indexOf(String(action)) >= 0) return 'open';
+  return callerType === 'bad_secret' ? 'wrong' : 'none';
+}
+
 /**
- * Editor-run, READ-ONLY: who calls this backend, and with what?
+ * Editor-run, READ-ONLY: who calls this backend, and is it safe to enforce?
  * Summarizes SecurityLog for the last 7 days by action × callerClass
- * (none / wrong / managers / therapists / out_of_scope, and proxy for a
- * user_mismatch event) so each consumer's traffic is visible before anything
- * is enforced. A row written before 0b-2a has no callerClass; its class is
- * derived from callerType (no_secret → none, bad_secret → wrong,
- * user_mismatch → proxy). Each row is one active hour, so `hours` = in how
- * many distinct hours that action was hit by that class.
+ * (open / none / wrong, and proxy for a user_mismatch event). Each row is one
+ * active hour, so `hours` = in how many distinct hours that action was hit.
+ * The summary line "non-open actions without a valid secret: N" counts the
+ * none / wrong hours on actions outside OPEN_ACTIONS — every one of them
+ * would be REFUSED in enforce mode, so N must be 0 before Phase 0b-3.
  * Writes nothing: no cell, no tab, no lock, no property.
  */
 function securityCallersReportNow() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sh = ss.getSheetByName(SECURITY_LOG_SHEET);
-  const report = { since: '', rows: 0, summary: [] };
+  const report = { since: '', rows: 0, summary: [], nonOpenWithoutSecret: 0 };
   const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   report.since = cutoff.toISOString();
   if (!sh || sh.getLastRow() < 2) {
     Logger.log('securityCallersReportNow: SecurityLog is empty — nothing but valid Dashboard (proxy) traffic so far.');
+    Logger.log('non-open actions without a valid secret: 0');
     return report;
   }
   const values = sh.getRange(2, 1, sh.getLastRow() - 1, SECURITY_LOG_COLUMNS.length).getValues();
@@ -1140,13 +1096,14 @@ function securityCallersReportNow() {
     const ts = r[0] instanceof Date ? r[0] : new Date(String(r[0]));
     if (isNaN(ts.getTime()) || ts < cutoff) continue;
     report.rows++;
-    const klass = String(r[6] || '') || callerClassFor_(String(r[4]));
+    const klass = securityLogRowClass_(String(r[1]), String(r[4]), r[6]);
     const key = String(r[1]) + '|' + klass;
     const g = groups[key] || (groups[key] = {
       action: String(r[1]), callerClass: klass, hours: 0, userMismatchHours: 0, methods: {}, firstSeen: '', lastSeen: '',
     });
     g.hours++;
     if (String(r[4]) === 'user_mismatch') g.userMismatchHours++;
+    if ((klass === 'none' || klass === 'wrong') && OPEN_ACTIONS.indexOf(String(r[1])) < 0) report.nonOpenWithoutSecret++;
     g.methods[String(r[2])] = true;
     const iso = ts.toISOString();
     if (!g.firstSeen || iso < g.firstSeen) g.firstSeen = iso;
@@ -1166,71 +1123,9 @@ function securityCallersReportNow() {
       (s.userMismatchHours ? ' (' + s.userMismatchHours + ' with user_mismatch)' : '') + ' · ' + s.methods +
       ' · first ' + s.firstSeen + ' · last ' + s.lastSeen);
   });
+  // Must be 0 before PROXY_SECRET_MODE = 'enforce' (Phase 0b-3).
+  Logger.log('non-open actions without a valid secret: ' + report.nonOpenWithoutSecret);
   return report;
-}
-
-/* A fresh 32-byte random secret, URL-safe base64 without padding
- * (43 characters). Entropy: two v4 UUIDs (2 × 122 random bits) hashed with
- * SHA-256 — the strongest random source Apps Script exposes. */
-function newCallerSecret_() {
-  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,
-    Utilities.getUuid() + Utilities.getUuid(), Utilities.Charset.UTF_8);
-  return Utilities.base64EncodeWebSafe(bytes).replace(/=+$/, '');
-}
-
-/**
- * Editor-run, ONCE: create MANAGERS_CALLER_SECRET and THERAPISTS_CALLER_SECRET.
- * For each property that is UNSET it stores a new random secret and shows the
- * value ONE time in a dialog so it can be copied into the consumer app.
- *   - NEVER overwrites a property that already has a value (rotate by
- *     deleting it in Project Settings → Script Properties, then re-run).
- *   - NEVER writes a value to Logger / console / a sheet — the dialog is the
- *     only place it appears. If the dialog cannot open, the value is still
- *     readable in Project Settings → Script Properties.
- * Returns the names created / kept (never values).
- */
-function generateCallerSecretsNow() {
-  const lock = LockService.getScriptLock();
-  if (lock.tryLock(10000) !== true) throw new Error('generateCallerSecretsNow: ' + LOCK_BUSY_MESSAGE);
-  const created = [];
-  const kept = [];
-  const shown = [];
-  try {
-    const props = PropertiesService.getScriptProperties();
-    Object.keys(CALLER_SECRET_PROPS).forEach(function (name) {
-      const prop = CALLER_SECRET_PROPS[name];
-      const existing = props.getProperty(prop);
-      if (existing !== null && String(existing) !== '') { kept.push(prop); return; }
-      const value = newCallerSecret_();
-      props.setProperty(prop, value);
-      created.push(prop);
-      shown.push(prop + ':\n' + value);
-    });
-  } finally {
-    try { lock.releaseLock(); } catch (_) { /* no-op */ }
-  }
-  const lines = [];
-  if (shown.length) {
-    lines.push('Copy each value now — it is shown only this once.');
-    lines.push('');
-    lines.push(shown.join('\n\n'));
-  }
-  if (kept.length) {
-    lines.push('');
-    lines.push('Already set, NOT changed: ' + kept.join(', '));
-  }
-  if (!shown.length) lines.push('Nothing generated: every caller secret is already set.');
-  let dialogShown = false;
-  try {
-    const ui = SpreadsheetApp.getUi();
-    ui.alert('Caller secrets', lines.join('\n'), ui.ButtonSet.OK);
-    dialogShown = true;
-  } catch (_) { dialogShown = false; }
-  // Names and counts only — never a value.
-  Logger.log('generateCallerSecretsNow: created ' + (created.join(', ') || 'none') +
-    '; kept ' + (kept.join(', ') || 'none') + '.' +
-    (created.length && !dialogShown ? ' The dialog could not open: copy the values from Project Settings → Script Properties.' : ''));
-  return { created: created, kept: kept, dialogShown: dialogShown };
 }
 
 function handle_(params) {
@@ -5306,7 +5201,7 @@ function admittedRosterAuthOk_(params) {
   // Fail closed: no secret configured → refuse (never serve patient PII open).
   if (!expected) return false;
   const got = (params && params.secret) ? String(params.secret) : '';
-  return got === expected;
+  return constantTimeEquals_(got, expected);   // constant-time (0b-2)
 }
 
 /* Normalize a phone to canonical Israeli local form: strip every non-digit,
@@ -5377,7 +5272,7 @@ function meetingReportAuthOk_(params) {
   // Fail closed: no secret configured → refuse (never serve lead data open).
   if (!expected) return false;
   const got = (params && params.secret) ? String(params.secret) : '';
-  return got === expected;
+  return constantTimeEquals_(got, expected);   // constant-time (0b-2)
 }
 
 /* The stable outcome keys a report may carry — must match
@@ -8734,7 +8629,7 @@ function accountingAuthOk_(params) {
   // Fail closed: no secret configured → refuse (never serve financial data open).
   if (!expected) return false;
   const got = (params && params.secret) ? String(params.secret) : '';
-  return got === expected;
+  return constantTimeEquals_(got, expected);   // constant-time (0b-2)
 }
 
 function accStr_(v) {
