@@ -95,7 +95,11 @@
 // /api/export/refund-forecast.xlsx instead of a browser-built CSV. app.js
 // changed — evict v22 so no phone keeps the CSV button. The export route is
 // under /api/, so cacheStrategy() keeps it network-only (never cached).
-var CACHE_VERSION = 'v23';
+// v23 → v24: the גבייה tab gains «חובות פתוחים» (debt aging as of a date,
+// action=debtAging) and its «ייצוא לאקסל» from /api/export/debt-aging.xlsx.
+// app.js, index.html and style.css changed — evict v23. The export is under
+// /api/, so cacheStrategy() keeps it network-only (never cached).
+var CACHE_VERSION = 'v24';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
