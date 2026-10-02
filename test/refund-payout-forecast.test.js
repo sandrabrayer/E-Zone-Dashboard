@@ -401,7 +401,7 @@ function sampleForecast(g) {
  * through the server-side .xlsx builder; the full format checks live in
  * test/xlsx-export.test.js. */
 
-test('G: xlsx — the real forecast becomes five guarded sheets, the missing row never 0', async () => {
+test('G: xlsx — the real forecast becomes four guarded sheets; no-payment discharges are a count only', async () => {
   const ExcelJS = require('exceljs');
   const { buildXlsxReport } = require('../lib/xlsx-report');
   const { buildRefundForecastSpec, isForecastResponse } = require('../lib/refund-forecast-xlsx');
@@ -411,35 +411,42 @@ test('G: xlsx — the real forecast becomes five guarded sheets, the missing row
   const buf = await buildXlsxReport(buildRefundForecastSpec(data, new Date('2026-10-01T06:30:00Z')));
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buf);
-  assert.deepStrictEqual(wb.worksheets.map((w) => w.name), ['סיכום', 'הוחלט', 'ממתין להחלטה', 'חסרים נתוני תשלום', 'לא ניתן לחשב']);
+  // A discharge with no recorded payment is DEBT (CHANGELOG-billing-tab-section-colors.md):
+  // no sheet for it — only a count line in «סיכום».
+  assert.deepStrictEqual(wb.worksheets.map((w) => w.name), ['סיכום', 'הוחלט', 'ממתין להחלטה', 'לא ניתן לחשב']);
   const texts = [];
   wb.worksheets.forEach((ws) => ws.eachRow((row) => row.eachCell((c) => { if (typeof c.value === 'string') texts.push(c.value); })));
   for (const t of texts) assert.ok(!/^[=+\-@\t\r]/.test(t), 'unguarded cell: ' + t);
-  assert.ok(texts.includes(`'=HYPERLINK("http://x")`) && texts.includes(`'@SUM(A1)`) && texts.includes(`'-2+3`) && texts.includes(`'+972-50`));
+  assert.ok(texts.includes(`'=HYPERLINK("http://x")`) && texts.includes(`'@SUM(A1)`) && texts.includes(`'-2+3`));
   assert.ok(texts.includes('הופק ב־01/10/2026 09:30'));
-  const missing = wb.getWorksheet('חסרים נתוני תשלום');
-  let missingRow = null;
-  missing.eachRow((row) => { if (row.getCell(1).value === '<img src=x onerror=alert(1)>') missingRow = row; });
-  assert.ok(missingRow, 'the missing-data row is listed');
-  assert.strictEqual(missingRow.getCell(5).value, 'אין תשלום רשום — לבדוק');
-  missingRow.eachCell((c) => assert.notStrictEqual(c.value, 0, 'missing row never shows 0'));
+  assert.strictEqual(data.missing_payment_data.count, 2);
+  let line = null;
+  wb.getWorksheet('סיכום').eachRow((row) => { if (row.getCell(1).value === 'משוחררים ללא תשלום רשום — מופיעים ב״חובות פתוחים״') line = row; });
+  assert.ok(line, 'the count line is in «סיכום»');
+  assert.strictEqual(line.getCell(2).value, 2, 'its count');
+  assert.ok(line.getCell(3).value === null || line.getCell(3).value === undefined, 'no amount next to it');
+  for (const name of ['<img src=x onerror=alert(1)>', "'+972-50", '+972-50']) assert.ok(!texts.includes(name), 'not listed: ' + name);
 });
 
 /* ======================= H. UI ======================= */
 
-test('H: the forecast HTML — both section labels, everything escaped, missing rows never 0', () => {
+test('H: the forecast HTML — the awaiting label, everything escaped; no-payment discharges are one count line', () => {
   const g = loadGs({ today: '2026-10-01' });
   const data = sampleForecast(g);
   const app = loadApp(() => ({}));
   const html = app.t.payoutForecastHtml(data);
   assert.ok(html.includes('ממתין להחלטה — לא לתשלום'));
-  assert.ok(html.includes('חסרים נתוני תשלום — לבדוק'));
-  assert.ok(html.includes('אין תשלום רשום — לבדוק'));
+  // No section for them any more — one muted line that opens «חובות פתוחים».
+  assert.ok(!html.includes('חסרים נתוני תשלום'));
+  assert.ok(html.includes('<p class="forecast-missing-line"><a href="#debt-aging-view" data-open-debt-aging>2 משוחררים ללא תשלום רשום — מופיעים ב״חובות פתוחים״</a></p>'));
   assert.ok(!html.includes('<img'), 'patient text is escaped');
-  assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'));
+  assert.ok(!html.includes('onerror'), 'the no-payment patients are not listed here');
   assert.ok(html.includes('=HYPERLINK(&quot;http://x&quot;)'));
-  const missingPart = html.slice(html.indexOf('חסרים נתוני תשלום'));
-  assert.ok(!/₪\s*0(?![\d.,])/.test(missingPart), 'no ₪0 in the missing section');
+  const line = html.slice(html.indexOf('forecast-missing-line'), html.indexOf('</p>', html.indexOf('forecast-missing-line')));
+  assert.ok(!/₪/.test(line), 'the line carries no amount');
+  // count 0 → no line at all
+  const none = app.t.payoutForecastHtml(Object.assign({}, data, { missing_payment_data: { count: 0, rows: [] } }));
+  assert.ok(!none.includes('forecast-missing-line'));
 });
 
 test('H: loading then rendered; an error is shown explicitly, never a silent empty list', async () => {
@@ -481,5 +488,5 @@ test('H: index.html extends the existing payout section — no second view', () 
   assert.strictEqual(HTML_SRC.split('id="credits-payout-list"').length, 2, 'one payout list');
   assert.ok(at('id="credits-payout-list"') < at('id="credits-forecast"'), 'the forecast sits under the existing list');
   assert.ok(at('id="credits-forecast"') < at('<h3>סיכום חודשי</h3>'), 'inside the same block');
-  assert.ok(HTML_SRC.includes('id="credits-forecast-export"') && HTML_SRC.includes('ייצוא להנהלת חשבונות'));
+  assert.ok(HTML_SRC.includes('id="credits-forecast-export"') && HTML_SRC.includes('ייצוא זיכויים לאקסל'));
 });

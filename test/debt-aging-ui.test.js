@@ -613,7 +613,7 @@ test('xlsx: «סיכום» — both blocks × buckets × houses, credits line, n
   const review = findRow(ws, 'רשימה');
   assert.ok(review);
   assert.ok(!findRow(ws, 'סה"כ לבדיקה'));
-  // the caveat rides along in «פרטי הדוח»
+  // the caveat rides along as a note line under the title
   assert.ok(rowsOf(ws).some((r) => r.values.includes('1 תשלומים ללא תאריך קבלה — הוערכו לפי תחילת המחזור')));
 });
 
@@ -765,9 +765,10 @@ function loadSw() {
   return { handlers, puts, exports: moduleObj.exports };
 }
 
-test('SW: v24, and /api/export/debt-aging.xlsx is never intercepted or cached', async () => {
+test('SW: v24 or later, and /api/export/debt-aging.xlsx is never intercepted or cached', async () => {
   const sw = loadSw();
-  assert.equal(sw.exports.CACHE_VERSION, 'v24');
+  // v24 shipped with this screen; later PRs bump it again (v25: section colours).
+  assert.ok(Number(String(sw.exports.CACHE_VERSION).slice(1)) >= 24, sw.exports.CACHE_VERSION);
   for (const u of ['/api/export/debt-aging.xlsx?asOf=2026-08-31&house=all&status=all', 'https://ezone.example/api/export/debt-aging.xlsx']) {
     assert.equal(sw.exports.cacheStrategy(u), 'network-only', u);
     assert.equal(sw.exports.shouldCache(u), false, u);

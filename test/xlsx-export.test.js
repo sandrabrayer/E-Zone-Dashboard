@@ -1,4 +1,4 @@
-/* Tests for the «ייצוא להנהלת חשבונות» .xlsx export (CHANGELOG-xlsx-export.md):
+/* Tests for the «ייצוא זיכויים לאקסל» .xlsx export (CHANGELOG-xlsx-export.md):
  *   A. lib/xlsx-report.js — the generated buffer, re-opened with exceljs: RTL,
  *      frozen header, autoFilter, number formats, real date cells, bold totals,
  *      column widths, sheet names and the formula guard.
@@ -150,7 +150,11 @@ test('A: the total row is bold with the values given; column widths are set', as
   assert.strictEqual(tot.getCell(2).numFmt, '"₪"#,##0');
   assert.strictEqual(tot.getCell(4).value, 8);
   [1, 2, 3, 4].forEach((c) => assert.strictEqual(tot.getCell(c).font.bold, true));
-  assert.deepStrictEqual([1, 2, 3, 4].map((c) => ws.getColumn(c).width), [25, 15, 13, 10], 'a width under 10 is raised to 10');
+  // Widths are computed from the longest displayed value, never below 12
+  // (CHANGELOG-billing-tab-section-colors.md); the spec's `width` is ignored.
+  const widths = [1, 2, 3, 4].map((c) => ws.getColumn(c).width);
+  widths.forEach((w) => assert.ok(w >= 12 && w <= 60, String(w)));
+  assert.ok(widths[0] >= '=HYPERLINK("http://evil")'.length + 1, 'the longest name fits');
 });
 
 test('A: empty rows → an explicit empty text; a bad spec throws', async () => {
@@ -207,9 +211,11 @@ async function forecastBook(data) {
   return openBook(await report.buildXlsxReport(forecastXlsx.buildRefundForecastSpec(data || forecastFixture(), NOW)));
 }
 
-test('B: five sheets with the agreed Hebrew names, every one RTL with a frozen header', async () => {
+test('B: four sheets with the agreed Hebrew names, every one RTL with a frozen header', async () => {
   const wb = await forecastBook();
-  assert.deepStrictEqual(wb.worksheets.map((w) => w.name), ['סיכום', 'הוחלט', 'ממתין להחלטה', 'חסרים נתוני תשלום', 'לא ניתן לחשב']);
+  // No sheet for discharges with no recorded payment — they are debt, shown in
+  // «חובות פתוחים»; «סיכום» keeps their count (CHANGELOG-billing-tab-section-colors.md).
+  assert.deepStrictEqual(wb.worksheets.map((w) => w.name), ['סיכום', 'הוחלט', 'ממתין להחלטה', 'לא ניתן לחשב']);
   wb.worksheets.forEach((ws) => {
     assert.strictEqual(ws.views[0].rightToLeft, true, ws.name + ' RTL');
     assert.strictEqual(ws.views[0].state, 'frozen', ws.name + ' frozen');
@@ -236,7 +242,7 @@ test('B: «הוחלט» — stored payout dates as dates, money, rule labels, gu
   assert.strictEqual(tot.getCell(4).font.bold, true);
 });
 
-test('B: «ממתין להחלטה» / «חסרים נתוני תשלום» / «לא ניתן לחשב» — rows, never a 0 for missing', async () => {
+test('B: «ממתין להחלטה» / «לא ניתן לחשב» — rows; no-payment discharges are never listed', async () => {
   const wb = await forecastBook();
   const aw = wb.getWorksheet('ממתין להחלטה');
   const a = findRow(aw, `'=HYPERLINK("http://x")`);
@@ -246,14 +252,8 @@ test('B: «ממתין להחלטה» / «חסרים נתוני תשלום» / «
   assert.strictEqual(a.getCell(7).value.toISOString().slice(0, 10), '2026-10-15');
   assert.strictEqual(findRow(aw, 'סה"כ ממתין להחלטה (הצעה בלבד)').getCell(5).value, 2345);
 
-  const mi = wb.getWorksheet('חסרים נתוני תשלום');
-  const m = findRow(mi, "'+972-50");
-  assert.ok(m);
-  assert.strictEqual(m.getCell(5).value, 'אין תשלום רשום — לבדוק');
-  m.eachCell((c) => assert.notStrictEqual(c.value, 0, 'no 0 on a missing row'));
-  const header = mi.getRow(mi.views[0].ySplit);
-  const headers = []; header.eachCell((c) => headers.push(c.value));
-  assert.ok(!headers.some((h) => /סכום/.test(h)), 'the missing sheet has no amount column');
+  assert.strictEqual(wb.getWorksheet('חסרים נתוני תשלום'), undefined);
+  wb.worksheets.forEach((w) => assert.ok(!findRow(w, "'+972-50"), 'the no-payment patient is not listed in ' + w.name));
 
   const un = wb.getWorksheet('לא ניתן לחשב');
   const u = findRow(un, 'יוסי');
@@ -271,7 +271,9 @@ test('B: «סיכום» — per payout date and per house for decided and awaiti
   assert.ok(texts.some((t) => t.startsWith('ממתין להחלטה — לא לתשלום — לפי תאריך תשלום')));
   assert.ok(texts.some((t) => t.startsWith('ממתין להחלטה — לא לתשלום — לפי בית')));
   // the counts block
-  assert.strictEqual(findRow(ws, 'חסרים נתוני תשלום — לבדוק').getCell(2).value, 1);
+  const line = findRow(ws, 'משוחררים ללא תשלום רשום — מופיעים ב״חובות פתוחים״');
+  assert.strictEqual(line.getCell(2).value, 1, 'count only');
+  assert.ok(line.getCell(3).value == null, 'no amount');
   assert.strictEqual(findRow(ws, 'לא ניתן לחשב — לבדוק').getCell(2).value, 1);
   assert.strictEqual(findRow(ws, 'אפס לפי מדיניות (לא מוצגים)').getCell(2).value, 4);
   // per-house rows
@@ -337,7 +339,7 @@ test('B: the server label copies match public/app.js exactly', () => {
   assert.deepStrictEqual(forecastXlsx.CREDIT_TYPE_LABELS, lit('CREDIT_TYPE_LABELS'));
   assert.deepStrictEqual(forecastXlsx.SECTION_LABELS, lit('PAYOUT_FORECAST_SECTION_LABELS'));
   assert.deepStrictEqual(forecastXlsx.ERROR_LABELS, lit('PAYOUT_FORECAST_ERROR_LABELS'));
-  assert.ok(APP_SRC.includes(`const PAYOUT_FORECAST_MISSING_NOTE = '${forecastXlsx.MISSING_NOTE}';`));
+  assert.ok(APP_SRC.includes(`const PAYOUT_FORECAST_MISSING_LINE = '${forecastXlsx.MISSING_LINE}';`));
 });
 
 /* ======================= C. the route ======================= */
@@ -405,7 +407,7 @@ test('C: success — xlsx content type, RFC 5987 filename, no-store, a real work
   assert.strictEqual(Number(res.headers['content-length']), res.body.length);
   assert.deepStrictEqual(users, ['ורד']);
   const wb = await openBook(res.body);
-  assert.strictEqual(wb.worksheets.length, 5);
+  assert.strictEqual(wb.worksheets.length, 4);
   // no patient data in the logs
   const joined = logs.lines.join('\n');
   for (const p of ['@SUM(A1)', 'דנה', 'HYPERLINK', '+972-50', 'יוסי', '2345', '1500']) assert.ok(!joined.includes(p), 'log leaked ' + p);
@@ -485,7 +487,7 @@ test('E: the CSV path and its code are gone; the button is the .xlsx export', ()
   }
   assert.ok(APP_SRC.includes("const PAYOUT_FORECAST_XLSX_URL = '/api/export/refund-forecast.xlsx';"));
   assert.ok(/busyButton\(exp, 'load', exportPayoutForecastXlsx\)/.test(APP_SRC), 'spinner while busy');
-  assert.ok(HTML_SRC.includes('id="credits-forecast-export"') && HTML_SRC.includes('ייצוא להנהלת חשבונות'));
+  assert.ok(HTML_SRC.includes('id="credits-forecast-export"') && HTML_SRC.includes('ייצוא זיכויים לאקסל'));
 });
 
 function fakeEl() {
