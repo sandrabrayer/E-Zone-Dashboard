@@ -278,6 +278,8 @@ const state = {
   /* The name inside the signed session cookie, echoed by /api/me. Display and
    * control-gating only; every server-side decision reads the cookie itself. */
   sessionUser: '',
+  /* 'personal' | 'shared' (dual window) | '' — from /api/me. Display only. */
+  sessionAuth: '',
   payments: [],
   /* Credits / refunds ledger rows (Credits sheet), loaded by getCredits in
    * loadAll. Empty on a fresh install or an older deploy. */
@@ -878,8 +880,10 @@ function setSaving(on) {
  * screen (see apiGet/apiPost). A correct PIN sets the cookie and re-enters.
  * Single mode — being authenticated means edit access; viewer mode was removed. */
 
-/* Reveal the PIN overlay and hide the app. Called at startup only implicitly
- * (via a 401) and whenever a session expires mid-use. */
+/* Reveal the login overlay and hide the app. Called at startup only implicitly
+ * (via a 401) and whenever a session expires mid-use — including a personal
+ * session whose PIN was reset (pinVersion++) or revoked: the server answers
+ * 401 and this brings the person back to step 1 / 2. Clears every PIN field. */
 function showPinScreen() {
   const pin = document.getElementById('pin-screen');
   const app = document.getElementById('app');
@@ -887,6 +891,160 @@ function showPinScreen() {
   if (app) app.classList.add('hidden');
   const input = document.getElementById('pin-input');
   if (input) { input.value = ''; try { input.focus(); } catch (_) { /* no-op */ } }
+  const personal = document.getElementById('login-pin-input');
+  if (personal) personal.value = '';
+  loadLoginOptions().catch(() => { /* the screen still works with the shared field */ });
+}
+
+/* ===== Personal-PIN login (PR B) =====
+ *
+ * Step 1: tap your name — GET /api/login-users lists ONLY users with an
+ * ACTIVE personal-PIN record. Step 2: the 6-digit PIN → POST /api/verify-pin
+ * { userId, pin }. The last chosen name is remembered per device
+ * (localStorage, wrapped: the login works without it). During the 7-day dual
+ * window a small link opens the old shared field (#pin-input → the
+ * pre-PR-B flow below, unchanged). The PIN lives only in the input and the
+ * one request body — never stored, never logged. */
+const LOGIN_REMEMBER_KEY = 'ezone.lastLoginUser';
+let _loginUsers = [];
+let _loginChosen = null;
+
+function rememberLoginUser(id) {
+  try { localStorage.setItem(LOGIN_REMEMBER_KEY, String(id || '')); } catch (_) { /* private mode: fine */ }
+}
+function rememberedLoginUser() {
+  try { return String(localStorage.getItem(LOGIN_REMEMBER_KEY) || ''); } catch (_) { return ''; }
+}
+
+/* The Hebrew message for a failed login response. Pure. */
+function loginErrorMessage(status, error) {
+  if (status === 429 && error === 'locked') return 'נעול ל־15 דקות — יותר מדי ניסיונות שגויים';
+  if (status === 429) return 'יותר מדי ניסיונות — נסו שוב בעוד כמה דקות';
+  if (status === 503 || error === 'not_configured') return 'הכניסה עוד לא הוגדרה בשרת — פנו לסנדרה';
+  if (status === 403 && error === 'shared_pin_closed') return 'הקוד המשותף כבר לא בתוקף — היכנסו עם קוד אישי';
+  if (status === 401) return 'קוד שגוי';
+  return 'הכניסה נכשלה — נסו שוב';
+}
+
+/* Step-1 buttons as HTML. Every name goes through escapeHtml (the names come
+ * from the server's fixed model, but nothing reaches innerHTML unescaped). */
+function loginNamesHtml(users) {
+  return (Array.isArray(users) ? users : []).map(u =>
+    '<button type="button" class="btn primary user-option" data-user-id="' + escapeHtml(u && u.id) + '">' +
+    escapeHtml(u && u.name) + '</button>').join('');
+}
+
+/* The shared-session banner text. Pure. */
+function sharedBannerText(untilDisplay) {
+  return untilDisplay
+    ? 'נכנסת עם הקוד המשותף — עד ' + untilDisplay + ' יש לעבור לקוד אישי'
+    : 'נכנסת עם הקוד המשותף — יש לעבור לקוד אישי';
+}
+
+function showLoginStep(step) {
+  ['name', 'pin', 'shared'].forEach(k => {
+    const el = document.getElementById('login-step-' + k);
+    if (el) el.classList.toggle('hidden', k !== step);
+  });
+  const link = document.getElementById('login-shared-link');
+  if (link) link.classList.toggle('hidden', step === 'shared' || !_loginSharedOpen);
+  const focusId = step === 'pin' ? 'login-pin-input' : step === 'shared' ? 'pin-input' : '';
+  const f = focusId && document.getElementById(focusId);
+  if (f) { try { f.focus(); } catch (_) { /* no-op */ } }
+}
+
+let _loginSharedOpen = false;
+
+/* Fetch the name list + the dual-window state, then render step 1 (or jump
+ * straight to step 2 for the name this device chose last time). */
+async function loadLoginOptions() {
+  const res = await fetch('/api/login-users');
+  const data = res && res.ok ? await res.json() : null;
+  _loginUsers = data && Array.isArray(data.users) ? data.users : [];
+  _loginSharedOpen = !!(data && data.shared && data.shared.open);
+  renderLoginNames();
+  const last = rememberedLoginUser();
+  const hit = _loginUsers.find(u => u.id === last);
+  if (hit) chooseLoginUser(hit);
+  else if (!_loginUsers.length && _loginSharedOpen) showLoginStep('shared');
+  else showLoginStep('name');
+}
+
+function renderLoginNames() {
+  const box = document.getElementById('login-names');
+  const empty = document.getElementById('login-names-empty');
+  if (!box) return;
+  box.innerHTML = loginNamesHtml(_loginUsers);
+  if (empty) empty.classList.toggle('hidden', _loginUsers.length > 0);
+  const buttons = box.querySelectorAll ? box.querySelectorAll('button[data-user-id]') : [];
+  Array.prototype.forEach.call(buttons, btn => {
+    btn.onclick = () => {
+      const u = _loginUsers.find(x => x.id === btn.getAttribute('data-user-id'));
+      if (u) chooseLoginUser(u);
+    };
+  });
+}
+
+function chooseLoginUser(u) {
+  _loginChosen = u;
+  const nameEl = document.getElementById('login-chosen-name');
+  if (nameEl) nameEl.textContent = u.name;
+  const err = document.getElementById('login-error');
+  if (err) err.classList.add('hidden');
+  const input = document.getElementById('login-pin-input');
+  if (input) input.value = '';
+  showLoginStep('pin');
+}
+
+function tryPersonalLogin() {
+  const btn = document.getElementById('login-pin-submit');
+  return busyButton(btn, 'load', tryPersonalLoginWorker);
+}
+
+async function tryPersonalLoginWorker() {
+  const input = document.getElementById('login-pin-input');
+  const errEl = document.getElementById('login-error');
+  errEl.classList.add('hidden');
+  if (!_loginChosen) { showLoginStep('name'); return; }
+  const userId = _loginChosen.id;
+  try {
+    const res = await fetch('/api/verify-pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: userId, pin: input.value }),
+    });
+    input.value = '';
+    if (res.ok) {
+      rememberLoginUser(userId);
+      _sessionUserChecked = false; // re-read /api/me for the new session
+      enterApp();
+      return;
+    }
+    const data = await res.json().catch(() => ({}));
+    errEl.textContent = loginErrorMessage(res.status, data && data.error);
+    errEl.classList.remove('hidden');
+  } catch (_) {
+    input.value = '';
+    errEl.textContent = loginErrorMessage(0, '');
+    errEl.classList.remove('hidden');
+  }
+}
+
+/* The header / banner state for a verified session (/api/me). The banner is
+ * persistent for a shared session; «קוד אישי חדש» shows only for Sandra's
+ * approver session — the server re-checks both (403 otherwise). */
+function applySessionInfo(info) {
+  const i = info || {};
+  state.sessionAuth = String(i.auth || '');
+  renderWhoami(i.user || '');
+  const banner = document.getElementById('shared-banner');
+  if (banner) {
+    const shared = state.sessionAuth === 'shared';
+    banner.textContent = shared ? sharedBannerText(i.sharedUntil || '') : '';
+    banner.classList.toggle('hidden', !shared);
+  }
+  const adminBtn = document.getElementById('pin-admin-open');
+  if (adminBtn) adminBtn.classList.toggle('hidden', i.approver !== true);
 }
 
 function revealApp() {
@@ -918,9 +1076,12 @@ async function tryPinWorker() {
       await afterPinSuccess(pin);
       return;
     }
+    const data = res.json ? await res.json().catch(() => ({})) : {};
+    errEl.textContent = loginErrorMessage(res.status, data && data.error);
     errEl.classList.remove('hidden');
     input.value = '';
   } catch (_) {
+    errEl.textContent = loginErrorMessage(0, '');
     errEl.classList.remove('hidden');
     input.value = '';
   }
@@ -940,11 +1101,18 @@ async function tryPinWorker() {
  * null when the answer is not a clean 200 (unauthenticated / network) —
  * callers must not block entry on null. */
 async function fetchSessionUser() {
+  const info = await fetchSessionInfo();
+  return info === null ? null : info.user;
+}
+
+/* The whole /api/me answer ({ user, auth, approver, sharedUntil }, user
+ * always a string), or null when it is not a clean 200. */
+async function fetchSessionInfo() {
   try {
     const res = await fetch('/api/me');
     if (!res.ok) return null;
     const data = await res.json();
-    return typeof data.user === 'string' ? data.user : '';
+    return Object.assign({}, data, { user: typeof data.user === 'string' ? data.user : '' });
   } catch (_) {
     return null;
   }
@@ -953,13 +1121,14 @@ async function fetchSessionUser() {
 /* After a correct PIN: no name on the fresh cookie → picker (needs the PIN
  * for the re-issue); otherwise straight into the app with the header line. */
 async function afterPinSuccess(pin) {
-  const user = await fetchSessionUser();
+  const info = await fetchSessionInfo();
+  const user = info === null ? null : info.user;
   _sessionUserChecked = true; // this WAS the check — enterApp must not redo it
   if (user === '') {
     showUserPicker(pin);
     return;
   }
-  renderWhoami(user || '');
+  if (info) applySessionInfo(info); else renderWhoami('');
   enterApp();
 }
 
@@ -985,6 +1154,7 @@ function showUserPicker(pin) {
         if (!res.ok) { errEl.classList.remove('hidden'); return; }
         screen.classList.add('hidden');
         renderWhoami(name);
+        _sessionUserChecked = false; // let enterApp re-read /api/me (the banner)
         enterApp();
       } catch (_) {
         errEl.classList.remove('hidden');
@@ -1038,13 +1208,13 @@ let _sessionUserChecked = false;
 async function checkSessionUser() {
   if (_sessionUserChecked) return;
   _sessionUserChecked = true;
-  const user = await fetchSessionUser();
-  if (user === null) return;
-  if (user === '') {
+  const info = await fetchSessionInfo();
+  if (info === null) return;
+  if (info.user === '') {
     showPinScreen();
     return;
   }
-  renderWhoami(user);
+  applySessionInfo(info);
 }
 
 /* Startup: wire the PIN form + logout + tabs once, then attempt the authorized
@@ -1054,6 +1224,18 @@ function initPin() {
   const submitBtn = document.getElementById('pin-submit');
   submitBtn.onclick = tryPin;
   input.addEventListener('keydown', e => { if (e.key === 'Enter') tryPin(); });
+
+  const pInput = document.getElementById('login-pin-input');
+  const pSubmit = document.getElementById('login-pin-submit');
+  if (pSubmit) pSubmit.onclick = tryPersonalLogin;
+  if (pInput) pInput.addEventListener('keydown', e => { if (e.key === 'Enter') tryPersonalLogin(); });
+  const back = document.getElementById('login-back');
+  if (back) back.onclick = () => { _loginChosen = null; rememberLoginUser(''); showLoginStep('name'); };
+  const sharedLink = document.getElementById('login-shared-link');
+  if (sharedLink) sharedLink.onclick = () => showLoginStep('shared');
+  const sharedBack = document.getElementById('login-shared-back');
+  if (sharedBack) sharedBack.onclick = () => showLoginStep(_loginChosen ? 'pin' : 'name');
+  initPinAdmin();
 
   const logoutBtn = document.getElementById('logout');
   if (logoutBtn) logoutBtn.onclick = () => busyButton(logoutBtn, 'load', async () => {
@@ -1072,6 +1254,149 @@ function enterApp() {
   revealApp();
   loadAll();             // getData rides the cookie; a 401 flips to the PIN screen
   checkSessionUser();    // fire-and-forget: whoami line / one-time picker routing
+}
+
+/* ===== «קוד אישי חדש» — Sandra only (PR B) =====
+ *
+ * Shown only for Sandra's personal approver session (the button stays hidden
+ * otherwise, and the server answers 403 to anyone else). Picks a user, takes
+ * the new PIN twice, and shows the ONE record line the server returns, with
+ * a «העתקה» button and the steps for Railway. The page saves nothing: the
+ * PIN fields are cleared as soon as the request is sent. */
+const PIN_ADMIN_ERRORS = {
+  weak_pin: 'קוד חלש — לא 000000, לא 123456, לא ספרה אחת שחוזרת ולא רצף עולה או יורד',
+  pin_mismatch: 'שני הקודים לא זהים',
+  unknown_user: 'משתמש לא מוכר',
+  forbidden: 'רק סנדרה, בכניסה עם הקוד האישי שלה, יכולה ליצור קוד אישי',
+  rate_limited: 'יותר מדי ניסיונות — נסו שוב בעוד כמה דקות',
+  not_configured: 'PIN_PEPPER לא מוגדר ב-Railway',
+};
+
+function pinAdminErrorMessage(status, error) {
+  if (PIN_ADMIN_ERRORS[error]) return PIN_ADMIN_ERRORS[error];
+  if (status === 403) return PIN_ADMIN_ERRORS.forbidden;
+  if (status === 401) return 'נדרשת התחברות מחדש';
+  return 'היצירה נכשלה — נסו שוב';
+}
+
+/* The option label for one user. Sandra appears only as a reset of her own
+ * code. Pure. */
+function pinAdminOptionLabel(u) {
+  if (u.id === 'sandra') return u.name + ' — איפוס הקוד שלי';
+  if (!u.hasRecord) return u.name + ' (חדש)';
+  return u.name + (u.status === 'revoked' ? ' (מבוטל — איפוס מחזיר אותו)' : ' (איפוס)');
+}
+
+/* The Railway steps for the line just made. Pure: returns plain strings. */
+function pinAdminSteps(name, reset) {
+  return [
+    'לוחצים «העתקה».',
+    'Railway ← השירות של הדשבורד ← Variables ← USER_PIN_HASHES ← עריכה.',
+    reset
+      ? 'מוחקים את הרשומה הקיימת של ' + name + ' (מ־{"id" ועד ה־} שלה) ומדביקים במקומה את השורה החדשה.'
+      : 'מוסיפים פסיק אחרי הרשומה האחרונה ומדביקים את השורה לפני הסוגר ].',
+    'שומרים. Railway עולה מחדש. אם העלייה נכשלת — ההדבקה שבורה (פסיק או סוגר חסרים); מתקנים ושומרים שוב.',
+    reset
+      ? 'אחרי העלייה הקוד הישן של ' + name + ' מפסיק לעבוד, וכל מכשיר שמחובר בשמו/ה מתנתק.'
+      : 'מוסרים את הקוד ל־' + name + ' פנים אל פנים או בשיחת טלפון — לא בוואטסאפ ולא במייל.',
+  ];
+}
+
+let _pinAdminUsers = [];
+
+function initPinAdmin() {
+  const open = document.getElementById('pin-admin-open');
+  if (open) open.onclick = () => busyButton(open, 'load', openPinAdmin)
+    .catch(() => showError('הטעינה נכשלה — נסו שוב'));
+  const close = document.getElementById('pin-admin-close');
+  if (close) close.onclick = closePinAdmin;
+  const make = document.getElementById('pin-admin-make');
+  if (make) make.onclick = () => busyButton(make, 'save', makePinAdminRecord)
+    .catch(() => pinAdminShowError(pinAdminErrorMessage(0, '')));
+  const copy = document.getElementById('pin-admin-copy');
+  if (copy) copy.onclick = copyPinAdminLine;
+}
+
+function pinAdminShowError(msg) {
+  const el = document.getElementById('pin-admin-error');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.classList.toggle('hidden', !msg);
+}
+
+async function openPinAdmin() {
+  const screen = document.getElementById('pin-admin-screen');
+  pinAdminShowError('');
+  document.getElementById('pin-admin-result').classList.add('hidden');
+  document.getElementById('pin-admin-line').value = '';
+  const res = await fetch('/api/pin-admin/users');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) {
+    if (res.status === 401) { showPinScreen(); return; }
+    showError(pinAdminErrorMessage(res.status, data.error));
+    return;
+  }
+  _pinAdminUsers = (data.users || []).filter(u => u.id !== 'sandra' || u.hasRecord);
+  const sel = document.getElementById('pin-admin-user');
+  sel.textContent = '';
+  _pinAdminUsers.forEach(u => {
+    const o = document.createElement('option');
+    o.value = u.id;
+    o.textContent = pinAdminOptionLabel(u);
+    sel.appendChild(o);
+  });
+  const first = _pinAdminUsers.find(u => !u.hasRecord) || _pinAdminUsers[0];
+  if (first) sel.value = first.id;
+  screen.classList.remove('hidden');
+}
+
+function closePinAdmin() {
+  ['pin-admin-pin', 'pin-admin-pin2'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const line = document.getElementById('pin-admin-line');
+  if (line) line.value = '';
+  const screen = document.getElementById('pin-admin-screen');
+  if (screen) screen.classList.add('hidden');
+}
+
+async function makePinAdminRecord() {
+  pinAdminShowError('');
+  const sel = document.getElementById('pin-admin-user');
+  const a = document.getElementById('pin-admin-pin');
+  const b = document.getElementById('pin-admin-pin2');
+  const user = _pinAdminUsers.find(u => u.id === sel.value);
+  const body = JSON.stringify({ userId: sel.value, pin: a.value, pin2: b.value });
+  a.value = '';
+  b.value = '';
+  const res = await fetch('/api/pin-admin/record', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) { closePinAdmin(); showPinScreen(); return; }
+  if (!res.ok || !data.ok || typeof data.record !== 'string') {
+    pinAdminShowError(pinAdminErrorMessage(res.status, data.error));
+    return;
+  }
+  document.getElementById('pin-admin-line').value = data.record;
+  const steps = document.getElementById('pin-admin-steps');
+  steps.textContent = '';
+  pinAdminSteps(user ? user.name : '', !!(user && user.hasRecord)).forEach(t => {
+    const li = document.createElement('li');
+    li.textContent = t;
+    steps.appendChild(li);
+  });
+  document.getElementById('pin-admin-result').classList.remove('hidden');
+}
+
+async function copyPinAdminLine() {
+  const line = document.getElementById('pin-admin-line');
+  if (!line || !line.value) return;
+  try {
+    await navigator.clipboard.writeText(line.value);
+    showToast('השורה הועתקה');
+  } catch (_) {
+    try { line.select(); document.execCommand('copy'); showToast('השורה הועתקה'); }
+    catch (__) { showError('ההעתקה נכשלה — סמנו את השורה והעתיקו ידנית'); }
+  }
 }
 
 /* ===== Top tabs ===== */
@@ -1388,6 +1713,9 @@ async function loadAll() {
     }
   } catch (e) {
     console.error('[E-ZONE] loadAll failed:', e);
+    // A 401 already brought up the login screen (apiGet → showPinScreen);
+    // an «unauthorized» toast on top of it only lingers after the login.
+    if (e && e.message === 'unauthorized') return;
     showError('טעינת נתונים מהגיליון נכשלה — ' + e.message);
   } finally {
     setLoading(false);

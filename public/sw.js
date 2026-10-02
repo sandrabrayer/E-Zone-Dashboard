@@ -104,7 +104,12 @@
 // missing-payment section for one line linking to «חובות פתוחים»; the export
 // button reads «ייצוא זיכויים לאקסל». app.js, index.html and style.css
 // changed — evict v24.
-var CACHE_VERSION = 'v25';
+// v25 → v26: personal-PIN login (tap your name → 6-digit PIN), the shared-PIN
+// banner and Sandra's «קוד אישי חדש». app.js, index.html and style.css
+// changed — evict v25 so no phone keeps the 4-digit-only login. The login
+// and every /api/ route (/api/verify-pin, /api/login-users, /api/me,
+// /api/pin-admin/*) stay network-only: cacheStrategy() never caches /api/.
+var CACHE_VERSION = 'v26';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

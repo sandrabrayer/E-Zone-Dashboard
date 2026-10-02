@@ -265,6 +265,51 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
   text-decoration: underline;
 }
 
+/* ===== Login: personal PINs (PR B) =====
+ * Step 1 — one big button per name (≥ 56px tall: a phone touch target with
+ * room to spare). Step 2 — the 6-digit PIN. The shared-PIN link is small and
+ * secondary on purpose: it only exists during the 7-day dual window. */
+.login-names .user-option {
+  min-height: 56px;
+  font-size: 20px;
+  font-weight: 700;
+}
+.login-chosen-name { color: var(--text); font-size: 20px; font-weight: 700; }
+.login-link {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  padding: 10px 0;          /* a tappable line, not a 12px sliver */
+  background: none; border: none;
+  color: var(--primary); font-size: 14px; cursor: pointer;
+  text-decoration: underline;
+}
+.login-shared-link { color: var(--text-muted); font-size: 13px; }
+
+/* Shared-session banner: amber, persistent (no close button) while a
+ * session opened with the shared APP_PIN is in use. */
+.shared-banner {
+  position: sticky; top: 0; z-index: 850;
+  background: #ffb020;
+  color: #241600;
+  padding: 10px 16px;
+  font-size: 14px; font-weight: 700;
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* «קוד אישי חדש» (Sandra only). The record line is LTR JSON. */
+.pin-admin .pin-admin-result { margin-top: 12px; }
+.pin-admin .pin-admin-line {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+  background: var(--bg-2);
+}
+.pin-admin .pin-admin-steps { margin: 12px 0 0; padding-inline-start: 20px; font-size: 13px; color: var(--text-muted); line-height: 1.6; }
+.pin-admin .pin-admin-steps code { direction: ltr; unicode-bidi: isolate; color: var(--text); }
+
 /* ===== Banners ===== */
 .error-banner {
   position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
