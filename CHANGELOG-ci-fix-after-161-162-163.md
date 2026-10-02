@@ -56,19 +56,28 @@ and nothing was added or removed. The bug was the tests' size assumption, so
 
 ## Fix
 
-In the three tests, the 6000-char window is replaced with the whole `handle_`
-function — from `function handle_` to the next top-level `\nfunction ` — the
-same pattern 7 other tests in the repo already use (e.g.
-`test/audit-log-dedupe.test.js`, `test/occupancy-snapshots.test.js`). An
-`assert.ok` now fails loudly if `handle_` can't be located.
+The fix is to the tests, not Code.gs: replace the 6000-char window with the
+whole `handle_` function, from `function handle_` to the next top-level
+`\nfunction `. Seven other tests in the repo already do it this way (e.g.
+`test/audit-log-dedupe.test.js`, `test/occupancy-snapshots.test.js`).
 
-The expected list is **unchanged**. This makes the guard **stricter**, not
-weaker: the old window could not see an endpoint added after character 6000;
-the new one sees the whole dispatcher. Verified by temporarily appending
-`if (action === 'evilPayment') ...` to the end of `handle_`: all 3 tests fail
-(reverted afterwards). No test was deleted or skipped.
+**This exact fix reached the deploy branch first, in PR #164
+(`e141783 test: read the whole handle_ in the no-new-endpoint guards`, merged as
+`e236140`)**, while this branch was being prepared. This branch made the same
+change on its own. After rebasing onto `e236140`, that test commit only repeated
+#164, so it was dropped and the base version kept. The only thing this branch
+adds is this changelog, with the fuller root cause: #164's commit message blames
+#162 alone, but #161 was needed too (see the offset table above).
+
+The expected list is **unchanged**, and the guard is **stricter** than before,
+not weaker. The old window could not see an endpoint added after character 6000;
+the new slice covers the whole dispatcher. To check this, an
+`if (action === 'evilPayment') ...` line was temporarily added at the very end
+of `handle_`. All 3 tests failed, and the line was then removed. No test was
+deleted, skipped or weakened, and Code.gs was not changed.
 
 ## Verification
 
-`npm ci` then `npm test` (exactly as `.github/workflows/test.yml`), 3 runs in a
-row: 1822 tests, 1822 pass, 0 fail each time.
+Ran `npm ci`, then `npm test` exactly as `.github/workflows/test.yml` does, on
+this branch rebased onto `e236140`. Three runs in a row: **1850 tests, 1850 pass,
+0 fail** each time (1822 tests before #164 added 28).
