@@ -462,9 +462,10 @@ function loadSw() {
   return { handlers, puts, exports: moduleObj.exports };
 }
 
-test('D: the SW never caches /api/export/* and is bumped to v23', async () => {
+test('D: the SW never caches /api/export/* and is bumped to v23 or later', async () => {
   const sw = loadSw();
-  assert.strictEqual(sw.exports.CACHE_VERSION, 'v23');
+  // v23 shipped with this export; later PRs bump it again (v24: debt aging).
+  assert.ok(Number(String(sw.exports.CACHE_VERSION).slice(1)) >= 23, sw.exports.CACHE_VERSION);
   for (const u of ['/api/export/refund-forecast.xlsx', 'https://ezone.example/api/export/refund-forecast.xlsx', '/api/export/anything.xlsx?x=1']) {
     assert.strictEqual(sw.exports.cacheStrategy(u), 'network-only', u);
     assert.strictEqual(sw.exports.shouldCache(u), false, u);
