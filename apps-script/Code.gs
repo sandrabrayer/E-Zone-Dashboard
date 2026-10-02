@@ -9587,6 +9587,534 @@ function accountingCredits_(params) {
   };
 }
 
+/* ===== Ortal's daily payments digest (time-driven, mail only) ===============
+ *
+ * One email per working morning (Sunday–Thursday, ~08:00 Asia/Jerusalem) to
+ * Ortal, listing every payment RECORDED since the last successful digest, so
+ * she can check each one against the bank. Read-only against every sheet: it
+ * reads Payments and writes nothing but its own Script Properties.
+ *
+ * WHAT "RECORDED" MEANS — the charge stamp from the accounting source feed
+ * (CHANGELOG-accounting-source-feed.md): `chargedAt` is set when a row becomes
+ * paid/partial and RE-SET when its amountPaid moves. It means "reported paid",
+ * never "seen in the bank" — confirming that is exactly what this mail asks
+ * Ortal to do. A historical row (blank stamp) is never listed.
+ *
+ * THE WINDOW is (DIGEST_LAST_AT, now], compared as INSTANTS (the stamps carry
+ * their own offset). DIGEST_LAST_AT moves ONLY after MailApp succeeded, under
+ * the script lock, so a failed send is simply covered by the next run, and
+ * Sunday's mail naturally spans Thursday-after-send through Saturday. With no
+ * DIGEST_LAST_AT yet (the first run) the window is the last
+ * DIGEST_FIRST_RUN_DAYS days.
+ *
+ * WHAT IS LISTED — paid/partial rows whose chargedAt is in the window. A void
+ * row (PR #144) is excluded even if a stamp survived on it. A row that an
+ * EARLIER digest already sent and that was re-stamped since (its amount was
+ * edited, or it was re-recorded) is marked «עודכן», with the previously sent
+ * amount when it differs. That needs memory the sheet does not keep — the
+ * charge stamp is overwritten, not versioned — so each successful send records
+ * {row → amount sent} in a small chunked ledger in Script Properties, pruned
+ * after DIGEST_LEDGER_KEEP_DAYS.
+ *
+ * WHAT IS NEVER IN THE MAIL — anything clinical, any phone number, any id
+ * (paymentUid / patientUid / the billing triple / the row id). The row is
+ * projected onto an explicit allow-list (digestRow_) before anything renders,
+ * and every value is HTML-escaped.
+ *
+ * RECIPIENTS COME ONLY FROM SCRIPT PROPERTIES, never from code:
+ *   DIGEST_TO        Ortal — REQUIRED. Missing or malformed → nothing is sent
+ *                    and a warning is logged (fail closed).
+ *   DIGEST_CC        Sandra — CC'd only while today <= DIGEST_CC_UNTIL.
+ *   DIGEST_CC_UNTIL  'YYYY-MM-DD' (the trial week). Missing / malformed → no CC.
+ *
+ * Editor-run entry points (Run dropdown; handle_ never names any of them):
+ *   authorizeDigestNow, previewDigestNow, sendDigestTestNow,
+ *   installDigestTriggerNow. Trigger handler: paymentsDigestJob.
+ */
+const DIGEST_PROP_TO        = 'DIGEST_TO';
+const DIGEST_PROP_CC        = 'DIGEST_CC';
+const DIGEST_PROP_CC_UNTIL  = 'DIGEST_CC_UNTIL';
+const DIGEST_PROP_LAST_AT   = 'DIGEST_LAST_AT';
+const DIGEST_PROP_LAST_DAY  = 'DIGEST_LAST_SENT_DAY';
+const DIGEST_PROP_LEDGER_N  = 'DIGEST_LEDGER_CHUNKS';
+const DIGEST_PROP_LEDGER_PREFIX = 'DIGEST_LEDGER_';
+const DIGEST_LEDGER_CHUNK_CHARS = 8000;
+const DIGEST_LEDGER_KEEP_DAYS = 180;
+const DIGEST_FIRST_RUN_DAYS = 7;
+const DIGEST_TZ = 'Asia/Jerusalem';
+const DIGEST_TRIGGER_HANDLER = 'paymentsDigestJob';
+const DIGEST_TRIGGER_HOUR = 8;
+const DIGEST_DASHBOARD_URL = 'https://ezone-dashboard.up.railway.app';
+const DIGEST_SENDER_NAME = 'E-ZONE Dashboard';
+/* SimpleDateFormat 'u': 1 = Monday … 7 = Sunday. Friday and Saturday skip. */
+const DIGEST_SKIP_WEEKDAYS = [5, 6];
+
+/* ---------------- pure helpers ---------------- */
+
+/* Jerusalem wall-clock parts of an instant: { iso:'YYYY-MM-DD', dmy:'DD/MM/YYYY',
+ * weekday: 1..7 (Mon..Sun) }. Always DIGEST_TZ — the weekday rule is Israel's,
+ * whatever the spreadsheet or the runtime say. */
+function digestJerusalemParts_(now) {
+  const s = String(Utilities.formatDate(now, DIGEST_TZ, 'yyyy-MM-dd u'));
+  const iso = s.slice(0, 10);
+  return {
+    iso: iso,
+    dmy: iso.slice(8, 10) + '/' + iso.slice(5, 7) + '/' + iso.slice(0, 4),
+    weekday: Number(s.slice(11)) || 0,
+  };
+}
+
+function digestIsWorkday_(now) {
+  return DIGEST_SKIP_WEEKDAYS.indexOf(digestJerusalemParts_(now).weekday) < 0;
+}
+
+/* Escape for HTML text AND attribute context. Every value that reaches the
+ * HTML body goes through here — names are free text typed by staff. */
+function digestEsc_(v) {
+  return String(v == null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/* One line of plain text: control characters (incl. CR/LF) become spaces, so a
+ * value can never break the text table or forge a line. */
+function digestPlain_(v) {
+  return String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/* A recipient list from a Script Property: one or more addresses separated by
+ * ',' or ';'. Returns the cleaned ','-joined list, or '' when the value is
+ * blank OR any part is malformed — a half-valid list is refused whole, never
+ * partly sent. No whitespace, quotes, angle brackets or line breaks can pass,
+ * so a property value can never inject a header. */
+function digestRecipients_(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return '';
+  const parts = s.split(/[,;]/).map(function (p) { return p.trim(); }).filter(function (p) { return p; });
+  if (!parts.length) return '';
+  const re = /^[^\s@<>"'(),;:\\[\]]+@[^\s@<>"'(),;:\\[\]]+\.[A-Za-z]{2,}$/;
+  for (let i = 0; i < parts.length; i++) if (!re.test(parts[i])) return '';
+  return parts.join(',');
+}
+
+/* Is Sandra still CC'd today? Only with a well-formed DIGEST_CC_UNTIL and only
+ * while today (Jerusalem) is on or before it. Anything else → no CC. */
+function digestCcActive_(todayIso, untilRaw) {
+  const until = String(untilRaw == null ? '' : untilRaw).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(until)) return false;
+  return String(todayIso) <= until;
+}
+
+/* An instant from a charge stamp: an ISO string with its offset (what the
+ * server writes) or a Date (if Sheets ever coerced the cell). NaN otherwise. */
+function digestInstant_(v) {
+  if (v instanceof Date) return v.getTime();
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return NaN;
+  return Date.parse(s);
+}
+
+function digestDmyFromIso_(iso) {
+  const s = String(iso || '');
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s.slice(8, 10) + '/' + s.slice(5, 7) + '/' + s.slice(0, 4) : '';
+}
+
+/* '₪12,345' / '₪1,234.50'. VAT-INCLUSIVE, as stored; no conversion here. */
+function digestMoney_(n) {
+  const v = Math.round((Number(n) || 0) * 100) / 100;
+  const neg = v < 0;
+  const abs = Math.abs(v);
+  const whole = Math.floor(abs);
+  const cents = Math.round((abs - whole) * 100);
+  const w = String(whole).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return (neg ? '-' : '') + '₪' + w + (cents ? '.' + (cents < 10 ? '0' : '') + cents : '');
+}
+
+/* Reverse of DIGEST_HOUSE_NAME_TO_INTERNAL: internal id → Hebrew label. A
+ * stored Hebrew label resolves too. Unknown → the raw value (escaped later). */
+function digestHouseLabel_(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (DIGEST_HOUSE_NAME_TO_INTERNAL[s]) return s;
+  const labels = Object.keys(DIGEST_HOUSE_NAME_TO_INTERNAL);
+  for (let i = 0; i < labels.length; i++) {
+    if (DIGEST_HOUSE_NAME_TO_INTERNAL[labels[i]] === s) return labels[i];
+  }
+  for (let i = 0; i < labels.length; i++) {
+    if (DIGEST_HOUSE_NAME_TO_INTERNAL[labels[i]].toLowerCase() === s.toLowerCase()) return labels[i];
+  }
+  return s || '—';
+}
+
+/* The optional hand-added method column ('אמצעי תשלום' etc.) to the right of
+ * PAYMENT_COLUMNS — the same lookup recPayment_ uses. Payments has no method
+ * column of its own today; '' when there is none. */
+function digestMethod_(obj) {
+  const want = ['method', 'אמצעי תשלום', 'אמצעי', 'paymentMethod'].map(function (n) { return diagNormText_(n); });
+  const keys = Object.keys(obj);
+  for (let i = 0; i < keys.length; i++) {
+    if (PAYMENT_COLUMNS.indexOf(keys[i]) < 0 && want.indexOf(diagNormText_(keys[i])) >= 0) {
+      return String(obj[keys[i]] == null ? '' : obj[keys[i]]).trim();
+    }
+  }
+  return '';
+}
+
+/* The ledger key of a row: its permanent paymentUid, else its row id. Never
+ * rendered — it lives only in Script Properties. */
+function digestRowKey_(obj) {
+  const uid = String(obj.paymentUid == null ? '' : obj.paymentUid).trim();
+  return uid || String(obj.id == null ? '' : obj.id).trim();
+}
+
+/* The amount reported received: amountPaid; for a 'paid' row with no
+ * amountPaid recorded, its amount. */
+function digestAmount_(obj) {
+  const paid = Number(obj.amountPaid);
+  if (String(obj.amountPaid == null ? '' : obj.amountPaid).trim() !== '' && isFinite(paid)) return paid;
+  return paymentStatus_(obj.status) === 'paid' ? (Number(obj.amount) || 0) : 0;
+}
+
+/* THE ALLOW-LIST. The only fields of a Payments row that ever reach the mail.
+ * `key` and `instant` are bookkeeping and are never rendered. */
+function digestRow_(obj, ledger) {
+  const key = digestRowKey_(obj);
+  const amount = digestAmount_(obj);
+  const instant = digestInstant_(obj.chargedAt);
+  const prior = key && ledger ? ledger[key] : null;
+  return {
+    key: key,
+    instant: instant,
+    patientName: String(obj.patientName == null ? '' : obj.patientName).trim(),
+    houseLabel: digestHouseLabel_(obj.houseId),
+    amount: amount,
+    paymentDate: digestDmyFromIso_(asISODate_(obj.dueDate)),
+    method: digestMethod_(obj),
+    recordedBy: String(obj.chargedBy == null ? '' : obj.chargedBy).trim(),
+    recordedAt: isFinite(instant) ? String(Utilities.formatDate(new Date(instant), DIGEST_TZ, 'dd/MM/yyyy HH:mm')) : '',
+    updated: !!prior,
+    previousAmount: prior && Number(prior.amount) !== amount ? Number(prior.amount) : null,
+  };
+}
+
+/* Select and project. `rowObjs` are Payments row objects (recReadSheet_'s
+ * .obj); keeps paid/partial, non-void rows recorded in (sinceMs, untilMs]. */
+function digestSelect_(rowObjs, sinceMs, untilMs, ledger) {
+  const out = [];
+  for (let i = 0; i < rowObjs.length; i++) {
+    const o = rowObjs[i];
+    if (isVoidStatus_(o.status)) continue;
+    if (!paymentIsCharged_(o.status)) continue;
+    const t = digestInstant_(o.chargedAt);
+    if (!isFinite(t) || t <= sinceMs || t > untilMs) continue;
+    out.push(digestRow_(o, ledger));
+  }
+  out.sort(function (a, b) {
+    if (a.houseLabel !== b.houseLabel) return a.houseLabel < b.houseLabel ? -1 : 1;
+    return a.instant - b.instant;
+  });
+  return out;
+}
+
+/* Totals per house (in first-seen order) and overall. */
+function digestTotals_(rows) {
+  const byHouse = [];
+  const idx = {};
+  let total = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const h = rows[i].houseLabel;
+    if (!(h in idx)) { idx[h] = byHouse.length; byHouse.push({ houseLabel: h, count: 0, amount: 0 }); }
+    byHouse[idx[h]].count++;
+    byHouse[idx[h]].amount = Math.round((byHouse[idx[h]].amount + rows[i].amount) * 100) / 100;
+    total = Math.round((total + rows[i].amount) * 100) / 100;
+  }
+  return { byHouse: byHouse, count: rows.length, amount: total };
+}
+
+/* The whole message: { subject, htmlBody, body }. Pure given its inputs. */
+function digestCompose_(rows, ctx) {
+  const subject = (ctx.test ? '[בדיקה] ' : '') + 'תשלומים שנרשמו — ' + ctx.todayDmy;
+  const windowText = 'תשלומים שנרשמו בין ' + ctx.sinceText + ' ל-' + ctx.untilText +
+    (ctx.firstRun ? ' (הרצה ראשונה: ' + DIGEST_FIRST_RUN_DAYS + ' הימים האחרונים)' : '');
+  const totals = digestTotals_(rows);
+  const td = 'padding:6px 10px;border:1px solid #d0d7de;text-align:right;vertical-align:top;';
+  const th = td + 'background:#f3f6f8;font-weight:bold;';
+  const wrap = '<div dir="rtl" style="direction:rtl;text-align:right;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1f2328;">';
+  const link = '<p style="margin:16px 0 0;"><a href="' + digestEsc_(DIGEST_DASHBOARD_URL) + '" style="color:#0b6e4f;">פתיחת הדשבורד</a></p>';
+  const note = '<p style="margin:12px 0 0;color:#57606a;font-size:12px;">«נרשם» = דווח כשולם בדשבורד, לא אישור שהכסף הגיע לבנק. הסכומים כוללים מע״מ.</p>';
+
+  if (!rows.length) {
+    const html = wrap +
+      '<p style="margin:0 0 8px;font-weight:bold;">אין תשלומים חדשים</p>' +
+      '<p style="margin:0;">' + digestEsc_(windowText) + '</p>' + note + link + '</div>';
+    const text = 'אין תשלומים חדשים\n' + digestPlain_(windowText) + '\n\nפתיחת הדשבורד: ' + DIGEST_DASHBOARD_URL;
+    return { subject: subject, htmlBody: html, body: text, count: 0, total: 0 };
+  }
+
+  const head = ['מטופל', 'בית', 'סכום (כולל מע״מ)', 'תאריך תשלום', 'אמצעי', 'נרשם ע״י', 'נרשם ב-', ''];
+  let html = wrap + '<p style="margin:0 0 10px;">' + digestEsc_(windowText) + '</p>' +
+    '<table dir="rtl" cellpadding="0" cellspacing="0" style="border-collapse:collapse;direction:rtl;">' +
+    '<tr>' + head.map(function (h) { return '<th style="' + th + '">' + digestEsc_(h) + '</th>'; }).join('') + '</tr>';
+  const lines = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const flag = r.updated
+      ? 'עודכן' + (r.previousAmount !== null ? ' (נשלח קודם: ' + digestMoney_(r.previousAmount) + ')' : '')
+      : '';
+    const cells = [r.patientName || '—', r.houseLabel, digestMoney_(r.amount), r.paymentDate || '—',
+      r.method || '—', r.recordedBy || '—', r.recordedAt || '—', flag];
+    html += '<tr>' + cells.map(function (c, j) {
+      const style = td + (j === 2 ? 'white-space:nowrap;' : '') + (j === 7 && c ? 'color:#9a6700;font-weight:bold;' : '');
+      return '<td style="' + style + '">' + digestEsc_(c) + '</td>';
+    }).join('') + '</tr>';
+    lines.push(cells.map(digestPlain_).filter(function (c) { return c; }).join(' | '));
+  }
+  html += '</table>';
+
+  html += '<p style="margin:16px 0 6px;font-weight:bold;">סיכום לפי בית</p>' +
+    '<table dir="rtl" cellpadding="0" cellspacing="0" style="border-collapse:collapse;direction:rtl;">' +
+    '<tr><th style="' + th + '">בית</th><th style="' + th + '">תשלומים</th><th style="' + th + '">סכום (כולל מע״מ)</th></tr>';
+  const sumLines = [];
+  totals.byHouse.forEach(function (h) {
+    html += '<tr><td style="' + td + '">' + digestEsc_(h.houseLabel) + '</td><td style="' + td + '">' + h.count +
+      '</td><td style="' + td + 'white-space:nowrap;">' + digestEsc_(digestMoney_(h.amount)) + '</td></tr>';
+    sumLines.push(digestPlain_(h.houseLabel) + ': ' + h.count + ' תשלומים, ' + digestMoney_(h.amount));
+  });
+  html += '<tr><td style="' + th + '">סה״כ</td><td style="' + th + '">' + totals.count +
+    '</td><td style="' + th + 'white-space:nowrap;">' + digestEsc_(digestMoney_(totals.amount)) + '</td></tr></table>';
+  html += note + link + '</div>';
+
+  const text = digestPlain_(windowText) + '\n\n' +
+    'מטופל | בית | סכום | תאריך תשלום | אמצעי | נרשם ע״י | נרשם ב-\n' + lines.join('\n') +
+    '\n\nסיכום לפי בית:\n' + sumLines.join('\n') +
+    '\nסה״כ: ' + totals.count + ' תשלומים, ' + digestMoney_(totals.amount) +
+    '\n\n«נרשם» = דווח כשולם בדשבורד, לא אישור שהכסף הגיע לבנק. הסכומים כוללים מע״מ.' +
+    '\nפתיחת הדשבורד: ' + DIGEST_DASHBOARD_URL;
+  return { subject: subject, htmlBody: html, body: text, count: totals.count, total: totals.amount };
+}
+
+/* ---------------- the ledger (Script Properties, chunked) ---------------- */
+
+/* { key: { amount, day: 'YYYY-MM-DD' } }. Unreadable → {} (the only cost is
+ * that an edited row is not marked «עודכן» once). */
+function digestLedgerLoad_(props) {
+  const out = {};
+  try {
+    const n = Number(props.getProperty(DIGEST_PROP_LEDGER_N)) || 0;
+    let s = '';
+    for (let i = 0; i < n; i++) s += props.getProperty(DIGEST_PROP_LEDGER_PREFIX + i) || '';
+    if (!s) return out;
+    const obj = JSON.parse(s);
+    Object.keys(obj).forEach(function (k) {
+      const v = obj[k];
+      if (v && typeof v === 'object') out[k] = { amount: Number(v[0]) || 0, day: String(v[1] || '') };
+    });
+  } catch (_) { /* fall through with what we have */ }
+  return out;
+}
+
+/* The ledger after a successful send: every sent row at the amount sent,
+ * entries older than DIGEST_LEDGER_KEEP_DAYS dropped. Returns the property
+ * map to write (chunks + count) and the keys of stale chunks to delete. */
+function digestLedgerNext_(ledger, rows, todayIso, oldChunkCount) {
+  const next = {};
+  const cutoff = new Date(Date.parse(todayIso + 'T00:00:00Z') - DIGEST_LEDGER_KEEP_DAYS * 86400000).toISOString().slice(0, 10);
+  Object.keys(ledger).forEach(function (k) {
+    if (ledger[k].day >= cutoff) next[k] = [ledger[k].amount, ledger[k].day];
+  });
+  rows.forEach(function (r) { if (r.key) next[r.key] = [r.amount, todayIso]; });
+  const s = JSON.stringify(next);
+  const set = {};
+  let n = 0;
+  for (let i = 0; i < s.length; i += DIGEST_LEDGER_CHUNK_CHARS) {
+    set[DIGEST_PROP_LEDGER_PREFIX + n] = s.slice(i, i + DIGEST_LEDGER_CHUNK_CHARS);
+    n++;
+  }
+  set[DIGEST_PROP_LEDGER_N] = String(n);
+  const drop = [];
+  for (let i = n; i < (Number(oldChunkCount) || 0); i++) drop.push(DIGEST_PROP_LEDGER_PREFIX + i);
+  return { set: set, drop: drop };
+}
+
+/* ---------------- the run ---------------- */
+
+/* Payments row objects, header-aware (so a hand-added method column is read),
+ * READ-ONLY: getSheetByName, never getOrCreateSheet_. No sheet → []. */
+function digestReadPayments_() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PAYMENTS_SHEET);
+  if (!sh) return [];
+  return recReadSheet_(sh, PAYMENT_COLUMNS).rows.map(function (r) { return r.obj; });
+}
+
+/* Build the digest for `now`, reading DIGEST_LAST_AT and the ledger. Pure apart
+ * from the two reads; sends nothing, writes nothing. */
+function digestBuild_(props, now, test) {
+  const nowMs = now.getTime();
+  const lastRaw = props.getProperty(DIGEST_PROP_LAST_AT) || '';
+  const lastMs = digestInstant_(lastRaw);
+  const firstRun = !isFinite(lastMs);
+  const sinceMs = firstRun ? nowMs - DIGEST_FIRST_RUN_DAYS * 86400000 : lastMs;
+  const ledger = digestLedgerLoad_(props);
+  const rows = digestSelect_(digestReadPayments_(), sinceMs, nowMs, ledger);
+  const today = digestJerusalemParts_(now);
+  const fmt = function (ms) { return String(Utilities.formatDate(new Date(ms), DIGEST_TZ, 'dd/MM/yyyy HH:mm')); };
+  const msg = digestCompose_(rows, {
+    todayDmy: today.dmy, sinceText: fmt(sinceMs), untilText: fmt(nowMs), firstRun: firstRun, test: !!test,
+  });
+  return { rows: rows, msg: msg, ledger: ledger, today: today, sinceMs: sinceMs, nowMs: nowMs, firstRun: firstRun };
+}
+
+/* The script lock was busy: nothing sent, nothing advanced. */
+function digestLockBusy_() {
+  Logger.log('DIGEST: script lock busy — nothing sent; the next run covers this window.');
+  return { ok: false, mode: 'scheduled', error: 'lock_busy', sent: false };
+}
+
+/* The core. mode:
+ *   'scheduled' — weekday gate, DIGEST_TO required, script lock, once per
+ *                 Jerusalem day, advance DIGEST_LAST_AT + ledger after success;
+ *   'preview'   — build and log; no send, no lock, no property write;
+ *   'test'      — send to DIGEST_CC only; no property write.
+ * Never throws for a configuration fault — it returns { ok:false, error } and
+ * logs. A MailApp failure returns error 'send_failed' (and nothing advances). */
+function paymentsDigestRun_(mode, nowArg) {
+  const now = (nowArg instanceof Date) ? nowArg : new Date();
+  const props = PropertiesService.getScriptProperties();
+
+  if (mode === 'preview') {
+    const b = digestBuild_(props, now, false);
+    const to = digestRecipients_(props.getProperty(DIGEST_PROP_TO));
+    const cc = digestRecipients_(props.getProperty(DIGEST_PROP_CC));
+    const ccOn = !!cc && digestCcActive_(b.today.iso, props.getProperty(DIGEST_PROP_CC_UNTIL));
+    Logger.log('DIGEST PREVIEW (not sent; ' + DIGEST_PROP_LAST_AT + ' unchanged)\n' +
+      'to: ' + (to || '(DIGEST_TO missing or invalid — a scheduled run would send NOTHING)') + '\n' +
+      'cc: ' + (ccOn ? cc : '(none)') + '\n' +
+      'subject: ' + b.msg.subject + '\nrows: ' + b.msg.count + ', total: ' + digestMoney_(b.msg.total) + '\n\n' +
+      b.msg.body + '\n\n--- HTML ---\n' + b.msg.htmlBody);
+    return { ok: true, mode: 'preview', sent: false, to: to, cc: ccOn ? cc : '', subject: b.msg.subject,
+      htmlBody: b.msg.htmlBody, body: b.msg.body, count: b.msg.count, total: b.msg.total };
+  }
+
+  if (mode === 'test') {
+    const cc = digestRecipients_(props.getProperty(DIGEST_PROP_CC));
+    if (!cc) {
+      Logger.log('DIGEST TEST: ' + DIGEST_PROP_CC + ' is missing or invalid — nothing sent.');
+      return { ok: false, mode: 'test', error: 'no_cc', sent: false };
+    }
+    const b = digestBuild_(props, now, true);
+    try {
+      MailApp.sendEmail({ to: cc, subject: b.msg.subject, htmlBody: b.msg.htmlBody, body: b.msg.body, name: DIGEST_SENDER_NAME });
+    } catch (err) {
+      Logger.log('DIGEST TEST: send failed: ' + ((err && err.message) || err));
+      return { ok: false, mode: 'test', error: 'send_failed', sent: false };
+    }
+    Logger.log('DIGEST TEST: sent to ' + DIGEST_PROP_CC + ' only (' + b.msg.count + ' rows). ' + DIGEST_PROP_LAST_AT + ' unchanged.');
+    return { ok: true, mode: 'test', sent: true, to: cc, subject: b.msg.subject, count: b.msg.count, total: b.msg.total };
+  }
+
+  // ---- scheduled ----
+  const today = digestJerusalemParts_(now);
+  if (!digestIsWorkday_(now)) {
+    Logger.log('DIGEST: ' + today.iso + ' is Friday/Saturday in Jerusalem — skipped.');
+    return { ok: true, mode: 'scheduled', skipped: 'weekend', sent: false };
+  }
+  const to = digestRecipients_(props.getProperty(DIGEST_PROP_TO));
+  if (!to) {
+    Logger.log('WARNING DIGEST: ' + DIGEST_PROP_TO + ' is missing or invalid — nothing sent (fail closed).');
+    return { ok: false, mode: 'scheduled', error: 'no_recipient', sent: false };
+  }
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(30000) !== true) return digestLockBusy_();
+  try {
+    if ((props.getProperty(DIGEST_PROP_LAST_DAY) || '') === today.iso) {
+      Logger.log('DIGEST: already sent today (' + today.iso + ') — skipped.');
+      return { ok: true, mode: 'scheduled', skipped: 'already_sent_today', sent: false };
+    }
+    const b = digestBuild_(props, now, false);
+    const cc = digestRecipients_(props.getProperty(DIGEST_PROP_CC));
+    const ccOn = !!cc && digestCcActive_(today.iso, props.getProperty(DIGEST_PROP_CC_UNTIL));
+    const mail = { to: to, subject: b.msg.subject, htmlBody: b.msg.htmlBody, body: b.msg.body, name: DIGEST_SENDER_NAME };
+    if (ccOn) mail.cc = cc;
+    try {
+      MailApp.sendEmail(mail);
+    } catch (err) {
+      Logger.log('DIGEST: send failed (' + ((err && err.message) || err) + ') — ' +
+        DIGEST_PROP_LAST_AT + ' NOT advanced; the next run covers this window.');
+      return { ok: false, mode: 'scheduled', error: 'send_failed', sent: false };
+    }
+    // Sent. Only now does the window move.
+    const oldChunks = Number(props.getProperty(DIGEST_PROP_LEDGER_N)) || 0;
+    const led = digestLedgerNext_(b.ledger, b.rows, today.iso, oldChunks);
+    const set = led.set;
+    set[DIGEST_PROP_LAST_AT] = israelTimestamp_(now);
+    set[DIGEST_PROP_LAST_DAY] = today.iso;
+    props.setProperties(set, false);
+    led.drop.forEach(function (k) { props.deleteProperty(k); });
+    Logger.log('DIGEST: sent (' + b.msg.count + ' rows, ' + digestMoney_(b.msg.total) + ')' + (ccOn ? ' with CC.' : '.'));
+    return { ok: true, mode: 'scheduled', sent: true, cc: ccOn, count: b.msg.count, total: b.msg.total };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* TRIGGER HANDLER (time-driven, daily ~08:00 Asia/Jerusalem). Public because a
+ * trigger cannot call a trailing-underscore function; handle_ never names it.
+ * A failed send THROWS after logging, so the execution shows as Failed and
+ * Google's failure notice reaches the trigger owner; nothing has advanced. */
+function paymentsDigestJob() {
+  const res = paymentsDigestRun_('scheduled');
+  if (res && res.error === 'send_failed') throw new Error('Payments digest: send failed — the next run covers this window.');
+  return res;
+}
+
+/* ---------------- editor-run (Run dropdown) ---------------- */
+
+/* STEP 1. Forces the FULL consent dialog. Deliberately UNCAUGHT and FIRST: with
+ * Google's granular consent a user can tick only some scopes; a partial grant
+ * must fail HERE, loudly, not at 08:00 inside a trigger nobody watches. */
+function authorizeDigestNow() {
+  ScriptApp.requireAllScopes(ScriptApp.AuthMode.FULL);
+  const quota = MailApp.getRemainingDailyQuota();
+  Logger.log('DIGEST: authorized. Remaining daily mail quota: ' + quota);
+  return { ok: true, remainingDailyQuota: quota };
+}
+
+/* STEP 2. Build the mail for now and log it. Sends NOTHING, moves NOTHING. */
+function previewDigestNow() {
+  return paymentsDigestRun_('preview');
+}
+
+/* STEP 3. Send to DIGEST_CC only. DIGEST_LAST_AT does not move. */
+function sendDigestTestNow() {
+  return paymentsDigestRun_('test');
+}
+
+/* STEP 4. Idempotent: removes EVERY trigger bound to the digest handler, then
+ * installs exactly one daily trigger at 08:00 Asia/Jerusalem (Apps Script runs
+ * it within that hour; nearMinute(0) asks for the top of it). */
+function installDigestTriggerNow() {
+  const triggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+  for (let i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === DIGEST_TRIGGER_HANDLER) {
+      ScriptApp.deleteTrigger(triggers[i]);
+      removed++;
+    }
+  }
+  let installed = '';
+  try {
+    ScriptApp.newTrigger(DIGEST_TRIGGER_HANDLER).timeBased().everyDays(1)
+      .atHour(DIGEST_TRIGGER_HOUR).nearMinute(0).inTimezone(DIGEST_TZ).create();
+    installed = DIGEST_TRIGGER_HANDLER + ' @ ~08:00 ' + DIGEST_TZ;
+  } catch (_) {
+    ScriptApp.newTrigger(DIGEST_TRIGGER_HANDLER).timeBased().everyDays(1)
+      .atHour(DIGEST_TRIGGER_HOUR).inTimezone(DIGEST_TZ).create();
+    installed = DIGEST_TRIGGER_HANDLER + ' @ 08:00–09:00 ' + DIGEST_TZ;
+  }
+  const res = { ok: true, removed: removed, installed: installed };
+  Logger.log('DIGEST trigger: ' + JSON.stringify(res));
+  return res;
+}
+
 /* ===== Missing-patient diagnostic (READ-ONLY — run from the editor) =====
  *
  * diagnoseRamotPatientsNow() answers "where did this ramot patient go?" from
