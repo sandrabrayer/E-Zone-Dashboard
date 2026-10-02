@@ -85,7 +85,7 @@ A test keeps the two equal.
 
 **Visual check:**
 - Both workbooks were converted with LibreOffice Calc 24.2 (headless) to PDF, then to PNG.
-- The «סיכום» pages are in `docs/screenshots/billing-tab-section-colors/`: `xlsx-refund-summary.png` and `xlsx-debt-summary.png`.
+- The «סיכום» pages are in `docs/screenshots/billing-tab-section-colors/`: `workbook-refund-summary.png` and `workbook-debt-summary.png`.
 - This was not checked in Excel itself.
 
 ## Service worker
