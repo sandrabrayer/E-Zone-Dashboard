@@ -539,6 +539,22 @@ Detail and setup: `CHANGELOG-ortal-daily-digest.md`. Apps Script only; no
 - `appsscript.json` unchanged — `script.send_mail` and `script.scriptapp` were
   already pinned.
 
+## Dashboard: «חובות פתוחים» — debt aging screen + .xlsx (October 2, 2026)
+
+Detail: `CHANGELOG-debt-aging-ui.md`. Railway only: `Code.gs` and
+`appsscript.json` unchanged (it reads the existing read-only `debtAging`
+action from PR #161).
+
+- A collapsible «חובות פתוחים» section on the גבייה tab, right under the
+  refund payout forecast, before «סיכום חודשי». As-of date (default today,
+  Israel) with «סוף חודש קודם», a house filter and a patient-status filter.
+  «חוב רשום» and «מחזורים ללא רישום» are two blocks, never summed; pending
+  credits sit beside them, never subtracted.
+- New route `GET /api/export/debt-aging.xlsx?asOf=YYYY-MM-DD&house=…&status=…`
+  (session-gated, 400 on a bad parameter, `no-store`), file
+  `חובות-YYYY-MM-DD.xlsx`. No new env var, no new Script Property.
+- SW `CACHE_VERSION` v23 → v24.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);
