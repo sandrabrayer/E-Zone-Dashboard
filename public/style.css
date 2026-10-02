@@ -2131,7 +2131,6 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
 .forecast-totals { display: flex; flex-wrap: wrap; gap: 12px; padding: 6px 4px; font-size: 13px; color: var(--text-muted); }
 .forecast-error { color: #ff6b6b; }
 
-/* «חובות פתוחים» (debt aging) */
 /* Billing groups: a lightly tinted panel (9% of the group colour over the
  * surface), a bold heading with a 4px bar on its start side (right in RTL),
  * and the chip in the same colour. Only the wrapper and the heading — the
@@ -2181,6 +2180,7 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
 .forecast-missing-line a { color: var(--text-muted); text-decoration: underline; text-underline-offset: 3px; }
 .forecast-missing-line a:hover, .forecast-missing-line a:focus-visible { color: var(--text); }
 
+/* «חובות פתוחים» (debt aging) */
 .debt-aging-view { margin: 18px 0 8px; }
 .debt-aging-view > summary { cursor: pointer; list-style: revert; }
 .debt-aging-view > summary h3 { display: inline; margin: 0; }
