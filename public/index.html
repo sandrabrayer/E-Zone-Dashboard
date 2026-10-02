@@ -210,26 +210,39 @@
         </div>
       </div>
 
-      <h3>לגבייה בתאריך הנבחר</h3>
-      <div id="billing-due-list" class="billing-list"></div>
-
-      <h3>יתרות פתוחות מתאריכים קודמים</h3>
-      <div id="billing-open-list" class="billing-list"></div>
-
-      <h3>זיכויים ממתינים לתשלום <span class="count-pill" id="credits-pending-total">₪ 0</span></h3>
-      <p class="billing-date-label">משולמים ב־15 לחודש, מקובצים לפי תאריך תשלום. סימון כשולם הוא פעולה מפורשת.</p>
-      <div id="credits-payout-list" class="billing-list"></div>
-      <div class="forecast-actions">
-        <button type="button" class="btn small" id="credits-forecast-refresh">רענון</button>
-        <button type="button" class="btn small primary" id="credits-forecast-export">ייצוא להנהלת חשבונות</button>
+      <!-- Billing groups: each wrapper sets one colour token (--grp, from
+           --grp-<key> on :root — the same hex as lib/report-colors.js) for its
+           bold heading's 4px bar, its tinted panel and its chip. Wrappers only:
+           the lists inside are unchanged. CHANGELOG-billing-tab-section-colors.md -->
+      <div class="bill-group bill-group--due" data-group="due">
+        <h3 class="bill-group-title">לגבייה בתאריך הנבחר</h3>
+        <div id="billing-due-list" class="billing-list"></div>
       </div>
+
+      <div class="bill-group bill-group--open" data-group="open">
+        <h3 class="bill-group-title">יתרות פתוחות מתאריכים קודמים</h3>
+        <div id="billing-open-list" class="billing-list"></div>
+      </div>
+
+      <div class="bill-group bill-group--credits" data-group="credits">
+        <h3 class="bill-group-title">זיכויים ממתינים לתשלום <span class="count-pill" id="credits-pending-total">₪ 0</span></h3>
+        <p class="billing-date-label">משולמים ב־15 לחודש, מקובצים לפי תאריך תשלום. סימון כשולם הוא פעולה מפורשת.</p>
+        <div id="credits-payout-list" class="billing-list"></div>
+        <div class="forecast-actions">
+          <button type="button" class="btn small" id="credits-forecast-refresh">רענון</button>
+          <button type="button" class="btn small primary" id="credits-forecast-export">ייצוא זיכויים לאקסל</button>
+        </div>
+      </div>
+      <!-- The forecast renders its own groups: ממתין להחלטה (purple), לא ניתן
+           לחשב (grey), and — instead of a section — one muted line linking the
+           discharges with no recorded payment to «חובות פתוחים». -->
       <div id="credits-forecast" class="billing-list" aria-live="polite"></div>
 
       <!-- «חובות פתוחים»: debt aging as of a date (action=debtAging, read-only).
            Collapsed by default; fetched only when opened or the date changes.
            «חוב רשום» and «מחזורים ללא רישום» are two blocks, never summed. -->
-      <details id="debt-aging-view" class="debt-aging-view">
-        <summary><h3>חובות פתוחים</h3></summary>
+      <details id="debt-aging-view" class="debt-aging-view bill-group bill-group--debt" data-group="debt">
+        <summary><h3 class="bill-group-title">חובות פתוחים</h3></summary>
         <div class="debt-controls">
           <label for="debt-asof" class="billing-date-label">נכון לתאריך</label>
           <input id="debt-asof" type="date" />

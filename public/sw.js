@@ -99,7 +99,12 @@
 // action=debtAging) and its «ייצוא לאקסל» from /api/export/debt-aging.xlsx.
 // app.js, index.html and style.css changed — evict v23. The export is under
 // /api/, so cacheStrategy() keeps it network-only (never cached).
-var CACHE_VERSION = 'v24';
+// v24 → v25: every גבייה group gets its own colour (a bold heading with a
+// 4px bar, a tinted panel and a matching chip); the refund view drops the
+// missing-payment section for one line linking to «חובות פתוחים»; the export
+// button reads «ייצוא זיכויים לאקסל». app.js, index.html and style.css
+// changed — evict v24.
+var CACHE_VERSION = 'v25';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

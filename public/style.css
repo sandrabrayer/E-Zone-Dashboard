@@ -27,6 +27,18 @@
   --fuchsia-tint: rgba(224, 64, 251, .13);
   --fuchsia-glow: rgba(224, 64, 251, .45);
 
+  /* Billing groups (גבייה tab) — ONE colour per group. The same hex values
+   * as lib/report-colors.js GROUP_COLORS, which colours the .xlsx exports;
+   * test/billing-tab-section-colors.test.js keeps the two equal and checks
+   * every heading against its tinted panel for WCAG AA (≥ 4.5:1). */
+  --grp-due:        #7aa2ff; /* blue   — לגבייה בתאריך הנבחר */
+  --grp-open:       #f5b041; /* amber  — יתרות פתוחות מתאריכים קודמים */
+  --grp-credits:    #3ddc84; /* green  — זיכויים ממתינים לתשלום */
+  --grp-awaiting:   #b892ff; /* purple — ממתין להחלטה — לא לתשלום */
+  --grp-unresolved: #a3acc2; /* grey   — לא ניתן לחשב */
+  --grp-debt:       #ff7a7a; /* red    — חובות פתוחים / חוב רשום */
+  --grp-unrecorded: #ff9f43; /* orange — מחזורים ללא רישום */
+
   --stage-new:        #5b8bff;
   --stage-visit:      #ffb020;
   --stage-waitlist:   #19c8e0;
@@ -2120,6 +2132,55 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
 .forecast-error { color: #ff6b6b; }
 
 /* «חובות פתוחים» (debt aging) */
+/* Billing groups: a lightly tinted panel (9% of the group colour over the
+ * surface), a bold heading with a 4px bar on its start side (right in RTL),
+ * and the chip in the same colour. Only the wrapper and the heading — the
+ * cards inside keep their own styles. --grp is set once per modifier. */
+.bill-group {
+  --grp: var(--grp-unresolved);
+  background: var(--surface);               /* fallback without color-mix() */
+  background: color-mix(in srgb, var(--grp) 9%, var(--surface));
+  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--grp) 28%, var(--surface));
+  border-radius: 10px;
+  padding: 10px 12px 4px;
+  margin: 0 0 16px;
+  min-width: 0;
+}
+.cards-row + .bill-group { margin-top: 18px; }
+.bill-group--due        { --grp: var(--grp-due); }
+.bill-group--open       { --grp: var(--grp-open); }
+.bill-group--credits    { --grp: var(--grp-credits); }
+.bill-group--awaiting   { --grp: var(--grp-awaiting); }
+.bill-group--unresolved { --grp: var(--grp-unresolved); }
+.bill-group--debt       { --grp: var(--grp-debt); }
+/* `.bill-group .bill-group-title` (0,2,0) outranks `.screen h3` (0,1,1),
+ * whose 14px / muted / uppercase / wide-tracked style is what made these
+ * headings hard to see; the resets below undo the rest of it. */
+.bill-group .bill-group-title {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 700;
+  font-size: 1.15rem;
+  line-height: 1.35;
+  color: var(--grp);
+  border-inline-start: 4px solid var(--grp);
+  padding-inline-start: 10px;
+  margin: 2px 0 10px;
+  overflow-wrap: anywhere;
+}
+.bill-group .bill-group-title .count-pill {
+  color: var(--grp);
+  background: color-mix(in srgb, var(--grp) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--grp) 55%, transparent);
+  font-size: 0.8em;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.forecast-missing-line { margin: -6px 0 16px; font-size: 13px; color: var(--text-muted); }
+.forecast-missing-line a { color: var(--text-muted); text-decoration: underline; text-underline-offset: 3px; }
+.forecast-missing-line a:hover, .forecast-missing-line a:focus-visible { color: var(--text); }
+
 .debt-aging-view { margin: 18px 0 8px; }
 .debt-aging-view > summary { cursor: pointer; list-style: revert; }
 .debt-aging-view > summary h3 { display: inline; margin: 0; }
@@ -2128,7 +2189,8 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
 .debt-aging > * { max-width: 100%; }
 .debt-blocks { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 12px; }
 .debt-block { border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px; min-width: 0; }
-.debt-block-unrecorded { border-style: dashed; }
+.debt-block-recorded { border-color: var(--grp-debt); }
+.debt-block-unrecorded { border-style: dashed; border-color: var(--grp-unrecorded); }
 .debt-block-title { margin: 4px 0; font-size: 15px; }
 .debt-table-wrap { overflow-x: auto; max-width: 100%; }
 .debt-table { border-collapse: collapse; width: 100%; font-size: 13px; }

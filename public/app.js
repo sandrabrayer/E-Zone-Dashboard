@@ -6485,16 +6485,18 @@ function renderCreditsPayouts() {
  * never summed together. See CHANGELOG-refund-payout-forecast.md.
  *   ממתין להחלטה — לא לתשלום   discharges with no saved credit whose server
  *                              suggestion is > 0 (a decision, not a payment);
- *   חסרים נתוני תשלום — לבדוק  discharges with no saved credit and no recorded
- *                              payment for the exit cycle — NEVER shown as 0.
+ *   discharges with no saved credit and no recorded payment for the exit
+ *   cycle are DEBT, not refunds: only their count, as one linked line (below).
  * Fetched only while the גבייה screen is shown (and on «רענון»); a credit
  * save marks it stale. Loading and errors are explicit — never a silent
  * empty list. */
-const PAYOUT_FORECAST_MISSING_NOTE = 'אין תשלום רשום — לבדוק';
+/* A discharge with NO recorded payment is DEBT, not a refund (Sandra,
+ * 02/10/2026): no section here — one muted line, shown only when the count is
+ * > 0, that opens «חובות פתוחים» where those cycles are listed. */
+const PAYOUT_FORECAST_MISSING_LINE = 'משוחררים ללא תשלום רשום — מופיעים ב״חובות פתוחים״';
 const PAYOUT_FORECAST_SECTION_LABELS = {
   decided:    'הוחלט — ממתין לתשלום',
   awaiting:   'ממתין להחלטה — לא לתשלום',
-  missing:    'חסרים נתוני תשלום — לבדוק',
   unresolved: 'לא ניתן לחשב — לבדוק',
 };
 const PAYOUT_FORECAST_ERROR_LABELS = {
@@ -6552,11 +6554,13 @@ function payoutForecastErrorText(code) {
 /* Pure: the forecast sections as HTML. Every value goes through escapeHtml. */
 function payoutForecastHtml(data) {
   const esc = escapeHtml;
-  const awaiting = data.awaiting_decision, missing = data.missing_payment_data;
+  const awaiting = data.awaiting_decision;
+  const missingCount = Number(data.missing_payment_data && data.missing_payment_data.count) || 0;
   const unresolved = data.unresolved || { count: 0, rows: [] };
   let html = '';
 
-  html += `<h4 class="forecast-title forecast-awaiting">${esc(PAYOUT_FORECAST_SECTION_LABELS.awaiting)} <span class="count-pill">${esc(fmtShekel(awaiting.total))}</span></h4>`;
+  html += `<div class="bill-group bill-group--awaiting" data-group="awaiting">`;
+  html += `<h4 class="bill-group-title forecast-title forecast-awaiting">${esc(PAYOUT_FORECAST_SECTION_LABELS.awaiting)} <span class="count-pill">${esc(fmtShekel(awaiting.total))}</span></h4>`;
   html += `<p class="billing-date-label">שוחררו מ־${esc(formatDateHe(data.recordsCutoff) || '—')} ואין להם זיכוי שמור. הסכום הוא הצעת המערכת בלבד — לא הוחלט ולא לתשלום. תאריך התשלום הוא אם יוחלט היום.</p>`;
   if (!awaiting.count) {
     html += `<div class="card billing-empty">אין שחרורים הממתינים להחלטה</div>`;
@@ -6577,23 +6581,15 @@ function payoutForecastHtml(data) {
       `<span>${esc(payoutForecastHouseName(h.houseId))}: <b>${esc(fmtShekel(h.total))}</b> (${esc(h.count)})</span>`).join('') + `</div>`;
   }
 
-  html += `<h4 class="forecast-title forecast-missing">${esc(PAYOUT_FORECAST_SECTION_LABELS.missing)} <span class="count-pill">${esc(missing.count)}</span></h4>`;
-  html += `<p class="billing-date-label">שוחררו ואין תשלום רשום שמכסה את מחזור היציאה — לא ניתן להציע סכום. לא 0: צריך לבדוק.</p>`;
-  if (!missing.count) {
-    html += `<div class="card billing-empty">אין שחרורים עם נתוני תשלום חסרים</div>`;
-  } else {
-    missing.rows.forEach(r => {
-      html += `<div class="billing-row forecast-row forecast-missing-row">`
-        + `<div><span class="p-label">שם</span><span class="p-name">${esc(r.patientName || '—')}</span></div>`
-        + `<div><span class="p-label">בית</span><span class="p-val">${esc(payoutForecastHouseName(r.houseId))}</span></div>`
-        + `<div><span class="p-label">יציאה</span><span class="p-val"><bdi>${esc(formatDateHe(r.exitDate) || '—')}</bdi></span></div>`
-        + `<div><span class="p-label">סטטוס</span><span class="p-val forecast-check">${esc(PAYOUT_FORECAST_MISSING_NOTE)}</span></div>`
-        + `</div>`;
-    });
+  html += `</div>`;
+
+  if (missingCount > 0) {
+    html += `<p class="forecast-missing-line"><a href="#debt-aging-view" data-open-debt-aging>${esc(missingCount + ' ' + PAYOUT_FORECAST_MISSING_LINE)}</a></p>`;
   }
 
   if (unresolved.count) {
-    html += `<h4 class="forecast-title forecast-missing">${esc(PAYOUT_FORECAST_SECTION_LABELS.unresolved)} <span class="count-pill">${esc(unresolved.count)}</span></h4>`;
+    html += `<div class="bill-group bill-group--unresolved" data-group="unresolved">`;
+    html += `<h4 class="bill-group-title forecast-title forecast-unresolved">${esc(PAYOUT_FORECAST_SECTION_LABELS.unresolved)} <span class="count-pill">${esc(unresolved.count)}</span></h4>`;
     unresolved.rows.forEach(r => {
       html += `<div class="billing-row forecast-row forecast-missing-row">`
         + `<div><span class="p-label">שם</span><span class="p-name">${esc(r.patientName || '—')}</span></div>`
@@ -6602,8 +6598,18 @@ function payoutForecastHtml(data) {
         + `<div><span class="p-label">סיבה</span><span class="p-val forecast-check">${esc(payoutForecastErrorText(r.error))}</span></div>`
         + `</div>`;
     });
+    html += `</div>`;
   }
   return html;
+}
+
+/* The muted «… מופיעים ב״חובות פתוחים״» line: open that section (its toggle
+ * handler loads it) and scroll to it. */
+function openDebtAgingSection() {
+  const view = document.getElementById('debt-aging-view');
+  if (!view) return;
+  if (!view.open) view.open = true;
+  if (view.scrollIntoView) view.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function renderPayoutForecast() {
@@ -6623,7 +6629,7 @@ function renderPayoutForecast() {
   box.innerHTML = payoutForecastHtml(f.data);
 }
 
-/* ---- «ייצוא להנהלת חשבונות»: a formatted .xlsx built on the server ---- */
+/* ---- «ייצוא זיכויים לאקסל»: a formatted .xlsx built on the server ---- */
 
 /* The workbook (RTL, Hebrew headers, ₪ and date formats, a bold total per
  * section) is built by lib/xlsx-report.js behind GET PAYOUT_FORECAST_XLSX_URL,
@@ -6673,6 +6679,13 @@ function initPayoutForecastControls() {
     .catch(e => showError('הייצוא נכשל — ' + ((e && e.message) || 'שגיאה')));
   const refresh = document.getElementById('credits-forecast-refresh');
   if (refresh) refresh.onclick = () => busyButton(refresh, 'load', () => { markPayoutForecastStale(); return loadPayoutForecast(); });
+  const box = document.getElementById('credits-forecast');
+  if (box && box.addEventListener) box.addEventListener('click', (e) => {
+    const link = e.target && e.target.closest && e.target.closest('[data-open-debt-aging]');
+    if (!link) return;
+    e.preventDefault();
+    openDebtAgingSection();
+  });
 }
 
 /* ===== «חובות פתוחים» — debt aging as of a date (גבייה tab) =====
