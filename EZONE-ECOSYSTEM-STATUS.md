@@ -485,6 +485,27 @@ nothing needs to be set.**
 - The roster, meeting-report and accounting secret checks are now
   constant-time.
 
+## Dashboard: personal PINs — foundation (October 2, 2026 — PR A)
+
+Detail: `CHANGELOG-personal-pins-foundation.md`; decisions: plan §11.5.
+**Zero user-facing change. Nothing needs to be set until PR B.**
+
+- **Security fix, live:** the server now trusts exactly one proxy hop
+  (Railway) and rate-limits PIN attempts by `req.ip`. Before, the limiter read
+  the client-controlled leftmost `X-Forwarded-For`, so a fake value per request
+  reset it.
+- **New Railway variables (all optional now, used from PR B):**
+  `USER_PIN_HASHES` (JSON records; a bad value **stops the server from
+  starting**), `PIN_PEPPER`, `BOOTSTRAP_TOKEN` (one-time Sandra setup via
+  `POST /api/bootstrap-pin`; delete it afterwards — the log warns while it is
+  set), `TRUST_PROXY_HOPS` (escape hatch, default 1).
+- **Roles** (`staff, reporter, deleter, approver, viewer, controller`) are sent
+  to Apps Script as `proxyRoles`; `Code.gs` believes them only with a valid
+  `PROXY_SECRET`. `DELETE_ACTIONS` / `APPROVER_ACTIONS` are defined, **not yet
+  enforced**. Today's shared APP_PIN session = `staff` only.
+- **Append-only columns:** `AuditLog.actor`, `BillingOverrides.updatedBy`.
+  Every delete / void / lead move now writes an AuditLog row with its actor.
+
 ## Dashboard: refund payout forecast on גבייה (October 1, 2026)
 
 Detail: `CHANGELOG-refund-payout-forecast.md`. **Nothing to set.**
@@ -560,7 +581,10 @@ check against pre-June-17 branches.
 - Claude Code opens PRs against the repo DEFAULT branch — always verify PR base
   = the deployed branch. PRs #33/#55 were closed for this; #56 was correct.
 - Railway variable changes apply only to deployments started after saving.
-- PIN inputs have maxlength (Outpatient 6, Dashboard 6) — keep APP_PIN within.
+- PIN inputs have maxlength (Outpatient 6, Dashboard **4** — `public/index.html`
+  `#pin-input`; corrected Oct 2, 2026, it was wrongly listed as 6) — keep APP_PIN
+  within. The meeting-report page (`/meeting-report`) PIN input is 6. Personal
+  PINs (plan §11.5) are 6 digits; PR B widens the Dashboard input.
 
 ## Next tracks (in priority order)
 
