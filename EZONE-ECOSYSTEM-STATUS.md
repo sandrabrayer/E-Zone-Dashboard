@@ -498,6 +498,26 @@ Detail: `CHANGELOG-refund-payout-forecast.md`. **Nothing to set.**
   sections and a «ייצוא להנהלת חשבונות» CSV. No new tab, no new column, no
   new Script Property. SW `CACHE_VERSION` v21 → v22.
 
+## Dashboard Apps Script: Ortal's daily payments digest (October 2, 2026)
+
+Detail and setup: `CHANGELOG-ortal-daily-digest.md`. Apps Script only; no
+`public/` change, no SW bump, no new HTTP action.
+
+- **One email, Sunday–Thursday ~08:00 Asia/Jerusalem**, to Ortal: every
+  payment **recorded** (`chargedAt`, PR #139) since the last successful digest,
+  void rows excluded, re-recorded rows marked «עודכן», totals per house and
+  overall. Empty → a «אין תשלומים חדשים» heartbeat. No clinical data, no
+  phone, no id.
+- **New Script Properties (Sandra sets):** `DIGEST_TO` (Ortal — required;
+  missing → nothing sent), `DIGEST_CC` (Sandra), `DIGEST_CC_UNTIL`
+  (`YYYY-MM-DD`, CC only while today ≤ it). **Written by the digest itself:**
+  `DIGEST_LAST_AT`, `DIGEST_LAST_SENT_DAY`, `DIGEST_LEDGER_*`.
+- **Setup order (editor):** `authorizeDigestNow` → `previewDigestNow` →
+  `sendDigestTestNow` → `installDigestTriggerNow`. Trigger handler:
+  `paymentsDigestJob`.
+- `appsscript.json` unchanged — `script.send_mail` and `script.scriptapp` were
+  already pinned.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);
