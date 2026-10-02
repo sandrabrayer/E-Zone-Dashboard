@@ -1062,6 +1062,7 @@ function initPin() {
   });
 
   initTabs();
+  initPayoutForecastControls();
   enterApp();
 }
 
@@ -6069,6 +6070,7 @@ async function saveCredit(credit) {
   state.credits = Array.isArray(state.credits) ? state.credits : [];
   const idx = state.credits.findIndex(c => c.id === saved.id);
   if (idx >= 0) state.credits[idx] = saved; else state.credits.push(saved);
+  markPayoutForecastStale();   // the forecast's sections move with every saved credit
   return saved;
 }
 
@@ -6420,6 +6422,7 @@ function showMarkCreditPaidModal(c) {
 /* Payout view (גבייה tab): pending credits grouped by payoutDate with a
  * total per date, so the outgoing amount is visible before each 15th. */
 function renderCreditsPayouts() {
+  renderPayoutForecast();
   const list = document.getElementById('credits-payout-list');
   if (!list) return;
   list.innerHTML = '';
@@ -6474,6 +6477,244 @@ function renderCreditsPayouts() {
       list.appendChild(row);
     });
   });
+}
+
+/* ===== Refund payout forecast (extends the payout view above) =====
+ * action=refundPayoutForecast (Code.gs) — READ-ONLY, three sections that are
+ * never summed together. See CHANGELOG-refund-payout-forecast.md.
+ *   ממתין להחלטה — לא לתשלום   discharges with no saved credit whose server
+ *                              suggestion is > 0 (a decision, not a payment);
+ *   חסרים נתוני תשלום — לבדוק  discharges with no saved credit and no recorded
+ *                              payment for the exit cycle — NEVER shown as 0.
+ * Fetched only while the גבייה screen is shown (and on «רענון»); a credit
+ * save marks it stale. Loading and errors are explicit — never a silent
+ * empty list. */
+const PAYOUT_FORECAST_MISSING_NOTE = 'אין תשלום רשום — לבדוק';
+const PAYOUT_FORECAST_SECTION_LABELS = {
+  decided:    'הוחלט — ממתין לתשלום',
+  awaiting:   'ממתין להחלטה — לא לתשלום',
+  missing:    'חסרים נתוני תשלום — לבדוק',
+  unresolved: 'לא ניתן לחשב — לבדוק',
+};
+const PAYOUT_FORECAST_ERROR_LABELS = {
+  unknown_house:     'בית לא מוכר',
+  bad_date:          'תאריך כניסה או יציאה חסר / לא תקין',
+  exit_before_entry: 'תאריך היציאה לפני תאריך הכניסה',
+  bad_amount:        'סכום ששולם לא תקין',
+  bad_coverage:      'תקופת כיסוי לא תקינה',
+};
+
+function payoutForecastState() {
+  if (!state.payoutForecast) state.payoutForecast = { status: 'idle', data: null, error: '' };
+  return state.payoutForecast;
+}
+function markPayoutForecastStale() {
+  const f = payoutForecastState();
+  if (f.status !== 'loading') f.status = 'idle';
+}
+
+async function loadPayoutForecast() {
+  const f = payoutForecastState();
+  if (f.status === 'loading') return f.promise;
+  f.status = 'loading'; f.error = '';
+  renderPayoutForecast();
+  f.promise = (async () => {
+    try {
+      const res = await apiPost({ action: 'refundPayoutForecast' });
+      if (!res || res.ok !== true || !res.decided || !res.awaiting_decision || !res.missing_payment_data) {
+        throw new Error('תשובת שרת לא תקינה');
+      }
+      f.data = res; f.status = 'ok';
+    } catch (e) {
+      f.status = 'error';
+      f.error = isLockBusyError(e) ? LOCK_BUSY_MESSAGE_HE : String((e && e.message) || 'שגיאה');
+      showError('טעינת תחזית ההחזרים נכשלה — ' + f.error);
+    }
+    renderPayoutForecast();
+    return f;
+  })();
+  return f.promise;
+}
+
+function payoutForecastHouseName(houseId) {
+  const h = houseById(houseId);
+  return (h && h.name) || houseId || '—';
+}
+function payoutForecastRuleText(rule) {
+  return String(rule || '').split(',').filter(Boolean)
+    .map(r => CREDIT_RULE_LABELS[r] || CREDIT_TYPE_LABELS[r] || r).join(' + ') || '—';
+}
+function payoutForecastErrorText(code) {
+  return PAYOUT_FORECAST_ERROR_LABELS[code] || String(code || 'שגיאה');
+}
+
+/* Pure: the forecast sections as HTML. Every value goes through escapeHtml. */
+function payoutForecastHtml(data) {
+  const esc = escapeHtml;
+  const awaiting = data.awaiting_decision, missing = data.missing_payment_data;
+  const unresolved = data.unresolved || { count: 0, rows: [] };
+  let html = '';
+
+  html += `<h4 class="forecast-title forecast-awaiting">${esc(PAYOUT_FORECAST_SECTION_LABELS.awaiting)} <span class="count-pill">${esc(fmtShekel(awaiting.total))}</span></h4>`;
+  html += `<p class="billing-date-label">שוחררו מ־${esc(formatDateHe(data.recordsCutoff) || '—')} ואין להם זיכוי שמור. הסכום הוא הצעת המערכת בלבד — לא הוחלט ולא לתשלום. תאריך התשלום הוא אם יוחלט היום.</p>`;
+  if (!awaiting.count) {
+    html += `<div class="card billing-empty">אין שחרורים הממתינים להחלטה</div>`;
+  } else {
+    awaiting.byPayoutDate.forEach(g => {
+      g.rows.forEach(r => {
+        html += `<div class="billing-row forecast-row forecast-awaiting-row">`
+          + `<div><span class="p-label">שם</span><span class="p-name">${esc(r.patientName || '—')}</span></div>`
+          + `<div><span class="p-label">בית</span><span class="p-val">${esc(payoutForecastHouseName(r.houseId))}</span></div>`
+          + `<div><span class="p-label">יציאה</span><span class="p-val"><bdi>${esc(formatDateHe(r.exitDate) || '—')}</bdi></span></div>`
+          + `<div><span class="p-label">סכום מוצע</span><span class="p-val">${esc(fmtShekel(r.suggestedAmount))}</span></div>`
+          + `<div><span class="p-label">כלל</span><span class="p-val">${esc(payoutForecastRuleText(r.rule))}</span></div>`
+          + `<div><span class="p-label">תשלום אם יוחלט היום</span><span class="p-val"><bdi>${esc(formatDateHe(r.payoutDate) || '—')}</bdi></span></div>`
+          + `</div>`;
+      });
+    });
+    html += `<div class="forecast-totals">` + awaiting.byHouse.map(h =>
+      `<span>${esc(payoutForecastHouseName(h.houseId))}: <b>${esc(fmtShekel(h.total))}</b> (${esc(h.count)})</span>`).join('') + `</div>`;
+  }
+
+  html += `<h4 class="forecast-title forecast-missing">${esc(PAYOUT_FORECAST_SECTION_LABELS.missing)} <span class="count-pill">${esc(missing.count)}</span></h4>`;
+  html += `<p class="billing-date-label">שוחררו ואין תשלום רשום שמכסה את מחזור היציאה — לא ניתן להציע סכום. לא 0: צריך לבדוק.</p>`;
+  if (!missing.count) {
+    html += `<div class="card billing-empty">אין שחרורים עם נתוני תשלום חסרים</div>`;
+  } else {
+    missing.rows.forEach(r => {
+      html += `<div class="billing-row forecast-row forecast-missing-row">`
+        + `<div><span class="p-label">שם</span><span class="p-name">${esc(r.patientName || '—')}</span></div>`
+        + `<div><span class="p-label">בית</span><span class="p-val">${esc(payoutForecastHouseName(r.houseId))}</span></div>`
+        + `<div><span class="p-label">יציאה</span><span class="p-val"><bdi>${esc(formatDateHe(r.exitDate) || '—')}</bdi></span></div>`
+        + `<div><span class="p-label">סטטוס</span><span class="p-val forecast-check">${esc(PAYOUT_FORECAST_MISSING_NOTE)}</span></div>`
+        + `</div>`;
+    });
+  }
+
+  if (unresolved.count) {
+    html += `<h4 class="forecast-title forecast-missing">${esc(PAYOUT_FORECAST_SECTION_LABELS.unresolved)} <span class="count-pill">${esc(unresolved.count)}</span></h4>`;
+    unresolved.rows.forEach(r => {
+      html += `<div class="billing-row forecast-row forecast-missing-row">`
+        + `<div><span class="p-label">שם</span><span class="p-name">${esc(r.patientName || '—')}</span></div>`
+        + `<div><span class="p-label">בית</span><span class="p-val">${esc(payoutForecastHouseName(r.houseId))}</span></div>`
+        + `<div><span class="p-label">יציאה</span><span class="p-val"><bdi>${esc(formatDateHe(r.exitDate) || '—')}</bdi></span></div>`
+        + `<div><span class="p-label">סיבה</span><span class="p-val forecast-check">${esc(payoutForecastErrorText(r.error))}</span></div>`
+        + `</div>`;
+    });
+  }
+  return html;
+}
+
+function renderPayoutForecast() {
+  const box = document.getElementById('credits-forecast');
+  if (!box) return;
+  const f = payoutForecastState();
+  if (f.status === 'idle' && state.currentScreen === 'billing') { loadPayoutForecast(); return; }
+  if (f.status === 'loading') {
+    box.innerHTML = `<div class="card billing-empty forecast-loading">${escapeHtml('טוען תחזית החזרים…')}</div>`;
+    return;
+  }
+  if (f.status === 'error') {
+    box.innerHTML = `<div class="card billing-empty forecast-error">${escapeHtml('טעינת תחזית ההחזרים נכשלה — ' + f.error + '. הרשימות למטה לא נטענו; אין להסיק שהן ריקות.')}</div>`;
+    return;
+  }
+  if (f.status !== 'ok' || !f.data) { box.innerHTML = ''; return; }
+  box.innerHTML = payoutForecastHtml(f.data);
+}
+
+/* ---- «ייצוא להנהלת חשבונות»: CSV (UTF-8 BOM, Hebrew headers) ---- */
+
+/* One CSV cell. Text that a spreadsheet would run as a formula (= + - @, tab,
+ * CR) is prefixed with ' ; every cell is quoted, quotes doubled. Numbers are
+ * written as numbers. */
+function csvCell(v) {
+  if (typeof v === 'number' && isFinite(v)) return String(v);
+  let s = String(v == null ? '' : v);
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  return '"' + s.replace(/"/g, '""') + '"';
+}
+function csvLine(cells) { return cells.map(csvCell).join(','); }
+
+/* Pure. data = the refundPayoutForecast response; generatedAt = a display
+ * timestamp string. Three sections, labelled, each with its own totals —
+ * never one grand total across them. */
+function buildPayoutForecastCsv(data, generatedAt) {
+  const L = [];
+  const day = (iso) => formatDateHe(iso) || '';
+  const house = payoutForecastHouseName;
+  L.push(csvLine(['תחזית החזרים לתשלום — E-ZONE']));
+  L.push(csvLine(['הופק', generatedAt]));
+  L.push(csvLine(['הסעיפים אינם מסתכמים יחד']));
+  L.push('');
+
+  L.push(csvLine(['סעיף א׳ — ' + PAYOUT_FORECAST_SECTION_LABELS.decided]));
+  L.push(csvLine(['תאריך תשלום', 'מטופל', 'בית', 'סכום (כולל מע"מ)', 'תאריך החלטה', 'כלל', 'סיבת חריגה']));
+  data.decided.byPayoutDate.forEach(g => {
+    g.rows.forEach(r => L.push(csvLine([day(r.payoutDate) || r.payoutDate, r.patientName, house(r.houseId), r.amount,
+      day(r.decidedDate) || r.decidedDate, payoutForecastRuleText(r.rule), r.overrideReason || ''])));
+  });
+  data.decided.byPayoutDate.forEach(g => L.push(csvLine(['סה"כ לתאריך ' + (day(g.payoutDate) || g.payoutDate || '—'), '', '', g.total])));
+  data.decided.byHouse.forEach(h => L.push(csvLine(['סה"כ לבית ' + house(h.houseId), '', '', h.total])));
+  L.push(csvLine(['סה"כ סעיף א׳', '', '', data.decided.total]));
+  L.push('');
+
+  L.push(csvLine(['סעיף ב׳ — ' + PAYOUT_FORECAST_SECTION_LABELS.awaiting]));
+  L.push(csvLine(['מטופל', 'בית', 'תאריך יציאה', 'סכום מוצע (כולל מע"מ)', 'כלל', 'תאריך תשלום אם יוחלט היום']));
+  data.awaiting_decision.byPayoutDate.forEach(g => {
+    g.rows.forEach(r => L.push(csvLine([r.patientName, house(r.houseId), day(r.exitDate), r.suggestedAmount,
+      payoutForecastRuleText(r.rule), day(r.payoutDate)])));
+  });
+  data.awaiting_decision.byPayoutDate.forEach(g => L.push(csvLine(['סה"כ לתאריך ' + (day(g.payoutDate) || '—'), '', '', g.total])));
+  data.awaiting_decision.byHouse.forEach(h => L.push(csvLine(['סה"כ לבית ' + house(h.houseId), '', '', h.total])));
+  L.push(csvLine(['סה"כ סעיף ב׳ (הצעה בלבד)', '', '', data.awaiting_decision.total]));
+  L.push('');
+
+  L.push(csvLine(['סעיף ג׳ — ' + PAYOUT_FORECAST_SECTION_LABELS.missing]));
+  L.push(csvLine(['מטופל', 'בית', 'תאריך יציאה', 'הערה']));
+  data.missing_payment_data.rows.forEach(r => L.push(csvLine([r.patientName, house(r.houseId), day(r.exitDate), PAYOUT_FORECAST_MISSING_NOTE])));
+  L.push(csvLine(['מספר שחרורים לבדיקה', data.missing_payment_data.count]));
+
+  const un = data.unresolved || { count: 0, rows: [] };
+  if (un.count) {
+    L.push('');
+    L.push(csvLine(['סעיף ד׳ — ' + PAYOUT_FORECAST_SECTION_LABELS.unresolved]));
+    L.push(csvLine(['מטופל', 'בית', 'תאריך יציאה', 'סיבה']));
+    un.rows.forEach(r => L.push(csvLine([r.patientName, house(r.houseId), day(r.exitDate), payoutForecastErrorText(r.error)])));
+  }
+  return '\uFEFF' + L.join('\r\n') + '\r\n';
+}
+
+function payoutForecastStamp(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+async function exportPayoutForecastCsv() {
+  const f = payoutForecastState();
+  if (f.status !== 'ok') await loadPayoutForecast();
+  if (f.status !== 'ok' || !f.data) {
+    showError('הייצוא נכשל — לא ניתן לטעון את תחזית ההחזרים' + (f.error ? ': ' + f.error : ''));
+    return;
+  }
+  const now = new Date();
+  const csv = buildPayoutForecastCsv(f.data, payoutForecastStamp(now));
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `refund-payout-forecast-${todayISO()}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function initPayoutForecastControls() {
+  const exp = document.getElementById('credits-forecast-export');
+  if (exp) exp.onclick = () => busyButton(exp, 'load', exportPayoutForecastCsv)
+    .catch(e => showError('הייצוא נכשל — ' + ((e && e.message) || 'שגיאה')));
+  const refresh = document.getElementById('credits-forecast-refresh');
+  if (refresh) refresh.onclick = () => busyButton(refresh, 'load', () => { markPayoutForecastStale(); return loadPayoutForecast(); });
 }
 
 /* True only for the "released to outpatient" disposition — the single trigger

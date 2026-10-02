@@ -877,7 +877,7 @@ const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
 const PROXY_KNOWN_ACTIONS = [
   'getData', 'getAdmittedRoster', 'saveAll', 'getPayments', 'savePayment',
   'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
-  'getCredits', 'saveCredit', 'suggestRefunds', 'moveLeadIrrelevant', 'restoreLead',
+  'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'moveLeadIrrelevant', 'restoreLead',
   'removeLead', 'deletePatientRow', 'dischargePatient', 'restorePatient',
   'restorePatientToActive', 'deleteMeetingReport', 'meetingReportLeads',
   'submitMeetingReport', 'managersOverview', 'managersHouse',
@@ -1175,6 +1175,8 @@ function handle_(params) {
     // Refund suggestion for a discharge: READ-ONLY (no sheet write, no lock),
     // gated by PROXY_SECRET like every non-OPEN_ACTIONS action.
     if (action === 'suggestRefunds') return jsonOut_(suggestRefunds_(params));
+    // Payout forecast for the bookkeeper: READ-ONLY, gated by PROXY_SECRET.
+    if (action === 'refundPayoutForecast') return jsonOut_(refundPayoutForecast_());
     if (action === 'saveCredit') {
       return jsonOut_(upsertCredit_(parseJsonParam_(params.credit), requestUser_(params)));
     }
@@ -6337,6 +6339,183 @@ function suggestRefunds_(params) {
 function creditPayoutDate_(decidedDate, existing) {
   if (existing && existing.payoutDate && existing.decidedDate === decidedDate) return existing.payoutDate;
   return refundPayoutDate_(decidedDate);
+}
+
+/* ===== Refund payout forecast (CHANGELOG-refund-payout-forecast.md) =====
+ * READ-ONLY. What the bookkeeper needs before each 15th, in three sections
+ * that are NEVER summed together:
+ *   decided              — saved credits, status 'pending', amount > 0, grouped
+ *                          by the STORED payoutDate (never recomputed);
+ *   awaiting_decision    — discharges (exit on/after the records cutoff) with
+ *                          NO saved credit for that stay, where the server's
+ *                          suggestion (refundSuggestionsFor_ → computeRefund_)
+ *                          totals > 0. NOT money to pay — a decision to make;
+ *   missing_payment_data — discharges (same cutoff) with no saved credit and NO
+ *                          recorded payment covering the exit cycle, whose
+ *                          suggestion would be 0 only for lack of data. They
+ *                          carry no amount at all — never a 0.
+ * Plus `unresolved` (a discharge the rules refused, e.g. unknown_house — an
+ * error code, never a 0) and zeroByPolicyCount (discharges whose suggestion is
+ * a real, data-backed 0; counted, not listed).
+ *
+ * A credit belongs to a stay when its patientKey triple equals the discharge's
+ * (house, trimmed name, Jerusalem entry day). Any saved row — pending, paid,
+ * cancelled, zero — means the stay is decided. Restored discharges are not
+ * discharges. Pure: no sheet access, no clock. */
+const REFUND_FORECAST_MISSING_NOTE = 'אין תשלום רשום — לבדוק';
+
+function refundForecastIso_(v) {
+  try { return refundDateIso_(v, 'date'); } catch (_) { return ''; }
+}
+function refundForecastKey_(houseId, name, entryIso) {
+  return String(houseId == null ? '' : houseId).trim() + '::' +
+         String(name == null ? '' : name).trim() + '::' + entryIso;
+}
+/* A stored 'house::name::entry' reduced the same way (trimmed name, ISO day). */
+function refundForecastStoredKey_(k) {
+  const parts = String(k == null ? '' : k).split('::');
+  if (parts.length !== 3) return '';
+  return refundForecastKey_(parts[0], parts[1], refundForecastIso_(parts[2]) || parts[2].trim());
+}
+/* The rule a saved credit was decided under (from its stored basis). */
+function refundForecastRule_(c) {
+  const raw = c && c.basis;
+  let b = raw;
+  if (typeof raw === 'string') { try { b = JSON.parse(raw); } catch (_) { b = null; } }
+  return (b && typeof b === 'object' && b.rule) ? String(b.rule) : String((c && c.creditType) || '');
+}
+/* Totals per payoutDate and per house for one section. */
+function refundForecastTotals_(rows, dateField, amountField) {
+  const byDate = {}, byHouse = {};
+  let total = 0;
+  rows.forEach(function (r) {
+    const amt = Number(r[amountField]) || 0;
+    const d = r[dateField] || '';
+    if (!byDate[d]) byDate[d] = { payoutDate: d, total: 0, count: 0, rows: [] };
+    byDate[d].total = refundRound2_(byDate[d].total + amt); byDate[d].count++; byDate[d].rows.push(r);
+    const h = r.houseId || '';
+    if (!byHouse[h]) byHouse[h] = { houseId: h, total: 0, count: 0 };
+    byHouse[h].total = refundRound2_(byHouse[h].total + amt); byHouse[h].count++;
+    total = refundRound2_(total + amt);
+  });
+  const sortKeys = function (o) { return Object.keys(o).sort(); };
+  return {
+    count: rows.length, total: total,
+    byPayoutDate: sortKeys(byDate).map(function (k) { return byDate[k]; }),
+    byHouse: sortKeys(byHouse).map(function (k) { return byHouse[k]; }),
+  };
+}
+
+function refundPayoutForecastFor_(discharged, credits, payments, todayIso) {
+  const today = refundDateIso_(todayIso, 'today');
+  const cutoff = recRecordsCutoff_();
+  const creditList = Array.isArray(credits) ? credits : [];
+
+  // a. decided — the stored payoutDate, as stored.
+  const decidedRows = [];
+  creditList.forEach(function (c) {
+    if (!c || String(c.status == null ? '' : c.status).trim() !== 'pending') return;
+    const amount = Number(c.amount);
+    if (!isFinite(amount) || amount <= 0) return;
+    const pd = c.payoutDate;
+    const payoutDate = Object.prototype.toString.call(pd) === '[object Date]'
+      ? refundForecastIso_(pd) : String(pd == null ? '' : pd).trim();
+    decidedRows.push({
+      creditId: String(c.id || ''), patientName: String(c.patientName || ''), houseId: String(c.houseId || ''),
+      amount: refundRound2_(amount), decidedDate: refundForecastIso_(c.decidedDate) || String(c.decidedDate || ''),
+      payoutDate: payoutDate, rule: refundForecastRule_(c), creditType: String(c.creditType || ''),
+      overrideReason: String(c.overrideReason || ''),
+    });
+  });
+
+  // Stays that already hold a saved credit (any status, any amount).
+  const decidedKeys = {};
+  creditList.forEach(function (c) {
+    const k = c && refundForecastStoredKey_(c.patientKey);
+    if (k) decidedKeys[k] = true;
+  });
+
+  // One discharge per stay (the latest exit), restored ones excluded.
+  const stays = {};
+  (Array.isArray(discharged) ? discharged : []).forEach(function (d) {
+    if (!d || diagIsRestored_(d.restored)) return;
+    const exitIso = refundForecastIso_(d.exitDate) || refundForecastIso_(d.dischargedAt);
+    const entryIso = refundForecastIso_(d.date);
+    const name = String(d.name == null ? '' : d.name).trim();
+    const houseId = String(d.houseId == null ? '' : d.houseId).trim();
+    if (exitIso && exitIso < cutoff) return;            // before the records cutoff
+    const key = refundForecastKey_(houseId, name, entryIso);
+    const prev = stays[key];
+    if (!prev || (exitIso && exitIso > prev.exitDate)) {
+      stays[key] = { key: key, patientName: name, houseId: houseId, entryDate: entryIso, exitDate: exitIso };
+    }
+  });
+
+  const payoutIfToday = refundPayoutDate_(today);
+  const awaitingRows = [], missingRows = [], unresolvedRows = [];
+  let zeroByPolicyCount = 0;
+  Object.keys(stays).sort().forEach(function (k) {
+    const s = stays[k];
+    if (decidedKeys[k]) return;
+    const ident = { patientName: s.patientName, houseId: s.houseId, entryDate: s.entryDate, exitDate: s.exitDate };
+    if (!s.exitDate || !s.entryDate) {
+      unresolvedRows.push(Object.assign(ident, { error: 'bad_date' }));
+      return;
+    }
+    let sugg;
+    try {
+      sugg = refundSuggestionsFor_({ houseId: s.houseId, entryDate: s.entryDate, exitDate: s.exitDate, patientKey: k }, payments, today);
+    } catch (e) {
+      unresolvedRows.push(Object.assign(ident, { error: (e && e.code) || 'refund_failed' }));
+      return;
+    }
+    const positive = sugg.filter(function (x) { return (Number(x.calculatedAmount) || 0) > 0; });
+    const total = refundRound2_(positive.reduce(function (t, x) { return t + Number(x.calculatedAmount); }, 0));
+    if (total > 0) {
+      const rules = [];
+      positive.forEach(function (x) { const r = x.basis && x.basis.rule; if (r && rules.indexOf(r) < 0) rules.push(r); });
+      awaitingRows.push(Object.assign(ident, { suggestedAmount: total, rule: rules.join(','), payoutDate: payoutIfToday }));
+      return;
+    }
+    // A recorded payment covers the exit cycle when a real row (amountPaid > 0)
+    // produced the line for the cycle that holds the exit.
+    const covered = sugg.some(function (x) {
+      const b = x.basis || {};
+      return b.coverageWindowSource !== 'no_payment_row' && (Number(b.amountPaid) || 0) > 0 &&
+        b.rule !== 'prepaid_return' && b.rule !== 'cycle_fully_used';
+    });
+    if (covered) { zeroByPolicyCount++; return; }
+    missingRows.push(Object.assign(ident, { note: REFUND_FORECAST_MISSING_NOTE }));
+  });
+
+  return {
+    ok: true, today: today, recordsCutoff: cutoff, payoutDateIfDecidedToday: payoutIfToday,
+    decided: refundForecastTotals_(decidedRows, 'payoutDate', 'amount'),
+    awaiting_decision: refundForecastTotals_(awaitingRows, 'payoutDate', 'suggestedAmount'),
+    missing_payment_data: { count: missingRows.length, rows: missingRows },
+    unresolved: { count: unresolvedRows.length, rows: unresolvedRows },
+    zeroByPolicyCount: zeroByPolicyCount,
+  };
+}
+
+/* action=refundPayoutForecast — READ-ONLY. Reads Credits, the discharged tab
+ * and Payments with getSheetByName (never creates a sheet, never backfills,
+ * no lock, no audit row). Gated by PROXY_SECRET (not in OPEN_ACTIONS). */
+function refundPayoutForecast_() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const read = function (name, cols) { const sh = ss.getSheetByName(name); return sh ? readSheet_(sh, cols) : []; };
+    const now = new Date();
+    const out = refundPayoutForecastFor_(
+      read(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS),
+      read(CREDITS_SHEET, CREDIT_COLUMNS),
+      read(PAYMENTS_SHEET, PAYMENT_COLUMNS),
+      Utilities.formatDate(now, 'Asia/Jerusalem', 'yyyy-MM-dd'));
+    out.generatedAt = now.toISOString();
+    return out;
+  } catch (e) {
+    return { ok: false, error: (e && e.code) || 'forecast_failed' };
+  }
 }
 
 function creditStr_(v, max) {

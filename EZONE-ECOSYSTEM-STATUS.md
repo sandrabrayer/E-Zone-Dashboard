@@ -485,6 +485,19 @@ nothing needs to be set.**
 - The roster, meeting-report and accounting secret checks are now
   constant-time.
 
+## Dashboard: refund payout forecast on גבייה (October 1, 2026)
+
+Detail: `CHANGELOG-refund-payout-forecast.md`. **Nothing to set.**
+
+- New **read-only** action `refundPayoutForecast`, gated by `PROXY_SECRET`
+  (not in `OPEN_ACTIONS`). It returns three sections, never summed together:
+  saved pending credits grouped by their **stored** `payoutDate`; discharges
+  awaiting a refund decision (suggestion > 0); discharges with no recorded
+  payment for the exit cycle (shown as «אין תשלום רשום — לבדוק», never 0).
+- The existing «זיכויים ממתינים לתשלום» section on גבייה gains those two
+  sections and a «ייצוא להנהלת חשבונות» CSV. No new tab, no new column, no
+  new Script Property. SW `CACHE_VERSION` v21 → v22.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);
