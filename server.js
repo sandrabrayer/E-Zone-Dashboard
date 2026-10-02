@@ -11,6 +11,9 @@ const { hashPin, pinPolicyError } = require('./lib/pin-hash');
 const { WindowCounter } = require('./lib/rate-limit');
 const { buildXlsxReport, isoDayInIsrael, XLSX_MIME } = require('./lib/xlsx-report');
 const { buildRefundForecastSpec, isForecastResponse, contentDisposition } = require('./lib/refund-forecast-xlsx');
+const {
+  buildDebtAgingSpec, isDebtAgingResponse, validateDebtAgingQuery, debtAgingContentDisposition,
+} = require('./lib/debt-aging-xlsx');
 
 const app = express();
 app.disable('etag');
@@ -891,6 +894,68 @@ function refundForecastXlsxHandler(deps) {
 }
 app.get('/api/export/refund-forecast.xlsx', requireSession, requireProxySecret, refundForecastXlsxHandler());
 
+/* GET /api/export/debt-aging.xlsx?asOf=YYYY-MM-DD&house=…&status=… — «חובות
+ * פתוחים» → «ייצוא לאקסל».
+ *
+ * requireSession → query validation (400 on a bad asOf / house / status) →
+ * requireProxySecret → handler. Reads action=debtAging (read-only) through
+ * sheetsPost and sends the workbook built by lib/xlsx-report.js from
+ * lib/debt-aging-xlsx.js: no amount is computed here, the cycles are only
+ * filtered and grouped. The file is named after the AS-OF date. Never cached
+ * (Cache-Control: no-store; the service worker never caches /api/). The log
+ * carries the outcome only — never a patient name, amount or response body. */
+function validateDebtAgingExportQuery(req, res, next) {
+  const q = validateDebtAgingQuery(req.query);
+  if (!q.ok) {
+    console.error('[export debt-aging] failed:', q.error);
+    res.set('Cache-Control', 'no-store');
+    return res.status(400).json({ ok: false, error: q.error });
+  }
+  req.debtAgingQuery = q;
+  return next();
+}
+function debtAgingXlsxHandler(deps) {
+  const d = deps || {};
+  const fetchAging = d.fetchAging || ((asOf, user) => sheetsPost({ action: 'debtAging', asOf, user }));
+  const clock = d.now || (() => new Date());
+  return async (req, res) => {
+    const fail = (status, error) => {
+      console.error('[export debt-aging] failed:', error);
+      res.set('Cache-Control', 'no-store');
+      return res.status(status).json({ ok: false, error });
+    };
+    const q = req.debtAgingQuery || validateDebtAgingQuery(req.query);
+    if (!q.ok) return fail(400, q.error);
+    let data;
+    try {
+      data = await fetchAging(q.asOf, sessionUserFromRequest(req));
+    } catch (err) {
+      return fail(502, err && err.message === PROXY_NOT_CONFIGURED ? 'proxy_not_configured' : 'sheets_unreachable');
+    }
+    if (data && data.ok === false && data.error === 'lock_busy') return fail(503, 'lock_busy');
+    if (!isDebtAgingResponse(data) || data.asOf !== q.asOf) {
+      return fail(502, data && typeof data.error === 'string' ? data.error.slice(0, 60) : 'bad_response');
+    }
+    let buf;
+    const now = clock();
+    try {
+      buf = await buildXlsxReport(buildDebtAgingSpec(data, { house: q.house, status: q.status }, now, isoDayInIsrael(now)));
+    } catch (_err) {
+      return fail(500, 'xlsx_build_failed');
+    }
+    console.log('[export debt-aging] ok, bytes=', buf.length);
+    res.set({
+      'Content-Type': XLSX_MIME,
+      'Content-Disposition': debtAgingContentDisposition(q.asOf),
+      'Content-Length': String(buf.length),
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    return res.status(200).end(buf);
+  };
+}
+app.get('/api/export/debt-aging.xlsx', requireSession, validateDebtAgingExportQuery, requireProxySecret, debtAgingXlsxHandler());
+
 /* Diagnostics — last save and last load. These echo lead/patient previews, so
  * they are gated behind the session cookie like the data routes.
  *
@@ -1344,6 +1409,9 @@ module.exports = {
   safeErrorMessage,
   // «ייצוא להנהלת חשבונות» .xlsx (see test/xlsx-export.test.js).
   refundForecastXlsxHandler,
+  // «חובות פתוחים» .xlsx (see test/debt-aging-ui.test.js).
+  debtAgingXlsxHandler,
+  validateDebtAgingExportQuery,
   // Deploy identity on /healthz (see test/healthz-deploy-identity.test.js).
   deployIdentity,
   healthzBody,

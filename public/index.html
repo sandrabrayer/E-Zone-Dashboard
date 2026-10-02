@@ -225,6 +225,25 @@
       </div>
       <div id="credits-forecast" class="billing-list" aria-live="polite"></div>
 
+      <!-- «חובות פתוחים»: debt aging as of a date (action=debtAging, read-only).
+           Collapsed by default; fetched only when opened or the date changes.
+           «חוב רשום» and «מחזורים ללא רישום» are two blocks, never summed. -->
+      <details id="debt-aging-view" class="debt-aging-view">
+        <summary><h3>חובות פתוחים</h3></summary>
+        <div class="debt-controls">
+          <label for="debt-asof" class="billing-date-label">נכון לתאריך</label>
+          <input id="debt-asof" type="date" />
+          <button type="button" class="btn small" id="debt-asof-prev-month">סוף חודש קודם</button>
+          <label for="debt-house" class="billing-date-label">בית</label>
+          <select id="debt-house"></select>
+          <label for="debt-status" class="billing-date-label">סטטוס</label>
+          <select id="debt-status"></select>
+          <button type="button" class="btn small" id="debt-refresh">רענון</button>
+          <button type="button" class="btn small primary" id="debt-export">ייצוא לאקסל</button>
+        </div>
+        <div id="debt-aging" class="debt-aging" aria-live="polite"></div>
+      </details>
+
       <h3>סיכום חודשי</h3>
       <div class="cards-row">
         <div class="card stat">

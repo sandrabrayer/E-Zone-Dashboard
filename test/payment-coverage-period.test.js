@@ -684,7 +684,9 @@ test('H: no new endpoint, and server.js is untouched by this change', () => {
   assert.ok(!SERVER.includes('coverageStart'), 'the proxy learned nothing about coverage');
   assert.ok(!SERVER.includes('coveragePeriod'));
   // The only actions that touch a payment row are the two that already did.
-  const dispatch = GS_SRC.slice(GS_SRC.indexOf('function handle_'), GS_SRC.indexOf('function handle_') + 6000);
+  // The whole handle_ body (a fixed-length window stopped reaching its later
+  // branches once handle_ grew in PR #162).
+  const dispatch = GS_SRC.slice(GS_SRC.indexOf('function handle_'), GS_SRC.indexOf('\nfunction ', GS_SRC.indexOf('function handle_') + 1));
   const payActions = (dispatch.match(/action === '(\w+)'/g) || [])
     .filter((a) => /Payment/i.test(a));
   /* accountingPayments was added later (CHANGELOG-accounting-source-feed.md).

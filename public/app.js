@@ -1063,6 +1063,7 @@ function initPin() {
 
   initTabs();
   initPayoutForecastControls();
+  initDebtAgingControls();
   enterApp();
 }
 
@@ -6672,6 +6673,419 @@ function initPayoutForecastControls() {
     .catch(e => showError('הייצוא נכשל — ' + ((e && e.message) || 'שגיאה')));
   const refresh = document.getElementById('credits-forecast-refresh');
   if (refresh) refresh.onclick = () => busyButton(refresh, 'load', () => { markPayoutForecastStale(); return loadPayoutForecast(); });
+}
+
+/* ===== «חובות פתוחים» — debt aging as of a date (גבייה tab) =====
+ * action=debtAging (Code.gs debtAging_) — READ-ONLY. See
+ * CHANGELOG-debt-aging-ui.md. No new math: the server's cycles are only
+ * FILTERED (house, patient status) and GROUPED into house × bucket tables.
+ *
+ * NEVER ADDED TOGETHER:
+ *   «חוב רשום»           recorded_debt     — a Payments row exists and is short;
+ *   «מחזורים ללא רישום»  unrecorded_cycles — no Payments row («לא שולם או
+ *                                           שולם ולא נרשם»).
+ * Pending credits sit beside the debt and are never subtracted. The separate
+ * lists (detached payments, payments after exit, discharged without an exit
+ * date, zero-amount patients) are never part of either figure.
+ *
+ * The view (debtAgingView) and the labels below are the browser copy of
+ * lib/debt-aging-xlsx.js; test/debt-aging-ui.test.js fails if they drift.
+ * Fetched only when the section is opened or the as-of date changes — never on
+ * a tab switch. Loading and errors are explicit, never a silent empty view. */
+const DEBT_AGING_BUCKETS = [
+  { key: 'd0_7',     label: '0–7' },
+  { key: 'd8_30',    label: '8–30' },
+  { key: 'd31_60',   label: '31–60' },
+  { key: 'd61_plus', label: '61+' },
+];
+const DEBT_AGING_BLOCK_LABELS = {
+  recorded_debt:     'חוב רשום',
+  unrecorded_cycles: 'מחזורים ללא רישום',
+};
+const DEBT_AGING_UNRECORDED_NOTE = 'לא שולם או שולם ולא נרשם';
+const DEBT_AGING_CREDITS_LABEL = 'זיכויים ממתינים — לא מקוזזים מהחוב';
+const DEBT_AGING_STATUS_LABELS = { all: 'כל המטופלים', active: 'פעילים', discharged: 'משוחררים' };
+const DEBT_AGING_PATIENT_STATUS_LABELS = { active: 'פעיל', discharged: 'משוחרר' };
+const DEBT_AGING_KIND_LABELS = { recorded: 'חוב רשום', unrecorded: 'ללא רישום' };
+const DEBT_AGING_DETACHED_REASON_LABELS = { not_a_patient: 'סומן: לא כסף של מטופל', unmatched: 'לא נמצא מטופל תואם' };
+const DEBT_AGING_LIST_LABELS = {
+  detached:       'תשלומים לא משויכים',
+  outsideStay:    'תשלומים אחרי יציאה',
+  releasedNoExit: 'משוחררים ללא תאריך יציאה',
+  zeroAmount:     'מטופלים בסכום אפס',
+  noEntryDate:    'ללא תאריך כניסה',
+};
+const DEBT_AGING_XLSX_URL = '/api/export/debt-aging.xlsx';
+const DEBT_AGING_XLSX_ERRORS = Object.assign({}, PAYOUT_FORECAST_XLSX_ERRORS, {
+  bad_asOf:   'תאריך לא תקין',
+  bad_house:  'בית לא תקין',
+  bad_status: 'סטטוס לא תקין',
+});
+
+/* Today in Asia/Jerusalem, 'YYYY-MM-DD' — whatever the device's clock zone. */
+function debtAgingTodayIso(now) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .format(now || new Date());
+}
+/* The last day of the month before todayIso's month. Pure. */
+function debtAgingPrevMonthEnd(todayIso) {
+  const y = Number(todayIso.slice(0, 4)), m = Number(todayIso.slice(5, 7));
+  return new Date(Date.UTC(y, m - 1, 0)).toISOString().slice(0, 10);
+}
+/* A bare 'YYYY-MM-DD' naming a real calendar day. Pure. */
+function debtAgingIsRealDay(s) {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(Date.UTC(Number(s.slice(0, 4)), Number(s.slice(5, 7)) - 1, Number(s.slice(8, 10))));
+  return d.toISOString().slice(0, 10) === s;
+}
+function debtAgingStatusGroup(status) { return status === 'released' ? 'discharged' : 'active'; }
+function debtAgingBucketLabel(key) {
+  const b = DEBT_AGING_BUCKETS.find(x => x.key === key);
+  return b ? b.label : String(key || '—');
+}
+function debtAgingHouseName(houseId) {
+  if (!houseId) return 'סה"כ';
+  const h = houseById(houseId);
+  return (h && h.name) || houseId;
+}
+
+/* The filtered view of one debtAging response — the browser copy of
+ * lib/debt-aging-xlsx.js debtAgingView. Pure. */
+function debtAgingView(data, filters) {
+  const f = filters || {};
+  const house = f.house || 'all', status = f.status || 'all';
+  const arr = v => (Array.isArray(v) ? v : []);
+  const rowsOf = o => arr(o && o.rows);
+  const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+  const houseOk = h => house === 'all' || h === house;
+  const statusOk = s => status === 'all' || debtAgingStatusGroup(s) === status;
+  const order = HOUSES.map(h => h.id);
+
+  const seen = [];
+  arr(data.byPatient).forEach(p => seen.push(p.houseId));
+  arr(data.byHouse).forEach(h => seen.push(h.houseId));
+  arr(data.pendingCredits && data.pendingCredits.byHouse).forEach(h => seen.push(h.houseId));
+  const extra = seen.filter((h, i) => h && order.indexOf(h) < 0 && seen.indexOf(h) === i).sort();
+  const houseIds = house === 'all' ? order.concat(extra) : [house];
+
+  const emptyRow = houseId => {
+    const o = { houseId, house: debtAgingHouseName(houseId), total: 0 };
+    DEBT_AGING_BUCKETS.forEach(b => { o[b.key] = 0; });
+    return o;
+  };
+  const table = () => ({ rows: houseIds.map(emptyRow), totals: emptyRow('') });
+  const tables = { recorded_debt: table(), unrecorded_cycles: table() };
+  const addTo = (t, houseId, bucket, amount) => {
+    let row = t.rows.find(r => r.houseId === houseId);
+    if (!row) { row = emptyRow(houseId); t.rows.push(row); }
+    if (!(bucket in row)) return;
+    row[bucket] = r2(row[bucket] + amount); row.total = r2(row.total + amount);
+    t.totals[bucket] = r2(t.totals[bucket] + amount); t.totals.total = r2(t.totals.total + amount);
+  };
+
+  const patients = [];
+  const zeroAmount = [];
+  arr(data.byPatient).forEach(p => {
+    if (!houseOk(p.houseId) || !statusOk(p.status)) return;
+    const owed = arr(p.cycles).filter(c => Number(c.balance) > 0);
+    const base = { patientId: p.patientId, name: p.name, houseId: p.houseId, status: p.status,
+      statusGroup: debtAgingStatusGroup(p.status), entryDate: p.entryDate || '', exitDate: p.exitDate || '' };
+    if (!owed.length) { zeroAmount.push(Object.assign(base, { cycles: arr(p.cycles).length })); return; }
+    let recorded = 0, unrecorded = 0, oldest = -1;
+    owed.forEach(c => {
+      const bal = Number(c.balance) || 0;
+      if (c.kind === 'recorded') { recorded = r2(recorded + bal); addTo(tables.recorded_debt, p.houseId, c.bucket, bal); }
+      else { unrecorded = r2(unrecorded + bal); addTo(tables.unrecorded_cycles, p.houseId, c.bucket, bal); }
+      oldest = Math.max(oldest, DEBT_AGING_BUCKETS.findIndex(b => b.key === c.bucket));
+    });
+    patients.push(Object.assign(base, {
+      recordedBalance: recorded, unrecordedTotal: unrecorded,
+      oldestBucket: oldest >= 0 ? DEBT_AGING_BUCKETS[oldest].key : '',
+      cycles: owed.slice().sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0)),
+    }));
+  });
+  const orderOf = h => { const i = houseIds.indexOf(h); return i < 0 ? houseIds.length : i; };
+  patients.sort((a, b) => (orderOf(a.houseId) - orderOf(b.houseId)) || String(a.name).localeCompare(String(b.name), 'he'));
+
+  const creditRows = arr(data.pendingCredits && data.pendingCredits.byHouse)
+    .filter(h => houseOk(h.houseId))
+    .map(h => ({ houseId: h.houseId, house: debtAgingHouseName(h.houseId), count: Number(h.count) || 0, total: r2(h.total) }))
+    .sort((a, b) => orderOf(a.houseId) - orderOf(b.houseId));
+  const credits = {
+    rows: creditRows,
+    count: creditRows.reduce((s, r) => s + r.count, 0),
+    total: r2(creditRows.reduce((s, r) => s + r.total, 0)),
+  };
+
+  const detachedRows = rowsOf(data.detachedPayments).filter(r => houseOk(r.houseId));
+  const outsideRows = rowsOf(data.outsideStay).filter(r => houseOk(r.houseId) && statusOk(r.status));
+  const noExitRows = rowsOf(data.releasedWithoutExit).filter(r => houseOk(r.houseId) && (status === 'all' || status === 'discharged'));
+  const noEntryRows = rowsOf(data.noEntryDate).filter(r => houseOk(r.houseId) && statusOk(r.status));
+  const lists = {
+    detached: {
+      rows: detachedRows, count: detachedRows.length,
+      total: r2(detachedRows.reduce((s, r) => s + (Number(r.amount) || 0), 0)),
+      receivedByAsOf: r2(detachedRows.reduce((s, r) => s + (Number(r.receivedByAsOf) || 0), 0)),
+    },
+    outsideStay: { rows: outsideRows, count: outsideRows.length },
+    releasedNoExit: { rows: noExitRows, count: noExitRows.length },
+    zeroAmount: { rows: zeroAmount, count: zeroAmount.length, total: 0 },
+    noEntryDate: { rows: noEntryRows, count: noEntryRows.length },
+  };
+
+  return { asOf: data.asOf, house, status, houseIds, tables, patients, credits, lists };
+}
+
+/* The caveats to show — only the relevant ones. Pure. */
+function debtAgingCaveats(data, todayIso) {
+  const out = [];
+  const unknown = Number(data && data.receivedDateUnknown && data.receivedDateUnknown.count) || 0;
+  if (unknown > 0) out.push(`${unknown} תשלומים ללא תאריך קבלה — הוערכו לפי תחילת המחזור`);
+  if (data && typeof data.asOf === 'string' && typeof todayIso === 'string' && data.asOf < todayIso) {
+    out.push('בתאריך עבר, תשלום שהושלם מאוחר יותר עלול להופיע כחוב');
+  }
+  return out;
+}
+
+/* Pure: one block's house × bucket table. Every value goes through escapeHtml. */
+function debtAgingBlockHtml(key, table, sub) {
+  const esc = escapeHtml;
+  const cls = key === 'recorded_debt' ? 'debt-block-recorded' : 'debt-block-unrecorded';
+  const cells = r => DEBT_AGING_BUCKETS.map(b => `<td data-bucket="${esc(b.key)}">${esc(fmtShekel(r[b.key]))}</td>`).join('')
+    + `<td class="debt-row-total">${esc(fmtShekel(r.total))}</td>`;
+  return `<div class="debt-block ${cls}" data-block="${esc(key)}">`
+    + `<h4 class="debt-block-title">${esc(DEBT_AGING_BLOCK_LABELS[key])} <span class="count-pill debt-block-total">${esc(fmtShekel(table.totals.total))}</span></h4>`
+    + `<p class="billing-date-label">${esc(sub)}</p>`
+    + `<div class="debt-table-wrap"><table class="debt-table"><thead><tr><th>בית</th>`
+    + DEBT_AGING_BUCKETS.map(b => `<th><span dir="ltr">${esc(b.label)}</span> ימים</th>`).join('') + `<th>סה"כ</th></tr></thead><tbody>`
+    + table.rows.map(r => `<tr data-house="${esc(r.houseId)}"><th>${esc(r.house)}</th>${cells(r)}</tr>`).join('')
+    + `</tbody><tfoot><tr class="debt-col-totals"><th>סה"כ ${esc(DEBT_AGING_BLOCK_LABELS[key])}</th>${cells(table.totals)}</tr></tfoot></table></div>`
+    + `</div>`;
+}
+
+/* Pure: a collapsible separate list with its own count (and total, when the
+ * report carries an amount). Never part of the debt figures. */
+function debtAgingListHtml(id, list, rowHtml, totalText) {
+  const esc = escapeHtml;
+  return `<details class="debt-list" data-list="${esc(id)}"><summary>${esc(DEBT_AGING_LIST_LABELS[id])} `
+    + `<span class="count-pill">${esc(list.count)}</span>`
+    + (totalText ? ` <span class="count-pill">${esc(totalText)}</span>` : '')
+    + `</summary>`
+    + (list.count ? list.rows.map(rowHtml).join('') : `<div class="card billing-empty">אין</div>`)
+    + `</details>`;
+}
+
+/* Pure: the whole view as HTML. Every value goes through escapeHtml. */
+function debtAgingHtml(data, filters, todayIso) {
+  const esc = escapeHtml;
+  const v = debtAgingView(data, filters);
+  let html = '';
+
+  const caveats = debtAgingCaveats(data, todayIso);
+  if (caveats.length) {
+    html += `<div class="debt-caveats">` + caveats.map(c => `<p class="debt-caveat">${esc(c)}</p>`).join('') + `</div>`;
+  }
+  html += `<p class="billing-date-label">נכון לסוף יום <bdi>${esc(formatDateHe(v.asOf) || '—')}</bdi> · כולל מע"מ · שני הגושים אינם מסתכמים יחד</p>`;
+  html += `<div class="debt-blocks">`
+    + debtAgingBlockHtml('recorded_debt', v.tables.recorded_debt, 'שורות תשלום שלא שולמו או שולמו חלקית')
+    + debtAgingBlockHtml('unrecorded_cycles', v.tables.unrecorded_cycles, DEBT_AGING_UNRECORDED_NOTE)
+    + `</div>`;
+
+  html += `<div class="debt-credits"><span class="debt-credits-label">${esc(DEBT_AGING_CREDITS_LABEL)}:</span> `
+    + (v.credits.rows.length
+      ? v.credits.rows.map(r => `<span data-house="${esc(r.houseId)}">${esc(r.house)}: <b>${esc(fmtShekel(r.total))}</b> (${esc(r.count)})</span>`).join(' ')
+      : `<span>אין</span>`)
+    + `</div>`;
+
+  // Drill-down: house → patients → cycles.
+  html += `<h4 class="debt-drill-title">פירוט לפי בית</h4>`;
+  if (!v.patients.length) {
+    html += `<div class="card billing-empty debt-none">אין חוב פתוח בסינון זה</div>`;
+  } else {
+    v.houseIds.forEach(h => {
+      const ps = v.patients.filter(p => p.houseId === h);
+      if (!ps.length) return;
+      const rec = v.tables.recorded_debt.rows.find(r => r.houseId === h);
+      const unr = v.tables.unrecorded_cycles.rows.find(r => r.houseId === h);
+      html += `<details class="debt-house" data-house="${esc(h)}"><summary>${esc(debtAgingHouseName(h))} · ${esc(ps.length)} מטופלים`
+        + ` · ${esc(DEBT_AGING_BLOCK_LABELS.recorded_debt)} ${esc(fmtShekel(rec ? rec.total : 0))}`
+        + ` · ${esc(DEBT_AGING_BLOCK_LABELS.unrecorded_cycles)} ${esc(fmtShekel(unr ? unr.total : 0))}</summary>`;
+      ps.forEach(p => {
+        html += `<details class="debt-patient" data-patient="${esc(p.patientId)}"><summary class="billing-row debt-patient-row">`
+          + `<div><span class="p-label">שם</span><span class="p-name">${esc(p.name || '—')}</span></div>`
+          + `<div><span class="p-label">סטטוס</span><span class="p-val">${esc(DEBT_AGING_PATIENT_STATUS_LABELS[p.statusGroup])}</span></div>`
+          + `<div><span class="p-label">${esc(DEBT_AGING_BLOCK_LABELS.recorded_debt)}</span><span class="p-val">${esc(fmtShekel(p.recordedBalance))}</span></div>`
+          + `<div><span class="p-label">ללא רישום</span><span class="p-val">${esc(fmtShekel(p.unrecordedTotal))}</span></div>`
+          + `<div><span class="p-label">הוותיק ביותר</span><span class="p-val"><span dir="ltr">${esc(debtAgingBucketLabel(p.oldestBucket))}</span> ימים</span></div>`
+          + `</summary><div class="debt-table-wrap"><table class="debt-table debt-cycles"><thead><tr>`
+          + `<th>תחילה</th><th>סוף</th><th>צפוי</th><th>התקבל</th><th>יתרה</th><th>תקופת חוב (ימים)</th><th>סוג</th></tr></thead><tbody>`
+          + p.cycles.map(c => `<tr class="debt-cycle" data-kind="${esc(c.kind)}"><td><bdi>${esc(formatDateHe(c.start) || '—')}</bdi></td><td><bdi>${esc(formatDateHe(c.end) || '—')}</bdi></td>`
+            + `<td>${esc(fmtShekel(c.expected))}</td><td>${esc(fmtShekel(c.received))}</td><td>${esc(fmtShekel(c.balance))}</td>`
+            + `<td><span dir="ltr">${esc(debtAgingBucketLabel(c.bucket))}</span></td><td>${esc(DEBT_AGING_KIND_LABELS[c.kind] || c.kind)}</td></tr>`).join('')
+          + `</tbody></table></div></details>`;
+      });
+      html += `</details>`;
+    });
+  }
+
+  // Separate lists — each with its own count/total, never in the debt figures.
+  const L = v.lists;
+  html += `<h4 class="debt-drill-title">לבדיקה — לא נכלל בחוב</h4>`;
+  html += debtAgingListHtml('detached', L.detached, r => `<div class="billing-row debt-list-row">`
+    + `<div><span class="p-label">שם</span><span class="p-name">${esc(r.patientName || '—')}</span></div>`
+    + `<div><span class="p-label">בית</span><span class="p-val">${esc(debtAgingHouseName(r.houseId))}</span></div>`
+    + `<div><span class="p-label">תאריך לתשלום</span><span class="p-val"><bdi>${esc(formatDateHe(r.dueDate) || '—')}</bdi></span></div>`
+    + `<div><span class="p-label">סכום</span><span class="p-val">${esc(fmtShekel(r.amount))}</span></div>`
+    + `<div><span class="p-label">סיבה</span><span class="p-val">${esc(DEBT_AGING_DETACHED_REASON_LABELS[r.reason] || r.reason || '—')}</span></div>`
+    + `</div>`, fmtShekel(L.detached.total));
+  html += debtAgingListHtml('outsideStay', L.outsideStay, r => `<div class="billing-row debt-list-row">`
+    + `<div><span class="p-label">שם</span><span class="p-name">${esc(r.name || '—')}</span></div>`
+    + `<div><span class="p-label">בית</span><span class="p-val">${esc(debtAgingHouseName(r.houseId))}</span></div>`
+    + `<div><span class="p-label">תחילת מחזור</span><span class="p-val"><bdi>${esc(formatDateHe(r.start) || '—')}</bdi></span></div>`
+    + `<div><span class="p-label">יציאה</span><span class="p-val"><bdi>${esc(formatDateHe(r.exitDate) || '—')}</bdi></span></div>`
+    + `</div>`, '');
+  html += debtAgingListHtml('releasedNoExit', L.releasedNoExit, r => `<div class="billing-row debt-list-row">`
+    + `<div><span class="p-label">שם</span><span class="p-name">${esc(r.name || '—')}</span></div>`
+    + `<div><span class="p-label">בית</span><span class="p-val">${esc(debtAgingHouseName(r.houseId))}</span></div>`
+    + `<div><span class="p-label">כניסה</span><span class="p-val"><bdi>${esc(formatDateHe(r.entryDate) || '—')}</bdi></span></div>`
+    + `</div>`, '');
+  html += debtAgingListHtml('zeroAmount', L.zeroAmount, r => `<div class="billing-row debt-list-row">`
+    + `<div><span class="p-label">שם</span><span class="p-name">${esc(r.name || '—')}</span></div>`
+    + `<div><span class="p-label">בית</span><span class="p-val">${esc(debtAgingHouseName(r.houseId))}</span></div>`
+    + `<div><span class="p-label">כניסה</span><span class="p-val"><bdi>${esc(formatDateHe(r.entryDate) || '—')}</bdi></span></div>`
+    + `</div>`, fmtShekel(0));
+  if (L.noEntryDate.count) {
+    html += debtAgingListHtml('noEntryDate', L.noEntryDate, r => `<div class="billing-row debt-list-row">`
+      + `<div><span class="p-label">שם</span><span class="p-name">${esc(r.name || '—')}</span></div>`
+      + `<div><span class="p-label">בית</span><span class="p-val">${esc(debtAgingHouseName(r.houseId))}</span></div>`
+      + `</div>`, '');
+  }
+  return html;
+}
+
+function debtAgingState() {
+  if (!state.debtAging) state.debtAging = { status: 'idle', asOf: '', house: 'all', statusFilter: 'all', data: null, error: '', seq: 0 };
+  return state.debtAging;
+}
+
+/* Fetch debtAging for the current as-of date. A response for an older date
+ * (the picker moved while it was in flight) is dropped. */
+async function loadDebtAging() {
+  const s = debtAgingState();
+  if (!s.asOf) s.asOf = debtAgingTodayIso();
+  if (!debtAgingIsRealDay(s.asOf)) {
+    s.status = 'error'; s.error = 'תאריך לא תקין';
+    renderDebtAging();
+    return s;
+  }
+  const seq = ++s.seq;
+  const asOf = s.asOf;
+  s.status = 'loading'; s.error = '';
+  renderDebtAging();
+  try {
+    const res = await apiPost({ action: 'debtAging', asOf });
+    if (seq !== s.seq) return s;
+    if (!res || res.ok !== true || res.asOf !== asOf || !res.totals || !Array.isArray(res.byPatient)) {
+      throw new Error('תשובת שרת לא תקינה');
+    }
+    s.data = res; s.status = 'ok';
+  } catch (e) {
+    if (seq !== s.seq) return s;
+    s.status = 'error'; s.data = null;
+    s.error = isLockBusyError(e) ? LOCK_BUSY_MESSAGE_HE : String((e && e.message) || 'שגיאה');
+    showError('טעינת החובות הפתוחים נכשלה — ' + s.error);
+  }
+  renderDebtAging();
+  return s;
+}
+
+function renderDebtAging() {
+  const box = document.getElementById('debt-aging');
+  if (!box) return;
+  const s = debtAgingState();
+  if (s.status === 'loading') {
+    box.innerHTML = `<div class="card billing-empty debt-loading">${escapeHtml('טוען חובות פתוחים…')}</div>`;
+    return;
+  }
+  if (s.status === 'error') {
+    box.innerHTML = `<div class="card billing-empty forecast-error debt-error">${escapeHtml('טעינת החובות הפתוחים נכשלה — ' + s.error + '. הנתונים לא נטענו; אין להסיק שאין חוב.')}</div>`;
+    return;
+  }
+  if (s.status !== 'ok' || !s.data) {
+    box.innerHTML = `<div class="card billing-empty">${escapeHtml('פתחו את הסעיף כדי לטעון')}</div>`;
+    return;
+  }
+  box.innerHTML = debtAgingHtml(s.data, { house: s.house, status: s.statusFilter }, debtAgingTodayIso());
+}
+
+/* Pure: the export URL for the current controls. */
+function debtAgingExportUrl(asOf, house, status) {
+  const qs = new URLSearchParams({ asOf: String(asOf || ''), house: String(house || 'all'), status: String(status || 'all') });
+  return DEBT_AGING_XLSX_URL + '?' + qs.toString();
+}
+
+async function exportDebtAgingXlsx() {
+  const s = debtAgingState();
+  if (!s.asOf) s.asOf = debtAgingTodayIso();
+  if (!debtAgingIsRealDay(s.asOf)) throw new Error('תאריך לא תקין');
+  let res;
+  try {
+    res = await fetch(debtAgingExportUrl(s.asOf, s.house, s.statusFilter), { method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+  } catch (_e) {
+    throw new Error('אין חיבור לשרת');
+  }
+  if (res.status === 401) showPinScreen();
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const code = body && body.error;
+    throw new Error(res.status === 401 ? 'נדרשת התחברות מחדש' : (DEBT_AGING_XLSX_ERRORS[code] || ('השרת החזיר שגיאה ' + res.status)));
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `חובות-${s.asOf}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function initDebtAgingControls() {
+  const s = debtAgingState();
+  const view = document.getElementById('debt-aging-view');
+  const asOfEl = document.getElementById('debt-asof');
+  const houseEl = document.getElementById('debt-house');
+  const statusEl = document.getElementById('debt-status');
+  if (!view || !asOfEl) return;
+  if (!s.asOf) s.asOf = debtAgingTodayIso();
+  asOfEl.value = s.asOf;
+  if (houseEl) {
+    houseEl.innerHTML = `<option value="all">כל הבתים</option>`
+      + HOUSES.map(h => `<option value="${escapeHtml(h.id)}">${escapeHtml(h.name)}</option>`).join('');
+    houseEl.value = s.house;
+    houseEl.onchange = () => { s.house = houseEl.value || 'all'; renderDebtAging(); };
+  }
+  if (statusEl) {
+    statusEl.innerHTML = Object.keys(DEBT_AGING_STATUS_LABELS)
+      .map(k => `<option value="${escapeHtml(k)}">${escapeHtml(DEBT_AGING_STATUS_LABELS[k])}</option>`).join('');
+    statusEl.value = s.statusFilter;
+    statusEl.onchange = () => { s.statusFilter = statusEl.value || 'all'; renderDebtAging(); };
+  }
+  const setAsOf = (iso) => {
+    s.asOf = iso; asOfEl.value = iso;
+    if (view.open) loadDebtAging();
+  };
+  asOfEl.onchange = () => setAsOf(String(asOfEl.value || '') || debtAgingTodayIso());   // cleared → today
+  const prev = document.getElementById('debt-asof-prev-month');
+  if (prev) prev.onclick = () => setAsOf(debtAgingPrevMonthEnd(debtAgingTodayIso()));
+  view.addEventListener('toggle', () => { if (view.open) loadDebtAging(); });
+  const refresh = document.getElementById('debt-refresh');
+  if (refresh) refresh.onclick = () => busyButton(refresh, 'load', loadDebtAging);
+  const exp = document.getElementById('debt-export');
+  if (exp) exp.onclick = () => busyButton(exp, 'load', exportDebtAgingXlsx)
+    .catch(e => showError('הייצוא נכשל — ' + ((e && e.message) || 'שגיאה')));
+  renderDebtAging();
 }
 
 /* True only for the "released to outpatient" disposition — the single trigger

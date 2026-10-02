@@ -631,7 +631,9 @@ test('G: a decided row leaves the worklist but stays on the screen', () => {
 
 test('H: no new endpoint, and nothing here moves money', () => {
   assert.ok(!SERVER.includes('void'), 'the proxy learned nothing');
-  const dispatch = GS_SRC.slice(GS_SRC.indexOf('function handle_'), GS_SRC.indexOf('function handle_') + 6000);
+  // The whole handle_ body (a fixed-length window stopped reaching its later
+  // branches once handle_ grew in PR #162).
+  const dispatch = GS_SRC.slice(GS_SRC.indexOf('function handle_'), GS_SRC.indexOf('\nfunction ', GS_SRC.indexOf('function handle_') + 1));
   const payActions = Array.from(new Set((dispatch.match(/action === '(\w+)'/g) || [])
     .filter((a) => /Payment/i.test(a))));
   assert.deepEqual(plain(payActions.sort()), [

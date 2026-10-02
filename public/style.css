@@ -2119,6 +2119,31 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
 .forecast-totals { display: flex; flex-wrap: wrap; gap: 12px; padding: 6px 4px; font-size: 13px; color: var(--text-muted); }
 .forecast-error { color: #ff6b6b; }
 
+/* «חובות פתוחים» (debt aging) */
+.debt-aging-view { margin: 18px 0 8px; }
+.debt-aging-view > summary { cursor: pointer; list-style: revert; }
+.debt-aging-view > summary h3 { display: inline; margin: 0; }
+.debt-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; }
+.debt-aging { min-width: 0; margin-bottom: 18px; }
+.debt-aging > * { max-width: 100%; }
+.debt-blocks { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 12px; }
+.debt-block { border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px; min-width: 0; }
+.debt-block-unrecorded { border-style: dashed; }
+.debt-block-title { margin: 4px 0; font-size: 15px; }
+.debt-table-wrap { overflow-x: auto; max-width: 100%; }
+.debt-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.debt-table th, .debt-table td { padding: 4px 6px; text-align: start; white-space: nowrap; border-bottom: 1px solid var(--border-strong); }
+.debt-table tfoot th, .debt-table tfoot td, .debt-row-total { font-weight: 700; }
+.debt-credits { display: flex; flex-wrap: wrap; gap: 10px; padding: 8px 4px; font-size: 13px; color: var(--text-muted); }
+.debt-credits-label { font-weight: 600; }
+.debt-caveats { border-inline-start: 3px solid #f5b041; padding: 4px 8px; margin: 6px 0; }
+.debt-caveat { margin: 2px 0; color: #f5b041; font-size: 13px; }
+.debt-drill-title { margin: 16px 0 4px; font-size: 15px; }
+.debt-house, .debt-list { margin: 6px 0; }
+.debt-house > summary, .debt-list > summary { cursor: pointer; font-weight: 600; padding: 4px 0; overflow-wrap: anywhere; }
+.debt-patient { margin: 4px 0 4px 0; padding-inline-start: 8px; }
+.debt-patient > summary { cursor: pointer; }
+
 /* ===== הכנסות חודשיות — monthly revenue screen ===========================
  * A separate screen from the daily גבייה worklist; nothing here touches the
  * .billing-row rules that screen uses, except additively via .rev-detail-row.

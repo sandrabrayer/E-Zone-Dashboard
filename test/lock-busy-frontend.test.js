@@ -86,6 +86,7 @@ function loadApp(script) {
       savePayment: (p) => savePayment(p),
       saveCredit: (c) => saveCredit(c),
       loadPayoutForecast: () => loadPayoutForecast(),
+      loadDebtAging: () => loadDebtAging(),
       dischargePatient: (p) => dischargePatient(p),
       showCreditsModal: (o) => showCreditsModal(o),
       doRestorePatientAsNewLead: (p) => doRestorePatientAsNewLead(p),
@@ -176,6 +177,16 @@ const PATHS = [
       missing_payment_data: { count: 0, rows: [] }, unresolved: { count: 0, rows: [] } },
     run: (app) => app.loadPayoutForecast(),
     landed: (app) => { assert.strictEqual(app.state.payoutForecast.status, 'ok'); },
+  },
+  {
+    // A READ sent through apiPost («חובות פתוחים» on the גבייה tab). Never
+    // locked on the server, but a busy answer is handled like every other path.
+    name: 'debtAging (the גבייה open-debt view)',
+    action: 'debtAging',
+    setup: (app) => { app.state.debtAging = { status: 'idle', asOf: '2026-09-30', house: 'all', statusFilter: 'all', data: null, error: '', seq: 0 }; },
+    okResponse: { ok: true, asOf: '2026-09-30', totals: { recorded_debt: {}, unrecorded_cycles: {} }, byPatient: [] },
+    run: (app) => app.loadDebtAging(),
+    landed: (app) => { assert.strictEqual(app.state.debtAging.status, 'ok'); },
   },
   {
     name: 'restorePatient (restore as a new lead)',

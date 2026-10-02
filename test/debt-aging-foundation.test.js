@@ -457,9 +457,9 @@ test('read-only by source: no writer, lock, audit, property or fetch in the debt
   for (const reuse of ['recModel_(', 'recCycleDueDates_(', 'recApplyOverride_(', 'recBeforeCutoff_(', 'recExitISO_(', 'recStayCovers_(', 'refundAddMonths_(']) {
     assert.ok(block.includes(reuse), 'reuses ' + reuse);
   }
-  // nothing user-facing
-  assert.ok(!APP_SRC.includes('debtAging'));
-  assert.ok(!fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8').includes('debtAging'));
+  // The UI (PR feat/debt-aging-ui) only READS it: app.js through apiPost and
+  // server.js through the export route — see test/debt-aging-ui.test.js.
+  assert.ok(/apiPost\(\{ action: 'debtAging', asOf \}\)/.test(APP_SRC));
 });
 
 test('getData keeps its keys', () => {

@@ -679,7 +679,9 @@ test('E: the backfill runs ON DEMAND, never on load, and never overwrites', () =
 test('F: no new endpoint — the link rides the existing savePayment', () => {
   assert.ok(!SERVER.includes('patientUid'), 'the proxy learned nothing');
   assert.ok(!SERVER.includes('reconnect'));
-  const dispatch = GS_SRC.slice(GS_SRC.indexOf('function handle_'), GS_SRC.indexOf('function handle_') + 6000);
+  // The whole handle_ body (a fixed-length window stopped reaching its later
+  // branches once handle_ grew in PR #162).
+  const dispatch = GS_SRC.slice(GS_SRC.indexOf('function handle_'), GS_SRC.indexOf('\nfunction ', GS_SRC.indexOf('function handle_') + 1));
   const payActions = (dispatch.match(/action === '(\w+)'/g) || []).filter((a) => /Payment/i.test(a));
   /* accountingPayments is PR #139's READ-only feed and predates this change;
    * the three WRITE-capable actions are still exactly the three that existed
