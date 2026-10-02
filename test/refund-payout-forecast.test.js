@@ -263,12 +263,18 @@ test('C: an unknown house is unresolved with its error code — never 0, never a
 
 test('D: the records cutoff — an exit before 2026-07-01 is excluded, on 2026-07-01 included', () => {
   const g = loadGs({ today: '2026-10-01' });
-  g.setDischarged([dis('rehab', 'לפני', '2026-06-01', '2026-06-30'), dis('rehab', 'ביום', '2026-06-25', '2026-07-01')]);
+  // 'ביום' (entry 01/07, exit 01/07) passes the exit filter and its exit cycle
+  // starts on the cutoff. 'מחזור לפני' passes the exit filter too, but its exit
+  // cycle started 25/06 — before the cutoff — so it is counted, not listed
+  // (CHANGELOG-forecast-missing-pre-cutoff.md).
+  g.setDischarged([dis('rehab', 'לפני', '2026-06-01', '2026-06-30'), dis('rehab', 'ביום', '2026-07-01', '2026-07-01'),
+    dis('rehab', 'מחזור לפני', '2026-06-25', '2026-07-01')]);
   const res = g.forecast();
   assert.strictEqual(res.recordsCutoff, '2026-07-01');
   const names = res.missing_payment_data.rows.map((r) => r.patientName)
     .concat(res.awaiting_decision.byPayoutDate.flatMap((x) => x.rows.map((r) => r.patientName)));
   assert.deepStrictEqual(names, ['ביום']);
+  assert.strictEqual(res.preCutoffExcludedCount, 1);
 });
 
 test('D: a restored discharge is not a discharge', () => {
