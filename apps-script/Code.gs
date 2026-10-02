@@ -877,7 +877,7 @@ const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
 const PROXY_KNOWN_ACTIONS = [
   'getData', 'getAdmittedRoster', 'saveAll', 'getPayments', 'savePayment',
   'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
-  'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'moveLeadIrrelevant', 'restoreLead',
+  'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'debtAging', 'moveLeadIrrelevant', 'restoreLead',
   'removeLead', 'deletePatientRow', 'dischargePatient', 'restorePatient',
   'restorePatientToActive', 'deleteMeetingReport', 'meetingReportLeads',
   'submitMeetingReport', 'managersOverview', 'managersHouse',
@@ -1177,6 +1177,8 @@ function handle_(params) {
     if (action === 'suggestRefunds') return jsonOut_(suggestRefunds_(params));
     // Payout forecast for the bookkeeper: READ-ONLY, gated by PROXY_SECRET.
     if (action === 'refundPayoutForecast') return jsonOut_(refundPayoutForecast_());
+    // Debt aging as of a date: READ-ONLY, gated by PROXY_SECRET.
+    if (action === 'debtAging') return jsonOut_(debtAgingAction_(params));
     if (action === 'saveCredit') {
       return jsonOut_(upsertCredit_(parseJsonParam_(params.credit), requestUser_(params)));
     }
@@ -6515,6 +6517,280 @@ function refundPayoutForecast_() {
     return out;
   } catch (e) {
     return { ok: false, error: (e && e.code) || 'forecast_failed' };
+  }
+}
+
+/* ===== Debt aging, as of any date (READ-ONLY foundation) =====
+ * CHANGELOG-debt-aging-foundation.md. No UI, no write, no lock, no audit row.
+ *
+ * As of a date D (default: today, Asia/Jerusalem):
+ *   - a cycle counts when it STARTED on or before D and on or after the
+ *     records cutoff (recRecordsCutoff_, 2026-07-01);
+ *   - money counts when it was RECEIVED on or before D. The only received
+ *     date a Payments row has is chargedAt (the moment it was reported paid,
+ *     server-stamped). A paid row with a blank chargedAt (written before the
+ *     column existed) is dated to its cycle start and counted in
+ *     receivedDateUnknown, never silently.
+ *
+ * Two figures, NEVER summed (no field adds them):
+ *   recorded_debt     — cycles with a Payments row still short at D
+ *                       (balance = expected − received by D);
+ *   unrecorded_cycles — cycles with NO Payments row: the expected amount,
+ *                       "unpaid, or paid and not entered".
+ *
+ * Reused, not re-implemented: recModel_ (normalizing + the four-tier
+ * payment→patient match), recCycleDueDates_ (entry-anchored cycle starts,
+ * clamped, bounded by entry / exit / D), recStayCovers_, recExitISO_,
+ * recApplyOverride_ (BillingOverrides), recBeforeCutoff_, refundAddMonths_
+ * (the computeRefund_ clamp) for cycle ends.
+ *
+ * Amounts are VAT-inclusive, as stored. Credits are reported beside the debt
+ * (pending at D, per house), never subtracted from it. */
+const DEBT_AGING_BUCKETS = [
+  { key: 'd0_7',     from: 0,  to: 7 },
+  { key: 'd8_30',    from: 8,  to: 30 },
+  { key: 'd31_60',   from: 31, to: 60 },
+  { key: 'd61_plus', from: 61, to: null },
+];
+const DEBT_UNRECORDED_NOTE = 'לא שולם, או ששולם ולא הוזן';
+
+/* The as-of date: blank → today in Asia/Jerusalem; else a bare 'YYYY-MM-DD'
+ * naming a real calendar day. Anything else throws bad_asOf. */
+function debtAgingAsOf_(raw) {
+  if (raw === undefined || raw === null || raw === '') {
+    return Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'yyyy-MM-dd');
+  }
+  if (typeof raw !== 'string') throw refundError_('bad_asOf', 'asOf');
+  const s = raw.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw refundError_('bad_asOf', 'asOf');
+  if (refundIsoFromDayNum_(refundDayNum_(s)) !== s) throw refundError_('bad_asOf', 'asOf');   // 2026-02-30
+  return s;
+}
+
+/* Days from the cycle start to D → bucket key. */
+function debtAgingBucket_(days) {
+  for (let i = 0; i < DEBT_AGING_BUCKETS.length; i++) {
+    const b = DEBT_AGING_BUCKETS[i];
+    if (days >= b.from && (b.to === null || days <= b.to)) return b.key;
+  }
+  return '';
+}
+
+function debtAgingEmpty_() {
+  const o = { count: 0, total: 0 };
+  DEBT_AGING_BUCKETS.forEach(function (b) { o[b.key] = 0; });
+  return o;
+}
+function debtAgingAdd_(acc, bucket, amount) {
+  acc[bucket] = refundRound2_(acc[bucket] + amount);
+  acc.total = refundRound2_(acc.total + amount);
+  acc.count++;
+}
+
+/* The end of the cycle that starts on startIso: the entry-anchored cycle end
+ * (the computeRefund_ clamp: entry + k + 1 months − 1 day) when startIso is
+ * an entry-anchored cycle start, else startIso + 1 month − 1 day. */
+function debtAgingCycleEnd_(entryIso, startIso) {
+  const k = (Number(startIso.slice(0, 4)) - Number(entryIso.slice(0, 4))) * 12 +
+            (Number(startIso.slice(5, 7)) - Number(entryIso.slice(5, 7)));
+  const base = (k >= 0 && refundAddMonths_(entryIso, k) === startIso) ? refundAddMonths_(entryIso, k + 1) : refundAddMonths_(startIso, 1);
+  return refundIsoFromDayNum_(refundDayNum_(base) - 1);
+}
+
+/* When a row's money was received: chargedAt's Jerusalem day, else unknown
+ * (dated to fallbackIso, the cycle start). */
+function debtAgingReceivedOn_(chargedAt, fallbackIso) {
+  const iso = refundForecastIso_(chargedAt);
+  return iso ? { iso: iso, known: true } : { iso: fallbackIso, known: false };
+}
+
+/* Pure. tabs = recCollect_'s shape ({ patients, payments, credits, overrides },
+ * each { rows: [{ rowNumber, obj }] }); a missing tab reads as empty.
+ * → the report, or { ok:false, error:'bad_asOf' }. */
+function debtAging_(asOfIso, tabs) {
+  let asOf;
+  try { asOf = debtAgingAsOf_(asOfIso); } catch (e) { return { ok: false, error: (e && e.code) || 'bad_asOf' }; }
+  const t = tabs || {};
+  const rawRows = function (k) { return (t[k] && Array.isArray(t[k].rows)) ? t[k].rows : []; };
+  const cutoff = recRecordsCutoff_();
+  const asOfN = refundDayNum_(asOf);
+  const m = recModel_(t, asOf);
+
+  const totals = { recorded_debt: debtAgingEmpty_(), unrecorded_cycles: debtAgingEmpty_() };
+  const byHouse = {};
+  const house = function (h) {
+    if (!byHouse[h]) byHouse[h] = { houseId: h, recorded_debt: debtAgingEmpty_(), unrecorded_cycles: debtAgingEmpty_() };
+    return byHouse[h];
+  };
+  const detachedRows = [], outsideStayRows = [], releasedNoExitRows = [], noEntryRows = [];
+  const unknownDate = { count: 0, amount: 0 };
+  let voidExcluded = 0;
+
+  // Payments: void out, detached apart, the rest grouped under their patient.
+  const rowsByPatient = m.patients.map(function () { return []; });
+  m.payments.forEach(function (pay, i) {
+    if (pay.status === 'void') { voidExcluded++; return; }
+    const raw = (rawRows('payments')[i] || {}).obj || {};
+    const owner = pay.linkStatus === 'not_a_patient' ? null : m.payOwner[i];
+    if (!owner) {
+      if (!pay.dueDate || pay.dueDate > asOf) return;
+      const got = debtAgingReceivedOn_(raw.chargedAt, pay.dueDate);
+      detachedRows.push({
+        paymentId: pay.id, patientName: pay.patientName, houseId: pay.houseId, dueDate: pay.dueDate,
+        amount: refundRound2_(pay.amount), receivedByAsOf: got.iso <= asOf ? refundRound2_(pay.amountPaid) : 0,
+        receivedDateKnown: got.known,
+        reason: pay.linkStatus === 'not_a_patient' ? 'not_a_patient' : 'unmatched',
+      });
+      return;
+    }
+    rowsByPatient[m.patients.indexOf(owner.patient)].push({ pay: pay, raw: raw });
+  });
+
+  const patientsOut = [];
+  m.patients.forEach(function (p, pi) {
+    const entry = p.date;
+    const exit = recExitISO_(p);
+    const ident = { patientId: p.id, patientKey: recPatientKey_(p), name: p.name, houseId: p.houseId, status: p.status };
+    const mine = rowsByPatient[pi];
+    if (!entry) {
+      if (mine.length) noEntryRows.push(Object.assign({}, ident, { paymentRows: mine.length }));
+      return;
+    }
+    const cycles = [];
+    let settled = 0;
+    const claimed = {};
+
+    // recorded cycles — one per Payments row, as the monthly revenue view does
+    mine.forEach(function (o) {
+      const pay = o.pay;
+      if (!pay.dueDate) return;
+      claimed[pay.dueDate] = true;
+      claimed['m:' + pay.dueDate.slice(0, 7)] = true;
+      const cs = refundForecastIso_(pay.coverageStart), ce = refundForecastIso_(pay.coverageEnd);
+      const recorded = !!(cs && ce && ce >= cs);
+      const start = recorded ? cs : pay.dueDate;
+      if (start > asOf || recBeforeCutoff_(start, cutoff)) return;
+      let end = recorded ? ce : debtAgingCycleEnd_(entry, pay.dueDate);
+      if (start < entry || (exit && start >= exit)) {
+        outsideStayRows.push(Object.assign({}, ident, { paymentId: pay.id, start: start, entryDate: entry, exitDate: exit }));
+        return;
+      }
+      if (exit && end > exit) end = exit;
+      const expected = refundRound2_(Number(recApplyOverride_(pay, m.overrides).amount) || 0);
+      const got = debtAgingReceivedOn_(o.raw.chargedAt, start);
+      const paid = refundRound2_(pay.amountPaid);
+      if (!got.known && paid > 0) { unknownDate.count++; unknownDate.amount = refundRound2_(unknownDate.amount + paid); }
+      const received = got.iso <= asOf ? paid : 0;
+      const balance = refundRound2_(Math.max(0, expected - received));
+      if (balance <= 0) { settled++; return; }
+      const days = asOfN - refundDayNum_(start);
+      const bucket = debtAgingBucket_(days);
+      cycles.push({
+        start: start, end: end, expected: expected, received: received, balance: balance,
+        days: days, bucket: bucket, kind: 'recorded', paymentId: pay.id,
+        coverageSource: recorded ? 'recorded' : 'derived', receivedDateKnown: got.known,
+      });
+      debtAgingAdd_(totals.recorded_debt, bucket, balance);
+      debtAgingAdd_(house(p.houseId).recorded_debt, bucket, balance);
+    });
+
+    // unrecorded cycles — the stay's cycles up to D with no Payments row
+    const releasedNoExit = p.status === 'released' && !exit;
+    if (releasedNoExit) {
+      releasedNoExitRows.push({ patientId: p.id, name: p.name, houseId: p.houseId, entryDate: entry });
+    } else {
+      recCycleDueDates_(p, asOf).forEach(function (due) {
+        if (recBeforeCutoff_(due, cutoff)) return;
+        if (claimed[due] || claimed['m:' + due.slice(0, 7)]) return;
+        const expected = refundRound2_(Number(recApplyOverride_({
+          patientId: recPatientKey_(p), dueDate: due, amount: p.pay, status: 'unpaid', amountPaid: 0,
+        }, m.overrides).amount) || 0);
+        let end = debtAgingCycleEnd_(entry, due);
+        if (exit && end > exit) end = exit;
+        const days = asOfN - refundDayNum_(due);
+        const bucket = debtAgingBucket_(days);
+        cycles.push({
+          start: due, end: end, expected: expected, received: 0, balance: expected,
+          days: days, bucket: bucket, kind: 'unrecorded', note: DEBT_UNRECORDED_NOTE,
+        });
+        debtAgingAdd_(totals.unrecorded_cycles, bucket, expected);
+        debtAgingAdd_(house(p.houseId).unrecorded_cycles, bucket, expected);
+      });
+    }
+
+    if (!cycles.length) return;
+    cycles.sort(function (a, b) { return a.start < b.start ? -1 : a.start > b.start ? 1 : 0; });
+    patientsOut.push(Object.assign(ident, {
+      entryDate: entry, exitDate: exit, inHouseAtAsOf: recStayCovers_(p, asOf),
+      settledCycles: settled, cycles: cycles,
+    }));
+  });
+
+  // Credits pending at D: created on/before D, not cancelled, not paid by D.
+  const creditsByHouse = {};
+  let creditsTotal = 0, creditsCount = 0, createdUnknown = 0;
+  m.credits.forEach(function (c, i) {
+    if (!(c.amount > 0) || c.status === 'cancelled') return;
+    const raw = (rawRows('credits')[i] || {}).obj || {};
+    const created = refundForecastIso_(raw.createdAt) || refundForecastIso_(raw.decidedDate);
+    if (created && created > asOf) return;
+    if (c.status === 'paid') {
+      const paidOn = refundForecastIso_(raw.paidDate);
+      if (!paidOn || paidOn <= asOf) return;
+    }
+    if (!created) createdUnknown++;
+    const h = c.houseId || '';
+    if (!creditsByHouse[h]) creditsByHouse[h] = { houseId: h, count: 0, total: 0 };
+    creditsByHouse[h].count++;
+    creditsByHouse[h].total = refundRound2_(creditsByHouse[h].total + c.amount);
+    creditsCount++;
+    creditsTotal = refundRound2_(creditsTotal + c.amount);
+  });
+
+  const sumField = function (rows, f) { return refundRound2_(rows.reduce(function (s, r) { return s + (Number(r[f]) || 0); }, 0)); };
+  const sorted = function (o) { return Object.keys(o).sort().map(function (k) { return o[k]; }); };
+  patientsOut.sort(function (a, b) {
+    return (a.houseId < b.houseId ? -1 : a.houseId > b.houseId ? 1 : 0) || String(a.name).localeCompare(String(b.name), 'he');
+  });
+
+  return {
+    ok: true, asOf: asOf, recordsCutoff: cutoff, vatInclusive: true,
+    buckets: DEBT_AGING_BUCKETS.map(function (b) { return { key: b.key, from: b.from, to: b.to }; }),
+    totals: totals,
+    byHouse: sorted(byHouse),
+    byPatient: patientsOut,
+    detachedPayments: {
+      count: detachedRows.length, amount: sumField(detachedRows, 'amount'),
+      receivedByAsOf: sumField(detachedRows, 'receivedByAsOf'), rows: detachedRows,
+    },
+    pendingCredits: { count: creditsCount, total: creditsTotal, createdDateUnknown: createdUnknown, byHouse: sorted(creditsByHouse) },
+    receivedDateUnknown: unknownDate,
+    outsideStay: { count: outsideStayRows.length, rows: outsideStayRows },
+    releasedWithoutExit: { count: releasedNoExitRows.length, rows: releasedNoExitRows },
+    noEntryDate: { count: noEntryRows.length, rows: noEntryRows },
+    voidExcluded: voidExcluded,
+  };
+}
+
+/* action=debtAging — READ-ONLY. Reads Patients, Payments, Credits and
+ * BillingOverrides with getSheetByName (never creates a sheet, no lock, no
+ * write, no audit row). Gated by PROXY_SECRET (not in OPEN_ACTIONS). */
+function debtAgingAction_(params) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const tabs = {};
+    [['patients', PATIENTS_SHEET, PATIENT_COLUMNS], ['payments', PAYMENTS_SHEET, PAYMENT_COLUMNS],
+     ['credits', CREDITS_SHEET, CREDIT_COLUMNS], ['overrides', BILLING_OVERRIDES_SHEET, BILLING_OVERRIDE_COLUMNS]]
+      .forEach(function (x) {
+        const sh = ss.getSheetByName(x[1]);
+        tabs[x[0]] = sh ? recReadSheet_(sh, x[2]) : { rows: [] };
+        tabs[x[0]].sheet = x[1];
+      });
+    const out = debtAging_((params || {}).asOf, tabs);
+    if (out.ok) out.generatedAt = new Date().toISOString();
+    return out;
+  } catch (e) {
+    return { ok: false, error: (e && e.code) || 'debt_aging_failed' };
   }
 }
 
