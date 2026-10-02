@@ -530,7 +530,7 @@ test('F: the SERVER refuses an un-void from anyone else', () => {
   assert.equal(allowed.payment.status, 'paid');
   /* The stamping user comes from requestUser_ — the signed session cookie —
    * so "Sandra only" cannot be claimed by a hand-built request body. */
-  assert.match(GS_SRC, /upsertPayment_\(payment, requestUser_\(params\)\)/);
+  assert.match(GS_SRC, /upsertPayment_\(payment, requestUser_\(params\)[,)]/);
   assert.match(fnSource(GS_SRC, 'upsertPayment_'),
     /PAYMENT_VOID_REVERSERS\.indexOf\(stampUser\) < 0/);
 });

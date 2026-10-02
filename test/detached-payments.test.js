@@ -543,7 +543,7 @@ test('D: WHO and WHEN are stamped by the SERVER, never by the caller', () => {
    * is not a correction. */
   assert.equal(res.payment.patientUid, 'id-amit');
   // The dispatcher is what supplies the user, from requestUser_ — not the payload.
-  assert.match(GS_SRC, /upsertPayment_\(payment, requestUser_\(params\)\)/);
+  assert.match(GS_SRC, /upsertPayment_\(payment, requestUser_\(params\)[,)]/);
   // An UNDECIDED row carries no stamps at all: blank means "nobody looked".
   const plainRes = code.upsert(payment({ id: 'p-plain' }), 'ורד');
   assert.equal(plainRes.payment.linkStatus, '');

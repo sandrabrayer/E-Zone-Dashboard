@@ -181,7 +181,8 @@ const SEED = [
 test('AuditLog column order is PINNED — append-only, same rule as LEAD_COLUMNS', () => {
   const { code } = loadCode();
   assert.deepStrictEqual(arr(code.AUDIT_LOG_COLUMNS),
-    ['timestamp', 'action', 'fn', 'patientId', 'name', 'details'],
+    // `actor` appended by personal-pins PR A (CHANGELOG-personal-pins-foundation.md).
+    ['timestamp', 'action', 'fn', 'patientId', 'name', 'details', 'actor'],
     'never insert/delete/reorder AuditLog columns — new columns go at the END');
 });
 
