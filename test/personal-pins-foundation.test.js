@@ -46,7 +46,7 @@ const SANDRA_PIN = '402917';
 /* ====================================================================== */
 
 const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'APP_PIN', 'USER_PIN_HASHES',
-  'PIN_PEPPER', 'BOOTSTRAP_TOKEN', 'TRUST_PROXY_HOPS', 'MEETING_REPORT_PIN', 'MEETING_REPORT_SECRET'];
+  'PIN_PEPPER', 'BOOTSTRAP_TOKEN', 'TRUST_PROXY_HOPS', 'MEETING_REPORT_PIN', 'MEETING_REPORT_SECRET', 'APP_PIN_UNTIL'];
 
 /* Require a FRESH server.js with exactly `env` (others unset). Captures every
  * startup console line. Throws whatever the require throws. */
@@ -72,7 +72,10 @@ function freshServer(env) {
   return { mod, startup: lines };
 }
 
-const BASE_ENV = { PROXY_SECRET, SESSION_SECRET, SHEETS_URL, APP_PIN };
+/* PR B: the shared APP_PIN (and its cookies) work only inside the dual
+ * window, so the PR A suite runs with it open (7 days from today, Israel). */
+const OPEN_UNTIL = require('../lib/shared-pin-window').israelDay(Date.now() + 7 * 864e5);
+const BASE_ENV = { PROXY_SECRET, SESSION_SECRET, SHEETS_URL, APP_PIN, APP_PIN_UNTIL: OPEN_UNTIL };
 
 function stubHttps(respond) {
   const calls = [];
@@ -167,7 +170,11 @@ test('APP_PIN login behaves exactly as before: 200 + cookie, 401 on a wrong PIN,
     assert.strictEqual(readSessionUser(token, SESSION_SECRET), 'ורד');
 
     const me = await request(port, 'GET', '/api/me', { cookie: 'ezone_session=' + token });
-    assert.deepStrictEqual(me.json, { ok: true, user: 'ורד' });
+    // PR B adds auth / approver / sharedUntil; `user` is unchanged.
+    assert.strictEqual(me.json.ok, true);
+    assert.strictEqual(me.json.user, 'ורד');
+    assert.strictEqual(me.json.auth, 'shared');
+    assert.strictEqual(me.json.approver, false);
 
     // An unknown name still mints the legacy user-less cookie.
     const anon = await request(port, 'POST', '/api/verify-pin', { body: { pin: APP_PIN, user: 'סנדרה' } });
@@ -426,7 +433,7 @@ test('role model: a personal session resolves to its CURRENT record — reset (p
 /* =================== per-user limiter (built, not wired) ============== */
 /* ====================================================================== */
 
-test('per-user limiter: 5 failures/user → 15 min, 10/IP/15 min, 30 global/15 min — and NOT wired yet', () => {
+test('per-user limiter: 5 failures/user → 15 min, 10/IP/15 min, 30 global/15 min — wired in PR B', () => {
   assert.deepStrictEqual(JSON.parse(JSON.stringify(PIN_LOCKOUT_LIMITS)), {
     perUser: { max: 5, windowMs: 900000 }, perIp: { max: 10, windowMs: 900000 }, global: { max: 30, windowMs: 900000 },
   });
@@ -454,7 +461,8 @@ test('per-user limiter: 5 failures/user → 15 min, 10/IP/15 min, 30 global/15 m
   for (let i = 0; i < 4; i++) S.recordFailure('vered', 'ip1', 0);
   assert.ok(S.check('vered', 'ip1', 0).ok, 'a success resets the user + IP counters');
 
-  assert.ok(!/PinLockout/.test(SERVER_SRC), 'not wired into server.js in PR A');
+  // PR B wires it into /api/verify-pin (test/personal-pins-login.test.js).
+  assert.ok(/const pinLockout = new PinLockout\(\)/.test(SERVER_SRC), 'wired into server.js in PR B');
 });
 
 /* ====================================================================== */
@@ -999,9 +1007,12 @@ test('Code.gs: getData keeps every top-level key', () => {
 /* ======================= no public/ change ============================ */
 /* ====================================================================== */
 
-test('PR A is invisible: the Dashboard PIN input is still maxlength 4 and no public/ file references personal PINs', () => {
+test('the shared PIN input is still maxlength 4 (PR B adds a separate 6-digit personal field); the client never sees roles or the bootstrap', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
   assert.match(html, /id="pin-input"[^>]*maxlength="4"/);
+  assert.match(html, /id="login-pin-input"[^>]*maxlength="6"/);
   const app = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
-  assert.ok(!/bootstrap-pin|USER_PIN_HASHES|proxyRoles/.test(app));
+  // USER_PIN_HASHES now appears in the «קוד אישי חדש» Railway instructions;
+  // roles and the bootstrap route still never reach the browser.
+  assert.ok(!/bootstrap-pin|proxyRoles/.test(app));
 });

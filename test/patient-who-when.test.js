@@ -374,6 +374,7 @@ test('restorePatient_ (to lead) and restorePatientToActive_ stamp the flagged au
 
 const SECRET = 'test-session-secret-0123456789abcdef0123456789';
 process.env.SESSION_SECRET = SECRET; // must be set before server.js is required
+process.env.APP_PIN_UNTIL = require('../lib/shared-pin-window').israelDay(Date.now() + 7 * 864e5); // PR B: shared cookies need the dual window open
 const { createSessionToken, verifySessionToken, readSessionUser } = require('../lib/session');
 const server = require('../server');
 
@@ -427,7 +428,8 @@ test('sessionUserFromRequest reads only a VERIFIED cookie; legacy cookie → bla
 test('source-scan: verify-pin stores the validated user in the signed cookie; /api/me is session-gated; the proxy ALWAYS overwrites body.user', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   // validateSessionUser = sanitize + SESSION_USERS allow-list (name picker).
-  assert.ok(/validateSessionUser\(req\.body && req\.body\.user\)/.test(src));
+  // PR B: the shared login reads the already-guarded body object `b`.
+  assert.ok(/validateSessionUser\(b\.user\)/.test(src));
   assert.ok(/createSessionToken\(SESSION_SECRET, undefined, undefined, user\)/.test(src));
   assert.ok(/app\.get\('\/api\/me', requireSession/.test(src));
   assert.ok(/body\.user = sessionUserFromRequest\(req\)/.test(src),
