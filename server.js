@@ -5,6 +5,8 @@ const https = require('https');
 const { checkPin } = require('./lib/pin');
 const { createSessionToken, verifySessionToken, readSessionUser } = require('./lib/session');
 const { SESSION_USERS } = require('./lib/users');
+const { buildXlsxReport, isoDayInIsrael, XLSX_MIME } = require('./lib/xlsx-report');
+const { buildRefundForecastSpec, isForecastResponse, contentDisposition } = require('./lib/refund-forecast-xlsx');
 
 const app = express();
 app.disable('etag');
@@ -745,6 +747,55 @@ app.post('/api/sheets', requireSession, requireProxySecret, async (req, res) => 
   }
 });
 
+/* GET /api/export/refund-forecast.xlsx — «ייצוא להנהלת חשבונות».
+ *
+ * Reads action=refundPayoutForecast through sheetsPost (PROXY_SECRET attached
+ * there, the session user as `user`) and sends the formatted workbook built by
+ * lib/xlsx-report.js. Behind requireSession + requireProxySecret like every
+ * data route. Cache-Control: no-store (and the service worker never caches
+ * /api/). The log carries the outcome only — never a patient name, amount or
+ * response body. Deps are injectable so the test can run it without Apps
+ * Script. */
+function refundForecastXlsxHandler(deps) {
+  const d = deps || {};
+  const fetchForecast = d.fetchForecast || ((user) => sheetsPost({ action: 'refundPayoutForecast', user }));
+  const clock = d.now || (() => new Date());
+  return async (req, res) => {
+    const fail = (status, error) => {
+      console.error('[export refund-forecast] failed:', error);
+      res.set('Cache-Control', 'no-store');
+      return res.status(status).json({ ok: false, error });
+    };
+    let data;
+    try {
+      data = await fetchForecast(sessionUserFromRequest(req));
+    } catch (err) {
+      return fail(502, err && err.message === PROXY_NOT_CONFIGURED ? 'proxy_not_configured' : 'sheets_unreachable');
+    }
+    if (data && data.ok === false && data.error === 'lock_busy') return fail(503, 'lock_busy');
+    if (!isForecastResponse(data)) {
+      return fail(502, data && typeof data.error === 'string' ? data.error.slice(0, 60) : 'bad_response');
+    }
+    let buf;
+    const now = clock();
+    try {
+      buf = await buildXlsxReport(buildRefundForecastSpec(data, now));
+    } catch (_err) {
+      return fail(500, 'xlsx_build_failed');
+    }
+    console.log('[export refund-forecast] ok, bytes=', buf.length);
+    res.set({
+      'Content-Type': XLSX_MIME,
+      'Content-Disposition': contentDisposition(isoDayInIsrael(now)),
+      'Content-Length': String(buf.length),
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    return res.status(200).end(buf);
+  };
+}
+app.get('/api/export/refund-forecast.xlsx', requireSession, requireProxySecret, refundForecastXlsxHandler());
+
 /* Diagnostics — last save and last load. These echo lead/patient previews, so
  * they are gated behind the session cookie like the data routes.
  *
@@ -1143,6 +1194,8 @@ module.exports = {
   sheetsPost,
   requireProxySecret,
   safeErrorMessage,
+  // «ייצוא להנהלת חשבונות» .xlsx (see test/xlsx-export.test.js).
+  refundForecastXlsxHandler,
   // Deploy identity on /healthz (see test/healthz-deploy-identity.test.js).
   deployIdentity,
   healthzBody,

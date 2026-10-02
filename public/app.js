@@ -6622,87 +6622,44 @@ function renderPayoutForecast() {
   box.innerHTML = payoutForecastHtml(f.data);
 }
 
-/* ---- «ייצוא להנהלת חשבונות»: CSV (UTF-8 BOM, Hebrew headers) ---- */
+/* ---- «ייצוא להנהלת חשבונות»: a formatted .xlsx built on the server ---- */
 
-/* One CSV cell. Text that a spreadsheet would run as a formula (= + - @, tab,
- * CR) is prefixed with ' ; every cell is quoted, quotes doubled. Numbers are
- * written as numbers. */
-function csvCell(v) {
-  if (typeof v === 'number' && isFinite(v)) return String(v);
-  let s = String(v == null ? '' : v);
-  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
-  return '"' + s.replace(/"/g, '""') + '"';
+/* The workbook (RTL, Hebrew headers, ₪ and date formats, a bold total per
+ * section) is built by lib/xlsx-report.js behind GET PAYOUT_FORECAST_XLSX_URL,
+ * which reads refundPayoutForecast itself. The browser only downloads it: no
+ * patient data is assembled here, and the service worker never caches /api/. */
+const PAYOUT_FORECAST_XLSX_URL = '/api/export/refund-forecast.xlsx';
+const PAYOUT_FORECAST_XLSX_ERRORS = {
+  lock_busy:            LOCK_BUSY_MESSAGE_HE,
+  sheets_unreachable:   'אין חיבור לגיליון הנתונים',
+  proxy_not_configured: 'השרת לא מוגדר לגישה לגיליון',
+  xlsx_build_failed:    'יצירת הקובץ נכשלה',
+  bad_response:         'תשובת שרת לא תקינה',
+};
+
+/* Pure: the Hebrew reason for a failed export response. */
+function payoutForecastXlsxErrorText(status, code) {
+  if (status === 401) return 'נדרשת התחברות מחדש';
+  return PAYOUT_FORECAST_XLSX_ERRORS[code] || ('השרת החזיר שגיאה ' + status);
 }
-function csvLine(cells) { return cells.map(csvCell).join(','); }
 
-/* Pure. data = the refundPayoutForecast response; generatedAt = a display
- * timestamp string. Three sections, labelled, each with its own totals —
- * never one grand total across them. */
-function buildPayoutForecastCsv(data, generatedAt) {
-  const L = [];
-  const day = (iso) => formatDateHe(iso) || '';
-  const house = payoutForecastHouseName;
-  L.push(csvLine(['תחזית החזרים לתשלום — E-ZONE']));
-  L.push(csvLine(['הופק', generatedAt]));
-  L.push(csvLine(['הסעיפים אינם מסתכמים יחד']));
-  L.push('');
-
-  L.push(csvLine(['סעיף א׳ — ' + PAYOUT_FORECAST_SECTION_LABELS.decided]));
-  L.push(csvLine(['תאריך תשלום', 'מטופל', 'בית', 'סכום (כולל מע"מ)', 'תאריך החלטה', 'כלל', 'סיבת חריגה']));
-  data.decided.byPayoutDate.forEach(g => {
-    g.rows.forEach(r => L.push(csvLine([day(r.payoutDate) || r.payoutDate, r.patientName, house(r.houseId), r.amount,
-      day(r.decidedDate) || r.decidedDate, payoutForecastRuleText(r.rule), r.overrideReason || ''])));
-  });
-  data.decided.byPayoutDate.forEach(g => L.push(csvLine(['סה"כ לתאריך ' + (day(g.payoutDate) || g.payoutDate || '—'), '', '', g.total])));
-  data.decided.byHouse.forEach(h => L.push(csvLine(['סה"כ לבית ' + house(h.houseId), '', '', h.total])));
-  L.push(csvLine(['סה"כ סעיף א׳', '', '', data.decided.total]));
-  L.push('');
-
-  L.push(csvLine(['סעיף ב׳ — ' + PAYOUT_FORECAST_SECTION_LABELS.awaiting]));
-  L.push(csvLine(['מטופל', 'בית', 'תאריך יציאה', 'סכום מוצע (כולל מע"מ)', 'כלל', 'תאריך תשלום אם יוחלט היום']));
-  data.awaiting_decision.byPayoutDate.forEach(g => {
-    g.rows.forEach(r => L.push(csvLine([r.patientName, house(r.houseId), day(r.exitDate), r.suggestedAmount,
-      payoutForecastRuleText(r.rule), day(r.payoutDate)])));
-  });
-  data.awaiting_decision.byPayoutDate.forEach(g => L.push(csvLine(['סה"כ לתאריך ' + (day(g.payoutDate) || '—'), '', '', g.total])));
-  data.awaiting_decision.byHouse.forEach(h => L.push(csvLine(['סה"כ לבית ' + house(h.houseId), '', '', h.total])));
-  L.push(csvLine(['סה"כ סעיף ב׳ (הצעה בלבד)', '', '', data.awaiting_decision.total]));
-  L.push('');
-
-  L.push(csvLine(['סעיף ג׳ — ' + PAYOUT_FORECAST_SECTION_LABELS.missing]));
-  L.push(csvLine(['מטופל', 'בית', 'תאריך יציאה', 'הערה']));
-  data.missing_payment_data.rows.forEach(r => L.push(csvLine([r.patientName, house(r.houseId), day(r.exitDate), PAYOUT_FORECAST_MISSING_NOTE])));
-  L.push(csvLine(['מספר שחרורים לבדיקה', data.missing_payment_data.count]));
-
-  const un = data.unresolved || { count: 0, rows: [] };
-  if (un.count) {
-    L.push('');
-    L.push(csvLine(['סעיף ד׳ — ' + PAYOUT_FORECAST_SECTION_LABELS.unresolved]));
-    L.push(csvLine(['מטופל', 'בית', 'תאריך יציאה', 'סיבה']));
-    un.rows.forEach(r => L.push(csvLine([r.patientName, house(r.houseId), day(r.exitDate), payoutForecastErrorText(r.error)])));
+async function exportPayoutForecastXlsx() {
+  let res;
+  try {
+    res = await fetch(PAYOUT_FORECAST_XLSX_URL, { method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+  } catch (_e) {
+    throw new Error('אין חיבור לשרת');
   }
-  return '\uFEFF' + L.join('\r\n') + '\r\n';
-}
-
-function payoutForecastStamp(d) {
-  const p = (n) => String(n).padStart(2, '0');
-  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-async function exportPayoutForecastCsv() {
-  const f = payoutForecastState();
-  if (f.status !== 'ok') await loadPayoutForecast();
-  if (f.status !== 'ok' || !f.data) {
-    showError('הייצוא נכשל — לא ניתן לטעון את תחזית ההחזרים' + (f.error ? ': ' + f.error : ''));
-    return;
+  if (res.status === 401) showPinScreen();
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(payoutForecastXlsxErrorText(res.status, body && body.error));
   }
-  const now = new Date();
-  const csv = buildPayoutForecastCsv(f.data, payoutForecastStamp(now));
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `refund-payout-forecast-${todayISO()}.csv`;
+  a.download = `זיכויים-לתשלום-${todayISO()}.xlsx`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -6711,7 +6668,7 @@ async function exportPayoutForecastCsv() {
 
 function initPayoutForecastControls() {
   const exp = document.getElementById('credits-forecast-export');
-  if (exp) exp.onclick = () => busyButton(exp, 'load', exportPayoutForecastCsv)
+  if (exp) exp.onclick = () => busyButton(exp, 'load', exportPayoutForecastXlsx)
     .catch(e => showError('הייצוא נכשל — ' + ((e && e.message) || 'שגיאה')));
   const refresh = document.getElementById('credits-forecast-refresh');
   if (refresh) refresh.onclick = () => busyButton(refresh, 'load', () => { markPayoutForecastStale(); return loadPayoutForecast(); });

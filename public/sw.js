@@ -91,7 +91,11 @@
 // v21 → v22: the גבייה payout view gains the refund payout forecast (ממתין
 // להחלטה / חסרים נתוני תשלום) and the «ייצוא להנהלת חשבונות» CSV. app.js,
 // index.html and style.css changed — evict v21 so no phone keeps the old view.
-var CACHE_VERSION = 'v22';
+// v22 → v23: «ייצוא להנהלת חשבונות» downloads a server-built .xlsx from
+// /api/export/refund-forecast.xlsx instead of a browser-built CSV. app.js
+// changed — evict v22 so no phone keeps the CSV button. The export route is
+// under /api/, so cacheStrategy() keeps it network-only (never cached).
+var CACHE_VERSION = 'v23';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

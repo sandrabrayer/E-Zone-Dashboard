@@ -380,7 +380,7 @@ function loadApp(server) {
   vm.runInContext(APP_SRC + `
     showError = (m) => { globalThis.__errors.push(String(m)); };
     globalThis.__errors = [];
-    globalThis.__t = { state, buildPayoutForecastCsv, payoutForecastHtml, renderPayoutForecast, loadPayoutForecast, saveCredit, csvCell };`, sandbox);
+    globalThis.__t = { state, payoutForecastHtml, renderPayoutForecast, loadPayoutForecast, saveCredit };`, sandbox);
   return { t: sandbox.__t, sent: () => sent.map(plain), els, errors: () => Array.from(sandbox.__errors) };
 }
 
@@ -396,38 +396,33 @@ function sampleForecast(g) {
   return g.forecast();
 }
 
-/* ======================= G. CSV ======================= */
+/* ======================= G. .xlsx export ======================= */
+/* The CSV is gone (CHANGELOG-xlsx-export.md). The real Code.gs forecast goes
+ * through the server-side .xlsx builder; the full format checks live in
+ * test/xlsx-export.test.js. */
 
-test('G: CSV — UTF-8 BOM, generated-at, Hebrew headers, labelled sections, formula guard', () => {
+test('G: xlsx — the real forecast becomes five guarded sheets, the missing row never 0', async () => {
+  const ExcelJS = require('exceljs');
+  const { buildXlsxReport } = require('../lib/xlsx-report');
+  const { buildRefundForecastSpec, isForecastResponse } = require('../lib/refund-forecast-xlsx');
   const g = loadGs({ today: '2026-10-01' });
-  const data = sampleForecast(g);
-  const app = loadApp(() => ({}));
-  const csv = app.t.buildPayoutForecastCsv(data, '01/10/2026 09:30');
-  assert.strictEqual(csv.charCodeAt(0), 0xFEFF, 'starts with the UTF-8 BOM');
-  const lines = csv.slice(1).split('\r\n');
-  assert.ok(lines.includes('"הופק","01/10/2026 09:30"'), 'generated-at line');
-  for (const label of ['"סעיף א׳ — הוחלט — ממתין לתשלום"', '"סעיף ב׳ — ממתין להחלטה — לא לתשלום"', '"סעיף ג׳ — חסרים נתוני תשלום — לבדוק"']) {
-    assert.ok(lines.includes(label), 'section label ' + label);
-  }
-  assert.ok(lines.includes('"תאריך תשלום","מטופל","בית","סכום (כולל מע""מ)","תאריך החלטה","כלל","סיבת חריגה"'));
-  assert.ok(lines.includes('"מטופל","בית","תאריך יציאה","סכום מוצע (כולל מע""מ)","כלל","תאריך תשלום אם יוחלט היום"'));
-  assert.ok(lines.includes('"מטופל","בית","תאריך יציאה","הערה"'));
-  // formula guard: no cell starts with = + - @ once unquoted
-  const cells = lines.flatMap((l) => l.match(/"(?:[^"]|"")*"|[^,]+/g) || []);
-  for (const c of cells) {
-    const v = c.startsWith('"') ? c.slice(1, -1).replace(/""/g, '"') : c;
-    if (/^-?\d+(\.\d+)?$/.test(v)) continue;     // a plain number cell
-    assert.ok(!/^[=+\-@\t\r]/.test(v), 'unguarded cell: ' + v);
-  }
-  assert.ok(csv.includes(`"'=HYPERLINK(""http://x"")"`), 'the formula name is guarded and quoted');
-  assert.ok(csv.includes(`"'@SUM(A1)"`) && csv.includes(`"'-2+3"`) && csv.includes(`"'+972-50"`));
-  // the stored payout date, DD/MM/YYYY; the missing row says to check and carries no amount
-  assert.ok(csv.includes('"15/09/2026","\'@SUM(A1)"'));
-  const missingLine = lines.find((l) => l.includes('<img'));
-  assert.ok(missingLine.endsWith('"אין תשלום רשום — לבדוק"'), missingLine);
-  assert.ok(!/(^|,)0(,|$)/.test(missingLine), 'missing row never shows 0');
-  assert.strictEqual(app.t.csvCell(11000), '11000');
-  assert.ok(!/סה"כ כולל|סה""כ כל הסעיפים/.test(csv), 'no grand total across sections');
+  const data = plain(sampleForecast(g));
+  assert.ok(isForecastResponse(data), 'the Code.gs response passes the server shape check');
+  const buf = await buildXlsxReport(buildRefundForecastSpec(data, new Date('2026-10-01T06:30:00Z')));
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf);
+  assert.deepStrictEqual(wb.worksheets.map((w) => w.name), ['סיכום', 'הוחלט', 'ממתין להחלטה', 'חסרים נתוני תשלום', 'לא ניתן לחשב']);
+  const texts = [];
+  wb.worksheets.forEach((ws) => ws.eachRow((row) => row.eachCell((c) => { if (typeof c.value === 'string') texts.push(c.value); })));
+  for (const t of texts) assert.ok(!/^[=+\-@\t\r]/.test(t), 'unguarded cell: ' + t);
+  assert.ok(texts.includes(`'=HYPERLINK("http://x")`) && texts.includes(`'@SUM(A1)`) && texts.includes(`'-2+3`) && texts.includes(`'+972-50`));
+  assert.ok(texts.includes('הופק ב־01/10/2026 09:30'));
+  const missing = wb.getWorksheet('חסרים נתוני תשלום');
+  let missingRow = null;
+  missing.eachRow((row) => { if (row.getCell(1).value === '<img src=x onerror=alert(1)>') missingRow = row; });
+  assert.ok(missingRow, 'the missing-data row is listed');
+  assert.strictEqual(missingRow.getCell(5).value, 'אין תשלום רשום — לבדוק');
+  missingRow.eachCell((c) => assert.notStrictEqual(c.value, 0, 'missing row never shows 0'));
 });
 
 /* ======================= H. UI ======================= */
