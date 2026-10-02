@@ -6528,7 +6528,11 @@ function creditPayoutDate_(decidedDate, existing) {
  *   missing_payment_data — discharges (same cutoff) with no saved credit and NO
  *                          recorded payment covering the exit cycle, whose
  *                          suggestion would be 0 only for lack of data. They
- *                          carry no amount at all — never a 0.
+ *                          carry no amount at all — never a 0. A discharge
+ *                          whose EXIT CYCLE started before the records cutoff
+ *                          is left out (records before it were never entered,
+ *                          so it is neither debt nor a refund question) and
+ *                          only counted in preCutoffExcludedCount.
  * Plus `unresolved` (a discharge the rules refused, e.g. unknown_house — an
  * error code, never a 0) and zeroByPolicyCount (discharges whose suggestion is
  * a real, data-backed 0; counted, not listed).
@@ -6581,6 +6585,15 @@ function refundForecastTotals_(rows, dateField, amountField) {
   };
 }
 
+/* The start of the cycle that holds the exit, from debtAging_'s own cycle
+ * helper (recCycleDueDates_: entry-anchored, none on/after the exit), so both
+ * engines agree on which cycle it is. A stay that ends inside its first cycle
+ * (or on its entry day) starts that cycle on the entry day. */
+function refundForecastExitCycleStart_(entryIso, exitIso) {
+  const dues = recCycleDueDates_({ date: entryIso, exitDate: exitIso }, exitIso);
+  return dues.length ? dues[dues.length - 1] : entryIso;
+}
+
 function refundPayoutForecastFor_(discharged, credits, payments, todayIso) {
   const today = refundDateIso_(todayIso, 'today');
   const cutoff = recRecordsCutoff_();
@@ -6628,7 +6641,7 @@ function refundPayoutForecastFor_(discharged, credits, payments, todayIso) {
 
   const payoutIfToday = refundPayoutDate_(today);
   const awaitingRows = [], missingRows = [], unresolvedRows = [];
-  let zeroByPolicyCount = 0;
+  let zeroByPolicyCount = 0, preCutoffExcludedCount = 0;
   Object.keys(stays).sort().forEach(function (k) {
     const s = stays[k];
     if (decidedKeys[k]) return;
@@ -6660,6 +6673,13 @@ function refundPayoutForecastFor_(discharged, credits, payments, todayIso) {
         b.rule !== 'prepaid_return' && b.rule !== 'cycle_fully_used';
     });
     if (covered) { zeroByPolicyCount++; return; }
+    // Records before the cutoff were never entered: an exit cycle that started
+    // before it is not debt (debtAging_ skips it with the same recBeforeCutoff_
+    // test) and not a refund question. Counted, never listed.
+    if (recBeforeCutoff_(refundForecastExitCycleStart_(s.entryDate, s.exitDate), cutoff)) {
+      preCutoffExcludedCount++;
+      return;
+    }
     missingRows.push(Object.assign(ident, { note: REFUND_FORECAST_MISSING_NOTE }));
   });
 
@@ -6670,6 +6690,7 @@ function refundPayoutForecastFor_(discharged, credits, payments, todayIso) {
     missing_payment_data: { count: missingRows.length, rows: missingRows },
     unresolved: { count: unresolvedRows.length, rows: unresolvedRows },
     zeroByPolicyCount: zeroByPolicyCount,
+    preCutoffExcludedCount: preCutoffExcludedCount,
   };
 }
 

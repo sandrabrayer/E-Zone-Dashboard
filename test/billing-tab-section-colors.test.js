@@ -11,7 +11,9 @@
  *      opens «חובות פתוחים»; the export button reads «ייצוא זיכויים לאקסל».
  *   C. Cross-check: every missing_payment_data discharge from the real
  *      refundPayoutForecastFor_ is in the real debtAging_ «מחזורים ללא רישום»
- *      as of the same day (two known exceptions are pinned and reported).
+ *      as of the same day; and every patient in the «משוחררים ללא תשלום רשום»
+ *      line is somewhere in debtAging_ (recorded or unrecorded), with no
+ *      exceptions (CHANGELOG-forecast-missing-pre-cutoff.md).
  *   D. xlsx (both exports): per-section fills (heading / header row / total
  *      row), merged headings and titles, widths ≥ the longest value, no
  *      oversized rows, and no "איזון" / "E-ZONE" anywhere in the file.
@@ -261,21 +263,57 @@ test('C: every missing_payment_data discharge is in debtAging «מחזורים �
     .includes('>4 משוחררים ללא תשלום רשום'));
 });
 
-test('C (known exceptions, reported): an unpaid row is «חוב רשום»; an exit cycle before 01/07/2026 is not in debt aging', () => {
+test('C (case 1): an unpaid ₪0 row for the exit cycle is counted, and is «חוב רשום» in debt aging', () => {
   const { forecast, aging } = both([
     // a Payments row exists for the exit cycle but nothing was paid
     ['ramot', 'שורה שלא שולמה', '2026-08-10', '2026-09-20', [['2026-08-10', 'paid', 30000], ['2026-09-10', 'unpaid', 0]]],
-    // the exit cycle started 20/06, before the records cutoff
-    ['pardes', 'מחזור יציאה לפני הסף', '2026-06-20', '2026-07-05', []],
   ], '2026-10-02');
   const byName = (n) => forecast.missing_payment_data.rows.find((r) => r.patientName === n);
-  // both are counted as missing payment data by the refund forecast …
-  assert.ok(byName('שורה שלא שולמה') && byName('מחזור יציאה לפני הסף'));
-  // … the first IS in «חובות פתוחים», but under «חוב רשום» (a row exists);
+  // counted as missing payment data by the refund forecast …
+  assert.ok(byName('שורה שלא שולמה'));
+  // … and it IS in «חובות פתוחים», under «חוב רשום» (a row exists).
   assert.deepEqual(kindsOf(aging, byName('שורה שלא שולמה')), ['recorded']);
-  // … the second is NOT in «חובות פתוחים» at all (debtAging_ starts at 01/07).
-  // Fixing either needs a server change, which this PR does not make.
-  assert.deepEqual(kindsOf(aging, byName('מחזור יציאה לפני הסף')), []);
+});
+
+test('C (case 2, fixed): an exit cycle that started before 01/07/2026 is neither counted nor listed', () => {
+  const { forecast, aging } = both([
+    // the exit cycle started 20/06, before the records cutoff; the exit is after it
+    ['pardes', 'מחזור יציאה לפני הסף', '2026-06-20', '2026-07-05', []],
+  ], '2026-10-02');
+  // not listed and not counted in the «משוחררים ללא תשלום רשום» line …
+  assert.equal(forecast.missing_payment_data.count, 0);
+  assert.equal(forecast.missing_payment_data.rows.length, 0);
+  // … only in the transparency counter (never shown in the UI) …
+  assert.equal(forecast.preCutoffExcludedCount, 1);
+  // … and not in any other section either;
+  assert.equal(forecast.awaiting_decision.count + forecast.unresolved.count, 0);
+  // debt aging agrees: records before 01/07 were never entered, so no debt.
+  assert.equal(aging.byPatient.find((p) => p.name === 'מחזור יציאה לפני הסף'), undefined);
+});
+
+test('C: every patient in the «משוחררים ללא תשלום רשום» line is in debt aging (recorded or unrecorded) — no exceptions', () => {
+  const people = [
+    ['rehab', 'אין תשלום בכלל', '2026-09-01', '2026-09-05', []],
+    ['asher', 'רק מחזור קודם שולם', '2026-07-05', '2026-08-20', [['2026-07-05', 'paid', 30000]]],
+    ['arfoni', 'רק שורה מבוטלת', '2026-09-09', '2026-09-12', [['2026-09-09', 'void', 30000]]],
+    ['sde', 'שני מחזורים בלי רישום', '2026-07-15', '2026-09-25', [['2026-07-15', 'paid', 30000]]],
+    ['ramot', 'שורה שלא שולמה', '2026-08-10', '2026-09-20', [['2026-08-10', 'paid', 30000], ['2026-09-10', 'unpaid', 0]]],
+    // pre-cutoff entries: excluded when the exit cycle starts before 01/07 …
+    ['pardes', 'מחזור יציאה לפני הסף', '2026-06-20', '2026-07-05', []],
+    // … counted when the exit cycle starts on the cutoff …
+    ['pardes', 'מחזור יציאה ביום הסף', '2026-06-01', '2026-07-05', []],
+    // … or after it.
+    ['rehab', 'מחזור יציאה אחרי הסף', '2026-06-15', '2026-07-20', []],
+  ];
+  const { forecast, aging } = both(people, '2026-10-02');
+  const missing = forecast.missing_payment_data.rows;
+  assert.equal(forecast.missing_payment_data.count, 7);
+  assert.equal(forecast.preCutoffExcludedCount, 1);
+  assert.ok(!missing.some((r) => r.patientName === 'מחזור יציאה לפני הסף'));
+  for (const row of missing) {
+    const kinds = kindsOf(aging, row);
+    assert.ok(kinds.includes('recorded') || kinds.includes('unrecorded'), `${row.patientName} is in «חובות פתוחים»`);
+  }
 });
 
 /* ======================= D. the workbooks ======================= */
