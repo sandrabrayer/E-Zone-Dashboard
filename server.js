@@ -845,7 +845,7 @@ app.post('/api/sheets', requireSession, requireProxySecret, async (req, res) => 
   }
 });
 
-/* GET /api/export/refund-forecast.xlsx — «ייצוא להנהלת חשבונות».
+/* GET /api/export/refund-forecast.xlsx — «ייצוא זיכויים לאקסל».
  *
  * Reads action=refundPayoutForecast through sheetsPost (PROXY_SECRET attached
  * there, the session user as `user`) and sends the formatted workbook built by
@@ -1407,7 +1407,7 @@ module.exports = {
   sheetsPost,
   requireProxySecret,
   safeErrorMessage,
-  // «ייצוא להנהלת חשבונות» .xlsx (see test/xlsx-export.test.js).
+  // «ייצוא זיכויים לאקסל» .xlsx (see test/xlsx-export.test.js).
   refundForecastXlsxHandler,
   // «חובות פתוחים» .xlsx (see test/debt-aging-ui.test.js).
   debtAgingXlsxHandler,
