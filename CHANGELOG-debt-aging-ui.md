@@ -181,7 +181,20 @@ the past-date caveat. It ran and passed in this session.
   asserts the UI reads the action through `apiPost`.
 - `test/xlsx-export.test.js`: the SW pin is now "v23 or later".
 
-**Full suite: `npm test` → 1818 / 1818** (base: 1790; +25 here, +1 browser, +2 lock-busy).
+- `test/payment-coverage-period.test.js`, `test/detached-payments.test.js`,
+  `test/duplicate-payment-void.test.js`: their "no new endpoint" guard read
+  `handle_` through a fixed 6,000-character window. PR #162 (personal PINs,
+  merged into the base while this branch was open) made `handle_` longer, so
+  the window stopped before `accountingPayments` and the three tests were
+  **red on the base itself** (318d3ff). The guard now reads the whole
+  `handle_` function and still asserts the exact same set of payment actions.
+
+**Full suite: `npm test` → 1850 / 1850** after the rebase onto 318d3ff
+(base: 1822 tests, 3 of them failing as above; this PR adds 28: 25 here, 1
+browser, 2 lock-busy). One run showed a single intermittent failure in the
+existing Chromium test `test/detached-payments-browser.test.js` under the
+parallel load; it passed alone 3/3 and on the full rerun. Browser tests are
+skipped in CI.
 
 ## Deploy
 
