@@ -218,7 +218,7 @@ test('personal login: success mints id + pinVersion; /api/me says personal; the 
     assert.deepStrictEqual([s.auth, s.id, s.pinVersion, s.user], ['personal', 'vered', 3, 'ורד']);
     assert.ok(!lines.join('\n').includes(PINS.vered), 'the PIN never reaches a log line');
     const me = await request(port, 'GET', '/api/me', { cookie: cookieOf(ok) });
-    assert.deepStrictEqual(me.json, { ok: true, user: 'ורד', auth: 'personal', approver: false, sharedUntil: '' });
+    assert.deepStrictEqual(me.json, { ok: true, user: 'ורד', auth: 'personal', approver: false, finance: true, sharedUntil: '' });
   });
 });
 
@@ -362,7 +362,7 @@ test('shared session = staff only (proxyRoles) + the banner date on /api/me; the
       const r = await request(port, 'POST', '/api/verify-pin', { body: { pin: APP_PIN, user: 'ורד' } });
       const cookie = cookieOf(r);
       const me = await request(port, 'GET', '/api/me', { cookie });
-      assert.deepStrictEqual(me.json, { ok: true, user: 'ורד', auth: 'shared', approver: false, sharedUntil: untilDisplay(IN_7) });
+      assert.deepStrictEqual(me.json, { ok: true, user: 'ורד', auth: 'shared', approver: false, finance: true, sharedUntil: untilDisplay(IN_7) });
       await request(port, 'POST', '/api/sheets', { cookie, body: { action: 'removeLead', lead: { id: 'L1' }, proxyRoles: ['deleter'] } });
       // The shared PIN cannot pose as Sandra: her name is not on the picker list.
       const s = await request(port, 'POST', '/api/verify-pin', { body: { pin: APP_PIN, user: 'סנדרה' } });
@@ -870,8 +870,10 @@ test('index.html: step 1 / step 2 / shared field — the 6-digit personal input,
 /* ============================ service worker ========================== */
 /* ====================================================================== */
 
-test('service worker: v26; the login and every API route are never cached', () => {
-  assert.match(SW_SRC, /var CACHE_VERSION = 'v26';/);
+test('service worker: v26 or later; the login and every API route are never cached', () => {
+  // v26 shipped the login; later PRs bump it again (v27: restricted view).
+  const m = /var CACHE_VERSION = 'v(\d+)';/.exec(SW_SRC);
+  assert.ok(m && Number(m[1]) >= 26, m && m[1]);
   const sandbox = { self: { addEventListener() {} }, module: { exports: {} }, URL, caches: {}, fetch() {} };
   vm.createContext(sandbox);
   vm.runInContext(SW_SRC, sandbox);

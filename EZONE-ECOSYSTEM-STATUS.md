@@ -506,6 +506,28 @@ Detail: `CHANGELOG-personal-pins-foundation.md`; decisions: plan §11.5.
 - **Append-only columns:** `AuditLog.actor`, `BillingOverrides.updatedBy`.
   Every delete / void / lead move now writes an AuditLog row with its actor.
 
+## Dashboard: restricted view for Shiran and Yael (October 3, 2026)
+
+Detail and the full tab → action map: `CHANGELOG-restricted-view.md`.
+**Nothing to set in Railway; no `USER_PIN_HASHES` change.**
+
+- **Shiran and Yael** see every tab except גבייה, הכנסות חודשיות, שיוך
+  תשלומים and גרף צמיחה, and no billing widget elsewhere: no renewal alert
+  or overdue strip on דשבורד, no «זיכויים» on מטופלים משוחררים, no refund
+  step after a discharge. They edit as staff and cannot delete.
+- **Sandra, Vered, and a shared `APP_PIN` session in the dual window:**
+  unchanged, full view.
+- **New capability `finance`**, derived from the stable user id
+  (`lib/users.js FINANCE_USER_IDS = vered, sandra`).
+- **server.js** answers `403 forbidden` («אין הרשאה לצפות בנתוני גבייה») for
+  every billing action and route (`lib/finance-scope.js`), and logs the user
+  id and the action only. `getData` drops `billingOverrides` for a restricted
+  session.
+- **Code.gs** refuses the same actions again for a verified actor without
+  `finance`, re-deriving it from `proxyAuth` + `proxyUserId` (new proxy-only
+  field `proxyCaps`).
+- SW `CACHE_VERSION` v26 → v27.
+
 ## Dashboard: personal PINs — the live login (October 2, 2026 — PR B)
 
 Detail and Sandra's setup steps: `CHANGELOG-personal-pins-login.md`.

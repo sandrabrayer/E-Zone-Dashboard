@@ -541,6 +541,7 @@ ortal  'אורטל'  : (inactive עד שלב 4; אז controller בלבד, בלי
 | 4 | סנדרה בלבד (`approver`) | ביטול של ביטול תשלום (`unvoidPayment`), חריגות החזר (`approveRefundException`), מחיקה לוגית או קבלה של יתרת פתיחה (`writeOffOpeningBalance`, `acceptOpeningBalance`). הרשימה: `APPROVER_ACTIONS`. התפקיד מוצמד ל-id של סנדרה: `approver` לכל משתמש אחר = **השרת לא עולה**. |
 | 5 | אחסון ומגבלות | `USER_PIN_HASHES` (משתנה Railway, JSON: `id`, `name`, `roles`, `hash`, `pinVersion`, `status`); scrypt עם salt בן 16 בתים לכל משתמש + `PIN_PEPPER` (Railway). נעילה: 5 שגויים למשתמש → 15 דקות; 10 לכל IP ב-15 דקות; 30 בסך הכול ב-15 דקות. `trust proxy` עם הקפיצה של Railway, ו-`req.ip`. `proxyRoles` נשלחים רק מהפרוקסי המאומת. חלון כפול של 7 ימים ל-`APP_PIN` (`staff` בלבד, `auth:'shared'`, **בלי** `deleter`). איפוס = `pinVersion++`; ביטול = `status`. |
 | 6 | בלי Node מקומי | PR B: דף לסנדרה בלבד «קוד אישי חדש» (hash בשרת; מציג רק את השורה להדבקה ב-Railway; לא שומר ולא רושם ללוג את ה-PIN). PR A: אתחול חד-פעמי לרשומה של סנדרה: `BOOTSTRAP_TOKEN` (Railway). כל עוד הוא מוגדר ואין `approver` ב-`USER_PIN_HASHES`, `POST /api/bootstrap-pin` עם הטוקן ו-PIN מחזיר את שורת הרשומה של סנדרה בלבד. ברגע שיש `approver` הוא נסגר, והלוג מזהיר בכל עלייה כל עוד הטוקן מוגדר. |
+| 7 | תצוגה מוגבלת (03/10/2026) | **שירן ויעל** רואות הכול **חוץ מ**ארבעה טאבים: גבייה, הכנסות חודשיות, שיוך תשלומים, גרף צמיחה, ובלי שום רכיב גבייה בטאבים האחרים. הן עורכות כ-`staff` ולא מוחקות. **סנדרה וורד** — בלי שינוי. **כניסה בקוד המשותף** בחלון הכפול — בלי שינוי (תצוגה מלאה). היכולת `finance` נגזרת מה-`id` הקבוע (`lib/users.js`), ולכן אין צורך לשנות את `USER_PIN_HASHES`. |
 
 **סטטוס (02/10/2026): PR A — תשתית, בלי שינוי למשתמש.** `CHANGELOG-personal-pins-foundation.md`. תיקון ה-`X-Forwarded-For` פעיל; כל השאר מוגדר ונבדק אבל לא מחובר לכניסה ולא נאכף. הכניסה עם `APP_PIN` עובדת בדיוק כמו קודם.
 
@@ -553,6 +554,13 @@ ortal  'אורטל'  : (inactive עד שלב 4; אז controller בלבד, בלי
 - **«קוד אישי חדש»:** לסנדרה בלבד (403 לכל אחד אחר). מחזיר רק את שורת הרשומה; איפוס = `pinVersion + 1`.
 - **`Code.gs` לא שונה:** ביטול של ביטול עדיין לסנדרה בלבד, ועכשיו גם מהכניסה האישית שלה. התפקידים `deleter`/`approver` **עדיין לא נאכפים** (PR C, יחד עם הסרת `APP_PIN`).
 - **⚠ בדיקת הבריאות השבועית** נכנסת עם `APP_PIN`, ותיכשל אחרי `APP_PIN_UNTIL` עד PR C.
+
+**סטטוס (03/10/2026): תצוגה מוגבלת לשירן וליעל.** `CHANGELOG-restricted-view.md`. החלטה 7 בטבלה למעלה.
+- **השרת הוא המנעול:** כל פעולת גבייה (`getPayments`, `savePayment`/`updatePayment`, `getCredits`, `saveCredit`, `suggestRefunds`, `refundPayoutForecast`, `debtAging`, `upsertBillingOverride`/`deleteBillingOverride`, וגם הפיד לחשבונאות) וכל נתיב גבייה (`/api/export/*.xlsx`, `/api/debug/last-*`) → `403` «אין הרשאה לצפות בנתוני גבייה» לשירן וליעל. הרשימה: `lib/finance-scope.js`.
+- **`Code.gs` מסרב שוב:** הוא גוזר את היכולת בעצמו מ-`proxyAuth` + `proxyUserId` ומצליב עם `proxyCaps` של השרת.
+- **`getData`:** בלי `billingOverrides` לשירן וליעל; כל המפתחות נשארים לתצוגה מלאה.
+- **בממשק:** ארבעת הטאבים, שני רכיבי הגבייה בדשבורד, כפתור «זיכויים» במטופלים משוחררים וחלון הזיכויים אחרי שחרור — לא קיימים להן.
+- **לסנדרה אין מה לעשות ב-Railway.**
 
 ---
 
