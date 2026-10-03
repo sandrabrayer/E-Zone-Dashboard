@@ -280,6 +280,11 @@ const state = {
   sessionUser: '',
   /* 'personal' | 'shared' (dual window) | '' — from /api/me. Display only. */
   sessionAuth: '',
+  /* Restricted view: true = the session may see billing (Sandra, Vered, a
+   * shared session in the dual window); false = Shiran / Yael; null = not
+   * known yet (before /api/me). From /api/me — display only; the server
+   * refuses the data itself. */
+  finance: null,
   payments: [],
   /* Credits / refunds ledger rows (Credits sheet), loaded by getCredits in
    * loadAll. Empty on a fresh install or an older deploy. */
@@ -1016,7 +1021,11 @@ async function tryPersonalLoginWorker() {
     input.value = '';
     if (res.ok) {
       rememberLoginUser(userId);
-      _sessionUserChecked = false; // re-read /api/me for the new session
+      // Apply the view BEFORE the app is revealed, so a restricted session
+      // never paints a money tab (restricted view).
+      const info = await fetchSessionInfo();
+      if (info && info.user) { applySessionInfo(info); _sessionUserChecked = true; }
+      else _sessionUserChecked = false; // re-read /api/me inside enterApp
       enterApp();
       return;
     }
@@ -1045,6 +1054,9 @@ function applySessionInfo(info) {
   }
   const adminBtn = document.getElementById('pin-admin-open');
   if (adminBtn) adminBtn.classList.toggle('hidden', i.approver !== true);
+  // Restricted only on an explicit false (the server always sends a
+  // boolean); an /api/me without the field keeps the full view as before.
+  applyView(i.finance !== false);
 }
 
 function revealApp() {
@@ -1246,6 +1258,10 @@ function initPin() {
   initTabs();
   initPayoutForecastControls();
   initDebtAgingControls();
+  // Restricted view: the server served <body class="view-restricted"> to a
+  // session without `finance`, so the view is known BEFORE the first load —
+  // the money tabs go now and loadAll never asks for getPayments / getCredits.
+  if (document.body && document.body.classList && document.body.classList.contains('view-restricted')) applyView(false);
   enterApp();
 }
 
@@ -1405,15 +1421,82 @@ async function copyPinAdminLine() {
  * (see index.html #screen-meetings); `retention` is intentionally last. */
 const SCREENS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention'];
 
+/* ===== Restricted view (Sandra, 2026-10-03) =====
+ *
+ * Shiran and Yael (no `finance` capability) see every tab EXCEPT these four,
+ * and no billing widget elsewhere. Their tab buttons and screens are removed
+ * from the DOM (not just hidden), every billing render is a no-op, and a deep
+ * link (#billing) or a current tab pointing at one of them falls back to the
+ * first allowed tab. Display only: server.js answers 403 for the data. */
+const FINANCE_SCREENS = ['billing', 'revenue', 'reconnect', 'growth'];
+
+/* false only once /api/me said this session is restricted. Unknown (null)
+ * renders as before (a restricted page load is already hidden by the
+ * server-served body.view-restricted). */
+function financeView() {
+  return state.finance !== false;
+}
+
+/* The screens a session may open, in tab order. Pure. */
+function allowedScreens(finance) {
+  return SCREENS.filter(s => finance !== false || FINANCE_SCREENS.indexOf(s) < 0);
+}
+
+/* `requested` when it is a screen the session may open, else the first
+ * allowed one (the dashboard). Pure. */
+function resolveScreen(requested, finance) {
+  const allowed = allowedScreens(finance);
+  return allowed.indexOf(requested) >= 0 ? requested : allowed[0];
+}
+
+/* The screen named by a deep link (#billing, #screen-billing), or ''. */
+function screenFromHash(hash) {
+  const h = String(hash || '').replace(/^#/, '').replace(/^screen-/, '');
+  return SCREENS.indexOf(h) >= 0 ? h : '';
+}
+
+/* Show exactly one screen and mark its tab active. Missing elements (a
+ * removed finance screen) are skipped. */
+function showScreen(name) {
+  state.currentScreen = name;
+  document.querySelectorAll('.tabs .tab').forEach(b => b.classList.toggle('active', b.dataset.screen === name));
+  SCREENS.forEach(s => {
+    const el = document.getElementById('screen-' + s);
+    if (el) el.classList.toggle('hidden', s !== name);
+  });
+}
+
+let _financeRemoved = false;
+
+/* Apply the session's view. finance === true → reveal the money tabs.
+ * Otherwise remove every [data-finance] element from the DOM, drop any
+ * billing data already in memory, and move off a finance screen. A later
+ * full-view login on the same page reloads to get the tabs back. */
+function applyView(finance) {
+  const full = finance === true;
+  if (full && _financeRemoved) { location.reload(); return; }
+  state.finance = full;
+  if (document.body && document.body.classList) document.body.classList.toggle('view-restricted', !full);
+  if (!full) {
+    const nodes = document.querySelectorAll('[data-finance]');
+    Array.prototype.forEach.call(nodes, el => { if (el && el.remove) el.remove(); });
+    _financeRemoved = true;
+    state.payments = [];
+    state.credits = [];
+    state.billingOverrides = [];
+  }
+  const want = screenFromHash(location.hash) || state.currentScreen;
+  const target = resolveScreen(want, full);
+  if (target !== state.currentScreen || want !== state.currentScreen) {
+    showScreen(target);
+    renderAll();
+  }
+}
+
 function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {
     btn.onclick = () => {
-      document.querySelectorAll('.tabs .tab').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      state.currentScreen = btn.dataset.screen;
-      SCREENS.forEach(s => {
-        document.getElementById('screen-' + s).classList.toggle('hidden', s !== state.currentScreen);
-      });
+      showScreen(resolveScreen(btn.dataset.screen, state.finance));
       renderAll();
     };
   });
@@ -1627,7 +1710,10 @@ async function loadAll() {
     // Payments live on their own sheet and their own action. A fresh
     // install has no Payments sheet yet — treat any failure as "empty
     // list" so the rest of the app still loads.
-    try {
+    if (!financeView()) {
+      state.payments = [];
+      state.credits = [];
+    } else try {
       const pr = await apiGet({ action: 'getPayments' });
       const raw = Array.isArray(pr && pr.payments) ? pr.payments : [];
       state.payments = raw.map(normalizePayment).filter(p => p.id);
@@ -1639,7 +1725,7 @@ async function loadAll() {
 
     // Credits ledger — own sheet, own action (same fail-soft rule as payments:
     // an older backend without getCredits must not block the app).
-    try {
+    if (financeView()) try {
       const cr = await apiGet({ action: 'getCredits' });
       const rawCredits = Array.isArray(cr && cr.credits) ? cr.credits : [];
       state.credits = rawCredits.map(normalizeCredit).filter(c => c.id);
@@ -3642,6 +3728,7 @@ function renderDashboard() {
  * existing שחרור modal). Action buttons carry `edit-only` so they're hidden in
  * viewer mode, matching the rest of the app. */
 function renderRenewalAlert() {
+  if (!financeView()) return; // restricted view: no billing UI at all
   const wrap    = document.getElementById('renewal-alert');
   const listEl  = document.getElementById('renewal-alert-list');
   const countEl = document.getElementById('renewal-alert-count');
@@ -4647,12 +4734,15 @@ function renderDischargedPatients() {
       /* Credits / refunds — create or edit without touching the discharge
        * record (recovery path for a failed or deferred credit). The count pill
        * shows how many ledger rows already exist for this patient. */
-      const nCredits = creditsForPatient(state.credits, '', patientKey(p)).length;
-      const creditBtn = document.createElement('button');
-      creditBtn.className = 'btn small';
-      creditBtn.textContent = nCredits ? `זיכויים (${nCredits})` : 'זיכויים';
-      creditBtn.onclick = () => openCreditsForDischarged(p);
-      actions.appendChild(creditBtn);
+      // Restricted view: no «זיכויים» button (credits are billing data).
+      if (financeView()) {
+        const nCredits = creditsForPatient(state.credits, '', patientKey(p)).length;
+        const creditBtn = document.createElement('button');
+        creditBtn.className = 'btn small';
+        creditBtn.textContent = nCredits ? `זיכויים (${nCredits})` : 'זיכויים';
+        creditBtn.onclick = () => openCreditsForDischarged(p);
+        actions.appendChild(creditBtn);
+      }
 
       row.appendChild(actions);
     }
@@ -5891,7 +5981,9 @@ function dischargePatient(p) {
       // the modal's save failures surface the Hebrew error banner and leave
       // the discharge intact; a deferred or failed credit is recoverable from
       // the מטופלים משוחררים tab (openCreditsForDischarged).
-      try {
+      // Restricted view: the refund step is skipped (Sandra / Vered create
+      // the credit later from מטופלים משוחררים → «זיכויים»).
+      if (financeView()) try {
         await showCreditsModal({
           patient: p, patientId: p.id ? String(p.id) : '', patientKey: patientKey(p), exitDate: exitDate,
         });
@@ -6751,6 +6843,7 @@ function showMarkCreditPaidModal(c) {
 /* Payout view (גבייה tab): pending credits grouped by payoutDate with a
  * total per date, so the outgoing amount is visible before each 15th. */
 function renderCreditsPayouts() {
+  if (!financeView()) return; // restricted view: no billing UI at all
   renderPayoutForecast();
   const list = document.getElementById('credits-payout-list');
   if (!list) return;
@@ -6845,6 +6938,7 @@ function markPayoutForecastStale() {
 }
 
 async function loadPayoutForecast() {
+  if (!financeView()) return; // restricted view: no billing UI at all
   const f = payoutForecastState();
   if (f.status === 'loading') return f.promise;
   f.status = 'loading'; f.error = '';
@@ -8169,6 +8263,7 @@ function overduePatients(fromISO) {
 /* Dashboard strip — "X מטופלים ממתינים לתשלום". Hidden at zero; the click
  * navigation to the גבייה tab is wired once in initTabs. */
 function renderOverdueAlert() {
+  if (!financeView()) return; // restricted view: no billing UI at all
   const wrap    = document.getElementById('overdue-alert');
   const countEl = document.getElementById('overdue-alert-count');
   const textEl  = document.getElementById('overdue-alert-text');
@@ -8554,6 +8649,7 @@ async function runPatientUidBackfill() {
 /* ---- the screen ---------------------------------------------------------- */
 
 function renderReconnect() {
+  if (!financeView()) return; // restricted view: no billing UI at all
   const list = document.getElementById('reconnect-list');
   if (!list) return;
   const rows = detachedPayments(state.payments, state.patients);
@@ -8838,6 +8934,7 @@ function billingRowMatchesQuery(patient, payment, q) {
 }
 
 function renderBilling() {
+  if (!financeView()) return; // restricted view: no billing UI at all
   const selected = state.billingDate || todayISO();
   const billingDateEl = document.getElementById('billing-date');
   if (billingDateEl && billingDateEl.value !== selected) billingDateEl.value = selected;
@@ -9948,6 +10045,7 @@ function revMoney(exVatAmount) {
  *
  * Every figure printed is EX-VAT, via revenueExVat() at 2dp. */
 function renderMonthlyRevenue() {
+  if (!financeView()) return; // restricted view: no billing UI at all
   const monthEl = document.getElementById('revenue-month');
   if (!state.revenueMonth) state.revenueMonth = monthKey(todayISO());
   if (monthEl && monthEl.value !== state.revenueMonth) monthEl.value = state.revenueMonth;
@@ -10560,6 +10658,7 @@ function growthLineChartSVG(series, opts) {
 
 /* Render the גרף צמיחה screen: two stacked, separately-scaled SVG charts. */
 function renderGrowthGraph() {
+  if (!financeView()) return; // restricted view: no billing UI at all
   const host = document.getElementById('growth-graphs');
   if (!host) return;
 
@@ -10615,6 +10714,7 @@ function growthChartWidth(el) {
  * growth screen being the active one, so we don't do work while it's hidden. */
 let _growthResizeTimer = null;
 function onGrowthViewportChange() {
+  if (!financeView()) return; // restricted view: no billing UI at all
   if (state.currentScreen !== 'growth') return;
   clearTimeout(_growthResizeTimer);
   _growthResizeTimer = setTimeout(renderGrowthGraph, 150);

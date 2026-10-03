@@ -310,6 +310,14 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
 .pin-admin .pin-admin-steps { margin: 12px 0 0; padding-inline-start: 20px; font-size: 13px; color: var(--text-muted); line-height: 1.6; }
 .pin-admin .pin-admin-steps code { direction: ltr; unicode-bidi: isolate; color: var(--text); }
 
+/* ===== Restricted view (finance capability) =====
+ * [data-finance] = the four money tabs, their screens and the dashboard
+ * renewal / overdue widgets. For a restricted session (Shiran / Yael) the
+ * server serves <body class="view-restricted"> and app.js removes them from
+ * the DOM once /api/me answers; this rule makes sure nothing flashes before
+ * that. */
+body.view-restricted [data-finance] { display: none !important; }
+
 /* ===== Banners ===== */
 .error-banner {
   position: fixed; top: 14px; left: 50%; transform: translateX(-50%);

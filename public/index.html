@@ -117,17 +117,22 @@
         <img class="brand-logo" src="/icons/icon-192.png" alt="" />
         <span class="brand-name">דשבורד בתים</span>
       </div>
+      <!-- data-finance: the four money tabs, their screens and the dashboard
+           billing widgets. REMOVED from the DOM for a restricted session
+           (Shiran / Yael — no `finance` capability), hidden from the first
+           paint by <body class="view-restricted">, which server.js serves
+           to such a session. The server refuses the data either way. -->
       <nav class="tabs">
         <button class="tab active" data-screen="dashboard">דשבורד</button>
         <button class="tab" data-screen="leads">לידים</button>
         <button class="tab" data-screen="meetings">לוח פגישות<span id="meetings-unseen-badge" class="tab-badge hidden">0</span></button>
         <button class="tab" data-screen="occupancy">תפוסה</button>
         <button class="tab" data-screen="discharged-patients">מטופלים משוחררים</button>
-        <button class="tab" data-screen="billing">גבייה</button>
-        <button class="tab" data-screen="revenue">הכנסות חודשיות</button>
-        <button class="tab" data-screen="reconnect">שיוך תשלומים<span id="reconnect-badge" class="tab-badge hidden">0</span></button>
+        <button class="tab" data-screen="billing" data-finance>גבייה</button>
+        <button class="tab" data-screen="revenue" data-finance>הכנסות חודשיות</button>
+        <button class="tab" data-screen="reconnect" data-finance>שיוך תשלומים<span id="reconnect-badge" class="tab-badge hidden">0</span></button>
         <button class="tab" data-screen="breakeven">נקודת איזון</button>
-        <button class="tab" data-screen="growth">גרף צמיחה</button>
+        <button class="tab" data-screen="growth" data-finance>גרף צמיחה</button>
         <button class="tab" data-screen="retention">שימור לידים</button>
       </nav>
       <div class="user-mode">
@@ -165,7 +170,7 @@
       <!-- Renewal alert: active patients whose next billing day is within 7
            days and whose upcoming cycle isn't already paid. Hidden when empty;
            populated by renderRenewalAlert() in app.js. -->
-      <div class="card renewal-alert hidden" id="renewal-alert">
+      <div class="card renewal-alert hidden" id="renewal-alert" data-finance>
         <div class="renewal-alert-head">
           <span class="renewal-alert-title">חידושי תפוסה — השבוע הקרוב</span>
           <span class="renewal-alert-count" id="renewal-alert-count">0</span>
@@ -175,7 +180,7 @@
 
       <!-- Overdue-payment strip: "X מטופלים ממתינים לתשלום". Hidden at zero;
            clicking navigates to the גבייה tab. -->
-      <button class="card overdue-strip hidden" id="overdue-alert" type="button">
+      <button class="card overdue-strip hidden" id="overdue-alert" type="button" data-finance>
         <span class="renewal-alert-count" id="overdue-alert-count">0</span>
         <span class="overdue-strip-text" id="overdue-alert-text">מטופלים ממתינים לתשלום</span>
         <span class="overdue-strip-cta">למעבר לגבייה ←</span>
@@ -241,7 +246,7 @@
     </section>
 
     <!-- ====== BILLING ====== -->
-    <section id="screen-billing" class="screen hidden">
+    <section id="screen-billing" class="screen hidden" data-finance>
       <div class="screen-head">
         <h2>גבייה</h2>
         <div class="actions">
@@ -345,7 +350,7 @@
          Same contract as ezone-outpatient PR #109, so the two apps' figures
          can be added into a network total: same allocation rule, same four
          figures, same never-blend rule, same ex-VAT basis (÷1.18). -->
-    <section id="screen-revenue" class="screen hidden">
+    <section id="screen-revenue" class="screen hidden" data-finance>
       <div class="screen-head">
         <h2>הכנסות חודשיות <span class="rev-month-label" id="rev-month-label"></span></h2>
         <div class="actions">
@@ -408,7 +413,7 @@
          Every payment row that matches no current patient, with the candidates
          it might belong to. Nothing here reconnects automatically: the engine
          ranks, this screen presents, a person decides. -->
-    <section id="screen-reconnect" class="screen hidden">
+    <section id="screen-reconnect" class="screen hidden" data-finance>
       <div class="screen-head">
         <h2>שיוך תשלומים</h2>
         <div class="actions">
@@ -509,7 +514,7 @@
     </section>
 
     <!-- ====== GROWTH GRAPH (network-wide growth over time) ====== -->
-    <section id="screen-growth" class="screen hidden">
+    <section id="screen-growth" class="screen hidden" data-finance>
       <div class="screen-head">
         <h2>גרף צמיחה</h2>
       </div>

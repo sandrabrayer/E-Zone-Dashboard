@@ -109,7 +109,11 @@
 // changed — evict v25 so no phone keeps the 4-digit-only login. The login
 // and every /api/ route (/api/verify-pin, /api/login-users, /api/me,
 // /api/pin-admin/*) stay network-only: cacheStrategy() never caches /api/.
-var CACHE_VERSION = 'v26';
+// v26 → v27: restricted view — Shiran and Yael do not get the four money tabs
+// (גבייה, הכנסות חודשיות, שיוך תשלומים, גרף צמיחה) or any billing widget.
+// app.js, index.html and style.css changed — evict v26 so no phone keeps the
+// old shell. Every /api/ route stays network-only (never cached).
+var CACHE_VERSION = 'v27';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
