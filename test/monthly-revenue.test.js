@@ -710,10 +710,11 @@ test('H: the dead monthKey twin is gone, and its removal is explained in place',
 /* ================= I. the daily גבייה view is untouched ================= */
 
 test('I: the daily גבייה screen is added ALONGSIDE, not modified', () => {
-  assert.match(INDEX, /<button class="tab" data-screen="billing">גבייה<\/button>/);
-  assert.match(INDEX, /<button class="tab" data-screen="revenue">הכנסות חודשיות<\/button>/);
-  assert.match(INDEX, /<section id="screen-billing" class="screen hidden">/);
-  assert.match(INDEX, /<section id="screen-revenue" class="screen hidden">/);
+  // Restricted view (2026-10-03) tags the money tabs with data-finance.
+  assert.match(INDEX, /<button class="tab" data-screen="billing"( data-finance)?>גבייה<\/button>/);
+  assert.match(INDEX, /<button class="tab" data-screen="revenue"( data-finance)?>הכנסות חודשיות<\/button>/);
+  assert.match(INDEX, /<section id="screen-billing" class="screen hidden"( data-finance)?>/);
+  assert.match(INDEX, /<section id="screen-revenue" class="screen hidden"( data-finance)?>/);
   for (const id of ['billing-date', 'billing-search', 'billing-due-list', 'billing-open-list',
                     'bill-due-count', 'bill-due-total', 'bill-due-collected',
                     'bill-month-collected', 'bill-month-outstanding', 'bill-month-breakdown',
@@ -745,7 +746,8 @@ test('I: the new screen is registered in the router and has a matching section',
   // entry — so the section id must match the screen id exactly or the toggle
   // throws on a missing element.
   assert.match(APP, /document\.querySelectorAll\('\.tabs \.tab'\)\.forEach\(btn => \{/);
-  assert.match(APP, /document\.getElementById\('screen-' \+ s\)\.classList\.toggle/);
+  // Restricted view: the router (showScreen) skips a removed finance screen.
+  assert.match(APP, /const el = document\.getElementById\('screen-' \+ s\);\s*if \(el\) el\.classList\.toggle/);
   assert.ok(INDEX.includes('id="screen-revenue"'), 'the router will look up screen-revenue');
   assert.match(APP, /revenueMonthEl\.onchange/);
   assert.match(APP, /revenueSearchEl\.addEventListener\('input'/);

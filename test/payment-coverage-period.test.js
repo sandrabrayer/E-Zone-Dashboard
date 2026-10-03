@@ -720,6 +720,6 @@ test('H: every coverage value reaching the DOM is escaped or a bare ISO date', (
 test('H: the index.html shell is unchanged — the cell is built by the renderer', () => {
   assert.ok(!INDEX.includes('bill-cov'), 'no new static markup to drift out of sync');
   // The two screens this touches still exist exactly as before.
-  assert.match(INDEX, /<section id="screen-billing" class="screen hidden">/);
-  assert.match(INDEX, /<section id="screen-revenue" class="screen hidden">/);
+  assert.match(INDEX, /<section id="screen-billing" class="screen hidden"( data-finance)?>/); // restricted view tags it
+  assert.match(INDEX, /<section id="screen-revenue" class="screen hidden"( data-finance)?>/); // restricted view tags it
 });
