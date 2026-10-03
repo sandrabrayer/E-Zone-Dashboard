@@ -6,8 +6,11 @@ const { checkPin } = require('./lib/pin');
 const { createSessionToken, verifySessionToken, readSession } = require('./lib/session');
 const {
   SESSION_USERS, APPROVER_ID, USER_MODEL, validateUserPinHashes, hasApprover, resolvePrincipal, recordLine,
-  loginUsers, modelById,
+  loginUsers, modelById, principalCapabilities, hasFinance,
 } = require('./lib/users');
+const {
+  FINANCE_ACTIONS, FINANCE_ROUTES, FINANCE_FORBIDDEN_MESSAGE, isFinanceAction, stripFinanceKeys,
+} = require('./lib/finance-scope');
 const { hashPin, verifyPin, pinPolicyError } = require('./lib/pin-hash');
 const { WindowCounter, PinLockout } = require('./lib/rate-limit');
 const { sharedPinWindow, untilDisplay, windowLogLine } = require('./lib/shared-pin-window');
@@ -214,9 +217,15 @@ app.use((req, _res, next) => {
 /* Serve index.html with BUILD_ID substituted so the script tag is unique
  * per deploy and cannot be cached between deploys. Read from disk on every
  * request so a hot-redeploy picks up edits immediately. */
-function sendIndex(_req, res) {
-  const html = fs.readFileSync(path.join(__dirname, 'public/index.html'), 'utf8')
+function sendIndex(req, res) {
+  let html = fs.readFileSync(path.join(__dirname, 'public/index.html'), 'utf8')
     .replace(/__BUILD__/g, BUILD_ID);
+  // Restricted view: a session without `finance` (Shiran / Yael) gets
+  // <body class="view-restricted">, so the four money tabs and the billing
+  // widgets never paint; app.js then removes them from the DOM. No session
+  // (the login screen) or a full-view session: the page is unchanged.
+  const principal = sessionPrincipalFromRequest(req);
+  if (principal && !hasFinance(principal)) html = html.replace('<body>', '<body class="view-restricted">');
   console.log(`[req] → serving /index.html (build ${BUILD_ID}, ${html.length} chars)`);
   noCache(res);
   res.type('html').send(html);
@@ -270,7 +279,7 @@ function readParamsToBody(params) {
 
 /* Proxy-owned identity fields beyond user/proxyUser. A client can never send
  * them: buildAppsScriptBody deletes any incoming copy before adding its own. */
-const PROXY_PRINCIPAL_FIELDS = ['proxyRoles', 'proxyAuth', 'proxyUserId'];
+const PROXY_PRINCIPAL_FIELDS = ['proxyRoles', 'proxyAuth', 'proxyUserId', 'proxyCaps'];
 
 /* The principal for an Apps Script call that carries no dashboard session
  * (the meeting-report micro-app): no roles at all. */
@@ -282,6 +291,7 @@ const NO_PRINCIPAL = Object.freeze({ auth: 'none', id: '', user: '', roles: [] }
  *   proxyUser   — the session user, which Code.gs trusts once the secret
  *                 verifies (a contradicting `user` is ignored + logged)
  *   proxySecret — PROXY_SECRET. Body only: never in a URL.
+ *   proxyCaps   — the session's view capabilities (['finance'] or []).
  *   proxyRoles / proxyAuth / proxyUserId — the session principal's roles,
  *                 'shared' | 'personal' | 'none', and stable id (personal
  *                 only). Code.gs grants roles ONLY when the secret verifies.
@@ -296,6 +306,10 @@ function buildAppsScriptBody(fields, user, secret, principal) {
     out.proxyUserId = typeof principal.id === 'string' ? principal.id : '';
     out.proxyAuth = typeof principal.auth === 'string' ? principal.auth : 'none';
     out.proxyRoles = Array.isArray(principal.roles) ? principal.roles.slice() : [];
+    // View capabilities (restricted view): derived from the principal here,
+    // never from the body. Code.gs re-derives them from proxyAuth +
+    // proxyUserId and honours the intersection (defense in depth).
+    out.proxyCaps = principalCapabilities(principal);
   }
   return out;
 }
@@ -763,15 +777,53 @@ function buildMeetingReportCookie(token, isHttps) {
   return parts.join('; ');
 }
 
+/* ===== Restricted view — the `finance` capability (Sandra, 2026-10-03) =====
+ *
+ * Shiran and Yael see every tab except the four money tabs (גבייה, הכנסות
+ * חודשיות, שיוך תשלומים, גרף צמיחה) and no billing widget elsewhere. THIS is
+ * the real lock: any session without `finance` (lib/users.js
+ * principalCapabilities — by stable user id, so no USER_PIN_HASHES change)
+ * gets 403 for every action in lib/finance-scope.js FINANCE_ACTIONS and every
+ * route in FINANCE_ROUTES, BEFORE anything is proxied. Sandra, Vered and a
+ * shared session inside the dual window are unchanged. The refusal is logged
+ * with the user id and the action/route only — never data. */
+function financeForbidden(res, req, what) {
+  const p = sessionPrincipalFromRequest(req);
+  const who = p ? (p.id || p.auth) : 'none';
+  console.warn(`[finance] 403 user=${who} ${what}`);
+  return res.status(403).json({ ok: false, error: 'forbidden', message: FINANCE_FORBIDDEN_MESSAGE });
+}
+
+/* /api/sheets: refuse a FINANCE_ACTIONS action (GET query or POST body). */
+function requireFinanceForAction(req, res, next) {
+  const action = req.method === 'GET' ? (req.query && req.query.action) : (req.body && req.body.action);
+  if (!isFinanceAction(action)) return next();
+  if (hasFinance(sessionPrincipalFromRequest(req))) return next();
+  return financeForbidden(res, req, 'action=' + action);
+}
+
+/* A whole route that only serves billing data. */
+function requireFinance(req, res, next) {
+  if (hasFinance(sessionPrincipalFromRequest(req))) return next();
+  return financeForbidden(res, req, 'route=' + req.path);
+}
+
+/* getData for a session without `finance`: drop the billing-only keys
+ * (GETDATA_FINANCE_KEYS — no tab such a session can see reads them). A
+ * full-view session gets every key, unchanged (append-only contract). */
+function viewFilteredResponse(action, data, principal) {
+  return action === 'getData' && !hasFinance(principal) ? stripFinanceKeys(data) : data;
+}
+
 /* GET /api/sheets?action=getData — forwarded to Apps Script as a POST whose
  * body carries the params + proxy secret (see sheetsGet). */
-app.get('/api/sheets', requireSession, requireProxySecret, async (req, res) => {
+app.get('/api/sheets', requireSession, requireFinanceForAction, requireProxySecret, async (req, res) => {
   const action = req.query && req.query.action;
   // The action name only — never the query values or a response body.
   console.log('[sheets GET] → action=', JSON.stringify(typeof action === 'string' ? action.slice(0, 60) : null));
   try {
     const principal = sessionPrincipalFromRequest(req);
-    const data = await sheetsGet(req.query, principal ? principal.user : '', principal);
+    const data = viewFilteredResponse(action, await sheetsGet(req.query, principal ? principal.user : '', principal), principal);
 
     const summary = summarizeResponse(data);
     console.log('[sheets GET] ← response summary:', summary);
@@ -805,7 +857,7 @@ app.get('/api/sheets', requireSession, requireProxySecret, async (req, res) => {
 /* POST /api/sheets — body is forwarded as POST application/json to Apps Script.
  * All save operations (saveAll, etc.) use POST so the data never hits the
  * querystring length limit. */
-app.post('/api/sheets', requireSession, requireProxySecret, async (req, res) => {
+app.post('/api/sheets', requireSession, requireFinanceForAction, requireProxySecret, async (req, res) => {
   const body = req.body || {};
   // Who/when stamping: the `user` the Apps Script writes into updatedBy
   // comes ONLY from the signed session cookie. ALWAYS overwritten — a
@@ -819,7 +871,7 @@ app.post('/api/sheets', requireSession, requireProxySecret, async (req, res) => 
   const summary = summarizeBody(body);
   console.log('[sheets POST] →', summary);
   try {
-    const data = await sheetsPost(body, principal);
+    const data = viewFilteredResponse(body.action, await sheetsPost(body, principal), principal);
     // Outcome only — the response can carry patient / payment data, so it is
     // never written to the log.
     console.log('[sheets POST] ←', data && typeof data === 'object'
@@ -920,7 +972,7 @@ function refundForecastXlsxHandler(deps) {
     return res.status(200).end(buf);
   };
 }
-app.get('/api/export/refund-forecast.xlsx', requireSession, requireProxySecret, refundForecastXlsxHandler());
+app.get('/api/export/refund-forecast.xlsx', requireSession, requireFinance, requireProxySecret, refundForecastXlsxHandler());
 
 /* GET /api/export/debt-aging.xlsx?asOf=YYYY-MM-DD&house=…&status=… — «חובות
  * פתוחים» → «ייצוא לאקסל».
@@ -982,7 +1034,7 @@ function debtAgingXlsxHandler(deps) {
     return res.status(200).end(buf);
   };
 }
-app.get('/api/export/debt-aging.xlsx', requireSession, validateDebtAgingExportQuery, requireProxySecret, debtAgingXlsxHandler());
+app.get('/api/export/debt-aging.xlsx', requireSession, requireFinance, validateDebtAgingExportQuery, requireProxySecret, debtAgingXlsxHandler());
 
 /* Diagnostics — last save and last load. These echo lead/patient previews, so
  * they are gated behind the session cookie like the data routes.
@@ -994,14 +1046,14 @@ app.get('/api/export/debt-aging.xlsx', requireSession, validateDebtAgingExportQu
  *   authFailures — every requireSession 401 (total, per path, recent
  *                  timestamps) — the trace a rejected-cookie write leaves.
  * The legacy lastSave shape is preserved under `lastSave`. */
-app.get('/api/debug/last-save', requireSession, (_req, res) => {
+app.get('/api/debug/last-save', requireSession, requireFinance, (_req, res) => {
   res.json({
     lastSave: lastSave || { empty: true },
     writes: writeLog,
     authFailures,
   });
 });
-app.get('/api/debug/last-load', requireSession, (_req, res) => {
+app.get('/api/debug/last-load', requireSession, requireFinance, (_req, res) => {
   res.json(lastLoad || { empty: true });
 });
 
@@ -1373,6 +1425,9 @@ app.get('/api/me', requireSession, (req, res) => {
     // re-made server-side from the cookie.
     auth: p ? p.auth : '',
     approver: isApproverPrincipal(p),
+    // Restricted view: false hides the four money tabs and every billing
+    // widget. Display only — the server refuses the data itself (403).
+    finance: hasFinance(p),
     sharedUntil: p && p.auth === 'shared' ? untilDisplay(w.until) : '',
   });
 });
@@ -1648,6 +1703,12 @@ module.exports = {
   pinAdminUsers,
   pinAdminAttempts,
   pinAdminGlobal,
+  // Restricted view (see test/restricted-view.test.js).
+  requireFinanceForAction,
+  requireFinance,
+  viewFilteredResponse,
+  FINANCE_ACTIONS,
+  FINANCE_ROUTES,
   bootstrapState,
   sessionPrincipalFromRequest,
   NO_PRINCIPAL,
