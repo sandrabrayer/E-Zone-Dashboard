@@ -7095,7 +7095,48 @@ async function exportPayoutForecastXlsx() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/* ---- «ייצוא רשימת תיקונים»: the data-cleanup workbook ---- */
+
+/* Every known gap and inconsistency, one tab per kind, each row with who
+ * fixes it, how, and a «טופל» box. Built on the server (lib/cleanup-xlsx.js)
+ * from action=cleanupReport behind GET CLEANUP_XLSX_URL, which needs the
+ * finance capability (403 otherwise). The browser only downloads it. */
+const CLEANUP_XLSX_URL = '/api/export/cleanup.xlsx';
+
+/* Pure: the Hebrew reason for a failed cleanup export. */
+function cleanupXlsxErrorText(status, code) {
+  if (status === 403) return 'אין הרשאה לייצוא זה';
+  return payoutForecastXlsxErrorText(status, code);
+}
+
+async function exportCleanupXlsx() {
+  if (!financeView()) throw new Error('אין הרשאה לייצוא זה');
+  let res;
+  try {
+    res = await fetch(CLEANUP_XLSX_URL, { method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+  } catch (_e) {
+    throw new Error('אין חיבור לשרת');
+  }
+  if (res.status === 401) showPinScreen();
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(cleanupXlsxErrorText(res.status, body && body.error));
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `רשימת-תיקונים-${todayISO()}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function initPayoutForecastControls() {
+  const cleanup = document.getElementById('cleanup-export');
+  if (cleanup) cleanup.onclick = () => busyButton(cleanup, 'load', exportCleanupXlsx)
+    .catch(e => showError('הייצוא נכשל — ' + ((e && e.message) || 'שגיאה')));
   const exp = document.getElementById('credits-forecast-export');
   if (exp) exp.onclick = () => busyButton(exp, 'load', exportPayoutForecastXlsx)
     .catch(e => showError('הייצוא נכשל — ' + ((e && e.message) || 'שגיאה')));

@@ -113,7 +113,11 @@
 // (גבייה, הכנסות חודשיות, שיוך תשלומים, גרף צמיחה) or any billing widget.
 // app.js, index.html and style.css changed — evict v26 so no phone keeps the
 // old shell. Every /api/ route stays network-only (never cached).
-var CACHE_VERSION = 'v27';
+// v27 → v28: «ייצוא רשימת תיקונים» — a button next to the other exports on
+// the גבייה tab downloads the data-cleanup workbook. app.js and index.html
+// changed — evict v27. /api/export/cleanup.xlsx is under /api/, so
+// cacheStrategy() keeps it network-only (never cached).
+var CACHE_VERSION = 'v28';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
