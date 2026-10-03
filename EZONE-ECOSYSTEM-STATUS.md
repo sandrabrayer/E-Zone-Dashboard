@@ -599,6 +599,21 @@ action from PR #161).
   `חובות-YYYY-MM-DD.xlsx`. No new env var, no new Script Property.
 - SW `CACHE_VERSION` v23 → v24.
 
+## Dashboard: «ייצוא רשימת תיקונים» — the data-cleanup workbook (October 3, 2026)
+
+Detail: `CHANGELOG-cleanup-workbook.md`. Apps Script **and** Railway.
+
+- New read-only Apps Script action `cleanupReport` (`PROXY_SECRET`, not in
+  `OPEN_ACTIONS`, in `PROXY_KNOWN_ACTIONS` and `FINANCE_ACTIONS`). It reuses
+  the existing checks (reconciliation §A/§D/§E/§F, `debtAging_`,
+  `refundPayoutForecastFor_`) and adds three: cross-tab spellings,
+  near-duplicate names in one house, same-month duplicate payments.
+- New route `GET /api/export/cleanup.xlsx` (session + `finance`, 403
+  otherwise; `no-store`), file `רשימת-תיקונים-YYYY-MM-DD.xlsx`. A button
+  «ייצוא רשימת תיקונים» beside «ייצוא זיכויים לאקסל» on the גבייה tab.
+- No new env var, no new Script Property, no new scope. SW `CACHE_VERSION`
+  v27 → v28.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);
