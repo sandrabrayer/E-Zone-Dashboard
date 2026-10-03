@@ -16,6 +16,7 @@ const { WindowCounter, PinLockout } = require('./lib/rate-limit');
 const { sharedPinWindow, untilDisplay, windowLogLine } = require('./lib/shared-pin-window');
 const { buildXlsxReport, isoDayInIsrael, XLSX_MIME } = require('./lib/xlsx-report');
 const { buildRefundForecastSpec, isForecastResponse, contentDisposition } = require('./lib/refund-forecast-xlsx');
+const { buildCleanupSpec, isCleanupResponse, cleanupContentDisposition } = require('./lib/cleanup-xlsx');
 const {
   buildDebtAgingSpec, isDebtAgingResponse, validateDebtAgingQuery, debtAgingContentDisposition,
 } = require('./lib/debt-aging-xlsx');
@@ -1036,6 +1037,57 @@ function debtAgingXlsxHandler(deps) {
 }
 app.get('/api/export/debt-aging.xlsx', requireSession, requireFinance, validateDebtAgingExportQuery, requireProxySecret, debtAgingXlsxHandler());
 
+/* GET /api/export/cleanup.xlsx — «ייצוא רשימת תיקונים».
+ *
+ * requireSession → requireFinance (403 for a restricted session) →
+ * requireProxySecret → handler. Reads action=cleanupReport (read-only)
+ * through sheetsPost and sends the workbook built by lib/xlsx-report.js from
+ * lib/cleanup-xlsx.js: every known gap and inconsistency as of today, one tab
+ * per kind, each row with who fixes it, how, and a «טופל» box. No check is
+ * computed here. Never cached (Cache-Control: no-store; the service worker
+ * never caches /api/). The log carries the outcome only — never a patient
+ * name, amount or response body. */
+function cleanupXlsxHandler(deps) {
+  const d = deps || {};
+  const fetchCleanup = d.fetchCleanup || ((user) => sheetsPost({ action: 'cleanupReport', user }));
+  const clock = d.now || (() => new Date());
+  return async (req, res) => {
+    const fail = (status, error) => {
+      console.error('[export cleanup] failed:', error);
+      res.set('Cache-Control', 'no-store');
+      return res.status(status).json({ ok: false, error });
+    };
+    let data;
+    try {
+      data = await fetchCleanup(sessionUserFromRequest(req));
+    } catch (err) {
+      return fail(502, err && err.message === PROXY_NOT_CONFIGURED ? 'proxy_not_configured' : 'sheets_unreachable');
+    }
+    if (data && data.ok === false && data.error === 'lock_busy') return fail(503, 'lock_busy');
+    if (data && data.ok === false && data.error === 'forbidden') return fail(403, 'forbidden');
+    if (!isCleanupResponse(data)) {
+      return fail(502, data && typeof data.error === 'string' ? data.error.slice(0, 60) : 'bad_response');
+    }
+    let buf;
+    const now = clock();
+    try {
+      buf = await buildXlsxReport(buildCleanupSpec(data, now));
+    } catch (_err) {
+      return fail(500, 'xlsx_build_failed');
+    }
+    console.log('[export cleanup] ok, bytes=', buf.length);
+    res.set({
+      'Content-Type': XLSX_MIME,
+      'Content-Disposition': cleanupContentDisposition(data.today),
+      'Content-Length': String(buf.length),
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    return res.status(200).end(buf);
+  };
+}
+app.get('/api/export/cleanup.xlsx', requireSession, requireFinance, requireProxySecret, cleanupXlsxHandler());
+
 /* Diagnostics — last save and last load. These echo lead/patient previews, so
  * they are gated behind the session cookie like the data routes.
  *
@@ -1673,6 +1725,8 @@ module.exports = {
   // «חובות פתוחים» .xlsx (see test/debt-aging-ui.test.js).
   debtAgingXlsxHandler,
   validateDebtAgingExportQuery,
+  // «ייצוא רשימת תיקונים» .xlsx (see test/cleanup-workbook.test.js).
+  cleanupXlsxHandler,
   // Deploy identity on /healthz (see test/healthz-deploy-identity.test.js).
   deployIdentity,
   healthzBody,
