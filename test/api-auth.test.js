@@ -13,6 +13,7 @@ const assert = require('node:assert');
 
 const SECRET = 'test-session-secret-0123456789abcdef0123456789';
 process.env.SESSION_SECRET = SECRET; // must be set before server.js is required
+process.env.APP_PIN_UNTIL = require('../lib/shared-pin-window').israelDay(Date.now() + 7 * 864e5); // PR B: shared cookies need the dual window open
 
 const { createSessionToken } = require('../lib/session');
 const server = require('../server');

@@ -518,9 +518,12 @@ const SERVER_PATH = require.resolve('../server');
 
 function freshServer(env) {
   const saved = {};
-  for (const k of ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL']) {
+  // PR B: shared session cookies are honoured only inside the dual window,
+  // so every fresh server here opens it (7 days from today, Israel time).
+  const e = Object.assign({ APP_PIN_UNTIL: require('../lib/shared-pin-window').israelDay(Date.now() + 7 * 864e5) }, env);
+  for (const k of ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'APP_PIN_UNTIL']) {
     saved[k] = process.env[k];
-    if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k];
+    if (e[k] === undefined) delete process.env[k]; else process.env[k] = e[k];
   }
   const errors = [];
   const origErr = console.error;

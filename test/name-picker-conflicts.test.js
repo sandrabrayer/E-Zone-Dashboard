@@ -63,6 +63,7 @@ test('SESSION_USERS: lib/users.js === app.js SESSION_USERS === app.js ASSIGNEE_O
 
 const SECRET = 'test-session-secret-0123456789abcdef0123456789';
 process.env.SESSION_SECRET = SECRET; // before server.js is required
+process.env.APP_PIN_UNTIL = require('../lib/shared-pin-window').israelDay(Date.now() + 7 * 864e5); // PR B: shared cookies need the dual window open
 const { createSessionToken, readSessionUser, DEFAULT_TTL_SECONDS } = require('../lib/session');
 const server = require('../server');
 

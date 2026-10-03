@@ -535,7 +535,9 @@ test('D: a section with no colour keeps the neutral look; an unknown colour is r
 
 /* ======================= E. the service worker ======================= */
 
-test('E: CACHE_VERSION is v25', () => {
-  const m = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC);
-  assert.equal(m && m[1], 'v25');
+test('E: CACHE_VERSION is v25 or later', () => {
+  // v25 shipped with the section colours; later PRs bump it again
+  // (v26: personal-PIN login).
+  const m = /var CACHE_VERSION = 'v(\d+)';/.exec(SW_SRC);
+  assert.ok(m && Number(m[1]) >= 25, m && m[1]);
 });

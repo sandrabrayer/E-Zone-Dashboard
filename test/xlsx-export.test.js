@@ -24,6 +24,7 @@ const ExcelJS = require('exceljs');
 
 const SECRET = 'test-session-secret-xlsx-0123456789abcdef0123456789';
 process.env.SESSION_SECRET = SECRET;
+process.env.APP_PIN_UNTIL = require('../lib/shared-pin-window').israelDay(Date.now() + 7 * 864e5); // PR B: shared cookies need the dual window open
 delete process.env.PROXY_SECRET;
 
 const { createSessionToken } = require('../lib/session');

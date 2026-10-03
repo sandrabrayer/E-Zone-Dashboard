@@ -26,14 +26,37 @@
 </head>
 <body>
 
-  <!-- PIN GATE -->
+  <!-- LOGIN GATE (personal PINs, PR B). Step 1: tap your name (only users
+       with an ACTIVE personal-PIN record are listed). Step 2: the 6-digit
+       personal PIN. During the 7-day dual window a small link opens the old
+       shared-PIN field (#pin-input, still maxlength 4, APP_PIN). -->
   <div id="pin-screen" class="overlay hidden">
-    <div class="pin-box">
+    <div class="pin-box login-box">
       <h1>E-ZONE</h1>
-      <p>הזן קוד גישה</p>
-      <input type="password" id="pin-input" inputmode="numeric" maxlength="4" autocomplete="off" />
-      <button id="pin-submit" class="btn primary">כניסה</button>
-      <div id="pin-error" class="error-msg hidden">קוד שגוי</div>
+
+      <div id="login-step-name">
+        <p>מי נכנס/ת? הקישו על השם</p>
+        <div id="login-names" class="user-options login-names"></div>
+        <div id="login-names-empty" class="error-msg hidden">אין עדיין קודים אישיים פעילים — פנו לסנדרה</div>
+      </div>
+
+      <div id="login-step-pin" class="hidden">
+        <p><span id="login-chosen-name" class="login-chosen-name"></span><br />הזינו את הקוד האישי (6 ספרות)</p>
+        <input type="password" id="login-pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" aria-label="קוד אישי" />
+        <button id="login-pin-submit" class="btn primary">כניסה</button>
+        <div id="login-error" class="error-msg hidden" role="alert"></div>
+        <button id="login-back" type="button" class="link-btn login-link">זה לא אני — החלפת שם</button>
+      </div>
+
+      <div id="login-step-shared" class="hidden">
+        <p>הזן קוד גישה משותף</p>
+        <input type="password" id="pin-input" inputmode="numeric" maxlength="4" autocomplete="off" aria-label="קוד משותף" />
+        <button id="pin-submit" class="btn primary">כניסה</button>
+        <div id="pin-error" class="error-msg hidden" role="alert">קוד שגוי</div>
+        <button id="login-shared-back" type="button" class="link-btn login-link">חזרה לכניסה עם קוד אישי</button>
+      </div>
+
+      <button id="login-shared-link" type="button" class="link-btn login-link login-shared-link hidden">כניסה עם הקוד המשותף</button>
     </div>
   </div>
 
@@ -47,6 +70,37 @@
     </div>
   </div>
 
+  <!-- «קוד אישי חדש» — Sandra's personal session only (the server answers
+       403 to anyone else). Makes ONE record line to paste into
+       USER_PIN_HASHES in Railway; nothing is saved by the page. -->
+  <div id="pin-admin-screen" class="modal-backdrop hidden">
+    <div class="modal pin-admin" role="dialog" aria-labelledby="pin-admin-title">
+      <h3 id="pin-admin-title">קוד אישי חדש</h3>
+      <div class="form-row">
+        <label for="pin-admin-user">למי?</label>
+        <select id="pin-admin-user"></select>
+      </div>
+      <div class="form-row">
+        <label for="pin-admin-pin">קוד חדש (6 ספרות)</label>
+        <input type="password" id="pin-admin-pin" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" />
+      </div>
+      <div class="form-row">
+        <label for="pin-admin-pin2">שוב, לאימות</label>
+        <input type="password" id="pin-admin-pin2" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" />
+      </div>
+      <div id="pin-admin-error" class="error-msg hidden" role="alert"></div>
+      <div id="pin-admin-result" class="pin-admin-result hidden">
+        <textarea id="pin-admin-line" class="pin-admin-line" readonly dir="ltr" rows="4"></textarea>
+        <button id="pin-admin-copy" type="button" class="btn primary">העתקה</button>
+        <ol id="pin-admin-steps" class="pin-admin-steps"></ol>
+      </div>
+      <div class="form-actions">
+        <button id="pin-admin-close" type="button" class="btn ghost">סגירה</button>
+        <button id="pin-admin-make" type="button" class="btn primary">יצירת שורה</button>
+      </div>
+    </div>
+  </div>
+
   <!-- LOADING / ERROR / SUCCESS BANNERS -->
   <div id="error-banner" class="error-banner hidden"></div>
   <div id="loading-banner" class="loading-banner hidden">טוען נתונים...</div>
@@ -54,6 +108,10 @@
 
   <!-- APP -->
   <div id="app" class="hidden">
+    <!-- Shared-session banner (dual window): persistent while this session
+         was opened with the shared APP_PIN. Inside #app so the login screen
+         never shows it. -->
+    <div id="shared-banner" class="shared-banner hidden" role="status"></div>
     <header class="topbar">
       <div class="brand">
         <img class="brand-logo" src="/icons/icon-192.png" alt="" />
@@ -74,6 +132,7 @@
       </nav>
       <div class="user-mode">
         <span id="whoami" class="whoami hidden"></span>
+        <button id="pin-admin-open" class="btn ghost-sm hidden">קוד אישי חדש</button>
         <button id="logout" class="btn ghost-sm">יציאה</button>
       </div>
     </header>

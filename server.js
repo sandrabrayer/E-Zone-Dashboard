@@ -5,10 +5,12 @@ const https = require('https');
 const { checkPin } = require('./lib/pin');
 const { createSessionToken, verifySessionToken, readSession } = require('./lib/session');
 const {
-  SESSION_USERS, APPROVER_ID, validateUserPinHashes, hasApprover, resolvePrincipal, recordLine,
+  SESSION_USERS, APPROVER_ID, USER_MODEL, validateUserPinHashes, hasApprover, resolvePrincipal, recordLine,
+  loginUsers, modelById,
 } = require('./lib/users');
-const { hashPin, pinPolicyError } = require('./lib/pin-hash');
-const { WindowCounter } = require('./lib/rate-limit');
+const { hashPin, verifyPin, pinPolicyError } = require('./lib/pin-hash');
+const { WindowCounter, PinLockout } = require('./lib/rate-limit');
+const { sharedPinWindow, untilDisplay, windowLogLine } = require('./lib/shared-pin-window');
 const { buildXlsxReport, isoDayInIsrael, XLSX_MIME } = require('./lib/xlsx-report');
 const { buildRefundForecastSpec, isForecastResponse, contentDisposition } = require('./lib/refund-forecast-xlsx');
 const {
@@ -147,6 +149,20 @@ if (BOOTSTRAP_TOKEN) {
     (hasApprover(USER_REGISTRY) ? ' (An approver already exists, so /api/bootstrap-pin is disabled.)' : '') +
     (BOOTSTRAP_TOKEN.length < BOOTSTRAP_TOKEN_MIN_LEN ? ' (It is shorter than ' + BOOTSTRAP_TOKEN_MIN_LEN + ' characters, so /api/bootstrap-pin is disabled.)' : ''));
 }
+
+/* APP_PIN_UNTIL (Railway, 'YYYY-MM-DD', Israel time, inclusive) — the last
+ * day of the 7-day dual-accept window (plan §11.5 decision 5). While it is
+ * open the shared APP_PIN still logs in, as a staff-only `auth:'shared'`
+ * session with a banner. Unset, invalid, past, or more than 14 days ahead →
+ * the shared APP_PIN is REFUSED and every existing shared cookie gets 401
+ * (lib/shared-pin-window.js). Re-evaluated on every request, so the window
+ * closes at midnight even without a redeploy. The startup line names the
+ * state and the date only — never a PIN. */
+const APP_PIN_UNTIL = process.env.APP_PIN_UNTIL || '';
+function sharedWindowNow() {
+  return sharedPinWindow(APP_PIN_UNTIL);
+}
+console.log(windowLogLine(sharedWindowNow()));
 
 const SESSION_COOKIE = 'ezone_session';
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60; // 604800 seconds (7 days), matches the token TTL
@@ -584,12 +600,24 @@ function parseMeetingReportCookie(cookieHeader) {
  *                      personal cookie that was reset or revoked (→ 401)
  * `registry` defaults to the validated USER_PIN_HASHES. Today's shared
  * (APP_PIN) cookies never consult it, so they behave exactly as before. */
-function sessionAuthStatus(cookieHeader, secret, registry) {
+function sessionAuthStatus(cookieHeader, secret, registry, win) {
   if (typeof secret !== 'string' || secret.length === 0) return 'not_configured';
   const token = parseSessionCookie(cookieHeader);
   const session = token ? readSession(token, secret) : null;
-  if (session && resolvePrincipal(session, registry === undefined ? USER_REGISTRY : registry)) return 'ok';
+  if (session && currentPrincipal(session, registry, win)) return 'ok';
   return 'unauthorized';
+}
+
+/* resolvePrincipal plus the dual window (PR B): a SHARED (APP_PIN) session is
+ * only honoured while the window is open — once APP_PIN_UNTIL has passed (or
+ * is unset), every shared cookie is 401, so the shared PIN cannot outlive the
+ * window by up to 7 days through a cookie minted on its last day. Personal
+ * sessions are unaffected by the window. */
+function currentPrincipal(session, registry, win) {
+  const p = resolvePrincipal(session, registry === undefined ? USER_REGISTRY : registry);
+  if (!p) return null;
+  if (p.auth === 'shared' && !(win === undefined ? sharedWindowNow() : win).open) return null;
+  return p;
 }
 
 /* The principal behind the request's VERIFIED session cookie
@@ -598,7 +626,7 @@ function sessionAuthStatus(cookieHeader, secret, registry) {
 function sessionPrincipalFromRequest(req, registry) {
   if (!SESSION_SECRET) return null;
   const session = readSession(parseSessionCookie(req.headers.cookie), SESSION_SECRET);
-  return resolvePrincipal(session, registry === undefined ? USER_REGISTRY : registry);
+  return currentPrincipal(session, registry);
 }
 
 /* Normalize the optional user name a login may attach to its session
@@ -1042,18 +1070,38 @@ app.post('/api/outpatient-lead', requireSession, async (req, res) => {
   }
 });
 
-/* POST /api/verify-pin — the browser sends { pin } and we compare it, in
- * constant time, against APP_PIN (which never leaves the server). Rate-limited
- * to 10 attempts per 15 minutes per client IP to blunt brute-forcing of a
- * short numeric PIN. A correct PIN resets that IP's counter (200); a wrong one
- * counts against it (401); exceeding the window is 429 without even checking.
- * Fail-closed: an unset APP_PIN makes checkPin return false, so every attempt
- * is a 401. */
+/* ===== POST /api/verify-pin — the dashboard login (personal PINs PR B) =====
+ *
+ * Two request shapes:
+ *
+ *   { userId, pin }  — PERSONAL. `pin` is checked against that user's
+ *     USER_PIN_HASHES record (scrypt + PIN_PEPPER, constant-time, always one
+ *     derivation — an unknown or inactive user costs the same as a wrong PIN
+ *     and answers the same 401). Success mints the personal cookie
+ *     `<expiry>.<name>.<id>-<pinVersion>.<sig>`.
+ *   { pin [, user] } — SHARED APP_PIN, ONLY while the dual window is open
+ *     (APP_PIN_UNTIL). Success mints the shared cookie (staff only, exactly
+ *     the pre-PR-B format; `user` from the fixed SESSION_USERS list or none).
+ *     With the window closed → 403 shared_pin_closed and the PIN is NOT
+ *     checked (no oracle for a retired secret).
+ *
+ * Limits (lib/rate-limit.js PinLockout, all checked BEFORE any PIN work):
+ *   5 failures per user → that user is locked 15 min (429 'locked');
+ *   10 failures per IP per 15 min and 30 globally per 15 min (429
+ *   'rate_limited'). The shared login shares the IP + global counters, so
+ *   neither path can be used to dodge the other's limits. The IP is req.ip
+ *   (trust proxy = Railway's one hop), never the raw X-Forwarded-For.
+ *
+ * Responses: 200 {ok:true}; 401 invalid_pin; 429 locked|rate_limited (with
+ * Retry-After); 403 shared_pin_closed; 503 not_configured (no PIN_PEPPER for
+ * a personal login). The PIN is never logged, stored or echoed: the request
+ * logger prints the path only and nothing here logs a body. */
 const PIN_RATE_LIMIT = { max: 10, windowMs: 15 * 60 * 1000 };
-/* Per-IP failure counters. WindowCounter keeps the exact old semantics and
- * also sweeps expired entries + caps the key count, so the maps can no longer
- * grow without bound. */
-const pinAttempts = new WindowCounter(PIN_RATE_LIMIT);
+const pinLockout = new PinLockout();
+/* The per-IP counter (10 / 15 min) — the same object the shared and personal
+ * logins count against. Kept under its old name for the existing tests. */
+const pinAttempts = pinLockout.ip;
+const PERSONAL_ID_SHAPE = /^[a-z][a-z0-9]{0,31}$/;
 
 /* The address the PIN limits count against: req.ip, which — with
  * 'trust proxy' = 1 hop — is the address Railway's edge appended, NOT the
@@ -1070,13 +1118,53 @@ function sendRateLimited(res, limit) {
   return true;
 }
 
-app.post('/api/verify-pin', (req, res) => {
-  const ip = pinClientIp(req);
-  if (sendRateLimited(res, pinAttempts.check(ip))) return undefined;
+/* 429 for a PinLockout refusal: 'locked' when the USER is locked (the
+ * «נעול ל־15 דקות» message), 'rate_limited' for the IP / global brakes. */
+function sendLockout(res, verdict) {
+  res.set('Retry-After', String(verdict.retryAfter));
+  return res.status(429).json({
+    ok: false, error: verdict.scope === 'user' ? 'locked' : 'rate_limited', retryAfter: verdict.retryAfter,
+  });
+}
 
-  const pin = req.body && req.body.pin;
-  if (checkPin(pin, APP_PIN)) {
-    pinAttempts.reset(ip); // reset the counter on success
+async function personalLogin(req, res, b, ip) {
+  // An id of the wrong shape is counted under one bucket, so junk ids can
+  // neither fill the per-user map nor dodge the per-user lock.
+  const rawId = typeof b.userId === 'string' ? b.userId : '';
+  const key = PERSONAL_ID_SHAPE.test(rawId) ? rawId : '?';
+  const verdict = pinLockout.check(key, ip);
+  if (!verdict.ok) return sendLockout(res, verdict);
+  if (!PIN_PEPPER) return res.status(503).json({ ok: false, error: 'not_configured' });
+
+  // Own properties only: an id such as 'constructor' must never reach the
+  // object prototype.
+  const rec = Object.prototype.hasOwnProperty.call(USER_REGISTRY.byId, key) ? USER_REGISTRY.byId[key] : null;
+  const loginable = !!(rec && rec.status === 'active' && modelById(key) && modelById(key).status === 'active');
+  const pin = typeof b.pin === 'string' ? b.pin : '';
+  // Always one scrypt derivation (verifyPin is constant-work), even for an
+  // unknown / inactive user, so timing does not reveal who has a record.
+  const match = await verifyPin(pin, loginable ? rec.hash : null, PIN_PEPPER);
+  if (!(match && loginable)) {
+    pinLockout.recordFailure(key, ip);
+    const after = pinLockout.check(key, ip);
+    if (!after.ok && after.scope === 'user') return sendLockout(res, after);
+    return res.status(401).json({ ok: false, error: 'invalid_pin' });
+  }
+  pinLockout.recordSuccess(key, ip);
+  if (SESSION_SECRET) {
+    const token = createSessionToken(SESSION_SECRET, undefined, undefined, rec.name, { id: rec.id, pinVersion: rec.pinVersion });
+    res.set('Set-Cookie', buildSessionCookie(token, requestIsHttps(req)));
+  }
+  return res.status(200).json({ ok: true });
+}
+
+function sharedLogin(req, res, b, ip) {
+  const verdict = pinLockout.check(null, ip);
+  if (!verdict.ok) return sendLockout(res, verdict);
+  if (!sharedWindowNow().open) return res.status(403).json({ ok: false, error: 'shared_pin_closed' });
+
+  if (checkPin(b.pin, APP_PIN)) {
+    pinLockout.recordSuccess(null, ip); // reset this IP's counter on success
     /* Mint the session cookie so subsequent data requests are authorized. Only
      * possible when SESSION_SECRET is configured; if it isn't, the PIN is still
      * accepted (200) but no usable cookie is issued, so the data routes stay
@@ -1086,16 +1174,40 @@ app.post('/api/verify-pin', (req, res) => {
       // attach — accepted ONLY from the fixed SESSION_USERS list (the name
       // picker's buttons); anything else falls back to the legacy user-less
       // token. It rides INSIDE the signed token so it cannot be changed
-      // without breaking the HMAC.
-      const user = validateSessionUser(req.body && req.body.user);
+      // without breaking the HMAC. A shared session is staff only.
+      const user = validateSessionUser(b.user);
       const token = createSessionToken(SESSION_SECRET, undefined, undefined, user);
       res.set('Set-Cookie', buildSessionCookie(token, requestIsHttps(req)));
     }
     return res.status(200).json({ ok: true });
   }
 
-  pinAttempts.fail(ip);
+  pinLockout.recordFailure(null, ip);
   return res.status(401).json({ ok: false, error: 'invalid_pin' });
+}
+
+app.post('/api/verify-pin', (req, res) => {
+  const b = req.body && typeof req.body === 'object' ? req.body : {};
+  const ip = pinClientIp(req);
+  if (Object.prototype.hasOwnProperty.call(b, 'userId')) {
+    return personalLogin(req, res, b, ip).catch(() => {
+      if (!res.headersSent) res.status(500).json({ ok: false, error: 'login_failed' });
+    });
+  }
+  return sharedLogin(req, res, b, ip);
+});
+
+/* GET /api/login-users — the login screen's step 1. Open (it runs before
+ * any session exists). Lists ONLY users with an ACTIVE USER_PIN_HASHES record
+ * ({ id, name }, nothing else), plus whether the shared-PIN link may be shown
+ * and until when. Ortal (inactive) is never listed. */
+app.get('/api/login-users', (_req, res) => {
+  const w = sharedWindowNow();
+  res.status(200).json({
+    ok: true,
+    users: loginUsers(USER_REGISTRY),
+    shared: { open: w.open, until: w.open ? w.until : '', untilDisplay: w.open ? untilDisplay(w.until) : '' },
+  });
 });
 
 /* ===== POST /api/bootstrap-pin — one-time setup of Sandra's own record =====
@@ -1163,12 +1275,106 @@ app.post('/api/bootstrap-pin', async (req, res) => {
   }
 });
 
-/* GET /api/me — the display name embedded in this session's signed cookie
- * (who/when stamping). Session-gated like every data route; a legacy
- * user-less cookie answers { user: '' } and everything keeps working. The
- * frontend reads this in the follow-up PR (name picker) — no UI uses it yet. */
+/* ===== «קוד אישי חדש» — Sandra-only record maker (PR B) =====
+ *
+ * Sandra has no local Node, so every personal PIN after her own is hashed
+ * HERE and she pastes the returned line into USER_PIN_HASHES (Railway).
+ *
+ *   GET  /api/pin-admin/users         → the model users she may create or
+ *        reset a code for: { id, name, hasRecord, status } (no hash, no role).
+ *   POST /api/pin-admin/record { userId, pin, pin2 }
+ *        → 200 { ok:true, record:'<one JSON line>' } — ONLY the line.
+ *          pinVersion = current + 1 for a reset (an existing record, any
+ *          status — a reset re-activates), 1 for a new user. A reset keeps
+ *          the existing record's (possibly narrowed) roles; a new record
+ *          gets the model roles.
+ *        400 weak_pin {reason} | pin_mismatch | unknown_user.
+ *
+ * Both need a CURRENT personal session of the approver (Sandra: id 'sandra'
+ * with the approver role) — a shared session or anyone else → 403
+ * (requireSession → 401 first when there is no valid session at all).
+ * POST is rate-limited (10 per 15 min per IP and globally), counted on every
+ * call. The PIN is never stored, logged or echoed: the request logger prints
+ * the path only, the response carries the scrypt hash only. Ortal (inactive
+ * until Phase 4) is not offered. Nothing here changes USER_PIN_HASHES — a
+ * line takes effect only when Sandra pastes it and Railway redeploys. */
+const PIN_ADMIN_LIMIT = { max: 10, windowMs: 15 * 60 * 1000 };
+const pinAdminAttempts = new WindowCounter(PIN_ADMIN_LIMIT);
+const pinAdminGlobal = new WindowCounter(PIN_ADMIN_LIMIT);
+
+function isApproverPrincipal(p) {
+  return !!(p && p.auth === 'personal' && p.id === APPROVER_ID && p.roles.indexOf('approver') >= 0);
+}
+
+function requireApprover(req, res, next) {
+  if (!isApproverPrincipal(sessionPrincipalFromRequest(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' });
+  }
+  return next();
+}
+
+/* The model users the page offers. Pure over the registry. */
+function pinAdminUsers(registry) {
+  const byId = registry && registry.byId ? registry.byId : {};
+  return USER_MODEL.filter((m) => m.status === 'active').map((m) => ({
+    id: m.id,
+    name: m.name,
+    hasRecord: !!byId[m.id],
+    status: byId[m.id] ? byId[m.id].status : '',
+  }));
+}
+
+app.get('/api/pin-admin/users', requireSession, requireApprover, (_req, res) => {
+  res.status(200).json({ ok: true, users: pinAdminUsers(USER_REGISTRY) });
+});
+
+app.post('/api/pin-admin/record', requireSession, requireApprover, async (req, res) => {
+  const ip = pinClientIp(req);
+  if (sendRateLimited(res, pinAdminGlobal.check('*'))) return undefined;
+  if (sendRateLimited(res, pinAdminAttempts.check(ip))) return undefined;
+  pinAdminGlobal.fail('*');
+  pinAdminAttempts.fail(ip);
+
+  if (!PIN_PEPPER) return res.status(503).json({ ok: false, error: 'not_configured' });
+  const b = req.body && typeof req.body === 'object' ? req.body : {};
+  const userId = typeof b.userId === 'string' ? b.userId : '';
+  const model = modelById(userId);
+  if (!model || model.status !== 'active') return res.status(400).json({ ok: false, error: 'unknown_user' });
+  const pin = typeof b.pin === 'string' ? b.pin : '';
+  const pin2 = typeof b.pin2 === 'string' ? b.pin2 : '';
+  // Constant-time compare of the two entries (two empty entries fall through
+  // to the weak-PIN check below, which names the real problem).
+  if (!(pin === '' && pin2 === '') && !checkPin(pin, pin2)) return res.status(400).json({ ok: false, error: 'pin_mismatch' });
+  const weak = pinPolicyError(pin);
+  if (weak) return res.status(400).json({ ok: false, error: 'weak_pin', reason: weak });
+
+  const existing = USER_REGISTRY.byId[model.id];
+  const pinVersion = existing ? existing.pinVersion + 1 : 1;
+  try {
+    const hash = await hashPin(pin, PIN_PEPPER);
+    return res.status(200).json({ ok: true, record: recordLine(model.id, hash, pinVersion, existing ? existing.roles : undefined) });
+  } catch (_) {
+    return res.status(500).json({ ok: false, error: 'hash_failed' });
+  }
+});
+
+/* GET /api/me — the session as the UI needs it: the display name (who/when
+ * stamping), the auth kind, whether this is Sandra's approver session, and —
+ * for a shared session — the last day of the dual window (DD/MM/YYYY) for
+ * the banner. Session-gated; a legacy user-less cookie answers user ''. */
 app.get('/api/me', requireSession, (req, res) => {
-  res.status(200).json({ ok: true, user: sessionUserFromRequest(req) });
+  const p = sessionPrincipalFromRequest(req);
+  const w = sharedWindowNow();
+  res.status(200).json({
+    ok: true,
+    user: p ? p.user : '',
+    // 'shared' | 'personal' — the shared banner and the approver-only
+    // «קוד אישי חדש» button key on these. Display only: every decision is
+    // re-made server-side from the cookie.
+    auth: p ? p.auth : '',
+    approver: isApproverPrincipal(p),
+    sharedUntil: p && p.auth === 'shared' ? untilDisplay(w.until) : '',
+  });
 });
 
 /* POST /api/logout — clear the session cookie (expire it immediately). Open
@@ -1432,7 +1638,16 @@ module.exports = {
   trustProxyHops,
   pinClientIp,
   pinAttempts,
+  pinLockout,
   mrPinAttempts,
+  // Personal PINs — login (see test/personal-pins-login.test.js).
+  APP_PIN_UNTIL,
+  sharedWindowNow,
+  currentPrincipal,
+  isApproverPrincipal,
+  pinAdminUsers,
+  pinAdminAttempts,
+  pinAdminGlobal,
   bootstrapState,
   sessionPrincipalFromRequest,
   NO_PRINCIPAL,

@@ -506,6 +506,28 @@ Detail: `CHANGELOG-personal-pins-foundation.md`; decisions: plan §11.5.
 - **Append-only columns:** `AuditLog.actor`, `BillingOverrides.updatedBy`.
   Every delete / void / lead move now writes an AuditLog row with its actor.
 
+## Dashboard: personal PINs — the live login (October 2, 2026 — PR B)
+
+Detail and Sandra's setup steps: `CHANGELOG-personal-pins-login.md`.
+**Set `APP_PIN_UNTIL` in Railway before merging.**
+
+- **Login:** tap your name (only users with an **active** `USER_PIN_HASHES`
+  record), then a personal **6-digit** PIN. Per-user lock: 5 failures → 15 min;
+  plus 10 per IP and 30 in total per 15 min (`PinLockout`, `req.ip`).
+- **Dual window:** new Railway variable **`APP_PIN_UNTIL`** (`YYYY-MM-DD`,
+  Israel time, inclusive, at most 14 days ahead). While it is open, the shared
+  `APP_PIN` still works through a small link, as a **staff-only** session with an amber
+  banner. Unset or past → `APP_PIN` is refused **and existing shared cookies
+  get 401**.
+- **«קוד אישי חדש»** (Sandra's personal session only; 403 otherwise) makes the
+  record line to paste into `USER_PIN_HASHES`. Reset = `pinVersion + 1`;
+  revoke = `status: "revoked"`. Either logs the person out after the deploy.
+- `Code.gs` unchanged; un-void still = Sandra (now from her personal session).
+  Delete/approver roles are **not enforced yet** (PR C, with `APP_PIN` removal).
+- SW `CACHE_VERSION` v25 → v26.
+- **⚠ Weekly healthcheck** logs in with `APP_PIN`; it will fail after
+  `APP_PIN_UNTIL` until PR C gives it its own credential.
+
 ## Dashboard: refund payout forecast on גבייה (October 1, 2026)
 
 Detail: `CHANGELOG-refund-payout-forecast.md`. **Nothing to set.**
@@ -617,10 +639,10 @@ check against pre-June-17 branches.
 - Claude Code opens PRs against the repo DEFAULT branch — always verify PR base
   = the deployed branch. PRs #33/#55 were closed for this; #56 was correct.
 - Railway variable changes apply only to deployments started after saving.
-- PIN inputs have maxlength (Outpatient 6, Dashboard **4** — `public/index.html`
-  `#pin-input`; corrected Oct 2, 2026, it was wrongly listed as 6) — keep APP_PIN
-  within. The meeting-report page (`/meeting-report`) PIN input is 6. Personal
-  PINs (plan §11.5) are 6 digits; PR B widens the Dashboard input.
+- PIN inputs have maxlength (Outpatient 6, Dashboard: personal PIN
+  `#login-pin-input` **6** since PR B; the shared `#pin-input` stays **4** for
+  the dual window — keep APP_PIN within). The meeting-report page
+  (`/meeting-report`) PIN input is 6.
 
 ## Next tracks (in priority order)
 
