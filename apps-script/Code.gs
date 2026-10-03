@@ -878,12 +878,16 @@ const PROXY_USER_FIELD       = 'proxyUser';
 const PROXY_ROLES_FIELD      = 'proxyRoles';
 const PROXY_AUTH_FIELD       = 'proxyAuth';
 const PROXY_USER_ID_FIELD    = 'proxyUserId';
+/* Restricted view (2026-10-03): the session's view capabilities, e.g.
+ * ['finance']. Same rules as the three above: POST body only, believed only
+ * with a valid PROXY_SECRET, stripped by proxyGate_ before handle_ runs. */
+const PROXY_CAPS_FIELD       = 'proxyCaps';
 /* Where proxyGate_ puts the acting user for handle_. ALWAYS overwritten by
  * proxyGate_ (a client-sent value never survives) and dropped from the
  * querystring by collectParams_. Read it through actingUser_ only. */
 const ACTOR_FIELD            = '__actor';
 const PROXY_ONLY_FIELDS = [PROXY_SECRET_FIELD, PROXY_USER_FIELD, PROXY_ROLES_FIELD,
-  PROXY_AUTH_FIELD, PROXY_USER_ID_FIELD, ACTOR_FIELD];
+  PROXY_AUTH_FIELD, PROXY_USER_ID_FIELD, PROXY_CAPS_FIELD, ACTOR_FIELD];
 
 /* ===== Roles (docs/billing-control-plan.md §11.5 — PR A: DEFINED, NOT ENFORCED) =====
  *
@@ -913,6 +917,29 @@ const DELETE_ACTIONS = [
   'removeLead', 'deletePatientRow', 'deleteBillingOverride', 'deleteMeetingReport',
   'voidPayment', 'cancelCredit',
 ];
+
+/* ===== Restricted view — the `finance` capability (Sandra, 2026-10-03) =====
+ *
+ * Mirrors lib/finance-scope.js FINANCE_ACTIONS (a guard test pins the two
+ * lists equal) and lib/users.js FINANCE_USER_IDS. Shiran and Yael see every
+ * tab except the four money tabs; server.js refuses them first (403), and
+ * handle_ refuses again here: a VERIFIED proxy call whose actor lacks
+ * `finance` gets {ok:false, error:'forbidden'} and nothing is read or
+ * written. The capability is RE-DERIVED here from proxyAuth + proxyUserId
+ * (shared session → finance during the dual window; personal → by id) and
+ * intersected with the server's proxyCaps when present — so neither side
+ * alone can widen it. A call without a valid PROXY_SECRET has no actor and
+ * is not refused here: enforce mode already refuses it at the gate, and the
+ * accounting feed (own secret) keeps working. */
+const FINANCE_ACTIONS = [
+  'getPayments', 'savePayment', 'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
+  'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'debtAging',
+  'accountingPayments', 'accountingCredits',
+];
+const FINANCE_USER_IDS = ['vered', 'sandra'];
+/* getData keys only billing reads — omitted for a restricted actor. */
+const GETDATA_FINANCE_KEYS = ['billingOverrides'];
+const FINANCE_FORBIDDEN_MESSAGE = 'אין הרשאה לצפות בנתוני גבייה';
 
 /* Approver-only operations (Sandra). unvoidPayment exists today (and is
  * already refused for anyone but Sandra inside upsertPayment_); the other
@@ -1011,6 +1038,12 @@ function proxyGate_(params, method) {
   const proxyRoles = p[PROXY_ROLES_FIELD];
   const proxyAuth = p[PROXY_AUTH_FIELD];
   const proxyUserId = p[PROXY_USER_ID_FIELD];
+  const hasProxyCaps = Object.prototype.hasOwnProperty.call(p, PROXY_CAPS_FIELD);
+  // A verified proxy body WITHOUT proxyAuth predates the session principal
+  // (personal PINs PR A): a legacy full-view caller. The current server
+  // always sends proxyAuth ('none' for the meeting-report micro-app).
+  const legacyProxy = !Object.prototype.hasOwnProperty.call(p, PROXY_AUTH_FIELD);
+  const proxyCaps = p[PROXY_CAPS_FIELD];
   PROXY_ONLY_FIELDS.forEach(function (k) { delete p[k]; });
 
   const action = String(p.action == null ? '' : p.action);
@@ -1028,7 +1061,8 @@ function proxyGate_(params, method) {
       securityLogOnce_(action, method, true, 'user_mismatch');
     }
     p.user = trusted;
-    p[ACTOR_FIELD] = proxyActor_(trusted, proxyUserId, proxyAuth, proxyRoles);
+    p[ACTOR_FIELD] = proxyActor_(trusted, proxyUserId, proxyAuth, proxyRoles,
+      legacyProxy ? ['finance'] : (hasProxyCaps ? proxyCaps : undefined), legacyProxy);
     return { ok: true, params: p };
   }
 
@@ -1198,7 +1232,12 @@ function securityCallersReportNow() {
 function handle_(params) {
   try {
     const action = params.action;
-    if (action === 'getData') return jsonOut_(getData_());
+    // Restricted view: refused BEFORE any read or write (server.js already
+    // answered 403; this is the second lock).
+    if (financeRefused_(params, action)) {
+      return jsonOut_({ ok: false, error: 'forbidden', message: FINANCE_FORBIDDEN_MESSAGE });
+    }
+    if (action === 'getData') return jsonOut_(getDataForActor_(params));
     if (action === 'getAdmittedRoster') {
       if (!admittedRosterAuthOk_(params)) {
         return jsonOut_({ ok: false, error: 'unauthorized' });
@@ -1387,31 +1426,63 @@ function cleanRoles_(raw) {
 /* The actor of a VERIFIED proxy call (valid PROXY_SECRET). Defense in depth
  * over the server's own rules: a shared session is capped to staff, and
  * approver survives only on Sandra's personal session. Pure. */
-function proxyActor_(user, userId, auth, roles) {
+function proxyActor_(user, userId, auth, roles, caps, legacy) {
   const a = auth === 'personal' || auth === 'shared' ? auth : 'none';
   const id = a === 'personal' && /^[a-z][a-z0-9]{0,31}$/.test(String(userId || '')) ? String(userId) : '';
   let r = cleanRoles_(roles);
   if (a === 'shared') r = r.filter(function (x) { return SHARED_SESSION_ROLES.indexOf(x) >= 0; });
   if (a === 'none') r = [];
   if (id !== APPROVER_USER_ID) r = r.filter(function (x) { return x !== 'approver'; });
-  return { verified: true, user: String(user || ''), id: id, auth: a, roles: r };
+  const c = legacy === true ? ['finance'] : actorCaps_(a, id, caps);
+  return { verified: true, user: String(user || ''), id: id, auth: a, roles: r, caps: c };
+}
+
+/* The view capabilities of a verified actor: derived HERE from auth + id
+ * (shared → finance; personal → finance only for FINANCE_USER_IDS; none →
+ * nothing), then intersected with the server's proxyCaps when it sent them
+ * (an older server that sends none is judged by the derivation alone). Pure. */
+function actorCaps_(auth, id, sent) {
+  const derived = auth === 'shared' || (auth === 'personal' && FINANCE_USER_IDS.indexOf(id) >= 0) ? ['finance'] : [];
+  if (sent === undefined) return derived;
+  let list = sent;
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list); } catch (_) { list = []; }
+  }
+  if (!Array.isArray(list)) list = [];
+  return derived.filter(function (c) { return list.indexOf(c) >= 0; });
+}
+
+/* Whether the VERIFIED acting user holds view capability `cap`. Always false
+ * for a non-proxy caller. */
+function hasCapability_(params, cap) {
+  const a = actingUser_(params);
+  return a.verified && a.caps.indexOf(String(cap)) >= 0;
+}
+
+/* true when handle_ must refuse `action`: a billing action from a verified
+ * proxy call whose actor lacks `finance` (restricted view). */
+function financeRefused_(params, action) {
+  if (FINANCE_ACTIONS.indexOf(String(action)) < 0) return false;
+  const a = actingUser_(params);
+  return a.verified && a.caps.indexOf('finance') < 0;
 }
 
 /* The actor of any call WITHOUT a valid PROXY_SECRET: the legacy body user is
  * kept for stamping (log mode, unchanged), but it holds NO role. Pure. */
 function unverifiedActor_(params) {
-  return { verified: false, user: requestUser_(params), id: '', auth: 'none', roles: [] };
+  return { verified: false, user: requestUser_(params), id: '', auth: 'none', roles: [], caps: [] };
 }
 
-/* The acting user for a handler: { verified, user, id, auth, roles }. Only
+/* The acting user for a handler: { verified, user, id, auth, roles, caps }. Only
  * proxyGate_ ever sets it; a params object that did not pass the gate
  * (an editor-run job, a direct call) has no verified actor and no role. */
 function actingUser_(params) {
   const a = params ? params[ACTOR_FIELD] : null;
   if (a && typeof a === 'object' && a.verified === true && Array.isArray(a.roles)) {
-    return { verified: true, user: String(a.user || ''), id: String(a.id || ''), auth: String(a.auth || 'none'), roles: a.roles.slice() };
+    return { verified: true, user: String(a.user || ''), id: String(a.id || ''), auth: String(a.auth || 'none'), roles: a.roles.slice(),
+      caps: Array.isArray(a.caps) ? a.caps.slice() : [] };
   }
-  return { verified: false, user: requestUser_(params), id: '', auth: 'none', roles: [] };
+  return { verified: false, user: requestUser_(params), id: '', auth: 'none', roles: [], caps: [] };
 }
 
 /* Whether the acting user holds `role`. Always false for a non-proxy caller;
@@ -1754,6 +1825,18 @@ function setLeadDateColsText_(sh, columns, rowNumber) {
 }
 
 /* ===== Read ===== */
+
+/* getData for the acting user: every key for a full-view session (the
+ * append-only contract); a verified actor without `finance` gets the same
+ * object minus GETDATA_FINANCE_KEYS (no tab it can see reads them). */
+function getDataForActor_(params) {
+  const out = getData_();
+  const a = actingUser_(params);
+  if (a.verified && a.caps.indexOf('finance') < 0) {
+    GETDATA_FINANCE_KEYS.forEach(function (k) { delete out[k]; });
+  }
+  return out;
+}
 
 function getData_() {
   const leadsSh      = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
