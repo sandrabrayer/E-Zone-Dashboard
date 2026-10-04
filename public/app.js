@@ -316,6 +316,11 @@ const state = {
    * refuses the data itself. */
   finance: null,
   payments: [],
+  /* Phase 3 PR 2: one row per money received (getPayments `receipts`, each
+   * with the cycleId it pays for) and the Funders tab (getPayments
+   * `funders`). Finance sessions only — a restricted session never loads them. */
+  receipts: [],
+  funders: [],
   /* Credits / refunds ledger rows (Credits sheet), loaded by getCredits in
    * loadAll. Empty on a fresh install or an older deploy. */
   credits: [],
@@ -1402,6 +1407,8 @@ function applyView(finance) {
     state.payments = [];
     state.credits = [];
     state.billingOverrides = [];
+    state.receipts = [];
+    state.funders = [];
   }
   const want = screenFromHash(location.hash) || state.currentScreen;
   const target = resolveScreen(want, full);
@@ -1631,14 +1638,23 @@ async function loadAll() {
     if (!financeView()) {
       state.payments = [];
       state.credits = [];
+      state.receipts = [];
+      state.funders = [];
     } else try {
       const pr = await apiGet({ action: 'getPayments' });
       const raw = Array.isArray(pr && pr.payments) ? pr.payments : [];
       state.payments = raw.map(normalizePayment).filter(p => p.id);
-      console.log('[E-ZONE] getPayments →', state.payments.length, 'records');
+      /* The cycles above already carry the money their receipts add up to
+       * (the server derives it); the receipts themselves are listed under
+       * each cycle. An older backend sends neither key — empty lists. */
+      state.receipts = (Array.isArray(pr && pr.receipts) ? pr.receipts : []).map(normalizeReceipt).filter(r => r.id);
+      state.funders = (Array.isArray(pr && pr.funders) ? pr.funders : []).map(normalizeFunderRow).filter(f => f.patientId);
+      console.log('[E-ZONE] getPayments →', state.payments.length, 'records,', state.receipts.length, 'receipts');
     } catch (err) {
       console.warn('[E-ZONE] getPayments failed, assuming empty:', err.message);
       state.payments = [];
+      state.receipts = [];
+      state.funders = [];
     }
 
     // Credits ledger — own sheet, own action (same fail-soft rule as payments:
@@ -3717,13 +3733,14 @@ function renewalAmount(patient, dueDateISO) {
  * confirm button inside #modal-root, which no list re-render touches, so the
  * spinner now stays visible for the whole round-trip (renewPatient returns
  * its settle promise; the dialog stays open + frozen until it resolves). */
+/* Phase 3 PR 2: a renewal is money received like any other, so «חידוש
+ * תשלום» opens the strict «דווח תשלום» form for the renewal cycle (prefilled
+ * with its amount and window) instead of marking the cycle paid. The report
+ * creates the receipt; the derived cycle status takes the patient off the
+ * alert. renewPatient (below) is no longer reachable from the UI. */
 function confirmRenewPatient(patient, dueDateISO) {
   if (state.mode !== 'edit') return;
-  const amount = renewalAmount(patient, dueDateISO);
-  showConfirm({
-    text: `לחדש תשלום עבור ${patient.name || ''} — ${amount.toLocaleString('he-IL')} ₪ לתאריך ${formatDate(dueDateISO)}?`,
-    onConfirm: () => renewPatient(patient, dueDateISO),
-  });
+  openPaymentReportModal(patient, paymentForPatientOnDate(patient, dueDateISO), dueDateISO);
 }
 
 function renewPatient(patient, dueDateISO) {
@@ -5718,7 +5735,8 @@ function renderPatients() {
       p.status === 'released' ? 'released' : 'wait';
 
     const row = document.createElement('div');
-    row.className = 'patient-row' + (isReleased ? ' released' : '');
+    const funderCell = patientFunderCellHtml(p);
+    row.className = 'patient-row' + (isReleased ? ' released' : '') + (funderCell ? ' has-funder' : '');
     row.innerHTML = `
       <div>
         <span class="p-label">מטופל</span>
@@ -5744,6 +5762,7 @@ function renderPatients() {
         <span class="p-label">סטטוס</span>
         <span class="badge ${badgeCls}">${statusInfo.label}${isReleased && p.exitDate ? ' · ' + formatDate(p.exitDate) : ''}</span>
       </div>
+      ${funderCell}
       <div class="row-actions edit-only">
         ${isReleased
           ? `<button class="btn small primary" data-action="restore">שחזר</button>`
@@ -5754,6 +5773,9 @@ function renderPatients() {
     `;
 
     row.querySelector('[data-action="edit"]').onclick = () => openEditPatientModal(p);
+    // The funder editor (finance sessions, edit mode — patientFunderCellHtml).
+    const funderBtn = row.querySelector('.funder-edit-btn');
+    if (funderBtn) funderBtn.onclick = () => openFunderModal(p);
     const releaseBtn = row.querySelector('[data-action="release"]');
     if (releaseBtn) releaseBtn.onclick = () => dischargePatient(p);
     /* Released rows (visible only under הצג משוחררים) restore through the SAME
@@ -9068,9 +9090,9 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
    *     rewritten (it may be money somebody really took), it is FLAGGED so
    *     Sandra can correct it. */
   /* A VOID row is still SHOWN — never deleted, never hidden — and says what
-   * it is. Its select is disabled too: the way back from a void is the
+   * it is. It offers no «דווח תשלום»: the way back from a void is the
    * שיוך תשלומים screen, where the decision was taken and where the audit
-   * trail lives, not a dropdown on a row. */
+   * trail lives. */
   const isVoid = isVoidPayment(payment);
   const preRecords = isPreRecordsCycle(dueDateISO);
   const outsideStay = !!(patient && isoDate(patient.date))
@@ -9078,14 +9100,14 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   row.className = 'billing-row' + (isCarryForward ? ' carry' : '') + (isOverdue ? ' overdue' : '');
   row.dataset.pid = payment.id;
 
-  /* A void row's own status is not in PAYMENT_STATUS (voiding is not a
-   * dropdown choice), so it is pinned on as a disabled option rather than
-   * silently rendering as whichever option happens to be first. */
-  const statusSelect = (isVoid
-    ? [{ id: PAYMENT_VOID_STATUS, label: PAYMENT_VOID_LABEL }].concat(PAYMENT_STATUS)
-    : PAYMENT_STATUS).map(s =>
-    `<option value="${s.id}" ${payment.status === s.id ? 'selected' : ''}>${s.label}</option>`
-  ).join('');
+  /* Phase 3 PR 2: the row no longer edits money. Its state (שולם / שולם
+   * חלקית / לא שולם, or מבוטל) is DERIVED by the server from the receipts
+   * that pay it — one Payments row per money received — and the only way to
+   * record money is the strict «דווח תשלום» form. A void row offers no form,
+   * and neither does a cycle already paid in full (a second report there is
+   * almost always the same money twice; voiding a receipt reopens it). */
+  const stateLabel = isVoid ? PAYMENT_VOID_LABEL : paymentStatusLabel(payment.status);
+  const canReport = state.mode === 'edit' && !isVoid && payment.status !== 'paid' && financeView();
 
   /* Per-month amount override (this row's OWN due-date month — for a
    * carry-forward row that is the record's original month, so an edit there
@@ -9191,95 +9213,25 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
     </div>
     <div>
       <span class="p-label">סטטוס</span>
-      <select class="billing-status" ${state.mode === 'edit' && !isVoid ? '' : 'disabled'}>${statusSelect}</select>
+      <span class="badge pay-state pay-state-${escapeHtml(isVoid ? PAYMENT_VOID_STATUS : payment.status)}">${escapeHtml(stateLabel)}</span>
     </div>
-    <div class="billing-paid-wrap ${payment.status === 'partial' ? '' : 'hidden'}">
-      <span class="p-label">שולם בפועל</span>
-      <input class="billing-paid" type="number" min="0" step="50"
-             value="${payment.amountPaid || 0}" ${state.mode === 'edit' ? '' : 'disabled'} />
+    <div>
+      <span class="p-label">שולם</span>
+      <span class="p-val billing-paid-total">₪ ${(payment.amountPaid || 0).toLocaleString('he-IL')}</span>
     </div>
     <div>
       <span class="p-label">יתרה</span>
       <span class="p-val billing-balance">₪ ${(payment.balance || 0).toLocaleString('he-IL')}</span>
     </div>
+    <div class="bill-report-cell">
+      ${canReport ? '<button type="button" class="btn small primary bill-report-btn">דווח תשלום</button>' : ''}
+    </div>
+    ${receiptsListHtml(payment.id)}
   `;
 
-  const statusSel = row.querySelector('.billing-status');
-  const paidWrap  = row.querySelector('.billing-paid-wrap');
-  const paidInput = row.querySelector('.billing-paid');
-  const balanceEl = row.querySelector('.billing-balance');
-
-  const recompute = (newStatus, newAmountPaid) => {
-    let amountPaid = Number(newAmountPaid);
-    if (!Number.isFinite(amountPaid) || amountPaid < 0) amountPaid = 0;
-    if (newStatus === 'paid')   amountPaid = amount;
-    if (newStatus === 'unpaid') amountPaid = 0;
-    const balance = Math.max(0, amount - amountPaid);
-
-    balanceEl.textContent = '₪ ' + balance.toLocaleString('he-IL');
-    paidWrap.classList.toggle('hidden', newStatus !== 'partial');
-    paidInput.value = amountPaid;
-
-    return {
-      ...payment,
-      patientId:   payment.patientId   || patientKey(patient),
-      patientName: payment.patientName || patient.name || '',
-      houseId:     payment.houseId     || patient.houseId || '',
-      dueDate:     dueDateISO,
-      amount,
-      status:      newStatus,
-      amountPaid,
-      balance,
-      timestamp:   new Date().toISOString(),
-    };
-  };
-
-  /* Busy discipline (async-button pass): both controls freeze (and the row
-   * dims) while savePayment's round-trip is in flight, so the status can't be
-   * flipped again mid-save. savePayment owns rollback + the error toast; a
-   * failure re-renders the whole billing tab, so re-enabling a detached row is
-   * harmless. */
-  const setRowSaving = saving => {
-    // A void row's controls stay disabled through the whole cycle.
-    statusSel.disabled = saving || state.mode !== 'edit' || isVoid;
-    paidInput.disabled = saving || state.mode !== 'edit' || isVoid;
-    row.classList.toggle('saving', saving);
-  };
-  /* The row freeze (both controls disabled + the row dimmed) predates the shared
-   * pattern and stays — it is what stops the OTHER control being touched
-   * mid-save. withFieldSaving adds the shared ring + «שומר…» beside the control
-   * the user actually changed, so this row speaks the same language as every
-   * other inline save. `el` is that control. */
-  const saveRow = (el, updated) => {
-    /* Re-entry guard FIRST: without it a second change would fall through to
-     * the finally below and unfreeze the row while the first save is still in
-     * flight. Then freeze synchronously — the row must be frozen at the tap,
-     * not a microtask later when withFieldSaving's worker starts. */
-    if (el && el.getAttribute && el.getAttribute('aria-busy') === 'true') return Promise.resolve();
-    setRowSaving(true);
-    return withFieldSaving(el, 'save', () => savePayment(updated))
-      .finally(() => setRowSaving(false));
-  };
-
-  statusSel.onchange = () => {
-    const updated = recompute(statusSel.value, paidInput.value);
-    saveRow(statusSel, updated);
-  };
-
-  paidInput.onchange = () => {
-    if (statusSel.value !== 'partial') return;
-    let v = Number(paidInput.value);
-    if (!Number.isFinite(v) || v < 0) v = 0;
-    if (v >= amount) {
-      // Fully paid — flip to "שולם" so the row stops carrying forward.
-      statusSel.value = 'paid';
-      const updated = recompute('paid', amount);
-      saveRow(paidInput, updated);
-    } else {
-      const updated = recompute('partial', v);
-      saveRow(paidInput, updated);
-    }
-  };
+  const reportBtn = row.querySelector('.bill-report-btn');
+  if (reportBtn) reportBtn.onclick = () => openPaymentReportModal(patient, payment, dueDateISO);
+  wireReceiptVoidButtons(row);
 
   /* Per-month amount editor wiring (present only when amountEditable). The
    * save/clear workers are optimistic — their renderBilling() rebuilds this
@@ -10221,9 +10173,9 @@ function buildRevenueDetailRow(row, groupKey, sign) {
 
 /* Upsert a payment record locally, then persist to the Payments sheet.
  *
- * THE ONE WRITE PATH for a payment row — the גבייה status/שולם בפועל
- * controls, the חידוש renewal write and the coverage-period editor all
- * funnel here, which is why the coverage default is stamped HERE and nowhere
+ * THE ONE WRITE PATH for a payment row's NON-money columns — the coverage-
+ * period editor and the שיוך תשלומים link / void decisions all funnel here
+ * (money is recorded only by «דווח תשלום» → reportPayment, Phase 3 PR 2), which is why the coverage default is stamped HERE and nowhere
  * else: every payment written from today forward carries an explicit period,
  * and a recorder who never looks at the field gets exactly the cycle that
  * used to be inferred for it. The client-side refusal below mirrors
@@ -10263,6 +10215,499 @@ async function savePayment(payment) {
     renderBilling();
     showError('שמירת גבייה נכשלה — ' + e.message);
   }
+}
+
+/* ====================================================
+   «דווח תשלום» — ONE ROW PER MONEY RECEIVED (Phase 3 PR 2)
+   ====================================================
+ * Sandra, 2026-10-04 (CHANGELOG-payment-report-form.md):
+ *   - every report creates a NEW receipt row on the server (reportPayment);
+ *     it never edits an existing amount. The cycle row stays the charge, and
+ *     its amountPaid / balance / status are derived by the server from the
+ *     receipts that pay it (recomputeCycleFromReceipts_ in Code.gs);
+ *   - STRICT: the form cannot be sent until every field passes
+ *     lib/payment-report-rules.js (window.PaymentReportRules), with an inline
+ *     Hebrew error under each field; the server re-validates and refuses an
+ *     incomplete report, writing nothing;
+ *   - un-doing a receipt = voiding it (deleter), never editing it;
+ *   - finance sessions only: a restricted session has no גבייה tab, no
+ *     button, no form and no funder editor (and the server answers 403). */
+
+const PAYMENT_REPORT_TOAST = 'התשלום נרשם — יופיע אצל אורטל מחר בבוקר';
+/* The form's field order — the order the inline errors are checked in. */
+const PAYMENT_REPORT_FORM_FIELDS = ['receivedDate', 'amount', 'method', 'payer', 'reference', 'funder', 'coverageStart', 'coverageEnd'];
+
+/* The shared rules, loaded as /payment-report-rules.js before app.js. */
+function paymentReportRules() {
+  return (typeof window !== 'undefined' && window.PaymentReportRules) || null;
+}
+
+/* PAYMENT_STATUS label for a derived status. Pure. */
+function paymentStatusLabel(status) {
+  const s = PAYMENT_STATUS.find(x => x.id === status);
+  return s ? s.label : 'לא שולם';
+}
+
+/* A receipt row from getPayments `receipts` (or a reportPayment echo). */
+function normalizeReceipt(r) {
+  const o = r && typeof r === 'object' ? r : {};
+  const rawStatus = String(o.status == null ? '' : o.status).trim();
+  const status = PAYMENT_STATUS_ALIASES[rawStatus] || PAYMENT_STATUS_ALIASES[rawStatus.toLowerCase()] || 'paid';
+  return {
+    id: String(o.id || ''),
+    cycleId: String(o.cycleId || ''),
+    patientId: String(o.patientId || ''),
+    patientName: String(o.patientName || ''),
+    houseId: resolveHouseId(o.houseId || ''),
+    dueDate: isoDate(o.dueDate),
+    amount: Number(o.amountPaid !== undefined && o.amountPaid !== '' ? o.amountPaid : o.amount) || 0,
+    status,
+    receivedDate: isoDate(o.receivedDate),
+    method: String(o.method || ''),
+    payer: String(o.payer || ''),
+    funder: String(o.funder || ''),
+    reference: String(o.reference || ''),
+    coverageStart: isoDate(o.coverageStart),
+    coverageEnd: isoDate(o.coverageEnd),
+    recordedBy: String(o.recordedBy || ''),
+    recordedAt: String(o.recordedAt || ''),
+    confirmStatus: String(o.confirmStatus || ''),
+    linkStatus: String(o.linkStatus || ''),
+    linkNote: String(o.linkNote || ''),
+    timestamp: String(o.timestamp || ''),
+  };
+}
+
+function normalizeFunderRow(r) {
+  const o = r && typeof r === 'object' ? r : {};
+  return {
+    patientId: String(o.patientId || '').trim(),
+    funder: String(o.funder || '').trim(),
+    effectiveFrom: isoDate(o.effectiveFrom),
+    setBy: String(o.setBy || ''),
+    setAt: String(o.setAt || ''),
+  };
+}
+
+/* The receipts that pay cycle `cycleId`, oldest received first. Pure over
+ * state.receipts. */
+function receiptsForCycle(cycleId, receipts) {
+  const list = Array.isArray(receipts) ? receipts : state.receipts;
+  return (list || []).filter(r => r && r.cycleId && r.cycleId === cycleId)
+    .sort((a, b) => (a.receivedDate || '').localeCompare(b.receivedDate || '') || (a.recordedAt || '').localeCompare(b.recordedAt || ''));
+}
+
+/* The receipts list under a גבייה row: date, amount, method, reference, who.
+ * A voided receipt stays listed, struck through. Empty → nothing. */
+function receiptsListHtml(cycleId) {
+  const rs = receiptsForCycle(cycleId);
+  if (!rs.length) return '';
+  const items = rs.map(r => {
+    const isVoid = r.status === PAYMENT_VOID_STATUS;
+    const voidBtn = !isVoid && state.mode === 'edit' && canDelete()
+      ? `<button type="button" class="btn small receipt-void-btn" data-role="deleter" data-rid="${escapeHtml(r.id)}" title="ביטול הקבלה (נשמרת כרישום)">ביטול קבלה</button>`
+      : '';
+    return `<li class="receipt-item${isVoid ? ' receipt-void' : ''}" data-rid="${escapeHtml(r.id)}">
+        <span class="receipt-date">${escapeHtml(formatDate(r.receivedDate) || '—')}</span>
+        <span class="receipt-amount">${escapeHtml(fmtShekel(r.amount))}</span>
+        <span class="receipt-method">${escapeHtml(r.method || '—')}</span>
+        ${r.reference ? `<span class="receipt-ref">אסמכתא ${escapeHtml(r.reference)}</span>` : ''}
+        <span class="receipt-who">${escapeHtml(r.recordedBy || '')}</span>
+        ${isVoid ? `<span class="badge void">${escapeHtml(PAYMENT_VOID_LABEL)}</span>` : ''}
+        ${voidBtn}
+      </li>`;
+  }).join('');
+  return `<div class="bill-receipts"><span class="p-label">תשלומים שהתקבלו</span><ul class="receipt-list">${items}</ul></div>`;
+}
+
+function wireReceiptVoidButtons(row) {
+  row.querySelectorAll('.receipt-void-btn').forEach(btn => {
+    btn.onclick = () => {
+      const r = state.receipts.find(x => x.id === btn.dataset.rid);
+      if (r) openReceiptVoidModal(r);
+    };
+  });
+}
+
+/* Void a receipt — the existing void flow (savePayment, status void, a
+ * reason), `deleter` only. The server re-derives the cycle and echoes it. */
+function openReceiptVoidModal(receipt) {
+  if (state.mode !== 'edit') return;
+  if (!canDelete()) { showError(ROLE_FORBIDDEN_TEXT); return; }
+  const root = document.getElementById('modal-root');
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  back.innerHTML = `
+    <div class="modal pay-report-modal">
+      <h3>ביטול קבלה</h3>
+      <p class="dup-lead">הקבלה על ${escapeHtml(fmtShekel(receipt.amount))} מ־${escapeHtml(formatDate(receipt.receivedDate))}
+        תסומן <b>${escapeHtml(PAYMENT_VOID_LABEL)}</b> ותישמר כרישום. סטטוס המחזור יחושב מחדש.</p>
+      <div class="form-row">
+        <label for="receipt-void-note">סיבה (נשמרת ביומן)</label>
+        <input type="text" id="receipt-void-note" class="receipt-void-note" maxlength="${PAYMENT_LINK_NOTE_MAX}" />
+        <div class="field-error" data-err="note" role="alert"></div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn" data-action="cancel">חזרה</button>
+        <button type="button" class="btn danger" data-action="confirm">בטל קבלה</button>
+      </div>
+    </div>`;
+  root.appendChild(back);
+  const close = () => back.remove();
+  const noteEl = back.querySelector('.receipt-void-note');
+  const confirmBtn = back.querySelector('[data-action="confirm"]');
+  back.querySelector('[data-action="cancel"]').onclick = () => { if (!busyButtonActive(confirmBtn)) close(); };
+  confirmBtn.onclick = () => {
+    const note = String(noteEl.value || '').trim();
+    if (!note) { back.querySelector('[data-err="note"]').textContent = 'יש לציין סיבה'; return; }
+    return busyButton(confirmBtn, 'delete', async () => {
+      try {
+        await voidReceipt(receipt, note);
+        close();
+      } catch (e) {
+        showError('ביטול הקבלה נכשל — ' + e.message);
+      }
+    });
+  };
+  if (noteEl.focus) noteEl.focus();
+}
+
+async function voidReceipt(receipt, note) {
+  const res = await apiPost({ action: 'savePayment', payment: {
+    id: receipt.id, patientId: receipt.patientId, patientName: receipt.patientName, houseId: receipt.houseId,
+    dueDate: receipt.dueDate, status: PAYMENT_VOID_STATUS, linkPatientUid: '', linkStatus: 'duplicate',
+    linkNote: String(note).slice(0, PAYMENT_LINK_NOTE_MAX), timestamp: new Date().toISOString(),
+  } });
+  const at = state.receipts.findIndex(x => x.id === receipt.id);
+  if (at >= 0) {
+    const echo = res && res.payment ? normalizeReceipt(Object.assign({}, res.payment, { cycleId: receipt.cycleId })) : null;
+    state.receipts[at] = echo || Object.assign({}, receipt, { status: PAYMENT_VOID_STATUS });
+  }
+  if (res && res.cycle) adoptCycleEcho(res.cycle);
+  renderBilling();
+  showToast('הקבלה בוטלה');
+}
+
+/* Put the server's copy of a cycle into state.payments (replace or add). */
+function adoptCycleEcho(cycle) {
+  const c = normalizePayment(cycle);
+  if (!c.id) return;
+  const at = state.payments.findIndex(x => x.id === c.id);
+  if (at >= 0) state.payments[at] = c; else state.payments.push(c);
+}
+
+/* ---- funders ----------------------------------------------------------- */
+
+/* The current funder of a patient — mirrors currentFunderFrom_ in Code.gs:
+ * the row with the latest effectiveFrom ≤ asOf (same day: the later setAt);
+ * no row → פרטי, marked as the default. Pure. */
+function currentFunderFor(patientId, asOfIso, funders) {
+  const rules = paymentReportRules();
+  const known = rules ? rules.PAYMENT_FUNDERS : ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי'];
+  const dflt = rules ? rules.DEFAULT_FUNDER : 'פרטי';
+  const id = String(patientId || '').trim();
+  const asOf = asOfIso || todayISO();
+  let best = null;
+  (Array.isArray(funders) ? funders : state.funders).forEach(r => {
+    if (!r || !id || r.patientId !== id || known.indexOf(r.funder) < 0) return;
+    if (!r.effectiveFrom || r.effectiveFrom > asOf) return;
+    if (!best || r.effectiveFrom > best.effectiveFrom || (r.effectiveFrom === best.effectiveFrom && r.setAt >= best.setAt)) best = r;
+  });
+  return best ? { funder: best.funder, effectiveFrom: best.effectiveFrom, isDefault: false }
+              : { funder: dflt, effectiveFrom: '', isDefault: true };
+}
+
+/* A patient's funder history, newest first. Pure. */
+function funderHistoryFor(patientId, funders) {
+  const id = String(patientId || '').trim();
+  return (Array.isArray(funders) ? funders : state.funders)
+    .filter(r => r && id && r.patientId === id)
+    .slice()
+    .sort((a, b) => (b.effectiveFrom || '').localeCompare(a.effectiveFrom || '') || (b.setAt || '').localeCompare(a.setAt || ''));
+}
+
+/* «פרטי (ברירת מחדל)» when the patient has no Funders row. Pure. */
+function funderLabel(cur) {
+  return cur.isDefault ? `${cur.funder} (ברירת מחדל)` : cur.funder;
+}
+
+/* The funder cell on the patient card (finance sessions only). */
+function patientFunderCellHtml(p) {
+  if (!financeView() || !patientUid(p)) return '';
+  const cur = currentFunderFor(patientUid(p));
+  return `<div class="patient-funder" data-finance>
+      <span class="p-label">גורם מממן</span>
+      <span class="p-val">${escapeHtml(funderLabel(cur))}
+        ${state.mode === 'edit' ? '<button type="button" class="btn small funder-edit-btn" title="שינוי גורם מממן">שינוי</button>' : ''}</span>
+    </div>`;
+}
+
+function openFunderModal(p) {
+  if (!financeView() || state.mode !== 'edit') return;
+  const uid = patientUid(p);
+  if (!uid) { showError('מטופל לא מזוהה — יש לשמור את המטופל קודם'); return; }
+  const rules = paymentReportRules();
+  const funders = rules ? rules.PAYMENT_FUNDERS : ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי'];
+  const cur = currentFunderFor(uid);
+  const hist = funderHistoryFor(uid).slice(0, 5);
+  const root = document.getElementById('modal-root');
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  back.innerHTML = `
+    <div class="modal pay-report-modal funder-modal">
+      <h3>גורם מממן — ${escapeHtml(p.name || '')}</h3>
+      <p class="pay-report-lead">כרגע: <b>${escapeHtml(funderLabel(cur))}</b>${cur.effectiveFrom ? ' · מ־' + escapeHtml(formatDate(cur.effectiveFrom)) : ''}</p>
+      <form novalidate>
+        <div class="form-row">
+          <label for="funder-select">גורם מממן</label>
+          <select id="funder-select" name="funder">
+            ${funders.map(f => `<option value="${escapeHtml(f)}" ${f === cur.funder ? 'selected' : ''}>${escapeHtml(f)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="funder-from">בתוקף מתאריך</label>
+          <input type="date" id="funder-from" name="effectiveFrom" lang="he" dir="rtl" value="${escapeHtml(todayISO())}" />
+          <div class="field-error" data-err="effectiveFrom" role="alert"></div>
+        </div>
+        ${hist.length ? `<div class="funder-history"><span class="p-label">היסטוריה</span><ul>${hist.map(h =>
+          `<li>${escapeHtml(h.funder)} · מ־${escapeHtml(formatDate(h.effectiveFrom))}${h.setBy ? ' · ' + escapeHtml(h.setBy) : ''}</li>`).join('')}</ul></div>` : ''}
+        <div class="form-actions">
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn primary">שמירה</button>
+        </div>
+      </form>
+    </div>`;
+  root.appendChild(back);
+  const close = () => back.remove();
+  const form = back.querySelector('form');
+  const submitBtn = back.querySelector('button[type="submit"]');
+  back.querySelector('[data-action="cancel"]').onclick = () => { if (!busyButtonActive(submitBtn)) close(); };
+  form.onsubmit = e => {
+    e.preventDefault();
+    const funder = String(form.querySelector('[name="funder"]').value || '');
+    const effectiveFrom = String(form.querySelector('[name="effectiveFrom"]').value || '');
+    const errEl = back.querySelector('[data-err="effectiveFrom"]');
+    errEl.textContent = '';
+    const iso = rules ? rules.parseReportDate(effectiveFrom) : effectiveFrom;
+    if (!iso) { errEl.textContent = 'יש לבחור תאריך תחילה תקין'; return; }
+    return busyButton(submitBtn, 'save', async () => {
+      try {
+        await saveFunder(p, funder, iso);
+        close();
+      } catch (err) {
+        showError('שמירת הגורם המממן נכשלה — ' + err.message);
+      }
+    });
+  };
+}
+
+async function saveFunder(p, funder, effectiveFrom) {
+  const res = await apiPost({ action: 'appendFunder', funder: { patientId: patientUid(p), funder, effectiveFrom } });
+  if (res && res.row) state.funders.push(normalizeFunderRow(res.row));
+  renderPatients();
+  showToast('הגורם המממן נשמר');
+  return res;
+}
+
+/* ---- the report form ---------------------------------------------------- */
+
+/* What the form opens with, for (patient, cycle row, due date). Pure.
+ * → { cycle: the cycle identity reportPayment needs, report: the defaults } */
+function paymentReportDefaults(patient, payment, dueDateISO, todayIso) {
+  const cov = paymentCoverage(payment);
+  const covStart = cov ? isoFromLocalDate(cov.start) : '';
+  const covEnd = cov ? isoFromLocalDate(cov.end) : '';
+  const expected = Number(payment.amount) || Number(patient && patient.pay) || 0;
+  const remaining = Math.max(0, roundMoney(expected - (Number(payment.amountPaid) || 0)));
+  const uid = patientUid(patient) || paymentPatientUid(payment);
+  return {
+    cycle: {
+      id: payment.id,
+      patientId: payment.patientId || patientKey(patient),
+      patientName: payment.patientName || trimName(patient && patient.name),
+      houseId: payment.houseId || (patient && patient.houseId) || '',
+      dueDate: dueDateISO || payment.dueDate,
+      amount: expected,
+      coverageStart: covStart,
+      coverageEnd: covEnd,
+    },
+    expected,
+    remaining,
+    report: {
+      receivedDate: todayIso || todayISO(),
+      amount: remaining > 0 ? String(remaining) : '',
+      method: '',
+      payer: '',
+      reference: '',
+      funder: currentFunderFor(uid).funder,
+      coverageStart: covStart,
+      coverageEnd: covEnd,
+    },
+  };
+}
+
+/* The issues for a form's values, through the shared rules. Pure. */
+function paymentReportIssues(values, todayIso, approver) {
+  const rules = paymentReportRules();
+  if (!rules) return [{ field: 'receivedDate', code: 'rules_missing', hebrewMessage: 'טעינת כללי הדיווח נכשלה — רעננו את הדף' }];
+  return rules.validatePaymentReport(values, {
+    todayIso: todayIso || rules.jerusalemToday(),
+    maxDaysBack: approver === true ? 0 : rules.RECEIVED_DATE_STAFF_MAX_DAYS,
+  });
+}
+
+function openPaymentReportModal(patient, payment, dueDateISO) {
+  if (!financeView() || state.mode !== 'edit') return;
+  if (isVoidPayment(payment)) return;
+  const rules = paymentReportRules();
+  const methods = rules ? rules.PAYMENT_METHODS : [];
+  const funders = rules ? rules.PAYMENT_FUNDERS : [];
+  const today = rules ? rules.jerusalemToday() : todayISO();
+  const d = paymentReportDefaults(patient, payment, dueDateISO, today);
+  const house = houseById(d.cycle.houseId);
+  const root = document.getElementById('modal-root');
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  const opt = (list, sel, placeholder) => (placeholder ? `<option value="">${placeholder}</option>` : '') +
+    list.map(v => `<option value="${escapeHtml(v)}" ${v === sel ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('');
+  const err = f => `<div class="field-error" data-err="${f}" id="pr-err-${f}" role="alert"></div>`;
+  // <input type="date"> values stay ISO; the two coverage errors share a row.
+  const covStart = d.report.coverageStart, covEnd = d.report.coverageEnd;
+  const covErrors = err('coverageStart') + err('coverageEnd');
+  back.innerHTML = `
+    <div class="modal pay-report-modal" role="dialog" aria-labelledby="pr-title">
+      <h3 id="pr-title">דווח תשלום</h3>
+      <p class="pay-report-lead"><b>${escapeHtml(patient.name || d.cycle.patientName)}</b> · ${escapeHtml(house ? house.name : d.cycle.houseId)}<br>
+        מחזור ${dateRangeHeHtml(d.cycle.coverageStart, d.cycle.coverageEnd)} · צפוי ${escapeHtml(fmtShekel(d.expected))}${d.remaining !== d.expected ? ' · יתרה ' + escapeHtml(fmtShekel(d.remaining)) : ''}</p>
+      <form novalidate>
+        <div class="form-row">
+          <label for="pr-receivedDate">תאריך קבלת התשלום *</label>
+          <input type="date" id="pr-receivedDate" name="receivedDate" lang="he" dir="rtl" max="${escapeHtml(today)}" value="${escapeHtml(d.report.receivedDate)}" aria-describedby="pr-err-receivedDate" />
+          ${err('receivedDate')}
+        </div>
+        <div class="form-row">
+          <label for="pr-amount">סכום שהתקבל (₪, כולל מע״מ) *</label>
+          <input type="text" inputmode="decimal" id="pr-amount" name="amount" value="${escapeHtml(d.report.amount)}" aria-describedby="pr-err-amount" />
+          ${err('amount')}
+        </div>
+        <div class="form-row">
+          <label for="pr-method">אמצעי תשלום *</label>
+          <select id="pr-method" name="method" aria-describedby="pr-err-method">${opt(methods, d.report.method, 'בחרו…')}</select>
+          ${err('method')}
+        </div>
+        <div class="form-row">
+          <label for="pr-payer">שם המשלם *</label>
+          <input type="text" id="pr-payer" name="payer" maxlength="100" autocomplete="off" value="${escapeHtml(d.report.payer)}" aria-describedby="pr-err-payer" />
+          ${err('payer')}
+        </div>
+        <div class="form-row">
+          <label for="pr-reference">מספר אסמכתא <span class="pr-ref-hint">(חובה בהעברה בנקאית ובצ'ק)</span></label>
+          <input type="text" id="pr-reference" name="reference" maxlength="40" autocomplete="off" dir="ltr" value="${escapeHtml(d.report.reference)}" aria-describedby="pr-err-reference" />
+          ${err('reference')}
+        </div>
+        <div class="form-row">
+          <label for="pr-funder">גורם מממן *</label>
+          <select id="pr-funder" name="funder" aria-describedby="pr-err-funder">${opt(funders, d.report.funder, '')}</select>
+          ${err('funder')}
+        </div>
+        <div class="form-row pr-cov-row">
+          <label>תקופת כיסוי *</label>
+          <div class="pr-cov">
+            <input type="date" name="coverageStart" lang="he" dir="rtl" aria-label="תחילת תקופת הכיסוי" value="${escapeHtml(covStart)}" />
+            <input type="date" name="coverageEnd" lang="he" dir="rtl" aria-label="סוף תקופת הכיסוי" value="${escapeHtml(covEnd)}" />
+          </div>
+          ${covErrors}
+        </div>
+        <div class="field-error pr-form-error" data-err="_form" role="alert"></div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn primary pr-submit">שמירת הדיווח</button>
+        </div>
+      </form>
+    </div>`;
+  root.appendChild(back);
+
+  const form = back.querySelector('form');
+  const submitBtn = back.querySelector('.pr-submit');
+  const close = () => back.remove();
+  back.querySelector('[data-action="cancel"]').onclick = () => { if (!busyButtonActive(submitBtn)) close(); };
+  back.addEventListener('click', e => { if (e.target === back && !busyButtonActive(submitBtn)) close(); });
+
+  const ctl = f => form.querySelector('[name="' + f + '"]');
+  const values = () => {
+    const v = {};
+    PAYMENT_REPORT_FORM_FIELDS.forEach(f => { v[f] = ctl(f) ? String(ctl(f).value || '').trim() : ''; });
+    return v;
+  };
+  const touched = {};
+  /* Paint the issues: one Hebrew line under each field, aria-invalid on the
+   * control. `only` limits it to the fields the user has touched (live
+   * feedback); a submit attempt paints them all. */
+  const paint = (issues, only) => {
+    const byField = {};
+    issues.forEach(i => { if (!byField[i.field]) byField[i.field] = i.hebrewMessage; });
+    back.querySelectorAll('[data-err]').forEach(el => {
+      const f = el.dataset.err;
+      if (f === '_form') return;
+      if (only && !only[f]) return;
+      el.textContent = byField[f] || '';
+      const c = ctl(f);
+      if (c && c.setAttribute) {
+        if (byField[f]) c.setAttribute('aria-invalid', 'true'); else c.removeAttribute('aria-invalid');
+      }
+    });
+  };
+  const check = () => paymentReportIssues(values(), today, state.approver === true);
+  PAYMENT_REPORT_FORM_FIELDS.forEach(f => {
+    const c = ctl(f);
+    if (!c || !c.addEventListener) return;
+    const on = () => { touched[f] = true; if (f === 'method') touched.reference = true; paint(check(), touched); };
+    c.addEventListener('change', on);
+    c.addEventListener('blur', on);
+  });
+
+  form.onsubmit = e => {
+    e.preventDefault();
+    const issues = check();
+    back.querySelector('[data-err="_form"]').textContent = '';
+    if (issues.length) {
+      paint(issues);
+      const first = ctl(issues[0].field);
+      if (first && first.focus) first.focus();
+      return;
+    }
+    const v = values();
+    return busyButton(submitBtn, 'save', async () => {
+      try {
+        await submitPaymentReport(d.cycle, v);
+        close();
+        showToast(PAYMENT_REPORT_TOAST);
+      } catch (err) {
+        const data = err && err.data;
+        if (data && Array.isArray(data.issues) && data.issues.length) {
+          paint(data.issues);
+          back.querySelector('[data-err="_form"]').textContent = data.message || 'הדיווח לא נשמר';
+        } else {
+          back.querySelector('[data-err="_form"]').textContent = 'הדיווח לא נשמר — ' + (err.message || 'שגיאה');
+        }
+      }
+    });
+  };
+  const first = ctl('amount');
+  if (first && first.focus) first.focus();
+}
+
+/* POST reportPayment; on success put the receipt and the re-derived cycle
+ * into state and re-render. Nothing is applied optimistically: the money a
+ * row shows is always the server's. Throws on refusal (err.data.issues). */
+async function submitPaymentReport(cycle, values) {
+  const report = Object.assign({}, values);
+  const res = await apiPost({ action: 'reportPayment', report: { cycle, report } });
+  if (res && res.receipt) state.receipts.push(normalizeReceipt(res.receipt));
+  if (res && res.cycle) adoptCycleEcho(res.cycle);
+  renderBilling();
+  if (typeof renderDashboard === 'function') renderDashboard();
+  return res;
 }
 
 /* Record the link for a row the SERVER's exact match cannot resolve.
