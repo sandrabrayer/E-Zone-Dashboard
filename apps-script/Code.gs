@@ -644,6 +644,34 @@ const BILLING_OVERRIDE_COLUMNS = ['id', 'patientId', 'month', 'amount', 'created
    * before it stay blank. */
   'updatedBy'];
 
+/* ===== FunderHistory — the patient's funder (גורם מממן), with history =====
+ * CHANGELOG-patient-funder-foundation.md. One row per decision "from date D,
+ * patient P is funded by F". APPEND-ONLY in BOTH senses:
+ *   - columns: never insert / delete / reorder; new columns go at the END
+ *     (readSheet_ maps by position). test/patient-funder-foundation.test.js
+ *     pins the exact order;
+ *   - rows: setPatientFunder_ only appends. A correction is a NEW row; no
+ *     path edits or deletes a row.
+ *
+ *   id            — 'fh-<uuid>', minted here under the script lock
+ *   patientId     — the persisted Patients `id` (the key Payments.patientUid
+ *                   links on, recMatchPatient_ tier 1); must exist on Patients
+ *   funder        — one of FUNDER_KEYS (stable keys, never a Hebrew label)
+ *   effectiveFrom — 'YYYY-MM-DD', the first day the funder applies
+ *   recordedAt    — ISO timestamp of the write (server clock)
+ *   recordedBy    — the session user (requestUser_), never the payload
+ *
+ * The funder on day D = the row with the latest effectiveFrom <= D; for the
+ * same effectiveFrom, the latest recordedAt wins (public/funder.js funderAt).
+ * No row → 'unset' («לא הוגדר»). */
+const FUNDER_HISTORY_SHEET = 'FunderHistory';
+const FUNDER_HISTORY_COLUMNS = ['id', 'patientId', 'funder', 'effectiveFrom', 'recordedAt', 'recordedBy'];
+const FUNDER_HISTORY_TEXT_COLUMNS = ['patientId', 'funder', 'effectiveFrom', 'recordedAt', 'recordedBy'];
+/* Mirrors public/funder.js FUNDER_KEYS (a guard test pins them equal). */
+const FUNDER_KEYS = ['private', 'btl', 'mod', 'maccabi'];
+/* How far ahead an effectiveFrom may be: today (Asia/Jerusalem) + 1 day. */
+const FUNDER_MAX_FUTURE_DAYS = 1;
+
 /* ===== Facility types =====
  * Patients-sheet houseId (HOUSES in app.js) → billing-policy family used by
  * the credits ledger. Mirrors FACILITY_TYPE_BY_HOUSE in app.js EXACTLY; the
@@ -937,11 +965,11 @@ const DELETE_ACTIONS = [
 const FINANCE_ACTIONS = [
   'getPayments', 'savePayment', 'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
   'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'debtAging', 'cleanupReport',
-  'accountingPayments', 'accountingCredits',
+  'accountingPayments', 'accountingCredits', 'setPatientFunder',
 ];
 const FINANCE_USER_IDS = ['vered', 'sandra'];
 /* getData keys only billing reads — omitted for a restricted actor. */
-const GETDATA_FINANCE_KEYS = ['billingOverrides'];
+const GETDATA_FINANCE_KEYS = ['billingOverrides', 'funderHistory'];
 const FINANCE_FORBIDDEN_MESSAGE = 'אין הרשאה לצפות בנתוני גבייה';
 
 /* Approver-only operations (Sandra's personal session). unvoidPayment is
@@ -973,6 +1001,7 @@ const PROXY_KNOWN_ACTIONS = [
   'restorePatientToActive', 'deleteMeetingReport', 'meetingReportLeads',
   'submitMeetingReport', 'managersOverview', 'managersHouse',
   'occupancySnapshots', 'accountingPayments', 'accountingCredits',
+  'setPatientFunder',
 ];
 
 /* SecurityLog — append-only, one row per (event, action, hour) at most.
@@ -1301,6 +1330,12 @@ function handle_(params) {
     if (action === 'cleanupReport') return jsonOut_(cleanupReportAction_());
     if (action === 'saveCredit') {
       return jsonOut_(upsertCredit_(parseJsonParam_(params.credit), requestUser_(params)));
+    }
+    // Patient funder (גורם מממן): append-only FunderHistory row. A finance
+    // action (refused above for a restricted actor); recordedBy from the
+    // signed session cookie via requestUser_.
+    if (action === 'setPatientFunder') {
+      return jsonOut_(setPatientFunder_(parseJsonParam_(params.funder), requestUser_(params)));
     }
     if (action === 'moveLeadIrrelevant') {
       const res = moveLeadIrrelevant_(parseJsonParam_(params.lead), actorLabel_(params));
@@ -1639,6 +1674,11 @@ function getOrCreateSheet_(name, headers) {
   if (name === CREDITS_SHEET) {
     forceColumnsText_(sh, CREDIT_COLUMNS, CREDIT_TEXT_COLUMNS);
   }
+  // FunderHistory: effectiveFrom ('YYYY-MM-DD') and recordedAt (ISO) must
+  // never coerce into Date cells (the exitDate −1-day drift class).
+  if (name === FUNDER_HISTORY_SHEET) {
+    forceColumnsText_(sh, FUNDER_HISTORY_COLUMNS, FUNDER_HISTORY_TEXT_COLUMNS);
+  }
   // Patients: the entry date AND exitDate must survive as plain 'YYYY-MM-DD'
   // strings — a date-typed cell reads back as a Date, serializes as a UTC
   // timestamp and drifts the day −1 for Israel (the exitDate timezone-drift
@@ -1943,6 +1983,9 @@ function getData_() {
     // other consumer.
     currentManagers: cm.managers,
     currentManagersSource: cm.source,
+    // Additive (append-only contract): the patient funder history. A
+    // billing key — dropped for a restricted actor (GETDATA_FINANCE_KEYS).
+    funderHistory: readFunderHistory_(),
   };
 }
 
@@ -7741,6 +7784,97 @@ function deleteBillingOverride_(override, actor) {
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
+}
+
+/* ===== Patient funder (גורם מממן) — FunderHistory =====
+ * Schema and rules: the FUNDER_HISTORY_COLUMNS block above. */
+
+/* Validate a setPatientFunder payload WITHOUT touching a sheet. `todayIso` is
+ * today in Asia/Jerusalem. → { ok:true, patientId, funder, effectiveFrom } or
+ * { ok:false, error }. Strict: a funder must be one of FUNDER_KEYS exactly (no
+ * trim, no case folding, never a Hebrew label); effectiveFrom must be a bare
+ * real 'YYYY-MM-DD' no more than FUNDER_MAX_FUTURE_DAYS after today. Pure. */
+function funderPayloadCheck_(payload, todayIso) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { ok: false, error: 'missing_funder' };
+  const patientId = typeof payload.patientId === 'string' ? payload.patientId.trim() : '';
+  if (!patientId || patientId.length > 200) return { ok: false, error: 'missing_patientId' };
+  const funder = payload.funder;
+  if (typeof funder !== 'string' || FUNDER_KEYS.indexOf(funder) < 0) return { ok: false, error: 'bad_funder' };
+  const eff = payload.effectiveFrom;
+  if (typeof eff !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(eff)) return { ok: false, error: 'bad_effectiveFrom' };
+  if (refundIsoFromDayNum_(refundDayNum_(eff)) !== eff) return { ok: false, error: 'bad_effectiveFrom' };   // 2026-02-30
+  if (refundDayNum_(eff) - refundDayNum_(todayIso) > FUNDER_MAX_FUTURE_DAYS) return { ok: false, error: 'future_effectiveFrom' };
+  return { ok: true, patientId: patientId, funder: funder, effectiveFrom: eff };
+}
+
+/* action=setPatientFunder — APPEND one FunderHistory row. Never edits or
+ * deletes a row: a correction is a new row (same or other effectiveFrom; for
+ * the same effectiveFrom the later recordedAt wins on read). The patient must
+ * exist on the Patients sheet (checked under the lock). recordedBy comes from
+ * the signed session cookie (handle_ → requestUser_). Logs nothing. */
+function setPatientFunder_(payload, user) {
+  const today = Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'yyyy-MM-dd');
+  const v = funderPayloadCheck_(payload, today);
+  if (!v.ok) return v;
+
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('setPatientFunder_');
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const patientsSh = ss.getSheetByName(PATIENTS_SHEET);
+    const idCol = PATIENT_COLUMNS.indexOf('id') + 1;
+    let found = false;
+    if (patientsSh && patientsSh.getLastRow() > 1) {
+      const ids = patientsSh.getRange(2, idCol, patientsSh.getLastRow() - 1, 1).getValues();
+      for (let i = 0; i < ids.length; i++) {
+        if (String(ids[i][0]).trim() === v.patientId) { found = true; break; }
+      }
+    }
+    if (!found) return { ok: false, error: 'unknown_patient' };
+
+    const record = {
+      id:            'fh-' + Utilities.getUuid(),
+      patientId:     v.patientId,
+      funder:        v.funder,
+      effectiveFrom: v.effectiveFrom,
+      recordedAt:    new Date().toISOString(),
+      recordedBy:    String(user == null ? '' : user),
+    };
+    const sh = getOrCreateSheet_(FUNDER_HISTORY_SHEET, FUNDER_HISTORY_COLUMNS);
+    // Next row, not appendRow: the text format lands BEFORE the value (the
+    // upsertBillingOverride_ ordering), so effectiveFrom can never coerce.
+    const target = sh.getLastRow() + 1;
+    sh.getRange(target, 1, 1, FUNDER_HISTORY_COLUMNS.length).setNumberFormat('@');
+    sh.getRange(target, 1, 1, FUNDER_HISTORY_COLUMNS.length).setValues([objectToRow_(record, FUNDER_HISTORY_COLUMNS)]);
+    return { ok: true, entry: record };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* One FunderHistory row object (readSheet_ output) → plain strings. A
+ * date-typed effectiveFrom cell (Sheets coerced it) reads back as a Date:
+ * asISODate_ renders it as the spreadsheet-timezone day, never the UTC slice. */
+function normalizeFunderHistoryRow_(r) {
+  const at = r.recordedAt;
+  return {
+    id:            String(r.id == null ? '' : r.id),
+    patientId:     String(r.patientId == null ? '' : r.patientId).trim(),
+    funder:        String(r.funder == null ? '' : r.funder).trim(),
+    effectiveFrom: asISODate_(r.effectiveFrom),
+    recordedAt:    Object.prototype.toString.call(at) === '[object Date]'
+      ? (isNaN(at.getTime()) ? '' : at.toISOString())
+      : String(at == null ? '' : at),
+    recordedBy:    String(r.recordedBy == null ? '' : r.recordedBy),
+  };
+}
+
+/* getData's funderHistory: every row, normalized. READ-ONLY — a missing tab
+ * reads as [] (nothing is created on a read). */
+function readFunderHistory_() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(FUNDER_HISTORY_SHEET);
+  if (!sh) return [];
+  return readSheet_(sh, FUNDER_HISTORY_COLUMNS).map(normalizeFunderHistoryRow_);
 }
 
 /* ===== Bonuses module ===== */

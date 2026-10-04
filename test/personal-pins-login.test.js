@@ -643,6 +643,7 @@ test('Code.gs: getData keeps every top-level key (PR B adds none)', () => {
   assert.deepStrictEqual(Object.keys(out), [
     'ok', 'leads', 'patients', 'irrelevantLeads', 'removedLeads', 'dischargedPatients',
     'billingOverrides', 'houseManagers', 'managerPhones', 'currentManagers', 'currentManagersSource',
+    'funderHistory',
   ]);
 });
 

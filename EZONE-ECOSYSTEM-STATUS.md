@@ -545,6 +545,33 @@ Detail and Sandra's steps: `CHANGELOG-personal-pins-cleanup.md`.
   - The token is never logged.
 - SW `CACHE_VERSION` v28 → v29.
 
+## Dashboard: patient funder (גורם מממן) — foundation (October 4, 2026 — PR 1 of 2)
+
+Detail: `CHANGELOG-patient-funder-foundation.md`. **Zero user-facing change.
+Nothing to set.** Once this is merged, clasp CI deploys `Code.gs`. No SW bump.
+
+- **New sheet `FunderHistory`** (append-only columns AND rows):
+  `id, patientId, funder, effectiveFrom, recordedAt, recordedBy`.
+  - `patientId` = the persisted Patients `id`, the same key
+    `Payments.patientUid` links on.
+  - `funder` is one of the fixed keys `private` (פרטי), `btl` (ביטוח לאומי),
+    `mod` (משרד הביטחון) or `maccabi` (מכבי). No row → `unset` («לא הוגדר»).
+  - A correction is a new row. Never edit or delete a row.
+  - The tab is created on the first write, never by a read.
+- **New action `setPatientFunder`.** It appends one row and checks:
+  - the funder is in the key allowlist;
+  - `effectiveFrom` is a strict `yyyy-MM-dd`, at most 1 day ahead;
+  - the patient exists.
+
+  It needs `PROXY_SECRET`, is a **finance** action (Shiran and Yael are
+  refused; `lib/finance-scope.js` mirrors it) and answers `lock_busy` when the
+  lock is busy. It writes no log line.
+- **`getData` gains `funderHistory`.** It is a finance key, so it is dropped
+  for the restricted view and the healthcheck.
+- **New pure module `public/funder.js`** (`funderAt`, `currentFunder`,
+  `debtByFunder` over the existing `debtAging` report). Nothing loads it yet;
+  PR 2 adds the UI and the debt-by-funder breakdown on גבייה.
+
 ## Dashboard: restricted view for Shiran and Yael (October 3, 2026)
 
 Detail and the full tab → action map: `CHANGELOG-restricted-view.md`.

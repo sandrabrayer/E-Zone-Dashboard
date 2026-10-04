@@ -1659,7 +1659,7 @@ app.get('/healthz', (_, res) => res.json(healthzBody()));
  * READ-ONLY: the only action is getData (absent = getData; anything else →
  * 400 bad_action). It is proxied with NO principal (no user, no role, no
  * capability), so Code.gs and viewFilteredResponse both serve the RESTRICTED
- * getData — never billingOverrides, never a write.
+ * getData — never billingOverrides or funderHistory, never a write.
  *
  * NO SESSION: it never sets or reads a cookie, and the token opens nothing
  * else (every other route still needs a personal session).

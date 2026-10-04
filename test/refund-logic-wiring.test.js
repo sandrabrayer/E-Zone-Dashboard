@@ -374,8 +374,8 @@ test('G: getData keeps its keys (the refund wiring adds nothing to it)', () => {
   const g = loadGs({ today: '2026-10-01' });
   const res = plain(g.t.handle({ action: 'getData' }));
   assert.deepStrictEqual(Object.keys(res).sort(), [
-    'billingOverrides', 'currentManagers', 'currentManagersSource', 'dischargedPatients', 'houseManagers',
-    'irrelevantLeads', 'leads', 'managerPhones', 'ok', 'patients', 'removedLeads',
+    'billingOverrides', 'currentManagers', 'currentManagersSource', 'dischargedPatients', 'funderHistory',
+    'houseManagers', 'irrelevantLeads', 'leads', 'managerPhones', 'ok', 'patients', 'removedLeads',
   ]);
 });
 

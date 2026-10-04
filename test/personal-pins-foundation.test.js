@@ -1005,6 +1005,7 @@ test('Code.gs: getData keeps every top-level key', () => {
   assert.deepStrictEqual(Object.keys(out), [
     'ok', 'leads', 'patients', 'irrelevantLeads', 'removedLeads', 'dischargedPatients',
     'billingOverrides', 'houseManagers', 'managerPhones', 'currentManagers', 'currentManagersSource',
+    'funderHistory',
   ]);
   assert.strictEqual(out.ok, true);
   assert.ok(!JSON.stringify(out).includes(PROXY_SECRET));

@@ -49,7 +49,7 @@ const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'APP_PIN', 'AP
 
 /* The full getData key list (Code.gs getData_, pinned since PR A). */
 const GETDATA_KEYS = ['ok', 'leads', 'patients', 'irrelevantLeads', 'removedLeads', 'dischargedPatients',
-  'billingOverrides', 'houseManagers', 'managerPhones', 'currentManagers', 'currentManagersSource'];
+  'billingOverrides', 'houseManagers', 'managerPhones', 'currentManagers', 'currentManagersSource', 'funderHistory'];
 
 /* ============================== harness =============================== */
 
@@ -437,7 +437,7 @@ test('healthcheck: the right Bearer token → 200 read-only getData (restricted 
       assert.strictEqual(r.status, 200, r.text);
       assert.strictEqual(r.headers['set-cookie'], undefined, 'no session is minted');
       assert.match(String(r.headers['cache-control']), /no-store/);
-      assert.deepStrictEqual(Object.keys(r.json), GETDATA_KEYS.filter((k) => k !== 'billingOverrides'));
+      assert.deepStrictEqual(Object.keys(r.json), GETDATA_KEYS.filter((k) => k !== 'billingOverrides' && k !== 'funderHistory'));
       // Without ?action it is getData too.
       assert.strictEqual((await request(port, 'GET', '/api/healthcheck', { headers: { Authorization: 'Bearer ' + HC_TOKEN } })).status, 200);
       assert.ok(!logs.join('\n').includes(HC_TOKEN) && !startup.join('\n').includes(HC_TOKEN), 'the token is never logged');

@@ -49,7 +49,7 @@ const FORBIDDEN = { ok: false, error: 'forbidden', message: 'אין הרשאה �
 
 /* The full getData key list (Code.gs getData_, pinned in the PR A suite). */
 const GETDATA_KEYS = ['ok', 'leads', 'patients', 'irrelevantLeads', 'removedLeads', 'dischargedPatients',
-  'billingOverrides', 'houseManagers', 'managerPhones', 'currentManagers', 'currentManagersSource'];
+  'billingOverrides', 'houseManagers', 'managerPhones', 'currentManagers', 'currentManagersSource', 'funderHistory'];
 
 const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'APP_PIN', 'USER_PIN_HASHES',
   'PIN_PEPPER', 'BOOTSTRAP_TOKEN', 'TRUST_PROXY_HOPS', 'MEETING_REPORT_PIN', 'MEETING_REPORT_SECRET', 'APP_PIN_UNTIL'];
@@ -311,8 +311,8 @@ test('non-billing work is unchanged for Shiran and Yael: getData, saveAll, disch
   } finally { stub.restore(); }
 });
 
-test('getData: a restricted session gets every key EXCEPT billingOverrides; full-view sessions get every key, unchanged', async () => {
-  assert.deepStrictEqual([...scope.GETDATA_FINANCE_KEYS], ['billingOverrides']);
+test('getData: a restricted session gets every key EXCEPT billingOverrides + funderHistory; full-view sessions get every key, unchanged', async () => {
+  assert.deepStrictEqual([...scope.GETDATA_FINANCE_KEYS], ['billingOverrides', 'funderHistory']);
   const stub = stubAll();
   try {
     await withServer(await envWith(), async (port) => {
@@ -321,7 +321,7 @@ test('getData: a restricted session gets every key EXCEPT billingOverrides; full
           const r = method === 'GET'
             ? await request(port, 'GET', '/api/sheets?action=getData', { cookie: personal(id) })
             : await request(port, 'POST', '/api/sheets', { cookie: personal(id), body: { action: 'getData' } });
-          assert.deepStrictEqual(Object.keys(r.json), GETDATA_KEYS.filter((k) => k !== 'billingOverrides'), id + ' ' + method);
+          assert.deepStrictEqual(Object.keys(r.json), GETDATA_KEYS.filter((k) => k !== 'billingOverrides' && k !== 'funderHistory'), id + ' ' + method);
         }
       }
       for (const cookie of [personal('vered'), personal('sandra')]) {
@@ -549,10 +549,10 @@ test('Code.gs getData: every key for full view (unchanged); no billingOverrides 
   }
   // PR C: a stale 'shared' auth is 'none' → the restricted keys.
   assert.deepStrictEqual(Object.keys(g.post(Object.assign({ action: 'getData' }, actor('shared', '', 'ורד')))),
-    GETDATA_KEYS.filter((k) => k !== 'billingOverrides'));
+    GETDATA_KEYS.filter((k) => k !== 'billingOverrides' && k !== 'funderHistory'));
   for (const [id, name] of [['shiran', 'שירן'], ['yael', 'יעל']]) {
     const out = g.post(Object.assign({ action: 'getData' }, actor('personal', id, name)));
-    assert.deepStrictEqual(Object.keys(out), GETDATA_KEYS.filter((k) => k !== 'billingOverrides'));
+    assert.deepStrictEqual(Object.keys(out), GETDATA_KEYS.filter((k) => k !== 'billingOverrides' && k !== 'funderHistory'));
   }
   const a = g.sandbox.proxyActor_('שירן', 'shiran', 'personal', ['staff'], ['finance']);
   assert.deepStrictEqual(Array.from(a.caps), [], 'a forged cap cannot widen the derivation');
