@@ -31,7 +31,8 @@ const EXPECTED_TAB_ORDER = [
   // 'reconnect' (שיוך תשלומים) follows them both: it is the exception list for
   // the payment rows those two screens cannot place, so it reads as their
   // tail rather than as a separate concern.
-  'discharged-patients', 'billing', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention',
+  // Phase 4: «בקרת גבייה» right after גבייה.
+  'discharged-patients', 'billing', 'billing-control', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention',
 ];
 
 /* Parse the <nav class="tabs"> block into an ordered [{ screen, label }]. */

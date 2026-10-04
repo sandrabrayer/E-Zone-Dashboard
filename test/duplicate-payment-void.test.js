@@ -660,6 +660,9 @@ test('H: no new endpoint, and nothing here moves money', () => {
     /* Phase 3 PR 2 (CHANGELOG-payment-report-form.md): the strict «דווח
      * תשלום» — it only APPENDS a receipt row and re-derives the cycle. */
     "action === 'reportPayment'",
+    /* Phase 4 (CHANGELOG-billing-control-tab.md): Ortal's decision — it
+     * writes ONLY the four confirm cells of a receipt, never an amount. */
+    "action === 'confirmPayment'",
   ].sort());
   for (const name of ['markPaymentDuplicate', 'reversePaymentVoid']) {
     assert.match(fnSource(APP, name), /savePayment\(/, name + ' must use the one write path');

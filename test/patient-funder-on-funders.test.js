@@ -509,8 +509,9 @@ test('wiring: funder.js before app.js, server route; filter + fill inside the fi
   assert.ok(!/setPatientFunder|FunderHistory/.test(GS_SRC + APP_SRC + SERVER_SRC), 'no second funder model');
 });
 
-test('SW: v32 (from v30; v31 belongs to #177, never v17); funder.js precached and network-first', () => {
-  assert.match(SW_SRC, /var CACHE_VERSION = 'v32';/);
+test('SW: v32 or later (from v30; v31 belongs to #177, never v17); funder.js precached and network-first', () => {
+  // v32 shipped this change; PR #179 («בקרת גבייה») bumped it to v33 on top.
+  assert.ok(Number((SW_SRC.match(/var CACHE_VERSION = 'v(\d+)';/) || [])[1]) >= 32);
   assert.ok(SW_SRC.includes('v31 → v32:'));
   assert.ok(/var PRECACHE_URLS = \[[\s\S]*?'\/funder\.js'[\s\S]*?\];/.test(SW_SRC));
   const sandbox = { self: { addEventListener() {} }, module: { exports: {} }, URL, caches: {}, fetch() {} };
