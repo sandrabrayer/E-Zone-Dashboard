@@ -653,6 +653,31 @@ Detail: `CHANGELOG-cleanup-workbook.md`. Apps Script **and** Railway.
 - No new env var, no new Script Property, no new scope. SW `CACHE_VERSION`
   v27 → v28.
 
+## Dashboard Apps Script: the strict payment report — foundation (October 4, 2026)
+
+Detail: `CHANGELOG-payment-report-foundation.md`. Apps Script, plus one
+workbook tab on Railway. **No user-facing change** on the dashboard screens;
+`public/` untouched, no SW bump.
+
+- `Payments` gains 11 appended, text-formatted columns (positions 25–35):
+  `receivedDate` (append-only, audited when changed), `method`, `payer`,
+  `funder`, `reference`, `recordedBy`/`recordedAt` (server),
+  `confirmStatus`/`confirmedBy`/`confirmedAt`/`flagNote` (Ortal's
+  confirmation — `controller` or `approver` only). The original 24 columns do
+  not move.
+- New tab **`Funders`** (`patientId`, `funder`, `effectiveFrom`, `setBy`,
+  `setAt`), append-only; `currentFunder_` → latest `effectiveFrom` ≤ date,
+  default **פרטי**. Created by the editor-run `setupFundersSheetNow`.
+- `validatePaymentReport_` (Code.gs) + `lib/payment-report-rules.js`
+  (mirror, parity-tested). **Not enforced yet** on `savePayment` (Phase 3
+  PR 2 wires the form).
+- `debtAging_` and Ortal's digest use `receivedDate` when present, else
+  `chargedAt` as before. **The accounting feed (`accountingPayments`) is
+  unchanged** — it projects an explicit field list and exposes none of the
+  new columns.
+- «ייצוא רשימת תיקונים» gains a tab «חסר גורם מממן».
+- No new HTTP action, env var, Script Property, scope or trigger.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);

@@ -125,6 +125,27 @@ One thing to **not** do: never insert or reorder a Payments column.
 `readSheet_` maps by position, so a shift re-reads every historical row
 against the wrong field. New columns go at the end.
 
+## Payments sheet — payment-report columns and the Funders tab (October 4, 2026)
+
+The `Payments` sheet gains eleven APPENDED columns (positions 25–35):
+`receivedDate`, `method`, `payer`, `funder`, `reference`, `recordedBy`,
+`recordedAt`, `confirmStatus`, `confirmedBy`, `confirmedAt`, `flagNote`.
+Rules: `CHANGELOG-payment-report-foundation.md`.
+
+**No manual step is needed for Payments.** The header is added and the eleven
+columns are text-formatted on the first read after deploy; existing rows stay
+blank and read exactly as before. Before merging, glance at the Payments tab:
+if there is a hand-added column in column 25 or later, tell Claude — the
+report columns are then left untouched (the server logs
+`[payments] report columns not used — header clash`) until it is moved.
+
+**Optional — the Funders tab.** In the Apps Script editor pick
+`setupFundersSheetNow` → **Run**. It creates the `Funders` tab
+(`patientId`, `funder`, `effectiveFrom`, `setBy`, `setAt`). Safe to run again.
+Until a row exists for a patient, the patient counts as **פרטי** and is listed
+in «ייצוא רשימת תיקונים» → «חסר גורם מממן». A change of funder is a **new
+row** with a later `effectiveFrom` — never edit or delete a row.
+
 ## Accounting source feed — one Script Property to set
 
 The Dashboard Apps Script gained two READ-ONLY actions for the external
