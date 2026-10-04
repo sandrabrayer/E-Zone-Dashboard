@@ -725,6 +725,38 @@ Supersedes #174 / #175 (closed by Sandra).
 - SW `CACHE_VERSION` v30 → **v32** (v31 is held by open PR #177).
 - No new action, env var, Script Property, scope or trigger.
 
+## Dashboard: «בקרת גבייה» — Ortal's verification tab (October 4, 2026)
+
+Detail: `CHANGELOG-billing-control-tab.md`. Apps Script **and** Railway.
+Phase 4 of `docs/billing-control-plan.md` is complete.
+
+- **Ortal logs in** (`lib/users.js`: `ortal` active, roles `['controller']`
+  only). Her session is the **controller view**: the «בקרת גבייה» tab and
+  logout, nothing else. server.js refuses every other `/api/sheets` action
+  and every other `/api/` route (403, `controllerRouteLock`); Code.gs refuses
+  the same (`viewRefused_`) — `getData` included, so she never receives
+  patients or leads. Sandra creates her code via «קוד אישי חדש».
+- New capability **`billingControl`** (Vered, Sandra, Ortal — by stable id).
+  Shiran / Yael never see the tab (403).
+- Two new actions, `PROXY_SECRET`-gated, not open:
+  `billingControlQueue` (read: receipts + counts + «חובות מעל 60 יום», and
+  Sandra's read-only «חריגים פתוחים») and `confirmPayment` (controller or
+  approver role; `reported` → `confirmed` / `flagged` (note 2–300) / back;
+  atomic bulk; `confirmedBy/At` stamped once; one AuditLog row per change).
+  Only the four confirm cells of a receipt are written.
+- New route `GET /api/export/billing-control.xlsx` («ייצוא אימות»). The
+  debt-aging export is now open to the controller too.
+- **הכנסות חודשיות** gains «מאומת» (confirmed receipts allocated by
+  coverage) next to «נגבה». No shared revenue rule changed; Outpatient
+  untouched.
+- **Item H:** `savePayment` refuses any direct `amountPaid` / status move
+  (`use_report_payment`), also on cycles without receipts.
+- Ortal's digest gains «ממתינים לאימות: N» with a link to `/#billing-control`.
+- `/api/me` adds `capabilities`, `billingControl`, `view`, `canConfirm`.
+  The page loads `/billing-control-rules.js`. SW `CACHE_VERSION` v32 → **v33**
+  (built as v31, rebased onto #178's v32).
+- No new env var, Script Property, scope, column or trigger.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);

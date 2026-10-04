@@ -155,6 +155,13 @@ yet. If column 36 (or 25–35) of `Payments` holds a hand-added header, every
 report is refused (`sheet_header_clash`) and nothing is written until it is
 moved.
 
+## «בקרת גבייה» — Ortal's tab (October 4, 2026)
+
+`CHANGELOG-billing-control-tab.md`. **No env var, no Script Property, no
+column.** One step for Sandra after the merge: «קוד אישי חדש» → אורטל →
+paste the line into `USER_PIN_HASHES` in Railway (same as the other codes).
+Until that line exists Ortal is simply not on the login screen.
+
 ## Accounting source feed — one Script Property to set
 
 The Dashboard Apps Script gained two READ-ONLY actions for the external
