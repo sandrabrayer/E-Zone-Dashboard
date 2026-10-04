@@ -678,6 +678,32 @@ workbook tab on Railway. **No user-facing change** on the dashboard screens;
 - «ייצוא רשימת תיקונים» gains a tab «חסר גורם מממן».
 - No new HTTP action, env var, Script Property, scope or trigger.
 
+## Dashboard: the strict payment-report form — live (October 4, 2026)
+
+Detail: `CHANGELOG-payment-report-form.md`. Apps Script **and** Railway.
+Phase 3 of `docs/billing-control-plan.md` is complete.
+
+- **One `Payments` row per money received.** New action `reportPayment`
+  (`PROXY_SECRET`, `FINANCE_ACTIONS`, not in `OPEN_ACTIONS`). It appends a
+  **receipt** row (`id` `rcpt-…`, server-minted) and never edits an amount.
+  The cycle row's `amountPaid` / `balance` / `status` are derived from its
+  receipts (`recomputeCycleFromReceipts_`). An incomplete report is refused
+  (`invalid_report`) with nothing written. `receivedDate` may be at most 90
+  days back (older: Sandra only).
+- One more appended column, **`legacyAmountPaid`** (position 36): the money a
+  cycle held before its first receipt.
+- New action `appendFunder` (finance): the patient card's funder editor
+  appends to `Funders`.
+- **`getPayments`** keeps `payments` (cycles only, derived) and adds
+  `receipts` and `funders`.
+- **The accounting feed still exports one record per cycle**, with the
+  derived total; receipts are not exported.
+- Ortal's digest lists one line per receipt, with method and reference.
+- The גבייה status dropdown and «שולם בפועל» are gone. The page loads
+  `/payment-report-rules.js` (the same `lib/` file). SW `CACHE_VERSION`
+  v29 → v30.
+- No new env var, Script Property, scope or trigger.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);
