@@ -937,7 +937,7 @@ app.post('/api/sheets', requireSession, requireFinanceForAction, requireProxySec
  * Script. */
 function refundForecastXlsxHandler(deps) {
   const d = deps || {};
-  const fetchForecast = d.fetchForecast || ((user) => sheetsPost({ action: 'refundPayoutForecast', user }));
+  const fetchForecast = d.fetchForecast || ((user, principal) => sheetsPost({ action: 'refundPayoutForecast', user }, principal));
   const clock = d.now || (() => new Date());
   return async (req, res) => {
     const fail = (status, error) => {
@@ -947,7 +947,7 @@ function refundForecastXlsxHandler(deps) {
     };
     let data;
     try {
-      data = await fetchForecast(sessionUserFromRequest(req));
+      data = await fetchForecast(sessionUserFromRequest(req), sessionPrincipalFromRequest(req));
     } catch (err) {
       return fail(502, err && err.message === PROXY_NOT_CONFIGURED ? 'proxy_not_configured' : 'sheets_unreachable');
     }
@@ -997,7 +997,7 @@ function validateDebtAgingExportQuery(req, res, next) {
 }
 function debtAgingXlsxHandler(deps) {
   const d = deps || {};
-  const fetchAging = d.fetchAging || ((asOf, user) => sheetsPost({ action: 'debtAging', asOf, user }));
+  const fetchAging = d.fetchAging || ((asOf, user, principal) => sheetsPost({ action: 'debtAging', asOf, user }, principal));
   const clock = d.now || (() => new Date());
   return async (req, res) => {
     const fail = (status, error) => {
@@ -1009,7 +1009,7 @@ function debtAgingXlsxHandler(deps) {
     if (!q.ok) return fail(400, q.error);
     let data;
     try {
-      data = await fetchAging(q.asOf, sessionUserFromRequest(req));
+      data = await fetchAging(q.asOf, sessionUserFromRequest(req), sessionPrincipalFromRequest(req));
     } catch (err) {
       return fail(502, err && err.message === PROXY_NOT_CONFIGURED ? 'proxy_not_configured' : 'sheets_unreachable');
     }
@@ -1046,10 +1046,15 @@ app.get('/api/export/debt-aging.xlsx', requireSession, requireFinance, validateD
  * per kind, each row with who fixes it, how, and a «טופל» box. No check is
  * computed here. Never cached (Cache-Control: no-store; the service worker
  * never caches /api/). The log carries the outcome only — never a patient
- * name, amount or response body. */
+ * name, amount or response body.
+ *
+ * All three export handlers pass the SESSION PRINCIPAL to sheetsPost: without
+ * it the body says proxyAuth 'none' / proxyCaps [] and Code.gs
+ * (financeRefused_) answers 'forbidden' to every billing action — even for
+ * Sandra (CHANGELOG-cleanup-export-finance.md). */
 function cleanupXlsxHandler(deps) {
   const d = deps || {};
-  const fetchCleanup = d.fetchCleanup || ((user) => sheetsPost({ action: 'cleanupReport', user }));
+  const fetchCleanup = d.fetchCleanup || ((user, principal) => sheetsPost({ action: 'cleanupReport', user }, principal));
   const clock = d.now || (() => new Date());
   return async (req, res) => {
     const fail = (status, error) => {
@@ -1059,7 +1064,7 @@ function cleanupXlsxHandler(deps) {
     };
     let data;
     try {
-      data = await fetchCleanup(sessionUserFromRequest(req));
+      data = await fetchCleanup(sessionUserFromRequest(req), sessionPrincipalFromRequest(req));
     } catch (err) {
       return fail(502, err && err.message === PROXY_NOT_CONFIGURED ? 'proxy_not_configured' : 'sheets_unreachable');
     }
