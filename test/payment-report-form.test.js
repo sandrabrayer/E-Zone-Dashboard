@@ -39,6 +39,7 @@ const scope = require('../lib/finance-scope');
 const ROOT = path.join(__dirname, '..');
 const APP_SRC = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
 const RULES_SRC = fs.readFileSync(path.join(ROOT, 'lib', 'payment-report-rules.js'), 'utf8');
+const FUNDER_SRC = fs.readFileSync(path.join(__dirname, '..', 'public', 'funder.js'), 'utf8');
 const SERVER_SRC = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
 const HTML_SRC = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 const SW_SRC = fs.readFileSync(path.join(ROOT, 'public', 'sw.js'), 'utf8');
@@ -144,6 +145,8 @@ function loadApp(opts) {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   if (o.rules !== false) vm.runInContext(RULES_SRC, sandbox);
+  // public/funder.js — the page loads it before app.js (global Funder).
+  if (o.funder !== false) vm.runInContext(FUNDER_SRC, sandbox);
   vm.runInContext(APP_SRC + `
     renderBilling = () => {}; renderDashboard = () => {}; renderPatients = () => {};
     showToast = (m) => { globalThis.__toasts.push(String(m)); };
@@ -467,10 +470,12 @@ test('D: appendFunder appends one Funders row (audited); the current funder and 
   assert.equal(w.g.sheetRows('Funders', 'FUNDER_COLUMNS').length, 2, 'a bad funder writes nothing');
   const gp = w.getPayments();
   assert.deepEqual(gp.funders.map((f) => f.funder), ['ביטוח לאומי', 'מכבי']);
-  // The page: «פרטי (ברירת מחדל)» with no row; the current one with rows; the form prefills it.
+  // The page: «לא הוגדר» with no row (there is no default funder); the
+  // current one with rows; the form prefills it.
   const { app } = loadApp();
   const none = app.currentFunderFor('p2');
-  assert.equal(app.funderLabel(none), 'פרטי (ברירת מחדל)');
+  assert.equal(app.funderLabel(none), 'לא הוגדר');
+  assert.equal(none.unset, true);
   app.state.funders = gp.funders.map(app.normalizeFunderRow);
   assert.equal(app.funderLabel(app.currentFunderFor('p1', '2026-10-04')), 'מכבי');
   assert.equal(app.currentFunderFor('p1', '2026-08-15').funder, 'ביטוח לאומי', 'history by effectiveFrom');
@@ -542,7 +547,7 @@ test('form: opens prefilled — patient, house, cycle window, expected amount (r
   assert.equal(d.report.coverageStart, DUE);
   assert.equal(d.report.coverageEnd, COV_END);
   assert.equal(d.report.receivedDate, UTC_TODAY);
-  assert.equal(d.report.funder, 'פרטי');
+  assert.equal(d.report.funder, '', 'no Funders row → the report must name one (no default)');
   app.openPaymentReportModal(P, pay, DUE);
   const html = created[0].innerHTML;
   assert.match(html, /דווח תשלום/);
@@ -677,7 +682,8 @@ test('scope: the two new actions are proxied through the finance gate, nothing n
   assert.match(SERVER_SRC, /app\.get\('\/payment-report-rules\.js'/);
   // The page loads the shared rules before app.js; the worker serves them network-first.
   assert.ok(HTML_SRC.indexOf('payment-report-rules.js') < HTML_SRC.indexOf('src="app.js'));
-  assert.match(SW_SRC, /var CACHE_VERSION = 'v30';/);
+  // v30 shipped the form; later PRs bump it again (v32: patient funder on Funders).
+  assert.ok(Number((SW_SRC.match(/var CACHE_VERSION = 'v(\d+)';/) || [])[1]) >= 30);
   assert.match(SW_SRC, /v29 → v30:/);
 });
 

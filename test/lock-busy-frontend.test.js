@@ -50,6 +50,8 @@ function loadApp(script) {
     localStorage: { getItem: () => null, setItem: noop, removeItem: noop },
     URL, URLSearchParams, Math, Date, JSON, Number, String, Array, Object, RegExp, Promise, Set, Map,
     confirm: () => true,
+    // public/funder.js (the global the page loads before app.js).
+    Funder: require(path.join(__dirname, '..', 'public', 'funder.js')),
     fetch: (url, opts) => {
       const raw = opts && opts.body;
       const body = raw ? JSON.parse(raw) : null;
@@ -279,7 +281,7 @@ const PATHS = [
     // Phase 3 PR 2: the patient card's funder editor (its modal stays open).
     name: 'appendFunder (the patient card funder editor)',
     action: 'appendFunder',
-    setup: (app) => { app.state.funders = []; },
+    setup: (app) => { app.state.funders = []; app.state.finance = true; },
     okResponse: { ok: true, row: { patientId: 'pt-1', funder: 'מכבי', effectiveFrom: '2026-10-01', setBy: 'ורד', setAt: '2026-10-04T10:00:00+03:00' } },
     run: (app) => app.saveFunder({ ...PATIENT }, 'מכבי', '2026-10-01'),
     landed: (app) => { assert.strictEqual(app.state.funders.length, 1); assert.strictEqual(app.state.funders[0].funder, 'מכבי'); },

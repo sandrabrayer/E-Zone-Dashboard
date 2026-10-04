@@ -2368,3 +2368,47 @@ body.viewer-mode .receipt-void-btn { display: none !important; }
 @media (max-width: 900px) {
   .billing-row.rev-detail-row { grid-template-columns: 1fr 1fr; }
 }
+
+/* ===== Patient funder (גורם מממן) — CHANGELOG-patient-funder-on-funders.md =====
+ * Finance-only. «לא הוגדר» is the amber badge (the .badge.trial palette).
+ * Every control is ≥ 44px tall; the fill rows wrap at 360px. */
+.funder-chip {
+  display: inline-block;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  background: rgba(91,139,255,.16); color: #a9c1ff;
+  border: 1px solid rgba(91,139,255,.40);
+}
+.funder-chip.funder-unset {
+  background: rgba(255,176,32,.18); color: #ffc55a; border-color: rgba(255,176,32,.55);
+}
+#billing-funder,
+.funder-fill select, .funder-fill input[type="date"], .funder-fill .btn,
+.funder-edit-btn {
+  min-height: 44px;
+}
+.funder-fill {
+  margin: 14px 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--warning) 9%, var(--surface));
+  border: 1px solid rgba(255,176,32,.45);
+}
+.funder-fill-title { margin: 0 0 6px; font-size: 16px; }
+.billing-row.funder-fill-row {
+  display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end;
+}
+.billing-row.funder-fill-row > div,
+.funder-fill-row .funder-field { display: flex; flex-direction: column; min-width: 130px; flex: 1 1 130px; }
+.funder-fill-row .btn { flex: 0 0 auto; }
+.funder-released-tag { margin-top: 4px; }
+.funder-strip { margin: 10px 0 16px; }
+.funder-strip-block { margin-bottom: 12px; }
+@media (max-width: 480px) {
+  .billing-row.funder-fill-row > div,
+  .funder-fill-row .funder-field { min-width: 100%; }
+  .funder-fill-row .btn { width: 100%; }
+  #billing-funder { width: 100%; }
+}
