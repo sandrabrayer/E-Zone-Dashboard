@@ -214,8 +214,9 @@ test('A: PAYMENT_COLUMNS appends the two coverage columns and moves nothing', ()
     'receivedDate', 'method', 'payer', 'funder', 'reference',
     'recordedBy', 'recordedAt',
     'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
+    'legacyAmountPaid',
   ]);
-  assert.equal(cols.length, 35);
+  assert.equal(cols.length, 36);
 });
 
 test('A: the two new columns are text-forced at sheet-ensure, the old ones are left alone', () => {
@@ -629,9 +630,10 @@ test('G: the period has its own cell on the גבייה row, next to the amount',
   assert.ok(src.indexOf('bill-cov-cell') > src.indexOf('bill-amount-cell'));
   assert.ok(src.indexOf('bill-cov-cell') - src.indexOf('${amountCellHtml}') < 200,
     'the coverage cell follows the amount cell directly');
-  // The row grid grew a column to hold it.
-  assert.match(CSS, /grid-template-columns: 1\.2fr \.85fr \.95fr 2fr 1fr \.95fr \.85fr;/,
-    'seven columns — the coverage cell is the widest, it prints two ISO dates');
+  // The row grid grew a column to hold it (and, in Phase 3 PR 2, one more
+  // for «דווח תשלום» — the status / שולם / יתרה cells became read-only).
+  assert.match(CSS, /grid-template-columns: 1\.2fr \.85fr \.95fr 2fr \.9fr \.85fr \.85fr auto;/,
+    'eight columns — the coverage cell is the widest, it prints two ISO dates');
   assert.match(CSS, /\.bill-cov-view \{/);
   assert.match(CSS, /\.bill-cov-edit\.hidden \{ display: none; \}/);
 });
@@ -701,6 +703,8 @@ test('H: no new endpoint, and server.js is untouched by this change', () => {
   assert.deepEqual(unique, [
     "action === 'accountingPayments'",
     "action === 'getPayments'", "action === 'savePayment'", "action === 'updatePayment'",
+    // Phase 3 PR 2: the strict «דווח תשלום» appends a receipt row.
+    "action === 'reportPayment'",
   ].sort());
 });
 

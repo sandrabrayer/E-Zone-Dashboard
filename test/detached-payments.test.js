@@ -692,6 +692,9 @@ test('F: no new endpoint — the link rides the existing savePayment', () => {
   assert.deepEqual(plain(Array.from(new Set(payActions)).sort()), [
     "action === 'accountingPayments'",
     "action === 'getPayments'", "action === 'savePayment'", "action === 'updatePayment'",
+    /* Phase 3 PR 2 (CHANGELOG-payment-report-form.md): the strict «דווח
+     * תשלום» — it only APPENDS a receipt row and re-derives the cycle. */
+    "action === 'reportPayment'",
   ].sort());
   for (const name of ['reconnectPaymentToPatient', 'markPaymentNotAPatient', 'runPatientUidBackfill']) {
     assert.match(fnSource(APP, name), /savePayment\(/, name + ' must use the one write path');

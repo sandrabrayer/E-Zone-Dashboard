@@ -74,6 +74,7 @@ function loadApp(script) {
     renderAll = () => {}; renderBilling = () => {}; renderBillingMonthlySummary = () => {};
     renderMeetings = () => {}; renderMeetingsUnseenBadge = () => {}; setSaving = () => {};
     reloadCredits = () => Promise.resolve();
+    renderPatients = () => {}; renderDashboard = () => {};
     showCloseLeadModal = (o) => { globalThis.__onConfirm = o.onConfirm; };
     showConfirm = (o) => { globalThis.__onConfirm = o.onConfirm; };
     globalThis.__test = {
@@ -100,6 +101,8 @@ function loadApp(script) {
       clearBillingOverride: (p) => clearBillingOverride(p),
       billingOverrideId: (p, m) => billingOverrideId(p, m),
       autosaveMeetingWithDefaults: () => autosaveMeetingWithDefaults(),
+      submitPaymentReport: (c, v) => submitPaymentReport(c, v),
+      saveFunder: (p, f, d) => saveFunder(p, f, d),
       confirm: (v) => globalThis.__onConfirm(v),
       errors: () => globalThis.__errors,
       delays: () => globalThis.__delays,
@@ -256,6 +259,31 @@ const PATHS = [
     },
     run: (app) => app.clearBillingOverride({ ...PAYMENT_ROW }),
     landed: (app) => { assert.strictEqual(app.state.billingOverrides.length, 0); },
+  },
+  {
+    // Phase 3 PR 2: the strict «דווח תשלום». The form stays open with the
+    // Hebrew message (submitPaymentReport throws; the form paints it).
+    name: 'reportPayment (the «דווח תשלום» form)',
+    action: 'reportPayment',
+    setup: (app) => { app.state.receipts = []; app.state.payments = []; },
+    okResponse: { ok: true,
+      receipt: { id: 'rcpt-1', cycleId: 'pay::ramot::דנה::2026-07-01::2026-09-01', amountPaid: 9000, status: 'paid', receivedDate: '2026-09-02', method: 'מזומן' },
+      cycle: { id: 'pay::ramot::דנה::2026-07-01::2026-09-01', patientId: 'ramot::דנה::2026-07-01', houseId: 'ramot', dueDate: '2026-09-01', amount: 9000, amountPaid: 9000, balance: 0, status: 'paid' } },
+    run: (app) => app.submitPaymentReport(
+      { id: 'pay::ramot::דנה::2026-07-01::2026-09-01', patientId: 'ramot::דנה::2026-07-01', houseId: 'ramot', dueDate: '2026-09-01', amount: 9000 },
+      { receivedDate: '2026-09-02', amount: '9000', method: 'מזומן', payer: 'דנה', reference: '', funder: 'פרטי', coverageStart: '2026-09-01', coverageEnd: '2026-09-30' }),
+    landed: (app) => { assert.strictEqual(app.state.receipts.length, 1); assert.strictEqual(app.state.payments[0].status, 'paid'); },
+    rejects: true,
+  },
+  {
+    // Phase 3 PR 2: the patient card's funder editor (its modal stays open).
+    name: 'appendFunder (the patient card funder editor)',
+    action: 'appendFunder',
+    setup: (app) => { app.state.funders = []; },
+    okResponse: { ok: true, row: { patientId: 'pt-1', funder: 'מכבי', effectiveFrom: '2026-10-01', setBy: 'ורד', setAt: '2026-10-04T10:00:00+03:00' } },
+    run: (app) => app.saveFunder({ ...PATIENT }, 'מכבי', '2026-10-01'),
+    landed: (app) => { assert.strictEqual(app.state.funders.length, 1); assert.strictEqual(app.state.funders[0].funder, 'מכבי'); },
+    rejects: true,
   },
 ];
 

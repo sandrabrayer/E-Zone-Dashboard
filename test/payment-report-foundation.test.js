@@ -94,7 +94,9 @@ test('columns: the eleven report columns are APPENDED; the original 24 do not mo
   const { g } = world();
   const cols = arr(g.run('PAYMENT_COLUMNS'));
   assert.deepEqual(cols.slice(0, 24), ORIGINAL_24, 'position IS the data contract');
-  assert.deepEqual(cols.slice(24), REPORT_COLUMNS);
+  assert.deepEqual(cols.slice(24, 35), REPORT_COLUMNS);
+  // PR 2 (CHANGELOG-payment-report-form.md) appended one more after them.
+  assert.deepEqual(cols.slice(35), ['legacyAmountPaid']);
   assert.deepEqual(arr(g.run('PAYMENT_REPORT_COLUMNS')), REPORT_COLUMNS);
   for (const c of REPORT_COLUMNS) {
     assert.equal(cols.filter((x) => x === c).length, 1, c + ' appears once');
@@ -109,7 +111,7 @@ test('columns: an existing 24-column Payments sheet is extended in place — no 
   const legacy = ORIGINAL_24.map((c) => ({ id: 'old1', patientName: 'ותיק', status: 'paid', amountPaid: 100 }[c] || ''));
   S.Payments.appendRow(legacy);
   g.run('getOrCreateSheet_(PAYMENTS_SHEET, PAYMENT_COLUMNS)');
-  assert.deepEqual(S.Payments.grid[0], ORIGINAL_24.concat(REPORT_COLUMNS));
+  assert.deepEqual(S.Payments.grid[0], ORIGINAL_24.concat(REPORT_COLUMNS, ['legacyAmountPaid']));
   assert.deepEqual(S.Payments.grid[1].slice(0, 24), legacy, 'the legacy row is untouched');
 });
 
@@ -564,7 +566,12 @@ test('cleanup workbook: the «חסר גורם מממן» tab is built (owner ו�
 test('scope: no new HTTP action, no new role list entry, and the accounting feed does not leak the new fields', () => {
   const { g } = world();
   const known = arr(g.run('PROXY_KNOWN_ACTIONS'));
-  assert.ok(!known.some((a) => /funder|confirm|paymentReport/i.test(a)), known.join(','));
+  /* PR 2 (CHANGELOG-payment-report-form.md) added exactly two, both behind
+   * PROXY_SECRET and the finance gate: reportPayment and appendFunder.
+   * Still no confirm action (Phase 4). */
+  const pr2 = ['reportPayment', 'appendFunder'];
+  assert.ok(pr2.every((a) => known.includes(a)), known.join(','));
+  assert.ok(!known.filter((a) => pr2.indexOf(a) < 0).some((a) => /funder|confirm|paymentReport/i.test(a)), known.join(','));
   assert.ok(!arr(g.run('APPROVER_ACTIONS')).includes('confirmPayment'));
   assert.ok(!arr(g.run('DELETE_ACTIONS')).includes('confirmPayment'));
   // The accounting feed is an explicit projection (the object around chargedAt): no new key reaches it.

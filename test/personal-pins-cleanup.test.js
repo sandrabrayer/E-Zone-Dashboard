@@ -629,8 +629,10 @@ test('UI: the «בוטל» credit status (cancelCredit) is offered to a deleter 
   assert.deepStrictEqual(Array.from(app.creditStatusOptionKeys('cancelled', false)), ['pending', 'paid', 'cancelled']);
 });
 
-test('service worker: v29 (from v28), with the PR C note; /api/healthcheck is network-only', () => {
-  assert.match(SW_SRC, /var CACHE_VERSION = 'v29';/);
+test('service worker: v29 (from v28) or later, with the PR C note; /api/healthcheck is network-only', () => {
+  // v29 shipped PR C; later PRs bump it again (v30: the payment-report form).
+  const m = /var CACHE_VERSION = 'v(\d+)';/.exec(SW_SRC);
+  assert.ok(m && Number(m[1]) >= 29, m && m[1]);
   assert.ok(SW_SRC.includes('v28 → v29:'));
   const sandbox = { self: { addEventListener() {} }, module: { exports: {} }, URL, caches: {}, fetch() {} };
   vm.createContext(sandbox);

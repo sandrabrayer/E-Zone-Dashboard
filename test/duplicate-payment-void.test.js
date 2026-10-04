@@ -262,12 +262,14 @@ test('A: void is NOT one of the three statuses a recorder can pick', () => {
    * from "לא שולם". */
   assert.deepEqual(plain(app.PAYMENT_STATUS.map((x) => x.id)), ['paid', 'partial', 'unpaid']);
   assert.ok(!app.PAYMENT_STATUS.some((x) => x.id === 'void'));
-  // The row still renders it, pinned on and disabled, rather than falling back
-  // to whichever option happens to be first.
+  // Phase 3 PR 2: the row has no status dropdown at all any more — it shows
+  // its DERIVED state, «מבוטל» for a void row, and a void row offers no
+  // «דווח תשלום».
   const row = fnSource(APP, 'buildBillingRow');
   assert.match(row, /const isVoid = isVoidPayment\(payment\);/);
-  assert.match(row, /\? \[\{ id: PAYMENT_VOID_STATUS, label: PAYMENT_VOID_LABEL \}\]\.concat\(PAYMENT_STATUS\)/);
-  assert.match(row, /state\.mode === 'edit' && !isVoid \? '' : 'disabled'/);
+  assert.match(row, /const stateLabel = isVoid \? PAYMENT_VOID_LABEL : paymentStatusLabel\(payment\.status\);/);
+  assert.match(row, /const canReport = state\.mode === 'edit' && !isVoid && payment\.status !== 'paid' && financeView\(\);/);
+  assert.ok(!/<select class="billing-status"/.test(row), 'no status <select>');
   assert.match(row, /badge void/);
 });
 
@@ -655,6 +657,9 @@ test('H: no new endpoint, and nothing here moves money', () => {
   assert.deepEqual(plain(payActions.sort()), [
     "action === 'accountingPayments'",
     "action === 'getPayments'", "action === 'savePayment'", "action === 'updatePayment'",
+    /* Phase 3 PR 2 (CHANGELOG-payment-report-form.md): the strict «דווח
+     * תשלום» — it only APPENDS a receipt row and re-derives the cycle. */
+    "action === 'reportPayment'",
   ].sort());
   for (const name of ['markPaymentDuplicate', 'reversePaymentVoid']) {
     assert.match(fnSource(APP, name), /savePayment\(/, name + ' must use the one write path');

@@ -577,7 +577,7 @@ test('no phone number and no id (row id, billing triple, paymentUid, patientUid)
   assert.ok(!/pmt-|id-patient|pay::|::/.test(all), 'nothing id-shaped');
   const projected = Object.keys(t.g.digestRow_(rows[0], {})).sort();
   assert.deepEqual(projected, ['amount', 'houseLabel', 'instant', 'key', 'method', 'patientName', 'paymentDate',
-    'previousAmount', 'recordedAt', 'recordedBy', 'updated'].sort(), 'the allow-list');
+    'previousAmount', 'recordedAt', 'recordedBy', 'reference', 'updated'].sort(), 'the allow-list (reference: Phase 3 PR 2)');
 });
 
 test('read-only against the spreadsheet: zero write attempts, never getOrCreateSheet_', () => {

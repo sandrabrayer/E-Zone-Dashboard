@@ -13,7 +13,10 @@
  *            nothing. renewalAmount keeps the dialog text and the write in
  *            agreement.
  *
- * Same vm-sandbox + fake-DOM approach as async-button-busy-states.test.js. */
+ * Same vm-sandbox + fake-DOM approach as async-button-busy-states.test.js.
+ *
+ * Phase 3 PR 2 (CHANGELOG-payment-report-form.md): the confirm-then-mark-paid
+ * step is replaced by the strict «דווח תשלום» form; the tests below pin that. */
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -43,6 +46,9 @@ function fakeButton() {
     getAttribute(k) { return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null; },
     setAttribute(k, v) { this._attrs[k] = String(v); },
     removeAttribute(k) { delete this._attrs[k]; },
+    // The report form (Phase 3 PR 2) looks its fields up by name.
+    querySelector() { return fakeButton(); },
+    querySelectorAll() { return []; },
   };
 }
 function fakeContainerEl() {
@@ -123,68 +129,44 @@ test('renewalAmount uses an existing payment record amount, else the base pay', 
   app.setState({ payments: [] });
 });
 
-/* ===== the initial click writes NOTHING ===== */
+/* ===== Phase 3 PR 2: חידוש תשלום opens the strict «דווח תשלום» form =====
+ * A renewal is money received like any other, so the button no longer marks
+ * the cycle paid behind a confirm dialog: it opens the report form for the
+ * renewal cycle, and nothing is written until a COMPLETE report is sent
+ * (test/payment-report-form.test.js covers the form itself). */
 
-test('clicking חידוש תשלום opens the confirm dialog and writes no payment', () => {
-  app.setState({ mode: 'edit', payments: [] });
+test('clicking חידוש תשלום opens the «דווח תשלום» form for the renewal cycle and writes no payment', () => {
+  app.setState({ mode: 'edit', payments: [], finance: true });
   let writes = 0;
   app.setSavePayment(async () => { writes++; });
   holder.created.length = 0;
   app.confirmRenewPatient(PATIENT, DUE);
   assert.strictEqual(writes, 0, 'no payment written on the initial click');
-  assert.strictEqual(holder.created.length, 1, 'confirm dialog created');
+  assert.strictEqual(holder.created.length, 1, 'the form dialog is created');
   const html = holder.created[0].innerHTML;
-  assert.ok(html.includes('לחדש תשלום עבור'), 'Hebrew confirm phrasing');
-  assert.ok(html.includes('בעז גילה'), 'patient name in the prompt');
-  assert.ok(html.includes('9,000') || html.includes('9000'), 'amount in the prompt');
+  assert.ok(html.includes('דווח תשלום'), 'the report form, not the old confirm');
+  assert.ok(!html.includes('לחדש תשלום עבור'), 'the old mark-paid confirm is gone');
+  assert.ok(html.includes('בעז גילה'), 'patient name in the form');
+  assert.ok(html.includes('9,000') || html.includes('9000'), 'expected amount in the form');
 });
 
-/* ===== אישור → write, with the busy state surviving the re-render ===== */
-
-test('אישור fires the write; the dialog stays open + frozen for the round-trip (spinner survives)', async () => {
-  app.setState({ mode: 'edit', payments: [] });
-  const d = deferred();
-  let saved = null;
-  app.setSavePayment((p) => { saved = p; return d.promise; });
-  // Simulate the destructive optimistic re-render renderDashboard performs:
-  // it rebuilds the renewals LIST — it cannot touch #modal-root. The dialog
-  // node below living in modal-root is exactly what makes the spinner survive.
-  let dashboardRenders = 0;
-  app.setRenderDashboard(() => { dashboardRenders++; });
-  app.setShowToast(() => {});
-
+test('submitting the form without the required fields writes nothing (strict)', () => {
+  app.setState({ mode: 'edit', payments: [], finance: true });
+  let writes = 0;
+  app.setSavePayment(async () => { writes++; });
   holder.created.length = 0;
   app.confirmRenewPatient(PATIENT, DUE);
   const back = holder.created[0];
-  const confirmBtn = back.querySelector('[data-action="confirm"]');
-  const cancelBtn  = back.querySelector('[data-action="cancel"]');
-
-  const clicked = confirmBtn.onclick();
-  // The busy state is applied synchronously, at the tap...
-  assert.strictEqual(confirmBtn.disabled, true, 'confirm frozen');
-  assert.strictEqual(confirmBtn.getAttribute('aria-busy'), 'true');
-  assert.strictEqual(confirmBtn.classList.contains('is-busy'), true, 'spinner class present');
-  // ...and the worker itself runs on a microtask (busyButton wraps it in
-  // Promise.resolve().then), so give it one before asserting the write.
-  await settle();
-  assert.ok(saved, 'savePayment fired on אישור');
-  assert.strictEqual(saved.status, 'paid');
-  assert.ok(dashboardRenders >= 1, 'optimistic re-render ran while the request is pending');
-  // The heart of the fix: while the network write is still pending, the busy
-  // state is alive on the modal button — NOT on a destroyed row button.
-  assert.strictEqual(back.removed, false, 'dialog still open while pending');
-  assert.strictEqual(cancelBtn.disabled, true, 'cancel frozen');
-
-  d.resolve();
-  await clicked;
-  await settle();
-  assert.strictEqual(back.removed, true, 'dialog closes after the round-trip settles');
+  const form = back.querySelector('form');
+  let prevented = false;
+  form.onsubmit({ preventDefault() { prevented = true; } });
+  assert.strictEqual(prevented, true);
+  assert.strictEqual(writes, 0, 'nothing written');
+  assert.strictEqual(back.removed, false, 'the form stays open');
 });
 
-/* ===== ביטול → no write ===== */
-
-test('ביטול closes the dialog and writes nothing', () => {
-  app.setState({ mode: 'edit', payments: [] });
+test('ביטול closes the form and writes nothing', () => {
+  app.setState({ mode: 'edit', payments: [], finance: true });
   let writes = 0;
   app.setSavePayment(async () => { writes++; });
   holder.created.length = 0;
