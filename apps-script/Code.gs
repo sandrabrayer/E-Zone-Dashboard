@@ -6388,7 +6388,7 @@ function paymentReportText_(v) {
 }
 /* "צ׳ק" (geresh) and "צ’ק" are the stored "צ'ק". Nothing else is folded. */
 function paymentReportMethod_(v) {
-  return paymentReportText_(v).replace(/[׳’‘`]/g, "'");
+  return paymentReportText_(v).replace(/[\u05F3\u2019\u2018`]/g, "'");
 }
 function paymentReportRealDate_(y, m, d) {
   if (!(m >= 1 && m <= 12 && d >= 1 && d <= 31 && y >= 1900 && y <= 2999)) return false;
@@ -6440,7 +6440,7 @@ function paymentReportReferenceCode_(v, method) {
   const t = paymentReportText_(v);
   if (!t) return REFERENCE_REQUIRED_METHODS.indexOf(paymentReportMethod_(method)) >= 0 ? 'reference_missing' : '';
   if (t.length < REFERENCE_MIN || t.length > REFERENCE_MAX) return 'reference_invalid';
-  return /^[A-Za-z0-9א-ת][A-Za-z0-9א-ת\-/]*$/.test(t) ? '' : 'reference_invalid';
+  return /^[A-Za-z0-9\u05D0-\u05EA][A-Za-z0-9\u05D0-\u05EA\-/]*$/.test(t) ? '' : 'reference_invalid';
 }
 function paymentReportIssue_(field, code) {
   return { field: field, code: code, hebrewMessage: PAYMENT_REPORT_MESSAGES[code] || code };
