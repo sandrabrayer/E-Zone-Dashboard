@@ -1063,6 +1063,28 @@ const FINANCE_ACTIONS = [
   'reportPayment', 'appendFunder',
 ];
 const FINANCE_USER_IDS = ['vered', 'sandra'];
+
+/* ===== «בקרת גבייה» — the billing-control tab (Phase 4, Sandra 2026-10-04) =====
+ *
+ * Mirrors lib/finance-scope.js BILLING_CONTROL_ACTIONS / CONTROLLER_ACTIONS and
+ * lib/users.js CONTROLLER_USER_IDS (a guard test pins the lists equal).
+ *
+ *   billingControl  a VIEW capability: may open the tab and read its queue.
+ *                   Derived here by stable id — the finance users (Vered,
+ *                   Sandra) plus the controller (Ortal) — and intersected with
+ *                   the server's proxyCaps, like `finance`.
+ *   controller view Ortal's session (CONTROLLER_USER_IDS, by id — never by
+ *                   caps alone, so a narrowed or missing proxyCaps can never
+ *                   widen her view): ONLY the CONTROLLER_ACTIONS; every other
+ *                   action (getData included — no patients, no leads) is
+ *                   refused before anything is read.
+ *
+ * Confirming / flagging still needs the controller or approver ROLE
+ * (confirmPayment_), so Vered sees the tab but cannot decide. */
+const BILLING_CONTROL_ACTIONS = ['billingControlQueue', 'confirmPayment'];
+const CONTROLLER_ACTIONS = ['billingControlQueue', 'confirmPayment', 'debtAging'];
+const CONTROLLER_USER_IDS = ['ortal'];
+const BILLING_CONTROL_FORBIDDEN_MESSAGE = 'אין הרשאה לפעולה זו';
 /* getData keys only billing reads — omitted for a restricted actor. */
 const GETDATA_FINANCE_KEYS = ['billingOverrides'];
 const FINANCE_FORBIDDEN_MESSAGE = 'אין הרשאה לצפות בנתוני גבייה';
@@ -1091,7 +1113,7 @@ const PROXY_KNOWN_ACTIONS = [
   'getData', 'getAdmittedRoster', 'saveAll', 'getPayments', 'savePayment',
   'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
   'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'debtAging', 'cleanupReport',
-  'reportPayment', 'appendFunder',
+  'reportPayment', 'appendFunder', 'billingControlQueue', 'confirmPayment',
   'moveLeadIrrelevant', 'restoreLead',
   'removeLead', 'deletePatientRow', 'dischargePatient', 'restorePatient',
   'restorePatientToActive', 'deleteMeetingReport', 'meetingReportLeads',
@@ -1361,6 +1383,11 @@ function securityCallersReportNow() {
 function handle_(params) {
   try {
     const action = params.action;
+    // «בקרת גבייה» (Phase 4): the controller view reaches only its own
+    // actions, and the tab's actions need billingControl — refused BEFORE any
+    // read or write (server.js already answered 403; this is the second lock).
+    const viewNo = viewRefused_(params, action);
+    if (viewNo) return jsonOut_(viewNo);
     // Restricted view: refused BEFORE any read or write (server.js already
     // answered 403; this is the second lock).
     if (financeRefused_(params, action)) {
@@ -1403,7 +1430,9 @@ function handle_(params) {
       // approver = Sandra). From hasRole_ — the verified actor — only.
       const paid = upsertPayment_(payment, requestUser_(params),
         { actor: actorLabel_(params), verified: actingUser_(params).verified, approver: hasRole_(params, 'approver'),
-          privileged: hasRole_(params, 'controller') || hasRole_(params, 'approver') });
+          privileged: hasRole_(params, 'controller') || hasRole_(params, 'approver'),
+          // Item H (Phase 4): the HTTP save path never writes money directly.
+          refuseLegacyMoney: true });
       if (paid && paid.error === 'forbidden_role') {
         roleRefusedLog_(params, paid.operation || 'unvoidPayment');
         delete paid.operation;
@@ -1419,6 +1448,21 @@ function handle_(params) {
     }
     // The patient card's funder editor: appends ONE Funders row.
     if (action === 'appendFunder') return jsonOut_(appendFunderAction_(params));
+    // «בקרת גבייה» (Phase 4): the verification queue (READ-ONLY) and Ortal's
+    // decision on a receipt. The decision needs the controller or approver
+    // ROLE of the verified session (never anything in the body).
+    if (action === 'billingControlQueue') {
+      return jsonOut_(billingControlQueue_({ approver: hasRole_(params, 'approver') }));
+    }
+    if (action === 'confirmPayment') {
+      const privileged = hasRole_(params, 'controller') || hasRole_(params, 'approver');
+      if (!privileged) {
+        roleRefusedLog_(params, CONFIRM_OPERATION);
+        return jsonOut_({ ok: false, error: 'forbidden_role', message: ROLE_FORBIDDEN_MESSAGE });
+      }
+      return jsonOut_(confirmPayment_(parseJsonParam_(params.confirm), requestUser_(params),
+        { actor: actorLabel_(params) }));
+    }
     if (action === 'upsertBillingOverride') {
       return jsonOut_(upsertBillingOverride_(parseJsonParam_(params.override), requestUser_(params)));
     }
@@ -1588,7 +1632,7 @@ function proxyActor_(user, userId, auth, roles, caps, legacy) {
   let r = cleanRoles_(roles);
   if (a === 'none') r = [];
   if (id !== APPROVER_USER_ID) r = r.filter(function (x) { return x !== 'approver'; });
-  const c = legacy === true ? ['finance'] : actorCaps_(a, id, caps);
+  const c = legacy === true ? ['finance', 'billingControl'] : actorCaps_(a, id, caps);
   return { verified: true, user: String(user || ''), id: id, auth: a, roles: r, caps: c };
 }
 
@@ -1597,7 +1641,9 @@ function proxyActor_(user, userId, auth, roles, caps, legacy) {
  * nothing), then intersected with the server's proxyCaps when it sent them
  * (an older server that sends none is judged by the derivation alone). Pure. */
 function actorCaps_(auth, id, sent) {
-  const derived = auth === 'personal' && FINANCE_USER_IDS.indexOf(id) >= 0 ? ['finance'] : [];
+  let derived = [];
+  if (auth === 'personal' && FINANCE_USER_IDS.indexOf(id) >= 0) derived = ['finance', 'billingControl'];
+  else if (auth === 'personal' && CONTROLLER_USER_IDS.indexOf(id) >= 0) derived = ['billingControl'];
   if (sent === undefined) return derived;
   let list = sent;
   if (typeof list === 'string') {
@@ -1615,11 +1661,42 @@ function hasCapability_(params, cap) {
 }
 
 /* true when handle_ must refuse `action`: a billing action from a verified
- * proxy call whose actor lacks `finance` (restricted view). */
+ * proxy call whose actor lacks `finance` (restricted view). The controller
+ * view's own allow-list (CONTROLLER_ACTIONS, e.g. debtAging for the
+ * «חובות מעל 60 יום» export) is decided by viewRefused_ instead. */
 function financeRefused_(params, action) {
   if (FINANCE_ACTIONS.indexOf(String(action)) < 0) return false;
   const a = actingUser_(params);
-  return a.verified && a.caps.indexOf('finance') < 0;
+  if (!a.verified) return false;
+  if (isControllerActor_(a) && CONTROLLER_ACTIONS.indexOf(String(action)) >= 0) return a.caps.indexOf('billingControl') < 0;
+  return a.caps.indexOf('finance') < 0;
+}
+
+/* Whether a verified actor is the controller view (Ortal): by stable id on a
+ * personal session — never by caps, so a missing or narrowed proxyCaps can
+ * only shrink what she reaches. Pure. */
+function isControllerActor_(a) {
+  return !!a && a.verified === true && a.auth === 'personal' && CONTROLLER_USER_IDS.indexOf(String(a.id)) >= 0;
+}
+
+/* The «בקרת גבייה» view gate (Phase 4), run by handle_ BEFORE dispatch:
+ *   - the controller view reaches ONLY CONTROLLER_ACTIONS (getData, every
+ *     lead / patient / billing action → refused);
+ *   - BILLING_CONTROL_ACTIONS need the billingControl capability (Shiran and
+ *     Yael → refused).
+ * → null (allowed) or the refusal body. A call without a valid PROXY_SECRET
+ * has no actor: enforce mode refuses it at the gate already. */
+function viewRefused_(params, action) {
+  const a = actingUser_(params);
+  if (!a.verified) return null;
+  const act = String(action == null ? '' : action);
+  if (isControllerActor_(a) && CONTROLLER_ACTIONS.indexOf(act) < 0) {
+    return { ok: false, error: 'forbidden', message: BILLING_CONTROL_FORBIDDEN_MESSAGE };
+  }
+  if (BILLING_CONTROL_ACTIONS.indexOf(act) >= 0 && a.caps.indexOf('billingControl') < 0) {
+    return { ok: false, error: 'forbidden', message: BILLING_CONTROL_FORBIDDEN_MESSAGE };
+  }
+  return null;
 }
 
 /* The actor of any call WITHOUT a valid PROXY_SECRET: the legacy body user is
@@ -6166,6 +6243,7 @@ function upsertPayment_(payment, user, ctx) {
      * has receipts gets its money DERIVED from them, whatever the payload
      * says, and cannot be voided while a live receipt still pays it. */
     const isReceipt = isReceiptRow_(payment) || (hadRow && isReceiptRow_(prev));
+    let cycleHasReceipts = false;
     if (isReceipt && !hadRow) {
       return { ok: false, error: 'receipt_via_report_only', message: 'קבלה נרשמת רק דרך «דווח תשלום»' };
     }
@@ -6188,6 +6266,7 @@ function upsertPayment_(payment, user, ctx) {
       });
       const mine = linkReceiptsToCycles_(rowsNow).byCycle[targetRow - 2];
       if (mine && mine.length) {
+        cycleHasReceipts = true;
         const live = mine.some(function (r) { return !isVoidStatus_(r.status); });
         if (isVoidStatus_(payment.status) && !isVoidStatus_(prev.status) && live) {
           return { ok: false, error: 'cycle_has_receipts', message: 'יש קבלות פעילות על המחזור — יש לבטל אותן קודם' };
@@ -6199,6 +6278,18 @@ function upsertPayment_(payment, user, ctx) {
           payment.status = d.status;
         }
       }
+    }
+
+    /* Item H (Phase 4, closes PR #176 choice 7): money is reported ONLY
+     * through «דווח תשלום». A cycle with no receipts used to accept the old
+     * direct amountPaid / status write (a stale cached page); it is refused
+     * now too — nothing is written. Linking, the coverage period, a void and
+     * Sandra's un-void are unaffected (they do not move money). Decided for
+     * every call through handle_ (ctx.refuseLegacyMoney); a direct editor-run
+     * call has no HTTP caller and keeps the old behaviour. */
+    if (c.refuseLegacyMoney === true && !isReceipt && !cycleHasReceipts) {
+      const legacyNo = legacyMoneyWriteRefused_(payment, hadRow ? prev : null);
+      if (legacyNo) return legacyNo;
     }
 
     /* The payment report columns (Phase 3 PR 1). Decided against the STORED
@@ -6261,6 +6352,26 @@ function upsertPayment_(payment, user, ctx) {
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
+}
+
+/* Item H (Phase 4): the refusal a direct money write on a cycle gets.
+ * PURE. payment = the request; prev = the stored row (null on insert).
+ * Refused when the request CHANGES the money a cycle shows — its amountPaid,
+ * or its paid / partial / unpaid status — outside a void / un-void move.
+ * A request that echoes the stored figures (linking, the coverage period, an
+ * override frozen on an unpaid cycle) passes. → null | refusal */
+const USE_REPORT_PAYMENT_MESSAGE = 'יש לדווח תשלום דרך ״דווח תשלום״';
+function legacyMoneyWriteRefused_(payment, prev) {
+  const pay = payment || {};
+  const had = !!prev;
+  const P = prev || {};
+  if (isVoidStatus_(pay.status) || (had && isVoidStatus_(P.status))) return null;
+  const refuse = { ok: false, error: 'use_report_payment', message: USE_REPORT_PAYMENT_MESSAGE };
+  const sentPaid = pay.amountPaid !== undefined && pay.amountPaid !== null && String(pay.amountPaid).trim() !== '';
+  if (sentPaid && receiptMoney_(pay.amountPaid) !== (had ? receiptMoney_(P.amountPaid) : 0)) return refuse;
+  const sentStatus = pay.status !== undefined && pay.status !== null && String(pay.status).trim() !== '';
+  if (sentStatus && paymentStatus_(pay.status) !== (had ? paymentStatus_(P.status) : 'unpaid')) return refuse;
+  return null;
 }
 
 /* Belt-and-suspenders over the whole-column '@' format getOrCreateSheet_
@@ -7322,6 +7433,375 @@ function rederiveReceiptCycleLocked_(sh, stampUser, receiptId) {
   setPaymentRowTextCols_(sh, at + 2);
   sh.getRange(at + 2, 1, 1, PAYMENT_COLUMNS.length).setValues([objectToRow_(out, PAYMENT_COLUMNS)]);
   return out;
+}
+
+/* ===== «בקרת גבייה» — Ortal's verification (Phase 4, Sandra 2026-10-04) =====
+ * docs/billing-control-plan.md Phase 4 / §7; CHANGELOG-billing-control-tab.md.
+ *
+ * Every receipt (rcpt- row, Phase 3 PR 2) is born confirmStatus 'reported'.
+ * Ortal (controller) — or Sandra (approver) — checks the bank herself, outside
+ * the system, and decides per receipt:
+ *   reported → confirmed   «אושר בבנק» — the money is real revenue
+ *   reported → flagged     «לא נמצא / בעיה» — flagNote REQUIRED (2–300 chars)
+ *   flagged  → reported    «הסר דגל» (she was wrong)
+ *   flagged  → confirmed   allowed (found after all)
+ *   confirmed → reported / flagged
+ *                          allowed (a mistake), never silent: AuditLog
+ * confirmedBy / confirmedAt are stamped ONCE, at the first confirmation, and
+ * never re-stamped or cleared; every transition writes ONE AuditLog row with
+ * the old and new status, the old and new note, and the actor. The amount,
+ * the date and every other cell of the receipt are never touched — a wrong
+ * amount is flagged, and Vered cancels and re-reports (the existing flow). */
+const CONFIRM_BATCH_MAX = 200;
+const BILLING_CONTROL_FLAG_STALE_DAYS = 7;
+const BILLING_CONTROL_DEBT_BUCKET = 'd61_plus';
+const CONFIRM_ERROR_MESSAGES = {
+  confirm_status_invalid: 'סטטוס אישור לא מוכר',
+  bad_ids: 'לא נבחרו קבלות לאישור',
+  flag_note_invalid: 'בסימון «בעיה» חובה לפרט (2 עד 300 תווים)',
+  not_found: 'הקבלה לא נמצאה — רעננו את הדף',
+  receipt_void: 'הקבלה בוטלה — אין מה לאשר',
+  confirm_without_report: 'אין דיווח תשלום לאשר — חסר תאריך קבלה',
+  sheet_header_clash: 'מבנה גיליון התשלומים השתנה — פנו לסנדרה',
+};
+
+function confirmError_(code) {
+  return { ok: false, error: code, message: CONFIRM_ERROR_MESSAGES[code] || code };
+}
+
+/* A receipt's stored confirm status: blank on a receipt reads 'reported'. */
+function receiptConfirmStatus_(row) {
+  const cs = paymentCell_(row && row.confirmStatus);
+  return cs || 'reported';
+}
+
+/* The confirm request, validated. PURE.
+ *   body { ids: [rcpt-…] | id, status, flagNote }
+ * → { ok:true, ids, status, note } | refusal */
+function confirmRequestClean_(body) {
+  const b = body && typeof body === 'object' ? body : {};
+  const status = String(b.status == null ? '' : b.status).trim();
+  if (CONFIRM_STATUSES.indexOf(status) < 0) return confirmError_('confirm_status_invalid');
+  const raw = Array.isArray(b.ids) ? b.ids : (b.id !== undefined && b.id !== null ? [b.id] : []);
+  if (!raw.length || raw.length > CONFIRM_BATCH_MAX) return confirmError_('bad_ids');
+  const ids = [];
+  for (let i = 0; i < raw.length; i++) {
+    const id = String(raw[i] == null ? '' : raw[i]).trim();
+    if (!id || id.length > 300 || /[\u0000-\u001f\u007f]/.test(id) || id.indexOf(RECEIPT_ID_PREFIX) !== 0) return confirmError_('bad_ids');
+    if (ids.indexOf(id) < 0) ids.push(id);
+  }
+  let note = '';
+  if (status === 'flagged') {
+    const rawNote = String(b.flagNote == null ? '' : b.flagNote);
+    note = paymentFlagNoteClean_(rawNote);
+    const full = rawNote.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().replace(/^[=+@-]+/, '').trim();
+    if (note.length < FLAG_NOTE_MIN || full.length > FLAG_NOTE_MAX) return confirmError_('flag_note_invalid');
+  }
+  return { ok: true, ids: ids, status: status, note: note };
+}
+
+/* The next confirm cells of ONE stored receipt for the request. PURE.
+ * → { changed:false } | { changed:true, from, to, oldNote, cells:{confirmStatus,
+ *     confirmedBy, confirmedAt, flagNote} } | refusal */
+function confirmTransition_(row, req, user, nowStamp) {
+  if (isVoidStatus_(row.status)) return confirmError_('receipt_void');
+  const rd = row.receivedDate instanceof Date ? localPartsISO_(row.receivedDate) : paymentReportDate_(row.receivedDate);
+  if (!rd) return confirmError_('confirm_without_report');
+  const from = receiptConfirmStatus_(row);
+  const oldNote = paymentCell_(row.flagNote);
+  const to = req.status;
+  const note = to === 'flagged' ? req.note : '';
+  if (from === to && note === oldNote) return { changed: false };
+  let by = paymentCell_(row.confirmedBy), at = paymentCell_(row.confirmedAt);
+  if (to === 'confirmed' && !by && !at) { by = String(user == null ? '' : user); at = nowStamp; }
+  return {
+    changed: true, from: from, to: to, oldNote: oldNote,
+    cells: { confirmStatus: to, confirmedBy: by, confirmedAt: at, flagNote: note },
+  };
+}
+
+/* The fields of a receipt the tab / the export may show — an explicit
+ * allow-list (no patientUid, no paymentUid, no triple id). PURE. */
+function billingControlReceipt_(r, flaggedAt) {
+  const iso = function (v) {
+    if (v instanceof Date) return localPartsISO_(v);
+    return paymentReportDate_(v) || coverageDateISO_(v) || '';
+  };
+  const cs = receiptConfirmStatus_(r);
+  return {
+    id: paymentCell_(r.id),
+    cycleId: paymentCell_(r.cycleId),
+    patientName: paymentCell_(r.patientName),
+    houseId: paymentCell_(r.houseId),
+    amount: receiptMoney_(r.amountPaid !== '' && r.amountPaid !== undefined && r.amountPaid !== null ? r.amountPaid : r.amount),
+    receivedDate: iso(r.receivedDate),
+    method: paymentCell_(r.method),
+    reference: paymentCell_(r.reference),
+    payer: paymentCell_(r.payer),
+    funder: paymentCell_(r.funder),
+    coverageStart: iso(r.coverageStart),
+    coverageEnd: iso(r.coverageEnd),
+    recordedBy: paymentCell_(r.recordedBy),
+    recordedAt: paymentCell_(r.recordedAt),
+    confirmStatus: cs,
+    confirmedBy: paymentCell_(r.confirmedBy),
+    confirmedAt: paymentCell_(r.confirmedAt),
+    flagNote: cs === 'flagged' ? paymentCell_(r.flagNote) : '',
+    flaggedAt: cs === 'flagged' ? String(flaggedAt || paymentCell_(r.recordedAt) || '') : '',
+  };
+}
+
+/* Newest first: receivedDate, then recordedAt, then id. PURE. */
+function billingControlSort_(list) {
+  return list.sort(function (a, b) {
+    if (a.receivedDate !== b.receivedDate) return a.receivedDate < b.receivedDate ? 1 : -1;
+    if (a.recordedAt !== b.recordedAt) return a.recordedAt < b.recordedAt ? 1 : -1;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+}
+
+/* { count, amount } per confirm status over projected receipts. PURE. */
+function billingControlCounts_(list) {
+  const out = { reported: { count: 0, amount: 0 }, flagged: { count: 0, amount: 0 }, confirmed: { count: 0, amount: 0 } };
+  list.forEach(function (r) {
+    const b = out[r.confirmStatus];
+    if (!b) return;
+    b.count++;
+    b.amount = receiptMoney_(b.amount + r.amount);
+  });
+  return out;
+}
+
+/* The day ('YYYY-MM-DD', Israel) of a stored stamp, or ''. */
+function billingControlDay_(stamp) {
+  const s = String(stamp == null ? '' : stamp).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s) && s.length === 10) return s;
+  const t = Date.parse(s);
+  if (!isFinite(t)) return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : '';
+  return String(Utilities.formatDate(new Date(t), 'Asia/Jerusalem', 'yyyy-MM-dd')).slice(0, 10);
+}
+
+/* Whole days from the day of `stamp` to todayIso (0 when unknown). PURE. */
+function billingControlAgeDays_(stamp, todayIso) {
+  const d = billingControlDay_(stamp);
+  if (!d || !todayIso) return 0;
+  return Math.max(0, paymentReportDayNum_(todayIso) - paymentReportDayNum_(d));
+}
+
+/* The latest «flagged» decision per receipt id, from AuditLog (both this
+ * action and the savePayment path write 'payment_confirm_flagged').
+ * READ-ONLY, fail-soft: an unreadable log → {} (the age falls back to
+ * recordedAt). */
+function billingControlFlagTimes_() {
+  const out = {};
+  try {
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AUDIT_LOG_SHEET);
+    if (!sh) return out;
+    readSheet_(sh, AUDIT_LOG_COLUMNS).forEach(function (r) {
+      if (String(r.action) !== 'payment_confirm_flagged') return;
+      let d = null;
+      try { d = JSON.parse(String(r.details || '')); } catch (_) { d = null; }
+      const id = d && d.paymentId ? String(d.paymentId) : '';
+      if (!id) return;
+      const at = String(r.timestamp || '');
+      if (!out[id] || at > out[id]) out[id] = at;
+    });
+  } catch (_) { /* fail-soft */ }
+  return out;
+}
+
+/* «חובות מעל 60 יום» from debtAging_'s own output (no second engine): the
+ * cycles in the 61+ bucket, recorded debt and unrecorded cycles kept apart
+ * (never summed — the debt-aging rule). PURE. */
+function billingControlDebt60_(aging) {
+  if (!aging || aging.ok !== true) return null;
+  const out = { asOf: aging.asOf, recorded: { count: 0, amount: 0 }, unrecorded: { count: 0, amount: 0 }, rows: [] };
+  (aging.byPatient || []).forEach(function (p) {
+    (p.cycles || []).forEach(function (c) {
+      if (c.bucket !== BILLING_CONTROL_DEBT_BUCKET) return;
+      const b = c.kind === 'recorded' ? out.recorded : out.unrecorded;
+      b.count++;
+      b.amount = receiptMoney_(b.amount + (Number(c.balance) || 0));
+      out.rows.push({
+        patientName: String(p.name || ''), houseId: String(p.houseId || ''), start: String(c.start || ''),
+        balance: receiptMoney_(c.balance), days: Number(c.days) || 0, kind: c.kind === 'recorded' ? 'recorded' : 'unrecorded',
+      });
+    });
+  });
+  out.rows.sort(function (a, b) { return b.days - a.days || (a.patientName < b.patientName ? -1 : a.patientName > b.patientName ? 1 : 0); });
+  return out;
+}
+
+/* Refund exceptions awaiting Sandra (plan §7.4 / §8.5), from existing data:
+ *   awaiting  — refundPayoutForecastFor_'s «ממתין להחלטה» stays
+ *   overPolicy — a PENDING credit whose amount exceeds its stored
+ *                calculatedAmount (the policy figure)
+ * PURE over its inputs. */
+function billingControlRefundExceptions_(forecast, credits) {
+  const out = [];
+  const aw = forecast && forecast.awaiting_decision ? forecast.awaiting_decision : null;
+  ((aw && aw.byPayoutDate) || []).forEach(function (g) {
+    (g.rows || []).forEach(function (r) {
+      out.push({
+        kind: 'awaiting_decision', patientName: String(r.patientName || ''), houseId: String(r.houseId || ''),
+        exitDate: String(r.exitDate || ''), amount: receiptMoney_(r.suggestedAmount), policyAmount: receiptMoney_(r.suggestedAmount),
+        payoutDate: String(r.payoutDate || ''),
+      });
+    });
+  });
+  (Array.isArray(credits) ? credits : []).forEach(function (c) {
+    if (!c || String(c.status == null ? '' : c.status).trim() !== 'pending') return;
+    const amount = Number(c.amount), calc = Number(c.calculatedAmount);
+    if (!isFinite(amount) || !isFinite(calc) || String(c.calculatedAmount).trim() === '') return;
+    if (receiptMoney_(amount) <= receiptMoney_(calc)) return;
+    out.push({
+      kind: 'over_policy', patientName: String(c.patientName || ''), houseId: String(c.houseId || ''),
+      exitDate: '', amount: receiptMoney_(amount), policyAmount: receiptMoney_(calc),
+      payoutDate: refundForecastIso_(c.payoutDate) || String(c.payoutDate || ''),
+      reason: String(c.overrideReason || ''),
+    });
+  });
+  return out;
+}
+
+/* The whole queue answer from already-read rows. PURE apart from the clock
+ * passed in.
+ *   rows       Payments row objects
+ *   flagTimes  { receiptId: ISO } (AuditLog)
+ *   opts       { todayIso, approver, aging (debtAging_ output), forecast, credits }
+ * Sandra's «חריגים פתוחים» (read-only) rides only an approver answer. */
+function billingControlQueueFor_(rows, flagTimes, opts) {
+  const o = opts || {};
+  const today = o.todayIso;
+  const split = paymentRowsDerived_(Array.isArray(rows) ? rows : []);
+  const ft = flagTimes || {};
+  const receipts = billingControlSort_(split.receipts.filter(function (r) {
+    return !isVoidStatus_(r.status);
+  }).map(function (r) { return billingControlReceipt_(r, ft[paymentCell_(r.id)]); }));
+  const debt60 = billingControlDebt60_(o.aging);
+  const out = {
+    ok: true, today: today, receipts: receipts, counts: billingControlCounts_(receipts),
+    debt60: debt60 ? { asOf: debt60.asOf, recorded: debt60.recorded, unrecorded: debt60.unrecorded } : null,
+    flagStaleDays: BILLING_CONTROL_FLAG_STALE_DAYS,
+  };
+  if (o.approver === true) {
+    out.exceptions = {
+      flaggedOld: receipts.filter(function (r) {
+        return r.confirmStatus === 'flagged' && billingControlAgeDays_(r.flaggedAt, today) > BILLING_CONTROL_FLAG_STALE_DAYS;
+      }).map(function (r) {
+        return Object.assign({}, r, { ageDays: billingControlAgeDays_(r.flaggedAt, today) });
+      }),
+      debtsOver60: debt60 ? debt60.rows : [],
+      refundExceptions: billingControlRefundExceptions_(o.forecast, o.credits),
+    };
+  }
+  return out;
+}
+
+/**
+ * action=billingControlQueue — READ-ONLY. PROXY_SECRET-gated (not in
+ * OPEN_ACTIONS), needs billingControl (Vered, Sandra, Ortal). Reads Payments,
+ * AuditLog, and — through the existing read actions — debt aging as of today
+ * and (approver only) the refund forecast + Credits. Never creates a sheet,
+ * no lock, no write. The minimal payload the tab needs: no patient or lead
+ * list, no clinical field.
+ */
+function billingControlQueue_(opts) {
+  try {
+    const o = opts || {};
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sh = ss.getSheetByName(PAYMENTS_SHEET);
+    const rows = sh ? readSheet_(sh, PAYMENT_COLUMNS) : [];
+    const today = paymentReportToday_();
+    let aging = null;
+    try { aging = debtAgingAction_({ asOf: today }); } catch (_) { aging = null; }
+    let forecast = null, credits = [];
+    if (o.approver === true) {
+      try { forecast = refundPayoutForecast_(); } catch (_) { forecast = null; }
+      try { const csh = ss.getSheetByName(CREDITS_SHEET); credits = csh ? readSheet_(csh, CREDIT_COLUMNS) : []; } catch (_) { credits = []; }
+    }
+    const out = billingControlQueueFor_(rows, billingControlFlagTimes_(), {
+      todayIso: today, approver: o.approver === true, aging: aging, forecast: forecast, credits: credits,
+    });
+    out.generatedAt = new Date().toISOString();
+    return out;
+  } catch (e) {
+    return { ok: false, error: (e && e.code) || 'billing_control_failed' };
+  }
+}
+
+/**
+ * action=confirmPayment — Ortal's decision on one or more receipts.
+ * PROXY_SECRET-gated, needs billingControl AND the controller or approver
+ * role (handle_ checks the role from the verified session before calling).
+ *
+ *   body  { ids: ['rcpt-…', …] (1–200) | id, status: 'confirmed' | 'flagged'
+ *           | 'reported', flagNote (flagged: 2–300 chars) }
+ *
+ * ATOMIC: every id is checked first (exists, is a live receipt with a
+ * receivedDate); one problem → { ok:false, error, message, id } and NOTHING is
+ * written. Only the four confirm cells move. One AuditLog row per change.
+ * → { ok:true, changed:[projected receipts], unchanged:N }
+ */
+function confirmPayment_(body, user, ctx) {
+  const req = confirmRequestClean_(body);
+  if (!req.ok) return req;
+  const c = ctx || {};
+  const stampUser = String(user == null ? '' : user);
+  const auditActor = c.actor === undefined ? stampUser : String(c.actor);
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('confirmPayment_');
+  try {
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PAYMENTS_SHEET);
+    if (!sh || sh.getLastRow() < 2) return Object.assign(confirmError_('not_found'), { id: req.ids[0] });
+    const header = sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getValues()[0];
+    if (paymentReportHeaderClash_(header).length) return confirmError_('sheet_header_clash');
+    const grid = sh.getRange(2, 1, sh.getLastRow() - 1, PAYMENT_COLUMNS.length).getValues();
+    const idIdx = PAYMENT_COLUMNS.indexOf('id');
+    const at = {};
+    grid.forEach(function (g, i) { const id = String(g[idIdx] == null ? '' : g[idIdx]).trim(); if (id && !(id in at)) at[id] = i; });
+    const nowStamp = israelTimestamp_();
+    const plan = [];
+    for (let k = 0; k < req.ids.length; k++) {
+      const id = req.ids[k];
+      if (!(id in at)) return Object.assign(confirmError_('not_found'), { id: id });
+      const row = {};
+      for (let j = 0; j < PAYMENT_COLUMNS.length; j++) row[PAYMENT_COLUMNS[j]] = grid[at[id]][j];
+      const t = confirmTransition_(row, req, stampUser, nowStamp);
+      if (t.ok === false) return Object.assign(t, { id: id });
+      plan.push({ id: id, index: at[id], row: row, t: t });
+    }
+    const first = PAYMENT_COLUMNS.indexOf('confirmStatus');
+    const changed = [];
+    let unchanged = 0;
+    plan.forEach(function (p) {
+      if (!p.t.changed) { unchanged++; return; }
+      const cells = p.t.cells;
+      setPaymentRowTextCols_(sh, p.index + 2);
+      sh.getRange(p.index + 2, first + 1, 1, 4).setValues([[cells.confirmStatus, cells.confirmedBy, cells.confirmedAt, cells.flagNote]]);
+      Object.keys(cells).forEach(function (k) { p.row[k] = cells[k]; });
+      logAudit_('payment_confirm_' + p.t.to, 'confirmPayment_',
+        String(p.row.patientUid || ''), String(p.row.patientName || ''), {
+          paymentId: p.id,
+          paymentUid: String(p.row.paymentUid || ''),
+          from: p.t.from,
+          to: p.t.to,
+          oldFlagNote: p.t.oldNote,
+          flagNote: cells.flagNote,
+          amount: receiptMoney_(p.row.amountPaid !== '' ? p.row.amountPaid : p.row.amount),
+          by: stampUser,
+          at: nowStamp,
+        }, auditActor);
+      // The row as the tab shows it. cycleId is the queue's (the link needs
+      // every row), so it is left out here rather than sent blank.
+      const proj = billingControlReceipt_(p.row, p.t.to === 'flagged' ? nowStamp : '');
+      delete proj.cycleId;
+      changed.push(proj);
+    });
+    return { ok: true, changed: changed, unchanged: unchanged };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
 }
 
 /* action=appendFunder — the patient card's funder editor (finance-gated).
@@ -11806,6 +12286,9 @@ const DIGEST_TZ = 'Asia/Jerusalem';
 const DIGEST_TRIGGER_HANDLER = 'paymentsDigestJob';
 const DIGEST_TRIGGER_HOUR = 8;
 const DIGEST_DASHBOARD_URL = 'https://ezone-dashboard.up.railway.app';
+/* Phase 4: the «בקרת גבייה» tab — the deep link the digest's «ממתינים
+ * לאימות» line opens (app.js screenFromHash). */
+const DIGEST_BILLING_CONTROL_URL = DIGEST_DASHBOARD_URL + '/#billing-control';
 const DIGEST_SENDER_NAME = 'E-ZONE Dashboard';
 /* SimpleDateFormat 'u': 1 = Monday … 7 = Sunday. Friday and Saturday skip. */
 const DIGEST_SKIP_WEEKDAYS = [5, 6];
@@ -11987,6 +12470,18 @@ function digestSelect_(rowObjs, sinceMs, untilMs, ledger) {
   return out;
 }
 
+/* Phase 4: how many live receipts still wait for Ortal's check
+ * (confirmStatus 'reported', or blank on a receipt). Counts only — no name,
+ * no amount. PURE over Payments row objects. */
+function digestPendingCount_(rowObjs) {
+  let n = 0;
+  (Array.isArray(rowObjs) ? rowObjs : []).forEach(function (o) {
+    if (!isReceiptRow_(o) || isVoidStatus_(o.status)) return;
+    if (receiptConfirmStatus_(o) === 'reported') n++;
+  });
+  return n;
+}
+
 /* Totals per house (in first-seen order) and overall. */
 function digestTotals_(rows) {
   const byHouse = [];
@@ -12013,17 +12508,24 @@ function digestCompose_(rows, ctx) {
   const wrap = '<div dir="rtl" style="direction:rtl;text-align:right;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1f2328;">';
   const link = '<p style="margin:16px 0 0;"><a href="' + digestEsc_(DIGEST_DASHBOARD_URL) + '" style="color:#0b6e4f;">פתיחת הדשבורד</a></p>';
   const note = '<p style="margin:12px 0 0;color:#57606a;font-size:12px;">«נרשם» = דווח כשולם בדשבורד, לא אישור שהכסף הגיע לבנק. הסכומים כוללים מע״מ.</p>';
+  /* Phase 4: one line with the count still waiting for her check, linking
+   * straight to the «בקרת גבייה» tab. Absent when the count is unknown. */
+  const pending = ctx.pendingCount === undefined || ctx.pendingCount === null ? null : Math.max(0, Number(ctx.pendingCount) || 0);
+  const pendingHtml = pending === null ? '' :
+    '<p style="margin:0 0 10px;font-weight:bold;">ממתינים לאימות: ' + pending +
+    ' · <a href="' + digestEsc_(DIGEST_BILLING_CONTROL_URL) + '" style="color:#0b6e4f;">לטאב «בקרת גבייה»</a></p>';
+  const pendingText = pending === null ? '' : 'ממתינים לאימות: ' + pending + ' — ' + DIGEST_BILLING_CONTROL_URL + '\n\n';
 
   if (!rows.length) {
     const html = wrap +
-      '<p style="margin:0 0 8px;font-weight:bold;">אין תשלומים חדשים</p>' +
+      '<p style="margin:0 0 8px;font-weight:bold;">אין תשלומים חדשים</p>' + pendingHtml +
       '<p style="margin:0;">' + digestEsc_(windowText) + '</p>' + note + link + '</div>';
-    const text = 'אין תשלומים חדשים\n' + digestPlain_(windowText) + '\n\nפתיחת הדשבורד: ' + DIGEST_DASHBOARD_URL;
-    return { subject: subject, htmlBody: html, body: text, count: 0, total: 0 };
+    const text = 'אין תשלומים חדשים\n' + pendingText + digestPlain_(windowText) + '\n\nפתיחת הדשבורד: ' + DIGEST_DASHBOARD_URL;
+    return { subject: subject, htmlBody: html, body: text, count: 0, total: 0, pending: pending };
   }
 
   const head = ['מטופל', 'בית', 'סכום (כולל מע״מ)', 'תאריך תשלום', 'אמצעי', 'אסמכתא', 'נרשם ע״י', 'נרשם ב-', ''];
-  let html = wrap + '<p style="margin:0 0 10px;">' + digestEsc_(windowText) + '</p>' +
+  let html = wrap + pendingHtml + '<p style="margin:0 0 10px;">' + digestEsc_(windowText) + '</p>' +
     '<table dir="rtl" cellpadding="0" cellspacing="0" style="border-collapse:collapse;direction:rtl;">' +
     '<tr>' + head.map(function (h) { return '<th style="' + th + '">' + digestEsc_(h) + '</th>'; }).join('') + '</tr>';
   const lines = [];
@@ -12055,13 +12557,13 @@ function digestCompose_(rows, ctx) {
     '</td><td style="' + th + 'white-space:nowrap;">' + digestEsc_(digestMoney_(totals.amount)) + '</td></tr></table>';
   html += note + link + '</div>';
 
-  const text = digestPlain_(windowText) + '\n\n' +
+  const text = pendingText + digestPlain_(windowText) + '\n\n' +
     'מטופל | בית | סכום | תאריך תשלום | אמצעי | אסמכתא | נרשם ע״י | נרשם ב-\n' + lines.join('\n') +
     '\n\nסיכום לפי בית:\n' + sumLines.join('\n') +
     '\nסה״כ: ' + totals.count + ' תשלומים, ' + digestMoney_(totals.amount) +
     '\n\n«נרשם» = דווח כשולם בדשבורד, לא אישור שהכסף הגיע לבנק. הסכומים כוללים מע״מ.' +
     '\nפתיחת הדשבורד: ' + DIGEST_DASHBOARD_URL;
-  return { subject: subject, htmlBody: html, body: text, count: totals.count, total: totals.amount };
+  return { subject: subject, htmlBody: html, body: text, count: totals.count, total: totals.amount, pending: pending };
 }
 
 /* ---------------- the ledger (Script Properties, chunked) ---------------- */
@@ -12126,11 +12628,13 @@ function digestBuild_(props, now, test) {
   const firstRun = !isFinite(lastMs);
   const sinceMs = firstRun ? nowMs - DIGEST_FIRST_RUN_DAYS * 86400000 : lastMs;
   const ledger = digestLedgerLoad_(props);
-  const rows = digestSelect_(digestReadPayments_(), sinceMs, nowMs, ledger);
+  const payRows = digestReadPayments_();
+  const rows = digestSelect_(payRows, sinceMs, nowMs, ledger);
   const today = digestJerusalemParts_(now);
   const fmt = function (ms) { return String(Utilities.formatDate(new Date(ms), DIGEST_TZ, 'dd/MM/yyyy HH:mm')); };
   const msg = digestCompose_(rows, {
     todayDmy: today.dmy, sinceText: fmt(sinceMs), untilText: fmt(nowMs), firstRun: firstRun, test: !!test,
+    pendingCount: digestPendingCount_(payRows),
   });
   return { rows: rows, msg: msg, ledger: ledger, today: today, sinceMs: sinceMs, nowMs: nowMs, firstRun: firstRun };
 }
