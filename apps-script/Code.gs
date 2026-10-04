@@ -522,7 +522,9 @@ const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient', 'duplicate'];
  *   method        PAYMENT_METHODS (Hebrew labels, stored as shown)
  *   payer         free text, who paid
  *   funder        PAYMENT_FUNDERS; filled from currentFunder_ on the first
- *                 report when the payload names none
+ *                 report when the payload names none — and REFUSED
+ *                 (funder_unset) when the patient has no funder either:
+ *                 there is no default funder (CHANGELOG-patient-funder-on-funders.md)
  *   reference     transaction / cheque number
  *   recordedBy / recordedAt
  *                 SERVER-OWNED: the signed-session user and the server clock,
@@ -555,9 +557,13 @@ const PAYMENT_REPORT_COLUMNS = [
 ];
 const PAYMENT_METHODS = ['העברה בנקאית', 'אשראי', "צ'ק", 'מזומן', 'ביט', 'אחר'];
 const PAYMENT_FUNDERS = ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי'];
-/* A patient with no Funders row is private (and listed in the cleanup
- * workbook as «חסר גורם מממן»). */
-const DEFAULT_FUNDER = 'פרטי';
+/* There is NO default funder (Sandra, 2026-10-04). A patient with no Funders
+ * row — or whose effective row carries a label not in PAYMENT_FUNDERS — reads
+ * as FUNDER_UNSET («לא הוגדר»): never guessed, never silently private. Listed
+ * in the cleanup workbook as «חסר גורם מממן» and on the גבייה fill screen.
+ * public/funder.js mirrors it (FUNDER_UNSET, LABEL_TO_KEY); a guard test pins
+ * PAYMENT_FUNDERS to its labels and forbids any fallback to the private label. */
+const FUNDER_UNSET = 'unset';
 const REFERENCE_REQUIRED_METHODS = ['העברה בנקאית', "צ'ק"];
 const CONFIRM_STATUSES = ['reported', 'confirmed', 'flagged'];
 /* Mirrors COVERAGE_MAX_DAYS (declared further down; consts are not hoisted). */
@@ -591,6 +597,7 @@ const PAYMENT_REPORT_MESSAGES = {
   coverage_too_long: 'תקופת כיסוי ארוכה מדי (המקסימום ' + COVERAGE_MAX_DAYS_REPORT_ + ' ימים)',
   funder_missing: 'חסר: גורם מממן',
   funder_invalid: 'גורם מממן לא מוכר',
+  funder_unset: 'לא הוגדר גורם מממן למטופל — יש לבחור גורם מממן בדיווח או להגדיר אותו בכרטיס המטופל',
   reference_missing: "חסר: מספר אסמכתא (חובה בהעברה בנקאית ובצ'ק)",
   reference_invalid: 'מספר אסמכתא לא תקין',
   confirm_status_invalid: 'סטטוס אישור לא מוכר',
@@ -607,7 +614,7 @@ const PAYMENT_REPORT_MESSAGES = {
  *   effectiveFrom 'YYYY-MM-DD'
  *   setBy / setAt who and when (server-stamped by appendFunder_)
  * The current funder = the row with the latest effectiveFrom ≤ the date
- * (currentFunder_); none → DEFAULT_FUNDER. */
+ * (currentFunder_); none, or an unrecognized label on that row → FUNDER_UNSET. */
 const FUNDERS_SHEET = 'Funders';
 const FUNDER_COLUMNS = ['patientId', 'funder', 'effectiveFrom', 'setBy', 'setAt'];
 
@@ -6211,8 +6218,13 @@ function upsertPayment_(payment, user, ctx) {
     Object.keys(rep.fields).forEach(function (k) { merged[k] = rep.fields[k]; });
 
     const out = stampPaymentRow_(merged, prev, hadRow, stampUser);
-    // A first report that names no funder gets the patient's current one.
-    if (rep.needsFunder) out.funder = currentFunder_(out.patientUid, out.receivedDate);
+    // A first report that names no funder gets the patient's current one —
+    // and is REFUSED, nothing written, when the patient has none (no default).
+    if (rep.needsFunder) {
+      const f = currentFunder_(out.patientUid, out.receivedDate);
+      if (f === FUNDER_UNSET) return { ok: false, error: 'funder_unset', message: PAYMENT_REPORT_MESSAGES.funder_unset };
+      out.funder = f;
+    }
     const row = objectToRow_(out, PAYMENT_COLUMNS);
     const unvoided = hadRow && isVoidStatus_(prev.status) && !isVoidStatus_(out.status);
     /* Informational only (nothing is refused for it yet): what the report on
@@ -6777,10 +6789,12 @@ function logPaymentConfirm_(out, change, actor) {
 
 /* ===== Funders (append-only) ===== */
 
-/* PURE. rows: Funders row objects. → { funder, effectiveFrom, isDefault }.
+/* PURE. rows: Funders row objects. → { funder, effectiveFrom, unset }.
  * The row with the latest effectiveFrom ≤ asOf wins; on the same day the
- * later setAt, then the later row. No row → DEFAULT_FUNDER. A row with an
- * unknown funder or an unreadable date is skipped, never guessed. */
+ * later setAt, then the later row. No row → FUNDER_UNSET. When the winning
+ * row's label is not in PAYMENT_FUNDERS the answer is FUNDER_UNSET too (a
+ * typo is never read past to an older row, and never guessed). A row with an
+ * unreadable date is skipped. public/funder.js funderAt is the same rule. */
 function currentFunderFrom_(rows, patientId, asOfIso) {
   const id = paymentReportText_(patientId);
   const asOf = paymentReportDate_(asOfIso) || paymentReportToday_();
@@ -6791,7 +6805,6 @@ function currentFunderFrom_(rows, patientId, asOfIso) {
       const r = list[i] || {};
       if (paymentReportText_(r.patientId) !== id) continue;
       const f = paymentReportText_(r.funder);
-      if (PAYMENT_FUNDERS.indexOf(f) < 0) continue;
       const eff = r.effectiveFrom instanceof Date ? refundForecastIso_(r.effectiveFrom) : paymentReportDate_(r.effectiveFrom);
       if (!eff || eff > asOf) continue;
       const setAt = paymentReportText_(r.setAt);
@@ -6800,8 +6813,8 @@ function currentFunderFrom_(rows, patientId, asOfIso) {
       }
     }
   }
-  return best ? { funder: best.funder, effectiveFrom: best.effectiveFrom, isDefault: false }
-              : { funder: DEFAULT_FUNDER, effectiveFrom: '', isDefault: true };
+  if (!best || PAYMENT_FUNDERS.indexOf(best.funder) < 0) return { funder: FUNDER_UNSET, effectiveFrom: '', unset: true };
+  return { funder: best.funder, effectiveFrom: best.effectiveFrom, unset: false };
 }
 
 /* The Funders rows, read-only: getSheetByName (a missing tab is never
@@ -6811,15 +6824,16 @@ function fundersRows_() {
   return sh ? readSheet_(sh, FUNDER_COLUMNS) : [];
 }
 
-/* currentFunder_(patientId, asOfIso) → the funder label (PAYMENT_FUNDERS).
- * Read-only; DEFAULT_FUNDER when the patient has no row, or on any read
- * failure (fail-soft: a funder lookup never breaks a save). */
+/* currentFunder_(patientId, asOfIso) → the funder label (PAYMENT_FUNDERS),
+ * or FUNDER_UNSET when there is none, the label is unrecognized, or the read
+ * fails. Read-only. A caller that needs a funder must refuse on FUNDER_UNSET
+ * (upsertPayment_ does) — it never stands in for one. */
 function currentFunder_(patientId, asOfIso) {
   try {
     return currentFunderFrom_(fundersRows_(), patientId, asOfIso).funder;
   } catch (e) {
     try { console.warn('[funders] read failed: ' + ((e && e.message) || e)); } catch (_) { /* no-op */ }
-    return DEFAULT_FUNDER;
+    return FUNDER_UNSET;
   }
 }
 
@@ -7332,11 +7346,13 @@ function appendFunderAction_(params) {
   };
 }
 
-/* Funders rows for the client: known funders only, effectiveFrom as a bare
- * 'YYYY-MM-DD' (a Date-typed cell never travels as a UTC stamp). PURE. */
+/* Funders rows for the client, effectiveFrom as a bare 'YYYY-MM-DD' (a
+ * Date-typed cell never travels as a UTC stamp). Every row with a patient id
+ * travels — an unrecognized label too — so the page reads the SAME answer as
+ * currentFunderFrom_ (an unrecognized effective row → «לא הוגדר»). PURE. */
 function fundersForClient_(rows) {
   return (Array.isArray(rows) ? rows : []).filter(function (r) {
-    return r && paymentReportText_(r.patientId) && PAYMENT_FUNDERS.indexOf(paymentReportText_(r.funder)) >= 0;
+    return r && paymentReportText_(r.patientId);
   }).map(function (r) {
     return {
       patientId: paymentReportText_(r.patientId), funder: paymentReportText_(r.funder),
@@ -8302,7 +8318,7 @@ function debtAgingAction_(params) {
  *   credits    refundPayoutForecastFor_: awaiting_decision + unresolved
  *              (missing_payment_data is already in gaps, via debtAging_)
  *   noFunder   (Phase 3 PR 1) patients not released with no Funders row —
- *              currentFunder_ treats them as פרטי (cleanupNoFunder_) */
+ *              they read as «לא הוגדר» — no default (cleanupNoFunder_) */
 const CLEANUP_SECTION_KEYS = ['names', 'gaps', 'detached', 'outsideStay', 'releasedNoExit', 'noEntryDate',
   'zeroAmount', 'leads', 'duplicates', 'credits', 'noFunder'];
 /* A gap cycle older than this, with no later activity, is "probably a
@@ -8534,8 +8550,8 @@ function cleanupCredits_(forecast) {
 }
 
 /* «חסר גורם מממן» — every patient who is not released and has no Funders
- * row at all. Such a patient reads as DEFAULT_FUNDER (פרטי); the list is so
- * somebody decides rather than the default deciding silently. A row for the
+ * row at all. Such a patient reads as FUNDER_UNSET («לא הוגדר»); the list is
+ * so somebody decides. There is no default. A row for the
  * patient with any date counts as recorded (a future effectiveFrom is still a
  * decision). Pure. */
 function cleanupNoFunder_(m, funderObjs) {
@@ -8548,7 +8564,7 @@ function cleanupNoFunder_(m, funderObjs) {
     return p.status !== 'released' && !has[paymentReportText_(p.id)];
   }).map(function (p) {
     return { kind: 'no_funder', houseId: p.houseId || '', name: p.name, status: p.status,
-      entryDate: p.date || '', funder: DEFAULT_FUNDER };
+      entryDate: p.date || '', funder: FUNDER_UNSET };
   }).sort(function (a, b) {
     return (a.houseId < b.houseId ? -1 : a.houseId > b.houseId ? 1 : 0) || String(a.name).localeCompare(String(b.name), 'he');
   });
