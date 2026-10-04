@@ -7000,7 +7000,7 @@ function recomputeCycleFromReceipts_(cycleRow, receipts) {
 
 /* Payments row objects → the same rows with every cycle that has receipts
  * re-derived, receipts left out. PURE; new objects only where derived.
- * → { cycles: [rows], receipts: [rows + cycleId], byCycleId }. */
+ * → { cycles: [rows], receipts: [rows + cycleId], links }. */
 function paymentRowsDerived_(rows) {
   const list = Array.isArray(rows) ? rows : [];
   const L = linkReceiptsToCycles_(list);
