@@ -249,8 +249,10 @@ test('B: the five LINK columns are appended, text-forced, and do not duplicate #
     'paymentUid', 'patientUid', 'payerUid',
     'chargedAt', 'chargedBy', 'sourceUpdatedAt', 'sourceVersion',
   ], 'position IS the data contract — nothing before the append moved');
-  assert.deepEqual(cols.slice(19),
+  assert.deepEqual(cols.slice(19, 24),
     ['linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt']);
+  // The payment report columns come after them (CHANGELOG-payment-report-foundation.md).
+  assert.equal(cols[24], 'receivedDate');
   /* ONE patientUid, not two. PR #139 already put the persisted patient id on
    * the payment row; this change REUSES it and adds the manual decision
    * beside it. A second column of the same name would be a data-contract

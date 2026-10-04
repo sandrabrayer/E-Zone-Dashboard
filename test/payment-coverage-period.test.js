@@ -211,8 +211,11 @@ test('A: PAYMENT_COLUMNS appends the two coverage columns and moves nothing', ()
     'paymentUid', 'patientUid', 'payerUid',
     'chargedAt', 'chargedBy', 'sourceUpdatedAt', 'sourceVersion',
     'linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt',
+    'receivedDate', 'method', 'payer', 'funder', 'reference',
+    'recordedBy', 'recordedAt',
+    'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
   ]);
-  assert.equal(cols.length, 24);
+  assert.equal(cols.length, 35);
 });
 
 test('A: the two new columns are text-forced at sheet-ensure, the old ones are left alone', () => {
@@ -235,6 +238,8 @@ test('A: the two new columns are text-forced at sheet-ensure, the old ones are l
     'chargedAt', 'chargedBy', 'coverageEnd', 'coverageStart',
     'linkNote', 'linkPatientUid', 'linkStatus', 'linkedAt', 'linkedBy',
     'patientUid', 'payerUid', 'paymentUid', 'sourceUpdatedAt',
+    'receivedDate', 'method', 'payer', 'funder', 'reference', 'recordedBy', 'recordedAt',
+    'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
   ].sort());
   assert.deepEqual(arr(code.PAYMENT_TEXT_COLUMNS).slice().sort(), forced.sort());
   ['id', 'patientId', 'patientName', 'houseId', 'dueDate',

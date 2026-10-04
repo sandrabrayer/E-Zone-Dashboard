@@ -484,7 +484,7 @@ test('workbook: «סיכום» first, then one tab per kind, in order; every tab
   const { wb } = await book();
   assert.deepEqual(wb.worksheets.map((w) => w.name), ['סיכום'].concat(cleanup.TABS.map((t) => t.name)));
   assert.deepEqual(cleanup.TABS.map((t) => t.name), ['שמות לא תואמים', 'פערי גבייה לבדיקה', 'תשלומים לא משויכים', 'תשלומים אחרי יציאה',
-    'משוחררים ללא תאריך יציאה', 'ללא תאריך כניסה', 'מטופלים בסכום אפס', 'לידים ששולמו ולא נקלטו', 'כפילויות חשודות', 'זיכויים לבדיקה']);
+    'משוחררים ללא תאריך יציאה', 'ללא תאריך כניסה', 'מטופלים בסכום אפס', 'לידים ששולמו ולא נקלטו', 'כפילויות חשודות', 'זיכויים לבדיקה', 'חסר גורם מממן']);
   for (const ws of wb.worksheets) {
     assert.equal(ws.views[0].rightToLeft, true, ws.name);
     assert.equal(ws.views[0].state, 'frozen', ws.name);
