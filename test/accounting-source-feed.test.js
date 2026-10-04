@@ -264,8 +264,14 @@ test('A: PAYMENT_COLUMNS appends seven accounting columns and moves nothing', ()
    * triple is too damaged for the exact match above to resolve. Append-only is
    * the contract, so the assertion is "the seven are at 13-19", not "the list
    * ends there". */
-  assert.deepEqual(cols.slice(19), [
+  assert.deepEqual(cols.slice(19, 24), [
     'linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt',
+  ]);
+  // …and the payment report (CHANGELOG-payment-report-foundation.md) after those.
+  assert.deepEqual(cols.slice(24), [
+    'receivedDate', 'method', 'payer', 'funder', 'reference',
+    'recordedBy', 'recordedAt',
+    'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
   ]);
 });
 
@@ -290,6 +296,8 @@ test('A: the appended text columns are force-formatted at ensure; the original t
     'chargedAt', 'chargedBy', 'coverageEnd', 'coverageStart',
     'linkNote', 'linkPatientUid', 'linkStatus', 'linkedAt', 'linkedBy',
     'patientUid', 'payerUid', 'paymentUid', 'sourceUpdatedAt',
+    'receivedDate', 'method', 'payer', 'funder', 'reference', 'recordedBy', 'recordedAt',
+    'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
   ].sort());
   ['id', 'patientId', 'patientName', 'houseId', 'dueDate',
    'amount', 'status', 'amountPaid', 'balance', 'timestamp'].forEach((c) => {
