@@ -124,7 +124,15 @@
 
     <!-- ====== DASHBOARD ====== -->
     <section id="screen-dashboard" class="screen">
-      <h2>דשבורד רשת</h2>
+      <div class="screen-head">
+        <h2>דשבורד רשת</h2>
+        <div class="actions">
+          <!-- Top-level intake entry: a new inpatient (name, house, admission
+               date). Same direct-add flow as «+ הוסף מטופל ישירות», intake
+               mode. The new patient reaches the coordinators feed on save. -->
+          <button id="intake-patient-btn" class="btn intake edit-only" type="button">🟢 קליטת מטופל חדש</button>
+        </div>
+      </div>
 
       <div class="cards-row">
         <div class="card stat">
@@ -165,6 +173,18 @@
         <span class="overdue-strip-text" id="overdue-alert-text">מטופלים ממתינים לתשלום</span>
         <span class="overdue-strip-cta">למעבר לגבייה ←</span>
       </button>
+
+      <!-- «🚪 שחרורים מהבתים»: discharges a coordinator recorded in the
+           coordinators app (last 30 days) — already in effect; listed here
+           so billing / refunds are handled. Read-only. -->
+      <div class="card coord-discharges" id="coord-discharges">
+        <div class="coord-discharges-head">
+          <span class="coord-discharges-title">🚪 שחרורים מהבתים</span>
+          <span class="renewal-alert-count" id="coord-discharges-count">0</span>
+        </div>
+        <div class="coord-discharges-sub">שחרורים שדווחו ע״י הרכזות ב־30 הימים האחרונים — כבר בתוקף (התפוסה עודכנה). לטיפול בגבייה / החזרים.</div>
+        <div class="coord-discharges-list" id="coord-discharges-list"></div>
+      </div>
 
       <h3>מיטות פנויות לפי בית</h3>
       <div class="houses-grid" id="houses-grid"></div>

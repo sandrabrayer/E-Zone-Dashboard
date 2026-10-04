@@ -2453,3 +2453,53 @@ body.viewer-mode .receipt-void-btn { display: none !important; }
 .bc-flag-form textarea { width: 100%; box-sizing: border-box; min-width: 0; }
 .bc-flag-form textarea[aria-invalid="true"] { border-color: var(--danger); }
 .bc-ex-title { margin: 12px 0 6px; font-size: 14px; }
+
+/* ===== Coordinators roster (2026-10-04) =====
+ * «🟢 קליטת מטופל חדש» — the dashboard's top-level intake button: green so it
+ * reads as "admit", distinct from the blue primary actions.
+ * «🚪 שחרורים מהבתים» — the coordinators-discharge panel: same card language
+ * as the renewal alert, a teal accent bar (information, not an alarm). */
+.btn.intake {
+  background: linear-gradient(180deg, #2fbf71 0%, #1f9d5a 100%);
+  color: #fff;
+  border-color: transparent;
+  font-weight: 700;
+  font-size: 15px;
+  padding: 10px 18px;
+  box-shadow: 0 6px 16px rgba(47, 191, 113, .28);
+}
+.btn.intake:hover { filter: brightness(1.07); }
+
+.coord-discharges { margin-top: 18px; position: relative; }
+.coord-discharges::before {
+  content: '';
+  position: absolute; top: 0; right: 0; left: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #20c3b0, #5b8bff);
+}
+.coord-discharges-head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.coord-discharges-title { color: var(--text); font-size: 15px; font-weight: 700; }
+.coord-discharges-sub { color: var(--text-muted); font-size: 12.5px; margin-bottom: 12px; }
+.coord-discharges-list { display: grid; gap: 10px; }
+.coord-discharges-empty { color: var(--text-dim); font-size: 13px; }
+.coord-discharge-row {
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  display: grid;
+  grid-template-columns: 1.3fr 1fr 1fr 1.6fr 1fr;
+  align-items: center;
+  gap: 12px;
+}
+.coord-discharge-row .p-label {
+  color: var(--text-dim); font-size: 11px; display: block;
+  letter-spacing: .8px; font-weight: 600; margin-bottom: 2px;
+}
+.coord-discharge-row .p-val  { font-size: 14px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.coord-discharge-row .p-name { font-weight: 700; font-size: 15.5px; color: var(--text); }
+@media (max-width: 640px) {
+  .coord-discharge-row { grid-template-columns: 1fr 1fr; }
+  #screen-dashboard .screen-head .actions { width: 100%; }
+  .btn.intake { width: 100%; }
+}

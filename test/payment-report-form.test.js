@@ -674,7 +674,10 @@ test('other readers: the accounting feed exports cycles only, the refund suggest
 test('scope: the two new actions are proxied through the finance gate, nothing new is open, and Code.gs dispatches them', () => {
   assert.ok(/action === 'reportPayment'/.test(GS_SRC) && /action === 'appendFunder'/.test(GS_SRC));
   const g = loadGs({ props: { PROXY_SECRET } });
-  assert.deepEqual(arr(g.run('OPEN_ACTIONS')), ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster']);
+  // The two coordinators-roster actions (2026-10-04, own fail-closed secret)
+  // are the only additions since; nothing billing-related is open.
+  assert.deepEqual(arr(g.run('OPEN_ACTIONS')), ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster',
+    'getPatientsForCoordinators', 'recordDischargeFromCoordinators']);
   assert.deepEqual(arr(g.run('FINANCE_ACTIONS')), [...scope.FINANCE_ACTIONS]);
   assert.ok(arr(g.run('PROXY_KNOWN_ACTIONS')).includes('reportPayment'));
   // server.js knows no action name of its own for them: the finance list is the gate.
@@ -683,7 +686,8 @@ test('scope: the two new actions are proxied through the finance gate, nothing n
   // The page loads the shared rules before app.js; the worker serves them network-first.
   assert.ok(HTML_SRC.indexOf('payment-report-rules.js') < HTML_SRC.indexOf('src="app.js'));
   // v30 shipped the form; later PRs bump it again (v32: patient funder on
-  // Funders; v33: Phase 4 «בקרת גבייה») — v30 or later.
+  // Funders; v33: Phase 4 «בקרת גבייה»; v34: coordinators roster) — v30 or
+  // later.
   const ver = Number((SW_SRC.match(/var CACHE_VERSION = 'v(\d+)';/) || [])[1]);
   assert.ok(ver >= 30, 'SW v30 or later');
   assert.match(SW_SRC, /v29 → v30:/);

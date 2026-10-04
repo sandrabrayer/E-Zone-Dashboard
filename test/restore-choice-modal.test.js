@@ -182,7 +182,10 @@ test('DISCHARGED_PATIENT_COLUMNS keeps prior_status directly after restored; who
   const cols = loadCodeColumns();
   // The who/when columns were APPENDED after prior_status (append-only sheet
   // contract — existing sheets store prior_status at its position already).
-  assert.deepStrictEqual(cols.slice(-4), ['restored', 'prior_status', 'updatedAt', 'updatedBy']);
+  // The coordinators-discharge audit columns (2026-10-04) follow them.
+  const at = cols.indexOf('restored');
+  assert.deepStrictEqual(cols.slice(at, at + 4), ['restored', 'prior_status', 'updatedAt', 'updatedBy']);
+  assert.deepStrictEqual(cols.slice(at + 4), ['dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId']);
   assert.strictEqual(cols.filter(c => c === 'prior_status').length, 1);
 });
 

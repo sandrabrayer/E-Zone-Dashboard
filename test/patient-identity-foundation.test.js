@@ -217,7 +217,11 @@ test('DISCHARGED_PATIENT_COLUMNS keeps the legacy positional layout (Patients id
   const cols = arr(code.DISCHARGED_PATIENT_COLUMNS);
   assert.deepStrictEqual(cols.slice(0, LEGACY_DISCHARGED_COLUMNS.length), LEGACY_DISCHARGED_COLUMNS,
     'the pre-stamp prefix is byte-identical (now a FROZEN literal, no longer derived)');
-  assert.deepStrictEqual(cols.slice(LEGACY_DISCHARGED_COLUMNS.length), ['updatedAt', 'updatedBy']);
+  // Stamps appended right after the legacy prefix; the coordinators-discharge
+  // audit columns (2026-10-04) appended after them — append-only.
+  assert.deepStrictEqual(cols.slice(LEGACY_DISCHARGED_COLUMNS.length, LEGACY_DISCHARGED_COLUMNS.length + 2), ['updatedAt', 'updatedBy']);
+  assert.deepStrictEqual(cols.slice(LEGACY_DISCHARGED_COLUMNS.length + 2),
+    ['dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId']);
   assert.strictEqual(cols.filter((c) => c === 'id').length, 1, 'no duplicate id header');
 });
 

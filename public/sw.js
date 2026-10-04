@@ -140,7 +140,12 @@
 // new /billing-control-rules.js (network-first like app.js) — evict v32 (and
 // v30 / v31 on a phone that skipped them). (PR #179 was built as v31, then
 // rebased onto #178's v32.)
-var CACHE_VERSION = 'v33';
+// v33 → v34: coordinators roster (PR #177, built as v31, rebased onto
+// #179's v33) — the dashboard gains the «🟢 קליטת מטופל חדש» intake button
+// and the «🚪 שחרורים מהבתים» panel (discharges the coordinators recorded).
+// app.js, index.html, style.css changed — evict v33 (and older). /api/ stays
+// network-only.
+var CACHE_VERSION = 'v34';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
