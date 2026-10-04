@@ -310,6 +310,14 @@ body:not(.role-approver) [data-role="approver"] { display: none !important; }
  * the DOM once /api/me answers; this rule makes sure nothing flashes before
  * that. */
 body.view-restricted [data-finance] { display: none !important; }
+/* «בקרת גבייה» (Phase 4): never for Shiran / Yael; for Ortal (the controller
+ * view, <body class="view-controller">) the ONLY tab and screen — app.js
+ * removes the rest from the DOM, this rule makes sure nothing flashes first. */
+body.view-restricted [data-billing-control] { display: none !important; }
+body.view-controller .tabs .tab:not([data-screen="billing-control"]),
+body.view-controller section.screen:not(#screen-billing-control),
+body.view-controller [data-finance] { display: none !important; }
+body.view-controller #screen-billing-control { display: block; }
 
 /* ===== Banners ===== */
 .error-banner {
@@ -2412,3 +2420,36 @@ body.viewer-mode .receipt-void-btn { display: none !important; }
   .funder-fill-row .btn { width: 100%; }
   #billing-funder { width: 100%; }
 }
+/* ===== «בקרת גבייה» (Phase 4) — phone-first receipt cards ===== */
+.bc-cards .bc-card .bc-debt-export { margin-top: 8px; }
+.bc-list { display: flex; flex-direction: column; gap: 8px; }
+.bc-row {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+.bc-row--flagged { border-inline-start: 4px solid var(--grp-debt); }
+.bc-row--confirmed { border-inline-start: 4px solid var(--grp-credits); }
+.bc-row--queue { border-inline-start: 4px solid var(--grp-open); }
+.bc-row--exception { border-inline-start: 4px solid var(--grp-awaiting); }
+.bc-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.bc-name { font-size: 15px; overflow-wrap: anywhere; }
+.bc-house { color: var(--text-muted); font-size: 13px; }
+.bc-amount { margin-inline-start: auto; font-weight: 700; white-space: nowrap; }
+.bc-fields { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 13px; }
+.bc-f { min-width: 0; overflow-wrap: anywhere; }
+.bc-k { color: var(--text-dim); }
+.bc-v { color: var(--text); }
+.bc-sub { color: var(--text-muted); font-size: 12px; font-weight: 400; }
+.bc-note-text { margin-top: 6px; font-size: 13px; overflow-wrap: anywhere; }
+.bc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.bc-actions .btn { min-height: 40px; }
+.bc-pick { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); }
+.bc-pick input { width: 20px; height: 20px; }
+.bc-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 8px 0; }
+.bc-flag-form { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.bc-flag-form textarea { width: 100%; box-sizing: border-box; min-width: 0; }
+.bc-flag-form textarea[aria-invalid="true"] { border-color: var(--danger); }
+.bc-ex-title { margin: 12px 0 6px; font-size: 14px; }

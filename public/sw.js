@@ -134,7 +134,13 @@
 // on גבייה, all finance-only. New script public/funder.js (precached,
 // network-first like app.js); app.js, index.html and style.css changed —
 // evict v30 (and v31 if #177 shipped first). appendFunder goes through /api/sheets, network-only.
-var CACHE_VERSION = 'v32';
+// v32 → v33: Phase 4 — the «בקרת גבייה» tab (Ortal's verification queue,
+// Sandra's «חריגים פתוחים»), the «מאומת» figure on הכנסות חודשיות and the
+// controller view. app.js, index.html, style.css changed and the page loads a
+// new /billing-control-rules.js (network-first like app.js) — evict v32 (and
+// v30 / v31 on a phone that skipped them). (PR #179 was built as v31, then
+// rebased onto #178's v32.)
+var CACHE_VERSION = 'v33';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
@@ -176,6 +182,7 @@ function cacheStrategy(url) {
   if (path === '/app.js' || path === '/style.css') return 'network-first';
   if (path === '/payment-report-rules.js') return 'network-first';
   if (path === '/funder.js') return 'network-first';
+  if (path === '/billing-control-rules.js') return 'network-first';
 
   // Truly versioned-by-filename static assets: cache-first.
   if (path === '/manifest.json') return 'cache-first';
