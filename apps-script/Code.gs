@@ -500,9 +500,108 @@ const PAYMENT_COLUMNS = [
   'coverageStart', 'coverageEnd',
   'paymentUid', 'patientUid', 'payerUid',
   'chargedAt', 'chargedBy', 'sourceUpdatedAt', 'sourceVersion',
-  'linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt'
+  'linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt',
+  /* The strict payment report (Phase 3 PR 1, PAYMENT_REPORT_COLUMNS below). */
+  'receivedDate', 'method', 'payer', 'funder', 'reference',
+  'recordedBy', 'recordedAt',
+  'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote'
 ];
 const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient', 'duplicate'];
+
+/* ===== The strict payment report — foundation (Phase 3 PR 1) =====
+ * docs/billing-control-plan.md Phase 3, decided by Sandra 2026-10-04.
+ * CHANGELOG-payment-report-foundation.md. Eleven columns APPENDED to
+ * PAYMENT_COLUMNS (positions 25–35), all text-forced:
+ *
+ *   receivedDate  the day the money actually arrived, 'YYYY-MM-DD'
+ *                 (Asia/Jerusalem). APPEND-ONLY: set once, never re-stamped by
+ *                 the server, never erased by a blank; a deliberate change is
+ *                 allowed and writes an AuditLog row (old, new, actor).
+ *   method        PAYMENT_METHODS (Hebrew labels, stored as shown)
+ *   payer         free text, who paid
+ *   funder        PAYMENT_FUNDERS; filled from currentFunder_ on the first
+ *                 report when the payload names none
+ *   reference     transaction / cheque number
+ *   recordedBy / recordedAt
+ *                 SERVER-OWNED: the signed-session user and the server clock,
+ *                 stamped once, when the row first gets a receivedDate
+ *   confirmStatus 'reported' | 'confirmed' | 'flagged'. 'reported' on the
+ *                 first report; any other write needs the verified
+ *                 `controller` role (Ortal, Phase 4) or `approver` (Sandra)
+ *   confirmedBy / confirmedAt
+ *                 SERVER-OWNED, stamped when confirmStatus changes
+ *   flagNote      why a payment was flagged (controller / approver only)
+ *
+ * FOUNDATION ONLY: a savePayment without these fields behaves exactly as
+ * before. The required-field rules (validatePaymentReport_) are NOT enforced
+ * on the save path yet — Phase 3 PR 2 wires the form. What IS enforced now,
+ * because a bad value would otherwise land in the sheet: a value that CHANGES
+ * one of these columns must be well-formed (a real, non-future date; a method
+ * or funder from the list; a sane payer / reference), and the confirm fields
+ * are refused (forbidden_role) to everyone but controller / approver.
+ * lib/payment-report-rules.js mirrors validatePaymentReport_ for the form; a
+ * parity test runs both on the same inputs. */
+const PAYMENT_REPORT_COLUMNS = [
+  'receivedDate', 'method', 'payer', 'funder', 'reference',
+  'recordedBy', 'recordedAt',
+  'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote'
+];
+const PAYMENT_METHODS = ['העברה בנקאית', 'אשראי', "צ'ק", 'מזומן', 'ביט', 'אחר'];
+const PAYMENT_FUNDERS = ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי'];
+/* A patient with no Funders row is private (and listed in the cleanup
+ * workbook as «חסר גורם מממן»). */
+const DEFAULT_FUNDER = 'פרטי';
+const REFERENCE_REQUIRED_METHODS = ['העברה בנקאית', "צ'ק"];
+const CONFIRM_STATUSES = ['reported', 'confirmed', 'flagged'];
+/* Mirrors COVERAGE_MAX_DAYS (declared further down; consts are not hoisted). */
+const COVERAGE_MAX_DAYS_REPORT_ = 366;
+const PAYMENT_REPORT_FIELDS = ['receivedDate', 'amount', 'method', 'payer', 'coverageStart', 'coverageEnd', 'funder', 'reference'];
+const PAYER_MIN = 2;
+const PAYER_MAX = 100;
+const REFERENCE_MIN = 3;
+const REFERENCE_MAX = 40;
+const FLAG_NOTE_MIN = 2;
+const FLAG_NOTE_MAX = 300;
+/* The operation name a refused confirm write is logged under. Not in
+ * DELETE_ACTIONS / APPROVER_ACTIONS: it needs controller OR approver, and the
+ * decision needs the stored row, so upsertPayment_ makes it (like un-void). */
+const CONFIRM_OPERATION = 'confirmPayment';
+const PAYMENT_REPORT_MESSAGES = {
+  received_date_missing: 'חסר: תאריך קבלת התשלום',
+  received_date_invalid: 'תאריך קבלת התשלום לא תקין',
+  received_date_future: 'תאריך קבלת התשלום לא יכול להיות בעתיד',
+  amount_missing: 'חסר: סכום',
+  amount_invalid: 'סכום לא תקין',
+  amount_not_positive: 'הסכום חייב להיות גדול מאפס',
+  method_missing: 'חסר: אמצעי תשלום',
+  method_invalid: 'אמצעי תשלום לא מוכר',
+  payer_missing: 'חסר: שם משלם',
+  payer_invalid: 'שם משלם לא תקין',
+  coverage_start_missing: 'חסר: תחילת תקופת הכיסוי',
+  coverage_end_missing: 'חסר: סוף תקופת הכיסוי',
+  coverage_invalid: 'תאריך לא תקין בתקופת הכיסוי',
+  coverage_reversed: 'תאריך הסיום מוקדם מתאריך ההתחלה',
+  coverage_too_long: 'תקופת כיסוי ארוכה מדי (המקסימום ' + COVERAGE_MAX_DAYS_REPORT_ + ' ימים)',
+  funder_missing: 'חסר: גורם מממן',
+  funder_invalid: 'גורם מממן לא מוכר',
+  reference_missing: "חסר: מספר אסמכתא (חובה בהעברה בנקאית ובצ'ק)",
+  reference_invalid: 'מספר אסמכתא לא תקין',
+  confirm_status_invalid: 'סטטוס אישור לא מוכר',
+  confirm_without_report: 'אין דיווח תשלום לאשר — חסר תאריך קבלה',
+  flag_note_missing: 'בסימון «בעיה» חובה לפרט (2 עד 300 תווים)',
+};
+
+/* Funders — the patient's funder over time. APPEND-ONLY (rows and columns):
+ * a change is a new row with a later effectiveFrom, never an edit.
+ *   patientId     the patient's stable id (Patients.id, 'id-<uuid>' — the
+ *                 same value Payments.patientUid holds)
+ *   funder        PAYMENT_FUNDERS
+ *   effectiveFrom 'YYYY-MM-DD'
+ *   setBy / setAt who and when (server-stamped by appendFunder_)
+ * The current funder = the row with the latest effectiveFrom ≤ the date
+ * (currentFunder_); none → DEFAULT_FUNDER. */
+const FUNDERS_SHEET = 'Funders';
+const FUNDER_COLUMNS = ['patientId', 'funder', 'effectiveFrom', 'setBy', 'setAt'];
 
 /* ===== VOID =====
  * The status of a payment row that was entered TWICE — the patient renamed
@@ -596,7 +695,12 @@ const PAYMENT_TEXT_COLUMNS = [
    * opaque string, and one that happens to look like a date or a long number
    * is coerced by Sheets — on the very column that decides whose money a row
    * is. linkNote is text because it is text. */
-  'linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt'
+  'linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt',
+  /* The payment report: a date, ids, a cheque number with leading zeros and
+   * ISO stamps — every one of them something Sheets would coerce. */
+  'receivedDate', 'method', 'payer', 'funder', 'reference',
+  'recordedBy', 'recordedAt',
+  'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote'
 ];
 
 /* PaymentsTombstones — the recoverable record of a DELETED Payments row.
@@ -1275,9 +1379,15 @@ function handle_(params) {
       // chargedBy comes from the SIGNED SESSION COOKIE via requestUser_, the
       // same rule saveAll / discharge / saveCredit already follow. A
       // client-supplied user name never reaches the Payments sheet.
+      // privileged: may write the confirm fields (controller = Ortal, Phase 4;
+      // approver = Sandra). From hasRole_ — the verified actor — only.
       const paid = upsertPayment_(payment, requestUser_(params),
-        { actor: actorLabel_(params), verified: actingUser_(params).verified, approver: hasRole_(params, 'approver') });
-      if (paid && paid.error === 'forbidden_role') roleRefusedLog_(params, 'unvoidPayment');
+        { actor: actorLabel_(params), verified: actingUser_(params).verified, approver: hasRole_(params, 'approver'),
+          privileged: hasRole_(params, 'controller') || hasRole_(params, 'approver') });
+      if (paid && paid.error === 'forbidden_role') {
+        roleRefusedLog_(params, paid.operation || 'unvoidPayment');
+        delete paid.operation;
+      }
       return jsonOut_(paid);
     }
     if (action === 'upsertBillingOverride') {
@@ -1628,6 +1738,11 @@ function getOrCreateSheet_(name, headers) {
   // a live column's format is a migration, not a guard.
   if (name === PAYMENTS_SHEET) {
     forceColumnsText_(sh, PAYMENT_COLUMNS, PAYMENT_TEXT_COLUMNS);
+  }
+  // Funders: every column — an opaque id, a Hebrew label, a bare date and an
+  // ISO stamp. effectiveFrom as a date-typed cell would drift a day.
+  if (name === FUNDERS_SHEET) {
+    forceColumnsText_(sh, FUNDER_COLUMNS, FUNDER_COLUMNS);
   }
   // PaymentsTombstones: opaque uids, a bare due date and two ISO stamps —
   // the same coercion class the Payments coverage columns are guarded for.
@@ -6005,16 +6120,42 @@ function upsertPayment_(payment, user, ctx) {
       return { ok: false, error: 'forbidden_role', message: ROLE_FORBIDDEN_MESSAGE };
     }
 
-    const out = stampPaymentRow_(payment, prev, hadRow, stampUser);
+    /* The payment report columns (Phase 3 PR 1). Decided against the STORED
+     * row: a payload without them keeps what the sheet holds; receivedDate is
+     * append-only; the confirm fields need controller / approver (c.privileged
+     * comes from hasRole_, never from the payload). Refused before a single
+     * cell moves. A hand-added column where a report column belongs leaves
+     * all eleven exactly as stored (paymentReportHeaderClash_). */
+    const clash = paymentReportHeaderClash_(sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getValues()[0]);
+    if (clash.length) {
+      try { console.warn('[payments] report columns not used — header clash at column ' + clash[0].column); } catch (_) { /* no-op */ }
+    }
+    const rep = paymentReportFields_(payment, prev, { stampUser: stampUser, privileged: c.privileged === true, headerClash: clash.length > 0 });
+    if (!rep.ok) return rep;
+    const merged = {};
+    Object.keys(payment).forEach(function (k) { merged[k] = payment[k]; });
+    Object.keys(rep.fields).forEach(function (k) { merged[k] = rep.fields[k]; });
+
+    const out = stampPaymentRow_(merged, prev, hadRow, stampUser);
+    // A first report that names no funder gets the patient's current one.
+    if (rep.needsFunder) out.funder = currentFunder_(out.patientUid, out.receivedDate);
     const row = objectToRow_(out, PAYMENT_COLUMNS);
     const unvoided = hadRow && isVoidStatus_(prev.status) && !isVoidStatus_(out.status);
+    /* Informational only (nothing is refused for it yet): what the report on
+     * this row still lacks, for a row that carries a receivedDate. */
+    const reportExtra = function (res) {
+      if (paymentCell_(out.receivedDate)) res.reportIssues = validatePaymentReport_(paymentReportFromRow_(out));
+      return res;
+    };
 
     if (targetRow) {
       setPaymentRowTextCols_(sh, targetRow);
       sh.getRange(targetRow, 1, 1, PAYMENT_COLUMNS.length).setValues([row]);
       logPaymentLink_(out, prev, 'update', auditActor);
       if (unvoided) logPaymentVoidReversed_(out, prev, stampUser, auditActor);
-      return { ok: true, payment: out, updated: true };
+      logPaymentReceivedDateChanged_(out, rep.receivedChange, stampUser, auditActor);
+      logPaymentConfirm_(out, rep.confirmChange, auditActor);
+      return reportExtra({ ok: true, payment: out, updated: true });
     }
 
     // Insert at the next row (not appendRow) so the text format is applied
@@ -6023,7 +6164,8 @@ function upsertPayment_(payment, user, ctx) {
     setPaymentRowTextCols_(sh, insertAt);
     sh.getRange(insertAt, 1, 1, PAYMENT_COLUMNS.length).setValues([row]);
     logPaymentLink_(out, prev, 'create', auditActor);
-    return { ok: true, payment: out, created: true };
+    logPaymentConfirm_(out, rep.confirmChange, auditActor);
+    return reportExtra({ ok: true, payment: out, created: true });
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
@@ -6235,6 +6377,396 @@ function logPaymentLink_(out, prev, how, actor) {
       by: String(out.linkedBy || ''),
       at: String(out.linkedAt || ''),
     }, actor === undefined ? String(out.linkedBy || '') : actor);
+}
+
+/* ===== The strict payment report: rules (PURE) =====
+ * The authority for every rule in lib/payment-report-rules.js (its mirror;
+ * a parity test runs both on the same inputs). See PAYMENT_REPORT_COLUMNS. */
+
+function paymentReportText_(v) {
+  return v === null || v === undefined ? '' : String(v).trim();
+}
+/* "צ׳ק" (geresh) and "צ’ק" are the stored "צ'ק". Nothing else is folded. */
+function paymentReportMethod_(v) {
+  return paymentReportText_(v).replace(/[׳’‘`]/g, "'");
+}
+function paymentReportRealDate_(y, m, d) {
+  if (!(m >= 1 && m <= 12 && d >= 1 && d <= 31 && y >= 1900 && y <= 2999)) return false;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+/* 'YYYY-MM-DD' or 'DD/MM/YYYY' → 'YYYY-MM-DD'; '' blank; null not a real date. */
+function paymentReportDate_(v) {
+  const t = paymentReportText_(v);
+  if (!t) return '';
+  let m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return paymentReportRealDate_(+m[1], +m[2], +m[3]) ? t : null;
+  m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    const pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    return paymentReportRealDate_(+m[3], +m[2], +m[1]) ? m[3] + '-' + pad(+m[2]) + '-' + pad(+m[1]) : null;
+  }
+  return null;
+}
+function paymentReportToday_() {
+  return Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'yyyy-MM-dd');
+}
+function paymentReportDayNum_(iso) {
+  const p = iso.split('-');
+  return Math.round(Date.UTC(+p[0], +p[1] - 1, +p[2]) / 86400000);
+}
+function paymentReportAmountCode_(v) {
+  if (v === null || v === undefined || paymentReportText_(v) === '') return 'amount_missing';
+  let n;
+  if (typeof v === 'number') {
+    if (!isFinite(v)) return 'amount_invalid';
+    n = v;
+    if (Math.round(n * 100) / 100 !== n) return 'amount_invalid';
+  } else {
+    const t = paymentReportText_(v);
+    if (/^-\d/.test(t) || /^0(\.0+)?$/.test(t)) return 'amount_not_positive';
+    if (!/^\d+(\.\d{1,2})?$/.test(t)) return 'amount_invalid';
+    n = Number(t);
+  }
+  return n > 0 ? '' : 'amount_not_positive';
+}
+function paymentReportPayerCode_(v) {
+  const t = paymentReportText_(v);
+  if (!t) return 'payer_missing';
+  if (/[\u0000-\u001f\u007f]/.test(t) || /^[=+@-]/.test(t) || t.length < PAYER_MIN || t.length > PAYER_MAX) return 'payer_invalid';
+  return '';
+}
+function paymentReportReferenceCode_(v, method) {
+  const t = paymentReportText_(v);
+  if (!t) return REFERENCE_REQUIRED_METHODS.indexOf(paymentReportMethod_(method)) >= 0 ? 'reference_missing' : '';
+  if (t.length < REFERENCE_MIN || t.length > REFERENCE_MAX) return 'reference_invalid';
+  return /^[A-Za-z0-9א-ת][A-Za-z0-9א-ת\-/]*$/.test(t) ? '' : 'reference_invalid';
+}
+function paymentReportIssue_(field, code) {
+  return { field: field, code: code, hebrewMessage: PAYMENT_REPORT_MESSAGES[code] || code };
+}
+
+/* validatePaymentReport_(report, ctx) → [{ field, code, hebrewMessage }] in
+ * PAYMENT_REPORT_FIELDS order; [] = valid. ctx.todayIso pins "today"
+ * (default: today in Asia/Jerusalem). Pure but for that default.
+ * `report.amount` is the money received (on a Payments row: amountPaid —
+ * paymentReportFromRow_). NOT enforced on savePayment in this PR. */
+function validatePaymentReport_(report, ctx) {
+  const r = report && typeof report === 'object' ? report : {};
+  const today = (ctx && ctx.todayIso) || paymentReportToday_();
+  const out = [];
+
+  const rd = paymentReportDate_(r.receivedDate);
+  if (rd === '') out.push(paymentReportIssue_('receivedDate', 'received_date_missing'));
+  else if (rd === null) out.push(paymentReportIssue_('receivedDate', 'received_date_invalid'));
+  else if (rd > today) out.push(paymentReportIssue_('receivedDate', 'received_date_future'));
+
+  const ac = paymentReportAmountCode_(r.amount);
+  if (ac) out.push(paymentReportIssue_('amount', ac));
+
+  const method = paymentReportMethod_(r.method);
+  if (!method) out.push(paymentReportIssue_('method', 'method_missing'));
+  else if (PAYMENT_METHODS.indexOf(method) < 0) out.push(paymentReportIssue_('method', 'method_invalid'));
+
+  const pc = paymentReportPayerCode_(r.payer);
+  if (pc) out.push(paymentReportIssue_('payer', pc));
+
+  const cs = paymentReportDate_(r.coverageStart);
+  const ce = paymentReportDate_(r.coverageEnd);
+  if (cs === '') out.push(paymentReportIssue_('coverageStart', 'coverage_start_missing'));
+  else if (cs === null) out.push(paymentReportIssue_('coverageStart', 'coverage_invalid'));
+  if (ce === '') out.push(paymentReportIssue_('coverageEnd', 'coverage_end_missing'));
+  else if (ce === null) out.push(paymentReportIssue_('coverageEnd', 'coverage_invalid'));
+  if (cs && ce) {
+    if (ce < cs) out.push(paymentReportIssue_('coverageEnd', 'coverage_reversed'));
+    else if (paymentReportDayNum_(ce) - paymentReportDayNum_(cs) + 1 > COVERAGE_MAX_DAYS_REPORT_) {
+      out.push(paymentReportIssue_('coverageEnd', 'coverage_too_long'));
+    }
+  }
+
+  const funder = paymentReportText_(r.funder);
+  if (!funder) out.push(paymentReportIssue_('funder', 'funder_missing'));
+  else if (PAYMENT_FUNDERS.indexOf(funder) < 0) out.push(paymentReportIssue_('funder', 'funder_invalid'));
+
+  const rc = paymentReportReferenceCode_(r.reference, method);
+  if (rc) out.push(paymentReportIssue_('reference', rc));
+
+  return out;
+}
+
+/* A Payments row as a report: the money received is amountPaid. */
+function paymentReportFromRow_(row) {
+  const p = row && typeof row === 'object' ? row : {};
+  return {
+    receivedDate: p.receivedDate, amount: p.amountPaid, method: p.method, payer: p.payer,
+    coverageStart: p.coverageStart, coverageEnd: p.coverageEnd, funder: p.funder, reference: p.reference,
+  };
+}
+
+/* flagNote as stored: one line, control characters flattened, a formula
+ * lead-in stripped, capped — the paymentLinkNoteClean_ treatment. */
+function paymentFlagNoteClean_(v) {
+  let t = String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+  t = t.replace(/^[=+@-]+/, '').trim();
+  return t.slice(0, FLAG_NOTE_MAX);
+}
+
+/* Whether the Payments header row can hold the report columns: each of their
+ * positions is blank or already carries its own name. A hand-added column
+ * sitting where a report column belongs (readSheet_ maps BY POSITION) would
+ * otherwise be read and written as receivedDate / method / … — so then the
+ * report columns are left exactly as the sheet holds them. Pure. */
+function paymentReportHeaderClash_(header) {
+  const h = Array.isArray(header) ? header : [];
+  const clash = [];
+  for (let k = 0; k < PAYMENT_REPORT_COLUMNS.length; k++) {
+    const i = PAYMENT_COLUMNS.indexOf(PAYMENT_REPORT_COLUMNS[k]);
+    const got = i < h.length ? String(h[i] == null ? '' : h[i]).trim() : '';
+    if (got !== '' && got !== PAYMENT_REPORT_COLUMNS[k]) clash.push({ column: i + 1, expected: PAYMENT_REPORT_COLUMNS[k], found: got });
+  }
+  return clash;
+}
+
+/**
+ * The eleven report columns of the row about to be written. PURE (no sheet,
+ * no clock beyond israelTimestamp_ / opts.todayIso).
+ *
+ *   payment  the request payload; prev the stored row ({} on insert)
+ *   opts     { stampUser, privileged (controller or approver, from hasRole_ —
+ *              never the payload), todayIso, now, headerClash }
+ *
+ * A column the payload does not carry (undefined / null) keeps the stored
+ * value — so a client that has never heard of these columns changes nothing.
+ * A carried value equal to the stored one changes nothing either and is NOT
+ * re-validated (a hand-typed cell must not block an unrelated save).
+ *
+ * → { ok:true, fields, firstReport, receivedChange, confirmChange, needsFunder }
+ *   { ok:false, error:'validation', message, fields:[issues] }
+ *   { ok:false, error:'forbidden_role', message, operation:CONFIRM_OPERATION }
+ */
+function paymentReportFields_(payment, prev, opts) {
+  const P = prev || {};
+  const o = opts || {};
+  const pay = payment || {};
+  const fields = {};
+  if (o.headerClash) {
+    for (let k = 0; k < PAYMENT_REPORT_COLUMNS.length; k++) {
+      const c = PAYMENT_REPORT_COLUMNS[k];
+      fields[c] = P[c] === undefined || P[c] === null ? '' : P[c];
+    }
+    return { ok: true, fields: fields, firstReport: false, receivedChange: null, confirmChange: null, needsFunder: false };
+  }
+  const sent = function (k) { return pay[k] !== undefined && pay[k] !== null; };
+  const today = o.todayIso || paymentReportToday_();
+  const issues = [];
+
+  // ---- the confirmation: controller / approver only — checked first, so a
+  // refused write is refused before anything else is looked at.
+  const prevCs = paymentCell_(P.confirmStatus);
+  const prevNote = paymentCell_(P.flagNote);
+  const wantCs = sent('confirmStatus') ? paymentCell_(pay.confirmStatus) : '';
+  const wantNote = sent('flagNote') ? paymentFlagNoteClean_(pay.flagNote) : '';
+  /* Blank is "not sending", never "clear": a client holding an older copy of
+   * the row must not be able to wipe Ortal's decision by saving something
+   * else. */
+  /* 'reported' onto a row that has no status yet is what the server sets on
+   * the first report anyway (below) — echoing it is not a decision. */
+  const csWrite = wantCs !== '' && wantCs !== prevCs && !(prevCs === '' && wantCs === 'reported');
+  const noteWrite = wantNote !== '' && wantNote !== prevNote;
+  if ((csWrite || noteWrite) && o.privileged !== true) {
+    return { ok: false, error: 'forbidden_role', message: ROLE_FORBIDDEN_MESSAGE, operation: CONFIRM_OPERATION };
+  }
+
+  // ---- receivedDate: append-only
+  const prevRd = paymentCell_(P.receivedDate);
+  let rd = prevRd;
+  let receivedChange = null;
+  if (sent('receivedDate') && paymentCell_(pay.receivedDate) !== '' && paymentCell_(pay.receivedDate) !== prevRd) {
+    const iso = paymentReportDate_(pay.receivedDate);
+    if (iso === null) issues.push(paymentReportIssue_('receivedDate', 'received_date_invalid'));
+    else if (iso > today) issues.push(paymentReportIssue_('receivedDate', 'received_date_future'));
+    else if (iso !== prevRd) {
+      if (prevRd) receivedChange = { from: prevRd, to: iso };
+      rd = iso;
+    }
+  }
+  fields.receivedDate = rd;
+  const firstReport = !prevRd && rd !== '';
+
+  // ---- the client-written report fields: validated only when they change
+  const prevMethod = paymentCell_(P.method);
+  fields.method = sent('method') ? paymentReportMethod_(pay.method) : prevMethod;
+  if (fields.method !== prevMethod && fields.method && PAYMENT_METHODS.indexOf(fields.method) < 0) {
+    issues.push(paymentReportIssue_('method', 'method_invalid'));
+  }
+  const prevPayer = paymentCell_(P.payer);
+  fields.payer = sent('payer') ? paymentReportText_(pay.payer) : prevPayer;
+  if (fields.payer !== prevPayer && fields.payer && paymentReportPayerCode_(fields.payer)) {
+    issues.push(paymentReportIssue_('payer', 'payer_invalid'));
+  }
+  const prevFunder = paymentCell_(P.funder);
+  fields.funder = sent('funder') ? paymentReportText_(pay.funder) : prevFunder;
+  if (fields.funder !== prevFunder && fields.funder && PAYMENT_FUNDERS.indexOf(fields.funder) < 0) {
+    issues.push(paymentReportIssue_('funder', 'funder_invalid'));
+  }
+  const prevRef = paymentCell_(P.reference);
+  fields.reference = sent('reference') ? paymentReportText_(pay.reference) : prevRef;
+  if (fields.reference !== prevRef && fields.reference && paymentReportReferenceCode_(fields.reference, fields.method)) {
+    issues.push(paymentReportIssue_('reference', 'reference_invalid'));
+  }
+
+  // ---- who recorded the report: once, from the signed session, never again
+  if (firstReport) {
+    fields.recordedBy = String(o.stampUser == null ? '' : o.stampUser);
+    fields.recordedAt = israelTimestamp_(o.now);
+  } else {
+    fields.recordedBy = paymentCell_(P.recordedBy);
+    fields.recordedAt = paymentCell_(P.recordedAt);
+  }
+
+  // ---- the confirmation state
+  let cs = prevCs;
+  let confirmChange = null;
+  if (csWrite) {
+    if (CONFIRM_STATUSES.indexOf(wantCs) < 0) issues.push(paymentReportIssue_('confirmStatus', 'confirm_status_invalid'));
+    else if (!rd) issues.push(paymentReportIssue_('confirmStatus', 'confirm_without_report'));
+    else { cs = wantCs; confirmChange = { from: prevCs, to: cs }; }
+  }
+  const note = noteWrite ? wantNote : prevNote;
+  if (cs === 'flagged' && (csWrite || noteWrite) && note.length < FLAG_NOTE_MIN) {
+    issues.push(paymentReportIssue_('flagNote', 'flag_note_missing'));
+  }
+  if (firstReport && !cs) cs = 'reported';   // a new report is always 'reported' (plan R12)
+  fields.confirmStatus = cs;
+  fields.flagNote = note;
+  if (confirmChange) {
+    fields.confirmedBy = String(o.stampUser == null ? '' : o.stampUser);
+    fields.confirmedAt = israelTimestamp_(o.now);
+  } else {
+    fields.confirmedBy = paymentCell_(P.confirmedBy);
+    fields.confirmedAt = paymentCell_(P.confirmedAt);
+  }
+
+  if (issues.length) return { ok: false, error: 'validation', message: issues[0].hebrewMessage, fields: issues };
+  return {
+    ok: true, fields: fields, firstReport: firstReport, receivedChange: receivedChange,
+    confirmChange: confirmChange, needsFunder: firstReport && !fields.funder,
+  };
+}
+
+/* One AuditLog row when a recorded receivedDate is changed (old, new, actor).
+ * Setting it for the first time is not a change: recordedBy / recordedAt say
+ * who and when. Fail-soft, like every logAudit_ caller. */
+function logPaymentReceivedDateChanged_(out, change, user, actor) {
+  if (!change) return;
+  logAudit_('payment_received_date_changed', 'upsertPayment_',
+    String(out.patientUid || ''), String(out.patientName || ''), {
+      paymentId: String(out.id || ''),
+      paymentUid: String(out.paymentUid || ''),
+      old: change.from,
+      new: change.to,
+      by: String(user == null ? '' : user),
+      at: israelTimestamp_(),
+    }, actor === undefined ? String(user == null ? '' : user) : actor);
+}
+
+/* One AuditLog row per confirmation decision (reported / confirmed /
+ * flagged), so un-confirming is visible after the row moves on. */
+function logPaymentConfirm_(out, change, actor) {
+  if (!change) return;
+  logAudit_('payment_confirm_' + change.to, 'upsertPayment_',
+    String(out.patientUid || ''), String(out.patientName || ''), {
+      paymentId: String(out.id || ''),
+      paymentUid: String(out.paymentUid || ''),
+      from: change.from,
+      to: change.to,
+      flagNote: String(out.flagNote || ''),
+      by: String(out.confirmedBy || ''),
+      at: String(out.confirmedAt || ''),
+    }, actor === undefined ? String(out.confirmedBy || '') : actor);
+}
+
+/* ===== Funders (append-only) ===== */
+
+/* PURE. rows: Funders row objects. → { funder, effectiveFrom, isDefault }.
+ * The row with the latest effectiveFrom ≤ asOf wins; on the same day the
+ * later setAt, then the later row. No row → DEFAULT_FUNDER. A row with an
+ * unknown funder or an unreadable date is skipped, never guessed. */
+function currentFunderFrom_(rows, patientId, asOfIso) {
+  const id = paymentReportText_(patientId);
+  const asOf = paymentReportDate_(asOfIso) || paymentReportToday_();
+  let best = null;
+  const list = Array.isArray(rows) ? rows : [];
+  if (id) {
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i] || {};
+      if (paymentReportText_(r.patientId) !== id) continue;
+      const f = paymentReportText_(r.funder);
+      if (PAYMENT_FUNDERS.indexOf(f) < 0) continue;
+      const eff = r.effectiveFrom instanceof Date ? refundForecastIso_(r.effectiveFrom) : paymentReportDate_(r.effectiveFrom);
+      if (!eff || eff > asOf) continue;
+      const setAt = paymentReportText_(r.setAt);
+      if (!best || eff > best.effectiveFrom || (eff === best.effectiveFrom && setAt >= best.setAt)) {
+        best = { funder: f, effectiveFrom: eff, setAt: setAt };
+      }
+    }
+  }
+  return best ? { funder: best.funder, effectiveFrom: best.effectiveFrom, isDefault: false }
+              : { funder: DEFAULT_FUNDER, effectiveFrom: '', isDefault: true };
+}
+
+/* The Funders rows, read-only: getSheetByName (a missing tab is never
+ * created here) → [] when there is none. */
+function fundersRows_() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(FUNDERS_SHEET);
+  return sh ? readSheet_(sh, FUNDER_COLUMNS) : [];
+}
+
+/* currentFunder_(patientId, asOfIso) → the funder label (PAYMENT_FUNDERS).
+ * Read-only; DEFAULT_FUNDER when the patient has no row, or on any read
+ * failure (fail-soft: a funder lookup never breaks a save). */
+function currentFunder_(patientId, asOfIso) {
+  try {
+    return currentFunderFrom_(fundersRows_(), patientId, asOfIso).funder;
+  } catch (e) {
+    try { console.warn('[funders] read failed: ' + ((e && e.message) || e)); } catch (_) { /* no-op */ }
+    return DEFAULT_FUNDER;
+  }
+}
+
+/* Append ONE Funders row. Not reachable over HTTP in this PR (no handle_
+ * action): the funder UI is later work; until then rows are typed into the
+ * tab by hand. ctx { user, actor } — setBy is ctx.user, which a future
+ * caller must take from the signed session (requestUser_), never a payload.
+ * → { ok:true, row } | { ok:false, error }. */
+function appendFunder_(patientId, funder, effectiveFrom, ctx) {
+  const c = ctx || {};
+  const id = paymentLinkUidClean_(patientId);
+  if (!id) return { ok: false, error: 'patient_id_invalid' };
+  const f = paymentReportText_(funder);
+  if (PAYMENT_FUNDERS.indexOf(f) < 0) return { ok: false, error: 'funder_invalid', message: PAYMENT_REPORT_MESSAGES.funder_invalid };
+  const eff = paymentReportDate_(effectiveFrom);
+  if (!eff) return { ok: false, error: 'effective_from_invalid' };
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('appendFunder_');
+  try {
+    const sh = getOrCreateSheet_(FUNDERS_SHEET, FUNDER_COLUMNS);
+    const row = { patientId: id, funder: f, effectiveFrom: eff, setBy: String(c.user == null ? '' : c.user), setAt: israelTimestamp_() };
+    sh.getRange(sh.getLastRow() + 1, 1, 1, FUNDER_COLUMNS.length).setValues([objectToRow_(row, FUNDER_COLUMNS)]);
+    logAudit_('funder_set', 'appendFunder_', id, '', { funder: f, effectiveFrom: eff, by: row.setBy, at: row.setAt },
+      c.actor === undefined ? row.setBy : String(c.actor));
+    return { ok: true, row: row };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* Editor-run: create the Funders tab (headers, frozen row, text-format) so
+ * Sandra can type rows into it. Idempotent; touches no other tab. */
+function setupFundersSheetNow() {
+  const sh = getOrCreateSheet_(FUNDERS_SHEET, FUNDER_COLUMNS);
+  console.log('[funders] ready: ' + FUNDERS_SHEET + ', ' + Math.max(0, sh.getLastRow() - 1) + ' rows');
+  return { ok: true, rows: Math.max(0, sh.getLastRow() - 1) };
 }
 
 /* ===== Credits ledger ===== */
@@ -6835,11 +7367,12 @@ function refundPayoutForecast_() {
  * As of a date D (default: today, Asia/Jerusalem):
  *   - a cycle counts when it STARTED on or before D and on or after the
  *     records cutoff (recRecordsCutoff_, 2026-07-01);
- *   - money counts when it was RECEIVED on or before D. The only received
- *     date a Payments row has is chargedAt (the moment it was reported paid,
- *     server-stamped). A paid row with a blank chargedAt (written before the
- *     column existed) is dated to its cycle start and counted in
- *     receivedDateUnknown, never silently.
+ *   - money counts when it was RECEIVED on or before D: the row's
+ *     receivedDate (Phase 3, the day the money arrived) when it has one,
+ *     else chargedAt (the moment it was reported paid, server-stamped —
+ *     the legacy rule; debtAgingReceivedOn_). A paid row with neither
+ *     (written before the columns existed) is dated to its cycle start and
+ *     counted in receivedDateUnknown, never silently.
  *
  * Two figures, NEVER summed (no field adds them):
  *   recorded_debt     — cycles with a Payments row still short at D
@@ -6906,11 +7439,20 @@ function debtAgingCycleEnd_(entryIso, startIso) {
   return refundIsoFromDayNum_(refundDayNum_(base) - 1);
 }
 
-/* When a row's money was received: chargedAt's Jerusalem day, else unknown
- * (dated to fallbackIso, the cycle start). */
-function debtAgingReceivedOn_(chargedAt, fallbackIso) {
-  const iso = refundForecastIso_(chargedAt);
-  return iso ? { iso: iso, known: true } : { iso: fallbackIso, known: false };
+/* When a row's money was received. `raw` is the Payments row object.
+ *   1. receivedDate (Phase 3: the day the money actually arrived, set once);
+ *   2. else chargedAt's Jerusalem day — the legacy rule. chargedAt is
+ *      re-stamped whenever amountPaid moves, so for a row topped up later it
+ *      is the day of the LAST change, which made a historical as-of overstate
+ *      the debt;
+ *   3. else unknown, dated to fallbackIso (the cycle start).
+ * `source` says which one answered. */
+function debtAgingReceivedOn_(raw, fallbackIso) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  const rd = r.receivedDate instanceof Date ? refundForecastIso_(r.receivedDate) : paymentReportDate_(r.receivedDate);
+  if (rd) return { iso: rd, known: true, source: 'receivedDate' };
+  const iso = refundForecastIso_(r.chargedAt);
+  return iso ? { iso: iso, known: true, source: 'chargedAt' } : { iso: fallbackIso, known: false, source: '' };
 }
 
 /* Pure. tabs = recCollect_'s shape ({ patients, payments, credits, overrides },
@@ -6943,7 +7485,7 @@ function debtAging_(asOfIso, tabs) {
     const owner = pay.linkStatus === 'not_a_patient' ? null : m.payOwner[i];
     if (!owner) {
       if (!pay.dueDate || pay.dueDate > asOf) return;
-      const got = debtAgingReceivedOn_(raw.chargedAt, pay.dueDate);
+      const got = debtAgingReceivedOn_(raw, pay.dueDate);
       detachedRows.push({
         paymentId: pay.id, patientName: pay.patientName, houseId: pay.houseId, dueDate: pay.dueDate,
         amount: refundRound2_(pay.amount), receivedByAsOf: got.iso <= asOf ? refundRound2_(pay.amountPaid) : 0,
@@ -6986,7 +7528,7 @@ function debtAging_(asOfIso, tabs) {
       }
       if (exit && end > exit) end = exit;
       const expected = refundRound2_(Number(recApplyOverride_(pay, m.overrides).amount) || 0);
-      const got = debtAgingReceivedOn_(o.raw.chargedAt, start);
+      const got = debtAgingReceivedOn_(o.raw, start);
       const paid = refundRound2_(pay.amountPaid);
       if (!got.known && paid > 0) { unknownDate.count++; unknownDate.amount = refundRound2_(unknownDate.amount + paid); }
       const received = got.iso <= asOf ? paid : 0;
@@ -6998,6 +7540,7 @@ function debtAging_(asOfIso, tabs) {
         start: start, end: end, expected: expected, received: received, balance: balance,
         days: days, bucket: bucket, kind: 'recorded', paymentId: pay.id,
         coverageSource: recorded ? 'recorded' : 'derived', receivedDateKnown: got.known,
+        receivedDateSource: got.source,
       });
       debtAgingAdd_(totals.recorded_debt, bucket, balance);
       debtAgingAdd_(house(p.houseId).recorded_debt, bucket, balance);
@@ -7124,9 +7667,11 @@ function debtAgingAction_(params) {
  *              cycle" rule), or due dates ≤ 7 days apart (reconciliation §I);
  *              void rows never count
  *   credits    refundPayoutForecastFor_: awaiting_decision + unresolved
- *              (missing_payment_data is already in gaps, via debtAging_) */
+ *              (missing_payment_data is already in gaps, via debtAging_)
+ *   noFunder   (Phase 3 PR 1) patients not released with no Funders row —
+ *              currentFunder_ treats them as פרטי (cleanupNoFunder_) */
 const CLEANUP_SECTION_KEYS = ['names', 'gaps', 'detached', 'outsideStay', 'releasedNoExit', 'noEntryDate',
-  'zeroAmount', 'leads', 'duplicates', 'credits'];
+  'zeroAmount', 'leads', 'duplicates', 'credits', 'noFunder'];
 /* A gap cycle older than this, with no later activity, is "probably a
  * data-entry error" (cleanupProbablyEntryError_). */
 const CLEANUP_STALE_DAYS = 30;
@@ -7355,7 +7900,29 @@ function cleanupCredits_(forecast) {
   return rows.sort(function (a, b) { return a.exitDate < b.exitDate ? -1 : a.exitDate > b.exitDate ? 1 : 0; });
 }
 
-/* Pure. tabs = recCollect_'s shape (a missing tab reads as empty).
+/* «חסר גורם מממן» — every patient who is not released and has no Funders
+ * row at all. Such a patient reads as DEFAULT_FUNDER (פרטי); the list is so
+ * somebody decides rather than the default deciding silently. A row for the
+ * patient with any date counts as recorded (a future effectiveFrom is still a
+ * decision). Pure. */
+function cleanupNoFunder_(m, funderObjs) {
+  const has = {};
+  (funderObjs || []).forEach(function (r) {
+    const id = paymentReportText_(r && r.patientId);
+    if (id) has[id] = true;
+  });
+  return m.patients.filter(function (p) {
+    return p.status !== 'released' && !has[paymentReportText_(p.id)];
+  }).map(function (p) {
+    return { kind: 'no_funder', houseId: p.houseId || '', name: p.name, status: p.status,
+      entryDate: p.date || '', funder: DEFAULT_FUNDER };
+  }).sort(function (a, b) {
+    return (a.houseId < b.houseId ? -1 : a.houseId > b.houseId ? 1 : 0) || String(a.name).localeCompare(String(b.name), 'he');
+  });
+}
+
+/* Pure. tabs = recCollect_'s shape (a missing tab reads as empty), plus an
+ * optional `funders` tab (cleanupReportAction_ adds it).
  * → { ok, today, recordsCutoff, sections: { <CLEANUP_SECTION_KEYS> }, counts }. */
 function cleanupReport_(todayIso, tabs) {
   let today;
@@ -7422,6 +7989,7 @@ function cleanupReport_(todayIso, tabs) {
     leads: leads,
     duplicates: cleanupDuplicates_(m),
     credits: cleanupCredits_(forecast),
+    noFunder: cleanupNoFunder_(m, objs('funders')),
   };
   const counts = {};
   CLEANUP_SECTION_KEYS.forEach(function (k) { counts[k] = sections[k].length; });
@@ -7436,6 +8004,10 @@ function cleanupReport_(todayIso, tabs) {
 function cleanupReportAction_() {
   try {
     const data = recCollect_();
+    // Funders is read here, not in recTargets_: the reconciliation report has
+    // no use for it, and a tab that does not exist yet is not "missing".
+    const fsh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(FUNDERS_SHEET);
+    data.tabs.funders = fsh ? recReadSheet_(fsh, FUNDER_COLUMNS) : { rows: [] };
     const out = cleanupReport_(Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'yyyy-MM-dd'), data.tabs);
     if (out.ok) {
       out.missingTabs = data.missing;
@@ -10678,10 +11250,12 @@ function digestHouseLabel_(raw) {
   return s || '—';
 }
 
-/* The optional hand-added method column ('אמצעי תשלום' etc.) to the right of
- * PAYMENT_COLUMNS — the same lookup recPayment_ uses. Payments has no method
- * column of its own today; '' when there is none. */
+/* The payment method: the `method` column (Phase 3) when the row has one,
+ * else the optional hand-added column ('אמצעי תשלום' etc.) to the right of
+ * PAYMENT_COLUMNS — the same lookup recPayment_ uses; '' when there is none. */
 function digestMethod_(obj) {
+  const own = String(obj.method == null ? '' : obj.method).trim();
+  if (own) return own;
   const want = ['method', 'אמצעי תשלום', 'אמצעי', 'paymentMethod'].map(function (n) { return diagNormText_(n); });
   const keys = Object.keys(obj);
   for (let i = 0; i < keys.length; i++) {
@@ -10720,7 +11294,10 @@ function digestRow_(obj, ledger) {
     patientName: String(obj.patientName == null ? '' : obj.patientName).trim(),
     houseLabel: digestHouseLabel_(obj.houseId),
     amount: amount,
-    paymentDate: digestDmyFromIso_(asISODate_(obj.dueDate)),
+    /* The day the money arrived (receivedDate, Phase 3) when the row has
+     * one; a legacy row keeps showing its due date. Which rows are listed is
+     * still decided by chargedAt — "recorded since the last digest". */
+    paymentDate: digestDmyFromIso_(paymentReportDate_(obj.receivedDate) || asISODate_(obj.dueDate)),
     method: digestMethod_(obj),
     recordedBy: String(obj.chargedBy == null ? '' : obj.chargedBy).trim(),
     recordedAt: isFinite(instant) ? String(Utilities.formatDate(new Date(instant), DIGEST_TZ, 'dd/MM/yyyy HH:mm')) : '',
