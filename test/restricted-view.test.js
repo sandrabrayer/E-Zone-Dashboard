@@ -272,7 +272,7 @@ test('every mapped ACTION is served for Vered, Sandra and a shared session insid
 
 test('every mapped ROUTE (/api/export/*.xlsx, /api/debug/*) → 403 for Shiran and Yael; passes the gate for full-view sessions', async () => {
   assert.deepStrictEqual([...scope.FINANCE_ROUTES],
-    ['/api/export/refund-forecast.xlsx', '/api/export/debt-aging.xlsx', '/api/debug/last-save', '/api/debug/last-load']);
+    ['/api/export/refund-forecast.xlsx', '/api/export/debt-aging.xlsx', '/api/export/cleanup.xlsx', '/api/debug/last-save', '/api/debug/last-load']);
   const stub = stubAll();
   try {
     await withServer(await envWith(), async (port) => {
@@ -654,6 +654,8 @@ test('client: no billing leaks — loadAll skips getPayments / getCredits, the �
   assert.strictEqual((HTML_SRC.match(/ data-finance[ >]/g) || []).length, 10, 'exactly the 4 tabs, 4 screens and 2 widgets');
 });
 
-test('service worker: v27', () => {
-  assert.match(SW_SRC, /var CACHE_VERSION = 'v27';/);
+test('service worker: v27 or later', () => {
+  // v27 shipped the restricted view; later PRs bump it again (v28: cleanup workbook).
+  const m = /var CACHE_VERSION = 'v(\d+)';/.exec(SW_SRC);
+  assert.ok(m && Number(m[1]) >= 27, m && m[1]);
 });
