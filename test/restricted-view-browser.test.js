@@ -9,7 +9,8 @@
  *     - no renewal / overdue widget on the dashboard, no «זיכויים» button on
  *       מטופלים משוחררים (its «שחזר» is still there);
  *     - the page never asked for getPayments / getCredits.
- *   Vered and a shared session (dual window): all 11 tabs; #billing opens גבייה.
+ *   Vered and Sandra: all 11 tabs; #billing opens גבייה. (PR C removed the
+ *   shared session.)
  *
  * Set SHOT_DIR to also write restricted-360-dashboard.png and
  * restricted-360-discharged.png.
@@ -43,13 +44,14 @@ const why = !playwright ? 'playwright not installed' : (!chromiumPath ? 'no chro
 
 const pinHash = require('../lib/pin-hash');
 const users = require('../lib/users');
-const { israelDay } = require('../lib/shared-pin-window');
+/* 'YYYY-MM-DD' in Israel time (lib/shared-pin-window.js israelDay, removed in PR C). */
+const israelDay = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date(ms));
 const { createSessionToken } = require('../lib/session');
 
 const SERVER_PATH = require.resolve('../server');
 const PEPPER = 'pepper-TEST-restricted-browser-0123456789abcdef';
 const SESSION_SECRET = 'session-secret-TEST-restricted-browser-0123456789';
-const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'APP_PIN', 'USER_PIN_HASHES', 'PIN_PEPPER', 'APP_PIN_UNTIL'];
+const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'USER_PIN_HASHES', 'PIN_PEPPER'];
 const ALL_TABS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention'];
 const RESTRICTED_TABS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'breakeven', 'retention'];
 
@@ -72,8 +74,8 @@ async function boot() {
   const recs = ['vered', 'sandra', 'shiran', 'yael'].map((id) => JSON.parse(users.recordLine(id, hash, 1)));
   const env = {
     PROXY_SECRET: 'proxy-secret-TEST-restricted-browser-0123456789', SESSION_SECRET,
-    SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', APP_PIN: '4711', PIN_PEPPER: PEPPER,
-    APP_PIN_UNTIL: israelDay(Date.now() + 7 * 864e5), USER_PIN_HASHES: JSON.stringify(recs),
+    SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', PIN_PEPPER: PEPPER,
+    USER_PIN_HASHES: JSON.stringify(recs),
   };
   const saved = {};
   for (const k of ENV_KEYS) { saved[k] = process.env[k]; process.env[k] = env[k]; }
@@ -112,7 +114,6 @@ async function boot() {
 }
 
 function tokenFor(id) {
-  if (!id) return createSessionToken(SESSION_SECRET, undefined, undefined, 'ורד'); // shared (dual window)
   return createSessionToken(SESSION_SECRET, undefined, undefined, users.modelById(id).name, { id, pinVersion: 1 });
 }
 
@@ -140,7 +141,7 @@ async function shot(target, name) {
 
 const tabs = (page) => page.locator('.tabs .tab').evaluateAll((bs) => bs.map((b) => b.dataset.screen));
 
-test('restricted view at 360px: Shiran gets 7 tabs, no money tab in the DOM, the #billing deep link falls back, no billing widget; Vered / shared keep all 11', { skip: skip && why, timeout: 120000 }, async () => {
+test('restricted view at 360px: Shiran gets 7 tabs, no money tab in the DOM, the #billing deep link falls back, no billing widget; Vered / Sandra keep all 11', { skip: skip && why, timeout: 120000 }, async () => {
   const server = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
@@ -152,7 +153,7 @@ test('restricted view at 360px: Shiran gets 7 tabs, no money tab in the DOM, the
     for (const scr of ['billing', 'revenue', 'reconnect', 'growth']) {
       assert.equal(await page.locator('#screen-' + scr).count(), 0, scr);
     }
-    assert.equal(await page.evaluate(() => document.body.className), 'view-restricted');
+    assert.equal(await page.evaluate(() => document.body.className), 'view-restricted', 'restricted, and no role-* class (no deleter)');
     assert.equal(await page.locator('.tabs .tab.active').getAttribute('data-screen'), 'dashboard', 'the deep link fell back');
     assert.equal(await page.locator('#screen-dashboard').isVisible(), true);
     assert.equal(await page.locator('#renewal-alert, #overdue-alert').count(), 0, 'no dashboard billing widget');
@@ -177,17 +178,19 @@ test('restricted view at 360px: Shiran gets 7 tabs, no money tab in the DOM, the
     assert.deepEqual(direct, [403, { ok: false, error: 'forbidden', message: 'אין הרשאה לצפות בנתוני גבייה' }]);
     await s.ctx.close();
 
-    // ---- Vered and a shared session: unchanged, all 11 tabs ----
-    for (const id of ['vered', '']) {
+    // ---- Vered and Sandra: unchanged, all 11 tabs ----
+    for (const id of ['vered', 'sandra']) {
       const f = await open(browser, server.port, id, '#billing');
-      assert.deepEqual(await tabs(f.page), ALL_TABS, id || 'shared');
-      assert.equal(await f.page.evaluate(() => document.body.className), '');
+      assert.deepEqual(await tabs(f.page), ALL_TABS, id);
+      await f.page.waitForFunction(() => document.body.classList.contains('role-deleter'));
+      assert.equal(await f.page.evaluate(() => document.body.classList.contains('view-restricted')), false);
+      assert.equal(await f.page.evaluate(() => document.body.classList.contains('role-approver')), id === 'sandra', 'approver: Sandra only');
       assert.equal(await f.page.locator('.tabs .tab.active').getAttribute('data-screen'), 'billing', 'the deep link opens גבייה');
       assert.equal(await f.page.locator('#screen-billing').isVisible(), true);
       assert.ok(f.sheetActions.includes('getPayments') && f.sheetActions.includes('getCredits'));
       // The same data DOES raise the dashboard billing widget for full view —
       // so its absence for Shiran above is the restriction, not empty data.
-      assert.equal(await f.page.locator('#overdue-alert:not(.hidden)').count(), 1, 'overdue strip present for ' + (id || 'shared'));
+      assert.equal(await f.page.locator('#overdue-alert:not(.hidden)').count(), 1, 'overdue strip present for ' + id);
       assert.deepEqual(f.errors, [], 'no page errors');
       await f.ctx.close();
     }

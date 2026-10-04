@@ -87,6 +87,11 @@ function serve(state) {
 function seedScript(sessionUser) {
   return `
     state.sessionUser = ${JSON.stringify(sessionUser || 'ורד')};
+    // PR C: the roles /api/me gives Vered and Sandra — both deleters, the
+    // approver is Sandra's session only.
+    state.deleter = true;
+    state.approver = ${JSON.stringify((sessionUser || 'ורד') === 'סנדרה')};
+    applyRoleView();
     state.patients = [
       normalizePatient({ id: 'id-amit', houseId: 'arfoni', name: 'עמית בורנשטיין',
         date: '2026-09-07', pay: 30000, status: 'active', exitDate: '' }),

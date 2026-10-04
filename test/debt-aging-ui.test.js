@@ -37,10 +37,12 @@ const ExcelJS = require('exceljs');
 
 const SECRET = 'test-session-secret-debt-aging-0123456789abcdef0123';
 process.env.SESSION_SECRET = SECRET;
-process.env.APP_PIN_UNTIL = require('../lib/shared-pin-window').israelDay(Date.now() + 7 * 864e5); // PR B: shared cookies need the dual window open
+// PR C: every session is personal — a real USER_PIN_HASHES record per user.
+const { applyPersonalEnv, personalToken } = require('./helpers/personal-session');
+applyPersonalEnv();
+const ID_BY_NAME = { 'ורד': 'vered', 'סנדרה': 'sandra', 'שירן': 'shiran', 'יעל': 'yael' };
 delete process.env.PROXY_SECRET;
 
-const { createSessionToken } = require('../lib/session');
 const report = require('../lib/xlsx-report');
 const debtXlsx = require('../lib/debt-aging-xlsx');
 const server = require('../server');
@@ -641,7 +643,8 @@ function get(port, urlPath, headers) {
   });
 }
 const ROUTE = '/api/export/debt-aging.xlsx';
-const cookie = (user) => ({ Cookie: `ezone_session=${createSessionToken(SECRET, undefined, undefined, user)}` });
+// A finance user's personal cookie (Shiran / Yael get 403 on these routes — restricted view).
+const cookie = (user) => ({ Cookie: `ezone_session=${personalToken(SECRET, ID_BY_NAME[user])}` });
 function captureLogs() {
   const lines = [];
   const orig = { log: console.log, error: console.error, warn: console.warn };
@@ -688,7 +691,7 @@ test('route: success — xlsx, the as-of filename, no-store, nosniff; asOf and t
   const s = await listen(stubApp(async (asOf, user) => { seen.push([asOf, user]); return Object.assign({}, PAST, { generatedAt: 'x' }); }));
   const logs = captureLogs();
   let res;
-  try { res = await get(s.address().port, ROUTE + '?asOf=2026-08-31&house=all&status=all', cookie('שירן')); } finally { logs.restore(); s.close(); }
+  try { res = await get(s.address().port, ROUTE + '?asOf=2026-08-31&house=all&status=all', cookie('סנדרה')); } finally { logs.restore(); s.close(); }
   assert.equal(res.status, 200);
   assert.equal(res.headers['content-type'], report.XLSX_MIME);
   assert.equal(res.headers['cache-control'], 'no-store');
@@ -697,7 +700,7 @@ test('route: success — xlsx, the as-of filename, no-store, nosniff; asOf and t
   assert.equal(cd, `attachment; filename="debt-aging-2026-08-31.xlsx"; filename*=UTF-8''${enc('חובות-2026-08-31.xlsx')}`);
   assert.ok(/^[\x20-\x7e]+$/.test(cd));
   assert.equal(Number(res.headers['content-length']), res.body.length);
-  assert.deepEqual(seen, [['2026-08-31', 'שירן']]);
+  assert.deepEqual(seen, [['2026-08-31', 'סנדרה']]);
   const wb = await openBook(res.body);
   assert.equal(wb.worksheets.length, 6);
   // the past-date caveat (exported 02/10, as of 31/08)
@@ -721,7 +724,7 @@ test('route: failures answer JSON with no-store', async () => {
     const s = await listen(stubApp(fn));
     const logs = captureLogs();
     let res;
-    try { res = await get(s.address().port, ROUTE + '?asOf=2026-08-31', cookie('יעל')); } finally { logs.restore(); s.close(); }
+    try { res = await get(s.address().port, ROUTE + '?asOf=2026-08-31', cookie('סנדרה')); } finally { logs.restore(); s.close(); }
     assert.equal(res.status, status, error);
     assert.deepEqual(JSON.parse(res.body.toString()), { ok: false, error });
     assert.equal(res.headers['cache-control'], 'no-store');

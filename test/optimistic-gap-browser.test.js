@@ -150,7 +150,7 @@ test('the four optimistic triggers paint a busy indicator in a real browser',
       await page.route('**/api/**', async (route) => {
         const url = route.request().url();
         const json = (b) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) });
-        if (url.includes('/api/me')) return json({ ok: true, user: 'בודק' });
+        if (url.includes('/api/me')) return json({ ok: true, user: 'בודק', auth: 'personal', deleter: true, finance: true }); // PR C: the delete controls need the deleter role
         if (url.includes('/api/verify-pin')) return json({ ok: true });
         if (url.includes('action=getData')) return json(GET_DATA);
         if (url.includes('action=getPayments')) return json({ ok: true, payments: [] });

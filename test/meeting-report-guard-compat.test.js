@@ -26,6 +26,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+/* Personal PINs PR C: Code.gs refuses a delete without a VERIFIED `deleter`
+ * (handle_ → roleAllowed_). These calls go straight to handle_, so they carry
+ * the actor proxyGate_ would set for Vered's personal session. */
+const DELETER_ACTOR = { verified: true, user: 'ורד', id: 'vered', auth: 'personal', roles: ['staff', 'reporter', 'deleter'], caps: ['finance'] };
+
+
 const arr = (x) => Array.from(x);
 
 /* ---------- a minimal fake Sheet (same shape as meeting-report-write-fix) ---------- */
@@ -191,7 +197,7 @@ test("Vered's edit (same reportedAt) round-trips through mergeLeads_ post-guard"
 
 test('deleteMeetingReport clears exactly the six fields on the sheet row', () => {
   const { code, sandbox, cols } = withLeads([REPORTED]);
-  const res = code.handle({ action: 'deleteMeetingReport', leadId: 'L1' });
+  const res = code.handle({ __actor: DELETER_ACTOR, action: 'deleteMeetingReport', leadId: 'L1' });
   assert.strictEqual(res.ok, true);
   assert.strictEqual(res.deleted.leadId, 'L1');
 
@@ -204,16 +210,16 @@ test('deleteMeetingReport clears exactly the six fields on the sheet row', () =>
 
 test('deleteMeetingReport: unknown/missing leadId refused; report-less lead is idempotent ok', () => {
   const { code } = withLeads([REPORTED, { ...REPORTED, id: 'L2', meetingReportedAt: '', meetingReportOutcome: '', meetingCompanion: '', meetingNote: '', meetingReporter: '', meetingSeen: '' }]);
-  assert.strictEqual(code.handle({ action: 'deleteMeetingReport', leadId: 'nope' }).error, 'lead_not_found');
-  assert.strictEqual(code.handle({ action: 'deleteMeetingReport' }).error, 'bad_lead');
-  assert.strictEqual(code.handle({ action: 'deleteMeetingReport', leadId: 'L2' }).ok, true, 'idempotent');
+  assert.strictEqual(code.handle({ __actor: DELETER_ACTOR, action: 'deleteMeetingReport', leadId: 'nope' }).error, 'lead_not_found');
+  assert.strictEqual(code.handle({ __actor: DELETER_ACTOR, action: 'deleteMeetingReport' }).error, 'bad_lead');
+  assert.strictEqual(code.handle({ __actor: DELETER_ACTOR, action: 'deleteMeetingReport', leadId: 'L2' }).ok, true, 'idempotent');
 });
 
 /* ===== delete survives stale tabs ===== */
 
 test('REGRESSION: a stale tab cannot resurrect a deleted report via saveAll', () => {
   const { code, sandbox, cols } = withLeads([REPORTED]);
-  assert.strictEqual(code.handle({ action: 'deleteMeetingReport', leadId: 'L1' }).ok, true);
+  assert.strictEqual(code.handle({ __actor: DELETER_ACTOR, action: 'deleteMeetingReport', leadId: 'L1' }).ok, true);
 
   // A tab that loaded BEFORE the delete still holds the full report and
   // saves (any inline edit fires saveAll with the whole list).
@@ -230,7 +236,7 @@ test('REGRESSION: a stale tab cannot resurrect a deleted report via saveAll', ()
 
 test("the deleting tab's own next saveAll (locally cleared) is inert — no conflict", () => {
   const { code, sandbox, cols } = withLeads([REPORTED]);
-  assert.strictEqual(code.handle({ action: 'deleteMeetingReport', leadId: 'L1' }).ok, true);
+  assert.strictEqual(code.handle({ __actor: DELETER_ACTOR, action: 'deleteMeetingReport', leadId: 'L1' }).ok, true);
 
   // The frontend cleared its local copy on success, so the echo matches the
   // sheet: empty timestamp on both sides.

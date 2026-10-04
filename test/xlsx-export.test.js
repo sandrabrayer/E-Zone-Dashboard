@@ -24,10 +24,12 @@ const ExcelJS = require('exceljs');
 
 const SECRET = 'test-session-secret-xlsx-0123456789abcdef0123456789';
 process.env.SESSION_SECRET = SECRET;
-process.env.APP_PIN_UNTIL = require('../lib/shared-pin-window').israelDay(Date.now() + 7 * 864e5); // PR B: shared cookies need the dual window open
+// PR C: every session is personal — a real USER_PIN_HASHES record per user.
+const { applyPersonalEnv, personalToken } = require('./helpers/personal-session');
+applyPersonalEnv();
+const ID_BY_NAME = { 'ורד': 'vered', 'סנדרה': 'sandra', 'שירן': 'shiran', 'יעל': 'yael' };
 delete process.env.PROXY_SECRET;
 
-const { createSessionToken } = require('../lib/session');
 const report = require('../lib/xlsx-report');
 const forecastXlsx = require('../lib/refund-forecast-xlsx');
 const server = require('../server');
@@ -358,7 +360,8 @@ function get(port, urlPath, headers) {
   });
 }
 const ROUTE = '/api/export/refund-forecast.xlsx';
-const cookie = (user) => ({ Cookie: `ezone_session=${createSessionToken(SECRET, undefined, undefined, user)}` });
+// A finance user's personal cookie (Shiran / Yael get 403 on these routes — restricted view).
+const cookie = (user) => ({ Cookie: `ezone_session=${personalToken(SECRET, ID_BY_NAME[user])}` });
 
 function captureLogs() {
   const lines = [];
@@ -425,7 +428,7 @@ test('C: failures answer JSON with no-store and log only a code', async () => {
     const s = await listen(stubApp(fn));
     const logs = captureLogs();
     let res;
-    try { res = await get(s.address().port, ROUTE, cookie('שירן')); } finally { logs.restore(); s.close(); }
+    try { res = await get(s.address().port, ROUTE, cookie('סנדרה')); } finally { logs.restore(); s.close(); }
     assert.strictEqual(res.status, status, error);
     assert.deepStrictEqual(JSON.parse(res.body.toString()), { ok: false, error });
     assert.strictEqual(res.headers['cache-control'], 'no-store');

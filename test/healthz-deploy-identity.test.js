@@ -7,7 +7,7 @@
  *     and adds `commit` / `branch` straight from RAILWAY_GIT_COMMIT_SHA /
  *     RAILWAY_GIT_BRANCH — validated (hex sha, capped branch), blank elsewhere;
  *   - the helper reads ONLY those two env keys: nothing else in the environment
- *     (SESSION_SECRET, APP_PIN, …) can ever surface on the unauthenticated route;
+ *     (SESSION_SECRET, HEALTHCHECK_TOKEN, …) can ever surface on the unauthenticated route;
  *   - the healthcheck compares /healthz `commit` with GITHUB_SHA: a mismatch is a
  *     WARNING (never fails the run), a match or any unknown side is a note;
  *   - run() still exits 0 on a mismatch and the warning lands in the report.
@@ -60,7 +60,7 @@ test('deployIdentity reads only the two RAILWAY_GIT_* keys — secrets never rid
     RAILWAY_GIT_COMMIT_SHA: FULL_SHA,
     RAILWAY_GIT_BRANCH: BRANCH,
     SESSION_SECRET: 'super-secret-session',
-    APP_PIN: '123456',
+    HEALTHCHECK_TOKEN: 'hc-token-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345',
     MEETING_REPORT_SECRET: 'mr-secret',
     RAILWAY_DEPLOYMENT_ID: 'dep-123',
     SHEETS_URL: 'https://script.google.com/macros/s/AKfyc/exec',
@@ -166,6 +166,9 @@ function healthyData() {
   };
 }
 
+/* The weekly healthcheck's own credential (PR C) — any ≥ 32-char value. */
+const HC_TOKEN = 'hc-test-token-0123456789abcdef0123456789';
+
 function fakeFetchFor(routes) {
   return async (url) => {
     for (const [suffix, resp] of Object.entries(routes)) {
@@ -188,15 +191,14 @@ function fakeFetchFor(routes) {
 function routesWithHealthz(commit) {
   return {
     '/healthz': { status: 200, body: healthzJson(commit) },
-    '/api/verify-pin': { status: 200, body: '{"ok":true}', setCookie: ['ezone_session=tok123; HttpOnly; Path=/'] },
-    '/api/sheets?action=getData': { status: 200, body: JSON.stringify(healthyData()) },
+    '/api/healthcheck?action=getData': { status: 200, body: JSON.stringify(healthyData()) },
     '/': { status: 200, body: '<title>E-ZONE Dashboard</title>' },
   };
 }
 
 test('run(): a stale Railway build is a WARNING in the report and still exits 0', async () => {
   const summary = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hc-')), 'summary.md');
-  const env = { APP_PIN: '0000', APP_URL: 'https://healthcheck.invalid', GITHUB_SHA: '93b72ef181' + 'f'.repeat(30), GITHUB_STEP_SUMMARY: summary };
+  const env = { HEALTHCHECK_TOKEN: HC_TOKEN, APP_URL: 'https://healthcheck.invalid', GITHUB_SHA: '93b72ef181' + 'f'.repeat(30), GITHUB_STEP_SUMMARY: summary };
   const code = await hc.run(env, fakeFetchFor(routesWithHealthz(FULL_SHA)));
   assert.strictEqual(code, 0);
   const report = fs.readFileSync(summary, 'utf8');
@@ -207,7 +209,7 @@ test('run(): a stale Railway build is a WARNING in the report and still exits 0'
 
 test('run(): a matching build reports the match as a note and no warning', async () => {
   const summary = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hc-')), 'summary.md');
-  const env = { APP_PIN: '0000', APP_URL: 'https://healthcheck.invalid', GITHUB_SHA: FULL_SHA, GITHUB_STEP_SUMMARY: summary };
+  const env = { HEALTHCHECK_TOKEN: HC_TOKEN, APP_URL: 'https://healthcheck.invalid', GITHUB_SHA: FULL_SHA, GITHUB_STEP_SUMMARY: summary };
   assert.strictEqual(await hc.run(env, fakeFetchFor(routesWithHealthz(FULL_SHA))), 0);
   const report = fs.readFileSync(summary, 'utf8');
   assert.match(report, /Warnings: none/);
@@ -221,5 +223,5 @@ test('run(): /healthz probe failure is a warning, never a critical', async () =>
     if (String(url).includes('/healthz')) throw new Error('boom');
     return inner(url, opts);
   };
-  assert.strictEqual(await hc.run({ APP_PIN: '0000', APP_URL: 'https://healthcheck.invalid', GITHUB_SHA: FULL_SHA }, fetchFn), 0);
+  assert.strictEqual(await hc.run({ HEALTHCHECK_TOKEN: HC_TOKEN, APP_URL: 'https://healthcheck.invalid', GITHUB_SHA: FULL_SHA }, fetchFn), 0);
 });

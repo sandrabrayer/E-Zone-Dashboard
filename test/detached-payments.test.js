@@ -465,8 +465,9 @@ test('C: the עמית יעקובי / עמית בורנשטיין pair is WARNED 
    * it just steps down to secondary while כפילות leads. */
   const row = fnSource(APP, 'buildReconnectRow');
   assert.match(row, /ייתכן רישום כפול/);
-  assert.match(row, /class="btn small \$\{dup\.length \? '' : 'primary'\} cand-link"/);
-  assert.match(row, /dup\.length \? `<button class="btn small primary cand-dup"/,
+  // PR C: כפילות (a void) is offered to a deleter only; for anyone else שייך stays primary.
+  assert.match(row, /class="btn small \$\{dup\.length && canDelete\(\) \? '' : 'primary'\} cand-link"/);
+  assert.match(row, /dup\.length && canDelete\(\) \? `<button class="btn small primary cand-dup" data-role="deleter"/,
     'and כפילות is the PRIMARY action exactly where the warning is');
   assert.ok(!/dup\.length \? ' disabled'/.test(row), 'a possible double entry must not block the link');
 });

@@ -518,10 +518,10 @@ const SERVER_PATH = require.resolve('../server');
 
 function freshServer(env) {
   const saved = {};
-  // PR B: shared session cookies are honoured only inside the dual window,
-  // so every fresh server here opens it (7 days from today, Israel time).
-  const e = Object.assign({ APP_PIN_UNTIL: require('../lib/shared-pin-window').israelDay(Date.now() + 7 * 864e5) }, env);
-  for (const k of ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'APP_PIN_UNTIL']) {
+  // PR C: every session is personal, so every fresh server here gets real
+  // USER_PIN_HASHES records (test/helpers/personal-session.js).
+  const e = Object.assign(require('./helpers/personal-session').applyPersonalEnv({}), env);
+  for (const k of ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'USER_PIN_HASHES', 'PIN_PEPPER']) {
     saved[k] = process.env[k];
     if (e[k] === undefined) delete process.env[k]; else process.env[k] = e[k];
   }
@@ -603,8 +603,8 @@ function request(port, method, urlPath, { cookie, body } = {}) {
 }
 
 function sessionCookie(user) {
-  const { createSessionToken } = require('../lib/session');
-  return 'ezone_session=' + createSessionToken(SESSION_SECRET, undefined, undefined, user);
+  const ids = { 'ורד': 'vered', 'סנדרה': 'sandra', 'שירן': 'shiran', 'יעל': 'yael' };
+  return require('./helpers/personal-session').personalCookie(SESSION_SECRET, ids[user]);
 }
 
 test('server.js buildAppsScriptBody: proxy fields go LAST, so a client can never override them', () => {

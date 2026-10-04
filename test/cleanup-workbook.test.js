@@ -821,8 +821,10 @@ test('UI: the export GETs the route with no-store and downloads the dated file; 
   assert.match(APP_SRC, /cleanup\.onclick = \(\) => busyButton\(cleanup, 'load', exportCleanupXlsx\)/);
 });
 
-test('service worker: v28; /api/export/cleanup.xlsx is network-only (never cached)', () => {
-  assert.match(SW_SRC, /var CACHE_VERSION = 'v28';/);
+test('service worker: v28 or later; /api/export/cleanup.xlsx is network-only (never cached)', () => {
+  // v28 shipped the cleanup workbook; later PRs bump it again (v29: personal PINs PR C).
+  const v = Number((SW_SRC.match(/var CACHE_VERSION = 'v(\d+)';/) || [])[1]);
+  assert.ok(v >= 28, 'CACHE_VERSION is v' + v);
   assert.ok(SW_SRC.includes('v27 → v28:'));
   const sandbox = { self: { addEventListener() {} }, module: { exports: {} }, URL, caches: {}, fetch() {} };
   vm.createContext(sandbox);

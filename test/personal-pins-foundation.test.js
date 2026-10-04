@@ -1,8 +1,12 @@
 /* Personal PINs — PR A, foundation (ZERO user-facing change).
  * See CHANGELOG-personal-pins-foundation.md and docs/billing-control-plan.md §11.5.
  *
+ * PR C (2026-10-04) removed the shared APP_PIN: the tests that pinned its
+ * login now pin that it is gone, and the shared-session role tests now pin
+ * that such a cookie is no session at all.
+ *
  * server.js (real Express app on an ephemeral port, https.request stubbed):
- *   - APP_PIN login behaves exactly as before
+ *   - the shared APP_PIN login is gone (PR C)
  *   - X-Forwarded-For spoofing no longer resets the per-IP counter
  *   - the counter maps sweep expired entries and are capped
  *   - the USER_PIN_HASHES startup validator
@@ -72,10 +76,13 @@ function freshServer(env) {
   return { mod, startup: lines };
 }
 
-/* PR B: the shared APP_PIN (and its cookies) work only inside the dual
- * window, so the PR A suite runs with it open (7 days from today, Israel). */
-const OPEN_UNTIL = require('../lib/shared-pin-window').israelDay(Date.now() + 7 * 864e5);
-const BASE_ENV = { PROXY_SECRET, SESSION_SECRET, SHEETS_URL, APP_PIN, APP_PIN_UNTIL: OPEN_UNTIL };
+/* PR C: no APP_PIN — the base env has no shared code at all. Tests that log
+ * in add personal records (PERSONAL_ENV). */
+const BASE_ENV = { PROXY_SECRET, SESSION_SECRET, SHEETS_URL };
+const personalHelper = require('./helpers/personal-session');
+const PERSONAL_ENV = Object.assign({}, BASE_ENV, {
+  USER_PIN_HASHES: personalHelper.userPinHashes(), PIN_PEPPER: personalHelper.TEST_PEPPER,
+});
 
 function stubHttps(respond) {
   const calls = [];
@@ -155,55 +162,42 @@ async function record(id, over) {
 }
 
 /* ====================================================================== */
-/* ============== server.js: APP_PIN login exactly as before ============ */
+/* ============== server.js: the shared APP_PIN login is gone (PR C) ===== */
 /* ====================================================================== */
 
-test('APP_PIN login behaves exactly as before: 200 + cookie, 401 on a wrong PIN, 429 after 10, success resets', async () => {
-  await withServer(BASE_ENV, async (port) => {
-    const ok = await request(port, 'POST', '/api/verify-pin', { body: { pin: APP_PIN, user: 'ורד' } });
+test('PR C: { pin } without userId → 400 user_required, no cookie, nothing counted — even with APP_PIN still set', async () => {
+  await withServer(Object.assign({}, PERSONAL_ENV, { APP_PIN }), async (port, mod, startup) => {
+    for (const body of [{ pin: APP_PIN }, { pin: APP_PIN, user: 'ורד' }, { pin: '0000' }, {}]) {
+      const r = await request(port, 'POST', '/api/verify-pin', { body });
+      assert.strictEqual(r.status, 400, JSON.stringify(body));
+      assert.deepStrictEqual(r.json, { ok: false, error: 'user_required' });
+      assert.strictEqual(r.headers['set-cookie'], undefined, 'no cookie is minted');
+    }
+    // Nothing was counted: a personal login from the same address still works.
+    const ok = await request(port, 'POST', '/api/verify-pin', { body: { userId: 'vered', pin: personalHelper.TEST_PIN } });
     assert.strictEqual(ok.status, 200);
-    assert.deepStrictEqual(ok.json, { ok: true });
     const setCookie = String(ok.headers['set-cookie']);
     assert.match(setCookie, /^ezone_session=[^;]+; HttpOnly; SameSite=Strict; Path=\/; Max-Age=604800$/);
     const token = setCookie.split(';')[0].slice('ezone_session='.length);
-    assert.strictEqual(token.split('.').length, 3, 'the same user-bearing 3-part token as before');
-    assert.strictEqual(readSessionUser(token, SESSION_SECRET), 'ורד');
-
+    assert.strictEqual(token.split('.').length, 4, 'the personal 4-part token');
     const me = await request(port, 'GET', '/api/me', { cookie: 'ezone_session=' + token });
-    // PR B adds auth / approver / sharedUntil; `user` is unchanged.
-    assert.strictEqual(me.json.ok, true);
-    assert.strictEqual(me.json.user, 'ורד');
-    assert.strictEqual(me.json.auth, 'shared');
-    assert.strictEqual(me.json.approver, false);
-
-    // An unknown name still mints the legacy user-less cookie.
-    const anon = await request(port, 'POST', '/api/verify-pin', { body: { pin: APP_PIN, user: 'סנדרה' } });
-    const anonTok = String(anon.headers['set-cookie']).split(';')[0].slice('ezone_session='.length);
-    assert.strictEqual(anonTok.split('.').length, 2);
-
-    for (let i = 0; i < 9; i++) {
-      const bad = await request(port, 'POST', '/api/verify-pin', { body: { pin: '0000' } });
-      assert.strictEqual(bad.status, 401);
-      assert.deepStrictEqual(bad.json, { ok: false, error: 'invalid_pin' });
-    }
-    // A success resets the counter (as before) …
-    assert.strictEqual((await request(port, 'POST', '/api/verify-pin', { body: { pin: APP_PIN } })).status, 200);
-    for (let i = 0; i < 10; i++) {
-      assert.strictEqual((await request(port, 'POST', '/api/verify-pin', { body: { pin: '0000' } })).status, 401);
-    }
-    // … and the 11th attempt in the window is 429 without checking the PIN.
-    const limited = await request(port, 'POST', '/api/verify-pin', { body: { pin: APP_PIN } });
-    assert.strictEqual(limited.status, 429);
-    assert.strictEqual(limited.json.error, 'rate_limited');
-    assert.ok(limited.json.retryAfter >= 1 && limited.json.retryAfter <= 900);
-    assert.strictEqual(limited.headers['retry-after'], String(limited.json.retryAfter));
+    assert.deepStrictEqual([me.json.user, me.json.auth, me.json.approver, me.json.deleter], ['ורד', 'personal', false, true]);
+    assert.ok(!('sharedUntil' in me.json), 'the dual-window field is gone');
+    // The startup log says APP_PIN is ignored — once, and never its value.
+    const warn = startup.filter((l) => /APP_PIN/.test(l));
+    assert.strictEqual(warn.length, 1);
+    assert.match(warn[0], /set but ignored/);
+    assert.ok(!startup.join('\n').includes(APP_PIN));
   });
 });
 
-test('APP_PIN unset still fails closed (every attempt 401)', async () => {
-  await withServer(Object.assign({}, BASE_ENV, { APP_PIN: undefined }), async (port) => {
-    const r = await request(port, 'POST', '/api/verify-pin', { body: { pin: '' } });
-    assert.strictEqual(r.status, 401);
+test('PR C: the server starts fine with APP_PIN and APP_PIN_UNTIL unset, and says nothing about them', async () => {
+  await withServer(PERSONAL_ENV, async (port, mod, startup) => {
+    assert.ok(!startup.some((l) => /APP_PIN/.test(l)), startup.join('\n'));
+    assert.strictEqual(mod.APP_PIN_UNTIL, undefined);
+    assert.strictEqual(mod.sharedWindowNow, undefined);
+    const users = await request(port, 'GET', '/api/login-users');
+    assert.deepStrictEqual(Object.keys(users.json).sort(), ['ok', 'users'], 'no shared-window field');
   });
 });
 
@@ -212,7 +206,10 @@ test('APP_PIN unset still fails closed (every attempt 401)', async () => {
 /* ====================================================================== */
 
 test('X-Forwarded-For spoofing no longer resets the IP counter (trust proxy = 1 hop, req.ip)', async () => {
-  await withServer(BASE_ENV, async (port, mod) => {
+  await withServer(PERSONAL_ENV, async (port, mod) => {
+    // PR C: personal logins only. The wrong codes rotate over the four users
+    // (≤ 3 each), so only the per-IP brake (10) can trip.
+    const IDS = ['vered', 'sandra', 'shiran', 'yael'];
     assert.strictEqual(mod.TRUST_PROXY_HOPS, 1);
     assert.strictEqual(mod.app.get('trust proxy'), 1);
     /* Railway's edge APPENDS the real client address; a client may put
@@ -221,17 +218,17 @@ test('X-Forwarded-For spoofing no longer resets the IP counter (trust proxy = 1 
     const REAL = '203.0.113.7';
     for (let i = 0; i < 10; i++) {
       const r = await request(port, 'POST', '/api/verify-pin', {
-        body: { pin: '0000' }, headers: { 'X-Forwarded-For': `10.0.0.${i}, ${REAL}` },
+        body: { userId: IDS[i % 4], pin: '000000' }, headers: { 'X-Forwarded-For': `10.0.0.${i}, ${REAL}` },
       });
       assert.strictEqual(r.status, 401, 'attempt ' + i);
     }
     const spoofed = await request(port, 'POST', '/api/verify-pin', {
-      body: { pin: APP_PIN }, headers: { 'X-Forwarded-For': `198.51.100.99, ${REAL}` },
+      body: { userId: 'vered', pin: personalHelper.TEST_PIN }, headers: { 'X-Forwarded-For': `198.51.100.99, ${REAL}` },
     });
     assert.strictEqual(spoofed.status, 429, 'a new spoofed leftmost entry does not reset the counter');
     // A genuinely different client (different appended address) is unaffected.
     const other = await request(port, 'POST', '/api/verify-pin', {
-      body: { pin: APP_PIN }, headers: { 'X-Forwarded-For': `${REAL}, 192.0.2.44` },
+      body: { userId: 'vered', pin: personalHelper.TEST_PIN }, headers: { 'X-Forwarded-For': `${REAL}, 192.0.2.44` },
     });
     assert.strictEqual(other.status, 200);
     // The meeting-report PIN route uses the same address.
@@ -406,16 +403,17 @@ test('role model: Vered / Sandra / Shiran / Yael / Ortal exactly as decided; sta
   assert.deepStrictEqual(approvers, ['sandra'], 'approver is Sandra only');
   assert.strictEqual(users.APPROVER_ID, 'sandra');
   assert.ok(Object.isFrozen(users.USER_MODEL) && Object.isFrozen(users.USER_MODEL[0].roles));
-  // The name picker list is untouched (guarded against app.js elsewhere).
-  assert.deepStrictEqual(users.SESSION_USERS, ['ורד', 'שירן', 'יעל']);
+  // PR C: the shared-login picker list is gone.
+  assert.strictEqual(users.SESSION_USERS, undefined);
 });
 
-test('role model: a shared APP_PIN session is staff only — never deleter, whatever name it carries', () => {
-  for (const user of ['ורד', 'שירן', '']) {
-    const p = users.resolvePrincipal({ user, id: '', pinVersion: 0, auth: 'shared' }, users.validateUserPinHashes(''));
-    assert.deepStrictEqual(p, { auth: 'shared', id: '', user, roles: ['staff'] });
+test('role model (PR C): a shared APP_PIN session (no personal id) is no session at all — whatever name it carries', () => {
+  for (const user of ['ורד', 'סנדרה', '']) {
+    assert.strictEqual(users.resolvePrincipal({ user, id: '', pinVersion: 0, auth: 'shared' }, users.validateUserPinHashes('')), null);
   }
-  assert.deepStrictEqual([...users.SHARED_SESSION_ROLES], ['staff']);
+  assert.strictEqual(users.SHARED_SESSION_ROLES, undefined);
+  assert.deepStrictEqual(users.principalCapabilities({ auth: 'shared', id: '', user: 'ורד', roles: ['staff'] }), [],
+    'even a hand-built shared principal holds no capability');
 });
 
 test('role model: a personal session resolves to its CURRENT record — reset (pinVersion++) and revoke (status) kill it', async () => {
@@ -504,9 +502,9 @@ test('server: a personal cookie authorizes only while its record is active with 
   assert.strictEqual(mod.sessionAuthStatus(ck(tok('vered', 1)), SESSION_SECRET), 'unauthorized', 'after a reset');
   assert.strictEqual(mod.sessionAuthStatus(ck(tok('shiran', 1)), SESSION_SECRET), 'unauthorized', 'revoked');
   assert.strictEqual(mod.sessionAuthStatus(ck(tok('yael', 1)), SESSION_SECRET), 'unauthorized', 'no record');
-  // Shared cookies never consult the registry — exactly as before.
-  assert.strictEqual(mod.sessionAuthStatus(ck(createSessionToken(SESSION_SECRET, undefined, undefined, 'ורד')), SESSION_SECRET), 'ok');
-  assert.strictEqual(mod.sessionAuthStatus(ck(createSessionToken(SESSION_SECRET)), SESSION_SECRET), 'ok');
+  // PR C: a shared cookie (no personal id) is 401, named or not.
+  assert.strictEqual(mod.sessionAuthStatus(ck(createSessionToken(SESSION_SECRET, undefined, undefined, 'ורד')), SESSION_SECRET), 'unauthorized');
+  assert.strictEqual(mod.sessionAuthStatus(ck(createSessionToken(SESSION_SECRET)), SESSION_SECRET), 'unauthorized');
   const p = mod.sessionPrincipalFromRequest({ headers: { cookie: ck(tok('vered', 2)) } });
   assert.deepStrictEqual(p, { auth: 'personal', id: 'vered', user: 'ורד', roles: ['staff', 'reporter', 'deleter'] });
   delete require.cache[SERVER_PATH];
@@ -516,24 +514,28 @@ test('server: a personal cookie authorizes only while its record is active with 
 /* =================== proxyRoles: session → Code.gs ==================== */
 /* ====================================================================== */
 
-test('server: proxyRoles come from the session only — a shared session sends staff only; a body copy is dropped', async () => {
+test('server: proxyRoles come from the session only — Shiran sends staff + reporter; a body copy is dropped; a shared cookie reaches nothing', async () => {
   const stub = stubHttps(() => ({ body: { ok: true, leads: [], patients: {} } }));
   try {
-    await withServer(BASE_ENV, async (port) => {
-      const cookie = 'ezone_session=' + createSessionToken(SESSION_SECRET, undefined, undefined, 'ורד');
+    await withServer(PERSONAL_ENV, async (port) => {
+      const cookie = personalHelper.personalCookie(SESSION_SECRET, 'shiran');
       await request(port, 'POST', '/api/sheets', {
-        cookie, body: { action: 'removeLead', lead: { id: 'L1' }, proxyRoles: ['deleter', 'approver'], proxyAuth: 'personal', proxyUserId: 'sandra' },
+        cookie, body: { action: 'saveAll', leads: [], proxyRoles: ['deleter', 'approver'], proxyAuth: 'personal', proxyUserId: 'sandra' },
       });
       await request(port, 'GET', '/api/sheets?action=getData&proxyRoles=approver&proxyAuth=personal&proxyUserId=sandra', { cookie });
+      // PR C: the retired shared cookie is 401 before anything is proxied.
+      const shared = personalHelper.sharedCookie(SESSION_SECRET, 'ורד');
+      assert.strictEqual((await request(port, 'GET', '/api/sheets?action=getData', { cookie: shared })).status, 401);
+      assert.strictEqual((await request(port, 'POST', '/api/sheets', { cookie: shared, body: { action: 'saveAll' } })).status, 401);
     });
   } finally { stub.restore(); }
   assert.strictEqual(stub.calls.length, 2);
   for (const c of stub.calls) {
     const b = JSON.parse(c.body);
-    assert.deepStrictEqual(b.proxyRoles, ['staff'], 'a shared APP_PIN session: staff only, NO deleter');
-    assert.strictEqual(b.proxyAuth, 'shared');
-    assert.strictEqual(b.proxyUserId, '');
-    assert.strictEqual(b.user, 'ורד');
+    assert.deepStrictEqual(b.proxyRoles, ['staff', 'reporter'], 'Shiran: NO deleter, whatever the body claims');
+    assert.strictEqual(b.proxyAuth, 'personal');
+    assert.strictEqual(b.proxyUserId, 'shiran');
+    assert.strictEqual(b.user, 'שירן');
   }
 });
 
@@ -807,7 +809,7 @@ test('Code.gs: roles are NEVER granted to a non-proxy caller (no secret, wrong s
   assert.strictEqual(o.sandbox.hasRole_({ user: 'סנדרה', __actor: undefined }, 'staff'), false);
 });
 
-test('Code.gs: a VERIFIED proxy call gets its roles — capped: shared → staff only, approver → Sandra\'s personal session only', () => {
+test('Code.gs: a VERIFIED proxy call gets its roles — capped: shared → none (PR C), approver → Sandra\'s personal session only', () => {
   const g = loadGs({ props: { PROXY_SECRET }, spyHandle: true });
   g.post(Object.assign({ action: 'removeLead' }, PROXY()));
   g.post(Object.assign({ action: 'removeLead' }, PROXY({ proxyAuth: 'shared', proxyUserId: '', proxyRoles: ['staff', 'deleter', 'approver'] })));
@@ -818,7 +820,7 @@ test('Code.gs: a VERIFIED proxy call gets its roles — capped: shared → staff
   const roles = g.calls.map((p) => Array.from(g.sandbox.actingUser_(p).roles));
   assert.deepStrictEqual(roles, [
     ['staff', 'reporter', 'deleter'],
-    ['staff'],                                     // shared APP_PIN session: NO deleter
+    [],                                            // PR C: a stale 'shared' auth is 'none' — no role at all
     ['staff', 'deleter'],                          // approver stripped — not Sandra
     ['staff', 'deleter', 'approver', 'viewer'],
     ['staff', 'reporter'],                         // Shiran: no deleter; unknown role dropped
@@ -826,6 +828,7 @@ test('Code.gs: a VERIFIED proxy call gets its roles — capped: shared → staff
   ]);
   assert.strictEqual(g.sandbox.hasRole_(g.calls[0], 'deleter'), true);
   assert.strictEqual(g.sandbox.hasRole_(g.calls[1], 'deleter'), false, 'shared session has no deleter');
+  assert.strictEqual(g.sandbox.hasRole_(g.calls[1], 'staff'), false, 'PR C: nor any other role');
   assert.strictEqual(g.sandbox.hasRole_(g.calls[3], 'approver'), true, 'Sandra');
   assert.strictEqual(g.sandbox.hasRole_(g.calls[2], 'approver'), false);
   assert.strictEqual(g.sandbox.hasRole_(g.calls[4], 'deleter'), false, 'Shiran');
@@ -833,7 +836,7 @@ test('Code.gs: a VERIFIED proxy call gets its roles — capped: shared → staff
   assert.strictEqual(g.run('APPROVER_USER_ID'), 'sandra');
 });
 
-test('Code.gs: DELETE_ACTIONS / APPROVER_ACTIONS are defined — and NOT enforced yet', () => {
+test('Code.gs: DELETE_ACTIONS / APPROVER_ACTIONS are defined — and ENFORCED by handle_ since PR C', () => {
   const g = loadGs({});
   assert.deepStrictEqual(Array.from(g.run('DELETE_ACTIONS')),
     ['removeLead', 'deletePatientRow', 'deleteBillingOverride', 'deleteMeetingReport', 'voidPayment', 'cancelCredit']);
@@ -851,14 +854,16 @@ test('Code.gs: DELETE_ACTIONS / APPROVER_ACTIONS are defined — and NOT enforce
   assert.strictEqual(s.roleOperationFor_('removeLead', {}), 'removeLead');
   assert.strictEqual(s.roleAllowed_({}, 'removeLead'), false, 'defined: a non-proxy caller would be refused');
   assert.strictEqual(s.roleAllowed_({}, 'saveAll'), true);
-  // NOT enforced: handle_ never calls the checks …
+  // PR C: handle_ calls the checks in front of every dispatch …
   const h = GS_SRC.slice(GS_SRC.indexOf('function handle_('), GS_SRC.indexOf('function collectParams_('));
-  assert.ok(!/roleAllowed_|hasRole_|requiredRoleFor_/.test(h), 'role checks are not wired into handle_ in PR A');
-  // … so a non-proxy delete in log mode is still served exactly as before.
+  assert.ok(/roleOperationFor_\(action, params\)/.test(h) && /roleAllowed_\(params, roleOp\)/.test(h), 'role checks wired into handle_');
+  // … so a non-proxy delete in log mode is now REFUSED, and nothing is written.
   const live = loadGs({ props: { PROXY_SECRET } });
   live.sandbox.__sheets.Leads = richSheet('Leads', Array.from(live.run('LEAD_COLUMNS')));
   live.sandbox.__sheets.Leads.appendRow(['L1', 'דנה']);
-  assert.strictEqual(live.post({ action: 'removeLead', lead: JSON.stringify({ id: 'L1', name: 'דנה' }) }).ok, true);
+  assert.deepStrictEqual(live.post({ action: 'removeLead', lead: JSON.stringify({ id: 'L1', name: 'דנה' }) }),
+    { ok: false, error: 'forbidden_role', message: 'אין הרשאה לפעולה זו' });
+  assert.strictEqual(live.sandbox.__sheets.Leads.grid.length, 2, 'the lead row is still there');
 });
 
 test('Code.gs scan guard: DELETE_ACTIONS covers every delete / remove / void action handle_ dispatches', () => {
@@ -963,12 +968,15 @@ test('Code.gs: actor stamps on every delete, the lead moves, the billing overrid
   assert.strictEqual(byAction.lead_removed.patientId, 'L2');
   assert.strictEqual(JSON.parse(byAction.billing_override_deleted.details).removed, 1);
 
-  // Without a valid secret (log mode) the actor is marked unverified.
+  // Without a valid secret (log mode) a caller has no role, so since PR C a
+  // delete is refused before anything is written (no row, no audit).
   const u = loadGs({ props: { PROXY_SECRET } });
   u.sandbox.__sheets.Leads = richSheet('Leads', Array.from(u.run('LEAD_COLUMNS')));
   u.sandbox.__sheets.Leads.appendRow(['L9', 'ליד']);
-  assert.strictEqual(u.post({ action: 'removeLead', user: 'סנדרה', lead: JSON.stringify({ id: 'L9' }) }).ok, true);
-  assert.strictEqual(u.sheetRows('AuditLog', 'AUDIT_LOG_COLUMNS').find((r) => r.action === 'lead_removed').actor, 'סנדרה (unverified)');
+  assert.strictEqual(u.post({ action: 'removeLead', user: 'סנדרה', lead: JSON.stringify({ id: 'L9' }) }).error, 'forbidden_role');
+  assert.ok(!(u.sandbox.__sheets.AuditLog && u.sheetRows('AuditLog', 'AUDIT_LOG_COLUMNS').some((r) => r.action === 'lead_removed')));
+  // A non-delete write without a secret is still stamped "(unverified)".
+  assert.ok(/\(unverified\)$/.test(u.sandbox.actorLabel_({ user: 'סנדרה' })));
 });
 
 test('Code.gs: an un-void claimed by a NON-proxy body user "סנדרה" is refused (it could be spoofed in log mode)', () => {
@@ -981,7 +989,7 @@ test('Code.gs: an un-void claimed by a NON-proxy body user "סנדרה" is refus
   assert.strictEqual(g.post(Object.assign({ action: 'savePayment', payment: voidIt }, PROXY())).ok, true);
   const spoof = g.post({ action: 'savePayment', user: 'סנדרה', payment: Object.assign({}, pay, { status: 'paid' }) });
   assert.strictEqual(spoof.ok, false);
-  assert.match(spoof.error, /לסנדרה בלבד/);
+  assert.strictEqual(spoof.error, 'forbidden_role', 'PR C: the un-void is APPROVER_ACTIONS unvoidPayment');
   // Sandra through the verified proxy still can (unchanged rule).
   const real = g.post(Object.assign({ action: 'savePayment', payment: Object.assign({}, pay, { status: 'paid' }) },
     PROXY({ proxyUser: 'סנדרה', user: 'סנדרה', proxyUserId: 'sandra', proxyRoles: ['staff', 'deleter', 'approver', 'viewer'] })));
@@ -1007,9 +1015,9 @@ test('Code.gs: getData keeps every top-level key', () => {
 /* ======================= no public/ change ============================ */
 /* ====================================================================== */
 
-test('the shared PIN input is still maxlength 4 (PR B adds a separate 6-digit personal field); the client never sees roles or the bootstrap', () => {
+test('PR C: the shared 4-digit field is gone; the 6-digit personal field stays; the client never sees roles or the bootstrap', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
-  assert.match(html, /id="pin-input"[^>]*maxlength="4"/);
+  assert.ok(!/id="pin-input"|id="login-shared-link"|id="login-step-shared"|id="shared-banner"/.test(html));
   assert.match(html, /id="login-pin-input"[^>]*maxlength="6"/);
   const app = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
   // USER_PIN_HASHES now appears in the «קוד אישי חדש» Railway instructions;
