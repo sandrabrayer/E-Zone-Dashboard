@@ -253,6 +253,20 @@ function sendStatic(relPath, mime) {
   };
 }
 app.get('/app.js', sendStatic('app.js', 'application/javascript'));
+/* The payment-report rules (Phase 3 PR 2): the SAME file the server tests
+ * require (lib/payment-report-rules.js, a pure IIFE that exposes
+ * window.PaymentReportRules in a browser), so the «דווח תשלום» form validates
+ * with exactly the rules Code.gs mirrors. No data in it — only the rules and
+ * the Hebrew messages — so it is served like app.js, to any page. */
+app.get('/payment-report-rules.js', (_req, res) => {
+  try {
+    const content = fs.readFileSync(path.join(__dirname, 'lib', 'payment-report-rules.js'));
+    noCache(res);
+    res.type('application/javascript').send(content);
+  } catch (_err) {
+    res.status(404).send('not found');
+  }
+});
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 
 /* PWA assets. Without these explicit routes they hit the 404 fallback, because
