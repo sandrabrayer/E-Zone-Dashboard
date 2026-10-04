@@ -26,10 +26,9 @@
 </head>
 <body>
 
-  <!-- LOGIN GATE (personal PINs, PR B). Step 1: tap your name (only users
+  <!-- LOGIN GATE (personal PINs only). Step 1: tap your name (only users
        with an ACTIVE personal-PIN record are listed). Step 2: the 6-digit
-       personal PIN. During the 7-day dual window a small link opens the old
-       shared-PIN field (#pin-input, still maxlength 4, APP_PIN). -->
+       personal PIN. The shared APP_PIN field was removed in PR C. -->
   <div id="pin-screen" class="overlay hidden">
     <div class="pin-box login-box">
       <h1>E-ZONE</h1>
@@ -48,25 +47,6 @@
         <button id="login-back" type="button" class="link-btn login-link">זה לא אני — החלפת שם</button>
       </div>
 
-      <div id="login-step-shared" class="hidden">
-        <p>הזן קוד גישה משותף</p>
-        <input type="password" id="pin-input" inputmode="numeric" maxlength="4" autocomplete="off" aria-label="קוד משותף" />
-        <button id="pin-submit" class="btn primary">כניסה</button>
-        <div id="pin-error" class="error-msg hidden" role="alert">קוד שגוי</div>
-        <button id="login-shared-back" type="button" class="link-btn login-link">חזרה לכניסה עם קוד אישי</button>
-      </div>
-
-      <button id="login-shared-link" type="button" class="link-btn login-link login-shared-link hidden">כניסה עם הקוד המשותף</button>
-    </div>
-  </div>
-
-  <!-- USER PICKER (shown once after PIN when the session has no name yet) -->
-  <div id="user-screen" class="overlay hidden">
-    <div class="pin-box">
-      <h1>E-ZONE</h1>
-      <p>מי מתחבר/ת?</p>
-      <div id="user-options" class="user-options"></div>
-      <div id="user-error" class="error-msg hidden">בחירת השם נכשלה — נסו שוב</div>
     </div>
   </div>
 
@@ -108,10 +88,6 @@
 
   <!-- APP -->
   <div id="app" class="hidden">
-    <!-- Shared-session banner (dual window): persistent while this session
-         was opened with the shared APP_PIN. Inside #app so the login screen
-         never shows it. -->
-    <div id="shared-banner" class="shared-banner hidden" role="status"></div>
     <header class="topbar">
       <div class="brand">
         <img class="brand-logo" src="/icons/icon-192.png" alt="" />

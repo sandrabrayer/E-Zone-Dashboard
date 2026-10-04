@@ -12,16 +12,16 @@
  *      workflow run checked out; a mismatch is the Railway
  *      "Redeploy-doesn't-pull" stale-build signature, reported as a WARNING)
  *   1. GET  /                          → the HTML shell (index.html)
- *   2. POST /api/verify-pin {pin}      → 200 + Set-Cookie: ezone_session=…
- *      (server.js app.post('/api/verify-pin') — mints the signed HttpOnly
- *      session cookie)
- *   3. GET  /api/sheets?action=getData → riding that cookie, same as
- *      app.js loadAll() → apiGet({action:'getData'})
+ *   2. GET  /api/healthcheck?action=getData
+ *      with `Authorization: Bearer <HEALTHCHECK_TOKEN>` (server.js — a
+ *      read-only, session-less probe that serves the RESTRICTED getData: no
+ *      billingOverrides, no cookie). It replaced the shared-APP_PIN login
+ *      (personal PINs PR C, 2026-10-04).
  *
  * No dependencies beyond Node built-ins (global fetch, Node 20+).
  *
- * SECURITY: APP_PIN and the session-cookie value are NEVER printed or written
- * to any report. Patient NAMES never appear in CI output — ids only.
+ * SECURITY: HEALTHCHECK_TOKEN is NEVER printed or written to any report.
+ * Patient NAMES never appear in CI output — ids only.
  */
 'use strict';
 
@@ -36,10 +36,14 @@ const REQUEST_TIMEOUT_MS = 45000;
  * (<title>E-ZONE Dashboard</title>); BUILD_ID substitution never touches it. */
 const HTML_MARKER = 'E-ZONE Dashboard';
 
-const SESSION_COOKIE = 'ezone_session'; // server.js SESSION_COOKIE
+/* The probe route and the shortest token server.js accepts. */
+const HEALTHCHECK_PATH = '/api/healthcheck?action=getData';
+const HEALTHCHECK_TOKEN_MIN_LEN = 32;
 
-/* Top-level keys of the getData response — duplicated from the return object
- * of getData_() in apps-script/Code.gs. Keep in sync with that function. */
+/* Top-level keys of the RESTRICTED getData response the probe receives —
+ * getData_() in apps-script/Code.gs minus GETDATA_FINANCE_KEYS
+ * (billingOverrides, which a session without `finance` never gets). Keep in
+ * sync with that function. */
 const EXPECTED_TOP_KEYS = [
   'ok',
   'leads',
@@ -47,7 +51,6 @@ const EXPECTED_TOP_KEYS = [
   'irrelevantLeads',
   'removedLeads',
   'dischargedPatients',
-  'billingOverrides',
   'houseManagers',
   'managerPhones',
 ];
@@ -81,20 +84,26 @@ const PLAIN_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /* ===== Config ===== */
 
-/* Throws when APP_PIN is unset. The error message explains the fix and never
- * contains any secret value (there is nothing to echo — that's the point). */
+/* Throws when HEALTHCHECK_TOKEN is unset or too short. The error message
+ * explains the fix and never contains any secret value. */
 function resolveConfig(env) {
   const e = env || {};
   const appUrl = String(e.APP_URL || DEFAULT_APP_URL).replace(/\/+$/, '');
-  const pin = e.APP_PIN == null ? '' : String(e.APP_PIN);
-  if (!pin) {
+  const token = e.HEALTHCHECK_TOKEN == null ? '' : String(e.HEALTHCHECK_TOKEN).trim();
+  if (!token) {
     throw new Error(
-      'APP_PIN is not set. Add it as a GitHub Actions repository secret named APP_PIN ' +
-      '(repo Settings → Secrets and variables → Actions → New repository secret) — ' +
-      'the same PIN the dashboard login screen accepts. Its value is never printed.'
+      'HEALTHCHECK_TOKEN is not set. Add it as a GitHub Actions repository secret named ' +
+      'HEALTHCHECK_TOKEN (repo Settings → Secrets and variables → Actions → New repository ' +
+      'secret) — the same value as the HEALTHCHECK_TOKEN variable in Railway. Its value is never printed.'
     );
   }
-  return { appUrl, pin };
+  if (token.length < HEALTHCHECK_TOKEN_MIN_LEN) {
+    throw new Error(
+      'HEALTHCHECK_TOKEN is shorter than ' + HEALTHCHECK_TOKEN_MIN_LEN + ' characters — the server ' +
+      'refuses it. Generate a new one (see CHANGELOG-personal-pins-cleanup.md). Its value is never printed.'
+    );
+  }
+  return { appUrl, token };
 }
 
 /* ===== CRITICAL checks (pure — injectable for tests) ===== */
@@ -116,20 +125,6 @@ function checkHtmlShell(status, body) {
   return criticals;
 }
 
-/* b. Pull the session cookie pair ("ezone_session=<token>") out of the login
- * response's Set-Cookie values. Returns '' when absent. The returned value is
- * only ever placed on a Cookie header — never logged. */
-function extractSessionCookie(setCookieValues) {
-  const list = Array.isArray(setCookieValues) ? setCookieValues : [setCookieValues];
-  const prefix = SESSION_COOKIE + '=';
-  for (const raw of list) {
-    if (typeof raw !== 'string') continue;
-    const first = raw.split(';')[0].trim();
-    if (first.indexOf(prefix) === 0 && first.length > prefix.length) return first;
-  }
-  return '';
-}
-
 /* c. The getData response body: must be HTTP 200, must NOT be an HTML page
  * (a Google Apps Script error/permission page starts with '<'), must parse as
  * JSON, and must carry ok:true. Returns { criticals, data }. */
@@ -137,7 +132,7 @@ function checkDataBody(status, bodyText) {
   const criticals = [];
   const text = String(bodyText == null ? '' : bodyText);
   if (status !== 200) {
-    criticals.push(`Data: GET /api/sheets?action=getData returned HTTP ${status} (expected 200). Body starts: ${text.slice(0, 200)}`);
+    criticals.push(`Data: GET /api/healthcheck returned HTTP ${status} (expected 200). Body starts: ${text.slice(0, 200)}`);
     return { criticals, data: null };
   }
   if (text.trim().charAt(0) === '<') {
@@ -485,35 +480,16 @@ async function run(env, fetchFn) {
     criticals.push(`App shell: GET / failed: ${err.message}`);
   }
 
-  // b. Login → session cookie
-  let cookie = '';
+  // b/c/d/e. getData through the token-protected, read-only probe.
   try {
-    const res = await timedFetch(f, config.appUrl + '/api/verify-pin', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pin: config.pin }),
+    const res = await timedFetch(f, config.appUrl + HEALTHCHECK_PATH, {
+      headers: { authorization: 'Bearer ' + config.token },
     });
-    if (res.status !== 200) {
-      criticals.push(`Login: POST /api/verify-pin returned HTTP ${res.status} (expected 200) — wrong APP_PIN secret, rate-limited, or the server rejects the PIN.`);
+    if (res.status === 401 || res.status === 404) {
+      criticals.push(res.status === 401
+        ? 'Data: GET /api/healthcheck returned HTTP 401 — the HEALTHCHECK_TOKEN GitHub secret does not match the Railway variable.'
+        : 'Data: GET /api/healthcheck returned HTTP 404 — HEALTHCHECK_TOKEN is not set (or shorter than 32 characters) in Railway.');
     } else {
-      const setCookies = typeof res.headers.getSetCookie === 'function'
-        ? res.headers.getSetCookie()
-        : [res.headers.get('set-cookie') || ''];
-      cookie = extractSessionCookie(setCookies);
-      if (!cookie) {
-        criticals.push('Login: PIN accepted (HTTP 200) but no ezone_session cookie was issued — SESSION_SECRET likely unset on the server (fail-closed state).');
-      }
-    }
-  } catch (err) {
-    criticals.push(`Login: POST /api/verify-pin failed: ${err.message}`);
-  }
-
-  // c/d/e. Authenticated getData — only reachable with a session cookie.
-  if (cookie) {
-    try {
-      const res = await timedFetch(f, config.appUrl + '/api/sheets?action=getData', {
-        headers: { cookie },
-      });
       const { criticals: dataCriticals, data } = checkDataBody(res.status, await res.text());
       criticals.push(...dataCriticals);
       if (data) {
@@ -523,11 +499,9 @@ async function run(env, fetchFn) {
         notes.push(...cols.notes);
         warnings.push(...collectWarnings(data));
       }
-    } catch (err) {
-      criticals.push(`Data: GET /api/sheets?action=getData failed: ${err.message}`);
     }
-  } else {
-    notes.push('Data checks skipped — no session cookie (see the login failure above).');
+  } catch (err) {
+    criticals.push(`Data: GET /api/healthcheck failed: ${err.message}`);
   }
 
   const report = buildReport(criticals, warnings, notes);
@@ -558,13 +532,13 @@ if (require.main === module) {
 module.exports = {
   DEFAULT_APP_URL,
   HTML_MARKER,
-  SESSION_COOKIE,
+  HEALTHCHECK_PATH,
+  HEALTHCHECK_TOKEN_MIN_LEN,
   EXPECTED_TOP_KEYS,
   LEAD_COLUMNS,
   PATIENT_COLUMNS,
   resolveConfig,
   checkHtmlShell,
-  extractSessionCookie,
   checkDataBody,
   checkTopLevelKeys,
   flattenPatients,

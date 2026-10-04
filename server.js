@@ -5,7 +5,7 @@ const https = require('https');
 const { checkPin } = require('./lib/pin');
 const { createSessionToken, verifySessionToken, readSession } = require('./lib/session');
 const {
-  SESSION_USERS, APPROVER_ID, USER_MODEL, validateUserPinHashes, hasApprover, resolvePrincipal, recordLine,
+  APPROVER_ID, USER_MODEL, validateUserPinHashes, hasApprover, resolvePrincipal, recordLine,
   loginUsers, modelById, principalCapabilities, hasFinance,
 } = require('./lib/users');
 const {
@@ -13,7 +13,9 @@ const {
 } = require('./lib/finance-scope');
 const { hashPin, verifyPin, pinPolicyError } = require('./lib/pin-hash');
 const { WindowCounter, PinLockout } = require('./lib/rate-limit');
-const { sharedPinWindow, untilDisplay, windowLogLine } = require('./lib/shared-pin-window');
+const {
+  ROLE_FORBIDDEN_MESSAGE, roleOperationFor, requiredRoleFor, principalHasRole, roleAllowed,
+} = require('./lib/role-scope');
 const { buildXlsxReport, isoDayInIsrael, XLSX_MIME } = require('./lib/xlsx-report');
 const { buildRefundForecastSpec, isForecastResponse, contentDisposition } = require('./lib/refund-forecast-xlsx');
 const { buildCleanupSpec, isCleanupResponse, cleanupContentDisposition } = require('./lib/cleanup-xlsx');
@@ -100,14 +102,16 @@ if (!PROXY_SECRET) {
 const OUTPATIENT_LEAD_URL    = process.env.OUTPATIENT_LEAD_URL    || '';
 const OUTPATIENT_LEAD_SECRET = process.env.OUTPATIENT_LEAD_SECRET || '';
 
-/* Edit-mode PIN. Verified server-side by POST /api/verify-pin so the value
- * never reaches the browser (the old PIN was hardcoded in public/app.js and is
- * now burned in git history — issue a NEW one). Unset means no PIN can match
- * (checkPin fails closed on the empty string), so edit mode is unreachable
- * until it is configured. */
-const APP_PIN = process.env.APP_PIN || '';
-if (!APP_PIN) {
-  console.warn('[config] APP_PIN is not set — edit-mode PIN verification will reject every attempt until it is configured.');
+/* The shared code (APP_PIN) and its dual window (APP_PIN_UNTIL) were removed
+ * on 2026-10-04 (personal PINs PR C, CHANGELOG-personal-pins-cleanup.md):
+ * every login is a personal one. Neither variable is read for anything; if
+ * either is still set in Railway, ONE warning says it is ignored. The line
+ * names the variables only — never a value. */
+const RETIRED_ENV = ['APP_PIN', 'APP_PIN_UNTIL'].filter((k) => !!process.env[k]);
+if (RETIRED_ENV.length) {
+  console.warn('[config] ' + RETIRED_ENV.join(' and ') + ' ' + (RETIRED_ENV.length > 1 ? 'are' : 'is') +
+    ' set but ignored — the shared code was removed (personal codes only). Delete ' +
+    (RETIRED_ENV.length > 1 ? 'them' : 'it') + ' in Railway.');
 }
 
 /* Session-cookie signing secret. A correct PIN mints an HttpOnly session cookie
@@ -154,19 +158,18 @@ if (BOOTSTRAP_TOKEN) {
     (BOOTSTRAP_TOKEN.length < BOOTSTRAP_TOKEN_MIN_LEN ? ' (It is shorter than ' + BOOTSTRAP_TOKEN_MIN_LEN + ' characters, so /api/bootstrap-pin is disabled.)' : ''));
 }
 
-/* APP_PIN_UNTIL (Railway, 'YYYY-MM-DD', Israel time, inclusive) — the last
- * day of the 7-day dual-accept window (plan §11.5 decision 5). While it is
- * open the shared APP_PIN still logs in, as a staff-only `auth:'shared'`
- * session with a banner. Unset, invalid, past, or more than 14 days ahead →
- * the shared APP_PIN is REFUSED and every existing shared cookie gets 401
- * (lib/shared-pin-window.js). Re-evaluated on every request, so the window
- * closes at midnight even without a redeploy. The startup line names the
- * state and the date only — never a PIN. */
-const APP_PIN_UNTIL = process.env.APP_PIN_UNTIL || '';
-function sharedWindowNow() {
-  return sharedPinWindow(APP_PIN_UNTIL);
+/* HEALTHCHECK_TOKEN (Railway, ≥ 32 characters) — the weekly healthcheck's
+ * own credential (PR C; it replaced the shared APP_PIN). It opens exactly one
+ * read-only route, GET /api/healthcheck (see there). Unset or shorter than 32
+ * characters → the route answers 404 and the startup log says why — never
+ * the value. */
+const HEALTHCHECK_TOKEN = process.env.HEALTHCHECK_TOKEN || '';
+const HEALTHCHECK_TOKEN_MIN_LEN = 32;
+if (!HEALTHCHECK_TOKEN) {
+  console.warn('[config] HEALTHCHECK_TOKEN is not set — GET /api/healthcheck is disabled (404) and the weekly healthcheck cannot read data.');
+} else if (HEALTHCHECK_TOKEN.length < HEALTHCHECK_TOKEN_MIN_LEN) {
+  console.warn('[config] HEALTHCHECK_TOKEN is shorter than ' + HEALTHCHECK_TOKEN_MIN_LEN + ' characters — GET /api/healthcheck is disabled (404).');
 }
-console.log(windowLogLine(sharedWindowNow()));
 
 const SESSION_COOKIE = 'ezone_session';
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60; // 604800 seconds (7 days), matches the token TTL
@@ -294,7 +297,7 @@ const NO_PRINCIPAL = Object.freeze({ auth: 'none', id: '', user: '', roles: [] }
  *   proxySecret — PROXY_SECRET. Body only: never in a URL.
  *   proxyCaps   — the session's view capabilities (['finance'] or []).
  *   proxyRoles / proxyAuth / proxyUserId — the session principal's roles,
- *                 'shared' | 'personal' | 'none', and stable id (personal
+ *                 'personal' | 'none', and stable id (personal
  *                 only). Code.gs grants roles ONLY when the secret verifies.
  *                 Sent whenever a principal is given (sheetsPost always gives
  *                 one); any client-sent copy is dropped either way. Pure. */
@@ -613,63 +616,36 @@ function parseMeetingReportCookie(cookieHeader) {
  *                      with the same pinVersion in `registry`
  *   'unauthorized'   → missing / malformed / tampered / expired cookie, or a
  *                      personal cookie that was reset or revoked (→ 401)
- * `registry` defaults to the validated USER_PIN_HASHES. Today's shared
- * (APP_PIN) cookies never consult it, so they behave exactly as before. */
-function sessionAuthStatus(cookieHeader, secret, registry, win) {
+ * `registry` defaults to the validated USER_PIN_HASHES. A cookie without a
+ * personal id (the retired shared APP_PIN format) is always 'unauthorized'. */
+function sessionAuthStatus(cookieHeader, secret, registry) {
   if (typeof secret !== 'string' || secret.length === 0) return 'not_configured';
   const token = parseSessionCookie(cookieHeader);
   const session = token ? readSession(token, secret) : null;
-  if (session && currentPrincipal(session, registry, win)) return 'ok';
+  if (session && currentPrincipal(session, registry)) return 'ok';
   return 'unauthorized';
 }
 
-/* resolvePrincipal plus the dual window (PR B): a SHARED (APP_PIN) session is
- * only honoured while the window is open — once APP_PIN_UNTIL has passed (or
- * is unset), every shared cookie is 401, so the shared PIN cannot outlive the
- * window by up to 7 days through a cookie minted on its last day. Personal
- * sessions are unaffected by the window. */
-function currentPrincipal(session, registry, win) {
-  const p = resolvePrincipal(session, registry === undefined ? USER_REGISTRY : registry);
-  if (!p) return null;
-  if (p.auth === 'shared' && !(win === undefined ? sharedWindowNow() : win).open) return null;
-  return p;
+/* resolvePrincipal over the validated USER_PIN_HASHES: a PERSONAL session
+ * whose record is active with the same pinVersion, or null. A shared
+ * (APP_PIN, auth:'shared') cookie resolves to null → 401 everywhere. */
+function currentPrincipal(session, registry) {
+  return resolvePrincipal(session, registry === undefined ? USER_REGISTRY : registry);
 }
 
 /* The principal behind the request's VERIFIED session cookie
- * ({ auth, id, user, roles } — see lib/users.js resolvePrincipal), or null.
- * A shared APP_PIN session is staff only: never deleter, never approver. */
+ * ({ auth:'personal', id, user, roles } — see lib/users.js
+ * resolvePrincipal), or null. */
 function sessionPrincipalFromRequest(req, registry) {
   if (!SESSION_SECRET) return null;
   const session = readSession(parseSessionCookie(req.headers.cookie), SESSION_SECRET);
   return currentPrincipal(session, registry);
 }
 
-/* Normalize the optional user name a login may attach to its session
- * (who/when stamping): trim, strip control characters and angle brackets
- * (defense-in-depth against a name ever being interpolated into HTML), cap
- * at 40 characters. Hebrew names with quotes (ד"ר …) survive. '' (no
- * name) is always allowed — the cookie then keeps the legacy user-less
- * format and everything behaves exactly as before. */
-function sanitizeSessionUser(raw) {
-  if (typeof raw !== 'string') return '';
-  // eslint-disable-next-line no-control-regex
-  return raw.replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 40);
-}
-
-/* The `user` a login may embed in its session cookie: sanitized, then
- * accepted ONLY if it is one of the fixed SESSION_USERS names (the same
- * three names as the leads assignedTo dropdown). Anything else — unknown
- * name, free text, empty — returns '' and the cookie stays user-less, so
- * updatedBy can never carry an arbitrary string. */
-function validateSessionUser(raw) {
-  const user = sanitizeSessionUser(raw);
-  return SESSION_USERS.indexOf(user) >= 0 ? user : '';
-}
-
-/* The user name embedded in the request's VERIFIED session cookie, '' when
- * the cookie is a legacy user-less token (or absent/invalid — callers behind
- * requireSession never see that case). This — never a client-supplied body
- * field — is the only source of the `user` the sheets proxy forwards. */
+/* The user name of the request's VERIFIED personal session (the record's
+ * name), '' when there is none (callers behind requireSession never see that
+ * case). This — never a client-supplied body field — is the only source of
+ * the `user` the sheets proxy forwards. */
 function sessionUserFromRequest(req) {
   const principal = sessionPrincipalFromRequest(req);
   return principal ? principal.user : '';
@@ -785,8 +761,8 @@ function buildMeetingReportCookie(token, isHttps) {
  * the real lock: any session without `finance` (lib/users.js
  * principalCapabilities — by stable user id, so no USER_PIN_HASHES change)
  * gets 403 for every action in lib/finance-scope.js FINANCE_ACTIONS and every
- * route in FINANCE_ROUTES, BEFORE anything is proxied. Sandra, Vered and a
- * shared session inside the dual window are unchanged. The refusal is logged
+ * route in FINANCE_ROUTES, BEFORE anything is proxied. Sandra and Vered are
+ * unchanged. The refusal is logged
  * with the user id and the action/route only — never data. */
 function financeForbidden(res, req, what) {
   const p = sessionPrincipalFromRequest(req);
@@ -809,6 +785,22 @@ function requireFinance(req, res, next) {
   return financeForbidden(res, req, 'route=' + req.path);
 }
 
+/* Roles (PR C): a DELETE_ACTIONS operation without `deleter`, or an
+ * APPROVER_ACTIONS operation outside Sandra's personal session → 403
+ * {ok:false, error:'forbidden_role', message:'אין הרשאה לפעולה זו'}, BEFORE
+ * anything is proxied (lib/role-scope.js). Code.gs refuses the same again,
+ * and is the only side that can see an un-void. Logged with the user id and
+ * the operation only — never data. */
+function requireRoleForAction(req, res, next) {
+  const src = req.method === 'GET' ? (req.query || {}) : (req.body || {});
+  const op = roleOperationFor(src.action, src);
+  if (!op) return next();
+  const p = sessionPrincipalFromRequest(req);
+  if (roleAllowed(p, op)) return next();
+  console.warn(`[role] 403 user=${p ? p.id : 'none'} op=${op} needs=${requiredRoleFor(op)}`);
+  return res.status(403).json({ ok: false, error: 'forbidden_role', message: ROLE_FORBIDDEN_MESSAGE });
+}
+
 /* getData for a session without `finance`: drop the billing-only keys
  * (GETDATA_FINANCE_KEYS — no tab such a session can see reads them). A
  * full-view session gets every key, unchanged (append-only contract). */
@@ -818,7 +810,7 @@ function viewFilteredResponse(action, data, principal) {
 
 /* GET /api/sheets?action=getData — forwarded to Apps Script as a POST whose
  * body carries the params + proxy secret (see sheetsGet). */
-app.get('/api/sheets', requireSession, requireFinanceForAction, requireProxySecret, async (req, res) => {
+app.get('/api/sheets', requireSession, requireFinanceForAction, requireRoleForAction, requireProxySecret, async (req, res) => {
   const action = req.query && req.query.action;
   // The action name only — never the query values or a response body.
   console.log('[sheets GET] → action=', JSON.stringify(typeof action === 'string' ? action.slice(0, 60) : null));
@@ -858,7 +850,7 @@ app.get('/api/sheets', requireSession, requireFinanceForAction, requireProxySecr
 /* POST /api/sheets — body is forwarded as POST application/json to Apps Script.
  * All save operations (saveAll, etc.) use POST so the data never hits the
  * querystring length limit. */
-app.post('/api/sheets', requireSession, requireFinanceForAction, requireProxySecret, async (req, res) => {
+app.post('/api/sheets', requireSession, requireFinanceForAction, requireRoleForAction, requireProxySecret, async (req, res) => {
   const body = req.body || {};
   // Who/when stamping: the `user` the Apps Script writes into updatedBy
   // comes ONLY from the signed session cookie. ALWAYS overwritten — a
@@ -1179,36 +1171,31 @@ app.post('/api/outpatient-lead', requireSession, async (req, res) => {
   }
 });
 
-/* ===== POST /api/verify-pin — the dashboard login (personal PINs PR B) =====
+/* ===== POST /api/verify-pin — the dashboard login (personal PINs only) =====
  *
- * Two request shapes:
- *
- *   { userId, pin }  — PERSONAL. `pin` is checked against that user's
- *     USER_PIN_HASHES record (scrypt + PIN_PEPPER, constant-time, always one
- *     derivation — an unknown or inactive user costs the same as a wrong PIN
- *     and answers the same 401). Success mints the personal cookie
+ *   { userId, pin } — `pin` is checked against that user's USER_PIN_HASHES
+ *     record (scrypt + PIN_PEPPER, constant-time, always one derivation — an
+ *     unknown or inactive user costs the same as a wrong PIN and answers the
+ *     same 401). Success mints the personal cookie
  *     `<expiry>.<name>.<id>-<pinVersion>.<sig>`.
- *   { pin [, user] } — SHARED APP_PIN, ONLY while the dual window is open
- *     (APP_PIN_UNTIL). Success mints the shared cookie (staff only, exactly
- *     the pre-PR-B format; `user` from the fixed SESSION_USERS list or none).
- *     With the window closed → 403 shared_pin_closed and the PIN is NOT
- *     checked (no oracle for a retired secret).
+ *   Anything without `userId` (the retired shared APP_PIN shape { pin }) →
+ *     400 user_required. No PIN is checked and nothing is counted: there is
+ *     no shared code left to guess (removed 2026-10-04, PR C).
  *
  * Limits (lib/rate-limit.js PinLockout, all checked BEFORE any PIN work):
  *   5 failures per user → that user is locked 15 min (429 'locked');
  *   10 failures per IP per 15 min and 30 globally per 15 min (429
- *   'rate_limited'). The shared login shares the IP + global counters, so
- *   neither path can be used to dodge the other's limits. The IP is req.ip
- *   (trust proxy = Railway's one hop), never the raw X-Forwarded-For.
+ *   'rate_limited'). The IP is req.ip (trust proxy = Railway's one hop),
+ *   never the raw X-Forwarded-For.
  *
- * Responses: 200 {ok:true}; 401 invalid_pin; 429 locked|rate_limited (with
- * Retry-After); 403 shared_pin_closed; 503 not_configured (no PIN_PEPPER for
- * a personal login). The PIN is never logged, stored or echoed: the request
- * logger prints the path only and nothing here logs a body. */
+ * Responses: 200 {ok:true}; 400 user_required; 401 invalid_pin; 429
+ * locked|rate_limited (with Retry-After); 503 not_configured (no PIN_PEPPER).
+ * The PIN is never logged, stored or echoed: the request logger prints the
+ * path only and nothing here logs a body. */
 const PIN_RATE_LIMIT = { max: 10, windowMs: 15 * 60 * 1000 };
 const pinLockout = new PinLockout();
-/* The per-IP counter (10 / 15 min) — the same object the shared and personal
- * logins count against. Kept under its old name for the existing tests. */
+/* The per-IP counter (10 / 15 min). Kept under its old name for the
+ * existing tests. */
 const pinAttempts = pinLockout.ip;
 const PERSONAL_ID_SHAPE = /^[a-z][a-z0-9]{0,31}$/;
 
@@ -1267,56 +1254,22 @@ async function personalLogin(req, res, b, ip) {
   return res.status(200).json({ ok: true });
 }
 
-function sharedLogin(req, res, b, ip) {
-  const verdict = pinLockout.check(null, ip);
-  if (!verdict.ok) return sendLockout(res, verdict);
-  if (!sharedWindowNow().open) return res.status(403).json({ ok: false, error: 'shared_pin_closed' });
-
-  if (checkPin(b.pin, APP_PIN)) {
-    pinLockout.recordSuccess(null, ip); // reset this IP's counter on success
-    /* Mint the session cookie so subsequent data requests are authorized. Only
-     * possible when SESSION_SECRET is configured; if it isn't, the PIN is still
-     * accepted (200) but no usable cookie is issued, so the data routes stay
-     * 503 — the fail-closed state, surfaced to the operator, not to an attacker. */
-    if (SESSION_SECRET) {
-      // Optional `user` (who/when stamping): a display name the login may
-      // attach — accepted ONLY from the fixed SESSION_USERS list (the name
-      // picker's buttons); anything else falls back to the legacy user-less
-      // token. It rides INSIDE the signed token so it cannot be changed
-      // without breaking the HMAC. A shared session is staff only.
-      const user = validateSessionUser(b.user);
-      const token = createSessionToken(SESSION_SECRET, undefined, undefined, user);
-      res.set('Set-Cookie', buildSessionCookie(token, requestIsHttps(req)));
-    }
-    return res.status(200).json({ ok: true });
-  }
-
-  pinLockout.recordFailure(null, ip);
-  return res.status(401).json({ ok: false, error: 'invalid_pin' });
-}
-
 app.post('/api/verify-pin', (req, res) => {
   const b = req.body && typeof req.body === 'object' ? req.body : {};
   const ip = pinClientIp(req);
-  if (Object.prototype.hasOwnProperty.call(b, 'userId')) {
-    return personalLogin(req, res, b, ip).catch(() => {
-      if (!res.headersSent) res.status(500).json({ ok: false, error: 'login_failed' });
-    });
+  if (!Object.prototype.hasOwnProperty.call(b, 'userId')) {
+    return res.status(400).json({ ok: false, error: 'user_required' });
   }
-  return sharedLogin(req, res, b, ip);
+  return personalLogin(req, res, b, ip).catch(() => {
+    if (!res.headersSent) res.status(500).json({ ok: false, error: 'login_failed' });
+  });
 });
 
 /* GET /api/login-users — the login screen's step 1. Open (it runs before
  * any session exists). Lists ONLY users with an ACTIVE USER_PIN_HASHES record
- * ({ id, name }, nothing else), plus whether the shared-PIN link may be shown
- * and until when. Ortal (inactive) is never listed. */
+ * ({ id, name }, nothing else). Ortal (inactive) is never listed. */
 app.get('/api/login-users', (_req, res) => {
-  const w = sharedWindowNow();
-  res.status(200).json({
-    ok: true,
-    users: loginUsers(USER_REGISTRY),
-    shared: { open: w.open, until: w.open ? w.until : '', untilDisplay: w.open ? untilDisplay(w.until) : '' },
-  });
+  res.status(200).json({ ok: true, users: loginUsers(USER_REGISTRY) });
 });
 
 /* ===== POST /api/bootstrap-pin — one-time setup of Sandra's own record =====
@@ -1400,7 +1353,7 @@ app.post('/api/bootstrap-pin', async (req, res) => {
  *        400 weak_pin {reason} | pin_mismatch | unknown_user.
  *
  * Both need a CURRENT personal session of the approver (Sandra: id 'sandra'
- * with the approver role) — a shared session or anyone else → 403
+ * with the approver role) — anyone else → 403
  * (requireSession → 401 first when there is no valid session at all).
  * POST is rate-limited (10 per 15 min per IP and globally), counted on every
  * call. The PIN is never stored, logged or echoed: the request logger prints
@@ -1468,24 +1421,23 @@ app.post('/api/pin-admin/record', requireSession, requireApprover, async (req, r
 });
 
 /* GET /api/me — the session as the UI needs it: the display name (who/when
- * stamping), the auth kind, whether this is Sandra's approver session, and —
- * for a shared session — the last day of the dual window (DD/MM/YYYY) for
- * the banner. Session-gated; a legacy user-less cookie answers user ''. */
+ * stamping), the auth kind ('personal'), whether this is Sandra's approver
+ * session, whether it may delete, and whether it has the finance view.
+ * Session-gated. Display only: every decision is re-made server-side from
+ * the cookie (and again in Code.gs). */
 app.get('/api/me', requireSession, (req, res) => {
   const p = sessionPrincipalFromRequest(req);
-  const w = sharedWindowNow();
   res.status(200).json({
     ok: true,
     user: p ? p.user : '',
-    // 'shared' | 'personal' — the shared banner and the approver-only
-    // «קוד אישי חדש» button key on these. Display only: every decision is
-    // re-made server-side from the cookie.
     auth: p ? p.auth : '',
+    // The approver-only «קוד אישי חדש» button, un-void, exceptions, write-off.
     approver: isApproverPrincipal(p),
+    // false hides every delete / void / cancel control (Shiran, Yael).
+    deleter: principalHasRole(p, 'deleter'),
     // Restricted view: false hides the four money tabs and every billing
     // widget. Display only — the server refuses the data itself (403).
     finance: hasFinance(p),
-    sharedUntil: p && p.auth === 'shared' ? untilDisplay(w.until) : '',
   });
 });
 
@@ -1699,6 +1651,78 @@ function healthzBody(env) {
 
 app.get('/healthz', (_, res) => res.json(healthzBody()));
 
+/* ===== GET /api/healthcheck — the weekly healthcheck's data probe (PR C) =====
+ *
+ *   GET /api/healthcheck?action=getData
+ *   Authorization: Bearer <HEALTHCHECK_TOKEN>
+ *
+ * READ-ONLY: the only action is getData (absent = getData; anything else →
+ * 400 bad_action). It is proxied with NO principal (no user, no role, no
+ * capability), so Code.gs and viewFilteredResponse both serve the RESTRICTED
+ * getData — never billingOverrides, never a write.
+ *
+ * NO SESSION: it never sets or reads a cookie, and the token opens nothing
+ * else (every other route still needs a personal session).
+ *
+ * The token is compared in constant time (lib/pin.js checkPin: both sides
+ * SHA-256'd, timingSafeEqual). Rate limit: 10 calls per IP and 20 in total
+ * per 15 minutes, counted on EVERY call before the token is looked at (the
+ * job makes one call a week). The token is never logged: the request logger
+ * prints the path only, and nothing here prints a header.
+ *
+ * Responses: 200 getData JSON; 400 bad_action; 401 unauthorized (missing or
+ * wrong token, with WWW-Authenticate: Bearer); 404 healthcheck_disabled (no
+ * token configured, or shorter than 32); 429 rate_limited; 503
+ * proxy_not_configured; 502 sheets_unreachable. Cache-Control: no-store. */
+const HEALTHCHECK_LIMIT = { max: 10, windowMs: 15 * 60 * 1000 };
+const healthcheckAttempts = new WindowCounter(HEALTHCHECK_LIMIT);
+const healthcheckGlobal = new WindowCounter({ max: 20, windowMs: 15 * 60 * 1000 });
+
+/* The bearer token of an Authorization header, '' when absent or malformed.
+ * Pure. */
+function bearerToken(header) {
+  if (typeof header !== 'string') return '';
+  const m = /^Bearer[ ]+([\x21-\x7e]+)$/.exec(header.trim());
+  return m ? m[1] : '';
+}
+
+/* Whether `header` carries the configured token. Fail-closed: no token (or a
+ * short one) configured → false, whatever is sent. Constant-time. */
+function healthcheckAuthorized(header, configured) {
+  const want = configured === undefined ? HEALTHCHECK_TOKEN : configured;
+  if (typeof want !== 'string' || want.length < HEALTHCHECK_TOKEN_MIN_LEN) return false;
+  return checkPin(bearerToken(header), want);
+}
+
+app.get('/api/healthcheck', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  if (HEALTHCHECK_TOKEN.length < HEALTHCHECK_TOKEN_MIN_LEN) {
+    return res.status(404).json({ ok: false, error: 'healthcheck_disabled' });
+  }
+  const ip = pinClientIp(req);
+  if (sendRateLimited(res, healthcheckGlobal.check('*'))) return undefined;
+  if (sendRateLimited(res, healthcheckAttempts.check(ip))) return undefined;
+  healthcheckGlobal.fail('*');
+  healthcheckAttempts.fail(ip);
+
+  if (!healthcheckAuthorized(req.headers.authorization)) {
+    console.warn('[healthcheck] 401');
+    res.set('WWW-Authenticate', 'Bearer');
+    return res.status(401).json({ ok: false, error: 'unauthorized' });
+  }
+  const action = req.query && req.query.action !== undefined ? req.query.action : 'getData';
+  if (action !== 'getData') return res.status(400).json({ ok: false, error: 'bad_action' });
+  if (!PROXY_SECRET) return res.status(503).json({ ok: false, error: PROXY_NOT_CONFIGURED });
+  try {
+    const data = viewFilteredResponse('getData', await sheetsPost({ action: 'getData', user: '' }, NO_PRINCIPAL), null);
+    console.log('[healthcheck] ok');
+    return sendAppsScriptJson(res, data);
+  } catch (err) {
+    console.error('[healthcheck] error:', safeErrorMessage(err));
+    return res.status(502).json({ ok: false, error: 'sheets_unreachable' });
+  }
+});
+
 /* 404 fallback — logs and returns JSON so an unexpected request (e.g.
  * Sandra typing a stray URL) is visible in the logs. */
 app.use((req, res) => {
@@ -1743,10 +1767,7 @@ module.exports = {
   buildSessionCookie,
   requestIsHttps,
   // Who/when stamping (see test/patient-who-when.test.js).
-  sanitizeSessionUser,
   sessionUserFromRequest,
-  // Name picker (see test/name-picker-conflicts.test.js).
-  validateSessionUser,
   // Personal PINs — foundation (see test/personal-pins-foundation.test.js).
   TRUST_PROXY_HOPS,
   trustProxyHops,
@@ -1755,8 +1776,6 @@ module.exports = {
   pinLockout,
   mrPinAttempts,
   // Personal PINs — login (see test/personal-pins-login.test.js).
-  APP_PIN_UNTIL,
-  sharedWindowNow,
   currentPrincipal,
   isApproverPrincipal,
   pinAdminUsers,
@@ -1765,6 +1784,12 @@ module.exports = {
   // Restricted view (see test/restricted-view.test.js).
   requireFinanceForAction,
   requireFinance,
+  // Roles + healthcheck (see test/personal-pins-cleanup.test.js).
+  requireRoleForAction,
+  bearerToken,
+  healthcheckAuthorized,
+  healthcheckAttempts,
+  healthcheckGlobal,
   viewFilteredResponse,
   FINANCE_ACTIONS,
   FINANCE_ROUTES,

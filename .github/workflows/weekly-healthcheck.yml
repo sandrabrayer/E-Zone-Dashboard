@@ -2,7 +2,7 @@ name: Weekly Healthcheck
 
 # Checks the LIVE app (Railway) every Saturday evening, Israel time, plus
 # on-demand manual runs. A failed run = GitHub emails Sandra — and it fails
-# ONLY on real breakage (app shell down, PIN login broken, getData returning
+# ONLY on real breakage (app shell down, the healthcheck token refused, getData returning
 # HTML/garbage, missing top-level keys, stale Apps Script deployment missing
 # merged columns). Data-quality issues (blank ids, malformed dates, duplicate
 # discharge-audit rows, a Railway build whose /healthz commit differs from the
@@ -12,9 +12,12 @@ name: Weekly Healthcheck
 # ⛔ This workflow must NEVER be added to branch-protection required checks —
 # it probes a live deployment on a schedule and must never gate merges.
 #
-# Requires the APP_PIN repository secret (Settings → Secrets and variables →
-# Actions). The script fails with a clear message when it is missing and never
-# prints its value.
+# Requires the HEALTHCHECK_TOKEN repository secret (Settings → Secrets and
+# variables → Actions) — the same value as the HEALTHCHECK_TOKEN variable in
+# Railway (≥ 32 characters). It opens only GET /api/healthcheck, a read-only,
+# session-less probe (personal PINs PR C replaced the shared APP_PIN login).
+# The script fails with a clear message when it is missing and never prints
+# its value.
 
 on:
   schedule:
@@ -47,4 +50,4 @@ jobs:
       - name: Run healthcheck against the live app
         run: node scripts/healthcheck.js
         env:
-          APP_PIN: ${{ secrets.APP_PIN }}
+          HEALTHCHECK_TOKEN: ${{ secrets.HEALTHCHECK_TOKEN }}

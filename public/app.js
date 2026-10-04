@@ -14,13 +14,6 @@ const HOUSES = [
  * add-lead form; rendered on the kanban card. Fixed list (no free text). */
 const ASSIGNEE_OPTIONS = ['ורד', 'שירן', 'יעל'];
 
-/* Session-user names (the login name picker) — the same three people as
- * ASSIGNEE_OPTIONS, kept as a SEPARATE constant so the two lists can evolve
- * independently. MUST stay equal to lib/users.js SESSION_USERS (the server's
- * validation list for /api/verify-pin's `user`) — a guard test pins the two
- * equal, so they can never drift silently. */
-const SESSION_USERS = ['ורד', 'שירן', 'יעל'];
-
 /* רשימת המתנה — a potential patient waiting for a spot; the lead's existing
  * `house` field is the house they are waiting for. Entering the stage stamps
  * `waitlistedAt` (ISO timestamp string, schema shipped in the foundation PR);
@@ -263,7 +256,37 @@ function isVoidPayment(pay) {
  * discovered by clicking. */
 const PAYMENT_VOID_REVERSERS = ['סנדרה'];
 function canReverseVoid() {
-  return PAYMENT_VOID_REVERSERS.indexOf(String(state.sessionUser || '').trim()) >= 0;
+  return state.approver === true && PAYMENT_VOID_REVERSERS.indexOf(String(state.sessionUser || '').trim()) >= 0;
+}
+
+/* ===== Roles in the UI (PR C) =====
+ *
+ * deleter (Vered, Sandra): every delete / void / cancel control — הסר ליד,
+ * מחיקת דיווח, ✕ (מחיקה לצמיתות), ↩ (ביטול התאמת סכום), כפילות (סימון
+ * תשלום כמבוטל), and the «בוטל» credit status. approver (Sandra's personal
+ * session): «ביטול סימון הכפילות» (un-void) — and the refund-exception /
+ * write-off controls when they are built (Phase 1/2).
+ *
+ * Display only: server.js (lib/role-scope.js) and Code.gs refuse the
+ * operation itself (403 forbidden_role). Each control carries
+ * data-role="deleter" | "approver", hidden by CSS unless <body> has the
+ * matching role-* class (applyRoleView), and each handler re-checks — so a
+ * control is never offered before /api/me has answered. */
+const ROLE_FORBIDDEN_TEXT = 'אין הרשאה לפעולה זו';
+function canDelete() {
+  return state.deleter === true;
+}
+
+/* The <body> role classes for a session. Pure. */
+function roleBodyClasses(deleter, approver) {
+  return { 'role-deleter': deleter === true, 'role-approver': approver === true };
+}
+
+function applyRoleView() {
+  const body = document.body;
+  if (!body || !body.classList) return;
+  const cls = roleBodyClasses(state.deleter, state.approver);
+  Object.keys(cls).forEach(k => body.classList.toggle(k, cls[k]));
 }
 
 const houseById = id => HOUSES.find(h => h.id === id);
@@ -278,10 +301,17 @@ const state = {
   /* The name inside the signed session cookie, echoed by /api/me. Display and
    * control-gating only; every server-side decision reads the cookie itself. */
   sessionUser: '',
-  /* 'personal' | 'shared' (dual window) | '' — from /api/me. Display only. */
+  /* 'personal' | '' — from /api/me. Display only. */
   sessionAuth: '',
-  /* Restricted view: true = the session may see billing (Sandra, Vered, a
-   * shared session in the dual window); false = Shiran / Yael; null = not
+  /* Roles (PR C), from /api/me — display only; server.js and Code.gs refuse
+   * the operation itself (403 forbidden_role). deleter = Vered, Sandra: every
+   * delete / void / cancel control. approver = Sandra's personal session:
+   * un-void, refund exceptions, write-off. false until /api/me answers, so a
+   * control is never offered before the role is known. */
+  deleter: false,
+  approver: false,
+  /* Restricted view: true = the session may see billing (Sandra, Vered);
+   * false = Shiran / Yael; null = not
    * known yet (before /api/me). From /api/me — display only; the server
    * refuses the data itself. */
   finance: null,
@@ -894,11 +924,9 @@ function showPinScreen() {
   const app = document.getElementById('app');
   if (pin) pin.classList.remove('hidden');
   if (app) app.classList.add('hidden');
-  const input = document.getElementById('pin-input');
-  if (input) { input.value = ''; try { input.focus(); } catch (_) { /* no-op */ } }
   const personal = document.getElementById('login-pin-input');
   if (personal) personal.value = '';
-  loadLoginOptions().catch(() => { /* the screen still works with the shared field */ });
+  loadLoginOptions().catch(() => { showLoginStep('name'); });
 }
 
 /* ===== Personal-PIN login (PR B) =====
@@ -906,10 +934,9 @@ function showPinScreen() {
  * Step 1: tap your name — GET /api/login-users lists ONLY users with an
  * ACTIVE personal-PIN record. Step 2: the 6-digit PIN → POST /api/verify-pin
  * { userId, pin }. The last chosen name is remembered per device
- * (localStorage, wrapped: the login works without it). During the 7-day dual
- * window a small link opens the old shared field (#pin-input → the
- * pre-PR-B flow below, unchanged). The PIN lives only in the input and the
- * one request body — never stored, never logged. */
+ * (localStorage, wrapped: the login works without it). The shared APP_PIN
+ * field, its name picker and its banner were removed in PR C. The PIN lives
+ * only in the input and the one request body — never stored, never logged. */
 const LOGIN_REMEMBER_KEY = 'ezone.lastLoginUser';
 let _loginUsers = [];
 let _loginChosen = null;
@@ -926,7 +953,6 @@ function loginErrorMessage(status, error) {
   if (status === 429 && error === 'locked') return 'נעול ל־15 דקות — יותר מדי ניסיונות שגויים';
   if (status === 429) return 'יותר מדי ניסיונות — נסו שוב בעוד כמה דקות';
   if (status === 503 || error === 'not_configured') return 'הכניסה עוד לא הוגדרה בשרת — פנו לסנדרה';
-  if (status === 403 && error === 'shared_pin_closed') return 'הקוד המשותף כבר לא בתוקף — היכנסו עם קוד אישי';
   if (status === 401) return 'קוד שגוי';
   return 'הכניסה נכשלה — נסו שוב';
 }
@@ -939,39 +965,25 @@ function loginNamesHtml(users) {
     escapeHtml(u && u.name) + '</button>').join('');
 }
 
-/* The shared-session banner text. Pure. */
-function sharedBannerText(untilDisplay) {
-  return untilDisplay
-    ? 'נכנסת עם הקוד המשותף — עד ' + untilDisplay + ' יש לעבור לקוד אישי'
-    : 'נכנסת עם הקוד המשותף — יש לעבור לקוד אישי';
-}
-
 function showLoginStep(step) {
-  ['name', 'pin', 'shared'].forEach(k => {
+  ['name', 'pin'].forEach(k => {
     const el = document.getElementById('login-step-' + k);
     if (el) el.classList.toggle('hidden', k !== step);
   });
-  const link = document.getElementById('login-shared-link');
-  if (link) link.classList.toggle('hidden', step === 'shared' || !_loginSharedOpen);
-  const focusId = step === 'pin' ? 'login-pin-input' : step === 'shared' ? 'pin-input' : '';
-  const f = focusId && document.getElementById(focusId);
+  const f = step === 'pin' && document.getElementById('login-pin-input');
   if (f) { try { f.focus(); } catch (_) { /* no-op */ } }
 }
 
-let _loginSharedOpen = false;
-
-/* Fetch the name list + the dual-window state, then render step 1 (or jump
- * straight to step 2 for the name this device chose last time). */
+/* Fetch the name list, then render step 1 (or jump straight to step 2 for
+ * the name this device chose last time). */
 async function loadLoginOptions() {
   const res = await fetch('/api/login-users');
   const data = res && res.ok ? await res.json() : null;
   _loginUsers = data && Array.isArray(data.users) ? data.users : [];
-  _loginSharedOpen = !!(data && data.shared && data.shared.open);
   renderLoginNames();
   const last = rememberedLoginUser();
   const hit = _loginUsers.find(u => u.id === last);
   if (hit) chooseLoginUser(hit);
-  else if (!_loginUsers.length && _loginSharedOpen) showLoginStep('shared');
   else showLoginStep('name');
 }
 
@@ -1039,24 +1051,26 @@ async function tryPersonalLoginWorker() {
   }
 }
 
-/* The header / banner state for a verified session (/api/me). The banner is
- * persistent for a shared session; «קוד אישי חדש» shows only for Sandra's
- * approver session — the server re-checks both (403 otherwise). */
+/* The header state for a verified session (/api/me). «קוד אישי חדש» shows
+ * only for Sandra's approver session; delete / void / cancel controls only
+ * for a deleter; un-void and the other approver controls only for Sandra —
+ * the server re-checks every one (403 otherwise). */
 function applySessionInfo(info) {
   const i = info || {};
   state.sessionAuth = String(i.auth || '');
+  const roleChanged = state.deleter !== (i.deleter === true) || state.approver !== (i.approver === true);
+  state.deleter = i.deleter === true;
+  state.approver = i.approver === true;
   renderWhoami(i.user || '');
-  const banner = document.getElementById('shared-banner');
-  if (banner) {
-    const shared = state.sessionAuth === 'shared';
-    banner.textContent = shared ? sharedBannerText(i.sharedUntil || '') : '';
-    banner.classList.toggle('hidden', !shared);
-  }
   const adminBtn = document.getElementById('pin-admin-open');
   if (adminBtn) adminBtn.classList.toggle('hidden', i.approver !== true);
+  applyRoleView();
   // Restricted only on an explicit false (the server always sends a
   // boolean); an /api/me without the field keeps the full view as before.
   applyView(i.finance !== false);
+  // A render that ran before /api/me answered drew no role-gated control;
+  // redraw once the roles (and the view) are known.
+  if (roleChanged && typeof renderAll === 'function') { try { renderAll(); } catch (_) { /* no-op */ } }
 }
 
 function revealApp() {
@@ -1064,50 +1078,12 @@ function revealApp() {
   document.getElementById('app').classList.remove('hidden');
 }
 
-/* The PIN submit runs through busyButton like every other button: it owns the
- * re-entry guard (so the old _pinPending flag is gone), the «טוען…» label and
- * the restore on both exits. */
-function tryPin() {
-  const submitBtn = document.getElementById('pin-submit');
-  return busyButton(submitBtn, 'load', tryPinWorker);
-}
-
-async function tryPinWorker() {
-  const input = document.getElementById('pin-input');
-  const errEl = document.getElementById('pin-error');
-  errEl.classList.add('hidden');
-  try {
-    const pin = input.value; // held in memory ONLY for this login flow
-    const res = await fetch('/api/verify-pin', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pin: pin }),
-    });
-    if (res.ok) {          // cookie is now set → name check, then the app
-      input.value = '';
-      await afterPinSuccess(pin);
-      return;
-    }
-    const data = res.json ? await res.json().catch(() => ({})) : {};
-    errEl.textContent = loginErrorMessage(res.status, data && data.error);
-    errEl.classList.remove('hidden');
-    input.value = '';
-  } catch (_) {
-    errEl.textContent = loginErrorMessage(0, '');
-    errEl.classList.remove('hidden');
-    input.value = '';
-  }
-}
-
-/* ===== Name picker (מי מתחבר/ת) =====
+/* ===== The session (/api/me) =====
  *
- * Each person identifies once per device: after a correct PIN, a session
- * whose cookie carries no name gets a one-screen picker (fixed SESSION_USERS
- * buttons, no free text). Picking RE-ISSUES the cookie via /api/verify-pin
- * with { pin, user } — the PIN is held in a closure only for that one call,
- * never persisted anywhere. The name then rides inside the signed cookie for
- * its whole lifetime (7 days) and the server stamps updatedBy from it.
- * Switching (החלף) = logout → PIN → picker, since a re-issue needs the PIN. */
+ * Every session is personal: the name rides inside the signed cookie for its
+ * whole lifetime (7 days) and the server stamps updatedBy from it. Switching
+ * (החלף) = logout → the login screen. The shared APP_PIN name picker was
+ * removed in PR C. */
 
 /* The session's user name via /api/me: '' when the cookie carries none,
  * null when the answer is not a clean 200 (unauthenticated / network) —
@@ -1117,7 +1093,7 @@ async function fetchSessionUser() {
   return info === null ? null : info.user;
 }
 
-/* The whole /api/me answer ({ user, auth, approver, sharedUntil }, user
+/* The whole /api/me answer ({ user, auth, approver, deleter, finance }, user
  * always a string), or null when it is not a clean 200. */
 async function fetchSessionInfo() {
   try {
@@ -1130,56 +1106,8 @@ async function fetchSessionInfo() {
   }
 }
 
-/* After a correct PIN: no name on the fresh cookie → picker (needs the PIN
- * for the re-issue); otherwise straight into the app with the header line. */
-async function afterPinSuccess(pin) {
-  const info = await fetchSessionInfo();
-  const user = info === null ? null : info.user;
-  _sessionUserChecked = true; // this WAS the check — enterApp must not redo it
-  if (user === '') {
-    showUserPicker(pin);
-    return;
-  }
-  if (info) applySessionInfo(info); else renderWhoami('');
-  enterApp();
-}
-
-function showUserPicker(pin) {
-  document.getElementById('pin-screen').classList.add('hidden');
-  const screen = document.getElementById('user-screen');
-  const box = document.getElementById('user-options');
-  const errEl = document.getElementById('user-error');
-  errEl.classList.add('hidden');
-  box.innerHTML = '';
-  SESSION_USERS.forEach(name => {
-    const btn = document.createElement('button');
-    btn.className = 'btn primary user-option';
-    btn.textContent = name;
-    btn.onclick = () => busyButton(btn, 'load', async () => {
-      errEl.classList.add('hidden');
-      try {
-        const res = await fetch('/api/verify-pin', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pin: pin, user: name }),
-        });
-        if (!res.ok) { errEl.classList.remove('hidden'); return; }
-        screen.classList.add('hidden');
-        renderWhoami(name);
-        _sessionUserChecked = false; // let enterApp re-read /api/me (the banner)
-        enterApp();
-      } catch (_) {
-        errEl.classList.remove('hidden');
-      }
-    });
-    box.appendChild(btn);
-  });
-  screen.classList.remove('hidden');
-}
-
 /* Header line 'מחובר/ת כ: <name> · החלף'. Hidden when the session has no
- * name (legacy cookie). החלף goes through logout → PIN → picker, because
- * re-issuing the cookie with a different name needs the PIN again. */
+ * name. החלף goes through logout → the login screen. */
 function renderWhoami(name) {
   /* Remembered so canReverseVoid() can decide whether to OFFER the un-void
    * control. It is never the authority — upsertPayment_() re-checks against
@@ -1210,12 +1138,11 @@ function renderWhoami(name) {
   el.classList.remove('hidden');
 }
 
-/* Startup / existing sessions: an authenticated (clean 200) /api/me with an
- * EMPTY user means this device's cookie pre-dates the name picker — route it
- * through the PIN form once so the pick can re-issue the cookie (the
- * re-issue needs the PIN; see showUserPicker). A named session just renders
- * the header line. null (unauthenticated / network) changes nothing — the
- * normal 401 flow owns those cases. Runs once per page load. */
+/* Startup / existing sessions: a named session renders the header line and
+ * the role view. An authenticated /api/me with an EMPTY user cannot happen
+ * for a personal session; it is sent to the login screen. null
+ * (unauthenticated / network) changes nothing — the normal 401 flow owns
+ * those cases. Runs once per page load. */
 let _sessionUserChecked = false;
 async function checkSessionUser() {
   if (_sessionUserChecked) return;
@@ -1232,21 +1159,12 @@ async function checkSessionUser() {
 /* Startup: wire the PIN form + logout + tabs once, then attempt the authorized
  * initial load. No stored-flag trust — the cookie is the only source of truth. */
 function initPin() {
-  const input = document.getElementById('pin-input');
-  const submitBtn = document.getElementById('pin-submit');
-  submitBtn.onclick = tryPin;
-  input.addEventListener('keydown', e => { if (e.key === 'Enter') tryPin(); });
-
   const pInput = document.getElementById('login-pin-input');
   const pSubmit = document.getElementById('login-pin-submit');
   if (pSubmit) pSubmit.onclick = tryPersonalLogin;
   if (pInput) pInput.addEventListener('keydown', e => { if (e.key === 'Enter') tryPersonalLogin(); });
   const back = document.getElementById('login-back');
   if (back) back.onclick = () => { _loginChosen = null; rememberLoginUser(''); showLoginStep('name'); };
-  const sharedLink = document.getElementById('login-shared-link');
-  if (sharedLink) sharedLink.onclick = () => showLoginStep('shared');
-  const sharedBack = document.getElementById('login-shared-back');
-  if (sharedBack) sharedBack.onclick = () => showLoginStep(_loginChosen ? 'pin' : 'name');
   initPinAdmin();
 
   const logoutBtn = document.getElementById('logout');
@@ -1269,7 +1187,7 @@ function enterApp() {
   state.mode = 'edit';   // single mode: an authenticated user is an editor
   revealApp();
   loadAll();             // getData rides the cookie; a 401 flips to the PIN screen
-  checkSessionUser();    // fire-and-forget: whoami line / one-time picker routing
+  checkSessionUser();    // fire-and-forget: whoami line + the role view
 }
 
 /* ===== «קוד אישי חדש» — Sandra only (PR B) =====
@@ -2883,7 +2801,7 @@ function meetingReportBlockHTML(lead) {
   const actions = (state.mode === 'edit')
     ? `<div class="mrv-actions">
           <button type="button" class="btn small" data-mrv-edit="${escapeHtml(lead.id || '')}">עריכה</button>
-          <button type="button" class="btn small danger" data-mrv-delete="${escapeHtml(lead.id || '')}">מחיקת דיווח</button>
+          ${canDelete() ? `<button type="button" class="btn small danger" data-role="deleter" data-mrv-delete="${escapeHtml(lead.id || '')}">מחיקת דיווח</button>` : ''}
         </div>`
     : '';
   return `
@@ -2974,6 +2892,7 @@ function wireMeetingReportToggle(el) {
   if (delBtn) {
     delBtn.addEventListener('click', () => {
       const id = delBtn.getAttribute('data-mrv-delete');
+      if (!canDelete()) { showError(ROLE_FORBIDDEN_TEXT); return; }
       showConfirm({
         text: 'למחוק את דיווח המנהל? הדיווח יוסר מהליד ולא ניתן יהיה לשחזר אותו.',
         confirmLabel: 'כן, מחק',
@@ -4085,7 +4004,7 @@ function buildLeadCard(lead) {
       <button class="btn small primary" data-action="next">${nextLabel}</button>
       <button class="btn small" data-action="edit" title="ערוך ליד">✏️</button>
       <button class="lc-irrelevant" title="סגור ליד">סגירת ליד</button>
-      <button class="lc-irrelevant lc-remove" title="הסר ליד">הסר</button>
+      ${canDelete() ? '<button class="lc-irrelevant lc-remove" data-role="deleter" title="הסר ליד">הסר</button>' : ''}
     </div>
   `;
 
@@ -4097,7 +4016,9 @@ function buildLeadCard(lead) {
   if (idx > 0) card.querySelector('[data-action="back"]').onclick = e =>
     busyButton(e.currentTarget, 'save', () => moveLead(lead, STAGES[idx - 1].id));
   card.querySelector('.lc-irrelevant:not(.lc-remove)').onclick = () => closeLead(lead);
-  card.querySelector('.lc-remove').onclick = () => {
+  const removeBtn = card.querySelector('.lc-remove');
+  if (removeBtn) removeBtn.onclick = () => {
+    if (!canDelete()) { showError(ROLE_FORBIDDEN_TEXT); return; }
     showConfirm({
       text: 'להסיר את הליד? פעולה זו תסיר אותו מהמערכת.',
       confirmLabel: 'כן, הסר',
@@ -4547,6 +4468,7 @@ function buildIrrelevantRow(lead) {
  * guard here is what actually prevents viewer-mode mutations.
  */
 async function removeLead(lead) {
+  if (!canDelete()) { showError(ROLE_FORBIDDEN_TEXT); return; }
   if (state.mode !== 'edit') return;
 
   const prev = state.leads.slice();
@@ -5826,7 +5748,7 @@ function renderPatients() {
         ${isReleased
           ? `<button class="btn small primary" data-action="restore">שחזר</button>`
           : `<button class="btn small" data-action="release">שחרר</button>`}
-        <button class="btn small danger" data-action="delete" title="מחק לצמיתות">✕</button>
+        ${canDelete() ? '<button class="btn small danger" data-action="delete" data-role="deleter" title="מחק לצמיתות">✕</button>' : ''}
         <button class="btn small" data-action="edit" title="ערוך מטופל">✏️</button>
       </div>
     `;
@@ -5839,7 +5761,8 @@ function renderPatients() {
     const restoreBtn = row.querySelector('[data-action="restore"]');
     if (restoreBtn) restoreBtn.onclick = () =>
       showRestorePatientChoiceModal(auditRowForReleasedPatient(p, state.dischargedPatients));
-    row.querySelector('[data-action="delete"]').onclick = e =>
+    const deleteBtn = row.querySelector('[data-action="delete"]');
+    if (deleteBtn) deleteBtn.onclick = e =>
       busyButton(e.currentTarget, 'delete', () => deletePatient(p));
 
     list.appendChild(row);
@@ -6027,6 +5950,13 @@ const CREDIT_TYPE_LABELS = {
   other:          'זיכוי אחר',
 };
 const CREDIT_STATUS_LABELS = { pending: 'ממתין', paid: 'שולם', cancelled: 'בוטל' };
+
+/* The credit status options a session is offered: «בוטל» (cancelCredit, a
+ * DELETE_ACTIONS operation) only for a deleter — or when the line is already
+ * cancelled, so its stored state still shows. Pure. */
+function creditStatusOptionKeys(current, deleter) {
+  return Object.keys(CREDIT_STATUS_LABELS).filter(s => s !== 'cancelled' || deleter === true || current === 'cancelled');
+}
 const CREDIT_TYPES = Object.keys(CREDIT_TYPE_LABELS);
 
 /* The refund RULES live on the server only (computeRefund_ /
@@ -6564,7 +6494,7 @@ async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate
 
   const lineHtml = (l, i) => {
     const typeLabel = CREDIT_TYPE_LABELS[l.creditType] || l.creditType;
-    const statusOpts = Object.keys(CREDIT_STATUS_LABELS).map(s =>
+    const statusOpts = creditStatusOptionKeys(l.status, canDelete()).map(s =>
       `<option value="${s}" ${l.status === s ? 'selected' : ''}>${CREDIT_STATUS_LABELS[s]}</option>`).join('');
     const isOther = l.creditType === 'other';
     const b = l.basis;
@@ -7629,6 +7559,7 @@ async function createOutpatientLead(patient) {
  * Local state drops the row WITHOUT a full saveAll — the action IS the whole
  * delete; on failure the optimistic removal rolls back. */
 async function deletePatient(p) {
+  if (!canDelete()) { showError(ROLE_FORBIDDEN_TEXT); return; }
   if (!confirm(`למחוק לצמיתות את ${p.name}?`)) return;
   const prev = state.patients.slice();
   state.patients = state.patients.filter(x => x.id !== p.id);
@@ -8620,6 +8551,7 @@ function duplicateVoidNote(pay, original, patient) {
 
 async function markPaymentDuplicate(pay, original, note) {
   if (state.mode !== 'edit') return;
+  if (!canDelete()) { showError(ROLE_FORBIDDEN_TEXT); return; }
   if (!original || !original.id) { showError('אין שורה מקורית לסמן מולה כפילות'); return; }
   if (original.id === pay.id) { showError('לא ניתן לסמן שורה ככפילות של עצמה'); return; }
   const reason = String(note || '').trim().slice(0, PAYMENT_LINK_NOTE_MAX);
@@ -8652,7 +8584,7 @@ function statusFromAmounts(pay) {
 
 async function reversePaymentVoid(pay) {
   if (state.mode !== 'edit') return;
-  if (!canReverseVoid()) { showError('החזרת כפילות מותרת לסנדרה בלבד'); return; }
+  if (!canReverseVoid()) { showError(ROLE_FORBIDDEN_TEXT); return; }
   await savePayment(Object.assign({}, pay, {
     status: statusFromAmounts(pay),
     linkPatientUid: '',
@@ -8784,6 +8716,7 @@ function renderReconnect() {
       if (canReverseVoid()) {
         const btn = document.createElement('button');
         btn.className = 'btn small reconnect-unvoid';
+        btn.setAttribute('data-role', 'approver');
         btn.textContent = 'ביטול סימון הכפילות';
         btn.disabled = state.mode !== 'edit';
         btn.onclick = e => busyButton(e.currentTarget, 'save', () => reversePaymentVoid(pay));
@@ -8921,8 +8854,8 @@ function buildReconnectRow(pay) {
       <span class="cand-why">${c.reasons.map(r =>
         `<span class="rev-chip rev-chip-soft">${escapeHtml(RECONNECT_REASON_LABELS[r] || r)}</span>`).join('')}</span>
       ${dup.length ? `<span class="cand-warn" title="${escapeHtml(dup.map(d => formatDate(d.dueDate)).join(', '))}">⚠ ייתכן רישום כפול — כבר קיים תשלום לאותו מחזור</span>` : ''}
-      ${dup.length ? `<button class="btn small primary cand-dup" ${editable ? '' : 'disabled'}>כפילות</button>` : ''}
-      <button class="btn small ${dup.length ? '' : 'primary'} cand-link" ${editable ? '' : 'disabled'}>שייך</button>
+      ${dup.length && canDelete() ? `<button class="btn small primary cand-dup" data-role="deleter" ${editable ? '' : 'disabled'}>כפילות</button>` : ''}
+      <button class="btn small ${dup.length && canDelete() ? '' : 'primary'} cand-link" ${editable ? '' : 'disabled'}>שייך</button>
     `;
     /* WHERE THE WARNING IS, THE WARNING LEADS. A candidate that already has a
      * payment for this cycle is far more often a double entry than a second
@@ -9228,7 +9161,7 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
       <span class="p-val bill-amount-view">₪ ${amount.toLocaleString('he-IL')}
         ${hasOverride ? '<span class="badge override" title="סכום מותאם לחודש זה">מותאם</span>' : ''}
         ${amountEditable ? '<button class="bill-amount-edit-btn" title="עריכת הסכום לחודש זה בלבד">✏️</button>' : ''}
-        ${amountEditable && hasOverride ? '<button class="bill-amount-clear-btn" title="ביטול ההתאמה — חזרה לסכום הבסיס">↩</button>' : ''}
+        ${amountEditable && hasOverride && canDelete() ? '<button class="bill-amount-clear-btn" data-role="deleter" title="ביטול ההתאמה — חזרה לסכום הבסיס">↩</button>' : ''}
       </span>
       ${amountEditable ? `<span class="bill-amount-edit hidden">
         <input class="bill-amount-input" type="number" min="0" step="50" value="${amount}" />
@@ -10453,6 +10386,7 @@ async function saveBillingOverride(payment, newAmount) {
  * rollback shape as saveBillingOverride. */
 async function clearBillingOverride(payment) {
   if (state.mode !== 'edit') return;
+  if (!canDelete()) { showError(ROLE_FORBIDDEN_TEXT); return; }
   const pid = payment && payment.patientId;
   if (!pid) return;
   const month = monthKey(payment.dueDate);
