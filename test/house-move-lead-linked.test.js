@@ -36,6 +36,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+/* Personal PINs PR C: Code.gs refuses a delete without a VERIFIED `deleter`
+ * (handle_ → roleAllowed_). These calls go straight to handle_, so they carry
+ * the actor proxyGate_ would set for Vered's personal session. */
+const DELETER_ACTOR = { verified: true, user: 'ורד', id: 'vered', auth: 'personal', roles: ['staff', 'reporter', 'deleter'], caps: ['finance'] };
+
+
 const ROOT = path.join(__dirname, '..');
 const APP_SRC = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
 const GS_SRC = fs.readFileSync(path.join(ROOT, 'apps-script', 'Code.gs'), 'utf8');
@@ -465,7 +471,7 @@ test('MOVED ELSEWHERE: another tab moved the patient first → this move is refu
 test('DELETED meanwhile: moving a patient someone permanently deleted is refused — never resurrected', async () => {
   const backend = world();
   const stale = await openSession(backend, 'שירן');
-  const del = backend.handle({ action: 'deletePatientRow', user: 'ורד',
+  const del = backend.handle({ __actor: DELETER_ACTOR, action: 'deletePatientRow', user: 'ורד',
     patient: { id: 'id-x', houseId: 'pardes', name: NAME, date: ENTRY } });
   assert.strictEqual(del.ok, true);
   await editPatient(stale, 'id-x', { houseId: 'asher' });

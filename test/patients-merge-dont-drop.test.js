@@ -31,6 +31,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+/* Personal PINs PR C: Code.gs refuses a delete without a VERIFIED `deleter`
+ * (handle_ → roleAllowed_). These calls go straight to handle_, so they carry
+ * the actor proxyGate_ would set for Vered's personal session. */
+const DELETER_ACTOR = { verified: true, user: 'ורד', id: 'vered', auth: 'personal', roles: ['staff', 'reporter', 'deleter'], caps: ['finance'] };
+
+
 const arr = (x) => Array.from(x);
 
 /* ---------- a minimal fake Sheet (guard-compat shape + clear-op logging) ---------- */
@@ -338,7 +344,7 @@ test('deletePatientRow: tombstones (user-delete) BEFORE deleting; row gone, othe
   patientsSh.ops.length = 0;
 
   const out = code.handle({
-    action: 'deletePatientRow',
+    action: 'deletePatientRow', __actor: DELETER_ACTOR,
     patient: { houseId: 'ramot', name: 'דנה', date: '2026-08-15' },
   });
   assert.deepStrictEqual({ ok: out.ok, deleted: out.deleted, key: out.key },
@@ -368,7 +374,7 @@ test('deletePatientRow: tombstones (user-delete) BEFORE deleting; row gone, othe
 test('deletePatientRow: unknown identity key → patient_not_found, nothing touched', () => {
   const { code, sandbox } = withPatients(SEED);
   const out = code.handle({
-    action: 'deletePatientRow',
+    action: 'deletePatientRow', __actor: DELETER_ACTOR,
     patient: { houseId: 'ramot', name: 'לא קיימת', date: '2026-01-01' },
   });
   assert.deepStrictEqual({ ok: out.ok, error: out.error }, { ok: false, error: 'patient_not_found' });
@@ -386,7 +392,7 @@ test('deletePatientRow: a tombstone failure ABORTS the delete — the row surviv
     setFrozenRows() { throw new Error('quota'); },
   };
   const out = code.handle({
-    action: 'deletePatientRow',
+    action: 'deletePatientRow', __actor: DELETER_ACTOR,
     patient: { houseId: 'ramot', name: 'דנה', date: '2026-08-15' },
   });
   assert.strictEqual(out.ok, false, 'delete refused without its recovery copy');
@@ -396,7 +402,7 @@ test('deletePatientRow: a tombstone failure ABORTS the delete — the row surviv
 test('a stale saveAll cannot resurrect a deleted patient (deletedSuppressed)', () => {
   const { code, sandbox } = withPatients(SEED);
   code.handle({
-    action: 'deletePatientRow',
+    action: 'deletePatientRow', __actor: DELETER_ACTOR,
     patient: { houseId: 'ramot', name: 'דנה', date: '2026-08-15' },
   });
   // A stale tab still carries דנה in memory and saves.

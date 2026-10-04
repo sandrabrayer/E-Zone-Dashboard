@@ -7,10 +7,11 @@
  *   3. The right PIN enters the app; «קוד אישי חדש» is offered to Sandra and
  *      makes a record line.
  *   4. Logout → the login screen remembers «סנדרה» (straight to step 2).
- *   5. The shared link → APP_PIN → the name picker → the amber banner.
+ *   5. PR C: no shared link, field, picker or banner; Shiran logs in with her
+ *      own code and gets no delete / approver role in the page.
  *
- * Set SHOT_DIR to also write login-360-step1.png, login-360-step2.png,
- * login-360-shared-banner.png and login-360-new-code.png.
+ * Set SHOT_DIR to also write login-360-step1.png, login-360-step2.png and
+ * login-360-new-code.png.
  *
  * SKIPPED unless BOTH `playwright` resolves AND a Chromium binary is present
  * (the gate every browser test here uses):
@@ -42,14 +43,12 @@ const why = !playwright ? 'playwright not installed' : (!chromiumPath ? 'no chro
 
 const pinHash = require('../lib/pin-hash');
 const users = require('../lib/users');
-const { israelDay, untilDisplay } = require('../lib/shared-pin-window');
 
 const SERVER_PATH = require.resolve('../server');
 const PEPPER = 'pepper-TEST-browser-0123456789abcdef0123456789';
-const APP_PIN = '4711';
 const SANDRA_PIN = '402917';
-const UNTIL = israelDay(Date.now() + 7 * 864e5);
-const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'APP_PIN', 'USER_PIN_HASHES', 'PIN_PEPPER', 'APP_PIN_UNTIL'];
+const SHIRAN_PIN = '719305';
+const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'USER_PIN_HASHES', 'PIN_PEPPER'];
 
 async function rec(id, pin, over) {
   const m = users.modelById(id);
@@ -59,11 +58,11 @@ async function rec(id, pin, over) {
 /* Boot a fresh server.js with the test env; Apps Script answers a minimal
  * empty dataset for every action. */
 async function boot() {
-  const recs = [await rec('vered', '583920'), await rec('sandra', SANDRA_PIN), await rec('shiran', '719305'),
+  const recs = [await rec('vered', '583920'), await rec('sandra', SANDRA_PIN), await rec('shiran', SHIRAN_PIN),
     await rec('yael', '264081', { status: 'revoked' })];
   const env = {
     PROXY_SECRET: 'proxy-secret-TEST-browser-0123456789abcdef', SESSION_SECRET: 'session-secret-TEST-browser-0123456789abcdef',
-    SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', APP_PIN, PIN_PEPPER: PEPPER, APP_PIN_UNTIL: UNTIL,
+    SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', PIN_PEPPER: PEPPER,
     USER_PIN_HASHES: JSON.stringify(recs),
   };
   const saved = {};
@@ -108,7 +107,7 @@ async function shot(page, el, name) {
 
 const visible = (page, sel) => page.locator(sel).isVisible();
 
-test('personal-PIN login at 360px: step 1 names → step 2 PIN → app; remembered name; shared link + banner; «קוד אישי חדש»', { skip: skip && why, timeout: 120000 }, async () => {
+test('personal-PIN login at 360px: step 1 names → step 2 PIN → app; remembered name; «קוד אישי חדש»; no shared path (PR C)', { skip: skip && why, timeout: 120000 }, async () => {
   const server = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
@@ -128,7 +127,7 @@ test('personal-PIN login at 360px: step 1 names → step 2 PIN → app; remember
       assert.ok(h >= 48, 'big touch target: ' + h);
     }
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'no horizontal scroll at 360px');
-    assert.equal(await visible(page, '#login-shared-link'), true, 'the shared link during the window');
+    assert.equal(await page.locator('#login-shared-link, #login-step-shared, #pin-input, #user-screen').count(), 0, 'PR C: no shared path in the page');
     assert.equal(await visible(page, '#app'), false);
     await shot(page, null, 'login-360-step1.png');
 
@@ -150,7 +149,8 @@ test('personal-PIN login at 360px: step 1 names → step 2 PIN → app; remember
     await page.waitForSelector('#app', { state: 'visible', timeout: 15000 });
     await page.waitForSelector('#whoami', { state: 'visible', timeout: 15000 });
     assert.match(await page.locator('#whoami').textContent(), /סנדרה/);
-    assert.equal(await visible(page, '#shared-banner'), false, 'no banner on a personal session');
+    assert.equal(await page.locator('#shared-banner').count(), 0, 'PR C: no shared banner at all');
+    await page.waitForFunction(() => document.body.classList.contains('role-deleter') && document.body.classList.contains('role-approver'));
     assert.equal(await page.evaluate(() => localStorage.getItem('ezone.lastLoginUser')), 'sandra');
     assert.ok(!(await page.evaluate(() => JSON.stringify(localStorage))).includes(SANDRA_PIN), 'the PIN is never stored');
 
@@ -184,22 +184,18 @@ test('personal-PIN login at 360px: step 1 names → step 2 PIN → app; remember
     await page.locator('#login-back').click();
     await page.waitForSelector('#login-step-name', { state: 'visible' });
 
-    // ---- Shared PIN (dual window) → banner ----
-    await page.locator('#login-shared-link').click();
-    await page.waitForSelector('#login-step-shared', { state: 'visible' });
-    assert.equal(await page.locator('#pin-input').getAttribute('maxlength'), '4');
-    await page.fill('#pin-input', APP_PIN);
-    await page.locator('#pin-submit').click();
-    await page.waitForSelector('#user-screen', { state: 'visible', timeout: 15000 });
-    await page.locator('#user-options button', { hasText: 'ורד' }).click();
-    await page.waitForSelector('#shared-banner', { state: 'visible', timeout: 15000 });
-    assert.equal((await page.locator('#shared-banner').textContent()).trim(),
-      'נכנסת עם הקוד המשותף — עד ' + untilDisplay(UNTIL) + ' יש לעבור לקוד אישי');
-    assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById('shared-banner')).backgroundColor), 'rgb(255, 176, 32)');
-    assert.equal(await visible(page, '#pin-admin-open'), false, 'no «קוד אישי חדש» on a shared session');
+    // ---- Shiran: her own code, no delete / approver role in the page ----
+    await page.locator('#login-names button', { hasText: 'שירן' }).click();
+    await page.waitForSelector('#login-step-pin', { state: 'visible' });
+    await page.locator('#login-pin-input').fill(SHIRAN_PIN);
+    await page.locator('#login-pin-submit').click();
+    await page.waitForSelector('#whoami', { state: 'visible', timeout: 15000 });
+    assert.match(await page.locator('#whoami').textContent(), /שירן/);
+    assert.equal(await page.evaluate(() => document.body.classList.contains('role-deleter')), false);
+    assert.equal(await page.evaluate(() => document.body.classList.contains('role-approver')), false);
+    assert.equal(await visible(page, '#pin-admin-open'), false, 'no «קוד אישי חדש» for Shiran');
     assert.equal(await visible(page, '#error-banner'), false, 'no leftover «unauthorized» toast from the pre-login 401');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
-    await shot(page, null, 'login-360-shared-banner.png');
 
     assert.deepEqual(pageErrors, [], 'no page errors');
   } finally {

@@ -519,13 +519,11 @@ const PAYMENT_VOID_STATUS = 'void';
 
 /* Who may UNDO a void. Marking a duplicate is ordinary daily work; unmarking
  * one puts a second payment back into every revenue and debt figure, which is
- * a money decision. The name comes from the SIGNED SESSION COOKIE via
- * requestUser_ — never from the request body — so this is the authority and
- * the client's matching list only decides whether to offer the control.
- *
- * NOTE: 'סנדרה' is not in SESSION_USERS today, so no current login can reverse
- * a void. That is deliberate — the reversal is hers — and adding her as a
- * session user is a separate decision about who may log in at all. */
+ * a money decision. Since PR C (2026-10-04) the un-void is the APPROVER_ACTIONS
+ * operation `unvoidPayment`: it needs the verified `approver` role (Sandra's
+ * personal session only, hasRole_) AND this name, which comes from the SIGNED
+ * SESSION COOKIE via requestUser_ — never from the request body. The client's
+ * matching list only decides whether to offer the control. */
 const PAYMENT_VOID_REVERSERS = ['סנדרה'];
 const PAYMENT_LINK_NOTE_MAX = 300;
 const PAYMENT_LINK_UID_MAX = 100;
@@ -889,7 +887,7 @@ const ACTOR_FIELD            = '__actor';
 const PROXY_ONLY_FIELDS = [PROXY_SECRET_FIELD, PROXY_USER_FIELD, PROXY_ROLES_FIELD,
   PROXY_AUTH_FIELD, PROXY_USER_ID_FIELD, PROXY_CAPS_FIELD, ACTOR_FIELD];
 
-/* ===== Roles (docs/billing-control-plan.md §11.5 — PR A: DEFINED, NOT ENFORCED) =====
+/* ===== Roles (docs/billing-control-plan.md §11.5 — ENFORCED since PR C, 2026-10-04) =====
  *
  * Mirrors lib/users.js ROLES. The server sends the session's roles as
  * proxyRoles; they count ONLY for a request with a valid PROXY_SECRET
@@ -897,14 +895,19 @@ const PROXY_ONLY_FIELDS = [PROXY_SECRET_FIELD, PROXY_USER_FIELD, PROXY_ROLES_FIE
  *   - approver is honoured only for the personal session of APPROVER_USER_ID
  *     (Sandra) — the server's startup validator refuses any other approver,
  *     and this is the same rule again on this side;
- *   - a SHARED (APP_PIN) session is staff only — never deleter / approver.
- * Nothing in handle_ calls roleAllowed_ yet: enforcement is a later PR. */
+ *   - only a PERSONAL session holds roles: the shared APP_PIN was removed, so
+ *     any other proxyAuth (including a stale 'shared') is treated as 'none'.
+ * handle_ refuses every DELETE_ACTIONS operation without `deleter` and every
+ * APPROVER_ACTIONS operation without `approver`: {ok:false,
+ * error:'forbidden_role', message: ROLE_FORBIDDEN_MESSAGE}, before anything is
+ * read or written. lib/role-scope.js (server.js) makes the same decision
+ * first; a guard test pins the two lists equal. */
 const KNOWN_ROLES = ['staff', 'reporter', 'deleter', 'approver', 'viewer', 'controller'];
 const APPROVER_USER_ID = 'sandra';
-const SHARED_SESSION_ROLES = ['staff'];
+const ROLE_FORBIDDEN_MESSAGE = 'אין הרשאה לפעולה זו';
 
 /* Every delete / void operation. Each needs the `deleter` role (Vered,
- * Sandra — NOT Shiran / Yael, NOT a shared APP_PIN session) once enforced.
+ * Sandra — NOT Shiran / Yael).
  * Dispatched action names, plus two payload-level operations that ride an
  * ordinary write action (roleOperationFor_ maps them):
  *   voidPayment — savePayment / updatePayment that sets status 'void'
@@ -926,7 +929,7 @@ const DELETE_ACTIONS = [
  * handle_ refuses again here: a VERIFIED proxy call whose actor lacks
  * `finance` gets {ok:false, error:'forbidden'} and nothing is read or
  * written. The capability is RE-DERIVED here from proxyAuth + proxyUserId
- * (shared session → finance during the dual window; personal → by id) and
+ * (personal → by id; anything else → none) and
  * intersected with the server's proxyCaps when present — so neither side
  * alone can widen it. A call without a valid PROXY_SECRET has no actor and
  * is not refused here: enforce mode already refuses it at the gate, and the
@@ -941,9 +944,10 @@ const FINANCE_USER_IDS = ['vered', 'sandra'];
 const GETDATA_FINANCE_KEYS = ['billingOverrides'];
 const FINANCE_FORBIDDEN_MESSAGE = 'אין הרשאה לצפות בנתוני גבייה';
 
-/* Approver-only operations (Sandra). unvoidPayment exists today (and is
- * already refused for anyone but Sandra inside upsertPayment_); the other
- * three are the Phase 1/2 decisions (plan §7.3, §8.5, §9). */
+/* Approver-only operations (Sandra's personal session). unvoidPayment is
+ * decided inside upsertPayment_ (only the stored row shows an un-void); the
+ * other three are the Phase 1/2 decisions (plan §7.3, §8.5, §9) and are
+ * refused by handle_ before dispatch. */
 const APPROVER_ACTIONS = [
   'unvoidPayment', 'approveRefundException', 'writeOffOpeningBalance', 'acceptOpeningBalance',
 ];
@@ -1238,6 +1242,12 @@ function handle_(params) {
     if (financeRefused_(params, action)) {
       return jsonOut_({ ok: false, error: 'forbidden', message: FINANCE_FORBIDDEN_MESSAGE });
     }
+    // Roles (PR C): a delete / void / cancel without `deleter`, or an
+    // approver operation outside Sandra's personal session → refused BEFORE
+    // any read or write (server.js already answered 403; this is the second
+    // lock). The un-void is decided in upsertPayment_ against the stored row.
+    const roleOp = roleOperationFor_(action, params);
+    if (roleOp && !roleAllowed_(params, roleOp)) return jsonOut_(roleRefused_(params, roleOp));
     if (action === 'getData') return jsonOut_(getDataForActor_(params));
     if (action === 'getAdmittedRoster') {
       if (!admittedRosterAuthOk_(params)) {
@@ -1265,8 +1275,10 @@ function handle_(params) {
       // chargedBy comes from the SIGNED SESSION COOKIE via requestUser_, the
       // same rule saveAll / discharge / saveCredit already follow. A
       // client-supplied user name never reaches the Payments sheet.
-      return jsonOut_(upsertPayment_(payment, requestUser_(params),
-        { actor: actorLabel_(params), verified: actingUser_(params).verified }));
+      const paid = upsertPayment_(payment, requestUser_(params),
+        { actor: actorLabel_(params), verified: actingUser_(params).verified, approver: hasRole_(params, 'approver') });
+      if (paid && paid.error === 'forbidden_role') roleRefusedLog_(params, 'unvoidPayment');
+      return jsonOut_(paid);
     }
     if (action === 'upsertBillingOverride') {
       return jsonOut_(upsertBillingOverride_(parseJsonParam_(params.override), requestUser_(params)));
@@ -1430,10 +1442,11 @@ function cleanRoles_(raw) {
  * over the server's own rules: a shared session is capped to staff, and
  * approver survives only on Sandra's personal session. Pure. */
 function proxyActor_(user, userId, auth, roles, caps, legacy) {
-  const a = auth === 'personal' || auth === 'shared' ? auth : 'none';
+  // Only a personal session is an auth kind any more; a stale 'shared' (the
+  // removed APP_PIN) or anything else is 'none': no role, no capability.
+  const a = auth === 'personal' ? auth : 'none';
   const id = a === 'personal' && /^[a-z][a-z0-9]{0,31}$/.test(String(userId || '')) ? String(userId) : '';
   let r = cleanRoles_(roles);
-  if (a === 'shared') r = r.filter(function (x) { return SHARED_SESSION_ROLES.indexOf(x) >= 0; });
   if (a === 'none') r = [];
   if (id !== APPROVER_USER_ID) r = r.filter(function (x) { return x !== 'approver'; });
   const c = legacy === true ? ['finance'] : actorCaps_(a, id, caps);
@@ -1445,7 +1458,7 @@ function proxyActor_(user, userId, auth, roles, caps, legacy) {
  * nothing), then intersected with the server's proxyCaps when it sent them
  * (an older server that sends none is judged by the derivation alone). Pure. */
 function actorCaps_(auth, id, sent) {
-  const derived = auth === 'shared' || (auth === 'personal' && FINANCE_USER_IDS.indexOf(id) >= 0) ? ['finance'] : [];
+  const derived = auth === 'personal' && FINANCE_USER_IDS.indexOf(id) >= 0 ? ['finance'] : [];
   if (sent === undefined) return derived;
   let list = sent;
   if (typeof list === 'string') {
@@ -1530,11 +1543,27 @@ function requiredRoleFor_(operation) {
   return '';
 }
 
-/* Whether the acting user may perform `operation`. DEFINED, NOT CALLED by
- * handle_ yet — the enforcement PR wires it in front of each write. */
+/* Whether the acting user may perform `operation`. Called by handle_ in
+ * front of every dispatch (PR C). A non-proxy caller never holds a role, so
+ * it can never delete, void, cancel or approve. */
 function roleAllowed_(params, operation) {
   const need = requiredRoleFor_(operation);
   return need === '' ? true : hasRole_(params, need);
+}
+
+/* Log a role refusal: the acting user's stable id (or 'none') and the
+ * operation ONLY — never a name, a payload or any patient data. Fail-soft. */
+function roleRefusedLog_(params, operation) {
+  try {
+    const a = actingUser_(params);
+    console.warn('[role] forbidden_role user=' + (a.id || 'none') + ' op=' + String(operation).slice(0, 40));
+  } catch (_) { /* no-op */ }
+}
+
+/* The refusal body for a role-checked operation (logged once). */
+function roleRefused_(params, operation) {
+  roleRefusedLog_(params, operation);
+  return { ok: false, error: 'forbidden_role', message: ROLE_FORBIDDEN_MESSAGE };
 }
 
 function parseJsonParam_(v) {
@@ -5964,16 +5993,16 @@ function upsertPayment_(payment, user, ctx) {
       }
     }
 
-    /* UN-VOIDING IS SANDRA'S ALONE. Checked HERE, against the row the sheet
-     * actually holds, and against the name in the SIGNED SESSION COOKIE — not
-     * against anything the caller sent. Marking a duplicate is daily work;
+    /* UN-VOIDING IS SANDRA'S ALONE (APPROVER_ACTIONS 'unvoidPayment').
+     * Checked HERE, against the row the sheet actually holds: the caller must
+     * hold the verified `approver` role (Sandra's personal session — c.approver
+     * comes from hasRole_, never from the payload) AND the name in the SIGNED
+     * SESSION COOKIE must be hers. Marking a duplicate is daily work;
      * unmarking one puts a second payment back into every revenue and debt
      * figure, which is a money decision. Refused before a single cell moves. */
     if (hadRow && isVoidStatus_(prev.status) && !isVoidStatus_(payment.status)
-        && (PAYMENT_VOID_REVERSERS.indexOf(stampUser) < 0 || c.verified === false)) {
-      // c.verified === false: a request WITHOUT a valid PROXY_SECRET (log
-      // mode) whose body merely CLAIMS to be Sandra — refused the same way.
-      return { ok: false, error: 'החזרת כפילות מותרת לסנדרה בלבד' };
+        && (PAYMENT_VOID_REVERSERS.indexOf(stampUser) < 0 || c.approver !== true)) {
+      return { ok: false, error: 'forbidden_role', message: ROLE_FORBIDDEN_MESSAGE };
     }
 
     const out = stampPaymentRow_(payment, prev, hadRow, stampUser);

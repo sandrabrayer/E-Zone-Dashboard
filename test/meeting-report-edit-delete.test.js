@@ -41,7 +41,7 @@ function loadApp() {
       countUnseenMeetingReports: (ls) => countUnseenMeetingReports(ls),
       renderMeetingsUnseenBadge: () => renderMeetingsUnseenBadge(),
       setLeads(ls) { state.leads = ls; },
-      setMode(m) { state.mode = m; },
+      setMode(m) { state.mode = m; state.deleter = m === 'edit'; },
       getLead(id) { return state.leads.find(l => l.id === id); },
       meetingReportOutcomeBadgeClass: (k) => meetingReportOutcomeBadgeClass(k),
       /* Capture what saveAll would persist (deep copy of state.leads at call

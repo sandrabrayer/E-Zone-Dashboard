@@ -108,6 +108,7 @@ function loadApp(script) {
   vm.runInContext(SRC + epilogue, sandbox);
   const app = sandbox.__test;
   app.state.mode = 'edit';
+  app.state.deleter = true;   // PR C: the delete paths below need the deleter role
   app.state.leads = []; app.state.patients = []; app.state.payments = [];
   app.state.credits = []; app.state.dischargedPatients = []; app.state.irrelevantLeads = [];
   app.state.removedLeads = []; app.state.billingOverrides = [];

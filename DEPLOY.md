@@ -305,6 +305,23 @@ change before `enforce`.
    `bad_secret` — not blocked.
 3. In `enforce` mode, switch to `log` before rotating and back afterwards.
 
+## Railway variables — the login and the healthcheck (October 4, 2026)
+
+The dashboard login is **personal codes only** (personal PINs PR C,
+`CHANGELOG-personal-pins-cleanup.md`). The variables, on the Railway web
+service:
+
+| Variable | Required | What it is |
+|---|---|---|
+| `SESSION_SECRET` | yes | signs the session cookie. Unset → every data route answers 503 (fail-closed). |
+| `PROXY_SECRET` | yes | the Apps Script proxy secret (see "Proxy secret" below). |
+| `USER_PIN_HASHES` | yes | the personal-code records (JSON, one per user). A bad value **stops the server from starting**. Made with «קוד אישי חדש». |
+| `PIN_PEPPER` | yes | mixed into every code hash. **Never change it** — every personal code would stop working. |
+| `HEALTHCHECK_TOKEN` | for the weekly healthcheck | at least 32 characters. Opens only the read-only `GET /api/healthcheck`. The same value is the GitHub Actions secret `HEALTHCHECK_TOKEN`. Unset → that route answers 404 and the weekly check fails. |
+| `TRUST_PROXY_HOPS` | no | escape hatch, default 1 (Railway's one hop). |
+| `BOOTSTRAP_TOKEN` | no — delete it | one-time setup of Sandra's own record. Closed for good once her record exists; the log warns while it is set. |
+| ~~`APP_PIN`~~, ~~`APP_PIN_UNTIL`~~ | **removed** | the old shared code and its window. Ignored if still set (one warning in the log). Delete them. |
+
 ## Security
 
 - Credentials live **only** in GitHub Secrets — never committed, never printed;

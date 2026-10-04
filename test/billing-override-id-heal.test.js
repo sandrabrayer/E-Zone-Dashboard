@@ -117,7 +117,7 @@ test('normalizePayment preserves a non-blank patientId and leaves malformed ids 
 /* ===== the live bug: due-list row with a blank-patientId record ===== */
 
 test('due-list unpaid row backed by a blank-patientId record renders the ✏️ again', () => {
-  app.setState({ mode: 'edit', billingOverrides: [],
+  app.setState({ mode: 'edit', deleter: true, billingOverrides: [],
                  payments: [app.normalizePayment(blankIdRecord())] });
   const payment = app.paymentForPatientOnDate(PATIENT, DUE);
   assert.strictEqual(payment.patientId, PID, 'the found record carries the healed id');
@@ -128,7 +128,7 @@ test('due-list unpaid row backed by a blank-patientId record renders the ✏️ 
 /* ===== THE REQUIRED ROUND-TRIP: save → overlay on a HEALED record ===== */
 
 test('save→overlay round-trip: an override written for a healed record overlays that record', async () => {
-  app.setState({ mode: 'edit', billingOverrides: [],
+  app.setState({ mode: 'edit', deleter: true, billingOverrides: [],
                  payments: [app.normalizePayment(blankIdRecord())] });
   const posts = [];
   app.setApiPost(async b => posts.push(b));
@@ -158,7 +158,7 @@ test('save→overlay round-trip: an override written for a healed record overlay
 
 test('workers key off payment.patientId verbatim — save-key equals lookup-key even for a stale id', async () => {
   const stale = app.normalizePayment(blankIdRecord({ patientId: 'old-house::מעיין::2025-01-01' }));
-  app.setState({ mode: 'edit', billingOverrides: [], payments: [stale] });
+  app.setState({ mode: 'edit', deleter: true, billingOverrides: [], payments: [stale] });
   const posts = [];
   app.setApiPost(async b => posts.push(b));
   app.setRenderBilling(() => {});
@@ -174,7 +174,7 @@ test('workers key off payment.patientId verbatim — save-key equals lookup-key 
 /* ===== worker guard ===== */
 
 test('saveBillingOverride refuses a record with no resolvable identity', async () => {
-  app.setState({ mode: 'edit', billingOverrides: [], payments: [] });
+  app.setState({ mode: 'edit', deleter: true, billingOverrides: [], payments: [] });
   const posts = [];
   app.setApiPost(async b => posts.push(b));
   app.setRenderBilling(() => {});
@@ -186,7 +186,7 @@ test('saveBillingOverride refuses a record with no resolvable identity', async (
 /* ===== carry orphans still locked out ===== */
 
 test('a carry row with a malformed id AND blank patientId still gets no editor', () => {
-  app.setState({ mode: 'edit', billingOverrides: [], payments: [] });
+  app.setState({ mode: 'edit', deleter: true, billingOverrides: [], payments: [] });
   const orphan = app.normalizePayment({ id: 'hand-row-3', patientId: '', patientName: 'מעיין אברהמי',
                                         houseId: 'rehab', dueDate: '2026-06-10', amount: 30000, status: 'unpaid' });
   const pseudo = { name: 'מעיין אברהמי', houseId: 'rehab', pay: 30000, date: '', status: '' };

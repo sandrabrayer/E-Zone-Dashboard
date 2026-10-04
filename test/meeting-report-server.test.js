@@ -19,7 +19,9 @@ const assert = require('node:assert');
 
 const SECRET = 'test-session-secret-0123456789abcdef0123456789';
 process.env.SESSION_SECRET = SECRET;
-process.env.APP_PIN_UNTIL = require('../lib/shared-pin-window').israelDay(Date.now() + 7 * 864e5); // PR B: shared cookies need the dual window open
+// PR C: every main-app session is personal.
+const { applyPersonalEnv, personalToken } = require('./helpers/personal-session');
+applyPersonalEnv();
 process.env.MEETING_REPORT_PIN = '123456';
 process.env.MEETING_REPORT_SECRET = 'mr-shared-secret-for-tests';
 
@@ -42,7 +44,7 @@ function mkRes() {
   };
 }
 
-const mainToken = () => createSessionToken(SECRET);
+const mainToken = () => personalToken(SECRET, 'vered');
 const mrToken = () => createSessionToken(SECRET, undefined, MR_SCOPE);
 
 /* ===== lib/session scope partitioning ===== */

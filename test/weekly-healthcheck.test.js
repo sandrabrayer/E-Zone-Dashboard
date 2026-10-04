@@ -7,7 +7,9 @@
  *   - WARNINGS never escalate: blank ids, malformed dates, duplicate
  *     non-restored discharge-audit rows all report without failing;
  *   - empty arrays SKIP (with a note), never fail;
- *   - missing APP_PIN → clear, actionable error that echoes no secret;
+ *   - missing / short HEALTHCHECK_TOKEN → clear, actionable error that
+ *     echoes no secret (PR C replaced the shared-APP_PIN login with a
+ *     token-protected, read-only GET /api/healthcheck);
  *   - the runner never touches the network: fetch is injected everywhere.
  *
  * Everything runs against injected fixtures — the live URL is never hit. */
@@ -38,17 +40,18 @@ function healthyData() {
     irrelevantLeads: [],
     removedLeads: [],
     dischargedPatients: [],
-    billingOverrides: [],
     houseManagers: {},
     managerPhones: {},
   };
 }
 
-/* ===== Config / APP_PIN ===== */
+/* ===== Config / HEALTHCHECK_TOKEN ===== */
 
-test('resolveConfig fails clearly when APP_PIN is unset, without echoing secrets', () => {
+const TOKEN = 'hc-test-token-0123456789abcdef0123456789';
+
+test('resolveConfig fails clearly when HEALTHCHECK_TOKEN is unset, without echoing secrets', () => {
   assert.throws(() => hc.resolveConfig({}), (err) => {
-    assert.match(err.message, /APP_PIN is not set/);
+    assert.match(err.message, /HEALTHCHECK_TOKEN is not set/);
     assert.match(err.message, /repository secret/);
     // Nothing secret exists to echo, and the message promises none is printed.
     assert.match(err.message, /never printed/);
@@ -56,11 +59,36 @@ test('resolveConfig fails clearly when APP_PIN is unset, without echoing secrets
   });
 });
 
+test('resolveConfig refuses a token shorter than 32 characters, without echoing it', () => {
+  const short = 'short-token-123';
+  assert.throws(() => hc.resolveConfig({ HEALTHCHECK_TOKEN: short }), (err) => {
+    assert.match(err.message, /shorter than 32/);
+    assert.ok(!err.message.includes(short));
+    return true;
+  });
+});
+
 test('resolveConfig uses the default APP_URL and strips trailing slashes', () => {
-  const cfg = hc.resolveConfig({ APP_PIN: '1234' });
+  const cfg = hc.resolveConfig({ HEALTHCHECK_TOKEN: TOKEN });
   assert.strictEqual(cfg.appUrl, hc.DEFAULT_APP_URL);
-  const cfg2 = hc.resolveConfig({ APP_PIN: '1234', APP_URL: 'https://x.test///' });
+  const cfg2 = hc.resolveConfig({ HEALTHCHECK_TOKEN: TOKEN, APP_URL: 'https://x.test///' });
   assert.strictEqual(cfg2.appUrl, 'https://x.test');
+});
+
+test('the healthcheck no longer knows APP_PIN, a session cookie or /api/verify-pin', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'healthcheck.js'), 'utf8');
+  assert.ok(!/e\.APP_PIN|\/api\/verify-pin|extractSessionCookie|\/api\/sheets/.test(src));
+  assert.strictEqual(hc.HEALTHCHECK_PATH, '/api/healthcheck?action=getData');
+});
+
+test('the workflow passes the HEALTHCHECK_TOKEN secret, not APP_PIN', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const yml = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'weekly-healthcheck.yml'), 'utf8');
+  assert.match(yml, /HEALTHCHECK_TOKEN: \$\{\{ secrets\.HEALTHCHECK_TOKEN \}\}/);
+  assert.ok(!/secrets\.APP_PIN/.test(yml), 'APP_PIN secret is gone from the workflow');
 });
 
 /* ===== HTML shell ===== */
@@ -72,19 +100,6 @@ test('checkHtmlShell passes on a 200 with the index.html marker', () => {
 test('checkHtmlShell is critical on non-200 or a missing marker', () => {
   assert.strictEqual(hc.checkHtmlShell(503, 'nope').length, 1);
   assert.strictEqual(hc.checkHtmlShell(200, '<html>something else</html>').length, 1);
-});
-
-/* ===== Session cookie extraction ===== */
-
-test('extractSessionCookie pulls the ezone_session pair and ignores attributes', () => {
-  const cookie = hc.extractSessionCookie(['ezone_session=abc.def; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800; Secure']);
-  assert.strictEqual(cookie, 'ezone_session=abc.def');
-});
-
-test('extractSessionCookie returns empty when the cookie is absent or valueless', () => {
-  assert.strictEqual(hc.extractSessionCookie(['other=1; Path=/']), '');
-  assert.strictEqual(hc.extractSessionCookie(['ezone_session=; Path=/']), '');
-  assert.strictEqual(hc.extractSessionCookie([]), '');
 });
 
 /* ===== getData body: HTML detection, JSON, ok:true ===== */
@@ -113,10 +128,12 @@ test('a healthy JSON body parses with no criticals', () => {
 
 test('missing top-level key is critical', () => {
   const d = healthyData();
-  delete d.billingOverrides;
+  delete d.houseManagers;
   const criticals = hc.checkTopLevelKeys(d);
   assert.strictEqual(criticals.length, 1);
-  assert.match(criticals[0], /billingOverrides/);
+  assert.match(criticals[0], /houseManagers/);
+  // The probe serves the RESTRICTED getData: billingOverrides is never expected.
+  assert.ok(hc.EXPECTED_TOP_KEYS.indexOf('billingOverrides') < 0);
 });
 
 test('all expected top-level keys present → no criticals', () => {
@@ -244,7 +261,7 @@ function fakeFetchFor(routes) {
   };
 }
 
-const TEST_ENV = { APP_PIN: '0000', APP_URL: 'https://healthcheck.invalid' };
+const TEST_ENV = { HEALTHCHECK_TOKEN: TOKEN, APP_URL: 'https://healthcheck.invalid' };
 
 test('run() exits 0 on a fully healthy app (warnings alone never fail)', async () => {
   const d = healthyData();
@@ -252,32 +269,44 @@ test('run() exits 0 on a fully healthy app (warnings alone never fail)', async (
   const wartLead = {};
   for (const c of hc.LEAD_COLUMNS) wartLead[c] = '';
   d.leads.push(wartLead);
-  const fetchFn = fakeFetchFor({
-    '/api/verify-pin': { status: 200, body: '{"ok":true}', setCookie: ['ezone_session=tok123; HttpOnly; Path=/'] },
-    '/api/sheets?action=getData': { status: 200, body: JSON.stringify(d) },
+  const seen = [];
+  const inner = fakeFetchFor({
+    '/api/healthcheck?action=getData': { status: 200, body: JSON.stringify(d) },
     '/': { status: 200, body: '<title>E-ZONE Dashboard</title>' },
   });
-  assert.strictEqual(await hc.run(TEST_ENV, fetchFn), 0);
+  const fetchFn = async (url, opts) => { seen.push({ url: String(url), opts: opts || {} }); return inner(url, opts); };
+  const logs = [];
+  const saved = console.log;
+  console.log = (...a) => logs.push(a.join(' '));
+  try {
+    assert.strictEqual(await hc.run(TEST_ENV, fetchFn), 0);
+  } finally { console.log = saved; }
+  const probe = seen.find((c) => c.url.endsWith('/api/healthcheck?action=getData'));
+  assert.ok(probe, 'the data comes from the token-protected probe');
+  assert.strictEqual(probe.opts.headers.authorization, 'Bearer ' + TOKEN);
+  assert.ok(!seen.some((c) => /verify-pin|\/api\/sheets/.test(c.url)), 'no login, no session route');
+  assert.ok(!logs.join('\n').includes(TOKEN), 'the token is never printed');
 });
 
 test('run() exits 1 when getData serves the Google HTML error page', async () => {
   const fetchFn = fakeFetchFor({
-    '/api/verify-pin': { status: 200, body: '{"ok":true}', setCookie: ['ezone_session=tok123; HttpOnly'] },
-    '/api/sheets?action=getData': { status: 200, body: '<html><body>Sorry, unable to open the file</body></html>' },
+    '/api/healthcheck?action=getData': { status: 200, body: '<html><body>Sorry, unable to open the file</body></html>' },
     '/': { status: 200, body: '<title>E-ZONE Dashboard</title>' },
   });
   assert.strictEqual(await hc.run(TEST_ENV, fetchFn), 1);
 });
 
-test('run() exits 1 when the PIN is rejected', async () => {
-  const fetchFn = fakeFetchFor({
-    '/api/verify-pin': { status: 401, body: '{"ok":false,"error":"invalid_pin"}' },
-    '/': { status: 200, body: '<title>E-ZONE Dashboard</title>' },
-  });
-  assert.strictEqual(await hc.run(TEST_ENV, fetchFn), 1);
+test('run() exits 1 when the token is refused (401) or the probe is disabled (404)', async () => {
+  for (const status of [401, 404]) {
+    const fetchFn = fakeFetchFor({
+      '/api/healthcheck?action=getData': { status, body: '{"ok":false}' },
+      '/': { status: 200, body: '<title>E-ZONE Dashboard</title>' },
+    });
+    assert.strictEqual(await hc.run(TEST_ENV, fetchFn), 1, String(status));
+  }
 });
 
-test('run() exits 1 without touching the network when APP_PIN is missing', async () => {
+test('run() exits 1 without touching the network when HEALTHCHECK_TOKEN is missing', async () => {
   let called = false;
   const fetchFn = async () => { called = true; throw new Error('must not be called'); };
   assert.strictEqual(await hc.run({ APP_URL: 'https://healthcheck.invalid' }, fetchFn), 1);

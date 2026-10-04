@@ -117,7 +117,12 @@
 // the גבייה tab downloads the data-cleanup workbook. app.js and index.html
 // changed — evict v27. /api/export/cleanup.xlsx is under /api/, so
 // cacheStrategy() keeps it network-only (never cached).
-var CACHE_VERSION = 'v28';
+// v28 → v29: personal PINs PR C — the shared-code field, the «מי מתחבר/ת?»
+// picker and the amber shared-session banner are gone; delete / void /
+// cancel controls show only for a deleter, un-void only for Sandra. app.js,
+// index.html and style.css changed — evict v28 so no phone keeps the shared
+// login. Every /api/ route stays network-only (never cached).
+var CACHE_VERSION = 'v29';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

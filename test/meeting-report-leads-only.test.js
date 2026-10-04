@@ -137,7 +137,7 @@ test('edit mode too: no report strip and no edit/delete report actions reachable
 
 test('the lead-surface block still renders the report, with unseen cue and edit-mode actions', () => {
   const { app } = loadApp();
-  app.setState({ mode: 'edit' });
+  app.setState({ mode: 'edit', deleter: true });
   const html = app.meetingReportBlockHTML(admittedLead({ meetingSeen: '' }));
   assert.ok(html.includes('mrv-report') && html.includes('דיווח מנהל'), 'block renders');
   assert.ok(html.includes('mrv-badge-undecided'), 'outcome chip (התקיימה — מתלבט) intact');

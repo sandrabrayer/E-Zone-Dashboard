@@ -13,9 +13,10 @@ const assert = require('node:assert');
 
 const SECRET = 'test-session-secret-0123456789abcdef0123456789';
 process.env.SESSION_SECRET = SECRET; // must be set before server.js is required
-process.env.APP_PIN_UNTIL = require('../lib/shared-pin-window').israelDay(Date.now() + 7 * 864e5); // PR B: shared cookies need the dual window open
-
-const { createSessionToken } = require('../lib/session');
+// PR C: every session is personal — a real USER_PIN_HASHES record per user.
+const { applyPersonalEnv, personalToken, sharedCookie } = require('./helpers/personal-session');
+applyPersonalEnv();
+const createSessionToken = (secret, ttl) => personalToken(secret, 'vered', ttl);
 const server = require('../server');
 
 function mkRes() {
@@ -56,6 +57,11 @@ test('sessionAuthStatus: missing / expired / tampered cookie → unauthorized', 
   assert.strictEqual(server.sessionAuthStatus('other=1', SECRET), 'unauthorized');
   assert.strictEqual(server.sessionAuthStatus(cookieHeader(createSessionToken(SECRET, -10)), SECRET), 'unauthorized');
   assert.strictEqual(server.sessionAuthStatus(cookieHeader('123.deadbeef'), SECRET), 'unauthorized');
+});
+
+test('sessionAuthStatus: the retired shared APP_PIN cookie (no personal id) → unauthorized', () => {
+  assert.strictEqual(server.sessionAuthStatus(sharedCookie(SECRET, 'ורד'), SECRET), 'unauthorized');
+  assert.strictEqual(server.sessionAuthStatus(sharedCookie(SECRET), SECRET), 'unauthorized');
 });
 
 test('sessionAuthStatus: unset secret → not_configured (fail-closed)', () => {

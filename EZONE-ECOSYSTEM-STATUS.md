@@ -501,10 +501,49 @@ Detail: `CHANGELOG-personal-pins-foundation.md`; decisions: plan §11.5.
   set), `TRUST_PROXY_HOPS` (escape hatch, default 1).
 - **Roles** (`staff, reporter, deleter, approver, viewer, controller`) are sent
   to Apps Script as `proxyRoles`; `Code.gs` believes them only with a valid
-  `PROXY_SECRET`. `DELETE_ACTIONS` / `APPROVER_ACTIONS` are defined, **not yet
-  enforced**. Today's shared APP_PIN session = `staff` only.
+  `PROXY_SECRET`. `DELETE_ACTIONS` / `APPROVER_ACTIONS` were defined here and
+  are **enforced since PR C** (October 4).
 - **Append-only columns:** `AuditLog.actor`, `BillingOverrides.updatedBy`.
   Every delete / void / lead move now writes an AuditLog row with its actor.
+
+## Dashboard: shared code removed, roles enforced (October 4, 2026 — personal PINs PR C)
+
+Detail and Sandra's steps: `CHANGELOG-personal-pins-cleanup.md`.
+**Railway + GitHub steps needed: add `HEALTHCHECK_TOKEN`, remove `APP_PIN`.**
+
+- **The shared code is gone.** `APP_PIN`, `APP_PIN_UNTIL`, the dual window
+  (`lib/shared-pin-window.js`), the «כניסה עם הקוד המשותף» link, the
+  «מי מתחבר/ת?» picker and the amber banner were removed. Every login is a
+  personal 6-digit code. A cookie without a personal id (`auth:'shared'`) gets
+  **401** everywhere. `POST /api/verify-pin` without `userId` → **400
+  user_required**. The server starts with `APP_PIN` unset; if `APP_PIN` or
+  `APP_PIN_UNTIL` is still set, the log prints one "set but ignored" warning.
+- **Roles enforced** (plan §11.5 decisions 3–4):
+  - Every `DELETE_ACTIONS` operation (`removeLead`, `deletePatientRow`,
+    `deleteBillingOverride`, `deleteMeetingReport`, `voidPayment`,
+    `cancelCredit`) needs **`deleter`**: Vered and Sandra; not Shiran or Yael.
+  - Every `APPROVER_ACTIONS` operation (`unvoidPayment`,
+    `approveRefundException`, `writeOffOpeningBalance`,
+    `acceptOpeningBalance`) needs **`approver`**: Sandra's personal session
+    only.
+  - Refused → `{ok:false, error:'forbidden_role', message:'אין הרשאה לפעולה זו'}`,
+    nothing written, logged with the user id and the operation only.
+  - **Code.gs** (`handle_` → `roleAllowed_`) is the authority. **server.js**
+    makes the same decision first (`lib/role-scope.js`, HTTP 403), except the
+    un-void, which only Code.gs can see (it needs the stored row).
+  - A call without a valid `PROXY_SECRET` holds no role, so it can never
+    delete.
+- **UI:** the delete / void / cancel controls show only for a deleter; the
+  un-void only for Sandra (`/api/me` now returns `deleter`).
+- **Weekly healthcheck:** its own credential, **`HEALTHCHECK_TOKEN`** (Railway +
+  GitHub Actions secret, at least 32 characters). It opens one read-only route,
+  `GET /api/healthcheck?action=getData` with `Authorization: Bearer <token>`.
+  - The token is compared in constant time.
+  - The route serves the restricted getData (no `billingOverrides`).
+  - It mints no cookie.
+  - It is rate-limited to 10 per IP and 20 in total per 15 minutes.
+  - The token is never logged.
+- SW `CACHE_VERSION` v28 → v29.
 
 ## Dashboard: restricted view for Shiran and Yael (October 3, 2026)
 
@@ -515,8 +554,8 @@ Detail and the full tab → action map: `CHANGELOG-restricted-view.md`.
   תשלומים and גרף צמיחה, and no billing widget elsewhere: no renewal alert
   or overdue strip on דשבורד, no «זיכויים» on מטופלים משוחררים, no refund
   step after a discharge. They edit as staff and cannot delete.
-- **Sandra, Vered, and a shared `APP_PIN` session in the dual window:**
-  unchanged, full view.
+- **Sandra, Vered:** unchanged, full view. (The shared `APP_PIN` session that
+  also kept the full view was removed on October 4 — PR C.)
 - **New capability `finance`**, derived from the stable user id
   (`lib/users.js FINANCE_USER_IDS = vered, sandra`).
 - **server.js** answers `403 forbidden` («אין הרשאה לצפות בנתוני גבייה») for
@@ -531,7 +570,7 @@ Detail and the full tab → action map: `CHANGELOG-restricted-view.md`.
 ## Dashboard: personal PINs — the live login (October 2, 2026 — PR B)
 
 Detail and Sandra's setup steps: `CHANGELOG-personal-pins-login.md`.
-**Set `APP_PIN_UNTIL` in Railway before merging.**
+**Superseded on October 4 by PR C: the shared code and its dual window are gone.**
 
 - **Login:** tap your name (only users with an **active** `USER_PIN_HASHES`
   record), then a personal **6-digit** PIN. Per-user lock: 5 failures → 15 min;
@@ -628,8 +667,10 @@ Detail: `CHANGELOG-cleanup-workbook.md`. Apps Script **and** Railway.
   TREATMENT_PLANS_SECRET, OCCUPANCY_SECRET, OUTPATIENT_LEAD_SECRET,
   WINBACK_SOURCE_SECRET, ACCOUNTING_SECRET (Dashboard — unlocks ONLY the
   read-only accountingPayments / accountingCredits feed; see the Sep 22 section
-  above), APP_PIN (Railway; Logistics uses SHARED_ACCESS_CODE —
-  its shared login code, which replaced APP_PIN there). Coordinators' staffing
+  above). Dashboard login: personal codes only (Railway `USER_PIN_HASHES` +
+  `PIN_PEPPER`; the shared `APP_PIN` was removed on October 4, 2026 — PR C;
+  the weekly healthcheck uses `HEALTHCHECK_TOKEN`). Logistics uses
+  SHARED_ACCESS_CODE, its own shared login code. Coordinators' staffing
   pair (STAFFING_SHEETS_URL / STAFFING_GUIDES_SECRET) and staffing's
   COORDINATORS_READ_SECRET: see the Sep 10 coordinators section above.
 
@@ -677,8 +718,8 @@ check against pre-June-17 branches.
   = the deployed branch. PRs #33/#55 were closed for this; #56 was correct.
 - Railway variable changes apply only to deployments started after saving.
 - PIN inputs have maxlength (Outpatient 6, Dashboard: personal PIN
-  `#login-pin-input` **6** since PR B; the shared `#pin-input` stays **4** for
-  the dual window — keep APP_PIN within). The meeting-report page
+  `#login-pin-input` **6** since PR B; the shared 4-digit `#pin-input` was
+  removed with `APP_PIN` in PR C). The meeting-report page
   (`/meeting-report`) PIN input is 6.
 
 ## Next tracks (in priority order)

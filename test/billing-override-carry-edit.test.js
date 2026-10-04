@@ -99,7 +99,7 @@ function juneCarry(over) {
 const JUNE_OVR = { id: `ovr::${PID}::2026-06`, patientId: PID, month: '2026-06', amount: 4200, created: '2026-08-10' };
 
 test('a matched unpaid carry row renders the editor, with the original date folded into the label', () => {
-  app.setState({ mode: 'edit', payments: [], billingOverrides: [] });
+  app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [] });
   const row = app.buildBillingRow(PATIENT, juneCarry(), '2026-06-05', true);
   assert.ok(row.innerHTML.includes('bill-amount-edit-btn'), 'pencil present on the carry row');
   assert.ok(row.innerHTML.includes('תאריך מקורי ·'), 'original due date kept in the label line');
@@ -108,7 +108,7 @@ test('a matched unpaid carry row renders the editor, with the original date fold
 });
 
 test('editing a carry row targets the RECORD\'s own month, not the selected billing date', () => {
-  app.setState({ mode: 'edit', payments: [], billingOverrides: [] });
+  app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [] });
   const calls = [];
   // Single-identity-source signature: the worker receives the payment record.
   app.setSaveBillingOverride(async (payment, v) => calls.push([payment.dueDate, v]));
@@ -125,7 +125,7 @@ test('editing a carry row targets the RECORD\'s own month, not the selected bill
 });
 
 test('an ORPHANED carry row (patient not really matched) gets no editor', () => {
-  app.setState({ mode: 'edit', payments: [], billingOverrides: [] });
+  app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [] });
   // findPatientForPayment's fallback pseudo-patient: name/house from the record
   // but no entry date → patientKey !== payment.patientId.
   const pseudo = { name: 'מעיין', houseId: 'ramot', pay: 30000, date: '', status: '' };
@@ -135,7 +135,7 @@ test('an ORPHANED carry row (patient not really matched) gets no editor', () => 
 });
 
 test('CONSISTENCY: an overridden carry month flows through applyBillingOverride into the row display', () => {
-  app.setState({ mode: 'edit', payments: [], billingOverrides: [JUNE_OVR] });
+  app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [JUNE_OVR] });
   // renderBillingOpenList overlays before building the row — replicate that
   // exact path: overlay first, then build.
   const overlaid = app.applyBillingOverride(juneCarry(), [JUNE_OVR]);
@@ -150,7 +150,7 @@ test('CONSISTENCY: an overridden carry month flows through applyBillingOverride 
 });
 
 test('paid carry rows remain non-editable history', () => {
-  app.setState({ mode: 'edit', payments: [], billingOverrides: [] });
+  app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [] });
   const paid = juneCarry({ status: 'partial', amountPaid: 10000, balance: 20000 });
   const row = app.buildBillingRow(PATIENT, paid, '2026-06-05', true);
   assert.ok(!row.innerHTML.includes('bill-amount-edit-btn'));

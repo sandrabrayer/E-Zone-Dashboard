@@ -6,14 +6,14 @@
  *   - POST /api/verify-pin { userId, pin }: success, wrong PIN, the per-user
  *     lock at 5 failures, unlock after the window, per-IP + global brakes,
  *     X-Forwarded-For spoofing, constant work for unknown users
- *   - { pin } (shared APP_PIN) only inside APP_PIN_UNTIL: before / on / after
- *   - a shared session is staff only and carries the banner date
+ *   - PR C: the shared APP_PIN path is gone — { pin } → 400, a shared cookie
+ *     → 401, no banner, no window (lib/shared-pin-window.js removed)
  *   - «קוד אישי חדש» (/api/pin-admin/*): Sandra's personal session only
  *   - a reset / revoked user is logged out (401); logout clears the cookie
  *   - un-void end to end: server → the exact forwarded body → Code.gs
  *   - meeting-report PIN unchanged
  * public/app.js (vm sandbox): the Hebrew errors, escapeHtml on names, the
- *   remembered name (and no localStorage), the banner, the admin steps.
+ *   remembered name (and no localStorage), the admin steps.
  * public/sw.js: v26, the login + API routes are never cached. */
 
 const { test } = require('node:test');
@@ -36,7 +36,6 @@ const HTML_SRC = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8'
 
 const pinHash = require('../lib/pin-hash');
 const users = require('../lib/users');
-const { sharedPinWindow, israelDay, untilDisplay, windowLogLine } = require('../lib/shared-pin-window');
 const { createSessionToken, readSession } = require('../lib/session');
 
 const SESSION_SECRET = 'session-secret-TEST-login-0123456789abcdef0123';
@@ -46,10 +45,6 @@ const APP_PIN = '4711';
 const PEPPER = 'pepper-TEST-login-a1b2c3d4e5f60718293a4b5c6d7e8f90';
 const PINS = { vered: '583920', sandra: '402917', shiran: '719305', yael: '264081' };
 
-const DAY = 864e5;
-const TODAY = israelDay(Date.now());
-const IN_7 = israelDay(Date.now() + 7 * DAY);
-const YESTERDAY = israelDay(Date.now() - DAY);
 
 const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'APP_PIN', 'USER_PIN_HASHES',
   'PIN_PEPPER', 'BOOTSTRAP_TOKEN', 'TRUST_PROXY_HOPS', 'MEETING_REPORT_PIN', 'MEETING_REPORT_SECRET', 'APP_PIN_UNTIL'];
@@ -167,7 +162,7 @@ async function team() {
 
 async function envWith(over, recs) {
   return Object.assign({
-    PROXY_SECRET, SESSION_SECRET, SHEETS_URL, APP_PIN, PIN_PEPPER: PEPPER, APP_PIN_UNTIL: IN_7,
+    PROXY_SECRET, SESSION_SECRET, SHEETS_URL, PIN_PEPPER: PEPPER,
     USER_PIN_HASHES: JSON.stringify(recs || await team()),
   }, over || {});
 }
@@ -192,10 +187,10 @@ test('login-users: ACTIVE records only, in model order, { id, name } only — re
     assert.strictEqual(r.status, 200);
     assert.deepStrictEqual(r.json.users, [{ id: 'vered', name: 'ורד' }, { id: 'sandra', name: 'סנדרה' }, { id: 'shiran', name: 'שירן' }]);
     assert.ok(!/scrypt|hash|roles|pinVersion|אורטל|יעל/.test(r.text), 'no hash, role, version — and no Ortal / revoked Yael');
-    assert.deepStrictEqual(r.json.shared, { open: true, until: IN_7, untilDisplay: untilDisplay(IN_7) });
+    assert.ok(!('shared' in r.json), 'PR C: no shared-window field');
     assert.match(String(r.headers['cache-control']), /no-store/);
   });
-  // No records at all → an empty list (the shared link is then the way in).
+  // No records at all → an empty list (the screen says to ask Sandra).
   await withServer(await envWith({ USER_PIN_HASHES: undefined }), async (port) => {
     assert.deepStrictEqual((await request(port, 'GET', '/api/login-users')).json.users, []);
   });
@@ -218,7 +213,7 @@ test('personal login: success mints id + pinVersion; /api/me says personal; the 
     assert.deepStrictEqual([s.auth, s.id, s.pinVersion, s.user], ['personal', 'vered', 3, 'ורד']);
     assert.ok(!lines.join('\n').includes(PINS.vered), 'the PIN never reaches a log line');
     const me = await request(port, 'GET', '/api/me', { cookie: cookieOf(ok) });
-    assert.deepStrictEqual(me.json, { ok: true, user: 'ורד', auth: 'personal', approver: false, finance: true, sharedUntil: '' });
+    assert.deepStrictEqual(me.json, { ok: true, user: 'ורד', auth: 'personal', approver: false, deleter: true, finance: true });
   });
 });
 
@@ -262,20 +257,19 @@ test('per-user lock: 5 failures → 429 «locked» (the 5th already), even with 
   });
 });
 
-test('per-IP (10) and global (30) brakes cover personal AND shared logins; X-Forwarded-For spoofing cannot bypass them', async () => {
+test('per-IP (10) and global (30) brakes; X-Forwarded-For spoofing cannot bypass them', async () => {
   await withServer(await envWith(), async (port, mod) => {
     assert.strictEqual(mod.app.get('trust proxy'), 1);
     const REAL = '203.0.113.7';
     // 10 failures from one real address, spread over users (no user reaches
-    // 5) and over personal + shared, each with a fresh fake leftmost XFF.
-    const plan = ['vered', 'vered', 'vered', 'sandra', 'sandra', 'sandra', 'shiran', 'shiran', null, null];
+    // 5), each with a fresh fake leftmost XFF.
+    const plan = ['vered', 'vered', 'vered', 'sandra', 'sandra', 'sandra', 'shiran', 'shiran', 'nobody', 'x'];
     for (let i = 0; i < plan.length; i++) {
       const headers = { 'X-Forwarded-For': `10.9.${i}.1, ${REAL}` };
-      const r = plan[i] ? await login(port, plan[i], '111222', headers)
-        : await request(port, 'POST', '/api/verify-pin', { body: { pin: '0000' }, headers });
+      const r = await login(port, plan[i], '111222', headers);
       assert.strictEqual(r.status, 401, 'attempt ' + i);
     }
-    for (const body of [{ userId: 'shiran', pin: PINS.shiran }, { pin: APP_PIN }]) {
+    for (const body of [{ userId: 'shiran', pin: PINS.shiran }, { userId: 'vered', pin: PINS.vered }]) {
       const r = await request(port, 'POST', '/api/verify-pin', { body, headers: { 'X-Forwarded-For': `198.51.100.99, ${REAL}` } });
       assert.deepStrictEqual([r.status, r.json.error], [429, 'rate_limited'], 'spoofed leftmost entry: ' + JSON.stringify(Object.keys(body)));
     }
@@ -301,87 +295,50 @@ test('personal login without PIN_PEPPER → 503 not_configured (fail-closed); no
 });
 
 /* ====================================================================== */
-/* ======================= the dual-accept window ======================= */
+/* =================== PR C: the shared path is gone ==================== */
 /* ====================================================================== */
 
-test('window (pure): open before and ON APP_PIN_UNTIL (Israel time, inclusive); closed after, unset, invalid, too far', () => {
-  const at = (iso) => Date.parse(iso);
-  // 2026-10-09 is the last day. 23:30 Israel (20:30Z, IDT = UTC+3) is still in.
-  assert.strictEqual(sharedPinWindow('2026-10-09', at('2026-10-02T09:00:00Z')).open, true, 'before');
-  assert.strictEqual(sharedPinWindow('2026-10-09', at('2026-10-09T06:00:00Z')).open, true, 'on the day');
-  assert.strictEqual(sharedPinWindow('2026-10-09', at('2026-10-09T20:30:00Z')).open, true, '23:30 Israel on the day');
-  const after = sharedPinWindow('2026-10-09', at('2026-10-09T21:30:00Z')); // 00:30 Israel on the 10th
-  assert.deepStrictEqual([after.open, after.reason], [false, 'past'], 'after midnight Israel');
-  assert.deepStrictEqual([sharedPinWindow('', at('2026-10-02T09:00:00Z')).reason, sharedPinWindow(undefined).reason], ['unset', 'unset']);
-  for (const bad of ['2026-02-30', '09/10/2026', '2026-10-9', 'tomorrow', '2026-10-09T00:00']) {
-    assert.deepStrictEqual([sharedPinWindow(bad, at('2026-10-02T09:00:00Z')).open, sharedPinWindow(bad, at('2026-10-02T09:00:00Z')).reason], [false, 'invalid'], bad);
-  }
-  assert.strictEqual(sharedPinWindow('2026-10-16', at('2026-10-02T09:00:00Z')).open, true, '14 days ahead is the limit');
-  assert.strictEqual(sharedPinWindow('2027-10-09', at('2026-10-02T09:00:00Z')).reason, 'too_far', 'a typo year cannot keep APP_PIN alive');
-  assert.strictEqual(untilDisplay('2026-10-09'), '09/10/2026');
-  assert.strictEqual(untilDisplay('nope'), '');
-  assert.match(windowLogLine(sharedPinWindow('2026-10-09', at('2026-10-02T09:00:00Z'))), /OPEN until 2026-10-09 \(inclusive, Asia\/Jerusalem\)/);
-  assert.match(windowLogLine(sharedPinWindow('', 0)), /CLOSED \(APP_PIN_UNTIL is not set\)/);
+test('PR C: lib/shared-pin-window.js and every APP_PIN / APP_PIN_UNTIL read are gone from the server', () => {
+  assert.ok(!fs.existsSync(path.join(ROOT, 'lib', 'shared-pin-window.js')));
+  assert.ok(!/shared-pin-window|sharedLogin|sharedWindowNow|shared_pin_closed|process\.env\.APP_PIN\b|process\.env\.APP_PIN_UNTIL/.test(SERVER_SRC));
 });
 
-test('shared APP_PIN over HTTP: accepted before and ON APP_PIN_UNTIL; refused (403, PIN not checked) after it, unset, invalid', async () => {
-  for (const until of [IN_7, TODAY]) {
-    await withServer(await envWith({ APP_PIN_UNTIL: until }), async (port, mod, startup) => {
-      assert.ok(startup.some((l) => l.includes('dual-accept window: OPEN until ' + until)), 'startup log names the state');
-      const r = await request(port, 'POST', '/api/verify-pin', { body: { pin: APP_PIN, user: 'ורד' } });
-      assert.strictEqual(r.status, 200, 'until ' + until);
-      const s = readSession(cookieOf(r).slice('ezone_session='.length), SESSION_SECRET);
-      assert.deepStrictEqual([s.auth, s.id, s.user], ['shared', '', 'ורד']);
-      assert.strictEqual((await request(port, 'POST', '/api/verify-pin', { body: { pin: '0000' } })).status, 401);
-    });
-  }
-  for (const until of [YESTERDAY, undefined, 'garbage']) {
-    await withServer(await envWith({ APP_PIN_UNTIL: until }), async (port, mod, startup) => {
-      assert.ok(startup.some((l) => /dual-accept window: CLOSED/.test(l)), 'startup log: closed');
-      assert.ok(!startup.join('\n').includes(APP_PIN) && !startup.join('\n').includes(PEPPER), 'no PIN / pepper in the log');
-      for (const pin of [APP_PIN, '0000']) {
-        const r = await request(port, 'POST', '/api/verify-pin', { body: { pin } });
-        assert.deepStrictEqual([r.status, r.json], [403, { ok: false, error: 'shared_pin_closed' }], 'same answer, right or wrong: ' + until);
-        assert.ok(!r.headers['set-cookie']);
-      }
-      assert.deepStrictEqual((await request(port, 'GET', '/api/login-users')).json.shared, { open: false, until: '', untilDisplay: '' });
-      // Personal logins are unaffected by the window.
-      assert.strictEqual((await login(port, 'sandra', PINS.sandra)).status, 200);
-      // An existing shared cookie stops working once the window is closed.
-      const old = 'ezone_session=' + createSessionToken(SESSION_SECRET, undefined, undefined, 'ורד');
-      assert.strictEqual((await request(port, 'GET', '/api/me', { cookie: old })).status, 401);
-      assert.strictEqual(mod.sessionAuthStatus(old, SESSION_SECRET), 'unauthorized');
-    });
-  }
-});
-
-test('shared session = staff only (proxyRoles) + the banner date on /api/me; the frontend renders the amber banner', async () => {
+test('PR C: { pin } → 400 user_required (PIN not checked, no cookie); a shared cookie → 401 everywhere; login-users has no window', async () => {
   const stub = stubHttps(() => ({ body: { ok: true, leads: [], patients: {} } }));
   try {
-    await withServer(await envWith(), async (port) => {
-      const r = await request(port, 'POST', '/api/verify-pin', { body: { pin: APP_PIN, user: 'ורד' } });
-      const cookie = cookieOf(r);
-      const me = await request(port, 'GET', '/api/me', { cookie });
-      assert.deepStrictEqual(me.json, { ok: true, user: 'ורד', auth: 'shared', approver: false, finance: true, sharedUntil: untilDisplay(IN_7) });
-      await request(port, 'POST', '/api/sheets', { cookie, body: { action: 'removeLead', lead: { id: 'L1' }, proxyRoles: ['deleter'] } });
-      // The shared PIN cannot pose as Sandra: her name is not on the picker list.
-      const s = await request(port, 'POST', '/api/verify-pin', { body: { pin: APP_PIN, user: 'סנדרה' } });
-      const sm = await request(port, 'GET', '/api/me', { cookie: cookieOf(s) });
-      assert.deepStrictEqual([sm.json.user, sm.json.approver], ['', false]);
+    // Even if APP_PIN / APP_PIN_UNTIL were left in Railway.
+    await withServer(await envWith({ APP_PIN, APP_PIN_UNTIL: '2026-10-09' }), async (port, mod, startup) => {
+      for (const body of [{ pin: APP_PIN }, { pin: APP_PIN, user: 'ורד' }, { pin: '0000' }]) {
+        const r = await request(port, 'POST', '/api/verify-pin', { body });
+        assert.deepStrictEqual([r.status, r.json], [400, { ok: false, error: 'user_required' }], JSON.stringify(body));
+        assert.ok(!r.headers['set-cookie']);
+      }
+      assert.ok(!startup.join('\n').includes(APP_PIN) && !startup.join('\n').includes(PEPPER), 'no PIN / pepper in the log');
+      assert.deepStrictEqual((await request(port, 'GET', '/api/login-users')).json,
+        { ok: true, users: [{ id: 'vered', name: 'ורד' }, { id: 'sandra', name: 'סנדרה' }, { id: 'shiran', name: 'שירן' }] });
+      // A shared cookie minted before PR C (named or not) is no session.
+      for (const name of ['ורד', '']) {
+        const old = 'ezone_session=' + createSessionToken(SESSION_SECRET, undefined, undefined, name);
+        assert.strictEqual((await request(port, 'GET', '/api/me', { cookie: old })).status, 401);
+        assert.strictEqual((await request(port, 'GET', '/api/sheets?action=getData', { cookie: old })).status, 401);
+        assert.strictEqual((await request(port, 'POST', '/api/sheets', { cookie: old, body: { action: 'saveAll' } })).status, 401);
+        assert.strictEqual(mod.sessionAuthStatus(old, SESSION_SECRET), 'unauthorized');
+      }
+      // Personal logins are unaffected.
+      assert.strictEqual((await login(port, 'sandra', PINS.sandra)).status, 200);
     });
   } finally { stub.restore(); }
-  const b = JSON.parse(stub.calls[0].body);
-  assert.deepStrictEqual([b.proxyRoles, b.proxyAuth, b.proxyUserId], [['staff'], 'shared', '']);
+  assert.strictEqual(stub.calls.length, 0, 'nothing reached Apps Script for a shared cookie');
+});
 
-  const { app, els } = loadApp();
-  app.applySessionInfo({ user: 'ורד', auth: 'shared', approver: false, sharedUntil: '09/10/2026' });
-  assert.strictEqual(els['shared-banner'].classList.contains('hidden'), false);
-  assert.strictEqual(els['shared-banner'].textContent, 'נכנסת עם הקוד המשותף — עד 09/10/2026 יש לעבור לקוד אישי');
-  assert.strictEqual(els['pin-admin-open'].classList.contains('hidden'), true);
-  app.applySessionInfo({ user: 'ורד', auth: 'personal', approver: false, sharedUntil: '' });
-  assert.strictEqual(els['shared-banner'].classList.contains('hidden'), true, 'no banner on a personal session');
-  assert.match(HTML_SRC, /id="shared-banner" class="shared-banner hidden"/);
-  assert.match(fs.readFileSync(path.join(ROOT, 'public', 'style.css'), 'utf8'), /\.shared-banner \{[^}]*background: #ffb020/);
+test('PR C: /api/me has no sharedUntil; the client has no banner, no shared field, no picker', async () => {
+  await withServer(await envWith(), async (port) => {
+    const me = await request(port, 'GET', '/api/me', { cookie: cookieOf(await login(port, 'shiran', PINS.shiran)) });
+    assert.deepStrictEqual(me.json, { ok: true, user: 'שירן', auth: 'personal', approver: false, deleter: false, finance: false });
+  });
+  assert.ok(!/id="shared-banner"|id="pin-input"|id="login-shared-link"|id="user-screen"/.test(HTML_SRC));
+  assert.ok(!/\.shared-banner \{/.test(fs.readFileSync(path.join(ROOT, 'public', 'style.css'), 'utf8')));
+  assert.ok(!/sharedBannerText|shared_pin_closed|login-shared-link|function tryPin\b|showUserPicker/.test(APP_SRC));
 });
 
 /* ====================================================================== */
@@ -392,15 +349,16 @@ async function sandraCookie(port) {
   return cookieOf(await login(port, 'sandra', PINS.sandra));
 }
 
-test('new-code page: 401 without a session; 403 for a shared session and for every non-approver personal session', async () => {
+test('new-code page: 401 without a session or with a shared cookie; 403 for every non-approver personal session', async () => {
   await withServer(await envWith(), async (port) => {
     for (const [m, p] of [['GET', '/api/pin-admin/users'], ['POST', '/api/pin-admin/record']]) {
       assert.strictEqual((await request(port, m, p, { body: { userId: 'shiran', pin: '719305', pin2: '719305' } })).status, 401);
     }
-    const shared = cookieOf(await request(port, 'POST', '/api/verify-pin', { body: { pin: APP_PIN, user: 'ורד' } }));
+    const shared = 'ezone_session=' + createSessionToken(SESSION_SECRET, undefined, undefined, 'ורד');
+    assert.strictEqual((await request(port, 'GET', '/api/pin-admin/users', { cookie: shared })).status, 401, 'PR C: no session');
     const vered = cookieOf(await login(port, 'vered', PINS.vered));
     const shiran = cookieOf(await login(port, 'shiran', PINS.shiran));
-    for (const cookie of [shared, vered, shiran]) {
+    for (const cookie of [vered, shiran]) {
       const g = await request(port, 'GET', '/api/pin-admin/users', { cookie });
       const p = await request(port, 'POST', '/api/pin-admin/record', { cookie, body: { userId: 'yael', pin: '264081', pin2: '264081' } });
       assert.deepStrictEqual([g.status, g.json], [403, { ok: false, error: 'forbidden' }]);
@@ -633,7 +591,7 @@ function loadGs(opts) {
   return { sandbox, calls, logs, post, postQ, run, sheetRows };
 }
 
-test('un-void from Sandra\'s personal session works end to end; from Vered\'s personal or a shared session it is refused', async () => {
+test('un-void from Sandra\'s personal session works end to end; from Vered\'s personal session it is refused (forbidden_role); a shared cookie never reaches Apps Script', async () => {
   const pay = {
     id: 'pay1', patientId: 'arfoni::מטופל::2026-09-01', patientName: 'מטופל', houseId: 'arfoni',
     dueDate: '2026-09-07', amount: 30000, amountPaid: 30000, balance: 0,
@@ -646,7 +604,7 @@ test('un-void from Sandra\'s personal session works end to end; from Vered\'s pe
     await withServer(await envWith(), async (port) => {
       const vered = cookieOf(await login(port, 'vered', PINS.vered));
       const sandra = cookieOf(await login(port, 'sandra', PINS.sandra));
-      const shared = cookieOf(await request(port, 'POST', '/api/verify-pin', { body: { pin: APP_PIN, user: 'ורד' } }));
+      const shared = 'ezone_session=' + createSessionToken(SESSION_SECRET, undefined, undefined, 'ורד');
       await request(port, 'POST', '/api/sheets', { cookie: vered, body: { action: 'savePayment', payment: voidIt } });
       // Each un-void attempt also tries to forge Sandra in the body.
       for (const cookie of [vered, shared, sandra]) {
@@ -655,22 +613,18 @@ test('un-void from Sandra\'s personal session works end to end; from Vered\'s pe
     });
   } finally { stub.restore(); }
   const bodies = stub.calls.map((c) => JSON.parse(c.body));
-  assert.strictEqual(bodies.length, 4);
-  assert.deepStrictEqual([bodies[3].user, bodies[3].proxyAuth, bodies[3].proxyUserId, bodies[3].proxyRoles],
+  assert.strictEqual(bodies.length, 3, 'PR C: the shared cookie is 401 — never proxied');
+  assert.deepStrictEqual([bodies[2].user, bodies[2].proxyAuth, bodies[2].proxyUserId, bodies[2].proxyRoles],
     ['סנדרה', 'personal', 'sandra', ['staff', 'deleter', 'approver', 'viewer']]);
   assert.deepStrictEqual([bodies[1].user, bodies[1].proxyUserId], ['ורד', 'vered'], 'the body forgery never survives the proxy');
-  assert.deepStrictEqual([bodies[2].user, bodies[2].proxyAuth, bodies[2].proxyRoles], ['ורד', 'shared', ['staff']]);
 
   // 2. Feed those exact bodies to Code.gs (with the matching PROXY_SECRET).
   for (const mode of ['log', 'enforce']) {
     const g = loadGs({ props: { PROXY_SECRET, PROXY_SECRET_MODE: mode } });
     assert.strictEqual(g.post(bodies[0]).ok, true, 'Vered marks the duplicate');
-    for (const i of [1, 2]) {
-      const r = g.post(bodies[i]);
-      assert.strictEqual(r.ok, false, 'refused: body ' + i);
-      assert.match(r.error, /לסנדרה בלבד/);
-    }
-    const ok = g.post(bodies[3]);
+    const r = g.post(bodies[1]);
+    assert.deepStrictEqual([r.ok, r.error, r.message], [false, 'forbidden_role', 'אין הרשאה לפעולה זו'], 'Vered cannot un-void');
+    const ok = g.post(bodies[2]);
     assert.strictEqual(ok.ok, true, JSON.stringify(ok));
     const rev = g.sheetRows('AuditLog', 'AUDIT_LOG_COLUMNS').find((r) => r.action === 'payment_void_reversed');
     assert.strictEqual(rev.actor, 'סנדרה');
@@ -766,7 +720,7 @@ function loadApp(opts) {
   vm.createContext(sandbox);
   vm.runInContext(APP_SRC + `
     globalThis.__test = {
-      loginErrorMessage, loginNamesHtml, sharedBannerText, applySessionInfo, canReverseVoid,
+      loginErrorMessage, loginNamesHtml, applySessionInfo, canReverseVoid,
       loadLoginOptions, tryPersonalLoginWorker, chooseLoginUser, rememberLoginUser, rememberedLoginUser,
       pinAdminSteps, pinAdminOptionLabel, pinAdminErrorMessage,
       stubEnterApp(fn) { enterApp = fn; },
@@ -774,13 +728,12 @@ function loadApp(opts) {
   return { app: sandbox.__test, els, store, fetchCalls };
 }
 
-test('client: Hebrew login errors — wrong code, locked «נעול ל־15 דקות», rate limited, not configured, shared closed', () => {
+test('client: Hebrew login errors — wrong code, locked «נעול ל־15 דקות», rate limited, not configured', () => {
   const { app } = loadApp();
   assert.strictEqual(app.loginErrorMessage(401, 'invalid_pin'), 'קוד שגוי');
   assert.match(app.loginErrorMessage(429, 'locked'), /^נעול ל־15 דקות/);
   assert.match(app.loginErrorMessage(429, 'rate_limited'), /יותר מדי ניסיונות/);
   assert.match(app.loginErrorMessage(503, 'not_configured'), /לא הוגדרה/);
-  assert.match(app.loginErrorMessage(403, 'shared_pin_closed'), /הקוד המשותף כבר לא בתוקף/);
   assert.match(app.loginErrorMessage(0, ''), /נכשלה/);
 });
 
@@ -795,13 +748,12 @@ test('client: escapeHtml on every name in the step-1 buttons', () => {
 
 test('client: the name list comes from /api/login-users; the last name is remembered per device and jumps to step 2', async () => {
   const respond = (url) => (url === '/api/login-users'
-    ? { status: 200, body: { ok: true, users: [{ id: 'vered', name: 'ורד' }, { id: 'sandra', name: 'סנדרה' }], shared: { open: true, until: IN_7 } } }
+    ? { status: 200, body: { ok: true, users: [{ id: 'vered', name: 'ורד' }, { id: 'sandra', name: 'סנדרה' }] } }
     : null);
   const a = loadApp({ respond });
   await a.app.loadLoginOptions();
   assert.match(a.els['login-names'].innerHTML, /data-user-id="vered">ורד<\/button>.*data-user-id="sandra">סנדרה/);
   assert.strictEqual(a.els['login-step-name'].classList.contains('hidden'), false, 'step 1 first');
-  assert.strictEqual(a.els['login-shared-link'].classList.contains('hidden'), false, 'shared link during the window');
 
   // A successful login remembers the id …
   let entered = 0;
@@ -820,10 +772,6 @@ test('client: the name list comes from /api/login-users; the last name is rememb
   assert.strictEqual(b.els['login-step-pin'].classList.contains('hidden'), false);
   assert.strictEqual(b.els['login-chosen-name'].textContent, 'סנדרה');
 
-  // Window closed → no shared link.
-  const c = loadApp({ respond: (url) => (url === '/api/login-users' ? { status: 200, body: { ok: true, users: [{ id: 'vered', name: 'ורד' }], shared: { open: false } } } : null) });
-  await c.app.loadLoginOptions();
-  assert.strictEqual(c.els['login-shared-link'].classList.contains('hidden'), true);
 });
 
 test('client: works without localStorage (blocked / private mode) and shows the server error in Hebrew', async () => {
@@ -856,12 +804,12 @@ test('client: «קוד אישי חדש» — labels, Railway steps for new vs re
   assert.strictEqual(els['pin-admin-open'].classList.contains('hidden'), true);
 });
 
-test('index.html: step 1 / step 2 / shared field — the 6-digit personal input, the 4-digit shared one, RTL', () => {
+test('index.html: step 1 / step 2 — the 6-digit personal input, RTL; PR C: no shared field', () => {
   assert.match(HTML_SRC, /<html lang="he" dir="rtl">/);
   assert.match(HTML_SRC, /<input type="password" id="login-pin-input" inputmode="numeric" pattern="\[0-9\]\*" maxlength="6" autocomplete="off"/);
-  assert.match(HTML_SRC, /<input type="password" id="pin-input" inputmode="numeric" maxlength="4" autocomplete="off"/);
+  assert.ok(!/id="pin-input"/.test(HTML_SRC), 'the 4-digit shared field is gone');
   assert.ok(!/one-time-code/.test(HTML_SRC), 'no one-time-code autofill');
-  assert.match(HTML_SRC, /id="login-shared-link"[^>]*>כניסה עם הקוד המשותף</);
+  assert.ok(!/כניסה עם הקוד המשותף/.test(HTML_SRC));
   assert.match(HTML_SRC, /id="pin-admin-screen"/);
   assert.match(HTML_SRC, /id="pin-admin-copy"[^>]*>העתקה</);
 });

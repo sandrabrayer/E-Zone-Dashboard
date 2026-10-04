@@ -4,8 +4,8 @@
  * server.js (real Express app, https.request stubbed):
  *   - every FINANCE_ACTIONS action (GET + POST /api/sheets) and every
  *     FINANCE_ROUTES route → 403 «אין הרשאה לצפות בנתוני גבייה» for Shiran and
- *     Yael, with NOTHING proxied; served for Vered, Sandra and a shared session
- *     inside the dual window
+ *     Yael, with NOTHING proxied; served for Vered and Sandra (PR C: the
+ *     shared session is gone — its cookie is 401)
  *   - the refusal is logged with the user id and the action only
  *   - getData: billing-only keys dropped for a restricted session, every key
  *     kept for a full-view one
@@ -38,7 +38,6 @@ const HTML_SRC = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8'
 const pinHash = require('../lib/pin-hash');
 const users = require('../lib/users');
 const scope = require('../lib/finance-scope');
-const { israelDay } = require('../lib/shared-pin-window');
 const { createSessionToken } = require('../lib/session');
 
 const SESSION_SECRET = 'session-secret-TEST-restricted-0123456789abcdef';
@@ -46,7 +45,6 @@ const PROXY_SECRET = 'proxy-secret-TEST-restricted-7f3a9c1e5b2d4f6a8c0e';
 const SHEETS_URL = 'https://script.google.com/macros/s/TEST/exec';
 const APP_PIN = '4711';
 const PEPPER = 'pepper-TEST-restricted-a1b2c3d4e5f60718293a4b5c6d7e';
-const IN_7 = israelDay(Date.now() + 7 * 864e5);
 const FORBIDDEN = { ok: false, error: 'forbidden', message: 'אין הרשאה לצפות בנתוני גבייה' };
 
 /* The full getData key list (Code.gs getData_, pinned in the PR A suite). */
@@ -161,13 +159,14 @@ async function liveRecords(over) {
 
 async function envWith(over, recs) {
   return Object.assign({
-    PROXY_SECRET, SESSION_SECRET, SHEETS_URL, APP_PIN, PIN_PEPPER: PEPPER, APP_PIN_UNTIL: IN_7,
+    PROXY_SECRET, SESSION_SECRET, SHEETS_URL, PIN_PEPPER: PEPPER,
     USER_PIN_HASHES: JSON.stringify(recs || await liveRecords()),
   }, over || {});
 }
 
 const NAMES = { vered: 'ורד', sandra: 'סנדרה', shiran: 'שירן', yael: 'יעל' };
 const personal = (id, v) => 'ezone_session=' + createSessionToken(SESSION_SECRET, undefined, undefined, NAMES[id], { id, pinVersion: v || 1 });
+// The retired shared APP_PIN cookie (no personal id) — 401 since PR C.
 const shared = () => 'ezone_session=' + createSessionToken(SESSION_SECRET, undefined, undefined, 'ורד');
 
 /* An Apps Script stub that answers getData with every key and anything else
@@ -188,7 +187,7 @@ function stubAll() {
 /* =============================== model ================================ */
 /* ====================================================================== */
 
-test('model: finance by stable id — Vered and Sandra yes, Shiran / Yael / Ortal no, a shared session yes', () => {
+test('model: finance by stable id — Vered and Sandra yes, Shiran / Yael / Ortal no, a shared principal no (PR C)', () => {
   assert.deepStrictEqual([...users.FINANCE_USER_IDS], ['vered', 'sandra']);
   const cap = (auth, id) => users.principalCapabilities({ auth, id, user: '', roles: [] });
   assert.deepStrictEqual(cap('personal', 'vered'), ['finance']);
@@ -196,7 +195,7 @@ test('model: finance by stable id — Vered and Sandra yes, Shiran / Yael / Orta
   assert.deepStrictEqual(cap('personal', 'shiran'), []);
   assert.deepStrictEqual(cap('personal', 'yael'), []);
   assert.deepStrictEqual(cap('personal', 'ortal'), []);
-  assert.deepStrictEqual(cap('shared', ''), ['finance'], 'the dual window keeps the full view');
+  assert.deepStrictEqual(cap('shared', ''), [], 'PR C: no shared session any more');
   assert.deepStrictEqual(users.principalCapabilities(null), []);
   assert.deepStrictEqual(users.principalCapabilities({ auth: 'none', id: '', roles: [] }), [], 'meeting-report proxy');
   // USER_PIN_HASHES has no field for it: a record cannot grant it.
@@ -254,11 +253,12 @@ test('every mapped ACTION → 403 for Shiran and Yael (GET and POST, nothing pro
   } finally { stub.restore(); }
 });
 
-test('every mapped ACTION is served for Vered, Sandra and a shared session inside the window (unchanged)', async () => {
+test('every mapped ACTION is served for Vered and Sandra (unchanged); a shared cookie is 401 (PR C)', async () => {
   const stub = stubAll();
   try {
     await withServer(await envWith(), async (port) => {
-      for (const cookie of [personal('vered'), personal('sandra'), shared()]) {
+      assert.strictEqual((await request(port, 'GET', '/api/sheets?action=getPayments', { cookie: shared() })).status, 401);
+      for (const cookie of [personal('vered'), personal('sandra')]) {
         for (const action of scope.FINANCE_ACTIONS) {
           const before = stub.calls.length;
           assert.strictEqual((await request(port, 'GET', '/api/sheets?action=' + action, { cookie })).status, 200, action);
@@ -285,7 +285,7 @@ test('every mapped ROUTE (/api/export/*.xlsx, /api/debug/*) → 403 for Shiran a
           assert.strictEqual(stub.calls.length, before);
         }
       }
-      for (const cookie of [personal('vered'), personal('sandra'), shared()]) {
+      for (const cookie of [personal('vered'), personal('sandra')]) {
         for (const route of scope.FINANCE_ROUTES) {
           const r = await request(port, 'GET', url(route), { cookie });
           assert.notStrictEqual(r.status, 403, route);
@@ -296,11 +296,13 @@ test('every mapped ROUTE (/api/export/*.xlsx, /api/debug/*) → 403 for Shiran a
   } finally { stub.restore(); }
 });
 
-test('non-billing work is unchanged for Shiran and Yael: getData, saveAll, discharge, leads, meeting reports are served', async () => {
+test('non-billing work is unchanged for Shiran and Yael: getData, saveAll, discharge, lead moves, restores are served', async () => {
+  // PR C: deleteMeetingReport (and every other delete) now needs `deleter`,
+  // which Shiran and Yael do not hold — see test/personal-pins-cleanup.test.js.
   const stub = stubAll();
   try {
     await withServer(await envWith(), async (port) => {
-      for (const action of ['getData', 'saveAll', 'dischargePatient', 'moveLeadIrrelevant', 'restoreLead', 'restorePatient', 'restorePatientToActive', 'deleteMeetingReport']) {
+      for (const action of ['getData', 'saveAll', 'dischargePatient', 'moveLeadIrrelevant', 'restoreLead', 'restorePatient', 'restorePatientToActive']) {
         const r = await request(port, 'POST', '/api/sheets', { cookie: personal('shiran'), body: { action } });
         assert.strictEqual(r.status, 200, action);
       }
@@ -322,7 +324,7 @@ test('getData: a restricted session gets every key EXCEPT billingOverrides; full
           assert.deepStrictEqual(Object.keys(r.json), GETDATA_KEYS.filter((k) => k !== 'billingOverrides'), id + ' ' + method);
         }
       }
-      for (const cookie of [personal('vered'), personal('sandra'), shared()]) {
+      for (const cookie of [personal('vered'), personal('sandra')]) {
         const r = await request(port, 'GET', '/api/sheets?action=getData', { cookie });
         assert.deepStrictEqual(Object.keys(r.json), GETDATA_KEYS, 'append-only contract');
       }
@@ -336,11 +338,11 @@ test('proxyCaps reaches Apps Script from the session only — a body copy is dro
     await withServer(await envWith(), async (port) => {
       await request(port, 'POST', '/api/sheets', { cookie: personal('shiran'), body: { action: 'saveAll', proxyCaps: ['finance'] } });
       await request(port, 'POST', '/api/sheets', { cookie: personal('vered'), body: { action: 'saveAll', proxyCaps: [] } });
-      await request(port, 'POST', '/api/sheets', { cookie: shared(), body: { action: 'saveAll' } });
+      assert.strictEqual((await request(port, 'POST', '/api/sheets', { cookie: shared(), body: { action: 'saveAll' } })).status, 401);
     });
   } finally { stub.restore(); }
   const caps = stub.calls.map((c) => JSON.parse(c.body).proxyCaps);
-  assert.deepStrictEqual(caps, [[], ['finance'], ['finance']]);
+  assert.deepStrictEqual(caps, [[], ['finance']]);
 });
 
 test('index.html: a restricted session is served <body class="view-restricted">; no session and full-view sessions get the page unchanged', async () => {
@@ -356,8 +358,8 @@ test('index.html: a restricted session is served <body class="view-restricted">;
   assert.match(fs.readFileSync(path.join(ROOT, 'public', 'style.css'), 'utf8'), /body\.view-restricted \[data-finance\] \{ display: none !important; \}/);
 });
 
-test('the shared session after the window is still refused outright (401) — unchanged', async () => {
-  await withServer(await envWith({ APP_PIN_UNTIL: undefined }), async (port) => {
+test('a shared cookie is refused outright (401) — PR C removed the shared session', async () => {
+  await withServer(await envWith({ APP_PIN }), async (port) => {
     assert.strictEqual((await request(port, 'GET', '/api/sheets?action=getPayments', { cookie: shared() })).status, 401);
   });
 });
@@ -520,13 +522,13 @@ test('Code.gs refuses every mapped action for a verified restricted actor — ev
   }
 });
 
-test('Code.gs serves the mapped actions for Vered, Sandra, a shared session, a legacy proxy body — and refuses when the server withheld finance', () => {
+test('Code.gs serves the mapped actions for Vered, Sandra, a legacy proxy body — and refuses a stale shared auth (PR C) or when the server withheld finance', () => {
   const g = loadGs({ props: { PROXY_SECRET } });
   const pay = { id: 'P1', patientId: 'arfoni::x::2026-09-01', patientName: 'x', houseId: 'arfoni', dueDate: '2026-09-07', amount: 100, amountPaid: 0, balance: 100 };
   const ok = (body) => g.post(Object.assign({ action: 'getPayments' }, body));
   assert.strictEqual(ok(actor('personal', 'vered', 'ורד')).ok, true);
   assert.strictEqual(ok(actor('personal', 'sandra', 'סנדרה', { proxyCaps: ['finance'] })).ok, true);
-  assert.strictEqual(ok(actor('shared', '', 'ורד', { proxyCaps: ['finance'] })).ok, true, 'dual window: full view');
+  assert.deepStrictEqual(ok(actor('shared', '', 'ורד', { proxyCaps: ['finance'] })), FORBIDDEN, 'PR C: a stale shared auth is none');
   assert.strictEqual(ok({ proxySecret: PROXY_SECRET, proxyUser: 'ורד', user: 'ורד' }).ok, true, 'legacy proxy body (no proxyAuth)');
   assert.deepStrictEqual(ok(actor('personal', 'vered', 'ורד', { proxyCaps: [] })), FORBIDDEN, 'the server says no → no (intersection)');
   assert.deepStrictEqual(ok(actor('none', '', '', { proxyCaps: ['finance'] })), FORBIDDEN, 'the meeting-report principal has none');
@@ -541,10 +543,13 @@ test('Code.gs serves the mapped actions for Vered, Sandra, a shared session, a l
 
 test('Code.gs getData: every key for full view (unchanged); no billingOverrides for a restricted actor; actingUser_ caps', () => {
   const g = loadGs({ props: { PROXY_SECRET } });
-  for (const body of [actor('personal', 'vered', 'ורד'), actor('personal', 'sandra', 'סנדרה'), actor('shared', '', 'ורד'),
+  for (const body of [actor('personal', 'vered', 'ורד'), actor('personal', 'sandra', 'סנדרה'),
     { proxySecret: PROXY_SECRET, proxyUser: 'ורד', user: 'ורד' }]) {
     assert.deepStrictEqual(Object.keys(g.post(Object.assign({ action: 'getData' }, body))), GETDATA_KEYS);
   }
+  // PR C: a stale 'shared' auth is 'none' → the restricted keys.
+  assert.deepStrictEqual(Object.keys(g.post(Object.assign({ action: 'getData' }, actor('shared', '', 'ורד')))),
+    GETDATA_KEYS.filter((k) => k !== 'billingOverrides'));
   for (const [id, name] of [['shiran', 'שירן'], ['yael', 'יעל']]) {
     const out = g.post(Object.assign({ action: 'getData' }, actor('personal', id, name)));
     assert.deepStrictEqual(Object.keys(out), GETDATA_KEYS.filter((k) => k !== 'billingOverrides'));
@@ -592,7 +597,7 @@ function loadApp() {
   return { app: sandbox.__test, sandbox, removed };
 }
 
-test('client: exactly the allowed tabs per session — 7 for Shiran / Yael, all 11 for Sandra / Vered / shared', () => {
+test('client: exactly the allowed tabs per session — 7 for Shiran / Yael, all 11 for Sandra / Vered', () => {
   const { app } = loadApp();
   assert.deepStrictEqual([...app.FINANCE_SCREENS], ['billing', 'revenue', 'reconnect', 'growth']);
   assert.deepStrictEqual([...app.allowedScreens(false)],

@@ -194,7 +194,7 @@ const CASES = [
     render: 'setRenderAll',
     run(app, settle) {
       const lead = { id: 'L1', stage: 'new', waitlistedAt: '' };
-      app.setState({ mode: 'edit', leads: [lead] });
+      app.setState({ mode: 'edit', deleter: true, leads: [lead] });
       app.setSaveAll(() => settle());
       return { promise: app.moveLead(lead, 'visit'), subject: lead };
     },
@@ -206,7 +206,7 @@ const CASES = [
     render: 'setRenderAll',
     run(app, settle) {
       const p = { id: 'P1', name: 'בעז', houseId: 'ramot', date: '2026-01-05' };
-      app.setState({ mode: 'edit', patients: [p] });
+      app.setState({ mode: 'edit', deleter: true, patients: [p] });
       app.setApiPost(() => settle().then(() => ({ ok: true })));
       return { promise: app.deletePatient(p), subject: p };
     },
@@ -218,7 +218,7 @@ const CASES = [
     render: 'setRenderBilling',
     run(app, settle) {
       const prev = [];
-      app.setState({ mode: 'edit', billingOverrides: prev, billingDate: '2026-09-05' });
+      app.setState({ mode: 'edit', deleter: true, billingOverrides: prev, billingDate: '2026-09-05' });
       app.setApiPost(() => settle().then(() => ({ ok: true })));
       return { promise: app.saveBillingOverride({ patientId: 'P1', dueDate: '2026-09-05' }, 8000) };
     },
@@ -230,7 +230,7 @@ const CASES = [
     render: 'setRenderBilling',
     run(app, settle) {
       const existing = { id: 'ov1', patientId: 'P1', month: '2026-09', amount: 1 };
-      app.setState({ mode: 'edit', billingOverrides: [existing], billingDate: '2026-09-05' });
+      app.setState({ mode: 'edit', deleter: true, billingOverrides: [existing], billingDate: '2026-09-05' });
       app.setApiPost(() => settle().then(() => ({ ok: true })));
       return { promise: app.clearBillingOverride({ patientId: 'P1', dueDate: '2026-09-05' }) };
     },

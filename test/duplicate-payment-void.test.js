@@ -179,7 +179,7 @@ function loadCode() {
     readSheet: (sh, cols) => readSheet_(sh, cols),
     handle: (params) => handle_(params).json,
     ensure: (name, cols) => getOrCreateSheet_(name, cols),
-    upsert: (p, user) => upsertPayment_(p, user),
+    upsert: (p, user, ctx) => upsertPayment_(p, user, ctx),
     PAYMENT_VOID_STATUS, PAYMENT_VOID_REVERSERS,
     isVoidStatus: (v) => isVoidStatus_(v),
     paymentStatus: (v) => paymentStatus_(v),
@@ -521,11 +521,19 @@ test('F: the SERVER refuses an un-void from anyone else', () => {
     status: 'void', linkStatus: 'duplicate', linkNote: 'כפילות של p0',
   }), 'ורד');
 
-  const refused = code.upsert(Object.assign({}, base, { status: 'paid' }), 'ורד');
+  /* PR C: the un-void is the APPROVER_ACTIONS operation `unvoidPayment` —
+   * it needs the verified approver role (ctx.approver, from hasRole_ in
+   * handle_: Sandra's personal session only) AND her name from the cookie. */
+  const refused = code.upsert(Object.assign({}, base, { status: 'paid' }), 'ורד', { approver: false });
   assert.equal(refused.ok, false);
-  assert.match(refused.error, /לסנדרה בלבד/);
+  assert.equal(refused.error, 'forbidden_role');
+  assert.equal(refused.message, 'אין הרשאה לפעולה זו');
+  assert.equal(code.upsert(Object.assign({}, base, { status: 'paid' }), 'סנדרה').error, 'forbidden_role',
+    'her name without the verified approver role is not enough');
+  assert.equal(code.upsert(Object.assign({}, base, { status: 'paid' }), 'ורד', { approver: true }).error, 'forbidden_role',
+    'the role without her name is not enough either');
 
-  const allowed = code.upsert(Object.assign({}, base, { status: 'paid' }), 'סנדרה');
+  const allowed = code.upsert(Object.assign({}, base, { status: 'paid' }), 'סנדרה', { approver: true });
   assert.equal(allowed.ok, true);
   assert.equal(allowed.payment.status, 'paid');
   /* The stamping user comes from requestUser_ — the signed session cookie —
@@ -544,7 +552,7 @@ test('F: the reversal gets its own audit row', () => {
   code.upsert(Object.assign({}, base, {
     status: 'void', linkStatus: 'duplicate', linkNote: 'כפילות של p0',
   }), 'ורד');
-  code.upsert(Object.assign({}, base, { status: 'paid' }), 'סנדרה');
+  code.upsert(Object.assign({}, base, { status: 'paid' }), 'סנדרה', { approver: true });
 
   const log = sandbox.__sheets[code.AUDIT_LOG_SHEET];
   const cols = arr(code.AUDIT_LOG_COLUMNS);
@@ -561,14 +569,18 @@ test('F: the reversal gets its own audit row', () => {
 test('F: the CLIENT only offers the control to a permitted user', () => {
   assert.deepEqual(plain(app.PAYMENT_VOID_REVERSERS), ['סנדרה']);
   const prev = app.state.sessionUser;
+  const prevApprover = app.state.approver;
   try {
+    app.state.approver = true;   // /api/me approver (PR C)
     app.state.sessionUser = 'ורד';
     assert.equal(app.canReverseVoid(), false);
     app.state.sessionUser = 'סנדרה';
     assert.equal(app.canReverseVoid(), true);
     app.state.sessionUser = ' סנדרה ';
     assert.equal(app.canReverseVoid(), true, 'trimmed, like every other name in this app');
-  } finally { app.state.sessionUser = prev; }
+    app.state.approver = false;
+    assert.equal(app.canReverseVoid(), false, 'her name without the approver session is not enough');
+  } finally { app.state.sessionUser = prev; app.state.approver = prevApprover; }
 
   const render = fnSource(APP, 'renderReconnect');
   assert.match(render, /if \(canReverseVoid\(\)\) \{/);
@@ -586,8 +598,9 @@ test('F: the CLIENT only offers the control to a permitted user', () => {
 
 test('G: כפילות leads exactly where the double-entry warning is', () => {
   const row = fnSource(APP, 'buildReconnectRow');
-  assert.match(row, /\$\{dup\.length \? `<button class="btn small primary cand-dup"/);
-  assert.match(row, /class="btn small \$\{dup\.length \? '' : 'primary'\} cand-link"/);
+  // PR C: כפילות voids a row (DELETE_ACTIONS voidPayment) — offered to a deleter only.
+  assert.match(row, /\$\{dup\.length && canDelete\(\) \? `<button class="btn small primary cand-dup" data-role="deleter"/);
+  assert.match(row, /class="btn small \$\{dup\.length && canDelete\(\) \? '' : 'primary'\} cand-link"/);
   /* שייך is offered, never removed: the pair CAN be a rename whose first row
    * was simply never linked, and only a person knows which. */
   assert.match(row, /line\.querySelector\('\.cand-link'\)\.onclick/);
@@ -630,7 +643,10 @@ test('G: a decided row leaves the worklist but stays on the screen', () => {
 /* ================= H. scope + security ================= */
 
 test('H: no new endpoint, and nothing here moves money', () => {
-  assert.ok(!SERVER.includes('void'), 'the proxy learned nothing');
+  /* PR C: the proxy now MIRRORS the role check (lib/role-scope.js classifies
+   * a void payload as voidPayment, to refuse it without `deleter`), but it
+   * still never writes a status itself. */
+  assert.ok(!SERVER.includes("'void'"), 'the proxy never sets a void status');
   // The whole handle_ body (a fixed-length window stopped reaching its later
   // branches once handle_ grew in PR #162).
   const dispatch = GS_SRC.slice(GS_SRC.indexOf('function handle_'), GS_SRC.indexOf('\nfunction ', GS_SRC.indexOf('function handle_') + 1));
