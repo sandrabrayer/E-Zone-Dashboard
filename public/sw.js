@@ -122,7 +122,13 @@
 // cancel controls show only for a deleter, un-void only for Sandra. app.js,
 // index.html and style.css changed — evict v28 so no phone keeps the shared
 // login. Every /api/ route stays network-only (never cached).
-var CACHE_VERSION = 'v29';
+// v29 → v30: patient funder (גורם מממן) UI — a funder chip on the patient
+// card, the funder field in the edit and admission modals, «השלמת גורם מממן»
+// and the funder filter + funder × house strip on גבייה, all finance-only.
+// New script public/funder.js (precached, network-first like app.js);
+// app.js, index.html and style.css changed — evict v29. setPatientFunder goes
+// through /api/sheets, which stays network-only (never cached).
+var CACHE_VERSION = 'v30';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
@@ -130,6 +136,7 @@ var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 var PRECACHE_URLS = [
   '/',
   '/style.css',
+  '/funder.js',
   '/manifest.json',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
@@ -160,7 +167,7 @@ function cacheStrategy(url) {
 
   // Shell + JS/CSS bundle: network-first (offline fallback only).
   if (path === '/' || path === '/index.html') return 'network-first';
-  if (path === '/app.js' || path === '/style.css') return 'network-first';
+  if (path === '/app.js' || path === '/style.css' || path === '/funder.js') return 'network-first';
 
   // Truly versioned-by-filename static assets: cache-first.
   if (path === '/manifest.json') return 'cache-first';

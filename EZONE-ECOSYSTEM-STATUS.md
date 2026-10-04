@@ -545,6 +545,32 @@ Detail and Sandra's steps: `CHANGELOG-personal-pins-cleanup.md`.
   - The token is never logged.
 - SW `CACHE_VERSION` v28 → v29.
 
+## Dashboard: patient funder (גורם מממן) — UI (October 4, 2026 — PR 2 of 2)
+
+Detail and the live-test steps: `CHANGELOG-patient-funder-ui.md`. **Merge PR 1
+(#174) first.** Railway only: no `Code.gs` change. SW `CACHE_VERSION`
+**v29 → v30**. Nothing to set.
+
+- **Finance users (Sandra, Vered):**
+  - a funder chip on every patient card; «לא הוגדר» is an amber badge;
+  - in the ✏ modal: the funder and «החל מ», plus the read-only history (date ·
+    funder · who);
+  - **at admission the funder is required**, recorded from the entry date;
+  - on גבייה:
+    - **«השלמת גורם מממן — X נותרו»**, where «החל מ» defaults to the entry
+      date;
+    - a **funder filter** on the billing lists and «חובות פתוחים»;
+    - a **funder × house strip** whose totals equal the aging totals.
+      «חוב רשום» and «מחזורים ללא רישום» are never summed.
+- **Shiran, Yael and the healthcheck:** no funder UI anywhere, and they never
+  write a funder. Admission works without one.
+- `public/funder.js` is now loaded (before `app.js`), served by `server.js`,
+  and precached (network-first).
+- **⚠ Open PR #173** (`feat/payment-report-foundation`) defines a second
+  `Funders` sheet, with Hebrew labels as values and a default of `'פרטי'`.
+  That conflicts with `FunderHistory` (keys, missing = `unset`). Decide which
+  one is the source of truth before #173 merges.
+
 ## Dashboard: patient funder (גורם מממן) — foundation (October 4, 2026 — PR 1 of 2)
 
 Detail: `CHANGELOG-patient-funder-foundation.md`. **Zero user-facing change.

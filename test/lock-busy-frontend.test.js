@@ -50,6 +50,8 @@ function loadApp(script) {
     localStorage: { getItem: () => null, setItem: noop, removeItem: noop },
     URL, URLSearchParams, Math, Date, JSON, Number, String, Array, Object, RegExp, Promise, Set, Map,
     confirm: () => true,
+    // public/funder.js (the global the page loads before app.js).
+    Funder: require(path.join(__dirname, '..', 'public', 'funder.js')),
     fetch: (url, opts) => {
       const raw = opts && opts.body;
       const body = raw ? JSON.parse(raw) : null;
@@ -100,6 +102,7 @@ function loadApp(script) {
       clearBillingOverride: (p) => clearBillingOverride(p),
       billingOverrideId: (p, m) => billingOverrideId(p, m),
       autosaveMeetingWithDefaults: () => autosaveMeetingWithDefaults(),
+      savePatientFunder: (id, f, d) => savePatientFunder(id, f, d),
       confirm: (v) => globalThis.__onConfirm(v),
       errors: () => globalThis.__errors,
       delays: () => globalThis.__delays,
@@ -188,6 +191,17 @@ const PATHS = [
     okResponse: { ok: true, asOf: '2026-09-30', totals: { recorded_debt: {}, unrecorded_cycles: {} }, byPatient: [] },
     run: (app) => app.loadDebtAging(),
     landed: (app) => { assert.strictEqual(app.state.debtAging.status, 'ok'); },
+  },
+  {
+    // Patient funder (גורם מממן): one FunderHistory row, finance view only.
+    name: 'setPatientFunder (the patient funder)',
+    action: 'setPatientFunder',
+    setup: (app) => { app.state.finance = true; app.state.funderHistory = []; },
+    okResponse: { ok: true, entry: { id: 'fh-1', patientId: 'pt-1', funder: 'btl', effectiveFrom: '2026-09-01', recordedAt: '2026-09-01T08:00:00.000Z', recordedBy: 'ורד' } },
+    run: (app) => app.savePatientFunder('pt-1', 'btl', '2026-09-01'),
+    landed: (app) => { assert.strictEqual(app.state.funderHistory.length, 1); assert.strictEqual(app.state.funderHistory[0].id, 'fh-1'); },
+    // The caller is told (the fill row / modal shows the error and stays).
+    rejects: true,
   },
   {
     name: 'restorePatient (restore as a new lead)',

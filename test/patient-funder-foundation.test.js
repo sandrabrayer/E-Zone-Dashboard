@@ -537,9 +537,11 @@ test('getData: funderHistory is dropped for a restricted actor (finance key), ke
 
 /* ============================ zero browser-visible change ============================ */
 
-test('funder.js is not loaded anywhere in the browser yet (no index.html / sw.js / app.js / server.js route)', () => {
-  for (const f of ['public/index.html', 'public/sw.js', 'public/app.js', 'server.js']) {
-    assert.ok(!/funder\.js/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')), f);
-  }
-  assert.ok(!/\bfunderHistory\b/.test(fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8')), 'no app.js UI change');
+/* PR 1 shipped funder.js unloaded; PR 2 (patient-funder-ui) wires it in. The
+ * wiring itself is tested in test/patient-funder-ui.test.js. */
+test('funder.js is served (server.js route) and loaded before app.js', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+  const f = html.indexOf('<script src="funder.js?v=__BUILD__"></script>');
+  assert.ok(f > 0 && f < html.indexOf('<script src="app.js?v=__BUILD__"></script>'));
+  assert.match(fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8'), /app\.get\('\/funder\.js', sendStatic\('funder\.js', 'application\/javascript'\)\)/);
 });

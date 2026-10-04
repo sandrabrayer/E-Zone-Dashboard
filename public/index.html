@@ -227,6 +227,9 @@
         <h2>גבייה</h2>
         <div class="actions">
           <input id="billing-search" type="search" placeholder="חיפוש מטופל..." />
+          <!-- Patient funder filter (גורם מממן): inside the finance-only screen,
+               so it goes with the whole tab for a restricted session. -->
+          <select id="billing-funder" aria-label="סינון לפי גורם מממן"></select>
           <label for="billing-date" class="billing-date-label">תאריך</label>
           <input id="billing-date" type="date" />
         </div>
@@ -249,6 +252,10 @@
           <div class="stat-sub">סכום בפועל ששולם</div>
         </div>
       </div>
+
+      <!-- «השלמת גורם מממן»: active patients with no funder yet. Rendered by
+           renderFunderFill (app.js); hidden when none are left. -->
+      <div id="funder-fill" class="funder-fill hidden" aria-live="polite"></div>
 
       <!-- Billing groups: each wrapper sets one colour token (--grp, from
            --grp-<key> on :root — the same hex as lib/report-colors.js) for its
@@ -528,6 +535,8 @@
        The mirror <meta name="build"> in <head> is the primary lookup handle. -->
   <div id="build-marker" hidden data-build="__BUILD__">build: __BUILD__</div>
 
+  <!-- Patient funder helpers (global Funder) — must load before app.js. -->
+  <script src="funder.js?v=__BUILD__"></script>
   <script src="app.js?v=__BUILD__"></script>
 
   <!-- Service worker registration (guarded). Registered after load so it never
