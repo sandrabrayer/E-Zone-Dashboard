@@ -504,7 +504,9 @@ const PAYMENT_COLUMNS = [
   /* The strict payment report (Phase 3 PR 1, PAYMENT_REPORT_COLUMNS below). */
   'receivedDate', 'method', 'payer', 'funder', 'reference',
   'recordedBy', 'recordedAt',
-  'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote'
+  'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
+  /* One row per money received (Phase 3 PR 2, RECEIPT_ID_PREFIX below). */
+  'legacyAmountPaid'
 ];
 const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient', 'duplicate'];
 
@@ -531,6 +533,11 @@ const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient', 'duplicate'];
  *   confirmedBy / confirmedAt
  *                 SERVER-OWNED, stamped when confirmStatus changes
  *   flagNote      why a payment was flagged (controller / approver only)
+ *
+ * PHASE 3 PR 2 (the form, live): money is reported ONLY through
+ * action=reportPayment, which appends a receipt row (RECEIPT_ID_PREFIX) and
+ * enforces validatePaymentReport_ in full — see reportPayment_. What follows
+ * describes the savePayment path, which still works as below.
  *
  * FOUNDATION ONLY: a savePayment without these fields behaves exactly as
  * before. The required-field rules (validatePaymentReport_) are NOT enforced
@@ -589,6 +596,7 @@ const PAYMENT_REPORT_MESSAGES = {
   confirm_status_invalid: 'סטטוס אישור לא מוכר',
   confirm_without_report: 'אין דיווח תשלום לאשר — חסר תאריך קבלה',
   flag_note_missing: 'בסימון «בעיה» חובה לפרט (2 עד 300 תווים)',
+  received_date_too_old: 'תאריך קבלה לפני יותר מ-90 יום — פנו לסנדרה',
 };
 
 /* Funders — the patient's funder over time. APPEND-ONLY (rows and columns):
@@ -637,7 +645,10 @@ const PAYMENT_SERVER_COLUMNS = [
    * linkStatus, linkNote) is the client's to send — it is what a person chose
    * — but its provenance never is: a caller that can post a payment can post
    * any name and any date it likes. */
-  'linkedBy', 'linkedAt'
+  'linkedBy', 'linkedAt',
+  /* The part of a cycle's amountPaid recorded BEFORE its first receipt row
+   * (Phase 3 PR 2). Set once, by reportPayment_, never from a payload. */
+  'legacyAmountPaid'
 ];
 
 /* Columns that do NOT count as a content change when deciding whether to bump
@@ -1042,6 +1053,7 @@ const FINANCE_ACTIONS = [
   'getPayments', 'savePayment', 'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
   'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'debtAging', 'cleanupReport',
   'accountingPayments', 'accountingCredits',
+  'reportPayment', 'appendFunder',
 ];
 const FINANCE_USER_IDS = ['vered', 'sandra'];
 /* getData keys only billing reads — omitted for a restricted actor. */
@@ -1072,6 +1084,7 @@ const PROXY_KNOWN_ACTIONS = [
   'getData', 'getAdmittedRoster', 'saveAll', 'getPayments', 'savePayment',
   'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
   'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'debtAging', 'cleanupReport',
+  'reportPayment', 'appendFunder',
   'moveLeadIrrelevant', 'restoreLead',
   'removeLead', 'deletePatientRow', 'dischargePatient', 'restorePatient',
   'restorePatientToActive', 'deleteMeetingReport', 'meetingReportLeads',
@@ -1390,6 +1403,15 @@ function handle_(params) {
       }
       return jsonOut_(paid);
     }
+    // The strict «דווח תשלום» (Phase 3 PR 2): one NEW receipt row per money
+    // received; the cycle's money is re-derived. user / actor / approver come
+    // from the verified session only, never from the body.
+    if (action === 'reportPayment') {
+      return jsonOut_(reportPayment_(parseJsonParam_(params.report), requestUser_(params),
+        { actor: actorLabel_(params), approver: hasRole_(params, 'approver') }));
+    }
+    // The patient card's funder editor: appends ONE Funders row.
+    if (action === 'appendFunder') return jsonOut_(appendFunderAction_(params));
     if (action === 'upsertBillingOverride') {
       return jsonOut_(upsertBillingOverride_(parseJsonParam_(params.override), requestUser_(params)));
     }
@@ -5972,7 +5994,16 @@ function getPayments_() {
    * ZERO writes and no lock once every cell is filled. It mints identity only
    * — it never touches an amount, a status or a charge stamp. */
   backfillPaymentIdentityLocked_(sh);
-  return { ok: true, payments: readSheet_(sh, PAYMENT_COLUMNS) };
+  /* Phase 3 PR 2: `payments` stays what every reader expects — one row per
+   * CYCLE — with the money of each cycle that has receipts derived from them
+   * (recomputeCycleFromReceipts_; a legacy cycle is returned untouched).
+   * The receipts themselves ride a NEW key, each with the cycleId it pays
+   * for ('' = unlinked), and `funders` carries the Funders tab (read-only,
+   * never created here) for the patient card. */
+  const split = paymentRowsDerived_(readSheet_(sh, PAYMENT_COLUMNS));
+  let funders = [];
+  try { funders = fundersForClient_(fundersRows_()); } catch (_) { funders = []; }
+  return { ok: true, payments: split.cycles, receipts: split.receipts, funders: funders };
 }
 
 /**
@@ -6096,8 +6127,9 @@ function upsertPayment_(payment, user, ctx) {
     let targetRow = 0;
     const prev = {};
     let hadRow = false;
+    let existing = [];
     if (lastRow > 1) {
-      const existing = sh.getRange(2, 1, lastRow - 1, PAYMENT_COLUMNS.length).getValues();
+      existing = sh.getRange(2, 1, lastRow - 1, PAYMENT_COLUMNS.length).getValues();
       for (let i = 0; i < existing.length; i++) {
         if (String(existing[i][idIdx]) === String(payment.id)) {
           targetRow = i + 2;
@@ -6118,6 +6150,48 @@ function upsertPayment_(payment, user, ctx) {
     if (hadRow && isVoidStatus_(prev.status) && !isVoidStatus_(payment.status)
         && (PAYMENT_VOID_REVERSERS.indexOf(stampUser) < 0 || c.approver !== true)) {
       return { ok: false, error: 'forbidden_role', message: ROLE_FORBIDDEN_MESSAGE };
+    }
+
+    /* ---- receipts (Phase 3 PR 2) --------------------------------------
+     * A receipt is born ONLY through reportPayment_, and is never edited: the
+     * one thing savePayment may do to it is the void decision (and Sandra's
+     * un-void) — everything else is taken from the stored row. A cycle that
+     * has receipts gets its money DERIVED from them, whatever the payload
+     * says, and cannot be voided while a live receipt still pays it. */
+    const isReceipt = isReceiptRow_(payment) || (hadRow && isReceiptRow_(prev));
+    if (isReceipt && !hadRow) {
+      return { ok: false, error: 'receipt_via_report_only', message: 'קבלה נרשמת רק דרך «דווח תשלום»' };
+    }
+    if (isReceipt) {
+      const voidMove = isVoidStatus_(payment.status) !== isVoidStatus_(prev.status);
+      if (!voidMove) return { ok: false, error: 'receipt_immutable', message: 'קבלה אינה ניתנת לעריכה — ניתן רק לבטל אותה' };
+      const keep = {};
+      PAYMENT_COLUMNS.forEach(function (k) { keep[k] = prev[k]; });
+      keep.status = isVoidStatus_(payment.status) ? PAYMENT_VOID_STATUS : 'paid';
+      keep.linkStatus = payment.linkStatus;
+      keep.linkNote = payment.linkNote;
+      keep.linkPatientUid = paymentCell_(prev.linkPatientUid);
+      keep.timestamp = payment.timestamp || prev.timestamp;
+      payment = keep;
+    } else if (hadRow) {
+      const rowsNow = existing.map(function (g) {
+        const o = {};
+        for (let k = 0; k < PAYMENT_COLUMNS.length; k++) o[PAYMENT_COLUMNS[k]] = g[k];
+        return o;
+      });
+      const mine = linkReceiptsToCycles_(rowsNow).byCycle[targetRow - 2];
+      if (mine && mine.length) {
+        const live = mine.some(function (r) { return !isVoidStatus_(r.status); });
+        if (isVoidStatus_(payment.status) && !isVoidStatus_(prev.status) && live) {
+          return { ok: false, error: 'cycle_has_receipts', message: 'יש קבלות פעילות על המחזור — יש לבטל אותן קודם' };
+        }
+        if (!isVoidStatus_(payment.status) && !isVoidStatus_(prev.status)) {
+          const d = recomputeCycleFromReceipts_(prev, mine);
+          payment.amountPaid = d.amountPaid;
+          payment.balance = d.balance;
+          payment.status = d.status;
+        }
+      }
     }
 
     /* The payment report columns (Phase 3 PR 1). Decided against the STORED
@@ -6155,7 +6229,13 @@ function upsertPayment_(payment, user, ctx) {
       if (unvoided) logPaymentVoidReversed_(out, prev, stampUser, auditActor);
       logPaymentReceivedDateChanged_(out, rep.receivedChange, stampUser, auditActor);
       logPaymentConfirm_(out, rep.confirmChange, auditActor);
-      return reportExtra({ ok: true, payment: out, updated: true });
+      // A voided / un-voided receipt re-derives the cycle it pays for.
+      const res = { ok: true, payment: out, updated: true };
+      if (isReceipt) {
+        const cy = rederiveReceiptCycleLocked_(sh, stampUser, out.id);
+        if (cy) res.cycle = cy;
+      }
+      return reportExtra(res);
     }
 
     // Insert at the next row (not appendRow) so the text format is applied
@@ -6304,6 +6384,8 @@ function stampPaymentRow_(payment, prev, hadRow, stampUser, now) {
   }
 
   out.payerUid = paymentCell_(prev.payerUid);
+  // Server-owned (reportPayment_ sets it once, after this function); carried.
+  out.legacyAmountPaid = paymentCell_(prev.legacyAmountPaid);
 
   const nowStamp = israelTimestamp_(now);
 
@@ -6460,6 +6542,13 @@ function validatePaymentReport_(report, ctx) {
   if (rd === '') out.push(paymentReportIssue_('receivedDate', 'received_date_missing'));
   else if (rd === null) out.push(paymentReportIssue_('receivedDate', 'received_date_invalid'));
   else if (rd > today) out.push(paymentReportIssue_('receivedDate', 'received_date_future'));
+  /* ctx.maxDaysBack (Phase 3 PR 2): reportPayment_ passes
+   * RECEIVED_DATE_STAFF_MAX_DAYS for everyone but the approver. Omitted → no
+   * age limit (the PR 1 behaviour, and the parity cases). */
+  else if (ctx && Number(ctx.maxDaysBack) > 0 &&
+           paymentReportDayNum_(today) - paymentReportDayNum_(rd) > Number(ctx.maxDaysBack)) {
+    out.push(paymentReportIssue_('receivedDate', 'received_date_too_old'));
+  }
 
   const ac = paymentReportAmountCode_(r.amount);
   if (ac) out.push(paymentReportIssue_('amount', ac));
@@ -6734,10 +6823,10 @@ function currentFunder_(patientId, asOfIso) {
   }
 }
 
-/* Append ONE Funders row. Not reachable over HTTP in this PR (no handle_
- * action): the funder UI is later work; until then rows are typed into the
- * tab by hand. ctx { user, actor } — setBy is ctx.user, which a future
- * caller must take from the signed session (requestUser_), never a payload.
+/* Append ONE Funders row. Reached over HTTP since Phase 3 PR 2 through
+ * action=appendFunder (appendFunderAction_, finance-gated) — the patient
+ * card's funder editor. ctx { user, actor } — setBy is ctx.user, taken from
+ * the signed session (requestUser_), never a payload.
  * → { ok:true, row } | { ok:false, error }. */
 function appendFunder_(patientId, funder, effectiveFrom, ctx) {
   const c = ctx || {};
@@ -6767,6 +6856,510 @@ function setupFundersSheetNow() {
   const sh = getOrCreateSheet_(FUNDERS_SHEET, FUNDER_COLUMNS);
   console.log('[funders] ready: ' + FUNDERS_SHEET + ', ' + Math.max(0, sh.getLastRow() - 1) + ' rows');
   return { ok: true, rows: Math.max(0, sh.getLastRow() - 1) };
+}
+
+/* ===== One row per money received (Phase 3 PR 2, Sandra 2026-10-04) =====
+ * docs/billing-control-plan.md Phase 3 and §14.1;
+ * CHANGELOG-payment-report-form.md.
+ *
+ * A «דווח תשלום» report ALWAYS appends a NEW Payments row — a RECEIPT:
+ *   id            RECEIPT_ID_PREFIX + uuid, minted here (never by a client)
+ *   status        'paid'; amount = amountPaid = the money received; balance 0
+ *   patientId / patientName / houseId / dueDate / patientUid
+ *                 copied from the cycle it pays for
+ *   coverageStart / coverageEnd, receivedDate, method, payer, funder,
+ *   reference     the report (validatePaymentReport_, strict)
+ *   recordedBy / recordedAt / confirmStatus 'reported' — server-stamped
+ * A receipt is never edited. Un-doing one = voiding it (the existing void
+ * flow, `deleter`), which re-derives its cycle.
+ *
+ * A CYCLE row (every non-receipt row: a dueDate, the expected `amount`) stays
+ * the charge. Its amountPaid / balance / status are DERIVED from the receipts
+ * linked to it (recomputeCycleFromReceipts_), written on every report / void
+ * and re-derived on every read, so legacy data reads consistently.
+ *
+ * LINK (receiptLinksToCycle_): same patient (patientUid when both rows carry
+ * one, else the billing-triple patientId) AND the receipt's coverageStart
+ * falls in the cycle's window (its recorded coverage, else dueDate … dueDate
+ * + 1 month − 1 day — app.js inferredCoverage). Several candidates → the one
+ * with the receipt's own dueDate, then the latest start, then the first row.
+ * Void cycles and other receipts are never candidates.
+ *
+ * LEGACY: a cycle with NO receipt row (void ones included) keeps its stored
+ * amountPaid / balance / status untouched — one legacy receipt. When its first
+ * receipt is reported, the stored amountPaid moves into legacyAmountPaid
+ * (once), so the derived total = legacyAmountPaid + Σ live receipts and a
+ * void of every receipt falls back to exactly the legacy figure. */
+const RECEIPT_ID_PREFIX = 'rcpt-';
+/* Older than this many days back → approver only («פנו לסנדרה»). */
+const RECEIVED_DATE_STAFF_MAX_DAYS = 90;
+const PAYMENT_REPORT_REFUSED_MESSAGE = 'הדיווח לא נשמר — יש להשלים את השדות המסומנים';
+
+function isReceiptRow_(row) {
+  return !!row && String(row.id == null ? '' : row.id).trim().indexOf(RECEIPT_ID_PREFIX) === 0;
+}
+
+/* A money cell as a number rounded to agorot ('' / junk → 0). */
+function receiptMoney_(v) {
+  const n = Number(v);
+  return isFinite(n) ? Math.round(n * 100) / 100 : 0;
+}
+
+/* The cycle's window { start, end } ('YYYY-MM-DD'), or null. Pure. */
+function receiptCycleWindow_(cycle) {
+  const c = cycle || {};
+  const cs = coverageDateISO_(c.coverageStart), ce = coverageDateISO_(c.coverageEnd);
+  if (cs && ce && ce >= cs) return { start: cs, end: ce };
+  const due = c.dueDate instanceof Date ? localPartsISO_(c.dueDate) : coverageDateISO_(c.dueDate);
+  if (!due) return null;
+  return { start: due, end: refundIsoFromDayNum_(refundDayNum_(refundAddMonths_(due, 1)) - 1) };
+}
+
+/* Same patient? patientUid when both rows carry one, else patientId. Pure. */
+function receiptSamePatient_(a, b) {
+  const ua = paymentCell_(a.patientUid), ub = paymentCell_(b.patientUid);
+  if (ua && ub) return ua === ub;
+  const pa = paymentCell_(a.patientId), pb = paymentCell_(b.patientId);
+  return !!pa && pa === pb;
+}
+
+function receiptLinksToCycle_(receipt, cycle) {
+  if (!receipt || !cycle || isReceiptRow_(cycle) || isVoidStatus_(cycle.status)) return false;
+  if (!receiptSamePatient_(receipt, cycle)) return false;
+  const w = receiptCycleWindow_(cycle);
+  const at = coverageDateISO_(receipt.coverageStart) ||
+    (receipt.dueDate instanceof Date ? localPartsISO_(receipt.dueDate) : coverageDateISO_(receipt.dueDate));
+  return !!(w && at && at >= w.start && at <= w.end);
+}
+
+/* rows: Payments row objects (any order). PURE.
+ * → { cycles: [{ index, row }], receipts: [{ index, row, cycleIndex }],
+ *     byCycle: { index: [receipt rows] } } — indexes into `rows`;
+ *     cycleIndex -1 = unlinked. */
+function linkReceiptsToCycles_(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const cycles = [], receipts = [], byCycle = {};
+  list.forEach(function (r, i) { (isReceiptRow_(r) ? receipts : cycles).push({ index: i, row: r || {} }); });
+  receipts.forEach(function (rc) {
+    let best = null;
+    const ownDue = coverageDateISO_(rc.row.dueDate);
+    cycles.forEach(function (cy) {
+      if (!receiptLinksToCycle_(rc.row, cy.row)) return;
+      const sameDue = !!ownDue && coverageDateISO_(cy.row.dueDate) === ownDue;
+      const start = receiptCycleWindow_(cy.row).start;
+      if (!best || (sameDue && !best.sameDue) || (sameDue === best.sameDue && start > best.start)) {
+        best = { index: cy.index, sameDue: sameDue, start: start };
+      }
+    });
+    rc.cycleIndex = best ? best.index : -1;
+    if (best) (byCycle[best.index] = byCycle[best.index] || []).push(rc.row);
+  });
+  return { cycles: cycles, receipts: receipts, byCycle: byCycle };
+}
+
+/* THE DERIVATION. PURE.
+ *   cycleRow  the cycle's row object (stored values)
+ *   receipts  the receipt rows linked to it (void ones included)
+ * → { amountPaid, balance, status, legacy, legacyAmountPaid, receiptCount,
+ *     liveReceipts, received: [{ date, amount }] }
+ * No receipt row at all → the stored figures, untouched (legacy: its own
+ * amountPaid is one receipt). Otherwise amountPaid = legacyAmountPaid + Σ
+ * live receipts, balance = max(0, amount − amountPaid) and status
+ * paid / partial / unpaid from those. A void cycle stays void. */
+function recomputeCycleFromReceipts_(cycleRow, receipts) {
+  const c = cycleRow || {};
+  const list = Array.isArray(receipts) ? receipts : [];
+  const amount = receiptMoney_(c.amount);
+  const storedPaid = receiptMoney_(c.amountPaid);
+  if (!list.length) {
+    const bal = paymentCell_(c.balance) === '' ? Math.max(0, receiptMoney_(amount - storedPaid)) : receiptMoney_(c.balance);
+    return {
+      amountPaid: storedPaid, balance: bal, status: paymentStatus_(c.status), legacy: true,
+      legacyAmountPaid: storedPaid, receiptCount: 0, liveReceipts: 0, received: [],
+    };
+  }
+  const legacyPaid = receiptMoney_(c.legacyAmountPaid);
+  const received = [];
+  let sum = legacyPaid;
+  list.forEach(function (r) {
+    if (isVoidStatus_(r.status)) return;
+    const a = receiptMoney_(r.amountPaid !== '' && r.amountPaid !== undefined && r.amountPaid !== null ? r.amountPaid : r.amount);
+    sum = receiptMoney_(sum + a);
+    received.push({ date: paymentReportDate_(r.receivedDate instanceof Date ? localPartsISO_(r.receivedDate) : r.receivedDate) || '', amount: a });
+  });
+  let status;
+  if (isVoidStatus_(c.status)) status = PAYMENT_VOID_STATUS;
+  else if (sum <= 0) status = 'unpaid';
+  else if (sum >= amount) status = 'paid';
+  else status = 'partial';
+  return {
+    amountPaid: sum, balance: Math.max(0, receiptMoney_(amount - sum)), status: status, legacy: false,
+    legacyAmountPaid: legacyPaid, receiptCount: list.length, liveReceipts: received.length, received: received,
+  };
+}
+
+/* Payments row objects → the same rows with every cycle that has receipts
+ * re-derived, receipts left out. PURE; new objects only where derived.
+ * → { cycles: [rows], receipts: [rows + cycleId], links }. */
+function paymentRowsDerived_(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const L = linkReceiptsToCycles_(list);
+  const cycles = L.cycles.map(function (cy) {
+    const rs = L.byCycle[cy.index];
+    if (!rs) return cy.row;
+    const d = recomputeCycleFromReceipts_(cy.row, rs);
+    const o = {};
+    Object.keys(cy.row).forEach(function (k) { o[k] = cy.row[k]; });
+    o.amountPaid = d.amountPaid;
+    o.balance = d.balance;
+    o.status = d.status;
+    return o;
+  });
+  const receipts = L.receipts.map(function (rc) {
+    const o = {};
+    Object.keys(rc.row).forEach(function (k) { o[k] = rc.row[k]; });
+    o.cycleId = rc.cycleIndex >= 0 ? String(list[rc.cycleIndex].id == null ? '' : list[rc.cycleIndex].id) : '';
+    return o;
+  });
+  return { cycles: cycles, receipts: receipts, links: L };
+}
+
+/* Payments row objects → the cycles only, derived (what every reader that
+ * predates receipts expects). PURE. */
+function paymentCyclesDerived_(rows) {
+  return paymentRowsDerived_(rows).cycles;
+}
+
+/* recCollect_-shaped tabs → the same, with tabs.payments.rows = the cycles
+ * (derived, their rowNumber kept) and tabs.receipts.rows = the receipts with
+ * their cycle's rowNumber (cycleRowNumber, 0 = unlinked). Idempotent. PURE. */
+function paymentTabsDerived_(tabs) {
+  const t = tabs || {};
+  if (t.__receiptsDerived) return t;
+  const src = (t.payments && Array.isArray(t.payments.rows)) ? t.payments.rows : [];
+  const objs = src.map(function (r) { return (r && r.obj) || {}; });
+  const L = linkReceiptsToCycles_(objs);
+  const out = {};
+  Object.keys(t).forEach(function (k) { out[k] = t[k]; });
+  const payTab = {};
+  Object.keys(t.payments || {}).forEach(function (k) { payTab[k] = t.payments[k]; });
+  payTab.rows = L.cycles.map(function (cy) {
+    const rs = L.byCycle[cy.index];
+    if (!rs) return src[cy.index];
+    const d = recomputeCycleFromReceipts_(cy.row, rs);
+    const o = {};
+    Object.keys(cy.row).forEach(function (k) { o[k] = cy.row[k]; });
+    o.amountPaid = d.amountPaid;
+    o.balance = d.balance;
+    o.status = d.status;
+    return { rowNumber: src[cy.index].rowNumber, obj: o, receipts: rs, derived: d };
+  });
+  out.payments = payTab;
+  out.receipts = {
+    sheet: (t.payments && t.payments.sheet) || PAYMENTS_SHEET,
+    rows: L.receipts.map(function (rc) {
+      return { rowNumber: src[rc.index].rowNumber, obj: rc.row, cycleRowNumber: rc.cycleIndex >= 0 ? src[rc.cycleIndex].rowNumber : 0 };
+    }),
+  };
+  out.__receiptsDerived = true;
+  return out;
+}
+
+/* The report fields of a reportPayment payload, normalized for storage. */
+function receiptReportClean_(r) {
+  const x = r || {};
+  return {
+    receivedDate: paymentReportDate_(x.receivedDate) || '',
+    amount: x.amount,
+    method: paymentReportMethod_(x.method),
+    payer: paymentReportText_(x.payer),
+    coverageStart: paymentReportDate_(x.coverageStart) || '',
+    coverageEnd: paymentReportDate_(x.coverageEnd) || '',
+    funder: paymentReportText_(x.funder),
+    reference: paymentReportText_(x.reference),
+  };
+}
+
+/**
+ * action=reportPayment — the strict «דווח תשלום». PROXY_SECRET-gated (not in
+ * OPEN_ACTIONS), finance-gated (FINANCE_ACTIONS).
+ *
+ *   body   { cycle: { id, patientId, patientName, houseId, dueDate, amount,
+ *                     coverageStart?, coverageEnd? },
+ *            report: { receivedDate, amount, method, payer, coverageStart,
+ *                      coverageEnd, funder, reference } }
+ *   ctx    { user (signed session), actor (AuditLog label), approver }
+ *
+ * Validates FIRST (validatePaymentReport_, strict; older than
+ * RECEIVED_DATE_STAFF_MAX_DAYS needs the approver) — an incomplete report is
+ * refused { ok:false, error:'invalid_report', message, issues } and NOTHING
+ * is written. Then, under the script lock: find (or create) the cycle row,
+ * append ONE receipt row, re-derive the cycle from all its receipts and write
+ * it, and log AuditLog 'payment_reported' with the actor.
+ * → { ok:true, receipt, cycle } */
+function reportPayment_(body, user, ctx) {
+  const b = body && typeof body === 'object' ? body : {};
+  const c = ctx || {};
+  const stampUser = String(user == null ? '' : user);
+  const cycleIn = b.cycle && typeof b.cycle === 'object' ? b.cycle : null;
+  const reportIn = b.report && typeof b.report === 'object' ? b.report : null;
+  if (!cycleIn || !reportIn) return { ok: false, error: 'missing_report' };
+  const cycleId = String(cycleIn.id == null ? '' : cycleIn.id).trim();
+  if (!cycleId || cycleId.length > 300 || /[\u0000-\u001f\u007f]/.test(cycleId) ||
+      cycleId.indexOf(RECEIPT_ID_PREFIX) === 0) return { ok: false, error: 'bad_cycle' };
+
+  const today = paymentReportToday_();
+  const issues = validatePaymentReport_(reportIn, {
+    todayIso: c.todayIso || today,
+    maxDaysBack: c.approver === true ? 0 : RECEIVED_DATE_STAFF_MAX_DAYS,
+  });
+  if (issues.length) {
+    return { ok: false, error: 'invalid_report', message: PAYMENT_REPORT_REFUSED_MESSAGE, issues: issues };
+  }
+  const rep = receiptReportClean_(reportIn);
+  const amount = receiptMoney_(rep.amount);
+
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('reportPayment_');
+  try {
+    const sh = getOrCreateSheet_(PAYMENTS_SHEET, PAYMENT_COLUMNS);
+    const header = sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getValues()[0];
+    if (paymentReportHeaderClash_(header).length || receiptHeaderClash_(header).length) {
+      try { console.warn('[payments] reportPayment refused — Payments header clash'); } catch (_) { /* no-op */ }
+      return { ok: false, error: 'sheet_header_clash', message: 'מבנה גיליון התשלומים לא תקין — פנו לסנדרה' };
+    }
+    const lastRow = sh.getLastRow();
+    const grid = lastRow > 1 ? sh.getRange(2, 1, lastRow - 1, PAYMENT_COLUMNS.length).getValues() : [];
+    const rows = grid.map(function (g) {
+      const o = {};
+      for (let k = 0; k < PAYMENT_COLUMNS.length; k++) o[PAYMENT_COLUMNS[k]] = g[k];
+      return o;
+    });
+    let cycleAt = -1;
+    for (let i = 0; i < rows.length; i++) if (String(rows[i].id) === cycleId) { cycleAt = i; break; }
+    const prevCycle = cycleAt >= 0 ? rows[cycleAt] : {};
+    if (cycleAt >= 0 && isVoidStatus_(prevCycle.status)) {
+      return { ok: false, error: 'cycle_void', message: 'לא ניתן לדווח תשלום על שורה מבוטלת' };
+    }
+
+    // The cycle as it will stand (a new one is born unpaid, from the payload).
+    let cycle = {};
+    if (cycleAt >= 0) {
+      Object.keys(prevCycle).forEach(function (k) { cycle[k] = prevCycle[k]; });
+    } else {
+      if (cycleId.indexOf('pay::') !== 0) return { ok: false, error: 'bad_cycle' };
+      const due = coverageDateISO_(cycleIn.dueDate);
+      const expected = Number(cycleIn.amount);
+      if (!due || !isFinite(expected) || expected < 0) return { ok: false, error: 'bad_cycle' };
+      const covErr = coveragePeriodError_(cycleIn.coverageStart, cycleIn.coverageEnd);
+      if (covErr) return { ok: false, error: covErr };
+      cycle = {
+        id: cycleId, patientId: paymentLinkNoteClean_(cycleIn.patientId),
+        patientName: paymentLinkNoteClean_(cycleIn.patientName).slice(0, 100),
+        houseId: paymentLinkNoteClean_(cycleIn.houseId).slice(0, 40), dueDate: due,
+        amount: receiptMoney_(expected), status: 'unpaid', amountPaid: 0, balance: receiptMoney_(expected),
+        timestamp: new Date().toISOString(),
+        coverageStart: coverageDateISO_(cycleIn.coverageStart) || '', coverageEnd: coverageDateISO_(cycleIn.coverageEnd) || '',
+      };
+    }
+    const win = receiptCycleWindow_(cycle);
+    if (!win || rep.coverageStart < win.start || rep.coverageStart > win.end) {
+      return { ok: false, error: 'invalid_report', message: PAYMENT_REPORT_REFUSED_MESSAGE, issues: [
+        { field: 'coverageStart', code: 'coverage_outside_cycle', hebrewMessage: 'תחילת תקופת הכיסוי חייבת להיות בתוך מחזור החיוב' }] };
+    }
+    // The expected amount of an unpaid cycle is frozen at what was billed
+    // (a per-month override included), exactly as the old row save did.
+    const prevStatus = paymentStatus_(cycle.status);
+    if (prevStatus === 'unpaid') {
+      const mk = String(cycle.dueDate instanceof Date ? localPartsISO_(cycle.dueDate) : coverageDateISO_(cycle.dueDate) || '').slice(0, 7);
+      const ovr = receiptOverrideAmount_(cycle.patientId, mk);
+      if (ovr !== null) cycle.amount = ovr;
+    }
+    const cycleOut = stampPaymentRow_(cycle, prevCycle, cycleAt >= 0, stampUser);
+    // A cycle that pays its first receipt keeps its legacy money, once.
+    const linked = linkReceiptsToCycles_(rows.concat([cycleOut])).byCycle;
+    const priorReceipts = (cycleAt >= 0 ? linked[cycleAt] : linked[rows.length]) || [];
+    if (!priorReceipts.length && paymentCell_(cycleOut.legacyAmountPaid) === '') {
+      cycleOut.legacyAmountPaid = receiptMoney_(prevCycle.amountPaid) > 0 ? receiptMoney_(prevCycle.amountPaid) : '';
+    }
+
+    // The receipt row.
+    const nowIso = new Date().toISOString();
+    const receiptIn = {
+      id: RECEIPT_ID_PREFIX + Utilities.getUuid(),
+      patientId: cycleOut.patientId, patientName: cycleOut.patientName, houseId: cycleOut.houseId,
+      dueDate: cycleOut.dueDate instanceof Date ? localPartsISO_(cycleOut.dueDate) : coverageDateISO_(cycleOut.dueDate) || '',
+      amount: amount, status: 'paid', amountPaid: amount, balance: 0, timestamp: nowIso,
+      coverageStart: rep.coverageStart, coverageEnd: rep.coverageEnd,
+      linkPatientUid: '', linkStatus: '', linkNote: '',
+      receivedDate: rep.receivedDate, method: rep.method, payer: rep.payer, funder: rep.funder, reference: rep.reference,
+      recordedBy: stampUser, recordedAt: israelTimestamp_(),
+      confirmStatus: 'reported', confirmedBy: '', confirmedAt: '', flagNote: '',
+    };
+    const receiptOut = stampPaymentRow_(receiptIn, {}, false, stampUser);
+    receiptOut.patientUid = paymentCell_(cycleOut.patientUid);   // same patient as its cycle, always
+    receiptOut.legacyAmountPaid = '';
+
+    // Re-derive the cycle from every receipt it has, the new one included.
+    const d = recomputeCycleFromReceipts_(cycleOut, priorReceipts.concat([receiptOut]));
+    const finalCycle = {};
+    Object.keys(cycleOut).forEach(function (k) { finalCycle[k] = cycleOut[k]; });
+    finalCycle.amountPaid = d.amountPaid;
+    finalCycle.balance = d.balance;
+    finalCycle.status = d.status;
+    const cycleWritten = receiptRestampCycle_(finalCycle, prevCycle, cycleAt >= 0, stampUser);
+    // A cycle born here keeps the identity minted for it above.
+    cycleWritten.paymentUid = cycleOut.paymentUid;
+    cycleWritten.patientUid = cycleOut.patientUid;
+
+    // Write: the cycle in place (or appended), then the receipt appended.
+    let cycleRowNumber;
+    if (cycleAt >= 0) cycleRowNumber = cycleAt + 2;
+    else cycleRowNumber = sh.getLastRow() + 1;
+    setPaymentRowTextCols_(sh, cycleRowNumber);
+    sh.getRange(cycleRowNumber, 1, 1, PAYMENT_COLUMNS.length).setValues([objectToRow_(cycleWritten, PAYMENT_COLUMNS)]);
+    const receiptRowNumber = sh.getLastRow() + 1;
+    setPaymentRowTextCols_(sh, receiptRowNumber);
+    sh.getRange(receiptRowNumber, 1, 1, PAYMENT_COLUMNS.length).setValues([objectToRow_(receiptOut, PAYMENT_COLUMNS)]);
+
+    logAudit_('payment_reported', 'reportPayment_', String(receiptOut.patientUid || ''), String(receiptOut.patientName || ''), {
+      receiptId: String(receiptOut.id), paymentUid: String(receiptOut.paymentUid || ''),
+      cycleId: String(cycleWritten.id), dueDate: String(receiptOut.dueDate || ''),
+      amount: amount, receivedDate: rep.receivedDate, method: rep.method, funder: rep.funder,
+      cycleStatus: String(cycleWritten.status), cycleAmountPaid: cycleWritten.amountPaid,
+      by: stampUser, at: String(receiptOut.recordedAt || ''),
+    }, c.actor === undefined ? stampUser : String(c.actor));
+
+    const echoReceipt = {};
+    Object.keys(receiptOut).forEach(function (k) { echoReceipt[k] = receiptOut[k]; });
+    echoReceipt.cycleId = String(cycleWritten.id);
+    return { ok: true, receipt: echoReceipt, cycle: cycleWritten, created: cycleAt < 0 };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* A cycle's derived money through stampPaymentRow_'s rules (uid, version
+ * bump), but the charge stamp of money that was ALREADY recorded is carried:
+ * chargedAt dates the legacy part of the cycle (debtAgingReceivedOn_); each
+ * receipt carries its own receivedDate. */
+function receiptRestampCycle_(cycle, prev, hadRow, stampUser) {
+  const out = stampPaymentRow_(cycle, prev, hadRow, stampUser);
+  out.legacyAmountPaid = cycle.legacyAmountPaid === undefined ? paymentCell_(prev.legacyAmountPaid) : cycle.legacyAmountPaid;
+  if (hadRow && paymentIsCharged_(prev.status) && paymentIsCharged_(out.status)) {
+    out.chargedAt = paymentCell_(prev.chargedAt);
+    out.chargedBy = paymentCell_(prev.chargedBy);
+  }
+  return out;
+}
+
+/* The per-month BillingOverrides amount for (patientId, 'YYYY-MM'), or null.
+ * Read-only (getSheetByName); fail-soft → null. */
+function receiptOverrideAmount_(patientId, month) {
+  try {
+    const pid = paymentCell_(patientId);
+    if (!pid || !month) return null;
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(BILLING_OVERRIDES_SHEET);
+    if (!sh) return null;
+    const rows = readSheet_(sh, BILLING_OVERRIDE_COLUMNS);
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (paymentCell_(rows[i].patientId) === pid && String(rows[i].month == null ? '' : rows[i].month).slice(0, 7) === month) {
+        const n = Number(rows[i].amount);
+        return isFinite(n) && n >= 0 ? receiptMoney_(n) : null;
+      }
+    }
+  } catch (_) { /* fail-soft */ }
+  return null;
+}
+
+/* Like paymentReportHeaderClash_, for the receipt column(s). Pure. */
+function receiptHeaderClash_(header) {
+  const h = Array.isArray(header) ? header : [];
+  const i = PAYMENT_COLUMNS.indexOf('legacyAmountPaid');
+  const got = i < h.length ? String(h[i] == null ? '' : h[i]).trim() : '';
+  return got !== '' && got !== 'legacyAmountPaid' ? [{ column: i + 1, expected: 'legacyAmountPaid', found: got }] : [];
+}
+
+/* Re-derive the cycle a (void / un-voided) receipt belongs to, and write it.
+ * Called by upsertPayment_ INSIDE its lock, after the receipt row landed.
+ * → the cycle as written, or null when the receipt links to no cycle. */
+function rederiveReceiptCycleLocked_(sh, stampUser, receiptId) {
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return null;
+  const grid = sh.getRange(2, 1, lastRow - 1, PAYMENT_COLUMNS.length).getValues();
+  const rows = grid.map(function (g) {
+    const o = {};
+    for (let k = 0; k < PAYMENT_COLUMNS.length; k++) o[PAYMENT_COLUMNS[k]] = g[k];
+    return o;
+  });
+  const L = linkReceiptsToCycles_(rows);
+  let at = -1;
+  L.receipts.forEach(function (rc) { if (String(rc.row.id) === String(receiptId)) at = rc.cycleIndex; });
+  if (at < 0) return null;
+  const prev = rows[at];
+  const d = recomputeCycleFromReceipts_(prev, L.byCycle[at] || []);
+  const next = {};
+  Object.keys(prev).forEach(function (k) { next[k] = prev[k]; });
+  next.amountPaid = d.amountPaid;
+  next.balance = d.balance;
+  next.status = d.status;
+  next.legacyAmountPaid = prev.legacyAmountPaid;
+  const out = receiptRestampCycle_(next, prev, true, stampUser);
+  setPaymentRowTextCols_(sh, at + 2);
+  sh.getRange(at + 2, 1, 1, PAYMENT_COLUMNS.length).setValues([objectToRow_(out, PAYMENT_COLUMNS)]);
+  return out;
+}
+
+/* action=appendFunder — the patient card's funder editor (finance-gated).
+ * Appends ONE Funders row (appendFunder_), setBy from the signed session.
+ * → { ok:true, row, current, history } | { ok:false, error, message? } */
+function appendFunderAction_(params) {
+  const f = parseJsonParam_(params && params.funder) || {};
+  const res = appendFunder_(f.patientId, f.funder, f.effectiveFrom,
+    { user: requestUser_(params), actor: actorLabel_(params) });
+  if (!res.ok) {
+    if (!res.message) {
+      res.message = res.error === 'effective_from_invalid' ? 'תאריך תחילה לא תקין'
+        : res.error === 'patient_id_invalid' ? 'מטופל לא מזוהה — יש לשמור את המטופל קודם' : res.message;
+    }
+    return res;
+  }
+  const rows = fundersRows_();
+  return {
+    ok: true, row: res.row,
+    current: currentFunderFrom_(rows, res.row.patientId, ''),
+    history: fundersHistoryFor_(rows, res.row.patientId),
+  };
+}
+
+/* Funders rows for the client: known funders only, effectiveFrom as a bare
+ * 'YYYY-MM-DD' (a Date-typed cell never travels as a UTC stamp). PURE. */
+function fundersForClient_(rows) {
+  return (Array.isArray(rows) ? rows : []).filter(function (r) {
+    return r && paymentReportText_(r.patientId) && PAYMENT_FUNDERS.indexOf(paymentReportText_(r.funder)) >= 0;
+  }).map(function (r) {
+    return {
+      patientId: paymentReportText_(r.patientId), funder: paymentReportText_(r.funder),
+      effectiveFrom: r.effectiveFrom instanceof Date ? localPartsISO_(r.effectiveFrom) : (paymentReportDate_(r.effectiveFrom) || ''),
+      setBy: paymentReportText_(r.setBy), setAt: paymentReportText_(r.setAt),
+    };
+  });
+}
+
+/* A patient's Funders rows, newest effectiveFrom first. PURE. */
+function fundersHistoryFor_(rows, patientId) {
+  const id = paymentReportText_(patientId);
+  return (Array.isArray(rows) ? rows : []).filter(function (r) {
+    return r && paymentReportText_(r.patientId) === id && PAYMENT_FUNDERS.indexOf(paymentReportText_(r.funder)) >= 0;
+  }).map(function (r) {
+    return {
+      funder: paymentReportText_(r.funder),
+      effectiveFrom: r.effectiveFrom instanceof Date ? localPartsISO_(r.effectiveFrom) : (paymentReportDate_(r.effectiveFrom) || ''),
+      setBy: paymentReportText_(r.setBy), setAt: paymentReportText_(r.setAt),
+    };
+  }).sort(function (a, b) {
+    return a.effectiveFrom < b.effectiveFrom ? 1 : a.effectiveFrom > b.effectiveFrom ? -1 : (a.setAt < b.setAt ? 1 : a.setAt > b.setAt ? -1 : 0);
+  });
 }
 
 /* ===== Credits ledger ===== */
@@ -7031,6 +7624,8 @@ function computeRefund_(input) {
  * revenue screen allocates by (coverageStart, coverageEnd, creditedFrom).
  * Throws (err.code) on any bad input — never a silent 0. */
 function refundSuggestionsFor_(input, rows, todayIso) {
+  // Receipts are not cycles; each cycle's amountPaid is derived (Phase 3 PR 2).
+  rows = paymentCyclesDerived_(rows);
   const x = input || {};
   const key = String(x.patientKey == null ? '' : x.patientKey);
   if (!key) throw refundError_('missing_patientKey', 'patientKey');
@@ -7242,6 +7837,8 @@ function refundForecastExitCycleStart_(entryIso, exitIso) {
 }
 
 function refundPayoutForecastFor_(discharged, credits, payments, todayIso) {
+  // Receipts are not cycles; each cycle's amountPaid is derived (Phase 3 PR 2).
+  payments = paymentCyclesDerived_(payments);
   const today = refundDateIso_(todayIso, 'today');
   const cutoff = recRecordsCutoff_();
   const creditList = Array.isArray(credits) ? credits : [];
@@ -7455,13 +8052,49 @@ function debtAgingReceivedOn_(raw, fallbackIso) {
   return iso ? { iso: iso, known: true, source: 'chargedAt' } : { iso: fallbackIso, known: false, source: '' };
 }
 
+/* How much of a cycle's money had arrived by asOf. PURE.
+ *   prow  the cycle's tab row ({ obj, receipts?, derived? } — paymentTabsDerived_)
+ *   pay   recPayment_(prow) (its amountPaid is the derived total)
+ * A cycle WITH receipts: its legacy part (legacyAmountPaid) dated as before
+ * (debtAgingReceivedOn_ of the cycle row), plus every live receipt whose own
+ * receivedDate is on or before asOf — so a partial payment topped up later
+ * is owed exactly the top-up between the two dates. A cycle without
+ * receipts: the PR 1 rule, unchanged.
+ * → { received, known, source, unknownAmount } */
+function debtAgingReceivedBy_(prow, pay, asOf, fallbackIso) {
+  const p = prow || {};
+  const raw = p.obj || {};
+  if (p.receipts && p.derived) {
+    let received = 0, unknownAmount = 0;
+    const legacy = refundRound2_(Number(p.derived.legacyAmountPaid) || 0);
+    let known = true;
+    if (legacy > 0) {
+      const g = debtAgingReceivedOn_(raw, fallbackIso);
+      if (!g.known) { unknownAmount = legacy; known = false; }
+      if (g.iso <= asOf) received = refundRound2_(received + legacy);
+    }
+    p.derived.received.forEach(function (r) {
+      if (r.date && r.date <= asOf) received = refundRound2_(received + r.amount);
+    });
+    return { received: received, known: known, source: 'receipts', unknownAmount: unknownAmount };
+  }
+  const got = debtAgingReceivedOn_(raw, fallbackIso);
+  const paid = refundRound2_(pay.amountPaid);
+  return {
+    received: got.iso <= asOf ? paid : 0, known: got.known, source: got.source,
+    unknownAmount: !got.known && paid > 0 ? paid : 0,
+  };
+}
+
 /* Pure. tabs = recCollect_'s shape ({ patients, payments, credits, overrides },
  * each { rows: [{ rowNumber, obj }] }); a missing tab reads as empty.
  * → the report, or { ok:false, error:'bad_asOf' }. */
 function debtAging_(asOfIso, tabs) {
   let asOf;
   try { asOf = debtAgingAsOf_(asOfIso); } catch (e) { return { ok: false, error: (e && e.code) || 'bad_asOf' }; }
-  const t = tabs || {};
+  // Receipts (Phase 3 PR 2) are not cycles: the cycles carry their derived
+  // money, and each receipt dates its own part of it (debtAgingReceivedBy_).
+  const t = paymentTabsDerived_(tabs || {});
   const rawRows = function (k) { return (t[k] && Array.isArray(t[k].rows)) ? t[k].rows : []; };
   const cutoff = recRecordsCutoff_();
   const asOfN = refundDayNum_(asOf);
@@ -7481,20 +8114,21 @@ function debtAging_(asOfIso, tabs) {
   const rowsByPatient = m.patients.map(function () { return []; });
   m.payments.forEach(function (pay, i) {
     if (pay.status === 'void') { voidExcluded++; return; }
-    const raw = (rawRows('payments')[i] || {}).obj || {};
+    const prow = rawRows('payments')[i] || {};
+    const raw = prow.obj || {};
     const owner = pay.linkStatus === 'not_a_patient' ? null : m.payOwner[i];
     if (!owner) {
       if (!pay.dueDate || pay.dueDate > asOf) return;
-      const got = debtAgingReceivedOn_(raw, pay.dueDate);
+      const got = debtAgingReceivedBy_(prow, pay, asOf, pay.dueDate);
       detachedRows.push({
         paymentId: pay.id, patientName: pay.patientName, houseId: pay.houseId, dueDate: pay.dueDate,
-        amount: refundRound2_(pay.amount), receivedByAsOf: got.iso <= asOf ? refundRound2_(pay.amountPaid) : 0,
+        amount: refundRound2_(pay.amount), receivedByAsOf: got.received,
         receivedDateKnown: got.known,
         reason: pay.linkStatus === 'not_a_patient' ? 'not_a_patient' : 'unmatched',
       });
       return;
     }
-    rowsByPatient[m.patients.indexOf(owner.patient)].push({ pay: pay, raw: raw });
+    rowsByPatient[m.patients.indexOf(owner.patient)].push({ pay: pay, raw: raw, prow: prow });
   });
 
   const patientsOut = [];
@@ -7528,10 +8162,9 @@ function debtAging_(asOfIso, tabs) {
       }
       if (exit && end > exit) end = exit;
       const expected = refundRound2_(Number(recApplyOverride_(pay, m.overrides).amount) || 0);
-      const got = debtAgingReceivedOn_(o.raw, start);
-      const paid = refundRound2_(pay.amountPaid);
-      if (!got.known && paid > 0) { unknownDate.count++; unknownDate.amount = refundRound2_(unknownDate.amount + paid); }
-      const received = got.iso <= asOf ? paid : 0;
+      const got = debtAgingReceivedBy_(o.prow, pay, asOf, start);
+      if (got.unknownAmount > 0) { unknownDate.count++; unknownDate.amount = refundRound2_(unknownDate.amount + got.unknownAmount); }
+      const received = got.received;
       const balance = refundRound2_(Math.max(0, expected - received));
       if (balance <= 0) { settled++; return; }
       const days = asOfN - refundDayNum_(start);
@@ -7927,7 +8560,10 @@ function cleanupNoFunder_(m, funderObjs) {
 function cleanupReport_(todayIso, tabs) {
   let today;
   try { today = debtAgingAsOf_(todayIso); } catch (e) { return { ok: false, error: 'bad_today' }; }
-  const t = tabs || {};
+  // Receipts (Phase 3 PR 2) are not cycles: derive once here, so every
+  // section below indexes the same rows recModel_ does (cleanupGaps_ reads
+  // tabs.payments.rows in parallel with m.payments).
+  const t = paymentTabsDerived_(tabs || {});
   const objs = function (k) { return ((t[k] && t[k].rows) || []).map(function (r) { return r.obj; }); };
   const m = recModel_(t, today);
   const rec = recBuildReport_(t, today);
@@ -11009,8 +11645,12 @@ function accountingPayments_(params) {
 
   const items = [];
   let identityPending = 0;
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i];
+  /* Receipt rows (Phase 3 PR 2) are not exported: the feed's contract is one
+   * record per cycle, and each cycle row already carries the total of its
+   * receipts (written by reportPayment_ and on every void). */
+  const cyclesOnly = paymentCyclesDerived_(rows);
+  for (let i = 0; i < cyclesOnly.length; i++) {
+    const r = cyclesOnly[i];
     if (!accStr_(r.paymentUid)) identityPending++;
     const uid = accStr_(r.paymentUid) || accStr_(r.id);
     if (!uid) continue;   // a row with no identity at all is not exportable
@@ -11299,6 +11939,7 @@ function digestRow_(obj, ledger) {
      * still decided by chargedAt — "recorded since the last digest". */
     paymentDate: digestDmyFromIso_(paymentReportDate_(obj.receivedDate) || asISODate_(obj.dueDate)),
     method: digestMethod_(obj),
+    reference: String(obj.reference == null ? '' : obj.reference).trim(),
     recordedBy: String(obj.chargedBy == null ? '' : obj.chargedBy).trim(),
     recordedAt: isFinite(instant) ? String(Utilities.formatDate(new Date(instant), DIGEST_TZ, 'dd/MM/yyyy HH:mm')) : '',
     updated: !!prior,
@@ -11310,8 +11951,13 @@ function digestRow_(obj, ledger) {
  * .obj); keeps paid/partial, non-void rows recorded in (sinceMs, untilMs]. */
 function digestSelect_(rowObjs, sinceMs, untilMs, ledger) {
   const out = [];
+  /* One line per money received (Phase 3 PR 2): a cycle that has receipt
+   * rows is listed through them, never itself — its re-derived amountPaid
+   * would count the same money twice. A legacy row is listed as before. */
+  const paidByReceipts = linkReceiptsToCycles_(rowObjs).byCycle;
   for (let i = 0; i < rowObjs.length; i++) {
     const o = rowObjs[i];
+    if (paidByReceipts[i]) continue;
     if (isVoidStatus_(o.status)) continue;
     if (!paymentIsCharged_(o.status)) continue;
     const t = digestInstant_(o.chargedAt);
@@ -11360,7 +12006,7 @@ function digestCompose_(rows, ctx) {
     return { subject: subject, htmlBody: html, body: text, count: 0, total: 0 };
   }
 
-  const head = ['מטופל', 'בית', 'סכום (כולל מע״מ)', 'תאריך תשלום', 'אמצעי', 'נרשם ע״י', 'נרשם ב-', ''];
+  const head = ['מטופל', 'בית', 'סכום (כולל מע״מ)', 'תאריך תשלום', 'אמצעי', 'אסמכתא', 'נרשם ע״י', 'נרשם ב-', ''];
   let html = wrap + '<p style="margin:0 0 10px;">' + digestEsc_(windowText) + '</p>' +
     '<table dir="rtl" cellpadding="0" cellspacing="0" style="border-collapse:collapse;direction:rtl;">' +
     '<tr>' + head.map(function (h) { return '<th style="' + th + '">' + digestEsc_(h) + '</th>'; }).join('') + '</tr>';
@@ -11371,9 +12017,9 @@ function digestCompose_(rows, ctx) {
       ? 'עודכן' + (r.previousAmount !== null ? ' (נשלח קודם: ' + digestMoney_(r.previousAmount) + ')' : '')
       : '';
     const cells = [r.patientName || '—', r.houseLabel, digestMoney_(r.amount), r.paymentDate || '—',
-      r.method || '—', r.recordedBy || '—', r.recordedAt || '—', flag];
+      r.method || '—', r.reference || '—', r.recordedBy || '—', r.recordedAt || '—', flag];
     html += '<tr>' + cells.map(function (c, j) {
-      const style = td + (j === 2 ? 'white-space:nowrap;' : '') + (j === 7 && c ? 'color:#9a6700;font-weight:bold;' : '');
+      const style = td + (j === 2 ? 'white-space:nowrap;' : '') + (j === 8 && c ? 'color:#9a6700;font-weight:bold;' : '');
       return '<td style="' + style + '">' + digestEsc_(c) + '</td>';
     }).join('') + '</tr>';
     lines.push(cells.map(digestPlain_).filter(function (c) { return c; }).join(' | '));
@@ -11394,7 +12040,7 @@ function digestCompose_(rows, ctx) {
   html += note + link + '</div>';
 
   const text = digestPlain_(windowText) + '\n\n' +
-    'מטופל | בית | סכום | תאריך תשלום | אמצעי | נרשם ע״י | נרשם ב-\n' + lines.join('\n') +
+    'מטופל | בית | סכום | תאריך תשלום | אמצעי | אסמכתא | נרשם ע״י | נרשם ב-\n' + lines.join('\n') +
     '\n\nסיכום לפי בית:\n' + sumLines.join('\n') +
     '\nסה״כ: ' + totals.count + ' תשלומים, ' + digestMoney_(totals.amount) +
     '\n\n«נרשם» = דווח כשולם בדשבורד, לא אישור שהכסף הגיע לבנק. הסכומים כוללים מע״מ.' +
@@ -12744,6 +13390,9 @@ function recOverride_(r) {
 
 /* The whole data set, normalized. Pure over the read tabs. */
 function recModel_(tabs, todayISO) {
+  // Receipt rows (Phase 3 PR 2) are not cycles: every check below sees the
+  // cycles, with their money derived from their receipts. Idempotent.
+  tabs = paymentTabsDerived_(tabs);
   const rows = function (k) { return (tabs[k] && tabs[k].rows) || []; };
   const name = function (k) { return (tabs[k] && tabs[k].sheet) || k; };
   const leads = rows('leads').map(function (r) { return recLead_(r, name('leads')); });

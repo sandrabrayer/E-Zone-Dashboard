@@ -832,6 +832,8 @@ test('column contracts unchanged: PATIENT_COLUMNS, PAYMENT_COLUMNS, PATIENT_TOMB
     'receivedDate', 'method', 'payer', 'funder', 'reference',
     'recordedBy', 'recordedAt',
     'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
+    // And for one row per money received (CHANGELOG-payment-report-form.md).
+    'legacyAmountPaid',
   ]);
   assert.deepEqual(arr(code.PATIENT_TOMBSTONE_COLUMNS), [
     'houseId', 'name', 'date', 'pay', 'adv', 'status', 'fromLead', 'exitDate', 'source', 'notes',

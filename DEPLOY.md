@@ -146,6 +146,15 @@ Until a row exists for a patient, the patient counts as **פרטי** and is list
 in «ייצוא רשימת תיקונים» → «חסר גורם מממן». A change of funder is a **new
 row** with a later `effectiveFrom` — never edit or delete a row.
 
+## Payments — the «דווח תשלום» form (October 4, 2026)
+
+`CHANGELOG-payment-report-form.md`. **No manual step.** Column 36,
+`legacyAmountPaid`, is added to `Payments` on the first read after deploy.
+The `Funders` tab is created by the first funder save if it does not exist
+yet. If column 36 (or 25–35) of `Payments` holds a hand-added header, every
+report is refused (`sheet_header_clash`) and nothing is written until it is
+moved.
+
 ## Accounting source feed — one Script Property to set
 
 The Dashboard Apps Script gained two READ-ONLY actions for the external

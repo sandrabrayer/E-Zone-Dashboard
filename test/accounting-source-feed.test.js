@@ -268,11 +268,13 @@ test('A: PAYMENT_COLUMNS appends seven accounting columns and moves nothing', ()
     'linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt',
   ]);
   // …and the payment report (CHANGELOG-payment-report-foundation.md) after those.
-  assert.deepEqual(cols.slice(24), [
+  assert.deepEqual(cols.slice(24, 35), [
     'receivedDate', 'method', 'payer', 'funder', 'reference',
     'recordedBy', 'recordedAt',
     'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
   ]);
+  // …and one row per money received (CHANGELOG-payment-report-form.md).
+  assert.deepEqual(cols.slice(35), ['legacyAmountPaid']);
 });
 
 test('A: CREDIT_COLUMNS appends creditUid at the END, nothing else moves', () => {

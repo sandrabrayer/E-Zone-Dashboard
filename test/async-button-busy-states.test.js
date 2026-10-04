@@ -192,14 +192,15 @@ test('renewPatient returns a promise the busy wrapper can await', async () => {
   assert.strictEqual(saved.status, 'paid');
 });
 
-/* ===== billing row controls freeze during savePayment ===== */
+/* ===== Phase 3 PR 2: the גבייה row no longer edits money =====
+ * The status select and «שולם בפועל» input this test used to freeze are
+ * gone: a row shows its DERIVED state and a «דווח תשלום» button that opens
+ * the strict form (test/payment-report-form.test.js). */
 
-test('billing status change freezes the row controls until savePayment settles', async () => {
-  app.setState({ mode: 'edit', payments: [] });
-  const d = deferred();
-  app.setSavePayment(() => d.promise);
-
-  holder.created.length = 0;
+test('the billing row has no status select / paid input — it offers «דווח תשלום» instead', () => {
+  app.setState({ mode: 'edit', payments: [], finance: true });
+  let writes = 0;
+  app.setSavePayment(async () => { writes++; });
   const row = app.buildBillingRow(
     { houseId: 'ramot', name: 'א', date: '2026-01-05', pay: 7000, status: 'active' },
     { id: 'pay::x::2026-08-05', patientId: 'x', patientName: 'א', houseId: 'ramot',
@@ -207,20 +208,11 @@ test('billing status change freezes the row controls until savePayment settles',
     '2026-08-05',
     false
   );
-  const statusSel = row.querySelector('.billing-status');
-  const paidInput = row.querySelector('.billing-paid');
-
-  statusSel.value = 'paid';
-  statusSel.onchange();
-  assert.strictEqual(statusSel.disabled, true, 'select frozen while save pending');
-  assert.strictEqual(paidInput.disabled, true, 'paid input frozen while save pending');
-  assert.strictEqual(row.classList.contains('saving'), true, 'row dimmed');
-
-  d.resolve();
-  // Cross-realm promise adoption (vm async fn awaiting a host promise) takes a
-  // few extra microtask ticks — a short macrotask wait is deterministic.
-  await new Promise(r => setTimeout(r, 20));
-  assert.strictEqual(statusSel.disabled, false, 're-enabled after settle');
-  assert.strictEqual(paidInput.disabled, false);
-  assert.strictEqual(row.classList.contains('saving'), false);
+  const html = row.innerHTML;
+  assert.ok(!/class="billing-status"/.test(html), 'no status <select>');
+  assert.ok(!/class="billing-paid"/.test(html), 'no «שולם בפועל» input');
+  assert.ok(/bill-report-btn/.test(html), 'the «דווח תשלום» button');
+  assert.ok(html.includes('לא שולם'), 'the derived state is shown');
+  assert.strictEqual(writes, 0, 'building a row writes nothing');
 });
+

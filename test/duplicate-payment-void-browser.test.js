@@ -288,11 +288,12 @@ test('the גבייה row shows a void payment as void, and will not let it be ed
       await page.waitForSelector('.billing-row');
       const badges = await page.$$eval('.badge.void', (els) => els.map((e) => e.textContent.trim()));
       assert.ok(badges.includes('מבוטל'), 'got ' + JSON.stringify(badges));
-      // Its select is disabled: the way back is the שיוך תשלומים screen, where
-      // the decision was taken and where the audit trail lives.
-      const anyEnabled = await page.$$eval('.billing-row',
+      // It offers no «דווח תשלום» (Phase 3 PR 2 — no status dropdown exists
+      // any more): the way back is the שיוך תשלומים screen, where the
+      // decision was taken and where the audit trail lives.
+      const anyEditable = await page.$$eval('.billing-row',
         (rows) => rows.some((r) => r.querySelector('.badge.void')
-          && !r.querySelector('.billing-status').disabled));
-      assert.strictEqual(anyEnabled, false);
+          && (r.querySelector('.bill-report-btn') || r.querySelector('select.billing-status'))));
+      assert.strictEqual(anyEditable, false);
     });
   });

@@ -122,7 +122,13 @@
 // cancel controls show only for a deleter, un-void only for Sandra. app.js,
 // index.html and style.css changed — evict v28 so no phone keeps the shared
 // login. Every /api/ route stays network-only (never cached).
-var CACHE_VERSION = 'v29';
+// v29 → v30: Phase 3 PR 2 — the strict «דווח תשלום» form. The גבייה row's
+// status dropdown and «שולם בפועל» box are gone; a row shows its derived
+// state, its receipts and a «דווח תשלום» button; the patient card gains the
+// funder editor. app.js, index.html, style.css changed and the page loads a
+// new /payment-report-rules.js (network-first like app.js) — evict v29 so no
+// phone keeps the old editable status. /api/ stays network-only.
+var CACHE_VERSION = 'v30';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
@@ -161,6 +167,7 @@ function cacheStrategy(url) {
   // Shell + JS/CSS bundle: network-first (offline fallback only).
   if (path === '/' || path === '/index.html') return 'network-first';
   if (path === '/app.js' || path === '/style.css') return 'network-first';
+  if (path === '/payment-report-rules.js') return 'network-first';
 
   // Truly versioned-by-filename static assets: cache-first.
   if (path === '/manifest.json') return 'cache-first';
