@@ -2,8 +2,10 @@
 
 Branch `claude/intelligent-gates-roo3yc-invoice` → base
 `claude/build-ezone-dashboard-QOg5s` (built off the deploy branch, **not**
-stacked on the pro-bono PR #183; the two touch different lines and merge in
-either order). `apps-script/Code.gs` deploys through the clasp CI on merge —
+stacked on the pro-bono PR #183). The code merges cleanly with #183 in
+either order; only `public/sw.js` (keep v38 and both comment blocks) and
+`EZONE-ECOSYSTEM-STATUS.md` (keep both sections) need a trivial hand-merge.
+The combined tree was tested: 2174 tests, all green. `apps-script/Code.gs` deploys through the clasp CI on merge —
 do not paste it by hand. Service worker `CACHE_VERSION` **v34 → v38**: v35,
 v36 and v37 are held by open PRs #181, #182 and #183. v38 evicts every older
 cache.

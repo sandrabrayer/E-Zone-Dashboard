@@ -436,7 +436,8 @@ test('«ייצוא אימות»: «חשבונית» / «על שם» columns afte
   assert.ok(lines.some((l) => l.includes('|פרטי|—|—|')), 'legacy → «—»');
 });
 
-test('SW: v38 (above the live v34 and open PRs #181 / #182 / #183), with its bump comment', () => {
-  assert.ok(/var CACHE_VERSION = 'v38';/.test(SW_SRC));
+test('SW: at least v38 (above the live v34 and open PRs #181 / #182 / #183), with its bump comment', () => {
+  const v = Number((SW_SRC.match(/var CACHE_VERSION = 'v(\d+)';/) || [])[1]);
+  assert.ok(v >= 38, 'v' + v);   // a later PR may bump it again
   assert.ok(SW_SRC.includes('v37 → v38:'));
 });
