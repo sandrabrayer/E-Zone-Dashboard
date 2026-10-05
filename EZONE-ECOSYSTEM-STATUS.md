@@ -667,7 +667,8 @@ workbook tab on Railway. **No user-facing change** on the dashboard screens;
   not move.
 - New tab **`Funders`** (`patientId`, `funder`, `effectiveFrom`, `setBy`,
   `setAt`), append-only; `currentFunder_` → latest `effectiveFrom` ≤ date,
-  default **פרטי**. Created by the editor-run `setupFundersSheetNow`.
+  ~~default **פרטי**~~ — **no default since Oct 4 (see below): missing =
+  unset «לא הוגדר»**. Created by the editor-run `setupFundersSheetNow`.
 - `validatePaymentReport_` (Code.gs) + `lib/payment-report-rules.js`
   (mirror, parity-tested). **Not enforced yet** on `savePayment` (Phase 3
   PR 2 wires the form).
@@ -703,6 +704,26 @@ Phase 3 of `docs/billing-control-plan.md` is complete.
   `/payment-report-rules.js` (the same `lib/` file). SW `CACHE_VERSION`
   v29 → v30.
 - No new env var, Script Property, scope or trigger.
+
+## Dashboard: patient funder on the Funders sheet — no default (October 4, 2026)
+
+Detail: `CHANGELOG-patient-funder-on-funders.md`. Apps Script **and** Railway.
+Supersedes #174 / #175 (closed by Sandra).
+
+- **`Funders` is the single source of truth** for the funder (גורם מממן).
+  Stored values stay the Hebrew `PAYMENT_FUNDERS` labels (no migration).
+  **`FunderHistory` / `setPatientFunder` never shipped.**
+- **Missing = unset.** No `Funders` row, or an unrecognized effective label →
+  «לא הוגדר» (`unset`), never «פרטי». `reportPayment` with no funder for an
+  unset patient is refused (`funder_unset`) instead of writing «פרטי».
+- New `public/funder.js` (labels → keys `private`/`btl`/`mod`/`maccabi`,
+  `funderAt`, `debtByFunder`). Finance-only UI: amber «לא הוגדר» on the card,
+  funder required at admission, «השלמת גורם מממן» on גבייה (incl. released
+  patients with open debt), funder filter, funder × house strip on «חובות
+  פתוחים» (recorded / unrecorded never summed). Restricted users: no funder
+  UI, admission unchanged.
+- SW `CACHE_VERSION` v30 → **v32** (v31 is held by open PR #177).
+- No new action, env var, Script Property, scope or trigger.
 
 ## Apps Script topology (July 4)
 

@@ -268,6 +268,8 @@ app.get('/payment-report-rules.js', (_req, res) => {
   }
 });
 app.get('/style.css', sendStatic('style.css', 'text/css'));
+// Patient funder helpers (public/funder.js, global Funder) — loaded before app.js.
+app.get('/funder.js', sendStatic('funder.js', 'application/javascript'));
 
 /* PWA assets. Without these explicit routes they hit the 404 fallback, because
  * serving is hand-rolled (no express.static). The no-cache headers set above

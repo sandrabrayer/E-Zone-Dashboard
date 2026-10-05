@@ -7,8 +7,9 @@
  *     cycle, sends a bank transfer WITHOUT a reference → the inline Hebrew
  *     error under «מספר אסמכתא», nothing sent; fills it → the toast «התשלום
  *     נרשם — יופיע אצל אורטל מחר בבוקר», the row shows «שולם» and the receipt;
- *     Code.gs holds the cycle + ONE receipt row. The patient card shows
- *     «פרטי (ברירת מחדל)».
+ *     Code.gs holds the cycle + ONE receipt row. There is no default funder
+ *     (CHANGELOG-patient-funder-on-funders.md): the form opens with the
+ *     funder EMPTY and the patient card shows the amber «לא הוגדר».
  *   Shiran (no finance): no «דווח תשלום», no form, no funder editor; a direct
  *     POST of reportPayment / appendFunder gets 403.
  *
@@ -141,7 +142,8 @@ test('«דווח תשלום» at 360px: one inline error, nothing sent; then suc
     await modal.waitFor({ state: 'visible' });
     assert.match(await modal.textContent(), /דנה כהן/);
     assert.equal(await page.inputValue('#pr-amount'), '30000', 'the expected amount is prefilled');
-    assert.equal(await page.inputValue('#pr-funder'), 'פרטי', 'the patient\'s current funder (none → פרטי)');
+    assert.equal(await page.inputValue('#pr-funder'), '', 'no Funders row → empty: there is no default funder');
+    await page.selectOption('#pr-funder', 'ביטוח לאומי');
 
     // One error: a bank transfer with no reference.
     await page.fill('#pr-receivedDate', YESTERDAY);
@@ -187,7 +189,8 @@ test('«דווח תשלום» at 360px: one inline error, nothing sent; then suc
     // The patient card: the funder, finance-only.
     await page.locator('.tabs .tab[data-screen="occupancy"]').click();
     await page.waitForSelector('.patient-funder', { state: 'visible' });
-    assert.match(await page.locator('.patient-funder').first().textContent(), /פרטי \(ברירת מחדל\)/);
+    assert.match(await page.locator('.patient-funder').first().textContent(), /לא הוגדר/);
+    assert.equal(await page.locator('.patient-funder .funder-chip.funder-unset').count() > 0, true, 'the amber badge');
     assert.deepEqual(v.errors, [], 'no page errors');
     await v.ctx.close();
 

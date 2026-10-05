@@ -329,6 +329,8 @@ const state = {
    * Foundation phase: populated on load and plumbed through state only — no UI
    * reads it yet. Empty until the first load / on older deploys. */
   billingOverrides: [],
+  /* גבייה funder filter: 'all' | a funder key (public/funder.js) | 'unset'. */
+  billingFunder: 'all',
   /* House-id → manager-name roster returned by getData (HOUSE_MANAGERS in
    * Code.gs). Populated in loadAll; the meetingWith dropdown and the meetings
    * board read it instead of hardcoding names. '{}' until the first load. */
@@ -1181,6 +1183,7 @@ function initPin() {
   initTabs();
   initPayoutForecastControls();
   initDebtAgingControls();
+  initFunderControls();
   // Restricted view: the server served <body class="view-restricted"> to a
   // session without `finance`, so the view is known BEFORE the first load —
   // the money tabs go now and loadAll never asks for getPayments / getCredits.
@@ -5464,10 +5467,12 @@ function openEntryModal(lead) {
       { name: 'status', label: 'סטטוס', type: 'select',
         value: 'trial',
         options: STATUS_OPTIONS.filter(s => s.id !== 'released').map(s => ({ value: s.id, label: s.label })) },
-    ],
+    ].concat(admissionFunderFields()),
     submitLabel: 'אשר כניסה',
     onSubmit: async v => {
       if (!v.houseId || !v.date || !v.pay) { showError('שדות חסרים'); return false; }
+      const funderErr = admissionFunderError(state.finance, v.funder);
+      if (funderErr) { showError(funderErr); return false; }
       const patient = normalizePatient({
         id: cryptoId(),
         houseId: v.houseId,
@@ -5505,6 +5510,7 @@ function openEntryModal(lead) {
         showError('שמירה נכשלה — ' + e.message);
         return false;
       }
+      await saveAdmissionFunder(patient, v.funder);
       return true;
     }
   });
@@ -5535,13 +5541,15 @@ function openDirectAddPatientModal() {
           { value: 'released', label: 'יצא' },
         ] },
       { name: 'notes', label: 'הערות', type: 'textarea' },
-    ],
+    ].concat(admissionFunderFields()),
     submitLabel: 'הוסף מטופל',
     onSubmit: async v => {
       if (!v.name || !v.houseId || !v.date || !v.pay) {
         showError('שדות חובה חסרים');
         return false;
       }
+      const funderErr = admissionFunderError(state.finance, v.funder);
+      if (funderErr) { showError(funderErr); return false; }
       const patient = normalizePatient({
         id: cryptoId(),
         houseId: v.houseId,
@@ -5567,6 +5575,7 @@ function openDirectAddPatientModal() {
         showError('שמירה נכשלה — ' + e.message);
         return false;
       }
+      await saveAdmissionFunder(patient, v.funder);
       return true;
     }
   });
@@ -7443,7 +7452,19 @@ function renderDebtAging() {
     box.innerHTML = `<div class="card billing-empty">${escapeHtml('פתחו את הסעיף כדי לטעון')}</div>`;
     return;
   }
-  box.innerHTML = debtAgingHtml(s.data, { house: s.house, status: s.statusFilter }, debtAgingTodayIso());
+  const filters = { house: s.house, status: s.statusFilter };
+  if (!funderView()) {
+    box.innerHTML = debtAgingHtml(s.data, filters, debtAgingTodayIso());
+    renderFunderFill();
+    return;
+  }
+  // Funder view: the strip splits the SAME report (house/status filters, all
+  // funders); the blocks and drill-down below follow the funder filter.
+  const strip = debtFunderStripHtml(debtFunderStrip(s.data, state.funders, filters));
+  const shown = filterDebtReportByFunder(s.data, state.funders, billingFunderFilter());
+  box.innerHTML = strip + debtAgingHtml(shown, filters, debtAgingTodayIso());
+  // The fill screen counts released patients by the debt this report shows.
+  renderFunderFill();
 }
 
 /* Pure: the export URL for the current controls. */
@@ -7514,6 +7535,276 @@ function initDebtAgingControls() {
   if (exp) exp.onclick = () => busyButton(exp, 'load', exportDebtAgingXlsx)
     .catch(e => showError('הייצוא נכשל — ' + ((e && e.message) || 'שגיאה')));
   renderDebtAging();
+}
+
+/* ===== Patient funder (גורם מממן) on the Funders sheet =====
+ * CHANGELOG-patient-funder-on-funders.md. The source of truth is the existing
+ * append-only Funders sheet (#173/#176): state.funders comes from getPayments,
+ * every write is action=appendFunder (saveFunder), and the card's funder field
+ * and editor are #176's (patientFunderCellHtml / openFunderModal). This block
+ * adds, for the FINANCE VIEW ONLY:
+ *   - the funder REQUIRED at admission (direct add + admit-from-lead);
+ *   - «השלמת גורם מממן — X נותרו» on גבייה;
+ *   - the funder filter on the billing lists and «חובות פתוחים»;
+ *   - the funder × house strip (Funder.debtByFunder over the SAME debtAging
+ *     report and as-of the view uses; the two figures are never summed).
+ * There is NO default funder: no row → «לא הוגדר». A restricted session
+ * (Shiran, Yael) gets none of it and never sends appendFunder.
+ * public/funder.js (global Funder) maps the stored labels to stable keys. */
+const FUNDER_UNSET_KEY = 'unset';
+const FUNDER_UNSET_LABEL = 'לא הוגדר';
+const FUNDER_FILTER_ALL = 'all';
+const FUNDER_REQUIRED_MESSAGE = 'יש לבחור גורם מממן';
+const FUNDER_RELEASED_DEBT_TAG = 'שוחרר/ה · יתרה פתוחה';
+
+/* The funder module, or null when funder.js did not load. */
+function funderLib() {
+  return (typeof Funder !== 'undefined' && Funder && typeof Funder.funderAt === 'function') ? Funder : null;
+}
+
+/* True only for a session KNOWN to have `finance` (Sandra, Vered), with
+ * funder.js loaded. Unknown (before /api/me) or restricted → false. */
+function funderView() {
+  return state.finance === true && !!funderLib();
+}
+
+/* The day a patient's funder is read on: today, or the exit day of a
+ * patient who already left. Pure. */
+function patientFunderDay(p, today) {
+  const t = today || todayISO();
+  const exit = p ? isoDate(p.exitDate) : '';
+  return exit && exit < t ? exit : t;
+}
+
+/* The funder KEY of a patient on `day` (default: patientFunderDay), or 'unset'. Pure. */
+function patientFunderKey(p, funders, today, day) {
+  const F = funderLib();
+  if (!F || !p) return FUNDER_UNSET_KEY;
+  return F.funderAt(Array.isArray(funders) ? funders : state.funders, patientUid(p), day || patientFunderDay(p, today));
+}
+
+/* The admission rule: a finance session must pick one of the four labels; a
+ * restricted (or unknown) session never sees the field and is never blocked.
+ * '' = OK. Pure. */
+function admissionFunderError(finance, value) {
+  if (finance !== true || !funderLib()) return '';
+  return paymentFunderLabels().indexOf(value) >= 0 ? '' : FUNDER_REQUIRED_MESSAGE;
+}
+
+/* The select options for a funder field: the stored labels as values (the
+ * Funders sheet keeps labels), escaped for showModal, led by «— בחרו —». */
+function funderSelectOptions() {
+  return [{ value: '', label: '— בחרו —' }].concat(paymentFunderLabels().map(f => ({ value: escapeHtml(f), label: escapeHtml(f) })));
+}
+
+/* The funder field an admission modal adds (none outside the finance view). */
+function admissionFunderFields() {
+  if (!funderView()) return [];
+  return [{ name: 'funder', label: 'גורם מממן', type: 'select', required: true, value: '', options: funderSelectOptions() }];
+}
+
+/* The effectiveFrom recorded at admission / offered on the fill screen: the
+ * entry date. appendFunder_ accepts any real date (no future limit today);
+ * an unreadable entry date falls back to today. Pure. */
+function funderEffectiveFromEntry(entryIso, today) {
+  return isoDate(entryIso) || today || todayISO();
+}
+
+/* After an admission saved: append the picked funder from the entry date. A
+ * failure keeps the patient (already saved) and says so in Hebrew; the
+ * patient then shows «לא הוגדר» and waits on the fill screen. */
+async function saveAdmissionFunder(patient, picked) {
+  if (!funderView() || !patient || paymentFunderLabels().indexOf(picked) < 0) return;
+  try {
+    await saveFunder(patient, picked, funderEffectiveFromEntry(patient.date));
+  } catch (e) {
+    showError('המטופל נשמר, אך שמירת הגורם המממן נכשלה — ' + (isLockBusyError(e) ? LOCK_BUSY_MESSAGE_HE : ((e && e.message) || 'שגיאה')));
+  }
+}
+
+/* Patient ids with an OPEN balance: owed cycles in the loaded debtAging
+ * report, or an unpaid / partial past-due row in «יתרות פתוחות». Read from
+ * what the page already holds — no new endpoint. Pure. */
+function openDebtPatientIds(report, payments, patients, today) {
+  const ids = {};
+  ((report && Array.isArray(report.byPatient)) ? report.byPatient : []).forEach(p => {
+    if (p && p.patientId && (Array.isArray(p.cycles) ? p.cycles : []).some(c => Number(c && c.balance) > 0)) ids[String(p.patientId)] = true;
+  });
+  const t = today || todayISO();
+  (Array.isArray(payments) ? payments : []).forEach(pay => {
+    if (!pay || isVoidPayment(pay) || (pay.status !== 'unpaid' && pay.status !== 'partial') || !pay.dueDate || pay.dueDate >= t) return;
+    const hit = findPatientForPaymentIn(patients, pay);
+    const uid = patientUid(hit) || paymentPatientUid(pay);
+    if (uid) ids[uid] = true;
+  });
+  return ids;
+}
+
+/* «השלמת גורם מממן»: every patient with an id whose funder today is unset —
+ * not released, or released WITH open debt (tagged «שוחרר/ה · יתרה פתוחה»).
+ * By house, then name; default effectiveFrom = the entry date, so the debt
+ * already accrued is attributed too. Pure. */
+function funderFillRows(patients, funders, today, debtIds) {
+  const F = funderLib();
+  if (!F) return [];
+  const t = today || todayISO();
+  const owes = debtIds || {};
+  const order = HOUSES.map(h => h.id);
+  const rank = h => { const i = order.indexOf(h); return i < 0 ? order.length : i; };
+  return (Array.isArray(patients) ? patients : [])
+    .filter(p => p && patientUid(p) && F.funderAt(funders, patientUid(p), t) === FUNDER_UNSET_KEY)
+    .filter(p => p.status !== 'released' || owes[patientUid(p)] === true)
+    .sort((a, b) => (rank(a.houseId) - rank(b.houseId)) || String(a.name || '').localeCompare(String(b.name || ''), 'he'))
+    .map(p => ({ patient: p, released: p.status === 'released', defaultFrom: funderEffectiveFromEntry(p.date, t) }));
+}
+
+/* Pure: the fill screen's HTML ('' when nothing is left). */
+function funderFillHtml(rows) {
+  if (!rows.length) return '';
+  const esc = escapeHtml;
+  const opts = funderSelectOptions().map(o => `<option value="${o.value}">${o.label}</option>`).join('');
+  return `<h3 class="funder-fill-title">השלמת גורם מממן — <span class="count-pill" data-funder-fill-count>${esc(rows.length)}</span> נותרו</h3>`
+    + `<p class="billing-date-label">ברירת המחדל של «בתוקף מתאריך» היא תאריך הכניסה, כך שגם חוב קודם משויך לגורם הנכון.</p>`
+    + rows.map(({ patient: p, released, defaultFrom }) => `<div class="billing-row funder-fill-row" data-patient="${esc(patientUid(p))}">`
+      + `<div><span class="p-label">שם</span><span class="p-name">${esc(p.name || '—')}</span>`
+      + (released ? ` <span class="funder-chip funder-unset funder-released-tag">${esc(FUNDER_RELEASED_DEBT_TAG)}</span>` : '') + `</div>`
+      + `<div><span class="p-label">בית</span><span class="p-val">${esc(houseLabel(p.houseId))}</span></div>`
+      + `<div><span class="p-label">כניסה</span><span class="p-val"><bdi>${esc(formatDateHe(p.date) || '—')}</bdi></span></div>`
+      + `<label class="funder-field"><span class="p-label">גורם מממן</span><select data-fill-funder aria-label="גורם מממן">${opts}</select></label>`
+      + `<label class="funder-field"><span class="p-label">בתוקף מתאריך</span><input type="date" data-fill-from value="${esc(defaultFrom)}" /></label>`
+      + `<button type="button" class="btn small primary" data-fill-save>שמירה</button>`
+      + `</div>`).join('');
+}
+
+function renderFunderFill() {
+  const box = document.getElementById('funder-fill');
+  if (!box) return;
+  let rows = [];
+  if (funderView()) {
+    const today = todayISO();
+    const aging = state.debtAging && state.debtAging.status === 'ok' ? state.debtAging.data : null;
+    rows = funderFillRows(state.patients, state.funders, today, openDebtPatientIds(aging, state.payments, state.patients, today));
+  }
+  box.innerHTML = funderFillHtml(rows);
+  box.classList.toggle('hidden', rows.length === 0);
+}
+
+/* Whether a funder key passes the גבייה filter ('all' | key | 'unset'). Pure. */
+function funderFilterMatch(filter, key) {
+  return !filter || filter === FUNDER_FILTER_ALL || filter === key;
+}
+
+/* A billing row's funder: the patient's funder ON THAT CYCLE'S DUE DATE. */
+function billingRowFunderKey(patient, dueISO) {
+  return patientFunderKey(patient, state.funders, todayISO(), isoDate(dueISO) || todayISO());
+}
+
+/* The active funder filter — 'all' outside the finance view. */
+function billingFunderFilter() {
+  return funderView() ? (state.billingFunder || FUNDER_FILTER_ALL) : FUNDER_FILTER_ALL;
+}
+
+/* The day a debt cycle is attributed on: its start, never after the as-of
+ * date — the same rule as Funder.debtByFunder. Pure. */
+function debtCycleFunderDay(cycle, asOf) {
+  const start = isoDate(cycle && cycle.start);
+  return start && start <= asOf ? start : asOf;
+}
+
+/* The debtAging report keeping only the cycles of funder `filter` (a patient
+ * left with none is dropped); 'all' → the report itself. Pure. */
+function filterDebtReportByFunder(data, funders, filter) {
+  const F = funderLib();
+  if (!F || !data || !filter || filter === FUNDER_FILTER_ALL) return data;
+  const byPatient = (Array.isArray(data.byPatient) ? data.byPatient : []).map(p => Object.assign({}, p, {
+    cycles: (Array.isArray(p.cycles) ? p.cycles : []).filter(c => F.funderAt(funders, p.patientId, debtCycleFunderDay(c, data.asOf)) === filter),
+  })).filter(p => p.cycles.length > 0);
+  return Object.assign({}, data, { byPatient });
+}
+
+/* The report narrowed by the view's house / status filters only (never by
+ * funder) — what the strip splits. Pure. */
+function debtReportForStrip(data, filters) {
+  const f = filters || {};
+  const house = f.house || 'all', status = f.status || 'all';
+  const byPatient = (Array.isArray(data && data.byPatient) ? data.byPatient : [])
+    .filter(p => (house === 'all' || p.houseId === house) && (status === 'all' || debtAgingStatusGroup(p.status) === status));
+  return Object.assign({}, data, { byPatient });
+}
+
+/* The funder × house strip. → { houseIds, recorded_debt, unrecorded_cycles },
+ * each { rows: [{ funder, label, byHouse, total }], totals: { byHouse, total } }.
+ * Columns = the view's houses; totals = the view's block totals. Pure. */
+function debtFunderStrip(data, funders, filters) {
+  const F = funderLib();
+  const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+  const split = F.debtByFunder(debtReportForStrip(data, filters), funders, data.asOf);
+  const houseIds = debtAgingView(data, filters).houseIds;
+  const keys = F.FUNDER_KEYS.concat([F.FUNDER_UNSET]);
+  const block = kind => {
+    const totals = { byHouse: {}, total: 0 };
+    houseIds.forEach(h => { totals.byHouse[h] = 0; });
+    const rows = keys.map(k => {
+      const row = { funder: k, label: F.labelFor(k), byHouse: {}, total: r2(split[k][kind].total) };
+      houseIds.forEach(h => {
+        const v = r2(((split[k].byHouse[h] || {})[kind] || { total: 0 }).total);
+        row.byHouse[h] = v;
+        totals.byHouse[h] = r2(totals.byHouse[h] + v);
+      });
+      totals.total = r2(totals.total + row.total);
+      return row;
+    });
+    return { rows, totals };
+  };
+  return { houseIds, recorded_debt: block('recorded_debt'), unrecorded_cycles: block('unrecorded_cycles') };
+}
+
+/* Pure: the strip's HTML — two tables, never one summed figure. */
+function debtFunderStripHtml(strip) {
+  const esc = escapeHtml;
+  const table = kind => {
+    const b = strip[kind];
+    return `<div class="funder-strip-block" data-block="${esc(kind)}">`
+      + `<h4 class="debt-block-title">${esc(DEBT_AGING_BLOCK_LABELS[kind])} לפי גורם מממן <span class="count-pill">${esc(fmtShekel(b.totals.total))}</span></h4>`
+      + `<div class="debt-table-wrap"><table class="debt-table funder-strip-table"><thead><tr><th>גורם מממן</th>`
+      + strip.houseIds.map(h => `<th>${esc(debtAgingHouseName(h))}</th>`).join('') + `<th>סה"כ</th></tr></thead><tbody>`
+      + b.rows.map(r => `<tr data-funder="${esc(r.funder)}"><th>`
+        + (r.funder === FUNDER_UNSET_KEY ? `<span class="funder-chip funder-unset">${esc(r.label)}</span>` : esc(r.label)) + `</th>`
+        + strip.houseIds.map(h => `<td data-house="${esc(h)}">${esc(fmtShekel(r.byHouse[h]))}</td>`).join('')
+        + `<td class="debt-row-total">${esc(fmtShekel(r.total))}</td></tr>`).join('')
+      + `</tbody><tfoot><tr class="debt-col-totals"><th>סה"כ</th>`
+      + strip.houseIds.map(h => `<td data-house="${esc(h)}">${esc(fmtShekel(b.totals.byHouse[h]))}</td>`).join('')
+      + `<td class="debt-row-total">${esc(fmtShekel(b.totals.total))}</td></tr></tfoot></table></div></div>`;
+  };
+  return `<div class="funder-strip" data-finance>`
+    + `<p class="billing-date-label">פילוח לפי גורם מממן — כל מחזור משויך לגורם שהיה בתוקף בתחילתו. שני הגושים אינם מסתכמים יחד.</p>`
+    + table('recorded_debt') + table('unrecorded_cycles')
+    + `</div>`;
+}
+
+function initFunderControls() {
+  const sel = document.getElementById('billing-funder');
+  if (sel) {
+    const F = funderLib();
+    sel.innerHTML = `<option value="${FUNDER_FILTER_ALL}">כל הגורמים המממנים</option>`
+      + (F ? F.FUNDER_KEYS.concat([F.FUNDER_UNSET]).map(k => `<option value="${escapeHtml(k)}">${escapeHtml(F.labelFor(k))}</option>`).join('') : '');
+    sel.value = state.billingFunder || FUNDER_FILTER_ALL;
+    sel.onchange = () => { state.billingFunder = sel.value || FUNDER_FILTER_ALL; renderBilling(); renderDebtAging(); };
+  }
+  const box = document.getElementById('funder-fill');
+  if (box && box.addEventListener) box.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest && e.target.closest('[data-fill-save]');
+    if (!btn || !funderView()) return;
+    const row = btn.closest('[data-patient]');
+    const patient = row && state.patients.find(p => patientUid(p) === row.getAttribute('data-patient'));
+    if (!patient) return;
+    const picked = (row.querySelector('[data-fill-funder]') || {}).value || '';
+    const from = isoDate((row.querySelector('[data-fill-from]') || {}).value || '');
+    if (paymentFunderLabels().indexOf(picked) < 0) { showError(FUNDER_REQUIRED_MESSAGE); return; }
+    if (!from) { showError('יש לבחור תאריך תחילה תקין'); return; }
+    busyButton(btn, 'save', () => saveFunder(patient, picked, from))
+      .catch(e => showError('שמירת הגורם המממן נכשלה — ' + (isLockBusyError(e) ? LOCK_BUSY_MESSAGE_HE : ((e && e.message) || 'שגיאה'))));
+  });
 }
 
 /* True only for the "released to outpatient" disposition — the single trigger
@@ -8944,7 +9235,9 @@ function renderBilling() {
    * FILTERED due list — same "counts match what the list shows" rule as the
    * discharged tab — so while searching they read as the subset's totals. */
   const q = state.billingSearch;
-  const due = dueAll.filter(d => billingRowMatchesQuery(d.patient, d.payment, q));
+  const funderFilter = billingFunderFilter();
+  const due = dueAll.filter(d => billingRowMatchesQuery(d.patient, d.payment, q)
+    && funderFilterMatch(funderFilter, billingRowFunderKey(d.patient, selected)));
 
   /* KPI totals sum the payment records' EFFECTIVE amounts (override-aware via
    * paymentForPatientOnDate) — previously totalDue summed the base pay
@@ -8978,6 +9271,7 @@ function renderBilling() {
   renderBillingDueList(due, selected, dueAll.length);
   renderBillingOpenList(selected);
   renderBillingMonthlySummary(selected);
+  renderFunderFill();
 }
 
 /* Says, under the גבייה KPI cards, that N cycles on this date predate the
@@ -9041,7 +9335,9 @@ function renderBillingOpenList(selectedISO) {
       return { patient, pay };
     });
 
-  const matched = openAll.filter(o => billingRowMatchesQuery(o.patient, o.pay, state.billingSearch));
+  const funderFilter = billingFunderFilter();
+  const matched = openAll.filter(o => billingRowMatchesQuery(o.patient, o.pay, state.billingSearch)
+    && funderFilterMatch(funderFilter, billingRowFunderKey(o.patient, o.pay.dueDate)));
   /* Cycles before the records cutoff are not debt (see RECORDS_COMPLETE_FROM).
    * They are still LISTED — under their own heading, after the real balances —
    * because a cycle that vanishes from every screen is indistinguishable from
@@ -10398,23 +10694,32 @@ function adoptCycleEcho(cycle) {
 
 /* ---- funders ----------------------------------------------------------- */
 
-/* The current funder of a patient — mirrors currentFunderFrom_ in Code.gs:
- * the row with the latest effectiveFrom ≤ asOf (same day: the later setAt);
- * no row → פרטי, marked as the default. Pure. */
-function currentFunderFor(patientId, asOfIso, funders) {
+/* The four funder labels, as stored in the Funders sheet. From the shared
+ * rules (lib/payment-report-rules.js), else funder.js's label map — there is
+ * no inline copy here. */
+function paymentFunderLabels() {
   const rules = paymentReportRules();
-  const known = rules ? rules.PAYMENT_FUNDERS : ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי'];
-  const dflt = rules ? rules.DEFAULT_FUNDER : 'פרטי';
+  if (rules && Array.isArray(rules.PAYMENT_FUNDERS)) return rules.PAYMENT_FUNDERS.slice();
+  const F = funderLib();
+  return F ? Object.keys(F.LABEL_TO_KEY) : [];
+}
+
+/* The current funder of a patient — mirrors currentFunderFrom_ in Code.gs:
+ * the row with the latest effectiveFrom ≤ asOf (same day: the later setAt,
+ * then the later row). NO DEFAULT: no row, or an unrecognized label on the
+ * effective row → { funder: 'unset', unset: true }. Pure. */
+function currentFunderFor(patientId, asOfIso, funders) {
+  const known = paymentFunderLabels();
   const id = String(patientId || '').trim();
   const asOf = asOfIso || todayISO();
   let best = null;
   (Array.isArray(funders) ? funders : state.funders).forEach(r => {
-    if (!r || !id || r.patientId !== id || known.indexOf(r.funder) < 0) return;
+    if (!r || !id || r.patientId !== id) return;
     if (!r.effectiveFrom || r.effectiveFrom > asOf) return;
     if (!best || r.effectiveFrom > best.effectiveFrom || (r.effectiveFrom === best.effectiveFrom && r.setAt >= best.setAt)) best = r;
   });
-  return best ? { funder: best.funder, effectiveFrom: best.effectiveFrom, isDefault: false }
-              : { funder: dflt, effectiveFrom: '', isDefault: true };
+  if (!best || known.indexOf(best.funder) < 0) return { funder: FUNDER_UNSET_KEY, effectiveFrom: '', unset: true };
+  return { funder: best.funder, effectiveFrom: best.effectiveFrom, unset: false };
 }
 
 /* A patient's funder history, newest first. Pure. */
@@ -10426,28 +10731,32 @@ function funderHistoryFor(patientId, funders) {
     .sort((a, b) => (b.effectiveFrom || '').localeCompare(a.effectiveFrom || '') || (b.setAt || '').localeCompare(a.setAt || ''));
 }
 
-/* «פרטי (ברירת מחדל)» when the patient has no Funders row. Pure. */
+/* The text for a current funder: its label, or «לא הוגדר». Pure. */
 function funderLabel(cur) {
-  return cur.isDefault ? `${cur.funder} (ברירת מחדל)` : cur.funder;
+  return !cur || cur.unset ? FUNDER_UNSET_LABEL : cur.funder;
 }
 
-/* The funder cell on the patient card (finance sessions only). */
+/* The funder cell on the patient card (finance view only). Unset is the
+ * amber «לא הוגדר» badge. */
 function patientFunderCellHtml(p) {
-  if (!financeView() || !patientUid(p)) return '';
-  const cur = currentFunderFor(patientUid(p));
+  if (!funderView() || !patientUid(p)) return '';
+  const cur = currentFunderFor(patientUid(p), patientFunderDay(p, todayISO()));
+  const value = cur.unset
+    ? `<span class="funder-chip funder-unset" data-funder="unset">${escapeHtml(FUNDER_UNSET_LABEL)}</span>`
+    : escapeHtml(cur.funder);
   return `<div class="patient-funder" data-finance>
       <span class="p-label">גורם מממן</span>
-      <span class="p-val">${escapeHtml(funderLabel(cur))}
+      <span class="p-val">${value}
         ${state.mode === 'edit' ? '<button type="button" class="btn small funder-edit-btn" title="שינוי גורם מממן">שינוי</button>' : ''}</span>
     </div>`;
 }
 
 function openFunderModal(p) {
-  if (!financeView() || state.mode !== 'edit') return;
+  if (!funderView() || state.mode !== 'edit') return;
   const uid = patientUid(p);
   if (!uid) { showError('מטופל לא מזוהה — יש לשמור את המטופל קודם'); return; }
   const rules = paymentReportRules();
-  const funders = rules ? rules.PAYMENT_FUNDERS : ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי'];
+  const funders = paymentFunderLabels();
   const cur = currentFunderFor(uid);
   const hist = funderHistoryFor(uid).slice(0, 5);
   const root = document.getElementById('modal-root');
@@ -10461,8 +10770,10 @@ function openFunderModal(p) {
         <div class="form-row">
           <label for="funder-select">גורם מממן</label>
           <select id="funder-select" name="funder">
+            ${cur.unset ? '<option value="" selected>בחרו…</option>' : ''}
             ${funders.map(f => `<option value="${escapeHtml(f)}" ${f === cur.funder ? 'selected' : ''}>${escapeHtml(f)}</option>`).join('')}
           </select>
+          <div class="field-error" data-err="funder" role="alert"></div>
         </div>
         <div class="form-row">
           <label for="funder-from">בתוקף מתאריך</label>
@@ -10488,6 +10799,9 @@ function openFunderModal(p) {
     const effectiveFrom = String(form.querySelector('[name="effectiveFrom"]').value || '');
     const errEl = back.querySelector('[data-err="effectiveFrom"]');
     errEl.textContent = '';
+    const funderErr = back.querySelector('[data-err="funder"]');
+    if (funderErr) funderErr.textContent = '';
+    if (funders.indexOf(funder) < 0) { if (funderErr) funderErr.textContent = FUNDER_REQUIRED_MESSAGE; return; }
     const iso = rules ? rules.parseReportDate(effectiveFrom) : effectiveFrom;
     if (!iso) { errEl.textContent = 'יש לבחור תאריך תחילה תקין'; return; }
     return busyButton(submitBtn, 'save', async () => {
@@ -10501,10 +10815,14 @@ function openFunderModal(p) {
   };
 }
 
+/* Append ONE Funders row (action=appendFunder). The single write path for
+ * the card editor, admission and the fill screen. Finance view only — a
+ * restricted session never sends it. */
 async function saveFunder(p, funder, effectiveFrom) {
+  if (!funderView()) throw new Error('אין הרשאה');
   const res = await apiPost({ action: 'appendFunder', funder: { patientId: patientUid(p), funder, effectiveFrom } });
   if (res && res.row) state.funders.push(normalizeFunderRow(res.row));
-  renderPatients();
+  renderAll();
   showToast('הגורם המממן נשמר');
   return res;
 }
@@ -10539,7 +10857,9 @@ function paymentReportDefaults(patient, payment, dueDateISO, todayIso) {
       method: '',
       payer: '',
       reference: '',
-      funder: currentFunderFor(uid).funder,
+      // No default: an unset funder leaves the field empty, so the report
+      // must name one (validatePaymentReport_ → «חסר: גורם מממן»).
+      funder: (cur => (cur.unset ? '' : cur.funder))(currentFunderFor(uid)),
       coverageStart: covStart,
       coverageEnd: covEnd,
     },
@@ -10561,7 +10881,7 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
   if (isVoidPayment(payment)) return;
   const rules = paymentReportRules();
   const methods = rules ? rules.PAYMENT_METHODS : [];
-  const funders = rules ? rules.PAYMENT_FUNDERS : [];
+  const funders = paymentFunderLabels();
   const today = rules ? rules.jerusalemToday() : todayISO();
   const d = paymentReportDefaults(patient, payment, dueDateISO, today);
   const house = houseById(d.cycle.houseId);
@@ -10607,7 +10927,7 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
         </div>
         <div class="form-row">
           <label for="pr-funder">גורם מממן *</label>
-          <select id="pr-funder" name="funder" aria-describedby="pr-err-funder">${opt(funders, d.report.funder, '')}</select>
+          <select id="pr-funder" name="funder" aria-describedby="pr-err-funder">${opt(funders, d.report.funder, 'בחרו…')}</select>
           ${err('funder')}
         </div>
         <div class="form-row pr-cov-row">

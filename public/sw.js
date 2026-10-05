@@ -128,7 +128,13 @@
 // funder editor. app.js, index.html, style.css changed and the page loads a
 // new /payment-report-rules.js (network-first like app.js) — evict v29 so no
 // phone keeps the old editable status. /api/ stays network-only.
-var CACHE_VERSION = 'v30';
+// v31 → v32: (v31 is reserved by open PR #177; this evicts v30 or v31) patient funder on the Funders sheet — no default funder (an
+// unset patient shows the amber «לא הוגדר»), the funder required at
+// admission, «השלמת גורם מממן» and the funder filter + funder × house strip
+// on גבייה, all finance-only. New script public/funder.js (precached,
+// network-first like app.js); app.js, index.html and style.css changed —
+// evict v30 (and v31 if #177 shipped first). appendFunder goes through /api/sheets, network-only.
+var CACHE_VERSION = 'v32';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
@@ -136,6 +142,7 @@ var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 var PRECACHE_URLS = [
   '/',
   '/style.css',
+  '/funder.js',
   '/manifest.json',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
@@ -168,6 +175,7 @@ function cacheStrategy(url) {
   if (path === '/' || path === '/index.html') return 'network-first';
   if (path === '/app.js' || path === '/style.css') return 'network-first';
   if (path === '/payment-report-rules.js') return 'network-first';
+  if (path === '/funder.js') return 'network-first';
 
   // Truly versioned-by-filename static assets: cache-first.
   if (path === '/manifest.json') return 'cache-first';

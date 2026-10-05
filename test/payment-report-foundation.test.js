@@ -82,6 +82,11 @@ function world(opts) {
   return { g, S, base, save, row, audits, snapshot };
 }
 
+/* The patient's funder on file. There is NO default funder any more
+ * (CHANGELOG-patient-funder-on-funders.md): a first report that names none
+ * takes the patient's Funders row, and is refused (funder_unset) without one. */
+const FUNDED = { funders: [{ patientId: 'p1', funder: 'מכבי', effectiveFrom: '2026-01-01' }] };
+
 /* A full, valid report on top of the base row. */
 const REPORT = {
   receivedDate: '20/09/2026', method: 'העברה בנקאית', payer: 'משפחת כהן', reference: 'TRX-2026/0042',
@@ -207,7 +212,9 @@ test('rules: the shared lists are the same on both sides, and exactly Sandra\'s'
   assert.deepEqual(arr(g.run('REFERENCE_REQUIRED_METHODS')), arr(rules.REFERENCE_REQUIRED_METHODS));
   assert.deepEqual(arr(g.run('CONFIRM_STATUSES')), arr(rules.CONFIRM_STATUSES));
   assert.deepEqual(arr(g.run('PAYMENT_REPORT_FIELDS')), arr(rules.REPORT_FIELDS));
-  assert.equal(g.run('DEFAULT_FUNDER'), rules.DEFAULT_FUNDER);
+  assert.equal(g.run('FUNDER_UNSET'), rules.FUNDER_UNSET, 'no default funder on either side');
+  assert.equal(rules.FUNDER_UNSET, 'unset');
+  assert.equal(rules.DEFAULT_FUNDER, undefined);
   assert.deepEqual(plain(g.run('PAYMENT_REPORT_MESSAGES')), plain(rules.MESSAGES), 'the same Hebrew, word for word');
 });
 
@@ -235,11 +242,26 @@ test('save: a payload WITHOUT the new fields behaves exactly as before — blank
 });
 
 test('save: an incomplete report is NOT refused yet (foundation) — the gaps come back as reportIssues', () => {
-  const { base, save, row } = world();
+  const { base, save, row } = world(FUNDED);
   const r = save(Object.assign({}, base, { status: 'paid', amountPaid: 30000, receivedDate: '2026-09-20' }));
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(row().receivedDate, '2026-09-20');
   assert.deepEqual(r.reportIssues.map((i) => i.code).sort(), ['coverage_end_missing', 'coverage_start_missing', 'method_missing', 'payer_missing'].sort());
+});
+
+test('save: a first report naming no funder, for a patient with NO Funders row, is refused (funder_unset) — never written as פרטי', () => {
+  const { base, save, row, snapshot } = world();
+  save(base);
+  const before = snapshot();
+  const r = save(Object.assign({}, base, REPORT));
+  assert.deepEqual([r.ok, r.error], [false, 'funder_unset']);
+  assert.equal(r.message, 'לא הוגדר גורם מממן למטופל — יש לבחור גורם מממן בדיווח או להגדיר אותו בכרטיס המטופל');
+  assert.equal(snapshot(), before, 'nothing written');
+  assert.equal(row().funder, '');
+  // naming the funder in the report itself is enough
+  const ok = save(Object.assign({}, base, REPORT, { funder: 'ביטוח לאומי' }));
+  assert.equal(ok.ok, true, JSON.stringify(ok));
+  assert.equal(row().funder, 'ביטוח לאומי');
 });
 
 test('receivedDate: first report stores ISO, stamps recordedBy/At from the session, sets reported, fills the funder', () => {
@@ -263,7 +285,7 @@ test('receivedDate: first report stores ISO, stamps recordedBy/At from the sessi
 });
 
 test('receivedDate: APPEND-ONLY — omitted or blank never erases it, re-saves never re-stamp it', () => {
-  const { base, save, row } = world();
+  const { base, save, row } = world(FUNDED);
   save(Object.assign({}, base, REPORT));
   const first = row();
   // the current client: omits the field entirely
@@ -280,7 +302,7 @@ test('receivedDate: APPEND-ONLY — omitted or blank never erases it, re-saves n
 });
 
 test('receivedDate: a change is allowed and writes ONE AuditLog row with old, new and the actor', () => {
-  const { base, save, row, audits } = world();
+  const { base, save, row, audits } = world(FUNDED);
   save(Object.assign({}, base, REPORT));
   const before = row();
   const r = save(Object.assign({}, base, REPORT, { receivedDate: '2026-09-18' }));
@@ -320,7 +342,7 @@ test('receivedDate / method / funder / payer / reference: a bad NEW value is ref
 });
 
 test('round-trip: a value already stored is carried, not re-validated (a hand-typed cell never blocks a save)', () => {
-  const { base, save, S, row } = world();
+  const { base, save, S, row } = world(FUNDED);
   save(Object.assign({}, base, REPORT));
   const cols = arr(S.Payments.grid[0]);
   S.Payments.grid[1][cols.indexOf('method')] = 'paypal';   // typed by hand into the sheet
@@ -345,7 +367,7 @@ test('confirm: staff (Vered) may not set confirmStatus or flagNote → forbidden
 });
 
 test('confirm: Sandra (approver) confirms and flags; confirmedBy/At stamped; each decision audited', () => {
-  const { base, save, row, audits } = world();
+  const { base, save, row, audits } = world(FUNDED);
   save(Object.assign({}, base, REPORT));
   const r = save(Object.assign({}, row(), { confirmStatus: 'confirmed', confirmedBy: 'מתחזה' }), SANDRA);
   assert.equal(r.ok, true, JSON.stringify(r));
@@ -365,7 +387,7 @@ test('confirm: Sandra (approver) confirms and flags; confirmedBy/At stamped; eac
 });
 
 test('confirm: the controller role (Ortal, Phase 4) may confirm', () => {
-  const { base, save, row } = world();
+  const { base, save, row } = world(FUNDED);
   save(Object.assign({}, base, REPORT));
   const r = save(Object.assign({}, row(), { confirmStatus: 'confirmed' }), CONTROLLER);
   assert.equal(r.ok, true, JSON.stringify(r));
@@ -373,7 +395,7 @@ test('confirm: the controller role (Ortal, Phase 4) may confirm', () => {
 });
 
 test('confirm: echoing \'reported\' on a first report is not a decision — staff may send it', () => {
-  const { base, save, row } = world();
+  const { base, save, row } = world(FUNDED);
   const r = save(Object.assign({}, base, REPORT, { confirmStatus: 'reported' }));
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(row().confirmStatus, 'reported');
@@ -387,7 +409,7 @@ test('confirm: a row with no report cannot be confirmed', () => {
 });
 
 test('confirm: Vered re-saving a row Ortal/Sandra already decided does NOT undo it (stale copy, blank or same value)', () => {
-  const { base, save, row } = world();
+  const { base, save, row } = world(FUNDED);
   save(Object.assign({}, base, REPORT));
   const stale = row();   // Vered's copy: confirmStatus 'reported'
   save(Object.assign({}, row(), { confirmStatus: 'confirmed' }), SANDRA);
@@ -408,29 +430,31 @@ test('currentFunder_: the latest effectiveFrom ≤ the date wins; history, futur
     { patientId: 'p1', funder: 'ביטוח לאומי', effectiveFrom: '2026-08-01', setAt: '2026-08-01T09:00:00+03:00' },
     { patientId: 'p1', funder: 'משרד הביטחון', effectiveFrom: '2026-08-01', setAt: '2026-08-02T09:00:00+03:00' },   // same day, set later
     { patientId: 'p1', funder: 'מכבי', effectiveFrom: '2026-12-01', setAt: '2026-09-01T09:00:00+03:00' },   // future
-    { patientId: 'p1', funder: 'כללית', effectiveFrom: '2026-09-01' },   // not on the list → skipped
+    { patientId: 'p1', funder: 'כללית', effectiveFrom: '2026-10-01' },   // not on the list → «לא הוגדר» from its day
     { patientId: 'p1', funder: 'פרטי', effectiveFrom: 'לא תאריך' },      // unreadable → skipped
     { patientId: 'p2', funder: 'מכבי', effectiveFrom: '2026-01-01' },
   ];
   const { g } = world();
   const at = (id, d) => plain(g.sandbox.currentFunderFrom_(rows, id, d));
   assert.equal(at('p1', '2026-07-31').funder, 'פרטי');
-  assert.deepEqual(at('p1', '2026-09-15'), { funder: 'משרד הביטחון', effectiveFrom: '2026-08-01', isDefault: false });
-  assert.equal(at('p1', '2026-11-30').funder, 'משרד הביטחון', 'a future row does not apply yet');
-  assert.equal(at('p1', '2026-12-01').funder, 'מכבי');
+  assert.deepEqual(at('p1', '2026-09-15'), { funder: 'משרד הביטחון', effectiveFrom: '2026-08-01', unset: false });
+  assert.deepEqual(at('p1', '2026-10-15'), { funder: 'unset', effectiveFrom: '', unset: true },
+    'an unrecognized label on the effective row → «לא הוגדר», never read past to an older row');
+  assert.equal(at('p1', '2026-12-01').funder, 'מכבי', 'a later recognized row applies from its day (a future row does not apply before it)');
+  assert.equal(at('p1', '2026-11-30').funder, 'unset');
   assert.equal(at('p2', '2026-09-15').funder, 'מכבי');
-  assert.deepEqual(at('p9', '2026-09-15'), { funder: 'פרטי', effectiveFrom: '', isDefault: true }, 'no row → פרטי');
-  assert.deepEqual(at('', '2026-09-15').isDefault, true);
-  assert.equal(at('p1', '2025-12-31').isDefault, true, 'before the first row → default');
+  assert.deepEqual(at('p9', '2026-09-15'), { funder: 'unset', effectiveFrom: '', unset: true }, 'no row → unset, never פרטי');
+  assert.deepEqual(at('', '2026-09-15').unset, true);
+  assert.equal(at('p1', '2025-12-31').unset, true, 'before the first row → unset');
 });
 
-test('currentFunder_: reads the tab without creating it; no tab → פרטי', () => {
+test('currentFunder_: reads the tab without creating it; no tab → unset (no default)', () => {
   const { g, S } = world();
-  assert.equal(g.sandbox.currentFunder_('p1', '2026-09-15'), 'פרטי');
+  assert.equal(g.sandbox.currentFunder_('p1', '2026-09-15'), 'unset');
   assert.ok(!S.Funders, 'a read never creates the tab');
   const w = world({ funders: [{ patientId: 'p1', funder: 'מכבי', effectiveFrom: '2026-09-01' }] });
   assert.equal(w.g.sandbox.currentFunder_('p1', '2026-09-15'), 'מכבי');
-  assert.equal(w.g.sandbox.currentFunder_('p1', '2026-08-31'), 'פרטי');
+  assert.equal(w.g.sandbox.currentFunder_('p1', '2026-08-31'), 'unset', 'before its first row');
 });
 
 test('appendFunder_: appends one row (never edits), stamps setBy/At, audits; bad input refused', () => {
@@ -531,7 +555,7 @@ test('cleanup: a patient who is not released and has no Funders row is listed «
   };
   const r = plain(g.sandbox.cleanupReport_('2026-09-30', t));
   assert.equal(r.ok, true, JSON.stringify(r));
-  assert.deepEqual(r.sections.noFunder.map((x) => [x.kind, x.name, x.funder]), [['no_funder', 'אבי כהן', 'פרטי']]);
+  assert.deepEqual(r.sections.noFunder.map((x) => [x.kind, x.name, x.funder]), [['no_funder', 'אבי כהן', 'unset']]);
   assert.equal(r.counts.noFunder, 1);
   assert.deepEqual(Object.keys(r.sections), cleanup.SECTION_KEYS);
   // no funders tab at all → every active patient
@@ -544,7 +568,7 @@ test('cleanup workbook: the «חסר גורם מממן» tab is built (owner ו�
     ok: true, today: '2026-09-30', sections: {}, counts: {},
   };
   cleanup.SECTION_KEYS.forEach((k) => { data.sections[k] = []; });
-  data.sections.noFunder = [{ kind: 'no_funder', houseId: 'ramot', name: 'אבי כהן', status: 'active', entryDate: '2026-07-05', funder: 'פרטי' }];
+  data.sections.noFunder = [{ kind: 'no_funder', houseId: 'ramot', name: 'אבי כהן', status: 'active', entryDate: '2026-07-05', funder: 'unset' }];
   assert.equal(cleanup.isCleanupResponse(data), true);
   const spec = cleanup.buildCleanupSpec(data, new Date('2026-09-30T09:00:00Z'));
   const tab = spec.sheets.find((s) => s.name === 'חסר גורם מממן');
