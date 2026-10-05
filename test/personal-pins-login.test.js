@@ -194,7 +194,8 @@ test('login-users: ACTIVE records only, in model order, { id, name } only — re
   await withServer(await envWith({ USER_PIN_HASHES: undefined }), async (port) => {
     assert.deepStrictEqual((await request(port, 'GET', '/api/login-users')).json.users, []);
   });
-  assert.deepStrictEqual(users.loginUsers({ byId: { ortal: { status: 'active' } } }), [], 'an inactive model user never lists');
+  // Phase 4: Ortal's model is active — her ACTIVE record lists her.
+  assert.deepStrictEqual(users.loginUsers({ byId: { ortal: { status: 'active' } } }), [{ id: 'ortal', name: 'אורטל' }]);
 });
 
 /* ====================================================================== */
@@ -213,7 +214,9 @@ test('personal login: success mints id + pinVersion; /api/me says personal; the 
     assert.deepStrictEqual([s.auth, s.id, s.pinVersion, s.user], ['personal', 'vered', 3, 'ורד']);
     assert.ok(!lines.join('\n').includes(PINS.vered), 'the PIN never reaches a log line');
     const me = await request(port, 'GET', '/api/me', { cookie: cookieOf(ok) });
-    assert.deepStrictEqual(me.json, { ok: true, user: 'ורד', auth: 'personal', approver: false, deleter: true, finance: true });
+    assert.deepStrictEqual(me.json, { ok: true, user: 'ורד', auth: 'personal', approver: false, deleter: true, finance: true,
+      // Phase 4 («בקרת גבייה»): the capability set, the view and the decision right.
+      capabilities: ['finance', 'billingControl'], billingControl: true, view: 'full', canConfirm: false });
   });
 });
 
@@ -334,7 +337,8 @@ test('PR C: { pin } → 400 user_required (PIN not checked, no cookie); a shared
 test('PR C: /api/me has no sharedUntil; the client has no banner, no shared field, no picker', async () => {
   await withServer(await envWith(), async (port) => {
     const me = await request(port, 'GET', '/api/me', { cookie: cookieOf(await login(port, 'shiran', PINS.shiran)) });
-    assert.deepStrictEqual(me.json, { ok: true, user: 'שירן', auth: 'personal', approver: false, deleter: false, finance: false });
+    assert.deepStrictEqual(me.json, { ok: true, user: 'שירן', auth: 'personal', approver: false, deleter: false, finance: false,
+      capabilities: [], billingControl: false, view: 'restricted', canConfirm: false });
   });
   assert.ok(!/id="shared-banner"|id="pin-input"|id="login-shared-link"|id="user-screen"/.test(HTML_SRC));
   assert.ok(!/\.shared-banner \{/.test(fs.readFileSync(path.join(ROOT, 'public', 'style.css'), 'utf8')));
@@ -376,7 +380,9 @@ test('new-code page: 401 without a session or with a shared cookie; 403 for ever
       { id: 'sandra', name: 'סנדרה', hasRecord: true, status: 'active' },
       { id: 'shiran', name: 'שירן', hasRecord: true, status: 'active' },
       { id: 'yael', name: 'יעל', hasRecord: true, status: 'revoked' },
-    ], 'no Ortal, no hash, no roles');
+      // Phase 4: Sandra creates Ortal's code here (new, no record yet).
+      { id: 'ortal', name: 'אורטל', hasRecord: false, status: '' },
+    ], 'Ortal offered as new; no hash, no roles');
   });
 });
 
@@ -407,8 +413,13 @@ test('new-code page: returns ONLY a valid record line; new → v1, reset → cur
     assert.deepStrictEqual([own.id, own.pinVersion, own.roles], ['sandra', 2, ['staff', 'deleter', 'approver', 'viewer']], 'Sandra: a reset of her own');
     const revoked = JSON.parse((await request(port, 'POST', '/api/pin-admin/record', { cookie, body: { userId: 'yael', pin: '264081', pin2: '264081' } })).json.record);
     assert.deepStrictEqual([revoked.pinVersion, revoked.status], [2, 'active'], 'a reset re-activates a revoked user');
+    // Phase 4: Ortal's first code — controller ONLY, active, v1; the line
+    // validates as Sandra pastes it.
     const ortal = await request(port, 'POST', '/api/pin-admin/record', { cookie, body: { userId: 'ortal', pin: '264081', pin2: '264081' } });
-    assert.deepStrictEqual([ortal.status, ortal.json.error], [400, 'unknown_user'], 'Ortal: not before Phase 4');
+    assert.strictEqual(ortal.status, 200);
+    const oline = JSON.parse(ortal.json.record);
+    assert.deepStrictEqual([oline.id, oline.name, oline.roles, oline.status, oline.pinVersion], ['ortal', 'אורטל', ['controller'], 'active', 1]);
+    assert.strictEqual(users.validateUserPinHashes(JSON.stringify(recs.concat([oline]))).byId.ortal.status, 'active');
   });
 });
 

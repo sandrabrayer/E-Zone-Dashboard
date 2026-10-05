@@ -190,11 +190,12 @@ function stubAll() {
 test('model: finance by stable id — Vered and Sandra yes, Shiran / Yael / Ortal no, a shared principal no (PR C)', () => {
   assert.deepStrictEqual([...users.FINANCE_USER_IDS], ['vered', 'sandra']);
   const cap = (auth, id) => users.principalCapabilities({ auth, id, user: '', roles: [] });
-  assert.deepStrictEqual(cap('personal', 'vered'), ['finance']);
-  assert.deepStrictEqual(cap('personal', 'sandra'), ['finance']);
+  // Phase 4: the finance users also hold billingControl; Ortal holds ONLY it.
+  assert.deepStrictEqual(cap('personal', 'vered'), ['finance', 'billingControl']);
+  assert.deepStrictEqual(cap('personal', 'sandra'), ['finance', 'billingControl']);
   assert.deepStrictEqual(cap('personal', 'shiran'), []);
   assert.deepStrictEqual(cap('personal', 'yael'), []);
-  assert.deepStrictEqual(cap('personal', 'ortal'), []);
+  assert.deepStrictEqual(cap('personal', 'ortal'), ['billingControl'], 'never finance');
   assert.deepStrictEqual(cap('shared', ''), [], 'PR C: no shared session any more');
   assert.deepStrictEqual(users.principalCapabilities(null), []);
   assert.deepStrictEqual(users.principalCapabilities({ auth: 'none', id: '', roles: [] }), [], 'meeting-report proxy');
@@ -342,7 +343,7 @@ test('proxyCaps reaches Apps Script from the session only — a body copy is dro
     });
   } finally { stub.restore(); }
   const caps = stub.calls.map((c) => JSON.parse(c.body).proxyCaps);
-  assert.deepStrictEqual(caps, [[], ['finance']]);
+  assert.deepStrictEqual(caps, [[], ['finance', 'billingControl']]);
 });
 
 test('index.html: a restricted session is served <body class="view-restricted">; no session and full-view sessions get the page unchanged', async () => {

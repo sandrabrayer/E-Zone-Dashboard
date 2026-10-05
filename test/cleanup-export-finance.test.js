@@ -167,7 +167,8 @@ test("Sandra's personal session (id 'sandra') → 200 on cleanup.xlsx and both s
         assert.equal(b.action, action);
         assert.equal(b.proxyAuth, 'personal', route);
         assert.equal(b.proxyUserId, 'sandra', route);
-        assert.deepEqual(b.proxyCaps, ['finance'], route);
+        // Phase 4: the finance users also hold billingControl («בקרת גבייה»).
+        assert.deepEqual(b.proxyCaps, ['finance', 'billingControl'], route);
         assert.equal(b.user, 'סנדרה', route);
       }
     });

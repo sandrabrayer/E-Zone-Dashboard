@@ -569,13 +569,21 @@ test('D: the stamp is Israel time with an EXPLICIT offset, on both sides of the 
 
 test('D: marking a payment paid stamps chargedAt + chargedBy from the SIGNED COOKIE', () => {
   const h = world();
+  /* Phase 4 item H (CHANGELOG-billing-control-tab.md): the HTTP save path no
+   * longer writes money directly — a direct amountPaid / status write is
+   * refused ('use_report_payment') and nothing is written. Money arrives only
+   * through «דווח תשלום» (reportPayment). The stamping rule itself is
+   * unchanged (the direct-call tests below). */
   const res = h.code.handle({
     action: 'savePayment', user: 'ורד',
     payment: JSON.stringify(payRow({ status: 'paid', amountPaid: 3000, balance: 0, chargedBy: 'FORGED' })),
   });
-  assert.equal(res.ok, true);
-  assert.equal(res.payment.chargedAt, '2026-09-22T10:00:00+03:00');
-  assert.equal(res.payment.chargedBy, 'ורד', 'never the client-supplied name');
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'use_report_payment');
+  const direct = h.code.upsert(payRow({ status: 'paid', amountPaid: 3000, balance: 0, chargedBy: 'FORGED' }), 'ורד');
+  assert.equal(direct.ok, true);
+  assert.equal(direct.payment.chargedAt, '2026-09-22T10:00:00+03:00');
+  assert.equal(direct.payment.chargedBy, 'ורד', 'never the client-supplied name');
 });
 
 test('D: `partial` stamps too; `unpaid` leaves both blank', () => {

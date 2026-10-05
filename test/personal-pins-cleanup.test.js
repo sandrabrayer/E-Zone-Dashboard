@@ -343,7 +343,9 @@ function seededGs(mode) {
   S.Patients.appendRow(pcols.map((c) => ({ id: 'p1', houseId: 'arfoni', name: 'מטופל', date: '2026-09-01' }[c] || '')));
   assert.strictEqual(g.post(Object.assign({ action: 'upsertBillingOverride', override: { patientId: 'P1', month: '2026-09', amount: 1000 } }, VERED())).ok, true);
   const pay = { id: 'pay1', patientId: 'arfoni::מטופל::2026-09-01', patientName: 'מטופל', houseId: 'arfoni', dueDate: '2026-09-07', amount: 30000, amountPaid: 30000, balance: 0, status: 'paid' };
-  assert.strictEqual(g.post(Object.assign({ action: 'savePayment', payment: pay }, VERED())).ok, true);
+  /* A paid row as legacy data sits on the sheet (an editor-side write):
+   * since Phase 4 item H the HTTP save path never writes money itself. */
+  assert.strictEqual(g.sandbox.upsertPayment_(JSON.parse(JSON.stringify(pay)), 'ורד').ok, true);
   const snapshot = () => JSON.stringify(Object.keys(S).sort().map((k) => [k, S[k].grid]));
   return { g, pay, snapshot };
 }

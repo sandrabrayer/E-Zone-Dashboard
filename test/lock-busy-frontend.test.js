@@ -105,6 +105,7 @@ function loadApp(script) {
       autosaveMeetingWithDefaults: () => autosaveMeetingWithDefaults(),
       submitPaymentReport: (c, v) => submitPaymentReport(c, v),
       saveFunder: (p, f, d) => saveFunder(p, f, d),
+      confirmReceipts: (ids, st, n) => confirmReceipts(ids, st, n),
       confirm: (v) => globalThis.__onConfirm(v),
       errors: () => globalThis.__errors,
       delays: () => globalThis.__delays,
@@ -286,6 +287,19 @@ const PATHS = [
     run: (app) => app.saveFunder({ ...PATIENT }, 'מכבי', '2026-10-01'),
     landed: (app) => { assert.strictEqual(app.state.funders.length, 1); assert.strictEqual(app.state.funders[0].funder, 'מכבי'); },
     rejects: true,
+  },
+  {
+    // Phase 4: Ortal's decision on the «בקרת גבייה» tab (✓ / ⚑ / הסר דגל).
+    name: 'confirmPayment (the «בקרת גבייה» decision)',
+    action: 'confirmPayment',
+    setup: (app) => {
+      app.state.canConfirm = true;
+      app.state.bc = { data: { receipts: [{ id: 'rcpt-1', confirmStatus: 'reported', amount: 9000 }] },
+        loading: false, error: '', selected: {}, flagOpen: '', flagDraft: '', month: '', house: 'all' };
+    },
+    okResponse: { ok: true, changed: [{ id: 'rcpt-1', confirmStatus: 'confirmed', confirmedBy: 'אורטל' }], unchanged: 0 },
+    run: (app) => app.confirmReceipts(['rcpt-1'], 'confirmed'),
+    landed: (app) => { assert.strictEqual(app.state.bc.data.receipts[0].confirmStatus, 'confirmed'); },
   },
 ];
 

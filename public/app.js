@@ -315,6 +315,14 @@ const state = {
    * known yet (before /api/me). From /api/me — display only; the server
    * refuses the data itself. */
   finance: null,
+  /* «בקרת גבייה» (Phase 4), from /api/me — display only; server.js and
+   * Code.gs refuse the data and the decision themselves.
+   *   view            'full' | 'restricted' | 'controller' | null (unknown)
+   *   billingControl  may open the «בקרת גבייה» tab (Vered, Sandra, Ortal)
+   *   canConfirm      may confirm / flag a receipt (Ortal, Sandra) */
+  view: null,
+  billingControl: null,
+  canConfirm: false,
   payments: [],
   /* Phase 3 PR 2: one row per money received (getPayments `receipts`, each
    * with the cycleId it pays for) and the Funders tab (getPayments
@@ -1068,13 +1076,21 @@ function applySessionInfo(info) {
   const roleChanged = state.deleter !== (i.deleter === true) || state.approver !== (i.approver === true);
   state.deleter = i.deleter === true;
   state.approver = i.approver === true;
+  const confirmChanged = state.canConfirm !== (i.canConfirm === true);
+  state.canConfirm = i.canConfirm === true;
   renderWhoami(i.user || '');
   const adminBtn = document.getElementById('pin-admin-open');
   if (adminBtn) adminBtn.classList.toggle('hidden', i.approver !== true);
   applyRoleView();
+  // «בקרת גבייה» (Phase 4): Ortal's controller session sees that tab ONLY.
+  if (i.view === 'controller') { applyControllerView(); return; }
+  if (_controllerApplied) { location.reload(); return; }
+  // The tab itself: only an explicit false removes it (Shiran, Yael).
+  applyBillingControlCap(i.billingControl !== false && i.finance !== false);
   // Restricted only on an explicit false (the server always sends a
   // boolean); an /api/me without the field keeps the full view as before.
   applyView(i.finance !== false);
+  if (confirmChanged && state.currentScreen === 'billing-control') renderBillingControl();
   // A render that ran before /api/me answered drew no role-gated control;
   // redraw once the roles (and the view) are known.
   if (roleChanged && typeof renderAll === 'function') { try { renderAll(); } catch (_) { /* no-op */ } }
@@ -1184,6 +1200,11 @@ function initPin() {
   initPayoutForecastControls();
   initDebtAgingControls();
   initFunderControls();
+  initBillingControlControls();
+  // «בקרת גבייה» (Phase 4): the server served <body class="view-controller">
+  // to Ortal's session — every other tab goes BEFORE the first load, and
+  // loadAll never asks for getData.
+  if (document.body && document.body.classList && document.body.classList.contains('view-controller')) applyControllerView();
   // Restricted view: the server served <body class="view-restricted"> to a
   // session without `finance`, so the view is known BEFORE the first load —
   // the money tabs go now and loadAll never asks for getPayments / getCredits.
@@ -1345,7 +1366,7 @@ async function copyPinAdminLine() {
 /* Tab / screen order. Mirrors the .tabs nav in index.html exactly (each id has a
  * matching <section id="screen-<id>">). `meetings` is an empty placeholder shell
  * (see index.html #screen-meetings); `retention` is intentionally last. */
-const SCREENS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention'];
+const SCREENS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'billing-control', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention'];
 
 /* ===== Restricted view (Sandra, 2026-10-03) =====
  *
@@ -1363,16 +1384,74 @@ function financeView() {
   return state.finance !== false;
 }
 
-/* The screens a session may open, in tab order. Pure. */
-function allowedScreens(finance) {
-  return SCREENS.filter(s => finance !== false || FINANCE_SCREENS.indexOf(s) < 0);
+/* «בקרת גבייה» (Phase 4): the tab Vered, Sandra and Ortal see; for Ortal
+ * (the controller view) it is the ONLY screen. */
+const BILLING_CONTROL_SCREEN = 'billing-control';
+
+/* The screens a session may open, in tab order. Pure.
+ *   view 'controller' → the «בקרת גבייה» tab only;
+ *   finance false     → no money tab and no «בקרת גבייה». */
+function allowedScreens(finance, view) {
+  if (view === 'controller') return [BILLING_CONTROL_SCREEN];
+  return SCREENS.filter(s => finance !== false || (FINANCE_SCREENS.indexOf(s) < 0 && s !== BILLING_CONTROL_SCREEN));
 }
 
 /* `requested` when it is a screen the session may open, else the first
  * allowed one (the dashboard). Pure. */
-function resolveScreen(requested, finance) {
-  const allowed = allowedScreens(finance);
+function resolveScreen(requested, finance, view) {
+  const allowed = allowedScreens(finance, view);
   return allowed.indexOf(requested) >= 0 ? requested : allowed[0];
+}
+
+/* true once the session is known to be the controller view (Ortal). */
+function controllerView() {
+  return state.view === 'controller';
+}
+
+let _controllerApplied = false;
+let _billingControlRemoved = false;
+
+/* Remove the «בקרת גבייה» tab (and its screen) for a session without the
+ * capability (Shiran, Yael). Display only — the server answers 403. */
+function applyBillingControlCap(allowed) {
+  state.billingControl = allowed === true;
+  if (allowed === true) {
+    if (_billingControlRemoved) location.reload();
+    return;
+  }
+  const nodes = document.querySelectorAll('[data-billing-control]');
+  Array.prototype.forEach.call(nodes, el => { if (el && el.remove) el.remove(); });
+  _billingControlRemoved = true;
+}
+
+/* The controller view (Ortal): every tab button and every screen except
+ * «בקרת גבייה» is REMOVED from the DOM (not just hidden), together with every
+ * billing widget; the data already in memory is dropped; the tab opens. The
+ * server refuses every other action and route (403) either way. Idempotent. */
+function applyControllerView() {
+  state.view = 'controller';
+  state.finance = false;
+  state.billingControl = true;
+  if (document.body && document.body.classList) {
+    document.body.classList.add('view-controller');
+    document.body.classList.remove('view-restricted');
+  }
+  const keep = el => el && (el.getAttribute('data-screen') === BILLING_CONTROL_SCREEN || el.id === 'screen-' + BILLING_CONTROL_SCREEN);
+  const drop = el => { if (el && el.remove && !keep(el)) el.remove(); };
+  Array.prototype.forEach.call(document.querySelectorAll('.tabs .tab'), drop);
+  Array.prototype.forEach.call(document.querySelectorAll('section.screen'), drop);
+  Array.prototype.forEach.call(document.querySelectorAll('[data-finance]'), drop);
+  _controllerApplied = true;
+  _financeRemoved = true;
+  state.leads = [];
+  state.patients = [];
+  state.payments = [];
+  state.credits = [];
+  state.billingOverrides = [];
+  state.receipts = [];
+  state.funders = [];
+  showScreen(BILLING_CONTROL_SCREEN);
+  renderBillingControl();
 }
 
 /* The screen named by a deep link (#billing, #screen-billing), or ''. */
@@ -1399,14 +1478,17 @@ let _financeRemoved = false;
  * billing data already in memory, and move off a finance screen. A later
  * full-view login on the same page reloads to get the tabs back. */
 function applyView(finance) {
+  if (controllerView()) return; // the controller view is final for this page
   const full = finance === true;
   if (full && _financeRemoved) { location.reload(); return; }
   state.finance = full;
+  if (!state.view) state.view = full ? 'full' : 'restricted';
   if (document.body && document.body.classList) document.body.classList.toggle('view-restricted', !full);
   if (!full) {
     const nodes = document.querySelectorAll('[data-finance]');
     Array.prototype.forEach.call(nodes, el => { if (el && el.remove) el.remove(); });
     _financeRemoved = true;
+    applyBillingControlCap(false);
     state.payments = [];
     state.credits = [];
     state.billingOverrides = [];
@@ -1414,18 +1496,21 @@ function applyView(finance) {
     state.funders = [];
   }
   const want = screenFromHash(location.hash) || state.currentScreen;
-  const target = resolveScreen(want, full);
+  const target = resolveScreen(want, full, state.view);
   if (target !== state.currentScreen || want !== state.currentScreen) {
     showScreen(target);
     renderAll();
+    // The digest's «ממתינים לאימות» link opens #billing-control directly.
+    if (target === BILLING_CONTROL_SCREEN && full) loadBillingControl().catch(() => { /* shown in the tab */ });
   }
 }
 
 function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {
     btn.onclick = () => {
-      showScreen(resolveScreen(btn.dataset.screen, state.finance));
+      showScreen(resolveScreen(btn.dataset.screen, state.finance, state.view));
       renderAll();
+      if (state.currentScreen === BILLING_CONTROL_SCREEN) loadBillingControl().catch(() => { /* shown in the tab */ });
     };
   });
 
@@ -1540,6 +1625,9 @@ document.addEventListener('visibilitychange', () => {
 
 async function loadAll() {
   _lastLoadAllAt = Date.now();
+  // «בקרת גבייה» (Phase 4): the controller view loads ONLY its queue — no
+  // getData (no patients, no leads), no payments, no credits.
+  if (controllerView()) return loadBillingControl();
   setLoading(true);
   try {
     let data = await apiGet({ action: 'getData' });
@@ -3531,6 +3619,8 @@ function openMeetingEditModal(m) {
 }
 
 function renderAll() {
+  // The controller view has one screen; nothing else exists to render.
+  if (controllerView()) { renderBillingControl(); return; }
   renderDashboard();
   renderKanban();
   renderMeetings();
@@ -3545,6 +3635,7 @@ function renderAll() {
   renderReconnect();
   renderBreakeven();
   renderGrowthGraph();
+  renderBillingControl();
   /* Backfill + persist any visit-stage lead whose meetingWith default was only
    * rendered, never saved. Fire-and-forget: one batched saveAll, re-entry- and
    * idempotency-guarded so it never loops or storms. */
@@ -10178,7 +10269,26 @@ function buildMonthlyRevenue(opts) {
     },
 
     byHouse: revenueBreakdownByHouse(receivedRows, expectedRows, creditRows),
+
+    /* «מאומת» (Phase 4): the part of the month's money Ortal confirmed in the
+     * bank — the CONFIRMED receipts allocated by their coverage window, by
+     * lib/billing-control-rules.js verifiedForMonth (the «בקרת גבייה» tab's
+     * own figure). A SEPARATE field: it is in no other figure here — not
+     * RECEIVED, not NET — so every shared revenue rule is unchanged. null
+     * when the receipts or the rules are not available. */
+    verified: revenueVerified(opts.receipts, bounds.key),
   };
+}
+
+/* { inclVat, exVat, count, rows } of «מאומת» for month `key`, or null. Ex-VAT
+ * is taken PER ROW at 2dp, like every bucket on this screen. Pure. */
+function revenueVerified(receipts, key) {
+  const R = (typeof globalThis !== 'undefined' && globalThis.BillingControlRules) || null;
+  if (!R || !Array.isArray(receipts)) return null;
+  const v = R.verifiedForMonth(receipts, key, 'all');
+  let ex = 0;
+  v.rows.forEach(r => { ex = roundMoney(ex + revenueExVat(r.amountInMonth)); });
+  return { inclVat: v.total, exVat: ex, count: v.count, rows: v.rows };
 }
 
 /* A payment whose patient is gone still counts — money is money. The SAME
@@ -10278,6 +10388,7 @@ function renderMonthlyRevenue() {
     payments: state.payments,
     credits: Array.isArray(state.credits) ? state.credits : [],
     overrides: state.billingOverrides,
+    receipts: Array.isArray(state.receipts) ? state.receipts : [],
     today: todayISO(),
   });
   if (!model) return;
@@ -10287,6 +10398,7 @@ function renderMonthlyRevenue() {
 
   const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
   set('rev-received', revMoney(model.received.exVat));
+  set('rev-verified', model.verified ? revMoney(model.verified.exVat) : '—');
   set('rev-expected', revMoney(model.expected.exVat));
   // Credits are a deduction; the minus sign is part of the figure so the card
   // cannot be misread as income.
@@ -10568,6 +10680,9 @@ function normalizeReceipt(r) {
     recordedBy: String(o.recordedBy || ''),
     recordedAt: String(o.recordedAt || ''),
     confirmStatus: String(o.confirmStatus || ''),
+    confirmedBy: String(o.confirmedBy || ''),
+    confirmedAt: String(o.confirmedAt || ''),
+    flagNote: String(o.flagNote || ''),
     linkStatus: String(o.linkStatus || ''),
     linkNote: String(o.linkNote || ''),
     timestamp: String(o.timestamp || ''),
@@ -12078,6 +12193,403 @@ function renderBreakevenSummary() {
   }
 
   fitAllStatText(); // scale the network summary KPI values to fit
+}
+
+/* ====================================================
+   «בקרת גבייה» — Ortal's verification tab (Phase 4)
+   ====================================================
+ * Sandra, 2026-10-04 (docs/billing-control-plan.md Phase 4 / §7,
+ * CHANGELOG-billing-control-tab.md):
+ *   - every receipt Vered reports (a rcpt- row) waits here as «ממתין לאימות»;
+ *     Ortal checks the bank herself, outside the system, and marks it
+ *     ✓ «אושר בבנק» or ⚑ «לא נמצא / בעיה» (a note is required);
+ *   - «סומנו כבעיה»: Vered resolves by cancelling + re-reporting (the existing
+ *     flow); Ortal can «הסר דגל» if she was wrong;
+ *   - «אומתו»: filterable by month and house — the month's total is the real
+ *     revenue figure («הכנסה מאומתת», lib/billing-control-rules.js);
+ *   - Sandra (approver) also sees «חריגים פתוחים», read-only.
+ * Data: action=billingControlQueue (read), action=confirmPayment (write).
+ * Display only: server.js and Code.gs refuse the data and the decision
+ * themselves. Vered sees the tab without the decision buttons. */
+
+/* The flag-note bounds come from lib/billing-control-rules.js (2–300, the
+ * same FLAG_NOTE_MIN / FLAG_NOTE_MAX as Code.gs). */
+const BC_FLAG_MIN = (bcRules() && bcRules().FLAG_NOTE_MIN) || 2;
+const BC_FLAG_MAX = (bcRules() && bcRules().FLAG_NOTE_MAX) || 300;
+const BC_FLAG_LABEL = `מה הבעיה? (${BC_FLAG_MIN} עד ${BC_FLAG_MAX} תווים)`;
+const BC_FLAG_EXAMPLE = 'לדוגמה: הגיע 29,500 ולא 30,000, או: לא נמצא בבנק';
+const BC_ERRORS = {
+  forbidden: 'אין הרשאה לפעולה זו',
+  forbidden_role: 'אין הרשאה לפעולה זו',
+  flag_note_invalid: 'בסימון «בעיה» חובה לפרט (2 עד 300 תווים)',
+  not_found: 'הקבלה לא נמצאה — רעננו את הדף',
+  receipt_void: 'הקבלה בוטלה — אין מה לאשר',
+};
+const BC_XLSX_ERRORS = {
+  forbidden: 'אין הרשאה לייצוא זה',
+  lock_busy: 'המערכת עסוקה, נסו שוב',
+  sheets_unreachable: 'הגיליון לא זמין כרגע — נסו שוב',
+};
+
+function bcRules() {
+  return (typeof globalThis !== 'undefined' && globalThis.BillingControlRules) || null;
+}
+
+function billingControlState() {
+  if (!state.bc) {
+    state.bc = {
+      data: null, loading: false, error: '', selected: {}, flagOpen: '', flagDraft: '',
+      month: '', house: 'all',
+    };
+  }
+  return state.bc;
+}
+
+/* This month in Israel, 'YYYY-MM'. */
+function bcThisMonth() {
+  return debtAgingTodayIso().slice(0, 7);
+}
+
+function bcHouseName(id) {
+  const h = houseById(id);
+  return (h && h.name) || id || '—';
+}
+
+/* A stored stamp ('YYYY-MM-DD' or ISO) → DD/MM/YYYY [HH:MM]. Pure. */
+function bcStampHe(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(String(s || ''));
+  if (!m) return String(s || '');
+  return `${m[3]}/${m[2]}/${m[1]}` + (m[4] ? ` ${m[4]}:${m[5]}` : '');
+}
+
+/* Load the queue. Never throws to a caller that does not await it; the
+ * error is shown inside the tab. */
+async function loadBillingControl() {
+  if (state.billingControl === false) return;
+  const s = billingControlState();
+  s.loading = true;
+  s.error = '';
+  renderBillingControl();
+  setLoading(true);
+  try {
+    const data = await apiGet({ action: 'billingControlQueue' });
+    s.data = data;
+    // Drop a selection that is no longer waiting.
+    const waiting = {};
+    (data.receipts || []).forEach(r => { if (r.confirmStatus === 'reported') waiting[r.id] = true; });
+    Object.keys(s.selected).forEach(id => { if (!waiting[id]) delete s.selected[id]; });
+  } catch (e) {
+    if (!(e && e.message === 'unauthorized')) s.error = 'הטעינה נכשלה — ' + ((e && e.message) || 'שגיאה');
+  } finally {
+    s.loading = false;
+    setLoading(false);
+    renderBillingControl();
+  }
+}
+
+/* The decision (confirmPayment). ids: receipt ids; status: 'confirmed' |
+ * 'flagged' | 'reported'. The server's answer replaces the rows on screen. */
+async function confirmReceipts(ids, status, flagNote) {
+  if (!state.canConfirm) { showError(ROLE_FORBIDDEN_TEXT); return null; }
+  const s = billingControlState();
+  const body = { ids: ids.slice(), status };
+  if (status === 'flagged') body.flagNote = flagNote;
+  let res;
+  try {
+    res = await apiPost({ action: 'confirmPayment', confirm: body });
+  } catch (e) {
+    const code = e && e.data && e.data.error;
+    showError(BC_ERRORS[code] || (e && e.message) || 'השמירה נכשלה');
+    return null;
+  }
+  const changed = {};
+  (res.changed || []).forEach(r => { changed[r.id] = r; });
+  if (s.data && Array.isArray(s.data.receipts)) {
+    s.data.receipts = s.data.receipts.map(r => (changed[r.id] ? Object.assign({}, r, changed[r.id]) : r));
+  }
+  ids.forEach(id => { delete s.selected[id]; });
+  if (s.flagOpen && ids.indexOf(s.flagOpen) >= 0) { s.flagOpen = ''; s.flagDraft = ''; }
+  renderBillingControl();
+  const n = (res.changed || []).length;
+  showToast(status === 'confirmed' ? (n === 1 ? 'אושר בבנק' : `אושרו ${n} קבלות`)
+    : status === 'flagged' ? 'סומן כבעיה — חוזר לוורד'
+    : 'הדגל הוסר — חזר ל«ממתין לאימות»');
+  return res;
+}
+
+/* One receipt as a phone-friendly card. mode: 'queue' | 'flagged' |
+ * 'confirmed' | 'exception'. Every value is escaped. */
+function bcReceiptHtml(r, mode, opts) {
+  const o = opts || {};
+  const s = billingControlState();
+  const can = state.canConfirm === true && mode !== 'exception' && mode !== 'confirmed';
+  const id = escapeHtml(r.id);
+  const field = (label, value) => `<span class="bc-f"><span class="bc-k">${escapeHtml(label)}</span> <span class="bc-v">${escapeHtml(value || '—')}</span></span>`;
+  const amount = mode === 'confirmed' && o.inMonth !== undefined
+    ? `${fmtShekel(o.inMonth)} <span class="bc-sub">(מתוך ${fmtShekel(r.amount)})</span>`
+    : fmtShekel(r.amount);
+  let actions = '';
+  if (mode === 'queue' && can) {
+    actions = `<div class="bc-actions">
+      <label class="bc-pick"><input type="checkbox" data-bc-pick="${id}"${s.selected[r.id] ? ' checked' : ''} aria-label="סימון לאישור"> סמן</label>
+      <button type="button" class="btn small primary bc-ok" data-bc-confirm="${id}">✓ אושר בבנק</button>
+      <button type="button" class="btn small bc-flag" data-bc-flag="${id}">⚑ לא נמצא / בעיה</button>
+    </div>`;
+    if (s.flagOpen === r.id) {
+      actions += `<div class="bc-flag-form">
+        <label for="bc-note-${id}">${escapeHtml(BC_FLAG_LABEL)}</label>
+        <textarea id="bc-note-${id}" class="bc-note" data-bc-note="${id}" maxlength="${BC_FLAG_MAX}" rows="3" placeholder="${escapeHtml(BC_FLAG_EXAMPLE)}">${escapeHtml(s.flagDraft)}</textarea>
+        <div class="error-msg bc-note-error hidden" role="alert"></div>
+        <div class="bc-actions">
+          <button type="button" class="btn small primary" data-bc-flag-save="${id}">שמירת הבעיה</button>
+          <button type="button" class="btn small ghost" data-bc-flag-cancel="${id}">ביטול</button>
+        </div>
+      </div>`;
+    }
+  } else if (mode === 'flagged' && can) {
+    actions = `<div class="bc-actions"><button type="button" class="btn small" data-bc-unflag="${id}">הסר דגל</button></div>`;
+  }
+  const extra = [];
+  if (mode === 'flagged' || (mode === 'exception' && r.flagNote)) {
+    extra.push(`<div class="bc-note-text"><b>הערה:</b> ${escapeHtml(r.flagNote || '—')}${r.flaggedAt ? ` <span class="bc-sub">(${escapeHtml(bcStampHe(r.flaggedAt))})</span>` : ''}${o.ageDays !== undefined ? ` <span class="bc-sub">· ${escapeHtml(String(o.ageDays))} ימים</span>` : ''}</div>`);
+  }
+  if (mode === 'confirmed') {
+    extra.push(`<div class="bc-sub">אומת ע״י ${escapeHtml(r.confirmedBy || '—')}${r.confirmedAt ? ' · ' + escapeHtml(bcStampHe(r.confirmedAt)) : ''}</div>`);
+  }
+  return `<div class="bc-row bc-row--${escapeHtml(mode)}" data-bc-id="${id}">
+    <div class="bc-head"><b class="bc-name">${escapeHtml(r.patientName || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(r.houseId))}</span> <span class="bc-amount">${amount}</span></div>
+    <div class="bc-fields">
+      ${field('התקבל', formatDateHe(r.receivedDate))}
+      ${field('אמצעי', r.method)}
+      ${field('אסמכתא', r.reference)}
+      ${field('משלם', r.payer)}
+      ${field('גורם מממן', r.funder)}
+      ${field('נרשם ע״י', r.recordedBy)}
+    </div>
+    ${extra.join('')}
+    ${actions}
+  </div>`;
+}
+
+function bcCardsHtml(cards) {
+  const c = cards;
+  const d = c.debt60;
+  const debtMain = d ? `${d.recorded.count} · ${fmtShekel(d.recorded.amount)}` : '—';
+  const debtSub = d ? `חוב רשום · ללא רישום: ${d.unrecorded.count} · ${fmtShekel(d.unrecorded.amount)}` : 'לא ניתן לחשב כרגע';
+  return `
+    <div class="card stat bc-card bc-card--reported"><div class="stat-label">ממתין לאימות</div>
+      <div class="stat-value" id="bc-card-reported">${c.reported.count} · ${fmtShekel(c.reported.amount)}</div>
+      <div class="stat-sub">דווח וטרם אומת</div></div>
+    <div class="card stat bc-card bc-card--flagged"><div class="stat-label">סומנו כבעיה</div>
+      <div class="stat-value" id="bc-card-flagged">${c.flagged.count} · ${fmtShekel(c.flagged.amount)}</div>
+      <div class="stat-sub">חוזר לוורד</div></div>
+    <div class="card stat bc-card bc-card--confirmed"><div class="stat-label">אומת החודש</div>
+      <div class="stat-value" id="bc-card-confirmed">${fmtShekel(c.confirmedThisMonth.amount)}</div>
+      <div class="stat-sub">הכנסה מאומתת · ${escapeHtml(formatMonth(c.confirmedThisMonth.month + '-01'))}</div></div>
+    <div class="card stat bc-card bc-card--debt"><div class="stat-label">חובות מעל 60 יום</div>
+      <div class="stat-value" id="bc-card-debt">${debtMain}</div>
+      <div class="stat-sub">${escapeHtml(debtSub)}</div>
+      <button type="button" class="btn small bc-debt-export" id="bc-debt-export">ייצוא חובות לאקסל</button></div>`;
+}
+
+/* Sandra's «חריגים פתוחים» — READ-ONLY: no button, no input. */
+function bcExceptionsHtml(ex) {
+  const e = ex || {};
+  const flagged = Array.isArray(e.flaggedOld) ? e.flaggedOld : [];
+  const debts = Array.isArray(e.debtsOver60) ? e.debtsOver60 : [];
+  const refunds = Array.isArray(e.refundExceptions) ? e.refundExceptions : [];
+  const empty = t => `<p class="billing-date-label">${escapeHtml(t)}</p>`;
+  const debtRow = d => `<div class="bc-row bc-row--exception"><div class="bc-head"><b class="bc-name">${escapeHtml(d.patientName || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(d.houseId))}</span> <span class="bc-amount">${fmtShekel(d.balance)}</span></div>
+    <div class="bc-fields"><span class="bc-f"><span class="bc-k">תחילת מחזור</span> <span class="bc-v">${escapeHtml(formatDateHe(d.start))}</span></span>
+    <span class="bc-f"><span class="bc-k">ימים</span> <span class="bc-v">${escapeHtml(String(d.days))}</span></span>
+    <span class="bc-f"><span class="bc-k">סוג</span> <span class="bc-v">${d.kind === 'recorded' ? 'חוב רשום' : 'ללא רישום'}</span></span></div></div>`;
+  const refundRow = x => `<div class="bc-row bc-row--exception"><div class="bc-head"><b class="bc-name">${escapeHtml(x.patientName || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(x.houseId))}</span> <span class="bc-amount">${fmtShekel(x.amount)}</span></div>
+    <div class="bc-fields"><span class="bc-f"><span class="bc-k">סוג</span> <span class="bc-v">${x.kind === 'over_policy' ? 'זיכוי מעל המדיניות' : 'ממתין להחלטה'}</span></span>
+    ${x.kind === 'over_policy' ? `<span class="bc-f"><span class="bc-k">לפי המדיניות</span> <span class="bc-v">${escapeHtml(fmtShekel(x.policyAmount))}</span></span>` : ''}
+    ${x.exitDate ? `<span class="bc-f"><span class="bc-k">יציאה</span> <span class="bc-v">${escapeHtml(formatDateHe(x.exitDate))}</span></span>` : ''}
+    ${x.payoutDate ? `<span class="bc-f"><span class="bc-k">תשלום</span> <span class="bc-v">${escapeHtml(formatDateHe(x.payoutDate))}</span></span>` : ''}
+    ${x.reason ? `<span class="bc-f"><span class="bc-k">סיבה</span> <span class="bc-v">${escapeHtml(x.reason)}</span></span>` : ''}</div></div>`;
+  return `
+    <h4 class="bc-ex-title">סומנו כבעיה לפני יותר מ־7 ימים <span class="count-pill">${flagged.length}</span></h4>
+    ${flagged.length ? flagged.map(r => bcReceiptHtml(r, 'exception', { ageDays: r.ageDays })).join('') : empty('אין')}
+    <h4 class="bc-ex-title">חובות מעל 60 יום <span class="count-pill">${debts.length}</span></h4>
+    ${debts.length ? debts.map(debtRow).join('') : empty('אין')}
+    <h4 class="bc-ex-title">החזרים שממתינים לאישור <span class="count-pill">${refunds.length}</span></h4>
+    ${refunds.length ? refunds.map(refundRow).join('') : empty('אין')}`;
+}
+
+function renderBillingControl() {
+  const screen = document.getElementById('screen-billing-control');
+  if (!screen || state.billingControl === false) return;
+  const s = billingControlState();
+  const R = bcRules();
+  const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+  const errEl = document.getElementById('bc-error');
+  if (errEl) { errEl.textContent = s.error || ''; errEl.classList.toggle('hidden', !s.error); }
+  if (!s.data || !R) {
+    set('bc-cards', '');
+    set('bc-queue', `<p class="billing-date-label">${s.loading ? busyLabelFor('load') : (R ? '' : 'הקובץ לא נטען — רעננו את הדף')}</p>`);
+    set('bc-flagged', '');
+    set('bc-confirmed', '');
+    return;
+  }
+  const receipts = Array.isArray(s.data.receipts) ? s.data.receipts : [];
+  if (!s.month) s.month = bcThisMonth();
+  set('bc-cards', bcCardsHtml(R.summaryCards(s.data, bcThisMonth())));
+
+  const queue = R.receiptsByStatus(receipts, 'reported');
+  const flagged = R.receiptsByStatus(receipts, 'flagged');
+  set('bc-queue-count', String(queue.length));
+  set('bc-flagged-count', String(flagged.length));
+  set('bc-queue', queue.length ? queue.map(r => bcReceiptHtml(r, 'queue')).join('') : '<p class="billing-date-label">אין קבלות שממתינות לאימות</p>');
+  set('bc-flagged', flagged.length ? flagged.map(r => bcReceiptHtml(r, 'flagged')).join('') : '<p class="billing-date-label">אין קבלות שסומנו כבעיה</p>');
+
+  const bulk = document.getElementById('bc-bulk');
+  if (bulk) bulk.classList.toggle('hidden', !(state.canConfirm && queue.length));
+  const picked = queue.filter(r => s.selected[r.id]).length;
+  const bulkBtn = document.getElementById('bc-bulk-confirm');
+  if (bulkBtn && !busyButtonActive(bulkBtn)) {
+    bulkBtn.disabled = picked === 0;
+    bulkBtn.textContent = picked ? `אשר את כל המסומנים (${picked})` : 'אשר את כל המסומנים';
+  }
+  const all = document.getElementById('bc-select-all');
+  if (all) all.checked = queue.length > 0 && picked === queue.length;
+
+  const monthEl = document.getElementById('bc-month');
+  if (monthEl && monthEl.value !== s.month) monthEl.value = s.month;
+  const houseEl = document.getElementById('bc-house');
+  if (houseEl && !houseEl.options.length) {
+    houseEl.innerHTML = `<option value="all">כל הבתים</option>`
+      + HOUSES.map(h => `<option value="${escapeHtml(h.id)}">${escapeHtml(h.name)}</option>`).join('');
+  }
+  if (houseEl) houseEl.value = s.house;
+  const v = R.verifiedForMonth(receipts, s.month, s.house);
+  set('bc-verified-total', fmtShekel(v.total));
+  set('bc-confirmed', v.rows.length
+    ? v.rows.map(r => bcReceiptHtml(r, 'confirmed', { inMonth: r.amountInMonth })).join('')
+    : '<p class="billing-date-label">אין קבלות שאומתו בחודש הזה</p>');
+
+  const exEl = document.getElementById('bc-exceptions');
+  if (exEl) {
+    const show = state.approver === true && !!s.data.exceptions;
+    exEl.classList.toggle('hidden', !show);
+    if (show) set('bc-exceptions-body', bcExceptionsHtml(s.data.exceptions));
+  }
+
+  const badge = document.getElementById('bc-badge');
+  if (badge) { badge.textContent = String(queue.length); badge.classList.toggle('hidden', !queue.length); }
+  if (typeof fitAllStatText === 'function') fitAllStatText();
+}
+
+/* Download an .xlsx from one of the tab's export routes. */
+async function bcDownload(url, filename) {
+  let res;
+  try {
+    res = await fetch(url, { method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+  } catch (_e) {
+    throw new Error('אין חיבור לשרת');
+  }
+  if (res.status === 401) showPinScreen();
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const code = body && body.error;
+    throw new Error(res.status === 401 ? 'נדרשת התחברות מחדש' : (BC_XLSX_ERRORS[code] || ('השרת החזיר שגיאה ' + res.status)));
+  }
+  const blob = await res.blob();
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 1000);
+}
+
+function exportBillingControlXlsx() {
+  return bcDownload('/api/export/billing-control.xlsx', `אימות-${debtAgingTodayIso()}.xlsx`);
+}
+function exportBillingControlDebtXlsx() {
+  const today = debtAgingTodayIso();
+  return bcDownload(debtAgingExportUrl(today, 'all', 'all'), `חובות-${today}.xlsx`);
+}
+
+/* Wire the tab once (event delegation — the lists re-render). */
+function initBillingControlControls() {
+  const screen = document.getElementById('screen-billing-control');
+  if (!screen || screen._bcWired) return;
+  screen._bcWired = true;
+  const s = billingControlState();
+  const refresh = document.getElementById('bc-refresh');
+  if (refresh) refresh.onclick = () => busyButton(refresh, 'load', loadBillingControl);
+  const exp = document.getElementById('bc-export');
+  if (exp) exp.onclick = () => busyButton(exp, 'load', exportBillingControlXlsx)
+    .catch(e => showError('הייצוא נכשל — ' + ((e && e.message) || 'שגיאה')));
+  const monthEl = document.getElementById('bc-month');
+  if (monthEl) monthEl.onchange = () => { s.month = monthEl.value || bcThisMonth(); renderBillingControl(); };
+  const houseEl = document.getElementById('bc-house');
+  if (houseEl) houseEl.onchange = () => { s.house = houseEl.value || 'all'; renderBillingControl(); };
+  const all = document.getElementById('bc-select-all');
+  if (all) all.onchange = () => {
+    const R = bcRules();
+    const queue = R && s.data ? R.receiptsByStatus(s.data.receipts, 'reported') : [];
+    s.selected = {};
+    if (all.checked) queue.forEach(r => { s.selected[r.id] = true; });
+    renderBillingControl();
+  };
+  const bulkBtn = document.getElementById('bc-bulk-confirm');
+  if (bulkBtn) bulkBtn.onclick = () => {
+    const ids = Object.keys(s.selected).filter(id => s.selected[id]);
+    if (!ids.length) return Promise.resolve();
+    return busyButton(bulkBtn, 'save', () => confirmReceipts(ids, 'confirmed'));
+  };
+
+  screen.addEventListener('change', e => {
+    const t = e.target;
+    const pick = t && t.getAttribute && t.getAttribute('data-bc-pick');
+    if (pick) {
+      if (t.checked) s.selected[pick] = true; else delete s.selected[pick];
+      renderBillingControl();
+    }
+  });
+  screen.addEventListener('input', e => {
+    const t = e.target;
+    if (t && t.getAttribute && t.getAttribute('data-bc-note')) s.flagDraft = t.value;
+  });
+  screen.addEventListener('click', e => {
+    const t = e.target && e.target.closest ? e.target.closest('button') : null;
+    if (!t) return;
+    const attr = n => t.getAttribute(n);
+    if (attr('id') === 'bc-debt-export') {
+      busyButton(t, 'load', exportBillingControlDebtXlsx).catch(err => showError('הייצוא נכשל — ' + ((err && err.message) || 'שגיאה')));
+    } else if (attr('data-bc-confirm')) {
+      busyButton(t, 'save', () => confirmReceipts([attr('data-bc-confirm')], 'confirmed'));
+    } else if (attr('data-bc-flag')) {
+      s.flagOpen = attr('data-bc-flag');
+      s.flagDraft = '';
+      renderBillingControl();
+      const ta = document.getElementById('bc-note-' + s.flagOpen);
+      if (ta && ta.focus) ta.focus();
+    } else if (attr('data-bc-flag-cancel')) {
+      s.flagOpen = ''; s.flagDraft = '';
+      renderBillingControl();
+    } else if (attr('data-bc-flag-save')) {
+      const id = attr('data-bc-flag-save');
+      const R = bcRules();
+      const chk = R ? R.flagNoteCheck(s.flagDraft) : { note: s.flagDraft, error: '' };
+      if (chk.error) {
+        const row = t.closest('.bc-flag-form');
+        const err = row && row.querySelector('.bc-note-error');
+        const ta = row && row.querySelector('textarea');
+        if (err) { err.textContent = chk.error; err.classList.remove('hidden'); }
+        if (ta) { ta.setAttribute('aria-invalid', 'true'); if (ta.focus) ta.focus(); }
+        return;
+      }
+      busyButton(t, 'save', () => confirmReceipts([id], 'flagged', chk.note));
+    } else if (attr('data-bc-unflag')) {
+      busyButton(t, 'save', () => confirmReceipts([attr('data-bc-unflag')], 'reported'));
+    }
+  });
 }
 
 /* ===== Boot ===== */
