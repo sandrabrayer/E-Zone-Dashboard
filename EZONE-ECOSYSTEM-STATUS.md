@@ -777,6 +777,30 @@ Detail: `CHANGELOG-coordinators-roster.md` (Dashboard repo).
   SW v33 → **v34**.
 - **Managers / Therapists payloads unchanged** (guard test pins them).
 
+## Dashboard: pro-bono — the fifth funder (October 5, 2026)
+
+Detail: `CHANGELOG-funder-probono.md`. Apps Script **and** Railway.
+
+- **`PAYMENT_FUNDERS` gains `'פרו-בונו'`, appended LAST** (key `probono` in
+  `public/funder.js`). The four existing positions never move.
+- **A pro-bono patient owes nothing.** `debtAging_` (Code.gs) now reads the
+  `Funders` tab and drops every cycle whose start day is pro-bono from
+  `byPatient`, `byHouse` and `totals` (new informational field
+  `probonoExcluded`). A mid-stay switch drops only the cycles from that date on.
+  `billingControlQueue`'s «חובות מעל 60 יום» follows automatically.
+- The page skips pro-bono rows in «לגבייה בתאריך הנבחר», «יתרות פתוחות» and the
+  renewal / «ממתינים לתשלום» alerts (finance view only). The funder × house
+  strip always shows a ₪0 «פרו-בונו» row. Occupancy, cards and meetings are
+  unchanged.
+- **Ortal's daily email** skips a pro-bono patient's payments; the
+  «ממתינים לאימות» count and «בקרת גבייה» are unchanged.
+- A payment report for a pro-bono patient needs an **explicit** funder: the
+  form never prefills pro-bono; the savePayment fill path refuses
+  `funder_probono_explicit`.
+- «ייצוא רשימת תיקונים» gains a last tab, «מטופלי פרו-בונו».
+- SW `CACHE_VERSION` v34 → **v37** (v35 / v36 are held by open PRs #181 / #182).
+- No new action, env var, Script Property, scope, column or trigger.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);

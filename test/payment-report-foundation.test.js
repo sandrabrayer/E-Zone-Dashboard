@@ -229,7 +229,8 @@ test('rules: every case gives the expected field + code — in Code.gs AND lib, 
 test('rules: the shared lists are the same on both sides, and exactly Sandra\'s', () => {
   const { g } = world();
   assert.deepEqual(arr(g.run('PAYMENT_METHODS')), ['העברה בנקאית', 'אשראי', "צ'ק", 'מזומן', 'ביט', 'אחר']);
-  assert.deepEqual(arr(g.run('PAYMENT_FUNDERS')), ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי']);
+  // 'פרו-בונו' appended LAST (append-only; CHANGELOG-funder-probono.md).
+  assert.deepEqual(arr(g.run('PAYMENT_FUNDERS')), ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי', 'פרו-בונו']);
   assert.deepEqual(arr(g.run('PAYMENT_METHODS')), arr(rules.PAYMENT_METHODS));
   assert.deepEqual(arr(g.run('PAYMENT_FUNDERS')), arr(rules.PAYMENT_FUNDERS));
   assert.deepEqual(arr(g.run('REFERENCE_REQUIRED_METHODS')), arr(rules.REFERENCE_REQUIRED_METHODS));
