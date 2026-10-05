@@ -725,6 +725,18 @@ Supersedes #174 / #175 (closed by Sandra).
 - SW `CACHE_VERSION` v30 → **v32** (v31 is held by open PR #177).
 - No new action, env var, Script Property, scope or trigger.
 
+## Dashboard Apps Script: payments the old default funder decided (October 5, 2026)
+
+Detail: `CHANGELOG-defaulted-funder-report.md`. Editor-run
+**`defaultedFunderPaymentsReportNow()`**: a dry run that writes nothing to the
+sheet. It lists every Payments row written «פרטי» while the patient had no
+recognized Funders row on its `receivedDate`, in one private RTL Doc plus a
+Logger line (counts and URL, no names). The cleanup workbook gains the tab
+«גורם מממן ברירת מחדל» («תשלומים שקיבלו גורם מממן ברירת מחדל»). Fix: set the
+funder in «השלמת גורם מממן», then correct a cycle row's funder with
+`updatePayment`; a receipt is immutable, so it is voided and reported again.
+No `public/` change, no SW bump, no new HTTP action.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);
