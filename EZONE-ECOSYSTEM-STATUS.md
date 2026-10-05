@@ -777,6 +777,27 @@ Detail: `CHANGELOG-coordinators-roster.md` (Dashboard repo).
   SW v33 → **v34**.
 - **Managers / Therapists payloads unchanged** (guard test pins them).
 
+## Dashboard: pro-bono — the fifth funder (October 5, 2026)
+
+Detail: `CHANGELOG-funder-probono.md`. Apps Script **and** Railway.
+
+- **Label 'פרו-בונו', key 'probono'**, appended LAST to `PAYMENT_FUNDERS`
+  (Code.gs + `lib/payment-report-rules.js`) and `public/funder.js`. The
+  older four do not move.
+- **A pro-bono patient owes nothing.** `debtAging_` drops every cycle whose
+  funder on its start day is pro-bono, from `byPatient`, `byHouse` and
+  `totals`; it counts them apart in `probonoExcluded`. A mid-stay switch drops
+  only the cycles from that day on. The client due list, «יתרות פתוחות», the
+  renewal and overdue alerts, and Ortal's daily email skip them.
+  **Unchanged:** occupancy, the patient card, meetings and the restricted view.
+- The strip always shows a «פרו-בונו» row (₪0). The cleanup workbook gets
+  a last tab, «מטופלי פרו-בונו».
+- A payment report for a pro-bono patient must name its funder. The old save
+  path refuses to fill it in (`funder_probono_implicit`). There is still no
+  default funder.
+- SW `CACHE_VERSION` v34 → **v35**. No new action, env var, Script Property,
+  scope, column or trigger.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);
