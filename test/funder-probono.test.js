@@ -280,7 +280,8 @@ test('reportPayment: allowed for a pro-bono patient WITH an explicit funder; ref
   const due = today.slice(0, 8) + '01';
   const end = GS.sandbox.refundIsoFromDayNum_(GS.sandbox.refundDayNum_(GS.sandbox.refundAddMonths_(due, 1)) - 1);
   const cycle = { id: 'pay::arfoni::מטופל::2026-09-01::' + due, patientId: 'arfoni::מטופל::2026-09-01', patientName: 'מטופל', houseId: 'arfoni', dueDate: due, amount: 30000, coverageStart: due, coverageEnd: end };
-  const rep = { receivedDate: today, amount: '5000', method: 'מזומן', payer: 'משפחת כהן', coverageStart: due, coverageEnd: end };
+  // invoiceWanted: ignored today, required once the invoice PR lands (CHANGELOG-payment-invoice.md).
+  const rep = { receivedDate: today, amount: '5000', method: 'מזומן', payer: 'משפחת כהן', coverageStart: due, coverageEnd: end, invoiceWanted: 'no' };
   const before = w.snapshot();
   const bad = w.post({ action: 'reportPayment', report: { cycle, report: rep } });
   assert.equal(bad.ok, false);
@@ -443,7 +444,8 @@ for (const finance of [false, null]) {
   });
 }
 
-test('SW: v37 (above the live v34 and open PRs #181 / #182 at v35 / v36), with its bump comment', () => {
-  assert.ok(/var CACHE_VERSION = 'v37';/.test(SW_SRC));
+test('SW: at least v37 (above the live v34 and open PRs #181 / #182 at v35 / v36), with its bump comment', () => {
+  const v = Number((SW_SRC.match(/var CACHE_VERSION = 'v(\d+)';/) || [])[1]);
+  assert.ok(v >= 37, 'v' + v);   // a later PR may bump it again
   assert.ok(SW_SRC.includes('v36 → v37:'));
 });

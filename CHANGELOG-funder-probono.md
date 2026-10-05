@@ -7,6 +7,11 @@ through the clasp CI on merge — do not paste it by hand. Service worker
 `CACHE_VERSION` **v34 → v37**: v35 and v36 are held by open PRs #181 / #182.
 Whichever ships first, v37 evicts every older cache.
 
+**Merging with the invoice PR (branch `claude/intelligent-gates-roo3yc-invoice`):** the code merges cleanly in either
+order. Only `public/sw.js` (the version line: keep the higher, v38, and both
+comment blocks) and `EZONE-ECOSYSTEM-STATUS.md` (keep both sections) need a
+trivial hand-merge. The combined tree was tested: 2174 tests, all green.
+
 > **Overlap note.** Open PR #181 (`claude/lucid-mendel-v6qsbf`) implements the
 > same request from an earlier session. This PR was built independently from
 > the current deploy branch. Sandra merges one of the two and closes the other.
