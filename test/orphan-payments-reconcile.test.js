@@ -834,6 +834,8 @@ test('column contracts unchanged: PATIENT_COLUMNS, PAYMENT_COLUMNS, PATIENT_TOMB
     'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
     // And for one row per money received (CHANGELOG-payment-report-form.md).
     'legacyAmountPaid',
+    // And for the invoice choice (CHANGELOG-payment-invoice.md).
+    'invoiceWanted', 'invoiceTo',
   ]);
   assert.deepEqual(arr(code.PATIENT_TOMBSTONE_COLUMNS), [
     'houseId', 'name', 'date', 'pay', 'adv', 'status', 'fromLead', 'exitDate', 'source', 'notes',

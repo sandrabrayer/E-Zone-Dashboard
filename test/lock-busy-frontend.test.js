@@ -104,6 +104,7 @@ function loadApp(script) {
       billingOverrideId: (p, m) => billingOverrideId(p, m),
       autosaveMeetingWithDefaults: () => autosaveMeetingWithDefaults(),
       submitPaymentReport: (c, v) => submitPaymentReport(c, v),
+      saveReceiptInvoice: (r, v) => saveReceiptInvoice(r, v),
       saveFunder: (p, f, d) => saveFunder(p, f, d),
       confirmReceipts: (ids, st, n) => confirmReceipts(ids, st, n),
       confirm: (v) => globalThis.__onConfirm(v),
@@ -276,6 +277,18 @@ const PATHS = [
       { id: 'pay::ramot::דנה::2026-07-01::2026-09-01', patientId: 'ramot::דנה::2026-07-01', houseId: 'ramot', dueDate: '2026-09-01', amount: 9000 },
       { receivedDate: '2026-09-02', amount: '9000', method: 'מזומן', payer: 'דנה', reference: '', funder: 'פרטי', coverageStart: '2026-09-01', coverageEnd: '2026-09-30' }),
     landed: (app) => { assert.strictEqual(app.state.receipts.length, 1); assert.strictEqual(app.state.payments[0].status, 'paid'); },
+    rejects: true,
+  },
+  {
+    // CHANGELOG-payment-invoice.md: a receipt's «חשבונית» edit (updatePayment).
+    // The modal stays open with the Hebrew message (saveReceiptInvoice throws).
+    name: 'updatePayment (a receipt\'s invoice choice)',
+    action: 'updatePayment',
+    setup: (app) => { app.state.receipts = [{ id: 'rcpt-1', cycleId: 'c1', status: 'paid', invoiceWanted: '', invoiceTo: '' }]; },
+    okResponse: { ok: true, updated: true, payment: { id: 'rcpt-1', status: 'paid', amountPaid: 9000, invoiceWanted: 'yes', invoiceTo: 'משפחת כהן' } },
+    run: (app) => app.saveReceiptInvoice({ id: 'rcpt-1', cycleId: 'c1', status: 'paid', invoiceWanted: '', invoiceTo: '' },
+      { invoiceWanted: 'yes', invoiceTo: 'משפחת כהן' }),
+    landed: (app) => { assert.strictEqual(app.state.receipts[0].invoiceWanted, 'yes'); assert.strictEqual(app.state.receipts[0].invoiceTo, 'משפחת כהן'); },
     rejects: true,
   },
   {

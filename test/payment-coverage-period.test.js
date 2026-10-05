@@ -215,8 +215,9 @@ test('A: PAYMENT_COLUMNS appends the two coverage columns and moves nothing', ()
     'recordedBy', 'recordedAt',
     'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
     'legacyAmountPaid',
+    'invoiceWanted', 'invoiceTo',   // CHANGELOG-payment-invoice.md
   ]);
-  assert.equal(cols.length, 36);
+  assert.equal(cols.length, 38);
 });
 
 test('A: the two new columns are text-forced at sheet-ensure, the old ones are left alone', () => {
@@ -241,6 +242,7 @@ test('A: the two new columns are text-forced at sheet-ensure, the old ones are l
     'patientUid', 'payerUid', 'paymentUid', 'sourceUpdatedAt',
     'receivedDate', 'method', 'payer', 'funder', 'reference', 'recordedBy', 'recordedAt',
     'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
+    'invoiceWanted', 'invoiceTo',
   ].sort());
   assert.deepEqual(arr(code.PAYMENT_TEXT_COLUMNS).slice().sort(), forced.sort());
   ['id', 'patientId', 'patientName', 'houseId', 'dueDate',

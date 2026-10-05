@@ -177,6 +177,11 @@ const PAYMENTS = [
   pay(DANA, '2026-07-15', { amount: 25000, status: 'paid', amountPaid: 25000, chargedAt: '2026-07-15T09:00:00+03:00' }),
   pay(DANA, '2026-08-15', { amount: 25000, status: 'paid', amountPaid: 25000, chargedAt: '2026-08-15T09:00:00+03:00' }),
   pay(DANA, '2026-09-15', { amount: 25000, status: 'paid', amountPaid: 25000, chargedAt: '2026-09-15T09:00:00+03:00' }),
+  // a receipt reported BEFORE the invoice choice existed → «קבלות ללא בחירת חשבונית»
+  // (CHANGELOG-payment-invoice.md); it pays the cycle above in full, so no gap moves
+  { id: 'rcpt-dana-0915', patientId: DANA, patientName: 'דנה לוי', houseId: 'rehab', dueDate: '2026-09-15', amount: 25000,
+    amountPaid: 25000, balance: 0, status: 'paid', receivedDate: '2026-09-15', coverageStart: '2026-09-15', coverageEnd: '2026-10-14',
+    method: 'מזומן', payer: 'דנה לוי', funder: 'פרטי', confirmStatus: 'reported', chargedAt: '2026-09-15T09:00:00+03:00' },
   pay(DANA2, '2026-07-15', { amount: 25000, status: 'paid', amountPaid: 25000, chargedAt: '2026-07-15T09:00:00+03:00' }),
   pay(AMIT, '2026-09-07', { amount: 30000, status: 'paid', amountPaid: 30000, chargedAt: '2026-09-15T09:00:00+03:00' }),
   // the renamed-patient shape: a detached row, same house / entry day / amount
@@ -484,7 +489,7 @@ test('workbook: «סיכום» first, then one tab per kind, in order; every tab
   const { wb } = await book();
   assert.deepEqual(wb.worksheets.map((w) => w.name), ['סיכום'].concat(cleanup.TABS.map((t) => t.name)));
   assert.deepEqual(cleanup.TABS.map((t) => t.name), ['שמות לא תואמים', 'פערי גבייה לבדיקה', 'תשלומים לא משויכים', 'תשלומים אחרי יציאה',
-    'משוחררים ללא תאריך יציאה', 'ללא תאריך כניסה', 'מטופלים בסכום אפס', 'לידים ששולמו ולא נקלטו', 'כפילויות חשודות', 'זיכויים לבדיקה', 'חסר גורם מממן']);
+    'משוחררים ללא תאריך יציאה', 'ללא תאריך כניסה', 'מטופלים בסכום אפס', 'לידים ששולמו ולא נקלטו', 'כפילויות חשודות', 'זיכויים לבדיקה', 'חסר גורם מממן', 'קבלות ללא בחירת חשבונית']);
   for (const ws of wb.worksheets) {
     assert.equal(ws.views[0].rightToLeft, true, ws.name);
     assert.equal(ws.views[0].state, 'frozen', ws.name);

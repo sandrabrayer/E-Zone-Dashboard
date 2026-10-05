@@ -10757,6 +10757,8 @@ async function savePayment(payment) {
 const PAYMENT_REPORT_TOAST = 'התשלום נרשם — יופיע אצל אורטל מחר בבוקר';
 /* The form's field order — the order the inline errors are checked in. */
 const PAYMENT_REPORT_FORM_FIELDS = ['receivedDate', 'amount', 'method', 'payer', 'reference', 'funder', 'coverageStart', 'coverageEnd'];
+/* «על שם» — PaymentReportRules.INVOICE_TO_MAX (CHANGELOG-payment-invoice.md). */
+const PAYMENT_INVOICE_TO_MAX = 120;
 
 /* The shared rules, loaded as /payment-report-rules.js before app.js. */
 function paymentReportRules() {
@@ -10799,7 +10801,27 @@ function normalizeReceipt(r) {
     linkStatus: String(o.linkStatus || ''),
     linkNote: String(o.linkNote || ''),
     timestamp: String(o.timestamp || ''),
+    // CHANGELOG-payment-invoice.md: 'yes' / 'no', '' on a receipt from before it.
+    invoiceWanted: String(o.invoiceWanted == null ? '' : o.invoiceWanted).trim(),
+    invoiceTo: String(o.invoiceTo == null ? '' : o.invoiceTo).trim(),
   };
+}
+
+/* The invoice choice as a screen shows it — the shared rule
+ * (PaymentReportRules.invoiceDisplay): 'כן' / 'לא', «—» for a row without a
+ * choice, never guessed. Pure. */
+function invoiceDisplayOf(row) {
+  const rules = paymentReportRules();
+  if (rules && typeof rules.invoiceDisplay === 'function') return rules.invoiceDisplay(row);
+  return { wanted: '—', to: '—' };
+}
+
+/* The receipt line's invoice part: «חשבונית: כן · על שם X» / «חשבונית: לא» /
+ * «חשבונית: —». Escaped. Pure. */
+function receiptInvoiceHtml(r) {
+  const d = invoiceDisplayOf(r);
+  return `<span class="receipt-invoice" data-invoice="${escapeHtml(r.invoiceWanted || 'none')}">חשבונית: ${escapeHtml(d.wanted)}`
+    + (d.wanted === 'כן' ? ` · על שם ${escapeHtml(d.to)}` : '') + `</span>`;
 }
 
 function normalizeFunderRow(r) {
@@ -10831,13 +10853,18 @@ function receiptsListHtml(cycleId) {
     const voidBtn = !isVoid && state.mode === 'edit' && canDelete()
       ? `<button type="button" class="btn small receipt-void-btn" data-role="deleter" data-rid="${escapeHtml(r.id)}" title="ביטול הקבלה (נשמרת כרישום)">ביטול קבלה</button>`
       : '';
+    const invoiceBtn = !isVoid && state.mode === 'edit' && financeView()
+      ? `<button type="button" class="btn small receipt-invoice-btn" data-rid="${escapeHtml(r.id)}" title="עריכת בחירת החשבונית">חשבונית ✎</button>`
+      : '';
     return `<li class="receipt-item${isVoid ? ' receipt-void' : ''}" data-rid="${escapeHtml(r.id)}">
         <span class="receipt-date">${escapeHtml(formatDate(r.receivedDate) || '—')}</span>
         <span class="receipt-amount">${escapeHtml(fmtShekel(r.amount))}</span>
         <span class="receipt-method">${escapeHtml(r.method || '—')}</span>
         ${r.reference ? `<span class="receipt-ref">אסמכתא ${escapeHtml(r.reference)}</span>` : ''}
         <span class="receipt-who">${escapeHtml(r.recordedBy || '')}</span>
+        ${receiptInvoiceHtml(r)}
         ${isVoid ? `<span class="badge void">${escapeHtml(PAYMENT_VOID_LABEL)}</span>` : ''}
+        ${invoiceBtn}
         ${voidBtn}
       </li>`;
   }).join('');
@@ -10851,6 +10878,127 @@ function wireReceiptVoidButtons(row) {
       if (r) openReceiptVoidModal(r);
     };
   });
+  row.querySelectorAll('.receipt-invoice-btn').forEach(btn => {
+    btn.onclick = () => {
+      const r = state.receipts.find(x => x.id === btn.dataset.rid);
+      if (r) openInvoiceEditModal(r);
+    };
+  });
+}
+
+/* The invoice fields' markup, shared by the report form and the edit modal:
+ * «חשבונית?» כן / לא with NO default, and «על שם» (hidden until כן). `pre` is
+ * the element-id prefix. */
+function invoiceFieldsHtml(pre, wanted, to) {
+  const err = f => `<div class="field-error" data-err="${f}" id="${pre}-err-${f}" role="alert"></div>`;
+  const radio = (v, label) => `<label class="pr-radio"><input type="radio" name="invoiceWanted" value="${v}"${wanted === v ? ' checked' : ''} aria-describedby="${pre}-err-invoiceWanted" /> ${label}</label>`;
+  return `
+        <div class="form-row pr-invoice-row">
+          <span class="pr-label" id="${pre}-invoice-label">חשבונית? *</span>
+          <div class="pr-invoice" role="radiogroup" aria-labelledby="${pre}-invoice-label">${radio('yes', 'כן')}${radio('no', 'לא')}</div>
+          ${err('invoiceWanted')}
+        </div>
+        <div class="form-row pr-invoice-to${wanted === 'yes' ? '' : ' hidden'}">
+          <label for="${pre}-invoiceTo">על שם *</label>
+          <input type="text" id="${pre}-invoiceTo" name="invoiceTo" maxlength="${PAYMENT_INVOICE_TO_MAX}" autocomplete="off" value="${escapeHtml(to || '')}" aria-describedby="${pre}-err-invoiceTo" />
+          ${err('invoiceTo')}
+        </div>`;
+}
+
+/* The invoice choice a form holds: the checked radio ('' when none) and the
+ * name — '' unless כן. */
+function invoiceValuesFrom(root) {
+  const checked = root.querySelector('[name="invoiceWanted"]:checked');
+  const wanted = checked ? String(checked.value || '') : '';
+  const toEl = root.querySelector('[name="invoiceTo"]');
+  return { invoiceWanted: wanted, invoiceTo: wanted === 'yes' && toEl ? String(toEl.value || '').trim() : '' };
+}
+
+/* Wire the radios: כן shows «על שם» and, when it is empty, fills it with the
+ * payer (`payerOf()`); לא hides it. `onChange` runs after. */
+function wireInvoiceFields(root, payerOf, onChange) {
+  const row = root.querySelector('.pr-invoice-to');
+  const toEl = root.querySelector('[name="invoiceTo"]');
+  root.querySelectorAll('[name="invoiceWanted"]').forEach(radio => {
+    if (!radio || !radio.addEventListener) return;
+    radio.addEventListener('change', () => {
+      const yes = invoiceValuesFrom(root).invoiceWanted === 'yes';
+      if (row) row.classList.toggle('hidden', !yes);
+      if (yes && toEl && !String(toEl.value || '').trim()) toEl.value = String((payerOf && payerOf()) || '').trim();
+      if (onChange) onChange();
+    });
+  });
+  if (toEl && onChange && toEl.addEventListener) { toEl.addEventListener('change', onChange); toEl.addEventListener('blur', onChange); }
+}
+
+/* Edit a receipt's invoice choice (updatePayment — CHANGELOG-payment-invoice.md).
+ * The server validates it like a report and writes one AuditLog row. Finance
+ * only; a receipt is otherwise never edited. */
+function openInvoiceEditModal(receipt) {
+  if (!financeView() || state.mode !== 'edit') return;
+  const root = document.getElementById('modal-root');
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  back.innerHTML = `
+    <div class="modal pay-report-modal invoice-edit-modal" role="dialog" aria-labelledby="inv-title">
+      <h3 id="inv-title">חשבונית</h3>
+      <p class="pay-report-lead">${escapeHtml(receipt.patientName || '—')} · ${escapeHtml(fmtShekel(receipt.amount))} · ${escapeHtml(formatDate(receipt.receivedDate) || '—')}</p>
+      <form novalidate>
+        ${invoiceFieldsHtml('inv', receipt.invoiceWanted, receipt.invoiceTo)}
+        <div class="field-error pr-form-error" data-err="_form" role="alert"></div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn primary inv-submit">שמירה</button>
+        </div>
+      </form>
+    </div>`;
+  root.appendChild(back);
+  const form = back.querySelector('form');
+  const submitBtn = back.querySelector('.inv-submit');
+  const close = () => back.remove();
+  back.querySelector('[data-action="cancel"]').onclick = () => { if (!busyButtonActive(submitBtn)) close(); };
+  const paint = issues => {
+    const by = {};
+    issues.forEach(i => { if (!by[i.field]) by[i.field] = i.hebrewMessage; });
+    ['invoiceWanted', 'invoiceTo'].forEach(f => { const el = back.querySelector(`[data-err="${f}"]`); if (el) el.textContent = by[f] || ''; });
+  };
+  const check = () => { const rules = paymentReportRules(); return rules ? rules.validateInvoiceChoice(invoiceValuesFrom(form)) : []; };
+  wireInvoiceFields(form, () => receipt.payer, () => paint(check()));
+  form.onsubmit = e => {
+    e.preventDefault();
+    const issues = check();
+    if (issues.length) { paint(issues); return; }
+    const v = invoiceValuesFrom(form);
+    return busyButton(submitBtn, 'save', async () => {
+      try {
+        await saveReceiptInvoice(receipt, v);
+        close();
+        showToast('בחירת החשבונית נשמרה');
+      } catch (err) {
+        const data = err && err.data;
+        if (data && Array.isArray(data.fields)) paint(data.fields);
+        back.querySelector('[data-err="_form"]').textContent = 'השמירה נכשלה — ' + ((data && data.message) || err.message || 'שגיאה');
+      }
+    });
+  };
+}
+
+/* POST updatePayment with the receipt as stored plus the new choice; adopt
+ * the server's echo. Throws on refusal. */
+async function saveReceiptInvoice(receipt, values) {
+  const res = await apiPost({ action: 'updatePayment', payment: {
+    id: receipt.id, patientId: receipt.patientId, patientName: receipt.patientName, houseId: receipt.houseId,
+    dueDate: receipt.dueDate, status: receipt.status, linkStatus: receipt.linkStatus, linkNote: receipt.linkNote,
+    invoiceWanted: values.invoiceWanted, invoiceTo: values.invoiceTo, timestamp: new Date().toISOString(),
+  } });
+  const at = state.receipts.findIndex(x => x.id === receipt.id);
+  if (at >= 0) {
+    state.receipts[at] = res && res.payment
+      ? normalizeReceipt(Object.assign({}, res.payment, { cycleId: receipt.cycleId }))
+      : Object.assign({}, receipt, { invoiceWanted: values.invoiceWanted, invoiceTo: values.invoiceTo });
+  }
+  renderBilling();
+  return res;
 }
 
 /* Void a receipt — the existing void flow (savePayment, status void, a
@@ -11090,6 +11238,9 @@ function paymentReportDefaults(patient, payment, dueDateISO, todayIso) {
       funder: (cur => (cur.unset ? '' : cur.funder))(currentFunderFor(uid)),
       coverageStart: covStart,
       coverageEnd: covEnd,
+      // No default: the report cannot be sent until כן / לא is chosen.
+      invoiceWanted: '',
+      invoiceTo: '',
     },
   };
 }
@@ -11101,7 +11252,8 @@ function paymentReportIssues(values, todayIso, approver) {
   return rules.validatePaymentReport(values, {
     todayIso: todayIso || rules.jerusalemToday(),
     maxDaysBack: approver === true ? 0 : rules.RECEIVED_DATE_STAFF_MAX_DAYS,
-  });
+  }).concat(typeof rules.validateInvoiceChoice === 'function' ? rules.validateInvoiceChoice(values)
+    : [{ field: 'invoiceWanted', code: 'rules_missing', hebrewMessage: 'טעינת כללי הדיווח נכשלה — רעננו את הדף' }]);
 }
 
 function openPaymentReportModal(patient, payment, dueDateISO) {
@@ -11166,6 +11318,7 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
           </div>
           ${covErrors}
         </div>
+        ${invoiceFieldsHtml('pr', d.report.invoiceWanted, d.report.invoiceTo)}
         <div class="field-error pr-form-error" data-err="_form" role="alert"></div>
         <div class="form-actions">
           <button type="button" class="btn" data-action="cancel">ביטול</button>
@@ -11185,7 +11338,7 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
   const values = () => {
     const v = {};
     PAYMENT_REPORT_FORM_FIELDS.forEach(f => { v[f] = ctl(f) ? String(ctl(f).value || '').trim() : ''; });
-    return v;
+    return Object.assign(v, invoiceValuesFrom(form));
   };
   const touched = {};
   /* Paint the issues: one Hebrew line under each field, aria-invalid on the
@@ -11212,6 +11365,10 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
     const on = () => { touched[f] = true; if (f === 'method') touched.reference = true; paint(check(), touched); };
     c.addEventListener('change', on);
     c.addEventListener('blur', on);
+  });
+  // «חשבונית?»: כן prefills «על שם» with the payer (CHANGELOG-payment-invoice.md).
+  wireInvoiceFields(form, () => (ctl('payer') ? ctl('payer').value : ''), () => {
+    touched.invoiceWanted = true; touched.invoiceTo = true; paint(check(), touched);
   });
 
   form.onsubmit = e => {
@@ -12478,6 +12635,8 @@ function bcReceiptHtml(r, mode, opts) {
       ${field('משלם', r.payer)}
       ${field('גורם מממן', r.funder)}
       ${field('נרשם ע״י', r.recordedBy)}
+      ${field('חשבונית', invoiceDisplayOf(r).wanted)}
+      ${field('על שם', invoiceDisplayOf(r).to)}
     </div>
     ${extra.join('')}
     ${actions}

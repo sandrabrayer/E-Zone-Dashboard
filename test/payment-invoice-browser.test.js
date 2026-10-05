@@ -1,21 +1,17 @@
-/* The strict «דווח תשלום» form in REAL Chromium at 360px — the real
+/* «חשבונית?» on the «דווח תשלום» form, in REAL Chromium at 360px — the real
  * server.js, index.html, app.js, style.css and lib/payment-report-rules.js,
- * with the REAL apps-script/Code.gs (vm sandbox, test/helpers/gs-sandbox.js)
- * answering every Apps Script call except getData. CHANGELOG-payment-report-form.md.
+ * with the REAL apps-script/Code.gs (vm sandbox) answering every Apps Script
+ * call except getData. CHANGELOG-payment-invoice.md.
  *
- *   Vered (finance, deleter): opens גבייה, taps «דווח תשלום» on today's
- *     cycle, sends a bank transfer WITHOUT a reference → the inline Hebrew
- *     error under «מספר אסמכתא», nothing sent; fills it → the toast «התשלום
- *     נרשם — יופיע אצל אורטל מחר בבוקר», the row shows «שולם» and the receipt;
- *     Code.gs holds the cycle + ONE receipt row. There is no default funder
- *     (CHANGELOG-patient-funder-on-funders.md): the form opens with the
- *     funder EMPTY and the patient card shows the amber «לא הוגדר».
- *   Shiran (no finance): no «דווח תשלום», no form, no funder editor; a direct
- *     POST of reportPayment / appendFunder gets 403.
+ *   Vered: the form opens with NO choice; sending it paints «חסר: האם להפיק
+ *     חשבונית (כן / לא)» and sends nothing; כן reveals «על שם» prefilled with
+ *     the payer; emptying it paints «חסר: על שם מי החשבונית»; then the report
+ *     lands with invoiceWanted 'yes' + the name; the receipt line shows
+ *     «חשבונית: כן · על שם …»; «חשבונית ✎» switches it to לא (updatePayment,
+ *     one AuditLog row) and the line shows «חשבונית: לא».
+ *   Shiran: no form, no receipt line; a direct updatePayment gets 403.
  *
- * Set SHOT_DIR to write payment-report-360-error.png and
- * payment-report-360-success.png.
- *
+ * Set SHOT_DIR to write payment-invoice-360-error.png / -yes.png.
  * SKIPPED unless BOTH `playwright` resolves AND a Chromium binary is present. */
 
 const { test } = require('node:test');
@@ -45,9 +41,9 @@ const users = require('../lib/users');
 const { createSessionToken } = require('../lib/session');
 
 const SERVER_PATH = require.resolve('../server');
-const PEPPER = 'pepper-TEST-payment-report-browser-0123456789abcd';
-const SESSION_SECRET = 'session-secret-TEST-payment-report-browser-01234';
-const PROXY_SECRET = 'proxy-secret-TEST-payment-report-browser-0123456';
+const PEPPER = 'pepper-TEST-payment-invoice-browser-0123456789ab';
+const SESSION_SECRET = 'session-secret-TEST-payment-invoice-browser-0123';
+const PROXY_SECRET = 'proxy-secret-TEST-payment-invoice-browser-012345';
 const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'USER_PIN_HASHES', 'PIN_PEPPER'];
 
 const israelDay = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date(ms));
@@ -127,92 +123,91 @@ async function shot(target, name) {
   await target.screenshot({ path: path.join(process.env.SHOT_DIR, name) });
 }
 
-test('«דווח תשלום» at 360px: one inline error, nothing sent; then success — one receipt row, the cycle paid, the toast', { skip: skip && why, timeout: 120000 }, async () => {
+test('«חשבונית?» at 360px: no default, both errors inline, nothing sent; כן prefills the payer; stored; edited to לא and audited', { skip: skip && why, timeout: 120000 }, async () => {
   const server = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
     const v = await open(browser, server.port, 'vered', '#billing');
     const page = v.page;
-    await page.waitForSelector('#screen-billing', { state: 'visible' });
     await page.waitForSelector('#billing-due-list .billing-row', { timeout: 10000 });
-    assert.equal(await page.locator('#billing-due-list select.billing-status').count(), 0, 'the old status dropdown is gone');
-    assert.equal(await page.locator('#billing-due-list .billing-paid').count(), 0, 'and «שולם בפועל»');
     await page.locator('#billing-due-list .bill-report-btn').first().click();
     const modal = page.locator('.pay-report-modal');
     await modal.waitFor({ state: 'visible' });
-    assert.match(await modal.textContent(), /דנה כהן/);
-    assert.equal(await page.inputValue('#pr-amount'), '30000', 'the expected amount is prefilled');
-    assert.equal(await page.inputValue('#pr-funder'), '', 'no Funders row → empty: there is no default funder');
+    assert.equal(await page.locator('.pay-report-modal input[name="invoiceWanted"]:checked').count(), 0, 'no default');
+    assert.equal(await page.locator('.pay-report-modal .pr-invoice-to').isVisible(), false, '«על שם» hidden until כן');
     await page.selectOption('#pr-funder', 'ביטוח לאומי');
-
-    // One error: a bank transfer with no reference.
     await page.fill('#pr-receivedDate', YESTERDAY);
-    await page.selectOption('#pr-method', 'העברה בנקאית');
+    await page.selectOption('#pr-method', 'מזומן');
     await page.fill('#pr-payer', 'משפחת כהן');
-    // CHANGELOG-payment-invoice.md: «חשבונית?» has no default — choose לא here
-    // (the כן / «על שם» flow is test/payment-invoice-browser.test.js).
-    await page.check('.pay-report-modal input[name="invoiceWanted"][value="no"]');
-    const before = server.actions.filter((a) => a === 'reportPayment').length;
-    await page.click('.pr-submit');
-    const refErr = page.locator('[data-err="reference"]');
-    await refErr.waitFor({ state: 'visible' });
-    assert.equal((await refErr.textContent()).trim(), "חסר: מספר אסמכתא (חובה בהעברה בנקאית ובצ'ק)");
-    assert.equal(await page.getAttribute('#pr-reference', 'aria-invalid'), 'true');
-    assert.equal(await page.locator('.pay-report-modal .field-error:not(:empty)').count(), 1, 'exactly one error');
-    assert.equal(server.actions.filter((a) => a === 'reportPayment').length, before, 'nothing was sent');
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'no sideways scroll at 360px');
-    await shot(page, 'payment-report-360-error.png');
+    const sent = () => server.actions.filter((a) => a === 'reportPayment').length;
+    const before = sent();
 
-    // Success.
-    await page.fill('#pr-reference', 'TRX-2026/0042');
+    // 1. no choice → one inline error, nothing sent
+    await page.click('.pr-submit');
+    const choiceErr = page.locator('[data-err="invoiceWanted"]');
+    await choiceErr.waitFor({ state: 'visible' });
+    assert.equal((await choiceErr.textContent()).trim(), 'חסר: האם להפיק חשבונית (כן / לא)');
+    assert.equal(await page.locator('.pay-report-modal .field-error:not(:empty)').count(), 1, 'exactly one error');
+    assert.equal(sent(), before, 'nothing was sent');
+    await shot(page, 'payment-invoice-360-error.png');
+
+    // 2. כן → «על שם» appears, prefilled with the payer
+    await page.check('.pay-report-modal input[name="invoiceWanted"][value="yes"]');
+    await page.locator('#pr-invoiceTo').waitFor({ state: 'visible' });
+    assert.equal(await page.inputValue('#pr-invoiceTo'), 'משפחת כהן', 'prefilled with the payer name');
+    assert.equal((await choiceErr.textContent()).trim(), '', 'the choice error clears');
+    const box = await page.locator('.pay-report-modal .pr-radio').first().boundingBox();
+    assert.ok(box && box.height >= 44, '44px touch target');
+
+    // 3. an empty name → its own error, nothing sent
+    await page.fill('#pr-invoiceTo', '');
+    await page.click('.pr-submit');
+    const toErr = page.locator('[data-err="invoiceTo"]');
+    await toErr.waitFor({ state: 'visible' });
+    assert.equal((await toErr.textContent()).trim(), 'חסר: על שם מי החשבונית');
+    assert.equal(sent(), before);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'no sideways scroll at 360px');
+
+    // 4. a name → stored
+    await page.fill('#pr-invoiceTo', 'קרן <סיוע> & בניו');
     await page.click('.pr-submit');
     await modal.waitFor({ state: 'detached', timeout: 10000 });
-    const toast = page.locator('#toast-banner');
-    await toast.waitFor({ state: 'visible' });
-    assert.equal((await toast.textContent()).trim(), 'התשלום נרשם — יופיע אצל אורטל מחר בבוקר');
-    const row = page.locator('#billing-due-list .billing-row').first();
-    await row.locator('.receipt-item').waitFor({ state: 'visible' });
-    assert.match(await row.locator('.pay-state').textContent(), /^שולם$/);
-    const receipt = await row.locator('.receipt-item').textContent();
-    assert.match(receipt, /העברה בנקאית/);
-    assert.match(receipt, /TRX-2026\/0042/);
-    assert.match(receipt, /ורד/);
-    assert.equal(await row.locator('.bill-report-btn').count(), 0, 'paid in full — no second report');
-    assert.equal((await row.locator('.receipt-void-btn').textContent()).trim(), 'ביטול קבלה', 'a deleter may void it');
-    await shot(page, 'payment-report-360-success.png');
+    const rcpt = () => server.gs.sheetRows('Payments', 'PAYMENT_COLUMNS').find((r) => /^rcpt-/.test(String(r.id)));
+    assert.deepEqual([rcpt().invoiceWanted, rcpt().invoiceTo], ['yes', 'קרן <סיוע> & בניו']);
+    const line = page.locator('#billing-due-list .receipt-item .receipt-invoice').first();
+    await line.waitFor({ state: 'visible' });
+    assert.equal((await line.textContent()).trim(), 'חשבונית: כן · על שם קרן <סיוע> & בניו', 'escaped text, not markup');
+    assert.equal(await page.locator('#billing-due-list .receipt-invoice *').count(), 0, 'no injected element');
+    await shot(page, 'payment-invoice-360-yes.png');
 
-    const rows = server.gs.sheetRows('Payments', 'PAYMENT_COLUMNS');
-    assert.equal(rows.length, 2, 'the cycle and ONE receipt');
-    assert.equal(rows[0].status, 'paid');
-    assert.match(rows[1].id, /^rcpt-/);
-    assert.equal(rows[1].recordedBy, 'ורד');
-    assert.equal(rows[1].receivedDate, YESTERDAY);
-    assert.equal(rows[0].dueDate, DUE_TODAY);
-
-    // The patient card: the funder, finance-only.
-    await page.locator('.tabs .tab[data-screen="occupancy"]').click();
-    await page.waitForSelector('.patient-funder', { state: 'visible' });
-    assert.match(await page.locator('.patient-funder').first().textContent(), /לא הוגדר/);
-    assert.equal(await page.locator('.patient-funder .funder-chip.funder-unset').count() > 0, true, 'the amber badge');
+    // 5. «חשבונית ✎» → לא (updatePayment), audited
+    await page.locator('#billing-due-list .receipt-invoice-btn').first().click();
+    const edit = page.locator('.invoice-edit-modal');
+    await edit.waitFor({ state: 'visible' });
+    assert.equal(await edit.locator('input[name="invoiceWanted"][value="yes"]').isChecked(), true, 'opens on the stored choice');
+    await edit.locator('input[name="invoiceWanted"][value="no"]').check();
+    await edit.locator('.inv-submit').click();
+    await edit.waitFor({ state: 'detached', timeout: 10000 });
+    assert.deepEqual([rcpt().invoiceWanted, rcpt().invoiceTo], ['no', '']);
+    await page.waitForFunction(() => /חשבונית: לא/.test((document.querySelector('#billing-due-list .receipt-invoice') || {}).textContent || ''));
+    const audit = server.gs.sheetRows('AuditLog', 'AUDIT_LOG_COLUMNS').filter((r) => r.action === 'payment_invoice_changed');
+    assert.equal(audit.length, 1);
+    assert.equal(JSON.parse(audit[0].details).by, 'ורד');
     assert.deepEqual(v.errors, [], 'no page errors');
     await v.ctx.close();
 
     // ---- Shiran: nothing of it, and the server refuses it ----
     const s = await open(browser, server.port, 'shiran', '#billing');
-    assert.equal(await s.page.locator('.bill-report-btn, .pay-report-modal, #screen-billing').count(), 0);
-    await s.page.locator('.tabs .tab[data-screen="occupancy"]').click();
-    await s.page.waitForSelector('.patient-row', { state: 'visible' });
-    assert.equal(await s.page.locator('.patient-funder, .funder-edit-btn').count(), 0, 'no funder editor');
-    const direct = await s.page.evaluate(async () => {
-      const post = (body) => fetch('/api/sheets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-        .then(async (r) => [r.status, await r.json()]);
-      return [await post({ action: 'reportPayment', report: {} }), await post({ action: 'appendFunder', funder: {} })];
-    });
-    for (const [status, body] of direct) {
-      assert.equal(status, 403);
-      assert.deepEqual(body, { ok: false, error: 'forbidden', message: 'אין הרשאה לצפות בנתוני גבייה' });
-    }
-    assert.equal(server.gs.sheetRows('Payments', 'PAYMENT_COLUMNS').length, 2, 'nothing more written');
+    assert.equal(await s.page.locator('.pay-report-modal, .receipt-invoice, .receipt-invoice-btn').count(), 0);
+    const id = rcpt().id;
+    const direct = await s.page.evaluate(async (rid) => {
+      const r = await fetch('/api/sheets', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'updatePayment', payment: { id: rid, invoiceWanted: 'yes', invoiceTo: 'x' } }) });
+      return [r.status, await r.json()];
+    }, id);
+    assert.equal(direct[0], 403);
+    assert.equal(direct[1].error, 'forbidden');
+    assert.deepEqual([rcpt().invoiceWanted, rcpt().invoiceTo], ['no', ''], 'unchanged');
     assert.deepEqual(s.errors, []);
     await s.ctx.close();
   } finally {

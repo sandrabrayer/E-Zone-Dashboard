@@ -89,7 +89,7 @@ async function boot() {
   for (const [amount, d, payer] of [[18000, daysAgo(2), 'משפחת כהן'], [12000, daysAgo(1), 'ביטוח משלים']]) {
     const r = gs.post(Object.assign({ action: 'reportPayment', report: { cycle: CYCLE, report: {
       receivedDate: d, amount, method: 'העברה בנקאית', payer, reference: 'TRX-' + amount, funder: 'פרטי',
-      coverageStart: MONTH_START, coverageEnd: MONTH_END } } }, vered));
+      coverageStart: MONTH_START, coverageEnd: MONTH_END, invoiceWanted: 'yes', invoiceTo: payer } } }, vered));
     if (!r.ok) throw new Error('seed report failed: ' + JSON.stringify(r));
   }
   const actions = [];

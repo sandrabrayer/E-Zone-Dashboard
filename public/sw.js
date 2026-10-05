@@ -145,7 +145,13 @@
 // and the «🚪 שחרורים מהבתים» panel (discharges the coordinators recorded).
 // app.js, index.html, style.css changed — evict v33 (and older). /api/ stays
 // network-only.
-var CACHE_VERSION = 'v34';
+// v35 → v36: invoice on the payment report (CHANGELOG-payment-invoice.md) —
+// «חשבונית?» כן / לא + «על שם» in the form, on the receipt line and on the
+// «בקרת גבייה» card; payment-report-rules.js gains validateInvoiceChoice /
+// invoiceDisplay. app.js, style.css, payment-report-rules.js changed. Built
+// as v36 because v35 is held by open PR #181 (pro-bono); if this ships first,
+// v36 still evicts v34 (and older). /api/ stays network-only.
+var CACHE_VERSION = 'v36';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

@@ -1512,6 +1512,20 @@ body.view-controller #screen-billing-control { display: block; }
 .pay-report-modal .field-error:empty { display: none; }
 .pay-report-modal [aria-invalid="true"] { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
 .pay-report-modal .pr-form-error { margin-top: 10px; }
+/* «חשבונית?» כן / לא — CHANGELOG-payment-invoice.md. No default; 44px targets. */
+.pay-report-modal .pr-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.pay-report-modal .pr-invoice { display: flex; gap: 10px; flex-wrap: wrap; }
+.pay-report-modal .pr-radio {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; min-width: 88px;
+  padding: 0 14px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer;
+  text-transform: none; letter-spacing: 0; font-weight: 600;
+}
+.pay-report-modal .pr-radio input { width: 18px; height: 18px; margin: 0; }
+.pay-report-modal .pr-radio:has(input:checked) { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+.pay-report-modal .pr-radio input[aria-invalid="true"] { box-shadow: none; }
+.receipt-item .receipt-invoice { color: var(--text-muted); }
+.receipt-item .receipt-invoice-btn { margin-inline-start: auto; }
+.receipt-item .receipt-invoice-btn + .receipt-void-btn { margin-inline-start: 0; }
 .funder-modal .funder-history ul { margin: 4px 0 0; padding-inline-start: 18px; font-size: 13px; color: var(--text-muted); }
 .patient-funder .funder-edit-btn { margin-inline-start: 6px; }
 @media (max-width: 420px) {
