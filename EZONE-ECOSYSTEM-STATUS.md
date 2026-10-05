@@ -777,6 +777,28 @@ Detail: `CHANGELOG-coordinators-roster.md` (Dashboard repo).
   SW v33 → **v34**.
 - **Managers / Therapists payloads unchanged** (guard test pins them).
 
+## Dashboard: invoice on the payment report (October 5, 2026)
+
+Detail: `CHANGELOG-payment-invoice.md`. Apps Script **and** Railway.
+
+- `Payments` gets two columns appended **last**: `invoiceWanted`
+  (`'yes'`/`'no'`) and `invoiceTo` (1–120 characters, formula-guarded). Both
+  are text-forced, and nothing above them moves.
+- «דווח תשלום» gets «חשבונית?» כן / לא with **no default**. The report is
+  refused without a choice (`invoice_choice_missing`) and, when the answer is
+  כן, without «על שם» (`invoice_to_missing`). «על שם» is prefilled with the
+  payer. The check runs in the UI and on the server, and nothing is written
+  on a refusal.
+- The choice shows on the receipt line («חשבונית ✎» edits it through
+  `updatePayment`, validated, with one `payment_invoice_changed` AuditLog
+  row), on the «בקרת גבייה» card, in Ortal's email («חשבונית» / «על שם»),
+  in the accounting feed (`invoices` per cycle; additive, `schemaVersion`
+  1) and in the workbooks («ייצוא אימות» columns; a cleanup tab «קבלות ללא
+  בחירת חשבונית»). Rows from before this change show «—».
+- Restricted users: unchanged.
+- SW `CACHE_VERSION` v34 → **v36** (v35 is held by open PR #181). No new
+  action, env var, Script Property, scope or trigger.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);
