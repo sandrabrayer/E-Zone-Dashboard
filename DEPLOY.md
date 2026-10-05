@@ -213,6 +213,47 @@ stamp is ever invented for a historical row**.
 
 Same rule as always: never insert or reorder a Payments or Credits column.
 
+## Coordinators roster — one Script Property to set (October 4, 2026)
+
+Two actions for the **ezone-coordinators** app: `getPatientsForCoordinators`
+(read-only feed) and `recordDischargeFromCoordinators` (a coordinator's
+discharge, written back immediately). Full contract: `CHANGELOG-coordinators-roster.md`.
+
+**Steps:**
+
+1. **Generate a secret** on your own computer: `openssl rand -hex 32`.
+2. **Apps Script editor → Project Settings → Script Properties**, add:
+
+   | Property | Value |
+   |---|---|
+   | `COORDINATORS_PATIENTS_SECRET` | the string from step 1 |
+
+   Its **own** secret — do not reuse `ADMITTED_ROSTER_SECRET`,
+   `ACCOUNTING_SECRET`, `MEETING_REPORT_SECRET` or `PROXY_SECRET`. Until it is
+   set both actions refuse every request (**fail-closed**) — the safe default.
+3. **Merge the PR.** The Apps Script deploys automatically (the clasp workflow
+   runs on a push to `claude/build-ezone-dashboard-QOg5s` that touches
+   `apps-script/**`). Railway redeploys the Dashboard UI. Nothing to set on
+   Railway.
+4. **Give the coordinators app** the Dashboard `/exec` URL and the secret
+   (server-side only — never in browser code). It sends `secret` in the POST
+   body.
+5. **Check it:**
+
+   ```
+   curl -sS -L -X POST "<the /exec URL>" \
+     -H 'Content-Type: application/json' \
+     -d '{"action":"getPatientsForCoordinators","secret":"<COORDINATORS_PATIENTS_SECRET>"}'
+   ```
+
+   Expect `{"ok":true,"patients":[{"id":…,"name":…,"house":…,"active":…,"admissionDate":…,"dischargeDate":…}]}`.
+   Without the secret: `{"ok":false,"error":"unauthorized"}` — verify that too.
+   Do **not** test the discharge on a real patient.
+
+The discharged-audit sheet (`מטופלים משוחררים`) gains four columns at the END
+(`dischargeSource`, `dischargedBy`, `dischargeReason`, `patientId`); they are
+added automatically on the first read. Never insert or reorder a column there.
+
 ## Missing-patient diagnostic (read-only)
 
 `diagnoseRamotPatientsNow()` is an editor-run diagnostic for the

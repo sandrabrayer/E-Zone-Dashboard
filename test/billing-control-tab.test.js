@@ -127,7 +127,9 @@ test('lists: Code.gs and lib/ hold the same billing-control lists; nothing new i
   for (const a of scope.BILLING_CONTROL_ACTIONS) assert.ok(known.includes(a), a + ' is a known action');
   const open = arr(g.run('OPEN_ACTIONS'));
   for (const a of scope.BILLING_CONTROL_ACTIONS) assert.ok(!open.includes(a), a + ' is NOT open — PROXY_SECRET-gated');
-  assert.deepEqual(open, ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster']);
+  // + the two own-secret coordinators-roster actions (PR #177); nothing billing.
+  assert.deepEqual(open, ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster',
+    'getPatientsForCoordinators', 'recordDischargeFromCoordinators']);
   assert.ok(!arr(g.run('DELETE_ACTIONS')).includes('confirmPayment'));
   assert.ok(!arr(g.run('APPROVER_ACTIONS')).includes('confirmPayment'));
   assert.deepEqual([...roleScope.CONFIRM_ACTIONS], ['confirmPayment']);
@@ -663,7 +665,9 @@ test('page wiring: index.html, the rules route, the SW bump (v33), CSS — and �
   assert.ok(HTML_SRC.includes('id="rev-verified"'), 'the «מאומת» card');
   assert.ok(HTML_SRC.indexOf('billing-control-rules.js') < HTML_SRC.indexOf('src="app.js'), 'the rules load before app.js');
   assert.match(SERVER_SRC, /app\.get\('\/billing-control-rules\.js'/);
-  assert.match(SW_SRC, /var CACHE_VERSION = 'v33';/);
+  // v33 shipped this tab; later PRs bump it again (v34: coordinators roster).
+  const swVer = Number((SW_SRC.match(/var CACHE_VERSION = 'v(\d+)';/) || [])[1]);
+  assert.ok(swVer >= 33, 'SW v33 or later');
   assert.match(SW_SRC, /v32 → v33:/);
   assert.match(SW_SRC, /'\/funder\.js'\) return 'network-first'/, "#178's funder.js route is kept");
   assert.match(SW_SRC, /'\/billing-control-rules\.js'\) return 'network-first'/);

@@ -1559,7 +1559,11 @@ function initTabs() {
     });
   }
   document.getElementById('add-lead-btn').onclick = openAddLeadModal;
-  document.getElementById('add-patient-btn').onclick = openDirectAddPatientModal;
+  document.getElementById('add-patient-btn').onclick = () => openDirectAddPatientModal();
+  /* «🟢 קליטת מטופל חדש» — the top-level intake entry on the dashboard. Same
+   * direct-add flow, intake mode (see openDirectAddPatientModal). */
+  const intakeBtn = document.getElementById('intake-patient-btn');
+  if (intakeBtn) intakeBtn.onclick = () => openDirectAddPatientModal({ intake: true });
 
   /* Overdue strip (dashboard) → navigate to the גבייה tab. Invoking the tab
    * button's own onclick runs the exact switch logic wired above (active
@@ -2689,6 +2693,13 @@ function normalizeDischargedPatient(p) {
    * (recorded before the column existed) stay blank — priorStatusFromAudit
    * falls back to 'active' for them. */
   base.prior_status   = pickField(p, ['prior_status', 'priorStatus', 'סטטוס קודם']) || '';
+  /* Coordinators discharge audit (appended columns, 2026-10-04). Carried so
+   * the panel can list them AND so a restore — which upserts this whole row
+   * back — never blanks them. Empty on the Dashboard's own discharges. */
+  base.dischargeSource = pickField(p, ['dischargeSource']) || '';
+  base.dischargedBy    = pickField(p, ['dischargedBy']) || '';
+  base.dischargeReason = pickField(p, ['dischargeReason']) || '';
+  base.patientId       = pickField(p, ['patientId']) || '';
   return base;
 }
 function cryptoId() {
@@ -3622,6 +3633,7 @@ function renderAll() {
   // The controller view has one screen; nothing else exists to render.
   if (controllerView()) { renderBillingControl(); return; }
   renderDashboard();
+  renderCoordinatorDischarges();
   renderKanban();
   renderMeetings();
   renderIrrelevantLeads();
@@ -4687,6 +4699,73 @@ function dischargedPatientMatchesQuery(p, q, houseLabel) {
  * single שחזר button opening the restore-choice modal
  * (showRestorePatientChoiceModal): prior-status restore (default) or a new
  * lead. The discharge record stays on the sheet as the audit trail either way. */
+/* ===== «🚪 שחרורים מהבתים» — discharges a coordinator recorded =====
+ * The coordinators app writes a discharge straight back (Code.gs
+ * recordDischargeFromCoordinators_): the patient is released IMMEDIATELY
+ * and the standard discharged-audit row is stamped dischargeSource =
+ * 'ezone-coordinators'. This panel is Vered's worklist for the follow-up
+ * (billing, refunds): the last COORD_PANEL_WINDOW_DAYS days, newest
+ * first, restored rows hidden. Nothing here writes. */
+const COORD_PANEL_SOURCE = 'ezone-coordinators';
+const COORD_PANEL_WINDOW_DAYS = 30;
+
+/* Pure + tested: the panel's rows. `today` is 'YYYY-MM-DD'. A row counts by
+ * its discharge date (exitDate), falling back to when it was recorded. */
+function coordinatorDischarges(list, today) {
+  const t = Date.parse(String(today || todayISO()) + 'T00:00:00Z');
+  const cutoff = new Date(t - COORD_PANEL_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
+  const day = d => String(d.exitDate || d.dischargedAt || '').slice(0, 10);
+  return (Array.isArray(list) ? list : [])
+    .filter(d => d && d.dischargeSource === COORD_PANEL_SOURCE)
+    .filter(d => d.restored !== 'TRUE' && d.restored !== true)
+    .filter(d => day(d) >= cutoff)
+    .sort((a, b) => (day(b) + String(b.dischargedAt || '')).localeCompare(day(a) + String(a.dischargedAt || '')));
+}
+
+function renderCoordinatorDischarges() {
+  const panel = document.getElementById('coord-discharges');
+  const list = document.getElementById('coord-discharges-list');
+  if (!panel || !list) return;
+  const rows = coordinatorDischarges(state.dischargedPatients, todayISO());
+  const countEl = document.getElementById('coord-discharges-count');
+  if (countEl) countEl.textContent = rows.length;
+  list.innerHTML = '';
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'coord-discharges-empty';
+    empty.textContent = 'אין שחרורים מהבתים ב־30 הימים האחרונים';
+    list.appendChild(empty);
+    return;
+  }
+  rows.forEach(d => {
+    const row = document.createElement('div');
+    row.className = 'coord-discharge-row';
+    row.dataset.id = d.id;
+    const houseName = (houseById(d.houseId) && houseById(d.houseId).name) || d.houseId || '—';
+    const cells = [
+      { label: 'שם', value: d.name || '—', cls: 'p-name' },
+      { label: 'בית', value: houseName },
+      { label: 'תאריך שחרור', value: d.exitDate ? formatDate(d.exitDate) : '—' },
+      { label: 'סיבה', value: d.dischargeReason || '—' },
+      { label: 'דווח ע״י', value: d.dischargedBy || '—' },
+    ];
+    // textContent only — every value here came from another app.
+    cells.forEach(c => {
+      const cell = document.createElement('div');
+      const label = document.createElement('span');
+      label.className = 'p-label';
+      label.textContent = c.label;
+      const val = document.createElement('span');
+      val.className = c.cls || 'p-val';
+      val.textContent = c.value;
+      cell.appendChild(label);
+      cell.appendChild(val);
+      row.appendChild(cell);
+    });
+    list.appendChild(row);
+  });
+}
+
 function renderDischargedPatients() {
   const list = document.getElementById('discharged-patients-list');
   if (!list) return;
@@ -5613,30 +5692,28 @@ function openEntryModal(lead) {
  * .edit-only. Saved records are flagged source='direct_admin' so reports
  * can distinguish them from lead-converted patients; the Billing tab is
  * source-agnostic and treats them identically. */
-function openDirectAddPatientModal() {
+function openDirectAddPatientModal(opts) {
+  /* Intake mode («🟢 קליטת מטופל חדש», 2026-10-04): a NEW inpatient arriving
+   * today. The same record and the same saveAll path — only the form differs:
+   * the required fields are exactly name, house and admission date; the
+   * monthly amount is optional (pre-filled, blank → 0) and the status is
+   * always פעיל, so the new patient lands in occupancy and in the
+   * coordinators feed (getPatientsForCoordinators) on save. A finance
+   * session (Vered / Sandra) ALSO gets the required «גורם מממן» picker —
+   * the admission funder rule (CHANGELOG-patient-funder-on-funders.md)
+   * applies to intake exactly as to the direct-add form. */
+  const intake = !!(opts && opts.intake);
+  const fields = intakeFormFields(intake, state.currentHouseTab || HOUSES[0].id, todayISO());
   showModal({
-    title: 'הוספת מטופל ישירות',
-    fields: [
-      { name: 'name', label: 'שם מטופל', type: 'text', required: true },
-      { name: 'houseId', label: 'בית', type: 'select', required: true,
-        value: state.currentHouseTab || HOUSES[0].id,
-        options: HOUSES.map(h => ({ value: h.id, label: h.name })) },
-      { name: 'date', label: 'תאריך כניסה', type: 'date', required: true,
-        value: todayISO() },
-      { name: 'pay', label: 'סכום חודשי (₪)', type: 'number', required: true,
-        value: '29000' },
-      { name: 'status', label: 'סטטוס', type: 'select',
-        value: 'active',
-        options: [
-          { value: 'active',   label: 'פעיל' },
-          { value: 'released', label: 'יצא' },
-        ] },
-      { name: 'notes', label: 'הערות', type: 'textarea' },
-    ].concat(admissionFunderFields()),
-    submitLabel: 'הוסף מטופל',
+    title: intake ? 'קליטת מטופל חדש' : 'הוספת מטופל ישירות',
+    // The funder picker (finance sessions only, required there — PR #178)
+    // rides along in BOTH modes.
+    fields: fields.concat(admissionFunderFields()),
+    submitLabel: intake ? 'קליטה' : 'הוסף מטופל',
     onSubmit: async v => {
-      if (!v.name || !v.houseId || !v.date || !v.pay) {
-        showError('שדות חובה חסרים');
+      const missing = intakeMissingFields(v, intake);
+      if (missing.length) {
+        showError('שדות חובה חסרים: ' + missing.join(', '));
         return false;
       }
       const funderErr = admissionFunderError(state.finance, v.funder);
@@ -5648,7 +5725,7 @@ function openDirectAddPatientModal() {
         date: v.date,
         pay: Number(v.pay) || 0,
         adv: 0,
-        status: v.status || 'active',
+        status: intake ? 'active' : (v.status || 'active'),
         fromLead: '',
         source: 'direct_admin',
         notes: (v.notes || '').trim(),
@@ -5667,9 +5744,45 @@ function openDirectAddPatientModal() {
         return false;
       }
       await saveAdmissionFunder(patient, v.funder);
+      if (intake) showToast('המטופל נקלט — ' + patient.name);
       return true;
     }
   });
+}
+
+/* The direct-add / intake form fields. Pure + tested. In intake mode the
+ * ONLY required fields are name, house and admission date (תאריך כניסה). */
+function intakeFormFields(intake, houseId, today) {
+  const fields = [
+    { name: 'name', label: 'שם מטופל', type: 'text', required: true },
+    { name: 'houseId', label: 'בית', type: 'select', required: true,
+      value: houseId,
+      options: HOUSES.map(h => ({ value: h.id, label: h.name })) },
+    { name: 'date', label: 'תאריך כניסה', type: 'date', required: true,
+      value: today },
+    { name: 'pay', label: 'סכום חודשי (₪)', type: 'number', required: !intake,
+      value: '29000' },
+  ];
+  if (!intake) {
+    fields.push({ name: 'status', label: 'סטטוס', type: 'select',
+      value: 'active',
+      options: [
+        { value: 'active',   label: 'פעיל' },
+        { value: 'released', label: 'יצא' },
+      ] });
+  }
+  fields.push({ name: 'notes', label: 'הערות', type: 'textarea' });
+  return fields;
+}
+
+/* Labels of the required fields missing from a submitted form. Pure + tested. */
+function intakeMissingFields(v, intake) {
+  const missing = [];
+  if (!v || !String(v.name || '').trim()) missing.push('שם מטופל');
+  if (!v || !v.houseId || !houseById(v.houseId)) missing.push('בית');
+  if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(String(v.date || ''))) missing.push('תאריך כניסה');
+  if (!intake && (!v || !v.pay)) missing.push('סכום חודשי');
+  return missing;
 }
 
 /* ===== Edit existing patient =====

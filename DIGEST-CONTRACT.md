@@ -7,6 +7,13 @@ the schema. The producing code lives in
 and the contract is locked by
 [`test/coordinators-patients-digest.test.js`](test/coordinators-patients-digest.test.js).
 
+> **Live feed alternative (2026-10-04).** The coordinators app can also read the
+> roster live, with patient ids and recent discharges, from the Dashboard Apps
+> Script action `getPatientsForCoordinators` (same canonical house encoding as
+> below), and write a discharge back with `recordDischargeFromCoordinators`.
+> Contract: [`CHANGELOG-coordinators-roster.md`](CHANGELOG-coordinators-roster.md).
+> This digest is unchanged.
+
 ## Ownership
 
 - The digest lives in its **own dedicated spreadsheet**, separate from the main

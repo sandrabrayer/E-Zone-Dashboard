@@ -399,7 +399,15 @@ const DISCHARGED_PATIENT_COLUMNS = [
   'houseId', 'name', 'date', 'pay', 'adv',
   'status', 'fromLead', 'exitDate', 'source', 'notes',
   'dischargedAt', 'disposition', 'discharge_note', 'restored', 'prior_status',
-  'updatedAt', 'updatedBy'
+  'updatedAt', 'updatedBy',
+  // Coordinators discharge audit (APPENDED LAST, append-only — see
+  // recordDischargeFromCoordinators_). Blank on every row the Dashboard's own
+  // שחרר flow writes; set only by a discharge a coordinator recorded:
+  //   dischargeSource — 'ezone-coordinators'
+  //   dischargedBy    — the coordinator name the request carried (`by`)
+  //   dischargeReason — the coordinator's free-text reason (cleaned, capped)
+  //   patientId       — the persisted Patients `id` the discharge targeted
+  'dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId'
 ];
 
 /* Payments sheet columns. `id` is a deterministic per-patient-per-due-date
@@ -1102,8 +1110,14 @@ const APPROVER_ACTIONS = [
  *   ezone-managers @ main               — managersOverview, managersHouse,
  *                                          occupancySnapshots
  *   ezone-therapists @ claude/inspiring-tesla-jipobw — getAdmittedRoster
- * test/open-actions-gate.test.js pins exactly these four. */
-const OPEN_ACTIONS = ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster'];
+ * test/open-actions-gate.test.js pins exactly these six. */
+/* Coordinators roster (2026-10-04): getPatientsForCoordinators and
+ * recordDischargeFromCoordinators are called by the ezone-coordinators app
+ * directly (no Dashboard session), so they are open here and gated INSIDE
+ * handle_ by their own fail-closed COORDINATORS_PATIENTS_SECRET — exactly the
+ * getAdmittedRoster model. */
+const OPEN_ACTIONS = ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster',
+  'getPatientsForCoordinators', 'recordDischargeFromCoordinators'];
 const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
 /* Every action handle_ dispatches. An action name is caller-controlled, so
  * SecurityLog records only these; anything else is logged as '(unknown)' —
@@ -1119,6 +1133,7 @@ const PROXY_KNOWN_ACTIONS = [
   'restorePatientToActive', 'deleteMeetingReport', 'meetingReportLeads',
   'submitMeetingReport', 'managersOverview', 'managersHouse',
   'occupancySnapshots', 'accountingPayments', 'accountingCredits',
+  'getPatientsForCoordinators', 'recordDischargeFromCoordinators',
 ];
 
 /* SecurityLog — append-only, one row per (event, action, hour) at most.
@@ -1405,6 +1420,19 @@ function handle_(params) {
         return jsonOut_({ ok: false, error: 'unauthorized' });
       }
       return jsonOut_(getAdmittedRoster_());
+    }
+    /* ===== Coordinators roster — own fail-closed secret =====
+     * Read feed + the one write (a discharge). Refused with NOTHING read or
+     * written unless COORDINATORS_PATIENTS_SECRET is set and matches. */
+    if (action === 'getPatientsForCoordinators' || action === 'recordDischargeFromCoordinators') {
+      if (!coordinatorsPatientsAuthOk_(params)) {
+        return jsonOut_({ ok: false, error: 'unauthorized' });
+      }
+      if (action === 'getPatientsForCoordinators') return jsonOut_(getPatientsForCoordinators_());
+      const res = recordDischargeFromCoordinators_(params);
+      // A discharge drops a resident out of the active population. Fail-soft.
+      if (res && res.ok && res.discharged) refreshDigestBestEffort_();
+      return jsonOut_(res);
     }
     if (action === 'saveAll') {
       const leads    = parseJsonParam_(params.leads);
@@ -1880,7 +1908,8 @@ function getOrCreateSheet_(name, headers) {
   // Discharged patients: entry date + exitDate (the audit row carries the
   // patient's dates) and the appended who/when stamps.
   if (name === DISCHARGED_PATIENTS_SHEET) {
-    forceColumnsText_(sh, DISCHARGED_PATIENT_COLUMNS, ['date', 'exitDate', 'updatedAt', 'updatedBy']);
+    forceColumnsText_(sh, DISCHARGED_PATIENT_COLUMNS, ['date', 'exitDate', 'updatedAt', 'updatedBy',
+      'dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId']);
   }
   // AuditLog: the ISO timestamp must survive as a plain string (same guard as
   // droppedAt); details is JSON text that must never be reinterpreted.
@@ -5765,6 +5794,260 @@ function getAdmittedRoster_() {
     });
   }
   return { ok: true, patients: out };
+}
+
+/* ===== Cross-app: coordinators patient roster (2026-10-04) =====
+ *
+ * The ezone-coordinators app shows a per-house patient list and lets a
+ * coordinator mark a discharge. Two actions, BOTH behind their own Script
+ * Property COORDINATORS_PATIENTS_SECRET (passed as `secret`), constant-time
+ * compared, FAIL-CLOSED: unset / empty / mismatched → {ok:false,
+ * error:'unauthorized'} and nothing is read or written. The secret is
+ * separate from every other app's, so it unlocks nothing else and can be
+ * rotated alone. Both actions are in OPEN_ACTIONS (the coordinators app
+ * calls Apps Script directly, like the therapists roster).
+ *
+ * 1. getPatientsForCoordinators — READ-ONLY feed. FROZEN per-row contract,
+ *    EXACTLY these keys (test/coordinators-roster.test.js pins the set):
+ *      id            — the persisted Patients `id` (immutable)
+ *      name          — patient display name (trimmed)
+ *      house         — canonical coordinators house id, the DIGEST-CONTRACT
+ *                      encoding: ramot | raanana | efroni | rehab | pardes.
+ *                      Houses outside that set (sde, unknown) are EXCLUDED.
+ *      active        — boolean: in the house now (status not released AND no
+ *                      exitDate) — the population occupancy counts
+ *      admissionDate — 'yyyy-MM-dd' (Patients `date`), '' if blank
+ *      dischargeDate — 'yyyy-MM-dd' (Patients `exitDate`), '' if none
+ *    Every active patient, plus released patients whose dischargeDate is
+ *    within the last COORD_RELEASED_WINDOW_DAYS days (so a discharge stays
+ *    visible to the coordinator who made it; older history is not shared —
+ *    data minimization). NO phone, billing, payment, advance, notes, lead
+ *    link or source field — the projection is an explicit allow-list.
+ *
+ * 2. recordDischargeFromCoordinators — the ONE write. Payload: id,
+ *    dischargeDate ('yyyy-MM-dd', not in the future, not before admission),
+ *    reason (optional, ≤ 500 chars), by (required, the coordinator's name).
+ *    Only a patient the feed can show (a canonical house) can be discharged;
+ *    any other id answers patient_not_found. Under the script lock it:
+ *      a. upserts the standard discharged-audit row (DISCHARGED_PATIENTS_SHEET,
+ *         the same sheet the Dashboard's own שחרר writes) with the appended
+ *         audit columns dischargeSource / dischargedBy / dischargeReason /
+ *         patientId. Its id is DETERMINISTIC ('coord-<patientId>-<date>'), so
+ *         a retry rewrites the same row, never a second one. Written FIRST:
+ *         once it lands the discharge is durable (the client's
+ *         healClobberedDischarges completes a release from it), exactly the
+ *         write order the Dashboard's own discharge uses;
+ *      b. flips the Patients row: status='released', exitDate=dischargeDate,
+ *         updatedAt=now, updatedBy='רכזות · <by>'. Only those four cells; the
+ *         row is never deleted and nothing else on it changes. The fresh
+ *         updatedAt makes a stale Dashboard tab's later save of that row a
+ *         refused CONFLICT (replaceHousePatients_), not a silent re-activation.
+ *    DECISION (Sandra, 2026-10-04): the discharge takes effect IMMEDIATELY —
+ *    occupancy, the Managers feed and the ActivePatients digest all see it on
+ *    their next read. No Vered confirmation step; Vered sees it in the
+ *    «🚪 שחרורים מהבתים» panel for billing/refunds.
+ *    IDEMPOTENT: the patient already released with the SAME exitDate → ok,
+ *    alreadyDischarged:true, zero writes. Released with a DIFFERENT date →
+ *    refused 'already_discharged' (a coordinator never rewrites a discharge
+ *    the Dashboard recorded). Never deletes anything.
+ */
+const COORDINATORS_PATIENTS_SECRET_PROP = 'COORDINATORS_PATIENTS_SECRET';
+const COORD_FEED_KEYS = ['id', 'name', 'house', 'active', 'admissionDate', 'dischargeDate'];
+const COORD_RELEASED_WINDOW_DAYS = 30;
+const COORD_DISCHARGE_SOURCE = 'ezone-coordinators';
+const COORD_REASON_MAX = 500;
+const COORD_BY_MAX = 60;
+const COORD_ID_MAX = 100;
+const COORD_RELEASED_STATUSES = ['released', 'שוחרר', 'שחרור'];
+
+function coordinatorsPatientsAuthOk_(params) {
+  const expected = PropertiesService.getScriptProperties().getProperty(COORDINATORS_PATIENTS_SECRET_PROP);
+  // Fail closed: no secret configured → refuse (never serve patient names open).
+  if (!expected) return false;
+  const got = (params && typeof params.secret === 'string') ? params.secret : '';
+  if (!got) return false;
+  return constantTimeEquals_(got, expected);
+}
+
+function coordStatusReleased_(raw) {
+  return COORD_RELEASED_STATUSES.indexOf(String(raw == null ? '' : raw).trim()) >= 0;
+}
+
+/* One line of free text as stored: control characters flattened, a formula
+ * lead-in stripped, angle brackets removed, capped. */
+function coordTextClean_(v, max) {
+  let t = String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/[<>]/g, '').trim();
+  t = t.replace(/^[=+@-]+/, '').trim();
+  return t.slice(0, max);
+}
+
+/* A strict calendar 'yyyy-MM-dd', or '' — 2026-02-30 is not a date. */
+function coordIsoDateClean_(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return '';
+  const d = new Date(s + 'T00:00:00Z');
+  if (isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) return '';
+  return s;
+}
+
+/* Today and the released-window cutoff as 'yyyy-MM-dd' (Asia/Jerusalem). */
+function coordToday_() {
+  return Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'yyyy-MM-dd');
+}
+function coordReleasedCutoff_() {
+  return Utilities.formatDate(new Date(Date.now() - COORD_RELEASED_WINDOW_DAYS * 86400000),
+    'Asia/Jerusalem', 'yyyy-MM-dd');
+}
+
+/* PURE projection: Patients rows (readSheet_ objects) → feed rows. Built
+ * from exactly COORD_FEED_KEYS, so nothing else on the row can leak. */
+function buildCoordinatorsRoster_(rows, cutoffIso) {
+  const out = [];
+  if (!Array.isArray(rows)) return out;
+  for (let i = 0; i < rows.length; i++) {
+    const p = rows[i];
+    if (!p) continue;
+    const id = String(p.id == null ? '' : p.id).trim();
+    const name = String(p.name == null ? '' : p.name).trim();
+    if (!id || !name) continue;
+    const house = canonicalDigestHouse_(p.houseId);
+    if (!house) continue;                       // sde / unknown → excluded
+    const admissionDate = asISODate_(p.date);
+    const dischargeDate = asISODate_(p.exitDate);
+    const active = !coordStatusReleased_(p.status) && dischargeDate === '';
+    // Released history beyond the window is not shared (minimization).
+    if (!active && !(dischargeDate !== '' && dischargeDate >= cutoffIso)) continue;
+    out.push({
+      id: id,
+      name: name,
+      house: house,
+      active: active,
+      admissionDate: admissionDate,
+      dischargeDate: dischargeDate,
+    });
+  }
+  return out;
+}
+
+function getPatientsForCoordinators_() {
+  const sh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+  // Every row must carry its persisted id before it is served: zero writes
+  // and no lock in the steady state (the getData_ discipline).
+  backfillPatientIdsLocked_(sh);
+  const rows = readSheet_(sh, PATIENT_COLUMNS);
+  return { ok: true, patients: buildCoordinatorsRoster_(rows, coordReleasedCutoff_()) };
+}
+
+/* Validate the discharge payload → { ok:true, value } | { ok:false, error }. Pure
+ * apart from `today`. */
+function coordDischargeInput_(params, today) {
+  const p = params || {};
+  const id = String(p.id == null ? '' : p.id).trim();
+  if (!id || id.length > COORD_ID_MAX || /[\u0000-\u001f\u007f]/.test(id)) {
+    return { ok: false, error: 'invalid_id' };
+  }
+  const dischargeDate = coordIsoDateClean_(p.dischargeDate);
+  if (!dischargeDate) return { ok: false, error: 'invalid_discharge_date' };
+  if (dischargeDate > today) return { ok: false, error: 'discharge_date_in_future' };
+  const by = coordTextClean_(p.by, COORD_BY_MAX);
+  if (!by) return { ok: false, error: 'missing_by' };
+  const reason = coordTextClean_(p.reason, COORD_REASON_MAX);
+  return { ok: true, value: { id: id, dischargeDate: dischargeDate, by: by, reason: reason } };
+}
+
+function recordDischargeFromCoordinators_(params) {
+  const input = coordDischargeInput_(params, coordToday_());
+  if (!input.ok) return input;
+  const v = input.value;
+
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('recordDischargeFromCoordinators_');
+  try {
+    const sh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+    const lastRow = sh.getLastRow();
+    const idIdx = PATIENT_COLUMNS.indexOf('id');
+    const matches = [];
+    let values = [];
+    if (lastRow >= 2) {
+      values = sh.getRange(2, 1, lastRow - 1, PATIENT_COLUMNS.length).getValues();
+      for (let i = 0; i < values.length; i++) {
+        if (String(values[i][idIdx] == null ? '' : values[i][idIdx]).trim() === v.id) matches.push(i);
+      }
+    }
+    if (matches.length === 0) return { ok: false, error: 'patient_not_found' };
+    if (matches.length > 1) return { ok: false, error: 'ambiguous_patient_id' };
+
+    const rowIdx = matches[0];
+    const rowVals = values[rowIdx];
+    const patient = {};
+    for (let c = 0; c < PATIENT_COLUMNS.length; c++) patient[PATIENT_COLUMNS[c]] = rowVals[c];
+    // The write reaches only patients the feed can show: a house outside the
+    // coordinators' canonical set (sde / unknown) answers like an unknown id.
+    if (!canonicalDigestHouse_(patient.houseId)) return { ok: false, error: 'patient_not_found' };
+    const admissionDate = asISODate_(patient.date);
+    const currentExit = asISODate_(patient.exitDate);
+
+    if (coordStatusReleased_(patient.status)) {
+      if (currentExit === v.dischargeDate) {
+        // Idempotent replay (or the Dashboard already recorded this exact
+        // discharge): nothing to do, nothing written.
+        return { ok: true, discharged: false, alreadyDischarged: true, id: v.id, dischargeDate: currentExit };
+      }
+      return { ok: false, error: 'already_discharged', id: v.id, dischargeDate: currentExit };
+    }
+    if (admissionDate && v.dischargeDate < admissionDate) {
+      return { ok: false, error: 'discharge_before_admission', admissionDate: admissionDate };
+    }
+
+    const nowIso = new Date().toISOString();
+    const stampBy = ('רכזות · ' + v.by).slice(0, 40);
+
+    // a. The audit row FIRST (durable intent; deterministic id → idempotent).
+    const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
+    const audit = {};
+    for (let c = 0; c < PATIENT_COLUMNS.length; c++) {
+      if (PATIENT_META_COLUMNS.indexOf(PATIENT_COLUMNS[c]) >= 0) continue; // own id + stamps below
+      audit[PATIENT_COLUMNS[c]] = rowVals[c];
+    }
+    audit.id              = 'coord-' + v.id + '-' + v.dischargeDate;
+    audit.date            = admissionDate;
+    audit.status          = 'released';
+    audit.exitDate        = v.dischargeDate;
+    audit.dischargedAt    = nowIso;
+    audit.disposition     = '';
+    audit.discharge_note  = v.reason;
+    audit.restored        = '';
+    audit.prior_status    = String(patient.status == null ? '' : patient.status).trim();
+    audit.updatedAt       = nowIso;
+    audit.updatedBy       = stampBy;
+    audit.dischargeSource = COORD_DISCHARGE_SOURCE;
+    audit.dischargedBy    = v.by;
+    audit.dischargeReason = v.reason;
+    audit.patientId       = v.id;
+    upsertRowById_(dischargedSh, DISCHARGED_PATIENT_COLUMNS, audit);
+
+    // b. The Patients row: four cells, nothing else touched, never deleted.
+    // `status` is written LAST: an interrupted write leaves the row not yet
+    // released, so the retry runs the full discharge again (never a false
+    // 'already_discharged').
+    const sheetRow = rowIdx + 2;
+    const setCell = function (col, val) {
+      sh.getRange(sheetRow, PATIENT_COLUMNS.indexOf(col) + 1).setValue(val);
+    };
+    setCell('exitDate', v.dischargeDate);
+    setCell('updatedAt', nowIso);
+    setCell('updatedBy', stampBy);
+    setCell('status', 'released');
+
+    logAudit_('patient_discharged_by_coordinators', 'recordDischargeFromCoordinators_',
+      patient.fromLead || v.id, String(patient.name == null ? '' : patient.name), {
+        id: v.id, houseId: String(patient.houseId == null ? '' : patient.houseId),
+        dischargeDate: v.dischargeDate, priorStatus: audit.prior_status, by: v.by, auditId: audit.id,
+      }, stampBy);
+    return { ok: true, discharged: true, id: v.id, dischargeDate: v.dischargeDate };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
 }
 
 /* ===== Meeting reports (PR 2 — manager form endpoint) =====

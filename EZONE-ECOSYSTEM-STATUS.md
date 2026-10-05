@@ -757,6 +757,26 @@ Phase 4 of `docs/billing-control-plan.md` is complete.
   (built as v31, rebased onto #178's v32).
 - No new env var, Script Property, scope, column or trigger.
 
+## Dashboard ⇄ Coordinators: shared patient roster (October 4, 2026)
+
+Detail: `CHANGELOG-coordinators-roster.md` (Dashboard repo).
+
+- **New Script Property (Dashboard Apps Script):** `COORDINATORS_PATIENTS_SECRET`
+  (own secret, fail-closed, constant-time).
+- **`getPatientsForCoordinators`** — read-only. Per row EXACTLY `id, name,
+  house, active, admissionDate, dischargeDate` (`'yyyy-MM-dd'`, `''` when
+  none). `house` = canonical `ramot|raanana|efroni|rehab|pardes`. Active
+  patients + discharges from the last 30 days. No phone / billing / payment.
+- **`recordDischargeFromCoordinators`** — `id, dischargeDate, reason, by`.
+  Immediate effect (status released + exitDate; occupancy, Managers feed and
+  the digest follow), idempotent, never deletes; audit on the discharged sheet
+  (4 columns appended last). Vered sees these in «🚪 שחרורים מהבתים».
+- Both are in `OPEN_ACTIONS` (now six) — they survive `PROXY_SECRET_MODE=enforce`.
+- Dashboard: «🟢 קליטת מטופל חדש» on the dashboard (name, house, admission
+  date; finance sessions also pick the required funder, as at any admission).
+  SW v33 → **v34**.
+- **Managers / Therapists payloads unchanged** (guard test pins them).
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);

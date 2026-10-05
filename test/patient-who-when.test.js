@@ -190,7 +190,10 @@ test('all three column lists end with updatedAt, updatedBy — after `id` where 
   const { code } = loadCode();
   assert.deepStrictEqual(arr(code.PATIENT_COLUMNS).slice(-3), ['id', 'updatedAt', 'updatedBy']);
   assert.deepStrictEqual(arr(code.PATIENT_TOMBSTONE_COLUMNS).slice(-3), ['id', 'updatedAt', 'updatedBy']);
-  assert.deepStrictEqual(arr(code.DISCHARGED_PATIENT_COLUMNS).slice(-2), ['updatedAt', 'updatedBy']);
+  // Discharged: the stamps sit right after prior_status; the coordinators
+  // audit columns (2026-10-04) were appended after them.
+  const dis = arr(code.DISCHARGED_PATIENT_COLUMNS);
+  assert.deepStrictEqual(dis.slice(dis.indexOf('prior_status') + 1, dis.indexOf('prior_status') + 3), ['updatedAt', 'updatedBy']);
 });
 
 test('patientRowDiffCols_ ignores id + stamps: rows differing only in meta are byte-identical; a real change still shows', () => {

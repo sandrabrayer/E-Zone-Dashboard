@@ -2,8 +2,9 @@
  * See CHANGELOG-open-actions-gate.md.
  *
  *   - OPEN_ACTIONS is pinned to exactly the four actions Managers and
- *     Therapists call; they are served WITHOUT PROXY_SECRET in log AND enforce
- *     mode, so neither app needs any change
+ *     Therapists call, plus (2026-10-04) the two coordinators-roster actions
+ *     that carry their own fail-closed secret; they are served WITHOUT
+ *     PROXY_SECRET in log AND enforce mode, so no consumer needs any change
  *   - every other action — getData, every write, GET or POST — is gated by
  *     PROXY_SECRET: logged in log mode, refused (nothing written) in enforce
  *   - classes proxy | open | none | wrong land in SecurityLog.callerClass
@@ -28,8 +29,11 @@ const ROSTER = 'roster-secret-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
 
 /* What the consumers' deployed code calls on this backend (2026-10-01):
  *   ezone-managers @ main (b779e22): public/app.js → server.js GET /api/sheets
- *   ezone-therapists @ claude/inspiring-tesla-jipobw (95195e3): server.js:1438 */
-const EXPECTED_OPEN = ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster'];
+ *   ezone-therapists @ claude/inspiring-tesla-jipobw (95195e3): server.js:1438
+ *   ezone-coordinators (2026-10-04): getPatientsForCoordinators,
+ *     recordDischargeFromCoordinators — own COORDINATORS_PATIENTS_SECRET */
+const EXPECTED_OPEN = ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster',
+  'getPatientsForCoordinators', 'recordDischargeFromCoordinators'];
 /* A sample of gated actions: the bulk read and representative writes. */
 const GATED_SAMPLE = ['getData', 'saveAll', 'savePayment'];
 
@@ -126,7 +130,7 @@ const MODES = [['log', { PROXY_SECRET: PROXY }], ['enforce', { PROXY_SECRET: PRO
 
 /* ===== OPEN_ACTIONS ===== */
 
-test('OPEN_ACTIONS is pinned to exactly the four actions Managers and Therapists call', () => {
+test('OPEN_ACTIONS is pinned to exactly the Managers + Therapists actions and the two own-secret coordinators actions', () => {
   const g = loadGs({});
   assert.deepStrictEqual(Array.from(g.gsConst('OPEN_ACTIONS')), EXPECTED_OPEN);
   assert.deepStrictEqual(Array.from(g.gsConst('CALLER_CLASSES')), ['proxy', 'open', 'none', 'wrong']);
@@ -141,7 +145,7 @@ test('OPEN_ACTIONS is pinned to exactly the four actions Managers and Therapists
   }
 });
 
-test('the 4 open actions are served WITHOUT a secret in log AND enforce mode, GET and POST, logged as class "open"', () => {
+test('the open actions are served WITHOUT a secret in log AND enforce mode, GET and POST, logged as class "open"', () => {
   for (const [mode, props] of MODES) {
     const g = loadGs({ props });
     for (const a of EXPECTED_OPEN) {
