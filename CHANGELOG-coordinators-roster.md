@@ -208,7 +208,11 @@ This Apps Script also serves **Managers** (`managersOverview`,
   `payment-report-form` (OPEN_ACTIONS, SW version), `patient-identity-foundation`,
   `patient-who-when`, `restore-choice-modal` (discharged header).
 
-Full suite: **2084 / 2084 green**.
+- After the rebase onto PR #178 / #179: `billing-control-tab` pins
+  (`OPEN_ACTIONS` now six; SW "v33 or later") and the browser test (a finance
+  session also picks the required funder; `appendFunder` follows the save).
+
+Full suite: **2141 / 2141 green** (after the rebase onto `aaa2265`).
 
 ## Setup (once)
 
