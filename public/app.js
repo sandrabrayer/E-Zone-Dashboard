@@ -7787,7 +7787,7 @@ function patientFunderKey(p, funders, today, day) {
   return F.funderAt(Array.isArray(funders) ? funders : state.funders, patientUid(p), day || patientFunderDay(p, today));
 }
 
-/* The admission rule: a finance session must pick one of the four labels; a
+/* The admission rule: a finance session must pick one of the funder labels; a
  * restricted (or unknown) session never sees the field and is never blocked.
  * '' = OK. Pure. */
 function admissionFunderError(finance, value) {
@@ -7901,6 +7901,17 @@ function funderFilterMatch(filter, key) {
 /* A billing row's funder: the patient's funder ON THAT CYCLE'S DUE DATE. */
 function billingRowFunderKey(patient, dueISO) {
   return patientFunderKey(patient, state.funders, todayISO(), isoDate(dueISO) || todayISO());
+}
+
+/* Pro-bono (CHANGELOG-funder-probono.md): a patient whose funder on the
+ * cycle's due date is pro-bono owes nothing for it — the due list, «יתרות
+ * פתוחות» and the renewal / overdue alerts skip the row. Read from the
+ * Funders rows the page holds (finance only); without them nothing is
+ * skipped. Pure over state.funders. */
+function isProbonoOn(patient, dueISO) {
+  const F = funderLib();
+  if (!F || !patient) return false;
+  return billingRowFunderKey(patient, dueISO) === F.FUNDER_PROBONO;
 }
 
 /* The active funder filter — 'all' outside the finance view. */
@@ -8742,6 +8753,7 @@ function overduePatients(fromISO) {
     // A brand-new patient whose first cycle hasn't started yet: the computed
     // occurrence predates their entry date — no cycle exists, nothing overdue.
     if (dueISO < isoDate(p.date)) return;
+    if (isProbonoOn(p, dueISO)) return; // pro-bono: nothing is owed
     const pay = paymentForPatientOnDate(p, dueISO);
     if (paymentCoversCycle(pay)) return;
     out.push({ patient: p, dueISO });
@@ -8779,6 +8791,7 @@ function patientsNeedingRenewal(fromISO, windowDays) {
     if (!renewalISO) return;
     const days = daysBetween(today, renewalISO);
     if (!(days >= 0 && days <= win)) return;
+    if (isProbonoOn(p, renewalISO)) return; // pro-bono: nothing is owed
     // Cycle coverage: only a paid/partial payment for THIS due date counts as
     // covered — an unpaid placeholder does not suppress the alert.
     const pay = paymentForPatientOnDate(p, renewalISO);
@@ -9430,7 +9443,7 @@ function renderBilling() {
   const billingDateEl = document.getElementById('billing-date');
   if (billingDateEl && billingDateEl.value !== selected) billingDateEl.value = selected;
 
-  const dueAll = patientsDueOn(selected).map(p => ({
+  const dueAll = patientsDueOn(selected).filter(p => !isProbonoOn(p, selected)).map(p => ({
     patient: p,
     payment: paymentForPatientOnDate(p, selected),
   }));
@@ -9537,7 +9550,8 @@ function renderBillingOpenList(selectedISO) {
         status: '',
       };
       return { patient, pay };
-    });
+    })
+    .filter(o => !isProbonoOn(o.patient, o.pay.dueDate));
 
   const funderFilter = billingFunderFilter();
   const matched = openAll.filter(o => billingRowMatchesQuery(o.patient, o.pay, state.billingSearch)

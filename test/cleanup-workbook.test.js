@@ -202,6 +202,10 @@ const DISCHARGED = [
   { id: 'd2', houseId: 'mars', name: 'אורח לא ידוע', date: '2026-07-01', exitDate: '2026-09-01', status: 'released' },
 ];
 
+// «מטופלי פרו-בונו» (CHANGELOG-funder-probono.md): דנה לוי, all paid — no gap moves.
+const FUNDER_HEADER = ['patientId', 'funder', 'effectiveFrom', 'setBy', 'setAt'];
+const FUNDERS_FIXTURE = [{ patientId: 'pt-dana', funder: 'פרו-בונו', effectiveFrom: '2026-07-15', setBy: 'ורד', setAt: '2026-07-15T09:00:00+03:00' }];
+
 let GS;
 function gs() { return GS || (GS = loadGs()); }
 function tabsOf(C) {
@@ -209,6 +213,7 @@ function tabsOf(C) {
   return {
     leads: rows(C.LEADS_SHEET, LEADS), patients: rows(C.PATIENTS_SHEET, PATIENTS), discharged: rows(C.DISCHARGED_PATIENTS_SHEET, DISCHARGED),
     payments: rows(C.PAYMENTS_SHEET, PAYMENTS), credits: rows(C.CREDITS_SHEET, CREDITS), overrides: rows(C.BILLING_OVERRIDES_SHEET, []),
+    funders: rows('Funders', FUNDERS_FIXTURE),
   };
 }
 let REPORT;
@@ -381,6 +386,7 @@ function sheetsOf(C) {
     { name: C.DISCHARGED_PATIENTS_SHEET, header: Array.from(C.DISCHARGED_PATIENT_COLUMNS), rows: grid(C.DISCHARGED_PATIENT_COLUMNS, DISCHARGED) },
     { name: C.PAYMENTS_SHEET, header: Array.from(C.PAYMENT_COLUMNS), rows: grid(C.PAYMENT_COLUMNS, PAYMENTS) },
     { name: C.CREDITS_SHEET, header: Array.from(C.CREDIT_COLUMNS), rows: grid(C.CREDIT_COLUMNS, CREDITS) },
+    { name: 'Funders', header: FUNDER_HEADER, rows: grid(FUNDER_HEADER, FUNDERS_FIXTURE) },
   ];
 }
 
@@ -484,7 +490,7 @@ test('workbook: «סיכום» first, then one tab per kind, in order; every tab
   const { wb } = await book();
   assert.deepEqual(wb.worksheets.map((w) => w.name), ['סיכום'].concat(cleanup.TABS.map((t) => t.name)));
   assert.deepEqual(cleanup.TABS.map((t) => t.name), ['שמות לא תואמים', 'פערי גבייה לבדיקה', 'תשלומים לא משויכים', 'תשלומים אחרי יציאה',
-    'משוחררים ללא תאריך יציאה', 'ללא תאריך כניסה', 'מטופלים בסכום אפס', 'לידים ששולמו ולא נקלטו', 'כפילויות חשודות', 'זיכויים לבדיקה', 'חסר גורם מממן']);
+    'משוחררים ללא תאריך יציאה', 'ללא תאריך כניסה', 'מטופלים בסכום אפס', 'לידים ששולמו ולא נקלטו', 'כפילויות חשודות', 'זיכויים לבדיקה', 'חסר גורם מממן', 'מטופלי פרו-בונו']);
   for (const ws of wb.worksheets) {
     assert.equal(ws.views[0].rightToLeft, true, ws.name);
     assert.equal(ws.views[0].state, 'frozen', ws.name);

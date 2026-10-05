@@ -47,8 +47,9 @@ const Funder = require('../public/funder.js');
 const rules = require('../lib/payment-report-rules.js');
 const plain = (v) => JSON.parse(JSON.stringify(v));
 const TODAY = '2026-09-30';
-const LABELS = ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי'];
-const KEYS = ['private', 'btl', 'mod', 'maccabi'];
+// Append-only: pro-bono is the fifth funder (CHANGELOG-funder-probono.md).
+const LABELS = ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי', 'פרו-בונו'];
+const KEYS = ['private', 'btl', 'mod', 'maccabi', 'probono'];
 const FUNDERS = KEYS.concat(['unset']);
 const KINDS = ['recorded_debt', 'unrecorded_cycles'];
 const r2 = (n) => Math.round(n * 100) / 100;
@@ -74,7 +75,7 @@ test('no default: Code.gs answers unset (never פרטי) for no row, before the 
 test('guard: no \'פרטי\' fallback anywhere — Code.gs only in PAYMENT_FUNDERS, app.js not at all; no DEFAULT_FUNDER', () => {
   const quoted = /['"`]פרטי['"`]/g;
   const gsHits = GS_SRC.split('\n').filter((l) => quoted.test(l) && (quoted.lastIndex = 0, true));
-  assert.deepEqual(gsHits, ["const PAYMENT_FUNDERS = ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי'];"]);
+  assert.deepEqual(gsHits, ["const PAYMENT_FUNDERS = ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי', 'פרו-בונו'];"]);
   assert.equal((APP_SRC.match(quoted) || []).length, 0, 'app.js carries no funder label literal at all');
   for (const [name, src] of [['Code.gs', GS_SRC], ['app.js', APP_SRC], ['payment-report-rules.js', RULES_SRC]]) {
     assert.ok(!/\bDEFAULT_FUNDER\b/.test(src), name);

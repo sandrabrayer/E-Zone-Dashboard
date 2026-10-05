@@ -564,7 +564,14 @@ const PAYMENT_REPORT_COLUMNS = [
   'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote'
 ];
 const PAYMENT_METHODS = ['העברה בנקאית', 'אשראי', "צ'ק", 'מזומן', 'ביט', 'אחר'];
-const PAYMENT_FUNDERS = ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי'];
+const PAYMENT_FUNDERS = ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי', 'פרו-בונו'];
+/* Pro-bono (Sandra, 2026-10-05, CHANGELOG-funder-probono.md): the fifth
+ * funder, appended LAST (the list is append-only). A patient whose funder on
+ * a cycle's start day is pro-bono OWES NOTHING for that cycle: debtAging_
+ * drops it from byPatient, byHouse and totals, and the daily digest skips the
+ * patient's rows. Occupancy, the patient card and meetings are unchanged.
+ * public/funder.js maps it to the key 'probono'. */
+const FUNDER_PROBONO = 'פרו-בונו';
 /* There is NO default funder (Sandra, 2026-10-04). A patient with no Funders
  * row — or whose effective row carries a label not in PAYMENT_FUNDERS — reads
  * as FUNDER_UNSET («לא הוגדר»): never guessed, never silently private. Listed
@@ -606,6 +613,7 @@ const PAYMENT_REPORT_MESSAGES = {
   funder_missing: 'חסר: גורם מממן',
   funder_invalid: 'גורם מממן לא מוכר',
   funder_unset: 'לא הוגדר גורם מממן למטופל — יש לבחור גורם מממן בדיווח או להגדיר אותו בכרטיס המטופל',
+  funder_probono_implicit: 'המטופל מוגדר פרו-בונו — יש לבחור גורם מממן במפורש בדיווח',
   reference_missing: "חסר: מספר אסמכתא (חובה בהעברה בנקאית ובצ'ק)",
   reference_invalid: 'מספר אסמכתא לא תקין',
   confirm_status_invalid: 'סטטוס אישור לא מוכר',
@@ -6597,6 +6605,9 @@ function upsertPayment_(payment, user, ctx) {
     if (rep.needsFunder) {
       const f = currentFunder_(out.patientUid, out.receivedDate);
       if (f === FUNDER_UNSET) return { ok: false, error: 'funder_unset', message: PAYMENT_REPORT_MESSAGES.funder_unset };
+      // A report for a pro-bono patient is allowed, but its funder is never
+      // filled in for it: the report must name one (CHANGELOG-funder-probono.md).
+      if (f === FUNDER_PROBONO) return { ok: false, error: 'funder_probono_implicit', message: PAYMENT_REPORT_MESSAGES.funder_probono_implicit };
       out.funder = f;
     }
     const row = objectToRow_(out, PAYMENT_COLUMNS);
@@ -8865,8 +8876,19 @@ function debtAgingReceivedBy_(prow, pay, asOf, fallbackIso) {
   };
 }
 
+/* Pro-bono (CHANGELOG-funder-probono.md): is the patient's funder on `day`
+ * pro-bono? The same rule as Funder.debtByFunder — the Funders row with the
+ * latest effectiveFrom ≤ day (currentFunderFrom_). No Funders rows → false. */
+function debtAgingProbonoOn_(funderObjs, patientId, day) {
+  if (!funderObjs.length || !patientId || !day) return false;
+  return currentFunderFrom_(funderObjs, patientId, day).funder === FUNDER_PROBONO;
+}
+
 /* Pure. tabs = recCollect_'s shape ({ patients, payments, credits, overrides },
- * each { rows: [{ rowNumber, obj }] }); a missing tab reads as empty.
+ * each { rows: [{ rowNumber, obj }] }); a missing tab reads as empty. An
+ * optional `funders` tab (Funders rows) drops every cycle whose funder on its
+ * start day is pro-bono — from byPatient, byHouse and totals; they are only
+ * counted, apart, in `probonoExcluded` (never in a debt figure).
  * → the report, or { ok:false, error:'bad_asOf' }. */
 function debtAging_(asOfIso, tabs) {
   let asOf;
@@ -8888,6 +8910,14 @@ function debtAging_(asOfIso, tabs) {
   const detachedRows = [], outsideStayRows = [], releasedNoExitRows = [], noEntryRows = [];
   const unknownDate = { count: 0, amount: 0 };
   let voidExcluded = 0;
+  const funderObjs = rawRows('funders').map(function (r) { return (r && r.obj) || {}; });
+  const probonoExcluded = { recorded_debt: { count: 0, total: 0 }, unrecorded_cycles: { count: 0, total: 0 } };
+  const probonoSkip = function (patientId, start, kind, amount) {
+    if (!debtAgingProbonoOn_(funderObjs, patientId, start)) return false;
+    probonoExcluded[kind].count++;
+    probonoExcluded[kind].total = refundRound2_(probonoExcluded[kind].total + amount);
+    return true;
+  };
 
   // Payments: void out, detached apart, the rest grouped under their patient.
   const rowsByPatient = m.patients.map(function () { return []; });
@@ -8946,6 +8976,7 @@ function debtAging_(asOfIso, tabs) {
       const received = got.received;
       const balance = refundRound2_(Math.max(0, expected - received));
       if (balance <= 0) { settled++; return; }
+      if (probonoSkip(p.id, start, 'recorded_debt', balance)) return;
       const days = asOfN - refundDayNum_(start);
       const bucket = debtAgingBucket_(days);
       cycles.push({
@@ -8969,6 +9000,7 @@ function debtAging_(asOfIso, tabs) {
         const expected = refundRound2_(Number(recApplyOverride_({
           patientId: recPatientKey_(p), dueDate: due, amount: p.pay, status: 'unpaid', amountPaid: 0,
         }, m.overrides).amount) || 0);
+        if (probonoSkip(p.id, due, 'unrecorded_cycles', expected)) return;
         let end = debtAgingCycleEnd_(entry, due);
         if (exit && end > exit) end = exit;
         const days = asOfN - refundDayNum_(due);
@@ -9033,18 +9065,20 @@ function debtAging_(asOfIso, tabs) {
     releasedWithoutExit: { count: releasedNoExitRows.length, rows: releasedNoExitRows },
     noEntryDate: { count: noEntryRows.length, rows: noEntryRows },
     voidExcluded: voidExcluded,
+    probonoExcluded: probonoExcluded,
   };
 }
 
-/* action=debtAging — READ-ONLY. Reads Patients, Payments, Credits and
- * BillingOverrides with getSheetByName (never creates a sheet, no lock, no
+/* action=debtAging — READ-ONLY. Reads Patients, Payments, Credits,
+ * BillingOverrides and Funders (pro-bono cycles are dropped) with getSheetByName (never creates a sheet, no lock, no
  * write, no audit row). Gated by PROXY_SECRET (not in OPEN_ACTIONS). */
 function debtAgingAction_(params) {
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const tabs = {};
     [['patients', PATIENTS_SHEET, PATIENT_COLUMNS], ['payments', PAYMENTS_SHEET, PAYMENT_COLUMNS],
-     ['credits', CREDITS_SHEET, CREDIT_COLUMNS], ['overrides', BILLING_OVERRIDES_SHEET, BILLING_OVERRIDE_COLUMNS]]
+     ['credits', CREDITS_SHEET, CREDIT_COLUMNS], ['overrides', BILLING_OVERRIDES_SHEET, BILLING_OVERRIDE_COLUMNS],
+     ['funders', FUNDERS_SHEET, FUNDER_COLUMNS]]
       .forEach(function (x) {
         const sh = ss.getSheetByName(x[1]);
         tabs[x[0]] = sh ? recReadSheet_(sh, x[2]) : { rows: [] };
@@ -9081,9 +9115,13 @@ function debtAgingAction_(params) {
  *   credits    refundPayoutForecastFor_: awaiting_decision + unresolved
  *              (missing_payment_data is already in gaps, via debtAging_)
  *   noFunder   (Phase 3 PR 1) patients not released with no Funders row —
- *              they read as «לא הוגדר» — no default (cleanupNoFunder_) */
+ *              they read as «לא הוגדר» — no default (cleanupNoFunder_)
+ *   probono    «מטופלי פרו-בונו»: every patient whose funder is pro-bono on
+ *              their funder day — today, or the exit day of one who already
+ *              left (cleanupProbono_). A list to check, not a gap: their
+ *              cycles are already out of debtAging_ (CHANGELOG-funder-probono.md) */
 const CLEANUP_SECTION_KEYS = ['names', 'gaps', 'detached', 'outsideStay', 'releasedNoExit', 'noEntryDate',
-  'zeroAmount', 'leads', 'duplicates', 'credits', 'noFunder'];
+  'zeroAmount', 'leads', 'duplicates', 'credits', 'noFunder', 'probono'];
 /* A gap cycle older than this, with no later activity, is "probably a
  * data-entry error" (cleanupProbablyEntryError_). */
 const CLEANUP_STALE_DAYS = 30;
@@ -9333,6 +9371,26 @@ function cleanupNoFunder_(m, funderObjs) {
   });
 }
 
+/* «מטופלי פרו-בונו» — every patient whose funder is pro-bono on their funder
+ * day: today, or the exit day of a patient who left before today (the
+ * patient card's rule, app.js patientFunderDay). Pure. */
+function cleanupProbono_(m, funderObjs, todayIso) {
+  const rows = funderObjs || [];
+  if (!rows.length) return [];
+  return m.patients.map(function (p) {
+    const exit = recExitISO_(p);
+    const day = exit && exit < todayIso ? exit : todayIso;
+    return { p: p, exit: exit, cur: currentFunderFrom_(rows, p.id, day) };
+  }).filter(function (x) {
+    return x.p.id && x.cur.funder === FUNDER_PROBONO;
+  }).map(function (x) {
+    return { kind: 'probono', houseId: x.p.houseId || '', name: x.p.name, status: x.p.status,
+      entryDate: x.p.date || '', exitDate: x.exit || '', effectiveFrom: x.cur.effectiveFrom };
+  }).sort(function (a, b) {
+    return (a.houseId < b.houseId ? -1 : a.houseId > b.houseId ? 1 : 0) || String(a.name).localeCompare(String(b.name), 'he');
+  });
+}
+
 /* Pure. tabs = recCollect_'s shape (a missing tab reads as empty), plus an
  * optional `funders` tab (cleanupReportAction_ adds it).
  * → { ok, today, recordsCutoff, sections: { <CLEANUP_SECTION_KEYS> }, counts }. */
@@ -9405,6 +9463,7 @@ function cleanupReport_(todayIso, tabs) {
     duplicates: cleanupDuplicates_(m),
     credits: cleanupCredits_(forecast),
     noFunder: cleanupNoFunder_(m, objs('funders')),
+    probono: cleanupProbono_(m, objs('funders'), today),
   };
   const counts = {};
   CLEANUP_SECTION_KEYS.forEach(function (k) { counts[k] = sections[k].length; });
@@ -12729,9 +12788,23 @@ function digestRow_(obj, ledger) {
   };
 }
 
+/* Pro-bono (CHANGELOG-funder-probono.md): is this Payments row a pro-bono
+ * patient's? The row's own `funder` when it carries one (a report names its
+ * funder); else the patient's Funders row on the payment day (receivedDate,
+ * else dueDate) by patientUid. PURE. */
+function digestRowIsProbono_(obj, funderObjs) {
+  const own = paymentReportText_(obj.funder);
+  if (own) return own === FUNDER_PROBONO;
+  const uid = paymentReportText_(obj.patientUid);
+  const day = paymentReportDate_(obj.receivedDate) || asISODate_(obj.dueDate);
+  return debtAgingProbonoOn_(Array.isArray(funderObjs) ? funderObjs : [], uid, day);
+}
+
 /* Select and project. `rowObjs` are Payments row objects (recReadSheet_'s
- * .obj); keeps paid/partial, non-void rows recorded in (sinceMs, untilMs]. */
-function digestSelect_(rowObjs, sinceMs, untilMs, ledger) {
+ * .obj); keeps paid/partial, non-void rows recorded in (sinceMs, untilMs].
+ * `funderObjs` (optional, Funders rows): a pro-bono patient's rows are
+ * skipped (digestRowIsProbono_). */
+function digestSelect_(rowObjs, sinceMs, untilMs, ledger, funderObjs) {
   const out = [];
   /* One line per money received (Phase 3 PR 2): a cycle that has receipt
    * rows is listed through them, never itself — its re-derived amountPaid
@@ -12744,6 +12817,7 @@ function digestSelect_(rowObjs, sinceMs, untilMs, ledger) {
     if (!paymentIsCharged_(o.status)) continue;
     const t = digestInstant_(o.chargedAt);
     if (!isFinite(t) || t <= sinceMs || t > untilMs) continue;
+    if (digestRowIsProbono_(o, funderObjs)) continue;
     out.push(digestRow_(o, ledger));
   }
   out.sort(function (a, b) {
@@ -12912,7 +12986,7 @@ function digestBuild_(props, now, test) {
   const sinceMs = firstRun ? nowMs - DIGEST_FIRST_RUN_DAYS * 86400000 : lastMs;
   const ledger = digestLedgerLoad_(props);
   const payRows = digestReadPayments_();
-  const rows = digestSelect_(payRows, sinceMs, nowMs, ledger);
+  const rows = digestSelect_(payRows, sinceMs, nowMs, ledger, fundersRows_());
   const today = digestJerusalemParts_(now);
   const fmt = function (ms) { return String(Utilities.formatDate(new Date(ms), DIGEST_TZ, 'dd/MM/yyyy HH:mm')); };
   const msg = digestCompose_(rows, {

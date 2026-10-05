@@ -145,7 +145,11 @@
 // and the «🚪 שחרורים מהבתים» panel (discharges the coordinators recorded).
 // app.js, index.html, style.css changed — evict v33 (and older). /api/ stays
 // network-only.
-var CACHE_VERSION = 'v34';
+// v34 → v35: pro-bono funder (CHANGELOG-funder-probono.md) — funder.js gains
+// the fifth key 'probono', payment-report-rules.js the fifth label; app.js
+// skips pro-bono rows in the due list, «יתרות פתוחות» and the alerts. Evict
+// v34 (and older). /api/ stays network-only.
+var CACHE_VERSION = 'v35';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
