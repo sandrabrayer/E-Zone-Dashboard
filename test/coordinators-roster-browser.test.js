@@ -3,8 +3,10 @@
  *
  *   - «🟢 קליטת מטופל חדש» is on the dashboard, top level, visible;
  *     it opens the intake form whose required fields are exactly name,
- *     house and admission date; submitting saves a NEW active patient
- *     through saveAll (source direct_admin) — no status / pay required
+ *     house and admission date — plus, for a finance session (Vered), the
+ *     «גורם מממן» picker every admission requires (PR #178); submitting
+ *     saves a NEW active patient through saveAll (source direct_admin) — no
+ *     status / pay required — and then appends the picked funder
  *   - «🚪 שחרורים מהבתים» lists ONLY the coordinators' discharges from the
  *     last 30 days (not the Dashboard's own, not older, not restored), with
  *     reason and reporter rendered as text
@@ -162,12 +164,16 @@ test('dashboard at 360px: the intake entry is top level and saves a new active p
     const required = await page.locator('#modal-root .form-row').evaluateAll((rows) => rows
       .filter((r) => /\*\s*$/.test(r.querySelector('label').textContent))
       .map((r) => r.querySelector('[name]').getAttribute('name')).sort());
-    assert.deepEqual(required, ['date', 'houseId', 'name'], 'exactly name, house, admission date');
+    assert.deepEqual(required, ['date', 'funder', 'houseId', 'name'],
+      'name, house, admission date — and the funder, required at every admission for a finance session');
     assert.equal(await page.locator('form [name="status"]').count(), 0, 'a new inpatient is always active');
     await page.fill('form [name="name"]', 'נועה חדשה');
     await page.selectOption('form [name="houseId"]', 'pardes');
     await page.fill('form [name="date"]', daysAgo(0));
     await page.fill('form [name="pay"]', '');
+    const funder = await page.locator('form [name="funder"] option').evaluateAll((os) => os.map((o) => o.value).find((v) => v));
+    assert.ok(funder, 'the funder picker offers labels');
+    await page.selectOption('form [name="funder"]', funder);
     await shot(page, 'coordinators-360-intake.png');
     await page.locator('form button[type="submit"]').click();
 
@@ -184,6 +190,11 @@ test('dashboard at 360px: the intake entry is top level and saves a new active p
     assert.equal(added.source, 'direct_admin');
     assert.equal(added.pay, 0, 'optional monthly amount left blank → 0');
     assert.ok(added.id, 'carries a client id');
+    // The funder lands after the save, from the admission date (PR #178 flow).
+    for (let i = 0; i < 50 && !server.bodies.some((b) => b.action === 'appendFunder'); i++) await page.waitForTimeout(100);
+    const fund = server.bodies.find((b) => b.action === 'appendFunder');
+    assert.ok(fund, 'appendFunder was sent after the admission');
+    assert.ok(JSON.stringify(fund).includes(funder) && JSON.stringify(fund).includes(daysAgo(0)), JSON.stringify(fund));
     assert.deepEqual(errors, [], 'no page errors');
     await ctx.close();
   } finally {
