@@ -150,7 +150,12 @@
 // «פרו-בונו» (funder.js keys/labels; app.js skips pro-bono rows in the due
 // list, «יתרות פתוחות» and the renewal / overdue alerts). /api/ stays
 // network-only.
-var CACHE_VERSION = 'v37';
+// v37 → v38: (v35 / v36 / v37 are reserved by open PRs #181 / #182 / #183;
+// this evicts v34–v37, whichever a phone has) the invoice on the payment
+// report — «חשבונית?» כן / לא (no default) and «על שם» in the «דווח תשלום»
+// form, shown on the receipts list and the «בקרת גבייה» card. app.js,
+// style.css and /payment-report-rules.js changed. /api/ stays network-only.
+var CACHE_VERSION = 'v38';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

@@ -10780,7 +10780,18 @@ async function savePayment(payment) {
 
 const PAYMENT_REPORT_TOAST = 'התשלום נרשם — יופיע אצל אורטל מחר בבוקר';
 /* The form's field order — the order the inline errors are checked in. */
-const PAYMENT_REPORT_FORM_FIELDS = ['receivedDate', 'amount', 'method', 'payer', 'reference', 'funder', 'coverageStart', 'coverageEnd'];
+const PAYMENT_REPORT_FORM_FIELDS = ['receivedDate', 'amount', 'method', 'payer', 'reference', 'funder', 'coverageStart', 'coverageEnd',
+  'invoiceWanted', 'invoiceTo'];
+
+/* «חשבונית?» / «על שם» (CHANGELOG-payment-invoice.md). A row from before the
+ * question carries neither and reads «—» — never כן, never לא. Pure. */
+const INVOICE_LABELS = { yes: 'כן', no: 'לא' };
+function invoiceLabel(v) {
+  return Object.prototype.hasOwnProperty.call(INVOICE_LABELS, v) ? INVOICE_LABELS[v] : '—';
+}
+function invoiceToLabel(r) {
+  return r && r.invoiceWanted === 'yes' && r.invoiceTo ? String(r.invoiceTo) : '—';
+}
 
 /* The shared rules, loaded as /payment-report-rules.js before app.js. */
 function paymentReportRules() {
@@ -10823,6 +10834,8 @@ function normalizeReceipt(r) {
     linkStatus: String(o.linkStatus || ''),
     linkNote: String(o.linkNote || ''),
     timestamp: String(o.timestamp || ''),
+    invoiceWanted: ['yes', 'no'].indexOf(String(o.invoiceWanted || '').trim()) >= 0 ? String(o.invoiceWanted).trim() : '',
+    invoiceTo: String(o.invoiceTo || ''),
   };
 }
 
@@ -10860,6 +10873,7 @@ function receiptsListHtml(cycleId) {
         <span class="receipt-amount">${escapeHtml(fmtShekel(r.amount))}</span>
         <span class="receipt-method">${escapeHtml(r.method || '—')}</span>
         ${r.reference ? `<span class="receipt-ref">אסמכתא ${escapeHtml(r.reference)}</span>` : ''}
+        <span class="receipt-invoice">חשבונית: ${escapeHtml(invoiceLabel(r.invoiceWanted))}${r.invoiceWanted === 'yes' ? ' · על שם ' + escapeHtml(invoiceToLabel(r)) : ''}</span>
         <span class="receipt-who">${escapeHtml(r.recordedBy || '')}</span>
         ${isVoid ? `<span class="badge void">${escapeHtml(PAYMENT_VOID_LABEL)}</span>` : ''}
         ${voidBtn}
@@ -11116,6 +11130,9 @@ function paymentReportDefaults(patient, payment, dueDateISO, todayIso) {
       funder: (cur => (cur.unset || isProbonoLabel(cur.funder) ? '' : cur.funder))(currentFunderFor(uid)),
       coverageStart: covStart,
       coverageEnd: covEnd,
+      // «חשבונית?» has NO default: neither כן nor לא is pre-selected.
+      invoiceWanted: '',
+      invoiceTo: '',
     },
   };
 }
@@ -11123,11 +11140,13 @@ function paymentReportDefaults(patient, payment, dueDateISO, todayIso) {
 /* The issues for a form's values, through the shared rules. Pure. */
 function paymentReportIssues(values, todayIso, approver) {
   const rules = paymentReportRules();
-  if (!rules) return [{ field: 'receivedDate', code: 'rules_missing', hebrewMessage: 'טעינת כללי הדיווח נכשלה — רעננו את הדף' }];
+  if (!rules || typeof rules.validatePaymentInvoice !== 'function') {
+    return [{ field: 'receivedDate', code: 'rules_missing', hebrewMessage: 'טעינת כללי הדיווח נכשלה — רעננו את הדף' }];
+  }
   return rules.validatePaymentReport(values, {
     todayIso: todayIso || rules.jerusalemToday(),
     maxDaysBack: approver === true ? 0 : rules.RECEIVED_DATE_STAFF_MAX_DAYS,
-  });
+  }).concat(rules.validatePaymentInvoice(values));
 }
 
 function openPaymentReportModal(patient, payment, dueDateISO) {
@@ -11192,6 +11211,19 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
           </div>
           ${covErrors}
         </div>
+        <fieldset class="form-row pr-invoice" aria-describedby="pr-err-invoiceWanted">
+          <legend>חשבונית? *</legend>
+          <div class="pr-invoice-choices" role="radiogroup">
+            <label class="pr-radio"><input type="radio" name="invoiceWanted" value="yes" /> כן</label>
+            <label class="pr-radio"><input type="radio" name="invoiceWanted" value="no" /> לא</label>
+          </div>
+          ${err('invoiceWanted')}
+        </fieldset>
+        <div class="form-row pr-invoice-to hidden">
+          <label for="pr-invoiceTo">על שם *</label>
+          <input type="text" id="pr-invoiceTo" name="invoiceTo" maxlength="120" autocomplete="off" value="" aria-describedby="pr-err-invoiceTo" />
+          ${err('invoiceTo')}
+        </div>
         <div class="field-error pr-form-error" data-err="_form" role="alert"></div>
         <div class="form-actions">
           <button type="button" class="btn" data-action="cancel">ביטול</button>
@@ -11208,11 +11240,33 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
   back.addEventListener('click', e => { if (e.target === back && !busyButtonActive(submitBtn)) close(); });
 
   const ctl = f => form.querySelector('[name="' + f + '"]');
+  /* The checked «חשבונית?» radio's value, or '' (none chosen — no default). */
+  const invoiceChoice = () => {
+    const on = form.querySelector('[name="invoiceWanted"]:checked');
+    return on ? String(on.value || '') : '';
+  };
   const values = () => {
     const v = {};
     PAYMENT_REPORT_FORM_FIELDS.forEach(f => { v[f] = ctl(f) ? String(ctl(f).value || '').trim() : ''; });
+    v.invoiceWanted = invoiceChoice();
+    if (v.invoiceWanted !== 'yes') v.invoiceTo = '';   // לא → stored ''
     return v;
   };
+  /* כן shows «על שם», prefilled with the payer until the user types a name
+   * of their own; לא hides it. */
+  const toRow = back.querySelector('.pr-invoice-to');
+  let invoiceToEdited = false;
+  const syncInvoice = () => {
+    const yes = invoiceChoice() === 'yes';
+    if (toRow && toRow.classList) toRow.classList.toggle('hidden', !yes);
+    const to = ctl('invoiceTo');
+    if (yes && to && !invoiceToEdited) to.value = String((ctl('payer') || {}).value || '').trim();
+  };
+  form.querySelectorAll('[name="invoiceWanted"]').forEach(r => {
+    if (r.addEventListener) r.addEventListener('change', () => { syncInvoice(); touched.invoiceWanted = true; touched.invoiceTo = true; paint(check(), touched); });
+  });
+  if (ctl('invoiceTo') && ctl('invoiceTo').addEventListener) ctl('invoiceTo').addEventListener('input', () => { invoiceToEdited = true; });
+  if (ctl('payer') && ctl('payer').addEventListener) ctl('payer').addEventListener('input', syncInvoice);
   const touched = {};
   /* Paint the issues: one Hebrew line under each field, aria-invalid on the
    * control. `only` limits it to the fields the user has touched (live
@@ -12503,6 +12557,8 @@ function bcReceiptHtml(r, mode, opts) {
       ${field('אסמכתא', r.reference)}
       ${field('משלם', r.payer)}
       ${field('גורם מממן', r.funder)}
+      ${field('חשבונית', invoiceLabel(r.invoiceWanted))}
+      ${field('על שם', invoiceToLabel(r))}
       ${field('נרשם ע״י', r.recordedBy)}
     </div>
     ${extra.join('')}

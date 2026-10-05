@@ -274,7 +274,9 @@ test('A: PAYMENT_COLUMNS appends seven accounting columns and moves nothing', ()
     'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
   ]);
   // …and one row per money received (CHANGELOG-payment-report-form.md).
-  assert.deepEqual(cols.slice(35), ['legacyAmountPaid']);
+  assert.deepEqual(cols.slice(35, 36), ['legacyAmountPaid']);
+  // …and the invoice on the report, LAST (CHANGELOG-payment-invoice.md).
+  assert.deepEqual(cols.slice(36), ['invoiceWanted', 'invoiceTo']);
 });
 
 test('A: CREDIT_COLUMNS appends creditUid at the END, nothing else moves', () => {
@@ -300,6 +302,7 @@ test('A: the appended text columns are force-formatted at ensure; the original t
     'patientUid', 'payerUid', 'paymentUid', 'sourceUpdatedAt',
     'receivedDate', 'method', 'payer', 'funder', 'reference', 'recordedBy', 'recordedAt',
     'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
+    'invoiceWanted', 'invoiceTo',
   ].sort());
   ['id', 'patientId', 'patientName', 'houseId', 'dueDate',
    'amount', 'status', 'amountPaid', 'balance', 'timestamp'].forEach((c) => {
@@ -902,6 +905,8 @@ const PAYMENT_KEYS = [
   'coverageStart', 'coverageEnd', 'coverageSource', 'coverageDays',
   'coverageAllocation', 'sourceUpdatedAt', 'sourceVersion', 'historical',
   'deleted', 'creditLinkBasis', 'credits',
+  // the invoice (CHANGELOG-payment-invoice.md): the row's pair + one per receipt
+  'invoiceWanted', 'invoiceTo', 'invoices',
 ];
 const CREDIT_KEYS = [
   'sourceApp', 'sourceRecordId', 'creditUid', 'patientUid', 'patientKey', 'payerUid',

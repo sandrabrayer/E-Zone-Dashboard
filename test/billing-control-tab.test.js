@@ -97,6 +97,7 @@ function world() {
   const call = (body, who) => plain(g.post(Object.assign({}, body, (who || VERED)())));
   const reportPay = (amount, receivedDate, extra) => call({ action: 'reportPayment', report: { cycle: CYCLE, report: Object.assign({
     receivedDate, amount, method: 'העברה בנקאית', payer: 'משפחת כהן', reference: 'TRX-' + amount, funder: 'פרטי',
+    invoiceWanted: 'no',   // required since CHANGELOG-payment-invoice.md
   }, COV, extra || {}) } });
   const queue = (who) => call({ action: 'billingControlQueue' }, who || ORTAL);
   const confirm = (ids, status, flagNote, who) => call({ action: 'confirmPayment', confirm: { ids, status, flagNote } }, who || ORTAL);
@@ -295,7 +296,8 @@ test('queue: newest first; counts and ₪ per status; voids left out; the allow-
   assert.deepEqual(plain(q.counts), { reported: { count: 3, amount: 18000 }, flagged: { count: 0, amount: 0 }, confirmed: { count: 0, amount: 0 } });
   const keys = Object.keys(q.receipts[0]).sort();
   assert.deepEqual(keys, ['amount', 'confirmStatus', 'confirmedAt', 'confirmedBy', 'coverageEnd', 'coverageStart', 'cycleId', 'flagNote', 'flaggedAt',
-    'funder', 'houseId', 'id', 'method', 'patientName', 'payer', 'receivedDate', 'recordedAt', 'recordedBy', 'reference'].sort());
+    'funder', 'houseId', 'id', 'method', 'patientName', 'payer', 'receivedDate', 'recordedAt', 'recordedBy', 'reference',
+    'invoiceWanted', 'invoiceTo'].sort());   // the invoice: CHANGELOG-payment-invoice.md
   assert.equal(q.receipts[0].cycleId, CYCLE.id, 'linked to its cycle');
   assert.ok(!JSON.stringify(q).includes('patientUid'), 'no uid leaves');
   // Same date: the later recordedAt first.
@@ -892,7 +894,7 @@ test('«ייצוא אימות» workbook: four sheets — סיכום, ממתין
   for (const s of wb.worksheets) assert.equal(s.views[0].rightToLeft, true, s.name);
   const text = (s) => { const out = []; s.eachRow((r) => out.push(r.values.slice(1).map((v) => (v && v.richText ? v.richText.map((t) => t.text).join('') : v instanceof Date ? v.toISOString().slice(0, 10) : String(v == null ? '' : v))).join('|'))); return out.join('\n'); };
   const pending = text(wb.getWorksheet('ממתין לאימות'));
-  assert.ok(pending.includes('תאריך קבלה|מטופל|בית|סכום|אמצעי|אסמכתא|משלם|גורם מממן|נרשם ע״י'), pending.slice(0, 300));
+  assert.ok(pending.includes('תאריך קבלה|מטופל|בית|סכום|אמצעי|אסמכתא|משלם|גורם מממן|חשבונית|על שם|נרשם ע״י'), pending.slice(0, 300));
   assert.ok(pending.includes(`'=HYPERLINK("x")`), 'formula-guarded');
   const flagged = text(wb.getWorksheet('סומנו כבעיה'));
   assert.ok(flagged.includes('לא נמצא בבנק'));

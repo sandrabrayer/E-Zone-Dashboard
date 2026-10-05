@@ -1512,6 +1512,13 @@ body.view-controller #screen-billing-control { display: block; }
 .pay-report-modal .field-error:empty { display: none; }
 .pay-report-modal [aria-invalid="true"] { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
 .pay-report-modal .pr-form-error { margin-top: 10px; }
+/* «חשבונית?» — two radios, neither pre-selected; 44px tap targets. */
+.pay-report-modal .pr-invoice { border: 0; padding: 0; margin: 0 0 14px; min-width: 0; }
+.pay-report-modal .pr-invoice legend { font-size: 13px; font-weight: 600; margin-bottom: 6px; padding: 0; }
+.pay-report-modal .pr-invoice-choices { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.pay-report-modal .pr-radio { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; text-transform: none; letter-spacing: 0; }
+.pay-report-modal .pr-radio input { width: 20px; height: 20px; margin: 0; }
+.receipt-item .receipt-invoice { color: var(--text-muted); }
 .funder-modal .funder-history ul { margin: 4px 0 0; padding-inline-start: 18px; font-size: 13px; color: var(--text-muted); }
 .patient-funder .funder-edit-btn { margin-inline-start: 6px; }
 @media (max-width: 420px) {
