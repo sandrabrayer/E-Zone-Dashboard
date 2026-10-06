@@ -199,7 +199,7 @@ test('permissions (page): Ortal opens «בקרת גבייה» first and «גבי
   assert.equal(app.billingTabView(), false);
 });
 
-test('wiring: index.html section, CSS (read-only + RTL + mobile), the server body class, SW v40 (never v17)', () => {
+test('wiring: index.html section, CSS (read-only + RTL + mobile), the server body class, SW >= v40 (never v17)', () => {
   assert.ok(HTML_SRC.includes('id="bc-partial"') && HTML_SRC.includes('id="bc-partial-count"') && HTML_SRC.includes('id="bc-partial-open"'));
   assert.match(HTML_SRC, /«שולם», «שולם חלקית» \(מזינים כמה התקבל\) או «לא שולם»/);
   assert.ok(!HTML_SRC.includes('✓ «אושר בבנק» או ⚑'), 'the old ✓ / ⚑ help text is gone');
@@ -211,7 +211,9 @@ test('wiring: index.html section, CSS (read-only + RTL + mobile), the server bod
   assert.match(CSS_SRC, /@media \(max-width: 480px\) \{\n  \.bc-status-wrap \{ flex-basis: 100%; \}/);
   assert.match(SERVER_SRC, /'<body class="view-controller view-billing-read">'/);
   const v = /var CACHE_VERSION = 'v(\d+)';/.exec(SW_SRC)[1];
-  assert.equal(v, '40');
+  // v40 shipped this change; later public/ changes bump past it (v41: the
+  // re-landed reactivation fix). v17 must never come back.
+  assert.ok(Number(v) >= 40, 'CACHE_VERSION must be v40 or later, got v' + v);
   assert.notEqual(v, '17');
   assert.match(SW_SRC, /v39 → v40:/);
 });

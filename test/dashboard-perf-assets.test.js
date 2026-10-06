@@ -328,10 +328,12 @@ function serve(handlers, url) {
 }
 const settle = () => new Promise((r) => setImmediate(r));
 
-test('D: CACHE_VERSION is v40 (v39 deployed by this PR\'s base; v17 burned, never reused)', () => {
+test('D: CACHE_VERSION is v41 (v40 deployed by this PR\'s base; v17 burned, never reused)', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
   // v40: CHANGELOG-ortal-verification-status.md.
-  assert.equal(v, 'v40');
+  // v41: CHANGELOG-reactivation-fix.md (PR #145's fix, re-landed).
+  assert.equal(v, 'v41');
+  assert.notEqual(v, 'v17');
 });
 
 test('D: cacheStrategy — hashed bundle URLs cache-first-hashed, everything else unchanged', () => {

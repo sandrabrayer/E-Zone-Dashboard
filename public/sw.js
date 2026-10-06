@@ -164,7 +164,13 @@
 // v38. /api/ stays network-only.
 // v39 → v40: «בקרת גבייה» status dropdown, partial amount, remaining
 // balance, the note; Ortal reads «גבייה» (CHANGELOG-ortal-verification-status.md).
-var CACHE_VERSION = 'v40';
+// v40 → v41: PR #145's reactivation fix, re-landed (CHANGELOG-reactivation-fix.md)
+// — a patient set back to live via ✏️ / re-add / admission / restore no longer
+// vanishes on the next load, and the load-time heal announces itself. app.js
+// is the only asset that changed: index.html links it at its new content hash,
+// so the 'cache-first-hashed' lookup misses and phones fetch the new bundle;
+// activate evicts v40 and any orphaned v17 (#145's burned number, never reused).
+var CACHE_VERSION = 'v41';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
