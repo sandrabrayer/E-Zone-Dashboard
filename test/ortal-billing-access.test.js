@@ -620,3 +620,175 @@ test('lists: lib/finance-scope.js and Code.gs agree; the controller read list ho
   // Ortal's roles are unchanged: controller only — no deleter, no approver.
   assert.deepEqual([...users.modelById('ortal').roles], ['controller']);
 });
+
+/* ======================================================================
+ * Field allow-lists (privacy fix before merge, Sandra 2026-10-06)
+ * Ortal's getData, cleanupReport and refundPayoutForecast carry ONLY the
+ * fields the «גבייה» tab needs — no 'notes', 'phone', 'note' or 'source' key
+ * at any depth, no row from the Leads sheet in getData. Both layers.
+ * ==================================================================== */
+
+const FORBIDDEN_KEYS = ['notes', 'phone', 'note', 'source'];
+const LEAD_PHONE = '0502222222';
+
+/* Every key at any depth. */
+function deepKeys(v, out) {
+  const s = out || new Set();
+  if (Array.isArray(v)) v.forEach((x) => deepKeys(x, s));
+  else if (v && typeof v === 'object') Object.keys(v).forEach((k) => { s.add(k); deepKeys(v[k], s); });
+  return s;
+}
+const forbiddenIn = (v) => FORBIDDEN_KEYS.filter((k) => deepKeys(v).has(k));
+
+/* A world whose sheets DO hold the sensitive fields: a patient with notes /
+ * source / fromLead, a lead (no patient) with a phone and a note, a discharge
+ * with notes, a credit with a free-text overrideReason and notes. */
+function sensitiveWorld() {
+  const w = world();
+  const put = (name, colsName, rows) => {
+    const cols = arr(w.g.run(colsName));
+    w.S[name] = richSheet(name, cols);
+    rows.forEach((r) => w.S[name].appendRow(cols.map((c) => (r[c] === undefined ? '' : r[c]))));
+  };
+  put('Patients', 'PATIENT_COLUMNS', [{ id: 'p1', houseId: 'arfoni', name: 'דנה כהן', date: daysAgo(40), pay: 30000, adv: 1000, status: 'active',
+    notes: 'הערה קלינית', source: 'lead', fromLead: 'L9', updatedBy: 'ורד' }]);
+  put(w.g.run('LEADS_SHEET'), 'LEAD_COLUMNS', [{ id: 'L2', name: 'יוסי ליד', phone: LEAD_PHONE, house: 'sde', stage: 'paid', advance: 5000,
+    created: daysAgo(20), entryDate: daysAgo(15), note: 'אבחנה רגישה' }]);
+  put(w.g.run('DISCHARGED_PATIENTS_SHEET'), 'DISCHARGED_PATIENT_COLUMNS', [{ id: 'd1', houseId: 'rehab', name: 'נועה ים', date: daysAgo(30),
+    exitDate: daysAgo(3), status: 'released', notes: 'קליני' }]);
+  put(w.g.run('CREDITS_SHEET'), 'CREDIT_COLUMNS', [{ id: 'c1', patientKey: 'rehab::שי::x', patientName: 'שי', houseId: 'rehab', amount: 900,
+    calculatedAmount: 500, status: 'pending', overrideReason: 'סיבה רגישה', notes: 'הערת זיכוי', payoutDate: daysAgo(-10), createdAt: daysAgo(2) }]);
+  return w;
+}
+const BILLING_SCHEMAS = { getData: 'CONTROLLER_GETDATA_SCHEMA', cleanupReport: 'CONTROLLER_CLEANUP_SCHEMA', refundPayoutForecast: 'CONTROLLER_FORECAST_SCHEMA' };
+
+test('field allow-lists: Code.gs and lib/finance-scope.js hold the SAME literals; the patient fields are exactly what «גבייה» reads', () => {
+  const { g } = world();
+  assert.deepEqual(arr(g.run('CONTROLLER_PATIENT_FIELDS')), [...scope.CONTROLLER_PATIENT_FIELDS]);
+  assert.deepEqual(arr(g.run('CONTROLLER_OVERRIDE_FIELDS')), [...scope.CONTROLLER_OVERRIDE_FIELDS]);
+  for (const [action, name] of Object.entries(BILLING_SCHEMAS)) {
+    assert.equal(JSON.stringify(g.run(name)), JSON.stringify(scope[name]), name);
+    assert.equal(scope.CONTROLLER_RESPONSE_SCHEMAS[action], scope[name], action);
+  }
+  assert.deepEqual([...scope.CONTROLLER_PATIENT_FIELDS], ['id', 'houseId', 'name', 'date', 'exitDate', 'status', 'pay', 'adv']);
+  const cols = arr(g.run('PATIENT_COLUMNS'));
+  for (const f of scope.CONTROLLER_PATIENT_FIELDS) assert.ok(cols.includes(f), f + ' is a Patients column');
+  for (const f of ['notes', 'source', 'fromLead', 'updatedAt', 'updatedBy']) assert.ok(!scope.CONTROLLER_PATIENT_FIELDS.includes(f), f + ' is never sent');
+  // No schema anywhere names a forbidden key.
+  for (const name of Object.values(BILLING_SCHEMAS)) {
+    assert.deepEqual(FORBIDDEN_KEYS.filter((k) => JSON.stringify(scope[name]).includes('"' + k + '"')), [], name);
+    assert.ok(!JSON.stringify(scope[name]).includes('overrideReason'), name);
+  }
+});
+
+test('field allow-lists (Code.gs): Ortal\'s getData has no notes / phone / note / source at any depth and no Leads row; each patient row is cut to its fields', () => {
+  const w = sensitiveWorld();
+  const raw = w.call({ action: 'getData' }, SANDRA);
+  assert.deepEqual(forbiddenIn(raw).sort(), ['note', 'notes', 'phone', 'source'], 'the fixture really holds them (Sandra, unchanged)');
+  const d = w.call({ action: 'getData' }, ORTAL);
+  assert.equal(d.ok, true);
+  assert.deepEqual(forbiddenIn(d), []);
+  assert.deepEqual(Object.keys(d).sort(), ['billingOverrides', 'ok', 'patients']);
+  const text = JSON.stringify(d);
+  for (const s of ['L2', 'יוסי ליד', LEAD_PHONE, 'אבחנה רגישה', 'הערה קלינית', 'L9']) assert.ok(!text.includes(s), 'no lead / clinical text: ' + s);
+  const rows = Object.values(d.patients).flat();
+  assert.equal(rows.length, 1);
+  assert.deepEqual(Object.keys(rows[0]).sort(), [...scope.CONTROLLER_PATIENT_FIELDS].sort());
+  assert.deepEqual([rows[0].id, rows[0].name, rows[0].pay, rows[0].adv, rows[0].status], ['p1', 'דנה כהן', 30000, 1000, 'active']);
+});
+
+test('field allow-lists (Code.gs): Ortal\'s cleanupReport and refundPayoutForecast — no notes / phone / note / source at any depth; a lead keeps its name and billing gap', () => {
+  const w = sensitiveWorld();
+  const rawC = w.call({ action: 'cleanupReport' }, SANDRA);
+  const rawF = w.call({ action: 'refundPayoutForecast' }, SANDRA);
+  assert.ok(forbiddenIn(rawC).includes('phone') && forbiddenIn(rawC).includes('notes'), 'the lead row really carries phone + notes for Sandra');
+  assert.ok(forbiddenIn(rawF).includes('note') && JSON.stringify(rawF).includes('overrideReason'), 'the forecast really carries note + overrideReason for Sandra');
+  const c = w.call({ action: 'cleanupReport' }, ORTAL);
+  const f = w.call({ action: 'refundPayoutForecast' }, ORTAL);
+  assert.equal(c.ok, true);
+  assert.equal(f.ok, true);
+  assert.deepEqual(forbiddenIn(c), []);
+  assert.deepEqual(forbiddenIn(f), []);
+  assert.ok(!JSON.stringify(c).includes(LEAD_PHONE) && !JSON.stringify(c).includes('אבחנה רגישה'));
+  assert.ok(!JSON.stringify(f).includes('overrideReason') && !JSON.stringify(f).includes('סיבה רגישה'));
+  const lead = c.sections.leads.find((r) => r.name === 'יוסי ליד');
+  assert.ok(lead, 'the lead row stays — name + the billing gap');
+  assert.deepEqual([lead.kind, lead.advance, lead.houseId], [rawC.sections.leads[0].kind, 5000, 'sde']);
+  // Same counts, same sections: rows are cut, never dropped.
+  assert.deepEqual(c.counts, rawC.counts);
+  assert.deepEqual(Object.keys(c.sections), Object.keys(rawC.sections));
+  assert.equal(f.decided.count, rawF.decided.count);
+  assert.equal(f.missing_payment_data.count, rawF.missing_payment_data.count);
+});
+
+test('projector: an allow-list at every depth — unknown keys, nested objects under a leaf, and the forbidden keys anywhere are dropped; lib = Code.gs on real answers', () => {
+  const w = sensitiveWorld();
+  const hostile = { ok: true, today: '2026-10-06', notes: 'x', sections: { leads: [{ name: 'a', phone: '1', notes: ['n'], refs: ['r1', { note: 'x' }],
+    advance: { source: 'nested' } }], names: [{ name: 'b', source: 'payments', why: 'w' }] }, counts: { leads: 1, phone: 2 } };
+  for (const project of [scope.projectBySchema, w.g.sandbox.projectBySchema_]) {
+    const out = plain(project(hostile, scope.CONTROLLER_CLEANUP_SCHEMA));
+    assert.deepEqual(forbiddenIn(out), []);
+    assert.deepEqual(out, { ok: true, today: '2026-10-06', sections: { leads: [{ name: 'a' }], names: [{ name: 'b', why: 'w' }] }, counts: { leads: 1 } });
+  }
+  // The patients map: every house, every row.
+  const pd = plain(scope.projectBySchema({ ok: true, leads: [{ id: 'L1' }], patients: { a: [{ id: '1', notes: 'x', name: 'n' }], b: [{ id: '2', source: 's' }] } },
+    scope.CONTROLLER_GETDATA_SCHEMA));
+  assert.deepEqual(pd, { ok: true, patients: { a: [{ id: '1', name: 'n' }], b: [{ id: '2' }] } });
+  // An error answer passes as an error.
+  assert.deepEqual(plain(scope.controllerResponseView('cleanupReport', { ok: false, error: 'cleanup_failed', phone: '1' })), { ok: false, error: 'cleanup_failed' });
+  assert.deepEqual(plain(scope.controllerResponseView('getPayments', { ok: true, x: 1 })), { ok: true, x: 1 }, 'other actions are not this cut');
+  // lib and Code.gs give the same answer on the real raw answers.
+  for (const [action, name] of Object.entries(BILLING_SCHEMAS)) {
+    const raw = w.call({ action }, SANDRA);
+    assert.deepEqual(plain(scope.projectBySchema(raw, scope[name])), plain(w.g.sandbox.projectBySchema_(raw, w.g.run(name))), action);
+  }
+});
+
+test('field allow-lists (server.js): Ortal\'s getData, cleanupReport, refundPayoutForecast and both exports are cut AGAIN even if Apps Script sends every field; Sandra unchanged', async () => {
+  const w = sensitiveWorld();
+  const raw = {};
+  for (const a of Object.keys(BILLING_SCHEMAS)) raw[a] = w.call({ action: a }, SANDRA);   // the FULL answers
+  const stub = stubHttps((b) => raw[b.action] || { ok: true });
+  try {
+    await withServer(async (port) => {
+      for (const action of Object.keys(BILLING_SCHEMAS)) {
+        for (const method of ['GET', 'POST']) {
+          const r = method === 'GET'
+            ? await request(port, 'GET', '/api/sheets?action=' + action, { cookie: personal('ortal') })
+            : await request(port, 'POST', '/api/sheets', { cookie: personal('ortal'), body: { action } });
+          assert.equal(r.status, 200, method + ' ' + action);
+          assert.deepEqual(forbiddenIn(r.json), [], method + ' ' + action);
+          assert.ok(!r.text.includes(LEAD_PHONE), method + ' ' + action);
+        }
+      }
+      assert.ok(!(await request(port, 'GET', '/api/sheets?action=getData', { cookie: personal('ortal') })).text.includes('יוסי ליד'), 'no Leads row');
+      // Sandra: every field, unchanged.
+      const s = await request(port, 'GET', '/api/sheets?action=cleanupReport', { cookie: personal('sandra') });
+      assert.ok(s.text.includes(LEAD_PHONE));
+      // The exports: the workbook built for Ortal holds no lead phone and no note text.
+      const cellsOf = async (buf) => {
+        const wb = new ExcelJS.Workbook();
+        await wb.xlsx.load(buf);
+        const out = [];
+        wb.worksheets.forEach((ws) => ws.eachRow((row) => row.eachCell((c) => out.push(String(c.value && c.value.richText ? c.value.richText.map((t) => t.text).join('') : c.value)))));
+        return out.join('|');
+      };
+      const xls = async (p, id) => {
+        const res = await new Promise((resolve, reject) => {
+          http.get({ host: '127.0.0.1', port, path: p, headers: { Cookie: personal(id) } }, (r) => {
+            const chunks = []; r.on('data', (x) => chunks.push(x)); r.on('end', () => resolve({ status: r.statusCode, buf: Buffer.concat(chunks) }));
+          }).on('error', reject);
+        });
+        assert.equal(res.status, 200, id + ' ' + p);
+        return cellsOf(res.buf);
+      };
+      const sandraCleanup = await xls('/api/export/cleanup.xlsx', 'sandra');
+      assert.ok(sandraCleanup.includes(LEAD_PHONE), 'non-vacuous: Sandra\'s workbook shows the phone');
+      const ortalCleanup = await xls('/api/export/cleanup.xlsx', 'ortal');
+      assert.ok(ortalCleanup.includes('יוסי ליד'), 'the lead name + gap stay');
+      assert.ok(!ortalCleanup.includes(LEAD_PHONE) && !ortalCleanup.includes('אבחנה רגישה'), 'no phone / note in Ortal\'s workbook');
+      const ortalForecast = await xls('/api/export/refund-forecast.xlsx', 'ortal');
+      assert.ok(!ortalForecast.includes('סיבה רגישה'), 'no free-text override reason');
+    });
+  } finally { stub.restore(); }
+});

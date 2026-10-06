@@ -86,6 +86,55 @@ All three stay exactly as they are.
 - **Shiran and Yael:** unchanged. They get 403 on every «גבייה» read, on
   both tab actions and on all three exports.
 
+### A2. Field allow-lists — a privacy fix before merge (Sandra, 2026-10-06)
+
+Cutting getData's **keys** was not enough: each patient row still carried
+every column, notes included. Now every row Ortal receives from **getData**,
+**cleanupReport** and **refundPayoutForecast** keeps only the fields «גבייה»
+needs, at every depth.
+
+**How the cut works**
+- It is an **allow-list**: a key that is not named is dropped.
+- It runs on **both layers**:
+  - `Code.gs`: `projectBySchema_`, with `controllerGetData_` and
+    `controllerProjected_` in `handle_`;
+  - `server.js`: `viewFilteredResponse` → `controllerResponseView`, for
+    `/api/sheets` **and** for the refund-forecast and fix-list exports.
+- The two layers hold the **same literals**, and a guard test pins them
+  equal:
+  - `CONTROLLER_PATIENT_FIELDS`, `CONTROLLER_OVERRIDE_FIELDS`;
+  - `CONTROLLER_GETDATA_SCHEMA`, `CONTROLLER_CLEANUP_SCHEMA`,
+    `CONTROLLER_FORECAST_SCHEMA`.
+- Sandra and Vered are unchanged.
+
+**What each read keeps**
+
+| Read | Kept | Dropped for Ortal |
+|---|---|---|
+| getData, patient rows | `id, houseId, name, date, exitDate, status, pay, adv` | `notes, source, fromLead, updatedAt, updatedBy` (and any `phone`) |
+| getData, overrides | `id, patientId, month, amount, created, updatedBy` | — (no free text) |
+| getData, other keys | `ok`, `patients`, `billingOverrides` | leads, discharge records, managers, everything else |
+| cleanupReport | every section's billing fields. Leads keep `kind, houseId, name, stage, created, entryDate, advance, paymentName, dueDate, amount, reason, refs`: the name plus the billing gap | leads' `phone` and `notes`; `names[].source` |
+| refundPayoutForecast | counts, totals, house and date groups; rows keep name, house, dates, amount, rule, payout date | `decided[].overrideReason` (Sandra's free text); `missing_payment_data[].note` |
+
+**Where the patient field list comes from.** These are the fields
+`public/app.js` actually reads in the «גבייה» code:
+- `renderBilling` and `buildBillingRow`: `name`, `houseId`, `date`, `pay`;
+- `patientDueOnDate` and `patientStayCoversDate`: `date`;
+- `patientExitISO` and `patientFunderDay`: `exitDate`;
+- `patientUid` (the join key to Funders): `id`;
+- `matchPatientForPayment` and `paymentForPatientOnDate`: `houseId`,
+  `name`, `pay`;
+- the released filters: `status`;
+- the advance column: `adv`.
+
+There are no funder fields on the patient row. The funder comes from
+`getPayments.funders` (`patientId, funder, effectiveFrom, setBy, setAt`).
+
+Every remaining field is a date, an amount, a name or a code (`kind`,
+`rule`, `why`, `reason`, `error`, `stage`). `reason` in leads is the
+computed match list, not free text.
+
 ### B. The status dropdown and the note (`confirmPayment`)
 
 **Two columns are appended at the end of `Payments`.**
@@ -183,7 +232,7 @@ the workbook):
 
 ## Tests
 
-**New: `test/ortal-billing-access.test.js`** (18 tests). They run the real
+**New: `test/ortal-billing-access.test.js`** (23 tests). They run the real
 Code.gs and server.js.
 
 - **Permissions, Code.gs:**
@@ -237,6 +286,32 @@ Code.gs and server.js.
   - HTML is stored verbatim as text;
   - the lib check = Code.gs;
   - the workbook holds the note as a string cell, never a formula.
+- **Field allow-lists** (5 tests). They use a world whose sheets hold a
+  patient with notes / source / fromLead, a lead with a phone and a note, a
+  discharge with notes, and a credit with a free-text `overrideReason`.
+  Sandra's raw answers really contain them, so the tests cannot pass
+  vacuously.
+  - **Parity:** Code.gs = lib for all five literals; the exact patient
+    field list; no schema names a forbidden key.
+  - **Ortal's getData (Code.gs):**
+    - no `notes`, `phone`, `note` or `source` key at any depth;
+    - no Leads row: no lead id, name, phone or note text;
+    - each patient row = the eight fields.
+  - **Ortal's cleanupReport and refundPayoutForecast (Code.gs):**
+    - no forbidden key at any depth, and no `overrideReason`;
+    - the lead keeps its name, kind and advance;
+    - counts and sections are unchanged (rows are cut, never dropped).
+  - **The projector:**
+    - forbidden keys nested anywhere, objects under a leaf, and unknown keys
+      are all dropped;
+    - the patients map is cut house by house;
+    - an error answer passes as an error;
+    - lib = Code.gs on the three real answers.
+  - **server.js:** Apps Script stubbed to send Sandra's full answers.
+    - Ortal's GET and POST of all three are cut;
+    - her fix-list workbook has the lead's name but no phone or note;
+    - her forecast workbook has no override reason;
+    - Sandra's answers are unchanged.
 - **Write path:**
   - savePayment cannot write either column (a receipt, an existing cycle, a
     new row);
@@ -249,6 +324,20 @@ The new tests catch each of these mutations (checked by hand):
 - not cutting getData in server.js;
 - skipping the note audit row;
 - adding `savePayment` to Ortal's list.
+
+The field allow-lists add nine more mutations, each caught (by the test
+named):
+- `notes` added to the lib patient fields only → parity, getData, projector,
+  server;
+- Code.gs getData cut to keys only → Ortal's getData;
+- Code.gs `cleanupReport` not projected → cleanup / forecast;
+- Code.gs `refundPayoutForecast` not projected → cleanup / forecast;
+- leads keep `phone` on both layers, in sync → parity, cleanup, projector,
+  server;
+- the lib projector keeps any leaf → projector;
+- server.js cuts getData only → server;
+- the fix-list export not filtered → server;
+- server.js cuts nothing → server (and the permissions test).
 
 **Updated:** these tests pinned the old lists, columns or answers.
 
@@ -267,7 +356,7 @@ The new tests catch each of these mutations (checked by hand):
   `payment-report-foundation`: the two appended columns.
 - `personal-pins-login`: `/api/me` `billingRead: false`.
 
-**Full suite: 2263 / 2263 passing** (2245 on the base, plus 18).
+**Full suite: 2268 / 2268 passing** (2245 on the base, plus 23).
 
 ---
 
@@ -298,6 +387,11 @@ The new tests catch each of these mutations (checked by hand):
 9. **SW v39 is unchanged in this PR.** No UI file moves. The live `/sw.js`
    could not be fetched from this environment (proxy 403), so the deployed
    branch's `v39` (after #186) is the reference.
+10. **The field cut is an allow-list on both layers**, not a deny-list, so a
+    column added to a sheet later never reaches Ortal by default. Leads keep
+    only their name and the billing gap. Sandra's free-text `overrideReason`
+    is dropped as possible clinical text; Ortal's forecast export shows that
+    column empty.
 
 ## For Sandra
 

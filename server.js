@@ -12,7 +12,7 @@ const {
 const {
   FINANCE_ACTIONS, FINANCE_ROUTES, FINANCE_FORBIDDEN_MESSAGE, isFinanceAction, stripFinanceKeys,
   BILLING_CONTROL_ACTIONS, CONTROLLER_ACTIONS, CONTROLLER_ROUTES, BILLING_CONTROL_FORBIDDEN_MESSAGE,
-  isBillingControlAction, isControllerAction, isControllerRoute, controllerGetDataView,
+  isBillingControlAction, isControllerAction, isControllerRoute, controllerResponseView,
 } = require('./lib/finance-scope');
 const { hashPin, verifyPin, pinPolicyError } = require('./lib/pin-hash');
 const { WindowCounter, PinLockout } = require('./lib/rate-limit');
@@ -926,11 +926,13 @@ function requireRoleForAction(req, res, next) {
 /* getData for a session without `finance`: drop the billing-only keys
  * (GETDATA_FINANCE_KEYS — no tab such a session can see reads them). A
  * full-view session gets every key, unchanged (append-only contract). The
- * controller view (Ortal, read access to «גבייה») gets the allow-list
- * CONTROLLER_GETDATA_KEYS only — Code.gs makes the same cut. */
+ * controller view (Ortal, read access to «גבייה») gets getData, cleanupReport
+ * and refundPayoutForecast cut to their FIELD allow-lists
+ * (lib/finance-scope.js CONTROLLER_RESPONSE_SCHEMAS) — no lead row, no notes,
+ * no phone, no source. Code.gs makes the same cut first. */
 function viewFilteredResponse(action, data, principal) {
+  if (isControllerView(principal)) return controllerResponseView(action, data);
   if (action !== 'getData') return data;
-  if (isControllerView(principal)) return controllerGetDataView(data);
   return !hasFinance(principal) ? stripFinanceKeys(data) : data;
 }
 
@@ -1055,7 +1057,9 @@ app.post('/api/sheets', requireSession, requireBillingControlForAction, requireF
  * Script. */
 function refundForecastXlsxHandler(deps) {
   const d = deps || {};
-  const fetchForecast = d.fetchForecast || ((user, principal) => sheetsPost({ action: 'refundPayoutForecast', user }, principal));
+  // The controller view's answer is cut to its field allow-list here too.
+  const fetchForecast = d.fetchForecast || ((user, principal) => sheetsPost({ action: 'refundPayoutForecast', user }, principal)
+    .then((data) => viewFilteredResponse('refundPayoutForecast', data, principal)));
   const clock = d.now || (() => new Date());
   return async (req, res) => {
     const fail = (status, error) => {
@@ -1173,7 +1177,8 @@ app.get('/api/export/debt-aging.xlsx', requireSession, requireFinanceOrControlle
  * Sandra (CHANGELOG-cleanup-export-finance.md). */
 function cleanupXlsxHandler(deps) {
   const d = deps || {};
-  const fetchCleanup = d.fetchCleanup || ((user, principal) => sheetsPost({ action: 'cleanupReport', user }, principal));
+  const fetchCleanup = d.fetchCleanup || ((user, principal) => sheetsPost({ action: 'cleanupReport', user }, principal)
+    .then((data) => viewFilteredResponse('cleanupReport', data, principal)));
   const clock = d.now || (() => new Date());
   return async (req, res) => {
     const fail = (status, error) => {
