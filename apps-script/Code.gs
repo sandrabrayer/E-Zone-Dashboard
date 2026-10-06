@@ -514,9 +514,30 @@ const PAYMENT_COLUMNS = [
   'recordedBy', 'recordedAt',
   'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
   /* One row per money received (Phase 3 PR 2, RECEIPT_ID_PREFIX below). */
-  'legacyAmountPaid'
+  'legacyAmountPaid',
+  /* The invoice choice on the report (PAYMENT_INVOICE_COLUMNS below). */
+  'invoiceWanted', 'invoiceTo'
 ];
 const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient', 'duplicate'];
+
+/* ===== The invoice on the payment report (CHANGELOG-payment-invoice.md) =====
+ * Two columns APPENDED at the very end of PAYMENT_COLUMNS (append-only), both
+ * text-forced:
+ *   invoiceWanted  'yes' | 'no' — «חשבונית?». There is NO default: a report
+ *                  without a choice is refused (invoice_choice_missing).
+ *                  Blank on every row written before this change, and shown
+ *                  as «—», never as כן or לא.
+ *   invoiceTo      «על שם» — free text, 1–120 characters, required when
+ *                  invoiceWanted is 'yes'; '' when 'no'. No control
+ *                  character, no formula lead-in (= + @ -).
+ * Written by reportPayment_ on the receipt; changed later only through
+ * savePayment / updatePayment (paymentInvoiceFields_, the same rules), which
+ * writes one AuditLog row (payment_invoice_changed). On a receipt this is the
+ * one edit besides the void decision. lib/payment-report-rules.js mirrors
+ * validatePaymentInvoice_ (parity-tested). */
+const PAYMENT_INVOICE_COLUMNS = ['invoiceWanted', 'invoiceTo'];
+const INVOICE_CHOICES = ['yes', 'no'];
+const INVOICE_TO_MAX = 120;
 
 /* ===== The strict payment report — foundation (Phase 3 PR 1) =====
  * docs/billing-control-plan.md Phase 3, decided by Sandra 2026-10-04.
@@ -622,6 +643,10 @@ const PAYMENT_REPORT_MESSAGES = {
   confirm_without_report: 'אין דיווח תשלום לאשר — חסר תאריך קבלה',
   flag_note_missing: 'בסימון «בעיה» חובה לפרט (2 עד 300 תווים)',
   received_date_too_old: 'תאריך קבלה לפני יותר מ-90 יום — פנו לסנדרה',
+  invoice_choice_missing: 'חסר: חשבונית? — יש לבחור כן או לא',
+  invoice_choice_invalid: 'בחירת חשבונית לא תקינה — כן או לא בלבד',
+  invoice_to_missing: 'חסר: על שם מי החשבונית',
+  invoice_to_invalid: 'שם לחשבונית לא תקין — עד 120 תווים, לא מתחיל ב-= + - @',
 };
 
 /* Funders — the patient's funder over time. APPEND-ONLY (rows and columns):
@@ -736,7 +761,9 @@ const PAYMENT_TEXT_COLUMNS = [
    * ISO stamps — every one of them something Sheets would coerce. */
   'receivedDate', 'method', 'payer', 'funder', 'reference',
   'recordedBy', 'recordedAt',
-  'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote'
+  'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
+  /* «חשבונית?» / «על שם» — free text; a name typed as =… must stay text. */
+  'invoiceWanted', 'invoiceTo'
 ];
 
 /* PaymentsTombstones — the recoverable record of a DELETED Payments row.
@@ -6491,6 +6518,9 @@ function upsertPayment_(payment, user, ctx) {
    * editor job or a test) passes nothing and keeps the old behavior. */
   const c = ctx && typeof ctx === 'object' ? ctx : {};
   const auditActor = c.actor === undefined ? stampUser : String(c.actor);
+  /* The invoice pair as the caller sent it — kept apart, because a receipt
+   * edit below replaces `payment` with the stored row. */
+  const invoiceIn = { invoiceWanted: payment.invoiceWanted, invoiceTo: payment.invoiceTo };
 
   const lock = LockService.getScriptLock();
   if (lock.tryLock(10000) !== true) return lockBusy_('upsertPayment_');
@@ -6542,12 +6572,21 @@ function upsertPayment_(payment, user, ctx) {
     }
     if (isReceipt) {
       const voidMove = isVoidStatus_(payment.status) !== isVoidStatus_(prev.status);
-      if (!voidMove) return { ok: false, error: 'receipt_immutable', message: 'קבלה אינה ניתנת לעריכה — ניתן רק לבטל אותה' };
+      /* The one other edit a receipt takes: its invoice choice (validated by
+       * paymentInvoiceFields_ below, audited). Every other cell is kept. */
+      const invoiceEdit = !voidMove && paymentInvoiceFields_(invoiceIn, prev, {}).change !== null;
+      const invoiceBad = !voidMove && !paymentInvoiceFields_(invoiceIn, prev, {}).ok;
+      if (!voidMove && !invoiceEdit && !invoiceBad) return { ok: false, error: 'receipt_immutable', message: 'קבלה אינה ניתנת לעריכה — ניתן רק לבטל אותה' };
       const keep = {};
       PAYMENT_COLUMNS.forEach(function (k) { keep[k] = prev[k]; });
-      keep.status = isVoidStatus_(payment.status) ? PAYMENT_VOID_STATUS : 'paid';
-      keep.linkStatus = payment.linkStatus;
-      keep.linkNote = payment.linkNote;
+      if (voidMove) {
+        keep.status = isVoidStatus_(payment.status) ? PAYMENT_VOID_STATUS : 'paid';
+        keep.linkStatus = payment.linkStatus;
+        keep.linkNote = payment.linkNote;
+      } else {
+        keep.linkStatus = paymentCell_(prev.linkStatus);
+        keep.linkNote = paymentCell_(prev.linkNote);
+      }
       keep.linkPatientUid = paymentCell_(prev.linkPatientUid);
       keep.timestamp = payment.timestamp || prev.timestamp;
       payment = keep;
@@ -6597,9 +6636,15 @@ function upsertPayment_(payment, user, ctx) {
     }
     const rep = paymentReportFields_(payment, prev, { stampUser: stampUser, privileged: c.privileged === true, headerClash: clash.length > 0 });
     if (!rep.ok) return rep;
+    /* The invoice pair (CHANGELOG-payment-invoice.md): same rules as the
+     * report; refused before a single cell moves. */
+    const invClash = paymentInvoiceHeaderClash_(sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getValues()[0]);
+    const inv = paymentInvoiceFields_(invoiceIn, prev, { headerClash: invClash.length > 0 });
+    if (!inv.ok) return inv;
     const merged = {};
     Object.keys(payment).forEach(function (k) { merged[k] = payment[k]; });
     Object.keys(rep.fields).forEach(function (k) { merged[k] = rep.fields[k]; });
+    Object.keys(inv.fields).forEach(function (k) { merged[k] = inv.fields[k]; });
 
     const out = stampPaymentRow_(merged, prev, hadRow, stampUser);
     // A first report that names no funder gets the patient's current one —
@@ -6626,6 +6671,7 @@ function upsertPayment_(payment, user, ctx) {
       logPaymentLink_(out, prev, 'update', auditActor);
       if (unvoided) logPaymentVoidReversed_(out, prev, stampUser, auditActor);
       logPaymentReceivedDateChanged_(out, rep.receivedChange, stampUser, auditActor);
+      logPaymentInvoiceChanged_(out, inv.change, stampUser, auditActor);
       logPaymentConfirm_(out, rep.confirmChange, auditActor);
       // A voided / un-voided receipt re-derives the cycle it pays for.
       const res = { ok: true, payment: out, updated: true };
@@ -7008,6 +7054,92 @@ function paymentReportFromRow_(row) {
     receivedDate: p.receivedDate, amount: p.amountPaid, method: p.method, payer: p.payer,
     coverageStart: p.coverageStart, coverageEnd: p.coverageEnd, funder: p.funder, reference: p.reference,
   };
+}
+
+/* «על שם»: '' valid, else the error code. Trimmed; 1–INVOICE_TO_MAX
+ * characters, no control character, no formula lead-in. PURE. */
+function paymentInvoiceToCode_(v) {
+  const t = paymentReportText_(v);
+  if (!t) return 'invoice_to_missing';
+  if (/[\u0000-\u001f\u007f]/.test(t) || /^[=+@-]/.test(t) || t.length > INVOICE_TO_MAX) return 'invoice_to_invalid';
+  return '';
+}
+
+/* validatePaymentInvoice_({ invoiceWanted, invoiceTo }) → issues in field
+ * order (invoiceWanted, invoiceTo); [] = valid. 'no' needs nothing more (the
+ * name is stored ''); 'yes' needs a valid name. PURE. */
+function validatePaymentInvoice_(report) {
+  const r = report && typeof report === 'object' ? report : {};
+  const w = paymentReportText_(r.invoiceWanted);
+  if (!w) return [paymentReportIssue_('invoiceWanted', 'invoice_choice_missing')];
+  if (INVOICE_CHOICES.indexOf(w) < 0) return [paymentReportIssue_('invoiceWanted', 'invoice_choice_invalid')];
+  if (w === 'yes') {
+    const code = paymentInvoiceToCode_(r.invoiceTo);
+    if (code) return [paymentReportIssue_('invoiceTo', code)];
+  }
+  return [];
+}
+
+/* The invoice pair as stored: 'yes' + the trimmed name, or 'no' + ''. Call
+ * only after validatePaymentInvoice_ passed. PURE. */
+function paymentInvoiceClean_(report) {
+  const r = report || {};
+  const w = paymentReportText_(r.invoiceWanted);
+  return { invoiceWanted: w, invoiceTo: w === 'yes' ? paymentReportText_(r.invoiceTo) : '' };
+}
+
+/* Whether the header holds the invoice columns where they belong (blank or
+ * their own name). Pure — the paymentReportHeaderClash_ rule. */
+function paymentInvoiceHeaderClash_(header) {
+  const h = Array.isArray(header) ? header : [];
+  const clash = [];
+  PAYMENT_INVOICE_COLUMNS.forEach(function (name) {
+    const i = PAYMENT_COLUMNS.indexOf(name);
+    const got = i < h.length ? String(h[i] == null ? '' : h[i]).trim() : '';
+    if (got !== '' && got !== name) clash.push({ column: i + 1, expected: name, found: got });
+  });
+  return clash;
+}
+
+/* The invoice pair of the row about to be written by savePayment /
+ * updatePayment. PURE. A payload that does not carry them (undefined / null,
+ * or a blank invoiceWanted — "not sending", so an older client can never
+ * wipe a choice) keeps the stored pair. A pair equal to the stored one is
+ * not re-validated. 'no' always stores invoiceTo ''.
+ * → { ok:true, fields, change: null | { from, to } }
+ *   { ok:false, error:'validation', message, fields:[issues] } */
+function paymentInvoiceFields_(payment, prev, opts) {
+  const P = prev || {};
+  const pay = payment || {};
+  const o = opts || {};
+  const prevW = paymentCell_(P.invoiceWanted), prevTo = paymentCell_(P.invoiceTo);
+  const keep = { ok: true, fields: { invoiceWanted: prevW, invoiceTo: prevTo }, change: null };
+  if (o.headerClash) return keep;
+  const sentW = pay.invoiceWanted !== undefined && pay.invoiceWanted !== null && paymentReportText_(pay.invoiceWanted) !== '';
+  const sentTo = pay.invoiceTo !== undefined && pay.invoiceTo !== null;
+  const w = sentW ? paymentReportText_(pay.invoiceWanted) : prevW;
+  let to = sentTo ? paymentReportText_(pay.invoiceTo) : prevTo;
+  if (w === 'no') to = '';
+  if (w === prevW && to === prevTo) return keep;
+  const issues = validatePaymentInvoice_({ invoiceWanted: w, invoiceTo: to });
+  if (issues.length) return { ok: false, error: 'validation', message: issues[0].hebrewMessage, fields: issues };
+  const next = paymentInvoiceClean_({ invoiceWanted: w, invoiceTo: to });
+  return { ok: true, fields: next, change: { from: { invoiceWanted: prevW, invoiceTo: prevTo }, to: next } };
+}
+
+/* One AuditLog row when a row's invoice choice changes (old, new, actor) —
+ * the receivedDate-change treatment. Fail-soft, like every logAudit_ caller. */
+function logPaymentInvoiceChanged_(out, change, user, actor) {
+  if (!change) return;
+  logAudit_('payment_invoice_changed', 'upsertPayment_',
+    String(out.patientUid || ''), String(out.patientName || ''), {
+      paymentId: String(out.id || ''),
+      paymentUid: String(out.paymentUid || ''),
+      old: change.from,
+      new: change.to,
+      by: String(user == null ? '' : user),
+      at: israelTimestamp_(),
+    }, actor === undefined ? String(user == null ? '' : user) : actor);
 }
 
 /* flagNote as stored: one line, control characters flattened, a formula
@@ -7532,11 +7664,12 @@ function reportPayment_(body, user, ctx) {
   const issues = validatePaymentReport_(reportIn, {
     todayIso: c.todayIso || today,
     maxDaysBack: c.approver === true ? 0 : RECEIVED_DATE_STAFF_MAX_DAYS,
-  });
+  }).concat(validatePaymentInvoice_(reportIn));   // «חשבונית?» — no default
   if (issues.length) {
     return { ok: false, error: 'invalid_report', message: PAYMENT_REPORT_REFUSED_MESSAGE, issues: issues };
   }
   const rep = receiptReportClean_(reportIn);
+  const inv = paymentInvoiceClean_(reportIn);
   const amount = receiptMoney_(rep.amount);
 
   const lock = LockService.getScriptLock();
@@ -7544,7 +7677,7 @@ function reportPayment_(body, user, ctx) {
   try {
     const sh = getOrCreateSheet_(PAYMENTS_SHEET, PAYMENT_COLUMNS);
     const header = sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getValues()[0];
-    if (paymentReportHeaderClash_(header).length || receiptHeaderClash_(header).length) {
+    if (paymentReportHeaderClash_(header).length || receiptHeaderClash_(header).length || paymentInvoiceHeaderClash_(header).length) {
       try { console.warn('[payments] reportPayment refused — Payments header clash'); } catch (_) { /* no-op */ }
       return { ok: false, error: 'sheet_header_clash', message: 'מבנה גיליון התשלומים לא תקין — פנו לסנדרה' };
     }
@@ -7615,6 +7748,7 @@ function reportPayment_(body, user, ctx) {
       receivedDate: rep.receivedDate, method: rep.method, payer: rep.payer, funder: rep.funder, reference: rep.reference,
       recordedBy: stampUser, recordedAt: israelTimestamp_(),
       confirmStatus: 'reported', confirmedBy: '', confirmedAt: '', flagNote: '',
+      invoiceWanted: inv.invoiceWanted, invoiceTo: inv.invoiceTo,
     };
     const receiptOut = stampPaymentRow_(receiptIn, {}, false, stampUser);
     receiptOut.patientUid = paymentCell_(cycleOut.patientUid);   // same patient as its cycle, always
@@ -7646,6 +7780,7 @@ function reportPayment_(body, user, ctx) {
       receiptId: String(receiptOut.id), paymentUid: String(receiptOut.paymentUid || ''),
       cycleId: String(cycleWritten.id), dueDate: String(receiptOut.dueDate || ''),
       amount: amount, receivedDate: rep.receivedDate, method: rep.method, funder: rep.funder,
+      invoiceWanted: inv.invoiceWanted,
       cycleStatus: String(cycleWritten.status), cycleAmountPaid: cycleWritten.amountPaid,
       by: stampUser, at: String(receiptOut.recordedAt || ''),
     }, c.actor === undefined ? stampUser : String(c.actor));
@@ -7834,6 +7969,9 @@ function billingControlReceipt_(r, flaggedAt) {
     reference: paymentCell_(r.reference),
     payer: paymentCell_(r.payer),
     funder: paymentCell_(r.funder),
+    /* 'yes' | 'no' | '' (a receipt from before the invoice question — shown «—») */
+    invoiceWanted: INVOICE_CHOICES.indexOf(paymentCell_(r.invoiceWanted)) >= 0 ? paymentCell_(r.invoiceWanted) : '',
+    invoiceTo: paymentCell_(r.invoiceWanted) === 'yes' ? paymentCell_(r.invoiceTo) : '',
     coverageStart: iso(r.coverageStart),
     coverageEnd: iso(r.coverageEnd),
     recordedBy: paymentCell_(r.recordedBy),
@@ -12379,7 +12517,15 @@ function accountingCreditView_(c) {
   };
 }
 
-function accountingPaymentView_(r, creditsByLink) {
+/* The invoice choice of one row for the feed: 'yes' | 'no' | null (a row from
+ * before the question — never guessed), and the name only when 'yes'. PURE. */
+function accountingInvoice_(r) {
+  const w = accStr_(r && r.invoiceWanted);
+  const known = INVOICE_CHOICES.indexOf(w) >= 0;
+  return { invoiceWanted: known ? w : null, invoiceTo: w === 'yes' ? (accStr_(r.invoiceTo) || null) : null };
+}
+
+function accountingPaymentView_(r, creditsByLink, receipts) {
   const amount     = accNum_(r.amount);
   const amountPaid = accNum_(r.amountPaid);
   const cov = accountingCoverage_(r);
@@ -12433,6 +12579,20 @@ function accountingPaymentView_(r, creditsByLink) {
      * creditUid. */
     creditLinkBasis: 'derived:patientKey+allocationMonth==dueDateMonth',
     credits: (creditsByLink && creditsByLink[linkKey]) || [],
+    /* The invoice (CHANGELOG-payment-invoice.md). The feed stays one record
+     * per cycle, so the choice — made per money received — rides along: the
+     * row's own pair (null on a cycle), and one entry per receipt of this
+     * cycle (void ones included, flagged), oldest first. */
+    invoiceWanted: accountingInvoice_(r).invoiceWanted,
+    invoiceTo: accountingInvoice_(r).invoiceTo,
+    invoices: (receipts || []).map(function (x) {
+      const inv = accountingInvoice_(x);
+      return {
+        receiptUid: accOrNull_(x.paymentUid), receivedDate: paymentReportDate_(x.receivedDate) || null,
+        amount: accNum_(x.amountPaid !== '' && x.amountPaid !== undefined && x.amountPaid !== null ? x.amountPaid : x.amount),
+        void: isVoidStatus_(x.status), invoiceWanted: inv.invoiceWanted, invoiceTo: inv.invoiceTo,
+      };
+    }),
   };
 }
 
@@ -12505,16 +12665,34 @@ function accountingPayments_(params) {
   /* Receipt rows (Phase 3 PR 2) are not exported: the feed's contract is one
    * record per cycle, and each cycle row already carries the total of its
    * receipts (written by reportPayment_ and on every void). */
-  const cyclesOnly = paymentCyclesDerived_(rows);
+  const derived = paymentRowsDerived_(rows);
+  const cyclesOnly = derived.cycles;
+  /* Each cycle's receipts (for `invoices`). A receipt edited later (its
+   * invoice choice) moves its cycle's place in the incremental feed too:
+   * sortMs = the newest sourceUpdatedAt of the cycle and its receipts. */
+  const receiptsOf = {};
+  derived.receipts.forEach(function (x) {
+    if (!x.cycleId) return;
+    (receiptsOf[x.cycleId] || (receiptsOf[x.cycleId] = [])).push(x);
+  });
   for (let i = 0; i < cyclesOnly.length; i++) {
     const r = cyclesOnly[i];
     if (!accStr_(r.paymentUid)) identityPending++;
     const uid = accStr_(r.paymentUid) || accStr_(r.id);
     if (!uid) continue;   // a row with no identity at all is not exportable
+    const mine = (receiptsOf[accStr_(r.id)] || []).slice().sort(function (a, b) {
+      const da = paymentReportDate_(a.receivedDate) || '', db = paymentReportDate_(b.receivedDate) || '';
+      return da < db ? -1 : da > db ? 1 : 0;
+    });
+    let sortMs = accountingSortMs_(r.sourceUpdatedAt);
+    mine.forEach(function (x) {
+      const ms = accountingSortMs_(x.sourceUpdatedAt);
+      if (isFinite(ms) && (!isFinite(sortMs) || ms > sortMs)) sortMs = ms;
+    });
     items.push({
-      sortMs: accountingSortMs_(r.sourceUpdatedAt),
+      sortMs: sortMs,
       uid: uid,
-      value: accountingPaymentView_(r, creditsByLink),
+      value: accountingPaymentView_(r, creditsByLink, mine),
     });
   }
 
@@ -12781,6 +12959,13 @@ function digestAmount_(obj) {
   return paymentStatus_(obj.status) === 'paid' ? (Number(obj.amount) || 0) : 0;
 }
 
+/* 'yes' → «כן», 'no' → «לא», anything else (a row from before the question)
+ * → '' (rendered «—»): never guessed as כן or לא. */
+function digestInvoiceLabel_(v) {
+  const t = String(v == null ? '' : v).trim();
+  return t === 'yes' ? 'כן' : t === 'no' ? 'לא' : '';
+}
+
 /* THE ALLOW-LIST. The only fields of a Payments row that ever reach the mail.
  * `key` and `instant` are bookkeeping and are never rendered. */
 function digestRow_(obj, ledger) {
@@ -12800,6 +12985,11 @@ function digestRow_(obj, ledger) {
     paymentDate: digestDmyFromIso_(paymentReportDate_(obj.receivedDate) || asISODate_(obj.dueDate)),
     method: digestMethod_(obj),
     reference: String(obj.reference == null ? '' : obj.reference).trim(),
+    /* «חשבונית» / «על שם» (CHANGELOG-payment-invoice.md): כן / לא, and the
+     * name only when כן. A row from before the question → «—» in both. */
+    invoice: digestInvoiceLabel_(obj.invoiceWanted),
+    invoiceTo: String(obj.invoiceWanted == null ? '' : obj.invoiceWanted).trim() === 'yes'
+      ? String(obj.invoiceTo == null ? '' : obj.invoiceTo).trim() : '',
     recordedBy: String(obj.chargedBy == null ? '' : obj.chargedBy).trim(),
     recordedAt: isFinite(instant) ? String(Utilities.formatDate(new Date(instant), DIGEST_TZ, 'dd/MM/yyyy HH:mm')) : '',
     updated: !!prior,
@@ -12885,7 +13075,7 @@ function digestCompose_(rows, ctx) {
     return { subject: subject, htmlBody: html, body: text, count: 0, total: 0, pending: pending };
   }
 
-  const head = ['מטופל', 'בית', 'סכום (כולל מע״מ)', 'תאריך תשלום', 'אמצעי', 'אסמכתא', 'נרשם ע״י', 'נרשם ב-', ''];
+  const head = ['מטופל', 'בית', 'סכום (כולל מע״מ)', 'תאריך תשלום', 'אמצעי', 'אסמכתא', 'חשבונית', 'על שם', 'נרשם ע״י', 'נרשם ב-', ''];
   let html = wrap + pendingHtml + '<p style="margin:0 0 10px;">' + digestEsc_(windowText) + '</p>' +
     '<table dir="rtl" cellpadding="0" cellspacing="0" style="border-collapse:collapse;direction:rtl;">' +
     '<tr>' + head.map(function (h) { return '<th style="' + th + '">' + digestEsc_(h) + '</th>'; }).join('') + '</tr>';
@@ -12896,9 +13086,10 @@ function digestCompose_(rows, ctx) {
       ? 'עודכן' + (r.previousAmount !== null ? ' (נשלח קודם: ' + digestMoney_(r.previousAmount) + ')' : '')
       : '';
     const cells = [r.patientName || '—', r.houseLabel, digestMoney_(r.amount), r.paymentDate || '—',
-      r.method || '—', r.reference || '—', r.recordedBy || '—', r.recordedAt || '—', flag];
+      r.method || '—', r.reference || '—', r.invoice || '—', r.invoiceTo || '—',
+      r.recordedBy || '—', r.recordedAt || '—', flag];
     html += '<tr>' + cells.map(function (c, j) {
-      const style = td + (j === 2 ? 'white-space:nowrap;' : '') + (j === 8 && c ? 'color:#9a6700;font-weight:bold;' : '');
+      const style = td + (j === 2 ? 'white-space:nowrap;' : '') + (j === cells.length - 1 && c ? 'color:#9a6700;font-weight:bold;' : '');
       return '<td style="' + style + '">' + digestEsc_(c) + '</td>';
     }).join('') + '</tr>';
     lines.push(cells.map(digestPlain_).filter(function (c) { return c; }).join(' | '));
@@ -12919,7 +13110,7 @@ function digestCompose_(rows, ctx) {
   html += note + link + '</div>';
 
   const text = pendingText + digestPlain_(windowText) + '\n\n' +
-    'מטופל | בית | סכום | תאריך תשלום | אמצעי | אסמכתא | נרשם ע״י | נרשם ב-\n' + lines.join('\n') +
+    'מטופל | בית | סכום | תאריך תשלום | אמצעי | אסמכתא | חשבונית | על שם | נרשם ע״י | נרשם ב-\n' + lines.join('\n') +
     '\n\nסיכום לפי בית:\n' + sumLines.join('\n') +
     '\nסה״כ: ' + totals.count + ' תשלומים, ' + digestMoney_(totals.amount) +
     '\n\n«נרשם» = דווח כשולם בדשבורד, לא אישור שהכסף הגיע לבנק. הסכומים כוללים מע״מ.' +

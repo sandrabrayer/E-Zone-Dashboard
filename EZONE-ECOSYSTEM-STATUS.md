@@ -802,6 +802,30 @@ Detail: `CHANGELOG-funder-probono.md`. Apps Script **and** Railway.
 - SW `CACHE_VERSION` v34 → **v37** (v35 / v36 are held by open PRs #181 / #182).
 - No new action, env var, Script Property, scope, column or trigger.
 
+## Dashboard: the invoice on the payment report (October 5, 2026)
+
+Detail: `CHANGELOG-payment-invoice.md`. Apps Script **and** Railway.
+
+- **`Payments` gains two columns, appended LAST** (positions 37–38, text):
+  `invoiceWanted` (`yes` | `no`) and `invoiceTo` (1–120 characters, no
+  formula lead-in). Rows from before stay blank and display «—».
+- «דווח תשלום» asks **«חשבונית?» כן / לא with no default**; refused without
+  a choice (`invoice_choice_missing`), and with כן without «על שם»
+  (`invoice_to_missing`). In the UI and on the server, nothing is written on
+  a refusal.
+- `updatePayment` may change the pair (on a receipt, it is the only edit
+  besides the void), with the same rules and one `payment_invoice_changed`
+  AuditLog row.
+- Shown in the גבייה receipts list, the «בקרת גבייה» card, «ייצוא אימות»,
+  and Ortal's daily email («חשבונית» / «על שם»).
+- **Accounting feed (additive, `schemaVersion` still 1):** each cycle record
+  gains `invoiceWanted` / `invoiceTo` and `invoices` (one per receipt:
+  `receiptUid, receivedDate, amount, void, invoiceWanted, invoiceTo`; `null`
+  = from before the question). A receipt edit moves its cycle into the next
+  incremental read.
+- SW `CACHE_VERSION` v34 → **v38** (v35–v37 are held by open PRs #181–#183).
+- No new action, env var, Script Property, scope or trigger.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);

@@ -123,8 +123,9 @@ test('columns: the eleven report columns are APPENDED; the original 24 do not mo
   const cols = arr(g.run('PAYMENT_COLUMNS'));
   assert.deepEqual(cols.slice(0, 24), ORIGINAL_24, 'position IS the data contract');
   assert.deepEqual(cols.slice(24, 35), REPORT_COLUMNS);
-  // PR 2 (CHANGELOG-payment-report-form.md) appended one more after them.
-  assert.deepEqual(cols.slice(35), ['legacyAmountPaid']);
+  // PR 2 (CHANGELOG-payment-report-form.md) appended one more after them,
+  // and the invoice pair came last (CHANGELOG-payment-invoice.md).
+  assert.deepEqual(cols.slice(35), ['legacyAmountPaid', 'invoiceWanted', 'invoiceTo']);
   assert.deepEqual(arr(g.run('PAYMENT_REPORT_COLUMNS')), REPORT_COLUMNS);
   for (const c of REPORT_COLUMNS) {
     assert.equal(cols.filter((x) => x === c).length, 1, c + ' appears once');
@@ -139,7 +140,7 @@ test('columns: an existing 24-column Payments sheet is extended in place — no 
   const legacy = ORIGINAL_24.map((c) => ({ id: 'old1', patientName: 'ותיק', status: 'paid', amountPaid: 100 }[c] || ''));
   S.Payments.appendRow(legacy);
   g.run('getOrCreateSheet_(PAYMENTS_SHEET, PAYMENT_COLUMNS)');
-  assert.deepEqual(S.Payments.grid[0], ORIGINAL_24.concat(REPORT_COLUMNS, ['legacyAmountPaid']));
+  assert.deepEqual(S.Payments.grid[0], ORIGINAL_24.concat(REPORT_COLUMNS, ['legacyAmountPaid', 'invoiceWanted', 'invoiceTo']));
   assert.deepEqual(S.Payments.grid[1].slice(0, 24), legacy, 'the legacy row is untouched');
 });
 

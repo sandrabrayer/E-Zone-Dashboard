@@ -99,6 +99,8 @@ const CYCLE_ROW = (extra) => Object.assign({
 const VALID = (extra) => Object.assign({
   receivedDate: RECEIVED, amount: '10000', method: 'העברה בנקאית', payer: 'משפחת כהן', reference: 'TRX-2026/0042',
   funder: 'פרטי', coverageStart: DUE, coverageEnd: COV_END,
+  // «חשבונית?» is required since CHANGELOG-payment-invoice.md (no default).
+  invoiceWanted: 'no',
 }, extra || {});
 
 /* ---------- app.js in a vm (the same rules file the page loads) ---------- */
@@ -662,7 +664,8 @@ test('other readers: the accounting feed exports cycles only, the refund suggest
   assert.equal(cycles.length, 1);
   assert.equal(cycles[0].amountPaid, 30000);
   const feedSrc = GS_SRC.slice(GS_SRC.indexOf('function accountingPayments_'), GS_SRC.indexOf('function ', GS_SRC.indexOf('function accountingPayments_') + 10));
-  assert.match(feedSrc, /paymentCyclesDerived_\(rows\)/, 'receipts are not exported as payment records');
+  // (since CHANGELOG-payment-invoice.md the receipts ride along as each cycle's `invoices`, never as records)
+  assert.match(feedSrc, /paymentCyclesDerived_\(rows\)|cyclesOnly = derived\.cycles/, 'receipts are not exported as payment records');
   for (const fn of ['refundSuggestionsFor_', 'refundPayoutForecastFor_', 'debtAging_', 'recModel_', 'digestSelect_']) {
     const src = GS_SRC.slice(GS_SRC.indexOf('function ' + fn + '('), GS_SRC.indexOf('function ' + fn + '(') + 700);
     assert.match(src, /paymentCyclesDerived_|paymentTabsDerived_|linkReceiptsToCycles_/, fn + ' knows receipts are not cycles');

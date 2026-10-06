@@ -149,6 +149,12 @@ test('«דווח תשלום» at 360px: one inline error, nothing sent; then suc
     await page.fill('#pr-receivedDate', YESTERDAY);
     await page.selectOption('#pr-method', 'העברה בנקאית');
     await page.fill('#pr-payer', 'משפחת כהן');
+    // «חשבונית?» has no default; כן reveals «על שם», prefilled with the payer
+    // (CHANGELOG-payment-invoice.md).
+    assert.equal(await page.locator('[name="invoiceWanted"]:checked').count(), 0, 'neither כן nor לא pre-selected');
+    assert.equal(await page.locator('#pr-invoiceTo').isVisible(), false);
+    await page.check('[name="invoiceWanted"][value="yes"]');
+    assert.equal(await page.inputValue('#pr-invoiceTo'), 'משפחת כהן', 'prefilled with the payer');
     const before = server.actions.filter((a) => a === 'reportPayment').length;
     await page.click('.pr-submit');
     const refErr = page.locator('[data-err="reference"]');
@@ -173,6 +179,7 @@ test('«דווח תשלום» at 360px: one inline error, nothing sent; then suc
     const receipt = await row.locator('.receipt-item').textContent();
     assert.match(receipt, /העברה בנקאית/);
     assert.match(receipt, /TRX-2026\/0042/);
+    assert.match(receipt, /חשבונית: כן · על שם משפחת כהן/);
     assert.match(receipt, /ורד/);
     assert.equal(await row.locator('.bill-report-btn').count(), 0, 'paid in full — no second report');
     assert.equal((await row.locator('.receipt-void-btn').textContent()).trim(), 'ביטול קבלה', 'a deleter may void it');
@@ -183,6 +190,8 @@ test('«דווח תשלום» at 360px: one inline error, nothing sent; then suc
     assert.equal(rows[0].status, 'paid');
     assert.match(rows[1].id, /^rcpt-/);
     assert.equal(rows[1].recordedBy, 'ורד');
+    assert.equal(rows[1].invoiceWanted, 'yes');
+    assert.equal(rows[1].invoiceTo, 'משפחת כהן');
     assert.equal(rows[1].receivedDate, YESTERDAY);
     assert.equal(rows[0].dueDate, DUE_TODAY);
 
