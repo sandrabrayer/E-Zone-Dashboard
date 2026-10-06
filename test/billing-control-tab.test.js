@@ -671,8 +671,12 @@ test('page wiring: index.html, the rules route, the SW bump (v33), CSS — and �
   const swVer = Number((SW_SRC.match(/var CACHE_VERSION = 'v(\d+)';/) || [])[1]);
   assert.ok(swVer >= 33, 'SW v33 or later');
   assert.match(SW_SRC, /v32 → v33:/);
-  assert.match(SW_SRC, /'\/funder\.js'\) return 'network-first'/, "#178's funder.js route is kept");
-  assert.match(SW_SRC, /'\/billing-control-rules\.js'\) return 'network-first'/);
+  // Since the perf PR both sit in BUNDLE_PATHS: network-first unversioned,
+  // cache-first at their content hash (test/dashboard-perf-assets.test.js).
+  const bundle = (SW_SRC.match(/var BUNDLE_PATHS = \[([^\]]*)\]/) || [])[1] || '';
+  assert.ok(bundle.includes("'/funder.js'"), "#178's funder.js route is kept");
+  assert.ok(bundle.includes("'/billing-control-rules.js'"));
+  assert.match(SW_SRC, /return isContentHashUrl\(url\) \? 'cache-first-hashed' : 'network-first';/);
   assert.match(CSS_SRC, /body\.view-restricted \[data-billing-control\] \{ display: none !important; \}/);
   assert.match(CSS_SRC, /body\.view-controller section\.screen:not\(#screen-billing-control\)/);
   const { app } = loadApp();

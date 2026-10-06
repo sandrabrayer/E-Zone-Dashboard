@@ -376,10 +376,11 @@ test('F(d): a failing cache.put never disturbs the response or leaks a rejection
     assert.ok(typeof res !== 'string', url + ' must still be served: ' + res);
     assert.equal(res.tag, 'network');
   }
-  // Both put sites are guarded in the source.
+  // Every put site is guarded in the source (three since the perf PR added
+  // cacheFirstHashed — its behaviour is tested in dashboard-perf-assets).
   const puts = SW_SRC.match(/cache\.put\([^)]*\)/g) || [];
-  assert.equal(puts.length, 2, 'exactly the two cache.put call sites');
-  assert.equal((SW_SRC.match(/cache refresh is best-effort|cache write is best-effort/g) || []).length, 2,
+  assert.equal(puts.length, 3, 'exactly the three cache.put call sites');
+  assert.equal((SW_SRC.match(/cache refresh is best-effort|cache write is best-effort/g) || []).length, 3,
     'each one carries its own catch');
 });
 

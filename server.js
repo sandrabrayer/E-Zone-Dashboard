@@ -20,6 +20,9 @@ const {
   ROLE_FORBIDDEN_MESSAGE, roleOperationFor, requiredRoleFor, principalHasRole, roleAllowed,
 } = require('./lib/role-scope');
 const { buildXlsxReport, isoDayInIsrael, XLSX_MIME } = require('./lib/xlsx-report');
+const {
+  createAssetStore, versionAssetRefs, isCurrentVersion, immutableHeaders, sendAsset, sendCompressedText,
+} = require('./lib/static-assets');
 const { buildRefundForecastSpec, isForecastResponse, contentDisposition } = require('./lib/refund-forecast-xlsx');
 const { buildCleanupSpec, isCleanupResponse, cleanupContentDisposition } = require('./lib/cleanup-xlsx');
 const {
@@ -241,11 +244,26 @@ function controllerRouteLock(req, res, next) {
 }
 app.use(controllerRouteLock);
 
-/* Serve index.html with BUILD_ID substituted so the script tag is unique
- * per deploy and cannot be cached between deploys. Read from disk on every
- * request so a hot-redeploy picks up edits immediately. */
+/* The page's JS/CSS (perf, CHANGELOG-dashboard-perf.md). Each is referenced
+ * from index.html as `<file>?v=<its own content hash>` and served
+ * precompressed; a request naming the CURRENT hash is cacheable forever
+ * (immutable), anything else keeps the no-store headers below. sw.js, the
+ * manifest, the icons and the meeting-report files are NOT here — they are
+ * served exactly as before. */
+const ASSETS = createAssetStore({
+  '/app.js': { file: path.join(__dirname, 'public', 'app.js'), mime: 'application/javascript' },
+  '/style.css': { file: path.join(__dirname, 'public', 'style.css'), mime: 'text/css' },
+  '/funder.js': { file: path.join(__dirname, 'public', 'funder.js'), mime: 'application/javascript' },
+  '/payment-report-rules.js': { file: path.join(__dirname, 'lib', 'payment-report-rules.js'), mime: 'application/javascript' },
+  '/billing-control-rules.js': { file: path.join(__dirname, 'lib', 'billing-control-rules.js'), mime: 'application/javascript' },
+});
+
+/* Serve index.html with every asset reference pinned to that file's content
+ * hash (versionAssetRefs) and BUILD_ID substituted in the build markers.
+ * Read from disk on every request so a hot-redeploy picks up edits
+ * immediately; the page itself stays no-store. */
 function sendIndex(req, res) {
-  let html = fs.readFileSync(path.join(__dirname, 'public/index.html'), 'utf8')
+  let html = versionAssetRefs(fs.readFileSync(path.join(__dirname, 'public/index.html'), 'utf8'), ASSETS)
     .replace(/__BUILD__/g, BUILD_ID);
   // Restricted view: a session without `finance` (Shiran / Yael) gets
   // <body class="view-restricted">, so the four money tabs and the billing
@@ -258,16 +276,21 @@ function sendIndex(req, res) {
   else if (principal && !hasFinance(principal)) html = html.replace('<body>', '<body class="view-restricted">');
   console.log(`[req] → serving /index.html (build ${BUILD_ID}, ${html.length} chars)`);
   noCache(res);
-  res.type('html').send(html);
+  res.type('html');
+  sendCompressedText(req, res, html);
 }
 app.get('/', sendIndex);
 app.get('/index.html', sendIndex);
 
-/* Serve app.js and style.css by hand so we control the headers. Each file
- * is tagged with BUILD_ID in its URL via the HTML, but we ALSO no-cache
- * the response itself so even an unversioned request doesn't get cached. */
+/* Serve app.js and style.css by hand so we control the headers. A file in
+ * ASSETS is sent precompressed; `?v=<its current hash>` (what index.html
+ * links) is cached immutable, any other request is no-store as before. A
+ * file outside ASSETS (sw.js above all — it must never be HTTP-cached) is
+ * served exactly as it always was. */
 function sendStatic(relPath, mime) {
-  return (_req, res) => {
+  return (req, res) => {
+    const entry = ASSETS.get('/' + relPath);
+    if (entry) return sendAssetEntry(req, res, entry);
     const full = path.join(__dirname, 'public', relPath);
     try {
       const content = fs.readFileSync(full);
@@ -278,34 +301,35 @@ function sendStatic(relPath, mime) {
     }
   };
 }
+/* One ASSETS entry → the response: immutable when the request names its
+ * current hash, otherwise no-store (noCache already ran as middleware). */
+function sendAssetEntry(req, res, entry) {
+  if (isCurrentVersion(req.query && req.query.v, entry)) immutableHeaders(res);
+  else noCache(res);
+  return sendAsset(req, res, entry);
+}
+
+/* A route for an ASSETS file outside public/ (the shared lib/ rules). */
+function sendLibAsset(urlPath) {
+  return (req, res) => {
+    const entry = ASSETS.get(urlPath);
+    if (!entry) return res.status(404).send('not found');
+    return sendAssetEntry(req, res, entry);
+  };
+}
+
 app.get('/app.js', sendStatic('app.js', 'application/javascript'));
 /* The payment-report rules (Phase 3 PR 2): the SAME file the server tests
  * require (lib/payment-report-rules.js, a pure IIFE that exposes
  * window.PaymentReportRules in a browser), so the «דווח תשלום» form validates
  * with exactly the rules Code.gs mirrors. No data in it — only the rules and
  * the Hebrew messages — so it is served like app.js, to any page. */
-app.get('/payment-report-rules.js', (_req, res) => {
-  try {
-    const content = fs.readFileSync(path.join(__dirname, 'lib', 'payment-report-rules.js'));
-    noCache(res);
-    res.type('application/javascript').send(content);
-  } catch (_err) {
-    res.status(404).send('not found');
-  }
-});
+app.get('/payment-report-rules.js', sendLibAsset('/payment-report-rules.js'));
 /* «בקרת גבייה» (Phase 4): lib/billing-control-rules.js — the tab's pure views
  * and the «הכנסה מאומתת» allocation — is the SAME file the «ייצוא אימות»
  * workbook requires (window.BillingControlRules in a browser). Rules only, no
  * data, so it is served like app.js. */
-app.get('/billing-control-rules.js', (_req, res) => {
-  try {
-    const content = fs.readFileSync(path.join(__dirname, 'lib', 'billing-control-rules.js'));
-    noCache(res);
-    res.type('application/javascript').send(content);
-  } catch (_err) {
-    res.status(404).send('not found');
-  }
-});
+app.get('/billing-control-rules.js', sendLibAsset('/billing-control-rules.js'));
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 // Patient funder helpers (public/funder.js, global Funder) — loaded before app.js.
 app.get('/funder.js', sendStatic('funder.js', 'application/javascript'));
@@ -529,7 +553,10 @@ function safeErrorMessage(err) {
  * browser. One split/join over the serialized body. */
 function sendAppsScriptJson(res, data) {
   const text = JSON.stringify(data === undefined ? null : data);
-  res.type('application/json').send(redactSecrets(text, [PROXY_SECRET]));
+  // Compressed when the browser accepts it (getData is the largest answer
+  // the app receives). Redaction runs on the plain text, before compression.
+  res.type('application/json');
+  sendCompressedText(res.req, res, redactSecrets(text, [PROXY_SECRET]));
 }
 
 /* Express middleware: refuse to proxy when PROXY_SECRET is unset

@@ -155,9 +155,13 @@
 // report — «חשבונית?» כן / לא (no default) and «על שם» in the «דווח תשלום»
 // form, shown on the receipts list and the «בקרת גבייה» card. app.js,
 // style.css and /payment-report-rules.js changed. /api/ stays network-only.
-// v38 → v39: perf (PR #149, built as v18, rebased) — loadAll starts getData,
-// getPayments and getCredits together. app.js changed — evict v38. /api/
-// stays network-only.
+// v38 → v39: perf (CHANGELOG-dashboard-perf.md; built as v18 in PR #149,
+// rebased). index.html now links each JS/CSS file as `<file>?v=<its content
+// hash>`; such a URL is served 'cache-first-hashed' (exact URL, no
+// ignoreSearch — a new hash is a cache miss, so a deploy is never pinned),
+// and older hashes of the same file are pruned. Unversioned requests stay
+// network-first. app.js (the three reads start together) changed — evict
+// v38. /api/ stays network-only.
 var CACHE_VERSION = 'v39';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
@@ -182,7 +186,24 @@ var PRECACHE_URLS = [
  *                     deploy is picked up immediately; cache is an OFFLINE-only
  *                     fallback. This is what fixes the stale-bundle pin.
  *   'cache-first'   — versioned-by-filename assets (icons, manifest).
+ *   'cache-first-hashed' — the JS/CSS bundle at `?v=<12-hex content hash>`
+ *                     (what index.html links): those bytes can never change
+ *                     under that URL, so the cached copy is served without a
+ *                     network round trip. Matched by EXACT url.
  *   'network'       — everything else: pass through to the network. */
+/* The JS/CSS files index.html links with a content hash (server.js ASSETS). */
+var BUNDLE_PATHS = ['/app.js', '/style.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js'];
+
+/* True for `?v=<exactly 12 lowercase hex>` — the server's content hash. The
+ * old `?v=<BUILD_ID>` (digits-dash-base36) never matches. Pure. */
+function isContentHashUrl(url) {
+  try {
+    return /^[0-9a-f]{12}$/.test(new URL(url, 'http://localhost').searchParams.get('v') || '');
+  } catch (e) {
+    return false;
+  }
+}
+
 function cacheStrategy(url) {
   var path;
   try {
@@ -195,12 +216,13 @@ function cacheStrategy(url) {
   if (url.indexOf('sheets') !== -1) return 'network-only';
   if (path.indexOf('/api/') !== -1) return 'network-only';
 
-  // Shell + JS/CSS bundle: network-first (offline fallback only).
+  // Shell: network-first (offline fallback only).
   if (path === '/' || path === '/index.html') return 'network-first';
-  if (path === '/app.js' || path === '/style.css') return 'network-first';
-  if (path === '/payment-report-rules.js') return 'network-first';
-  if (path === '/funder.js') return 'network-first';
-  if (path === '/billing-control-rules.js') return 'network-first';
+
+  // JS/CSS bundle: cache-first at its content hash, network-first otherwise.
+  if (BUNDLE_PATHS.indexOf(path) !== -1) {
+    return isContentHashUrl(url) ? 'cache-first-hashed' : 'network-first';
+  }
 
   // Truly versioned-by-filename static assets: cache-first.
   if (path === '/manifest.json') return 'cache-first';
@@ -220,6 +242,8 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     cacheStrategy: cacheStrategy,
     shouldCache: shouldCache,
+    isContentHashUrl: isContentHashUrl,
+    cacheFirstHashed: cacheFirstHashed,
     CACHE_NAME: CACHE_NAME,
     CACHE_VERSION: CACHE_VERSION,
   };
@@ -335,6 +359,47 @@ function cacheFirst(req) {
   });
 }
 
+/* CACHE-FIRST BY EXACT URL for a content-hashed bundle file. A hit is served
+ * with no network at all. A miss fetches, stores, and deletes every OTHER
+ * cached copy of the same path (an older hash), so the cache holds one copy
+ * per file no matter how many deploys happen within one CACHE_VERSION.
+ * Offline with a miss: the last copy of that path (ignoreSearch), else
+ * Response.error(). Always resolves to a Response. */
+function cacheFirstHashed(req) {
+  var url = req.url || String(req);
+  return caches.open(CACHE_NAME).then(function (cache) {
+    return cache.match(req, { ignoreVary: true }).then(function (hit) {
+      if (hit) return hit;
+      return fetch(req).then(function (res) {
+        if (res && res.status === 200) {
+          var copy = res.clone();
+          cache.put(req, copy).then(function () {
+            return pruneOtherVersions(cache, url);
+          }).catch(function () { /* cache write is best-effort */ });
+        }
+        return res;
+      }, function () {
+        return cache.match(req, { ignoreSearch: true, ignoreVary: true }).then(function (old) {
+          return old || Response.error();
+        });
+      });
+    });
+  }).catch(function () {
+    return Response.error();
+  });
+}
+
+/* Delete cached entries with the same pathname as `url` but another query. */
+function pruneOtherVersions(cache, url) {
+  var keep = new URL(url, 'http://localhost');
+  return cache.keys().then(function (keys) {
+    return Promise.all(keys.map(function (k) {
+      var u = new URL(k.url, 'http://localhost');
+      return (u.pathname === keep.pathname && u.search !== keep.search) ? cache.delete(k) : false;
+    }));
+  });
+}
+
 self.addEventListener('fetch', function (event) {
   var req = event.request;
 
@@ -358,6 +423,11 @@ self.addEventListener('fetch', function (event) {
 
   if (strategy === 'cache-first') {
     event.respondWith(cacheFirst(req));
+    return;
+  }
+
+  if (strategy === 'cache-first-hashed') {
+    event.respondWith(cacheFirstHashed(req));
     return;
   }
 });
