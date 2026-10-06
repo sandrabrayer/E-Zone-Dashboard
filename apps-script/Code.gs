@@ -1187,6 +1187,100 @@ const CONTROLLER_ACTIONS = ['billingControlQueue', 'confirmPayment', 'debtAging'
   'getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'cleanupReport'];
 const CONTROLLER_GETDATA_KEYS = ['ok', 'patients', 'billingOverrides'];
 const CONTROLLER_USER_IDS = ['ortal'];
+
+/* ===== Field allow-lists for the controller view (privacy fix, Sandra
+ * 2026-10-06; CHANGELOG-ortal-billing-access.md «Field allow-lists») =====
+ * Mirrors lib/finance-scope.js CONTROLLER_*_SCHEMA EXACTLY (a guard test pins
+ * the literals equal). Every row the controller view (Ortal) receives from
+ * getData, cleanupReport and refundPayoutForecast keeps ONLY the named
+ * fields, at every depth (projectBySchema_): no lead row, no notes, no phone,
+ * no source, no free-text reason. Grammar:
+ *   true          a primitive, or an array of primitives
+ *   ['a', 'b']    an array of rows, each cut to these fields
+ *   { $each: S }  an array, each element projected by S
+ *   { '*': S }    an object map, every value projected by S
+ *   { k: S, … }   an object, only these keys */
+const CONTROLLER_PATIENT_FIELDS = ['id', 'houseId', 'name', 'date', 'exitDate', 'status', 'pay', 'adv'];
+const CONTROLLER_OVERRIDE_FIELDS = ['id', 'patientId', 'month', 'amount', 'created', 'updatedBy'];
+const CONTROLLER_GETDATA_SCHEMA = {
+  ok: true, error: true, message: true,
+  patients: { '*': CONTROLLER_PATIENT_FIELDS },
+  billingOverrides: CONTROLLER_OVERRIDE_FIELDS,
+};
+const CONTROLLER_CLEANUP_SCHEMA = {
+  ok: true, error: true, message: true,
+  today: true, recordsCutoff: true, notAPatientExcluded: true, missingTabs: true, generatedAt: true,
+  counts: { names: true, gaps: true, detached: true, outsideStay: true, releasedNoExit: true, noEntryDate: true,
+    zeroAmount: true, leads: true, duplicates: true, credits: true, noFunder: true, probono: true },
+  sections: {
+    names: ['kind', 'houseId', 'name', 'recordedName', 'otherName', 'entryDate', 'otherEntryDate', 'proposal', 'confidence', 'via', 'why', 'refs'],
+    gaps: ['kind', 'houseId', 'name', 'status', 'entryDate', 'exitDate', 'start', 'end', 'due', 'expected', 'charged', 'received', 'balance',
+      'bucket', 'days', 'laterActivity', 'probablyEntryError'],
+    detached: ['kind', 'houseId', 'name', 'dueDate', 'amount', 'receivedByAsOf', 'candidate', 'candidateReason', 'refs'],
+    outsideStay: ['kind', 'houseId', 'name', 'status', 'start', 'entryDate', 'exitDate', 'amount', 'refs'],
+    releasedNoExit: ['kind', 'houseId', 'name', 'entryDate'],
+    noEntryDate: ['kind', 'houseId', 'name', 'status', 'paymentRows'],
+    zeroAmount: ['kind', 'houseId', 'name', 'status', 'entryDate', 'exitDate', 'cycles'],
+    leads: ['kind', 'houseId', 'name', 'stage', 'created', 'entryDate', 'advance', 'paymentName', 'dueDate', 'amount', 'reason', 'refs'],
+    duplicates: ['kind', 'houseId', 'name', 'names', 'dueDate', 'otherDueDate', 'amount', 'rule', 'refs'],
+    credits: ['kind', 'houseId', 'name', 'entryDate', 'exitDate', 'amount', 'payoutDate', 'rule', 'error'],
+    noFunder: ['kind', 'houseId', 'name', 'status', 'entryDate', 'funder'],
+    probono: ['kind', 'houseId', 'name', 'status', 'entryDate', 'exitDate', 'from', 'current', 'excludedCycles'],
+  },
+};
+const CONTROLLER_FORECAST_BY_HOUSE_ = ['houseId', 'count', 'total'];
+const CONTROLLER_FORECAST_SCHEMA = {
+  ok: true, error: true, message: true,
+  today: true, recordsCutoff: true, payoutDateIfDecidedToday: true, preCutoffExcludedCount: true, zeroByPolicyCount: true, generatedAt: true,
+  awaiting_decision: { count: true, total: true, byHouse: CONTROLLER_FORECAST_BY_HOUSE_,
+    byPayoutDate: { $each: { payoutDate: true, count: true, total: true,
+      rows: ['patientName', 'houseId', 'entryDate', 'exitDate', 'suggestedAmount', 'rule', 'payoutDate'] } } },
+  decided: { count: true, total: true, byHouse: CONTROLLER_FORECAST_BY_HOUSE_,
+    byPayoutDate: { $each: { payoutDate: true, count: true, total: true,
+      rows: ['creditId', 'creditType', 'patientName', 'houseId', 'amount', 'decidedDate', 'payoutDate', 'rule'] } } },
+  missing_payment_data: { count: true, rows: ['patientName', 'houseId', 'entryDate', 'exitDate'] },
+  unresolved: { count: true, rows: ['patientName', 'houseId', 'entryDate', 'exitDate', 'error'] },
+};
+
+function isPrimitive_(v) {
+  return v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
+}
+
+/* `value` cut to `schema` (the grammar above); undefined = drop. PURE.
+ * lib/finance-scope.js projectBySchema is the same function. */
+function projectBySchema_(value, schema) {
+  if (schema === true) {
+    if (isPrimitive_(value)) return value;
+    if (Array.isArray(value) && value.every(isPrimitive_)) return value.slice();
+    return undefined;
+  }
+  if (Array.isArray(schema)) {
+    if (!Array.isArray(value)) return undefined;
+    const row = {};
+    schema.forEach(function (k) { row[k] = true; });
+    return value.map(function (v) { return projectBySchema_(v, row); }).filter(function (v) { return v !== undefined; });
+  }
+  if (!schema || typeof schema !== 'object') return undefined;
+  if (schema.$each) {
+    if (!Array.isArray(value)) return undefined;
+    return value.map(function (v) { return projectBySchema_(v, schema.$each); }).filter(function (v) { return v !== undefined; });
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const out = {};
+  Object.keys(value).forEach(function (k) {
+    const sub = Object.prototype.hasOwnProperty.call(schema, k) ? schema[k] : schema['*'];
+    if (sub === undefined) return;
+    const v = projectBySchema_(value[k], sub);
+    if (v !== undefined) out[k] = v;
+  });
+  return out;
+}
+
+/* The controller view's answer, cut by its schema when the actor is the
+ * controller view (by id — isControllerActor_); anyone else: unchanged. */
+function controllerProjected_(params, data, schema) {
+  return isControllerActor_(actingUser_(params)) ? projectBySchema_(data, schema) : data;
+}
 const BILLING_CONTROL_FORBIDDEN_MESSAGE = 'אין הרשאה לפעולה זו';
 /* getData keys only billing reads — omitted for a restricted actor. */
 const GETDATA_FINANCE_KEYS = ['billingOverrides'];
@@ -1605,11 +1699,13 @@ function handle_(params) {
     // gated by PROXY_SECRET like every non-OPEN_ACTIONS action.
     if (action === 'suggestRefunds') return jsonOut_(suggestRefunds_(params));
     // Payout forecast for the bookkeeper: READ-ONLY, gated by PROXY_SECRET.
-    if (action === 'refundPayoutForecast') return jsonOut_(refundPayoutForecast_());
+    // The controller view gets both «גבייה» reads cut to their field
+    // allow-lists (no lead phone / notes, no free-text reason).
+    if (action === 'refundPayoutForecast') return jsonOut_(controllerProjected_(params, refundPayoutForecast_(), CONTROLLER_FORECAST_SCHEMA));
     // Debt aging as of a date: READ-ONLY, gated by PROXY_SECRET.
     if (action === 'debtAging') return jsonOut_(debtAgingAction_(params));
     // The data-cleanup workbook («ייצוא רשימת תיקונים»): READ-ONLY, gated by PROXY_SECRET.
-    if (action === 'cleanupReport') return jsonOut_(cleanupReportAction_());
+    if (action === 'cleanupReport') return jsonOut_(controllerProjected_(params, cleanupReportAction_(), CONTROLLER_CLEANUP_SCHEMA));
     if (action === 'saveCredit') {
       return jsonOut_(upsertCredit_(parseJsonParam_(params.credit), requestUser_(params)));
     }
@@ -2361,15 +2457,17 @@ function getDataForActor_(params) {
   return out;
 }
 
-/* getData as the controller view sees it: CONTROLLER_GETDATA_KEYS only
- * (billingOverrides only with billingControl). PURE. */
+/* getData as the controller view sees it: CONTROLLER_GETDATA_KEYS only, and
+ * every row cut to its FIELD allow-list (CONTROLLER_GETDATA_SCHEMA: patients
+ * → CONTROLLER_PATIENT_FIELDS, overrides → CONTROLLER_OVERRIDE_FIELDS);
+ * billingOverrides only with billingControl. PURE. */
 function controllerGetData_(data, billingControl) {
-  const out = {};
+  const keys = {};
   CONTROLLER_GETDATA_KEYS.forEach(function (k) {
     if (k === 'billingOverrides' && billingControl !== true) return;
-    if (data && Object.prototype.hasOwnProperty.call(data, k)) out[k] = data[k];
+    if (data && Object.prototype.hasOwnProperty.call(data, k)) keys[k] = data[k];
   });
-  return out;
+  return projectBySchema_(keys, CONTROLLER_GETDATA_SCHEMA);
 }
 
 function getData_() {
