@@ -14,7 +14,8 @@
  *   - the page: the due list, «יתרות פתוחות» and the renewal / overdue
  *     alerts skip a row whose patient is pro-bono on its date; the report
  *     form never prefills pro-bono;
- *   - Ortal's digest skips a pro-bono patient's rows;
+ *   - Ortal's digest is NOT affected: every payment received is listed,
+ *     pro-bono or not (money received is always reported);
  *   - a payment for a pro-bono patient is allowed with an explicit funder;
  *     the savePayment fill path refuses (funder_probono_explicit);
  *   - the cleanup workbook's «מטופלי פרו-בונו» tab;
@@ -189,7 +190,7 @@ test('invariant: the five funders + unset still sum to the totals; the pro-bono 
 
 /* ============================ Ortal's digest ============================ */
 
-test('digest: a pro-bono patient\'s rows are skipped (by the row\'s day); others stay; no Funders rows → nothing skipped', () => {
+test('digest: money received is ALWAYS reported — a pro-bono patient\'s payments stay in Ortal\'s email, whatever the funder', () => {
   const at = (iso) => iso + 'T10:00:00+03:00';
   const rows = [
     { id: 'a1', patientUid: 'id-avi', patientName: 'אבי בדיקה', houseId: 'ramot', dueDate: '2026-09-10', amount: 100, amountPaid: 100, status: 'paid', chargedAt: at('2026-09-28') },
@@ -198,13 +199,29 @@ test('digest: a pro-bono patient\'s rows are skipped (by the row\'s day); others
     { id: 'b1', patientUid: 'id-bat', patientName: 'בת בדיקה', houseId: 'ramot', dueDate: '2026-09-20', amount: 400, amountPaid: 400, status: 'paid', chargedAt: at('2026-09-28') },
   ];
   const since = Date.parse('2026-09-27T00:00:00+03:00'), until = Date.parse('2026-09-29T00:00:00+03:00');
+  const ALL = ['אבי בדיקה:100', 'בת בדיקה:400', 'גל בדיקה:200', 'גל בדיקה:300'];
   const names = (out) => plain(out).map((r) => r.patientName + ':' + r.amount).sort();
-  assert.deepEqual(names(GS.sandbox.digestSelect_(rows, since, until, {}, HIST)), ['בת בדיקה:400', 'גל בדיקה:200'],
-    'Avi (pro-bono) and Gal\'s September row out; Gal\'s July money (private then) stays');
-  assert.deepEqual(names(GS.sandbox.digestSelect_(rows, since, until, {})).length, 4, 'no Funders rows → unchanged');
-  assert.deepEqual(names(GS.sandbox.digestSelect_(rows, since, until, {}, [])).length, 4);
-  // digestBuild_ reads the Funders tab itself
-  assert.ok(/funderRows = fundersRows_\(\)/.test(read('apps-script', 'Code.gs')));
+  // Through the real digestBuild_, with a Funders tab where Avi is pro-bono
+  // throughout and Gal from 05/08: every payment is still listed.
+  const g = loadGs();
+  const S = g.sandbox.__sheets;
+  const tab = (name, colsExpr, list) => {
+    const cols = Array.from(g.run(colsExpr));
+    S[name] = richSheet(name, cols);
+    list.forEach((o) => S[name].appendRow(cols.map((c) => (o[c] === undefined ? '' : o[c]))));
+  };
+  tab('Payments', 'PAYMENT_COLUMNS', rows);
+  tab('Funders', 'FUNDER_COLUMNS', HIST);
+  const props = { getProperty: (k) => (k === 'DIGEST_LAST_AT' ? '2026-09-27T00:00:00+03:00' : null) };
+  const built = g.sandbox.digestBuild_(props, new Date(until), true);
+  assert.deepEqual(names(built.rows), ALL, 'nobody is skipped for being pro-bono');
+  assert.deepEqual(names(GS.sandbox.digestSelect_(rows, since, until, {})), ALL);
+  // The digest never consults the Funders tab (pro-bono stays out of it).
+  const src = read('apps-script', 'Code.gs');
+  for (const fn of ['digestSelect_', 'digestBuild_']) {
+    const body = src.slice(src.indexOf('function ' + fn + '('), src.indexOf('\n}\n', src.indexOf('function ' + fn + '(')));
+    assert.ok(!/fundersRows_|probono|FUNDER_PROBONO/i.test(body), fn + ' knows nothing about funders');
+  }
 });
 
 /* ============================ the cleanup workbook ============================ */

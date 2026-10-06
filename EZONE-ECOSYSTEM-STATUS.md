@@ -792,8 +792,9 @@ Detail: `CHANGELOG-funder-probono.md`. Apps Script **and** Railway.
   renewal / «ממתינים לתשלום» alerts (finance view only). The funder × house
   strip always shows a ₪0 «פרו-בונו» row. Occupancy, cards and meetings are
   unchanged.
-- **Ortal's daily email** skips a pro-bono patient's payments; the
-  «ממתינים לאימות» count and «בקרת גבייה» are unchanged.
+- **Ortal's daily email is unchanged:** every payment received is listed,
+  pro-bono or not (money received is always reported). Pro-bono exclusion
+  lives only in `debtAging_`, the due list, «יתרות פתוחות» and the alerts.
 - A payment report for a pro-bono patient needs an **explicit** funder: the
   form never prefills pro-bono; the savePayment fill path refuses
   `funder_probono_explicit`.
