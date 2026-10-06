@@ -18,6 +18,7 @@ const HTML_SRC = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8'
 const CSS_SRC = fs.readFileSync(path.join(ROOT, 'public', 'style.css'), 'utf8');
 const SW_SRC = fs.readFileSync(path.join(ROOT, 'public', 'sw.js'), 'utf8');
 const SERVER_SRC = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+const FUNDER_SRC = fs.readFileSync(path.join(ROOT, 'public', 'funder.js'), 'utf8');
 const plain = (v) => JSON.parse(JSON.stringify(v));
 
 function loadApp() {
@@ -40,12 +41,13 @@ function loadApp() {
   vm.createContext(sandbox);
   vm.runInContext(PR_RULES_SRC, sandbox);
   vm.runInContext(RULES_SRC, sandbox);
+  vm.runInContext(FUNDER_SRC, sandbox);
   vm.runInContext(APP_SRC + `
     globalThis.__test = {
       get state() { return state; },
       normalizeReceipt, buildMonthlyRevenue, allowedScreens, resolveScreen, billingTabView, billingReadView,
       bcReceiptHtml, bcCardsHtml, bcStatusSelectHtml, bcPartialFormHtml, bcControlNoteHtml, bcRemainingText,
-      billingControlState, BC_ERRORS,
+      billingControlState, BC_ERRORS, isProbonoOn,
     };`, sandbox);
   return { app: sandbox.__test, sandbox };
 }
@@ -212,4 +214,23 @@ test('wiring: index.html section, CSS (read-only + RTL + mobile), the server bod
   assert.equal(v, '40');
   assert.notEqual(v, '17');
   assert.match(SW_SRC, /v39 → v40:/);
+});
+
+test('Ortal\'s read-only «גבייה»: a pro-bono patient is left out exactly as for Vered (the funder data is loaded and read for her)', () => {
+  const { app } = loadApp();
+  const p = { id: 'pt-1', houseId: 'arfoni', name: 'דנה כהן', date: '2026-07-15', status: 'active', pay: 25000 };
+  app.state.funders = [{ patientId: 'pt-1', funder: 'פרו-בונו', effectiveFrom: '2026-09-01', setBy: 'ורד', setAt: '2026-09-01T09:00:00+03:00' }];
+  // Vered (finance): pro-bono from September.
+  app.state.view = 'full'; app.state.finance = true; app.state.billingRead = false;
+  assert.equal(app.isProbonoOn(p, '2026-09-15'), true);
+  assert.equal(app.isProbonoOn(p, '2026-08-15'), false);
+  // Ortal (controller + billingRead): the same answer.
+  app.state.view = 'controller'; app.state.finance = false; app.state.billingRead = true;
+  assert.equal(app.isProbonoOn(p, '2026-09-15'), true);
+  assert.equal(app.isProbonoOn(p, '2026-08-15'), false);
+  // Shiran (restricted): no funder view at all.
+  app.state.view = 'restricted'; app.state.billingRead = false;
+  assert.equal(app.isProbonoOn(p, '2026-09-15'), false);
+  // loadBillingRead keeps the Funders rows from getPayments.
+  assert.match(APP_SRC, /async function loadBillingRead\(\)[\s\S]*?state\.funders = \(Array\.isArray\(p\.value\.funders\)/);
 });

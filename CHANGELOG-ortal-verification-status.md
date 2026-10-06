@@ -82,6 +82,13 @@ worker `CACHE_VERSION` **v39 → v40** (v39 is the deployed one, from #186).
   the fix-list export.
 - If `/api/me` says `billingRead` but the page was drawn without «גבייה»,
   the page reloads once (the server then serves the right body class).
+- **Pro-bono patients** (found while building #187's field allow-list):
+  - `loadBillingRead` keeps the Funders rows from `getPayments`;
+  - `isProbonoOn` also answers for `billingReadView()`.
+
+  Without this, Ortal's «גבייה» would have listed a pro-bono patient as
+  owing. The patient rows she receives are now cut to `id, houseId, name,
+  date, exitDate, status, pay, adv` (#187); the funder joins on `id`.
 
 **`index.html`:**
 - The «שולם חלקית» section (`#bc-partial`, `#bc-partial-count`,
@@ -110,8 +117,8 @@ server-side permissions are PR 1's and are unchanged.
 
 ## Tests
 
-**New: `test/ortal-verification-status.test.js`** (8 tests, app.js + the
-lib in a vm):
+**New: `test/ortal-verification-status.test.js`** (9 tests, app.js + the
+lib + funder.js in a vm):
 - **Status enum:** exactly שולם / שולם חלקית / לא שולם plus the blank
   option; the values are in `CONTROL_STATUSES`; every refusal code has
   Hebrew.
@@ -136,6 +143,12 @@ lib in a vm):
   - a restricted session never gets either.
 - **Wiring:** index.html, CSS (read-only, RTL, mobile), the body class, SW
   v40.
+- **Pro-bono in Ortal's read-only «גבייה»:**
+  - the same answer as for Vered, before and after the funder's start;
+  - none for a restricted session;
+  - `loadBillingRead` keeps the Funders rows.
+  - Two hand mutations — the old gate restored, and the funders not loaded —
+    each fail this test.
 
 **New: `test/ortal-verification-status-browser.test.js`.** Real Chromium at
 360px, with the real server.js and Code.gs.
@@ -177,8 +190,8 @@ or SW v39):
   - the body class.
 - `dashboard-perf-assets`: SW v40.
 
-**Full suite: 2272 / 2272 passing** (2263 after PR 1, plus 9), every browser
-test running.
+**Full suite: 2278 / 2278 passing** (2268 after PR 1, plus 10), every
+browser test running.
 
 ---
 

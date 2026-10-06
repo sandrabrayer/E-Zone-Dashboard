@@ -1707,6 +1707,8 @@ async function loadBillingRead() {
   if (p.ok && p.value) {
     state.payments = (Array.isArray(p.value.payments) ? p.value.payments : []).map(normalizePayment).filter(x => x.id);
     state.receipts = (Array.isArray(p.value.receipts) ? p.value.receipts : []).map(normalizeReceipt).filter(r => r.id);
+    // The Funders rows: pro-bono cycles are not debt (isProbonoOn).
+    state.funders = (Array.isArray(p.value.funders) ? p.value.funders : []).map(normalizeFunderRow).filter(f => f.patientId);
   }
   if (c.ok && c.value) state.credits = (Array.isArray(c.value.credits) ? c.value.credits : []).map(normalizeCredit).filter(x => x.id);
   if (!d.ok) showError('טעינת «גבייה» נכשלה — ' + ((d.error && d.error.message) || 'שגיאה'));
@@ -8036,7 +8038,9 @@ function isProbonoLabel(label) {
  * restricted session holds no funders and sees no billing). Such a row is
  * not owed, so the due list, «יתרות פתוחות» and the alerts skip it. */
 function isProbonoOn(patient, dayISO) {
-  if (!funderView() || !patient) return false;
+  // Ortal's read-only «גבייה» (billingReadView) must leave pro-bono cycles
+  // out exactly like Vered's — the funder data rides getPayments for her too.
+  if (!(funderView() || (billingReadView() && !!funderLib())) || !patient) return false;
   return patientFunderKey(patient, state.funders, todayISO(), isoDate(dayISO) || todayISO()) === FUNDER_PROBONO_KEY;
 }
 
