@@ -162,7 +162,9 @@
 // and older hashes of the same file are pruned. Unversioned requests stay
 // network-first. app.js (the three reads start together) changed — evict
 // v38. /api/ stays network-only.
-var CACHE_VERSION = 'v39';
+// v39 → v40: «בקרת גבייה» status dropdown, partial amount, remaining
+// balance, the note; Ortal reads «גבייה» (CHANGELOG-ortal-verification-status.md).
+var CACHE_VERSION = 'v40';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

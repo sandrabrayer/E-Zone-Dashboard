@@ -746,6 +746,15 @@ Phase 4 of `docs/billing-control-plan.md` is complete.
 - Only confirmed money reduces the tab's open debt. Shared revenue rules
   and Outpatient are unchanged.
 
+**UI (`CHANGELOG-ortal-verification-status.md`, SW v40):**
+
+- A status dropdown on every «בקרת גבייה» row.
+- «שולם חלקית»: an amount field with the remaining balance shown live, its
+  own list, and an «יתרה פתוחה» card.
+- «+ הערה» on every row.
+- Ortal gets a read-only «גבייה» tab
+  (`<body class="view-controller view-billing-read">`).
+
 - **Ortal logs in** (`lib/users.js`: `ortal` active, roles `['controller']`
   only). Her session is the **controller view**: the «בקרת גבייה» tab and
   logout, nothing else. server.js refuses every other `/api/sheets` action
