@@ -154,8 +154,16 @@ function managerPhones_() {
   const out = {};
   var props = null;
   try { props = PropertiesService.getScriptProperties(); } catch (_) { props = null; }
+  // ONE getProperties() round trip instead of one getProperty() per manager
+  // (this runs on every dashboard load). Same override rule either way; a
+  // store without getProperties, or one that throws, falls back per key.
+  var all = null;
+  if (props && typeof props.getProperties === 'function') {
+    try { all = props.getProperties() || null; } catch (_) { all = null; }
+  }
   Object.keys(MANAGER_PHONES).forEach(function (name) {
-    var override = props ? props.getProperty('MANAGER_PHONE_' + name) : null;
+    var key = 'MANAGER_PHONE_' + name;
+    var override = all ? all[key] : (props ? props.getProperty(key) : null);
     out[name] = (override && String(override).trim()) || MANAGER_PHONES[name];
   });
   return out;
@@ -982,6 +990,15 @@ const REPAIR_PLAN_COLUMNS = ['sheet', 'row', 'column', 'newValue', 'action', 'ap
 
 /* ===== Entry points ===== */
 
+/* The handle_ actions that can write the Patients sheet: after each one,
+ * handle_ drops the read caches built from that sheet (invalidateReadCaches_). */
+const PATIENTS_WRITE_ACTIONS = [
+  'saveAll', 'deletePatientRow', 'dischargePatient', 'restorePatient', 'restorePatientToActive',
+  // Coordinators roster (#177): writes exitDate/status only — the patient key
+  // set is unchanged, but a write to Patients clears the lookup all the same.
+  'recordDischargeFromCoordinators',
+];
+
 function doGet(e) {
   return gatedEntry_(e, 'GET');
 }
@@ -1472,9 +1489,11 @@ function handle_(params) {
       return jsonOut_(res);
     }
     if (action === 'saveAll') {
+      const perf = perfStart_('saveAll');
       const leads    = parseJsonParam_(params.leads);
       const patients = parseJsonParam_(params.patients);
       const res = saveAll_(leads, patients, requestUser_(params));
+      perfLap_(perf, 'save');
       // The digest is the active-resident population, which an admission or a
       // patient status/house change (both ride saveAll's patients payload)
       // mutates; lead edits can too. Refresh when either bucket is present.
@@ -1483,6 +1502,9 @@ function handle_(params) {
           (patients && typeof patients === 'object' && Object.keys(patients).length > 0)) {
         refreshDigestBestEffort_();
       }
+      perfLap_(perf, 'roster');
+      perfEnd_(perf, 'leads=' + (Array.isArray(leads) ? leads.length : 0) +
+        ' houses=' + (patients && typeof patients === 'object' ? Object.keys(patients).length : 0));
       return jsonOut_(res);
     }
     if (action === 'getPayments') return jsonOut_(getPayments_());
@@ -1633,6 +1655,11 @@ function handle_(params) {
     return jsonOut_({ ok: false, error: 'unknown_action', action: action || null });
   } catch (err) {
     return jsonOut_({ ok: false, error: 'exception', message: String((err && err.message) || err) });
+  } finally {
+    // AFTER (never before) a request that can change the Patients sheet —
+    // also when it threw part-way — drop the cached lookups built from it.
+    // Fail-soft and returns nothing, so the response above is untouched.
+    if (params && PATIENTS_WRITE_ACTIONS.indexOf(params.action) >= 0) invalidateReadCaches_();
   }
 }
 
@@ -1974,9 +2001,21 @@ function forceColumnsText_(sh, columns, names) {
 }
 
 function readSheet_(sh, columns) {
+  return rowsFromValues_(sheetValues_(sh, columns), columns);
+}
+
+/* The data block of `sh` (row 2 down, `columns.length` wide) as ONE getValues —
+ * the single read a request needs per sheet. [] when there are no data rows. */
+function sheetValues_(sh, columns) {
   const lastRow = sh.getLastRow();
   if (lastRow < 2) return [];
-  const values = sh.getRange(2, 1, lastRow - 1, columns.length).getValues();
+  return sh.getRange(2, 1, lastRow - 1, columns.length).getValues();
+}
+
+/* readSheet_'s row objects from values already read (fully-empty rows
+ * skipped), so a request that also pre-scans those values reads the sheet
+ * once, not twice. */
+function rowsFromValues_(values, columns) {
   const rows = [];
   for (let i = 0; i < values.length; i++) {
     const row = values[i];
@@ -1990,6 +2029,122 @@ function readSheet_(sh, columns) {
     rows.push(obj);
   }
   return rows;
+}
+
+/* A sheet opened for a READ. getOrCreateSheet_ also re-applies whole-column
+ * text formats (and can extend the header) — WRITES, on every call. Those
+ * guards protect values being written, so every write path still runs them;
+ * a read gains nothing from them. Only a missing sheet, or one whose header is
+ * shorter than the columns the app maps, is handed to getOrCreateSheet_ (the
+ * one-time setup a first read has always done). */
+function sheetForRead_(name, headers) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  if (!sh || sh.getLastColumn() < headers.length) return getOrCreateSheet_(name, headers);
+  return sh;
+}
+
+/* Does any CONTENT row of `values` have a blank `column` cell? (Fully-empty
+ * rows are ignored, as every backfill ignores them.) Pure. */
+function blankInContentRows_(values, columns, column) {
+  const idx = columns.indexOf(column);
+  if (idx < 0) return false;
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    if (String(row[idx] == null ? '' : row[idx]).trim() !== '') continue;
+    for (let j = 0; j < row.length; j++) {
+      if (row[j] !== '' && row[j] !== null) return true;
+    }
+  }
+  return false;
+}
+
+/* ===== Per-request timing (Executions log only) =====
+ * One Logger line per request, e.g.
+ *   [perf] getData_ 812ms | open=31 read=402 backfill=0 shape=77 phones=12 | leads=250 patients=90
+ * Milliseconds and row counts only: no names, no values, never in a response,
+ * never stored. Read it in Apps Script → Executions → the request's log. */
+function perfStart_(label) {
+  const now = Date.now();
+  return { label: label, t0: now, last: now, laps: [] };
+}
+function perfLap_(p, name) {
+  const now = Date.now();
+  p.laps.push(name + '=' + (now - p.last));
+  p.last = now;
+}
+function perfEnd_(p, extra) {
+  try {
+    Logger.log('[perf] ' + p.label + ' ' + (Date.now() - p.t0) + 'ms' +
+      (p.laps.length ? ' | ' + p.laps.join(' ') : '') + (extra ? ' | ' + extra : ''));
+  } catch (_) { /* timing must never break a request */ }
+}
+
+/* ===== Script cache for read-only lookups =====
+ * CacheService's script cache, shared by every execution of this script.
+ * Only LOOKUPS whose staleness is harmless go here — never a response, never
+ * a value that is written back — and only as fastHash_ values, so no patient
+ * name is ever copied into the cache. Each key is either re-recorded by the
+ * write that changes it or removed by invalidateReadCaches_() after every
+ * write action (handle_), and always has a TTL. Everything is fail-soft: no
+ * cache service (absent, or refused by the deployment), a failed get/put or
+ * an oversized value simply means "not cached", i.e. exactly the behaviour
+ * before the cache existed. */
+const READ_CACHE_PATIENT_KEYS = 'read:patientKeyHashes:v1';
+const READ_CACHE_PATIENT_KEYS_TTL = 600;        // seconds
+const READ_CACHE_MAX_CHARS = 90000;             // CacheService caps a value at 100 KB
+
+/* 53-bit string hash (cyrb53, public domain), as base-36 text. Pure and
+ * deterministic, no service call. NOT a security primitive: it only keeps
+ * names out of the cache and values short. A collision can only make a
+ * pre-scan say "look closer" (or, for the digest, skip one redundant write
+ * until the hourly rebuild) — never change a stored cell. */
+function fastHash_(str) {
+  const s = String(str == null ? '' : str);
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+function scriptCache_() {
+  try { return CacheService.getScriptCache(); } catch (_) { return null; }
+}
+function cacheGetJson_(key) {
+  const c = scriptCache_();
+  if (!c) return null;
+  try {
+    const s = c.get(key);
+    return s ? JSON.parse(s) : null;
+  } catch (_) { return null; }
+}
+function cachePutJson_(key, value, ttlSeconds) {
+  const c = scriptCache_();
+  if (!c) return false;
+  try {
+    const s = JSON.stringify(value);
+    if (s.length > READ_CACHE_MAX_CHARS) return false;
+    c.put(key, s, ttlSeconds);
+    return true;
+  } catch (_) { return false; }
+}
+
+function cacheRemove_(key) {
+  const c = scriptCache_();
+  if (!c) return;
+  try { c.remove(key); } catch (_) { /* fail-soft */ }
+}
+
+/* Called after every request that can change the Patients sheet (handle_) and
+ * after a Patients id backfill: the next reader recomputes the lookups. */
+function invalidateReadCaches_() {
+  cacheRemove_(READ_CACHE_PATIENT_KEYS);
 }
 
 function objectToRow_(obj, columns) {
@@ -2093,15 +2248,20 @@ function sheetSerialToISODate_(n) {
  * unrecognized returns '' rather than emitting a bogus time. */
 function asISOTime_(v) {
   if (v === undefined || v === null || v === '') return '';
-  const tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || 'Asia/Jerusalem';
+  // The timezone lookup is a spreadsheet round trip; only the Date and the
+  // timestamp-string branches need it, so the 'HH:MM' fast path (every clean
+  // cell, i.e. almost every lead on every load) never pays for it.
+  const tz = function () {
+    return SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || 'Asia/Jerusalem';
+  };
   if (Object.prototype.toString.call(v) === '[object Date]') {
-    return Utilities.formatDate(v, tz, 'HH:mm');
+    return Utilities.formatDate(v, tz(), 'HH:mm');
   }
   const s = String(v);
   const m = s.match(/^(\d{2}):(\d{2})/);
   if (m) return m[1] + ':' + m[2];
   const d = new Date(s);
-  return isNaN(d) ? '' : Utilities.formatDate(d, tz, 'HH:mm');
+  return isNaN(d) ? '' : Utilities.formatDate(d, tz(), 'HH:mm');
 }
 
 /* Every date-like column name any row-level writer (upsertRowById_) may meet:
@@ -2158,14 +2318,28 @@ function getDataForActor_(params) {
 }
 
 function getData_() {
-  const leadsSh      = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
-  const patientsSh   = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
-  const irrelevantSh = getOrCreateSheet_(IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS);
-  const removedSh    = getOrCreateSheet_(REMOVED_LEADS_SHEET, REMOVED_LEAD_COLUMNS);
-  const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
-  const overridesSh  = getOrCreateSheet_(BILLING_OVERRIDES_SHEET, BILLING_OVERRIDE_COLUMNS);
+  const perf = perfStart_('getData_');
+  // READ accessors: no whole-column re-formatting and no header writes on a
+  // load (sheetForRead_). Every write path still runs getOrCreateSheet_.
+  const leadsSh      = sheetForRead_(LEADS_SHEET, LEAD_COLUMNS);
+  const patientsSh   = sheetForRead_(PATIENTS_SHEET, PATIENT_COLUMNS);
+  const irrelevantSh = sheetForRead_(IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS);
+  const removedSh    = sheetForRead_(REMOVED_LEADS_SHEET, REMOVED_LEAD_COLUMNS);
+  const dischargedSh = sheetForRead_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
+  const overridesSh  = sheetForRead_(BILLING_OVERRIDES_SHEET, BILLING_OVERRIDE_COLUMNS);
+  perfLap_(perf, 'open');
 
-  // Heal blank id cells BEFORE reading, so the ids returned to the client are
+  // ONE getValues per sheet: the id-backfill pre-scans below look at these
+  // same values instead of reading each sheet a second time.
+  let leadValues      = sheetValues_(leadsSh, LEAD_COLUMNS);
+  let irrelevantValues = sheetValues_(irrelevantSh, IRRELEVANT_LEAD_COLUMNS);
+  let patientValues   = sheetValues_(patientsSh, PATIENT_COLUMNS);
+  const removedValues    = sheetValues_(removedSh, REMOVED_LEAD_COLUMNS);
+  const dischargedValues = sheetValues_(dischargedSh, DISCHARGED_PATIENT_COLUMNS);
+  const overrideValues   = sheetValues_(overridesSh, BILLING_OVERRIDE_COLUMNS);
+  perfLap_(perf, 'read');
+
+  // Heal blank id cells BEFORE answering, so the ids returned to the client are
   // the same ones now stored on the sheet — client and sheet agree on the
   // delete/update key. Only the two sheets that are targets of delete-by-id are
   // healed: Leads (removeLead_ / moveLeadIrrelevant_), the irrelevant-leads
@@ -2175,12 +2349,24 @@ function getData_() {
   // lands) and takes the script lock so it cannot race a saveAll rewrite;
   // with every id present it performs ZERO writes and takes no lock. The
   // removed and discharged sheets are written with client-stamped ids and
-  // are not delete-by-id targets, so they need no backfill.
-  backfillMissingIds_(leadsSh, LEAD_COLUMNS);
-  backfillMissingIds_(irrelevantSh, IRRELEVANT_LEAD_COLUMNS);
-  backfillPatientIdsLocked_(patientsSh);
+  // are not delete-by-id targets, so they need no backfill. A sheet that WAS
+  // healed is read again, so the answer carries the stored ids.
+  if (blankInContentRows_(leadValues, LEAD_COLUMNS, 'id')) {
+    backfillMissingIds_(leadsSh, LEAD_COLUMNS);
+    leadValues = sheetValues_(leadsSh, LEAD_COLUMNS);
+  }
+  if (blankInContentRows_(irrelevantValues, IRRELEVANT_LEAD_COLUMNS, 'id')) {
+    backfillMissingIds_(irrelevantSh, IRRELEVANT_LEAD_COLUMNS);
+    irrelevantValues = sheetValues_(irrelevantSh, IRRELEVANT_LEAD_COLUMNS);
+  }
+  if (blankInContentRows_(patientValues, PATIENT_COLUMNS, 'id')) {
+    backfillPatientIdsLocked_(patientsSh);
+    patientValues = sheetValues_(patientsSh, PATIENT_COLUMNS);
+    invalidateReadCaches_();   // new ids → the patient-uid lookup is stale
+  }
+  perfLap_(perf, 'backfill');
 
-  const leads               = readSheet_(leadsSh, LEAD_COLUMNS);
+  const leads               = rowsFromValues_(leadValues, LEAD_COLUMNS);
   // Normalize visitTime on the way out: a legacy cell coerced to a time-typed
   // value (before the text-format fix in mergeLeads_) reads back from getValues
   // as a Date; asISOTime_ converts it to 'HH:MM' in the SPREADSHEET timezone so
@@ -2189,11 +2375,11 @@ function getData_() {
   for (let i = 0; i < leads.length; i++) {
     leads[i].visitTime = asISOTime_(leads[i].visitTime);
   }
-  const patientRows         = readSheet_(patientsSh, PATIENT_COLUMNS);
-  const irrelevantLeads     = readSheet_(irrelevantSh, IRRELEVANT_LEAD_COLUMNS);
-  const removedLeads        = readSheet_(removedSh, REMOVED_LEAD_COLUMNS);
-  const dischargedPatients  = readSheet_(dischargedSh, DISCHARGED_PATIENT_COLUMNS);
-  const billingOverrides    = readSheet_(overridesSh, BILLING_OVERRIDE_COLUMNS);
+  const patientRows         = rowsFromValues_(patientValues, PATIENT_COLUMNS);
+  const irrelevantLeads     = rowsFromValues_(irrelevantValues, IRRELEVANT_LEAD_COLUMNS);
+  const removedLeads        = rowsFromValues_(removedValues, REMOVED_LEAD_COLUMNS);
+  const dischargedPatients  = rowsFromValues_(dischargedValues, DISCHARGED_PATIENT_COLUMNS);
+  const billingOverrides    = rowsFromValues_(overrideValues, BILLING_OVERRIDE_COLUMNS);
   // Normalize the patient dates on the way out — same treatment visitTime
   // gets above. A legacy date-typed (or serial-numbered) exitDate / entry
   // date cell would otherwise serialize to the client as a UTC timestamp
@@ -2212,6 +2398,11 @@ function getData_() {
     if (!patients[hid]) patients[hid] = [];
     patients[hid].push(p);
   }
+  perfLap_(perf, 'shape');
+
+  const phones = managerPhones_();
+  perfLap_(perf, 'phones');
+  perfEnd_(perf, 'leads=' + leads.length + ' patients=' + patientRows.length);
 
   const cm = currentManagers_();
 
@@ -2224,7 +2415,7 @@ function getData_() {
     dischargedPatients: dischargedPatients,
     billingOverrides: billingOverrides,
     houseManagers: HOUSE_MANAGERS,
-    managerPhones: managerPhones_(),
+    managerPhones: phones,
     // Additive (append-only contract): who manages each house TODAY. Read
     // only — see currentManagers_. houseManagers above is unchanged for every
     // other consumer.
@@ -2515,8 +2706,10 @@ function mergeLeads_(leads) {
   // without re-querying the sheet.
   const existingById = {};
   let kept = [];
+  let before = [];   // the sheet as read, untouched by the canonicalization below
   if (lastRow > 1) {
     const values = sh.getRange(2, 1, lastRow - 1, LEAD_COLUMNS.length).getValues();
+    before = values.map(function (row) { return row.slice(); });
     for (let i = 0; i < values.length; i++) {
       const row = values[i];
       const rowId = String(row[idColIdx] || '');
@@ -2581,6 +2774,12 @@ function mergeLeads_(leads) {
     return row;
   });
 
+  // Every save sends EVERY lead, so a save that changed none of them (a
+  // patient edit) would still rewrite the whole sheet. When the final rows
+  // equal the sheet as read above, cell for cell, nothing is written (no
+  // format pass, no setValues, no trim) — the sheet already holds them.
+  if (leadRowsUnchanged_(before, finalRows)) return reportConflicts;
+
   // WRITE-THEN-TRIM (not clear-then-write): write the final row set first,
   // then clear only the surplus tail rows. A crash between the two steps can
   // leave duplicate tail rows (visible, fixable) but can no longer leave the
@@ -2598,6 +2797,23 @@ function mergeLeads_(leads) {
   }
 
   return reportConflicts;
+}
+
+/* Would writing `after` over `before` (both raw Leads row arrays, same
+ * column order) change the sheet? Same row count and every cell equal as
+ * text ('' for empty). A legacy Date cell always counts as a change: its text
+ * ('Tue Jun 02 2026 …') never equals the canonical 'YYYY-MM-DD' / 'HH:MM'
+ * the write stores, so the write still heals it. Pure. */
+function leadRowsUnchanged_(before, after) {
+  if (!before || before.length !== after.length) return false;
+  for (let i = 0; i < after.length; i++) {
+    const a = before[i], b = after[i];
+    if (!a || !b || a.length !== b.length) return false;
+    for (let c = 0; c < b.length; c++) {
+      if (String(a[c] == null ? '' : a[c]) !== String(b[c] == null ? '' : b[c])) return false;
+    }
+  }
+  return true;
 }
 
 /* The six lead columns owned by the manager reporting form (submitMeetingReport_
@@ -3731,7 +3947,9 @@ function backfillMissingUids_(sh, columns, column, prefix, max) {
  * by two patient rows is dropped from the index entirely: an ambiguous link is
  * worse than no link, and no link is what a blank patientUid means. */
 function patientUidIndexByKey_() {
-  const sh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+  // A READ of Patients (the fill writes Payments cells, never Patients), so
+  // no whole-column re-format of Patients here — see sheetForRead_.
+  const sh = sheetForRead_(PATIENTS_SHEET, PATIENT_COLUMNS);
   const rows = readSheet_(sh, PATIENT_COLUMNS);
   const index = {};
   const ambiguous = {};
@@ -3778,16 +3996,44 @@ function fillPaymentPatientUids_(sh, max) {
   return filled;
 }
 
+/* Which billing keys patientUidIndexByKey_() resolves — as a set of
+ * fastHash_ values, for the PRE-SCAN only, served from the script cache
+ * (READ_CACHE_PATIENT_KEYS) when present. A stale or colliding set can only
+ * change the pre-scan's yes/no — never a written cell: the fill runs under
+ * the lock against a FRESH patientUidIndexByKey_(). Removed by
+ * invalidateReadCaches_() after every write action, TTL-bounded otherwise. */
+function resolvablePatientKeyHashes_() {
+  let hashes = cacheGetJson_(READ_CACHE_PATIENT_KEYS);
+  if (!Array.isArray(hashes)) {
+    hashes = Object.keys(patientUidIndexByKey_()).map(fastHash_);
+    cachePutJson_(READ_CACHE_PATIENT_KEYS, hashes, READ_CACHE_PATIENT_KEYS_TTL);
+  }
+  const set = Object.create(null);
+  for (let i = 0; i < hashes.length; i++) set[hashes[i]] = true;
+  return set;
+}
+
 /* Does the Payments sheet have any content row missing a paymentUid, or any
- * with a resolvable-but-blank patientUid? Cheap pre-scan, no lock, no writes. */
-function paymentIdentityNeedsBackfill_(sh) {
+ * with a RESOLVABLE-but-blank patientUid? Cheap pre-scan, no lock, no writes.
+ *
+ * "Resolvable" is checked, not assumed: a payment whose billing triple
+ * matches no patient row (a patient long since discharged, renamed or
+ * deleted) keeps a blank patientUid forever — that is what blank means —
+ * and must not send EVERY read into the locked backfill only to fill
+ * nothing. The Patients index is built lazily, only when such a row exists.
+ * `values` (optional) are the Payments rows the caller already read, so the
+ * sheet is not read twice. */
+function paymentIdentityNeedsBackfill_(sh, values) {
   const pIdx = PAYMENT_COLUMNS.indexOf('paymentUid');
   const uIdx = PAYMENT_COLUMNS.indexOf('patientUid');
   const kIdx = PAYMENT_COLUMNS.indexOf('patientId');
   if (pIdx < 0 || uIdx < 0 || kIdx < 0) return false;
-  const lastRow = sh.getLastRow();
-  if (lastRow < 2) return false;
-  const values = sh.getRange(2, 1, lastRow - 1, PAYMENT_COLUMNS.length).getValues();
+  if (!values) {
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return false;
+    values = sh.getRange(2, 1, lastRow - 1, PAYMENT_COLUMNS.length).getValues();
+  }
+  let resolvable = null;
   for (let i = 0; i < values.length; i++) {
     const row = values[i];
     let hasContent = false;
@@ -3796,17 +4042,21 @@ function paymentIdentityNeedsBackfill_(sh) {
     }
     if (!hasContent) continue;
     if (String(row[pIdx] == null ? '' : row[pIdx]).trim() === '') return true;
-    if (String(row[uIdx] == null ? '' : row[uIdx]).trim() === '' &&
-        String(row[kIdx] == null ? '' : row[kIdx]).trim() !== '') return true;
+    if (String(row[uIdx] == null ? '' : row[uIdx]).trim() !== '') continue;
+    const key = String(row[kIdx] == null ? '' : row[kIdx]).trim();
+    if (!key) continue;
+    if (resolvable === null) resolvable = resolvablePatientKeyHashes_();
+    if (resolvable[fastHash_(key)]) return true;
   }
   return false;
 }
 
 /* Payments identity foundation — the Payments-sheet twin of
  * backfillPatientIdsLocked_ (PR #112), same contract to the letter.
+ * `values` (optional): the caller's own read of the sheet, for the pre-scan.
  * Returns { paymentUids, patientUids } counts. */
-function backfillPaymentIdentityLocked_(sh) {
-  if (!paymentIdentityNeedsBackfill_(sh)) return { paymentUids: 0, patientUids: 0 };
+function backfillPaymentIdentityLocked_(sh, values) {
+  if (!paymentIdentityNeedsBackfill_(sh, values)) return { paymentUids: 0, patientUids: 0 };
   const lock = LockService.getScriptLock();
   // Busy lock → skip this pass (nothing written); the next read retries.
   if (lock.tryLock(10000) !== true) return { paymentUids: 0, patientUids: 0 };
@@ -3823,24 +4073,20 @@ function backfillPaymentIdentityLocked_(sh) {
 /* Credits identity foundation — same contract again. Credit behaviour is
  * otherwise untouched: `id`, the edit rules, the stale-save refusal and every
  * figure stay exactly as they were. */
-function creditUidsNeedBackfill_(sh) {
+function creditUidsNeedBackfill_(sh, values) {
   const idx = CREDIT_COLUMNS.indexOf('creditUid');
   if (idx < 0) return false;
-  const lastRow = sh.getLastRow();
-  if (lastRow < 2) return false;
-  const values = sh.getRange(2, 1, lastRow - 1, CREDIT_COLUMNS.length).getValues();
-  for (let i = 0; i < values.length; i++) {
-    const row = values[i];
-    if (String(row[idx] == null ? '' : row[idx]).trim() !== '') continue;
-    for (let j = 0; j < row.length; j++) {
-      if (row[j] !== '' && row[j] !== null) return true;
-    }
+  if (!values) {
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return false;
+    values = sh.getRange(2, 1, lastRow - 1, CREDIT_COLUMNS.length).getValues();
   }
-  return false;
+  return blankInContentRows_(values, CREDIT_COLUMNS, 'creditUid');
 }
 
-function backfillCreditUidsLocked_(sh) {
-  if (!creditUidsNeedBackfill_(sh)) return 0;
+/* `values` (optional): the caller's own read of the sheet, for the pre-scan. */
+function backfillCreditUidsLocked_(sh, values) {
+  if (!creditUidsNeedBackfill_(sh, values)) return 0;
   const lock = LockService.getScriptLock();
   // Busy lock → skip this pass (nothing written); the next read retries.
   if (lock.tryLock(10000) !== true) return 0;
@@ -6391,22 +6637,32 @@ function coveragePeriodError_(startRaw, endRaw) {
 }
 
 function getPayments_() {
-  const sh = getOrCreateSheet_(PAYMENTS_SHEET, PAYMENT_COLUMNS);
-  /* Heal the stable-identity cells BEFORE reading, exactly as getData_ heals
+  const perf = perfStart_('getPayments_');
+  // READ accessor: no whole-column re-format on a load (sheetForRead_);
+  // savePayment still runs getOrCreateSheet_ before every write.
+  const sh = sheetForRead_(PAYMENTS_SHEET, PAYMENT_COLUMNS);
+  let values = sheetValues_(sh, PAYMENT_COLUMNS);   // the ONE read of Payments
+  perfLap_(perf, 'read');
+  /* Heal the stable-identity cells BEFORE answering, exactly as getData_ heals
    * the Patients `id` column: the uids handed to any reader are then the ones
    * now stored on the sheet. One-time (the first read after the columns land);
    * ZERO writes and no lock once every cell is filled. It mints identity only
-   * — it never touches an amount, a status or a charge stamp. */
-  backfillPaymentIdentityLocked_(sh);
+   * — it never touches an amount, a status or a charge stamp. The pre-scan
+   * runs over the values just read; only a sheet that was healed is read
+   * again, so the answer carries the stored uids. */
+  const healed = backfillPaymentIdentityLocked_(sh, values);
+  if (healed.paymentUids || healed.patientUids) values = sheetValues_(sh, PAYMENT_COLUMNS);
+  perfLap_(perf, 'backfill');
   /* Phase 3 PR 2: `payments` stays what every reader expects — one row per
    * CYCLE — with the money of each cycle that has receipts derived from them
    * (recomputeCycleFromReceipts_; a legacy cycle is returned untouched).
    * The receipts themselves ride a NEW key, each with the cycleId it pays
    * for ('' = unlinked), and `funders` carries the Funders tab (read-only,
    * never created here) for the patient card. */
-  const split = paymentRowsDerived_(readSheet_(sh, PAYMENT_COLUMNS));
+  const split = paymentRowsDerived_(rowsFromValues_(values, PAYMENT_COLUMNS));
   let funders = [];
   try { funders = fundersForClient_(fundersRows_()); } catch (_) { funders = []; }
+  perfEnd_(perf, 'payments=' + split.cycles.length + ' receipts=' + split.receipts.length);
   return { ok: true, payments: split.cycles, receipts: split.receipts, funders: funders };
 }
 
@@ -8294,9 +8550,16 @@ function fundersHistoryFor_(rows, patientId) {
 /* ===== Credits ledger ===== */
 
 function getCredits_() {
-  const sh = getOrCreateSheet_(CREDITS_SHEET, CREDIT_COLUMNS);
-  backfillCreditUidsLocked_(sh);   // same one-time, zero-writes-in-steady-state rule
-  return { ok: true, credits: readSheet_(sh, CREDIT_COLUMNS) };
+  const perf = perfStart_('getCredits_');
+  const sh = sheetForRead_(CREDITS_SHEET, CREDIT_COLUMNS);   // saveCredit re-formats before writing
+  let values = sheetValues_(sh, CREDIT_COLUMNS);             // the ONE read of Credits
+  perfLap_(perf, 'read');
+  // Same one-time, zero-writes-in-steady-state rule; re-read only if healed.
+  if (backfillCreditUidsLocked_(sh, values)) values = sheetValues_(sh, CREDIT_COLUMNS);
+  perfLap_(perf, 'backfill');
+  const credits = rowsFromValues_(values, CREDIT_COLUMNS);
+  perfEnd_(perf, 'credits=' + credits.length);
+  return { ok: true, credits: credits };
 }
 
 /* Deterministic credit id. Mirrors creditId() in app.js (display only there —
@@ -10875,7 +11138,10 @@ function occupancySnapshots_() {
  * discharge, or status change is reflected promptly, plus an hourly time-based
  * trigger as a backstop in case a mutation path is ever missed. The in-request
  * rebuild is fail-soft: a digest error can never break the primary read/write
- * path.
+ * path. It also recomputes the rows in full every time, but skips the WRITE
+ * when they equal what the digest already holds (most saves don't touch the
+ * active population) — `updatedAt` then keeps the time of the last write. The
+ * hourly backstop always writes, so `updatedAt` is never more than ~1h old.
  */
 const DIGEST_TAB                = 'ActivePatients';
 const DIGEST_COLUMNS            = ['house', 'patientName', 'patientId', 'updatedAt'];
@@ -10996,12 +11262,32 @@ function ensureDigestTab_(ss) {
   return sh;
 }
 
+/* What the digest tab holds, as one fastHash_ of the target spreadsheet id
+ * and every row's house/patientName/patientId — updatedAt excluded, it is the
+ * rebuild time, not content. Order-insensitive: the tab is a SET of residents
+ * (nothing in the contract depends on row order), so a Patients sheet that
+ * merely reordered does not force a rewrite. Recorded by writeDigestRows_
+ * under the lock. */
+const DIGEST_WRITTEN_SIG_KEY = 'digest:writtenSig:v1';
+const DIGEST_WRITTEN_SIG_TTL = 21600;   // 6 h, CacheService's maximum
+
+function digestSignature_(ssId, rows) {
+  const lines = rows.map(function (r) { return JSON.stringify([r.house, r.patientName, r.patientId]); });
+  lines.sort();
+  return fastHash_(JSON.stringify([ssId, lines]));
+}
+
 /* Whole-tab replace: clear the body and write the current row set. Locked so a
- * request-driven rebuild and the hourly trigger can't interleave writes. */
-function writeDigestRows_(ssId, rows) {
+ * request-driven rebuild and the hourly trigger can't interleave writes.
+ * `signature` (optional, digestSignature_ of `rows`): recorded once the write
+ * lands, so an identical request-path rebuild can skip it. */
+function writeDigestRows_(ssId, rows, signature) {
   const lock = LockService.getScriptLock();
   if (lock.tryLock(10000) !== true) throw new Error('writeDigestRows_: ' + LOCK_BUSY_MESSAGE);
   try {
+    // Forget the old record BEFORE touching the tab: a write that fails half
+    // way must never leave a record that lets the next rebuild skip.
+    cacheRemove_(DIGEST_WRITTEN_SIG_KEY);
     const ss = SpreadsheetApp.openById(ssId);
     const sh = ensureDigestTab_(ss);
     const lastRow = sh.getLastRow();
@@ -11012,6 +11298,11 @@ function writeDigestRows_(ssId, rows) {
       const values = rows.map(function (r) { return objectToRow_(r, DIGEST_COLUMNS); });
       sh.getRange(2, 1, values.length, DIGEST_COLUMNS.length).setValues(values);
     }
+    // Recorded only while holding the lock, where writers are ordered (a
+    // busy lock threw above, before anything was touched).
+    if (signature) {
+      cachePutJson_(DIGEST_WRITTEN_SIG_KEY, signature, DIGEST_WRITTEN_SIG_TTL);
+    }
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
@@ -11019,15 +11310,23 @@ function writeDigestRows_(ssId, rows) {
 
 /* Rebuild the whole digest from the current Patients sheet (active residents).
  * Returns a small status object; no-ops with a clear error if setup hasn't run
- * yet. */
-function rebuildActivePatientsDigest_() {
+ * yet. `opts.skipIfUnchanged` (the request path only): the rows are still
+ * recomputed in full, but when they equal what the digest already holds the
+ * write — opening a second spreadsheet, clearing and rewriting its body — is
+ * skipped ({ skipped: true }). The hourly backstop and setup never skip. */
+function rebuildActivePatientsDigest_(opts) {
   const ssId = getDigestSpreadsheetId_();
   if (!ssId) return { ok: false, error: 'digest_not_configured' };
-  const patientsSh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+  // A READ of Patients: no whole-column re-format here (see sheetForRead_).
+  const patientsSh = sheetForRead_(PATIENTS_SHEET, PATIENT_COLUMNS);
   const patients   = readSheet_(patientsSh, PATIENT_COLUMNS);
   const nowIso     = new Date().toISOString();
   const rows       = buildActivePatientsRows_(patients, nowIso);
-  writeDigestRows_(ssId, rows);
+  const signature  = digestSignature_(ssId, rows);
+  if (opts && opts.skipIfUnchanged && cacheGetJson_(DIGEST_WRITTEN_SIG_KEY) === signature) {
+    return { ok: true, count: rows.length, skipped: true };
+  }
+  writeDigestRows_(ssId, rows, signature);
   return { ok: true, count: rows.length, updatedAt: nowIso };
 }
 
@@ -11093,8 +11392,8 @@ function rebuildActivePatientsDigest() {
  * setup not yet run) must NEVER surface to the caller or abort the write. */
 function refreshDigestBestEffort_() {
   try {
-    if (!getDigestSpreadsheetId_()) return; // setup hasn't run — nothing to update
-    rebuildActivePatientsDigest_();
+    // Setup hasn't run → digest_not_configured, nothing read or written.
+    rebuildActivePatientsDigest_({ skipIfUnchanged: true });
   } catch (err) {
     try { console.warn('[digest] rebuild skipped: ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
   }

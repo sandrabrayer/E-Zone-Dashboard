@@ -155,7 +155,10 @@
 // report — «חשבונית?» כן / לא (no default) and «על שם» in the «דווח תשלום»
 // form, shown on the receipts list and the «בקרת גבייה» card. app.js,
 // style.css and /payment-report-rules.js changed. /api/ stays network-only.
-var CACHE_VERSION = 'v38';
+// v38 → v39: perf (PR #149, built as v18, rebased) — loadAll starts getData,
+// getPayments and getCredits together. app.js changed — evict v38. /api/
+// stays network-only.
+var CACHE_VERSION = 'v39';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

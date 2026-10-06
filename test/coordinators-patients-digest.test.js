@@ -35,6 +35,7 @@ function loadDigest() {
     let __patients = [];
     let __digestTab = null;   // { header:[], body:[[...]] }
     getOrCreateSheet_ = function () { return {}; };
+    sheetForRead_ = function () { return {}; };
     readSheet_ = function (sh, columns) {
       if (columns === PATIENT_COLUMNS) return __patients;
       return [];
