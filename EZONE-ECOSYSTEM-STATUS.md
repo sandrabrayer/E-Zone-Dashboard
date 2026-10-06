@@ -826,6 +826,29 @@ Detail: `CHANGELOG-payment-invoice.md`. Apps Script **and** Railway.
 - SW `CACHE_VERSION` v34 → **v38** (v35–v37 are held by open PRs #181–#183).
 - No new action, env var, Script Property, scope or trigger.
 
+## Dashboard: page-load performance (October 6, 2026)
+
+Detail: `CHANGELOG-dashboard-perf.md` (carries PR #149, rebased, plus
+compressed / content-hashed assets). Apps Script **and** Railway.
+
+- `loadAll` starts `getData` / `getPayments` / `getCredits` **together**.
+  The page waits for the slowest read (~2 s est.), not the sum (~11 s est.).
+  A session without `finance` still never asks for the money reads.
+- `Code.gs` read path: no whole-column format writes, one `getValues` per
+  sheet, timezone lookups only for Date cells, and no lock in `getPayments`
+  unless there is work. Per load: 51 → 0 writes, 13 → 8 reads, 166 → 0
+  timezone lookups. Byte-identical responses.
+- Assets: `index.html` links each JS/CSS file as `?v=<content hash>`.
+  - Those URLs are `immutable` and served br/gzip; any other request stays
+    `no-store`.
+  - Apps Script JSON answers are compressed too.
+  - Bytes per page: 789 KB → 204 KB on a first visit, 9 KB after.
+- SW `CACHE_VERSION` v38 → **v39**, with a new `cache-first-hashed`
+  strategy (exact URL; older hashes pruned). `/api/` stays network-only.
+- No new action, env var, Script Property, scope, column or trigger.
+- Timing lines: `[perf] …` in Apps Script Executions and
+  `[E-ZONE][perf] loadAll …` in the browser console.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);

@@ -649,8 +649,15 @@ test('client: every billing render is a no-op for a restricted session (they wou
 test('client: no billing leaks — loadAll skips getPayments / getCredits, the «זיכויים» button and the discharge refund step are guarded', () => {
   const loadAll = APP_SRC.slice(APP_SRC.indexOf('async function loadAll()'), APP_SRC.indexOf('// ===== Patient-load diagnosis ====='));
   // Phase 3 PR 2 also empties the receipts and the funders there.
-  assert.match(loadAll, /if \(!financeView\(\)\) \{\s*state\.payments = \[\];\s*state\.credits = \[\];\s*state\.receipts = \[\];\s*state\.funders = \[\];\s*\} else try \{\s*const pr = await apiGet\(\{ action: 'getPayments' \}\);/);
-  assert.match(loadAll, /if \(financeView\(\)\) try \{\s*const cr = await apiGet\(\{ action: 'getCredits' \}\);/);
+  // The three reads start together (perf); the two money reads only when
+  // financeView() — and the result is dropped again if it turned false.
+  assert.match(loadAll, /const finance\s*= financeView\(\);/);
+  assert.match(loadAll, /const paymentsRead = finance \? startTimedRead\(\{ action: 'getPayments' \}\) : null;/);
+  assert.match(loadAll, /const creditsRead\s*= finance \? startTimedRead\(\{ action: 'getCredits' \}\) : null;/);
+  assert.match(loadAll, /if \(!financeView\(\) \|\| !paymentsRead\) \{\s*state\.payments = \[\];\s*state\.credits = \[\];\s*state\.receipts = \[\];\s*state\.funders = \[\];\s*\} else try \{/);
+  assert.match(loadAll, /if \(financeView\(\) && creditsRead\) try \{/);
+  assert.strictEqual((loadAll.match(/action: 'getPayments'/g) || []).length, 1, 'getPayments asked in one place only');
+  assert.strictEqual((loadAll.match(/action: 'getCredits'/g) || []).length, 1, 'getCredits asked in one place only');
   assert.match(APP_SRC, /if \(financeView\(\)\) \{\s*const nCredits = creditsForPatient/);
   assert.match(APP_SRC, /if \(financeView\(\)\) try \{\s*await showCreditsModal\(\{\s*patient: p,/);
   for (const id of ['renewal-alert', 'overdue-alert']) assert.match(HTML_SRC, new RegExp(`id="${id}"[^>]*data-finance`), id);
