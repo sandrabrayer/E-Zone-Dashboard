@@ -7757,6 +7757,11 @@ function initDebtAgingControls() {
  * public/funder.js (global Funder) maps the stored labels to stable keys. */
 const FUNDER_UNSET_KEY = 'unset';
 const FUNDER_UNSET_LABEL = 'לא הוגדר';
+/* Pro-bono (CHANGELOG-funder-probono.md): the fifth funder. A patient whose
+ * funder on a cycle's day is pro-bono owes nothing for it — the server drops
+ * those cycles from «חובות פתוחים»; here the due list, «יתרות פתוחות» and the
+ * renewal / overdue alerts skip them (isProbonoOn). The strip keeps its ₪0 row. */
+const FUNDER_PROBONO_KEY = 'probono';
 const FUNDER_FILTER_ALL = 'all';
 const FUNDER_REQUIRED_MESSAGE = 'יש לבחור גורם מממן';
 const FUNDER_RELEASED_DEBT_TAG = 'שוחרר/ה · יתרה פתוחה';
@@ -7896,6 +7901,20 @@ function renderFunderFill() {
 /* Whether a funder key passes the גבייה filter ('all' | key | 'unset'). Pure. */
 function funderFilterMatch(filter, key) {
   return !filter || filter === FUNDER_FILTER_ALL || filter === key;
+}
+
+/* Is `label` the pro-bono funder label (funder.js's map; no literal here)? Pure. */
+function isProbonoLabel(label) {
+  const F = funderLib();
+  return !!F && F.keyFromLabel(label) === FUNDER_PROBONO_KEY;
+}
+
+/* True when `patient` is pro-bono on `dayISO` — finance view only (a
+ * restricted session holds no funders and sees no billing). Such a row is
+ * not owed, so the due list, «יתרות פתוחות» and the alerts skip it. */
+function isProbonoOn(patient, dayISO) {
+  if (!funderView() || !patient) return false;
+  return patientFunderKey(patient, state.funders, todayISO(), isoDate(dayISO) || todayISO()) === FUNDER_PROBONO_KEY;
 }
 
 /* A billing row's funder: the patient's funder ON THAT CYCLE'S DUE DATE. */
@@ -8744,6 +8763,7 @@ function overduePatients(fromISO) {
     if (dueISO < isoDate(p.date)) return;
     const pay = paymentForPatientOnDate(p, dueISO);
     if (paymentCoversCycle(pay)) return;
+    if (isProbonoOn(p, dueISO)) return;   // pro-bono: nothing is owed
     out.push({ patient: p, dueISO });
   });
   return out.sort((a, b) => a.dueISO.localeCompare(b.dueISO));
@@ -8783,6 +8803,7 @@ function patientsNeedingRenewal(fromISO, windowDays) {
     // covered — an unpaid placeholder does not suppress the alert.
     const pay = paymentForPatientOnDate(p, renewalISO);
     if (paymentCoversCycle(pay)) return;
+    if (isProbonoOn(p, renewalISO)) return;   // pro-bono: nothing to renew
     out.push({ patient: p, renewalISO, days });
   });
   return out.sort((a, b) => a.renewalISO.localeCompare(b.renewalISO));
@@ -9430,7 +9451,8 @@ function renderBilling() {
   const billingDateEl = document.getElementById('billing-date');
   if (billingDateEl && billingDateEl.value !== selected) billingDateEl.value = selected;
 
-  const dueAll = patientsDueOn(selected).map(p => ({
+  // A patient pro-bono on the selected date owes nothing: not listed.
+  const dueAll = patientsDueOn(selected).filter(p => !isProbonoOn(p, selected)).map(p => ({
     patient: p,
     payment: paymentForPatientOnDate(p, selected),
   }));
@@ -9537,7 +9559,9 @@ function renderBillingOpenList(selectedISO) {
         status: '',
       };
       return { patient, pay };
-    });
+    })
+    // Pro-bono on the row's due date: not a balance (never owed).
+    .filter(o => !isProbonoOn(o.patient, o.pay.dueDate));
 
   const funderFilter = billingFunderFilter();
   const matched = openAll.filter(o => billingRowMatchesQuery(o.patient, o.pay, state.billingSearch)
@@ -11086,8 +11110,10 @@ function paymentReportDefaults(patient, payment, dueDateISO, todayIso) {
       payer: '',
       reference: '',
       // No default: an unset funder leaves the field empty, so the report
-      // must name one (validatePaymentReport_ → «חסר: גורם מממן»).
-      funder: (cur => (cur.unset ? '' : cur.funder))(currentFunderFor(uid)),
+      // must name one (validatePaymentReport_ → «חסר: גורם מממן»). A
+      // pro-bono patient's report names its funder EXPLICITLY too: never
+      // prefilled (CHANGELOG-funder-probono.md).
+      funder: (cur => (cur.unset || isProbonoLabel(cur.funder) ? '' : cur.funder))(currentFunderFor(uid)),
       coverageStart: covStart,
       coverageEnd: covEnd,
     },
