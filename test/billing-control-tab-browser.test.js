@@ -201,14 +201,19 @@ test('Ortal at 360px: only «בקרת גבייה»; the queue → ✓ confirm on
     assert.deepEqual([by[18000].confirmStatus, by[18000].flagNote, by[18000].confirmedBy], ['flagged', 'לא נמצא בבנק עד היום', '']);
     const audit = server.gs.sheetRows('AuditLog', 'AUDIT_LOG_COLUMNS').filter((r) => String(r.action).indexOf('payment_confirm_') === 0);
     assert.deepEqual(audit.map((r) => [r.action, r.actor]), [['payment_confirm_confirmed', 'אורטל'], ['payment_confirm_flagged', 'אורטל']]);
-    // The server refuses anything else even if the page is bypassed.
+    // The server refuses anything else even if the page is bypassed. Since
+    // CHANGELOG-ortal-billing-access.md she READS the «גבייה» tab (getData is
+    // cut to patients + overrides), but every write and debug route is 403.
     const direct = await page.evaluate(async () => {
-      const a = await fetch('/api/sheets?action=getData');
-      const b = await fetch('/api/sheets?action=getPayments');
-      const c = await fetch('/api/export/cleanup.xlsx');
-      return [a.status, b.status, c.status];
+      const post = (body) => fetch('/api/sheets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const a = await post({ action: 'savePayment', payment: { id: 'x' } });
+      const b = await post({ action: 'reportPayment', report: {} });
+      const c = await fetch('/api/debug/last-save');
+      const d = await fetch('/api/sheets?action=getData');
+      const keys = d.status === 200 ? Object.keys(await d.json()).sort() : [];
+      return [a.status, b.status, c.status, d.status, keys];
     });
-    assert.deepEqual(direct, [403, 403, 403]);
+    assert.deepEqual(direct, [403, 403, 403, 200, ['billingOverrides', 'ok', 'patients']]);
     assert.deepEqual(o.errors, [], 'no page errors');
     await o.ctx.close();
   } finally {

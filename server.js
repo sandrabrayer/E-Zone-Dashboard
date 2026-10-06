@@ -12,7 +12,7 @@ const {
 const {
   FINANCE_ACTIONS, FINANCE_ROUTES, FINANCE_FORBIDDEN_MESSAGE, isFinanceAction, stripFinanceKeys,
   BILLING_CONTROL_ACTIONS, CONTROLLER_ACTIONS, CONTROLLER_ROUTES, BILLING_CONTROL_FORBIDDEN_MESSAGE,
-  isBillingControlAction, isControllerAction, isControllerRoute,
+  isBillingControlAction, isControllerAction, isControllerRoute, controllerResponseView,
 } = require('./lib/finance-scope');
 const { hashPin, verifyPin, pinPolicyError } = require('./lib/pin-hash');
 const { WindowCounter, PinLockout } = require('./lib/rate-limit');
@@ -899,7 +899,8 @@ function requireBillingControl(req, res, next) {
 }
 
 /* A billing route the controller view also needs (the «חובות פתוחים»
- * export the tab links to): finance, or the controller view. */
+ * export the tab links to, and — read access to «גבייה» — the refund
+ * forecast and fix-list exports): finance, or the controller view. */
 function requireFinanceOrController(req, res, next) {
   const p = sessionPrincipalFromRequest(req);
   if (hasFinance(p) || (isControllerView(p) && hasBillingControl(p))) return next();
@@ -924,9 +925,15 @@ function requireRoleForAction(req, res, next) {
 
 /* getData for a session without `finance`: drop the billing-only keys
  * (GETDATA_FINANCE_KEYS — no tab such a session can see reads them). A
- * full-view session gets every key, unchanged (append-only contract). */
+ * full-view session gets every key, unchanged (append-only contract). The
+ * controller view (Ortal, read access to «גבייה») gets getData, cleanupReport
+ * and refundPayoutForecast cut to their FIELD allow-lists
+ * (lib/finance-scope.js CONTROLLER_RESPONSE_SCHEMAS) — no lead row, no notes,
+ * no phone, no source. Code.gs makes the same cut first. */
 function viewFilteredResponse(action, data, principal) {
-  return action === 'getData' && !hasFinance(principal) ? stripFinanceKeys(data) : data;
+  if (isControllerView(principal)) return controllerResponseView(action, data);
+  if (action !== 'getData') return data;
+  return !hasFinance(principal) ? stripFinanceKeys(data) : data;
 }
 
 /* GET /api/sheets?action=getData — forwarded to Apps Script as a POST whose
@@ -1050,7 +1057,9 @@ app.post('/api/sheets', requireSession, requireBillingControlForAction, requireF
  * Script. */
 function refundForecastXlsxHandler(deps) {
   const d = deps || {};
-  const fetchForecast = d.fetchForecast || ((user, principal) => sheetsPost({ action: 'refundPayoutForecast', user }, principal));
+  // The controller view's answer is cut to its field allow-list here too.
+  const fetchForecast = d.fetchForecast || ((user, principal) => sheetsPost({ action: 'refundPayoutForecast', user }, principal)
+    .then((data) => viewFilteredResponse('refundPayoutForecast', data, principal)));
   const clock = d.now || (() => new Date());
   return async (req, res) => {
     const fail = (status, error) => {
@@ -1086,7 +1095,8 @@ function refundForecastXlsxHandler(deps) {
     return res.status(200).end(buf);
   };
 }
-app.get('/api/export/refund-forecast.xlsx', requireSession, requireFinance, requireProxySecret, refundForecastXlsxHandler());
+// Ortal (controller view) reads the full «גבייה» tab, its exports included.
+app.get('/api/export/refund-forecast.xlsx', requireSession, requireFinanceOrController, requireProxySecret, refundForecastXlsxHandler());
 
 /* GET /api/export/debt-aging.xlsx?asOf=YYYY-MM-DD&house=…&status=… — «חובות
  * פתוחים» → «ייצוא לאקסל».
@@ -1152,7 +1162,7 @@ app.get('/api/export/debt-aging.xlsx', requireSession, requireFinanceOrControlle
 
 /* GET /api/export/cleanup.xlsx — «ייצוא רשימת תיקונים».
  *
- * requireSession → requireFinance (403 for a restricted session) →
+ * requireSession → requireFinanceOrController (403 for a restricted session) →
  * requireProxySecret → handler. Reads action=cleanupReport (read-only)
  * through sheetsPost and sends the workbook built by lib/xlsx-report.js from
  * lib/cleanup-xlsx.js: every known gap and inconsistency as of today, one tab
@@ -1167,7 +1177,8 @@ app.get('/api/export/debt-aging.xlsx', requireSession, requireFinanceOrControlle
  * Sandra (CHANGELOG-cleanup-export-finance.md). */
 function cleanupXlsxHandler(deps) {
   const d = deps || {};
-  const fetchCleanup = d.fetchCleanup || ((user, principal) => sheetsPost({ action: 'cleanupReport', user }, principal));
+  const fetchCleanup = d.fetchCleanup || ((user, principal) => sheetsPost({ action: 'cleanupReport', user }, principal)
+    .then((data) => viewFilteredResponse('cleanupReport', data, principal)));
   const clock = d.now || (() => new Date());
   return async (req, res) => {
     const fail = (status, error) => {
@@ -1204,7 +1215,7 @@ function cleanupXlsxHandler(deps) {
     return res.status(200).end(buf);
   };
 }
-app.get('/api/export/cleanup.xlsx', requireSession, requireFinance, requireProxySecret, cleanupXlsxHandler());
+app.get('/api/export/cleanup.xlsx', requireSession, requireFinanceOrController, requireProxySecret, cleanupXlsxHandler());
 
 /* GET /api/export/billing-control.xlsx — «ייצוא אימות» (Phase 4).
  *
@@ -1616,6 +1627,9 @@ app.get('/api/me', requireSession, (req, res) => {
     billingControl: hasBillingControl(p),
     view: principalView(p),
     canConfirm: roleAllowed(p, 'confirmPayment'),
+    // Read access to the full «גבייה» tab for the controller view (Ortal):
+    // reads only — no write, delete, void or approval control. Display only.
+    billingRead: isControllerView(p) && hasBillingControl(p),
   });
 });
 

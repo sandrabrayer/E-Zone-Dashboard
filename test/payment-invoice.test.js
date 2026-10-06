@@ -101,8 +101,10 @@ test('columns: invoiceWanted, invoiceTo are APPENDED at the very end; the 36 bef
   const { g } = world();
   const cols = arr(g.run('PAYMENT_COLUMNS'));
   assert.deepEqual(cols.slice(0, 36), BEFORE_36, 'position IS the data contract');
-  assert.deepEqual(cols.slice(36), ['invoiceWanted', 'invoiceTo']);
-  assert.equal(cols.length, 38);
+  assert.deepEqual(cols.slice(36, 38), ['invoiceWanted', 'invoiceTo']);
+  // CHANGELOG-ortal-billing-access.md appended two more after them.
+  assert.deepEqual(cols.slice(38), ['confirmedAmount', 'controlNote']);
+  assert.equal(cols.length, 40);
   assert.deepEqual(arr(g.run('PAYMENT_INVOICE_COLUMNS')), ['invoiceWanted', 'invoiceTo']);
   for (const c of ['invoiceWanted', 'invoiceTo']) assert.ok(arr(g.run('PAYMENT_TEXT_COLUMNS')).includes(c), c + ' text-forced');
   assert.deepEqual(arr(g.run('INVOICE_CHOICES')), ['yes', 'no']);
@@ -112,7 +114,7 @@ test('columns: invoiceWanted, invoiceTo are APPENDED at the very end; the 36 bef
 test('columns: an existing 36-column sheet is extended in place; a hand-added column where invoiceWanted belongs refuses the report, nothing written', () => {
   const w = world({ header: BEFORE_36, rows: [] });
   w.g.run('getOrCreateSheet_(PAYMENTS_SHEET, PAYMENT_COLUMNS)');
-  assert.deepEqual(w.S.Payments.grid[0], BEFORE_36.concat(['invoiceWanted', 'invoiceTo']));
+  assert.deepEqual(w.S.Payments.grid[0], BEFORE_36.concat(['invoiceWanted', 'invoiceTo', 'confirmedAmount', 'controlNote']));
   const clash = BEFORE_36.concat(['הערה ידנית']);
   assert.deepEqual(plain(w.g.sandbox.paymentInvoiceHeaderClash_(clash)), [{ column: 37, expected: 'invoiceWanted', found: 'הערה ידנית' }]);
   const w2 = world({ header: clash, rows: [] });

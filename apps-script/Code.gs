@@ -524,7 +524,10 @@ const PAYMENT_COLUMNS = [
   /* One row per money received (Phase 3 PR 2, RECEIPT_ID_PREFIX below). */
   'legacyAmountPaid',
   /* The invoice choice on the report (PAYMENT_INVOICE_COLUMNS below). */
-  'invoiceWanted', 'invoiceTo'
+  'invoiceWanted', 'invoiceTo',
+  /* Ortal's partial confirmation and her free-text note
+   * (PAYMENT_CONTROL_COLUMNS below; CHANGELOG-ortal-billing-access.md). */
+  'confirmedAmount', 'controlNote'
 ];
 const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient', 'duplicate'];
 
@@ -546,6 +549,30 @@ const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient', 'duplicate'];
 const PAYMENT_INVOICE_COLUMNS = ['invoiceWanted', 'invoiceTo'];
 const INVOICE_CHOICES = ['yes', 'no'];
 const INVOICE_TO_MAX = 120;
+
+/* ===== «בקרת גבייה» — partial confirmation + Ortal's note
+ * (CHANGELOG-ortal-billing-access.md, Sandra 2026-10-06) =====
+ * Two columns APPENDED at the very end of PAYMENT_COLUMNS (append-only):
+ *   confirmedAmount  the money Ortal found in the bank for this receipt.
+ *                    SERVER-OWNED, written ONLY by confirmPayment_:
+ *                      confirmed → the full reported amount
+ *                      partial   → 0 < x < the reported amount
+ *                      reported / flagged → ''
+ *                    Blank on a receipt confirmed before this change reads
+ *                    as the full amount (receiptVerifiedAmount_).
+ *   controlNote      Ortal's free-text note on the receipt, 0–500 characters,
+ *                    editable at any time, SEPARATE from flagNote (the
+ *                    required «לא שולם» reason). Text-forced; one line, no
+ *                    control character, no formula lead-in.
+ * savePayment / updatePayment never write either (upsertPayment_ pins both
+ * to the stored row). Every change writes one AuditLog row with
+ * at / by / prev / next — nothing is overwritten silently. */
+const PAYMENT_CONTROL_COLUMNS = ['confirmedAmount', 'controlNote'];
+/* The statuses confirmPayment_ accepts: CONFIRM_STATUSES + 'partial'
+ * («שולם חלקית»). The savePayment path keeps CONFIRM_STATUSES (it cannot
+ * carry an amount, so it can never set 'partial'). */
+const CONTROL_STATUSES = ['reported', 'confirmed', 'partial', 'flagged'];
+const CONTROL_NOTE_MAX = 500;
 
 /* ===== The strict payment report — foundation (Phase 3 PR 1) =====
  * docs/billing-control-plan.md Phase 3, decided by Sandra 2026-10-04.
@@ -771,7 +798,9 @@ const PAYMENT_TEXT_COLUMNS = [
   'recordedBy', 'recordedAt',
   'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
   /* «חשבונית?» / «על שם» — free text; a name typed as =… must stay text. */
-  'invoiceWanted', 'invoiceTo'
+  'invoiceWanted', 'invoiceTo',
+  /* Ortal's note — free text (confirmedAmount stays a number). */
+  'controlNote'
 ];
 
 /* PaymentsTombstones — the recoverable record of a DELETED Payments row.
@@ -1142,10 +1171,116 @@ const FINANCE_USER_IDS = ['vered', 'sandra'];
  *                   refused before anything is read.
  *
  * Confirming / flagging still needs the controller or approver ROLE
- * (confirmPayment_), so Vered sees the tab but cannot decide. */
+ * (confirmPayment_), so Vered sees the tab but cannot decide.
+ *
+ * READ access to the full «גבייה» tab (Sandra 2026-10-06,
+ * CHANGELOG-ortal-billing-access.md): the controller view also reaches
+ * CONTROLLER_BILLING_READ_ACTIONS — the tab's READS only. Every write of that
+ * tab (savePayment, updatePayment, reportPayment, the override, credits,
+ * funder), every delete / void and every approval stays refused: none is on
+ * the list, and her roles hold no deleter / approver. getData answers her
+ * with CONTROLLER_GETDATA_KEYS only (no lead, no discharge record). */
 const BILLING_CONTROL_ACTIONS = ['billingControlQueue', 'confirmPayment'];
-const CONTROLLER_ACTIONS = ['billingControlQueue', 'confirmPayment', 'debtAging'];
+const CONTROLLER_BILLING_READ_ACTIONS = ['getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'debtAging', 'cleanupReport'];
+/* Append-only: the Phase 4 three first, then the «גבייה» reads. */
+const CONTROLLER_ACTIONS = ['billingControlQueue', 'confirmPayment', 'debtAging',
+  'getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'cleanupReport'];
+const CONTROLLER_GETDATA_KEYS = ['ok', 'patients', 'billingOverrides'];
 const CONTROLLER_USER_IDS = ['ortal'];
+
+/* ===== Field allow-lists for the controller view (privacy fix, Sandra
+ * 2026-10-06; CHANGELOG-ortal-billing-access.md «Field allow-lists») =====
+ * Mirrors lib/finance-scope.js CONTROLLER_*_SCHEMA EXACTLY (a guard test pins
+ * the literals equal). Every row the controller view (Ortal) receives from
+ * getData, cleanupReport and refundPayoutForecast keeps ONLY the named
+ * fields, at every depth (projectBySchema_): no lead row, no notes, no phone,
+ * no source, no free-text reason. Grammar:
+ *   true          a primitive, or an array of primitives
+ *   ['a', 'b']    an array of rows, each cut to these fields
+ *   { $each: S }  an array, each element projected by S
+ *   { '*': S }    an object map, every value projected by S
+ *   { k: S, … }   an object, only these keys */
+const CONTROLLER_PATIENT_FIELDS = ['id', 'houseId', 'name', 'date', 'exitDate', 'status', 'pay', 'adv'];
+const CONTROLLER_OVERRIDE_FIELDS = ['id', 'patientId', 'month', 'amount', 'created', 'updatedBy'];
+const CONTROLLER_GETDATA_SCHEMA = {
+  ok: true, error: true, message: true,
+  patients: { '*': CONTROLLER_PATIENT_FIELDS },
+  billingOverrides: CONTROLLER_OVERRIDE_FIELDS,
+};
+const CONTROLLER_CLEANUP_SCHEMA = {
+  ok: true, error: true, message: true,
+  today: true, recordsCutoff: true, notAPatientExcluded: true, missingTabs: true, generatedAt: true,
+  counts: { names: true, gaps: true, detached: true, outsideStay: true, releasedNoExit: true, noEntryDate: true,
+    zeroAmount: true, leads: true, duplicates: true, credits: true, noFunder: true, probono: true },
+  sections: {
+    names: ['kind', 'houseId', 'name', 'recordedName', 'otherName', 'entryDate', 'otherEntryDate', 'proposal', 'confidence', 'via', 'why', 'refs'],
+    gaps: ['kind', 'houseId', 'name', 'status', 'entryDate', 'exitDate', 'start', 'end', 'due', 'expected', 'charged', 'received', 'balance',
+      'bucket', 'days', 'laterActivity', 'probablyEntryError'],
+    detached: ['kind', 'houseId', 'name', 'dueDate', 'amount', 'receivedByAsOf', 'candidate', 'candidateReason', 'refs'],
+    outsideStay: ['kind', 'houseId', 'name', 'status', 'start', 'entryDate', 'exitDate', 'amount', 'refs'],
+    releasedNoExit: ['kind', 'houseId', 'name', 'entryDate'],
+    noEntryDate: ['kind', 'houseId', 'name', 'status', 'paymentRows'],
+    zeroAmount: ['kind', 'houseId', 'name', 'status', 'entryDate', 'exitDate', 'cycles'],
+    leads: ['kind', 'houseId', 'name', 'stage', 'created', 'entryDate', 'advance', 'paymentName', 'dueDate', 'amount', 'reason', 'refs'],
+    duplicates: ['kind', 'houseId', 'name', 'names', 'dueDate', 'otherDueDate', 'amount', 'rule', 'refs'],
+    credits: ['kind', 'houseId', 'name', 'entryDate', 'exitDate', 'amount', 'payoutDate', 'rule', 'error'],
+    noFunder: ['kind', 'houseId', 'name', 'status', 'entryDate', 'funder'],
+    probono: ['kind', 'houseId', 'name', 'status', 'entryDate', 'exitDate', 'from', 'current', 'excludedCycles'],
+  },
+};
+const CONTROLLER_FORECAST_BY_HOUSE_ = ['houseId', 'count', 'total'];
+const CONTROLLER_FORECAST_SCHEMA = {
+  ok: true, error: true, message: true,
+  today: true, recordsCutoff: true, payoutDateIfDecidedToday: true, preCutoffExcludedCount: true, zeroByPolicyCount: true, generatedAt: true,
+  awaiting_decision: { count: true, total: true, byHouse: CONTROLLER_FORECAST_BY_HOUSE_,
+    byPayoutDate: { $each: { payoutDate: true, count: true, total: true,
+      rows: ['patientName', 'houseId', 'entryDate', 'exitDate', 'suggestedAmount', 'rule', 'payoutDate'] } } },
+  decided: { count: true, total: true, byHouse: CONTROLLER_FORECAST_BY_HOUSE_,
+    byPayoutDate: { $each: { payoutDate: true, count: true, total: true,
+      rows: ['creditId', 'creditType', 'patientName', 'houseId', 'amount', 'decidedDate', 'payoutDate', 'rule'] } } },
+  missing_payment_data: { count: true, rows: ['patientName', 'houseId', 'entryDate', 'exitDate'] },
+  unresolved: { count: true, rows: ['patientName', 'houseId', 'entryDate', 'exitDate', 'error'] },
+};
+
+function isPrimitive_(v) {
+  return v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
+}
+
+/* `value` cut to `schema` (the grammar above); undefined = drop. PURE.
+ * lib/finance-scope.js projectBySchema is the same function. */
+function projectBySchema_(value, schema) {
+  if (schema === true) {
+    if (isPrimitive_(value)) return value;
+    if (Array.isArray(value) && value.every(isPrimitive_)) return value.slice();
+    return undefined;
+  }
+  if (Array.isArray(schema)) {
+    if (!Array.isArray(value)) return undefined;
+    const row = {};
+    schema.forEach(function (k) { row[k] = true; });
+    return value.map(function (v) { return projectBySchema_(v, row); }).filter(function (v) { return v !== undefined; });
+  }
+  if (!schema || typeof schema !== 'object') return undefined;
+  if (schema.$each) {
+    if (!Array.isArray(value)) return undefined;
+    return value.map(function (v) { return projectBySchema_(v, schema.$each); }).filter(function (v) { return v !== undefined; });
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const out = {};
+  Object.keys(value).forEach(function (k) {
+    const sub = Object.prototype.hasOwnProperty.call(schema, k) ? schema[k] : schema['*'];
+    if (sub === undefined) return;
+    const v = projectBySchema_(value[k], sub);
+    if (v !== undefined) out[k] = v;
+  });
+  return out;
+}
+
+/* The controller view's answer, cut by its schema when the actor is the
+ * controller view (by id — isControllerActor_); anyone else: unchanged. */
+function controllerProjected_(params, data, schema) {
+  return isControllerActor_(actingUser_(params)) ? projectBySchema_(data, schema) : data;
+}
 const BILLING_CONTROL_FORBIDDEN_MESSAGE = 'אין הרשאה לפעולה זו';
 /* getData keys only billing reads — omitted for a restricted actor. */
 const GETDATA_FINANCE_KEYS = ['billingOverrides'];
@@ -1564,11 +1699,13 @@ function handle_(params) {
     // gated by PROXY_SECRET like every non-OPEN_ACTIONS action.
     if (action === 'suggestRefunds') return jsonOut_(suggestRefunds_(params));
     // Payout forecast for the bookkeeper: READ-ONLY, gated by PROXY_SECRET.
-    if (action === 'refundPayoutForecast') return jsonOut_(refundPayoutForecast_());
+    // The controller view gets both «גבייה» reads cut to their field
+    // allow-lists (no lead phone / notes, no free-text reason).
+    if (action === 'refundPayoutForecast') return jsonOut_(controllerProjected_(params, refundPayoutForecast_(), CONTROLLER_FORECAST_SCHEMA));
     // Debt aging as of a date: READ-ONLY, gated by PROXY_SECRET.
     if (action === 'debtAging') return jsonOut_(debtAgingAction_(params));
     // The data-cleanup workbook («ייצוא רשימת תיקונים»): READ-ONLY, gated by PROXY_SECRET.
-    if (action === 'cleanupReport') return jsonOut_(cleanupReportAction_());
+    if (action === 'cleanupReport') return jsonOut_(controllerProjected_(params, cleanupReportAction_(), CONTROLLER_CLEANUP_SCHEMA));
     if (action === 'saveCredit') {
       return jsonOut_(upsertCredit_(parseJsonParam_(params.credit), requestUser_(params)));
     }
@@ -2311,10 +2448,26 @@ function setLeadDateColsText_(sh, columns, rowNumber) {
 function getDataForActor_(params) {
   const out = getData_();
   const a = actingUser_(params);
+  // The controller view (Ortal): the «גבייה» tab's keys ONLY — by stable id,
+  // like viewRefused_, so a forged cap can never widen it.
+  if (isControllerActor_(a)) return controllerGetData_(out, a.caps.indexOf('billingControl') >= 0);
   if (a.verified && a.caps.indexOf('finance') < 0) {
     GETDATA_FINANCE_KEYS.forEach(function (k) { delete out[k]; });
   }
   return out;
+}
+
+/* getData as the controller view sees it: CONTROLLER_GETDATA_KEYS only, and
+ * every row cut to its FIELD allow-list (CONTROLLER_GETDATA_SCHEMA: patients
+ * → CONTROLLER_PATIENT_FIELDS, overrides → CONTROLLER_OVERRIDE_FIELDS);
+ * billingOverrides only with billingControl. PURE. */
+function controllerGetData_(data, billingControl) {
+  const keys = {};
+  CONTROLLER_GETDATA_KEYS.forEach(function (k) {
+    if (k === 'billingOverrides' && billingControl !== true) return;
+    if (data && Object.prototype.hasOwnProperty.call(data, k)) keys[k] = data[k];
+  });
+  return projectBySchema_(keys, CONTROLLER_GETDATA_SCHEMA);
 }
 
 function getData_() {
@@ -6901,6 +7054,12 @@ function upsertPayment_(payment, user, ctx) {
     Object.keys(payment).forEach(function (k) { merged[k] = payment[k]; });
     Object.keys(rep.fields).forEach(function (k) { merged[k] = rep.fields[k]; });
     Object.keys(inv.fields).forEach(function (k) { merged[k] = inv.fields[k]; });
+    /* Ortal's partial amount and note (PAYMENT_CONTROL_COLUMNS) are written
+     * ONLY by confirmPayment_: whatever the payload says, the stored cells
+     * stay (blank on a new row). */
+    PAYMENT_CONTROL_COLUMNS.forEach(function (k) {
+      merged[k] = hadRow && prev[k] !== undefined && prev[k] !== null ? prev[k] : '';
+    });
 
     const out = stampPaymentRow_(merged, prev, hadRow, stampUser);
     // A first report that names no funder gets the patient's current one —
@@ -8137,7 +8296,20 @@ function rederiveReceiptCycleLocked_(sh, stampUser, receiptId) {
  * never re-stamped or cleared; every transition writes ONE AuditLog row with
  * the old and new status, the old and new note, and the actor. The amount,
  * the date and every other cell of the receipt are never touched — a wrong
- * amount is flagged, and Vered cancels and re-reports (the existing flow). */
+ * amount is flagged, and Vered cancels and re-reports (the existing flow).
+ *
+ * Extended 2026-10-06 (CHANGELOG-ortal-billing-access.md) — the status
+ * dropdown and the note:
+ *   any → confirmed   «שולם» — confirmedAmount = the full reported amount
+ *   any → partial     «שולם חלקית» — ONE receipt, confirmedAmount required,
+ *                     0 < x < the reported amount (agorot). Only x is verified
+ *                     money; the rest stays open debt in the tab
+ *   any → flagged     «לא שולם» — the existing flow, flagNote required
+ *   controlNote       Ortal's free-text note (0–500), ONE receipt, at any
+ *                     time, with or without a status change
+ * Each status change → one AuditLog row 'payment_confirm_<to>'; each note
+ * change → one row 'payment_control_note'; both carry at / by / prev / next.
+ * The reported amount (amountPaid) is still never touched. */
 const CONFIRM_BATCH_MAX = 200;
 const BILLING_CONTROL_FLAG_STALE_DAYS = 7;
 const BILLING_CONTROL_DEBT_BUCKET = 'd61_plus';
@@ -8149,25 +8321,97 @@ const CONFIRM_ERROR_MESSAGES = {
   receipt_void: 'הקבלה בוטלה — אין מה לאשר',
   confirm_without_report: 'אין דיווח תשלום לאשר — חסר תאריך קבלה',
   sheet_header_clash: 'מבנה גיליון התשלומים השתנה — פנו לסנדרה',
+  partial_single: '«שולם חלקית» — קבלה אחת בכל פעם',
+  partial_amount_invalid: 'בתשלום חלקי חובה להזין סכום שהתקבל (מספר, עד שתי ספרות אחרי הנקודה)',
+  partial_amount_range: 'הסכום שהתקבל חייב להיות גדול מאפס וקטן מהסכום שדווח',
+  control_note_invalid: 'הערה — טקסט עד 500 תווים',
+  control_note_single: 'הערה נשמרת לקבלה אחת בכל פעם',
 };
 
 function confirmError_(code) {
   return { ok: false, error: code, message: CONFIRM_ERROR_MESSAGES[code] || code };
 }
 
-/* A receipt's stored confirm status: blank on a receipt reads 'reported'. */
+/* A receipt's stored confirm status: blank (or anything unknown) on a
+ * receipt reads 'reported'. */
 function receiptConfirmStatus_(row) {
   const cs = paymentCell_(row && row.confirmStatus);
-  return cs || 'reported';
+  return CONTROL_STATUSES.indexOf(cs) >= 0 ? cs : 'reported';
+}
+
+/* The amount Vered reported on a receipt (amountPaid, else amount). PURE. */
+function receiptReportedAmount_(row) {
+  const r = row || {};
+  return receiptMoney_(r.amountPaid !== '' && r.amountPaid !== undefined && r.amountPaid !== null ? r.amountPaid : r.amount);
+}
+
+/* The verified money of a receipt — only what Ortal confirmed. PURE.
+ *   confirmed → confirmedAmount, or the reported amount when blank (a
+ *               receipt confirmed before the column existed)
+ *   partial   → confirmedAmount
+ *   reported / flagged / void → 0
+ * lib/billing-control-rules.js verifiedAmountOf is the same rule. */
+function receiptVerifiedAmount_(row) {
+  if (!row || isVoidStatus_(row.status)) return 0;
+  const cs = receiptConfirmStatus_(row);
+  const cell = paymentCell_(row.confirmedAmount);
+  if (cs === 'confirmed') return cell === '' ? receiptReportedAmount_(row) : receiptMoney_(row.confirmedAmount);
+  if (cs === 'partial') return cell === '' ? 0 : receiptMoney_(row.confirmedAmount);
+  return 0;
+}
+
+/* The open (unverified) money of a DECIDED receipt in the tab: partial →
+ * reported − verified; flagged («לא שולם») → the whole reported amount;
+ * reported (still waiting) / confirmed / void → 0. PURE. Mirrors
+ * lib/billing-control-rules.js openAmountOf. */
+function receiptOpenAmount_(row) {
+  if (!row || isVoidStatus_(row.status)) return 0;
+  const cs = receiptConfirmStatus_(row);
+  if (cs === 'partial') return Math.max(0, receiptMoney_(receiptReportedAmount_(row) - receiptVerifiedAmount_(row)));
+  if (cs === 'flagged') return receiptReportedAmount_(row);
+  return 0;
+}
+
+/* «שולם חלקית» amount as sent: a finite number > 0 with at most two decimals
+ * (a number, or its plain decimal text). → the amount | null. The upper bound
+ * (< the reported amount) needs the stored row: confirmTransition_. PURE. */
+function confirmedAmountParse_(v) {
+  if (typeof v === 'number') {
+    if (!isFinite(v)) return null;
+  } else if (typeof v === 'string') {
+    if (!/^\s*\d{1,9}(\.\d{1,2})?\s*$/.test(v)) return null;
+  } else return null;
+  const n = Number(v);
+  if (!isFinite(n) || n <= 0) return null;
+  if (Math.abs(Math.round(n * 100) - n * 100) > 1e-6) return null;
+  return receiptMoney_(n);
+}
+
+/* controlNote as stored: one line (control characters → space), trimmed, a
+ * formula lead-in (= + - @) dropped — the flagNote treatment. A longer note
+ * is REFUSED, never cut. '' is legal (clears the note). Non-text → refused.
+ * → { ok:true, note } | { ok:false }. PURE. Mirrors
+ * lib/billing-control-rules.js controlNoteCheck. */
+function controlNoteClean_(v) {
+  if (typeof v !== 'string') return { ok: false };
+  const t = v.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().replace(/^[=+@-]+/, '').trim();
+  if (t.length > CONTROL_NOTE_MAX) return { ok: false };
+  return { ok: true, note: t };
 }
 
 /* The confirm request, validated. PURE.
- *   body { ids: [rcpt-…] | id, status, flagNote }
- * → { ok:true, ids, status, note } | refusal */
+ *   body { ids: [rcpt-…] | id, status, flagNote, confirmedAmount, controlNote }
+ *   status           CONTROL_STATUSES; may be omitted ONLY when controlNote
+ *                    is sent (a note-only edit)
+ *   confirmedAmount  required for 'partial' (ONE id); ignored otherwise
+ *   controlNote      optional, ONE id; '' clears it
+ * → { ok:true, ids, status ('' = keep), note, amount, controlNote (null =
+ *     keep) } | refusal */
 function confirmRequestClean_(body) {
   const b = body && typeof body === 'object' ? body : {};
   const status = String(b.status == null ? '' : b.status).trim();
-  if (CONFIRM_STATUSES.indexOf(status) < 0) return confirmError_('confirm_status_invalid');
+  const noteSent = b.controlNote !== undefined && b.controlNote !== null;
+  if (status === '' ? !noteSent : CONTROL_STATUSES.indexOf(status) < 0) return confirmError_('confirm_status_invalid');
   const raw = Array.isArray(b.ids) ? b.ids : (b.id !== undefined && b.id !== null ? [b.id] : []);
   if (!raw.length || raw.length > CONFIRM_BATCH_MAX) return confirmError_('bad_ids');
   const ids = [];
@@ -8183,27 +8427,92 @@ function confirmRequestClean_(body) {
     const full = rawNote.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().replace(/^[=+@-]+/, '').trim();
     if (note.length < FLAG_NOTE_MIN || full.length > FLAG_NOTE_MAX) return confirmError_('flag_note_invalid');
   }
-  return { ok: true, ids: ids, status: status, note: note };
+  let amount = null;
+  if (status === 'partial') {
+    if (ids.length !== 1) return confirmError_('partial_single');
+    amount = confirmedAmountParse_(b.confirmedAmount);
+    if (amount === null) return confirmError_('partial_amount_invalid');
+  }
+  let controlNote = null;
+  if (noteSent) {
+    if (ids.length !== 1) return confirmError_('control_note_single');
+    const c = controlNoteClean_(b.controlNote);
+    if (!c.ok) return confirmError_('control_note_invalid');
+    controlNote = c.note;
+  }
+  return { ok: true, ids: ids, status: status, note: note, amount: amount, controlNote: controlNote };
+}
+
+/* A stored confirmedAmount cell as compared and audited: '' or agorot. */
+function confirmedAmountCell_(v) {
+  return paymentCell_(v) === '' ? '' : receiptMoney_(v);
 }
 
 /* The next confirm cells of ONE stored receipt for the request. PURE.
- * → { changed:false } | { changed:true, from, to, oldNote, cells:{confirmStatus,
- *     confirmedBy, confirmedAt, flagNote} } | refusal */
+ * → { changed:false }
+ *   | { changed:true, statusChanged, noteChanged, from, to, oldNote, prev,
+ *       next, cells:{confirmStatus, confirmedBy, confirmedAt, flagNote,
+ *       confirmedAmount, controlNote} }
+ *   | refusal
+ * prev / next = { status, confirmedAmount, flagNote, controlNote } — the
+ * audit pair. A status re-sent unchanged (same amount, same flag note) is no
+ * change; a receipt confirmed before confirmedAmount existed reads as its
+ * full amount, so re-confirming it is still a no-op. */
 function confirmTransition_(row, req, user, nowStamp) {
   if (isVoidStatus_(row.status)) return confirmError_('receipt_void');
   const rd = row.receivedDate instanceof Date ? localPartsISO_(row.receivedDate) : paymentReportDate_(row.receivedDate);
   if (!rd) return confirmError_('confirm_without_report');
+  const reported = receiptReportedAmount_(row);
   const from = receiptConfirmStatus_(row);
   const oldNote = paymentCell_(row.flagNote);
-  const to = req.status;
-  const note = to === 'flagged' ? req.note : '';
-  if (from === to && note === oldNote) return { changed: false };
-  let by = paymentCell_(row.confirmedBy), at = paymentCell_(row.confirmedAt);
-  if (to === 'confirmed' && !by && !at) { by = String(user == null ? '' : user); at = nowStamp; }
-  return {
-    changed: true, from: from, to: to, oldNote: oldNote,
-    cells: { confirmStatus: to, confirmedBy: by, confirmedAt: at, flagNote: note },
+  const prevAmountCell = confirmedAmountCell_(row.confirmedAmount);
+  const prev = {
+    status: from,
+    confirmedAmount: from === 'confirmed' && prevAmountCell === '' ? reported : prevAmountCell,
+    flagNote: oldNote,
+    controlNote: paymentCell_(row.controlNote),
   };
+  const statusSent = req.status !== '' && req.status !== undefined && req.status !== null;
+  const to = statusSent ? req.status : from;
+  let amount = prev.confirmedAmount;
+  let flagNote = oldNote;
+  if (statusSent) {
+    flagNote = to === 'flagged' ? req.note : '';
+    if (to === 'confirmed') amount = reported;
+    else if (to === 'partial') {
+      if (!(req.amount > 0 && req.amount < reported)) return confirmError_('partial_amount_range');
+      amount = req.amount;
+    } else amount = '';
+  }
+  const controlNote = req.controlNote === null || req.controlNote === undefined ? prev.controlNote : req.controlNote;
+  const next = { status: to, confirmedAmount: amount, flagNote: flagNote, controlNote: controlNote };
+  const statusChanged = statusSent && (to !== from || flagNote !== oldNote || amount !== prev.confirmedAmount);
+  const noteChanged = controlNote !== prev.controlNote;
+  if (!statusChanged && !noteChanged) return { changed: false };
+  let by = paymentCell_(row.confirmedBy), at = paymentCell_(row.confirmedAt);
+  if (statusChanged && (to === 'confirmed' || to === 'partial') && !by && !at) { by = String(user == null ? '' : user); at = nowStamp; }
+  return {
+    changed: true, statusChanged: statusChanged, noteChanged: noteChanged,
+    from: from, to: to, oldNote: oldNote, prev: prev, next: next,
+    cells: {
+      confirmStatus: to, confirmedBy: by, confirmedAt: at, flagNote: flagNote,
+      confirmedAmount: statusChanged ? amount : prevAmountCell, controlNote: controlNote,
+    },
+  };
+}
+
+/* Whether the Payments header can hold PAYMENT_CONTROL_COLUMNS: each of
+ * their positions is blank or already carries its own name (readSheet_ maps
+ * BY POSITION). Pure. */
+function paymentControlHeaderClash_(header) {
+  const h = Array.isArray(header) ? header : [];
+  const clash = [];
+  PAYMENT_CONTROL_COLUMNS.forEach(function (name) {
+    const i = PAYMENT_COLUMNS.indexOf(name);
+    const got = i < h.length ? String(h[i] == null ? '' : h[i]).trim() : '';
+    if (got !== '' && got !== name) clash.push({ column: i + 1, expected: name, found: got });
+  });
+  return clash;
 }
 
 /* The fields of a receipt the tab / the export may show — an explicit
@@ -8237,6 +8546,12 @@ function billingControlReceipt_(r, flaggedAt) {
     confirmedAt: paymentCell_(r.confirmedAt),
     flagNote: cs === 'flagged' ? paymentCell_(r.flagNote) : '',
     flaggedAt: cs === 'flagged' ? String(flaggedAt || paymentCell_(r.recordedAt) || '') : '',
+    /* CHANGELOG-ortal-billing-access.md: the verified money, the open rest,
+     * the partial amount as entered ('' unless partial) and Ortal's note. */
+    verifiedAmount: receiptVerifiedAmount_(r),
+    openAmount: receiptOpenAmount_(r),
+    confirmedAmount: cs === 'partial' ? receiptVerifiedAmount_(r) : '',
+    controlNote: paymentCell_(r.controlNote),
   };
 }
 
@@ -8251,12 +8566,36 @@ function billingControlSort_(list) {
 
 /* { count, amount } per confirm status over projected receipts. PURE. */
 function billingControlCounts_(list) {
-  const out = { reported: { count: 0, amount: 0 }, flagged: { count: 0, amount: 0 }, confirmed: { count: 0, amount: 0 } };
+  const out = { reported: { count: 0, amount: 0 }, flagged: { count: 0, amount: 0 }, confirmed: { count: 0, amount: 0 },
+    partial: { count: 0, amount: 0, verified: 0, open: 0 } };
   list.forEach(function (r) {
     const b = out[r.confirmStatus];
     if (!b) return;
     b.count++;
     b.amount = receiptMoney_(b.amount + r.amount);
+    if (r.confirmStatus === 'partial') {
+      b.verified = receiptMoney_(b.verified + (Number(r.verifiedAmount) || 0));
+      b.open = receiptMoney_(b.open + (Number(r.openAmount) || 0));
+    }
+  });
+  return out;
+}
+
+/* The tab's open debt by verification (CHANGELOG-ortal-billing-access.md):
+ * only confirmed money reduces it. partial = the unconfirmed rest of every
+ * «שולם חלקית» receipt; notReceived = every «לא שולם» receipt in full.
+ * Receipts still waiting are NOT debt here (counts.reported shows them).
+ * debtAging_ / «חובות פתוחים» / revenue are unchanged. PURE. */
+function billingControlOpenDebt_(list) {
+  const out = { partial: { count: 0, amount: 0 }, notReceived: { count: 0, amount: 0 }, total: 0 };
+  list.forEach(function (r) {
+    const open = Number(r.openAmount) || 0;
+    if (open <= 0) return;
+    const b = r.confirmStatus === 'partial' ? out.partial : r.confirmStatus === 'flagged' ? out.notReceived : null;
+    if (!b) return;
+    b.count++;
+    b.amount = receiptMoney_(b.amount + open);
+    out.total = receiptMoney_(out.total + open);
   });
   return out;
 }
@@ -8370,6 +8709,7 @@ function billingControlQueueFor_(rows, flagTimes, opts) {
   const debt60 = billingControlDebt60_(o.aging);
   const out = {
     ok: true, today: today, receipts: receipts, counts: billingControlCounts_(receipts),
+    openDebt: billingControlOpenDebt_(receipts),
     debt60: debt60 ? { asOf: debt60.asOf, recorded: debt60.recorded, unrecorded: debt60.unrecorded } : null,
     flagStaleDays: BILLING_CONTROL_FLAG_STALE_DAYS,
   };
@@ -8424,12 +8764,15 @@ function billingControlQueue_(opts) {
  * PROXY_SECRET-gated, needs billingControl AND the controller or approver
  * role (handle_ checks the role from the verified session before calling).
  *
- *   body  { ids: ['rcpt-…', …] (1–200) | id, status: 'confirmed' | 'flagged'
- *           | 'reported', flagNote (flagged: 2–300 chars) }
+ *   body  { ids: ['rcpt-…', …] (1–200) | id, status: 'confirmed' | 'partial'
+ *           | 'flagged' | 'reported', flagNote (flagged: 2–300 chars),
+ *           confirmedAmount (partial, one id), controlNote (one id, ≤500) }
  *
  * ATOMIC: every id is checked first (exists, is a live receipt with a
- * receivedDate); one problem → { ok:false, error, message, id } and NOTHING is
- * written. Only the four confirm cells move. One AuditLog row per change.
+ * receivedDate, a partial amount below the reported one); one problem →
+ * { ok:false, error, message, id } and NOTHING is written. Only the confirm
+ * cells (the four + confirmedAmount / controlNote) move. One AuditLog row
+ * per status change and one per note change (at / by / prev / next).
  * → { ok:true, changed:[projected receipts], unchanged:N }
  */
 function confirmPayment_(body, user, ctx) {
@@ -8460,30 +8803,56 @@ function confirmPayment_(body, user, ctx) {
       if (t.ok === false) return Object.assign(t, { id: id });
       plan.push({ id: id, index: at[id], row: row, t: t });
     }
+    // The two appended columns: refused when a hand-added column sits where
+    // they belong; their header names are written when still blank.
+    if (paymentControlHeaderClash_(header).length) return confirmError_('sheet_header_clash');
     const first = PAYMENT_COLUMNS.indexOf('confirmStatus');
+    const ctlFirst = PAYMENT_COLUMNS.indexOf(PAYMENT_CONTROL_COLUMNS[0]);
     const changed = [];
     let unchanged = 0;
+    if (plan.some(function (p) { return p.t.changed; })) {
+      PAYMENT_CONTROL_COLUMNS.forEach(function (name, k) {
+        const i = ctlFirst + k;
+        if (i >= header.length || String(header[i] == null ? '' : header[i]).trim() === '') sh.getRange(1, i + 1).setValue(name);
+      });
+    }
     plan.forEach(function (p) {
       if (!p.t.changed) { unchanged++; return; }
       const cells = p.t.cells;
       setPaymentRowTextCols_(sh, p.index + 2);
       sh.getRange(p.index + 2, first + 1, 1, 4).setValues([[cells.confirmStatus, cells.confirmedBy, cells.confirmedAt, cells.flagNote]]);
+      sh.getRange(p.index + 2, ctlFirst + 1, 1, 2).setValues([[cells.confirmedAmount, cells.controlNote]]);
       Object.keys(cells).forEach(function (k) { p.row[k] = cells[k]; });
-      logAudit_('payment_confirm_' + p.t.to, 'confirmPayment_',
-        String(p.row.patientUid || ''), String(p.row.patientName || ''), {
-          paymentId: p.id,
-          paymentUid: String(p.row.paymentUid || ''),
-          from: p.t.from,
-          to: p.t.to,
-          oldFlagNote: p.t.oldNote,
-          flagNote: cells.flagNote,
-          amount: receiptMoney_(p.row.amountPaid !== '' ? p.row.amountPaid : p.row.amount),
-          by: stampUser,
-          at: nowStamp,
-        }, auditActor);
+      const base = {
+        paymentId: p.id,
+        paymentUid: String(p.row.paymentUid || ''),
+        amount: receiptReportedAmount_(p.row),
+        by: stampUser,
+        at: nowStamp,
+      };
+      if (p.t.statusChanged) {
+        logAudit_('payment_confirm_' + p.t.to, 'confirmPayment_',
+          String(p.row.patientUid || ''), String(p.row.patientName || ''), Object.assign({}, base, {
+            from: p.t.from,
+            to: p.t.to,
+            oldFlagNote: p.t.oldNote,
+            flagNote: cells.flagNote,
+            confirmedAmount: p.t.next.confirmedAmount,
+            openAmount: receiptOpenAmount_(p.row),
+            prev: { status: p.t.prev.status, confirmedAmount: p.t.prev.confirmedAmount, flagNote: p.t.prev.flagNote },
+            next: { status: p.t.next.status, confirmedAmount: p.t.next.confirmedAmount, flagNote: p.t.next.flagNote },
+          }), auditActor);
+      }
+      if (p.t.noteChanged) {
+        logAudit_('payment_control_note', 'confirmPayment_',
+          String(p.row.patientUid || ''), String(p.row.patientName || ''), Object.assign({}, base, {
+            prev: { controlNote: p.t.prev.controlNote },
+            next: { controlNote: p.t.next.controlNote },
+          }), auditActor);
+      }
       // The row as the tab shows it. cycleId is the queue's (the link needs
       // every row), so it is left out here rather than sent blank.
-      const proj = billingControlReceipt_(p.row, p.t.to === 'flagged' ? nowStamp : '');
+      const proj = billingControlReceipt_(p.row, p.t.to === 'flagged' && p.t.statusChanged ? nowStamp : '');
       delete proj.cycleId;
       changed.push(proj);
     });

@@ -123,7 +123,11 @@ test('lists: Code.gs and lib/ hold the same billing-control lists; nothing new i
   assert.deepEqual(arr(g.run('BILLING_CONTROL_ACTIONS')), [...scope.BILLING_CONTROL_ACTIONS]);
   assert.deepEqual(arr(g.run('CONTROLLER_ACTIONS')), [...scope.CONTROLLER_ACTIONS]);
   assert.deepEqual(arr(g.run('CONTROLLER_USER_IDS')), [...users.CONTROLLER_USER_IDS]);
-  assert.deepEqual([...scope.CONTROLLER_ACTIONS], ['billingControlQueue', 'confirmPayment', 'debtAging']);
+  // + the «גבייה» reads (CHANGELOG-ortal-billing-access.md), append-only.
+  assert.deepEqual([...scope.CONTROLLER_ACTIONS], ['billingControlQueue', 'confirmPayment', 'debtAging',
+    'getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'cleanupReport']);
+  assert.deepEqual(arr(g.run('CONTROLLER_BILLING_READ_ACTIONS')), [...scope.CONTROLLER_BILLING_READ_ACTIONS]);
+  assert.deepEqual(arr(g.run('CONTROLLER_GETDATA_KEYS')), [...scope.CONTROLLER_GETDATA_KEYS]);
   const known = arr(g.run('PROXY_KNOWN_ACTIONS'));
   for (const a of scope.BILLING_CONTROL_ACTIONS) assert.ok(known.includes(a), a + ' is a known action');
   const open = arr(g.run('OPEN_ACTIONS'));
@@ -293,11 +297,13 @@ test('queue: newest first; counts and ₪ per status; voids left out; the allow-
   assert.equal(w.reportPay(3000, daysAgo(2)).ok, true);
   let q = w.queue();
   assert.deepEqual(q.receipts.map((r) => r.receivedDate), [daysAgo(1), daysAgo(2), daysAgo(3)], 'newest first');
-  assert.deepEqual(plain(q.counts), { reported: { count: 3, amount: 18000 }, flagged: { count: 0, amount: 0 }, confirmed: { count: 0, amount: 0 } });
+  const P0 = { count: 0, amount: 0, verified: 0, open: 0 };   // partial: CHANGELOG-ortal-billing-access.md
+  assert.deepEqual(plain(q.counts), { reported: { count: 3, amount: 18000 }, flagged: { count: 0, amount: 0 }, confirmed: { count: 0, amount: 0 }, partial: P0 });
   const keys = Object.keys(q.receipts[0]).sort();
   assert.deepEqual(keys, ['amount', 'confirmStatus', 'confirmedAt', 'confirmedBy', 'coverageEnd', 'coverageStart', 'cycleId', 'flagNote', 'flaggedAt',
     'funder', 'houseId', 'id', 'method', 'patientName', 'payer', 'receivedDate', 'recordedAt', 'recordedBy', 'reference',
-    'invoiceWanted', 'invoiceTo'].sort());   // the invoice: CHANGELOG-payment-invoice.md
+    'invoiceWanted', 'invoiceTo',   // the invoice: CHANGELOG-payment-invoice.md
+    'verifiedAmount', 'openAmount', 'confirmedAmount', 'controlNote'].sort());   // CHANGELOG-ortal-billing-access.md
   assert.equal(q.receipts[0].cycleId, CYCLE.id, 'linked to its cycle');
   assert.ok(!JSON.stringify(q).includes('patientUid'), 'no uid leaves');
   // Same date: the later recordedAt first.
@@ -309,7 +315,8 @@ test('queue: newest first; counts and ₪ per status; voids left out; the allow-
   w.call({ action: 'savePayment', payment: Object.assign({}, third, { status: 'void', linkStatus: 'duplicate', linkNote: 'כפילות' }) });
   q = w.queue();
   assert.equal(q.receipts.length, 2, 'the void receipt is not in the queue');
-  assert.deepEqual(plain(q.counts), { reported: { count: 0, amount: 0 }, flagged: { count: 1, amount: 3000 }, confirmed: { count: 1, amount: 5000 } });
+  assert.deepEqual(plain(q.counts), { reported: { count: 0, amount: 0 }, flagged: { count: 1, amount: 3000 }, confirmed: { count: 1, amount: 5000 }, partial: P0 });
+  assert.deepEqual(plain(q.openDebt), { partial: { count: 0, amount: 0 }, notReceived: { count: 1, amount: 3000 }, total: 3000 });
   assert.equal(q.today, TODAY);
   assert.ok(q.debt60 && q.debt60.recorded && q.debt60.unrecorded, 'debt over 60 days rides along');
   assert.equal(q.exceptions, undefined, 'Ortal: no «חריגים פתוחים»');
@@ -381,7 +388,7 @@ test('«חריגים פתוחים»: flagged receipts older than 7 days (by the 
 
 /* ------------------ the controller view (Code.gs side) ------------------ */
 
-test('Code.gs: Ortal reaches ONLY billingControlQueue, confirmPayment and debtAging — every other known action is refused before any read or write', () => {
+test('Code.gs: Ortal reaches ONLY CONTROLLER_ACTIONS (the tab + the «גבייה» reads) — every other known action is refused before any read or write', () => {
   const w = withTwoReceipts();
   const known = arr(w.g.run('PROXY_KNOWN_ACTIONS'));
   const allowed = [...scope.CONTROLLER_ACTIONS];
@@ -396,12 +403,15 @@ test('Code.gs: Ortal reaches ONLY billingControlQueue, confirmPayment and debtAg
   assert.equal(w.snapshot(), before, 'nothing written by any refused call');
   assert.equal(w.call({ action: 'billingControlQueue' }, ORTAL).ok, true);
   assert.equal(w.call({ action: 'debtAging', asOf: TODAY }, ORTAL).ok, true, 'the debt export she links to');
-  // getData: no patients, no leads for her — refused outright.
-  assert.deepEqual(w.call({ action: 'getData' }, ORTAL), FORBIDDEN);
-  // A forged proxyCaps cannot widen her: finance is never derived for her id.
-  assert.deepEqual(w.call({ action: 'getPayments' }, () => gsActor('ortal', 'אורטל', ['controller'], ['finance', 'billingControl'])), FORBIDDEN);
+  // getData (CHANGELOG-ortal-billing-access.md): patients + overrides only — no lead.
+  assert.deepEqual(Object.keys(w.call({ action: 'getData' }, ORTAL)).sort(), ['billingOverrides', 'ok', 'patients']);
+  // A forged proxyCaps cannot widen her: finance is never derived for her id,
+  // so a «גבייה» write stays refused.
+  assert.deepEqual(w.call({ action: 'savePayment', payment: { id: 'x' } }, () => gsActor('ortal', 'אורטל', ['controller'], ['finance', 'billingControl'])), FORBIDDEN);
   // And a narrowed proxyCaps (no billingControl) leaves her nothing.
   assert.deepEqual(w.call({ action: 'billingControlQueue' }, () => gsActor('ortal', 'אורטל', ['controller'], [])), FORBIDDEN);
+  const narrowed = w.call({ action: 'getPayments' }, () => gsActor('ortal', 'אורטל', ['controller'], []));
+  assert.deepEqual([narrowed.ok, narrowed.error], [false, 'forbidden'], 'refused by the finance lock');
 });
 
 test('Code.gs: Shiran / Yael get forbidden on both tab actions; Vered may read the queue', () => {
@@ -817,12 +827,12 @@ test('server: Ortal gets 403 on EVERY Express /api/ route outside CONTROLLER_ROU
         assert.deepEqual(r.json, FORBIDDEN, method + ' ' + p);
         refused++;
       }
-      assert.ok(refused >= 8, 'refused ' + refused);
+      assert.ok(refused >= 6, 'refused ' + refused);   // two exports opened by CHANGELOG-ortal-billing-access.md
       assert.equal(stub.calls.length, 0, 'no refused route reached Apps Script');
       // The allowed ones.
       const me = await request(port, 'GET', '/api/me', { cookie: personal('ortal') });
       assert.deepEqual(me.json, { ok: true, user: 'אורטל', auth: 'personal', approver: false, deleter: false, finance: false,
-        capabilities: ['billingControl'], billingControl: true, view: 'controller', canConfirm: true });
+        capabilities: ['billingControl'], billingControl: true, view: 'controller', canConfirm: true, billingRead: true });
       const x = await request(port, 'GET', '/api/export/billing-control.xlsx', { cookie: personal('ortal') });
       assert.equal(x.status, 200);
       assert.equal(x.headers['content-type'], report.XLSX_MIME);
@@ -877,7 +887,9 @@ test('server: an Ortal record narrowed to no roles keeps the controller VIEW (no
     await withServer(async (port) => {
       const me = await request(port, 'GET', '/api/me', { cookie: personal('ortal') });
       assert.deepEqual([me.json.view, me.json.canConfirm], ['controller', false]);
-      assert.equal((await request(port, 'GET', '/api/sheets?action=getData', { cookie: personal('ortal') })).status, 403);
+      // Reads the «גבייה» tab (CHANGELOG-ortal-billing-access.md); never writes.
+      assert.equal((await request(port, 'GET', '/api/sheets?action=getData', { cookie: personal('ortal') })).status, 200);
+      assert.equal((await request(port, 'POST', '/api/sheets', { cookie: personal('ortal'), body: { action: 'savePayment', payment: { id: 'x' } } })).status, 403);
       assert.equal((await request(port, 'POST', '/api/sheets', { cookie: personal('ortal'), body: { action: 'confirmPayment' } })).status, 403);
     }, { ortal: { roles: [] } });
     await withServer(async (port) => {
@@ -894,7 +906,8 @@ test('«ייצוא אימות» workbook: four sheets — סיכום, ממתין
   const buf = await report.buildXlsxReport(bcx.buildBillingControlSpec(q, new Date()));
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buf);
-  assert.deepEqual(wb.worksheets.map((s) => s.name), ['סיכום', 'ממתין לאימות', 'סומנו כבעיה', 'אומתו']);
+  // + «שולם חלקית» (CHANGELOG-ortal-billing-access.md)
+  assert.deepEqual(wb.worksheets.map((s) => s.name), ['סיכום', 'ממתין לאימות', 'סומנו כבעיה', 'אומתו', 'שולם חלקית']);
   for (const s of wb.worksheets) assert.equal(s.views[0].rightToLeft, true, s.name);
   const text = (s) => { const out = []; s.eachRow((r) => out.push(r.values.slice(1).map((v) => (v && v.richText ? v.richText.map((t) => t.text).join('') : v instanceof Date ? v.toISOString().slice(0, 10) : String(v == null ? '' : v))).join('|'))); return out.join('\n'); };
   const pending = text(wb.getWorksheet('ממתין לאימות'));
