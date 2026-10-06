@@ -136,3 +136,39 @@ the last day in `end_date`: from the next day that manager disappears from
 the strip and the dropdown. Leads already saved with that manager keep the
 name. A new manager can be added ahead of time with a future `start_date`;
 they appear on that day, not before.
+
+## Follow-up — October 6, 2026 (tests and docs only)
+
+The feature branch `fix/meeting-summary-active-managers` was merged as PR #154
+on October 1. On October 6 it was re-checked against the deployed branch,
+which now also carries #186 (page-load perf / hashed assets), #187 and #188
+(Ortal billing):
+
+- `currentManagers_` is still called by `getData_` after #186's read-path
+  rework. It does its own read-only lookup. #186's script cache stores no
+  responses, so the roster is read fresh on every load. It sits behind
+  the same PROXY_SECRET gate as every other action (unchanged, still in its
+  transition mode), and no shared action changed.
+- No runtime file changed, so the SW `CACHE_VERSION` stays **v40**. Bumping
+  it without an asset change would only make every client re-download.
+
+Tests added to `test/current-managers.test.js` (31 → 33):
+
+- **escaping:** a hostile `Managers` cell (`<img onerror=…>&'`) passes through
+  `Code.gs` untouched. The summary strip, the meetingWith `<option>` (value
+  and label) and the meetings row all HTML-escape it, and no raw tag
+  survives.
+- **saved former manager:** `אורן` ended yesterday and `דנה` starts today, and a
+  meeting is saved with `אורן`.
+  - The meetings row shows `אורן` and the dropdown keeps it selected, with
+    `דנה` offered alongside.
+  - The strip hides `אורן`'s row.
+  - The default autosave neither rewrites `אורן` nor saves anything.
+
+Mutation checks against the suite: 6 of 7 mutants were killed. The survivor
+was an equivalent mutant: dropping only the explicit «ללא מנהל» filter leaves
+it hidden, because «ללא מנהל» is never a current manager. Dropping the whole
+filter is killed.
+
+Full suite: 2280/2280, with the Chromium browser tests run (none skipped).
+

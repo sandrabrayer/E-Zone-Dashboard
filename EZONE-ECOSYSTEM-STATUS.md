@@ -893,6 +893,22 @@ Detail: `CHANGELOG-reactivation-fix.md`. **Railway only**: `public/app.js`;
   evicts v40 and any orphaned v17.
 - No new action, env var, Script Property, scope, column or trigger.
 
+## Dashboard: meetings strip shows current managers only (PR #154, October 1, 2026; re-verified October 6)
+
+Detail: `CHANGELOG-meeting-summary-active-managers.md`. Apps Script **and** Railway.
+
+- `getData` adds `currentManagers` + `currentManagersSource` (additive;
+  `houseManagers` unchanged for ezone-managers / ezone-therapists).
+- Source: the `Managers` tab (house | manager_name | start_date | end_date),
+  current = start ≤ today ≤ end (blank = open), today in Asia/Jerusalem.
+  Missing/empty tab → bonusconfig `manager` column → `houseManagers`.
+  Read-only: no tab created, no header written.
+- The strip hides former managers and «ללא מנהל»; the meetingWith dropdowns
+  and the house default use current managers. A meeting saved with a former
+  manager keeps and shows that name — saved data is never rewritten.
+- Oct 6: confirmed intact after #186–#188 (no code change, SW stays v40);
+  tests added for escaping and the saved-former-manager meeting row.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);
