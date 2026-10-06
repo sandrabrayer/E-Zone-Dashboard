@@ -368,7 +368,7 @@
 
       <div class="bill-group bill-group--open" data-group="bc-queue">
         <h3 class="bill-group-title">ממתין לאימות <span class="count-pill" id="bc-queue-count">0</span></h3>
-        <p class="billing-date-label">החדש ראשון. בודקים בבנק, ואז ✓ «אושר בבנק» או ⚑ «לא נמצא / בעיה».</p>
+        <p class="billing-date-label">החדש ראשון. בודקים בבנק ובוחרים סטטוס: «שולם», «שולם חלקית» (מזינים כמה התקבל) או «לא שולם» (חובה לפרט).</p>
         <div id="bc-bulk" class="bc-bulk hidden">
           <label class="bc-pick"><input type="checkbox" id="bc-select-all" /> סמן הכל</label>
           <button type="button" class="btn small primary" id="bc-bulk-confirm" disabled>אשר את כל המסומנים</button>
@@ -380,6 +380,12 @@
         <h3 class="bill-group-title">סומנו כבעיה <span class="count-pill" id="bc-flagged-count">0</span></h3>
         <p class="billing-date-label">ורד מטפלת: ביטול הקבלה ודיווח מחדש. הקבלה שסומנה נשארת בהיסטוריה.</p>
         <div id="bc-flagged" class="billing-list bc-list"></div>
+      </div>
+
+      <div class="bill-group bill-group--open" data-group="bc-partial">
+        <h3 class="bill-group-title">שולם חלקית <span class="count-pill" id="bc-partial-count">0</span> <span class="bc-sub">יתרה פתוחה: <span id="bc-partial-open">₪ 0</span></span></h3>
+        <p class="billing-date-label">רק הסכום שאומת נחשב הכנסה מאומתת. היתרה נשארת חוב פתוח עד שמסמנים «שולם».</p>
+        <div id="bc-partial" class="billing-list bc-list"></div>
       </div>
 
       <div class="bill-group bill-group--credits" data-group="bc-confirmed">

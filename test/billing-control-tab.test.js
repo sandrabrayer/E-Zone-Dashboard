@@ -633,23 +633,28 @@ test('page: the controller view opens ONLY «בקרת גבייה»; restricted s
   assert.equal(app.resolveScreen('billing-control', true, 'full'), 'billing-control', 'the digest deep link opens it');
 });
 
-test('page: a queue card has ✓ / ⚑ / סמן only for a session that may decide; Vered sees the same card read-only; every value escaped', () => {
+test('page: a queue card has the status dropdown / סמן only for a session that may decide; Vered sees the same card read-only; every value escaped', () => {
   const { app } = loadApp();
   const r = { id: 'rcpt-1', patientName: '<img src=x>', houseId: 'arfoni', amount: 30000, receivedDate: '2026-10-01',
     method: 'העברה בנקאית', reference: 'TRX-1', payer: 'משפחת "כהן"', funder: 'פרטי', recordedBy: 'ורד', confirmStatus: 'reported' };
   app.state.canConfirm = true;
   const ortal = app.bcReceiptHtml(r, 'queue');
-  for (const s of ['data-bc-confirm="rcpt-1"', 'data-bc-flag="rcpt-1"', 'data-bc-pick="rcpt-1"', '✓ אושר בבנק', '⚑ לא נמצא / בעיה']) assert.ok(ortal.includes(s), s);
+  // ✓ / ⚑ became the status dropdown (CHANGELOG-ortal-verification-status.md).
+  for (const s of ['data-bc-status="rcpt-1"', 'data-bc-pick="rcpt-1"', '>שולם<', '>שולם חלקית<', '>לא שולם<']) assert.ok(ortal.includes(s), s);
+  assert.ok(!ortal.includes('data-bc-confirm') && !ortal.includes('data-bc-flag="'), 'no ✓ / ⚑ buttons any more');
   for (const label of ['התקבל', 'אמצעי', 'אסמכתא', 'משלם', 'גורם מממן', 'נרשם ע״י', 'TRX-1', 'קיסריה עפרוני', '01/10/2026']) assert.ok(ortal.includes(label), label);
   assert.ok(!ortal.includes('<img'), 'escaped');
   assert.ok(ortal.includes('&quot;כהן&quot;'));
   app.state.canConfirm = false;
   const vered = app.bcReceiptHtml(r, 'queue');
-  assert.ok(!/<button|<input/.test(vered), 'no control for Vered');
+  assert.ok(!/<button|<input|<select|<textarea/.test(vered), 'no control for Vered');
   app.state.canConfirm = true;
   const flagged = app.bcReceiptHtml(Object.assign({}, r, { confirmStatus: 'flagged', flagNote: 'לא נמצא' }), 'flagged');
   assert.ok(flagged.includes('data-bc-unflag="rcpt-1"') && flagged.includes('הסר דגל') && flagged.includes('לא נמצא'));
-  assert.ok(!/<button|<input/.test(app.bcReceiptHtml(r, 'confirmed', { inMonth: 1000 })), 'the confirmed list is read-only');
+  // Every row — the confirmed list too — has the dropdown and the note for a decider; none for Vered.
+  assert.ok(app.bcReceiptHtml(Object.assign({}, r, { confirmStatus: 'confirmed' }), 'confirmed', { inMonth: 1000 }).includes('data-bc-status="rcpt-1"'));
+  app.state.canConfirm = false;
+  assert.ok(!/<button|<input|<select|<textarea/.test(app.bcReceiptHtml(r, 'confirmed', { inMonth: 1000 })), 'read-only without the role');
 });
 
 test("page: Sandra's «חריגים פתוחים» has NO write control — no button, no input, no checkbox", () => {
@@ -838,7 +843,8 @@ test('server: Ortal gets 403 on EVERY Express /api/ route outside CONTROLLER_ROU
       assert.equal(x.headers['content-type'], report.XLSX_MIME);
       assert.equal(x.headers['cache-control'], 'no-store');
       const page = await request(port, 'GET', '/', { cookie: personal('ortal') });
-      assert.match(page.text, /<body class="view-controller">/);
+      // + view-billing-read (CHANGELOG-ortal-verification-status.md).
+      assert.match(page.text, /<body class="view-controller view-billing-read">/);
       // Static assets are not data — they load.
       assert.equal((await request(port, 'GET', '/billing-control-rules.js', { cookie: personal('ortal') })).status, 200);
     });

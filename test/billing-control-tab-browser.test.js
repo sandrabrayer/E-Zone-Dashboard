@@ -146,14 +146,17 @@ test('Ortal at 360px: only «בקרת גבייה»; the queue → ✓ confirm on
     const o = await open(browser, server.port, 'ortal');
     const page = o.page;
     await page.waitForSelector('#bc-queue .bc-row', { timeout: 10000 });
-    // ONE tab, ONE screen — everything else is gone from the DOM.
-    assert.deepEqual(await page.locator('.tabs .tab').evaluateAll((els) => els.map((e) => e.getAttribute('data-screen'))), ['billing-control']);
-    assert.deepEqual(await page.locator('section.screen').evaluateAll((els) => els.map((e) => e.id)), ['screen-billing-control']);
-    assert.equal(await page.locator('[data-finance]').count(), 0);
+    // «בקרת גבייה» + «גבייה» read-only (CHANGELOG-ortal-verification-status.md)
+    // — everything else is gone from the DOM.
+    assert.deepEqual(await page.locator('.tabs .tab').evaluateAll((els) => els.map((e) => e.getAttribute('data-screen'))), ['billing', 'billing-control']);
+    assert.deepEqual(await page.locator('section.screen').evaluateAll((els) => els.map((e) => e.id)), ['screen-billing', 'screen-billing-control']);
+    assert.deepEqual(await page.locator('[data-finance]').evaluateAll((els) => els.map((e) => e.getAttribute('data-screen') || e.id)), ['billing', 'screen-billing']);
     assert.equal(await page.evaluate(() => document.body.classList.contains('view-controller')), true);
     assert.equal(await page.locator('#pin-admin-open').isVisible(), false, 'no «קוד אישי חדש»');
     assert.ok(await page.locator('#logout').isVisible(), 'logout stays');
-    assert.ok(!server.actions.some((a) => a.action === 'getData'), 'no patients / leads asked: ' + server.actions.map((a) => a.action).join(','));
+    // Only her allow-listed reads (getData is cut to patients + overrides).
+    const allowed = ['billingControlQueue', 'confirmPayment', 'debtAging', 'getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'cleanupReport'];
+    assert.deepEqual(server.actions.map((a) => a.action).filter((a) => !allowed.includes(a)), [], 'only her reads');
     // The queue: newest first, every column.
     const names = await page.locator('#bc-queue .bc-row .bc-amount').allTextContents();
     assert.equal(names.length, 2);
@@ -164,17 +167,17 @@ test('Ortal at 360px: only «בקרת גבייה»; the queue → ✓ confirm on
     assert.equal(await noSideScroll(page), true, 'no sideways scroll');
     await shot(page, 'ortal-360-queue.png');
 
-    // ✓ on the newest (12,000).
-    await page.locator('#bc-queue .bc-row').first().locator('[data-bc-confirm]').click();
+    // «שולם» on the newest (12,000) — the dropdown replaces ✓.
+    await page.locator('#bc-queue .bc-row').first().locator('[data-bc-status]').selectOption('confirmed');
     await page.waitForFunction(() => document.querySelectorAll('#bc-queue .bc-row').length === 1);
     await page.waitForSelector('#bc-confirmed .bc-row');
     assert.match(await page.locator('#bc-confirmed').textContent(), /12,000/);
     assert.match(await page.locator('#bc-card-confirmed').textContent(), /12,000/);
-    assert.match(await page.locator('#toast-banner').textContent(), /אושר בבנק/);
+    assert.match(await page.locator('#toast-banner').textContent(), /שולם/);
 
-    // ⚑ on the other with an empty note → inline error, nothing sent.
+    // «לא שולם» on the other with an empty note → inline error, nothing sent.
     const sentBefore = server.actions.filter((a) => a.action === 'confirmPayment').length;
-    await page.locator('#bc-queue .bc-row').first().locator('[data-bc-flag]').click();
+    await page.locator('#bc-queue .bc-row').first().locator('[data-bc-status]').selectOption('flagged');
     const form = page.locator('.bc-flag-form');
     await form.waitFor();
     await form.locator('[data-bc-flag-save]').click();
@@ -239,7 +242,7 @@ test("Sandra sees «חריגים פתוחים» read-only and «מאומת» on 
     await page.waitForSelector('#bc-exceptions:not(.hidden)');
     assert.equal(await page.locator('#bc-exceptions button, #bc-exceptions input, #bc-exceptions textarea, #bc-exceptions select').count(), 0, 'read-only');
     assert.match(await page.locator('#bc-exceptions').textContent(), /חובות מעל 60 יום/);
-    assert.ok(await page.locator('#bc-queue [data-bc-confirm]').first().isVisible(), 'Sandra (approver) may decide in the queue');
+    assert.ok(await page.locator('#bc-queue [data-bc-status]').first().isVisible(), 'Sandra (approver) may decide in the queue');
     assert.equal(await noSideScroll(page), true);
     await shot(page, 'sandra-360-tab.png');
     // הכנסות חודשיות: «מאומת» next to «נגבה».
@@ -255,7 +258,7 @@ test("Sandra sees «חריגים פתוחים» read-only and «מאומת» on 
 
     const v = await open(browser, server.port, 'vered', '#billing-control');
     await v.page.waitForSelector('#bc-queue .bc-row', { timeout: 10000 });
-    assert.equal(await v.page.locator('#screen-billing-control button[data-bc-confirm], #screen-billing-control [data-bc-flag], #screen-billing-control [data-bc-pick]').count(), 0, 'Vered: read-only');
+    assert.equal(await v.page.locator('#screen-billing-control [data-bc-status], #screen-billing-control [data-bc-cnote-open], #screen-billing-control [data-bc-pick]').count(), 0, 'Vered: read-only');
     assert.equal(await v.page.locator('#bc-exceptions').isVisible(), false, 'not Sandra: no «חריגים פתוחים»');
     assert.deepEqual(v.errors, []);
     await v.ctx.close();

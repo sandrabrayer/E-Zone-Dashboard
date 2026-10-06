@@ -272,7 +272,11 @@ function sendIndex(req, res) {
   // «בקרת גבייה» (Phase 4): Ortal's controller session gets
   // <body class="view-controller"> — only that tab ever paints.
   const principal = sessionPrincipalFromRequest(req);
-  if (isControllerView(principal)) html = html.replace('<body>', '<body class="view-controller">');
+  // With read access to «גבייה» (CHANGELOG-ortal-verification-status.md) the
+  // page also gets view-billing-read, so that tab paints read-only.
+  if (isControllerView(principal)) {
+    html = html.replace('<body>', hasBillingControl(principal) ? '<body class="view-controller view-billing-read">' : '<body class="view-controller">');
+  }
   else if (principal && !hasFinance(principal)) html = html.replace('<body>', '<body class="view-restricted">');
   console.log(`[req] → serving /index.html (build ${BUILD_ID}, ${html.length} chars)`);
   noCache(res);

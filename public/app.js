@@ -1082,8 +1082,16 @@ function applySessionInfo(info) {
   const adminBtn = document.getElementById('pin-admin-open');
   if (adminBtn) adminBtn.classList.toggle('hidden', i.approver !== true);
   applyRoleView();
-  // «בקרת גבייה» (Phase 4): Ortal's controller session sees that tab ONLY.
-  if (i.view === 'controller') { applyControllerView(); return; }
+  // «בקרת גבייה» (Phase 4): Ortal's controller session sees that tab — and,
+  // since CHANGELOG-ortal-verification-status.md, «גבייה» read-only when the
+  // server says billingRead.
+  if (i.view === 'controller') {
+    const readChanged = state.billingRead !== (i.billingRead === true);
+    state.billingRead = i.billingRead === true;
+    applyControllerView();
+    if (readChanged && state.billingRead) loadBillingRead().catch(() => { /* shown in the tab */ });
+    return;
+  }
   if (_controllerApplied) { location.reload(); return; }
   // The tab itself: only an explicit false removes it (Shiran, Yael).
   applyBillingControlCap(i.billingControl !== false && i.finance !== false);
@@ -1213,7 +1221,10 @@ function initPin() {
 }
 
 function enterApp() {
-  state.mode = 'edit';   // single mode: an authenticated user is an editor
+  // single mode: an authenticated user is an editor — except the controller
+  // view (Ortal), which only READS «גבייה» (CHANGELOG-ortal-verification-status.md):
+  // 'view' leaves out every edit / report / void control the tab draws.
+  state.mode = controllerView() ? 'view' : 'edit';
   revealApp();
   loadAll();             // getData rides the cookie; a 401 flips to the PIN screen
   checkSessionUser();    // fire-and-forget: whoami line + the role view
@@ -1388,24 +1399,40 @@ function financeView() {
  * (the controller view) it is the ONLY screen. */
 const BILLING_CONTROL_SCREEN = 'billing-control';
 
+/* «גבייה» read-only for the controller view (Ortal) when the server allows
+ * it (/api/me billingRead, or <body class="view-billing-read">). */
+const BILLING_SCREEN = 'billing';
+
 /* The screens a session may open, in tab order. Pure.
- *   view 'controller' → the «בקרת גבייה» tab only;
+ *   view 'controller' → «בקרת גבייה» (first) and, with billingRead, «גבייה»;
  *   finance false     → no money tab and no «בקרת גבייה». */
-function allowedScreens(finance, view) {
-  if (view === 'controller') return [BILLING_CONTROL_SCREEN];
+function allowedScreens(finance, view, billingRead) {
+  if (view === 'controller') return billingRead === true ? [BILLING_CONTROL_SCREEN, BILLING_SCREEN] : [BILLING_CONTROL_SCREEN];
   return SCREENS.filter(s => finance !== false || (FINANCE_SCREENS.indexOf(s) < 0 && s !== BILLING_CONTROL_SCREEN));
 }
 
 /* `requested` when it is a screen the session may open, else the first
  * allowed one (the dashboard). Pure. */
-function resolveScreen(requested, finance, view) {
-  const allowed = allowedScreens(finance, view);
+function resolveScreen(requested, finance, view, billingRead) {
+  const allowed = allowedScreens(finance, view, billingRead);
   return allowed.indexOf(requested) >= 0 ? requested : allowed[0];
 }
 
 /* true once the session is known to be the controller view (Ortal). */
 function controllerView() {
   return state.view === 'controller';
+}
+
+/* true for the controller view with read access to «גבייה». */
+function billingReadView() {
+  return controllerView() && state.billingRead === true;
+}
+
+/* Whether the «גבייה» screen renders: the finance view, or Ortal's read-only
+ * view. Every write control in it also needs state.mode === 'edit', which
+ * the controller view never is. */
+function billingTabView() {
+  return financeView() || billingReadView();
 }
 
 let _controllerApplied = false;
@@ -1429,28 +1456,46 @@ function applyBillingControlCap(allowed) {
  * billing widget; the data already in memory is dropped; the tab opens. The
  * server refuses every other action and route (403) either way. Idempotent. */
 function applyControllerView() {
+  const first = state.view !== 'controller';
   state.view = 'controller';
   state.finance = false;
   state.billingControl = true;
+  state.mode = 'view';
   if (document.body && document.body.classList) {
     document.body.classList.add('view-controller');
     document.body.classList.remove('view-restricted');
+    // Served by the server for Ortal's billingRead session; /api/me decides after.
+    if (state.billingRead === undefined) state.billingRead = document.body.classList.contains('view-billing-read');
+    document.body.classList.toggle('view-billing-read', state.billingRead === true);
   }
-  const keep = el => el && (el.getAttribute('data-screen') === BILLING_CONTROL_SCREEN || el.id === 'screen-' + BILLING_CONTROL_SCREEN);
+  const read = state.billingRead === true;
+  // A page drawn without «גבייה» (served before billingRead) gets it back by
+  // a reload — the server then serves <body class="view-billing-read">.
+  if (!first && read && !document.getElementById('screen-' + BILLING_SCREEN)) { location.reload(); return; }
+  const screens = allowedScreens(false, 'controller', read);
+  const keepScreen = name => screens.indexOf(name) >= 0;
+  // The «גבייה» screen keeps its own [data-finance] children (read-only).
+  const inKeptScreen = el => !!(el && el.closest && screens.some(n => el.closest('#screen-' + n)));
+  const keep = el => el && (keepScreen(el.getAttribute('data-screen')) || keepScreen(String(el.id || '').replace(/^screen-/, '')) || inKeptScreen(el));
   const drop = el => { if (el && el.remove && !keep(el)) el.remove(); };
   Array.prototype.forEach.call(document.querySelectorAll('.tabs .tab'), drop);
   Array.prototype.forEach.call(document.querySelectorAll('section.screen'), drop);
   Array.prototype.forEach.call(document.querySelectorAll('[data-finance]'), drop);
+  // «השלמת גורם מממן» is data entry — never in the read-only view.
+  const ff = document.getElementById('funder-fill');
+  if (ff && ff.remove) ff.remove();
   _controllerApplied = true;
   _financeRemoved = true;
-  state.leads = [];
-  state.patients = [];
-  state.payments = [];
-  state.credits = [];
-  state.billingOverrides = [];
-  state.receipts = [];
-  state.funders = [];
-  showScreen(BILLING_CONTROL_SCREEN);
+  if (first) {
+    state.leads = [];
+    state.patients = [];
+    state.payments = [];
+    state.credits = [];
+    state.billingOverrides = [];
+    state.receipts = [];
+    state.funders = [];
+  }
+  if (first || !keepScreen(state.currentScreen)) showScreen(BILLING_CONTROL_SCREEN);
   renderBillingControl();
 }
 
@@ -1508,7 +1553,7 @@ function applyView(finance) {
 function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {
     btn.onclick = () => {
-      showScreen(resolveScreen(btn.dataset.screen, state.finance, state.view));
+      showScreen(resolveScreen(btn.dataset.screen, state.finance, state.view, state.billingRead === true));
       renderAll();
       if (state.currentScreen === BILLING_CONTROL_SCREEN) loadBillingControl().catch(() => { /* shown in the tab */ });
     };
@@ -1645,11 +1690,37 @@ function startTimedRead(params) {
   );
 }
 
+/* The controller view's «גבייה» data (CHANGELOG-ortal-verification-status.md):
+ * getData (the server cuts it to patients + billingOverrides), getPayments
+ * and getCredits — the same normalizers as loadAll. Fail-soft per read, like
+ * loadAll; nothing else is loaded. */
+async function loadBillingRead() {
+  if (!billingReadView()) return;
+  const [d, p, c] = await Promise.all([
+    startTimedRead({ action: 'getData' }), startTimedRead({ action: 'getPayments' }), startTimedRead({ action: 'getCredits' }),
+  ]);
+  if (d.ok && d.value && typeof d.value === 'object') {
+    state.patients = parsePatients(d.value.patients);
+    state.billingOverrides = (Array.isArray(d.value.billingOverrides) ? d.value.billingOverrides : [])
+      .map(normalizeBillingOverride).filter(o => o.patientId && o.month);
+  }
+  if (p.ok && p.value) {
+    state.payments = (Array.isArray(p.value.payments) ? p.value.payments : []).map(normalizePayment).filter(x => x.id);
+    state.receipts = (Array.isArray(p.value.receipts) ? p.value.receipts : []).map(normalizeReceipt).filter(r => r.id);
+  }
+  if (c.ok && c.value) state.credits = (Array.isArray(c.value.credits) ? c.value.credits : []).map(normalizeCredit).filter(x => x.id);
+  if (!d.ok) showError('טעינת «גבייה» נכשלה — ' + ((d.error && d.error.message) || 'שגיאה'));
+  renderBilling();
+  renderCreditsPayouts();
+}
+
 async function loadAll() {
   _lastLoadAllAt = Date.now();
-  // «בקרת גבייה» (Phase 4): the controller view loads ONLY its queue — no
-  // getData (no patients, no leads), no payments, no credits.
-  if (controllerView()) return loadBillingControl();
+  // «בקרת גבייה» (Phase 4): the controller view loads its queue and — with
+  // read access to «גבייה» — the tab's reads (loadBillingRead). No lead.
+  if (controllerView()) {
+    return Promise.all([loadBillingControl(), billingReadView() ? loadBillingRead() : null]).then(() => undefined);
+  }
   setLoading(true);
   const t0 = perfNow();
   // The three reads are independent: start them TOGETHER, so the page waits
@@ -3678,8 +3749,12 @@ function openMeetingEditModal(m) {
 }
 
 function renderAll() {
-  // The controller view has one screen; nothing else exists to render.
-  if (controllerView()) { renderBillingControl(); return; }
+  // The controller view: «בקרת גבייה», and «גבייה» read-only when allowed.
+  if (controllerView()) {
+    renderBillingControl();
+    if (billingReadView()) { renderBilling(); renderCreditsPayouts(); }
+    return;
+  }
   renderDashboard();
   renderCoordinatorDischarges();
   renderKanban();
@@ -7056,7 +7131,7 @@ function showMarkCreditPaidModal(c) {
 /* Payout view (גבייה tab): pending credits grouped by payoutDate with a
  * total per date, so the outgoing amount is visible before each 15th. */
 function renderCreditsPayouts() {
-  if (!financeView()) return; // restricted view: no billing UI at all
+  if (!billingTabView()) return; // restricted view: no billing UI at all
   renderPayoutForecast();
   const list = document.getElementById('credits-payout-list');
   if (!list) return;
@@ -7151,7 +7226,7 @@ function markPayoutForecastStale() {
 }
 
 async function loadPayoutForecast() {
-  if (!financeView()) return; // restricted view: no billing UI at all
+  if (!billingTabView()) return; // restricted view: no billing UI at all
   const f = payoutForecastState();
   if (f.status === 'loading') return f.promise;
   f.status = 'loading'; f.error = '';
@@ -7323,7 +7398,7 @@ function cleanupXlsxErrorText(status, code) {
 }
 
 async function exportCleanupXlsx() {
-  if (!financeView()) throw new Error('אין הרשאה לייצוא זה');
+  if (!billingTabView()) throw new Error('אין הרשאה לייצוא זה');
   let res;
   try {
     res = await fetch(CLEANUP_XLSX_URL, { method: 'GET', credentials: 'same-origin', cache: 'no-store' });
@@ -9494,7 +9569,7 @@ function billingRowMatchesQuery(patient, payment, q) {
 }
 
 function renderBilling() {
-  if (!financeView()) return; // restricted view: no billing UI at all
+  if (!billingTabView()) return; // restricted view: no billing UI at all
   const selected = state.billingDate || todayISO();
   const billingDateEl = document.getElementById('billing-date');
   if (billingDateEl && billingDateEl.value !== selected) billingDateEl.value = selected;
@@ -10879,6 +10954,10 @@ function normalizeReceipt(r) {
     confirmedBy: String(o.confirmedBy || ''),
     confirmedAt: String(o.confirmedAt || ''),
     flagNote: String(o.flagNote || ''),
+    // CHANGELOG-ortal-verification-status.md: «שולם חלקית» counts only this
+    // in «מאומת» (lib/billing-control-rules.js verifiedAmountOf).
+    confirmedAmount: o.confirmedAmount === undefined || o.confirmedAmount === null ? '' : o.confirmedAmount,
+    controlNote: String(o.controlNote || ''),
     linkStatus: String(o.linkStatus || ''),
     linkNote: String(o.linkNote || ''),
     timestamp: String(o.timestamp || ''),
@@ -12451,7 +12530,15 @@ function renderBreakevenSummary() {
  *   - Sandra (approver) also sees «חריגים פתוחים», read-only.
  * Data: action=billingControlQueue (read), action=confirmPayment (write).
  * Display only: server.js and Code.gs refuse the data and the decision
- * themselves. Vered sees the tab without the decision buttons. */
+ * themselves. Vered sees the tab without the decision buttons.
+ *
+ * Extended 2026-10-06 (CHANGELOG-ortal-verification-status.md): ✓ / ⚑ are
+ * replaced by a status dropdown on every row — «שולם» (saved at once),
+ * «שולם חלקית» (an amount field: > 0 and < the reported amount, with the
+ * remaining balance shown live), «לא שולם» (the existing note form). Partial
+ * receipts get their own list and their open rest is shown on the row and in
+ * the «יתרה פתוחה» card. Every row also has Ortal's free-text note (≤500),
+ * editable at any time. Every value is escaped on render. */
 
 /* The flag-note bounds come from lib/billing-control-rules.js (2–300, the
  * same FLAG_NOTE_MIN / FLAG_NOTE_MAX as Code.gs). */
@@ -12465,7 +12552,20 @@ const BC_ERRORS = {
   flag_note_invalid: 'בסימון «בעיה» חובה לפרט (2 עד 300 תווים)',
   not_found: 'הקבלה לא נמצאה — רעננו את הדף',
   receipt_void: 'הקבלה בוטלה — אין מה לאשר',
+  partial_single: '«שולם חלקית» — קבלה אחת בכל פעם',
+  partial_amount_invalid: 'בתשלום חלקי חובה להזין סכום שהתקבל (מספר, עד שתי ספרות אחרי הנקודה)',
+  partial_amount_range: 'הסכום שהתקבל חייב להיות גדול מאפס וקטן מהסכום שדווח',
+  control_note_invalid: 'הערה — טקסט עד 500 תווים',
+  control_note_single: 'הערה נשמרת לקבלה אחת בכל פעם',
+  confirm_status_invalid: 'סטטוס לא מוכר',
+  sheet_header_clash: 'מבנה גיליון התשלומים השתנה — פנו לסנדרה',
 };
+/* The dropdown (lib/billing-control-rules.js DECISION_OPTIONS) and the note
+ * bound (CONTROL_NOTE_MAX, the same 500 as Code.gs). */
+const BC_DECISIONS = (bcRules() && bcRules().DECISION_OPTIONS) || [
+  { value: 'confirmed', label: 'שולם' }, { value: 'partial', label: 'שולם חלקית' }, { value: 'flagged', label: 'לא שולם' },
+];
+const BC_NOTE_MAX = (bcRules() && bcRules().CONTROL_NOTE_MAX) || 500;
 const BC_XLSX_ERRORS = {
   forbidden: 'אין הרשאה לייצוא זה',
   lock_busy: 'המערכת עסוקה, נסו שוב',
@@ -12481,6 +12581,8 @@ function billingControlState() {
     state.bc = {
       data: null, loading: false, error: '', selected: {}, flagOpen: '', flagDraft: '',
       month: '', house: 'all',
+      // «שולם חלקית» amount form and the note editor (one row at a time each).
+      partialOpen: '', partialDraft: '', noteOpen: '', noteDraft: '',
     };
   }
   return state.bc;
@@ -12529,12 +12631,18 @@ async function loadBillingControl() {
 }
 
 /* The decision (confirmPayment). ids: receipt ids; status: 'confirmed' |
- * 'flagged' | 'reported'. The server's answer replaces the rows on screen. */
-async function confirmReceipts(ids, status, flagNote) {
+ * 'partial' | 'flagged' | 'reported' | '' (a note-only edit). extra:
+ * { flagNote, confirmedAmount, controlNote } — a string flagNote is accepted
+ * as before. The server's answer replaces the rows on screen. */
+async function confirmReceipts(ids, status, extra) {
   if (!state.canConfirm) { showError(ROLE_FORBIDDEN_TEXT); return null; }
   const s = billingControlState();
-  const body = { ids: ids.slice(), status };
-  if (status === 'flagged') body.flagNote = flagNote;
+  const x = typeof extra === 'string' ? { flagNote: extra } : (extra || {});
+  const body = { ids: ids.slice() };
+  if (status) body.status = status;
+  if (status === 'flagged') body.flagNote = x.flagNote;
+  if (status === 'partial') body.confirmedAmount = x.confirmedAmount;
+  if (x.controlNote !== undefined) body.controlNote = x.controlNote;
   let res;
   try {
     res = await apiPost({ action: 'confirmPayment', confirm: body });
@@ -12549,54 +12657,128 @@ async function confirmReceipts(ids, status, flagNote) {
     s.data.receipts = s.data.receipts.map(r => (changed[r.id] ? Object.assign({}, r, changed[r.id]) : r));
   }
   ids.forEach(id => { delete s.selected[id]; });
-  if (s.flagOpen && ids.indexOf(s.flagOpen) >= 0) { s.flagOpen = ''; s.flagDraft = ''; }
+  if (s.flagOpen && ids.indexOf(s.flagOpen) >= 0 && status) { s.flagOpen = ''; s.flagDraft = ''; }
+  if (s.partialOpen && ids.indexOf(s.partialOpen) >= 0 && status) { s.partialOpen = ''; s.partialDraft = ''; }
+  if (s.noteOpen && ids.indexOf(s.noteOpen) >= 0 && x.controlNote !== undefined) { s.noteOpen = ''; s.noteDraft = ''; }
   renderBillingControl();
   const n = (res.changed || []).length;
-  showToast(status === 'confirmed' ? (n === 1 ? 'אושר בבנק' : `אושרו ${n} קבלות`)
-    : status === 'flagged' ? 'סומן כבעיה — חוזר לוורד'
-    : 'הדגל הוסר — חזר ל«ממתין לאימות»');
+  showToast(!status ? 'ההערה נשמרה'
+    : status === 'confirmed' ? (n === 1 ? 'סומן «שולם»' : `סומנו ${n} קבלות «שולם»`)
+    : status === 'partial' ? 'סומן «שולם חלקית» — היתרה נשארת חוב פתוח'
+    : status === 'flagged' ? 'סומן «לא שולם» — חוזר לוורד'
+    : 'חזר ל«ממתין לאימות»');
   return res;
 }
 
+/* The status dropdown of one row. Every option value is fixed; the label is
+ * escaped. The current status is preselected; the waiting row starts on a
+ * blank «בחרו סטטוס». */
+function bcStatusSelectHtml(r) {
+  const id = escapeHtml(r.id);
+  const cur = String(r.confirmStatus || 'reported');
+  const opts = BC_DECISIONS.map(o => `<option value="${escapeHtml(o.value)}"${o.value === cur ? ' selected' : ''}>${escapeHtml(o.label)}</option>`).join('');
+  return `<label class="bc-status-wrap"><span class="bc-k">סטטוס</span>
+      <select class="bc-status" id="bc-status-${id}" data-bc-status="${id}" aria-label="סטטוס תשלום">
+        <option value=""${cur === 'reported' ? ' selected' : ''} disabled>בחרו סטטוס…</option>${opts}
+      </select></label>`;
+}
+
+/* «יתרה פתוחה: ₪x» — the partial form's live line and the partial row's. */
+function bcRemainingText(reported, confirmed) {
+  const rest = Math.max(0, Math.round(((Number(reported) || 0) - (Number(confirmed) || 0)) * 100) / 100);
+  return 'יתרה פתוחה: ' + fmtShekel(rest);
+}
+
+/* The «שולם חלקית» amount form (one row). */
+function bcPartialFormHtml(r) {
+  const s = billingControlState();
+  const id = escapeHtml(r.id);
+  const R = bcRules();
+  const chk = R && s.partialDraft ? R.partialAmountCheck(s.partialDraft, r.amount) : { amount: null, error: '' };
+  return `<div class="bc-partial-form">
+      <label for="bc-partial-${id}">כמה התקבל בפועל? (מתוך ${escapeHtml(fmtShekel(r.amount))})</label>
+      <input id="bc-partial-${id}" class="bc-partial-input" data-bc-partial-amount="${id}" type="text" inputmode="decimal" autocomplete="off" dir="ltr" value="${escapeHtml(s.partialDraft)}" placeholder="0.00" />
+      <div class="bc-remaining" data-bc-remaining="${id}" aria-live="polite">${escapeHtml(bcRemainingText(r.amount, chk.amount || 0))}</div>
+      <div class="error-msg bc-partial-error hidden" role="alert"></div>
+      <div class="bc-actions">
+        <button type="button" class="btn small primary" data-bc-partial-save="${id}">שמירת תשלום חלקי</button>
+        <button type="button" class="btn small ghost" data-bc-partial-cancel="${id}">ביטול</button>
+      </div>
+    </div>`;
+}
+
+/* Ortal's note on one row: the text (escaped) and, for a decider, the editor. */
+function bcControlNoteHtml(r, can) {
+  const s = billingControlState();
+  const id = escapeHtml(r.id);
+  const note = String(r.controlNote || '');
+  if (can && s.noteOpen === r.id) {
+    return `<div class="bc-cnote-form">
+      <label for="bc-cnote-${id}">הערה (לא חובה, עד ${BC_NOTE_MAX} תווים)</label>
+      <textarea id="bc-cnote-${id}" class="bc-cnote" data-bc-cnote="${id}" maxlength="${BC_NOTE_MAX}" rows="3">${escapeHtml(s.noteDraft)}</textarea>
+      <div class="bc-sub bc-cnote-count" data-bc-cnote-count="${id}">${escapeHtml(String(s.noteDraft.length))} / ${BC_NOTE_MAX}</div>
+      <div class="error-msg bc-cnote-error hidden" role="alert"></div>
+      <div class="bc-actions">
+        <button type="button" class="btn small primary" data-bc-cnote-save="${id}">שמירת הערה</button>
+        <button type="button" class="btn small ghost" data-bc-cnote-cancel="${id}">ביטול</button>
+      </div>
+    </div>`;
+  }
+  const text = note ? `<span class="bc-cnote-text"><b>הערה:</b> ${escapeHtml(note)}</span>` : '';
+  const btn = can ? ` <button type="button" class="btn small ghost bc-cnote-open" data-bc-cnote-open="${id}">${note ? '✎ עריכת הערה' : '+ הערה'}</button>` : '';
+  return text || btn ? `<div class="bc-cnote-line">${text}${btn}</div>` : '';
+}
+
 /* One receipt as a phone-friendly card. mode: 'queue' | 'flagged' |
- * 'confirmed' | 'exception'. Every value is escaped. */
+ * 'partial' | 'confirmed' | 'exception'. Every value is escaped. */
 function bcReceiptHtml(r, mode, opts) {
   const o = opts || {};
   const s = billingControlState();
-  const can = state.canConfirm === true && mode !== 'exception' && mode !== 'confirmed';
+  const isPartial = r.confirmStatus === 'partial';
+  // A partial receipt is ALSO listed by month under «אומתו»; its controls live
+  // only in «שולם חלקית», so no element id is drawn twice.
+  const can = state.canConfirm === true && mode !== 'exception' && !(mode === 'confirmed' && isPartial);
   const id = escapeHtml(r.id);
   const field = (label, value) => `<span class="bc-f"><span class="bc-k">${escapeHtml(label)}</span> <span class="bc-v">${escapeHtml(value || '—')}</span></span>`;
+  const R = bcRules();
+  const verified = R ? R.verifiedAmountOf(r) : Number(r.verifiedAmount) || 0;
+  const open = R ? R.openAmountOf(r) : Number(r.openAmount) || 0;
   const amount = mode === 'confirmed' && o.inMonth !== undefined
-    ? `${fmtShekel(o.inMonth)} <span class="bc-sub">(מתוך ${fmtShekel(r.amount)})</span>`
+    ? `${fmtShekel(o.inMonth)} <span class="bc-sub">(מתוך ${fmtShekel(isPartial ? verified : r.amount)})</span>`
     : fmtShekel(r.amount);
   let actions = '';
-  if (mode === 'queue' && can) {
-    actions = `<div class="bc-actions">
-      <label class="bc-pick"><input type="checkbox" data-bc-pick="${id}"${s.selected[r.id] ? ' checked' : ''} aria-label="סימון לאישור"> סמן</label>
-      <button type="button" class="btn small primary bc-ok" data-bc-confirm="${id}">✓ אושר בבנק</button>
-      <button type="button" class="btn small bc-flag" data-bc-flag="${id}">⚑ לא נמצא / בעיה</button>
-    </div>`;
+  if (can) {
+    const pick = mode === 'queue'
+      ? `<label class="bc-pick"><input type="checkbox" data-bc-pick="${id}"${s.selected[r.id] ? ' checked' : ''} aria-label="סימון לאישור"> סמן</label>`
+      : '';
+    const unflag = mode === 'flagged' ? `<button type="button" class="btn small" data-bc-unflag="${id}">הסר דגל</button>` : '';
+    actions = `<div class="bc-actions">${pick}${bcStatusSelectHtml(r)}${unflag}</div>`;
     if (s.flagOpen === r.id) {
       actions += `<div class="bc-flag-form">
         <label for="bc-note-${id}">${escapeHtml(BC_FLAG_LABEL)}</label>
         <textarea id="bc-note-${id}" class="bc-note" data-bc-note="${id}" maxlength="${BC_FLAG_MAX}" rows="3" placeholder="${escapeHtml(BC_FLAG_EXAMPLE)}">${escapeHtml(s.flagDraft)}</textarea>
         <div class="error-msg bc-note-error hidden" role="alert"></div>
         <div class="bc-actions">
-          <button type="button" class="btn small primary" data-bc-flag-save="${id}">שמירת הבעיה</button>
+          <button type="button" class="btn small primary" data-bc-flag-save="${id}">שמירת «לא שולם»</button>
           <button type="button" class="btn small ghost" data-bc-flag-cancel="${id}">ביטול</button>
         </div>
       </div>`;
     }
-  } else if (mode === 'flagged' && can) {
-    actions = `<div class="bc-actions"><button type="button" class="btn small" data-bc-unflag="${id}">הסר דגל</button></div>`;
+    if (s.partialOpen === r.id) actions += bcPartialFormHtml(r);
   }
   const extra = [];
   if (mode === 'flagged' || (mode === 'exception' && r.flagNote)) {
-    extra.push(`<div class="bc-note-text"><b>הערה:</b> ${escapeHtml(r.flagNote || '—')}${r.flaggedAt ? ` <span class="bc-sub">(${escapeHtml(bcStampHe(r.flaggedAt))})</span>` : ''}${o.ageDays !== undefined ? ` <span class="bc-sub">· ${escapeHtml(String(o.ageDays))} ימים</span>` : ''}</div>`);
+    extra.push(`<div class="bc-note-text"><b>לא שולם:</b> ${escapeHtml(r.flagNote || '—')}${r.flaggedAt ? ` <span class="bc-sub">(${escapeHtml(bcStampHe(r.flaggedAt))})</span>` : ''}${o.ageDays !== undefined ? ` <span class="bc-sub">· ${escapeHtml(String(o.ageDays))} ימים</span>` : ''}</div>`);
   }
-  if (mode === 'confirmed') {
+  if (isPartial && mode !== 'exception') {
+    extra.push(`<div class="bc-partial-line"><span class="badge bc-partial-badge">שולם חלקית</span> אומת ${escapeHtml(fmtShekel(verified))} מתוך ${escapeHtml(fmtShekel(r.amount))} · <b class="bc-remaining">${escapeHtml(bcRemainingText(r.amount, verified))}</b></div>`);
+  } else if (mode === 'flagged' && open > 0) {
+    extra.push(`<div class="bc-partial-line"><b class="bc-remaining">${escapeHtml(bcRemainingText(r.amount, 0))}</b></div>`);
+  }
+  if (mode === 'confirmed' || mode === 'partial') {
     extra.push(`<div class="bc-sub">אומת ע״י ${escapeHtml(r.confirmedBy || '—')}${r.confirmedAt ? ' · ' + escapeHtml(bcStampHe(r.confirmedAt)) : ''}</div>`);
   }
+  if (mode !== 'exception') extra.push(bcControlNoteHtml(r, can));
   return `<div class="bc-row bc-row--${escapeHtml(mode)}" data-bc-id="${id}">
     <div class="bc-head"><b class="bc-name">${escapeHtml(r.patientName || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(r.houseId))}</span> <span class="bc-amount">${amount}</span></div>
     <div class="bc-fields">
@@ -12626,6 +12808,9 @@ function bcCardsHtml(cards) {
     <div class="card stat bc-card bc-card--flagged"><div class="stat-label">סומנו כבעיה</div>
       <div class="stat-value" id="bc-card-flagged">${c.flagged.count} · ${fmtShekel(c.flagged.amount)}</div>
       <div class="stat-sub">חוזר לוורד</div></div>
+    <div class="card stat bc-card bc-card--open"><div class="stat-label">יתרה פתוחה</div>
+      <div class="stat-value" id="bc-card-open">${fmtShekel(c.openDebt ? c.openDebt.total : 0)}</div>
+      <div class="stat-sub">${escapeHtml(c.openDebt ? `חלקי ${fmtShekel(c.openDebt.partial.amount)} · לא שולם ${fmtShekel(c.openDebt.notReceived.amount)}` : '—')}</div></div>
     <div class="card stat bc-card bc-card--confirmed"><div class="stat-label">אומת החודש</div>
       <div class="stat-value" id="bc-card-confirmed">${fmtShekel(c.confirmedThisMonth.amount)}</div>
       <div class="stat-sub">הכנסה מאומתת · ${escapeHtml(formatMonth(c.confirmedThisMonth.month + '-01'))}</div></div>
@@ -12673,6 +12858,7 @@ function renderBillingControl() {
     set('bc-cards', '');
     set('bc-queue', `<p class="billing-date-label">${s.loading ? busyLabelFor('load') : (R ? '' : 'הקובץ לא נטען — רעננו את הדף')}</p>`);
     set('bc-flagged', '');
+    set('bc-partial', '');
     set('bc-confirmed', '');
     return;
   }
@@ -12682,8 +12868,12 @@ function renderBillingControl() {
 
   const queue = R.receiptsByStatus(receipts, 'reported');
   const flagged = R.receiptsByStatus(receipts, 'flagged');
+  const partial = R.receiptsByStatus(receipts, 'partial');
   set('bc-queue-count', String(queue.length));
   set('bc-flagged-count', String(flagged.length));
+  set('bc-partial-count', String(partial.length));
+  set('bc-partial-open', fmtShekel(R.openDebt(receipts).partial.amount));
+  set('bc-partial', partial.length ? partial.map(r => bcReceiptHtml(r, 'partial')).join('') : '<p class="billing-date-label">אין קבלות ששולמו חלקית</p>');
   set('bc-queue', queue.length ? queue.map(r => bcReceiptHtml(r, 'queue')).join('') : '<p class="billing-date-label">אין קבלות שממתינות לאימות</p>');
   set('bc-flagged', flagged.length ? flagged.map(r => bcReceiptHtml(r, 'flagged')).join('') : '<p class="billing-date-label">אין קבלות שסומנו כבעיה</p>');
 
@@ -12794,10 +12984,31 @@ function initBillingControlControls() {
       if (t.checked) s.selected[pick] = true; else delete s.selected[pick];
       renderBillingControl();
     }
+    const sid = t && t.getAttribute && t.getAttribute('data-bc-status');
+    if (sid) onBcStatusChange(t, sid, t.value);
   });
   screen.addEventListener('input', e => {
     const t = e.target;
-    if (t && t.getAttribute && t.getAttribute('data-bc-note')) s.flagDraft = t.value;
+    if (!t || !t.getAttribute) return;
+    if (t.getAttribute('data-bc-note')) s.flagDraft = t.value;
+    const pid = t.getAttribute('data-bc-partial-amount');
+    if (pid) {
+      // Live remaining balance — computed by the shared rule, text only.
+      s.partialDraft = t.value;
+      const r = bcReceiptById(pid);
+      const R = bcRules();
+      const chk = r && R ? R.partialAmountCheck(t.value, r.amount) : { amount: null };
+      const line = t.parentNode && t.parentNode.querySelector('[data-bc-remaining]');
+      if (line && r) line.textContent = bcRemainingText(r.amount, chk.amount || 0);
+      bcClearInlineError(t, '.bc-partial-error');
+    }
+    const nid = t.getAttribute('data-bc-cnote');
+    if (nid) {
+      s.noteDraft = t.value;
+      const cnt = t.parentNode && t.parentNode.querySelector('[data-bc-cnote-count]');
+      if (cnt) cnt.textContent = `${t.value.length} / ${BC_NOTE_MAX}`;
+      bcClearInlineError(t, '.bc-cnote-error');
+    }
   });
   screen.addEventListener('click', e => {
     const t = e.target && e.target.closest ? e.target.closest('button') : null;
@@ -12831,8 +13042,81 @@ function initBillingControlControls() {
       busyButton(t, 'save', () => confirmReceipts([id], 'flagged', chk.note));
     } else if (attr('data-bc-unflag')) {
       busyButton(t, 'save', () => confirmReceipts([attr('data-bc-unflag')], 'reported'));
+    } else if (attr('data-bc-partial-cancel')) {
+      s.partialOpen = ''; s.partialDraft = '';
+      renderBillingControl();
+    } else if (attr('data-bc-partial-save')) {
+      const id = attr('data-bc-partial-save');
+      const r = bcReceiptById(id);
+      const R = bcRules();
+      const chk = R && r ? R.partialAmountCheck(s.partialDraft, r.amount) : { amount: null, error: BC_ERRORS.partial_amount_invalid };
+      if (chk.error) {
+        bcInlineError(t, '.bc-partial-form', '.bc-partial-error', 'input', chk.error);
+        return;
+      }
+      busyButton(t, 'save', () => confirmReceipts([id], 'partial', { confirmedAmount: chk.amount }));
+    } else if (attr('data-bc-cnote-open')) {
+      const id = attr('data-bc-cnote-open');
+      const r = bcReceiptById(id);
+      s.noteOpen = id; s.noteDraft = r ? String(r.controlNote || '') : '';
+      renderBillingControl();
+      const ta = document.getElementById('bc-cnote-' + id);
+      if (ta && ta.focus) ta.focus();
+    } else if (attr('data-bc-cnote-cancel')) {
+      s.noteOpen = ''; s.noteDraft = '';
+      renderBillingControl();
+    } else if (attr('data-bc-cnote-save')) {
+      const id = attr('data-bc-cnote-save');
+      const R = bcRules();
+      const chk = R ? R.controlNoteCheck(s.noteDraft) : { note: s.noteDraft, error: '' };
+      if (chk.error) {
+        bcInlineError(t, '.bc-cnote-form', '.bc-cnote-error', 'textarea', chk.error);
+        return;
+      }
+      busyButton(t, 'save', () => confirmReceipts([id], '', { controlNote: chk.note }));
     }
   });
+}
+
+/* The receipt on screen with id `id`, or null. */
+function bcReceiptById(id) {
+  const s = billingControlState();
+  const list = s.data && Array.isArray(s.data.receipts) ? s.data.receipts : [];
+  return list.find(r => r.id === id) || null;
+}
+
+/* An inline Hebrew error under a form; the field gets aria-invalid + focus. */
+function bcInlineError(btn, formSel, errSel, fieldSel, text) {
+  const form = btn.closest(formSel);
+  const err = form && form.querySelector(errSel);
+  const field = form && form.querySelector(fieldSel);
+  if (err) { err.textContent = text; err.classList.remove('hidden'); }
+  if (field) { field.setAttribute('aria-invalid', 'true'); if (field.focus) field.focus(); }
+}
+
+/* A field being typed in again drops its stale inline error. */
+function bcClearInlineError(field, errSel) {
+  const err = field.parentNode && field.parentNode.querySelector(errSel);
+  if (err) { err.textContent = ''; err.classList.add('hidden'); }
+  field.removeAttribute('aria-invalid');
+}
+
+/* The status dropdown moved. «שולם» saves at once; «שולם חלקית» opens the
+ * amount form; «לא שולם» opens the note form. The dropdown shows the saved
+ * status again until a form is saved (nothing changes silently). */
+function onBcStatusChange(sel, id, value) {
+  const s = billingControlState();
+  if (value === 'confirmed') {
+    s.partialOpen = ''; s.flagOpen = '';
+    sel.disabled = true;
+    return confirmReceipts([id], 'confirmed').finally(() => { sel.disabled = false; renderBillingControl(); });
+  }
+  if (value === 'partial') { s.partialOpen = id; s.partialDraft = ''; s.flagOpen = ''; }
+  else if (value === 'flagged') { s.flagOpen = id; s.flagDraft = ''; s.partialOpen = ''; }
+  renderBillingControl();
+  const focus = document.getElementById((value === 'partial' ? 'bc-partial-' : 'bc-note-') + id);
+  if (focus && focus.focus) focus.focus();
+  return Promise.resolve();
 }
 
 /* ===== Boot ===== */

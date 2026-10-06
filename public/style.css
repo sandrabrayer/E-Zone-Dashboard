@@ -318,6 +318,20 @@ body.view-controller .tabs .tab:not([data-screen="billing-control"]),
 body.view-controller section.screen:not(#screen-billing-control),
 body.view-controller [data-finance] { display: none !important; }
 body.view-controller #screen-billing-control { display: block; }
+/* Ortal reads «גבייה» (CHANGELOG-ortal-verification-status.md): the server
+ * serves <body class="view-controller view-billing-read">. The tab and its
+ * screen show (the screen still follows .hidden); every write control stays
+ * hidden even if one were drawn — app.js never draws them (mode 'view'). */
+body.view-controller.view-billing-read .tabs .tab[data-screen="billing"] { display: inline-flex !important; }
+body.view-controller.view-billing-read #screen-billing:not(.hidden) { display: block !important; }
+body.view-controller #funder-fill,
+body.view-controller #screen-billing .bill-report-btn,
+body.view-controller #screen-billing .bill-amount-edit-btn,
+body.view-controller #screen-billing .bill-amount-clear-btn,
+body.view-controller #screen-billing .bill-cov-edit-btn,
+body.view-controller #screen-billing .bill-cov-reset-btn,
+body.view-controller #screen-billing .receipt-void-btn,
+body.view-controller #screen-billing .irrelevant-actions { display: none !important; }
 
 /* ===== Banners ===== */
 .error-banner {
@@ -2460,6 +2474,26 @@ body.viewer-mode .receipt-void-btn { display: none !important; }
 .bc-flag-form textarea { width: 100%; box-sizing: border-box; min-width: 0; }
 .bc-flag-form textarea[aria-invalid="true"] { border-color: var(--danger); }
 .bc-ex-title { margin: 12px 0 6px; font-size: 14px; }
+/* The status dropdown, the partial amount form and the note
+ * (CHANGELOG-ortal-verification-status.md). RTL by inheritance; the amount is
+ * typed LTR. 44px touch targets; nothing wider than the card at 360px. */
+.bc-row--partial { border-inline-start: 4px solid var(--grp-open); }
+.bc-status-wrap { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 180px; }
+.bc-status { min-height: 44px; min-width: 0; flex: 1 1 auto; max-width: 100%; font-size: 15px; }
+.bc-partial-form, .bc-cnote-form { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.bc-partial-input { min-height: 44px; font-size: 16px; width: 100%; max-width: 220px; box-sizing: border-box; text-align: left; }
+.bc-partial-input[aria-invalid="true"], .bc-cnote-form textarea[aria-invalid="true"] { border-color: var(--danger); }
+.bc-cnote-form textarea { width: 100%; box-sizing: border-box; min-width: 0; font-size: 15px; }
+.bc-remaining { color: var(--grp-debt); font-weight: 700; }
+.bc-partial-line { margin-top: 6px; font-size: 13px; overflow-wrap: anywhere; }
+.bc-partial-badge { margin-inline-end: 6px; }
+.bc-cnote-line { margin-top: 6px; font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.bc-cnote-text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.bc-cnote-open { min-height: 36px; }
+@media (max-width: 480px) {
+  .bc-status-wrap { flex-basis: 100%; }
+  .bc-partial-input { max-width: none; }
+}
 
 /* ===== Coordinators roster (2026-10-04) =====
  * «🟢 קליטת מטופל חדש» — the dashboard's top-level intake button: green so it
