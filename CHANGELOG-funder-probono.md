@@ -108,7 +108,7 @@ Updated guard tests (append-only lists): `test/patient-funder-on-funders.test.js
 `test/payment-report-foundation.test.js`, `test/cleanup-workbook.test.js`
 (its fixture now has one pro-bono patient, so the new tab has a row).
 
-**Mutation check:** three breaks, each caught and reverted:
+**Mutation check:** four breaks, each caught and reverted:
 
 1. `debtAgingProbonoTest_` always false → 5 tests fail.
 2. `isProbonoOn` always false → 2 tests fail.
