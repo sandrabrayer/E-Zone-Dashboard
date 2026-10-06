@@ -730,6 +730,22 @@ Supersedes #174 / #175 (closed by Sandra).
 Detail: `CHANGELOG-billing-control-tab.md`. Apps Script **and** Railway.
 Phase 4 of `docs/billing-control-plan.md` is complete.
 
+**Extended 06/10/2026 (`CHANGELOG-ortal-billing-access.md`, server + schema):**
+
+- **Ortal can read the full «גבייה» tab**, enforced on the server:
+  - the reads: `getData` cut to patients + overrides, payments, credits,
+    the refund forecast, debt aging, the fix list;
+  - two exports.
+- She still cannot write, delete, void or approve. Shiran and Yael are
+  still blocked.
+- `confirmPayment` takes `partial` (an amount > 0 and below the reported
+  one) and a `controlNote` (up to 500 characters).
+- Two columns are appended to `Payments`: `confirmedAmount` and
+  `controlNote`.
+- Every change writes an AuditLog row with at / by / prev / next.
+- Only confirmed money reduces the tab's open debt. Shared revenue rules
+  and Outpatient are unchanged.
+
 - **Ortal logs in** (`lib/users.js`: `ortal` active, roles `['controller']`
   only). Her session is the **controller view**: the «בקרת גבייה» tab and
   logout, nothing else. server.js refuses every other `/api/sheets` action

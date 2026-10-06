@@ -162,6 +162,12 @@ column.** One step for Sandra after the merge: «קוד אישי חדש» → א
 paste the line into `USER_PIN_HASHES` in Railway (same as the other codes).
 Until that line exists Ortal is simply not on the login screen.
 
+**06/10/2026 — `CHANGELOG-ortal-billing-access.md`:** nothing to set. The
+clasp CI deploys Code.gs. The two appended `Payments` columns
+(`confirmedAmount`, `controlNote`) write their own header names on the first
+decision. If a hand-added column sits where they belong, decisions are
+refused (`sheet_header_clash`) until it is moved.
+
 ## Accounting source feed — one Script Property to set
 
 The Dashboard Apps Script gained two READ-ONLY actions for the external

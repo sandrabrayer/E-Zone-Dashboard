@@ -216,7 +216,7 @@ test('personal login: success mints id + pinVersion; /api/me says personal; the 
     const me = await request(port, 'GET', '/api/me', { cookie: cookieOf(ok) });
     assert.deepStrictEqual(me.json, { ok: true, user: 'ורד', auth: 'personal', approver: false, deleter: true, finance: true,
       // Phase 4 («בקרת גבייה»): the capability set, the view and the decision right.
-      capabilities: ['finance', 'billingControl'], billingControl: true, view: 'full', canConfirm: false });
+      capabilities: ['finance', 'billingControl'], billingControl: true, view: 'full', canConfirm: false, billingRead: false });
   });
 });
 
@@ -338,7 +338,7 @@ test('PR C: /api/me has no sharedUntil; the client has no banner, no shared fiel
   await withServer(await envWith(), async (port) => {
     const me = await request(port, 'GET', '/api/me', { cookie: cookieOf(await login(port, 'shiran', PINS.shiran)) });
     assert.deepStrictEqual(me.json, { ok: true, user: 'שירן', auth: 'personal', approver: false, deleter: false, finance: false,
-      capabilities: [], billingControl: false, view: 'restricted', canConfirm: false });
+      capabilities: [], billingControl: false, view: 'restricted', canConfirm: false, billingRead: false });
   });
   assert.ok(!/id="shared-banner"|id="pin-input"|id="login-shared-link"|id="user-screen"/.test(HTML_SRC));
   assert.ok(!/\.shared-banner \{/.test(fs.readFileSync(path.join(ROOT, 'public', 'style.css'), 'utf8')));
