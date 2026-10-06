@@ -48,10 +48,14 @@ trivial hand-merge. The combined tree was tested: 2174 tests, all green.
   left out as pro-bono. Columns: entry, exit, «פרו-בונו מתאריך», «מחזורים שלא
   נספרו». Owner ורד: check the funder and the from-date.
 
-**Ortal:** her daily email no longer lists the payments of a patient who is
-pro-bono on the payment's day (`receivedDate`, else `dueDate`). The
-«ממתינים לאימות» count and the «בקרת גבייה» queue are unchanged: every
-receipt is still verified against the bank there.
+**Ortal:** no change. Her daily email lists **every** payment received,
+pro-bono or not: money received is always reported, whatever the funder
+(Sandra, 2026-10-06). The digest never reads the Funders tab. The
+«ממתינים לאימות» count and the «בקרת גבייה» queue are unchanged too.
+
+Pro-bono exclusion applies in exactly four places: `debtAging_`
+(«חובות פתוחים», and so the strip and «חובות מעל 60 יום»), «לגבייה בתאריך
+הנבחר», «יתרות פתוחות», and the renewal / overdue alerts.
 
 **Shiran and Yael (restricted):** no change. They have no funders in memory,
 so nothing is skipped, and they see no funder UI.
@@ -60,7 +64,7 @@ so nothing is skipped, and they see no funder UI.
 
 | File | Change |
 |---|---|
-| `apps-script/Code.gs` | `PAYMENT_FUNDERS` + `'פרו-בונו'` (last). `FUNDER_PROBONO`. `debtAging_` reads `tabs.funders`; `debtAgingProbonoTest_` (pure, rows grouped per patient, `currentFunderFrom_`'s rule) drops a cycle whose start day is pro-bono — recorded and unrecorded alike — before it reaches `byPatient`, `byHouse` or `totals`. New report field `probonoExcluded {count, patients, rows}` (informational, never in a total). `debtAgingAction_` reads the Funders tab (so `billingControlQueue`'s «חובות מעל 60 יום» follows too). `digestSelect_` takes the Funders rows and skips a pro-bono patient's rows; `digestBuild_` reads them. `cleanupProbono_` + section key `probono` (last). The savePayment fill path refuses `funder_probono_explicit` instead of copying pro-bono onto a row. |
+| `apps-script/Code.gs` | `PAYMENT_FUNDERS` + `'פרו-בונו'` (last). `FUNDER_PROBONO`. `debtAging_` reads `tabs.funders`; `debtAgingProbonoTest_` (pure, rows grouped per patient, `currentFunderFrom_`'s rule) drops a cycle whose start day is pro-bono — recorded and unrecorded alike — before it reaches `byPatient`, `byHouse` or `totals`. New report field `probonoExcluded {count, patients, rows}` (informational, never in a total). `debtAgingAction_` reads the Funders tab (so `billingControlQueue`'s «חובות מעל 60 יום» follows too). `digestSelect_` / `digestBuild_` are **unchanged** (no pro-bono skip in Ortal's email). `cleanupProbono_` + section key `probono` (last). The savePayment fill path refuses `funder_probono_explicit` instead of copying pro-bono onto a row. |
 | `lib/payment-report-rules.js` | `PAYMENT_FUNDERS` + `'פרו-בונו'`, `FUNDER_PROBONO`, the `funder_probono_explicit` message (parity-tested against Code.gs). |
 | `lib/cleanup-xlsx.js` | Tab «מטופלי פרו-בונו» (last), kind `probono`, optional section (an older Code.gs without it still renders). |
 | `public/funder.js` | `FUNDER_KEYS` + `probono`, `LABEL_TO_KEY` + `'פרו-בונו': 'probono'`, `FUNDER_PROBONO`. `debtByFunder` now returns six buckets. |
@@ -88,7 +92,9 @@ so nothing is skipped, and they see no funder UI.
   (and a switch back re-opens them); `debtAgingAction_` reads Funders;
 - the invariant: 5 funders + unset = totals (three as-of dates, three
   histories); the pro-bono bucket is ₪0;
-- the digest skips pro-bono rows by the row's day;
+- Ortal's digest is unaffected: through the real `digestBuild_`, with a
+  Funders tab where patients are pro-bono, every payment is still listed,
+  and neither `digestSelect_` nor `digestBuild_` reads funders;
 - the cleanup section and tab;
 - the savePayment path refuses `funder_probono_explicit` with nothing
   written, and accepts an explicit funder; `reportPayment` accepts an
@@ -104,9 +110,10 @@ Updated guard tests (append-only lists): `test/patient-funder-on-funders.test.js
 
 **Mutation check:** three breaks, each caught and reverted:
 
-1. `debtAgingProbonoTest_` always false → 6 tests fail.
+1. `debtAgingProbonoTest_` always false → 5 tests fail.
 2. `isProbonoOn` always false → 2 tests fail.
 3. The `funder_probono_explicit` refusal removed → 1 test fails.
+4. A pro-bono skip put back into `digestSelect_` → 1 test fails.
 
 ## Live test (Vered)
 

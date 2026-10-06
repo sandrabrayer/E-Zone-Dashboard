@@ -568,7 +568,8 @@ const PAYMENT_FUNDERS = ['פרטי', 'ביטוח לאומי', 'משרד הביט
 /* Pro-bono (Sandra, 2026-10-05; CHANGELOG-funder-probono.md). APPENDED LAST:
  * the list is append-only. A patient whose funder on a cycle's start day is
  * pro-bono owes nothing for that cycle: debtAging_ drops it from byPatient,
- * byHouse and totals, and Ortal's digest skips that patient's rows. A payment
+ * byHouse and totals. Ortal's digest still lists every payment received,
+ * whatever the funder (money received is always reported). A payment
  * report for such a patient is still allowed and still names its funder
  * explicitly (validatePaymentReport_; the savePayment fill path refuses
  * funder_probono_explicit instead of copying pro-bono onto the row). */
@@ -12807,13 +12808,9 @@ function digestRow_(obj, ledger) {
 }
 
 /* Select and project. `rowObjs` are Payments row objects (recReadSheet_'s
- * .obj); keeps paid/partial, non-void rows recorded in (sinceMs, untilMs].
- * `funderRows` (optional, Funders row objects): a row whose patient
- * (patientUid) is pro-bono on the row's day — receivedDate, else dueDate — is
- * skipped (CHANGELOG-funder-probono.md). Without it nothing is skipped. */
-function digestSelect_(rowObjs, sinceMs, untilMs, ledger, funderRows) {
+ * .obj); keeps paid/partial, non-void rows recorded in (sinceMs, untilMs]. */
+function digestSelect_(rowObjs, sinceMs, untilMs, ledger) {
   const out = [];
-  const probonoOn = debtAgingProbonoTest_(funderRows);
   /* One line per money received (Phase 3 PR 2): a cycle that has receipt
    * rows is listed through them, never itself — its re-derived amountPaid
    * would count the same money twice. A legacy row is listed as before. */
@@ -12825,7 +12822,6 @@ function digestSelect_(rowObjs, sinceMs, untilMs, ledger, funderRows) {
     if (!paymentIsCharged_(o.status)) continue;
     const t = digestInstant_(o.chargedAt);
     if (!isFinite(t) || t <= sinceMs || t > untilMs) continue;
-    if (probonoOn(o.patientUid, paymentReportDate_(o.receivedDate) || asISODate_(o.dueDate))) continue;
     out.push(digestRow_(o, ledger));
   }
   out.sort(function (a, b) {
@@ -12994,9 +12990,7 @@ function digestBuild_(props, now, test) {
   const sinceMs = firstRun ? nowMs - DIGEST_FIRST_RUN_DAYS * 86400000 : lastMs;
   const ledger = digestLedgerLoad_(props);
   const payRows = digestReadPayments_();
-  let funderRows = [];
-  try { funderRows = fundersRows_(); } catch (_) { funderRows = []; }
-  const rows = digestSelect_(payRows, sinceMs, nowMs, ledger, funderRows);
+  const rows = digestSelect_(payRows, sinceMs, nowMs, ledger);
   const today = digestJerusalemParts_(now);
   const fmt = function (ms) { return String(Utilities.formatDate(new Date(ms), DIGEST_TZ, 'dd/MM/yyyy HH:mm')); };
   const msg = digestCompose_(rows, {
