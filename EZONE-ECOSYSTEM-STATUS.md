@@ -893,6 +893,27 @@ Detail: `CHANGELOG-reactivation-fix.md`. **Railway only**: `public/app.js`;
   evicts v40 and any orphaned v17.
 - No new action, env var, Script Property, scope, column or trigger.
 
+## Dashboard: «לא נקלט כמטופל» — paid / entering leads with no patient record (October 7, 2026)
+
+Detail: `CHANGELOG-unadmitted-lead-warning.md`. **Railway only**: `public/`;
+`Code.gs` is not touched.
+
+- **When it flags:** a lead that is paid (stage בטיפול פעיל, an advance, or a
+  recorded payment) or has the outcome «נכנסים לטיפול», whose `entryDate` is
+  3+ days ago (Asia/Jerusalem), with no matching Patients row.
+- **What it shows:** a red chip on the card, «לא נקלט כמטופל · N ימים», and a
+  red count on the לידים tab.
+- **Never flagged:** no entryDate; closed, irrelevant, removed or admitted
+  leads; an ambiguous match (logged once).
+- **The match** is reconciliation report §A's `recLeadPatient_`
+  (fromLead → phone → name + house). It is ported to app.js as
+  `unadmittedLeadPatient` and parity-tested against the Code.gs original.
+- Display only, computed in the browser. Ortal's controller view has no leads
+  and is untouched.
+- SW `CACHE_VERSION` v41 → **v42** (v41 was the highest on every remote
+  branch; v17 stays burned).
+- No new action, env var, Script Property, scope, column or trigger.
+
 ## Dashboard: meetings strip shows current managers only (PR #154, October 1, 2026; re-verified October 6)
 
 Detail: `CHANGELOG-meeting-summary-active-managers.md`. Apps Script **and** Railway.

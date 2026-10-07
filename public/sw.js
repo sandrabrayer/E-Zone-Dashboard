@@ -170,7 +170,11 @@
 // is the only asset that changed: index.html links it at its new content hash,
 // so the 'cache-first-hashed' lookup misses and phones fetch the new bundle;
 // activate evicts v40 and any orphaned v17 (#145's burned number, never reused).
-var CACHE_VERSION = 'v41';
+// v41 → v42: «לא נקלט כמטופל · N ימים» on the lead card and its count on the
+// לידים tab (CHANGELOG-unadmitted-lead-warning.md). app.js, index.html and
+// style.css changed; hashed URLs miss and phones fetch them; activate evicts
+// v41 (and any orphaned v17 — still burned, never reused).
+var CACHE_VERSION = 'v42';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

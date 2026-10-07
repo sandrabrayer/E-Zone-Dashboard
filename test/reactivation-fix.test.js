@@ -727,10 +727,12 @@ function loadSw(cacheNames) {
   return { handlers, caches, deleted, fetched, cacheApi, exports: sandbox.module.exports };
 }
 
-test('SW v41: a phone still holding the v40 cache, the burned v17 one and the OLD app.js hash gets the new app.js', async () => {
+test('SW v41+: a phone still holding the v40 cache, the burned v17 one and the OLD app.js hash gets the new app.js', async () => {
   const SA = require('../lib/static-assets');
   const sw = loadSw(['ezone-dashboard-v40', 'ezone-dashboard-v17']);
-  assert.strictEqual(sw.exports.CACHE_VERSION, 'v41');
+  // v41 shipped this fix; later public/ changes bump past it (v42: the
+  // unadmitted-lead warning). v17 must never come back.
+  assert.ok(Number(sw.exports.CACHE_VERSION.slice(1)) >= 41, 'got ' + sw.exports.CACHE_VERSION);
   assert.notStrictEqual(sw.exports.CACHE_VERSION, 'v17');
 
   // The index.html the server sends links app.js at the CURRENT bytes' hash.
@@ -739,16 +741,16 @@ test('SW v41: a phone still holding the v40 cache, the burned v17 one and the OL
   const hash = crypto.createHash('sha256').update(fs.readFileSync(path.join(ROOT, 'public', 'app.js'))).digest('hex').slice(0, 12);
   assert.ok(html.includes('src="app.js?v=' + hash + '"'), 'index.html links the new app.js by its content hash');
 
-  // Activate: every cache that is not v41 goes — v40 and the orphaned v17.
+  // Activate: every cache that is not the current one goes — v40 and the orphaned v17.
   let done;
   sw.handlers.activate({ waitUntil: (p) => { done = p; } });
   await done;
   assert.deepStrictEqual(sw.deleted.sort(), ['ezone-dashboard-v17', 'ezone-dashboard-v40']);
 
-  // An old hash cached under v41 (a deploy within this version) is never served
+  // An old hash cached under the current version (a deploy within it) is never served
   // for the new URL: the exact-URL lookup misses and the network answers.
-  const v41 = sw.cacheApi('ezone-dashboard-v41');
-  await v41.put('https://x/app.js?v=000000000000', { tag: 'OLD BUNDLE' });
+  const current = sw.cacheApi('ezone-dashboard-' + sw.exports.CACHE_VERSION);
+  await current.put('https://x/app.js?v=000000000000', { tag: 'OLD BUNDLE' });
   let resp;
   sw.handlers.fetch({ request: { method: 'GET', url: 'https://x/app.js?v=' + hash }, respondWith: (p) => { resp = p; } });
   assert.strictEqual((await resp).tag, 'network', 'the new app.js, never the old bundle');
