@@ -256,6 +256,7 @@ const ASSETS = createAssetStore({
   '/funder.js': { file: path.join(__dirname, 'public', 'funder.js'), mime: 'application/javascript' },
   '/payment-report-rules.js': { file: path.join(__dirname, 'lib', 'payment-report-rules.js'), mime: 'application/javascript' },
   '/billing-control-rules.js': { file: path.join(__dirname, 'lib', 'billing-control-rules.js'), mime: 'application/javascript' },
+  '/refund-rules.js': { file: path.join(__dirname, 'lib', 'refund-rules.js'), mime: 'application/javascript' },
 });
 
 /* Serve index.html with every asset reference pinned to that file's content
@@ -334,6 +335,10 @@ app.get('/payment-report-rules.js', sendLibAsset('/payment-report-rules.js'));
  * workbook requires (window.BillingControlRules in a browser). Rules only, no
  * data, so it is served like app.js. */
 app.get('/billing-control-rules.js', sendLibAsset('/billing-control-rules.js'));
+/* The refund rule picked by the exit date (CHANGELOG-refund-rule-v2.md):
+ * lib/refund-rules.js, window.RefundRules — the same rule Code.gs
+ * computeRefund_ applies (parity-tested). Rules only, no data. */
+app.get('/refund-rules.js', sendLibAsset('/refund-rules.js'));
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 // Patient funder helpers (public/funder.js, global Funder) — loaded before app.js.
 app.get('/funder.js', sendStatic('funder.js', 'application/javascript'));

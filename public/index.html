@@ -655,6 +655,8 @@
   <!-- Patient funder helpers (global Funder) — must load before app.js. -->
   <script src="funder.js?v=__BUILD__"></script>
   <script src="billing-control-rules.js?v=__BUILD__"></script>
+  <!-- The refund rule by exit date (global RefundRules) — must load before app.js. -->
+  <script src="refund-rules.js?v=__BUILD__"></script>
   <script src="app.js?v=__BUILD__"></script>
 
   <!-- Service worker registration (guarded). Registered after load so it never

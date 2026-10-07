@@ -7464,6 +7464,8 @@ function fmtShekel(n) {
 /* Hebrew label per rule, for suggestions built by the server (basis
  * basisVersion 2 — computeRefund_ in Code.gs). */
 const CREDIT_RULE_LABELS = {
+  billing_month_prorata:      'יציאה ביום 1–13 של חודש החיוב — זיכוי יחסי',
+  billing_month_day14_zero:   'יציאה ביום 14 ומעלה של חודש החיוב — ללא זיכוי',
   residential_prorata:        'מגורים — זיכוי יחסי על הימים שלא שהה',
   residential_last_days_zero: '7 הימים האחרונים במחזור — ללא זיכוי',
   detox_prorata:              'גמילה/דואלי — יציאה עד יום 13 — זיכוי יחסי',
@@ -7549,6 +7551,31 @@ async function fetchRefundSuggestions(patient, pKey, exitDate) {
   }
 }
 
+/* The refund rule in one Hebrew line, for the «זיכויים» modal. Picked by the
+ * EXIT date through lib/refund-rules.js (window.RefundRules — the same rule
+ * Code.gs computeRefund_ applies, parity-tested): an exit from
+ * REFUND_RULE_V2_FROM on → the unified billing-month rule; earlier → the
+ * per-house rule it was decided under. '' without a usable exit date or
+ * without the rules file. CHANGELOG-refund-rule-v2.md. */
+function refundPolicyNote(exitISO, facility) {
+  const R = typeof RefundRules !== 'undefined' ? RefundRules : null;
+  const exit = isoDate(exitISO);
+  if (!R || !exit) return '';
+  let version;
+  try { version = R.refundRuleVersion(exit); } catch (_) { return ''; }
+  const prepaid = 'מחזור ששולם מראש ומתחיל אחרי היציאה — החזר מלא.';
+  if (version === 2) {
+    return `כלל ההחזר (יציאה מ־${formatDateHe(R.REFUND_RULE_V2_FROM)}, כל הבתים): יציאה ביום ${R.REFUND_V2_NO_REFUND_FROM_DAY} ומעלה של חודש החיוב (יום הכניסה = יום 1) — ללא זיכוי; יציאה ביום 1–${R.REFUND_V2_NO_REFUND_FROM_DAY - 1} — זיכוי יחסי. ${prepaid}`;
+  }
+  if (facility === 'residential') {
+    return `כלל ההחזר (יציאה לפני ${formatDateHe(R.REFUND_RULE_V2_FROM)}, בית מאזן): יציאה ב־${R.REFUND_V1_RESIDENTIAL_LAST_DAYS} הימים האחרונים של חודש החיוב — ללא זיכוי. ${prepaid}`;
+  }
+  if (facility === 'detox_dual') {
+    return `כלל ההחזר (יציאה לפני ${formatDateHe(R.REFUND_RULE_V2_FROM)}, גמילה / דואלי): יציאה ביום שהייה ${R.REFUND_V1_DETOX_CUTOFF_DAY} ומעלה — ללא זיכוי. ${prepaid}`;
+  }
+  return '';
+}
+
 /* The breakdown Vered reads under a suggested amount (server basis only).
  * Every value goes through escapeHtml. */
 function creditBreakdownHtml(basis) {
@@ -7561,8 +7588,12 @@ function creditBreakdownHtml(basis) {
     row('ימים שלא שהה:', String(basis.daysNotStayed)),
     row('תעריף יומי:', `${fmtShekel(basis.dailyRate)} (${fmtShekel(basis.amountPaid)} ÷ ${basis.divisor})`),
   ];
-  if (basis.facilityType === 'detox_dual') rows.push(row('יום שהייה ביציאה:', String(basis.stayDay)));
-  if (basis.facilityType === 'residential' && basis.lastDaysFrom) {
+  // Rule v2 (exit from 07/10/2026, every house): the exit's day in the billing
+  // month decides. v1 (earlier exits): stay day (detox) / last 7 days (residential).
+  if (Number(basis.ruleVersion) === 2) {
+    if (basis.billingMonthDay) rows.push(row('יום בחודש החיוב ביציאה:', String(basis.billingMonthDay)));
+  } else if (basis.facilityType === 'detox_dual') rows.push(row('יום שהייה ביציאה:', String(basis.stayDay)));
+  if (Number(basis.ruleVersion) !== 2 && basis.facilityType === 'residential' && basis.lastDaysFrom) {
     rows.push(row('7 הימים האחרונים במחזור:', `${d(basis.lastDaysFrom)} – ${d(basis.lastDaysTo)}`));
   }
   if (basis.alreadyCreditedThrough) rows.push(row('כבר זוכה עד:', d(basis.alreadyCreditedThrough)));
@@ -7775,6 +7806,7 @@ async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate
   const existing    = creditsForPatient(state.credits, patientId, pKey);
   const lines       = buildCreditLines(existing, suggestions);
   const facility    = facilityTypeFor(patient && patient.houseId);
+  const policyNote  = refundPolicyNote(exitDate, facility);
 
   const back = document.createElement('div');
   back.className = 'modal-backdrop';
@@ -7851,6 +7883,7 @@ async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate
     back.innerHTML = `
       <div class="modal credits-modal">
         <h3>זיכויים והחזרים — ${escapeHtml((patient && patient.name) || '')}${facility ? ` <span class="credit-new">${escapeHtml(FACILITY_TYPE_LABELS[facility])}</span>` : ''}</h3>
+        ${policyNote ? `<p class="credit-policy">${escapeHtml(policyNote)}</p>` : ''}
         ${suggestionError ? `<div class="credit-error" role="alert">${escapeHtml(refundErrorMessage(suggestionError))}</div>` : ''}
         <form>
           <div class="credit-lines">${lines.map(lineHtml).join('')}</div>

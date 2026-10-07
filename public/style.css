@@ -2227,6 +2227,15 @@ body.viewer-mode .receipt-edit-btn { display: none !important; }
 }
 .credit-bd-k { color: var(--text-muted); }
 .credit-bd-v { font-weight: 600; }
+.credit-policy {
+  margin: 0 0 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, .08);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
 .credit-error {
   margin: 0 0 12px;
   padding: 8px 10px;
