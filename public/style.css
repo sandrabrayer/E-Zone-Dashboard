@@ -1515,6 +1515,15 @@ body.view-controller #screen-billing .irrelevant-actions { display: none !import
 .billing-row .pay-state-paid    { color: var(--success); background: rgba(45, 212, 122, .14); border-color: rgba(45, 212, 122, .5); }
 .billing-row .pay-state-partial { color: var(--warning); background: rgba(255, 176, 32, .14); border-color: rgba(255, 176, 32, .5); }
 .billing-row .pay-state-unpaid  { color: var(--text-muted); }
+/* «ממתין לגורם מממן» (CHANGELOG-funder-grace.md): neutral grey, not a problem
+ * yet — an institutional funder within 30 days of the due date. */
+.pay-state-funder_grace { color: var(--text-muted); background: rgba(127, 127, 127, .12); border-color: rgba(127, 127, 127, .45); white-space: nowrap; }
+.billing-row.funder-grace {
+  border-right: 3px solid var(--text-dim);
+  background: rgba(127, 127, 127, .05);
+}
+.debt-cycle.funder-grace td { color: var(--text-muted); }
+.debt-grace-line { margin: 6px 0 0; font-size: 12.5px; color: var(--text-muted); }
 .billing-row .bill-report-cell { justify-self: end; }
 .billing-row .bill-report-btn { white-space: nowrap; }
 .billing-row .bill-receipts {

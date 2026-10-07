@@ -412,7 +412,7 @@ test('wiring: /refund-rules.js is served like the other lib rules, loaded before
   assert.match(SERVER_SRC, /app\.get\('\/refund-rules\.js', sendLibAsset\('\/refund-rules\.js'\)\);/);
   assert.ok(INDEX_SRC.indexOf('refund-rules.js?v=__BUILD__') > 0);
   assert.ok(INDEX_SRC.indexOf('refund-rules.js?v=__BUILD__') < INDEX_SRC.indexOf('app.js?v=__BUILD__'));
-  assert.match(SW_SRC, /var BUNDLE_PATHS = \[[^\]]*'\/refund-rules\.js'\]/);
+  assert.match(SW_SRC, /var BUNDLE_PATHS = \[[^\]]*'\/refund-rules\.js'[^\]]*\]/);
   assert.ok(Number(/var CACHE_VERSION = 'v(\d+)';/.exec(SW_SRC)[1]) >= 46);
   assert.doesNotMatch(LIB_SRC, /fetch\(|require\(|Date\.now|new Date\(\)/, 'pure: no I/O, no clock');
 });

@@ -120,7 +120,7 @@ test('«חובות פתוחים» renders in Chromium: two blocks, drill-down, f
     assert.strictEqual(await page.isVisible('[data-patient="pt-1"] > summary'), true);
     await page.click('[data-patient="pt-1"] > summary');
     const cells = await page.$$eval('[data-patient="pt-1"] tr.debt-cycle td', (tds) => tds.map((t) => t.textContent.trim()));
-    assert.deepStrictEqual(cells, ['10/09/2026', '09/10/2026', '₪ 25,000', '₪ 0', '₪ 25,000', '8–30', 'חוב רשום']);
+    assert.deepStrictEqual(cells, ['10/09/2026', '09/10/2026', '₪ 25,000', '₪ 0', '₪ 25,000', '8–30', 'חוב רשום', '—']);   // last: «בתוך תקופת גורם מממן» (CHANGELOG-funder-grace.md)
 
     // the hostile name is text, never markup
     const evilName = await page.$eval('[data-patient="pt-6"] .p-name', (el) => el.textContent);

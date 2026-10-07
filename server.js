@@ -257,6 +257,7 @@ const ASSETS = createAssetStore({
   '/payment-report-rules.js': { file: path.join(__dirname, 'lib', 'payment-report-rules.js'), mime: 'application/javascript' },
   '/billing-control-rules.js': { file: path.join(__dirname, 'lib', 'billing-control-rules.js'), mime: 'application/javascript' },
   '/refund-rules.js': { file: path.join(__dirname, 'lib', 'refund-rules.js'), mime: 'application/javascript' },
+  '/funder-grace.js': { file: path.join(__dirname, 'lib', 'funder-grace.js'), mime: 'application/javascript' },
 });
 
 /* Serve index.html with every asset reference pinned to that file's content
@@ -339,6 +340,10 @@ app.get('/billing-control-rules.js', sendLibAsset('/billing-control-rules.js'));
  * lib/refund-rules.js, window.RefundRules — the same rule Code.gs
  * computeRefund_ applies (parity-tested). Rules only, no data. */
 app.get('/refund-rules.js', sendLibAsset('/refund-rules.js'));
+/* The institutional-funder grace period (CHANGELOG-funder-grace.md):
+ * lib/funder-grace.js, window.FunderGrace — the same rule as Code.gs
+ * isWithinFunderGrace_ (parity-tested). Rules only, no data. */
+app.get('/funder-grace.js', sendLibAsset('/funder-grace.js'));
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 // Patient funder helpers (public/funder.js, global Funder) — loaded before app.js.
 app.get('/funder.js', sendStatic('funder.js', 'application/javascript'));
