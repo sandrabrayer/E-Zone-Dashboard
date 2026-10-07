@@ -1927,6 +1927,8 @@ async function loadAll() {
      * patient is also checked against the audit sheet in the same pass. */
     const healed   = healClobberedDischarges();
     console.log('[E-ZONE] after promote — leads:', state.leads.length, 'patients:', state.patients.length, '(+', promoted.length, 'promoted,', retired.length, 'retired,', healed.length, 'healed)');
+    // The heal moves patients out of the house tab — never silently.
+    if (healed.length > 0) showToast(healedToastMessage(healed));
     renderAll();
 
     if ((promoted.length > 0 || retired.length > 0 || healed.length > 0) && state.mode === 'edit') {
@@ -5144,6 +5146,79 @@ function auditRowForReleasedPatient(p, dischargedPatients) {
   };
 }
 
+/* ===== A deliberate re-activation must close the stay's open discharges =====
+ * (CHANGELOG-reactivation-fix.md — PR #145's fix, re-landed.)
+ * healClobberedDischarges runs on EVERY load and releases the first patient
+ * whose houseId + name + date matches a NON-restored discharge audit row. The
+ * only thing it reads is that restored flag, so it cannot tell a clobbered
+ * discharge from a patient someone set back to live on purpose. Every write
+ * that leaves a stay live therefore has to flag ALL of that stay's open audit
+ * rows restored='TRUE' — one left open and the patient flips back to released
+ * on the next load and silently vanishes from the house tab. The ✏️ edit
+ * modal (released → פעיל), a direct re-add or an admission with the original
+ * entry date (the new row is written FIRST in the house, so it is the heal's
+ * first match), and a restore with a second open row all left rows open. */
+
+/* Every OPEN (non-restored) discharge audit row of this stay — the same
+ * houseId + name + date key matchActivePatientIndex uses. Pure + tested. */
+function openDischargeAuditsFor(patient, dischargedPatients) {
+  if (!patient) return [];
+  return (Array.isArray(dischargedPatients) ? dischargedPatients : []).filter(d =>
+    d && d.restored !== 'TRUE' && d.restored !== true &&
+    d.houseId === patient.houseId && d.name === patient.name && d.date === patient.date);
+}
+
+/* The open audit rows a deliberate write re-opens: `after` is the patient as
+ * it will be saved, `before` (optional) the same patient before an edit — an
+ * edit can fix the name / date / house in the same save, so both identities
+ * count. Nothing when `after` is released. Deduplicated by audit id. Pure +
+ * tested. */
+function reopenedDischargeAudits(before, after, dischargedPatients) {
+  if (!after || after.status === 'released') return [];
+  const out = [];
+  const seen = new Set();
+  [after, before].forEach(p => {
+    openDischargeAuditsFor(p, dischargedPatients).forEach(d => {
+      if (seen.has(d.id)) return;
+      seen.add(d.id);
+      out.push(d);
+    });
+  });
+  return out;
+}
+
+/* A NEW array with `rows` flagged restored='TRUE' (matched by audit id); the
+ * input is never mutated, so a caller rolls back by keeping its old
+ * reference. Pure + tested. */
+function withAuditsRestored(dischargedPatients, rows) {
+  const ids = new Set((rows || []).map(d => d.id));
+  return (Array.isArray(dischargedPatients) ? dischargedPatients : []).map(d =>
+    d && ids.has(d.id) ? Object.assign({}, d, { restored: 'TRUE' }) : d);
+}
+
+/* Persist those flags with the SAME restorePatientToActive action and payload
+ * shape the restore-choice modal sends (a keyed upsert of the audit row by its
+ * own id — no new backend action). Sequential; the first refusal rejects to
+ * the caller, whose rollback restores its state. A view-mode session writes
+ * nothing, exactly like saveAll. */
+async function persistAuditsRestored(rows) {
+  if (state.mode !== 'edit') return;
+  for (const d of rows || []) {
+    await apiPost({ action: 'restorePatientToActive', patient: { ...d, restored: 'TRUE' } });
+  }
+}
+
+/* The ✏️ edit's message when the save (with a landed house move) went through
+ * but closing the discharge rows did not. */
+const REOPEN_NOT_CLOSED_MESSAGE = 'השינוי נשמר, אבל רישום השחרור לא נסגר — בטעינה הבאה המטופל יסומן שוב כמשוחרר. ערכו שוב את הסטטוס. ';
+
+/* The toast loadAll shows when the heal moved patients to released. Names are
+ * plain text (showToast sets textContent). Pure + tested. */
+function healedToastMessage(healed) {
+  return 'סומנו כמשוחררים לפי רישום שחרור פתוח: ' +
+    (Array.isArray(healed) ? healed : []).map(p => String((p && p.name) || '')).join(', ');
+}
+
 /* ===== Restore-choice modal =====
  * The single שחזר button on a discharged row opens this modal: an explicit
  * choice between the two restore paths, radio-style (mirrors the
@@ -5223,26 +5298,32 @@ function showRestorePatientChoiceModal(p) {
  *      (the Patients sheet has no dedicated action; status flips there). This
  *      is the IMPORTANT record, so it goes first.
  *   2. restorePatientToActive action — flags the audit row restored='TRUE' on
- *      the discharged sheet so it leaves the tab. Cosmetic; goes second.
+ *      the discharged sheet so it leaves the tab. NOT cosmetic: an open audit
+ *      row is exactly what healClobberedDischarges re-releases on the next
+ *      load, so every OTHER open row of the same stay is flagged too.
  * On any failure BOTH optimistic changes roll back (previous refs restored).
- * If write 2 fails after write 1 persisted, the patient is already active on
- * the sheet and the audit row just reappears on reload — re-clicking restore is
- * idempotent (the match flips an already-active row in place, no duplicate). */
+ * If write 2 fails after write 1 persisted, the next load's heal re-releases
+ * the row on the sheet as well (its audit row is still open), so the sheet
+ * converges back to the rolled-back UI — re-clicking restore is idempotent
+ * (the match flips an already-active row in place, no duplicate). */
 async function doRestorePatientToActive(p) {
   const prevPatients   = state.patients;
   const prevDischarged = state.dischargedPatients.slice();
 
   const { patients } = buildRestoredToActivePatients(state.patients, p);
   state.patients = patients;
-  // Flag the audit row locally so renderDischargedPatients' restored-filter
-  // hides it; the row object stays in state as the audit trail.
-  state.dischargedPatients = state.dischargedPatients.map(d =>
-    d.id === p.id ? Object.assign({}, d, { restored: 'TRUE' }) : d);
+  // A stay discharged twice without a restore in between has a SECOND open
+  // audit row; flagging only `p` let the heal release the patient again.
+  const siblings = openDischargeAuditsFor(p, prevDischarged).filter(d => d.id !== p.id);
+  // Flag the audit row(s) locally so renderDischargedPatients' restored-filter
+  // hides them; the row objects stay in state as the audit trail.
+  state.dischargedPatients = withAuditsRestored(state.dischargedPatients, [p].concat(siblings));
   renderAll();
 
   try {
     await saveAll();
     await apiPost({ action: 'restorePatientToActive', patient: { ...p, restored: 'TRUE' } });
+    await persistAuditsRestored(siblings);
   } catch (e) {
     state.patients = prevPatients;
     state.dischargedPatients = prevDischarged;
@@ -5778,6 +5859,11 @@ function openEntryModal(lead) {
         status: v.status || 'trial',
         fromLead: lead.id,
       });
+      // Same stay as an open discharge (house + name + entry date)? Close it,
+      // or the load-time heal releases the new row (see reopenedDischargeAudits).
+      const prevDischarged = state.dischargedPatients;
+      const reopened = reopenedDischargeAudits(null, patient, state.dischargedPatients);
+      if (reopened.length) state.dischargedPatients = withAuditsRestored(state.dischargedPatients, reopened);
       state.patients.unshift(patient);
       const prevStage = lead.stage;
       const prevOutcome = lead.meetingOutcome;
@@ -5797,8 +5883,10 @@ function openEntryModal(lead) {
       renderAll();
       try {
         await saveAll();
+        await persistAuditsRestored(reopened);
       } catch (e) {
         state.patients = state.patients.filter(p => p.id !== patient.id);
+        state.dischargedPatients = prevDischarged;
         lead.stage = prevStage;
         lead.meetingOutcome = prevOutcome;
         renderAll();
@@ -5855,6 +5943,11 @@ function openDirectAddPatientModal(opts) {
         source: 'direct_admin',
         notes: (v.notes || '').trim(),
       });
+      // Re-adding a discharged patient with the ORIGINAL entry date recreates
+      // a stay whose discharge rows are still open (see reopenedDischargeAudits).
+      const prevDischarged = state.dischargedPatients;
+      const reopened = reopenedDischargeAudits(null, patient, state.dischargedPatients);
+      if (reopened.length) state.dischargedPatients = withAuditsRestored(state.dischargedPatients, reopened);
       state.patients.unshift(patient);
       // Jump to the house the new patient landed in so the admin can
       // immediately verify the record appeared.
@@ -5862,8 +5955,10 @@ function openDirectAddPatientModal(opts) {
       renderAll();
       try {
         await saveAll();
+        await persistAuditsRestored(reopened);
       } catch (e) {
         state.patients = state.patients.filter(x => x.id !== patient.id);
+        state.dischargedPatients = prevDischarged;
         renderAll();
         showError('שמירה נכשלה — ' + e.message);
         return false;
@@ -5947,6 +6042,7 @@ function openEditPatientModal(p) {
         return false;
       }
       const prev = { ...p };
+      const prevDischarged = state.dischargedPatients;
       const houseChanged = p.houseId !== v.houseId;
       p.name    = v.name.trim();
       p.houseId = v.houseId;
@@ -5954,6 +6050,11 @@ function openEditPatientModal(p) {
       p.pay     = Number(v.pay) || 0;
       p.status  = v.status || 'active';
       p.notes   = (v.notes || '').trim();
+      // ✏️ is also how a released patient is set back to פעיל / הפסקה זמנית:
+      // close the stay's open discharge rows with it, or the load-time heal
+      // releases the patient again (see reopenedDischargeAudits).
+      const reopened = reopenedDischargeAudits(prev, p, state.dischargedPatients);
+      if (reopened.length) state.dischargedPatients = withAuditsRestored(state.dischargedPatients, reopened);
       if (houseChanged) {
         // The explicit move intent (serializePatients → collectHouseMoves_ in
         // Code.gs). Without it the backend cannot tell this deliberate move
@@ -5966,9 +6067,28 @@ function openEditPatientModal(p) {
         state.currentHouseTab = p.houseId;
       }
       renderAll();
+      let saved = false;
       try {
         await saveAll();
+        saved = true;
+        // A house move the backend refused (or never confirmed) is undone
+        // below — the discharge rows stay open with it.
+        if (!houseChanged || houseMoveVerdict(p) === 'moved') {
+          await persistAuditsRestored(reopened);
+        } else {
+          state.dischargedPatients = prevDischarged;
+        }
       } catch (e) {
+        state.dischargedPatients = prevDischarged;
+        if (saved && houseChanged) {
+          // The move already landed on the sheet: putting the patient back in
+          // the old house here would send them there WITHOUT a move intent.
+          // Keep the saved edit and say what did not save — the next load's
+          // heal (announced by its toast) releases the patient again.
+          renderAll();
+          showError(REOPEN_NOT_CLOSED_MESSAGE + e.message, REFUSAL_BANNER_MS);
+          return true;
+        }
         Object.assign(p, prev);
         if (prev.movedFrom === undefined) delete p.movedFrom;
         renderAll();

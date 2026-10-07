@@ -874,6 +874,25 @@ compressed / content-hashed assets). Apps Script **and** Railway.
 - Timing lines: `[perf] …` in Apps Script Executions and
   `[E-ZONE][perf] loadAll …` in the browser console.
 
+## Dashboard: re-activated patients stay visible — PR #145's fix re-landed (October 6, 2026)
+
+Detail: `CHANGELOG-reactivation-fix.md`. **Railway only**: `public/app.js`;
+`Code.gs` is not touched.
+
+- **The bug:** the load-time heal released any live patient whose stay still
+  had an open discharge row. So a patient set back to live through ✏️, direct
+  add / intake, admission (same entry date) or restore (with a second open row)
+  vanished from the house tab on the next load.
+- **The fix:** each of those writes now also closes the stay's open discharge
+  rows, using the existing `restorePatientToActive` action. When the heal does
+  act, it shows a toast.
+- **History:** #145 shipped this fix, #146 reverted it (phones were pinned to a
+  stale SW v17 cache), and #147 re-landed only the diagnostic.
+- SW `CACHE_VERSION` v40 → **v41**. v17 stays burned and is never reused.
+  Phones pick up the new `app.js` through #186's content hash; `activate`
+  evicts v40 and any orphaned v17.
+- No new action, env var, Script Property, scope, column or trigger.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);
