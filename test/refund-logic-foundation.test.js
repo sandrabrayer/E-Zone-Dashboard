@@ -110,28 +110,30 @@ test('[plan 8.4] payout date: decided on or before the 10th → the 15th of that
 /* ------------------------------------------------------------------------ */
 
 test('balance houses: exit on cycle end and end−6 → 0; end−7 → pro-rata, with the full breakdown', () => {
-  const base = { houseId: 'ramot', entryDate: '2026-09-10', amountPaid: 30000 };
-  const onEnd = refund(Object.assign({ exitDate: '2026-10-09' }, base));
+  // v1 rule (exits before REFUND_RULE_V2_FROM 2026-10-07 — CHANGELOG-refund-rule-v2.md).
+  const base = { houseId: 'ramot', entryDate: '2026-08-10', amountPaid: 30000 };
+  const onEnd = refund(Object.assign({ exitDate: '2026-09-09' }, base));
   assert.strictEqual(onEnd.rule, 'residential_last_days_zero');
   assert.strictEqual(onEnd.refund, 0);
   assert.strictEqual(onEnd.daysNotStayed, 0);
 
-  const endMinus6 = refund(Object.assign({ exitDate: '2026-10-03' }, base));
+  const endMinus6 = refund(Object.assign({ exitDate: '2026-09-03' }, base));
   assert.strictEqual(endMinus6.rule, 'residential_last_days_zero');
   assert.strictEqual(endMinus6.refund, 0);
   assert.strictEqual(endMinus6.daysNotStayed, 6, 'the raw days are still recorded');
   assert.strictEqual(endMinus6.uncappedRefund, 6000, 'the raw figure is still recorded');
 
-  const endMinus7 = refund(Object.assign({ exitDate: '2026-10-02' }, base));
+  const endMinus7 = refund(Object.assign({ exitDate: '2026-09-02' }, base));
   assert.deepStrictEqual(endMinus7, {
     houseId: 'ramot', facilityType: 'residential',
-    entryDate: '2026-09-10', exitDate: '2026-10-02', stayDay: 23,
-    cycleStart: '2026-09-10', cycleEnd: '2026-10-09', cycleSource: 'entry_anchored', cycleDays: 30,
-    daysStayed: 23, daysNotStayed: 7,
+    entryDate: '2026-08-10', exitDate: '2026-09-02', stayDay: 24,
+    cycleStart: '2026-08-10', cycleEnd: '2026-09-09', cycleSource: 'entry_anchored', cycleDays: 31,
+    daysStayed: 24, daysNotStayed: 7,
     divisor: 30, amountPaid: 30000, dailyRate: 1000,
     uncappedRefund: 7000, capped: false,
-    lastDaysFrom: '2026-10-03', lastDaysTo: '2026-10-09',
+    lastDaysFrom: '2026-09-03', lastDaysTo: '2026-09-09',
     rule: 'residential_prorata', creditType: 'days_unused', refund: 7000,
+    ruleVersion: 1, billingMonthDay: 24,
     decidedDate: '2026-10-01', payoutDate: '2026-10-15',
   });
 });
@@ -255,11 +257,12 @@ test('rate is paid / 30 whatever the cycle length; a 31-day cycle never refunds 
 });
 
 test('recorded coverage wins over the derived cycle (plan 8.1); half a coverage pair is an error', () => {
-  const base = { houseId: 'ramot', entryDate: '2026-09-10', exitDate: '2026-10-07', amountPaid: 30000 };
-  assert.strictEqual(refund(base).rule, 'residential_last_days_zero', 'derived 10/09–09/10: 07/10 is in the last 7 days');
-  const rec = refund(Object.assign({ coverageStart: '2026-09-15', coverageEnd: '2026-10-14' }, base));
+  // v1 rule (exit before 2026-10-07); v2 with recorded coverage: test/refund-rule-v2.test.js.
+  const base = { houseId: 'ramot', entryDate: '2026-08-10', exitDate: '2026-09-07', amountPaid: 30000 };
+  assert.strictEqual(refund(base).rule, 'residential_last_days_zero', 'derived 10/08–09/09: 07/09 is in the last 7 days');
+  const rec = refund(Object.assign({ coverageStart: '2026-08-15', coverageEnd: '2026-09-14' }, base));
   assert.strictEqual(rec.cycleSource, 'recorded_coverage');
-  assert.strictEqual(rec.lastDaysFrom, '2026-10-08');
+  assert.strictEqual(rec.lastDaysFrom, '2026-09-08');
   assert.strictEqual(rec.rule, 'residential_prorata');
   assert.strictEqual(rec.refund, 7000);
   assert.throws(() => gs.computeRefund(Object.assign({ decidedDate: '2026-10-01', coverageStart: '2026-09-15' }, base)),
