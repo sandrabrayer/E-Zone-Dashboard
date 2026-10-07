@@ -11804,6 +11804,7 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
           ${err('invoiceTo')}
         </div>
         <div class="field-error pr-form-error" data-err="_form" role="alert"></div>
+        <div class="pr-dup-confirm hidden" role="alertdialog" aria-live="assertive"></div>
         <div class="form-actions">
           <button type="button" class="btn" data-action="cancel">ביטול</button>
           <button type="submit" class="btn primary pr-submit">שמירת הדיווח</button>
@@ -11883,15 +11884,33 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
       if (first && first.focus) first.focus();
       return;
     }
-    const v = values();
+    return sendReport(values(), false);
+  };
+  /* Send the report; confirmDup re-sends it after «כן, קבלה נוספת». */
+  const dupBox = back.querySelector('.pr-dup-confirm');
+  const hideDup = () => { if (dupBox) { dupBox.innerHTML = ''; dupBox.classList.add('hidden'); } };
+  const sendReport = (v, confirmDup) => {
+    hideDup();
     return busyButton(submitBtn, 'save', async () => {
       try {
-        await submitPaymentReport(d.cycle, v);
+        await submitPaymentReport(d.cycle, v, confirmDup);
         close();
         showToast(PAYMENT_REPORT_TOAST);
       } catch (err) {
         const data = err && err.data;
-        if (data && Array.isArray(data.issues) && data.issues.length) {
+        if (data && data.error === 'possible_duplicate' && !confirmDup && dupBox) {
+          // «קיימת כבר קבלה דומה (dd/mm, אסמכתא X). האם זו קבלה נוספת?»
+          dupBox.innerHTML = `<p class="pr-dup-text">${escapeHtml(possibleDuplicateText(data.existing))}</p>
+            <div class="form-actions">
+              <button type="button" class="btn primary" data-action="dup-yes">כן, קבלה נוספת</button>
+              <button type="button" class="btn" data-action="dup-no">ביטול</button>
+            </div>`;
+          dupBox.classList.remove('hidden');
+          dupBox.querySelector('[data-action="dup-yes"]').onclick = () => sendReport(v, true);
+          dupBox.querySelector('[data-action="dup-no"]').onclick = hideDup;
+          const yes = dupBox.querySelector('[data-action="dup-yes"]');
+          if (yes && yes.focus) yes.focus();
+        } else if (data && Array.isArray(data.issues) && data.issues.length) {
           paint(data.issues);
           back.querySelector('[data-err="_form"]').textContent = data.message || 'הדיווח לא נשמר';
         } else {
@@ -11904,12 +11923,27 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
   if (first && first.focus) first.focus();
 }
 
+/* «קיימת כבר קבלה דומה (dd/mm, אסמכתא X). האם זו קבלה נוספת?» for the
+ * server's possible_duplicate `existing` { id, receivedDate, reference }.
+ * Plain text — the caller escapes it. Pure. */
+function possibleDuplicateText(existing) {
+  const e = existing || {};
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(e.receivedDate || ''));
+  const day = m ? `${m[3]}/${m[2]}` : '—';
+  const ref = String(e.reference || '').trim();
+  return `קיימת כבר קבלה דומה (${day}, ${ref ? 'אסמכתא ' + ref : 'ללא אסמכתא'}). האם זו קבלה נוספת?`;
+}
+
 /* POST reportPayment; on success put the receipt and the re-derived cycle
  * into state and re-render. Nothing is applied optimistically: the money a
- * row shows is always the server's. Throws on refusal (err.data.issues). */
-async function submitPaymentReport(cycle, values) {
+ * row shows is always the server's. Throws on refusal (err.data.issues).
+ * confirmDuplicate true = Vered answered «כן, קבלה נוספת» to the server's
+ * possible_duplicate (the override is audited there). */
+async function submitPaymentReport(cycle, values, confirmDuplicate) {
   const report = Object.assign({}, values);
-  const res = await apiPost({ action: 'reportPayment', report: { cycle, report } });
+  const body = { cycle, report };
+  if (confirmDuplicate === true) body.confirmDuplicate = true;
+  const res = await apiPost({ action: 'reportPayment', report: body });
   if (res && res.receipt) state.receipts.push(normalizeReceipt(res.receipt));
   if (res && res.cycle) adoptCycleEcho(res.cycle);
   renderBilling();
@@ -13011,11 +13045,18 @@ const BC_ERRORS = {
   control_note_single: 'הערה נשמרת לקבלה אחת בכל פעם',
   confirm_status_invalid: 'סטטוס לא מוכר',
   sheet_header_clash: 'מבנה גיליון התשלומים השתנה — פנו לסנדרה',
+  /* «כפילות» (CHANGELOG-receipt-duplicates-and-edit.md). */
+  duplicate_single: '«כפילות» — קבלה אחת בכל פעם',
+  duplicate_note_invalid: 'בסימון «כפילות» חובה לפרט (2 עד 300 תווים)',
+  duplicate_last_receipt: 'זו הקבלה היחידה של המחזור — אי אפשר לסמן אותה ככפילות. אם הכסף לא התקבל, סמנו «לא שולם»',
 };
+const BC_DUP_LABEL = `למה זו כפילות? (${BC_FLAG_MIN} עד ${BC_FLAG_MAX} תווים)`;
+const BC_DUP_EXAMPLE = 'לדוגמה: אותה העברה דווחה פעמיים (אסמכתא 12345)';
 /* The dropdown (lib/billing-control-rules.js DECISION_OPTIONS) and the note
  * bound (CONTROL_NOTE_MAX, the same 500 as Code.gs). */
 const BC_DECISIONS = (bcRules() && bcRules().DECISION_OPTIONS) || [
   { value: 'confirmed', label: 'שולם' }, { value: 'partial', label: 'שולם חלקית' }, { value: 'flagged', label: 'לא שולם' },
+  { value: 'duplicate', label: 'כפילות' },
 ];
 const BC_NOTE_MAX = (bcRules() && bcRules().CONTROL_NOTE_MAX) || 500;
 const BC_XLSX_ERRORS = {
@@ -13035,6 +13076,8 @@ function billingControlState() {
       month: '', house: 'all',
       // «שולם חלקית» amount form and the note editor (one row at a time each).
       partialOpen: '', partialDraft: '', noteOpen: '', noteDraft: '',
+      // «כפילות» reason form (one row at a time).
+      dupOpen: '', dupDraft: '',
     };
   }
   return state.bc;
@@ -13092,7 +13135,7 @@ async function confirmReceipts(ids, status, extra) {
   const x = typeof extra === 'string' ? { flagNote: extra } : (extra || {});
   const body = { ids: ids.slice() };
   if (status) body.status = status;
-  if (status === 'flagged') body.flagNote = x.flagNote;
+  if (status === 'flagged' || status === 'duplicate') body.flagNote = x.flagNote;
   if (status === 'partial') body.confirmedAmount = x.confirmedAmount;
   if (x.controlNote !== undefined) body.controlNote = x.controlNote;
   let res;
@@ -13105,9 +13148,14 @@ async function confirmReceipts(ids, status, extra) {
   }
   const changed = {};
   (res.changed || []).forEach(r => { changed[r.id] = r; });
+  // «כפילות»: the receipt is void now — it leaves every list and total.
+  const voided = {};
+  (res.voided || []).forEach(r => { if (r && r.id) voided[r.id] = true; });
   if (s.data && Array.isArray(s.data.receipts)) {
-    s.data.receipts = s.data.receipts.map(r => (changed[r.id] ? Object.assign({}, r, changed[r.id]) : r));
+    s.data.receipts = s.data.receipts.filter(r => !voided[r.id])
+      .map(r => (changed[r.id] ? Object.assign({}, r, changed[r.id]) : r));
   }
+  if (s.dupOpen && ids.indexOf(s.dupOpen) >= 0 && status) { s.dupOpen = ''; s.dupDraft = ''; }
   ids.forEach(id => { delete s.selected[id]; });
   if (s.flagOpen && ids.indexOf(s.flagOpen) >= 0 && status) { s.flagOpen = ''; s.flagDraft = ''; }
   if (s.partialOpen && ids.indexOf(s.partialOpen) >= 0 && status) { s.partialOpen = ''; s.partialDraft = ''; }
@@ -13118,6 +13166,7 @@ async function confirmReceipts(ids, status, extra) {
     : status === 'confirmed' ? (n === 1 ? 'סומן «שולם»' : `סומנו ${n} קבלות «שולם»`)
     : status === 'partial' ? 'סומן «שולם חלקית» — היתרה נשארת חוב פתוח'
     : status === 'flagged' ? 'סומן «לא שולם» — חוזר לוורד'
+    : status === 'duplicate' ? 'סומן «כפילות» — הקבלה בוטלה ואינה נספרת'
     : 'חזר ל«ממתין לאימות»');
   return res;
 }
@@ -13155,6 +13204,23 @@ function bcPartialFormHtml(r) {
       <div class="bc-actions">
         <button type="button" class="btn small primary" data-bc-partial-save="${id}">שמירת תשלום חלקי</button>
         <button type="button" class="btn small ghost" data-bc-partial-cancel="${id}">ביטול</button>
+      </div>
+    </div>`;
+}
+
+/* The «כפילות» reason form (one row): a required note, 2–300, like «לא שולם».
+ * Saving voids the receipt on the server (Code.gs confirmDuplicate_). */
+function bcDuplicateFormHtml(r) {
+  const s = billingControlState();
+  const id = escapeHtml(r.id);
+  return `<div class="bc-dup-form">
+      <label for="bc-dup-${id}">${escapeHtml(BC_DUP_LABEL)}</label>
+      <textarea id="bc-dup-${id}" class="bc-dup-note" data-bc-dup-note="${id}" maxlength="${BC_FLAG_MAX}" rows="3" placeholder="${escapeHtml(BC_DUP_EXAMPLE)}">${escapeHtml(s.dupDraft)}</textarea>
+      <div class="bc-sub">הקבלה תסומן כמבוטלת ולא תיספר ב«נגבה». רק סנדרה יכולה לבטל את הסימון.</div>
+      <div class="error-msg bc-dup-error hidden" role="alert"></div>
+      <div class="bc-actions">
+        <button type="button" class="btn small danger" data-bc-dup-save="${id}">שמירת «כפילות»</button>
+        <button type="button" class="btn small ghost" data-bc-dup-cancel="${id}">ביטול</button>
       </div>
     </div>`;
 }
@@ -13220,6 +13286,7 @@ function bcReceiptHtml(r, mode, opts) {
       </div>`;
     }
     if (s.partialOpen === r.id) actions += bcPartialFormHtml(r);
+    if (s.dupOpen === r.id) actions += bcDuplicateFormHtml(r);
   }
   const extra = [];
   if (mode === 'flagged' || (mode === 'exception' && r.flagNote)) {
@@ -13446,6 +13513,7 @@ function initBillingControlControls() {
     const t = e.target;
     if (!t || !t.getAttribute) return;
     if (t.getAttribute('data-bc-note')) s.flagDraft = t.value;
+    if (t.getAttribute('data-bc-dup-note')) { s.dupDraft = t.value; bcClearInlineError(t, '.bc-dup-error'); }
     const pid = t.getAttribute('data-bc-partial-amount');
     if (pid) {
       // Live remaining balance — computed by the shared rule, text only.
@@ -13497,6 +13565,18 @@ function initBillingControlControls() {
       busyButton(t, 'save', () => confirmReceipts([id], 'flagged', chk.note));
     } else if (attr('data-bc-unflag')) {
       busyButton(t, 'save', () => confirmReceipts([attr('data-bc-unflag')], 'reported'));
+    } else if (attr('data-bc-dup-cancel')) {
+      s.dupOpen = ''; s.dupDraft = '';
+      renderBillingControl();
+    } else if (attr('data-bc-dup-save')) {
+      const id = attr('data-bc-dup-save');
+      const R = bcRules();
+      const chk = R ? R.flagNoteCheck(s.dupDraft) : { note: s.dupDraft, error: '' };
+      if (chk.error) {
+        bcInlineError(t, '.bc-dup-form', '.bc-dup-error', 'textarea', BC_ERRORS.duplicate_note_invalid);
+        return;
+      }
+      busyButton(t, 'save', () => confirmReceipts([id], 'duplicate', { flagNote: chk.note }));
     } else if (attr('data-bc-partial-cancel')) {
       s.partialOpen = ''; s.partialDraft = '';
       renderBillingControl();
@@ -13562,14 +13642,15 @@ function bcClearInlineError(field, errSel) {
 function onBcStatusChange(sel, id, value) {
   const s = billingControlState();
   if (value === 'confirmed') {
-    s.partialOpen = ''; s.flagOpen = '';
+    s.partialOpen = ''; s.flagOpen = ''; s.dupOpen = '';
     sel.disabled = true;
     return confirmReceipts([id], 'confirmed').finally(() => { sel.disabled = false; renderBillingControl(); });
   }
-  if (value === 'partial') { s.partialOpen = id; s.partialDraft = ''; s.flagOpen = ''; }
-  else if (value === 'flagged') { s.flagOpen = id; s.flagDraft = ''; s.partialOpen = ''; }
+  if (value === 'partial') { s.partialOpen = id; s.partialDraft = ''; s.flagOpen = ''; s.dupOpen = ''; }
+  else if (value === 'flagged') { s.flagOpen = id; s.flagDraft = ''; s.partialOpen = ''; s.dupOpen = ''; }
+  else if (value === 'duplicate') { s.dupOpen = id; s.dupDraft = ''; s.partialOpen = ''; s.flagOpen = ''; }
   renderBillingControl();
-  const focus = document.getElementById((value === 'partial' ? 'bc-partial-' : 'bc-note-') + id);
+  const focus = document.getElementById((value === 'partial' ? 'bc-partial-' : value === 'duplicate' ? 'bc-dup-' : 'bc-note-') + id);
   if (focus && focus.focus) focus.focus();
   return Promise.resolve();
 }

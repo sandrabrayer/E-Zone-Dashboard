@@ -177,7 +177,10 @@ test('status enum: reported / confirmed / partial / flagged — nothing else; sa
   assert.deepEqual(arr(w.g.run('CONTROL_STATUSES')), ['reported', 'confirmed', 'partial', 'flagged']);
   assert.deepEqual(arr(w.g.run('CONFIRM_STATUSES')), ['reported', 'confirmed', 'flagged'], 'the savePayment list is unchanged');
   assert.deepEqual([...rules.CONTROL_STATUSES], arr(w.g.run('CONTROL_STATUSES')));
-  assert.deepEqual(rules.DECISION_OPTIONS.map((o) => [o.value, o.label]), [['confirmed', 'שולם'], ['partial', 'שולם חלקית'], ['flagged', 'לא שולם']]);
+  // «כפילות» (CHANGELOG-receipt-duplicates-and-edit.md) is a fourth DECISION
+  // in the dropdown, never a stored status: CONTROL_STATUSES is unchanged.
+  assert.deepEqual(rules.DECISION_OPTIONS.map((o) => [o.value, o.label]), [['confirmed', 'שולם'], ['partial', 'שולם חלקית'], ['flagged', 'לא שולם'], ['duplicate', 'כפילות']]);
+  assert.equal(w.g.run('DUPLICATE_DECISION'), rules.DUPLICATE_DECISION);
   const before = w.snapshot();
   for (const status of ['paid', 'PARTIAL', 'Confirmed', 'void', 'partial ', null, 7]) {
     const r = w.decide({ ids: [w.id], status, confirmedAmount: 100 });

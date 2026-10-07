@@ -59,17 +59,18 @@ const R = (over) => Object.assign({
 
 /* ============================ status enum ============================ */
 
-test('status dropdown: exactly שולם / שולם חלקית / לא שולם (+ the blank «בחרו סטטוס»), values from the shared enum, current one selected', () => {
+test('status dropdown: exactly שולם / שולם חלקית / לא שולם / כפילות (+ the blank «בחרו סטטוס»), values from the shared enum, current one selected', () => {
   const { app } = loadApp();
   const html = app.bcStatusSelectHtml(R());
   const opts = [...html.matchAll(/<option value="([^"]*)"[^>]*>([^<]*)<\/option>/g)].map((m) => [m[1], m[2]]);
-  assert.deepEqual(opts, [['', 'בחרו סטטוס…'], ['confirmed', 'שולם'], ['partial', 'שולם חלקית'], ['flagged', 'לא שולם']]);
+  // «כפילות» added by CHANGELOG-receipt-duplicates-and-edit.md.
+  assert.deepEqual(opts, [['', 'בחרו סטטוס…'], ['confirmed', 'שולם'], ['partial', 'שולם חלקית'], ['flagged', 'לא שולם'], ['duplicate', 'כפילות']]);
   assert.match(html, /<option value="" selected disabled>/, 'a waiting row starts blank');
   assert.match(app.bcStatusSelectHtml(R({ confirmStatus: 'partial' })), /<option value="partial" selected>/);
   assert.match(app.bcStatusSelectHtml(R({ confirmStatus: 'flagged' })), /<option value="flagged" selected>/);
   // Every value is one Code.gs accepts.
   const rules = require('../lib/billing-control-rules');
-  for (const [v] of opts.slice(1)) assert.ok(rules.CONTROL_STATUSES.includes(v), v);
+  for (const [v] of opts.slice(1)) assert.ok(rules.CONTROL_STATUSES.includes(v) || v === rules.DUPLICATE_DECISION, v);
   // The server's refusal codes all have a Hebrew message.
   for (const code of ['partial_single', 'partial_amount_invalid', 'partial_amount_range', 'control_note_invalid', 'control_note_single', 'confirm_status_invalid']) {
     assert.ok(/[֐-׿]/.test(app.BC_ERRORS[code]), code);
