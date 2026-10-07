@@ -1015,6 +1015,31 @@ and `server.js` are not touched.
   branches; v17 stays burned.
 - No new action, env var, Script Property, scope, column or trigger.
 
+## Dashboard: grace period for institutional funders (October 7, 2026)
+
+Detail: `CHANGELOG-funder-grace.md`, plan §7.5. **Nothing to set.**
+
+- **The rule (Sandra, 07/10/2026):**
+  - A cycle whose funder on its due date is ביטוח לאומי, מכבי or משרד
+    הביטחון reads **«ממתין לגורם מממן»** (grey) until 30 days after its due
+    date (`FUNDER_GRACE_DAYS = 30`). From day 31 it is red / overdue as
+    usual.
+  - Private, pro-bono and unset funders are unchanged.
+- **Every total is unchanged.** The amount stays outstanding in debt aging,
+  «חובות פתוחים», «יתרות פתוחות» and Ortal's open debt. Only the problem
+  marking waits:
+  - the «לא דווח תשלום» chip and the problem count on מטופלים;
+  - the גבייה row status and colour;
+  - the overdue strip on the dashboard;
+  - a «בתוך תקופת גורם מממן» column in debt aging and its .xlsx.
+- **The shared helper** is in `lib/funder-grace.js` (served at
+  `/funder-grace.js`) and in `Code.gs` (`isWithinFunderGrace_`). A parity
+  test checks that the two agree. `debtAging_` flags each cycle
+  (`funderGrace`, `funderGraceUntil`) and counts them (`funderGrace`).
+- SW `CACHE_VERSION` v46 → **v47**. v17 stays burned.
+- Code.gs changes, so clasp CI deploys it on merge. There is no data change
+  and no new action, Script Property, env var, column or trigger.
+
 ## Dashboard: refund rule v2 — stay day 14, every house (October 7, 2026)
 
 Detail: `CHANGELOG-refund-rule-v2.md`, plan §8.6. **Nothing to set.**
