@@ -34,6 +34,7 @@ const FILES = {
   '/funder.js': path.join(ROOT, 'public', 'funder.js'),
   '/payment-report-rules.js': path.join(ROOT, 'lib', 'payment-report-rules.js'),
   '/billing-control-rules.js': path.join(ROOT, 'lib', 'billing-control-rules.js'),
+  '/refund-rules.js': path.join(ROOT, 'lib', 'refund-rules.js'),
 };
 
 /* ===================================================================== */
@@ -102,7 +103,7 @@ test('A: versionAssetRefs pins all five files in the real index.html — and onl
     const h = sha12(fs.readFileSync(f));
     assert.ok(out.includes(name + '?v=' + h + '"'), name + ' carries its own hash');
   }
-  assert.ok(!/(app|funder|payment-report-rules|billing-control-rules)\.js\?v=__BUILD__/.test(out));
+  assert.ok(!/(app|funder|payment-report-rules|billing-control-rules|refund-rules)\.js\?v=__BUILD__/.test(out));
   assert.ok(!out.includes('href="style.css"'), 'style.css is no longer unversioned');
   // The build markers still carry __BUILD__ for the BUILD_ID substitution.
   assert.match(out, /<meta name="build" content="__BUILD__"/);
@@ -328,7 +329,7 @@ function serve(handlers, url) {
 }
 const settle = () => new Promise((r) => setImmediate(r));
 
-test('D: CACHE_VERSION is v45 (v44 deployed by this PR\'s base; v17 burned, never reused)', () => {
+test('D: CACHE_VERSION is v46 (v45 deployed by this PR\'s base; v17 burned, never reused)', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
   // v40: CHANGELOG-ortal-verification-status.md.
   // v41: CHANGELOG-reactivation-fix.md (PR #145's fix, re-landed).
@@ -336,7 +337,8 @@ test('D: CACHE_VERSION is v45 (v44 deployed by this PR\'s base; v17 burned, neve
   // v43: CHANGELOG-duplicate-discharges.md.
   // v44: CHANGELOG-receipt-duplicates-and-edit.md.
   // v45: CHANGELOG-patients-tab-ui.md.
-  assert.equal(v, 'v45');
+  // v46: CHANGELOG-refund-rule-v2.md.
+  assert.equal(v, 'v46');
   assert.notEqual(v, 'v17');
 });
 

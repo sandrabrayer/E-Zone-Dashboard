@@ -325,5 +325,7 @@ test('styles: the plist rules exist, wrap at phone width, 44px targets; SW v45',
   assert.match(CSS_SRC, /\.plist-lead-note \.p-val \{[^}]*white-space: pre-wrap;/);
   assert.match(CSS_SRC, /@media \(max-width: 480px\) \{\n  \.plist-main \{ grid-template-columns: 1fr 1fr; \}/);
   assert.match(CSS_SRC, /\.plist-lead summary \{[\s\S]*?min-height: 44px;/);
-  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v45');
+  // v46: refund rule v2 (CHANGELOG-refund-rule-v2.md) bumped past it.
+  const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
+  assert.ok(Number(v.slice(1)) >= 45 && v !== 'v17', v);
 });

@@ -185,7 +185,12 @@
 // v44 → v45: the «מטופלים» tab — the patient list, «ממתינים לקליטה», problem
 // chips and «פרטי הליד» (CHANGELOG-patients-tab-ui.md). app.js, index.html and
 // style.css changed; activate evicts v44 (v17 never reused).
-var CACHE_VERSION = 'v45';
+// v45 → v46: refund rule v2 (CHANGELOG-refund-rule-v2.md) — every house: an
+// exit on day 14+ of the billing month gets no refund (exits from 07/10/2026);
+// the «זיכויים» modal shows the rule line and the billing-month day. app.js,
+// style.css and index.html changed and the page loads a new /refund-rules.js
+// (hashed like app.js); activate evicts v45 (v17 never reused).
+var CACHE_VERSION = 'v46';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
@@ -215,7 +220,7 @@ var PRECACHE_URLS = [
  *                     network round trip. Matched by EXACT url.
  *   'network'       — everything else: pass through to the network. */
 /* The JS/CSS files index.html links with a content hash (server.js ASSETS). */
-var BUNDLE_PATHS = ['/app.js', '/style.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js'];
+var BUNDLE_PATHS = ['/app.js', '/style.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/refund-rules.js'];
 
 /* True for `?v=<exactly 12 lowercase hex>` — the server's content hash. The
  * old `?v=<BUILD_ID>` (digits-dash-base36) never matches. Pure. */

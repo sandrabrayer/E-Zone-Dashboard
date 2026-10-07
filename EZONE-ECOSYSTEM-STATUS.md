@@ -1015,6 +1015,30 @@ and `server.js` are not touched.
   branches; v17 stays burned.
 - No new action, env var, Script Property, scope, column or trigger.
 
+## Dashboard: refund rule v2 — stay day 14, every house (October 7, 2026)
+
+Detail: `CHANGELOG-refund-rule-v2.md`, plan §8.6. **Nothing to set.**
+
+- **The rule (Sandra, 07/10/2026), for every house:**
+  `stayDay = exit − entry + 1`. The entry day is day 1, and the count runs
+  across month boundaries.
+  - `stayDay ≥ 14` → no refund for the current cycle.
+  - `stayDay` 1–13 → pro-rata of the current cycle, as before.
+  - The first draft counted the billing month; Sandra corrected it to the
+    stay the same day.
+- **Unchanged:** the prepaid full refund, the payout timing (by the 10th → the
+  15th), and the rule that exceptions are Sandra-only.
+- **Selected by the EXIT date:** `REFUND_RULE_V2_FROM = '2026-10-07'`. An
+  earlier exit keeps the old per-house rule (the last 7 days for אשר / רמות,
+  stay day 14 for the others). Saved credits are never recomputed.
+- **The shared rule** is in `lib/refund-rules.js` (served at
+  `/refund-rules.js`) and in `Code.gs` (`refundCurrentCycleRule_`,
+  `refundRuleVersion_`). A parity test checks that the two agree.
+  `suggestRefunds`, the refund forecast and the «זיכויים» modal all follow it.
+- SW `CACHE_VERSION` v45 → **v46**. v17 stays burned.
+- Code.gs changes, so clasp CI deploys it on merge. There is no new action,
+  Script Property, env var, column or trigger.
+
 ## Dashboard: meetings strip shows current managers only (PR #154, October 1, 2026; re-verified October 6)
 
 Detail: `CHANGELOG-meeting-summary-active-managers.md`. Apps Script **and** Railway.
