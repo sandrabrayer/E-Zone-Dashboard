@@ -2000,7 +2000,7 @@ function promoteEnteredLeads() {
   const dischargedByFromLead = new Set();
   const dischargedByNameHouse = new Set();
   (state.dischargedPatients || []).forEach(d => {
-    if (d.restored === 'TRUE' || d.restored === true) return;
+    if (!dischargeRowOpen(d)) return;
     if (d.fromLead) dischargedByFromLead.add(String(d.fromLead));
     if (d.name && d.houseId) dischargedByNameHouse.add(`${d.houseId}::${String(d.name).trim()}`);
   });
@@ -2124,7 +2124,7 @@ function healClobberedDischarges() {
   const healed = [];
   const audits = Array.isArray(state.dischargedPatients) ? state.dischargedPatients : [];
   audits.forEach(d => {
-    if (!d || d.restored === 'TRUE' || d.restored === true) return;
+    if (!dischargeRowOpen(d)) return;
     const idx = matchActivePatientIndex(state.patients, d);
     if (idx < 0) return;
     const p = state.patients[idx];
@@ -2823,7 +2823,38 @@ function normalizeDischargedPatient(p) {
   base.dischargedBy    = pickField(p, ['dischargedBy']) || '';
   base.dischargeReason = pickField(p, ['dischargeReason']) || '';
   base.patientId       = pickField(p, ['patientId']) || '';
+  /* Duplicate-discharge soft delete (appended columns, 2026-10-07). Carried
+   * so every open-row filter can skip a deleted row (dischargeRowOpen). */
+  base.deletedAt       = pickField(p, ['deletedAt']) || '';
+  base.deletedBy       = pickField(p, ['deletedBy']) || '';
+  base.deleteReason    = pickField(p, ['deleteReason']) || '';
   return base;
+}
+
+/* An OPEN discharge row: neither restored (restored='TRUE', or a Sheets bool)
+ * nor soft-deleted as a duplicate (deletedAt). Mirrors dischargeRowOpen_ in
+ * Code.gs. Every reader that treats a row as a live discharge uses it. Pure. */
+function dischargeRowOpen(d) {
+  return !!d && d.restored !== 'TRUE' && d.restored !== true && !String(d.deletedAt || '').trim();
+}
+
+/* The stay a discharge row belongs to: houseId + name + entry date, with the
+ * name trimmed and inner whitespace collapsed — dischargeStayKey_ in Code.gs.
+ * '' when house or name is blank. Pure. */
+function dischargeStayKey(d) {
+  if (!d) return '';
+  const houseId = String(d.houseId || '').trim();
+  const name = String(d.name || '').replace(/\s+/g, ' ').trim();
+  if (!houseId || !name) return '';
+  return houseId + '::' + name + '::' + String(d.date || '').slice(0, 10);
+}
+
+/* The OTHER open rows of `d`'s stay — what makes `d` a duplicate. Pure. */
+function openDuplicateSiblings(d, dischargedPatients) {
+  const key = dischargeStayKey(d);
+  if (!key || !dischargeRowOpen(d)) return [];
+  return (Array.isArray(dischargedPatients) ? dischargedPatients : []).filter(x =>
+    x && x !== d && x.id !== d.id && dischargeRowOpen(x) && dischargeStayKey(x) === key);
 }
 function cryptoId() {
   return 'id-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -4989,7 +5020,7 @@ function coordinatorDischarges(list, today) {
   const day = d => String(d.exitDate || d.dischargedAt || '').slice(0, 10);
   return (Array.isArray(list) ? list : [])
     .filter(d => d && d.dischargeSource === COORD_PANEL_SOURCE)
-    .filter(d => d.restored !== 'TRUE' && d.restored !== true)
+    .filter(d => dischargeRowOpen(d))
     .filter(d => day(d) >= cutoff)
     .sort((a, b) => (day(b) + String(b.dischargedAt || '')).localeCompare(day(a) + String(a.dischargedAt || '')));
 }
@@ -5047,7 +5078,7 @@ function renderDischargedPatients() {
    * restored='TRUE' (string) on restorePatient_; Sheets may coerce to bool
    * in some configs, so accept both. The audit row stays in the sheet. */
   const allRows = (state.dischargedPatients || [])
-    .filter(d => d.restored !== 'TRUE' && d.restored !== true);
+    .filter(d => dischargeRowOpen(d));
 
   /* Live search (name / phone / house). The count pill reflects the FILTERED
    * count, matching what the list actually shows. */
@@ -5128,11 +5159,105 @@ function renderDischargedPatients() {
         actions.appendChild(creditBtn);
       }
 
+      /* «מחק כפילות» — only on a row whose stay has ANOTHER open discharge
+       * row (so the last row of a stay never offers it), and only to a
+       * deleter (Vered, Sandra). Code.gs re-checks both, plus the credits. */
+      if (canDelete() && openDuplicateSiblings(p, state.dischargedPatients).length > 0) {
+        const dupBtn = document.createElement('button');
+        dupBtn.className = 'btn small danger';
+        dupBtn.dataset.role = 'deleter';
+        dupBtn.dataset.action = 'delete-duplicate-discharge';
+        dupBtn.textContent = 'מחק כפילות';
+        dupBtn.onclick = () => showDeleteDuplicateDischargeModal(p);
+        actions.appendChild(dupBtn);
+      }
+
       row.appendChild(actions);
     }
 
     list.appendChild(row);
   });
+}
+
+/* ===== «מחק כפילות» — soft-delete a duplicate discharge row =====
+ * (CHANGELOG-duplicate-discharges.md.) The server (deleteDuplicateDischarge_)
+ * is the authority: deleter role, a 2–120 char reason, never the last open row
+ * of a stay, never a row with its own credit or a stay with a double credit.
+ * Here: the reason check up front, busyButton against a double tap, the row
+ * leaves the tab only once the server confirmed. Nothing optimistic. */
+const DUP_DISCHARGE_REASON_MIN = 2;
+const DUP_DISCHARGE_REASON_MAX = 120;
+
+/* '' when the reason is acceptable, else the Hebrew error. Pure. */
+function duplicateDischargeReasonError(reason) {
+  const r = String(reason == null ? '' : reason).trim();
+  if (r.length < DUP_DISCHARGE_REASON_MIN) return 'יש להזין סיבה למחיקה (2–120 תווים)';
+  if (r.length > DUP_DISCHARGE_REASON_MAX) return 'הסיבה ארוכה מדי (עד 120 תווים)';
+  return '';
+}
+
+/* The worker: one deleteDuplicateDischarge call. On success the row carries
+ * the server's stamps (so every open-row filter drops it) and the tab
+ * re-renders. Throws the server's Hebrew message on a refusal. */
+async function deleteDuplicateDischarge(d, reason) {
+  if (state.mode !== 'edit' || !canDelete()) throw new Error('אין הרשאה לפעולה זו');
+  const err = duplicateDischargeReasonError(reason);
+  if (err) throw new Error(err);
+  const res = await apiPost({ action: 'deleteDuplicateDischarge', id: String(d.id), reason: String(reason).trim() });
+  const stamps = {
+    deletedAt: (res && res.deletedAt) || new Date().toISOString(),
+    deletedBy: (res && res.deletedBy) || '',
+    deleteReason: (res && res.deleteReason) || String(reason).trim(),
+  };
+  state.dischargedPatients = (state.dischargedPatients || []).map(x =>
+    x && x.id === d.id ? Object.assign({}, x, stamps) : x);
+  renderAll();
+  showToast('הכפילות נמחקה');
+  return res;
+}
+
+function showDeleteDuplicateDischargeModal(d) {
+  if (state.mode !== 'edit' || !canDelete()) return;
+  const root = document.getElementById('modal-root');
+  if (!root) return;
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  const houseName = (houseById(d.houseId) && houseById(d.houseId).name) || d.houseId || '';
+  back.innerHTML = `
+    <div class="modal">
+      <h3>מחיקת שורת שחרור כפולה</h3>
+      <p class="confirm-text">${escapeHtml(d.name || '')} · ${escapeHtml(houseName)} · כניסה ${escapeHtml(d.date ? formatDate(d.date) : '—')} · שחרור ${escapeHtml((d.exitDate || d.dischargedAt) ? formatDate(d.exitDate || d.dischargedAt) : '—')}</p>
+      <p class="confirm-text">השורה תוסתר מהלשונית ותישמר ביומן. המטופל, התשלומים ושורת השחרור האחרת לא ישתנו.</p>
+      <form>
+        <div class="form-row">
+          <label for="dup-discharge-reason">סיבת המחיקה (חובה)</label>
+          <input type="text" id="dup-discharge-reason" name="reason" minlength="2" maxlength="120" required />
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn danger" data-role="deleter">מחק כפילות</button>
+        </div>
+      </form>
+    </div>`;
+  const close = () => back.remove();
+  back.querySelector('[data-action="cancel"]').onclick = close;
+  const form = back.querySelector('form');
+  form.onsubmit = e => {
+    e.preventDefault();
+    const submitBtn = back.querySelector('button[type="submit"]');
+    const reason = (back.querySelector('[name="reason"]').value || '').trim();
+    const err = duplicateDischargeReasonError(reason);
+    if (err) { showError(err); return; }
+    return busyButton(submitBtn, 'delete', async () => {
+      try {
+        await deleteDuplicateDischarge(d, reason);
+        close();
+      } catch (ex) {
+        showError('מחיקת הכפילות נכשלה — ' + ((ex && ex.message) || 'שגיאה'));
+      }
+    });
+  };
+  root.appendChild(back);
 }
 
 /* Restore path A — back into the leads pipeline as a NEW LEAD. The restore-
@@ -5268,7 +5393,7 @@ function restoreNeedsOutpatientCleanup(audit) {
  * filters restored rows) and simply documents the restore. Pure + tested. */
 function auditRowForReleasedPatient(p, dischargedPatients) {
   const match = (Array.isArray(dischargedPatients) ? dischargedPatients : []).find(d =>
-    d && d.restored !== 'TRUE' && d.restored !== true &&
+    dischargeRowOpen(d) &&
     d.houseId === p.houseId && d.name === p.name && d.date === p.date);
   if (match) return match;
   return {
@@ -5309,7 +5434,7 @@ function auditRowForReleasedPatient(p, dischargedPatients) {
 function openDischargeAuditsFor(patient, dischargedPatients) {
   if (!patient) return [];
   return (Array.isArray(dischargedPatients) ? dischargedPatients : []).filter(d =>
-    d && d.restored !== 'TRUE' && d.restored !== true &&
+    dischargeRowOpen(d) &&
     d.houseId === patient.houseId && d.name === patient.name && d.date === patient.date);
 }
 
@@ -6436,111 +6561,166 @@ function dischargeAuditRow(patient, { disposition, note, dischargeDate }, today)
  * the optimistic discharged row if either write fails.
  * NOTE: the משוחרר לטיפול חוץ option only records the disposition + date here;
  * the cross-app Outpatient lead creation is PR 3 — intentionally not built. */
+/* Duplicate discharges (CHANGELOG-duplicate-discharges.md). The server
+ * refuses a second OPEN discharge row for a stay and answers duplicate:true;
+ * this is what the user reads then. */
+const DISCHARGE_ALREADY_RECORDED_HE = 'השחרור כבר נרשם';
+
+/* Stays (dischargeStayKey) with a discharge being saved right now in THIS
+ * tab: a second confirm for the same stay — the house row's שחרר and the
+ * renewals row's שחרור are two doors to the same worker — waits for nothing
+ * and writes nothing. */
+const dischargesInFlight = new Set();
+
 function dischargePatient(p) {
   if (state.mode !== 'edit') return;
+
+  /* ONE audit id per modal: a retry from the same modal (after a lost
+   * response or a «נשמר חלקית» error — the modal stays open) re-sends the
+   * SAME row, which the server upserts in place instead of appending a
+   * second one. The old per-confirm cryptoId() was the duplicate's source. */
+  const auditId = cryptoId();
 
   showCloseLeadModal({
     title: 'שחרור מטופל',
     dispositions: DISCHARGE_DISPOSITIONS,
     dateField: { name: 'dischargeDate', label: 'תאריך שחרור' },
-    onConfirm: async ({ disposition, note, dischargeDate }) => {
-      // Guard 2 (discharge re-promotion fix, insurance): retire the source lead
-      // to the terminal 'admitted' stage (the same value retireAdmittedLeads
-      // uses) so a later loadAll's promoteEnteredLeads can't re-create this
-      // just-discharged patient from a lead still parked at 'entry'/'entered'.
-      // Only a fromLead that resolves to a REAL lead is touched; hand-entered
-      // patients (no fromLead) are covered by Guard 1. `prev` also captures the
-      // lead's prior stage so a failed persist rolls the lead back with the
-      // patient.
-      const sourceLead = p.fromLead
-        ? (state.leads || []).find(l => String(l.id) === String(p.fromLead)) || null
-        : null;
-      const prev = {
-        status: p.status,
-        exitDate: p.exitDate,
-        lead: sourceLead,
-        leadStage: sourceLead ? sourceLead.stage : undefined,
-      };
-
-      const auditRow = dischargeAuditRow(p, { disposition, note, dischargeDate });
-      const exitDate = auditRow.exitDate;
-      const rollback = () => {
-        p.status = prev.status;
-        p.exitDate = prev.exitDate;
-        if (prev.lead) prev.lead.stage = prev.leadStage;
-        state.dischargedPatients = state.dischargedPatients.filter(d => d.id !== auditRow.id);
-        renderAll();
-      };
-
-      p.status   = 'released';
-      p.exitDate = exitDate;
-      if (sourceLead) sourceLead.stage = 'admitted';
-      state.dischargedPatients = state.dischargedPatients || [];
-      state.dischargedPatients.unshift(auditRow);
-      renderAll();
-
-      /* WRITE ORDER MATTERS (discharge-persistence fix). The audit row goes
-       * FIRST: it is a keyed upsert on its own sheet that no saveAll can ever
-       * clobber, so once it lands the discharge intent is durable — if the
-       * saveAll below then fails, healClobberedDischarges completes the
-       * release from the audit row on the next load. The old order (saveAll
-       * first) had the fatal inverse: a failed audit write rolled the LOCAL
-       * patient back to active while the sheet already said released, and the
-       * session's next saveAll silently re-activated the sheet — the
-       * discharge evaporated with nothing but a 6-second toast.
-       *
-       * The payload is the full auditRow (not {...p}): it carries
-       * prior_status + exitDate + dischargedAt, which the old payload dropped
-       * — persisted audit rows always had a blank prior_status, so
-       * restore-to-previous-status silently fell back to 'active'. */
+    onConfirm: async (fields) => {
+      const stay = dischargeStayKey(p) || ('id:' + String(p.id || ''));
+      if (dischargesInFlight.has(stay)) {
+        showToast('השחרור כבר בשמירה…');
+        return;
+      }
+      dischargesInFlight.add(stay);
       try {
-        await apiPost({ action: 'dischargePatient', patient: auditRow });
-      } catch (e) {
-        // Nothing persisted yet — a full rollback is truthful.
-        rollback();
-        showError('שחרור המטופל נכשל — לא נשמר. ' + e.message);
-        throw e;
-      }
-
-      try {
-        await saveAll();
-      } catch (e) {
-        /* The audit row IS persisted; only the status flip failed. Roll the
-         * UI back so it reflects the Patients sheet (still active), and let
-         * the load-time heal finish the release — the discharge converges to
-         * the user's intent instead of silently disappearing. */
-        rollback();
-        showError('שחרור המטופל נשמר חלקית — הסטטוס יתעדכן בטעינה הבאה. ' + e.message);
-        throw e;
-      }
-
-      // PR 3 — cross-app effect: a "released to outpatient" discharge also
-      // creates a lead in the Outpatient app. This runs ONLY after the local
-      // discharge has fully persisted, and is deliberately NON-FATAL — a failed
-      // Outpatient write must never roll back the (already saved) discharge.
-      // createOutpatientLead swallows its own errors and warns the user, so we
-      // await it without a try/throw: it cannot break the discharge.
-      if (shouldCreateOutpatientLead(disposition)) {
-        await createOutpatientLead(p);
-      }
-
-      // Credits / refunds — a SEPARATE write, offered only once BOTH discharge
-      // writes above have succeeded. Nothing here can roll the discharge back:
-      // the modal's save failures surface the Hebrew error banner and leave
-      // the discharge intact; a deferred or failed credit is recoverable from
-      // the מטופלים משוחררים tab (openCreditsForDischarged).
-      // Restricted view: the refund step is skipped (Sandra / Vered create
-      // the credit later from מטופלים משוחררים → «זיכויים»).
-      if (financeView()) try {
-        await showCreditsModal({
-          patient: p, patientId: p.id ? String(p.id) : '', patientKey: patientKey(p), exitDate: exitDate,
-        });
-      } catch (e) {
-        console.warn('[E-ZONE] credits modal failed to open:', e && e.message);
-        showError('לא ניתן לפתוח את חלון הזיכויים — ניתן ליצור זיכוי מלשונית מטופלים משוחררים. ' + (e && e.message || ''));
+        await runDischarge(p, auditId, fields);
+      } finally {
+        dischargesInFlight.delete(stay);
       }
     },
   });
+}
+
+/* The discharge itself (both writes + the follow-ups). Split out of
+ * dischargePatient only so the in-flight guard can wrap it. */
+async function runDischarge(p, auditId, { disposition, note, dischargeDate }) {
+  // Guard 2 (discharge re-promotion fix, insurance): retire the source lead
+  // to the terminal 'admitted' stage (the same value retireAdmittedLeads
+  // uses) so a later loadAll's promoteEnteredLeads can't re-create this
+  // just-discharged patient from a lead still parked at 'entry'/'entered'.
+  // Only a fromLead that resolves to a REAL lead is touched; hand-entered
+  // patients (no fromLead) are covered by Guard 1. `prev` also captures the
+  // lead's prior stage so a failed persist rolls the lead back with the
+  // patient.
+  const sourceLead = p.fromLead
+    ? (state.leads || []).find(l => String(l.id) === String(p.fromLead)) || null
+    : null;
+  const prev = {
+    status: p.status,
+    exitDate: p.exitDate,
+    lead: sourceLead,
+    leadStage: sourceLead ? sourceLead.stage : undefined,
+  };
+
+  const auditRow = Object.assign(dischargeAuditRow(p, { disposition, note, dischargeDate }), { id: auditId });
+  let exitDate = auditRow.exitDate;
+  const rollback = () => {
+    p.status = prev.status;
+    p.exitDate = prev.exitDate;
+    if (prev.lead) prev.lead.stage = prev.leadStage;
+    state.dischargedPatients = state.dischargedPatients.filter(d => d.id !== auditRow.id);
+    renderAll();
+  };
+
+  p.status   = 'released';
+  p.exitDate = exitDate;
+  if (sourceLead) sourceLead.stage = 'admitted';
+  state.dischargedPatients = state.dischargedPatients || [];
+  state.dischargedPatients.unshift(auditRow);
+  renderAll();
+
+  /* WRITE ORDER MATTERS (discharge-persistence fix). The audit row goes
+   * FIRST: it is a keyed upsert on its own sheet that no saveAll can ever
+   * clobber, so once it lands the discharge intent is durable — if the
+   * saveAll below then fails, healClobberedDischarges completes the
+   * release from the audit row on the next load. The old order (saveAll
+   * first) had the fatal inverse: a failed audit write rolled the LOCAL
+   * patient back to active while the sheet already said released, and the
+   * session's next saveAll silently re-activated the sheet — the
+   * discharge evaporated with nothing but a 6-second toast.
+   *
+   * The payload is the full auditRow (not {...p}): it carries
+   * prior_status + exitDate + dischargedAt, which the old payload dropped
+   * — persisted audit rows always had a blank prior_status, so
+   * restore-to-previous-status silently fell back to 'active'. */
+  let auditRes;
+  try {
+    auditRes = await apiPost({ action: 'dischargePatient', patient: auditRow });
+  } catch (e) {
+    // Nothing persisted yet — a full rollback is truthful.
+    rollback();
+    showError('שחרור המטופל נכשל — לא נשמר. ' + e.message);
+    throw e;
+  }
+
+  /* duplicate:true — this stay ALREADY has an open discharge row (an
+   * earlier attempt whose answer was lost, or another tab). The server
+   * wrote nothing. Drop the optimistic row, keep the patient released
+   * (on the recorded exit date) so the Patients sheet matches the
+   * recorded discharge, and skip the follow-ups the first discharge
+   * already owned (outpatient lead, credits). */
+  if (auditRes && auditRes.duplicate === true) {
+    state.dischargedPatients = state.dischargedPatients.filter(d => d.id !== auditRow.id);
+    if (auditRes.exitDate) { exitDate = String(auditRes.exitDate).slice(0, 10); p.exitDate = exitDate; }
+    renderAll();
+    showToast(DISCHARGE_ALREADY_RECORDED_HE);
+    try {
+      await saveAll();
+    } catch (e) {
+      rollback();
+      showError(DISCHARGE_ALREADY_RECORDED_HE + ' — הסטטוס יתעדכן בטעינה הבאה. ' + e.message);
+      throw e;
+    }
+    return;
+  }
+
+  try {
+    await saveAll();
+  } catch (e) {
+    /* The audit row IS persisted; only the status flip failed. Roll the
+     * UI back so it reflects the Patients sheet (still active), and let
+     * the load-time heal finish the release — the discharge converges to
+     * the user's intent instead of silently disappearing. */
+    rollback();
+    showError('שחרור המטופל נשמר חלקית — הסטטוס יתעדכן בטעינה הבאה. ' + e.message);
+    throw e;
+  }
+
+  // PR 3 — cross-app effect: a "released to outpatient" discharge also
+  // creates a lead in the Outpatient app. This runs ONLY after the local
+  // discharge has fully persisted, and is deliberately NON-FATAL — a failed
+  // Outpatient write must never roll back the (already saved) discharge.
+  // createOutpatientLead swallows its own errors and warns the user, so we
+  // await it without a try/throw: it cannot break the discharge.
+  if (shouldCreateOutpatientLead(disposition)) {
+    await createOutpatientLead(p);
+  }
+
+  // Credits / refunds — a SEPARATE write, offered only once BOTH discharge
+  // writes above have succeeded. Nothing here can roll the discharge back:
+  // the modal's save failures surface the Hebrew error banner and leave
+  // the discharge intact; a deferred or failed credit is recoverable from
+  // the מטופלים משוחררים tab (openCreditsForDischarged).
+  // Restricted view: the refund step is skipped (Sandra / Vered create
+  // the credit later from מטופלים משוחררים → «זיכויים»).
+  if (financeView()) try {
+    await showCreditsModal({
+      patient: p, patientId: p.id ? String(p.id) : '', patientKey: patientKey(p), exitDate: exitDate,
+    });
+  } catch (e) {
+    console.warn('[E-ZONE] credits modal failed to open:', e && e.message);
+    showError('לא ניתן לפתוח את חלון הזיכויים — ניתן ליצור זיכוי מלשונית מטופלים משוחררים. ' + (e && e.message || ''));
+  }
 }
 
 /* ====================================================
@@ -7043,6 +7223,9 @@ async function saveCredit(credit) {
     throw new Error('תשובת שרת לא תקינה בשמירת זיכוי');
   }
   const saved = normalizeCredit(res.credit);
+  /* duplicate:true — the stay already has an OPEN credit for this rule; the
+   * server wrote nothing and answered that row, which replaces the line. */
+  if (res.duplicate === true) console.warn('[E-ZONE] credit already recorded — kept', saved.id);
   state.credits = Array.isArray(state.credits) ? state.credits : [];
   const idx = state.credits.findIndex(c => c.id === saved.id);
   if (idx >= 0) state.credits[idx] = saved; else state.credits.push(saved);

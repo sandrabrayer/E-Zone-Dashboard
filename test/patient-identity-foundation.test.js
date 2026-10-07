@@ -221,7 +221,9 @@ test('DISCHARGED_PATIENT_COLUMNS keeps the legacy positional layout (Patients id
   // audit columns (2026-10-04) appended after them — append-only.
   assert.deepStrictEqual(cols.slice(LEGACY_DISCHARGED_COLUMNS.length, LEGACY_DISCHARGED_COLUMNS.length + 2), ['updatedAt', 'updatedBy']);
   assert.deepStrictEqual(cols.slice(LEGACY_DISCHARGED_COLUMNS.length + 2),
-    ['dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId']);
+    ['dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId',
+      // duplicate-discharge soft delete (2026-10-07), appended LAST
+      'deletedAt', 'deletedBy', 'deleteReason']);
   assert.strictEqual(cols.filter((c) => c === 'id').length, 1, 'no duplicate id header');
 });
 

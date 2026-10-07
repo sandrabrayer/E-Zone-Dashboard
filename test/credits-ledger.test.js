@@ -207,7 +207,14 @@ test('saveCredit via handle_: server mints credit::<patientId>::<month>::<seq>, 
 
   const r2 = code.handle({ action: 'saveCredit', credit: Object.assign({}, BASE, { creditType: 'prepaid_return', allocationMonth: '2026-10', calculatedAmount: 9000, amount: 9000 }), user: 'ורד' });
   assert.strictEqual(r2.credit.id, 'credit::id-sara-7f3::2026-10::1');
-  const r3 = code.handle({ action: 'saveCredit', credit: BASE, user: 'דנה' });
+  // Same stay + same rule (days_unused, 2026-09) again → the existing row,
+  // nothing written (CHANGELOG-duplicate-discharges.md).
+  const dup = code.handle({ action: 'saveCredit', credit: BASE, user: 'דנה' });
+  assert.strictEqual(dup.ok, true);
+  assert.strictEqual(dup.duplicate, true);
+  assert.strictEqual(dup.id, 'credit::id-sara-7f3::2026-09::1');
+  // A different rule in the same month (a manual 'other' credit) still mints seq 2.
+  const r3 = code.handle({ action: 'saveCredit', credit: Object.assign({}, BASE, { creditType: 'other', reason: 'פיצוי', calculatedAmount: 300, amount: 300 }), user: 'דנה' });
   assert.strictEqual(r3.credit.id, 'credit::id-sara-7f3::2026-09::2', 'seq increments per patientId+month');
 
   const got = code.handle({ action: 'getCredits' });
@@ -293,7 +300,8 @@ test('a ZERO credit is still a row (calculatedAmount 0, amount 0, no override ne
   assert.strictEqual(row.amount, 0);
   assert.strictEqual(row.status, 'pending');
   // amount omitted → defaults to calculatedAmount
-  const res2 = code.upsert(Object.assign({}, BASE, { amount: undefined, decidedDate: '' }), 'ורד');
+  // (another month: the same month + rule would be the duplicate guard's case)
+  const res2 = code.upsert(Object.assign({}, BASE, { allocationMonth: '2026-10', amount: undefined, decidedDate: '' }), 'ורד');
   assert.strictEqual(res2.ok, true);
   assert.strictEqual(res2.credit.amount, 4800);
   assert.match(res2.credit.decidedDate, /^\d{4}-\d{2}-\d{2}$/, 'blank decidedDate defaults to today');

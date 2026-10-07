@@ -174,7 +174,11 @@
 // לידים tab (CHANGELOG-unadmitted-lead-warning.md). app.js, index.html and
 // style.css changed; hashed URLs miss and phones fetch them; activate evicts
 // v41 (and any orphaned v17 — still burned, never reused).
-var CACHE_VERSION = 'v42';
+// v42 → v43: duplicate discharges — «השחרור כבר נרשם», «מחק כפילות» on the
+// מטופלים משוחררים tab (CHANGELOG-duplicate-discharges.md). app.js changed;
+// its hashed URL misses and phones fetch it; activate evicts v42 (and any
+// orphaned v17 — still burned, never reused).
+var CACHE_VERSION = 'v43';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

@@ -54,6 +54,8 @@ test('discharged-audit header: legacy layout byte-identical; stamps; coordinator
     'dischargedAt', 'disposition', 'discharge_note', 'restored', 'prior_status',
     'updatedAt', 'updatedBy',
     'dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId',
+    // Duplicate-discharge soft delete (CHANGELOG-duplicate-discharges.md), appended LAST.
+    'deletedAt', 'deletedBy', 'deleteReason',
   ]);
 });
 
@@ -66,7 +68,8 @@ test('a live discharged sheet with the OLD 18-column header gets the 4 new heade
   g.sandbox.__sheets['מטופלים משוחררים'] = sh;
   g.run("getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS)");
   assert.deepStrictEqual(sh.grid[0].slice(0, 18), old, 'existing headers untouched');
-  assert.deepStrictEqual(sh.grid[0].slice(18), ['dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId']);
+  assert.deepStrictEqual(sh.grid[0].slice(18), ['dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId',
+    'deletedAt', 'deletedBy', 'deleteReason']);
   assert.deepStrictEqual(sh.grid[1].slice(0, 18), legacyRow, 'existing row untouched');
 });
 
