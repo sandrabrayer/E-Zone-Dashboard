@@ -967,6 +967,28 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
 
+## Dashboard: «מטופלים» patient list — PR 1, the foundation (October 7, 2026)
+
+Detail: `CHANGELOG-patients-tab-foundation.md`. **Railway only**: `public/app.js`
+(pure helpers, not yet called by any render) and a test. Nothing changes on
+screen. `Code.gs` is not touched.
+
+- **Helpers:**
+  - `patientLeadInfo`: `fromLead` → board / closed / removed lists, else the
+    #192 name + house match; ambiguous → no lead.
+  - `patientProblems`: ללא גורם מממן · לא דווח תשלום (3+ days) · בית שונה
+    מהליד · ללא ליד. The first two are finance only.
+  - `patientPaymentState`: the current cycle through the billing helpers.
+  - `patientListRows`, `patientProblemSummary`, `pendingAdmissionRows`: the
+    #192 rule without its threshold.
+- **The lead's details are a display join.** Nothing is copied onto the
+  Patients sheet.
+- **Admission** (requirement 7): «כניסה לבית» and the load-time promote
+  already set `fromLead` and stage `admitted`. Pinned by tests; no
+  write-path change.
+- No new action, env var, Script Property, scope, column or trigger. SW
+  `CACHE_VERSION` unchanged (v44).
+
 ## Dashboard: meetings strip shows current managers only (PR #154, October 1, 2026; re-verified October 6)
 
 Detail: `CHANGELOG-meeting-summary-active-managers.md`. Apps Script **and** Railway.

@@ -4351,6 +4351,255 @@ function renderUnadmittedLeadsBadge() {
   el.classList.toggle('hidden', n === 0);
 }
 
+
+/* ===== «מטופלים» — the patient list (CHANGELOG-patients-tab-foundation.md) =====
+ * Pure helpers for the patient list tab. Display only: nothing here writes,
+ * and no lead field is ever copied onto a Patients row — the lead's details
+ * are JOINED at render time, so the lead stays the one source of truth.
+ *
+ * The lead ↔ patient link is the #192 rule (unadmittedLeadPatient), read
+ * from the patient's side:
+ *   - fromLead set   → the lead with that id, in any list (board, closed,
+ *                      removed). Never a fallback: a fromLead whose lead is
+ *                      gone reads «הליד לא נמצא», it is not re-guessed.
+ *   - fromLead blank → the leads whose #192 match lands on THIS patient. With
+ *                      no fromLead the only tier that can reach a patient is
+ *                      name + house (the phone tier joins through a
+ *                      patient's own fromLead). More than one lead, or a tier
+ *                      that hits several patients → ambiguous: no lead is
+ *                      shown and the patient is never flagged for it. */
+const PATIENT_NO_PAYMENT_AFTER_DAYS = 3;
+
+/* The patient list's filters, as the tab opens: active patients, every house. */
+const PATIENT_LIST_DEFAULT_FILTERS = Object.freeze({ house: '', status: 'active', problemsOnly: false, q: '' });
+
+/* The problem chips, in display order. `finance` = only computed for a
+ * finance session (the data is never loaded for any other). */
+const PATIENT_PROBLEMS = Object.freeze([
+  { code: 'no_funder',      label: 'ללא גורם מממן',        finance: true },
+  { code: 'no_payment',     label: 'לא דווח תשלום',         finance: true },
+  { code: 'house_mismatch', label: 'בית שונה מהליד',        finance: false },
+  { code: 'no_lead',        label: 'ללא ליד',               finance: false },
+]);
+
+/* Every lead the app holds (board incl. admitted, closed, removed), first
+ * copy of an id wins. */
+function patientLeadPool(s) {
+  const src = s || state;
+  return (src.leads || []).concat(src.irrelevantLeads || [], src.removedLeads || []);
+}
+
+/* A patient's lead → { lead, via, ambiguous }.
+ *   via: 'fromLead' | 'fromLead_missing' | 'name_house' | 'ambiguous' | 'none'
+ * `leads` = every lead (patientLeadPool); `patients` = every Patients row, for
+ * the ambiguity check (defaults to just this one). Pure. */
+function patientLeadInfo(patient, leads, patients) {
+  const text = v => String(v == null ? '' : v).trim();
+  const all = [];
+  const seen = new Set();
+  (Array.isArray(leads) ? leads : []).forEach(l => {
+    const k = text(l && l.id);
+    if (!l || (k && seen.has(k))) return;
+    if (k) seen.add(k);
+    all.push(l);
+  });
+  const none = { lead: null, via: 'none', ambiguous: false };
+  if (!patient) return none;
+  const fromLead = text(patient.fromLead);
+  if (fromLead) {
+    const lead = all.find(l => text(l.id) === fromLead) || null;
+    return { lead, via: lead ? 'fromLead' : 'fromLead_missing', ambiguous: false };
+  }
+  const pats = Array.isArray(patients) && patients.length ? patients : [patient];
+  const nk = normalizeNameForMatch(patient.name);
+  const hid = unadmittedHouseId(patient.houseId);
+  if (!nk || !hid) return none;
+  let tierAmbiguous = false;
+  const hits = all.filter(l => {
+    if (normalizeNameForMatch(l.name) !== nk || unadmittedHouseId(l.house) !== hid) return false;
+    const m = unadmittedLeadPatient(l, pats, all);
+    if (!m || m.via !== 'name_house') return false;   // the lead belongs to another patient
+    if (m.ambiguous) tierAmbiguous = true;
+    return true;
+  });
+  if (!hits.length) return none;
+  if (hits.length > 1 || tierAmbiguous) return { lead: null, via: 'ambiguous', ambiguous: true };
+  return { lead: hits[0], via: 'name_house', ambiguous: false };
+}
+
+/* Whole days from `fromIso` to `toIso` (both 'YYYY-MM-DD'), or null. Pure. */
+function patientDayDiff(fromIso, toIso) {
+  const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+  const a = DATE_RE.exec(isoDate(fromIso || ''));
+  const b = DATE_RE.exec(String(toIso || ''));
+  if (!a || !b) return null;
+  return Math.round((Date.UTC(+b[1], +b[2] - 1, +b[3]) - Date.UTC(+a[1], +a[2] - 1, +a[3])) / 86400000);
+}
+
+/* Days in the house: entry → today, or entry → exit for a released patient.
+ * null without an entry date; a future entry date clamps to 0. Pure. */
+function patientDaysInHouse(patient, todayIso) {
+  if (!patient) return null;
+  const exit = patient.status === 'released' ? patientExitISO(patient) : '';
+  const d = patientDayDiff(patient.date, exit && exit < todayIso ? exit : todayIso);
+  return d == null ? null : Math.max(0, d);
+}
+
+/* Did any payment row record money for this patient? A row is the patient's
+ * by the server-owned uid, or by the house::name::entryDate reduction the
+ * payment matcher uses. A void row is not money. Pure. */
+function patientHasReportedPayment(patient, payments) {
+  const uid = patientUid(patient);
+  const key = patientMatchKeyOf(patient);
+  return (Array.isArray(payments) ? payments : []).some(pay => {
+    if (!pay || isVoidPayment(pay)) return false;
+    const mine = (uid && paymentPatientUid(pay) === uid) || (key && patientMatchKeyFromId(pay.patientId) === key);
+    return !!mine && (paymentCoversCycle(pay) || (Number(pay.amountPaid) || 0) > 0);
+  });
+}
+
+/* The open problems of one patient → [{ code, label }] in PATIENT_PROBLEMS
+ * order. A released patient has none (the list is about who is in a house).
+ *   leadInfo  patientLeadInfo's answer.
+ *   payments  the Payments rows, or null when this session has none (no
+ *             finance) → «לא דווח תשלום» is not computed.
+ *   funders   the Funders rows, or null likewise → «ללא גורם מממן» is not
+ *             computed. Also skipped when funder.js did not load.
+ *   todayIso  'YYYY-MM-DD' in Asia/Jerusalem.
+ * Pure. */
+function patientProblems(patient, leadInfo, payments, funders, todayIso) {
+  if (!patient || patient.status === 'released') return [];
+  const info = leadInfo || { lead: null, via: 'none', ambiguous: false };
+  const lead = info.lead || null;
+  const hasFunders = Array.isArray(funders) && !!funderLib();
+  const funderKey = hasFunders ? patientFunderKey(patient, funders, todayIso, todayIso) : '';
+  const out = new Set();
+  if (hasFunders && (!patientUid(patient) || funderKey === FUNDER_UNSET_KEY)) out.add('no_funder');
+  if (Array.isArray(payments) && funderKey !== FUNDER_PROBONO_KEY) {
+    const days = patientDayDiff(patient.date, todayIso);
+    if (days != null && days >= PATIENT_NO_PAYMENT_AFTER_DAYS && !patientHasReportedPayment(patient, payments)) out.add('no_payment');
+  }
+  if (lead) {
+    const leadHouse = unadmittedHouseId(lead.house);
+    if (leadHouse && leadHouse !== unadmittedHouseId(patient.houseId)) out.add('house_mismatch');
+  }
+  if (!String(patient.fromLead || '').trim() && !lead && !info.ambiguous) out.add('no_lead');
+  return PATIENT_PROBLEMS.filter(p => out.has(p.code)).map(p => ({ code: p.code, label: p.label }));
+}
+
+/* The current cycle's payment state, from the same helpers as גבייה:
+ * lastBillingDayOnOrBefore → the cycle's Payments row (paymentId) → its
+ * derived status. null for a released patient or without an entry date.
+ * → { key: 'paid'|'partial'|'unpaid'|'void'|'probono'|'not_due', label, dueISO }
+ * Pure (payments / funders passed in). */
+function patientPaymentState(patient, payments, funders, todayIso) {
+  if (!patient || patient.status === 'released' || !isoDate(patient.date)) return null;
+  const d = lastBillingDayOnOrBefore(patient.date, todayIso);
+  const dueISO = d ? isoDate(d) : '';
+  if (!dueISO || dueISO < isoDate(patient.date)) return { key: 'not_due', label: 'טרם חויב', dueISO: '' };
+  if (Array.isArray(funders) && funderLib() && patientFunderKey(patient, funders, todayIso, dueISO) === FUNDER_PROBONO_KEY) {
+    return { key: 'probono', label: funderLib().labelFor(FUNDER_PROBONO_KEY), dueISO };
+  }
+  const id = paymentId(patient, dueISO);
+  const pay = (Array.isArray(payments) ? payments : []).find(x => x && x.id === id) || null;
+  if (pay && isVoidPayment(pay)) return { key: 'void', label: PAYMENT_VOID_LABEL, dueISO };
+  const key = pay ? pay.status : 'unpaid';
+  return { key, label: paymentStatusLabel(key), dueISO };
+}
+
+/* What the row shows of its lead (the «פרטי הליד» section). Pure. */
+function patientLeadDetails(lead) {
+  if (!lead) return null;
+  const s = v => String(v == null ? '' : v).trim();
+  return {
+    phone: s(lead.phone),
+    source: s(lead.source),
+    visitDate: isoDate(lead.visitDate || ''),
+    advance: Number(lead.advance) || 0,
+    note: s(lead.note),
+    assignedTo: s(lead.assignedTo),
+    meetingWith: s(lead.meetingWith),
+    house: s(lead.house),
+  };
+}
+
+/* The patient list → rows, filtered and sorted (newest entry first, then
+ * name). `s` is the app state (patients, the three lead lists, and — finance
+ * only — payments and funders); `filters` is PATIENT_LIST_DEFAULT_FILTERS'
+ * shape. A session without finance never reads payments or funders, even if
+ * an array is present. Pure apart from reading `s`.
+ * → [{ patient, leadInfo, lead, problems, days, payment }] */
+function patientListRows(s, filters, todayIso) {
+  const src = s || state;
+  const f = Object.assign({}, PATIENT_LIST_DEFAULT_FILTERS, filters || {});
+  const today = todayIso || debtAgingTodayIso();
+  const finance = src.finance === true;
+  const payments = finance && Array.isArray(src.payments) ? src.payments : null;
+  const funders = finance && Array.isArray(src.funders) ? src.funders : null;
+  const patients = Array.isArray(src.patients) ? src.patients : [];
+  const leads = patientLeadPool(src);
+  const q = normalizeNameForMatch(f.q);
+  const rows = [];
+  patients.forEach(p => {
+    if (!p) return;
+    const released = p.status === 'released';
+    if (f.status === 'active' && released) return;
+    if (f.status === 'released' && !released) return;
+    if (f.house && unadmittedHouseId(p.houseId) !== f.house) return;
+    if (q && normalizeNameForMatch(p.name).indexOf(q) < 0) return;
+    const leadInfo = patientLeadInfo(p, leads, patients);
+    const problems = patientProblems(p, leadInfo, payments, funders, today);
+    if (f.problemsOnly && !problems.length) return;
+    rows.push({
+      patient: p,
+      leadInfo,
+      lead: patientLeadDetails(leadInfo.lead),
+      problems,
+      days: patientDaysInHouse(p, today),
+      payment: finance ? patientPaymentState(p, payments, funders, today) : null,
+    });
+  });
+  return rows.sort((a, b) => String(isoDate(b.patient.date) || '').localeCompare(String(isoDate(a.patient.date) || ''))
+    || String(a.patient.name || '').localeCompare(String(b.patient.name || ''), 'he'));
+}
+
+/* Open problems across the ACTIVE list (every house, no search), for the
+ * summary line and the tab badge. → { patients: N with ≥1, byCode: {code: n} }
+ * Pure apart from reading `s`. */
+function patientProblemSummary(s, todayIso) {
+  const rows = patientListRows(s, { status: 'active' }, todayIso);
+  const byCode = {};
+  PATIENT_PROBLEMS.forEach(p => { byCode[p.code] = 0; });
+  let n = 0;
+  rows.forEach(r => {
+    if (r.problems.length) n++;
+    r.problems.forEach(p => { byCode[p.code]++; });
+  });
+  return { patients: n, byCode };
+}
+
+/* «ממתינים לקליטה»: board leads that are paid or entering treatment
+ * (unadmittedLeadEligible) with no patient record — the #192 rule WITHOUT its
+ * 3-day threshold; `chipDays` carries the #192 chip (3+ days) when it
+ * applies. Ambiguous matches and an unloaded patient list are never listed.
+ * → [{ lead, days, chipDays }], oldest entry first. Pure. */
+function pendingAdmissionRows(leads, patients, payments, todayIso, allLeads) {
+  if (!Array.isArray(patients)) return [];
+  const onBoard = new Set(STAGES.map(st => st.id));
+  const pool = allLeads || leads || [];
+  return (Array.isArray(leads) ? leads : [])
+    .filter(l => l && onBoard.has(l.stage) && unadmittedLeadEligible(l, payments)
+      && !unadmittedLeadPatient(l, patients, pool))
+    .map(l => {
+      const d = patientDayDiff(l.entryDate, todayIso);
+      return {
+        lead: l,
+        days: d == null ? null : Math.max(0, d),
+        chipDays: unadmittedLeadDays(l, patients, payments, todayIso, pool),
+      };
+    })
+    .sort((a, b) => String(isoDate(a.lead.entryDate) || '9999').localeCompare(String(isoDate(b.lead.entryDate) || '9999')));
+}
 function buildLeadCard(lead) {
   const card = document.createElement('div');
   card.className = 'lead-card';
