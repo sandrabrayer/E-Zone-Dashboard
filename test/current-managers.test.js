@@ -308,6 +308,7 @@ function loadApp() {
       meetingWithField: (p) => meetingWithField(p),
       meetingsSummaryHTML: (l, m) => meetingsSummaryHTML(l, m),
       autosaveMeetingWithDefaults: () => autosaveMeetingWithDefaults(),
+      meetingRowHTML: (m, t, o) => meetingRowHTML(m, t, o),
     };`, sandbox);
   return { app: sandbox.__a, saves };
 }
@@ -508,3 +509,58 @@ test("rehab / 'רנטה': from the Managers tab, through getData's currentManage
   assert.ok(html.includes('<span class="mtg-sum-mgr">רנטה</span>'), 'the strip has a רנטה row');
   assert.match(html, /נכנסו: <b>2<\/b>/);
 });
+
+/* ===== Follow-up coverage (2026-10-06) =====
+ * Escaping of a Managers-tab name end to end, and a SAVED former manager on a
+ * meeting: displayed unchanged and never rewritten by the default autosave. */
+
+const HOSTILE = '<img src=x onerror="alert(1)">&\'';
+
+test('escaping: a hostile Managers-tab name passes through Code.gs as-is and is HTML-escaped by every renderer', () => {
+  const { gs } = loadGs({ Managers: fakeSheet('Managers', MANAGERS_HEADER, [['ramot', HOSTILE, '', '']]) });
+  const out = arr(gs.current(TODAY));
+  assert.deepStrictEqual(out, { source: 'managers', managers: [{ house: 'ramot', name: HOSTILE }] },
+    'the backend never mangles the cell — escaping is the renderer\'s job');
+
+  const { app } = loadApp();
+  applyCurrent(app, out.managers);
+  const esc = '&lt;img src=x onerror=&quot;alert(1)&quot;&gt;&amp;&#39;';
+  const strip = app.meetingsSummaryHTML([{ id: '1', meetingWith: HOSTILE, meetingOutcome: 'entered' }]);
+  assert.ok(strip.includes(esc), 'summary strip escapes the name');
+  const select = app.meetingWithSelectHTML({ house: 'רמות השבים', meetingWith: '' });
+  assert.ok(select.includes('<option value="' + esc + '" selected>' + esc + '</option>'), 'dropdown escapes value and label');
+  app.state.mode = 'view';
+  const row = app.meetingRowHTML({ id: 'L1', name: 'x', meetingWith: HOSTILE }, '10:00', false);
+  assert.ok(row.includes('<span class="mtg-with">' + esc + '</span>'), 'meeting row escapes the saved name');
+  for (const html of [strip, select, row]) assert.ok(!/<img/i.test(html), 'no raw tag survives');
+});
+
+test('former manager: a meeting saved with an ended manager is displayed unchanged and never rewritten', async () => {
+  const { gs } = loadGs({ Managers: fakeSheet('Managers', MANAGERS_HEADER, [
+    ['ramot', 'אורן', '2025-01-01', '2026-09-30'],   // ended yesterday
+    ['ramot', 'דנה', '2026-10-01', ''],              // current from today
+  ]) });
+  const out = arr(gs.current(TODAY));
+  assert.deepStrictEqual(out.managers, [{ house: 'ramot', name: 'דנה' }], 'only the current manager is sent');
+
+  const { app, saves } = loadApp();
+  applyCurrent(app, out.managers);
+  app.state.mode = 'edit';
+  app.state.patients = [];
+  const saved = { id: 'L1', name: 'x', stage: 'visit', house: 'רמות השבים', meetingWith: 'אורן', meetingOutcome: 'entered' };
+  app.state.leads = [saved];
+
+  // the meetings row shows the saved value exactly
+  assert.ok(app.meetingRowHTML(saved, '10:00', false).includes('<span class="mtg-with">אורן</span>'));
+  // the dropdown keeps it selected, the current manager is offered alongside
+  const sel = app.meetingWithSelectHTML(saved);
+  assert.match(sel, /<option value="אורן" selected>אורן<\/option>/);
+  assert.match(sel, /<option value="דנה" >דנה<\/option>/);
+  // the strip hides the former manager's row but does not touch the lead
+  assert.strictEqual(app.meetingsSummaryHTML(app.state.leads), '');
+  // the default autosave never overwrites a saved value
+  await app.autosaveMeetingWithDefaults();
+  assert.strictEqual(saved.meetingWith, 'אורן');
+  assert.strictEqual(saves.length, 0, 'nothing written');
+});
+
