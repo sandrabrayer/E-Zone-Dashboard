@@ -331,6 +331,7 @@ body.view-controller #screen-billing .bill-amount-clear-btn,
 body.view-controller #screen-billing .bill-cov-edit-btn,
 body.view-controller #screen-billing .bill-cov-reset-btn,
 body.view-controller #screen-billing .receipt-void-btn,
+body.view-controller #screen-billing .receipt-edit-btn,
 body.view-controller #screen-billing .irrelevant-actions { display: none !important; }
 
 /* ===== Banners ===== */
@@ -1530,6 +1531,9 @@ body.view-controller #screen-billing .irrelevant-actions { display: none !import
 .receipt-item .receipt-ref,
 .receipt-item .receipt-who { color: var(--text-muted); }
 .receipt-item .receipt-void-btn { margin-inline-start: auto; }
+/* ✏️ a receipt's non-money fields (CHANGELOG-receipt-duplicates-and-edit.md). */
+.receipt-item .receipt-edit-btn { margin-inline-start: auto; min-width: 44px; min-height: 36px; }
+.receipt-item .receipt-edit-btn + .receipt-void-btn { margin-inline-start: 0; }
 /* «קיימת כבר קבלה דומה…» — Vered's duplicate prompt in the report form. */
 .pay-report-modal .pr-dup-confirm { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--grp-open); border-radius: 10px; }
 .pay-report-modal .pr-dup-confirm .pr-dup-text { margin: 0 0 8px; font-weight: 600; overflow-wrap: anywhere; }
@@ -1794,7 +1798,8 @@ body.view-controller #screen-billing .irrelevant-actions { display: none !import
 body.viewer-mode .edit-only { display: none !important; }
 body.viewer-mode .bill-report-btn,
 body.viewer-mode .funder-edit-btn,
-body.viewer-mode .receipt-void-btn { display: none !important; }
+body.viewer-mode .receipt-void-btn,
+body.viewer-mode .receipt-edit-btn { display: none !important; }
 
 /* ===== BREAK-EVEN MODULE ===== */
 .be-hq-row {

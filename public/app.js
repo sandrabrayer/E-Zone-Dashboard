@@ -11447,6 +11447,11 @@ function receiptsListHtml(cycleId) {
     const voidBtn = !isVoid && state.mode === 'edit' && canDelete()
       ? `<button type="button" class="btn small receipt-void-btn" data-role="deleter" data-rid="${escapeHtml(r.id)}" title="ביטול הקבלה (נשמרת כרישום)">ביטול קבלה</button>`
       : '';
+    // ✏️ the non-money fields (CHANGELOG-receipt-duplicates-and-edit.md):
+    // Vered and Sandra (finance, edit mode); never Ortal's read-only view.
+    const editBtn = !isVoid && canEditReceipt()
+      ? `<button type="button" class="btn small receipt-edit-btn" data-rid="${escapeHtml(r.id)}" title="עריכת פרטי הקבלה (לא סכום, לא תאריך)" aria-label="עריכת פרטי הקבלה">✏️</button>`
+      : '';
     return `<li class="receipt-item${isVoid ? ' receipt-void' : ''}" data-rid="${escapeHtml(r.id)}">
         <span class="receipt-date">${escapeHtml(formatDate(r.receivedDate) || '—')}</span>
         <span class="receipt-amount">${escapeHtml(fmtShekel(r.amount))}</span>
@@ -11455,6 +11460,7 @@ function receiptsListHtml(cycleId) {
         <span class="receipt-invoice">חשבונית: ${escapeHtml(invoiceLabel(r.invoiceWanted))}${r.invoiceWanted === 'yes' ? ' · על שם ' + escapeHtml(invoiceToLabel(r)) : ''}</span>
         <span class="receipt-who">${escapeHtml(r.recordedBy || '')}</span>
         ${isVoid ? `<span class="badge void">${escapeHtml(PAYMENT_VOID_LABEL)}</span>` : ''}
+        ${editBtn}
         ${voidBtn}
       </li>`;
   }).join('');
@@ -11468,6 +11474,195 @@ function wireReceiptVoidButtons(row) {
       if (r) openReceiptVoidModal(r);
     };
   });
+  row.querySelectorAll('.receipt-edit-btn').forEach(btn => {
+    btn.onclick = () => {
+      const r = state.receipts.find(x => x.id === btn.dataset.rid);
+      if (r) openReceiptEditModal(r);
+    };
+  });
+}
+
+/* ===== ✏️ a receipt's non-money fields (CHANGELOG-receipt-duplicates-and-edit.md)
+ * Vered and Sandra: reference, method, payer, invoice, coverage dates —
+ * NEVER amount, receivedDate or status (the server refuses those keys,
+ * field_not_editable). Reason optional. A confirmed receipt stays confirmed.
+ * Display only: Code.gs editReceipt_ is the authority (finance-gated;
+ * the controller view gets 403 from server.js and Code.gs). */
+const RECEIPT_EDIT_FIELDS = ['reference', 'method', 'payer', 'invoiceWanted', 'invoiceTo', 'coverageStart', 'coverageEnd'];
+const RECEIPT_EDIT_REASON_MAX = 300;
+const RECEIPT_EDIT_TOAST = 'פרטי הקבלה עודכנו';
+
+function canEditReceipt() {
+  return state.mode === 'edit' && financeView() && !controllerView();
+}
+
+/* The edit as sent: only the fields that differ from the receipt, plus the
+ * issues the shared report rules find in THOSE fields. Pure.
+ * → { fields: { k: v }, issues: [{ field, code, hebrewMessage }] } */
+function receiptEditChanges(receipt, values) {
+  const r = receipt || {};
+  const v = values || {};
+  const cur = {
+    reference: String(r.reference || ''), method: String(r.method || ''), payer: String(r.payer || ''),
+    invoiceWanted: String(r.invoiceWanted || ''), invoiceTo: r.invoiceWanted === 'yes' ? String(r.invoiceTo || '') : '',
+    coverageStart: String(r.coverageStart || ''), coverageEnd: String(r.coverageEnd || ''),
+  };
+  const next = {};
+  RECEIPT_EDIT_FIELDS.forEach(k => { next[k] = v[k] === undefined ? cur[k] : String(v[k] == null ? '' : v[k]).trim(); });
+  if (next.invoiceWanted !== 'yes') next.invoiceTo = '';
+  const fields = {};
+  RECEIPT_EDIT_FIELDS.forEach(k => { if (next[k] !== cur[k]) fields[k] = next[k]; });
+  // A coverage or invoice change is sent as its pair.
+  if ('coverageStart' in fields || 'coverageEnd' in fields) { fields.coverageStart = next.coverageStart; fields.coverageEnd = next.coverageEnd; }
+  if ('invoiceWanted' in fields || 'invoiceTo' in fields) { fields.invoiceWanted = next.invoiceWanted; fields.invoiceTo = next.invoiceTo; }
+  const touched = {};
+  Object.keys(fields).forEach(k => { touched[k] = true; });
+  if (touched.method) touched.reference = true;
+  const rules = paymentReportRules();
+  let issues = [];
+  if (rules && Object.keys(fields).length) {
+    issues = rules.validatePaymentReport({
+      receivedDate: r.receivedDate, amount: String(r.amount), method: next.method, payer: next.payer,
+      coverageStart: next.coverageStart, coverageEnd: next.coverageEnd, funder: r.funder, reference: next.reference,
+    }, { todayIso: rules.jerusalemToday(), maxDaysBack: 0 }).filter(i => touched[i.field]);
+    if (touched.invoiceWanted) issues = issues.concat(rules.validatePaymentInvoice(next));
+  }
+  return { fields, issues };
+}
+
+function openReceiptEditModal(receipt) {
+  if (!canEditReceipt()) { showError(ROLE_FORBIDDEN_TEXT); return; }
+  const rules = paymentReportRules();
+  const methods = rules ? rules.PAYMENT_METHODS : [];
+  const root = document.getElementById('modal-root');
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  const r = receipt;
+  const opt = (list, sel) => list.map(v => `<option value="${escapeHtml(v)}" ${v === sel ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('');
+  const err = f => `<div class="field-error" data-err="${f}" id="re-err-${f}" role="alert"></div>`;
+  const yes = r.invoiceWanted === 'yes', no = r.invoiceWanted === 'no';
+  // <input type="date"> values stay ISO; the two coverage errors share a row.
+  const covStart = r.coverageStart, covEnd = r.coverageEnd;
+  const covErrors = err('coverageStart') + err('coverageEnd');
+  back.innerHTML = `
+    <div class="modal pay-report-modal receipt-edit-modal" role="dialog" aria-labelledby="re-title">
+      <h3 id="re-title">עריכת פרטי קבלה</h3>
+      <p class="pay-report-lead"><b>${escapeHtml(r.patientName || '')}</b> · ${escapeHtml(fmtShekel(r.amount))} · התקבל ${escapeHtml(formatDate(r.receivedDate) || '—')}<br>
+        <span class="bc-sub">סכום, תאריך קבלה וסטטוס אינם ניתנים לעריכה. אישור הקבלה נשמר.</span></p>
+      <form novalidate>
+        <div class="form-row">
+          <label for="re-reference">מספר אסמכתא</label>
+          <input type="text" id="re-reference" name="reference" maxlength="40" autocomplete="off" dir="ltr" value="${escapeHtml(r.reference)}" />
+          ${err('reference')}
+        </div>
+        <div class="form-row">
+          <label for="re-method">אמצעי תשלום</label>
+          <select id="re-method" name="method">${opt(methods, r.method)}</select>
+          ${err('method')}
+        </div>
+        <div class="form-row">
+          <label for="re-payer">שם המשלם</label>
+          <input type="text" id="re-payer" name="payer" maxlength="100" autocomplete="off" value="${escapeHtml(r.payer)}" />
+          ${err('payer')}
+        </div>
+        <fieldset class="form-row pr-invoice">
+          <legend>חשבונית?</legend>
+          <div class="pr-invoice-choices" role="radiogroup">
+            <label class="pr-radio"><input type="radio" name="invoiceWanted" value="yes"${yes ? ' checked' : ''} /> כן</label>
+            <label class="pr-radio"><input type="radio" name="invoiceWanted" value="no"${no ? ' checked' : ''} /> לא</label>
+          </div>
+          ${err('invoiceWanted')}
+        </fieldset>
+        <div class="form-row re-invoice-to${yes ? '' : ' hidden'}">
+          <label for="re-invoiceTo">על שם</label>
+          <input type="text" id="re-invoiceTo" name="invoiceTo" maxlength="120" autocomplete="off" value="${escapeHtml(yes ? r.invoiceTo : '')}" />
+          ${err('invoiceTo')}
+        </div>
+        <div class="form-row pr-cov-row">
+          <label>תקופת כיסוי</label>
+          <div class="pr-cov">
+            <input type="date" name="coverageStart" lang="he" dir="rtl" aria-label="תחילת תקופת הכיסוי" value="${escapeHtml(covStart)}" />
+            <input type="date" name="coverageEnd" lang="he" dir="rtl" aria-label="סוף תקופת הכיסוי" value="${escapeHtml(covEnd)}" />
+          </div>
+          ${covErrors}
+        </div>
+        <div class="form-row">
+          <label for="re-reason">סיבה (לא חובה, נשמרת ביומן)</label>
+          <input type="text" id="re-reason" name="reason" maxlength="${RECEIPT_EDIT_REASON_MAX}" autocomplete="off" />
+        </div>
+        <div class="field-error pr-form-error" data-err="_form" role="alert"></div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn primary re-submit">שמירה</button>
+        </div>
+      </form>
+    </div>`;
+  root.appendChild(back);
+  const form = back.querySelector('form');
+  const submitBtn = back.querySelector('.re-submit');
+  const close = () => back.remove();
+  back.querySelector('[data-action="cancel"]').onclick = () => { if (!busyButtonActive(submitBtn)) close(); };
+  const ctl = f => form.querySelector('[name="' + f + '"]');
+  const toRow = back.querySelector('.re-invoice-to');
+  form.querySelectorAll('[name="invoiceWanted"]').forEach(x => {
+    if (x.addEventListener) x.addEventListener('change', () => {
+      const on = form.querySelector('[name="invoiceWanted"]:checked');
+      if (toRow && toRow.classList) toRow.classList.toggle('hidden', !(on && on.value === 'yes'));
+    });
+  });
+  const values = () => {
+    const v = {};
+    ['reference', 'method', 'payer', 'invoiceTo', 'coverageStart', 'coverageEnd'].forEach(f => { v[f] = ctl(f) ? String(ctl(f).value || '').trim() : ''; });
+    const on = form.querySelector('[name="invoiceWanted"]:checked');
+    v.invoiceWanted = on ? String(on.value || '') : String(r.invoiceWanted || '');
+    return v;
+  };
+  const paint = issues => {
+    const by = {};
+    issues.forEach(i => { if (!by[i.field]) by[i.field] = i.hebrewMessage; });
+    back.querySelectorAll('[data-err]').forEach(el => {
+      if (el.dataset.err === '_form') return;
+      el.textContent = by[el.dataset.err] || '';
+      const c = ctl(el.dataset.err);
+      if (c && c.setAttribute) { if (by[el.dataset.err]) c.setAttribute('aria-invalid', 'true'); else c.removeAttribute('aria-invalid'); }
+    });
+  };
+  form.onsubmit = e => {
+    e.preventDefault();
+    const formErr = back.querySelector('[data-err="_form"]');
+    formErr.textContent = '';
+    const ch = receiptEditChanges(r, values());
+    paint(ch.issues);
+    if (ch.issues.length) return;
+    if (!Object.keys(ch.fields).length) { formErr.textContent = 'לא בוצע שינוי'; return; }
+    const reason = String((ctl('reason') || {}).value || '').trim().slice(0, RECEIPT_EDIT_REASON_MAX);
+    return busyButton(submitBtn, 'save', async () => {
+      try {
+        await submitReceiptEdit(r, ch.fields, reason);
+        close();
+        showToast(RECEIPT_EDIT_TOAST);
+      } catch (e2) {
+        const data = e2 && e2.data;
+        if (data && Array.isArray(data.issues) && data.issues.length) paint(data.issues);
+        formErr.textContent = (data && data.message) || ('השמירה נכשלה — ' + ((e2 && e2.message) || 'שגיאה'));
+      }
+    });
+  };
+  const first = ctl('reference');
+  if (first && first.focus) first.focus();
+}
+
+/* POST editReceipt; the server's echo replaces the receipt in state. */
+async function submitReceiptEdit(receipt, fields, reason) {
+  const edit = { id: receipt.id, fields: Object.assign({}, fields) };
+  if (reason) edit.reason = reason;
+  const res = await apiPost({ action: 'editReceipt', edit });
+  const at = state.receipts.findIndex(x => x.id === receipt.id);
+  if (at >= 0 && res && res.receipt) {
+    state.receipts[at] = normalizeReceipt(Object.assign({}, res.receipt, { cycleId: receipt.cycleId }));
+  }
+  renderBilling();
+  return res;
 }
 
 /* Void a receipt — the existing void flow (savePayment, status void, a
