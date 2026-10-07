@@ -620,9 +620,10 @@ test('Code.gs: editReceipt for the controller view → forbidden even with a for
   assert.equal(arr(w.g.run('PAYMENT_COLUMNS')).slice(-2).join(','), 'confirmedAmount,controlNote');
 });
 
-test('SW: CACHE_VERSION v44 (v43 live, from #193; v17 burned)', () => {
+test('SW: CACHE_VERSION v44 or later (v44 shipped this PR; v17 burned)', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
-  assert.equal(v, 'v44');
+  // v45: the «מטופלים» tab (CHANGELOG-patients-tab-ui.md) bumped past it.
+  assert.ok(Number(v.slice(1)) >= 44 && v !== 'v17', v);
 });
 
 /* ============================ mutation checks ============================ */

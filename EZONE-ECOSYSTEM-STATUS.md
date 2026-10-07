@@ -989,6 +989,32 @@ screen. `Code.gs` is not touched.
 - No new action, env var, Script Property, scope, column or trigger. SW
   `CACHE_VERSION` unchanged (v44).
 
+## Dashboard: «מטופלים» patient list — PR 2, the tab (October 7, 2026)
+
+Detail: `CHANGELOG-patients-tab-ui.md`. **Railway only**: `public/`; `Code.gs`
+and `server.js` are not touched.
+
+- **Placement:** a new tab right after לידים. A red badge counts active
+  patients with open problems.
+- **The tab, top to bottom:**
+  1. A problems summary.
+  2. «ממתינים לקליטה»: the #192 rule without its threshold. Each row has
+     «קלוט כמטופל» (the «כניסה לבית» modal) and the #192 chip from day 3.
+  3. The list, one row per patient. Filters: house, פעילים / משוחררים / הכל,
+     בעיות בלבד, name. Columns: name, house, entry date, days, funder,
+     payment status, problem chips. Each row has a «פרטי הליד» section, a
+     display join from the lead.
+- **Actions:** existing flows only — ✏️, «הגדר גורם מממן», «דווח תשלום»,
+  «קלוט כמטופל», «שחזר».
+- **Visibility:**
+  - Shiran / Yael see the tab without the payment column, the funder cell,
+    the finance chips or «דווח תשלום».
+  - Ortal has no tab.
+  - The server already withholds the money data (`FINANCE_ACTIONS`).
+- SW `CACHE_VERSION` v44 → **v45**: v44 was the highest on all 159 remote
+  branches; v17 stays burned.
+- No new action, env var, Script Property, scope, column or trigger.
+
 ## Dashboard: meetings strip shows current managers only (PR #154, October 1, 2026; re-verified October 6)
 
 Detail: `CHANGELOG-meeting-summary-active-managers.md`. Apps Script **and** Railway.

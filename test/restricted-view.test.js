@@ -598,11 +598,11 @@ function loadApp() {
   return { app: sandbox.__test, sandbox, removed };
 }
 
-test('client: exactly the allowed tabs per session — 7 for Shiran / Yael, all 11 for Sandra / Vered', () => {
+test('client: exactly the allowed tabs per session — 8 for Shiran / Yael («מטופלים» included), all of SCREENS for Sandra / Vered', () => {
   const { app } = loadApp();
   assert.deepStrictEqual([...app.FINANCE_SCREENS], ['billing', 'revenue', 'reconnect', 'growth']);
   assert.deepStrictEqual([...app.allowedScreens(false)],
-    ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'breakeven', 'retention']);
+    ['dashboard', 'leads', 'patients', 'meetings', 'occupancy', 'discharged-patients', 'breakeven', 'retention']);
   assert.deepStrictEqual([...app.allowedScreens(true)], [...app.SCREENS]);
   assert.deepStrictEqual([...app.allowedScreens(null)], [...app.SCREENS], 'unknown = as before');
 });

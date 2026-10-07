@@ -101,6 +101,9 @@
       <nav class="tabs">
         <button class="tab active" data-screen="dashboard">דשבורד</button>
         <button class="tab" data-screen="leads">לידים<span id="leads-unadmitted-badge" class="tab-badge tab-badge-danger hidden" title="לידים ששילמו או נכנסים לטיפול ואינם רשומים כמטופלים">0</span></button>
+        <!-- «מטופלים» — the patient list (CHANGELOG-patients-tab-ui.md). Every
+             session but the controller view (Ortal), whose tab removal drops it. -->
+        <button class="tab" data-screen="patients">מטופלים<span id="patients-problems-badge" class="tab-badge tab-badge-danger hidden" title="מטופלים פעילים עם בעיות פתוחות">0</span></button>
         <button class="tab" data-screen="meetings">לוח פגישות<span id="meetings-unseen-badge" class="tab-badge hidden">0</span></button>
         <button class="tab" data-screen="occupancy">תפוסה</button>
         <button class="tab" data-screen="discharged-patients">מטופלים משוחררים</button>
@@ -218,6 +221,29 @@
     </section>
 
     <!-- ====== OCCUPANCY ====== -->
+    <!-- ====== PATIENTS (the patient list) ====== -->
+    <section id="screen-patients" class="screen hidden">
+      <div class="screen-head">
+        <h2>מטופלים <span class="count-pill" id="plist-count">0</span></h2>
+        <div class="actions plist-filters">
+          <input id="plist-search" type="search" placeholder="חיפוש שם מטופל" aria-label="חיפוש שם מטופל" />
+          <select id="plist-house" aria-label="סינון לפי בית"></select>
+          <select id="plist-status" aria-label="סינון לפי סטטוס">
+            <option value="active">פעילים</option>
+            <option value="released">משוחררים</option>
+            <option value="all">הכל</option>
+          </select>
+          <label class="show-released-toggle">
+            <input type="checkbox" id="plist-problems" />
+            <span>בעיות בלבד</span>
+          </label>
+        </div>
+      </div>
+      <div id="plist-summary" class="plist-summary"></div>
+      <div id="plist-pending" class="plist-pending"></div>
+      <div id="plist-list" class="plist-list"></div>
+    </section>
+
     <section id="screen-occupancy" class="screen hidden">
       <div class="screen-head">
         <h2>תפוסה</h2>

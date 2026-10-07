@@ -2573,3 +2573,78 @@ body.viewer-mode .receipt-edit-btn { display: none !important; }
   #screen-dashboard .screen-head .actions { width: 100%; }
   .btn.intake { width: 100%; }
 }
+
+/* ===== «מטופלים» — the patient list (CHANGELOG-patients-tab-ui.md) =====
+ * A row is a column of three bands: the cells (wrapping grid), the red
+ * problem chips, and the foot (the «פרטי הליד» details + the actions).
+ * Nothing scrolls sideways at 360px: every band wraps, long text breaks. */
+.plist-filters { flex-wrap: wrap; }
+.plist-filters select, .plist-filters input[type="search"] { min-height: 44px; }
+.plist-summary {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 0 0 12px;
+}
+.plist-summary-head { font-weight: 700; color: var(--danger); }
+.plist-summary-ok { color: var(--text-muted); font-weight: 600; }
+.plist-section-title { margin: 4px 0 10px; font-size: 16px; color: var(--warning); }
+.plist-pending { display: grid; gap: 10px; margin-bottom: 16px; }
+.plist-list { display: grid; gap: 10px; }
+.plist-row {
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  display: flex; flex-direction: column; align-items: stretch; gap: 10px;
+  min-width: 0;
+}
+.plist-row.released { opacity: .6; }
+.plist-row .p-label {
+  color: var(--text-dim); font-size: 11px; display: block;
+  letter-spacing: .8px; font-weight: 600; margin-bottom: 2px;
+}
+.plist-row .p-val { font-size: 14.5px; font-weight: 600; color: var(--text); }
+.plist-row .p-name { font-weight: 700; font-size: 16px; color: var(--text); overflow-wrap: anywhere; }
+.plist-row.has-problems { border-color: rgba(255, 77, 94, 0.55); }
+.plist-row.plist-pending-row { border-color: rgba(255, 176, 32, 0.55); }
+.plist-main {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px 14px;
+  align-items: start;
+  min-width: 0;
+}
+.plist-main > div { min-width: 0; overflow-wrap: anywhere; }
+.plist-main .plist-name-cell { grid-column: span 2; }
+.plist-main .btn { margin-top: 6px; min-height: 44px; }
+.plist-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.plist-chip {
+  display: inline-block;
+  font-size: 12px; font-weight: 700;
+  color: var(--danger);
+  background: rgba(255, 77, 94, 0.14);
+  border: 1px solid rgba(255, 77, 94, 0.5);
+  padding: 3px 10px; border-radius: 999px;
+  max-width: 100%; white-space: normal; overflow-wrap: anywhere;
+}
+.plist-foot {
+  display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px;
+}
+.plist-foot .row-actions .btn, .plist-pending-row .row-actions .btn { min-height: 44px; }
+.plist-lead { flex: 1 1 240px; min-width: 0; }
+.plist-lead summary {
+  cursor: pointer; font-weight: 700; color: var(--primary);
+  min-height: 44px; display: flex; align-items: center;
+}
+.plist-lead-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px 14px;
+  margin: 6px 0;
+}
+.plist-lead-item, .plist-lead-note { min-width: 0; overflow-wrap: anywhere; }
+.plist-lead-note .p-val { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.plist-lead-none { color: var(--text-muted); font-weight: 600; padding: 4px 0; }
+.plist-empty { text-align: center; color: var(--text-muted); }
+@media (max-width: 480px) {
+  .plist-main { grid-template-columns: 1fr 1fr; }
+  .plist-filters > * { flex: 1 1 100%; }
+  .plist-foot .row-actions { width: 100%; }
+}
