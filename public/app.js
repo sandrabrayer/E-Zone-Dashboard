@@ -11447,6 +11447,11 @@ function receiptsListHtml(cycleId) {
     const voidBtn = !isVoid && state.mode === 'edit' && canDelete()
       ? `<button type="button" class="btn small receipt-void-btn" data-role="deleter" data-rid="${escapeHtml(r.id)}" title="ביטול הקבלה (נשמרת כרישום)">ביטול קבלה</button>`
       : '';
+    // ✏️ the non-money fields (CHANGELOG-receipt-duplicates-and-edit.md):
+    // Vered and Sandra (finance, edit mode); never Ortal's read-only view.
+    const editBtn = !isVoid && canEditReceipt()
+      ? `<button type="button" class="btn small receipt-edit-btn" data-rid="${escapeHtml(r.id)}" title="עריכת פרטי הקבלה (לא סכום, לא תאריך)" aria-label="עריכת פרטי הקבלה">✏️</button>`
+      : '';
     return `<li class="receipt-item${isVoid ? ' receipt-void' : ''}" data-rid="${escapeHtml(r.id)}">
         <span class="receipt-date">${escapeHtml(formatDate(r.receivedDate) || '—')}</span>
         <span class="receipt-amount">${escapeHtml(fmtShekel(r.amount))}</span>
@@ -11455,6 +11460,7 @@ function receiptsListHtml(cycleId) {
         <span class="receipt-invoice">חשבונית: ${escapeHtml(invoiceLabel(r.invoiceWanted))}${r.invoiceWanted === 'yes' ? ' · על שם ' + escapeHtml(invoiceToLabel(r)) : ''}</span>
         <span class="receipt-who">${escapeHtml(r.recordedBy || '')}</span>
         ${isVoid ? `<span class="badge void">${escapeHtml(PAYMENT_VOID_LABEL)}</span>` : ''}
+        ${editBtn}
         ${voidBtn}
       </li>`;
   }).join('');
@@ -11468,6 +11474,195 @@ function wireReceiptVoidButtons(row) {
       if (r) openReceiptVoidModal(r);
     };
   });
+  row.querySelectorAll('.receipt-edit-btn').forEach(btn => {
+    btn.onclick = () => {
+      const r = state.receipts.find(x => x.id === btn.dataset.rid);
+      if (r) openReceiptEditModal(r);
+    };
+  });
+}
+
+/* ===== ✏️ a receipt's non-money fields (CHANGELOG-receipt-duplicates-and-edit.md)
+ * Vered and Sandra: reference, method, payer, invoice, coverage dates —
+ * NEVER amount, receivedDate or status (the server refuses those keys,
+ * field_not_editable). Reason optional. A confirmed receipt stays confirmed.
+ * Display only: Code.gs editReceipt_ is the authority (finance-gated;
+ * the controller view gets 403 from server.js and Code.gs). */
+const RECEIPT_EDIT_FIELDS = ['reference', 'method', 'payer', 'invoiceWanted', 'invoiceTo', 'coverageStart', 'coverageEnd'];
+const RECEIPT_EDIT_REASON_MAX = 300;
+const RECEIPT_EDIT_TOAST = 'פרטי הקבלה עודכנו';
+
+function canEditReceipt() {
+  return state.mode === 'edit' && financeView() && !controllerView();
+}
+
+/* The edit as sent: only the fields that differ from the receipt, plus the
+ * issues the shared report rules find in THOSE fields. Pure.
+ * → { fields: { k: v }, issues: [{ field, code, hebrewMessage }] } */
+function receiptEditChanges(receipt, values) {
+  const r = receipt || {};
+  const v = values || {};
+  const cur = {
+    reference: String(r.reference || ''), method: String(r.method || ''), payer: String(r.payer || ''),
+    invoiceWanted: String(r.invoiceWanted || ''), invoiceTo: r.invoiceWanted === 'yes' ? String(r.invoiceTo || '') : '',
+    coverageStart: String(r.coverageStart || ''), coverageEnd: String(r.coverageEnd || ''),
+  };
+  const next = {};
+  RECEIPT_EDIT_FIELDS.forEach(k => { next[k] = v[k] === undefined ? cur[k] : String(v[k] == null ? '' : v[k]).trim(); });
+  if (next.invoiceWanted !== 'yes') next.invoiceTo = '';
+  const fields = {};
+  RECEIPT_EDIT_FIELDS.forEach(k => { if (next[k] !== cur[k]) fields[k] = next[k]; });
+  // A coverage or invoice change is sent as its pair.
+  if ('coverageStart' in fields || 'coverageEnd' in fields) { fields.coverageStart = next.coverageStart; fields.coverageEnd = next.coverageEnd; }
+  if ('invoiceWanted' in fields || 'invoiceTo' in fields) { fields.invoiceWanted = next.invoiceWanted; fields.invoiceTo = next.invoiceTo; }
+  const touched = {};
+  Object.keys(fields).forEach(k => { touched[k] = true; });
+  if (touched.method) touched.reference = true;
+  const rules = paymentReportRules();
+  let issues = [];
+  if (rules && Object.keys(fields).length) {
+    issues = rules.validatePaymentReport({
+      receivedDate: r.receivedDate, amount: String(r.amount), method: next.method, payer: next.payer,
+      coverageStart: next.coverageStart, coverageEnd: next.coverageEnd, funder: r.funder, reference: next.reference,
+    }, { todayIso: rules.jerusalemToday(), maxDaysBack: 0 }).filter(i => touched[i.field]);
+    if (touched.invoiceWanted) issues = issues.concat(rules.validatePaymentInvoice(next));
+  }
+  return { fields, issues };
+}
+
+function openReceiptEditModal(receipt) {
+  if (!canEditReceipt()) { showError(ROLE_FORBIDDEN_TEXT); return; }
+  const rules = paymentReportRules();
+  const methods = rules ? rules.PAYMENT_METHODS : [];
+  const root = document.getElementById('modal-root');
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  const r = receipt;
+  const opt = (list, sel) => list.map(v => `<option value="${escapeHtml(v)}" ${v === sel ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('');
+  const err = f => `<div class="field-error" data-err="${f}" id="re-err-${f}" role="alert"></div>`;
+  const yes = r.invoiceWanted === 'yes', no = r.invoiceWanted === 'no';
+  // <input type="date"> values stay ISO; the two coverage errors share a row.
+  const covStart = r.coverageStart, covEnd = r.coverageEnd;
+  const covErrors = err('coverageStart') + err('coverageEnd');
+  back.innerHTML = `
+    <div class="modal pay-report-modal receipt-edit-modal" role="dialog" aria-labelledby="re-title">
+      <h3 id="re-title">עריכת פרטי קבלה</h3>
+      <p class="pay-report-lead"><b>${escapeHtml(r.patientName || '')}</b> · ${escapeHtml(fmtShekel(r.amount))} · התקבל ${escapeHtml(formatDate(r.receivedDate) || '—')}<br>
+        <span class="bc-sub">סכום, תאריך קבלה וסטטוס אינם ניתנים לעריכה. אישור הקבלה נשמר.</span></p>
+      <form novalidate>
+        <div class="form-row">
+          <label for="re-reference">מספר אסמכתא</label>
+          <input type="text" id="re-reference" name="reference" maxlength="40" autocomplete="off" dir="ltr" value="${escapeHtml(r.reference)}" />
+          ${err('reference')}
+        </div>
+        <div class="form-row">
+          <label for="re-method">אמצעי תשלום</label>
+          <select id="re-method" name="method">${opt(methods, r.method)}</select>
+          ${err('method')}
+        </div>
+        <div class="form-row">
+          <label for="re-payer">שם המשלם</label>
+          <input type="text" id="re-payer" name="payer" maxlength="100" autocomplete="off" value="${escapeHtml(r.payer)}" />
+          ${err('payer')}
+        </div>
+        <fieldset class="form-row pr-invoice">
+          <legend>חשבונית?</legend>
+          <div class="pr-invoice-choices" role="radiogroup">
+            <label class="pr-radio"><input type="radio" name="invoiceWanted" value="yes"${yes ? ' checked' : ''} /> כן</label>
+            <label class="pr-radio"><input type="radio" name="invoiceWanted" value="no"${no ? ' checked' : ''} /> לא</label>
+          </div>
+          ${err('invoiceWanted')}
+        </fieldset>
+        <div class="form-row re-invoice-to${yes ? '' : ' hidden'}">
+          <label for="re-invoiceTo">על שם</label>
+          <input type="text" id="re-invoiceTo" name="invoiceTo" maxlength="120" autocomplete="off" value="${escapeHtml(yes ? r.invoiceTo : '')}" />
+          ${err('invoiceTo')}
+        </div>
+        <div class="form-row pr-cov-row">
+          <label>תקופת כיסוי</label>
+          <div class="pr-cov">
+            <input type="date" name="coverageStart" lang="he" dir="rtl" aria-label="תחילת תקופת הכיסוי" value="${escapeHtml(covStart)}" />
+            <input type="date" name="coverageEnd" lang="he" dir="rtl" aria-label="סוף תקופת הכיסוי" value="${escapeHtml(covEnd)}" />
+          </div>
+          ${covErrors}
+        </div>
+        <div class="form-row">
+          <label for="re-reason">סיבה (לא חובה, נשמרת ביומן)</label>
+          <input type="text" id="re-reason" name="reason" maxlength="${RECEIPT_EDIT_REASON_MAX}" autocomplete="off" />
+        </div>
+        <div class="field-error pr-form-error" data-err="_form" role="alert"></div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn primary re-submit">שמירה</button>
+        </div>
+      </form>
+    </div>`;
+  root.appendChild(back);
+  const form = back.querySelector('form');
+  const submitBtn = back.querySelector('.re-submit');
+  const close = () => back.remove();
+  back.querySelector('[data-action="cancel"]').onclick = () => { if (!busyButtonActive(submitBtn)) close(); };
+  const ctl = f => form.querySelector('[name="' + f + '"]');
+  const toRow = back.querySelector('.re-invoice-to');
+  form.querySelectorAll('[name="invoiceWanted"]').forEach(x => {
+    if (x.addEventListener) x.addEventListener('change', () => {
+      const on = form.querySelector('[name="invoiceWanted"]:checked');
+      if (toRow && toRow.classList) toRow.classList.toggle('hidden', !(on && on.value === 'yes'));
+    });
+  });
+  const values = () => {
+    const v = {};
+    ['reference', 'method', 'payer', 'invoiceTo', 'coverageStart', 'coverageEnd'].forEach(f => { v[f] = ctl(f) ? String(ctl(f).value || '').trim() : ''; });
+    const on = form.querySelector('[name="invoiceWanted"]:checked');
+    v.invoiceWanted = on ? String(on.value || '') : String(r.invoiceWanted || '');
+    return v;
+  };
+  const paint = issues => {
+    const by = {};
+    issues.forEach(i => { if (!by[i.field]) by[i.field] = i.hebrewMessage; });
+    back.querySelectorAll('[data-err]').forEach(el => {
+      if (el.dataset.err === '_form') return;
+      el.textContent = by[el.dataset.err] || '';
+      const c = ctl(el.dataset.err);
+      if (c && c.setAttribute) { if (by[el.dataset.err]) c.setAttribute('aria-invalid', 'true'); else c.removeAttribute('aria-invalid'); }
+    });
+  };
+  form.onsubmit = e => {
+    e.preventDefault();
+    const formErr = back.querySelector('[data-err="_form"]');
+    formErr.textContent = '';
+    const ch = receiptEditChanges(r, values());
+    paint(ch.issues);
+    if (ch.issues.length) return;
+    if (!Object.keys(ch.fields).length) { formErr.textContent = 'לא בוצע שינוי'; return; }
+    const reason = String((ctl('reason') || {}).value || '').trim().slice(0, RECEIPT_EDIT_REASON_MAX);
+    return busyButton(submitBtn, 'save', async () => {
+      try {
+        await submitReceiptEdit(r, ch.fields, reason);
+        close();
+        showToast(RECEIPT_EDIT_TOAST);
+      } catch (e2) {
+        const data = e2 && e2.data;
+        if (data && Array.isArray(data.issues) && data.issues.length) paint(data.issues);
+        formErr.textContent = (data && data.message) || ('השמירה נכשלה — ' + ((e2 && e2.message) || 'שגיאה'));
+      }
+    });
+  };
+  const first = ctl('reference');
+  if (first && first.focus) first.focus();
+}
+
+/* POST editReceipt; the server's echo replaces the receipt in state. */
+async function submitReceiptEdit(receipt, fields, reason) {
+  const edit = { id: receipt.id, fields: Object.assign({}, fields) };
+  if (reason) edit.reason = reason;
+  const res = await apiPost({ action: 'editReceipt', edit });
+  const at = state.receipts.findIndex(x => x.id === receipt.id);
+  if (at >= 0 && res && res.receipt) {
+    state.receipts[at] = normalizeReceipt(Object.assign({}, res.receipt, { cycleId: receipt.cycleId }));
+  }
+  renderBilling();
+  return res;
 }
 
 /* Void a receipt — the existing void flow (savePayment, status void, a
@@ -11804,6 +11999,7 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
           ${err('invoiceTo')}
         </div>
         <div class="field-error pr-form-error" data-err="_form" role="alert"></div>
+        <div class="pr-dup-confirm hidden" role="alertdialog" aria-live="assertive"></div>
         <div class="form-actions">
           <button type="button" class="btn" data-action="cancel">ביטול</button>
           <button type="submit" class="btn primary pr-submit">שמירת הדיווח</button>
@@ -11883,15 +12079,33 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
       if (first && first.focus) first.focus();
       return;
     }
-    const v = values();
+    return sendReport(values(), false);
+  };
+  /* Send the report; confirmDup re-sends it after «כן, קבלה נוספת». */
+  const dupBox = back.querySelector('.pr-dup-confirm');
+  const hideDup = () => { if (dupBox) { dupBox.innerHTML = ''; dupBox.classList.add('hidden'); } };
+  const sendReport = (v, confirmDup) => {
+    hideDup();
     return busyButton(submitBtn, 'save', async () => {
       try {
-        await submitPaymentReport(d.cycle, v);
+        await submitPaymentReport(d.cycle, v, confirmDup);
         close();
         showToast(PAYMENT_REPORT_TOAST);
       } catch (err) {
         const data = err && err.data;
-        if (data && Array.isArray(data.issues) && data.issues.length) {
+        if (data && data.error === 'possible_duplicate' && !confirmDup && dupBox) {
+          // «קיימת כבר קבלה דומה (dd/mm, אסמכתא X). האם זו קבלה נוספת?»
+          dupBox.innerHTML = `<p class="pr-dup-text">${escapeHtml(possibleDuplicateText(data.existing))}</p>
+            <div class="form-actions">
+              <button type="button" class="btn primary" data-action="dup-yes">כן, קבלה נוספת</button>
+              <button type="button" class="btn" data-action="dup-no">ביטול</button>
+            </div>`;
+          dupBox.classList.remove('hidden');
+          dupBox.querySelector('[data-action="dup-yes"]').onclick = () => sendReport(v, true);
+          dupBox.querySelector('[data-action="dup-no"]').onclick = hideDup;
+          const yes = dupBox.querySelector('[data-action="dup-yes"]');
+          if (yes && yes.focus) yes.focus();
+        } else if (data && Array.isArray(data.issues) && data.issues.length) {
           paint(data.issues);
           back.querySelector('[data-err="_form"]').textContent = data.message || 'הדיווח לא נשמר';
         } else {
@@ -11904,12 +12118,27 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
   if (first && first.focus) first.focus();
 }
 
+/* «קיימת כבר קבלה דומה (dd/mm, אסמכתא X). האם זו קבלה נוספת?» for the
+ * server's possible_duplicate `existing` { id, receivedDate, reference }.
+ * Plain text — the caller escapes it. Pure. */
+function possibleDuplicateText(existing) {
+  const e = existing || {};
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(e.receivedDate || ''));
+  const day = m ? `${m[3]}/${m[2]}` : '—';
+  const ref = String(e.reference || '').trim();
+  return `קיימת כבר קבלה דומה (${day}, ${ref ? 'אסמכתא ' + ref : 'ללא אסמכתא'}). האם זו קבלה נוספת?`;
+}
+
 /* POST reportPayment; on success put the receipt and the re-derived cycle
  * into state and re-render. Nothing is applied optimistically: the money a
- * row shows is always the server's. Throws on refusal (err.data.issues). */
-async function submitPaymentReport(cycle, values) {
+ * row shows is always the server's. Throws on refusal (err.data.issues).
+ * confirmDuplicate true = Vered answered «כן, קבלה נוספת» to the server's
+ * possible_duplicate (the override is audited there). */
+async function submitPaymentReport(cycle, values, confirmDuplicate) {
   const report = Object.assign({}, values);
-  const res = await apiPost({ action: 'reportPayment', report: { cycle, report } });
+  const body = { cycle, report };
+  if (confirmDuplicate === true) body.confirmDuplicate = true;
+  const res = await apiPost({ action: 'reportPayment', report: body });
   if (res && res.receipt) state.receipts.push(normalizeReceipt(res.receipt));
   if (res && res.cycle) adoptCycleEcho(res.cycle);
   renderBilling();
@@ -13011,11 +13240,18 @@ const BC_ERRORS = {
   control_note_single: 'הערה נשמרת לקבלה אחת בכל פעם',
   confirm_status_invalid: 'סטטוס לא מוכר',
   sheet_header_clash: 'מבנה גיליון התשלומים השתנה — פנו לסנדרה',
+  /* «כפילות» (CHANGELOG-receipt-duplicates-and-edit.md). */
+  duplicate_single: '«כפילות» — קבלה אחת בכל פעם',
+  duplicate_note_invalid: 'בסימון «כפילות» חובה לפרט (2 עד 300 תווים)',
+  duplicate_last_receipt: 'זו הקבלה היחידה של המחזור — אי אפשר לסמן אותה ככפילות. אם הכסף לא התקבל, סמנו «לא שולם»',
 };
+const BC_DUP_LABEL = `למה זו כפילות? (${BC_FLAG_MIN} עד ${BC_FLAG_MAX} תווים)`;
+const BC_DUP_EXAMPLE = 'לדוגמה: אותה העברה דווחה פעמיים (אסמכתא 12345)';
 /* The dropdown (lib/billing-control-rules.js DECISION_OPTIONS) and the note
  * bound (CONTROL_NOTE_MAX, the same 500 as Code.gs). */
 const BC_DECISIONS = (bcRules() && bcRules().DECISION_OPTIONS) || [
   { value: 'confirmed', label: 'שולם' }, { value: 'partial', label: 'שולם חלקית' }, { value: 'flagged', label: 'לא שולם' },
+  { value: 'duplicate', label: 'כפילות' },
 ];
 const BC_NOTE_MAX = (bcRules() && bcRules().CONTROL_NOTE_MAX) || 500;
 const BC_XLSX_ERRORS = {
@@ -13035,6 +13271,8 @@ function billingControlState() {
       month: '', house: 'all',
       // «שולם חלקית» amount form and the note editor (one row at a time each).
       partialOpen: '', partialDraft: '', noteOpen: '', noteDraft: '',
+      // «כפילות» reason form (one row at a time).
+      dupOpen: '', dupDraft: '',
     };
   }
   return state.bc;
@@ -13092,7 +13330,7 @@ async function confirmReceipts(ids, status, extra) {
   const x = typeof extra === 'string' ? { flagNote: extra } : (extra || {});
   const body = { ids: ids.slice() };
   if (status) body.status = status;
-  if (status === 'flagged') body.flagNote = x.flagNote;
+  if (status === 'flagged' || status === 'duplicate') body.flagNote = x.flagNote;
   if (status === 'partial') body.confirmedAmount = x.confirmedAmount;
   if (x.controlNote !== undefined) body.controlNote = x.controlNote;
   let res;
@@ -13105,9 +13343,14 @@ async function confirmReceipts(ids, status, extra) {
   }
   const changed = {};
   (res.changed || []).forEach(r => { changed[r.id] = r; });
+  // «כפילות»: the receipt is void now — it leaves every list and total.
+  const voided = {};
+  (res.voided || []).forEach(r => { if (r && r.id) voided[r.id] = true; });
   if (s.data && Array.isArray(s.data.receipts)) {
-    s.data.receipts = s.data.receipts.map(r => (changed[r.id] ? Object.assign({}, r, changed[r.id]) : r));
+    s.data.receipts = s.data.receipts.filter(r => !voided[r.id])
+      .map(r => (changed[r.id] ? Object.assign({}, r, changed[r.id]) : r));
   }
+  if (s.dupOpen && ids.indexOf(s.dupOpen) >= 0 && status) { s.dupOpen = ''; s.dupDraft = ''; }
   ids.forEach(id => { delete s.selected[id]; });
   if (s.flagOpen && ids.indexOf(s.flagOpen) >= 0 && status) { s.flagOpen = ''; s.flagDraft = ''; }
   if (s.partialOpen && ids.indexOf(s.partialOpen) >= 0 && status) { s.partialOpen = ''; s.partialDraft = ''; }
@@ -13118,6 +13361,7 @@ async function confirmReceipts(ids, status, extra) {
     : status === 'confirmed' ? (n === 1 ? 'סומן «שולם»' : `סומנו ${n} קבלות «שולם»`)
     : status === 'partial' ? 'סומן «שולם חלקית» — היתרה נשארת חוב פתוח'
     : status === 'flagged' ? 'סומן «לא שולם» — חוזר לוורד'
+    : status === 'duplicate' ? 'סומן «כפילות» — הקבלה בוטלה ואינה נספרת'
     : 'חזר ל«ממתין לאימות»');
   return res;
 }
@@ -13159,6 +13403,23 @@ function bcPartialFormHtml(r) {
     </div>`;
 }
 
+/* The «כפילות» reason form (one row): a required note, 2–300, like «לא שולם».
+ * Saving voids the receipt on the server (Code.gs confirmDuplicate_). */
+function bcDuplicateFormHtml(r) {
+  const s = billingControlState();
+  const id = escapeHtml(r.id);
+  return `<div class="bc-dup-form">
+      <label for="bc-dup-${id}">${escapeHtml(BC_DUP_LABEL)}</label>
+      <textarea id="bc-dup-${id}" class="bc-dup-note" data-bc-dup-note="${id}" maxlength="${BC_FLAG_MAX}" rows="3" placeholder="${escapeHtml(BC_DUP_EXAMPLE)}">${escapeHtml(s.dupDraft)}</textarea>
+      <div class="bc-sub">הקבלה תסומן כמבוטלת ולא תיספר ב«נגבה». רק סנדרה יכולה לבטל את הסימון.</div>
+      <div class="error-msg bc-dup-error hidden" role="alert"></div>
+      <div class="bc-actions">
+        <button type="button" class="btn small danger" data-bc-dup-save="${id}">שמירת «כפילות»</button>
+        <button type="button" class="btn small ghost" data-bc-dup-cancel="${id}">ביטול</button>
+      </div>
+    </div>`;
+}
+
 /* Ortal's note on one row: the text (escaped) and, for a decider, the editor. */
 function bcControlNoteHtml(r, can) {
   const s = billingControlState();
@@ -13195,8 +13456,11 @@ function bcReceiptHtml(r, mode, opts) {
   const R = bcRules();
   const verified = R ? R.verifiedAmountOf(r) : Number(r.verifiedAmount) || 0;
   const open = R ? R.openAmountOf(r) : Number(r.openAmount) || 0;
+  /* «אומתו» (CHANGELOG-receipt-duplicates-and-edit.md): «חלק אוקטובר: ₪x ·
+   * הקבלה המלאה ₪y (תקופה dd/mm–dd/mm) · שולם במלואו» — «שולם חלקית» only
+   * for a partial receipt (lib/billing-control-rules.js confirmedMonthLine). */
   const amount = mode === 'confirmed' && o.inMonth !== undefined
-    ? `${fmtShekel(o.inMonth)} <span class="bc-sub">(מתוך ${fmtShekel(isPartial ? verified : r.amount)})</span>`
+    ? `<span class="bc-month-line">${escapeHtml(R ? R.confirmedMonthLine(r, s.month, o.inMonth, fmtShekel) : fmtShekel(o.inMonth))}</span>`
     : fmtShekel(r.amount);
   let actions = '';
   if (can) {
@@ -13217,6 +13481,7 @@ function bcReceiptHtml(r, mode, opts) {
       </div>`;
     }
     if (s.partialOpen === r.id) actions += bcPartialFormHtml(r);
+    if (s.dupOpen === r.id) actions += bcDuplicateFormHtml(r);
   }
   const extra = [];
   if (mode === 'flagged' || (mode === 'exception' && r.flagNote)) {
@@ -13443,6 +13708,7 @@ function initBillingControlControls() {
     const t = e.target;
     if (!t || !t.getAttribute) return;
     if (t.getAttribute('data-bc-note')) s.flagDraft = t.value;
+    if (t.getAttribute('data-bc-dup-note')) { s.dupDraft = t.value; bcClearInlineError(t, '.bc-dup-error'); }
     const pid = t.getAttribute('data-bc-partial-amount');
     if (pid) {
       // Live remaining balance — computed by the shared rule, text only.
@@ -13494,6 +13760,18 @@ function initBillingControlControls() {
       busyButton(t, 'save', () => confirmReceipts([id], 'flagged', chk.note));
     } else if (attr('data-bc-unflag')) {
       busyButton(t, 'save', () => confirmReceipts([attr('data-bc-unflag')], 'reported'));
+    } else if (attr('data-bc-dup-cancel')) {
+      s.dupOpen = ''; s.dupDraft = '';
+      renderBillingControl();
+    } else if (attr('data-bc-dup-save')) {
+      const id = attr('data-bc-dup-save');
+      const R = bcRules();
+      const chk = R ? R.flagNoteCheck(s.dupDraft) : { note: s.dupDraft, error: '' };
+      if (chk.error) {
+        bcInlineError(t, '.bc-dup-form', '.bc-dup-error', 'textarea', BC_ERRORS.duplicate_note_invalid);
+        return;
+      }
+      busyButton(t, 'save', () => confirmReceipts([id], 'duplicate', { flagNote: chk.note }));
     } else if (attr('data-bc-partial-cancel')) {
       s.partialOpen = ''; s.partialDraft = '';
       renderBillingControl();
@@ -13559,14 +13837,15 @@ function bcClearInlineError(field, errSel) {
 function onBcStatusChange(sel, id, value) {
   const s = billingControlState();
   if (value === 'confirmed') {
-    s.partialOpen = ''; s.flagOpen = '';
+    s.partialOpen = ''; s.flagOpen = ''; s.dupOpen = '';
     sel.disabled = true;
     return confirmReceipts([id], 'confirmed').finally(() => { sel.disabled = false; renderBillingControl(); });
   }
-  if (value === 'partial') { s.partialOpen = id; s.partialDraft = ''; s.flagOpen = ''; }
-  else if (value === 'flagged') { s.flagOpen = id; s.flagDraft = ''; s.partialOpen = ''; }
+  if (value === 'partial') { s.partialOpen = id; s.partialDraft = ''; s.flagOpen = ''; s.dupOpen = ''; }
+  else if (value === 'flagged') { s.flagOpen = id; s.flagDraft = ''; s.partialOpen = ''; s.dupOpen = ''; }
+  else if (value === 'duplicate') { s.dupOpen = id; s.dupDraft = ''; s.partialOpen = ''; s.flagOpen = ''; }
   renderBillingControl();
-  const focus = document.getElementById((value === 'partial' ? 'bc-partial-' : 'bc-note-') + id);
+  const focus = document.getElementById((value === 'partial' ? 'bc-partial-' : value === 'duplicate' ? 'bc-dup-' : 'bc-note-') + id);
   if (focus && focus.focus) focus.focus();
   return Promise.resolve();
 }

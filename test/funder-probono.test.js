@@ -304,8 +304,11 @@ test('reportPayment: allowed for a pro-bono patient WITH an explicit funder; ref
   assert.equal(bad.ok, false);
   assert.ok(bad.issues.some((i) => i.code === 'funder_missing'), JSON.stringify(bad));
   assert.equal(w.snapshot(), before, 'nothing written');
-  for (const f of [PB, 'ביטוח לאומי']) {
-    const ok = w.post({ action: 'reportPayment', report: { cycle, report: Object.assign({}, rep, { funder: f }) } });
+  // Two different amounts: the same amount twice the same day is now a
+  // possible duplicate (CHANGELOG-receipt-duplicates-and-edit.md) — not this
+  // test's rule.
+  for (const [f, amount] of [[PB, '5000'], ['ביטוח לאומי', '5001']]) {
+    const ok = w.post({ action: 'reportPayment', report: { cycle, report: Object.assign({}, rep, { funder: f, amount }) } });
     assert.equal(ok.ok, true, JSON.stringify(ok));
     assert.equal(ok.receipt.funder, f);
   }

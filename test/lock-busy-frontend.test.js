@@ -87,6 +87,7 @@ function loadApp(script) {
       normalizePatient: (p) => normalizePatient(p),
       updateLead: (id, f) => updateLead(id, f),
       savePayment: (p) => savePayment(p),
+      submitReceiptEdit: (r, f, why) => submitReceiptEdit(r, f, why),
       saveCredit: (c) => saveCredit(c),
       loadPayoutForecast: () => loadPayoutForecast(),
       loadDebtAging: () => loadDebtAging(),
@@ -310,6 +311,19 @@ const PATHS = [
     okResponse: { ok: true, changed: [{ id: 'rcpt-1', confirmStatus: 'confirmed', confirmedBy: 'אורטל' }], unchanged: 0 },
     run: (app) => app.confirmReceipts(['rcpt-1'], 'confirmed'),
     landed: (app) => { assert.strictEqual(app.state.bc.data.receipts[0].confirmStatus, 'confirmed'); },
+  },
+  {
+    // ✏️ a receipt's non-money fields (CHANGELOG-receipt-duplicates-and-edit.md).
+    name: 'editReceipt (✏️ on a receipt in «גבייה»)',
+    action: 'editReceipt',
+    setup: (app) => {
+      app.state.finance = true;
+      app.state.receipts = [{ id: 'rcpt-1', cycleId: 'pay::c', amount: 9000, reference: 'A1', status: 'paid' }];
+    },
+    okResponse: { ok: true, changed: true, fields: ['reference'], receipt: { id: 'rcpt-1', amountPaid: 9000, reference: 'B2', status: 'paid' } },
+    run: (app) => app.submitReceiptEdit({ id: 'rcpt-1', cycleId: 'pay::c' }, { reference: 'B2' }, ''),
+    landed: (app) => { assert.strictEqual(app.state.receipts[0].reference, 'B2'); assert.strictEqual(app.state.receipts[0].cycleId, 'pay::c'); },
+    rejects: true,
   },
 ];
 

@@ -589,7 +589,7 @@ test('escaping: the delete modal escapes every interpolated value; the tab write
   assert.ok(!/\+/.test(msgs), 'no concatenated (user-supplied) text in the refusal messages');
 });
 
-test('wiring: Code.gs dispatch + registries, server.js role mirror, append-only columns, SW v43', () => {
+test('wiring: Code.gs dispatch + registries, server.js role mirror, append-only columns, SW v43+', () => {
   const h = GS_SRC.slice(GS_SRC.indexOf('function handle_('), GS_SRC.indexOf('function collectParams_('));
   assert.match(h, /if \(action === 'deleteDuplicateDischarge'\) \{\n\s+\/\/[^\n]*\n[\s\S]*?return jsonOut_\(deleteDuplicateDischarge_\(params, actorLabel_\(params\)\)\);/);
   const g = loadGs({});
@@ -604,7 +604,9 @@ test('wiring: Code.gs dispatch + registries, server.js role mirror, append-only 
   assert.deepEqual([...require('../lib/role-scope').DELETE_ACTIONS], arr(g.run('DELETE_ACTIONS')));
   const sw = fs.readFileSync(path.join(ROOT, 'public', 'sw.js'), 'utf8');
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(sw)[1];
-  assert.equal(v, 'v43');
+  // v43 shipped this fix; later public/ changes bump past it (v44: the
+  // receipt duplicates / edit PR). v17 must never come back.
+  assert.ok(Number(v.slice(1)) >= 43 && v !== 'v17', 'got ' + v);
   // Shared-action changes are ADDITIVE: dischargePatient still answers ok:true
   // (a duplicate is ok:true + duplicate), so ezone-managers / ezone-therapists
   // callers that only read `ok` see no change.

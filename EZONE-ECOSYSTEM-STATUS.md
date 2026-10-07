@@ -939,6 +939,34 @@ Detail: `CHANGELOG-duplicate-discharges.md`. Apps Script **and** Railway.
   trigger. Additive for ezone-managers / ezone-therapists.
 - SW `CACHE_VERSION` v42 → **v43** (v17 stays burned).
 
+## Dashboard: receipts — month-split label, duplicates, ✏️ edit (October 7, 2026)
+
+Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
+(clasp CI on merge). No new column, sheet, Script Property, env var or scope.
+
+- **«אומתו» line:** a month-split confirmed receipt reads «חלק אוקטובר: ₪x ·
+  הקבלה המלאה ₪y (תקופה dd/mm–dd/mm) · שולם במלואו». «שולם חלקית» appears
+  only for `partial`. The «ייצוא אימות» month columns now read «חלק <חודש>»,
+  «הקבלה המלאה» and «סטטוס».
+- **Duplicates at report time:** same patient + same amount within 14 days
+  of a live receipt → `possible_duplicate`, and nothing is written. Vered
+  re-sends with `confirmDuplicate:true`, and AuditLog records
+  `payment_duplicate_override`.
+- **«כפילות» in Ortal's dropdown** (`confirmPayment` status `duplicate`,
+  controller or approver): a required note (2–300) voids the receipt through
+  the PR #144 path (`payment_link_duplicate` audit, cycle re-derived, «נגבה»
+  drops it). The only live receipt of its cycle is refused. Un-void stays
+  Sandra's alone.
+- **`listDuplicateReceiptsNow()`**: a read-only editor function. Run it from
+  the Apps Script editor and read the Execution log.
+- **`editReceipt`** (new, appended to `FINANCE_ACTIONS`; Vered and Sandra
+  only): ✏️ on a receipt edits reference, method, payer, the invoice pair and
+  coverage. Amount, receivedDate and status are refused server-side. Each
+  edit writes one `receipt_edited` audit row with prev / next. Confirmation
+  is kept. Ortal gets 403.
+- SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
+  v17 stays burned).
+
 ## Dashboard: meetings strip shows current managers only (PR #154, October 1, 2026; re-verified October 6)
 
 Detail: `CHANGELOG-meeting-summary-active-managers.md`. Apps Script **and** Railway.

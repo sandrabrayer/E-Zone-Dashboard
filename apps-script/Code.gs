@@ -1165,6 +1165,9 @@ const FINANCE_ACTIONS = [
   'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'debtAging', 'cleanupReport',
   'accountingPayments', 'accountingCredits',
   'reportPayment', 'appendFunder',
+  /* Appended (CHANGELOG-receipt-duplicates-and-edit.md): the receipt's
+   * non-money fields (editReceipt_). Not on CONTROLLER_ACTIONS. */
+  'editReceipt',
 ];
 const FINANCE_USER_IDS = ['vered', 'sandra'];
 
@@ -1337,6 +1340,7 @@ const PROXY_KNOWN_ACTIONS = [
   'occupancySnapshots', 'accountingPayments', 'accountingCredits',
   'getPatientsForCoordinators', 'recordDischargeFromCoordinators',
   'deleteDuplicateDischarge',
+  'editReceipt',
 ];
 
 /* SecurityLog — append-only, one row per (event, action, hour) at most.
@@ -1681,6 +1685,12 @@ function handle_(params) {
     if (action === 'reportPayment') {
       return jsonOut_(reportPayment_(parseJsonParam_(params.report), requestUser_(params),
         { actor: actorLabel_(params), approver: hasRole_(params, 'approver') }));
+    }
+    // A receipt's NON-money fields (CHANGELOG-receipt-duplicates-and-edit.md):
+    // finance-gated (FINANCE_ACTIONS), never the controller view. user /
+    // actor from the verified session only.
+    if (action === 'editReceipt') {
+      return jsonOut_(editReceipt_(parseJsonParam_(params.edit), requestUser_(params), { actor: actorLabel_(params) }));
     }
     // The patient card's funder editor: appends ONE Funders row.
     if (action === 'appendFunder') return jsonOut_(appendFunderAction_(params));
@@ -7300,6 +7310,14 @@ function upsertPayment_(payment, user, ctx) {
     }
     if (isReceipt) {
       const voidMove = isVoidStatus_(payment.status) !== isVoidStatus_(prev.status);
+      /* «כפילות» from Ortal's tab (confirmDuplicate_, ctx.duplicateGuard):
+       * the receipt may not be the ONLY live receipt of its cycle — then it
+       * is not a duplicate of anything there. Decided here, under the lock,
+       * against the sheet. CHANGELOG-receipt-duplicates-and-edit.md. */
+      if (voidMove && isVoidStatus_(payment.status) && c.duplicateGuard === true
+          && !receiptHasLiveSibling_(existing, targetRow - 2)) {
+        return { ok: false, error: 'duplicate_last_receipt', message: DUPLICATE_LAST_RECEIPT_MESSAGE };
+      }
       /* The one other edit a receipt takes: its invoice choice (validated by
        * paymentInvoiceFields_ below, audited). Every other cell is kept. */
       const invoiceEdit = !voidMove && paymentInvoiceFields_(invoiceIn, prev, {}).change !== null;
@@ -8470,6 +8488,16 @@ function reportPayment_(body, user, ctx) {
       cycleOut.legacyAmountPaid = receiptMoney_(prevCycle.amountPaid) > 0 ? receiptMoney_(prevCycle.amountPaid) : '';
     }
 
+    /* A possible duplicate (CHANGELOG-receipt-duplicates-and-edit.md): the
+     * same patient already has a live receipt of the same amount received
+     * within DUPLICATE_WINDOW_DAYS. Refused, NOTHING written, unless the
+     * caller re-sends with confirmDuplicate:true (Vered's «כן, קבלה נוספת») —
+     * then the override is audited below. */
+    const dup = receiptPossibleDuplicate_(rows, cycleOut, amount, rep.receivedDate);
+    if (dup && b.confirmDuplicate !== true) {
+      return { ok: false, error: 'possible_duplicate', message: POSSIBLE_DUPLICATE_MESSAGE, existing: dup };
+    }
+
     // The receipt row.
     const nowIso = new Date().toISOString();
     const receiptIn = {
@@ -8518,6 +8546,13 @@ function reportPayment_(body, user, ctx) {
       cycleStatus: String(cycleWritten.status), cycleAmountPaid: cycleWritten.amountPaid,
       by: stampUser, at: String(receiptOut.recordedAt || ''),
     }, c.actor === undefined ? stampUser : String(c.actor));
+    if (dup) {
+      logAudit_('payment_duplicate_override', 'reportPayment_', String(receiptOut.patientUid || ''), String(receiptOut.patientName || ''), {
+        receiptId: String(receiptOut.id), existingId: dup.id, existingReceivedDate: dup.receivedDate,
+        existingReference: dup.reference, amount: amount, receivedDate: rep.receivedDate, reference: rep.reference,
+        by: stampUser, at: String(receiptOut.recordedAt || ''),
+      }, c.actor === undefined ? stampUser : String(c.actor));
+    }
 
     const echoReceipt = {};
     Object.keys(receiptOut).forEach(function (k) { echoReceipt[k] = receiptOut[k]; });
@@ -8599,6 +8634,291 @@ function rederiveReceiptCycleLocked_(sh, stampUser, receiptId) {
   return out;
 }
 
+/* ===== Duplicate receipts + the receipt's non-money fields =====
+ * CHANGELOG-receipt-duplicates-and-edit.md (Sandra, 2026-10-07).
+ *
+ * B1 — at report time: reportPayment_ refuses { ok:false,
+ *   error:'possible_duplicate', existing:{ id, receivedDate, reference } }
+ *   when the same patient already has a LIVE receipt of the same amount
+ *   received within DUPLICATE_WINDOW_DAYS (either side). Vered confirms
+ *   «כן, קבלה נוספת» → the same report with confirmDuplicate:true is
+ *   accepted and AuditLog 'payment_duplicate_override' names both receipts.
+ * B2 — Ortal's «כפילות» (confirmPayment status 'duplicate', ONE receipt, a
+ *   note 2–300): the receipt is voided through upsertPayment_ — the PR #144
+ *   void path, linkStatus 'duplicate', its 'payment_link_duplicate' audit and
+ *   the cycle re-derivation — so «נגבה» stops counting it. Refused when it
+ *   is the only live receipt of its cycle. Un-void stays Sandra's alone.
+ * B3 — listDuplicateReceiptsNow(): READ-ONLY editor report.
+ * C  — editReceipt_: reference / method / payer / invoice / coverage only. */
+const DUPLICATE_WINDOW_DAYS = 14;
+const DUPLICATE_DECISION = 'duplicate';
+const POSSIBLE_DUPLICATE_MESSAGE = 'קיימת כבר קבלה דומה';
+const DUPLICATE_LAST_RECEIPT_MESSAGE = 'זו הקבלה היחידה של המחזור — אי אפשר לסמן אותה ככפילות. אם הכסף לא התקבל, סמנו «לא שולם»';
+
+/* A Payments cell as 'YYYY-MM-DD' ('' when it is not a real day). */
+function receiptDayIso_(v) {
+  if (v instanceof Date) return localPartsISO_(v);
+  return paymentReportDate_(v) || '';
+}
+
+/* The live receipt of the same patient (receiptSamePatient_ against
+ * `probe`), the same amount (agorot) and received within
+ * DUPLICATE_WINDOW_DAYS of receivedIso — the closest one, or null. PURE.
+ * → { id, receivedDate, reference } */
+function receiptPossibleDuplicate_(rows, probe, amount, receivedIso) {
+  if (!receivedIso || !probe) return null;
+  const at = paymentReportDayNum_(receivedIso);
+  const want = receiptMoney_(amount);
+  let best = null;
+  (Array.isArray(rows) ? rows : []).forEach(function (r) {
+    if (!isReceiptRow_(r) || isVoidStatus_(r.status) || !receiptSamePatient_(r, probe)) return;
+    if (receiptReportedAmount_(r) !== want) return;
+    const d = receiptDayIso_(r.receivedDate);
+    if (!d) return;
+    const gap = Math.abs(paymentReportDayNum_(d) - at);
+    if (gap > DUPLICATE_WINDOW_DAYS) return;
+    if (!best || gap < best.gap) best = { gap: gap, row: r, date: d };
+  });
+  return best ? { id: paymentCell_(best.row.id), receivedDate: best.date, reference: paymentCell_(best.row.reference) } : null;
+}
+
+/* Whether the receipt at `index` of the raw Payments grid shares its cycle
+ * with at least one OTHER live receipt. Unlinked → false. PURE. */
+function receiptHasLiveSibling_(grid, index) {
+  const rows = (Array.isArray(grid) ? grid : []).map(function (g) {
+    const o = {};
+    for (let k = 0; k < PAYMENT_COLUMNS.length; k++) o[PAYMENT_COLUMNS[k]] = g[k];
+    return o;
+  });
+  const L = linkReceiptsToCycles_(rows);
+  let cycleIndex = -1;
+  L.receipts.forEach(function (rc) { if (rc.index === index) cycleIndex = rc.cycleIndex; });
+  if (cycleIndex < 0) return false;
+  const self = paymentCell_(rows[index] && rows[index].id);
+  return (L.byCycle[cycleIndex] || []).some(function (r) {
+    return paymentCell_(r.id) !== self && !isVoidStatus_(r.status);
+  });
+}
+
+/* confirmPayment status 'duplicate' — Ortal (controller) or Sandra
+ * (approver); handle_ already checked the role. ONE receipt; req.note is the
+ * required reason (confirmRequestClean_). Reuses the PR #144 void path. */
+function confirmDuplicate_(req, user, ctx) {
+  const c = ctx || {};
+  const stampUser = String(user == null ? '' : user);
+  const id = req.ids[0];
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PAYMENTS_SHEET);
+  const rows = sh ? readSheet_(sh, PAYMENT_COLUMNS) : [];
+  let row = null;
+  for (let i = 0; i < rows.length; i++) if (paymentCell_(rows[i].id) === id) { row = rows[i]; break; }
+  if (!row || !isReceiptRow_(row)) return Object.assign(confirmError_('not_found'), { id: id });
+  if (isVoidStatus_(row.status)) return Object.assign(confirmError_('receipt_void'), { id: id });
+  const res = upsertPayment_({
+    id: id, status: PAYMENT_VOID_STATUS, linkPatientUid: '', linkStatus: 'duplicate',
+    linkNote: req.note, timestamp: new Date().toISOString(),
+  }, stampUser, { actor: c.actor === undefined ? stampUser : String(c.actor), duplicateGuard: true, refuseLegacyMoney: true });
+  if (!res || res.ok !== true) return Object.assign({}, res || { ok: false, error: 'duplicate_failed' }, { id: id });
+  return {
+    ok: true, changed: [], unchanged: 0,
+    voided: [{ id: id, status: PAYMENT_VOID_STATUS, linkStatus: 'duplicate', linkNote: req.note }],
+    cycle: res.cycle || null,
+  };
+}
+
+/* Every patient with 2+ LIVE receipts of the same amount received within
+ * DUPLICATE_WINDOW_DAYS of each other (a chain: each one within the window
+ * of the previous). PURE. → [{ patientName, houseId, amount, receipts:
+ * [{ id, receivedDate, reference, method, confirmStatus, recordedBy }] }] */
+function duplicateReceiptGroups_(rows) {
+  const byKey = {};
+  (Array.isArray(rows) ? rows : []).forEach(function (r) {
+    if (!isReceiptRow_(r) || isVoidStatus_(r.status)) return;
+    const d = receiptDayIso_(r.receivedDate);
+    if (!d) return;
+    const who = paymentCell_(r.patientUid) || paymentCell_(r.patientId);
+    if (!who) return;
+    const k = who + '|' + receiptReportedAmount_(r);
+    (byKey[k] = byKey[k] || []).push({ row: r, date: d });
+  });
+  const out = [];
+  Object.keys(byKey).sort().forEach(function (k) {
+    const list = byKey[k].sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    let chain = [list[0]];
+    const flush = function () {
+      if (chain.length < 2) return;
+      const first = chain[0].row;
+      out.push({
+        patientName: paymentCell_(first.patientName), houseId: paymentCell_(first.houseId),
+        amount: receiptReportedAmount_(first),
+        receipts: chain.map(function (x) {
+          return { id: paymentCell_(x.row.id), receivedDate: x.date, reference: paymentCell_(x.row.reference),
+            method: paymentCell_(x.row.method), confirmStatus: receiptConfirmStatus_(x.row), recordedBy: paymentCell_(x.row.recordedBy) };
+        }),
+      });
+    };
+    for (let i = 1; i < list.length; i++) {
+      if (paymentReportDayNum_(list[i].date) - paymentReportDayNum_(chain[chain.length - 1].date) <= DUPLICATE_WINDOW_DAYS) chain.push(list[i]);
+      else { flush(); chain = [list[i]]; }
+    }
+    flush();
+  });
+  return out;
+}
+
+/**
+ * EDITOR-RUN, READ-ONLY. Run from the Apps Script editor (no argument):
+ * logs every patient with 2+ live receipts of the same amount received within
+ * 14 days of each other. Reads Payments only — no lock, no write, no sheet
+ * created. Decide each group in «בקרת גבייה» («כפילות») or with Vered.
+ * → { ok, groups, receipts } */
+function listDuplicateReceiptsNow() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PAYMENTS_SHEET);
+  const rows = sh ? readSheet_(sh, PAYMENT_COLUMNS) : [];
+  const groups = duplicateReceiptGroups_(rows);
+  let n = 0;
+  Logger.log('listDuplicateReceiptsNow — ' + groups.length + ' patient group(s) with possible duplicate receipts (same amount, ≤' +
+    DUPLICATE_WINDOW_DAYS + ' days). READ-ONLY: nothing was changed.');
+  groups.forEach(function (g) {
+    n += g.receipts.length;
+    Logger.log('• ' + g.patientName + ' (' + g.houseId + ') ₪' + g.amount + ' × ' + g.receipts.length);
+    g.receipts.forEach(function (r) {
+      Logger.log('    ' + r.receivedDate + ' · ' + r.id + ' · אסמכתא ' + (r.reference || '—') + ' · ' + (r.method || '—') +
+        ' · ' + r.confirmStatus + ' · ' + (r.recordedBy || '—'));
+    });
+  });
+  return { ok: true, groups: groups, receipts: n };
+}
+
+/* ---- C: the receipt's non-money fields (editReceipt) -------------------
+ * Vered and Sandra (FINANCE_ACTIONS; never the controller view). ONLY
+ * RECEIPT_EDIT_FIELDS; amount, receivedDate, status and every other key are
+ * REFUSED (field_not_editable), nothing written. The edited fields are
+ * validated with the reportPayment rules (validatePaymentReport_ /
+ * validatePaymentInvoice_); a coverage change must keep the receipt on the
+ * SAME cycle (money never moves between cycles here). Only the changed cells
+ * are written — no restamp, no version bump, confirmStatus untouched. One
+ * AuditLog row 'receipt_edited' with prev / next, the optional reason, by, at. */
+const RECEIPT_EDIT_FIELDS = ['reference', 'method', 'payer', 'invoiceWanted', 'invoiceTo', 'coverageStart', 'coverageEnd'];
+const RECEIPT_EDIT_REASON_MAX = 300;
+const RECEIPT_EDIT_MESSAGES = {
+  bad_edit: 'בקשת עריכה לא תקינה',
+  field_not_editable: 'סכום, תאריך קבלה וסטטוס אינם ניתנים לעריכה',
+  not_found: 'הקבלה לא נמצאה — רעננו את הדף',
+  receipt_void: 'הקבלה בוטלה — אין מה לערוך',
+  reason_invalid: 'סיבה — טקסט עד 300 תווים',
+  coverage_outside_cycle: 'תחילת תקופת הכיסוי חייבת להישאר בתוך מחזור החיוב',
+  sheet_header_clash: 'מבנה גיליון התשלומים השתנה — פנו לסנדרה',
+};
+function receiptEditError_(code, extra) {
+  return Object.assign({ ok: false, error: code, message: RECEIPT_EDIT_MESSAGES[code] || code }, extra || {});
+}
+
+/* body { id: 'rcpt-…', fields: { …RECEIPT_EDIT_FIELDS }, reason? }. */
+function editReceipt_(body, user, ctx) {
+  const b = body && typeof body === 'object' ? body : {};
+  const c = ctx || {};
+  const stampUser = String(user == null ? '' : user);
+  const id = String(b.id == null ? '' : b.id).trim();
+  if (!id || id.length > 300 || /[\u0000-\u001f\u007f]/.test(id) || id.indexOf(RECEIPT_ID_PREFIX) !== 0) return receiptEditError_('bad_edit');
+  const f = b.fields && typeof b.fields === 'object' && !Array.isArray(b.fields) ? b.fields : null;
+  if (!f) return receiptEditError_('bad_edit');
+  const sent = Object.keys(f);
+  const forbidden = sent.filter(function (k) { return RECEIPT_EDIT_FIELDS.indexOf(k) < 0; });
+  if (forbidden.length) return receiptEditError_('field_not_editable', { fields: forbidden });
+  if (!sent.length) return receiptEditError_('bad_edit');
+  for (let i = 0; i < sent.length; i++) {
+    const v = f[sent[i]];
+    if (v !== null && typeof v !== 'string') return receiptEditError_('bad_edit');
+  }
+  const rawReason = b.reason === undefined || b.reason === null ? '' : b.reason;
+  if (typeof rawReason !== 'string') return receiptEditError_('reason_invalid');
+  const reason = rawReason.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().replace(/^[=+@-]+/, '').trim();
+  if (reason.length > RECEIPT_EDIT_REASON_MAX) return receiptEditError_('reason_invalid');
+
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('editReceipt_');
+  try {
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PAYMENTS_SHEET);
+    if (!sh || sh.getLastRow() < 2) return receiptEditError_('not_found');
+    const header = sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getValues()[0];
+    if (paymentReportHeaderClash_(header).length || paymentInvoiceHeaderClash_(header).length) return receiptEditError_('sheet_header_clash');
+    const grid = sh.getRange(2, 1, sh.getLastRow() - 1, PAYMENT_COLUMNS.length).getValues();
+    const rows = grid.map(function (g) {
+      const o = {};
+      for (let k = 0; k < PAYMENT_COLUMNS.length; k++) o[PAYMENT_COLUMNS[k]] = g[k];
+      return o;
+    });
+    let at = -1;
+    for (let i = 0; i < rows.length; i++) if (paymentCell_(rows[i].id) === id) { at = i; break; }
+    if (at < 0 || !isReceiptRow_(rows[at])) return receiptEditError_('not_found');
+    const prevRow = rows[at];
+    if (isVoidStatus_(prevRow.status)) return receiptEditError_('receipt_void');
+
+    const stored = {
+      reference: paymentCell_(prevRow.reference), method: paymentCell_(prevRow.method), payer: paymentCell_(prevRow.payer),
+      invoiceWanted: paymentCell_(prevRow.invoiceWanted), invoiceTo: paymentCell_(prevRow.invoiceTo),
+      coverageStart: receiptDayIso_(prevRow.coverageStart), coverageEnd: receiptDayIso_(prevRow.coverageEnd),
+    };
+    const next = {};
+    RECEIPT_EDIT_FIELDS.forEach(function (k) { next[k] = sent.indexOf(k) >= 0 ? paymentReportText_(f[k]) : stored[k]; });
+    // Validate the edited fields with the reportPayment rules (only the
+    // fields this edit touches — a legacy blank elsewhere is not its issue).
+    const touched = {};
+    sent.forEach(function (k) { touched[k] = true; });
+    if (touched.coverageStart || touched.coverageEnd) { touched.coverageStart = true; touched.coverageEnd = true; }
+    if (touched.method) touched.reference = true;
+    const issues = validatePaymentReport_({
+      receivedDate: receiptDayIso_(prevRow.receivedDate), amount: receiptReportedAmount_(prevRow),
+      method: next.method, payer: next.payer, coverageStart: next.coverageStart, coverageEnd: next.coverageEnd,
+      funder: paymentCell_(prevRow.funder), reference: next.reference,
+    }, { todayIso: paymentReportToday_() }).filter(function (i) { return touched[i.field]; });
+    if (touched.invoiceWanted || touched.invoiceTo) issues.push.apply(issues, validatePaymentInvoice_(next));
+    if (issues.length) {
+      return { ok: false, error: 'invalid_report', message: PAYMENT_REPORT_REFUSED_MESSAGE, issues: issues };
+    }
+    // Only a field this edit touches is normalized (an untouched legacy cell
+    // never reads as a change).
+    if (touched.method) next.method = paymentReportMethod_(next.method);
+    if (touched.invoiceWanted || touched.invoiceTo) {
+      const inv = paymentInvoiceClean_(next);
+      next.invoiceWanted = inv.invoiceWanted;
+      next.invoiceTo = inv.invoiceTo;
+    }
+    // A coverage change keeps the receipt on the cycle it pays.
+    if (next.coverageStart !== stored.coverageStart || next.coverageEnd !== stored.coverageEnd) {
+      const moved = rows.slice();
+      const probe = {};
+      Object.keys(prevRow).forEach(function (k) { probe[k] = prevRow[k]; });
+      probe.coverageStart = next.coverageStart;
+      probe.coverageEnd = next.coverageEnd;
+      moved[at] = probe;
+      const before = linkReceiptsToCycles_(rows).receipts.filter(function (rc) { return rc.index === at; })[0];
+      const after = linkReceiptsToCycles_(moved).receipts.filter(function (rc) { return rc.index === at; })[0];
+      if (!before || !after || before.cycleIndex !== after.cycleIndex) return receiptEditError_('coverage_outside_cycle');
+    }
+
+    const changedKeys = RECEIPT_EDIT_FIELDS.filter(function (k) { return next[k] !== stored[k]; });
+    if (!changedKeys.length) return { ok: true, changed: false };
+    setPaymentRowTextCols_(sh, at + 2);
+    changedKeys.forEach(function (k) {
+      sh.getRange(at + 2, PAYMENT_COLUMNS.indexOf(k) + 1).setValue(next[k]);
+    });
+    const prevOut = {}, nextOut = {};
+    changedKeys.forEach(function (k) { prevOut[k] = stored[k]; nextOut[k] = next[k]; });
+    const nowStamp = israelTimestamp_();
+    logAudit_('receipt_edited', 'editReceipt_', String(prevRow.patientUid || ''), String(prevRow.patientName || ''), {
+      receiptId: id, paymentUid: paymentCell_(prevRow.paymentUid), fields: changedKeys,
+      prev: prevOut, next: nextOut, reason: reason, by: stampUser, at: nowStamp,
+    }, c.actor === undefined ? stampUser : String(c.actor));
+    const echo = {};
+    Object.keys(prevRow).forEach(function (k) { echo[k] = prevRow[k]; });
+    changedKeys.forEach(function (k) { echo[k] = next[k]; });
+    return { ok: true, changed: true, fields: changedKeys, receipt: echo };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
 /* ===== «בקרת גבייה» — Ortal's verification (Phase 4, Sandra 2026-10-04) =====
  * docs/billing-control-plan.md Phase 4 / §7; CHANGELOG-billing-control-tab.md.
  *
@@ -8645,6 +8965,9 @@ const CONFIRM_ERROR_MESSAGES = {
   partial_amount_range: 'הסכום שהתקבל חייב להיות גדול מאפס וקטן מהסכום שדווח',
   control_note_invalid: 'הערה — טקסט עד 500 תווים',
   control_note_single: 'הערה נשמרת לקבלה אחת בכל פעם',
+  /* «כפילות» (CHANGELOG-receipt-duplicates-and-edit.md). */
+  duplicate_single: '«כפילות» — קבלה אחת בכל פעם',
+  duplicate_note_invalid: 'בסימון «כפילות» חובה לפרט (2 עד 300 תווים)',
 };
 
 function confirmError_(code) {
@@ -8730,7 +9053,10 @@ function confirmRequestClean_(body) {
   const b = body && typeof body === 'object' ? body : {};
   const status = String(b.status == null ? '' : b.status).trim();
   const noteSent = b.controlNote !== undefined && b.controlNote !== null;
-  if (status === '' ? !noteSent : CONTROL_STATUSES.indexOf(status) < 0) return confirmError_('confirm_status_invalid');
+  // «כפילות» is a DECISION, never a stored confirmStatus: it voids the
+  // receipt (confirmDuplicate_). CHANGELOG-receipt-duplicates-and-edit.md.
+  const isDup = status === DUPLICATE_DECISION;
+  if (status === '' ? !noteSent : (CONTROL_STATUSES.indexOf(status) < 0 && !isDup)) return confirmError_('confirm_status_invalid');
   const raw = Array.isArray(b.ids) ? b.ids : (b.id !== undefined && b.id !== null ? [b.id] : []);
   if (!raw.length || raw.length > CONFIRM_BATCH_MAX) return confirmError_('bad_ids');
   const ids = [];
@@ -8740,6 +9066,13 @@ function confirmRequestClean_(body) {
     if (ids.indexOf(id) < 0) ids.push(id);
   }
   let note = '';
+  if (isDup) {
+    if (ids.length !== 1) return confirmError_('duplicate_single');
+    const rawDup = String(b.flagNote == null ? '' : b.flagNote);
+    const dupNote = rawDup.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().replace(/^[=+@-]+/, '').trim();
+    if (dupNote.length < FLAG_NOTE_MIN || dupNote.length > FLAG_NOTE_MAX) return confirmError_('duplicate_note_invalid');
+    return { ok: true, ids: ids, status: status, note: dupNote, amount: null, controlNote: null };
+  }
   if (status === 'flagged') {
     const rawNote = String(b.flagNote == null ? '' : b.flagNote);
     note = paymentFlagNoteClean_(rawNote);
@@ -9093,10 +9426,15 @@ function billingControlQueue_(opts) {
  * cells (the four + confirmedAmount / controlNote) move. One AuditLog row
  * per status change and one per note change (at / by / prev / next).
  * → { ok:true, changed:[projected receipts], unchanged:N }
+ *
+ * status 'duplicate' («כפילות», ONE id, the reason in flagNote 2–300) is
+ * not a confirm status: confirmDuplicate_ voids the receipt through the
+ * PR #144 void path → { ok:true, changed:[], voided:[{ id, … }], cycle }.
  */
 function confirmPayment_(body, user, ctx) {
   const req = confirmRequestClean_(body);
   if (!req.ok) return req;
+  if (req.status === DUPLICATE_DECISION) return confirmDuplicate_(req, user, ctx);
   const c = ctx || {};
   const stampUser = String(user == null ? '' : user);
   const auditActor = c.actor === undefined ? stampUser : String(c.actor);

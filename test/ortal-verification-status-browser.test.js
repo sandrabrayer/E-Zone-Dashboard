@@ -170,7 +170,7 @@ test('Ortal at 360px: «גבייה» read-only; «שולם חלקית» with the
     await page.locator('.tabs .tab[data-screen="billing-control"]').click();
     await page.waitForSelector('#bc-queue .bc-row');
     const r18 = page.locator('#bc-queue .bc-row', { hasText: '18,000' });
-    assert.equal(await r18.locator('select[data-bc-status] option').evaluateAll((os) => os.map((x) => x.textContent)).then((t) => t.slice(1).join('|')), 'שולם|שולם חלקית|לא שולם');
+    assert.equal(await r18.locator('select[data-bc-status] option').evaluateAll((os) => os.map((x) => x.textContent)).then((t) => t.slice(1).join('|')), 'שולם|שולם חלקית|לא שולם|כפילות');
     await r18.locator('[data-bc-status]').selectOption('partial');
     const form = page.locator('.bc-partial-form');
     await form.waitFor();
