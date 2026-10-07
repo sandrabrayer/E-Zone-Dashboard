@@ -82,6 +82,22 @@ function serve(state) {
   return new Promise((resolve) => server.listen(0, () => resolve({ server, port: server.address().port })));
 }
 
+/* The UI flips optimistically: state.payments changes before the POST has
+ * reached this stub server. Asserting on state.posts right after a UI wait
+ * therefore races the request. Poll the server's own log until at least `n`
+ * savePayment bodies have actually arrived, and fail loudly on timeout. */
+async function waitForSaves(state, n, timeout = 5000) {
+  const saves = () => state.posts.filter((p) => p && p.action === 'savePayment');
+  const deadline = Date.now() + timeout;
+  while (saves().length < n) {
+    if (Date.now() > deadline) {
+      assert.fail(`timed out after ${timeout}ms waiting for savePayment #${n} to reach the server`);
+    }
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return saves();
+}
+
 /* The live pair: עמית בורנשטיין (עפרוני, entered 7.9) with his ₪30,000, and
  * "עמית יעקובי" — the same ₪30,000, recorded before the rename. */
 function seedScript(sessionUser) {
@@ -211,7 +227,7 @@ test('confirming voids the row, keeps its money, and halves the month\'s revenue
       await page.click('.dup-modal [data-action="confirm"]');
       await page.waitForFunction(`state.payments.find(p => p.id === 'pay-yaakovi').status === 'void'`);
 
-      const post = state.posts.filter((p) => p && p.action === 'savePayment').pop();
+      const post = (await waitForSaves(state, 1)).pop();
       assert.strictEqual(post.payment.id, 'pay-yaakovi');
       assert.strictEqual(post.payment.status, 'void');
       assert.strictEqual(post.payment.linkStatus, 'duplicate');
@@ -256,7 +272,8 @@ test('Sandra, and only Sandra, is offered the un-void', { skip }, async () => {
 
     await page.click('.reconnect-unvoid');
     await page.waitForFunction(`state.payments.find(p => p.id === 'pay-yaakovi').status !== 'void'`);
-    const post = state.posts.filter((p) => p && p.action === 'savePayment').pop();
+    // Two writes by now: the void, then the un-void.
+    const post = (await waitForSaves(state, 2)).pop();
     // Restored from the money the row still carries — exact, because voiding
     // never touched it.
     assert.strictEqual(post.payment.status, 'paid');
