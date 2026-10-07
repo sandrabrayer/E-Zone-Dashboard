@@ -8107,6 +8107,56 @@ function currentFunderFrom_(rows, patientId, asOfIso) {
   return { funder: best.funder, effectiveFrom: best.effectiveFrom, unset: false };
 }
 
+/* ===== Institutional-funder grace period (Sandra, 07/10/2026) =====
+ * CHANGELOG-funder-grace.md. A cycle whose funder ON ITS DUE DATE (the
+ * Funders history, currentFunderFrom_'s rule) is ביטוח לאומי, מכבי or משרד
+ * הביטחון is NOT a collection problem until FUNDER_GRACE_DAYS after its due
+ * date: while today − due ≤ 30 it reads «ממתין לגורם מממן»; from day 31 the
+ * normal marking applies. Private, pro-bono and unset: unchanged. The AMOUNT
+ * stays outstanding everywhere — only the problem marking waits. The same rule
+ * lives in lib/funder-grace.js (window.FunderGrace); test/funder-grace.test.js
+ * checks the two agree. */
+const FUNDER_GRACE_DAYS = 30;
+const FUNDER_GRACE_FUNDERS = ['ביטוח לאומי', 'מכבי', 'משרד הביטחון'];
+const FUNDER_GRACE_KEY_BY_LABEL = { 'ביטוח לאומי': 'btl', 'מכבי': 'maccabi', 'משרד הביטחון': 'mod' };
+
+/* A funder sheet label or key → its grace key ('btl' | 'maccabi' | 'mod'), or
+ * '' when that funder gets no grace. Exact strings. PURE. */
+function graceFunderKey_(funder) {
+  if (typeof funder !== 'string') return '';
+  if (funder === 'btl' || funder === 'maccabi' || funder === 'mod') return funder;
+  return Object.prototype.hasOwnProperty.call(FUNDER_GRACE_KEY_BY_LABEL, funder) ? FUNDER_GRACE_KEY_BY_LABEL[funder] : '';
+}
+
+/* A bare real 'YYYY-MM-DD' → epoch-day number, else null. PURE. */
+function funderGraceDayNum_(s) {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const n = refundDayNum_(s);
+  return refundIsoFromDayNum_(n) === s ? n : null;
+}
+function funderGraceDue_(cycle) {
+  if (typeof cycle === 'string') return cycle;
+  if (cycle && typeof cycle === 'object') return String(cycle.dueDate || cycle.start || '');
+  return '';
+}
+
+/* PURE. True while the cycle (a due ISO, or { dueDate } / { start }) is inside
+ * its funder's grace window: an institutional funder and today − due ≤ 30
+ * (a cycle not yet due is inside too). Any unreadable date → false, so the
+ * normal marking applies. Same as lib/funder-grace.js isWithinFunderGrace. */
+function isWithinFunderGrace_(cycle, funder, todayIso) {
+  if (!graceFunderKey_(funder)) return false;
+  const due = funderGraceDayNum_(funderGraceDue_(cycle)), today = funderGraceDayNum_(todayIso);
+  if (due === null || today === null) return false;
+  return today - due <= FUNDER_GRACE_DAYS;
+}
+
+/* The last day of the grace window (due + 30), or '' for a bad date. PURE. */
+function funderGraceUntil_(cycle) {
+  const due = funderGraceDayNum_(funderGraceDue_(cycle));
+  return due === null ? '' : refundIsoFromDayNum_(due + FUNDER_GRACE_DAYS);
+}
+
 /* The Funders rows, read-only: getSheetByName (a missing tab is never
  * created here) → [] when there is none. */
 function fundersRows_() {
@@ -10377,7 +10427,19 @@ function debtAging_(asOfIso, tabs) {
   const asOfN = refundDayNum_(asOf);
   const m = recModel_(t, asOf);
   const probonoOn = debtAgingProbonoTest_(rawRows('funders'));
+  const funderOn = debtAgingFunderOf_(rawRows('funders'));
   const probonoRows = [];
+  // Cycles inside an institutional funder's grace window at asOf: flagged on
+  // the cycle (funderGrace), counted here. Still owed — never taken out of
+  // totals, byHouse or the buckets (CHANGELOG-funder-grace.md).
+  const funderGrace = { count: 0, amount: 0 };
+  const graceFlags = function (patientId, due, balance) {
+    const funder = funderOn(patientId, due);
+    if (!isWithinFunderGrace_(due, funder, asOf)) return { funderGrace: false, funderGraceUntil: '' };
+    funderGrace.count++;
+    funderGrace.amount = refundRound2_(funderGrace.amount + balance);
+    return { funderGrace: true, funderGraceUntil: funderGraceUntil_(due) };
+  };
 
   const totals = { recorded_debt: debtAgingEmpty_(), unrecorded_cycles: debtAgingEmpty_() };
   const byHouse = {};
@@ -10451,12 +10513,12 @@ function debtAging_(asOfIso, tabs) {
       if (balance <= 0) { settled++; return; }
       const days = asOfN - refundDayNum_(start);
       const bucket = debtAgingBucket_(days);
-      cycles.push({
+      cycles.push(Object.assign({
         start: start, end: end, expected: expected, received: received, balance: balance,
         days: days, bucket: bucket, kind: 'recorded', paymentId: pay.id,
         coverageSource: recorded ? 'recorded' : 'derived', receivedDateKnown: got.known,
         receivedDateSource: got.source,
-      });
+      }, graceFlags(p.id, pay.dueDate, balance)));
       debtAgingAdd_(totals.recorded_debt, bucket, balance);
       debtAgingAdd_(house(p.houseId).recorded_debt, bucket, balance);
     });
@@ -10477,10 +10539,10 @@ function debtAging_(asOfIso, tabs) {
         if (exit && end > exit) end = exit;
         const days = asOfN - refundDayNum_(due);
         const bucket = debtAgingBucket_(days);
-        cycles.push({
+        cycles.push(Object.assign({
           start: due, end: end, expected: expected, received: 0, balance: expected,
           days: days, bucket: bucket, kind: 'unrecorded', note: DEBT_UNRECORDED_NOTE,
-        });
+        }, graceFlags(p.id, due, expected)));
         debtAgingAdd_(totals.unrecorded_cycles, bucket, expected);
         debtAgingAdd_(house(p.houseId).unrecorded_cycles, bucket, expected);
       });
@@ -10547,6 +10609,9 @@ function debtAging_(asOfIso, tabs) {
       count: probonoRows.reduce(function (s, r) { return s + r.cycles; }, 0),
       patients: probonoRows.length, rows: probonoRows,
     },
+    /* Owed cycles inside an institutional funder's grace window at asOf —
+     * INCLUDED in totals / byHouse / byPatient above; this only counts them. */
+    funderGrace: funderGrace,
   };
 }
 
@@ -10565,6 +10630,23 @@ function debtAgingProbonoTest_(funderRows) {
     const id = paymentReportText_(patientId);
     if (!id || !byId[id] || !dayIso) return false;
     return currentFunderFrom_(byId[id], id, dayIso).funder === FUNDER_PROBONO;
+  };
+}
+
+/* Funders row objects → funderOf(patientId, dayIso): the patient's funder
+ * label on that day (currentFunderFrom_'s rule), or FUNDER_UNSET. Grouped once
+ * like debtAgingProbonoTest_. PURE. */
+function debtAgingFunderOf_(funderRows) {
+  const byId = {};
+  (Array.isArray(funderRows) ? funderRows : []).forEach(function (r) {
+    const o = r && r.obj && typeof r.obj === 'object' ? r.obj : r;
+    const id = paymentReportText_(o && o.patientId);
+    if (id) (byId[id] || (byId[id] = [])).push(o);
+  });
+  return function (patientId, dayIso) {
+    const id = paymentReportText_(patientId);
+    if (!id || !byId[id] || !dayIso) return FUNDER_UNSET;
+    return currentFunderFrom_(byId[id], id, dayIso).funder;
   };
 }
 
