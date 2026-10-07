@@ -144,6 +144,7 @@ const DELETE_BODIES = {
   deleteMeetingReport: { action: 'deleteMeetingReport', leadId: 'L1' },
   voidPayment: { action: 'savePayment', payment: { id: 'pay1', status: 'void', linkStatus: 'duplicate', linkNote: 'כפילות' } },
   cancelCredit: { action: 'saveCredit', credit: { id: 'c1', status: 'cancelled' } },
+  deleteDuplicateDischarge: { action: 'deleteDuplicateDischarge', id: 'd2', reason: 'כפילות' },
 };
 
 /* ================== 1. the shared code is gone (server) ================== */
@@ -361,6 +362,7 @@ test('Code.gs: every DELETE_ACTIONS operation → forbidden_role for Shiran / Ya
       deleteBillingOverride: { action: 'deleteBillingOverride', override: { patientId: 'P1', month: '2026-09' } },
       voidPayment: { action: 'savePayment', payment: Object.assign({}, pay, { status: 'void', linkStatus: 'duplicate', linkNote: 'x' }) },
       cancelCredit: { action: 'saveCredit', credit: { id: 'c1', status: 'cancelled' } },
+      deleteDuplicateDischarge: { action: 'deleteDuplicateDischarge', id: 'd2', reason: 'כפילות' },
     };
     for (const who of [SHIRAN, YAEL, VERED_NARROWED]) {
       for (const [op, body] of Object.entries(bodies)) {

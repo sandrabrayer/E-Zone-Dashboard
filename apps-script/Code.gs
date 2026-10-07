@@ -415,7 +415,17 @@ const DISCHARGED_PATIENT_COLUMNS = [
   //   dischargedBy    — the coordinator name the request carried (`by`)
   //   dischargeReason — the coordinator's free-text reason (cleaned, capped)
   //   patientId       — the persisted Patients `id` the discharge targeted
-  'dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId'
+  'dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId',
+  // Duplicate-discharge soft delete (APPENDED LAST, append-only — see
+  // deleteDuplicateDischarge_, CHANGELOG-duplicate-discharges.md). Blank on
+  // every live row; set ONCE when a deleter removes a duplicate row:
+  //   deletedAt    — ISO timestamp of the delete
+  //   deletedBy    — the acting user (actorLabel_)
+  //   deleteReason — the required reason (2–120 chars, cleaned)
+  // A row with deletedAt set is not a discharge any more: it leaves the tab,
+  // the heal, the duplicate guard and the refund forecast. It stays on the
+  // sheet as the audit trail and is never physically removed.
+  'deletedAt', 'deletedBy', 'deleteReason'
 ];
 
 /* Payments sheet columns. `id` is a deterministic per-patient-per-due-date
@@ -1132,6 +1142,9 @@ const ROLE_FORBIDDEN_MESSAGE = 'אין הרשאה לפעולה זו';
 const DELETE_ACTIONS = [
   'removeLead', 'deletePatientRow', 'deleteBillingOverride', 'deleteMeetingReport',
   'voidPayment', 'cancelCredit',
+  // Duplicate discharges (CHANGELOG-duplicate-discharges.md): soft-deletes ONE
+  // duplicate row of the discharged sheet. Appended — the list is append-only.
+  'deleteDuplicateDischarge',
 ];
 
 /* ===== Restricted view — the `finance` capability (Sandra, 2026-10-03) =====
@@ -1323,6 +1336,7 @@ const PROXY_KNOWN_ACTIONS = [
   'submitMeetingReport', 'managersOverview', 'managersHouse',
   'occupancySnapshots', 'accountingPayments', 'accountingCredits',
   'getPatientsForCoordinators', 'recordDischargeFromCoordinators',
+  'deleteDuplicateDischarge',
 ];
 
 /* SecurityLog — append-only, one row per (event, action, hour) at most.
@@ -1737,6 +1751,12 @@ function handle_(params) {
       refreshDigestBestEffort_();
       return jsonOut_(res);
     }
+    if (action === 'deleteDuplicateDischarge') {
+      // Role-gated above (DELETE_ACTIONS → deleter: Vered, Sandra). Soft
+      // delete of one duplicate discharged-audit row; Patients and Payments
+      // are never touched, so no digest refresh.
+      return jsonOut_(deleteDuplicateDischarge_(params, actorLabel_(params)));
+    }
     if (action === 'restorePatient') {
       const res = restorePatient_(parseJsonParam_(params.patient), requestUser_(params));
       refreshDigestBestEffort_();
@@ -2110,7 +2130,8 @@ function getOrCreateSheet_(name, headers) {
   // patient's dates) and the appended who/when stamps.
   if (name === DISCHARGED_PATIENTS_SHEET) {
     forceColumnsText_(sh, DISCHARGED_PATIENT_COLUMNS, ['date', 'exitDate', 'updatedAt', 'updatedBy',
-      'dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId']);
+      'dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId',
+      'deletedAt', 'deletedBy', 'deleteReason']);
   }
   // AuditLog: the ISO timestamp must survive as a plain string (same guard as
   // droppedAt); details is JSON text that must never be reinterpreted.
@@ -3158,6 +3179,7 @@ function dischargedFromLeadIds_() {
     const rows = readSheet_(sh, DISCHARGED_PATIENT_COLUMNS);
     for (let i = 0; i < rows.length; i++) {
       if (String(rows[i].restored) === 'TRUE' || rows[i].restored === true) continue;
+      if (dischargeRowDeleted_(rows[i])) continue;   // a soft-deleted duplicate is not a discharge
       const fl = String(rows[i].fromLead == null ? '' : rows[i].fromLead).trim();
       if (fl) out[fl] = true;
     }
@@ -6053,12 +6075,88 @@ function removeLead_(lead, actor) {
  * Mirrors moveLeadIrrelevant_'s pattern: record with defaults, lock, upsert.
  * Append-only on the discharged sheet.
  */
+/* ===== Duplicate discharges (CHANGELOG-duplicate-discharges.md, 2026-10-07) =====
+ *
+ * ONE open discharge row per stay. A stay is houseId + name + entry date — the
+ * same triple the client's restore / heal flows match on (matchActivePatientIndex)
+ * — with the name trimmed and its inner whitespace collapsed, and the entry
+ * date read through asISODate_ (a Date-typed cell and 'YYYY-MM-DD' text agree).
+ * A row is OPEN while it is neither restored (restored='TRUE') nor soft-deleted
+ * (deletedAt set). Every discharge writer checks this under the script lock
+ * before it appends; a re-discharge after a restore is legal because the
+ * restored row is no longer open. */
+function dischargeStayKey_(row) {
+  if (!row) return '';
+  const houseId = String(row.houseId == null ? '' : row.houseId).trim();
+  const name = String(row.name == null ? '' : row.name).replace(/\s+/g, ' ').trim();
+  if (!houseId || !name) return '';
+  return houseId + '::' + name + '::' + asISODate_(row.date);
+}
+
+function dischargeRowRestored_(row) {
+  const r = row ? row.restored : '';
+  return r === true || String(r == null ? '' : r).trim().toUpperCase() === 'TRUE';
+}
+
+function dischargeRowDeleted_(row) {
+  return !!row && String(row.deletedAt == null ? '' : row.deletedAt).trim() !== '';
+}
+
+function dischargeRowOpen_(row) {
+  return !!row && !dischargeRowRestored_(row) && !dischargeRowDeleted_(row);
+}
+
+/* The OPEN rows (readSheet_ objects) of `key`'s stay, other than `exceptId`.
+ * Pure. */
+function openDischargeRowsForStay_(rows, key, exceptId) {
+  if (!key) return [];
+  const skip = String(exceptId == null ? '' : exceptId);
+  return (Array.isArray(rows) ? rows : []).filter(function (r) {
+    return dischargeRowOpen_(r) && dischargeStayKey_(r) === key &&
+      String(r.id == null ? '' : r.id) !== skip;
+  });
+}
+
+/* A keyed upsert of a discharged-audit row from a CLIENT copy (restore paths)
+ * must never blank the server-owned soft-delete stamps: carry them from the
+ * stored row with the same id. Mutates and returns `record`. */
+function carryDischargeDeleteStamps_(sh, record) {
+  if (!sh || !record || !record.id) return record;
+  const rows = readSheet_(sh, DISCHARGED_PATIENT_COLUMNS);
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i].id) !== String(record.id)) continue;
+    if (dischargeRowDeleted_(rows[i])) {
+      record.deletedAt = rows[i].deletedAt;
+      record.deletedBy = rows[i].deletedBy;
+      record.deleteReason = rows[i].deleteReason;
+    }
+    break;
+  }
+  return record;
+}
+
 function dischargePatient_(patient, user) {
   if (!patient || !patient.id) return { ok: false, error: 'missing_patient' };
   const lock = LockService.getScriptLock();
   if (lock.tryLock(10000) !== true) return lockBusy_('dischargePatient_');
   try {
     const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
+
+    /* Duplicate guard (root cause of the doubled row): the client mints a
+     * fresh audit id per confirm, so a retry after a lost response, a second
+     * tab, or a «נשמר חלקית» rollback re-sent the SAME stay under a NEW id and
+     * upsertRowById_ appended a second row. An open row of this stay under
+     * another id → answer duplicate and write NOTHING. The same id is a plain
+     * retry of this very row and still upserts (idempotent). */
+    const stayKey = dischargeStayKey_(patient);
+    const open = openDischargeRowsForStay_(readSheet_(dischargedSh, DISCHARGED_PATIENT_COLUMNS), stayKey, patient.id);
+    if (open.length) {
+      console.log('[discharge] duplicate refused: stay already has open row ' + open[0].id);
+      return {
+        ok: true, duplicate: true, discharged: false,
+        id: String(open[0].id), exitDate: asISODate_(open[0].exitDate),
+      };
+    }
 
     const record = Object.assign({}, patient, {
       dischargedAt:   patient.dischargedAt   || new Date().toISOString(),
@@ -6107,6 +6205,7 @@ function restorePatient_(patient, user) {
     const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
     const flagged = Object.assign({}, patient, { restored: 'TRUE',
       updatedAt: new Date().toISOString(), updatedBy: String(user == null ? '' : user) });
+    carryDischargeDeleteStamps_(dischargedSh, flagged);
     upsertRowById_(dischargedSh, DISCHARGED_PATIENT_COLUMNS, flagged);
 
     logAudit_('patient_restored_to_lead', 'restorePatient_', patient.fromLead || patient.id, patient.name || '', { id: patient.id, newLeadId: restored.id, updatedBy: flagged.updatedBy });
@@ -6136,12 +6235,221 @@ function restorePatientToActive_(patient, user) {
     const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
     const flagged = Object.assign({}, patient, { restored: 'TRUE',
       updatedAt: new Date().toISOString(), updatedBy: String(user == null ? '' : user) });
+    carryDischargeDeleteStamps_(dischargedSh, flagged);
     upsertRowById_(dischargedSh, DISCHARGED_PATIENT_COLUMNS, flagged);
     logAudit_('patient_restored_active', 'restorePatientToActive_', patient.fromLead || patient.id, patient.name || '', { id: patient.id, updatedBy: flagged.updatedBy });
     return { ok: true, restoredToActive: true, id: patient.id };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
+}
+
+/* ===== «מחק כפילות» — soft-delete ONE duplicate discharge row =====
+ * (CHANGELOG-duplicate-discharges.md, 2026-10-07)
+ *
+ * action=deleteDuplicateDischarge { id, reason } — DELETE_ACTIONS, so handle_
+ * has already refused anyone without the `deleter` role (Vered, Sandra) before
+ * this runs. Under the script lock:
+ *   - reason: required, cleaned (control chars, < >, formula lead-in), 2–120;
+ *   - the row must exist and be OPEN (not restored); an already-deleted row
+ *     answers ok + alreadyDeleted, nothing written (idempotent retry);
+ *   - the stay must keep at least ONE other open row — the last remaining
+ *     discharge row of a stay is never deleted;
+ *   - credits: a stay with two open credits for the same rule (creditType +
+ *     allocationMonth) is a possible DOUBLE REFUND, and a credit whose basis
+ *     exitDate matches only THIS row is this row's own credit — both refuse.
+ *     Cancelling a credit is Sandra's decision, never a side effect here.
+ *   - the write: three APPENDED cells on that one row (deletedAt / deletedBy /
+ *     deleteReason) + one AuditLog row (at / by / prev). The Patients and
+ *     Payments sheets are never read for writing, never touched. */
+const DUP_DELETE_REASON_MIN = 2;
+const DUP_DELETE_REASON_MAX = 120;
+const DUP_DELETE_MESSAGES = {
+  missing_id:          'חסר מזהה שורת שחרור',
+  reason_required:     'יש להזין סיבה למחיקה (2–120 תווים)',
+  reason_too_long:     'הסיבה ארוכה מדי (עד 120 תווים)',
+  not_found:           'שורת השחרור לא נמצאה',
+  not_open:            'שורת שחרור משוחזרת אינה כפילות פתוחה — לא נמחקה',
+  last_discharge_row:  'זו שורת השחרור היחידה של השהייה — לא ניתן למחוק אותה',
+  duplicate_credit:    'לשהייה זו קיימים שני זיכויים פתוחים לאותו כלל (חשד להחזר כפול). ביטול זיכוי דורש אישור סנדרה — השורה לא נמחקה',
+  row_has_credit:      'לשורת שחרור זו יש זיכוי משלה. ביטול זיכוי דורש אישור סנדרה — השורה לא נמחקה',
+};
+
+function dupDeleteRefusal_(code, extra) {
+  return Object.assign({ ok: false, error: code, message: DUP_DELETE_MESSAGES[code] || code }, extra || {});
+}
+
+/* A credit's stay key: its stored patientKey ('house::name::date'), read
+ * through the same normalization as dischargeStayKey_. Pure. */
+function creditStayKey_(c) {
+  const parts = String(c && c.patientKey != null ? c.patientKey : '').split('::');
+  if (parts.length < 3) return '';
+  return dischargeStayKey_({ houseId: parts[0], name: parts.slice(1, parts.length - 1).join('::'), date: parts[parts.length - 1] });
+}
+
+function creditOpen_(c) {
+  return !!c && String(c.status == null ? '' : c.status).trim().toLowerCase() !== 'cancelled';
+}
+
+/* The exit date a credit was computed for (basis.exitDate), or ''. Pure. */
+function creditBasisExit_(c) {
+  let b = c ? c.basis : null;
+  if (typeof b === 'string') { try { b = JSON.parse(b); } catch (_) { b = null; } }
+  return b && b.exitDate ? asISODate_(b.exitDate) : '';
+}
+
+/* The open credits of a stay (Credits rows as objects). Pure. */
+function openCreditsForStay_(credits, key) {
+  if (!key) return [];
+  return (Array.isArray(credits) ? credits : []).filter(function (c) {
+    return creditOpen_(c) && creditStayKey_(c) === key;
+  });
+}
+
+/* Two or more open credits of one stay under the same rule. Pure. */
+function duplicateCreditRules_(credits) {
+  const seen = {}, out = [];
+  (credits || []).forEach(function (c) {
+    const k = String(c.creditType) + '::' + String(c.allocationMonth);
+    seen[k] = (seen[k] || 0) + 1;
+    if (seen[k] === 2) out.push(k);
+  });
+  return out;
+}
+
+/* The credits that belong to `row` ALONE: an open credit whose basis exitDate
+ * equals this row's exit date when no other remaining open row of the stay
+ * carries that exit date. A credit shared by identical duplicates stays with
+ * the surviving row, so it never blocks the delete. Pure. */
+function creditsOwnedByDischargeRow_(row, siblings, stayCredits) {
+  const exit = asISODate_(row && row.exitDate);
+  if (!exit) return [];
+  const shared = (siblings || []).some(function (s) { return asISODate_(s.exitDate) === exit; });
+  if (shared) return [];
+  return (stayCredits || []).filter(function (c) { return creditBasisExit_(c) === exit; });
+}
+
+function deleteDuplicateDischarge_(params, actor) {
+  const p = params || {};
+  const id = String(p.id == null ? '' : p.id).trim().slice(0, 200);
+  if (!id) return dupDeleteRefusal_('missing_id');
+  const reason = coordTextClean_(p.reason, 1000);
+  if (reason.length < DUP_DELETE_REASON_MIN) return dupDeleteRefusal_('reason_required');
+  if (reason.length > DUP_DELETE_REASON_MAX) return dupDeleteRefusal_('reason_too_long');
+
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('deleteDuplicateDischarge_');
+  try {
+    const sh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
+    const lastRow = sh.getLastRow();
+    const values = lastRow >= 2 ? sh.getRange(2, 1, lastRow - 1, DISCHARGED_PATIENT_COLUMNS.length).getValues() : [];
+    const rows = values.map(function (v) {
+      const o = {};
+      for (let c = 0; c < DISCHARGED_PATIENT_COLUMNS.length; c++) o[DISCHARGED_PATIENT_COLUMNS[c]] = v[c];
+      return o;
+    });
+    let idx = -1;
+    for (let i = 0; i < rows.length; i++) {
+      if (String(rows[i].id) === id) { idx = i; break; }
+    }
+    if (idx < 0) return dupDeleteRefusal_('not_found');
+    const target = rows[idx];
+    if (dischargeRowDeleted_(target)) {
+      return { ok: true, alreadyDeleted: true, id: id, deletedAt: String(target.deletedAt) };
+    }
+    if (dischargeRowRestored_(target)) return dupDeleteRefusal_('not_open');
+
+    const key = dischargeStayKey_(target);
+    const siblings = openDischargeRowsForStay_(rows, key, id);
+    if (!key || siblings.length === 0) return dupDeleteRefusal_('last_discharge_row');
+
+    const creditsSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CREDITS_SHEET);
+    const stayCredits = openCreditsForStay_(creditsSh ? readSheet_(creditsSh, CREDIT_COLUMNS) : [], key);
+    const dupRules = duplicateCreditRules_(stayCredits);
+    if (dupRules.length) {
+      return dupDeleteRefusal_('duplicate_credit', { creditIds: stayCredits.map(function (c) { return String(c.id); }) });
+    }
+    const own = creditsOwnedByDischargeRow_(target, siblings, stayCredits);
+    if (own.length) {
+      return dupDeleteRefusal_('row_has_credit', { creditIds: own.map(function (c) { return String(c.id); }) });
+    }
+
+    const nowIso = new Date().toISOString();
+    const by = String(actor == null ? '' : actor).slice(0, 60);
+    const sheetRow = idx + 2;
+    const col = function (name) { return DISCHARGED_PATIENT_COLUMNS.indexOf(name) + 1; };
+    // The three appended cells are contiguous; text-forced so the ISO stamp
+    // never coerces into a Date cell.
+    sh.getRange(sheetRow, col('deletedAt'), 1, 3).setNumberFormat('@');
+    sh.getRange(sheetRow, col('deletedAt'), 1, 3).setValues([[nowIso, by, reason]]);
+
+    const prev = {};
+    DISCHARGED_PATIENT_COLUMNS.forEach(function (c) {
+      const v = target[c];
+      prev[c] = v instanceof Date ? v.toISOString() : (v == null ? '' : v);
+    });
+    logAudit_('discharge_duplicate_deleted', 'deleteDuplicateDischarge_', target.fromLead || id,
+      String(target.name == null ? '' : target.name),
+      { id: id, at: nowIso, by: by, reason: reason, keptId: String(siblings[0].id), prev: prev }, by);
+    return { ok: true, deleted: true, id: id, keptId: String(siblings[0].id), deletedAt: nowIso, deletedBy: by, deleteReason: reason };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* EDITOR-RUN, DRY RUN — read-only. Lists every stay with two or more OPEN
+ * discharge rows, and the credits of that stay (with the row each one is
+ * attributed to by basis exitDate). Writes NOTHING: no lock, no
+ * getOrCreateSheet_, no header extension, no AuditLog row.
+ * Run: Apps Script editor → choose listDuplicateDischargesNow → Run →
+ * View → Executions (or Logs). Public name (no trailing underscore) so the
+ * editor's Run dropdown shows it; handle_ never dispatches it. */
+function listDuplicateDischargesNow() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(DISCHARGED_PATIENTS_SHEET);
+  const out = { ok: true, dryRun: true, stays: [] };
+  if (!sh) { console.log('[dup-discharges] no sheet «' + DISCHARGED_PATIENTS_SHEET + '» — nothing to list'); return out; }
+  const values = sheetValues_(sh, DISCHARGED_PATIENT_COLUMNS);
+  const byStay = {};
+  values.forEach(function (v, i) {
+    const o = {};
+    for (let c = 0; c < DISCHARGED_PATIENT_COLUMNS.length; c++) o[DISCHARGED_PATIENT_COLUMNS[c]] = v[c];
+    if (!dischargeRowOpen_(o)) return;
+    const k = dischargeStayKey_(o);
+    if (!k) return;
+    o.__row = i + 2;
+    (byStay[k] = byStay[k] || []).push(o);
+  });
+  const creditsSh = ss.getSheetByName(CREDITS_SHEET);
+  const credits = creditsSh ? readSheet_(creditsSh, CREDIT_COLUMNS) : [];
+  Object.keys(byStay).sort().forEach(function (k) {
+    const rows = byStay[k];
+    if (rows.length < 2) return;
+    const stayCredits = credits.filter(function (c) { return creditStayKey_(c) === k; });
+    const stay = {
+      stay: k,
+      rows: rows.map(function (r) {
+        return {
+          sheetRow: r.__row, id: String(r.id), exitDate: asISODate_(r.exitDate),
+          disposition: String(r.disposition || ''), dischargedAt: String(r.dischargedAt || ''),
+          updatedBy: String(r.updatedBy || ''), source: String(r.dischargeSource || 'dashboard'),
+          ownCredits: creditsOwnedByDischargeRow_(r, rows.filter(function (x) { return x !== r; }),
+            stayCredits.filter(creditOpen_)).map(function (c) { return String(c.id); }),
+        };
+      }),
+      credits: stayCredits.map(function (c) {
+        return {
+          id: String(c.id), creditType: String(c.creditType), allocationMonth: String(c.allocationMonth),
+          amount: c.amount, status: String(c.status), basisExitDate: creditBasisExit_(c),
+        };
+      }),
+      doubleRefund: duplicateCreditRules_(stayCredits.filter(creditOpen_)),
+    };
+    out.stays.push(stay);
+    console.log('[dup-discharges] ' + JSON.stringify(stay));
+  });
+  console.log('[dup-discharges] DRY RUN — ' + out.stays.length + ' stay(s) with 2+ open discharge rows; nothing written.');
+  return out;
 }
 
 /* ===== Cross-app: admitted roster (read-only) =====
@@ -6440,12 +6748,23 @@ function recordDischargeFromCoordinators_(params) {
 
     // a. The audit row FIRST (durable intent; deterministic id → idempotent).
     const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
+    // Duplicate guard (CHANGELOG-duplicate-discharges.md): this stay already
+    // has an OPEN discharge row (the Dashboard's, whose Patients flip was
+    // clobbered or has not landed yet) → write NOTHING. The Dashboard's
+    // load-time heal completes the release from that row.
+    const coordAuditId = 'coord-' + v.id + '-' + v.dischargeDate;
+    const openRows = openDischargeRowsForStay_(readSheet_(dischargedSh, DISCHARGED_PATIENT_COLUMNS),
+      dischargeStayKey_({ houseId: patient.houseId, name: patient.name, date: admissionDate }), coordAuditId);
+    if (openRows.length) {
+      return { ok: true, discharged: false, alreadyDischarged: true, duplicate: true, id: v.id,
+        auditId: String(openRows[0].id), dischargeDate: asISODate_(openRows[0].exitDate) };
+    }
     const audit = {};
     for (let c = 0; c < PATIENT_COLUMNS.length; c++) {
       if (PATIENT_META_COLUMNS.indexOf(PATIENT_COLUMNS[c]) >= 0) continue; // own id + stamps below
       audit[PATIENT_COLUMNS[c]] = rowVals[c];
     }
-    audit.id              = 'coord-' + v.id + '-' + v.dischargeDate;
+    audit.id              = coordAuditId;
     audit.date            = admissionDate;
     audit.status          = 'released';
     audit.exitDate        = v.dischargeDate;
@@ -9431,7 +9750,7 @@ function refundPayoutForecastFor_(discharged, credits, payments, todayIso) {
   // One discharge per stay (the latest exit), restored ones excluded.
   const stays = {};
   (Array.isArray(discharged) ? discharged : []).forEach(function (d) {
-    if (!d || diagIsRestored_(d.restored)) return;
+    if (!d || diagIsRestored_(d.restored) || dischargeRowDeleted_(d)) return;
     const exitIso = refundForecastIso_(d.exitDate) || refundForecastIso_(d.dischargedAt);
     const entryIso = refundForecastIso_(d.date);
     const name = String(d.name == null ? '' : d.name).trim();
@@ -10442,6 +10761,24 @@ function upsertCredit_(credit, user) {
     };
 
     if (!targetRow) {
+      /* Duplicate guard (CHANGELOG-duplicate-discharges.md): never a second
+       * OPEN (non-cancelled) credit for the same stay (patientKey, normalized
+       * like the discharge stay key) and the same rule (creditType +
+       * allocationMonth). A manual 'other' credit is a duplicate only when its
+       * amount and reason match too (a retry), since two distinct manual
+       * credits in one month are legitimate. → answer the existing row,
+       * write nothing. */
+      const wantStay = creditStayKey_({ patientKey: patientKey });
+      for (let i = 0; i < existing.length && wantStay; i++) {
+        const c = {};
+        for (let j = 0; j < CREDIT_COLUMNS.length; j++) c[CREDIT_COLUMNS[j]] = existing[i][j];
+        if (!creditOpen_(c) || creditStayKey_(c) !== wantStay) continue;
+        if (String(c.creditType) !== creditType || String(c.allocationMonth) !== month) continue;
+        if (creditType === 'other' &&
+            (creditAmount_(c.amount) !== amount || creditStr_(c.reason, 1000) !== reason)) continue;
+        console.log('[credit] duplicate refused: stay already has open credit ' + c.id);
+        return { ok: true, duplicate: true, id: String(c.id), credit: c };
+      }
       // Mint: seq = rows already carrying this patientId + month, plus one.
       const pIdx = CREDIT_COLUMNS.indexOf('patientId');
       const mIdx = CREDIT_COLUMNS.indexOf('allocationMonth');
@@ -15147,7 +15484,9 @@ function recModel_(tabs, todayISO) {
     todayISO: asISODate_(todayISO), leads: leads, closedLeads: closedLeads, allLeads: allLeads, leadById: leadById,
     patients: patients,
     active: patients.filter(function (p) { return recIsBillable_(p); }),
-    audits: rows('discharged').map(function (r) { return recPatient_(r, name('discharged')); }),
+    // A soft-deleted duplicate (deletedAt) is not a discharge record.
+    audits: rows('discharged').filter(function (r) { return !dischargeRowDeleted_(r.obj); })
+      .map(function (r) { return recPatient_(r, name('discharged')); }),
     tombs: rows('tombstones').map(function (r) { return recPatient_(r, name('tombstones')); }),
     payments: payments,
     credits: rows('credits').map(function (r) { return recCredit_(r); }),

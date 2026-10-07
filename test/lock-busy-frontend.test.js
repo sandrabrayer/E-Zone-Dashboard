@@ -97,6 +97,7 @@ function loadApp(script) {
       restoreIrrelevantLead: (l) => restoreIrrelevantLead(l),
       deletePatient: (p) => deletePatient(p),
       deleteMeetingReport: (id) => deleteMeetingReport(id),
+      deleteDuplicateDischarge: (d, r) => deleteDuplicateDischarge(d, r),
       removeLead: (l) => removeLead(l),
       closeLead: (l) => closeLead(l),
       saveBillingOverride: (p, a) => saveBillingOverride(p, a),
@@ -225,6 +226,15 @@ const PATHS = [
     setup: (app) => { app.state.patients = [app.normalizePatient(PATIENT)]; },
     run: (app) => app.deletePatient(app.state.patients[0]),
     landed: (app) => { assert.strictEqual(app.state.patients.length, 0); },
+  },
+  {
+    name: 'deleteDuplicateDischarge («מחק כפילות» on the discharged tab)',
+    action: 'deleteDuplicateDischarge',
+    rejects: true,
+    setup: (app) => { app.state.dischargedPatients = [{ ...AUDIT }, { ...AUDIT, id: 'aud-2' }]; },
+    okResponse: { ok: true, deleted: true, id: 'aud-2', deletedAt: '2026-10-07T08:00:00.000Z', deletedBy: 'ורד', deleteReason: 'כפילות' },
+    run: (app) => app.deleteDuplicateDischarge(app.state.dischargedPatients[1], 'כפילות'),
+    landed: (app) => { assert.strictEqual(app.state.dischargedPatients[1].deletedAt, '2026-10-07T08:00:00.000Z'); },
   },
   {
     name: 'deleteMeetingReport',

@@ -328,12 +328,13 @@ function serve(handlers, url) {
 }
 const settle = () => new Promise((r) => setImmediate(r));
 
-test('D: CACHE_VERSION is v42 (v41 deployed by this PR\'s base; v17 burned, never reused)', () => {
+test('D: CACHE_VERSION is v43 (v42 deployed by this PR\'s base; v17 burned, never reused)', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
   // v40: CHANGELOG-ortal-verification-status.md.
   // v41: CHANGELOG-reactivation-fix.md (PR #145's fix, re-landed).
   // v42: CHANGELOG-unadmitted-lead-warning.md.
-  assert.equal(v, 'v42');
+  // v43: CHANGELOG-duplicate-discharges.md.
+  assert.equal(v, 'v43');
   assert.notEqual(v, 'v17');
 });
 

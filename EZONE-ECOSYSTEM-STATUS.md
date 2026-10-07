@@ -914,6 +914,31 @@ Detail: `CHANGELOG-unadmitted-lead-warning.md`. **Railway only**: `public/`;
   branch; v17 stays burned).
 - No new action, env var, Script Property, scope, column or trigger.
 
+## Dashboard: duplicate discharges — one open row per stay, «מחק כפילות» (October 7, 2026)
+
+Detail: `CHANGELOG-duplicate-discharges.md`. Apps Script **and** Railway.
+
+- **Root cause:** every discharge confirm minted a new audit id, and
+  `dischargePatient_` upserted by that id. So a retry after a lost answer or
+  «נשמר חלקית», or a stale tab, appended a second row for the same stay.
+- **Credits:** «זיכויים (N)» counts per stay. Two duplicate rows showing «(1)»
+  are **one** credit.
+- **Server guard:** one OPEN (not restored, not deleted) discharge row per
+  stay (house + name + entry date). A second row is refused as `{ ok:true,
+  duplicate:true, id }` and nothing is written. Same rule in the coordinators
+  discharge and for credits (same stay + rule).
+- **Client:** one audit id per modal, an in-flight guard per stay, and the
+  toast «השחרור כבר נרשם».
+- **«מחק כפילות»** (`deleteDuplicateDischarge`, in `DELETE_ACTIONS` = Vered /
+  Sandra): a soft delete with a reason (2–120). It never touches the last row
+  of a stay, and refuses a row with its own credit or a stay with a double
+  credit. It writes an AuditLog row.
+- **Editor-run dry run:** `listDuplicateDischargesNow()`.
+- **Columns:** `deletedAt` / `deletedBy` / `deleteReason` appended to the
+  discharged sheet. Nothing else is new: no env var, Script Property, scope or
+  trigger. Additive for ezone-managers / ezone-therapists.
+- SW `CACHE_VERSION` v42 → **v43** (v17 stays burned).
+
 ## Dashboard: meetings strip shows current managers only (PR #154, October 1, 2026; re-verified October 6)
 
 Detail: `CHANGELOG-meeting-summary-active-managers.md`. Apps Script **and** Railway.

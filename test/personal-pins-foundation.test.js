@@ -840,7 +840,8 @@ test('Code.gs: a VERIFIED proxy call gets its roles — capped: shared → none 
 test('Code.gs: DELETE_ACTIONS / APPROVER_ACTIONS are defined — and ENFORCED by handle_ since PR C', () => {
   const g = loadGs({});
   assert.deepStrictEqual(Array.from(g.run('DELETE_ACTIONS')),
-    ['removeLead', 'deletePatientRow', 'deleteBillingOverride', 'deleteMeetingReport', 'voidPayment', 'cancelCredit']);
+    ['removeLead', 'deletePatientRow', 'deleteBillingOverride', 'deleteMeetingReport', 'voidPayment', 'cancelCredit',
+      'deleteDuplicateDischarge']);
   assert.deepStrictEqual(Array.from(g.run('APPROVER_ACTIONS')),
     ['unvoidPayment', 'approveRefundException', 'writeOffOpeningBalance', 'acceptOpeningBalance']);
   const s = g.sandbox;

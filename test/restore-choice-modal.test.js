@@ -185,7 +185,9 @@ test('DISCHARGED_PATIENT_COLUMNS keeps prior_status directly after restored; who
   // The coordinators-discharge audit columns (2026-10-04) follow them.
   const at = cols.indexOf('restored');
   assert.deepStrictEqual(cols.slice(at, at + 4), ['restored', 'prior_status', 'updatedAt', 'updatedBy']);
-  assert.deepStrictEqual(cols.slice(at + 4), ['dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId']);
+  // Then the duplicate-discharge soft-delete stamps (2026-10-07), appended LAST.
+  assert.deepStrictEqual(cols.slice(at + 4), ['dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId',
+    'deletedAt', 'deletedBy', 'deleteReason']);
   assert.strictEqual(cols.filter(c => c === 'prior_status').length, 1);
 });
 
