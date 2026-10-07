@@ -268,7 +268,7 @@ test('A: void is NOT one of the three statuses a recorder can pick', () => {
   const row = fnSource(APP, 'buildBillingRow');
   assert.match(row, /const isVoid = isVoidPayment\(payment\);/);
   // CHANGELOG-funder-grace.md: an institutional funder within 30 days reads «ממתין לגורם מממן».
-  assert.match(row, /const stateLabel = isVoid \? PAYMENT_VOID_LABEL : inFunderGrace \? FUNDER_GRACE_STATUS_LABEL : paymentStatusLabel\(payment\.status\);/);
+  assert.match(row, /const stateLabel = isVoid \? PAYMENT_VOID_LABEL : inFunderGrace \? funderGraceStatusLabel\(payment\.status\) : paymentStatusLabel\(payment\.status\);/);
   assert.match(row, /const canReport = state\.mode === 'edit' && !isVoid && payment\.status !== 'paid' && financeView\(\);/);
   assert.ok(!/<select class="billing-status"/.test(row), 'no status <select>');
   assert.match(row, /badge void/);

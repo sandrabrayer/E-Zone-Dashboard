@@ -358,6 +358,63 @@ test('wiring: /funder-grace.js is served like the other lib rules, loaded before
   assert.doesNotMatch(LIB_SRC, /fetch\(|require\(|Date\.now|new Date\(\)/, 'pure: no I/O, no clock');
 });
 
+/* ============================ partly paid inside the window ============================ */
+
+// mod: a PARTLY paid recorded cycle (08/09, day 29) — ₪5,000 of ₪25,000 received 10/09.
+const MOD = PATIENTS.find((p) => p.id === 'id-mod');
+const BTL = PATIENTS.find((p) => p.id === 'id-btl');
+const PRI = PATIENTS.find((p) => p.id === 'id-pri');
+const PARTIAL_PAYMENTS = PAYMENTS.concat([
+  payRow(MOD, '2026-09-08', { amount: 25000, status: 'partial', amountPaid: 5000, receivedDate: '2026-09-10' }),
+  payRow(BTL, '2026-10-07', { amount: 30000, status: 'partial', amountPaid: 10000, receivedDate: '2026-10-07' }),
+  payRow(PRI, '2026-10-07', { amount: 15000, status: 'partial', amountPaid: 1000, receivedDate: '2026-10-07' }),
+]);
+
+test('partly paid inside the window: «שולם חלקית · ממתין לגורם מממן» — patient cell, גבייה row, debt aging, .xlsx; private keeps «שולם חלקית»', () => {
+  const a = loadApp({ payments: PARTIAL_PAYMENTS });
+  const st = plain(a.patientPaymentState(P(a, 'id-btl'), a.state.payments, a.state.funders, TODAY));
+  assert.equal(st.key, 'funder_grace');
+  assert.equal(st.owed, 'partial');
+  assert.equal(st.label, 'שולם חלקית · ממתין לגורם מממן');
+  assert.equal(plain(a.patientPaymentState(P(a, 'id-pri'), a.state.payments, a.state.funders, TODAY)).label, 'שולם חלקית');
+  const html = a.patientListRowHtml({ patient: P(a, 'id-btl'), problems: [], days: 30, payment: st, leadInfo: NOINFO, lead: null }, true, true);
+  assert.match(html, /pay-state-funder_grace">שולם חלקית · ממתין לגורם מממן</);
+  assert.match(html, /plist-report-btn/, 'the rest can still be reported');
+
+  const row = (id, due) => { const p = P(a, id); return a.buildBillingRow(p, a.paymentForPatientOnDate(p, due), due, false); };
+  const btlRow = row('id-btl', '2026-10-07');
+  assert.match(btlRow.className, /\bfunder-grace\b/);
+  assert.match(btlRow.innerHTML, /pay-state-funder_grace">שולם חלקית · ממתין לגורם מממן</);
+  const priRow = row('id-pri', '2026-10-07');
+  assert.doesNotMatch(priRow.className, /funder-grace/);
+  assert.match(priRow.innerHTML, /pay-state-partial">שולם חלקית</);
+  // an UNPAID cycle in the window keeps the plain grace label
+  assert.match(row('id-mac', '2026-10-06').innerHTML, /pay-state-funder_grace">ממתין לגורם מממן</);
+
+  const rep = plain(GS.sandbox.debtAging_(TODAY, {
+    patients: rowsOf(PATIENTS), payments: rowsOf(PARTIAL_PAYMENTS), credits: rowsOf([]), overrides: rowsOf([]), funders: rowsOf(HIST),
+  }));
+  const modCycle = cyclesOf(rep, 'id-mod').find((c) => c.start === '2026-09-08');
+  assert.equal(modCycle.funderGrace, true);
+  assert.equal(modCycle.received, 5000);
+  assert.equal(modCycle.balance, 20000, 'still owed in full');
+  const dhtml = a.debtAgingHtml(rep, { house: 'all', status: 'all' }, TODAY);
+  assert.match(dhtml, /שולם חלקית · ממתין לגורם מממן · עד 08\/10\/2026/);
+  assert.match(dhtml, /pay-state-funder_grace">ממתין לגורם מממן · עד 07\/10\/2026</, 'the unpaid ביטוח לאומי cycle keeps the plain label');
+  const spec = debtXlsx.buildDebtAgingSpec(rep, { house: 'all', status: 'all' }, new Date('2026-10-07T09:00:00+03:00'));
+  const rec = (spec.sheets || spec).find((sh) => sh.name === 'חוב רשום');
+  assert.equal(rec.rows.find((r) => r.name === 'מודי בדיקה').funderGrace, 'שולם חלקית · ממתין לגורם מממן · עד 08/10/2026');
+  assert.equal(rec.rows.find((r) => r.name === 'בטל בדיקה' && r.start === '2026-09-07').funderGrace, 'ממתין לגורם מממן · עד 07/10/2026');
+  assert.match(read('lib', 'debt-aging-xlsx.js'), /const PARTIAL_LABEL = 'שולם חלקית';/);
+});
+
+test('mutation check (app.js): a partly paid grace cycle that loses its «שולם חלקית» FAILS', () => {
+  const from = "return owedKey === 'partial' ? paymentStatusLabel('partial') + ' · ' + FUNDER_GRACE_STATUS_LABEL : FUNDER_GRACE_STATUS_LABEL;";
+  assert.equal(APP_SRC.split(from).length, 2);
+  const m = loadApp({ payments: PARTIAL_PAYMENTS, appSrc: APP_SRC.replace(from, 'return FUNDER_GRACE_STATUS_LABEL;') });
+  assert.notEqual(plain(m.patientPaymentState(P(m, 'id-btl'), m.state.payments, m.state.funders, TODAY)).label, 'שולם חלקית · ממתין לגורם מממן');
+});
+
 /* ============================ mutation checks ============================ */
 
 const CHECKS = {

@@ -4513,7 +4513,7 @@ function patientPaymentState(patient, payments, funders, todayIso) {
   // Institutional funder, within 30 days of the due date: neutral, not red.
   // `owed` keeps the real state (the cell still offers «דווח תשלום»).
   if ((key === 'unpaid' || key === 'partial') && patientCycleInFunderGrace(patient, funders, dueISO, todayIso)) {
-    return { key: 'funder_grace', label: FUNDER_GRACE_STATUS_LABEL, dueISO, owed: key };
+    return { key: 'funder_grace', label: funderGraceStatusLabel(key), dueISO, owed: key };
   }
   return { key, label: paymentStatusLabel(key), dueISO };
 }
@@ -8571,10 +8571,12 @@ function debtAgingView(data, filters) {
 }
 
 /* «ממתין לגורם מממן · עד DD/MM/YYYY» for a cycle the server flagged
- * funderGrace (Code.gs debtAging_). Pure. */
+ * funderGrace (Code.gs debtAging_); a cycle with money received and a
+ * balance left is partly paid: «שולם חלקית · ממתין לגורם מממן · עד …». Pure. */
 function debtAgingGraceText(c) {
   const until = c && c.funderGraceUntil ? formatDateHe(c.funderGraceUntil) : '';
-  return FUNDER_GRACE_STATUS_LABEL + (until ? ' · עד ' + until : '');
+  const partial = c && Number(c.received) > 0 && Number(c.balance) > 0;
+  return funderGraceStatusLabel(partial ? 'partial' : 'unpaid') + (until ? ' · עד ' + until : '');
 }
 /* The one line under the two blocks: how many owed cycles are inside an
  * institutional funder's grace window — still INCLUDED in both blocks. '' at
@@ -9044,6 +9046,11 @@ function billingRowFunderKey(patient, dueISO) {
  * lib/funder-grace.js (global FunderGrace, the same as Code.gs
  * isWithinFunderGrace_); without it nothing is deferred (normal marking). */
 const FUNDER_GRACE_STATUS_LABEL = 'ממתין לגורם מממן';
+/* The status shown inside the window: a partly paid cycle keeps its fact —
+ * «שולם חלקית · ממתין לגורם מממן»; an unpaid one reads the grace label. Pure. */
+function funderGraceStatusLabel(owedKey) {
+  return owedKey === 'partial' ? paymentStatusLabel('partial') + ' · ' + FUNDER_GRACE_STATUS_LABEL : FUNDER_GRACE_STATUS_LABEL;
+}
 const FUNDER_GRACE_COLUMN_LABEL = 'בתוך תקופת גורם מממן';
 function funderGraceLib() {
   return (typeof FunderGrace !== 'undefined' && FunderGrace && typeof FunderGrace.isWithinFunderGrace === 'function') ? FunderGrace : null;
@@ -10778,7 +10785,7 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
    * record money is the strict «דווח תשלום» form. A void row offers no form,
    * and neither does a cycle already paid in full (a second report there is
    * almost always the same money twice; voiding a receipt reopens it). */
-  const stateLabel = isVoid ? PAYMENT_VOID_LABEL : inFunderGrace ? FUNDER_GRACE_STATUS_LABEL : paymentStatusLabel(payment.status);
+  const stateLabel = isVoid ? PAYMENT_VOID_LABEL : inFunderGrace ? funderGraceStatusLabel(payment.status) : paymentStatusLabel(payment.status);
   const canReport = state.mode === 'edit' && !isVoid && payment.status !== 'paid' && financeView();
 
   /* Per-month amount override (this row's OWN due-date month — for a

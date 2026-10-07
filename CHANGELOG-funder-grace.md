@@ -6,7 +6,7 @@ until **`FUNDER_GRACE_DAYS = 30`** days after its due date:
 
 | days since the due date | marking |
 |---|---|
-| 0–30 (and a cycle not yet due) | **«ממתין לגורם מממן»**, neutral grey |
+| 0–30 (and a cycle not yet due) | **«ממתין לגורם מממן»**, neutral grey. A partly paid cycle reads **«שולם חלקית · ממתין לגורם מממן»**. |
 | 31 or more | the normal red / overdue marking |
 
 - The funder is resolved per patient, with history (`effectiveFrom`), exactly
@@ -68,13 +68,16 @@ until **`FUNDER_GRACE_DAYS = 30`** days after its due date:
 - **מטופלים, `patientProblems`:** the «לא דווח תשלום» chip, and so the
   problem count and the tab badge, waits while the first cycle (due on the
   entry day) is inside the window.
+- **New `funderGraceStatusLabel(owedKey)`:** «ממתין לגורם מממן», or
+  «שולם חלקית · ממתין לגורם מממן» for a partly paid cycle, so the partial
+  payment is never hidden.
 - **מטופלים, `patientPaymentState` / `patientListRowHtml`:** an unpaid or
-  partial current cycle inside the window shows «ממתין לגורם מממן» (grey).
-  `owed` keeps the real state, so «דווח תשלום» is still offered.
+  partial current cycle inside the window shows that label (grey). `owed`
+  keeps the real state, so «דווח תשלום» is still offered.
 - **גבייה, `buildBillingRow`:** an unpaid or partial cycle that is due and
-  inside the window gets the `funder-grace` class (a grey border) and the
-  status «ממתין לגורם מממן». It is not `overdue`, and the amber carry
-  marking is replaced by grey. Amounts are unchanged.
+  inside the window gets the `funder-grace` class (a grey border) and that
+  status label. It is not `overdue`, and the amber carry marking is replaced
+  by grey. Amounts are unchanged.
 - **Dashboard alert, `overduePatients`** («X מטופלים ממתינים לתשלום»): skips
   a cycle inside the window.
 
@@ -87,15 +90,16 @@ until **`FUNDER_GRACE_DAYS = 30`** days after its due date:
   so it is unchanged.
 - **«חובות פתוחים», `debtAgingHtml`:**
   - a new column «בתוך תקופת גורם מממן» in the cycle table («ממתין לגורם
-    מממן · עד DD/MM/YYYY», or «—»), with the row greyed;
+    מממן · עד DD/MM/YYYY»; with money received and a balance left, «שולם
+    חלקית · ממתין לגורם מממן · עד DD/MM/YYYY»; or «—»), with the row greyed;
   - a summary line «N מחזורים (₪X) בתוך תקופת גורם מממן — נכללים בחוב, לא
     מסומנים כבעיה»;
   - the rows are not removed, and the buckets are unchanged.
 
 **Elsewhere:**
 
-- `lib/debt-aging-xlsx.js`: the same column at the end of both cycle sheets.
-  The totals rows are unchanged.
+- `lib/debt-aging-xlsx.js`: the same column, with the same partial wording,
+  at the end of both cycle sheets. The totals rows are unchanged.
 - `public/style.css`: `.pay-state-funder_grace`, `.billing-row.funder-grace`,
   `.debt-cycle.funder-grace`, `.debt-grace-line`.
 - `server.js` (ASSETS + route), `public/index.html` (the script loads before
@@ -113,7 +117,7 @@ line gives the number and the amount directly
 
 ## Tests
 
-`test/funder-grace.test.js`, 23 tests:
+`test/funder-grace.test.js`, 25 tests:
 
 - the guard (30 days, the three funders, labels ⇄ keys ⇄ `PAYMENT_FUNDERS`);
 - day 29 / 30 / 31 for each funder, as a key and as a label, in both
@@ -133,24 +137,27 @@ line gives the number and the amount directly
 - the overdue strip;
 - the debt-aging column, line and block totals;
 - the .xlsx column and totals;
+- a partly paid cycle inside the window: «שולם חלקית · ממתין לגורם מממן» in
+  the patient cell, the גבייה row, debt aging and the .xlsx; private keeps
+  «שולם חלקית»;
 - the asset wiring and SW v47;
-- **9 mutation checks**:
+- **10 mutation checks**:
   - six on Code.gs: 30→29, `<=`→`<`, מכבי dropped, every funder treated as
     institutional, grace cycles dropped from totals, the flag never set;
-  - two on `app.js`: the chip and the strip;
+  - three on `app.js`: the chip, the strip, and the partial label;
   - one on the lib (parity).
 
 **Existing tests updated:**
 
 - `debt-aging-ui-browser.test.js`: the cycle row has the new last cell «—».
 - `debt-aging-ui.test.js`: the xlsx header has the new last column.
-- `duplicate-payment-void.test.js`: the `stateLabel` source pin includes the
-  grace label.
+- `duplicate-payment-void.test.js`: the `stateLabel` source pin includes
+  `funderGraceStatusLabel`.
 - `dashboard-perf-assets.test.js`: SW v47 and the new hashed file.
 - `refund-rule-v2.test.js`: the `BUNDLE_PATHS` regex no longer assumes
   `/refund-rules.js` is last.
 
-Full suite: `npm test`, 2488 / 2488 pass, browser tests included.
+Full suite: `npm test`, 2491 / 2491 pass, browser tests included.
 
 ## Deploy
 
