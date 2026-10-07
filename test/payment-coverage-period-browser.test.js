@@ -81,6 +81,22 @@ function serve(state) {
   return new Promise((resolve) => server.listen(0, () => resolve({ server, port: server.address().port })));
 }
 
+/* The UI flips optimistically: state.payments changes before the POST has
+ * reached this stub server. Asserting on state.posts right after a UI wait
+ * therefore races the request. Poll the server's own log until at least `n`
+ * savePayment bodies have actually arrived, and fail loudly on timeout. */
+async function waitForSaves(state, n, timeout = 5000) {
+  const saves = () => state.posts.filter((p) => p && p.action === 'savePayment');
+  const deadline = Date.now() + timeout;
+  while (saves().length < n) {
+    if (Date.now() > deadline) {
+      assert.fail(`timed out after ${timeout}ms waiting for savePayment #${n} to reach the server`);
+    }
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return saves();
+}
+
 /* One patient, one PAID payment row already in the sheet — the case the whole
  * change is about, since a payment already taken is the one whose period has
  * to be correctable. */
@@ -166,8 +182,8 @@ test('editing the period persists BOTH columns and marks the row as adjusted',
       await page.click('.bill-cov-save');
       await page.waitForFunction(`state.payments[0].coverageStart === '2026-03-01'`);
 
-      // What actually went to the backend.
-      const post = state.posts.find((p) => p && p.action === 'savePayment');
+      // What actually went to the backend — once it has actually got there.
+      const post = (await waitForSaves(state, 1))[0];
       assert.ok(post, 'a savePayment was sent');
       assert.strictEqual(post.payment.coverageStart, '2026-03-01');
       assert.strictEqual(post.payment.coverageEnd, '2026-03-31');
