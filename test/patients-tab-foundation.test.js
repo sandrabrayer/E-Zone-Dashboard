@@ -398,11 +398,8 @@ test('scope: Code.gs is untouched; the server keeps withholding money data from 
   for (const a of ['getPayments', 'reportPayment', 'appendFunder']) assert.ok(FINANCE_ACTIONS.includes(a), a);
 });
 
-test('scope: zero visible change in PR 1 — no tab, no screen', () => {
-  const html = read('public', 'index.html');
-  assert.ok(!html.includes('data-screen="patients"'));
-  assert.ok(!APP_SRC.includes("'patients-list-screen'"));
-});
+// PR 1 shipped with a "no tab, no screen yet" check here. PR 2 adds the tab;
+// its placement and rendering are locked in test/patients-tab-ui.test.js.
 
 /* ---------- 8. mutation checks ---------- */
 

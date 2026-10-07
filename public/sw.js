@@ -182,7 +182,10 @@
 // גבייה», Vered's duplicate prompt and ✏️ on a receipt
 // (CHANGELOG-receipt-duplicates-and-edit.md). app.js, style.css and
 // billing-control-rules.js changed; activate evicts v43 (v17 never reused).
-var CACHE_VERSION = 'v44';
+// v44 → v45: the «מטופלים» tab — the patient list, «ממתינים לקליטה», problem
+// chips and «פרטי הליד» (CHANGELOG-patients-tab-ui.md). app.js, index.html and
+// style.css changed; activate evicts v44 (v17 never reused).
+var CACHE_VERSION = 'v45';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

@@ -1377,7 +1377,7 @@ async function copyPinAdminLine() {
 /* Tab / screen order. Mirrors the .tabs nav in index.html exactly (each id has a
  * matching <section id="screen-<id>">). `meetings` is an empty placeholder shell
  * (see index.html #screen-meetings); `retention` is intentionally last. */
-const SCREENS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'billing-control', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention'];
+const SCREENS = ['dashboard', 'leads', 'patients', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'billing-control', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention'];
 
 /* ===== Restricted view (Sandra, 2026-10-03) =====
  *
@@ -1563,6 +1563,7 @@ function initTabs() {
     state.leadSearch = String(e.target.value || '').trim().toLowerCase();
     renderKanban();
   });
+  initPatientsTabFilters();
   document.getElementById('patient-search').oninput = e => {
     state.patientSearch = e.target.value.trim().toLowerCase();
     renderPatients();
@@ -3793,6 +3794,7 @@ function renderAll() {
   renderDashboard();
   renderCoordinatorDischarges();
   renderKanban();
+  renderPatientsTab();
   renderMeetings();
   renderIrrelevantLeads();
   renderRemovedLeads();
@@ -6766,6 +6768,234 @@ function renderPatients() {
 
     list.appendChild(row);
   });
+}
+
+/* ===== «מטופלים» — the patient list tab (CHANGELOG-patients-tab-ui.md) =====
+ * The rows come from the pure helpers (patientListRows, pendingAdmissionRows,
+ * patientProblemSummary — CHANGELOG-patients-tab-foundation.md). Every action
+ * here is an EXISTING flow: ✏️ openEditPatientModal, «הגדר גורם מממן»
+ * openFunderModal, «דווח תשלום» openPaymentReportModal, «קלוט כמטופל»
+ * openEntryModal (the «כניסה לבית» admission), «שחזר»
+ * showRestorePatientChoiceModal. Nothing new is written or sent.
+ *
+ * Restricted view (Shiran, Yael): no payment column, no funder cell or chip,
+ * no «דווח תשלום» — patientListRows never reads money data without
+ * `finance`, and the cells below are built only for a finance session. The
+ * controller view (Ortal) has no tab: applyControllerView removes it and
+ * renderAll returns first. Every value goes through escapeHtml — a lead's
+ * notes are free text. */
+
+/* The session's filters (never persisted). */
+function patientsTabFilters() {
+  if (!state.ptFilters) state.ptFilters = Object.assign({}, PATIENT_LIST_DEFAULT_FILTERS);
+  return state.ptFilters;
+}
+
+/* The red problem chips of one row. Pure. */
+function patientProblemChipsHtml(problems) {
+  return (problems || []).map(p =>
+    `<span class="plist-chip" data-problem="${escapeHtml(p.code)}">${escapeHtml(p.label)}</span>`).join('');
+}
+
+/* The «פרטי הליד» section (a closed <details>). Pure. */
+function patientLeadDetailsHtml(row) {
+  const L = row.lead;
+  const via = row.leadInfo ? row.leadInfo.via : 'none';
+  let body;
+  if (L) {
+    const item = (label, value) => `<div class="plist-lead-item"><span class="p-label">${escapeHtml(label)}</span>`
+      + `<span class="p-val">${value ? escapeHtml(value) : '—'}</span></div>`;
+    body = `<div class="plist-lead-grid">
+        ${item('טלפון', L.phone)}
+        ${item('מקור', L.source)}
+        ${item('תאריך ביקור', L.visitDate ? formatDate(L.visitDate) : '')}
+        ${item('מקדמה', L.advance ? '₪ ' + L.advance.toLocaleString('he-IL') : '')}
+        ${item('משוייך ל', L.assignedTo)}
+        ${item('נפגש עם', L.meetingWith)}
+        ${item('בית בליד', L.house)}
+      </div>
+      <div class="plist-lead-note"><span class="p-label">הערות הליד</span>`
+      + `<span class="p-val">${L.note ? escapeHtml(L.note) : '—'}</span></div>`;
+  } else if (via === 'fromLead_missing') {
+    body = '<div class="plist-lead-none">הליד המקושר לא נמצא</div>';
+  } else if (via === 'ambiguous') {
+    body = '<div class="plist-lead-none">ללא ליד · נמצאו כמה לידים תואמים, לא קושר</div>';
+  } else {
+    body = '<div class="plist-lead-none">ללא ליד</div>';
+  }
+  return `<details class="plist-lead"><summary>פרטי הליד${L ? '' : ' · ללא ליד'}</summary>${body}</details>`;
+}
+
+/* One patient row's HTML. `finance` = the session may see money data; `edit`
+ * = edit mode. Pure (reads the funder rows only through currentFunderFor
+ * when `finance`). */
+function patientListRowHtml(row, finance, edit) {
+  const p = row.patient;
+  const house = HOUSES.find(h => h.id === p.houseId);
+  const released = p.status === 'released';
+  const statusInfo = STATUS_OPTIONS.find(s => s.id === p.status) || STATUS_OPTIONS[0];
+  const cells = [];
+  cells.push(`<div class="plist-name-cell"><span class="p-label">מטופל</span><span class="p-name">${escapeHtml(p.name)}</span>`
+    + (released ? ` <span class="badge released">${escapeHtml(statusInfo.label)}${p.exitDate ? ' · ' + escapeHtml(formatDate(p.exitDate)) : ''}</span>` : '')
+    + `</div>`);
+  cells.push(`<div><span class="p-label">בית</span><span class="p-val">${escapeHtml(house ? house.name : p.houseId)}</span></div>`);
+  cells.push(`<div><span class="p-label">תאריך כניסה</span><span class="p-val">${escapeHtml(p.date ? formatDate(p.date) : '—')}</span></div>`);
+  cells.push(`<div><span class="p-label">ימים בבית</span><span class="p-val">${row.days == null ? '—' : escapeHtml(String(row.days))}</span></div>`);
+  if (finance && funderView()) {
+    const uid = patientUid(p);
+    const cur = uid ? currentFunderFor(uid, patientFunderDay(p, todayISO())) : { unset: true };
+    const value = cur.unset
+      ? `<span class="funder-chip funder-unset" data-funder="unset">${escapeHtml(FUNDER_UNSET_LABEL)}</span>`
+      : escapeHtml(cur.funder);
+    cells.push(`<div class="plist-funder" data-finance><span class="p-label">גורם מממן</span><span class="p-val">${value}</span>`
+      + (edit ? '<button type="button" class="btn small plist-funder-btn">הגדר גורם מממן</button>' : '') + `</div>`);
+  }
+  if (finance && row.payment) {
+    const pay = row.payment;
+    const canReport = edit && (pay.key === 'unpaid' || pay.key === 'partial');
+    cells.push(`<div class="plist-pay" data-finance><span class="p-label">תשלום${pay.dueISO ? ' · ' + escapeHtml(formatDate(pay.dueISO)) : ''}</span>`
+      + `<span class="badge pay-state pay-state-${escapeHtml(pay.key)}">${escapeHtml(pay.label)}</span>`
+      + (canReport ? '<button type="button" class="btn small primary plist-report-btn">דווח תשלום</button>' : '') + `</div>`);
+  }
+  const chips = patientProblemChipsHtml(row.problems);
+  return `
+    <div class="plist-main">${cells.join('')}</div>
+    ${chips ? `<div class="plist-chips">${chips}</div>` : ''}
+    <div class="plist-foot">
+      ${patientLeadDetailsHtml(row)}
+      <div class="row-actions edit-only">
+        ${released ? '<button type="button" class="btn small primary plist-restore-btn">שחזר</button>' : ''}
+        <button type="button" class="btn small plist-edit-btn" title="ערוך מטופל">✏️</button>
+      </div>
+    </div>`;
+}
+
+/* One «ממתינים לקליטה» row's HTML. Pure. */
+function pendingAdmissionRowHtml(r, edit) {
+  const L = r.lead;
+  const house = unadmittedHouseId(L.house);
+  const h = HOUSES.find(x => x.id === house);
+  const item = (label, value) => `<div><span class="p-label">${escapeHtml(label)}</span><span class="p-val">${value ? escapeHtml(value) : '—'}</span></div>`;
+  return `
+    <div class="plist-main">
+      <div class="plist-name-cell"><span class="p-label">ליד</span><span class="p-name">${escapeHtml(L.name)}</span></div>
+      ${item('בית', h ? h.name : L.house)}
+      ${item('תאריך כניסה', L.entryDate ? formatDate(L.entryDate) : '')}
+      ${item('ימים מהכניסה', r.days == null ? '' : String(r.days))}
+      ${item('טלפון', L.phone)}
+      ${item('מקור', L.source)}
+      ${item('מקדמה', L.advance ? '₪ ' + Number(L.advance).toLocaleString('he-IL') : '')}
+    </div>
+    ${r.chipDays != null ? `<div class="plist-chips"><span class="plist-chip">${escapeHtml(`לא נקלט כמטופל · ${r.chipDays} ימים`)}</span></div>` : ''}
+    ${edit ? '<div class="row-actions"><button type="button" class="btn small primary plist-admit-btn">קלוט כמטופל</button></div>' : ''}`;
+}
+
+/* The count on the «מטופלים» tab: active patients with at least one open
+ * problem. Hidden at zero. */
+function renderPatientsProblemsBadge(summary) {
+  const el = document.getElementById('patients-problems-badge');
+  if (!el) return;
+  const n = summary ? summary.patients : 0;
+  el.textContent = String(n);
+  el.classList.toggle('hidden', n === 0);
+}
+
+function renderPatientsTab() {
+  if (controllerView()) return;
+  const today = debtAgingTodayIso();
+  const summary = patientProblemSummary(state, today);
+  renderPatientsProblemsBadge(summary);
+  const list = document.getElementById('plist-list');
+  if (!list) return;
+  const f = patientsTabFilters();
+  const finance = state.finance === true;
+  const edit = state.mode === 'edit';
+
+  const houseSel = document.getElementById('plist-house');
+  if (houseSel) {
+    houseSel.innerHTML = '<option value="">כל הבתים</option>'
+      + HOUSES.map(h => `<option value="${escapeHtml(h.id)}">${escapeHtml(h.name)}</option>`).join('');
+    houseSel.value = f.house;
+  }
+  const statusSel = document.getElementById('plist-status');
+  if (statusSel) statusSel.value = f.status;
+  const probEl = document.getElementById('plist-problems');
+  if (probEl) probEl.checked = !!f.problemsOnly;
+
+  const sumEl = document.getElementById('plist-summary');
+  if (sumEl) {
+    const parts = PATIENT_PROBLEMS.filter(p => summary.byCode[p.code] > 0)
+      .map(p => `<span class="plist-chip" data-problem="${escapeHtml(p.code)}">${escapeHtml(p.label)} · ${summary.byCode[p.code]}</span>`);
+    sumEl.innerHTML = summary.patients
+      ? `<span class="plist-summary-head">${escapeHtml(`${summary.patients} מטופלים פעילים עם בעיות פתוחות`)}</span>${parts.join('')}`
+      : '<span class="plist-summary-ok">אין בעיות פתוחות במטופלים הפעילים</span>';
+  }
+
+  // «ממתינים לקליטה» — follows the house and name filters, not the status one.
+  const pendEl = document.getElementById('plist-pending');
+  if (pendEl) {
+    const q = normalizeNameForMatch(f.q);
+    const pending = pendingAdmissionRows(state.leads, state.patients, state.payments || [], today, patientLeadPool(state))
+      .filter(r => (!f.house || unadmittedHouseId(r.lead.house) === f.house)
+        && (!q || normalizeNameForMatch(r.lead.name).indexOf(q) >= 0));
+    pendEl.innerHTML = '';
+    if (pending.length) {
+      const head = document.createElement('h3');
+      head.className = 'plist-section-title';
+      head.textContent = `ממתינים לקליטה (${pending.length})`;
+      pendEl.appendChild(head);
+      pending.forEach(r => {
+        const el = document.createElement('div');
+        el.className = 'plist-row plist-pending-row';
+        el.innerHTML = pendingAdmissionRowHtml(r, edit);
+        const btn = el.querySelector('.plist-admit-btn');
+        if (btn) btn.onclick = () => openEntryModal(r.lead);
+        pendEl.appendChild(el);
+      });
+    }
+  }
+
+  const rows = patientListRows(state, f, today);
+  const countEl = document.getElementById('plist-count');
+  if (countEl) countEl.textContent = String(rows.length);
+  list.innerHTML = '';
+  if (!rows.length) {
+    list.innerHTML = '<div class="card plist-empty">אין מטופלים להצגה</div>';
+    return;
+  }
+  rows.forEach(row => {
+    const p = row.patient;
+    const el = document.createElement('div');
+    el.className = 'plist-row' + (p.status === 'released' ? ' released' : '') + (row.problems.length ? ' has-problems' : '');
+    el.dataset.id = p.id;
+    el.innerHTML = patientListRowHtml(row, finance, edit);
+    const on = (sel, fn) => { const b = el.querySelector(sel); if (b) b.onclick = fn; };
+    on('.plist-edit-btn', () => openEditPatientModal(p));
+    on('.plist-funder-btn', () => openFunderModal(p));
+    on('.plist-report-btn', () => {
+      const due = row.payment && row.payment.dueISO;
+      if (due) openPaymentReportModal(p, paymentForPatientOnDate(p, due), due);
+    });
+    on('.plist-restore-btn', () => showRestorePatientChoiceModal(auditRowForReleasedPatient(p, state.dischargedPatients)));
+    list.appendChild(el);
+  });
+}
+
+/* Filter controls — wired once from initTabs. Each handler reads the LIVE
+ * filters object (patientsTabFilters), never one captured at wiring time. */
+function initPatientsTabFilters() {
+  const set = (k, v) => { patientsTabFilters()[k] = v; renderPatientsTab(); };
+  const search = document.getElementById('plist-search');
+  if (search) search.oninput = e => set('q', String(e.target.value || '').trim());
+  const house = document.getElementById('plist-house');
+  if (house) house.onchange = e => set('house', String(e.target.value || ''));
+  const status = document.getElementById('plist-status');
+  if (status) status.onchange = e => {
+    const v = String(e.target.value || '');
+    set('status', ['active', 'released', 'all'].indexOf(v) >= 0 ? v : 'active');
+  };
+  const prob = document.getElementById('plist-problems');
+  if (prob) prob.onchange = e => set('problemsOnly', !!e.target.checked);
 }
 
 /* Build the discharged-patient audit row (pure — no DOM, no I/O, so it's unit
@@ -12392,6 +12622,8 @@ async function submitPaymentReport(cycle, values, confirmDuplicate) {
   if (res && res.cycle) adoptCycleEcho(res.cycle);
   renderBilling();
   if (typeof renderDashboard === 'function') renderDashboard();
+  // «דווח תשלום» from the «מטופלים» row: its payment column follows.
+  renderPatientsTab();
   return res;
 }
 

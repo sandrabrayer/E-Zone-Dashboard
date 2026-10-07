@@ -2,14 +2,14 @@
  * app.js and style.css; Apps Script stubbed.
  *
  *   Shiran (no `finance`): opened on a deep link to #billing →
- *     - exactly 7 tabs, the four money tabs and their screens are NOT in the
+ *     - exactly 8 tabs («מטופלים» included, CHANGELOG-patients-tab-ui.md), the four money tabs and their screens are NOT in the
  *       DOM, no [data-finance] node at all, body.view-restricted from the first
  *       byte the server sent;
  *     - the deep link fell back to the dashboard;
  *     - no renewal / overdue widget on the dashboard, no «זיכויים» button on
  *       מטופלים משוחררים (its «שחזר» is still there);
  *     - the page never asked for getPayments / getCredits.
- *   Vered and Sandra: all 12 tabs (Phase 4: + «בקרת גבייה»); #billing opens גבייה. (PR C removed the
+ *   Vered and Sandra: all 13 tabs («מטופלים» added) (Phase 4: + «בקרת גבייה»); #billing opens גבייה. (PR C removed the
  *   shared session.)
  *
  * Set SHOT_DIR to also write restricted-360-dashboard.png and
@@ -54,8 +54,8 @@ const SESSION_SECRET = 'session-secret-TEST-restricted-browser-0123456789';
 const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'USER_PIN_HASHES', 'PIN_PEPPER'];
 // Phase 4: «בקרת גבייה» (billing-control) right after גבייה — Vered and Sandra
 // only among these sessions; Shiran never gets it.
-const ALL_TABS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'billing-control', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention'];
-const RESTRICTED_TABS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'breakeven', 'retention'];
+const ALL_TABS = ['dashboard', 'leads', 'patients', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'billing-control', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention'];
+const RESTRICTED_TABS = ['dashboard', 'leads', 'patients', 'meetings', 'occupancy', 'discharged-patients', 'breakeven', 'retention'];
 
 /* Today-relative data, so the dashboard renewal / overdue widgets WOULD show
  * for a full-view session: a patient who entered on today's day of the month
@@ -143,7 +143,7 @@ async function shot(target, name) {
 
 const tabs = (page) => page.locator('.tabs .tab').evaluateAll((bs) => bs.map((b) => b.dataset.screen));
 
-test('restricted view at 360px: Shiran gets 7 tabs, no money tab in the DOM, the #billing deep link falls back, no billing widget; Vered / Sandra keep all 12', { skip: skip && why, timeout: 120000 }, async () => {
+test('restricted view at 360px: Shiran gets 8 tabs, no money tab in the DOM, the #billing deep link falls back, no billing widget; Vered / Sandra keep all 13', { skip: skip && why, timeout: 120000 }, async () => {
   const server = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
