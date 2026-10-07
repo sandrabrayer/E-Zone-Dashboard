@@ -4050,6 +4050,7 @@ function renderKanban() {
     filtered.forEach(lead => col.appendChild(buildLeadCard(lead)));
     kanban.appendChild(col);
   });
+  renderUnadmittedLeadsBadge();
 }
 
 /* Whether a lead matches the search box query `q` (already trimmed+lowercased by
@@ -4176,6 +4177,149 @@ function waitlistBadgeText(waitlistedAt, now) {
   return `ממתין ${days} ימים`;
 }
 
+/* ===== «לא נקלט כמטופל» — a paid / entering lead with no patient record =====
+ * CHANGELOG-unadmitted-lead-warning.md. Display only, computed here; nothing
+ * is written.
+ *
+ * The lead → patient match is NOT a new rule. It is reconciliationReportNow's
+ * §A rule (Code.gs recLeadPatient_), ported as is and pinned by a parity test
+ * that runs both on the same fixtures:
+ *   1. a Patients row whose fromLead is the lead's id; else
+ *   2. a Patients row whose phone (the phone of the lead it came from, as
+ *      getAdmittedRoster_ joins it) is the lead's phone; else
+ *   3. a Patients row with the same normalized name in the same house.
+ * Every Patients row counts, released ones included, exactly as in §A. */
+const UNADMITTED_AFTER_DAYS = 3;
+
+/* Code.gs normalizePhone_ + diagPhoneKey_: digits only, 972 → 0, the leading 0
+ * a number-typed cell drops put back; fewer than 9 digits is not a phone. */
+function unadmittedPhoneKey(raw) {
+  let d = String(raw == null ? '' : raw).replace(/[^\d]/g, '');
+  if (d.indexOf('972') === 0) d = '0' + d.slice(3);
+  if (/^[1-9]\d{7,8}$/.test(d)) d = '0' + d;
+  return /^0\d{8,9}$/.test(d) ? d : '';
+}
+
+/* Code.gs diagClientHouseId_: an id, a Hebrew house name, or an id in another
+ * case → the id; anything else is kept as written (trimmed). */
+function unadmittedHouseId(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return '';
+  const h = HOUSES.find(x => x.id === s) || HOUSES.find(x => x.name === s)
+    || HOUSES.find(x => x.id.toLowerCase() === s.toLowerCase());
+  return h ? h.id : s;
+}
+
+/* The Patients row a lead already has → { patient, via, ambiguous } or null.
+ * `ambiguous` = the tier that decided found more than one row. `allLeads` is
+ * every lead (board, closed and removed), for the phone join. Pure. */
+function unadmittedLeadPatient(lead, patients, allLeads) {
+  const pats = Array.isArray(patients) ? patients : [];
+  const text = v => String(v == null ? '' : v).trim();
+  const found = (list, via) => ({ patient: list[0], via, ambiguous: list.length > 1 });
+  const id = text(lead && lead.id);
+  const byLead = id ? pats.filter(p => text(p && p.fromLead) === id) : [];
+  if (byLead.length) return found(byLead, 'fromLead');
+  const phone = unadmittedPhoneKey(lead && lead.phone);
+  if (phone) {
+    const leadById = {};
+    (Array.isArray(allLeads) ? allLeads : []).forEach(l => {
+      const k = text(l && l.id);
+      if (k && !(k in leadById)) leadById[k] = l;
+    });
+    const byPhone = pats.filter(p => {
+      const src = p && text(p.fromLead) ? leadById[text(p.fromLead)] : null;
+      return !!src && unadmittedPhoneKey(src.phone) === phone;
+    });
+    if (byPhone.length) return found(byPhone, 'phone');
+  }
+  const nk = normalizeNameForMatch(lead && lead.name);
+  const hid = unadmittedHouseId(lead && lead.house);
+  if (nk && hid) {
+    const byName = pats.filter(p => p && normalizeNameForMatch(p.name) === nk
+      && unadmittedHouseId(p.houseId) === hid);
+    if (byName.length) return found(byName, 'name_house');
+  }
+  return null;
+}
+
+/* Rule part 1: paid (stage בטיפול פעיל / מקדמה שולמה, an advance on the lead,
+ * or a non-void payment with money on it recorded under the lead's own
+ * house::name::entryDate) OR entering treatment (meetingOutcome «נכנסים
+ * לטיפול»). Closed, irrelevant and removed leads never qualify. Pure. */
+function unadmittedLeadEligible(lead, payments) {
+  if (!lead) return false;
+  if (lead.stage === 'irrelevant' || lead.stage === 'admitted') return false;
+  if (lead.disposition || lead.removedAt) return false;
+  const outcome = String(lead.meetingOutcome || '').trim();
+  if (outcome === 'entered' || outcome === MEETING_OUTCOME_LABELS.entered) return true;
+  if (lead.stage === 'paid') return true;
+  if ((Number(lead.advance) || 0) > 0) return true;
+  const key = patientMatchKey(lead.house, lead.name, lead.entryDate);
+  return (Array.isArray(payments) ? payments : []).some(pay => pay && !isVoidPayment(pay)
+    && (Number(pay.amountPaid) || 0) > 0 && patientMatchKeyFromId(pay.patientId) === key);
+}
+
+/* Logged once per lead per page load, so a re-render never repeats it. */
+const _unadmittedAmbiguousLogged = new Set();
+
+/* Whole days since the lead's entryDate when it is flagged, else null.
+ * Flagged = eligible (above) AND todayIso (Asia/Jerusalem, 'YYYY-MM-DD') is
+ * UNADMITTED_AFTER_DAYS or more after entryDate AND no Patients row matches.
+ * No entryDate, unloaded patients, or an ambiguous match → null (never fail
+ * open). Pure apart from the one-time console line. */
+function unadmittedLeadDays(lead, patients, payments, todayIso, allLeads) {
+  if (!lead || !Array.isArray(patients)) return null;
+  const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+  const entry = DATE_RE.exec(isoDate(lead.entryDate || ''));
+  const today = DATE_RE.exec(String(todayIso || ''));
+  if (!entry || !today) return null;
+  if (!unadmittedLeadEligible(lead, payments)) return null;
+  const days = Math.round((Date.UTC(+today[1], +today[2] - 1, +today[3]) -
+                           Date.UTC(+entry[1], +entry[2] - 1, +entry[3])) / 86400000);
+  if (days < UNADMITTED_AFTER_DAYS) return null;
+  const match = unadmittedLeadPatient(lead, patients, allLeads || [lead]);
+  if (match) {
+    if (match.ambiguous && !_unadmittedAmbiguousLogged.has(String(lead.id))) {
+      _unadmittedAmbiguousLogged.add(String(lead.id));
+      console.warn('[E-ZONE] unadmitted-lead check: ambiguous patient match, not flagged',
+        { leadId: lead.id, via: match.via });
+    }
+    return null;
+  }
+  return days;
+}
+
+/* The same check against the live state, for one lead on the board. */
+function unadmittedDaysForLead(lead) {
+  const allLeads = (state.leads || []).concat(state.irrelevantLeads || [], state.removedLeads || []);
+  return unadmittedLeadDays(lead, state.patients, state.payments || [], debtAgingTodayIso(), allLeads);
+}
+
+/* The chip on a flagged card; '' when the lead is not flagged. Pure. */
+function unadmittedChipHTML(days) {
+  if (days == null) return '';
+  return `<div class="lc-unadmitted">${escapeHtml(`לא נקלט כמטופל · ${days} ימים`)}</div>`;
+}
+
+/* How many leads ON THE BOARD (the STAGES columns, before any search filter)
+ * carry the chip — the number on the לידים tab. Pure. */
+function countUnadmittedLeads(leads, patients, payments, todayIso, allLeads) {
+  const onBoard = new Set(STAGES.map(s => s.id));
+  return (Array.isArray(leads) ? leads : []).filter(l => l && onBoard.has(l.stage)
+    && unadmittedLeadDays(l, patients, payments, todayIso, allLeads) != null).length;
+}
+
+/* The count badge on the לידים tab. Hidden at zero. */
+function renderUnadmittedLeadsBadge() {
+  const el = document.getElementById('leads-unadmitted-badge');
+  if (!el) return;
+  const allLeads = (state.leads || []).concat(state.irrelevantLeads || [], state.removedLeads || []);
+  const n = countUnadmittedLeads(state.leads, state.patients, state.payments || [], debtAgingTodayIso(), allLeads);
+  el.textContent = String(n);
+  el.classList.toggle('hidden', n === 0);
+}
+
 function buildLeadCard(lead) {
   const card = document.createElement('div');
   card.className = 'lead-card';
@@ -4236,6 +4380,7 @@ function buildLeadCard(lead) {
       ${lead.source ? '· מקור: ' + escapeHtml(lead.source) : ''}
     </div>
     ${waitBadge ? `<div class="lc-wait-badge">${waitBadge}</div>` : ''}
+    ${unadmittedChipHTML(unadmittedDaysForLead(lead))}
     ${state.mode === 'edit' ? '' : leadContactLineHTML(lead)}
     ${state.mode === 'edit' ? '' : leadBillingLineHTML(lead)}
     ${lead.assignedTo
