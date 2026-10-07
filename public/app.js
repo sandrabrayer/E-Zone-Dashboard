@@ -4479,7 +4479,11 @@ function patientProblems(patient, leadInfo, payments, funders, todayIso) {
   if (hasFunders && (!patientUid(patient) || funderKey === FUNDER_UNSET_KEY)) out.add('no_funder');
   if (Array.isArray(payments) && funderKey !== FUNDER_PROBONO_KEY) {
     const days = patientDayDiff(patient.date, todayIso);
-    if (days != null && days >= PATIENT_NO_PAYMENT_AFTER_DAYS && !patientHasReportedPayment(patient, payments)) out.add('no_payment');
+    // Nothing reported since the entry — the first cycle, due on the entry
+    // day. Inside an institutional funder's grace window it is not a problem
+    // yet (CHANGELOG-funder-grace.md); the row's payment cell says why.
+    if (days != null && days >= PATIENT_NO_PAYMENT_AFTER_DAYS && !patientHasReportedPayment(patient, payments)
+      && !patientCycleInFunderGrace(patient, funders, patient.date, todayIso)) out.add('no_payment');
   }
   if (lead) {
     const leadHouse = unadmittedHouseId(lead.house);
@@ -4506,6 +4510,11 @@ function patientPaymentState(patient, payments, funders, todayIso) {
   const pay = (Array.isArray(payments) ? payments : []).find(x => x && x.id === id) || null;
   if (pay && isVoidPayment(pay)) return { key: 'void', label: PAYMENT_VOID_LABEL, dueISO };
   const key = pay ? pay.status : 'unpaid';
+  // Institutional funder, within 30 days of the due date: neutral, not red.
+  // `owed` keeps the real state (the cell still offers «דווח תשלום»).
+  if ((key === 'unpaid' || key === 'partial') && patientCycleInFunderGrace(patient, funders, dueISO, todayIso)) {
+    return { key: 'funder_grace', label: FUNDER_GRACE_STATUS_LABEL, dueISO, owed: key };
+  }
   return { key, label: paymentStatusLabel(key), dueISO };
 }
 
@@ -6852,7 +6861,8 @@ function patientListRowHtml(row, finance, edit) {
   }
   if (finance && row.payment) {
     const pay = row.payment;
-    const canReport = edit && (pay.key === 'unpaid' || pay.key === 'partial');
+    const owedKey = pay.key === 'funder_grace' ? pay.owed : pay.key;
+    const canReport = edit && (owedKey === 'unpaid' || owedKey === 'partial');
     cells.push(`<div class="plist-pay" data-finance><span class="p-label">תשלום${pay.dueISO ? ' · ' + escapeHtml(formatDate(pay.dueISO)) : ''}</span>`
       + `<span class="badge pay-state pay-state-${escapeHtml(pay.key)}">${escapeHtml(pay.label)}</span>`
       + (canReport ? '<button type="button" class="btn small primary plist-report-btn">דווח תשלום</button>' : '') + `</div>`);
@@ -8560,6 +8570,22 @@ function debtAgingView(data, filters) {
   return { asOf: data.asOf, house, status, houseIds, tables, patients, credits, lists };
 }
 
+/* «ממתין לגורם מממן · עד DD/MM/YYYY» for a cycle the server flagged
+ * funderGrace (Code.gs debtAging_). Pure. */
+function debtAgingGraceText(c) {
+  const until = c && c.funderGraceUntil ? formatDateHe(c.funderGraceUntil) : '';
+  return FUNDER_GRACE_STATUS_LABEL + (until ? ' · עד ' + until : '');
+}
+/* The one line under the two blocks: how many owed cycles are inside an
+ * institutional funder's grace window — still INCLUDED in both blocks. '' at
+ * zero. Pure. */
+function debtAgingGraceLine(data) {
+  const g = data && data.funderGrace;
+  const n = Number(g && g.count) || 0;
+  if (!n) return '';
+  return `${n} מחזורים (${fmtShekel(g.amount)}) ${FUNDER_GRACE_COLUMN_LABEL} — נכללים בחוב, לא מסומנים כבעיה`;
+}
+
 /* The caveats to show — only the relevant ones. Pure. */
 function debtAgingCaveats(data, todayIso) {
   const out = [];
@@ -8614,6 +8640,8 @@ function debtAgingHtml(data, filters, todayIso) {
     + debtAgingBlockHtml('recorded_debt', v.tables.recorded_debt, 'שורות תשלום שלא שולמו או שולמו חלקית')
     + debtAgingBlockHtml('unrecorded_cycles', v.tables.unrecorded_cycles, DEBT_AGING_UNRECORDED_NOTE)
     + `</div>`;
+  const graceLine = debtAgingGraceLine(data);
+  if (graceLine) html += `<p class="debt-grace-line">${esc(graceLine)}</p>`;
 
   html += `<div class="debt-credits"><span class="debt-credits-label">${esc(DEBT_AGING_CREDITS_LABEL)}:</span> `
     + (v.credits.rows.length
@@ -8642,10 +8670,11 @@ function debtAgingHtml(data, filters, todayIso) {
           + `<div><span class="p-label">ללא רישום</span><span class="p-val">${esc(fmtShekel(p.unrecordedTotal))}</span></div>`
           + `<div><span class="p-label">הוותיק ביותר</span><span class="p-val"><span dir="ltr">${esc(debtAgingBucketLabel(p.oldestBucket))}</span> ימים</span></div>`
           + `</summary><div class="debt-table-wrap"><table class="debt-table debt-cycles"><thead><tr>`
-          + `<th>תחילה</th><th>סוף</th><th>צפוי</th><th>התקבל</th><th>יתרה</th><th>תקופת חוב (ימים)</th><th>סוג</th></tr></thead><tbody>`
-          + p.cycles.map(c => `<tr class="debt-cycle" data-kind="${esc(c.kind)}"><td><bdi>${esc(formatDateHe(c.start) || '—')}</bdi></td><td><bdi>${esc(formatDateHe(c.end) || '—')}</bdi></td>`
+          + `<th>תחילה</th><th>סוף</th><th>צפוי</th><th>התקבל</th><th>יתרה</th><th>תקופת חוב (ימים)</th><th>סוג</th><th>${esc(FUNDER_GRACE_COLUMN_LABEL)}</th></tr></thead><tbody>`
+          + p.cycles.map(c => `<tr class="debt-cycle${c.funderGrace ? ' funder-grace' : ''}" data-kind="${esc(c.kind)}"><td><bdi>${esc(formatDateHe(c.start) || '—')}</bdi></td><td><bdi>${esc(formatDateHe(c.end) || '—')}</bdi></td>`
             + `<td>${esc(fmtShekel(c.expected))}</td><td>${esc(fmtShekel(c.received))}</td><td>${esc(fmtShekel(c.balance))}</td>`
-            + `<td><span dir="ltr">${esc(debtAgingBucketLabel(c.bucket))}</span></td><td>${esc(DEBT_AGING_KIND_LABELS[c.kind] || c.kind)}</td></tr>`).join('')
+            + `<td><span dir="ltr">${esc(debtAgingBucketLabel(c.bucket))}</span></td><td>${esc(DEBT_AGING_KIND_LABELS[c.kind] || c.kind)}</td>`
+            + `<td>${c.funderGrace ? `<span class="badge pay-state pay-state-funder_grace">${esc(debtAgingGraceText(c))}</span>` : '—'}</td></tr>`).join('')
           + `</tbody></table></div></details>`;
       });
       html += `</details>`;
@@ -9005,6 +9034,34 @@ function isProbonoOn(patient, dayISO) {
 /* A billing row's funder: the patient's funder ON THAT CYCLE'S DUE DATE. */
 function billingRowFunderKey(patient, dueISO) {
   return patientFunderKey(patient, state.funders, todayISO(), isoDate(dueISO) || todayISO());
+}
+
+/* ===== Institutional-funder grace (CHANGELOG-funder-grace.md) =====
+ * A cycle whose funder on its due date is ביטוח לאומי / מכבי / משרד הביטחון
+ * is not a collection problem until 30 days after its due date: it reads
+ * «ממתין לגורם מממן» (grey) instead of the overdue / «לא דווח תשלום» marking.
+ * The amount still counts as outstanding everywhere. The rule is
+ * lib/funder-grace.js (global FunderGrace, the same as Code.gs
+ * isWithinFunderGrace_); without it nothing is deferred (normal marking). */
+const FUNDER_GRACE_STATUS_LABEL = 'ממתין לגורם מממן';
+const FUNDER_GRACE_COLUMN_LABEL = 'בתוך תקופת גורם מממן';
+function funderGraceLib() {
+  return (typeof FunderGrace !== 'undefined' && FunderGrace && typeof FunderGrace.isWithinFunderGrace === 'function') ? FunderGrace : null;
+}
+/* Pure: is the cycle due on dueISO inside the grace window on todayIso, for
+ * this patient, with these Funders rows? false without the rules, the funder
+ * module, a funder rows array or a readable due date. */
+function patientCycleInFunderGrace(patient, funders, dueISO, todayIso) {
+  const G = funderGraceLib();
+  const due = isoDate(dueISO);
+  if (!G || !funderLib() || !patient || !due || !Array.isArray(funders)) return false;
+  return G.isWithinFunderGrace(due, patientFunderKey(patient, funders, todayIso, due), todayIso);
+}
+/* The live-state form, for the גבייה rows and the dashboard alert: only
+ * where funder data is loaded (the same gate as isProbonoOn). */
+function isInFunderGraceOn(patient, dueISO) {
+  if (!(funderView() || (billingReadView() && !!funderLib())) || !patient) return false;
+  return patientCycleInFunderGrace(patient, state.funders, dueISO, todayISO());
 }
 
 /* The active funder filter — 'all' outside the finance view. */
@@ -9849,6 +9906,7 @@ function overduePatients(fromISO) {
     const pay = paymentForPatientOnDate(p, dueISO);
     if (paymentCoversCycle(pay)) return;
     if (isProbonoOn(p, dueISO)) return;   // pro-bono: nothing is owed
+    if (isInFunderGraceOn(p, dueISO)) return;   // institutional funder, ≤ 30 days: not overdue yet
     out.push({ patient: p, dueISO });
   });
   return out.sort((a, b) => a.dueISO.localeCompare(b.dueISO));
@@ -10687,7 +10745,12 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   /* Overdue highlight: an unpaid current-list row whose due date has arrived.
    * Carry-forward rows keep their existing amber treatment (same warning
    * language) and are skipped here. */
-  const isOverdue = !isCarryForward && payment.status === 'unpaid' && dueDateISO <= todayISO();
+  /* Institutional funder (ביטוח לאומי / מכבי / משרד הביטחון) within 30 days
+   * of the due date: «ממתין לגורם מממן», grey — not overdue, not amber.
+   * The amount still counts in every total (CHANGELOG-funder-grace.md). */
+  const inFunderGrace = !isVoidPayment(payment) && payment.status !== 'paid'
+    && isoDate(dueDateISO) <= todayISO() && isInFunderGraceOn(patient, dueDateISO);
+  const isOverdue = !isCarryForward && !inFunderGrace && payment.status === 'unpaid' && dueDateISO <= todayISO();
   /* Two facts about the CYCLE rather than the money, both said on the row
    * instead of silently changing a total somewhere else:
    *   - before the records cutoff → not counted as debt (see
@@ -10706,7 +10769,7 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   const preRecords = isPreRecordsCycle(dueDateISO);
   const outsideStay = !!(patient && isoDate(patient.date))
     && !patientStayCoversDate(patient, dueDateISO);
-  row.className = 'billing-row' + (isCarryForward ? ' carry' : '') + (isOverdue ? ' overdue' : '');
+  row.className = 'billing-row' + (isCarryForward ? ' carry' : '') + (isOverdue ? ' overdue' : '') + (inFunderGrace ? ' funder-grace' : '');
   row.dataset.pid = payment.id;
 
   /* Phase 3 PR 2: the row no longer edits money. Its state (שולם / שולם
@@ -10715,7 +10778,7 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
    * record money is the strict «דווח תשלום» form. A void row offers no form,
    * and neither does a cycle already paid in full (a second report there is
    * almost always the same money twice; voiding a receipt reopens it). */
-  const stateLabel = isVoid ? PAYMENT_VOID_LABEL : paymentStatusLabel(payment.status);
+  const stateLabel = isVoid ? PAYMENT_VOID_LABEL : inFunderGrace ? FUNDER_GRACE_STATUS_LABEL : paymentStatusLabel(payment.status);
   const canReport = state.mode === 'edit' && !isVoid && payment.status !== 'paid' && financeView();
 
   /* Per-month amount override (this row's OWN due-date month — for a
@@ -10822,7 +10885,7 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
     </div>
     <div>
       <span class="p-label">סטטוס</span>
-      <span class="badge pay-state pay-state-${escapeHtml(isVoid ? PAYMENT_VOID_STATUS : payment.status)}">${escapeHtml(stateLabel)}</span>
+      <span class="badge pay-state pay-state-${escapeHtml(isVoid ? PAYMENT_VOID_STATUS : inFunderGrace ? 'funder_grace' : payment.status)}">${escapeHtml(stateLabel)}</span>
     </div>
     <div>
       <span class="p-label">שולם</span>
