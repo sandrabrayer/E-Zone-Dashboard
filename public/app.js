@@ -13195,8 +13195,11 @@ function bcReceiptHtml(r, mode, opts) {
   const R = bcRules();
   const verified = R ? R.verifiedAmountOf(r) : Number(r.verifiedAmount) || 0;
   const open = R ? R.openAmountOf(r) : Number(r.openAmount) || 0;
+  /* «אומתו» (CHANGELOG-receipt-duplicates-and-edit.md): «חלק אוקטובר: ₪x ·
+   * הקבלה המלאה ₪y (תקופה dd/mm–dd/mm) · שולם במלואו» — «שולם חלקית» only
+   * for a partial receipt (lib/billing-control-rules.js confirmedMonthLine). */
   const amount = mode === 'confirmed' && o.inMonth !== undefined
-    ? `${fmtShekel(o.inMonth)} <span class="bc-sub">(מתוך ${fmtShekel(isPartial ? verified : r.amount)})</span>`
+    ? `<span class="bc-month-line">${escapeHtml(R ? R.confirmedMonthLine(r, s.month, o.inMonth, fmtShekel) : fmtShekel(o.inMonth))}</span>`
     : fmtShekel(r.amount);
   let actions = '';
   if (can) {

@@ -2489,6 +2489,9 @@ body.viewer-mode .receipt-void-btn { display: none !important; }
 .bc-flag-form textarea { width: 100%; box-sizing: border-box; min-width: 0; }
 .bc-flag-form textarea[aria-invalid="true"] { border-color: var(--danger); }
 .bc-ex-title { margin: 12px 0 6px; font-size: 14px; }
+/* «כפילות» reason form and the «אומתו» month line
+ * (CHANGELOG-receipt-duplicates-and-edit.md). */
+.bc-month-line { font-size: 13.5px; overflow-wrap: anywhere; }
 /* The status dropdown, the partial amount form and the note
  * (CHANGELOG-ortal-verification-status.md). RTL by inheritance; the amount is
  * typed LTR. 44px touch targets; nothing wider than the card at 360px. */

@@ -172,7 +172,9 @@ test('no element id twice: a partial receipt listed under «אומתו» by mont
   const p = R({ confirmStatus: 'partial', confirmedAmount: 6000 });
   const inMonth = app.bcReceiptHtml(p, 'confirmed', { inMonth: 3000 });
   assert.ok(!/<select|<textarea|<input|<button/.test(inMonth), inMonth.slice(0, 300));
-  assert.match(inMonth, /₪ 3,000 <span class="bc-sub">\(מתוך ₪ 6,000\)/, 'its month slice of the CONFIRMED part');
+  // CHANGELOG-receipt-duplicates-and-edit.md: the month slice of the
+  // CONFIRMED part, named as such; «שולם חלקית» only on a partial receipt.
+  assert.match(inMonth, /חלק החודש: ₪ 3,000 · אומת ₪ 6,000 מתוך ₪ 10,000 \(תקופה 01\/10–01\/10\) · שולם חלקית/, 'its month slice of the CONFIRMED part');
   const own = app.bcReceiptHtml(p, 'partial');
   assert.match(own, /id="bc-cnote-rcpt-1"/);
   assert.match(own, /id="bc-partial-rcpt-1"/);
