@@ -178,7 +178,11 @@
 // מטופלים משוחררים tab (CHANGELOG-duplicate-discharges.md). app.js changed;
 // its hashed URL misses and phones fetch it; activate evicts v42 (and any
 // orphaned v17 — still burned, never reused).
-var CACHE_VERSION = 'v43';
+// v43 → v44: receipts — the «אומתו» month-split line, «כפילות» in «בקרת
+// גבייה», Vered's duplicate prompt and ✏️ on a receipt
+// (CHANGELOG-receipt-duplicates-and-edit.md). app.js, style.css and
+// billing-control-rules.js changed; activate evicts v43 (v17 never reused).
+var CACHE_VERSION = 'v44';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
