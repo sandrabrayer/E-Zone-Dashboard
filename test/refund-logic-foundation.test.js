@@ -133,7 +133,7 @@ test('balance houses: exit on cycle end and end−6 → 0; end−7 → pro-rata,
     uncappedRefund: 7000, capped: false,
     lastDaysFrom: '2026-09-03', lastDaysTo: '2026-09-09',
     rule: 'residential_prorata', creditType: 'days_unused', refund: 7000,
-    ruleVersion: 1, billingMonthDay: 24,
+    ruleVersion: 1,
     decidedDate: '2026-10-01', payoutDate: '2026-10-15',
   });
 });

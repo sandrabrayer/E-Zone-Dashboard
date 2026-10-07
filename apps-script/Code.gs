@@ -9612,8 +9612,9 @@ function creditId_(patientId, allocationMonth, seq) {
  *                  length; refund = rate × days not stayed, capped at amountPaid.
  *                  The exit day counts as stayed (entry day is day 1).
  *   - v2, every house (exit on/after REFUND_RULE_V2_FROM, Sandra 07/10/2026):
- *                  exit on day 14 or later of the billing month (cycle start =
- *                  day 1) → 0 for that cycle; day 1–13 → pro-rata.
+ *                  exit on STAY day 14 or later (entry day = day 1, counted
+ *                  across month boundaries) → 0 for the current cycle; stay
+ *                  day 1–13 → pro-rata of the current cycle.
  *   - v1 (exit before REFUND_RULE_V2_FROM), kept for those exits:
  *     residential (asher, ramot): exit within the last 7 days of the cycle
  *                  (cycle end and the 6 days before it) → 0 for that cycle.
@@ -9636,15 +9637,15 @@ const CREDIT_DETOX_TENURE_CUTOFF_DAYS = 14;   // stay day, entry day = day 1
 const CREDIT_DECISION_CUTOFF_DAY      = 10;
 const REFUND_MAX_CYCLES               = 1200; // 100 years — a guard, never a real stay
 /* Refund rule v2 (Sandra, 07/10/2026 — CHANGELOG-refund-rule-v2.md, plan §8.6):
- * EVERY house — an exit on day 14 or later of the patient's own billing month
- * (cycle start = day 1, month anchored on the entry) → no refund for that
- * cycle; day 1–13 → pro-rata. Selected by the EXIT date: an exit on/after
+ * EVERY house — stayDay = exit − entry + 1 (entry day = day 1); stayDay ≥ 14
+ * → no refund for the current cycle; stayDay 1–13 → pro-rata of the current
+ * cycle. A prepaid cycle that starts after the exit is still returned in full. Selected by the EXIT date: an exit on/after
  * REFUND_RULE_V2_FROM uses v2, an earlier exit keeps the v1 per-house rule
  * above (last 7 days for asher/ramot, stay day 14 for the others). The same
  * rule lives in lib/refund-rules.js (window.RefundRules); the parity test
  * test/refund-rule-v2.test.js runs both over a grid of inputs. */
 const REFUND_RULE_V2_FROM             = '2026-10-07';
-const REFUND_V2_NO_REFUND_FROM_DAY    = 14;   // billing-month day, cycle start = day 1
+const REFUND_V2_NO_REFUND_FROM_DAY    = 14;   // stay day, entry day = day 1
 
 /* An Error carrying a machine code. Messages name the field, never a patient. */
 function refundError_(code, field) {
@@ -9727,17 +9728,16 @@ function refundRuleVersion_(exitIso) {
  * cycleEnd), picked by the exit date. Same as lib/refund-rules.js
  * currentCycleRule (parity-tested).
  * x: { facilityType, entryDate, exitDate, cycleStart, cycleEnd } — ISO days.
- * → { ruleVersion, rule, billingMonthDay, stayDay, lastDaysFrom, lastDaysTo, refundDue } */
+ * → { ruleVersion, rule, stayDay, lastDaysFrom, lastDaysTo, refundDue } */
 function refundCurrentCycleRule_(x) {
   const o = x || {};
   const version = refundRuleVersion_(o.exitDate);
   const entryN = refundDayNum_(o.entryDate), exitN = refundDayNum_(o.exitDate);
-  const startN = refundDayNum_(o.cycleStart), endN = refundDayNum_(o.cycleEnd);
-  const billingMonthDay = exitN - startN + 1;
+  const endN = refundDayNum_(o.cycleEnd);
   const stayDay = exitN - entryN + 1;
   let rule, lastDaysFrom = '', lastDaysTo = '';
   if (version === 2) {
-    rule = billingMonthDay >= REFUND_V2_NO_REFUND_FROM_DAY ? 'billing_month_day14_zero' : 'billing_month_prorata';
+    rule = stayDay >= REFUND_V2_NO_REFUND_FROM_DAY ? 'stay_day14_zero' : 'stay_prorata';
   } else if (o.facilityType === 'residential') {
     const fromN = endN - (CREDIT_RESIDENTIAL_LAST_DAYS - 1);
     lastDaysFrom = refundIsoFromDayNum_(fromN);
@@ -9749,9 +9749,9 @@ function refundCurrentCycleRule_(x) {
     throw refundError_('unknown_house', 'houseId');
   }
   return {
-    ruleVersion: version, rule: rule, billingMonthDay: billingMonthDay, stayDay: stayDay,
+    ruleVersion: version, rule: rule, stayDay: stayDay,
     lastDaysFrom: lastDaysFrom, lastDaysTo: lastDaysTo,
-    refundDue: rule === 'billing_month_prorata' || rule === 'residential_prorata' || rule === 'detox_prorata',
+    refundDue: rule === 'stay_prorata' || rule === 'residential_prorata' || rule === 'detox_prorata',
   };
 }
 
@@ -9773,13 +9773,12 @@ function refundCurrentCycleRule_(x) {
  * output: { houseId, facilityType, entryDate, exitDate, stayDay, cycleStart,
  *   cycleEnd, cycleSource, cycleDays, daysStayed, daysNotStayed, divisor,
  *   amountPaid, dailyRate, uncappedRefund, capped, lastDaysFrom, lastDaysTo,
- *   rule, creditType, refund, ruleVersion, billingMonthDay, decidedDate, payoutDate }
- *   rule ∈ billing_month_prorata | billing_month_day14_zero (v2) |
+ *   rule, creditType, refund, ruleVersion, decidedDate, payoutDate }
+ *   rule ∈ stay_prorata | stay_day14_zero (v2) |
  *          residential_prorata | residential_last_days_zero | detox_prorata |
  *          detox_tenure_cutoff_zero (v1) | prepaid_return | cycle_fully_used
- *   ruleVersion — 2 / 1 by the exit date (refundRuleVersion_); billingMonthDay —
- *   the exit's day in the current cycle (cycle start = day 1), 0 when the cycle
- *   does not hold the exit; lastDaysFrom/To only for a v1 residential stay.
+ *   ruleVersion — 2 / 1 by the exit date (refundRuleVersion_); stayDay is the
+ *   v2 deciding figure; lastDaysFrom/To only for a v1 residential stay.
  *   refund is computed from the unrounded rate; dailyRate is rounded for display. */
 function computeRefund_(input) {
   const x = input || {};
@@ -9836,7 +9835,7 @@ function computeRefund_(input) {
   const showLastDays = ruleVersion === 1 && facilityType === 'residential';
   const lastDaysFromN = endN - (CREDIT_RESIDENTIAL_LAST_DAYS - 1);
 
-  let daysStayed, daysNotStayed, rule, creditType = 'days_unused', uncapped, refund, billingMonthDay = 0;
+  let daysStayed, daysNotStayed, rule, creditType = 'days_unused', uncapped, refund;
   if (startN > exitN) {
     // Prepaid and not started at the exit: unearned in full, in every house.
     daysStayed = 0; daysNotStayed = cycleDays;
@@ -9855,7 +9854,6 @@ function computeRefund_(input) {
       facilityType: facilityType, entryDate: entryDate, exitDate: exitDate, cycleStart: cycleStart, cycleEnd: cycleEnd,
     });
     rule = cur.rule;
-    billingMonthDay = cur.billingMonthDay;
     refund = cur.refundDue ? prorata : 0;
   }
 
@@ -9869,7 +9867,7 @@ function computeRefund_(input) {
     lastDaysFrom: showLastDays ? refundIsoFromDayNum_(lastDaysFromN) : '',
     lastDaysTo: showLastDays ? cycleEnd : '',
     rule: rule, creditType: creditType, refund: refund,
-    ruleVersion: ruleVersion, billingMonthDay: billingMonthDay,
+    ruleVersion: ruleVersion,
     decidedDate: decidedDate, payoutDate: refundPayoutDate_(decidedDate),
   };
 }
@@ -9993,7 +9991,7 @@ function refundSuggestion_(b, extra, allocationMonth) {
     coverageStart: b.cycleStart,
     coverageEnd:   b.cycleEnd,
     unusedDays:    extra.creditedDays,
-    eligible:      b.rule === 'residential_prorata' || b.rule === 'detox_prorata' || b.rule === 'billing_month_prorata' || b.rule === 'prepaid_return',
+    eligible:      b.rule === 'residential_prorata' || b.rule === 'detox_prorata' || b.rule === 'stay_prorata' || b.rule === 'prepaid_return',
   });
   return { creditType: b.creditType, allocationMonth: allocationMonth, calculatedAmount: b.refund, basis: basis };
 }

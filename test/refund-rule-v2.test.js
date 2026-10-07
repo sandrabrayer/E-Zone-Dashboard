@@ -1,9 +1,11 @@
 /* Refund rule v2 — one rule for every house (Sandra, 07/10/2026).
  * CHANGELOG-refund-rule-v2.md, docs/billing-control-plan.md §8.6.
  *
- *   - exit on day 14 or later of the patient's OWN billing month (the cycle
- *     start is day 1, the month is anchored on the entry) → no refund for it;
- *     exit on day 1–13 → pro-rata, as computed before;
+ *   - stayDay = exit − entry + 1 (entry day = day 1, counted across month
+ *     boundaries). stayDay ≥ 14 → no refund for the current cycle
+ *     ('stay_day14_zero'); stayDay 1–13 → pro-rata of the current cycle
+ *     ('stay_prorata'). (Corrected 07/10/2026: day 14 of the STAY, not of the
+ *     billing month.)
  *   - a prepaid cycle that starts after the exit → refunded in full (unchanged);
  *   - payout timing unchanged (decided by the 10th → the 15th, else next 15th);
  *   - selected by the EXIT date: exit on/after REFUND_RULE_V2_FROM = 2026-10-07
@@ -104,95 +106,115 @@ test('the version is picked by the EXIT date: 06/10 → v1, 07/10 → v2 (both r
   assert.throws(() => lib.refundRuleVersion(''), /bad exitDate/);
 });
 
-/* ======================= v2: day 13 vs day 14, every house ======================= */
+/* ======================= v2: stay day 13 vs 14, every house ======================= */
 
-test('v2: exit on billing-month day 13 → pro-rata; day 14 → 0 — in every house', () => {
+test('v2: exit on stay day 13 → pro-rata of the current cycle; stay day 14 → 0 — in every house', () => {
   for (const houseId of HOUSES) {
-    // Entry 2026-10-08: cycle 08/10–07/11 (31 days). Day 13 = 20/10, day 14 = 21/10.
+    // Entry 2026-10-08: cycle 08/10–07/11 (31 days). Stay day 13 = 20/10, day 14 = 21/10.
     const base = { houseId, entryDate: '2026-10-08', amountPaid: 30000 };
     const d13 = refund(Object.assign({ exitDate: '2026-10-20' }, base));
     assert.strictEqual(d13.ruleVersion, 2, houseId);
-    assert.strictEqual(d13.billingMonthDay, 13, houseId);
-    assert.strictEqual(d13.rule, 'billing_month_prorata', houseId);
+    assert.strictEqual(d13.stayDay, 13, houseId);
+    assert.strictEqual(d13.rule, 'stay_prorata', houseId);
     assert.strictEqual(d13.daysNotStayed, 18, houseId);
     assert.strictEqual(d13.refund, 18000, houseId + ' day 13: 30000 / 30 × 18 days not stayed');
     assert.strictEqual(d13.lastDaysFrom, '', houseId + ' no «last 7 days» window under v2');
+    assert.ok(!('billingMonthDay' in d13), houseId + ' no billing-month day in the breakdown');
 
     const d14 = refund(Object.assign({ exitDate: '2026-10-21' }, base));
-    assert.strictEqual(d14.billingMonthDay, 14, houseId);
-    assert.strictEqual(d14.rule, 'billing_month_day14_zero', houseId);
+    assert.strictEqual(d14.stayDay, 14, houseId);
+    assert.strictEqual(d14.rule, 'stay_day14_zero', houseId);
     assert.strictEqual(d14.refund, 0, houseId + ' day 14 → 0');
     assert.strictEqual(d14.uncappedRefund, 17000, houseId + ' the raw figure is still recorded');
 
     const d1 = refund(Object.assign({ exitDate: '2026-10-08' }, base));
-    assert.strictEqual(d1.billingMonthDay, 1, houseId);
-    assert.strictEqual(d1.rule, 'billing_month_prorata', houseId);
+    assert.strictEqual(d1.stayDay, 1, houseId);
+    assert.strictEqual(d1.rule, 'stay_prorata', houseId);
     assert.strictEqual(d1.refund, 30000, houseId + ' day 1 of a 31-day cycle: 30 days not stayed');
   }
 });
 
-test('v2: the billing month is anchored on the ENTRY, not the calendar month — second cycle counts from its own start', () => {
-  // Entry 2026-09-20 → cycles 20/09–19/10, 20/10–19/11.
-  const base = { houseId: 'rehab', entryDate: '2026-09-20', amountPaid: 30000 };
-  const c1d13 = refund(Object.assign({ exitDate: '2026-10-02' }, base));    // v1 (before 07/10)
-  assert.strictEqual(c1d13.ruleVersion, 1);
-  const c1d18 = refund(Object.assign({ exitDate: '2026-10-07' }, base));    // cycle day 18 → 0
-  assert.strictEqual(c1d18.billingMonthDay, 18);
-  assert.strictEqual(c1d18.rule, 'billing_month_day14_zero');
-  const c2d13 = refund(Object.assign({ exitDate: '2026-11-01' }, base));    // second cycle, day 13
-  assert.strictEqual(c2d13.cycleStart, '2026-10-20');
-  assert.strictEqual(c2d13.billingMonthDay, 13);
-  assert.strictEqual(c2d13.stayDay, 43, 'stay day from entry is 43 — v1 detox would give 0');
-  assert.strictEqual(c2d13.rule, 'billing_month_prorata');
-  assert.strictEqual(c2d13.refund, 18000, '18 days not stayed (02/11–19/11)');
-  const c2d14 = refund(Object.assign({ exitDate: '2026-11-02' }, base));
-  assert.strictEqual(c2d14.billingMonthDay, 14);
-  assert.strictEqual(c2d14.refund, 0);
-  // 31 Jan clamp: entry 2027-01-31 → cycle 2 starts 28/02; day 14 = 13/03.
-  const clamp = refund({ houseId: 'asher', entryDate: '2027-01-31', exitDate: '2027-03-13', amountPaid: 30000 });
-  assert.strictEqual(clamp.cycleStart, '2027-02-28');
-  assert.strictEqual(clamp.billingMonthDay, 14);
-  assert.strictEqual(clamp.refund, 0);
+test('v2: the stay day counts across month boundaries (calendar month and cycle boundaries are irrelevant)', () => {
+  for (const houseId of HOUSES) {
+    // Entry 25/10: stay day 13 = 06/11, day 14 = 07/11 — across the calendar month end.
+    const b = { houseId, entryDate: '2026-10-25', amountPaid: 30000 };
+    const d13 = refund(Object.assign({ exitDate: '2026-11-06' }, b));
+    assert.strictEqual(d13.stayDay, 13, houseId);
+    assert.strictEqual(d13.rule, 'stay_prorata', houseId);
+    assert.strictEqual(d13.cycleEnd, '2026-11-24');
+    assert.strictEqual(d13.refund, 18000, houseId + ' 18 days not stayed (07/11–24/11)');
+    const d14 = refund(Object.assign({ exitDate: '2026-11-07' }, b));
+    assert.strictEqual(d14.stayDay, 14, houseId);
+    assert.strictEqual(d14.refund, 0, houseId);
+    // Entry 30/09 → stay day 13 = 12/10, day 14 = 13/10 (crosses the September end).
+    const e = { houseId, entryDate: '2026-09-30', amountPaid: 30000 };
+    assert.strictEqual(refund(Object.assign({ exitDate: '2026-10-12' }, e)).refund, 17000, houseId + ' day 13: 13/10–29/10');
+    assert.strictEqual(refund(Object.assign({ exitDate: '2026-10-13' }, e)).refund, 0, houseId + ' day 14');
+  }
+  // 31 Jan entry: stay day 13 = 12/02, day 14 = 13/02 (the clamped cycle 31/01–27/02).
+  const jan = { houseId: 'asher', entryDate: '2027-01-31', amountPaid: 30000 };
+  assert.strictEqual(refund(Object.assign({ exitDate: '2027-02-12' }, jan)).rule, 'stay_prorata');
+  assert.strictEqual(refund(Object.assign({ exitDate: '2027-02-12' }, jan)).refund, 15000, '15 days not stayed (13/02–27/02)');
+  assert.strictEqual(refund(Object.assign({ exitDate: '2027-02-13' }, jan)).rule, 'stay_day14_zero');
 });
 
-test('v2: a RECORDED coverage period wins — the billing-month day counts from coverageStart', () => {
-  const base = { houseId: 'ramot', entryDate: '2026-10-01', exitDate: '2026-10-20', amountPaid: 30000 };
-  assert.strictEqual(refund(base).rule, 'billing_month_day14_zero', 'derived cycle 01/10: day 20');
+test('v2: an exit in the second cycle or later is past stay day 14 → 0 for that cycle (NOT counted from the cycle start)', () => {
+  for (const houseId of HOUSES) {
+    // Entry 20/09 → cycle 2 starts 20/10; exit 01/11 is day 13 of that cycle but stay day 43.
+    const r = refund({ houseId, entryDate: '2026-09-20', exitDate: '2026-11-01', amountPaid: 30000 });
+    assert.strictEqual(r.cycleStart, '2026-10-20', houseId);
+    assert.strictEqual(r.stayDay, 43, houseId);
+    assert.strictEqual(r.rule, 'stay_day14_zero', houseId);
+    assert.strictEqual(r.refund, 0, houseId);
+  }
+});
+
+test('v2: a RECORDED coverage period sets the cycle (days not stayed); the rule is still the stay day', () => {
+  const base = { houseId: 'ramot', entryDate: '2026-10-08', exitDate: '2026-10-20', amountPaid: 30000 };
   const rec = refund(Object.assign({ coverageStart: '2026-10-10', coverageEnd: '2026-11-09' }, base));
   assert.strictEqual(rec.cycleSource, 'recorded_coverage');
-  assert.strictEqual(rec.billingMonthDay, 11);
-  assert.strictEqual(rec.rule, 'billing_month_prorata');
+  assert.strictEqual(rec.stayDay, 13);
+  assert.strictEqual(rec.rule, 'stay_prorata');
   assert.strictEqual(rec.refund, 20000, '20 days not stayed (21/10–09/11)');
+  const rec14 = refund(Object.assign({}, base, { exitDate: '2026-10-21', coverageStart: '2026-10-15', coverageEnd: '2026-11-14' }));
+  assert.strictEqual(rec14.stayDay, 14);
+  assert.strictEqual(rec14.refund, 0, 'a later coverage start does not reset the stay day');
 });
 
 /* ======================= exit 06/10 vs 07/10 ======================= */
 
-test('exit 06/10 → the old per-house rule; exit 07/10 → the new rule (balance house)', () => {
-  // ramot, entry 2026-09-22: cycle 22/09–21/10, last 7 days 15/10–21/10.
-  const base = { houseId: 'ramot', entryDate: '2026-09-22', amountPaid: 30000 };
-  const oct06 = refund(Object.assign({ exitDate: '2026-10-06' }, base));   // cycle day 15
-  assert.strictEqual(oct06.ruleVersion, 1);
-  assert.strictEqual(oct06.rule, 'residential_prorata', 'v1: 06/10 is outside the last 7 days');
-  assert.strictEqual(oct06.refund, 15000);
-  assert.strictEqual(oct06.lastDaysFrom, '2026-10-15', 'v1 keeps its breakdown');
-  const oct07 = refund(Object.assign({ exitDate: '2026-10-07' }, base));   // cycle day 16
-  assert.strictEqual(oct07.ruleVersion, 2);
-  assert.strictEqual(oct07.rule, 'billing_month_day14_zero', 'v2: day 16 → no refund');
-  assert.strictEqual(oct07.refund, 0);
+test('exit 06/10 → the old per-house rule; exit 07/10 → the new stay-day rule (balance houses)', () => {
+  for (const houseId of ['asher', 'ramot']) {
+    // Entry 24/09: cycle 24/09–23/10, last 7 days 17/10–23/10. 06/10 = stay day 13, 07/10 = 14.
+    const base = { houseId, entryDate: '2026-09-24', amountPaid: 30000 };
+    const oct06 = refund(Object.assign({ exitDate: '2026-10-06' }, base));
+    assert.strictEqual(oct06.ruleVersion, 1, houseId);
+    assert.strictEqual(oct06.rule, 'residential_prorata', houseId);
+    assert.strictEqual(oct06.refund, 17000, houseId);
+    assert.strictEqual(oct06.lastDaysFrom, '2026-10-17', houseId + ' v1 keeps its breakdown');
+    const oct07 = refund(Object.assign({ exitDate: '2026-10-07' }, base));
+    assert.strictEqual(oct07.ruleVersion, 2, houseId);
+    assert.strictEqual(oct07.rule, 'stay_day14_zero', houseId + ' v2: stay day 14 → no refund');
+    assert.strictEqual(oct07.refund, 0, houseId);
+  }
+  // ramot, entry 22/09: v1 refunds 06/10 (stay day 15, outside the last 7 days); v2 gives 0 on 07/10.
+  const r = { houseId: 'ramot', entryDate: '2026-09-22', amountPaid: 30000 };
+  assert.strictEqual(refund(Object.assign({ exitDate: '2026-10-06' }, r)).refund, 15000);
+  assert.strictEqual(refund(Object.assign({ exitDate: '2026-10-07' }, r)).refund, 0);
 });
 
-test('exit 06/10 → the old per-house rule; exit 07/10 → the new rule (rehab / dual-diagnosis)', () => {
-  // rehab, entry 2026-09-01: second cycle 01/10–31/10. Stay day 36/37 (v1 → 0); cycle day 6/7.
-  const base = { houseId: 'rehab', entryDate: '2026-09-01', amountPaid: 30000 };
-  const oct06 = refund(Object.assign({ exitDate: '2026-10-06' }, base));
-  assert.strictEqual(oct06.ruleVersion, 1);
-  assert.strictEqual(oct06.rule, 'detox_tenure_cutoff_zero');
-  assert.strictEqual(oct06.refund, 0);
-  const oct07 = refund(Object.assign({ exitDate: '2026-10-07' }, base));
-  assert.strictEqual(oct07.ruleVersion, 2);
-  assert.strictEqual(oct07.billingMonthDay, 7);
-  assert.strictEqual(oct07.rule, 'billing_month_prorata');
-  assert.strictEqual(oct07.refund, 24000, '24 days not stayed (08/10–31/10)');
+test('exit 06/10 → the old per-house rule; exit 07/10 → the new rule (rehab / dual-diagnosis — same stay-day cutoff, new rule name)', () => {
+  for (const houseId of ['rehab', 'pardes', 'arfoni', 'sde']) {
+    const base = { houseId, entryDate: '2026-09-24', amountPaid: 30000 };
+    const oct06 = refund(Object.assign({ exitDate: '2026-10-06' }, base));   // stay day 13
+    assert.strictEqual(oct06.ruleVersion, 1, houseId);
+    assert.strictEqual(oct06.rule, 'detox_prorata', houseId);
+    assert.strictEqual(oct06.refund, 17000, houseId);
+    const oct07 = refund(Object.assign({ exitDate: '2026-10-07' }, base));   // stay day 14
+    assert.strictEqual(oct07.ruleVersion, 2, houseId);
+    assert.strictEqual(oct07.rule, 'stay_day14_zero', houseId);
+    assert.strictEqual(oct07.refund, 0, houseId);
+  }
 });
 
 test('v1 is kept as it was for exits before 07/10 — every house, day 13 / day 14 / last 7 days', () => {
@@ -221,12 +243,16 @@ test('v2: a fully prepaid cycle after the exit is refunded in full, beside a day
   for (const houseId of HOUSES) {
     const base = { houseId, entryDate: '2026-09-25', exitDate: '2026-10-20', amountPaid: 30000 };
     const cur = refund(Object.assign({ cycleStart: '2026-09-25' }, base));
-    assert.strictEqual(cur.billingMonthDay, 26, houseId);
+    assert.strictEqual(cur.stayDay, 26, houseId);
+    assert.strictEqual(cur.rule, 'stay_day14_zero', houseId);
     assert.strictEqual(cur.refund, 0, houseId);
     const next = refund(Object.assign({ cycleStart: '2026-10-25' }, base));
     assert.strictEqual(next.rule, 'prepaid_return', houseId);
     assert.strictEqual(next.refund, 30000, houseId);
-    assert.strictEqual(next.billingMonthDay, 0, houseId + ' the cycle does not hold the exit');
+    // a short stay (day 13) with the next month prepaid: pro-rata now + the prepaid month in full
+    const short = { houseId, entryDate: '2026-10-08', exitDate: '2026-10-20', amountPaid: 30000 };
+    assert.strictEqual(refund(Object.assign({ cycleStart: '2026-10-08' }, short)).refund, 18000, houseId);
+    assert.strictEqual(refund(Object.assign({ cycleStart: '2026-11-08' }, short)).refund, 30000, houseId);
   }
   const used = refund({ houseId: 'asher', entryDate: '2026-08-01', exitDate: '2026-10-10', cycleStart: '2026-08-01', amountPaid: 30000 });
   assert.strictEqual(used.rule, 'cycle_fully_used');
@@ -254,7 +280,7 @@ test('suggestRefunds (refundSuggestionsFor_) under v2: day 13 → eligible pro-r
   const rows = [payRow({ dueDate: '2026-10-01' }), payRow({ dueDate: '2026-11-01' })];
   const d13 = plain(gs.suggest({ houseId: 'ramot', entryDate: '2026-10-01', exitDate: '2026-10-13', patientKey: KEY }, rows, '2026-10-14'));
   const du13 = d13.find((s) => s.creditType === 'days_unused');
-  assert.strictEqual(du13.basis.rule, 'billing_month_prorata');
+  assert.strictEqual(du13.basis.rule, 'stay_prorata');
   assert.strictEqual(du13.basis.eligible, true);
   assert.strictEqual(du13.basis.ruleVersion, 2);
   assert.strictEqual(du13.calculatedAmount, 18000);
@@ -262,7 +288,7 @@ test('suggestRefunds (refundSuggestionsFor_) under v2: day 13 → eligible pro-r
 
   const d14 = plain(gs.suggest({ houseId: 'ramot', entryDate: '2026-10-01', exitDate: '2026-10-14', patientKey: KEY }, rows, '2026-10-14'));
   const du14 = d14.find((s) => s.creditType === 'days_unused');
-  assert.strictEqual(du14.basis.rule, 'billing_month_day14_zero');
+  assert.strictEqual(du14.basis.rule, 'stay_day14_zero');
   assert.strictEqual(du14.basis.eligible, false);
   assert.strictEqual(du14.calculatedAmount, 0);
   assert.strictEqual(d14.find((s) => s.creditType === 'prepaid_return').calculatedAmount, 30000);
@@ -273,7 +299,7 @@ test('refund forecast under v2: a day-13 exit is «ממתין להחלטה»; a 
   const dis = (exit) => [{ id: 'd1', houseId: 'ramot', name: 'דנה', date: '2026-10-01', exitDate: exit, status: 'released', restored: '' }];
   const f13 = plain(gs.forecast(dis('2026-10-13'), [], pays, '2026-10-14'));
   assert.strictEqual(f13.awaiting_decision.total, 18000);
-  assert.strictEqual(f13.awaiting_decision.byPayoutDate[0].rows[0].rule, 'billing_month_prorata');
+  assert.strictEqual(f13.awaiting_decision.byPayoutDate[0].rows[0].rule, 'stay_prorata');
   const f14 = plain(gs.forecast(dis('2026-10-14'), [], pays, '2026-10-14'));
   assert.strictEqual(f14.awaiting_decision.count, 0);
   assert.strictEqual(f14.zeroByPolicyCount, 1);
@@ -341,28 +367,28 @@ function loadApp(withRules) {
 const app = loadApp();
 
 test('labels: the two v2 rules have Hebrew labels on screen and in the .xlsx; the v1 labels stay for older exits', () => {
-  assert.strictEqual(app.CREDIT_RULE_LABELS.billing_month_prorata, 'יציאה ביום 1–13 של חודש החיוב — זיכוי יחסי');
-  assert.strictEqual(app.CREDIT_RULE_LABELS.billing_month_day14_zero, 'יציאה ביום 14 ומעלה של חודש החיוב — ללא זיכוי');
+  assert.strictEqual(app.CREDIT_RULE_LABELS.stay_prorata, 'יציאה ביום שהייה 1–13 — זיכוי יחסי על המחזור הנוכחי');
+  assert.strictEqual(app.CREDIT_RULE_LABELS.stay_day14_zero, 'יציאה ביום שהייה 14 ומעלה — ללא זיכוי על המחזור הנוכחי');
+  assert.ok(!('billing_month_prorata' in app.CREDIT_RULE_LABELS) && !('billing_month_day14_zero' in app.CREDIT_RULE_LABELS));
   assert.strictEqual(app.CREDIT_RULE_LABELS.residential_last_days_zero, '7 הימים האחרונים במחזור — ללא זיכוי');
   assert.strictEqual(app.CREDIT_RULE_LABELS.detox_tenure_cutoff_zero, 'יום 14 ומעלה — ללא זיכוי');
   const xlsx = require('../lib/refund-forecast-xlsx.js');
   assert.deepStrictEqual(plain(xlsx.RULE_LABELS), plain(app.CREDIT_RULE_LABELS));
-  assert.match(XLSX_SRC, /billing_month_day14_zero/);
+  assert.match(XLSX_SRC, /stay_day14_zero/);
 });
 
-test('breakdown: a v2 basis shows the billing-month day and no «7 הימים האחרונים» / stay-day rows; a v1 basis is unchanged', () => {
+test('breakdown: a v2 basis shows the stay day in every house and no «7 הימים האחרונים»; a v1 basis is unchanged', () => {
   const v2 = refund({ houseId: 'ramot', entryDate: '2026-10-01', exitDate: '2026-10-14', amountPaid: 30000 });
   const html2 = app.creditBreakdownHtml(Object.assign({ basisVersion: 2 }, v2));
-  assert.match(html2, /יום בחודש החיוב ביציאה:<\/span> <span class="credit-bd-v">14</);
+  assert.match(html2, /יום שהייה ביציאה:<\/span> <span class="credit-bd-v">14</);
   assert.doesNotMatch(html2, /7 הימים האחרונים במחזור:/);
-  assert.match(html2, /יציאה ביום 14 ומעלה של חודש החיוב — ללא זיכוי/);
-  const v2d = refund({ houseId: 'rehab', entryDate: '2026-10-01', exitDate: '2026-10-13', amountPaid: 30000 });
-  assert.doesNotMatch(app.creditBreakdownHtml(Object.assign({ basisVersion: 2 }, v2d)), /יום שהייה ביציאה/);
+  assert.doesNotMatch(html2, /חודש החיוב ביציאה/);
+  assert.match(html2, /יציאה ביום שהייה 14 ומעלה — ללא זיכוי על המחזור הנוכחי/);
 
   const v1 = refund({ houseId: 'ramot', entryDate: '2026-09-10', exitDate: '2026-10-02', amountPaid: 30000 });
   const html1 = app.creditBreakdownHtml(Object.assign({ basisVersion: 2 }, v1));
   assert.match(html1, /7 הימים האחרונים במחזור:/);
-  assert.doesNotMatch(html1, /יום בחודש החיוב/);
+  assert.doesNotMatch(html1, /יום שהייה ביציאה/, 'v1 residential shows the last-7-days window, not the stay day');
   const v1d = refund({ houseId: 'rehab', entryDate: '2026-09-25', exitDate: '2026-10-06', amountPaid: 30000 });
   assert.match(app.creditBreakdownHtml(Object.assign({ basisVersion: 2 }, v1d)), /יום שהייה ביציאה:/);
 });
@@ -370,8 +396,9 @@ test('breakdown: a v2 basis shows the billing-month day and no «7 הימים ה
 test('the «זיכויים» modal rule line names the rule that applies — by the exit date — and nothing without the rules file', () => {
   const v2 = app.refundPolicyNote('2026-10-07', 'residential');
   assert.match(v2, /יציאה מ־07\/10\/2026, כל הבתים/);
-  assert.match(v2, /יציאה ביום 14 ומעלה של חודש החיוב \(יום הכניסה = יום 1\) — ללא זיכוי; יציאה ביום 1–13 — זיכוי יחסי/);
+  assert.match(v2, /יציאה ביום השהייה ה־14 ומעלה \(יום הכניסה = יום 1, נספר גם מעבר לסוף החודש\) — ללא זיכוי על המחזור הנוכחי; יציאה ביום שהייה 1–13 — זיכוי יחסי על המחזור הנוכחי/);
   assert.match(v2, /מחזור ששולם מראש ומתחיל אחרי היציאה — החזר מלא/);
+  assert.doesNotMatch(v2, /חודש החיוב/);
   assert.strictEqual(app.refundPolicyNote('2026-10-07', 'detox_dual'), v2, 'one rule for every house');
   assert.match(app.refundPolicyNote('2026-10-06', 'residential'), /לפני 07\/10\/2026, בית מאזן\): יציאה ב־7 הימים האחרונים/);
   assert.match(app.refundPolicyNote('2026-10-06', 'detox_dual'), /לפני 07\/10\/2026, גמילה \/ דואלי\): יציאה ביום שהייה 14 ומעלה/);
@@ -396,16 +423,20 @@ test('wiring: /refund-rules.js is served like the other lib rules, loaded before
  * mutated Code.gs / lib can be shown to FAIL them. */
 const GS_CHECKS = {
   day13vs14: (g) => {
-    const b = { houseId: 'asher', entryDate: '2026-10-01', amountPaid: 30000 };
-    const d13 = refundWith(g, Object.assign({ exitDate: '2026-10-13' }, b));
-    const d14 = refundWith(g, Object.assign({ exitDate: '2026-10-14' }, b));
+    const b = { houseId: 'asher', entryDate: '2026-10-08', amountPaid: 30000 };
+    const d13 = refundWith(g, Object.assign({ exitDate: '2026-10-20' }, b));
+    const d14 = refundWith(g, Object.assign({ exitDate: '2026-10-21' }, b));
     return d13.refund === 18000 && d14.refund === 0 ? '' : `d13 ${d13.refund} d14 ${d14.refund}`;
   },
+  secondCycle: (g) => {
+    const r = refundWith(g, { houseId: 'asher', entryDate: '2026-09-20', exitDate: '2026-11-01', amountPaid: 30000 });
+    return r.refund === 0 && r.rule === 'stay_day14_zero' ? '' : `second cycle ${r.rule} ${r.refund}`;
+  },
   oct06vs07: (g) => {
-    const b = { houseId: 'rehab', entryDate: '2026-09-01', amountPaid: 30000 };
+    const b = { houseId: 'asher', entryDate: '2026-09-24', amountPaid: 30000 };
     const a = refundWith(g, Object.assign({ exitDate: '2026-10-06' }, b));
     const c = refundWith(g, Object.assign({ exitDate: '2026-10-07' }, b));
-    return a.rule === 'detox_tenure_cutoff_zero' && c.rule === 'billing_month_prorata' ? '' : `${a.rule} / ${c.rule}`;
+    return a.rule === 'residential_prorata' && a.refund === 17000 && c.rule === 'stay_day14_zero' && c.refund === 0 ? '' : `${a.rule} / ${c.rule}`;
   },
   prepaid: (g) => {
     const r = refundWith(g, { houseId: 'ramot', entryDate: '2026-09-25', exitDate: '2026-10-20', cycleStart: '2026-10-25', amountPaid: 30000 });
@@ -424,13 +455,13 @@ test('mutation check: the real Code.gs passes every core check', () => {
 });
 
 const GS_MUTANTS = [
-  ['cutoff day 14 → 15', 'day13vs14', "rule = billingMonthDay >= REFUND_V2_NO_REFUND_FROM_DAY ? 'billing_month_day14_zero'", "rule = billingMonthDay > REFUND_V2_NO_REFUND_FROM_DAY ? 'billing_month_day14_zero'"],
+  ['cutoff day 14 → 15', 'day13vs14', "rule = stayDay >= REFUND_V2_NO_REFUND_FROM_DAY ? 'stay_day14_zero'", "rule = stayDay > REFUND_V2_NO_REFUND_FROM_DAY ? 'stay_day14_zero'"],
   ['effective date moved to 08/10', 'oct06vs07', "const REFUND_RULE_V2_FROM             = '2026-10-07';", "const REFUND_RULE_V2_FROM             = '2026-10-08';"],
   ['version compared with > (07/10 stays v1)', 'oct06vs07', 'return s >= REFUND_RULE_V2_FROM ? 2 : 1;', 'return s > REFUND_RULE_V2_FROM ? 2 : 1;'],
-  ['billing-month day counted from the entry (old detox stay day)', 'oct06vs07', 'const billingMonthDay = exitN - startN + 1;\n  const stayDay = exitN - entryN + 1;\n  let rule, lastDaysFrom', 'const billingMonthDay = exitN - entryN + 1;\n  const stayDay = exitN - entryN + 1;\n  let rule, lastDaysFrom'],
-  ['v2 pro-rata pays nothing', 'day13vs14', "refundDue: rule === 'billing_month_prorata' || rule === 'residential_prorata'", "refundDue: rule === 'residential_prorata'"],
+  ['stay day counted from the cycle start (the billing-month reading)', 'secondCycle', 'const endN = refundDayNum_(o.cycleEnd);\n  const stayDay = exitN - entryN + 1;', 'const endN = refundDayNum_(o.cycleEnd);\n  const stayDay = exitN - refundDayNum_(o.cycleStart) + 1;'],
+  ['v2 pro-rata pays nothing', 'day13vs14', "refundDue: rule === 'stay_prorata' || rule === 'residential_prorata'", "refundDue: rule === 'residential_prorata'"],
   ['prepaid cycle no longer returned in full', 'prepaid', 'uncapped = amountPaid; refund = amountPaid;', 'uncapped = amountPaid; refund = 0;'],
-  ['v2 pro-rata not eligible in the suggestion', 'eligible', "b.rule === 'billing_month_prorata' || b.rule === 'prepaid_return'", "b.rule === 'prepaid_return'"],
+  ['v2 pro-rata not eligible in the suggestion', 'eligible', "b.rule === 'stay_prorata' || b.rule === 'prepaid_return'", "b.rule === 'prepaid_return'"],
 ];
 
 for (const [name, check, from, to] of GS_MUTANTS) {
@@ -443,7 +474,7 @@ for (const [name, check, from, to] of GS_MUTANTS) {
 }
 
 test('mutation check (lib): a lib whose cutoff drifts from Code.gs FAILS the parity check', () => {
-  const from = "rule = billingMonthDay >= REFUND_V2_NO_REFUND_FROM_DAY ? 'billing_month_day14_zero'";
+  const from = "rule = stayDay >= REFUND_V2_NO_REFUND_FROM_DAY ? 'stay_day14_zero'";
   assert.strictEqual(LIB_SRC.split(from).length, 2);
   const mutant = loadLibBrowser(LIB_SRC.replace(from, from.replace('>=', '>')));
   assert.ok(parityRun(mutant, gs).length > 0, 'the mutant survived');

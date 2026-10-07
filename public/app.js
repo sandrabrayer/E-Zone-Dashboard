@@ -7464,8 +7464,8 @@ function fmtShekel(n) {
 /* Hebrew label per rule, for suggestions built by the server (basis
  * basisVersion 2 — computeRefund_ in Code.gs). */
 const CREDIT_RULE_LABELS = {
-  billing_month_prorata:      'יציאה ביום 1–13 של חודש החיוב — זיכוי יחסי',
-  billing_month_day14_zero:   'יציאה ביום 14 ומעלה של חודש החיוב — ללא זיכוי',
+  stay_prorata:               'יציאה ביום שהייה 1–13 — זיכוי יחסי על המחזור הנוכחי',
+  stay_day14_zero:            'יציאה ביום שהייה 14 ומעלה — ללא זיכוי על המחזור הנוכחי',
   residential_prorata:        'מגורים — זיכוי יחסי על הימים שלא שהה',
   residential_last_days_zero: '7 הימים האחרונים במחזור — ללא זיכוי',
   detox_prorata:              'גמילה/דואלי — יציאה עד יום 13 — זיכוי יחסי',
@@ -7565,7 +7565,7 @@ function refundPolicyNote(exitISO, facility) {
   try { version = R.refundRuleVersion(exit); } catch (_) { return ''; }
   const prepaid = 'מחזור ששולם מראש ומתחיל אחרי היציאה — החזר מלא.';
   if (version === 2) {
-    return `כלל ההחזר (יציאה מ־${formatDateHe(R.REFUND_RULE_V2_FROM)}, כל הבתים): יציאה ביום ${R.REFUND_V2_NO_REFUND_FROM_DAY} ומעלה של חודש החיוב (יום הכניסה = יום 1) — ללא זיכוי; יציאה ביום 1–${R.REFUND_V2_NO_REFUND_FROM_DAY - 1} — זיכוי יחסי. ${prepaid}`;
+    return `כלל ההחזר (יציאה מ־${formatDateHe(R.REFUND_RULE_V2_FROM)}, כל הבתים): יציאה ביום השהייה ה־${R.REFUND_V2_NO_REFUND_FROM_DAY} ומעלה (יום הכניסה = יום 1, נספר גם מעבר לסוף החודש) — ללא זיכוי על המחזור הנוכחי; יציאה ביום שהייה 1–${R.REFUND_V2_NO_REFUND_FROM_DAY - 1} — זיכוי יחסי על המחזור הנוכחי. ${prepaid}`;
   }
   if (facility === 'residential') {
     return `כלל ההחזר (יציאה לפני ${formatDateHe(R.REFUND_RULE_V2_FROM)}, בית מאזן): יציאה ב־${R.REFUND_V1_RESIDENTIAL_LAST_DAYS} הימים האחרונים של חודש החיוב — ללא זיכוי. ${prepaid}`;
@@ -7588,11 +7588,9 @@ function creditBreakdownHtml(basis) {
     row('ימים שלא שהה:', String(basis.daysNotStayed)),
     row('תעריף יומי:', `${fmtShekel(basis.dailyRate)} (${fmtShekel(basis.amountPaid)} ÷ ${basis.divisor})`),
   ];
-  // Rule v2 (exit from 07/10/2026, every house): the exit's day in the billing
-  // month decides. v1 (earlier exits): stay day (detox) / last 7 days (residential).
-  if (Number(basis.ruleVersion) === 2) {
-    if (basis.billingMonthDay) rows.push(row('יום בחודש החיוב ביציאה:', String(basis.billingMonthDay)));
-  } else if (basis.facilityType === 'detox_dual') rows.push(row('יום שהייה ביציאה:', String(basis.stayDay)));
+  // Rule v2 (exit from 07/10/2026, every house) and v1 detox: the stay day
+  // decides. v1 residential: the last 7 days of the cycle.
+  if (Number(basis.ruleVersion) === 2 || basis.facilityType === 'detox_dual') rows.push(row('יום שהייה ביציאה:', String(basis.stayDay)));
   if (Number(basis.ruleVersion) !== 2 && basis.facilityType === 'residential' && basis.lastDaysFrom) {
     rows.push(row('7 הימים האחרונים במחזור:', `${d(basis.lastDaysFrom)} – ${d(basis.lastDaysTo)}`));
   }

@@ -1015,14 +1015,17 @@ and `server.js` are not touched.
   branches; v17 stays burned.
 - No new action, env var, Script Property, scope, column or trigger.
 
-## Dashboard: refund rule v2 — day 14 of the billing month, every house (October 7, 2026)
+## Dashboard: refund rule v2 — stay day 14, every house (October 7, 2026)
 
 Detail: `CHANGELOG-refund-rule-v2.md`, plan §8.6. **Nothing to set.**
 
-- **The rule (Sandra, 07/10/2026), for every house:** an exit on day 14 or
-  later of the patient's own billing month gets no refund. The month is
-  anchored on the entry, and the cycle start is day 1. An exit on day 1–13 is
-  refunded pro-rata, as before.
+- **The rule (Sandra, 07/10/2026), for every house:**
+  `stayDay = exit − entry + 1`. The entry day is day 1, and the count runs
+  across month boundaries.
+  - `stayDay ≥ 14` → no refund for the current cycle.
+  - `stayDay` 1–13 → pro-rata of the current cycle, as before.
+  - The first draft counted the billing month; Sandra corrected it to the
+    stay the same day.
 - **Unchanged:** the prepaid full refund, the payout timing (by the 10th → the
   15th), and the rule that exceptions are Sandra-only.
 - **Selected by the EXIT date:** `REFUND_RULE_V2_FROM = '2026-10-07'`. An
