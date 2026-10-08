@@ -537,7 +537,10 @@ const PAYMENT_COLUMNS = [
   'invoiceWanted', 'invoiceTo',
   /* Ortal's partial confirmation and her free-text note
    * (PAYMENT_CONTROL_COLUMNS below; CHANGELOG-ortal-billing-access.md). */
-  'confirmedAmount', 'controlNote'
+  'confirmedAmount', 'controlNote',
+  /* The «דווח תשלום» form's idempotency key, on the receipt row it wrote
+   * (CHANGELOG-payment-report-persistence.md). Server-owned, text-forced. */
+  'submissionId'
 ];
 const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient', 'duplicate'];
 
@@ -743,7 +746,9 @@ const PAYMENT_SERVER_COLUMNS = [
   'linkedBy', 'linkedAt',
   /* The part of a cycle's amountPaid recorded BEFORE its first receipt row
    * (Phase 3 PR 2). Set once, by reportPayment_, never from a payload. */
-  'legacyAmountPaid'
+  'legacyAmountPaid',
+  /* The report's idempotency key — written by reportPayment_ only. */
+  'submissionId'
 ];
 
 /* Columns that do NOT count as a content change when deciding whether to bump
@@ -810,7 +815,9 @@ const PAYMENT_TEXT_COLUMNS = [
   /* «חשבונית?» / «על שם» — free text; a name typed as =… must stay text. */
   'invoiceWanted', 'invoiceTo',
   /* Ortal's note — free text (confirmedAmount stays a number). */
-  'controlNote'
+  'controlNote',
+  /* An opaque key — never a number or a date. */
+  'submissionId'
 ];
 
 /* PaymentsTombstones — the recoverable record of a DELETED Payments row.
@@ -8461,6 +8468,8 @@ function reportPayment_(body, user, ctx) {
   const cycleId = String(cycleIn.id == null ? '' : cycleIn.id).trim();
   if (!cycleId || cycleId.length > 300 || /[\u0000-\u001f\u007f]/.test(cycleId) ||
       cycleId.indexOf(RECEIPT_ID_PREFIX) === 0) return { ok: false, error: 'bad_cycle' };
+  const submissionId = receiptSubmissionIdClean_(b.submissionId);
+  if (submissionId === null) return { ok: false, error: 'bad_submission_id' };
 
   const today = paymentReportToday_();
   const issues = validatePaymentReport_(reportIn, {
@@ -8490,6 +8499,12 @@ function reportPayment_(body, user, ctx) {
       for (let k = 0; k < PAYMENT_COLUMNS.length; k++) o[PAYMENT_COLUMNS[k]] = g[k];
       return o;
     });
+    // A retry of a report already written: answer from the sheet, write nothing.
+    const replay = receiptReplayFor_(rows, submissionId);
+    if (replay) {
+      try { console.log('[payments] reportPayment replayed an idempotent retry'); } catch (_) { /* no-op */ }
+      return replay;
+    }
     let cycleAt = -1;
     for (let i = 0; i < rows.length; i++) if (String(rows[i].id) === cycleId) { cycleAt = i; break; }
     const prevCycle = cycleAt >= 0 ? rows[cycleAt] : {};
@@ -8565,6 +8580,7 @@ function reportPayment_(body, user, ctx) {
     const receiptOut = stampPaymentRow_(receiptIn, {}, false, stampUser);
     receiptOut.patientUid = paymentCell_(cycleOut.patientUid);   // same patient as its cycle, always
     receiptOut.legacyAmountPaid = '';
+    receiptOut.submissionId = submissionId;   // the idempotency key ('' = none sent)
 
     // Re-derive the cycle from every receipt it has, the new one included.
     const d = recomputeCycleFromReceipts_(cycleOut, priorReceipts.concat([receiptOut]));
@@ -8649,9 +8665,49 @@ function receiptOverrideAmount_(patientId, month) {
 /* Like paymentReportHeaderClash_, for the receipt column(s). Pure. */
 function receiptHeaderClash_(header) {
   const h = Array.isArray(header) ? header : [];
-  const i = PAYMENT_COLUMNS.indexOf('legacyAmountPaid');
-  const got = i < h.length ? String(h[i] == null ? '' : h[i]).trim() : '';
-  return got !== '' && got !== 'legacyAmountPaid' ? [{ column: i + 1, expected: 'legacyAmountPaid', found: got }] : [];
+  const clash = [];
+  ['legacyAmountPaid', 'submissionId'].forEach(function (name) {
+    const i = PAYMENT_COLUMNS.indexOf(name);
+    const got = i < h.length ? String(h[i] == null ? '' : h[i]).trim() : '';
+    if (got !== '' && got !== name) clash.push({ column: i + 1, expected: name, found: got });
+  });
+  return clash;
+}
+
+/* ===== Idempotent «דווח תשלום» (CHANGELOG-payment-report-persistence.md) =====
+ * The form mints ONE key per opened form ('sub-' + hex) and every send of it
+ * carries the same key. reportPayment_ stores it on the receipt row; a
+ * request whose key is already on a receipt is a RETRY (its first response
+ * was lost — a proxy 502, a dropped connection) and is answered from the
+ * sheet with that receipt, writing nothing. No key (an older client) = the
+ * old behaviour. */
+const SUBMISSION_ID_RE = /^sub-[A-Za-z0-9-]{8,64}$/;
+
+/* undefined / null / '' → '' (no key); a well-formed key → itself; anything
+ * else → null (refused). Pure. */
+function receiptSubmissionIdClean_(v) {
+  if (v === undefined || v === null || v === '') return '';
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  return SUBMISSION_ID_RE.test(t) ? t : null;
+}
+
+/* The replay answer for a key already stored on a receipt of `rows`, or null.
+ * The cycle is the one the receipt links to, derived from all its receipts
+ * exactly as getPayments_ derives it. PURE. */
+function receiptReplayFor_(rows, submissionId) {
+  if (!submissionId) return null;
+  const list = Array.isArray(rows) ? rows : [];
+  let hit = -1;
+  for (let i = 0; i < list.length; i++) {
+    if (isReceiptRow_(list[i]) && paymentCell_(list[i].submissionId) === submissionId) { hit = i; break; }
+  }
+  if (hit < 0) return null;
+  const split = paymentRowsDerived_(list);
+  const rid = paymentCell_(list[hit].id);
+  const receipt = split.receipts.find(function (r) { return paymentCell_(r.id) === rid; }) || list[hit];
+  const cycle = split.cycles.find(function (c) { return paymentCell_(c.id) === paymentCell_(receipt.cycleId); }) || null;
+  return { ok: true, receipt: receipt, cycle: cycle, created: false, replayed: true };
 }
 
 /* Re-derive the cycle a (void / un-voided) receipt belongs to, and write it.

@@ -348,13 +348,14 @@ test('xlsx: both cycle sheets carry the «בתוך תקופת גורם מממן�
   assert.deepEqual(unr.totals, ns.find((s) => s.name === 'מחזורים ללא רישום').totals);
 });
 
-test('wiring: /funder-grace.js is served like the other lib rules, loaded before app.js, hashed by the SW; SW v47', () => {
+test('wiring: /funder-grace.js is served like the other lib rules, loaded before app.js, hashed by the SW; SW v47+', () => {
   assert.match(SERVER_SRC, /'\/funder-grace\.js': \{ file: path\.join\(__dirname, 'lib', 'funder-grace\.js'\)/);
   assert.match(SERVER_SRC, /app\.get\('\/funder-grace\.js', sendLibAsset\('\/funder-grace\.js'\)\);/);
   assert.ok(INDEX_SRC.indexOf('funder-grace.js?v=__BUILD__') > 0);
   assert.ok(INDEX_SRC.indexOf('funder-grace.js?v=__BUILD__') < INDEX_SRC.indexOf('app.js?v=__BUILD__'));
   assert.match(SW_SRC, /var BUNDLE_PATHS = \[[^\]]*'\/funder-grace\.js'\]/);
-  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v47');
+  // v47 shipped funder-grace; later PRs bump it (v48: CHANGELOG-payment-report-persistence.md).
+  assert.ok(Number(/var CACHE_VERSION = 'v(\d+)';/.exec(SW_SRC)[1]) >= 47);
   assert.doesNotMatch(LIB_SRC, /fetch\(|require\(|Date\.now|new Date\(\)/, 'pure: no I/O, no clock');
 });
 

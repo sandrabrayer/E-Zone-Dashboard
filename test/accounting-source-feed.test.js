@@ -278,7 +278,7 @@ test('A: PAYMENT_COLUMNS appends seven accounting columns and moves nothing', ()
   // …and the invoice on the report (CHANGELOG-payment-invoice.md).
   assert.deepEqual(cols.slice(36, 38), ['invoiceWanted', 'invoiceTo']);
   // …and Ortal's partial amount + note, LAST (CHANGELOG-ortal-billing-access.md).
-  assert.deepEqual(cols.slice(38), ['confirmedAmount', 'controlNote']);
+  assert.deepEqual(cols.slice(38), ['confirmedAmount', 'controlNote', 'submissionId']);   // + CHANGELOG-payment-report-persistence.md
 });
 
 test('A: CREDIT_COLUMNS appends creditUid at the END, nothing else moves', () => {
@@ -306,6 +306,7 @@ test('A: the appended text columns are force-formatted at ensure; the original t
     'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
     'invoiceWanted', 'invoiceTo',
     'controlNote',   // CHANGELOG-ortal-billing-access.md (confirmedAmount stays a number)
+    'submissionId',  // CHANGELOG-payment-report-persistence.md
   ].sort());
   ['id', 'patientId', 'patientName', 'houseId', 'dueDate',
    'amount', 'status', 'amountPaid', 'balance', 'timestamp'].forEach((c) => {

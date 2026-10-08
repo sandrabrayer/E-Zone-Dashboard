@@ -497,9 +497,11 @@ test('form: submitting a valid report posts reportPayment once, adopts the recei
     : { ok: true };
   const { app, posts } = loadApp({ answer });
   await app.submitPaymentReport(cycleIdentity(), VALID({ method: 'מזומן', reference: '' }));
-  assert.equal(posts.length, 1);
-  assert.equal(posts[0].action, 'reportPayment');
-  assert.deepEqual(Object.keys(posts[0].report).sort(), ['cycle', 'report']);
+  // POSTs only: the post-save reconcile is a GET (CHANGELOG-payment-report-persistence.md).
+  const sentPosts = posts.filter((b) => b.action);
+  assert.equal(sentPosts.length, 1);
+  assert.equal(sentPosts[0].action, 'reportPayment');
+  assert.deepEqual(Object.keys(sentPosts[0].report).sort(), ['cycle', 'report']);
   assert.equal(app.state.receipts.length, 1);
   assert.equal(app.state.payments[0].status, 'partial', 'the money shown is the server\'s');
   assert.equal(app.PAYMENT_REPORT_TOAST, 'התשלום נרשם — יופיע אצל אורטל מחר בבוקר');

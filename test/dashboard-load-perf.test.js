@@ -849,7 +849,7 @@ test('H: loadAll starts getData, getPayments and getCredits TOGETHER', async () 
   assert.deepEqual(h.errors, []);
 });
 
-test('H: a getPayments / getCredits failure is still fail-soft', async () => {
+test('H: a getPayments / getCredits failure does not fail the load; getPayments says so in Hebrew', async () => {
   const h = loadApp();
   h.t.setApiGet((p) => (p.action === 'getData' ? Promise.resolve(DATA)
     : Promise.reject(new Error('Unknown action ' + p.action))));
@@ -858,10 +858,13 @@ test('H: a getPayments / getCredits failure is still fail-soft', async () => {
   assert.deepEqual(Array.from(s.payments), []);
   assert.deepEqual(Array.from(s.credits), []);
   assert.equal(h.renders(), 1, 'the app still renders');
-  assert.deepEqual(h.errors, [], 'no error banner for the optional reads');
+  // CHANGELOG-payment-report-persistence.md: a failed getPayments is no
+  // longer silent — the money on screen may be stale, and the user is told.
+  assert.equal(h.errors.length, 1);
+  assert.match(h.errors[0], /^טעינת התשלומים נכשלה/);
 });
 
-test('H: a payments row that breaks normalization is still fail-soft (as before)', async () => {
+test('H: a payments row that breaks normalization does not fail the load (reported in Hebrew)', async () => {
   const h = loadApp();
   h.t.setNormalizePayment(() => { throw new TypeError('bad row'); });
   h.t.setApiGet((p) => Promise.resolve(p.action === 'getData' ? DATA
@@ -871,7 +874,8 @@ test('H: a payments row that breaks normalization is still fail-soft (as before)
   assert.deepEqual(Array.from(s.payments), []);
   assert.equal(s.credits.length, 1);
   assert.equal(h.renders(), 1);
-  assert.deepEqual(h.errors, []);
+  assert.equal(h.errors.length, 1, 'the bad payments answer is reported, not swallowed');
+  assert.match(h.errors[0], /^טעינת התשלומים נכשלה/);
 });
 
 test('H: a getData failure still fails the load in Hebrew — and leaks no unhandled rejection', async () => {

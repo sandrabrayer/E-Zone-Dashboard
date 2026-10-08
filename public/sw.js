@@ -195,7 +195,11 @@
 // (grey) for 30 days after its due date instead of overdue. app.js,
 // style.css and index.html changed and the page loads a new /funder-grace.js
 // (hashed like app.js); activate evicts v46 (v17 never reused).
-var CACHE_VERSION = 'v47';
+// v47 → v48: «דוח תשלום» persistence (CHANGELOG-payment-report-persistence.md)
+// — a stale getPayments can no longer overwrite a confirmed report, a failed
+// one no longer wipes the money state, and every report carries an
+// idempotency key. app.js changed; activate evicts v47 (v17 never reused).
+var CACHE_VERSION = 'v48';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

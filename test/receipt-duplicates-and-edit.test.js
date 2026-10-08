@@ -258,12 +258,15 @@ test('B1: NOT flagged — a 15-day gap, another amount, a voided receipt, anothe
 });
 
 test('B1 page: «קיימת כבר קבלה דומה (dd/mm, אסמכתא X). האם זו קבלה נוספת?»; confirmDuplicate is sent ONLY after «כן, קבלה נוספת»', async () => {
-  const { app, sent } = loadApp();
+  // A confirmed save carries the persisted receipt id (CHANGELOG-payment-report-persistence.md).
+  const { app, sent } = loadApp(() => ({ ok: true, receipt: { id: 'rcpt-b1' } }));
   assert.equal(app.possibleDuplicateText({ receivedDate: '2026-10-05', reference: 'TRX-9' }), 'קיימת כבר קבלה דומה (05/10, אסמכתא TRX-9). האם זו קבלה נוספת?');
   assert.equal(app.possibleDuplicateText({ receivedDate: '2026-10-05', reference: '' }), 'קיימת כבר קבלה דומה (05/10, ללא אסמכתא). האם זו קבלה נוספת?');
   app.state.receipts = []; app.state.payments = [];
   await app.submitPaymentReport({ id: 'pay::x' }, { amount: '1' });
   await app.submitPaymentReport({ id: 'pay::x' }, { amount: '1' }, true);
+  // POSTs only — the post-save reconcile GET carries no body.
+  sent.splice(0, sent.length, ...sent.filter((b) => b.action));
   assert.equal(sent[0].action, 'reportPayment');
   assert.equal('confirmDuplicate' in sent[0].report, false, 'the first send never carries it');
   assert.equal(sent[1].report.confirmDuplicate, true);
@@ -617,7 +620,7 @@ test('Code.gs: editReceipt for the controller view → forbidden even with a for
   assert.ok(arr(w.g.run('PROXY_KNOWN_ACTIONS')).includes('editReceipt'));
   assert.ok(!arr(w.g.run('OPEN_ACTIONS')).includes('editReceipt'));
   // No new column: PAYMENT_COLUMNS unchanged (append-only, nothing needed).
-  assert.equal(arr(w.g.run('PAYMENT_COLUMNS')).slice(-2).join(','), 'confirmedAmount,controlNote');
+  assert.equal(arr(w.g.run('PAYMENT_COLUMNS')).slice(-3).join(','), 'confirmedAmount,controlNote,submissionId');   // + CHANGELOG-payment-report-persistence.md
 });
 
 test('SW: CACHE_VERSION v44 or later (v44 shipped this PR; v17 burned)', () => {
