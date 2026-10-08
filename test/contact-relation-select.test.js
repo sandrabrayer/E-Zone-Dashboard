@@ -97,7 +97,8 @@ function loadApp() {
       getLeads() { return state.leads; },
       /* Silence the save/render side of the real onSubmit paths. */
       stubIO() {
-        saveAll = async () => ({ ok: true });
+        // Answers like saveAll_: proves the rows asked about (CHANGELOG-write-path-hardening.md).
+        saveAll = async (opts) => ({ ok: true, proven: (opts && opts.prove) || {} });
         renderAll = () => {};
         showError = () => {};
         showToast = () => {};

@@ -2793,8 +2793,9 @@ function saveAll_(leads, patients, user, prove) {
     // checks its own leadId here to surface the conflict instead of
     // pretending the edit saved.
     let reportConflicts = [];
+    const leadOut = {};
     if (Array.isArray(leads) && leads.length > 0) {
-      reportConflicts = mergeLeads_(leads);
+      reportConflicts = mergeLeads_(leads, leadOut);
     }
 
     // Patients — only touch houseIds that are present in the payload.
@@ -2864,6 +2865,9 @@ function saveAll_(leads, patients, user, prove) {
       reportConflicts: reportConflicts,
     };
     if (conflicts.length > 0) out.conflicts = conflicts;
+    // Leads a stale payload tried to put back after they were closed or
+    // removed (CHANGELOG-write-path-hardening.md, R1). Absent when none.
+    if (leadOut.closedSuppressed && leadOut.closedSuppressed.length > 0) out.closedSuppressed = leadOut.closedSuppressed;
     if (moved.length > 0) out.moved = moved;
     if (Object.keys(stamps).length > 0) out.stamps = stamps;
     // R3 proof (CHANGELOG-write-path-hardening.md): which of the ids the
@@ -2939,11 +2943,32 @@ function saveProven_(want) {
  *     keeps legacy rows blank: editing any other field on a pre-`created`
  *     lead won't auto-backfill a guess.
  */
-function mergeLeads_(leads) {
+function mergeLeads_(leadsIn, out) {
   const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
   const idColIdx      = LEAD_COLUMNS.indexOf('id');
   const createdColIdx = LEAD_COLUMNS.indexOf('created');
   const lastRow = sh.getLastRow();
+
+  /* R1, server side (CHANGELOG-write-path-hardening.md): a lead that is NOT
+   * on Leads but IS on the closed or the removed sheet was moved there by
+   * moveLeadIrrelevant_ / removeLead_. A payload that still carries it is a
+   * stale tab (or a rollback after a lost answer) — appending it would put
+   * the lead in two sheets. It is dropped and reported (closedSuppressed).
+   * A lead already on Leads is an update and is never touched by this. */
+  const onLeads = {};
+  if (lastRow > 1) {
+    sh.getRange(2, idColIdx + 1, lastRow - 1, 1).getValues().forEach(function (r) {
+      onLeads[String(r[0] == null ? '' : r[0])] = true;
+    });
+  }
+  const parked = movedOffLeadsIds_();
+  const suppressed = [];
+  const leads = leadsIn.filter(function (l) {
+    const id = String(l && l.id != null ? l.id : '');
+    if (id && !onLeads[id] && parked[id]) { suppressed.push(id); return false; }
+    return true;
+  });
+  if (out && typeof out === 'object') out.closedSuppressed = suppressed;
 
   const incomingIds = {};
   for (let i = 0; i < leads.length; i++) {
@@ -3047,6 +3072,27 @@ function mergeLeads_(leads) {
   }
 
   return reportConflicts;
+}
+
+/* {id: true} for every lead id on the closed (לידים לא רלוונטיים) or removed
+ * (לידים שהוסרו) sheet. Read-only (never creates a sheet); fail-open to {}
+ * so a read error can never block a save. */
+function movedOffLeadsIds_() {
+  const out = {};
+  [[IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS], [REMOVED_LEADS_SHEET, REMOVED_LEAD_COLUMNS]].forEach(function (x) {
+    try {
+      const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(x[0]);
+      if (!sh || sh.getLastRow() < 2) return;
+      const at = x[1].indexOf('id');
+      sh.getRange(2, at + 1, sh.getLastRow() - 1, 1).getValues().forEach(function (r) {
+        const id = String(r[0] == null ? '' : r[0]).trim();
+        if (id) out[id] = true;
+      });
+    } catch (err) {
+      try { console.warn('[leads] moved-off scan skipped: ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
+    }
+  });
+  return out;
 }
 
 /* Would writing `after` over `before` (both raw Leads row arrays, same
@@ -6161,6 +6207,12 @@ function removeLead_(lead, actor) {
     // All three steps run under the script lock, so no writer can slip between
     // the peek and the delete.
     if (countRowsById_(leadsSh, LEAD_COLUMNS, lead.id) < 1) {
+      /* A RETRY whose first answer was lost: the lead is already on the
+       * removed sheet. Answer that row, write nothing (CHANGELOG-write-path-hardening.md). */
+      const prior = readSheet_(removedSh, REMOVED_LEAD_COLUMNS).filter(function (r) {
+        return String(r.id == null ? '' : r.id) === String(lead.id);
+      })[0];
+      if (prior) return { ok: true, removed: true, replayed: true, lead: prior };
       return { ok: false, error: 'lead_id_not_found' };
     }
     upsertRowById_(removedSh, REMOVED_LEAD_COLUMNS, record);
@@ -7043,7 +7095,48 @@ function submitMeetingReport_(report) {
   if (!reporter || reporter.length > 100) {
     return { ok: false, error: 'bad_reporter', message: 'reporter is required (max 100 chars)' };
   }
+  // The form's idempotency key (CHANGELOG-write-path-hardening.md): same
+  // shape as reportPayment's; malformed → refused, nothing written.
+  const submissionId = receiptSubmissionIdClean_(report.submissionId);
+  if (submissionId === null) return { ok: false, error: 'bad_submission_id', message: 'bad submissionId' };
 
+  /* Under the script lock, like every other writer: the read-merge-write of
+   * one lead row below must not interleave with a saveAll rebuilding Leads. */
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('submitMeetingReport_');
+  try {
+    // A RETRY of a submission whose answer was lost: replay the stored answer
+    // — never a second reportedAt, never «נצפה» reset again.
+    const cacheKey = submissionId ? MEETING_REPORT_REPLAY_PREFIX + submissionId : '';
+    if (cacheKey) {
+      const seen = CacheService.getScriptCache().get(cacheKey);
+      if (seen) {
+        try {
+          const prior = JSON.parse(seen);
+          if (prior && prior.saved && String(prior.saved.leadId) === leadId) {
+            return Object.assign({}, prior, { replayed: true });
+          }
+        } catch (_) { /* a corrupt entry is ignored: the write below runs */ }
+      }
+    }
+    const res = submitMeetingReportLocked_(leadId, outcome, companion, note, reporter);
+    if (cacheKey && res && res.ok === true) {
+      try { CacheService.getScriptCache().put(cacheKey, JSON.stringify(res), MEETING_REPORT_REPLAY_TTL_S); } catch (_) { /* best effort */ }
+    }
+    return res;
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* The idempotency window for a meeting report retry (CacheService; a retry
+ * after a lost answer comes within minutes). Keys hold the saved answer only
+ * — no report text. */
+const MEETING_REPORT_REPLAY_PREFIX = 'mr-sub:';
+const MEETING_REPORT_REPLAY_TTL_S = 6 * 60 * 60;
+
+/* The write itself, called by submitMeetingReport_ under the script lock. */
+function submitMeetingReportLocked_(leadId, outcome, companion, note, reporter) {
   const leads = openLeads_();
   let lead = null;
   for (let i = 0; i < leads.length; i++) {

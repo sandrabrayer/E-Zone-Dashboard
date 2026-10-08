@@ -264,7 +264,29 @@ var MR_SUBMIT_ERROR_TEXTS = {
   sheets_unreachable:  'אין חיבור לגיליון — נסו שוב בעוד רגע',
   write_verify_failed: 'הדיווח לא נשמר בגיליון — נסו שוב, ואם זה חוזר פנו לסנדרה',
   exception:      'שגיאה בשרת הנתונים — נסו שוב, ואם זה חוזר פנו לסנדרה',
+  lock_busy:      'המערכת עסוקה — נסו שוב בעוד רגע (הדיווח לא נשמר)',
+  not_proven:     'השרת לא אישר שהדיווח נשמר — נסו שוב (שליחה חוזרת לא תכפיל אותו)',
 };
+
+/* One idempotency key per report form ('sub-' + 32 hex,
+ * CHANGELOG-write-path-hardening.md): every send of the same form carries it,
+ * so a retry after a lost answer is replayed by the server, never written
+ * twice. crypto when the browser has it; it is a dedupe key, not a secret. */
+function mrNewSubmissionId() {
+  var bytes = new Uint8Array(16);
+  var c = typeof crypto !== 'undefined' && crypto && typeof crypto.getRandomValues === 'function' ? crypto : null;
+  if (c) c.getRandomValues(bytes);
+  else for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  var hex = '';
+  for (var j = 0; j < bytes.length; j++) hex += (bytes[j] < 16 ? '0' : '') + bytes[j].toString(16);
+  return 'sub-' + hex;
+}
+
+/* «נשמר» only with the server's proof: ok:true AND the saved row names the
+ * lead this form reported on. Pure. */
+function mrSavedProven(data, leadId) {
+  return !!(data && data.ok === true && data.saved && String(data.saved.leadId) === String(leadId));
+}
 
 function mrSubmitErrorText(code) {
   var c = String(code == null ? '' : code);
@@ -378,6 +400,8 @@ if (typeof module !== 'undefined' && module.exports) {
     mrEscapeHtml: mrEscapeHtml,
     MR_SUBMIT_ERROR_TEXTS: MR_SUBMIT_ERROR_TEXTS,
     mrSubmitErrorText: mrSubmitErrorText,
+    mrNewSubmissionId: mrNewSubmissionId,
+    mrSavedProven: mrSavedProven,
     BUSY_LABELS: BUSY_LABELS,
     busyLabelFor: busyLabelFor,
     busyButtonActive: busyButtonActive,
@@ -397,6 +421,8 @@ if (typeof module !== 'undefined' && module.exports) {
     showAll: false,
     outcome: '',
     companion: '',
+    // This form's idempotency key; a new one for every fresh form (resetForm).
+    submissionId: mrNewSubmissionId(),
   };
 
   var el = function (id) { return document.getElementById(id); };
@@ -511,6 +537,7 @@ if (typeof module !== 'undefined' && module.exports) {
         companion: companion,
         note: note,
         reporter: reporter,
+        submissionId: state.submissionId,
       };
       return fetch('/api/meeting-report/submit', {
         method: 'POST',
@@ -523,6 +550,8 @@ if (typeof module !== 'undefined' && module.exports) {
         if (!data || data.ok !== true) {
           throw new Error((data && data.error) || 'submit_failed');
         }
+        // R3: the confirmation screen only with the server's saved row.
+        if (!mrSavedProven(data, lead.id)) throw new Error('not_proven');
         showConfirmation({
           name: lead.name,
           house: lead.house,
@@ -556,6 +585,7 @@ if (typeof module !== 'undefined' && module.exports) {
   function resetForm() {
     state.outcome = '';
     state.companion = '';
+    state.submissionId = mrNewSubmissionId();   // a NEW report → a new key
     el('mr-lead').value = '';
     el('mr-note').value = '';
     el('mr-companion-other').value = '';

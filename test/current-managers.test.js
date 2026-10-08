@@ -291,7 +291,8 @@ function loadApp() {
     document: { getElementById: () => fakeEl(), createElement: () => fakeEl(), querySelectorAll: () => [], addEventListener() {}, body: fakeEl() },
     localStorage: { getItem: () => null, setItem: noop, removeItem: noop },
     URL, URLSearchParams, Math, Date, JSON, Number, String, Array, Object, RegExp, Promise, Set, Map,
-    fetch: (_u, o) => { saves.push(JSON.parse(o.body)); return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) }); },
+    // Answers like saveAll_: proves the rows asked about (CHANGELOG-write-path-hardening.md).
+    fetch: (_u, o) => { const b = JSON.parse(o.body); saves.push(b); return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, proven: b.prove || {} }) }); },
   };
   sandbox.window = sandbox; sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
