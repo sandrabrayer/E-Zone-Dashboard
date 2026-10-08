@@ -237,5 +237,9 @@ test('Ortal\'s read-only «גבייה»: a pro-bono patient is left out exactly 
   app.state.view = 'restricted'; app.state.billingRead = false;
   assert.equal(app.isProbonoOn(p, '2026-09-15'), false);
   // loadBillingRead keeps the Funders rows from getPayments.
-  assert.match(APP_SRC, /async function loadBillingRead\(\)[\s\S]*?state\.funders = \(Array\.isArray\(p\.value\.funders\)/);
+  // Since CHANGELOG-payment-report-persistence.md it goes through the
+  // sequence-guarded applyPaymentsRead, which sets state.funders.
+  assert.match(APP_SRC, /async function loadBillingRead\(\)[\s\S]*?applyPaymentsRead\(paymentsTicket, p\.value\)/);
+  assert.match(APP_SRC, /function paymentsStateFrom\(pr\)[\s\S]*?funders: \(Array\.isArray\(pr && pr\.funders\)/);
+  assert.match(APP_SRC, /function applyPaymentsRead\(ticket, pr\)[\s\S]*?state\.funders = next\.funders;/);
 });

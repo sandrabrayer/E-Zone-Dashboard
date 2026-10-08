@@ -449,7 +449,10 @@ async function apiGet(params) {
   const qs = new URLSearchParams(params).toString();
   const url = '/api/sheets?' + qs;
   console.log('[E-ZONE] GET →', new URL(url, location.origin).href);
-  const res = await fetch(url);
+  // cache: 'no-store' — a read is never answered from any HTTP cache (the
+  // server already sends no-store and sw.js never caches /api/; this makes
+  // the browser side explicit too). CHANGELOG-payment-report-persistence.md.
+  const res = await fetch(url, { cache: 'no-store' });
   if (res.status === 401) { showPinScreen(); throw new Error('unauthorized'); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) {
@@ -775,6 +778,58 @@ function maybeResyncPreservedPatients(res) {
 /* Saves currently in flight — the visibilitychange resync (see loadAll's
  * listener) skips reloading while a write is mid-air. */
 let _savesInFlight = 0;
+
+/* ===== Money-state freshness (CHANGELOG-payment-report-persistence.md) =====
+ * The bug: a getPayments read that STARTED before a payment write landed
+ * (loadAll from the visibility resync, a second tab action…) answered AFTER
+ * the write's echo had been applied and overwrote it with the sheet as it
+ * was before — the row Vered had just reported read «לא שולם» again.
+ *
+ * The guard: every confirmed (or in-flight) payment write bumps
+ * _paymentsWriteSeq; every getPayments read takes a ticket when it STARTS.
+ * A read is applied only if no write happened since its ticket and no
+ * newer read was applied already — otherwise it is discarded and the
+ * current (newer, confirmed) money state stays on screen. */
+let _paymentsWriteSeq = 0;
+let _paymentsReadSeq = 0;
+let _paymentsAppliedReadSeq = 0;
+/* The post-save reconcile in flight (tests await it). */
+let _paymentsReconcile = null;
+const PAYMENTS_LOAD_FAILED_HE = 'טעינת התשלומים נכשלה — הסטטוסים המוצגים אינם מעודכנים, רעננו את הדף';
+
+function beginPaymentsRead() {
+  _paymentsReadSeq++;
+  return { read: _paymentsReadSeq, write: _paymentsWriteSeq };
+}
+function notePaymentsWrite() {
+  _paymentsWriteSeq++;
+}
+function paymentsReadIsCurrent(ticket) {
+  return !!ticket && ticket.write === _paymentsWriteSeq && ticket.read > _paymentsAppliedReadSeq;
+}
+/* A getPayments answer → the three state lists. Throws on a malformed row,
+ * BEFORE anything is assigned, so a bad answer never half-replaces state. */
+function paymentsStateFrom(pr) {
+  return {
+    payments: (Array.isArray(pr && pr.payments) ? pr.payments : []).map(normalizePayment).filter(p => p.id),
+    receipts: (Array.isArray(pr && pr.receipts) ? pr.receipts : []).map(normalizeReceipt).filter(r => r.id),
+    funders: (Array.isArray(pr && pr.funders) ? pr.funders : []).map(normalizeFunderRow).filter(f => f.patientId),
+  };
+}
+/* Apply a getPayments answer read under `ticket` — or discard it as stale.
+ * → true when applied. */
+function applyPaymentsRead(ticket, pr) {
+  const next = paymentsStateFrom(pr);
+  if (!paymentsReadIsCurrent(ticket)) {
+    console.warn('[E-ZONE] getPayments answer discarded — a payment write landed after it started');
+    return false;
+  }
+  state.payments = next.payments;
+  state.receipts = next.receipts;
+  state.funders = next.funders;
+  _paymentsAppliedReadSeq = ticket.read;
+  return true;
+}
 
 /* Save full state to Sheets. Serialized so overlapping calls don't interleave. */
 function saveAll() {
@@ -1697,6 +1752,7 @@ function startTimedRead(params) {
  * loadAll; nothing else is loaded. */
 async function loadBillingRead() {
   if (!billingReadView()) return;
+  const paymentsTicket = beginPaymentsRead();
   const [d, p, c] = await Promise.all([
     startTimedRead({ action: 'getData' }), startTimedRead({ action: 'getPayments' }), startTimedRead({ action: 'getCredits' }),
   ]);
@@ -1705,12 +1761,10 @@ async function loadBillingRead() {
     state.billingOverrides = (Array.isArray(d.value.billingOverrides) ? d.value.billingOverrides : [])
       .map(normalizeBillingOverride).filter(o => o.patientId && o.month);
   }
-  if (p.ok && p.value) {
-    state.payments = (Array.isArray(p.value.payments) ? p.value.payments : []).map(normalizePayment).filter(x => x.id);
-    state.receipts = (Array.isArray(p.value.receipts) ? p.value.receipts : []).map(normalizeReceipt).filter(r => r.id);
-    // The Funders rows: pro-bono cycles are not debt (isProbonoOn).
-    state.funders = (Array.isArray(p.value.funders) ? p.value.funders : []).map(normalizeFunderRow).filter(f => f.patientId);
-  }
+  // The Funders rows ride along: pro-bono cycles are not debt (isProbonoOn).
+  // Applied only if no payment write landed since the read started.
+  if (p.ok && p.value) applyPaymentsRead(paymentsTicket, p.value);
+  else if (!p.ok) showError(PAYMENTS_LOAD_FAILED_HE);
   if (c.ok && c.value) state.credits = (Array.isArray(c.value.credits) ? c.value.credits : []).map(normalizeCredit).filter(x => x.id);
   if (!d.ok) showError('טעינת «גבייה» נכשלה — ' + ((d.error && d.error.message) || 'שגיאה'));
   renderBilling();
@@ -1733,6 +1787,7 @@ async function loadAll() {
   // (restricted view) never asks for the two money reads.
   const finance      = financeView();
   const dataRead     = startTimedRead({ action: 'getData' });
+  const paymentsTicket = finance ? beginPaymentsRead() : null;
   const paymentsRead = finance ? startTimedRead({ action: 'getPayments' }) : null;
   const creditsRead  = finance ? startTimedRead({ action: 'getCredits' }) : null;
   const timing = {};
@@ -1833,9 +1888,11 @@ async function loadAll() {
       .filter(o => o.patientId && o.month);
     console.log('[E-ZONE] billingOverrides loaded:', state.billingOverrides.length);
 
-    // Payments live on their own sheet and their own action. A fresh
-    // install has no Payments sheet yet — treat any failure as "empty
-    // list" so the rest of the app still loads.
+    // Payments live on their own sheet and their own action. A failed read
+    // KEEPS the money state already on screen and says so — it used to
+    // wipe it to [] silently, and every row then read «לא שולם»
+    // (CHANGELOG-payment-report-persistence.md). The rest of the app still
+    // loads either way.
     if (!financeView() || !paymentsRead) {
       state.payments = [];
       state.credits = [];
@@ -1845,20 +1902,15 @@ async function loadAll() {
       const got = await paymentsRead;
       timing.getPayments = got.ms;
       if (!got.ok) throw got.error;
-      const pr = got.value;
-      const raw = Array.isArray(pr && pr.payments) ? pr.payments : [];
-      state.payments = raw.map(normalizePayment).filter(p => p.id);
-      /* The cycles above already carry the money their receipts add up to
-       * (the server derives it); the receipts themselves are listed under
-       * each cycle. An older backend sends neither key — empty lists. */
-      state.receipts = (Array.isArray(pr && pr.receipts) ? pr.receipts : []).map(normalizeReceipt).filter(r => r.id);
-      state.funders = (Array.isArray(pr && pr.funders) ? pr.funders : []).map(normalizeFunderRow).filter(f => f.patientId);
+      /* The cycles carry the money their receipts add up to (the server
+       * derives it); the receipts themselves are listed under each cycle.
+       * Applied only if no payment write landed since the read started. */
+      applyPaymentsRead(paymentsTicket, got.value);
       console.log('[E-ZONE] getPayments →', state.payments.length, 'records,', state.receipts.length, 'receipts');
     } catch (err) {
-      console.warn('[E-ZONE] getPayments failed, assuming empty:', err && err.message);
-      state.payments = [];
-      state.receipts = [];
-      state.funders = [];
+      console.warn('[E-ZONE] getPayments failed — keeping the money state on screen:', err && err.message);
+      if (err && err.message === 'unauthorized') throw err;
+      showError(PAYMENTS_LOAD_FAILED_HE + (err && err.message ? ' (' + err.message + ')' : ''));
     }
 
     // Credits ledger — own sheet, own action (same fail-soft rule as payments:
@@ -11896,8 +11948,11 @@ async function savePayment(payment) {
   // updated in place by buildBillingRow's recompute.
   renderBillingMonthlySummary(state.billingDate || todayISO());
 
+  // Reads that started before this write must not overwrite it.
+  notePaymentsWrite();
   try {
     const res = await apiPost({ action: 'savePayment', payment });
+    notePaymentsWrite();
     /* ADOPT THE SERVER'S COPY when it echoes one. The link columns
      * (linkedBy / linkedAt) are stamped SERVER-SIDE from the signed session
      * cookie and the server's clock — the client cannot know them, and must
@@ -12237,6 +12292,7 @@ async function submitReceiptEdit(receipt, fields, reason) {
   const edit = { id: receipt.id, fields: Object.assign({}, fields) };
   if (reason) edit.reason = reason;
   const res = await apiPost({ action: 'editReceipt', edit });
+  notePaymentsWrite();   // an older in-flight getPayments must not undo it
   const at = state.receipts.findIndex(x => x.id === receipt.id);
   if (at >= 0 && res && res.receipt) {
     state.receipts[at] = normalizeReceipt(Object.assign({}, res.receipt, { cycleId: receipt.cycleId }));
@@ -12294,6 +12350,7 @@ async function voidReceipt(receipt, note) {
     dueDate: receipt.dueDate, status: PAYMENT_VOID_STATUS, linkPatientUid: '', linkStatus: 'duplicate',
     linkNote: String(note).slice(0, PAYMENT_LINK_NOTE_MAX), timestamp: new Date().toISOString(),
   } });
+  notePaymentsWrite();   // an older in-flight getPayments must not undo it
   const at = state.receipts.findIndex(x => x.id === receipt.id);
   if (at >= 0) {
     const echo = res && res.payment ? normalizeReceipt(Object.assign({}, res.payment, { cycleId: receipt.cycleId })) : null;
@@ -12511,6 +12568,10 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
   const funders = paymentFunderLabels();
   const today = rules ? rules.jerusalemToday() : todayISO();
   const d = paymentReportDefaults(patient, payment, dueDateISO, today);
+  /* ONE idempotency key per opened form: every send of it — the
+   * «כן, קבלה נוספת» re-send and a retry after a lost response included —
+   * carries the same id, so the server writes the receipt at most once. */
+  const submissionId = newSubmissionId();
   const house = houseById(d.cycle.houseId);
   const root = document.getElementById('modal-root');
   const back = document.createElement('div');
@@ -12668,7 +12729,7 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
     hideDup();
     return busyButton(submitBtn, 'save', async () => {
       try {
-        await submitPaymentReport(d.cycle, v, confirmDup);
+        await submitPaymentReport(d.cycle, v, confirmDup, submissionId);
         close();
         showToast(PAYMENT_REPORT_TOAST);
       } catch (err) {
@@ -12689,7 +12750,9 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
           paint(data.issues);
           back.querySelector('[data-err="_form"]').textContent = data.message || 'הדיווח לא נשמר';
         } else {
-          back.querySelector('[data-err="_form"]').textContent = 'הדיווח לא נשמר — ' + (err.message || 'שגיאה');
+          // The modal stays open with every value; never a silent rollback.
+          const msg = err && err.message && err.message !== PAYMENT_REPORT_SAVE_FAILED_HE ? ' (' + err.message + ')' : '';
+          back.querySelector('[data-err="_form"]').textContent = PAYMENT_REPORT_SAVE_FAILED_HE + msg;
         }
       }
     });
@@ -12709,23 +12772,86 @@ function possibleDuplicateText(existing) {
   return `קיימת כבר קבלה דומה (${day}, ${ref ? 'אסמכתא ' + ref : 'ללא אסמכתא'}). האם זו קבלה נוספת?`;
 }
 
+const PAYMENT_REPORT_SAVE_FAILED_HE = 'התשלום לא נשמר — נסי שוב';
+
+/* An idempotency key for one report form: 'sub-' + 32 hex. crypto when the
+ * browser has it (every supported one does), Math.random otherwise — it is
+ * a dedupe key, not a secret. */
+function newSubmissionId() {
+  const bytes = new Uint8Array(16);
+  const c = typeof crypto !== 'undefined' && crypto && typeof crypto.getRandomValues === 'function' ? crypto : null;
+  if (c) c.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  return 'sub-' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
 /* POST reportPayment; on success put the receipt and the re-derived cycle
  * into state and re-render. Nothing is applied optimistically: the money a
  * row shows is always the server's. Throws on refusal (err.data.issues).
  * confirmDuplicate true = Vered answered «כן, קבלה נוספת» to the server's
- * possible_duplicate (the override is audited there). */
-async function submitPaymentReport(cycle, values, confirmDuplicate) {
+ * possible_duplicate (the override is audited there). submissionId is the
+ * form's idempotency key (newSubmissionId) — a retry never writes twice.
+ *
+ * CHANGELOG-payment-report-persistence.md:
+ *   - "saved" only with proof: ok:true AND the persisted receipt id, else
+ *     it throws PAYMENT_REPORT_SAVE_FAILED_HE and the modal stays open;
+ *   - counted in _savesInFlight, so the visibility resync never reloads
+ *     under it, and a payment write for the freshness guard, so a read that
+ *     started before it can never overwrite the echo;
+ *   - then a fresh getPayments re-reads the sheet and reconciles. */
+async function submitPaymentReport(cycle, values, confirmDuplicate, submissionId) {
   const report = Object.assign({}, values);
   const body = { cycle, report };
   if (confirmDuplicate === true) body.confirmDuplicate = true;
-  const res = await apiPost({ action: 'reportPayment', report: body });
-  if (res && res.receipt) state.receipts.push(normalizeReceipt(res.receipt));
-  if (res && res.cycle) adoptCycleEcho(res.cycle);
+  if (submissionId) body.submissionId = String(submissionId);
+  _savesInFlight++;
+  let res;
+  try {
+    notePaymentsWrite();
+    res = await apiPost({ action: 'reportPayment', report: body });
+  } finally {
+    _savesInFlight--;
+  }
+  const receiptId = res && res.receipt && res.receipt.id ? String(res.receipt.id) : '';
+  if (!receiptId) {
+    const err = new Error(PAYMENT_REPORT_SAVE_FAILED_HE);
+    err.data = res;
+    throw err;
+  }
+  notePaymentsWrite();
+  const at = state.receipts.findIndex(r => r.id === receiptId);   // a replayed retry
+  if (at >= 0) state.receipts[at] = normalizeReceipt(res.receipt);
+  else state.receipts.push(normalizeReceipt(res.receipt));
+  if (res.cycle) adoptCycleEcho(res.cycle);
   renderBilling();
   if (typeof renderDashboard === 'function') renderDashboard();
   // «דווח תשלום» from the «מטופלים» row: its payment column follows.
   renderPatientsTab();
+  _paymentsReconcile = reconcilePaymentsAfterWrite(receiptId);
   return res;
+}
+
+/* After a confirmed payment write: re-read getPayments (no cache) and adopt
+ * the sheet's state — unless another write landed meanwhile (the sequence
+ * guard), or the answer does not carry the receipt just confirmed (then the
+ * confirmed echo stays). Never throws. → true when applied. */
+async function reconcilePaymentsAfterWrite(receiptId) {
+  const ticket = beginPaymentsRead();
+  try {
+    const pr = await apiGet({ action: 'getPayments' });
+    if (receiptId && !(Array.isArray(pr && pr.receipts) && pr.receipts.some(r => r && String(r.id) === receiptId))) {
+      console.warn('[E-ZONE] reconcile answer lacks the confirmed receipt — keeping the echo');
+      return false;
+    }
+    if (!applyPaymentsRead(ticket, pr)) return false;
+    renderBilling();
+    if (typeof renderDashboard === 'function') renderDashboard();
+    renderPatientsTab();
+    return true;
+  } catch (e) {
+    console.warn('[E-ZONE] post-save reconcile failed:', e && e.message);
+    return false;
+  }
 }
 
 /* Record the link for a row the SERVER's exact match cannot resolve.

@@ -967,6 +967,23 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
 
+## Dashboard: «דוח תשלום» persistence fix (October 8, 2026)
+
+Detail: `CHANGELOG-payment-report-persistence.md`. **Railway + Code.gs**
+(clasp CI on merge). Vered saw a reported row flip back to «לא שולם».
+The data was in the sheet; the client overwrote it on screen.
+- A `getPayments` read that started before a payment write can no longer
+  overwrite that write's echo. A request-sequence guard handles this, and a
+  report counts as a save in flight for the visibility resync.
+- A failed `getPayments` keeps the money state and shows a Hebrew error.
+  It no longer wipes every row to «לא שולם» without a message.
+- After a confirmed report, the app re-reads `getPayments` with `no-store`
+  and reconciles.
+- Each report form carries an idempotency key (`submissionId`, a new
+  APPENDED `Payments` column). A retry after a lost response returns the
+  same receipt and never writes a second one.
+- SW `CACHE_VERSION` v47 → **v48** (v17 stays burned).
+
 ## Dashboard: «מטופלים» patient list — PR 1, the foundation (October 7, 2026)
 
 Detail: `CHANGELOG-patients-tab-foundation.md`. **Railway only**: `public/app.js`

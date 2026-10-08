@@ -159,6 +159,13 @@ yet. If column 36 (or 25–35) of `Payments` holds a hand-added header, every
 report is refused (`sheet_header_clash`) and nothing is written until it is
 moved.
 
+**08/10/2026 — `CHANGELOG-payment-report-persistence.md`:** no manual step.
+One column, `submissionId` (the report's idempotency key), is APPENDED at
+the end of `Payments` (after `controlNote`) and writes its own header name on
+the first read or report after the clasp deploy. If a hand-added header sits
+in that position, reports are refused (`sheet_header_clash`) until it is
+moved. SW `CACHE_VERSION` v47 → **v48**.
+
 ## «בקרת גבייה» — Ortal's tab (October 4, 2026)
 
 `CHANGELOG-billing-control-tab.md`. **No env var, no Script Property, no

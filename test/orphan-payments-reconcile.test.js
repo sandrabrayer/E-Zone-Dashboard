@@ -838,6 +838,8 @@ test('column contracts unchanged: PATIENT_COLUMNS, PAYMENT_COLUMNS, PATIENT_TOMB
     'invoiceWanted', 'invoiceTo',
     // And Ortal's partial amount + note (CHANGELOG-ortal-billing-access.md).
     'confirmedAmount', 'controlNote',
+    // And the report's idempotency key (CHANGELOG-payment-report-persistence.md).
+    'submissionId',
   ]);
   assert.deepEqual(arr(code.PATIENT_TOMBSTONE_COLUMNS), [
     'houseId', 'name', 'date', 'pay', 'adv', 'status', 'fromLead', 'exitDate', 'source', 'notes',

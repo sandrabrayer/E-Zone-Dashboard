@@ -217,8 +217,9 @@ test('A: PAYMENT_COLUMNS appends the two coverage columns and moves nothing', ()
     'legacyAmountPaid',
     'invoiceWanted', 'invoiceTo',
     'confirmedAmount', 'controlNote',   // CHANGELOG-ortal-billing-access.md
+    'submissionId',                     // CHANGELOG-payment-report-persistence.md
   ]);
-  assert.equal(cols.length, 40);
+  assert.equal(cols.length, 41);
 });
 
 test('A: the two new columns are text-forced at sheet-ensure, the old ones are left alone', () => {
@@ -245,6 +246,7 @@ test('A: the two new columns are text-forced at sheet-ensure, the old ones are l
     'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
     'invoiceWanted', 'invoiceTo',
     'controlNote',   // CHANGELOG-ortal-billing-access.md
+    'submissionId',  // CHANGELOG-payment-report-persistence.md
   ].sort());
   assert.deepEqual(arr(code.PAYMENT_TEXT_COLUMNS).slice().sort(), forced.sort());
   ['id', 'patientId', 'patientName', 'houseId', 'dueDate',
