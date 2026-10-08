@@ -979,6 +979,20 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
 
+## Dashboard: the month split on the «תקופת כיסוי» row (October 8, 2026 — PR #137)
+
+Detail: `CHANGELOG-coverage-month-split.md`. **Railway only** (display); Code.gs
+is not touched.
+
+- **What it shows:** under each גבייה row's coverage period, how the amount
+  divides across the calendar months it buys: month · days · ₪. The month on
+  screen is shown in the accent colour; other months are marked «נדחה».
+- **Same numbers as «הכנסות חודשיות»:** it uses `revenueAllocate`, the same
+  rule as that screen, with whole-shekel largest-remainder rounding so the
+  months always add up to the amount shown.
+- SW `CACHE_VERSION` v48 → **v49** (PR #137's original v17 bump renumbered;
+  v17 stays burned).
+
 ## Dashboard Apps Script: duplicate-payment report (October 8, 2026)
 
 Detail: `CHANGELOG-duplicate-payments-report.md`. **Code.gs only** (clasp CI
