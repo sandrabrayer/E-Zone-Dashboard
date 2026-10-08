@@ -1857,6 +1857,28 @@ function healthzBody(env) {
 
 app.get('/healthz', (_, res) => res.json(healthzBody()));
 
+/* GET /api/version — the post-merge deploy probe (CLAUDE.md rule 4b): poll it
+ * until `commit` equals the merge SHA to know Railway is serving the merge.
+ * Public (no session, nothing proxied), Cache-Control: no-store, and the body
+ * is exactly { commit, builtAt }: commit is deployIdentity()'s validated
+ * RAILWAY_GIT_COMMIT_SHA ('' outside Railway); builtAt is when this process
+ * started (ISO-8601) — Railway exposes no build timestamp, and a new deploy
+ * always starts a new process. A controller-view session (Ortal) still gets
+ * the controllerRouteLock 403 like every other /api/ route outside
+ * CONTROLLER_ROUTES; the probe is meant to be called anonymously. */
+const PROCESS_STARTED_AT = new Date().toISOString();
+function versionBody(env, builtAt) {
+  return {
+    commit: deployIdentity(env || process.env).commit,
+    builtAt: builtAt || PROCESS_STARTED_AT,
+  };
+}
+
+app.get('/api/version', (_, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(versionBody());
+});
+
 /* ===== GET /api/healthcheck — the weekly healthcheck's data probe (PR C) =====
  *
  *   GET /api/healthcheck?action=getData
@@ -1965,6 +1987,8 @@ module.exports = {
   // Deploy identity on /healthz (see test/healthz-deploy-identity.test.js).
   deployIdentity,
   healthzBody,
+  // GET /api/version deploy probe (see test/api-version.test.js).
+  versionBody,
   buildLoadPreviews,
   followingRequest,
   parseSessionCookie,
