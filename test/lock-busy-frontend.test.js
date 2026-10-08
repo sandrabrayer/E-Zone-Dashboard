@@ -39,6 +39,7 @@ function fakeEl() {
 
 /* `script` maps an action to the responses it returns IN ORDER (the last one
  * repeats); unlisted actions answer {ok:true}. */
+const { serverEcho } = require('./helpers/server-echo');
 function loadApp(script) {
   const calls = [];
   const used = {};
@@ -61,9 +62,11 @@ function loadApp(script) {
       // the modal); unscripted it answers an empty suggestion list.
       const list = (script && script[action]) || (action === 'suggestRefunds' ? [{ ok: true, suggestions: [] }] : [{ ok: true }]);
       const i = used[action] = (used[action] || 0) + 1;
-      const payload = typeof list[Math.min(i, list.length) - 1] === 'function'
+      // serverEcho: a bare {ok:true} answers like the real handler (the
+      // proof the page needs, CHANGELOG-write-path-hardening.md).
+      const payload = serverEcho(body, typeof list[Math.min(i, list.length) - 1] === 'function'
         ? list[Math.min(i, list.length) - 1](body)
-        : list[Math.min(i, list.length) - 1];
+        : list[Math.min(i, list.length) - 1]);
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload) });
     },
   };
@@ -390,7 +393,9 @@ test('loadAll auto-promote saveAll: a busy lock shows the Hebrew message; the ro
   const at = body.indexOf('saveAll().catch(');
   assert.ok(at !== -1, 'the auto-promote save is still there');
   const handler = body.slice(at, body.indexOf('});', at));
-  assert.ok(/isLockBusyError\(e\)\)\s*showError\(LOCK_BUSY_MESSAGE_HE\)/.test(handler), 'busy lock is reported');
+  // Every failure is reported now (CHANGELOG-write-path-hardening.md); a busy
+  // lock still in the Hebrew busy message.
+  assert.ok(/showError\(isLockBusyError\(e\)\s*\?\s*LOCK_BUSY_MESSAGE_HE\s*:/.test(handler), 'busy lock is reported');
   assert.ok(!/state\.patients\s*=/.test(handler), 'nothing is reverted — the rows ride the next saveAll');
 });
 

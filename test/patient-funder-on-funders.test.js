@@ -251,7 +251,8 @@ function loadApp(opts) {
     lockBusyDelay = () => Promise.resolve();
     renderAll = () => {};
     showModal = (m) => { globalThis.__modal = m; };
-    saveAll = async () => { globalThis.__saves++; if (globalThis.__saveFails) throw new Error('boom'); return { ok: true }; };
+    // Answers like saveAll_: it proves the rows it was asked about (CHANGELOG-write-path-hardening.md).
+    saveAll = async (opts) => { globalThis.__saves++; if (globalThis.__saveFails) throw new Error('boom'); return { ok: true, proven: (opts && opts.prove) || {} }; };
     todayISO = () => '${TODAY}';
     globalThis.__test = {
       get state() { return state; },

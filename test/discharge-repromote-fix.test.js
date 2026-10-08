@@ -24,6 +24,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+const { serverEcho } = require('./helpers/server-echo');
+
 function loadApp() {
   const src = fs.readFileSync(
     path.join(__dirname, '..', 'public', 'app.js'),
@@ -171,8 +173,10 @@ function dischargeHarness({ patient, leads, saveAll, apiPost }) {
   app.setShowError(m => errors.push(m));
   app.setShowToast(() => {});
   app.setShowCloseLeadModal(({ onConfirm }) => { captured = onConfirm; });
-  app.setSaveAll(saveAll || (() => Promise.resolve()));
-  app.setApiPost(apiPost || (() => Promise.resolve({ ok: true })));
+  // The default stubs answer like the real server: a saveAll proves the rows
+  // it was asked about, dischargePatient echoes the row (CHANGELOG-write-path-hardening.md).
+  app.setSaveAll(saveAll || ((opts) => Promise.resolve({ ok: true, proven: (opts && opts.prove) || {} })));
+  app.setApiPost(apiPost || ((b) => Promise.resolve(serverEcho(b, { ok: true }))));
   app.setState({
     mode: 'edit',
     patients: [patient],

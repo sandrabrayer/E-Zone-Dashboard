@@ -343,7 +343,8 @@ test('promoteSkippedMessage: null unless promoteSkipped is non-empty; message na
 
 test('source-scan: saveAll surfaces promoteSkipped through showError — refusals are never silent', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
-  const start = src.indexOf('function saveAll()');
+  // saveAll(opts) since CHANGELOG-write-path-hardening.md (the proof request).
+  const start = src.indexOf('function saveAll(');
   assert.ok(start >= 0);
   const body = src.slice(start, src.indexOf('\n}', start + 1) + 2);
   assert.ok(/promoteSkippedMessage\(res\)/.test(body), 'saveAll routes the response through promoteSkippedMessage');

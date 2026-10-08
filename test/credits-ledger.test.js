@@ -430,6 +430,7 @@ function fakeEl() {
   };
 }
 const APP_SRC = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+const { serverEcho } = require('./helpers/server-echo');
 function loadApp(routes) {
   const calls = [];
   const noop = () => {};
@@ -444,7 +445,9 @@ function loadApp(routes) {
       const body = opts && opts.body ? JSON.parse(opts.body) : null;
       calls.push(body);
       const handler = body && routes && routes[body.action];
-      const payload = handler ? handler(body) : { ok: true };
+      // serverEcho: a bare {ok:true} answers like the real handler (the
+      // proof the page needs, CHANGELOG-write-path-hardening.md).
+      const payload = serverEcho(body, handler ? handler(body) : { ok: true });
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload) });
     },
   };

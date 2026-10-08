@@ -173,6 +173,13 @@ on the first funder save after the clasp deploy. If a hand-added header sits
 in that position, funder saves keep working without the key (the old
 behaviour, a console warning). SW `CACHE_VERSION` v49 → **v50**.
 
+**08/10/2026 — `CHANGELOG-write-path-hardening.md` (PR B, patients):** no
+manual step and no column. `saveAll` gains an optional `prove` parameter
+(answered with `proven`). Railway and the clasp deploy both run on merge; in
+the minute between them an admission may report «השמירה לא אושרה» while the
+older Apps Script answers without `proven` — retrying from the same form is
+safe (same id, no duplicate). SW `CACHE_VERSION` v50 → **v51**.
+
 ## «בקרת גבייה» — Ortal's tab (October 4, 2026)
 
 `CHANGELOG-billing-control-tab.md`. **No env var, no Script Property, no

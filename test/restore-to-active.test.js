@@ -7,6 +7,7 @@
  * apiPost/saveAll/renderAll/showError/showToast), and evaluate it in a vm
  * context with the browser globals stubbed. No changes to app.js are required. */
 
+const { serverEcho } = require('./helpers/server-echo');
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -148,8 +149,10 @@ function harness(over) {
   app.setRenderAll(() => {});
   app.setShowToast(m => toasts.push(m));
   app.setShowError(m => errors.push(m));
-  app.setSaveAll(() => Promise.resolve());
-  app.setApiPost(() => Promise.resolve({ ok: true }));
+  // Answer like the real server: saveAll proves the rows asked about,
+  // restorePatientToActive names the audit row (CHANGELOG-write-path-hardening.md).
+  app.setSaveAll((opts) => Promise.resolve({ ok: true, proven: (opts && opts.prove) || {} }));
+  app.setApiPost((b) => Promise.resolve(serverEcho(b, { ok: true })));
   app.setState({
     mode: 'edit',
     patients: [patient({ id: 'p-1' })],
@@ -192,7 +195,8 @@ test('rollback on a failed persist: state restored to previous refs, error shown
   const st = app.getState();
   const prevPatients = st.patients;
   const prevDischarged = st.dischargedPatients.slice();
-  await app.doRestorePatientToActive(audit());
+  // It throws now, so the restore-choice modal stays open (R3).
+  await assert.rejects(app.doRestorePatientToActive(audit()), /boom/);
   const after = app.getState();
   assert.strictEqual(after.patients, prevPatients);          // exact previous ref
   // dischargedPatients is rolled back to a slice (matching restorePatient's
@@ -209,7 +213,7 @@ test('rollback also fires when saveAll fails (before the audit flag write)', asy
   const h = harness(() => {
     app.setSaveAll(() => Promise.reject(new Error('save failed')));
   });
-  await app.doRestorePatientToActive(audit());
+  await assert.rejects(app.doRestorePatientToActive(audit()), /save failed/);
   const after = app.getState();
   assert.strictEqual(after.patients[0].status, 'released');
   assert.strictEqual(after.dischargedPatients[0].restored, undefined);
