@@ -1784,12 +1784,6 @@ app.post('/api/meeting-report/submit', requireMeetingReportSession, requireProxy
     note:      b.note      == null ? '' : String(b.note),
     reporter:  b.reporter  == null ? '' : String(b.reporter),
   };
-  /* The form's idempotency key (CHANGELOG-write-path-hardening.md): forwarded
-   * only in its exact shape — anything else is dropped here, so the old
-   * behaviour (no replay) is the worst case; Apps Script re-validates. */
-  if (typeof b.submissionId === 'string' && /^sub-[A-Za-z0-9-]{8,64}$/.test(b.submissionId)) {
-    report.submissionId = b.submissionId;
-  }
   const noteError = meetingReportNoteError(report.note);
   if (noteError) {
     recordWrite({

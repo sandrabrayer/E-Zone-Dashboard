@@ -260,11 +260,9 @@ async function bootMeetingReportPage() {
 
   const fetchCalls = [];
   const ok = (body) => Promise.resolve({ status: 200, json: () => Promise.resolve(body) });
-  // The submit answers like submitMeetingReport_: the saved row names the
-  // lead (the proof the page needs, CHANGELOG-write-path-hardening.md).
-  let responder = (url, opts) => (String(url).indexOf('/leads') !== -1
+  let responder = (url) => (String(url).indexOf('/leads') !== -1
     ? ok({ ok: true, leads: [PICKER_LEAD] })
-    : ok({ ok: true, saved: { leadId: JSON.parse((opts && opts.body) || '{}').leadId } }));
+    : ok({ ok: true }));
 
   const sandbox = {
     console: { log: noop, warn: noop, error: noop, info: noop },

@@ -208,10 +208,7 @@
 // v50 → v51: write-path hardening, patients (PR B) — admit / edit / discharge
 // / restore / delete are tracked, proven by the server and idempotent per
 // form. app.js changed; activate evicts v50.
-// v51 → v52: write-path hardening, leads (PR C) — lead writes proven and
-// idempotent per form, the meeting-report page carries a submission key.
-// app.js and meeting-report.js changed; activate evicts v51.
-var CACHE_VERSION = 'v52';
+var CACHE_VERSION = 'v51';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

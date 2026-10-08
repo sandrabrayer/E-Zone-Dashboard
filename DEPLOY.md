@@ -180,11 +180,6 @@ the minute between them an admission may report «השמירה לא אושרה»
 older Apps Script answers without `proven` — retrying from the same form is
 safe (same id, no duplicate). SW `CACHE_VERSION` v50 → **v51**.
 
-**08/10/2026 — `CHANGELOG-write-path-hardening.md` (PR C, leads):** no
-manual step and no column. The meeting-report idempotency keys live in the
-Apps Script script cache (6 h, the saved answer only — no report text). SW
-`CACHE_VERSION` v51 → **v52**.
-
 ## «בקרת גבייה» — Ortal's tab (October 4, 2026)
 
 `CHANGELOG-billing-control-tab.md`. **No env var, no Script Property, no

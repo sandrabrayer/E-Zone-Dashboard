@@ -42,11 +42,9 @@ function loadApp() {
        * time) — proves the mark-seen write carries the WHOLE row. */
       stubSaveAll(fail) {
         const calls = [];
-        saveAll = async (opts) => {
+        saveAll = async () => {
           calls.push(JSON.parse(JSON.stringify(state.leads)));
           if (fail) throw new Error('save failed');
-          // Answers like saveAll_: proves the rows asked about (CHANGELOG-write-path-hardening.md).
-          return { ok: true, proven: (opts && opts.prove) || {} };
         };
         return calls;
       },

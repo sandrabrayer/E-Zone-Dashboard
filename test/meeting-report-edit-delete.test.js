@@ -50,11 +50,10 @@ function loadApp() {
        * flagging leadIds (a raced manager resubmit/delete). */
       stubSaveAll(fail, conflicts) {
         const calls = [];
-        saveAll = async (opts) => {
+        saveAll = async () => {
           calls.push(JSON.parse(JSON.stringify(state.leads)));
           if (fail) throw new Error('save failed');
-          // Answers like saveAll_: proves the rows asked about (CHANGELOG-write-path-hardening.md).
-          return { ok: true, written: {}, reportConflicts: conflicts || [], proven: (opts && opts.prove) || {} };
+          return { ok: true, written: {}, reportConflicts: conflicts || [] };
         };
         return calls;
       },
@@ -64,8 +63,7 @@ function loadApp() {
         apiPost = async (body) => {
           calls.push(JSON.parse(JSON.stringify(body)));
           if (fail) throw new Error('action failed');
-          // deleteMeetingReport_ names the lead it cleared (R3 proof).
-          return { ok: true, deleted: { leadId: body.leadId } };
+          return { ok: true };
         };
         return calls;
       },
