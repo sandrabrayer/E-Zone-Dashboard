@@ -75,8 +75,31 @@ function world(opts) {
     o.funders.forEach((f) => S.Funders.appendRow(fcols.map((c) => (f[c] === undefined ? '' : f[c]))));
   }
   const base = { id: 'pay1', patientId: 'arfoni::מטופל::2026-09-01', patientName: 'מטופל', houseId: 'arfoni', dueDate: '2026-09-07', amount: 30000, amountPaid: 0, balance: 30000, status: 'unpaid' };
-  const save = (payment, who) => plain(g.post(Object.assign({ action: 'savePayment', payment }, (who || VERED)())));
   const row = () => g.sheetRows('Payments', 'PAYMENT_COLUMNS')[0];
+  /* Phase 4 item H (CHANGELOG-billing-control-tab.md): the HTTP save path no
+   * longer writes MONEY (amountPaid / status) — money arrives only through
+   * «דווח תשלום». These PR 1 tests are about the report COLUMNS on that path,
+   * so when a payload moves the money, the money is put in place first the
+   * way legacy data already sits on the sheet (a direct, editor-side
+   * upsertPayment_), and the HTTP save then carries the same figures. The
+   * refusal itself is tested in test/billing-control-tab.test.js. */
+  const moneyFirst = (payment, who) => {
+    const p = payment || {};
+    if (g.sandbox.isVoidStatus_(p.status)) return;
+    const cur = row();
+    const paidNow = cur ? Number(cur.amountPaid) || 0 : 0;
+    const statusNow = g.sandbox.paymentStatus_(cur ? cur.status : 'unpaid');
+    const moves = (p.amountPaid !== undefined && Number(p.amountPaid) !== paidNow) ||
+      (p.status !== undefined && g.sandbox.paymentStatus_(p.status) !== statusNow);
+    if (!moves) return;
+    const m = {};
+    Object.keys(p).forEach((k) => { if (REPORT_COLUMNS.indexOf(k) < 0) m[k] = p[k]; });
+    g.sandbox.upsertPayment_(JSON.parse(JSON.stringify(m)), (who || VERED)().user);
+  };
+  const save = (payment, who) => {
+    moneyFirst(payment, who);
+    return plain(g.post(Object.assign({ action: 'savePayment', payment }, (who || VERED)())));
+  };
   const audits = (action) => g.sheetRows('AuditLog', 'AUDIT_LOG_COLUMNS').filter((r) => !action || r.action === action);
   const snapshot = () => JSON.stringify(Object.keys(S).sort().map((k) => [k, S[k].grid]));
   return { g, S, base, save, row, audits, snapshot };
@@ -100,8 +123,10 @@ test('columns: the eleven report columns are APPENDED; the original 24 do not mo
   const cols = arr(g.run('PAYMENT_COLUMNS'));
   assert.deepEqual(cols.slice(0, 24), ORIGINAL_24, 'position IS the data contract');
   assert.deepEqual(cols.slice(24, 35), REPORT_COLUMNS);
-  // PR 2 (CHANGELOG-payment-report-form.md) appended one more after them.
-  assert.deepEqual(cols.slice(35), ['legacyAmountPaid']);
+  // PR 2 (CHANGELOG-payment-report-form.md) appended one more after them,
+  // then the invoice pair (CHANGELOG-payment-invoice.md), then Ortal's
+  // partial amount + note (CHANGELOG-ortal-billing-access.md).
+  assert.deepEqual(cols.slice(35), ['legacyAmountPaid', 'invoiceWanted', 'invoiceTo', 'confirmedAmount', 'controlNote', 'submissionId']);
   assert.deepEqual(arr(g.run('PAYMENT_REPORT_COLUMNS')), REPORT_COLUMNS);
   for (const c of REPORT_COLUMNS) {
     assert.equal(cols.filter((x) => x === c).length, 1, c + ' appears once');
@@ -116,7 +141,7 @@ test('columns: an existing 24-column Payments sheet is extended in place — no 
   const legacy = ORIGINAL_24.map((c) => ({ id: 'old1', patientName: 'ותיק', status: 'paid', amountPaid: 100 }[c] || ''));
   S.Payments.appendRow(legacy);
   g.run('getOrCreateSheet_(PAYMENTS_SHEET, PAYMENT_COLUMNS)');
-  assert.deepEqual(S.Payments.grid[0], ORIGINAL_24.concat(REPORT_COLUMNS, ['legacyAmountPaid']));
+  assert.deepEqual(S.Payments.grid[0], ORIGINAL_24.concat(REPORT_COLUMNS, ['legacyAmountPaid', 'invoiceWanted', 'invoiceTo', 'confirmedAmount', 'controlNote', 'submissionId']));
   assert.deepEqual(S.Payments.grid[1].slice(0, 24), legacy, 'the legacy row is untouched');
 });
 
@@ -206,7 +231,8 @@ test('rules: every case gives the expected field + code — in Code.gs AND lib, 
 test('rules: the shared lists are the same on both sides, and exactly Sandra\'s', () => {
   const { g } = world();
   assert.deepEqual(arr(g.run('PAYMENT_METHODS')), ['העברה בנקאית', 'אשראי', "צ'ק", 'מזומן', 'ביט', 'אחר']);
-  assert.deepEqual(arr(g.run('PAYMENT_FUNDERS')), ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי']);
+  // 'פרו-בונו' appended LAST (append-only; CHANGELOG-funder-probono.md).
+  assert.deepEqual(arr(g.run('PAYMENT_FUNDERS')), ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי', 'פרו-בונו']);
   assert.deepEqual(arr(g.run('PAYMENT_METHODS')), arr(rules.PAYMENT_METHODS));
   assert.deepEqual(arr(g.run('PAYMENT_FUNDERS')), arr(rules.PAYMENT_FUNDERS));
   assert.deepEqual(arr(g.run('REFERENCE_REQUIRED_METHODS')), arr(rules.REFERENCE_REQUIRED_METHODS));
@@ -252,6 +278,9 @@ test('save: an incomplete report is NOT refused yet (foundation) — the gaps co
 test('save: a first report naming no funder, for a patient with NO Funders row, is refused (funder_unset) — never written as פרטי', () => {
   const { base, save, row, snapshot } = world();
   save(base);
+  /* Phase 4 item H: the money is put in place first (as legacy data sits on
+   * the sheet — see moneyFirst), so the snapshot below isolates the report. */
+  save(Object.assign({}, base, { status: REPORT.status, amountPaid: REPORT.amountPaid, balance: REPORT.balance }));
   const before = snapshot();
   const r = save(Object.assign({}, base, REPORT));
   assert.deepEqual([r.ok, r.error], [false, 'funder_unset']);
@@ -592,8 +621,9 @@ test('scope: no new HTTP action, no new role list entry, and the accounting feed
   const known = arr(g.run('PROXY_KNOWN_ACTIONS'));
   /* PR 2 (CHANGELOG-payment-report-form.md) added exactly two, both behind
    * PROXY_SECRET and the finance gate: reportPayment and appendFunder.
-   * Still no confirm action (Phase 4). */
-  const pr2 = ['reportPayment', 'appendFunder'];
+   * Phase 4 (CHANGELOG-billing-control-tab.md) added the confirm action and
+   * the queue read, behind PROXY_SECRET and the billingControl gate. */
+  const pr2 = ['reportPayment', 'appendFunder', 'confirmPayment', 'billingControlQueue'];
   assert.ok(pr2.every((a) => known.includes(a)), known.join(','));
   assert.ok(!known.filter((a) => pr2.indexOf(a) < 0).some((a) => /funder|confirm|paymentReport/i.test(a)), known.join(','));
   assert.ok(!arr(g.run('APPROVER_ACTIONS')).includes('confirmPayment'));

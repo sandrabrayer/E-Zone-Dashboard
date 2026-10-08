@@ -315,6 +315,14 @@ const state = {
    * known yet (before /api/me). From /api/me — display only; the server
    * refuses the data itself. */
   finance: null,
+  /* «בקרת גבייה» (Phase 4), from /api/me — display only; server.js and
+   * Code.gs refuse the data and the decision themselves.
+   *   view            'full' | 'restricted' | 'controller' | null (unknown)
+   *   billingControl  may open the «בקרת גבייה» tab (Vered, Sandra, Ortal)
+   *   canConfirm      may confirm / flag a receipt (Ortal, Sandra) */
+  view: null,
+  billingControl: null,
+  canConfirm: false,
   payments: [],
   /* Phase 3 PR 2: one row per money received (getPayments `receipts`, each
    * with the cycleId it pays for) and the Funders tab (getPayments
@@ -441,7 +449,10 @@ async function apiGet(params) {
   const qs = new URLSearchParams(params).toString();
   const url = '/api/sheets?' + qs;
   console.log('[E-ZONE] GET →', new URL(url, location.origin).href);
-  const res = await fetch(url);
+  // cache: 'no-store' — a read is never answered from any HTTP cache (the
+  // server already sends no-store and sw.js never caches /api/; this makes
+  // the browser side explicit too). CHANGELOG-payment-report-persistence.md.
+  const res = await fetch(url, { cache: 'no-store' });
   if (res.status === 401) { showPinScreen(); throw new Error('unauthorized'); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) {
@@ -768,6 +779,58 @@ function maybeResyncPreservedPatients(res) {
  * listener) skips reloading while a write is mid-air. */
 let _savesInFlight = 0;
 
+/* ===== Money-state freshness (CHANGELOG-payment-report-persistence.md) =====
+ * The bug: a getPayments read that STARTED before a payment write landed
+ * (loadAll from the visibility resync, a second tab action…) answered AFTER
+ * the write's echo had been applied and overwrote it with the sheet as it
+ * was before — the row Vered had just reported read «לא שולם» again.
+ *
+ * The guard: every confirmed (or in-flight) payment write bumps
+ * _paymentsWriteSeq; every getPayments read takes a ticket when it STARTS.
+ * A read is applied only if no write happened since its ticket and no
+ * newer read was applied already — otherwise it is discarded and the
+ * current (newer, confirmed) money state stays on screen. */
+let _paymentsWriteSeq = 0;
+let _paymentsReadSeq = 0;
+let _paymentsAppliedReadSeq = 0;
+/* The post-save reconcile in flight (tests await it). */
+let _paymentsReconcile = null;
+const PAYMENTS_LOAD_FAILED_HE = 'טעינת התשלומים נכשלה — הסטטוסים המוצגים אינם מעודכנים, רעננו את הדף';
+
+function beginPaymentsRead() {
+  _paymentsReadSeq++;
+  return { read: _paymentsReadSeq, write: _paymentsWriteSeq };
+}
+function notePaymentsWrite() {
+  _paymentsWriteSeq++;
+}
+function paymentsReadIsCurrent(ticket) {
+  return !!ticket && ticket.write === _paymentsWriteSeq && ticket.read > _paymentsAppliedReadSeq;
+}
+/* A getPayments answer → the three state lists. Throws on a malformed row,
+ * BEFORE anything is assigned, so a bad answer never half-replaces state. */
+function paymentsStateFrom(pr) {
+  return {
+    payments: (Array.isArray(pr && pr.payments) ? pr.payments : []).map(normalizePayment).filter(p => p.id),
+    receipts: (Array.isArray(pr && pr.receipts) ? pr.receipts : []).map(normalizeReceipt).filter(r => r.id),
+    funders: (Array.isArray(pr && pr.funders) ? pr.funders : []).map(normalizeFunderRow).filter(f => f.patientId),
+  };
+}
+/* Apply a getPayments answer read under `ticket` — or discard it as stale.
+ * → true when applied. */
+function applyPaymentsRead(ticket, pr) {
+  const next = paymentsStateFrom(pr);
+  if (!paymentsReadIsCurrent(ticket)) {
+    console.warn('[E-ZONE] getPayments answer discarded — a payment write landed after it started');
+    return false;
+  }
+  state.payments = next.payments;
+  state.receipts = next.receipts;
+  state.funders = next.funders;
+  _paymentsAppliedReadSeq = ticket.read;
+  return true;
+}
+
 /* Save full state to Sheets. Serialized so overlapping calls don't interleave. */
 function saveAll() {
   if (state.mode !== 'edit') return Promise.resolve();
@@ -1068,13 +1131,29 @@ function applySessionInfo(info) {
   const roleChanged = state.deleter !== (i.deleter === true) || state.approver !== (i.approver === true);
   state.deleter = i.deleter === true;
   state.approver = i.approver === true;
+  const confirmChanged = state.canConfirm !== (i.canConfirm === true);
+  state.canConfirm = i.canConfirm === true;
   renderWhoami(i.user || '');
   const adminBtn = document.getElementById('pin-admin-open');
   if (adminBtn) adminBtn.classList.toggle('hidden', i.approver !== true);
   applyRoleView();
+  // «בקרת גבייה» (Phase 4): Ortal's controller session sees that tab — and,
+  // since CHANGELOG-ortal-verification-status.md, «גבייה» read-only when the
+  // server says billingRead.
+  if (i.view === 'controller') {
+    const readChanged = state.billingRead !== (i.billingRead === true);
+    state.billingRead = i.billingRead === true;
+    applyControllerView();
+    if (readChanged && state.billingRead) loadBillingRead().catch(() => { /* shown in the tab */ });
+    return;
+  }
+  if (_controllerApplied) { location.reload(); return; }
+  // The tab itself: only an explicit false removes it (Shiran, Yael).
+  applyBillingControlCap(i.billingControl !== false && i.finance !== false);
   // Restricted only on an explicit false (the server always sends a
   // boolean); an /api/me without the field keeps the full view as before.
   applyView(i.finance !== false);
+  if (confirmChanged && state.currentScreen === 'billing-control') renderBillingControl();
   // A render that ran before /api/me answered drew no role-gated control;
   // redraw once the roles (and the view) are known.
   if (roleChanged && typeof renderAll === 'function') { try { renderAll(); } catch (_) { /* no-op */ } }
@@ -1184,6 +1263,11 @@ function initPin() {
   initPayoutForecastControls();
   initDebtAgingControls();
   initFunderControls();
+  initBillingControlControls();
+  // «בקרת גבייה» (Phase 4): the server served <body class="view-controller">
+  // to Ortal's session — every other tab goes BEFORE the first load, and
+  // loadAll never asks for getData.
+  if (document.body && document.body.classList && document.body.classList.contains('view-controller')) applyControllerView();
   // Restricted view: the server served <body class="view-restricted"> to a
   // session without `finance`, so the view is known BEFORE the first load —
   // the money tabs go now and loadAll never asks for getPayments / getCredits.
@@ -1192,7 +1276,10 @@ function initPin() {
 }
 
 function enterApp() {
-  state.mode = 'edit';   // single mode: an authenticated user is an editor
+  // single mode: an authenticated user is an editor — except the controller
+  // view (Ortal), which only READS «גבייה» (CHANGELOG-ortal-verification-status.md):
+  // 'view' leaves out every edit / report / void control the tab draws.
+  state.mode = controllerView() ? 'view' : 'edit';
   revealApp();
   loadAll();             // getData rides the cookie; a 401 flips to the PIN screen
   checkSessionUser();    // fire-and-forget: whoami line + the role view
@@ -1345,7 +1432,7 @@ async function copyPinAdminLine() {
 /* Tab / screen order. Mirrors the .tabs nav in index.html exactly (each id has a
  * matching <section id="screen-<id>">). `meetings` is an empty placeholder shell
  * (see index.html #screen-meetings); `retention` is intentionally last. */
-const SCREENS = ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention'];
+const SCREENS = ['dashboard', 'leads', 'patients', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'billing-control', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention'];
 
 /* ===== Restricted view (Sandra, 2026-10-03) =====
  *
@@ -1363,16 +1450,108 @@ function financeView() {
   return state.finance !== false;
 }
 
-/* The screens a session may open, in tab order. Pure. */
-function allowedScreens(finance) {
-  return SCREENS.filter(s => finance !== false || FINANCE_SCREENS.indexOf(s) < 0);
+/* «בקרת גבייה» (Phase 4): the tab Vered, Sandra and Ortal see; for Ortal
+ * (the controller view) it is the ONLY screen. */
+const BILLING_CONTROL_SCREEN = 'billing-control';
+
+/* «גבייה» read-only for the controller view (Ortal) when the server allows
+ * it (/api/me billingRead, or <body class="view-billing-read">). */
+const BILLING_SCREEN = 'billing';
+
+/* The screens a session may open, in tab order. Pure.
+ *   view 'controller' → «בקרת גבייה» (first) and, with billingRead, «גבייה»;
+ *   finance false     → no money tab and no «בקרת גבייה». */
+function allowedScreens(finance, view, billingRead) {
+  if (view === 'controller') return billingRead === true ? [BILLING_CONTROL_SCREEN, BILLING_SCREEN] : [BILLING_CONTROL_SCREEN];
+  return SCREENS.filter(s => finance !== false || (FINANCE_SCREENS.indexOf(s) < 0 && s !== BILLING_CONTROL_SCREEN));
 }
 
 /* `requested` when it is a screen the session may open, else the first
  * allowed one (the dashboard). Pure. */
-function resolveScreen(requested, finance) {
-  const allowed = allowedScreens(finance);
+function resolveScreen(requested, finance, view, billingRead) {
+  const allowed = allowedScreens(finance, view, billingRead);
   return allowed.indexOf(requested) >= 0 ? requested : allowed[0];
+}
+
+/* true once the session is known to be the controller view (Ortal). */
+function controllerView() {
+  return state.view === 'controller';
+}
+
+/* true for the controller view with read access to «גבייה». */
+function billingReadView() {
+  return controllerView() && state.billingRead === true;
+}
+
+/* Whether the «גבייה» screen renders: the finance view, or Ortal's read-only
+ * view. Every write control in it also needs state.mode === 'edit', which
+ * the controller view never is. */
+function billingTabView() {
+  return financeView() || billingReadView();
+}
+
+let _controllerApplied = false;
+let _billingControlRemoved = false;
+
+/* Remove the «בקרת גבייה» tab (and its screen) for a session without the
+ * capability (Shiran, Yael). Display only — the server answers 403. */
+function applyBillingControlCap(allowed) {
+  state.billingControl = allowed === true;
+  if (allowed === true) {
+    if (_billingControlRemoved) location.reload();
+    return;
+  }
+  const nodes = document.querySelectorAll('[data-billing-control]');
+  Array.prototype.forEach.call(nodes, el => { if (el && el.remove) el.remove(); });
+  _billingControlRemoved = true;
+}
+
+/* The controller view (Ortal): every tab button and every screen except
+ * «בקרת גבייה» is REMOVED from the DOM (not just hidden), together with every
+ * billing widget; the data already in memory is dropped; the tab opens. The
+ * server refuses every other action and route (403) either way. Idempotent. */
+function applyControllerView() {
+  const first = state.view !== 'controller';
+  state.view = 'controller';
+  state.finance = false;
+  state.billingControl = true;
+  state.mode = 'view';
+  if (document.body && document.body.classList) {
+    document.body.classList.add('view-controller');
+    document.body.classList.remove('view-restricted');
+    // Served by the server for Ortal's billingRead session; /api/me decides after.
+    if (state.billingRead === undefined) state.billingRead = document.body.classList.contains('view-billing-read');
+    document.body.classList.toggle('view-billing-read', state.billingRead === true);
+  }
+  const read = state.billingRead === true;
+  // A page drawn without «גבייה» (served before billingRead) gets it back by
+  // a reload — the server then serves <body class="view-billing-read">.
+  if (!first && read && !document.getElementById('screen-' + BILLING_SCREEN)) { location.reload(); return; }
+  const screens = allowedScreens(false, 'controller', read);
+  const keepScreen = name => screens.indexOf(name) >= 0;
+  // The «גבייה» screen keeps its own [data-finance] children (read-only).
+  const inKeptScreen = el => !!(el && el.closest && screens.some(n => el.closest('#screen-' + n)));
+  const keep = el => el && (keepScreen(el.getAttribute('data-screen')) || keepScreen(String(el.id || '').replace(/^screen-/, '')) || inKeptScreen(el));
+  const drop = el => { if (el && el.remove && !keep(el)) el.remove(); };
+  Array.prototype.forEach.call(document.querySelectorAll('.tabs .tab'), drop);
+  Array.prototype.forEach.call(document.querySelectorAll('section.screen'), drop);
+  Array.prototype.forEach.call(document.querySelectorAll('[data-finance]'), drop);
+  // «השלמת גורם מממן» is data entry — never in the read-only view.
+  const ff = document.getElementById('funder-fill');
+  if (ff && ff.remove) ff.remove();
+  _controllerApplied = true;
+  _financeRemoved = true;
+  if (first) {
+    state.leads = [];
+    state.patients = [];
+    state.payments = [];
+    state.credits = [];
+    state.billingOverrides = [];
+    state.receipts = [];
+    state.funders = [];
+  }
+  if (first || !keepScreen(state.currentScreen)) showScreen(BILLING_CONTROL_SCREEN);
+  renderBillingControl();
 }
 
 /* The screen named by a deep link (#billing, #screen-billing), or ''. */
@@ -1399,14 +1578,17 @@ let _financeRemoved = false;
  * billing data already in memory, and move off a finance screen. A later
  * full-view login on the same page reloads to get the tabs back. */
 function applyView(finance) {
+  if (controllerView()) return; // the controller view is final for this page
   const full = finance === true;
   if (full && _financeRemoved) { location.reload(); return; }
   state.finance = full;
+  if (!state.view) state.view = full ? 'full' : 'restricted';
   if (document.body && document.body.classList) document.body.classList.toggle('view-restricted', !full);
   if (!full) {
     const nodes = document.querySelectorAll('[data-finance]');
     Array.prototype.forEach.call(nodes, el => { if (el && el.remove) el.remove(); });
     _financeRemoved = true;
+    applyBillingControlCap(false);
     state.payments = [];
     state.credits = [];
     state.billingOverrides = [];
@@ -1414,18 +1596,21 @@ function applyView(finance) {
     state.funders = [];
   }
   const want = screenFromHash(location.hash) || state.currentScreen;
-  const target = resolveScreen(want, full);
+  const target = resolveScreen(want, full, state.view);
   if (target !== state.currentScreen || want !== state.currentScreen) {
     showScreen(target);
     renderAll();
+    // The digest's «ממתינים לאימות» link opens #billing-control directly.
+    if (target === BILLING_CONTROL_SCREEN && full) loadBillingControl().catch(() => { /* shown in the tab */ });
   }
 }
 
 function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {
     btn.onclick = () => {
-      showScreen(resolveScreen(btn.dataset.screen, state.finance));
+      showScreen(resolveScreen(btn.dataset.screen, state.finance, state.view, state.billingRead === true));
       renderAll();
+      if (state.currentScreen === BILLING_CONTROL_SCREEN) loadBillingControl().catch(() => { /* shown in the tab */ });
     };
   });
 
@@ -1433,6 +1618,7 @@ function initTabs() {
     state.leadSearch = String(e.target.value || '').trim().toLowerCase();
     renderKanban();
   });
+  initPatientsTabFilters();
   document.getElementById('patient-search').oninput = e => {
     state.patientSearch = e.target.value.trim().toLowerCase();
     renderPatients();
@@ -1474,7 +1660,11 @@ function initTabs() {
     });
   }
   document.getElementById('add-lead-btn').onclick = openAddLeadModal;
-  document.getElementById('add-patient-btn').onclick = openDirectAddPatientModal;
+  document.getElementById('add-patient-btn').onclick = () => openDirectAddPatientModal();
+  /* «🟢 קליטת מטופל חדש» — the top-level intake entry on the dashboard. Same
+   * direct-add flow, intake mode (see openDirectAddPatientModal). */
+  const intakeBtn = document.getElementById('intake-patient-btn');
+  if (intakeBtn) intakeBtn.onclick = () => openDirectAddPatientModal({ intake: true });
 
   /* Overdue strip (dashboard) → navigate to the גבייה tab. Invoking the tab
    * button's own onclick runs the exact switch logic wired above (active
@@ -1538,11 +1728,74 @@ document.addEventListener('visibilitychange', () => {
   loadAll().catch(e => console.warn('[E-ZONE] visibility resync failed:', e.message));
 });
 
+/* Milliseconds for the load timing — performance.now() where the browser has
+ * it, Date.now() otherwise. */
+function perfNow() {
+  return (typeof performance !== 'undefined' && performance && typeof performance.now === 'function')
+    ? performance.now() : Date.now();
+}
+
+/* Start one read now and settle it into { ok, value | error, ms } — it never
+ * rejects, so a read nobody has awaited yet can't become an unhandled
+ * rejection, and `ms` is that request's own round trip. */
+function startTimedRead(params) {
+  const t0 = perfNow();
+  return apiGet(params).then(
+    value => ({ ok: true, value, ms: Math.round(perfNow() - t0) }),
+    error => ({ ok: false, error, ms: Math.round(perfNow() - t0) })
+  );
+}
+
+/* The controller view's «גבייה» data (CHANGELOG-ortal-verification-status.md):
+ * getData (the server cuts it to patients + billingOverrides), getPayments
+ * and getCredits — the same normalizers as loadAll. Fail-soft per read, like
+ * loadAll; nothing else is loaded. */
+async function loadBillingRead() {
+  if (!billingReadView()) return;
+  const paymentsTicket = beginPaymentsRead();
+  const [d, p, c] = await Promise.all([
+    startTimedRead({ action: 'getData' }), startTimedRead({ action: 'getPayments' }), startTimedRead({ action: 'getCredits' }),
+  ]);
+  if (d.ok && d.value && typeof d.value === 'object') {
+    state.patients = parsePatients(d.value.patients);
+    state.billingOverrides = (Array.isArray(d.value.billingOverrides) ? d.value.billingOverrides : [])
+      .map(normalizeBillingOverride).filter(o => o.patientId && o.month);
+  }
+  // The Funders rows ride along: pro-bono cycles are not debt (isProbonoOn).
+  // Applied only if no payment write landed since the read started.
+  if (p.ok && p.value) applyPaymentsRead(paymentsTicket, p.value);
+  else if (!p.ok) showError(PAYMENTS_LOAD_FAILED_HE);
+  if (c.ok && c.value) state.credits = (Array.isArray(c.value.credits) ? c.value.credits : []).map(normalizeCredit).filter(x => x.id);
+  if (!d.ok) showError('טעינת «גבייה» נכשלה — ' + ((d.error && d.error.message) || 'שגיאה'));
+  renderBilling();
+  renderCreditsPayouts();
+}
+
 async function loadAll() {
   _lastLoadAllAt = Date.now();
+  // «בקרת גבייה» (Phase 4): the controller view loads its queue and — with
+  // read access to «גבייה» — the tab's reads (loadBillingRead). No lead.
+  if (controllerView()) {
+    return Promise.all([loadBillingControl(), billingReadView() ? loadBillingRead() : null]).then(() => undefined);
+  }
   setLoading(true);
+  const t0 = perfNow();
+  // The three reads are independent: start them TOGETHER, so the page waits
+  // for the slowest one instead of the sum of all three. getPayments and
+  // getCredits stay fail-soft exactly as before (see below); a getData
+  // failure still fails the whole load. A session without `finance`
+  // (restricted view) never asks for the two money reads.
+  const finance      = financeView();
+  const dataRead     = startTimedRead({ action: 'getData' });
+  const paymentsTicket = finance ? beginPaymentsRead() : null;
+  const paymentsRead = finance ? startTimedRead({ action: 'getPayments' }) : null;
+  const creditsRead  = finance ? startTimedRead({ action: 'getCredits' }) : null;
+  const timing = {};
   try {
-    let data = await apiGet({ action: 'getData' });
+    const d = await dataRead;
+    timing.getData = d.ms;
+    if (!d.ok) throw d.error;
+    let data = d.value;
 
     console.log('[E-ZONE] raw response type:', typeof data);
     if (data && typeof data === 'object') {
@@ -1635,42 +1888,46 @@ async function loadAll() {
       .filter(o => o.patientId && o.month);
     console.log('[E-ZONE] billingOverrides loaded:', state.billingOverrides.length);
 
-    // Payments live on their own sheet and their own action. A fresh
-    // install has no Payments sheet yet — treat any failure as "empty
-    // list" so the rest of the app still loads.
-    if (!financeView()) {
+    // Payments live on their own sheet and their own action. A failed read
+    // KEEPS the money state already on screen and says so — it used to
+    // wipe it to [] silently, and every row then read «לא שולם»
+    // (CHANGELOG-payment-report-persistence.md). The rest of the app still
+    // loads either way.
+    if (!financeView() || !paymentsRead) {
       state.payments = [];
       state.credits = [];
       state.receipts = [];
       state.funders = [];
     } else try {
-      const pr = await apiGet({ action: 'getPayments' });
-      const raw = Array.isArray(pr && pr.payments) ? pr.payments : [];
-      state.payments = raw.map(normalizePayment).filter(p => p.id);
-      /* The cycles above already carry the money their receipts add up to
-       * (the server derives it); the receipts themselves are listed under
-       * each cycle. An older backend sends neither key — empty lists. */
-      state.receipts = (Array.isArray(pr && pr.receipts) ? pr.receipts : []).map(normalizeReceipt).filter(r => r.id);
-      state.funders = (Array.isArray(pr && pr.funders) ? pr.funders : []).map(normalizeFunderRow).filter(f => f.patientId);
+      const got = await paymentsRead;
+      timing.getPayments = got.ms;
+      if (!got.ok) throw got.error;
+      /* The cycles carry the money their receipts add up to (the server
+       * derives it); the receipts themselves are listed under each cycle.
+       * Applied only if no payment write landed since the read started. */
+      applyPaymentsRead(paymentsTicket, got.value);
       console.log('[E-ZONE] getPayments →', state.payments.length, 'records,', state.receipts.length, 'receipts');
     } catch (err) {
-      console.warn('[E-ZONE] getPayments failed, assuming empty:', err.message);
-      state.payments = [];
-      state.receipts = [];
-      state.funders = [];
+      console.warn('[E-ZONE] getPayments failed — keeping the money state on screen:', err && err.message);
+      if (err && err.message === 'unauthorized') throw err;
+      showError(PAYMENTS_LOAD_FAILED_HE + (err && err.message ? ' (' + err.message + ')' : ''));
     }
 
     // Credits ledger — own sheet, own action (same fail-soft rule as payments:
     // an older backend without getCredits must not block the app).
-    if (financeView()) try {
-      const cr = await apiGet({ action: 'getCredits' });
+    if (financeView() && creditsRead) try {
+      const got = await creditsRead;
+      timing.getCredits = got.ms;
+      if (!got.ok) throw got.error;
+      const cr = got.value;
       const rawCredits = Array.isArray(cr && cr.credits) ? cr.credits : [];
       state.credits = rawCredits.map(normalizeCredit).filter(c => c.id);
       console.log('[E-ZONE] getCredits →', state.credits.length, 'records');
     } catch (err) {
-      console.warn('[E-ZONE] getCredits failed, assuming empty:', err.message);
+      console.warn('[E-ZONE] getCredits failed, assuming empty:', err && err.message);
       state.credits = [];
     }
+    timing.fetched = Math.round(perfNow() - t0);
 
     // ===== Patient-load diagnosis =====
     // Log the exact rawPatients as received from the server, its shape,
@@ -1723,6 +1980,8 @@ async function loadAll() {
      * patient is also checked against the audit sheet in the same pass. */
     const healed   = healClobberedDischarges();
     console.log('[E-ZONE] after promote — leads:', state.leads.length, 'patients:', state.patients.length, '(+', promoted.length, 'promoted,', retired.length, 'retired,', healed.length, 'healed)');
+    // The heal moves patients out of the house tab — never silently.
+    if (healed.length > 0) showToast(healedToastMessage(healed));
     renderAll();
 
     if ((promoted.length > 0 || retired.length > 0 || healed.length > 0) && state.mode === 'edit') {
@@ -1742,6 +2001,15 @@ async function loadAll() {
     showError('טעינת נתונים מהגיליון נכשלה — ' + e.message);
   } finally {
     setLoading(false);
+    // One line per load, console only: each read's own round trip (they run
+    // in parallel, so the wait is the slowest, not the sum), all three
+    // fetched, and the whole load including parse + render. Milliseconds only.
+    timing.total = Math.round(perfNow() - t0);
+    console.log('[E-ZONE][perf] loadAll ' + timing.total + 'ms | ' +
+      ['getData', 'getPayments', 'getCredits', 'fetched']
+        .filter(k => timing[k] !== undefined)
+        .map(k => k + '=' + timing[k])
+        .join(' '));
   }
 }
 
@@ -1785,7 +2053,7 @@ function promoteEnteredLeads() {
   const dischargedByFromLead = new Set();
   const dischargedByNameHouse = new Set();
   (state.dischargedPatients || []).forEach(d => {
-    if (d.restored === 'TRUE' || d.restored === true) return;
+    if (!dischargeRowOpen(d)) return;
     if (d.fromLead) dischargedByFromLead.add(String(d.fromLead));
     if (d.name && d.houseId) dischargedByNameHouse.add(`${d.houseId}::${String(d.name).trim()}`);
   });
@@ -1909,7 +2177,7 @@ function healClobberedDischarges() {
   const healed = [];
   const audits = Array.isArray(state.dischargedPatients) ? state.dischargedPatients : [];
   audits.forEach(d => {
-    if (!d || d.restored === 'TRUE' || d.restored === true) return;
+    if (!dischargeRowOpen(d)) return;
     const idx = matchActivePatientIndex(state.patients, d);
     if (idx < 0) return;
     const p = state.patients[idx];
@@ -2601,7 +2869,45 @@ function normalizeDischargedPatient(p) {
    * (recorded before the column existed) stay blank — priorStatusFromAudit
    * falls back to 'active' for them. */
   base.prior_status   = pickField(p, ['prior_status', 'priorStatus', 'סטטוס קודם']) || '';
+  /* Coordinators discharge audit (appended columns, 2026-10-04). Carried so
+   * the panel can list them AND so a restore — which upserts this whole row
+   * back — never blanks them. Empty on the Dashboard's own discharges. */
+  base.dischargeSource = pickField(p, ['dischargeSource']) || '';
+  base.dischargedBy    = pickField(p, ['dischargedBy']) || '';
+  base.dischargeReason = pickField(p, ['dischargeReason']) || '';
+  base.patientId       = pickField(p, ['patientId']) || '';
+  /* Duplicate-discharge soft delete (appended columns, 2026-10-07). Carried
+   * so every open-row filter can skip a deleted row (dischargeRowOpen). */
+  base.deletedAt       = pickField(p, ['deletedAt']) || '';
+  base.deletedBy       = pickField(p, ['deletedBy']) || '';
+  base.deleteReason    = pickField(p, ['deleteReason']) || '';
   return base;
+}
+
+/* An OPEN discharge row: neither restored (restored='TRUE', or a Sheets bool)
+ * nor soft-deleted as a duplicate (deletedAt). Mirrors dischargeRowOpen_ in
+ * Code.gs. Every reader that treats a row as a live discharge uses it. Pure. */
+function dischargeRowOpen(d) {
+  return !!d && d.restored !== 'TRUE' && d.restored !== true && !String(d.deletedAt || '').trim();
+}
+
+/* The stay a discharge row belongs to: houseId + name + entry date, with the
+ * name trimmed and inner whitespace collapsed — dischargeStayKey_ in Code.gs.
+ * '' when house or name is blank. Pure. */
+function dischargeStayKey(d) {
+  if (!d) return '';
+  const houseId = String(d.houseId || '').trim();
+  const name = String(d.name || '').replace(/\s+/g, ' ').trim();
+  if (!houseId || !name) return '';
+  return houseId + '::' + name + '::' + String(d.date || '').slice(0, 10);
+}
+
+/* The OTHER open rows of `d`'s stay — what makes `d` a duplicate. Pure. */
+function openDuplicateSiblings(d, dischargedPatients) {
+  const key = dischargeStayKey(d);
+  if (!key || !dischargeRowOpen(d)) return [];
+  return (Array.isArray(dischargedPatients) ? dischargedPatients : []).filter(x =>
+    x && x !== d && x.id !== d.id && dischargeRowOpen(x) && dischargeStayKey(x) === key);
 }
 function cryptoId() {
   return 'id-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -3531,8 +3837,16 @@ function openMeetingEditModal(m) {
 }
 
 function renderAll() {
+  // The controller view: «בקרת גבייה», and «גבייה» read-only when allowed.
+  if (controllerView()) {
+    renderBillingControl();
+    if (billingReadView()) { renderBilling(); renderCreditsPayouts(); }
+    return;
+  }
   renderDashboard();
+  renderCoordinatorDischarges();
   renderKanban();
+  renderPatientsTab();
   renderMeetings();
   renderIrrelevantLeads();
   renderRemovedLeads();
@@ -3545,6 +3859,7 @@ function renderAll() {
   renderReconnect();
   renderBreakeven();
   renderGrowthGraph();
+  renderBillingControl();
   /* Backfill + persist any visit-stage lead whose meetingWith default was only
    * rendered, never saved. Fire-and-forget: one batched saveAll, re-entry- and
    * idempotency-guarded so it never loops or storms. */
@@ -3820,6 +4135,7 @@ function renderKanban() {
     filtered.forEach(lead => col.appendChild(buildLeadCard(lead)));
     kanban.appendChild(col);
   });
+  renderUnadmittedLeadsBadge();
 }
 
 /* Whether a lead matches the search box query `q` (already trimmed+lowercased by
@@ -3946,6 +4262,407 @@ function waitlistBadgeText(waitlistedAt, now) {
   return `ממתין ${days} ימים`;
 }
 
+/* ===== «לא נקלט כמטופל» — a paid / entering lead with no patient record =====
+ * CHANGELOG-unadmitted-lead-warning.md. Display only, computed here; nothing
+ * is written.
+ *
+ * The lead → patient match is NOT a new rule. It is reconciliationReportNow's
+ * §A rule (Code.gs recLeadPatient_), ported as is and pinned by a parity test
+ * that runs both on the same fixtures:
+ *   1. a Patients row whose fromLead is the lead's id; else
+ *   2. a Patients row whose phone (the phone of the lead it came from, as
+ *      getAdmittedRoster_ joins it) is the lead's phone; else
+ *   3. a Patients row with the same normalized name in the same house.
+ * Every Patients row counts, released ones included, exactly as in §A. */
+const UNADMITTED_AFTER_DAYS = 3;
+
+/* Code.gs normalizePhone_ + diagPhoneKey_: digits only, 972 → 0, the leading 0
+ * a number-typed cell drops put back; fewer than 9 digits is not a phone. */
+function unadmittedPhoneKey(raw) {
+  let d = String(raw == null ? '' : raw).replace(/[^\d]/g, '');
+  if (d.indexOf('972') === 0) d = '0' + d.slice(3);
+  if (/^[1-9]\d{7,8}$/.test(d)) d = '0' + d;
+  return /^0\d{8,9}$/.test(d) ? d : '';
+}
+
+/* Code.gs diagClientHouseId_: an id, a Hebrew house name, or an id in another
+ * case → the id; anything else is kept as written (trimmed). */
+function unadmittedHouseId(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return '';
+  const h = HOUSES.find(x => x.id === s) || HOUSES.find(x => x.name === s)
+    || HOUSES.find(x => x.id.toLowerCase() === s.toLowerCase());
+  return h ? h.id : s;
+}
+
+/* The Patients row a lead already has → { patient, via, ambiguous } or null.
+ * `ambiguous` = the tier that decided found more than one row. `allLeads` is
+ * every lead (board, closed and removed), for the phone join. Pure. */
+function unadmittedLeadPatient(lead, patients, allLeads) {
+  const pats = Array.isArray(patients) ? patients : [];
+  const text = v => String(v == null ? '' : v).trim();
+  const found = (list, via) => ({ patient: list[0], via, ambiguous: list.length > 1 });
+  const id = text(lead && lead.id);
+  const byLead = id ? pats.filter(p => text(p && p.fromLead) === id) : [];
+  if (byLead.length) return found(byLead, 'fromLead');
+  const phone = unadmittedPhoneKey(lead && lead.phone);
+  if (phone) {
+    const leadById = {};
+    (Array.isArray(allLeads) ? allLeads : []).forEach(l => {
+      const k = text(l && l.id);
+      if (k && !(k in leadById)) leadById[k] = l;
+    });
+    const byPhone = pats.filter(p => {
+      const src = p && text(p.fromLead) ? leadById[text(p.fromLead)] : null;
+      return !!src && unadmittedPhoneKey(src.phone) === phone;
+    });
+    if (byPhone.length) return found(byPhone, 'phone');
+  }
+  const nk = normalizeNameForMatch(lead && lead.name);
+  const hid = unadmittedHouseId(lead && lead.house);
+  if (nk && hid) {
+    const byName = pats.filter(p => p && normalizeNameForMatch(p.name) === nk
+      && unadmittedHouseId(p.houseId) === hid);
+    if (byName.length) return found(byName, 'name_house');
+  }
+  return null;
+}
+
+/* Rule part 1: paid (stage בטיפול פעיל / מקדמה שולמה, an advance on the lead,
+ * or a non-void payment with money on it recorded under the lead's own
+ * house::name::entryDate) OR entering treatment (meetingOutcome «נכנסים
+ * לטיפול»). Closed, irrelevant and removed leads never qualify. Pure. */
+function unadmittedLeadEligible(lead, payments) {
+  if (!lead) return false;
+  if (lead.stage === 'irrelevant' || lead.stage === 'admitted') return false;
+  if (lead.disposition || lead.removedAt) return false;
+  const outcome = String(lead.meetingOutcome || '').trim();
+  if (outcome === 'entered' || outcome === MEETING_OUTCOME_LABELS.entered) return true;
+  if (lead.stage === 'paid') return true;
+  if ((Number(lead.advance) || 0) > 0) return true;
+  const key = patientMatchKey(lead.house, lead.name, lead.entryDate);
+  return (Array.isArray(payments) ? payments : []).some(pay => pay && !isVoidPayment(pay)
+    && (Number(pay.amountPaid) || 0) > 0 && patientMatchKeyFromId(pay.patientId) === key);
+}
+
+/* Logged once per lead per page load, so a re-render never repeats it. */
+const _unadmittedAmbiguousLogged = new Set();
+
+/* Whole days since the lead's entryDate when it is flagged, else null.
+ * Flagged = eligible (above) AND todayIso (Asia/Jerusalem, 'YYYY-MM-DD') is
+ * UNADMITTED_AFTER_DAYS or more after entryDate AND no Patients row matches.
+ * No entryDate, unloaded patients, or an ambiguous match → null (never fail
+ * open). Pure apart from the one-time console line. */
+function unadmittedLeadDays(lead, patients, payments, todayIso, allLeads) {
+  if (!lead || !Array.isArray(patients)) return null;
+  const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+  const entry = DATE_RE.exec(isoDate(lead.entryDate || ''));
+  const today = DATE_RE.exec(String(todayIso || ''));
+  if (!entry || !today) return null;
+  if (!unadmittedLeadEligible(lead, payments)) return null;
+  const days = Math.round((Date.UTC(+today[1], +today[2] - 1, +today[3]) -
+                           Date.UTC(+entry[1], +entry[2] - 1, +entry[3])) / 86400000);
+  if (days < UNADMITTED_AFTER_DAYS) return null;
+  const match = unadmittedLeadPatient(lead, patients, allLeads || [lead]);
+  if (match) {
+    if (match.ambiguous && !_unadmittedAmbiguousLogged.has(String(lead.id))) {
+      _unadmittedAmbiguousLogged.add(String(lead.id));
+      console.warn('[E-ZONE] unadmitted-lead check: ambiguous patient match, not flagged',
+        { leadId: lead.id, via: match.via });
+    }
+    return null;
+  }
+  return days;
+}
+
+/* The same check against the live state, for one lead on the board. */
+function unadmittedDaysForLead(lead) {
+  const allLeads = (state.leads || []).concat(state.irrelevantLeads || [], state.removedLeads || []);
+  return unadmittedLeadDays(lead, state.patients, state.payments || [], debtAgingTodayIso(), allLeads);
+}
+
+/* The chip on a flagged card; '' when the lead is not flagged. Pure. */
+function unadmittedChipHTML(days) {
+  if (days == null) return '';
+  return `<div class="lc-unadmitted">${escapeHtml(`לא נקלט כמטופל · ${days} ימים`)}</div>`;
+}
+
+/* How many leads ON THE BOARD (the STAGES columns, before any search filter)
+ * carry the chip — the number on the לידים tab. Pure. */
+function countUnadmittedLeads(leads, patients, payments, todayIso, allLeads) {
+  const onBoard = new Set(STAGES.map(s => s.id));
+  return (Array.isArray(leads) ? leads : []).filter(l => l && onBoard.has(l.stage)
+    && unadmittedLeadDays(l, patients, payments, todayIso, allLeads) != null).length;
+}
+
+/* The count badge on the לידים tab. Hidden at zero. */
+function renderUnadmittedLeadsBadge() {
+  const el = document.getElementById('leads-unadmitted-badge');
+  if (!el) return;
+  const allLeads = (state.leads || []).concat(state.irrelevantLeads || [], state.removedLeads || []);
+  const n = countUnadmittedLeads(state.leads, state.patients, state.payments || [], debtAgingTodayIso(), allLeads);
+  el.textContent = String(n);
+  el.classList.toggle('hidden', n === 0);
+}
+
+
+/* ===== «מטופלים» — the patient list (CHANGELOG-patients-tab-foundation.md) =====
+ * Pure helpers for the patient list tab. Display only: nothing here writes,
+ * and no lead field is ever copied onto a Patients row — the lead's details
+ * are JOINED at render time, so the lead stays the one source of truth.
+ *
+ * The lead ↔ patient link is the #192 rule (unadmittedLeadPatient), read
+ * from the patient's side:
+ *   - fromLead set   → the lead with that id, in any list (board, closed,
+ *                      removed). Never a fallback: a fromLead whose lead is
+ *                      gone reads «הליד לא נמצא», it is not re-guessed.
+ *   - fromLead blank → the leads whose #192 match lands on THIS patient. With
+ *                      no fromLead the only tier that can reach a patient is
+ *                      name + house (the phone tier joins through a
+ *                      patient's own fromLead). More than one lead, or a tier
+ *                      that hits several patients → ambiguous: no lead is
+ *                      shown and the patient is never flagged for it. */
+const PATIENT_NO_PAYMENT_AFTER_DAYS = 3;
+
+/* The patient list's filters, as the tab opens: active patients, every house. */
+const PATIENT_LIST_DEFAULT_FILTERS = Object.freeze({ house: '', status: 'active', problemsOnly: false, q: '' });
+
+/* The problem chips, in display order. `finance` = only computed for a
+ * finance session (the data is never loaded for any other). */
+const PATIENT_PROBLEMS = Object.freeze([
+  { code: 'no_funder',      label: 'ללא גורם מממן',        finance: true },
+  { code: 'no_payment',     label: 'לא דווח תשלום',         finance: true },
+  { code: 'house_mismatch', label: 'בית שונה מהליד',        finance: false },
+  { code: 'no_lead',        label: 'ללא ליד',               finance: false },
+]);
+
+/* Every lead the app holds (board incl. admitted, closed, removed), first
+ * copy of an id wins. */
+function patientLeadPool(s) {
+  const src = s || state;
+  return (src.leads || []).concat(src.irrelevantLeads || [], src.removedLeads || []);
+}
+
+/* A patient's lead → { lead, via, ambiguous }.
+ *   via: 'fromLead' | 'fromLead_missing' | 'name_house' | 'ambiguous' | 'none'
+ * `leads` = every lead (patientLeadPool); `patients` = every Patients row, for
+ * the ambiguity check (defaults to just this one). Pure. */
+function patientLeadInfo(patient, leads, patients) {
+  const text = v => String(v == null ? '' : v).trim();
+  const all = [];
+  const seen = new Set();
+  (Array.isArray(leads) ? leads : []).forEach(l => {
+    const k = text(l && l.id);
+    if (!l || (k && seen.has(k))) return;
+    if (k) seen.add(k);
+    all.push(l);
+  });
+  const none = { lead: null, via: 'none', ambiguous: false };
+  if (!patient) return none;
+  const fromLead = text(patient.fromLead);
+  if (fromLead) {
+    const lead = all.find(l => text(l.id) === fromLead) || null;
+    return { lead, via: lead ? 'fromLead' : 'fromLead_missing', ambiguous: false };
+  }
+  const pats = Array.isArray(patients) && patients.length ? patients : [patient];
+  const nk = normalizeNameForMatch(patient.name);
+  const hid = unadmittedHouseId(patient.houseId);
+  if (!nk || !hid) return none;
+  let tierAmbiguous = false;
+  const hits = all.filter(l => {
+    if (normalizeNameForMatch(l.name) !== nk || unadmittedHouseId(l.house) !== hid) return false;
+    const m = unadmittedLeadPatient(l, pats, all);
+    if (!m || m.via !== 'name_house') return false;   // the lead belongs to another patient
+    if (m.ambiguous) tierAmbiguous = true;
+    return true;
+  });
+  if (!hits.length) return none;
+  if (hits.length > 1 || tierAmbiguous) return { lead: null, via: 'ambiguous', ambiguous: true };
+  return { lead: hits[0], via: 'name_house', ambiguous: false };
+}
+
+/* Whole days from `fromIso` to `toIso` (both 'YYYY-MM-DD'), or null. Pure. */
+function patientDayDiff(fromIso, toIso) {
+  const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+  const a = DATE_RE.exec(isoDate(fromIso || ''));
+  const b = DATE_RE.exec(String(toIso || ''));
+  if (!a || !b) return null;
+  return Math.round((Date.UTC(+b[1], +b[2] - 1, +b[3]) - Date.UTC(+a[1], +a[2] - 1, +a[3])) / 86400000);
+}
+
+/* Days in the house: entry → today, or entry → exit for a released patient.
+ * null without an entry date; a future entry date clamps to 0. Pure. */
+function patientDaysInHouse(patient, todayIso) {
+  if (!patient) return null;
+  const exit = patient.status === 'released' ? patientExitISO(patient) : '';
+  const d = patientDayDiff(patient.date, exit && exit < todayIso ? exit : todayIso);
+  return d == null ? null : Math.max(0, d);
+}
+
+/* Did any payment row record money for this patient? A row is the patient's
+ * by the server-owned uid, or by the house::name::entryDate reduction the
+ * payment matcher uses. A void row is not money. Pure. */
+function patientHasReportedPayment(patient, payments) {
+  const uid = patientUid(patient);
+  const key = patientMatchKeyOf(patient);
+  return (Array.isArray(payments) ? payments : []).some(pay => {
+    if (!pay || isVoidPayment(pay)) return false;
+    const mine = (uid && paymentPatientUid(pay) === uid) || (key && patientMatchKeyFromId(pay.patientId) === key);
+    return !!mine && (paymentCoversCycle(pay) || (Number(pay.amountPaid) || 0) > 0);
+  });
+}
+
+/* The open problems of one patient → [{ code, label }] in PATIENT_PROBLEMS
+ * order. A released patient has none (the list is about who is in a house).
+ *   leadInfo  patientLeadInfo's answer.
+ *   payments  the Payments rows, or null when this session has none (no
+ *             finance) → «לא דווח תשלום» is not computed.
+ *   funders   the Funders rows, or null likewise → «ללא גורם מממן» is not
+ *             computed. Also skipped when funder.js did not load.
+ *   todayIso  'YYYY-MM-DD' in Asia/Jerusalem.
+ * Pure. */
+function patientProblems(patient, leadInfo, payments, funders, todayIso) {
+  if (!patient || patient.status === 'released') return [];
+  const info = leadInfo || { lead: null, via: 'none', ambiguous: false };
+  const lead = info.lead || null;
+  const hasFunders = Array.isArray(funders) && !!funderLib();
+  const funderKey = hasFunders ? patientFunderKey(patient, funders, todayIso, todayIso) : '';
+  const out = new Set();
+  if (hasFunders && (!patientUid(patient) || funderKey === FUNDER_UNSET_KEY)) out.add('no_funder');
+  if (Array.isArray(payments) && funderKey !== FUNDER_PROBONO_KEY) {
+    const days = patientDayDiff(patient.date, todayIso);
+    // Nothing reported since the entry — the first cycle, due on the entry
+    // day. Inside an institutional funder's grace window it is not a problem
+    // yet (CHANGELOG-funder-grace.md); the row's payment cell says why.
+    if (days != null && days >= PATIENT_NO_PAYMENT_AFTER_DAYS && !patientHasReportedPayment(patient, payments)
+      && !patientCycleInFunderGrace(patient, funders, patient.date, todayIso)) out.add('no_payment');
+  }
+  if (lead) {
+    const leadHouse = unadmittedHouseId(lead.house);
+    if (leadHouse && leadHouse !== unadmittedHouseId(patient.houseId)) out.add('house_mismatch');
+  }
+  if (!String(patient.fromLead || '').trim() && !lead && !info.ambiguous) out.add('no_lead');
+  return PATIENT_PROBLEMS.filter(p => out.has(p.code)).map(p => ({ code: p.code, label: p.label }));
+}
+
+/* The current cycle's payment state, from the same helpers as גבייה:
+ * lastBillingDayOnOrBefore → the cycle's Payments row (paymentId) → its
+ * derived status. null for a released patient or without an entry date.
+ * → { key: 'paid'|'partial'|'unpaid'|'void'|'probono'|'not_due', label, dueISO }
+ * Pure (payments / funders passed in). */
+function patientPaymentState(patient, payments, funders, todayIso) {
+  if (!patient || patient.status === 'released' || !isoDate(patient.date)) return null;
+  const d = lastBillingDayOnOrBefore(patient.date, todayIso);
+  const dueISO = d ? isoDate(d) : '';
+  if (!dueISO || dueISO < isoDate(patient.date)) return { key: 'not_due', label: 'טרם חויב', dueISO: '' };
+  if (Array.isArray(funders) && funderLib() && patientFunderKey(patient, funders, todayIso, dueISO) === FUNDER_PROBONO_KEY) {
+    return { key: 'probono', label: funderLib().labelFor(FUNDER_PROBONO_KEY), dueISO };
+  }
+  const id = paymentId(patient, dueISO);
+  const pay = (Array.isArray(payments) ? payments : []).find(x => x && x.id === id) || null;
+  if (pay && isVoidPayment(pay)) return { key: 'void', label: PAYMENT_VOID_LABEL, dueISO };
+  const key = pay ? pay.status : 'unpaid';
+  // Institutional funder, within 30 days of the due date: neutral, not red.
+  // `owed` keeps the real state (the cell still offers «דווח תשלום»).
+  if ((key === 'unpaid' || key === 'partial') && patientCycleInFunderGrace(patient, funders, dueISO, todayIso)) {
+    return { key: 'funder_grace', label: funderGraceStatusLabel(key), dueISO, owed: key };
+  }
+  return { key, label: paymentStatusLabel(key), dueISO };
+}
+
+/* What the row shows of its lead (the «פרטי הליד» section). Pure. */
+function patientLeadDetails(lead) {
+  if (!lead) return null;
+  const s = v => String(v == null ? '' : v).trim();
+  return {
+    phone: s(lead.phone),
+    source: s(lead.source),
+    visitDate: isoDate(lead.visitDate || ''),
+    advance: Number(lead.advance) || 0,
+    note: s(lead.note),
+    assignedTo: s(lead.assignedTo),
+    meetingWith: s(lead.meetingWith),
+    house: s(lead.house),
+  };
+}
+
+/* The patient list → rows, filtered and sorted (newest entry first, then
+ * name). `s` is the app state (patients, the three lead lists, and — finance
+ * only — payments and funders); `filters` is PATIENT_LIST_DEFAULT_FILTERS'
+ * shape. A session without finance never reads payments or funders, even if
+ * an array is present. Pure apart from reading `s`.
+ * → [{ patient, leadInfo, lead, problems, days, payment }] */
+function patientListRows(s, filters, todayIso) {
+  const src = s || state;
+  const f = Object.assign({}, PATIENT_LIST_DEFAULT_FILTERS, filters || {});
+  const today = todayIso || debtAgingTodayIso();
+  const finance = src.finance === true;
+  const payments = finance && Array.isArray(src.payments) ? src.payments : null;
+  const funders = finance && Array.isArray(src.funders) ? src.funders : null;
+  const patients = Array.isArray(src.patients) ? src.patients : [];
+  const leads = patientLeadPool(src);
+  const q = normalizeNameForMatch(f.q);
+  const rows = [];
+  patients.forEach(p => {
+    if (!p) return;
+    const released = p.status === 'released';
+    if (f.status === 'active' && released) return;
+    if (f.status === 'released' && !released) return;
+    if (f.house && unadmittedHouseId(p.houseId) !== f.house) return;
+    if (q && normalizeNameForMatch(p.name).indexOf(q) < 0) return;
+    const leadInfo = patientLeadInfo(p, leads, patients);
+    const problems = patientProblems(p, leadInfo, payments, funders, today);
+    if (f.problemsOnly && !problems.length) return;
+    rows.push({
+      patient: p,
+      leadInfo,
+      lead: patientLeadDetails(leadInfo.lead),
+      problems,
+      days: patientDaysInHouse(p, today),
+      payment: finance ? patientPaymentState(p, payments, funders, today) : null,
+    });
+  });
+  return rows.sort((a, b) => String(isoDate(b.patient.date) || '').localeCompare(String(isoDate(a.patient.date) || ''))
+    || String(a.patient.name || '').localeCompare(String(b.patient.name || ''), 'he'));
+}
+
+/* Open problems across the ACTIVE list (every house, no search), for the
+ * summary line and the tab badge. → { patients: N with ≥1, byCode: {code: n} }
+ * Pure apart from reading `s`. */
+function patientProblemSummary(s, todayIso) {
+  const rows = patientListRows(s, { status: 'active' }, todayIso);
+  const byCode = {};
+  PATIENT_PROBLEMS.forEach(p => { byCode[p.code] = 0; });
+  let n = 0;
+  rows.forEach(r => {
+    if (r.problems.length) n++;
+    r.problems.forEach(p => { byCode[p.code]++; });
+  });
+  return { patients: n, byCode };
+}
+
+/* «ממתינים לקליטה»: board leads that are paid or entering treatment
+ * (unadmittedLeadEligible) with no patient record — the #192 rule WITHOUT its
+ * 3-day threshold; `chipDays` carries the #192 chip (3+ days) when it
+ * applies. Ambiguous matches and an unloaded patient list are never listed.
+ * → [{ lead, days, chipDays }], oldest entry first. Pure. */
+function pendingAdmissionRows(leads, patients, payments, todayIso, allLeads) {
+  if (!Array.isArray(patients)) return [];
+  const onBoard = new Set(STAGES.map(st => st.id));
+  const pool = allLeads || leads || [];
+  return (Array.isArray(leads) ? leads : [])
+    .filter(l => l && onBoard.has(l.stage) && unadmittedLeadEligible(l, payments)
+      && !unadmittedLeadPatient(l, patients, pool))
+    .map(l => {
+      const d = patientDayDiff(l.entryDate, todayIso);
+      return {
+        lead: l,
+        days: d == null ? null : Math.max(0, d),
+        chipDays: unadmittedLeadDays(l, patients, payments, todayIso, pool),
+      };
+    })
+    .sort((a, b) => String(isoDate(a.lead.entryDate) || '9999').localeCompare(String(isoDate(b.lead.entryDate) || '9999')));
+}
 function buildLeadCard(lead) {
   const card = document.createElement('div');
   card.className = 'lead-card';
@@ -4006,6 +4723,7 @@ function buildLeadCard(lead) {
       ${lead.source ? '· מקור: ' + escapeHtml(lead.source) : ''}
     </div>
     ${waitBadge ? `<div class="lc-wait-badge">${waitBadge}</div>` : ''}
+    ${unadmittedChipHTML(unadmittedDaysForLead(lead))}
     ${state.mode === 'edit' ? '' : leadContactLineHTML(lead)}
     ${state.mode === 'edit' ? '' : leadBillingLineHTML(lead)}
     ${lead.assignedTo
@@ -4596,6 +5314,73 @@ function dischargedPatientMatchesQuery(p, q, houseLabel) {
  * single שחזר button opening the restore-choice modal
  * (showRestorePatientChoiceModal): prior-status restore (default) or a new
  * lead. The discharge record stays on the sheet as the audit trail either way. */
+/* ===== «🚪 שחרורים מהבתים» — discharges a coordinator recorded =====
+ * The coordinators app writes a discharge straight back (Code.gs
+ * recordDischargeFromCoordinators_): the patient is released IMMEDIATELY
+ * and the standard discharged-audit row is stamped dischargeSource =
+ * 'ezone-coordinators'. This panel is Vered's worklist for the follow-up
+ * (billing, refunds): the last COORD_PANEL_WINDOW_DAYS days, newest
+ * first, restored rows hidden. Nothing here writes. */
+const COORD_PANEL_SOURCE = 'ezone-coordinators';
+const COORD_PANEL_WINDOW_DAYS = 30;
+
+/* Pure + tested: the panel's rows. `today` is 'YYYY-MM-DD'. A row counts by
+ * its discharge date (exitDate), falling back to when it was recorded. */
+function coordinatorDischarges(list, today) {
+  const t = Date.parse(String(today || todayISO()) + 'T00:00:00Z');
+  const cutoff = new Date(t - COORD_PANEL_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
+  const day = d => String(d.exitDate || d.dischargedAt || '').slice(0, 10);
+  return (Array.isArray(list) ? list : [])
+    .filter(d => d && d.dischargeSource === COORD_PANEL_SOURCE)
+    .filter(d => dischargeRowOpen(d))
+    .filter(d => day(d) >= cutoff)
+    .sort((a, b) => (day(b) + String(b.dischargedAt || '')).localeCompare(day(a) + String(a.dischargedAt || '')));
+}
+
+function renderCoordinatorDischarges() {
+  const panel = document.getElementById('coord-discharges');
+  const list = document.getElementById('coord-discharges-list');
+  if (!panel || !list) return;
+  const rows = coordinatorDischarges(state.dischargedPatients, todayISO());
+  const countEl = document.getElementById('coord-discharges-count');
+  if (countEl) countEl.textContent = rows.length;
+  list.innerHTML = '';
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'coord-discharges-empty';
+    empty.textContent = 'אין שחרורים מהבתים ב־30 הימים האחרונים';
+    list.appendChild(empty);
+    return;
+  }
+  rows.forEach(d => {
+    const row = document.createElement('div');
+    row.className = 'coord-discharge-row';
+    row.dataset.id = d.id;
+    const houseName = (houseById(d.houseId) && houseById(d.houseId).name) || d.houseId || '—';
+    const cells = [
+      { label: 'שם', value: d.name || '—', cls: 'p-name' },
+      { label: 'בית', value: houseName },
+      { label: 'תאריך שחרור', value: d.exitDate ? formatDate(d.exitDate) : '—' },
+      { label: 'סיבה', value: d.dischargeReason || '—' },
+      { label: 'דווח ע״י', value: d.dischargedBy || '—' },
+    ];
+    // textContent only — every value here came from another app.
+    cells.forEach(c => {
+      const cell = document.createElement('div');
+      const label = document.createElement('span');
+      label.className = 'p-label';
+      label.textContent = c.label;
+      const val = document.createElement('span');
+      val.className = c.cls || 'p-val';
+      val.textContent = c.value;
+      cell.appendChild(label);
+      cell.appendChild(val);
+      row.appendChild(cell);
+    });
+    list.appendChild(row);
+  });
+}
+
 function renderDischargedPatients() {
   const list = document.getElementById('discharged-patients-list');
   if (!list) return;
@@ -4605,7 +5390,7 @@ function renderDischargedPatients() {
    * restored='TRUE' (string) on restorePatient_; Sheets may coerce to bool
    * in some configs, so accept both. The audit row stays in the sheet. */
   const allRows = (state.dischargedPatients || [])
-    .filter(d => d.restored !== 'TRUE' && d.restored !== true);
+    .filter(d => dischargeRowOpen(d));
 
   /* Live search (name / phone / house). The count pill reflects the FILTERED
    * count, matching what the list actually shows. */
@@ -4686,11 +5471,105 @@ function renderDischargedPatients() {
         actions.appendChild(creditBtn);
       }
 
+      /* «מחק כפילות» — only on a row whose stay has ANOTHER open discharge
+       * row (so the last row of a stay never offers it), and only to a
+       * deleter (Vered, Sandra). Code.gs re-checks both, plus the credits. */
+      if (canDelete() && openDuplicateSiblings(p, state.dischargedPatients).length > 0) {
+        const dupBtn = document.createElement('button');
+        dupBtn.className = 'btn small danger';
+        dupBtn.dataset.role = 'deleter';
+        dupBtn.dataset.action = 'delete-duplicate-discharge';
+        dupBtn.textContent = 'מחק כפילות';
+        dupBtn.onclick = () => showDeleteDuplicateDischargeModal(p);
+        actions.appendChild(dupBtn);
+      }
+
       row.appendChild(actions);
     }
 
     list.appendChild(row);
   });
+}
+
+/* ===== «מחק כפילות» — soft-delete a duplicate discharge row =====
+ * (CHANGELOG-duplicate-discharges.md.) The server (deleteDuplicateDischarge_)
+ * is the authority: deleter role, a 2–120 char reason, never the last open row
+ * of a stay, never a row with its own credit or a stay with a double credit.
+ * Here: the reason check up front, busyButton against a double tap, the row
+ * leaves the tab only once the server confirmed. Nothing optimistic. */
+const DUP_DISCHARGE_REASON_MIN = 2;
+const DUP_DISCHARGE_REASON_MAX = 120;
+
+/* '' when the reason is acceptable, else the Hebrew error. Pure. */
+function duplicateDischargeReasonError(reason) {
+  const r = String(reason == null ? '' : reason).trim();
+  if (r.length < DUP_DISCHARGE_REASON_MIN) return 'יש להזין סיבה למחיקה (2–120 תווים)';
+  if (r.length > DUP_DISCHARGE_REASON_MAX) return 'הסיבה ארוכה מדי (עד 120 תווים)';
+  return '';
+}
+
+/* The worker: one deleteDuplicateDischarge call. On success the row carries
+ * the server's stamps (so every open-row filter drops it) and the tab
+ * re-renders. Throws the server's Hebrew message on a refusal. */
+async function deleteDuplicateDischarge(d, reason) {
+  if (state.mode !== 'edit' || !canDelete()) throw new Error('אין הרשאה לפעולה זו');
+  const err = duplicateDischargeReasonError(reason);
+  if (err) throw new Error(err);
+  const res = await apiPost({ action: 'deleteDuplicateDischarge', id: String(d.id), reason: String(reason).trim() });
+  const stamps = {
+    deletedAt: (res && res.deletedAt) || new Date().toISOString(),
+    deletedBy: (res && res.deletedBy) || '',
+    deleteReason: (res && res.deleteReason) || String(reason).trim(),
+  };
+  state.dischargedPatients = (state.dischargedPatients || []).map(x =>
+    x && x.id === d.id ? Object.assign({}, x, stamps) : x);
+  renderAll();
+  showToast('הכפילות נמחקה');
+  return res;
+}
+
+function showDeleteDuplicateDischargeModal(d) {
+  if (state.mode !== 'edit' || !canDelete()) return;
+  const root = document.getElementById('modal-root');
+  if (!root) return;
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  const houseName = (houseById(d.houseId) && houseById(d.houseId).name) || d.houseId || '';
+  back.innerHTML = `
+    <div class="modal">
+      <h3>מחיקת שורת שחרור כפולה</h3>
+      <p class="confirm-text">${escapeHtml(d.name || '')} · ${escapeHtml(houseName)} · כניסה ${escapeHtml(d.date ? formatDate(d.date) : '—')} · שחרור ${escapeHtml((d.exitDate || d.dischargedAt) ? formatDate(d.exitDate || d.dischargedAt) : '—')}</p>
+      <p class="confirm-text">השורה תוסתר מהלשונית ותישמר ביומן. המטופל, התשלומים ושורת השחרור האחרת לא ישתנו.</p>
+      <form>
+        <div class="form-row">
+          <label for="dup-discharge-reason">סיבת המחיקה (חובה)</label>
+          <input type="text" id="dup-discharge-reason" name="reason" minlength="2" maxlength="120" required />
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn danger" data-role="deleter">מחק כפילות</button>
+        </div>
+      </form>
+    </div>`;
+  const close = () => back.remove();
+  back.querySelector('[data-action="cancel"]').onclick = close;
+  const form = back.querySelector('form');
+  form.onsubmit = e => {
+    e.preventDefault();
+    const submitBtn = back.querySelector('button[type="submit"]');
+    const reason = (back.querySelector('[name="reason"]').value || '').trim();
+    const err = duplicateDischargeReasonError(reason);
+    if (err) { showError(err); return; }
+    return busyButton(submitBtn, 'delete', async () => {
+      try {
+        await deleteDuplicateDischarge(d, reason);
+        close();
+      } catch (ex) {
+        showError('מחיקת הכפילות נכשלה — ' + ((ex && ex.message) || 'שגיאה'));
+      }
+    });
+  };
+  root.appendChild(back);
 }
 
 /* Restore path A — back into the leads pipeline as a NEW LEAD. The restore-
@@ -4826,7 +5705,7 @@ function restoreNeedsOutpatientCleanup(audit) {
  * filters restored rows) and simply documents the restore. Pure + tested. */
 function auditRowForReleasedPatient(p, dischargedPatients) {
   const match = (Array.isArray(dischargedPatients) ? dischargedPatients : []).find(d =>
-    d && d.restored !== 'TRUE' && d.restored !== true &&
+    dischargeRowOpen(d) &&
     d.houseId === p.houseId && d.name === p.name && d.date === p.date);
   if (match) return match;
   return {
@@ -4847,6 +5726,79 @@ function auditRowForReleasedPatient(p, dischargedPatients) {
     restored:     '',
     prior_status: '',
   };
+}
+
+/* ===== A deliberate re-activation must close the stay's open discharges =====
+ * (CHANGELOG-reactivation-fix.md — PR #145's fix, re-landed.)
+ * healClobberedDischarges runs on EVERY load and releases the first patient
+ * whose houseId + name + date matches a NON-restored discharge audit row. The
+ * only thing it reads is that restored flag, so it cannot tell a clobbered
+ * discharge from a patient someone set back to live on purpose. Every write
+ * that leaves a stay live therefore has to flag ALL of that stay's open audit
+ * rows restored='TRUE' — one left open and the patient flips back to released
+ * on the next load and silently vanishes from the house tab. The ✏️ edit
+ * modal (released → פעיל), a direct re-add or an admission with the original
+ * entry date (the new row is written FIRST in the house, so it is the heal's
+ * first match), and a restore with a second open row all left rows open. */
+
+/* Every OPEN (non-restored) discharge audit row of this stay — the same
+ * houseId + name + date key matchActivePatientIndex uses. Pure + tested. */
+function openDischargeAuditsFor(patient, dischargedPatients) {
+  if (!patient) return [];
+  return (Array.isArray(dischargedPatients) ? dischargedPatients : []).filter(d =>
+    dischargeRowOpen(d) &&
+    d.houseId === patient.houseId && d.name === patient.name && d.date === patient.date);
+}
+
+/* The open audit rows a deliberate write re-opens: `after` is the patient as
+ * it will be saved, `before` (optional) the same patient before an edit — an
+ * edit can fix the name / date / house in the same save, so both identities
+ * count. Nothing when `after` is released. Deduplicated by audit id. Pure +
+ * tested. */
+function reopenedDischargeAudits(before, after, dischargedPatients) {
+  if (!after || after.status === 'released') return [];
+  const out = [];
+  const seen = new Set();
+  [after, before].forEach(p => {
+    openDischargeAuditsFor(p, dischargedPatients).forEach(d => {
+      if (seen.has(d.id)) return;
+      seen.add(d.id);
+      out.push(d);
+    });
+  });
+  return out;
+}
+
+/* A NEW array with `rows` flagged restored='TRUE' (matched by audit id); the
+ * input is never mutated, so a caller rolls back by keeping its old
+ * reference. Pure + tested. */
+function withAuditsRestored(dischargedPatients, rows) {
+  const ids = new Set((rows || []).map(d => d.id));
+  return (Array.isArray(dischargedPatients) ? dischargedPatients : []).map(d =>
+    d && ids.has(d.id) ? Object.assign({}, d, { restored: 'TRUE' }) : d);
+}
+
+/* Persist those flags with the SAME restorePatientToActive action and payload
+ * shape the restore-choice modal sends (a keyed upsert of the audit row by its
+ * own id — no new backend action). Sequential; the first refusal rejects to
+ * the caller, whose rollback restores its state. A view-mode session writes
+ * nothing, exactly like saveAll. */
+async function persistAuditsRestored(rows) {
+  if (state.mode !== 'edit') return;
+  for (const d of rows || []) {
+    await apiPost({ action: 'restorePatientToActive', patient: { ...d, restored: 'TRUE' } });
+  }
+}
+
+/* The ✏️ edit's message when the save (with a landed house move) went through
+ * but closing the discharge rows did not. */
+const REOPEN_NOT_CLOSED_MESSAGE = 'השינוי נשמר, אבל רישום השחרור לא נסגר — בטעינה הבאה המטופל יסומן שוב כמשוחרר. ערכו שוב את הסטטוס. ';
+
+/* The toast loadAll shows when the heal moved patients to released. Names are
+ * plain text (showToast sets textContent). Pure + tested. */
+function healedToastMessage(healed) {
+  return 'סומנו כמשוחררים לפי רישום שחרור פתוח: ' +
+    (Array.isArray(healed) ? healed : []).map(p => String((p && p.name) || '')).join(', ');
 }
 
 /* ===== Restore-choice modal =====
@@ -4928,26 +5880,32 @@ function showRestorePatientChoiceModal(p) {
  *      (the Patients sheet has no dedicated action; status flips there). This
  *      is the IMPORTANT record, so it goes first.
  *   2. restorePatientToActive action — flags the audit row restored='TRUE' on
- *      the discharged sheet so it leaves the tab. Cosmetic; goes second.
+ *      the discharged sheet so it leaves the tab. NOT cosmetic: an open audit
+ *      row is exactly what healClobberedDischarges re-releases on the next
+ *      load, so every OTHER open row of the same stay is flagged too.
  * On any failure BOTH optimistic changes roll back (previous refs restored).
- * If write 2 fails after write 1 persisted, the patient is already active on
- * the sheet and the audit row just reappears on reload — re-clicking restore is
- * idempotent (the match flips an already-active row in place, no duplicate). */
+ * If write 2 fails after write 1 persisted, the next load's heal re-releases
+ * the row on the sheet as well (its audit row is still open), so the sheet
+ * converges back to the rolled-back UI — re-clicking restore is idempotent
+ * (the match flips an already-active row in place, no duplicate). */
 async function doRestorePatientToActive(p) {
   const prevPatients   = state.patients;
   const prevDischarged = state.dischargedPatients.slice();
 
   const { patients } = buildRestoredToActivePatients(state.patients, p);
   state.patients = patients;
-  // Flag the audit row locally so renderDischargedPatients' restored-filter
-  // hides it; the row object stays in state as the audit trail.
-  state.dischargedPatients = state.dischargedPatients.map(d =>
-    d.id === p.id ? Object.assign({}, d, { restored: 'TRUE' }) : d);
+  // A stay discharged twice without a restore in between has a SECOND open
+  // audit row; flagging only `p` let the heal release the patient again.
+  const siblings = openDischargeAuditsFor(p, prevDischarged).filter(d => d.id !== p.id);
+  // Flag the audit row(s) locally so renderDischargedPatients' restored-filter
+  // hides them; the row objects stay in state as the audit trail.
+  state.dischargedPatients = withAuditsRestored(state.dischargedPatients, [p].concat(siblings));
   renderAll();
 
   try {
     await saveAll();
     await apiPost({ action: 'restorePatientToActive', patient: { ...p, restored: 'TRUE' } });
+    await persistAuditsRestored(siblings);
   } catch (e) {
     state.patients = prevPatients;
     state.dischargedPatients = prevDischarged;
@@ -5483,6 +6441,11 @@ function openEntryModal(lead) {
         status: v.status || 'trial',
         fromLead: lead.id,
       });
+      // Same stay as an open discharge (house + name + entry date)? Close it,
+      // or the load-time heal releases the new row (see reopenedDischargeAudits).
+      const prevDischarged = state.dischargedPatients;
+      const reopened = reopenedDischargeAudits(null, patient, state.dischargedPatients);
+      if (reopened.length) state.dischargedPatients = withAuditsRestored(state.dischargedPatients, reopened);
       state.patients.unshift(patient);
       const prevStage = lead.stage;
       const prevOutcome = lead.meetingOutcome;
@@ -5502,8 +6465,10 @@ function openEntryModal(lead) {
       renderAll();
       try {
         await saveAll();
+        await persistAuditsRestored(reopened);
       } catch (e) {
         state.patients = state.patients.filter(p => p.id !== patient.id);
+        state.dischargedPatients = prevDischarged;
         lead.stage = prevStage;
         lead.meetingOutcome = prevOutcome;
         renderAll();
@@ -5522,30 +6487,28 @@ function openEntryModal(lead) {
  * .edit-only. Saved records are flagged source='direct_admin' so reports
  * can distinguish them from lead-converted patients; the Billing tab is
  * source-agnostic and treats them identically. */
-function openDirectAddPatientModal() {
+function openDirectAddPatientModal(opts) {
+  /* Intake mode («🟢 קליטת מטופל חדש», 2026-10-04): a NEW inpatient arriving
+   * today. The same record and the same saveAll path — only the form differs:
+   * the required fields are exactly name, house and admission date; the
+   * monthly amount is optional (pre-filled, blank → 0) and the status is
+   * always פעיל, so the new patient lands in occupancy and in the
+   * coordinators feed (getPatientsForCoordinators) on save. A finance
+   * session (Vered / Sandra) ALSO gets the required «גורם מממן» picker —
+   * the admission funder rule (CHANGELOG-patient-funder-on-funders.md)
+   * applies to intake exactly as to the direct-add form. */
+  const intake = !!(opts && opts.intake);
+  const fields = intakeFormFields(intake, state.currentHouseTab || HOUSES[0].id, todayISO());
   showModal({
-    title: 'הוספת מטופל ישירות',
-    fields: [
-      { name: 'name', label: 'שם מטופל', type: 'text', required: true },
-      { name: 'houseId', label: 'בית', type: 'select', required: true,
-        value: state.currentHouseTab || HOUSES[0].id,
-        options: HOUSES.map(h => ({ value: h.id, label: h.name })) },
-      { name: 'date', label: 'תאריך כניסה', type: 'date', required: true,
-        value: todayISO() },
-      { name: 'pay', label: 'סכום חודשי (₪)', type: 'number', required: true,
-        value: '29000' },
-      { name: 'status', label: 'סטטוס', type: 'select',
-        value: 'active',
-        options: [
-          { value: 'active',   label: 'פעיל' },
-          { value: 'released', label: 'יצא' },
-        ] },
-      { name: 'notes', label: 'הערות', type: 'textarea' },
-    ].concat(admissionFunderFields()),
-    submitLabel: 'הוסף מטופל',
+    title: intake ? 'קליטת מטופל חדש' : 'הוספת מטופל ישירות',
+    // The funder picker (finance sessions only, required there — PR #178)
+    // rides along in BOTH modes.
+    fields: fields.concat(admissionFunderFields()),
+    submitLabel: intake ? 'קליטה' : 'הוסף מטופל',
     onSubmit: async v => {
-      if (!v.name || !v.houseId || !v.date || !v.pay) {
-        showError('שדות חובה חסרים');
+      const missing = intakeMissingFields(v, intake);
+      if (missing.length) {
+        showError('שדות חובה חסרים: ' + missing.join(', '));
         return false;
       }
       const funderErr = admissionFunderError(state.finance, v.funder);
@@ -5557,11 +6520,16 @@ function openDirectAddPatientModal() {
         date: v.date,
         pay: Number(v.pay) || 0,
         adv: 0,
-        status: v.status || 'active',
+        status: intake ? 'active' : (v.status || 'active'),
         fromLead: '',
         source: 'direct_admin',
         notes: (v.notes || '').trim(),
       });
+      // Re-adding a discharged patient with the ORIGINAL entry date recreates
+      // a stay whose discharge rows are still open (see reopenedDischargeAudits).
+      const prevDischarged = state.dischargedPatients;
+      const reopened = reopenedDischargeAudits(null, patient, state.dischargedPatients);
+      if (reopened.length) state.dischargedPatients = withAuditsRestored(state.dischargedPatients, reopened);
       state.patients.unshift(patient);
       // Jump to the house the new patient landed in so the admin can
       // immediately verify the record appeared.
@@ -5569,16 +6537,54 @@ function openDirectAddPatientModal() {
       renderAll();
       try {
         await saveAll();
+        await persistAuditsRestored(reopened);
       } catch (e) {
         state.patients = state.patients.filter(x => x.id !== patient.id);
+        state.dischargedPatients = prevDischarged;
         renderAll();
         showError('שמירה נכשלה — ' + e.message);
         return false;
       }
       await saveAdmissionFunder(patient, v.funder);
+      if (intake) showToast('המטופל נקלט — ' + patient.name);
       return true;
     }
   });
+}
+
+/* The direct-add / intake form fields. Pure + tested. In intake mode the
+ * ONLY required fields are name, house and admission date (תאריך כניסה). */
+function intakeFormFields(intake, houseId, today) {
+  const fields = [
+    { name: 'name', label: 'שם מטופל', type: 'text', required: true },
+    { name: 'houseId', label: 'בית', type: 'select', required: true,
+      value: houseId,
+      options: HOUSES.map(h => ({ value: h.id, label: h.name })) },
+    { name: 'date', label: 'תאריך כניסה', type: 'date', required: true,
+      value: today },
+    { name: 'pay', label: 'סכום חודשי (₪)', type: 'number', required: !intake,
+      value: '29000' },
+  ];
+  if (!intake) {
+    fields.push({ name: 'status', label: 'סטטוס', type: 'select',
+      value: 'active',
+      options: [
+        { value: 'active',   label: 'פעיל' },
+        { value: 'released', label: 'יצא' },
+      ] });
+  }
+  fields.push({ name: 'notes', label: 'הערות', type: 'textarea' });
+  return fields;
+}
+
+/* Labels of the required fields missing from a submitted form. Pure + tested. */
+function intakeMissingFields(v, intake) {
+  const missing = [];
+  if (!v || !String(v.name || '').trim()) missing.push('שם מטופל');
+  if (!v || !v.houseId || !houseById(v.houseId)) missing.push('בית');
+  if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(String(v.date || ''))) missing.push('תאריך כניסה');
+  if (!intake && (!v || !v.pay)) missing.push('סכום חודשי');
+  return missing;
 }
 
 /* ===== Edit existing patient =====
@@ -5618,6 +6624,7 @@ function openEditPatientModal(p) {
         return false;
       }
       const prev = { ...p };
+      const prevDischarged = state.dischargedPatients;
       const houseChanged = p.houseId !== v.houseId;
       p.name    = v.name.trim();
       p.houseId = v.houseId;
@@ -5625,6 +6632,11 @@ function openEditPatientModal(p) {
       p.pay     = Number(v.pay) || 0;
       p.status  = v.status || 'active';
       p.notes   = (v.notes || '').trim();
+      // ✏️ is also how a released patient is set back to פעיל / הפסקה זמנית:
+      // close the stay's open discharge rows with it, or the load-time heal
+      // releases the patient again (see reopenedDischargeAudits).
+      const reopened = reopenedDischargeAudits(prev, p, state.dischargedPatients);
+      if (reopened.length) state.dischargedPatients = withAuditsRestored(state.dischargedPatients, reopened);
       if (houseChanged) {
         // The explicit move intent (serializePatients → collectHouseMoves_ in
         // Code.gs). Without it the backend cannot tell this deliberate move
@@ -5637,9 +6649,28 @@ function openEditPatientModal(p) {
         state.currentHouseTab = p.houseId;
       }
       renderAll();
+      let saved = false;
       try {
         await saveAll();
+        saved = true;
+        // A house move the backend refused (or never confirmed) is undone
+        // below — the discharge rows stay open with it.
+        if (!houseChanged || houseMoveVerdict(p) === 'moved') {
+          await persistAuditsRestored(reopened);
+        } else {
+          state.dischargedPatients = prevDischarged;
+        }
       } catch (e) {
+        state.dischargedPatients = prevDischarged;
+        if (saved && houseChanged) {
+          // The move already landed on the sheet: putting the patient back in
+          // the old house here would send them there WITHOUT a move intent.
+          // Keep the saved edit and say what did not save — the next load's
+          // heal (announced by its toast) releases the patient again.
+          renderAll();
+          showError(REOPEN_NOT_CLOSED_MESSAGE + e.message, REFUSAL_BANNER_MS);
+          return true;
+        }
         Object.assign(p, prev);
         if (prev.movedFrom === undefined) delete p.movedFrom;
         renderAll();
@@ -5800,6 +6831,235 @@ function renderPatients() {
   });
 }
 
+/* ===== «מטופלים» — the patient list tab (CHANGELOG-patients-tab-ui.md) =====
+ * The rows come from the pure helpers (patientListRows, pendingAdmissionRows,
+ * patientProblemSummary — CHANGELOG-patients-tab-foundation.md). Every action
+ * here is an EXISTING flow: ✏️ openEditPatientModal, «הגדר גורם מממן»
+ * openFunderModal, «דווח תשלום» openPaymentReportModal, «קלוט כמטופל»
+ * openEntryModal (the «כניסה לבית» admission), «שחזר»
+ * showRestorePatientChoiceModal. Nothing new is written or sent.
+ *
+ * Restricted view (Shiran, Yael): no payment column, no funder cell or chip,
+ * no «דווח תשלום» — patientListRows never reads money data without
+ * `finance`, and the cells below are built only for a finance session. The
+ * controller view (Ortal) has no tab: applyControllerView removes it and
+ * renderAll returns first. Every value goes through escapeHtml — a lead's
+ * notes are free text. */
+
+/* The session's filters (never persisted). */
+function patientsTabFilters() {
+  if (!state.ptFilters) state.ptFilters = Object.assign({}, PATIENT_LIST_DEFAULT_FILTERS);
+  return state.ptFilters;
+}
+
+/* The red problem chips of one row. Pure. */
+function patientProblemChipsHtml(problems) {
+  return (problems || []).map(p =>
+    `<span class="plist-chip" data-problem="${escapeHtml(p.code)}">${escapeHtml(p.label)}</span>`).join('');
+}
+
+/* The «פרטי הליד» section (a closed <details>). Pure. */
+function patientLeadDetailsHtml(row) {
+  const L = row.lead;
+  const via = row.leadInfo ? row.leadInfo.via : 'none';
+  let body;
+  if (L) {
+    const item = (label, value) => `<div class="plist-lead-item"><span class="p-label">${escapeHtml(label)}</span>`
+      + `<span class="p-val">${value ? escapeHtml(value) : '—'}</span></div>`;
+    body = `<div class="plist-lead-grid">
+        ${item('טלפון', L.phone)}
+        ${item('מקור', L.source)}
+        ${item('תאריך ביקור', L.visitDate ? formatDate(L.visitDate) : '')}
+        ${item('מקדמה', L.advance ? '₪ ' + L.advance.toLocaleString('he-IL') : '')}
+        ${item('משוייך ל', L.assignedTo)}
+        ${item('נפגש עם', L.meetingWith)}
+        ${item('בית בליד', L.house)}
+      </div>
+      <div class="plist-lead-note"><span class="p-label">הערות הליד</span>`
+      + `<span class="p-val">${L.note ? escapeHtml(L.note) : '—'}</span></div>`;
+  } else if (via === 'fromLead_missing') {
+    body = '<div class="plist-lead-none">הליד המקושר לא נמצא</div>';
+  } else if (via === 'ambiguous') {
+    body = '<div class="plist-lead-none">ללא ליד · נמצאו כמה לידים תואמים, לא קושר</div>';
+  } else {
+    body = '<div class="plist-lead-none">ללא ליד</div>';
+  }
+  return `<details class="plist-lead"><summary>פרטי הליד${L ? '' : ' · ללא ליד'}</summary>${body}</details>`;
+}
+
+/* One patient row's HTML. `finance` = the session may see money data; `edit`
+ * = edit mode. Pure (reads the funder rows only through currentFunderFor
+ * when `finance`). */
+function patientListRowHtml(row, finance, edit) {
+  const p = row.patient;
+  const house = HOUSES.find(h => h.id === p.houseId);
+  const released = p.status === 'released';
+  const statusInfo = STATUS_OPTIONS.find(s => s.id === p.status) || STATUS_OPTIONS[0];
+  const cells = [];
+  cells.push(`<div class="plist-name-cell"><span class="p-label">מטופל</span><span class="p-name">${escapeHtml(p.name)}</span>`
+    + (released ? ` <span class="badge released">${escapeHtml(statusInfo.label)}${p.exitDate ? ' · ' + escapeHtml(formatDate(p.exitDate)) : ''}</span>` : '')
+    + `</div>`);
+  cells.push(`<div><span class="p-label">בית</span><span class="p-val">${escapeHtml(house ? house.name : p.houseId)}</span></div>`);
+  cells.push(`<div><span class="p-label">תאריך כניסה</span><span class="p-val">${escapeHtml(p.date ? formatDate(p.date) : '—')}</span></div>`);
+  cells.push(`<div><span class="p-label">ימים בבית</span><span class="p-val">${row.days == null ? '—' : escapeHtml(String(row.days))}</span></div>`);
+  if (finance && funderView()) {
+    const uid = patientUid(p);
+    const cur = uid ? currentFunderFor(uid, patientFunderDay(p, todayISO())) : { unset: true };
+    const value = cur.unset
+      ? `<span class="funder-chip funder-unset" data-funder="unset">${escapeHtml(FUNDER_UNSET_LABEL)}</span>`
+      : escapeHtml(cur.funder);
+    cells.push(`<div class="plist-funder" data-finance><span class="p-label">גורם מממן</span><span class="p-val">${value}</span>`
+      + (edit ? '<button type="button" class="btn small plist-funder-btn">הגדר גורם מממן</button>' : '') + `</div>`);
+  }
+  if (finance && row.payment) {
+    const pay = row.payment;
+    const owedKey = pay.key === 'funder_grace' ? pay.owed : pay.key;
+    const canReport = edit && (owedKey === 'unpaid' || owedKey === 'partial');
+    cells.push(`<div class="plist-pay" data-finance><span class="p-label">תשלום${pay.dueISO ? ' · ' + escapeHtml(formatDate(pay.dueISO)) : ''}</span>`
+      + `<span class="badge pay-state pay-state-${escapeHtml(pay.key)}">${escapeHtml(pay.label)}</span>`
+      + (canReport ? '<button type="button" class="btn small primary plist-report-btn">דווח תשלום</button>' : '') + `</div>`);
+  }
+  const chips = patientProblemChipsHtml(row.problems);
+  return `
+    <div class="plist-main">${cells.join('')}</div>
+    ${chips ? `<div class="plist-chips">${chips}</div>` : ''}
+    <div class="plist-foot">
+      ${patientLeadDetailsHtml(row)}
+      <div class="row-actions edit-only">
+        ${released ? '<button type="button" class="btn small primary plist-restore-btn">שחזר</button>' : ''}
+        <button type="button" class="btn small plist-edit-btn" title="ערוך מטופל">✏️</button>
+      </div>
+    </div>`;
+}
+
+/* One «ממתינים לקליטה» row's HTML. Pure. */
+function pendingAdmissionRowHtml(r, edit) {
+  const L = r.lead;
+  const house = unadmittedHouseId(L.house);
+  const h = HOUSES.find(x => x.id === house);
+  const item = (label, value) => `<div><span class="p-label">${escapeHtml(label)}</span><span class="p-val">${value ? escapeHtml(value) : '—'}</span></div>`;
+  return `
+    <div class="plist-main">
+      <div class="plist-name-cell"><span class="p-label">ליד</span><span class="p-name">${escapeHtml(L.name)}</span></div>
+      ${item('בית', h ? h.name : L.house)}
+      ${item('תאריך כניסה', L.entryDate ? formatDate(L.entryDate) : '')}
+      ${item('ימים מהכניסה', r.days == null ? '' : String(r.days))}
+      ${item('טלפון', L.phone)}
+      ${item('מקור', L.source)}
+      ${item('מקדמה', L.advance ? '₪ ' + Number(L.advance).toLocaleString('he-IL') : '')}
+    </div>
+    ${r.chipDays != null ? `<div class="plist-chips"><span class="plist-chip">${escapeHtml(`לא נקלט כמטופל · ${r.chipDays} ימים`)}</span></div>` : ''}
+    ${edit ? '<div class="row-actions"><button type="button" class="btn small primary plist-admit-btn">קלוט כמטופל</button></div>' : ''}`;
+}
+
+/* The count on the «מטופלים» tab: active patients with at least one open
+ * problem. Hidden at zero. */
+function renderPatientsProblemsBadge(summary) {
+  const el = document.getElementById('patients-problems-badge');
+  if (!el) return;
+  const n = summary ? summary.patients : 0;
+  el.textContent = String(n);
+  el.classList.toggle('hidden', n === 0);
+}
+
+function renderPatientsTab() {
+  if (controllerView()) return;
+  const today = debtAgingTodayIso();
+  const summary = patientProblemSummary(state, today);
+  renderPatientsProblemsBadge(summary);
+  const list = document.getElementById('plist-list');
+  if (!list) return;
+  const f = patientsTabFilters();
+  const finance = state.finance === true;
+  const edit = state.mode === 'edit';
+
+  const houseSel = document.getElementById('plist-house');
+  if (houseSel) {
+    houseSel.innerHTML = '<option value="">כל הבתים</option>'
+      + HOUSES.map(h => `<option value="${escapeHtml(h.id)}">${escapeHtml(h.name)}</option>`).join('');
+    houseSel.value = f.house;
+  }
+  const statusSel = document.getElementById('plist-status');
+  if (statusSel) statusSel.value = f.status;
+  const probEl = document.getElementById('plist-problems');
+  if (probEl) probEl.checked = !!f.problemsOnly;
+
+  const sumEl = document.getElementById('plist-summary');
+  if (sumEl) {
+    const parts = PATIENT_PROBLEMS.filter(p => summary.byCode[p.code] > 0)
+      .map(p => `<span class="plist-chip" data-problem="${escapeHtml(p.code)}">${escapeHtml(p.label)} · ${summary.byCode[p.code]}</span>`);
+    sumEl.innerHTML = summary.patients
+      ? `<span class="plist-summary-head">${escapeHtml(`${summary.patients} מטופלים פעילים עם בעיות פתוחות`)}</span>${parts.join('')}`
+      : '<span class="plist-summary-ok">אין בעיות פתוחות במטופלים הפעילים</span>';
+  }
+
+  // «ממתינים לקליטה» — follows the house and name filters, not the status one.
+  const pendEl = document.getElementById('plist-pending');
+  if (pendEl) {
+    const q = normalizeNameForMatch(f.q);
+    const pending = pendingAdmissionRows(state.leads, state.patients, state.payments || [], today, patientLeadPool(state))
+      .filter(r => (!f.house || unadmittedHouseId(r.lead.house) === f.house)
+        && (!q || normalizeNameForMatch(r.lead.name).indexOf(q) >= 0));
+    pendEl.innerHTML = '';
+    if (pending.length) {
+      const head = document.createElement('h3');
+      head.className = 'plist-section-title';
+      head.textContent = `ממתינים לקליטה (${pending.length})`;
+      pendEl.appendChild(head);
+      pending.forEach(r => {
+        const el = document.createElement('div');
+        el.className = 'plist-row plist-pending-row';
+        el.innerHTML = pendingAdmissionRowHtml(r, edit);
+        const btn = el.querySelector('.plist-admit-btn');
+        if (btn) btn.onclick = () => openEntryModal(r.lead);
+        pendEl.appendChild(el);
+      });
+    }
+  }
+
+  const rows = patientListRows(state, f, today);
+  const countEl = document.getElementById('plist-count');
+  if (countEl) countEl.textContent = String(rows.length);
+  list.innerHTML = '';
+  if (!rows.length) {
+    list.innerHTML = '<div class="card plist-empty">אין מטופלים להצגה</div>';
+    return;
+  }
+  rows.forEach(row => {
+    const p = row.patient;
+    const el = document.createElement('div');
+    el.className = 'plist-row' + (p.status === 'released' ? ' released' : '') + (row.problems.length ? ' has-problems' : '');
+    el.dataset.id = p.id;
+    el.innerHTML = patientListRowHtml(row, finance, edit);
+    const on = (sel, fn) => { const b = el.querySelector(sel); if (b) b.onclick = fn; };
+    on('.plist-edit-btn', () => openEditPatientModal(p));
+    on('.plist-funder-btn', () => openFunderModal(p));
+    on('.plist-report-btn', () => {
+      const due = row.payment && row.payment.dueISO;
+      if (due) openPaymentReportModal(p, paymentForPatientOnDate(p, due), due);
+    });
+    on('.plist-restore-btn', () => showRestorePatientChoiceModal(auditRowForReleasedPatient(p, state.dischargedPatients)));
+    list.appendChild(el);
+  });
+}
+
+/* Filter controls — wired once from initTabs. Each handler reads the LIVE
+ * filters object (patientsTabFilters), never one captured at wiring time. */
+function initPatientsTabFilters() {
+  const set = (k, v) => { patientsTabFilters()[k] = v; renderPatientsTab(); };
+  const search = document.getElementById('plist-search');
+  if (search) search.oninput = e => set('q', String(e.target.value || '').trim());
+  const house = document.getElementById('plist-house');
+  if (house) house.onchange = e => set('house', String(e.target.value || ''));
+  const status = document.getElementById('plist-status');
+  if (status) status.onchange = e => {
+    const v = String(e.target.value || '');
+    set('status', ['active', 'released', 'all'].indexOf(v) >= 0 ? v : 'active');
+  };
+  const prob = document.getElementById('plist-problems');
+  if (prob) prob.onchange = e => set('problemsOnly', !!e.target.checked);
+}
+
 /* Build the discharged-patient audit row (pure — no DOM, no I/O, so it's unit
  * tested directly). Resolves the effective discharge date: a user-entered
  * `dischargeDate` (from the optional date field) wins; an empty field falls
@@ -5842,111 +7102,166 @@ function dischargeAuditRow(patient, { disposition, note, dischargeDate }, today)
  * the optimistic discharged row if either write fails.
  * NOTE: the משוחרר לטיפול חוץ option only records the disposition + date here;
  * the cross-app Outpatient lead creation is PR 3 — intentionally not built. */
+/* Duplicate discharges (CHANGELOG-duplicate-discharges.md). The server
+ * refuses a second OPEN discharge row for a stay and answers duplicate:true;
+ * this is what the user reads then. */
+const DISCHARGE_ALREADY_RECORDED_HE = 'השחרור כבר נרשם';
+
+/* Stays (dischargeStayKey) with a discharge being saved right now in THIS
+ * tab: a second confirm for the same stay — the house row's שחרר and the
+ * renewals row's שחרור are two doors to the same worker — waits for nothing
+ * and writes nothing. */
+const dischargesInFlight = new Set();
+
 function dischargePatient(p) {
   if (state.mode !== 'edit') return;
+
+  /* ONE audit id per modal: a retry from the same modal (after a lost
+   * response or a «נשמר חלקית» error — the modal stays open) re-sends the
+   * SAME row, which the server upserts in place instead of appending a
+   * second one. The old per-confirm cryptoId() was the duplicate's source. */
+  const auditId = cryptoId();
 
   showCloseLeadModal({
     title: 'שחרור מטופל',
     dispositions: DISCHARGE_DISPOSITIONS,
     dateField: { name: 'dischargeDate', label: 'תאריך שחרור' },
-    onConfirm: async ({ disposition, note, dischargeDate }) => {
-      // Guard 2 (discharge re-promotion fix, insurance): retire the source lead
-      // to the terminal 'admitted' stage (the same value retireAdmittedLeads
-      // uses) so a later loadAll's promoteEnteredLeads can't re-create this
-      // just-discharged patient from a lead still parked at 'entry'/'entered'.
-      // Only a fromLead that resolves to a REAL lead is touched; hand-entered
-      // patients (no fromLead) are covered by Guard 1. `prev` also captures the
-      // lead's prior stage so a failed persist rolls the lead back with the
-      // patient.
-      const sourceLead = p.fromLead
-        ? (state.leads || []).find(l => String(l.id) === String(p.fromLead)) || null
-        : null;
-      const prev = {
-        status: p.status,
-        exitDate: p.exitDate,
-        lead: sourceLead,
-        leadStage: sourceLead ? sourceLead.stage : undefined,
-      };
-
-      const auditRow = dischargeAuditRow(p, { disposition, note, dischargeDate });
-      const exitDate = auditRow.exitDate;
-      const rollback = () => {
-        p.status = prev.status;
-        p.exitDate = prev.exitDate;
-        if (prev.lead) prev.lead.stage = prev.leadStage;
-        state.dischargedPatients = state.dischargedPatients.filter(d => d.id !== auditRow.id);
-        renderAll();
-      };
-
-      p.status   = 'released';
-      p.exitDate = exitDate;
-      if (sourceLead) sourceLead.stage = 'admitted';
-      state.dischargedPatients = state.dischargedPatients || [];
-      state.dischargedPatients.unshift(auditRow);
-      renderAll();
-
-      /* WRITE ORDER MATTERS (discharge-persistence fix). The audit row goes
-       * FIRST: it is a keyed upsert on its own sheet that no saveAll can ever
-       * clobber, so once it lands the discharge intent is durable — if the
-       * saveAll below then fails, healClobberedDischarges completes the
-       * release from the audit row on the next load. The old order (saveAll
-       * first) had the fatal inverse: a failed audit write rolled the LOCAL
-       * patient back to active while the sheet already said released, and the
-       * session's next saveAll silently re-activated the sheet — the
-       * discharge evaporated with nothing but a 6-second toast.
-       *
-       * The payload is the full auditRow (not {...p}): it carries
-       * prior_status + exitDate + dischargedAt, which the old payload dropped
-       * — persisted audit rows always had a blank prior_status, so
-       * restore-to-previous-status silently fell back to 'active'. */
+    onConfirm: async (fields) => {
+      const stay = dischargeStayKey(p) || ('id:' + String(p.id || ''));
+      if (dischargesInFlight.has(stay)) {
+        showToast('השחרור כבר בשמירה…');
+        return;
+      }
+      dischargesInFlight.add(stay);
       try {
-        await apiPost({ action: 'dischargePatient', patient: auditRow });
-      } catch (e) {
-        // Nothing persisted yet — a full rollback is truthful.
-        rollback();
-        showError('שחרור המטופל נכשל — לא נשמר. ' + e.message);
-        throw e;
-      }
-
-      try {
-        await saveAll();
-      } catch (e) {
-        /* The audit row IS persisted; only the status flip failed. Roll the
-         * UI back so it reflects the Patients sheet (still active), and let
-         * the load-time heal finish the release — the discharge converges to
-         * the user's intent instead of silently disappearing. */
-        rollback();
-        showError('שחרור המטופל נשמר חלקית — הסטטוס יתעדכן בטעינה הבאה. ' + e.message);
-        throw e;
-      }
-
-      // PR 3 — cross-app effect: a "released to outpatient" discharge also
-      // creates a lead in the Outpatient app. This runs ONLY after the local
-      // discharge has fully persisted, and is deliberately NON-FATAL — a failed
-      // Outpatient write must never roll back the (already saved) discharge.
-      // createOutpatientLead swallows its own errors and warns the user, so we
-      // await it without a try/throw: it cannot break the discharge.
-      if (shouldCreateOutpatientLead(disposition)) {
-        await createOutpatientLead(p);
-      }
-
-      // Credits / refunds — a SEPARATE write, offered only once BOTH discharge
-      // writes above have succeeded. Nothing here can roll the discharge back:
-      // the modal's save failures surface the Hebrew error banner and leave
-      // the discharge intact; a deferred or failed credit is recoverable from
-      // the מטופלים משוחררים tab (openCreditsForDischarged).
-      // Restricted view: the refund step is skipped (Sandra / Vered create
-      // the credit later from מטופלים משוחררים → «זיכויים»).
-      if (financeView()) try {
-        await showCreditsModal({
-          patient: p, patientId: p.id ? String(p.id) : '', patientKey: patientKey(p), exitDate: exitDate,
-        });
-      } catch (e) {
-        console.warn('[E-ZONE] credits modal failed to open:', e && e.message);
-        showError('לא ניתן לפתוח את חלון הזיכויים — ניתן ליצור זיכוי מלשונית מטופלים משוחררים. ' + (e && e.message || ''));
+        await runDischarge(p, auditId, fields);
+      } finally {
+        dischargesInFlight.delete(stay);
       }
     },
   });
+}
+
+/* The discharge itself (both writes + the follow-ups). Split out of
+ * dischargePatient only so the in-flight guard can wrap it. */
+async function runDischarge(p, auditId, { disposition, note, dischargeDate }) {
+  // Guard 2 (discharge re-promotion fix, insurance): retire the source lead
+  // to the terminal 'admitted' stage (the same value retireAdmittedLeads
+  // uses) so a later loadAll's promoteEnteredLeads can't re-create this
+  // just-discharged patient from a lead still parked at 'entry'/'entered'.
+  // Only a fromLead that resolves to a REAL lead is touched; hand-entered
+  // patients (no fromLead) are covered by Guard 1. `prev` also captures the
+  // lead's prior stage so a failed persist rolls the lead back with the
+  // patient.
+  const sourceLead = p.fromLead
+    ? (state.leads || []).find(l => String(l.id) === String(p.fromLead)) || null
+    : null;
+  const prev = {
+    status: p.status,
+    exitDate: p.exitDate,
+    lead: sourceLead,
+    leadStage: sourceLead ? sourceLead.stage : undefined,
+  };
+
+  const auditRow = Object.assign(dischargeAuditRow(p, { disposition, note, dischargeDate }), { id: auditId });
+  let exitDate = auditRow.exitDate;
+  const rollback = () => {
+    p.status = prev.status;
+    p.exitDate = prev.exitDate;
+    if (prev.lead) prev.lead.stage = prev.leadStage;
+    state.dischargedPatients = state.dischargedPatients.filter(d => d.id !== auditRow.id);
+    renderAll();
+  };
+
+  p.status   = 'released';
+  p.exitDate = exitDate;
+  if (sourceLead) sourceLead.stage = 'admitted';
+  state.dischargedPatients = state.dischargedPatients || [];
+  state.dischargedPatients.unshift(auditRow);
+  renderAll();
+
+  /* WRITE ORDER MATTERS (discharge-persistence fix). The audit row goes
+   * FIRST: it is a keyed upsert on its own sheet that no saveAll can ever
+   * clobber, so once it lands the discharge intent is durable — if the
+   * saveAll below then fails, healClobberedDischarges completes the
+   * release from the audit row on the next load. The old order (saveAll
+   * first) had the fatal inverse: a failed audit write rolled the LOCAL
+   * patient back to active while the sheet already said released, and the
+   * session's next saveAll silently re-activated the sheet — the
+   * discharge evaporated with nothing but a 6-second toast.
+   *
+   * The payload is the full auditRow (not {...p}): it carries
+   * prior_status + exitDate + dischargedAt, which the old payload dropped
+   * — persisted audit rows always had a blank prior_status, so
+   * restore-to-previous-status silently fell back to 'active'. */
+  let auditRes;
+  try {
+    auditRes = await apiPost({ action: 'dischargePatient', patient: auditRow });
+  } catch (e) {
+    // Nothing persisted yet — a full rollback is truthful.
+    rollback();
+    showError('שחרור המטופל נכשל — לא נשמר. ' + e.message);
+    throw e;
+  }
+
+  /* duplicate:true — this stay ALREADY has an open discharge row (an
+   * earlier attempt whose answer was lost, or another tab). The server
+   * wrote nothing. Drop the optimistic row, keep the patient released
+   * (on the recorded exit date) so the Patients sheet matches the
+   * recorded discharge, and skip the follow-ups the first discharge
+   * already owned (outpatient lead, credits). */
+  if (auditRes && auditRes.duplicate === true) {
+    state.dischargedPatients = state.dischargedPatients.filter(d => d.id !== auditRow.id);
+    if (auditRes.exitDate) { exitDate = String(auditRes.exitDate).slice(0, 10); p.exitDate = exitDate; }
+    renderAll();
+    showToast(DISCHARGE_ALREADY_RECORDED_HE);
+    try {
+      await saveAll();
+    } catch (e) {
+      rollback();
+      showError(DISCHARGE_ALREADY_RECORDED_HE + ' — הסטטוס יתעדכן בטעינה הבאה. ' + e.message);
+      throw e;
+    }
+    return;
+  }
+
+  try {
+    await saveAll();
+  } catch (e) {
+    /* The audit row IS persisted; only the status flip failed. Roll the
+     * UI back so it reflects the Patients sheet (still active), and let
+     * the load-time heal finish the release — the discharge converges to
+     * the user's intent instead of silently disappearing. */
+    rollback();
+    showError('שחרור המטופל נשמר חלקית — הסטטוס יתעדכן בטעינה הבאה. ' + e.message);
+    throw e;
+  }
+
+  // PR 3 — cross-app effect: a "released to outpatient" discharge also
+  // creates a lead in the Outpatient app. This runs ONLY after the local
+  // discharge has fully persisted, and is deliberately NON-FATAL — a failed
+  // Outpatient write must never roll back the (already saved) discharge.
+  // createOutpatientLead swallows its own errors and warns the user, so we
+  // await it without a try/throw: it cannot break the discharge.
+  if (shouldCreateOutpatientLead(disposition)) {
+    await createOutpatientLead(p);
+  }
+
+  // Credits / refunds — a SEPARATE write, offered only once BOTH discharge
+  // writes above have succeeded. Nothing here can roll the discharge back:
+  // the modal's save failures surface the Hebrew error banner and leave
+  // the discharge intact; a deferred or failed credit is recoverable from
+  // the מטופלים משוחררים tab (openCreditsForDischarged).
+  // Restricted view: the refund step is skipped (Sandra / Vered create
+  // the credit later from מטופלים משוחררים → «זיכויים»).
+  if (financeView()) try {
+    await showCreditsModal({
+      patient: p, patientId: p.id ? String(p.id) : '', patientKey: patientKey(p), exitDate: exitDate,
+    });
+  } catch (e) {
+    console.warn('[E-ZONE] credits modal failed to open:', e && e.message);
+    showError('לא ניתן לפתוח את חלון הזיכויים — ניתן ליצור זיכוי מלשונית מטופלים משוחררים. ' + (e && e.message || ''));
+  }
 }
 
 /* ====================================================
@@ -6211,6 +7526,8 @@ function fmtShekel(n) {
 /* Hebrew label per rule, for suggestions built by the server (basis
  * basisVersion 2 — computeRefund_ in Code.gs). */
 const CREDIT_RULE_LABELS = {
+  stay_prorata:               'יציאה ביום שהייה 1–13 — זיכוי יחסי על המחזור הנוכחי',
+  stay_day14_zero:            'יציאה ביום שהייה 14 ומעלה — ללא זיכוי על המחזור הנוכחי',
   residential_prorata:        'מגורים — זיכוי יחסי על הימים שלא שהה',
   residential_last_days_zero: '7 הימים האחרונים במחזור — ללא זיכוי',
   detox_prorata:              'גמילה/דואלי — יציאה עד יום 13 — זיכוי יחסי',
@@ -6296,6 +7613,31 @@ async function fetchRefundSuggestions(patient, pKey, exitDate) {
   }
 }
 
+/* The refund rule in one Hebrew line, for the «זיכויים» modal. Picked by the
+ * EXIT date through lib/refund-rules.js (window.RefundRules — the same rule
+ * Code.gs computeRefund_ applies, parity-tested): an exit from
+ * REFUND_RULE_V2_FROM on → the unified billing-month rule; earlier → the
+ * per-house rule it was decided under. '' without a usable exit date or
+ * without the rules file. CHANGELOG-refund-rule-v2.md. */
+function refundPolicyNote(exitISO, facility) {
+  const R = typeof RefundRules !== 'undefined' ? RefundRules : null;
+  const exit = isoDate(exitISO);
+  if (!R || !exit) return '';
+  let version;
+  try { version = R.refundRuleVersion(exit); } catch (_) { return ''; }
+  const prepaid = 'מחזור ששולם מראש ומתחיל אחרי היציאה — החזר מלא.';
+  if (version === 2) {
+    return `כלל ההחזר (יציאה מ־${formatDateHe(R.REFUND_RULE_V2_FROM)}, כל הבתים): יציאה ביום השהייה ה־${R.REFUND_V2_NO_REFUND_FROM_DAY} ומעלה (יום הכניסה = יום 1, נספר גם מעבר לסוף החודש) — ללא זיכוי על המחזור הנוכחי; יציאה ביום שהייה 1–${R.REFUND_V2_NO_REFUND_FROM_DAY - 1} — זיכוי יחסי על המחזור הנוכחי. ${prepaid}`;
+  }
+  if (facility === 'residential') {
+    return `כלל ההחזר (יציאה לפני ${formatDateHe(R.REFUND_RULE_V2_FROM)}, בית מאזן): יציאה ב־${R.REFUND_V1_RESIDENTIAL_LAST_DAYS} הימים האחרונים של חודש החיוב — ללא זיכוי. ${prepaid}`;
+  }
+  if (facility === 'detox_dual') {
+    return `כלל ההחזר (יציאה לפני ${formatDateHe(R.REFUND_RULE_V2_FROM)}, גמילה / דואלי): יציאה ביום שהייה ${R.REFUND_V1_DETOX_CUTOFF_DAY} ומעלה — ללא זיכוי. ${prepaid}`;
+  }
+  return '';
+}
+
 /* The breakdown Vered reads under a suggested amount (server basis only).
  * Every value goes through escapeHtml. */
 function creditBreakdownHtml(basis) {
@@ -6308,8 +7650,10 @@ function creditBreakdownHtml(basis) {
     row('ימים שלא שהה:', String(basis.daysNotStayed)),
     row('תעריף יומי:', `${fmtShekel(basis.dailyRate)} (${fmtShekel(basis.amountPaid)} ÷ ${basis.divisor})`),
   ];
-  if (basis.facilityType === 'detox_dual') rows.push(row('יום שהייה ביציאה:', String(basis.stayDay)));
-  if (basis.facilityType === 'residential' && basis.lastDaysFrom) {
+  // Rule v2 (exit from 07/10/2026, every house) and v1 detox: the stay day
+  // decides. v1 residential: the last 7 days of the cycle.
+  if (Number(basis.ruleVersion) === 2 || basis.facilityType === 'detox_dual') rows.push(row('יום שהייה ביציאה:', String(basis.stayDay)));
+  if (Number(basis.ruleVersion) !== 2 && basis.facilityType === 'residential' && basis.lastDaysFrom) {
     rows.push(row('7 הימים האחרונים במחזור:', `${d(basis.lastDaysFrom)} – ${d(basis.lastDaysTo)}`));
   }
   if (basis.alreadyCreditedThrough) rows.push(row('כבר זוכה עד:', d(basis.alreadyCreditedThrough)));
@@ -6449,6 +7793,9 @@ async function saveCredit(credit) {
     throw new Error('תשובת שרת לא תקינה בשמירת זיכוי');
   }
   const saved = normalizeCredit(res.credit);
+  /* duplicate:true — the stay already has an OPEN credit for this rule; the
+   * server wrote nothing and answered that row, which replaces the line. */
+  if (res.duplicate === true) console.warn('[E-ZONE] credit already recorded — kept', saved.id);
   state.credits = Array.isArray(state.credits) ? state.credits : [];
   const idx = state.credits.findIndex(c => c.id === saved.id);
   if (idx >= 0) state.credits[idx] = saved; else state.credits.push(saved);
@@ -6519,6 +7866,7 @@ async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate
   const existing    = creditsForPatient(state.credits, patientId, pKey);
   const lines       = buildCreditLines(existing, suggestions);
   const facility    = facilityTypeFor(patient && patient.houseId);
+  const policyNote  = refundPolicyNote(exitDate, facility);
 
   const back = document.createElement('div');
   back.className = 'modal-backdrop';
@@ -6595,6 +7943,7 @@ async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate
     back.innerHTML = `
       <div class="modal credits-modal">
         <h3>זיכויים והחזרים — ${escapeHtml((patient && patient.name) || '')}${facility ? ` <span class="credit-new">${escapeHtml(FACILITY_TYPE_LABELS[facility])}</span>` : ''}</h3>
+        ${policyNote ? `<p class="credit-policy">${escapeHtml(policyNote)}</p>` : ''}
         ${suggestionError ? `<div class="credit-error" role="alert">${escapeHtml(refundErrorMessage(suggestionError))}</div>` : ''}
         <form>
           <div class="credit-lines">${lines.map(lineHtml).join('')}</div>
@@ -6804,7 +8153,7 @@ function showMarkCreditPaidModal(c) {
 /* Payout view (גבייה tab): pending credits grouped by payoutDate with a
  * total per date, so the outgoing amount is visible before each 15th. */
 function renderCreditsPayouts() {
-  if (!financeView()) return; // restricted view: no billing UI at all
+  if (!billingTabView()) return; // restricted view: no billing UI at all
   renderPayoutForecast();
   const list = document.getElementById('credits-payout-list');
   if (!list) return;
@@ -6899,7 +8248,7 @@ function markPayoutForecastStale() {
 }
 
 async function loadPayoutForecast() {
-  if (!financeView()) return; // restricted view: no billing UI at all
+  if (!billingTabView()) return; // restricted view: no billing UI at all
   const f = payoutForecastState();
   if (f.status === 'loading') return f.promise;
   f.status = 'loading'; f.error = '';
@@ -7071,7 +8420,7 @@ function cleanupXlsxErrorText(status, code) {
 }
 
 async function exportCleanupXlsx() {
-  if (!financeView()) throw new Error('אין הרשאה לייצוא זה');
+  if (!billingTabView()) throw new Error('אין הרשאה לייצוא זה');
   let res;
   try {
     res = await fetch(CLEANUP_XLSX_URL, { method: 'GET', credentials: 'same-origin', cache: 'no-store' });
@@ -7273,6 +8622,24 @@ function debtAgingView(data, filters) {
   return { asOf: data.asOf, house, status, houseIds, tables, patients, credits, lists };
 }
 
+/* «ממתין לגורם מממן · עד DD/MM/YYYY» for a cycle the server flagged
+ * funderGrace (Code.gs debtAging_); a cycle with money received and a
+ * balance left is partly paid: «שולם חלקית · ממתין לגורם מממן · עד …». Pure. */
+function debtAgingGraceText(c) {
+  const until = c && c.funderGraceUntil ? formatDateHe(c.funderGraceUntil) : '';
+  const partial = c && Number(c.received) > 0 && Number(c.balance) > 0;
+  return funderGraceStatusLabel(partial ? 'partial' : 'unpaid') + (until ? ' · עד ' + until : '');
+}
+/* The one line under the two blocks: how many owed cycles are inside an
+ * institutional funder's grace window — still INCLUDED in both blocks. '' at
+ * zero. Pure. */
+function debtAgingGraceLine(data) {
+  const g = data && data.funderGrace;
+  const n = Number(g && g.count) || 0;
+  if (!n) return '';
+  return `${n} מחזורים (${fmtShekel(g.amount)}) ${FUNDER_GRACE_COLUMN_LABEL} — נכללים בחוב, לא מסומנים כבעיה`;
+}
+
 /* The caveats to show — only the relevant ones. Pure. */
 function debtAgingCaveats(data, todayIso) {
   const out = [];
@@ -7327,6 +8694,8 @@ function debtAgingHtml(data, filters, todayIso) {
     + debtAgingBlockHtml('recorded_debt', v.tables.recorded_debt, 'שורות תשלום שלא שולמו או שולמו חלקית')
     + debtAgingBlockHtml('unrecorded_cycles', v.tables.unrecorded_cycles, DEBT_AGING_UNRECORDED_NOTE)
     + `</div>`;
+  const graceLine = debtAgingGraceLine(data);
+  if (graceLine) html += `<p class="debt-grace-line">${esc(graceLine)}</p>`;
 
   html += `<div class="debt-credits"><span class="debt-credits-label">${esc(DEBT_AGING_CREDITS_LABEL)}:</span> `
     + (v.credits.rows.length
@@ -7355,10 +8724,11 @@ function debtAgingHtml(data, filters, todayIso) {
           + `<div><span class="p-label">ללא רישום</span><span class="p-val">${esc(fmtShekel(p.unrecordedTotal))}</span></div>`
           + `<div><span class="p-label">הוותיק ביותר</span><span class="p-val"><span dir="ltr">${esc(debtAgingBucketLabel(p.oldestBucket))}</span> ימים</span></div>`
           + `</summary><div class="debt-table-wrap"><table class="debt-table debt-cycles"><thead><tr>`
-          + `<th>תחילה</th><th>סוף</th><th>צפוי</th><th>התקבל</th><th>יתרה</th><th>תקופת חוב (ימים)</th><th>סוג</th></tr></thead><tbody>`
-          + p.cycles.map(c => `<tr class="debt-cycle" data-kind="${esc(c.kind)}"><td><bdi>${esc(formatDateHe(c.start) || '—')}</bdi></td><td><bdi>${esc(formatDateHe(c.end) || '—')}</bdi></td>`
+          + `<th>תחילה</th><th>סוף</th><th>צפוי</th><th>התקבל</th><th>יתרה</th><th>תקופת חוב (ימים)</th><th>סוג</th><th>${esc(FUNDER_GRACE_COLUMN_LABEL)}</th></tr></thead><tbody>`
+          + p.cycles.map(c => `<tr class="debt-cycle${c.funderGrace ? ' funder-grace' : ''}" data-kind="${esc(c.kind)}"><td><bdi>${esc(formatDateHe(c.start) || '—')}</bdi></td><td><bdi>${esc(formatDateHe(c.end) || '—')}</bdi></td>`
             + `<td>${esc(fmtShekel(c.expected))}</td><td>${esc(fmtShekel(c.received))}</td><td>${esc(fmtShekel(c.balance))}</td>`
-            + `<td><span dir="ltr">${esc(debtAgingBucketLabel(c.bucket))}</span></td><td>${esc(DEBT_AGING_KIND_LABELS[c.kind] || c.kind)}</td></tr>`).join('')
+            + `<td><span dir="ltr">${esc(debtAgingBucketLabel(c.bucket))}</span></td><td>${esc(DEBT_AGING_KIND_LABELS[c.kind] || c.kind)}</td>`
+            + `<td>${c.funderGrace ? `<span class="badge pay-state pay-state-funder_grace">${esc(debtAgingGraceText(c))}</span>` : '—'}</td></tr>`).join('')
           + `</tbody></table></div></details>`;
       });
       html += `</details>`;
@@ -7553,6 +8923,11 @@ function initDebtAgingControls() {
  * public/funder.js (global Funder) maps the stored labels to stable keys. */
 const FUNDER_UNSET_KEY = 'unset';
 const FUNDER_UNSET_LABEL = 'לא הוגדר';
+/* Pro-bono (CHANGELOG-funder-probono.md): the fifth funder. A patient whose
+ * funder on a cycle's day is pro-bono owes nothing for it — the server drops
+ * those cycles from «חובות פתוחים»; here the due list, «יתרות פתוחות» and the
+ * renewal / overdue alerts skip them (isProbonoOn). The strip keeps its ₪0 row. */
+const FUNDER_PROBONO_KEY = 'probono';
 const FUNDER_FILTER_ALL = 'all';
 const FUNDER_REQUIRED_MESSAGE = 'יש לבחור גורם מממן';
 const FUNDER_RELEASED_DEBT_TAG = 'שוחרר/ה · יתרה פתוחה';
@@ -7694,9 +9069,58 @@ function funderFilterMatch(filter, key) {
   return !filter || filter === FUNDER_FILTER_ALL || filter === key;
 }
 
+/* Is `label` the pro-bono funder label (funder.js's map; no literal here)? Pure. */
+function isProbonoLabel(label) {
+  const F = funderLib();
+  return !!F && F.keyFromLabel(label) === FUNDER_PROBONO_KEY;
+}
+
+/* True when `patient` is pro-bono on `dayISO` — finance view only (a
+ * restricted session holds no funders and sees no billing). Such a row is
+ * not owed, so the due list, «יתרות פתוחות» and the alerts skip it. */
+function isProbonoOn(patient, dayISO) {
+  // Ortal's read-only «גבייה» (billingReadView) must leave pro-bono cycles
+  // out exactly like Vered's — the funder data rides getPayments for her too.
+  if (!(funderView() || (billingReadView() && !!funderLib())) || !patient) return false;
+  return patientFunderKey(patient, state.funders, todayISO(), isoDate(dayISO) || todayISO()) === FUNDER_PROBONO_KEY;
+}
+
 /* A billing row's funder: the patient's funder ON THAT CYCLE'S DUE DATE. */
 function billingRowFunderKey(patient, dueISO) {
   return patientFunderKey(patient, state.funders, todayISO(), isoDate(dueISO) || todayISO());
+}
+
+/* ===== Institutional-funder grace (CHANGELOG-funder-grace.md) =====
+ * A cycle whose funder on its due date is ביטוח לאומי / מכבי / משרד הביטחון
+ * is not a collection problem until 30 days after its due date: it reads
+ * «ממתין לגורם מממן» (grey) instead of the overdue / «לא דווח תשלום» marking.
+ * The amount still counts as outstanding everywhere. The rule is
+ * lib/funder-grace.js (global FunderGrace, the same as Code.gs
+ * isWithinFunderGrace_); without it nothing is deferred (normal marking). */
+const FUNDER_GRACE_STATUS_LABEL = 'ממתין לגורם מממן';
+/* The status shown inside the window: a partly paid cycle keeps its fact —
+ * «שולם חלקית · ממתין לגורם מממן»; an unpaid one reads the grace label. Pure. */
+function funderGraceStatusLabel(owedKey) {
+  return owedKey === 'partial' ? paymentStatusLabel('partial') + ' · ' + FUNDER_GRACE_STATUS_LABEL : FUNDER_GRACE_STATUS_LABEL;
+}
+const FUNDER_GRACE_COLUMN_LABEL = 'בתוך תקופת גורם מממן';
+function funderGraceLib() {
+  return (typeof FunderGrace !== 'undefined' && FunderGrace && typeof FunderGrace.isWithinFunderGrace === 'function') ? FunderGrace : null;
+}
+/* Pure: is the cycle due on dueISO inside the grace window on todayIso, for
+ * this patient, with these Funders rows? false without the rules, the funder
+ * module, a funder rows array or a readable due date. */
+function patientCycleInFunderGrace(patient, funders, dueISO, todayIso) {
+  const G = funderGraceLib();
+  const due = isoDate(dueISO);
+  if (!G || !funderLib() || !patient || !due || !Array.isArray(funders)) return false;
+  return G.isWithinFunderGrace(due, patientFunderKey(patient, funders, todayIso, due), todayIso);
+}
+/* The live-state form, for the גבייה rows and the dashboard alert: only
+ * where funder data is loaded (the same gate as isProbonoOn). */
+function isInFunderGraceOn(patient, dueISO) {
+  if (!(funderView() || (billingReadView() && !!funderLib())) || !patient) return false;
+  return patientCycleInFunderGrace(patient, state.funders, dueISO, todayISO());
 }
 
 /* The active funder filter — 'all' outside the finance view. */
@@ -8540,6 +9964,8 @@ function overduePatients(fromISO) {
     if (dueISO < isoDate(p.date)) return;
     const pay = paymentForPatientOnDate(p, dueISO);
     if (paymentCoversCycle(pay)) return;
+    if (isProbonoOn(p, dueISO)) return;   // pro-bono: nothing is owed
+    if (isInFunderGraceOn(p, dueISO)) return;   // institutional funder, ≤ 30 days: not overdue yet
     out.push({ patient: p, dueISO });
   });
   return out.sort((a, b) => a.dueISO.localeCompare(b.dueISO));
@@ -8579,6 +10005,7 @@ function patientsNeedingRenewal(fromISO, windowDays) {
     // covered — an unpaid placeholder does not suppress the alert.
     const pay = paymentForPatientOnDate(p, renewalISO);
     if (paymentCoversCycle(pay)) return;
+    if (isProbonoOn(p, renewalISO)) return;   // pro-bono: nothing to renew
     out.push({ patient: p, renewalISO, days });
   });
   return out.sort((a, b) => a.renewalISO.localeCompare(b.renewalISO));
@@ -9221,12 +10648,13 @@ function billingRowMatchesQuery(patient, payment, q) {
 }
 
 function renderBilling() {
-  if (!financeView()) return; // restricted view: no billing UI at all
+  if (!billingTabView()) return; // restricted view: no billing UI at all
   const selected = state.billingDate || todayISO();
   const billingDateEl = document.getElementById('billing-date');
   if (billingDateEl && billingDateEl.value !== selected) billingDateEl.value = selected;
 
-  const dueAll = patientsDueOn(selected).map(p => ({
+  // A patient pro-bono on the selected date owes nothing: not listed.
+  const dueAll = patientsDueOn(selected).filter(p => !isProbonoOn(p, selected)).map(p => ({
     patient: p,
     payment: paymentForPatientOnDate(p, selected),
   }));
@@ -9333,7 +10761,9 @@ function renderBillingOpenList(selectedISO) {
         status: '',
       };
       return { patient, pay };
-    });
+    })
+    // Pro-bono on the row's due date: not a balance (never owed).
+    .filter(o => !isProbonoOn(o.patient, o.pay.dueDate));
 
   const funderFilter = billingFunderFilter();
   const matched = openAll.filter(o => billingRowMatchesQuery(o.patient, o.pay, state.billingSearch)
@@ -9374,7 +10804,12 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   /* Overdue highlight: an unpaid current-list row whose due date has arrived.
    * Carry-forward rows keep their existing amber treatment (same warning
    * language) and are skipped here. */
-  const isOverdue = !isCarryForward && payment.status === 'unpaid' && dueDateISO <= todayISO();
+  /* Institutional funder (ביטוח לאומי / מכבי / משרד הביטחון) within 30 days
+   * of the due date: «ממתין לגורם מממן», grey — not overdue, not amber.
+   * The amount still counts in every total (CHANGELOG-funder-grace.md). */
+  const inFunderGrace = !isVoidPayment(payment) && payment.status !== 'paid'
+    && isoDate(dueDateISO) <= todayISO() && isInFunderGraceOn(patient, dueDateISO);
+  const isOverdue = !isCarryForward && !inFunderGrace && payment.status === 'unpaid' && dueDateISO <= todayISO();
   /* Two facts about the CYCLE rather than the money, both said on the row
    * instead of silently changing a total somewhere else:
    *   - before the records cutoff → not counted as debt (see
@@ -9393,7 +10828,7 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   const preRecords = isPreRecordsCycle(dueDateISO);
   const outsideStay = !!(patient && isoDate(patient.date))
     && !patientStayCoversDate(patient, dueDateISO);
-  row.className = 'billing-row' + (isCarryForward ? ' carry' : '') + (isOverdue ? ' overdue' : '');
+  row.className = 'billing-row' + (isCarryForward ? ' carry' : '') + (isOverdue ? ' overdue' : '') + (inFunderGrace ? ' funder-grace' : '');
   row.dataset.pid = payment.id;
 
   /* Phase 3 PR 2: the row no longer edits money. Its state (שולם / שולם
@@ -9402,7 +10837,7 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
    * record money is the strict «דווח תשלום» form. A void row offers no form,
    * and neither does a cycle already paid in full (a second report there is
    * almost always the same money twice; voiding a receipt reopens it). */
-  const stateLabel = isVoid ? PAYMENT_VOID_LABEL : paymentStatusLabel(payment.status);
+  const stateLabel = isVoid ? PAYMENT_VOID_LABEL : inFunderGrace ? funderGraceStatusLabel(payment.status) : paymentStatusLabel(payment.status);
   const canReport = state.mode === 'edit' && !isVoid && payment.status !== 'paid' && financeView();
 
   /* Per-month amount override (this row's OWN due-date month — for a
@@ -9509,7 +10944,7 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
     </div>
     <div>
       <span class="p-label">סטטוס</span>
-      <span class="badge pay-state pay-state-${escapeHtml(isVoid ? PAYMENT_VOID_STATUS : payment.status)}">${escapeHtml(stateLabel)}</span>
+      <span class="badge pay-state pay-state-${escapeHtml(isVoid ? PAYMENT_VOID_STATUS : inFunderGrace ? 'funder_grace' : payment.status)}">${escapeHtml(stateLabel)}</span>
     </div>
     <div>
       <span class="p-label">שולם</span>
@@ -10178,7 +11613,26 @@ function buildMonthlyRevenue(opts) {
     },
 
     byHouse: revenueBreakdownByHouse(receivedRows, expectedRows, creditRows),
+
+    /* «מאומת» (Phase 4): the part of the month's money Ortal confirmed in the
+     * bank — the CONFIRMED receipts allocated by their coverage window, by
+     * lib/billing-control-rules.js verifiedForMonth (the «בקרת גבייה» tab's
+     * own figure). A SEPARATE field: it is in no other figure here — not
+     * RECEIVED, not NET — so every shared revenue rule is unchanged. null
+     * when the receipts or the rules are not available. */
+    verified: revenueVerified(opts.receipts, bounds.key),
   };
+}
+
+/* { inclVat, exVat, count, rows } of «מאומת» for month `key`, or null. Ex-VAT
+ * is taken PER ROW at 2dp, like every bucket on this screen. Pure. */
+function revenueVerified(receipts, key) {
+  const R = (typeof globalThis !== 'undefined' && globalThis.BillingControlRules) || null;
+  if (!R || !Array.isArray(receipts)) return null;
+  const v = R.verifiedForMonth(receipts, key, 'all');
+  let ex = 0;
+  v.rows.forEach(r => { ex = roundMoney(ex + revenueExVat(r.amountInMonth)); });
+  return { inclVat: v.total, exVat: ex, count: v.count, rows: v.rows };
 }
 
 /* A payment whose patient is gone still counts — money is money. The SAME
@@ -10278,6 +11732,7 @@ function renderMonthlyRevenue() {
     payments: state.payments,
     credits: Array.isArray(state.credits) ? state.credits : [],
     overrides: state.billingOverrides,
+    receipts: Array.isArray(state.receipts) ? state.receipts : [],
     today: todayISO(),
   });
   if (!model) return;
@@ -10287,6 +11742,7 @@ function renderMonthlyRevenue() {
 
   const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
   set('rev-received', revMoney(model.received.exVat));
+  set('rev-verified', model.verified ? revMoney(model.verified.exVat) : '—');
   set('rev-expected', revMoney(model.expected.exVat));
   // Credits are a deduction; the minus sign is part of the figure so the card
   // cannot be misread as income.
@@ -10492,8 +11948,11 @@ async function savePayment(payment) {
   // updated in place by buildBillingRow's recompute.
   renderBillingMonthlySummary(state.billingDate || todayISO());
 
+  // Reads that started before this write must not overwrite it.
+  notePaymentsWrite();
   try {
     const res = await apiPost({ action: 'savePayment', payment });
+    notePaymentsWrite();
     /* ADOPT THE SERVER'S COPY when it echoes one. The link columns
      * (linkedBy / linkedAt) are stamped SERVER-SIDE from the signed session
      * cookie and the server's clock — the client cannot know them, and must
@@ -10531,7 +11990,18 @@ async function savePayment(payment) {
 
 const PAYMENT_REPORT_TOAST = 'התשלום נרשם — יופיע אצל אורטל מחר בבוקר';
 /* The form's field order — the order the inline errors are checked in. */
-const PAYMENT_REPORT_FORM_FIELDS = ['receivedDate', 'amount', 'method', 'payer', 'reference', 'funder', 'coverageStart', 'coverageEnd'];
+const PAYMENT_REPORT_FORM_FIELDS = ['receivedDate', 'amount', 'method', 'payer', 'reference', 'funder', 'coverageStart', 'coverageEnd',
+  'invoiceWanted', 'invoiceTo'];
+
+/* «חשבונית?» / «על שם» (CHANGELOG-payment-invoice.md). A row from before the
+ * question carries neither and reads «—» — never כן, never לא. Pure. */
+const INVOICE_LABELS = { yes: 'כן', no: 'לא' };
+function invoiceLabel(v) {
+  return Object.prototype.hasOwnProperty.call(INVOICE_LABELS, v) ? INVOICE_LABELS[v] : '—';
+}
+function invoiceToLabel(r) {
+  return r && r.invoiceWanted === 'yes' && r.invoiceTo ? String(r.invoiceTo) : '—';
+}
 
 /* The shared rules, loaded as /payment-report-rules.js before app.js. */
 function paymentReportRules() {
@@ -10568,9 +12038,18 @@ function normalizeReceipt(r) {
     recordedBy: String(o.recordedBy || ''),
     recordedAt: String(o.recordedAt || ''),
     confirmStatus: String(o.confirmStatus || ''),
+    confirmedBy: String(o.confirmedBy || ''),
+    confirmedAt: String(o.confirmedAt || ''),
+    flagNote: String(o.flagNote || ''),
+    // CHANGELOG-ortal-verification-status.md: «שולם חלקית» counts only this
+    // in «מאומת» (lib/billing-control-rules.js verifiedAmountOf).
+    confirmedAmount: o.confirmedAmount === undefined || o.confirmedAmount === null ? '' : o.confirmedAmount,
+    controlNote: String(o.controlNote || ''),
     linkStatus: String(o.linkStatus || ''),
     linkNote: String(o.linkNote || ''),
     timestamp: String(o.timestamp || ''),
+    invoiceWanted: ['yes', 'no'].indexOf(String(o.invoiceWanted || '').trim()) >= 0 ? String(o.invoiceWanted).trim() : '',
+    invoiceTo: String(o.invoiceTo || ''),
   };
 }
 
@@ -10603,13 +12082,20 @@ function receiptsListHtml(cycleId) {
     const voidBtn = !isVoid && state.mode === 'edit' && canDelete()
       ? `<button type="button" class="btn small receipt-void-btn" data-role="deleter" data-rid="${escapeHtml(r.id)}" title="ביטול הקבלה (נשמרת כרישום)">ביטול קבלה</button>`
       : '';
+    // ✏️ the non-money fields (CHANGELOG-receipt-duplicates-and-edit.md):
+    // Vered and Sandra (finance, edit mode); never Ortal's read-only view.
+    const editBtn = !isVoid && canEditReceipt()
+      ? `<button type="button" class="btn small receipt-edit-btn" data-rid="${escapeHtml(r.id)}" title="עריכת פרטי הקבלה (לא סכום, לא תאריך)" aria-label="עריכת פרטי הקבלה">✏️</button>`
+      : '';
     return `<li class="receipt-item${isVoid ? ' receipt-void' : ''}" data-rid="${escapeHtml(r.id)}">
         <span class="receipt-date">${escapeHtml(formatDate(r.receivedDate) || '—')}</span>
         <span class="receipt-amount">${escapeHtml(fmtShekel(r.amount))}</span>
         <span class="receipt-method">${escapeHtml(r.method || '—')}</span>
         ${r.reference ? `<span class="receipt-ref">אסמכתא ${escapeHtml(r.reference)}</span>` : ''}
+        <span class="receipt-invoice">חשבונית: ${escapeHtml(invoiceLabel(r.invoiceWanted))}${r.invoiceWanted === 'yes' ? ' · על שם ' + escapeHtml(invoiceToLabel(r)) : ''}</span>
         <span class="receipt-who">${escapeHtml(r.recordedBy || '')}</span>
         ${isVoid ? `<span class="badge void">${escapeHtml(PAYMENT_VOID_LABEL)}</span>` : ''}
+        ${editBtn}
         ${voidBtn}
       </li>`;
   }).join('');
@@ -10623,6 +12109,196 @@ function wireReceiptVoidButtons(row) {
       if (r) openReceiptVoidModal(r);
     };
   });
+  row.querySelectorAll('.receipt-edit-btn').forEach(btn => {
+    btn.onclick = () => {
+      const r = state.receipts.find(x => x.id === btn.dataset.rid);
+      if (r) openReceiptEditModal(r);
+    };
+  });
+}
+
+/* ===== ✏️ a receipt's non-money fields (CHANGELOG-receipt-duplicates-and-edit.md)
+ * Vered and Sandra: reference, method, payer, invoice, coverage dates —
+ * NEVER amount, receivedDate or status (the server refuses those keys,
+ * field_not_editable). Reason optional. A confirmed receipt stays confirmed.
+ * Display only: Code.gs editReceipt_ is the authority (finance-gated;
+ * the controller view gets 403 from server.js and Code.gs). */
+const RECEIPT_EDIT_FIELDS = ['reference', 'method', 'payer', 'invoiceWanted', 'invoiceTo', 'coverageStart', 'coverageEnd'];
+const RECEIPT_EDIT_REASON_MAX = 300;
+const RECEIPT_EDIT_TOAST = 'פרטי הקבלה עודכנו';
+
+function canEditReceipt() {
+  return state.mode === 'edit' && financeView() && !controllerView();
+}
+
+/* The edit as sent: only the fields that differ from the receipt, plus the
+ * issues the shared report rules find in THOSE fields. Pure.
+ * → { fields: { k: v }, issues: [{ field, code, hebrewMessage }] } */
+function receiptEditChanges(receipt, values) {
+  const r = receipt || {};
+  const v = values || {};
+  const cur = {
+    reference: String(r.reference || ''), method: String(r.method || ''), payer: String(r.payer || ''),
+    invoiceWanted: String(r.invoiceWanted || ''), invoiceTo: r.invoiceWanted === 'yes' ? String(r.invoiceTo || '') : '',
+    coverageStart: String(r.coverageStart || ''), coverageEnd: String(r.coverageEnd || ''),
+  };
+  const next = {};
+  RECEIPT_EDIT_FIELDS.forEach(k => { next[k] = v[k] === undefined ? cur[k] : String(v[k] == null ? '' : v[k]).trim(); });
+  if (next.invoiceWanted !== 'yes') next.invoiceTo = '';
+  const fields = {};
+  RECEIPT_EDIT_FIELDS.forEach(k => { if (next[k] !== cur[k]) fields[k] = next[k]; });
+  // A coverage or invoice change is sent as its pair.
+  if ('coverageStart' in fields || 'coverageEnd' in fields) { fields.coverageStart = next.coverageStart; fields.coverageEnd = next.coverageEnd; }
+  if ('invoiceWanted' in fields || 'invoiceTo' in fields) { fields.invoiceWanted = next.invoiceWanted; fields.invoiceTo = next.invoiceTo; }
+  const touched = {};
+  Object.keys(fields).forEach(k => { touched[k] = true; });
+  if (touched.method) touched.reference = true;
+  const rules = paymentReportRules();
+  let issues = [];
+  if (rules && Object.keys(fields).length) {
+    issues = rules.validatePaymentReport({
+      receivedDate: r.receivedDate, amount: String(r.amount), method: next.method, payer: next.payer,
+      coverageStart: next.coverageStart, coverageEnd: next.coverageEnd, funder: r.funder, reference: next.reference,
+    }, { todayIso: rules.jerusalemToday(), maxDaysBack: 0 }).filter(i => touched[i.field]);
+    if (touched.invoiceWanted) issues = issues.concat(rules.validatePaymentInvoice(next));
+  }
+  return { fields, issues };
+}
+
+function openReceiptEditModal(receipt) {
+  if (!canEditReceipt()) { showError(ROLE_FORBIDDEN_TEXT); return; }
+  const rules = paymentReportRules();
+  const methods = rules ? rules.PAYMENT_METHODS : [];
+  const root = document.getElementById('modal-root');
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  const r = receipt;
+  const opt = (list, sel) => list.map(v => `<option value="${escapeHtml(v)}" ${v === sel ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('');
+  const err = f => `<div class="field-error" data-err="${f}" id="re-err-${f}" role="alert"></div>`;
+  const yes = r.invoiceWanted === 'yes', no = r.invoiceWanted === 'no';
+  // <input type="date"> values stay ISO; the two coverage errors share a row.
+  const covStart = r.coverageStart, covEnd = r.coverageEnd;
+  const covErrors = err('coverageStart') + err('coverageEnd');
+  back.innerHTML = `
+    <div class="modal pay-report-modal receipt-edit-modal" role="dialog" aria-labelledby="re-title">
+      <h3 id="re-title">עריכת פרטי קבלה</h3>
+      <p class="pay-report-lead"><b>${escapeHtml(r.patientName || '')}</b> · ${escapeHtml(fmtShekel(r.amount))} · התקבל ${escapeHtml(formatDate(r.receivedDate) || '—')}<br>
+        <span class="bc-sub">סכום, תאריך קבלה וסטטוס אינם ניתנים לעריכה. אישור הקבלה נשמר.</span></p>
+      <form novalidate>
+        <div class="form-row">
+          <label for="re-reference">מספר אסמכתא</label>
+          <input type="text" id="re-reference" name="reference" maxlength="40" autocomplete="off" dir="ltr" value="${escapeHtml(r.reference)}" />
+          ${err('reference')}
+        </div>
+        <div class="form-row">
+          <label for="re-method">אמצעי תשלום</label>
+          <select id="re-method" name="method">${opt(methods, r.method)}</select>
+          ${err('method')}
+        </div>
+        <div class="form-row">
+          <label for="re-payer">שם המשלם</label>
+          <input type="text" id="re-payer" name="payer" maxlength="100" autocomplete="off" value="${escapeHtml(r.payer)}" />
+          ${err('payer')}
+        </div>
+        <fieldset class="form-row pr-invoice">
+          <legend>חשבונית?</legend>
+          <div class="pr-invoice-choices" role="radiogroup">
+            <label class="pr-radio"><input type="radio" name="invoiceWanted" value="yes"${yes ? ' checked' : ''} /> כן</label>
+            <label class="pr-radio"><input type="radio" name="invoiceWanted" value="no"${no ? ' checked' : ''} /> לא</label>
+          </div>
+          ${err('invoiceWanted')}
+        </fieldset>
+        <div class="form-row re-invoice-to${yes ? '' : ' hidden'}">
+          <label for="re-invoiceTo">על שם</label>
+          <input type="text" id="re-invoiceTo" name="invoiceTo" maxlength="120" autocomplete="off" value="${escapeHtml(yes ? r.invoiceTo : '')}" />
+          ${err('invoiceTo')}
+        </div>
+        <div class="form-row pr-cov-row">
+          <label>תקופת כיסוי</label>
+          <div class="pr-cov">
+            <input type="date" name="coverageStart" lang="he" dir="rtl" aria-label="תחילת תקופת הכיסוי" value="${escapeHtml(covStart)}" />
+            <input type="date" name="coverageEnd" lang="he" dir="rtl" aria-label="סוף תקופת הכיסוי" value="${escapeHtml(covEnd)}" />
+          </div>
+          ${covErrors}
+        </div>
+        <div class="form-row">
+          <label for="re-reason">סיבה (לא חובה, נשמרת ביומן)</label>
+          <input type="text" id="re-reason" name="reason" maxlength="${RECEIPT_EDIT_REASON_MAX}" autocomplete="off" />
+        </div>
+        <div class="field-error pr-form-error" data-err="_form" role="alert"></div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn primary re-submit">שמירה</button>
+        </div>
+      </form>
+    </div>`;
+  root.appendChild(back);
+  const form = back.querySelector('form');
+  const submitBtn = back.querySelector('.re-submit');
+  const close = () => back.remove();
+  back.querySelector('[data-action="cancel"]').onclick = () => { if (!busyButtonActive(submitBtn)) close(); };
+  const ctl = f => form.querySelector('[name="' + f + '"]');
+  const toRow = back.querySelector('.re-invoice-to');
+  form.querySelectorAll('[name="invoiceWanted"]').forEach(x => {
+    if (x.addEventListener) x.addEventListener('change', () => {
+      const on = form.querySelector('[name="invoiceWanted"]:checked');
+      if (toRow && toRow.classList) toRow.classList.toggle('hidden', !(on && on.value === 'yes'));
+    });
+  });
+  const values = () => {
+    const v = {};
+    ['reference', 'method', 'payer', 'invoiceTo', 'coverageStart', 'coverageEnd'].forEach(f => { v[f] = ctl(f) ? String(ctl(f).value || '').trim() : ''; });
+    const on = form.querySelector('[name="invoiceWanted"]:checked');
+    v.invoiceWanted = on ? String(on.value || '') : String(r.invoiceWanted || '');
+    return v;
+  };
+  const paint = issues => {
+    const by = {};
+    issues.forEach(i => { if (!by[i.field]) by[i.field] = i.hebrewMessage; });
+    back.querySelectorAll('[data-err]').forEach(el => {
+      if (el.dataset.err === '_form') return;
+      el.textContent = by[el.dataset.err] || '';
+      const c = ctl(el.dataset.err);
+      if (c && c.setAttribute) { if (by[el.dataset.err]) c.setAttribute('aria-invalid', 'true'); else c.removeAttribute('aria-invalid'); }
+    });
+  };
+  form.onsubmit = e => {
+    e.preventDefault();
+    const formErr = back.querySelector('[data-err="_form"]');
+    formErr.textContent = '';
+    const ch = receiptEditChanges(r, values());
+    paint(ch.issues);
+    if (ch.issues.length) return;
+    if (!Object.keys(ch.fields).length) { formErr.textContent = 'לא בוצע שינוי'; return; }
+    const reason = String((ctl('reason') || {}).value || '').trim().slice(0, RECEIPT_EDIT_REASON_MAX);
+    return busyButton(submitBtn, 'save', async () => {
+      try {
+        await submitReceiptEdit(r, ch.fields, reason);
+        close();
+        showToast(RECEIPT_EDIT_TOAST);
+      } catch (e2) {
+        const data = e2 && e2.data;
+        if (data && Array.isArray(data.issues) && data.issues.length) paint(data.issues);
+        formErr.textContent = (data && data.message) || ('השמירה נכשלה — ' + ((e2 && e2.message) || 'שגיאה'));
+      }
+    });
+  };
+  const first = ctl('reference');
+  if (first && first.focus) first.focus();
+}
+
+/* POST editReceipt; the server's echo replaces the receipt in state. */
+async function submitReceiptEdit(receipt, fields, reason) {
+  const edit = { id: receipt.id, fields: Object.assign({}, fields) };
+  if (reason) edit.reason = reason;
+  const res = await apiPost({ action: 'editReceipt', edit });
+  notePaymentsWrite();   // an older in-flight getPayments must not undo it
+  const at = state.receipts.findIndex(x => x.id === receipt.id);
+  if (at >= 0 && res && res.receipt) {
+    state.receipts[at] = normalizeReceipt(Object.assign({}, res.receipt, { cycleId: receipt.cycleId }));
+  }
+  renderBilling();
+  return res;
 }
 
 /* Void a receipt — the existing void flow (savePayment, status void, a
@@ -10674,6 +12350,7 @@ async function voidReceipt(receipt, note) {
     dueDate: receipt.dueDate, status: PAYMENT_VOID_STATUS, linkPatientUid: '', linkStatus: 'duplicate',
     linkNote: String(note).slice(0, PAYMENT_LINK_NOTE_MAX), timestamp: new Date().toISOString(),
   } });
+  notePaymentsWrite();   // an older in-flight getPayments must not undo it
   const at = state.receipts.findIndex(x => x.id === receipt.id);
   if (at >= 0) {
     const echo = res && res.payment ? normalizeReceipt(Object.assign({}, res.payment, { cycleId: receipt.cycleId })) : null;
@@ -10858,10 +12535,15 @@ function paymentReportDefaults(patient, payment, dueDateISO, todayIso) {
       payer: '',
       reference: '',
       // No default: an unset funder leaves the field empty, so the report
-      // must name one (validatePaymentReport_ → «חסר: גורם מממן»).
-      funder: (cur => (cur.unset ? '' : cur.funder))(currentFunderFor(uid)),
+      // must name one (validatePaymentReport_ → «חסר: גורם מממן»). A
+      // pro-bono patient's report names its funder EXPLICITLY too: never
+      // prefilled (CHANGELOG-funder-probono.md).
+      funder: (cur => (cur.unset || isProbonoLabel(cur.funder) ? '' : cur.funder))(currentFunderFor(uid)),
       coverageStart: covStart,
       coverageEnd: covEnd,
+      // «חשבונית?» has NO default: neither כן nor לא is pre-selected.
+      invoiceWanted: '',
+      invoiceTo: '',
     },
   };
 }
@@ -10869,11 +12551,13 @@ function paymentReportDefaults(patient, payment, dueDateISO, todayIso) {
 /* The issues for a form's values, through the shared rules. Pure. */
 function paymentReportIssues(values, todayIso, approver) {
   const rules = paymentReportRules();
-  if (!rules) return [{ field: 'receivedDate', code: 'rules_missing', hebrewMessage: 'טעינת כללי הדיווח נכשלה — רעננו את הדף' }];
+  if (!rules || typeof rules.validatePaymentInvoice !== 'function') {
+    return [{ field: 'receivedDate', code: 'rules_missing', hebrewMessage: 'טעינת כללי הדיווח נכשלה — רעננו את הדף' }];
+  }
   return rules.validatePaymentReport(values, {
     todayIso: todayIso || rules.jerusalemToday(),
     maxDaysBack: approver === true ? 0 : rules.RECEIVED_DATE_STAFF_MAX_DAYS,
-  });
+  }).concat(rules.validatePaymentInvoice(values));
 }
 
 function openPaymentReportModal(patient, payment, dueDateISO) {
@@ -10884,6 +12568,10 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
   const funders = paymentFunderLabels();
   const today = rules ? rules.jerusalemToday() : todayISO();
   const d = paymentReportDefaults(patient, payment, dueDateISO, today);
+  /* ONE idempotency key per opened form: every send of it — the
+   * «כן, קבלה נוספת» re-send and a retry after a lost response included —
+   * carries the same id, so the server writes the receipt at most once. */
+  const submissionId = newSubmissionId();
   const house = houseById(d.cycle.houseId);
   const root = document.getElementById('modal-root');
   const back = document.createElement('div');
@@ -10938,7 +12626,21 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
           </div>
           ${covErrors}
         </div>
+        <fieldset class="form-row pr-invoice" aria-describedby="pr-err-invoiceWanted">
+          <legend>חשבונית? *</legend>
+          <div class="pr-invoice-choices" role="radiogroup">
+            <label class="pr-radio"><input type="radio" name="invoiceWanted" value="yes" /> כן</label>
+            <label class="pr-radio"><input type="radio" name="invoiceWanted" value="no" /> לא</label>
+          </div>
+          ${err('invoiceWanted')}
+        </fieldset>
+        <div class="form-row pr-invoice-to hidden">
+          <label for="pr-invoiceTo">על שם *</label>
+          <input type="text" id="pr-invoiceTo" name="invoiceTo" maxlength="120" autocomplete="off" value="" aria-describedby="pr-err-invoiceTo" />
+          ${err('invoiceTo')}
+        </div>
         <div class="field-error pr-form-error" data-err="_form" role="alert"></div>
+        <div class="pr-dup-confirm hidden" role="alertdialog" aria-live="assertive"></div>
         <div class="form-actions">
           <button type="button" class="btn" data-action="cancel">ביטול</button>
           <button type="submit" class="btn primary pr-submit">שמירת הדיווח</button>
@@ -10954,11 +12656,33 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
   back.addEventListener('click', e => { if (e.target === back && !busyButtonActive(submitBtn)) close(); });
 
   const ctl = f => form.querySelector('[name="' + f + '"]');
+  /* The checked «חשבונית?» radio's value, or '' (none chosen — no default). */
+  const invoiceChoice = () => {
+    const on = form.querySelector('[name="invoiceWanted"]:checked');
+    return on ? String(on.value || '') : '';
+  };
   const values = () => {
     const v = {};
     PAYMENT_REPORT_FORM_FIELDS.forEach(f => { v[f] = ctl(f) ? String(ctl(f).value || '').trim() : ''; });
+    v.invoiceWanted = invoiceChoice();
+    if (v.invoiceWanted !== 'yes') v.invoiceTo = '';   // לא → stored ''
     return v;
   };
+  /* כן shows «על שם», prefilled with the payer until the user types a name
+   * of their own; לא hides it. */
+  const toRow = back.querySelector('.pr-invoice-to');
+  let invoiceToEdited = false;
+  const syncInvoice = () => {
+    const yes = invoiceChoice() === 'yes';
+    if (toRow && toRow.classList) toRow.classList.toggle('hidden', !yes);
+    const to = ctl('invoiceTo');
+    if (yes && to && !invoiceToEdited) to.value = String((ctl('payer') || {}).value || '').trim();
+  };
+  form.querySelectorAll('[name="invoiceWanted"]').forEach(r => {
+    if (r.addEventListener) r.addEventListener('change', () => { syncInvoice(); touched.invoiceWanted = true; touched.invoiceTo = true; paint(check(), touched); });
+  });
+  if (ctl('invoiceTo') && ctl('invoiceTo').addEventListener) ctl('invoiceTo').addEventListener('input', () => { invoiceToEdited = true; });
+  if (ctl('payer') && ctl('payer').addEventListener) ctl('payer').addEventListener('input', syncInvoice);
   const touched = {};
   /* Paint the issues: one Hebrew line under each field, aria-invalid on the
    * control. `only` limits it to the fields the user has touched (live
@@ -10996,19 +12720,39 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
       if (first && first.focus) first.focus();
       return;
     }
-    const v = values();
+    return sendReport(values(), false);
+  };
+  /* Send the report; confirmDup re-sends it after «כן, קבלה נוספת». */
+  const dupBox = back.querySelector('.pr-dup-confirm');
+  const hideDup = () => { if (dupBox) { dupBox.innerHTML = ''; dupBox.classList.add('hidden'); } };
+  const sendReport = (v, confirmDup) => {
+    hideDup();
     return busyButton(submitBtn, 'save', async () => {
       try {
-        await submitPaymentReport(d.cycle, v);
+        await submitPaymentReport(d.cycle, v, confirmDup, submissionId);
         close();
         showToast(PAYMENT_REPORT_TOAST);
       } catch (err) {
         const data = err && err.data;
-        if (data && Array.isArray(data.issues) && data.issues.length) {
+        if (data && data.error === 'possible_duplicate' && !confirmDup && dupBox) {
+          // «קיימת כבר קבלה דומה (dd/mm, אסמכתא X). האם זו קבלה נוספת?»
+          dupBox.innerHTML = `<p class="pr-dup-text">${escapeHtml(possibleDuplicateText(data.existing))}</p>
+            <div class="form-actions">
+              <button type="button" class="btn primary" data-action="dup-yes">כן, קבלה נוספת</button>
+              <button type="button" class="btn" data-action="dup-no">ביטול</button>
+            </div>`;
+          dupBox.classList.remove('hidden');
+          dupBox.querySelector('[data-action="dup-yes"]').onclick = () => sendReport(v, true);
+          dupBox.querySelector('[data-action="dup-no"]').onclick = hideDup;
+          const yes = dupBox.querySelector('[data-action="dup-yes"]');
+          if (yes && yes.focus) yes.focus();
+        } else if (data && Array.isArray(data.issues) && data.issues.length) {
           paint(data.issues);
           back.querySelector('[data-err="_form"]').textContent = data.message || 'הדיווח לא נשמר';
         } else {
-          back.querySelector('[data-err="_form"]').textContent = 'הדיווח לא נשמר — ' + (err.message || 'שגיאה');
+          // The modal stays open with every value; never a silent rollback.
+          const msg = err && err.message && err.message !== PAYMENT_REPORT_SAVE_FAILED_HE ? ' (' + err.message + ')' : '';
+          back.querySelector('[data-err="_form"]').textContent = PAYMENT_REPORT_SAVE_FAILED_HE + msg;
         }
       }
     });
@@ -11017,17 +12761,97 @@ function openPaymentReportModal(patient, payment, dueDateISO) {
   if (first && first.focus) first.focus();
 }
 
+/* «קיימת כבר קבלה דומה (dd/mm, אסמכתא X). האם זו קבלה נוספת?» for the
+ * server's possible_duplicate `existing` { id, receivedDate, reference }.
+ * Plain text — the caller escapes it. Pure. */
+function possibleDuplicateText(existing) {
+  const e = existing || {};
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(e.receivedDate || ''));
+  const day = m ? `${m[3]}/${m[2]}` : '—';
+  const ref = String(e.reference || '').trim();
+  return `קיימת כבר קבלה דומה (${day}, ${ref ? 'אסמכתא ' + ref : 'ללא אסמכתא'}). האם זו קבלה נוספת?`;
+}
+
+const PAYMENT_REPORT_SAVE_FAILED_HE = 'התשלום לא נשמר — נסי שוב';
+
+/* An idempotency key for one report form: 'sub-' + 32 hex. crypto when the
+ * browser has it (every supported one does), Math.random otherwise — it is
+ * a dedupe key, not a secret. */
+function newSubmissionId() {
+  const bytes = new Uint8Array(16);
+  const c = typeof crypto !== 'undefined' && crypto && typeof crypto.getRandomValues === 'function' ? crypto : null;
+  if (c) c.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  return 'sub-' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
 /* POST reportPayment; on success put the receipt and the re-derived cycle
  * into state and re-render. Nothing is applied optimistically: the money a
- * row shows is always the server's. Throws on refusal (err.data.issues). */
-async function submitPaymentReport(cycle, values) {
+ * row shows is always the server's. Throws on refusal (err.data.issues).
+ * confirmDuplicate true = Vered answered «כן, קבלה נוספת» to the server's
+ * possible_duplicate (the override is audited there). submissionId is the
+ * form's idempotency key (newSubmissionId) — a retry never writes twice.
+ *
+ * CHANGELOG-payment-report-persistence.md:
+ *   - "saved" only with proof: ok:true AND the persisted receipt id, else
+ *     it throws PAYMENT_REPORT_SAVE_FAILED_HE and the modal stays open;
+ *   - counted in _savesInFlight, so the visibility resync never reloads
+ *     under it, and a payment write for the freshness guard, so a read that
+ *     started before it can never overwrite the echo;
+ *   - then a fresh getPayments re-reads the sheet and reconciles. */
+async function submitPaymentReport(cycle, values, confirmDuplicate, submissionId) {
   const report = Object.assign({}, values);
-  const res = await apiPost({ action: 'reportPayment', report: { cycle, report } });
-  if (res && res.receipt) state.receipts.push(normalizeReceipt(res.receipt));
-  if (res && res.cycle) adoptCycleEcho(res.cycle);
+  const body = { cycle, report };
+  if (confirmDuplicate === true) body.confirmDuplicate = true;
+  if (submissionId) body.submissionId = String(submissionId);
+  _savesInFlight++;
+  let res;
+  try {
+    notePaymentsWrite();
+    res = await apiPost({ action: 'reportPayment', report: body });
+  } finally {
+    _savesInFlight--;
+  }
+  const receiptId = res && res.receipt && res.receipt.id ? String(res.receipt.id) : '';
+  if (!receiptId) {
+    const err = new Error(PAYMENT_REPORT_SAVE_FAILED_HE);
+    err.data = res;
+    throw err;
+  }
+  notePaymentsWrite();
+  const at = state.receipts.findIndex(r => r.id === receiptId);   // a replayed retry
+  if (at >= 0) state.receipts[at] = normalizeReceipt(res.receipt);
+  else state.receipts.push(normalizeReceipt(res.receipt));
+  if (res.cycle) adoptCycleEcho(res.cycle);
   renderBilling();
   if (typeof renderDashboard === 'function') renderDashboard();
+  // «דווח תשלום» from the «מטופלים» row: its payment column follows.
+  renderPatientsTab();
+  _paymentsReconcile = reconcilePaymentsAfterWrite(receiptId);
   return res;
+}
+
+/* After a confirmed payment write: re-read getPayments (no cache) and adopt
+ * the sheet's state — unless another write landed meanwhile (the sequence
+ * guard), or the answer does not carry the receipt just confirmed (then the
+ * confirmed echo stays). Never throws. → true when applied. */
+async function reconcilePaymentsAfterWrite(receiptId) {
+  const ticket = beginPaymentsRead();
+  try {
+    const pr = await apiGet({ action: 'getPayments' });
+    if (receiptId && !(Array.isArray(pr && pr.receipts) && pr.receipts.some(r => r && String(r.id) === receiptId))) {
+      console.warn('[E-ZONE] reconcile answer lacks the confirmed receipt — keeping the echo');
+      return false;
+    }
+    if (!applyPaymentsRead(ticket, pr)) return false;
+    renderBilling();
+    if (typeof renderDashboard === 'function') renderDashboard();
+    renderPatientsTab();
+    return true;
+  } catch (e) {
+    console.warn('[E-ZONE] post-save reconcile failed:', e && e.message);
+    return false;
+  }
 }
 
 /* Record the link for a row the SERVER's exact match cannot resolve.
@@ -12078,6 +13902,660 @@ function renderBreakevenSummary() {
   }
 
   fitAllStatText(); // scale the network summary KPI values to fit
+}
+
+/* ====================================================
+   «בקרת גבייה» — Ortal's verification tab (Phase 4)
+   ====================================================
+ * Sandra, 2026-10-04 (docs/billing-control-plan.md Phase 4 / §7,
+ * CHANGELOG-billing-control-tab.md):
+ *   - every receipt Vered reports (a rcpt- row) waits here as «ממתין לאימות»;
+ *     Ortal checks the bank herself, outside the system, and marks it
+ *     ✓ «אושר בבנק» or ⚑ «לא נמצא / בעיה» (a note is required);
+ *   - «סומנו כבעיה»: Vered resolves by cancelling + re-reporting (the existing
+ *     flow); Ortal can «הסר דגל» if she was wrong;
+ *   - «אומתו»: filterable by month and house — the month's total is the real
+ *     revenue figure («הכנסה מאומתת», lib/billing-control-rules.js);
+ *   - Sandra (approver) also sees «חריגים פתוחים», read-only.
+ * Data: action=billingControlQueue (read), action=confirmPayment (write).
+ * Display only: server.js and Code.gs refuse the data and the decision
+ * themselves. Vered sees the tab without the decision buttons.
+ *
+ * Extended 2026-10-06 (CHANGELOG-ortal-verification-status.md): ✓ / ⚑ are
+ * replaced by a status dropdown on every row — «שולם» (saved at once),
+ * «שולם חלקית» (an amount field: > 0 and < the reported amount, with the
+ * remaining balance shown live), «לא שולם» (the existing note form). Partial
+ * receipts get their own list and their open rest is shown on the row and in
+ * the «יתרה פתוחה» card. Every row also has Ortal's free-text note (≤500),
+ * editable at any time. Every value is escaped on render. */
+
+/* The flag-note bounds come from lib/billing-control-rules.js (2–300, the
+ * same FLAG_NOTE_MIN / FLAG_NOTE_MAX as Code.gs). */
+const BC_FLAG_MIN = (bcRules() && bcRules().FLAG_NOTE_MIN) || 2;
+const BC_FLAG_MAX = (bcRules() && bcRules().FLAG_NOTE_MAX) || 300;
+const BC_FLAG_LABEL = `מה הבעיה? (${BC_FLAG_MIN} עד ${BC_FLAG_MAX} תווים)`;
+const BC_FLAG_EXAMPLE = 'לדוגמה: הגיע 29,500 ולא 30,000, או: לא נמצא בבנק';
+const BC_ERRORS = {
+  forbidden: 'אין הרשאה לפעולה זו',
+  forbidden_role: 'אין הרשאה לפעולה זו',
+  flag_note_invalid: 'בסימון «בעיה» חובה לפרט (2 עד 300 תווים)',
+  not_found: 'הקבלה לא נמצאה — רעננו את הדף',
+  receipt_void: 'הקבלה בוטלה — אין מה לאשר',
+  partial_single: '«שולם חלקית» — קבלה אחת בכל פעם',
+  partial_amount_invalid: 'בתשלום חלקי חובה להזין סכום שהתקבל (מספר, עד שתי ספרות אחרי הנקודה)',
+  partial_amount_range: 'הסכום שהתקבל חייב להיות גדול מאפס וקטן מהסכום שדווח',
+  control_note_invalid: 'הערה — טקסט עד 500 תווים',
+  control_note_single: 'הערה נשמרת לקבלה אחת בכל פעם',
+  confirm_status_invalid: 'סטטוס לא מוכר',
+  sheet_header_clash: 'מבנה גיליון התשלומים השתנה — פנו לסנדרה',
+  /* «כפילות» (CHANGELOG-receipt-duplicates-and-edit.md). */
+  duplicate_single: '«כפילות» — קבלה אחת בכל פעם',
+  duplicate_note_invalid: 'בסימון «כפילות» חובה לפרט (2 עד 300 תווים)',
+  duplicate_last_receipt: 'זו הקבלה היחידה של המחזור — אי אפשר לסמן אותה ככפילות. אם הכסף לא התקבל, סמנו «לא שולם»',
+};
+const BC_DUP_LABEL = `למה זו כפילות? (${BC_FLAG_MIN} עד ${BC_FLAG_MAX} תווים)`;
+const BC_DUP_EXAMPLE = 'לדוגמה: אותה העברה דווחה פעמיים (אסמכתא 12345)';
+/* The dropdown (lib/billing-control-rules.js DECISION_OPTIONS) and the note
+ * bound (CONTROL_NOTE_MAX, the same 500 as Code.gs). */
+const BC_DECISIONS = (bcRules() && bcRules().DECISION_OPTIONS) || [
+  { value: 'confirmed', label: 'שולם' }, { value: 'partial', label: 'שולם חלקית' }, { value: 'flagged', label: 'לא שולם' },
+  { value: 'duplicate', label: 'כפילות' },
+];
+const BC_NOTE_MAX = (bcRules() && bcRules().CONTROL_NOTE_MAX) || 500;
+const BC_XLSX_ERRORS = {
+  forbidden: 'אין הרשאה לייצוא זה',
+  lock_busy: 'המערכת עסוקה, נסו שוב',
+  sheets_unreachable: 'הגיליון לא זמין כרגע — נסו שוב',
+};
+
+function bcRules() {
+  return (typeof globalThis !== 'undefined' && globalThis.BillingControlRules) || null;
+}
+
+function billingControlState() {
+  if (!state.bc) {
+    state.bc = {
+      data: null, loading: false, error: '', selected: {}, flagOpen: '', flagDraft: '',
+      month: '', house: 'all',
+      // «שולם חלקית» amount form and the note editor (one row at a time each).
+      partialOpen: '', partialDraft: '', noteOpen: '', noteDraft: '',
+      // «כפילות» reason form (one row at a time).
+      dupOpen: '', dupDraft: '',
+    };
+  }
+  return state.bc;
+}
+
+/* This month in Israel, 'YYYY-MM'. */
+function bcThisMonth() {
+  return debtAgingTodayIso().slice(0, 7);
+}
+
+function bcHouseName(id) {
+  const h = houseById(id);
+  return (h && h.name) || id || '—';
+}
+
+/* A stored stamp ('YYYY-MM-DD' or ISO) → DD/MM/YYYY [HH:MM]. Pure. */
+function bcStampHe(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(String(s || ''));
+  if (!m) return String(s || '');
+  return `${m[3]}/${m[2]}/${m[1]}` + (m[4] ? ` ${m[4]}:${m[5]}` : '');
+}
+
+/* Load the queue. Never throws to a caller that does not await it; the
+ * error is shown inside the tab. */
+async function loadBillingControl() {
+  if (state.billingControl === false) return;
+  const s = billingControlState();
+  s.loading = true;
+  s.error = '';
+  renderBillingControl();
+  setLoading(true);
+  try {
+    const data = await apiGet({ action: 'billingControlQueue' });
+    s.data = data;
+    // Drop a selection that is no longer waiting.
+    const waiting = {};
+    (data.receipts || []).forEach(r => { if (r.confirmStatus === 'reported') waiting[r.id] = true; });
+    Object.keys(s.selected).forEach(id => { if (!waiting[id]) delete s.selected[id]; });
+  } catch (e) {
+    if (!(e && e.message === 'unauthorized')) s.error = 'הטעינה נכשלה — ' + ((e && e.message) || 'שגיאה');
+  } finally {
+    s.loading = false;
+    setLoading(false);
+    renderBillingControl();
+  }
+}
+
+/* The decision (confirmPayment). ids: receipt ids; status: 'confirmed' |
+ * 'partial' | 'flagged' | 'reported' | '' (a note-only edit). extra:
+ * { flagNote, confirmedAmount, controlNote } — a string flagNote is accepted
+ * as before. The server's answer replaces the rows on screen. */
+async function confirmReceipts(ids, status, extra) {
+  if (!state.canConfirm) { showError(ROLE_FORBIDDEN_TEXT); return null; }
+  const s = billingControlState();
+  const x = typeof extra === 'string' ? { flagNote: extra } : (extra || {});
+  const body = { ids: ids.slice() };
+  if (status) body.status = status;
+  if (status === 'flagged' || status === 'duplicate') body.flagNote = x.flagNote;
+  if (status === 'partial') body.confirmedAmount = x.confirmedAmount;
+  if (x.controlNote !== undefined) body.controlNote = x.controlNote;
+  let res;
+  try {
+    res = await apiPost({ action: 'confirmPayment', confirm: body });
+  } catch (e) {
+    const code = e && e.data && e.data.error;
+    showError(BC_ERRORS[code] || (e && e.message) || 'השמירה נכשלה');
+    return null;
+  }
+  const changed = {};
+  (res.changed || []).forEach(r => { changed[r.id] = r; });
+  // «כפילות»: the receipt is void now — it leaves every list and total.
+  const voided = {};
+  (res.voided || []).forEach(r => { if (r && r.id) voided[r.id] = true; });
+  if (s.data && Array.isArray(s.data.receipts)) {
+    s.data.receipts = s.data.receipts.filter(r => !voided[r.id])
+      .map(r => (changed[r.id] ? Object.assign({}, r, changed[r.id]) : r));
+  }
+  if (s.dupOpen && ids.indexOf(s.dupOpen) >= 0 && status) { s.dupOpen = ''; s.dupDraft = ''; }
+  ids.forEach(id => { delete s.selected[id]; });
+  if (s.flagOpen && ids.indexOf(s.flagOpen) >= 0 && status) { s.flagOpen = ''; s.flagDraft = ''; }
+  if (s.partialOpen && ids.indexOf(s.partialOpen) >= 0 && status) { s.partialOpen = ''; s.partialDraft = ''; }
+  if (s.noteOpen && ids.indexOf(s.noteOpen) >= 0 && x.controlNote !== undefined) { s.noteOpen = ''; s.noteDraft = ''; }
+  renderBillingControl();
+  const n = (res.changed || []).length;
+  showToast(!status ? 'ההערה נשמרה'
+    : status === 'confirmed' ? (n === 1 ? 'סומן «שולם»' : `סומנו ${n} קבלות «שולם»`)
+    : status === 'partial' ? 'סומן «שולם חלקית» — היתרה נשארת חוב פתוח'
+    : status === 'flagged' ? 'סומן «לא שולם» — חוזר לוורד'
+    : status === 'duplicate' ? 'סומן «כפילות» — הקבלה בוטלה ואינה נספרת'
+    : 'חזר ל«ממתין לאימות»');
+  return res;
+}
+
+/* The status dropdown of one row. Every option value is fixed; the label is
+ * escaped. The current status is preselected; the waiting row starts on a
+ * blank «בחרו סטטוס». */
+function bcStatusSelectHtml(r) {
+  const id = escapeHtml(r.id);
+  const cur = String(r.confirmStatus || 'reported');
+  const opts = BC_DECISIONS.map(o => `<option value="${escapeHtml(o.value)}"${o.value === cur ? ' selected' : ''}>${escapeHtml(o.label)}</option>`).join('');
+  return `<label class="bc-status-wrap"><span class="bc-k">סטטוס</span>
+      <select class="bc-status" id="bc-status-${id}" data-bc-status="${id}" aria-label="סטטוס תשלום">
+        <option value=""${cur === 'reported' ? ' selected' : ''} disabled>בחרו סטטוס…</option>${opts}
+      </select></label>`;
+}
+
+/* «יתרה פתוחה: ₪x» — the partial form's live line and the partial row's. */
+function bcRemainingText(reported, confirmed) {
+  const rest = Math.max(0, Math.round(((Number(reported) || 0) - (Number(confirmed) || 0)) * 100) / 100);
+  return 'יתרה פתוחה: ' + fmtShekel(rest);
+}
+
+/* The «שולם חלקית» amount form (one row). */
+function bcPartialFormHtml(r) {
+  const s = billingControlState();
+  const id = escapeHtml(r.id);
+  const R = bcRules();
+  const chk = R && s.partialDraft ? R.partialAmountCheck(s.partialDraft, r.amount) : { amount: null, error: '' };
+  return `<div class="bc-partial-form">
+      <label for="bc-partial-${id}">כמה התקבל בפועל? (מתוך ${escapeHtml(fmtShekel(r.amount))})</label>
+      <input id="bc-partial-${id}" class="bc-partial-input" data-bc-partial-amount="${id}" type="text" inputmode="decimal" autocomplete="off" dir="ltr" value="${escapeHtml(s.partialDraft)}" placeholder="0.00" />
+      <div class="bc-remaining" data-bc-remaining="${id}" aria-live="polite">${escapeHtml(bcRemainingText(r.amount, chk.amount || 0))}</div>
+      <div class="error-msg bc-partial-error hidden" role="alert"></div>
+      <div class="bc-actions">
+        <button type="button" class="btn small primary" data-bc-partial-save="${id}">שמירת תשלום חלקי</button>
+        <button type="button" class="btn small ghost" data-bc-partial-cancel="${id}">ביטול</button>
+      </div>
+    </div>`;
+}
+
+/* The «כפילות» reason form (one row): a required note, 2–300, like «לא שולם».
+ * Saving voids the receipt on the server (Code.gs confirmDuplicate_). */
+function bcDuplicateFormHtml(r) {
+  const s = billingControlState();
+  const id = escapeHtml(r.id);
+  return `<div class="bc-dup-form">
+      <label for="bc-dup-${id}">${escapeHtml(BC_DUP_LABEL)}</label>
+      <textarea id="bc-dup-${id}" class="bc-dup-note" data-bc-dup-note="${id}" maxlength="${BC_FLAG_MAX}" rows="3" placeholder="${escapeHtml(BC_DUP_EXAMPLE)}">${escapeHtml(s.dupDraft)}</textarea>
+      <div class="bc-sub">הקבלה תסומן כמבוטלת ולא תיספר ב«נגבה». רק סנדרה יכולה לבטל את הסימון.</div>
+      <div class="error-msg bc-dup-error hidden" role="alert"></div>
+      <div class="bc-actions">
+        <button type="button" class="btn small danger" data-bc-dup-save="${id}">שמירת «כפילות»</button>
+        <button type="button" class="btn small ghost" data-bc-dup-cancel="${id}">ביטול</button>
+      </div>
+    </div>`;
+}
+
+/* Ortal's note on one row: the text (escaped) and, for a decider, the editor. */
+function bcControlNoteHtml(r, can) {
+  const s = billingControlState();
+  const id = escapeHtml(r.id);
+  const note = String(r.controlNote || '');
+  if (can && s.noteOpen === r.id) {
+    return `<div class="bc-cnote-form">
+      <label for="bc-cnote-${id}">הערה (לא חובה, עד ${BC_NOTE_MAX} תווים)</label>
+      <textarea id="bc-cnote-${id}" class="bc-cnote" data-bc-cnote="${id}" maxlength="${BC_NOTE_MAX}" rows="3">${escapeHtml(s.noteDraft)}</textarea>
+      <div class="bc-sub bc-cnote-count" data-bc-cnote-count="${id}">${escapeHtml(String(s.noteDraft.length))} / ${BC_NOTE_MAX}</div>
+      <div class="error-msg bc-cnote-error hidden" role="alert"></div>
+      <div class="bc-actions">
+        <button type="button" class="btn small primary" data-bc-cnote-save="${id}">שמירת הערה</button>
+        <button type="button" class="btn small ghost" data-bc-cnote-cancel="${id}">ביטול</button>
+      </div>
+    </div>`;
+  }
+  const text = note ? `<span class="bc-cnote-text"><b>הערה:</b> ${escapeHtml(note)}</span>` : '';
+  const btn = can ? ` <button type="button" class="btn small ghost bc-cnote-open" data-bc-cnote-open="${id}">${note ? '✎ עריכת הערה' : '+ הערה'}</button>` : '';
+  return text || btn ? `<div class="bc-cnote-line">${text}${btn}</div>` : '';
+}
+
+/* One receipt as a phone-friendly card. mode: 'queue' | 'flagged' |
+ * 'partial' | 'confirmed' | 'exception'. Every value is escaped. */
+function bcReceiptHtml(r, mode, opts) {
+  const o = opts || {};
+  const s = billingControlState();
+  const isPartial = r.confirmStatus === 'partial';
+  // A partial receipt is ALSO listed by month under «אומתו»; its controls live
+  // only in «שולם חלקית», so no element id is drawn twice.
+  const can = state.canConfirm === true && mode !== 'exception' && !(mode === 'confirmed' && isPartial);
+  const id = escapeHtml(r.id);
+  const field = (label, value) => `<span class="bc-f"><span class="bc-k">${escapeHtml(label)}</span> <span class="bc-v">${escapeHtml(value || '—')}</span></span>`;
+  const R = bcRules();
+  const verified = R ? R.verifiedAmountOf(r) : Number(r.verifiedAmount) || 0;
+  const open = R ? R.openAmountOf(r) : Number(r.openAmount) || 0;
+  /* «אומתו» (CHANGELOG-receipt-duplicates-and-edit.md): «חלק אוקטובר: ₪x ·
+   * הקבלה המלאה ₪y (תקופה dd/mm–dd/mm) · שולם במלואו» — «שולם חלקית» only
+   * for a partial receipt (lib/billing-control-rules.js confirmedMonthLine). */
+  const amount = mode === 'confirmed' && o.inMonth !== undefined
+    ? `<span class="bc-month-line">${escapeHtml(R ? R.confirmedMonthLine(r, s.month, o.inMonth, fmtShekel) : fmtShekel(o.inMonth))}</span>`
+    : fmtShekel(r.amount);
+  let actions = '';
+  if (can) {
+    const pick = mode === 'queue'
+      ? `<label class="bc-pick"><input type="checkbox" data-bc-pick="${id}"${s.selected[r.id] ? ' checked' : ''} aria-label="סימון לאישור"> סמן</label>`
+      : '';
+    const unflag = mode === 'flagged' ? `<button type="button" class="btn small" data-bc-unflag="${id}">הסר דגל</button>` : '';
+    actions = `<div class="bc-actions">${pick}${bcStatusSelectHtml(r)}${unflag}</div>`;
+    if (s.flagOpen === r.id) {
+      actions += `<div class="bc-flag-form">
+        <label for="bc-note-${id}">${escapeHtml(BC_FLAG_LABEL)}</label>
+        <textarea id="bc-note-${id}" class="bc-note" data-bc-note="${id}" maxlength="${BC_FLAG_MAX}" rows="3" placeholder="${escapeHtml(BC_FLAG_EXAMPLE)}">${escapeHtml(s.flagDraft)}</textarea>
+        <div class="error-msg bc-note-error hidden" role="alert"></div>
+        <div class="bc-actions">
+          <button type="button" class="btn small primary" data-bc-flag-save="${id}">שמירת «לא שולם»</button>
+          <button type="button" class="btn small ghost" data-bc-flag-cancel="${id}">ביטול</button>
+        </div>
+      </div>`;
+    }
+    if (s.partialOpen === r.id) actions += bcPartialFormHtml(r);
+    if (s.dupOpen === r.id) actions += bcDuplicateFormHtml(r);
+  }
+  const extra = [];
+  if (mode === 'flagged' || (mode === 'exception' && r.flagNote)) {
+    extra.push(`<div class="bc-note-text"><b>לא שולם:</b> ${escapeHtml(r.flagNote || '—')}${r.flaggedAt ? ` <span class="bc-sub">(${escapeHtml(bcStampHe(r.flaggedAt))})</span>` : ''}${o.ageDays !== undefined ? ` <span class="bc-sub">· ${escapeHtml(String(o.ageDays))} ימים</span>` : ''}</div>`);
+  }
+  if (isPartial && mode !== 'exception') {
+    extra.push(`<div class="bc-partial-line"><span class="badge bc-partial-badge">שולם חלקית</span> אומת ${escapeHtml(fmtShekel(verified))} מתוך ${escapeHtml(fmtShekel(r.amount))} · <b class="bc-remaining">${escapeHtml(bcRemainingText(r.amount, verified))}</b></div>`);
+  } else if (mode === 'flagged' && open > 0) {
+    extra.push(`<div class="bc-partial-line"><b class="bc-remaining">${escapeHtml(bcRemainingText(r.amount, 0))}</b></div>`);
+  }
+  if (mode === 'confirmed' || mode === 'partial') {
+    extra.push(`<div class="bc-sub">אומת ע״י ${escapeHtml(r.confirmedBy || '—')}${r.confirmedAt ? ' · ' + escapeHtml(bcStampHe(r.confirmedAt)) : ''}</div>`);
+  }
+  if (mode !== 'exception') extra.push(bcControlNoteHtml(r, can));
+  return `<div class="bc-row bc-row--${escapeHtml(mode)}" data-bc-id="${id}">
+    <div class="bc-head"><b class="bc-name">${escapeHtml(r.patientName || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(r.houseId))}</span> <span class="bc-amount">${amount}</span></div>
+    <div class="bc-fields">
+      ${field('התקבל', formatDateHe(r.receivedDate))}
+      ${field('אמצעי', r.method)}
+      ${field('אסמכתא', r.reference)}
+      ${field('משלם', r.payer)}
+      ${field('גורם מממן', r.funder)}
+      ${field('חשבונית', invoiceLabel(r.invoiceWanted))}
+      ${field('על שם', invoiceToLabel(r))}
+      ${field('נרשם ע״י', r.recordedBy)}
+    </div>
+    ${extra.join('')}
+    ${actions}
+  </div>`;
+}
+
+function bcCardsHtml(cards) {
+  const c = cards;
+  const d = c.debt60;
+  const debtMain = d ? `${d.recorded.count} · ${fmtShekel(d.recorded.amount)}` : '—';
+  const debtSub = d ? `חוב רשום · ללא רישום: ${d.unrecorded.count} · ${fmtShekel(d.unrecorded.amount)}` : 'לא ניתן לחשב כרגע';
+  return `
+    <div class="card stat bc-card bc-card--reported"><div class="stat-label">ממתין לאימות</div>
+      <div class="stat-value" id="bc-card-reported">${c.reported.count} · ${fmtShekel(c.reported.amount)}</div>
+      <div class="stat-sub">דווח וטרם אומת</div></div>
+    <div class="card stat bc-card bc-card--flagged"><div class="stat-label">סומנו כבעיה</div>
+      <div class="stat-value" id="bc-card-flagged">${c.flagged.count} · ${fmtShekel(c.flagged.amount)}</div>
+      <div class="stat-sub">חוזר לוורד</div></div>
+    <div class="card stat bc-card bc-card--open"><div class="stat-label">יתרה פתוחה</div>
+      <div class="stat-value" id="bc-card-open">${fmtShekel(c.openDebt ? c.openDebt.total : 0)}</div>
+      <div class="stat-sub">${escapeHtml(c.openDebt ? `חלקי ${fmtShekel(c.openDebt.partial.amount)} · לא שולם ${fmtShekel(c.openDebt.notReceived.amount)}` : '—')}</div></div>
+    <div class="card stat bc-card bc-card--confirmed"><div class="stat-label">אומת החודש</div>
+      <div class="stat-value" id="bc-card-confirmed">${fmtShekel(c.confirmedThisMonth.amount)}</div>
+      <div class="stat-sub">הכנסה מאומתת · ${escapeHtml(formatMonth(c.confirmedThisMonth.month + '-01'))}</div></div>
+    <div class="card stat bc-card bc-card--debt"><div class="stat-label">חובות מעל 60 יום</div>
+      <div class="stat-value" id="bc-card-debt">${debtMain}</div>
+      <div class="stat-sub">${escapeHtml(debtSub)}</div>
+      <button type="button" class="btn small bc-debt-export" id="bc-debt-export">ייצוא חובות לאקסל</button></div>`;
+}
+
+/* Sandra's «חריגים פתוחים» — READ-ONLY: no button, no input. */
+function bcExceptionsHtml(ex) {
+  const e = ex || {};
+  const flagged = Array.isArray(e.flaggedOld) ? e.flaggedOld : [];
+  const debts = Array.isArray(e.debtsOver60) ? e.debtsOver60 : [];
+  const refunds = Array.isArray(e.refundExceptions) ? e.refundExceptions : [];
+  const empty = t => `<p class="billing-date-label">${escapeHtml(t)}</p>`;
+  const debtRow = d => `<div class="bc-row bc-row--exception"><div class="bc-head"><b class="bc-name">${escapeHtml(d.patientName || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(d.houseId))}</span> <span class="bc-amount">${fmtShekel(d.balance)}</span></div>
+    <div class="bc-fields"><span class="bc-f"><span class="bc-k">תחילת מחזור</span> <span class="bc-v">${escapeHtml(formatDateHe(d.start))}</span></span>
+    <span class="bc-f"><span class="bc-k">ימים</span> <span class="bc-v">${escapeHtml(String(d.days))}</span></span>
+    <span class="bc-f"><span class="bc-k">סוג</span> <span class="bc-v">${d.kind === 'recorded' ? 'חוב רשום' : 'ללא רישום'}</span></span></div></div>`;
+  const refundRow = x => `<div class="bc-row bc-row--exception"><div class="bc-head"><b class="bc-name">${escapeHtml(x.patientName || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(x.houseId))}</span> <span class="bc-amount">${fmtShekel(x.amount)}</span></div>
+    <div class="bc-fields"><span class="bc-f"><span class="bc-k">סוג</span> <span class="bc-v">${x.kind === 'over_policy' ? 'זיכוי מעל המדיניות' : 'ממתין להחלטה'}</span></span>
+    ${x.kind === 'over_policy' ? `<span class="bc-f"><span class="bc-k">לפי המדיניות</span> <span class="bc-v">${escapeHtml(fmtShekel(x.policyAmount))}</span></span>` : ''}
+    ${x.exitDate ? `<span class="bc-f"><span class="bc-k">יציאה</span> <span class="bc-v">${escapeHtml(formatDateHe(x.exitDate))}</span></span>` : ''}
+    ${x.payoutDate ? `<span class="bc-f"><span class="bc-k">תשלום</span> <span class="bc-v">${escapeHtml(formatDateHe(x.payoutDate))}</span></span>` : ''}
+    ${x.reason ? `<span class="bc-f"><span class="bc-k">סיבה</span> <span class="bc-v">${escapeHtml(x.reason)}</span></span>` : ''}</div></div>`;
+  return `
+    <h4 class="bc-ex-title">סומנו כבעיה לפני יותר מ־7 ימים <span class="count-pill">${flagged.length}</span></h4>
+    ${flagged.length ? flagged.map(r => bcReceiptHtml(r, 'exception', { ageDays: r.ageDays })).join('') : empty('אין')}
+    <h4 class="bc-ex-title">חובות מעל 60 יום <span class="count-pill">${debts.length}</span></h4>
+    ${debts.length ? debts.map(debtRow).join('') : empty('אין')}
+    <h4 class="bc-ex-title">החזרים שממתינים לאישור <span class="count-pill">${refunds.length}</span></h4>
+    ${refunds.length ? refunds.map(refundRow).join('') : empty('אין')}`;
+}
+
+function renderBillingControl() {
+  const screen = document.getElementById('screen-billing-control');
+  if (!screen || state.billingControl === false) return;
+  const s = billingControlState();
+  const R = bcRules();
+  const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+  const errEl = document.getElementById('bc-error');
+  if (errEl) { errEl.textContent = s.error || ''; errEl.classList.toggle('hidden', !s.error); }
+  if (!s.data || !R) {
+    set('bc-cards', '');
+    set('bc-queue', `<p class="billing-date-label">${s.loading ? busyLabelFor('load') : (R ? '' : 'הקובץ לא נטען — רעננו את הדף')}</p>`);
+    set('bc-flagged', '');
+    set('bc-partial', '');
+    set('bc-confirmed', '');
+    return;
+  }
+  const receipts = Array.isArray(s.data.receipts) ? s.data.receipts : [];
+  if (!s.month) s.month = bcThisMonth();
+  set('bc-cards', bcCardsHtml(R.summaryCards(s.data, bcThisMonth())));
+
+  const queue = R.receiptsByStatus(receipts, 'reported');
+  const flagged = R.receiptsByStatus(receipts, 'flagged');
+  const partial = R.receiptsByStatus(receipts, 'partial');
+  set('bc-queue-count', String(queue.length));
+  set('bc-flagged-count', String(flagged.length));
+  set('bc-partial-count', String(partial.length));
+  set('bc-partial-open', fmtShekel(R.openDebt(receipts).partial.amount));
+  set('bc-partial', partial.length ? partial.map(r => bcReceiptHtml(r, 'partial')).join('') : '<p class="billing-date-label">אין קבלות ששולמו חלקית</p>');
+  set('bc-queue', queue.length ? queue.map(r => bcReceiptHtml(r, 'queue')).join('') : '<p class="billing-date-label">אין קבלות שממתינות לאימות</p>');
+  set('bc-flagged', flagged.length ? flagged.map(r => bcReceiptHtml(r, 'flagged')).join('') : '<p class="billing-date-label">אין קבלות שסומנו כבעיה</p>');
+
+  const bulk = document.getElementById('bc-bulk');
+  if (bulk) bulk.classList.toggle('hidden', !(state.canConfirm && queue.length));
+  const picked = queue.filter(r => s.selected[r.id]).length;
+  const bulkBtn = document.getElementById('bc-bulk-confirm');
+  if (bulkBtn && !busyButtonActive(bulkBtn)) {
+    bulkBtn.disabled = picked === 0;
+    bulkBtn.textContent = picked ? `אשר את כל המסומנים (${picked})` : 'אשר את כל המסומנים';
+  }
+  const all = document.getElementById('bc-select-all');
+  if (all) all.checked = queue.length > 0 && picked === queue.length;
+
+  const monthEl = document.getElementById('bc-month');
+  if (monthEl && monthEl.value !== s.month) monthEl.value = s.month;
+  const houseEl = document.getElementById('bc-house');
+  if (houseEl && !houseEl.options.length) {
+    houseEl.innerHTML = `<option value="all">כל הבתים</option>`
+      + HOUSES.map(h => `<option value="${escapeHtml(h.id)}">${escapeHtml(h.name)}</option>`).join('');
+  }
+  if (houseEl) houseEl.value = s.house;
+  const v = R.verifiedForMonth(receipts, s.month, s.house);
+  set('bc-verified-total', fmtShekel(v.total));
+  set('bc-confirmed', v.rows.length
+    ? v.rows.map(r => bcReceiptHtml(r, 'confirmed', { inMonth: r.amountInMonth })).join('')
+    : '<p class="billing-date-label">אין קבלות שאומתו בחודש הזה</p>');
+
+  const exEl = document.getElementById('bc-exceptions');
+  if (exEl) {
+    const show = state.approver === true && !!s.data.exceptions;
+    exEl.classList.toggle('hidden', !show);
+    if (show) set('bc-exceptions-body', bcExceptionsHtml(s.data.exceptions));
+  }
+
+  const badge = document.getElementById('bc-badge');
+  if (badge) { badge.textContent = String(queue.length); badge.classList.toggle('hidden', !queue.length); }
+  if (typeof fitAllStatText === 'function') fitAllStatText();
+}
+
+/* Download an .xlsx from one of the tab's export routes. */
+async function bcDownload(url, filename) {
+  let res;
+  try {
+    res = await fetch(url, { method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+  } catch (_e) {
+    throw new Error('אין חיבור לשרת');
+  }
+  if (res.status === 401) showPinScreen();
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const code = body && body.error;
+    throw new Error(res.status === 401 ? 'נדרשת התחברות מחדש' : (BC_XLSX_ERRORS[code] || ('השרת החזיר שגיאה ' + res.status)));
+  }
+  const blob = await res.blob();
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 1000);
+}
+
+function exportBillingControlXlsx() {
+  return bcDownload('/api/export/billing-control.xlsx', `אימות-${debtAgingTodayIso()}.xlsx`);
+}
+function exportBillingControlDebtXlsx() {
+  const today = debtAgingTodayIso();
+  return bcDownload(debtAgingExportUrl(today, 'all', 'all'), `חובות-${today}.xlsx`);
+}
+
+/* Wire the tab once (event delegation — the lists re-render). */
+function initBillingControlControls() {
+  const screen = document.getElementById('screen-billing-control');
+  if (!screen || screen._bcWired) return;
+  screen._bcWired = true;
+  const s = billingControlState();
+  const refresh = document.getElementById('bc-refresh');
+  if (refresh) refresh.onclick = () => busyButton(refresh, 'load', loadBillingControl);
+  const exp = document.getElementById('bc-export');
+  if (exp) exp.onclick = () => busyButton(exp, 'load', exportBillingControlXlsx)
+    .catch(e => showError('הייצוא נכשל — ' + ((e && e.message) || 'שגיאה')));
+  const monthEl = document.getElementById('bc-month');
+  if (monthEl) monthEl.onchange = () => { s.month = monthEl.value || bcThisMonth(); renderBillingControl(); };
+  const houseEl = document.getElementById('bc-house');
+  if (houseEl) houseEl.onchange = () => { s.house = houseEl.value || 'all'; renderBillingControl(); };
+  const all = document.getElementById('bc-select-all');
+  if (all) all.onchange = () => {
+    const R = bcRules();
+    const queue = R && s.data ? R.receiptsByStatus(s.data.receipts, 'reported') : [];
+    s.selected = {};
+    if (all.checked) queue.forEach(r => { s.selected[r.id] = true; });
+    renderBillingControl();
+  };
+  const bulkBtn = document.getElementById('bc-bulk-confirm');
+  if (bulkBtn) bulkBtn.onclick = () => {
+    const ids = Object.keys(s.selected).filter(id => s.selected[id]);
+    if (!ids.length) return Promise.resolve();
+    return busyButton(bulkBtn, 'save', () => confirmReceipts(ids, 'confirmed'));
+  };
+
+  screen.addEventListener('change', e => {
+    const t = e.target;
+    const pick = t && t.getAttribute && t.getAttribute('data-bc-pick');
+    if (pick) {
+      if (t.checked) s.selected[pick] = true; else delete s.selected[pick];
+      renderBillingControl();
+    }
+    const sid = t && t.getAttribute && t.getAttribute('data-bc-status');
+    if (sid) onBcStatusChange(t, sid, t.value);
+  });
+  screen.addEventListener('input', e => {
+    const t = e.target;
+    if (!t || !t.getAttribute) return;
+    if (t.getAttribute('data-bc-note')) s.flagDraft = t.value;
+    if (t.getAttribute('data-bc-dup-note')) { s.dupDraft = t.value; bcClearInlineError(t, '.bc-dup-error'); }
+    const pid = t.getAttribute('data-bc-partial-amount');
+    if (pid) {
+      // Live remaining balance — computed by the shared rule, text only.
+      s.partialDraft = t.value;
+      const r = bcReceiptById(pid);
+      const R = bcRules();
+      const chk = r && R ? R.partialAmountCheck(t.value, r.amount) : { amount: null };
+      const line = t.parentNode && t.parentNode.querySelector('[data-bc-remaining]');
+      if (line && r) line.textContent = bcRemainingText(r.amount, chk.amount || 0);
+      bcClearInlineError(t, '.bc-partial-error');
+    }
+    const nid = t.getAttribute('data-bc-cnote');
+    if (nid) {
+      s.noteDraft = t.value;
+      const cnt = t.parentNode && t.parentNode.querySelector('[data-bc-cnote-count]');
+      if (cnt) cnt.textContent = `${t.value.length} / ${BC_NOTE_MAX}`;
+      bcClearInlineError(t, '.bc-cnote-error');
+    }
+  });
+  screen.addEventListener('click', e => {
+    const t = e.target && e.target.closest ? e.target.closest('button') : null;
+    if (!t) return;
+    const attr = n => t.getAttribute(n);
+    if (attr('id') === 'bc-debt-export') {
+      busyButton(t, 'load', exportBillingControlDebtXlsx).catch(err => showError('הייצוא נכשל — ' + ((err && err.message) || 'שגיאה')));
+    } else if (attr('data-bc-confirm')) {
+      busyButton(t, 'save', () => confirmReceipts([attr('data-bc-confirm')], 'confirmed'));
+    } else if (attr('data-bc-flag')) {
+      s.flagOpen = attr('data-bc-flag');
+      s.flagDraft = '';
+      renderBillingControl();
+      const ta = document.getElementById('bc-note-' + s.flagOpen);
+      if (ta && ta.focus) ta.focus();
+    } else if (attr('data-bc-flag-cancel')) {
+      s.flagOpen = ''; s.flagDraft = '';
+      renderBillingControl();
+    } else if (attr('data-bc-flag-save')) {
+      const id = attr('data-bc-flag-save');
+      const R = bcRules();
+      const chk = R ? R.flagNoteCheck(s.flagDraft) : { note: s.flagDraft, error: '' };
+      if (chk.error) {
+        const row = t.closest('.bc-flag-form');
+        const err = row && row.querySelector('.bc-note-error');
+        const ta = row && row.querySelector('textarea');
+        if (err) { err.textContent = chk.error; err.classList.remove('hidden'); }
+        if (ta) { ta.setAttribute('aria-invalid', 'true'); if (ta.focus) ta.focus(); }
+        return;
+      }
+      busyButton(t, 'save', () => confirmReceipts([id], 'flagged', chk.note));
+    } else if (attr('data-bc-unflag')) {
+      busyButton(t, 'save', () => confirmReceipts([attr('data-bc-unflag')], 'reported'));
+    } else if (attr('data-bc-dup-cancel')) {
+      s.dupOpen = ''; s.dupDraft = '';
+      renderBillingControl();
+    } else if (attr('data-bc-dup-save')) {
+      const id = attr('data-bc-dup-save');
+      const R = bcRules();
+      const chk = R ? R.flagNoteCheck(s.dupDraft) : { note: s.dupDraft, error: '' };
+      if (chk.error) {
+        bcInlineError(t, '.bc-dup-form', '.bc-dup-error', 'textarea', BC_ERRORS.duplicate_note_invalid);
+        return;
+      }
+      busyButton(t, 'save', () => confirmReceipts([id], 'duplicate', { flagNote: chk.note }));
+    } else if (attr('data-bc-partial-cancel')) {
+      s.partialOpen = ''; s.partialDraft = '';
+      renderBillingControl();
+    } else if (attr('data-bc-partial-save')) {
+      const id = attr('data-bc-partial-save');
+      const r = bcReceiptById(id);
+      const R = bcRules();
+      const chk = R && r ? R.partialAmountCheck(s.partialDraft, r.amount) : { amount: null, error: BC_ERRORS.partial_amount_invalid };
+      if (chk.error) {
+        bcInlineError(t, '.bc-partial-form', '.bc-partial-error', 'input', chk.error);
+        return;
+      }
+      busyButton(t, 'save', () => confirmReceipts([id], 'partial', { confirmedAmount: chk.amount }));
+    } else if (attr('data-bc-cnote-open')) {
+      const id = attr('data-bc-cnote-open');
+      const r = bcReceiptById(id);
+      s.noteOpen = id; s.noteDraft = r ? String(r.controlNote || '') : '';
+      renderBillingControl();
+      const ta = document.getElementById('bc-cnote-' + id);
+      if (ta && ta.focus) ta.focus();
+    } else if (attr('data-bc-cnote-cancel')) {
+      s.noteOpen = ''; s.noteDraft = '';
+      renderBillingControl();
+    } else if (attr('data-bc-cnote-save')) {
+      const id = attr('data-bc-cnote-save');
+      const R = bcRules();
+      const chk = R ? R.controlNoteCheck(s.noteDraft) : { note: s.noteDraft, error: '' };
+      if (chk.error) {
+        bcInlineError(t, '.bc-cnote-form', '.bc-cnote-error', 'textarea', chk.error);
+        return;
+      }
+      busyButton(t, 'save', () => confirmReceipts([id], '', { controlNote: chk.note }));
+    }
+  });
+}
+
+/* The receipt on screen with id `id`, or null. */
+function bcReceiptById(id) {
+  const s = billingControlState();
+  const list = s.data && Array.isArray(s.data.receipts) ? s.data.receipts : [];
+  return list.find(r => r.id === id) || null;
+}
+
+/* An inline Hebrew error under a form; the field gets aria-invalid + focus. */
+function bcInlineError(btn, formSel, errSel, fieldSel, text) {
+  const form = btn.closest(formSel);
+  const err = form && form.querySelector(errSel);
+  const field = form && form.querySelector(fieldSel);
+  if (err) { err.textContent = text; err.classList.remove('hidden'); }
+  if (field) { field.setAttribute('aria-invalid', 'true'); if (field.focus) field.focus(); }
+}
+
+/* A field being typed in again drops its stale inline error. */
+function bcClearInlineError(field, errSel) {
+  const err = field.parentNode && field.parentNode.querySelector(errSel);
+  if (err) { err.textContent = ''; err.classList.add('hidden'); }
+  field.removeAttribute('aria-invalid');
+}
+
+/* The status dropdown moved. «שולם» saves at once; «שולם חלקית» opens the
+ * amount form; «לא שולם» opens the note form. The dropdown shows the saved
+ * status again until a form is saved (nothing changes silently). */
+function onBcStatusChange(sel, id, value) {
+  const s = billingControlState();
+  if (value === 'confirmed') {
+    s.partialOpen = ''; s.flagOpen = ''; s.dupOpen = '';
+    sel.disabled = true;
+    return confirmReceipts([id], 'confirmed').finally(() => { sel.disabled = false; renderBillingControl(); });
+  }
+  if (value === 'partial') { s.partialOpen = id; s.partialDraft = ''; s.flagOpen = ''; s.dupOpen = ''; }
+  else if (value === 'flagged') { s.flagOpen = id; s.flagDraft = ''; s.partialOpen = ''; s.dupOpen = ''; }
+  else if (value === 'duplicate') { s.dupOpen = id; s.dupDraft = ''; s.partialOpen = ''; s.flagOpen = ''; }
+  renderBillingControl();
+  const focus = document.getElementById((value === 'partial' ? 'bc-partial-' : value === 'duplicate' ? 'bc-dup-' : 'bc-note-') + id);
+  if (focus && focus.focus) focus.focus();
+  return Promise.resolve();
 }
 
 /* ===== Boot ===== */

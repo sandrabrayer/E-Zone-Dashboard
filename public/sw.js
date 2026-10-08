@@ -134,7 +134,72 @@
 // on גבייה, all finance-only. New script public/funder.js (precached,
 // network-first like app.js); app.js, index.html and style.css changed —
 // evict v30 (and v31 if #177 shipped first). appendFunder goes through /api/sheets, network-only.
-var CACHE_VERSION = 'v32';
+// v32 → v33: Phase 4 — the «בקרת גבייה» tab (Ortal's verification queue,
+// Sandra's «חריגים פתוחים»), the «מאומת» figure on הכנסות חודשיות and the
+// controller view. app.js, index.html, style.css changed and the page loads a
+// new /billing-control-rules.js (network-first like app.js) — evict v32 (and
+// v30 / v31 on a phone that skipped them). (PR #179 was built as v31, then
+// rebased onto #178's v32.)
+// v33 → v34: coordinators roster (PR #177, built as v31, rebased onto
+// #179's v33) — the dashboard gains the «🟢 קליטת מטופל חדש» intake button
+// and the «🚪 שחרורים מהבתים» panel (discharges the coordinators recorded).
+// app.js, index.html, style.css changed — evict v33 (and older). /api/ stays
+// network-only.
+// v36 → v37: (v35 / v36 are reserved by open PRs #181 / #182; this evicts
+// v34, v35 or v36, whichever a phone has) pro-bono — the fifth funder
+// «פרו-בונו» (funder.js keys/labels; app.js skips pro-bono rows in the due
+// list, «יתרות פתוחות» and the renewal / overdue alerts). /api/ stays
+// network-only.
+// v37 → v38: (v35 / v36 / v37 are reserved by open PRs #181 / #182 / #183;
+// this evicts v34–v37, whichever a phone has) the invoice on the payment
+// report — «חשבונית?» כן / לא (no default) and «על שם» in the «דווח תשלום»
+// form, shown on the receipts list and the «בקרת גבייה» card. app.js,
+// style.css and /payment-report-rules.js changed. /api/ stays network-only.
+// v38 → v39: perf (CHANGELOG-dashboard-perf.md; built as v18 in PR #149,
+// rebased). index.html now links each JS/CSS file as `<file>?v=<its content
+// hash>`; such a URL is served 'cache-first-hashed' (exact URL, no
+// ignoreSearch — a new hash is a cache miss, so a deploy is never pinned),
+// and older hashes of the same file are pruned. Unversioned requests stay
+// network-first. app.js (the three reads start together) changed — evict
+// v38. /api/ stays network-only.
+// v39 → v40: «בקרת גבייה» status dropdown, partial amount, remaining
+// balance, the note; Ortal reads «גבייה» (CHANGELOG-ortal-verification-status.md).
+// v40 → v41: PR #145's reactivation fix, re-landed (CHANGELOG-reactivation-fix.md)
+// — a patient set back to live via ✏️ / re-add / admission / restore no longer
+// vanishes on the next load, and the load-time heal announces itself. app.js
+// is the only asset that changed: index.html links it at its new content hash,
+// so the 'cache-first-hashed' lookup misses and phones fetch the new bundle;
+// activate evicts v40 and any orphaned v17 (#145's burned number, never reused).
+// v41 → v42: «לא נקלט כמטופל · N ימים» on the lead card and its count on the
+// לידים tab (CHANGELOG-unadmitted-lead-warning.md). app.js, index.html and
+// style.css changed; hashed URLs miss and phones fetch them; activate evicts
+// v41 (and any orphaned v17 — still burned, never reused).
+// v42 → v43: duplicate discharges — «השחרור כבר נרשם», «מחק כפילות» on the
+// מטופלים משוחררים tab (CHANGELOG-duplicate-discharges.md). app.js changed;
+// its hashed URL misses and phones fetch it; activate evicts v42 (and any
+// orphaned v17 — still burned, never reused).
+// v43 → v44: receipts — the «אומתו» month-split line, «כפילות» in «בקרת
+// גבייה», Vered's duplicate prompt and ✏️ on a receipt
+// (CHANGELOG-receipt-duplicates-and-edit.md). app.js, style.css and
+// billing-control-rules.js changed; activate evicts v43 (v17 never reused).
+// v44 → v45: the «מטופלים» tab — the patient list, «ממתינים לקליטה», problem
+// chips and «פרטי הליד» (CHANGELOG-patients-tab-ui.md). app.js, index.html and
+// style.css changed; activate evicts v44 (v17 never reused).
+// v45 → v46: refund rule v2 (CHANGELOG-refund-rule-v2.md) — every house: an
+// exit on day 14+ of the billing month gets no refund (exits from 07/10/2026);
+// the «זיכויים» modal shows the rule line and the billing-month day. app.js,
+// style.css and index.html changed and the page loads a new /refund-rules.js
+// (hashed like app.js); activate evicts v45 (v17 never reused).
+// v46 → v47: the institutional-funder grace period (CHANGELOG-funder-grace.md)
+// — a ביטוח לאומי / מכבי / משרד הביטחון cycle reads «ממתין לגורם מממן»
+// (grey) for 30 days after its due date instead of overdue. app.js,
+// style.css and index.html changed and the page loads a new /funder-grace.js
+// (hashed like app.js); activate evicts v46 (v17 never reused).
+// v47 → v48: «דוח תשלום» persistence (CHANGELOG-payment-report-persistence.md)
+// — a stale getPayments can no longer overwrite a confirmed report, a failed
+// one no longer wipes the money state, and every report carries an
+// idempotency key. app.js changed; activate evicts v47 (v17 never reused).
+var CACHE_VERSION = 'v48';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
@@ -158,7 +223,24 @@ var PRECACHE_URLS = [
  *                     deploy is picked up immediately; cache is an OFFLINE-only
  *                     fallback. This is what fixes the stale-bundle pin.
  *   'cache-first'   — versioned-by-filename assets (icons, manifest).
+ *   'cache-first-hashed' — the JS/CSS bundle at `?v=<12-hex content hash>`
+ *                     (what index.html links): those bytes can never change
+ *                     under that URL, so the cached copy is served without a
+ *                     network round trip. Matched by EXACT url.
  *   'network'       — everything else: pass through to the network. */
+/* The JS/CSS files index.html links with a content hash (server.js ASSETS). */
+var BUNDLE_PATHS = ['/app.js', '/style.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/refund-rules.js', '/funder-grace.js'];
+
+/* True for `?v=<exactly 12 lowercase hex>` — the server's content hash. The
+ * old `?v=<BUILD_ID>` (digits-dash-base36) never matches. Pure. */
+function isContentHashUrl(url) {
+  try {
+    return /^[0-9a-f]{12}$/.test(new URL(url, 'http://localhost').searchParams.get('v') || '');
+  } catch (e) {
+    return false;
+  }
+}
+
 function cacheStrategy(url) {
   var path;
   try {
@@ -171,11 +253,13 @@ function cacheStrategy(url) {
   if (url.indexOf('sheets') !== -1) return 'network-only';
   if (path.indexOf('/api/') !== -1) return 'network-only';
 
-  // Shell + JS/CSS bundle: network-first (offline fallback only).
+  // Shell: network-first (offline fallback only).
   if (path === '/' || path === '/index.html') return 'network-first';
-  if (path === '/app.js' || path === '/style.css') return 'network-first';
-  if (path === '/payment-report-rules.js') return 'network-first';
-  if (path === '/funder.js') return 'network-first';
+
+  // JS/CSS bundle: cache-first at its content hash, network-first otherwise.
+  if (BUNDLE_PATHS.indexOf(path) !== -1) {
+    return isContentHashUrl(url) ? 'cache-first-hashed' : 'network-first';
+  }
 
   // Truly versioned-by-filename static assets: cache-first.
   if (path === '/manifest.json') return 'cache-first';
@@ -195,6 +279,8 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     cacheStrategy: cacheStrategy,
     shouldCache: shouldCache,
+    isContentHashUrl: isContentHashUrl,
+    cacheFirstHashed: cacheFirstHashed,
     CACHE_NAME: CACHE_NAME,
     CACHE_VERSION: CACHE_VERSION,
   };
@@ -310,6 +396,47 @@ function cacheFirst(req) {
   });
 }
 
+/* CACHE-FIRST BY EXACT URL for a content-hashed bundle file. A hit is served
+ * with no network at all. A miss fetches, stores, and deletes every OTHER
+ * cached copy of the same path (an older hash), so the cache holds one copy
+ * per file no matter how many deploys happen within one CACHE_VERSION.
+ * Offline with a miss: the last copy of that path (ignoreSearch), else
+ * Response.error(). Always resolves to a Response. */
+function cacheFirstHashed(req) {
+  var url = req.url || String(req);
+  return caches.open(CACHE_NAME).then(function (cache) {
+    return cache.match(req, { ignoreVary: true }).then(function (hit) {
+      if (hit) return hit;
+      return fetch(req).then(function (res) {
+        if (res && res.status === 200) {
+          var copy = res.clone();
+          cache.put(req, copy).then(function () {
+            return pruneOtherVersions(cache, url);
+          }).catch(function () { /* cache write is best-effort */ });
+        }
+        return res;
+      }, function () {
+        return cache.match(req, { ignoreSearch: true, ignoreVary: true }).then(function (old) {
+          return old || Response.error();
+        });
+      });
+    });
+  }).catch(function () {
+    return Response.error();
+  });
+}
+
+/* Delete cached entries with the same pathname as `url` but another query. */
+function pruneOtherVersions(cache, url) {
+  var keep = new URL(url, 'http://localhost');
+  return cache.keys().then(function (keys) {
+    return Promise.all(keys.map(function (k) {
+      var u = new URL(k.url, 'http://localhost');
+      return (u.pathname === keep.pathname && u.search !== keep.search) ? cache.delete(k) : false;
+    }));
+  });
+}
+
 self.addEventListener('fetch', function (event) {
   var req = event.request;
 
@@ -333,6 +460,11 @@ self.addEventListener('fetch', function (event) {
 
   if (strategy === 'cache-first') {
     event.respondWith(cacheFirst(req));
+    return;
+  }
+
+  if (strategy === 'cache-first-hashed') {
+    event.respondWith(cacheFirstHashed(req));
     return;
   }
 });

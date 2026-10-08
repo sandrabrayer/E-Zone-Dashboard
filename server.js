@@ -7,9 +7,12 @@ const { createSessionToken, verifySessionToken, readSession } = require('./lib/s
 const {
   APPROVER_ID, USER_MODEL, validateUserPinHashes, hasApprover, resolvePrincipal, recordLine,
   loginUsers, modelById, principalCapabilities, hasFinance,
+  hasBillingControl, isControllerView, principalView,
 } = require('./lib/users');
 const {
   FINANCE_ACTIONS, FINANCE_ROUTES, FINANCE_FORBIDDEN_MESSAGE, isFinanceAction, stripFinanceKeys,
+  BILLING_CONTROL_ACTIONS, CONTROLLER_ACTIONS, CONTROLLER_ROUTES, BILLING_CONTROL_FORBIDDEN_MESSAGE,
+  isBillingControlAction, isControllerAction, isControllerRoute, controllerResponseView,
 } = require('./lib/finance-scope');
 const { hashPin, verifyPin, pinPolicyError } = require('./lib/pin-hash');
 const { WindowCounter, PinLockout } = require('./lib/rate-limit');
@@ -17,8 +20,14 @@ const {
   ROLE_FORBIDDEN_MESSAGE, roleOperationFor, requiredRoleFor, principalHasRole, roleAllowed,
 } = require('./lib/role-scope');
 const { buildXlsxReport, isoDayInIsrael, XLSX_MIME } = require('./lib/xlsx-report');
+const {
+  createAssetStore, versionAssetRefs, isCurrentVersion, immutableHeaders, sendAsset, sendCompressedText,
+} = require('./lib/static-assets');
 const { buildRefundForecastSpec, isForecastResponse, contentDisposition } = require('./lib/refund-forecast-xlsx');
 const { buildCleanupSpec, isCleanupResponse, cleanupContentDisposition } = require('./lib/cleanup-xlsx');
+const {
+  buildBillingControlSpec, isBillingControlResponse, billingControlContentDisposition,
+} = require('./lib/billing-control-xlsx');
 const {
   buildDebtAgingSpec, isDebtAgingResponse, validateDebtAgingQuery, debtAgingContentDisposition,
 } = require('./lib/debt-aging-xlsx');
@@ -218,30 +227,76 @@ app.use((req, _res, next) => {
   next();
 });
 
-/* Serve index.html with BUILD_ID substituted so the script tag is unique
- * per deploy and cannot be cached between deploys. Read from disk on every
- * request so a hot-redeploy picks up edits immediately. */
+/* ===== «בקרת גבייה» — the controller view lock (Phase 4, Sandra 2026-10-04) =====
+ *
+ * Ortal's session (lib/users.js isControllerView — by stable id) sees ONLY
+ * the «בקרת גבייה» tab. Registered BEFORE every route, so it also covers any
+ * /api/ route added later: an /api/ path outside lib/finance-scope.js
+ * CONTROLLER_ROUTES → 403, before any handler runs. /api/sheets is further
+ * limited to CONTROLLER_ACTIONS by requireBillingControlForAction. Pages and
+ * static assets are not data and pass. Logged with the path only. */
+function controllerRouteLock(req, res, next) {
+  if (isControllerRoute(req.path)) return next();
+  const p = sessionPrincipalFromRequest(req);
+  if (!isControllerView(p)) return next();
+  console.warn(`[billing-control] 403 user=${p.id} route=${req.path}`);
+  return res.status(403).json({ ok: false, error: 'forbidden', message: BILLING_CONTROL_FORBIDDEN_MESSAGE });
+}
+app.use(controllerRouteLock);
+
+/* The page's JS/CSS (perf, CHANGELOG-dashboard-perf.md). Each is referenced
+ * from index.html as `<file>?v=<its own content hash>` and served
+ * precompressed; a request naming the CURRENT hash is cacheable forever
+ * (immutable), anything else keeps the no-store headers below. sw.js, the
+ * manifest, the icons and the meeting-report files are NOT here — they are
+ * served exactly as before. */
+const ASSETS = createAssetStore({
+  '/app.js': { file: path.join(__dirname, 'public', 'app.js'), mime: 'application/javascript' },
+  '/style.css': { file: path.join(__dirname, 'public', 'style.css'), mime: 'text/css' },
+  '/funder.js': { file: path.join(__dirname, 'public', 'funder.js'), mime: 'application/javascript' },
+  '/payment-report-rules.js': { file: path.join(__dirname, 'lib', 'payment-report-rules.js'), mime: 'application/javascript' },
+  '/billing-control-rules.js': { file: path.join(__dirname, 'lib', 'billing-control-rules.js'), mime: 'application/javascript' },
+  '/refund-rules.js': { file: path.join(__dirname, 'lib', 'refund-rules.js'), mime: 'application/javascript' },
+  '/funder-grace.js': { file: path.join(__dirname, 'lib', 'funder-grace.js'), mime: 'application/javascript' },
+});
+
+/* Serve index.html with every asset reference pinned to that file's content
+ * hash (versionAssetRefs) and BUILD_ID substituted in the build markers.
+ * Read from disk on every request so a hot-redeploy picks up edits
+ * immediately; the page itself stays no-store. */
 function sendIndex(req, res) {
-  let html = fs.readFileSync(path.join(__dirname, 'public/index.html'), 'utf8')
+  let html = versionAssetRefs(fs.readFileSync(path.join(__dirname, 'public/index.html'), 'utf8'), ASSETS)
     .replace(/__BUILD__/g, BUILD_ID);
   // Restricted view: a session without `finance` (Shiran / Yael) gets
   // <body class="view-restricted">, so the four money tabs and the billing
   // widgets never paint; app.js then removes them from the DOM. No session
   // (the login screen) or a full-view session: the page is unchanged.
+  // «בקרת גבייה» (Phase 4): Ortal's controller session gets
+  // <body class="view-controller"> — only that tab ever paints.
   const principal = sessionPrincipalFromRequest(req);
-  if (principal && !hasFinance(principal)) html = html.replace('<body>', '<body class="view-restricted">');
+  // With read access to «גבייה» (CHANGELOG-ortal-verification-status.md) the
+  // page also gets view-billing-read, so that tab paints read-only.
+  if (isControllerView(principal)) {
+    html = html.replace('<body>', hasBillingControl(principal) ? '<body class="view-controller view-billing-read">' : '<body class="view-controller">');
+  }
+  else if (principal && !hasFinance(principal)) html = html.replace('<body>', '<body class="view-restricted">');
   console.log(`[req] → serving /index.html (build ${BUILD_ID}, ${html.length} chars)`);
   noCache(res);
-  res.type('html').send(html);
+  res.type('html');
+  sendCompressedText(req, res, html);
 }
 app.get('/', sendIndex);
 app.get('/index.html', sendIndex);
 
-/* Serve app.js and style.css by hand so we control the headers. Each file
- * is tagged with BUILD_ID in its URL via the HTML, but we ALSO no-cache
- * the response itself so even an unversioned request doesn't get cached. */
+/* Serve app.js and style.css by hand so we control the headers. A file in
+ * ASSETS is sent precompressed; `?v=<its current hash>` (what index.html
+ * links) is cached immutable, any other request is no-store as before. A
+ * file outside ASSETS (sw.js above all — it must never be HTTP-cached) is
+ * served exactly as it always was. */
 function sendStatic(relPath, mime) {
-  return (_req, res) => {
+  return (req, res) => {
+    const entry = ASSETS.get('/' + relPath);
+    if (entry) return sendAssetEntry(req, res, entry);
     const full = path.join(__dirname, 'public', relPath);
     try {
       const content = fs.readFileSync(full);
@@ -252,21 +307,43 @@ function sendStatic(relPath, mime) {
     }
   };
 }
+/* One ASSETS entry → the response: immutable when the request names its
+ * current hash, otherwise no-store (noCache already ran as middleware). */
+function sendAssetEntry(req, res, entry) {
+  if (isCurrentVersion(req.query && req.query.v, entry)) immutableHeaders(res);
+  else noCache(res);
+  return sendAsset(req, res, entry);
+}
+
+/* A route for an ASSETS file outside public/ (the shared lib/ rules). */
+function sendLibAsset(urlPath) {
+  return (req, res) => {
+    const entry = ASSETS.get(urlPath);
+    if (!entry) return res.status(404).send('not found');
+    return sendAssetEntry(req, res, entry);
+  };
+}
+
 app.get('/app.js', sendStatic('app.js', 'application/javascript'));
 /* The payment-report rules (Phase 3 PR 2): the SAME file the server tests
  * require (lib/payment-report-rules.js, a pure IIFE that exposes
  * window.PaymentReportRules in a browser), so the «דווח תשלום» form validates
  * with exactly the rules Code.gs mirrors. No data in it — only the rules and
  * the Hebrew messages — so it is served like app.js, to any page. */
-app.get('/payment-report-rules.js', (_req, res) => {
-  try {
-    const content = fs.readFileSync(path.join(__dirname, 'lib', 'payment-report-rules.js'));
-    noCache(res);
-    res.type('application/javascript').send(content);
-  } catch (_err) {
-    res.status(404).send('not found');
-  }
-});
+app.get('/payment-report-rules.js', sendLibAsset('/payment-report-rules.js'));
+/* «בקרת גבייה» (Phase 4): lib/billing-control-rules.js — the tab's pure views
+ * and the «הכנסה מאומתת» allocation — is the SAME file the «ייצוא אימות»
+ * workbook requires (window.BillingControlRules in a browser). Rules only, no
+ * data, so it is served like app.js. */
+app.get('/billing-control-rules.js', sendLibAsset('/billing-control-rules.js'));
+/* The refund rule picked by the exit date (CHANGELOG-refund-rule-v2.md):
+ * lib/refund-rules.js, window.RefundRules — the same rule Code.gs
+ * computeRefund_ applies (parity-tested). Rules only, no data. */
+app.get('/refund-rules.js', sendLibAsset('/refund-rules.js'));
+/* The institutional-funder grace period (CHANGELOG-funder-grace.md):
+ * lib/funder-grace.js, window.FunderGrace — the same rule as Code.gs
+ * isWithinFunderGrace_ (parity-tested). Rules only, no data. */
+app.get('/funder-grace.js', sendLibAsset('/funder-grace.js'));
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 // Patient funder helpers (public/funder.js, global Funder) — loaded before app.js.
 app.get('/funder.js', sendStatic('funder.js', 'application/javascript'));
@@ -490,7 +567,10 @@ function safeErrorMessage(err) {
  * browser. One split/join over the serialized body. */
 function sendAppsScriptJson(res, data) {
   const text = JSON.stringify(data === undefined ? null : data);
-  res.type('application/json').send(redactSecrets(text, [PROXY_SECRET]));
+  // Compressed when the browser accepts it (getData is the largest answer
+  // the app receives). Redaction runs on the plain text, before compression.
+  res.type('application/json');
+  sendCompressedText(res.req, res, redactSecrets(text, [PROXY_SECRET]));
 }
 
 /* Express middleware: refuse to proxy when PROXY_SECRET is unset
@@ -787,17 +867,57 @@ function financeForbidden(res, req, what) {
   return res.status(403).json({ ok: false, error: 'forbidden', message: FINANCE_FORBIDDEN_MESSAGE });
 }
 
-/* /api/sheets: refuse a FINANCE_ACTIONS action (GET query or POST body). */
+/* /api/sheets: refuse a FINANCE_ACTIONS action (GET query or POST body).
+ * The controller view's own allow-list (CONTROLLER_ACTIONS — debtAging for
+ * the «חובות פתוחים» export) is decided by requireBillingControlForAction,
+ * which runs first. */
 function requireFinanceForAction(req, res, next) {
   const action = req.method === 'GET' ? (req.query && req.query.action) : (req.body && req.body.action);
   if (!isFinanceAction(action)) return next();
-  if (hasFinance(sessionPrincipalFromRequest(req))) return next();
+  const p = sessionPrincipalFromRequest(req);
+  if (hasFinance(p)) return next();
+  if (isControllerView(p) && isControllerAction(action) && hasBillingControl(p)) return next();
   return financeForbidden(res, req, 'action=' + action);
 }
 
 /* A whole route that only serves billing data. */
 function requireFinance(req, res, next) {
   if (hasFinance(sessionPrincipalFromRequest(req))) return next();
+  return financeForbidden(res, req, 'route=' + req.path);
+}
+
+/* «בקרת גבייה» (Phase 4) on /api/sheets, BEFORE anything is proxied:
+ *   - the controller view (Ortal) may call ONLY CONTROLLER_ACTIONS — getData
+ *     and every lead / patient / billing action → 403;
+ *   - BILLING_CONTROL_ACTIONS need billingControl (Shiran, Yael → 403).
+ * Code.gs (viewRefused_) refuses the same again. */
+function billingControlForbidden(res, req, what) {
+  const p = sessionPrincipalFromRequest(req);
+  console.warn(`[billing-control] 403 user=${p ? (p.id || p.auth) : 'none'} ${what}`);
+  return res.status(403).json({ ok: false, error: 'forbidden', message: BILLING_CONTROL_FORBIDDEN_MESSAGE });
+}
+function requireBillingControlForAction(req, res, next) {
+  const action = req.method === 'GET' ? (req.query && req.query.action) : (req.body && req.body.action);
+  const p = sessionPrincipalFromRequest(req);
+  if (isControllerView(p) && !isControllerAction(action)) {
+    return billingControlForbidden(res, req, 'action=' + String(action == null ? '' : action).slice(0, 60));
+  }
+  if (isBillingControlAction(action) && !hasBillingControl(p)) return billingControlForbidden(res, req, 'action=' + action);
+  return next();
+}
+
+/* A route of the «בקרת גבייה» tab: billingControl (Vered, Sandra, Ortal). */
+function requireBillingControl(req, res, next) {
+  if (hasBillingControl(sessionPrincipalFromRequest(req))) return next();
+  return billingControlForbidden(res, req, 'route=' + req.path);
+}
+
+/* A billing route the controller view also needs (the «חובות פתוחים»
+ * export the tab links to, and — read access to «גבייה» — the refund
+ * forecast and fix-list exports): finance, or the controller view. */
+function requireFinanceOrController(req, res, next) {
+  const p = sessionPrincipalFromRequest(req);
+  if (hasFinance(p) || (isControllerView(p) && hasBillingControl(p))) return next();
   return financeForbidden(res, req, 'route=' + req.path);
 }
 
@@ -819,14 +939,20 @@ function requireRoleForAction(req, res, next) {
 
 /* getData for a session without `finance`: drop the billing-only keys
  * (GETDATA_FINANCE_KEYS — no tab such a session can see reads them). A
- * full-view session gets every key, unchanged (append-only contract). */
+ * full-view session gets every key, unchanged (append-only contract). The
+ * controller view (Ortal, read access to «גבייה») gets getData, cleanupReport
+ * and refundPayoutForecast cut to their FIELD allow-lists
+ * (lib/finance-scope.js CONTROLLER_RESPONSE_SCHEMAS) — no lead row, no notes,
+ * no phone, no source. Code.gs makes the same cut first. */
 function viewFilteredResponse(action, data, principal) {
-  return action === 'getData' && !hasFinance(principal) ? stripFinanceKeys(data) : data;
+  if (isControllerView(principal)) return controllerResponseView(action, data);
+  if (action !== 'getData') return data;
+  return !hasFinance(principal) ? stripFinanceKeys(data) : data;
 }
 
 /* GET /api/sheets?action=getData — forwarded to Apps Script as a POST whose
  * body carries the params + proxy secret (see sheetsGet). */
-app.get('/api/sheets', requireSession, requireFinanceForAction, requireRoleForAction, requireProxySecret, async (req, res) => {
+app.get('/api/sheets', requireSession, requireBillingControlForAction, requireFinanceForAction, requireRoleForAction, requireProxySecret, async (req, res) => {
   const action = req.query && req.query.action;
   // The action name only — never the query values or a response body.
   console.log('[sheets GET] → action=', JSON.stringify(typeof action === 'string' ? action.slice(0, 60) : null));
@@ -866,7 +992,7 @@ app.get('/api/sheets', requireSession, requireFinanceForAction, requireRoleForAc
 /* POST /api/sheets — body is forwarded as POST application/json to Apps Script.
  * All save operations (saveAll, etc.) use POST so the data never hits the
  * querystring length limit. */
-app.post('/api/sheets', requireSession, requireFinanceForAction, requireRoleForAction, requireProxySecret, async (req, res) => {
+app.post('/api/sheets', requireSession, requireBillingControlForAction, requireFinanceForAction, requireRoleForAction, requireProxySecret, async (req, res) => {
   const body = req.body || {};
   // Who/when stamping: the `user` the Apps Script writes into updatedBy
   // comes ONLY from the signed session cookie. ALWAYS overwritten — a
@@ -945,7 +1071,9 @@ app.post('/api/sheets', requireSession, requireFinanceForAction, requireRoleForA
  * Script. */
 function refundForecastXlsxHandler(deps) {
   const d = deps || {};
-  const fetchForecast = d.fetchForecast || ((user, principal) => sheetsPost({ action: 'refundPayoutForecast', user }, principal));
+  // The controller view's answer is cut to its field allow-list here too.
+  const fetchForecast = d.fetchForecast || ((user, principal) => sheetsPost({ action: 'refundPayoutForecast', user }, principal)
+    .then((data) => viewFilteredResponse('refundPayoutForecast', data, principal)));
   const clock = d.now || (() => new Date());
   return async (req, res) => {
     const fail = (status, error) => {
@@ -981,7 +1109,8 @@ function refundForecastXlsxHandler(deps) {
     return res.status(200).end(buf);
   };
 }
-app.get('/api/export/refund-forecast.xlsx', requireSession, requireFinance, requireProxySecret, refundForecastXlsxHandler());
+// Ortal (controller view) reads the full «גבייה» tab, its exports included.
+app.get('/api/export/refund-forecast.xlsx', requireSession, requireFinanceOrController, requireProxySecret, refundForecastXlsxHandler());
 
 /* GET /api/export/debt-aging.xlsx?asOf=YYYY-MM-DD&house=…&status=… — «חובות
  * פתוחים» → «ייצוא לאקסל».
@@ -1043,11 +1172,11 @@ function debtAgingXlsxHandler(deps) {
     return res.status(200).end(buf);
   };
 }
-app.get('/api/export/debt-aging.xlsx', requireSession, requireFinance, validateDebtAgingExportQuery, requireProxySecret, debtAgingXlsxHandler());
+app.get('/api/export/debt-aging.xlsx', requireSession, requireFinanceOrController, validateDebtAgingExportQuery, requireProxySecret, debtAgingXlsxHandler());
 
 /* GET /api/export/cleanup.xlsx — «ייצוא רשימת תיקונים».
  *
- * requireSession → requireFinance (403 for a restricted session) →
+ * requireSession → requireFinanceOrController (403 for a restricted session) →
  * requireProxySecret → handler. Reads action=cleanupReport (read-only)
  * through sheetsPost and sends the workbook built by lib/xlsx-report.js from
  * lib/cleanup-xlsx.js: every known gap and inconsistency as of today, one tab
@@ -1062,7 +1191,8 @@ app.get('/api/export/debt-aging.xlsx', requireSession, requireFinance, validateD
  * Sandra (CHANGELOG-cleanup-export-finance.md). */
 function cleanupXlsxHandler(deps) {
   const d = deps || {};
-  const fetchCleanup = d.fetchCleanup || ((user, principal) => sheetsPost({ action: 'cleanupReport', user }, principal));
+  const fetchCleanup = d.fetchCleanup || ((user, principal) => sheetsPost({ action: 'cleanupReport', user }, principal)
+    .then((data) => viewFilteredResponse('cleanupReport', data, principal)));
   const clock = d.now || (() => new Date());
   return async (req, res) => {
     const fail = (status, error) => {
@@ -1099,7 +1229,57 @@ function cleanupXlsxHandler(deps) {
     return res.status(200).end(buf);
   };
 }
-app.get('/api/export/cleanup.xlsx', requireSession, requireFinance, requireProxySecret, cleanupXlsxHandler());
+app.get('/api/export/cleanup.xlsx', requireSession, requireFinanceOrController, requireProxySecret, cleanupXlsxHandler());
+
+/* GET /api/export/billing-control.xlsx — «ייצוא אימות» (Phase 4).
+ *
+ * requireSession → requireBillingControl (Vered, Sandra, Ortal; 403 for
+ * Shiran / Yael) → requireProxySecret → handler. Reads
+ * action=billingControlQueue (read-only) with the SESSION PRINCIPAL (Code.gs
+ * re-checks the capability) and sends the workbook built by
+ * lib/xlsx-report.js from lib/billing-control-xlsx.js: ממתין / בעיה / אומתו
+ * by month. No amount is computed here. Never cached (no-store; the service
+ * worker never caches /api/). The log carries the outcome only. */
+function billingControlXlsxHandler(deps) {
+  const d = deps || {};
+  const fetchQueue = d.fetchQueue || ((user, principal) => sheetsPost({ action: 'billingControlQueue', user }, principal));
+  const clock = d.now || (() => new Date());
+  return async (req, res) => {
+    const fail = (status, error) => {
+      console.error('[export billing-control] failed:', error);
+      res.set('Cache-Control', 'no-store');
+      return res.status(status).json({ ok: false, error });
+    };
+    let data;
+    try {
+      data = await fetchQueue(sessionUserFromRequest(req), sessionPrincipalFromRequest(req));
+    } catch (err) {
+      return fail(502, err && err.message === PROXY_NOT_CONFIGURED ? 'proxy_not_configured' : 'sheets_unreachable');
+    }
+    if (data && data.ok === false && data.error === 'lock_busy') return fail(503, 'lock_busy');
+    if (data && data.ok === false && data.error === 'forbidden') return fail(403, 'forbidden');
+    if (!isBillingControlResponse(data)) {
+      return fail(502, data && typeof data.error === 'string' ? data.error.slice(0, 60) : 'bad_response');
+    }
+    let buf;
+    const now = clock();
+    try {
+      buf = await buildXlsxReport(buildBillingControlSpec(data, now));
+    } catch (_err) {
+      return fail(500, 'xlsx_build_failed');
+    }
+    console.log('[export billing-control] ok, bytes=', buf.length);
+    res.set({
+      'Content-Type': XLSX_MIME,
+      'Content-Disposition': billingControlContentDisposition(data.today),
+      'Content-Length': String(buf.length),
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    return res.status(200).end(buf);
+  };
+}
+app.get('/api/export/billing-control.xlsx', requireSession, requireBillingControl, requireProxySecret, billingControlXlsxHandler());
 
 /* Diagnostics — last save and last load. These echo lead/patient previews, so
  * they are gated behind the session cookie like the data routes.
@@ -1454,6 +1634,16 @@ app.get('/api/me', requireSession, (req, res) => {
     // Restricted view: false hides the four money tabs and every billing
     // widget. Display only — the server refuses the data itself (403).
     finance: hasFinance(p),
+    // «בקרת גבייה» (Phase 4): the capability set, the page view
+    // ('full' | 'restricted' | 'controller' — Ortal sees only that tab), and
+    // whether this session may confirm / flag (controller or approver role).
+    capabilities: principalCapabilities(p),
+    billingControl: hasBillingControl(p),
+    view: principalView(p),
+    canConfirm: roleAllowed(p, 'confirmPayment'),
+    // Read access to the full «גבייה» tab for the controller view (Ortal):
+    // reads only — no write, delete, void or approval control. Display only.
+    billingRead: isControllerView(p) && hasBillingControl(p),
   });
 });
 
@@ -1667,6 +1857,28 @@ function healthzBody(env) {
 
 app.get('/healthz', (_, res) => res.json(healthzBody()));
 
+/* GET /api/version — the post-merge deploy probe (CLAUDE.md rule 4b): poll it
+ * until `commit` equals the merge SHA to know Railway is serving the merge.
+ * Public (no session, nothing proxied), Cache-Control: no-store, and the body
+ * is exactly { commit, builtAt }: commit is deployIdentity()'s validated
+ * RAILWAY_GIT_COMMIT_SHA ('' outside Railway); builtAt is when this process
+ * started (ISO-8601) — Railway exposes no build timestamp, and a new deploy
+ * always starts a new process. A controller-view session (Ortal) still gets
+ * the controllerRouteLock 403 like every other /api/ route outside
+ * CONTROLLER_ROUTES; the probe is meant to be called anonymously. */
+const PROCESS_STARTED_AT = new Date().toISOString();
+function versionBody(env, builtAt) {
+  return {
+    commit: deployIdentity(env || process.env).commit,
+    builtAt: builtAt || PROCESS_STARTED_AT,
+  };
+}
+
+app.get('/api/version', (_, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(versionBody());
+});
+
 /* ===== GET /api/healthcheck — the weekly healthcheck's data probe (PR C) =====
  *
  *   GET /api/healthcheck?action=getData
@@ -1775,6 +1987,8 @@ module.exports = {
   // Deploy identity on /healthz (see test/healthz-deploy-identity.test.js).
   deployIdentity,
   healthzBody,
+  // GET /api/version deploy probe (see test/api-version.test.js).
+  versionBody,
   buildLoadPreviews,
   followingRequest,
   parseSessionCookie,
@@ -1809,6 +2023,15 @@ module.exports = {
   viewFilteredResponse,
   FINANCE_ACTIONS,
   FINANCE_ROUTES,
+  // «בקרת גבייה» (see test/billing-control-tab.test.js).
+  controllerRouteLock,
+  requireBillingControlForAction,
+  requireBillingControl,
+  requireFinanceOrController,
+  billingControlXlsxHandler,
+  BILLING_CONTROL_ACTIONS,
+  CONTROLLER_ACTIONS,
+  CONTROLLER_ROUTES,
   bootstrapState,
   sessionPrincipalFromRequest,
   NO_PRINCIPAL,

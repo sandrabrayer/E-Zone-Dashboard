@@ -549,7 +549,8 @@ test('every value is HTML-escaped (name, house, method, recorder)', () => {
   t.g.paymentsDigestRun_('scheduled', THU_8);
   const html = t.sent[0].htmlBody;
   assert.ok(!html.includes('<script') && !html.includes('<img') && !html.includes('<b>x') && !html.includes('<a href=javascript'));
-  assert.equal((html.match(/<a /g) || []).length, 1, 'only the dashboard link');
+  // The dashboard link, and (Phase 4) the «ממתינים לאימות» link to the tab.
+  assert.equal((html.match(/<a /g) || []).length, 2, 'only the dashboard link and the «בקרת גבייה» link');
   assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;&amp;&quot;&#39;'));
   assert.ok(html.includes('&lt;img src=x onerror=1&gt;'));
   assert.equal(t.g.digestEsc_('a&<>"\'b'), 'a&amp;&lt;&gt;&quot;&#39;b');
@@ -577,7 +578,8 @@ test('no phone number and no id (row id, billing triple, paymentUid, patientUid)
   assert.ok(!/pmt-|id-patient|pay::|::/.test(all), 'nothing id-shaped');
   const projected = Object.keys(t.g.digestRow_(rows[0], {})).sort();
   assert.deepEqual(projected, ['amount', 'houseLabel', 'instant', 'key', 'method', 'patientName', 'paymentDate',
-    'previousAmount', 'recordedAt', 'recordedBy', 'reference', 'updated'].sort(), 'the allow-list (reference: Phase 3 PR 2)');
+    'previousAmount', 'recordedAt', 'recordedBy', 'reference', 'updated',
+    'invoice', 'invoiceTo'].sort(), 'the allow-list (reference: Phase 3 PR 2; invoice: CHANGELOG-payment-invoice.md)');
 });
 
 test('read-only against the spreadsheet: zero write attempts, never getOrCreateSheet_', () => {

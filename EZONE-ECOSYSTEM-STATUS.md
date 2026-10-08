@@ -737,6 +737,390 @@ funder in «השלמת גורם מממן», then correct a cycle row's funder wi
 `updatePayment`; a receipt is immutable, so it is voided and reported again.
 No `public/` change, no SW bump, no new HTTP action.
 
+## Dashboard: «בקרת גבייה» — Ortal's verification tab (October 4, 2026)
+
+Detail: `CHANGELOG-billing-control-tab.md`. Apps Script **and** Railway.
+Phase 4 of `docs/billing-control-plan.md` is complete.
+
+**Extended 06/10/2026 (`CHANGELOG-ortal-billing-access.md`, server + schema):**
+
+- **Ortal can read the full «גבייה» tab**, enforced on the server:
+  - the reads: `getData` cut to patients + overrides, payments, credits,
+    the refund forecast, debt aging, the fix list;
+  - two exports.
+- She still cannot write, delete, void or approve. Shiran and Yael are
+  still blocked.
+- `confirmPayment` takes `partial` (an amount > 0 and below the reported
+  one) and a `controlNote` (up to 500 characters).
+- Two columns are appended to `Payments`: `confirmedAmount` and
+  `controlNote`.
+- Every change writes an AuditLog row with at / by / prev / next.
+- Only confirmed money reduces the tab's open debt. Shared revenue rules
+  and Outpatient are unchanged.
+
+**UI (`CHANGELOG-ortal-verification-status.md`, SW v40):**
+
+- A status dropdown on every «בקרת גבייה» row.
+- «שולם חלקית»: an amount field with the remaining balance shown live, its
+  own list, and an «יתרה פתוחה» card.
+- «+ הערה» on every row.
+- Ortal gets a read-only «גבייה» tab
+  (`<body class="view-controller view-billing-read">`).
+
+- **Ortal logs in** (`lib/users.js`: `ortal` active, roles `['controller']`
+  only). Her session is the **controller view**: the «בקרת גבייה» tab and
+  logout, nothing else. server.js refuses every other `/api/sheets` action
+  and every other `/api/` route (403, `controllerRouteLock`); Code.gs refuses
+  the same (`viewRefused_`) — `getData` included, so she never receives
+  patients or leads. Sandra creates her code via «קוד אישי חדש».
+- New capability **`billingControl`** (Vered, Sandra, Ortal — by stable id).
+  Shiran / Yael never see the tab (403).
+- Two new actions, `PROXY_SECRET`-gated, not open:
+  `billingControlQueue` (read: receipts + counts + «חובות מעל 60 יום», and
+  Sandra's read-only «חריגים פתוחים») and `confirmPayment` (controller or
+  approver role; `reported` → `confirmed` / `flagged` (note 2–300) / back;
+  atomic bulk; `confirmedBy/At` stamped once; one AuditLog row per change).
+  Only the four confirm cells of a receipt are written.
+- New route `GET /api/export/billing-control.xlsx` («ייצוא אימות»). The
+  debt-aging export is now open to the controller too.
+- **הכנסות חודשיות** gains «מאומת» (confirmed receipts allocated by
+  coverage) next to «נגבה». No shared revenue rule changed; Outpatient
+  untouched.
+- **Item H:** `savePayment` refuses any direct `amountPaid` / status move
+  (`use_report_payment`), also on cycles without receipts.
+- Ortal's digest gains «ממתינים לאימות: N» with a link to `/#billing-control`.
+- `/api/me` adds `capabilities`, `billingControl`, `view`, `canConfirm`.
+  The page loads `/billing-control-rules.js`. SW `CACHE_VERSION` v32 → **v33**
+  (built as v31, rebased onto #178's v32).
+- No new env var, Script Property, scope, column or trigger.
+
+## Dashboard ⇄ Coordinators: shared patient roster (October 4, 2026)
+
+Detail: `CHANGELOG-coordinators-roster.md` (Dashboard repo).
+
+- **New Script Property (Dashboard Apps Script):** `COORDINATORS_PATIENTS_SECRET`
+  (own secret, fail-closed, constant-time).
+- **`getPatientsForCoordinators`** — read-only. Per row EXACTLY `id, name,
+  house, active, admissionDate, dischargeDate` (`'yyyy-MM-dd'`, `''` when
+  none). `house` = canonical `ramot|raanana|efroni|rehab|pardes`. Active
+  patients + discharges from the last 30 days. No phone / billing / payment.
+- **`recordDischargeFromCoordinators`** — `id, dischargeDate, reason, by`.
+  Immediate effect (status released + exitDate; occupancy, Managers feed and
+  the digest follow), idempotent, never deletes; audit on the discharged sheet
+  (4 columns appended last). Vered sees these in «🚪 שחרורים מהבתים».
+- Both are in `OPEN_ACTIONS` (now six) — they survive `PROXY_SECRET_MODE=enforce`.
+- Dashboard: «🟢 קליטת מטופל חדש» on the dashboard (name, house, admission
+  date; finance sessions also pick the required funder, as at any admission).
+  SW v33 → **v34**.
+- **Managers / Therapists payloads unchanged** (guard test pins them).
+
+## Dashboard: pro-bono — the fifth funder (October 5, 2026)
+
+Detail: `CHANGELOG-funder-probono.md`. Apps Script **and** Railway.
+
+- **`PAYMENT_FUNDERS` gains `'פרו-בונו'`, appended LAST** (key `probono` in
+  `public/funder.js`). The four existing positions never move.
+- **A pro-bono patient owes nothing.** `debtAging_` (Code.gs) now reads the
+  `Funders` tab and drops every cycle whose start day is pro-bono from
+  `byPatient`, `byHouse` and `totals` (new informational field
+  `probonoExcluded`). A mid-stay switch drops only the cycles from that date on.
+  `billingControlQueue`'s «חובות מעל 60 יום» follows automatically.
+- The page skips pro-bono rows in «לגבייה בתאריך הנבחר», «יתרות פתוחות» and the
+  renewal / «ממתינים לתשלום» alerts (finance view only). The funder × house
+  strip always shows a ₪0 «פרו-בונו» row. Occupancy, cards and meetings are
+  unchanged.
+- **Ortal's daily email is unchanged:** every payment received is listed,
+  pro-bono or not (money received is always reported). Pro-bono exclusion
+  lives only in `debtAging_`, the due list, «יתרות פתוחות» and the alerts.
+- A payment report for a pro-bono patient needs an **explicit** funder: the
+  form never prefills pro-bono; the savePayment fill path refuses
+  `funder_probono_explicit`.
+- «ייצוא רשימת תיקונים» gains a last tab, «מטופלי פרו-בונו».
+- SW `CACHE_VERSION` v34 → **v37** (v35 / v36 are held by open PRs #181 / #182).
+- No new action, env var, Script Property, scope, column or trigger.
+
+## Dashboard: the invoice on the payment report (October 5, 2026)
+
+Detail: `CHANGELOG-payment-invoice.md`. Apps Script **and** Railway.
+
+- **`Payments` gains two columns, appended LAST** (positions 37–38, text):
+  `invoiceWanted` (`yes` | `no`) and `invoiceTo` (1–120 characters, no
+  formula lead-in). Rows from before stay blank and display «—».
+- «דווח תשלום» asks **«חשבונית?» כן / לא with no default**; refused without
+  a choice (`invoice_choice_missing`), and with כן without «על שם»
+  (`invoice_to_missing`). In the UI and on the server, nothing is written on
+  a refusal.
+- `updatePayment` may change the pair (on a receipt, it is the only edit
+  besides the void), with the same rules and one `payment_invoice_changed`
+  AuditLog row.
+- Shown in the גבייה receipts list, the «בקרת גבייה» card, «ייצוא אימות»,
+  and Ortal's daily email («חשבונית» / «על שם»).
+- **Accounting feed (additive, `schemaVersion` still 1):** each cycle record
+  gains `invoiceWanted` / `invoiceTo` and `invoices` (one per receipt:
+  `receiptUid, receivedDate, amount, void, invoiceWanted, invoiceTo`; `null`
+  = from before the question). A receipt edit moves its cycle into the next
+  incremental read.
+- SW `CACHE_VERSION` v34 → **v38** (v35–v37 are held by open PRs #181–#183).
+- No new action, env var, Script Property, scope or trigger.
+
+## Dashboard: page-load performance (October 6, 2026)
+
+Detail: `CHANGELOG-dashboard-perf.md` (carries PR #149, rebased, plus
+compressed / content-hashed assets). Apps Script **and** Railway.
+
+- `loadAll` starts `getData` / `getPayments` / `getCredits` **together**.
+  The page waits for the slowest read (~2 s est.), not the sum (~11 s est.).
+  A session without `finance` still never asks for the money reads.
+- `Code.gs` read path: no whole-column format writes, one `getValues` per
+  sheet, timezone lookups only for Date cells, and no lock in `getPayments`
+  unless there is work. Per load: 51 → 0 writes, 13 → 8 reads, 166 → 0
+  timezone lookups. Byte-identical responses.
+- Assets: `index.html` links each JS/CSS file as `?v=<content hash>`.
+  - Those URLs are `immutable` and served br/gzip; any other request stays
+    `no-store`.
+  - Apps Script JSON answers are compressed too.
+  - Bytes per page: 789 KB → 204 KB on a first visit, 9 KB after.
+- SW `CACHE_VERSION` v38 → **v39**, with a new `cache-first-hashed`
+  strategy (exact URL; older hashes pruned). `/api/` stays network-only.
+- No new action, env var, Script Property, scope, column or trigger.
+- Timing lines: `[perf] …` in Apps Script Executions and
+  `[E-ZONE][perf] loadAll …` in the browser console.
+
+## Dashboard: re-activated patients stay visible — PR #145's fix re-landed (October 6, 2026)
+
+Detail: `CHANGELOG-reactivation-fix.md`. **Railway only**: `public/app.js`;
+`Code.gs` is not touched.
+
+- **The bug:** the load-time heal released any live patient whose stay still
+  had an open discharge row. So a patient set back to live through ✏️, direct
+  add / intake, admission (same entry date) or restore (with a second open row)
+  vanished from the house tab on the next load.
+- **The fix:** each of those writes now also closes the stay's open discharge
+  rows, using the existing `restorePatientToActive` action. When the heal does
+  act, it shows a toast.
+- **History:** #145 shipped this fix, #146 reverted it (phones were pinned to a
+  stale SW v17 cache), and #147 re-landed only the diagnostic.
+- SW `CACHE_VERSION` v40 → **v41**. v17 stays burned and is never reused.
+  Phones pick up the new `app.js` through #186's content hash; `activate`
+  evicts v40 and any orphaned v17.
+- No new action, env var, Script Property, scope, column or trigger.
+
+## Dashboard: «לא נקלט כמטופל» — paid / entering leads with no patient record (October 7, 2026)
+
+Detail: `CHANGELOG-unadmitted-lead-warning.md`. **Railway only**: `public/`;
+`Code.gs` is not touched.
+
+- **When it flags:** a lead that is paid (stage בטיפול פעיל, an advance, or a
+  recorded payment) or has the outcome «נכנסים לטיפול», whose `entryDate` is
+  3+ days ago (Asia/Jerusalem), with no matching Patients row.
+- **What it shows:** a red chip on the card, «לא נקלט כמטופל · N ימים», and a
+  red count on the לידים tab.
+- **Never flagged:** no entryDate; closed, irrelevant, removed or admitted
+  leads; an ambiguous match (logged once).
+- **The match** is reconciliation report §A's `recLeadPatient_`
+  (fromLead → phone → name + house). It is ported to app.js as
+  `unadmittedLeadPatient` and parity-tested against the Code.gs original.
+- Display only, computed in the browser. Ortal's controller view has no leads
+  and is untouched.
+- SW `CACHE_VERSION` v41 → **v42** (v41 was the highest on every remote
+  branch; v17 stays burned).
+- No new action, env var, Script Property, scope, column or trigger.
+
+## Dashboard: duplicate discharges — one open row per stay, «מחק כפילות» (October 7, 2026)
+
+Detail: `CHANGELOG-duplicate-discharges.md`. Apps Script **and** Railway.
+
+- **Root cause:** every discharge confirm minted a new audit id, and
+  `dischargePatient_` upserted by that id. So a retry after a lost answer or
+  «נשמר חלקית», or a stale tab, appended a second row for the same stay.
+- **Credits:** «זיכויים (N)» counts per stay. Two duplicate rows showing «(1)»
+  are **one** credit.
+- **Server guard:** one OPEN (not restored, not deleted) discharge row per
+  stay (house + name + entry date). A second row is refused as `{ ok:true,
+  duplicate:true, id }` and nothing is written. Same rule in the coordinators
+  discharge and for credits (same stay + rule).
+- **Client:** one audit id per modal, an in-flight guard per stay, and the
+  toast «השחרור כבר נרשם».
+- **«מחק כפילות»** (`deleteDuplicateDischarge`, in `DELETE_ACTIONS` = Vered /
+  Sandra): a soft delete with a reason (2–120). It never touches the last row
+  of a stay, and refuses a row with its own credit or a stay with a double
+  credit. It writes an AuditLog row.
+- **Editor-run dry run:** `listDuplicateDischargesNow()`.
+- **Columns:** `deletedAt` / `deletedBy` / `deleteReason` appended to the
+  discharged sheet. Nothing else is new: no env var, Script Property, scope or
+  trigger. Additive for ezone-managers / ezone-therapists.
+- SW `CACHE_VERSION` v42 → **v43** (v17 stays burned).
+
+## Dashboard: receipts — month-split label, duplicates, ✏️ edit (October 7, 2026)
+
+Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
+(clasp CI on merge). No new column, sheet, Script Property, env var or scope.
+
+- **«אומתו» line:** a month-split confirmed receipt reads «חלק אוקטובר: ₪x ·
+  הקבלה המלאה ₪y (תקופה dd/mm–dd/mm) · שולם במלואו». «שולם חלקית» appears
+  only for `partial`. The «ייצוא אימות» month columns now read «חלק <חודש>»,
+  «הקבלה המלאה» and «סטטוס».
+- **Duplicates at report time:** same patient + same amount within 14 days
+  of a live receipt → `possible_duplicate`, and nothing is written. Vered
+  re-sends with `confirmDuplicate:true`, and AuditLog records
+  `payment_duplicate_override`.
+- **«כפילות» in Ortal's dropdown** (`confirmPayment` status `duplicate`,
+  controller or approver): a required note (2–300) voids the receipt through
+  the PR #144 path (`payment_link_duplicate` audit, cycle re-derived, «נגבה»
+  drops it). The only live receipt of its cycle is refused. Un-void stays
+  Sandra's alone.
+- **`listDuplicateReceiptsNow()`**: a read-only editor function. Run it from
+  the Apps Script editor and read the Execution log.
+- **`editReceipt`** (new, appended to `FINANCE_ACTIONS`; Vered and Sandra
+  only): ✏️ on a receipt edits reference, method, payer, the invoice pair and
+  coverage. Amount, receivedDate and status are refused server-side. Each
+  edit writes one `receipt_edited` audit row with prev / next. Confirmation
+  is kept. Ortal gets 403.
+- SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
+  v17 stays burned).
+
+## Dashboard Apps Script: duplicate-payment report (October 8, 2026)
+
+Detail: `CHANGELOG-duplicate-payments-report.md`. **Code.gs only** (clasp CI
+deploys it on merge). No column, sheet, Script Property, env var or SW change.
+
+- **What it does:** `duplicatePaymentsReportNow()` is run from the editor. It
+  lists non-voided Payments money rows created since 30/09/2026 that share a
+  patient or cycle, have the same amount, and either share a payment date or
+  were created within 10 minutes of each other.
+- **Output:** one private Google Doc; the function logs its URL.
+- **Read-only:** the spreadsheet is never written.
+
+## Dashboard: «דוח תשלום» persistence fix (October 8, 2026)
+
+Detail: `CHANGELOG-payment-report-persistence.md`. **Railway + Code.gs**
+(clasp CI on merge). Vered saw a reported row flip back to «לא שולם».
+The data was in the sheet; the client overwrote it on screen.
+- A `getPayments` read that started before a payment write can no longer
+  overwrite that write's echo. A request-sequence guard handles this, and a
+  report counts as a save in flight for the visibility resync.
+- A failed `getPayments` keeps the money state and shows a Hebrew error.
+  It no longer wipes every row to «לא שולם» without a message.
+- After a confirmed report, the app re-reads `getPayments` with `no-store`
+  and reconciles.
+- Each report form carries an idempotency key (`submissionId`, a new
+  APPENDED `Payments` column). A retry after a lost response returns the
+  same receipt and never writes a second one.
+- SW `CACHE_VERSION` v47 → **v48** (v17 stays burned).
+
+## Dashboard: «מטופלים» patient list — PR 1, the foundation (October 7, 2026)
+
+Detail: `CHANGELOG-patients-tab-foundation.md`. **Railway only**: `public/app.js`
+(pure helpers, not yet called by any render) and a test. Nothing changes on
+screen. `Code.gs` is not touched.
+
+- **Helpers:**
+  - `patientLeadInfo`: `fromLead` → board / closed / removed lists, else the
+    #192 name + house match; ambiguous → no lead.
+  - `patientProblems`: ללא גורם מממן · לא דווח תשלום (3+ days) · בית שונה
+    מהליד · ללא ליד. The first two are finance only.
+  - `patientPaymentState`: the current cycle through the billing helpers.
+  - `patientListRows`, `patientProblemSummary`, `pendingAdmissionRows`: the
+    #192 rule without its threshold.
+- **The lead's details are a display join.** Nothing is copied onto the
+  Patients sheet.
+- **Admission** (requirement 7): «כניסה לבית» and the load-time promote
+  already set `fromLead` and stage `admitted`. Pinned by tests; no
+  write-path change.
+- No new action, env var, Script Property, scope, column or trigger. SW
+  `CACHE_VERSION` unchanged (v44).
+
+## Dashboard: «מטופלים» patient list — PR 2, the tab (October 7, 2026)
+
+Detail: `CHANGELOG-patients-tab-ui.md`. **Railway only**: `public/`; `Code.gs`
+and `server.js` are not touched.
+
+- **Placement:** a new tab right after לידים. A red badge counts active
+  patients with open problems.
+- **The tab, top to bottom:**
+  1. A problems summary.
+  2. «ממתינים לקליטה»: the #192 rule without its threshold. Each row has
+     «קלוט כמטופל» (the «כניסה לבית» modal) and the #192 chip from day 3.
+  3. The list, one row per patient. Filters: house, פעילים / משוחררים / הכל,
+     בעיות בלבד, name. Columns: name, house, entry date, days, funder,
+     payment status, problem chips. Each row has a «פרטי הליד» section, a
+     display join from the lead.
+- **Actions:** existing flows only — ✏️, «הגדר גורם מממן», «דווח תשלום»,
+  «קלוט כמטופל», «שחזר».
+- **Visibility:**
+  - Shiran / Yael see the tab without the payment column, the funder cell,
+    the finance chips or «דווח תשלום».
+  - Ortal has no tab.
+  - The server already withholds the money data (`FINANCE_ACTIONS`).
+- SW `CACHE_VERSION` v44 → **v45**: v44 was the highest on all 159 remote
+  branches; v17 stays burned.
+- No new action, env var, Script Property, scope, column or trigger.
+
+## Dashboard: grace period for institutional funders (October 7, 2026)
+
+Detail: `CHANGELOG-funder-grace.md`, plan §7.5. **Nothing to set.**
+
+- **The rule (Sandra, 07/10/2026):**
+  - A cycle whose funder on its due date is ביטוח לאומי, מכבי or משרד
+    הביטחון reads **«ממתין לגורם מממן»** (grey) until 30 days after its due
+    date (`FUNDER_GRACE_DAYS = 30`). From day 31 it is red / overdue as
+    usual.
+  - Private, pro-bono and unset funders are unchanged.
+- **Every total is unchanged.** The amount stays outstanding in debt aging,
+  «חובות פתוחים», «יתרות פתוחות» and Ortal's open debt. Only the problem
+  marking waits:
+  - the «לא דווח תשלום» chip and the problem count on מטופלים;
+  - the גבייה row status and colour;
+  - the overdue strip on the dashboard;
+  - a «בתוך תקופת גורם מממן» column in debt aging and its .xlsx.
+- **The shared helper** is in `lib/funder-grace.js` (served at
+  `/funder-grace.js`) and in `Code.gs` (`isWithinFunderGrace_`). A parity
+  test checks that the two agree. `debtAging_` flags each cycle
+  (`funderGrace`, `funderGraceUntil`) and counts them (`funderGrace`).
+- SW `CACHE_VERSION` v46 → **v47**. v17 stays burned.
+- Code.gs changes, so clasp CI deploys it on merge. There is no data change
+  and no new action, Script Property, env var, column or trigger.
+
+## Dashboard: refund rule v2 — stay day 14, every house (October 7, 2026)
+
+Detail: `CHANGELOG-refund-rule-v2.md`, plan §8.6. **Nothing to set.**
+
+- **The rule (Sandra, 07/10/2026), for every house:**
+  `stayDay = exit − entry + 1`. The entry day is day 1, and the count runs
+  across month boundaries.
+  - `stayDay ≥ 14` → no refund for the current cycle.
+  - `stayDay` 1–13 → pro-rata of the current cycle, as before.
+  - The first draft counted the billing month; Sandra corrected it to the
+    stay the same day.
+- **Unchanged:** the prepaid full refund, the payout timing (by the 10th → the
+  15th), and the rule that exceptions are Sandra-only.
+- **Selected by the EXIT date:** `REFUND_RULE_V2_FROM = '2026-10-07'`. An
+  earlier exit keeps the old per-house rule (the last 7 days for אשר / רמות,
+  stay day 14 for the others). Saved credits are never recomputed.
+- **The shared rule** is in `lib/refund-rules.js` (served at
+  `/refund-rules.js`) and in `Code.gs` (`refundCurrentCycleRule_`,
+  `refundRuleVersion_`). A parity test checks that the two agree.
+  `suggestRefunds`, the refund forecast and the «זיכויים» modal all follow it.
+- SW `CACHE_VERSION` v45 → **v46**. v17 stays burned.
+- Code.gs changes, so clasp CI deploys it on merge. There is no new action,
+  Script Property, env var, column or trigger.
+
+## Dashboard: meetings strip shows current managers only (PR #154, October 1, 2026; re-verified October 6)
+
+Detail: `CHANGELOG-meeting-summary-active-managers.md`. Apps Script **and** Railway.
+
+- `getData` adds `currentManagers` + `currentManagersSource` (additive;
+  `houseManagers` unchanged for ezone-managers / ezone-therapists).
+- Source: the `Managers` tab (house | manager_name | start_date | end_date),
+  current = start ≤ today ≤ end (blank = open), today in Asia/Jerusalem.
+  Missing/empty tab → bonusconfig `manager` column → `houseManagers`.
+  Read-only: no tab created, no header written.
+- The strip hides former managers and «ללא מנהל»; the meetingWith dropdowns
+  and the house default use current managers. A meeting saved with a former
+  manager keeps and shows that name — saved data is never rewritten.
+- Oct 6: confirmed intact after #186–#188 (no code change, SW stays v40);
+  tests added for escaping and the saved-former-manager meeting row.
+
 ## Apps Script topology (July 4)
 
 - Outpatient Apps Script: **ONE active deployment** (URL ending FOwWYIw/exec);

@@ -13,6 +13,10 @@ Two independent deploy paths:
 | **Node/Express + frontend** | Railway | Auto-deploys the connected branch (`claude/build-ezone-dashboard-QOg5s`). |
 | **Apps Script backend** (`apps-script/**`) | GitHub Actions → clasp | Push to `claude/build-ezone-dashboard-QOg5s` touching `apps-script/**`. |
 
+**Verify a Railway deploy:** `GET https://ezone-dashboard.up.railway.app/api/version` returns
+`{ commit, builtAt }` (public, `no-store`). When `commit` equals the merge SHA, Railway is
+serving the merge; if it never changes, the deploy was skipped. See `CLAUDE.md` rule 4.
+
 ## Automatic Apps Script deployment (clasp in CI)
 
 **Workflow:** [`.github/workflows/deploy-apps-script.yml`](.github/workflows/deploy-apps-script.yml)
@@ -155,6 +159,26 @@ yet. If column 36 (or 25–35) of `Payments` holds a hand-added header, every
 report is refused (`sheet_header_clash`) and nothing is written until it is
 moved.
 
+**08/10/2026 — `CHANGELOG-payment-report-persistence.md`:** no manual step.
+One column, `submissionId` (the report's idempotency key), is APPENDED at
+the end of `Payments` (after `controlNote`) and writes its own header name on
+the first read or report after the clasp deploy. If a hand-added header sits
+in that position, reports are refused (`sheet_header_clash`) until it is
+moved. SW `CACHE_VERSION` v47 → **v48**.
+
+## «בקרת גבייה» — Ortal's tab (October 4, 2026)
+
+`CHANGELOG-billing-control-tab.md`. **No env var, no Script Property, no
+column.** One step for Sandra after the merge: «קוד אישי חדש» → אורטל →
+paste the line into `USER_PIN_HASHES` in Railway (same as the other codes).
+Until that line exists Ortal is simply not on the login screen.
+
+**06/10/2026 — `CHANGELOG-ortal-billing-access.md`:** nothing to set. The
+clasp CI deploys Code.gs. The two appended `Payments` columns
+(`confirmedAmount`, `controlNote`) write their own header names on the first
+decision. If a hand-added column sits where they belong, decisions are
+refused (`sheet_header_clash`) until it is moved.
+
 ## Accounting source feed — one Script Property to set
 
 The Dashboard Apps Script gained two READ-ONLY actions for the external
@@ -205,6 +229,47 @@ are what every historical row carries — nothing is rewritten, and **no charge
 stamp is ever invented for a historical row**.
 
 Same rule as always: never insert or reorder a Payments or Credits column.
+
+## Coordinators roster — one Script Property to set (October 4, 2026)
+
+Two actions for the **ezone-coordinators** app: `getPatientsForCoordinators`
+(read-only feed) and `recordDischargeFromCoordinators` (a coordinator's
+discharge, written back immediately). Full contract: `CHANGELOG-coordinators-roster.md`.
+
+**Steps:**
+
+1. **Generate a secret** on your own computer: `openssl rand -hex 32`.
+2. **Apps Script editor → Project Settings → Script Properties**, add:
+
+   | Property | Value |
+   |---|---|
+   | `COORDINATORS_PATIENTS_SECRET` | the string from step 1 |
+
+   Its **own** secret — do not reuse `ADMITTED_ROSTER_SECRET`,
+   `ACCOUNTING_SECRET`, `MEETING_REPORT_SECRET` or `PROXY_SECRET`. Until it is
+   set both actions refuse every request (**fail-closed**) — the safe default.
+3. **Merge the PR.** The Apps Script deploys automatically (the clasp workflow
+   runs on a push to `claude/build-ezone-dashboard-QOg5s` that touches
+   `apps-script/**`). Railway redeploys the Dashboard UI. Nothing to set on
+   Railway.
+4. **Give the coordinators app** the Dashboard `/exec` URL and the secret
+   (server-side only — never in browser code). It sends `secret` in the POST
+   body.
+5. **Check it:**
+
+   ```
+   curl -sS -L -X POST "<the /exec URL>" \
+     -H 'Content-Type: application/json' \
+     -d '{"action":"getPatientsForCoordinators","secret":"<COORDINATORS_PATIENTS_SECRET>"}'
+   ```
+
+   Expect `{"ok":true,"patients":[{"id":…,"name":…,"house":…,"active":…,"admissionDate":…,"dischargeDate":…}]}`.
+   Without the secret: `{"ok":false,"error":"unauthorized"}` — verify that too.
+   Do **not** test the discharge on a real patient.
+
+The discharged-audit sheet (`מטופלים משוחררים`) gains four columns at the END
+(`dischargeSource`, `dischargedBy`, `dischargeReason`, `patientId`); they are
+added automatically on the first read. Never insert or reorder a column there.
 
 ## Missing-patient diagnostic (read-only)
 

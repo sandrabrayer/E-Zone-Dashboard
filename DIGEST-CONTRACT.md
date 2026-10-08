@@ -7,6 +7,13 @@ the schema. The producing code lives in
 and the contract is locked by
 [`test/coordinators-patients-digest.test.js`](test/coordinators-patients-digest.test.js).
 
+> **Live feed alternative (2026-10-04).** The coordinators app can also read the
+> roster live, with patient ids and recent discharges, from the Dashboard Apps
+> Script action `getPatientsForCoordinators` (same canonical house encoding as
+> below), and write a discharge back with `recordDischargeFromCoordinators`.
+> Contract: [`CHANGELOG-coordinators-roster.md`](CHANGELOG-coordinators-roster.md).
+> This digest is unchanged.
+
 ## Ownership
 
 - The digest lives in its **own dedicated spreadsheet**, separate from the main
@@ -83,9 +90,13 @@ mixed/legacy rows still resolve.
   patient status/house changes ride this), `dischargePatient`, `restorePatient`,
   `restorePatientToActive`, plus the lead paths (`moveLeadIrrelevant`,
   `restoreLead`, `removeLead`). A digest failure can never break the primary
-  read/write path.
+  read/write path. The rows are recomputed in full every time; when they are
+  identical to what the tab already holds, the write itself is skipped (most
+  saves do not change the active population), so the tab's rows — and their
+  `updatedAt` — stay those of the last write.
 - **Backstop:** an hourly time-based trigger (`rebuildActivePatientsDigest`)
-  rebuilds the digest even if a mutation path is ever missed.
+  rebuilds the digest even if a mutation path is ever missed. It always writes,
+  so `updatedAt` is never more than about an hour old.
 - **Diagnostics:** run **`diagnoseActivePatientsDigest`** from the editor to see,
   read-only, the resident count per status and — among active residents — the
   per-house kept count plus every dropped row with its exclusion reason (so a

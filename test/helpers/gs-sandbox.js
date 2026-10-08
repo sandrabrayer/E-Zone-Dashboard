@@ -112,7 +112,8 @@ function loadGs(opts) {
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
-  vm.runInContext(GS_SRC, sandbox);
+  // o.src: a MUTATED Code.gs for a mutation check (the real file otherwise).
+  vm.runInContext(typeof o.src === 'string' ? o.src : GS_SRC, sandbox);
   const calls = [];
   if (o.spyHandle) {
     sandbox.handle_ = (params) => {

@@ -7,7 +7,9 @@
  * labels to stable keys for the UI (filter values, chips, strip rows).
  *
  * Rules (Sandra, locked):
- *   - four funders, stable keys private / btl / mod / maccabi. There is NO
+ *   - five funders, stable keys private / btl / mod / maccabi / probono
+ *     (probono appended LAST — the lists are append-only;
+ *     CHANGELOG-funder-probono.md). There is NO
  *     default: no row, or an unrecognized label on the effective row → 'unset'
  *     («לא הוגדר») — never 'private'.
  *   - the funder on day D = the row with the latest effectiveFrom <= D; same
@@ -24,8 +26,11 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  const FUNDER_KEYS = Object.freeze(['private', 'btl', 'mod', 'maccabi']);
+  const FUNDER_KEYS = Object.freeze(['private', 'btl', 'mod', 'maccabi', 'probono']);
   const FUNDER_UNSET = 'unset';
+  /* A pro-bono patient owes nothing: Code.gs debtAging_ drops the cycles
+   * that start on a pro-bono day, so this row of the strip is always ₪0. */
+  const FUNDER_PROBONO = 'probono';
   /* The Funders sheet's labels → keys. EXACT strings: no trim, no folding.
    * KEEP IN SYNC with Code.gs PAYMENT_FUNDERS (a guard test pins the keys of
    * this map to that list, in order). */
@@ -34,6 +39,7 @@
     'ביטוח לאומי': 'btl',
     'משרד הביטחון': 'mod',
     'מכבי': 'maccabi',
+    'פרו-בונו': 'probono',
   });
   const KEY_TO_LABEL = Object.freeze(Object.keys(LABEL_TO_KEY).reduce(function (o, label) {
     o[LABEL_TO_KEY[label]] = label;
@@ -124,9 +130,9 @@
   function addTo(fig, amount) { fig.count++; fig.total = round2(fig.total + amount); }
 
   /* Split the EXISTING debtAging report by funder (never recomputed).
-   * → { private, btl, mod, maccabi, unset }, each { recorded_debt, unrecorded_cycles
+   * → { private, btl, mod, maccabi, probono, unset }, each { recorded_debt, unrecorded_cycles
    * ({count,total}), byHouse: { houseId: { recorded_debt, unrecorded_cycles } } }.
-   * Per figure, the five sum to report.totals and per house to report.byHouse.
+   * Per figure, the six sum to report.totals and per house to report.byHouse.
    * asOf (optional) must equal report.asOf. */
   function debtByFunder(report, fundersRows, asOf) {
     if (!report || report.ok !== true || !Array.isArray(report.byPatient)) {
@@ -160,6 +166,7 @@
   return {
     FUNDER_KEYS: FUNDER_KEYS,
     FUNDER_UNSET: FUNDER_UNSET,
+    FUNDER_PROBONO: FUNDER_PROBONO,
     LABEL_TO_KEY: LABEL_TO_KEY,
     KEY_TO_LABEL: KEY_TO_LABEL,
     UNSET_LABEL: UNSET_LABEL,

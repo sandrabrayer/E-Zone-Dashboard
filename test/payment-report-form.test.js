@@ -99,6 +99,8 @@ const CYCLE_ROW = (extra) => Object.assign({
 const VALID = (extra) => Object.assign({
   receivedDate: RECEIVED, amount: '10000', method: 'העברה בנקאית', payer: 'משפחת כהן', reference: 'TRX-2026/0042',
   funder: 'פרטי', coverageStart: DUE, coverageEnd: COV_END,
+  // «חשבונית?» is required since CHANGELOG-payment-invoice.md (no default).
+  invoiceWanted: 'no',
 }, extra || {});
 
 /* ---------- app.js in a vm (the same rules file the page loads) ---------- */
@@ -495,9 +497,11 @@ test('form: submitting a valid report posts reportPayment once, adopts the recei
     : { ok: true };
   const { app, posts } = loadApp({ answer });
   await app.submitPaymentReport(cycleIdentity(), VALID({ method: 'מזומן', reference: '' }));
-  assert.equal(posts.length, 1);
-  assert.equal(posts[0].action, 'reportPayment');
-  assert.deepEqual(Object.keys(posts[0].report).sort(), ['cycle', 'report']);
+  // POSTs only: the post-save reconcile is a GET (CHANGELOG-payment-report-persistence.md).
+  const sentPosts = posts.filter((b) => b.action);
+  assert.equal(sentPosts.length, 1);
+  assert.equal(sentPosts[0].action, 'reportPayment');
+  assert.deepEqual(Object.keys(sentPosts[0].report).sort(), ['cycle', 'report']);
   assert.equal(app.state.receipts.length, 1);
   assert.equal(app.state.payments[0].status, 'partial', 'the money shown is the server\'s');
   assert.equal(app.PAYMENT_REPORT_TOAST, 'התשלום נרשם — יופיע אצל אורטל מחר בבוקר');
@@ -662,7 +666,8 @@ test('other readers: the accounting feed exports cycles only, the refund suggest
   assert.equal(cycles.length, 1);
   assert.equal(cycles[0].amountPaid, 30000);
   const feedSrc = GS_SRC.slice(GS_SRC.indexOf('function accountingPayments_'), GS_SRC.indexOf('function ', GS_SRC.indexOf('function accountingPayments_') + 10));
-  assert.match(feedSrc, /paymentCyclesDerived_\(rows\)/, 'receipts are not exported as payment records');
+  // (since CHANGELOG-payment-invoice.md the receipts ride along as each cycle's `invoices`, never as records)
+  assert.match(feedSrc, /paymentCyclesDerived_\(rows\)|cyclesOnly = derived\.cycles/, 'receipts are not exported as payment records');
   for (const fn of ['refundSuggestionsFor_', 'refundPayoutForecastFor_', 'debtAging_', 'recModel_', 'digestSelect_']) {
     const src = GS_SRC.slice(GS_SRC.indexOf('function ' + fn + '('), GS_SRC.indexOf('function ' + fn + '(') + 700);
     assert.match(src, /paymentCyclesDerived_|paymentTabsDerived_|linkReceiptsToCycles_/, fn + ' knows receipts are not cycles');
@@ -674,7 +679,10 @@ test('other readers: the accounting feed exports cycles only, the refund suggest
 test('scope: the two new actions are proxied through the finance gate, nothing new is open, and Code.gs dispatches them', () => {
   assert.ok(/action === 'reportPayment'/.test(GS_SRC) && /action === 'appendFunder'/.test(GS_SRC));
   const g = loadGs({ props: { PROXY_SECRET } });
-  assert.deepEqual(arr(g.run('OPEN_ACTIONS')), ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster']);
+  // The two coordinators-roster actions (2026-10-04, own fail-closed secret)
+  // are the only additions since; nothing billing-related is open.
+  assert.deepEqual(arr(g.run('OPEN_ACTIONS')), ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster',
+    'getPatientsForCoordinators', 'recordDischargeFromCoordinators']);
   assert.deepEqual(arr(g.run('FINANCE_ACTIONS')), [...scope.FINANCE_ACTIONS]);
   assert.ok(arr(g.run('PROXY_KNOWN_ACTIONS')).includes('reportPayment'));
   // server.js knows no action name of its own for them: the finance list is the gate.
@@ -682,8 +690,11 @@ test('scope: the two new actions are proxied through the finance gate, nothing n
   assert.match(SERVER_SRC, /app\.get\('\/payment-report-rules\.js'/);
   // The page loads the shared rules before app.js; the worker serves them network-first.
   assert.ok(HTML_SRC.indexOf('payment-report-rules.js') < HTML_SRC.indexOf('src="app.js'));
-  // v30 shipped the form; later PRs bump it again (v32: patient funder on Funders).
-  assert.ok(Number((SW_SRC.match(/var CACHE_VERSION = 'v(\d+)';/) || [])[1]) >= 30);
+  // v30 shipped the form; later PRs bump it again (v32: patient funder on
+  // Funders; v33: Phase 4 «בקרת גבייה»; v34: coordinators roster) — v30 or
+  // later.
+  const ver = Number((SW_SRC.match(/var CACHE_VERSION = 'v(\d+)';/) || [])[1]);
+  assert.ok(ver >= 30, 'SW v30 or later');
   assert.match(SW_SRC, /v29 → v30:/);
 });
 

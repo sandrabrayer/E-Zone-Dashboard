@@ -274,7 +274,11 @@ test('A: PAYMENT_COLUMNS appends seven accounting columns and moves nothing', ()
     'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
   ]);
   // …and one row per money received (CHANGELOG-payment-report-form.md).
-  assert.deepEqual(cols.slice(35), ['legacyAmountPaid']);
+  assert.deepEqual(cols.slice(35, 36), ['legacyAmountPaid']);
+  // …and the invoice on the report (CHANGELOG-payment-invoice.md).
+  assert.deepEqual(cols.slice(36, 38), ['invoiceWanted', 'invoiceTo']);
+  // …and Ortal's partial amount + note, LAST (CHANGELOG-ortal-billing-access.md).
+  assert.deepEqual(cols.slice(38), ['confirmedAmount', 'controlNote', 'submissionId']);   // + CHANGELOG-payment-report-persistence.md
 });
 
 test('A: CREDIT_COLUMNS appends creditUid at the END, nothing else moves', () => {
@@ -300,6 +304,9 @@ test('A: the appended text columns are force-formatted at ensure; the original t
     'patientUid', 'payerUid', 'paymentUid', 'sourceUpdatedAt',
     'receivedDate', 'method', 'payer', 'funder', 'reference', 'recordedBy', 'recordedAt',
     'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
+    'invoiceWanted', 'invoiceTo',
+    'controlNote',   // CHANGELOG-ortal-billing-access.md (confirmedAmount stays a number)
+    'submissionId',  // CHANGELOG-payment-report-persistence.md
   ].sort());
   ['id', 'patientId', 'patientName', 'houseId', 'dueDate',
    'amount', 'status', 'amountPaid', 'balance', 'timestamp'].forEach((c) => {
@@ -569,13 +576,21 @@ test('D: the stamp is Israel time with an EXPLICIT offset, on both sides of the 
 
 test('D: marking a payment paid stamps chargedAt + chargedBy from the SIGNED COOKIE', () => {
   const h = world();
+  /* Phase 4 item H (CHANGELOG-billing-control-tab.md): the HTTP save path no
+   * longer writes money directly — a direct amountPaid / status write is
+   * refused ('use_report_payment') and nothing is written. Money arrives only
+   * through «דווח תשלום» (reportPayment). The stamping rule itself is
+   * unchanged (the direct-call tests below). */
   const res = h.code.handle({
     action: 'savePayment', user: 'ורד',
     payment: JSON.stringify(payRow({ status: 'paid', amountPaid: 3000, balance: 0, chargedBy: 'FORGED' })),
   });
-  assert.equal(res.ok, true);
-  assert.equal(res.payment.chargedAt, '2026-09-22T10:00:00+03:00');
-  assert.equal(res.payment.chargedBy, 'ורד', 'never the client-supplied name');
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'use_report_payment');
+  const direct = h.code.upsert(payRow({ status: 'paid', amountPaid: 3000, balance: 0, chargedBy: 'FORGED' }), 'ורד');
+  assert.equal(direct.ok, true);
+  assert.equal(direct.payment.chargedAt, '2026-09-22T10:00:00+03:00');
+  assert.equal(direct.payment.chargedBy, 'ורד', 'never the client-supplied name');
 });
 
 test('D: `partial` stamps too; `unpaid` leaves both blank', () => {
@@ -894,6 +909,8 @@ const PAYMENT_KEYS = [
   'coverageStart', 'coverageEnd', 'coverageSource', 'coverageDays',
   'coverageAllocation', 'sourceUpdatedAt', 'sourceVersion', 'historical',
   'deleted', 'creditLinkBasis', 'credits',
+  // the invoice (CHANGELOG-payment-invoice.md): the row's pair + one per receipt
+  'invoiceWanted', 'invoiceTo', 'invoices',
 ];
 const CREDIT_KEYS = [
   'sourceApp', 'sourceRecordId', 'creditUid', 'patientUid', 'patientKey', 'payerUid',

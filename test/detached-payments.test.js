@@ -695,6 +695,9 @@ test('F: no new endpoint — the link rides the existing savePayment', () => {
     /* Phase 3 PR 2 (CHANGELOG-payment-report-form.md): the strict «דווח
      * תשלום» — it only APPENDS a receipt row and re-derives the cycle. */
     "action === 'reportPayment'",
+    /* Phase 4 (CHANGELOG-billing-control-tab.md): Ortal's decision — it
+     * writes ONLY the four confirm cells of a receipt, never an amount. */
+    "action === 'confirmPayment'",
   ].sort());
   for (const name of ['reconnectPaymentToPatient', 'markPaymentNotAPatient', 'runPatientUidBackfill']) {
     assert.match(fnSource(APP, name), /savePayment\(/, name + ' must use the one write path');
@@ -720,7 +723,8 @@ test('F: everything the reconnect screen renders is escaped', () => {
 });
 
 test('F: the screen is registered, and nothing else about the app moved', () => {
-  assert.match(APP, /'billing', 'revenue', 'reconnect', 'breakeven'/);
+  // Phase 4: «בקרת גבייה» sits between גבייה and הכנסות חודשיות.
+  assert.match(APP, /'billing', 'billing-control', 'revenue', 'reconnect', 'breakeven'/);
   assert.ok(INDEX.includes('id="screen-reconnect"'), 'the router looks this up by id');
   assert.ok(INDEX.includes('data-screen="reconnect"'));
   assert.match(fnSource(APP, 'renderAll'), /renderReconnect\(\);/);

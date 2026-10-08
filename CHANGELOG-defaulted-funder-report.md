@@ -115,3 +115,24 @@ Full suite: **2076/2076**.
 
 Open the Apps Script editor, choose `defaultedFunderPaymentsReportNow` in
 the Run dropdown, and run it. Open the Doc URL from the execution log.
+
+## Brought up to date with the deploy branch (October 8, 2026)
+
+This PR was opened on 5 October. Today the current deploy branch was merged
+into it (with a merge commit, so no history was rewritten), and these
+conflicts were resolved:
+
+- **Tab order.** The deploy branch had meanwhile shipped the «מטופלי
+  פרו-בונו» cleanup tab (CHANGELOG-funder-probono.md). Both tabs are kept.
+  Pro-bono shipped first, so «גורם מממן ברירת מחדל» is appended **after**
+  it, in `CLEANUP_SECTION_KEYS` and in the `TABS` / `OPTIONAL_SECTION_KEYS`
+  lists in `lib/cleanup-xlsx.js`.
+- **Ortal's view.** Her cleanup-report field allow-list,
+  `CONTROLLER_CLEANUP_SCHEMA` (kept identical in Code.gs and
+  `lib/finance-scope.js`), now carries `defaultedFunder` with
+  kind / houseId / name / paymentId / receipt / receivedDate / amount / fix.
+  It deliberately leaves out `patientUid`.
+- **Test fixture.** The fixture now has a pro-bono Funders row from
+  15/09/2026, so the defaulted-funder row is the 15/08 payment instead.
+- **SW.** No `public/` file changed, so `CACHE_VERSION` stays at the live
+  **v48** with no bump.

@@ -310,6 +310,29 @@ body:not(.role-approver) [data-role="approver"] { display: none !important; }
  * the DOM once /api/me answers; this rule makes sure nothing flashes before
  * that. */
 body.view-restricted [data-finance] { display: none !important; }
+/* «בקרת גבייה» (Phase 4): never for Shiran / Yael; for Ortal (the controller
+ * view, <body class="view-controller">) the ONLY tab and screen — app.js
+ * removes the rest from the DOM, this rule makes sure nothing flashes first. */
+body.view-restricted [data-billing-control] { display: none !important; }
+body.view-controller .tabs .tab:not([data-screen="billing-control"]),
+body.view-controller section.screen:not(#screen-billing-control),
+body.view-controller [data-finance] { display: none !important; }
+body.view-controller #screen-billing-control { display: block; }
+/* Ortal reads «גבייה» (CHANGELOG-ortal-verification-status.md): the server
+ * serves <body class="view-controller view-billing-read">. The tab and its
+ * screen show (the screen still follows .hidden); every write control stays
+ * hidden even if one were drawn — app.js never draws them (mode 'view'). */
+body.view-controller.view-billing-read .tabs .tab[data-screen="billing"] { display: inline-flex !important; }
+body.view-controller.view-billing-read #screen-billing:not(.hidden) { display: block !important; }
+body.view-controller #funder-fill,
+body.view-controller #screen-billing .bill-report-btn,
+body.view-controller #screen-billing .bill-amount-edit-btn,
+body.view-controller #screen-billing .bill-amount-clear-btn,
+body.view-controller #screen-billing .bill-cov-edit-btn,
+body.view-controller #screen-billing .bill-cov-reset-btn,
+body.view-controller #screen-billing .receipt-void-btn,
+body.view-controller #screen-billing .receipt-edit-btn,
+body.view-controller #screen-billing .irrelevant-actions { display: none !important; }
 
 /* ===== Banners ===== */
 .error-banner {
@@ -1193,6 +1216,21 @@ body.view-restricted [data-finance] { display: none !important; }
   border: 1px solid rgba(25, 200, 224, 0.35);
   padding: 2px 9px; border-radius: 999px;
 }
+/* «לא נקלט כמטופל · N ימים» — a paid / entering lead with no patient record
+   3+ days after its entry date (CHANGELOG-unadmitted-lead-warning.md). */
+.lead-card .lc-unadmitted {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 11.5px; font-weight: 700;
+  color: var(--danger);
+  background: rgba(255, 77, 94, 0.14);
+  border: 1px solid rgba(255, 77, 94, 0.5);
+  padding: 2px 9px; border-radius: 999px;
+  max-width: 100%;
+  white-space: normal;
+}
+/* The same warning counted on the לידים tab. */
+.tab-badge.tab-badge-danger { background: var(--danger); color: #fff; }
 /* Edit-mode פרטי הפונה block — stacks the contact inputs + billing selector. */
 .lead-card .lc-contact-edit {
   margin-top: 10px;
@@ -1477,6 +1515,15 @@ body.view-restricted [data-finance] { display: none !important; }
 .billing-row .pay-state-paid    { color: var(--success); background: rgba(45, 212, 122, .14); border-color: rgba(45, 212, 122, .5); }
 .billing-row .pay-state-partial { color: var(--warning); background: rgba(255, 176, 32, .14); border-color: rgba(255, 176, 32, .5); }
 .billing-row .pay-state-unpaid  { color: var(--text-muted); }
+/* «ממתין לגורם מממן» (CHANGELOG-funder-grace.md): neutral grey, not a problem
+ * yet — an institutional funder within 30 days of the due date. */
+.pay-state-funder_grace { color: var(--text-muted); background: rgba(127, 127, 127, .12); border-color: rgba(127, 127, 127, .45); white-space: nowrap; }
+.billing-row.funder-grace {
+  border-right: 3px solid var(--text-dim);
+  background: rgba(127, 127, 127, .05);
+}
+.debt-cycle.funder-grace td { color: var(--text-muted); }
+.debt-grace-line { margin: 6px 0 0; font-size: 12.5px; color: var(--text-muted); }
 .billing-row .bill-report-cell { justify-self: end; }
 .billing-row .bill-report-btn { white-space: nowrap; }
 .billing-row .bill-receipts {
@@ -1493,6 +1540,12 @@ body.view-restricted [data-finance] { display: none !important; }
 .receipt-item .receipt-ref,
 .receipt-item .receipt-who { color: var(--text-muted); }
 .receipt-item .receipt-void-btn { margin-inline-start: auto; }
+/* ✏️ a receipt's non-money fields (CHANGELOG-receipt-duplicates-and-edit.md). */
+.receipt-item .receipt-edit-btn { margin-inline-start: auto; min-width: 44px; min-height: 36px; }
+.receipt-item .receipt-edit-btn + .receipt-void-btn { margin-inline-start: 0; }
+/* «קיימת כבר קבלה דומה…» — Vered's duplicate prompt in the report form. */
+.pay-report-modal .pr-dup-confirm { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--grp-open); border-radius: 10px; }
+.pay-report-modal .pr-dup-confirm .pr-dup-text { margin: 0 0 8px; font-weight: 600; overflow-wrap: anywhere; }
 .receipt-item.receipt-void { opacity: .6; }
 .receipt-item.receipt-void .receipt-amount { text-decoration: line-through; color: var(--text-muted); }
 
@@ -1504,6 +1557,13 @@ body.view-restricted [data-finance] { display: none !important; }
 .pay-report-modal .field-error:empty { display: none; }
 .pay-report-modal [aria-invalid="true"] { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
 .pay-report-modal .pr-form-error { margin-top: 10px; }
+/* «חשבונית?» — two radios, neither pre-selected; 44px tap targets. */
+.pay-report-modal .pr-invoice { border: 0; padding: 0; margin: 0 0 14px; min-width: 0; }
+.pay-report-modal .pr-invoice legend { font-size: 13px; font-weight: 600; margin-bottom: 6px; padding: 0; }
+.pay-report-modal .pr-invoice-choices { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.pay-report-modal .pr-radio { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; text-transform: none; letter-spacing: 0; }
+.pay-report-modal .pr-radio input { width: 20px; height: 20px; margin: 0; }
+.receipt-item .receipt-invoice { color: var(--text-muted); }
 .funder-modal .funder-history ul { margin: 4px 0 0; padding-inline-start: 18px; font-size: 13px; color: var(--text-muted); }
 .patient-funder .funder-edit-btn { margin-inline-start: 6px; }
 @media (max-width: 420px) {
@@ -1747,7 +1807,8 @@ body.view-restricted [data-finance] { display: none !important; }
 body.viewer-mode .edit-only { display: none !important; }
 body.viewer-mode .bill-report-btn,
 body.viewer-mode .funder-edit-btn,
-body.viewer-mode .receipt-void-btn { display: none !important; }
+body.viewer-mode .receipt-void-btn,
+body.viewer-mode .receipt-edit-btn { display: none !important; }
 
 /* ===== BREAK-EVEN MODULE ===== */
 .be-hq-row {
@@ -2175,6 +2236,15 @@ body.viewer-mode .receipt-void-btn { display: none !important; }
 }
 .credit-bd-k { color: var(--text-muted); }
 .credit-bd-v { font-weight: 600; }
+.credit-policy {
+  margin: 0 0 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, .08);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
 .credit-error {
   margin: 0 0 12px;
   padding: 8px 10px;
@@ -2411,4 +2481,188 @@ body.viewer-mode .receipt-void-btn { display: none !important; }
   .funder-fill-row .funder-field { min-width: 100%; }
   .funder-fill-row .btn { width: 100%; }
   #billing-funder { width: 100%; }
+}
+/* ===== «בקרת גבייה» (Phase 4) — phone-first receipt cards ===== */
+.bc-cards .bc-card .bc-debt-export { margin-top: 8px; }
+.bc-list { display: flex; flex-direction: column; gap: 8px; }
+.bc-row {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+.bc-row--flagged { border-inline-start: 4px solid var(--grp-debt); }
+.bc-row--confirmed { border-inline-start: 4px solid var(--grp-credits); }
+.bc-row--queue { border-inline-start: 4px solid var(--grp-open); }
+.bc-row--exception { border-inline-start: 4px solid var(--grp-awaiting); }
+.bc-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.bc-name { font-size: 15px; overflow-wrap: anywhere; }
+.bc-house { color: var(--text-muted); font-size: 13px; }
+.bc-amount { margin-inline-start: auto; font-weight: 700; white-space: nowrap; }
+.bc-fields { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 13px; }
+.bc-f { min-width: 0; overflow-wrap: anywhere; }
+.bc-k { color: var(--text-dim); }
+.bc-v { color: var(--text); }
+.bc-sub { color: var(--text-muted); font-size: 12px; font-weight: 400; }
+.bc-note-text { margin-top: 6px; font-size: 13px; overflow-wrap: anywhere; }
+.bc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.bc-actions .btn { min-height: 40px; }
+.bc-pick { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); }
+.bc-pick input { width: 20px; height: 20px; }
+.bc-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 8px 0; }
+.bc-flag-form { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.bc-flag-form textarea { width: 100%; box-sizing: border-box; min-width: 0; }
+.bc-flag-form textarea[aria-invalid="true"] { border-color: var(--danger); }
+.bc-ex-title { margin: 12px 0 6px; font-size: 14px; }
+/* «כפילות» reason form and the «אומתו» month line
+ * (CHANGELOG-receipt-duplicates-and-edit.md). */
+.bc-dup-form { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.bc-dup-form textarea { width: 100%; box-sizing: border-box; min-width: 0; font-size: 15px; }
+.bc-dup-form textarea[aria-invalid="true"] { border-color: var(--danger); }
+.bc-month-line { font-size: 13.5px; overflow-wrap: anywhere; }
+/* The status dropdown, the partial amount form and the note
+ * (CHANGELOG-ortal-verification-status.md). RTL by inheritance; the amount is
+ * typed LTR. 44px touch targets; nothing wider than the card at 360px. */
+.bc-row--partial { border-inline-start: 4px solid var(--grp-open); }
+.bc-status-wrap { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 180px; }
+.bc-status { min-height: 44px; min-width: 0; flex: 1 1 auto; max-width: 100%; font-size: 15px; }
+.bc-partial-form, .bc-cnote-form { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.bc-partial-input { min-height: 44px; font-size: 16px; width: 100%; max-width: 220px; box-sizing: border-box; text-align: left; }
+.bc-partial-input[aria-invalid="true"], .bc-cnote-form textarea[aria-invalid="true"] { border-color: var(--danger); }
+.bc-cnote-form textarea { width: 100%; box-sizing: border-box; min-width: 0; font-size: 15px; }
+.bc-remaining { color: var(--grp-debt); font-weight: 700; }
+.bc-partial-line { margin-top: 6px; font-size: 13px; overflow-wrap: anywhere; }
+.bc-partial-badge { margin-inline-end: 6px; }
+.bc-cnote-line { margin-top: 6px; font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.bc-cnote-text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.bc-cnote-open { min-height: 36px; }
+@media (max-width: 480px) {
+  .bc-status-wrap { flex-basis: 100%; }
+  .bc-partial-input { max-width: none; }
+}
+
+/* ===== Coordinators roster (2026-10-04) =====
+ * «🟢 קליטת מטופל חדש» — the dashboard's top-level intake button: green so it
+ * reads as "admit", distinct from the blue primary actions.
+ * «🚪 שחרורים מהבתים» — the coordinators-discharge panel: same card language
+ * as the renewal alert, a teal accent bar (information, not an alarm). */
+.btn.intake {
+  background: linear-gradient(180deg, #2fbf71 0%, #1f9d5a 100%);
+  color: #fff;
+  border-color: transparent;
+  font-weight: 700;
+  font-size: 15px;
+  padding: 10px 18px;
+  box-shadow: 0 6px 16px rgba(47, 191, 113, .28);
+}
+.btn.intake:hover { filter: brightness(1.07); }
+
+.coord-discharges { margin-top: 18px; position: relative; }
+.coord-discharges::before {
+  content: '';
+  position: absolute; top: 0; right: 0; left: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #20c3b0, #5b8bff);
+}
+.coord-discharges-head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.coord-discharges-title { color: var(--text); font-size: 15px; font-weight: 700; }
+.coord-discharges-sub { color: var(--text-muted); font-size: 12.5px; margin-bottom: 12px; }
+.coord-discharges-list { display: grid; gap: 10px; }
+.coord-discharges-empty { color: var(--text-dim); font-size: 13px; }
+.coord-discharge-row {
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  display: grid;
+  grid-template-columns: 1.3fr 1fr 1fr 1.6fr 1fr;
+  align-items: center;
+  gap: 12px;
+}
+.coord-discharge-row .p-label {
+  color: var(--text-dim); font-size: 11px; display: block;
+  letter-spacing: .8px; font-weight: 600; margin-bottom: 2px;
+}
+.coord-discharge-row .p-val  { font-size: 14px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.coord-discharge-row .p-name { font-weight: 700; font-size: 15.5px; color: var(--text); }
+@media (max-width: 640px) {
+  .coord-discharge-row { grid-template-columns: 1fr 1fr; }
+  #screen-dashboard .screen-head .actions { width: 100%; }
+  .btn.intake { width: 100%; }
+}
+
+/* ===== «מטופלים» — the patient list (CHANGELOG-patients-tab-ui.md) =====
+ * A row is a column of three bands: the cells (wrapping grid), the red
+ * problem chips, and the foot (the «פרטי הליד» details + the actions).
+ * Nothing scrolls sideways at 360px: every band wraps, long text breaks. */
+.plist-filters { flex-wrap: wrap; }
+.plist-filters select, .plist-filters input[type="search"] { min-height: 44px; }
+.plist-summary {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 0 0 12px;
+}
+.plist-summary-head { font-weight: 700; color: var(--danger); }
+.plist-summary-ok { color: var(--text-muted); font-weight: 600; }
+.plist-section-title { margin: 4px 0 10px; font-size: 16px; color: var(--warning); }
+.plist-pending { display: grid; gap: 10px; margin-bottom: 16px; }
+.plist-list { display: grid; gap: 10px; }
+.plist-row {
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  display: flex; flex-direction: column; align-items: stretch; gap: 10px;
+  min-width: 0;
+}
+.plist-row.released { opacity: .6; }
+.plist-row .p-label {
+  color: var(--text-dim); font-size: 11px; display: block;
+  letter-spacing: .8px; font-weight: 600; margin-bottom: 2px;
+}
+.plist-row .p-val { font-size: 14.5px; font-weight: 600; color: var(--text); }
+.plist-row .p-name { font-weight: 700; font-size: 16px; color: var(--text); overflow-wrap: anywhere; }
+.plist-row.has-problems { border-color: rgba(255, 77, 94, 0.55); }
+.plist-row.plist-pending-row { border-color: rgba(255, 176, 32, 0.55); }
+.plist-main {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px 14px;
+  align-items: start;
+  min-width: 0;
+}
+.plist-main > div { min-width: 0; overflow-wrap: anywhere; }
+.plist-main .plist-name-cell { grid-column: span 2; }
+.plist-main .btn { margin-top: 6px; min-height: 44px; }
+.plist-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.plist-chip {
+  display: inline-block;
+  font-size: 12px; font-weight: 700;
+  color: var(--danger);
+  background: rgba(255, 77, 94, 0.14);
+  border: 1px solid rgba(255, 77, 94, 0.5);
+  padding: 3px 10px; border-radius: 999px;
+  max-width: 100%; white-space: normal; overflow-wrap: anywhere;
+}
+.plist-foot {
+  display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px;
+}
+.plist-foot .row-actions .btn, .plist-pending-row .row-actions .btn { min-height: 44px; }
+.plist-lead { flex: 1 1 240px; min-width: 0; }
+.plist-lead summary {
+  cursor: pointer; font-weight: 700; color: var(--primary);
+  min-height: 44px; display: flex; align-items: center;
+}
+.plist-lead-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px 14px;
+  margin: 6px 0;
+}
+.plist-lead-item, .plist-lead-note { min-width: 0; overflow-wrap: anywhere; }
+.plist-lead-note .p-val { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.plist-lead-none { color: var(--text-muted); font-weight: 600; padding: 4px 0; }
+.plist-empty { text-align: center; color: var(--text-muted); }
+@media (max-width: 480px) {
+  .plist-main { grid-template-columns: 1fr 1fr; }
+  .plist-filters > * { flex: 1 1 100%; }
+  .plist-foot .row-actions { width: 100%; }
 }

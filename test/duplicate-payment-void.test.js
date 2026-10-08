@@ -267,7 +267,8 @@ test('A: void is NOT one of the three statuses a recorder can pick', () => {
   // «דווח תשלום».
   const row = fnSource(APP, 'buildBillingRow');
   assert.match(row, /const isVoid = isVoidPayment\(payment\);/);
-  assert.match(row, /const stateLabel = isVoid \? PAYMENT_VOID_LABEL : paymentStatusLabel\(payment\.status\);/);
+  // CHANGELOG-funder-grace.md: an institutional funder within 30 days reads «ממתין לגורם מממן».
+  assert.match(row, /const stateLabel = isVoid \? PAYMENT_VOID_LABEL : inFunderGrace \? funderGraceStatusLabel\(payment\.status\) : paymentStatusLabel\(payment\.status\);/);
   assert.match(row, /const canReport = state\.mode === 'edit' && !isVoid && payment\.status !== 'paid' && financeView\(\);/);
   assert.ok(!/<select class="billing-status"/.test(row), 'no status <select>');
   assert.match(row, /badge void/);
@@ -660,6 +661,9 @@ test('H: no new endpoint, and nothing here moves money', () => {
     /* Phase 3 PR 2 (CHANGELOG-payment-report-form.md): the strict «דווח
      * תשלום» — it only APPENDS a receipt row and re-derives the cycle. */
     "action === 'reportPayment'",
+    /* Phase 4 (CHANGELOG-billing-control-tab.md): Ortal's decision — it
+     * writes ONLY the four confirm cells of a receipt, never an amount. */
+    "action === 'confirmPayment'",
   ].sort());
   for (const name of ['markPaymentDuplicate', 'reversePaymentVoid']) {
     assert.match(fnSource(APP, name), /savePayment\(/, name + ' must use the one write path');

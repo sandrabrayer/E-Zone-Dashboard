@@ -363,7 +363,8 @@ test('startup validator: bad JSON, unknown role, non-Sandra approver and every o
     [JSON.stringify([await record('vered', { pinVersion: 0 })]), /pinVersion/],
     [JSON.stringify([await record('vered', { pinVersion: '1' })]), /pinVersion/],
     [JSON.stringify([await record('vered', { status: 'enabled' })]), /status must be one of/],
-    [JSON.stringify([await record('ortal', { status: 'active' })]), /no login until Phase 4/],
+    // Phase 4: Ortal is active — as controller ONLY (no staff, no finance role).
+    [JSON.stringify([await record('ortal', { roles: ['controller', 'staff'] })]), /staff is not allowed/],
     [JSON.stringify([await record('vered', { roles: ['staff', 'staff'] })]), /duplicate role/],
   ];
   for (const [raw, re] of bad) {
@@ -397,7 +398,7 @@ test('role model: Vered / Sandra / Shiran / Yael / Ortal exactly as decided; sta
   assert.deepStrictEqual([...by.shiran.roles], ['staff', 'reporter']);
   assert.deepStrictEqual([...by.yael.roles], ['staff', 'reporter']);
   assert.ok(!by.shiran.roles.includes('deleter') && !by.yael.roles.includes('deleter'), 'Shiran / Yael: NO deleter');
-  assert.strictEqual(by.ortal.status, 'inactive');
+  assert.strictEqual(by.ortal.status, 'active', 'Phase 4 (2026-10-04): Ortal logs in');
   assert.deepStrictEqual([...by.ortal.roles], ['controller'], 'Phase 4: controller only, no staff');
   const approvers = users.USER_MODEL.filter((u) => u.roles.includes('approver')).map((u) => u.id);
   assert.deepStrictEqual(approvers, ['sandra'], 'approver is Sandra only');
@@ -839,7 +840,8 @@ test('Code.gs: a VERIFIED proxy call gets its roles — capped: shared → none 
 test('Code.gs: DELETE_ACTIONS / APPROVER_ACTIONS are defined — and ENFORCED by handle_ since PR C', () => {
   const g = loadGs({});
   assert.deepStrictEqual(Array.from(g.run('DELETE_ACTIONS')),
-    ['removeLead', 'deletePatientRow', 'deleteBillingOverride', 'deleteMeetingReport', 'voidPayment', 'cancelCredit']);
+    ['removeLead', 'deletePatientRow', 'deleteBillingOverride', 'deleteMeetingReport', 'voidPayment', 'cancelCredit',
+      'deleteDuplicateDischarge']);
   assert.deepStrictEqual(Array.from(g.run('APPROVER_ACTIONS')),
     ['unvoidPayment', 'approveRefundException', 'writeOffOpeningBalance', 'acceptOpeningBalance']);
   const s = g.sandbox;
@@ -954,7 +956,9 @@ test('Code.gs: actor stamps on every delete, the lead moves, the billing overrid
     id: 'pay1', patientId: 'arfoni::מטופל::2026-09-01', patientName: 'מטופל', houseId: 'arfoni',
     dueDate: '2026-09-07', amount: 30000, amountPaid: 30000, balance: 0, status: 'paid',
   };
-  assert.strictEqual(call({ action: 'savePayment', payment: pay }).ok, true);
+  /* The paid row as legacy data sits on the sheet: since Phase 4 item H the
+   * HTTP save path never writes money itself (CHANGELOG-billing-control-tab.md). */
+  assert.strictEqual(g.sandbox.upsertPayment_(JSON.parse(JSON.stringify(pay)), 'ורד').ok, true);
   const voided = call({ action: 'savePayment', payment: Object.assign({}, pay, { status: 'void', linkStatus: 'duplicate', linkNote: 'כפילות של pay0' }) });
   assert.strictEqual(voided.ok, true, JSON.stringify(voided));
 

@@ -90,7 +90,7 @@ const CONSTS = [
 const FUNCS = [
   // shared, pre-existing helpers the module reuses (never re-implemented)
   'endOfMonth_', 'daysInMonth_', 'ymOf_', 'offsetMonth_',
-  'readSheet_', 'objectToRow_',
+  'readSheet_', 'sheetValues_', 'rowsFromValues_', 'objectToRow_',
   // the module
   'occupancySnapshotValidMonth_', 'occupancySnapshotIsFinishedMonth_',
   'occupancySnapshotRound_', 'occupancyPct_', 'occupancySnapshotKey_',

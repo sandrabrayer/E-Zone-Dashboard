@@ -559,7 +559,7 @@ test('xlsx: six sheets, RTL, frozen header, ₪ / date / int formats', async () 
   }
   const rec = wb.getWorksheet('חוב רשום');
   const header = findRow(rec, 'מטופל');
-  assert.deepEqual(header.values.slice(1), ['מטופל', 'בית', 'סטטוס', 'תחילת מחזור', 'סוף מחזור', 'צפוי', 'התקבל עד התאריך', 'יתרה', 'ימים', 'תקופת חוב (ימים)']);
+  assert.deepEqual(header.values.slice(1), ['מטופל', 'בית', 'סטטוס', 'תחילת מחזור', 'סוף מחזור', 'צפוי', 'התקבל עד התאריך', 'יתרה', 'ימים', 'תקופת חוב (ימים)', 'בתוך תקופת גורם מממן']);
   assert.ok(header.getCell(1).font.bold);
   const avi = findRow(rec, 'אבי כהן');
   assert.ok(avi.getCell(4).value instanceof Date);

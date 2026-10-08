@@ -144,6 +144,7 @@ const DELETE_BODIES = {
   deleteMeetingReport: { action: 'deleteMeetingReport', leadId: 'L1' },
   voidPayment: { action: 'savePayment', payment: { id: 'pay1', status: 'void', linkStatus: 'duplicate', linkNote: 'כפילות' } },
   cancelCredit: { action: 'saveCredit', credit: { id: 'c1', status: 'cancelled' } },
+  deleteDuplicateDischarge: { action: 'deleteDuplicateDischarge', id: 'd2', reason: 'כפילות' },
 };
 
 /* ================== 1. the shared code is gone (server) ================== */
@@ -343,7 +344,9 @@ function seededGs(mode) {
   S.Patients.appendRow(pcols.map((c) => ({ id: 'p1', houseId: 'arfoni', name: 'מטופל', date: '2026-09-01' }[c] || '')));
   assert.strictEqual(g.post(Object.assign({ action: 'upsertBillingOverride', override: { patientId: 'P1', month: '2026-09', amount: 1000 } }, VERED())).ok, true);
   const pay = { id: 'pay1', patientId: 'arfoni::מטופל::2026-09-01', patientName: 'מטופל', houseId: 'arfoni', dueDate: '2026-09-07', amount: 30000, amountPaid: 30000, balance: 0, status: 'paid' };
-  assert.strictEqual(g.post(Object.assign({ action: 'savePayment', payment: pay }, VERED())).ok, true);
+  /* A paid row as legacy data sits on the sheet (an editor-side write):
+   * since Phase 4 item H the HTTP save path never writes money itself. */
+  assert.strictEqual(g.sandbox.upsertPayment_(JSON.parse(JSON.stringify(pay)), 'ורד').ok, true);
   const snapshot = () => JSON.stringify(Object.keys(S).sort().map((k) => [k, S[k].grid]));
   return { g, pay, snapshot };
 }
@@ -359,6 +362,7 @@ test('Code.gs: every DELETE_ACTIONS operation → forbidden_role for Shiran / Ya
       deleteBillingOverride: { action: 'deleteBillingOverride', override: { patientId: 'P1', month: '2026-09' } },
       voidPayment: { action: 'savePayment', payment: Object.assign({}, pay, { status: 'void', linkStatus: 'duplicate', linkNote: 'x' }) },
       cancelCredit: { action: 'saveCredit', credit: { id: 'c1', status: 'cancelled' } },
+      deleteDuplicateDischarge: { action: 'deleteDuplicateDischarge', id: 'd2', reason: 'כפילות' },
     };
     for (const who of [SHIRAN, YAEL, VERED_NARROWED]) {
       for (const [op, body] of Object.entries(bodies)) {

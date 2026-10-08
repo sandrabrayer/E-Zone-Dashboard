@@ -87,6 +87,7 @@ function loadApp(script) {
       normalizePatient: (p) => normalizePatient(p),
       updateLead: (id, f) => updateLead(id, f),
       savePayment: (p) => savePayment(p),
+      submitReceiptEdit: (r, f, why) => submitReceiptEdit(r, f, why),
       saveCredit: (c) => saveCredit(c),
       loadPayoutForecast: () => loadPayoutForecast(),
       loadDebtAging: () => loadDebtAging(),
@@ -97,6 +98,7 @@ function loadApp(script) {
       restoreIrrelevantLead: (l) => restoreIrrelevantLead(l),
       deletePatient: (p) => deletePatient(p),
       deleteMeetingReport: (id) => deleteMeetingReport(id),
+      deleteDuplicateDischarge: (d, r) => deleteDuplicateDischarge(d, r),
       removeLead: (l) => removeLead(l),
       closeLead: (l) => closeLead(l),
       saveBillingOverride: (p, a) => saveBillingOverride(p, a),
@@ -105,6 +107,7 @@ function loadApp(script) {
       autosaveMeetingWithDefaults: () => autosaveMeetingWithDefaults(),
       submitPaymentReport: (c, v) => submitPaymentReport(c, v),
       saveFunder: (p, f, d) => saveFunder(p, f, d),
+      confirmReceipts: (ids, st, n) => confirmReceipts(ids, st, n),
       confirm: (v) => globalThis.__onConfirm(v),
       errors: () => globalThis.__errors,
       delays: () => globalThis.__delays,
@@ -226,6 +229,15 @@ const PATHS = [
     landed: (app) => { assert.strictEqual(app.state.patients.length, 0); },
   },
   {
+    name: 'deleteDuplicateDischarge («מחק כפילות» on the discharged tab)',
+    action: 'deleteDuplicateDischarge',
+    rejects: true,
+    setup: (app) => { app.state.dischargedPatients = [{ ...AUDIT }, { ...AUDIT, id: 'aud-2' }]; },
+    okResponse: { ok: true, deleted: true, id: 'aud-2', deletedAt: '2026-10-07T08:00:00.000Z', deletedBy: 'ורד', deleteReason: 'כפילות' },
+    run: (app) => app.deleteDuplicateDischarge(app.state.dischargedPatients[1], 'כפילות'),
+    landed: (app) => { assert.strictEqual(app.state.dischargedPatients[1].deletedAt, '2026-10-07T08:00:00.000Z'); },
+  },
+  {
     name: 'deleteMeetingReport',
     action: 'deleteMeetingReport',
     setup: (app) => { app.state.leads = [{ ...LEAD, meetingReportedAt: '2026-09-10T10:00:00Z', meetingReportOutcome: 'advancing' }]; },
@@ -285,6 +297,32 @@ const PATHS = [
     okResponse: { ok: true, row: { patientId: 'pt-1', funder: 'מכבי', effectiveFrom: '2026-10-01', setBy: 'ורד', setAt: '2026-10-04T10:00:00+03:00' } },
     run: (app) => app.saveFunder({ ...PATIENT }, 'מכבי', '2026-10-01'),
     landed: (app) => { assert.strictEqual(app.state.funders.length, 1); assert.strictEqual(app.state.funders[0].funder, 'מכבי'); },
+    rejects: true,
+  },
+  {
+    // Phase 4: Ortal's decision on the «בקרת גבייה» tab (✓ / ⚑ / הסר דגל).
+    name: 'confirmPayment (the «בקרת גבייה» decision)',
+    action: 'confirmPayment',
+    setup: (app) => {
+      app.state.canConfirm = true;
+      app.state.bc = { data: { receipts: [{ id: 'rcpt-1', confirmStatus: 'reported', amount: 9000 }] },
+        loading: false, error: '', selected: {}, flagOpen: '', flagDraft: '', month: '', house: 'all' };
+    },
+    okResponse: { ok: true, changed: [{ id: 'rcpt-1', confirmStatus: 'confirmed', confirmedBy: 'אורטל' }], unchanged: 0 },
+    run: (app) => app.confirmReceipts(['rcpt-1'], 'confirmed'),
+    landed: (app) => { assert.strictEqual(app.state.bc.data.receipts[0].confirmStatus, 'confirmed'); },
+  },
+  {
+    // ✏️ a receipt's non-money fields (CHANGELOG-receipt-duplicates-and-edit.md).
+    name: 'editReceipt (✏️ on a receipt in «גבייה»)',
+    action: 'editReceipt',
+    setup: (app) => {
+      app.state.finance = true;
+      app.state.receipts = [{ id: 'rcpt-1', cycleId: 'pay::c', amount: 9000, reference: 'A1', status: 'paid' }];
+    },
+    okResponse: { ok: true, changed: true, fields: ['reference'], receipt: { id: 'rcpt-1', amountPaid: 9000, reference: 'B2', status: 'paid' } },
+    run: (app) => app.submitReceiptEdit({ id: 'rcpt-1', cycleId: 'pay::c' }, { reference: 'B2' }, ''),
+    landed: (app) => { assert.strictEqual(app.state.receipts[0].reference, 'B2'); assert.strictEqual(app.state.receipts[0].cycleId, 'pay::c'); },
     rejects: true,
   },
 ];

@@ -47,8 +47,9 @@ const Funder = require('../public/funder.js');
 const rules = require('../lib/payment-report-rules.js');
 const plain = (v) => JSON.parse(JSON.stringify(v));
 const TODAY = '2026-09-30';
-const LABELS = ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי'];
-const KEYS = ['private', 'btl', 'mod', 'maccabi'];
+// The fifth, 'פרו-בונו' / 'probono', is appended LAST (CHANGELOG-funder-probono.md).
+const LABELS = ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי', 'פרו-בונו'];
+const KEYS = ['private', 'btl', 'mod', 'maccabi', 'probono'];
 const FUNDERS = KEYS.concat(['unset']);
 const KINDS = ['recorded_debt', 'unrecorded_cycles'];
 const r2 = (n) => Math.round(n * 100) / 100;
@@ -74,7 +75,7 @@ test('no default: Code.gs answers unset (never פרטי) for no row, before the 
 test('guard: no \'פרטי\' fallback anywhere — Code.gs only in PAYMENT_FUNDERS, app.js not at all; no DEFAULT_FUNDER', () => {
   const quoted = /['"`]פרטי['"`]/g;
   const gsHits = GS_SRC.split('\n').filter((l) => quoted.test(l) && (quoted.lastIndex = 0, true));
-  assert.deepEqual(gsHits, ["const PAYMENT_FUNDERS = ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי'];"]);
+  assert.deepEqual(gsHits, ["const PAYMENT_FUNDERS = ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי', 'פרו-בונו'];"]);
   assert.equal((APP_SRC.match(quoted) || []).length, 0, 'app.js carries no funder label literal at all');
   for (const [name, src] of [['Code.gs', GS_SRC], ['app.js', APP_SRC], ['payment-report-rules.js', RULES_SRC]]) {
     assert.ok(!/\bDEFAULT_FUNDER\b/.test(src), name);
@@ -170,7 +171,7 @@ const HIST = [
   frow('id-p9', 'כללית', '2026-07-01'),                                               // unrecognized → unset
 ];
 
-test('debtByFunder: per figure the five buckets sum EXACTLY to the report totals and per house to byHouse (3 as-of dates, history and none)', () => {
+test('debtByFunder: per figure the six buckets sum EXACTLY to the report totals and per house to byHouse (3 as-of dates, history and none)', () => {
   for (const asOf of ['2026-08-31', '2026-09-15', TODAY]) {
     const report = realAging(asOf);
     assert.equal(report.ok, true);
@@ -510,7 +511,7 @@ test('wiring: funder.js before app.js, server route; filter + fill inside the fi
 });
 
 test('SW: v32 or later (from v30; v31 belongs to #177, never v17); funder.js precached and network-first', () => {
-  // Later PRs bump it again (#177 → v33); the v31 → v32 entry stays in the history.
+  // v32 shipped this change; PR #179 («בקרת גבייה») bumped it to v33 on top.
   assert.ok(Number((SW_SRC.match(/var CACHE_VERSION = 'v(\d+)';/) || [])[1]) >= 32);
   assert.ok(SW_SRC.includes('v31 → v32:'));
   assert.ok(/var PRECACHE_URLS = \[[\s\S]*?'\/funder\.js'[\s\S]*?\];/.test(SW_SRC));

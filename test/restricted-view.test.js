@@ -190,11 +190,12 @@ function stubAll() {
 test('model: finance by stable id — Vered and Sandra yes, Shiran / Yael / Ortal no, a shared principal no (PR C)', () => {
   assert.deepStrictEqual([...users.FINANCE_USER_IDS], ['vered', 'sandra']);
   const cap = (auth, id) => users.principalCapabilities({ auth, id, user: '', roles: [] });
-  assert.deepStrictEqual(cap('personal', 'vered'), ['finance']);
-  assert.deepStrictEqual(cap('personal', 'sandra'), ['finance']);
+  // Phase 4: the finance users also hold billingControl; Ortal holds ONLY it.
+  assert.deepStrictEqual(cap('personal', 'vered'), ['finance', 'billingControl']);
+  assert.deepStrictEqual(cap('personal', 'sandra'), ['finance', 'billingControl']);
   assert.deepStrictEqual(cap('personal', 'shiran'), []);
   assert.deepStrictEqual(cap('personal', 'yael'), []);
-  assert.deepStrictEqual(cap('personal', 'ortal'), []);
+  assert.deepStrictEqual(cap('personal', 'ortal'), ['billingControl'], 'never finance');
   assert.deepStrictEqual(cap('shared', ''), [], 'PR C: no shared session any more');
   assert.deepStrictEqual(users.principalCapabilities(null), []);
   assert.deepStrictEqual(users.principalCapabilities({ auth: 'none', id: '', roles: [] }), [], 'meeting-report proxy');
@@ -342,7 +343,7 @@ test('proxyCaps reaches Apps Script from the session only — a body copy is dro
     });
   } finally { stub.restore(); }
   const caps = stub.calls.map((c) => JSON.parse(c.body).proxyCaps);
-  assert.deepStrictEqual(caps, [[], ['finance']]);
+  assert.deepStrictEqual(caps, [[], ['finance', 'billingControl']]);
 });
 
 test('index.html: a restricted session is served <body class="view-restricted">; no session and full-view sessions get the page unchanged', async () => {
@@ -597,11 +598,11 @@ function loadApp() {
   return { app: sandbox.__test, sandbox, removed };
 }
 
-test('client: exactly the allowed tabs per session — 7 for Shiran / Yael, all 11 for Sandra / Vered', () => {
+test('client: exactly the allowed tabs per session — 8 for Shiran / Yael («מטופלים» included), all of SCREENS for Sandra / Vered', () => {
   const { app } = loadApp();
   assert.deepStrictEqual([...app.FINANCE_SCREENS], ['billing', 'revenue', 'reconnect', 'growth']);
   assert.deepStrictEqual([...app.allowedScreens(false)],
-    ['dashboard', 'leads', 'meetings', 'occupancy', 'discharged-patients', 'breakeven', 'retention']);
+    ['dashboard', 'leads', 'patients', 'meetings', 'occupancy', 'discharged-patients', 'breakeven', 'retention']);
   assert.deepStrictEqual([...app.allowedScreens(true)], [...app.SCREENS]);
   assert.deepStrictEqual([...app.allowedScreens(null)], [...app.SCREENS], 'unknown = as before');
 });
@@ -648,8 +649,15 @@ test('client: every billing render is a no-op for a restricted session (they wou
 test('client: no billing leaks — loadAll skips getPayments / getCredits, the «זיכויים» button and the discharge refund step are guarded', () => {
   const loadAll = APP_SRC.slice(APP_SRC.indexOf('async function loadAll()'), APP_SRC.indexOf('// ===== Patient-load diagnosis ====='));
   // Phase 3 PR 2 also empties the receipts and the funders there.
-  assert.match(loadAll, /if \(!financeView\(\)\) \{\s*state\.payments = \[\];\s*state\.credits = \[\];\s*state\.receipts = \[\];\s*state\.funders = \[\];\s*\} else try \{\s*const pr = await apiGet\(\{ action: 'getPayments' \}\);/);
-  assert.match(loadAll, /if \(financeView\(\)\) try \{\s*const cr = await apiGet\(\{ action: 'getCredits' \}\);/);
+  // The three reads start together (perf); the two money reads only when
+  // financeView() — and the result is dropped again if it turned false.
+  assert.match(loadAll, /const finance\s*= financeView\(\);/);
+  assert.match(loadAll, /const paymentsRead = finance \? startTimedRead\(\{ action: 'getPayments' \}\) : null;/);
+  assert.match(loadAll, /const creditsRead\s*= finance \? startTimedRead\(\{ action: 'getCredits' \}\) : null;/);
+  assert.match(loadAll, /if \(!financeView\(\) \|\| !paymentsRead\) \{\s*state\.payments = \[\];\s*state\.credits = \[\];\s*state\.receipts = \[\];\s*state\.funders = \[\];\s*\} else try \{/);
+  assert.match(loadAll, /if \(financeView\(\) && creditsRead\) try \{/);
+  assert.strictEqual((loadAll.match(/action: 'getPayments'/g) || []).length, 1, 'getPayments asked in one place only');
+  assert.strictEqual((loadAll.match(/action: 'getCredits'/g) || []).length, 1, 'getCredits asked in one place only');
   assert.match(APP_SRC, /if \(financeView\(\)\) \{\s*const nCredits = creditsForPatient/);
   assert.match(APP_SRC, /if \(financeView\(\)\) try \{\s*await showCreditsModal\(\{\s*patient: p,/);
   for (const id of ['renewal-alert', 'overdue-alert']) assert.match(HTML_SRC, new RegExp(`id="${id}"[^>]*data-finance`), id);

@@ -215,8 +215,11 @@ test('A: PAYMENT_COLUMNS appends the two coverage columns and moves nothing', ()
     'recordedBy', 'recordedAt',
     'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
     'legacyAmountPaid',
+    'invoiceWanted', 'invoiceTo',
+    'confirmedAmount', 'controlNote',   // CHANGELOG-ortal-billing-access.md
+    'submissionId',                     // CHANGELOG-payment-report-persistence.md
   ]);
-  assert.equal(cols.length, 36);
+  assert.equal(cols.length, 41);
 });
 
 test('A: the two new columns are text-forced at sheet-ensure, the old ones are left alone', () => {
@@ -241,6 +244,9 @@ test('A: the two new columns are text-forced at sheet-ensure, the old ones are l
     'patientUid', 'payerUid', 'paymentUid', 'sourceUpdatedAt',
     'receivedDate', 'method', 'payer', 'funder', 'reference', 'recordedBy', 'recordedAt',
     'confirmStatus', 'confirmedBy', 'confirmedAt', 'flagNote',
+    'invoiceWanted', 'invoiceTo',
+    'controlNote',   // CHANGELOG-ortal-billing-access.md
+    'submissionId',  // CHANGELOG-payment-report-persistence.md
   ].sort());
   assert.deepEqual(arr(code.PAYMENT_TEXT_COLUMNS).slice().sort(), forced.sort());
   ['id', 'patientId', 'patientName', 'houseId', 'dueDate',
@@ -566,11 +572,13 @@ test('F: a hand-built request cannot smuggle a period past the server', () => {
 
 test('F: a good period round-trips through the sheet as bare YYYY-MM-DD text', () => {
   const { code, sandbox } = loadCode();
+  /* Phase 4 item H: the HTTP save path never writes money directly, so the
+   * period rides an UNPAID cycle (the coverage editor's own case). */
   const res = code.handle({
     action: 'savePayment',
     payment: JSON.stringify({
       id: 'pay::x::2026-01-20', patientId: 'x', patientName: 'דנה', houseId: 'arfoni',
-      dueDate: '2026-01-20', amount: 3000, status: 'paid', amountPaid: 3000, balance: 0,
+      dueDate: '2026-01-20', amount: 3000, status: 'unpaid', amountPaid: 0, balance: 3000,
       timestamp: '2026-01-20T08:00:00.000Z',
       coverageStart: '2026-03-01', coverageEnd: '2026-03-31',
     }),
@@ -586,7 +594,7 @@ test('F: a good period round-trips through the sheet as bare YYYY-MM-DD text', (
     action: 'savePayment',
     payment: {
       id: 'pay::x::2026-01-20', patientId: 'x', patientName: 'דנה', houseId: 'arfoni',
-      dueDate: '2026-01-20', amount: 3000, status: 'paid', amountPaid: 3000, balance: 0,
+      dueDate: '2026-01-20', amount: 3000, status: 'unpaid', amountPaid: 0, balance: 3000,
       timestamp: '2026-01-21T08:00:00.000Z', coverageStart: '', coverageEnd: '',
     },
   });
@@ -705,6 +713,8 @@ test('H: no new endpoint, and server.js is untouched by this change', () => {
     "action === 'getPayments'", "action === 'savePayment'", "action === 'updatePayment'",
     // Phase 3 PR 2: the strict «דווח תשלום» appends a receipt row.
     "action === 'reportPayment'",
+    // Phase 4: Ortal's decision writes only a receipt's four confirm cells.
+    "action === 'confirmPayment'",
   ].sort());
 });
 
