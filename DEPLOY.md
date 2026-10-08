@@ -13,6 +13,10 @@ Two independent deploy paths:
 | **Node/Express + frontend** | Railway | Auto-deploys the connected branch (`claude/build-ezone-dashboard-QOg5s`). |
 | **Apps Script backend** (`apps-script/**`) | GitHub Actions → clasp | Push to `claude/build-ezone-dashboard-QOg5s` touching `apps-script/**`. |
 
+**Verify a Railway deploy:** `GET https://ezone-dashboard.up.railway.app/api/version` returns
+`{ commit, builtAt }` (public, `no-store`). When `commit` equals the merge SHA, Railway is
+serving the merge; if it never changes, the deploy was skipped. See `CLAUDE.md` rule 4.
+
 ## Automatic Apps Script deployment (clasp in CI)
 
 **Workflow:** [`.github/workflows/deploy-apps-script.yml`](.github/workflows/deploy-apps-script.yml)
