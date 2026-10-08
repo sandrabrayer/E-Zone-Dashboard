@@ -134,7 +134,7 @@ function loadCode() {
     getUuid: () => 'uuid-' + (++uuid),
     formatDate: (d) => d.toISOString().slice(0, 10),
   };
-  sandbox.LockService = { getScriptLock: () => ({ tryLock: noop, releaseLock: noop }) };
+  sandbox.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: noop }) };
   sandbox.globalThis = sandbox;
   const epilogue = `globalThis.__test = {
     PATIENT_COLUMNS: PATIENT_COLUMNS,
@@ -190,7 +190,10 @@ test('all three column lists end with updatedAt, updatedBy — after `id` where 
   const { code } = loadCode();
   assert.deepStrictEqual(arr(code.PATIENT_COLUMNS).slice(-3), ['id', 'updatedAt', 'updatedBy']);
   assert.deepStrictEqual(arr(code.PATIENT_TOMBSTONE_COLUMNS).slice(-3), ['id', 'updatedAt', 'updatedBy']);
-  assert.deepStrictEqual(arr(code.DISCHARGED_PATIENT_COLUMNS).slice(-2), ['updatedAt', 'updatedBy']);
+  // Discharged: the stamps sit right after prior_status; the coordinators
+  // audit columns (2026-10-04) were appended after them.
+  const dis = arr(code.DISCHARGED_PATIENT_COLUMNS);
+  assert.deepStrictEqual(dis.slice(dis.indexOf('prior_status') + 1, dis.indexOf('prior_status') + 3), ['updatedAt', 'updatedBy']);
 });
 
 test('patientRowDiffCols_ ignores id + stamps: rows differing only in meta are byte-identical; a real change still shows', () => {
@@ -374,6 +377,9 @@ test('restorePatient_ (to lead) and restorePatientToActive_ stamp the flagged au
 
 const SECRET = 'test-session-secret-0123456789abcdef0123456789';
 process.env.SESSION_SECRET = SECRET; // must be set before server.js is required
+// PR C: every session is personal — a real USER_PIN_HASHES record per user.
+const { applyPersonalEnv, personalToken, sharedCookie } = require('./helpers/personal-session');
+applyPersonalEnv();
 const { createSessionToken, verifySessionToken, readSessionUser } = require('../lib/session');
 const server = require('../server');
 
@@ -403,32 +409,30 @@ test('user-bearing tokens respect scope separation and expiry', () => {
   assert.strictEqual(verifySessionToken(createSessionToken(SECRET, -10, undefined, 'ורד'), SECRET), false);
 });
 
-test('sanitizeSessionUser trims, caps at 40, strips angle brackets + control chars; Hebrew quotes survive', () => {
-  assert.strictEqual(server.sanitizeSessionUser('  ורד לוי  '), 'ורד לוי');
-  assert.strictEqual(server.sanitizeSessionUser('א'.repeat(60)).length, 40);
-  assert.strictEqual(server.sanitizeSessionUser('<script>ורד</script>'), 'scriptורד/script');
-  assert.strictEqual(server.sanitizeSessionUser('ורד\u0000\u001f'), 'ורד');
-  assert.strictEqual(server.sanitizeSessionUser('ד"ר ורד'), 'ד"ר ורד');
-  assert.strictEqual(server.sanitizeSessionUser(undefined), '');
-  assert.strictEqual(server.sanitizeSessionUser(12345), '');
-});
-
-test('sessionUserFromRequest reads only a VERIFIED cookie; legacy cookie → blank; old cookies still pass requireSession', () => {
+test('sessionUserFromRequest reads only a VERIFIED personal cookie; the retired shared cookie → blank and 401', () => {
   const mk = (token) => ({ headers: { cookie: 'ezone_session=' + token }, originalUrl: '/api/sheets' });
-  assert.strictEqual(server.sessionUserFromRequest(mk(createSessionToken(SECRET, undefined, undefined, 'ורד'))), 'ורד');
+  // The name comes from the RECORD behind the cookie's id, never from a picker.
+  assert.strictEqual(server.sessionUserFromRequest(mk(personalToken(SECRET, 'vered'))), 'ורד');
+  assert.strictEqual(server.sessionUserFromRequest(mk(createSessionToken(SECRET, undefined, undefined, 'ורד'))), '',
+    'a shared (no-id) cookie carrying a name is not a session any more');
   assert.strictEqual(server.sessionUserFromRequest(mk(createSessionToken(SECRET))), '');
   assert.strictEqual(server.sessionUserFromRequest(mk('123.deadbeef')), '');
 
   let called = false;
-  server.requireSession(mk(createSessionToken(SECRET)), { status: () => ({ json: () => {} }) }, () => { called = true; });
-  assert.strictEqual(called, true, 'a user-less cookie authorizes exactly as today');
+  let status = 0;
+  const res = { status: (c) => { status = c; return { json: () => {} }; } };
+  server.requireSession({ headers: { cookie: sharedCookie(SECRET, 'ורד') }, originalUrl: '/api/sheets' }, res, () => { called = true; });
+  assert.deepStrictEqual([called, status], [false, 401], 'PR C: a shared cookie is 401');
+  called = false;
+  server.requireSession(mk(personalToken(SECRET, 'shiran')), res, () => { called = true; });
+  assert.strictEqual(called, true);
 });
 
-test('source-scan: verify-pin stores the validated user in the signed cookie; /api/me is session-gated; the proxy ALWAYS overwrites body.user', () => {
+test('source-scan: verify-pin stores the RECORD name + id in the signed cookie; /api/me is session-gated; the proxy ALWAYS overwrites body.user', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  // validateSessionUser = sanitize + SESSION_USERS allow-list (name picker).
-  assert.ok(/validateSessionUser\(req\.body && req\.body\.user\)/.test(src));
-  assert.ok(/createSessionToken\(SESSION_SECRET, undefined, undefined, user\)/.test(src));
+  // PR C: the only login is personal — the name is the record's, never the body's.
+  assert.ok(!/validateSessionUser|SESSION_USERS/.test(src), 'the shared-login name allow-list is gone');
+  assert.ok(/createSessionToken\(SESSION_SECRET, undefined, undefined, rec\.name, \{ id: rec\.id, pinVersion: rec\.pinVersion \}\)/.test(src));
   assert.ok(/app\.get\('\/api\/me', requireSession/.test(src));
   assert.ok(/body\.user = sessionUserFromRequest\(req\)/.test(src),
     'a client-supplied user can never reach Apps Script');

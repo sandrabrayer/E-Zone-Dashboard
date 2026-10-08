@@ -81,6 +81,22 @@ function serve(state) {
   return new Promise((resolve) => server.listen(0, () => resolve({ server, port: server.address().port })));
 }
 
+/* The UI flips optimistically: state.payments changes before the POST has
+ * reached this stub server. Asserting on state.posts right after a UI wait
+ * therefore races the request. Poll the server's own log until at least `n`
+ * savePayment bodies have actually arrived, and fail loudly on timeout. */
+async function waitForSaves(state, n, timeout = 5000) {
+  const saves = () => state.posts.filter((p) => p && p.action === 'savePayment');
+  const deadline = Date.now() + timeout;
+  while (saves().length < n) {
+    if (Date.now() > deadline) {
+      assert.fail(`timed out after ${timeout}ms waiting for savePayment #${n} to reach the server`);
+    }
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return saves();
+}
+
 /* The roster and the rows, from the bug report:
  *   עמית בורנשטיין (עפרוני, entered 7.9) with his OWN ₪30,000 on 07/09;
  *   "עמית יעקובי" — ₪30,000 on the same day, attached to nobody;
@@ -184,7 +200,7 @@ test('linking records the decision through savePayment, and moves no money', { s
     await page.waitForFunction(
       `state.payments.find(p => p.id === 'pay-yaakovi').linkPatientUid === 'id-amit'`);
 
-    const post = state.posts.find((p) => p && p.action === 'savePayment');
+    const post = (await waitForSaves(state, 1))[0];
     assert.ok(post, 'it went through the one payment write path');
     assert.strictEqual(post.payment.id, 'pay-yaakovi');
     /* The DECISION is what the client sends. `patientUid` is the server's to
@@ -214,7 +230,7 @@ test('"not a patient" is refused without a reason, and recorded with one', { ski
     await (await row.$('.reconnect-not-patient')).click();
     await page.waitForFunction(
       `state.payments.find(p => p.id === 'pay-refund').linkStatus === 'not_a_patient'`);
-    const post = state.posts.filter((p) => p && p.action === 'savePayment').pop();
+    const post = (await waitForSaves(state, 1)).pop();
     assert.strictEqual(post.payment.linkStatus, 'not_a_patient');
     assert.strictEqual(post.payment.linkNote, 'החזר לספק, לא שורת מטופל');
     /* WHO and WHEN are not sent — the server stamps them from the signed
@@ -250,7 +266,7 @@ test('the backfill button says what it will do, and only runs on a click', { ski
     await page.click('#reconnect-backfill');
     await page.waitForFunction(
       `state.payments.find(p => p.id === 'pay-shachar').linkPatientUid === 'id-shachar'`);
-    const post = state.posts.filter((p) => p && p.action === 'savePayment').pop();
+    const post = (await waitForSaves(state, 1)).pop();
     assert.strictEqual(post.payment.linkPatientUid, 'id-shachar');
     assert.strictEqual(post.payment.amountPaid, 35000, 'the backfill moves no money');
   });

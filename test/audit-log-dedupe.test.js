@@ -32,6 +32,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+/* Personal PINs PR C: Code.gs refuses a delete without a VERIFIED `deleter`
+ * (handle_ → roleAllowed_). These calls go straight to handle_, so they carry
+ * the actor proxyGate_ would set for Vered's personal session. */
+const DELETER_ACTOR = { verified: true, user: 'ורד', id: 'vered', auth: 'personal', roles: ['staff', 'reporter', 'deleter'], caps: ['finance'] };
+
+
 const arr = (x) => Array.from(x);
 /* vm-sandbox values carry the sandbox realm's prototypes; JSON-normalize before
  * deepStrictEqual so structure, not realm, is compared. */
@@ -125,7 +131,7 @@ function loadCode() {
     getUuid: () => 'uuid-' + (++uuid),
     formatDate: (d) => d.toISOString().slice(0, 10),
   };
-  sandbox.LockService = { getScriptLock: () => ({ tryLock: noop, releaseLock: noop }) };
+  sandbox.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: noop }) };
   sandbox.globalThis = sandbox;
   const epilogue = `globalThis.__test = {
     PATIENT_COLUMNS: PATIENT_COLUMNS,
@@ -181,7 +187,8 @@ const SEED = [
 test('AuditLog column order is PINNED — append-only, same rule as LEAD_COLUMNS', () => {
   const { code } = loadCode();
   assert.deepStrictEqual(arr(code.AUDIT_LOG_COLUMNS),
-    ['timestamp', 'action', 'fn', 'patientId', 'name', 'details'],
+    // `actor` appended by personal-pins PR A (CHANGELOG-personal-pins-foundation.md).
+    ['timestamp', 'action', 'fn', 'patientId', 'name', 'details', 'actor'],
     'never insert/delete/reorder AuditLog columns — new columns go at the END');
 });
 
@@ -348,7 +355,7 @@ test('discharge / delete / restore write paths each log one audit row', () => {
   code.handle({ action: 'dischargePatient',
     patient: { id: 'p1', houseId: 'ramot', name: 'הדס', date: '2026-09-01', fromLead: LEAD_ID } });
   code.handle({ action: 'restorePatientToActive', patient: { id: 'p1', name: 'הדס', fromLead: LEAD_ID } });
-  code.handle({ action: 'deletePatientRow',
+  code.handle({ __actor: DELETER_ACTOR, action: 'deletePatientRow',
     patient: { houseId: 'ramot', name: 'שרה', date: '2026-07-01' } });
   const actions = plain(auditOf(code, sandbox).map((a) => a.action).sort());
   assert.deepStrictEqual(actions,

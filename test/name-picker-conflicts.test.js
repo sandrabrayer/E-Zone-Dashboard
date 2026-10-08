@@ -1,4 +1,9 @@
-/* Name picker + stale-save conflict refusal (PR 2a).
+/* Name picker (RETIRED in personal PINs PR C) + stale-save conflict refusal (PR 2a).
+ *
+ * PR C (2026-10-04) removed the shared APP_PIN and with it the «מי מתחבר/ת?»
+ * picker: the session name is now the personal record's own name. Sections
+ * A, B and D pin that the picker is gone; section C (the conflict refusal) is
+ * unchanged.
  *
  * Context under test: PR #112 gave Patients a persisted `id`; PR #113 added
  * updatedAt/updatedBy stamping and a tamper-proof `user` inside the signed
@@ -42,7 +47,7 @@ const plain = (x) => JSON.parse(JSON.stringify(x));
 
 const GS_SRC = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Code.gs'), 'utf8');
 const APP_SRC = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
-const { SESSION_USERS } = require('../lib/users');
+const users = require('../lib/users');
 
 /* Parse a const string-array literal out of app.js source. */
 function appConst(name) {
@@ -51,39 +56,26 @@ function appConst(name) {
   return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
 }
 
-/* ================= A. the user list — one list, pinned everywhere ================= */
+/* ================= A. the picker list is gone ================= */
 
-test('SESSION_USERS: lib/users.js === app.js SESSION_USERS === app.js ASSIGNEE_OPTIONS (assignedTo names, not invented)', () => {
-  assert.deepStrictEqual(SESSION_USERS, ['ורד', 'שירן', 'יעל']);
-  assert.deepStrictEqual(appConst('SESSION_USERS'), SESSION_USERS, 'client picker list must equal the server allow-list');
-  assert.deepStrictEqual(appConst('ASSIGNEE_OPTIONS'), SESSION_USERS, 'the names come from the assignedTo dropdown');
+test('PR C: no SESSION_USERS anywhere — the login name comes from the personal record', () => {
+  assert.strictEqual(users.SESSION_USERS, undefined, 'lib/users.js no longer exports a picker list');
+  assert.ok(!/const SESSION_USERS = /.test(APP_SRC), 'app.js no longer has a picker list');
+  assert.deepStrictEqual(appConst('ASSIGNEE_OPTIONS'), ['ורד', 'שירן', 'יעל'], 'the assignedTo dropdown is untouched');
 });
 
-/* ================= B. server: list validation + re-issue ================= */
+/* ================= B. server: the re-issue path is gone ================= */
 
 const SECRET = 'test-session-secret-0123456789abcdef0123456789';
 process.env.SESSION_SECRET = SECRET; // before server.js is required
-const { createSessionToken, readSessionUser, DEFAULT_TTL_SECONDS } = require('../lib/session');
+require('./helpers/personal-session').applyPersonalEnv();
+const { createSessionToken } = require('../lib/session');
 const server = require('../server');
 
-test('validateSessionUser: list names pass (sanitized first); anything else → the user-less cookie path', () => {
-  assert.strictEqual(server.validateSessionUser('ורד'), 'ורד');
-  assert.strictEqual(server.validateSessionUser('  שירן  '), 'שירן', 'sanitize runs before the list check');
-  assert.strictEqual(server.validateSessionUser('<יעל>'), 'יעל', 'angle brackets stripped, then matched');
-  assert.strictEqual(server.validateSessionUser('האקר'), '', 'unknown name never reaches the cookie');
-  assert.strictEqual(server.validateSessionUser('ורד לוי'), '', 'not on the list — even a plausible name');
-  assert.strictEqual(server.validateSessionUser(''), '');
-  assert.strictEqual(server.validateSessionUser(undefined), '');
-});
-
-test('picker re-issue keeps the default 7-day TTL and /api/me reads the chosen name back', () => {
-  const token = createSessionToken(SECRET, undefined, undefined, server.validateSessionUser('ורד'));
-  const expiry = Number(token.split('.')[0]);
-  const expected = Math.floor(Date.now() / 1000) + DEFAULT_TTL_SECONDS;
-  assert.ok(Math.abs(expiry - expected) <= 10, 'unchanged TTL semantics: ' + expiry + ' vs ' + expected);
-  const req = { headers: { cookie: 'ezone_session=' + token } };
-  assert.strictEqual(server.sessionUserFromRequest(req), 'ורד', 'what /api/me returns');
-  assert.strictEqual(readSessionUser(token, SECRET), 'ורד');
+test('PR C: validateSessionUser is gone, and a picker-style cookie (a name, no id) is not a session', () => {
+  assert.strictEqual(server.validateSessionUser, undefined);
+  const token = createSessionToken(SECRET, undefined, undefined, 'ורד');
+  assert.strictEqual(server.sessionUserFromRequest({ headers: { cookie: 'ezone_session=' + token } }), '');
 });
 
 /* ================= C. Code.gs: conflict refusal (vm harness as sibling suites) ================= */
@@ -178,7 +170,7 @@ function loadCode() {
     getUuid: () => 'uuid-' + (++uuid),
     formatDate: (d) => d.toISOString().slice(0, 10),
   };
-  sandbox.LockService = { getScriptLock: () => ({ tryLock: noop, releaseLock: noop }) };
+  sandbox.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: noop }) };
   sandbox.globalThis = sandbox;
   const epilogue = `globalThis.__test = {
     PATIENT_COLUMNS: PATIENT_COLUMNS,
@@ -310,7 +302,7 @@ test('saveAll_ aggregates conflicts ACROSS houses; the field is absent when no h
   assert.ok(!('conflicts' in res2), 'additive: absent when none — old clients and Managers see nothing new');
 });
 
-/* ================= D. client: message, resync, picker, header ================= */
+/* ================= D. client: message, resync, header (no picker) ================= */
 
 function fakeEl(id) {
   const el = {
@@ -377,10 +369,8 @@ function loadApp() {
   sandbox.globalThis = sandbox;
   const epilogue = `
     globalThis.__test = {
-      SESSION_USERS,
       conflictsMessage,
       saveAllResponseNeedsResync,
-      afterPinSuccess,
       renderWhoami,
       checkSessionUser,
       stubEnterApp(fn) { enterApp = fn; },
@@ -418,36 +408,10 @@ test('saveAllResponseNeedsResync: a non-empty conflicts array triggers the same 
   assert.strictEqual(app.saveAllResponseNeedsResync({}), false);
 });
 
-test('picker shows ONLY when /api/me answers an empty user; a named session goes straight in with the header line', async () => {
-  const { app, sandbox } = loadApp();
-  let entered = 0;
-  app.stubEnterApp(() => { entered++; });
-
-  sandbox.__me = { ok: true, user: '' };
-  await app.afterPinSuccess('1234');
-  const screen = sandbox.__els['user-screen'];
-  assert.strictEqual(screen.classList.contains('hidden'), false, 'picker shown for a user-less cookie');
-  assert.strictEqual(entered, 0, 'app entry waits for the pick');
-  const buttons = sandbox.__els['user-options'].children;
-  assert.deepStrictEqual(buttons.map((b) => b.textContent), ['ורד', 'שירן', 'יעל'], 'one button per fixed name, no free text');
-
-  // Picking re-sends the PIN with the name (in-memory only) and enters.
-  await buttons[0].onclick();
-  const reissue = sandbox.__fetchCalls.find((c) => c.url === '/api/verify-pin' && c.opts && c.opts.body.includes('"user"'));
-  assert.ok(reissue, 'the pick re-issues the cookie via verify-pin');
-  assert.deepStrictEqual(JSON.parse(reissue.opts.body), { pin: '1234', user: 'ורד' });
-  assert.strictEqual(entered, 1, 'app entered after the pick');
-  assert.strictEqual(screen.classList.contains('hidden'), true);
-
-  // Named session: no picker, straight in.
-  const second = loadApp();
-  let entered2 = 0;
-  second.app.stubEnterApp(() => { entered2++; });
-  second.sandbox.__me = { ok: true, user: 'שירן' };
-  await second.app.afterPinSuccess('1234');
-  assert.strictEqual(entered2, 1);
-  const screen2 = second.sandbox.__els['user-screen'];
-  assert.ok(!screen2 || screen2.classList.contains('hidden'), 'no picker for a named cookie');
+test('PR C: the picker screen and its re-issue are gone from the client', () => {
+  assert.ok(!/function showUserPicker|function afterPinSuccess|user-options'|'user-screen'/.test(APP_SRC));
+  const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  assert.ok(!/id="user-screen"|id="user-options"/.test(html));
 });
 
 test('renderWhoami: header shows מחובר/ת כ + the name + a החלף control; blank name hides the line', () => {
@@ -461,13 +425,13 @@ test('renderWhoami: header shows מחובר/ת כ + the name + a החלף contro
   assert.strictEqual(el.classList.contains('hidden'), true, 'legacy user-less session shows nothing');
 });
 
-test('existing user-less session on load: checkSessionUser routes through the PIN form once (the re-issue needs the PIN)', async () => {
+test('a user-less /api/me (cannot happen for a personal session) goes to the login screen; a named one renders the header', async () => {
   const { app, sandbox } = loadApp();
   let pinShown = 0;
   app.stubShowPin(() => { pinShown++; });
   sandbox.__me = { ok: true, user: '' };
   await app.checkSessionUser();
-  assert.strictEqual(pinShown, 1, 'user-less but authenticated → PIN form (picker follows after the PIN)');
+  assert.strictEqual(pinShown, 1, 'user-less → the login screen');
 
   const named = loadApp();
   let pinShown2 = 0;

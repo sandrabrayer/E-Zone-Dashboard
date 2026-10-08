@@ -120,14 +120,14 @@ test('applyBillingOverride is a no-op without a matching override', () => {
 /* ===== paymentForPatientOnDate: effective amount + month isolation ===== */
 
 test('placeholder for the overridden month carries the override amount', () => {
-  app.setState({ mode: 'edit', payments: [], billingOverrides: [OVR_AUG] });
+  app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [OVR_AUG] });
   const aug = app.paymentForPatientOnDate(PATIENT, '2026-08-05');
   assert.strictEqual(aug.amount, 4200);
   assert.strictEqual(aug.balance, 4200);
 });
 
 test('month isolation: the override does NOT leak into another month', () => {
-  app.setState({ mode: 'edit', payments: [], billingOverrides: [OVR_AUG] });
+  app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [OVR_AUG] });
   const sep = app.paymentForPatientOnDate(PATIENT, '2026-09-05');
   assert.strictEqual(sep.amount, 9000, 'September stays at base pay');
   const jul = app.paymentForPatientOnDate(PATIENT, '2026-07-05');
@@ -135,7 +135,7 @@ test('month isolation: the override does NOT leak into another month', () => {
 });
 
 test('a persisted UNPAID record is overlaid too; clearing the override restores its stored amount', () => {
-  app.setState({ mode: 'edit', payments: [unpaidPayment()], billingOverrides: [OVR_AUG] });
+  app.setState({ mode: 'edit', deleter: true, payments: [unpaidPayment()], billingOverrides: [OVR_AUG] });
   assert.strictEqual(app.paymentForPatientOnDate(PATIENT, '2026-08-05').amount, 4200);
   app.setState({ billingOverrides: [] });
   assert.strictEqual(app.paymentForPatientOnDate(PATIENT, '2026-08-05').amount, 9000, 'base restored');
@@ -145,7 +145,7 @@ test('a persisted UNPAID record is overlaid too; clearing the override restores 
 
 test('monthly summary outstanding uses the effective amount; collected untouched', () => {
   app.setState({
-    mode: 'edit',
+    mode: 'edit', deleter: true,
     billingOverrides: [OVR_AUG],
     payments: [
       unpaidPayment(), // 9000 base → 4200 effective
@@ -163,7 +163,7 @@ test('monthly summary outstanding uses the effective amount; collected untouched
 /* ===== save / clear workers: optimistic + rollback ===== */
 
 test('saveBillingOverride writes the upsert action and applies optimistically', async () => {
-  app.setState({ mode: 'edit', payments: [], billingOverrides: [] });
+  app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [] });
   const posts = [];
   app.setApiPost(async (b) => { posts.push(b); });
   app.setRenderBilling(() => {});
@@ -182,7 +182,7 @@ test('saveBillingOverride writes the upsert action and applies optimistically', 
 });
 
 test('saveBillingOverride rolls back on failure', async () => {
-  app.setState({ mode: 'edit', payments: [], billingOverrides: [] });
+  app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [] });
   const errors = [];
   app.setApiPost(async () => { throw new Error('נכשל'); });
   app.setRenderBilling(() => {});
@@ -193,7 +193,7 @@ test('saveBillingOverride rolls back on failure', async () => {
 });
 
 test('clearBillingOverride deletes and restores base; rolls back on failure', async () => {
-  app.setState({ mode: 'edit', payments: [], billingOverrides: [{ ...OVR_AUG }] });
+  app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [{ ...OVR_AUG }] });
   const posts = [];
   app.setApiPost(async (b) => { posts.push(b); });
   app.setRenderBilling(() => {});
@@ -214,7 +214,7 @@ test('clearBillingOverride deletes and restores base; rolls back on failure', as
 /* ===== row rendering ===== */
 
 test('row shows the מותאם badge + clear control only when an override is active', () => {
-  app.setState({ mode: 'edit', payments: [], billingOverrides: [OVR_AUG] });
+  app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [OVR_AUG] });
   const withOvr = app.buildBillingRow(PATIENT, app.paymentForPatientOnDate(PATIENT, '2026-08-05'), '2026-08-05', false);
   assert.ok(withOvr.innerHTML.includes('מותאם'), 'badge shown');
   assert.ok(withOvr.innerHTML.includes('bill-amount-clear-btn'), 'clear control shown');
@@ -227,7 +227,7 @@ test('row shows the מותאם badge + clear control only when an override is ac
 });
 
 test('paid rows offer no amount editing; carry rows with a matched patient DO (carry-edit fix)', () => {
-  app.setState({ mode: 'edit', payments: [], billingOverrides: [] });
+  app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [] });
   const paidRow = app.buildBillingRow(
     PATIENT, unpaidPayment({ status: 'paid', amountPaid: 9000, balance: 0 }), '2026-08-05', false);
   assert.ok(!paidRow.innerHTML.includes('bill-amount-edit-btn'), 'paid history not editable');

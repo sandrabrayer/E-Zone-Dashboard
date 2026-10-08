@@ -26,24 +26,58 @@
 </head>
 <body>
 
-  <!-- PIN GATE -->
+  <!-- LOGIN GATE (personal PINs only). Step 1: tap your name (only users
+       with an ACTIVE personal-PIN record are listed). Step 2: the 6-digit
+       personal PIN. The shared APP_PIN field was removed in PR C. -->
   <div id="pin-screen" class="overlay hidden">
-    <div class="pin-box">
+    <div class="pin-box login-box">
       <h1>E-ZONE</h1>
-      <p>הזן קוד גישה</p>
-      <input type="password" id="pin-input" inputmode="numeric" maxlength="4" autocomplete="off" />
-      <button id="pin-submit" class="btn primary">כניסה</button>
-      <div id="pin-error" class="error-msg hidden">קוד שגוי</div>
+
+      <div id="login-step-name">
+        <p>מי נכנס/ת? הקישו על השם</p>
+        <div id="login-names" class="user-options login-names"></div>
+        <div id="login-names-empty" class="error-msg hidden">אין עדיין קודים אישיים פעילים — פנו לסנדרה</div>
+      </div>
+
+      <div id="login-step-pin" class="hidden">
+        <p><span id="login-chosen-name" class="login-chosen-name"></span><br />הזינו את הקוד האישי (6 ספרות)</p>
+        <input type="password" id="login-pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" aria-label="קוד אישי" />
+        <button id="login-pin-submit" class="btn primary">כניסה</button>
+        <div id="login-error" class="error-msg hidden" role="alert"></div>
+        <button id="login-back" type="button" class="link-btn login-link">זה לא אני — החלפת שם</button>
+      </div>
+
     </div>
   </div>
 
-  <!-- USER PICKER (shown once after PIN when the session has no name yet) -->
-  <div id="user-screen" class="overlay hidden">
-    <div class="pin-box">
-      <h1>E-ZONE</h1>
-      <p>מי מתחבר/ת?</p>
-      <div id="user-options" class="user-options"></div>
-      <div id="user-error" class="error-msg hidden">בחירת השם נכשלה — נסו שוב</div>
+  <!-- «קוד אישי חדש» — Sandra's personal session only (the server answers
+       403 to anyone else). Makes ONE record line to paste into
+       USER_PIN_HASHES in Railway; nothing is saved by the page. -->
+  <div id="pin-admin-screen" class="modal-backdrop hidden">
+    <div class="modal pin-admin" role="dialog" aria-labelledby="pin-admin-title">
+      <h3 id="pin-admin-title">קוד אישי חדש</h3>
+      <div class="form-row">
+        <label for="pin-admin-user">למי?</label>
+        <select id="pin-admin-user"></select>
+      </div>
+      <div class="form-row">
+        <label for="pin-admin-pin">קוד חדש (6 ספרות)</label>
+        <input type="password" id="pin-admin-pin" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" />
+      </div>
+      <div class="form-row">
+        <label for="pin-admin-pin2">שוב, לאימות</label>
+        <input type="password" id="pin-admin-pin2" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" />
+      </div>
+      <div id="pin-admin-error" class="error-msg hidden" role="alert"></div>
+      <div id="pin-admin-result" class="pin-admin-result hidden">
+        <textarea id="pin-admin-line" class="pin-admin-line" readonly dir="ltr" rows="4"></textarea>
+        <button id="pin-admin-copy" type="button" class="btn primary">העתקה</button>
+        <ol id="pin-admin-steps" class="pin-admin-steps"></ol>
+      </div>
+      <div class="form-actions">
+        <button id="pin-admin-close" type="button" class="btn ghost">סגירה</button>
+        <button id="pin-admin-make" type="button" class="btn primary">יצירת שורה</button>
+      </div>
     </div>
   </div>
 
@@ -59,28 +93,49 @@
         <img class="brand-logo" src="/icons/icon-192.png" alt="" />
         <span class="brand-name">דשבורד בתים</span>
       </div>
+      <!-- data-finance: the four money tabs, their screens and the dashboard
+           billing widgets. REMOVED from the DOM for a restricted session
+           (Shiran / Yael — no `finance` capability), hidden from the first
+           paint by <body class="view-restricted">, which server.js serves
+           to such a session. The server refuses the data either way. -->
       <nav class="tabs">
         <button class="tab active" data-screen="dashboard">דשבורד</button>
-        <button class="tab" data-screen="leads">לידים</button>
+        <button class="tab" data-screen="leads">לידים<span id="leads-unadmitted-badge" class="tab-badge tab-badge-danger hidden" title="לידים ששילמו או נכנסים לטיפול ואינם רשומים כמטופלים">0</span></button>
+        <!-- «מטופלים» — the patient list (CHANGELOG-patients-tab-ui.md). Every
+             session but the controller view (Ortal), whose tab removal drops it. -->
+        <button class="tab" data-screen="patients">מטופלים<span id="patients-problems-badge" class="tab-badge tab-badge-danger hidden" title="מטופלים פעילים עם בעיות פתוחות">0</span></button>
         <button class="tab" data-screen="meetings">לוח פגישות<span id="meetings-unseen-badge" class="tab-badge hidden">0</span></button>
         <button class="tab" data-screen="occupancy">תפוסה</button>
         <button class="tab" data-screen="discharged-patients">מטופלים משוחררים</button>
-        <button class="tab" data-screen="billing">גבייה</button>
-        <button class="tab" data-screen="revenue">הכנסות חודשיות</button>
-        <button class="tab" data-screen="reconnect">שיוך תשלומים<span id="reconnect-badge" class="tab-badge hidden">0</span></button>
+        <button class="tab" data-screen="billing" data-finance>גבייה</button>
+        <!-- «בקרת גבייה» (Phase 4): Vered, Sandra and Ortal. data-billing-control
+             is removed for Shiran / Yael; for Ortal (the controller view) this
+             is the ONLY tab — every other one is removed from the DOM. -->
+        <button class="tab" data-screen="billing-control" data-billing-control>בקרת גבייה<span id="bc-badge" class="tab-badge hidden">0</span></button>
+        <button class="tab" data-screen="revenue" data-finance>הכנסות חודשיות</button>
+        <button class="tab" data-screen="reconnect" data-finance>שיוך תשלומים<span id="reconnect-badge" class="tab-badge hidden">0</span></button>
         <button class="tab" data-screen="breakeven">נקודת איזון</button>
-        <button class="tab" data-screen="growth">גרף צמיחה</button>
+        <button class="tab" data-screen="growth" data-finance>גרף צמיחה</button>
         <button class="tab" data-screen="retention">שימור לידים</button>
       </nav>
       <div class="user-mode">
         <span id="whoami" class="whoami hidden"></span>
+        <button id="pin-admin-open" class="btn ghost-sm hidden">קוד אישי חדש</button>
         <button id="logout" class="btn ghost-sm">יציאה</button>
       </div>
     </header>
 
     <!-- ====== DASHBOARD ====== -->
     <section id="screen-dashboard" class="screen">
-      <h2>דשבורד רשת</h2>
+      <div class="screen-head">
+        <h2>דשבורד רשת</h2>
+        <div class="actions">
+          <!-- Top-level intake entry: a new inpatient (name, house, admission
+               date). Same direct-add flow as «+ הוסף מטופל ישירות», intake
+               mode. The new patient reaches the coordinators feed on save. -->
+          <button id="intake-patient-btn" class="btn intake edit-only" type="button">🟢 קליטת מטופל חדש</button>
+        </div>
+      </div>
 
       <div class="cards-row">
         <div class="card stat">
@@ -106,7 +161,7 @@
       <!-- Renewal alert: active patients whose next billing day is within 7
            days and whose upcoming cycle isn't already paid. Hidden when empty;
            populated by renderRenewalAlert() in app.js. -->
-      <div class="card renewal-alert hidden" id="renewal-alert">
+      <div class="card renewal-alert hidden" id="renewal-alert" data-finance>
         <div class="renewal-alert-head">
           <span class="renewal-alert-title">חידושי תפוסה — השבוע הקרוב</span>
           <span class="renewal-alert-count" id="renewal-alert-count">0</span>
@@ -116,11 +171,23 @@
 
       <!-- Overdue-payment strip: "X מטופלים ממתינים לתשלום". Hidden at zero;
            clicking navigates to the גבייה tab. -->
-      <button class="card overdue-strip hidden" id="overdue-alert" type="button">
+      <button class="card overdue-strip hidden" id="overdue-alert" type="button" data-finance>
         <span class="renewal-alert-count" id="overdue-alert-count">0</span>
         <span class="overdue-strip-text" id="overdue-alert-text">מטופלים ממתינים לתשלום</span>
         <span class="overdue-strip-cta">למעבר לגבייה ←</span>
       </button>
+
+      <!-- «🚪 שחרורים מהבתים»: discharges a coordinator recorded in the
+           coordinators app (last 30 days) — already in effect; listed here
+           so billing / refunds are handled. Read-only. -->
+      <div class="card coord-discharges" id="coord-discharges">
+        <div class="coord-discharges-head">
+          <span class="coord-discharges-title">🚪 שחרורים מהבתים</span>
+          <span class="renewal-alert-count" id="coord-discharges-count">0</span>
+        </div>
+        <div class="coord-discharges-sub">שחרורים שדווחו ע״י הרכזות ב־30 הימים האחרונים — כבר בתוקף (התפוסה עודכנה). לטיפול בגבייה / החזרים.</div>
+        <div class="coord-discharges-list" id="coord-discharges-list"></div>
+      </div>
 
       <h3>מיטות פנויות לפי בית</h3>
       <div class="houses-grid" id="houses-grid"></div>
@@ -154,6 +221,29 @@
     </section>
 
     <!-- ====== OCCUPANCY ====== -->
+    <!-- ====== PATIENTS (the patient list) ====== -->
+    <section id="screen-patients" class="screen hidden">
+      <div class="screen-head">
+        <h2>מטופלים <span class="count-pill" id="plist-count">0</span></h2>
+        <div class="actions plist-filters">
+          <input id="plist-search" type="search" placeholder="חיפוש שם מטופל" aria-label="חיפוש שם מטופל" />
+          <select id="plist-house" aria-label="סינון לפי בית"></select>
+          <select id="plist-status" aria-label="סינון לפי סטטוס">
+            <option value="active">פעילים</option>
+            <option value="released">משוחררים</option>
+            <option value="all">הכל</option>
+          </select>
+          <label class="show-released-toggle">
+            <input type="checkbox" id="plist-problems" />
+            <span>בעיות בלבד</span>
+          </label>
+        </div>
+      </div>
+      <div id="plist-summary" class="plist-summary"></div>
+      <div id="plist-pending" class="plist-pending"></div>
+      <div id="plist-list" class="plist-list"></div>
+    </section>
+
     <section id="screen-occupancy" class="screen hidden">
       <div class="screen-head">
         <h2>תפוסה</h2>
@@ -182,11 +272,14 @@
     </section>
 
     <!-- ====== BILLING ====== -->
-    <section id="screen-billing" class="screen hidden">
+    <section id="screen-billing" class="screen hidden" data-finance>
       <div class="screen-head">
         <h2>גבייה</h2>
         <div class="actions">
           <input id="billing-search" type="search" placeholder="חיפוש מטופל..." />
+          <!-- Patient funder filter (גורם מממן): inside the finance-only screen,
+               so it goes with the whole tab for a restricted session. -->
+          <select id="billing-funder" aria-label="סינון לפי גורם מממן"></select>
           <label for="billing-date" class="billing-date-label">תאריך</label>
           <input id="billing-date" type="date" />
         </div>
@@ -210,15 +303,57 @@
         </div>
       </div>
 
-      <h3>לגבייה בתאריך הנבחר</h3>
-      <div id="billing-due-list" class="billing-list"></div>
+      <!-- «השלמת גורם מממן»: patients with no funder (released ones only with
+           open debt). Rendered by renderFunderFill (app.js); hidden at 0. -->
+      <div id="funder-fill" class="funder-fill hidden" aria-live="polite"></div>
 
-      <h3>יתרות פתוחות מתאריכים קודמים</h3>
-      <div id="billing-open-list" class="billing-list"></div>
+      <!-- Billing groups: each wrapper sets one colour token (--grp, from
+           --grp-<key> on :root — the same hex as lib/report-colors.js) for its
+           bold heading's 4px bar, its tinted panel and its chip. Wrappers only:
+           the lists inside are unchanged. CHANGELOG-billing-tab-section-colors.md -->
+      <div class="bill-group bill-group--due" data-group="due">
+        <h3 class="bill-group-title">לגבייה בתאריך הנבחר</h3>
+        <div id="billing-due-list" class="billing-list"></div>
+      </div>
 
-      <h3>זיכויים ממתינים לתשלום <span class="count-pill" id="credits-pending-total">₪ 0</span></h3>
-      <p class="billing-date-label">משולמים ב־15 לחודש, מקובצים לפי תאריך תשלום. סימון כשולם הוא פעולה מפורשת.</p>
-      <div id="credits-payout-list" class="billing-list"></div>
+      <div class="bill-group bill-group--open" data-group="open">
+        <h3 class="bill-group-title">יתרות פתוחות מתאריכים קודמים</h3>
+        <div id="billing-open-list" class="billing-list"></div>
+      </div>
+
+      <div class="bill-group bill-group--credits" data-group="credits">
+        <h3 class="bill-group-title">זיכויים ממתינים לתשלום <span class="count-pill" id="credits-pending-total">₪ 0</span></h3>
+        <p class="billing-date-label">משולמים ב־15 לחודש, מקובצים לפי תאריך תשלום. סימון כשולם הוא פעולה מפורשת.</p>
+        <div id="credits-payout-list" class="billing-list"></div>
+        <div class="forecast-actions">
+          <button type="button" class="btn small" id="credits-forecast-refresh">רענון</button>
+          <button type="button" class="btn small primary" id="credits-forecast-export">ייצוא זיכויים לאקסל</button>
+          <button type="button" class="btn small primary" id="cleanup-export">ייצוא רשימת תיקונים</button>
+        </div>
+      </div>
+      <!-- The forecast renders its own groups: ממתין להחלטה (purple), לא ניתן
+           לחשב (grey), and — instead of a section — one muted line linking the
+           discharges with no recorded payment to «חובות פתוחים». -->
+      <div id="credits-forecast" class="billing-list" aria-live="polite"></div>
+
+      <!-- «חובות פתוחים»: debt aging as of a date (action=debtAging, read-only).
+           Collapsed by default; fetched only when opened or the date changes.
+           «חוב רשום» and «מחזורים ללא רישום» are two blocks, never summed. -->
+      <details id="debt-aging-view" class="debt-aging-view bill-group bill-group--debt" data-group="debt">
+        <summary><h3 class="bill-group-title">חובות פתוחים</h3></summary>
+        <div class="debt-controls">
+          <label for="debt-asof" class="billing-date-label">נכון לתאריך</label>
+          <input id="debt-asof" type="date" />
+          <button type="button" class="btn small" id="debt-asof-prev-month">סוף חודש קודם</button>
+          <label for="debt-house" class="billing-date-label">בית</label>
+          <select id="debt-house"></select>
+          <label for="debt-status" class="billing-date-label">סטטוס</label>
+          <select id="debt-status"></select>
+          <button type="button" class="btn small" id="debt-refresh">רענון</button>
+          <button type="button" class="btn small primary" id="debt-export">ייצוא לאקסל</button>
+        </div>
+        <div id="debt-aging" class="debt-aging" aria-live="polite"></div>
+      </details>
 
       <h3>סיכום חודשי</h3>
       <div class="cards-row">
@@ -239,6 +374,65 @@
       </div>
     </section>
 
+    <!-- ====== «בקרת גבייה» (Phase 4) ======
+         Ortal checks every reported receipt against the bank (outside the
+         system) and marks it ✓ «אושר בבנק» or ⚑ «לא נמצא / בעיה». Only a
+         confirmed receipt is «הכנסה מאומתת». Data: billingControlQueue (read)
+         and confirmPayment (write); the server refuses both to Shiran / Yael,
+         and the decision to anyone but Ortal and Sandra. -->
+    <section id="screen-billing-control" class="screen hidden" data-billing-control>
+      <div class="screen-head">
+        <h2>בקרת גבייה</h2>
+        <div class="actions">
+          <button type="button" class="btn small" id="bc-refresh">רענון</button>
+          <button type="button" class="btn small primary" id="bc-export">ייצוא אימות</button>
+        </div>
+      </div>
+      <div id="bc-error" class="error-msg hidden" role="alert"></div>
+
+      <div class="cards-row bc-cards" id="bc-cards"></div>
+
+      <div class="bill-group bill-group--open" data-group="bc-queue">
+        <h3 class="bill-group-title">ממתין לאימות <span class="count-pill" id="bc-queue-count">0</span></h3>
+        <p class="billing-date-label">החדש ראשון. בודקים בבנק ובוחרים סטטוס: «שולם», «שולם חלקית» (מזינים כמה התקבל) או «לא שולם» (חובה לפרט).</p>
+        <div id="bc-bulk" class="bc-bulk hidden">
+          <label class="bc-pick"><input type="checkbox" id="bc-select-all" /> סמן הכל</label>
+          <button type="button" class="btn small primary" id="bc-bulk-confirm" disabled>אשר את כל המסומנים</button>
+        </div>
+        <div id="bc-queue" class="billing-list bc-list" aria-live="polite"></div>
+      </div>
+
+      <div class="bill-group bill-group--debt" data-group="bc-flagged">
+        <h3 class="bill-group-title">סומנו כבעיה <span class="count-pill" id="bc-flagged-count">0</span></h3>
+        <p class="billing-date-label">ורד מטפלת: ביטול הקבלה ודיווח מחדש. הקבלה שסומנה נשארת בהיסטוריה.</p>
+        <div id="bc-flagged" class="billing-list bc-list"></div>
+      </div>
+
+      <div class="bill-group bill-group--open" data-group="bc-partial">
+        <h3 class="bill-group-title">שולם חלקית <span class="count-pill" id="bc-partial-count">0</span> <span class="bc-sub">יתרה פתוחה: <span id="bc-partial-open">₪ 0</span></span></h3>
+        <p class="billing-date-label">רק הסכום שאומת נחשב הכנסה מאומתת. היתרה נשארת חוב פתוח עד שמסמנים «שולם».</p>
+        <div id="bc-partial" class="billing-list bc-list"></div>
+      </div>
+
+      <div class="bill-group bill-group--credits" data-group="bc-confirmed">
+        <h3 class="bill-group-title">אומתו — הכנסה מאומתת <span class="count-pill" id="bc-verified-total">₪ 0</span></h3>
+        <div class="debt-controls">
+          <label for="bc-month" class="billing-date-label">חודש</label>
+          <input id="bc-month" type="month" />
+          <label for="bc-house" class="billing-date-label">בית</label>
+          <select id="bc-house"></select>
+        </div>
+        <p class="billing-date-label">כל קבלה מחולקת לחודשים לפי תקופת הכיסוי שלה — כמו «נגבה» בהכנסות חודשיות. הסכומים כוללים מע"מ.</p>
+        <div id="bc-confirmed" class="billing-list bc-list"></div>
+      </div>
+
+      <!-- Sandra (approver) only: READ-ONLY — no button, no input. -->
+      <div id="bc-exceptions" class="bill-group bill-group--awaiting hidden" data-group="bc-exceptions">
+        <h3 class="bill-group-title">חריגים פתוחים <span class="bc-sub">(קריאה בלבד)</span></h3>
+        <div id="bc-exceptions-body" class="billing-list bc-list"></div>
+      </div>
+    </section>
+
     <!-- ====== MONTHLY REVENUE (הכנסות חודשיות) ======
          A SEPARATE screen from the daily גבייה worklist above, which is
          untouched. That one answers "who do I collect from today"; this one
@@ -249,7 +443,7 @@
          Same contract as ezone-outpatient PR #109, so the two apps' figures
          can be added into a network total: same allocation rule, same four
          figures, same never-blend rule, same ex-VAT basis (÷1.18). -->
-    <section id="screen-revenue" class="screen hidden">
+    <section id="screen-revenue" class="screen hidden" data-finance>
       <div class="screen-head">
         <h2>הכנסות חודשיות <span class="rev-month-label" id="rev-month-label"></span></h2>
         <div class="actions">
@@ -266,6 +460,13 @@
           <div class="stat-label">נגבה בפועל</div>
           <div class="stat-value" id="rev-received">₪ 0</div>
           <div class="stat-sub">כסף שהתקבל ומשויך לחודש זה</div>
+        </div>
+        <!-- «מאומת» (Phase 4): the part Ortal confirmed in the bank. A second
+             figure next to «נגבה», in no other total. -->
+        <div class="card stat rev-stat-verified">
+          <div class="stat-label">מאומת</div>
+          <div class="stat-value" id="rev-verified">₪ 0</div>
+          <div class="stat-sub">אושר בבנק ע״י אורטל — לא מצטרף לשום סכום אחר</div>
         </div>
         <div class="card stat rev-stat-expected">
           <div class="stat-label">צפוי</div>
@@ -312,7 +513,7 @@
          Every payment row that matches no current patient, with the candidates
          it might belong to. Nothing here reconnects automatically: the engine
          ranks, this screen presents, a person decides. -->
-    <section id="screen-reconnect" class="screen hidden">
+    <section id="screen-reconnect" class="screen hidden" data-finance>
       <div class="screen-head">
         <h2>שיוך תשלומים</h2>
         <div class="actions">
@@ -413,7 +614,7 @@
     </section>
 
     <!-- ====== GROWTH GRAPH (network-wide growth over time) ====== -->
-    <section id="screen-growth" class="screen hidden">
+    <section id="screen-growth" class="screen hidden" data-finance>
       <div class="screen-head">
         <h2>גרף צמיחה</h2>
       </div>
@@ -450,6 +651,14 @@
        The mirror <meta name="build"> in <head> is the primary lookup handle. -->
   <div id="build-marker" hidden data-build="__BUILD__">build: __BUILD__</div>
 
+  <script src="payment-report-rules.js?v=__BUILD__"></script>
+  <!-- Patient funder helpers (global Funder) — must load before app.js. -->
+  <script src="funder.js?v=__BUILD__"></script>
+  <script src="billing-control-rules.js?v=__BUILD__"></script>
+  <!-- The refund rule by exit date (global RefundRules) — must load before app.js. -->
+  <script src="refund-rules.js?v=__BUILD__"></script>
+  <!-- The institutional-funder grace rule (global FunderGrace) — must load before app.js. -->
+  <script src="funder-grace.js?v=__BUILD__"></script>
   <script src="app.js?v=__BUILD__"></script>
 
   <!-- Service worker registration (guarded). Registered after load so it never

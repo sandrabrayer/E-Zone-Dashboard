@@ -27,6 +27,18 @@
   --fuchsia-tint: rgba(224, 64, 251, .13);
   --fuchsia-glow: rgba(224, 64, 251, .45);
 
+  /* Billing groups (גבייה tab) — ONE colour per group. The same hex values
+   * as lib/report-colors.js GROUP_COLORS, which colours the .xlsx exports;
+   * test/billing-tab-section-colors.test.js keeps the two equal and checks
+   * every heading against its tinted panel for WCAG AA (≥ 4.5:1). */
+  --grp-due:        #7aa2ff; /* blue   — לגבייה בתאריך הנבחר */
+  --grp-open:       #f5b041; /* amber  — יתרות פתוחות מתאריכים קודמים */
+  --grp-credits:    #3ddc84; /* green  — זיכויים ממתינים לתשלום */
+  --grp-awaiting:   #b892ff; /* purple — ממתין להחלטה — לא לתשלום */
+  --grp-unresolved: #a3acc2; /* grey   — לא ניתן לחשב */
+  --grp-debt:       #ff7a7a; /* red    — חובות פתוחים / חוב רשום */
+  --grp-unrecorded: #ff9f43; /* orange — מחזורים ללא רישום */
+
   --stage-new:        #5b8bff;
   --stage-visit:      #ffb020;
   --stage-waitlist:   #19c8e0;
@@ -252,6 +264,75 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
   color: var(--primary); font-size: 12px; cursor: pointer;
   text-decoration: underline;
 }
+
+/* ===== Login: personal PINs (PR B) =====
+ * Step 1 — one big button per name (≥ 56px tall: a phone touch target with
+ * room to spare). Step 2 — the 6-digit PIN. The shared-PIN link is small and
+ * secondary on purpose: it only exists during the 7-day dual window. */
+.login-names .user-option {
+  min-height: 56px;
+  font-size: 20px;
+  font-weight: 700;
+}
+.login-chosen-name { color: var(--text); font-size: 20px; font-weight: 700; }
+.login-link {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  padding: 10px 0;          /* a tappable line, not a 12px sliver */
+  background: none; border: none;
+  color: var(--primary); font-size: 14px; cursor: pointer;
+  text-decoration: underline;
+}
+/* Roles (PR C): a delete / void / cancel control (data-role="deleter") and an
+ * approver control (data-role="approver") are hidden unless <body> carries
+ * the matching role class (app.js applyRoleView, from /api/me). Display only
+ * — the server refuses the operation itself. */
+body:not(.role-deleter) [data-role="deleter"],
+body:not(.role-approver) [data-role="approver"] { display: none !important; }
+
+/* «קוד אישי חדש» (Sandra only). The record line is LTR JSON. */
+.pin-admin .pin-admin-result { margin-top: 12px; }
+.pin-admin .pin-admin-line {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+  background: var(--bg-2);
+}
+.pin-admin .pin-admin-steps { margin: 12px 0 0; padding-inline-start: 20px; font-size: 13px; color: var(--text-muted); line-height: 1.6; }
+.pin-admin .pin-admin-steps code { direction: ltr; unicode-bidi: isolate; color: var(--text); }
+
+/* ===== Restricted view (finance capability) =====
+ * [data-finance] = the four money tabs, their screens and the dashboard
+ * renewal / overdue widgets. For a restricted session (Shiran / Yael) the
+ * server serves <body class="view-restricted"> and app.js removes them from
+ * the DOM once /api/me answers; this rule makes sure nothing flashes before
+ * that. */
+body.view-restricted [data-finance] { display: none !important; }
+/* «בקרת גבייה» (Phase 4): never for Shiran / Yael; for Ortal (the controller
+ * view, <body class="view-controller">) the ONLY tab and screen — app.js
+ * removes the rest from the DOM, this rule makes sure nothing flashes first. */
+body.view-restricted [data-billing-control] { display: none !important; }
+body.view-controller .tabs .tab:not([data-screen="billing-control"]),
+body.view-controller section.screen:not(#screen-billing-control),
+body.view-controller [data-finance] { display: none !important; }
+body.view-controller #screen-billing-control { display: block; }
+/* Ortal reads «גבייה» (CHANGELOG-ortal-verification-status.md): the server
+ * serves <body class="view-controller view-billing-read">. The tab and its
+ * screen show (the screen still follows .hidden); every write control stays
+ * hidden even if one were drawn — app.js never draws them (mode 'view'). */
+body.view-controller.view-billing-read .tabs .tab[data-screen="billing"] { display: inline-flex !important; }
+body.view-controller.view-billing-read #screen-billing:not(.hidden) { display: block !important; }
+body.view-controller #funder-fill,
+body.view-controller #screen-billing .bill-report-btn,
+body.view-controller #screen-billing .bill-amount-edit-btn,
+body.view-controller #screen-billing .bill-amount-clear-btn,
+body.view-controller #screen-billing .bill-cov-edit-btn,
+body.view-controller #screen-billing .bill-cov-reset-btn,
+body.view-controller #screen-billing .receipt-void-btn,
+body.view-controller #screen-billing .receipt-edit-btn,
+body.view-controller #screen-billing .irrelevant-actions { display: none !important; }
 
 /* ===== Banners ===== */
 .error-banner {
@@ -1181,6 +1262,21 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
   border: 1px solid rgba(25, 200, 224, 0.35);
   padding: 2px 9px; border-radius: 999px;
 }
+/* «לא נקלט כמטופל · N ימים» — a paid / entering lead with no patient record
+   3+ days after its entry date (CHANGELOG-unadmitted-lead-warning.md). */
+.lead-card .lc-unadmitted {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 11.5px; font-weight: 700;
+  color: var(--danger);
+  background: rgba(255, 77, 94, 0.14);
+  border: 1px solid rgba(255, 77, 94, 0.5);
+  padding: 2px 9px; border-radius: 999px;
+  max-width: 100%;
+  white-space: normal;
+}
+/* The same warning counted on the לידים tab. */
+.tab-badge.tab-badge-danger { background: var(--danger); color: #fff; }
 /* Edit-mode פרטי הפונה block — stacks the contact inputs + billing selector. */
 .lead-card .lc-contact-edit {
   margin-top: 10px;
@@ -1263,6 +1359,8 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
   transition: border-color .15s;
 }
 .patient-row:hover { border-color: var(--border-strong); }
+/* Finance sessions: one more cell, «גורם מממן» (Phase 3 PR 2). */
+.patient-row.has-funder { grid-template-columns: 1.4fr 1fr 1fr 1fr 1fr 1fr 1.1fr auto; }
 .patient-row.released { opacity: .50; }
 .patient-row .p-label {
   color: var(--text-dim); font-size: 11px;
@@ -1425,12 +1523,13 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
   border-radius: var(--radius);
   padding: 14px 18px;
   display: grid;
-  /* מטופל · בית · סכום · תקופת כיסוי · סטטוס · שולם בפועל · יתרה.
+  /* מטופל · בית · סכום · תקופת כיסוי · סטטוס · שולם · יתרה · «דווח תשלום»,
+     then the receipts list on its own full-width line (Phase 3 PR 2).
      The coverage cell is the widest of the middle columns: it prints two
      dates side by side and must not wrap mid-window, and it now carries the
      month split underneath them (.bill-cov-split), which is the tallest thing
      on the row. */
-  grid-template-columns: 1.2fr .85fr .95fr 2fr 1fr .95fr .85fr;
+  grid-template-columns: 1.2fr .85fr .95fr 2fr .9fr .85fr .85fr auto;
   align-items: center;
   gap: 12px;
   transition: border-color .15s;
@@ -1456,9 +1555,70 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
 .billing-row .p-val  { font-size: 14.5px; font-weight: 600; color: var(--text); }
 .billing-row .p-name { font-weight: 700;  font-size: 16px; color: var(--text); }
 
-.billing-row .billing-status,
-.billing-row .billing-paid { width: 100%; font-size: 13.5px; }
 .billing-row .billing-balance { color: var(--warning); }
+
+/* ===== «דווח תשלום» (Phase 3 PR 2) =====
+   The row's DERIVED state, its receipts, and the strict report form. */
+.billing-row .pay-state { white-space: nowrap; }
+.billing-row .pay-state-paid    { color: var(--success); background: rgba(45, 212, 122, .14); border-color: rgba(45, 212, 122, .5); }
+.billing-row .pay-state-partial { color: var(--warning); background: rgba(255, 176, 32, .14); border-color: rgba(255, 176, 32, .5); }
+.billing-row .pay-state-unpaid  { color: var(--text-muted); }
+/* «ממתין לגורם מממן» (CHANGELOG-funder-grace.md): neutral grey, not a problem
+ * yet — an institutional funder within 30 days of the due date. */
+.pay-state-funder_grace { color: var(--text-muted); background: rgba(127, 127, 127, .12); border-color: rgba(127, 127, 127, .45); white-space: nowrap; }
+.billing-row.funder-grace {
+  border-right: 3px solid var(--text-dim);
+  background: rgba(127, 127, 127, .05);
+}
+.debt-cycle.funder-grace td { color: var(--text-muted); }
+.debt-grace-line { margin: 6px 0 0; font-size: 12.5px; color: var(--text-muted); }
+.billing-row .bill-report-cell { justify-self: end; }
+.billing-row .bill-report-btn { white-space: nowrap; }
+.billing-row .bill-receipts {
+  grid-column: 1 / -1;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+.receipt-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.receipt-item {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px;
+  font-size: 13px; color: var(--text);
+}
+.receipt-item .receipt-amount { font-weight: 700; color: var(--success); }
+.receipt-item .receipt-ref,
+.receipt-item .receipt-who { color: var(--text-muted); }
+.receipt-item .receipt-void-btn { margin-inline-start: auto; }
+/* ✏️ a receipt's non-money fields (CHANGELOG-receipt-duplicates-and-edit.md). */
+.receipt-item .receipt-edit-btn { margin-inline-start: auto; min-width: 44px; min-height: 36px; }
+.receipt-item .receipt-edit-btn + .receipt-void-btn { margin-inline-start: 0; }
+/* «קיימת כבר קבלה דומה…» — Vered's duplicate prompt in the report form. */
+.pay-report-modal .pr-dup-confirm { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--grp-open); border-radius: 10px; }
+.pay-report-modal .pr-dup-confirm .pr-dup-text { margin: 0 0 8px; font-weight: 600; overflow-wrap: anywhere; }
+.receipt-item.receipt-void { opacity: .6; }
+.receipt-item.receipt-void .receipt-amount { text-decoration: line-through; color: var(--text-muted); }
+
+.pay-report-modal { width: 480px; }
+.pay-report-modal .pay-report-lead { margin: -8px 0 16px; color: var(--text-muted); font-size: 13.5px; line-height: 1.6; }
+.pay-report-modal .pr-ref-hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.pay-report-modal .pr-cov { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pay-report-modal .field-error { color: var(--danger); font-size: 12.5px; font-weight: 600; min-height: 0; margin-top: 4px; }
+.pay-report-modal .field-error:empty { display: none; }
+.pay-report-modal [aria-invalid="true"] { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
+.pay-report-modal .pr-form-error { margin-top: 10px; }
+/* «חשבונית?» — two radios, neither pre-selected; 44px tap targets. */
+.pay-report-modal .pr-invoice { border: 0; padding: 0; margin: 0 0 14px; min-width: 0; }
+.pay-report-modal .pr-invoice legend { font-size: 13px; font-weight: 600; margin-bottom: 6px; padding: 0; }
+.pay-report-modal .pr-invoice-choices { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.pay-report-modal .pr-radio { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; text-transform: none; letter-spacing: 0; }
+.pay-report-modal .pr-radio input { width: 20px; height: 20px; margin: 0; }
+.receipt-item .receipt-invoice { color: var(--text-muted); }
+.funder-modal .funder-history ul { margin: 4px 0 0; padding-inline-start: 18px; font-size: 13px; color: var(--text-muted); }
+.patient-funder .funder-edit-btn { margin-inline-start: 6px; }
+@media (max-width: 420px) {
+  .modal.pay-report-modal { padding: 18px 16px; }
+  .pay-report-modal .pr-cov { grid-template-columns: 1fr; }
+  .pay-report-modal .form-actions .btn { flex: 1; }
+}
 
 /* ===== שיוך תשלומים — the reconnect tool =====
    One card per payment row that matches no current patient: the row as the
@@ -1504,6 +1664,47 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
 .reconnect-dismiss .reconnect-note { flex: 1; min-width: 0; font-size: 13px; }
 .reconnect-row.decided { opacity: .8; }
 .reconnect-note-shown { font-size: 13px; color: var(--text); margin-bottom: 4px; }
+
+/* ===== VOID — a payment entered twice =====
+   Marked, never deleted. Grey rather than red: nobody did anything wrong, the
+   same money was simply recorded twice, and the row survives as the evidence
+   of that. It must read as "not counted", not as "error". */
+.badge.void {
+  background: var(--surface-3); color: var(--text-muted);
+  border-color: var(--border-strong); text-decoration: line-through;
+}
+.reconnect-row.voided { opacity: .75; border-right: 3px solid var(--border-strong); }
+.reconnect-locked { color: var(--text-muted); font-size: 12.5px; margin-top: 8px; }
+.bd-line.void-line .bd-house { color: var(--text-muted); text-decoration: line-through; }
+
+/* The side-by-side comparison. Two panels, same fields in the same order, so
+   the eye can run down them: the only way to tell a duplicate from two real
+   payments is to read them against each other. */
+.dup-modal { max-width: 720px; }
+.dup-lead { font-size: 13.5px; color: var(--text-muted); margin: 0 0 12px; line-height: 1.6; }
+.dup-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.dup-panel {
+  padding: 10px 12px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+/* The one that will be voided is marked, and the one that survives is the
+   calm side — so a mis-click is visible before it is confirmed, not after. */
+.dup-panel.dup-void { border-color: var(--warning); background: rgba(255,176,32,.07); }
+.dup-panel.dup-keep { border-color: var(--success); background: rgba(45,212,122,.07); }
+.dup-panel-title { font-weight: 700; font-size: 13px; margin-bottom: 8px; }
+.dup-panel.dup-void .dup-panel-title { color: var(--warning); }
+.dup-panel.dup-keep .dup-panel-title { color: var(--success); }
+.dup-field { display: flex; gap: 8px; justify-content: space-between; padding: 3px 0; font-size: 13px; }
+.dup-field .dup-k { color: var(--text-dim); white-space: nowrap; }
+.dup-field .dup-v { font-weight: 600; text-align: left; overflow-wrap: anywhere; }
+.dup-field .dup-v.mono {
+  direction: ltr; font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px; font-weight: 500; color: var(--text-muted);
+}
+.dup-flags { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 4px; }
+/* A mismatch is the thing worth noticing, so it gets the warning colour. */
+.rev-chip.dup-flag-warn { color: var(--warning); border-color: var(--warning); }
+@media (max-width: 640px) { .dup-compare { grid-template-columns: 1fr; } }
 
 /* ===== RECORDS CUTOFF (לפני תחילת הרישום) =====
    Everything that says "this is shown but not counted" shares one muted
@@ -1652,8 +1853,10 @@ input[type="month"]:focus::-webkit-calendar-picker-indicator {
 
 /* ===== Read-only mode ===== */
 body.viewer-mode .edit-only { display: none !important; }
-body.viewer-mode .billing-status,
-body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
+body.viewer-mode .bill-report-btn,
+body.viewer-mode .funder-edit-btn,
+body.viewer-mode .receipt-void-btn,
+body.viewer-mode .receipt-edit-btn { display: none !important; }
 
 /* ===== BREAK-EVEN MODULE ===== */
 .be-hq-row {
@@ -1917,8 +2120,10 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
   .cards-row, .houses-grid { grid-template-columns: 1fr 1fr; }
   .pipeline-row { grid-template-columns: repeat(2, 1fr); }
   .kanban { grid-template-columns: 1fr; }
-  .patient-row { grid-template-columns: 1fr 1fr; }
+  .patient-row, .patient-row.has-funder { grid-template-columns: 1fr 1fr; }
   .billing-row { grid-template-columns: 1fr 1fr; }
+  .billing-row .bill-report-cell { grid-column: 1 / -1; justify-self: stretch; }
+  .billing-row .bill-report-btn { width: 100%; }
   .irrelevant-row { grid-template-columns: 1fr 1fr; }
   /* Renewal-alert cards (dashboard "חידושי תפוסה"): the desktop grid is
      `1.6fr 1fr auto`, whose `auto` actions column (the חידוש תשלום / שחרור
@@ -2068,6 +2273,35 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
   font-size: 12px;
   color: var(--warning, #d68b00);
 }
+/* Refund breakdown from the server (computeRefund_) + its refusal banner. */
+.credit-breakdown {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, .08);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.credit-bd-k { color: var(--text-muted); }
+.credit-bd-v { font-weight: 600; }
+.credit-policy {
+  margin: 0 0 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, .08);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.credit-error {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  font-size: 13.5px;
+  font-weight: 600;
+}
 .credit-basis {
   margin: 0 0 8px;
   font-size: 11.5px;
@@ -2093,6 +2327,93 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
 }
 .credit-payout-head b { color: var(--text); font-size: 15px; }
 .credit-payout-row .irrelevant-actions { display: flex; gap: 8px; }
+
+/* Refund payout forecast — the two sections under the payout view. Awaiting
+ * a decision is muted (not money to pay); missing data reads as a warning. */
+.forecast-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
+.forecast-title { margin: 18px 0 4px; font-size: 15px; }
+.forecast-awaiting { color: var(--text-muted); }
+.forecast-awaiting-row { opacity: 0.85; border-inline-start: 2px dashed var(--border-strong); }
+.forecast-missing { color: #f5b041; }
+.forecast-missing-row { border-inline-start: 2px solid #f5b041; }
+.forecast-check { color: #f5b041; font-weight: 600; }
+.forecast-totals { display: flex; flex-wrap: wrap; gap: 12px; padding: 6px 4px; font-size: 13px; color: var(--text-muted); }
+.forecast-error { color: #ff6b6b; }
+
+/* Billing groups: a lightly tinted panel (9% of the group colour over the
+ * surface), a bold heading with a 4px bar on its start side (right in RTL),
+ * and the chip in the same colour. Only the wrapper and the heading — the
+ * cards inside keep their own styles. --grp is set once per modifier. */
+.bill-group {
+  --grp: var(--grp-unresolved);
+  background: var(--surface);               /* fallback without color-mix() */
+  background: color-mix(in srgb, var(--grp) 9%, var(--surface));
+  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--grp) 28%, var(--surface));
+  border-radius: 10px;
+  padding: 10px 12px 4px;
+  margin: 0 0 16px;
+  min-width: 0;
+}
+.cards-row + .bill-group { margin-top: 18px; }
+.bill-group--due        { --grp: var(--grp-due); }
+.bill-group--open       { --grp: var(--grp-open); }
+.bill-group--credits    { --grp: var(--grp-credits); }
+.bill-group--awaiting   { --grp: var(--grp-awaiting); }
+.bill-group--unresolved { --grp: var(--grp-unresolved); }
+.bill-group--debt       { --grp: var(--grp-debt); }
+/* `.bill-group .bill-group-title` (0,2,0) outranks `.screen h3` (0,1,1),
+ * whose 14px / muted / uppercase / wide-tracked style is what made these
+ * headings hard to see; the resets below undo the rest of it. */
+.bill-group .bill-group-title {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 700;
+  font-size: 1.15rem;
+  line-height: 1.35;
+  color: var(--grp);
+  border-inline-start: 4px solid var(--grp);
+  padding-inline-start: 10px;
+  margin: 2px 0 10px;
+  overflow-wrap: anywhere;
+}
+.bill-group .bill-group-title .count-pill {
+  color: var(--grp);
+  background: color-mix(in srgb, var(--grp) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--grp) 55%, transparent);
+  font-size: 0.8em;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.forecast-missing-line { margin: -6px 0 16px; font-size: 13px; color: var(--text-muted); }
+.forecast-missing-line a { color: var(--text-muted); text-decoration: underline; text-underline-offset: 3px; }
+.forecast-missing-line a:hover, .forecast-missing-line a:focus-visible { color: var(--text); }
+
+/* «חובות פתוחים» (debt aging) */
+.debt-aging-view { margin: 18px 0 8px; }
+.debt-aging-view > summary { cursor: pointer; list-style: revert; }
+.debt-aging-view > summary h3 { display: inline; margin: 0; }
+.debt-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; }
+.debt-aging { min-width: 0; margin-bottom: 18px; }
+.debt-aging > * { max-width: 100%; }
+.debt-blocks { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 12px; }
+.debt-block { border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px; min-width: 0; }
+.debt-block-recorded { border-color: var(--grp-debt); }
+.debt-block-unrecorded { border-style: dashed; border-color: var(--grp-unrecorded); }
+.debt-block-title { margin: 4px 0; font-size: 15px; }
+.debt-table-wrap { overflow-x: auto; max-width: 100%; }
+.debt-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.debt-table th, .debt-table td { padding: 4px 6px; text-align: start; white-space: nowrap; border-bottom: 1px solid var(--border-strong); }
+.debt-table tfoot th, .debt-table tfoot td, .debt-row-total { font-weight: 700; }
+.debt-credits { display: flex; flex-wrap: wrap; gap: 10px; padding: 8px 4px; font-size: 13px; color: var(--text-muted); }
+.debt-credits-label { font-weight: 600; }
+.debt-caveats { border-inline-start: 3px solid #f5b041; padding: 4px 8px; margin: 6px 0; }
+.debt-caveat { margin: 2px 0; color: #f5b041; font-size: 13px; }
+.debt-drill-title { margin: 16px 0 4px; font-size: 15px; }
+.debt-house, .debt-list { margin: 6px 0; }
+.debt-house > summary, .debt-list > summary { cursor: pointer; font-weight: 600; padding: 4px 0; overflow-wrap: anywhere; }
+.debt-patient { margin: 4px 0 4px 0; padding-inline-start: 8px; }
+.debt-patient > summary { cursor: pointer; }
 
 /* ===== הכנסות חודשיות — monthly revenue screen ===========================
  * A separate screen from the daily גבייה worklist; nothing here touches the
@@ -2164,4 +2485,232 @@ body.viewer-mode .billing-paid { pointer-events: none; opacity: .75; }
 
 @media (max-width: 900px) {
   .billing-row.rev-detail-row { grid-template-columns: 1fr 1fr; }
+}
+
+/* ===== Patient funder (גורם מממן) — CHANGELOG-patient-funder-on-funders.md =====
+ * Finance-only. «לא הוגדר» is the amber badge (the .badge.trial palette).
+ * Every control is ≥ 44px tall; the fill rows wrap at 360px. */
+.funder-chip {
+  display: inline-block;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  background: rgba(91,139,255,.16); color: #a9c1ff;
+  border: 1px solid rgba(91,139,255,.40);
+}
+.funder-chip.funder-unset {
+  background: rgba(255,176,32,.18); color: #ffc55a; border-color: rgba(255,176,32,.55);
+}
+#billing-funder,
+.funder-fill select, .funder-fill input[type="date"], .funder-fill .btn,
+.funder-edit-btn {
+  min-height: 44px;
+}
+.funder-fill {
+  margin: 14px 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--warning) 9%, var(--surface));
+  border: 1px solid rgba(255,176,32,.45);
+}
+.funder-fill-title { margin: 0 0 6px; font-size: 16px; }
+.billing-row.funder-fill-row {
+  display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end;
+}
+.billing-row.funder-fill-row > div,
+.funder-fill-row .funder-field { display: flex; flex-direction: column; min-width: 130px; flex: 1 1 130px; }
+.funder-fill-row .btn { flex: 0 0 auto; }
+.funder-released-tag { margin-top: 4px; }
+.funder-strip { margin: 10px 0 16px; }
+.funder-strip-block { margin-bottom: 12px; }
+@media (max-width: 480px) {
+  .billing-row.funder-fill-row > div,
+  .funder-fill-row .funder-field { min-width: 100%; }
+  .funder-fill-row .btn { width: 100%; }
+  #billing-funder { width: 100%; }
+}
+/* ===== «בקרת גבייה» (Phase 4) — phone-first receipt cards ===== */
+.bc-cards .bc-card .bc-debt-export { margin-top: 8px; }
+.bc-list { display: flex; flex-direction: column; gap: 8px; }
+.bc-row {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+.bc-row--flagged { border-inline-start: 4px solid var(--grp-debt); }
+.bc-row--confirmed { border-inline-start: 4px solid var(--grp-credits); }
+.bc-row--queue { border-inline-start: 4px solid var(--grp-open); }
+.bc-row--exception { border-inline-start: 4px solid var(--grp-awaiting); }
+.bc-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.bc-name { font-size: 15px; overflow-wrap: anywhere; }
+.bc-house { color: var(--text-muted); font-size: 13px; }
+.bc-amount { margin-inline-start: auto; font-weight: 700; white-space: nowrap; }
+.bc-fields { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 13px; }
+.bc-f { min-width: 0; overflow-wrap: anywhere; }
+.bc-k { color: var(--text-dim); }
+.bc-v { color: var(--text); }
+.bc-sub { color: var(--text-muted); font-size: 12px; font-weight: 400; }
+.bc-note-text { margin-top: 6px; font-size: 13px; overflow-wrap: anywhere; }
+.bc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.bc-actions .btn { min-height: 40px; }
+.bc-pick { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); }
+.bc-pick input { width: 20px; height: 20px; }
+.bc-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 8px 0; }
+.bc-flag-form { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.bc-flag-form textarea { width: 100%; box-sizing: border-box; min-width: 0; }
+.bc-flag-form textarea[aria-invalid="true"] { border-color: var(--danger); }
+.bc-ex-title { margin: 12px 0 6px; font-size: 14px; }
+/* «כפילות» reason form and the «אומתו» month line
+ * (CHANGELOG-receipt-duplicates-and-edit.md). */
+.bc-dup-form { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.bc-dup-form textarea { width: 100%; box-sizing: border-box; min-width: 0; font-size: 15px; }
+.bc-dup-form textarea[aria-invalid="true"] { border-color: var(--danger); }
+.bc-month-line { font-size: 13.5px; overflow-wrap: anywhere; }
+/* The status dropdown, the partial amount form and the note
+ * (CHANGELOG-ortal-verification-status.md). RTL by inheritance; the amount is
+ * typed LTR. 44px touch targets; nothing wider than the card at 360px. */
+.bc-row--partial { border-inline-start: 4px solid var(--grp-open); }
+.bc-status-wrap { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 180px; }
+.bc-status { min-height: 44px; min-width: 0; flex: 1 1 auto; max-width: 100%; font-size: 15px; }
+.bc-partial-form, .bc-cnote-form { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.bc-partial-input { min-height: 44px; font-size: 16px; width: 100%; max-width: 220px; box-sizing: border-box; text-align: left; }
+.bc-partial-input[aria-invalid="true"], .bc-cnote-form textarea[aria-invalid="true"] { border-color: var(--danger); }
+.bc-cnote-form textarea { width: 100%; box-sizing: border-box; min-width: 0; font-size: 15px; }
+.bc-remaining { color: var(--grp-debt); font-weight: 700; }
+.bc-partial-line { margin-top: 6px; font-size: 13px; overflow-wrap: anywhere; }
+.bc-partial-badge { margin-inline-end: 6px; }
+.bc-cnote-line { margin-top: 6px; font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.bc-cnote-text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.bc-cnote-open { min-height: 36px; }
+@media (max-width: 480px) {
+  .bc-status-wrap { flex-basis: 100%; }
+  .bc-partial-input { max-width: none; }
+}
+
+/* ===== Coordinators roster (2026-10-04) =====
+ * «🟢 קליטת מטופל חדש» — the dashboard's top-level intake button: green so it
+ * reads as "admit", distinct from the blue primary actions.
+ * «🚪 שחרורים מהבתים» — the coordinators-discharge panel: same card language
+ * as the renewal alert, a teal accent bar (information, not an alarm). */
+.btn.intake {
+  background: linear-gradient(180deg, #2fbf71 0%, #1f9d5a 100%);
+  color: #fff;
+  border-color: transparent;
+  font-weight: 700;
+  font-size: 15px;
+  padding: 10px 18px;
+  box-shadow: 0 6px 16px rgba(47, 191, 113, .28);
+}
+.btn.intake:hover { filter: brightness(1.07); }
+
+.coord-discharges { margin-top: 18px; position: relative; }
+.coord-discharges::before {
+  content: '';
+  position: absolute; top: 0; right: 0; left: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #20c3b0, #5b8bff);
+}
+.coord-discharges-head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.coord-discharges-title { color: var(--text); font-size: 15px; font-weight: 700; }
+.coord-discharges-sub { color: var(--text-muted); font-size: 12.5px; margin-bottom: 12px; }
+.coord-discharges-list { display: grid; gap: 10px; }
+.coord-discharges-empty { color: var(--text-dim); font-size: 13px; }
+.coord-discharge-row {
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  display: grid;
+  grid-template-columns: 1.3fr 1fr 1fr 1.6fr 1fr;
+  align-items: center;
+  gap: 12px;
+}
+.coord-discharge-row .p-label {
+  color: var(--text-dim); font-size: 11px; display: block;
+  letter-spacing: .8px; font-weight: 600; margin-bottom: 2px;
+}
+.coord-discharge-row .p-val  { font-size: 14px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.coord-discharge-row .p-name { font-weight: 700; font-size: 15.5px; color: var(--text); }
+@media (max-width: 640px) {
+  .coord-discharge-row { grid-template-columns: 1fr 1fr; }
+  #screen-dashboard .screen-head .actions { width: 100%; }
+  .btn.intake { width: 100%; }
+}
+
+/* ===== «מטופלים» — the patient list (CHANGELOG-patients-tab-ui.md) =====
+ * A row is a column of three bands: the cells (wrapping grid), the red
+ * problem chips, and the foot (the «פרטי הליד» details + the actions).
+ * Nothing scrolls sideways at 360px: every band wraps, long text breaks. */
+.plist-filters { flex-wrap: wrap; }
+.plist-filters select, .plist-filters input[type="search"] { min-height: 44px; }
+.plist-summary {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 0 0 12px;
+}
+.plist-summary-head { font-weight: 700; color: var(--danger); }
+.plist-summary-ok { color: var(--text-muted); font-weight: 600; }
+.plist-section-title { margin: 4px 0 10px; font-size: 16px; color: var(--warning); }
+.plist-pending { display: grid; gap: 10px; margin-bottom: 16px; }
+.plist-list { display: grid; gap: 10px; }
+.plist-row {
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  display: flex; flex-direction: column; align-items: stretch; gap: 10px;
+  min-width: 0;
+}
+.plist-row.released { opacity: .6; }
+.plist-row .p-label {
+  color: var(--text-dim); font-size: 11px; display: block;
+  letter-spacing: .8px; font-weight: 600; margin-bottom: 2px;
+}
+.plist-row .p-val { font-size: 14.5px; font-weight: 600; color: var(--text); }
+.plist-row .p-name { font-weight: 700; font-size: 16px; color: var(--text); overflow-wrap: anywhere; }
+.plist-row.has-problems { border-color: rgba(255, 77, 94, 0.55); }
+.plist-row.plist-pending-row { border-color: rgba(255, 176, 32, 0.55); }
+.plist-main {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px 14px;
+  align-items: start;
+  min-width: 0;
+}
+.plist-main > div { min-width: 0; overflow-wrap: anywhere; }
+.plist-main .plist-name-cell { grid-column: span 2; }
+.plist-main .btn { margin-top: 6px; min-height: 44px; }
+.plist-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.plist-chip {
+  display: inline-block;
+  font-size: 12px; font-weight: 700;
+  color: var(--danger);
+  background: rgba(255, 77, 94, 0.14);
+  border: 1px solid rgba(255, 77, 94, 0.5);
+  padding: 3px 10px; border-radius: 999px;
+  max-width: 100%; white-space: normal; overflow-wrap: anywhere;
+}
+.plist-foot {
+  display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px;
+}
+.plist-foot .row-actions .btn, .plist-pending-row .row-actions .btn { min-height: 44px; }
+.plist-lead { flex: 1 1 240px; min-width: 0; }
+.plist-lead summary {
+  cursor: pointer; font-weight: 700; color: var(--primary);
+  min-height: 44px; display: flex; align-items: center;
+}
+.plist-lead-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px 14px;
+  margin: 6px 0;
+}
+.plist-lead-item, .plist-lead-note { min-width: 0; overflow-wrap: anywhere; }
+.plist-lead-note .p-val { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.plist-lead-none { color: var(--text-muted); font-weight: 600; padding: 4px 0; }
+.plist-empty { text-align: center; color: var(--text-muted); }
+@media (max-width: 480px) {
+  .plist-main { grid-template-columns: 1fr 1fr; }
+  .plist-filters > * { flex: 1 1 100%; }
+  .plist-foot .row-actions { width: 100%; }
 }

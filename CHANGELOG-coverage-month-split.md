@@ -221,3 +221,27 @@ Two further test edits the merge forced, neither a conflict:
   `sw-install-fix.test.js`'s two v15 pins, for the same reason.
 
 Full suite after the merge: **1,479 passing, 0 failing, 0 skipped.**
+
+## Brought up to date with the deploy branch (October 8, 2026)
+
+PR #137 was opened on 21 September and was never merged. Today the current
+deploy branch was merged into it (with a merge commit, so no history was
+rewritten):
+
+- **SW renumbered: `CACHE_VERSION` v48 → v49.** This PR originally bumped
+  v16 → v17, but v17 is burned: it was #145's version, phones still hold a v17
+  cache, and the number is never reused. Live production serves v48, so this
+  change takes the next free number, v49. Every comment above that says
+  "v17" refers to that original numbering.
+- **Conflicts resolved:**
+  - `app.js`: kept this PR's note that `dateRangeHeHtml` is the only
+    coverage-date formatter, together with the deploy branch's refund payout
+    echo comment.
+  - `style.css`: kept the deploy branch's 8-column billing grid (it gained the
+    «דווח תשלום» column), with this PR's comment about the split.
+  - `date-format-he.test.js`: kept the deploy branch's version-agnostic pin.
+- **Test G updated:** `creditBasisText` now prints the server basis'
+  `cycleStart → cycleEnd`. That is still the raw ISO pair that gets
+  persisted, so the test's intent is unchanged.
+- **Display only, as before.** No stored value, posted field or Code.gs line
+  changes.

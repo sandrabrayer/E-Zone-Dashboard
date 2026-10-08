@@ -427,7 +427,9 @@ test("G: the credits audit trail keeps its ISO dates — it is PERSISTED, not di
    * it would change stored data, which this change explicitly does not do —
    * so it is deliberately left on ISO and this test says so out loud. */
   const src = fnSource(APP, 'creditBasisText');
-  assert.match(src, /\$\{basis\.coverageStart\} → \$\{basis\.coverageEnd\}/,
+  // Since the server-side refund rule (CHANGELOG-refund-rule-v2.md) the
+  // window is the basis' cycleStart / cycleEnd — still the raw ISO pair.
+  assert.match(src, /\$\{basis\.cycleStart\} → \$\{basis\.cycleEnd\}/,
     'the persisted audit string still records the raw ISO window');
   assert.doesNotMatch(src, /dateRangeHeHtml|formatDateHe/);
 });

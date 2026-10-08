@@ -25,13 +25,14 @@ const INDEX_HTML = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.h
 
 /* The canonical tab order after this change, enumerated explicitly. */
 const EXPECTED_TAB_ORDER = [
-  'dashboard', 'leads', 'meetings', 'occupancy',
+  'dashboard', 'leads', 'patients', 'meetings', 'occupancy',
   // 'revenue' (הכנסות חודשיות) sits directly after 'billing': it is the monthly
   // companion to the daily גבייה worklist, so the two read as a pair in the nav.
   // 'reconnect' (שיוך תשלומים) follows them both: it is the exception list for
   // the payment rows those two screens cannot place, so it reads as their
   // tail rather than as a separate concern.
-  'discharged-patients', 'billing', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention',
+  // Phase 4: «בקרת גבייה» right after גבייה.
+  'discharged-patients', 'billing', 'billing-control', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention',
 ];
 
 /* Parse the <nav class="tabs"> block into an ordered [{ screen, label }]. */
@@ -76,7 +77,7 @@ function loadScreens() {
 const TABS = navTabs();
 const SCREENS = loadScreens();
 
-test('nav tab order is dashboard → leads → meetings → … → retention', () => {
+test('nav tab order is dashboard → leads → patients → meetings → … → retention', () => {
   assert.deepStrictEqual(TABS.map((t) => t.screen), EXPECTED_TAB_ORDER);
 });
 
@@ -85,10 +86,14 @@ test('שימור לידים (retention) is the LAST tab', () => {
   assert.strictEqual(TABS[TABS.length - 1].label, 'שימור לידים');
 });
 
-test('לוח פגישות (meetings) sits directly after לידים (leads)', () => {
+// Since the «מטופלים» tab (CHANGELOG-patients-tab-ui.md) sits right after
+// לידים, לוח פגישות follows it: leads → patients → meetings.
+test('לוח פגישות (meetings) sits directly after מטופלים (patients), which follows לידים (leads)', () => {
   const leadsIdx = TABS.findIndex((t) => t.screen === 'leads');
   assert.ok(leadsIdx !== -1, 'leads tab must exist');
-  const next = TABS[leadsIdx + 1];
+  assert.strictEqual(TABS[leadsIdx + 1].screen, 'patients');
+  assert.strictEqual(TABS[leadsIdx + 1].label, 'מטופלים');
+  const next = TABS[leadsIdx + 2];
   assert.strictEqual(next.screen, 'meetings');
   assert.strictEqual(next.label, 'לוח פגישות');
 });

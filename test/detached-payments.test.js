@@ -162,7 +162,7 @@ function loadCode() {
     MimeType: { JSON: 'json' },
   };
   sandbox.Utilities = { getUuid: () => 'uuid', formatDate: (d) => d.toISOString().slice(0, 10) };
-  sandbox.LockService = { getScriptLock: () => ({ tryLock: noop, releaseLock: noop }) };
+  sandbox.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: noop }) };
   sandbox.globalThis = sandbox;
   const epilogue = `globalThis.__test = {
     PAYMENT_COLUMNS, PAYMENTS_SHEET, PAYMENT_TEXT_COLUMNS, COVERAGE_MAX_DAYS,
@@ -249,8 +249,10 @@ test('B: the five LINK columns are appended, text-forced, and do not duplicate #
     'paymentUid', 'patientUid', 'payerUid',
     'chargedAt', 'chargedBy', 'sourceUpdatedAt', 'sourceVersion',
   ], 'position IS the data contract — nothing before the append moved');
-  assert.deepEqual(cols.slice(19),
+  assert.deepEqual(cols.slice(19, 24),
     ['linkPatientUid', 'linkStatus', 'linkNote', 'linkedBy', 'linkedAt']);
+  // The payment report columns come after them (CHANGELOG-payment-report-foundation.md).
+  assert.equal(cols[24], 'receivedDate');
   /* ONE patientUid, not two. PR #139 already put the persisted patient id on
    * the payment row; this change REUSES it and adds the manual decision
    * beside it. A second column of the same name would be a data-contract
@@ -460,10 +462,15 @@ test('C: the עמית יעקובי / עמית בורנשטיין pair is WARNED 
   // A different month is a different cycle, and no warning.
   const nextMonth = Object.assign({}, his, { id: 'pay-oct', dueDate: '2026-10-07' });
   assert.equal(app.reconnectDoubleEntry(stray, amit, [nextMonth]).length, 0);
-  // It is a WARNING: the screen renders it and still offers the button.
+  /* It is a WARNING, never a block. שייך is still offered on a flagged
+   * candidate — the pair CAN be a rename whose first row was never linked —
+   * it just steps down to secondary while כפילות leads. */
   const row = fnSource(APP, 'buildReconnectRow');
   assert.match(row, /ייתכן רישום כפול/);
-  assert.match(row, /class="btn small primary cand-link"/);
+  // PR C: כפילות (a void) is offered to a deleter only; for anyone else שייך stays primary.
+  assert.match(row, /class="btn small \$\{dup\.length && canDelete\(\) \? '' : 'primary'\} cand-link"/);
+  assert.match(row, /dup\.length && canDelete\(\) \? `<button class="btn small primary cand-dup" data-role="deleter"/,
+    'and כפילות is the PRIMARY action exactly where the warning is');
   assert.ok(!/dup\.length \? ' disabled'/.test(row), 'a possible double entry must not block the link');
 });
 
@@ -539,7 +546,7 @@ test('D: WHO and WHEN are stamped by the SERVER, never by the caller', () => {
    * is not a correction. */
   assert.equal(res.payment.patientUid, 'id-amit');
   // The dispatcher is what supplies the user, from requestUser_ — not the payload.
-  assert.match(GS_SRC, /upsertPayment_\(payment, requestUser_\(params\)\)/);
+  assert.match(GS_SRC, /upsertPayment_\(payment, requestUser_\(params\)[,)]/);
   // An UNDECIDED row carries no stamps at all: blank means "nobody looked".
   const plainRes = code.upsert(payment({ id: 'p-plain' }), 'ורד');
   assert.equal(plainRes.payment.linkStatus, '');
@@ -675,7 +682,9 @@ test('E: the backfill runs ON DEMAND, never on load, and never overwrites', () =
 test('F: no new endpoint — the link rides the existing savePayment', () => {
   assert.ok(!SERVER.includes('patientUid'), 'the proxy learned nothing');
   assert.ok(!SERVER.includes('reconnect'));
-  const dispatch = GS_SRC.slice(GS_SRC.indexOf('function handle_'), GS_SRC.indexOf('function handle_') + 6000);
+  // The whole handle_ body (a fixed-length window stopped reaching its later
+  // branches once handle_ grew in PR #162).
+  const dispatch = GS_SRC.slice(GS_SRC.indexOf('function handle_'), GS_SRC.indexOf('\nfunction ', GS_SRC.indexOf('function handle_') + 1));
   const payActions = (dispatch.match(/action === '(\w+)'/g) || []).filter((a) => /Payment/i.test(a));
   /* accountingPayments is PR #139's READ-only feed and predates this change;
    * the three WRITE-capable actions are still exactly the three that existed
@@ -683,6 +692,12 @@ test('F: no new endpoint — the link rides the existing savePayment', () => {
   assert.deepEqual(plain(Array.from(new Set(payActions)).sort()), [
     "action === 'accountingPayments'",
     "action === 'getPayments'", "action === 'savePayment'", "action === 'updatePayment'",
+    /* Phase 3 PR 2 (CHANGELOG-payment-report-form.md): the strict «דווח
+     * תשלום» — it only APPENDS a receipt row and re-derives the cycle. */
+    "action === 'reportPayment'",
+    /* Phase 4 (CHANGELOG-billing-control-tab.md): Ortal's decision — it
+     * writes ONLY the four confirm cells of a receipt, never an amount. */
+    "action === 'confirmPayment'",
   ].sort());
   for (const name of ['reconnectPaymentToPatient', 'markPaymentNotAPatient', 'runPatientUidBackfill']) {
     assert.match(fnSource(APP, name), /savePayment\(/, name + ' must use the one write path');
@@ -708,7 +723,8 @@ test('F: everything the reconnect screen renders is escaped', () => {
 });
 
 test('F: the screen is registered, and nothing else about the app moved', () => {
-  assert.match(APP, /'billing', 'revenue', 'reconnect', 'breakeven'/);
+  // Phase 4: «בקרת גבייה» sits between גבייה and הכנסות חודשיות.
+  assert.match(APP, /'billing', 'billing-control', 'revenue', 'reconnect', 'breakeven'/);
   assert.ok(INDEX.includes('id="screen-reconnect"'), 'the router looks this up by id');
   assert.ok(INDEX.includes('data-screen="reconnect"'));
   assert.match(fnSource(APP, 'renderAll'), /renderReconnect\(\);/);

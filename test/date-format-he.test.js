@@ -257,11 +257,10 @@ const ALLOWLIST = [
   'return `ovr::${patientId}::${month}`;',
   // isoFromLocalDate IS the ISO producer; it must emit ISO.
   "return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;",
-  // creditBasisText is PERSISTED to the Sheets `reason` column verbatim.
-  // Reformatting it would change stored data, which this change must not do.
-  'const windowText = `חלון כיסוי ${basis.coverageStart} → ${basis.coverageEnd}',
-  '`שהות ${basis.tenureDays == null ? \'?\' : basis.tenureDays} ימים',
-  'return `${CREDIT_RULE_LABELS.prepaid_return} (שחרור ${basis.exitDate});',
+  // creditBasisText is PERSISTED to the Sheets `reason` column verbatim (an
+  // audit trail, ISO by design — the same rule the pre-wiring trail followed).
+  // The modal's breakdown (creditBreakdownHtml) formats every date.
+  '`כניסה ${basis.entryDate}, יציאה ${basis.exitDate} (יום שהייה ${basis.stayDay})`,',
   '(עד ${basis.alreadyCreditedThrough} כבר זוכה בשורה קודמת)',
 ];
 
@@ -329,10 +328,8 @@ test('E: month-year labels are untouched (they are not DD/MM/YYYY dates)', () =>
 
 test('E: the service worker cache version was bumped for the app.js change', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
-  /* What matters is that v15 — the last version that served ISO dates — is
-   * evicted, not that the counter stopped at v16. Pinning the exact number
-   * made every later asset change break this test (sw-install-fix.test.js was
-   * already made version-agnostic for the same reason). */
-  assert.ok(Number(v.slice(1)) >= 16,
-    `v15 served ISO dates and must be superseded; found ${v}`);
+  assert.notEqual(v, 'v15', 'v15 is the version that still served ISO dates');
+  // Was pinned to exactly 'v16', which made the next bump a failure; what
+  // matters is that the DD/MM/YYYY bundle's version was not rolled back.
+  assert.ok(Number(v.slice(1)) >= 16, 'at least v16, found ' + v);
 });

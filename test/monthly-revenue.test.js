@@ -59,7 +59,6 @@ function loadApp() {
       roundMoney, isoFromLocalDate, VAT_RATE,
       // The credits ledger, so the no-fork guard can prove both consumers
       // really do read the same window off the same row.
-      suggestCredits,
     };
   `;
   const noop = () => {};
@@ -427,7 +426,7 @@ test('D: a prepaid_return credit is split over the WHOLE window it returns', () 
 });
 
 test('D: allocationMonth is NOT the allocator — the window overrides it', () => {
-  // suggestCredits documents allocationMonth as reporting metadata that never
+  // refundSuggestionsFor_ (Code.gs) documents allocationMonth as reporting metadata that never
   // enters the math. A credit keyed to January whose refunded span is entirely
   // in February belongs to February.
   const c = credit({
@@ -721,14 +720,9 @@ test('H: the credits ledger and the revenue screen read the SAME recorded period
   assert.equal(mar.received.rows[0].coverageWindowSource, 'recorded');
   assert.equal(mar.received.rows[0].coverageAdjusted, true);
 
-  // The credits ledger, on the very same row: a discharge on 10 Feb leaves
-  // the WHOLE March window unearned — prepaid_return, not a Jan/Feb prorata.
-  const credits = app.suggestCredits(p, '2026-02-10', [pay]);
-  const pre = credits.find((c) => c.creditType === 'prepaid_return');
-  assert.ok(pre, 'the March window is entirely after the exit');
-  assert.equal(pre.basis.coverageStart, '2026-03-01');
-  assert.equal(pre.basis.coverageEnd, '2026-03-31');
-  assert.equal(pre.basis.coverageWindowSource, 'recorded');
+  // The credits side of the same row (a discharge on 10 Feb → the whole
+  // recorded March window is prepaid_return) is computed on the SERVER since
+  // the wiring PR; ported with this fixture to test/refund-logic-wiring.test.js.
 });
 
 test('H: the dead monthKey twin is gone, and its removal is explained in place', () => {
@@ -746,10 +740,11 @@ test('H: the dead monthKey twin is gone, and its removal is explained in place',
 /* ================= I. the daily גבייה view is untouched ================= */
 
 test('I: the daily גבייה screen is added ALONGSIDE, not modified', () => {
-  assert.match(INDEX, /<button class="tab" data-screen="billing">גבייה<\/button>/);
-  assert.match(INDEX, /<button class="tab" data-screen="revenue">הכנסות חודשיות<\/button>/);
-  assert.match(INDEX, /<section id="screen-billing" class="screen hidden">/);
-  assert.match(INDEX, /<section id="screen-revenue" class="screen hidden">/);
+  // Restricted view (2026-10-03) tags the money tabs with data-finance.
+  assert.match(INDEX, /<button class="tab" data-screen="billing"( data-finance)?>גבייה<\/button>/);
+  assert.match(INDEX, /<button class="tab" data-screen="revenue"( data-finance)?>הכנסות חודשיות<\/button>/);
+  assert.match(INDEX, /<section id="screen-billing" class="screen hidden"( data-finance)?>/);
+  assert.match(INDEX, /<section id="screen-revenue" class="screen hidden"( data-finance)?>/);
   for (const id of ['billing-date', 'billing-search', 'billing-due-list', 'billing-open-list',
                     'bill-due-count', 'bill-due-total', 'bill-due-collected',
                     'bill-month-collected', 'bill-month-outstanding', 'bill-month-breakdown',
@@ -781,7 +776,8 @@ test('I: the new screen is registered in the router and has a matching section',
   // entry — so the section id must match the screen id exactly or the toggle
   // throws on a missing element.
   assert.match(APP, /document\.querySelectorAll\('\.tabs \.tab'\)\.forEach\(btn => \{/);
-  assert.match(APP, /document\.getElementById\('screen-' \+ s\)\.classList\.toggle/);
+  // Restricted view: the router (showScreen) skips a removed finance screen.
+  assert.match(APP, /const el = document\.getElementById\('screen-' \+ s\);\s*if \(el\) el\.classList\.toggle/);
   assert.ok(INDEX.includes('id="screen-revenue"'), 'the router will look up screen-revenue');
   assert.match(APP, /revenueMonthEl\.onchange/);
   assert.match(APP, /revenueSearchEl\.addEventListener\('input'/);

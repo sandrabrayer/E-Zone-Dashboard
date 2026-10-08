@@ -74,7 +74,7 @@ function loadCode() {
     JSON, Math, Date, Number, String, Array, Object, RegExp, isFinite,
     Logger: { log: noop },
     Utilities: { formatDate: () => '2026-08-09' },
-    LockService: { getScriptLock: () => ({ tryLock: noop, releaseLock: noop }) },
+    LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: noop }) },
     __registry: registry,
   };
   sandbox.SpreadsheetApp = {
@@ -148,10 +148,11 @@ function seedOverrides(rows) {
 
 /* ===== Code.gs — column contract ===== */
 
-test('BILLING_OVERRIDE_COLUMNS is exactly [id, patientId, month, amount, created]', () => {
+test('BILLING_OVERRIDE_COLUMNS is exactly [id, patientId, month, amount, created, updatedBy]', () => {
+  // updatedBy appended LAST by personal-pins PR A (append-only).
   assert.deepStrictEqual(
     arr(code.BILLING_OVERRIDE_COLUMNS),
-    ['id', 'patientId', 'month', 'amount', 'created']
+    ['id', 'patientId', 'month', 'amount', 'created', 'updatedBy']
   );
 });
 

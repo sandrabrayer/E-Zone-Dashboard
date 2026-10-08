@@ -370,11 +370,16 @@ test('C: nothing in the APP overrides the constant — only the tests can', () =
 test('D: the גבייה KPI card, the open balances and the monthly summary all honour it', () => {
   // סך לגבייה excludes pre-records cycles, and says how many it left out.
   const rb = fnSource(APP, 'renderBilling');
-  assert.match(rb, /const countableDue\s+= due\.filter\(d => !isPreRecordsCycle\(selected\)\);/);
+  assert.match(rb, /const countableDue\s+= due\.filter\(d => !isPreRecordsCycle\(selected\) && !isVoidPayment\(d\.payment\)\);/);
   assert.match(rb, /const totalDue\s+= countableDue\.reduce/);
   assert.match(rb, /renderPreRecordsNote\(preRecordsDue\.length\)/);
-  // נגבה is NOT filtered — money that was recorded arrived.
-  assert.match(rb, /const totalCollected = due\.reduce/);
+  /* נגבה is not filtered BY THE CUTOFF — money that was recorded arrived.
+   * (It is filtered by isVoidPayment: a void row's amountPaid is the second
+   * copy of a sum already counted on its twin. Different rule, different
+   * reason — see CHANGELOG-duplicate-payment-void.md.) */
+  assert.match(rb, /const totalCollected = due\.filter\(d => !isVoidPayment\(d\.payment\)\)/);
+  assert.ok(!/const totalCollected = due\.filter\(d => isPreRecordsCycle/.test(rb),
+    'the cutoff must still leave נגבה alone');
   assert.match(fnSource(APP, 'renderPreRecordsNote'), /RECORDS_COMPLETE_FROM/);
 
   // יתרות פתוחות lists them apart, under their own heading, never above it.
@@ -385,9 +390,15 @@ test('D: the גבייה KPI card, the open balances and the monthly summary all 
 
   // The old סיכום חודשי: יתרה honours the line, נגבה does not.
   const sum = fnSource(APP, 'renderBillingMonthlySummary');
-  assert.match(sum, /const debtRows = thisMonth\.filter\(p => !isPreRecordsCycle\(p\.dueDate\)\);/);
+  assert.match(sum, /const debtRows = liveRows\.filter\(p => !isPreRecordsCycle\(p\.dueDate\)\);/);
   assert.match(sum, /const outstanding = debtRows/);
-  assert.match(sum, /const collected\s+= thisMonth\.reduce/);
+  /* `liveRows` is thisMonth minus VOID rows — a separate rule with a separate
+   * reason (see CHANGELOG-duplicate-payment-void.md). What this test still
+   * pins is that the CUTOFF touches יתרה and leaves נגבה alone. */
+  assert.match(sum, /const liveRows = thisMonth\.filter\(p => !isVoidPayment\(p\)\);/);
+  assert.match(sum, /const collected\s+= liveRows\.reduce/);
+  assert.ok(!/const collected\s+= .*isPreRecordsCycle/.test(sum),
+    'the cutoff must still leave נגבה alone');
 });
 
 test('D: the row says so, and the drill-down groups it apart', () => {
