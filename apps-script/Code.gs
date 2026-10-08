@@ -7320,6 +7320,18 @@ function upsertPayment_(payment, user, ctx) {
     }
     if (isReceipt) {
       const voidMove = isVoidStatus_(payment.status) !== isVoidStatus_(prev.status);
+      /* A void sent for a receipt that is ALREADY void is a retry whose first
+       * answer was lost (write-path hardening, R3): answer the stored row and
+       * its cycle, write nothing — never a false «receipt_immutable». */
+      if (hadRow && isVoidStatus_(payment.status) && isVoidStatus_(prev.status)) {
+        const rowsNow = existing.map(function (g) {
+          const o = {};
+          for (let k = 0; k < PAYMENT_COLUMNS.length; k++) o[PAYMENT_COLUMNS[k]] = g[k];
+          return o;
+        });
+        const d = receiptDerivedAt_(rowsNow, targetRow - 2);
+        return { ok: true, payment: d.receipt, cycle: d.cycle, updated: false, replayed: true };
+      }
       /* «כפילות» from Ortal's tab (confirmDuplicate_, ctx.duplicateGuard):
        * the receipt may not be the ONLY live receipt of its cycle — then it
        * is not a duplicate of anything there. Decided here, under the lock,
@@ -8204,6 +8216,12 @@ function appendFunder_(patientId, funder, effectiveFrom, ctx) {
   if (lock.tryLock(10000) !== true) return lockBusy_('appendFunder_');
   try {
     const sh = getOrCreateSheet_(FUNDERS_SHEET, FUNDER_COLUMNS);
+    /* A retry whose first answer was lost (write-path hardening, R3): when
+     * this patient's LATEST row already says the same funder from the same
+     * date, answer it and append nothing. Only the latest row counts, so a
+     * deliberate switch back (A → B → A) still lands. */
+    const same = funderLatestRowIfSame_(sh, id, f, eff);
+    if (same) return { ok: true, row: same, replayed: true };
     const row = { patientId: id, funder: f, effectiveFrom: eff, setBy: String(c.user == null ? '' : c.user), setAt: israelTimestamp_() };
     sh.getRange(sh.getLastRow() + 1, 1, 1, FUNDER_COLUMNS.length).setValues([objectToRow_(row, FUNDER_COLUMNS)]);
     logAudit_('funder_set', 'appendFunder_', id, '', { funder: f, effectiveFrom: eff, by: row.setBy, at: row.setAt },
@@ -8212,6 +8230,23 @@ function appendFunder_(patientId, funder, effectiveFrom, ctx) {
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
+}
+
+/* The patient's LATEST Funders row (sheet order — rows are only appended)
+ * when it already holds `funder` from `eff`; otherwise null. Read under the
+ * caller's lock. */
+function funderLatestRowIfSame_(sh, patientId, funder, eff) {
+  const last = sh.getLastRow();
+  if (last < 2) return null;
+  const grid = sh.getRange(2, 1, last - 1, FUNDER_COLUMNS.length).getValues();
+  const pIdx = FUNDER_COLUMNS.indexOf('patientId');
+  for (let i = grid.length - 1; i >= 0; i--) {
+    if (String(grid[i][pIdx] == null ? '' : grid[i][pIdx]).trim() !== patientId) continue;
+    const o = {};
+    FUNDER_COLUMNS.forEach(function (k, j) { o[k] = grid[i][j]; });
+    return paymentReportText_(o.funder) === funder && paymentReportDate_(o.effectiveFrom) === eff ? o : null;
+  }
+  return null;
 }
 
 /* Editor-run: create the Funders tab (headers, frozen row, text-format) so
@@ -8706,11 +8741,19 @@ function receiptReplayFor_(rows, submissionId) {
     if (isReceiptRow_(list[i]) && paymentCell_(list[i].submissionId) === submissionId) { hit = i; break; }
   }
   if (hit < 0) return null;
+  return Object.assign({ ok: true }, receiptDerivedAt_(list, hit), { created: false, replayed: true });
+}
+
+/* The receipt at rows[index] and the cycle it pays, both derived exactly as
+ * getPayments_ derives them. → { receipt, cycle|null }. PURE. Shared by the
+ * reportPayment replay and the re-void replay (write-path hardening). */
+function receiptDerivedAt_(rows, index) {
+  const list = Array.isArray(rows) ? rows : [];
   const split = paymentRowsDerived_(list);
-  const rid = paymentCell_(list[hit].id);
-  const receipt = split.receipts.find(function (r) { return paymentCell_(r.id) === rid; }) || list[hit];
+  const rid = paymentCell_(list[index].id);
+  const receipt = split.receipts.find(function (r) { return paymentCell_(r.id) === rid; }) || list[index];
   const cycle = split.cycles.find(function (c) { return paymentCell_(c.id) === paymentCell_(receipt.cycleId); }) || null;
-  return { ok: true, receipt: receipt, cycle: cycle, created: false, replayed: true };
+  return { receipt: receipt, cycle: cycle };
 }
 
 /* Re-derive the cycle a (void / un-voided) receipt belongs to, and write it.
@@ -8821,7 +8864,18 @@ function confirmDuplicate_(req, user, ctx) {
   let row = null;
   for (let i = 0; i < rows.length; i++) if (paymentCell_(rows[i].id) === id) { row = rows[i]; break; }
   if (!row || !isReceiptRow_(row)) return Object.assign(confirmError_('not_found'), { id: id });
-  if (isVoidStatus_(row.status)) return Object.assign(confirmError_('receipt_void'), { id: id });
+  if (isVoidStatus_(row.status)) {
+    // Already marked «כפילות»: a retry whose first answer was lost. Answer
+    // the stored decision, write nothing (write-path hardening, R3).
+    if (paymentCell_(row.linkStatus) === 'duplicate') {
+      return {
+        ok: true, changed: [], unchanged: 1, replayed: true,
+        voided: [{ id: id, status: PAYMENT_VOID_STATUS, linkStatus: 'duplicate', linkNote: paymentCell_(row.linkNote) }],
+        cycle: null,
+      };
+    }
+    return Object.assign(confirmError_('receipt_void'), { id: id });
+  }
   const res = upsertPayment_({
     id: id, status: PAYMENT_VOID_STATUS, linkPatientUid: '', linkStatus: 'duplicate',
     linkNote: req.note, timestamp: new Date().toISOString(),
@@ -9007,7 +9061,9 @@ function editReceipt_(body, user, ctx) {
     }
 
     const changedKeys = RECEIPT_EDIT_FIELDS.filter(function (k) { return next[k] !== stored[k]; });
-    if (!changedKeys.length) return { ok: true, changed: false };
+    // A replay (the first answer was lost) changes nothing — and still echoes
+    // the stored receipt, so the client has its proof (write-path hardening).
+    if (!changedKeys.length) return { ok: true, changed: false, receipt: Object.assign({}, prevRow) };
     setPaymentRowTextCols_(sh, at + 2);
     changedKeys.forEach(function (k) {
       sh.getRange(at + 2, PAYMENT_COLUMNS.indexOf(k) + 1).setValue(next[k]);
@@ -9643,11 +9699,13 @@ function appendFunderAction_(params) {
     return res;
   }
   const rows = fundersRows_();
-  return {
+  const out = {
     ok: true, row: res.row,
     current: currentFunderFrom_(rows, res.row.patientId, ''),
     history: fundersHistoryFor_(rows, res.row.patientId),
   };
+  if (res.replayed === true) out.replayed = true;
+  return out;
 }
 
 /* Funders rows for the client, effectiveFrom as a bare 'YYYY-MM-DD' (a
@@ -11331,6 +11389,12 @@ function upsertCredit_(credit, user) {
       // Stale-save refusal: the stamp this tab loaded vs the sheet's now.
       const seenStamp  = creditStr_(credit.updatedAt, 60);
       const sheetStamp = creditStr_(sheetObj.updatedAt, 60);
+      /* A retry of an edit that already landed (its answer was lost) carries
+       * the OLD stamp but changes nothing: answer the stored row, write
+       * nothing — never a false «conflict» (write-path hardening, R3). */
+      if (sheetStamp !== '' && seenStamp !== '' && seenStamp !== sheetStamp && creditEditIsReplay_(credit, sheetObj)) {
+        return { ok: true, credit: sheetObj, updated: false, replayed: true };
+      }
       if (sheetStamp !== '' && seenStamp !== '' && seenStamp !== sheetStamp) {
         const conflict = {
           id: wantId, name: String(sheetObj.patientName || ''), houseId: String(sheetObj.houseId || ''),
@@ -11464,6 +11528,23 @@ function upsertCredit_(credit, user) {
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
+}
+
+/* True when every editable field the edit sends already equals the sheet's
+ * cell — the edit would change nothing. Numbers compare as numbers, dates as
+ * 'YYYY-MM-DD', everything else as trimmed text. A field the edit omits is
+ * not compared. PURE. */
+function creditEditIsReplay_(credit, sheetObj) {
+  const norm = function (col, v) {
+    if (v === undefined || v === null) return '';
+    if (col === 'amount') { const n = creditAmount_(v); return n === null ? String(v) : String(n); }
+    if (col === 'decidedDate' || col === 'paidDate') { const d = creditDate_(v); return d === null ? String(v) : d; }
+    return String(v).trim();
+  };
+  return CREDIT_EDITABLE_COLUMNS.every(function (col) {
+    if (credit[col] === undefined) return true;
+    return norm(col, credit[col]) === norm(col, sheetObj[col]);
+  });
 }
 
 /* ===== Billing overrides ===== */
