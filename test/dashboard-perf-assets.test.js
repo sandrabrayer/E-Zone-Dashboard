@@ -330,7 +330,7 @@ function serve(handlers, url) {
 }
 const settle = () => new Promise((r) => setImmediate(r));
 
-test('D: CACHE_VERSION is v48 (v47 from the funder-grace base PR; v17 burned, never reused)', () => {
+test('D: CACHE_VERSION is v49 (v48 from the payment-report-persistence base PR; v17 burned, never reused)', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
   // v40: CHANGELOG-ortal-verification-status.md.
   // v41: CHANGELOG-reactivation-fix.md (PR #145's fix, re-landed).
@@ -341,7 +341,8 @@ test('D: CACHE_VERSION is v48 (v47 from the funder-grace base PR; v17 burned, ne
   // v46: CHANGELOG-refund-rule-v2.md.
   // v47: CHANGELOG-funder-grace.md.
   // v48: CHANGELOG-payment-report-persistence.md.
-  assert.equal(v, 'v48');
+  // v49: CHANGELOG-coverage-month-split.md (PR #137, renumbered from v17).
+  assert.equal(v, 'v49');
   assert.notEqual(v, 'v17');
 });
 
