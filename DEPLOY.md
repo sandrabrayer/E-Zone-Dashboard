@@ -166,6 +166,13 @@ the first read or report after the clasp deploy. If a hand-added header sits
 in that position, reports are refused (`sheet_header_clash`) until it is
 moved. SW `CACHE_VERSION` v47 → **v48**.
 
+**08/10/2026 — `CHANGELOG-write-path-hardening.md` (PR A, money):** no
+manual step. One column, `submissionId` (the funder form's idempotency key),
+is APPENDED at the end of `Funders` (after `setAt`) and writes its own header
+on the first funder save after the clasp deploy. If a hand-added header sits
+in that position, funder saves keep working without the key (the old
+behaviour, a console warning). SW `CACHE_VERSION` v49 → **v50**.
+
 ## «בקרת גבייה» — Ortal's tab (October 4, 2026)
 
 `CHANGELOG-billing-control-tab.md`. **No env var, no Script Property, no

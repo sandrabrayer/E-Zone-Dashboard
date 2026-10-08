@@ -66,7 +66,9 @@ function serve(state) {
           res.writeHead(state.failWrites ? 500 : 200, { 'Content-Type': TYPES['.json'] });
           return res.end(JSON.stringify(state.failWrites
             ? { ok: false, error: 'תאריך הסיום מוקדם מתאריך ההתחלה' }
-            : { ok: true }));
+            // The real upsertPayment_ echoes the stored row — the client
+            // needs it as proof (CHANGELOG-write-path-hardening.md, R3).
+            : (parsed && parsed.action === 'savePayment' ? { ok: true, payment: parsed.payment } : { ok: true })));
         }
         res.writeHead(200, { 'Content-Type': TYPES['.json'] });
         res.end(JSON.stringify({ ok: true, user: 'ורד', patients: [], leads: [], payments: [] }));

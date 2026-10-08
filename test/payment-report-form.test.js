@@ -465,7 +465,9 @@ test('D: appendFunder appends one Funders row (audited); the current funder and 
   assert.equal(rows.length, 2, 'appended, never edited');
   assert.equal(rows[1].effectiveFrom, '2026-09-01');
   assert.equal(rows[1].setBy, 'ורד', 'from the signed session');
-  assert.equal(fcols.length, 5);
+  // The five original columns + submissionId appended last (CHANGELOG-write-path-hardening.md).
+  assert.equal(fcols.length, 6);
+  assert.equal(fcols[5], 'submissionId');
   assert.equal(w.audits('funder_set').length, 2);
   const bad = plain(w.g.post(Object.assign({ action: 'appendFunder', funder: { patientId: 'p1', funder: 'כללית', effectiveFrom: '2026-09-01' } }, VERED())));
   assert.equal(bad.error, 'funder_invalid');

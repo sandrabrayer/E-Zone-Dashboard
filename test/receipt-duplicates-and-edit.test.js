@@ -349,7 +349,12 @@ test('B2: the ONLY live receipt of its cycle cannot be a duplicate — Hebrew re
   assert.equal(w2.decide({ ids: [w2.b], status: 'duplicate', flagNote: 'כפול' }).ok, true);
   assert.equal(w2.decide({ ids: [w2.a], status: 'duplicate', flagNote: 'כפול' }).error, 'duplicate_last_receipt');
   // A void receipt / an unknown id / a cycle id.
-  assert.equal(w2.decide({ ids: [w2.b], status: 'duplicate', flagNote: 'כפול' }).error, 'receipt_void');
+  // The SAME «כפילות» again is a retry of a lost answer: replayed, nothing
+  // written (CHANGELOG-write-path-hardening.md). A different decision on the
+  // void receipt is still refused.
+  const replay = w2.decide({ ids: [w2.b], status: 'duplicate', flagNote: 'כפול' });
+  assert.deepEqual([replay.ok, replay.replayed, replay.voided[0].id], [true, true, w2.b]);
+  assert.equal(w2.decide({ ids: [w2.b], status: 'duplicate', flagNote: 'סיבה אחרת' }).error, 'receipt_void');
   assert.equal(w2.decide({ ids: ['rcpt-nope'], status: 'duplicate', flagNote: 'כפול' }).error, 'not_found');
   assert.equal(w2.decide({ ids: [CYCLE.id], status: 'duplicate', flagNote: 'כפול' }).error, 'bad_ids');
 });

@@ -707,7 +707,10 @@ const PAYMENT_REPORT_MESSAGES = {
  * The current funder = the row with the latest effectiveFrom ≤ the date
  * (currentFunder_); none, or an unrecognized label on that row → FUNDER_UNSET. */
 const FUNDERS_SHEET = 'Funders';
-const FUNDER_COLUMNS = ['patientId', 'funder', 'effectiveFrom', 'setBy', 'setAt'];
+/* APPEND-ONLY. submissionId (CHANGELOG-write-path-hardening.md) is the
+ * appending form's idempotency key — a retry of a lost answer replays the
+ * stored row instead of appending a second one. Server-validated, LAST. */
+const FUNDER_COLUMNS = ['patientId', 'funder', 'effectiveFrom', 'setBy', 'setAt', 'submissionId'];
 
 /* ===== VOID =====
  * The status of a payment row that was entered TWICE — the patient renamed
@@ -7332,6 +7335,13 @@ function upsertPayment_(payment, user, ctx) {
        * paymentInvoiceFields_ below, audited). Every other cell is kept. */
       const invoiceEdit = !voidMove && paymentInvoiceFields_(invoiceIn, prev, {}).change !== null;
       const invoiceBad = !voidMove && !paymentInvoiceFields_(invoiceIn, prev, {}).ok;
+      /* A RETRY of a void whose first answer was lost: the receipt is already
+       * void as a duplicate with this very reason. Answer the stored row and
+       * its cycle, write nothing (CHANGELOG-write-path-hardening.md). */
+      if (!voidMove && !invoiceEdit && isVoidStatus_(payment.status)) {
+        const replay = receiptVoidReplay_(existing, payment.id, payment.linkNote);
+        if (replay) return replay;
+      }
       if (!voidMove && !invoiceEdit && !invoiceBad) return { ok: false, error: 'receipt_immutable', message: 'קבלה אינה ניתנת לעריכה — ניתן רק לבטל אותה' };
       const keep = {};
       PAYMENT_COLUMNS.forEach(function (k) { keep[k] = prev[k]; });
@@ -8200,12 +8210,35 @@ function appendFunder_(patientId, funder, effectiveFrom, ctx) {
   if (PAYMENT_FUNDERS.indexOf(f) < 0) return { ok: false, error: 'funder_invalid', message: PAYMENT_REPORT_MESSAGES.funder_invalid };
   const eff = paymentReportDate_(effectiveFrom);
   if (!eff) return { ok: false, error: 'effective_from_invalid' };
+  // Idempotency key: same shape as reportPayment's; malformed → refused, nothing written.
+  const sid = receiptSubmissionIdClean_(c.submissionId);
+  if (sid === null) return { ok: false, error: 'bad_submission_id' };
   const lock = LockService.getScriptLock();
   if (lock.tryLock(10000) !== true) return lockBusy_('appendFunder_');
   try {
     const sh = getOrCreateSheet_(FUNDERS_SHEET, FUNDER_COLUMNS);
-    const row = { patientId: id, funder: f, effectiveFrom: eff, setBy: String(c.user == null ? '' : c.user), setAt: israelTimestamp_() };
-    sh.getRange(sh.getLastRow() + 1, 1, 1, FUNDER_COLUMNS.length).setValues([objectToRow_(row, FUNDER_COLUMNS)]);
+    /* A hand-added column where submissionId belongs: write the five original
+     * columns only (the old behaviour) — never into somebody else's column. */
+    const header = sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getValues()[0];
+    const sidAt = FUNDER_COLUMNS.indexOf('submissionId');
+    const sidHead = String(header[sidAt] == null ? '' : header[sidAt]).trim();
+    const sidOk = sidHead === '' || sidHead === 'submissionId';
+    if (!sidOk) { try { console.warn('[funders] submissionId not used — header clash at column ' + (sidAt + 1)); } catch (_) { /* no-op */ } }
+    // A retry: the key is already on a row → answer that row, write nothing.
+    if (sid && sidOk) {
+      const prior = readSheet_(sh, FUNDER_COLUMNS).filter(function (r) {
+        return String(r.submissionId == null ? '' : r.submissionId).trim() === sid;
+      })[0];
+      if (prior) {
+        const replay = {};
+        FUNDER_COLUMNS.forEach(function (k) { replay[k] = String(prior[k] == null ? '' : prior[k]); });
+        return { ok: true, row: replay, replayed: true };
+      }
+    }
+    const row = { patientId: id, funder: f, effectiveFrom: eff, setBy: String(c.user == null ? '' : c.user), setAt: israelTimestamp_(),
+      submissionId: sidOk ? sid : '' };
+    const width = sidOk ? FUNDER_COLUMNS.length : sidAt;
+    sh.getRange(sh.getLastRow() + 1, 1, 1, width).setValues([objectToRow_(row, FUNDER_COLUMNS).slice(0, width)]);
     logAudit_('funder_set', 'appendFunder_', id, '', { funder: f, effectiveFrom: eff, by: row.setBy, at: row.setAt },
       c.actor === undefined ? row.setBy : String(c.actor));
     return { ok: true, row: row };
@@ -8713,6 +8746,28 @@ function receiptReplayFor_(rows, submissionId) {
   return { ok: true, receipt: receipt, cycle: cycle, created: false, replayed: true };
 }
 
+/* The replay answer for a void RETRY (CHANGELOG-write-path-hardening.md):
+ * receipt `id` in `grid` (raw PAYMENT_COLUMNS rows) is already void as a
+ * duplicate with reason `note` → { ok, payment, cycle, replayed:true }, the
+ * cycle derived exactly as getPayments_ derives it; otherwise null. PURE. */
+function receiptVoidReplay_(grid, id, note) {
+  const rows = (Array.isArray(grid) ? grid : []).map(function (g) {
+    if (!Array.isArray(g)) return g;
+    const o = {};
+    for (let k = 0; k < PAYMENT_COLUMNS.length; k++) o[PAYMENT_COLUMNS[k]] = g[k];
+    return o;
+  });
+  const want = paymentCell_(id);
+  const row = rows.filter(function (r) { return r && paymentCell_(r.id) === want; })[0];
+  if (!row || !isReceiptRow_(row) || !isVoidStatus_(row.status)) return null;
+  if (paymentLinkStatusClean_(row.linkStatus) !== 'duplicate') return null;
+  if (paymentLinkNoteClean_(row.linkNote) !== paymentLinkNoteClean_(note)) return null;
+  const split = paymentRowsDerived_(rows);
+  const receipt = split.receipts.find(function (r) { return paymentCell_(r.id) === want; }) || row;
+  const cycle = split.cycles.find(function (c) { return paymentCell_(c.id) === paymentCell_(receipt.cycleId); }) || null;
+  return { ok: true, payment: receipt, cycle: cycle, updated: false, replayed: true };
+}
+
 /* Re-derive the cycle a (void / un-voided) receipt belongs to, and write it.
  * Called by upsertPayment_ INSIDE its lock, after the receipt row landed.
  * → the cycle as written, or null when the receipt links to no cycle. */
@@ -8821,7 +8876,16 @@ function confirmDuplicate_(req, user, ctx) {
   let row = null;
   for (let i = 0; i < rows.length; i++) if (paymentCell_(rows[i].id) === id) { row = rows[i]; break; }
   if (!row || !isReceiptRow_(row)) return Object.assign(confirmError_('not_found'), { id: id });
-  if (isVoidStatus_(row.status)) return Object.assign(confirmError_('receipt_void'), { id: id });
+  if (isVoidStatus_(row.status)) {
+    // A RETRY of this very «כפילות» (same note): answer what landed.
+    const replay = receiptVoidReplay_(rows, id, req.note);
+    if (!replay) return Object.assign(confirmError_('receipt_void'), { id: id });
+    return {
+      ok: true, changed: [], unchanged: 0, replayed: true,
+      voided: [{ id: id, status: PAYMENT_VOID_STATUS, linkStatus: 'duplicate', linkNote: paymentCell_(replay.payment.linkNote) }],
+      cycle: replay.cycle,
+    };
+  }
   const res = upsertPayment_({
     id: id, status: PAYMENT_VOID_STATUS, linkPatientUid: '', linkStatus: 'duplicate',
     linkNote: req.note, timestamp: new Date().toISOString(),
@@ -9007,7 +9071,13 @@ function editReceipt_(body, user, ctx) {
     }
 
     const changedKeys = RECEIPT_EDIT_FIELDS.filter(function (k) { return next[k] !== stored[k]; });
-    if (!changedKeys.length) return { ok: true, changed: false };
+    // Nothing to change (e.g. a retry whose first answer was lost): answer
+    // the stored row, so the caller has its proof (CHANGELOG-write-path-hardening.md).
+    if (!changedKeys.length) {
+      const same = {};
+      Object.keys(prevRow).forEach(function (k) { same[k] = prevRow[k]; });
+      return { ok: true, changed: false, receipt: same };
+    }
     setPaymentRowTextCols_(sh, at + 2);
     changedKeys.forEach(function (k) {
       sh.getRange(at + 2, PAYMENT_COLUMNS.indexOf(k) + 1).setValue(next[k]);
@@ -9576,6 +9646,9 @@ function confirmPayment_(body, user, ctx) {
     const ctlFirst = PAYMENT_COLUMNS.indexOf(PAYMENT_CONTROL_COLUMNS[0]);
     const changed = [];
     let unchanged = 0;
+    // The rows already in the asked state (a retry of a decision that landed):
+    // answered too, so the caller can prove every id it sent.
+    const unchangedRows = [];
     if (plan.some(function (p) { return p.t.changed; })) {
       PAYMENT_CONTROL_COLUMNS.forEach(function (name, k) {
         const i = ctlFirst + k;
@@ -9583,7 +9656,13 @@ function confirmPayment_(body, user, ctx) {
       });
     }
     plan.forEach(function (p) {
-      if (!p.t.changed) { unchanged++; return; }
+      if (!p.t.changed) {
+        unchanged++;
+        const same = billingControlReceipt_(p.row, '');
+        delete same.cycleId;
+        unchangedRows.push(same);
+        return;
+      }
       const cells = p.t.cells;
       setPaymentRowTextCols_(sh, p.index + 2);
       sh.getRange(p.index + 2, first + 1, 1, 4).setValues([[cells.confirmStatus, cells.confirmedBy, cells.confirmedAt, cells.flagNote]]);
@@ -9622,7 +9701,7 @@ function confirmPayment_(body, user, ctx) {
       delete proj.cycleId;
       changed.push(proj);
     });
-    return { ok: true, changed: changed, unchanged: unchanged };
+    return { ok: true, changed: changed, unchanged: unchanged, unchangedRows: unchangedRows };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
@@ -9634,7 +9713,7 @@ function confirmPayment_(body, user, ctx) {
 function appendFunderAction_(params) {
   const f = parseJsonParam_(params && params.funder) || {};
   const res = appendFunder_(f.patientId, f.funder, f.effectiveFrom,
-    { user: requestUser_(params), actor: actorLabel_(params) });
+    { user: requestUser_(params), actor: actorLabel_(params), submissionId: f.submissionId });
   if (!res.ok) {
     if (!res.message) {
       res.message = res.error === 'effective_from_invalid' ? 'תאריך תחילה לא תקין'
@@ -9644,7 +9723,7 @@ function appendFunderAction_(params) {
   }
   const rows = fundersRows_();
   return {
-    ok: true, row: res.row,
+    ok: true, row: res.row, replayed: res.replayed === true,
     current: currentFunderFrom_(rows, res.row.patientId, ''),
     history: fundersHistoryFor_(rows, res.row.patientId),
   };
@@ -11332,6 +11411,12 @@ function upsertCredit_(credit, user) {
       const seenStamp  = creditStr_(credit.updatedAt, 60);
       const sheetStamp = creditStr_(sheetObj.updatedAt, 60);
       if (sheetStamp !== '' && seenStamp !== '' && seenStamp !== sheetStamp) {
+        /* A RETRY of this user's own edit whose answer was lost: the sheet was
+         * stamped by them and already holds every value this edit asks for.
+         * Answer the stored row, write nothing (CHANGELOG-write-path-hardening.md). */
+        if (String(sheetObj.updatedBy == null ? '' : sheetObj.updatedBy) === stampUser && creditEditAlreadyApplied_(credit, sheetObj)) {
+          return { ok: true, credit: sheetObj, updated: false, replayed: true };
+        }
         const conflict = {
           id: wantId, name: String(sheetObj.patientName || ''), houseId: String(sheetObj.houseId || ''),
           sheetUpdatedAt: sheetStamp, sheetUpdatedBy: String(sheetObj.updatedBy || ''),
@@ -11464,6 +11549,20 @@ function upsertCredit_(credit, user) {
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
+}
+
+/* True when every editable field `credit` sends already equals the stored
+ * row `sheetObj` (amounts as numbers, dates as ISO days, the rest as trimmed
+ * text). A field the payload leaves out is not compared. PURE. */
+function creditEditAlreadyApplied_(credit, sheetObj) {
+  const sent = CREDIT_EDITABLE_COLUMNS.filter(function (col) { return credit && credit[col] !== undefined; });
+  if (!sent.length) return false;
+  return sent.every(function (col) {
+    const a = credit[col], b = sheetObj[col];
+    if (col === 'amount' || col === 'calculatedAmount') return creditAmount_(a) === creditAmount_(b);
+    if (/Date$/.test(col)) return creditDate_(a) === creditDate_(b);
+    return String(a == null ? '' : a).trim() === String(b == null ? '' : b).trim();
+  });
 }
 
 /* ===== Billing overrides ===== */

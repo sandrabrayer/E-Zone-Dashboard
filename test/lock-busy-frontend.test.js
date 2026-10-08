@@ -142,6 +142,8 @@ const PATHS = [
   {
     name: 'savePayment',
     action: 'savePayment',
+    // The real upsertPayment_ echoes the stored row (R3 proof).
+    okResponse: (b) => ({ ok: true, payment: b.payment, updated: true }),
     setup: (app) => { app.state.patients = [app.normalizePatient(PATIENT)]; },
     run: (app) => app.savePayment({ ...PAYMENT_ROW }),
     landed: (app) => { assert.ok(app.state.payments.some(p => p.id === 'pay-1')); },
@@ -262,12 +264,14 @@ const PATHS = [
   {
     name: 'upsertBillingOverride',
     action: 'upsertBillingOverride',
+    okResponse: (b) => ({ ok: true, override: b.override, created: true }),
     run: (app) => app.saveBillingOverride({ ...PAYMENT_ROW }, 8000),
     landed: (app) => { assert.strictEqual(app.state.billingOverrides.length, 1); },
   },
   {
     name: 'deleteBillingOverride',
     action: 'deleteBillingOverride',
+    okResponse: (b) => ({ ok: true, deleted: true, id: b.override.id }),
     setup: (app) => {
       app.state.billingOverrides = [{ id: app.billingOverrideId('pt-1', '2026-09'), patientId: 'pt-1', month: '2026-09', amount: 8000 }];
     },
@@ -294,7 +298,8 @@ const PATHS = [
     name: 'appendFunder (the patient card funder editor)',
     action: 'appendFunder',
     setup: (app) => { app.state.funders = []; app.state.finance = true; },
-    okResponse: { ok: true, row: { patientId: 'pt-1', funder: 'מכבי', effectiveFrom: '2026-10-01', setBy: 'ורד', setAt: '2026-10-04T10:00:00+03:00' } },
+    // The real appendFunder_ stores and echoes the form's submissionId (R3).
+    okResponse: (b) => ({ ok: true, row: { patientId: 'pt-1', funder: 'מכבי', effectiveFrom: '2026-10-01', setBy: 'ורד', setAt: '2026-10-04T10:00:00+03:00', submissionId: b.funder.submissionId } }),
     run: (app) => app.saveFunder({ ...PATIENT }, 'מכבי', '2026-10-01'),
     landed: (app) => { assert.strictEqual(app.state.funders.length, 1); assert.strictEqual(app.state.funders[0].funder, 'מכבי'); },
     rejects: true,

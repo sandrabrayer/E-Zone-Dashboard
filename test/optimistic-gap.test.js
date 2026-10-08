@@ -214,12 +214,17 @@ const CASES = [
     assertCommitted(t, app) { assert.strictEqual(app.state.patients.length, 0); },
   },
   {
+    /* No longer optimistic (CHANGELOG-write-path-hardening.md, R3): nothing is
+     * re-rendered before the server proves the override, so the ✏️ editor —
+     * and its busy שמור button — stay attached; the banner still covers the
+     * whole write. */
     name: 'billing שמור → saveBillingOverride',
     render: 'setRenderBilling',
+    rendersBeforeAwait: false,
     run(app, settle) {
       const prev = [];
       app.setState({ mode: 'edit', deleter: true, billingOverrides: prev, billingDate: '2026-09-05' });
-      app.setApiPost(() => settle().then(() => ({ ok: true })));
+      app.setApiPost((b) => settle().then(() => ({ ok: true, override: b.override })));
       return { promise: app.saveBillingOverride({ patientId: 'P1', dueDate: '2026-09-05' }, 8000) };
     },
     assertRolledBack(t, app) { assert.strictEqual(app.state.billingOverrides.length, 0, 'the override rolled back'); },
@@ -231,7 +236,7 @@ const CASES = [
     run(app, settle) {
       const existing = { id: 'ov1', patientId: 'P1', month: '2026-09', amount: 1 };
       app.setState({ mode: 'edit', deleter: true, billingOverrides: [existing], billingDate: '2026-09-05' });
-      app.setApiPost(() => settle().then(() => ({ ok: true })));
+      app.setApiPost((b) => settle().then(() => ({ ok: true, deleted: true, id: b.override.id })));
       return { promise: app.clearBillingOverride({ patientId: 'P1', dueDate: '2026-09-05' }) };
     },
     assertRolledBack(t, app) { assert.strictEqual(app.state.billingOverrides.length, 1, 'the override is back'); },
@@ -249,11 +254,15 @@ CASES.forEach((c) => {
     const t = c.run(app, () => d.promise);
     await tick();
 
-    assert.ok(renderedBeforeAwait >= 1,
-      'this worker is supposed to re-render before it awaits — if it stopped doing so ' +
-      'the premise of this whole test file changed');
+    if (c.rendersBeforeAwait === false) {
+      assert.strictEqual(renderedBeforeAwait, 0, 'not optimistic: the editor stays attached until the server proves the write');
+    } else {
+      assert.ok(renderedBeforeAwait >= 1,
+        'this worker is supposed to re-render before it awaits — if it stopped doing so ' +
+        'the premise of this whole test file changed');
+    }
     assert.strictEqual(up(), true,
-      'the trigger is detached by now, so the banner is the only surviving indicator');
+      'the banner is up for the whole write (the only surviving indicator once a trigger is detached)');
     assert.strictEqual(banner.textContent, 'שומר נתונים…');
 
     d.resolve({ ok: true });
@@ -307,7 +316,7 @@ test('#loading-banner sits outside every re-rendered container', () => {
     'the banner must not be rebuilt by any renderer');
 });
 
-test('each of the four workers raises the banner AFTER its optimistic re-render', () => {
+test('each optimistic worker raises the banner AFTER its optimistic re-render', () => {
   /* Ordering is load-bearing: setSaving must come after the re-render call, or
    * it would be reporting a window that has not started yet. Structural — it
    * proves the call sites exist and are ordered, while the browser test proves
@@ -315,9 +324,20 @@ test('each of the four workers raises the banner AFTER its optimistic re-render'
   const WORKERS = [
     ['async function moveLead', 'renderAll()'],
     ['async function deletePatient', 'renderAll()'],
-    ['async function saveBillingOverride', 'renderBilling()'],
     ['async function clearBillingOverride', 'renderBilling()'],
   ];
+  /* saveBillingOverride is no longer optimistic (CHANGELOG-write-path-hardening.md):
+   * it renders only after the server's proof, and still raises / lowers the
+   * banner around the whole write. */
+  {
+    const i = APP.indexOf('async function saveBillingOverride');
+    const body = APP.slice(i, APP.indexOf('\n}\n', i));
+    assert.ok(body.indexOf('setSaving(true)') !== -1 && body.indexOf('setSaving(true)') < body.indexOf('apiPost'),
+      'saveBillingOverride: the banner goes up before the write');
+    assert.ok(body.indexOf('renderBilling()') > body.indexOf('requireSavedId'),
+      'saveBillingOverride: renders only after the server proved the override');
+    assert.ok(/}\s*finally\s*{[^}]*setSaving\(false\)/.test(body), 'saveBillingOverride: lowered in a finally');
+  }
   WORKERS.forEach(([sig, renderCall]) => {
     const i = APP.indexOf(sig);
     assert.ok(i !== -1, `${sig} not found — did it get renamed?`);
