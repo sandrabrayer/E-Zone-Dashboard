@@ -131,7 +131,10 @@ test('save→overlay round-trip: an override written for a healed record overlay
   app.setState({ mode: 'edit', deleter: true, billingOverrides: [],
                  payments: [app.normalizePayment(blankIdRecord())] });
   const posts = [];
-  app.setApiPost(async b => posts.push(b));
+  // The real handlers echo the stored override / the deleted id (R3 proof,
+  // CHANGELOG-write-path-hardening.md).
+  app.setApiPost(async b => { posts.push(b); return b.action === 'deleteBillingOverride'
+    ? { ok: true, deleted: true, id: b.override.id } : { ok: true, override: b.override }; });
   app.setRenderBilling(() => {});
   app.setShowToast(() => {});
 
@@ -160,7 +163,7 @@ test('workers key off payment.patientId verbatim — save-key equals lookup-key 
   const stale = app.normalizePayment(blankIdRecord({ patientId: 'old-house::מעיין::2025-01-01' }));
   app.setState({ mode: 'edit', deleter: true, billingOverrides: [], payments: [stale] });
   const posts = [];
-  app.setApiPost(async b => posts.push(b));
+  app.setApiPost(async b => { posts.push(b); return { ok: true, override: b.override }; });
   app.setRenderBilling(() => {});
   app.setShowToast(() => {});
 

@@ -132,7 +132,8 @@ test('columns: the eleven report columns are APPENDED; the original 24 do not mo
     assert.equal(cols.filter((x) => x === c).length, 1, c + ' appears once');
     assert.ok(arr(g.run('PAYMENT_TEXT_COLUMNS')).includes(c), c + ' is text-forced (Sheets would coerce a date / a cheque number)');
   }
-  assert.deepEqual(arr(g.run('FUNDER_COLUMNS')), ['patientId', 'funder', 'effectiveFrom', 'setBy', 'setAt']);
+  // submissionId APPENDED last (CHANGELOG-write-path-hardening.md); the original five never move.
+  assert.deepEqual(arr(g.run('FUNDER_COLUMNS')), ['patientId', 'funder', 'effectiveFrom', 'setBy', 'setAt', 'submissionId']);
 });
 
 test('columns: an existing 24-column Payments sheet is extended in place — no existing cell rewritten', () => {
@@ -495,7 +496,7 @@ test('appendFunder_: appends one row (never edits), stamps setBy/At, audits; bad
   assert.equal(rows.length, 2, 'append-only: the change is a second row');
   assert.deepEqual([rows[0].funder, rows[0].effectiveFrom, rows[0].setBy], ['ביטוח לאומי', '2026-09-01', 'סנדרה']);
   assert.ok(rows[0].setAt);
-  assert.deepEqual(S.Funders.grid[0], ['patientId', 'funder', 'effectiveFrom', 'setBy', 'setAt']);
+  assert.deepEqual(S.Funders.grid[0], ['patientId', 'funder', 'effectiveFrom', 'setBy', 'setAt', 'submissionId']);
   assert.equal(g.sheetRows('AuditLog', 'AUDIT_LOG_COLUMNS').filter((a) => a.action === 'funder_set').length, 2);
   assert.equal(g.sandbox.appendFunder_('p1', 'כללית', '2026-10-01', {}).error, 'funder_invalid');
   assert.equal(g.sandbox.appendFunder_('p1', 'מכבי', '2026-02-30', {}).error, 'effective_from_invalid');

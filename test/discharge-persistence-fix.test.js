@@ -270,7 +270,9 @@ test('END-TO-END: a stale-session clobber is healed on the next load and persist
 test('loadAll runs the heal and persists when healed > 0', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
   const loadAllBody = src.slice(src.indexOf('async function loadAll()'), src.indexOf('function admissionMeetingOutcome'));
-  assert.ok(/const healed\s*=\s*healClobberedDischarges\(\)/.test(loadAllBody),
+  // Guarded by dataFresh: a discarded (stale) getData answer heals nothing
+  // (CHANGELOG-write-path-hardening.md).
+  assert.ok(/const healed\s*=\s*(?:dataFresh \? )?healClobberedDischarges\(\)/.test(loadAllBody),
     'loadAll must invoke healClobberedDischarges');
   assert.ok(/promoted\.length > 0 \|\| retired\.length > 0 \|\| healed\.length > 0/.test(loadAllBody),
     'the post-load persist condition must include healed discharges');

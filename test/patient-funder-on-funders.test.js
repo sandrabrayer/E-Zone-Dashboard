@@ -372,7 +372,11 @@ test('admission with a funder → saveAll, then appendFunder from the ENTRY date
   h.app.openDirectAddPatientModal();
   assert.equal(await h.app.modal().onSubmit({ name: 'חדש', houseId: 'ramot', date: '2026-07-15', pay: '1000', status: 'active', notes: '', funder: 'משרד הביטחון' }), true);
   const pid = h.app.state.patients[0].id;
-  assert.deepEqual(h.sent('appendFunder')[0].body.funder, { patientId: pid, funder: 'משרד הביטחון', effectiveFrom: '2026-07-15' });
+  const sentFunder = Object.assign({}, h.sent('appendFunder')[0].body.funder);
+  // R3 (CHANGELOG-write-path-hardening.md): every append carries an idempotency key.
+  assert.match(sentFunder.submissionId, /^sub-[0-9a-f]{32}$/);
+  delete sentFunder.submissionId;
+  assert.deepEqual(sentFunder, { patientId: pid, funder: 'משרד הביטחון', effectiveFrom: '2026-07-15' });
   assert.equal(h.app.currentFunderFor(pid).funder, 'משרד הביטחון');
   const lead = { id: 'L2', name: 'ליד', house: 'רמות השבים', stage: 'entry', advance: 0, entryDate: '2026-10-02' };
   h.app.state.leads = [lead];

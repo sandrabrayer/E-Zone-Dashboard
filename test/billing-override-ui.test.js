@@ -162,10 +162,11 @@ test('monthly summary outstanding uses the effective amount; collected untouched
 
 /* ===== save / clear workers: optimistic + rollback ===== */
 
-test('saveBillingOverride writes the upsert action and applies optimistically', async () => {
+test('saveBillingOverride writes the upsert action and applies it once the server echoes the override', async () => {
   app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [] });
   const posts = [];
-  app.setApiPost(async (b) => { posts.push(b); });
+  // The real upsertBillingOverride_ answers { ok, override } (R3 proof).
+  app.setApiPost(async (b) => { posts.push(b); return { ok: true, override: b.override }; });
   app.setRenderBilling(() => {});
   app.setShowToast(() => {});
   await app.saveBillingOverride({ patientId: PID, dueDate: '2026-08-05' }, 4200);
@@ -188,14 +189,15 @@ test('saveBillingOverride rolls back on failure', async () => {
   app.setRenderBilling(() => {});
   app.setShowError(m => errors.push(m));
   await app.saveBillingOverride({ patientId: PID, dueDate: '2026-08-05' }, 4200);
-  assert.strictEqual(app.getState().billingOverrides.length, 0, 'optimistic write rolled back');
+  assert.strictEqual(app.getState().billingOverrides.length, 0, 'nothing applied without the server\'s proof');
   assert.strictEqual(errors.length, 1);
 });
 
 test('clearBillingOverride deletes and restores base; rolls back on failure', async () => {
   app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [{ ...OVR_AUG }] });
   const posts = [];
-  app.setApiPost(async (b) => { posts.push(b); });
+  // The real deleteBillingOverride_ answers { ok, deleted, id } (R3 proof).
+  app.setApiPost(async (b) => { posts.push(b); return { ok: true, deleted: true, id: b.override.id }; });
   app.setRenderBilling(() => {});
   app.setShowToast(() => {});
   await app.clearBillingOverride({ patientId: PID, dueDate: '2026-08-05' });

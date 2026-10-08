@@ -979,6 +979,25 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
 
+## Dashboard: write-path hardening — PR A, money (October 8, 2026)
+
+Detail: `CHANGELOG-write-path-hardening.md`. **Railway + Code.gs** (clasp CI
+on merge). The three PR #201 rules applied to every money write besides
+«דווח תשלום»: void receipt, cycle edits and links, ✏️ coverage, ✏️ amount
+(and ↩), receipt edit, funder, credits, Ortal's decisions.
+- **R1:** shared read guards (`createReadGuard`) for getData, getPayments,
+  getCredits and the «בקרת גבייה» queue; every write is tracked in flight
+  (`trackedWrite`). A `getData` answer is never applied while a save is in
+  flight or after one landed; it is re-read once the saves drain.
+- **R2:** a failed `getCredits` keeps the credits and shows a Hebrew error
+  (it used to wipe them silently).
+- **R3:** «נשמר» only with the server's copy of the row (`requireSavedId`).
+  The ✏️ editors stay open with the typed values on failure. Retries replay:
+  a void, a «כפילות», a receipt edit, an Ortal decision and a credit edit
+  answer the stored row; `appendFunder` stores the form's `submissionId`
+  (new APPENDED `Funders` column) and never writes a second row.
+- SW `CACHE_VERSION` v49 → **v50** (v17 stays burned).
+
 ## Dashboard: the month split on the «תקופת כיסוי» row (October 8, 2026 — PR #137)
 
 Detail: `CHANGELOG-coverage-month-split.md`. **Railway only** (display); Code.gs

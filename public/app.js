@@ -790,22 +790,103 @@ let _savesInFlight = 0;
  * A read is applied only if no write happened since its ticket and no
  * newer read was applied already — otherwise it is discarded and the
  * current (newer, confirmed) money state stays on screen. */
-let _paymentsWriteSeq = 0;
-let _paymentsReadSeq = 0;
-let _paymentsAppliedReadSeq = 0;
+/* ===== Read guards (CHANGELOG-write-path-hardening.md) =====
+ * The PR #201 sequence guard, generalized: one guard per slice of state that
+ * a read replaces wholesale. A write calls noteWrite() (before it is sent and
+ * again when it answers); a read takes begin() when it STARTS; isCurrent()
+ * says whether its answer may still be applied — no write since its ticket,
+ * no newer read applied already, and (opts.quiescent) no save in flight now.
+ * applied(ticket) records that the answer was applied. */
+function createReadGuard(opts) {
+  const o = opts || {};
+  let writeSeq = 0, readSeq = 0, appliedSeq = 0;
+  return {
+    begin() { readSeq++; return { read: readSeq, write: writeSeq }; },
+    noteWrite() { writeSeq++; },
+    isCurrent(ticket) {
+      if (!ticket || ticket.write !== writeSeq || ticket.read <= appliedSeq) return false;
+      return !(o.quiescent && _savesInFlight > 0);
+    },
+    applied(ticket) { if (ticket && ticket.read > appliedSeq) appliedSeq = ticket.read; },
+  };
+}
+/* getPayments (payments + receipts + funders) — PR #201. */
+const _paymentsGuard = createReadGuard();
+/* getData (leads, patients, overrides, closed / removed / discharged lists).
+ * Quiescent: an edit waiting in the saveAll queue lives in the state objects
+ * a getData answer would replace, so no getData answer lands while any save
+ * is in flight — it is discarded and re-read once the saves drain. */
+const _dataGuard = createReadGuard({ quiescent: true });
+/* getCredits. */
+const _creditsGuard = createReadGuard();
+/* billingControlQueue («בקרת גבייה»). */
+const _billingControlGuard = createReadGuard();
+
 /* The post-save reconcile in flight (tests await it). */
 let _paymentsReconcile = null;
 const PAYMENTS_LOAD_FAILED_HE = 'טעינת התשלומים נכשלה — הסטטוסים המוצגים אינם מעודכנים, רעננו את הדף';
+const CREDITS_LOAD_FAILED_HE = 'טעינת הזיכויים נכשלה — הרשימה המוצגת אינה מעודכנת, רעננו את הדף';
 
 function beginPaymentsRead() {
-  _paymentsReadSeq++;
-  return { read: _paymentsReadSeq, write: _paymentsWriteSeq };
+  return _paymentsGuard.begin();
 }
 function notePaymentsWrite() {
-  _paymentsWriteSeq++;
+  _paymentsGuard.noteWrite();
 }
 function paymentsReadIsCurrent(ticket) {
-  return !!ticket && ticket.write === _paymentsWriteSeq && ticket.read > _paymentsAppliedReadSeq;
+  return _paymentsGuard.isCurrent(ticket);
+}
+
+/* ===== Saves in flight (CHANGELOG-write-path-hardening.md) =====
+ * Every write — saveAll and every direct apiPost write — is bracketed by
+ * beginSave / endSave: counted in _savesInFlight (the visibility resync and
+ * the data guard wait for it) and noted on the read guards of the state it
+ * changes, before it is sent and again when it answers. When the last save
+ * ends, callbacks queued by whenSavesDrain run (a getData answer that was
+ * discarded as stale is re-read then). */
+let _drainCallbacks = [];
+function beginSave(guards) {
+  _savesInFlight++;
+  (guards || []).forEach(g => g.noteWrite());
+}
+function endSave(guards) {
+  (guards || []).forEach(g => g.noteWrite());
+  _savesInFlight = Math.max(0, _savesInFlight - 1);
+  if (_savesInFlight === 0 && _drainCallbacks.length) {
+    const cbs = _drainCallbacks;
+    _drainCallbacks = [];
+    cbs.forEach(fn => { try { fn(); } catch (e) { console.warn('[E-ZONE] drain callback failed:', e && e.message); } });
+  }
+}
+function whenSavesDrain(fn) {
+  if (_savesInFlight === 0) { fn(); return; }
+  _drainCallbacks.push(fn);
+}
+/* One write, tracked: beginSave → work() → endSave (also on failure). */
+async function trackedWrite(guards, work) {
+  beginSave(guards);
+  try {
+    return await work();
+  } finally {
+    endSave(guards);
+  }
+}
+
+/* «נשמר» only with proof (R3): the server's answer must carry the persisted
+ * row's id. pick(res) → that id ('' when absent); `want`, when given, is the
+ * id this write targeted. Otherwise throws SAVE_UNPROVEN_HE — the caller's
+ * form stays open with its values. → the id. */
+const SAVE_UNPROVEN_HE = 'השמירה לא אושרה בשרת — לא נשמר, נסו שוב';
+function requireSavedId(res, pick, want) {
+  let id = '';
+  try { id = res && res.ok !== false ? String(pick(res) || '') : ''; } catch (_) { id = ''; }
+  if (!id || (want !== undefined && want !== null && String(want) !== id)) {
+    const err = new Error(SAVE_UNPROVEN_HE);
+    err.data = res;
+    err.unproven = true;
+    throw err;
+  }
+  return id;
 }
 /* A getPayments answer → the three state lists. Throws on a malformed row,
  * BEFORE anything is assigned, so a bad answer never half-replaces state. */
@@ -827,14 +908,40 @@ function applyPaymentsRead(ticket, pr) {
   state.payments = next.payments;
   state.receipts = next.receipts;
   state.funders = next.funders;
-  _paymentsAppliedReadSeq = ticket.read;
+  _paymentsGuard.applied(ticket);
   return true;
+}
+
+/* A getCredits answer read under `ticket` → state.credits, or discarded as
+ * stale. Parsed fully before anything is assigned. → true when applied. */
+function applyCreditsRead(ticket, cr) {
+  const next = (Array.isArray(cr && cr.credits) ? cr.credits : []).map(normalizeCredit).filter(c => c.id);
+  if (!_creditsGuard.isCurrent(ticket)) {
+    console.warn('[E-ZONE] getCredits answer discarded — a credit write landed after it started');
+    return false;
+  }
+  state.credits = next;
+  _creditsGuard.applied(ticket);
+  return true;
+}
+
+/* A discarded getData answer is re-read ONCE, after the saves in flight
+ * drain — never under them. */
+let _dataResyncQueued = false;
+function queueDataResync() {
+  if (_dataResyncQueued) return;
+  _dataResyncQueued = true;
+  whenSavesDrain(() => {
+    _dataResyncQueued = false;
+    Promise.resolve().then(() => loadAll())
+      .catch(e => console.warn('[E-ZONE] data resync failed:', e && e.message));
+  });
 }
 
 /* Save full state to Sheets. Serialized so overlapping calls don't interleave. */
 function saveAll() {
   if (state.mode !== 'edit') return Promise.resolve();
-  const run = async () => {
+  const work = async () => {
     const patients = serializePatients();
     // The objects this save is sending, with the stamps they carry — read in
     // the same tick as the payload, so the response is applied to exactly
@@ -884,24 +991,26 @@ function saveAll() {
     }));
     console.log('[E-ZONE] saveAll body preview (first 400 chars):', JSON.stringify(payload).slice(0, 400));
 
-    _savesInFlight++;
-    try {
-      const res = await apiPost(payload);
-      // Fresh stamps, landed moves, refused moves — applied BEFORE any resync
-      // so a later queued save never re-sends a refused move without intent.
-      applySaveOutcome(sent, res);
-      maybeResyncPreservedPatients(res);
-      const skippedMsg = promoteSkippedMessage(res);
-      if (skippedMsg) showError(skippedMsg, REFUSAL_BANNER_MS);
-      // Stale-save refusal: tell the user whose edit won; the resync above
-      // already reloads the sheet's version. Never retried automatically.
-      const conflictMsg = conflictsMessage(res);
-      if (conflictMsg) showError(conflictMsg, REFUSAL_BANNER_MS);
-      return res;
-    } finally {
-      _savesInFlight--;
-    }
+    const res = await apiPost(payload);
+    // Fresh stamps, landed moves, refused moves — applied BEFORE any resync
+    // so a later queued save never re-sends a refused move without intent.
+    applySaveOutcome(sent, res);
+    const skippedMsg = promoteSkippedMessage(res);
+    if (skippedMsg) showError(skippedMsg, REFUSAL_BANNER_MS);
+    // Stale-save refusal: tell the user whose edit won; the resync below
+    // reloads the sheet's version. Never retried automatically.
+    const conflictMsg = conflictsMessage(res);
+    if (conflictMsg) showError(conflictMsg, REFUSAL_BANNER_MS);
+    // The resync reloads only once every save has drained (R1).
+    if (saveAllResponseNeedsResync(res)) whenSavesDrain(() => maybeResyncPreservedPatients(res));
+    return res;
   };
+  // endSave runs however run ends — a throw before the POST included.
+  const run = () => Promise.resolve().then(work).finally(() => endSave([_dataGuard]));
+  // Counted (and noted on the data guard) from the moment it is QUEUED: the
+  // edit it carries already lives in state, so a getData read that started
+  // before this point must never replace it (CHANGELOG-write-path-hardening.md).
+  beginSave([_dataGuard]);
   savePromise = savePromise.then(run, run);
   return savePromise;
 }
@@ -1752,20 +1861,31 @@ function startTimedRead(params) {
  * loadAll; nothing else is loaded. */
 async function loadBillingRead() {
   if (!billingReadView()) return;
+  const dataTicket = _dataGuard.begin();
   const paymentsTicket = beginPaymentsRead();
+  const creditsTicket = _creditsGuard.begin();
   const [d, p, c] = await Promise.all([
     startTimedRead({ action: 'getData' }), startTimedRead({ action: 'getPayments' }), startTimedRead({ action: 'getCredits' }),
   ]);
+  // R1: applied only if no write was queued or landed since the read started.
   if (d.ok && d.value && typeof d.value === 'object') {
-    state.patients = parsePatients(d.value.patients);
-    state.billingOverrides = (Array.isArray(d.value.billingOverrides) ? d.value.billingOverrides : [])
+    const patients = parsePatients(d.value.patients);
+    const overrides = (Array.isArray(d.value.billingOverrides) ? d.value.billingOverrides : [])
       .map(normalizeBillingOverride).filter(o => o.patientId && o.month);
+    if (_dataGuard.isCurrent(dataTicket)) {
+      _dataGuard.applied(dataTicket);
+      state.patients = patients;
+      state.billingOverrides = overrides;
+    } else {
+      console.warn('[E-ZONE] «גבייה» getData answer discarded — a write landed after it started');
+    }
   }
   // The Funders rows ride along: pro-bono cycles are not debt (isProbonoOn).
   // Applied only if no payment write landed since the read started.
   if (p.ok && p.value) applyPaymentsRead(paymentsTicket, p.value);
   else if (!p.ok) showError(PAYMENTS_LOAD_FAILED_HE);
-  if (c.ok && c.value) state.credits = (Array.isArray(c.value.credits) ? c.value.credits : []).map(normalizeCredit).filter(x => x.id);
+  if (c.ok && c.value) applyCreditsRead(creditsTicket, c.value);
+  else if (!c.ok) showError(CREDITS_LOAD_FAILED_HE);   // R2: the list on screen stays
   if (!d.ok) showError('טעינת «גבייה» נכשלה — ' + ((d.error && d.error.message) || 'שגיאה'));
   renderBilling();
   renderCreditsPayouts();
@@ -1786,9 +1906,12 @@ async function loadAll() {
   // failure still fails the whole load. A session without `finance`
   // (restricted view) never asks for the two money reads.
   const finance      = financeView();
+  // R1: each read takes its guard's ticket as it STARTS (CHANGELOG-write-path-hardening.md).
+  const dataTicket   = _dataGuard.begin();
   const dataRead     = startTimedRead({ action: 'getData' });
   const paymentsTicket = finance ? beginPaymentsRead() : null;
   const paymentsRead = finance ? startTimedRead({ action: 'getPayments' }) : null;
+  const creditsTicket = finance ? _creditsGuard.begin() : null;
   const creditsRead  = finance ? startTimedRead({ action: 'getCredits' }) : null;
   const timing = {};
   try {
@@ -1836,57 +1959,68 @@ async function loadAll() {
       throw new Error(`לא נמצא מערך leads (מפתחות: ${Object.keys(data).join(', ')})`);
     }
 
-    state.leads = rawLeads.map(normalizeLead);
-    state.patients = parsePatients(rawPatients);
+    /* R1: a getData answer replaces leads, patients and every list below
+     * wholesale. If a write was queued or answered since this read started,
+     * or one is still in flight, this answer predates it — discard it (what
+     * is on screen is newer) and re-read once the saves drain. */
+    const dataFresh = _dataGuard.isCurrent(dataTicket);
+    if (!dataFresh) {
+      console.warn('[E-ZONE] getData answer discarded — a write was in flight or landed after it started');
+      queueDataResync();
+    } else {
+      _dataGuard.applied(dataTicket);
+      state.leads = rawLeads.map(normalizeLead);
+      state.patients = parsePatients(rawPatients);
 
-    /* House-manager roster (HOUSE_MANAGERS, exported by getData_). Keyed by
-     * house id. Missing/invalid on older deploys → empty object, so the
-     * meetingWith dropdown falls back to a blank default with no options and
-     * the meetings board still renders (just no manager names). */
-    state.houseManagers = (data.houseManagers && typeof data.houseManagers === 'object' && !Array.isArray(data.houseManagers))
-      ? data.houseManagers
-      : {};
-    /* Current managers (additive getData key). When present it is THE roster:
-     * the per-house default, the meetingWith dropdown and the summary strip
-     * all read state.houseManagers / state.currentManagers. An older backend
-     * that does not send it keeps the houseManagers above — no change. */
-    state.currentManagers = normalizeCurrentManagers(data.currentManagers);
-    if (state.currentManagers) state.houseManagers = rosterFromCurrentManagers(state.currentManagers);
-    console.log('[E-ZONE] houseManagers loaded:', Object.keys(state.houseManagers).length, 'houses',
-      'source:', data.currentManagersSource || '(houseManagers)');
+      /* House-manager roster (HOUSE_MANAGERS, exported by getData_). Keyed by
+       * house id. Missing/invalid on older deploys → empty object, so the
+       * meetingWith dropdown falls back to a blank default with no options and
+       * the meetings board still renders (just no manager names). */
+      state.houseManagers = (data.houseManagers && typeof data.houseManagers === 'object' && !Array.isArray(data.houseManagers))
+        ? data.houseManagers
+        : {};
+      /* Current managers (additive getData key). When present it is THE roster:
+       * the per-house default, the meetingWith dropdown and the summary strip
+       * all read state.houseManagers / state.currentManagers. An older backend
+       * that does not send it keeps the houseManagers above — no change. */
+      state.currentManagers = normalizeCurrentManagers(data.currentManagers);
+      if (state.currentManagers) state.houseManagers = rosterFromCurrentManagers(state.currentManagers);
+      console.log('[E-ZONE] houseManagers loaded:', Object.keys(state.houseManagers).length, 'houses',
+        'source:', data.currentManagersSource || '(houseManagers)');
 
-    /* Manager-name → WhatsApp phone map (MANAGER_PHONES, exported by getData_).
-     * Missing/invalid on older deploys → empty object, so the WhatsApp button
-     * renders disabled (no phone resolves). */
-    state.managerPhones = (data.managerPhones && typeof data.managerPhones === 'object' && !Array.isArray(data.managerPhones))
-      ? data.managerPhones
-      : {};
-    console.log('[E-ZONE] managerPhones loaded:', Object.keys(state.managerPhones).length, 'managers');
+      /* Manager-name → WhatsApp phone map (MANAGER_PHONES, exported by getData_).
+       * Missing/invalid on older deploys → empty object, so the WhatsApp button
+       * renders disabled (no phone resolves). */
+      state.managerPhones = (data.managerPhones && typeof data.managerPhones === 'object' && !Array.isArray(data.managerPhones))
+        ? data.managerPhones
+        : {};
+      console.log('[E-ZONE] managerPhones loaded:', Object.keys(state.managerPhones).length, 'managers');
 
-    const rawIrrelevant = Array.isArray(data.irrelevantLeads) ? data.irrelevantLeads : [];
-    state.irrelevantLeads = rawIrrelevant.map(normalizeIrrelevantLead);
-    console.log('[E-ZONE] irrelevantLeads loaded:', state.irrelevantLeads.length);
+      const rawIrrelevant = Array.isArray(data.irrelevantLeads) ? data.irrelevantLeads : [];
+      state.irrelevantLeads = rawIrrelevant.map(normalizeIrrelevantLead);
+      console.log('[E-ZONE] irrelevantLeads loaded:', state.irrelevantLeads.length);
 
-    const rawRemoved = Array.isArray(data.removedLeads) ? data.removedLeads : [];
-    state.removedLeads = rawRemoved.map(normalizeRemovedLead);
-    console.log('[E-ZONE] removedLeads loaded:', state.removedLeads.length);
+      const rawRemoved = Array.isArray(data.removedLeads) ? data.removedLeads : [];
+      state.removedLeads = rawRemoved.map(normalizeRemovedLead);
+      console.log('[E-ZONE] removedLeads loaded:', state.removedLeads.length);
 
-    /* Phase 2e-1 — discharged-patient audit rows. Sheet may not exist yet on
-     * older deploys; treat missing array as empty so the rest of the app
-     * still loads. */
-    const rawDischarged = Array.isArray(data.dischargedPatients) ? data.dischargedPatients : [];
-    state.dischargedPatients = rawDischarged.map(normalizeDischargedPatient);
-    console.log('[E-ZONE] dischargedPatients loaded:', state.dischargedPatients.length);
+      /* Phase 2e-1 — discharged-patient audit rows. Sheet may not exist yet on
+       * older deploys; treat missing array as empty so the rest of the app
+       * still loads. */
+      const rawDischarged = Array.isArray(data.dischargedPatients) ? data.dischargedPatients : [];
+      state.dischargedPatients = rawDischarged.map(normalizeDischargedPatient);
+      console.log('[E-ZONE] dischargedPatients loaded:', state.dischargedPatients.length);
 
-    /* Billing overrides (per patient, per month). Sheet may not exist yet on
-     * older deploys; treat a missing array as empty so the rest of the app
-     * still loads. Foundation phase: state only, nothing renders it. Rows
-     * without a patientId+month are dropped (can't key a valid override). */
-    const rawOverrides = Array.isArray(data.billingOverrides) ? data.billingOverrides : [];
-    state.billingOverrides = rawOverrides
-      .map(normalizeBillingOverride)
-      .filter(o => o.patientId && o.month);
-    console.log('[E-ZONE] billingOverrides loaded:', state.billingOverrides.length);
+      /* Billing overrides (per patient, per month). Sheet may not exist yet on
+       * older deploys; treat a missing array as empty so the rest of the app
+       * still loads. Foundation phase: state only, nothing renders it. Rows
+       * without a patientId+month are dropped (can't key a valid override). */
+      const rawOverrides = Array.isArray(data.billingOverrides) ? data.billingOverrides : [];
+      state.billingOverrides = rawOverrides
+        .map(normalizeBillingOverride)
+        .filter(o => o.patientId && o.month);
+      console.log('[E-ZONE] billingOverrides loaded:', state.billingOverrides.length);
+    } // dataFresh
 
     // Payments live on their own sheet and their own action. A failed read
     // KEEPS the money state already on screen and says so — it used to
@@ -1919,13 +2053,15 @@ async function loadAll() {
       const got = await creditsRead;
       timing.getCredits = got.ms;
       if (!got.ok) throw got.error;
-      const cr = got.value;
-      const rawCredits = Array.isArray(cr && cr.credits) ? cr.credits : [];
-      state.credits = rawCredits.map(normalizeCredit).filter(c => c.id);
+      // Applied only if no credit write landed since the read started.
+      applyCreditsRead(creditsTicket, got.value);
       console.log('[E-ZONE] getCredits →', state.credits.length, 'records');
     } catch (err) {
-      console.warn('[E-ZONE] getCredits failed, assuming empty:', err && err.message);
-      state.credits = [];
+      // R2: a failed read KEEPS the credits on screen and says so — it used
+      // to assume [] silently (CHANGELOG-write-path-hardening.md).
+      console.warn('[E-ZONE] getCredits failed — keeping the credits on screen:', err && err.message);
+      if (err && err.message === 'unauthorized') throw err;
+      showError(CREDITS_LOAD_FAILED_HE + (err && err.message ? ' (' + err.message + ')' : ''));
     }
     timing.fetched = Math.round(perfNow() - t0);
 
@@ -1974,11 +2110,12 @@ async function loadAll() {
     if (state.leads[0])    console.log('[E-ZONE] first lead:', state.leads[0]);
     if (state.patients[0]) console.log('[E-ZONE] first patient:', state.patients[0]);
 
-    const promoted = promoteEnteredLeads();
-    const retired  = retireAdmittedLeads();
+    // A discarded getData answer changed nothing — nothing to promote or heal.
+    const promoted = dataFresh ? promoteEnteredLeads() : [];
+    const retired  = dataFresh ? retireAdmittedLeads() : [];
     /* Discharge-persistence heal — after promote/retire so a freshly promoted
      * patient is also checked against the audit sheet in the same pass. */
-    const healed   = healClobberedDischarges();
+    const healed   = dataFresh ? healClobberedDischarges() : [];
     console.log('[E-ZONE] after promote — leads:', state.leads.length, 'patients:', state.patients.length, '(+', promoted.length, 'promoted,', retired.length, 'retired,', healed.length, 'healed)');
     // The heal moves patients out of the house tab — never silently.
     if (healed.length > 0) showToast(healedToastMessage(healed));
@@ -7759,11 +7896,11 @@ async function reloadCredits() {
    * what the screen shows — so it raises the same #loading-banner loadAll does,
    * cleared in a finally so a failed reload cannot strand it on screen. */
   setLoading(true);
+  const ticket = _creditsGuard.begin();
   try {
     const cr = await apiGet({ action: 'getCredits' });
-    const raw = Array.isArray(cr && cr.credits) ? cr.credits : [];
-    state.credits = raw.map(normalizeCredit).filter(c => c.id);
-    return true;
+    // R1: a credit write that landed meanwhile is newer than this answer.
+    return applyCreditsRead(ticket, cr);
   } catch (e) {
     console.warn('[E-ZONE] credits reload failed:', e && e.message);
     return false;
@@ -7782,7 +7919,8 @@ async function saveCredit(credit) {
   if (state.mode !== 'edit') throw new Error('שמירת זיכוי אפשרית רק בעריכה');
   let res;
   try {
-    res = await apiPost({ action: 'saveCredit', credit });
+    // R1: counted in flight, noted on the credits guard.
+    res = await trackedWrite([_creditsGuard], () => apiPost({ action: 'saveCredit', credit }));
   } catch (e) {
     if (e && e.data && e.data.error === 'conflict') {
       // Refresh FIRST so the banner's "refreshed" claim holds, then refuse.
@@ -9231,7 +9369,9 @@ function initFunderControls() {
     const from = isoDate((row.querySelector('[data-fill-from]') || {}).value || '');
     if (paymentFunderLabels().indexOf(picked) < 0) { showError(FUNDER_REQUIRED_MESSAGE); return; }
     if (!from) { showError('יש לבחור תאריך תחילה תקין'); return; }
-    busyButton(btn, 'save', () => saveFunder(patient, picked, from))
+    // R3: one key per row while it is on screen — a retry re-sends it.
+    if (!btn.dataset.submissionId) btn.dataset.submissionId = newSubmissionId();
+    busyButton(btn, 'save', () => saveFunder(patient, picked, from, btn.dataset.submissionId))
       .catch(e => showError('שמירת הגורם המממן נכשלה — ' + (isLockBusyError(e) ? LOCK_BUSY_MESSAGE_HE : ((e && e.message) || 'שגיאה'))));
   });
 }
@@ -12076,10 +12216,13 @@ function buildRevenueDetailRow(row, groupKey, sign) {
  * used to be inferred for it. The client-side refusal below mirrors
  * coveragePeriodError_() in Code.gs — the server is the authority and
  * re-validates every write; this only spares the user a round-trip. */
-async function savePayment(payment) {
-  if (state.mode !== 'edit') return;
+async function savePayment(payment, opts) {
+  if (state.mode !== 'edit') return false;
+  // keepEditor: on failure re-render only the summary, so an inline editor
+  // stays open with what was typed (R3). Default: re-render the tab.
+  const keepEditor = !!(opts && opts.keepEditor);
   const covErr = coveragePeriodError(payment && payment.coverageStart, payment && payment.coverageEnd);
-  if (covErr) { showError(covErr); return; }
+  if (covErr) { showError(covErr); return false; }
   payment = withDefaultCoverage(payment);
   payment = withPatientUid(payment, state.patients);
   const idx = state.payments.findIndex(x => x.id === payment.id);
@@ -12091,27 +12234,31 @@ async function savePayment(payment) {
   // updated in place by buildBillingRow's recompute.
   renderBillingMonthlySummary(state.billingDate || todayISO());
 
-  // Reads that started before this write must not overwrite it.
-  notePaymentsWrite();
+  // Counted in flight and noted on the payments guard: reads that started
+  // before this write must not overwrite it (R1).
   try {
-    const res = await apiPost({ action: 'savePayment', payment });
-    notePaymentsWrite();
-    /* ADOPT THE SERVER'S COPY when it echoes one. The link columns
-     * (linkedBy / linkedAt) are stamped SERVER-SIDE from the signed session
-     * cookie and the server's clock — the client cannot know them, and must
-     * not be trusted with them. Reading them back here is what puts the real
-     * "who and when" on screen without a reload. Everything else in the echo
-     * is what we just sent, so adopting it changes nothing. */
-    if (res && res.payment && res.payment.id === payment.id) {
-      const at = state.payments.findIndex(x => x.id === payment.id);
-      if (at >= 0) state.payments[at] = normalizePayment(res.payment);
-    }
+    const res = await trackedWrite([_paymentsGuard], () => apiPost({ action: 'savePayment', payment }));
+    // R3: «נשמר» only with the server's copy of THIS row.
+    requireSavedId(res, r => r.payment && r.payment.id, payment.id);
+    /* ADOPT THE SERVER'S COPY. The link columns (linkedBy / linkedAt) are
+     * stamped SERVER-SIDE from the signed session cookie and the server's
+     * clock — the client cannot know them, and must not be trusted with them.
+     * Reading them back here is what puts the real "who and when" on screen
+     * without a reload. Everything else in the echo is what we just sent. */
+    const at = state.payments.findIndex(x => x.id === payment.id);
+    if (at >= 0) state.payments[at] = normalizePayment(res.payment);
+    else state.payments.push(normalizePayment(res.payment));
+    if (res.cycle) adoptCycleEcho(res.cycle);
+    return true;
   } catch (e) {
     // Roll back local change so the UI doesn't lie about persistence.
-    if (prev) state.payments[idx] = prev;
+    const at = state.payments.findIndex(x => x.id === payment.id);
+    if (prev) { if (at >= 0) state.payments[at] = prev; else state.payments.push(prev); }
     else state.payments = state.payments.filter(x => x.id !== payment.id);
-    renderBilling();
+    if (keepEditor) renderBillingMonthlySummary(state.billingDate || todayISO());
+    else renderBilling();
     showError('שמירת גבייה נכשלה — ' + e.message);
+    return false;
   }
 }
 
@@ -12204,6 +12351,8 @@ function normalizeFunderRow(r) {
     effectiveFrom: isoDate(o.effectiveFrom),
     setBy: String(o.setBy || ''),
     setAt: String(o.setAt || ''),
+    // The appending form's idempotency key (blank on older rows).
+    submissionId: String(o.submissionId || ''),
   };
 }
 
@@ -12434,12 +12583,12 @@ function openReceiptEditModal(receipt) {
 async function submitReceiptEdit(receipt, fields, reason) {
   const edit = { id: receipt.id, fields: Object.assign({}, fields) };
   if (reason) edit.reason = reason;
-  const res = await apiPost({ action: 'editReceipt', edit });
-  notePaymentsWrite();   // an older in-flight getPayments must not undo it
+  // R1: counted in flight; an older in-flight getPayments must not undo it.
+  const res = await trackedWrite([_paymentsGuard], () => apiPost({ action: 'editReceipt', edit }));
+  // R3: the server's copy of THIS receipt, or the modal stays open.
+  requireSavedId(res, r => r.receipt && r.receipt.id, receipt.id);
   const at = state.receipts.findIndex(x => x.id === receipt.id);
-  if (at >= 0 && res && res.receipt) {
-    state.receipts[at] = normalizeReceipt(Object.assign({}, res.receipt, { cycleId: receipt.cycleId }));
-  }
+  if (at >= 0) state.receipts[at] = normalizeReceipt(Object.assign({}, res.receipt, { cycleId: receipt.cycleId }));
   renderBilling();
   return res;
 }
@@ -12488,18 +12637,19 @@ function openReceiptVoidModal(receipt) {
 }
 
 async function voidReceipt(receipt, note) {
-  const res = await apiPost({ action: 'savePayment', payment: {
+  // R1: counted in flight and noted on the payments guard.
+  const res = await trackedWrite([_paymentsGuard], () => apiPost({ action: 'savePayment', payment: {
     id: receipt.id, patientId: receipt.patientId, patientName: receipt.patientName, houseId: receipt.houseId,
     dueDate: receipt.dueDate, status: PAYMENT_VOID_STATUS, linkPatientUid: '', linkStatus: 'duplicate',
     linkNote: String(note).slice(0, PAYMENT_LINK_NOTE_MAX), timestamp: new Date().toISOString(),
-  } });
-  notePaymentsWrite();   // an older in-flight getPayments must not undo it
+  } }));
+  /* R3: «בוטלה» only when the server's copy of THIS receipt reads void — no
+   * optimistic fallback. A retry after a lost answer is replayed by the
+   * server (replayed:true) with the stored void row. */
+  requireSavedId(res, r => r.payment && isVoidPayment(r.payment) && r.payment.id, receipt.id);
   const at = state.receipts.findIndex(x => x.id === receipt.id);
-  if (at >= 0) {
-    const echo = res && res.payment ? normalizeReceipt(Object.assign({}, res.payment, { cycleId: receipt.cycleId })) : null;
-    state.receipts[at] = echo || Object.assign({}, receipt, { status: PAYMENT_VOID_STATUS });
-  }
-  if (res && res.cycle) adoptCycleEcho(res.cycle);
+  if (at >= 0) state.receipts[at] = normalizeReceipt(Object.assign({}, res.payment, { cycleId: receipt.cycleId }));
+  if (res.cycle) adoptCycleEcho(res.cycle);
   renderBilling();
   showToast('הקבלה בוטלה');
 }
@@ -12612,6 +12762,8 @@ function openFunderModal(p) {
   const close = () => back.remove();
   const form = back.querySelector('form');
   const submitBtn = back.querySelector('button[type="submit"]');
+  // R3: one idempotency key for this form — every retry re-sends it.
+  const submissionId = newSubmissionId();
   back.querySelector('[data-action="cancel"]').onclick = () => { if (!busyButtonActive(submitBtn)) close(); };
   form.onsubmit = e => {
     e.preventDefault();
@@ -12626,7 +12778,7 @@ function openFunderModal(p) {
     if (!iso) { errEl.textContent = 'יש לבחור תאריך תחילה תקין'; return; }
     return busyButton(submitBtn, 'save', async () => {
       try {
-        await saveFunder(p, funder, iso);
+        await saveFunder(p, funder, iso, submissionId);
         close();
       } catch (err) {
         showError('שמירת הגורם המממן נכשלה — ' + err.message);
@@ -12638,10 +12790,19 @@ function openFunderModal(p) {
 /* Append ONE Funders row (action=appendFunder). The single write path for
  * the card editor, admission and the fill screen. Finance view only — a
  * restricted session never sends it. */
-async function saveFunder(p, funder, effectiveFrom) {
+async function saveFunder(p, funder, effectiveFrom, submissionId) {
   if (!funderView()) throw new Error('אין הרשאה');
-  const res = await apiPost({ action: 'appendFunder', funder: { patientId: patientUid(p), funder, effectiveFrom } });
-  if (res && res.row) state.funders.push(normalizeFunderRow(res.row));
+  /* R3: one idempotency key per form (the caller keeps it across retries;
+   * a one-shot caller gets a fresh one). The server stores it on the Funders
+   * row and answers a retry with that row — never a second one. */
+  const sid = submissionId || newSubmissionId();
+  // R1: funders ride getPayments — counted in flight, noted on that guard.
+  const res = await trackedWrite([_paymentsGuard], () =>
+    apiPost({ action: 'appendFunder', funder: { patientId: patientUid(p), funder, effectiveFrom, submissionId: sid } }));
+  requireSavedId(res, r => r.row && r.row.submissionId, sid);
+  const row = normalizeFunderRow(res.row);
+  const at = state.funders.findIndex(f => f && f.submissionId === sid);
+  if (at >= 0) state.funders[at] = row; else state.funders.push(row);
   renderAll();
   showToast('הגורם המממן נשמר');
   return res;
@@ -12947,14 +13108,7 @@ async function submitPaymentReport(cycle, values, confirmDuplicate, submissionId
   const body = { cycle, report };
   if (confirmDuplicate === true) body.confirmDuplicate = true;
   if (submissionId) body.submissionId = String(submissionId);
-  _savesInFlight++;
-  let res;
-  try {
-    notePaymentsWrite();
-    res = await apiPost({ action: 'reportPayment', report: body });
-  } finally {
-    _savesInFlight--;
-  }
+  const res = await trackedWrite([_paymentsGuard], () => apiPost({ action: 'reportPayment', report: body }));
   const receiptId = res && res.receipt && res.receipt.id ? String(res.receipt.id) : '';
   if (!receiptId) {
     const err = new Error(PAYMENT_REPORT_SAVE_FAILED_HE);
@@ -13059,9 +13213,11 @@ async function saveCoveragePeriod(payment, startISO, endISO) {
   const expectStart = isoDate(stamped.coverageStart);
   const expectEnd   = isoDate(stamped.coverageEnd);
 
-  await savePayment(updated);
-  // savePayment() swallows its own failure (it rolls state back and shows
-  // שמירת גבייה נכשלה), so confirm only against what survived in state.
+  // savePayment() shows its own failure (שמירת גבייה נכשלה) and, with
+  // keepEditor, leaves this editor open with the typed dates (R3).
+  const saved = await savePayment(updated, { keepEditor: true });
+  if (!saved) return;
+  // Proven by the server's echo — confirm against what it stored.
   const live = state.payments.find(x => x && x.id === payment.id);
   renderBilling();
   if (live && isoDate(live.coverageStart) === expectStart && isoDate(live.coverageEnd) === expectEnd) {
@@ -13091,22 +13247,22 @@ async function saveBillingOverride(payment, newAmount) {
     created: todayISO(),
   };
 
-  const prev = state.billingOverrides.slice();
-  const idx = state.billingOverrides.findIndex(o => o && o.id === record.id);
-  state.billingOverrides = idx >= 0
-    ? state.billingOverrides.map((o, i) => (i === idx ? record : o))
-    : prev.concat([record]);
-  renderBilling();
-
-  // renderBilling() above rebuilt this row, detaching the שמור button that was
-  // pressed; the banner is the indicator that survives.
+  /* R3: applied only once the server proves it stored THIS override (its
+   * id). Nothing is re-rendered before that, so on failure the ✏️ editor
+   * stays open with the typed amount. Overrides ride getData, so the write
+   * is noted on the data guard (R1). */
   setSaving(true);
   try {
-    await apiPost({ action: 'upsertBillingOverride', override: record });
+    const res = await trackedWrite([_dataGuard], () => apiPost({ action: 'upsertBillingOverride', override: record }));
+    requireSavedId(res, r => r.override && r.override.id, record.id);
+    const saved = normalizeBillingOverride(Object.assign({}, record, res.override));
+    const idx = state.billingOverrides.findIndex(o => o && o.id === saved.id);
+    state.billingOverrides = idx >= 0
+      ? state.billingOverrides.map((o, i) => (i === idx ? saved : o))
+      : state.billingOverrides.concat([saved]);
+    renderBilling();
     showToast('הסכום עודכן לחודש ' + formatMonth(payment.dueDate));
   } catch (e) {
-    state.billingOverrides = prev;
-    renderBilling();
     showError('עדכון הסכום נכשל — ' + e.message);
   } finally {
     setSaving(false);
@@ -13132,7 +13288,10 @@ async function clearBillingOverride(payment) {
   // Same detachment as saveBillingOverride — the ↩ button is gone by here.
   setSaving(true);
   try {
-    await apiPost({ action: 'deleteBillingOverride', override: { id: existing.id, patientId: pid, month } });
+    const res = await trackedWrite([_dataGuard], () =>
+      apiPost({ action: 'deleteBillingOverride', override: { id: existing.id, patientId: pid, month } }));
+    // R3: the server names the override it removed (a retry answers the same).
+    requireSavedId(res, r => r.deleted === true && r.id, existing.id);
     showToast('הסכום הוחזר לסכום הבסיס');
   } catch (e) {
     state.billingOverrides = prev;
@@ -14155,8 +14314,15 @@ async function loadBillingControl() {
   s.error = '';
   renderBillingControl();
   setLoading(true);
+  const ticket = _billingControlGuard.begin();
   try {
     const data = await apiGet({ action: 'billingControlQueue' });
+    // R1: a decision that landed after this read started is newer — keep it.
+    if (!_billingControlGuard.isCurrent(ticket)) {
+      console.warn('[E-ZONE] billingControlQueue answer discarded — a decision landed after it started');
+      return;
+    }
+    _billingControlGuard.applied(ticket);
     s.data = data;
     // Drop a selection that is no longer waiting.
     const waiting = {};
@@ -14186,14 +14352,26 @@ async function confirmReceipts(ids, status, extra) {
   if (x.controlNote !== undefined) body.controlNote = x.controlNote;
   let res;
   try {
-    res = await apiPost({ action: 'confirmPayment', confirm: body });
+    // R1: counted in flight; the queue and getPayments reads that started
+    // before it are discarded (a «כפילות» voids a receipt).
+    res = await trackedWrite([_billingControlGuard, _paymentsGuard], () => apiPost({ action: 'confirmPayment', confirm: body }));
   } catch (e) {
     const code = e && e.data && e.data.error;
     showError(BC_ERRORS[code] || (e && e.message) || 'השמירה נכשלה');
     return null;
   }
+  /* R3: every id sent must come back — changed, already in that state
+   * (unchangedRows: a retry of a decision that landed), or voided. Otherwise
+   * nothing is cleared: the drafts and the selection stay on screen. */
+  const answered = {};
+  (res.changed || []).concat(res.unchangedRows || [], res.voided || [])
+    .forEach(r => { if (r && r.id) answered[r.id] = true; });
+  if (!ids.every(id => answered[id])) {
+    showError(SAVE_UNPROVEN_HE);
+    return null;
+  }
   const changed = {};
-  (res.changed || []).forEach(r => { changed[r.id] = r; });
+  (res.changed || []).concat(res.unchangedRows || []).forEach(r => { changed[r.id] = r; });
   // «כפילות»: the receipt is void now — it leaves every list and total.
   const voided = {};
   (res.voided || []).forEach(r => { if (r && r.id) voided[r.id] = true; });

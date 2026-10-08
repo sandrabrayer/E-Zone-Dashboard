@@ -662,7 +662,9 @@ test('G: the editor writes through savePayment and validates with the SHARED rul
   const src = fnSource(APP, 'saveCoveragePeriod');
   assert.match(src, /coveragePeriodError\(start, end\)/, 'the same rule the server enforces');
   assert.match(src, /showError\(err\)/, 'a refusal is shown, never swallowed');
-  assert.match(src, /await savePayment\(updated\)/, 'one write path — optimistic upsert + rollback');
+  // One write path; keepEditor leaves the editor open with the typed dates
+  // on failure (CHANGELOG-write-path-hardening.md, R3).
+  assert.match(src, /await savePayment\(updated, \{ keepEditor: true \}\)/, 'one write path — optimistic upsert + rollback');
   // Only the two columns move. If this ever changed the money, a period edit
   // could silently alter a balance.
   assert.match(src, /coverageStart: start,\n\s+coverageEnd: end,/);
