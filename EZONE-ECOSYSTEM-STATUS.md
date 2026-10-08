@@ -979,6 +979,15 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
 
+## Dashboard: write-path hardening — PR D, proven saves never hidden (October 8, 2026)
+
+Detail: `CHANGELOG-write-path-hardening.md`. **Railway only** (`public/app.js`);
+Code.gs not touched. Admission, direct add / intake and ✏️ patient edit no
+longer roll a PROVEN patient save off the screen when only the follow-up
+discharge-row flag write fails: the patient stays, the form closes, and the
+Hebrew error says the discharge record was not closed (the next load's heal
+converges, as before). SW `CACHE_VERSION` v52 → **v53**.
+
 ## Dashboard: write-path hardening — PR C, leads and the rest (October 8, 2026)
 
 Detail: `CHANGELOG-write-path-hardening.md`. **Railway + Code.gs** (clasp CI

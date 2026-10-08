@@ -5991,6 +5991,20 @@ async function persistAuditsRestored(rows) {
   }
 }
 
+/* After a PROVEN patient save: close the stay's re-opened discharge rows. A
+ * failure keeps the saved patient on screen (it is on the sheet) and says
+ * what did not save — never a rollback of the landed row. */
+async function closeReopenedAuditsAfterSave(reopened, prevDischarged) {
+  if (!reopened || !reopened.length) return;
+  try {
+    await persistAuditsRestored(reopened);
+  } catch (e) {
+    state.dischargedPatients = prevDischarged;
+    renderAll();
+    showError(REOPEN_NOT_CLOSED_MESSAGE + ((e && e.message) || ''), REFUSAL_BANNER_MS);
+  }
+}
+
 /* The ✏️ edit's message when the save (with a landed house move) went through
  * but closing the discharge rows did not. */
 const REOPEN_NOT_CLOSED_MESSAGE = 'השינוי נשמר, אבל רישום השחרור לא נסגר — בטעינה הבאה המטופל יסומן שוב כמשוחרר. ערכו שוב את הסטטוס. ';
@@ -6690,7 +6704,6 @@ function openEntryModal(lead) {
         // promotion the server refused (promoteSkipped) is not proven.
         const res = await saveAll({ prove: { patients: [patient.id] } });
         requireProven(res, 'patients', patient.id);
-        await persistAuditsRestored(reopened);
       } catch (e) {
         state.patients = state.patients.filter(p => p.id !== patient.id);
         state.dischargedPatients = prevDischarged;
@@ -6700,6 +6713,9 @@ function openEntryModal(lead) {
         showError('שמירה נכשלה — ' + e.message);
         return false;
       }
+      // The patient IS on the sheet (proven): a failed discharge-flag write
+      // never hides it (CHANGELOG-write-path-hardening.md, PR D).
+      await closeReopenedAuditsAfterSave(reopened, prevDischarged);
       await saveAdmissionFunder(patient, v.funder);
       return true;
     }
@@ -6765,7 +6781,6 @@ function openDirectAddPatientModal(opts) {
       try {
         const res = await saveAll({ prove: { patients: [patient.id] } });
         requireProven(res, 'patients', patient.id);
-        await persistAuditsRestored(reopened);
       } catch (e) {
         state.patients = state.patients.filter(x => x.id !== patient.id);
         state.dischargedPatients = prevDischarged;
@@ -6773,6 +6788,7 @@ function openDirectAddPatientModal(opts) {
         showError('שמירה נכשלה — ' + e.message);
         return false;
       }
+      await closeReopenedAuditsAfterSave(reopened, prevDischarged);
       await saveAdmissionFunder(patient, v.funder);
       if (intake) showToast('המטופל נקלט — ' + patient.name);
       return true;
@@ -6893,11 +6909,12 @@ function openEditPatientModal(p) {
         }
       } catch (e) {
         state.dischargedPatients = prevDischarged;
-        if (saved && houseChanged) {
-          // The move already landed on the sheet: putting the patient back in
-          // the old house here would send them there WITHOUT a move intent.
-          // Keep the saved edit and say what did not save — the next load's
-          // heal (announced by its toast) releases the patient again.
+        if (saved) {
+          // The edit (and any move) already landed on the sheet — proven.
+          // Rolling it back here would hide a saved edit (and, for a move,
+          // send the patient back WITHOUT a move intent). Keep it and say
+          // what did not save — the next load's heal (announced by its toast)
+          // releases the patient again (CHANGELOG-write-path-hardening.md, PR D).
           renderAll();
           showError(REOPEN_NOT_CLOSED_MESSAGE + e.message, REFUSAL_BANNER_MS);
           return true;

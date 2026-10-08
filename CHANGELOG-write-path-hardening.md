@@ -213,6 +213,23 @@ loading-feedback-rollout, optimistic-gap); two Code.gs harnesses gained the
 `LockService` / `CacheService` stubs every locked writer's harness has.
 SW `CACHE_VERSION` v51 → **v52** (live v51).
 
+### PR D — a proven patient save is never hidden (relayed audit list)
+
+A parallel audit (pre-#203 code), relayed from Sandra, listed six items.
+Each was checked against `89135bc`:
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Admit / add patient: save lands, the audit-flag write fails → UI rolls the patient back → a retry adds a second patient | **Fixed here (PR D).** The duplicate was already gone (one patient id per form, PR B), but the proven patient was still rolled back off the screen. Now `closeReopenedAuditsAfterSave` runs AFTER the proven save, outside its rollback: the patient stays, the form closes, `REOPEN_NOT_CLOSED_MESSAGE` says what did not save. |
+| 2 | Edit patient: same rollback hides an edit already on the sheet | **Fixed here (PR D).** A proven edit is kept for every edit, not only a house move. The pinned reactivation-fix test (which asserted the rollback) now asserts the corrected behaviour. |
+| 3 | Patient delete / lead soft-delete retry → `patient_not_found` / `lead_id_not_found` | **Already fixed** — PR B (`deletePatientRow_` tombstone replay) and PR C (`removeLead_` replay). |
+| 4 | Restore-as-lead: the choice window closes on failure | **Already fixed** — PR B (the worker throws; the modal stays open). |
+| 5 | Create lead: the form closes and values are lost on failure | **Already fixed** — PR C. |
+| 6 | `submitMeetingReport_`: no lock; a retry re-stamps and resets «נצפה» | **Already fixed** — PR C (script lock + `submissionId` replay). The request contract is unchanged: the key is optional, so any caller that does not send it behaves as before. |
+
+Tests: `test/write-path-hardening-audit.test.js` — 3 tests, all 3 FAILED on
+the parent (`89135bc`). SW `CACHE_VERSION` v52 → **v53**.
+
 ## Result: the matrix after (before → after)
 
 | # | Write | R1 | R3 | Fixed in |
