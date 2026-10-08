@@ -609,8 +609,11 @@ function saveAllResponseNeedsResync(res) {
   // tombstone. conflicts: rows the backend REFUSED because this tab loaded
   // an older version someone else has since updated (stale-stamp refusal).
   // Any of them means the tab's memory is stale — reload.
+  // closedSuppressed: leads this tab still held after they were closed or
+  // removed elsewhere — the server refused to put them back (R1).
   return nonEmpty(res.preserved) || nonEmpty(res.deletedSuppressed) ||
-    (Array.isArray(res.conflicts) && res.conflicts.length > 0);
+    (Array.isArray(res.conflicts) && res.conflicts.length > 0) ||
+    (Array.isArray(res.closedSuppressed) && res.closedSuppressed.length > 0);
 }
 
 /* Hebrew error message when the backend's promotion dedupe guard refused
@@ -897,6 +900,14 @@ function requireProven(res, kind, id) {
     const list = r && r.proven && Array.isArray(r.proven[kind]) ? r.proven[kind] : [];
     return list.indexOf(String(id)) >= 0 ? String(id) : '';
   }, id);
+}
+
+/* saveAll, proven for lead `id` (R3): resolves the answer, or throws
+ * SAVE_UNPROVEN_HE when the sheet does not hold the lead after the save. */
+async function saveAllProvingLead(id) {
+  const res = await saveAll({ prove: { leads: [String(id)] } });
+  if (state.mode === 'edit') requireProven(res, 'leads', id);
+  return res;
 }
 
 /* True when a saveAll answer REFUSED this tab's edit of patient `id` as stale
@@ -2602,7 +2613,10 @@ function autosaveMeetingWithDefaults() {
   applied.forEach(({ lead }) => { lead.meetingWith = managerForHouse(lead.house, state.houseManagers); });
   renderMeetings();                                  // board: '—' → manager name, immediately
 
-  return saveAll()
+  // R3: every lead it filled must be proven on the sheet.
+  const ids = applied.map(({ lead }) => String(lead.id));
+  return saveAll({ prove: { leads: ids } })
+    .then((res) => { ids.forEach(id => requireProven(res, 'leads', id)); return res; })
     .catch((e) => {
       const busy = isLockBusyError(e);
       applied.forEach(({ lead, prev }) => {
@@ -3559,11 +3573,13 @@ function saveMeetingReportEdit(leadId, { outcome, companion, note }) {
   });
   return (async () => {
     try {
-      const res = await saveAll();
+      const res = await saveAllProvingLead(leadId);
       const conflicts = (res && res.reportConflicts) || [];
       if (conflicts.indexOf(String(leadId)) !== -1) {
         showError('דיווח המנהל השתנה בזמן העריכה (דיווח חדש או מחיקה) — העריכה לא נשמרה, הנתונים רועננו');
-        await loadAll(); // pull the sheet's newer report state and re-render
+        // Pull the sheet's newer report state — once the saves drain, never
+        // under one (R1, CHANGELOG-write-path-hardening.md).
+        queueDataResync();
         return 'conflict';
       }
       return true;
@@ -3597,7 +3613,9 @@ function deleteMeetingReport(leadId) {
 
   return (async () => {
     try {
-      await apiPost({ action: 'deleteMeetingReport', leadId: String(leadId) });
+      // R1 tracked; R3: the server names the lead whose report it cleared.
+      const res = await trackedWrite([_dataGuard], () => apiPost({ action: 'deleteMeetingReport', leadId: String(leadId) }));
+      requireSavedId(res, r => r.deleted && r.deleted.leadId, leadId);
       return true;
     } catch (e) {
       Object.assign(lead, prev);
@@ -5070,7 +5088,7 @@ async function moveLead(lead, newStage) {
    * the rollback below are untouched. */
   setSaving(true);
   try {
-    await saveAll();
+    await saveAllProvingLead(lead.id);
   } catch (e) {
     lead.stage = prev;
     lead.waitlistedAt = prevWaitlistedAt;
@@ -5087,7 +5105,7 @@ async function updateLead(id, fields) {
   const prev = { ...lead };
   Object.assign(lead, fields);
   try {
-    await saveAll();
+    await saveAllProvingLead(id);
     return true;
   } catch (e) {
     Object.assign(lead, prev);
@@ -5143,7 +5161,10 @@ function closeLead(lead) {
       renderAll();
 
       try {
-        await apiPost({ action: 'moveLeadIrrelevant', lead: moved });
+        // R1 tracked; R3: the server's copy of THIS lead on the closed sheet.
+        // A retry is safe — the server deletes by id and upserts by id.
+        const res = await trackedWrite([_dataGuard], () => apiPost({ action: 'moveLeadIrrelevant', lead: moved }));
+        requireSavedId(res, r => r.lead && r.lead.id, moved.id);
       } catch (e) {
         // Roll back on failure
         state.irrelevantLeads = state.irrelevantLeads.filter(l => l.id !== moved.id);
@@ -5180,7 +5201,8 @@ async function restoreIrrelevantLead(ilead) {
       renderAll();
 
       try {
-        await apiPost({ action: 'restoreLead', lead: restored });
+        const res = await trackedWrite([_dataGuard], () => apiPost({ action: 'restoreLead', lead: restored }));
+        requireSavedId(res, r => r.lead && r.lead.id, restored.id);
         showToast('הליד הוחזר לגיליון ליד חדש');
       } catch (e) {
         state.leads = state.leads.filter(l => l.id !== restored.id);
@@ -5386,18 +5408,13 @@ async function removeLead(lead) {
   renderAll();
 
   try {
-    const res = await apiPost({ action: 'removeLead', lead: lead });
-    /* Backend stamps removedAt + originSheet on the record it persists; prefer
-     * that exact record so the in-memory state matches what's on the sheet.
-     * Fall back to a client-stamped record if the response shape is unexpected
-     * (defensive — moveLeadIrrelevant uses the same pattern). */
-    const stored = (res && res.lead)
-      ? normalizeRemovedLead(res.lead)
-      : normalizeRemovedLead({
-          ...lead,
-          removedAt:   new Date().toISOString(),
-          originSheet: 'Leads',
-        });
+    const res = await trackedWrite([_dataGuard], () => apiPost({ action: 'removeLead', lead: lead }));
+    /* R3: the backend's record of THIS lead on the removed sheet (it stamps
+     * removedAt + originSheet) is the proof — never a client-made stand-in.
+     * A retry after a lost answer replays the stored row. */
+    requireSavedId(res, r => r.lead && r.lead.id, lead.id);
+    const stored = normalizeRemovedLead(res.lead);
+    state.removedLeads = (state.removedLeads || []).filter(r => r && r.id !== stored.id);
     state.removedLeads.unshift(stored);
     renderAll();
     showToast('הליד הוסר');
@@ -6246,7 +6263,7 @@ function withFieldSaving(el, kind, fn) {
  *
  * Backward-compatible with the prior {text, onConfirm} signature — existing
  * callers (restoreIrrelevantLead) continue to render with 'אישור' / primary. */
-function showConfirm({ text, onConfirm, confirmLabel = 'אישור', danger = false }) {
+function showConfirm({ text, onConfirm, onCancel, confirmLabel = 'אישור', danger = false }) {
   const root = document.getElementById('modal-root');
   const back = document.createElement('div');
   back.className = 'modal-backdrop';
@@ -6277,8 +6294,10 @@ function showConfirm({ text, onConfirm, confirmLabel = 'אישור', danger = fa
    * `busyConfirm` mirrors its aria-busy so cancel and the backdrop stay locked
    * for exactly as long. A destructive dialog says «מוחק…», any other «שומר…». */
   const busyConfirm = () => confirmBtn.getAttribute('aria-busy') === 'true';
-  cancelBtn.onclick = () => { if (!busyConfirm()) close(); };
-  back.addEventListener('click', e => { if (e.target === back && !busyConfirm()) close(); });
+  // onCancel (optional): told when the dialog is dismissed without confirming.
+  const dismiss = () => { close(); if (typeof onCancel === 'function') onCancel(); };
+  cancelBtn.onclick = () => { if (!busyConfirm()) dismiss(); };
+  back.addEventListener('click', e => { if (e.target === back && !busyConfirm()) dismiss(); });
 
   confirmBtn.onclick = () => {
     // ביטול freezes SYNCHRONOUSLY, at the tap — busyButton runs its worker on a
@@ -6430,6 +6449,9 @@ function openAddLeadModal() {
    * autofillMeetingWith). Programmatic `.value =` from the house autofill does
    * not fire 'change', so it never flips this flag. */
   let meetingDirty = false;
+  // R3: ONE lead id per form — a retry after a lost answer re-sends it and
+  // the server upserts by id (never a second lead).
+  const leadId = cryptoId();
 
   showModal({
     title: 'ליד חדש',
@@ -6477,8 +6499,11 @@ function openAddLeadModal() {
       if (!values.name) { showError('יש להזין שם'); return false; }
       if (!values.assignedTo) { showError('יש לבחור משוייך ל'); return false; }
 
+      // → true when the server proved the lead; false (rolled back, error
+      // shown) otherwise — the form then stays open with its values.
       const doCreateLead = async vals => {
-        const id = cryptoId();
+        const id = leadId;
+        state.leads = state.leads.filter(l => l.id !== id);   // a retry: never twice on screen
         /* Resolve the billing selector into the stored phone string. billingMode
          * / billingOther are selector-only and not lead fields — normalizeLead
          * ignores them; the explicit billingPhone below is what persists. */
@@ -6502,11 +6527,13 @@ function openAddLeadModal() {
         state.leads.unshift(lead);
         renderAll();
         try {
-          await saveAll();
+          await saveAllProvingLead(id);
+          return true;
         } catch (e) {
           state.leads = state.leads.filter(l => l.id !== id);
           renderAll();
           showError('הוספת ליד נכשלה — ' + e.message);
+          return false;
         }
       };
 
@@ -6514,20 +6541,21 @@ function openAddLeadModal() {
       if (normalized) {
         const existing = findDuplicateLeadByPhone(normalized);
         if (existing) {
-          /* Closes the Add Lead modal (showModal treats any non-false return
-           * as success → calls close()). The user re-confirms in showConfirm;
-           * cancel = no lead created, confirm = doCreateLead runs. */
-          showConfirm({
+          /* The user re-confirms in showConfirm ON TOP of the Add Lead form,
+           * which stays open underneath: cancel = no lead created and the
+           * form keeps its values (to fix the phone); confirm = doCreateLead,
+           * and the form closes only once the lead is proven (R3). */
+          const go = await new Promise(resolve => showConfirm({
             text: 'כבר קיים ליד "' + existing.name + '" עם הטלפון ' + values.phone + '. להוסיף בכל זאת?',
             confirmLabel: 'הוסף בכל זאת',
-            onConfirm: () => doCreateLead(values),
-          });
-          return true;
+            onConfirm: () => resolve(true),
+            onCancel: () => resolve(false),
+          }));
+          if (!go) return false;
         }
       }
 
-      await doCreateLead(values);
-      return true;
+      return doCreateLead(values);
     }
   });
 }
@@ -6587,7 +6615,7 @@ function openEditLeadModal(lead) {
         v.billingMode, v.phone, v.contactPhone, v.billingOther);
       renderAll();
       try {
-        await saveAll();
+        await saveAllProvingLead(lead.id);
       } catch (e) {
         Object.assign(lead, prev);
         renderAll();

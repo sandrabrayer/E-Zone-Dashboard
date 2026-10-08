@@ -195,7 +195,8 @@ const CASES = [
     run(app, settle) {
       const lead = { id: 'L1', stage: 'new', waitlistedAt: '' };
       app.setState({ mode: 'edit', deleter: true, leads: [lead] });
-      app.setSaveAll(() => settle());
+      // Answers like saveAll_: proves the lead it was asked about (R3).
+      app.setSaveAll((opts) => settle().then(() => ({ ok: true, proven: (opts && opts.prove) || {} })));
       return { promise: app.moveLead(lead, 'visit'), subject: lead };
     },
     assertRolledBack(t) { assert.strictEqual(t.subject.stage, 'new', 'the stage rolled back'); },
