@@ -499,7 +499,8 @@ test('closeLead still moves the lead when the write succeeds', async () => {
   const { app, created } = freshApp();
   const lead = { id: 'L1', name: 'דני', stage: 'visit' };
   app.setState({ mode: 'edit', leads: [lead], irrelevantLeads: [] });
-  app.setApiPost(async () => ({ ok: true }));
+  // moveLeadIrrelevant_ echoes the closed lead (R3 proof).
+  app.setApiPost(async (b) => ({ ok: true, moved: true, lead: b.lead }));
 
   app.closeLead(lead);
   const back = created[created.length - 1];

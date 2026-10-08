@@ -187,3 +187,69 @@ restore, delete, saveAll proof) instead of weakening the rule; pins updated
 in reactivation-fix (proven order), lock-busy (every auto-save failure is
 reported), rename-guard (`saveAll(`), restore-to-active (the worker throws).
 SW `CACHE_VERSION` v50 → **v51** (live v50).
+
+### PR C — leads, meeting reports and the rest
+
+| # | Write | Fix |
+|---|---|---|
+| 19 | create lead | lead id minted per form; `saveAllProvingLead`. A failure keeps the form open with its values; «ביטול» on the duplicate-phone question keeps it open too (`showConfirm` gained an optional `onCancel`). |
+| 20–23 | ✏️ lead, stage / waitlist, inline fields, «נפגש עם» autosave | proven through `saveAll`'s `proven.leads`; rolled back otherwise. |
+| 24 | close lead | `trackedWrite`; requires the server's copy. Server: `mergeLeads_` refuses to re-append a lead that is on the closed / removed sheet (`closedSuppressed` → the tab resyncs), so a rollback after a lost answer can no longer put the lead in two sheets. |
+| 25 | restore lead | `trackedWrite`; requires the server's copy (already idempotent: delete + upsert by id). |
+| 26 | «הסר» | `trackedWrite`; requires the server's record — never a client-made stand-in. Server: a retry finds the lead on the removed sheet and replays it. |
+| 27 | delete meeting report | `trackedWrite`; requires `deleted.leadId`. |
+| 28 | meeting-report edit | proven; the conflict refresh is `queueDataResync()` (after the saves drain), never a direct `loadAll()`. |
+| 29 | `submitMeetingReport` (manager page) | Server: under the script lock (was the only unlocked writer). One `submissionId` per form (`mrNewSubmissionId`, reset by «דיווח נוסף»); `server.js` forwards it only in its exact shape; a retry replays the stored answer from the script cache (6 h, no report text) — no second `reportedAt`, «נצפה» not reset. The confirmation screen needs `saved.leadId` (`mrSavedProven`). |
+
+Tests: `test/write-path-hardening-leads.test.js` — 13 tests, all 13 FAILED
+on the parent (`ec5a8a1`). Stubs updated to answer like the server
+(contact-relation-select, current-managers, meeting-report-edit-delete,
+meeting-report-vered-view, meetingwith-autosave, loading-spinners,
+loading-feedback-rollout, optimistic-gap); two Code.gs harnesses gained the
+`LockService` / `CacheService` stubs every locked writer's harness has.
+SW `CACHE_VERSION` v51 → **v52** (live v51).
+
+## Result: the matrix after (before → after)
+
+| # | Write | R1 | R3 | Fixed in |
+|---|---|---|---|---|
+| 1 | reportPayment | PASS → PASS | PASS → PASS | (PR #201) |
+| 2 | void receipt | FAIL → PASS | FAIL → PASS | A |
+| 3 | savePayment | FAIL → PASS | FAIL → PASS | A |
+| 4 | ✏️ coverage | FAIL → PASS | FAIL → PASS | A |
+| 5 | ✏️ monthly amount | FAIL → PASS | FAIL → PASS | A |
+| 6 | ↩ amount | FAIL → PASS | FAIL → PASS | A |
+| 7 | editReceipt | FAIL → PASS | FAIL → PASS | A |
+| 8 | appendFunder | FAIL → PASS | FAIL → PASS | A |
+| 9 | saveCredit | FAIL → PASS | FAIL → PASS | A |
+| 10 | confirmPayment | FAIL → PASS | FAIL → PASS | A |
+| 11 | admit lead → patient | FAIL → PASS | FAIL → PASS | A (R1), B |
+| 12 | edit patient / move | FAIL → PASS | FAIL → PASS | A (R1), B |
+| 13 | discharge | FAIL → PASS | FAIL → PASS | B |
+| 14 | restore → new lead | FAIL → PASS | FAIL → PASS | B |
+| 15 | restore → active | FAIL → PASS | FAIL → PASS | B |
+| 16 | delete patient row | FAIL → PASS | FAIL → PASS | B |
+| 17 | delete duplicate discharge | FAIL → PASS | PASS* → PASS | B |
+| 18 | promote / heal auto-save | FAIL → PASS | FAIL → PASS (R2 too) | A, B |
+| 19 | create lead | FAIL → PASS | FAIL → PASS | A (R1), C |
+| 20 | edit lead | FAIL → PASS | FAIL → PASS | A (R1), C |
+| 21 | stage / waitlist | FAIL → PASS | FAIL → PASS | A (R1), C |
+| 22 | inline lead fields | FAIL → PASS | FAIL → PASS | A (R1), C |
+| 23 | «נפגש עם» autosave | FAIL → PASS | FAIL → PASS | A (R1), C |
+| 24 | close lead | FAIL → PASS | FAIL → PASS | C |
+| 25 | restore lead | FAIL → PASS | FAIL → PASS | C |
+| 26 | «הסר» | FAIL → PASS | FAIL → PASS | C |
+| 27 | delete meeting report | FAIL → PASS | FAIL → PASS | C |
+| 28 | meeting-report edit | FAIL → PASS | FAIL → PASS | A, C |
+| 29 | submitMeetingReport | FAIL → PASS | FAIL → PASS | C |
+
+Loads: `getData` R1 FAIL → PASS (A); `getCredits` R1 + R2 FAIL → PASS (A);
+`loadBillingRead` credits / overrides FAIL → PASS (A); `loadBillingControl`
+R1 FAIL → PASS (A); visibility / preserved / meeting-edit reloads FAIL →
+PASS (A, C). R2 was already PASS for `getData`, `getPayments`,
+`loadBillingControl` and the manager page.
+
+Not changed, by design: `showConfirm` still closes on a handled failure
+(restore lead — the worker rolls back and shows the error; there are no
+typed values to lose). The admission edge in PR B (a row folded into an
+existing sheet row) reports «לא אושרה» rather than claiming success.
