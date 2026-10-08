@@ -176,8 +176,12 @@ const PAYMENTS = [
   pay(GAL, '2026-09-05', { amount: 20000, status: 'paid', amountPaid: 20000, chargedAt: '2026-09-06T09:00:00+03:00' }),
   pay(GAL, '2026-09-06', { id: 'gal-void', amount: 20000, status: 'void', amountPaid: 20000 }),     // already voided: never a duplicate
   pay(DANA, '2026-07-15', { amount: 25000, status: 'paid', amountPaid: 25000, chargedAt: '2026-07-15T09:00:00+03:00' }),
-  pay(DANA, '2026-08-15', { amount: 25000, status: 'paid', amountPaid: 25000, chargedAt: '2026-08-15T09:00:00+03:00' }),
-  pay(DANA, '2026-09-15', { amount: 25000, status: 'paid', amountPaid: 25000, chargedAt: '2026-09-15T09:00:00+03:00' }),
+  // reported as פרטי before her first Funders row (pro-bono from 15/09): the old default decided it
+  pay(DANA, '2026-08-15', { amount: 25000, status: 'paid', amountPaid: 25000, chargedAt: '2026-08-15T09:00:00+03:00',
+    patientUid: 'pt-dana', receivedDate: '2026-08-15', funder: 'פרטי' }),
+  // her Funders row (pro-bono) starts on this receivedDate, so this one is NOT a defaulted funder
+  pay(DANA, '2026-09-15', { amount: 25000, status: 'paid', amountPaid: 25000, chargedAt: '2026-09-15T09:00:00+03:00',
+    patientUid: 'pt-dana', receivedDate: '2026-09-15', funder: 'פרטי' }),
   pay(DANA2, '2026-07-15', { amount: 25000, status: 'paid', amountPaid: 25000, chargedAt: '2026-07-15T09:00:00+03:00' }),
   pay(AMIT, '2026-09-07', { amount: 30000, status: 'paid', amountPaid: 30000, chargedAt: '2026-09-15T09:00:00+03:00' }),
   // the renamed-patient shape: a detached row, same house / entry day / amount
@@ -492,7 +496,7 @@ test('workbook: «סיכום» first, then one tab per kind, in order; every tab
   assert.deepEqual(wb.worksheets.map((w) => w.name), ['סיכום'].concat(cleanup.TABS.map((t) => t.name)));
   assert.deepEqual(cleanup.TABS.map((t) => t.name), ['שמות לא תואמים', 'פערי גבייה לבדיקה', 'תשלומים לא משויכים', 'תשלומים אחרי יציאה',
     'משוחררים ללא תאריך יציאה', 'ללא תאריך כניסה', 'מטופלים בסכום אפס', 'לידים ששולמו ולא נקלטו', 'כפילויות חשודות', 'זיכויים לבדיקה', 'חסר גורם מממן',
-    'מטופלי פרו-בונו']);
+    'מטופלי פרו-בונו', 'גורם מממן ברירת מחדל']);
   for (const ws of wb.worksheets) {
     assert.equal(ws.views[0].rightToLeft, true, ws.name);
     assert.equal(ws.views[0].state, 'frozen', ws.name);

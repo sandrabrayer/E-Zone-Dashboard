@@ -226,11 +226,12 @@ test('digest: money received is ALWAYS reported — a pro-bono patient\'s paymen
 
 /* ============================ the cleanup workbook ============================ */
 
-test('cleanup: «מטופלי פרו-בונו» lists the pro-bono patients (now, or with cycles left out); the tab is built LAST', () => {
+test('cleanup: «מטופלי פרו-בונו» lists the pro-bono patients (now, or with cycles left out); the tab is built after «חסר גורם מממן» (then «גורם מממן ברירת מחדל»)', () => {
   const t = { patients: rowsOf(PATIENTS), payments: rowsOf(PAYMENTS), credits: rowsOf([]), overrides: rowsOf([]), funders: rowsOf(HIST) };
   const r = plain(GS.sandbox.cleanupReport_(TODAY, t));
   assert.equal(r.ok, true);
-  assert.deepEqual(Array.from(GS.run('CLEANUP_SECTION_KEYS')).slice(-1), ['probono']);
+  // The defaulted-funder tab (CHANGELOG-defaulted-funder-report.md) was appended after it.
+  assert.deepEqual(Array.from(GS.run('CLEANUP_SECTION_KEYS')).slice(-2), ['probono', 'defaultedFunder']);
   assert.deepEqual(r.sections.probono.map((x) => [x.kind, x.name, x.from, x.current]),
     [['probono', 'אבי בדיקה', '2026-07-01', PB], ['probono', 'גל בדיקה', '2026-08-05', PB]]);
   assert.equal(r.counts.probono, 2);
@@ -241,7 +242,7 @@ test('cleanup: «מטופלי פרו-בונו» lists the pro-bono patients (now
   assert.equal(gal.current, 'פרטי');
   assert.equal(gal.excludedCycles, 1);
   // the workbook
-  assert.equal(cleanup.TABS[cleanup.TABS.length - 1].key, 'probono');
+  assert.equal(cleanup.TABS[cleanup.TABS.length - 2].key, 'probono');
   const spec = cleanup.buildCleanupSpec(r, new Date('2026-09-30T08:00:00Z'));
   const tab = spec.sheets.find((s) => s.name === 'מטופלי פרו-בונו');
   assert.ok(tab);

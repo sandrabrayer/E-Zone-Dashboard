@@ -1234,7 +1234,8 @@ const CONTROLLER_CLEANUP_SCHEMA = {
   ok: true, error: true, message: true,
   today: true, recordsCutoff: true, notAPatientExcluded: true, missingTabs: true, generatedAt: true,
   counts: { names: true, gaps: true, detached: true, outsideStay: true, releasedNoExit: true, noEntryDate: true,
-    zeroAmount: true, leads: true, duplicates: true, credits: true, noFunder: true, probono: true },
+    zeroAmount: true, leads: true, duplicates: true, credits: true, noFunder: true, probono: true,
+    defaultedFunder: true },
   sections: {
     names: ['kind', 'houseId', 'name', 'recordedName', 'otherName', 'entryDate', 'otherEntryDate', 'proposal', 'confidence', 'via', 'why', 'refs'],
     gaps: ['kind', 'houseId', 'name', 'status', 'entryDate', 'exitDate', 'start', 'end', 'due', 'expected', 'charged', 'received', 'balance',
@@ -1249,6 +1250,8 @@ const CONTROLLER_CLEANUP_SCHEMA = {
     credits: ['kind', 'houseId', 'name', 'entryDate', 'exitDate', 'amount', 'payoutDate', 'rule', 'error'],
     noFunder: ['kind', 'houseId', 'name', 'status', 'entryDate', 'funder'],
     probono: ['kind', 'houseId', 'name', 'status', 'entryDate', 'exitDate', 'from', 'current', 'excludedCycles'],
+    // CHANGELOG-defaulted-funder-report.md — no patientUid for the controller view.
+    defaultedFunder: ['kind', 'houseId', 'name', 'paymentId', 'receipt', 'receivedDate', 'amount', 'fix'],
   },
 };
 const CONTROLLER_FORECAST_BY_HOUSE_ = ['houseId', 'count', 'total'];
@@ -10755,9 +10758,13 @@ function debtAgingAction_(params) {
  *              they read as «לא הוגדר» — no default (cleanupNoFunder_)
  *   probono    «מטופלי פרו-בונו»: patients whose funder is pro-bono today
  *              (released: on the exit day), or who have cycles debtAging_
- *              left out as pro-bono (cleanupProbono_). Appended LAST. */
+ *              left out as pro-bono (cleanupProbono_).
+ *   defaultedFunder  payments the old default funder decided (written as the
+ *              private label with no Funders row on their receivedDate) —
+ *              defaultedFunderPayments_, CHANGELOG-defaulted-funder-report.md.
+ *              Appended LAST. */
 const CLEANUP_SECTION_KEYS = ['names', 'gaps', 'detached', 'outsideStay', 'releasedNoExit', 'noEntryDate',
-  'zeroAmount', 'leads', 'duplicates', 'credits', 'noFunder', 'probono'];
+  'zeroAmount', 'leads', 'duplicates', 'credits', 'noFunder', 'probono', 'defaultedFunder'];
 /* A gap cycle older than this, with no later activity, is "probably a
  * data-entry error" (cleanupProbablyEntryError_). */
 const CLEANUP_STALE_DAYS = 30;
@@ -11107,6 +11114,8 @@ function cleanupReport_(todayIso, tabs) {
     credits: cleanupCredits_(forecast),
     noFunder: cleanupNoFunder_(m, objs('funders')),
     probono: cleanupProbono_(m, objs('funders'), aging, today),
+    // Every Payments row (cycles AND receipts), from the derived tabs.
+    defaultedFunder: defaultedFunderPayments_(objs('payments').concat(objs('receipts')), objs('funders')),
   };
   const counts = {};
   CLEANUP_SECTION_KEYS.forEach(function (k) { counts[k] = sections[k].length; });
@@ -11134,6 +11143,119 @@ function cleanupReportAction_() {
   } catch (e) {
     return { ok: false, error: (e && e.code) || 'cleanup_failed' };
   }
+}
+
+/* ===== Payments the old default funder decided (READ-ONLY) =====
+ * CHANGELOG-defaulted-funder-report.md. Until #178, a payment report that
+ * named no funder for a patient without a Funders row was written as פרטי
+ * (the old default constant, removed in #178). The report form also pre-selected פרטי, so a
+ * receipt sent without anyone choosing could carry it too. This lists every
+ * such row so a person decides. A row is listed when ALL of these hold:
+ *   - funder is exactly the private label (PAYMENT_FUNDERS[0]);
+ *   - it has a readable receivedDate (the default only ever ran on a report,
+ *     and a report always has one);
+ *   - it is not void (a voided row has nothing left to fix);
+ *   - the patient (patientUid, else linkPatientUid) has NO Funders row with
+ *     a recognized label and an effectiveFrom <= that receivedDate. This is
+ *     the rule the old currentFunderFrom_ used, so the old default is exactly
+ *     what decided the row. A patient with no id cannot have a Funders row,
+ *     so the row is listed.
+ * How each row is fixed depends on its type: a cycle row (savePayment)
+ * takes updatePayment with the right funder; a receipt (rcpt-…) is
+ * immutable (receipt_immutable), so it is voided and reported again.
+ * PURE. paymentObjs / funderObjs: sheet row objects (Payments, Funders).
+ * → rows sorted by receivedDate, then id:
+ *   { kind, paymentId, receipt, houseId, name, patientUid, receivedDate,
+ *     amount, fix: 'update_payment' | 'void_and_rereport' } */
+function defaultedFunderPayments_(paymentObjs, funderObjs) {
+  const day = function (v) { return v instanceof Date ? refundForecastIso_(v) : (paymentReportDate_(v) || ''); };
+  const first = {};   // patientId → the earliest effectiveFrom of a recognized row
+  (Array.isArray(funderObjs) ? funderObjs : []).forEach(function (r) {
+    const id = paymentReportText_(r && r.patientId);
+    const eff = day(r && r.effectiveFrom);
+    if (!id || !eff || PAYMENT_FUNDERS.indexOf(paymentReportText_(r.funder)) < 0) return;
+    if (!first[id] || eff < first[id]) first[id] = eff;
+  });
+  const privateLabel = PAYMENT_FUNDERS[0];
+  return (Array.isArray(paymentObjs) ? paymentObjs : []).filter(function (p) {
+    if (!p || paymentReportText_(p.funder) !== privateLabel || isVoidStatus_(p.status)) return false;
+    const rd = day(p.receivedDate);
+    if (!rd) return false;
+    const uid = paymentReportText_(p.patientUid) || paymentReportText_(p.linkPatientUid);
+    return !uid || !first[uid] || first[uid] > rd;
+  }).map(function (p) {
+    const receipt = isReceiptRow_(p);
+    const amountPaid = Number(p.amountPaid) || 0;
+    return {
+      kind: 'defaulted_funder',
+      paymentId: paymentReportText_(p.id),
+      receipt: receipt,
+      houseId: paymentReportText_(p.houseId),
+      name: paymentReportText_(p.patientName),
+      patientUid: paymentReportText_(p.patientUid) || paymentReportText_(p.linkPatientUid),
+      receivedDate: day(p.receivedDate),
+      amount: receipt ? (Number(p.amount) || 0) : (amountPaid > 0 ? amountPaid : (Number(p.amount) || 0)),
+      fix: receipt ? 'void_and_rereport' : 'update_payment',
+    };
+  }).sort(function (a, b) {
+    return (a.receivedDate < b.receivedDate ? -1 : a.receivedDate > b.receivedDate ? 1 : 0) ||
+      (a.paymentId < b.paymentId ? -1 : a.paymentId > b.paymentId ? 1 : 0);
+  });
+}
+
+/* Editor-run, DRY RUN: writes nothing to the spreadsheet. It opens Payments
+ * and Funders with getSheetByName (a missing tab reads as empty and is never
+ * created) and reads them with getValues. There is no lock, no AuditLog row
+ * and no property. Its ONLY write is one new private Google Doc
+ * ("E-Zone תשלומים עם גורם מממן ברירת מחדל YYYY-MM-DD HH:mm", not shared or
+ * moved), whose URL it logs, the same as reconciliationReportNow. Public (Run
+ * dropdown), and handle_ never names it, so it is not reachable over HTTP.
+ * The log carries counts and the URL only: no names (no PII in logs).
+ * Returns { rows, count, total, title, url }. */
+function defaultedFunderPaymentsReportNow() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const objs = function (name, cols) {
+    const sh = ss.getSheetByName(name);
+    return sh ? recReadSheet_(sh, cols).rows.map(function (r) { return r.obj; }) : [];
+  };
+  const rows = defaultedFunderPayments_(objs(PAYMENTS_SHEET, PAYMENT_COLUMNS), objs(FUNDERS_SHEET, FUNDER_COLUMNS));
+  const total = rows.reduce(function (s, r) { return Math.round((s + r.amount) * 100) / 100; }, 0);
+  const title = 'E-Zone תשלומים עם גורם מממן ברירת מחדל ' + Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'yyyy-MM-dd HH:mm');
+  const doc = DocumentApp.create(title);
+  const body = doc.getBody();
+  const paras = body.getParagraphs();
+  for (let i = 0; i < paras.length; i++) paras[i].setLeftToRight(false);
+  recDocPara_(body, title, DocumentApp.ParagraphHeading.TITLE);
+  recDocPara_(body, 'דוח לקריאה בלבד: הגיליון לא שונה. תשלומים שנרשמו כ«' + PAYMENT_FUNDERS[0] +
+    '» כשלמטופל לא הייתה שורה בלשונית Funders בתאריך קבלת התשלום — כלומר ברירת המחדל הישנה קבעה את הגורם המממן, לא אדם.', null);
+  recDocPara_(body, 'נמצאו ' + rows.length + ' תשלומים, סה״כ ' + recShekel_(total) + '.', null);
+  recDocPara_(body, 'איך מתקנים: (1) לקבוע את הגורם המממן הנכון בגבייה ← «השלמת גורם מממן» (או בכרטיס המטופל), מתאריך הכניסה. ' +
+    '(2) שורת מחזור — לתקן את הגורם המממן של התשלום (updatePayment). ' +
+    'קבלה (rcpt-…) אינה ניתנת לעריכה — לבטל אותה («ביטול קבלה») ולדווח מחדש עם הגורם המממן הנכון.', null);
+  if (!rows.length) recDocPara_(body, 'אין פריטים.', null);
+  else {
+    recDocTable_(body, [['מזהה תשלום', 'סוג', 'מטופל', 'בית', 'תאריך קבלה', 'סכום', 'תיקון']].concat(rows.map(function (r) {
+      return [r.paymentId, r.receipt ? 'קבלה' : 'מחזור', r.name || '—', defaultedFunderHouseName_(r.houseId),
+        recDateText_(r.receivedDate), recShekel_(r.amount), r.receipt ? 'ביטול ודיווח מחדש' : 'updatePayment'];
+    })));
+  }
+  doc.saveAndClose();
+  const url = doc.getUrl();
+  Logger.log('defaultedFunderPaymentsReportNow — DRY RUN, READ-ONLY on the spreadsheet (no cell, tab, lock or property written). ' +
+    'Rows: ' + rows.length + ' (' + rows.filter(function (r) { return r.receipt; }).length + ' receipts), total ₪' + recMoneyText_(total) +
+    '. Report: ' + title + ' — ' + url);
+  return { rows: rows, count: rows.length, total: total, title: title, url: url };
+}
+
+/* A patients-sheet house id → its Hebrew name (MANAGER_HOUSE_NAMES is keyed
+ * by the managers' ids), else the id itself. Pure. */
+function defaultedFunderHouseName_(houseId) {
+  const id = paymentReportText_(houseId);
+  const keys = Object.keys(MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID);
+  for (let i = 0; i < keys.length; i++) {
+    if (MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[keys[i]] === id) return MANAGER_HOUSE_NAMES[keys[i]];
+  }
+  return id || '—';
 }
 
 function creditStr_(v, max) {
