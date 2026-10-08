@@ -967,6 +967,18 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
 
+## Dashboard Apps Script: duplicate-payment report (October 8, 2026)
+
+Detail: `CHANGELOG-duplicate-payments-report.md`. **Code.gs only** (clasp CI
+deploys it on merge). No column, sheet, Script Property, env var or SW change.
+
+- **What it does:** `duplicatePaymentsReportNow()` is run from the editor. It
+  lists non-voided Payments money rows created since 30/09/2026 that share a
+  patient or cycle, have the same amount, and either share a payment date or
+  were created within 10 minutes of each other.
+- **Output:** one private Google Doc; the function logs its URL.
+- **Read-only:** the spreadsheet is never written.
+
 ## Dashboard: «דוח תשלום» persistence fix (October 8, 2026)
 
 Detail: `CHANGELOG-payment-report-persistence.md`. **Railway + Code.gs**

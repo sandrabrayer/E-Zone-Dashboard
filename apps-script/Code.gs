@@ -14883,6 +14883,155 @@ function installDigestTriggerNow() {
   return res;
 }
 
+/* ===== Duplicate-payment report (READ-ONLY on the spreadsheet — run from the editor) =====
+ * CHANGELOG-duplicate-payments-report.md.
+ *
+ * duplicatePaymentsReportNow() lists the Payments rows that look like the
+ * SAME money recorded twice, and writes them into ONE new, private Google Doc
+ * ("E-Zone דוח תשלומים כפולים YYYY-MM-DD HH:mm"), right-to-left, whose URL it
+ * logs — the reconciliationReportNow() pattern (recReadSheet_, recDocPara_,
+ * recDocTable_). The spreadsheet is NEVER written: getSheetByName +
+ * getValues only, no lock, no AuditLog row, no property. The Doc is not
+ * shared or moved.
+ *
+ * Which rows (dupPaymentsFind_, pure):
+ *   - a money row: a receipt ('rcpt-…') or a legacy cycle marked paid /
+ *     partial with NO receipt linked to it (a cycle that has receipts carries
+ *     their derived total, so comparing it with them would flag every report);
+ *   - not voided (status void / מבוטל);
+ *   - created on/after DUP_REPORT_SINCE (Israel time): recordedAt, else
+ *     timestamp, else chargedAt.
+ * Two such rows are a suspected duplicate when they share the patient
+ * (patientUid, else patientId) OR the cycle (a receipt's linked cycle id / a
+ * cycle's own id), AND the same amount, AND either the same payment date
+ * (receivedDate, else dueDate) or creation times within 10 minutes. Pairs are
+ * grouped (a chain of three is one group). Intentionally PUBLIC (Run menu)
+ * and NOT reachable over HTTP: handle_'s action allow-list never names it. */
+const DUP_REPORT_SINCE = '2026-09-30';
+const DUP_REPORT_WINDOW_MS = 10 * 60 * 1000;
+
+function duplicatePaymentsReportNow() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PAYMENTS_SHEET);
+  const read = sh ? recReadSheet_(sh, PAYMENT_COLUMNS) : { rows: [] };
+  const report = dupPaymentsFind_(read.rows, DUP_REPORT_SINCE);
+  report.missingSheet = !sh;
+  const now = new Date();
+  const two = function (n) { return ('0' + n).slice(-2); };
+  const title = 'E-Zone דוח תשלומים כפולים ' + localPartsISO_(now) + ' ' + two(now.getHours()) + ':' + two(now.getMinutes());
+  const out = dupPaymentsWriteDoc_(report, title);
+  report.title = title;
+  report.url = out.url;
+  Logger.log('duplicatePaymentsReportNow — READ-ONLY on the spreadsheet. ' + report.groups.length + ' group(s), ' +
+    report.rowCount + ' row(s) since ' + DUP_REPORT_SINCE + '. Report: ' + title + ' — ' + out.url);
+  return report;
+}
+
+/* A cell's creation instant in ms, or NaN. Date cells as-is; strings through
+ * Date.parse (recordedAt is ISO with an offset, timestamp is ISO UTC). Pure. */
+function dupCreatedMs_(obj) {
+  const o = obj || {};
+  const cands = [o.recordedAt, o.timestamp, o.chargedAt];
+  for (let i = 0; i < cands.length; i++) {
+    const v = cands[i];
+    if (v instanceof Date && !isNaN(v.getTime())) return v.getTime();
+    const t = String(v == null ? '' : v).trim();
+    if (!t) continue;
+    const ms = Date.parse(t);
+    if (!isNaN(ms)) return ms;
+  }
+  return NaN;
+}
+
+/* 'YYYY-MM-DD' of a date cell (receivedDate, else dueDate), or ''. Pure. */
+function dupPayDate_(obj) {
+  const o = obj || {};
+  const pick = function (v) { return v instanceof Date ? localPartsISO_(v) : (paymentReportDate_(v) || coverageDateISO_(v) || ''); };
+  return pick(o.receivedDate) || pick(o.dueDate);
+}
+
+/* rows: [{ rowNumber, obj }] (recReadSheet_). PURE.
+ * → { since, rowCount, groups: [[entry…]] }, entry = { rowNumber, patient,
+ *   house, amount, date, method, reference, receiptId, created, createdMs }. */
+function dupPaymentsFind_(rows, sinceIso) {
+  const list = Array.isArray(rows) ? rows : [];
+  const objs = list.map(function (r) { return (r && r.obj) || {}; });
+  const L = linkReceiptsToCycles_(objs);
+  const cycleOf = {};
+  L.receipts.forEach(function (rc) { cycleOf[rc.index] = rc.cycleIndex >= 0 ? paymentCell_(objs[rc.cycleIndex].id) : ''; });
+  const sinceMs = Date.parse(String(sinceIso || DUP_REPORT_SINCE) + 'T00:00:00+03:00');
+
+  const entries = [];
+  objs.forEach(function (o, i) {
+    if (isVoidStatus_(o.status)) return;
+    const receipt = isReceiptRow_(o);
+    if (!receipt && (!paymentIsCharged_(o.status) || L.byCycle[i])) return;
+    const createdMs = dupCreatedMs_(o);
+    if (isNaN(createdMs) || createdMs < sinceMs) return;
+    const paid = paymentCell_(o.amountPaid);
+    const amount = receiptMoney_(paid !== '' && receiptMoney_(paid) > 0 ? paid : o.amount);
+    if (amount <= 0) return;
+    entries.push({
+      index: i, rowNumber: list[i].rowNumber,
+      patientKey: paymentCell_(o.patientUid) || paymentCell_(o.patientId),
+      cycleKey: receipt ? (cycleOf[i] || '') : paymentCell_(o.id),
+      patient: paymentCell_(o.patientName), house: paymentCell_(o.houseId), amount: amount,
+      date: dupPayDate_(o), method: paymentCell_(o.method), reference: paymentCell_(o.reference),
+      receiptId: receipt ? paymentCell_(o.id) : '',
+      created: o.recordedAt instanceof Date || o.timestamp instanceof Date
+        ? new Date(createdMs).toISOString() : (paymentCell_(o.recordedAt) || paymentCell_(o.timestamp) || paymentCell_(o.chargedAt)),
+      createdMs: createdMs,
+    });
+  });
+
+  // Union-find over the matching pairs.
+  const parent = entries.map(function (_, k) { return k; });
+  const find = function (k) { while (parent[k] !== k) { parent[k] = parent[parent[k]]; k = parent[k]; } return k; };
+  for (let a = 0; a < entries.length; a++) {
+    for (let b = a + 1; b < entries.length; b++) {
+      const x = entries[a], y = entries[b];
+      const samePatient = !!x.patientKey && x.patientKey === y.patientKey;
+      const sameCycle = !!x.cycleKey && x.cycleKey === y.cycleKey;
+      if (!(samePatient || sameCycle) || x.amount !== y.amount) continue;
+      const sameDate = !!x.date && x.date === y.date;
+      const close = Math.abs(x.createdMs - y.createdMs) <= DUP_REPORT_WINDOW_MS;
+      if (sameDate || close) parent[find(b)] = find(a);
+    }
+  }
+  const byRoot = {};
+  entries.forEach(function (e, k) { const r = find(k); (byRoot[r] = byRoot[r] || []).push(e); });
+  const groups = Object.keys(byRoot).map(function (r) { return byRoot[r]; })
+    .filter(function (g) { return g.length > 1; })
+    .map(function (g) { return g.sort(function (p, q) { return p.createdMs - q.createdMs || p.rowNumber - q.rowNumber; }); })
+    .sort(function (p, q) { return p[0].createdMs - q[0].createdMs; });
+  return { since: String(sinceIso || DUP_REPORT_SINCE), rowCount: entries.length, groups: groups };
+}
+
+/* Writes the report into ONE new Google Doc → { url, id }. Nothing is shared,
+ * moved or written anywhere else. */
+function dupPaymentsWriteDoc_(report, title) {
+  const doc = DocumentApp.create(title);
+  const body = doc.getBody();
+  const first = body.getParagraphs();
+  for (let i = 0; i < first.length; i++) first[i].setLeftToRight(false);
+  recDocPara_(body, title, DocumentApp.ParagraphHeading.TITLE);
+  recDocPara_(body, 'דוח לקריאה בלבד: הגיליון לא שונה. שורות תשלום (לא מבוטלות) שנוצרו מ-' + recDateText_(report.since) +
+    ': אותו מטופל או מחזור, אותו סכום, ואותו תאריך תשלום או נוצרו בהפרש של עד 10 דקות.', null);
+  if (report.missingSheet) recDocPara_(body, 'לשונית Payments לא נמצאה.', null);
+  recDocPara_(body, 'נבדקו ' + report.rowCount + ' שורות. נמצאו ' + report.groups.length + ' קבוצות חשודות.', null);
+  if (!report.groups.length) { recDocPara_(body, 'אין פריטים.', null); doc.saveAndClose(); return { url: doc.getUrl(), id: doc.getId() }; }
+  const rows = [['קבוצה', 'שורה בגיליון', 'מטופל', 'בית', 'סכום', 'תאריך', 'אמצעי', 'אסמכתא', 'מזהה קבלה', 'נוצר']];
+  report.groups.forEach(function (g, n) {
+    g.forEach(function (e) {
+      rows.push([String(n + 1), String(e.rowNumber), e.patient, e.house, recShekel_(e.amount), recDateText_(e.date),
+        e.method, e.reference, e.receiptId, e.created]);
+    });
+  });
+  recDocTable_(body, rows);
+  doc.saveAndClose();
+  return { url: doc.getUrl(), id: doc.getId() };
+}
+
+
 /* ===== Missing-patient diagnostic (READ-ONLY — run from the editor) =====
  *
  * diagnoseRamotPatientsNow() answers "where did this ramot patient go?" from
