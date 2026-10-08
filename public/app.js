@@ -785,27 +785,94 @@ let _savesInFlight = 0;
  * the write's echo had been applied and overwrote it with the sheet as it
  * was before — the row Vered had just reported read «לא שולם» again.
  *
- * The guard: every confirmed (or in-flight) payment write bumps
- * _paymentsWriteSeq; every getPayments read takes a ticket when it STARTS.
+ * The guard: every confirmed (or in-flight) payment write bumps the
+ * 'payments' write counter (noteWrite, below); every getPayments read takes
+ * a ticket when it STARTS.
  * A read is applied only if no write happened since its ticket and no
  * newer read was applied already — otherwise it is discarded and the
  * current (newer, confirmed) money state stays on screen. */
-let _paymentsWriteSeq = 0;
-let _paymentsReadSeq = 0;
-let _paymentsAppliedReadSeq = 0;
 /* The post-save reconcile in flight (tests await it). */
 let _paymentsReconcile = null;
 const PAYMENTS_LOAD_FAILED_HE = 'טעינת התשלומים נכשלה — הסטטוסים המוצגים אינם מעודכנים, רעננו את הדף';
+const CREDITS_LOAD_FAILED_HE = 'טעינת הזיכויים נכשלה — הזיכויים המוצגים אינם מעודכנים, רעננו את הדף';
+
+/* ===== Write-path freshness, every resource (CHANGELOG-write-path-hardening.md) =====
+ * The #201 guard above, generalized: one sequence slot per RESOURCE (the
+ * read that fills it). A write to a resource bumps its write counter (before
+ * it is sent AND when it settles); a read takes a ticket when it STARTS and
+ * is applied only if no write to that resource happened since, and no newer
+ * read of it was applied already.
+ *   'payments'       getPayments  → payments / receipts / funders
+ *   'billingOverrides' getData    → state.billingOverrides
+ *   'credits'        getCredits   → state.credits
+ *   'billingControl' billingControlQueue → the «בקרת גבייה» queue */
+const _freshSlots = {};
+function freshSlot(resource) {
+  return _freshSlots[resource] || (_freshSlots[resource] = { write: 0, read: 0, applied: 0 });
+}
+function beginRead(resource) {
+  const s = freshSlot(resource);
+  s.read++;
+  return { resource, read: s.read, write: s.write };
+}
+function noteWrite(resource) {
+  freshSlot(resource).write++;
+}
+function readIsCurrent(ticket) {
+  if (!ticket) return false;
+  const s = freshSlot(ticket.resource);
+  return ticket.write === s.write && ticket.read > s.applied;
+}
+function markReadApplied(ticket) {
+  if (ticket) freshSlot(ticket.resource).applied = ticket.read;
+}
+/* Apply `fn` for a read answered under `ticket` — or discard it as stale.
+ * → true when applied. */
+function applyIfCurrent(ticket, fn) {
+  if (!readIsCurrent(ticket)) {
+    console.warn('[E-ZONE] ' + (ticket && ticket.resource) + ' answer discarded — a write landed after it started');
+    return false;
+  }
+  fn();
+  markReadApplied(ticket);
+  return true;
+}
+
+/* Run ONE write: it counts in _savesInFlight (so the visibility resync never
+ * reloads under it) and every read of `resources` that started before it
+ * settles is discarded. */
+async function trackedWrite(resources, fn) {
+  const list = Array.isArray(resources) ? resources : [resources];
+  _savesInFlight++;
+  list.forEach(noteWrite);
+  try {
+    return await fn();
+  } finally {
+    list.forEach(noteWrite);
+    _savesInFlight--;
+  }
+}
+
+/* "Saved" only with server proof: ok:true AND the persisted row's id equal
+ * to the one we wrote (or, with no expected id, any id). Otherwise throws
+ * WRITE_NOT_CONFIRMED_HE — the caller's existing failure path runs (the
+ * modal stays open, the optimistic change rolls back). → the response. */
+const WRITE_NOT_CONFIRMED_HE = 'השמירה לא אושרה בשרת — נסו שוב';
+function requireSaved(res, idOf, expectId) {
+  const id = res && res.ok === true ? String(idOf(res) || '') : '';
+  if (!id || (expectId !== undefined && id !== String(expectId))) {
+    const err = new Error(WRITE_NOT_CONFIRMED_HE);
+    err.data = res;
+    throw err;
+  }
+  return res;
+}
 
 function beginPaymentsRead() {
-  _paymentsReadSeq++;
-  return { read: _paymentsReadSeq, write: _paymentsWriteSeq };
+  return beginRead('payments');
 }
 function notePaymentsWrite() {
-  _paymentsWriteSeq++;
-}
-function paymentsReadIsCurrent(ticket) {
-  return !!ticket && ticket.write === _paymentsWriteSeq && ticket.read > _paymentsAppliedReadSeq;
+  noteWrite('payments');
 }
 /* A getPayments answer → the three state lists. Throws on a malformed row,
  * BEFORE anything is assigned, so a bad answer never half-replaces state. */
@@ -820,15 +887,11 @@ function paymentsStateFrom(pr) {
  * → true when applied. */
 function applyPaymentsRead(ticket, pr) {
   const next = paymentsStateFrom(pr);
-  if (!paymentsReadIsCurrent(ticket)) {
-    console.warn('[E-ZONE] getPayments answer discarded — a payment write landed after it started');
-    return false;
-  }
-  state.payments = next.payments;
-  state.receipts = next.receipts;
-  state.funders = next.funders;
-  _paymentsAppliedReadSeq = ticket.read;
-  return true;
+  return applyIfCurrent(ticket, () => {
+    state.payments = next.payments;
+    state.receipts = next.receipts;
+    state.funders = next.funders;
+  });
 }
 
 /* Save full state to Sheets. Serialized so overlapping calls don't interleave. */
@@ -1753,19 +1816,25 @@ function startTimedRead(params) {
 async function loadBillingRead() {
   if (!billingReadView()) return;
   const paymentsTicket = beginPaymentsRead();
+  const overridesTicket = beginRead('billingOverrides');
+  const creditsTicket = beginRead('credits');
   const [d, p, c] = await Promise.all([
     startTimedRead({ action: 'getData' }), startTimedRead({ action: 'getPayments' }), startTimedRead({ action: 'getCredits' }),
   ]);
   if (d.ok && d.value && typeof d.value === 'object') {
     state.patients = parsePatients(d.value.patients);
-    state.billingOverrides = (Array.isArray(d.value.billingOverrides) ? d.value.billingOverrides : [])
+    const nextOverrides = (Array.isArray(d.value.billingOverrides) ? d.value.billingOverrides : [])
       .map(normalizeBillingOverride).filter(o => o.patientId && o.month);
+    applyIfCurrent(overridesTicket, () => { state.billingOverrides = nextOverrides; });
   }
   // The Funders rows ride along: pro-bono cycles are not debt (isProbonoOn).
   // Applied only if no payment write landed since the read started.
   if (p.ok && p.value) applyPaymentsRead(paymentsTicket, p.value);
   else if (!p.ok) showError(PAYMENTS_LOAD_FAILED_HE);
-  if (c.ok && c.value) state.credits = (Array.isArray(c.value.credits) ? c.value.credits : []).map(normalizeCredit).filter(x => x.id);
+  if (c.ok && c.value) {
+    const nextCredits = (Array.isArray(c.value.credits) ? c.value.credits : []).map(normalizeCredit).filter(x => x.id);
+    applyIfCurrent(creditsTicket, () => { state.credits = nextCredits; });
+  } else if (!c.ok) showError(CREDITS_LOAD_FAILED_HE);
   if (!d.ok) showError('טעינת «גבייה» נכשלה — ' + ((d.error && d.error.message) || 'שגיאה'));
   renderBilling();
   renderCreditsPayouts();
@@ -1788,6 +1857,8 @@ async function loadAll() {
   const finance      = financeView();
   const dataRead     = startTimedRead({ action: 'getData' });
   const paymentsTicket = finance ? beginPaymentsRead() : null;
+  const overridesTicket = beginRead('billingOverrides');
+  const creditsTicket = finance ? beginRead('credits') : null;
   const paymentsRead = finance ? startTimedRead({ action: 'getPayments' }) : null;
   const creditsRead  = finance ? startTimedRead({ action: 'getCredits' }) : null;
   const timing = {};
@@ -1883,9 +1954,11 @@ async function loadAll() {
      * still loads. Foundation phase: state only, nothing renders it. Rows
      * without a patientId+month are dropped (can't key a valid override). */
     const rawOverrides = Array.isArray(data.billingOverrides) ? data.billingOverrides : [];
-    state.billingOverrides = rawOverrides
+    const nextOverrides = rawOverrides
       .map(normalizeBillingOverride)
       .filter(o => o.patientId && o.month);
+    // Applied only if no amount edit landed since the read started.
+    applyIfCurrent(overridesTicket, () => { state.billingOverrides = nextOverrides; });
     console.log('[E-ZONE] billingOverrides loaded:', state.billingOverrides.length);
 
     // Payments live on their own sheet and their own action. A failed read
@@ -1921,11 +1994,15 @@ async function loadAll() {
       if (!got.ok) throw got.error;
       const cr = got.value;
       const rawCredits = Array.isArray(cr && cr.credits) ? cr.credits : [];
-      state.credits = rawCredits.map(normalizeCredit).filter(c => c.id);
+      const nextCredits = rawCredits.map(normalizeCredit).filter(c => c.id);
+      applyIfCurrent(creditsTicket, () => { state.credits = nextCredits; });
       console.log('[E-ZONE] getCredits →', state.credits.length, 'records');
     } catch (err) {
-      console.warn('[E-ZONE] getCredits failed, assuming empty:', err && err.message);
-      state.credits = [];
+      // A failed read KEEPS the credits on screen and says so — it used to
+      // wipe them to [] silently (write-path hardening, R2).
+      console.warn('[E-ZONE] getCredits failed — keeping the credits on screen:', err && err.message);
+      if (err && err.message === 'unauthorized') throw err;
+      showError(CREDITS_LOAD_FAILED_HE + (err && err.message ? ' (' + err.message + ')' : ''));
     }
     timing.fetched = Math.round(perfNow() - t0);
 
@@ -7759,13 +7836,17 @@ async function reloadCredits() {
    * what the screen shows — so it raises the same #loading-banner loadAll does,
    * cleared in a finally so a failed reload cannot strand it on screen. */
   setLoading(true);
+  const ticket = beginRead('credits');
   try {
     const cr = await apiGet({ action: 'getCredits' });
     const raw = Array.isArray(cr && cr.credits) ? cr.credits : [];
-    state.credits = raw.map(normalizeCredit).filter(c => c.id);
+    const next = raw.map(normalizeCredit).filter(c => c.id);
+    applyIfCurrent(ticket, () => { state.credits = next; });
     return true;
   } catch (e) {
+    // The credits on screen stay; say so (write-path hardening, R2).
     console.warn('[E-ZONE] credits reload failed:', e && e.message);
+    if (!(e && e.message === 'unauthorized')) showError(CREDITS_LOAD_FAILED_HE);
     return false;
   } finally {
     setLoading(false);
@@ -7782,7 +7863,7 @@ async function saveCredit(credit) {
   if (state.mode !== 'edit') throw new Error('שמירת זיכוי אפשרית רק בעריכה');
   let res;
   try {
-    res = await apiPost({ action: 'saveCredit', credit });
+    res = await trackedWrite('credits', () => apiPost({ action: 'saveCredit', credit }));
   } catch (e) {
     if (e && e.data && e.data.error === 'conflict') {
       // Refresh FIRST so the banner's "refreshed" claim holds, then refuse.
@@ -12091,11 +12172,11 @@ async function savePayment(payment) {
   // updated in place by buildBillingRow's recompute.
   renderBillingMonthlySummary(state.billingDate || todayISO());
 
-  // Reads that started before this write must not overwrite it.
-  notePaymentsWrite();
+  // Reads that started before this write must not overwrite it, and the
+  // visibility resync waits for it (trackedWrite).
   try {
-    const res = await apiPost({ action: 'savePayment', payment });
-    notePaymentsWrite();
+    const res = await trackedWrite('payments', async () =>
+      requireSaved(await apiPost({ action: 'savePayment', payment }), r => r.payment && r.payment.id, payment.id));
     /* ADOPT THE SERVER'S COPY when it echoes one. The link columns
      * (linkedBy / linkedAt) are stamped SERVER-SIDE from the signed session
      * cookie and the server's clock — the client cannot know them, and must
@@ -12434,10 +12515,12 @@ function openReceiptEditModal(receipt) {
 async function submitReceiptEdit(receipt, fields, reason) {
   const edit = { id: receipt.id, fields: Object.assign({}, fields) };
   if (reason) edit.reason = reason;
-  const res = await apiPost({ action: 'editReceipt', edit });
-  notePaymentsWrite();   // an older in-flight getPayments must not undo it
+  // An older in-flight getPayments must not undo it; "saved" only with the
+  // stored receipt echoed back (a replay echoes it too).
+  const res = await trackedWrite('payments', async () =>
+    requireSaved(await apiPost({ action: 'editReceipt', edit }), r => r.receipt && r.receipt.id, receipt.id));
   const at = state.receipts.findIndex(x => x.id === receipt.id);
-  if (at >= 0 && res && res.receipt) {
+  if (at >= 0) {
     state.receipts[at] = normalizeReceipt(Object.assign({}, res.receipt, { cycleId: receipt.cycleId }));
   }
   renderBilling();
@@ -12488,16 +12571,16 @@ function openReceiptVoidModal(receipt) {
 }
 
 async function voidReceipt(receipt, note) {
-  const res = await apiPost({ action: 'savePayment', payment: {
+  // Counted as a save in flight; "voided" only with the stored row echoed
+  // back. A retry of a void that already landed is answered, not refused.
+  const res = await trackedWrite('payments', async () => requireSaved(await apiPost({ action: 'savePayment', payment: {
     id: receipt.id, patientId: receipt.patientId, patientName: receipt.patientName, houseId: receipt.houseId,
     dueDate: receipt.dueDate, status: PAYMENT_VOID_STATUS, linkPatientUid: '', linkStatus: 'duplicate',
     linkNote: String(note).slice(0, PAYMENT_LINK_NOTE_MAX), timestamp: new Date().toISOString(),
-  } });
-  notePaymentsWrite();   // an older in-flight getPayments must not undo it
+  } }), r => r.payment && r.payment.id, receipt.id));
   const at = state.receipts.findIndex(x => x.id === receipt.id);
   if (at >= 0) {
-    const echo = res && res.payment ? normalizeReceipt(Object.assign({}, res.payment, { cycleId: receipt.cycleId })) : null;
-    state.receipts[at] = echo || Object.assign({}, receipt, { status: PAYMENT_VOID_STATUS });
+    state.receipts[at] = normalizeReceipt(Object.assign({}, res.payment, { cycleId: receipt.cycleId }));
   }
   if (res && res.cycle) adoptCycleEcho(res.cycle);
   renderBilling();
@@ -12640,8 +12723,13 @@ function openFunderModal(p) {
  * restricted session never sends it. */
 async function saveFunder(p, funder, effectiveFrom) {
   if (!funderView()) throw new Error('אין הרשאה');
-  const res = await apiPost({ action: 'appendFunder', funder: { patientId: patientUid(p), funder, effectiveFrom } });
-  if (res && res.row) state.funders.push(normalizeFunderRow(res.row));
+  // Funders ride getPayments: an older in-flight read must not undo it.
+  // "Saved" only with the stored row echoed back; a replay (the same funder
+  // from the same date is already the latest row) adds nothing on screen.
+  const res = await trackedWrite('payments', async () => requireSaved(
+    await apiPost({ action: 'appendFunder', funder: { patientId: patientUid(p), funder, effectiveFrom } }),
+    r => r.row && r.row.patientId));
+  if (!res.replayed) state.funders.push(normalizeFunderRow(res.row));
   renderAll();
   showToast('הגורם המממן נשמר');
   return res;
@@ -13102,7 +13190,8 @@ async function saveBillingOverride(payment, newAmount) {
   // pressed; the banner is the indicator that survives.
   setSaving(true);
   try {
-    await apiPost({ action: 'upsertBillingOverride', override: record });
+    await trackedWrite('billingOverrides', async () =>
+      requireSaved(await apiPost({ action: 'upsertBillingOverride', override: record }), r => r.override && r.override.id, record.id));
     showToast('הסכום עודכן לחודש ' + formatMonth(payment.dueDate));
   } catch (e) {
     state.billingOverrides = prev;
@@ -13132,7 +13221,8 @@ async function clearBillingOverride(payment) {
   // Same detachment as saveBillingOverride — the ↩ button is gone by here.
   setSaving(true);
   try {
-    await apiPost({ action: 'deleteBillingOverride', override: { id: existing.id, patientId: pid, month } });
+    await trackedWrite('billingOverrides', async () => requireSaved(
+      await apiPost({ action: 'deleteBillingOverride', override: { id: existing.id, patientId: pid, month } }), r => r.id, existing.id));
     showToast('הסכום הוחזר לסכום הבסיס');
   } catch (e) {
     state.billingOverrides = prev;
@@ -14155,9 +14245,12 @@ async function loadBillingControl() {
   s.error = '';
   renderBillingControl();
   setLoading(true);
+  const ticket = beginRead('billingControl');
   try {
     const data = await apiGet({ action: 'billingControlQueue' });
-    s.data = data;
+    // A queue read that started before a decision landed is discarded — the
+    // decided rows on screen are newer (write-path hardening, R1).
+    if (!applyIfCurrent(ticket, () => { s.data = data; })) return;
     // Drop a selection that is no longer waiting.
     const waiting = {};
     (data.receipts || []).forEach(r => { if (r.confirmStatus === 'reported') waiting[r.id] = true; });
@@ -14186,7 +14279,14 @@ async function confirmReceipts(ids, status, extra) {
   if (x.controlNote !== undefined) body.controlNote = x.controlNote;
   let res;
   try {
-    res = await apiPost({ action: 'confirmPayment', confirm: body });
+    // Counted as a save in flight; an older queue / payments read must not
+    // undo it. "Saved" only when every id is accounted for in the answer.
+    res = await trackedWrite(['billingControl', 'payments'], async () => {
+      const r = await apiPost({ action: 'confirmPayment', confirm: body });
+      const seen = (r.changed || []).length + (r.voided || []).length + (Number(r.unchanged) || 0);
+      if (seen < ids.length) { const err = new Error(WRITE_NOT_CONFIRMED_HE); err.data = r; throw err; }
+      return r;
+    });
   } catch (e) {
     const code = e && e.data && e.data.error;
     showError(BC_ERRORS[code] || (e && e.message) || 'השמירה נכשלה');

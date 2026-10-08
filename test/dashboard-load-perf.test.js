@@ -849,7 +849,7 @@ test('H: loadAll starts getData, getPayments and getCredits TOGETHER', async () 
   assert.deepEqual(h.errors, []);
 });
 
-test('H: a getPayments / getCredits failure does not fail the load; getPayments says so in Hebrew', async () => {
+test('H: a getPayments / getCredits failure does not fail the load; both say so in Hebrew', async () => {
   const h = loadApp();
   h.t.setApiGet((p) => (p.action === 'getData' ? Promise.resolve(DATA)
     : Promise.reject(new Error('Unknown action ' + p.action))));
@@ -860,8 +860,10 @@ test('H: a getPayments / getCredits failure does not fail the load; getPayments 
   assert.equal(h.renders(), 1, 'the app still renders');
   // CHANGELOG-payment-report-persistence.md: a failed getPayments is no
   // longer silent — the money on screen may be stale, and the user is told.
-  assert.equal(h.errors.length, 1);
+  // CHANGELOG-write-path-hardening.md: the same for a failed getCredits.
+  assert.equal(h.errors.length, 2);
   assert.match(h.errors[0], /^טעינת התשלומים נכשלה/);
+  assert.match(h.errors[1], /^טעינת הזיכויים נכשלה/);
 });
 
 test('H: a payments row that breaks normalization does not fail the load (reported in Hebrew)', async () => {

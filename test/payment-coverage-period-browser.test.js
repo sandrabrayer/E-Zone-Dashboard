@@ -17,6 +17,7 @@
  * Point EZONE_CHROMIUM at a binary to override discovery.
  */
 
+const { writeEcho } = require('./helpers/write-echo');
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -66,7 +67,7 @@ function serve(state) {
           res.writeHead(state.failWrites ? 500 : 200, { 'Content-Type': TYPES['.json'] });
           return res.end(JSON.stringify(state.failWrites
             ? { ok: false, error: 'תאריך הסיום מוקדם מתאריך ההתחלה' }
-            : { ok: true }));
+            : writeEcho(parsed)));
         }
         res.writeHead(200, { 'Content-Type': TYPES['.json'] });
         res.end(JSON.stringify({ ok: true, user: 'ורד', patients: [], leads: [], payments: [] }));

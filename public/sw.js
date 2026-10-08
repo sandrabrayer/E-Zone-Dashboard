@@ -202,7 +202,12 @@
 // v48 → v49: the תקופת כיסוי cell on גבייה gains the month split
 // (CHANGELOG-coverage-month-split.md — first written as a v17 bump in PR #137,
 // renumbered: v17 is burned). app.js and style.css changed; activate evicts v48.
-var CACHE_VERSION = 'v49';
+// v49 → v50: write-path hardening, PR A — the money writes
+// (CHANGELOG-write-path-hardening.md): void / receipt edit / amount edit /
+// credits / funder / «בקרת גבייה» decisions are sequence-guarded, counted as
+// saves in flight and "saved" only with server proof. app.js changed;
+// activate evicts v49 (v17 never reused).
+var CACHE_VERSION = 'v50';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

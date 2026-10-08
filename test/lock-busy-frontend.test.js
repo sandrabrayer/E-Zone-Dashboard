@@ -16,6 +16,7 @@
  * top-level declarations, stubbed in the epilogue; lockBusyDelay is stubbed
  * to resolve at once while recording the requested delay. */
 
+const { writeEcho } = require('./helpers/write-echo');
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -59,7 +60,7 @@ function loadApp(script) {
       const action = body && body.action;
       // suggestRefunds is the credits modal's READ (the discharge path opens
       // the modal); unscripted it answers an empty suggestion list.
-      const list = (script && script[action]) || (action === 'suggestRefunds' ? [{ ok: true, suggestions: [] }] : [{ ok: true }]);
+      const list = (script && script[action]) || (action === 'suggestRefunds' ? [{ ok: true, suggestions: [] }] : [writeEcho]);
       const i = used[action] = (used[action] || 0) + 1;
       const payload = typeof list[Math.min(i, list.length) - 1] === 'function'
         ? list[Math.min(i, list.length) - 1](body)
@@ -329,7 +330,7 @@ const PATHS = [
 
 for (const p of PATHS) {
   test(`${p.name}: busy → retried ONCE after 2 s with the identical body, and the change lands`, async () => {
-    const { app, sent } = loadApp({ [p.action]: [BUSY, p.okResponse || { ok: true }] });
+    const { app, sent } = loadApp({ [p.action]: [BUSY, p.okResponse || writeEcho] });
     if (p.setup) p.setup(app);
     const result = await p.run(app);
     const writes = sent(p.action);

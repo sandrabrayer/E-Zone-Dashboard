@@ -23,6 +23,7 @@
  * vm-sandbox conventions per the repo (see test/loading-feedback-rollout.test.js).
  */
 
+const { writeEcho } = require('./helpers/write-echo');
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -207,7 +208,7 @@ const CASES = [
     run(app, settle) {
       const p = { id: 'P1', name: 'בעז', houseId: 'ramot', date: '2026-01-05' };
       app.setState({ mode: 'edit', deleter: true, patients: [p] });
-      app.setApiPost(() => settle().then(() => ({ ok: true })));
+      app.setApiPost((b) => settle().then(() => writeEcho(b)));
       return { promise: app.deletePatient(p), subject: p };
     },
     assertRolledBack(t, app) { assert.strictEqual(app.state.patients.length, 1, 'the patient is back'); },
@@ -219,7 +220,7 @@ const CASES = [
     run(app, settle) {
       const prev = [];
       app.setState({ mode: 'edit', deleter: true, billingOverrides: prev, billingDate: '2026-09-05' });
-      app.setApiPost(() => settle().then(() => ({ ok: true })));
+      app.setApiPost((b) => settle().then(() => writeEcho(b)));
       return { promise: app.saveBillingOverride({ patientId: 'P1', dueDate: '2026-09-05' }, 8000) };
     },
     assertRolledBack(t, app) { assert.strictEqual(app.state.billingOverrides.length, 0, 'the override rolled back'); },
@@ -231,7 +232,7 @@ const CASES = [
     run(app, settle) {
       const existing = { id: 'ov1', patientId: 'P1', month: '2026-09', amount: 1 };
       app.setState({ mode: 'edit', deleter: true, billingOverrides: [existing], billingDate: '2026-09-05' });
-      app.setApiPost(() => settle().then(() => ({ ok: true })));
+      app.setApiPost((b) => settle().then(() => writeEcho(b)));
       return { promise: app.clearBillingOverride({ patientId: 'P1', dueDate: '2026-09-05' }) };
     },
     assertRolledBack(t, app) { assert.strictEqual(app.state.billingOverrides.length, 1, 'the override is back'); },

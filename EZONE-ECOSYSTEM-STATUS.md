@@ -1005,6 +1005,21 @@ deploys it on merge). No column, sheet, Script Property, env var or SW change.
 - **Output:** one private Google Doc; the function logs its URL.
 - **Read-only:** the spreadsheet is never written.
 
+## Dashboard: write-path hardening, PR A — money writes (October 8, 2026)
+
+Detail: `CHANGELOG-write-path-hardening.md` (the full R1/R2/R3 audit matrix of
+every write and load path). **Railway + Code.gs** (clasp CI on merge). PR
+#201's three rules now cover every money write, not only «דווח תשלום»:
+- void receipt, receipt edit, savePayment, the monthly-amount override,
+  credits, funder and «בקרת גבייה» decisions count as saves in flight and
+  claim "saved" only with the persisted id echoed back;
+- stale getData (overrides), getCredits and queue reads are discarded by a
+  keyed request-sequence guard (`beginRead` / `noteWrite` / `trackedWrite`);
+- a failed getCredits keeps the credits and shows a Hebrew error;
+- server replays: re-void, re-«כפילות», credit-edit retry and funder retry
+  answer the stored row instead of a false error or a duplicate row.
+- SW `CACHE_VERSION` v49 → **v50**. PRs B (patients) and C (leads) follow.
+
 ## Dashboard: «דוח תשלום» persistence fix (October 8, 2026)
 
 Detail: `CHANGELOG-payment-report-persistence.md`. **Railway + Code.gs**

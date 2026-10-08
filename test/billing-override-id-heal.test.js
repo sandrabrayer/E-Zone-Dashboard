@@ -15,6 +15,7 @@
  *
  * Same vm-sandbox approach as billing-override-ui.test.js. */
 
+const { writeEcho } = require('./helpers/write-echo');
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -131,7 +132,7 @@ test('save→overlay round-trip: an override written for a healed record overlay
   app.setState({ mode: 'edit', deleter: true, billingOverrides: [],
                  payments: [app.normalizePayment(blankIdRecord())] });
   const posts = [];
-  app.setApiPost(async b => posts.push(b));
+  app.setApiPost(async b => { posts.push(b); return writeEcho(b); });
   app.setRenderBilling(() => {});
   app.setShowToast(() => {});
 
@@ -160,7 +161,7 @@ test('workers key off payment.patientId verbatim — save-key equals lookup-key 
   const stale = app.normalizePayment(blankIdRecord({ patientId: 'old-house::מעיין::2025-01-01' }));
   app.setState({ mode: 'edit', deleter: true, billingOverrides: [], payments: [stale] });
   const posts = [];
-  app.setApiPost(async b => posts.push(b));
+  app.setApiPost(async b => { posts.push(b); return writeEcho(b); });
   app.setRenderBilling(() => {});
   app.setShowToast(() => {});
 
@@ -176,7 +177,7 @@ test('workers key off payment.patientId verbatim — save-key equals lookup-key 
 test('saveBillingOverride refuses a record with no resolvable identity', async () => {
   app.setState({ mode: 'edit', deleter: true, billingOverrides: [], payments: [] });
   const posts = [];
-  app.setApiPost(async b => posts.push(b));
+  app.setApiPost(async b => { posts.push(b); return writeEcho(b); });
   app.setRenderBilling(() => {});
   await app.saveBillingOverride({ patientId: '', dueDate: DUE }, 999);
   assert.strictEqual(posts.length, 0, 'no write without an identity');

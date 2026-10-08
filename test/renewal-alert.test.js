@@ -208,9 +208,10 @@ function loadRenew() {
     renderDashboard = () => {};
     renderBilling = () => {};
     renderBillingMonthlySummary = () => {};
-    apiPost = async () => {
+    apiPost = async (b) => {
       if (globalThis.__apiShouldFail) throw new Error('save failed');
-      return {};
+      // The real server echoes the saved row (CHANGELOG-write-path-hardening.md).
+      return { ok: true, payment: b.payment };
     };
     globalThis.__renew = {
       setPatients(a) { state.patients = a; },

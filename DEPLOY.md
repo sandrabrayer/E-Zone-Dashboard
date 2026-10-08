@@ -166,6 +166,11 @@ the first read or report after the clasp deploy. If a hand-added header sits
 in that position, reports are refused (`sheet_header_clash`) until it is
 moved. SW `CACHE_VERSION` v47 → **v48**.
 
+**08/10/2026 — `CHANGELOG-write-path-hardening.md` (PR A, money writes):**
+no manual step. Code.gs gains replay answers only (re-void, re-«כפילות»,
+editReceipt echo, credit-edit replay, funder dedupe) — no column, sheet,
+Script Property or env var. SW `CACHE_VERSION` v49 → **v50**.
+
 ## «בקרת גבייה» — Ortal's tab (October 4, 2026)
 
 `CHANGELOG-billing-control-tab.md`. **No env var, no Script Property, no

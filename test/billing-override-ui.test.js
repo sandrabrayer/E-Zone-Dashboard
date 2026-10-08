@@ -10,6 +10,7 @@
  *
  * Same vm-sandbox + fake-DOM approach as the other UI test files. */
 
+const { writeEcho } = require('./helpers/write-echo');
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -165,7 +166,7 @@ test('monthly summary outstanding uses the effective amount; collected untouched
 test('saveBillingOverride writes the upsert action and applies optimistically', async () => {
   app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [] });
   const posts = [];
-  app.setApiPost(async (b) => { posts.push(b); });
+  app.setApiPost(async (b) => { posts.push(b); return writeEcho(b); });
   app.setRenderBilling(() => {});
   app.setShowToast(() => {});
   await app.saveBillingOverride({ patientId: PID, dueDate: '2026-08-05' }, 4200);
@@ -195,7 +196,7 @@ test('saveBillingOverride rolls back on failure', async () => {
 test('clearBillingOverride deletes and restores base; rolls back on failure', async () => {
   app.setState({ mode: 'edit', deleter: true, payments: [], billingOverrides: [{ ...OVR_AUG }] });
   const posts = [];
-  app.setApiPost(async (b) => { posts.push(b); });
+  app.setApiPost(async (b) => { posts.push(b); return writeEcho(b); });
   app.setRenderBilling(() => {});
   app.setShowToast(() => {});
   await app.clearBillingOverride({ patientId: PID, dueDate: '2026-08-05' });
