@@ -83,6 +83,14 @@ function loadCode() {
       getProperty: (k) => (k in sandbox.__props ? sandbox.__props[k] : null),
     }),
   };
+  // submitMeetingReport_ takes the script lock and keeps its replay key in
+  // the script cache (CHANGELOG-write-path-hardening.md).
+  sandbox.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
+  sandbox.__cache = {};
+  sandbox.CacheService = { getScriptCache: () => ({
+    get: (k) => (k in sandbox.__cache ? sandbox.__cache[k] : null),
+    put: (k, v) => { sandbox.__cache[k] = v; },
+  }) };
   // jsonOut_ pipes through here — hand the parsed payload back to the test.
   sandbox.ContentService = {
     createTextOutput: (s) => ({ setMimeType: () => ({ json: JSON.parse(s) }) }),

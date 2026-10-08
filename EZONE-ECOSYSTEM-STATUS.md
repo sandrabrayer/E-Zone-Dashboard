@@ -979,6 +979,24 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
 
+## Dashboard: write-path hardening — PR C, leads and the rest (October 8, 2026)
+
+Detail: `CHANGELOG-write-path-hardening.md`. **Railway + Code.gs** (clasp CI
+on merge). No column, sheet, Script Property or env var.
+- **R1:** close / restore / «הסר» / delete-report are tracked in flight; the
+  meeting-report edit conflict refreshes only after the saves drain.
+  Server: `mergeLeads_` no longer re-appends a lead that sits on the closed
+  or removed sheet (a stale tab) — reported as `closedSuppressed`, which
+  makes that tab resync. `submitMeetingReport_` now takes the script lock.
+- **R3:** every lead save (new, ✏️, stage, inline fields, «נפגש עם»
+  autosave, report edit) is proven via `saveAll`'s `proven`. One lead id per
+  new-lead form; a failure (or «ביטול» on the duplicate-phone question) keeps
+  the form open with its values. «הסר» never invents a record; a retry
+  replays server-side. The manager report page sends one `submissionId` per
+  form (forwarded by `server.js` only when well-formed); a retry replays from
+  the script cache (6 h) — no second stamp, «נצפה» not reset.
+- SW `CACHE_VERSION` v51 → **v52**.
+
 ## Dashboard: write-path hardening — PR B, patients (October 8, 2026)
 
 Detail: `CHANGELOG-write-path-hardening.md`. **Railway + Code.gs** (clasp CI
