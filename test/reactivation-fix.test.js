@@ -495,7 +495,7 @@ test('a GENUINE clobber is still healed on load — and now announced, never sil
   assert.strictEqual(onSheet.status, 'released', 'persisted, exactly as before');
 });
 
-test('flag write refused after the save: UI rolls back, error shown, next load converges to released', async () => {
+test('flag write refused after the save: the SAVED edit stays on screen, the error says what did not save, next load converges to released', async () => {
   const backend = releasedWorld();
   const client = loadClient((body) => (body.action === 'restorePatientToActive'
     ? { ok: false, error: 'exception', message: 'flaky' }
@@ -505,10 +505,13 @@ test('flag write refused after the save: UI rolls back, error shown, next load c
   const p = client.app.state.patients.find((x) => x.name === NAME);
   client.app.openEditPatientModal(p);
   const ok = await client.app.submitModal({ name: NAME, houseId: 'ramot', date: ENTRY, pay: '9000', status: 'active', notes: '' });
-  assert.strictEqual(ok, false, 'the modal stays open');
-  assert.strictEqual(p.status, 'released', 'local rollback');
+  // The patient save is PROVEN on the sheet; only the flag write failed.
+  // Hiding the landed edit would lie (CHANGELOG-write-path-hardening.md, PR D).
+  assert.strictEqual(ok, true, 'the edit is saved — the form closes');
+  assert.strictEqual(p.status, 'active', 'the saved edit stays on screen');
   assert.strictEqual(client.app.state.dischargedPatients[0].restored, '', 'the audit row is open again locally');
   assert.strictEqual(client.app.errors().length, 1);
+  assert.match(client.app.errors()[0], /רישום השחרור לא נסגר/);
 
   const s2 = await openSession(backend);
   assert.ok(!ramotTab(s2.app).includes(NAME),
@@ -533,7 +536,8 @@ test('every deliberate re-activation path closes the stay\'s open discharge rows
     const body = fnBody(APP_SRC, fn);
     assert.match(body, /reopenedDischargeAudits\(/, fn + ' must look for re-opened discharge rows');
     // R3 (CHANGELOG-write-path-hardening.md): the save is PROVEN first.
-    assert.match(body, /await saveAll\(\{ prove: \{ patients: \[patient\.id\] \} \}\);\s*requireProven\(res, 'patients', patient\.id\);\s*await persistAuditsRestored\(reopened\);/,
+    // PR D: the flags close after the PROVEN save, outside its rollback.
+    assert.match(body, /await saveAll\(\{ prove: \{ patients: \[patient\.id\] \} \}\);\s*requireProven\(res, 'patients', patient\.id\);[\s\S]*?await closeReopenedAuditsAfterSave\(reopened, prevDischarged\);/,
       fn + ' must persist the flags right after its saveAll (the restore modal\'s order)');
   });
   // ✏️: after the save, and only once a house move (if any) has landed.

@@ -185,6 +185,9 @@ manual step and no column. The meeting-report idempotency keys live in the
 Apps Script script cache (6 h, the saved answer only — no report text). SW
 `CACHE_VERSION` v51 → **v52**.
 
+**08/10/2026 — `CHANGELOG-write-path-hardening.md` (PR D):** Railway only, no
+manual step. SW `CACHE_VERSION` v52 → **v53**.
+
 ## «בקרת גבייה» — Ortal's tab (October 4, 2026)
 
 `CHANGELOG-billing-control-tab.md`. **No env var, no Script Property, no
