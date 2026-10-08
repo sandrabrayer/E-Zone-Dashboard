@@ -877,6 +877,7 @@ async function trackedWrite(guards, work) {
  * id this write targeted. Otherwise throws SAVE_UNPROVEN_HE — the caller's
  * form stays open with its values. → the id. */
 const SAVE_UNPROVEN_HE = 'השמירה לא אושרה בשרת — לא נשמר, נסו שוב';
+const AUTO_SAVE_FAILED_HE = 'עדכון אוטומטי (קליטה / שחרור) לא נשמר — יישלח שוב בשמירה הבאה. ';
 function requireSavedId(res, pick, want) {
   let id = '';
   try { id = res && res.ok !== false ? String(pick(res) || '') : ''; } catch (_) { id = ''; }
@@ -887,6 +888,22 @@ function requireSavedId(res, pick, want) {
     throw err;
   }
   return id;
+}
+
+/* The saveAll version of requireSavedId: `id` must be in the answer's
+ * proven[kind] (the server read it back under the save's lock). */
+function requireProven(res, kind, id) {
+  return requireSavedId(res, r => {
+    const list = r && r.proven && Array.isArray(r.proven[kind]) ? r.proven[kind] : [];
+    return list.indexOf(String(id)) >= 0 ? String(id) : '';
+  }, id);
+}
+
+/* True when a saveAll answer REFUSED this tab's edit of patient `id` as stale
+ * (a `conflicts` entry that is not a house move — those have their own flow). */
+function saveRefusedEdit(res, id) {
+  return !!res && Array.isArray(res.conflicts) &&
+    res.conflicts.some(c => c && !c.move && String(c.id || '') === String(id));
 }
 /* A getPayments answer → the three state lists. Throws on a malformed row,
  * BEFORE anything is assigned, so a bad answer never half-replaces state. */
@@ -939,8 +956,11 @@ function queueDataResync() {
 }
 
 /* Save full state to Sheets. Serialized so overlapping calls don't interleave. */
-function saveAll() {
+function saveAll(opts) {
   if (state.mode !== 'edit') return Promise.resolve();
+  // opts.prove: { leads: [id], patients: [id] } — the rows the caller must
+  // see on the sheet before it says «נשמר» (requireProven).
+  const prove = opts && opts.prove ? opts.prove : null;
   const work = async () => {
     const patients = serializePatients();
     // The objects this save is sending, with the stamps they carry — read in
@@ -970,6 +990,7 @@ function saveAll() {
       leads: state.leads,
       patients,
     };
+    if (prove) payload.prove = prove;
 
     // Hard guard: patients must be a plain object keyed by houseId, never
     // an array. serializePatients already guarantees this, but asserting
@@ -2126,8 +2147,8 @@ async function loadAll() {
       saveAll().catch(e => {
         console.warn('[E-ZONE] auto-promote save failed', e.message);
         // The promoted / healed rows stay on screen (state is untouched) and
-        // ride the next saveAll; a busy lock is said out loud, never silent.
-        if (isLockBusyError(e)) showError(LOCK_BUSY_MESSAGE_HE);
+        // ride the next saveAll; the failure is said out loud, never silent.
+        showError(isLockBusyError(e) ? LOCK_BUSY_MESSAGE_HE : AUTO_SAVE_FAILED_HE + ((e && e.message) || 'שגיאה'));
       });
     }
   } catch (e) {
@@ -3046,8 +3067,22 @@ function openDuplicateSiblings(d, dischargedPatients) {
   return (Array.isArray(dischargedPatients) ? dischargedPatients : []).filter(x =>
     x && x !== d && x.id !== d.id && dischargeRowOpen(x) && dischargeStayKey(x) === key);
 }
+/* A client-minted row id — the row's idempotency key, minted ONCE per form
+ * (CHANGELOG-write-path-hardening.md): a retry re-sends the same id and the
+ * server's merge matches it, never adding a second row. crypto when the
+ * browser has it (every supported one does). Same shape as before:
+ * 'id-' + [0-9a-z]. */
 function cryptoId() {
-  return 'id-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  const c = typeof crypto !== 'undefined' && crypto && typeof crypto.getRandomValues === 'function' ? crypto : null;
+  let rnd = '';
+  if (c) {
+    const bytes = new Uint8Array(8);
+    c.getRandomValues(bytes);
+    rnd = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  } else {
+    rnd = Math.random().toString(36).slice(2, 10);
+  }
+  return 'id-' + rnd + Date.now().toString(36);
 }
 
 /* Canonicalize Israeli phone numbers so different input formats of the same
@@ -5652,7 +5687,10 @@ async function deleteDuplicateDischarge(d, reason) {
   if (state.mode !== 'edit' || !canDelete()) throw new Error('אין הרשאה לפעולה זו');
   const err = duplicateDischargeReasonError(reason);
   if (err) throw new Error(err);
-  const res = await apiPost({ action: 'deleteDuplicateDischarge', id: String(d.id), reason: String(reason).trim() });
+  const res = await trackedWrite([_dataGuard], () =>
+    apiPost({ action: 'deleteDuplicateDischarge', id: String(d.id), reason: String(reason).trim() }));
+  // R3: the server names the row it soft-deleted (or had already).
+  requireSavedId(res, r => r.id, d.id);
   const stamps = {
     deletedAt: (res && res.deletedAt) || new Date().toISOString(),
     deletedBy: (res && res.deletedBy) || '',
@@ -5712,10 +5750,12 @@ function showDeleteDuplicateDischargeModal(d) {
 /* Restore path A — back into the leads pipeline as a NEW LEAD. The restore-
  * choice modal is the confirmation step, so this worker runs unconditionally.
  * Optimistic + rollback; errors are handled here (toast) and never thrown. */
-async function doRestorePatientAsNewLead(p) {
+async function doRestorePatientAsNewLead(p, newLeadId) {
   if (state.mode !== 'edit') return;
   const newLead = {
-    id:       cryptoId(),
+    // R3: the choice modal mints ONE id; a retry re-sends it and the server
+    // answers the lead it already created.
+    id:       newLeadId || cryptoId(),
     name:     p.name  || '',
     phone:    '',
     house:    (houseById(p.houseId) && houseById(p.houseId).name) || '',
@@ -5739,13 +5779,16 @@ async function doRestorePatientAsNewLead(p) {
   renderAll();
 
   try {
-    await apiPost({ action: 'restorePatient', patient: { ...p, newLeadId: newLead.id } });
+    const res = await trackedWrite([_dataGuard], () =>
+      apiPost({ action: 'restorePatient', patient: { ...p, newLeadId: newLead.id } }));
+    requireSavedId(res, r => r.lead && r.lead.id, newLead.id);
     showToast('המטופל הוחזר למסלול לידים חדש');
   } catch (e) {
     state.dischargedPatients = prevDischarged;
     state.leads = prevLeads;
     renderAll();
     showError('שחזור המטופל נכשל — ' + e.message);
+    throw e;   // the choice modal stays open (R3)
   }
 }
 
@@ -5923,7 +5966,11 @@ function withAuditsRestored(dischargedPatients, rows) {
 async function persistAuditsRestored(rows) {
   if (state.mode !== 'edit') return;
   for (const d of rows || []) {
-    await apiPost({ action: 'restorePatientToActive', patient: { ...d, restored: 'TRUE' } });
+    // R1 tracked; R3: the server names the audit row it flagged (an upsert by
+    // its own id, so a retry is idempotent).
+    const res = await trackedWrite([_dataGuard], () =>
+      apiPost({ action: 'restorePatientToActive', patient: { ...d, restored: 'TRUE' } }));
+    requireSavedId(res, r => r.restoredToActive === true && r.id, d.id);
   }
 }
 
@@ -5992,6 +6039,8 @@ function showRestorePatientChoiceModal(p) {
 
   cancelBtn.onclick = close;
   back.addEventListener('click', e => { if (e.target === back) close(); });
+  // R3: one new-lead id for this form — a retry never creates a second lead.
+  const newLeadId = cryptoId();
 
   form.onsubmit = e => {
     e.preventDefault();
@@ -6000,11 +6049,14 @@ function showRestorePatientChoiceModal(p) {
       try {
         const choice = (new FormData(form).get('restoreChoice') || 'prev_status').toString();
         if (choice === 'new_lead') {
-          await doRestorePatientAsNewLead(p);
+          await doRestorePatientAsNewLead(p, newLeadId);
         } else {
           await doRestorePatientToActive(p);
         }
         close();
+      } catch (_) {
+        // The worker rolled back and showed the Hebrew error; the modal stays
+        // open with the choice, ready for a retry (R3).
       } finally {
         cancelBtn.disabled = false;
       }
@@ -6029,7 +6081,7 @@ async function doRestorePatientToActive(p) {
   const prevPatients   = state.patients;
   const prevDischarged = state.dischargedPatients.slice();
 
-  const { patients } = buildRestoredToActivePatients(state.patients, p);
+  const { patients, patient: restoredRow } = buildRestoredToActivePatients(state.patients, p);
   state.patients = patients;
   // A stay discharged twice without a restore in between has a SECOND open
   // audit row; flagging only `p` let the heal release the patient again.
@@ -6040,15 +6092,17 @@ async function doRestorePatientToActive(p) {
   renderAll();
 
   try {
-    await saveAll();
-    await apiPost({ action: 'restorePatientToActive', patient: { ...p, restored: 'TRUE' } });
-    await persistAuditsRestored(siblings);
+    // R3: the patient row is proven on the sheet, then each audit row flag.
+    const rid = restoredRow && restoredRow.id ? String(restoredRow.id) : '';
+    const res = await saveAll(rid ? { prove: { patients: [rid] } } : undefined);
+    if (rid) requireProven(res, 'patients', rid);
+    await persistAuditsRestored([p].concat(siblings));
   } catch (e) {
     state.patients = prevPatients;
     state.dischargedPatients = prevDischarged;
     renderAll();
     showError('החזרת המטופל לסטטוס הקודם נכשלה — ' + e.message);
-    return;
+    throw e;   // the choice modal stays open (R3)
   }
 
   const restoredInfo = STATUS_OPTIONS.find(s => s.id === priorStatusFromAudit(p));
@@ -6548,6 +6602,9 @@ function openEditLeadModal(lead) {
 /* ===== Entry modal: paid → entry, creates patient ===== */
 function openEntryModal(lead) {
   const preferredHouse = houseByName(lead.house);
+  // R3: ONE patient id per form — a retry after a lost answer re-sends it and
+  // the server's merge matches it (never a second patient row).
+  const patientId = cryptoId();
   showModal({
     title: 'כניסה לבית — ' + lead.name,
     fields: [
@@ -6569,7 +6626,7 @@ function openEntryModal(lead) {
       const funderErr = admissionFunderError(state.finance, v.funder);
       if (funderErr) { showError(funderErr); return false; }
       const patient = normalizePatient({
-        id: cryptoId(),
+        id: patientId,
         houseId: v.houseId,
         name: lead.name,
         date: v.date,
@@ -6601,7 +6658,10 @@ function openEntryModal(lead) {
       if (admitOutcome) lead.meetingOutcome = admitOutcome;
       renderAll();
       try {
-        await saveAll();
+        // R3: «נשמר» only when the sheet holds this patient's row — a
+        // promotion the server refused (promoteSkipped) is not proven.
+        const res = await saveAll({ prove: { patients: [patient.id] } });
+        requireProven(res, 'patients', patient.id);
         await persistAuditsRestored(reopened);
       } catch (e) {
         state.patients = state.patients.filter(p => p.id !== patient.id);
@@ -6636,6 +6696,8 @@ function openDirectAddPatientModal(opts) {
    * applies to intake exactly as to the direct-add form. */
   const intake = !!(opts && opts.intake);
   const fields = intakeFormFields(intake, state.currentHouseTab || HOUSES[0].id, todayISO());
+  // R3: ONE patient id per form (see openEntryModal).
+  const patientId = cryptoId();
   showModal({
     title: intake ? 'קליטת מטופל חדש' : 'הוספת מטופל ישירות',
     // The funder picker (finance sessions only, required there — PR #178)
@@ -6651,7 +6713,7 @@ function openDirectAddPatientModal(opts) {
       const funderErr = admissionFunderError(state.finance, v.funder);
       if (funderErr) { showError(funderErr); return false; }
       const patient = normalizePatient({
-        id: cryptoId(),
+        id: patientId,
         houseId: v.houseId,
         name: v.name.trim(),
         date: v.date,
@@ -6673,7 +6735,8 @@ function openDirectAddPatientModal(opts) {
       state.currentHouseTab = patient.houseId;
       renderAll();
       try {
-        await saveAll();
+        const res = await saveAll({ prove: { patients: [patient.id] } });
+        requireProven(res, 'patients', patient.id);
         await persistAuditsRestored(reopened);
       } catch (e) {
         state.patients = state.patients.filter(x => x.id !== patient.id);
@@ -6787,8 +6850,11 @@ function openEditPatientModal(p) {
       }
       renderAll();
       let saved = false;
+      let res = null;
       try {
-        await saveAll();
+        // R3: proven = the sheet holds this patient's row after the save.
+        res = await saveAll({ prove: { patients: [String(p.id || '')] } });
+        if (p.id) requireProven(res, 'patients', p.id);
         saved = true;
         // A house move the backend refused (or never confirmed) is undone
         // below — the discharge rows stay open with it.
@@ -6812,6 +6878,15 @@ function openEditPatientModal(p) {
         if (prev.movedFrom === undefined) delete p.movedFrom;
         renderAll();
         showError('שמירה נכשלה — ' + e.message);
+        return false;
+      }
+      /* A stale-edit refusal of THIS patient (someone saved first): saveAll
+       * already said who, and reloads the sheet. Nothing was saved, so the
+       * form stays open with what was typed (R3). */
+      if (!houseChanged && saveRefusedEdit(res, p.id)) {
+        Object.assign(p, prev);
+        state.dischargedPatients = prevDischarged;
+        renderAll();
         return false;
       }
       if (houseChanged) {
@@ -7333,7 +7408,11 @@ async function runDischarge(p, auditId, { disposition, note, dischargeDate }) {
    * restore-to-previous-status silently fell back to 'active'. */
   let auditRes;
   try {
-    auditRes = await apiPost({ action: 'dischargePatient', patient: auditRow });
+    // R1 tracked. R3: the server names the row it holds — this audit row, or
+    // (duplicate:true) the stay's open row recorded earlier.
+    auditRes = await trackedWrite([_dataGuard], () => apiPost({ action: 'dischargePatient', patient: auditRow }));
+    requireSavedId(auditRes, r => (r.duplicate === true ? r.id : (r.patient && r.patient.id)),
+      auditRes && auditRes.duplicate === true ? undefined : auditRow.id);
   } catch (e) {
     // Nothing persisted yet — a full rollback is truthful.
     rollback();
@@ -7353,7 +7432,7 @@ async function runDischarge(p, auditId, { disposition, note, dischargeDate }) {
     renderAll();
     showToast(DISCHARGE_ALREADY_RECORDED_HE);
     try {
-      await saveAll();
+      requireProven(await saveAll({ prove: { patients: [String(p.id)] } }), 'patients', p.id);
     } catch (e) {
       rollback();
       showError(DISCHARGE_ALREADY_RECORDED_HE + ' — הסטטוס יתעדכן בטעינה הבאה. ' + e.message);
@@ -7363,7 +7442,7 @@ async function runDischarge(p, auditId, { disposition, note, dischargeDate }) {
   }
 
   try {
-    await saveAll();
+    requireProven(await saveAll({ prove: { patients: [String(p.id)] } }), 'patients', p.id);
   } catch (e) {
     /* The audit row IS persisted; only the status flip failed. Roll the
      * UI back so it reflects the Patients sheet (still active), and let
@@ -9454,13 +9533,16 @@ async function deletePatient(p) {
      * identity key. The backend deletes EXACTLY the row holding that id
      * (one of several identical-key duplicates can now go on its own) and
      * falls back to the key when the id isn't on the sheet (stale tab). */
-    const res = await apiPost({
+    const res = await trackedWrite([_dataGuard], () => apiPost({
       action: 'deletePatientRow',
       patient: { id: p.id ? String(p.id) : '', houseId: p.houseId, name: p.name, date: p.date },
-    });
+    }));
     if (!res || res.ok !== true) {
       throw new Error((res && (res.message || res.error)) || 'delete_failed');
     }
+    // R3: the server names the row it deleted (by id, or by key for a row
+    // that predates ids); a retry answers alreadyDeleted with the same id.
+    requireSavedId(res, r => r.id || (r.deleted > 0 ? r.key : ''));
     showToast(`${p.name} נמחק לצמיתות`);
   } catch (e) {
     state.patients = prev;

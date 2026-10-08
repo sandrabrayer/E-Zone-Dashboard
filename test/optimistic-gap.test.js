@@ -207,7 +207,8 @@ const CASES = [
     run(app, settle) {
       const p = { id: 'P1', name: 'בעז', houseId: 'ramot', date: '2026-01-05' };
       app.setState({ mode: 'edit', deleter: true, patients: [p] });
-      app.setApiPost(() => settle().then(() => ({ ok: true })));
+      // deletePatientRow_ names the row it deleted (R3 proof).
+      app.setApiPost(() => settle().then(() => ({ ok: true, deleted: 1, id: 'P1', matchedBy: 'id' })));
       return { promise: app.deletePatient(p), subject: p };
     },
     assertRolledBack(t, app) { assert.strictEqual(app.state.patients.length, 1, 'the patient is back'); },

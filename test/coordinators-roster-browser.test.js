@@ -17,6 +17,7 @@
  *
  * SKIPPED unless BOTH `playwright` resolves AND a Chromium binary is present. */
 
+const { serverEcho } = require('./helpers/server-echo');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -104,7 +105,9 @@ async function boot() {
       res.statusCode = 200; res.headers = {}; res.setEncoding = () => {}; res.resume = () => {};
       setImmediate(() => {
         cb(res);
-        res.emit('data', JSON.stringify(parsed.action === 'getData' ? DATA : { ok: true, payments: [], credits: [] }));
+        // serverEcho: answers like the real handler (the proof the page needs,
+        // CHANGELOG-write-path-hardening.md).
+        res.emit('data', JSON.stringify(parsed.action === 'getData' ? DATA : serverEcho(parsed, { ok: true, payments: [], credits: [] })));
         res.emit('end');
       });
     };

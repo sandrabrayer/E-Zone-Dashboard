@@ -205,7 +205,10 @@
 // v49 → v50: write-path hardening, money (CHANGELOG-write-path-hardening.md,
 // PR A) — every money write is tracked in flight, guarded against stale reads
 // and «saved» only with the server's row. app.js changed; activate evicts v49.
-var CACHE_VERSION = 'v50';
+// v50 → v51: write-path hardening, patients (PR B) — admit / edit / discharge
+// / restore / delete are tracked, proven by the server and idempotent per
+// form. app.js changed; activate evicts v50.
+var CACHE_VERSION = 'v51';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

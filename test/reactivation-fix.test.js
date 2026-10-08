@@ -160,6 +160,7 @@ function fakeEl() {
   };
 }
 
+const { serverEcho } = require('./helpers/server-echo');
 function loadClient(route, user) {
   const calls = [];
   const noop = () => {};
@@ -181,7 +182,9 @@ function loadClient(route, user) {
       if (opts && opts.body) body.user = user || 'ורד';
       calls.push(body);
       let out;
-      try { out = route(body); } catch (e) { out = { ok: false, error: 'exception', message: e.message }; }
+      // serverEcho: a bare {ok:true} answers like the real handler (the
+      // proof the page needs, CHANGELOG-write-path-hardening.md).
+      try { out = serverEcho(body, route(body)); } catch (e) { out = { ok: false, error: 'exception', message: e.message }; }
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(out) });
     },
   };
@@ -529,16 +532,18 @@ test('every deliberate re-activation path closes the stay\'s open discharge rows
   ['openDirectAddPatientModal', 'openEntryModal'].forEach((fn) => {
     const body = fnBody(APP_SRC, fn);
     assert.match(body, /reopenedDischargeAudits\(/, fn + ' must look for re-opened discharge rows');
-    assert.match(body, /await saveAll\(\);\s*await persistAuditsRestored\(reopened\);/,
+    // R3 (CHANGELOG-write-path-hardening.md): the save is PROVEN first.
+    assert.match(body, /await saveAll\(\{ prove: \{ patients: \[patient\.id\] \} \}\);\s*requireProven\(res, 'patients', patient\.id\);\s*await persistAuditsRestored\(reopened\);/,
       fn + ' must persist the flags right after its saveAll (the restore modal\'s order)');
   });
   // ✏️: after the save, and only once a house move (if any) has landed.
   const edit = fnBody(APP_SRC, 'openEditPatientModal');
   assert.match(edit, /reopenedDischargeAudits\(prev, p, state\.dischargedPatients\)/);
-  assert.match(edit, /await saveAll\(\);\s*saved = true;[\s\S]*?if \(!houseChanged \|\| houseMoveVerdict\(p\) === 'moved'\) \{\s*await persistAuditsRestored\(reopened\);/);
+  assert.match(edit, /await saveAll\(\{ prove: [^\n]*\);\s*if \(p\.id\) requireProven\(res, 'patients', p\.id\);\s*saved = true;[\s\S]*?if \(!houseChanged \|\| houseMoveVerdict\(p\) === 'moved'\) \{\s*await persistAuditsRestored\(reopened\);/);
   const restore = fnBody(APP_SRC, 'doRestorePatientToActive');
   assert.match(restore, /openDischargeAuditsFor\(p, prevDischarged\)/);
-  assert.match(restore, /await persistAuditsRestored\(siblings\);/);
+  // The restored row's own flag and its siblings', each proven (R3).
+  assert.match(restore, /await persistAuditsRestored\(\[p\]\.concat\(siblings\)\);/);
 });
 
 test('loadAll announces a heal instead of moving patients out of the house silently', () => {

@@ -48,6 +48,8 @@ function fakeEl() {
 /* Load app.js with fetch stubbed. `routes` maps an action name to a handler
  * returning the parsed JSON body of the response; unlisted actions succeed
  * with {ok:true}. Every request body is recorded in `calls` in order. */
+const { serverEcho } = require('./helpers/server-echo');
+
 function loadApp(routes) {
   const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
   const calls = [];
@@ -64,7 +66,9 @@ function loadApp(routes) {
       const handler = body && routes && routes[body.action];
       // suggestRefunds: the credits modal's read after a discharge — an empty
       // suggestion list unless a test routes it.
-      const payload = handler ? handler(body) : (body && body.action === 'suggestRefunds' ? { ok: true, suggestions: [] } : { ok: true });
+      // serverEcho: a bare {ok:true} answers like the real handler (the
+      // proof the page needs, CHANGELOG-write-path-hardening.md).
+      const payload = serverEcho(body, handler ? handler(body) : (body && body.action === 'suggestRefunds' ? { ok: true, suggestions: [] } : { ok: true }));
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload) });
     },
   };

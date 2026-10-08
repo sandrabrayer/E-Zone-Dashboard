@@ -148,3 +148,42 @@ no longer optimistic), dashboard-load-perf H (credits error), B2 (a
 
 SW `CACHE_VERSION` v49 → **v50** (live served v48, the deploy branch v49;
 no open PRs; v17 burned).
+
+### PR B — admit / discharge / patients
+
+`saveAll` proof (no new column): the client names the rows it must see
+persisted — `saveAll({ prove: { leads: [id], patients: [id] } })` — and
+`saveAll_` answers `proven`, the ids the sheet holds after the write, read
+under the save's own lock. The ids are the client-minted row ids the merge
+already matches on, so they are the idempotency keys; the fix is to mint
+them ONCE per form. A malformed `prove` → `bad_prove`, nothing written.
+`cryptoId()` now uses `crypto.getRandomValues` (same `id-…` shape).
+
+| # | Write | Fix |
+|---|---|---|
+| 11 | admit lead → patient | patient id minted per form; `requireProven`. A refused promotion (`promoteSkipped`) is not proven → rolled back, form open. |
+| 11b | direct add / intake | same. |
+| 12 | ✏️ edit / house move | `requireProven`; a stale-edit `conflicts` refusal of THIS patient keeps the form open with what was typed. Moves keep their own flow. |
+| 13 | discharge | `trackedWrite`; the audit row (or the duplicate's id) must come back; the status flip is proven. |
+| 14 | restore → new lead | lead id minted per choice-modal; `trackedWrite`; requires `lead.id`; throws so the modal stays open. Server: an existing lead with that id replays (never reset, never a 2nd lead); the id is validated. |
+| 15 | restore → active | proven patient row + every audit flag (`persistAuditsRestored`, now tracked + proven); throws so the modal stays open. |
+| 16 | delete patient row | `trackedWrite`; requires the deleted id / key. Server: a retry whose row is gone and held by a fresh `user-delete` tombstone of the same house replays `alreadyDeleted`. |
+| 17 | delete duplicate discharge | `trackedWrite`; requires the id. |
+| 18 | promote / heal auto-save | every failure shown in Hebrew (`AUTO_SAVE_FAILED_HE`), not only a lock. |
+
+Already idempotent server-side, left alone: `dischargePatient_` (upsert by
+id + open-stay duplicate guard), `restorePatientToActive_` (upsert by audit
+id), `deleteDuplicateDischarge_` (`alreadyDeleted`), the patient merge.
+
+Known edge (documented, not changed): an admission whose row the merge
+folds into an EXISTING sheet row (same house + name + entry date under
+another id) keeps the sheet's id, so the client's id is not proven and the
+form says «לא אושרה»; the preserved-rows resync then shows the real row.
+
+Tests: `test/write-path-hardening-patients.test.js` — 12 tests, all 12
+FAILED on the parent (`c5a5494`). `test/helpers/server-echo.js` makes older
+suites' bare `{ok:true}` stubs answer like the real handlers (discharge,
+restore, delete, saveAll proof) instead of weakening the rule; pins updated
+in reactivation-fix (proven order), lock-busy (every auto-save failure is
+reported), rename-guard (`saveAll(`), restore-to-active (the worker throws).
+SW `CACHE_VERSION` v50 → **v51** (live v50).

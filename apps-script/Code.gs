@@ -1658,7 +1658,7 @@ function handle_(params) {
       const perf = perfStart_('saveAll');
       const leads    = parseJsonParam_(params.leads);
       const patients = parseJsonParam_(params.patients);
-      const res = saveAll_(leads, patients, requestUser_(params));
+      const res = saveAll_(leads, patients, requestUser_(params), parseJsonParam_(params.prove));
       perfLap_(perf, 'save');
       // The digest is the active-resident population, which an admission or a
       // patient status/house change (both ride saveAll's patients payload)
@@ -2778,7 +2778,10 @@ function bonusConfigManagers_(ss) {
 
 /* ===== Write (merge semantics) ===== */
 
-function saveAll_(leads, patients, user) {
+function saveAll_(leads, patients, user, prove) {
+  // Validated BEFORE the lock: a malformed proof request writes nothing.
+  const want = saveProveRequest_(prove);
+  if (want === null) return { ok: false, error: 'bad_prove' };
   const lock = LockService.getScriptLock();
   if (lock.tryLock(10000) !== true) return lockBusy_('saveAll_');
   try {
@@ -2863,10 +2866,60 @@ function saveAll_(leads, patients, user) {
     if (conflicts.length > 0) out.conflicts = conflicts;
     if (moved.length > 0) out.moved = moved;
     if (Object.keys(stamps).length > 0) out.stamps = stamps;
+    // R3 proof (CHANGELOG-write-path-hardening.md): which of the ids the
+    // client asked about are on the sheet NOW, read under the same lock.
+    if (want) out.proven = saveProven_(want);
     return out;
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
+}
+
+/* ===== saveAll proof (CHANGELOG-write-path-hardening.md, R3) =====
+ * A saveAll payload may carry `prove: { leads: [id…], patients: [id…] }` —
+ * the rows the caller must see persisted before it says «נשמר». The answer's
+ * `proven` lists those of them the sheet holds after the write. The ids are
+ * the client-minted row ids (one per form), which the merge already matches
+ * on, so a retry re-sends the same id and never adds a row.
+ * → undefined (no proof asked), null (malformed: refused, nothing written),
+ *   or { leads: [...], patients: [...] }. PURE. */
+const SAVE_PROVE_MAX = 50;
+// Row ids are opaque (legacy rows predate the client's format): any text of
+// 1–200 characters without control characters. Only the shape is checked.
+const SAVE_PROVE_ID_RE = /^[^\u0000-\u001f\u007f]{1,200}$/;
+// The id a restore mints for its new lead (cryptoId: 'id-' + base36).
+const NEW_LEAD_ID_RE = /^[A-Za-z0-9_-]{4,64}$/;
+function saveProveRequest_(prove) {
+  if (prove === undefined || prove === null || prove === '') return undefined;
+  if (typeof prove !== 'object' || Array.isArray(prove)) return null;
+  const out = { leads: [], patients: [] };
+  const keys = ['leads', 'patients'];
+  for (let k = 0; k < keys.length; k++) {
+    const list = prove[keys[k]];
+    if (list === undefined) continue;
+    if (!Array.isArray(list) || list.length > SAVE_PROVE_MAX) return null;
+    for (let i = 0; i < list.length; i++) {
+      if (typeof list[i] !== 'string' || !SAVE_PROVE_ID_RE.test(list[i])) return null;
+      out[keys[k]].push(list[i]);
+    }
+  }
+  return out;
+}
+function saveProven_(want) {
+  const has = function (sheetName, columns, ids) {
+    if (!ids.length) return [];
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+    if (!sh || sh.getLastRow() < 2) return [];
+    const at = columns.indexOf('id');
+    const col = sh.getRange(2, at + 1, sh.getLastRow() - 1, 1).getValues();
+    const seen = {};
+    col.forEach(function (r) { seen[String(r[0] == null ? '' : r[0]).trim()] = true; });
+    return ids.filter(function (id) { return seen[id] === true; });
+  };
+  return {
+    leads: has(LEADS_SHEET, LEAD_COLUMNS, want.leads),
+    patients: has(PATIENTS_SHEET, PATIENT_COLUMNS, want.patients),
+  };
 }
 
 /**
@@ -3856,6 +3909,31 @@ function recentUserDeleteKeys_() {
   return out;
 }
 
+/* True when PatientsTombstones holds a 'user-delete' row for patient `id` of
+ * house `houseId` dropped within USER_DELETE_SUPPRESS_MS. Read-only;
+ * fail-closed (false) on any read error. */
+function recentUserDeleteTombstoneHolds_(id, houseId) {
+  try {
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PATIENTS_TOMBSTONES_SHEET);
+    if (!sh || sh.getLastRow() < 2) return false;
+    const values = sh.getRange(2, 1, sh.getLastRow() - 1, PATIENT_TOMBSTONE_COLUMNS.length).getValues();
+    const iIdx = PATIENT_TOMBSTONE_COLUMNS.indexOf('id');
+    const hIdx = PATIENT_TOMBSTONE_COLUMNS.indexOf('houseId');
+    const rIdx = PATIENT_TOMBSTONE_COLUMNS.indexOf('reason');
+    const aIdx = PATIENT_TOMBSTONE_COLUMNS.indexOf('droppedAt');
+    const now = Date.now();
+    return values.some(function (row) {
+      if (String(row[rIdx]) !== 'user-delete') return false;
+      if (String(row[iIdx] == null ? '' : row[iIdx]).trim() !== id) return false;
+      if (String(row[hIdx] == null ? '' : row[hIdx]).trim() !== houseId) return false;
+      const at = Date.parse(asTimestampText_(row[aIdx]));
+      return isFinite(at) && now - at <= USER_DELETE_SUPPRESS_MS;
+    });
+  } catch (err) {
+    return false;
+  }
+}
+
 /* ===== Permanent patient-row delete (dedicated action) =====
  *
  * The occupancy tab's ✕ button used to delete by OMISSION — drop the patient
@@ -3897,7 +3975,15 @@ function deletePatientRow_(patient, user, actor) {
     const wantId = String(patient.id == null ? '' : patient.id).trim();
     const wantHouse = String(patient.houseId == null ? '' : patient.houseId).trim();
     const lastRow = sh.getLastRow();
-    if (lastRow < 2) return { ok: false, error: 'patient_not_found' };
+    /* A RETRY of a delete whose answer was lost: this id's row is gone and a
+     * fresh 'user-delete' tombstone of the same house holds it. Answer the
+     * delete, write nothing (CHANGELOG-write-path-hardening.md). */
+    const replayDeleted = function () {
+      return wantId && recentUserDeleteTombstoneHolds_(wantId, wantHouse)
+        ? { ok: true, deleted: 0, alreadyDeleted: true, key: key, id: wantId, matchedBy: 'id' }
+        : { ok: false, error: 'patient_not_found' };
+    };
+    if (lastRow < 2) return replayDeleted();
 
     const values = sh.getRange(2, 1, lastRow - 1, PATIENT_COLUMNS.length).getValues();
     let kept = [];
@@ -3920,7 +4006,7 @@ function deletePatientRow_(patient, user, actor) {
         else kept.push(row);
       }
     }
-    if (matched.length === 0) return { ok: false, error: 'patient_not_found' };
+    if (matched.length === 0) return replayDeleted();
 
     // Tombstone BEFORE delete — fail-HARD (no catch): an audit failure aborts
     // the whole action via handle_'s exception envelope and the row survives.
@@ -6206,10 +6292,26 @@ function dischargePatient_(patient, user) {
  * blank with stage='new' and created=now. */
 function restorePatient_(patient, user) {
   if (!patient || !patient.id) return { ok: false, error: 'missing_patient' };
+  // The client-minted lead id is this restore's idempotency key: validated.
+  if (patient.newLeadId !== undefined && patient.newLeadId !== null && patient.newLeadId !== '' &&
+      !(typeof patient.newLeadId === 'string' && NEW_LEAD_ID_RE.test(patient.newLeadId))) {
+    return { ok: false, error: 'bad_new_lead_id' };
+  }
   const lock = LockService.getScriptLock();
   if (lock.tryLock(10000) !== true) return lockBusy_('restorePatient_');
   try {
     const leadsSh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+    /* A RETRY whose first answer was lost: the lead this restore creates is
+     * already on the sheet. Answer it, write nothing — never a second lead,
+     * never a reset of what the lead holds now (CHANGELOG-write-path-hardening.md). */
+    if (patient.newLeadId) {
+      const prior = readSheet_(leadsSh, LEAD_COLUMNS).filter(function (r) {
+        return String(r.id == null ? '' : r.id).trim() === String(patient.newLeadId);
+      })[0];
+      if (prior) {
+        return { ok: true, restored: true, replayed: true, newLeadId: String(patient.newLeadId), originalPatientId: patient.id, lead: prior };
+      }
+    }
 
     const restored = {};
     for (let i = 0; i < LEAD_COLUMNS.length; i++) {

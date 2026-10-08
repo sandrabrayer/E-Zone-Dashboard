@@ -979,6 +979,22 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
 
+## Dashboard: write-path hardening — PR B, patients (October 8, 2026)
+
+Detail: `CHANGELOG-write-path-hardening.md`. **Railway + Code.gs** (clasp CI
+on merge). No column, sheet, Script Property or env var.
+- **R1:** discharge, restore (to a lead / to active), delete and «מחק כפילות»
+  are tracked in flight — the visibility resync never reloads under them.
+- **R2:** a failed automatic save after a load (promote / heal) shows a
+  Hebrew error instead of only a console line.
+- **R3:** `saveAll` takes `prove: {leads, patients}` and answers `proven`
+  (the ids the sheet holds after the write, read under the same lock).
+  Admission, intake, ✏️ edit, discharge and restore-to-active say «נשמר»
+  only for a proven row; a stale-edit refusal keeps the ✏️ form open. One
+  patient / lead id per form (crypto), so a retry never adds a row. A delete
+  retry and a restore-as-lead retry replay on the server.
+- SW `CACHE_VERSION` v50 → **v51**.
+
 ## Dashboard: write-path hardening — PR A, money (October 8, 2026)
 
 Detail: `CHANGELOG-write-path-hardening.md`. **Railway + Code.gs** (clasp CI

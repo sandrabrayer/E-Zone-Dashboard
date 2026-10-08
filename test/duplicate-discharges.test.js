@@ -99,6 +99,7 @@ function fakeEl() {
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
   };
 }
+const { serverEcho } = require('./helpers/server-echo');
 function loadApp(route) {
   const calls = [];
   const noop = () => {};
@@ -113,7 +114,9 @@ function loadApp(route) {
     fetch: (url, opts) => {
       const body = opts && opts.body ? JSON.parse(opts.body) : null;
       calls.push(body);
-      const out = (route && route(body)) || (body && body.action === 'suggestRefunds' ? { ok: true, suggestions: [] } : { ok: true });
+      // serverEcho: a bare {ok:true} answers like the real handler (the proof
+      // the page needs, CHANGELOG-write-path-hardening.md).
+      const out = serverEcho(body, (route && route(body)) || (body && body.action === 'suggestRefunds' ? { ok: true, suggestions: [] } : { ok: true }));
       const status = out.__status || 200;
       delete out.__status;
       return Promise.resolve({ ok: status < 400, status, json: () => Promise.resolve(JSON.parse(JSON.stringify(out))) });
