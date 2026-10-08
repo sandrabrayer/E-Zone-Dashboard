@@ -29,8 +29,7 @@ function loadApp() {
       // Reassign saveAll to count calls without a network round-trip.
       stubSaveAll(fail) {
         const calls = [];
-        // Answers like saveAll_: proves the rows asked about (CHANGELOG-write-path-hardening.md).
-        saveAll = async (opts) => { calls.push(true); if (fail) throw new Error('save failed'); return { ok: true, proven: (opts && opts.prove) || {} }; };
+        saveAll = async () => { calls.push(true); if (fail) throw new Error('save failed'); };
         return calls;
       },
     };
