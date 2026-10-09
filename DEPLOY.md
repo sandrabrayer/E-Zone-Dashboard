@@ -205,6 +205,10 @@ the old page never sends such a date once the user finishes typing, and the
 new page never sends one at all. Damaged rows are only flagged, never
 rewritten. SW `CACHE_VERSION` v55 → **v56**.
 
+**09/10/2026 — `CHANGELOG-inclusive-coordinator-wording.md`:** Railway only
+(`index.html`, `sw.js`), no manual step, no column, Code.gs not touched. One
+UI string: «ע״י הרכזות» → «ע״י הרכזים». SW `CACHE_VERSION` v56 → **v57**.
+
 ## «בקרת גבייה» — Ortal's tab (October 4, 2026)
 
 `CHANGELOG-billing-control-tab.md`. **No env var, no Script Property, no

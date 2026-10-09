@@ -223,7 +223,10 @@
 // v55 → v56: visit-date guard (CHANGELOG-visit-date-guard.md) — out-of-range
 // lead dates are never sent; damaged rows are flagged. app.js + style.css
 // changed; activate evicts v55.
-var CACHE_VERSION = 'v56';
+// v56 → v57: inclusive coordinator wording
+// (CHANGELOG-inclusive-coordinator-wording.md) — index.html text changed;
+// activate evicts v56.
+var CACHE_VERSION = 'v57';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
