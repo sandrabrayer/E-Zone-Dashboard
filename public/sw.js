@@ -220,7 +220,10 @@
 // v54 → v55: meetings board re-render (CHANGELOG-meetings-board-rerender.md) —
 // a visit change shows on the board at once; tab entry always re-renders.
 // app.js changed; activate evicts v54.
-var CACHE_VERSION = 'v55';
+// v55 → v56: visit-date guard (CHANGELOG-visit-date-guard.md) — out-of-range
+// lead dates are never sent; damaged rows are flagged. app.js + style.css
+// changed; activate evicts v55.
+var CACHE_VERSION = 'v56';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

@@ -197,6 +197,14 @@ safe. SW `CACHE_VERSION` v53 → **v54**.
 (`app.js`, `sw.js`), no manual step, no column, Code.gs not touched. SW
 `CACHE_VERSION` v54 → **v55**.
 
+**09/10/2026 — `CHANGELOG-visit-date-guard.md`:** no manual step, no column.
+Railway (`app.js`, `style.css`, `sw.js`) + Code.gs (`saveAll_` refuses a
+changed lead visitDate / entryDate outside [2024, this year + 2] with
+`error: 'bad_lead_date'`) — clasp CI deploys on merge. Either order is safe:
+the old page never sends such a date once the user finishes typing, and the
+new page never sends one at all. Damaged rows are only flagged, never
+rewritten. SW `CACHE_VERSION` v55 → **v56**.
+
 ## «בקרת גבייה» — Ortal's tab (October 4, 2026)
 
 `CHANGELOG-billing-control-tab.md`. **No env var, no Script Property, no

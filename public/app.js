@@ -3210,6 +3210,91 @@ function leadVisitDateISO(v) {
   return isoDate(s);
 }
 
+/* ===== Lead date guard (CHANGELOG-visit-date-guard.md) =====
+ * A lead's visitDate / entryDate must fall in [2024, current year + 2]. Typing
+ * a date into a desktop date input fires 'change' at every complete-looking
+ * date (11/10/0002 → …/0020 → …/2026); before #211 those intermediate years
+ * were saved. The guard keeps them off the wire (client) and off the sheet
+ * (Code.gs mergeLeads_), and the board lists the rows already damaged. */
+const LEAD_DATE_MIN_YEAR = 2024;
+const LEAD_DATE_MAX_YEARS_AHEAD = 2;
+const LEAD_GUARDED_DATE_FIELDS = ['visitDate', 'entryDate'];
+const LEAD_DATE_PROBLEM_LABELS = {
+  visitDate: 'תאריך ביקור לא תקין — יש לתקן',
+  entryDate: 'תאריך כניסה לא תקין — יש לתקן',
+};
+
+/* true for '' (no date) or a bare YYYY-MM-DD whose year is in range. Pure;
+ * todayIso is injectable for tests. */
+function leadDateInRange(v, todayIso) {
+  if (v === undefined || v === null || v === '') return true;
+  const m = /^(\d{4})-\d{2}-\d{2}$/.exec(String(v));
+  if (!m) return false;
+  const year = Number(m[1]);
+  const maxYear = Number(String(todayIso || todayISO()).slice(0, 4)) + LEAD_DATE_MAX_YEARS_AHEAD;
+  return year >= LEAD_DATE_MIN_YEAR && year <= maxYear;
+}
+
+/* The guarded date fields of `lead` that hold an out-of-range value, as
+ * [{ field, label }]. Pure. */
+function leadDateProblems(lead, todayIso) {
+  if (!lead) return [];
+  return LEAD_GUARDED_DATE_FIELDS
+    .filter(f => !leadDateInRange(lead[f], todayIso))
+    .map(f => ({ field: f, label: LEAD_DATE_PROBLEM_LABELS[f] }));
+}
+
+/* Every lead (any stage) with at least one out-of-range date. Pure. */
+function leadsWithBadDates(leads, todayIso) {
+  return (leads || []).filter(l => leadDateProblems(l, todayIso).length > 0);
+}
+
+/* Quiet invalid state on a date control: an amber outline and a tooltip, no
+ * toast — the user may still be typing. */
+function markDateFieldInvalid(el, invalid) {
+  if (!el) return;
+  if (el.classList) el.classList.toggle('date-invalid', !!invalid);
+  if (invalid) {
+    if (el.setAttribute) el.setAttribute('aria-invalid', 'true');
+    if (el.setAttribute) el.setAttribute('title', 'השנה לא תקינה — יש להשלים תאריך מלא');
+  } else if (el.removeAttribute) {
+    el.removeAttribute('aria-invalid');
+    el.removeAttribute('title');
+  }
+}
+
+/* The one message a deliberate save (a modal's submit) shows for an
+ * out-of-range date. Typing never shows it. */
+const LEAD_DATE_REFUSED_HE = 'התאריך לא תקין — השנה חייבת להיות בין ' + LEAD_DATE_MIN_YEAR +
+  ' לשנתיים קדימה. התאריך לא נשמר.';
+
+/* A showModal date field's onChange: the quiet amber state while typing. */
+function guardDateFieldOnChange(name) {
+  return (value, form) => markDateFieldInvalid(form && form.querySelector(`[name="${name}"]`), !leadDateInRange(value));
+}
+
+/* The amber chip(s) a lead card shows for its damaged dates ('' when none). */
+function leadDateChipsHTML(lead) {
+  return leadDateProblems(lead)
+    .map(p => `<div class="lc-date-bad">${escapeHtml(p.label)}</div>`).join('');
+}
+
+/* The line at the top of «לוח פגישות»: «N לידים עם תאריך ביקור לא תקין» and
+ * their names. In edit mode each name is a button that opens the lead's edit
+ * modal; viewers see the names only. '' when no lead is damaged. */
+function badLeadDatesBannerHTML(leads) {
+  const bad = leadsWithBadDates(leads);
+  if (!bad.length) return '';
+  const names = bad.map(l => state.mode === 'edit'
+    ? `<button type="button" class="mtg-bad-date-lead" data-bad-date-lead="${escapeHtml(l.id || '')}">${escapeHtml(l.name || '—')}</button>`
+    : `<span class="mtg-bad-date-lead">${escapeHtml(l.name || '—')}</span>`).join('');
+  return `
+    <div class="mtg-bad-dates" role="status">
+      <div class="mtg-bad-dates-head">${bad.length} לידים עם תאריך ביקור לא תקין</div>
+      <div class="mtg-bad-dates-names">${names}</div>
+    </div>`;
+}
+
 /* Pure bucketing for the meetings board. Given the lead list and any date in
  * the target week, returns the week's meetings grouped by day.
  *
@@ -3978,8 +4063,17 @@ function renderMeetings() {
       <button type="button" class="btn" data-mtg="next">← שבוע הבא</button>
       <span class="mtg-range">${escapeHtml(rangeLabel)}</span>
     </div>
+    ${badLeadDatesBannerHTML(state.leads)}
     ${summary}
     <div class="mtg-list">${body}</div>`;
+
+  /* Damaged-date names → that lead's edit modal (edit mode only). */
+  board.querySelectorAll('[data-bad-date-lead]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const lead = state.leads.find(l => l.id === btn.getAttribute('data-bad-date-lead'));
+      if (lead) openEditLeadModal(lead);
+    });
+  });
 
   board.querySelector('[data-mtg="prev"]').onclick = () => {
     state.meetingsWeekStart = addDaysISO(state.meetingsWeekStart, -7);
@@ -4117,8 +4211,16 @@ function openMeetingEditModal(m) {
     openWhatsAppLink(meetingInviteWaUrl(leadBillingPhone(lead), msg));
   };
 
+  /* Date guard: amber while the year is out of range (quiet — no toast). */
+  dateInp.addEventListener('change', () => markDateFieldInvalid(dateInp, !leadDateInRange(dateInp.value)));
+
   form.onsubmit = e => {
     e.preventDefault();
+    if (!leadDateInRange(dateInp.value)) {   // never sent: no updateLead call
+      markDateFieldInvalid(dateInp, true);
+      showError(LEAD_DATE_REFUSED_HE);
+      return undefined;
+    }
     return busyButton(submitBtn, 'save', async () => {
       cancelBtn.disabled = true;
       try {
@@ -5023,6 +5125,7 @@ function buildLeadCard(lead) {
     </div>
     ${waitBadge ? `<div class="lc-wait-badge">${waitBadge}</div>` : ''}
     ${unadmittedChipHTML(unadmittedDaysForLead(lead))}
+    ${leadDateChipsHTML(lead)}
     ${state.mode === 'edit' ? '' : leadContactLineHTML(lead)}
     ${state.mode === 'edit' ? '' : leadBillingLineHTML(lead)}
     ${lead.assignedTo
@@ -5162,6 +5265,13 @@ function buildLeadCard(lead) {
  * re-renders the card (updateLead), so nothing is retried. */
 function saveInlineLeadField(inp, lead) {
   const field = inp.dataset.field;
+  /* Date guard: an out-of-range year (an intermediate value while typing) is
+   * never sent — the field turns amber and waits for a complete date. */
+  if (LEAD_GUARDED_DATE_FIELDS.indexOf(field) !== -1) {
+    const ok = leadDateInRange(inp.value);
+    markDateFieldInvalid(inp, !ok);
+    if (!ok) return Promise.resolve(undefined);
+  }
   return withFieldSaving(inp, 'save', () => updateLead(lead.id, { [field]: inp.value }))
     .then(saved => {
       if (saved !== true) return saved;   // busy (undefined) or failed (false)
@@ -6731,7 +6841,12 @@ function openEditLeadModal(lead) {
         value: lead.house || '',
         options: [{ value: '', label: '— ללא —' }, ...HOUSES.map(h => ({ value: h.name, label: h.name }))] },
       { name: 'created',   label: 'נוצר',          type: 'date', value: isoDate(lead.created || '') },
-      { name: 'visitDate', label: 'תאריך ביקור', type: 'date', value: lead.visitDate || '' },
+      { name: 'visitDate', label: 'תאריך ביקור', type: 'date', value: lead.visitDate || '',
+        onChange: guardDateFieldOnChange('visitDate') },
+      /* תאריך כניסה — only on a lead that already has one, so a damaged entry
+       * date (CHANGELOG-visit-date-guard.md) can be fixed here. */
+      ...(lead.entryDate ? [{ name: 'entryDate', label: 'תאריך כניסה', type: 'date', value: lead.entryDate,
+        onChange: guardDateFieldOnChange('entryDate') }] : []),
       /* Quarter-hour <select> (native time picker ignores step on mobile). An
        * off-step legacy value is preserved as an extra option (visitTimeOptions). */
       { name: 'visitTime', label: 'שעת ביקור',   type: 'select', value: lead.visitTime || '',
@@ -6744,12 +6859,18 @@ function openEditLeadModal(lead) {
     submitLabel: 'שמור שינויים',
     onSubmit: async v => {
       if (!v.name) { showError('יש להזין שם'); return false; }
+      /* Date guard: an out-of-range year is never saved; the modal stays open. */
+      if (!leadDateInRange(v.visitDate) || (lead.entryDate && !leadDateInRange(v.entryDate))) {
+        showError(LEAD_DATE_REFUSED_HE);
+        return false;
+      }
       const prev = { ...lead };
       lead.name        = v.name.trim();
       lead.phone       = v.phone || '';
       lead.house       = v.house || '';
       lead.created     = v.created || '';
       lead.visitDate   = v.visitDate || '';
+      if (lead.entryDate) lead.entryDate = v.entryDate || '';
       lead.visitTime   = v.visitTime || '';
       lead.meetingWith = v.meetingWith || '';
       lead.note        = (v.note || '').trim();
@@ -6788,7 +6909,7 @@ function openEntryModal(lead) {
         value: preferredHouse ? preferredHouse.id : '',
         options: HOUSES.map(h => ({ value: h.id, label: h.name })) },
       { name: 'date', label: 'תאריך כניסה', type: 'date', required: true,
-        value: lead.entryDate || todayISO() },
+        value: lead.entryDate || todayISO(), onChange: guardDateFieldOnChange('date') },
       { name: 'pay', label: 'תשלום חודשי כולל מע"מ (₪)', type: 'number', required: true },
       { name: 'adv', label: 'מקדמה ששולמה (₪)', type: 'number', required: true,
         value: String(lead.advance || 0) },
@@ -6799,6 +6920,8 @@ function openEntryModal(lead) {
     submitLabel: 'אשר כניסה',
     onSubmit: async v => {
       if (!v.houseId || !v.date || !v.pay) { showError('שדות חסרים'); return false; }
+      // Date guard: the entry date becomes lead.entryDate (CHANGELOG-visit-date-guard.md).
+      if (!leadDateInRange(v.date)) { showError(LEAD_DATE_REFUSED_HE); return false; }
       const funderErr = admissionFunderError(state.finance, v.funder);
       if (funderErr) { showError(funderErr); return false; }
       const patient = normalizePatient({

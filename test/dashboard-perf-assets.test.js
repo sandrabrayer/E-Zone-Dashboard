@@ -330,7 +330,7 @@ function serve(handlers, url) {
 }
 const settle = () => new Promise((r) => setImmediate(r));
 
-test('D: CACHE_VERSION is v55 (monotonic from the live v54; v17 burned, never reused)', () => {
+test('D: CACHE_VERSION is v56 (monotonic from the live v55; v17 burned, never reused)', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
   // v40: CHANGELOG-ortal-verification-status.md.
   // v41: CHANGELOG-reactivation-fix.md (PR #145's fix, re-landed).
@@ -348,7 +348,8 @@ test('D: CACHE_VERSION is v55 (monotonic from the live v54; v17 burned, never re
   // v53: CHANGELOG-write-path-hardening.md (PR D, proven saves never hidden).
   // v54: CHANGELOG-meetings-board-fixes.md.
   // v55: CHANGELOG-meetings-board-rerender.md.
-  assert.equal(v, 'v55');
+  // v56: CHANGELOG-visit-date-guard.md.
+  assert.equal(v, 'v56');
   assert.notEqual(v, 'v17');
 });
 
