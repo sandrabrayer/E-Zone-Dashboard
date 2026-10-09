@@ -106,7 +106,7 @@ test('arrows: the same markup shape as the lead-card «שלב קודם →» / �
   assert.ok(!board.innerHTML.includes('שבוע הבא →'));
 });
 
-test('arrows: behavior unchanged — prev goes back 7 days, next forward 7, השבוע resets', () => {
+test('arrows: behavior unchanged — prev goes back 7 days, next goes forward 7', () => {
   navButtons();
   handlers.prev();
   assert.strictEqual(app.state.meetingsWeekStart, '2026-09-27');
