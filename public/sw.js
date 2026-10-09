@@ -217,7 +217,10 @@
 // v53 → v54: meetings board fixes (CHANGELOG-meetings-board-fixes.md) — RTL
 // week arrows, scheduled visits land in their week. app.js changed; activate
 // evicts v53.
-var CACHE_VERSION = 'v54';
+// v54 → v55: meetings board re-render (CHANGELOG-meetings-board-rerender.md) —
+// a visit change shows on the board at once; tab entry always re-renders.
+// app.js changed; activate evicts v54.
+var CACHE_VERSION = 'v55';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
