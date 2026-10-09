@@ -214,7 +214,10 @@
 // v52 → v53: write-path hardening PR D — a proven patient save is never
 // rolled back off the screen when only the discharge-flag write fails.
 // app.js changed; activate evicts v52.
-var CACHE_VERSION = 'v53';
+// v53 → v54: meetings board fixes (CHANGELOG-meetings-board-fixes.md) — RTL
+// week arrows, scheduled visits land in their week. app.js changed; activate
+// evicts v53.
+var CACHE_VERSION = 'v54';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

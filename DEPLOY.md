@@ -188,6 +188,11 @@ Apps Script script cache (6 h, the saved answer only — no report text). SW
 **08/10/2026 — `CHANGELOG-write-path-hardening.md` (PR D):** Railway only, no
 manual step. SW `CACHE_VERSION` v52 → **v53**.
 
+**09/10/2026 — `CHANGELOG-meetings-board-fixes.md`:** no manual step and no
+column. Railway (`app.js`, `sw.js`) + Code.gs (`getData_` sends `visitDate` as
+`YYYY-MM-DD`, read path only) — clasp CI deploys on merge; either order is
+safe. SW `CACHE_VERSION` v53 → **v54**.
+
 ## «בקרת גבייה» — Ortal's tab (October 4, 2026)
 
 `CHANGELOG-billing-control-tab.md`. **No env var, no Script Property, no
