@@ -2569,8 +2569,15 @@ function getData_() {
   // as a Date; asISOTime_ converts it to 'HH:MM' in the SPREADSHEET timezone so
   // it no longer drifts through the UTC round-trip. A clean 'HH:MM' text cell
   // passes through unchanged.
+  // visitDate gets the same treatment (meetings board): a date-typed legacy
+  // cell (a Date, serialized as a UTC timestamp) or a serial left behind by a
+  // text re-format would otherwise reach the client raw and be read in the
+  // device's timezone / as 1970-01-01. asISODate_ renders it as the sheet-tz
+  // 'YYYY-MM-DD' — the form meetingReportLeads_ already sends. Clean text
+  // cells pass through unchanged.
   for (let i = 0; i < leads.length; i++) {
     leads[i].visitTime = asISOTime_(leads[i].visitTime);
+    leads[i].visitDate = asISODate_(leads[i].visitDate);
   }
   const patientRows         = rowsFromValues_(patientValues, PATIENT_COLUMNS);
   const irrelevantLeads     = rowsFromValues_(irrelevantValues, IRRELEVANT_LEAD_COLUMNS);
