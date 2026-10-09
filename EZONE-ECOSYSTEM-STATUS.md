@@ -6,6 +6,10 @@ Sep 10 revision is the UNION of every repo's copy (the per-repo sections that ha
 drifted — Dashboard git history, Therapists roster source, Managers Sep 5–10 work,
 Logistics access code — are folded in below); the same file now lives in all repos.
 
+## Conventions
+
+- Gendered roles: use slash form (רכז/ת, מטפל/ת) in the singular and the masculine plural (רכזים) as inclusive. Never feminine-only for a role.
+
 ## Deployment ground truth (branches re-verified July 22, 2026)
 
 | App | Repo | Deploys branch |
@@ -978,6 +982,16 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
   is kept. Ortal gets 403.
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
+
+## Dashboard: inclusive coordinator wording (October 9, 2026)
+
+Detail: `CHANGELOG-inclusive-coordinator-wording.md`. **Railway only**
+(`public/index.html`); Code.gs not touched. Coordinators include men: the
+«🚪 שחרורים מהבתים» subtitle now says «ע״י הרכזים» (was «ע״י הרכזות»).
+`test/inclusive-coordinator-wording.test.js` fails the build on «רכזת» /
+«רכזות» in public/** or a Code.gs string literal (the stored updatedBy stamp
+`'רכזות · '` is the one documented exception). Convention: see «Conventions»
+at the top. SW `CACHE_VERSION` v56 → **v57** (v17 stays burned).
 
 ## Dashboard: visit-date guard (October 9, 2026)
 
