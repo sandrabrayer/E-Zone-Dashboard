@@ -258,12 +258,14 @@ test('D: typing a date (several changes during one save) ends on the LAST value 
   app.state.leads = [app.normalizeLead(visitLead({ visitTime: '14:00' }))];
   app.state.meetingsWeekStart = '2026-10-11';
   const lead = app.state.leads[0];
-  const inp = fakeInput('visitDate', '0002-10-11');            // first complete date while typing
+  /* In-range values: since CHANGELOG-visit-date-guard.md an out-of-range year
+   * (0002 / 0020) is never sent at all — see test/visit-date-guard.test.js. */
+  const inp = fakeInput('visitDate', '2026-10-01');            // first value, save in flight
   const first = app.saveInlineLeadField(inp, lead);
   await tick();
   assert.strictEqual(pending.length, 1);
   saves.push(lead.visitDate);
-  inp.value = '0020-10-11'; app.saveInlineLeadField(inp, lead);  // busy → was dropped
+  inp.value = '2026-10-10'; app.saveInlineLeadField(inp, lead);  // busy → was dropped
   inp.value = '2026-10-11'; app.saveInlineLeadField(inp, lead);
   await tick();
   assert.strictEqual(pending.length, 1, 'one save at a time');
@@ -273,7 +275,7 @@ test('D: typing a date (several changes during one save) ends on the LAST value 
   saves.push(lead.visitDate);
   pending[1].resolve({ ok: true });
   assert.strictEqual(await first, true);
-  assert.deepStrictEqual(saves, ['0002-10-11', '2026-10-11']);
+  assert.deepStrictEqual(saves, ['2026-10-01', '2026-10-11']);
   assert.strictEqual(lead.visitDate, '2026-10-11');
   assert.ok(onBoard(board, 'תומר'), 'on the board in week 11/10–17/10');
 });

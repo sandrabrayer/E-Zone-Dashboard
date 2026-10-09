@@ -979,6 +979,21 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
 
+## Dashboard: visit-date guard (October 9, 2026)
+
+Detail: `CHANGELOG-visit-date-guard.md`. **Railway + Code.gs** (clasp CI on
+merge). No column, sheet, Script Property or env var.
+- A lead's visitDate / entryDate must be in [2024, this year + 2]. The page
+  never sends one outside it (inline card, lead ✏️, board ✏️, entry modal); the
+  field turns amber quietly while typing.
+- `saveAll_` refuses a CHANGED out-of-range date (`bad_lead_date`, Hebrew
+  message, nothing written); an unchanged damaged date still lets the lead's
+  other fields save.
+- Damaged rows from before #211 (0002 / 0020 years) are flagged read-only: an
+  amber chip on the lead card and «N לידים עם תאריך ביקור לא תקין» at the top
+  of «לוח פגישות» (click a name → the lead's ✏️ modal). Fixing the date clears it.
+- SW `CACHE_VERSION` v55 → **v56** (v17 stays burned).
+
 ## Dashboard: meetings board re-render (October 9, 2026)
 
 Detail: `CHANGELOG-meetings-board-rerender.md`. **Railway only** (`public/app.js`);
