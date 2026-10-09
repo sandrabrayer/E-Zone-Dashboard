@@ -362,6 +362,10 @@ const state = {
   /* Sunday (bare YYYY-MM-DD) anchoring the visible week on the meetings board.
    * Defaults to the current week on first render (see renderMeetings). */
   meetingsWeekStart: '',
+  /* true once the user navigated the board to another week (שבוע קודם / הבא);
+   * «השבוע» clears it. While false, entering the tab re-anchors the board on
+   * the CURRENT week, so a page left open past Saturday shows this week. */
+  meetingsWeekPinned: false,
   leadSearch: '',
   retentionSearch: '',
   patientSearch: '',
@@ -1750,6 +1754,9 @@ function initTabs() {
   document.querySelectorAll('.tabs .tab').forEach(btn => {
     btn.onclick = () => {
       showScreen(resolveScreen(btn.dataset.screen, state.finance, state.view, state.billingRead === true));
+      /* «לוח פגישות»: render the board FIRST and on its own, so nothing that
+       * renderAll draws before it can leave the board showing old data. */
+      if (state.currentScreen === MEETINGS_SCREEN) enterMeetingsTab();
       renderAll();
       if (state.currentScreen === BILLING_CONTROL_SCREEN) loadBillingControl().catch(() => { /* shown in the tab */ });
     };
@@ -3895,6 +3902,38 @@ function meetingRowHTML(m, timeText, showOutcome) {
     </div>${meetingReportBlockHTML(m)}`;
 }
 
+/* The «לוח פגישות» screen id (SCREENS). */
+const MEETINGS_SCREEN = 'meetings';
+
+/* Lead fields the meetings board shows or buckets by. A lead write touching
+ * any of them re-renders the board (see updateLead). */
+const MEETINGS_BOARD_FIELDS = ['visitDate', 'visitTime', 'meetingWith', 'name', 'house', 'stage'];
+
+/* Whether a lead update (a fields object) changes what the board shows. Pure. */
+function touchesMeetingsBoard(fields) {
+  if (!fields || typeof fields !== 'object') return false;
+  return MEETINGS_BOARD_FIELDS.some(f => Object.prototype.hasOwnProperty.call(fields, f));
+}
+
+/* Re-render the board (and with it the tab badge) without letting a render
+ * error escape: callers are save paths, and a board problem must never turn a
+ * saved lead into a «failed» one or skip their rollback. */
+function refreshMeetingsBoard() {
+  try {
+    renderMeetings();
+  } catch (e) {
+    console.error('[E-ZONE] meetings board render failed:', e && e.message);
+  }
+}
+
+/* Entering «לוח פגישות»: unless the user navigated to another week, the board
+ * follows TODAY's week (a page left open across Saturday night moves on), then
+ * renders from the current state.leads. */
+function enterMeetingsTab() {
+  if (!state.meetingsWeekPinned) state.meetingsWeekStart = weekStartSunday(todayISO());
+  refreshMeetingsBoard();
+}
+
 function renderMeetings() {
   const board = document.getElementById('meetings-board');
   if (!board) return;
@@ -3944,14 +3983,17 @@ function renderMeetings() {
 
   board.querySelector('[data-mtg="prev"]').onclick = () => {
     state.meetingsWeekStart = addDaysISO(state.meetingsWeekStart, -7);
+    state.meetingsWeekPinned = true;
     renderMeetings();
   };
   board.querySelector('[data-mtg="next"]').onclick = () => {
     state.meetingsWeekStart = addDaysISO(state.meetingsWeekStart, 7);
+    state.meetingsWeekPinned = true;
     renderMeetings();
   };
   board.querySelector('[data-mtg="today"]').onclick = () => {
     state.meetingsWeekStart = weekStartSunday(todayISO());
+    state.meetingsWeekPinned = false;
     renderMeetings();
   };
 
@@ -5035,8 +5077,7 @@ function buildLeadCard(lead) {
    * write, rollback and error banner are untouched: a failed save re-renders the
    * card with the previous value, so the field is never left looking saved. */
   card.querySelectorAll('[data-field]').forEach(inp => {
-    inp.onchange = () => withFieldSaving(inp, 'save',
-      () => updateLead(lead.id, { [inp.dataset.field]: inp.value }));
+    inp.onchange = () => saveInlineLeadField(inp, lead);
   });
 
   /* קשר למטופל (edit mode) — the <select> carries data-field, so the generic
@@ -5112,6 +5153,26 @@ function buildLeadCard(lead) {
   return card;
 }
 
+/* One inline lead-card field → updateLead. withFieldSaving ignores a change
+ * that arrives while the field's previous save is still in flight (typing a
+ * date fires several changes: 11/10/0002 … 11/10/2026), which used to drop the
+ * LAST value — the card showed it, but the lead, the sheet and the meetings
+ * board kept the earlier one. So when a save finishes and the field already
+ * holds a newer value, that value is saved too. A failed save rolls back and
+ * re-renders the card (updateLead), so nothing is retried. */
+function saveInlineLeadField(inp, lead) {
+  const field = inp.dataset.field;
+  return withFieldSaving(inp, 'save', () => updateLead(lead.id, { [field]: inp.value }))
+    .then(saved => {
+      if (saved !== true) return saved;   // busy (undefined) or failed (false)
+      const current = state.leads.find(l => l.id === lead.id);
+      if (current && String(inp.value) !== String(current[field] == null ? '' : current[field])) {
+        return saveInlineLeadField(inp, lead);
+      }
+      return saved;
+    });
+}
+
 async function advanceLead(lead) {
   // Admit action: advancing a paid (בטיפול פעיל) lead enters it into a house.
   // openEntryModal creates the patient and retires the lead to 'admitted'.
@@ -5171,15 +5232,21 @@ async function updateLead(id, fields) {
   if (!lead) return false;
   const prev = { ...lead };
   Object.assign(lead, fields);
+  /* A visit change (date / time / «נפגש עם» …) shows on the meetings board at
+   * once — optimistically — and again once the sheet has proven it. Board
+   * only: renderAll would rebuild the card being edited under the user. */
+  const board = touchesMeetingsBoard(fields);
+  if (board) refreshMeetingsBoard();
   try {
     await saveAllProvingLead(id);
-    return true;
   } catch (e) {
     Object.assign(lead, prev);
     renderAll();
     showError('עדכון ליד נכשל — ' + e.message);
     return false;
   }
+  if (board) refreshMeetingsBoard();
+  return true;
 }
 
 /* ===== Irrelevant leads — move + restore =====

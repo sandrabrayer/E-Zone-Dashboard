@@ -979,6 +979,19 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
 
+## Dashboard: meetings board re-render (October 9, 2026)
+
+Detail: `CHANGELOG-meetings-board-rerender.md`. **Railway only** (`public/app.js`);
+Code.gs not touched. No column, sheet, Script Property or env var.
+- A visit set or changed on a lead card (date / time / «נפגש עם») shows on
+  «לוח פגישות» at once, again when the sheet confirms it, and rolls back off it
+  on a failed save. The tab badge is refreshed with the board.
+- Entering the tab always renders the board first, from the current leads,
+  and follows today's week unless the user navigated to another week.
+- A change made while the same field's save is still in flight is no longer
+  dropped (typing a date used to save an intermediate year).
+- SW `CACHE_VERSION` v54 → **v55** (v17 stays burned).
+
 ## Dashboard: meetings board fixes (October 9, 2026)
 
 Detail: `CHANGELOG-meetings-board-fixes.md`. **Railway + Code.gs** (clasp CI on
