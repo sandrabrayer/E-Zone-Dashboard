@@ -2804,6 +2804,14 @@ function saveAll_(leads, patients, user, prove) {
     if (Array.isArray(leads) && leads.length > 0) {
       reportConflicts = mergeLeads_(leads, leadOut);
     }
+    // Date guard: refused BEFORE any patient write — nothing is saved.
+    if (leadOut.badLeadDates && leadOut.badLeadDates.length > 0) {
+      return {
+        ok: false, error: 'bad_lead_date',
+        message: leadDateRefusalMessage_(leadOut.badLeadDates[0], todayISODate_()),
+        badLeadDates: leadOut.badLeadDates,
+      };
+    }
 
     // Patients — only touch houseIds that are present in the payload.
     // `written` echoes, per house, how many patient rows were actually written
@@ -2950,6 +2958,51 @@ function saveProven_(want) {
  *     keeps legacy rows blank: editing any other field on a pre-`created`
  *     lead won't auto-backfill a guess.
  */
+/* Lead date guard (CHANGELOG-visit-date-guard.md). Before #211 a desktop date
+ * input saved every intermediate year while typing (0002-10-11, 0020-10-11 …).
+ * LEAD_DATE_MIN_YEAR .. (this year + LEAD_DATE_MAX_YEARS_AHEAD) is the range a
+ * lead's visitDate / entryDate may be SAVED into. */
+const LEAD_DATE_MIN_YEAR = 2024;
+const LEAD_DATE_MAX_YEARS_AHEAD = 2;
+const LEAD_GUARDED_DATE_COLUMNS = ['visitDate', 'entryDate'];
+
+/* true for '' or a bare YYYY-MM-DD with an in-range year. Pure. */
+function leadDateInRange_(iso, todayIso) {
+  if (iso === undefined || iso === null || iso === '') return true;
+  const m = /^(\d{4})-\d{2}-\d{2}$/.exec(String(iso));
+  if (!m) return false;
+  const year = Number(m[1]);
+  return year >= LEAD_DATE_MIN_YEAR && year <= Number(String(todayIso).slice(0, 4)) + LEAD_DATE_MAX_YEARS_AHEAD;
+}
+
+/* The payload's out-of-range lead dates that CHANGE the stored value, as
+ * [{ id, name, field, value }]. An unchanged damaged date (the row was saved
+ * before the guard) is not a violation. Pure. */
+function leadDateViolations_(leads, existingById, todayIso) {
+  const out = [];
+  (leads || []).forEach(function (l) {
+    if (!l) return;
+    const existing = existingById[String(l.id == null ? '' : l.id)];
+    LEAD_GUARDED_DATE_COLUMNS.forEach(function (col) {
+      const incoming = asISODate_(l[col]);
+      if (leadDateInRange_(incoming, todayIso)) return;
+      const idx = LEAD_COLUMNS.indexOf(col);
+      const stored = existing && idx >= 0 ? asISODate_(existing[idx]) : '';
+      if (incoming === stored) return;
+      out.push({ id: String(l.id == null ? '' : l.id), name: String(l.name || ''), field: col, value: incoming });
+    });
+  });
+  return out;
+}
+
+/* The Hebrew refusal for a save carrying an out-of-range lead date. */
+function leadDateRefusalMessage_(v, todayIso) {
+  const what = v.field === 'entryDate' ? 'תאריך הכניסה' : 'תאריך הביקור';
+  const maxYear = Number(String(todayIso).slice(0, 4)) + LEAD_DATE_MAX_YEARS_AHEAD;
+  return what + ' של ' + (v.name || 'הליד') + ' לא תקין (' + v.value + ') — השנה חייבת להיות בין ' +
+    LEAD_DATE_MIN_YEAR + ' ל-' + maxYear + '. דבר לא נשמר.';
+}
+
 function mergeLeads_(leadsIn, out) {
   const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
   const idColIdx      = LEAD_COLUMNS.indexOf('id');
@@ -3001,6 +3054,17 @@ function mergeLeads_(leadsIn, out) {
   }
 
   const today = todayISODate_();
+
+  // Date guard (CHANGELOG-visit-date-guard.md): an incoming visitDate /
+  // entryDate outside [2024, this year + 2] is refused — but ONLY when it
+  // differs from the stored value, so a lead whose damaged date is unchanged
+  // still saves its other fields. A refusal writes nothing: saveAll_ answers
+  // ok:false before touching patients.
+  const badDates = leadDateViolations_(leads, existingById, today);
+  if (badDates.length > 0) {
+    if (out && typeof out === 'object') out.badLeadDates = badDates;
+    return [];
+  }
 
   // leadIds whose meetingReport* fields the guard kept from the sheet instead
   // of the payload (detected as: the guard changed the row's reportedAt away
