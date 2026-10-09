@@ -979,6 +979,18 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
 
+## Dashboard: meetings board fixes (October 9, 2026)
+
+Detail: `CHANGELOG-meetings-board-fixes.md`. **Railway + Code.gs** (clasp CI on
+merge). No column, sheet, Script Property or env var.
+- «לוח פגישות» week arrows follow the lead-card RTL convention: «שבוע קודם →» /
+  «← שבוע הבא». Text only.
+- A lead's scheduled visit now always lands in its week: `getData_` sends
+  `visitDate` as `YYYY-MM-DD` (like `visitTime`), and the page reads any other
+  shape (Date / UTC timestamp, Sheets serial, DD/MM/YYYY) as the Asia/Jerusalem
+  day, never the device's — a Sunday visit no longer slips to the Saturday before.
+- SW `CACHE_VERSION` v53 → **v54** (v17 stays burned).
+
 ## Dashboard: write-path hardening — PR D, proven saves never hidden (October 8, 2026)
 
 Detail: `CHANGELOG-write-path-hardening.md`. **Railway only** (`public/app.js`);

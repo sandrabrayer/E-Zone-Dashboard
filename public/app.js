@@ -2881,7 +2881,7 @@ function normalizeLead(l) {
     source:    pickField(l, ['source', 'מקור', 'מקור הפניה', 'Source']),
     note:      pickField(l, ['note', 'notes', 'הערות', 'הערה', 'Note']),
     stage:     normalizeStage(pickField(l, ['stage', 'שלב', 'סטטוס ליד', 'Stage'])),
-    visitDate: isoDate(pickField(l, ['visitDate', 'visit_date', 'תאריך ביקור'])),
+    visitDate: leadVisitDateISO(pickField(l, ['visitDate', 'visit_date', 'תאריך ביקור'])),
     visitTime: isoTime(pickField(l, ['visitTime', 'visit_time', 'שעת ביקור', 'שעה'])),
     entryDate: isoDate(pickField(l, ['entryDate', 'entry_date', 'תאריך כניסה'])),
     advance:   advRaw === '' ? '' : Number(advRaw) || 0,
@@ -3139,6 +3139,70 @@ const HEBREW_DAYS = [
   'יום ראשון', 'יום שני', 'יום שלישי', 'יום רביעי', 'יום חמישי', 'יום שישי', 'יום שבת',
 ];
 
+/* The meetings board and the lead card read the visit day in Israel time,
+ * whatever the device's own timezone is set to. */
+const VISIT_TZ = 'Asia/Jerusalem';
+
+/* Calendar day (YYYY-MM-DD) of instant `d` in VISIT_TZ. Falls back to the
+ * device-local day (isoDate) only if Intl cannot resolve the zone. */
+function visitDayInJerusalem(d) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: VISIT_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(d);
+    const get = t => (parts.find(p => p.type === t) || {}).value || '';
+    const out = `${get('year')}-${get('month')}-${get('day')}`;
+    return /^\d{4}-\d{2}-\d{2}$/.test(out) ? out : isoDate(d);
+  } catch (_) {
+    return isoDate(d);
+  }
+}
+
+/* A lead's visitDate as a bare YYYY-MM-DD, or '' when it is not a date.
+ * getData hands the Leads cell over as-is, so every shape a Sheets cell can
+ * take has to land on the same calendar day the user picked:
+ *   - bare 'YYYY-MM-DD' (the canonical text form) → unchanged;
+ *   - a Date object or a timezone-marked timestamp (a date-TYPED legacy cell,
+ *     serialized as '2026-10-10T21:00:00.000Z') → its day in Asia/Jerusalem,
+ *     NOT the device's zone: on a device outside Israel time a Sunday visit
+ *     used to land on the Saturday before and drop out of its week;
+ *   - a Sheets date serial (a date cell later re-formatted as text reads back
+ *     as 46306) → that calendar day, not 1970-01-01;
+ *   - 'DD/MM/YYYY' / 'DD.MM.YYYY' (typed into the sheet by hand) → day-first,
+ *     the Israeli order — Date() would read it month-first (11/10 → Nov 10);
+ *   - a tz-less 'YYYY-MM-DDT…' → its leading date (wall clock).
+ * Anything else falls back to isoDate. Pure. */
+function leadVisitDateISO(v) {
+  if (v === undefined || v === null || v === '') return '';
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    return isNaN(v.getTime()) ? '' : visitDayInJerusalem(v);
+  }
+  const s = String(v).trim();
+  if (!s) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    const n = Number(s);
+    // Sheets serial window 1950-01-01 … 2199-12-31 (Code.gs isSheetDateSerial_).
+    if (n < 18264 || n > 109574) return '';
+    const d = new Date((Math.floor(n) - 25569) * 86400000);
+    return d.toISOString().slice(0, 10);   // the serial's day IS the UTC day
+  }
+  let m = s.match(/^(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})$/);
+  if (m) {
+    const day = Number(m[1]); const mo = Number(m[2]); const y = Number(m[3]);
+    const d = new Date(Date.UTC(y, mo - 1, day));
+    if (d.getUTCFullYear() !== y || d.getUTCMonth() !== mo - 1 || d.getUTCDate() !== day) return '';
+    return `${y}-${String(mo).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/.test(s)) {
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) return visitDayInJerusalem(d);
+  }
+  m = s.match(/^(\d{4}-\d{2}-\d{2})[T ]/);
+  if (m) return m[1];
+  return isoDate(s);
+}
+
 /* Pure bucketing for the meetings board. Given the lead list and any date in
  * the target week, returns the week's meetings grouped by day.
  *
@@ -3158,7 +3222,7 @@ function meetingsForWeek(leads, weekAnchorISO) {
   const byIso = {};
   if (start) {
     (leads || []).forEach(l => {
-      const v = isoDate(l && l.visitDate);
+      const v = leadVisitDateISO(l && l.visitDate);
       if (!v) return;
       if (v < start || v > end) return;          // bare YYYY-MM-DD sorts chronologically
       const h = houseByName(l.house) || houseById(resolveHouseId(l.house));
@@ -3865,11 +3929,14 @@ function renderMeetings() {
     }).join('');
   }
 
+  /* RTL arrows follow the lead-card convention («שלב קודם →» / «← שלב הבא»):
+   * back points RIGHT, forward points LEFT. Same source order as the lead-card
+   * buttons (back first) so bidi renders the labels identically. */
   board.innerHTML = `
     <div class="mtg-nav">
-      <button type="button" class="btn" data-mtg="prev">← שבוע קודם</button>
+      <button type="button" class="btn" data-mtg="prev">שבוע קודם →</button>
       <button type="button" class="btn" data-mtg="today">השבוע</button>
-      <button type="button" class="btn" data-mtg="next">שבוע הבא →</button>
+      <button type="button" class="btn" data-mtg="next">← שבוע הבא</button>
       <span class="mtg-range">${escapeHtml(rangeLabel)}</span>
     </div>
     ${summary}
