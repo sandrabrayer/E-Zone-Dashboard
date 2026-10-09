@@ -94,6 +94,13 @@ device-outside-Israel case):
 
 `test/dashboard-perf-assets.test.js`: SW version pin v53 → v54.
 
+`test/write-path-hardening-money.test.js` (CI flake that blocked this PR):
+«a credit edit retried with the pre-save stamp…» failed ~1 run in 8 because
+the create and the edit landed in the same millisecond, so both carried the
+same `updatedAt` stamp (`upsertCredit_`, `new Date().toISOString()`) and the
+retry was not stale — it saved again instead of replaying. The test now lets
+the clock pass the create stamp before the edit. Test-only; 30/30 runs green.
+
 Full suite: 2621 / 2621. `npm audit`: 0 high / critical (1 moderate,
 pre-existing).
 

@@ -285,6 +285,12 @@ test('server R3: a credit edit retried with the pre-save stamp replays for the s
   const created = w.call({ action: 'saveCredit', credit: base });
   assert.equal(created.ok, true, JSON.stringify(created));
   const edit = { id: created.credit.id, updatedAt: created.credit.updatedAt, notes: 'עודכן' };
+  /* The stamp is a millisecond ISO time: a create and an edit in the same
+   * millisecond carry the SAME stamp, so the retry below would not be stale
+   * and could not replay (the ~1-in-8 CI flake). Let the clock move first —
+   * a real lost answer and its retry are always further apart than that. */
+  const createdMs = Date.parse(created.credit.updatedAt);
+  while (Date.now() <= createdMs) { /* spin to the next millisecond */ }
   assert.equal(w.call({ action: 'saveCredit', credit: edit }).ok, true);
   const retry = w.call({ action: 'saveCredit', credit: edit });   // the stale stamp of the lost answer
   assert.deepEqual([retry.ok, retry.replayed, retry.credit.id, retry.credit.notes], [true, true, created.credit.id, 'עודכן']);
