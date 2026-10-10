@@ -198,8 +198,31 @@ test('discharge: status released + exitDate + who/when; nothing else on the row 
   });
   assert.strictEqual(patientCell(g, 'id-dana', 'status'), 'released');
   assert.strictEqual(patientCell(g, 'id-dana', 'exitDate'), TODAY);
-  assert.strictEqual(patientCell(g, 'id-dana', 'updatedBy'), 'רכזות · רכזת רמות');
+  // New writes stamp the inclusive plural (CHANGELOG-inclusive-role-wording.md).
+  assert.strictEqual(patientCell(g, 'id-dana', 'updatedBy'), 'רכזים · רכזת רמות');
   assert.notStrictEqual(patientCell(g, 'id-dana', 'updatedAt'), '2026-09-01T08:00:00.000Z');
+});
+
+test('discharge: a row stamped before the wording change keeps its old updatedBy; nothing rewrites it', () => {
+  /* Older coordinator discharges were stamped with the feminine plural. Such a
+   * row is read, replayed and saved as is — the stamp is never parsed, so both
+   * forms are accepted and the old one is never rewritten. */
+  const OLD = 'רכזות · רכזת רמות';   // the pre-change stamp
+  const rows = FIXTURE.map((r) => (r.id === 'id-dana'
+    ? Object.assign({}, r, { status: 'released', exitDate: TODAY, updatedBy: OLD })
+    : r));
+  const g = load({ rows });
+  const before = snapshot(g);
+  const res = discharge(g);   // the same discharge replayed
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(res.alreadyDischarged, true);
+  assert.strictEqual(patientCell(g, 'id-dana', 'updatedBy'), OLD, 'the old stamp is kept');
+  assert.strictEqual(snapshot(g), before, 'nothing written');
+  // The feed still lists the patient as discharged on that date.
+  const feed = g.post({ action: 'getPatientsForCoordinators', secret: SECRET });
+  const dana = feed.patients.find((p) => p.id === 'id-dana');
+  assert.strictEqual(dana.dischargeDate, TODAY);
+  assert.strictEqual(dana.active, false);
 });
 
 test('discharge: the standard discharged-audit row, with the appended coordinator audit columns', () => {

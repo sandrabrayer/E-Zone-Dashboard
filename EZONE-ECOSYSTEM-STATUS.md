@@ -983,6 +983,20 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
 
+## Dashboard: inclusive role wording (October 10, 2026)
+
+Detail: `CHANGELOG-inclusive-role-wording.md`. **Railway + Code.gs** (clasp CI
+on merge). No column, sheet, Script Property or env var.
+- The coordinators feed (`recordDischargeFromCoordinators`) stamps new
+  `updatedBy` values as «רכזים · <by>». Rows written before keep «רכזות · <by>»;
+  nothing parses the stamp, nothing rewrites old rows. The guard
+  `test/inclusive-coordinator-wording.test.js` now runs with zero exceptions.
+- House-manager labels (display only): «דיווח מנהל/ת», «דיווח המנהל/ת»,
+  «עריכת דיווח מנהל/ת», «המרת פגישות למנהל/ת», «דיווח מנהלי הבתים». The
+  conversion strip's unassigned bucket KEY stays «ללא מנהל» (matched in code);
+  only its label is «ללא מנהל/ת».
+- SW `CACHE_VERSION` v57 → **v58** (v17 stays burned).
+
 ## Dashboard: inclusive coordinator wording (October 9, 2026)
 
 Detail: `CHANGELOG-inclusive-coordinator-wording.md`. **Railway only**
@@ -990,7 +1004,8 @@ Detail: `CHANGELOG-inclusive-coordinator-wording.md`. **Railway only**
 «🚪 שחרורים מהבתים» subtitle now says «ע״י הרכזים» (was «ע״י הרכזות»).
 `test/inclusive-coordinator-wording.test.js` fails the build on «רכזת» /
 «רכזות» in public/** or a Code.gs string literal (the stored updatedBy stamp
-`'רכזות · '` is the one documented exception). Convention: see «Conventions»
+`'רכזות · '` was the one documented exception — removed on October 10, see
+«inclusive role wording»). Convention: see «Conventions»
 at the top. SW `CACHE_VERSION` v56 → **v57** (v17 stays burned).
 
 ## Dashboard: visit-date guard (October 9, 2026)

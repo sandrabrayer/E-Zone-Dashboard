@@ -226,7 +226,10 @@
 // v56 → v57: inclusive coordinator wording
 // (CHANGELOG-inclusive-coordinator-wording.md) — index.html text changed;
 // activate evicts v56.
-var CACHE_VERSION = 'v57';
+// v57 → v58: inclusive role wording (CHANGELOG-inclusive-role-wording.md) —
+// house-manager labels in slash form; app.js + meeting-report.html changed;
+// activate evicts v57.
+var CACHE_VERSION = 'v58';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

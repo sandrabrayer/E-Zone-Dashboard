@@ -3474,7 +3474,7 @@ function meetingReportBlockHTML(lead) {
   return `
     <div class="mrv-report${unseen ? ' mrv-unseen' : ''}" data-mrv-toggle="${escapeHtml(lead.id || '')}">
       <div class="mrv-head">
-        ${dot}<span class="mrv-title">דיווח מנהל</span>
+        ${dot}<span class="mrv-title">דיווח מנהל/ת</span>
         <span class="mrv-outcome-badge ${badgeClass}">${escapeHtml(outcomeLabel)}</span>
         <span class="mrv-chevron">▾</span>
       </div>
@@ -3561,7 +3561,7 @@ function wireMeetingReportToggle(el) {
       const id = delBtn.getAttribute('data-mrv-delete');
       if (!canDelete()) { showError(ROLE_FORBIDDEN_TEXT); return; }
       showConfirm({
-        text: 'למחוק את דיווח המנהל? הדיווח יוסר מהליד ולא ניתן יהיה לשחזר אותו.',
+        text: 'למחוק את דיווח המנהל/ת? הדיווח יוסר מהליד ולא ניתן יהיה לשחזר אותו.',
         confirmLabel: 'כן, מחק',
         danger: true,
         onConfirm: async () => {
@@ -3668,7 +3668,7 @@ function meetingReportEditModalHTML(lead) {
   ).join('');
   return `
     <div class="modal">
-      <h3>עריכת דיווח מנהל</h3>
+      <h3>עריכת דיווח מנהל/ת</h3>
       <form>
         <div class="form-row">
           <fieldset class="reason-fieldset">
@@ -3732,7 +3732,7 @@ function saveMeetingReportEdit(leadId, { outcome, companion, note }) {
       const res = await saveAllProvingLead(leadId);
       const conflicts = (res && res.reportConflicts) || [];
       if (conflicts.indexOf(String(leadId)) !== -1) {
-        showError('דיווח המנהל השתנה בזמן העריכה (דיווח חדש או מחיקה) — העריכה לא נשמרה, הנתונים רועננו');
+        showError('דיווח המנהל/ת השתנה בזמן העריכה (דיווח חדש או מחיקה) — העריכה לא נשמרה, הנתונים רועננו');
         // Pull the sheet's newer report state — once the saves drain, never
         // under one (R1, CHANGELOG-write-path-hardening.md).
         queueDataResync();
@@ -3892,9 +3892,18 @@ function showMeetingReportEditModal(lead, onSaved) {
  * count toward `total`) but the meeting did not take place, so they are excluded
  * from `held` and from the rate. */
 const HELD_OUTCOMES = ['not_relevant', 'thinking', 'entered'];
-/* Stable bucket for leads that have an outcome but no meetingWith — they still
- * count (never silently dropped); rendered under this label. */
+/* Stable bucket KEY for leads that have an outcome but no meetingWith — they
+ * still count (never silently dropped). Matched in code (meetingsSummaryHTML's
+ * filter, the tests): keep it byte-identical. What a screen shows for it is
+ * MANAGER_CONVERSION_UNASSIGNED_LABEL (CHANGELOG-inclusive-role-wording.md). */
 const MANAGER_CONVERSION_UNASSIGNED = 'ללא מנהל';
+const MANAGER_CONVERSION_UNASSIGNED_LABEL = 'ללא מנהל/ת';
+
+/* Display text for a conversion row's manager: the unassigned bucket's label,
+ * otherwise the manager's own name. Pure. */
+function managerConversionLabel(manager) {
+  return manager === MANAGER_CONVERSION_UNASSIGNED ? MANAGER_CONVERSION_UNASSIGNED_LABEL : manager;
+}
 
 /* Per-manager meeting→treatment conversion over ALL leads (all-time, not just
  * the displayed week) — the real conversion metric the Managers app will reuse.
@@ -3943,7 +3952,7 @@ function meetingsSummaryHTML(leads, managers) {
   const band = rate => (rate >= 80 ? 'rate-high' : rate >= 50 ? 'rate-mid' : 'rate-low');
   const items = rows.map(r => `
       <div class="mtg-sum-row">
-        <span class="mtg-sum-mgr">${escapeHtml(r.manager)}</span>
+        <span class="mtg-sum-mgr">${escapeHtml(managerConversionLabel(r.manager))}</span>
         <span class="mtg-sum-sep">·</span><span class="mtg-sum-stat">פגישות: <b>${r.total}</b></span>
         <span class="mtg-sum-sep">·</span><span class="mtg-sum-stat">התקיימו: <b>${r.held}</b></span>
         <span class="mtg-sum-sep">·</span><span class="mtg-sum-stat">נכנסו: <b>${r.converted}</b></span>
@@ -3951,7 +3960,7 @@ function meetingsSummaryHTML(leads, managers) {
       </div>`).join('');
   return `
     <div class="mtg-summary">
-      <div class="mtg-summary-head">המרת פגישות למנהל</div>
+      <div class="mtg-summary-head">המרת פגישות למנהל/ת</div>
       ${items}
     </div>`;
 }
