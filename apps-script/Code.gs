@@ -6830,7 +6830,9 @@ function getAdmittedRoster_() {
  *         healClobberedDischarges completes a release from it), exactly the
  *         write order the Dashboard's own discharge uses;
  *      b. flips the Patients row: status='released', exitDate=dischargeDate,
- *         updatedAt=now, updatedBy='רכזות · <by>'. Only those four cells; the
+ *         updatedAt=now, updatedBy='רכזים · <by>' (rows written before
+ *         CHANGELOG-inclusive-role-wording.md carry the older 'רכזות · <by>';
+ *         nothing parses the stamp, both are kept as is). Only those four cells; the
  *         row is never deleted and nothing else on it changes. The fresh
  *         updatedAt makes a stale Dashboard tab's later save of that row a
  *         refused CONFLICT (replaceHousePatients_), not a silent re-activation.
@@ -6992,7 +6994,7 @@ function recordDischargeFromCoordinators_(params) {
     }
 
     const nowIso = new Date().toISOString();
-    const stampBy = ('רכזות · ' + v.by).slice(0, 40);
+    const stampBy = ('רכזים · ' + v.by).slice(0, 40);
 
     // a. The audit row FIRST (durable intent; deterministic id → idempotent).
     const dischargedSh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);

@@ -209,6 +209,13 @@ rewritten. SW `CACHE_VERSION` v55 → **v56**.
 (`index.html`, `sw.js`), no manual step, no column, Code.gs not touched. One
 UI string: «ע״י הרכזות» → «ע״י הרכזים». SW `CACHE_VERSION` v56 → **v57**.
 
+**10/10/2026 — `CHANGELOG-inclusive-role-wording.md`:** no manual step, no
+column. Code.gs (the coordinators feed stamps new `updatedBy` values as
+«רכזים · …»; old rows keep «רכזות · …», nothing is rewritten) — clasp CI
+deploys on merge. Railway (`app.js`, `meeting-report.html`, `sw.js`):
+house-manager labels in slash form. Either order is safe. SW
+`CACHE_VERSION` v57 → **v58**.
+
 ## «בקרת גבייה» — Ortal's tab (October 4, 2026)
 
 `CHANGELOG-billing-control-tab.md`. **No env var, no Script Property, no

@@ -9,10 +9,9 @@
  *   - apps-script/Code.gs: every string literal ('…', "…", `…`). Comments are
  *     not user-facing and are skipped.
  *
- * ALLOWED holds the one literal that must stay as is: 'רכזות · ' prefixes the
- * updatedBy stamp the coordinators feed writes INTO the Patients sheet. It is a
- * stored sheet value (rule: never rewrite stored values / identifiers), and
- * existing rows already carry it. */
+ * No exceptions: since CHANGELOG-inclusive-role-wording.md the coordinators
+ * feed stamps updatedBy with 'רכזים · ' (older sheet rows keep their old stamp;
+ * nothing rewrites them). */
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -25,10 +24,6 @@ const ROOT = path.join(__dirname, '..');
  * Hebrew prefixes (ה, ו, ל, ב, ש, כ, מה …). Not inside a longer word, so
  * «מרכזות» / «מרכזת» (centralizes) never match. */
 const FEMININE_COORDINATOR = /(?<![א-ת])(?:[והלבשכ]{1,2}|מה)?רכז(?:ת|ות)(?![א-ת])/u;
-
-const ALLOWED = new Set([
-  'רכזות · ',   // Code.gs coordinators-feed updatedBy stamp — a stored sheet value
-]);
 
 const TEXT_EXT = new Set(['.html', '.js', '.css', '.json', '.webmanifest', '.svg', '.txt', '.md']);
 
@@ -94,13 +89,12 @@ test('public/**: no feminine-only coordinator wording («רכזת» / «רכזו
 test('apps-script/Code.gs string literals: no feminine-only coordinator wording', () => {
   const src = fs.readFileSync(path.join(ROOT, 'apps-script', 'Code.gs'), 'utf8');
   const hits = stringLiterals(src)
-    .filter(l => FEMININE_COORDINATOR.test(l.text) && !ALLOWED.has(l.text))
+    .filter(l => FEMININE_COORDINATOR.test(l.text))
     .map(l => `Code.gs:${l.line}: ${JSON.stringify(l.text)}`);
   assert.deepStrictEqual(hits, [], 'use «רכז/ת» (singular) / «רכזים» (plural):\n' + hits.join('\n'));
 });
 
-test('the allowed stored-value stamp is still the only exception (and still exists)', () => {
+test('the coordinators-feed updatedBy stamp uses the inclusive plural', () => {
   const src = fs.readFileSync(path.join(ROOT, 'apps-script', 'Code.gs'), 'utf8');
-  const allowedHits = stringLiterals(src).filter(l => ALLOWED.has(l.text));
-  assert.strictEqual(allowedHits.length, 1, 'drop it from ALLOWED once the stamp is gone');
+  assert.strictEqual(stringLiterals(src).filter(l => l.text === 'רכזים · ').length, 1);
 });
