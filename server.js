@@ -258,6 +258,7 @@ const ASSETS = createAssetStore({
   '/billing-control-rules.js': { file: path.join(__dirname, 'lib', 'billing-control-rules.js'), mime: 'application/javascript' },
   '/refund-rules.js': { file: path.join(__dirname, 'lib', 'refund-rules.js'), mime: 'application/javascript' },
   '/funder-grace.js': { file: path.join(__dirname, 'lib', 'funder-grace.js'), mime: 'application/javascript' },
+  '/cycle-balance.js': { file: path.join(__dirname, 'lib', 'cycle-balance.js'), mime: 'application/javascript' },
 });
 
 /* Serve index.html with every asset reference pinned to that file's content
@@ -344,6 +345,10 @@ app.get('/refund-rules.js', sendLibAsset('/refund-rules.js'));
  * lib/funder-grace.js, window.FunderGrace — the same rule as Code.gs
  * isWithinFunderGrace_ (parity-tested). Rules only, no data. */
 app.get('/funder-grace.js', sendLibAsset('/funder-grace.js'));
+/* The cycle balance (CHANGELOG-cycle-balance.md): lib/cycle-balance.js,
+ * window.CycleBalance — the same rule as Code.gs cycleBalanceState_. Rules
+ * only, no data. */
+app.get('/cycle-balance.js', sendLibAsset('/cycle-balance.js'));
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 // Patient funder helpers (public/funder.js, global Funder) — loaded before app.js.
 app.get('/funder.js', sendStatic('funder.js', 'application/javascript'));

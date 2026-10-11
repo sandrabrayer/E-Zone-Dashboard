@@ -3266,6 +3266,16 @@ function patientKey_(houseId, name, date) {
  * 'YYYY-MM-DD' string compare equal; plain String elsewhere). An empty result
  * means the rows are byte-identical for every purpose this file has: the
  * dedupe utilities collapse only what this says is equal. */
+/* The agreed-price change between two Patients rows (sheet values arrays),
+ * or null — for the AuditLog: old price → new price
+ * (CHANGELOG-cycle-balance.md). Pure. */
+function patientPayChange_(a, b) {
+  const i = PATIENT_COLUMNS.indexOf('pay');
+  const n = function (v) { const x = Number(v); return isFinite(x) ? x : 0; };
+  const from = n(a && a[i]), to = n(b && b[i]);
+  return from === to ? null : { from: from, to: to };
+}
+
 function patientRowDiffCols_(a, b) {
   const dateColIdx = PATIENT_COLUMNS.indexOf('date');
   const diff = [];
@@ -3773,6 +3783,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
         id: incomingId, fromHouseId: mv.from, toHouseId: houseId,
         oldKey: patientKey_(mv.from, src[nameColIdx], src[dateColIdx]), newKey: key,
         changed: patientRowDiffCols_(src, movedRow), updatedBy: stampUser,
+        price: patientPayChange_(src, movedRow),
       });
       echoStamp(withHouse, seenStamp);
       newRows.push(movedRow);
@@ -3818,10 +3829,11 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
         stampNow(withHouse);
         newRow = objectToRow_(withHouse, PATIENT_COLUMNS);
       }
+      const priceById = patientPayChange_(houseRows[rowIdx], newRow);
       if (oldKey !== key) {
-        logAudit_('patient_rekeyed_via_id', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { houseId: houseId, id: incomingId, oldKey: oldKey, newKey: key, changed: changed, updatedBy: stampUser });
+        logAudit_('patient_rekeyed_via_id', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { houseId: houseId, id: incomingId, oldKey: oldKey, newKey: key, changed: changed, updatedBy: stampUser, price: priceById });
       } else if (changed.length > 0) {
-        logAudit_('patient_edited', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { key: key, id: incomingId, changed: changed, updatedBy: stampUser });
+        logAudit_('patient_edited', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { key: key, id: incomingId, changed: changed, updatedBy: stampUser, price: priceById });
       }
       echoStamp(withHouse, seenStamp);
       newRows.push(newRow);
@@ -3846,7 +3858,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
       if (changed.length > 0) {
         stampNow(withHouse);
         newRow = objectToRow_(withHouse, PATIENT_COLUMNS);
-        logAudit_('patient_edited', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { key: key, id: withHouse.id, changed: changed, updatedBy: stampUser });
+        logAudit_('patient_edited', 'replaceHousePatients_', withHouse.fromLead || '', withHouse.name || '', { key: key, id: withHouse.id, changed: changed, updatedBy: stampUser, price: patientPayChange_(houseRows[rowIdx], newRow) });
       }
       echoStamp(withHouse, seenStamp);
       newRows.push(newRow);
@@ -9759,6 +9771,21 @@ function billingControlDebt60_(aging) {
   return out;
 }
 
+/* Settled cycles stamped below the override / agreed price, from debtAging_'s
+ * own output (CHANGELOG-cycle-balance.md): patient, house, cycle, stamped,
+ * expected, gap. Never a debt, never auto-changed — a person decides. PURE. */
+function billingControlUnderStamped_(aging) {
+  if (!aging || aging.ok !== true || !aging.underStamped) return [];
+  return (aging.underStamped.rows || []).map(function (r) {
+    return {
+      patientName: String(r.name || ''), houseId: String(r.houseId || ''), paymentId: String(r.paymentId || ''),
+      start: String(r.start || ''), end: String(r.end || ''),
+      stamped: receiptMoney_(r.stamped), expected: receiptMoney_(r.expected), gap: receiptMoney_(r.gap),
+      outsideStay: r.outsideStay === true,
+    };
+  }).sort(function (a, b) { return b.gap - a.gap || (a.start < b.start ? -1 : a.start > b.start ? 1 : 0); });
+}
+
 /* Refund exceptions awaiting Sandra (plan §7.4 / §8.5), from existing data:
  *   awaiting  — refundPayoutForecastFor_'s «ממתין להחלטה» stays
  *   overPolicy — a PENDING credit whose amount exceeds its stored
@@ -9806,11 +9833,14 @@ function billingControlQueueFor_(rows, flagTimes, opts) {
     return !isVoidStatus_(r.status);
   }).map(function (r) { return billingControlReceipt_(r, ft[paymentCell_(r.id)]); }));
   const debt60 = billingControlDebt60_(o.aging);
+  const underStamped = billingControlUnderStamped_(o.aging);
   const out = {
     ok: true, today: today, receipts: receipts, counts: billingControlCounts_(receipts),
     openDebt: billingControlOpenDebt_(receipts),
     debt60: debt60 ? { asOf: debt60.asOf, recorded: debt60.recorded, unrecorded: debt60.unrecorded } : null,
     flagStaleDays: BILLING_CONTROL_FLAG_STALE_DAYS,
+    // Every billing-control session (Ortal included) sees them — read-only.
+    underStamped: underStamped,
   };
   if (o.approver === true) {
     out.exceptions = {
@@ -9821,6 +9851,7 @@ function billingControlQueueFor_(rows, flagTimes, opts) {
       }),
       debtsOver60: debt60 ? debt60.rows : [],
       refundExceptions: billingControlRefundExceptions_(o.forecast, o.credits),
+      underStamped: underStamped,
     };
   }
   return out;
@@ -10691,6 +10722,167 @@ function refundPayoutForecast_() {
   }
 }
 
+/* ===== The cycle balance — lib/cycle-balance.js, mirrored =====
+ * CHANGELOG-cycle-balance.md. The page runs lib/cycle-balance.js
+ * (window.CycleBalance); Apps Script cannot require a file, so the same rule
+ * lives here and test/cycle-balance.test.js runs both over a grid.
+ *   - settled (stored «שולם», or paid ≥ stamped > 0) → stays settled, balance 0;
+ *   - open → the per-month override, else the patient's agreed price
+ *     (Patients `pay`), else the stamped amount;
+ *   - balance = expected − ALL money attached to the cycle (calendar months
+ *     play no part); void owes nothing;
+ *   - a settled cycle whose stamp is BELOW the override / agreed price stays
+ *     «שולם» but carries underStamped: true, priceExpected, gap (an exception
+ *     for a person — בקרת גבייה; never auto-changed).
+ * → { expected, source, paid, balance, status }. Pure. */
+function cycleBalanceMoney_(v) {
+  if (v === '' || v === null || v === undefined) return null;
+  const x = Number(v);
+  return isFinite(x) && x >= 0 ? Math.round(x * 100) / 100 : null;
+}
+function cycleBalanceState_(o) {
+  const x = o || {};
+  const isVoid = String(x.status == null ? '' : x.status).trim().toLowerCase() === 'void';
+  const stamped = cycleBalanceMoney_(x.stampedAmount);
+  const paid = cycleBalanceMoney_(x.amountPaid) || 0;
+  let expected, source;
+  if (isVoid) { expected = 0; source = 'void'; }
+  else if (String(x.status == null ? '' : x.status).trim().toLowerCase() === 'paid' ||
+           (stamped !== null && stamped > 0 && paid >= stamped)) { expected = stamped || 0; source = 'settled'; }
+  else {
+    const override = cycleBalanceMoney_(x.overrideAmount);
+    const agreed = cycleBalanceMoney_(x.agreedPrice);
+    if (override !== null) { expected = override; source = 'override'; }
+    else if (agreed !== null && agreed > 0) { expected = agreed; source = 'agreed'; }
+    else { expected = stamped || 0; source = 'stamped'; }
+  }
+  if (isVoid) return { expected: 0, source: source, paid: paid, balance: 0, status: 'void' };
+  if (source === 'settled') {
+    const out = { expected: expected, source: source, paid: paid, balance: 0, status: 'paid' };
+    const ov = cycleBalanceMoney_(x.overrideAmount);
+    const ag = cycleBalanceMoney_(x.agreedPrice);
+    const price = ov !== null ? ov : (ag !== null && ag > 0 ? ag : null);
+    if (price !== null && price > expected) {
+      out.underStamped = true;
+      out.priceExpected = price;
+      out.gap = Math.round((price - expected) * 100) / 100;
+    }
+    return out;
+  }
+  const exp = Math.round(expected * 100) / 100;
+  const balance = Math.max(0, Math.round((exp - paid) * 100) / 100);
+  const status = paid <= 0 ? 'unpaid' : (paid >= exp ? 'paid' : 'partial');
+  return { expected: exp, source: source, paid: paid, balance: balance, status: status };
+}
+
+/* ===== DATA REPAIR (editor only, DRY RUN by default) — CHANGELOG-cycle-balance.md =====
+ *
+ * The display rule above already reads every open cycle at the agreed price.
+ * This aligns the STORED cycle rows with it, so every other reader of the
+ * Payments sheet (the accounting feed, digests, exports) sees the same
+ * amount / balance / status. It is NOT run by any trigger or endpoint.
+ *
+ *   repairStaleCycleAmountsNow()      → DRY RUN: logs + returns the plan, writes nothing.
+ *   repairStaleCycleAmountsNow(true)  → applies it, under the script lock,
+ *                                       re-checking each row first, one
+ *                                       AuditLog 'cycle_amount_repaired' per row.
+ *
+ * A row is planned only when ALL hold: a cycle (not a receipt), not void, its
+ * derived status open (unpaid / partial), its owner is EXACTLY one patient
+ * (recMatchPatient_ — ambiguity refused), and cycleBalanceState_ says the
+ * expected amount comes from the agreed price or the month override and
+ * differs from the stamped one. Pure planner; the writer is separate.
+ *
+ * UNDER-STAMPED settled cycles (stamp below the override / agreed price) are
+ * NEVER planned: they are returned apart, as «needs human decision». */
+function cycleRepairScan_(tabs, todayIso) {
+  const m = recModel_(tabs || {}, todayIso || localPartsISO_(new Date()));
+  const plan = [], underStamped = [];
+  m.payments.forEach(function (pay, i) {
+    if (!pay || pay.status === 'void' || isReceiptRow_(pay)) return;
+    if (pay.linkStatus === 'not_a_patient') return;
+    const owner = m.payOwner[i];
+    if (!owner || !owner.patient) return;
+    const ovr = recOverrideFor_(m.overrides, pay.patientId, String(pay.dueDate).slice(0, 7));
+    const st = cycleBalanceState_({
+      stampedAmount: pay.amount, amountPaid: pay.amountPaid, overrideAmount: ovr ? ovr.amount : null,
+      agreedPrice: owner.patient.pay, status: pay.status,
+    });
+    if (st.underStamped) {
+      underStamped.push({
+        row: pay.row, id: pay.id, patientName: pay.patientName, houseId: pay.houseId, dueDate: pay.dueDate,
+        patientUid: recText_(owner.patient.id), stamped: refundRound2_(st.expected),
+        expected: refundRound2_(st.priceExpected), gap: refundRound2_(st.gap), amountPaid: st.paid,
+      });
+      return;
+    }
+    if (pay.status !== 'unpaid' && pay.status !== 'partial') return;
+    if ((st.source !== 'agreed' && st.source !== 'override') || st.expected === refundRound2_(pay.amount)) return;
+    plan.push({
+      row: pay.row, id: pay.id, patientName: pay.patientName, houseId: pay.houseId, dueDate: pay.dueDate,
+      patientUid: recText_(owner.patient.id), via: owner.via, source: st.source,
+      fromAmount: refundRound2_(pay.amount), toAmount: st.expected, amountPaid: st.paid,
+      fromStatus: pay.status, toStatus: st.status, toBalance: st.balance,
+    });
+  });
+  return { plan: plan, underStamped: underStamped };
+}
+function staleCyclePlan_(tabs, todayIso) {
+  return cycleRepairScan_(tabs, todayIso).plan;
+}
+
+function repairStaleCycleAmountsNow(apply) {
+  const doIt = apply === true;
+  const tag = '[cycle-balance repair' + (doIt ? '' : ' — DRY RUN') + '] ';
+  const scan = cycleRepairScan_(recCollect_().tabs);
+  const plan = scan.plan;
+  const underStamped = scan.underStamped;
+  if (!doIt) {
+    plan.forEach(function (x) {
+      console.log(tag + 'row ' + x.row + ' ' + x.patientName + ' ' + x.dueDate + ': amount ' + x.fromAmount + ' → ' + x.toAmount +
+        ' (' + x.source + '), paid ' + x.amountPaid + ', status ' + x.fromStatus + ' → ' + x.toStatus + ', balance → ' + x.toBalance);
+    });
+    console.log(tag + plan.length + ' row(s) would be rewritten. Nothing was written. Run repairStaleCycleAmountsNow(true) to apply.');
+    underStamped.forEach(function (x) {
+      console.log(tag + 'NEEDS HUMAN DECISION — row ' + x.row + ' ' + x.patientName + ' ' + x.dueDate + ': settled at ' + x.stamped +
+        ', price says ' + x.expected + ' (gap ' + x.gap + '). Never written by this function.');
+    });
+    console.log(tag + underStamped.length + ' under-stamped settled row(s) need a human decision.');
+    return { ok: true, dryRun: true, plan: plan, underStamped: underStamped };
+  }
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return { ok: false, error: 'lock_busy' };
+  const done = [], skipped = [];
+  try {
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PAYMENTS_SHEET);
+    if (!sh) return { ok: false, error: 'no_payments_sheet' };
+    const col = function (k) { return PAYMENT_COLUMNS.indexOf(k) + 1; };
+    plan.forEach(function (x) {
+      const cur = sh.getRange(x.row, 1, 1, PAYMENT_COLUMNS.length).getValues()[0];
+      const at = function (k) { return cur[col(k) - 1]; };
+      // Re-check under the lock: the same row, the same money, still open.
+      if (String(at('id')) !== String(x.id) || refundRound2_(Number(at('amount')) || 0) !== x.fromAmount ||
+          refundRound2_(Number(at('amountPaid')) || 0) !== x.amountPaid || recPaymentStatus_(at('status')) !== x.fromStatus) {
+        skipped.push({ row: x.row, id: x.id, reason: 'changed_since_plan' });
+        return;
+      }
+      sh.getRange(x.row, col('amount')).setValue(x.toAmount);
+      sh.getRange(x.row, col('balance')).setValue(x.toBalance);
+      sh.getRange(x.row, col('status')).setValue(x.toStatus);
+      logAudit_('cycle_amount_repaired', 'repairStaleCycleAmountsNow', x.patientUid, x.patientName, {
+        paymentId: x.id, row: x.row, dueDate: x.dueDate, source: x.source,
+        fromAmount: x.fromAmount, toAmount: x.toAmount, amountPaid: x.amountPaid,
+        fromStatus: x.fromStatus, toStatus: x.toStatus, toBalance: x.toBalance,
+      }, 'repairStaleCycleAmountsNow');
+      done.push(x);
+    });
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+  console.log(tag + done.length + ' row(s) rewritten, ' + skipped.length + ' skipped.');
+  return { ok: true, dryRun: false, rewritten: done, skipped: skipped, underStamped: underStamped };
+}
+
 /* ===== Debt aging, as of any date (READ-ONLY foundation) =====
  * CHANGELOG-debt-aging-foundation.md. No UI, no write, no lock, no audit row.
  *
@@ -10854,6 +11046,9 @@ function debtAging_(asOfIso, tabs) {
     return byHouse[h];
   };
   const detachedRows = [], outsideStayRows = [], releasedNoExitRows = [], noEntryRows = [];
+  // Settled cycles stamped BELOW the override / agreed price (CHANGELOG-cycle-balance.md):
+  // still «שולם», listed for a person — never in totals, never auto-changed.
+  const underStampedRows = [];
   const unknownDate = { count: 0, amount: 0 };
   let voidExcluded = 0;
 
@@ -10902,6 +11097,23 @@ function debtAging_(asOfIso, tabs) {
       const cs = refundForecastIso_(pay.coverageStart), ce = refundForecastIso_(pay.coverageEnd);
       const recorded = !!(cs && ce && ce >= cs);
       const start = recorded ? cs : pay.dueDate;
+      // CHANGELOG-cycle-balance.md: the cycle's price is owed once, at the
+      // agreed price while the cycle is open — the same rule as גבייה. An
+      // UNDER-STAMPED settled cycle is listed BEFORE any filter below (asOf,
+      // records cutoff, stay window, pro-bono): never hidden, never debt.
+      const ovr = recOverrideFor_(m.overrides, pay.patientId, String(pay.dueDate).slice(0, 7));
+      const cbs = cycleBalanceState_({
+        stampedAmount: pay.amount, amountPaid: pay.amountPaid, overrideAmount: ovr ? ovr.amount : null,
+        agreedPrice: p.pay, status: pay.status,
+      });
+      if (cbs.underStamped) {
+        underStampedRows.push({
+          patientId: p.id, name: p.name, houseId: p.houseId, paymentId: pay.id, start: start,
+          end: recorded ? ce : debtAgingCycleEnd_(entry, pay.dueDate),
+          stamped: refundRound2_(cbs.expected), expected: refundRound2_(cbs.priceExpected), gap: refundRound2_(cbs.gap),
+          outsideStay: start < entry || !!(exit && start >= exit),
+        });
+      }
       if (start > asOf || recBeforeCutoff_(start, cutoff)) return;
       let end = recorded ? ce : debtAgingCycleEnd_(entry, pay.dueDate);
       if (start < entry || (exit && start >= exit)) {
@@ -10911,7 +11123,7 @@ function debtAging_(asOfIso, tabs) {
       if (exit && end > exit) end = exit;
       // Pro-bono on the cycle's start day: nothing is owed for this cycle.
       if (probonoOn(p.id, start)) { probonoCycles++; return; }
-      const expected = refundRound2_(Number(recApplyOverride_(pay, m.overrides).amount) || 0);
+      const expected = refundRound2_(cbs.expected);
       const got = debtAgingReceivedBy_(o.prow, pay, asOf, start);
       if (got.unknownAmount > 0) { unknownDate.count++; unknownDate.amount = refundRound2_(unknownDate.amount + got.unknownAmount); }
       const received = got.received;
@@ -11009,6 +11221,7 @@ function debtAging_(asOfIso, tabs) {
     releasedWithoutExit: { count: releasedNoExitRows.length, rows: releasedNoExitRows },
     noEntryDate: { count: noEntryRows.length, rows: noEntryRows },
     voidExcluded: voidExcluded,
+    underStamped: { count: underStampedRows.length, gap: sumField(underStampedRows, 'gap'), rows: underStampedRows },
     /* Cycles left out because the patient was pro-bono on their start day —
      * counted, never owed, never in totals / byHouse / byPatient. */
     probonoExcluded: {
