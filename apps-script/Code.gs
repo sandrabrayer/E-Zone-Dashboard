@@ -16410,9 +16410,34 @@ function recPaymentUid_(pay) {
   return String(pay.linkPatientUid || pay.patientUid || '').trim();
 }
 
-/* app.js matchPatientForPayment — the four tiers, most durable first, and
+/* app.js leadLinkedPatientForPayment — tier 5 (CHANGELOG-payment-status-unified.md).
+ * The payment's triple names EXACTLY ONE lead (house + normalized name +
+ * entryDate), and exactly one Patients row carries that lead's id in
+ * fromLead. Anything else is no match. `leads` are recLead_ objects. Pure. */
+function recLeadLinkedPatient_(pay, patients, leads) {
+  if (!pay || !Array.isArray(patients) || !Array.isArray(leads) || !leads.length) return null;
+  const parts = String(pay.patientId == null ? '' : pay.patientId).split('::');
+  if (parts.length !== 3) return null;
+  const house = diagClientHouseId_(parts[0]);
+  const name = recNameKey_(parts[1]);
+  const entry = asISODate_(parts[2]);
+  if (!house || !name || !entry) return null;
+  const seen = {};
+  const hits = leads.filter(function (l) {
+    const id = recText_(l && l.id);
+    if (!id || seen[id]) return false;
+    seen[id] = true;
+    return diagClientHouseId_(l.house || l.houseId || '') === house && recNameKey_(l.name) === name && asISODate_(l.entryDate) === entry;
+  });
+  if (hits.length !== 1) return null;
+  const leadId = recText_(hits[0].id);
+  const claimants = patients.filter(function (p) { return p && recText_(p.fromLead) === leadId; });
+  return claimants.length === 1 ? claimants[0] : null;
+}
+
+/* app.js matchPatientForPayment — the five tiers, most durable first, and
  * ambiguity refused at every tier. → { patient, via } or null. */
-function recMatchPatient_(pay, patients) {
+function recMatchPatient_(pay, patients, leads) {
   if (!pay || !Array.isArray(patients)) return null;
   const uid = recPaymentUid_(pay);
   if (uid) {
@@ -16441,6 +16466,8 @@ function recMatchPatient_(pay, patients) {
     });
     if (hits2.length === 1) return { patient: hits2[0], via: 'house_name' };
   }
+  const linked = recLeadLinkedPatient_(pay, patients, leads);
+  if (linked) return { patient: linked, via: 'lead_link' };
   return null;
 }
 
@@ -16665,8 +16692,9 @@ function recModel_(tabs, todayISO) {
     credits: rows('credits').map(function (r) { return recCredit_(r); }),
     overrides: rows('overrides').map(function (r) { return recOverride_(r); }).filter(function (o) { return o.patientId && o.month; }),
   };
-  // Each payment's owner, by the app's own four tiers over ALL patients.
-  m.payOwner = payments.map(function (p) { return recMatchPatient_(p, patients); });
+  // Each payment's owner, by the app's own five tiers over ALL patients
+  // (tier 5, lead_link, over every lead — CHANGELOG-payment-status-unified.md).
+  m.payOwner = payments.map(function (p) { return recMatchPatient_(p, patients, allLeads); });
   return m;
 }
 

@@ -353,9 +353,10 @@ test('B: invisible characters do not orphan a row either — the אביב שבת
   assert.equal(app.normalizePayment(pay).patientName, dirty);
 });
 
-test('B: the four tiers are tried in order, and ambiguity is never guessed at', () => {
+// CHANGELOG-payment-status-unified.md added tier 5, lead_link (fail-closed).
+test('B: the five tiers are tried in order, and ambiguity is never guessed at', () => {
   assert.deepEqual(plain(app.PAYMENT_MATCH_TIERS),
-    ['patientUid', 'triple_exact', 'triple_loose', 'house_name']);
+    ['patientUid', 'triple_exact', 'triple_loose', 'house_name', 'lead_link']);
   const a = patient({ id: 'id-a', name: 'עדי לוי', date: '2026-09-14' });
   const b = patient({ id: 'id-b', name: 'עדי לוי', date: '2026-09-14' });   // same triple!
   const pay = payment({ patientUid: '', patientId: app.patientKey(a), patientName: 'עדי לוי' });

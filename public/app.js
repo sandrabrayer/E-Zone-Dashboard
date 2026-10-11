@@ -4909,16 +4909,65 @@ function patientDaysInHouse(patient, todayIso) {
   return d == null ? null : Math.max(0, d);
 }
 
-/* Did any payment row record money for this patient? A row is the patient's
- * by the server-owned uid, or by the house::name::entryDate reduction the
- * payment matcher uses. A void row is not money. Pure. */
-function patientHasReportedPayment(patient, payments) {
+/* ===== ONE ANSWER: whose payment row is this, and what does a patient's
+ * cycle look like (CHANGELOG-payment-status-unified.md) =====
+ *
+ * «מטופלים» used to look a cycle up by the EXACT deterministic id
+ * pay::<house>::<name>::<entry>::<due> built from the patient's CURRENT
+ * triple, while גבייה attached the same row through matchPatientForPayment
+ * (uid first). A house move (נועם שני, pardes → arfoni), a rename or a lead
+ * name ("ערן" → "ערן יצחק חונה") changes the triple, so «מטופלים» missed the
+ * row גבייה showed and offered «דווח תשלום» on money already recorded.
+ * Every screen now asks these two functions. */
+
+/* The patient list a cycle lookup matches against: `patients` (default: the
+ * page's), with `patient` itself in it exactly once — a copy of the same
+ * Patients row (same uid) is replaced, so it cannot read as a namesake. */
+function cyclePatientPool(patient, patients) {
+  const base = Array.isArray(patients) ? patients
+    : ((typeof state !== 'undefined' && state && Array.isArray(state.patients)) ? state.patients : []);
   const uid = patientUid(patient);
-  const key = patientMatchKeyOf(patient);
+  return base.filter(p => p && p !== patient && !(uid && patientUid(p) === uid)).concat([patient]);
+}
+
+/* Does this payment row belong to this patient? The five matcher tiers over
+ * the pool above — fail-closed: an ambiguous row belongs to nobody. */
+function paymentBelongsToPatient(pay, patient, patients, leads) {
+  if (!pay || !patient) return false;
+  const m = matchPatientForPayment(pay, cyclePatientPool(patient, patients), leads);
+  return !!m && m.patient === patient;
+}
+
+/* THE cycle row of `patient` due on `dueISO`, or null. The exact id first
+ * (what a row written today carries); otherwise every cycle row due that day
+ * that the matcher gives to this patient — a live row before a void one, the
+ * patient's own uid before a triple match, then sheet order. Receipts are not
+ * cycles (state.receipts). Pure apart from the default lists. */
+function patientCycleRecord(patient, dueISO, payments, patients, leads) {
+  const due = isoDate(dueISO || '');
+  if (!patient || !due) return null;
+  const list = Array.isArray(payments) ? payments : [];
+  const exactId = paymentId(patient, due);
+  const exact = list.find(x => x && x.id === exactId);
+  if (exact) return exact;
+  const uid = patientUid(patient);
+  const pool = cyclePatientPool(patient, patients);
+  const hits = list.filter(x => x && isoDate(x.dueDate || '') === due
+    && String(x.id || '').indexOf('rcpt-') !== 0
+    && (() => { const m = matchPatientForPayment(x, pool, leads); return !!m && m.patient === patient; })());
+  if (!hits.length) return null;
+  const rank = x => (isVoidPayment(x) ? 2 : 0) + (uid && paymentPatientUid(x) === uid ? 0 : 1);
+  return hits.slice().sort((a, b) => rank(a) - rank(b))[0];
+}
+
+/* Did any payment row record money for this patient? A row is the patient's
+ * by paymentBelongsToPatient (the same five tiers גבייה uses). A void row is
+ * not money. Pure apart from the default lists. */
+function patientHasReportedPayment(patient, payments, patients, leads) {
   return (Array.isArray(payments) ? payments : []).some(pay => {
     if (!pay || isVoidPayment(pay)) return false;
-    const mine = (uid && paymentPatientUid(pay) === uid) || (key && patientMatchKeyFromId(pay.patientId) === key);
-    return !!mine && (paymentCoversCycle(pay) || (Number(pay.amountPaid) || 0) > 0);
+    if (!paymentBelongsToPatient(pay, patient, patients, leads)) return false;
+    return paymentCoversCycle(pay) || (Number(pay.amountPaid) || 0) > 0;
   });
 }
 
@@ -4931,7 +4980,7 @@ function patientHasReportedPayment(patient, payments) {
  *             computed. Also skipped when funder.js did not load.
  *   todayIso  'YYYY-MM-DD' in Asia/Jerusalem.
  * Pure. */
-function patientProblems(patient, leadInfo, payments, funders, todayIso) {
+function patientProblems(patient, leadInfo, payments, funders, todayIso, patients, leads) {
   if (!patient || patient.status === 'released') return [];
   const info = leadInfo || { lead: null, via: 'none', ambiguous: false };
   const lead = info.lead || null;
@@ -4944,7 +4993,7 @@ function patientProblems(patient, leadInfo, payments, funders, todayIso) {
     // Nothing reported since the entry — the first cycle, due on the entry
     // day. Inside an institutional funder's grace window it is not a problem
     // yet (CHANGELOG-funder-grace.md); the row's payment cell says why.
-    if (days != null && days >= PATIENT_NO_PAYMENT_AFTER_DAYS && !patientHasReportedPayment(patient, payments)
+    if (days != null && days >= PATIENT_NO_PAYMENT_AFTER_DAYS && !patientHasReportedPayment(patient, payments, patients, leads)
       && !patientCycleInFunderGrace(patient, funders, patient.date, todayIso)) out.add('no_payment');
   }
   if (lead) {
@@ -4956,11 +5005,12 @@ function patientProblems(patient, leadInfo, payments, funders, todayIso) {
 }
 
 /* The current cycle's payment state, from the same helpers as גבייה:
- * lastBillingDayOnOrBefore → the cycle's Payments row (paymentId) → its
- * derived status. null for a released patient or without an entry date.
+ * lastBillingDayOnOrBefore → the cycle's Payments row (patientCycleRecord —
+ * the matcher גבייה uses, not just the exact id) → its derived status. null
+ * for a released patient or without an entry date.
  * → { key: 'paid'|'partial'|'unpaid'|'void'|'probono'|'not_due', label, dueISO }
- * Pure (payments / funders passed in). */
-function patientPaymentState(patient, payments, funders, todayIso) {
+ * Pure (payments / funders passed in; patients / leads default to the page's). */
+function patientPaymentState(patient, payments, funders, todayIso, patients, leads) {
   if (!patient || patient.status === 'released' || !isoDate(patient.date)) return null;
   const d = lastBillingDayOnOrBefore(patient.date, todayIso);
   const dueISO = d ? isoDate(d) : '';
@@ -4968,8 +5018,7 @@ function patientPaymentState(patient, payments, funders, todayIso) {
   if (Array.isArray(funders) && funderLib() && patientFunderKey(patient, funders, todayIso, dueISO) === FUNDER_PROBONO_KEY) {
     return { key: 'probono', label: funderLib().labelFor(FUNDER_PROBONO_KEY), dueISO };
   }
-  const id = paymentId(patient, dueISO);
-  const pay = (Array.isArray(payments) ? payments : []).find(x => x && x.id === id) || null;
+  const pay = patientCycleRecord(patient, dueISO, payments, patients, leads);
   if (pay && isVoidPayment(pay)) return { key: 'void', label: PAYMENT_VOID_LABEL, dueISO };
   const key = pay ? pay.status : 'unpaid';
   // Institutional funder, within 30 days of the due date: neutral, not red.
@@ -5021,7 +5070,7 @@ function patientListRows(s, filters, todayIso) {
     if (f.house && unadmittedHouseId(p.houseId) !== f.house) return;
     if (q && normalizeNameForMatch(p.name).indexOf(q) < 0) return;
     const leadInfo = patientLeadInfo(p, leads, patients);
-    const problems = patientProblems(p, leadInfo, payments, funders, today);
+    const problems = patientProblems(p, leadInfo, payments, funders, today, patients, leads);
     if (f.problemsOnly && !problems.length) return;
     rows.push({
       patient: p,
@@ -5029,7 +5078,7 @@ function patientListRows(s, filters, todayIso) {
       lead: patientLeadDetails(leadInfo.lead),
       problems,
       days: patientDaysInHouse(p, today),
-      payment: finance ? patientPaymentState(p, payments, funders, today) : null,
+      payment: finance ? patientPaymentState(p, payments, funders, today, patients, leads) : null,
     });
   });
   return rows.sort((a, b) => String(isoDate(b.patient.date) || '').localeCompare(String(isoDate(a.patient.date) || ''))
@@ -10306,7 +10355,10 @@ function applyBillingOverride(payment, overrides) {
  * sees the effective amount for that month. */
 function paymentForPatientOnDate(patient, dueDateISO) {
   const id = paymentId(patient, dueDateISO);
-  const existing = state.payments.find(x => x.id === id);
+  // The same lookup «מטופלים» uses (patientCycleRecord): a row written under
+  // an older triple (house move, rename, the lead's name) is still THE row —
+  // a report adds its receipt there instead of opening a second cycle.
+  const existing = patientCycleRecord(patient, dueDateISO, state.payments);
   if (existing) return applyBillingOverride(existing, state.billingOverrides);
   return applyBillingOverride(normalizePayment({
     id,
@@ -10566,13 +10618,59 @@ function patientsNeedingRenewal(fromISO, windowDays) {
  *                      one patient matches. A second candidate means we cannot
  *                      tell them apart, and guessing is how a payment ends up
  *                      on the wrong person's ledger.
+ *   5. lead_link     — CHANGELOG-payment-status-unified.md. Money reported on
+ *                      the LEAD before admission carries the lead's triple
+ *                      ("ערן", עפרוני, 09/08) while the patient was admitted
+ *                      under a fuller name ("ערן יצחק חונה"). The row's triple
+ *                      must name EXACTLY ONE lead (house + normalized name +
+ *                      entryDate, all exact), and exactly one Patients row may
+ *                      carry that lead's id in fromLead. Anything else — no
+ *                      lead, two leads, two patients — is no match.
  *
- * Returns { patient, via } or null. Pure over the `patients` list it is
- * given — buildMonthlyRevenue and the reconnect screen both drive it over
- * their own arrays. */
-const PAYMENT_MATCH_TIERS = ['patientUid', 'triple_exact', 'triple_loose', 'house_name'];
+ * Returns { patient, via } or null. Pure over the `patients` and `leads`
+ * lists it is given — buildMonthlyRevenue and the reconnect screen both drive
+ * it over their own arrays. `leads` defaults to the page's lead pool
+ * (patientLeadPool) so every caller gets the same five tiers; pass [] to
+ * switch tier 5 off. */
+const PAYMENT_MATCH_TIERS = ['patientUid', 'triple_exact', 'triple_loose', 'house_name', 'lead_link'];
 
-function matchPatientForPayment(pay, patients) {
+/* Tier 5. The payment's triple → the ONE lead it names → the ONE patient
+ * admitted from that lead. fromLead uniqueness is checked over `patients` AND
+ * the page's full patient list, so a narrowed list cannot hide a second
+ * claimant. → the patient (an element of `patients`) or null. Pure apart from
+ * that read of state.patients. */
+function leadLinkedPatientForPayment(pay, patients, leads) {
+  if (!pay || !Array.isArray(patients) || !Array.isArray(leads) || !leads.length) return null;
+  const parts = String(pay.patientId == null ? '' : pay.patientId).split('::');
+  if (parts.length !== 3) return null;
+  const house = unadmittedHouseId(parts[0]);
+  const name = normalizeNameForMatch(parts[1]);
+  const entry = isoDate(parts[2]);
+  if (!house || !name || !entry) return null;
+  const seen = new Set();
+  const hits = leads.filter(l => {
+    const id = String((l && l.id) || '').trim();
+    if (!id || seen.has(id)) return false;
+    seen.add(id);
+    return unadmittedHouseId(l.house) === house && normalizeNameForMatch(l.name) === name
+      && isoDate(l.entryDate || '') === entry;
+  });
+  if (hits.length !== 1) return null;
+  const leadId = String(hits[0].id).trim();
+  const fromLeadIs = p => !!p && String(p.fromLead == null ? '' : p.fromLead).trim() === leadId;
+  const everyone = (typeof state !== 'undefined' && state && Array.isArray(state.patients)) ? state.patients : [];
+  const claimants = new Set(patients.filter(fromLeadIs));
+  everyone.filter(fromLeadIs).forEach(p => {
+    // The same Patients row may reach us as two objects; its uid says so.
+    const uid = patientUid(p);
+    if (![...claimants].some(c => c === p || (uid && patientUid(c) === uid))) claimants.add(p);
+  });
+  if (claimants.size !== 1) return null;
+  const only = [...claimants][0];
+  return patients.indexOf(only) >= 0 ? only : null;
+}
+
+function matchPatientForPayment(pay, patients, leads) {
   if (!pay || !Array.isArray(patients)) return null;
 
   const uid = paymentPatientUid(pay);
@@ -10612,6 +10710,12 @@ function matchPatientForPayment(pay, patients) {
       && normalizeNameForMatch(p.name) === name);
     if (hits.length === 1) return { patient: hits[0], via: 'house_name' };
   }
+
+  const leadPool = leads === undefined
+    ? ((typeof state !== 'undefined' && state) ? patientLeadPool(state) : [])
+    : leads;
+  const linked = leadLinkedPatientForPayment(pay, patients, leadPool);
+  if (linked) return { patient: linked, via: 'lead_link' };
   return null;
 }
 
