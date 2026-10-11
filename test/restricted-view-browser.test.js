@@ -54,8 +54,8 @@ const SESSION_SECRET = 'session-secret-TEST-restricted-browser-0123456789';
 const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'USER_PIN_HASHES', 'PIN_PEPPER'];
 // Phase 4: «בקרת גבייה» (billing-control) right after גבייה — Vered and Sandra
 // only among these sessions; Shiran never gets it.
-const ALL_TABS = ['dashboard', 'leads', 'patients', 'meetings', 'occupancy', 'discharged-patients', 'billing', 'billing-control', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention'];
-const RESTRICTED_TABS = ['dashboard', 'leads', 'patients', 'meetings', 'occupancy', 'discharged-patients', 'breakeven', 'retention'];
+const ALL_TABS = ['dashboard', 'leads', 'meetings', 'patients', 'occupancy', 'discharged-patients', 'billing', 'billing-control', 'revenue', 'reconnect', 'breakeven', 'growth', 'retention'];
+const RESTRICTED_TABS = ['dashboard', 'leads', 'meetings', 'patients', 'occupancy', 'discharged-patients', 'breakeven', 'retention'];
 
 /* Today-relative data, so the dashboard renewal / overdue widgets WOULD show
  * for a full-view session: a patient who entered on today's day of the month

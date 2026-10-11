@@ -229,7 +229,10 @@
 // v57 → v58: inclusive role wording (CHANGELOG-inclusive-role-wording.md) —
 // house-manager labels in slash form; app.js + meeting-report.html changed;
 // activate evicts v57.
-var CACHE_VERSION = 'v58';
+// v58 → v59: tab order follows the business flow (CHANGELOG-tab-order.md) —
+// לוח פגישות now precedes מטופלים; index.html + app.js changed; activate
+// evicts v58.
+var CACHE_VERSION = 'v59';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

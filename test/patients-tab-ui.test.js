@@ -120,9 +120,10 @@ function seed(a, over) {
 
 /* ---------- 1. placement ---------- */
 
-test('placement: «מטופלים» is the tab right after «לידים», with a red badge; no data-finance on it', () => {
+// CHANGELOG-tab-order.md: לידים → לוח פגישות → מטופלים (business flow).
+test('placement: «מטופלים» is the tab right after «לוח פגישות», with a red badge; no data-finance on it', () => {
   const tabs = [...HTML_SRC.matchAll(/<button class="tab[^"]*" data-screen="([^"]+)"([^>]*)>/g)].map((m) => ({ screen: m[1], attrs: m[2] }));
-  const i = tabs.findIndex((t) => t.screen === 'leads');
+  const i = tabs.findIndex((t) => t.screen === 'meetings');
   assert.equal(tabs[i + 1].screen, 'patients');
   assert.ok(!/data-finance|data-billing-control/.test(tabs[i + 1].attrs));
   assert.match(HTML_SRC, /data-screen="patients">מטופלים<span id="patients-problems-badge" class="tab-badge tab-badge-danger hidden"/);
@@ -135,8 +136,8 @@ test('placement: «מטופלים» is the tab right after «לידים», with 
   assert.match(HTML_SRC, /data-screen="discharged-patients">מטופלים משוחררים</);
 });
 
-test('router: SCREENS has «patients» after «leads»; restricted keeps it, the controller view never has it', () => {
-  assert.deepEqual(plain(app.SCREENS).slice(0, 3), ['dashboard', 'leads', 'patients']);
+test('router: SCREENS has «patients» after «meetings»; restricted keeps it, the controller view never has it', () => {
+  assert.deepEqual(plain(app.SCREENS).slice(0, 4), ['dashboard', 'leads', 'meetings', 'patients']);
   assert.ok(plain(app.allowedScreens(false, 'restricted')).includes('patients'));
   assert.ok(plain(app.allowedScreens(true, 'full')).includes('patients'));
   assert.ok(!plain(app.allowedScreens(false, 'controller')).includes('patients'));

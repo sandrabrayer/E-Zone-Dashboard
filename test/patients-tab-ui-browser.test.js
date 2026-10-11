@@ -104,7 +104,8 @@ test('«מטופלים» at 360px: tab after לידים, badge, pending row, chi
       await page.waitForSelector('#plist-list .plist-row', { state: 'visible' });
 
       const tabs = await page.$$eval('.tabs .tab', (bs) => bs.map((b) => b.dataset.screen));
-      assert.strictEqual(tabs[tabs.indexOf('leads') + 1], 'patients');
+      // CHANGELOG-tab-order.md: לידים → לוח פגישות → מטופלים.
+      assert.strictEqual(tabs[tabs.indexOf('leads') + 2], 'patients');
 
       const badge = await page.$eval('#patients-problems-badge', (el) => ({ text: el.textContent, hidden: el.classList.contains('hidden'), bg: getComputedStyle(el).backgroundColor }));
       assert.deepStrictEqual(badge, { text: '2', hidden: false, bg: 'rgb(255, 77, 94)' });

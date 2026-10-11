@@ -25,7 +25,7 @@ const INDEX_HTML = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.h
 
 /* The canonical tab order after this change, enumerated explicitly. */
 const EXPECTED_TAB_ORDER = [
-  'dashboard', 'leads', 'patients', 'meetings', 'occupancy',
+  'dashboard', 'leads', 'meetings', 'patients', 'occupancy',
   // 'revenue' (הכנסות חודשיות) sits directly after 'billing': it is the monthly
   // companion to the daily גבייה worklist, so the two read as a pair in the nav.
   // 'reconnect' (שיוך תשלומים) follows them both: it is the exception list for
@@ -86,16 +86,16 @@ test('שימור לידים (retention) is the LAST tab', () => {
   assert.strictEqual(TABS[TABS.length - 1].label, 'שימור לידים');
 });
 
-// Since the «מטופלים» tab (CHANGELOG-patients-tab-ui.md) sits right after
-// לידים, לוח פגישות follows it: leads → patients → meetings.
-test('לוח פגישות (meetings) sits directly after מטופלים (patients), which follows לידים (leads)', () => {
+// Business flow (CHANGELOG-tab-order.md): a lead gets a meeting; only after
+// paying is the lead admitted as a patient: leads → meetings → patients.
+test('לוח פגישות (meetings) sits directly after לידים (leads), and מטופלים (patients) follows it', () => {
   const leadsIdx = TABS.findIndex((t) => t.screen === 'leads');
   assert.ok(leadsIdx !== -1, 'leads tab must exist');
-  assert.strictEqual(TABS[leadsIdx + 1].screen, 'patients');
-  assert.strictEqual(TABS[leadsIdx + 1].label, 'מטופלים');
+  assert.strictEqual(TABS[leadsIdx + 1].screen, 'meetings');
+  assert.strictEqual(TABS[leadsIdx + 1].label, 'לוח פגישות');
   const next = TABS[leadsIdx + 2];
-  assert.strictEqual(next.screen, 'meetings');
-  assert.strictEqual(next.label, 'לוח פגישות');
+  assert.strictEqual(next.screen, 'patients');
+  assert.strictEqual(next.label, 'מטופלים');
 });
 
 test('the meetings tab id is registered in the router (SCREENS)', () => {

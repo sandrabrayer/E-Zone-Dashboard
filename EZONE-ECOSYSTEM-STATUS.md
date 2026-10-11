@@ -983,6 +983,15 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
 
+## Dashboard: tab order follows the business flow (October 11, 2026)
+
+Detail: `CHANGELOG-tab-order.md`. **Railway only** (`public/`); Code.gs not
+touched. Top tabs read דשבורד, לידים, **לוח פגישות**, **מטופלים**, then the
+rest unchanged (a lead gets a meeting; only after paying is the lead admitted
+as a patient). Badges and the default tab unchanged; `SCREENS` mirrors the
+nav. Pinned by `test/tab-order.test.js`. SW `CACHE_VERSION` v58 → **v59**
+(v17 stays burned).
+
 ## Dashboard: inclusive role wording (October 10, 2026)
 
 Detail: `CHANGELOG-inclusive-role-wording.md`. **Railway + Code.gs** (clasp CI
