@@ -16410,8 +16410,6 @@ function recPaymentUid_(pay) {
   return String(pay.linkPatientUid || pay.patientUid || '').trim();
 }
 
-/* app.js matchPatientForPayment — the four tiers, most durable first, and
- * ambiguity refused at every tier. → { patient, via } or null. */
 /* app.js leadLinkedPatientForPayment — tier 5 (CHANGELOG-payment-status-unified.md).
  * The payment's triple names EXACTLY ONE lead (house + normalized name +
  * entryDate), and exactly one Patients row carries that lead's id in
@@ -16437,6 +16435,8 @@ function recLeadLinkedPatient_(pay, patients, leads) {
   return claimants.length === 1 ? claimants[0] : null;
 }
 
+/* app.js matchPatientForPayment — the five tiers, most durable first, and
+ * ambiguity refused at every tier. → { patient, via } or null. */
 function recMatchPatient_(pay, patients, leads) {
   if (!pay || !Array.isArray(patients)) return null;
   const uid = recPaymentUid_(pay);
