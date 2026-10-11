@@ -2,8 +2,8 @@
 
 October 11, 2026. **Railway + Code.gs** (clasp CI on merge; Code.gs is in its
 own commit). No column, sheet, Script Property, env var or trigger. No data is
-written. SW `CACHE_VERSION` v58 → **v60** (live is v58; v59 is claimed by the
-tab-order PR, `CHANGELOG-tab-order.md`; v17 stays burned).
+written. SW `CACHE_VERSION` v59 → **v60** (live and base are v59 after the
+tab-order PR, `CHANGELOG-tab-order.md`, merged; v17 stays burned).
 
 ## Symptom
 
@@ -93,5 +93,5 @@ records need a human decision on «שיוך תשלומים» / the leads board.
   Six of the seven fail on the previous app.js.
 - `test/detached-payments.test.js` — tier list now has five entries.
 - `test/dashboard-perf-assets.test.js` — pins v60.
-- `test/refund-logic-wiring.test.js` — the pre-existing clock bug (hard-coded
-  payout 15/10/2026), same fix as the tab-order PR.
+- `test/refund-logic-wiring.test.js` — unchanged here: the clock fix landed
+  with the tab-order PR (#216).

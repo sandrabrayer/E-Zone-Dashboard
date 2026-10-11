@@ -996,7 +996,7 @@ on merge). No column, sheet, Script Property or env var; nothing written.
   parity-tested): the row's triple names exactly one lead, and exactly one
   patient has that lead in `fromLead`. Row 76 (עמית יעקובי, no patient) stays
   on «שיוך תשלומים».
-- SW `CACHE_VERSION` v58 → **v60** (v59 = tab order; v17 stays burned).
+- SW `CACHE_VERSION` v59 → **v60** (v17 stays burned).
 
 ## Dashboard: tab order follows the business flow (October 11, 2026)
 
