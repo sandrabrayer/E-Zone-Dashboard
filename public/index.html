@@ -429,6 +429,14 @@
         <div id="bc-confirmed" class="billing-list bc-list"></div>
       </div>
 
+      <!-- «שולם מתחת למחיר» (CHANGELOG-cycle-balance.md): every billing-control
+           session, READ-ONLY. A settled cycle stays «שולם»; a person decides. -->
+      <div class="bill-group bill-group--awaiting" data-group="bc-understamped">
+        <h3 class="bill-group-title">שולם מתחת למחיר <span class="count-pill" id="bc-understamped-count">0</span> <span class="bc-sub">(קריאה בלבד)</span></h3>
+        <p class="billing-date-label">מחזורים ששולמו במלואם לפי הסכום שחויב, אך הסכום נמוך מהמחיר המוסכם או מהמחיר החודשי. הסטטוס נשאר «שולם» — ההחלטה אצל אדם.</p>
+        <div id="bc-understamped" class="billing-list bc-list"></div>
+      </div>
+
       <!-- Sandra (approver) only: READ-ONLY — no button, no input. -->
       <div id="bc-exceptions" class="bill-group bill-group--awaiting hidden" data-group="bc-exceptions">
         <h3 class="bill-group-title">חריגים פתוחים <span class="bc-sub">(קריאה בלבד)</span></h3>

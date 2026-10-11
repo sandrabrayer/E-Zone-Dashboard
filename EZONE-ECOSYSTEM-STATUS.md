@@ -999,6 +999,15 @@ merge). No column, sheet, Script Property or env var; nothing written.
 - `lib/cycle-balance.js` (window.CycleBalance) = Code.gs `cycleBalanceState_`
   (parity-tested). Used by גבייה (due list, יתרות פתוחות, monthly summary),
   «מטופלים» and `debtAging_` (בקרת גבייה «חובות מעל 60 יום»).
+- Under-stamped settled cycles (stamp below the agreed price / override) stay
+  «שולם» but are flagged (`underStamped`, gap). They are listed read-only in
+  בקרת גבייה («שולם מתחת למחיר», Ortal included, and Sandra's exceptions) and
+  never written by the repair. Live: Payments 59 (אביעד חביבאן, gap 5,000).
+- Vered's price path = patient ✏️ «תשלום חודשי». Open cycles recompute at
+  once; בקרת גבייה is re-read after the save; the audit now carries
+  price from → to.
+- 121 / 133 (ינון כהן, טמיר בן מיור) left open pending Vered's price
+  correction in-app.
 - Editor repair `repairStaleCycleAmountsNow()`, a DRY RUN by default, is NOT
   run (see DEPLOY.md).
 - SW `CACHE_VERSION` v60 → **v61** (v17 stays burned).

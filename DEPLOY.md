@@ -345,6 +345,9 @@ reading the plan, apply it from the editor console with
 row, writes `amount` / `balance` / `status` only, and logs one AuditLog
 `cycle_amount_repaired` per row. The display does not depend on it: the page
 and `debtAging_` already read every open cycle at the agreed price.
+Under-stamped settled cycles (paid in full at a stamp below the agreed price)
+are never written by it. The dry run lists them apart as «NEEDS HUMAN
+DECISION»; the same rows show read-only in בקרת גבייה as «שולם מתחת למחיר».
 
 ## Proxy secret (Phase 0b-1, TRANSITION mode) — Sandra's steps
 

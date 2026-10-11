@@ -3,8 +3,9 @@
 October 11, 2026. **Railway + Code.gs** (clasp CI on merge; Code.gs is in its
 own commit). No column, sheet, Script Property, env var or trigger. Nothing
 is written by code; one editor-only repair function is added (dry run by
-default, **not run**). SW `CACHE_VERSION` v58 → **v61** (live is v58; v59 /
-v60 are claimed by the tab-order and payment-status PRs; v17 stays burned).
+default, **not run**). SW `CACHE_VERSION` v60 → **v61** (live and base are
+v59 after #216; v60 is the payment-status PR #217, which this PR sits on;
+v17 stays burned).
 Outpatient and the shared revenue rules (`buildMonthlyRevenue`, the month
 split, «נגבה», «הכנסה מאומתת») are untouched.
 
@@ -93,14 +94,63 @@ Expected plan on the live sheet (11/10/2026):
 The display is already correct without it. The repair only aligns the stored
 row for other readers of the Payments sheet (accounting feed, exports).
 
-**Needs a decision, not a repair:** Payments **121** (ינון כהן, 5,000) and
-**133** (טמיר בן מיור, 3,000). If the agreed price from August on is 25,000 /
-30,000, set that on the patient (Patients `pay`) or add a 2026-09 override.
-The rule then reads both as paid, and the repair function will plan them.
+**121/133 left open pending Vered's price correction in-app.** Payments
+**121** (ינון כהן, 5,000) and **133** (טמיר בן מיור, 3,000): the prices are
+unknown, so both balances stay OPEN exactly as they are. No data change.
+Vered corrects the price herself (see «Vered's price path» below); the open
+cycle then recomputes through the shared rule.
+
+## Under-stamped settled cycles — the silent-underpayment gap
+
+A settled cycle is never reopened, so a future price change can never turn a
+closed month into a debt. The flip side: a cycle paid in full at a stamp
+**below** the override / agreed price would read «שולם» with nothing to show
+the shortfall. Now:
+
+- `cycleState` / `cycleBalanceState_` keep the settled rule (status «שולם»,
+  balance 0) but add `underStamped: true`, `priceExpected` and
+  `gap = priceExpected − stamped` when the stamp is lower than the price
+  (override, else agreed price). A stamp equal to or above the price → no
+  flag. Open cycles never carry it (they owe the price instead).
+- `debtAging_` lists every under-stamped cycle (`underStamped.rows`: patient,
+  house, cycle start–end, stamped, expected, gap, `outsideStay`). The list is
+  taken **before** the asOf / records-cutoff / stay-window / pro-bono filters
+  — never hidden. It is **never** in the debt totals.
+- בקרת גבייה shows it to **every** billing-control session (Ortal's view
+  included) as «שולם מתחת למחיר» (read-only), and inside Sandra's read-only
+  «חריגים פתוחים». Nothing changes the status; a person decides.
+- `repairStaleCycleAmountsNow` never plans or writes an under-stamped row. The
+  dry run logs each one apart as «NEEDS HUMAN DECISION» and returns them as
+  `underStamped`.
+
+**Live, read-only check (11/10/2026, 17:14 UTC copy):** one under-stamped
+cycle. Payments row **59**, אביעד חביבאן (ריהאב), cycle 16/08–15/09/2026,
+stamped and paid 30,000, agreed price 35,000, gap **5,000**. The patient's
+row reads released with exit 14/07/2026, so the cycle is also outside the
+recorded stay (tagged «מחוץ לתקופת השהייה הרשומה»). Needs a human decision.
+
+## Vered's price path — verified (read-only), then hardened
+
+- **The path:** patient ✏️ (`openEditPatientModal`) → «תשלום חודשי (₪)» =
+  Patients `pay`, the agreed price. Vered has it in edit mode. The per-month
+  override editor in גבייה is gated to unpaid rows, so it does not reach a
+  partly paid cycle; the ✏️ price is the path.
+- **Recompute without a reload:** the save sets `p.pay`, then `renderAll()` before
+  the server answers. גבייה (due list, יתרות פתוחות, monthly summary) and
+  «מטופלים» read the price live through `cycleView`, so an OPEN cycle's
+  expected amount, balance and status update at once. New: after a saved
+  price change the page re-reads בקרת גבייה
+  (`refreshBillingControlAfterPriceChange`). Its server-built parts (the debt
+  card, «שולם מתחת למחיר») follow without a reload.
+- **Settled cycles are never touched:** the price lives on the patient row
+  only; a settled cycle stays «שולם» (at most it gains the under-stamped flag).
+- **Audit (new):** the server already logged `patient_edited` / `patient_moved_house` /
+  `patient_rekeyed_via_id` with who (`updatedBy` + actor) and when. It now
+  also records `price: { from, to }` whenever `pay` changed (`patientPayChange_`).
 
 ## Tests
 
-- New `test/cycle-balance.test.js` (14):
+- New `test/cycle-balance.test.js` (25):
   - full payment across a month boundary → 0;
   - genuine partial → its balance;
   - a payment dated in the next calendar month counts (module + Code.gs
@@ -117,11 +167,20 @@ The rule then reads both as paid, and the repair function will plan them.
   - repair apply writes only the planned rows, audited, and skips a row
     changed since the plan;
   - repair refuses an ambiguous owner, void and receipt rows;
-  - wiring.
+  - wiring;
+  - under-stamped: 28,000 / 30,000 / 28,000 → «שולם» + gap 2,000;
+    30,000 / 28,000 / 30,000 → «שולם», no flag; parity grid covers the flag;
+  - `debtAging_` + בקרת גבייה list it for Ortal and in Sandra's exceptions;
+    the UI row (escaped, read-only); listed outside the stay / before the
+    cutoff;
+  - the repair never touches an under-stamped row and logs it apart;
+  - the price path: new price = paid → 0 / «שולם» on גבייה, «מטופלים» and
+    the open list; the price can create or grow a balance; a settled cycle is
+    never reopened; the ✏️ save wiring; the audit carries old → new.
   Nine of the fourteen fail on the previous code (the pure-module ones and
   the graceful fallback pass on either).
 - `test/funder-grace.test.js`: the BUNDLE_PATHS check no longer requires
   funder-grace to be last.
 - `test/dashboard-perf-assets.test.js`: the new asset is hashed; pins v61.
-- `test/refund-logic-wiring.test.js`: the pre-existing clock bug (same fix as
-  the tab-order PR).
+- `test/refund-logic-wiring.test.js`: not changed here; the clock fix landed
+  with #216.

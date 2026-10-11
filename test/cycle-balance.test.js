@@ -97,9 +97,10 @@ test('expected-amount source: agreed price over a stale stamped / house-default 
   // An override for the month beats the agreed price.
   assert.deepEqual(R.cycleState({ stampedAmount: 33000, amountPaid: 30000, agreedPrice: 33000, overrideAmount: 30000, status: 'partial' }),
     { expected: 30000, source: 'override', paid: 30000, balance: 0, status: 'paid' });
-  // A cycle already paid at its stamp stays paid even if the price changes later.
+  // A cycle already paid at its stamp stays paid even if the price changes
+  // later — it is never reopened; a HIGHER price only flags it (underStamped).
   assert.deepEqual(R.cycleState({ stampedAmount: 30000, amountPaid: 30000, agreedPrice: 35000, status: 'paid' }),
-    { expected: 30000, source: 'settled', paid: 30000, balance: 0, status: 'paid' });
+    { expected: 30000, source: 'settled', paid: 30000, balance: 0, status: 'paid', underStamped: true, priceExpected: 35000, gap: 5000 });
   assert.equal(R.cycleState({ stampedAmount: 30000, amountPaid: 0, agreedPrice: 35000, status: 'paid' }).status, 'paid', 'stored «שולם» is history');
   // No agreed price → the stamp; void owes nothing.
   assert.equal(R.cycleExpected({ stampedAmount: 30000, amountPaid: 0, agreedPrice: 0 }).source, 'stamped');
@@ -288,4 +289,192 @@ test('wiring: /cycle-balance.js is served like the other lib rules, loaded befor
   // Shared revenue rules are untouched: buildMonthlyRevenue does not use it.
   const i = APP.indexOf('function buildMonthlyRevenue(');
   assert.doesNotMatch(APP.slice(i, APP.indexOf('\n}\n', i)), /cycleView|CycleBalance/);
+});
+
+/* ================= underStamped — the silent-underpayment gap ================= */
+
+test('underStamped: stamped 28,000 / agreed 30,000 / paid 28,000 → «שולם» + underStamped gap 2,000', () => {
+  assert.deepEqual(R.cycleState({ stampedAmount: 28000, agreedPrice: 30000, amountPaid: 28000, status: 'paid' }),
+    { expected: 28000, source: 'settled', paid: 28000, balance: 0, status: 'paid', underStamped: true, priceExpected: 30000, gap: 2000 });
+  // An override is the price too.
+  assert.equal(R.cycleState({ stampedAmount: 28000, overrideAmount: 29000, agreedPrice: 25000, amountPaid: 28000, status: 'partial' }).gap, 1000);
+});
+
+test('underStamped: stamped 30,000 / agreed 28,000 / paid 30,000 → «שולם», no flag', () => {
+  const st = R.cycleState({ stampedAmount: 30000, agreedPrice: 28000, amountPaid: 30000, status: 'paid' });
+  assert.deepEqual(st, { expected: 30000, source: 'settled', paid: 30000, balance: 0, status: 'paid' });
+  assert.equal(st.underStamped, undefined);
+  // Equal price: no flag. Open cycles never carry it (they owe the price instead).
+  assert.equal(R.cycleState({ stampedAmount: 30000, agreedPrice: 30000, amountPaid: 30000, status: 'paid' }).underStamped, undefined);
+  assert.equal(R.cycleState({ stampedAmount: 28000, agreedPrice: 30000, amountPaid: 20000, status: 'partial' }).underStamped, undefined);
+});
+
+test('parity covers the flag: the grid hits underStamped and Code.gs agrees on every field', () => {
+  const g = loadGs();
+  let flagged = 0;
+  for (const stampedAmount of [0, 25000, 28000, 30000]) for (const agreedPrice of [null, 28000, 30000, 33000])
+    for (const overrideAmount of [null, 29000]) for (const status of ['paid', 'partial'])
+      for (const amountPaid of [25000, 28000, 30000]) {
+        const input = { stampedAmount, agreedPrice, overrideAmount, status, amountPaid };
+        g.sandbox.__i = input;
+        const a = plain(R.cycleState(input));
+        assert.deepEqual(plain(g.run('cycleBalanceState_(globalThis.__i)')), a, JSON.stringify(input));
+        if (a.underStamped) { flagged++; assert.equal(a.status, 'paid'); assert.equal(a.balance, 0); assert.ok(a.gap > 0); }
+      }
+  assert.ok(flagged > 10, 'flagged ' + flagged);
+});
+
+const UNDER = [
+  { id: 'id-u1', houseId: 'ramot', name: 'דנה לוי', date: '2026-09-05', pay: 30000, status: 'active' },
+];
+const UNDER_CYCLE = cyc(UNDER[0], '2026-09-05', 28000, 'paid', 28000, ['2026-09-05', '2026-10-04']);
+
+test('debtAging_ lists underStamped cycles (never in totals); בקרת גבייה shows them to Ortal AND in Sandra\'s exceptions', () => {
+  const g = loadGs();
+  const rows = (list) => ({ rows: list.map((o, i) => ({ rowNumber: i + 2, obj: Object.assign({}, o) })) });
+  g.sandbox.__t = { patients: rows(Object.values(P).concat(UNDER)), payments: rows(CYCLES.concat([UNDER_CYCLE])), credits: rows([]), overrides: rows([]) };
+  const aging = plain(g.run(`debtAging_('${TODAY}', globalThis.__t)`));
+  assert.deepEqual(aging.underStamped.rows.map((r) => [r.name, r.houseId, r.start, r.end, r.stamped, r.expected, r.gap]),
+    [['דנה לוי', 'ramot', '2026-09-05', '2026-10-04', 28000, 30000, 2000]]);
+  assert.equal(aging.totals.recorded_debt.total, 18000, 'the gap is NOT debt');
+  g.sandbox.__aging = aging;
+  for (const approver of [false, true]) {
+    g.sandbox.__o = { todayIso: TODAY, approver, aging };
+    const q = plain(g.run('billingControlQueueFor_([], {}, globalThis.__o)'));
+    assert.deepEqual(q.underStamped.map((r) => [r.patientName, r.houseId, r.start, r.end, r.stamped, r.expected, r.gap]),
+      [['דנה לוי', 'ramot', '2026-09-05', '2026-10-04', 28000, 30000, 2000]], 'every billing-control session');
+    if (approver) assert.equal(q.exceptions.underStamped.length, 1, 'Sandra\'s read-only exceptions');
+    else assert.equal(q.exceptions, undefined, 'Ortal: no exceptions block, but the list above');
+  }
+});
+
+test('בקרת גבייה UI: «שולם מתחת למחיר» — patient, house, cycle, stamped, expected, gap; escaped; read-only; never hidden', () => {
+  const p = page(CYCLES, Object.values(P));
+  const html = p.call('bcUnderStampedHtml', [{ patientName: '<b>דנה</b>', houseId: 'ramot', start: '2026-09-05', end: '2026-10-04', stamped: 28000, expected: 30000, gap: 2000 }]);
+  for (const s of ['&lt;b&gt;דנה&lt;/b&gt;', 'רמות השבים', '05/09/2026', '04/10/2026', 'חויב', 'לפי המחיר', 'פער']) assert.ok(html.includes(s), s);
+  for (const n of [28000, 30000, 2000]) assert.ok(html.includes(p.call('fmtShekel', n)), String(n));
+  assert.doesNotMatch(html, /<button|<input|<select/, 'read-only');
+  assert.match(p.call('bcUnderStampedHtml', []), /אין מחזורים ששולמו מתחת למחיר/);
+  const ex = p.call('bcExceptionsHtml', { underStamped: [{ patientName: 'דנה', houseId: 'ramot', start: '2026-09-05', stamped: 28000, expected: 30000, gap: 2000 }] });
+  assert.match(ex, /שולם מתחת למחיר <span class="count-pill">1<\/span>/);
+  const INDEX = read('public', 'index.html');
+  const grp = INDEX.slice(INDEX.indexOf('data-group="bc-understamped"') - 80, INDEX.indexOf('id="bc-understamped"') + 40);
+  assert.ok(grp.includes('id="bc-understamped"') && !/hidden/.test(grp.split('\n')[1] || ''), 'always visible in the tab');
+  const APP = read('public', 'app.js');
+  const i = APP.indexOf('function renderBillingControl(');
+  assert.match(APP.slice(i, APP.indexOf('\n}\n', i)), /set\('bc-understamped', bcUnderStampedHtml\(under\)\)/);
+});
+
+test('repairStaleCycleAmountsNow never touches an underStamped row — dry run lists it as «needs human decision»', () => {
+  const rows = CYCLES.concat([UNDER_CYCLE]);
+  const { g, pay, PAY_COLS } = gsWorld(rows, Object.values(P).concat(UNDER));
+  const logs = [];
+  g.sandbox.console.log = (m) => logs.push(String(m));
+  const dry = plain(g.run('repairStaleCycleAmountsNow()'));
+  assert.deepEqual(dry.plan.map((x) => x.patientName), ['אליהו חן', 'שחר חיון']);
+  assert.deepEqual(dry.underStamped.map((x) => [x.row, x.patientName, x.stamped, x.expected, x.gap]), [[7, 'דנה לוי', 28000, 30000, 2000]]);
+  assert.ok(logs.some((l) => /NEEDS HUMAN DECISION — row 7 דנה לוי/.test(l)), 'logged apart');
+  const before = JSON.stringify(pay.grid[6]);
+  const res = plain(g.run('repairStaleCycleAmountsNow(true)'));
+  assert.ok(!res.rewritten.some((x) => x.row === 7));
+  assert.equal(JSON.stringify(pay.grid[6]), before, 'the under-stamped row is untouched');
+  assert.equal(pay.grid[6][PAY_COLS.indexOf('status')], 'paid');
+});
+
+/* ================= Vered's in-app price path (patient ✏️ → «תשלום חודשי») ================= */
+
+function setPay(p, id, pay) {
+  p.run(`state.patients.find(x => x.id === ${JSON.stringify(id)}).pay = ${Number(pay)}`);
+}
+const yinonDue = (p) => p.call('paymentForPatientOnDate', p.run(`state.patients.find(x => x.id === '${P.yinon.id}')`), '2026-09-23');
+
+test('editing the agreed price recomputes the open cycle everywhere — new price = paid → balance 0, «שולם»', () => {
+  const p = page(CYCLES, Object.values(P));
+  assert.deepEqual([yinonDue(p).balance, yinonDue(p).status], [5000, 'partial'], 'left OPEN today (121): price unknown');
+  setPay(p, P.yinon.id, 25000);   // Vered corrects the price to what was paid
+  const v = yinonDue(p);
+  assert.deepEqual([v.amount, v.balance, v.status], [25000, 0, 'paid']);
+  const st = plain(p.call('patientPaymentState', p.run(`state.patients.find(x => x.id === '${P.yinon.id}')`), p.run('state.payments'), null, TODAY));
+  assert.equal(st.key, 'paid', '«מטופלים» card');
+  assert.ok(!openBalances(p, TODAY).some((o) => o.name === 'ינון כהן'), 'off «יתרות פתוחות»');
+  const row = p.call('buildBillingRow', p.run(`state.patients.find(x => x.id === '${P.yinon.id}')`), v, '2026-09-23', true);
+  assert.ok(!row.innerHTML.includes('bill-report-btn'), 'no «דווח תשלום»');
+});
+
+test('editing the price can also create / grow a balance on an open cycle, and never reopens a settled one', () => {
+  const p = page(CYCLES, Object.values(P));
+  setPay(p, P.yinon.id, 27000);
+  assert.deepEqual([yinonDue(p).balance, yinonDue(p).status], [2000, 'partial']);
+  setPay(p, P.yinon.id, 32000);
+  assert.deepEqual([yinonDue(p).balance, yinonDue(p).status], [7000, 'partial']);
+  // טמיר (133): the same path.
+  setPay(p, P.tamir.id, 30000);
+  const t = p.call('paymentForPatientOnDate', p.run(`state.patients.find(x => x.id === '${P.tamir.id}')`), '2026-09-27');
+  assert.deepEqual([t.balance, t.status], [0, 'paid']);
+  // A SETTLED cycle (שחר חיון's paid September) is never reopened by a later price.
+  const settled = cyc(P.shahar, '2026-09-07', 35000, 'paid', 35000);
+  const q = page([settled], [Object.assign({}, P.shahar)]);
+  setPay(q, P.shahar.id, 40000);
+  const s = q.call('paymentForPatientOnDate', q.run(`state.patients[0]`), '2026-09-07');
+  assert.deepEqual([s.amount, s.balance, s.status], [35000, 0, 'paid']);
+});
+
+test('the ✏️ save re-renders גבייה / «מטופלים» at once and re-reads בקרת גבייה after a price change', () => {
+  const APP = read('public', 'app.js');
+  const i = APP.indexOf('function openEditPatientModal(');
+  const body = APP.slice(i, APP.indexOf('\n}\n', i));
+  assert.match(body, /name: 'pay', label: 'תשלום חודשי \(₪\)'/);
+  assert.match(body, /p\.pay\s+= Number\(v\.pay\) \|\| 0;[\s\S]*renderAll\(\);[\s\S]*saveAll\(/, 'optimistic re-render before the save');
+  assert.match(body, /if \(prev\.pay !== p\.pay\) refreshBillingControlAfterPriceChange\(\);/);
+  const ra = APP.slice(APP.indexOf('function renderAll('), APP.indexOf('\n}\n', APP.indexOf('function renderAll(')));
+  for (const fn of ['renderBilling()', 'renderPatientsTab()', 'renderBillingControl()']) assert.ok(ra.includes(fn), fn);
+  // The refresh only runs when בקרת גבייה was loaded for this session.
+  const p = page(CYCLES, Object.values(P));
+  let calls = 0;
+  p.sandbox.__count = () => { calls++; return Promise.resolve(); };
+  p.run('loadBillingControl = () => globalThis.__count()');
+  p.run('refreshBillingControlAfterPriceChange()');
+  return new Promise((r) => setImmediate(r)).then(() => {
+    assert.equal(calls, 0, 'not loaded → no request');
+    p.run('billingControlState().data = { receipts: [] }');
+    p.run('refreshBillingControlAfterPriceChange()');
+    return new Promise((r) => setImmediate(r));
+  }).then(() => assert.equal(calls, 1));
+});
+
+test('a price change is audited: who, when, old price → new price', () => {
+  const { g } = gsWorld([], []);
+  const cols = Array.from(g.run('PATIENT_COLUMNS'));
+  const sh = g.sandbox.__sheets.Patients;
+  const pt = { houseId: 'rehab', name: 'ינון כהן', date: '2026-06-23', pay: 30000, adv: 0, status: 'active', id: 'id-ad890dc0', updatedAt: '', updatedBy: '' };
+  sh.grid.push(cols.map((c) => (pt[c] === undefined ? '' : pt[c])));
+  g.sandbox.__p = { rehab: [Object.assign({}, pt, { pay: 25000 })] };
+  g.run(`saveAll_(null, globalThis.__p, 'ורד')`);
+  const audit = g.sandbox.__sheets.AuditLog.grid.slice(1).find((r) => r[1] === 'patient_edited');
+  assert.ok(audit, 'patient_edited row');
+  const d = JSON.parse(audit[5]);
+  assert.deepEqual(d.price, { from: 30000, to: 25000 });
+  assert.equal(d.updatedBy, 'ורד');
+  assert.ok(/^\d{4}-\d{2}-\d{2}T/.test(String(audit[0])), 'when');
+  assert.deepEqual(d.changed, ['pay']);
+});
+
+test('never hidden: an underStamped cycle outside the recorded stay or before the records cutoff is still listed (live Payments 59 shape)', () => {
+  const g = loadGs();
+  const aviad = { id: 'id-12d6739f', houseId: 'rehab', name: 'אביעד חביבאן', date: '2026-07-08', pay: 35000, status: 'released', exitDate: '2026-07-14' };
+  const old = { id: 'id-old', houseId: 'sde', name: 'ותיק', date: '2026-05-02', pay: 32000, status: 'active' };
+  const rows = (list) => ({ rows: list.map((o, i) => ({ rowNumber: i + 2, obj: Object.assign({}, o) })) });
+  g.sandbox.__t = {
+    patients: rows([aviad, old]),
+    payments: rows([cyc(aviad, '2026-08-16', 30000, 'paid', 30000), cyc(old, '2026-06-02', 30000, 'paid', 30000)]),
+    credits: rows([]), overrides: rows([]),
+  };
+  const aging = plain(g.run(`debtAging_('${TODAY}', globalThis.__t)`));
+  assert.deepEqual(aging.underStamped.rows.map((r) => [r.name, r.start, r.gap, r.outsideStay]),
+    [['אביעד חביבאן', '2026-08-16', 5000, true], ['ותיק', '2026-06-02', 2000, false]]);
+  g.sandbox.__o = { todayIso: TODAY, approver: false, aging };
+  const q = plain(g.run('billingControlQueueFor_([], {}, globalThis.__o)'));
+  assert.equal(q.underStamped.length, 2);
+  const p = page([], []);
+  assert.match(p.call('bcUnderStampedHtml', q.underStamped), /מחוץ לתקופת השהייה הרשומה/);
 });

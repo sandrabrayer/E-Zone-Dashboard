@@ -7217,6 +7217,10 @@ function openEditPatientModal(p) {
         res = await saveAll({ prove: { patients: [String(p.id || '')] } });
         if (p.id) requireProven(res, 'patients', p.id);
         saved = true;
+        // A price change re-derives every OPEN cycle (CHANGELOG-cycle-balance.md):
+        // גבייה and «מטופלים» already re-rendered from state above; בקרת
+        // גבייה's server-built parts (debt, «שולם מתחת למחיר») are re-read.
+        if (prev.pay !== p.pay) refreshBillingControlAfterPriceChange();
         // A house move the backend refused (or never confirmed) is undone
         // below — the discharge rows stay open with it.
         if (!houseChanged || houseMoveVerdict(p) === 'moved') {
@@ -14842,6 +14846,15 @@ function bcStampHe(s) {
 
 /* Load the queue. Never throws to a caller that does not await it; the
  * error is shown inside the tab. */
+/* After a saved agreed-price change: re-read בקרת גבייה if this session has
+ * it loaded (fire-and-forget; its own error line reports a failure). */
+function refreshBillingControlAfterPriceChange() {
+  if (state.billingControl === false) return;
+  const s = billingControlState();
+  if (!s || !s.data) return;
+  Promise.resolve().then(loadBillingControl).catch(() => {});
+}
+
 async function loadBillingControl() {
   if (state.billingControl === false) return;
   const s = billingControlState();
@@ -15101,6 +15114,19 @@ function bcCardsHtml(cards) {
       <button type="button" class="btn small bc-debt-export" id="bc-debt-export">ייצוא חובות לאקסל</button></div>`;
 }
 
+/* «שולם מתחת למחיר» (CHANGELOG-cycle-balance.md): settled cycles whose stamp
+ * is below the override / agreed price. READ-ONLY — patient, house, cycle,
+ * stamped, expected, gap. Status stays «שולם»; a person decides. Pure. */
+function bcUnderStampedHtml(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return '<p class="billing-date-label">אין מחזורים ששולמו מתחת למחיר</p>';
+  return list.map(r => `<div class="bc-row bc-row--exception bc-row--understamped"><div class="bc-head"><b class="bc-name">${escapeHtml(r.patientName || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(r.houseId))}</span> <span class="bc-amount">פער ${fmtShekel(r.gap)}</span>${r.outsideStay ? ' <span class="badge">מחוץ לתקופת השהייה הרשומה</span>' : ''}</div>
+    <div class="bc-fields"><span class="bc-f"><span class="bc-k">מחזור</span> <span class="bc-v">${escapeHtml(formatDateHe(r.start))}${r.end ? ' – ' + escapeHtml(formatDateHe(r.end)) : ''}</span></span>
+    <span class="bc-f"><span class="bc-k">חויב</span> <span class="bc-v">${escapeHtml(fmtShekel(r.stamped))}</span></span>
+    <span class="bc-f"><span class="bc-k">לפי המחיר</span> <span class="bc-v">${escapeHtml(fmtShekel(r.expected))}</span></span>
+    <span class="bc-f"><span class="bc-k">פער</span> <span class="bc-v">${escapeHtml(fmtShekel(r.gap))}</span></span></div></div>`).join('');
+}
+
 /* Sandra's «חריגים פתוחים» — READ-ONLY: no button, no input. */
 function bcExceptionsHtml(ex) {
   const e = ex || {};
@@ -15124,7 +15150,9 @@ function bcExceptionsHtml(ex) {
     <h4 class="bc-ex-title">חובות מעל 60 יום <span class="count-pill">${debts.length}</span></h4>
     ${debts.length ? debts.map(debtRow).join('') : empty('אין')}
     <h4 class="bc-ex-title">החזרים שממתינים לאישור <span class="count-pill">${refunds.length}</span></h4>
-    ${refunds.length ? refunds.map(refundRow).join('') : empty('אין')}`;
+    ${refunds.length ? refunds.map(refundRow).join('') : empty('אין')}
+    <h4 class="bc-ex-title">שולם מתחת למחיר <span class="count-pill">${(Array.isArray(e.underStamped) ? e.underStamped : []).length}</span></h4>
+    ${bcUnderStampedHtml(e.underStamped)}`;
 }
 
 function renderBillingControl() {
@@ -15141,6 +15169,7 @@ function renderBillingControl() {
     set('bc-flagged', '');
     set('bc-partial', '');
     set('bc-confirmed', '');
+    set('bc-understamped', '');
     return;
   }
   const receipts = Array.isArray(s.data.receipts) ? s.data.receipts : [];
@@ -15182,6 +15211,11 @@ function renderBillingControl() {
   set('bc-confirmed', v.rows.length
     ? v.rows.map(r => bcReceiptHtml(r, 'confirmed', { inMonth: r.amountInMonth })).join('')
     : '<p class="billing-date-label">אין קבלות שאומתו בחודש הזה</p>');
+
+  // Every billing-control session (Ortal included): read-only.
+  const under = Array.isArray(s.data.underStamped) ? s.data.underStamped : [];
+  set('bc-understamped-count', String(under.length));
+  set('bc-understamped', bcUnderStampedHtml(under));
 
   const exEl = document.getElementById('bc-exceptions');
   if (exEl) {
