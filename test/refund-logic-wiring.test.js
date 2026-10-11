@@ -203,7 +203,10 @@ test('A: the credits modal shows the server\'s figure, rule label and breakdown 
   assert.ok(html.includes('מחושב: <b>' + app.t.fmtShekel(7000) + '</b>'), 'the computeRefund_ figure');
   assert.ok(html.includes('מגורים — זיכוי יחסי על הימים שלא שהה'));
   for (const s of ['מחזור:', '10/09/2026 – 09/10/2026', 'ימים ששהה במחזור:', 'ימים שלא שהה:', 'תעריף יומי:',
-    '7 הימים האחרונים במחזור:', '03/10/2026 – 09/10/2026', 'ישולם ב־15/10/2026']) {
+    '7 הימים האחרונים במחזור:', '03/10/2026 – 09/10/2026',
+    // The decision date is the browser's real "today", so the payout date is
+    // derived from it (fixed 15/10/2026 broke once the clock passed 10/10).
+    'ישולם ב־' + app.t.formatDateHe(app.t.payoutDateFor(app.t.todayISO()))]) {
     assert.ok(html.includes(s), 'breakdown shows ' + s);
   }
   assert.deepStrictEqual(app.errors(), []);
@@ -522,7 +525,7 @@ function loadApp(server) {
     globalThis.__errors = [];
     globalThis.__t = {
       state, normalizePatient, normalizeCredit, showCreditsModal, buildCreditLines, linePayoutDate,
-      creditBreakdownHtml, payoutDateFor, fmtShekel, creditRefundSpan, isoFromLocalDate,
+      creditBreakdownHtml, payoutDateFor, fmtShekel, creditRefundSpan, isoFromLocalDate, todayISO, formatDateHe,
     };`, sandbox);
   return {
     t: sandbox.__t,

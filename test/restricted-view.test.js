@@ -602,7 +602,7 @@ test('client: exactly the allowed tabs per session — 8 for Shiran / Yael («מ
   const { app } = loadApp();
   assert.deepStrictEqual([...app.FINANCE_SCREENS], ['billing', 'revenue', 'reconnect', 'growth']);
   assert.deepStrictEqual([...app.allowedScreens(false)],
-    ['dashboard', 'leads', 'patients', 'meetings', 'occupancy', 'discharged-patients', 'breakeven', 'retention']);
+    ['dashboard', 'leads', 'meetings', 'patients', 'occupancy', 'discharged-patients', 'breakeven', 'retention']);
   assert.deepStrictEqual([...app.allowedScreens(true)], [...app.SCREENS]);
   assert.deepStrictEqual([...app.allowedScreens(null)], [...app.SCREENS], 'unknown = as before');
 });
