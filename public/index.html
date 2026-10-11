@@ -662,6 +662,8 @@
   <script src="refund-rules.js?v=__BUILD__"></script>
   <!-- The institutional-funder grace rule (global FunderGrace) — must load before app.js. -->
   <script src="funder-grace.js?v=__BUILD__"></script>
+  <!-- The cycle balance (global CycleBalance) — must load before app.js. -->
+  <script src="cycle-balance.js?v=__BUILD__"></script>
   <script src="app.js?v=__BUILD__"></script>
 
   <!-- Service worker registration (guarded). Registered after load so it never

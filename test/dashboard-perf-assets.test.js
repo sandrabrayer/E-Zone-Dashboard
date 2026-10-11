@@ -36,6 +36,7 @@ const FILES = {
   '/billing-control-rules.js': path.join(ROOT, 'lib', 'billing-control-rules.js'),
   '/refund-rules.js': path.join(ROOT, 'lib', 'refund-rules.js'),
   '/funder-grace.js': path.join(ROOT, 'lib', 'funder-grace.js'),
+  '/cycle-balance.js': path.join(ROOT, 'lib', 'cycle-balance.js'),
 };
 
 /* ===================================================================== */
@@ -104,7 +105,7 @@ test('A: versionAssetRefs pins all five files in the real index.html — and onl
     const h = sha12(fs.readFileSync(f));
     assert.ok(out.includes(name + '?v=' + h + '"'), name + ' carries its own hash');
   }
-  assert.ok(!/(app|funder|payment-report-rules|billing-control-rules|refund-rules|funder-grace)\.js\?v=__BUILD__/.test(out));
+  assert.ok(!/(app|funder|payment-report-rules|billing-control-rules|refund-rules|funder-grace|cycle-balance)\.js\?v=__BUILD__/.test(out));
   assert.ok(!out.includes('href="style.css"'), 'style.css is no longer unversioned');
   // The build markers still carry __BUILD__ for the BUILD_ID substitution.
   assert.match(out, /<meta name="build" content="__BUILD__"/);
@@ -330,7 +331,7 @@ function serve(handlers, url) {
 }
 const settle = () => new Promise((r) => setImmediate(r));
 
-test('D: CACHE_VERSION is v60 (monotonic from the live v59; v17 burned, never reused)', () => {
+test('D: CACHE_VERSION is v61 (monotonic from the live v59; v17 burned, never reused)', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
   // v40: CHANGELOG-ortal-verification-status.md.
   // v41: CHANGELOG-reactivation-fix.md (PR #145's fix, re-landed).
@@ -353,7 +354,8 @@ test('D: CACHE_VERSION is v60 (monotonic from the live v59; v17 burned, never re
   // v58: CHANGELOG-inclusive-role-wording.md.
   // v59: CHANGELOG-tab-order.md (PR A).
   // v60: CHANGELOG-payment-status-unified.md (PR B).
-  assert.equal(v, 'v60');
+  // v61: CHANGELOG-cycle-balance.md (PR C).
+  assert.equal(v, 'v61');
   assert.notEqual(v, 'v17');
 });
 

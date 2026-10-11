@@ -334,6 +334,18 @@ can show, and every permanent delete (✕) recorded in the last 60 days. What
 each log section means and how to read it:
 `CHANGELOG-ramot-diagnostic-reland.md`.
 
+## Stale cycle amounts — editor repair (DRY RUN by default)
+
+`repairStaleCycleAmountsNow()` (CHANGELOG-cycle-balance.md) is editor-only:
+no trigger, not reachable over HTTP. Run it with **no argument** first. It
+logs the plan («row N name date: amount A → B …») and writes nothing: pick
+`repairStaleCycleAmountsNow` → **Run** → **View → Executions log**. Only after
+reading the plan, apply it from the editor console with
+`repairStaleCycleAmountsNow(true)`. It takes the script lock, re-checks each
+row, writes `amount` / `balance` / `status` only, and logs one AuditLog
+`cycle_amount_repaired` per row. The display does not depend on it: the page
+and `debtAging_` already read every open cycle at the agreed price.
+
 ## Proxy secret (Phase 0b-1, TRANSITION mode) — Sandra's steps
 
 From this release the Railway server sends a shared secret, `PROXY_SECRET`, on

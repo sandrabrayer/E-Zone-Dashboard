@@ -353,7 +353,8 @@ test('wiring: /funder-grace.js is served like the other lib rules, loaded before
   assert.match(SERVER_SRC, /app\.get\('\/funder-grace\.js', sendLibAsset\('\/funder-grace\.js'\)\);/);
   assert.ok(INDEX_SRC.indexOf('funder-grace.js?v=__BUILD__') > 0);
   assert.ok(INDEX_SRC.indexOf('funder-grace.js?v=__BUILD__') < INDEX_SRC.indexOf('app.js?v=__BUILD__'));
-  assert.match(SW_SRC, /var BUNDLE_PATHS = \[[^\]]*'\/funder-grace\.js'\]/);
+  // In the list (not necessarily last: /cycle-balance.js follows — CHANGELOG-cycle-balance.md).
+  assert.match(SW_SRC, /var BUNDLE_PATHS = \[[^\]]*'\/funder-grace\.js'[^\]]*\]/);
   // v47 shipped funder-grace; later PRs bump it (v48: CHANGELOG-payment-report-persistence.md).
   assert.ok(Number(/var CACHE_VERSION = 'v(\d+)';/.exec(SW_SRC)[1]) >= 47);
   assert.doesNotMatch(LIB_SRC, /fetch\(|require\(|Date\.now|new Date\(\)/, 'pure: no I/O, no clock');

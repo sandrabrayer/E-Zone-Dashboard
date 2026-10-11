@@ -5020,7 +5020,9 @@ function patientPaymentState(patient, payments, funders, todayIso, patients, lea
   }
   const pay = patientCycleRecord(patient, dueISO, payments, patients, leads);
   if (pay && isVoidPayment(pay)) return { key: 'void', label: PAYMENT_VOID_LABEL, dueISO };
-  const key = pay ? pay.status : 'unpaid';
+  // The shared cycle balance (CHANGELOG-cycle-balance.md) — the same answer
+  // as the גבייה row: a full payment at the agreed price reads «שולם».
+  const key = pay ? cycleView(pay, patient).status : 'unpaid';
   // Institutional funder, within 30 days of the due date: neutral, not red.
   // `owed` keeps the real state (the cell still offers «דווח תשלום»).
   if ((key === 'unpaid' || key === 'partial') && patientCycleInFunderGrace(patient, funders, dueISO, todayIso)) {
@@ -9589,8 +9591,10 @@ function openDebtPatientIds(report, payments, patients, today) {
   });
   const t = today || todayISO();
   (Array.isArray(payments) ? payments : []).forEach(pay => {
-    if (!pay || isVoidPayment(pay) || (pay.status !== 'unpaid' && pay.status !== 'partial') || !pay.dueDate || pay.dueDate >= t) return;
+    if (!pay || isVoidPayment(pay) || !pay.dueDate || pay.dueDate >= t) return;
     const hit = findPatientForPaymentIn(patients, pay);
+    const view = cycleView(pay, hit);
+    if (view.status !== 'unpaid' && view.status !== 'partial') return;
     const uid = patientUid(hit) || paymentPatientUid(pay);
     if (uid) ids[uid] = true;
   });
@@ -10347,6 +10351,38 @@ function applyBillingOverride(payment, overrides) {
   };
 }
 
+/* ===== The cycle balance (CHANGELOG-cycle-balance.md) =====
+ * lib/cycle-balance.js (global CycleBalance, the same rule as Code.gs
+ * cycleBalanceState_). The cycle's price is owed ONCE per coverage period;
+ * splitting it across calendar months is display / revenue only. An OPEN
+ * cycle owes the month override, else the patient's agreed price (`pay`),
+ * else its stamped amount — a SETTLED one stays settled. Without the module
+ * (a page that failed to load it) the stored figures stand, as before. */
+function cycleBalanceLib() {
+  return (typeof globalThis !== 'undefined' && globalThis.CycleBalance) || null;
+}
+
+/* A cycle row as EVERY money screen reads it: גבייה (due list, יתרות
+ * פתוחות, the monthly summary), «מטופלים» and the open-debt ids behind
+ * בקרת גבייה's funder fill. The override overlay first (unchanged), then the
+ * shared rule. `patient` may be null (an unmatched row: no agreed price).
+ * Returns the input untouched when nothing changes; else a copy carrying
+ * stampedAmount + expectedSource. Pure apart from the default overrides. */
+function cycleView(pay, patient, overrides) {
+  const ovrs = overrides === undefined ? state.billingOverrides : overrides;
+  const base = applyBillingOverride(pay, ovrs);
+  const R = cycleBalanceLib();
+  if (!R || !pay || isVoidPayment(pay)) return base;
+  const ovr = billingOverrideFor(ovrs, pay.patientId, monthKey(pay.dueDate));
+  const st = R.cycleState({
+    stampedAmount: pay.amount, amountPaid: pay.amountPaid, overrideAmount: ovr ? ovr.amount : null,
+    agreedPrice: patient ? patient.pay : null, status: pay.status,
+  });
+  if (base.amount === st.expected && base.balance === st.balance && base.status === st.status) return base;
+  return { ...base, amount: st.expected, balance: st.balance, status: st.status,
+    stampedAmount: pay.amount, expectedSource: st.source };
+}
+
 /* Build (or reuse) the payment record for a given patient + due date. If
  * there's no sheet-persisted record yet, return an in-memory "unpaid"
  * placeholder — not added to state.payments until it's actually saved. Either
@@ -10359,8 +10395,8 @@ function paymentForPatientOnDate(patient, dueDateISO) {
   // an older triple (house move, rename, the lead's name) is still THE row —
   // a report adds its receipt there instead of opening a second cycle.
   const existing = patientCycleRecord(patient, dueDateISO, state.payments);
-  if (existing) return applyBillingOverride(existing, state.billingOverrides);
-  return applyBillingOverride(normalizePayment({
+  if (existing) return cycleView(existing, patient);
+  return cycleView(normalizePayment({
     id,
     patientId: patientKey(patient),
     /* patientUid is SERVER-OWNED (PR #139) — it is resolved from the triple
@@ -10374,7 +10410,7 @@ function paymentForPatientOnDate(patient, dueDateISO) {
     status: 'unpaid',
     amountPaid: 0,
     balance: patient.pay || 0,
-  }), state.billingOverrides);
+  }), patient);
 }
 
 function activePatients() {
@@ -11387,15 +11423,16 @@ function renderBillingOpenList(selectedISO) {
     /* isVoidPayment is redundant beside the status whitelist and kept anyway:
      * this is a DEBT list, and the whitelist is one refactor away from being
      * "not paid" instead of "unpaid or partial". */
-    .filter(p => !isVoidPayment(p)
-      && (p.status === 'unpaid' || p.status === 'partial') && p.dueDate && p.dueDate < selectedISO)
+    .filter(p => !isVoidPayment(p) && p.dueDate && p.dueDate < selectedISO)
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
     .map(rawPay => {
-      // Carry-forward rows read straight from state.payments — overlay the
-      // per-month override here too so a past unpaid month edited by Sandra
-      // shows (and balances at) its effective amount.
-      const pay = applyBillingOverride(rawPay, state.billingOverrides);
-      const patient = findPatientForPayment(pay) || {
+      // Carry-forward rows read straight from state.payments — cycleView
+      // overlays the per-month override AND the shared balance rule
+      // (CHANGELOG-cycle-balance.md), so a cycle paid in full at the agreed
+      // price is not a «יתרה פתוחה» whatever calendar months it spans.
+      const matched = findPatientForPayment(rawPay);
+      const pay = cycleView(rawPay, matched);
+      const patient = matched || {
         name: pay.patientName,
         houseId: pay.houseId,
         pay: pay.amount,
@@ -11404,6 +11441,7 @@ function renderBillingOpenList(selectedISO) {
       };
       return { patient, pay };
     })
+    .filter(o => o.pay.status === 'unpaid' || o.pay.status === 'partial')
     // Pro-bono on the row's due date: not a balance (never owed).
     .filter(o => !isProbonoOn(o.patient, o.pay.dueDate));
 
@@ -11748,7 +11786,7 @@ function renderBillingMonthlySummary(selectedISO) {
   // overlay never touches paid/partial history).
   const thisMonth = state.payments
     .filter(p => monthKey(p.dueDate) === mk)
-    .map(p => applyBillingOverride(p, state.billingOverrides));
+    .map(p => cycleView(p, findPatientForPayment(p)));
   /* יתרה is a DEBT figure, so it honours the records cutoff exactly as the
    * גבייה KPI card does: a cycle before RECORDS_COMPLETE_FROM is not owed, it
    * is unrecorded. נגבה is untouched — money that was entered arrived,

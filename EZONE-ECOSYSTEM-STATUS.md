@@ -983,6 +983,26 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
 
+## Dashboard: the cycle balance — one rule (October 11, 2026)
+
+Detail: `CHANGELOG-cycle-balance.md`. **Railway + Code.gs** (clasp CI on
+merge). No column, sheet, Script Property or env var; nothing written.
+- A cycle's price is owed ONCE per coverage period; the month split is
+  display only. Balance = expected − all money attached to the cycle. An
+  OPEN cycle owes the month override, else the patient's agreed price
+  (`pay`), else its stamp; a settled cycle stays settled.
+- Root cause on the live sheet: the cycle row freezes the price at creation,
+  and Vered corrects `pay` minutes after reporting (אליהו חן 33,000 → 30,000,
+  שחר חיון 35,000 → 32,000, נועם שני 30,000 → 28,000). אוריאן אלון's 10,000 is
+  genuine. ינון כהן / טמיר בן מיור carry August-only overrides and need
+  Sandra's decision.
+- `lib/cycle-balance.js` (window.CycleBalance) = Code.gs `cycleBalanceState_`
+  (parity-tested). Used by גבייה (due list, יתרות פתוחות, monthly summary),
+  «מטופלים» and `debtAging_` (בקרת גבייה «חובות מעל 60 יום»).
+- Editor repair `repairStaleCycleAmountsNow()`, a DRY RUN by default, is NOT
+  run (see DEPLOY.md).
+- SW `CACHE_VERSION` v60 → **v61** (v17 stays burned).
+
 ## Dashboard: one payment status for «מטופלים» and גבייה (October 11, 2026)
 
 Detail: `CHANGELOG-payment-status-unified.md`. **Railway + Code.gs** (clasp CI
