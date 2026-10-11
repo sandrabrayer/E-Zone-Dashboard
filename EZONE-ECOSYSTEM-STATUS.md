@@ -983,6 +983,21 @@ Detail: `CHANGELOG-receipt-duplicates-and-edit.md`. **Railway + Code.gs**
 - SW `CACHE_VERSION` v43 → **v44** (v43 shipped with the duplicate-discharges PR #193;
   v17 stays burned).
 
+## Dashboard: one payment status for «מטופלים» and גבייה (October 11, 2026)
+
+Detail: `CHANGELOG-payment-status-unified.md`. **Railway + Code.gs** (clasp CI
+on merge). No column, sheet, Script Property or env var; nothing written.
+- «מטופלים» found a cycle only by the exact id built from the patient's
+  CURRENT triple; גבייה used `matchPatientForPayment`. A house move (נועם שני)
+  or a payment reported under the lead's name (Payments rows 45 «ערן», 86
+  «עדי») split the answers. Now ONE lookup, `patientCycleRecord`, serves
+  «מטופלים», the גבייה due list and «דווח תשלום».
+- New fail-closed tier 5 `lead_link` (app.js + Code.gs `recMatchPatient_`,
+  parity-tested): the row's triple names exactly one lead, and exactly one
+  patient has that lead in `fromLead`. Row 76 (עמית יעקובי, no patient) stays
+  on «שיוך תשלומים».
+- SW `CACHE_VERSION` v58 → **v60** (v59 = tab order; v17 stays burned).
+
 ## Dashboard: tab order follows the business flow (October 11, 2026)
 
 Detail: `CHANGELOG-tab-order.md`. **Railway only** (`public/`); Code.gs not

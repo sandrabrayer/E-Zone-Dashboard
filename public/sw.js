@@ -232,7 +232,10 @@
 // v58 → v59: tab order follows the business flow (CHANGELOG-tab-order.md) —
 // לוח פגישות now precedes מטופלים; index.html + app.js changed; activate
 // evicts v58.
-var CACHE_VERSION = 'v59';
+// v59 → v60: one payment status for «מטופלים» and גבייה
+// (CHANGELOG-payment-status-unified.md) — app.js changed;
+// activate evicts v59.
+var CACHE_VERSION = 'v60';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
