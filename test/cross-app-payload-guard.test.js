@@ -84,6 +84,7 @@ test('the occupancy snapshot header is unchanged', () => {
 const BONUS_KEYS = ['qualifies', 'bep', 'avgDaily', 'aboveBepDays', 'base', 'daily', 'dailyRate', 'quarterly',
   'quarterlyEligible', 'consecutiveAboveBep', 'continuity', 'total'];
 const CONTINUITY_KEYS = ['maintenance', 'day_2x', 'day_daily', 'total', 'rates'];
+const INTAKE_KEYS = ['confirmed', 'pending', 'items'];
 
 test('Managers: managersOverview payload keys are pinned', () => {
   const o = arr(load().sandbox.managersOverview_('2026-09'));
@@ -91,10 +92,12 @@ test('Managers: managersOverview payload keys are pinned', () => {
   assert.deepStrictEqual(Object.keys(o.totals), ['activePatients', 'networkCapacity', 'totalTreatmentDays', 'totalBonus']);
   assert.ok(o.houses.length > 0);
   for (const h of o.houses) {
+    // intakeMeetings appended LAST on 13 Oct 2026 (CHANGELOG-intake-meeting-bonus-feed.md).
     assert.deepStrictEqual(Object.keys(h), ['key', 'name', 'manager', 'type', 'bep', 'capacity', 'patientsNow',
-      'avgDaily', 'treatmentDays', 'entriesMonth', 'exitsMonth', 'qualifies', 'bonus']);
+      'avgDaily', 'treatmentDays', 'entriesMonth', 'exitsMonth', 'qualifies', 'bonus', 'intakeMeetings']);
     assert.deepStrictEqual(Object.keys(h.bonus), BONUS_KEYS);
     assert.deepStrictEqual(Object.keys(h.bonus.continuity), CONTINUITY_KEYS);
+    assert.deepStrictEqual(Object.keys(h.intakeMeetings), INTAKE_KEYS);
   }
 });
 
@@ -102,8 +105,9 @@ test('Managers: managersHouse payload keys are pinned', () => {
   const h = arr(load().sandbox.managersHouse_('ramot', '2026-09'));
   assert.deepStrictEqual(Object.keys(h), ['ok', 'month', 'key', 'name', 'manager', 'type', 'bep', 'capacity',
     'bonusBase', 'bonusPerDay', 'patientsNow', 'avgDaily', 'treatmentDays', 'entriesMonth', 'exitsMonth',
-    'dailyChart', 'activity', 'bonus']);
+    'dailyChart', 'activity', 'bonus', 'intakeMeetings']);
   assert.deepStrictEqual(Object.keys(h.bonus), BONUS_KEYS);
+  assert.deepStrictEqual(Object.keys(h.intakeMeetings), INTAKE_KEYS);
   assert.deepStrictEqual(Object.keys(h.dailyChart[0]), ['date', 'count']);
   assert.deepStrictEqual(Object.keys(h.activity[0]), ['date', 'kind', 'name']);
 });

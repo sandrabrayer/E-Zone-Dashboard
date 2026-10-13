@@ -12235,13 +12235,17 @@ function readOutpatients_() {
 function readPatientsForBonus_() {
   const sh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
   const rows = readSheet_(sh, PATIENT_COLUMNS);
-  return rows.map(function (p) {
+  return rows.map(function (p, i) {
     return {
       houseId:  p.houseId,
       name:     p.name,
       entry:    parseDate_(p.date),
       exit:     parseDate_(p.exitDate),
       status:   p.status,
+      // Intake-meeting bonus (CHANGELOG-intake-meeting-bonus-feed.md): the
+      // source lead, and the row order used to rank same-day admissions.
+      fromLead: String(p.fromLead == null ? '' : p.fromLead).trim(),
+      rowIndex: i,
     };
   });
 }
@@ -12368,6 +12372,139 @@ function computeContinuityByHouse_(outpatients, ym) {
   return out;
 }
 
+/* ----- Intake-meeting bonus feed (CHANGELOG-intake-meeting-bonus-feed.md) -----
+ *
+ * Sandra's rule (13 Oct 2026): a house manager who HELD the intake meeting
+ * (Leads.meetingWith) of a patient who was then admitted as the house's 7th
+ * patient or later, and who stayed at least 30 days, earns a bonus. The
+ * AMOUNT and the effective month live in the Managers app
+ * (lib/bonus-eligibility.js); this feed only supplies the raw facts, per
+ * month of ADMISSION:
+ *
+ *   intakeMeetings: { confirmed, pending, items: [{ date, name, house, status }] }
+ *     confirmed — stayed >= 30 days (discharged after >= 30 days, or still in
+ *                 the house 30+ days after entry)
+ *     pending   — still in the house, < 30 days so far (may confirm later)
+ *     items     — the qualifying admissions, newest first (status
+ *                 'confirmed' | 'pending'); `house` = the admitted house's
+ *                 Managers key
+ *
+ * Attribution: the meeting manager's NAME is matched to the Managers tab row
+ * active on the admission date (its `house` is the Managers key that gets the
+ * credit — it may differ from the admitted house). No match → not counted.
+ *
+ * 7th patient or later: on the admission day the admitted house already had
+ * >= INTAKE_MIN_PRIOR_PATIENTS (6) other patients present — patients who
+ * entered on an earlier day and had not left before that day, plus same-day
+ * admissions that sit ABOVE this row in the Patients sheet.
+ *
+ * Patients with no fromLead, a lead without meetingWith, or a stay that ended
+ * before 30 days are not counted. READ-ONLY: no tab is created or written. */
+const INTAKE_MIN_PRIOR_PATIENTS = 6;
+const INTAKE_MIN_STAY_DAYS = 30;
+
+/* Whole calendar days from a to b (midnight-local Dates), DST-proof. */
+function daysBetween_(a, b) {
+  const ua = Date.UTC(a.getFullYear(), a.getMonth(), a.getDate());
+  const ub = Date.UTC(b.getFullYear(), b.getMonth(), b.getDate());
+  return Math.round((ub - ua) / 86400000);
+}
+
+/* Today as a midnight-local Date in the spreadsheet timezone. Its own
+ * function so tests can pin the clock. */
+function intakeToday_() {
+  return parseDate_(todayISODate_());
+}
+
+/* meetingWith by lead id, across Leads + the irrelevant / removed tabs (an
+ * admitted lead normally stays in Leads at stage 'admitted'). Read-only. */
+function readLeadMeetingManagers_() {
+  const out = {};
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  [[LEADS_SHEET, LEAD_COLUMNS], [IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS],
+   [REMOVED_LEADS_SHEET, REMOVED_LEAD_COLUMNS]].forEach(function (t) {
+    const sh = ss.getSheetByName(t[0]);
+    if (!sh || sh.getLastRow() < 2) return;
+    readSheet_(sh, t[1]).forEach(function (l) {
+      const id = String(l.id == null ? '' : l.id).trim();
+      const who = String(l.meetingWith == null ? '' : l.meetingWith).trim();
+      if (id && who && !out[id]) out[id] = who;
+    });
+  });
+  return out;
+}
+
+/* The Managers key of the house whose manager is `name` on `asOf`, or ''. */
+function managerHouseByName_(managers, name, asOf) {
+  let best = null;
+  for (let i = 0; i < managers.length; i++) {
+    const m = managers[i];
+    if (String(m.manager_name == null ? '' : m.manager_name).trim() !== name) continue;
+    if (MANAGER_HOUSES.indexOf(m.house) < 0) continue;
+    const start = parseDate_(m.start_date);
+    const end   = parseDate_(m.end_date);
+    if (start && asOf < start) continue;
+    if (end && asOf > end) continue;
+    if (!best || (start && parseDate_(best.start_date) && start > parseDate_(best.start_date))) best = m;
+  }
+  return best ? best.house : '';
+}
+
+/* { managersKey: { confirmed, pending, items } } for admissions in `ym`. */
+function computeIntakeMeetingsByHouse_(patients, managers, leadManagers, ym, today) {
+  const start = startOfMonth_(ym);
+  const end   = endOfMonth_(ym);
+  const out = {};
+  MANAGER_HOUSES.forEach(function (h) { out[h] = { confirmed: 0, pending: 0, items: [] }; });
+  const keyByPatientsHouse = {};
+  Object.keys(MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID).forEach(function (k) {
+    keyByPatientsHouse[MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[k]] = k;
+  });
+
+  for (let i = 0; i < patients.length; i++) {
+    const p = patients[i];
+    if (!p.entry || p.entry < start || p.entry > end) continue;
+    if (!p.fromLead) continue;
+    const who = leadManagers[p.fromLead];
+    if (!who) continue;
+    const creditKey = managerHouseByName_(managers, who, p.entry);
+    if (!creditKey) continue;
+
+    // Stay: a discharge on or before today ends it; otherwise still in the house.
+    const ended = p.exit && p.exit <= today ? p.exit : null;
+    const stayDays = daysBetween_(p.entry, ended || today);
+    let status;
+    if (stayDays >= INTAKE_MIN_STAY_DAYS) status = 'confirmed';
+    else if (ended) continue; // left before 30 days — never qualifies
+    else status = 'pending';
+
+    // 7th patient or later in the ADMITTED house on the entry day.
+    let prior = 0;
+    for (let j = 0; j < patients.length; j++) {
+      const q = patients[j];
+      if (j === i || q.houseId !== p.houseId || !q.entry) continue;
+      if (q.exit && q.exit < p.entry) continue;            // left before that day
+      if (q.entry > p.entry) continue;                     // came later
+      if (q.entry.getTime() === p.entry.getTime() && q.rowIndex > p.rowIndex) continue; // same day, below
+      prior++;
+    }
+    if (prior < INTAKE_MIN_PRIOR_PATIENTS) continue;
+
+    const bucket = out[creditKey];
+    bucket[status]++;
+    bucket.items.push({
+      date: ymdOf_(p.entry),
+      name: String(p.name == null ? '' : p.name),
+      house: keyByPatientsHouse[p.houseId] || '',
+      status: status,
+    });
+  }
+  MANAGER_HOUSES.forEach(function (h) {
+    out[h].items.sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
+  });
+  return out;
+}
+
 /* ----- Bonus calculation for one house in one month ----- */
 function calcHouseBonus_(opts) {
   const cfg = opts.cfg;
@@ -12453,6 +12590,7 @@ function managersOverview_(monthParam) {
   const patients    = readPatientsForBonus_();
   const outpatients = readOutpatients_();
   const continuityByHouse = computeContinuityByHouse_(outpatients, ym);
+  const intakeByHouse = computeIntakeMeetingsByHouse_(patients, managers, readLeadMeetingManagers_(), ym, intakeToday_());
 
   const configByHouse = {};
   configs.forEach(function (c) { configByHouse[c.house] = c; });
@@ -12495,6 +12633,7 @@ function managersOverview_(monthParam) {
       exitsMonth: stats.exitsMonth,
       qualifies: bonus.qualifies,
       bonus: bonus,
+      intakeMeetings: intakeByHouse[key],
     };
   });
 
@@ -12535,6 +12674,7 @@ function managersHouse_(houseKey, monthParam) {
   const patients    = readPatientsForBonus_();
   const outpatients = readOutpatients_();
   const continuityByHouse = computeContinuityByHouse_(outpatients, ym);
+  const intakeByHouse = computeIntakeMeetingsByHouse_(patients, managers, readLeadMeetingManagers_(), ym, intakeToday_());
 
   const cfg = configs.filter(function (c) { return c.house === key; })[0] || {};
   const patientsHouseId = MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[key];
@@ -12577,6 +12717,7 @@ function managersHouse_(houseKey, monthParam) {
     dailyChart: stats.dailyChart,
     activity: stats.activity,
     bonus: bonus,
+    intakeMeetings: intakeByHouse[key],
   };
 }
 
