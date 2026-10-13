@@ -12372,6 +12372,54 @@ function computeContinuityByHouse_(outpatients, ym) {
   return out;
 }
 
+/* ----- One-time referral facts (CHANGELOG-referral-one-time-feed.md) -----
+ *
+ * Sandra (13 Oct 2026): the 300 ₪ referral bonus is ONE-TIME per patient —
+ * paid in the month the patient STARTS a day package (therapy_type day_2x or
+ * day_daily), not every month they stay in it. The amount and the effective
+ * month live in the Managers app; this feed supplies, per Managers house and
+ * month:
+ *
+ *   referralStarts: { count, items: [{ date, name }] }
+ *
+ * A patient (house_of_origin + trimmed patient_name) counts ONCE, in the
+ * month of their FIRST day-package start_date across all their Outpatients
+ * rows — a renewal row, or a switch from day_2x to day_daily, never pays
+ * again. Maintenance rows never count. Rows without a valid start_date are
+ * skipped. Read-only. */
+const REFERRAL_DAY_PACKAGES = ['day_2x', 'day_daily'];
+
+function computeReferralStartsByHouse_(outpatients, ym) {
+  const out = {};
+  MANAGER_HOUSES.forEach(function (h) { out[h] = { count: 0, items: [] }; });
+  const firstStart = {}; // "house|name" -> { date, name, house }
+  for (let i = 0; i < outpatients.length; i++) {
+    const o = outpatients[i];
+    const house = String(o.house_of_origin == null ? '' : o.house_of_origin).trim();
+    if (!out[house]) continue;
+    const type = String(o.therapy_type == null ? '' : o.therapy_type).trim();
+    if (REFERRAL_DAY_PACKAGES.indexOf(type) < 0) continue;
+    const name = String(o.patient_name == null ? '' : o.patient_name).trim();
+    if (!name) continue;
+    const start = parseDate_(o.start_date);
+    if (!start) continue;
+    const k = house + '|' + name;
+    if (!firstStart[k] || start < firstStart[k].date) firstStart[k] = { date: start, name: name, house: house };
+  }
+  const monthStart = startOfMonth_(ym);
+  const monthEnd = endOfMonth_(ym);
+  Object.keys(firstStart).forEach(function (k) {
+    const f = firstStart[k];
+    if (f.date < monthStart || f.date > monthEnd) return;
+    out[f.house].count++;
+    out[f.house].items.push({ date: ymdOf_(f.date), name: f.name });
+  });
+  MANAGER_HOUSES.forEach(function (h) {
+    out[h].items.sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
+  });
+  return out;
+}
+
 /* ----- Intake-meeting bonus feed (CHANGELOG-intake-meeting-bonus-feed.md) -----
  *
  * Sandra's rule (13 Oct 2026): a house manager who HELD the intake meeting
@@ -12591,6 +12639,7 @@ function managersOverview_(monthParam) {
   const outpatients = readOutpatients_();
   const continuityByHouse = computeContinuityByHouse_(outpatients, ym);
   const intakeByHouse = computeIntakeMeetingsByHouse_(patients, managers, readLeadMeetingManagers_(), ym, intakeToday_());
+  const referralStartsByHouse = computeReferralStartsByHouse_(outpatients, ym);
 
   const configByHouse = {};
   configs.forEach(function (c) { configByHouse[c.house] = c; });
@@ -12634,6 +12683,7 @@ function managersOverview_(monthParam) {
       qualifies: bonus.qualifies,
       bonus: bonus,
       intakeMeetings: intakeByHouse[key],
+      referralStarts: referralStartsByHouse[key],
     };
   });
 
@@ -12675,6 +12725,7 @@ function managersHouse_(houseKey, monthParam) {
   const outpatients = readOutpatients_();
   const continuityByHouse = computeContinuityByHouse_(outpatients, ym);
   const intakeByHouse = computeIntakeMeetingsByHouse_(patients, managers, readLeadMeetingManagers_(), ym, intakeToday_());
+  const referralStartsByHouse = computeReferralStartsByHouse_(outpatients, ym);
 
   const cfg = configs.filter(function (c) { return c.house === key; })[0] || {};
   const patientsHouseId = MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[key];
@@ -12718,6 +12769,7 @@ function managersHouse_(houseKey, monthParam) {
     activity: stats.activity,
     bonus: bonus,
     intakeMeetings: intakeByHouse[key],
+    referralStarts: referralStartsByHouse[key],
   };
 }
 

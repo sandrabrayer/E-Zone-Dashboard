@@ -256,6 +256,14 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
   is byte-for-byte unchanged (snapshot-tested). SW cache v10, tests 136.
   Details: `docs/bonus-month-labelling.md` → "Bonus history month picker".
 
+## Dashboard Apps Script: one-time referral facts for the Managers bonus (October 13, 2026)
+
+- `managersOverview_` / `managersHouse_` append `referralStarts: { count,
+  items }` per Managers house per month: patients whose FIRST day package
+  (day_2x / day_daily) started that month — once per patient, ever. Feeds the
+  Managers app's one-time 300 ₪ continued-treatment bonus. Details:
+  `CHANGELOG-referral-one-time-feed.md`.
+
 ## Dashboard Apps Script: intake-meeting facts for the Managers bonus (October 13, 2026)
 
 - `managersOverview_` / `managersHouse_` append `intakeMeetings: { confirmed,
