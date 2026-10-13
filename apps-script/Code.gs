@@ -1384,6 +1384,7 @@ function lockBusy_(_fn) {
 
 function gatedEntry_(e, method) {
   const params = collectParams_(e);
+  if (params.action === 'getCrmLeads' || params.action === 'getCrmAdmittedRoster') return crmReadEntry_(e, method);
   const gate = proxyGate_(params, method);
   if (!gate.ok) return jsonOut_({ ok: false, error: 'unauthorized' });
   return handle_(gate.params);
@@ -17682,4 +17683,78 @@ function recDocTable_(body, rows) {
   }
   if (table.getNumRows() > 0) table.getRow(0).editAsText().setBold(true);
   return table;
+}
+
+
+/* CRM-02 source projections. This path never calls ensure/backfill, caches,
+ * audit logging, locks or writes. One range read per sheet; only allowlisted
+ * fields leave this function. Missing/schema-invalid sources are NOT empty.
+ * complete means the entire selected source was read, not atomic cross-sheet
+ * consistency, a business SLA, a person match or a persistent task queue. */
+function crmReadRows_(sheetName, fields, dates) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sh) throw new Error('crm_source_unavailable');
+  if (sh.getLastRow() > 10001) throw new Error('crm_source_unavailable');
+  const values = sh.getDataRange().getValues();
+  const headers = values[0] || [];
+  const indexes = fields.map(function (field) {
+    const matches = headers.reduce(function (a, h, i) { if (h === field) a.push(i); return a; }, []);
+    if (matches.length !== 1) throw new Error('crm_source_unavailable');
+    return matches[0];
+  });
+  return values.slice(1).filter(function (row) {
+    return row.some(function (v) { return v !== '' && v !== null; });
+  }).map(function (row) {
+    const out = {};
+    fields.forEach(function (field, i) {
+      let v = row[indexes[i]];
+      if (v === undefined || v === null) v = '';
+      if (Object.prototype.toString.call(v) === '[object Date]') {
+        if (isNaN(v.getTime())) throw new Error('crm_source_unavailable');
+        v = dates.indexOf(field) >= 0
+          ? Utilities.formatDate(v, SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone(), 'yyyy-MM-dd')
+          : v.toISOString();
+      }
+      if (typeof v !== 'string') throw new Error('crm_source_unavailable');
+      out[field] = v;
+    });
+    return out;
+  });
+}
+function crmProjection_(dataset, rows) {
+  return { ok: true, contract: 'crm-source-v1', dataset: dataset,
+    health: 'fresh', complete: true, observedAt: new Date().toISOString(), rows: rows };
+}
+
+function crmReadEntry_(e, method) {
+  try {
+    // Body-only credentials; no transition/log-mode bypass or SecurityLog writes.
+    const p = method === 'POST' && e && e.postData ? JSON.parse(e.postData.contents) : {};
+    const props = PropertiesService.getScriptProperties();
+    if (p.action === 'getCrmAdmittedRoster') {
+      if (!admittedRosterAuthOk_(p)) return jsonOut_({ ok: false, error: 'unauthorized' });
+    } else if (p.action === 'getCrmLeads') {
+      const expected = props.getProperty(PROXY_SECRET_PROP);
+      if (!expected || typeof p.proxySecret !== 'string' || !constantTimeEquals_(p.proxySecret, expected)) {
+        return jsonOut_({ ok: false, error: 'unauthorized' });
+      }
+      const actor = proxyActor_('', p.proxyUserId, p.proxyAuth, p.proxyRoles, p.proxyCaps, false);
+      if (actor.auth !== 'personal' || ['vered', 'sandra', 'shiran', 'yael'].indexOf(actor.id) < 0 || actor.roles.indexOf('staff') < 0) {
+        return jsonOut_({ ok: false, error: 'forbidden' });
+      }
+    } else return jsonOut_({ ok: false, error: 'unauthorized' });
+    if (props.getProperty('CRM_READS') !== '1') return jsonOut_({ ok: false, error: 'crm_disabled' });
+    if (p.action === 'getCrmLeads') {
+      const leads = crmReadRows_(LEADS_SHEET,
+        ['id', 'name', 'stage', 'assignedTo', 'visitDate', 'meetingOutcome', 'meetingReportOutcome'], ['visitDate']);
+      if (leads.some(function (r) { return !r.id.trim(); })) throw new Error('crm_source_unavailable');
+      return jsonOut_(crmProjection_('dashboard.leads', leads));
+    }
+    const patients = crmReadRows_(PATIENTS_SHEET, ['name', 'houseId', 'date', 'status', 'exitDate'], ['date', 'exitDate']);
+    const rows = patients.filter(function (p) { return p.status.trim() !== 'released' && !p.exitDate.trim(); }).map(function (p) {
+      if (!p.name.trim() || !p.houseId.trim()) throw new Error('crm_source_unavailable');
+      return { name: p.name, house: p.houseId, entryDate: p.date };
+    });
+    return jsonOut_(crmProjection_('dashboard.admitted_roster', rows));
+  } catch (_) { return jsonOut_({ ok: false, error: 'crm_source_unavailable' }); }
 }
