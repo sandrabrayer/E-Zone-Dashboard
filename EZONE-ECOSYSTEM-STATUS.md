@@ -256,6 +256,15 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
   is byte-for-byte unchanged (snapshot-tested). SW cache v10, tests 136.
   Details: `docs/bonus-month-labelling.md` → "Bonus history month picker".
 
+## Dashboard Apps Script: managers work tool (October 13, 2026)
+
+- New action `managersWork` (POST, own fail-closed Script Property
+  `MANAGERS_WORK_SECRET`; in OPEN_ACTIONS like the other cross-app actions):
+  house patients / outpatients / visits / admissions, and three logs —
+  family calls, staff talks (private to author + admins), unusual events —
+  with follow-up dates. New sheets `ManagersFamilyCalls`, `ManagersStaffTalks`,
+  `ManagersEvents`. Details: `CHANGELOG-managers-work-tool.md`.
+
 ## Dashboard Apps Script: one-time referral facts for the Managers bonus (October 13, 2026)
 
 - `managersOverview_` / `managersHouse_` append `referralStarts: { count,

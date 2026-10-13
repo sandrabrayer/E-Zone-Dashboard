@@ -1334,14 +1334,18 @@ const APPROVER_ACTIONS = [
  * directly (no Dashboard session), so they are open here and gated INSIDE
  * handle_ by their own fail-closed COORDINATORS_PATIENTS_SECRET — exactly the
  * getAdmittedRoster model. */
+/* Managers work tool (2026-10-13): `managersWork` is called by the
+ * ezone-managers server (no Dashboard session), so it is open here and gated
+ * INSIDE handle_ by its own fail-closed MANAGERS_WORK_SECRET. */
 const OPEN_ACTIONS = ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster',
-  'getPatientsForCoordinators', 'recordDischargeFromCoordinators'];
+  'getPatientsForCoordinators', 'recordDischargeFromCoordinators', 'managersWork'];
 const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
 /* Every action handle_ dispatches. An action name is caller-controlled, so
  * SecurityLog records only these; anything else is logged as '(unknown)' —
  * an attacker can neither spam distinct rows nor inject a formula.
  * test/proxy-secret-transition.test.js checks this list against handle_. */
 const PROXY_KNOWN_ACTIONS = [
+  'managersWork',
   'getData', 'getAdmittedRoster', 'saveAll', 'getPayments', 'savePayment',
   'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
   'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'debtAging', 'cleanupReport',
@@ -1653,6 +1657,13 @@ function handle_(params) {
       // A discharge drops a resident out of the active population. Fail-soft.
       if (res && res.ok && res.discharged) refreshDigestBestEffort_();
       return jsonOut_(res);
+    }
+    /* ===== Managers work tool — own fail-closed secret =====
+     * House lists + the managers' logs. Refused with NOTHING read or written
+     * unless MANAGERS_WORK_SECRET is set and matches. */
+    if (action === 'managersWork') {
+      if (!managersWorkAuthOk_(params)) return jsonOut_({ ok: false, error: 'unauthorized' });
+      return jsonOut_(managersWork_(params));
     }
     if (action === 'saveAll') {
       const perf = perfStart_('saveAll');
@@ -12370,6 +12381,284 @@ function computeContinuityByHouse_(outpatients, ym) {
     out[houseKey].total += CONTINUITY_RATES[ttype];
   }
   return out;
+}
+
+/* ===== Managers work tool (CHANGELOG-managers-work-tool.md) =====
+ *
+ * Sandra (13 Oct 2026): the Managers app becomes a work tool, not only a
+ * bonus page. ONE action, `managersWork`, called by the ezone-managers SERVER
+ * only (POST body), gated by Script Property MANAGERS_WORK_SECRET
+ * (fail-closed: unset or mismatched → refused before anything is read).
+ *
+ * The managers server authenticates the person (personal code) and passes
+ * who they are: { house, role: 'manager' | 'admin', actor }. This backend
+ * trusts those fields ONLY because the secret matched; it still validates
+ * them (house must be a Managers key; role one of the two).
+ *
+ *   op 'houseData'  { house, month } → patients (in the house today),
+ *                   outpatients (from this house, active today), visits
+ *                   (lead meetings this month) and admissions (entries this
+ *                   month), the three logs, and follow-ups due.
+ *   op 'logAdd'     { house, log, entry } → a new log row (id, stamps).
+ *   op 'logUpdate'  { house, log, id, patch } → followUpDone / soft delete
+ *                   (only the author or an admin).
+ *
+ * Logs (append-only sheets, headers append-only):
+ *   familyCalls — patient, contact, relation, when, summary, follow-up
+ *   staffTalks  — employee, when, summary, follow-up. PRIVATE: a manager sees
+ *                 only the talks they wrote; admins (Sandra, Ron) see all.
+ *   events      — when, patient, what happened, what was done, follow-up
+ * Free text is cleaned (control characters, formula lead-ins and angle
+ * brackets stripped, capped). Rows are never physically deleted. */
+const MANAGERS_WORK_SECRET_PROP = 'MANAGERS_WORK_SECRET';
+const MW_LOG_STAMP_COLS = ['followUpDate', 'followUpDone', 'author', 'createdAt', 'deletedAt', 'deletedBy'];
+const MW_LOGS = {
+  familyCalls: {
+    sheet: 'ManagersFamilyCalls',
+    fields: { patientName: 80, contactName: 80, relation: 40, callDate: 'date', callTime: 'time', summary: 1000 },
+    required: ['patientName', 'contactName', 'callDate', 'summary'],
+    dateField: 'callDate',
+  },
+  staffTalks: {
+    sheet: 'ManagersStaffTalks',
+    fields: { employeeName: 80, talkDate: 'date', talkTime: 'time', summary: 1500 },
+    required: ['employeeName', 'talkDate', 'summary'],
+    dateField: 'talkDate',
+    private: true,
+  },
+  events: {
+    sheet: 'ManagersEvents',
+    fields: { eventDate: 'date', eventTime: 'time', patientName: 80, whatHappened: 1500, actionTaken: 1500 },
+    required: ['eventDate', 'whatHappened'],
+    dateField: 'eventDate',
+  },
+};
+const MW_THERAPY_LABELS = { maintenance: 'תחזוקתי', day_2x: 'טיפול יום — פעמיים בשבוע', day_daily: 'טיפול יום — יומי' };
+
+function managersWorkAuthOk_(params) {
+  const expected = PropertiesService.getScriptProperties().getProperty(MANAGERS_WORK_SECRET_PROP);
+  if (!expected) return false;
+  const got = (params && typeof params.secret === 'string') ? params.secret : '';
+  if (!got) return false;
+  return constantTimeEquals_(got, expected);
+}
+
+function mwColumns_(logKey) {
+  const def = MW_LOGS[logKey];
+  return ['id', 'house'].concat(Object.keys(def.fields), MW_LOG_STAMP_COLS);
+}
+
+function mwCleanTime_(v) {
+  const s = String(v == null ? '' : v).trim();
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(s) ? s : '';
+}
+
+/* A stored cell back to text: Sheets may hand a date/time cell back as a Date. */
+function mwCellText_(v, kind) {
+  if (v instanceof Date) {
+    if (kind === 'time') return Utilities.formatDate(v, Session.getScriptTimeZone(), 'HH:mm');
+    return asISODate_(v);
+  }
+  return String(v == null ? '' : v);
+}
+
+/* The validated caller: { house, role, actor } or null. */
+function mwCaller_(params) {
+  const house = String(params.house == null ? '' : params.house).trim();
+  const role = String(params.role == null ? '' : params.role).trim();
+  const actor = coordTextClean_(params.actor, 40);
+  if (MANAGER_HOUSES.indexOf(house) < 0) return null;
+  if (role !== 'manager' && role !== 'admin') return null;
+  if (!actor) return null;
+  return { house: house, role: role, actor: actor };
+}
+
+function managersWork_(params) {
+  const caller = mwCaller_(params);
+  if (!caller) return { ok: false, error: 'bad_request' };
+  const op = String(params.op || '');
+  if (op === 'houseData') return mwHouseData_(caller, params);
+  if (op === 'logAdd') return mwLogAdd_(caller, params);
+  if (op === 'logUpdate') return mwLogUpdate_(caller, params);
+  return { ok: false, error: 'unknown_op' };
+}
+
+/* Log rows of one house, visible to the caller, newest first. */
+function mwReadLog_(logKey, caller) {
+  const def = MW_LOGS[logKey];
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(def.sheet);
+  if (!sh || sh.getLastRow() < 2) return [];
+  const cols = mwColumns_(logKey);
+  const rows = readSheet_(sh, cols).filter(function (r) {
+    if (String(r.house) !== caller.house) return false;
+    if (String(r.deletedAt || '')) return false;
+    if (def.private && caller.role !== 'admin' && String(r.author) !== caller.actor) return false;
+    return true;
+  }).map(function (r) {
+    const o = { id: String(r.id) };
+    Object.keys(def.fields).forEach(function (f) {
+      const kind = def.fields[f];
+      o[f] = mwCellText_(r[f], kind === 'time' ? 'time' : kind === 'date' ? 'date' : 'text');
+    });
+    o.followUpDate = mwCellText_(r.followUpDate, 'date');
+    o.followUpDone = String(r.followUpDone) === '1' || r.followUpDone === true;
+    o.author = String(r.author || '');
+    o.createdAt = String(r.createdAt || '');
+    return o;
+  });
+  rows.sort(function (a, b) {
+    const ka = (a[def.dateField] || '') + (a.callTime || a.talkTime || a.eventTime || '') + a.createdAt;
+    const kb = (b[def.dateField] || '') + (b.callTime || b.talkTime || b.eventTime || '') + b.createdAt;
+    return ka < kb ? 1 : ka > kb ? -1 : 0;
+  });
+  return rows;
+}
+
+function mwHouseData_(caller, params) {
+  const key = caller.house;
+  const ym = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(params.month || '')) ? String(params.month) : defaultMonth_();
+  const today = parseDate_(todayISODate_());
+  const pid = MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[key];
+  const start = startOfMonth_(ym);
+  const end = endOfMonth_(ym);
+
+  // Patients in the house today, and admissions this month.
+  const patients = readPatientsForBonus_();
+  const inHouse = [];
+  const admissions = [];
+  patients.forEach(function (p) {
+    if (p.houseId !== pid || !p.entry) return;
+    if (p.entry <= today && (!p.exit || p.exit >= today)) {
+      inHouse.push({ name: String(p.name || ''), entryDate: ymdOf_(p.entry), days: daysBetween_(p.entry, today) + 1, status: String(p.status || '') });
+    }
+    if (p.entry >= start && p.entry <= end) admissions.push({ name: String(p.name || ''), date: ymdOf_(p.entry) });
+  });
+  inHouse.sort(function (a, b) { return a.entryDate < b.entryDate ? -1 : a.entryDate > b.entryDate ? 1 : 0; });
+  admissions.sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
+
+  // Outpatients who came from this house, active today.
+  const outpatients = readOutpatients_().filter(function (o) {
+    if (String(o.house_of_origin || '').trim() !== key) return false;
+    const s0 = parseDate_(o.start_date);
+    const e0 = parseDate_(o.end_date);
+    if (s0 && s0 > today) return false;
+    if (e0 && e0 < today) return false;
+    return String(o.patient_name || '').trim() !== '';
+  }).map(function (o) {
+    const t = String(o.therapy_type || '').trim();
+    return { name: String(o.patient_name).trim(), therapy: MW_THERAPY_LABELS[t] || t, startDate: o.start_date ? asISODate_(o.start_date) : '' };
+  });
+
+  // Intake visits (lead meetings) this month for this house.
+  const houseName = MANAGER_HOUSE_NAMES[key];
+  const visits = [];
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  [[LEADS_SHEET, LEAD_COLUMNS], [IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS], [REMOVED_LEADS_SHEET, REMOVED_LEAD_COLUMNS]].forEach(function (t) {
+    const sh = ss.getSheetByName(t[0]);
+    if (!sh || sh.getLastRow() < 2) return;
+    readSheet_(sh, t[1]).forEach(function (l) {
+      const h = String(l.house || '').trim();
+      if (h !== houseName && h !== pid) return;
+      const vd = parseDate_(asISODate_(l.visitDate));
+      if (!vd || vd < start || vd > end) return;
+      visits.push({
+        date: ymdOf_(vd), time: mwCleanTime_(mwCellText_(l.visitTime, 'time')),
+        name: String(l.name || ''), meetingWith: String(l.meetingWith || ''),
+        outcome: String(l.meetingOutcome || '')
+      });
+    });
+  });
+  visits.sort(function (a, b) { const ka = a.date + a.time, kb = b.date + b.time; return ka < kb ? 1 : ka > kb ? -1 : 0; });
+
+  const logs = {};
+  Object.keys(MW_LOGS).forEach(function (k) { logs[k] = mwReadLog_(k, caller); });
+  const todayIso = ymdOf_(today);
+  const followUps = [];
+  Object.keys(logs).forEach(function (k) {
+    logs[k].forEach(function (r) {
+      if (r.followUpDate && !r.followUpDone && r.followUpDate <= todayIso) followUps.push({ log: k, id: r.id, date: r.followUpDate });
+    });
+  });
+  followUps.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+
+  return {
+    ok: true, house: key, month: ym, today: todayIso,
+    patients: inHouse, outpatients: outpatients,
+    visits: visits, admissions: admissions,
+    logs: logs, followUps: followUps,
+  };
+}
+
+function mwLogAdd_(caller, params) {
+  const logKey = String(params.log || '');
+  const def = MW_LOGS[logKey];
+  if (!def) return { ok: false, error: 'unknown_log' };
+  const entry = parseJsonParam_(params.entry) || {};
+  const row = { id: Utilities.getUuid(), house: caller.house };
+  const missing = [];
+  Object.keys(def.fields).forEach(function (f) {
+    const kind = def.fields[f];
+    let v;
+    if (kind === 'date') v = coordIsoDateClean_(entry[f]);
+    else if (kind === 'time') v = mwCleanTime_(entry[f]);
+    else v = coordTextClean_(entry[f], kind);
+    row[f] = v;
+    if (def.required.indexOf(f) >= 0 && !v) missing.push(f);
+  });
+  if (missing.length) return { ok: false, error: 'missing_fields', fields: missing };
+  row.followUpDate = coordIsoDateClean_(entry.followUpDate);
+  row.followUpDone = '';
+  row.author = caller.actor;
+  row.createdAt = new Date().toISOString();
+  row.deletedAt = '';
+  row.deletedBy = '';
+  const cols = mwColumns_(logKey);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const sh = getOrCreateSheet_(def.sheet, cols);
+    // Text cells: dates / times must never be coerced into Date cells.
+    sh.getRange(sh.getLastRow() + 1, 1, 1, cols.length).setNumberFormat('@')
+      .setValues([cols.map(function (c) { return row[c] == null ? '' : String(row[c]); })]);
+  } finally {
+    lock.releaseLock();
+  }
+  return { ok: true, id: row.id };
+}
+
+function mwLogUpdate_(caller, params) {
+  const logKey = String(params.log || '');
+  const def = MW_LOGS[logKey];
+  if (!def) return { ok: false, error: 'unknown_log' };
+  const id = String(params.id || '').trim();
+  const patch = parseJsonParam_(params.patch) || {};
+  if (!id) return { ok: false, error: 'missing_id' };
+  const cols = mwColumns_(logKey);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(def.sheet);
+    if (!sh || sh.getLastRow() < 2) return { ok: false, error: 'not_found' };
+    const values = sh.getRange(2, 1, sh.getLastRow() - 1, cols.length).getValues();
+    for (let i = 0; i < values.length; i++) {
+      const r = values[i];
+      if (String(r[0]) !== id) continue;
+      if (String(r[1]) !== caller.house) return { ok: false, error: 'not_found' };
+      const author = String(r[cols.indexOf('author')]);
+      if (caller.role !== 'admin' && author !== caller.actor) return { ok: false, error: 'forbidden' };
+      if (String(r[cols.indexOf('deletedAt')])) return { ok: false, error: 'not_found' };
+      const rowNo = i + 2;
+      if (patch.followUpDone === true) sh.getRange(rowNo, cols.indexOf('followUpDone') + 1).setNumberFormat('@').setValue('1');
+      if (patch.deleted === true) {
+        sh.getRange(rowNo, cols.indexOf('deletedAt') + 1, 1, 2).setNumberFormat('@')
+          .setValues([[new Date().toISOString(), caller.actor]]);
+      }
+      return { ok: true };
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return { ok: false, error: 'not_found' };
 }
 
 /* ----- One-time referral facts (CHANGELOG-referral-one-time-feed.md) -----
