@@ -256,6 +256,17 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
   is byte-for-byte unchanged (snapshot-tested). SW cache v10, tests 136.
   Details: `docs/bonus-month-labelling.md` → "Bonus history month picker".
 
+## Dashboard Apps Script: intake-meeting facts for the Managers bonus (October 13, 2026)
+
+- `managersOverview_` / `managersHouse_` append `intakeMeetings: { confirmed,
+  pending, items }` per Managers house, per month of ADMISSION: admissions
+  whose intake meeting (`Leads.meetingWith`, matched to the Managers tab on
+  the admission date) that house's manager held, where the patient was the
+  admitted house's 7th+ patient and stayed 30+ days (`pending` while < 30
+  days and still in the house). Read-only; raw facts only — the 250 ₪ amount
+  and the Oct 2026 start live in the Managers app. Details:
+  `CHANGELOG-intake-meeting-bonus-feed.md`.
+
 ## Managers: house roster (5 houses, current as of September 5, 2026)
 
 The Managers app (`ezone-managers`) covers FIVE houses. Hardcoded fallbacks
