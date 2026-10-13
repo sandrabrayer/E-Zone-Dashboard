@@ -43,3 +43,21 @@ CRM tests use synthetic in-memory Sheets, real handlers and mocked transport.
   follow-up. See `docs/crm-checkpoint-review.md` for boundaries and open gates.
 - Counts above refer to the original projection slice. Updated no-DB/real-DB
   counts and exact-head CI links are recorded in the draft PR description.
+
+## Work-screen follow-up — 2026-10-13
+
+- Wire Dashboard leads to the retained checkpoint through a separate, default-off
+  `/crm-work` screen, GET queue read and explicit same-origin refresh POST.
+- Require current personal staff authority on every path; the controller remains
+  excluded. Reject browser grants/observations, recheck in-flight authority and
+  clear sensitive UI data on denied/failed reads or when the page is hidden.
+- Display overall responsibility, assignee, original deadline, source observation
+  time, missing/partial/unavailable states and fixed existing source-screen links.
+  Preserve open work on disappearance/outage; no source edits or invented SLAs.
+- Configure a fixed provisioned collector epoch; HTTP cannot claim/reclaim it.
+  No implicit migration, source collection on GET, scheduler or production change.
+- Promote pg 8.23.1 to runtime dependency at the same pinned version. Add actual
+  server/PostgreSQL HTTP and required synthetic Chromium tests. Full serial suites
+  and exact-head CI counts are recorded in the PR, separately from browser cases.
+- Outpatient #114 and the isolated Code.gs commit remain unchanged. See
+  `docs/crm-queue-integration.md` for remaining release gates and limits.

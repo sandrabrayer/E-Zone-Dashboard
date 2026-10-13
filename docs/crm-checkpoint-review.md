@@ -1,5 +1,11 @@
 # CRM-02 checkpoint foundation and review — 2026-10-13
 
+This records the foundation review. A later draft slice now wires ONLY
+Dashboard leads to a protected, default-off work screen. See
+[queue integration](crm-queue-integration.md) for the current runtime, fixed
+collector generation, authority, tests and remaining production gates. The
+historical "not connected" section below describes the foundation commit.
+
 ## Reviewed scope
 
 Self-review of Dashboard #220 at `9f4b547d6d77603f42a2230ede1f66fe5b29c746`
@@ -53,7 +59,7 @@ read, timer, HTTP handler or collector starts when this library is imported.
   queues. The limit is 25,000 historical task keys. Retention/archival/deletion
   policy and key rotation/recovery are not implemented or enabled.
 
-## Not connected to production
+## Foundation commit boundary (superseded runtime wiring)
 
 Neither `server.js` nor `lib/crm/read-routes.js` imports the checkpoint store.
 Existing source routes still return `persistence: none`. No new HTTP ingestion

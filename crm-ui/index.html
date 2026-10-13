@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>תור עבודה — פניות | E-ZONE</title>
+  <link rel="stylesheet" href="/crm-work/style.css">
+  <script src="/crm-work/app.js" defer></script>
+</head>
+<body>
+  <header><a href="/">E-ZONE · חזרה לדאשבורד</a><span class="draft">טיוטה לבדיקה</span></header>
+  <main>
+    <div class="heading"><div><p class="eyebrow">רצף לקוח · דאשבורד</p><h1>תור עבודה — פניות</h1>
+      <p>אחריות כוללת: ורד. הטיפול ברשומה מתבצע במסך המקור.</p></div>
+      <button id="refresh" type="button" disabled>עדכון מהמקור</button>
+    </div>
+    <div id="status" role="status" aria-live="polite">טוען את התור השמור…</div>
+    <p id="observed" class="muted"></p>
+    <section id="summary" aria-label="סיכום התור" hidden></section>
+    <section id="work" aria-label="משימות פתוחות" hidden>
+      <div class="tools"><label for="filter">הצגת משימות</label><select id="filter">
+        <option value="all">כל המשימות</option><option value="uncertain">נדרשת בדיקה</option>
+        <option value="missing">ללא מועד מקורי</option><option value="overdue">באיחור</option>
+      </select><span id="count" class="muted"></span></div>
+      <div id="tasks"></div><p id="empty" hidden></p>
+    </section>
+    <p class="footnote">מועד חסר דורש בירור ואינו מעיד שאין איחור. היעלמות רשומה או תקלה במקור אינן סוגרות משימה.</p>
+  </main>
+</body>
+</html>

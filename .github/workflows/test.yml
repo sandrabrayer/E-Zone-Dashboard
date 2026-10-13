@@ -43,7 +43,9 @@ jobs:
         run: npm ci
 
       - name: Run the test suite
-        run: npm test
+        env:
+          TZ: UTC
+        run: npm test -- --test-concurrency=1
 
   crm-checkpoint-postgres:
     runs-on: ubuntu-latest
@@ -88,3 +90,28 @@ jobs:
           exit 1
       - name: Verify checkpoint after database and process restart
         run: node scripts/crm-checkpoint-restart-fixture.js verify
+
+  crm-queue-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Install isolated browser tooling
+        run: |
+          npm install --prefix /tmp/crm-queue-browser-tools --no-save --package-lock=false playwright@1.56.1
+          node /tmp/crm-queue-browser-tools/node_modules/playwright/cli.js install --with-deps chromium --only-shell
+          echo "CRM_CHROMIUM=$(find "$HOME/.cache/ms-playwright" -type f -name headless_shell -print -quit)" >> "$GITHUB_ENV"
+      - name: Required synthetic CRM browser scenarios
+        env:
+          TZ: UTC
+          CRM_REQUIRE_BROWSER_TESTS: '1'
+          CRM_PLAYWRIGHT_MODULE: /tmp/crm-queue-browser-tools/node_modules/playwright
+        run: node --test --test-concurrency=1 test/crm/queue-browser.test.js

@@ -108,15 +108,14 @@ change. An older/missing counterpart yields explicit failure, not a legacy read.
    reconciliation is required. This rule does not apply to Coordinators' owned
    write-model flags, which must not be removed as a stop procedure.
 
-Before a live work queue: durable accepted snapshots/ordering, retention across
-restart, current authorization on retained records, cross-app principal mapping,
-source links and user-facing missing/partial states still need implementation
-and review. No live portal, recovery drill or production validation is claimed.
-
-A subsequent draft slice now adds a separate, dormant PostgreSQL checkpoint
-library. It is not wired to these routes; `persistence: none` is unchanged.
-See [checkpoint foundation and review](crm-checkpoint-review.md) for retention,
-ordering, encryption, current authorization and CI recovery coverage.
+The observation endpoints above still use `persistence: none`. The separate
+default-off [Dashboard work queue](crm-queue-integration.md) now persists their
+normalized lead observations and displays retained/partial states and source
+links. Its GET reads only the checkpoint; only its explicit same-origin POST
+collects and stores observations. Neither source endpoint has gained writes.
+See [checkpoint foundation and review](crm-checkpoint-review.md) for ordering,
+encryption and CI recovery coverage. Cross-app identity, live production/restore
+validation, retention and key custody remain unapproved/unimplemented gates.
 
 ## Provenance and verification
 

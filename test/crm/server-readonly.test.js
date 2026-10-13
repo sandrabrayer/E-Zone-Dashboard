@@ -6,6 +6,15 @@ Object.assign(process.env, {SESSION_SECRET:sessionSecret, APP_PIN:'817491', PROX
   CRM_READS:'1', SHEETS_URL:'https://script.google.com/macros/s/fixture/exec', DASHBOARD_SHEETS_URL:'https://script.google.com/macros/s/roster-fixture/exec'});
 let helper;
 if(dashboard) {
+  test('queue screen and endpoints stay off by default under the real server identity gates',async()=>{
+    for(const path of ['/api/crm/queue','/api/crm/queue/refresh','/crm-work','/crm-work/app.js']) {
+      const method=path.endsWith('refresh')?'POST':'GET';
+      assert.equal((await request(path,'',method)).status,401);
+      assert.equal((await request(path,cookie,method)).status,503);
+      assert.equal((await request(path,helper.personalCookie(sessionSecret,'ortal'),method)).status,403);
+      assert.equal((await request(path,helper.personalCookie(sessionSecret,'sandra'),method)).status,403);
+    } assert.equal(calls.length,0);
+  });
   helper=require('../helpers/personal-session'); process.env.PIN_PEPPER=helper.TEST_PEPPER;
   const registry=JSON.parse(helper.userPinHashes(['sandra','vered','shiran','yael','ortal']));
   registry.find(r=>r.id==='yael').status='revoked';

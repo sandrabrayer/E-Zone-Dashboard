@@ -958,19 +958,26 @@ function viewFilteredResponse(action, data, principal) {
 /* GET /api/sheets?action=getData — forwarded to Apps Script as a POST whose
  * body carries the params + proxy secret (see sheetsGet). */
 // Dormant CRM-02 observations: same-app personal staff only. The existing
-// controller route lock remains in force. No registry, role or UI changes.
+// controller route lock remains in force. No registry or role changes.
 const { crmPost } = require('./lib/crm/transport');
+function crmStaffPolicy(req) {
+  const p = sessionPrincipalFromRequest(req);
+  return p?.auth === 'personal' && !isControllerView(p) && principalHasRole(p, 'staff') ? JSON.stringify(p) : null;
+}
+function readCrmSource(action, req) {
+  const p = sessionPrincipalFromRequest(req);
+  if (!crmStaffPolicy(req) || !SHEETS_URL || !PROXY_SECRET) throw Error('crm_not_configured');
+  return crmPost(SHEETS_URL, buildAppsScriptBody({ action }, p.user, PROXY_SECRET, p));
+}
+const crmQueueRuntime = require('./lib/crm/queue-runtime').createQueueRuntime(process.env);
+// Mount before the observation-only /api/crm catchall. The queue has its own
+// auth, parameter and explicit POST-origin guards. Default: fully disabled.
+require('./lib/crm/queue-routes').installQueueRoutes(app, {
+  requireSession, authorize: crmStaffPolicy, runtime: crmQueueRuntime, read: readCrmSource,
+});
 require('./lib/crm/read-routes').installCrmReadRoutes(app, {
   source: 'dashboard', requireSession, enabled: process.env.CRM_READS === '1',
-  authorize: req => {
-    const p = sessionPrincipalFromRequest(req);
-    return p.auth === 'personal' && !isControllerView(p) && principalHasRole(p, 'staff');
-  },
-  read: (action, req) => {
-    const p = sessionPrincipalFromRequest(req);
-    if (!SHEETS_URL || !PROXY_SECRET) throw Error('crm_not_configured');
-    return crmPost(SHEETS_URL, buildAppsScriptBody({ action }, p.user, PROXY_SECRET, p));
-  },
+  authorize: crmStaffPolicy, read: readCrmSource,
 });
 
 function refuseCrmProxy(req, res, next) {
