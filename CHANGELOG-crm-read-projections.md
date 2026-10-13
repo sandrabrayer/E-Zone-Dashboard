@@ -29,3 +29,17 @@ No financial calculations or existing tests were changed.
 No dependency or lockfile changes. This is not a zero-vulnerability claim.
 No live Google/production, database or restoration test was run. The dedicated
 CRM tests use synthetic in-memory Sheets, real handlers and mocked transport.
+
+## Checkpoint follow-up — 2026-10-13
+
+- Add a dormant PostgreSQL checkpoint library for the three operational datasets.
+  Persist queue and cursor together; fence old collectors, reject late responses
+  and conflicting retries, and preserve unresolved work through source loss.
+- Encrypt stored payloads; recheck current policy before returning filtered
+  rows/counts. Preserve original deadlines across reassignment/rescheduling.
+- Add logic and real-PostgreSQL tests plus CI database/process restart checks on
+  synthetic records. `pg@8.23.1` is a test-only devDependency.
+- No Code.gs, source-reader, server-route, role or production changes in this
+  follow-up. See `docs/crm-checkpoint-review.md` for boundaries and open gates.
+- Counts above refer to the original projection slice. Updated no-DB/real-DB
+  counts and exact-head CI links are recorded in the draft PR description.

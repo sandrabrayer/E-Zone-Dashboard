@@ -113,6 +113,11 @@ restart, current authorization on retained records, cross-app principal mapping,
 source links and user-facing missing/partial states still need implementation
 and review. No live portal, recovery drill or production validation is claimed.
 
+A subsequent draft slice now adds a separate, dormant PostgreSQL checkpoint
+library. It is not wired to these routes; `persistence: none` is unchanged.
+See [checkpoint foundation and review](crm-checkpoint-review.md) for retention,
+ordering, encryption, current authorization and CI recovery coverage.
+
 ## Provenance and verification
 
 The source adapters are the already tested CRM-02 v0.2 implementation from
