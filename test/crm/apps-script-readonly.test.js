@@ -11,6 +11,8 @@ function fixture() {
       ? [['id','name','stage','assignedTo','visitDate','meetingOutcome','meetingReportOutcome','phone','note'],['lead-1','בדיקה בדויה','new','ורד','2026-10-01','','','PRIVATE_PHONE','PRIVATE_NOTE']]
       : [['id','name','stage','assignedTo','introDateTime','updatedAt','phone','note'],['lead-1','בדיקה בדויה','פרטים אישיים','ורד','2026-10-01T10:00','2026-10-01T10:00:00Z','PRIVATE_PHONE','PRIVATE_NOTE']],
     Patients: [['name','houseId','date','status','exitDate','notes','pay'],['בדיקה בדויה','ramot','2026-10-01','active','','PRIVATE_CLINICAL',9000],['released','ramot','2026-09-01','released','','',0]],
+    'לידים לא רלוונטיים': [['id','name','not_relevant_note']],
+    'לידים שהוסרו': [['id','name','note']],
     'מסלול המשך': [['key','name','house','entryDate','meetingDate','outcome','updatedAt','note'],['בדיקה בדויה|ramot|2026-10-01','בדיקה בדויה','ramot','2026-10-01','','to_outpatient','2026-10-12T10:00:00Z','PRIVATE_NOTE']],
   };
   const trap = name => () => { attempts.push(name); throw Error('WRITE_ATTEMPT'); };
@@ -67,6 +69,28 @@ for(const kind of ['missing','missing header','duplicate header','missing id','w
 });
 test('header-only sheet is a confirmed empty source without mutation',()=>{
   const f=fixture(); f.tables.Leads.length=1; const r=f.post(); assert.equal(r.ok,true); assert.deepEqual(r.rows,[]); noWrites(f);
+});
+test('archive membership is explicit ID-only evidence, including removed rows with a still-active stage',()=>{
+  const f=fixture();
+  f.tables['לידים לא רלוונטיים'].push(['archive-1','PRIVATE_ARCHIVE_NAME','PRIVATE_NOTE']);
+  f.tables['לידים שהוסרו'].push(['archive-2','PRIVATE_ARCHIVE_NAME','PRIVATE_NOTE']);
+  const r=f.post(); assert.equal(r.contract,'crm-source-v2');
+  assert.deepEqual(r.rows.map(x=>[x.id,x.leadLifecycle]),[['lead-1','active'],['archive-1','irrelevant'],['archive-2','removed']]);
+  assert.ok(!JSON.stringify(r).includes('PRIVATE')); assert.equal(r.rows[1].name,''); assert.equal(r.rows[2].stage,'');
+  assert.deepEqual(f.reads,['Leads','לידים לא רלוונטיים','לידים שהוסרו']); noWrites(f);
+});
+for(const sheet of ['לידים לא רלוונטיים','לידים שהוסרו']) for(const failure of ['missing','header','blank id','wrong type'])
+test('archive failure never claims a complete snapshot: '+sheet+' / '+failure,()=>{
+  const f=fixture();
+  if(failure==='missing') delete f.tables[sheet];
+  if(failure==='header') f.tables[sheet][0][0]='wrong';
+  if(failure==='blank id') f.tables[sheet].push(['','private-name']);
+  if(failure==='wrong type') f.tables[sheet].push([42]);
+  assert.equal(f.post().error,'crm_source_unavailable'); noWrites(f);
+});
+test('active/archive ID overlap is preserved for downstream quarantine',()=>{
+  const f=fixture(); f.tables['לידים שהוסרו'].push(['lead-1']);
+  assert.equal(f.post().rows.filter(r=>r.id==='lead-1').length,2); noWrites(f);
 });
 test('columns are mapped by exact name, not physical order',()=>{
   const f=fixture(); f.tables.Leads=f.tables.Leads.map(r=>r.slice().reverse()); assert.equal(f.post().rows[0].id,'lead-1'); noWrites(f);

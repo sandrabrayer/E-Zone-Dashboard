@@ -51,6 +51,9 @@
  * the app). A dedicated delete action can be added if that becomes needed.
  */
 
+// Mirrored by lib/crm/policy.js; the parity regression fails on any drift.
+const CRM_STAFF_IDS = ['vered', 'sandra', 'shiran', 'yael'];
+
 const LEADS_SHEET    = 'Leads';
 const PATIENTS_SHEET = 'Patients';
 const PAYMENTS_SHEET = 'Payments';
@@ -17726,6 +17729,26 @@ function crmProjection_(dataset, rows) {
     health: 'fresh', complete: true, observedAt: new Date().toISOString(), rows: rows };
 }
 
+function crmLeadRows_() {
+  const fields = ['id', 'name', 'stage', 'assignedTo', 'visitDate', 'meetingOutcome', 'meetingReportOutcome'];
+  const rows = crmReadRows_(LEADS_SHEET, fields, ['visitDate']).map(function (r) {
+    return Object.assign({}, r, { leadLifecycle: 'active' });
+  });
+  // Archive membership is explicit evidence for the SAME source row ID.
+  // Only IDs leave these sheets: no archive names, reasons, notes or phones.
+  [[IRRELEVANT_LEADS_SHEET, 'irrelevant'], [REMOVED_LEADS_SHEET, 'removed']].forEach(function (entry) {
+    crmReadRows_(entry[0], ['id'], []).forEach(function (r) {
+      const archived = { leadLifecycle: entry[1] };
+      fields.forEach(function (field) { archived[field] = field === 'id' ? r.id : ''; });
+      rows.push(archived);
+    });
+  });
+  // No choosing between contradictory active/archive rows: keep duplicate IDs
+  // for the adapter to quarantine. No last-write or array-order assumptions.
+  if (rows.length > 10000 || rows.some(function (r) { return !r.id.trim(); })) throw new Error('crm_source_unavailable');
+  return rows;
+}
+
 function crmReadEntry_(e, method) {
   try {
     // Body-only credentials; no transition/log-mode bypass or SecurityLog writes.
@@ -17739,16 +17762,17 @@ function crmReadEntry_(e, method) {
         return jsonOut_({ ok: false, error: 'unauthorized' });
       }
       const actor = proxyActor_('', p.proxyUserId, p.proxyAuth, p.proxyRoles, p.proxyCaps, false);
-      if (actor.auth !== 'personal' || ['vered', 'sandra', 'shiran', 'yael'].indexOf(actor.id) < 0 || actor.roles.indexOf('staff') < 0) {
+      if (actor.auth !== 'personal' || CRM_STAFF_IDS.indexOf(actor.id) < 0 || actor.roles.indexOf('staff') < 0) {
         return jsonOut_({ ok: false, error: 'forbidden' });
       }
     } else return jsonOut_({ ok: false, error: 'unauthorized' });
     if (props.getProperty('CRM_READS') !== '1') return jsonOut_({ ok: false, error: 'crm_disabled' });
     if (p.action === 'getCrmLeads') {
-      const leads = crmReadRows_(LEADS_SHEET,
-        ['id', 'name', 'stage', 'assignedTo', 'visitDate', 'meetingOutcome', 'meetingReportOutcome'], ['visitDate']);
-      if (leads.some(function (r) { return !r.id.trim(); })) throw new Error('crm_source_unavailable');
-      return jsonOut_(crmProjection_('dashboard.leads', leads));
+      const projection = crmProjection_('dashboard.leads', crmLeadRows_());
+      // v2 proves this reader includes both archives. A v1 deployment must
+      // fail closed at the new Node boundary, never pretend to cover closure.
+      projection.contract = 'crm-source-v2';
+      return jsonOut_(projection);
     }
     const patients = crmReadRows_(PATIENTS_SHEET, ['name', 'houseId', 'date', 'status', 'exitDate'], ['date', 'exitDate']);
     const rows = patients.filter(function (p) { return p.status.trim() !== 'released' && !p.exitDate.trim(); }).map(function (p) {
