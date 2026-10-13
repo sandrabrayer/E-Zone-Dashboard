@@ -33,7 +33,7 @@ const ROSTER = 'roster-secret-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
  *   ezone-coordinators (2026-10-04): getPatientsForCoordinators,
  *     recordDischargeFromCoordinators — own COORDINATORS_PATIENTS_SECRET */
 const EXPECTED_OPEN = ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster',
-  'getPatientsForCoordinators', 'recordDischargeFromCoordinators'];
+  'getPatientsForCoordinators', 'recordDischargeFromCoordinators', 'managersWork'];
 /* A sample of gated actions: the bulk read and representative writes. */
 const GATED_SAMPLE = ['getData', 'saveAll', 'savePayment'];
 
