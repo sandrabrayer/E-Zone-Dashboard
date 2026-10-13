@@ -38,6 +38,12 @@ already covered by the adapters. No financial or clinical domains are added.
   Hide composite identifying keys/names without name access; give record-limited
   grants no global source metadata or hidden-row counts.
 
+Clarification after independent review R3: the above in-flight policy-change
+guarantee is at the injected resolver boundary. The actual server loads its user
+registry once at boot. Registry revocation/role changes require restart with the
+new environment; tests do not establish production hot reload. Cookie validity
+is rechecked. Read transactions now use `BEGIN READ ONLY` (R6).
+
 `lib/crm/checkpoint-postgres.js` persists queue AND cursor in one PostgreSQL
 transaction using one checked-out client. It requires an injected pool and a
 separate 32-byte encryption key. No implicit migration, pool creation, environment

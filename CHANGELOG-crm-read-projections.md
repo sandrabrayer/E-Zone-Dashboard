@@ -61,3 +61,17 @@ CRM tests use synthetic in-memory Sheets, real handlers and mocked transport.
   and exact-head CI counts are recorded in the PR, separately from browser cases.
 - Outpatient #114 and the isolated Code.gs commit remain unchanged. See
   `docs/crm-queue-integration.md` for remaining release gates and limits.
+
+## Independent-review correction — 2026-10-13
+
+- B1: include explicit ID-only irrelevant/removed archive membership in the
+  read-only Dashboard lead projection. Require source-v2 lifecycle evidence;
+  retire both operational reminders on confirmed archiving, retaining an
+  archive-resolution basis. Missing sources/duplicate IDs never close tasks.
+- Add regressions using the real archive/restore functions through the adapter
+  and checkpoint, plus HTTP/PostgreSQL and browser closure/reload coverage.
+- R4: enforce and parity-test the same explicit source identity set in Node.
+- R6: enforce database read-only transactions for checkpoint GET reads.
+- Clarify R1/R2/R3/R5/R7 limits and release gates in `docs/crm-review-response.md`.
+  The complete PR changes Code.gs and can auto-deploy on merge. Source correction
+  remains isolated. No production, role, retention or deadline policy changed.

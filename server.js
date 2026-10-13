@@ -960,9 +960,10 @@ function viewFilteredResponse(action, data, principal) {
 // Dormant CRM-02 observations: same-app personal staff only. The existing
 // controller route lock remains in force. No registry or role changes.
 const { crmPost } = require('./lib/crm/transport');
+const { crmStaffPrincipal } = require('./lib/crm/policy');
 function crmStaffPolicy(req) {
   const p = sessionPrincipalFromRequest(req);
-  return p?.auth === 'personal' && !isControllerView(p) && principalHasRole(p, 'staff') ? JSON.stringify(p) : null;
+  return crmStaffPrincipal(p) && !isControllerView(p) ? JSON.stringify(p) : null;
 }
 function readCrmSource(action, req) {
   const p = sessionPrincipalFromRequest(req);

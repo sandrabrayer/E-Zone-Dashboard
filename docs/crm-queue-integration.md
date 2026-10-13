@@ -13,6 +13,10 @@ The existing Dashboard navigation and service worker are unchanged.
 The source adapter currently supplies no lead follow-up deadline. The UI shows
 it as missing; it does not invent an SLA or turn the visit date into a deadline.
 An established checkpoint deadline remains unchanged on reassignment/rescheduling.
+That preservation is currently verified using injected synthetic deadlines,
+not source-provided deadlines. Reopening the same task key also retains the old
+deadline; new-cycle deadline semantics require a business decision before a
+future dated source is connected. This fix does not invent or reset dates.
 The source observation time is always shown as an as-of snapshot, not proof of
 current freshness. Dashboard has no general Leads.updatedAt, so that field is
 explicitly unknown. No source version/cross-sheet atomicity is claimed.
@@ -25,6 +29,13 @@ explicitly unknown. No source version/cross-sheet atomicity is claimed.
   Missing rows and partial/duplicate sources cannot silently clear the queue.
   An HTTP 200 in this case means the queue was read/saved, NOT that Google is up;
   source health/uncertainty are visible in the response and screen.
+- Explicit membership in the irrelevant/removed lead archives retires both
+  reminders for that exact native ID. The persisted resolution basis distinguishes
+  administrative archiving from completed meeting results. Both archives must be
+  readable under the v2 contract. A restored active row can reopen its tasks;
+  active/archive duplicates remain partial and cannot close anything.
+- Clearing only a visit date on an active lead still leaves an existing meeting
+  reminder for review (R7). A blank date is not evidence of completion/cancellation.
 - Database/key/commit failure returns 503 with **no fabricated empty queue**.
   A fenced/late collector returns 409, no automatic epoch reacquisition. Reload
   may read the durable queue. A lost response never deletes a committed queue.
@@ -33,7 +44,7 @@ explicitly unknown. No source version/cross-sheet atomicity is claimed.
 ## Authority and browser privacy
 
 The real Dashboard session resolver rechecks the existing active personal
-registry and requires `staff`, excluding the controller. A display name is not
+registry and requires `staff` plus the explicit CRM source ID set, excluding the controller. A display name is not
 an identity grant. The authorized scope is the existing all-leads source scope;
 retained/disappeared rows do not lose authority just because a new read omits them.
 If house/record-level restrictions are introduced later, this all-scope policy
@@ -43,6 +54,12 @@ The same policy gates page/assets/GET/POST. The server owns tenant, dataset,
 epoch, source action and grants; browser parameters/observations are refused.
 Current policy is rechecked after source I/O before accepting observations and
 before/after reading the checkpoint. Existing controller locks remain intact.
+The registry is loaded from environment once per process. Revocation/role changes
+take effect after the changed registry is loaded on restart; the old process
+does not hot-reload it. In-flight policy-change tests inject a mutable resolver;
+they do not establish hot revocation in production. Cookie expiry is still checked.
+The Node and Apps Script CRM ID sets are bound by a parity test, so adding a new
+generic staff identity alone cannot grant access to retained queue data.
 POST additionally requires exact Origin (scheme + Host), same-origin fetch
 metadata when present, JSON and a custom header; no CORS grant is added.
 
@@ -76,6 +93,8 @@ after an authorized request with valid configuration; `pg@8.23.1` moves from
 devDependency to dependency at the same version. Import/boot creates no schema,
 claims no collector epoch and runs no source collection. Connection/query/lock
 timeouts are bounded, and connection errors never print credentials.
+Checkpoint reads now use `BEGIN READ ONLY`; PostgreSQL itself refuses writes
+inside the GET transaction. Provisioning/reserve/accept retain writable transactions.
 
 A separately reviewed provisioning operation would create `SCHEMA_SQL` in the
 approved database namespace and call `store.start(scope)` once, recording its
@@ -113,8 +132,12 @@ Before production: independent review of the draft; approve DB namespace and
 least-privilege role, separate key custody/recovery, retention/deletion and backup
 restore policy; validate source and retained-record authority in approved staging;
 provision a fixed generation; obtain separate merge/deploy/activation approval.
-Existing Code.gs changes remain in their original isolated commit, untouched by
-this UI slice. No Coordinators/PR3 files, flags, paid resources or schedules change.
+**The complete PR includes Code.gs changes and merging can auto-deploy Apps Script.**
+Both the original source projection and the B1 archive correction are in isolated
+Code.gs/test commits. The PR also includes `getCrmAdmittedRoster` for Outpatient
+#114, under the existing shared roster secret; the Dashboard work queue does not
+use that endpoint. The release approver must review/approve both source endpoints.
+No Coordinators/PR3 files, flags, paid resources or schedules change.
 
 Stopping this CRM queue means disabling its gate while preserving its encrypted
 checkpoints/key for later recovery. Do not drop data or borrow this rule for

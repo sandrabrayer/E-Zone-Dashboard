@@ -47,6 +47,13 @@ run('CRM browser: expired/revoked access removes names and counts instead of kee
   assert.equal(await page.locator('.task').count(), 0); assert.equal(await page.locator('#summary').isVisible(), false);
   assert.ok(!(await page.locator('body').innerText()).includes(name)); assert.match(await page.locator('#status').innerText(), /להתחבר מחדש/);
 });
+run('CRM browser: explicit archive evidence retires both reminders and remains closed on reload', async () => {
+  f.state.rows[0].visitDate='2020-01-01';
+  await page.goto(f.origin+'/crm-work'); await loaded(); await refresh(); assert.equal(await page.locator('.task').count(),2);
+  f.state.rows=[{id:'fixture-1',name:'',stage:'',assignedTo:'',visitDate:'',meetingOutcome:'',meetingReportOutcome:'',leadLifecycle:'irrelevant'}];
+  await refresh(); assert.equal(await page.locator('.task').count(),0); assert.match(await page.locator('#empty').innerText(),/אין משימות פתוחות/);
+  await page.reload(); await loaded(); assert.equal(await page.locator('.task').count(),0); assert.equal(f.state.reads,2);
+});
 run('CRM browser: mobile layout, preserved deadline after reassignment, filters and no false empty state on DB error', async () => {
   await f.refresh();
   // The current source has no follow-up deadline. A synthetic checkpoint with

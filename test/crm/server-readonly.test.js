@@ -29,8 +29,8 @@ global.fetch=async (url,opts)=>{
   const body=opts.body?JSON.parse(opts.body):null; calls.push({url,opts,body});
   if(fail) throw Error('PRIVATE_SECRET_FROM_UPSTREAM');
   const dataset=body.action==='getCrmAdmittedRoster'?'dashboard.admitted_roster':body.action==='getCrmContinuation'?'outpatient.continuation':source+'.leads';
-  const rows=dataset==='dashboard.admitted_roster'?[]:dataset==='outpatient.continuation'?[]:[{id:'fixture-1',name:'שם בדוי',stage:dashboard?'new':'פרטים אישיים',assignedTo:'ורד',visitDate:'',meetingOutcome:'',meetingReportOutcome:'',introDateTime:'',updatedAt:'',phone:'PRIVATE_PHONE',note:'PRIVATE_CLINICAL',amount:'PRIVATE_AMOUNT'}];
-  const data= typeof response==='function'?response(body,dataset):response||{ok:true,contract:'crm-source-v1',dataset,health:'fresh',complete:true,observedAt:new Date().toISOString(),rows};
+  const rows=dataset==='dashboard.admitted_roster'?[]:dataset==='outpatient.continuation'?[]:[{leadLifecycle:'active',id:'fixture-1',name:'שם בדוי',stage:dashboard?'new':'פרטים אישיים',assignedTo:'ורד',visitDate:'',meetingOutcome:'',meetingReportOutcome:'',introDateTime:'',updatedAt:'',phone:'PRIVATE_PHONE',note:'PRIVATE_CLINICAL',amount:'PRIVATE_AMOUNT'}];
+  const data= typeof response==='function'?response(body,dataset):response||{ok:true,contract:'crm-source-v2',dataset,health:'fresh',complete:true,observedAt:new Date().toISOString(),rows};
   return {ok:true,status:200,json:async()=>data};
 };
 const mod=require('../../server'), app=mod.app||mod;
@@ -73,19 +73,26 @@ test('outage returns unavailable with no private exception; previous success is 
   const r=await request('/api/crm/leads'); assert.equal(r.status,503); assert.equal(r.data.health,'unavailable');assert.equal(r.data.complete,false);assert.deepEqual(r.data.records,[]);assert.ok(!JSON.stringify(r).includes('PRIVATE'));
 });
 for(const kind of ['old','future','shape','dataset','missing id','old deployment','not complete']) test('rejects malformed/stale contract: '+kind,async()=>{
-  response={ok:true,contract:'crm-source-v1',dataset:source+'.leads',health:'fresh',complete:true,observedAt:new Date().toISOString(),rows:[]};
+  response={ok:true,contract:'crm-source-v2',dataset:source+'.leads',health:'fresh',complete:true,observedAt:new Date().toISOString(),rows:[]};
   if(kind==='old')response.observedAt='2020-01-01T00:00:00Z';
   if(kind==='future')response.observedAt='2099-01-01T00:00:00Z';
   if(kind==='shape')response.rows=[{}];
   if(kind==='dataset')response.dataset='other';
-  if(kind==='missing id')response.rows=[{id:'',name:'',stage:'',assignedTo:'',visitDate:'',meetingOutcome:'',meetingReportOutcome:'',introDateTime:'',updatedAt:''}];
+  if(kind==='missing id')response.rows=[{leadLifecycle:'active',id:'',name:'',stage:'',assignedTo:'',visitDate:'',meetingOutcome:'',meetingReportOutcome:'',introDateTime:'',updatedAt:''}];
   if(kind==='old deployment')delete response.contract;
   if(kind==='not complete')response.complete=false;
   assert.equal((await request('/api/crm/leads')).status,503);
 });
 test('confirmed empty source remains distinguishable from an outage',async()=>{
-  response={ok:true,contract:'crm-source-v1',dataset:source+'.leads',health:'fresh',complete:true,observedAt:new Date().toISOString(),rows:[]};
+  response={ok:true,contract:'crm-source-v2',dataset:source+'.leads',health:'fresh',complete:true,observedAt:new Date().toISOString(),rows:[]};
   const r=await request('/api/crm/leads');assert.equal(r.status,200);assert.equal(r.data.complete,true);assert.deepEqual(r.data.records,[]);
+});
+test('v1 or missing/unknown lifecycle cannot silently claim archive coverage',async()=>{
+  for(const kind of ['old contract','missing lifecycle','unknown lifecycle']) {
+    response={ok:true,contract:kind==='old contract'?'crm-source-v1':'crm-source-v2',dataset:'dashboard.leads',health:'fresh',complete:true,observedAt:new Date().toISOString(),rows:[]};
+    if(kind!=='old contract') response.rows=[{id:'fixture-1',name:'',stage:'new',assignedTo:'',visitDate:'',meetingOutcome:'',meetingReportOutcome:'',...(kind==='unknown lifecycle'?{leadLifecycle:'private-unknown'}:{})}];
+    assert.equal((await request('/api/crm/leads')).status,503);
+  }
 });
 if(dashboard) {
   test('controller, revoked identity and narrowed staff role are refused',async()=>{
@@ -100,11 +107,11 @@ if(dashboard) {
     assert.equal((await request('/api/crm/dashboard-leads',named)).status,404);
   });
   test('continuation workflow failure never invents blank decisions from a healthy roster',async()=>{
-    response=(body,dataset)=>body.action==='getCrmContinuation'?{ok:false}:{ok:true,contract:'crm-source-v1',dataset,health:'fresh',complete:true,observedAt:new Date().toISOString(),rows:[{name:'דוגמה',house:'ramot',entryDate:'2026-10-01'}]};
+    response=(body,dataset)=>body.action==='getCrmContinuation'?{ok:false}:{ok:true,contract:'crm-source-v2',dataset,health:'fresh',complete:true,observedAt:new Date().toISOString(),rows:[{name:'דוגמה',house:'ramot',entryDate:'2026-10-01'}]};
     const r=await request('/api/crm/continuation');assert.equal(r.status,503);assert.equal(r.data.complete,false);assert.deepEqual(r.data.records,[]);
   });
   test('roster failure keeps available saved workflow explicit and partial; transfer is not acceptance',async()=>{
-    response=(body,dataset)=>body.action==='getCrmAdmittedRoster'?{ok:false}:{ok:true,contract:'crm-source-v1',dataset,health:'fresh',complete:true,observedAt:new Date().toISOString(),rows:[{key:'דוגמה|ramot|2026-10-01',name:'דוגמה',house:'ramot',entryDate:'2026-10-01',meetingDate:'',outcome:'to_outpatient',updatedAt:''}]};
+    response=(body,dataset)=>body.action==='getCrmAdmittedRoster'?{ok:false}:{ok:true,contract:'crm-source-v2',dataset,health:'fresh',complete:true,observedAt:new Date().toISOString(),rows:[{key:'דוגמה|ramot|2026-10-01',name:'דוגמה',house:'ramot',entryDate:'2026-10-01',meetingDate:'',outcome:'to_outpatient',updatedAt:''}]};
     const r=await request('/api/crm/continuation');assert.equal(r.status,200);assert.equal(r.data.health,'partial');assert.equal(r.data.complete,false);
     assert.ok(r.data.diagnostics.includes('roster_unavailable'));assert.ok(r.data.records.some(x=>x.reason==='destination_link_review'&&x.state==='active'));
   });

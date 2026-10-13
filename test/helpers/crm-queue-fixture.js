@@ -6,7 +6,7 @@ const { normalize, mergeCheckpoint, projectCheckpoint, CheckpointError } = requi
 async function fixture() {
   const scope = { tenant: 'synthetic-ui', dataset: 'dashboard.leads' };
   const state = { allowed: true, revision: 'staff-v1', reads: 0, reserves: 0, accepts: 0, failure: null, checkpoint: null,
-    source: 'fresh', rows: [{ id: 'fixture-1', name: 'דוגמה לבדיקה בלבד', stage: 'new', assignedTo: 'מבצעת לדוגמה', visitDate: '', meetingOutcome: '', meetingReportOutcome: '' }] };
+    source: 'fresh', rows: [{ leadLifecycle: 'active', id: 'fixture-1', name: 'דוגמה לבדיקה בלבד', stage: 'new', assignedTo: 'מבצעת לדוגמה', visitDate: '', meetingOutcome: '', meetingReportOutcome: '' }] };
   const runtime = { enabled: true, scope, epoch: 1, getStore: () => store };
   const store = {
     async reserve() { state.reserves++; if (state.failure) throw new CheckpointError(state.failure); return { epoch: 1, sequence: state.reserves }; },
@@ -23,7 +23,7 @@ async function fixture() {
     state.reads++; if (action !== 'getCrmLeads') throw Error('unapproved action');
     if (state.waitSource) await state.waitSource;
     if (state.source === 'unavailable') throw Error('PRIVATE_UPSTREAM_SECRET');
-    return { ok: true, contract: 'crm-source-v1', dataset: scope.dataset, health: 'fresh', complete: true, observedAt: new Date().toISOString(), rows: state.rows };
+    return { ok: true, contract: 'crm-source-v2', dataset: scope.dataset, health: 'fresh', complete: true, observedAt: new Date().toISOString(), rows: state.rows };
   };
   installQueueRoutes(app, { requireSession, authorize, runtime, read });
   const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });

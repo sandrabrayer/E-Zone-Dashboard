@@ -9,7 +9,8 @@ HTTP routes. Nothing is deployed or enabled by this draft.
 
 - Operational lead follow-up and the existing continuation workflow only.
 - No money, phone numbers, free-text notes, clinical records, transfer writes,
-  new person identity, permission expansion, client UI or Coordinators changes.
+  new person identity, permission expansion or Coordinators changes. The separate
+  queue screen is documented in `crm-queue-integration.md`.
 - A continuation decision `to_outpatient` is a destination-link review task,
   not proof of acceptance, a scheduled visit, attendance or a client match.
 - The old lead/continuation/save routes and existing sheet schemas are unchanged.
@@ -43,13 +44,25 @@ Event dates do not become deadlines; missing deadlines remain missing.
 - Unknown statuses and duplicate IDs remain explicit adapter uncertainty.
 - Responses are observations, **not a durable task queue**. A consuming CRM must
   preserve previously authorized tasks on missing rows, incomplete sources,
-  outages and restarts, and enforce ordering/revocation. No consumer UI is wired
-  in this PR, so this endpoint cannot silently clear an existing task list.
+  outages and restarts, and enforce ordering/current authority. This endpoint
+  stays observation-only; the separate queue routes provide persistence/UI.
 
 ## Apps Script and transport
 
-`crm-source-v1` includes dataset, health, complete, observation time and projected
-rows. Each reader uses existing sheets only. Exact header names are required;
+`crm-source-v2` for Dashboard leads includes all three required sources: `Leads`,
+`לידים לא רלוונטיים` and `לידים שהוסרו`. The server requires explicit
+`leadLifecycle=active|irrelevant|removed`; v1/unknown/missing lifecycle fails closed.
+Archive projections contain only IDs and lifecycle, with other row fields blank.
+Archive membership retires both operational reminders, with a persisted
+`resolutionBasis=archived_irrelevant|archived_removed`. It does not prove attendance
+or recorded meeting results. Overlapping IDs across sheets are quarantined as
+partial, never chosen by precedence. Missing/malformed archives make the whole
+snapshot unavailable; they are never created or treated as empty. The 10,000-row
+bound applies to the combined source; long archive retention needs a release plan.
+
+The roster and Outpatient contracts remain `crm-source-v1`. Both versions include
+dataset, health, complete, observation time and projected rows. Each reader uses
+existing sheets only. Exact header names are required;
 column ordering is irrelevant. One range read per sheet is projected inside Apps
 Script. No `_ensureSheet`, `getOrCreateSheet_`, migration/backfill, audit log,
 CacheService, lock, Script Property write or background job is called.
@@ -68,10 +81,13 @@ A source timestamp must fall within the request window plus/minus 60 seconds
 ## Source authority and deployment dependency
 
 Dashboard lead access requires a currently valid personal session with the
-existing `staff` role, and excludes the controller. Current registry revocation,
-PIN version and role narrowing remain effective on each request. Apps Script
-rechecks the verified proxy secret, personal ID and staff role. No user registry
-or finance/controller allowlist changes are made.
+existing `staff` role and the same explicit four IDs as Apps Script, and excludes
+the controller. A semantic parity test prevents source/server ID-list drift.
+`USER_REGISTRY` is process-static: changing `USER_PIN_HASHES` takes effect after
+restart, not during a request in the old process. Cookie expiry is rechecked per
+request; tests that change policy during I/O use an injected resolver. Apps Script
+rechecks the verified proxy secret, personal ID and staff role. No registry or
+finance/controller permissions are changed.
 
 Outpatient retains its existing shared-PIN signed-session authority for leads
 and continuation. User-selected display names are audit labels, not personal

@@ -116,6 +116,22 @@ run('real Postgres: unissued ticket and duplicate task cannot advance state', as
   await assert.rejects(store.accept(s, await store.reserve(s, epoch), obs(s, [row(), row()])), { code: 'duplicate_task' });
   assert.equal((await read(s)).totals.tasks, 1);
 });
+run('real Postgres: the database refuses an injected write inside the GET read transaction (R6)', async () => {
+  const s=scope(); await initial(s); let sqlState;
+  const guarded=createCheckpointStore({key,pool:{connect:async()=>{
+    const client=await pool.connect();
+    return {release:()=>client.release(),query:async(sql,args)=>{
+      if(sql.startsWith('SELECT key_fingerprint,payload')) {
+        try { await client.query('UPDATE crm_operational_checkpoints_v1 SET payload=NULL WHERE scope_key=$1',[JSON.stringify([s.tenant,s.dataset])]); }
+        catch(error) { sqlState=error.code; throw error; }
+      }
+      return client.query(sql,args);
+    }};
+  }}});
+  await assert.rejects(read(s,guarded),{code:'checkpoint_unavailable'});
+  assert.equal(sqlState,'25006','PostgreSQL read_only_sql_transaction');
+  assert.equal((await read(s)).totals.tasks,1);
+});
 test('unavailable DB returns a bounded generic error and never an empty success', async () => {
   const broken = createCheckpointStore({ pool: { connect: async () => { throw Error('PRIVATE_PASSWORD'); } }, key });
   await assert.rejects(read({ tenant: 'fixture', dataset: 'dashboard.leads' }, broken), { message: 'checkpoint_unavailable' });

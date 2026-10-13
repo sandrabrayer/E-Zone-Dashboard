@@ -6,7 +6,7 @@ import { assemble } from './queue-reference.mjs';
 const now='2026-10-13T15:30:00Z',today='2026-10-13';
 const observedAt='2026-10-13T15:29:00Z';
 const input=(rows,extra={})=>({rows,observedAt,health:'fresh',complete:true,...extra});
-const d={id:'synthetic-d-1',name:'דוגמה בלבד',stage:'new',assignedTo:'מבצעת דמה'};
+const d={leadLifecycle:'active',id:'synthetic-d-1',name:'דוגמה בלבד',stage:'new',assignedTo:'מבצעת דמה'};
 const grant=(dataset,ids,extra={})=>({dataset,allowedIds:ids,showName:true,showAssignee:true,...extra});
 const dg=grant('dashboard.leads',[d.id]);
 const lead=(rows=[d],extra={})=>adaptLeads({dataset:'dashboard.leads',input:input(rows),access:dg,now,today,...extra});

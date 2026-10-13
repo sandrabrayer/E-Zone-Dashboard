@@ -24,7 +24,7 @@ if (configured) {
     if (!String(url).startsWith('https://script.google.com/')) return originalFetch(url, opts);
     sourceCalls++; const body = JSON.parse(opts.body); assert.equal(body.action, 'getCrmLeads'); assert.equal(body.proxyUserId, 'vered');
     if (unavailable) throw Error('PRIVATE_GOOGLE_ERROR');
-    return { status: 200, ok: true, json: async () => ({ ok: true, contract: 'crm-source-v1', dataset: scope.dataset, health: 'fresh', complete: true, observedAt: new Date().toISOString(), rows: sourceRows }) };
+    return { status: 200, ok: true, json: async () => ({ ok: true, contract: 'crm-source-v2', dataset: scope.dataset, health: 'fresh', complete: true, observedAt: new Date().toISOString(), rows: sourceRows }) };
   };
   const { app } = require('../../server'); factory.createQueueRuntime = create;
   cookie = helper.personalCookie(secret, 'vered');
@@ -36,7 +36,7 @@ if (configured) {
   test.beforeEach(async () => {
     await pool.query('DELETE FROM crm_operational_checkpoints_v1 WHERE scope_key=$1', [scopeKey(scope)]);
     assert.equal(await store.start(scope), 1); sourceCalls = 0; unavailable = false;
-    sourceRows = [{ id: 'synthetic-1', name: 'בדיקת מסלול בלבד', stage: 'new', assignedTo: '', visitDate: '', meetingOutcome: '', meetingReportOutcome: '' }];
+    sourceRows = [{ leadLifecycle: 'active', id: 'synthetic-1', name: 'בדיקת מסלול בלבד', stage: 'new', assignedTo: '', visitDate: '', meetingOutcome: '', meetingReportOutcome: '' }];
   });
   test.after(async () => { global.fetch = originalFetch; await new Promise(r => server.close(r)); await runtime.close(); await pool.end(); });
 }
@@ -69,4 +69,11 @@ run('real PostgreSQL + server: disappearance retains work; explicit resolution c
   const initial = sourceRows[0]; await request(true); sourceRows = []; assert.equal((await request(true)).data.queue.totals.tasks, 1);
   sourceRows = [{ ...initial, stage: 'admitted', visitDate: '2020-01-01' }];
   const r = await request(true); assert.equal(r.data.queue.totals.tasks, 1); assert.equal(r.data.queue.rows[0].reason, 'meeting_result');
+});
+run('real PostgreSQL + server: explicit archive membership durably closes prior lead and meeting tasks', async () => {
+  sourceRows[0].visitDate='2020-01-01'; assert.equal((await request(true)).data.queue.totals.tasks,2);
+  sourceRows=[{id:'synthetic-1',name:'',stage:'',assignedTo:'',visitDate:'',meetingOutcome:'',meetingReportOutcome:'',leadLifecycle:'removed'}];
+  assert.equal((await request(true)).data.queue.totals.tasks,0);
+  assert.equal((await request()).data.queue.totals.tasks,0);
+  unavailable=true; assert.equal((await request(true)).data.queue.totals.tasks,0);
 });
