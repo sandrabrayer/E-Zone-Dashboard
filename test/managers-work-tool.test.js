@@ -138,3 +138,91 @@ test('the other payloads are untouched: managersHouse / managersOverview carry n
   const o = JSON.stringify(g.sandbox.managersOverview_('2026-10'));
   assert.ok(!h.includes('סוד') && !o.includes('סוד'));
 });
+
+/* ---- Stage 2: the house team from the Coordinators ManagersHouse digest ---- */
+const { richSheet: digestSheet } = require('./helpers/gs-sandbox');
+const DIGEST_COLS = {
+  ManagersShifts: ['house', 'date', 'shift', 'guideName', 'scheduleStatus', 'updatedAt'],
+  ManagersStaff: ['house', 'name', 'kind', 'role', 'phone', 'onLeave', 'workdays', 'updatedAt'],
+  ManagersTherapistWeek: ['house', 'dayOfWeek', 'time', 'therapistName', 'patientName', 'updatedAt'],
+};
+function withDigest(rows, { id = 'digest-1', drop = null, missingTab = null } = {}) {
+  const t = boot();
+  if (id) t.g.sandbox.__props.MANAGERS_DIGEST_SHEET_ID = id;
+  const book = {};
+  Object.keys(DIGEST_COLS).forEach((tab) => {
+    if (tab === missingTab) return;
+    const cols = DIGEST_COLS[tab].filter((c) => c !== drop);
+    const sh = digestSheet(tab, cols);
+    (rows[tab] || []).forEach((r) => sh.grid.push(cols.map((c) => r[c] ?? '')));
+    book[tab] = sh;
+  });
+  t.opened = [];
+  t.g.sandbox.SpreadsheetApp.openById = (x) => { t.opened.push(x); return { getSheetByName: (n) => book[n] || null }; };
+  return t;
+}
+const NOW = new Date().toISOString();
+const ROWS = {
+  ManagersShifts: [
+    { house: 'ramot-hashavim', date: '2026-10-13', shift: 'בוקר', guideName: 'אבי', scheduleStatus: 'published', updatedAt: NOW },
+    { house: 'ramot-hashavim', date: '2026-10-13', shift: 'אחר צהריים', guideName: '=evil()', scheduleStatus: 'published', updatedAt: NOW },
+    { house: 'ramot-hashavim', date: '2026-10-14', shift: 'לילה', guideName: 'גל', scheduleStatus: 'draft', updatedAt: NOW },
+    { house: 'ramot-hashavim', date: '2026-10-14', shift: 'xx', guideName: 'גל', scheduleStatus: 'draft', updatedAt: NOW },
+    { house: 'caesarea-ofroni', date: '2026-10-13', shift: 'בוקר', guideName: 'של עפרוני', scheduleStatus: 'published', updatedAt: NOW },
+  ],
+  ManagersStaff: [
+    { house: 'ramot-hashavim', name: 'אבי', kind: 'guide', role: 'מדריך/ה', phone: '0501234567', updatedAt: NOW },
+    { house: 'ramot-hashavim', name: 'ד"ר כהן', kind: 'therapist', role: 'פסיכיאטר/ית', phone: 'not-a-phone', onLeave: 'true', workdays: '0,2,9', updatedAt: NOW },
+    { house: 'caesarea-ofroni', name: 'של עפרוני', kind: 'guide', role: 'מדריך/ה', updatedAt: NOW },
+  ],
+  ManagersTherapistWeek: [
+    { house: 'ramot-hashavim', dayOfWeek: '2', time: '10:00', therapistName: 'ד"ר כהן', patientName: 'דנה', updatedAt: NOW },
+    { house: 'ramot-hashavim', dayOfWeek: '8', time: '10:00', therapistName: 'ד"ר כהן', patientName: 'דנה', updatedAt: NOW },
+    { house: 'caesarea-ofroni', dayOfWeek: '1', time: '09:00', therapistName: 'אחר', patientName: 'אחר', updatedAt: NOW },
+  ],
+};
+
+test('team: no MANAGERS_DIGEST_SHEET_ID → honest not_configured, nothing opened, the rest of houseData intact', () => {
+  const t = withDigest(ROWS, { id: '' });
+  const r = t.call({ op: 'houseData', ...ORAN });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.team, { available: false, reason: 'not_configured' });
+  assert.strictEqual(t.opened.length, 0);
+  assert.ok(r.patients.length > 0);
+});
+
+test('team: a tab not filled yet → pending; a missing column → contract_mismatch (never an empty team)', () => {
+  assert.deepStrictEqual(withDigest(ROWS, { missingTab: 'ManagersStaff' }).call({ op: 'houseData', ...ORAN }).team, { available: false, reason: 'pending' });
+  assert.deepStrictEqual(withDigest(ROWS, { drop: 'guideName' }).call({ op: 'houseData', ...ORAN }).team, { available: false, reason: 'contract_mismatch' });
+  const t = withDigest(ROWS);
+  t.g.sandbox.SpreadsheetApp.openById = () => { throw new Error('no access'); };
+  assert.deepStrictEqual(t.call({ op: 'houseData', ...ORAN }).team, { available: false, reason: 'unreadable' });
+});
+
+test('team: only the caller\'s house; today\'s shifts, staff, therapist week — cleaned and validated', () => {
+  const t = withDigest(ROWS);
+  const team = t.call({ op: 'houseData', ...ORAN }).team;
+  assert.strictEqual(team.available, true);
+  assert.strictEqual(team.stale, false);
+  assert.deepStrictEqual(team.today, [
+    { date: '2026-10-13', shift: 'בוקר', guideName: 'אבי', draft: false },
+    { date: '2026-10-13', shift: 'ערב', guideName: 'evil()', draft: false },
+  ]);
+  assert.deepStrictEqual(team.shifts.map((s) => s.guideName), ['אבי', 'evil()', 'גל']);
+  assert.strictEqual(team.shifts[2].draft, true);
+  assert.deepStrictEqual(team.staff, [
+    { name: 'אבי', kind: 'guide', role: 'מדריך/ה', phone: '0501234567', onLeave: false, workdays: [] },
+    { name: 'ד"ר כהן', kind: 'therapist', role: 'פסיכיאטר/ית', phone: '', onLeave: true, workdays: [0, 2] },
+  ]);
+  assert.deepStrictEqual(team.therapistWeek, [{ dayOfWeek: 2, time: '10:00', therapistName: 'ד"ר כהן', patientName: 'דנה' }]);
+  assert.ok(!JSON.stringify(team).includes('עפרוני'), 'no other house leaks');
+});
+
+test('team: an old refresh is flagged stale; the digest is cached (one openById for repeated reads)', () => {
+  const old = JSON.parse(JSON.stringify(ROWS));
+  Object.values(old).forEach((rows) => rows.forEach((r) => { r.updatedAt = '2026-10-01T00:00:00.000Z'; }));
+  const t = withDigest(old);
+  assert.strictEqual(t.call({ op: 'houseData', ...ORAN }).team.stale, true);
+  t.call({ op: 'houseData', ...SANDRA });
+  assert.strictEqual(t.opened.length, 1);
+});

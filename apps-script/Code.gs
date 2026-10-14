@@ -12514,6 +12514,105 @@ function mwReadLog_(logKey, caller) {
   return rows;
 }
 
+/* Stage 2 — the house team, from the Coordinators-owned ManagersHouse digest
+ * (DIGEST-CONTRACT.md «Outbound — ManagersHouse»). Read-only, BY HEADER NAME,
+ * from the spreadsheet in MANAGERS_DIGEST_SHEET_ID (the same id is set on the
+ * Coordinators Apps Script, which rewrites it every 15 minutes). Unset /
+ * unreadable / not yet filled / a missing column → an honest
+ * { available:false, reason } — never an empty team that looks real. The raw
+ * all-house rows are cached 5 minutes; every value is cleaned before it leaves. */
+const MANAGERS_DIGEST_SHEET_PROP = 'MANAGERS_DIGEST_SHEET_ID';
+const MW_DIGEST_CANON = { raanana: 'raanana-asher', ramot: 'ramot-hashavim', efroni: 'caesarea-ofroni', rehab: 'caesarea-rehab', pardes: 'pardes' };
+const MW_DIGEST_TABS = {
+  shifts: { tab: 'ManagersShifts', cols: ['house', 'date', 'shift', 'guideName', 'scheduleStatus', 'updatedAt'] },
+  staff: { tab: 'ManagersStaff', cols: ['house', 'name', 'kind', 'role', 'phone', 'onLeave', 'workdays', 'updatedAt'] },
+  therapistWeek: { tab: 'ManagersTherapistWeek', cols: ['house', 'dayOfWeek', 'time', 'therapistName', 'patientName', 'updatedAt'] },
+};
+const MW_DIGEST_CACHE_KEY = 'mw:team-digest:v1';
+const MW_DIGEST_CACHE_TTL_S = 300;
+const MW_DIGEST_STALE_MS = 2 * 3600 * 1000;
+const MW_SHIFT_LABELS = { 'בוקר': 'בוקר', 'אחר צהריים': 'ערב', 'לילה': 'לילה' };
+
+function mwDigestCell_(v, col) {
+  if (v instanceof Date) {
+    if (col === 'time') return Utilities.formatDate(v, Session.getScriptTimeZone(), 'HH:mm');
+    if (col === 'updatedAt') return v.toISOString();
+    return asISODate_(v);
+  }
+  return String(v == null ? '' : v).trim();
+}
+
+/* All houses' rows: { available, reason?, updatedAt, shifts, staff, therapistWeek }. */
+function mwReadTeamDigest_() {
+  const hit = cacheGetJson_(MW_DIGEST_CACHE_KEY);
+  if (hit && hit.available) return hit;
+  const id = String(PropertiesService.getScriptProperties().getProperty(MANAGERS_DIGEST_SHEET_PROP) || '').trim();
+  if (!id) return { available: false, reason: 'not_configured' };
+  let ss;
+  try { ss = SpreadsheetApp.openById(id); } catch (e) { return { available: false, reason: 'unreadable' }; }
+  if (!ss) return { available: false, reason: 'unreadable' };
+  const out = { available: true, updatedAt: '' };
+  const keys = Object.keys(MW_DIGEST_TABS);
+  for (let k = 0; k < keys.length; k++) {
+    const def = MW_DIGEST_TABS[keys[k]];
+    const sh = ss.getSheetByName(def.tab);
+    if (!sh) return { available: false, reason: 'pending' };   // not filled by Coordinators yet
+    const lastRow = sh.getLastRow();
+    const lastCol = sh.getLastColumn();
+    if (lastRow < 1 || lastCol < 1) return { available: false, reason: 'pending' };
+    const grid = sh.getRange(1, 1, lastRow, lastCol).getValues();
+    const head = grid[0].map(function (h) { return String(h).trim(); });
+    const idx = {};
+    for (let j = 0; j < def.cols.length; j++) {
+      const at = head.indexOf(def.cols[j]);
+      if (at < 0) return { available: false, reason: 'contract_mismatch' };
+      idx[def.cols[j]] = at;
+    }
+    out[keys[k]] = grid.slice(1).map(function (row) {
+      const o = {};
+      def.cols.forEach(function (col) { o[col] = mwDigestCell_(row[idx[col]], col); });
+      if (o.updatedAt > out.updatedAt) out.updatedAt = o.updatedAt;
+      return o;
+    }).filter(function (o) { return o.house; });
+  }
+  cachePutJson_(MW_DIGEST_CACHE_KEY, out, MW_DIGEST_CACHE_TTL_S);
+  return out;
+}
+
+/* One house's team for the managers app. */
+function mwTeam_(key, todayIso) {
+  let d;
+  try { d = mwReadTeamDigest_(); } catch (e) { d = { available: false, reason: 'unreadable' }; }
+  if (!d || !d.available) return { available: false, reason: (d && d.reason) || 'unreadable' };
+  const canon = MW_DIGEST_CANON[key];
+  const mine = function (r) { return r.house === canon; };
+  const txt = function (v, n) { return coordTextClean_(v, n); };
+  const shifts = (d.shifts || []).filter(mine).filter(function (r) {
+    return /^\d{4}-\d{2}-\d{2}$/.test(r.date) && MW_SHIFT_LABELS[r.shift] && txt(r.guideName, 80);
+  }).map(function (r) {
+    return { date: r.date, shift: MW_SHIFT_LABELS[r.shift], guideName: txt(r.guideName, 80), draft: r.scheduleStatus !== 'published' };
+  });
+  const staff = (d.staff || []).filter(mine).filter(function (r) { return txt(r.name, 80); }).map(function (r) {
+    const phone = String(r.phone || '').replace(/\D/g, '');
+    return {
+      name: txt(r.name, 80), kind: r.kind === 'therapist' ? 'therapist' : 'guide', role: txt(r.role, 40),
+      phone: /^0\d{8,9}$/.test(phone) ? phone : '', onLeave: String(r.onLeave) === 'true',
+      workdays: String(r.workdays || '').split(',').filter(function (x) { return /^[0-6]$/.test(x); }).map(Number),
+    };
+  });
+  const therapistWeek = (d.therapistWeek || []).filter(mine).filter(function (r) {
+    return /^[0-6]$/.test(r.dayOfWeek) && txt(r.therapistName, 80) && txt(r.patientName, 80);
+  }).map(function (r) {
+    return { dayOfWeek: Number(r.dayOfWeek), time: mwCleanTime_(r.time), therapistName: txt(r.therapistName, 80), patientName: txt(r.patientName, 80) };
+  });
+  const age = d.updatedAt ? Date.now() - Date.parse(d.updatedAt) : NaN;
+  return {
+    available: true, updatedAt: d.updatedAt || '', stale: !(age <= MW_DIGEST_STALE_MS),
+    today: shifts.filter(function (s) { return s.date === todayIso; }),
+    shifts: shifts, staff: staff, therapistWeek: therapistWeek,
+  };
+}
+
 function mwHouseData_(caller, params) {
   const key = caller.house;
   const ym = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(params.month || '')) ? String(params.month) : defaultMonth_();
@@ -12586,6 +12685,7 @@ function mwHouseData_(caller, params) {
     patients: inHouse, outpatients: outpatients,
     visits: visits, admissions: admissions,
     logs: logs, followUps: followUps,
+    team: mwTeam_(key, todayIso),
   };
 }
 
