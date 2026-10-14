@@ -125,7 +125,9 @@ test('lists: Code.gs and lib/ hold the same billing-control lists; nothing new i
   assert.deepEqual(arr(g.run('CONTROLLER_USER_IDS')), [...users.CONTROLLER_USER_IDS]);
   // + the «גבייה» reads (CHANGELOG-ortal-billing-access.md), append-only.
   assert.deepEqual([...scope.CONTROLLER_ACTIONS], ['billingControlQueue', 'confirmPayment', 'debtAging',
-    'getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'cleanupReport']);
+    'getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'cleanupReport',
+    // Appended: «סמן כשולם» (CHANGELOG-refunds-auto-policy.md) — Ortal's one write on «גבייה».
+    'settleRefund']);
   assert.deepEqual(arr(g.run('CONTROLLER_BILLING_READ_ACTIONS')), [...scope.CONTROLLER_BILLING_READ_ACTIONS]);
   assert.deepEqual(arr(g.run('CONTROLLER_GETDATA_KEYS')), [...scope.CONTROLLER_GETDATA_KEYS]);
   const known = arr(g.run('PROXY_KNOWN_ACTIONS'));
@@ -377,11 +379,12 @@ test('«חריגים פתוחים»: flagged receipts older than 7 days (by the 
   assert.deepEqual(ex.flaggedOld.map((r) => [r.id, r.flagNote, r.ageDays]), [[w.ids[0], 'לא נמצא בבנק', 10]], 'only the one flagged 10 days ago');
   assert.deepEqual(ex.refundExceptions.map((r) => [r.kind, r.patientName, r.amount, r.policyAmount]), [['over_policy', 'יוסי לוי', 5000, 3000]]);
   assert.ok(Array.isArray(ex.debtsOver60));
-  // The pure rule with a forecast that has an awaiting decision.
+  // Refunds are automatic (CHANGELOG-refunds-auto-policy.md): nothing ever
+  // «awaits a decision», so the forecast alone yields no exception.
   const rx = plain(w.g.sandbox.billingControlRefundExceptions_({
-    awaiting_decision: { byPayoutDate: [{ rows: [{ patientName: 'מיכל', houseId: 'asher', exitDate: '2026-09-28', suggestedAmount: 7000, payoutDate: '2026-10-15' }] }] },
+    toPay: { rows: [{ patientName: 'מיכל', houseId: 'asher', exitDate: '2026-09-28', amount: 7000, payoutDate: '2026-10-15', auto: true }] },
   }, []));
-  assert.deepEqual(rx.map((r) => [r.kind, r.patientName, r.amount]), [['awaiting_decision', 'מיכל', 7000]]);
+  assert.deepEqual(rx, []);
   // 7 days exactly is not «older than 7».
   assert.equal(w.g.sandbox.billingControlAgeDays_(new Date(Date.now() - 7 * 86400000).toISOString(), TODAY) > 7, false);
 });

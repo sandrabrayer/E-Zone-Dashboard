@@ -6,9 +6,12 @@
  *      equal lib/report-colors.js GROUP_COLORS; each group wrapper sets its
  *      token; the heading is bold 1.15rem with a 4px start-side bar; every
  *      heading passes WCAG AA over its tinted panel.
- *   B. The headings render with the new labels; the refund view has NO
- *      missing-payment section — one muted, linked count line instead, which
- *      opens «חובות פתוחים»; the export button reads «ייצוא זיכויים לאקסל».
+ *   B. The headings render with the new labels; the refund view is ONE
+ *      green «זיכויים לתשלום» group (refunds are automatic — no decision
+ *      section, CHANGELOG-refunds-auto-policy.md) with totals per payment
+ *      date + a grand total; it has NO missing-payment section — one muted,
+ *      linked count line instead, which opens «חובות פתוחים»; the export
+ *      button reads «ייצוא זיכויים לאקסל».
  *   C. Cross-check: every missing_payment_data discharge from the real
  *      refundPayoutForecastFor_ is in the real debtAging_ «מחזורים ללא רישום»
  *      as of the same day; and every patient in the «משוחררים ללא תשלום רשום»
@@ -49,8 +52,7 @@ const token = (name) => { const m = new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6})`
 const GROUPS = {
   due: 'לגבייה בתאריך הנבחר',
   open: 'יתרות פתוחות מתאריכים קודמים',
-  credits: 'זיכויים ממתינים לתשלום',
-  awaiting: 'ממתין להחלטה — לא לתשלום',
+  credits: 'זיכויים לתשלום',
   unresolved: 'לא ניתן לחשב — לבדוק',
   debt: 'חובות פתוחים',
 };
@@ -134,10 +136,20 @@ test('B: index.html — every group wrapper carries its colour class and the bol
   }
   assert.ok(HTML.includes('<details id="debt-aging-view" class="debt-aging-view bill-group bill-group--debt" data-group="debt">'));
   assert.ok(HTML.includes('<summary><h3 class="bill-group-title">חובות פתוחים</h3></summary>'));
-  // the lists inside are unchanged
-  for (const id of ['billing-due-list', 'billing-open-list', 'credits-payout-list', 'credits-pending-total', 'credits-forecast']) {
+  // the lists inside
+  for (const id of ['billing-due-list', 'billing-open-list', 'credits-pending-total', 'credits-forecast']) {
     assert.equal(HTML.split(`id="${id}"`).length, 2, id);
   }
+  // ONE refund list: the old payout list and the decision group are gone,
+  // and #credits-forecast lives INSIDE the green group
+  assert.ok(!HTML.includes('id="credits-payout-list"'), 'no separate payout list');
+  assert.equal(HTML.split('data-group="credits"').length, 2, 'one refund (credits) group');
+  const credStart = HTML.indexOf('<div class="bill-group bill-group--credits"');
+  const credEnd = HTML.indexOf('bill-group--debt');
+  const fc = HTML.indexOf('id="credits-forecast"');
+  assert.ok(fc > credStart && fc < credEnd, '#credits-forecast is in the credits group');
+  const refundArea = HTML.slice(credStart, credEnd);
+  assert.ok(!/bill-group--awaiting|forecast-awaiting/.test(refundArea), 'no decision group in the refund area');
   // the order on the tab
   const order = ['bill-group--due', 'bill-group--open', 'bill-group--credits', 'id="credits-forecast"', 'bill-group--debt', '<h3>סיכום חודשי</h3>'];
   order.reduce((prev, s) => { const i = HTML.indexOf(s); assert.ok(i > prev, s); return i; }, -1);
@@ -152,21 +164,38 @@ test('B: the renamed export button; no «ייצוא להנהלת חשבונות�
 });
 
 const FORECAST = {
-  ok: true, recordsCutoff: '2026-07-01',
-  decided: { count: 0, total: 0, byPayoutDate: [], byHouse: [] },
-  awaiting_decision: { count: 1, total: 2000, byPayoutDate: [{ payoutDate: '2026-10-15', count: 1, total: 2000,
-    rows: [{ patientName: 'דנה', houseId: 'ramot', exitDate: '2026-09-20', suggestedAmount: 2000, rule: 'residential_prorata', payoutDate: '2026-10-15' }] }],
-  byHouse: [{ houseId: 'ramot', count: 1, total: 2000 }] },
+  ok: true, today: '2026-10-02', recordsCutoff: '2026-07-01', policyCutover: '2026-10-01',
+  toPay: { count: 2, total: 3500,
+    byPayoutDate: [{ payoutDate: '2026-10-15', count: 1, total: 2000 }, { payoutDate: '2026-11-15', count: 1, total: 1500 }],
+    rows: [
+      { creditId: '', auto: true, patientKey: 'k1', patientName: 'דנה', houseId: 'ramot', totalPaid: 30000, entryDate: '2026-08-20', exitDate: '2026-09-20',
+        disposition: 'stopped_early', dischargeNote: '<i>n</i>', daysStayed: 31, refundDays: 2, amount: 2000, calculatedAmount: 2000, overridden: false,
+        ruleVersion: 1, rule: 'residential_prorata', creditType: 'days_unused', allocationMonth: '2026-10', payoutDate: '2026-10-15' },
+      { creditId: 'c2', auto: false, patientKey: 'k2', patientName: '<script>z</script>', houseId: 'rehab', totalPaid: 20000, entryDate: '2026-10-01', exitDate: '2026-10-12',
+        disposition: 'completed', dischargeNote: '', daysStayed: 11, refundDays: 3, amount: 1500, calculatedAmount: 1500, overridden: false,
+        ruleVersion: 2, rule: 'stay_prorata', creditType: 'days_unused', allocationMonth: '2026-11', payoutDate: '2026-11-15' },
+    ] },
   missing_payment_data: { count: 3, rows: [{ patientName: '<b>x</b>' }, { patientName: 'b' }, { patientName: 'c' }] },
   unresolved: { count: 1, rows: [{ patientName: 'יוסי', houseId: 'mars', exitDate: '2026-09-01', error: 'unknown_house' }] },
 };
 
-test('B: the forecast renders the purple and grey groups, and one muted linked line for the no-payment discharges', () => {
+test('B: the forecast renders the totals table, the rows, the grey group, and one muted linked line for the no-payment discharges', () => {
   const app = loadApp();
   const html = app.t.payoutForecastHtml(FORECAST);
-  assert.ok(html.includes('<div class="bill-group bill-group--awaiting" data-group="awaiting"><h4 class="bill-group-title forecast-title forecast-awaiting">ממתין להחלטה — לא לתשלום'));
+  // totals per payment date + a grand total (the server's own total)
+  assert.ok(html.includes('<table class="refund-totals-table">'));
+  assert.equal((html.match(/<tbody>[\s\S]*?<\/tbody>/)[0].match(/<tr>/g) || []).length, 2, 'one row per payment date');
+  assert.match(html, /<tr class="refund-grand-total"><th>סה"כ<\/th><th>2<\/th><th>[^<]*3,500[^<]*<\/th><\/tr>/);
+  // one row per refund; text is escaped
+  assert.equal((html.match(/class="billing-row refund-row/g) || []).length, 2);
+  assert.equal((html.match(/refund-row--auto/g) || []).length, 1, 'only the computed row is marked auto');
+  assert.ok(html.includes('&lt;script&gt;z&lt;/script&gt;') && !html.includes('<script>z'), 'patient name escaped');
+  assert.ok(html.includes('הפסיק לפני הזמן — &lt;i&gt;n&lt;/i&gt;'), 'leave reason = label + escaped note');
+  assert.ok(html.includes('ישן (לפי בית)') && html.includes('חדש (אחיד)'), 'the rule family');
+  // no decision section any more
+  assert.ok(!/bill-group--awaiting|forecast-awaiting|data-group="awaiting"/.test(html));
   assert.ok(html.includes('<div class="bill-group bill-group--unresolved" data-group="unresolved"><h4 class="bill-group-title forecast-title forecast-unresolved">לא ניתן לחשב — לבדוק'));
-  assert.equal((html.match(/<div class="bill-group /g) || []).length, (html.match(/data-group=/g) || []).length);
+  assert.equal((html.match(/<div class="bill-group /g) || []).length, (html.match(/<div class="bill-group [^"]*" data-group=/g) || []).length);
   assert.ok(html.includes('<p class="forecast-missing-line"><a href="#debt-aging-view" data-open-debt-aging>3 משוחררים ללא תשלום רשום — מופיעים ב״חובות פתוחים״</a></p>'));
   assert.ok(!html.includes('&lt;b&gt;x') && !html.includes('<b>x'), 'the no-payment patients are not listed');
   assert.ok(!html.includes('bill-group--missing'), 'no colour and no section for them');
@@ -178,6 +207,10 @@ test('B: the forecast renders the purple and grey groups, and one muted linked l
   assert.ok(!noUn.includes('bill-group--unresolved'));
   // same text as the xlsx line
   assert.equal(app.t.PAYOUT_FORECAST_MISSING_LINE, refundXlsx.MISSING_LINE);
+  // an empty list says so in words
+  const empty = app.t.payoutForecastHtml(Object.assign({}, FORECAST, { toPay: { count: 0, total: 0, byPayoutDate: [], rows: [] } }));
+  assert.ok(empty.includes('אין זיכויים לתשלום'));
+  assert.ok(!empty.includes('refund-row'));
 });
 
 test('B: clicking the line opens «חובות פתוחים» and scrolls to it; other clicks do nothing', () => {
@@ -286,7 +319,7 @@ test('C (case 2, fixed): an exit cycle that started before 01/07/2026 is neither
   // … only in the transparency counter (never shown in the UI) …
   assert.equal(forecast.preCutoffExcludedCount, 1);
   // … and not in any other section either;
-  assert.equal(forecast.awaiting_decision.count + forecast.unresolved.count, 0);
+  assert.equal(forecast.toPay.count + forecast.unresolved.count, 0);
   // debt aging agrees: records before 01/07 were never entered, so no debt.
   assert.equal(aging.byPatient.find((p) => p.name === 'מחזור יציאה לפני הסף'), undefined);
 });
@@ -321,14 +354,18 @@ test('C: every patient in the «משוחררים ללא תשלום רשום» li
 const NOW = new Date('2026-10-02T07:05:00Z');
 async function open(buf) { const wb = new ExcelJS.Workbook(); await wb.xlsx.load(buf); return { wb, buf }; }
 const refundData = {
-  ok: true, recordsCutoff: '2026-07-01', zeroByPolicyCount: 2,
-  decided: { count: 1, total: 1500, byPayoutDate: [{ payoutDate: '2026-10-15', count: 1, total: 1500,
-    rows: [{ patientName: 'שם ארוך מאוד של מטופלת לבדיקת רוחב העמודה בגיליון', houseId: 'ramot', amount: 1500, decidedDate: '2026-10-01',
-      payoutDate: '2026-10-15', rule: 'residential_prorata', overrideReason: '' }] }],
-  byHouse: [{ houseId: 'ramot', count: 1, total: 1500 }] },
-  awaiting_decision: { count: 1, total: 2345, byPayoutDate: [{ payoutDate: '2026-11-15', count: 1, total: 2345,
-    rows: [{ patientName: 'דנה', houseId: 'rehab', entryDate: '2026-08-01', exitDate: '2026-09-20', suggestedAmount: 2345, rule: 'residential_prorata', payoutDate: '2026-11-15' }] }],
-  byHouse: [{ houseId: 'rehab', count: 1, total: 2345 }] },
+  ok: true, today: '2026-10-02', recordsCutoff: '2026-07-01', policyCutover: '2026-10-01', zeroByPolicyCount: 2, preCutoffExcludedCount: 0, zeroCreditsHidden: true,
+  toPay: { count: 2, total: 3845,
+    byPayoutDate: [{ payoutDate: '2026-10-15', count: 1, total: 1500 }, { payoutDate: '2026-11-15', count: 1, total: 2345 }],
+    rows: [
+      { creditId: 'c1', auto: false, patientKey: 'k1', patientName: 'שם ארוך מאוד של מטופלת לבדיקת רוחב העמודה בגיליון', houseId: 'ramot', totalPaid: 30000,
+        entryDate: '2026-08-15', exitDate: '2026-10-05', disposition: 'stopped_early', dischargeNote: 'הערת שחרור ארוכה למדי לבדיקת רוחב העמודה',
+        daysStayed: 51, refundDays: 10, amount: 1500, calculatedAmount: 1500, overridden: false, ruleVersion: 1, rule: 'residential_prorata',
+        creditType: 'days_unused', allocationMonth: '2026-10', payoutDate: '2026-10-15' },
+      { creditId: '', auto: true, patientKey: 'k2', patientName: 'דנה', houseId: 'rehab', totalPaid: 25000, entryDate: '2026-10-01', exitDate: '2026-10-20',
+        disposition: 'completed', dischargeNote: '', daysStayed: 19, refundDays: 2, amount: 2345, calculatedAmount: 2345, overridden: false,
+        ruleVersion: 2, rule: 'stay_prorata', creditType: 'days_unused', allocationMonth: '2026-11', payoutDate: '2026-11-15' },
+    ] },
   missing_payment_data: { count: 2, rows: [{ patientName: 'x' }, { patientName: 'y' }] },
   unresolved: { count: 1, rows: [{ patientName: 'יוסי', houseId: 'mars', entryDate: '2026-08-01', exitDate: '2026-09-01', error: 'unknown_house' }] },
 };
@@ -383,15 +420,12 @@ test('D: the shades — white headings pass AA; the tints are light and medium',
   assert.throws(() => colors.xlsxShades('nope'));
 });
 
-test('D: refund xlsx — הוחלט green, ממתין להחלטה purple, the rest grey; one-table sheets colour their title', async () => {
+test('D: refund xlsx — זיכויים לתשלום green, the rest grey; one-table sheets colour their title', async () => {
   const { wb } = await refundBook();
   const sum = wb.getWorksheet('סיכום');
-  assertSection(sum, 'הוחלט — ממתין לתשלום — לפי תאריך תשלום', 'credits', 3, ['סה"כ הוחלט']);
-  assertSection(sum, 'הוחלט — ממתין לתשלום — לפי בית', 'credits', 3, ['סה"כ הוחלט']);
-  assertSection(sum, 'ממתין להחלטה — לא לתשלום — לפי תאריך תשלום אם יוחלט היום (הצעה בלבד)', 'awaiting', 3, ['סה"כ ממתין להחלטה (הצעה בלבד)']);
-  assertSection(sum, 'ממתין להחלטה — לא לתשלום — לפי בית (הצעה בלבד)', 'awaiting', 3, ['סה"כ ממתין להחלטה (הצעה בלבד)']);
+  assertSection(sum, 'זיכויים לתשלום — לפי תאריך תשלום', 'credits', 3, ['סה"כ לתשלום']);
   assertSection(sum, 'לבדיקה — ספירה בלבד, ללא סכום', 'unresolved', 2, []);
-  for (const [name, key] of [['הוחלט', 'credits'], ['ממתין להחלטה', 'awaiting'], ['לא ניתן לחשב', 'unresolved']]) {
+  for (const [name, key] of [['זיכויים לתשלום', 'credits'], ['לא ניתן לחשב', 'unresolved']]) {
     const ws = wb.getWorksheet(name);
     const s = colors.xlsxShades(key);
     assert.equal(argb(ws.getCell('A1')), s.heading, name + ': title fill');
@@ -399,7 +433,11 @@ test('D: refund xlsx — הוחלט green, ממתין להחלטה purple, the r
     const header = ws.getRow(ws.views[0].ySplit);
     assert.equal(argb(header.getCell(1)), s.header, name + ': header tint');
   }
-  assert.deepEqual(wb.worksheets.map((w) => w.name), ['סיכום', 'הוחלט', 'ממתין להחלטה', 'לא ניתן לחשב']);
+  assert.deepEqual(wb.worksheets.map((w) => w.name), ['סיכום', 'זיכויים לתשלום', 'לא ניתן לחשב']);
+  const list = wb.getWorksheet('זיכויים לתשלום');
+  const t = findRow(list, 'סה"כ לתשלום');
+  assert.ok(t, 'the list has its own total row');
+  assert.equal(argb(t.row.getCell(10)), colors.xlsxShades('credits').total);
 });
 
 test('D: debt xlsx — חוב רשום red, מחזורים ללא רישום orange, credits green, separate lists grey', async () => {
@@ -473,8 +511,9 @@ async function assertLayout(wb) {
 test('D: widths fit the longest value (Hebrew too), merged headings span the table, rows are compact — refund xlsx', async () => {
   const { wb } = await refundBook();
   await assertLayout(wb);
-  const decided = wb.getWorksheet('הוחלט');
-  assert.ok(decided.getColumn(2).width >= 'שם ארוך מאוד של מטופלת לבדיקת רוחב העמודה בגיליון'.length);
+  const list = wb.getWorksheet('זיכויים לתשלום');
+  assert.ok(list.getColumn(2).width >= 'שם ארוך מאוד של מטופלת לבדיקת רוחב העמודה בגיליון'.length);
+  assert.ok(list.getColumn(7).width >= 'הפסיק לפני הזמן — הערת שחרור ארוכה למדי לבדיקת רוחב העמודה'.length, 'the leave-reason column fits');
 });
 
 test('D: the same layout rules — debt xlsx', async () => {

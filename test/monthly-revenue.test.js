@@ -748,7 +748,8 @@ test('I: the daily גבייה screen is added ALONGSIDE, not modified', () => {
   for (const id of ['billing-date', 'billing-search', 'billing-due-list', 'billing-open-list',
                     'bill-due-count', 'bill-due-total', 'bill-due-collected',
                     'bill-month-collected', 'bill-month-outstanding', 'bill-month-breakdown',
-                    'credits-payout-list']) {
+                    // «זיכויים לתשלום» is one list since CHANGELOG-refunds-auto-policy.md.
+                    'credits-forecast', 'credits-pending-total']) {
     assert.ok(INDEX.includes(`id="${id}"`), `the daily view keeps ${id}`);
   }
   // The daily renderer still does exactly its jobs, and learned nothing here.

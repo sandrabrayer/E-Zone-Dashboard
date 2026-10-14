@@ -347,21 +347,19 @@ test('«כפילויות חשודות»: same patient + amount + month (or ≤ 7
   assert.deepEqual(r2.map((r) => [r.rule, r.dueDate]), [['within_7_days', '2026-09-30']]);
 });
 
-test('«זיכויים לבדיקה»: refundPayoutForecast\'s awaiting decision + uncalculable (missing payment data is already a gap)', () => {
+test('«זיכויים לבדיקה»: only the uncalculable stays — refunds are automatic, nothing awaits a decision (missing payment data is already a gap)', () => {
   const c = S().credits;
-  const aw = c.filter((r) => r.kind === 'credit_awaiting');
-  assert.equal(aw.length, 1);
-  assert.equal(aw[0].name, 'דנה לואי');
-  assert.ok(aw[0].amount > 0);
-  assert.equal(aw[0].payoutDate, '2026-10-15', 'decided on the 3rd → paid on the 15th');
+  // CHANGELOG-refunds-auto-policy.md: a computable refund is in «זיכויים לתשלום», never here.
+  assert.ok(!c.some((r) => r.kind === 'credit_awaiting'));
   const un = c.filter((r) => r.kind === 'credit_unresolved');
   assert.deepEqual(un.map((r) => [r.name, r.error]), [['אורח לא ידוע', 'unknown_house']]);
   assert.ok(!c.some((r) => r.kind === 'credit_missing_payment'));
   // the same rows refundPayoutForecastFor_ returns
   const objs = (k) => tabsOf(gs().C)[k].rows.map((r) => r.obj);
   const f = plain(gs().sandbox.refundPayoutForecastFor_(objs('discharged'), objs('credits'), objs('payments'), TODAY));
-  assert.equal(f.awaiting_decision.count, aw.length);
   assert.equal(f.unresolved.count, un.length);
+  assert.ok(f.toPay.rows.some((r) => r.patientName === 'דנה לואי' && r.amount > 0 && r.auto === true),
+    'the refund is listed in «זיכויים לתשלום» instead');
 });
 
 test('no second engine: the block reuses the existing checks, and writes nothing', () => {
@@ -566,7 +564,7 @@ test('workbook: rows read back from the fixture — names, gaps (oldest first, t
   assert.deepEqual(owner('משוחררים ללא תאריך יציאה'), ['ורד']);
   assert.deepEqual(owner('כפילויות חשודות'), ['אורטל']);
   assert.deepEqual(owner('לידים ששולמו ולא נקלטו'), ['אורטל', 'ורד']);
-  assert.deepEqual(owner('זיכויים לבדיקה'), ['אורטל', 'ורד']);
+  assert.deepEqual(owner('זיכויים לבדיקה'), ['ורד']);
   const leads = table(wb.getWorksheet('לידים ששולמו ולא נקלטו')).rows;
   assert.equal(cellText(leads.find((r) => cellText(r['שלב']) === 'מקדמה שולמה')['מי מתקן']), 'ורד');
   const credits = table(wb.getWorksheet('זיכויים לבדיקה')).rows;
@@ -581,9 +579,10 @@ test('workbook: every kind has words and an owner; owners follow the plan (§9, 
   const owner = (k) => cleanup.KINDS[k].owner;
   for (const k of ['fffd', 'spelling', 'near_duplicate', 'lead_no_patient', 'released_no_exit', 'no_entry_date', 'zero_amount',
     'recorded_debt', 'unrecorded_cycle', 'credit_unresolved']) assert.equal(owner(k), 'vered', k);
-  for (const k of ['detached', 'paid_not_admitted', 'after_exit', 'before_entry', 'duplicate', 'duplicate_detached', 'credit_awaiting']) {
+  for (const k of ['detached', 'paid_not_admitted', 'after_exit', 'before_entry', 'duplicate', 'duplicate_detached']) {
     assert.equal(owner(k), 'ortal', k);
   }
+  assert.ok(!cleanup.KINDS.credit_awaiting, 'no refund awaits a decision (CHANGELOG-refunds-auto-policy.md)');
   // every kind the engine emits has words
   for (const k of cleanup.SECTION_KEYS) for (const r of rep().sections[k]) assert.ok(cleanup.KINDS[r.kind], r.kind);
 });

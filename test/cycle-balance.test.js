@@ -270,14 +270,14 @@ test('the repair never touches an ambiguous owner, a genuine partial, a void or 
 
 /* ================= wiring ================= */
 
-test('wiring: /cycle-balance.js is served like the other lib rules, loaded before app.js, hashed by the SW; SW v61', () => {
+test('wiring: /cycle-balance.js is served like the other lib rules, loaded before app.js, hashed by the SW; SW v61 or later', () => {
   const SERVER = read('server.js'), INDEX = read('public', 'index.html'), SW = read('public', 'sw.js'), APP = read('public', 'app.js');
   assert.match(SERVER, /'\/cycle-balance\.js': \{ file: path\.join\(__dirname, 'lib', 'cycle-balance\.js'\)/);
   assert.match(SERVER, /app\.get\('\/cycle-balance\.js', sendLibAsset\('\/cycle-balance\.js'\)\);/);
   assert.ok(INDEX.indexOf('cycle-balance.js?v=__BUILD__') > 0);
   assert.ok(INDEX.indexOf('cycle-balance.js?v=__BUILD__') < INDEX.indexOf('app.js?v=__BUILD__'));
   assert.match(SW, /var BUNDLE_PATHS = \[[^\]]*'\/cycle-balance\.js'[^\]]*\]/);
-  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW)[1], 'v61');
+  assert.ok(Number(/var CACHE_VERSION = 'v(\d+)';/.exec(SW)[1]) >= 61, 'monotonic: v61 or later');
   assert.doesNotMatch(read('lib', 'cycle-balance.js'), /fetch\(|require\(|Date\.now|new Date\(\)/, 'pure: no I/O, no clock');
   // ONE rule: every money screen goes through cycleView.
   for (const [fn, re] of [['paymentForPatientOnDate', /cycleView\(existing, patient\)/], ['renderBillingOpenList', /cycleView\(rawPay, matched\)/],

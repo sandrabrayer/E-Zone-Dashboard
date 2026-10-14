@@ -2,19 +2,24 @@
  * See CHANGELOG-refund-logic-wiring.md.
  *
  * Locked contracts:
- *   - the live refund suggestion comes from the SERVER: action=suggestRefunds
+ *   - the refund figure comes from the SERVER: action=suggestRefunds
  *     → refundSuggestionsFor_ → computeRefund_ (Code.gs). For the boundary
- *     fixtures of #156 every suggestion carries exactly computeRefund_'s
- *     refund, rule and cycle — through handle_ AND through the credits modal;
+ *     fixtures of #156 (v1, entry before the cutover) and the v2 fixtures
+ *     (entry on/after REFUND_POLICY_CUTOVER) every suggestion carries exactly
+ *     computeRefund_'s refund, rule and cycle. The credits modal proposes
+ *     nothing (CHANGELOG-refunds-auto-policy.md): it renders the SAVED
+ *     credit's server basis — figure, rule label, breakdown — and calls no
+ *     action;
  *   - suggestRefunds is READ-ONLY (no sheet created, no cell written, no
  *     audit row) and gated by PROXY_SECRET: refused without it in enforce
  *     mode, not in OPEN_ACTIONS, listed in PROXY_KNOWN_ACTIONS;
  *   - payoutDate: refundPayoutDate_ (cutoff on the 10th) on the server; the
- *     app.js echo matches it on every day of 2026–2028;
+ *     app.js echo matches it on every day of 2026–2028; a credit CREATE needs
+ *     the approver role and a non-zero amount;
  *   - saved credits are not recalculated or changed: an edit that keeps the
  *     decision date keeps the stored payoutDate, calculatedAmount, basis and
  *     reason; the modal shows the stored payout date;
- *   - unknown_house is an explicit Hebrew error in the modal — never a 0;
+ *   - unknown_house is an explicit error from suggestRefunds — never a 0;
  *   - every rendered breakdown value goes through escapeHtml;
  *   - getData keeps its keys;
  *   - the pre-wiring client invariants still hold on the server (recorded
@@ -34,6 +39,7 @@ const vm = require('node:vm');
 
 const GS_SRC = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Code.gs'), 'utf8');
 const APP_SRC = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+const LIB_SRC = fs.readFileSync(path.join(__dirname, '..', 'lib', 'refund-rules.js'), 'utf8');
 const plain = (x) => JSON.parse(JSON.stringify(x));
 const PROXY = 'proxy-secret-for-tests';
 
@@ -116,12 +122,12 @@ function loadGs(o) {
   vm.createContext(sandbox);
   vm.runInContext(GS_SRC + `
     globalThis.__t = {
-      PAYMENT_COLUMNS, CREDIT_COLUMNS, OPEN_ACTIONS, PROXY_KNOWN_ACTIONS,
+      PAYMENT_COLUMNS, CREDIT_COLUMNS, DISCHARGED_PATIENT_COLUMNS, OPEN_ACTIONS, PROXY_KNOWN_ACTIONS,
       handle: (p) => handle_(p).json,
       post: (body) => doPost({ parameter: {}, postData: { contents: JSON.stringify(body) } }).json,
       computeRefund: (x) => computeRefund_(x),
       payoutDate: (d) => refundPayoutDate_(d),
-      upsert: (c, u) => upsertCredit_(c, u),
+      upsert: (c, u, o) => upsertCredit_(c, u, o),
       readSheet: (sh, cols) => readSheet_(sh, cols),
     };`, sandbox);
   const t = sandbox.__t;
@@ -129,8 +135,13 @@ function loadGs(o) {
     const cols = Array.from(t.PAYMENT_COLUMNS);
     sandbox.__sheets.Payments = fakeSheet([cols.slice()].concat(rows.map((r) => cols.map((c) => (r[c] === undefined ? '' : r[c])))));
   };
+  // One open row on the discharged sheet — the stay refundPolicyLineFor_ finds.
+  const setDischarged = (rows) => {
+    const cols = Array.from(t.DISCHARGED_PATIENT_COLUMNS);
+    sandbox.__sheets['מטופלים משוחררים'] = fakeSheet([cols.slice()].concat(rows.map((r) => cols.map((c) => (r[c] === undefined ? '' : r[c])))));
+  };
   const snapshot = () => JSON.stringify(Object.keys(sandbox.__sheets).sort().map((k) => [k, sandbox.__sheets[k].grid]));
-  return { t, sandbox, setPayments, snapshot };
+  return { t, sandbox, setPayments, setDischarged, snapshot };
 }
 
 const keyOf = (houseId, name, entry) => `${houseId}::${name}::${entry}`;
@@ -160,6 +171,12 @@ const FIXTURES = [
   ['arfoni', '2026-09-01', '2026-09-13'],
   ['asher', '2026-01-31', '2026-02-21'],   // clamp: last 7 days 21/02–27/02 → 0
   ['asher', '2026-01-31', '2026-02-20'],   // clamp: → 7000
+  ['asher', '2026-09-24', '2026-10-07'],   // v1: entry before the cutover, exit after it → 16000
+  // v2 (entry on/after REFUND_POLICY_CUTOVER): stay day 13 → pro-rata, 14 → 0, every house.
+  ['ramot', '2026-10-08', '2026-10-20'],   // day 13 → 18000
+  ['ramot', '2026-10-08', '2026-10-21'],   // day 14 → 0
+  ['rehab', '2026-10-07', '2026-10-19'],   // day 13 → 18000
+  ['rehab', '2026-10-07', '2026-10-20'],   // day 14 → 0
 ];
 
 test('A: suggestRefunds returns computeRefund_\'s result for every boundary fixture of #156', () => {
@@ -176,9 +193,12 @@ test('A: suggestRefunds returns computeRefund_\'s result for every boundary fixt
       assert.strictEqual(du.basis[k], want[k], tag + ' ' + k);
     }
     assert.strictEqual(du.basis.basisVersion, 2);
+    assert.strictEqual(du.basis.ruleVersion, entry >= '2026-10-07' ? 2 : 1, tag + ' version by the ENTRY date');
   }
   const amounts = FIXTURES.map(([h, e, x]) => suggest(g, h, e, x).suggestions[0].calculatedAmount);
-  assert.deepStrictEqual(amounts, [0, 0, 7000, 11000, 17000, 0, 0, 17000, 0, 7000]);
+  assert.deepStrictEqual(amounts, [0, 0, 7000, 11000, 17000, 0, 0, 17000, 0, 7000, 16000, 18000, 0, 18000, 0]);
+  const rules = FIXTURES.slice(10).map(([h, e, x]) => suggest(g, h, e, x).suggestions[0].basis.rule);
+  assert.deepStrictEqual(rules, ['residential_prorata', 'stay_prorata', 'stay_day14_zero', 'stay_prorata', 'stay_day14_zero']);
 });
 
 test('A: a prepaid cycle not started at the exit returns in full beside the current cycle\'s decision (#156 fixture)', () => {
@@ -192,45 +212,96 @@ test('A: a prepaid cycle not started at the exit returns in full beside the curr
   assert.strictEqual(res.suggestions[1].basis.cycleEnd, '2026-09-30');
 });
 
-test('A: the credits modal shows the server\'s figure, rule label and breakdown (app.js → /api/sheets → handle_)', async () => {
+/* A credit saved from a server suggestion (the shape the policy writes at
+ * discharge). The stay's discharge row is seeded first, so the server's own
+ * recalculation (refundPolicyLineFor_) matches the amount — no approver is
+ * needed and the stored figure / basis are the server's, decided on the exit. */
+function saveFromSuggestion(g, sug, key, exitDate, user, opts) {
+  const [houseId, name, entry] = key.split('::');
+  g.setDischarged([{ id: 'aud-1', houseId, name, date: entry, pay: 30000, status: 'released', exitDate,
+    dischargedAt: exitDate + 'T09:00:00.000Z', disposition: 'completed', patientId: 'pt-1' }]);
+  const res = plain(g.t.upsert({ patientId: 'pt-1', patientKey: key, patientName: name, houseId,
+    creditType: sug.creditType, allocationMonth: sug.allocationMonth, calculatedAmount: sug.calculatedAmount,
+    amount: sug.calculatedAmount, decidedDate: '2000-01-01', basis: sug.basis }, user || 'ורד', opts));
+  assert.strictEqual(res.ok, true, JSON.stringify(res));
+  assert.strictEqual(res.credit.calculatedAmount, sug.calculatedAmount, 'the server recalculation agrees');
+  assert.strictEqual(res.credit.decidedDate, exitDate, 'decided on the exit date, the client value is ignored');
+  return res.credit;
+}
+
+test('A: the credits modal shows the SAVED credit\'s server figure, rule label and breakdown — and calls no action', async () => {
   const g = loadGs({ today: '2026-10-01' });
   const key = keyOf('ramot', 'דנה', '2026-09-10');
   g.setPayments([payRow(key, { dueDate: '2026-09-10' })]);
+  const res = plain(g.t.handle({ action: 'suggestRefunds', houseId: 'ramot', entryDate: '2026-09-10', exitDate: '2026-10-02', patientKey: key }));
+  assert.strictEqual(res.suggestions[0].calculatedAmount, 7000);
+  const saved = saveFromSuggestion(g, res.suggestions[0], key, '2026-10-02');
+  assert.strictEqual(saved.payoutDate, '2026-10-15', 'refundPayoutDate_(decidedDate)');
+  assert.strictEqual(saved.approvedBy, 'מדיניות אוטומטית', 'a policy-matching save by a non-approver');
   const app = loadApp((body) => g.t.handle(body));
+  app.t.state.credits = [app.t.normalizeCredit(saved)];
   const patient = app.t.normalizePatient({ id: 'pt-1', houseId: 'ramot', name: 'דנה', date: '2026-09-10', pay: 30000, status: 'released', exitDate: '2026-10-02' });
   await app.t.showCreditsModal({ patient, patientId: 'pt-1', patientKey: key, exitDate: '2026-10-02' });
   const html = app.modalHtml();
   assert.ok(html.includes('מחושב: <b>' + app.t.fmtShekel(7000) + '</b>'), 'the computeRefund_ figure');
   assert.ok(html.includes('מגורים — זיכוי יחסי על הימים שלא שהה'));
   for (const s of ['מחזור:', '10/09/2026 – 09/10/2026', 'ימים ששהה במחזור:', 'ימים שלא שהה:', 'תעריף יומי:',
-    '7 הימים האחרונים במחזור:', '03/10/2026 – 09/10/2026',
-    // The decision date is the browser's real "today", so the payout date is
-    // derived from it (fixed 15/10/2026 broke once the clock passed 10/10).
-    'ישולם ב־' + app.t.formatDateHe(app.t.payoutDateFor(app.t.todayISO()))]) {
+    '7 הימים האחרונים במחזור:', '03/10/2026 – 09/10/2026', 'ישולם ב־15/10/2026']) {
     assert.ok(html.includes(s), 'breakdown shows ' + s);
   }
+  // The rule line follows the saved basis's ruleVersion (entry before the cutover → the old rule).
+  assert.match(html, /<p class="credit-policy">כלל ההחזר הישן \(כניסה לפני תאריך המעבר, בית מאזן\)/);
+  assert.match(html, /name="amount"[^>]*readonly/, 'the amount is Sandra\'s alone');
+  assert.ok(!html.includes('data-action="add-other"'), 'no manual credit for a non-approver');
   assert.deepStrictEqual(app.errors(), []);
-  assert.deepStrictEqual(app.sent().map((b) => b.action), ['suggestRefunds']);
-  const body = app.sent()[0];
-  assert.deepStrictEqual([body.houseId, body.entryDate, body.exitDate, body.patientKey], ['ramot', '2026-09-10', '2026-10-02', key]);
+  assert.deepStrictEqual(app.sent(), [], 'the modal proposes nothing — no suggestRefunds call');
 });
 
-test('A: rule labels in Hebrew — «7 הימים האחרונים במחזור — ללא זיכוי», «יום 14 ומעלה — ללא זיכוי»', async () => {
-  const g = loadGs({ today: '2026-10-01' });
-  const run = async (houseId, entry, exit) => {
-    const key = keyOf(houseId, 'דנה', entry);
-    g.setPayments([payRow(key, { dueDate: entry })]);
-    const app = loadApp((body) => g.t.handle(body));
-    const patient = app.t.normalizePatient({ id: 'p', houseId, name: 'דנה', date: entry, pay: 30000, status: 'released', exitDate: exit });
-    await app.t.showCreditsModal({ patient, patientId: 'p', patientKey: key, exitDate: exit });
-    return app.modalHtml();
+test('A: the approver sees an editable amount and the manual-credit button; a v2 basis shows the new rule line', async () => {
+  const g = loadGs({ today: '2026-10-22' });
+  const key = keyOf('ramot', 'דנה', '2026-10-08');
+  g.setPayments([payRow(key, { dueDate: '2026-10-08' })]);
+  const res = plain(g.t.handle({ action: 'suggestRefunds', houseId: 'ramot', entryDate: '2026-10-08', exitDate: '2026-10-20', patientKey: key }));
+  const saved = saveFromSuggestion(g, res.suggestions[0], key, '2026-10-20', 'סנדרה', { approver: true });
+  assert.strictEqual(saved.approvedBy, 'סנדרה', 'the approver saving the policy figure is stamped by name');
+  const app = loadApp((body) => g.t.handle(body));
+  app.t.state.approver = true;
+  app.t.state.credits = [app.t.normalizeCredit(saved)];
+  const patient = app.t.normalizePatient({ id: 'pt-1', houseId: 'ramot', name: 'דנה', date: '2026-10-08', pay: 30000, status: 'released', exitDate: '2026-10-20' });
+  await app.t.showCreditsModal({ patient, patientId: 'pt-1', patientKey: key, exitDate: '2026-10-20' });
+  const html = app.modalHtml();
+  assert.ok(html.includes('מחושב: <b>' + app.t.fmtShekel(18000) + '</b>'));
+  assert.match(html, /<p class="credit-policy">כלל ההחזר החדש \(כניסה מתאריך המעבר ואילך, כל הבתים\)/);
+  assert.ok(html.includes('יציאה ביום שהייה 1–13 — זיכוי יחסי על המחזור הנוכחי'));
+  assert.match(html, /יום שהייה ביציאה:<\/span> <span class="credit-bd-v">13</);
+  assert.ok(!html.includes('7 הימים האחרונים במחזור:'));
+  assert.ok(html.includes('ישולם ב־15/11/2026'));
+  assert.doesNotMatch(html, /name="amount"[^>]*readonly/);
+  assert.ok(html.includes('data-action="add-other"'));
+  assert.deepStrictEqual(app.sent(), []);
+});
+
+test('A: rule labels in Hebrew — «7 הימים האחרונים במחזור — ללא זיכוי», «יום 14 ומעלה — ללא זיכוי», «יום שהייה 14 ומעלה» (server basis → breakdown)', () => {
+  const g = loadGs({ today: '2026-10-22' });
+  const app = loadApp(() => ({}));
+  const zero = (houseId, entry, exit) => {
+    const res = suggest(g, houseId, entry, exit);
+    const du = res.suggestions.find((s) => s.creditType === 'days_unused');
+    assert.strictEqual(du.calculatedAmount, 0, `${houseId} ${entry} → ${exit}`);
+    return du.basis;
   };
-  const bal = await run('asher', '2026-09-10', '2026-10-03');
-  assert.ok(bal.includes('7 הימים האחרונים במחזור — ללא זיכוי'));
-  assert.ok(bal.includes('לפני הכלל: ' + loadApp(() => ({})).t.fmtShekel(6000)), 'the raw figure is on record');
-  const dtx = await run('rehab', '2026-09-01', '2026-09-14');
+  const bal = zero('asher', '2026-09-10', '2026-10-03');
+  assert.strictEqual(bal.uncappedRefund, 6000, 'the raw figure is on record');
+  const balHtml = app.t.creditBreakdownHtml(bal);
+  assert.ok(balHtml.includes('7 הימים האחרונים במחזור — ללא זיכוי'));
+  assert.ok(balHtml.includes('7 הימים האחרונים במחזור:'));
+  const dtx = app.t.creditBreakdownHtml(zero('rehab', '2026-09-01', '2026-09-14'));
   assert.ok(dtx.includes('יום 14 ומעלה — ללא זיכוי'));
   assert.ok(dtx.includes('יום שהייה ביציאה:'));
+  const v2 = app.t.creditBreakdownHtml(zero('asher', '2026-10-08', '2026-10-21'));
+  assert.ok(v2.includes('יציאה ביום שהייה 14 ומעלה — ללא זיכוי על המחזור הנוכחי'));
+  assert.ok(v2.includes('יום שהייה ביציאה:'));
+  assert.ok(!v2.includes('7 הימים האחרונים במחזור:'));
 });
 
 /* ======================= B. payout date ======================= */
@@ -242,10 +313,29 @@ test('B: payout on the 10th vs the 11th — suggestRefunds, a new saved credit, 
     assert.strictEqual(res.decidedDate, today);
     assert.strictEqual(res.payoutDate, payout, today);
     assert.strictEqual(res.suggestions[0].basis.payoutDate, payout);
-    const saved = g.t.upsert({ patientId: 'pt-1', patientKey: 'ramot::דנה::2026-09-10', patientName: 'דנה', houseId: 'ramot',
-      creditType: 'days_unused', allocationMonth: '2026-09', calculatedAmount: 11000, amount: 11000, decidedDate: today, basis: {} }, 'ורד');
+    const credit = { patientId: 'pt-1', patientKey: 'ramot::דנה::2026-09-10', patientName: 'דנה', houseId: 'ramot',
+      creditType: 'days_unused', allocationMonth: '2026-09', calculatedAmount: 11000, amount: 11000, decidedDate: today, basis: {},
+      overrideReason: 'זיכוי ידני' };
+    // No discharge row → no policy line: a manual exception (approver + reason),
+    // decided on the day it is saved.
+    const saved = g.t.upsert(credit, 'סנדרה', { approver: true });
+    assert.strictEqual(saved.ok, true, JSON.stringify(plain(saved)));
     assert.strictEqual(saved.credit.payoutDate, payout, 'saved ' + today);
+    assert.strictEqual(loadApp(() => ({})).t.payoutDateFor(today), payout, 'app.js echo ' + today);
   }
+});
+
+test('B: a credit CREATE needs the approver; a zero-amount create is refused', () => {
+  const g = loadGs({ today: '2026-10-11' });
+  const credit = { patientId: 'pt-1', patientKey: 'ramot::דנה::2026-09-10', patientName: 'דנה', houseId: 'ramot',
+    creditType: 'days_unused', allocationMonth: '2026-09', calculatedAmount: 11000, amount: 11000, decidedDate: '2026-10-11', basis: {} };
+  const noRole = plain(g.t.upsert(credit, 'ורד'));
+  assert.strictEqual(noRole.ok, false);
+  assert.strictEqual(noRole.error, 'override_requires_approver');
+  const zero = plain(g.t.upsert(Object.assign({}, credit, { calculatedAmount: 0, amount: 0 }), 'סנדרה', { approver: true }));
+  assert.deepStrictEqual([zero.ok, zero.error], [false, 'zero_amount_credit']);
+  const sheet = g.sandbox.__sheets.Credits;
+  assert.ok(!sheet || sheet.grid.length <= 1, 'nothing written');
 });
 
 test('B: app.js payoutDateFor matches refundPayoutDate_ on every day of 2026–2028 (parity)', () => {
@@ -278,6 +368,7 @@ function withLegacyCredit(g) {
 test('C: a credit saved under the old 15th cutoff keeps its payoutDate, amount, basis and reason when re-saved', () => {
   const g = loadGs();
   withLegacyCredit(g);
+  // A notes-only edit stays open to finance users (no approver).
   const res = g.t.upsert({ id: LEGACY.id, updatedAt: LEGACY.updatedAt, decidedDate: '2026-09-14', notes: 'נבדק' }, 'ורד');
   assert.strictEqual(res.ok, true, JSON.stringify(res));
   assert.strictEqual(res.credit.payoutDate, '2026-09-15', 'not moved to 2026-10-15 by the new cutoff');
@@ -318,6 +409,8 @@ test('C: the modal shows a saved credit as saved — stored payout date, stored 
   assert.ok(html.includes('מחושב: <b>' + app.t.fmtShekel(4800) + '</b>'), 'stored calculatedAmount, not recomputed');
   assert.ok(html.includes('ישולם ב־15/09/2026'), 'stored payout date');
   assert.ok(html.includes('מגורים — שחרור בשבוע האחרון של החודש: אין זיכוי ימים'), 'labelled with the rule it was decided under');
+  assert.ok(!html.includes('class="credit-policy"'), 'a legacy basis carries no ruleVersion → no rule line');
+  assert.deepStrictEqual(app.sent(), [], 'nothing recomputed, nothing proposed');
   const lines = app.t.buildCreditLines(app.t.state.credits, [], '2026-10-01');
   assert.strictEqual(app.t.linePayoutDate(lines[0], '2026-09-14'), '2026-09-15');
   assert.strictEqual(app.t.linePayoutDate(lines[0], '2026-10-05'), '2026-10-15', 'a changed decision date takes the current rule');
@@ -325,21 +418,23 @@ test('C: the modal shows a saved credit as saved — stored payout date, stored 
 
 /* ======================= D. unknown_house ======================= */
 
-test('D: unknown_house → explicit error from the server, and a Hebrew error in the modal — never a 0', async () => {
+test('D: unknown_house → explicit error from the server (suggestRefunds and computeRefund_) — never a 0', async () => {
   const g = loadGs({ today: '2026-10-01' });
   const res = plain(g.t.handle({ action: 'suggestRefunds', houseId: 'nowhere', entryDate: '2026-09-01', exitDate: '2026-09-10', patientKey: 'nowhere::דנה::2026-09-01' }));
   assert.deepStrictEqual(res, { ok: false, error: 'unknown_house', field: 'houseId' });
+  // The same on both sides of the cutover.
+  const v2 = plain(g.t.handle({ action: 'suggestRefunds', houseId: 'nowhere', entryDate: '2026-10-08', exitDate: '2026-10-10', patientKey: 'nowhere::דנה::2026-10-08' }));
+  assert.deepStrictEqual(v2, { ok: false, error: 'unknown_house', field: 'houseId' });
+  assert.throws(() => g.t.computeRefund({ houseId: 'nowhere', entryDate: '2026-10-08', exitDate: '2026-10-10', amountPaid: 30000, decidedDate: '2026-10-10' }),
+    (e) => e.code === 'unknown_house');
+  // The modal never invents a line for such a patient: no saved credit → no line, no call.
   const app = loadApp((body) => g.t.handle(body));
   const patient = app.t.normalizePatient({ id: 'p', houseId: 'nowhere', name: 'דנה', date: '2026-09-01', pay: 1, status: 'released', exitDate: '2026-09-10' });
   await app.t.showCreditsModal({ patient, patientId: 'p', patientKey: 'nowhere::דנה::2026-09-01', exitDate: '2026-09-10' });
   const html = app.modalHtml();
-  assert.match(html, /<div class="credit-error" role="alert">לא ניתן לחשב זיכוי: הבית של המטופל לא מוכר במערכת/);
-  assert.ok(!html.includes('class="credit-line"'), 'no suggested line, so no silent 0');
-  assert.ok(app.errors().some((m) => m.includes('הבית של המטופל לא מוכר')), 'and the banner says so');
-  // A network failure is an error too, never an empty "no refund".
-  const down = loadApp(() => { throw new Error('offline'); });
-  await down.t.showCreditsModal({ patient, patientId: 'p', patientKey: 'x', exitDate: '2026-09-10' });
-  assert.match(down.modalHtml(), /class="credit-error"/);
+  assert.ok(!html.includes('class="credit-line"'), 'no line, so no silent 0');
+  assert.ok(html.includes('אין זיכויים שמורים'));
+  assert.deepStrictEqual(app.sent(), []);
 });
 
 /* ======================= E. escaping ======================= */
@@ -354,6 +449,11 @@ test('E: every breakdown value is escaped', () => {
   });
   assert.ok(!html.includes('<img'), html);
   assert.ok(html.includes('&lt;img'));
+  // The v2 rows (stay day) too.
+  const v2 = app.t.creditBreakdownHtml({ basisVersion: 2, ruleVersion: 2, rule: evil, cycleStart: evil, cycleEnd: evil, cycleDays: evil,
+    daysStayed: evil, daysNotStayed: evil, dailyRate: 1, amountPaid: 30, divisor: evil, facilityType: 'residential', stayDay: evil });
+  assert.ok(v2.includes('יום שהייה ביציאה:'));
+  assert.ok(!v2.includes('<img') && v2.includes('&lt;img'), v2);
   assert.strictEqual(app.t.creditBreakdownHtml({ rule: 'residential_prorata' }), '', 'a legacy basis renders no breakdown');
 });
 
@@ -519,6 +619,8 @@ function loadApp(server) {
   };
   sandbox.window = sandbox; sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
+  // /refund-rules.js loads before app.js on the page (window.RefundRules).
+  vm.runInContext(LIB_SRC, sandbox);
   vm.runInContext(APP_SRC + `
     showError = (m) => { globalThis.__errors.push(String(m)); };
     renderAll = () => {};

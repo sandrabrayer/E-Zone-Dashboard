@@ -238,7 +238,11 @@
 // v60 → v61: the cycle balance (CHANGELOG-cycle-balance.md) — app.js and
 // index.html changed and the page loads a new /cycle-balance.js
 // (network-first like app.js); activate evicts v60.
-var CACHE_VERSION = 'v61';
+// v61 → v62: automatic refunds by policy (CHANGELOG-refunds-auto-policy.md) —
+// one «זיכויים לתשלום» list, no «ממתין להחלטה». app.js, index.html,
+// style.css and /refund-rules.js changed; v61 was the LIVE version
+// (production /sw.js, 14/10/2026); activate evicts v61 (v17 never reused).
+var CACHE_VERSION = 'v62';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

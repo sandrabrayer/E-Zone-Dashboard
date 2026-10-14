@@ -60,7 +60,11 @@ function loadApp(script) {
       const action = body && body.action;
       // suggestRefunds is the credits modal's READ (the discharge path opens
       // the modal); unscripted it answers an empty suggestion list.
-      const list = (script && script[action]) || (action === 'suggestRefunds' ? [{ ok: true, suggestions: [] }] : [{ ok: true }]);
+      // A refund write re-reads «זיכויים לתשלום» (CHANGELOG-refunds-auto-policy.md):
+      // its default answer is a valid empty list.
+      const list = (script && script[action]) || (action === 'suggestRefunds' ? [{ ok: true, suggestions: [] }]
+        : action === 'refundPayoutForecast' ? [{ ok: true, toPay: { count: 0, total: 0, byPayoutDate: [], rows: [] }, missing_payment_data: { count: 0, rows: [] }, unresolved: { count: 0, rows: [] } }]
+        : [{ ok: true }]);
       const i = used[action] = (used[action] || 0) + 1;
       // serverEcho: a bare {ok:true} answers like the real handler (the
       // proof the page needs, CHANGELOG-write-path-hardening.md).
@@ -96,6 +100,8 @@ function loadApp(script) {
       loadDebtAging: () => loadDebtAging(),
       dischargePatient: (p) => dischargePatient(p),
       showCreditsModal: (o) => showCreditsModal(o),
+      settleRefundRow: (r, d, m) => settleRefundRow(r, d, m),
+      approveRefundExceptionRow: (r, a, why) => approveRefundExceptionRow(r, a, why),
       doRestorePatientAsNewLead: (p) => doRestorePatientAsNewLead(p),
       doRestorePatientToActive: (p) => doRestorePatientToActive(p),
       restoreIrrelevantLead: (l) => restoreIrrelevantLead(l),
@@ -172,22 +178,29 @@ const PATHS = [
     rejects: true,
   },
   {
-    // A READ sent through apiPost (no patient name in a URL). The server never
-    // answers lock_busy for it (no lock), but the client handles one the same
-    // way as every write: one retry, then the Hebrew message in the modal.
-    name: 'suggestRefunds (the credits modal\'s refund suggestion)',
-    action: 'suggestRefunds',
-    okResponse: { ok: true, suggestions: [] },
-    run: (app) => app.showCreditsModal({ patient: app.normalizePatient({ ...PATIENT, status: 'released', exitDate: '2026-08-10' }), patientId: 'pt-1', patientKey: 'ramot::דנה::2026-07-01', exitDate: '2026-08-10' }),
+    // «סמן כשולם» on «זיכויים לתשלום» (CHANGELOG-refunds-auto-policy.md).
+    name: 'settleRefund (mark a refund paid)',
+    action: 'settleRefund',
+    okResponse: { ok: true, credit: { id: 'credit::pt-1::2026-08::1', status: 'paid' } },
+    run: (app) => app.settleRefundRow({ creditId: 'credit::pt-1::2026-08::1' }, '2026-10-14', 'העברה'),
     landed: () => {},
+    rejects: true,
+  },
+  {
+    // Sandra's exception on a refund (APPROVER_ACTIONS server-side).
+    name: 'approveRefundException (Sandra\'s exception on a refund)',
+    action: 'approveRefundException',
+    okResponse: { ok: true, credit: { id: 'credit::pt-1::2026-08::1', amount: 0 } },
+    run: (app) => app.approveRefundExceptionRow({ creditId: 'credit::pt-1::2026-08::1' }, 0, 'בקשת המשפחה'),
+    landed: () => {},
+    rejects: true,
   },
   {
     // A READ sent through apiPost (the גבייה payout forecast). Never locked on
     // the server, but a busy answer is handled like every other path.
     name: 'refundPayoutForecast (the גבייה payout forecast)',
     action: 'refundPayoutForecast',
-    okResponse: { ok: true, decided: { count: 0, total: 0, byPayoutDate: [], byHouse: [] },
-      awaiting_decision: { count: 0, total: 0, byPayoutDate: [], byHouse: [] },
+    okResponse: { ok: true, toPay: { count: 0, total: 0, byPayoutDate: [], rows: [] },
       missing_payment_data: { count: 0, rows: [] }, unresolved: { count: 0, rows: [] } },
     run: (app) => app.loadPayoutForecast(),
     landed: (app) => { assert.strictEqual(app.state.payoutForecast.status, 'ok'); },

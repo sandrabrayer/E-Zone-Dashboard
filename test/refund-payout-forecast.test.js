@@ -1,21 +1,27 @@
-/* Refund payout forecast — action=refundPayoutForecast + the גבייה payout view.
- * See CHANGELOG-refund-payout-forecast.md.
+/* Refund payout forecast — action=refundPayoutForecast + the «זיכויים לתשלום»
+ * list on the גבייה screen. See CHANGELOG-refund-payout-forecast.md and
+ * CHANGELOG-refunds-auto-policy.md.
  *
  * Locked contracts:
- *   - decided: pending saved credits with amount > 0, grouped by the STORED
- *     payoutDate — never recomputed (an old-15th-cutoff date stays as stored);
- *   - awaiting_decision: discharges on/after the records cutoff (2026-07-01)
- *     with NO saved credit for that stay and a server suggestion > 0; the
- *     payoutDate is "if decided today" (cutoff on the 10th);
+ *   - toPay: ONE list. Saved pending credits with amount > 0 keep their
+ *     STORED payoutDate — never recomputed (an old-15th-cutoff date stays as
+ *     stored). Stays with no decision (exit on/after the records cutoff
+ *     2026-07-01) get their positive policy lines as computed rows
+ *     (auto: true, creditId ''), paid on the 15th by the EXIT date (exit ≤ 10th
+ *     → that month, else the next);
+ *   - any saved credit (pending, paid, cancelled, an approved zero) decides the
+ *     stay; a zero-amount credit WITHOUT overrideReason is a bug artefact:
+ *     never listed, counted in zeroCreditsHidden, and the stay is recomputed;
+ *   - the rule version is chosen by the ENTRY date vs REFUND_POLICY_CUTOVER;
  *   - missing_payment_data: no saved credit and no recorded payment covering
  *     the exit cycle — carries NO amount, never a 0;
  *   - a discharge the rules refuse (unknown house) is `unresolved`, never 0;
- *   - the three sections are never summed together;
+ *   - the sections are never summed together;
  *   - read-only; gated by PROXY_SECRET (not open), listed as a known action;
  *   - getData keeps its keys;
- *   - the CSV: UTF-8 BOM, Hebrew headers, formula-guarded cells, labelled
- *     sections, a generated-at line;
- *   - the UI escapes everything and shows loading / error states.
+ *   - the .xlsx: three guarded sheets, a generated-at line;
+ *   - the UI escapes everything, shows loading / error states, and has no
+ *     «ממתין להחלטה» text.
  *
  * vm-sandbox on the REAL shipped Code.gs / app.js, per repo convention. */
 
@@ -152,75 +158,109 @@ function credit(over) {
   }, over);
 }
 
-/* ======================= A. decided ======================= */
+/* ======================= A. saved credits (stored payoutDate) ======================= */
 
-test('A: decided uses the STORED payoutDate as-is, grouped, with totals per date and per house', () => {
+const toPayRows = (res) => res.toPay.rows;
+const byDate = (res) => res.toPay.byPayoutDate.map((x) => [x.payoutDate, x.count, x.total]);
+
+test('A: a saved pending credit uses the STORED payoutDate as-is, grouped, with totals per date', () => {
   const g = loadGs({ today: '2026-10-01' });
   g.setCredits([
     // decided on the 14th under the old 15th cutoff: stored 2026-09-15 — the 10th cutoff would say 2026-10-15
-    credit({ id: 'c1', patientKey: 'ramot::דנה::2026-08-01', decidedDate: '2026-09-14', payoutDate: '2026-09-15', amount: 4800 }),
+    credit({ id: 'c1', patientKey: 'ramot::דנה::2026-08-01', decidedDate: '2026-09-14', payoutDate: '2026-09-15', amount: 4800, calculatedAmount: 4800 }),
     // a stored date nothing would compute today — still reported as stored
     credit({ id: 'c2', patientKey: 'rehab::רון::2026-09-01', patientName: 'רון', houseId: 'rehab', decidedDate: '2026-10-01',
-      payoutDate: '2026-12-15', amount: 17000, overrideReason: 'אישור סנדרה', basis: '{"basisVersion":2,"rule":"detox_prorata"}' }),
-    credit({ id: 'c3', patientKey: 'ramot::גל::2026-08-05', patientName: 'גל', decidedDate: '2026-09-02', payoutDate: '2026-09-15', amount: 1200 }),
+      payoutDate: '2026-12-15', amount: 17000, calculatedAmount: 15000, overrideReason: 'אישור סנדרה', basis: '{"basisVersion":2,"rule":"detox_prorata"}' }),
+    credit({ id: 'c3', patientKey: 'ramot::גל::2026-08-05', patientName: 'גל', decidedDate: '2026-09-02', payoutDate: '2026-09-15', amount: 1200, calculatedAmount: 1200 }),
     credit({ id: 'paid', patientKey: 'ramot::א::2026-08-01', status: 'paid', paidDate: '2026-09-15', method: 'העברה', amount: 900 }),
     credit({ id: 'cancelled', patientKey: 'ramot::ב::2026-08-01', status: 'cancelled', amount: 900 }),
-    credit({ id: 'zero', patientKey: 'ramot::ג::2026-08-01', amount: 0, calculatedAmount: 0 }),
+    credit({ id: 'approvedZero', patientKey: 'ramot::ד::2026-08-01', amount: 0, calculatedAmount: 300, overrideReason: 'אישור סנדרה' }),
   ]);
   const res = g.forecast();
   assert.strictEqual(res.ok, true, JSON.stringify(res));
-  const d = res.decided;
-  assert.deepStrictEqual(d.byPayoutDate.map((x) => [x.payoutDate, x.count, x.total]), [['2026-09-15', 2, 6000], ['2026-12-15', 1, 17000]]);
-  const c1 = d.byPayoutDate[0].rows.find((r) => r.creditId === 'c1');
-  assert.deepStrictEqual([c1.payoutDate, c1.decidedDate, c1.amount, c1.patientName, c1.houseId, c1.rule],
-    ['2026-09-15', '2026-09-14', 4800, 'דנה', 'ramot', 'residential_prorata']);
-  const c2 = d.byPayoutDate[1].rows[0];
-  assert.deepStrictEqual([c2.payoutDate, c2.overrideReason, c2.rule], ['2026-12-15', 'אישור סנדרה', 'detox_prorata']);
-  assert.deepStrictEqual(d.byHouse.map((h) => [h.houseId, h.count, h.total]), [['ramot', 2, 6000], ['rehab', 1, 17000]]);
-  assert.strictEqual(d.total, 23000);
-  assert.strictEqual(d.count, 3, 'paid, cancelled and zero-amount credits are not in decided');
+  assert.ok(!('decided' in res) && !('awaiting_decision' in res) && !('payoutDateIfDecidedToday' in res), 'removed sections are gone');
+  assert.deepStrictEqual(byDate(res), [['2026-09-15', 2, 6000], ['2026-12-15', 1, 17000]]);
+  const c1 = toPayRows(res).find((r) => r.creditId === 'c1');
+  assert.deepStrictEqual([c1.payoutDate, c1.amount, c1.patientName, c1.houseId, c1.rule, c1.auto, c1.overridden],
+    ['2026-09-15', 4800, 'דנה', 'ramot', 'residential_prorata', false, false]);
+  const c2 = toPayRows(res).find((r) => r.creditId === 'c2');
+  assert.deepStrictEqual([c2.payoutDate, c2.rule, c2.overridden], ['2026-12-15', 'detox_prorata', true]);
+  assert.ok(!('overrideReason' in c2), 'the free-text override reason is not in the list');
+  assert.strictEqual(res.toPay.total, 23000);
+  assert.strictEqual(res.toPay.count, 3, 'paid, cancelled and approved-zero credits are not listed');
+  assert.strictEqual(res.zeroCreditsHidden, 0, 'an approved zero (with overrideReason) is not an artefact');
 });
 
-/* ======================= B. awaiting_decision ======================= */
+/* ======================= B. computed (undecided) stays ======================= */
 
-test('B: awaiting excludes a discharge with a saved credit (even a zero one) and excludes 0 suggestions', () => {
+test('B: a decided stay is excluded (saved credit, approved zero); a 0-by-policy stay is counted, not listed', () => {
   const g = loadGs({ today: '2026-10-01' });
-  const kA = keyOf('ramot', 'אבי', '2026-09-10');   // exit 28/09 → 11000, no credit → awaiting
-  const kB = keyOf('ramot', 'בני', '2026-09-10');   // same figure, but a saved credit → excluded
-  const kC = keyOf('ramot', 'כרמל', '2026-09-10');  // a saved ZERO credit → excluded
-  const kD = keyOf('ramot', 'דור', '2026-09-10');   // exit in the last 7 days → 0 by policy → excluded
+  const kA = keyOf('ramot', 'אבי', '2026-09-10');   // exit 28/09 → 11000, no credit → listed (auto)
+  const kB = keyOf('ramot', 'בני', '2026-09-10');   // same figure, but a saved credit → its credit only
+  const kC = keyOf('ramot', 'כרמל', '2026-09-10');  // an APPROVED zero credit → decided, nothing listed
+  const kD = keyOf('ramot', 'דור', '2026-09-10');   // exit in the last 7 days → 0 by policy → not listed
+  const kE = keyOf('ramot', 'הדס', '2026-09-10');   // a PAID credit → decided, nothing listed
   g.setPayments([
     payRow(kA, { dueDate: '2026-09-10' }), payRow(kB, { dueDate: '2026-09-10' }),
-    payRow(kC, { dueDate: '2026-09-10' }), payRow(kD, { dueDate: '2026-09-10' }),
+    payRow(kC, { dueDate: '2026-09-10' }), payRow(kD, { dueDate: '2026-09-10' }), payRow(kE, { dueDate: '2026-09-10' }),
   ]);
   g.setDischarged([
     dis('ramot', 'אבי', '2026-09-10', '2026-09-28'), dis('ramot', 'בני', '2026-09-10', '2026-09-28'),
     dis('ramot', 'כרמל', '2026-09-10', '2026-09-28'), dis('ramot', 'דור', '2026-09-10', '2026-10-05'),
+    dis('ramot', 'הדס', '2026-09-10', '2026-09-28'),
   ]);
   g.setCredits([
-    credit({ id: 'cb', patientKey: kB, patientName: 'בני', amount: 11000 }),
-    credit({ id: 'cc', patientKey: ' ' + kC.replace('כרמל', 'כרמל '), patientName: 'כרמל', amount: 0, calculatedAmount: 0 }),
+    credit({ id: 'cb', patientKey: kB, patientName: 'בני', amount: 9000, calculatedAmount: 9000, payoutDate: '2026-11-15' }),
+    credit({ id: 'cc', patientKey: ' ' + kC.replace('כרמל', 'כרמל '), patientName: 'כרמל', amount: 0, calculatedAmount: 11000, overrideReason: 'ויתור' }),
+    credit({ id: 'ce', patientKey: kE, patientName: 'הדס', status: 'paid', paidDate: '2026-10-01', method: 'העברה', amount: 11000 }),
   ]);
   const res = g.forecast();
-  const a = res.awaiting_decision;
-  assert.strictEqual(a.count, 1, JSON.stringify(a));
-  const row = a.byPayoutDate[0].rows[0];
-  assert.deepStrictEqual([row.patientName, row.houseId, row.exitDate, row.suggestedAmount, row.rule, row.payoutDate],
-    ['אבי', 'ramot', '2026-09-28', 11000, 'residential_prorata', '2026-10-15']);
-  assert.deepStrictEqual(a.byHouse.map((h) => [h.houseId, h.total]), [['ramot', 11000]]);
+  const rows = toPayRows(res);
+  assert.deepStrictEqual(rows.map((r) => [r.patientName, r.creditId, r.auto]).sort(), [['אבי', '', true], ['בני', 'cb', false]].sort());
+  const a = rows.find((r) => r.patientName === 'אבי');
+  assert.deepStrictEqual([a.houseId, a.exitDate, a.amount, a.calculatedAmount, a.rule, a.payoutDate, a.ruleVersion, a.totalPaid, a.patientKey, a.daysStayed],
+    ['ramot', '2026-09-28', 11000, 11000, 'residential_prorata', '2026-10-15', 1, 30000, kA, 19]);
+  assert.strictEqual(rows.find((r) => r.patientName === 'בני').amount, 9000, 'the saved credit, never the recomputed figure');
+  assert.strictEqual(res.toPay.total, 20000);
   assert.strictEqual(res.zeroByPolicyCount, 1, 'the data-backed 0 is counted, not listed');
   assert.strictEqual(res.missing_payment_data.count, 0, 'a data-backed 0 is not "missing data"');
-  assert.strictEqual(res.decided.count, 1, 'only the >0 pending credit is decided');
 });
 
-test('B: a prepaid cycle counts — rehab exit on day 20 with the next month paid suggests the prepaid return', () => {
+test('B: a zero-amount credit WITHOUT overrideReason is hidden (zeroCreditsHidden) and the stay is recomputed', () => {
+  const g = loadGs({ today: '2026-10-01' });
+  const k = keyOf('ramot', 'אבי', '2026-09-10');
+  g.setPayments([payRow(k, { dueDate: '2026-09-10' })]);
+  g.setDischarged([dis('ramot', 'אבי', '2026-09-10', '2026-09-28')]);
+  g.setCredits([credit({ id: 'zero', patientKey: k, patientName: 'אבי', amount: 0, calculatedAmount: 0, overrideReason: '' })]);
+  const res = g.forecast();
+  assert.strictEqual(res.zeroCreditsHidden, 1);
+  const rows = toPayRows(res);
+  assert.ok(!rows.some((r) => r.creditId === 'zero'), 'the artefact is never listed');
+  assert.deepStrictEqual(rows.map((r) => [r.patientName, r.auto, r.creditId, r.amount, r.payoutDate]), [['אבי', true, '', 11000, '2026-10-15']],
+    'the zero artefact is no decision — the stay is recomputed by policy');
+});
+
+test('B: a prepaid cycle counts — rehab exit on day 20 with the next month paid lists the prepaid return', () => {
   const g = loadGs({ today: '2026-10-01' });
   const k = keyOf('rehab', 'רון', '2026-08-01');
   g.setPayments([payRow(k, { dueDate: '2026-08-01' }), payRow(k, { dueDate: '2026-09-01' })]);
   g.setDischarged([dis('rehab', 'רון', '2026-08-01', '2026-08-20')]);
-  const a = g.forecast().awaiting_decision;
-  assert.strictEqual(a.total, 30000);
-  assert.strictEqual(a.byPayoutDate[0].rows[0].rule, 'prepaid_return');
+  const res = g.forecast();
+  assert.strictEqual(res.toPay.total, 30000);
+  const r = toPayRows(res)[0];
+  assert.deepStrictEqual([r.rule, r.auto, r.payoutDate, r.totalPaid], ['prepaid_return', true, '2026-09-15', 60000]);
+});
+
+test('B: the rule version follows the ENTRY date vs the policy cutover', () => {
+  const g = loadGs({ today: '2026-10-14' });
+  const kOld = keyOf('rehab', 'ישן', '2026-10-06');
+  const kNew = keyOf('rehab', 'חדש', '2026-10-07');
+  g.setPayments([payRow(kOld, { dueDate: '2026-10-06' }), payRow(kNew, { dueDate: '2026-10-07' })]);
+  g.setDischarged([dis('rehab', 'ישן', '2026-10-06', '2026-10-12'), dis('rehab', 'חדש', '2026-10-07', '2026-10-12')]);
+  const res = g.forecast();
+  assert.strictEqual(res.policyCutover, '2026-10-07');
+  const v = Object.fromEntries(toPayRows(res).map((r) => [r.patientName, r.ruleVersion]));
+  assert.deepStrictEqual(v, { 'ישן': 1, 'חדש': 2 });
 });
 
 /* ======================= C. missing_payment_data ======================= */
@@ -247,16 +287,16 @@ test('C: a discharge with no recorded payment is missing_payment_data — never 
     for (const k of Object.keys(r)) assert.notStrictEqual(r[k], 0, `missing row field ${k} must never be 0`);
     assert.ok(!('suggestedAmount' in r) && !('amount' in r), 'a missing row carries no amount');
   }
-  assert.strictEqual(res.awaiting_decision.count, 0);
+  assert.strictEqual(res.toPay.count, 0);
   assert.strictEqual(res.zeroByPolicyCount, 0);
 });
 
-test('C: an unknown house is unresolved with its error code — never 0, never awaiting', () => {
+test('C: an unknown house is unresolved with its error code — never 0, never listed', () => {
   const g = loadGs({ today: '2026-10-01' });
   g.setDischarged([dis('nowhere', 'טל', '2026-09-01', '2026-09-05'), dis('ramot', 'בלי', '', '2026-09-05')]);
   const res = g.forecast();
   assert.deepStrictEqual(res.unresolved.rows.map((r) => [r.patientName, r.error]).sort(), [['בלי', 'bad_date'], ['טל', 'unknown_house']]);
-  assert.strictEqual(res.awaiting_decision.count + res.missing_payment_data.count, 0);
+  assert.strictEqual(res.toPay.count + res.missing_payment_data.count, 0);
 });
 
 /* ======================= D. records cutoff, restored, sections ======================= */
@@ -271,38 +311,57 @@ test('D: the records cutoff — an exit before 2026-07-01 is excluded, on 2026-0
     dis('rehab', 'מחזור לפני', '2026-06-25', '2026-07-01')]);
   const res = g.forecast();
   assert.strictEqual(res.recordsCutoff, '2026-07-01');
-  const names = res.missing_payment_data.rows.map((r) => r.patientName)
-    .concat(res.awaiting_decision.byPayoutDate.flatMap((x) => x.rows.map((r) => r.patientName)));
+  const names = res.missing_payment_data.rows.map((r) => r.patientName).concat(toPayRows(res).map((r) => r.patientName));
   assert.deepStrictEqual(names, ['ביום']);
   assert.strictEqual(res.preCutoffExcludedCount, 1);
 });
 
-test('D: a restored discharge is not a discharge', () => {
+test('D: the records cutoff — a paid stay that exited before 2026-07-01 is never auto-listed', () => {
   const g = loadGs({ today: '2026-10-01' });
-  g.setDischarged([dis('rehab', 'חזר', '2026-09-01', '2026-09-05', { restored: 'TRUE' }), dis('rehab', 'חזר2', '2026-09-01', '2026-09-05', { restored: true })]);
+  const k = keyOf('ramot', 'ישנה', '2026-06-01');
+  g.setPayments([payRow(k, { dueDate: '2026-06-01' })]);
+  g.setDischarged([dis('ramot', 'ישנה', '2026-06-01', '2026-06-10')]);
   const res = g.forecast();
-  assert.strictEqual(res.missing_payment_data.count + res.awaiting_decision.count + res.unresolved.count, 0);
+  assert.strictEqual(res.toPay.count, 0);
 });
 
-test('D: the three sections are never summed — no grand total across them', () => {
+test('D: a restored discharge is not a discharge', () => {
+  const g = loadGs({ today: '2026-10-01' });
+  const k = keyOf('ramot', 'חזר3', '2026-09-10');
+  g.setPayments([payRow(k, { dueDate: '2026-09-10' })]);
+  g.setDischarged([dis('rehab', 'חזר', '2026-09-01', '2026-09-05', { restored: 'TRUE' }), dis('rehab', 'חזר2', '2026-09-01', '2026-09-05', { restored: true }),
+    dis('ramot', 'חזר3', '2026-09-10', '2026-09-28', { restored: 'TRUE' })]);
+  const res = g.forecast();
+  assert.strictEqual(res.missing_payment_data.count + res.toPay.count + res.unresolved.count, 0);
+});
+
+test('D: the sections are never summed — no grand total across them', () => {
   const g = loadGs({ today: '2026-10-01' });
   const res = g.forecast();
   for (const k of ['grandTotal', 'total', 'sum', 'allTotal']) assert.ok(!(k in res), 'no top-level ' + k);
   assert.ok(!('total' in res.missing_payment_data), 'missing data has no money total');
+  assert.ok(!('total' in res.unresolved), 'unresolved has no money total');
 });
 
-/* ======================= E. payout date if decided today ======================= */
+/* ======================= E. payout date by the EXIT date ======================= */
 
-test('E: pending payoutDate if decided today — the 10th gives this month\'s 15th, the 11th the next month\'s', () => {
-  for (const [today, want] of [['2026-10-10', '2026-10-15'], ['2026-10-11', '2026-11-15'], ['2026-12-11', '2027-01-15']]) {
-    const g = loadGs({ today });
-    const k = keyOf('ramot', 'אבי', '2026-09-10');
-    g.setPayments([payRow(k, { dueDate: '2026-09-10' })]);
-    g.setDischarged([dis('ramot', 'אבי', '2026-09-10', '2026-09-28')]);
-    const res = g.forecast();
-    assert.strictEqual(res.today, today);
-    assert.strictEqual(res.payoutDateIfDecidedToday, want, today);
-    assert.deepStrictEqual(res.awaiting_decision.byPayoutDate.map((x) => x.payoutDate), [want], today);
+test('E: a computed row\'s payoutDate follows the EXIT date — the 10th gives that month\'s 15th, the 11th the next month\'s', () => {
+  for (const [entry, exit, want] of [
+    ['2026-09-01', '2026-09-10', '2026-09-15'],
+    ['2026-09-01', '2026-09-11', '2026-10-15'],
+    ['2026-12-01', '2026-12-11', '2027-01-15'],
+  ]) {
+    // today is irrelevant to the date: two different "todays" give the same answer
+    for (const today of ['2026-10-01', '2026-12-20']) {
+      const g = loadGs({ today });
+      const k = keyOf('ramot', 'אבי', entry);
+      g.setPayments([payRow(k, { dueDate: entry })]);
+      g.setDischarged([dis('ramot', 'אבי', entry, exit)]);
+      const res = g.forecast();
+      assert.strictEqual(res.today, today);
+      assert.deepStrictEqual(res.toPay.byPayoutDate.map((x) => x.payoutDate), [want], exit + ' @ ' + today);
+      assert.deepStrictEqual(toPayRows(res).map((r) => r.payoutDate), [want], exit);
+    }
   }
 });
 
@@ -407,7 +466,7 @@ function sampleForecast(g) {
  * through the server-side .xlsx builder; the full format checks live in
  * test/xlsx-export.test.js. */
 
-test('G: xlsx — the real forecast becomes four guarded sheets; no-payment discharges are a count only', async () => {
+test('G: xlsx — the real forecast becomes three guarded sheets; no-payment discharges are a count only', async () => {
   const ExcelJS = require('exceljs');
   const { buildXlsxReport } = require('../lib/xlsx-report');
   const { buildRefundForecastSpec, isForecastResponse } = require('../lib/refund-forecast-xlsx');
@@ -419,11 +478,12 @@ test('G: xlsx — the real forecast becomes four guarded sheets; no-payment disc
   await wb.xlsx.load(buf);
   // A discharge with no recorded payment is DEBT (CHANGELOG-billing-tab-section-colors.md):
   // no sheet for it — only a count line in «סיכום».
-  assert.deepStrictEqual(wb.worksheets.map((w) => w.name), ['סיכום', 'הוחלט', 'ממתין להחלטה', 'לא ניתן לחשב']);
+  assert.deepStrictEqual(wb.worksheets.map((w) => w.name), ['סיכום', 'זיכויים לתשלום', 'לא ניתן לחשב']);
   const texts = [];
   wb.worksheets.forEach((ws) => ws.eachRow((row) => row.eachCell((c) => { if (typeof c.value === 'string') texts.push(c.value); })));
   for (const t of texts) assert.ok(!/^[=+\-@\t\r]/.test(t), 'unguarded cell: ' + t);
-  assert.ok(texts.includes(`'=HYPERLINK("http://x")`) && texts.includes(`'@SUM(A1)`) && texts.includes(`'-2+3`));
+  assert.ok(texts.includes(`'=HYPERLINK("http://x")`) && texts.includes(`'@SUM(A1)`));
+  assert.ok(!texts.some((t) => t.includes('ממתין להחלטה')), 'no decision section any more');
   assert.ok(texts.includes('הופק ב־01/10/2026 09:30'));
   assert.strictEqual(data.missing_payment_data.count, 2);
   let line = null;
@@ -436,12 +496,16 @@ test('G: xlsx — the real forecast becomes four guarded sheets; no-payment disc
 
 /* ======================= H. UI ======================= */
 
-test('H: the forecast HTML — the awaiting label, everything escaped; no-payment discharges are one count line', () => {
+test('H: the list HTML — the «זיכויים לתשלום» labels, no decision text, everything escaped; no-payment discharges are one count line', () => {
   const g = loadGs({ today: '2026-10-01' });
   const data = sampleForecast(g);
+  assert.strictEqual(data.toPay.count, 2, JSON.stringify(data.toPay));
   const app = loadApp(() => ({}));
   const html = app.t.payoutForecastHtml(data);
-  assert.ok(html.includes('ממתין להחלטה — לא לתשלום'));
+  assert.ok(!html.includes('ממתין להחלטה'), 'no awaiting-decision section');
+  assert.ok(html.includes('תאריך תשלום') && html.includes('סכום זיכוי') && html.includes('סה"כ'));
+  assert.ok(html.includes('ישן (לפי בית)'), 'the rule-version label');
+  assert.ok(html.includes('refund-row--auto'), 'a computed row is marked');
   // No section for them any more — one muted line that opens «חובות פתוחים».
   assert.ok(!html.includes('חסרים נתוני תשלום'));
   assert.ok(html.includes('<p class="forecast-missing-line"><a href="#debt-aging-view" data-open-debt-aging>2 משוחררים ללא תשלום רשום — מופיעים ב״חובות פתוחים״</a></p>'));
@@ -453,6 +517,9 @@ test('H: the forecast HTML — the awaiting label, everything escaped; no-paymen
   // count 0 → no line at all
   const none = app.t.payoutForecastHtml(Object.assign({}, data, { missing_payment_data: { count: 0, rows: [] } }));
   assert.ok(!none.includes('forecast-missing-line'));
+  // an empty list says so, explicitly
+  const empty = app.t.payoutForecastHtml(Object.assign({}, data, { toPay: { count: 0, total: 0, byPayoutDate: [], rows: [] } }));
+  assert.ok(empty.includes('אין זיכויים לתשלום'));
 });
 
 test('H: loading then rendered; an error is shown explicitly, never a silent empty list', async () => {
@@ -461,23 +528,29 @@ test('H: loading then rendered; an error is shown explicitly, never a silent emp
   const app = loadApp((body) => g.t.handle(body));
   app.t.state.currentScreen = 'billing';
   app.t.renderPayoutForecast();
-  assert.ok(app.els['credits-forecast'].innerHTML.includes('טוען תחזית החזרים'), 'loading state');
+  assert.ok(app.els['credits-forecast'].innerHTML.includes('טוען זיכויים לתשלום'), 'loading state');
   await app.t.state.payoutForecast.promise;
   assert.strictEqual(app.t.state.payoutForecast.status, 'ok');
-  assert.ok(app.els['credits-forecast'].innerHTML.includes('ממתין להחלטה — לא לתשלום'));
+  const box0 = app.els['credits-forecast'].innerHTML;
+  assert.ok(box0.includes('refund-totals') && !box0.includes('ממתין להחלטה'), box0);
   assert.deepStrictEqual(app.sent().map((b) => b.action), ['refundPayoutForecast']);
 
   const bad = loadApp(() => ({ ok: false, error: 'unauthorized' }));
   bad.t.state.currentScreen = 'billing';
   await bad.t.loadPayoutForecast();
   const box = bad.els['credits-forecast'].innerHTML;
-  assert.ok(box.includes('טעינת תחזית ההחזרים נכשלה') && box.includes('אין להסיק שהן ריקות'), box);
-  assert.ok(bad.errors().some((e) => e.includes('טעינת תחזית ההחזרים נכשלה')));
+  assert.ok(box.includes('טעינת רשימת הזיכויים נכשלה') && box.includes('אין להסיק שהיא ריקה'), box);
+  assert.ok(bad.errors().some((e) => e.includes('טעינת רשימת הזיכויים נכשלה')));
 });
 
 test('H: not fetched off the גבייה screen; a credit save marks it stale', async () => {
   const g = loadGs({ today: '2026-10-01' });
-  const app = loadApp((body) => g.t.handle(body));
+  // A client-created credit is now an approver-only exception on the server
+  // (CHANGELOG-refunds-auto-policy.md); this test is about the client marking
+  // the list stale, so the save itself is answered by a stub.
+  const app = loadApp((body) => (body && body.action === 'saveCredit'
+    ? { ok: true, credit: Object.assign({}, body.credit, { id: 'credit::pt::2026-09::1', status: 'pending' }) }
+    : g.t.handle(body)));
   app.t.renderPayoutForecast();
   assert.deepStrictEqual(app.sent(), [], 'no request while another screen is shown');
   app.t.state.currentScreen = 'billing';
@@ -489,10 +562,15 @@ test('H: not fetched off the גבייה screen; a credit save marks it stale', a
   assert.strictEqual(app.t.state.payoutForecast.status, 'idle', 'stale after a saved credit');
 });
 
-test('H: index.html extends the existing payout section — no second view', () => {
+test('H: index.html has ONE refund section — #credits-forecast, no #credits-payout-list', () => {
   const at = (s) => HTML_SRC.indexOf(s);
-  assert.strictEqual(HTML_SRC.split('id="credits-payout-list"').length, 2, 'one payout list');
-  assert.ok(at('id="credits-payout-list"') < at('id="credits-forecast"'), 'the forecast sits under the existing list');
-  assert.ok(at('id="credits-forecast"') < at('<h3>סיכום חודשי</h3>'), 'inside the same block');
+  assert.ok(!HTML_SRC.includes('credits-payout-list'), 'the old payout list is gone');
+  assert.strictEqual(HTML_SRC.split('id="credits-forecast"').length, 2, 'one forecast box');
+  assert.strictEqual(HTML_SRC.split('data-group="credits"').length, 2, 'one refund section');
+  assert.ok(!HTML_SRC.includes('ממתין להחלטה'), 'no decision section');
+  const sec = at('data-group="credits"');
+  const title = HTML_SRC.indexOf('זיכויים לתשלום', sec);
+  assert.ok(sec >= 0 && title > sec && title < at('id="credits-forecast"'), 'the section title sits above the list');
+  assert.ok(at('id="credits-forecast"') < at('<h3>סיכום חודשי</h3>'), 'before the monthly summary');
   assert.ok(HTML_SRC.includes('id="credits-forecast-export"') && HTML_SRC.includes('ייצוא זיכויים לאקסל'));
 });
