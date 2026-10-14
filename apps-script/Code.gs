@@ -12875,6 +12875,7 @@ function managersWork_(params) {
   if (op === 'houseData') return mwHouseData_(caller, params);
   if (op === 'logAdd') return mwLogAdd_(caller, params);
   if (op === 'logUpdate') return mwLogUpdate_(caller, params);
+  if (op === 'houseCost') return mwHouseCost_(caller, params);
   return { ok: false, error: 'unknown_op' };
 }
 
@@ -13005,6 +13006,71 @@ function mwTeam_(key, todayIso) {
     available: true, updatedAt: d.updatedAt || '', stale: !(age <= MW_DIGEST_STALE_MS),
     today: shifts.filter(function (s) { return s.date === todayIso; }),
     shifts: shifts, staff: staff, therapistWeek: therapistWeek,
+  };
+}
+
+/* Stage 3 — the house's manpower cost (14 Oct 2026), from the staffing
+ * Apps Script feed getHouseCostsForManagers (house TOTALS only, never a
+ * worker). Script Properties: STAFFING_SHEETS_URL (staffing /exec) and
+ * STAFFING_COST_SECRET (= staffing's MANAGERS_COST_READ_SECRET). Unset /
+ * unreachable / bad answer → { available:false, reason } — never a guessed
+ * 0. All houses of a month are cached 10 minutes; only the caller's house
+ * leaves. A separate op so the house page never waits on staffing. */
+const MW_STAFFING_HOUSES = { raanana: ['asher'], ramot: ['ramot'], efroni: ['ofroni'], rehab: ['rehab'], pardes: ['pardes', 'hapardes'] };
+const MW_COST_CACHE_TTL_S = 600;
+const MW_COST_KEYS = ['projectedTotal', 'actualConfirmed', 'estimated', 'missingDataCost', 'instructorsCost'];
+
+function mwFetchStaffingCosts_(ym) {
+  const key = 'mw:staffing-cost:v1:' + ym;
+  const hit = cacheGetJson_(key);
+  if (hit && hit.houses) return hit;
+  const props = PropertiesService.getScriptProperties();
+  const url = String(props.getProperty('STAFFING_SHEETS_URL') || '').trim();
+  const secret = String(props.getProperty('STAFFING_COST_SECRET') || '');
+  if (!url || !secret) return { error: 'not_configured' };
+  if (!/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(url)) return { error: 'not_configured' };
+  let resp;
+  try {
+    resp = UrlFetchApp.fetch(url + '?action=getHouseCostsForManagers&month=' + encodeURIComponent(ym) +
+      '&secret=' + encodeURIComponent(secret), { muteHttpExceptions: true, followRedirects: true });
+  } catch (e) {
+    return { error: 'unreachable' };
+  }
+  let body = null;
+  try { body = JSON.parse(resp.getContentText()); } catch (e) { body = null; }
+  if (!body || body.error || typeof body.houses !== 'object' || body.houses === null) {
+    return { error: body && body.error === 'unauthorized' ? 'unauthorized' : 'unreadable' };
+  }
+  const out = { month: String(body.month || ym), hasActuals: !!body.hasActuals, stale: !!body.stale,
+    generatedAt: String(body.feedGeneratedAt || ''), houses: body.houses };
+  if (!out.stale) cachePutJson_(key, out, MW_COST_CACHE_TTL_S);
+  return out;
+}
+
+function mwHouseCost_(caller, params) {
+  const ym = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(params.month || '')) ? String(params.month) : defaultMonth_();
+  let d;
+  try { d = mwFetchStaffingCosts_(ym); } catch (e) { d = { error: 'unreadable' }; }
+  if (!d || d.error) return { ok: true, house: caller.house, month: ym, cost: { available: false, reason: (d && d.error) || 'unreadable' } };
+  const ids = MW_STAFFING_HOUSES[caller.house] || [];
+  const sum = {}; MW_COST_KEYS.forEach(function (k) { sum[k] = 0; });
+  let budget = null, found = false;
+  ids.forEach(function (id) {
+    const h = d.houses[id];
+    if (!h || typeof h !== 'object') return;
+    found = true;
+    MW_COST_KEYS.forEach(function (k) { const n = Number(h[k]); sum[k] += Number.isFinite(n) ? Math.round(n) : 0; });
+    const b = Number(h.budget);
+    if (h.budget !== null && h.budget !== undefined && Number.isFinite(b)) budget = (budget || 0) + Math.round(b);
+  });
+  if (!found) return { ok: true, house: caller.house, month: ym, cost: { available: false, reason: 'no_house' } };
+  return {
+    ok: true, house: caller.house, month: ym,
+    cost: {
+      available: true, month: d.month, hasActuals: d.hasActuals, stale: d.stale, generatedAt: d.generatedAt,
+      total: sum.projectedTotal, confirmed: sum.actualConfirmed, estimated: sum.estimated,
+      missingData: sum.missingDataCost, instructors: sum.instructorsCost, budget: budget,
+    },
   };
 }
 
