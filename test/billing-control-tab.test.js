@@ -125,7 +125,9 @@ test('lists: Code.gs and lib/ hold the same billing-control lists; nothing new i
   assert.deepEqual(arr(g.run('CONTROLLER_USER_IDS')), [...users.CONTROLLER_USER_IDS]);
   // + the «גבייה» reads (CHANGELOG-ortal-billing-access.md), append-only.
   assert.deepEqual([...scope.CONTROLLER_ACTIONS], ['billingControlQueue', 'confirmPayment', 'debtAging',
-    'getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'cleanupReport']);
+    'getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'cleanupReport',
+    // Appended: «סמן כשולם» (CHANGELOG-refunds-auto-policy.md) — Ortal's one write on «גבייה».
+    'settleRefund']);
   assert.deepEqual(arr(g.run('CONTROLLER_BILLING_READ_ACTIONS')), [...scope.CONTROLLER_BILLING_READ_ACTIONS]);
   assert.deepEqual(arr(g.run('CONTROLLER_GETDATA_KEYS')), [...scope.CONTROLLER_GETDATA_KEYS]);
   const known = arr(g.run('PROXY_KNOWN_ACTIONS'));

@@ -122,7 +122,7 @@ function loadGs(o) {
   vm.createContext(sandbox);
   vm.runInContext(GS_SRC + `
     globalThis.__t = {
-      PAYMENT_COLUMNS, CREDIT_COLUMNS, OPEN_ACTIONS, PROXY_KNOWN_ACTIONS,
+      PAYMENT_COLUMNS, CREDIT_COLUMNS, DISCHARGED_PATIENT_COLUMNS, OPEN_ACTIONS, PROXY_KNOWN_ACTIONS,
       handle: (p) => handle_(p).json,
       post: (body) => doPost({ parameter: {}, postData: { contents: JSON.stringify(body) } }).json,
       computeRefund: (x) => computeRefund_(x),
@@ -135,8 +135,13 @@ function loadGs(o) {
     const cols = Array.from(t.PAYMENT_COLUMNS);
     sandbox.__sheets.Payments = fakeSheet([cols.slice()].concat(rows.map((r) => cols.map((c) => (r[c] === undefined ? '' : r[c])))));
   };
+  // One open row on the discharged sheet — the stay refundPolicyLineFor_ finds.
+  const setDischarged = (rows) => {
+    const cols = Array.from(t.DISCHARGED_PATIENT_COLUMNS);
+    sandbox.__sheets['מטופלים משוחררים'] = fakeSheet([cols.slice()].concat(rows.map((r) => cols.map((c) => (r[c] === undefined ? '' : r[c])))));
+  };
   const snapshot = () => JSON.stringify(Object.keys(sandbox.__sheets).sort().map((k) => [k, sandbox.__sheets[k].grid]));
-  return { t, sandbox, setPayments, snapshot };
+  return { t, sandbox, setPayments, setDischarged, snapshot };
 }
 
 const keyOf = (houseId, name, entry) => `${houseId}::${name}::${entry}`;
@@ -207,14 +212,20 @@ test('A: a prepaid cycle not started at the exit returns in full beside the curr
   assert.strictEqual(res.suggestions[1].basis.cycleEnd, '2026-09-30');
 });
 
-/* A credit saved by the approver from a server suggestion (the shape the
- * policy writes at discharge). */
-function saveFromSuggestion(g, sug, key, decidedDate) {
-  const [houseId, name] = key.split('::');
+/* A credit saved from a server suggestion (the shape the policy writes at
+ * discharge). The stay's discharge row is seeded first, so the server's own
+ * recalculation (refundPolicyLineFor_) matches the amount — no approver is
+ * needed and the stored figure / basis are the server's, decided on the exit. */
+function saveFromSuggestion(g, sug, key, exitDate, user, opts) {
+  const [houseId, name, entry] = key.split('::');
+  g.setDischarged([{ id: 'aud-1', houseId, name, date: entry, pay: 30000, status: 'released', exitDate,
+    dischargedAt: exitDate + 'T09:00:00.000Z', disposition: 'completed', patientId: 'pt-1' }]);
   const res = plain(g.t.upsert({ patientId: 'pt-1', patientKey: key, patientName: name, houseId,
     creditType: sug.creditType, allocationMonth: sug.allocationMonth, calculatedAmount: sug.calculatedAmount,
-    amount: sug.calculatedAmount, decidedDate, basis: sug.basis }, 'סנדרה', { approver: true }));
+    amount: sug.calculatedAmount, decidedDate: '2000-01-01', basis: sug.basis }, user || 'ורד', opts));
   assert.strictEqual(res.ok, true, JSON.stringify(res));
+  assert.strictEqual(res.credit.calculatedAmount, sug.calculatedAmount, 'the server recalculation agrees');
+  assert.strictEqual(res.credit.decidedDate, exitDate, 'decided on the exit date, the client value is ignored');
   return res.credit;
 }
 
@@ -226,6 +237,7 @@ test('A: the credits modal shows the SAVED credit\'s server figure, rule label a
   assert.strictEqual(res.suggestions[0].calculatedAmount, 7000);
   const saved = saveFromSuggestion(g, res.suggestions[0], key, '2026-10-02');
   assert.strictEqual(saved.payoutDate, '2026-10-15', 'refundPayoutDate_(decidedDate)');
+  assert.strictEqual(saved.approvedBy, 'מדיניות אוטומטית', 'a policy-matching save by a non-approver');
   const app = loadApp((body) => g.t.handle(body));
   app.t.state.credits = [app.t.normalizeCredit(saved)];
   const patient = app.t.normalizePatient({ id: 'pt-1', houseId: 'ramot', name: 'דנה', date: '2026-09-10', pay: 30000, status: 'released', exitDate: '2026-10-02' });
@@ -250,7 +262,8 @@ test('A: the approver sees an editable amount and the manual-credit button; a v2
   const key = keyOf('ramot', 'דנה', '2026-10-08');
   g.setPayments([payRow(key, { dueDate: '2026-10-08' })]);
   const res = plain(g.t.handle({ action: 'suggestRefunds', houseId: 'ramot', entryDate: '2026-10-08', exitDate: '2026-10-20', patientKey: key }));
-  const saved = saveFromSuggestion(g, res.suggestions[0], key, '2026-10-20');
+  const saved = saveFromSuggestion(g, res.suggestions[0], key, '2026-10-20', 'סנדרה', { approver: true });
+  assert.strictEqual(saved.approvedBy, 'סנדרה', 'the approver saving the policy figure is stamped by name');
   const app = loadApp((body) => g.t.handle(body));
   app.t.state.approver = true;
   app.t.state.credits = [app.t.normalizeCredit(saved)];
@@ -301,7 +314,10 @@ test('B: payout on the 10th vs the 11th — suggestRefunds, a new saved credit, 
     assert.strictEqual(res.payoutDate, payout, today);
     assert.strictEqual(res.suggestions[0].basis.payoutDate, payout);
     const credit = { patientId: 'pt-1', patientKey: 'ramot::דנה::2026-09-10', patientName: 'דנה', houseId: 'ramot',
-      creditType: 'days_unused', allocationMonth: '2026-09', calculatedAmount: 11000, amount: 11000, decidedDate: today, basis: {} };
+      creditType: 'days_unused', allocationMonth: '2026-09', calculatedAmount: 11000, amount: 11000, decidedDate: today, basis: {},
+      overrideReason: 'זיכוי ידני' };
+    // No discharge row → no policy line: a manual exception (approver + reason),
+    // decided on the day it is saved.
     const saved = g.t.upsert(credit, 'סנדרה', { approver: true });
     assert.strictEqual(saved.ok, true, JSON.stringify(plain(saved)));
     assert.strictEqual(saved.credit.payoutDate, payout, 'saved ' + today);

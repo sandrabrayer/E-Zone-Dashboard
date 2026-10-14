@@ -1331,12 +1331,16 @@ Detail: `CHANGELOG-refunds-auto-policy.md`, plan §8.7. **Nothing to set.**
   - `settleRefund` («סמן כשולם», finance, not the controller view);
   - `approveRefundException` (APPROVER_ACTIONS: Sandra's personal session
     only, on both servers).
-  - **Every client `saveCredit` CREATE** now needs approver, and so does an
-    edit that changes a stored amount.
+  - **`saveCredit` recalculates the policy on the server.** An amount equal to
+    the policy figure is saved with no approval. A different amount, or a
+    manual credit, needs Sandra plus a reason. The client's amount and label
+    are never trusted.
+  - **«סמן כשולם»:** Vered, Ortal and Sandra (Shiran and Yael refused).
 - **`refundPayoutForecast` response:** `toPay`, with totals per payment date, a
   grand total, and rows that carry the full stay. `decided` and
-  `awaiting_decision` are removed. Ortal's schema now carries every row column,
-  including the disposition and discharge note (Sandra, 14/10/2026).
+  `awaiting_decision` are removed. Ortal's schema carries every row column. The
+  reason for leaving is the disposition label only: the free-text discharge
+  note never reaches her.
 - SW `CACHE_VERSION` v61 (live) → **v62**. Code.gs → clasp CI on merge.
 
 ## Dashboard: refund rule v2 — stay day 14, every house (October 7, 2026)

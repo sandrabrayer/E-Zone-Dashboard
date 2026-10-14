@@ -852,8 +852,10 @@ test('Code.gs: DELETE_ACTIONS / APPROVER_ACTIONS are defined — and ENFORCED by
   assert.strictEqual(s.roleOperationFor_('updatePayment', { payment: { status: 'מבוטל' } }), 'voidPayment');
   assert.strictEqual(s.roleOperationFor_('savePayment', { payment: { status: 'paid' } }), '');
   assert.strictEqual(s.roleOperationFor_('saveCredit', { credit: { status: 'cancelled' } }), 'cancelCredit');
-  // A client CREATE is an exception — Sandra only (CHANGELOG-refunds-auto-policy.md); an edit is ordinary.
-  assert.strictEqual(s.roleOperationFor_('saveCredit', { credit: { status: 'pending' } }), 'approveRefundException');
+  // A MANUAL ('other') create is Sandra only, refused up front; any other create is
+  // decided by upsertCredit_ against the recalculated policy (CHANGELOG-refunds-auto-policy.md).
+  assert.strictEqual(s.roleOperationFor_('saveCredit', { credit: { creditType: 'other', status: 'pending' } }), 'approveRefundException');
+  assert.strictEqual(s.roleOperationFor_('saveCredit', { credit: { creditType: 'days_unused', status: 'pending' } }), '');
   assert.strictEqual(s.roleOperationFor_('saveCredit', { credit: { id: 'credit::p::2026-10::1', status: 'pending' } }), '');
   assert.strictEqual(s.roleOperationFor_('removeLead', {}), 'removeLead');
   assert.strictEqual(s.roleAllowed_({}, 'removeLead'), false, 'defined: a non-proxy caller would be refused');

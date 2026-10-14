@@ -8651,8 +8651,9 @@ function openCreditsForDischarged(audit) {
  * list comes from action=refundPayoutForecast (Code.gs, READ-ONLY): every
  * pending credit with amount > 0 (its stored payment date) plus, for a stay
  * with no saved refund yet, the policy's computed lines (auto). Ortal (the
- * controller view) reads the whole list; «סמן כשולם» is a finance write
- * (action=settleRefund) and «חריגה» is Sandra's alone
+ * controller view) reads the whole list (the reason for leaving as the
+ * disposition only); «סמן כשולם» (action=settleRefund) is Vered's, Sandra's
+ * and Ortal's, and «חריגה» is Sandra's alone
  * (action=approveRefundException — APPROVER_ACTIONS, refused server-side for
  * anyone else). Zero-amount credits are never shown.
  * Above the rows: totals per payment date (date, number, ₪) and a grand
@@ -8757,10 +8758,13 @@ function refundLeaveReasonText(r) {
 function refundRuleVersionText(v) {
   return REFUND_RULE_VERSION_LABELS[Number(v)] || '—';
 }
-/* Which row controls this session gets. Display only — the server decides. */
+/* Which row controls this session gets. Display only — the server decides
+ * (settleRefund: Vered, Sandra, Ortal; approveRefundException: Sandra).
+ * Ortal's controller view is never in edit mode, so «סמן כשולם» is offered
+ * to her read view directly; Shiran / Yael never see the list at all. */
 function refundRowControls() {
   const edit = state.mode === 'edit' && financeView() && !controllerView();
-  return { settle: edit, exception: edit && state.approver === true };
+  return { settle: edit || billingReadView(), exception: edit && state.approver === true };
 }
 
 /* Pure: the list as HTML. Every value goes through escapeHtml. */

@@ -1179,8 +1179,8 @@ const FINANCE_ACTIONS = [
    * non-money fields (editReceipt_). Not on CONTROLLER_ACTIONS. */
   'editReceipt',
   /* Appended (CHANGELOG-refunds-auto-policy.md): «סמן כשולם» on «זיכויים
-   * לתשלום». Not on CONTROLLER_ACTIONS. Sandra's approveRefundException is
-   * gated by APPROVER_ACTIONS instead. */
+   * לתשלום» — also on CONTROLLER_ACTIONS (Ortal). Sandra's
+   * approveRefundException is gated by APPROVER_ACTIONS instead. */
   'settleRefund',
 ];
 const FINANCE_USER_IDS = ['vered', 'sandra'];
@@ -1214,7 +1214,10 @@ const BILLING_CONTROL_ACTIONS = ['billingControlQueue', 'confirmPayment'];
 const CONTROLLER_BILLING_READ_ACTIONS = ['getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'debtAging', 'cleanupReport'];
 /* Append-only: the Phase 4 three first, then the «גבייה» reads. */
 const CONTROLLER_ACTIONS = ['billingControlQueue', 'confirmPayment', 'debtAging',
-  'getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'cleanupReport'];
+  'getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'cleanupReport',
+  /* Appended (CHANGELOG-refunds-auto-policy.md): Ortal pays the refunds, so
+   * «סמן כשולם» is the one write of «גבייה» her view reaches. */
+  'settleRefund'];
 const CONTROLLER_GETDATA_KEYS = ['ok', 'patients', 'billingOverrides'];
 const CONTROLLER_USER_IDS = ['ortal'];
 
@@ -1262,11 +1265,12 @@ const CONTROLLER_CLEANUP_SCHEMA = {
   },
 };
 /* «זיכויים לתשלום» (CHANGELOG-refunds-auto-policy.md): Ortal sees the whole
- * list — every column the row shows, including the reason for leaving
- * (disposition + discharge note), as Sandra decided on 14/10/2026. Sandra's
- * free-text overrideReason and the fixed missing-data note stay out. */
+ * list. The reason for leaving reaches her as the DISPOSITION only (a fixed
+ * key → «סיים טיפול» / «הפסיק לפני הזמן» / …) — never the free-text
+ * discharge note (Sandra, 14/10/2026). Sandra's free-text overrideReason and
+ * the fixed missing-data note stay out too. */
 const CONTROLLER_FORECAST_ROW_FIELDS_ = ['creditId', 'auto', 'patientKey', 'patientName', 'houseId', 'totalPaid',
-  'entryDate', 'exitDate', 'disposition', 'dischargeNote', 'daysStayed', 'refundDays', 'amount', 'calculatedAmount',
+  'entryDate', 'exitDate', 'disposition', 'daysStayed', 'refundDays', 'amount', 'calculatedAmount',
   'overridden', 'ruleVersion', 'rule', 'creditType', 'allocationMonth', 'payoutDate'];
 const CONTROLLER_FORECAST_SCHEMA = {
   ok: true, error: true, message: true,
@@ -1765,8 +1769,8 @@ function handle_(params) {
       return jsonOut_(upsertCredit_(parseJsonParam_(params.credit), requestUser_(params),
         { approver: hasRole_(params, 'approver') }));
     }
-    // «זיכויים לתשלום» (CHANGELOG-refunds-auto-policy.md). settleRefund: a
-    // FINANCE write (Vered, Sandra), refused for the controller view.
+    // «זיכויים לתשלום» (CHANGELOG-refunds-auto-policy.md). settleRefund:
+    // Vered, Sandra and Ortal (gated above; Shiran / Yael refused).
     // approveRefundException: APPROVER_ACTIONS — role-gated above (Sandra).
     if (action === 'settleRefund') return jsonOut_(settleRefund_(params, requestUser_(params)));
     if (action === 'approveRefundException') return jsonOut_(approveRefundException_(params, requestUser_(params)));
@@ -2049,14 +2053,15 @@ function roleOperationFor_(action, params) {
   return '';
 }
 
-/* A saveCredit CREATE (no id). Refunds are created by the SERVER from the
- * policy at discharge (CHANGELOG-refunds-auto-policy.md), so a credit a
- * client creates is always an exception — and its calculatedAmount is the
- * client's word, never trusted — Sandra only. Mirrors lib/role-scope.js
- * creditCreateNeedsApprover. An EDIT that changes the stored amount is
- * decided in upsertCredit_ against the stored row. Pure. */
+/* A saveCredit CREATE (no id) of a MANUAL credit ('other') — never a policy
+ * refund, so Sandra only, refused before anything is read. Every other
+ * create / amount edit is decided in upsertCredit_, which recalculates the
+ * policy figure itself and never trusts the client's amount or label
+ * (CHANGELOG-refunds-auto-policy.md). Mirrors lib/role-scope.js
+ * creditCreateNeedsApprover. Pure. */
 function creditCreateNeedsApprover_(credit) {
-  return !!credit && typeof credit === 'object' && String(credit.id == null ? '' : credit.id).trim() === '';
+  return !!credit && typeof credit === 'object' && String(credit.id == null ? '' : credit.id).trim() === '' &&
+    String(credit.creditType == null ? '' : credit.creditType).trim() === 'other';
 }
 
 /* The role an operation needs: 'deleter' | 'approver' | ''. */
@@ -10850,6 +10855,37 @@ function refundPatientIdForStay_(stay) {
   return stay.payKey;
 }
 
+/* The calculation trail of a policy refund (the `reason` column). Pure. */
+function refundAutoReason_(stay, b) {
+  const x = b || {};
+  return ('אוטומטי לפי מדיניות · כלל ' + (Number(x.ruleVersion) === 2 ? 'חדש' : 'ישן') + ' · ' + String(x.rule || '') +
+    ' · כניסה ' + stay.entryDate + ' · יציאה ' + stay.exitDate + ' · ימי זיכוי ' + String(x.creditedDays == null ? '' : x.creditedDays)).slice(0, 1000);
+}
+
+/* The policy line a saved credit stands for: the stay's latest OPEN discharge
+ * (by the credit's patientKey) and the policy line with the same creditType +
+ * allocationMonth, recalculated from the Payments rows. null for a manual
+ * ('other') credit, an unknown stay, a stay the rules refuse, or no such
+ * line. Reads only; under the caller's lock. */
+function refundPolicyLineFor_(patientKey, creditType, month) {
+  if (creditType === 'other') return null;
+  const want = creditStayKey_({ patientKey: patientKey });
+  if (!want) return null;
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const dSh = ss.getSheetByName(DISCHARGED_PATIENTS_SHEET);
+  let stay = null;
+  (dSh ? readSheet_(dSh, DISCHARGED_PATIENT_COLUMNS) : []).forEach(function (d) {
+    const st = refundStayFromDischarge_(d);
+    if (st && st.stayKey === want && (!stay || st.exitDate > stay.exitDate)) stay = st;
+  });
+  if (!stay) return null;
+  const paySh = ss.getSheetByName(PAYMENTS_SHEET);
+  let lines;
+  try { lines = autoRefundLines_(stay, paySh ? readSheet_(paySh, PAYMENT_COLUMNS) : []); } catch (_) { return null; }
+  const hit = lines.filter(function (l) { return l.creditType === creditType && l.allocationMonth === month; })[0];
+  return hit ? { stay: stay, line: hit } : null;
+}
+
 /* The Credits row for one automatic line. Pure (ids and stamps passed in). */
 function autoRefundRecord_(stay, line, patientId, seq, user, nowIso, uid) {
   const b = line.basis || {};
@@ -10860,8 +10896,7 @@ function autoRefundRecord_(stay, line, patientId, seq, user, nowIso, uid) {
     patientName: creditStr_(stay.patientName, 120), houseId: stay.houseId,
     facilityType: facilityTypeFor_(stay.houseId), creditType: line.creditType,
     allocationMonth: line.allocationMonth, calculatedAmount: amount, amount: amount, overrideReason: '',
-    reason: ('אוטומטי לפי מדיניות · כלל ' + (Number(b.ruleVersion) === 2 ? 'חדש' : 'ישן') + ' · ' + String(b.rule || '') +
-      ' · כניסה ' + stay.entryDate + ' · יציאה ' + stay.exitDate + ' · ימי זיכוי ' + String(b.creditedDays == null ? '' : b.creditedDays)).slice(0, 1000),
+    reason: refundAutoReason_(stay, b),
     approvedBy: REFUND_AUTO_APPROVER,
     decidedDate: stay.exitDate, payoutDate: refundPayoutDate_(stay.exitDate),
     status: 'pending', paidDate: '', method: '', notes: '',
@@ -10969,7 +11004,8 @@ function refundTargetLocked_(p, user) {
 }
 
 /* action=settleRefund — «סמן כשולם» on a row of «זיכויים לתשלום».
- * FINANCE (Vered, Sandra); never the controller view. Input: { creditId } or
+ * Vered, Sandra (finance) and Ortal (the controller view — on
+ * CONTROLLER_ACTIONS); Shiran / Yael are refused by financeRefused_. Input: { creditId } or
  * { patientKey, creditType, allocationMonth } (a computed row), plus
  * paidDate (a real day, not in the future) and method (1–40 chars). The row
  * must be pending with amount > 0. Writes status/paidDate/method + stamps. */
@@ -10995,7 +11031,8 @@ function settleRefund_(params, user) {
     writeCreditRow_(t.sh, t.row, out);
     logAudit_('credit_paid', 'settleRefund_', String(c.patientId || ''), String(c.patientName || ''),
       { id: String(c.id), updatedBy: out.updatedBy });
-    return { ok: true, credit: out };
+    // No free text and no amount in the answer — the controller view reads it too.
+    return { ok: true, credit: { id: String(out.id), status: out.status, paidDate: out.paidDate, updatedAt: out.updatedAt } };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
@@ -12279,18 +12316,43 @@ function upsertCredit_(credit, user, opts) {
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return { ok: false, error: 'bad_month' };
     if (CREDIT_TYPES.indexOf(creditType) < 0)    return { ok: false, error: 'bad_creditType', creditType: creditType };
     if (CREDIT_STATUSES.indexOf(status) < 0)     return { ok: false, error: 'bad_status', status: status };
+    /* The POLICY figure, recalculated HERE from the discharge + Payments rows
+     * (CHANGELOG-refunds-auto-policy.md, follow-up). The client's
+     * calculatedAmount, basis and creditType label are never trusted: on a
+     * CREATE the stored calculatedAmount and basis are the server's (0 and a
+     * manual basis when the policy has no such line). */
+    const policy = refundPolicyLineFor_(patientKey, creditType, month);
+    const policyFigure = policy ? creditAmount_(policy.line.calculatedAmount) : null;
+    if (!wantId) {
+      record.calculatedAmount = policy ? policyFigure : 0;
+      record.basis = policy ? JSON.stringify(Object.assign({}, policy.line.basis, { savedFromClient: true }))
+                            : JSON.stringify({ manual: true });
+    }
     const calculated = creditAmount_(record.calculatedAmount);
     const amount     = creditAmount_(record.amount === undefined || record.amount === '' ? record.calculatedAmount : record.amount);
     if (calculated === null || amount === null) return { ok: false, error: 'bad_amount' };
-    const overrideReason = creditStr_(record.overrideReason, 300);
-    const reason         = creditStr_(record.reason, 1000);
+    let overrideReason = creditStr_(record.overrideReason, 300);
+    let reason         = creditStr_(record.reason, 1000);
     if (!wantId && amount <= 0) return { ok: false, error: 'zero_amount_credit' };
-    const needsApprover = wantId ? amountChanged : true;
+    // Equal to the policy figure → no approval; a different amount, or a
+    // manual credit (no policy line), → Sandra's approver session + a reason.
+    const matchesPolicy = policyFigure !== null && amount === policyFigure;
+    const needsApprover = wantId ? (amountChanged && !matchesPolicy) : !matchesPolicy;
     if (needsApprover && !approver) {
       return { ok: false, error: 'override_requires_approver', message: ROLE_FORBIDDEN_MESSAGE };
     }
-    if (amount !== calculated && !overrideReason) return { ok: false, error: 'override_reason_required' };
+    if (!wantId && !matchesPolicy && creditType === 'other' && !overrideReason) overrideReason = creditStr_(reason, 300);
+    if (amount !== calculated && !overrideReason && !matchesPolicy) return { ok: false, error: 'override_reason_required' };
     if (creditType === 'other' && !reason)        return { ok: false, error: 'reason_required' };
+    // An approved exception is stamped with the approver — never the client's text.
+    if (needsApprover) record.approvedBy = stampUser;
+    if (!wantId && matchesPolicy) {
+      // A policy refund saved from the browser: the server's trail and stamps,
+      // decided on the exit date like the automatic one.
+      reason = refundAutoReason_(policy.stay, policy.line.basis);
+      record.approvedBy = approver ? stampUser : REFUND_AUTO_APPROVER;
+      record.decidedDate = policy.stay.exitDate;
+    }
     const decidedRaw = creditDate_(record.decidedDate);
     if (decidedRaw === null) return { ok: false, error: 'bad_decidedDate' };
     const decidedDate = decidedRaw || todayISODate_();   // blank → today; invalid → refused above
@@ -12310,7 +12372,7 @@ function upsertCredit_(credit, user, opts) {
       allocationMonth:  month,
       calculatedAmount: calculated,
       amount:           amount,
-      overrideReason:   amount !== calculated ? overrideReason : '',
+      overrideReason:   amount !== calculated && !matchesPolicy ? overrideReason : '',
       reason:           reason,
       approvedBy:       creditStr_(record.approvedBy, 40),
       decidedDate:      decidedDate,

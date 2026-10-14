@@ -84,18 +84,44 @@ The constant is defined **once**, in `apps-script/Code.gs`.
 - **What it writes:** `amount`, `overrideReason` and `approvedBy`.
   `calculatedAmount` never changes.
 
-**`saveCredit`:**
-- **Any CREATE needs approver.** A credit created by the client is always an
-  exception, and its `calculatedAmount` is only the client's word. This is
-  mapped to `approveRefundException` in `roleOperationFor_`, on both servers.
-- **An EDIT that changes the stored amount** needs approver
-  (`override_requires_approver`, decided against the stored row).
+**`saveCredit` — the server recalculates the policy itself (follow-up):**
+- **On every save from the browser**, `upsertCredit_` recalculates the policy
+  figure with `refundPolicyLineFor_`:
+  - it finds the stay's latest open discharge by the credit's `patientKey`;
+  - it recomputes the lines from the Payments rows (`autoRefundLines_`);
+  - it picks the line with the same `creditType` + `allocationMonth`.
+- **The client is never trusted.** Its `calculatedAmount`, `basis`, rule label
+  and `approvedBy` are ignored. A create stores the server's figure and basis:
+  0 and `{manual:true}` when the policy has no such line.
+- **Amount equal to the policy figure:** saved with **no approval** (Vered
+  too). The server writes its own trail, `approvedBy 'מדיניות אוטומטית'`, and
+  `decidedDate` = the exit date, so the payment date follows the exit.
+- **A different amount, a line the policy doesn't have, or a manual
+  (`other`) credit:** needs **Sandra's personal approver session plus a
+  reason** (`override_requires_approver` / `override_reason_required`). For a
+  manual credit, its reason is the override reason. `approvedBy` is stamped
+  with the approver.
+  - Only a manual create is refused up front, as `approveRefundException` in
+    `roleOperationFor_` on both servers. `server.js` can't recalculate the
+    policy, so every other create is decided by `Code.gs`.
+- **An EDIT that changes the stored amount:**
+  - back to the recalculated policy figure → no approval;
+  - anything else → Sandra.
 - **Vered** can still edit status, paid date and notes.
 
 ## «סמן כשולם» — action `settleRefund`
 
-- **Who:** finance users (Vered, Sandra). It is on `FINANCE_ACTIONS` in both
-  copies and **not** on `CONTROLLER_ACTIONS`.
+- **Who:** Vered, Sandra **and Ortal**. Shiran and Yael are refused (403 in
+  `server.js`, `forbidden` in `Code.gs`, nothing read or written).
+  - It is on `FINANCE_ACTIONS` and, appended, on `CONTROLLER_ACTIONS` in both
+    copies, so Ortal's controller view reaches it. That is her only write on
+    «גבייה».
+  - She never reaches `approveRefundException` or `saveCredit`.
+- **A row that isn't saved yet:** the server writes it from its own policy
+  calculation first. Any amount, `calculatedAmount` or rule sent in the body is
+  ignored.
+- **The answer** carries only `id`, `status`, `paidDate` and `updatedAt`: no
+  amount and no free text.
 - **Input:**
   - `paidDate`: a real day, not in the future;
   - `method`: 1–40 characters, with any formula lead-in stripped.
@@ -120,8 +146,14 @@ refunds, total ₪) and a grand total.
 
 Sandra also sees «חריגה». A computed row has a dashed edge.
 
-**Ortal** (the controller view) sees the whole list read-only, with every row
-column. Sandra's free-text `overrideReason` stays out of every list row.
+**Ortal** (the controller view) sees the whole list, with every row column, and
+can mark refunds paid.
+- **Reason for leaving:** she sees the **disposition label only** («סיים
+  טיפול» / «הפסיק לפני הזמן» / «לא רלוונטי» / …). The free-text discharge note
+  is cut from her answer (`dischargeNote` is not in
+  `CONTROLLER_FORECAST_SCHEMA`, in either `Code.gs` or `lib/finance-scope.js`),
+  so no discharge free text reaches her. Vered and Sandra still see the note.
+- **Sandra's free-text `overrideReason`** stays out of every list row.
 
 **What stays as it was:** the grey «לא ניתן לחשב» block and the muted
 "no recorded payment → «חובות פתוחים»" line.
@@ -166,7 +198,9 @@ removed. `CONTROLLER_FORECAST_SCHEMA` was updated in both `Code.gs` and
 
 ## Service worker
 
-`CACHE_VERSION` v61 → **v62**. Production `/sw.js` served v61 on 14/10/2026,
+`CACHE_VERSION` v61 → **v62**. The follow-up changed `public/app.js` again.
+Production still served v61 and no other branch was above it, so v62 (this
+unmerged PR) is still the next free number. No further bump. Production `/sw.js` served v61 on 14/10/2026,
 and every remote branch was at v61 or lower. v17 stays burned.
 
 ## Tests
@@ -182,8 +216,18 @@ and every remote branch was at v61 or lower. v17 stays burned.
   - zero-amount credits hidden and kept on the sheet;
   - the server-side exception permissions (Vered, Ortal and Sandra), for a
     saved row and for a computed row;
-  - «סמן כשולם»;
-  - Ortal's full view;
+  - «סמן כשולם», including a forged amount or rule that is ignored;
+  - follow-up, policy recalculation:
+    - Vered saves a policy-matching amount with no approval, and the server
+      keeps its own figure, basis, trail and dates;
+    - a different amount, a line the policy doesn't have, or a manual credit
+      needs Sandra plus a reason;
+    - an edit back to the policy figure needs no approval;
+  - follow-up, «סמן כשולם» permissions per role on both servers: Vered, Ortal
+    and Sandra allowed; Shiran and Yael refused with nothing written or
+    proxied;
+  - follow-up, Ortal's view: the disposition label only; the discharge note's
+    free text reaches her nowhere (Code.gs and lib cut);
   - the screen, escaped;
   - no modal after a discharge.
 - **Updated** for the new shape: refund-payout-forecast, credits-ledger,

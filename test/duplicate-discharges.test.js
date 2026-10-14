@@ -320,10 +320,14 @@ test('credits: «זיכויים (N)» counts per STAY — two duplicate rows sho
 test('upsertCredit_: a second OPEN credit for the same stay + rule is refused (duplicate:true, the existing id); cancelled / other rules / other stays are not', () => {
   const s = seeded();
   const base = { patientId: 'pt-1', patientKey: HOUSE + '::' + NAME + '::' + ENTRY, patientName: NAME, houseId: HOUSE,
-    creditType: 'days_unused', allocationMonth: '2026-09', calculatedAmount: 1000, amount: 1000, basis: { exitDate: EXIT } };
-  // A client-created credit is an exception — Sandra's approver session only
-  // (CHANGELOG-refunds-auto-policy.md); Vered is refused before anything is read.
-  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: base }, VERED())).error, 'forbidden_role');
+    creditType: 'days_unused', allocationMonth: '2026-09', calculatedAmount: 1000, amount: 1000, overrideReason: 'חריגה', basis: { exitDate: EXIT } };
+  // No discharge row behind this stay → no policy line: the create is an
+  // exception — Sandra's approver session + a reason
+  // (CHANGELOG-refunds-auto-policy.md). Vered's 'other' create is refused at
+  // the role gate; her other creates by upsertCredit_.
+  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: base }, VERED())).error, 'override_requires_approver');
+  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: Object.assign({}, base, { creditType: 'other', reason: 'פיצוי' }) }, VERED())).error, 'forbidden_role');
+  assert.equal(s.rows('Credits', 'CREDIT_COLUMNS').length, 0, 'nothing written');
   const r1 = s.g.post(Object.assign({ action: 'saveCredit', credit: base }, SANDRA()));
   assert.equal(r1.ok, true); assert.equal(r1.created, true);
   const before = s.snapshot('Credits');
