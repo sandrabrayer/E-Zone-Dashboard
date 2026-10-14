@@ -265,6 +265,15 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
   with follow-up dates. New sheets `ManagersFamilyCalls`, `ManagersStaffTalks`,
   `ManagersEvents`. Details: `CHANGELOG-managers-work-tool.md`.
 
+## Dashboard Apps Script: managers work tool stage 2, the house team (October 14, 2026)
+
+- `managersWork` `houseData` adds `team`: today's shifts, the next 14 days of shifts, the
+  staff list and the therapists' week.
+- It reads the Coordinators-owned **ManagersHouse** digest through the new Script Property
+  `MANAGERS_DIGEST_SHEET_ID`, which has the same id on both Apps Scripts.
+- When it can't read the digest, it returns `available:false` with a reason, never an empty team.
+- Details: `CHANGELOG-managers-team.md` and `DIGEST-CONTRACT.md`.
+
 ## Dashboard Apps Script: one-time referral facts for the Managers bonus (October 13, 2026)
 
 - `managersOverview_` / `managersHouse_` append `referralStarts: { count,
