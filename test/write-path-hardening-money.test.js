@@ -282,7 +282,11 @@ test('server R3: a credit edit retried with the pre-save stamp replays for the s
     patientId: 'p1', patientKey: 'arfoni::דנה כהן::2026-09-15', patientName: 'דנה כהן', houseId: 'arfoni',
     creditType: 'other', allocationMonth: '2026-09', calculatedAmount: 100, amount: 100, reason: 'פיצוי', status: 'pending',
   };
-  const created = w.call({ action: 'saveCredit', credit: base });
+  // A client-created credit is an exception: Sandra's approver session only
+  // (CHANGELOG-refunds-auto-policy.md). The edits below are Vered's.
+  const SANDRA = () => actor('sandra', 'סנדרה', ['staff', 'deleter', 'approver'], ['finance', 'billingControl']);
+  assert.equal(w.call({ action: 'saveCredit', credit: base }).error, 'forbidden_role', 'Vered cannot create a credit');
+  const created = w.call({ action: 'saveCredit', credit: base }, SANDRA);
   assert.equal(created.ok, true, JSON.stringify(created));
   const edit = { id: created.credit.id, updatedAt: created.credit.updatedAt, notes: 'עודכן' };
   /* The stamp is a millisecond ISO time: a create and an edit in the same

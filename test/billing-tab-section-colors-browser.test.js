@@ -38,11 +38,19 @@ const skip = !playwright ? 'playwright is not installed' : (!chromiumPath ? 'no 
 const TYPES = { '.css': 'text/css', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.png': 'image/png' };
 
 const FORECAST = {
-  ok: true, today: '2026-10-02', recordsCutoff: '2026-07-01', payoutDateIfDecidedToday: '2026-10-15', zeroByPolicyCount: 1,
-  decided: { count: 0, total: 0, byPayoutDate: [], byHouse: [] },
-  awaiting_decision: { count: 1, total: 6200, byPayoutDate: [{ payoutDate: '2026-10-15', count: 1, total: 6200,
-    rows: [{ patientName: 'מיכל לוי', houseId: 'pardes', entryDate: '2026-08-10', exitDate: '2026-09-24', suggestedAmount: 6200, rule: 'residential_prorata', payoutDate: '2026-10-15' }] }],
-  byHouse: [{ houseId: 'pardes', count: 1, total: 6200 }] },
+  ok: true, today: '2026-10-02', recordsCutoff: '2026-07-01', policyCutover: '2026-10-01', zeroByPolicyCount: 1, preCutoffExcludedCount: 0, zeroCreditsHidden: true,
+  toPay: { count: 2, total: 9700,
+    byPayoutDate: [{ payoutDate: '2026-10-15', count: 2, total: 9700 }],
+    rows: [
+      { creditId: '', auto: true, patientKey: 'pardes::מיכל לוי::2026-08-10', patientName: 'מיכל לוי', houseId: 'pardes', totalPaid: 60000,
+        entryDate: '2026-08-10', exitDate: '2026-09-24', disposition: 'stopped_early', dischargeNote: 'החליטה לעזוב', daysStayed: 45, refundDays: 7,
+        amount: 6200, calculatedAmount: 6200, overridden: false, ruleVersion: 1, rule: 'residential_prorata', creditType: 'days_unused',
+        allocationMonth: '2026-10', payoutDate: '2026-10-15' },
+      { creditId: 'credit::p9::2026-09::1', auto: false, patientKey: 'ramot::רון לוי::2026-07-01', patientName: 'רון לוי', houseId: 'ramot', totalPaid: 30000,
+        entryDate: '2026-07-01', exitDate: '2026-09-08', disposition: 'completed', dischargeNote: '', daysStayed: 69, refundDays: 3,
+        amount: 3500, calculatedAmount: 3500, overridden: false, ruleVersion: 1, rule: 'residential_prorata', creditType: 'days_unused',
+        allocationMonth: '2026-09', payoutDate: '2026-10-15' },
+    ] },
   missing_payment_data: { count: 2, rows: [
     { patientName: 'נועה ים', houseId: 'rehab', entryDate: '2026-09-01', exitDate: '2026-09-05', note: '' },
     { patientName: 'עדי כץ', houseId: 'asher', entryDate: '2026-07-05', exitDate: '2026-08-20', note: '' }] },
@@ -120,7 +128,9 @@ const SEED = `
 `;
 
 const rgb = (hex) => `rgb(${hexToRgb(hex).join(', ')})`;
-const GROUPS = { due: 'due', open: 'open', credits: 'credits', awaiting: 'awaiting', unresolved: 'unresolved', debt: 'debt' };
+// The refund area has ONE green group (refunds are automatic — no decision
+// group, CHANGELOG-refunds-auto-policy.md); «לא ניתן לחשב» stays grey.
+const GROUPS = { due: 'due', open: 'open', credits: 'credits', unresolved: 'unresolved', debt: 'debt' };
 
 test('גבייה groups in Chromium: bold coloured headings with a right-side bar, tinted panels, no sideways scroll at 360px', { skip }, async () => {
   const asked = [];
@@ -133,7 +143,16 @@ test('גבייה groups in Chromium: bold coloured headings with a right-side ba
       page.on('pageerror', (e) => errors.push(String(e)));
       await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: 'networkidle' });
       await page.evaluate(SEED);
-      await page.waitForSelector('#credits-forecast .bill-group--awaiting');
+      await page.waitForSelector('#credits-forecast .refund-row');
+      // the forecast renders INSIDE the green group, with no decision group
+      assert.strictEqual(await page.$eval('#credits-forecast', (e) => !!e.closest('.bill-group--credits')), true);
+      assert.strictEqual(await page.$$eval('#credits-forecast .bill-group--awaiting, #credits-payout-list', (els) => els.length), 0);
+      // totals per payment date + a grand total, then one row per refund
+      assert.strictEqual(await page.$$eval('#credits-forecast .refund-totals-table tbody tr', (els) => els.length), 1);
+      const grand = await page.$eval('#credits-forecast .refund-grand-total', (e) => e.textContent);
+      assert.ok(/9,700/.test(grand) && grand.includes('2'), grand);
+      assert.strictEqual(await page.$$eval('#credits-forecast .refund-row', (els) => els.length), 2);
+      assert.ok((await page.$eval('#credits-forecast', (e) => e.textContent)).includes('הפסיק לפני הזמן — החליטה לעזוב'));
 
       for (const key of Object.keys(GROUPS)) {
         const s = await page.$eval(`.bill-group--${key} .bill-group-title`, (h) => {

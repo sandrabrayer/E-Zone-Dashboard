@@ -274,6 +274,30 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
   with follow-up dates. New sheets `ManagersFamilyCalls`, `ManagersStaffTalks`,
   `ManagersEvents`. Details: `CHANGELOG-managers-work-tool.md`.
 
+## Dashboard Apps Script: managers house manpower cost (October 14, 2026)
+
+- `managersWork` op `houseCost` returns the caller's house cost totals for a month, from the
+  staffing feed `getHouseCostsForManagers`.
+- Script Properties: `STAFFING_SHEETS_URL` and `STAFFING_COST_SECRET` (= staffing's
+  `MANAGERS_COST_READ_SECRET`).
+- When the cost can't be read, it returns `available:false`, never 0.
+- Details: `CHANGELOG-managers-house-cost.md`.
+
+## Dashboard Apps Script: managers expected admissions (October 14, 2026)
+
+- `managersWork` `houseData` adds `expectedAdmissions`: the open leads of the house with a
+  planned entry date between today and +13 days (name, date, stage and who met them only).
+- Details: `CHANGELOG-managers-expected-admissions.md`.
+
+## Dashboard Apps Script: managers work tool stage 2, the house team (October 14, 2026)
+
+- `managersWork` `houseData` adds `team`: today's shifts, the next 14 days of shifts, the
+  staff list and the therapists' week.
+- It reads the Coordinators-owned **ManagersHouse** digest through the new Script Property
+  `MANAGERS_DIGEST_SHEET_ID`, which has the same id on both Apps Scripts.
+- When it can't read the digest, it returns `available:false` with a reason, never an empty team.
+- Details: `CHANGELOG-managers-team.md` and `DIGEST-CONTRACT.md`.
+
 ## Dashboard Apps Script: one-time referral facts for the Managers bonus (October 13, 2026)
 
 - `managersOverview_` / `managersHouse_` append `referralStarts: { count,
@@ -1316,6 +1340,42 @@ Detail: `CHANGELOG-funder-grace.md`, plan §7.5. **Nothing to set.**
 - Code.gs changes, so clasp CI deploys it on merge. There is no data change
   and no new action, Script Property, env var, column or trigger.
 
+## Dashboard: refunds automatic by policy — one list «זיכויים לתשלום» (October 14, 2026)
+
+Detail: `CHANGELOG-refunds-auto-policy.md`, plan §8.7. **Nothing to set.**
+
+- **No decision step.** The server creates the refund at discharge
+  (`dischargePatient_`, `recordDischargeFromCoordinators_`). It writes only
+  positive lines, `pending`, `approvedBy 'מדיניות אוטומטית'`.
+  - **Payment date by the exit date:** ≤ 10th → the 15th of that month,
+    else the 15th of the next.
+  - **Removed:** «ממתין להחלטה — לא לתשלום», the old pending list and the
+    post-discharge modal.
+- **The rule by the ENTRY date:** `REFUND_POLICY_CUTOVER = '2026-10-07'`, only
+  in `Code.gs`, with a guard test.
+  - Entry on or after the cutover: the unified stay-day-14 rule for every
+    house.
+  - Entry earlier: the old per-house rule, unchanged.
+  - This replaces the exit-date `REFUND_RULE_V2_FROM` below.
+- **Zero-amount credits** (the 7 «ימים שלא נוצלו» ₪0 rows the old modal saved):
+  never created again, hidden from the list, not counted as a decision. They
+  stay on the sheet.
+- **New actions:**
+  - `settleRefund` («סמן כשולם», finance, not the controller view);
+  - `approveRefundException` (APPROVER_ACTIONS: Sandra's personal session
+    only, on both servers).
+  - **`saveCredit` recalculates the policy on the server.** An amount equal to
+    the policy figure is saved with no approval. A different amount, or a
+    manual credit, needs Sandra plus a reason. The client's amount and label
+    are never trusted.
+  - **«סמן כשולם»:** Vered, Ortal and Sandra (Shiran and Yael refused).
+- **`refundPayoutForecast` response:** `toPay`, with totals per payment date, a
+  grand total, and rows that carry the full stay. `decided` and
+  `awaiting_decision` are removed. Ortal's schema carries every row column. The
+  reason for leaving is the disposition label only: the free-text discharge
+  note never reaches her.
+- SW `CACHE_VERSION` v61 (live) → **v62**. Code.gs → clasp CI on merge.
+
 ## Dashboard: refund rule v2 — stay day 14, every house (October 7, 2026)
 
 Detail: `CHANGELOG-refund-rule-v2.md`, plan §8.6. **Nothing to set.**
@@ -1329,7 +1389,8 @@ Detail: `CHANGELOG-refund-rule-v2.md`, plan §8.6. **Nothing to set.**
     stay the same day.
 - **Unchanged:** the prepaid full refund, the payout timing (by the 10th → the
   15th), and the rule that exceptions are Sandra-only.
-- **Selected by the EXIT date:** `REFUND_RULE_V2_FROM = '2026-10-07'`. An
+- **Selected by the EXIT date** (superseded 14/10/2026: now by the ENTRY date,
+  `REFUND_POLICY_CUTOVER` — see the section above): `REFUND_RULE_V2_FROM`. An
   earlier exit keeps the old per-house rule (the last 7 days for אשר / רמות,
   stay day 14 for the others). Saved credits are never recomputed.
 - **The shared rule** is in `lib/refund-rules.js` (served at

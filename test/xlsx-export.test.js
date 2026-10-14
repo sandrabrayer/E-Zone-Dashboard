@@ -2,7 +2,7 @@
  *   A. lib/xlsx-report.js — the generated buffer, re-opened with exceljs: RTL,
  *      frozen header, autoFilter, number formats, real date cells, bold totals,
  *      column widths, sheet names and the formula guard.
- *   B. lib/refund-forecast-xlsx.js — five sheets; no section total is ever
+ *   B. lib/refund-forecast-xlsx.js — three sheets; no section total is ever
  *      summed with another; missing rows carry no amount; labels mirror app.js.
  *   C. GET /api/export/refund-forecast.xlsx — 401 without a session; headers,
  *      RFC 5987 filename, no-store; failures are JSON; no patient data in logs.
@@ -182,43 +182,54 @@ test('A: toExcelDate / isoDayInIsrael / formatStamp', () => {
 /* ======================= B. the refund-forecast workbook ======================= */
 
 function forecastFixture() {
-  const decidedRows = [
-    { creditId: 'c1', patientName: '@SUM(A1)', houseId: 'ramot', amount: 1000, decidedDate: '2026-09-14', payoutDate: '2026-09-15', rule: 'residential_prorata', overrideReason: '-2+3' },
-    { creditId: 'c2', patientName: 'דנה', houseId: 'rehab', amount: 500, decidedDate: '2026-09-20', payoutDate: '2026-10-15', rule: 'days_unused', overrideReason: '' },
-  ];
-  const awaitingRows = [
-    { patientName: '=HYPERLINK("http://x")', houseId: 'ramot', entryDate: '2026-09-10', exitDate: '2026-09-28', suggestedAmount: 2345, rule: 'residential_prorata,prepaid_return', payoutDate: '2026-10-15' },
+  const rows = [
+    { creditId: 'c1', auto: false, patientKey: 'k1', patientName: '@SUM(A1)', houseId: 'ramot', totalPaid: 12000, entryDate: '2026-08-20', exitDate: '2026-09-08',
+      disposition: 'stopped_early', dischargeNote: '-2+3', daysStayed: 19, refundDays: 9, amount: 1000, calculatedAmount: 1000, overridden: false,
+      ruleVersion: 1, rule: 'residential_prorata', creditType: 'days_unused', allocationMonth: '2026-09', payoutDate: '2026-09-15' },
+    { creditId: '', auto: true, patientKey: 'k2', patientName: 'דנה', houseId: 'rehab', totalPaid: 8000, entryDate: '2026-09-10', exitDate: '2026-09-28',
+      disposition: 'completed', dischargeNote: '', daysStayed: 18, refundDays: 3, amount: 500, calculatedAmount: 500, overridden: false,
+      ruleVersion: 2, rule: 'stay_prorata,prepaid_return', creditType: 'days_unused', allocationMonth: '2026-10', payoutDate: '2026-10-15' },
+    { creditId: 'c3', auto: false, patientKey: 'k3', patientName: '=HYPERLINK("http://x")', houseId: 'ramot', totalPaid: 9000, entryDate: '2026-09-01', exitDate: '2026-09-25',
+      disposition: 'released_outpatient', dischargeNote: 'עבר לטיפול חוץ', daysStayed: 24, refundDays: 4, amount: 2345, calculatedAmount: 2000, overridden: true,
+      ruleVersion: 2, rule: 'stay_prorata', creditType: 'days_unused', allocationMonth: '2026-10', payoutDate: '2026-10-15' },
   ];
   return {
-    ok: true, today: '2026-10-02', recordsCutoff: '2026-07-01', payoutDateIfDecidedToday: '2026-10-15', generatedAt: NOW.toISOString(),
-    decided: {
-      count: 2, total: 1500,
+    ok: true, today: '2026-10-02', recordsCutoff: '2026-07-01', policyCutover: '2026-10-01',
+    toPay: {
+      count: 3, total: 3845,
       byPayoutDate: [
-        { payoutDate: '2026-09-15', total: 1000, count: 1, rows: [decidedRows[0]] },
-        { payoutDate: '2026-10-15', total: 500, count: 1, rows: [decidedRows[1]] },
+        { payoutDate: '2026-09-15', count: 1, total: 1000 },
+        { payoutDate: '2026-10-15', count: 2, total: 2845 },
       ],
-      byHouse: [{ houseId: 'ramot', total: 1000, count: 1 }, { houseId: 'rehab', total: 500, count: 1 }],
-    },
-    awaiting_decision: {
-      count: 1, total: 2345,
-      byPayoutDate: [{ payoutDate: '2026-10-15', total: 2345, count: 1, rows: awaitingRows }],
-      byHouse: [{ houseId: 'ramot', total: 2345, count: 1 }],
+      rows,
     },
     missing_payment_data: { count: 1, rows: [{ patientName: '+972-50', houseId: 'rehab', entryDate: '2026-09-02', exitDate: '2026-09-06', note: 'אין תשלום רשום — לבדוק' }] },
     unresolved: { count: 1, rows: [{ patientName: 'יוסי', houseId: 'mars', entryDate: '2026-08-01', exitDate: '2026-09-01', error: 'unknown_house' }] },
-    zeroByPolicyCount: 4,
+    zeroByPolicyCount: 40, preCutoffExcludedCount: 2, zeroCreditsHidden: true,
   };
 }
 
 async function forecastBook(data) {
   return openBook(await report.buildXlsxReport(forecastXlsx.buildRefundForecastSpec(data || forecastFixture(), NOW)));
 }
+function rowWhere(ws, col, value) {
+  let found = null;
+  ws.eachRow((x) => { if (!found && x.getCell(col).value === value) found = x; });
+  return found;
+}
+function headerOf(ws) {
+  const r = ws.getRow(ws.views[0].ySplit);
+  const out = [];
+  r.eachCell((c) => out.push(c.value));
+  return out;
+}
 
-test('B: four sheets with the agreed Hebrew names, every one RTL with a frozen header', async () => {
+test('B: three sheets with the agreed Hebrew names, every one RTL with a frozen header', async () => {
   const wb = await forecastBook();
   // No sheet for discharges with no recorded payment — they are debt, shown in
   // «חובות פתוחים»; «סיכום» keeps their count (CHANGELOG-billing-tab-section-colors.md).
-  assert.deepStrictEqual(wb.worksheets.map((w) => w.name), ['סיכום', 'הוחלט', 'ממתין להחלטה', 'לא ניתן לחשב']);
+  // No decision sheet — refunds are automatic (CHANGELOG-refunds-auto-policy.md).
+  assert.deepStrictEqual(wb.worksheets.map((w) => w.name), ['סיכום', 'זיכויים לתשלום', 'לא ניתן לחשב']);
   wb.worksheets.forEach((ws) => {
     assert.strictEqual(ws.views[0].rightToLeft, true, ws.name + ' RTL');
     assert.strictEqual(ws.views[0].state, 'frozen', ws.name + ' frozen');
@@ -229,34 +240,53 @@ test('B: four sheets with the agreed Hebrew names, every one RTL with a frozen h
   });
 });
 
-test('B: «הוחלט» — stored payout dates as dates, money, rule labels, guarded text, own total', async () => {
-  const ws = (await forecastBook()).getWorksheet('הוחלט');
-  const row = (() => { let r = null; ws.eachRow((x) => { if (x.getCell(2).value === "'@SUM(A1)") r = x; }); return r; })();
-  assert.ok(row, 'decided row present, name guarded');
+test('B: «זיכויים לתשלום» — every screen column, payout dates as dates, money, leave reason, rule, guarded text, own total', async () => {
+  const ws = (await forecastBook()).getWorksheet('זיכויים לתשלום');
+  assert.deepStrictEqual(headerOf(ws), [
+    'תאריך תשלום', 'מטופל', 'בית', 'סה"כ שולם', 'תאריך כניסה', 'תאריך יציאה', 'סיבת עזיבה',
+    'ימי שהייה', 'ימי זיכוי', 'סכום זיכוי (כולל מע"מ)', 'כלל', 'פירוט הכלל',
+  ]);
+  const row = rowWhere(ws, 2, "'@SUM(A1)");
+  assert.ok(row, 'row present, name guarded');
   assert.strictEqual(row.getCell(1).value.toISOString().slice(0, 10), '2026-09-15');
   assert.strictEqual(row.getCell(1).numFmt, 'dd/mm/yyyy');
   assert.strictEqual(row.getCell(3).value, 'רמות השבים');
-  assert.strictEqual(row.getCell(4).value, 1000);
+  assert.strictEqual(row.getCell(4).value, 12000);
   assert.strictEqual(row.getCell(4).numFmt, '"₪"#,##0');
-  assert.strictEqual(row.getCell(6).value, 'מגורים — זיכוי יחסי על הימים שלא שהה');
-  assert.strictEqual(row.getCell(7).value, "'-2+3");
-  const tot = findRow(ws, 'סה"כ הוחלט');
-  assert.strictEqual(tot.getCell(4).value, 1500);
-  assert.strictEqual(tot.getCell(4).font.bold, true);
+  assert.strictEqual(row.getCell(5).value.toISOString().slice(0, 10), '2026-08-20');
+  assert.strictEqual(row.getCell(6).value.toISOString().slice(0, 10), '2026-09-08');
+  // disposition label + discharge note; the note is guarded text
+  assert.strictEqual(row.getCell(7).value, 'הפסיק לפני הזמן — -2+3');
+  assert.strictEqual(row.getCell(8).value, 19);
+  assert.strictEqual(row.getCell(9).value, 9);
+  assert.strictEqual(row.getCell(10).value, 1000);
+  assert.strictEqual(row.getCell(10).numFmt, '"₪"#,##0');
+  assert.strictEqual(row.getCell(11).value, 'ישן (לפי בית)');
+  assert.strictEqual(row.getCell(12).value, 'מגורים — זיכוי יחסי על הימים שלא שהה');
+
+  const auto = rowWhere(ws, 2, 'דנה');
+  assert.ok(auto, 'a computed (auto) row is listed too');
+  assert.strictEqual(auto.getCell(7).value, 'סיים טיפול', 'no note → the label alone');
+  assert.strictEqual(auto.getCell(11).value, 'חדש (אחיד)');
+  assert.strictEqual(auto.getCell(12).value, 'יציאה ביום שהייה 1–13 — זיכוי יחסי על המחזור הנוכחי + מחזור ששולם מראש ולא התחיל — החזר מלא');
+
+  const formulaName = rowWhere(ws, 2, `'=HYPERLINK("http://x")`);
+  assert.ok(formulaName, 'a formula-like name is guarded');
+  assert.strictEqual(formulaName.getCell(10).value, 2345, 'the stored (overridden) amount, not the calculated one');
+
+  const tot = findRow(ws, 'סה"כ לתשלום');
+  assert.ok(tot);
+  assert.strictEqual(tot.getCell(10).value, 3845);
+  assert.strictEqual(tot.getCell(10).font.bold, true);
+
+  assert.strictEqual(forecastXlsx.leaveReasonText({ disposition: '', dischargeNote: '' }), '—');
+  assert.strictEqual(forecastXlsx.leaveReasonText({ disposition: 'odd_code' }), 'odd_code');
 });
 
-test('B: «ממתין להחלטה» / «לא ניתן לחשב» — rows; no-payment discharges are never listed', async () => {
+test('B: «לא ניתן לחשב» — rows; no-payment discharges are never listed', async () => {
   const wb = await forecastBook();
-  const aw = wb.getWorksheet('ממתין להחלטה');
-  const a = findRow(aw, `'=HYPERLINK("http://x")`);
-  assert.ok(a);
-  assert.strictEqual(a.getCell(5).value, 2345);
-  assert.strictEqual(a.getCell(6).value, 'מגורים — זיכוי יחסי על הימים שלא שהה + מחזור ששולם מראש ולא התחיל — החזר מלא');
-  assert.strictEqual(a.getCell(7).value.toISOString().slice(0, 10), '2026-10-15');
-  assert.strictEqual(findRow(aw, 'סה"כ ממתין להחלטה (הצעה בלבד)').getCell(5).value, 2345);
-
   assert.strictEqual(wb.getWorksheet('חסרים נתוני תשלום'), undefined);
-  wb.worksheets.forEach((w) => assert.ok(!findRow(w, "'+972-50"), 'the no-payment patient is not listed in ' + w.name));
+  wb.worksheets.forEach((w) => assert.ok(!findRow(w, "'+972-50") && !rowWhere(w, 2, "'+972-50"), 'the no-payment patient is not listed in ' + w.name));
 
   const un = wb.getWorksheet('לא ניתן לחשב');
   const u = findRow(un, 'יוסי');
@@ -264,72 +294,78 @@ test('B: «ממתין להחלטה» / «לא ניתן לחשב» — rows; no-p
   assert.strictEqual(u.getCell(5).value, 'בית לא מוכר');
 });
 
-test('B: «סיכום» — per payout date and per house for decided and awaiting, counts only for the rest', async () => {
+test('B: «סיכום» — totals per payment date with a grand total, counts only for the rest', async () => {
   const ws = (await forecastBook()).getWorksheet('סיכום');
   const cells = allCells(ws);
   const texts = cells.map((c) => c.value).filter((v) => typeof v === 'string');
-  assert.ok(texts.includes('הסעיפים אינם מסתכמים יחד'));
-  assert.ok(texts.includes('הוחלט — ממתין לתשלום — לפי תאריך תשלום'));
-  assert.ok(texts.includes('הוחלט — ממתין לתשלום — לפי בית'));
-  assert.ok(texts.some((t) => t.startsWith('ממתין להחלטה — לא לתשלום — לפי תאריך תשלום')));
-  assert.ok(texts.some((t) => t.startsWith('ממתין להחלטה — לא לתשלום — לפי בית')));
+  assert.ok(texts.includes('זיכויים לתשלום — לפי תאריך תשלום'));
+  assert.ok(texts.includes('לבדיקה — ספירה בלבד, ללא סכום'));
+  // per-date rows are real dates with their own count and total
+  const dateRows = [];
+  ws.eachRow((r) => { if (r.getCell(1).value instanceof Date) dateRows.push([r.getCell(1).value.toISOString().slice(0, 10), r.getCell(2).value, r.getCell(3).value]); });
+  assert.deepStrictEqual(dateRows, [['2026-09-15', 1, 1000], ['2026-10-15', 2, 2845]]);
+  cells.filter((c) => c.value instanceof Date).forEach((c) => assert.strictEqual(c.cell.numFmt, 'dd/mm/yyyy'));
+  const grand = findRow(ws, 'סה"כ לתשלום');
+  assert.strictEqual(grand.getCell(2).value, 3);
+  assert.strictEqual(grand.getCell(3).value, 3845);
+  assert.strictEqual(grand.getCell(3).font.bold, true);
   // the counts block
   const line = findRow(ws, 'משוחררים ללא תשלום רשום — מופיעים ב״חובות פתוחים״');
   assert.strictEqual(line.getCell(2).value, 1, 'count only');
   assert.ok(line.getCell(3).value == null, 'no amount');
   assert.strictEqual(findRow(ws, 'לא ניתן לחשב — לבדוק').getCell(2).value, 1);
-  assert.strictEqual(findRow(ws, 'אפס לפי מדיניות (לא מוצגים)').getCell(2).value, 4);
-  // per-house rows
-  const houseTotals = [];
-  ws.eachRow((r) => { if (r.getCell(1).value === 'רמות השבים') houseTotals.push(r.getCell(3).value); });
-  assert.deepStrictEqual(houseTotals, [1000, 2345], 'ramot: decided 1000, awaiting 2345 — separate rows');
-  // per-date rows are real dates
-  const dateCells = cells.filter((c) => c.value instanceof Date);
-  assert.ok(dateCells.length >= 3);
-  dateCells.forEach((c) => assert.strictEqual(c.cell.numFmt, 'dd/mm/yyyy'));
+  assert.strictEqual(findRow(ws, 'אפס לפי מדיניות (לא מוצגים)').getCell(2).value, 40);
 });
 
 test('B: no section total is ever summed with another', async () => {
   const data = forecastFixture();
   const wb = await forecastBook(data);
-  const sum = data.decided.total + data.awaiting_decision.total; // 3845
   const countSum = data.missing_payment_data.count + data.unresolved.count + data.zeroByPolicyCount;
+  const withCounts = data.toPay.count + countSum;
   wb.worksheets.forEach((ws) => {
     allCells(ws).forEach(({ value }) => {
-      assert.notStrictEqual(value, sum, `${ws.name}: decided + awaiting must never appear`);
+      assert.notStrictEqual(value, withCounts, `${ws.name}: the list count is never added to the check counts`);
       if (typeof value === 'string') assert.ok(!/סה"כ כולל|כל הסעיפים|סה"כ כללי/.test(value), ws.name + ': ' + value);
     });
   });
   const summary = wb.getWorksheet('סיכום');
   const totalLabels = [];
   summary.eachRow((r) => { if (/^סה"כ/.test(String(r.getCell(1).value))) totalLabels.push([r.getCell(1).value, r.getCell(3).value]); });
-  assert.deepStrictEqual(totalLabels, [
-    ['סה"כ הוחלט', 1500], ['סה"כ הוחלט', 1500],
-    ['סה"כ ממתין להחלטה (הצעה בלבד)', 2345], ['סה"כ ממתין להחלטה (הצעה בלבד)', 2345],
-  ], 'each table carries only its own section total');
+  assert.deepStrictEqual(totalLabels, [['סה"כ לתשלום', 3845]], 'only the list carries a money total');
   allCells(summary).forEach(({ value }) => assert.notStrictEqual(value, countSum, 'the counts are never added up'));
-  // Built only from the server's own totals: changing awaiting does not move decided.
-  const d2 = forecastFixture(); d2.awaiting_decision.total = 99999; d2.awaiting_decision.byHouse[0].total = 99999;
+  // Built only from the server's own totals: the grand total is toPay.total,
+  // never a re-sum of the rows or the per-date groups.
+  const d2 = forecastFixture(); d2.toPay.total = 4000; d2.toPay.byPayoutDate[0].total = 99999;
   const wb2 = await forecastBook(d2);
-  assert.strictEqual(findRow(wb2.getWorksheet('הוחלט'), 'סה"כ הוחלט').getCell(4).value, 1500);
+  assert.strictEqual(findRow(wb2.getWorksheet('זיכויים לתשלום'), 'סה"כ לתשלום').getCell(10).value, 4000);
+  assert.strictEqual(findRow(wb2.getWorksheet('סיכום'), 'סה"כ לתשלום').getCell(3).value, 4000);
 });
 
 test('B: empty sections say so in words; isForecastResponse rejects bad shapes', async () => {
   const empty = {
-    ok: true, decided: { count: 0, total: 0, byPayoutDate: [], byHouse: [] },
-    awaiting_decision: { count: 0, total: 0, byPayoutDate: [], byHouse: [] },
+    ok: true, toPay: { count: 0, total: 0, byPayoutDate: [], rows: [] },
     missing_payment_data: { count: 0, rows: [] }, zeroByPolicyCount: 0,
   };
   assert.ok(forecastXlsx.isForecastResponse(empty));
   const wb = await forecastBook(empty);
-  assert.ok(findRow(wb.getWorksheet('הוחלט'), 'אין זיכויים שהוחלטו וממתינים לתשלום'));
+  assert.ok(findRow(wb.getWorksheet('זיכויים לתשלום'), 'אין זיכויים לתשלום'));
+  assert.ok(findRow(wb.getWorksheet('סיכום'), 'אין זיכויים לתשלום'));
   assert.ok(findRow(wb.getWorksheet('לא ניתן לחשב'), 'אין שחרורים שלא ניתן לחשב'));
   assert.ok(!forecastXlsx.isForecastResponse(null));
   assert.ok(!forecastXlsx.isForecastResponse({ ok: false, error: 'x' }));
-  assert.ok(!forecastXlsx.isForecastResponse({ ok: true, decided: {} }));
+  assert.ok(!forecastXlsx.isForecastResponse({ ok: true, toPay: {} }));
+  assert.ok(!forecastXlsx.isForecastResponse({ ok: true, toPay: { rows: [] }, missing_payment_data: { count: 0 } }), 'no byPayoutDate');
+  assert.ok(!forecastXlsx.isForecastResponse({ ok: true, toPay: { rows: [], byPayoutDate: [] } }), 'no missing count');
+  // the old (decision-step) shape is no longer accepted
+  assert.ok(!forecastXlsx.isForecastResponse({
+    ok: true, decided: { count: 0, total: 0, byPayoutDate: [], byHouse: [] },
+    awaiting_decision: { count: 0, total: 0, byPayoutDate: [], byHouse: [] },
+    missing_payment_data: { count: 0, rows: [] },
+  }));
 });
 
 test('B: the server label copies match public/app.js exactly', () => {
+  const plainObj = (o) => JSON.parse(JSON.stringify(o));
   const lit = (name) => {
     const m = new RegExp(`const ${name} = (\\{[\\s\\S]*?\\n\\});`).exec(APP_SRC);
     assert.ok(m, name + ' found in app.js');
@@ -342,6 +378,9 @@ test('B: the server label copies match public/app.js exactly', () => {
   assert.deepStrictEqual(forecastXlsx.CREDIT_TYPE_LABELS, lit('CREDIT_TYPE_LABELS'));
   assert.deepStrictEqual(forecastXlsx.SECTION_LABELS, lit('PAYOUT_FORECAST_SECTION_LABELS'));
   assert.deepStrictEqual(forecastXlsx.ERROR_LABELS, lit('PAYOUT_FORECAST_ERROR_LABELS'));
+  assert.deepStrictEqual(forecastXlsx.DISPOSITION_LABELS, lit('DISPOSITION_LABELS'));
+  assert.deepStrictEqual(plainObj(forecastXlsx.RULE_VERSION_LABELS),
+    plainObj(vm.runInNewContext('(' + /const REFUND_RULE_VERSION_LABELS = (\{[^}]*\});/.exec(APP_SRC)[1] + ')')));
   assert.ok(APP_SRC.includes(`const PAYOUT_FORECAST_MISSING_LINE = '${forecastXlsx.MISSING_LINE}';`));
 });
 
@@ -411,17 +450,17 @@ test('C: success — xlsx content type, RFC 5987 filename, no-store, a real work
   assert.strictEqual(Number(res.headers['content-length']), res.body.length);
   assert.deepStrictEqual(users, ['ורד']);
   const wb = await openBook(res.body);
-  assert.strictEqual(wb.worksheets.length, 4);
+  assert.strictEqual(wb.worksheets.length, 3);
   // no patient data in the logs
   const joined = logs.lines.join('\n');
-  for (const p of ['@SUM(A1)', 'דנה', 'HYPERLINK', '+972-50', 'יוסי', '2345', '1500']) assert.ok(!joined.includes(p), 'log leaked ' + p);
+  for (const p of ['@SUM(A1)', 'דנה', 'HYPERLINK', '+972-50', 'יוסי', '2345', '3845']) assert.ok(!joined.includes(p), 'log leaked ' + p);
 });
 
 test('C: failures answer JSON with no-store and log only a code', async () => {
   const cases = [
     [async () => ({ ok: false, error: 'lock_busy' }), 503, 'lock_busy'],
     [async () => ({ ok: false, error: 'unauthorized' }), 502, 'unauthorized'],
-    [async () => ({ ok: true, decided: {} }), 502, 'bad_response'],
+    [async () => ({ ok: true, toPay: {} }), 502, 'bad_response'],
     [async () => { throw new Error('ECONNRESET דנה'); }, 502, 'sheets_unreachable'],
   ];
   for (const [fn, status, error] of cases) {

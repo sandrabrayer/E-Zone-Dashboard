@@ -7829,21 +7829,29 @@ async function runDischarge(p, auditId, { disposition, note, dischargeDate }) {
     await createOutpatientLead(p);
   }
 
-  // Credits / refunds — a SEPARATE write, offered only once BOTH discharge
-  // writes above have succeeded. Nothing here can roll the discharge back:
-  // the modal's save failures surface the Hebrew error banner and leave
-  // the discharge intact; a deferred or failed credit is recoverable from
-  // the מטופלים משוחררים tab (openCreditsForDischarged).
-  // Restricted view: the refund step is skipped (Sandra / Vered create
-  // the credit later from מטופלים משוחררים → «זיכויים»).
-  if (financeView()) try {
-    await showCreditsModal({
-      patient: p, patientId: p.id ? String(p.id) : '', patientKey: patientKey(p), exitDate: exitDate,
-    });
-  } catch (e) {
-    console.warn('[E-ZONE] credits modal failed to open:', e && e.message);
-    showError('לא ניתן לפתוח את חלון הזיכויים — ניתן ליצור זיכוי מלשונית מטופלים משוחררים. ' + (e && e.message || ''));
+  // Credits / refunds — computed by POLICY and created by the SERVER with
+  // the discharge row (CHANGELOG-refunds-auto-policy.md). There is no
+  // decision step: the refund lands in «זיכויים לתשלום». Nothing here can
+  // roll the discharge back. Restricted view: nothing shown (no money data).
+  if (financeView()) notifyAutoRefund(auditRes && auditRes.refund);
+}
+
+/* The discharge answer's `refund` ({ created, skipped } | { error }) → one
+ * Hebrew line, and the refund list is refreshed. Never an amount in a toast. */
+function autoRefundNotice(refund) {
+  if (!refund || typeof refund !== 'object') return null;
+  if (refund.error) {
+    return { error: true, text: 'הזיכוי לא חושב אוטומטית — ' + refundErrorMessage(refund.error) + ' השחרור נשמר; השהייה מופיעה ב״זיכויים לתשלום״ ← «לא ניתן לחשב».' };
   }
+  const n = Number(refund.created) || 0;
+  if (n > 0) return { error: false, text: n === 1 ? 'נוצר זיכוי אוטומטי לפי המדיניות — מופיע ב״זיכויים לתשלום״' : `נוצרו ${n} זיכויים אוטומטיים לפי המדיניות — מופיעים ב״זיכויים לתשלום״` };
+  return null;
+}
+function notifyAutoRefund(refund) {
+  const msg = autoRefundNotice(refund);
+  if (msg) { if (msg.error) showError(msg.text); else showToast(msg.text); }
+  markPayoutForecastStale();
+  if (refund && Number(refund.created) > 0) Promise.resolve(reloadCredits()).catch(() => {});
 }
 
 /* ====================================================
@@ -7888,8 +7896,8 @@ function creditStatusOptionKeys(current, deleter) {
 const CREDIT_TYPES = Object.keys(CREDIT_TYPE_LABELS);
 
 /* The refund RULES live on the server only (computeRefund_ /
- * refundSuggestionsFor_ in Code.gs, reached through action=suggestRefunds).
- * This file holds no copy of them — see CHANGELOG-refund-logic-wiring.md. */
+ * refundSuggestionsFor_ in Code.gs, applied automatically at discharge —
+ * CHANGELOG-refunds-auto-policy.md). This file holds no copy of them. */
 /* Credits pay out on this day of the month, never at discharge. */
 const CREDIT_PAYOUT_DAY = 15;
 /* A decision on or before this day of the month pays out on that month's
@@ -8162,8 +8170,8 @@ function creditBasisText(creditType, basis) {
   return parts.join(' | ');
 }
 
-/* Hebrew message for a suggestRefunds refusal. Never a silent 0: the modal
- * shows this instead of a suggested amount. */
+/* Hebrew message for a refund the server could not compute (the discharge's
+ * `refund.error`). Never a silent 0. */
 const REFUND_ERROR_MESSAGES = {
   unknown_house:      'לא ניתן לחשב זיכוי: הבית של המטופל לא מוכר במערכת. לא הוצע סכום — אפשר להוסיף זיכוי ידני.',
   exit_before_entry:  'לא ניתן לחשב זיכוי: תאריך היציאה לפני תאריך הכניסה.',
@@ -8177,50 +8185,25 @@ function refundErrorMessage(code) {
   return REFUND_ERROR_MESSAGES[code] || 'לא ניתן לחשב זיכוי כרגע — לא הוצע סכום. אפשר לנסות שוב או להוסיף זיכוי ידני.';
 }
 
-/* The server's refund suggestions for one discharge (action=suggestRefunds,
- * POST so no patient name rides a URL). → { suggestions, error } — error is a
- * code ('unknown_house', …, or 'network') and suggestions is [] with it.
- * Never throws. */
-async function fetchRefundSuggestions(patient, pKey, exitDate) {
-  try {
-    const res = await apiPost({
-      action: 'suggestRefunds',
-      houseId: (patient && patient.houseId) || '',
-      entryDate: isoDate(patient && patient.date) || '',
-      exitDate: isoDate(exitDate) || '',
-      patientKey: pKey || '',
-    });
-    const list = Array.isArray(res && res.suggestions) ? res.suggestions : null;
-    if (!list) return { suggestions: [], error: 'refund_failed' };
-    return { suggestions: list, error: '' };
-  } catch (e) {
-    if (isLockBusyError(e)) return { suggestions: [], error: 'lock_busy' };
-    const code = e && e.data && e.data.error ? String(e.data.error) : 'network';
-    return { suggestions: [], error: code };
-  }
-}
-
-/* The refund rule in one Hebrew line, for the «זיכויים» modal. Picked by the
- * EXIT date through lib/refund-rules.js (window.RefundRules — the same rule
- * Code.gs computeRefund_ applies, parity-tested): an exit from
- * REFUND_RULE_V2_FROM on → the unified billing-month rule; earlier → the
- * per-house rule it was decided under. '' without a usable exit date or
- * without the rules file. CHANGELOG-refund-rule-v2.md. */
-function refundPolicyNote(exitISO, facility) {
+/* The refund rule in one Hebrew line, for the «זיכויים» modal. The rule
+ * version comes from the SERVER (basis.ruleVersion — decided by the ENTRY
+ * date against REFUND_POLICY_CUTOVER, which lives only in Code.gs): 2 → the
+ * new unified rule, 1 → the old per-house rule. lib/refund-rules.js
+ * (window.RefundRules) supplies the day counts. '' without a version or
+ * without the rules file. CHANGELOG-refunds-auto-policy.md. */
+function refundPolicyNote(ruleVersion, facility) {
   const R = typeof RefundRules !== 'undefined' ? RefundRules : null;
-  const exit = isoDate(exitISO);
-  if (!R || !exit) return '';
-  let version;
-  try { version = R.refundRuleVersion(exit); } catch (_) { return ''; }
+  const version = Number(ruleVersion);
+  if (!R || (version !== 1 && version !== 2)) return '';
   const prepaid = 'מחזור ששולם מראש ומתחיל אחרי היציאה — החזר מלא.';
   if (version === 2) {
-    return `כלל ההחזר (יציאה מ־${formatDateHe(R.REFUND_RULE_V2_FROM)}, כל הבתים): יציאה ביום השהייה ה־${R.REFUND_V2_NO_REFUND_FROM_DAY} ומעלה (יום הכניסה = יום 1, נספר גם מעבר לסוף החודש) — ללא זיכוי על המחזור הנוכחי; יציאה ביום שהייה 1–${R.REFUND_V2_NO_REFUND_FROM_DAY - 1} — זיכוי יחסי על המחזור הנוכחי. ${prepaid}`;
+    return `כלל ההחזר החדש (כניסה מתאריך המעבר ואילך, כל הבתים): יציאה ביום השהייה ה־${R.REFUND_V2_NO_REFUND_FROM_DAY} ומעלה (יום הכניסה = יום 1) — ללא זיכוי על המחזור הנוכחי; יציאה ביום שהייה 1–${R.REFUND_V2_NO_REFUND_FROM_DAY - 1} — זיכוי יחסי על הימים שלא נוצלו. ${prepaid}`;
   }
   if (facility === 'residential') {
-    return `כלל ההחזר (יציאה לפני ${formatDateHe(R.REFUND_RULE_V2_FROM)}, בית מאזן): יציאה ב־${R.REFUND_V1_RESIDENTIAL_LAST_DAYS} הימים האחרונים של חודש החיוב — ללא זיכוי. ${prepaid}`;
+    return `כלל ההחזר הישן (כניסה לפני תאריך המעבר, בית מאזן): יציאה ב־${R.REFUND_V1_RESIDENTIAL_LAST_DAYS} הימים האחרונים של חודש החיוב — ללא זיכוי. ${prepaid}`;
   }
   if (facility === 'detox_dual') {
-    return `כלל ההחזר (יציאה לפני ${formatDateHe(R.REFUND_RULE_V2_FROM)}, גמילה / דואלי): יציאה ביום שהייה ${R.REFUND_V1_DETOX_CUTOFF_DAY} ומעלה — ללא זיכוי. ${prepaid}`;
+    return `כלל ההחזר הישן (כניסה לפני תאריך המעבר, גמילה / דואלי): יציאה ביום שהייה ${R.REFUND_V1_DETOX_CUTOFF_DAY} ומעלה — ללא זיכוי. ${prepaid}`;
   }
   return '';
 }
@@ -8237,8 +8220,8 @@ function creditBreakdownHtml(basis) {
     row('ימים שלא שהה:', String(basis.daysNotStayed)),
     row('תעריף יומי:', `${fmtShekel(basis.dailyRate)} (${fmtShekel(basis.amountPaid)} ÷ ${basis.divisor})`),
   ];
-  // Rule v2 (exit from 07/10/2026, every house) and v1 detox: the stay day
-  // decides. v1 residential: the last 7 days of the cycle.
+  // Rule v2 (the new unified rule) and v1 detox: the stay day decides.
+  // v1 residential: the last 7 days of the cycle.
   if (Number(basis.ruleVersion) === 2 || basis.facilityType === 'detox_dual') rows.push(row('יום שהייה ביציאה:', String(basis.stayDay)));
   if (Number(basis.ruleVersion) !== 2 && basis.facilityType === 'residential' && basis.lastDaysFrom) {
     rows.push(row('7 הימים האחרונים במחזור:', `${d(basis.lastDaysFrom)} – ${d(basis.lastDaysTo)}`));
@@ -8249,7 +8232,10 @@ function creditBreakdownHtml(basis) {
 }
 
 /* Pure. null when the line may be saved, else the Hebrew refusal:
- *   - amount must be a finite number ≥ 0 (0 is valid — a zero credit is a row);
+ *   - amount must be a finite number ≥ 0; a NEW line (no id) must be > 0 — a
+ *     zero refund is never a row (CHANGELOG-refunds-auto-policy.md; the
+ *     server refuses it too: zero_amount_credit). A saved line may be 0
+ *     (Sandra's approved zero);
  *   - amount ≠ calculatedAmount REQUIRES a non-empty overrideReason;
  *   - creditType ∈ CREDIT_TYPES; allocationMonth 'YYYY-MM'; decidedDate a date;
  *   - 'other' requires a free-text reason;
@@ -8261,6 +8247,7 @@ function validateCreditLine(line) {
   const amount = Number(line.amount);
   const calculated = Number(line.calculatedAmount);
   if (line.amount === '' || line.amount === null || line.amount === undefined || !isFinite(amount) || amount < 0) return 'סכום הזיכוי חסר או לא תקין';
+  if (!line.id && amount <= 0) return 'זיכוי בסכום 0 אינו נשמר';
   if (!isFinite(calculated) || calculated < 0) return 'הסכום המחושב לא תקין';
   if (roundMoney(amount) !== roundMoney(calculated) && !String(line.overrideReason || '').trim()) {
     return 'הסכום שונה מהסכום המחושב — יש למלא נימוק לשינוי';
@@ -8316,20 +8303,6 @@ function normalizeCredit(r) {
 function creditsForPatient(credits, patientId, pKey) {
   return (Array.isArray(credits) ? credits : []).filter(c =>
     c && ((patientId && c.patientId === patientId) || (pKey && c.patientKey === pKey)));
-}
-
-/* Pending credits grouped by payoutDate, ascending, with a total per date —
- * the outgoing amount visible before each 15th. Pure. */
-function pendingCreditsByPayout(credits) {
-  const groups = {};
-  (Array.isArray(credits) ? credits : []).forEach(c => {
-    if (!c || c.status !== 'pending') return;
-    const k = c.payoutDate || '—';
-    if (!groups[k]) groups[k] = { payoutDate: k, total: 0, credits: [] };
-    groups[k].total = roundMoney(groups[k].total + (Number(c.amount) || 0));
-    groups[k].credits.push(c);
-  });
-  return Object.keys(groups).sort().map(k => groups[k]);
 }
 
 /* Re-read the Credits sheet into state (best-effort; a failure leaves the
@@ -8424,37 +8397,25 @@ function linePayoutDate(line, decidedDate) {
   return payoutDateFor(decidedDate);
 }
 
-/* Hebrew RTL modal: the credit lines for one patient — suggestions after a
- * discharge and/or the existing rows (recovery / edit path). Vered can accept
- * or edit each amount; an amount that differs from calculatedAmount demands
- * an overrideReason before save (validateCreditLine, then again server-side).
- * calculatedAmount is displayed, never overwritten. The override input is
- * never disabled — the detox_dual 14-day zero is discretionary. Save is
- * guarded by busyButton; lines are written one by one and a failure stops
- * the run with the error banner, keeping the modal open (already-saved lines
- * are marked so a retry edits instead of duplicating). */
+/* Hebrew RTL modal: the SAVED credit lines for one patient (view / edit).
+ * Refunds are created by POLICY at discharge (CHANGELOG-refunds-auto-policy.md)
+ * — this modal proposes nothing and decides nothing. Finance users edit the
+ * status / paid / notes fields; the AMOUNT and a manual credit are Sandra's
+ * alone (approver — the server refuses anyone else:
+ * override_requires_approver), and an amount that differs from
+ * calculatedAmount still demands an overrideReason. calculatedAmount is
+ * displayed, never overwritten. Save is guarded by busyButton; lines are
+ * written one by one and a failure stops the run with the error banner. */
 async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate }) {
   const root = document.getElementById('modal-root');
   if (!root) return;
-  // The suggestion comes from the SERVER (computeRefund_). A refusal is shown
-  // as a Hebrew error in the modal — never replaced by a silent 0.
-  let suggestions = [];
-  let suggestionError = '';
-  if (exitDate) {
-    setLoading(true);
-    try {
-      const got = await fetchRefundSuggestions(patient, pKey, exitDate);
-      suggestions = got.suggestions;
-      suggestionError = got.error;
-    } finally {
-      setLoading(false);
-    }
-    if (suggestionError) showError(refundErrorMessage(suggestionError));
-  }
+  const suggestions = [];
+  const approver    = state.approver === true;
   const existing    = creditsForPatient(state.credits, patientId, pKey);
   const lines       = buildCreditLines(existing, suggestions);
   const facility    = facilityTypeFor(patient && patient.houseId);
-  const policyNote  = refundPolicyNote(exitDate, facility);
+  const versioned   = lines.find(l => isServerBasis(l.basis) && l.basis.ruleVersion);
+  const policyNote  = refundPolicyNote(versioned ? versioned.basis.ruleVersion : '', facility);
 
   const back = document.createElement('div');
   back.className = 'modal-backdrop';
@@ -8489,7 +8450,7 @@ async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate
         </div>`}
         <div class="form-row">
           <label>סכום הזיכוי (כולל מע"מ)</label>
-          <input type="number" name="amount" min="0" step="1" value="${escapeHtml(String(l.amount))}" dir="ltr" required />
+          <input type="number" name="amount" min="0" step="1" value="${escapeHtml(String(l.amount))}" dir="ltr" required ${approver ? '' : 'readonly title="שינוי סכום — באישור סנדרה בלבד"'} />
           <span class="credit-exvat" data-role="amount-exvat">${fmtShekel(exVat(l.amount))} ללא מע"מ</span>
         </div>
         <div class="form-row credit-override" ${roundMoney(l.amount) !== roundMoney(l.calculatedAmount) || isOther ? '' : 'hidden'}>
@@ -8532,10 +8493,9 @@ async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate
       <div class="modal credits-modal">
         <h3>זיכויים והחזרים — ${escapeHtml((patient && patient.name) || '')}${facility ? ` <span class="credit-new">${escapeHtml(FACILITY_TYPE_LABELS[facility])}</span>` : ''}</h3>
         ${policyNote ? `<p class="credit-policy">${escapeHtml(policyNote)}</p>` : ''}
-        ${suggestionError ? `<div class="credit-error" role="alert">${escapeHtml(refundErrorMessage(suggestionError))}</div>` : ''}
         <form>
-          <div class="credit-lines">${lines.map(lineHtml).join('')}</div>
-          <button type="button" class="btn small" data-action="add-other">+ זיכוי ידני</button>
+          <div class="credit-lines">${lines.length ? lines.map(lineHtml).join('') : '<div class="card billing-empty">אין זיכויים שמורים — זיכוי נוצר אוטומטית בשחרור ומופיע ב״זיכויים לתשלום״</div>'}</div>
+          ${approver ? '<button type="button" class="btn small" data-action="add-other" data-role="approver">+ זיכוי ידני (חריגה)</button>' : ''}
           <div class="form-actions">
             <button type="button" class="btn" data-action="cancel">ביטול</button>
             <button type="submit" class="btn primary">שמור זיכויים</button>
@@ -8566,7 +8526,9 @@ async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate
 
   const wire = () => {
     back.querySelector('[data-action="cancel"]').onclick = close;
-    back.querySelector('[data-action="add-other"]').onclick = () => {
+    const addOther = back.querySelector('[data-action="add-other"]');
+    if (addOther) addOther.onclick = () => {
+      if (state.approver !== true) { showError(ROLE_FORBIDDEN_TEXT); return; }
       collect();
       const decided = todayISO();
       lines.push({
@@ -8683,139 +8645,32 @@ function openCreditsForDischarged(audit) {
     .catch(e => showError('לא ניתן לפתוח את חלון הזיכויים — ' + (e && e.message || '')));
 }
 
-/* Edit entry point from the payout view: the same modal, keyed by the row's
- * own stored identity (no suggestions — there is no discharge context). */
-function openCreditsForCredit(c) {
-  if (state.mode !== 'edit' || !c) return;
-  const parts = String(c.patientKey || '').split('::');
-  const patient = { id: c.patientId, houseId: c.houseId, name: c.patientName || parts[1] || '', date: parts[2] || '' };
-  Promise.resolve(showCreditsModal({ patient, patientId: c.patientId, patientKey: c.patientKey, exitDate: '' }))
-    .catch(e => showError('לא ניתן לפתוח את חלון הזיכויים — ' + (e && e.message || '')));
-}
-
-/* "סמן כשולם" — the EXPLICIT mark-paid action: method + paidDate, then a
- * status edit through saveCredit (stale-save guarded). Never automatic. */
-function showMarkCreditPaidModal(c) {
-  if (state.mode !== 'edit' || !c) return;
-  const root = document.getElementById('modal-root');
-  if (!root) return;
-  const back = document.createElement('div');
-  back.className = 'modal-backdrop';
-  back.innerHTML = `
-    <div class="modal">
-      <h3>סימון זיכוי כשולם — ${escapeHtml(c.patientName || '')}</h3>
-      <p class="credit-calc">${escapeHtml(CREDIT_TYPE_LABELS[c.creditType] || c.creditType)} ${escapeHtml(c.allocationMonth)} · <b>${fmtShekel(c.amount)}</b>
-        <span class="credit-exvat">(${fmtShekel(exVat(c.amount))} ללא מע"מ)</span></p>
-      <form>
-        <div class="form-row"><label>תאריך תשלום</label><input type="date" name="paidDate" value="${escapeHtml(todayISO())}" dir="ltr" required /></div>
-        <div class="form-row"><label>אמצעי תשלום</label><input type="text" name="method" maxlength="40" required placeholder="העברה / מזומן / המחאה" /></div>
-        <div class="form-actions">
-          <button type="button" class="btn" data-action="cancel">ביטול</button>
-          <button type="submit" class="btn primary">סמן כשולם</button>
-        </div>
-      </form>
-    </div>`;
-  root.appendChild(back);
-  const close = () => back.remove();
-  back.querySelector('[data-action="cancel"]').onclick = close;
-  back.addEventListener('click', e => { if (e.target === back) close(); });
-  const form = back.querySelector('form');
-  form.onsubmit = (e) => {
-    e.preventDefault();
-    const fd = new FormData(form);
-    const paidDate = String(fd.get('paidDate') || '');
-    const method = String(fd.get('method') || '').trim();
-    const err = validateCreditLine(Object.assign({}, c, { status: 'paid', paidDate, method }));
-    if (err) { showError(err); return; }
-    busyButton(back.querySelector('button[type="submit"]'), 'save', async () => {
-      await saveCredit({ id: c.id, updatedAt: c.updatedAt, status: 'paid', paidDate, method });
-      showToast('הזיכוי סומן כשולם');
-      close();
-      renderAll();
-    }).catch(err => {
-      if (!(err && err.handled)) showError('סימון הזיכוי נכשל — ' + (err && err.message || 'שגיאה'));
-    });
-  };
-}
-
-/* Payout view (גבייה tab): pending credits grouped by payoutDate with a
- * total per date, so the outgoing amount is visible before each 15th. */
+/* ===== «זיכויים לתשלום» — the ONE refund list (גבייה tab) =====
+ * CHANGELOG-refunds-auto-policy.md. Refunds are computed by POLICY and created
+ * automatically at discharge — there is no «ממתין להחלטה» step any more. The
+ * list comes from action=refundPayoutForecast (Code.gs, READ-ONLY): every
+ * pending credit with amount > 0 (its stored payment date) plus, for a stay
+ * with no saved refund yet, the policy's computed lines (auto). Ortal (the
+ * controller view) reads the whole list (the reason for leaving as the
+ * disposition only); «סמן כשולם» (action=settleRefund) is Vered's, Sandra's
+ * and Ortal's, and «חריגה» is Sandra's alone
+ * (action=approveRefundException — APPROVER_ACTIONS, refused server-side for
+ * anyone else). Zero-amount credits are never shown.
+ * Above the rows: totals per payment date (date, number, ₪) and a grand
+ * total. Fetched only while the גבייה screen is shown (and on «רענון»); a
+ * credit write marks it stale. Loading and errors are explicit — never a
+ * silent empty list. Every value goes through escapeHtml. */
 function renderCreditsPayouts() {
   if (!billingTabView()) return; // restricted view: no billing UI at all
   renderPayoutForecast();
-  const list = document.getElementById('credits-payout-list');
-  if (!list) return;
-  list.innerHTML = '';
-  const groups = pendingCreditsByPayout(state.credits);
-  const totalEl = document.getElementById('credits-pending-total');
-  const grand = groups.reduce((s, g) => s + g.total, 0);
-  if (totalEl) totalEl.textContent = fmtShekel(grand);
-  if (!groups.length) {
-    const empty = document.createElement('div');
-    empty.className = 'card billing-empty';
-    empty.textContent = 'אין זיכויים ממתינים לתשלום';
-    list.appendChild(empty);
-    return;
-  }
-  groups.forEach(g => {
-    const head = document.createElement('div');
-    head.className = 'credit-payout-head';
-    head.innerHTML = `<span><bdi>${escapeHtml(formatDateHe(g.payoutDate))}</bdi></span><span>${g.credits.length} זיכויים</span><b>${fmtShekel(g.total)}</b><span class="credit-exvat">(${fmtShekel(exVat(g.total))} ללא מע"מ)</span>`;
-    list.appendChild(head);
-    g.credits.forEach(c => {
-      const row = document.createElement('div');
-      row.className = 'billing-row credit-payout-row';
-      const houseName = (houseById(c.houseId) && houseById(c.houseId).name) || c.houseId || '—';
-      const cells = [
-        { label: 'שם', value: c.patientName || '—', cls: 'p-name' },
-        { label: 'בית', value: houseName },
-        { label: 'סוג', value: CREDIT_TYPE_LABELS[c.creditType] || c.creditType },
-        { label: 'חודש', value: c.allocationMonth || '—' },
-        { label: 'סכום', value: fmtShekel(c.amount) + (c.amount !== c.calculatedAmount ? ' *' : '') },
-        { label: 'אושר ע"י', value: c.approvedBy || '—' },
-      ];
-      cells.forEach(cdef => {
-        const cell = document.createElement('div');
-        const label = document.createElement('span'); label.className = 'p-label'; label.textContent = cdef.label;
-        const val = document.createElement('span'); val.className = cdef.cls || 'p-val'; val.textContent = cdef.value;
-        cell.appendChild(label); cell.appendChild(val); row.appendChild(cell);
-      });
-      if (state.mode === 'edit') {
-        const actions = document.createElement('div');
-        actions.className = 'irrelevant-actions';
-        const paidBtn = document.createElement('button');
-        paidBtn.className = 'btn small primary';
-        paidBtn.textContent = 'סמן כשולם';
-        paidBtn.onclick = () => showMarkCreditPaidModal(c);
-        const editBtn = document.createElement('button');
-        editBtn.className = 'btn small';
-        editBtn.textContent = 'ערוך';
-        editBtn.onclick = () => openCreditsForCredit(c);
-        actions.appendChild(paidBtn); actions.appendChild(editBtn);
-        row.appendChild(actions);
-      }
-      list.appendChild(row);
-    });
-  });
 }
 
-/* ===== Refund payout forecast (extends the payout view above) =====
- * action=refundPayoutForecast (Code.gs) — READ-ONLY, three sections that are
- * never summed together. See CHANGELOG-refund-payout-forecast.md.
- *   ממתין להחלטה — לא לתשלום   discharges with no saved credit whose server
- *                              suggestion is > 0 (a decision, not a payment);
- *   discharges with no saved credit and no recorded payment for the exit
- *   cycle are DEBT, not refunds: only their count, as one linked line (below).
- * Fetched only while the גבייה screen is shown (and on «רענון»); a credit
- * save marks it stale. Loading and errors are explicit — never a silent
- * empty list. */
 /* A discharge with NO recorded payment is DEBT, not a refund (Sandra,
  * 02/10/2026): no section here — one muted line, shown only when the count is
  * > 0, that opens «חובות פתוחים» where those cycles are listed. */
 const PAYOUT_FORECAST_MISSING_LINE = 'משוחררים ללא תשלום רשום — מופיעים ב״חובות פתוחים״';
 const PAYOUT_FORECAST_SECTION_LABELS = {
-  decided:    'הוחלט — ממתין לתשלום',
-  awaiting:   'ממתין להחלטה — לא לתשלום',
+  toPay:      'זיכויים לתשלום',
   unresolved: 'לא ניתן לחשב — לבדוק',
 };
 const PAYOUT_FORECAST_ERROR_LABELS = {
@@ -8825,6 +8680,30 @@ const PAYOUT_FORECAST_ERROR_LABELS = {
   bad_amount:        'סכום ששולם לא תקין',
   bad_coverage:      'תקופת כיסוי לא תקינה',
 };
+/* ruleVersion → which rule family computed the refund (by the ENTRY date). */
+const REFUND_RULE_VERSION_LABELS = { 1: 'ישן (לפי בית)', 2: 'חדש (אחיד)' };
+/* settleRefund / approveRefundException refusals → Hebrew. */
+const REFUND_ACTION_ERRORS = {
+  forbidden_role:             'אין הרשאה לפעולה זו — חריגה באישור סנדרה בלבד',
+  forbidden:                  'אין הרשאה לפעולה זו',
+  bad_paidDate:               'תאריך התשלום לא תקין',
+  paidDate_in_future:         'תאריך התשלום לא יכול להיות בעתיד',
+  missing_method:             'יש להזין אמצעי תשלום',
+  bad_amount:                 'סכום לא תקין',
+  reason_required:            'יש להזין סיבה לחריגה (2–300 תווים)',
+  reason_too_long:            'הסיבה ארוכה מדי (עד 300 תווים)',
+  not_pending:                'הזיכוי כבר אינו ממתין לתשלום — הרשימה רועננה',
+  already_decided:            'לשהייה זו כבר נשמר זיכוי — הרשימה רועננה',
+  zero_amount_credit:         'זיכוי בסכום 0 אינו לתשלום',
+  stay_not_found:             'שורת השחרור לא נמצאה',
+  unknown_credit:             'הזיכוי לא נמצא — הרשימה רועננה',
+  override_requires_approver: 'שינוי סכום זיכוי — באישור סנדרה בלבד',
+};
+function refundActionErrorText(e) {
+  if (isLockBusyError(e)) return LOCK_BUSY_MESSAGE_HE;
+  const code = e && e.data && e.data.error ? String(e.data.error) : '';
+  return REFUND_ACTION_ERRORS[code] || String((e && e.message) || 'שגיאה');
+}
 
 function payoutForecastState() {
   if (!state.payoutForecast) state.payoutForecast = { status: 'idle', data: null, error: '' };
@@ -8844,14 +8723,14 @@ async function loadPayoutForecast() {
   f.promise = (async () => {
     try {
       const res = await apiPost({ action: 'refundPayoutForecast' });
-      if (!res || res.ok !== true || !res.decided || !res.awaiting_decision || !res.missing_payment_data) {
+      if (!res || res.ok !== true || !res.toPay || !Array.isArray(res.toPay.rows) || !res.missing_payment_data) {
         throw new Error('תשובת שרת לא תקינה');
       }
       f.data = res; f.status = 'ok';
     } catch (e) {
       f.status = 'error';
       f.error = isLockBusyError(e) ? LOCK_BUSY_MESSAGE_HE : String((e && e.message) || 'שגיאה');
-      showError('טעינת תחזית ההחזרים נכשלה — ' + f.error);
+      showError('טעינת רשימת הזיכויים נכשלה — ' + f.error);
     }
     renderPayoutForecast();
     return f;
@@ -8870,38 +8749,67 @@ function payoutForecastRuleText(rule) {
 function payoutForecastErrorText(code) {
   return PAYOUT_FORECAST_ERROR_LABELS[code] || String(code || 'שגיאה');
 }
+/* «סיים טיפול — <note>»: the disposition label and the discharge note. Pure. */
+function refundLeaveReasonText(r) {
+  const label = DISPOSITION_LABELS[r && r.disposition] || String((r && r.disposition) || '');
+  const note = String((r && r.dischargeNote) || '').trim();
+  return [label, note].filter(Boolean).join(' — ') || '—';
+}
+function refundRuleVersionText(v) {
+  return REFUND_RULE_VERSION_LABELS[Number(v)] || '—';
+}
+/* Which row controls this session gets. Display only — the server decides
+ * (settleRefund: Vered, Sandra, Ortal; approveRefundException: Sandra).
+ * Ortal's controller view is never in edit mode, so «סמן כשולם» is offered
+ * to her read view directly; Shiran / Yael never see the list at all. */
+function refundRowControls() {
+  const edit = state.mode === 'edit' && financeView() && !controllerView();
+  return { settle: edit || billingReadView(), exception: edit && state.approver === true };
+}
 
-/* Pure: the forecast sections as HTML. Every value goes through escapeHtml. */
-function payoutForecastHtml(data) {
+/* Pure: the list as HTML. Every value goes through escapeHtml. */
+function payoutForecastHtml(data, controls) {
   const esc = escapeHtml;
-  const awaiting = data.awaiting_decision;
+  const ctl = controls || { settle: false, exception: false };
+  const toPay = data.toPay || { count: 0, total: 0, byPayoutDate: [], rows: [] };
   const missingCount = Number(data.missing_payment_data && data.missing_payment_data.count) || 0;
   const unresolved = data.unresolved || { count: 0, rows: [] };
   let html = '';
 
-  html += `<div class="bill-group bill-group--awaiting" data-group="awaiting">`;
-  html += `<h4 class="bill-group-title forecast-title forecast-awaiting">${esc(PAYOUT_FORECAST_SECTION_LABELS.awaiting)} <span class="count-pill">${esc(fmtShekel(awaiting.total))}</span></h4>`;
-  html += `<p class="billing-date-label">שוחררו מ־${esc(formatDateHe(data.recordsCutoff) || '—')} ואין להם זיכוי שמור. הסכום הוא הצעת המערכת בלבד — לא הוחלט ולא לתשלום. תאריך התשלום הוא אם יוחלט היום.</p>`;
-  if (!awaiting.count) {
-    html += `<div class="card billing-empty">אין שחרורים הממתינים להחלטה</div>`;
-  } else {
-    awaiting.byPayoutDate.forEach(g => {
-      g.rows.forEach(r => {
-        html += `<div class="billing-row forecast-row forecast-awaiting-row">`
-          + `<div><span class="p-label">שם</span><span class="p-name">${esc(r.patientName || '—')}</span></div>`
-          + `<div><span class="p-label">בית</span><span class="p-val">${esc(payoutForecastHouseName(r.houseId))}</span></div>`
-          + `<div><span class="p-label">יציאה</span><span class="p-val"><bdi>${esc(formatDateHe(r.exitDate) || '—')}</bdi></span></div>`
-          + `<div><span class="p-label">סכום מוצע</span><span class="p-val">${esc(fmtShekel(r.suggestedAmount))}</span></div>`
-          + `<div><span class="p-label">כלל</span><span class="p-val">${esc(payoutForecastRuleText(r.rule))}</span></div>`
-          + `<div><span class="p-label">תשלום אם יוחלט היום</span><span class="p-val"><bdi>${esc(formatDateHe(r.payoutDate) || '—')}</bdi></span></div>`
-          + `</div>`;
-      });
-    });
-    html += `<div class="forecast-totals">` + awaiting.byHouse.map(h =>
-      `<span>${esc(payoutForecastHouseName(h.houseId))}: <b>${esc(fmtShekel(h.total))}</b> (${esc(h.count)})</span>`).join('') + `</div>`;
-  }
+  // Totals per payment date + a grand total.
+  html += `<div class="refund-totals" data-group="refund-totals"><table class="refund-totals-table">`
+    + `<thead><tr><th>תאריך תשלום</th><th>מספר זיכויים</th><th>סה"כ ₪</th></tr></thead><tbody>`;
+  (toPay.byPayoutDate || []).forEach(g => {
+    html += `<tr><td><bdi>${esc(formatDateHe(g.payoutDate) || '—')}</bdi></td><td>${esc(g.count)}</td><td>${esc(fmtShekel(g.total))}</td></tr>`;
+  });
+  html += `</tbody><tfoot><tr class="refund-grand-total"><th>סה"כ</th><th>${esc(toPay.count)}</th><th>${esc(fmtShekel(toPay.total))}</th></tr></tfoot></table></div>`;
 
-  html += `</div>`;
+  if (!toPay.count) {
+    html += `<div class="card billing-empty">אין זיכויים לתשלום</div>`;
+  } else {
+    (toPay.rows || []).forEach((r, i) => {
+      const cell = (label, value, cls) => `<div><span class="p-label">${esc(label)}</span><span class="${cls || 'p-val'}">${value}</span></div>`;
+      html += `<div class="billing-row refund-row${r.auto ? ' refund-row--auto' : ''}" data-refund-row="${i}">`
+        + cell('מטופל', esc(r.patientName || '—'), 'p-name')
+        + cell('בית', esc(payoutForecastHouseName(r.houseId)))
+        + cell('סה"כ שולם', esc(fmtShekel(r.totalPaid)))
+        + cell('כניסה', `<bdi>${esc(formatDateHe(r.entryDate) || '—')}</bdi>`)
+        + cell('יציאה', `<bdi>${esc(formatDateHe(r.exitDate) || '—')}</bdi>`)
+        + cell('סיבת עזיבה', esc(refundLeaveReasonText(r)))
+        + cell('ימי שהייה', esc(r.daysStayed === '' || r.daysStayed == null ? '—' : r.daysStayed))
+        + cell('ימי זיכוי', esc(r.refundDays === '' || r.refundDays == null ? '—' : r.refundDays))
+        + cell('סכום זיכוי', esc(fmtShekel(r.amount)) + (r.overridden ? ' <span class="credit-cap">חריגה מאושרת</span>' : ''))
+        + cell('כלל', `${esc(refundRuleVersionText(r.ruleVersion))} · <span class="credit-rule">${esc(payoutForecastRuleText(r.rule))}</span>`)
+        + cell('תאריך תשלום', `<bdi>${esc(formatDateHe(r.payoutDate) || '—')}</bdi>`);
+      if (ctl.settle || ctl.exception) {
+        html += `<div class="irrelevant-actions">`
+          + (ctl.settle ? `<button type="button" class="btn small primary" data-refund-action="settle" data-refund-row="${i}">סמן כשולם</button>` : '')
+          + (ctl.exception ? `<button type="button" class="btn small" data-role="approver" data-refund-action="exception" data-refund-row="${i}">חריגה</button>` : '')
+          + `</div>`;
+      }
+      html += `</div>`;
+    });
+  }
 
   if (missingCount > 0) {
     html += `<p class="forecast-missing-line"><a href="#debt-aging-view" data-open-debt-aging>${esc(missingCount + ' ' + PAYOUT_FORECAST_MISSING_LINE)}</a></p>`;
@@ -8934,19 +8842,139 @@ function openDebtAgingSection() {
 
 function renderPayoutForecast() {
   const box = document.getElementById('credits-forecast');
+  const totalEl = document.getElementById('credits-pending-total');
   if (!box) return;
   const f = payoutForecastState();
   if (f.status === 'idle' && state.currentScreen === 'billing') { loadPayoutForecast(); return; }
   if (f.status === 'loading') {
-    box.innerHTML = `<div class="card billing-empty forecast-loading">${escapeHtml('טוען תחזית החזרים…')}</div>`;
+    box.innerHTML = `<div class="card billing-empty forecast-loading">${escapeHtml('טוען זיכויים לתשלום…')}</div>`;
     return;
   }
   if (f.status === 'error') {
-    box.innerHTML = `<div class="card billing-empty forecast-error">${escapeHtml('טעינת תחזית ההחזרים נכשלה — ' + f.error + '. הרשימות למטה לא נטענו; אין להסיק שהן ריקות.')}</div>`;
+    if (totalEl) totalEl.textContent = '—';
+    box.innerHTML = `<div class="card billing-empty forecast-error">${escapeHtml('טעינת רשימת הזיכויים נכשלה — ' + f.error + '. הרשימה לא נטענה; אין להסיק שהיא ריקה.')}</div>`;
     return;
   }
   if (f.status !== 'ok' || !f.data) { box.innerHTML = ''; return; }
-  box.innerHTML = payoutForecastHtml(f.data);
+  if (totalEl) totalEl.textContent = fmtShekel(f.data.toPay.total);
+  box.innerHTML = payoutForecastHtml(f.data, refundRowControls());
+}
+
+/* The payload that names a list row on the server: its credit id, or — for a
+ * computed (auto) row — the stay + line. Pure. */
+function refundRowTarget(r) {
+  if (r && r.creditId) return { creditId: r.creditId };
+  return { patientKey: (r && r.patientKey) || '', creditType: (r && r.creditType) || '', allocationMonth: (r && r.allocationMonth) || '' };
+}
+
+/* The two refund writes behind the row buttons. Both throw on a refusal
+ * (apiPost: {ok:false}, lock_busy after its one retry) so the modal stays
+ * open with the Hebrew reason; the list is refreshed on success. */
+async function settleRefundRow(r, paidDate, method) {
+  const res = await trackedWrite([_creditsGuard], () => apiPost({ action: 'settleRefund', ...refundRowTarget(r), paidDate, method }));
+  await afterRefundWrite();
+  return res;
+}
+async function approveRefundExceptionRow(r, amount, reason) {
+  const res = await trackedWrite([_creditsGuard], () => apiPost({ action: 'approveRefundException', ...refundRowTarget(r), amount: roundMoney(amount), reason }));
+  await afterRefundWrite();
+  return res;
+}
+
+/* After a refund write: the list and the credits ledger are re-read. */
+async function afterRefundWrite() {
+  markPayoutForecastStale();
+  await Promise.resolve(reloadCredits()).catch(() => false);
+  await loadPayoutForecast();
+}
+
+/* «סמן כשולם» — the EXPLICIT mark-paid action on one row: date + method,
+ * then action=settleRefund (the server validates both again). */
+function showSettleRefundModal(r) {
+  if (!refundRowControls().settle || !r) return;
+  const root = document.getElementById('modal-root');
+  if (!root) return;
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  back.innerHTML = `
+    <div class="modal">
+      <h3>סימון זיכוי כשולם — ${escapeHtml(r.patientName || '')}</h3>
+      <p class="credit-calc"><b>${escapeHtml(fmtShekel(r.amount))}</b> · תאריך תשלום מתוכנן <bdi>${escapeHtml(formatDateHe(r.payoutDate) || '—')}</bdi></p>
+      <form>
+        <div class="form-row"><label>תאריך תשלום</label><input type="date" name="paidDate" value="${escapeHtml(todayISO())}" max="${escapeHtml(todayISO())}" dir="ltr" required /></div>
+        <div class="form-row"><label>אמצעי תשלום</label><input type="text" name="method" maxlength="40" required placeholder="העברה / מזומן / המחאה" /></div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn primary">סמן כשולם</button>
+        </div>
+      </form>
+    </div>`;
+  root.appendChild(back);
+  const close = () => back.remove();
+  back.querySelector('[data-action="cancel"]').onclick = close;
+  back.addEventListener('click', e => { if (e.target === back) close(); });
+  const form = back.querySelector('form');
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const paidDate = String(fd.get('paidDate') || '');
+    const method = String(fd.get('method') || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(paidDate) || !method) { showError('סימון כשולם דורש תאריך תשלום ואמצעי תשלום'); return; }
+    busyButton(back.querySelector('button[type="submit"]'), 'save', async () => {
+      await settleRefundRow(r, paidDate, method);
+      showToast('הזיכוי סומן כשולם');
+      close();
+    }).catch(err => {
+      showError('סימון הזיכוי נכשל — ' + refundActionErrorText(err));
+      markPayoutForecastStale();
+    });
+  };
+}
+
+/* «חריגה» — Sandra's exception on one row: a new amount (0 = zero it) and a
+ * REQUIRED reason, then action=approveRefundException. The server refuses
+ * everyone but Sandra's personal session (forbidden_role). */
+function showRefundExceptionModal(r) {
+  if (!refundRowControls().exception || !r) return;
+  const root = document.getElementById('modal-root');
+  if (!root) return;
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  back.innerHTML = `
+    <div class="modal">
+      <h3>חריגה מהמדיניות — ${escapeHtml(r.patientName || '')}</h3>
+      <p class="credit-calc">לפי המדיניות: <b>${escapeHtml(fmtShekel(r.calculatedAmount))}</b> · ${escapeHtml(payoutForecastRuleText(r.rule))}</p>
+      <form>
+        <div class="form-row"><label>סכום הזיכוי (כולל מע"מ, 0 = ביטול הזיכוי)</label><input type="number" name="amount" min="0" step="1" value="${escapeHtml(String(r.amount))}" dir="ltr" required /></div>
+        <div class="form-row"><label>סיבת החריגה (חובה)</label><input type="text" name="reason" minlength="2" maxlength="300" required /></div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-action="cancel">ביטול</button>
+          <button type="submit" class="btn primary">אישור חריגה</button>
+        </div>
+      </form>
+    </div>`;
+  root.appendChild(back);
+  const close = () => back.remove();
+  back.querySelector('[data-action="cancel"]').onclick = close;
+  back.addEventListener('click', e => { if (e.target === back) close(); });
+  const form = back.querySelector('form');
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const raw = String(fd.get('amount') || '');
+    const amount = Number(raw);
+    const reason = String(fd.get('reason') || '').trim();
+    if (raw === '' || !isFinite(amount) || amount < 0) { showError('סכום לא תקין'); return; }
+    if (reason.length < 2) { showError('יש להזין סיבה לחריגה (2–300 תווים)'); return; }
+    busyButton(back.querySelector('button[type="submit"]'), 'save', async () => {
+      await approveRefundExceptionRow(r, amount, reason);
+      showToast('החריגה נשמרה');
+      close();
+    }).catch(err => {
+      showError('שמירת החריגה נכשלה — ' + refundActionErrorText(err));
+      markPayoutForecastStale();
+    });
+  };
 }
 
 /* ---- «ייצוא זיכויים לאקסל»: a formatted .xlsx built on the server ---- */
@@ -9042,6 +9070,14 @@ function initPayoutForecastControls() {
   if (refresh) refresh.onclick = () => busyButton(refresh, 'load', () => { markPayoutForecastStale(); return loadPayoutForecast(); });
   const box = document.getElementById('credits-forecast');
   if (box && box.addEventListener) box.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest && e.target.closest('[data-refund-action]');
+    if (btn) {
+      const f = payoutForecastState();
+      const row = f.data && f.data.toPay && f.data.toPay.rows ? f.data.toPay.rows[Number(btn.getAttribute('data-refund-row'))] : null;
+      if (btn.getAttribute('data-refund-action') === 'settle') showSettleRefundModal(row);
+      else if (btn.getAttribute('data-refund-action') === 'exception') showRefundExceptionModal(row);
+      return;
+    }
     const link = e.target && e.target.closest && e.target.closest('[data-open-debt-aging]');
     if (!link) return;
     e.preventDefault();

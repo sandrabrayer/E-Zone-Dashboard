@@ -659,7 +659,9 @@ test('client: no billing leaks â€” loadAll skips getPayments / getCredits, the Â
   assert.strictEqual((loadAll.match(/action: 'getPayments'/g) || []).length, 1, 'getPayments asked in one place only');
   assert.strictEqual((loadAll.match(/action: 'getCredits'/g) || []).length, 1, 'getCredits asked in one place only');
   assert.match(APP_SRC, /if \(financeView\(\)\) \{\s*const nCredits = creditsForPatient/);
-  assert.match(APP_SRC, /if \(financeView\(\)\) try \{\s*await showCreditsModal\(\{\s*patient: p,/);
+  // Refunds are automatic (CHANGELOG-refunds-auto-policy.md): the discharge's
+  // refund step is only the notice, and it is finance-guarded too.
+  assert.match(APP_SRC, /if \(financeView\(\)\) notifyAutoRefund\(auditRes && auditRes\.refund\);/);
   for (const id of ['renewal-alert', 'overdue-alert']) assert.match(HTML_SRC, new RegExp(`id="${id}"[^>]*data-finance`), id);
   for (const s of ['billing', 'revenue', 'reconnect', 'growth']) {
     assert.match(HTML_SRC, new RegExp(`data-screen="${s}" data-finance`), s);

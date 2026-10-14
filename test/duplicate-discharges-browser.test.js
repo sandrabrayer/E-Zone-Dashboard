@@ -220,10 +220,12 @@ test('discharge: a double click writes ONCE; a stale second tab gets «השחר�
       return modal;
     };
     await discharge(a.page);
-    // The credits step opens after a full discharge; close it.
-    const credits = a.page.locator('.credits-modal');
-    await credits.waitFor({ timeout: 10000 });
-    await credits.locator('[data-action="cancel"]').click();
+    // Refunds are created by the server at discharge (CHANGELOG-refunds-auto-policy.md):
+    // no credits modal opens. Wait for the full discharge (the Patients flip) instead.
+    for (let i = 0; i < 100 && be.rows('Patients', 'PATIENT_COLUMNS')[0].status !== 'released'; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.equal(await a.page.locator('.credits-modal').count(), 0, 'no credits decision step');
     assert.equal(server.actions.filter((x) => x === 'dischargePatient').length, 1, 'double click → one write');
 
     await discharge(b.page);

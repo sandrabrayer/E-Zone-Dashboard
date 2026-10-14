@@ -1178,6 +1178,10 @@ const FINANCE_ACTIONS = [
   /* Appended (CHANGELOG-receipt-duplicates-and-edit.md): the receipt's
    * non-money fields (editReceipt_). Not on CONTROLLER_ACTIONS. */
   'editReceipt',
+  /* Appended (CHANGELOG-refunds-auto-policy.md): «סמן כשולם» on «זיכויים
+   * לתשלום» — also on CONTROLLER_ACTIONS (Ortal). Sandra's
+   * approveRefundException is gated by APPROVER_ACTIONS instead. */
+  'settleRefund',
 ];
 const FINANCE_USER_IDS = ['vered', 'sandra'];
 
@@ -1210,7 +1214,10 @@ const BILLING_CONTROL_ACTIONS = ['billingControlQueue', 'confirmPayment'];
 const CONTROLLER_BILLING_READ_ACTIONS = ['getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'debtAging', 'cleanupReport'];
 /* Append-only: the Phase 4 three first, then the «גבייה» reads. */
 const CONTROLLER_ACTIONS = ['billingControlQueue', 'confirmPayment', 'debtAging',
-  'getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'cleanupReport'];
+  'getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'cleanupReport',
+  /* Appended (CHANGELOG-refunds-auto-policy.md): Ortal pays the refunds, so
+   * «סמן כשולם» is the one write of «גבייה» her view reaches. */
+  'settleRefund'];
 const CONTROLLER_GETDATA_KEYS = ['ok', 'patients', 'billingOverrides'];
 const CONTROLLER_USER_IDS = ['ortal'];
 
@@ -1257,16 +1264,19 @@ const CONTROLLER_CLEANUP_SCHEMA = {
     defaultedFunder: ['kind', 'houseId', 'name', 'paymentId', 'receipt', 'receivedDate', 'amount', 'fix'],
   },
 };
-const CONTROLLER_FORECAST_BY_HOUSE_ = ['houseId', 'count', 'total'];
+/* «זיכויים לתשלום» (CHANGELOG-refunds-auto-policy.md): Ortal sees the whole
+ * list. The reason for leaving reaches her as the DISPOSITION only (a fixed
+ * key → «סיים טיפול» / «הפסיק לפני הזמן» / …) — never the free-text
+ * discharge note (Sandra, 14/10/2026). Sandra's free-text overrideReason and
+ * the fixed missing-data note stay out too. */
+const CONTROLLER_FORECAST_ROW_FIELDS_ = ['creditId', 'auto', 'patientKey', 'patientName', 'houseId', 'totalPaid',
+  'entryDate', 'exitDate', 'disposition', 'daysStayed', 'refundDays', 'amount', 'calculatedAmount',
+  'overridden', 'ruleVersion', 'rule', 'creditType', 'allocationMonth', 'payoutDate'];
 const CONTROLLER_FORECAST_SCHEMA = {
   ok: true, error: true, message: true,
-  today: true, recordsCutoff: true, payoutDateIfDecidedToday: true, preCutoffExcludedCount: true, zeroByPolicyCount: true, generatedAt: true,
-  awaiting_decision: { count: true, total: true, byHouse: CONTROLLER_FORECAST_BY_HOUSE_,
-    byPayoutDate: { $each: { payoutDate: true, count: true, total: true,
-      rows: ['patientName', 'houseId', 'entryDate', 'exitDate', 'suggestedAmount', 'rule', 'payoutDate'] } } },
-  decided: { count: true, total: true, byHouse: CONTROLLER_FORECAST_BY_HOUSE_,
-    byPayoutDate: { $each: { payoutDate: true, count: true, total: true,
-      rows: ['creditId', 'creditType', 'patientName', 'houseId', 'amount', 'decidedDate', 'payoutDate', 'rule'] } } },
+  today: true, recordsCutoff: true, policyCutover: true, preCutoffExcludedCount: true, zeroByPolicyCount: true,
+  zeroCreditsHidden: true, generatedAt: true,
+  toPay: { count: true, total: true, byPayoutDate: ['payoutDate', 'count', 'total'], rows: CONTROLLER_FORECAST_ROW_FIELDS_ },
   missing_payment_data: { count: true, rows: ['patientName', 'houseId', 'entryDate', 'exitDate'] },
   unresolved: { count: true, rows: ['patientName', 'houseId', 'entryDate', 'exitDate', 'error'] },
 };
@@ -1360,6 +1370,7 @@ const PROXY_KNOWN_ACTIONS = [
   'getPatientsForCoordinators', 'recordDischargeFromCoordinators',
   'deleteDuplicateDischarge',
   'editReceipt',
+  'settleRefund', 'approveRefundException',
 ];
 
 /* SecurityLog — append-only, one row per (event, action, hour) at most.
@@ -1766,8 +1777,14 @@ function handle_(params) {
     // The data-cleanup workbook («ייצוא רשימת תיקונים»): READ-ONLY, gated by PROXY_SECRET.
     if (action === 'cleanupReport') return jsonOut_(controllerProjected_(params, cleanupReportAction_(), CONTROLLER_CLEANUP_SCHEMA));
     if (action === 'saveCredit') {
-      return jsonOut_(upsertCredit_(parseJsonParam_(params.credit), requestUser_(params)));
+      return jsonOut_(upsertCredit_(parseJsonParam_(params.credit), requestUser_(params),
+        { approver: hasRole_(params, 'approver') }));
     }
+    // «זיכויים לתשלום» (CHANGELOG-refunds-auto-policy.md). settleRefund:
+    // Vered, Sandra and Ortal (gated above; Shiran / Yael refused).
+    // approveRefundException: APPROVER_ACTIONS — role-gated above (Sandra).
+    if (action === 'settleRefund') return jsonOut_(settleRefund_(params, requestUser_(params)));
+    if (action === 'approveRefundException') return jsonOut_(approveRefundException_(params, requestUser_(params)));
     if (action === 'moveLeadIrrelevant') {
       const res = moveLeadIrrelevant_(parseJsonParam_(params.lead), actorLabel_(params));
       refreshDigestBestEffort_();
@@ -2035,8 +2052,20 @@ function roleOperationFor_(action, params) {
   if (act === 'saveCredit') {
     const credit = parseJsonParam_(params && params.credit);
     if (credit && String(credit.status || '').trim().toLowerCase() === 'cancelled') return 'cancelCredit';
+    if (credit && creditCreateNeedsApprover_(credit)) return 'approveRefundException';
   }
   return '';
+}
+
+/* A saveCredit CREATE (no id) of a MANUAL credit ('other') — never a policy
+ * refund, so Sandra only, refused before anything is read. Every other
+ * create / amount edit is decided in upsertCredit_, which recalculates the
+ * policy figure itself and never trusts the client's amount or label
+ * (CHANGELOG-refunds-auto-policy.md). Mirrors lib/role-scope.js
+ * creditCreateNeedsApprover. Pure. */
+function creditCreateNeedsApprover_(credit) {
+  return !!credit && typeof credit === 'object' && String(credit.id == null ? '' : credit.id).trim() === '' &&
+    String(credit.creditType == null ? '' : credit.creditType).trim() === 'other';
 }
 
 /* The role an operation needs: 'deleter' | 'approver' | ''. */
@@ -6428,7 +6457,10 @@ function dischargePatient_(patient, user) {
 
     upsertRowById_(dischargedSh, DISCHARGED_PATIENT_COLUMNS, record);
     logAudit_('patient_discharged', 'dischargePatient_', record.fromLead || record.id || '', record.name || '', { id: record.id, houseId: record.houseId || '', disposition: record.disposition || '', updatedBy: record.updatedBy });
-    return { ok: true, discharged: true, patient: record };
+    // The refund is created by POLICY here — no approval step, fail-soft
+    // (CHANGELOG-refunds-auto-policy.md).
+    const refund = autoRefundOnDischarge_(record, record.updatedBy);
+    return { ok: true, discharged: true, patient: record, refund: refund };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
@@ -7076,6 +7108,9 @@ function recordDischargeFromCoordinators_(params) {
         id: v.id, houseId: String(patient.houseId == null ? '' : patient.houseId),
         dischargeDate: v.dischargeDate, priorStatus: audit.prior_status, by: v.by, auditId: audit.id,
       }, stampBy);
+    // The refund is created by POLICY (CHANGELOG-refunds-auto-policy.md);
+    // fail-soft, and never part of this feed's answer (no financial data).
+    autoRefundOnDischarge_(audit, stampBy);
     return { ok: true, discharged: true, id: v.id, dischargeDate: v.dischargeDate };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
@@ -9801,23 +9836,13 @@ function billingControlUnderStamped_(aging) {
   }).sort(function (a, b) { return b.gap - a.gap || (a.start < b.start ? -1 : a.start > b.start ? 1 : 0); });
 }
 
-/* Refund exceptions awaiting Sandra (plan §7.4 / §8.5), from existing data:
- *   awaiting  — refundPayoutForecastFor_'s «ממתין להחלטה» stays
- *   overPolicy — a PENDING credit whose amount exceeds its stored
- *                calculatedAmount (the policy figure)
- * PURE over its inputs. */
+/* Refund exceptions (plan §7.4 / §8.5), from existing data: a PENDING credit
+ * whose amount exceeds its stored calculatedAmount (the policy figure).
+ * Refunds are automatic now (CHANGELOG-refunds-auto-policy.md) — there is no
+ * «awaiting a decision» kind any more. `forecast` is kept in the signature
+ * for the callers. PURE over its inputs. */
 function billingControlRefundExceptions_(forecast, credits) {
   const out = [];
-  const aw = forecast && forecast.awaiting_decision ? forecast.awaiting_decision : null;
-  ((aw && aw.byPayoutDate) || []).forEach(function (g) {
-    (g.rows || []).forEach(function (r) {
-      out.push({
-        kind: 'awaiting_decision', patientName: String(r.patientName || ''), houseId: String(r.houseId || ''),
-        exitDate: String(r.exitDate || ''), amount: receiptMoney_(r.suggestedAmount), policyAmount: receiptMoney_(r.suggestedAmount),
-        payoutDate: String(r.payoutDate || ''),
-      });
-    });
-  });
   (Array.isArray(credits) ? credits : []).forEach(function (c) {
     if (!c || String(c.status == null ? '' : c.status).trim() !== 'pending') return;
     const amount = Number(c.amount), calc = Number(c.calculatedAmount);
@@ -10113,11 +10138,11 @@ function creditId_(patientId, allocationMonth, seq) {
  *   - rate       = amountPaid / 30 (CREDIT_DAYS_DIVISOR), whatever the cycle's
  *                  length; refund = rate × days not stayed, capped at amountPaid.
  *                  The exit day counts as stayed (entry day is day 1).
- *   - v2, every house (exit on/after REFUND_RULE_V2_FROM, Sandra 07/10/2026):
+ *   - v2 / NEW, every house (ENTRY on/after REFUND_POLICY_CUTOVER):
  *                  exit on STAY day 14 or later (entry day = day 1, counted
  *                  across month boundaries) → 0 for the current cycle; stay
  *                  day 1–13 → pro-rata of the current cycle.
- *   - v1 (exit before REFUND_RULE_V2_FROM), kept for those exits:
+ *   - v1 / OLD (ENTRY before REFUND_POLICY_CUTOVER), kept as it was:
  *     residential (asher, ramot): exit within the last 7 days of the cycle
  *                  (cycle end and the 6 days before it) → 0 for that cycle.
  *     detox_dual (rehab, pardes, arfoni, sde): exit on stay day 14 or later
@@ -10125,7 +10150,9 @@ function creditId_(patientId, allocationMonth, seq) {
  *   - a cycle that had not started at the exit → amountPaid back in full, in
  *     every house (prepaid_return).
  *   - payout: decided on or before the 10th → the 15th of that month; after
- *     the 10th → the 15th of the next month (refundPayoutDate_).
+ *     the 10th → the 15th of the next month (refundPayoutDate_). An automatic
+ *     refund is decided ON THE EXIT DATE (CHANGELOG-refunds-auto-policy.md),
+ *     so exit ≤ 10th → the 15th of that month, else the 15th of the next.
  * Dates are Asia/Jerusalem calendar days. Arithmetic is on day numbers
  * (UTC epoch days), so no runtime or sheet timezone can shift a day.
  *
@@ -10138,15 +10165,19 @@ const CREDIT_RESIDENTIAL_LAST_DAYS    = 7;
 const CREDIT_DETOX_TENURE_CUTOFF_DAYS = 14;   // stay day, entry day = day 1
 const CREDIT_DECISION_CUTOFF_DAY      = 10;
 const REFUND_MAX_CYCLES               = 1200; // 100 years — a guard, never a real stay
-/* Refund rule v2 (Sandra, 07/10/2026 — CHANGELOG-refund-rule-v2.md, plan §8.6):
- * EVERY house — stayDay = exit − entry + 1 (entry day = day 1); stayDay ≥ 14
- * → no refund for the current cycle; stayDay 1–13 → pro-rata of the current
- * cycle. A prepaid cycle that starts after the exit is still returned in full. Selected by the EXIT date: an exit on/after
- * REFUND_RULE_V2_FROM uses v2, an earlier exit keeps the v1 per-house rule
- * above (last 7 days for asher/ramot, stay day 14 for the others). The same
- * rule lives in lib/refund-rules.js (window.RefundRules); the parity test
- * test/refund-rule-v2.test.js runs both over a grid of inputs. */
-const REFUND_RULE_V2_FROM             = '2026-10-07';
+/* Refund policy cutover (Sandra, 14/10/2026 — CHANGELOG-refunds-auto-policy.md).
+ * Selected by the patient's ENTRY date (inclusive):
+ *   entry on/after REFUND_POLICY_CUTOVER → the NEW unified rule (ruleVersion 2)
+ *     for EVERY house: stayDay = exit − entry + 1 (entry day = day 1);
+ *     stayDay ≥ 14 → no refund for the current cycle; stayDay 1–13 → pro-rata
+ *     of the current cycle;
+ *   entry before it → the OLD per-house rule (ruleVersion 1), exactly as it
+ *     was: last 7 days of the cycle for asher/ramot, stay day 14 for the others.
+ * In both, a fully prepaid cycle that starts after the exit is returned in
+ * full. THE ONLY place this date is written: lib/refund-rules.js takes the
+ * version as an input, and test/refunds-auto-policy.test.js fails on any other
+ * copy of the literal. */
+const REFUND_POLICY_CUTOVER           = '2026-10-07';
 const REFUND_V2_NO_REFUND_FROM_DAY    = 14;   // stay day, entry day = day 1
 
 /* An Error carrying a machine code. Messages name the field, never a patient. */
@@ -10218,22 +10249,22 @@ function refundPayoutDate_(decided) {
   return y + '-' + String(mo).padStart(2, '0') + '-' + String(CREDIT_PAYOUT_DAY).padStart(2, '0');
 }
 
-/* 2 when the exit ('YYYY-MM-DD') is on/after REFUND_RULE_V2_FROM, else 1.
- * Same as lib/refund-rules.js refundRuleVersion (parity-tested). */
-function refundRuleVersion_(exitIso) {
-  const s = String(exitIso == null ? '' : exitIso);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw refundError_('bad_date', 'exitDate');
-  return s >= REFUND_RULE_V2_FROM ? 2 : 1;
+/* 2 (new unified rule) when the ENTRY date ('YYYY-MM-DD') is on/after
+ * REFUND_POLICY_CUTOVER, else 1 (old per-house rule). */
+function refundRuleVersion_(entryIso) {
+  const s = String(entryIso == null ? '' : entryIso);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw refundError_('bad_date', 'entryDate');
+  return s >= REFUND_POLICY_CUTOVER ? 2 : 1;
 }
 
 /* Pure. The rule for the cycle that holds the exit (cycleStart ≤ exit ≤
- * cycleEnd), picked by the exit date. Same as lib/refund-rules.js
- * currentCycleRule (parity-tested).
+ * cycleEnd), picked by the ENTRY date. Same as lib/refund-rules.js
+ * currentCycleRule given the same ruleVersion (parity-tested).
  * x: { facilityType, entryDate, exitDate, cycleStart, cycleEnd } — ISO days.
  * → { ruleVersion, rule, stayDay, lastDaysFrom, lastDaysTo, refundDue } */
 function refundCurrentCycleRule_(x) {
   const o = x || {};
-  const version = refundRuleVersion_(o.exitDate);
+  const version = refundRuleVersion_(o.entryDate);
   const entryN = refundDayNum_(o.entryDate), exitN = refundDayNum_(o.exitDate);
   const endN = refundDayNum_(o.cycleEnd);
   const stayDay = exitN - entryN + 1;
@@ -10279,7 +10310,7 @@ function refundCurrentCycleRule_(x) {
  *   rule ∈ stay_prorata | stay_day14_zero (v2) |
  *          residential_prorata | residential_last_days_zero | detox_prorata |
  *          detox_tenure_cutoff_zero (v1) | prepaid_return | cycle_fully_used
- *   ruleVersion — 2 / 1 by the exit date (refundRuleVersion_); stayDay is the
+ *   ruleVersion — 2 / 1 by the ENTRY date (refundRuleVersion_); stayDay is the
  *   v2 deciding figure; lastDaysFrom/To only for a v1 residential stay.
  *   refund is computed from the unrounded rate; dailyRate is rounded for display. */
 function computeRefund_(input) {
@@ -10332,7 +10363,7 @@ function computeRefund_(input) {
   const cycleDays = endN - startN + 1;
   const stayDay = exitN - entryN + 1;
   const rate = amountPaid / CREDIT_DAYS_DIVISOR;
-  const ruleVersion = refundRuleVersion_(exitDate);
+  const ruleVersion = refundRuleVersion_(entryDate);
   // v1 residential only: the cycle's last 7 days, recorded in the breakdown.
   const showLastDays = ruleVersion === 1 && facilityType === 'residential';
   const lastDaysFromN = endN - (CREDIT_RESIDENTIAL_LAST_DAYS - 1);
@@ -10375,7 +10406,8 @@ function computeRefund_(input) {
 }
 
 /* ===== Refund suggestions for a discharge (the live path) =====
- * Pure. Every credit suggestion the credits modal offers, built from
+ * Pure. Every refund line the policy yields for a discharge (the automatic
+ * refund at discharge and «זיכויים לתשלום» use it), built from
  * computeRefund_ over the patient's Payments rows — the server is the only
  * place the rules live (CHANGELOG-refund-logic-wiring.md).
  *
@@ -10537,32 +10569,35 @@ function creditPayoutDate_(decidedDate, existing) {
   return refundPayoutDate_(decidedDate);
 }
 
-/* ===== Refund payout forecast (CHANGELOG-refund-payout-forecast.md) =====
- * READ-ONLY. What the bookkeeper needs before each 15th, in three sections
- * that are NEVER summed together:
- *   decided              — saved credits, status 'pending', amount > 0, grouped
- *                          by the STORED payoutDate (never recomputed);
- *   awaiting_decision    — discharges (exit on/after the records cutoff) with
- *                          NO saved credit for that stay, where the server's
- *                          suggestion (refundSuggestionsFor_ → computeRefund_)
- *                          totals > 0. NOT money to pay — a decision to make;
- *   missing_payment_data — discharges (same cutoff) with no saved credit and NO
- *                          recorded payment covering the exit cycle, whose
- *                          suggestion would be 0 only for lack of data. They
- *                          carry no amount at all — never a 0. A discharge
- *                          whose EXIT CYCLE started before the records cutoff
- *                          is left out (records before it were never entered,
- *                          so it is neither debt nor a refund question) and
- *                          only counted in preCutoffExcludedCount.
- * Plus `unresolved` (a discharge the rules refused, e.g. unknown_house — an
- * error code, never a 0) and zeroByPolicyCount (discharges whose suggestion is
- * a real, data-backed 0; counted, not listed).
- *
- * A credit belongs to a stay when its patientKey triple equals the discharge's
- * (house, trimmed name, Jerusalem entry day). Any saved row — pending, paid,
- * cancelled, zero — means the stay is decided. Restored discharges are not
- * discharges. Pure: no sheet access, no clock. */
+/* ===== «זיכויים לתשלום» — the automatic refund list (CHANGELOG-refunds-auto-policy.md) =====
+ * Refunds are computed by POLICY (computeRefund_, ruleVersion by the ENTRY
+ * date) and created automatically at discharge — there is no decision step.
+ * The list the bookkeeper (Ortal) reads is ONE section, `toPay`:
+ *   - every SAVED credit with status 'pending' and amount > 0 — its STORED
+ *     payoutDate, never recomputed (a credit decided under an older rule
+ *     keeps its date);
+ *   - every discharge (exit on/after the records cutoff) whose stay holds NO
+ *     refund decision yet, with the policy's positive lines computed here
+ *     (auto: true, creditId '') — a discharge recorded before this change,
+ *     or one whose automatic write failed. Its payoutDate is decided by the
+ *     EXIT date: exit ≤ the 10th → the 15th of that month, else the 15th of
+ *     the next. «סמן כשולם» / an approved exception persist such a row first.
+ * A ZERO-AMOUNT credit without an approved override is a bug artefact (the old
+ * modal saved the policy's zero line as a row): it is never shown, never
+ * counts as a decision, and is only counted in zeroCreditsHidden. The sheet
+ * row itself is kept (no data is deleted).
+ * Beside the list, never summed with it: `missing_payment_data` (no recorded
+ * payment for the exit cycle — debt, not a refund), `unresolved` (the rules
+ * refused the stay, e.g. unknown_house — an error code, never a 0),
+ * zeroByPolicyCount and preCutoffExcludedCount. Pure: no sheet, no clock. */
 const REFUND_FORECAST_MISSING_NOTE = 'אין תשלום רשום — לבדוק';
+/* approvedBy on a refund the policy created (no person decided it). */
+const REFUND_AUTO_APPROVER = 'מדיניות אוטומטית';
+/* An approved exception: the reason is required, cleaned, 2–300 chars; the
+ * amount is a finite ₪ figure between 0 and this cap (a typo guard). */
+const REFUND_EXCEPTION_REASON_MIN = 2;
+const REFUND_EXCEPTION_REASON_MAX = 300;
+const REFUND_EXCEPTION_MAX_AMOUNT = 1000000;
 
 function refundForecastIso_(v) {
   try { return refundDateIso_(v, 'date'); } catch (_) { return ''; }
@@ -10584,28 +10619,6 @@ function refundForecastRule_(c) {
   if (typeof raw === 'string') { try { b = JSON.parse(raw); } catch (_) { b = null; } }
   return (b && typeof b === 'object' && b.rule) ? String(b.rule) : String((c && c.creditType) || '');
 }
-/* Totals per payoutDate and per house for one section. */
-function refundForecastTotals_(rows, dateField, amountField) {
-  const byDate = {}, byHouse = {};
-  let total = 0;
-  rows.forEach(function (r) {
-    const amt = Number(r[amountField]) || 0;
-    const d = r[dateField] || '';
-    if (!byDate[d]) byDate[d] = { payoutDate: d, total: 0, count: 0, rows: [] };
-    byDate[d].total = refundRound2_(byDate[d].total + amt); byDate[d].count++; byDate[d].rows.push(r);
-    const h = r.houseId || '';
-    if (!byHouse[h]) byHouse[h] = { houseId: h, total: 0, count: 0 };
-    byHouse[h].total = refundRound2_(byHouse[h].total + amt); byHouse[h].count++;
-    total = refundRound2_(total + amt);
-  });
-  const sortKeys = function (o) { return Object.keys(o).sort(); };
-  return {
-    count: rows.length, total: total,
-    byPayoutDate: sortKeys(byDate).map(function (k) { return byDate[k]; }),
-    byHouse: sortKeys(byHouse).map(function (k) { return byHouse[k]; }),
-  };
-}
-
 /* The start of the cycle that holds the exit, from debtAging_'s own cycle
  * helper (recCycleDueDates_: entry-anchored, none on/after the exit), so both
  * engines agree on which cycle it is. A stay that ends inside its first cycle
@@ -10615,6 +10628,122 @@ function refundForecastExitCycleStart_(entryIso, exitIso) {
   return dues.length ? dues[dues.length - 1] : entryIso;
 }
 
+/* The 'house::name::entry' triple a Payments row belongs to: its patientId
+ * cell, or — when blank — the triple inside its 'pay::h::n::d::due' id (the
+ * normalizePayment() rule). Pure. */
+function refundPaymentRowKey_(r) {
+  const pid = String(r && r.patientId != null ? r.patientId : '');
+  if (pid) return pid;
+  const parts = String(r && r.id != null ? r.id : '').split('::');
+  return parts.length === 5 && parts[0] === 'pay' ? parts.slice(1, 4).join('::') : '';
+}
+
+/* A saved credit that is a bug artefact: amount 0 (or unreadable) with no
+ * approved override reason. Hidden everywhere; the row stays on the sheet. */
+function refundZeroCredit_(c) {
+  const amount = Number(c && c.amount);
+  return (!isFinite(amount) || amount <= 0) &&
+    String(c && c.overrideReason != null ? c.overrideReason : '').trim() === '';
+}
+
+/* Whether `credit` belongs to the stay {stayKey, payKey}. Matched on the
+ * discharge stay key (collapsed whitespace) or the Payments triple. Pure. */
+function refundCreditOfStay_(c, stay) {
+  if (!c || !stay) return false;
+  const k1 = creditStayKey_(c);
+  if (k1 && k1 === stay.stayKey) return true;
+  const k2 = refundForecastStoredKey_(c.patientKey);
+  return !!k2 && k2 === stay.payKey;
+}
+
+/* Whether the stay already holds a refund decision: ANY saved credit of the
+ * stay (pending, paid, cancelled, an approved zero) — except a zero-amount
+ * artefact, which is no decision at all. Pure. */
+function refundStayDecided_(credits, stay) {
+  return (Array.isArray(credits) ? credits : []).some(function (c) {
+    return refundCreditOfStay_(c, stay) && !refundZeroCredit_(c);
+  });
+}
+
+/* A stay {payKey, stayKey, patientName, houseId, entryDate, exitDate, …} from
+ * a discharged-audit row, or null when the row is not a live discharge. */
+function refundStayFromDischarge_(d) {
+  if (!d || diagIsRestored_(d.restored) || dischargeRowDeleted_(d)) return null;
+  const exitIso = refundForecastIso_(d.exitDate) || refundForecastIso_(d.dischargedAt);
+  const entryIso = refundForecastIso_(d.date);
+  const name = String(d.name == null ? '' : d.name).trim();
+  const houseId = String(d.houseId == null ? '' : d.houseId).trim();
+  return {
+    payKey: refundForecastKey_(houseId, name, entryIso),
+    stayKey: dischargeStayKey_({ houseId: houseId, name: name, date: entryIso }),
+    patientName: name, houseId: houseId, entryDate: entryIso, exitDate: exitIso,
+    patientId: String(d.patientId == null ? '' : d.patientId).trim(),
+    disposition: String(d.disposition == null ? '' : d.disposition).trim().slice(0, 40),
+    dischargeNote: String(d.discharge_note || d.dischargeReason || '').replace(/[<>]/g, '').trim().slice(0, 300),
+  };
+}
+
+/* ₪ received for the stay: every non-void cycle's amountPaid (cycles already
+ * derived from receipts). Pure. */
+function refundStayTotalPaid_(cycles, payKey) {
+  let total = 0;
+  (Array.isArray(cycles) ? cycles : []).forEach(function (r) {
+    if (!r || refundPaymentRowKey_(r) !== payKey || isVoidStatus_(r.status)) return;
+    const n = Number(r.amountPaid);
+    if (isFinite(n) && n > 0) total = refundRound2_(total + n);
+  });
+  return total;
+}
+
+/* The policy's POSITIVE refund lines for a stay, decided on the EXIT date (so
+ * each line's payoutDate follows the exit: ≤ 10th → the 15th of that month,
+ * else the 15th of the next). Zero lines are dropped — a zero refund is never
+ * a row. Throws (err.code) like refundSuggestionsFor_. Pure. */
+function autoRefundLines_(stay, payments) {
+  if (!stay || !stay.exitDate || !stay.entryDate) throw refundError_('bad_date', stay && stay.entryDate ? 'exitDate' : 'entryDate');
+  return refundSuggestionsFor_({ houseId: stay.houseId, entryDate: stay.entryDate, exitDate: stay.exitDate, patientKey: stay.payKey },
+    payments, stay.exitDate).filter(function (x) { return (Number(x.calculatedAmount) || 0) > 0; });
+}
+
+/* One row of the list. `c` is a saved credit (or null for a computed line),
+ * `line` a computed line (or null), `stay` the discharge (or null for a
+ * credit whose discharge is not on the sheet — the basis fills the gaps). */
+function refundListRow_(c, line, stay, totalPaid) {
+  let b = c ? c.basis : line.basis;
+  if (typeof b === 'string') { try { b = JSON.parse(b); } catch (_) { b = null; } }
+  b = (b && typeof b === 'object') ? b : {};
+  const entryDate = (stay && stay.entryDate) || refundForecastIso_(b.entryDate);
+  const exitDate = (stay && stay.exitDate) || refundForecastIso_(b.exitDate);
+  let daysStayed = '';
+  if (entryDate && exitDate) daysStayed = refundDayNum_(exitDate) - refundDayNum_(entryDate) + 1;
+  else if (isFinite(Number(b.stayDay)) && b.stayDay !== '' && b.stayDay != null) daysStayed = Number(b.stayDay);
+  const pick = function () { for (let i = 0; i < arguments.length; i++) { const v = arguments[i]; if (v !== '' && v != null && isFinite(Number(v))) return Number(v); } return ''; };
+  let ruleVersion = pick(b.ruleVersion);
+  if (ruleVersion === '' && entryDate) { try { ruleVersion = refundRuleVersion_(entryDate); } catch (_) { ruleVersion = ''; } }
+  const amount = refundRound2_(Number(c ? c.amount : line.calculatedAmount) || 0);
+  const calculated = refundRound2_(Number(c ? c.calculatedAmount : line.calculatedAmount) || 0);
+  const pd = c ? c.payoutDate : b.payoutDate;
+  return {
+    creditId: c ? String(c.id || '') : '',
+    auto: !c,
+    patientKey: c ? String(c.patientKey || '') : stay.payKey,
+    patientName: String((c && c.patientName) || (stay && stay.patientName) || ''),
+    houseId: String((c && c.houseId) || (stay && stay.houseId) || ''),
+    totalPaid: totalPaid,
+    entryDate: entryDate, exitDate: exitDate,
+    disposition: stay ? stay.disposition : '', dischargeNote: stay ? stay.dischargeNote : '',
+    daysStayed: daysStayed,
+    refundDays: pick(b.creditedDays, b.unusedDays, b.daysNotStayed),
+    amount: amount, calculatedAmount: calculated,
+    overridden: !!c && amount !== calculated,
+    ruleVersion: ruleVersion,
+    rule: c ? refundForecastRule_(c) : String(b.rule || ''),
+    creditType: String((c ? c.creditType : line.creditType) || ''),
+    allocationMonth: String((c ? c.allocationMonth : line.allocationMonth) || ''),
+    payoutDate: Object.prototype.toString.call(pd) === '[object Date]' ? refundForecastIso_(pd) : String(pd == null ? '' : pd).trim(),
+  };
+}
+
 function refundPayoutForecastFor_(discharged, credits, payments, todayIso) {
   // Receipts are not cycles; each cycle's amountPaid is derived (Phase 3 PR 2).
   payments = paymentCyclesDerived_(payments);
@@ -10622,70 +10751,54 @@ function refundPayoutForecastFor_(discharged, credits, payments, todayIso) {
   const cutoff = recRecordsCutoff_();
   const creditList = Array.isArray(credits) ? credits : [];
 
-  // a. decided — the stored payoutDate, as stored.
-  const decidedRows = [];
+  // One live discharge per stay (the latest exit), restored / deleted excluded.
+  const stays = {}, allStays = {};
+  (Array.isArray(discharged) ? discharged : []).forEach(function (d) {
+    const s = refundStayFromDischarge_(d);
+    if (!s) return;
+    const prevAll = allStays[s.payKey];
+    if (!prevAll || (s.exitDate && s.exitDate > prevAll.exitDate)) allStays[s.payKey] = s;
+    if (s.exitDate && s.exitDate < cutoff) return;            // before the records cutoff
+    const prev = stays[s.payKey];
+    if (!prev || (s.exitDate && s.exitDate > prev.exitDate)) stays[s.payKey] = s;
+  });
+  const stayList = Object.keys(allStays).map(function (k) { return allStays[k]; });
+  const stayOf = function (c) {
+    for (let i = 0; i < stayList.length; i++) if (refundCreditOfStay_(c, stayList[i])) return stayList[i];
+    return null;
+  };
+
+  // a. Saved credits: pending, amount > 0. Zero artefacts are counted, never listed.
+  const rows = [];
+  let zeroCreditsHidden = 0;
   creditList.forEach(function (c) {
     if (!c || String(c.status == null ? '' : c.status).trim() !== 'pending') return;
-    const amount = Number(c.amount);
-    if (!isFinite(amount) || amount <= 0) return;
-    const pd = c.payoutDate;
-    const payoutDate = Object.prototype.toString.call(pd) === '[object Date]'
-      ? refundForecastIso_(pd) : String(pd == null ? '' : pd).trim();
-    decidedRows.push({
-      creditId: String(c.id || ''), patientName: String(c.patientName || ''), houseId: String(c.houseId || ''),
-      amount: refundRound2_(amount), decidedDate: refundForecastIso_(c.decidedDate) || String(c.decidedDate || ''),
-      payoutDate: payoutDate, rule: refundForecastRule_(c), creditType: String(c.creditType || ''),
-      overrideReason: String(c.overrideReason || ''),
-    });
+    if (refundZeroCredit_(c)) { zeroCreditsHidden++; return; }
+    if (!(Number(c.amount) > 0)) return;                       // an approved zero: decided, nothing to pay
+    const stay = stayOf(c);
+    const payKey = stay ? stay.payKey : (refundForecastStoredKey_(c.patientKey) || String(c.patientKey || ''));
+    rows.push(refundListRow_(c, null, stay, refundStayTotalPaid_(payments, payKey)));
   });
 
-  // Stays that already hold a saved credit (any status, any amount).
-  const decidedKeys = {};
-  creditList.forEach(function (c) {
-    const k = c && refundForecastStoredKey_(c.patientKey);
-    if (k) decidedKeys[k] = true;
-  });
-
-  // One discharge per stay (the latest exit), restored ones excluded.
-  const stays = {};
-  (Array.isArray(discharged) ? discharged : []).forEach(function (d) {
-    if (!d || diagIsRestored_(d.restored) || dischargeRowDeleted_(d)) return;
-    const exitIso = refundForecastIso_(d.exitDate) || refundForecastIso_(d.dischargedAt);
-    const entryIso = refundForecastIso_(d.date);
-    const name = String(d.name == null ? '' : d.name).trim();
-    const houseId = String(d.houseId == null ? '' : d.houseId).trim();
-    if (exitIso && exitIso < cutoff) return;            // before the records cutoff
-    const key = refundForecastKey_(houseId, name, entryIso);
-    const prev = stays[key];
-    if (!prev || (exitIso && exitIso > prev.exitDate)) {
-      stays[key] = { key: key, patientName: name, houseId: houseId, entryDate: entryIso, exitDate: exitIso };
-    }
-  });
-
-  const payoutIfToday = refundPayoutDate_(today);
-  const awaitingRows = [], missingRows = [], unresolvedRows = [];
+  // b. Stays with no decision yet: the policy's positive lines, computed here.
+  const unresolvedRows = [], missingRows = [];
   let zeroByPolicyCount = 0, preCutoffExcludedCount = 0;
   Object.keys(stays).sort().forEach(function (k) {
     const s = stays[k];
-    if (decidedKeys[k]) return;
+    if (refundStayDecided_(creditList, s)) return;
     const ident = { patientName: s.patientName, houseId: s.houseId, entryDate: s.entryDate, exitDate: s.exitDate };
-    if (!s.exitDate || !s.entryDate) {
-      unresolvedRows.push(Object.assign(ident, { error: 'bad_date' }));
-      return;
-    }
+    if (!s.exitDate || !s.entryDate) { unresolvedRows.push(Object.assign(ident, { error: 'bad_date' })); return; }
     let sugg;
     try {
-      sugg = refundSuggestionsFor_({ houseId: s.houseId, entryDate: s.entryDate, exitDate: s.exitDate, patientKey: k }, payments, today);
+      sugg = refundSuggestionsFor_({ houseId: s.houseId, entryDate: s.entryDate, exitDate: s.exitDate, patientKey: s.payKey }, payments, s.exitDate);
     } catch (e) {
       unresolvedRows.push(Object.assign(ident, { error: (e && e.code) || 'refund_failed' }));
       return;
     }
     const positive = sugg.filter(function (x) { return (Number(x.calculatedAmount) || 0) > 0; });
-    const total = refundRound2_(positive.reduce(function (t, x) { return t + Number(x.calculatedAmount); }, 0));
-    if (total > 0) {
-      const rules = [];
-      positive.forEach(function (x) { const r = x.basis && x.basis.rule; if (r && rules.indexOf(r) < 0) rules.push(r); });
-      awaitingRows.push(Object.assign(ident, { suggestedAmount: total, rule: rules.join(','), payoutDate: payoutIfToday }));
+    if (positive.length) {
+      const paid = refundStayTotalPaid_(payments, s.payKey);
+      positive.forEach(function (line) { rows.push(refundListRow_(null, line, s, paid)); });
       return;
     }
     // A recorded payment covers the exit cycle when a real row (amountPaid > 0)
@@ -10696,25 +10809,272 @@ function refundPayoutForecastFor_(discharged, credits, payments, todayIso) {
         b.rule !== 'prepaid_return' && b.rule !== 'cycle_fully_used';
     });
     if (covered) { zeroByPolicyCount++; return; }
-    // Records before the cutoff were never entered: an exit cycle that started
-    // before it is not debt (debtAging_ skips it with the same recBeforeCutoff_
-    // test) and not a refund question. Counted, never listed.
-    if (recBeforeCutoff_(refundForecastExitCycleStart_(s.entryDate, s.exitDate), cutoff)) {
-      preCutoffExcludedCount++;
-      return;
-    }
+    // Records before the cutoff were never entered: not debt, not a refund.
+    if (recBeforeCutoff_(refundForecastExitCycleStart_(s.entryDate, s.exitDate), cutoff)) { preCutoffExcludedCount++; return; }
     missingRows.push(Object.assign(ident, { note: REFUND_FORECAST_MISSING_NOTE }));
   });
 
+  rows.sort(function (a, b) {
+    if (a.payoutDate !== b.payoutDate) return a.payoutDate < b.payoutDate ? -1 : 1;
+    if (a.patientName !== b.patientName) return a.patientName < b.patientName ? -1 : 1;
+    return a.creditType < b.creditType ? -1 : a.creditType > b.creditType ? 1 : 0;
+  });
+  const byDate = {};
+  let total = 0;
+  rows.forEach(function (r) {
+    const d = r.payoutDate || '';
+    if (!byDate[d]) byDate[d] = { payoutDate: d, count: 0, total: 0 };
+    byDate[d].count++; byDate[d].total = refundRound2_(byDate[d].total + r.amount);
+    total = refundRound2_(total + r.amount);
+  });
+
   return {
-    ok: true, today: today, recordsCutoff: cutoff, payoutDateIfDecidedToday: payoutIfToday,
-    decided: refundForecastTotals_(decidedRows, 'payoutDate', 'amount'),
-    awaiting_decision: refundForecastTotals_(awaitingRows, 'payoutDate', 'suggestedAmount'),
+    ok: true, today: today, recordsCutoff: cutoff, policyCutover: REFUND_POLICY_CUTOVER,
+    toPay: {
+      count: rows.length, total: total,
+      byPayoutDate: Object.keys(byDate).sort().map(function (d) { return byDate[d]; }),
+      rows: rows,
+    },
     missing_payment_data: { count: missingRows.length, rows: missingRows },
     unresolved: { count: unresolvedRows.length, rows: unresolvedRows },
     zeroByPolicyCount: zeroByPolicyCount,
     preCutoffExcludedCount: preCutoffExcludedCount,
+    zeroCreditsHidden: zeroCreditsHidden,
   };
+}
+
+/* ===== Automatic refunds — the WRITE side (CHANGELOG-refunds-auto-policy.md) ===== */
+
+/* The persisted Patients id of a stay: the discharge row's own patientId
+ * (coordinator discharges), else the Patients row with the same stay key,
+ * else the stay's triple (Credits.patientId is never blank). */
+function refundPatientIdForStay_(stay) {
+  if (stay.patientId) return stay.patientId;
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PATIENTS_SHEET);
+  const rows = sh ? readSheet_(sh, PATIENT_COLUMNS) : [];
+  for (let i = 0; i < rows.length; i++) {
+    const id = String(rows[i].id == null ? '' : rows[i].id).trim();
+    if (id && dischargeStayKey_(rows[i]) === stay.stayKey) return id;
+  }
+  return stay.payKey;
+}
+
+/* The calculation trail of a policy refund (the `reason` column). Pure. */
+function refundAutoReason_(stay, b) {
+  const x = b || {};
+  return ('אוטומטי לפי מדיניות · כלל ' + (Number(x.ruleVersion) === 2 ? 'חדש' : 'ישן') + ' · ' + String(x.rule || '') +
+    ' · כניסה ' + stay.entryDate + ' · יציאה ' + stay.exitDate + ' · ימי זיכוי ' + String(x.creditedDays == null ? '' : x.creditedDays)).slice(0, 1000);
+}
+
+/* The policy line a saved credit stands for: the stay's latest OPEN discharge
+ * (by the credit's patientKey) and the policy line with the same creditType +
+ * allocationMonth, recalculated from the Payments rows. null for a manual
+ * ('other') credit, an unknown stay, a stay the rules refuse, or no such
+ * line. Reads only; under the caller's lock. */
+function refundPolicyLineFor_(patientKey, creditType, month) {
+  if (creditType === 'other') return null;
+  const want = creditStayKey_({ patientKey: patientKey });
+  if (!want) return null;
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const dSh = ss.getSheetByName(DISCHARGED_PATIENTS_SHEET);
+  let stay = null;
+  (dSh ? readSheet_(dSh, DISCHARGED_PATIENT_COLUMNS) : []).forEach(function (d) {
+    const st = refundStayFromDischarge_(d);
+    if (st && st.stayKey === want && (!stay || st.exitDate > stay.exitDate)) stay = st;
+  });
+  if (!stay) return null;
+  const paySh = ss.getSheetByName(PAYMENTS_SHEET);
+  let lines;
+  try { lines = autoRefundLines_(stay, paySh ? readSheet_(paySh, PAYMENT_COLUMNS) : []); } catch (_) { return null; }
+  const hit = lines.filter(function (l) { return l.creditType === creditType && l.allocationMonth === month; })[0];
+  return hit ? { stay: stay, line: hit } : null;
+}
+
+/* The Credits row for one automatic line. Pure (ids and stamps passed in). */
+function autoRefundRecord_(stay, line, patientId, seq, user, nowIso, uid) {
+  const b = line.basis || {};
+  const amount = refundRound2_(Number(line.calculatedAmount) || 0);
+  return {
+    id: creditId_(patientId, line.allocationMonth, seq),
+    patientId: patientId, patientKey: stay.payKey,
+    patientName: creditStr_(stay.patientName, 120), houseId: stay.houseId,
+    facilityType: facilityTypeFor_(stay.houseId), creditType: line.creditType,
+    allocationMonth: line.allocationMonth, calculatedAmount: amount, amount: amount, overrideReason: '',
+    reason: refundAutoReason_(stay, b),
+    approvedBy: REFUND_AUTO_APPROVER,
+    decidedDate: stay.exitDate, payoutDate: refundPayoutDate_(stay.exitDate),
+    status: 'pending', paidDate: '', method: '', notes: '',
+    basis: JSON.stringify(Object.assign({}, b, { auto: true })).slice(0, 4000),
+    createdAt: nowIso, createdBy: String(user == null ? '' : user).slice(0, 40),
+    updatedAt: nowIso, updatedBy: String(user == null ? '' : user).slice(0, 40),
+    creditUid: uid,
+  };
+}
+
+/* Write one Credits row (text cells forced first). Under the caller's lock. */
+function writeCreditRow_(sh, targetRow, out) {
+  CREDIT_TEXT_COLUMNS.forEach(function (col) {
+    const c = CREDIT_COLUMNS.indexOf(col);
+    if (c >= 0) sh.getRange(targetRow, c + 1, 1, 1).setNumberFormat('@');
+  });
+  sh.getRange(targetRow, 1, 1, CREDIT_COLUMNS.length).setValues([objectToRow_(out, CREDIT_COLUMNS)]);
+}
+
+/* Under the CALLER'S script lock. Creates the automatic refund rows for one
+ * stay — every POSITIVE line of the policy, pending, no approval step. Writes
+ * NOTHING when the stay already holds a decision ('decided') or the policy
+ * gives 0 ('zero'); the Credits tab is created only when there is a row to
+ * write. → { ok:true, created:[records], skipped? } | throws (err.code). */
+function writeAutoRefundsLocked_(stay, user) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const paySh = ss.getSheetByName(PAYMENTS_SHEET);
+  const payments = paySh ? readSheet_(paySh, PAYMENT_COLUMNS) : [];
+  const existingSh = ss.getSheetByName(CREDITS_SHEET);
+  const credits = existingSh ? readSheet_(existingSh, CREDIT_COLUMNS) : [];
+  if (refundStayDecided_(credits, stay)) return { ok: true, created: [], skipped: 'decided' };
+  const lines = autoRefundLines_(stay, payments);
+  if (!lines.length) return { ok: true, created: [], skipped: 'zero' };
+  const sh = existingSh || getOrCreateSheet_(CREDITS_SHEET, CREDIT_COLUMNS);
+  const patientId = refundPatientIdForStay_(stay);
+  const nowIso = new Date().toISOString();
+  const all = credits.slice();
+  const created = [];
+  lines.forEach(function (line) {
+    let seq = 1;
+    all.forEach(function (c) { if (String(c.patientId) === patientId && String(c.allocationMonth) === line.allocationMonth) seq++; });
+    const rec = autoRefundRecord_(stay, line, patientId, seq, user, nowIso, CREDIT_UID_PREFIX + Utilities.getUuid());
+    writeCreditRow_(sh, sh.getLastRow() + 1, rec);
+    all.push(rec);
+    created.push(rec);
+  });
+  // The audit trail names ids and rules only — no amounts in any log.
+  logAudit_('credit_auto_created', 'writeAutoRefundsLocked_', patientId, stay.patientName, {
+    ids: created.map(function (r) { return r.id; }).join(','), count: created.length, updatedBy: String(user == null ? '' : user),
+  });
+  return { ok: true, created: created };
+}
+
+/* At discharge (dischargePatient_ / recordDischargeFromCoordinators_), under
+ * their lock. FAIL-SOFT: a refund that cannot be computed never blocks the
+ * discharge — the stay then shows in the list (computed) or in «לא ניתן
+ * לחשב». → { created, skipped } | { error } (codes only). */
+function autoRefundOnDischarge_(record, user) {
+  try {
+    const stay = refundStayFromDischarge_(record);
+    if (!stay) return { created: 0, skipped: 'not_open' };
+    const res = writeAutoRefundsLocked_(stay, user);
+    return { created: res.created.length, skipped: res.skipped || '' };
+  } catch (e) {
+    console.warn('[refund] auto refund skipped: ' + String((e && e.code) || 'refund_failed'));
+    return { created: 0, error: String((e && e.code) || 'refund_failed') };
+  }
+}
+
+/* The Credits row a list row stands for, under the caller's lock: by
+ * creditId, or — for a computed row — the stay's automatic refunds are
+ * written first and the line (creditType + allocationMonth) is picked.
+ * → { ok:true, sh, row (1-based), credit } | { ok:false, error } */
+function refundTargetLocked_(p, user) {
+  const creditId = creditStr_(p.creditId, 200);
+  if (!creditId) {
+    const patientKey = String(p.patientKey == null ? '' : p.patientKey).slice(0, 300);
+    const creditType = creditStr_(p.creditType, 40);
+    const month = creditStr_(p.allocationMonth, 7);
+    if (!patientKey) return { ok: false, error: 'missing_patientKey' };
+    if (CREDIT_TYPES.indexOf(creditType) < 0) return { ok: false, error: 'bad_creditType' };
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return { ok: false, error: 'bad_month' };
+    const want = creditStayKey_({ patientKey: patientKey });
+    const dSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(DISCHARGED_PATIENTS_SHEET);
+    let stay = null;
+    (dSh ? readSheet_(dSh, DISCHARGED_PATIENT_COLUMNS) : []).forEach(function (d) {
+      const s = refundStayFromDischarge_(d);
+      if (s && want && s.stayKey === want && (!stay || s.exitDate > stay.exitDate)) stay = s;
+    });
+    if (!stay) return { ok: false, error: 'stay_not_found' };
+    let made;
+    try { made = writeAutoRefundsLocked_(stay, user); } catch (e) { return { ok: false, error: (e && e.code) || 'refund_failed' }; }
+    if (made.skipped === 'decided') return { ok: false, error: 'already_decided' };
+    const hit = made.created.filter(function (r) { return r.creditType === creditType && r.allocationMonth === month; })[0];
+    if (!hit) return { ok: false, error: 'not_found' };
+    p = { creditId: hit.id };
+  }
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CREDITS_SHEET);
+  const rows = sh ? readSheet_(sh, CREDIT_COLUMNS) : [];
+  const id = creditStr_(p.creditId, 200);
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i].id) === id) return { ok: true, sh: sh, row: i + 2, credit: rows[i] };
+  }
+  return { ok: false, error: 'unknown_credit' };
+}
+
+/* action=settleRefund — «סמן כשולם» on a row of «זיכויים לתשלום».
+ * Vered, Sandra (finance) and Ortal (the controller view — on
+ * CONTROLLER_ACTIONS); Shiran / Yael are refused by financeRefused_. Input: { creditId } or
+ * { patientKey, creditType, allocationMonth } (a computed row), plus
+ * paidDate (a real day, not in the future) and method (1–40 chars). The row
+ * must be pending with amount > 0. Writes status/paidDate/method + stamps. */
+function settleRefund_(params, user) {
+  const p = params || {};
+  const paidDate = creditDate_(p.paidDate);
+  if (!paidDate) return { ok: false, error: 'bad_paidDate' };
+  if (paidDate > todayISODate_()) return { ok: false, error: 'paidDate_in_future' };
+  const method = creditStr_(p.method, 40).replace(/^[=+\-@\t\r]+/, '');
+  if (!method) return { ok: false, error: 'missing_method' };
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('settleRefund_');
+  try {
+    const t = refundTargetLocked_(p, user);
+    if (!t.ok) return t;
+    const c = t.credit;
+    if (String(c.status).trim() !== 'pending') return { ok: false, error: 'not_pending' };
+    if (!(Number(c.amount) > 0)) return { ok: false, error: 'zero_amount_credit' };
+    const out = Object.assign({}, c, {
+      status: 'paid', paidDate: paidDate, method: method,
+      updatedAt: new Date().toISOString(), updatedBy: String(user == null ? '' : user).slice(0, 40),
+    });
+    writeCreditRow_(t.sh, t.row, out);
+    logAudit_('credit_paid', 'settleRefund_', String(c.patientId || ''), String(c.patientName || ''),
+      { id: String(c.id), updatedBy: out.updatedBy });
+    // No free text and no amount in the answer — the controller view reads it too.
+    return { ok: true, credit: { id: String(out.id), status: out.status, paidDate: out.paidDate, updatedAt: out.updatedAt } };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* action=approveRefundException — the ONLY way to change a policy refund's
+ * amount (or zero it). APPROVER_ACTIONS: handle_ has already refused anyone
+ * but Sandra's personal session (and server.js before it). Input: the row
+ * ({ creditId } or a computed row's keys), amount (0 … cap) and a required
+ * reason (2–300 chars, cleaned). The row must be pending. calculatedAmount is
+ * never touched; overrideReason holds the reason while amount ≠ calculated. */
+function approveRefundException_(params, user) {
+  const p = params || {};
+  const amount = creditAmount_(p.amount);
+  if (amount === null || amount > REFUND_EXCEPTION_MAX_AMOUNT) return { ok: false, error: 'bad_amount' };
+  const reason = creditStr_(p.reason, 1000).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/^[=+\-@]+/, '').trim();
+  if (reason.length < REFUND_EXCEPTION_REASON_MIN) return { ok: false, error: 'reason_required' };
+  if (reason.length > REFUND_EXCEPTION_REASON_MAX) return { ok: false, error: 'reason_too_long' };
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('approveRefundException_');
+  try {
+    const t = refundTargetLocked_(p, user);
+    if (!t.ok) return t;
+    const c = t.credit;
+    if (String(c.status).trim() !== 'pending') return { ok: false, error: 'not_pending' };
+    const calculated = creditAmount_(c.calculatedAmount);
+    const stamp = String(user == null ? '' : user).slice(0, 40);
+    const out = Object.assign({}, c, {
+      amount: amount, overrideReason: amount !== calculated ? reason : '',
+      approvedBy: stamp, updatedAt: new Date().toISOString(), updatedBy: stamp,
+    });
+    writeCreditRow_(t.sh, t.row, out);
+    logAudit_('credit_exception_approved', 'approveRefundException_', String(c.patientId || ''), String(c.patientName || ''),
+      { id: String(c.id), override: amount !== calculated, updatedBy: stamp });
+    return { ok: true, credit: out };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
 }
 
 /* action=refundPayoutForecast — READ-ONLY. Reads Credits, the discharged tab
@@ -11551,19 +11911,15 @@ function cleanupDuplicates_(m) {
   return out.sort(function (a, b) { return a.dueDate < b.dueDate ? -1 : a.dueDate > b.dueDate ? 1 : 0; });
 }
 
-/* «זיכויים לבדיקה» — refundPayoutForecastFor_'s awaiting_decision and
- * unresolved groups. missing_payment_data is left out: those exit cycles are
- * already unrecorded cycles in «פערי גבייה לבדיקה» (debtAging_). */
+/* «זיכויים לבדיקה» — refundPayoutForecastFor_'s unresolved group (the rules
+ * refused the stay). Refunds are automatic, so nothing awaits a decision
+ * (CHANGELOG-refunds-auto-policy.md). missing_payment_data is left out: those
+ * exit cycles are already unrecorded cycles in «פערי גבייה לבדיקה» (debtAging_). */
 function cleanupCredits_(forecast) {
   const rows = [];
   const ident = function (r) {
     return { houseId: r.houseId || '', name: r.patientName || '', entryDate: r.entryDate || '', exitDate: r.exitDate || '' };
   };
-  forecast.awaiting_decision.byPayoutDate.forEach(function (g) {
-    g.rows.forEach(function (r) {
-      rows.push(Object.assign(ident(r), { kind: 'credit_awaiting', amount: r.suggestedAmount, rule: r.rule, payoutDate: r.payoutDate }));
-    });
-  });
   forecast.unresolved.rows.forEach(function (r) { rows.push(Object.assign(ident(r), { kind: 'credit_unresolved', error: r.error })); });
   return rows.sort(function (a, b) { return a.exitDate < b.exitDate ? -1 : a.exitDate > b.exitDate ? 1 : 0; });
 }
@@ -11871,11 +12227,21 @@ function creditDate_(v) {
  *     never overwritten by the edited amount); a payload updatedAt that
  *     differs from the sheet's REFUSES the write with the same `conflicts`
  *     shape the Patients merge uses (stale tab — someone saved first).
- * Zero amounts are valid rows ("no refund owed" is a decision, not silence).
+ * Refunds are automatic (CHANGELOG-refunds-auto-policy.md), so this path
+ * never creates or changes a refund AMOUNT without Sandra:
+ *   - a CREATE with amount 0 is refused (zero_amount_credit) — a zero refund
+ *     is never a row;
+ *   - every CREATE (the policy's refunds are written by the server at
+ *     discharge, so a client-created credit is an exception whose
+ *     calculatedAmount is the client's word) and an EDIT that changes the
+ *     stored amount need `approver` (Sandra's personal session, opts.approver
+ *     from hasRole_) — else override_requires_approver. Status / paid /
+ *     notes edits stay open to finance users.
  */
-function upsertCredit_(credit, user) {
+function upsertCredit_(credit, user, opts) {
   if (!credit || typeof credit !== 'object') return { ok: false, error: 'missing_credit' };
   const stampUser = String(user == null ? '' : user);
+  const approver = !!(opts && opts.approver === true);
 
   const lock = LockService.getScriptLock();
   if (lock.tryLock(10000) !== true) return lockBusy_('upsertCredit_');
@@ -11892,6 +12258,8 @@ function upsertCredit_(credit, user) {
     let record, targetRow = 0;
     // EDIT only: the stored { decidedDate, payoutDate } before this edit.
     let existingPayout = null;
+    // EDIT only: whether the payload changes the stored amount.
+    let amountChanged = false;
 
     if (wantId) {
       // ---- EDIT ----
@@ -11924,6 +12292,7 @@ function upsertCredit_(credit, user) {
 
       record = Object.assign({}, sheetObj);
       existingPayout = { decidedDate: creditDate_(sheetObj.decidedDate), payoutDate: creditDate_(sheetObj.payoutDate) };
+      amountChanged = credit.amount !== undefined && creditAmount_(credit.amount) !== creditAmount_(sheetObj.amount);
       for (let k = 0; k < CREDIT_EDITABLE_COLUMNS.length; k++) {
         const col = CREDIT_EDITABLE_COLUMNS[k];
         if (credit[col] !== undefined) record[col] = credit[col];
@@ -11951,13 +12320,43 @@ function upsertCredit_(credit, user) {
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return { ok: false, error: 'bad_month' };
     if (CREDIT_TYPES.indexOf(creditType) < 0)    return { ok: false, error: 'bad_creditType', creditType: creditType };
     if (CREDIT_STATUSES.indexOf(status) < 0)     return { ok: false, error: 'bad_status', status: status };
+    /* The POLICY figure, recalculated HERE from the discharge + Payments rows
+     * (CHANGELOG-refunds-auto-policy.md, follow-up). The client's
+     * calculatedAmount, basis and creditType label are never trusted: on a
+     * CREATE the stored calculatedAmount and basis are the server's (0 and a
+     * manual basis when the policy has no such line). */
+    const policy = refundPolicyLineFor_(patientKey, creditType, month);
+    const policyFigure = policy ? creditAmount_(policy.line.calculatedAmount) : null;
+    if (!wantId) {
+      record.calculatedAmount = policy ? policyFigure : 0;
+      record.basis = policy ? JSON.stringify(Object.assign({}, policy.line.basis, { savedFromClient: true }))
+                            : JSON.stringify({ manual: true });
+    }
     const calculated = creditAmount_(record.calculatedAmount);
     const amount     = creditAmount_(record.amount === undefined || record.amount === '' ? record.calculatedAmount : record.amount);
     if (calculated === null || amount === null) return { ok: false, error: 'bad_amount' };
-    const overrideReason = creditStr_(record.overrideReason, 300);
-    const reason         = creditStr_(record.reason, 1000);
-    if (amount !== calculated && !overrideReason) return { ok: false, error: 'override_reason_required' };
+    let overrideReason = creditStr_(record.overrideReason, 300);
+    let reason         = creditStr_(record.reason, 1000);
+    if (!wantId && amount <= 0) return { ok: false, error: 'zero_amount_credit' };
+    // Equal to the policy figure → no approval; a different amount, or a
+    // manual credit (no policy line), → Sandra's approver session + a reason.
+    const matchesPolicy = policyFigure !== null && amount === policyFigure;
+    const needsApprover = wantId ? (amountChanged && !matchesPolicy) : !matchesPolicy;
+    if (needsApprover && !approver) {
+      return { ok: false, error: 'override_requires_approver', message: ROLE_FORBIDDEN_MESSAGE };
+    }
+    if (!wantId && !matchesPolicy && creditType === 'other' && !overrideReason) overrideReason = creditStr_(reason, 300);
+    if (amount !== calculated && !overrideReason && !matchesPolicy) return { ok: false, error: 'override_reason_required' };
     if (creditType === 'other' && !reason)        return { ok: false, error: 'reason_required' };
+    // An approved exception is stamped with the approver — never the client's text.
+    if (needsApprover) record.approvedBy = stampUser;
+    if (!wantId && matchesPolicy) {
+      // A policy refund saved from the browser: the server's trail and stamps,
+      // decided on the exit date like the automatic one.
+      reason = refundAutoReason_(policy.stay, policy.line.basis);
+      record.approvedBy = approver ? stampUser : REFUND_AUTO_APPROVER;
+      record.decidedDate = policy.stay.exitDate;
+    }
     const decidedRaw = creditDate_(record.decidedDate);
     if (decidedRaw === null) return { ok: false, error: 'bad_decidedDate' };
     const decidedDate = decidedRaw || todayISODate_();   // blank → today; invalid → refused above
@@ -11977,7 +12376,7 @@ function upsertCredit_(credit, user) {
       allocationMonth:  month,
       calculatedAmount: calculated,
       amount:           amount,
-      overrideReason:   amount !== calculated ? overrideReason : '',
+      overrideReason:   amount !== calculated && !matchesPolicy ? overrideReason : '',
       reason:           reason,
       approvedBy:       creditStr_(record.approvedBy, 40),
       decidedDate:      decidedDate,
@@ -12030,11 +12429,7 @@ function upsertCredit_(credit, user) {
 
     // Belt-and-suspenders over the whole-column '@' format getOrCreateSheet_
     // applies: force the text cells of THIS row before the values land.
-    CREDIT_TEXT_COLUMNS.forEach(function (col) {
-      const c = CREDIT_COLUMNS.indexOf(col);
-      if (c >= 0) sh.getRange(targetRow, c + 1, 1, 1).setNumberFormat('@');
-    });
-    sh.getRange(targetRow, 1, 1, CREDIT_COLUMNS.length).setValues([objectToRow_(out, CREDIT_COLUMNS)]);
+    writeCreditRow_(sh, targetRow, out);
 
     logAudit_(wantId ? 'credit_updated' : 'credit_created', 'upsertCredit_', patientId, out.patientName, {
       id: out.id, patientKey: patientKey, facilityType: facilityType, creditType: creditType, allocationMonth: month,
@@ -12489,6 +12884,7 @@ function managersWork_(params) {
   if (op === 'houseData') return mwHouseData_(caller, params);
   if (op === 'logAdd') return mwLogAdd_(caller, params);
   if (op === 'logUpdate') return mwLogUpdate_(caller, params);
+  if (op === 'houseCost') return mwHouseCost_(caller, params);
   return { ok: false, error: 'unknown_op' };
 }
 
@@ -12561,6 +12957,170 @@ function mwReadLog_(logKey, caller) {
   return rows;
 }
 
+/* Stage 2 — the house team, from the Coordinators-owned ManagersHouse digest
+ * (DIGEST-CONTRACT.md «Outbound — ManagersHouse»). Read-only, BY HEADER NAME,
+ * from the spreadsheet in MANAGERS_DIGEST_SHEET_ID (the same id is set on the
+ * Coordinators Apps Script, which rewrites it every 15 minutes). Unset /
+ * unreadable / not yet filled / a missing column → an honest
+ * { available:false, reason } — never an empty team that looks real. The raw
+ * all-house rows are cached 5 minutes; every value is cleaned before it leaves. */
+const MANAGERS_DIGEST_SHEET_PROP = 'MANAGERS_DIGEST_SHEET_ID';
+const MW_DIGEST_CANON = { raanana: 'raanana-asher', ramot: 'ramot-hashavim', efroni: 'caesarea-ofroni', rehab: 'caesarea-rehab', pardes: 'pardes' };
+const MW_DIGEST_TABS = {
+  shifts: { tab: 'ManagersShifts', cols: ['house', 'date', 'shift', 'guideName', 'scheduleStatus', 'updatedAt'] },
+  staff: { tab: 'ManagersStaff', cols: ['house', 'name', 'kind', 'role', 'phone', 'onLeave', 'workdays', 'updatedAt'] },
+  therapistWeek: { tab: 'ManagersTherapistWeek', cols: ['house', 'dayOfWeek', 'time', 'therapistName', 'patientName', 'updatedAt'] },
+};
+const MW_DIGEST_CACHE_KEY = 'mw:team-digest:v1';
+const MW_DIGEST_CACHE_TTL_S = 300;
+const MW_DIGEST_STALE_MS = 2 * 3600 * 1000;
+const MW_SHIFT_LABELS = { 'בוקר': 'בוקר', 'אחר צהריים': 'ערב', 'לילה': 'לילה' };
+
+function mwDigestCell_(v, col) {
+  if (v instanceof Date) {
+    if (col === 'time') return Utilities.formatDate(v, Session.getScriptTimeZone(), 'HH:mm');
+    if (col === 'updatedAt') return v.toISOString();
+    return asISODate_(v);
+  }
+  return String(v == null ? '' : v).trim();
+}
+
+/* All houses' rows: { available, reason?, updatedAt, shifts, staff, therapistWeek }. */
+function mwReadTeamDigest_() {
+  const hit = cacheGetJson_(MW_DIGEST_CACHE_KEY);
+  if (hit && hit.available) return hit;
+  const id = String(PropertiesService.getScriptProperties().getProperty(MANAGERS_DIGEST_SHEET_PROP) || '').trim();
+  if (!id) return { available: false, reason: 'not_configured' };
+  let ss;
+  try { ss = SpreadsheetApp.openById(id); } catch (e) { return { available: false, reason: 'unreadable' }; }
+  if (!ss) return { available: false, reason: 'unreadable' };
+  const out = { available: true, updatedAt: '' };
+  const keys = Object.keys(MW_DIGEST_TABS);
+  for (let k = 0; k < keys.length; k++) {
+    const def = MW_DIGEST_TABS[keys[k]];
+    const sh = ss.getSheetByName(def.tab);
+    if (!sh) return { available: false, reason: 'pending' };   // not filled by Coordinators yet
+    const lastRow = sh.getLastRow();
+    const lastCol = sh.getLastColumn();
+    if (lastRow < 1 || lastCol < 1) return { available: false, reason: 'pending' };
+    const grid = sh.getRange(1, 1, lastRow, lastCol).getValues();
+    const head = grid[0].map(function (h) { return String(h).trim(); });
+    const idx = {};
+    for (let j = 0; j < def.cols.length; j++) {
+      const at = head.indexOf(def.cols[j]);
+      if (at < 0) return { available: false, reason: 'contract_mismatch' };
+      idx[def.cols[j]] = at;
+    }
+    out[keys[k]] = grid.slice(1).map(function (row) {
+      const o = {};
+      def.cols.forEach(function (col) { o[col] = mwDigestCell_(row[idx[col]], col); });
+      if (o.updatedAt > out.updatedAt) out.updatedAt = o.updatedAt;
+      return o;
+    }).filter(function (o) { return o.house; });
+  }
+  cachePutJson_(MW_DIGEST_CACHE_KEY, out, MW_DIGEST_CACHE_TTL_S);
+  return out;
+}
+
+/* One house's team for the managers app. */
+function mwTeam_(key, todayIso) {
+  let d;
+  try { d = mwReadTeamDigest_(); } catch (e) { d = { available: false, reason: 'unreadable' }; }
+  if (!d || !d.available) return { available: false, reason: (d && d.reason) || 'unreadable' };
+  const canon = MW_DIGEST_CANON[key];
+  const mine = function (r) { return r.house === canon; };
+  const txt = function (v, n) { return coordTextClean_(v, n); };
+  const shifts = (d.shifts || []).filter(mine).filter(function (r) {
+    return /^\d{4}-\d{2}-\d{2}$/.test(r.date) && MW_SHIFT_LABELS[r.shift] && txt(r.guideName, 80);
+  }).map(function (r) {
+    return { date: r.date, shift: MW_SHIFT_LABELS[r.shift], guideName: txt(r.guideName, 80), draft: r.scheduleStatus !== 'published' };
+  });
+  const staff = (d.staff || []).filter(mine).filter(function (r) { return txt(r.name, 80); }).map(function (r) {
+    const phone = String(r.phone || '').replace(/\D/g, '');
+    return {
+      name: txt(r.name, 80), kind: r.kind === 'therapist' ? 'therapist' : 'guide', role: txt(r.role, 40),
+      phone: /^0\d{8,9}$/.test(phone) ? phone : '', onLeave: String(r.onLeave) === 'true',
+      workdays: String(r.workdays || '').split(',').filter(function (x) { return /^[0-6]$/.test(x); }).map(Number),
+    };
+  });
+  const therapistWeek = (d.therapistWeek || []).filter(mine).filter(function (r) {
+    return /^[0-6]$/.test(r.dayOfWeek) && txt(r.therapistName, 80) && txt(r.patientName, 80);
+  }).map(function (r) {
+    return { dayOfWeek: Number(r.dayOfWeek), time: mwCleanTime_(r.time), therapistName: txt(r.therapistName, 80), patientName: txt(r.patientName, 80) };
+  });
+  const age = d.updatedAt ? Date.now() - Date.parse(d.updatedAt) : NaN;
+  return {
+    available: true, updatedAt: d.updatedAt || '', stale: !(age <= MW_DIGEST_STALE_MS),
+    today: shifts.filter(function (s) { return s.date === todayIso; }),
+    shifts: shifts, staff: staff, therapistWeek: therapistWeek,
+  };
+}
+
+/* Stage 3 — the house's manpower cost (14 Oct 2026), from the staffing
+ * Apps Script feed getHouseCostsForManagers (house TOTALS only, never a
+ * worker). Script Properties: STAFFING_SHEETS_URL (staffing /exec) and
+ * STAFFING_COST_SECRET (= staffing's MANAGERS_COST_READ_SECRET). Unset /
+ * unreachable / bad answer → { available:false, reason } — never a guessed
+ * 0. All houses of a month are cached 10 minutes; only the caller's house
+ * leaves. A separate op so the house page never waits on staffing. */
+const MW_STAFFING_HOUSES = { raanana: ['asher'], ramot: ['ramot'], efroni: ['ofroni'], rehab: ['rehab'], pardes: ['pardes', 'hapardes'] };
+const MW_COST_CACHE_TTL_S = 600;
+const MW_COST_KEYS = ['projectedTotal', 'actualConfirmed', 'estimated', 'missingDataCost', 'instructorsCost'];
+
+function mwFetchStaffingCosts_(ym) {
+  const key = 'mw:staffing-cost:v1:' + ym;
+  const hit = cacheGetJson_(key);
+  if (hit && hit.houses) return hit;
+  const props = PropertiesService.getScriptProperties();
+  const url = String(props.getProperty('STAFFING_SHEETS_URL') || '').trim();
+  const secret = String(props.getProperty('STAFFING_COST_SECRET') || '');
+  if (!url || !secret) return { error: 'not_configured' };
+  if (!/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(url)) return { error: 'not_configured' };
+  let resp;
+  try {
+    resp = UrlFetchApp.fetch(url + '?action=getHouseCostsForManagers&month=' + encodeURIComponent(ym) +
+      '&secret=' + encodeURIComponent(secret), { muteHttpExceptions: true, followRedirects: true });
+  } catch (e) {
+    return { error: 'unreachable' };
+  }
+  let body = null;
+  try { body = JSON.parse(resp.getContentText()); } catch (e) { body = null; }
+  if (!body || body.error || typeof body.houses !== 'object' || body.houses === null) {
+    return { error: body && body.error === 'unauthorized' ? 'unauthorized' : 'unreadable' };
+  }
+  const out = { month: String(body.month || ym), hasActuals: !!body.hasActuals, stale: !!body.stale,
+    generatedAt: String(body.feedGeneratedAt || ''), houses: body.houses };
+  if (!out.stale) cachePutJson_(key, out, MW_COST_CACHE_TTL_S);
+  return out;
+}
+
+function mwHouseCost_(caller, params) {
+  const ym = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(params.month || '')) ? String(params.month) : defaultMonth_();
+  let d;
+  try { d = mwFetchStaffingCosts_(ym); } catch (e) { d = { error: 'unreadable' }; }
+  if (!d || d.error) return { ok: true, house: caller.house, month: ym, cost: { available: false, reason: (d && d.error) || 'unreadable' } };
+  const ids = MW_STAFFING_HOUSES[caller.house] || [];
+  const sum = {}; MW_COST_KEYS.forEach(function (k) { sum[k] = 0; });
+  let budget = null, found = false;
+  ids.forEach(function (id) {
+    const h = d.houses[id];
+    if (!h || typeof h !== 'object') return;
+    found = true;
+    MW_COST_KEYS.forEach(function (k) { const n = Number(h[k]); sum[k] += Number.isFinite(n) ? Math.round(n) : 0; });
+    const b = Number(h.budget);
+    if (h.budget !== null && h.budget !== undefined && Number.isFinite(b)) budget = (budget || 0) + Math.round(b);
+  });
+  if (!found) return { ok: true, house: caller.house, month: ym, cost: { available: false, reason: 'no_house' } };
+  return {
+    ok: true, house: caller.house, month: ym,
+    cost: {
+      available: true, month: d.month, hasActuals: d.hasActuals, stale: d.stale, generatedAt: d.generatedAt,
+      total: sum.projectedTotal, confirmed: sum.actualConfirmed, estimated: sum.estimated,
+      missingData: sum.missingDataCost, instructors: sum.instructorsCost, budget: budget,
+    },
+  };
+}
+
 function mwHouseData_(caller, params) {
   const key = caller.house;
   const ym = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(params.month || '')) ? String(params.month) : defaultMonth_();
@@ -12617,6 +13177,22 @@ function mwHouseData_(caller, params) {
   });
   visits.sort(function (a, b) { const ka = a.date + a.time, kb = b.date + b.time; return ka < kb ? 1 : ka > kb ? -1 : 0; });
 
+  // Expected admissions (14 Oct 2026): OPEN leads of this house (not admitted,
+  // not irrelevant) whose planned entry date falls today .. +13 days. Name,
+  // date, stage and who met them only — no phone, notes or money.
+  const horizon = new Date(today.getTime() + 13 * 86400000);
+  const expectedAdmissions = [];
+  openLeads_().forEach(function (l) {
+    const h = String(l.house || '').trim();
+    if (h !== houseName && h !== pid) return;
+    const ed = parseDate_(asISODate_(l.entryDate));
+    if (!ed || ed < today || ed > horizon) return;
+    const name = coordTextClean_(l.name, 80);
+    if (!name) return;
+    expectedAdmissions.push({ name: name, date: ymdOf_(ed), stage: recStage_(l.stage), meetingWith: coordTextClean_(l.meetingWith, 40) });
+  });
+  expectedAdmissions.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+
   const logs = {};
   Object.keys(MW_LOGS).forEach(function (k) { logs[k] = mwReadLog_(k, caller); });
   const todayIso = ymdOf_(today);
@@ -12631,8 +13207,9 @@ function mwHouseData_(caller, params) {
   return {
     ok: true, house: key, month: ym, today: todayIso,
     patients: inHouse, outpatients: outpatients,
-    visits: visits, admissions: admissions,
+    visits: visits, admissions: admissions, expectedAdmissions: expectedAdmissions,
     logs: logs, followUps: followUps,
+    team: mwTeam_(key, todayIso),
   };
 }
 

@@ -131,6 +131,9 @@ function loadApp(route) {
     renderAll = () => {};
     showCloseLeadModal = (o) => { globalThis.__confirms.push(o.onConfirm); };
     showCreditsModal = () => { globalThis.__creditsModal = (globalThis.__creditsModal || 0) + 1; return Promise.resolve(); };
+    // Refunds are created by the server at discharge (CHANGELOG-refunds-auto-policy.md):
+    // the client's refund step is the notice, counted here.
+    notifyAutoRefund = () => { globalThis.__refundStep = (globalThis.__refundStep || 0) + 1; };
     globalThis.__test = {
       state,
       normalizePatient: (p) => normalizePatient(p),
@@ -150,6 +153,7 @@ function loadApp(route) {
       errors: () => globalThis.__errors,
       toasts: () => globalThis.__toasts,
       creditsModals: () => globalThis.__creditsModal || 0,
+      refundSteps: () => globalThis.__refundStep || 0,
       DISCHARGE_ALREADY_RECORDED_HE,
     };`;
   vm.createContext(sandbox);
@@ -195,7 +199,8 @@ test('ROOT CAUSE: the first discharge lands but its answer is lost; the user dis
   assert.ok(app.toasts().includes('השחרור כבר נרשם'), app.toasts().join('|'));
   assert.equal(p.status, 'released', 'the patient is released on the recorded discharge');
   assert.equal(p.exitDate, EXIT);
-  assert.equal(app.creditsModals(), 0, 'no second credits step for a stay already discharged');
+  assert.equal(app.refundSteps(), 0, 'no second refund step for a stay already discharged');
+  assert.equal(app.creditsModals(), 0, 'no credits modal after a discharge (refunds are automatic)');
   assert.equal(app.state.dischargedPatients.filter((d) => d.name === NAME).length, 0, 'the optimistic duplicate was dropped');
 });
 
@@ -288,7 +293,8 @@ test('double tap: two confirms of the same stay in flight (two doors: house row 
   const b = app.confirms()[1](PICK);
   await Promise.all([a, b]);
   assert.equal(sent('dischargePatient').length, 1, 'the second confirm wrote nothing');
-  assert.equal(app.creditsModals(), 1, 'one credits step');
+  assert.equal(app.refundSteps(), 1, 'one refund step');
+  assert.equal(app.creditsModals(), 0, 'no credits modal after a discharge (refunds are automatic)');
   // Once the first finished, the guard is released (a later legit action is not blocked forever).
   app.dischargePatient(p);
   await app.confirms()[2](PICK);
@@ -314,27 +320,34 @@ test('credits: «זיכויים (N)» counts per STAY — two duplicate rows sho
 test('upsertCredit_: a second OPEN credit for the same stay + rule is refused (duplicate:true, the existing id); cancelled / other rules / other stays are not', () => {
   const s = seeded();
   const base = { patientId: 'pt-1', patientKey: HOUSE + '::' + NAME + '::' + ENTRY, patientName: NAME, houseId: HOUSE,
-    creditType: 'days_unused', allocationMonth: '2026-09', calculatedAmount: 1000, amount: 1000, basis: { exitDate: EXIT } };
-  const r1 = s.g.post(Object.assign({ action: 'saveCredit', credit: base }, VERED()));
+    creditType: 'days_unused', allocationMonth: '2026-09', calculatedAmount: 1000, amount: 1000, overrideReason: 'חריגה', basis: { exitDate: EXIT } };
+  // No discharge row behind this stay → no policy line: the create is an
+  // exception — Sandra's approver session + a reason
+  // (CHANGELOG-refunds-auto-policy.md). Vered's 'other' create is refused at
+  // the role gate; her other creates by upsertCredit_.
+  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: base }, VERED())).error, 'override_requires_approver');
+  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: Object.assign({}, base, { creditType: 'other', reason: 'פיצוי' }) }, VERED())).error, 'forbidden_role');
+  assert.equal(s.rows('Credits', 'CREDIT_COLUMNS').length, 0, 'nothing written');
+  const r1 = s.g.post(Object.assign({ action: 'saveCredit', credit: base }, SANDRA()));
   assert.equal(r1.ok, true); assert.equal(r1.created, true);
   const before = s.snapshot('Credits');
   // Same stay — even with the name spaced differently in the key — same rule.
-  const r2 = s.g.post(Object.assign({ action: 'saveCredit', credit: Object.assign({}, base, { patientKey: HOUSE + '::  מטופל  בדיקה ::' + ENTRY }) }, VERED()));
+  const r2 = s.g.post(Object.assign({ action: 'saveCredit', credit: Object.assign({}, base, { patientKey: HOUSE + '::  מטופל  בדיקה ::' + ENTRY }) }, SANDRA()));
   assert.equal(r2.ok, true); assert.equal(r2.duplicate, true); assert.equal(r2.id, r1.credit.id);
   assert.equal(r2.credit.id, r1.credit.id, 'the answer carries the existing row for the client');
   assert.equal(s.snapshot('Credits'), before, 'nothing written');
   // Another month / rule / stay → created.
-  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: Object.assign({}, base, { allocationMonth: '2026-10' }) }, VERED())).created, true);
-  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: Object.assign({}, base, { creditType: 'prepaid_return' }) }, VERED())).created, true);
-  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: Object.assign({}, base, { patientKey: HOUSE + '::' + NAME + '::2026-10-01' }) }, VERED())).created, true);
+  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: Object.assign({}, base, { allocationMonth: '2026-10' }) }, SANDRA())).created, true);
+  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: Object.assign({}, base, { creditType: 'prepaid_return' }) }, SANDRA())).created, true);
+  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: Object.assign({}, base, { patientKey: HOUSE + '::' + NAME + '::2026-10-01' }) }, SANDRA())).created, true);
   // Manual 'other': the identical retry is a duplicate, a different one is not.
   const other = Object.assign({}, base, { creditType: 'other', reason: 'פיצוי', calculatedAmount: 200, amount: 200 });
-  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: other }, VERED())).created, true);
-  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: other }, VERED())).duplicate, true);
-  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: Object.assign({}, other, { reason: 'פיצוי נוסף' }) }, VERED())).created, true);
+  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: other }, SANDRA())).created, true);
+  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: other }, SANDRA())).duplicate, true);
+  assert.equal(s.g.post(Object.assign({ action: 'saveCredit', credit: Object.assign({}, other, { reason: 'פיצוי נוסף' }) }, SANDRA())).created, true);
   // A CANCELLED credit does not block a new one.
   const s2 = seeded({ credits: [credit({ status: 'cancelled' })] });
-  assert.equal(s2.g.post(Object.assign({ action: 'saveCredit', credit: base }, VERED())).created, true);
+  assert.equal(s2.g.post(Object.assign({ action: 'saveCredit', credit: base }, SANDRA())).created, true);
 });
 
 test('saveCredit (client): duplicate:true keeps the existing credit, once, in state', async () => {
@@ -601,7 +614,7 @@ test('wiring: Code.gs dispatch + registries, server.js role mirror, append-only 
   assert.ok(!arr(g.run('OPEN_ACTIONS')).includes('deleteDuplicateDischarge'), 'never served without PROXY_SECRET');
   assert.deepEqual(arr(g.run('DISCHARGED_PATIENT_COLUMNS')).slice(-3), ['deletedAt', 'deletedBy', 'deleteReason']);
   // Every server reader that treats a row as a live discharge skips a soft-deleted one.
-  assert.match(GS_SRC, /if \(!d \|\| diagIsRestored_\(d\.restored\) \|\| dischargeRowDeleted_\(d\)\) return;/, 'refund forecast');
+  assert.match(GS_SRC, /if \(!d \|\| diagIsRestored_\(d\.restored\) \|\| dischargeRowDeleted_\(d\)\) return null;/, 'refund list (refundStayFromDischarge_)');
   assert.match(GS_SRC, /if \(dischargeRowDeleted_\(rows\[i\]\)\) continue;   \/\/ a soft-deleted duplicate is not a discharge/, 'promotion guard');
   assert.match(GS_SRC, /audits: rows\('discharged'\)\.filter\(function \(r\) \{ return !dischargeRowDeleted_\(r\.obj\); \}\)/, 'reconciliation');
   assert.deepEqual([...require('../lib/role-scope').DELETE_ACTIONS], arr(g.run('DELETE_ACTIONS')));

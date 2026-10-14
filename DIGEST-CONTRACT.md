@@ -121,3 +121,25 @@ Run **`setupActivePatientsDigest`** once from the Apps Script editor. It:
 > editor triggers the consent prompt for the deploying account; the web-app
 > deployment must be re-authorized once so its request-path rebuilds succeed
 > (until then they are silently skipped by the fail-soft guard).
+
+
+---
+
+# Inbound — ManagersHouse (Coordinators-owned → this Dashboard reads)
+
+The Dashboard is the **read-only consumer** of the Coordinators **ManagersHouse** digest, which it
+serves to ezone-managers through `managersWork` `houseData` → `team`. The authoritative schema
+lives in ezone-coordinators `DIGEST-CONTRACT.md` («Outbound — ManagersHouse»). Keep this copy
+identical.
+
+- Script Property **`MANAGERS_DIGEST_SHEET_ID`** has the same id as on the Coordinators Apps Script.
+- Reads are **by header name**. A missing column → `contract_mismatch`, and a missing tab → `pending`.
+- House ids are canonical: `ramot-hashavim` / `raanana-asher` / `caesarea-ofroni` /
+  `caesarea-rehab` / `pardes`.
+- No financial fields. Columns are append-only.
+
+| Tab | Columns (in order) |
+|---|---|
+| `ManagersShifts` | `house`, `date`, `shift` (`בוקר` / `אחר צהריים` / `לילה`), `guideName`, `scheduleStatus` (`published` / `draft`), `updatedAt` |
+| `ManagersStaff` | `house`, `name`, `kind` (`guide` / `therapist`), `role`, `phone`, `onLeave` (`true` / empty), `workdays` (CSV `0`–`6`), `updatedAt` |
+| `ManagersTherapistWeek` | `house`, `dayOfWeek` (`0`–`6`), `time` (`HH:MM` / empty), `therapistName`, `patientName`, `updatedAt` |

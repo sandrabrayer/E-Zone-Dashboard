@@ -224,3 +224,174 @@ test('cross-house intake credit preserves bonus counts but removes foreign patie
     assert.ok(JSON.stringify(g.post({ action, secret: SECRET, ...SANDRA })).includes('Foreign'));
   }
 });
+
+/* ---- Stage 2: the house team from the Coordinators ManagersHouse digest ---- */
+const { richSheet: digestSheet } = require('./helpers/gs-sandbox');
+const DIGEST_COLS = {
+  ManagersShifts: ['house', 'date', 'shift', 'guideName', 'scheduleStatus', 'updatedAt'],
+  ManagersStaff: ['house', 'name', 'kind', 'role', 'phone', 'onLeave', 'workdays', 'updatedAt'],
+  ManagersTherapistWeek: ['house', 'dayOfWeek', 'time', 'therapistName', 'patientName', 'updatedAt'],
+};
+function withDigest(rows, { id = 'digest-1', drop = null, missingTab = null } = {}) {
+  const t = boot();
+  if (id) t.g.sandbox.__props.MANAGERS_DIGEST_SHEET_ID = id;
+  const book = {};
+  Object.keys(DIGEST_COLS).forEach((tab) => {
+    if (tab === missingTab) return;
+    const cols = DIGEST_COLS[tab].filter((c) => c !== drop);
+    const sh = digestSheet(tab, cols);
+    (rows[tab] || []).forEach((r) => sh.grid.push(cols.map((c) => r[c] ?? '')));
+    book[tab] = sh;
+  });
+  t.opened = [];
+  t.g.sandbox.SpreadsheetApp.openById = (x) => { t.opened.push(x); return { getSheetByName: (n) => book[n] || null }; };
+  return t;
+}
+const NOW = new Date().toISOString();
+const ROWS = {
+  ManagersShifts: [
+    { house: 'ramot-hashavim', date: '2026-10-13', shift: 'בוקר', guideName: 'אבי', scheduleStatus: 'published', updatedAt: NOW },
+    { house: 'ramot-hashavim', date: '2026-10-13', shift: 'אחר צהריים', guideName: '=evil()', scheduleStatus: 'published', updatedAt: NOW },
+    { house: 'ramot-hashavim', date: '2026-10-14', shift: 'לילה', guideName: 'גל', scheduleStatus: 'draft', updatedAt: NOW },
+    { house: 'ramot-hashavim', date: '2026-10-14', shift: 'xx', guideName: 'גל', scheduleStatus: 'draft', updatedAt: NOW },
+    { house: 'caesarea-ofroni', date: '2026-10-13', shift: 'בוקר', guideName: 'של עפרוני', scheduleStatus: 'published', updatedAt: NOW },
+  ],
+  ManagersStaff: [
+    { house: 'ramot-hashavim', name: 'אבי', kind: 'guide', role: 'מדריך/ה', phone: '0501234567', updatedAt: NOW },
+    { house: 'ramot-hashavim', name: 'ד"ר כהן', kind: 'therapist', role: 'פסיכיאטר/ית', phone: 'not-a-phone', onLeave: 'true', workdays: '0,2,9', updatedAt: NOW },
+    { house: 'caesarea-ofroni', name: 'של עפרוני', kind: 'guide', role: 'מדריך/ה', updatedAt: NOW },
+  ],
+  ManagersTherapistWeek: [
+    { house: 'ramot-hashavim', dayOfWeek: '2', time: '10:00', therapistName: 'ד"ר כהן', patientName: 'דנה', updatedAt: NOW },
+    { house: 'ramot-hashavim', dayOfWeek: '8', time: '10:00', therapistName: 'ד"ר כהן', patientName: 'דנה', updatedAt: NOW },
+    { house: 'caesarea-ofroni', dayOfWeek: '1', time: '09:00', therapistName: 'אחר', patientName: 'אחר', updatedAt: NOW },
+  ],
+};
+
+test('team: no MANAGERS_DIGEST_SHEET_ID → honest not_configured, nothing opened, the rest of houseData intact', () => {
+  const t = withDigest(ROWS, { id: '' });
+  const r = t.call({ op: 'houseData', ...ORAN });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.team, { available: false, reason: 'not_configured' });
+  assert.strictEqual(t.opened.length, 0);
+  assert.ok(r.patients.length > 0);
+});
+
+test('team: a tab not filled yet → pending; a missing column → contract_mismatch (never an empty team)', () => {
+  assert.deepStrictEqual(withDigest(ROWS, { missingTab: 'ManagersStaff' }).call({ op: 'houseData', ...ORAN }).team, { available: false, reason: 'pending' });
+  assert.deepStrictEqual(withDigest(ROWS, { drop: 'guideName' }).call({ op: 'houseData', ...ORAN }).team, { available: false, reason: 'contract_mismatch' });
+  const t = withDigest(ROWS);
+  t.g.sandbox.SpreadsheetApp.openById = () => { throw new Error('no access'); };
+  assert.deepStrictEqual(t.call({ op: 'houseData', ...ORAN }).team, { available: false, reason: 'unreadable' });
+});
+
+test('team: only the caller\'s house; today\'s shifts, staff, therapist week — cleaned and validated', () => {
+  const t = withDigest(ROWS);
+  const team = t.call({ op: 'houseData', ...ORAN }).team;
+  assert.strictEqual(team.available, true);
+  assert.strictEqual(team.stale, false);
+  assert.deepStrictEqual(team.today, [
+    { date: '2026-10-13', shift: 'בוקר', guideName: 'אבי', draft: false },
+    { date: '2026-10-13', shift: 'ערב', guideName: 'evil()', draft: false },
+  ]);
+  assert.deepStrictEqual(team.shifts.map((s) => s.guideName), ['אבי', 'evil()', 'גל']);
+  assert.strictEqual(team.shifts[2].draft, true);
+  assert.deepStrictEqual(team.staff, [
+    { name: 'אבי', kind: 'guide', role: 'מדריך/ה', phone: '0501234567', onLeave: false, workdays: [] },
+    { name: 'ד"ר כהן', kind: 'therapist', role: 'פסיכיאטר/ית', phone: '', onLeave: true, workdays: [0, 2] },
+  ]);
+  assert.deepStrictEqual(team.therapistWeek, [{ dayOfWeek: 2, time: '10:00', therapistName: 'ד"ר כהן', patientName: 'דנה' }]);
+  assert.ok(!JSON.stringify(team).includes('עפרוני'), 'no other house leaks');
+});
+
+test('team: an old refresh is flagged stale; the digest is cached (one openById for repeated reads)', () => {
+  const old = JSON.parse(JSON.stringify(ROWS));
+  Object.values(old).forEach((rows) => rows.forEach((r) => { r.updatedAt = '2026-10-01T00:00:00.000Z'; }));
+  const t = withDigest(old);
+  assert.strictEqual(t.call({ op: 'houseData', ...ORAN }).team.stale, true);
+  t.call({ op: 'houseData', ...SANDRA });
+  assert.strictEqual(t.opened.length, 1);
+});
+
+test('houseData: expected admissions = open leads of THIS house with a planned entry today..+13 days, minimal fields', () => {
+  const t = boot();
+  const cols = Array.from(t.g.run('LEAD_COLUMNS'));
+  const sh = t.g.sandbox.__sheets.Leads;
+  [
+    { id: 'E1', name: 'נכנס מחר', house: 'רמות השבים', entryDate: '2026-10-14', stage: 'paid', meetingWith: 'אורן', phone: '0501234567' },
+    { id: 'E2', name: 'בעוד שבוע', house: 'ramot', entryDate: '2026-10-20', stage: 'entry' },
+    { id: 'E3', name: 'כבר נקלט', house: 'רמות השבים', entryDate: '2026-10-15', stage: 'admitted' },
+    { id: 'E4', name: 'לא רלוונטי', house: 'רמות השבים', entryDate: '2026-10-15', stage: 'irrelevant' },
+    { id: 'E5', name: 'רחוק מדי', house: 'רמות השבים', entryDate: '2026-11-20', stage: 'paid' },
+    { id: 'E6', name: 'אתמול', house: 'רמות השבים', entryDate: '2026-10-12', stage: 'paid' },
+    { id: 'E7', name: 'בית אחר', house: 'קיסריה עפרוני', entryDate: '2026-10-15', stage: 'paid' },
+    { id: 'E8', name: '=bad<b>', house: 'רמות השבים', entryDate: '2026-10-13', stage: '' }
+  ].forEach((r) => sh.grid.push(cols.map((c) => r[c] ?? '')));
+  const r = t.call({ op: 'houseData', ...ORAN });
+  assert.deepStrictEqual(r.expectedAdmissions, [
+    { name: 'badb', date: '2026-10-13', stage: 'new', meetingWith: '' },
+    { name: 'נכנס מחר', date: '2026-10-14', stage: 'paid', meetingWith: 'אורן' },
+    { name: 'בעוד שבוע', date: '2026-10-20', stage: 'entry', meetingWith: '' }
+  ]);
+  assert.ok(!JSON.stringify(r.expectedAdmissions).includes('0501234567'), 'no phone');
+});
+
+/* ---- Stage 3: the house manpower cost (staffing feed) ---- */
+const STAFFING_URL = 'https://script.google.com/macros/s/AKfycbTESTstaffing123/exec';
+function withCost(feed, props = {}) {
+  const t = boot();
+  Object.assign(t.g.sandbox.__props, { STAFFING_SHEETS_URL: STAFFING_URL, STAFFING_COST_SECRET: 'cost-secret-123' }, props);
+  t.fetches = [];
+  t.g.sandbox.UrlFetchApp = { fetch: (url) => {
+    t.fetches.push(url);
+    if (feed instanceof Error) throw feed;
+    return { getResponseCode: () => 200, getContentText: () => (typeof feed === 'string' ? feed : JSON.stringify(feed)) };
+  } };
+  return t;
+}
+const FEED = { month: '2026-10', hasActuals: true, feedGeneratedAt: '2026-10-14T10:00:00.000Z', houses: {
+  ramot: { projectedTotal: 182345.6, actualConfirmed: 150000, estimated: 32345.6, missingDataCost: 0, instructorsCost: 98000, budget: 186400 },
+  asher: { projectedTotal: 140000, actualConfirmed: 0, estimated: 140000, missingDataCost: 0, instructorsCost: 80000, budget: null },
+  pardes: { projectedTotal: 50000, actualConfirmed: 0, estimated: 50000, missingDataCost: 0, instructorsCost: 30000, budget: 60000 },
+  hapardes: { projectedTotal: 1000, actualConfirmed: 0, estimated: 1000, missingDataCost: 0, instructorsCost: 0, budget: null },
+} };
+
+test('houseCost: only the caller\'s house leaves — rounded totals, budget, no other house', () => {
+  const t = withCost(FEED);
+  const r = t.call({ op: 'houseCost', month: '2026-10', ...ORAN });
+  assert.deepStrictEqual(r, { ok: true, house: 'ramot', month: '2026-10', cost: {
+    available: true, month: '2026-10', hasActuals: true, stale: false, generatedAt: '2026-10-14T10:00:00.000Z',
+    total: 182346, confirmed: 150000, estimated: 32346, missingData: 0, instructors: 98000, budget: 186400 } });
+  assert.ok(!JSON.stringify(r).includes('140000'), 'no other house');
+  assert.match(t.fetches[0], /^https:\/\/script\.google\.com\/macros\/s\/AKfycbTESTstaffing123\/exec\?action=getHouseCostsForManagers&month=2026-10&secret=cost-secret-123$/);
+});
+
+test('houseCost: staffing ids map to manager houses (asher → raanana, pardes + hapardes → pardes); cached per month', () => {
+  const t = withCost(FEED);
+  const raanana = t.call({ op: 'houseCost', month: '2026-10', house: 'raanana', role: 'manager', actor: 'שחר', actorId: 'person-shahar' });
+  assert.strictEqual(raanana.cost.total, 140000);
+  assert.strictEqual(raanana.cost.budget, null);
+  const pardes = t.call({ op: 'houseCost', month: '2026-10', house: 'pardes', role: 'manager', actor: 'חן', actorId: 'person-chen' });
+  assert.strictEqual(pardes.cost.total, 51000);
+  assert.strictEqual(pardes.cost.budget, 60000);
+  assert.strictEqual(t.fetches.length, 1, 'one staffing call for the whole month');
+});
+
+test('houseCost: not configured / unreachable / unauthorized / junk / house missing → available:false, never a 0', () => {
+  const nc = withCost(FEED, { STAFFING_COST_SECRET: '' });
+  assert.deepStrictEqual(nc.call({ op: 'houseCost', month: '2026-10', ...ORAN }).cost, { available: false, reason: 'not_configured' });
+  assert.strictEqual(nc.fetches.length, 0);
+  const badUrl = withCost(FEED, { STAFFING_SHEETS_URL: 'https://evil.example/exec' });
+  assert.deepStrictEqual(badUrl.call({ op: 'houseCost', month: '2026-10', ...ORAN }).cost, { available: false, reason: 'not_configured' });
+  assert.strictEqual(badUrl.fetches.length, 0, 'never calls a non-Apps-Script URL');
+  assert.deepStrictEqual(withCost(new Error('down')).call({ op: 'houseCost', month: '2026-10', ...ORAN }).cost, { available: false, reason: 'unreachable' });
+  assert.deepStrictEqual(withCost({ error: 'unauthorized' }).call({ op: 'houseCost', month: '2026-10', ...ORAN }).cost, { available: false, reason: 'unauthorized' });
+  assert.deepStrictEqual(withCost('<html>').call({ op: 'houseCost', month: '2026-10', ...ORAN }).cost, { available: false, reason: 'unreadable' });
+  assert.deepStrictEqual(withCost({ month: '2026-10', houses: {} }).call({ op: 'houseCost', month: '2026-10', ...ORAN }).cost, { available: false, reason: 'no_house' });
+});
+
+test('houseCost: still behind the managersWork secret', () => {
+  const t = withCost(FEED);
+  assert.deepStrictEqual(arr(t.g.post({ action: 'managersWork', secret: 'wrong', op: 'houseCost', ...ORAN })), { ok: false, error: 'unauthorized' });
+  assert.strictEqual(t.fetches.length, 0);
+});

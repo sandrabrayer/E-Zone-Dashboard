@@ -8,7 +8,8 @@ close the GET feeds used by the current Managers deployment. Do not do that.
 
 An authorized configuration owner must inspect the current `MANAGER_ACCESS`
 inside Railway. Add one unique, immutable `id` per person without changing their
-code. Use 3–64 ASCII letters/digits/underscore/hyphen, starting with a letter or
+code, name or optional `user` alias. The existing username + personal-code
+login remains. Use 3–64 ASCII letters/digits/underscore/hyphen, starting with a letter or
 digit. Never derive an ID from a name/code, reuse an old person's ID, or combine
 Sandra and Ron into one account. Keep the ID when rotating codes or renaming.
 
@@ -17,7 +18,8 @@ Check every manager's `house` against their assignment: `raanana`, `ramot`,
 Keep `NODE_ENV=production`. `MANAGERS_WORK_SECRET` must match the existing
 Dashboard Script Property; never paste either value into logs, chat or a PR.
 Do not replace the current access array with sample data. The connector exposes
-variable names but redacts values, so it cannot safely perform this edit.
+variable names but redacts values. Use an authorized Railway UI session for
+this edit, preserving all existing fields.
 
 ## Order that preserves the current service
 
@@ -43,7 +45,9 @@ variable names but redacts values, so it cannot safely perform this edit.
    `/healthz` is 200, and unauthenticated `/api/me`, `/api/sheets` and the
    read-only `houseData` operation return 401. With authorized personal sessions,
    check a manager's own house, refusal for another house, Sandra/Ron's all-house
-   view, and private-note visibility. Keep the initial live checks read-only.
+   view, and private-note visibility. Also check the newly added team/shift and
+   house-cost views; their optional source configuration is separate from
+   protocol readiness. Keep the initial live checks read-only.
    Synthetic integration covers write logic but does not prove live persistence;
    a disposable write/read/soft-delete acceptance check needs explicit approval.
 6. **Only after step 5 succeeds**, merge the Dashboard PR. Confirm its existing

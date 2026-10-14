@@ -705,7 +705,9 @@ test('field allow-lists (Code.gs): Ortal\'s cleanupReport and refundPayoutForeca
   const rawC = w.call({ action: 'cleanupReport' }, SANDRA);
   const rawF = w.call({ action: 'refundPayoutForecast' }, SANDRA);
   assert.ok(forbiddenIn(rawC).includes('phone') && forbiddenIn(rawC).includes('notes'), 'the lead row really carries phone + notes for Sandra');
-  assert.ok(forbiddenIn(rawF).includes('note') && JSON.stringify(rawF).includes('overrideReason'), 'the forecast really carries note + overrideReason for Sandra');
+  // «זיכויים לתשלום» (CHANGELOG-refunds-auto-policy.md) never carries Sandra's
+  // overrideReason in its rows, for anyone; the missing-data note is cut for Ortal.
+  assert.ok(forbiddenIn(rawF).includes('note'), 'the forecast really carries the missing-data note for Sandra');
   const c = w.call({ action: 'cleanupReport' }, ORTAL);
   const f = w.call({ action: 'refundPayoutForecast' }, ORTAL);
   assert.equal(c.ok, true);
@@ -720,7 +722,7 @@ test('field allow-lists (Code.gs): Ortal\'s cleanupReport and refundPayoutForeca
   // Same counts, same sections: rows are cut, never dropped.
   assert.deepEqual(c.counts, rawC.counts);
   assert.deepEqual(Object.keys(c.sections), Object.keys(rawC.sections));
-  assert.equal(f.decided.count, rawF.decided.count);
+  assert.equal(f.toPay.count, rawF.toPay.count);
   assert.equal(f.missing_payment_data.count, rawF.missing_payment_data.count);
 });
 
