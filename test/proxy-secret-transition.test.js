@@ -185,13 +185,13 @@ test('Code.gs: a valid secret through the REAL handle_ reaches dispatch (unknown
 test('Code.gs log mode (the default): missing secret → served AND logged once per action per hour', () => {
   const g = loadGs({ props: { PROXY_SECRET: SECRET } });   // PROXY_SECRET_MODE unset → log
   for (let i = 0; i < 5; i++) {
-    assert.deepStrictEqual(g.post({ action: 'managersOverview', month: '2026-09' }).json, { ok: true, served: 'managersOverview' });
+    assert.deepStrictEqual(g.post({ action: 'getAdmittedRoster', month: '2026-09' }).json, { ok: true, served: 'getAdmittedRoster' });
   }
   assert.strictEqual(g.calls.length, 5, 'every request is still served in log mode');
   const rows = g.securityRows();
   assert.strictEqual(rows.length, 1, 'five calls in one hour → one row');
   const [ts, action, method, present, type, hourKey] = rows[0];
-  assert.strictEqual(action, 'managersOverview');
+  assert.strictEqual(action, 'getAdmittedRoster');
   assert.strictEqual(method, 'POST');
   assert.strictEqual(present, 'no');
   assert.strictEqual(type, 'no_secret');
@@ -199,7 +199,7 @@ test('Code.gs log mode (the default): missing secret → served AND logged once 
   assert.strictEqual(ts, '2026-10-01T09:15:00.000Z');
   assert.deepStrictEqual(g.sandbox.__sheets.SecurityLog.grid[0],
     ['timestamp', 'action', 'method', 'secretPresent', 'callerType', 'hourKey', 'callerClass']);
-  // Phase 0b-2: the appended callerClass column; managersOverview is an
+  // Phase 0b-2: the appended callerClass column; getAdmittedRoster is an
   // OPEN_ACTIONS action.
   assert.strictEqual(rows[0][6], 'open');
 });
@@ -218,13 +218,13 @@ test('Code.gs log mode: a wrong secret → served, logged as bad_secret with sec
 
 test('Code.gs log mode: one row per action per hour — other actions and the next hour get their own row', () => {
   const g = loadGs({ props: { PROXY_SECRET: SECRET } });
-  g.get({ action: 'managersHouse', house: 'ramot' });
-  g.post({ action: 'managersHouse', proxySecret: 'wrong' });     // same action, same hour → no row
-  g.get({ action: 'occupancySnapshots' });                        // another action → a row
+  g.get({ action: 'getPatientsForCoordinators', house: 'ramot' });
+  g.post({ action: 'getPatientsForCoordinators', proxySecret: 'wrong' });     // same action, same hour → no row
+  g.get({ action: 'recordDischargeFromCoordinators' });                        // another action → a row
   assert.strictEqual(g.securityRows().length, 2);
   assert.strictEqual(g.securityRows()[0][2], 'GET');
   g.sandbox.__setNow(Date.UTC(2026, 9, 1, 10, 1, 0));             // next hour
-  g.get({ action: 'managersHouse' });
+  g.get({ action: 'getPatientsForCoordinators' });
   const rows = g.securityRows();
   assert.strictEqual(rows.length, 3);
   assert.strictEqual(rows[2][5], '2026-10-01T10');
@@ -464,6 +464,7 @@ test('Code.gs: PROXY_KNOWN_ACTIONS lists every action handle_ dispatches; OPEN_A
   const h = gsFunction('handle_');
   const dispatched = new Set([...h.matchAll(/action === '([A-Za-z]+)'/g)].map((m) => m[1]));
   const g = loadGs({});
+  for (const action of Array.from(gsConst(g, 'MW_FEED_ACTIONS'))) dispatched.add(action);
   const known = new Set(Array.from(gsConst(g, 'PROXY_KNOWN_ACTIONS')));
   assert.deepStrictEqual([...dispatched].sort(), [...known].sort());
   for (const a of Array.from(gsConst(g, 'OPEN_ACTIONS'))) assert.ok(known.has(a), a);

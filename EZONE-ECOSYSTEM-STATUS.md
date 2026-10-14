@@ -1,5 +1,14 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Managers protocol 2 — prepared October 14, 2026 (not activated)
+
+Coordinated Managers/Dashboard hardening requires immutable account IDs,
+authenticated and scoped read feeds, private-note ownership by ID, and a
+protocol/secret readiness gate. Follow `docs/managers-hardening-rollout.md`.
+Do not merge this Dashboard change before compatible Managers is serving.
+No live identity mapping or write persistence has been verified here.
+
+
 Add this file to the knowledge of EVERY E-Zone app Project (all eight), replacing
 the July 22 version, so any future chat/session starts from the true state. This
 Sep 10 revision is the UNION of every repo's copy (the per-repo sections that had

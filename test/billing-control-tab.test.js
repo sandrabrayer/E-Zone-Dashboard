@@ -396,7 +396,8 @@ test('Code.gs: Ortal reaches ONLY CONTROLLER_ACTIONS (the tab + the «גבייה
   for (const action of known) {
     if (allowed.includes(action)) continue;
     const r = w.call({ action, lead: { id: 'L1' }, patient: { id: 'p1' }, payment: { id: 'x' } }, ORTAL);
-    assert.deepEqual(r, FORBIDDEN, action);
+    const ownSecret = ['managersWork', 'managersOverview', 'managersHouse', 'occupancySnapshots'].includes(action);
+    assert.deepEqual(r, ownSecret ? { ok: false, error: 'unauthorized' } : FORBIDDEN, action);
   }
   // An unknown action is refused too (never "unknown_action" with a read behind it).
   assert.deepEqual(w.call({ action: 'getDataPlus' }, ORTAL), FORBIDDEN);

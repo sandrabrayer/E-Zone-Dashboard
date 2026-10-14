@@ -1337,6 +1337,8 @@ const APPROVER_ACTIONS = [
 /* Managers work tool (2026-10-13): `managersWork` is called by the
  * ezone-managers server (no Dashboard session), so it is open here and gated
  * INSIDE handle_ by its own fail-closed MANAGERS_WORK_SECRET. */
+// Exempt from PROXY_SECRET only; Managers requests use their own mandatory
+// JSON-body MANAGERS_WORK_SECRET gate in gatedEntry_, even in log mode.
 const OPEN_ACTIONS = ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster',
   'getPatientsForCoordinators', 'recordDischargeFromCoordinators', 'managersWork'];
 const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
@@ -1388,6 +1390,15 @@ function lockBusy_(_fn) {
 
 function gatedEntry_(e, method) {
   const params = collectParams_(e);
+  // Managers credentials, identity and scope are accepted from JSON POST only.
+  // Bypass the transitional proxy logger: probes/refusals must not write sheets.
+  if (params.action === 'managersWork' || MW_FEED_ACTIONS.indexOf(params.action) >= 0) {
+    const body = collectParams_({ postData: e && e.postData });
+    if (method !== 'POST' || body.action !== params.action || !managersWorkAuthOk_(body)) {
+      return jsonOut_({ ok: false, error: 'unauthorized' });
+    }
+    return handle_(body);
+  }
   const gate = proxyGate_(params, method);
   if (!gate.ok) return jsonOut_({ ok: false, error: 'unauthorized' });
   return handle_(gate.params);
@@ -1819,16 +1830,9 @@ function handle_(params) {
       }
       return jsonOut_(submitMeetingReport_(parseJsonParam_(params.report)));
     }
-    if (action === 'managersOverview') {
-      return jsonOut_(managersOverview_(params.month));
-    }
-    if (action === 'managersHouse') {
-      return jsonOut_(managersHouse_(params.house, params.month));
-    }
-    // Read-only permanent occupancy history. Same access model as
-    // managersOverview above: no new secret, no financial data.
-    if (action === 'occupancySnapshots') {
-      return jsonOut_(occupancySnapshots_());
+    if (MW_FEED_ACTIONS.indexOf(action) >= 0) {
+      if (!managersWorkAuthOk_(params)) return jsonOut_({ ok: false, error: 'unauthorized' });
+      return jsonOut_(mwFeed_(params));
     }
     /* ===== Accounting source feed (READ-ONLY) =====
      * Two read actions behind their OWN least-privilege secret. There is no
@@ -12391,7 +12395,7 @@ function computeContinuityByHouse_(outpatients, ym) {
  * (fail-closed: unset or mismatched → refused before anything is read).
  *
  * The managers server authenticates the person (personal code) and passes
- * who they are: { house, role: 'manager' | 'admin', actor }. This backend
+ * who they are: { house, role: 'manager' | 'admin', actor, actorId }. This backend
  * trusts those fields ONLY because the secret matched; it still validates
  * them (house must be a Managers key; role one of the two).
  *
@@ -12411,7 +12415,8 @@ function computeContinuityByHouse_(outpatients, ym) {
  * Free text is cleaned (control characters, formula lead-ins and angle
  * brackets stripped, capped). Rows are never physically deleted. */
 const MANAGERS_WORK_SECRET_PROP = 'MANAGERS_WORK_SECRET';
-const MW_LOG_STAMP_COLS = ['followUpDate', 'followUpDone', 'author', 'createdAt', 'deletedAt', 'deletedBy'];
+const MW_FEED_ACTIONS = ['managersOverview', 'managersHouse', 'occupancySnapshots'];
+const MW_LOG_STAMP_COLS = ['followUpDate', 'followUpDone', 'author', 'createdAt', 'deletedAt', 'deletedBy', 'authorId'];
 const MW_LOGS = {
   familyCalls: {
     sheet: 'ManagersFamilyCalls',
@@ -12462,18 +12467,22 @@ function mwCellText_(v, kind) {
   return String(v == null ? '' : v);
 }
 
-/* The validated caller: { house, role, actor } or null. */
-function mwCaller_(params) {
+/* The validated caller; actorId is immutable, actor is display-only. */
+function mwCaller_(params, optionalAdminHouse) {
   const house = String(params.house == null ? '' : params.house).trim();
   const role = String(params.role == null ? '' : params.role).trim();
   const actor = coordTextClean_(params.actor, 40);
-  if (MANAGER_HOUSES.indexOf(house) < 0) return null;
+  const actorId = String(params.actorId || '');
+  if (MANAGER_HOUSES.indexOf(house) < 0 && !(optionalAdminHouse && role === 'admin' && !house)) return null;
   if (role !== 'manager' && role !== 'admin') return null;
-  if (!actor) return null;
-  return { house: house, role: role, actor: actor };
+  if (!actor || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$/.test(actorId)) return null;
+  return { house: house, role: role, actor: actor, actorId: actorId };
 }
 
 function managersWork_(params) {
+  if (params.op === 'capabilities') {
+    return { ok: true, protocol: 2, capabilities: ['stableActorId', 'scopedReads', 'privateLegacyAdminOnly'] };
+  }
   const caller = mwCaller_(params);
   if (!caller) return { ok: false, error: 'bad_request' };
   const op = String(params.op || '');
@@ -12481,6 +12490,43 @@ function managersWork_(params) {
   if (op === 'logAdd') return mwLogAdd_(caller, params);
   if (op === 'logUpdate') return mwLogUpdate_(caller, params);
   return { ok: false, error: 'unknown_op' };
+}
+
+/* Display names never authorize a read or update. Legacy rows without an id
+ * remain admin-only for private reads and for all edits; no name-based migration. */
+function mwCanEdit_(caller, authorId) {
+  return caller.role === 'admin' || (!!caller.actorId && !!authorId && String(authorId) === caller.actorId);
+}
+
+/* The old read contracts, now authenticated and scoped before leaving GAS. */
+function mwFeed_(params) {
+  const caller = mwCaller_(params, true);
+  if (!caller) return { ok: false, error: 'bad_request' };
+  const action = params.action;
+  if (action === 'managersHouse') {
+    if (!caller.house) return { ok: false, error: 'bad_request' };
+    const data = managersHouse_(caller.house, params.month);
+    return caller.role === 'admin' ? data : mwScopeHouse_(data, caller.house);
+  }
+  const data = action === 'managersOverview' ? managersOverview_(params.month) : occupancySnapshots_();
+  if (caller.role === 'admin' || !data || data.ok === false) return data;
+  if (action === 'managersOverview') {
+    const houses = (data.houses || []).filter(function (h) { return h.key === caller.house; })
+      .map(function (h) { return mwScopeHouse_(h, caller.house); });
+    return Object.assign({}, data, { houses: houses, totals: { activePatients: Number(houses[0] && houses[0].patientsNow) || 0 } });
+  }
+  return Object.assign({}, data, { rows: (data.rows || []).filter(function (r) {
+    return (r.houseId === 'arfoni' ? 'efroni' : r.houseId) === caller.house;
+  }) });
+}
+
+/* Intake bonus attribution can cross houses. Preserve the manager's bonus
+ * counts, but never send another house's patient-level details to a manager. */
+function mwScopeHouse_(data, house) {
+  if (!data || !data.intakeMeetings) return data;
+  return Object.assign({}, data, { intakeMeetings: Object.assign({}, data.intakeMeetings, {
+    items: (data.intakeMeetings.items || []).filter(function (item) { return item.house === house; })
+  }) });
 }
 
 /* Log rows of one house, visible to the caller, newest first. */
@@ -12492,7 +12538,7 @@ function mwReadLog_(logKey, caller) {
   const rows = readSheet_(sh, cols).filter(function (r) {
     if (String(r.house) !== caller.house) return false;
     if (String(r.deletedAt || '')) return false;
-    if (def.private && caller.role !== 'admin' && String(r.author) !== caller.actor) return false;
+    if (def.private && !mwCanEdit_(caller, r.authorId)) return false;
     return true;
   }).map(function (r) {
     const o = { id: String(r.id) };
@@ -12503,6 +12549,7 @@ function mwReadLog_(logKey, caller) {
     o.followUpDate = mwCellText_(r.followUpDate, 'date');
     o.followUpDone = String(r.followUpDone) === '1' || r.followUpDone === true;
     o.author = String(r.author || '');
+    o.canEdit = mwCanEdit_(caller, r.authorId);
     o.createdAt = String(r.createdAt || '');
     return o;
   });
@@ -12609,6 +12656,7 @@ function mwLogAdd_(caller, params) {
   row.followUpDate = coordIsoDateClean_(entry.followUpDate);
   row.followUpDone = '';
   row.author = caller.actor;
+  row.authorId = caller.actorId;
   row.createdAt = new Date().toISOString();
   row.deletedAt = '';
   row.deletedBy = '';
@@ -12644,8 +12692,7 @@ function mwLogUpdate_(caller, params) {
       const r = values[i];
       if (String(r[0]) !== id) continue;
       if (String(r[1]) !== caller.house) return { ok: false, error: 'not_found' };
-      const author = String(r[cols.indexOf('author')]);
-      if (caller.role !== 'admin' && author !== caller.actor) return { ok: false, error: 'forbidden' };
+      if (!mwCanEdit_(caller, r[cols.indexOf('authorId')])) return { ok: false, error: 'forbidden' };
       if (String(r[cols.indexOf('deletedAt')])) return { ok: false, error: 'not_found' };
       const rowNo = i + 2;
       if (patch.followUpDone === true) sh.getRange(rowNo, cols.indexOf('followUpDone') + 1).setNumberFormat('@').setValue('1');

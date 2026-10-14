@@ -744,18 +744,9 @@ test('the module introduces NO new secret and reads no Script Property', () => {
   });
 });
 
-test('doGet routes action=occupancySnapshots, on the managersOverview access model', () => {
-  const handleStart = GS.indexOf('function handle_');
-  const handleEnd = GS.indexOf('\nfunction ', handleStart + 1);
-  const handleBody = GS.slice(handleStart, handleEnd);
-  assert.ok(handleBody.includes("if (action === 'occupancySnapshots')"));
-  assert.ok(handleBody.includes('jsonOut_(occupancySnapshots_())'));
-
-  // No auth gate — exactly like managersOverview / managersHouse.
-  const at = handleBody.indexOf("action === 'occupancySnapshots'");
-  const snippet = handleBody.slice(at, at + 200);
-  assert.ok(!/AuthOk_|unauthorized/.test(snippet),
-    'the snapshots feed must sit on the same access model as managersOverview');
+test('occupancySnapshots uses the same authenticated feed dispatcher as the other manager reads', () => {
+  assert.ok(GS.includes("const MW_FEED_ACTIONS = ['managersOverview', 'managersHouse', 'occupancySnapshots']"));
+  assert.ok(GS.includes('return jsonOut_(mwFeed_(params))'));
 });
 
 test('the editor-run entry points are NOT reachable over HTTP', () => {
