@@ -226,3 +226,26 @@ test('team: an old refresh is flagged stale; the digest is cached (one openById 
   t.call({ op: 'houseData', ...SANDRA });
   assert.strictEqual(t.opened.length, 1);
 });
+
+test('houseData: expected admissions = open leads of THIS house with a planned entry today..+13 days, minimal fields', () => {
+  const t = boot();
+  const cols = Array.from(t.g.run('LEAD_COLUMNS'));
+  const sh = t.g.sandbox.__sheets.Leads;
+  [
+    { id: 'E1', name: 'נכנס מחר', house: 'רמות השבים', entryDate: '2026-10-14', stage: 'paid', meetingWith: 'אורן', phone: '0501234567' },
+    { id: 'E2', name: 'בעוד שבוע', house: 'ramot', entryDate: '2026-10-20', stage: 'entry' },
+    { id: 'E3', name: 'כבר נקלט', house: 'רמות השבים', entryDate: '2026-10-15', stage: 'admitted' },
+    { id: 'E4', name: 'לא רלוונטי', house: 'רמות השבים', entryDate: '2026-10-15', stage: 'irrelevant' },
+    { id: 'E5', name: 'רחוק מדי', house: 'רמות השבים', entryDate: '2026-11-20', stage: 'paid' },
+    { id: 'E6', name: 'אתמול', house: 'רמות השבים', entryDate: '2026-10-12', stage: 'paid' },
+    { id: 'E7', name: 'בית אחר', house: 'קיסריה עפרוני', entryDate: '2026-10-15', stage: 'paid' },
+    { id: 'E8', name: '=bad<b>', house: 'רמות השבים', entryDate: '2026-10-13', stage: '' }
+  ].forEach((r) => sh.grid.push(cols.map((c) => r[c] ?? '')));
+  const r = t.call({ op: 'houseData', ...ORAN });
+  assert.deepStrictEqual(r.expectedAdmissions, [
+    { name: 'badb', date: '2026-10-13', stage: 'new', meetingWith: '' },
+    { name: 'נכנס מחר', date: '2026-10-14', stage: 'paid', meetingWith: 'אורן' },
+    { name: 'בעוד שבוע', date: '2026-10-20', stage: 'entry', meetingWith: '' }
+  ]);
+  assert.ok(!JSON.stringify(r.expectedAdmissions).includes('0501234567'), 'no phone');
+});

@@ -265,6 +265,12 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
   with follow-up dates. New sheets `ManagersFamilyCalls`, `ManagersStaffTalks`,
   `ManagersEvents`. Details: `CHANGELOG-managers-work-tool.md`.
 
+## Dashboard Apps Script: managers expected admissions (October 14, 2026)
+
+- `managersWork` `houseData` adds `expectedAdmissions`: the open leads of the house with a
+  planned entry date between today and +13 days (name, date, stage and who met them only).
+- Details: `CHANGELOG-managers-expected-admissions.md`.
+
 ## Dashboard Apps Script: managers work tool stage 2, the house team (October 14, 2026)
 
 - `managersWork` `houseData` adds `team`: today's shifts, the next 14 days of shifts, the

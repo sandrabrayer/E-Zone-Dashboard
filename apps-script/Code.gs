@@ -13064,6 +13064,22 @@ function mwHouseData_(caller, params) {
   });
   visits.sort(function (a, b) { const ka = a.date + a.time, kb = b.date + b.time; return ka < kb ? 1 : ka > kb ? -1 : 0; });
 
+  // Expected admissions (14 Oct 2026): OPEN leads of this house (not admitted,
+  // not irrelevant) whose planned entry date falls today .. +13 days. Name,
+  // date, stage and who met them only — no phone, notes or money.
+  const horizon = new Date(today.getTime() + 13 * 86400000);
+  const expectedAdmissions = [];
+  openLeads_().forEach(function (l) {
+    const h = String(l.house || '').trim();
+    if (h !== houseName && h !== pid) return;
+    const ed = parseDate_(asISODate_(l.entryDate));
+    if (!ed || ed < today || ed > horizon) return;
+    const name = coordTextClean_(l.name, 80);
+    if (!name) return;
+    expectedAdmissions.push({ name: name, date: ymdOf_(ed), stage: recStage_(l.stage), meetingWith: coordTextClean_(l.meetingWith, 40) });
+  });
+  expectedAdmissions.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+
   const logs = {};
   Object.keys(MW_LOGS).forEach(function (k) { logs[k] = mwReadLog_(k, caller); });
   const todayIso = ymdOf_(today);
@@ -13078,7 +13094,7 @@ function mwHouseData_(caller, params) {
   return {
     ok: true, house: key, month: ym, today: todayIso,
     patients: inHouse, outpatients: outpatients,
-    visits: visits, admissions: admissions,
+    visits: visits, admissions: admissions, expectedAdmissions: expectedAdmissions,
     logs: logs, followUps: followUps,
     team: mwTeam_(key, todayIso),
   };
