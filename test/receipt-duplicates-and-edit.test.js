@@ -620,7 +620,8 @@ test('Code.gs: editReceipt for the controller view → forbidden even with a for
   assert.equal(w.edit({ id: w.a, fields: { reference: 'X1' } }, SHIRAN).error, 'forbidden');
   assert.equal(w.snapshot(), before);
   assert.deepEqual(arr(w.g.run('FINANCE_ACTIONS')), [...scope.FINANCE_ACTIONS]);
-  assert.equal([...scope.FINANCE_ACTIONS].pop(), 'editReceipt', 'appended');
+  // Appended; CHANGELOG-refunds-auto-policy.md appended settleRefund after it.
+  assert.deepEqual([...scope.FINANCE_ACTIONS].slice(-2), ['editReceipt', 'settleRefund'], 'appended');
   assert.ok(!scope.CONTROLLER_ACTIONS.includes('editReceipt'));
   assert.ok(arr(w.g.run('PROXY_KNOWN_ACTIONS')).includes('editReceipt'));
   assert.ok(!arr(w.g.run('OPEN_ACTIONS')).includes('editReceipt'));

@@ -324,20 +324,22 @@
         <div id="billing-open-list" class="billing-list"></div>
       </div>
 
+      <!-- «זיכויים לתשלום» (CHANGELOG-refunds-auto-policy.md): ONE list. Refunds
+           are computed by policy and created automatically at discharge — no
+           decision step. #credits-forecast renders the totals per payment date
+           + a grand total, the rows, the «לא ניתן לחשב» block (grey) and — instead
+           of a section — one muted line linking discharges with no recorded
+           payment to «חובות פתוחים». -->
       <div class="bill-group bill-group--credits" data-group="credits">
-        <h3 class="bill-group-title">זיכויים ממתינים לתשלום <span class="count-pill" id="credits-pending-total">₪ 0</span></h3>
-        <p class="billing-date-label">משולמים ב־15 לחודש, מקובצים לפי תאריך תשלום. סימון כשולם הוא פעולה מפורשת.</p>
-        <div id="credits-payout-list" class="billing-list"></div>
+        <h3 class="bill-group-title">זיכויים לתשלום <span class="count-pill" id="credits-pending-total">₪ 0</span></h3>
+        <p class="billing-date-label">מחושבים אוטומטית לפי המדיניות בעת השחרור. יציאה עד ה־10 בחודש — תשלום ב־15 לאותו חודש; אחרי ה־10 — ב־15 לחודש הבא. סימון כשולם הוא פעולה מפורשת.</p>
         <div class="forecast-actions">
           <button type="button" class="btn small" id="credits-forecast-refresh">רענון</button>
           <button type="button" class="btn small primary" id="credits-forecast-export">ייצוא זיכויים לאקסל</button>
           <button type="button" class="btn small primary" id="cleanup-export">ייצוא רשימת תיקונים</button>
         </div>
+        <div id="credits-forecast" class="billing-list" aria-live="polite"></div>
       </div>
-      <!-- The forecast renders its own groups: ממתין להחלטה (purple), לא ניתן
-           לחשב (grey), and — instead of a section — one muted line linking the
-           discharges with no recorded payment to «חובות פתוחים». -->
-      <div id="credits-forecast" class="billing-list" aria-live="polite"></div>
 
       <!-- «חובות פתוחים»: debt aging as of a date (action=debtAging, read-only).
            Collapsed by default; fetched only when opened or the date changes.
@@ -666,7 +668,7 @@
   <!-- Patient funder helpers (global Funder) — must load before app.js. -->
   <script src="funder.js?v=__BUILD__"></script>
   <script src="billing-control-rules.js?v=__BUILD__"></script>
-  <!-- The refund rule by exit date (global RefundRules) — must load before app.js. -->
+  <!-- The refund rule given its version (global RefundRules) — must load before app.js. -->
   <script src="refund-rules.js?v=__BUILD__"></script>
   <!-- The institutional-funder grace rule (global FunderGrace) — must load before app.js. -->
   <script src="funder-grace.js?v=__BUILD__"></script>

@@ -357,7 +357,8 @@ test('Code.gs: the stamped user flows into a REAL write (saveCredit stamps the p
   const g = loadGs({ props: { PROXY_SECRET: SECRET }, realHandle: true });
   let seen = null;
   g.sandbox.upsertCredit_ = (_c, user) => { seen = user; return { ok: true }; };
-  g.post({ action: 'saveCredit', credit: {}, proxySecret: SECRET, proxyUser: 'יעל', user: 'סנדרה' });
+  // An EDIT (a client CREATE is approver-only since CHANGELOG-refunds-auto-policy.md).
+  g.post({ action: 'saveCredit', credit: { id: 'credit::p::2026-10::1' }, proxySecret: SECRET, proxyUser: 'יעל', user: 'סנדרה' });
   assert.strictEqual(seen, 'יעל');
 });
 

@@ -33,8 +33,8 @@
    * every heading against its tinted panel for WCAG AA (≥ 4.5:1). */
   --grp-due:        #7aa2ff; /* blue   — לגבייה בתאריך הנבחר */
   --grp-open:       #f5b041; /* amber  — יתרות פתוחות מתאריכים קודמים */
-  --grp-credits:    #3ddc84; /* green  — זיכויים ממתינים לתשלום */
-  --grp-awaiting:   #b892ff; /* purple — ממתין להחלטה — לא לתשלום */
+  --grp-credits:    #3ddc84; /* green  — זיכויים לתשלום */
+  --grp-awaiting:   #b892ff; /* purple — exceptions (בקרת גבייה) */
   --grp-unresolved: #a3acc2; /* grey   — לא ניתן לחשב */
   --grp-debt:       #ff7a7a; /* red    — חובות פתוחים / חוב רשום */
   --grp-unrecorded: #ff9f43; /* orange — מחזורים ללא רישום */
@@ -2318,22 +2318,19 @@ body.viewer-mode .receipt-edit-btn { display: none !important; }
 .credit-paid { border-inline-start: 2px solid var(--border-strong); padding-inline-start: 10px; }
 .credit-paid .credit-inline { margin-bottom: 8px; }
 
-/* ===== Credits payout view (גבייה) ===== */
-.credit-payout-head {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px;
-  padding: 6px 4px 0;
-  font-size: 13.5px;
-  color: var(--text-muted);
-}
-.credit-payout-head b { color: var(--text); font-size: 15px; }
-.credit-payout-row .irrelevant-actions { display: flex; gap: 8px; }
-
-/* Refund payout forecast — the two sections under the payout view. Awaiting
- * a decision is muted (not money to pay); missing data reads as a warning. */
+/* ===== «זיכויים לתשלום» (גבייה, CHANGELOG-refunds-auto-policy.md) =====
+ * Totals per payment date + a grand total above the rows; a computed row
+ * (no saved credit yet) carries a dashed start edge. Missing data reads as a
+ * warning. */
 .forecast-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
 .forecast-title { margin: 18px 0 4px; font-size: 15px; }
-.forecast-awaiting { color: var(--text-muted); }
-.forecast-awaiting-row { opacity: 0.85; border-inline-start: 2px dashed var(--border-strong); }
+.refund-totals { overflow-x: auto; margin: 6px 0 10px; }
+.refund-totals-table { border-collapse: collapse; min-width: 280px; font-size: 13.5px; }
+.refund-totals-table th, .refund-totals-table td { padding: 4px 10px; text-align: start; border-bottom: 1px solid var(--border); }
+.refund-totals-table thead th { color: var(--text-muted); font-weight: 600; }
+.refund-grand-total th { color: var(--text); font-size: 15px; border-top: 2px solid var(--grp-credits); }
+.refund-row .irrelevant-actions { display: flex; gap: 8px; }
+.refund-row--auto { border-inline-start: 2px dashed var(--grp-credits); }
 .forecast-missing { color: #f5b041; }
 .forecast-missing-row { border-inline-start: 2px solid #f5b041; }
 .forecast-check { color: #f5b041; font-weight: 600; }
@@ -2359,7 +2356,7 @@ body.viewer-mode .receipt-edit-btn { display: none !important; }
 .bill-group--due        { --grp: var(--grp-due); }
 .bill-group--open       { --grp: var(--grp-open); }
 .bill-group--credits    { --grp: var(--grp-credits); }
-.bill-group--awaiting   { --grp: var(--grp-awaiting); }
+.bill-group--awaiting   { --grp: var(--grp-awaiting); }   /* purple — בקרת גבייה exceptions */
 .bill-group--unresolved { --grp: var(--grp-unresolved); }
 .bill-group--debt       { --grp: var(--grp-debt); }
 /* `.bill-group .bill-group-title` (0,2,0) outranks `.screen h3` (0,1,1),

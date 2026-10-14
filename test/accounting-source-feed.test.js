@@ -165,6 +165,7 @@ function loadCode(opts) {
     PAYMENTS_TOMBSTONES_SHEET, PAYMENT_TOMBSTONE_COLUMNS,
     ACCOUNTING_SECRET_PROP, ACCOUNTING_PAGE_MAX, ACCOUNTING_SOURCE_APP,
     handle: (p) => handle_(p).json,
+    upsertCredit: (c, u, o) => upsertCredit_(c, u, o),
     ensure: (n, c) => getOrCreateSheet_(n, c),
     readSheet: (sh, c) => readSheet_(sh, c),
     upsert: (p, u) => upsertPayment_(p, u),
@@ -463,7 +464,9 @@ test('B: creditUid is minted once and never re-minted; credit behaviour is uncha
     creditType: 'other', allocationMonth: '2026-01',
     calculatedAmount: 500, amount: 500, reason: 'הסבר', decidedDate: '2026-01-25',
   };
-  const r1 = h.code.handle({ action: 'saveCredit', credit: JSON.stringify(c), user: 'ורד' });
+  // A client-created credit is an exception — Sandra only
+  // (CHANGELOG-refunds-auto-policy.md); the edit below is an ordinary one.
+  const r1 = h.code.upsertCredit(c, 'סנדרה', { approver: true });
   assert.equal(r1.ok, true);
   assert.match(String(r1.credit.creditUid), /^crd-/);
   assert.equal(r1.credit.id, 'credit::id-dana::2026-01::1', 'the existing id scheme is untouched');

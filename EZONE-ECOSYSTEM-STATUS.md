@@ -1307,6 +1307,38 @@ Detail: `CHANGELOG-funder-grace.md`, plan §7.5. **Nothing to set.**
 - Code.gs changes, so clasp CI deploys it on merge. There is no data change
   and no new action, Script Property, env var, column or trigger.
 
+## Dashboard: refunds automatic by policy — one list «זיכויים לתשלום» (October 14, 2026)
+
+Detail: `CHANGELOG-refunds-auto-policy.md`, plan §8.7. **Nothing to set.**
+
+- **No decision step.** The server creates the refund at discharge
+  (`dischargePatient_`, `recordDischargeFromCoordinators_`). It writes only
+  positive lines, `pending`, `approvedBy 'מדיניות אוטומטית'`.
+  - **Payment date by the exit date:** ≤ 10th → the 15th of that month,
+    else the 15th of the next.
+  - **Removed:** «ממתין להחלטה — לא לתשלום», the old pending list and the
+    post-discharge modal.
+- **The rule by the ENTRY date:** `REFUND_POLICY_CUTOVER = '2026-10-07'`, only
+  in `Code.gs`, with a guard test.
+  - Entry on or after the cutover: the unified stay-day-14 rule for every
+    house.
+  - Entry earlier: the old per-house rule, unchanged.
+  - This replaces the exit-date `REFUND_RULE_V2_FROM` below.
+- **Zero-amount credits** (the 7 «ימים שלא נוצלו» ₪0 rows the old modal saved):
+  never created again, hidden from the list, not counted as a decision. They
+  stay on the sheet.
+- **New actions:**
+  - `settleRefund` («סמן כשולם», finance, not the controller view);
+  - `approveRefundException` (APPROVER_ACTIONS: Sandra's personal session
+    only, on both servers).
+  - **Every client `saveCredit` CREATE** now needs approver, and so does an
+    edit that changes a stored amount.
+- **`refundPayoutForecast` response:** `toPay`, with totals per payment date, a
+  grand total, and rows that carry the full stay. `decided` and
+  `awaiting_decision` are removed. Ortal's schema now carries every row column,
+  including the disposition and discharge note (Sandra, 14/10/2026).
+- SW `CACHE_VERSION` v61 (live) → **v62**. Code.gs → clasp CI on merge.
+
 ## Dashboard: refund rule v2 — stay day 14, every house (October 7, 2026)
 
 Detail: `CHANGELOG-refund-rule-v2.md`, plan §8.6. **Nothing to set.**
@@ -1320,7 +1352,8 @@ Detail: `CHANGELOG-refund-rule-v2.md`, plan §8.6. **Nothing to set.**
     stay the same day.
 - **Unchanged:** the prepaid full refund, the payout timing (by the 10th → the
   15th), and the rule that exceptions are Sandra-only.
-- **Selected by the EXIT date:** `REFUND_RULE_V2_FROM = '2026-10-07'`. An
+- **Selected by the EXIT date** (superseded 14/10/2026: now by the ENTRY date,
+  `REFUND_POLICY_CUTOVER` — see the section above): `REFUND_RULE_V2_FROM`. An
   earlier exit keeps the old per-house rule (the last 7 days for אשר / רמות,
   stay day 14 for the others). Saved credits are never recomputed.
 - **The shared rule** is in `lib/refund-rules.js` (served at

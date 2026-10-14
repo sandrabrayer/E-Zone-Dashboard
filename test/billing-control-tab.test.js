@@ -377,11 +377,12 @@ test('«חריגים פתוחים»: flagged receipts older than 7 days (by the 
   assert.deepEqual(ex.flaggedOld.map((r) => [r.id, r.flagNote, r.ageDays]), [[w.ids[0], 'לא נמצא בבנק', 10]], 'only the one flagged 10 days ago');
   assert.deepEqual(ex.refundExceptions.map((r) => [r.kind, r.patientName, r.amount, r.policyAmount]), [['over_policy', 'יוסי לוי', 5000, 3000]]);
   assert.ok(Array.isArray(ex.debtsOver60));
-  // The pure rule with a forecast that has an awaiting decision.
+  // Refunds are automatic (CHANGELOG-refunds-auto-policy.md): nothing ever
+  // «awaits a decision», so the forecast alone yields no exception.
   const rx = plain(w.g.sandbox.billingControlRefundExceptions_({
-    awaiting_decision: { byPayoutDate: [{ rows: [{ patientName: 'מיכל', houseId: 'asher', exitDate: '2026-09-28', suggestedAmount: 7000, payoutDate: '2026-10-15' }] }] },
+    toPay: { rows: [{ patientName: 'מיכל', houseId: 'asher', exitDate: '2026-09-28', amount: 7000, payoutDate: '2026-10-15', auto: true }] },
   }, []));
-  assert.deepEqual(rx.map((r) => [r.kind, r.patientName, r.amount]), [['awaiting_decision', 'מיכל', 7000]]);
+  assert.deepEqual(rx, []);
   // 7 days exactly is not «older than 7».
   assert.equal(w.g.sandbox.billingControlAgeDays_(new Date(Date.now() - 7 * 86400000).toISOString(), TODAY) > 7, false);
 });

@@ -72,7 +72,7 @@ const ANSWERS = {
   cleanupReport: () => ({ ok: true, today: TODAY, recordsCutoff: '2026-07-01', sections: emptySections(),
     counts: cleanup.SECTION_KEYS.reduce((o, k) => { o[k] = 0; return o; }, {}) }),
   refundPayoutForecast: () => ({ ok: true,
-    decided: { byPayoutDate: [], byHouse: [] }, awaiting_decision: { byPayoutDate: [], byHouse: [] },
+    toPay: { count: 0, total: 0, byPayoutDate: [], rows: [] },
     missing_payment_data: { count: 0, rows: [] } }),
   debtAging: (b) => ({ ok: true, asOf: b.asOf,
     totals: { recorded_debt: { amount: 0, count: 0 }, unrecorded_cycles: { amount: 0, count: 0 } }, byPatient: [] }),

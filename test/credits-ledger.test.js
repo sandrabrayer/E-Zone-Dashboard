@@ -11,7 +11,10 @@
  *   - the sheet is auto-created via getOrCreateSheet_ with allocationMonth +
  *     every date/stamp column text-forced ('@');
  *   - the server mints credit::<patientId>::<month>::<seq>, validates
- *     creditType/status/month/amounts/houseId, REQUIRES overrideReason when
+ *     creditType/status/month/amounts/houseId, refuses a zero-amount CREATE
+ *     (zero_amount_credit), makes EVERY create and any edit that changes the
+ *     stored amount approver-only (override_requires_approver; via handle_
+ *     a non-Sandra create is forbidden_role), REQUIRES overrideReason when
  *     amount ≠ calculatedAmount, requires paidDate+method for status 'paid',
  *     derives payoutDate from decidedDate (refundPayoutDate_: decided on the
  *     1st–10th → that month's 15th, later → next month's 15th), stamps
@@ -24,9 +27,11 @@
  *   - payoutDateFor (display echo): 10th → same-month 15th, 11th → next
  *     month's 15th;
  *   - validateCreditLine refuses amount ≠ calculatedAmount without a reason;
- *   - dischargePatient offers credits only AFTER both discharge writes succeed
- *     and a failed credit write never rolls the discharge back; backend
- *     refusals surface (conflict → Hebrew banner naming who saved first).
+ *   - refunds are created by POLICY on the server at discharge
+ *     (CHANGELOG-refunds-auto-policy.md): the page opens NO credits modal, it
+ *     shows the auto-refund notice (toast / error banner) only AFTER both
+ *     discharge writes succeed; saveCredit refusals surface (conflict →
+ *     Hebrew banner naming who saved first).
  *
  * TZ pinned to Asia/Jerusalem so the local-part assertions are deterministic.
  * vm-sandbox on the REAL shipped Code.gs / app.js, per repo convention. */
@@ -86,6 +91,7 @@ function fakeSheet(headerRow, dataRows) {
   };
 }
 
+const GS_PROXY_SECRET = 'proxy-secret-TEST-credits-ledger-3c9e1a7f5b2d';
 const GS_SRC = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Code.gs'), 'utf8');
 function loadCode() {
   const noop = () => {};
@@ -102,7 +108,8 @@ function loadCode() {
       getSpreadsheetTimeZone: () => 'Asia/Jerusalem',
     }),
   };
-  sandbox.PropertiesService = { getScriptProperties: () => ({ getProperty: () => null, setProperty() { return this; } }) };
+  const props = { PROXY_SECRET: GS_PROXY_SECRET };
+  sandbox.PropertiesService = { getScriptProperties: () => ({ getProperty: (k) => (k in props ? props[k] : null), setProperty() { return this; } }) };
   sandbox.ContentService = {
     createTextOutput: (s) => ({ setMimeType: () => ({ json: JSON.parse(s) }) }),
     MimeType: { JSON: 'json' },
@@ -115,8 +122,10 @@ function loadCode() {
     AUDIT_LOG_COLUMNS, AUDIT_LOG_SHEET, PATIENT_COLUMNS,
     readSheet: (sh, cols) => readSheet_(sh, cols),
     handle: (params) => handle_(params).json,
+    // Through the proxy gate, like doPost: the verified actor (roles) is set here.
+    post: (params) => { const g = proxyGate_(params, 'POST'); return g.ok ? handle_(g.params).json : { ok: false, error: 'unauthorized' }; },
     ensure: (name, cols) => getOrCreateSheet_(name, cols),
-    upsert: (c, u) => upsertCredit_(c, u),
+    upsert: (c, u, o) => upsertCredit_(c, u, o),
     creditId: (p, m, s) => creditId_(p, m, s),
     payoutDateFor: (d) => refundPayoutDate_(d),
     facilityTypeFor: (h) => facilityTypeFor_(h),
@@ -145,6 +154,15 @@ const EXPECTED_COLUMNS = [
   'creditUid',
 ];
 const FACILITY_MAP = { asher: 'residential', ramot: 'residential', rehab: 'detox_dual', pardes: 'detox_dual', arfoni: 'detox_dual', sde: 'detox_dual' };
+/* Every credit CREATE is an approver action (CHANGELOG-refunds-auto-policy.md):
+ * the policy refunds are minted by the server at discharge; a manual create is
+ * Sandra's alone. Direct upsertCredit_ calls pass the approver flag explicitly. */
+const APPROVER = { approver: true };
+const gsActor = (id, user, roles) => ({
+  proxySecret: GS_PROXY_SECRET, proxyUser: user, user, proxyAuth: 'personal', proxyUserId: id, proxyRoles: roles,
+});
+const SANDRA = () => gsActor('sandra', 'סנדרה', ['staff', 'deleter', 'approver', 'viewer']);
+const VERED = () => gsActor('vered', 'ורד', ['staff', 'reporter', 'deleter']);
 const PID = 'id-sara-7f3';
 const PKEY = 'ramot::שרה כהן::2026-07-01';
 const BASE = {
@@ -188,15 +206,27 @@ test('getOrCreateSheet_ auto-creates Credits with the header and text-forces all
 
 /* ===== B. create via handle_ (dispatch + signed-cookie user) ===== */
 
-test('saveCredit via handle_: server mints credit::<patientId>::<month>::<seq>, stamps from body.user, both keys round-trip intact via getCredits', () => {
+test('saveCredit via handle_: server mints credit::<patientId>::<month>::<seq>, stamps from the verified proxy user, both keys round-trip intact via getCredits', () => {
   const { code, sandbox } = loadCode();
-  const r1 = code.handle({ action: 'saveCredit', credit: JSON.stringify(Object.assign({}, BASE, { createdBy: 'FORGED', updatedBy: 'FORGED' })), user: 'ורד' });
-  assert.strictEqual(r1.ok, true);
+  // A CREATE is approver-only: a finance user (Vered) is refused at the role
+  // gate BEFORE upsertCredit_ runs — nothing written.
+  const veredCreate = code.post(Object.assign({ action: 'saveCredit', credit: JSON.stringify(BASE) }, VERED()));
+  assert.strictEqual(veredCreate.ok, false);
+  assert.strictEqual(veredCreate.error, 'forbidden_role');
+  assert.strictEqual(creditsOf(code, sandbox).length, 0, 'a refused create writes nothing');
+  // An unverified call (no proxy actor) carries no role → refused too (fail-closed).
+  const unverified = code.handle({ action: 'saveCredit', credit: JSON.stringify(BASE), user: 'סנדרה' });
+  assert.strictEqual(unverified.ok, false);
+  assert.strictEqual(unverified.error, 'forbidden_role');
+  assert.strictEqual(creditsOf(code, sandbox).length, 0);
+
+  const r1 = code.post(Object.assign({ action: 'saveCredit', credit: JSON.stringify(Object.assign({}, BASE, { createdBy: 'FORGED', updatedBy: 'FORGED' })) }, SANDRA()));
+  assert.strictEqual(r1.ok, true, JSON.stringify(r1));
   assert.strictEqual(r1.created, true);
   assert.strictEqual(r1.credit.id, code.creditId(PID, '2026-09', 1));
   assert.strictEqual(r1.credit.id, 'credit::id-sara-7f3::2026-09::1');
-  assert.strictEqual(r1.credit.createdBy, 'ורד', 'createdBy comes from the proxy-injected user, never the payload');
-  assert.strictEqual(r1.credit.updatedBy, 'ורד');
+  assert.strictEqual(r1.credit.createdBy, 'סנדרה', 'createdBy comes from the proxy-injected user, never the payload');
+  assert.strictEqual(r1.credit.updatedBy, 'סנדרה');
   assert.ok(Number.isFinite(Date.parse(r1.credit.createdAt)));
   assert.strictEqual(r1.credit.createdAt, r1.credit.updatedAt);
   assert.strictEqual(r1.credit.facilityType, 'residential', 'derived from houseId ramot, never the payload');
@@ -205,17 +235,23 @@ test('saveCredit via handle_: server mints credit::<patientId>::<month>::<seq>, 
   assert.strictEqual(r1.credit.paidDate, '', 'pending carries no paidDate');
   assert.deepStrictEqual(JSON.parse(r1.credit.basis), { rule: 'residential_prorata', uncappedAmount: 4800 }, 'basis stored as JSON');
 
-  const r2 = code.handle({ action: 'saveCredit', credit: Object.assign({}, BASE, { creditType: 'prepaid_return', allocationMonth: '2026-10', calculatedAmount: 9000, amount: 9000 }), user: 'ורד' });
+  const r2 = code.post(Object.assign({ action: 'saveCredit', credit: Object.assign({}, BASE, { creditType: 'prepaid_return', allocationMonth: '2026-10', calculatedAmount: 9000, amount: 9000 }) }, SANDRA()));
   assert.strictEqual(r2.credit.id, 'credit::id-sara-7f3::2026-10::1');
   // Same stay + same rule (days_unused, 2026-09) again → the existing row,
   // nothing written (CHANGELOG-duplicate-discharges.md).
-  const dup = code.handle({ action: 'saveCredit', credit: BASE, user: 'דנה' });
+  const dup = code.post(Object.assign({ action: 'saveCredit', credit: BASE }, SANDRA()));
   assert.strictEqual(dup.ok, true);
   assert.strictEqual(dup.duplicate, true);
   assert.strictEqual(dup.id, 'credit::id-sara-7f3::2026-09::1');
   // A different rule in the same month (a manual 'other' credit) still mints seq 2.
-  const r3 = code.handle({ action: 'saveCredit', credit: Object.assign({}, BASE, { creditType: 'other', reason: 'פיצוי', calculatedAmount: 300, amount: 300 }), user: 'דנה' });
+  const r3 = code.post(Object.assign({ action: 'saveCredit', credit: Object.assign({}, BASE, { creditType: 'other', reason: 'פיצוי', calculatedAmount: 300, amount: 300 }) }, SANDRA()));
   assert.strictEqual(r3.credit.id, 'credit::id-sara-7f3::2026-09::2', 'seq increments per patientId+month');
+
+  // A finance user may still EDIT without changing the amount (notes / status).
+  const veredEdit = code.post(Object.assign({ action: 'saveCredit', credit: { id: r1.credit.id, updatedAt: r1.credit.updatedAt, notes: 'עודכן' } }, VERED()));
+  assert.strictEqual(veredEdit.ok, true, JSON.stringify(veredEdit));
+  assert.strictEqual(veredEdit.credit.updatedBy, 'ורד');
+  assert.strictEqual(veredEdit.credit.createdBy, 'סנדרה');
 
   const got = code.handle({ action: 'getCredits' });
   assert.strictEqual(got.ok, true);
@@ -243,7 +279,7 @@ test('saveCredit via handle_: server mints credit::<patientId>::<month>::<seq>, 
   assert.strictEqual(d.override, false);
   assert.strictEqual(d.facilityType, 'residential');
   assert.strictEqual(d.payoutDate, '2026-10-15');
-  assert.strictEqual(d.updatedBy, 'ורד');
+  assert.strictEqual(d.updatedBy, 'סנדרה');
 });
 
 test('server-side validation: creditType outside the allowed list, bad status, bad month and a missing key are refused — nothing written', () => {
@@ -266,22 +302,32 @@ test('server-side validation: creditType outside the allowed list, bad status, b
     [Object.assign({}, BASE, { status: 'paid', method: 'העברה' }), 'paid_requires_paidDate_method'],
     [null, 'missing_credit'],
   ];
+  // Validated as the approver, so each refusal is the validation's own.
   cases.forEach(([credit, error]) => {
-    const res = code.upsert(credit, 'ורד');
+    const res = code.upsert(credit, 'סנדרה', APPROVER);
     assert.strictEqual(res.ok, false, error);
     assert.strictEqual(res.error, error);
   });
+  // Without the approver flag ANY valid create is refused.
+  const plainCreate = code.upsert(BASE, 'ורד');
+  assert.strictEqual(plainCreate.ok, false);
+  assert.strictEqual(plainCreate.error, 'override_requires_approver');
+  assert.strictEqual(code.upsert(BASE, 'ורד', { approver: 'yes' }).error, 'override_requires_approver', 'only approver === true counts');
   assert.strictEqual(creditsOf(code, sandbox).length, 0);
 });
 
-test('override path: amount ≠ calculatedAmount WITHOUT overrideReason is refused; with a reason both figures persist and calculatedAmount is untouched', () => {
+test('override path: approver-only; amount ≠ calculatedAmount WITHOUT overrideReason is refused; with a reason both figures persist and calculatedAmount is untouched', () => {
   const { code, sandbox } = loadCode();
-  const bad = code.upsert(Object.assign({}, BASE, { amount: 4000, overrideReason: '   ' }), 'ורד');
+  // A non-approver override is refused even WITH a reason.
+  const notApprover = code.upsert(Object.assign({}, BASE, { amount: 4000, overrideReason: 'הסכמה עם המשפחה' }), 'ורד');
+  assert.strictEqual(notApprover.ok, false);
+  assert.strictEqual(notApprover.error, 'override_requires_approver');
+  const bad = code.upsert(Object.assign({}, BASE, { amount: 4000, overrideReason: '   ' }), 'סנדרה', APPROVER);
   assert.strictEqual(bad.ok, false);
   assert.strictEqual(bad.error, 'override_reason_required');
   assert.strictEqual(creditsOf(code, sandbox).length, 0);
 
-  const ok = code.upsert(Object.assign({}, BASE, { amount: 4000, overrideReason: 'הסכמה עם המשפחה' }), 'ורד');
+  const ok = code.upsert(Object.assign({}, BASE, { amount: 4000, overrideReason: 'הסכמה עם המשפחה' }), 'סנדרה', APPROVER);
   assert.strictEqual(ok.ok, true);
   const row = creditsOf(code, sandbox)[0];
   assert.strictEqual(row.calculatedAmount, 4800);
@@ -291,17 +337,18 @@ test('override path: amount ≠ calculatedAmount WITHOUT overrideReason is refus
   assert.strictEqual(d.override, true);
 });
 
-test('a ZERO credit is still a row (calculatedAmount 0, amount 0, no override needed)', () => {
+test('a ZERO credit CREATE is refused (zero_amount_credit) even for the approver — nothing written; amount omitted defaults to calculatedAmount', () => {
   const { code, sandbox } = loadCode();
-  const res = code.upsert(Object.assign({}, BASE, { calculatedAmount: 0, amount: 0 }), 'ורד');
-  assert.strictEqual(res.ok, true);
-  const row = creditsOf(code, sandbox)[0];
-  assert.strictEqual(row.calculatedAmount, 0);
-  assert.strictEqual(row.amount, 0);
-  assert.strictEqual(row.status, 'pending');
+  for (const opts of [APPROVER, undefined]) {
+    const res = code.upsert(Object.assign({}, BASE, { calculatedAmount: 0, amount: 0 }), 'סנדרה', opts);
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(res.error, 'zero_amount_credit');
+  }
+  assert.strictEqual(code.upsert(Object.assign({}, BASE, { calculatedAmount: 0, amount: undefined }), 'סנדרה', APPROVER).error, 'zero_amount_credit',
+    'an omitted amount defaulting to a zero calculatedAmount is still zero');
+  assert.strictEqual(creditsOf(code, sandbox).length, 0);
   // amount omitted → defaults to calculatedAmount
-  // (another month: the same month + rule would be the duplicate guard's case)
-  const res2 = code.upsert(Object.assign({}, BASE, { allocationMonth: '2026-10', amount: undefined, decidedDate: '' }), 'ורד');
+  const res2 = code.upsert(Object.assign({}, BASE, { allocationMonth: '2026-10', amount: undefined, decidedDate: '' }), 'סנדרה', APPROVER);
   assert.strictEqual(res2.ok, true);
   assert.strictEqual(res2.credit.amount, 4800);
   assert.match(res2.credit.decidedDate, /^\d{4}-\d{2}-\d{2}$/, 'blank decidedDate defaults to today');
@@ -318,7 +365,7 @@ test('refundPayoutDate_ drives payoutDate: 10th → same-month 15th, 11th / 14th
   assert.strictEqual(code.payoutDateFor('2026-12-20'), '2027-01-15');
   assert.strictEqual(code.payoutDateFor('2026-01-01'), '2026-01-15');
   assert.throws(() => code.payoutDateFor(''), (e) => e.code === 'bad_date');
-  const detox = code.upsert(Object.assign({}, BASE, { houseId: 'rehab', facilityType: 'residential', decidedDate: '2026-09-16' }), 'ורד');
+  const detox = code.upsert(Object.assign({}, BASE, { houseId: 'rehab', facilityType: 'residential', decidedDate: '2026-09-16' }), 'סנדרה', APPROVER);
   assert.strictEqual(detox.ok, true);
   assert.strictEqual(detox.credit.facilityType, 'detox_dual', 'derived from houseId, the forged payload value is ignored');
   assert.strictEqual(detox.credit.payoutDate, '2026-10-15');
@@ -326,20 +373,22 @@ test('refundPayoutDate_ drives payoutDate: 10th → same-month 15th, 11th / 14th
 
 test('marking paid is an explicit edit: status paid + paidDate + method persist; payoutDate never flips status by itself', () => {
   const { code, sandbox } = loadCode();
-  const created = code.upsert(Object.assign({}, BASE, { decidedDate: '2026-08-20' }), 'ורד').credit;
+  const created = code.upsert(Object.assign({}, BASE, { decidedDate: '2026-08-20' }), 'סנדרה', APPROVER).credit;
   assert.strictEqual(created.payoutDate, '2026-09-15');
   // A later read does not change anything — nothing is automatic.
   assert.strictEqual(code.handle({ action: 'getCredits' }).credits[0].status, 'pending');
-  const paid = code.upsert({ id: created.id, updatedAt: created.updatedAt, status: 'paid', paidDate: '2026-09-15', method: 'העברה בנקאית' }, 'סנדרה');
+  // A status edit that leaves the amount alone needs no approver (finance user).
+  const paid = code.upsert({ id: created.id, updatedAt: created.updatedAt, status: 'paid', paidDate: '2026-09-15', method: 'העברה בנקאית' }, 'ורד');
   assert.strictEqual(paid.ok, true, JSON.stringify(paid));
   const row = creditsOf(code, sandbox)[0];
   assert.strictEqual(row.status, 'paid');
   assert.strictEqual(row.paidDate, '2026-09-15');
   assert.strictEqual(row.method, 'העברה בנקאית');
-  assert.strictEqual(row.updatedBy, 'סנדרה');
+  assert.strictEqual(row.updatedBy, 'ורד');
   assert.strictEqual(row.payoutDate, '2026-09-15', 'payoutDate stays derived from decidedDate');
   // Un-paying clears paidDate; changing decidedDate re-derives payoutDate.
-  const back = code.upsert({ id: created.id, updatedAt: paid.credit.updatedAt, status: 'pending', decidedDate: '2026-09-16' }, 'סנדרה');
+  const back = code.upsert({ id: created.id, updatedAt: paid.credit.updatedAt, status: 'pending', decidedDate: '2026-09-16' }, 'ורד');
+  assert.strictEqual(back.ok, true, JSON.stringify(back));
   assert.strictEqual(back.credit.paidDate, '');
   assert.strictEqual(back.credit.payoutDate, '2026-10-15');
 });
@@ -348,14 +397,24 @@ test('marking paid is an explicit edit: status paid + paidDate + method persist;
 
 test('edit: only the editable columns change; calculatedAmount, identity keys, reason and creation stamps are carried from the SHEET whatever the payload says', () => {
   const { code, sandbox } = loadCode();
-  const created = code.upsert(BASE, 'ורד').credit;
-  const edit = code.upsert({
+  const created = code.upsert(BASE, 'ורד', APPROVER).credit;
+  const tampered = {
     id: created.id, updatedAt: created.updatedAt,
     // attempted tampering:
     calculatedAmount: 1, patientId: 'other', patientKey: 'x::y::z', reason: 'rewritten', basis: '{"forged":true}', facilityType: 'detox_dual', houseId: 'rehab', createdAt: '2000-01-01T00:00:00.000Z', createdBy: 'FORGED', creditType: 'other', allocationMonth: '2027-01', payoutDate: '2030-01-15',
     // legitimate edits:
     amount: 4000, overrideReason: 'סוכם טלפונית', status: 'paid', paidDate: '2026-09-20', method: 'העברה', notes: 'שולם', approvedBy: 'סנדרה',
-  }, 'דנה');
+  };
+  // An edit that CHANGES the stored amount is approver-only — refused, row unchanged.
+  const before = JSON.stringify(sandbox.__sheets.Credits.grid[1]);
+  const refused = code.upsert(Object.assign({}, tampered), 'דנה');
+  assert.strictEqual(refused.ok, false);
+  assert.strictEqual(refused.error, 'override_requires_approver');
+  assert.strictEqual(JSON.stringify(sandbox.__sheets.Credits.grid[1]), before);
+  // Re-sending the SAME amount is not a change — no approver needed.
+  const same = code.upsert({ id: created.id, updatedAt: created.updatedAt, amount: 4800, notes: 'ללא שינוי' }, 'דנה');
+  assert.strictEqual(same.ok, true, JSON.stringify(same));
+  const edit = code.upsert(Object.assign({}, tampered, { updatedAt: same.credit.updatedAt }), 'דנה', APPROVER);
   assert.strictEqual(edit.ok, true, JSON.stringify(edit));
   assert.strictEqual(edit.updated, true);
   const rows = creditsOf(code, sandbox);
@@ -386,7 +445,7 @@ test('edit: only the editable columns change; calculatedAmount, identity keys, r
 
 test('edit: a payload updatedAt that differs from the sheet stamp is REFUSED with `conflicts` (who saved first) and the row is byte-unchanged', () => {
   const { code, sandbox } = loadCode();
-  const created = code.upsert(BASE, 'ורד').credit;
+  const created = code.upsert(BASE, 'ורד', APPROVER).credit;
   const before = JSON.stringify(sandbox.__sheets.Credits.grid[1]);
   const res = code.upsert({ id: created.id, updatedAt: '2026-01-01T00:00:00.000Z', amount: 100, overrideReason: 'x' }, 'דנה');
   assert.strictEqual(res.ok, false);
@@ -404,8 +463,8 @@ test('edit: a payload updatedAt that differs from the sheet stamp is REFUSED wit
 
 test('edit: an id the sheet does not carry is refused (clients never mint ids) — nothing appended', () => {
   const { code, sandbox } = loadCode();
-  code.upsert(BASE, 'ורד');
-  const res = code.upsert(Object.assign({}, BASE, { id: 'credit::id-sara-7f3::2026-09::9' }), 'ורד');
+  code.upsert(BASE, 'ורד', APPROVER);
+  const res = code.upsert(Object.assign({}, BASE, { id: 'credit::id-sara-7f3::2026-09::9' }), 'ורד', APPROVER);
   assert.strictEqual(res.ok, false);
   assert.strictEqual(res.error, 'unknown_credit');
   assert.strictEqual(creditsOf(code, sandbox).length, 1);
@@ -457,18 +516,20 @@ function loadApp(routes) {
     showCreditsModal = (opts) => { globalThis.__creditsModal.push(opts); };
     renderAll = () => {};
     showError = (m) => { globalThis.__errors.push(m); };
-    showToast = () => {};
+    showToast = (m) => { globalThis.__toasts.push(m); };
     globalThis.__errors = [];
+    globalThis.__toasts = [];
     globalThis.__creditsModal = [];
     globalThis.__test = {
       state,
       normalizePatient, normalizePayment, normalizeCredit,
       validateCreditLine, creditBasisText, buildCreditLines,
       creditsForPatient, creditId, paymentCoverage, addMonthsClamped, localDateFromISO, diffWholeDays, isoDate, exVat,
-      patientKey, saveCredit, dischargePatient, payoutDateFor, facilityTypeFor, pendingCreditsByPayout,
+      patientKey, saveCredit, dischargePatient, payoutDateFor, facilityTypeFor,
       FACILITY_TYPE_BY_HOUSE, CREDIT_DECISION_CUTOFF_DAY,
       confirm: (payload) => globalThis.__confirm(payload),
       errors: () => globalThis.__errors,
+      toasts: () => globalThis.__toasts,
       creditsModal: () => globalThis.__creditsModal,
       VAT_RATE,
     };`;
@@ -498,27 +559,19 @@ test('facility map mirrors Code.gs: asher/ramot residential, rehab/pardes/arfoni
   assert.strictEqual(app.CREDIT_DECISION_CUTOFF_DAY, 10);
   assert.ok(!/function suggestCredits?\(|CREDIT_DAYS_DIVISOR|CREDIT_RESIDENTIAL_LAST_DAYS|CREDIT_DETOX_TENURE_CUTOFF_DAYS|function applyCreditCap/.test(APP_SRC),
     'the old-rule calculation is gone from app.js');
+  // Refunds are created by POLICY on the server at discharge: the client no
+  // longer fetches suggestions, groups pending credits or marks them paid here.
+  assert.ok(!/function (fetchRefundSuggestions|pendingCreditsByPayout|showMarkCreditPaidModal|openCreditsForCredit)\(/.test(APP_SRC),
+    'the removed client refund-decision helpers are gone');
 });
 
-test('payoutDateFor (display echo of refundPayoutDate_): 10th → 15th same month, 11th → 15th next month; pendingCreditsByPayout groups + totals', () => {
+test('payoutDateFor (display echo of refundPayoutDate_): 10th → 15th same month, 11th → 15th next month', () => {
   const { app } = loadApp();
   assert.strictEqual(app.payoutDateFor('2026-09-10'), '2026-09-15');
   assert.strictEqual(app.payoutDateFor('2026-09-11'), '2026-10-15');
   assert.strictEqual(app.payoutDateFor('2026-09-15'), '2026-10-15');
   assert.strictEqual(app.payoutDateFor('2026-12-31'), '2027-01-15');
   assert.strictEqual(app.payoutDateFor(''), '');
-  const credits = [
-    { id: 'a', status: 'pending', payoutDate: '2026-10-15', amount: 2400 },
-    { id: 'b', status: 'pending', payoutDate: '2026-09-15', amount: 100.5 },
-    { id: 'c', status: 'paid',    payoutDate: '2026-09-15', amount: 9999 },
-    { id: 'd', status: 'pending', payoutDate: '2026-09-15', amount: 0 },
-    { id: 'e', status: 'cancelled', payoutDate: '2026-10-15', amount: 500 },
-  ];
-  const groups = plain(app.pendingCreditsByPayout(credits));
-  assert.deepStrictEqual(groups.map((g) => [g.payoutDate, g.total, g.credits.map((c) => c.id)]), [
-    ['2026-09-15', 100.5, ['b', 'd']],
-    ['2026-10-15', 2400, ['a']],
-  ]);
 });
 
 /* ===== E. client validation + normalization ===== */
@@ -585,31 +638,50 @@ test('normalizeCredit round-trips patientId AND patientKey intact (distinct, nei
 
 /* ===== F. discharge integration + error surfacing ===== */
 
-test('discharge: credits are offered only AFTER dischargePatient and saveAll both succeed, with patientId + patientKey + the normalized exitDate', async () => {
-  const { app, calls } = loadApp({});
+test('discharge: NO credits modal — the server creates the refund by policy; the page shows the auto-refund notice only AFTER dischargePatient and saveAll both succeed', async () => {
+  const { app, calls } = loadApp({ dischargePatient: (body) => ({ ok: true, discharged: true, patient: body.patient, refund: { created: 1, skipped: 0 } }) });
   app.state.mode = 'edit';
+  app.state.payoutForecast = { status: 'ready', data: {}, error: '' };
   const p = app.normalizePatient(PATIENT);
   app.state.patients = [p]; app.state.leads = []; app.state.dischargedPatients = []; app.state.payments = [pay({ dueDate: '2026-09-01' })];
   app.dischargePatient(p);
   await app.confirm({ disposition: 'completed', note: '', dischargeDate: '2026-09-14' });
-  const actions = calls.map((c) => c && c.action);
-  assert.deepStrictEqual(actions, ['dischargePatient', 'saveAll']);
-  assert.strictEqual(app.creditsModal().length, 1);
-  const opts = app.creditsModal()[0];
-  assert.strictEqual(opts.patientId, 'id-dana-1');
-  assert.strictEqual(opts.patientKey, KEY);
-  assert.strictEqual(opts.exitDate, '2026-09-14');
+  const posts = calls.filter(Boolean).map((c) => c.action);
+  assert.deepStrictEqual(posts, ['dischargePatient', 'saveAll'], 'no saveCredit / suggestRefunds from the page');
+  assert.strictEqual(app.creditsModal().length, 0, 'the credits modal is never opened by a discharge');
+  assert.ok(app.toasts().some((m) => /זיכוי אוטומטי/.test(m)), JSON.stringify(app.toasts()));
+  assert.ok(!app.toasts().some((m) => /\d{3,}/.test(m)), 'never an amount in a toast');
+  assert.strictEqual(app.state.payoutForecast.status, 'idle', 'the payout forecast is marked stale');
+  assert.strictEqual(app.errors().length, 0, JSON.stringify(app.errors()));
+  assert.strictEqual(p.status, 'released');
+  assert.strictEqual(p.exitDate, '2026-09-14');
+});
+
+test('discharge: a refund the server could not compute surfaces as an error banner — the discharge stays released', async () => {
+  const { app } = loadApp({ dischargePatient: (body) => ({ ok: true, discharged: true, patient: body.patient, refund: { error: 'missing_patientKey' } }) });
+  app.state.mode = 'edit';
+  const p = app.normalizePatient(PATIENT);
+  app.state.patients = [p]; app.state.leads = []; app.state.dischargedPatients = [];
+  app.dischargePatient(p);
+  await app.confirm({ disposition: 'completed', note: '', dischargeDate: '2026-09-14' });
+  assert.ok(app.errors().some((m) => /הזיכוי לא חושב אוטומטית/.test(m) && /השחרור נשמר/.test(m)), JSON.stringify(app.errors()));
+  assert.strictEqual(app.creditsModal().length, 0);
   assert.strictEqual(p.status, 'released');
 });
 
-test('discharge: a FAILED discharge write never reaches the credits step', async () => {
-  const { app } = loadApp({ dischargePatient: () => ({ ok: false, error: 'exception', message: 'boom' }) });
+test('discharge: a FAILED discharge write never reaches the refund step', async () => {
+  const { app, calls } = loadApp({ dischargePatient: () => ({ ok: false, error: 'exception', message: 'boom' }) });
   app.state.mode = 'edit';
+  app.state.payoutForecast = { status: 'ready', data: {}, error: '' };
   const p = app.normalizePatient(PATIENT);
   app.state.patients = [p]; app.state.leads = []; app.state.dischargedPatients = [];
   app.dischargePatient(p);
   await assert.rejects(() => app.confirm({ disposition: 'completed', note: '', dischargeDate: '2026-09-14' }));
   assert.strictEqual(app.creditsModal().length, 0);
+  assert.ok(!app.toasts().some((m) => /זיכוי/.test(m)), 'no auto-refund notice');
+  assert.ok(!app.errors().some((m) => /הזיכוי לא חושב/.test(m)));
+  assert.strictEqual(app.state.payoutForecast.status, 'ready', 'the forecast is not touched');
+  assert.deepStrictEqual(calls.filter(Boolean).map((c) => c.action), ['dischargePatient']);
   assert.strictEqual(p.status, 'active');
 });
 
@@ -618,7 +690,7 @@ test('saveCredit surfaces backend refusals: {ok:false} on a 200 throws with the 
     saveCredit: (body) => body.credit.notes === 'conflict'
       ? { ok: false, error: 'conflict', conflicts: [{ id: 'c1', name: 'דנה', sheetUpdatedBy: 'סנדרה', sheetUpdatedAt: 'T9' }] }
       : body.credit.notes === 'bad'
-        ? { ok: false, error: 'override_reason_required' }
+        ? { ok: false, error: 'override_requires_approver' }
         : body.credit.notes === 'empty' ? { ok: true } : { ok: true, created: true, credit: Object.assign({}, body.credit, { id: 'credit::id-dana-1::2026-09::1', updatedAt: 'T1' }) },
   });
   app.state.mode = 'edit';
@@ -626,7 +698,7 @@ test('saveCredit surfaces backend refusals: {ok:false} on a 200 throws with the 
   app.state.patients = [p];
   const line = { id: '', patientId: 'id-dana-1', patientKey: KEY, creditType: 'days_unused', allocationMonth: '2026-09', calculatedAmount: 4800, amount: 4800, notes: '' };
 
-  await assert.rejects(() => app.saveCredit(Object.assign({}, line, { notes: 'bad' })), /override_reason_required/);
+  await assert.rejects(() => app.saveCredit(Object.assign({}, line, { notes: 'bad' })), /override_requires_approver/);
   await assert.rejects(() => app.saveCredit(Object.assign({}, line, { notes: 'empty' })), /תשובת שרת לא תקינה/);
   await assert.rejects(() => app.saveCredit(Object.assign({}, line, { notes: 'conflict' })), (e) => e.handled === true && e.conflict === true);
   assert.ok(app.errors().some((m) => m.includes('סנדרה') && m.includes('לא נשמר')), JSON.stringify(app.errors()));
