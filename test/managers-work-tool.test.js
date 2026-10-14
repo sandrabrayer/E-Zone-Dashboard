@@ -249,3 +249,63 @@ test('houseData: expected admissions = open leads of THIS house with a planned e
   ]);
   assert.ok(!JSON.stringify(r.expectedAdmissions).includes('0501234567'), 'no phone');
 });
+
+/* ---- Stage 3: the house manpower cost (staffing feed) ---- */
+const STAFFING_URL = 'https://script.google.com/macros/s/AKfycbTESTstaffing123/exec';
+function withCost(feed, props = {}) {
+  const t = boot();
+  Object.assign(t.g.sandbox.__props, { STAFFING_SHEETS_URL: STAFFING_URL, STAFFING_COST_SECRET: 'cost-secret-123' }, props);
+  t.fetches = [];
+  t.g.sandbox.UrlFetchApp = { fetch: (url) => {
+    t.fetches.push(url);
+    if (feed instanceof Error) throw feed;
+    return { getResponseCode: () => 200, getContentText: () => (typeof feed === 'string' ? feed : JSON.stringify(feed)) };
+  } };
+  return t;
+}
+const FEED = { month: '2026-10', hasActuals: true, feedGeneratedAt: '2026-10-14T10:00:00.000Z', houses: {
+  ramot: { projectedTotal: 182345.6, actualConfirmed: 150000, estimated: 32345.6, missingDataCost: 0, instructorsCost: 98000, budget: 186400 },
+  asher: { projectedTotal: 140000, actualConfirmed: 0, estimated: 140000, missingDataCost: 0, instructorsCost: 80000, budget: null },
+  pardes: { projectedTotal: 50000, actualConfirmed: 0, estimated: 50000, missingDataCost: 0, instructorsCost: 30000, budget: 60000 },
+  hapardes: { projectedTotal: 1000, actualConfirmed: 0, estimated: 1000, missingDataCost: 0, instructorsCost: 0, budget: null },
+} };
+
+test('houseCost: only the caller\'s house leaves — rounded totals, budget, no other house', () => {
+  const t = withCost(FEED);
+  const r = t.call({ op: 'houseCost', month: '2026-10', ...ORAN });
+  assert.deepStrictEqual(r, { ok: true, house: 'ramot', month: '2026-10', cost: {
+    available: true, month: '2026-10', hasActuals: true, stale: false, generatedAt: '2026-10-14T10:00:00.000Z',
+    total: 182346, confirmed: 150000, estimated: 32346, missingData: 0, instructors: 98000, budget: 186400 } });
+  assert.ok(!JSON.stringify(r).includes('140000'), 'no other house');
+  assert.match(t.fetches[0], /^https:\/\/script\.google\.com\/macros\/s\/AKfycbTESTstaffing123\/exec\?action=getHouseCostsForManagers&month=2026-10&secret=cost-secret-123$/);
+});
+
+test('houseCost: staffing ids map to manager houses (asher → raanana, pardes + hapardes → pardes); cached per month', () => {
+  const t = withCost(FEED);
+  const raanana = t.call({ op: 'houseCost', month: '2026-10', house: 'raanana', role: 'manager', actor: 'שחר' });
+  assert.strictEqual(raanana.cost.total, 140000);
+  assert.strictEqual(raanana.cost.budget, null);
+  const pardes = t.call({ op: 'houseCost', month: '2026-10', house: 'pardes', role: 'manager', actor: 'חן' });
+  assert.strictEqual(pardes.cost.total, 51000);
+  assert.strictEqual(pardes.cost.budget, 60000);
+  assert.strictEqual(t.fetches.length, 1, 'one staffing call for the whole month');
+});
+
+test('houseCost: not configured / unreachable / unauthorized / junk / house missing → available:false, never a 0', () => {
+  const nc = withCost(FEED, { STAFFING_COST_SECRET: '' });
+  assert.deepStrictEqual(nc.call({ op: 'houseCost', month: '2026-10', ...ORAN }).cost, { available: false, reason: 'not_configured' });
+  assert.strictEqual(nc.fetches.length, 0);
+  const badUrl = withCost(FEED, { STAFFING_SHEETS_URL: 'https://evil.example/exec' });
+  assert.deepStrictEqual(badUrl.call({ op: 'houseCost', month: '2026-10', ...ORAN }).cost, { available: false, reason: 'not_configured' });
+  assert.strictEqual(badUrl.fetches.length, 0, 'never calls a non-Apps-Script URL');
+  assert.deepStrictEqual(withCost(new Error('down')).call({ op: 'houseCost', month: '2026-10', ...ORAN }).cost, { available: false, reason: 'unreachable' });
+  assert.deepStrictEqual(withCost({ error: 'unauthorized' }).call({ op: 'houseCost', month: '2026-10', ...ORAN }).cost, { available: false, reason: 'unauthorized' });
+  assert.deepStrictEqual(withCost('<html>').call({ op: 'houseCost', month: '2026-10', ...ORAN }).cost, { available: false, reason: 'unreadable' });
+  assert.deepStrictEqual(withCost({ month: '2026-10', houses: {} }).call({ op: 'houseCost', month: '2026-10', ...ORAN }).cost, { available: false, reason: 'no_house' });
+});
+
+test('houseCost: still behind the managersWork secret', () => {
+  const t = withCost(FEED);
+  assert.deepStrictEqual(arr(t.g.post({ action: 'managersWork', secret: 'wrong', op: 'houseCost', ...ORAN })), { ok: false, error: 'unauthorized' });
+  assert.strictEqual(t.fetches.length, 0);
+});

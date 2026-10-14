@@ -265,6 +265,15 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
   with follow-up dates. New sheets `ManagersFamilyCalls`, `ManagersStaffTalks`,
   `ManagersEvents`. Details: `CHANGELOG-managers-work-tool.md`.
 
+## Dashboard Apps Script: managers house manpower cost (October 14, 2026)
+
+- `managersWork` op `houseCost` returns the caller's house cost totals for a month, from the
+  staffing feed `getHouseCostsForManagers`.
+- Script Properties: `STAFFING_SHEETS_URL` and `STAFFING_COST_SECRET` (= staffing's
+  `MANAGERS_COST_READ_SECRET`).
+- When the cost can't be read, it returns `available:false`, never 0.
+- Details: `CHANGELOG-managers-house-cost.md`.
+
 ## Dashboard Apps Script: managers expected admissions (October 14, 2026)
 
 - `managersWork` `houseData` adds `expectedAdmissions`: the open leads of the house with a
