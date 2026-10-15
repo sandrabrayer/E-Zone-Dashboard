@@ -499,6 +499,13 @@ deploys automatically on merge; until it has, the card shows «לא ניתן ל�
 in — any personal session, Ortal's controller view included (the card sits on «בקרת גבייה»
 there). No session → 401; nothing else changes. Still nothing to set.
 
+## Coordinators committee feed — ONE Script Property (October 15, 2026)
+
+`CHANGELOG-coordinators-committee-feed.md`. After the automatic Code.gs deploy, set the Script
+Property **`COORDINATORS_COMMITTEES_SECRET`** (a new random value of 32+ characters). Put the same
+value in the coordinators Apps Script as `DASHBOARD_COMMITTEES_SECRET`. Unset → the feed answers
+`unauthorized` (fail-closed) and the coordinators show «לא סונכרן». No Railway variable.
+
 ## «ועדות קרובות» card — nothing to set (October 15, 2026)
 
 `CHANGELOG-dashboard-committees.md`. A read-only action `upcomingCommittees` reuses

@@ -1355,8 +1355,13 @@ const APPROVER_ACTIONS = [
  * INSIDE handle_ by its own fail-closed MANAGERS_WORK_SECRET. */
 // Exempt from PROXY_SECRET only; Managers requests use their own mandatory
 // JSON-body MANAGERS_WORK_SECRET gate in gatedEntry_, even in log mode.
+/* Coordinators committees (2026-10-15, CHANGELOG-coordinators-committee-feed.md):
+ * getCommitteesForCoordinators — READ-ONLY, called by the ezone-coordinators
+ * Apps Script directly, gated INSIDE handle_ by its own fail-closed
+ * COORDINATORS_COMMITTEES_SECRET (the getPatientsForCoordinators model). */
 const OPEN_ACTIONS = ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster',
-  'getPatientsForCoordinators', 'recordDischargeFromCoordinators', 'managersWork'];
+  'getPatientsForCoordinators', 'recordDischargeFromCoordinators', 'managersWork',
+  'getCommitteesForCoordinators'];
 const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
 /* Every action handle_ dispatches. An action name is caller-controlled, so
  * SecurityLog records only these; anything else is logged as '(unknown)' —
@@ -1379,6 +1384,7 @@ const PROXY_KNOWN_ACTIONS = [
   'settleRefund', 'approveRefundException',
   'expectedDischarges',
   'upcomingCommittees',
+  'getCommitteesForCoordinators',
 ];
 
 /* SecurityLog — append-only, one row per (event, action, hour) at most.
@@ -1678,6 +1684,11 @@ function handle_(params) {
     /* ===== Coordinators roster — own fail-closed secret =====
      * Read feed + the one write (a discharge). Refused with NOTHING read or
      * written unless COORDINATORS_PATIENTS_SECRET is set and matches. */
+    /* ===== Coordinators committees — own fail-closed secret (READ-ONLY) ===== */
+    if (action === 'getCommitteesForCoordinators') {
+      if (!coordinatorsCommitteesAuthOk_(params)) return jsonOut_({ ok: false, error: 'unauthorized' });
+      return jsonOut_(getCommitteesForCoordinators_());
+    }
     if (action === 'getPatientsForCoordinators' || action === 'recordDischargeFromCoordinators') {
       if (!coordinatorsPatientsAuthOk_(params)) {
         return jsonOut_({ ok: false, error: 'unauthorized' });
@@ -7011,6 +7022,78 @@ function getPatientsForCoordinators_() {
   backfillPatientIdsLocked_(sh);
   const rows = readSheet_(sh, PATIENT_COLUMNS);
   return { ok: true, patients: buildCoordinatorsRoster_(rows, coordReleasedCutoff_()) };
+}
+
+/* ===== Cross-app: committees for the coordinators (CHANGELOG-coordinators-committee-feed.md) =====
+ *
+ * Sandra (15 Oct 2026, PR 4): the coordinators app alerts its רכזת two days
+ * before a patient's committee («ועדה»). The house managers record the date in
+ * the Managers app (ManagersCommittee, CHANGELOG-managers-committee.md); this
+ * is the coordinators' READ-ONLY view of it.
+ *
+ * Gate: its OWN Script Property COORDINATORS_COMMITTEES_SECRET (passed as
+ * `secret`, constant-time compared, FAIL-CLOSED: unset / empty / mismatched →
+ * {ok:false, error:'unauthorized'}, nothing read). Separate from every other
+ * secret, so it unlocks nothing else and rotates alone.
+ *
+ * action=getCommitteesForCoordinators →
+ *   { ok, today, committees: [{ id, name, house, date, label }] }
+ * FROZEN per-row contract, EXACTLY those keys (the coordinators reject the
+ * whole feed on one entry off it):
+ *   id    — the patient's persisted Patients `id` (the id the coordinators'
+ *           roster feed uses), or '' when it is not uniquely resolvable;
+ *   name  — the patient name exactly as the roster feed shows it;
+ *   house — canonical coordinators id: ramot | raanana | efroni | rehab | pardes;
+ *   date  — the committee date 'yyyy-MM-dd'; label — its label (≤ 60, cleaned).
+ * Data minimisation: only patients in the house today whose CURRENT committee
+ * date is today .. today + COORD_COMMITTEE_FEED_DAYS (Israel time — the
+ * alert window is 2 days, one spare day absorbs a cached copy across Israel
+ * midnight). No phone, money, notes, who-set-it or admission date. Never writes. */
+const COORDINATORS_COMMITTEES_SECRET_PROP = 'COORDINATORS_COMMITTEES_SECRET';
+const COORD_COMMITTEE_FEED_KEYS = ['id', 'name', 'house', 'date', 'label'];
+const COORD_COMMITTEE_FEED_DAYS = 3;
+
+function coordinatorsCommitteesAuthOk_(params) {
+  const expected = PropertiesService.getScriptProperties().getProperty(COORDINATORS_COMMITTEES_SECRET_PROP);
+  if (!expected) return false;
+  const got = (params && typeof params.secret === 'string') ? params.secret : '';
+  if (!got) return false;
+  return constantTimeEquals_(got, expected);
+}
+
+function getCommitteesForCoordinators_() {
+  const todayIso = committeeToday_();
+  const t = parseDate_(todayIso);
+  const lastIso = ymdOf_(new Date(t.getFullYear(), t.getMonth(), t.getDate() + COORD_COMMITTEE_FEED_DAYS));
+  const inHouseToday = parseDate_(todayISODate_());
+  const patients = readPatientsForBonus_();
+  const raw = readSheet_(getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS), PATIENT_COLUMNS);
+  const out = [];
+  MANAGER_HOUSES.forEach(function (key) {
+    const pid = MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[key];
+    const committees = mwReadCommittees_(key);
+    mwInHousePatients_(patients, pid, inHouseToday).forEach(function (p) {
+      const cur = committees[mwDischargeKey_(key, p.name, p.entryDate)];
+      if (!cur || cur.date < todayIso || cur.date > lastIso) return;
+      const nameKey = mwPatientNameKey_(p.name);
+      // The roster id: the ONE in-house Patients row of this house + name.
+      const ids = raw.filter(function (r) {
+        if (String(r.houseId) !== pid || mwPatientNameKey_(r.name) !== nameKey) return false;
+        if (coordStatusReleased_(r.status)) return false;
+        const exit = asISODate_(r.exitDate);
+        return !exit || exit >= ymdOf_(inHouseToday);
+      }).map(function (r) { return String(r.id == null ? '' : r.id).trim(); }).filter(function (id) { return id; });
+      out.push({
+        id: ids.length === 1 ? ids[0] : '',
+        name: String(p.name == null ? '' : p.name).trim(),
+        house: key,
+        date: cur.date,
+        label: cur.label,
+      });
+    });
+  });
+  out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.house < b.house ? -1 : a.house > b.house ? 1 : 0); });
+  return { ok: true, today: todayIso, committees: out };
 }
 
 /* Validate the discharge payload → { ok:true, value } | { ok:false, error }. Pure

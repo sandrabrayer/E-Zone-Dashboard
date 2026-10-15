@@ -354,6 +354,14 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
 - **Audit**: editor-run, read-only `auditTemporaryExitsNow()` (initials only).
 - Details: `CHANGELOG-temporary-exit-return.md`.
 
+## Dashboard Apps Script: committee feed for the coordinators (October 15, 2026)
+
+- Read-only `getCommitteesForCoordinators` (open action, own fail-closed Script Property
+  `COORDINATORS_COMMITTEES_SECRET`). Returns `{ id, name, house, date, label }` only, for
+  in-house patients whose committee is today … +3 (Israel time).
+- The coordinators' `DASHBOARD_COMMITTEES_SECRET` must equal it.
+- Details: `CHANGELOG-coordinators-committee-feed.md`.
+
 ## Dashboard: «ועדות קרובות» — committees, read-only (October 15, 2026)
 
 - «דשבורד» card, all houses: «היום» first, then the next 7 days. Each row shows house, patient,
