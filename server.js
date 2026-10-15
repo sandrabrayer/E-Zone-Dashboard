@@ -951,8 +951,8 @@ function requireRoleForAction(req, res, next) {
 }
 
 /* Expected discharges (Task F): the read-only «שחרורים צפויים» feed needs a
- * personal staff session that is not the controller view
- * (lib/role-scope.js canViewExpectedDischarges), refused BEFORE anything is
+ * personal session — any user who can log in (CEO, 15 Oct 2026;
+ * lib/role-scope.js canViewExpectedDischarges) — refused BEFORE anything is
  * proxied. Code.gs refuses the same again. Logged with the user id only. */
 function requireExpectedDischargesView(req, res, next) {
   const action = req.method === 'GET' ? (req.query && req.query.action) : (req.body && req.body.action);

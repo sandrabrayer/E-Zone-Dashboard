@@ -1679,6 +1679,7 @@ function applyControllerView() {
   const inKeptScreen = el => !!(el && el.closest && screens.some(n => el.closest('#screen-' + n)));
   const keep = el => el && (keepScreen(el.getAttribute('data-screen')) || keepScreen(String(el.id || '').replace(/^screen-/, '')) || inKeptScreen(el));
   const drop = el => { if (el && el.remove && !keep(el)) el.remove(); };
+  moveExpectedDischargesToControllerScreen();
   Array.prototype.forEach.call(document.querySelectorAll('.tabs .tab'), drop);
   Array.prototype.forEach.call(document.querySelectorAll('section.screen'), drop);
   Array.prototype.forEach.call(document.querySelectorAll('[data-finance]'), drop);
@@ -4569,6 +4570,7 @@ function renderAll() {
   if (controllerView()) {
     renderBillingControl();
     if (billingReadView()) { renderBilling(); renderCreditsPayouts(); }
+    renderExpectedDischarges();
     return;
   }
   renderDashboard();
@@ -4738,8 +4740,20 @@ function paintExpectedDischarges() {
   if (retry) retry.onclick = () => busyButton(retry, 'load', () => loadExpectedDischarges(true));
 }
 
+/* Every user who can log in sees the card (CEO, 15 Oct 2026 —
+ * CHANGELOG-expected-discharges-all-users.md). The controller view (Ortal)
+ * has no «דשבורד» screen, so applyControllerView moves the card to the top
+ * of «בקרת גבייה» before the other screens are removed. The node is moved,
+ * not copied: one card, one id. Idempotent. */
+function moveExpectedDischargesToControllerScreen() {
+  const card = document.getElementById('expected-discharges');
+  const screen = document.getElementById('screen-' + BILLING_CONTROL_SCREEN);
+  if (!card || !screen || !screen.insertBefore || card.parentNode === screen) return;
+  const head = screen.querySelector ? screen.querySelector('.screen-head') : null;
+  screen.insertBefore(card, head ? head.nextSibling : screen.firstChild);
+}
+
 function renderExpectedDischarges() {
-  if (typeof controllerView === 'function' && controllerView()) return;
   paintExpectedDischarges();
   loadExpectedDischarges(false);
 }

@@ -495,8 +495,9 @@ service:
 action behind the «שחרורים צפויים» card. It reuses `PROXY_SECRET` and the existing
 `ManagersExpectedDischarge` sheet: **no new Script Property, Railway variable or sheet**. Code.gs
 deploys automatically on merge; until it has, the card shows «לא ניתן לטעון את השחרורים
-הצפויים כרגע» (the old Code.gs does not know the action) and nothing else on the page changes. Access: personal staff sessions (Sandra, Vered, Shiran, Yael); Ortal's controller view is
-refused by server.js and by Code.gs.
+הצפויים כרגע» (the old Code.gs does not know the action) and nothing else on the page changes. Access (CHANGELOG-expected-discharges-all-users.md, CEO 15 Oct 2026): every user who can log
+in — any personal session, Ortal's controller view included (the card sits on «בקרת גבייה»
+there). No session → 401; nothing else changes. Still nothing to set.
 
 ## Security
 

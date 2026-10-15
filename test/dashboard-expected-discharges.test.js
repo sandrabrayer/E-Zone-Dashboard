@@ -273,21 +273,39 @@ test('C: a read never creates the ManagersExpectedDischarge sheet', () => {
   assert.ok(!g.sandbox.__sheets.ManagersExpectedDischarge);
 });
 
-test('C: authorization — no / wrong PROXY_SECRET, the controller view, a non-personal or role-less session → refused, nothing read', () => {
+test('C: authorization — every logged-in user reads (CEO, 15 Oct 2026); no / wrong PROXY_SECRET or a non-personal session → refused', () => {
+  const YAEL = () => gsActor('yael', 'יעל', ['staff', 'reporter']);
+  const SANDRA = () => gsActor('sandra', 'סנדרה', ['staff', 'deleter', 'approver', 'viewer']);
   for (const mode of ['enforce', 'log']) {
     const { g } = bootGs({ mode });
+    // Every user who can log in — including the controller view and a
+    // narrowed (role-less) record: no per-person allow-list, no role check.
+    for (const [who, label] of [[VERED(), 'vered'], [SANDRA(), 'sandra'], [SHIRAN(), 'shiran'], [YAEL(), 'yael'],
+      [ORTAL(), 'ortal (controller view)'], [gsActor('vered', 'ורד', ['reporter']), 'no staff role'], [gsActor('yael', 'יעל', []), 'no role at all']]) {
+      const r = read_(g, who);
+      assert.strictEqual(r.ok, true, mode + ' ' + label);
+      assert.deepStrictEqual(r.houses.map((h) => h.house), ['raanana', 'ramot', 'efroni', 'rehab', 'pardes'], mode + ' ' + label);
+    }
     // Fail-closed even in 'log' mode: no verified actor → unauthorized.
     assert.deepStrictEqual(read_(g, {}), { ok: false, error: 'unauthorized' }, mode + ' no secret');
     assert.deepStrictEqual(read_(g, { ...VERED(), proxySecret: 'wrong' }), { ok: false, error: 'unauthorized' }, mode + ' wrong secret');
-    assert.strictEqual(read_(g, ORTAL()).error, 'forbidden', mode + ' controller view');
+    // A body-only user (no secret) is never a session, whatever it claims.
+    assert.deepStrictEqual(read_(g, { user: 'ורד', proxyAuth: 'personal', proxyUserId: 'vered', proxyRoles: ['staff'] }),
+      { ok: false, error: 'unauthorized' }, mode + ' claimed session without the secret');
+    // Verified, but not a personal session → forbidden.
     assert.strictEqual(read_(g, gsActor('', '', [], 'none')).error, 'forbidden', mode + ' meeting-report (no personal session)');
-    assert.strictEqual(read_(g, gsActor('vered', 'ורד', ['reporter'])).error, 'forbidden', mode + ' no staff role');
+    assert.strictEqual(read_(g, gsActor('', '', ['staff'], 'personal')).error, 'forbidden', mode + ' personal without an id');
     // Not reachable as a Managers "open" action with the Managers secret either.
     assert.deepStrictEqual(arr(g.post({ action: 'expectedDischarges', secret: MW_SECRET })), { ok: false, error: 'unauthorized' });
   }
   const { g } = bootGs();
   assert.ok(Array.from(g.run('OPEN_ACTIONS')).indexOf('expectedDischarges') < 0, 'not an open action');
   assert.ok(Array.from(g.run('PROXY_KNOWN_ACTIONS')).indexOf('expectedDischarges') >= 0);
+  assert.ok(Array.from(g.run('CONTROLLER_ACTIONS')).indexOf('expectedDischarges') >= 0, 'the controller view reaches it');
+  // No per-person allow-list left in the gate.
+  const src = read('apps-script', 'Code.gs');
+  const gate = src.slice(src.indexOf('function expectedDischargesRefused_'), src.indexOf('function expectedDischargesToday_'));
+  assert.doesNotMatch(gate, /isControllerActor_|'staff'|vered|shiran|yael|sandra|ortal/);
 });
 
 test('C: "today" is taken in Asia/Jerusalem', () => {
@@ -318,17 +336,21 @@ test('C: append-only sheet untouched — header pinned, and the action writes / 
 /* D. server.js gate                                                      */
 /* ===================================================================== */
 
-test('D: canViewExpectedDischarges — personal staff sessions yes; Ortal, role-less, non-personal no', () => {
+test('D: canViewExpectedDischarges — every personal session yes (any role, Ortal included); no / non-personal session no', () => {
   const p = (id, roles, auth) => ({ auth: auth || 'personal', id, user: '', roles });
   assert.strictEqual(roleScope.EXPECTED_DISCHARGES_ACTION, 'expectedDischarges');
   assert.strictEqual(roleScope.canViewExpectedDischarges(p('sandra', ['staff', 'deleter', 'approver', 'viewer'])), true);
   assert.strictEqual(roleScope.canViewExpectedDischarges(p('vered', ['staff'])), true);
   assert.strictEqual(roleScope.canViewExpectedDischarges(p('shiran', ['staff', 'reporter'])), true);
-  assert.strictEqual(roleScope.canViewExpectedDischarges(p('ortal', ['controller'])), false);
-  assert.strictEqual(roleScope.canViewExpectedDischarges(p('ortal', ['staff'])), false, 'controller id never, whatever the roles');
-  assert.strictEqual(roleScope.canViewExpectedDischarges(p('yael', ['reporter'])), false);
+  assert.strictEqual(roleScope.canViewExpectedDischarges(p('yael', ['reporter'])), true, 'no role check');
+  assert.strictEqual(roleScope.canViewExpectedDischarges(p('ortal', ['controller'])), true, 'the controller view too');
+  assert.strictEqual(roleScope.canViewExpectedDischarges(p('vered', [])), true);
   assert.strictEqual(roleScope.canViewExpectedDischarges(p('', ['staff'], 'none')), false);
+  assert.strictEqual(roleScope.canViewExpectedDischarges(p('', ['staff'])), false, 'personal without an id');
+  assert.strictEqual(roleScope.canViewExpectedDischarges(p('vered', ['staff'], 'shared')), false);
   assert.strictEqual(roleScope.canViewExpectedDischarges(null), false);
+  assert.strictEqual(roleScope.canViewExpectedDischarges(undefined), false);
+  assert.strictEqual(roleScope.canViewExpectedDischarges('vered'), false);
 });
 
 const SERVER_PATH = require.resolve('../server');
@@ -382,7 +404,7 @@ function get(port, urlPath, ck) {
   });
 }
 
-test('D: GET /api/sheets?action=expectedDischarges — staff served (secret + principal forwarded), Ortal 403, no session 401; no name in logs', async () => {
+test('D: GET + POST /api/sheets?action=expectedDischarges — every logged-in user served (Ortal included), no / bad session 401; no name in logs', async () => {
   const hash = await pinHash.hashPin('583920', PEPPER);
   const recs = ['vered', 'sandra', 'shiran', 'yael', 'ortal'].map((id) => JSON.parse(users.recordLine(id, hash, 1)));
   const mod = freshServer({ PROXY_SECRET, SESSION_SECRET, SHEETS_URL, PIN_PEPPER: PEPPER, USER_PIN_HASHES: JSON.stringify(recs) });
@@ -394,19 +416,34 @@ test('D: GET /api/sheets?action=expectedDischarges — staff served (secret + pr
   const srv = await new Promise((r) => { const s = mod.app.listen(0, '127.0.0.1', () => r(s)); });
   try {
     const port = srv.address().port;
-    const ok = await get(port, '/api/sheets?action=expectedDischarges', cookie('shiran'));
-    assert.strictEqual(ok.status, 200);
-    assert.deepStrictEqual(ok.json, feed);
-    assert.strictEqual(stub.calls.length, 1);
-    const sent = JSON.parse(stub.calls[0].body);
-    assert.strictEqual(sent.action, 'expectedDischarges');
-    assert.strictEqual(sent.proxySecret, PROXY_SECRET);
-    assert.deepStrictEqual([sent.proxyAuth, sent.proxyUserId], ['personal', 'shiran']);
-    const no = await get(port, '/api/sheets?action=expectedDischarges', cookie('ortal'));
-    assert.strictEqual(no.status, 403);
+    const ids = ['vered', 'sandra', 'shiran', 'yael', 'ortal'];
+    for (const id of ids) {
+      const ok = await get(port, '/api/sheets?action=expectedDischarges', cookie(id));
+      assert.strictEqual(ok.status, 200, id);
+      assert.deepStrictEqual(ok.json, feed, id + ': the feed is passed through unchanged');
+    }
+    assert.strictEqual(stub.calls.length, ids.length);
+    stub.calls.forEach((c, i) => {
+      const sent = JSON.parse(c.body);
+      assert.strictEqual(sent.action, 'expectedDischarges');
+      assert.strictEqual(sent.proxySecret, PROXY_SECRET);
+      assert.deepStrictEqual([sent.proxyAuth, sent.proxyUserId], ['personal', ids[i]]);
+    });
+    const post = await new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/api/sheets',
+        headers: { Cookie: cookie('yael'), 'Content-Type': 'application/json' } }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+      req.on('error', reject); req.end(JSON.stringify({ action: 'expectedDischarges' }));
+    });
+    assert.strictEqual(post, 200, 'POST route too');
+    const before = stub.calls.length;
     const none = await get(port, '/api/sheets?action=expectedDischarges');
-    assert.strictEqual(none.status, 401);
-    assert.strictEqual(stub.calls.length, 1, 'refusals never reach Apps Script');
+    assert.strictEqual(none.status, 401, 'no session');
+    const forged = await get(port, '/api/sheets?action=expectedDischarges', 'ezone_session=forged.token');
+    assert.strictEqual(forged.status, 401, 'bad session');
+    const stale = 'ezone_session=' + createSessionToken(SESSION_SECRET, undefined, undefined, NAMES.vered, { id: 'vered', pinVersion: 2 });
+    const st = await get(port, '/api/sheets?action=expectedDischarges', stale);
+    assert.ok(st.status === 401 || st.status === 403, 'a reset PIN (stale pinVersion) is no session: ' + st.status);
+    assert.strictEqual(stub.calls.length, before, 'refusals never reach Apps Script');
   } finally {
     srv.close(); stub.restore(); Object.assign(console, saved);
   }
@@ -462,4 +499,62 @@ test('E: CSS — 16px text and 44px targets for the card', () => {
   assert.match(block, /\.xd-row \{[^}]*min-height: 44px/);
   assert.match(block, /\.xd-retry \{[^}]*min-height: 44px/);
   assert.doesNotMatch(block, /font-size: 1[0-5](\.\d+)?px/, 'nothing under 16px');
+});
+
+/* ===================================================================== */
+/* F. every logged-in user sees the card (CEO, 15 Oct 2026;               */
+/*    CHANGELOG-expected-discharges-all-users.md)                         */
+/* ===================================================================== */
+
+test('F: the controller view (Ortal) gets the card on «בקרת גבייה» — moved, not copied; idempotent', () => {
+  const app = read('public', 'app.js');
+  const start = app.indexOf('function moveExpectedDischargesToControllerScreen');
+  const fnSrc = app.slice(start, app.indexOf('\nfunction renderExpectedDischarges', start));
+  const node = (id, cls) => ({ id, className: cls || '', children: [], parentNode: null,
+    insertBefore(n, ref) {
+      if (n.parentNode) n.parentNode.children.splice(n.parentNode.children.indexOf(n), 1);
+      const i = ref ? this.children.indexOf(ref) : -1;
+      if (i < 0) this.children.push(n); else this.children.splice(i, 0, n);
+      n.parentNode = this; return n;
+    },
+    get nextSibling() { const p = this.parentNode; return p ? p.children[p.children.indexOf(this) + 1] || null : null; },
+    querySelector(sel) { return sel === '.screen-head' ? this.children.find((c) => c.className === 'screen-head') || null : null; },
+  });
+  const dash = node('screen-dashboard'); const bc = node('screen-billing-control');
+  const card = node('expected-discharges', 'card xd-card'); dash.insertBefore(card, null);
+  const head = node('', 'screen-head'); const err = node('bc-error');
+  bc.insertBefore(head, null); bc.insertBefore(err, null);
+  const doc = { getElementById: (id) => ({ 'expected-discharges': card, 'screen-billing-control': bc })[id] || null };
+  const move = new Function('document', 'BILLING_CONTROL_SCREEN', fnSrc + '\nreturn moveExpectedDischargesToControllerScreen;')(doc, 'billing-control');
+  move();
+  assert.strictEqual(card.parentNode, bc);
+  assert.deepStrictEqual(bc.children.map((c) => c.id || c.className), ['screen-head', 'expected-discharges', 'bc-error'], 'right under the title');
+  assert.deepStrictEqual(dash.children, [], 'moved, not copied');
+  move();
+  assert.deepStrictEqual(bc.children.map((c) => c.id || c.className), ['screen-head', 'expected-discharges', 'bc-error'], 'idempotent');
+  assert.doesNotMatch(fnSrc, /innerHTML|cloneNode|console\./);
+});
+
+test('F: wiring — applyControllerView moves the card before dropping screens; renderAll paints it for every view', () => {
+  const app = read('public', 'app.js');
+  const acv = app.slice(app.indexOf('function applyControllerView'), app.indexOf('_controllerApplied = true;'));
+  assert.ok(acv.indexOf('moveExpectedDischargesToControllerScreen();') > 0);
+  assert.ok(acv.indexOf('moveExpectedDischargesToControllerScreen();') < acv.indexOf("querySelectorAll('section.screen'), drop"), 'moved before the dashboard screen is removed');
+  const ra = app.slice(app.indexOf('function renderAll()'), app.indexOf('renderDashboard();', app.indexOf('function renderAll()')));
+  assert.match(ra, /if \(controllerView\(\)\) \{[\s\S]*renderExpectedDischarges\(\);\n    return;/);
+  const red = app.slice(app.indexOf('function renderExpectedDischarges'), app.indexOf('/* Dashboard renewal alert'));
+  assert.doesNotMatch(red, /controllerView/, 'no per-view early return any more');
+  // The card is not a money widget and carries no view flag, so no view removes it.
+  const index = read('public', 'index.html');
+  assert.doesNotMatch(index.match(/<div class="card xd-card"[^>]*>/)[0], /data-finance|data-billing-control|edit-only/);
+});
+
+test('F: server and Code.gs agree — the controller view reaches the action on both sides; still not open, still read-only', () => {
+  const scope = require('../lib/finance-scope');
+  assert.ok(scope.CONTROLLER_ACTIONS.includes('expectedDischarges'));
+  const { g } = bootGs();
+  assert.deepStrictEqual(Array.from(g.run('CONTROLLER_ACTIONS')), [...scope.CONTROLLER_ACTIONS]);
+  // The read is identical for every user: the same feed for Ortal and Vered.
+  assert.deepStrictEqual(read_(g, ORTAL()), read_(g, VERED()));
+  assert.ok(!scope.FINANCE_ACTIONS.includes('expectedDischarges'), 'not a billing action');
 });
