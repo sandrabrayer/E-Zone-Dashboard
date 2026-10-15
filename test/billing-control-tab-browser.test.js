@@ -144,7 +144,7 @@ const noSideScroll = (page) => page.evaluate(() => {
   // RTL overflow may extend left without increasing document.scrollWidth.
   const width = window.innerWidth;
   return document.documentElement.scrollWidth <= width
-    && Array.from(document.querySelectorAll('.bc-row, .bc-month-line'))
+    && Array.from(document.querySelectorAll('.bc-row, .bc-month-line, .bc-reminder-card, .bc-reminder-group'))
       .every(el => Array.from(el.getClientRects()).every(r => r.left >= -1 && r.right <= width + 1));
 });
 
@@ -373,4 +373,74 @@ test('FIN-01.2 at 360px and desktop: separate work, owner/house filters, source 
     await browser.close();
     server.close();
   }
+});
+
+test('reminder preview: private aggregate audiences, source navigation, confirmation, grace and failed refresh at 360px/1280px', { skip: skip && why, timeout: 120000 }, async () => {
+  const server = await boot({ monthlyAmount: 40000 });
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const o = await open(browser, server.port, 'ortal', '#billing-control');
+    const page = o.page, panel = page.locator('#bc-reminder-preview');
+    await page.waitForSelector('#bc-followup .bc-row');
+    await panel.locator('summary').click();
+    const vered = panel.locator('[data-reminder-audience="vered"]');
+    const ortal = panel.locator('[data-reminder-audience="ortal"]');
+    assert.equal(await vered.locator('[data-reminder-count="vered"]').textContent(), '1');
+    assert.equal(await ortal.locator('[data-reminder-count="ortal"]').textContent(), '2');
+    assert.equal(await ortal.locator('[data-reminder-count="vered"]').textContent(), '1');
+    const text = await panel.textContent();
+    for (const forbidden of [PATIENT.name, 'משפחת כהן', 'ביטוח משלים', 'TRX-', '10,000', '18,000', '12,000', '₪']) {
+      assert.ok(!text.includes(forbidden), 'private/financial detail leaked: ' + forbidden);
+    }
+    assert.equal(await panel.locator('input, select, textarea, [data-bc-confirm]').count(), 0);
+    assert.match(text, /אין שליחה מכאן/);
+    await page.locator('#bc-followup-house').selectOption('ramot');
+    assert.equal(await page.locator('#bc-followup .bc-row').count(), 0);
+    assert.equal(await ortal.locator('[data-reminder-count="ortal"]').textContent(), '2', 'summary ignores local filters');
+    await vered.locator('[data-bc-reminder-owner="vered"]').click();
+    assert.equal(await page.locator('#bc-followup-owner').inputValue(), 'vered');
+    assert.equal(await page.locator('#bc-followup-house').inputValue(), 'all');
+    assert.equal(await page.locator('#bc-followup .bc-row').count(), 1);
+    assert.equal(await page.locator('#bc-followup-owner').evaluate(el => el === document.activeElement), true);
+    assert.equal(server.actions.filter(a => a.action === 'confirmPayment').length, 0);
+    assert.equal(await noSideScroll(page), true);
+    if (process.env.SHOT_DIR) await panel.screenshot({ path: path.join(process.env.SHOT_DIR, 'reminder-360.png') });
+
+    await page.locator('#bc-queue [data-bc-status]').first().selectOption('confirmed');
+    await page.waitForFunction(() => document.querySelector('[data-reminder-audience="ortal"] [data-reminder-count="ortal"]').textContent === '1');
+    await page.locator('#toast-banner').waitFor({ state: 'hidden' });
+    assert.equal(await vered.locator('[data-reminder-count="vered"]').textContent(), '1');
+    const fcols = Array.from(server.gs.run('FUNDER_COLUMNS'));
+    server.gs.sandbox.__sheets.Funders = richSheet('Funders', fcols);
+    const funder = { patientId: 'p1', funder: 'ביטוח לאומי', effectiveFrom: MONTH_START };
+    server.gs.sandbox.__sheets.Funders.appendRow(fcols.map(c => funder[c] === undefined ? '' : funder[c]));
+    await page.locator('#bc-refresh').click();
+    await page.waitForFunction(() => document.querySelector('[data-reminder-audience="vered"] [data-reminder-count="vered"]').textContent === '0');
+    assert.match(await ortal.locator('[data-reminder-group="ortal"] .bc-reminder-waiting').textContent(), /בהמתנה למממן: 1/);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    assert.equal(await noSideScroll(page), true);
+    const ratios = await panel.locator('.bc-reminder-card').evaluateAll(cards => {
+      const lum = c => { const v = c.match(/[\d.]+/g).slice(0, 3).map(Number).map(x => x / 255).map(x => x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4); return v[0] * 0.2126 + v[1] * 0.7152 + v[2] * 0.0722; };
+      return cards.flatMap(card => {
+        const bg = lum(getComputedStyle(card).backgroundColor);
+        return Array.from(card.querySelectorAll('p, li, h4, h5')).map(el => {
+          const fg = lum(getComputedStyle(el).color);
+          return (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
+        });
+      });
+    });
+    assert.ok(ratios.length > 10 && ratios.every(r => r >= 4.5), 'readable reminder text');
+    if (process.env.SHOT_DIR) await panel.screenshot({ path: path.join(process.env.SHOT_DIR, 'reminder-1280.png') });
+
+    server.gs.run('billingControlQueue_ = () => ({ ok: false, error: "SYNTHETIC unavailable" })');
+    await page.locator('#bc-refresh').click();
+    await page.waitForFunction(() => document.querySelector('#bc-reminder-content').textContent.includes('הרענון האחרון נכשל'));
+    assert.ok(!(await panel.textContent()).includes('אין משימות פתוחות לטיפול כרגע'), 'stale empty groups never say all clear');
+    assert.equal(await ortal.locator('[data-reminder-count="ortal"]').textContent(), '1', 'previous snapshot remains visible');
+    await page.setViewportSize({ width: 360, height: 780 });
+    assert.equal(await noSideScroll(page), true);
+    if (process.env.SHOT_DIR) await panel.screenshot({ path: path.join(process.env.SHOT_DIR, 'reminder-stale-360.png') });
+    assert.deepEqual(o.errors, []);
+    await o.ctx.close();
+  } finally { await browser.close(); server.close(); }
 });

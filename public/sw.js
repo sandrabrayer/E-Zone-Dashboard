@@ -258,7 +258,9 @@
 // (CHANGELOG-expected-discharges-all-users.md) — app.js changed (the controller
 // view shows the card on «בקרת גבייה»); v66 was the LIVE version (production
 // /sw.js, 15/10/2026); activate evicts v66 (v17 never reused).
-var CACHE_VERSION = 'v67';
+// v67 → v68: aggregate-only reminder preview, no delivery.
+// Live v67 verified 2026-10-15; changed app shell and billing rules.
+var CACHE_VERSION = 'v68';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

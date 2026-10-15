@@ -2586,6 +2586,19 @@ body.viewer-mode .receipt-edit-btn { display: none !important; }
 .bc-followup-grace { color: var(--text); font-weight: 600; margin-top: 6px; }
 .bc-followup-next { margin: 8px 0; }
 .bc-followup-warning { color: #764b00; background: #fff4d6; padding: 10px; border-radius: 8px; }
+.bc-reminder-preview { margin-top: 16px; border-top: 1px solid #626b79; padding-top: 8px; color: #e6ecff; }
+.bc-reminder-preview summary { cursor: pointer; min-height: 44px; padding: 10px 0; box-sizing: border-box; font-weight: 700; }
+.bc-reminder-intro, .bc-reminder-asof { font-size: 14px; line-height: 1.6; }
+.bc-reminder-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+.bc-reminder-card { min-width: 0; background: #192342; color: #e6ecff; border: 1px solid #626b79; border-radius: 12px; padding: 14px; overflow-wrap: anywhere; }
+.bc-reminder-card h4 { margin: 0 0 12px; font-size: 17px; }
+.bc-reminder-group { border-top: 1px solid #626b79; padding-top: 12px; margin-top: 12px; }
+.bc-reminder-group h5 { margin: 0 0 8px; font-size: 16px; }
+.bc-reminder-group p, .bc-reminder-group li { font-size: 14px; line-height: 1.6; margin: 8px 0; }
+.bc-reminder-group ul { padding-inline-start: 22px; }
+.bc-reminder-group .btn { min-height: 44px; max-width: 100%; white-space: normal; }
+.bc-reminder-date-warning { color: #ffda8a; }
+.bc-reminder-waiting { color: #d1d8e8; }
 .bc-partial-badge { margin-inline-end: 6px; }
 .bc-cnote-line { margin-top: 6px; font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; overflow-wrap: anywhere; }
 .bc-cnote-text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }

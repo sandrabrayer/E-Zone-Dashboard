@@ -419,7 +419,7 @@
       <div class="bill-group bill-group--open" data-group="bc-followup">
         <h3 class="bill-group-title">להמשך טיפול <span class="count-pill" id="bc-followup-count">—</span></h3>
         <p class="billing-date-label">הוותיק ראשון · אורטל אחראית למעקב. יתרות גבייה והפרשי אימות מוצגים בנפרד; אין לחבר את הסכומים.</p>
-        <p class="billing-date-label">ימי עבודה: אורטל א׳–ה׳, ורד א׳–ד׳, ללא חגים וערבי חג. ורד יכולה לטפל מהבית גם בחמישי.</p>
+        <p class="billing-date-label">ימי עבודה לספירה: אורטל א׳–ה׳, ורד א׳–ד׳, ללא חגים וערבי חג. אפשר לעבוד ולעדכן בכל יום, גם בשישי ובמוצ״ש.</p>
         <div class="debt-controls bc-followup-filters">
           <label for="bc-followup-owner">באחריות</label>
           <select id="bc-followup-owner"><option value="all">כולם</option><option value="vered">ורד</option><option value="ortal">אורטל</option></select>
@@ -428,6 +428,11 @@
         </div>
         <p id="bc-followup-warning" class="bc-followup-warning hidden" role="status"></p>
         <div id="bc-followup" class="billing-list bc-list" aria-live="polite"></div>
+        <details id="bc-reminder-preview" class="bc-reminder-preview" lang="he" dir="rtl">
+          <summary>תצוגה מקדימה לתזכורות</summary>
+          <p class="bc-reminder-intro">כל המשימות הפתוחות, מכל הבתים, ללא קשר לסינון התור. התצוגה לעיון בלבד; אין שליחה מכאן.</p>
+          <div id="bc-reminder-content" aria-live="polite"></div>
+        </details>
       </div>
 
       <div class="bill-group bill-group--open" data-group="bc-queue">

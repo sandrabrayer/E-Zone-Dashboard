@@ -1,12 +1,27 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
-## Owner workday calendar — October 15, 2026 (review candidate, not deployed)
+## Reminder preview — October 15, 2026 (review candidate, not deployed)
+
+A collapsed Billing Control section previews aggregate follow-up summaries:
+Vered's own work, Ortal's verification plus oversight, and neutral funder waiting.
+Uses the existing queue and calendar; no names, money, new permissions or sends.
+Partial/stale sources cannot claim all work is done. See
+`CHANGELOG-billing-reminder-preview.md`. This separate candidate needs release
+approval. CRM, security/access, broader speed work and FIN-02–04 are unchanged.
+
+## Owner workday calendar — October 15, 2026 (deployed)
 
 FIN-01.3 adds owner-specific work age alongside calendar age. Ortal uses Sun–Thu;
 Vered uses Sun–Wed, with optional Thursday remote actions still available.
 Holidays and eves are excluded. No new alerts, permissions or money calculations.
 See `CHANGELOG-billing-workdays.md` for the date range and calendar contract.
-This isolated candidate builds on #233 and requires separate release approval.
+Sandra approved #234, merged as `908fe4496e131cc067aa6d2ae6afe2db2b0bc295`.
+2,827 local tests and three real Chromium cases passed. Tests #345 and Railway
+production deployment `99cd7a40-c86d-4606-b9d1-a912c3c456bc` succeeded.
+`/api/version`, `/healthz` and byte-identical live calendar/SW assets were verified
+(cache v66). Home probes: 200 in 6.668 / 6.377 / 6.606 seconds. No Apps Script
+deploy was needed, and no live payment write was tested. Vered may work on
+Thursday, Friday and Saturday night; the calendar never gates access/actions.
 CRM numeric-ID work remains separately owned; no changes to security/access,
 other applications or the broader performance track are made by this candidate.
 
