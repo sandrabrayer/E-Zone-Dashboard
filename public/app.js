@@ -15568,13 +15568,16 @@ function bcFollowupHtml(rows) {
   return rows.map(r => {
     const info = labels[r.kind] || ['פריט לבדיקה', 'לבדוק את המקור'];
     const next = r.funderGrace ? 'לעקוב אחר התשלום מהגורם המממן' : info[1];
-    const age = r.ageDays === null ? 'מועד תחילת המעקב חסר' : `${r.ageDays} ימים`;
+    const age = r.ageDays === null ? 'מועד תחילת המעקב חסר' : `${r.ageDays} ימים קלנדריים`;
+    const workAge = Number.isInteger(r.workAgeDays)
+      ? `${r.workAgeDays} ימי עבודה לפי לוח ${r.owner === 'vered' ? 'ורד' : 'אורטל'}` : 'ספירת ימי עבודה אינה זמינה';
     const source = r.receiptId
       ? `<button type="button" class="btn small" data-bc-follow-receipt="${escapeHtml(r.receiptId)}">פתיחת הקבלה</button>`
       : '<button type="button" class="btn small" data-bc-follow-debt="true">פתיחת חובות פתוחים</button>';
     return `<div class="bc-row bc-followup-row${r.funderGrace ? ' bc-followup-waiting' : ''}">
       <div class="bc-head"><b class="bc-name">${escapeHtml(r.patientName || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(r.houseId))}</span> <span class="bc-amount">${escapeHtml(fmtShekel(r.amount))}</span></div>
       <div class="bc-sub">${escapeHtml(info[0])} · באחריות ${r.owner === 'vered' ? 'ורד' : 'אורטל'} · ${escapeHtml(age)}</div>
+      <div class="bc-sub bc-work-age">${escapeHtml(workAge)}</div>
       <div class="bc-sub">מועד גבייה מקורי: ${r.originalDueDate ? escapeHtml(formatDateHe(r.originalDueDate)) : 'לא זמין'}${r.receiptId ? ` · דווח: ${r.openedDate ? escapeHtml(formatDateHe(r.openedDate)) : 'לא זמין'}` : ''}</div>
       ${r.funderGrace ? `<div class="bc-followup-grace">ממתין לגורם מממן עד ${escapeHtml(formatDateHe(r.funderGraceUntil) || '—')}</div>` : ''}
       <p class="bc-followup-next">${escapeHtml(next)}</p>${source}

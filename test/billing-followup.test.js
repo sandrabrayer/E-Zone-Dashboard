@@ -126,6 +126,7 @@ test('missing dates remain unknown, and role/house filters do not mutate the sou
   delete q.followup.receiptDueDates[q.receipts[0].id];
   const r = rules.followupRows(q).find(r => r.receiptId);
   assert.equal(r.ageDays, null);
+  assert.equal(r.workAgeDays, null);
   assert.equal(r.originalDueDate, '');
 });
 
@@ -150,7 +151,7 @@ function app() {
     URL, URLSearchParams, Intl };
   s.window = s; s.globalThis = s;
   vm.createContext(s);
-  for (const f of ['lib/payment-report-rules.js', 'lib/billing-control-rules.js', 'public/funder.js', 'public/app.js']) {
+  for (const f of ['lib/payment-report-rules.js', 'lib/billing-work-calendar.js', 'lib/billing-control-rules.js', 'public/funder.js', 'public/app.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', f), 'utf8'), s);
   }
   return { run: code => vm.runInContext(code, s), s, elements };
@@ -223,4 +224,31 @@ test('confirmation updates receipt work immediately; a void invalidates cycles u
   assert.equal(a.run('billingControlState().data.followup.complete'), false);
   assert.equal(a.run('billingControlState().data.followup.cycles.length'), 0);
   assert.equal(a.run('refreshes'), 1);
+});
+
+test('Thursday queue retains dates and amounts, but counts each owner calendar separately', () => {
+  const q = world({ rows: [{ ...cycle, dueDate: '2026-10-14' },
+    { ...receipt, recordedAt: '2026-10-14T10:00:00+03:00' }] }).queue();
+  const before = JSON.stringify(q);
+  const r = rules.followupRows(q).find(r => r.receiptId);
+  assert.deepEqual([r.owner, r.openedDate, r.ageDays, r.workAgeDays, r.amount],
+    ['ortal', '2026-10-14', 1, 1, 2000]);
+  assert.equal(JSON.stringify(q), before);
+  q.receipts[0] = { ...q.receipts[0], confirmStatus: 'flagged' };
+  const flagged = rules.followupRows(q).find(r => r.receiptId);
+  assert.deepEqual([flagged.owner, flagged.openedDate, flagged.ageDays, flagged.workAgeDays, flagged.amount],
+    ['vered', '2026-10-14', 1, 0, 6000]);
+  // An action's echo on Thursday closes work immediately, independent of work age.
+  q.receipts[0] = { ...q.receipts[0], confirmStatus: 'confirmed', confirmedAmount: 6000 };
+  assert.equal(rules.followupRows(q).filter(r => r.receiptId).length, 0);
+});
+
+test('UI distinguishes calendar age, owner work age and unsupported dates', () => {
+  const a = app();
+  a.s.fixture = [{ kind: 'flagged', owner: 'vered', amount: 100, ageDays: 1, workAgeDays: 0 }];
+  const html = a.run('bcFollowupHtml(fixture)');
+  assert.match(html, /1 ימים קלנדריים/);
+  assert.match(html, /0 ימי עבודה לפי לוח ורד/);
+  a.s.fixture[0].workAgeDays = null;
+  assert.match(a.run('bcFollowupHtml(fixture)'), /ספירת ימי עבודה אינה זמינה/);
 });

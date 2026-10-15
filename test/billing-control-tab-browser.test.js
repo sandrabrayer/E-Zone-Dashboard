@@ -318,9 +318,12 @@ test('FIN-01.2 at 360px and desktop: separate work, owner/house filters, source 
     await page.waitForSelector('#bc-followup .bc-row');
     assert.equal(await list.locator('.bc-row').count(), 3);
     const text = await list.textContent();
-    for (const part of ['10,000', '7,000', '12,000', 'ורד', 'אורטל', 'מועד גבייה מקורי']) assert.ok(text.includes(part), part);
+    for (const part of ['10,000', '7,000', '12,000', 'ורד', 'אורטל', 'מועד גבייה מקורי', 'ימים קלנדריים', 'ימי עבודה לפי לוח ורד', 'ימי עבודה לפי לוח אורטל']) assert.ok(text.includes(part), part);
     assert.equal(await page.locator('#bc-followup-warning').isVisible(), false);
     assert.equal(await list.locator('input, select, textarea, [data-bc-confirm]').count(), 0, 'navigation only');
+    assert.ok(!(await list.textContent()).includes('ספירת ימי עבודה אינה זמינה'));
+    assert.equal(await page.evaluate(() => BillingWorkCalendar.businessDaysBetween('2026-10-14', '2026-10-15', 'vered')), 0);
+    assert.equal(await page.evaluate(() => BillingWorkCalendar.businessDaysBetween('2026-10-14', '2026-10-15', 'ortal')), 1);
     assert.equal(await noSideScroll(page), true);
     await shot(page, 'followup-360-separate-work.png');
 
