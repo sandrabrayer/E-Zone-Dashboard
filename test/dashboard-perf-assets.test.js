@@ -33,6 +33,7 @@ const FILES = {
   '/style.css': path.join(ROOT, 'public', 'style.css'),
   '/funder.js': path.join(ROOT, 'public', 'funder.js'),
   '/payment-report-rules.js': path.join(ROOT, 'lib', 'payment-report-rules.js'),
+  '/billing-work-calendar.js': path.join(ROOT, 'lib', 'billing-work-calendar.js'),
   '/billing-control-rules.js': path.join(ROOT, 'lib', 'billing-control-rules.js'),
   '/refund-rules.js': path.join(ROOT, 'lib', 'refund-rules.js'),
   '/funder-grace.js': path.join(ROOT, 'lib', 'funder-grace.js'),
@@ -106,7 +107,7 @@ test('A: versionAssetRefs pins all five files in the real index.html — and onl
     const h = sha12(fs.readFileSync(f));
     assert.ok(out.includes(name + '?v=' + h + '"'), name + ' carries its own hash');
   }
-  assert.ok(!/(app|funder|payment-report-rules|billing-control-rules|refund-rules|funder-grace|cycle-balance|discharge-alerts)\.js\?v=__BUILD__/.test(out));
+  assert.ok(!/(app|funder|payment-report-rules|billing-control-rules|billing-work-calendar|refund-rules|funder-grace|cycle-balance|discharge-alerts)\.js\?v=__BUILD__/.test(out));
   assert.ok(!out.includes('href="style.css"'), 'style.css is no longer unversioned');
   // The build markers still carry __BUILD__ for the BUILD_ID substitution.
   assert.match(out, /<meta name="build" content="__BUILD__"/);
@@ -332,7 +333,7 @@ function serve(handlers, url) {
 }
 const settle = () => new Promise((r) => setImmediate(r));
 
-test('D: CACHE_VERSION is v66 (monotonic from the live v65; v17 burned, never reused)', () => {
+test('D: CACHE_VERSION is v67 (monotonic from the live v66; v17 burned, never reused)', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
   // v40: CHANGELOG-ortal-verification-status.md.
   // v41: CHANGELOG-reactivation-fix.md (PR #145's fix, re-landed).
@@ -360,8 +361,9 @@ test('D: CACHE_VERSION is v66 (monotonic from the live v65; v17 burned, never re
   // v63: CHANGELOG-global-patient-search.md (live /sw.js read v62 on 15/10/2026).
   // v64: CHANGELOG-billing-followup-queue.md (live /sw.js read v63 on 15/10/2026).
   // v65: CHANGELOG-dashboard-expected-discharges.md (live /sw.js read v64 on 15/10/2026).
-  // v66: CHANGELOG-expected-discharges-all-users.md (live /sw.js read v65 on 15/10/2026).
-  assert.equal(v, 'v66');
+  // v66: CHANGELOG-billing-workdays.md (live v65 verified 15/10/2026).
+  // v67: CHANGELOG-expected-discharges-all-users.md (live /sw.js read v66 on 15/10/2026).
+  assert.equal(v, 'v67');
   assert.notEqual(v, 'v17');
 });
 

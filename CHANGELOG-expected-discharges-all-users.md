@@ -32,10 +32,10 @@ CEO decision, 15 Oct 2026: every user who can log in to the Dashboard app may se
 - `npm audit`: 0 high / 0 critical (1 moderate in `qs`, pre-existing, unchanged).
 
 ## UI
-SW `CACHE_VERSION` **v65 → v66** (production `/sw.js` served v65 on 15/10/2026) — `app.js` changed.
+SW `CACHE_VERSION` **v66 → v67** (production `/sw.js` served v66 on 15/10/2026, after PR #234) — `app.js` changed.
 
 ## Tests
-2884 → 2887 (+3):
+2893 → 2896 (+3; base = the deployed branch after PR #234):
 - `test/dashboard-expected-discharges.test.js`:
   - C (Code.gs): every user (Sandra, Vered, Shiran, Yael, Ortal, a narrowed role-less record)
     gets the full feed in both modes; no / wrong secret, a body-only claimed session, a
@@ -48,7 +48,7 @@ SW `CACHE_VERSION` **v65 → v66** (production `/sw.js` served v65 on 15/10/2026
     גבייה» title; wiring of `applyControllerView` / `renderAll`; Code.gs ⇄ lib lists equal and
     the same feed for Ortal and Vered.
 - `test/billing-control-tab.test.js` pinned list (+ `expectedDischarges`, appended),
-  `test/dashboard-perf-assets.test.js` SW v66.
+  `test/dashboard-perf-assets.test.js` SW v67.
 - Existing snapshots unchanged.
 
 ## Deploy

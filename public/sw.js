@@ -252,11 +252,13 @@
 // — app.js, index.html and style.css changed and the page loads a new
 // /discharge-alerts.js; v64 was the LIVE version (production /sw.js,
 // 15/10/2026); activate evicts v64 (v17 never reused).
-// v65 → v66: «שחרורים צפויים» for every logged-in user
+// v65 → v66: owner-specific workday age, including holidays and eves.
+// Live v65 verified 2026-10-15; new calendar asset is network-first.
+// v66 → v67: «שחרורים צפויים» for every logged-in user
 // (CHANGELOG-expected-discharges-all-users.md) — app.js changed (the controller
-// view shows the card on «בקרת גבייה»); v65 was the LIVE version (production
-// /sw.js, 15/10/2026); activate evicts v65 (v17 never reused).
-var CACHE_VERSION = 'v66';
+// view shows the card on «בקרת גבייה»); v66 was the LIVE version (production
+// /sw.js, 15/10/2026); activate evicts v66 (v17 never reused).
+var CACHE_VERSION = 'v67';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
@@ -286,7 +288,7 @@ var PRECACHE_URLS = [
  *                     network round trip. Matched by EXACT url.
  *   'network'       — everything else: pass through to the network. */
 /* The JS/CSS files index.html links with a content hash (server.js ASSETS). */
-var BUNDLE_PATHS = ['/app.js', '/style.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/refund-rules.js', '/funder-grace.js', '/cycle-balance.js', '/discharge-alerts.js'];
+var BUNDLE_PATHS = ['/app.js', '/style.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/billing-work-calendar.js', '/refund-rules.js', '/funder-grace.js', '/cycle-balance.js', '/discharge-alerts.js'];
 
 /* True for `?v=<exactly 12 lowercase hex>` — the server's content hash. The
  * old `?v=<BUILD_ID>` (digits-dash-base36) never matches. Pure. */

@@ -1,6 +1,16 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
-## Billing follow-up queue — October 15, 2026 (review candidate, not deployed)
+## Owner workday calendar — October 15, 2026 (review candidate, not deployed)
+
+FIN-01.3 adds owner-specific work age alongside calendar age. Ortal uses Sun–Thu;
+Vered uses Sun–Wed, with optional Thursday remote actions still available.
+Holidays and eves are excluded. No new alerts, permissions or money calculations.
+See `CHANGELOG-billing-workdays.md` for the date range and calendar contract.
+This isolated candidate builds on #233 and requires separate release approval.
+CRM numeric-ID work remains separately owned; no changes to security/access,
+other applications or the broader performance track are made by this candidate.
+
+## Billing follow-up queue — October 15, 2026 (deployed)
 
 FIN-01.2 adds a read-only chronological work list in Billing Control, combining
 existing receipt verification work with the debt-aging engine's open cycles.
@@ -8,8 +18,12 @@ Amounts stay separate; original dates, Vered/Ortal responsibility and the existi
 institutional grace period are preserved. No bank imports, notifications, new
 permissions or sheet writes are introduced. See `CHANGELOG-billing-followup-queue.md`.
 The isolated branch includes the deployed recovery fix #229 and Managers #231.
-The follow-up feature is a separate change; explicit release authorization
-remains outstanding. This note is not evidence of live operation.
+Sandra separately authorized #232, merged as `8620735c87e24c80ad375d5fcdd079af2d80ae02`.
+Apps Script #100, Tests #341 and Validate Workflows #38 passed. Railway reported
+SUCCESS and `/api/version` and `/healthz` returned the merge SHA. Three public
+home-page probes returned 200 in 6.683 / 5.816 / 7.372 seconds. These are
+availability checks; no live payment writes were tested. #233 subsequently
+advanced the deployed branch to `e85c812` and cache v65.
 The first CI screenshots exposed waiting-row contrast and RTL overflow in a
 confirmed partial-payment line. Both are corrected in the review branch with
 browser assertions for text contrast and bounds. Browser run #2 passed all three
@@ -335,7 +349,7 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
 - Gate: `PROXY_SECRET` + a verified personal session — **every user who can log in** (CEO,
   15 Oct 2026; no per-person allow-list, no role check; Ortal sees the card on «בקרת גבייה»).
   No / bad session → 401; a non-personal caller → refused, in both proxy-secret modes; server.js
-  refuses first. No new secret or variable. SW v66. `CHANGELOG-expected-discharges-all-users.md`.
+  refuses first. No new secret or variable. SW v67. `CHANGELOG-expected-discharges-all-users.md`.
 - The alert rule is shared with Managers: `lib/discharge-alerts.js` copies the Managers core and
   both repos run the identical fixture `test/fixtures/discharge-alert-cases.json` (sha256 pinned).
 - Israel time; text-only rendering; SW v65. Details: `CHANGELOG-dashboard-expected-discharges.md`.
