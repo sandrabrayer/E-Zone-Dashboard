@@ -957,7 +957,39 @@ function viewFilteredResponse(action, data, principal) {
 
 /* GET /api/sheets?action=getData — forwarded to Apps Script as a POST whose
  * body carries the params + proxy secret (see sheetsGet). */
-app.get('/api/sheets', requireSession, requireBillingControlForAction, requireFinanceForAction, requireRoleForAction, requireProxySecret, async (req, res) => {
+// Dormant CRM-02 observations: same-app personal staff only. The existing
+// controller route lock remains in force. No registry or role changes.
+const { crmPost } = require('./lib/crm/transport');
+const { crmStaffPrincipal } = require('./lib/crm/policy');
+function crmStaffPolicy(req) {
+  const p = sessionPrincipalFromRequest(req);
+  return crmStaffPrincipal(p) && !isControllerView(p) ? JSON.stringify(p) : null;
+}
+function readCrmSource(action, req) {
+  const p = sessionPrincipalFromRequest(req);
+  if (!crmStaffPolicy(req) || !SHEETS_URL || !PROXY_SECRET) throw Error('crm_not_configured');
+  return crmPost(SHEETS_URL, buildAppsScriptBody({ action }, p.user, PROXY_SECRET, p));
+}
+const crmQueueRuntime = require('./lib/crm/queue-runtime').createQueueRuntime(process.env);
+// Mount before the observation-only /api/crm catchall. The queue has its own
+// auth, parameter and explicit POST-origin guards. Default: fully disabled.
+require('./lib/crm/queue-routes').installQueueRoutes(app, {
+  requireSession, authorize: crmStaffPolicy, runtime: crmQueueRuntime, read: readCrmSource,
+});
+require('./lib/crm/read-routes').installCrmReadRoutes(app, {
+  source: 'dashboard', requireSession, enabled: process.env.CRM_READS === '1',
+  authorize: crmStaffPolicy, read: readCrmSource,
+});
+
+function refuseCrmProxy(req, res, next) {
+  const action = req.method === 'GET' ? req.query.action : req.body && req.body.action;
+  if (['getCrmLeads', 'getCrmContinuation', 'getCrmAdmittedRoster'].includes(action)) {
+    return res.status(403).json({ ok: false, error: 'crm_use_dedicated_route' });
+  }
+  next();
+}
+
+app.get('/api/sheets', requireSession, refuseCrmProxy, requireBillingControlForAction, requireFinanceForAction, requireRoleForAction, requireProxySecret, async (req, res) => {
   const action = req.query && req.query.action;
   // The action name only — never the query values or a response body.
   console.log('[sheets GET] → action=', JSON.stringify(typeof action === 'string' ? action.slice(0, 60) : null));
@@ -997,7 +1029,7 @@ app.get('/api/sheets', requireSession, requireBillingControlForAction, requireFi
 /* POST /api/sheets — body is forwarded as POST application/json to Apps Script.
  * All save operations (saveAll, etc.) use POST so the data never hits the
  * querystring length limit. */
-app.post('/api/sheets', requireSession, requireBillingControlForAction, requireFinanceForAction, requireRoleForAction, requireProxySecret, async (req, res) => {
+app.post('/api/sheets', requireSession, refuseCrmProxy, requireBillingControlForAction, requireFinanceForAction, requireRoleForAction, requireProxySecret, async (req, res) => {
   const body = req.body || {};
   // Who/when stamping: the `user` the Apps Script writes into updatedBy
   // comes ONLY from the signed session cookie. ALWAYS overwritten — a

@@ -500,3 +500,18 @@ npm i -g @google/clasp@3.3.0 && clasp login
 clasp push -f
 clasp deploy -i <DEPLOYMENT_ID> -d "manual deploy"
 ```
+
+## CRM read projections (draft, disabled by default)
+
+See [the CRM contract and release/rollback gates](docs/crm-read-projections.md).
+`CRM_READS` is off unless explicitly set to `1` on each participating server and
+Apps Script backend. Outpatient additionally needs a dedicated `CRM_READ_SECRET`
+for its own new readers. No configuration is changed by this draft. Approval for
+Coordinators week-note writes does not authorize this connection.
+
+The separate Dashboard `/crm-work` screen and checkpoint routes additionally
+require the complete, default-off `CRM_QUEUE_*` contract in
+[CRM queue integration](docs/crm-queue-integration.md). They do not provision a
+database/schema or claim a collector epoch at startup; GET does not collect.
+No production values are supplied. Separate review/approval is required for
+namespace, key custody, backups, authority and activation.

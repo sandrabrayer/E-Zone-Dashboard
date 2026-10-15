@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "exceljs": "4.4.0",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "pg": "8.23.1"
   },
   "overrides": {
     "uuid": "11.1.1"
