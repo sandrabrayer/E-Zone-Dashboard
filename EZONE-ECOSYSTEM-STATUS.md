@@ -8,11 +8,13 @@ Amounts stay separate; original dates, Vered/Ortal responsibility and the existi
 institutional grace period are preserved. No bank imports, notifications, new
 permissions or sheet writes are introduced. See `CHANGELOG-billing-followup-queue.md`.
 The isolated branch includes the deployed recovery fix #229 and Managers #231.
-The follow-up feature is a separate change. Browser QA and explicit release
-authorization remain outstanding; this note is not evidence of live operation.
+The follow-up feature is a separate change; explicit release authorization
+remains outstanding. This note is not evidence of live operation.
 The first CI screenshots exposed waiting-row contrast and RTL overflow in a
 confirmed partial-payment line. Both are corrected in the review branch with
-browser assertions for text contrast and bounds; the new run awaits review.
+browser assertions for text contrast and bounds. Browser run #2 passed all three
+cases with no skips; the corrected 360px and 1280px screenshots were reviewed.
+The same code tree passed 2,793 local tests, Tests #339 and Validate Workflows #36.
 
 ## Dashboard payment report recovery — October 15, 2026 (deployed)
 

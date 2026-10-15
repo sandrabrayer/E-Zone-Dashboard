@@ -63,19 +63,31 @@ Recheck the live cache version before eventual deployment if it has moved.
   days. Playwright 1.62.1 is isolated under the runner's temporary directory;
   production dependencies, deployment workflows and secrets are unchanged.
   The check exercises filters, navigation, partial-confirmation echoes, neutral
-  funder grace, role boundaries, page errors and horizontal overflow. Its result
-  must be inspected before claiming visual/mobile QA. No live patient data is used.
+  funder grace, role boundaries, page errors and horizontal overflow. No live
+  patient data is used.
 - The first Chromium run passed all three cases, but screenshot review exposed
   a light waiting-row background under dark-theme text and a long confirmed
   partial-payment month line overflowing to the left at 360px. Use a neutral
   dark waiting background and wrap confirmed amount details. Browser assertions
   now require 4.5:1 contrast for every waiting-row text role and check visible
   card/text bounds on both sides, including RTL overflow missed by scrollWidth.
-  The corrected screenshots and CI run must pass review before release.
+  Corrected screenshots at 360px and 1280px were reviewed: waiting text and
+  amounts are legible, and the confirmed line wraps inside the mobile viewport.
+- [Browser run #2](https://github.com/sandrabrayer/E-Zone-Dashboard/actions/runs/38721101578)
+  passed **3 tests, 0 failures, 0 skips** on code head
+  `bdde29e97e4599b25b70e32f030ab0967f5c9563`. Tests #339 and Validate Workflows #36
+  also passed. The CI merge tree `a584359b9feb8f8e12a58984bb18544939a20e14`
+  matches local commit `692e3eb1373a3bafea65e6d672f0287237fa9fae`, which passed
+  the full local suite again with 2,793 passes and 66 browser skips. Screenshots
+  and TAP report are artifact 11965470408 (retained until October 22, 2026).
+  The deployed branch and live API still reported `0d9790a`; live cache v63 was
+  rechecked after browser QA. Final documentation-only changes do not alter this
+  tested code.
 
 This feature remains separate from payment-write recovery PR #229, which Sandra
 authorized and which is deployed as `0d9790a51f10ce914cf3bc9d84b41373f504991d`.
 The candidate now includes that deployed base and Managers #231. No merge or
 deployment of the follow-up feature is authorized yet. No flags, credentials,
-production data or financial permissions were changed. Before release: complete
-browser QA and obtain the separate deployment authorization in the work plan.
+production data or financial permissions were changed. Before release: obtain
+the separate deployment authorization in the work plan and recheck the live
+base and cache version if another change has shipped meanwhile.
