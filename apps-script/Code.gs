@@ -8865,9 +8865,22 @@ function reportPayment_(body, user, ctx) {
       for (let k = 0; k < PAYMENT_COLUMNS.length; k++) o[PAYMENT_COLUMNS[k]] = g[k];
       return o;
     });
-    // A retry of a report already written: answer from the sheet, write nothing.
+    // A persisted receipt is the idempotency boundary. A failed later cycle
+    // summary write is repaired from receipts; an already-current replay
+    // performs no write. Never append the receipt a second time.
     const replay = receiptReplayFor_(rows, submissionId);
     if (replay) {
+      const storedCycle = replay.cycle && rows.find(function (r) { return paymentCell_(r.id) === paymentCell_(replay.cycle.id); });
+      if (storedCycle && (receiptMoney_(storedCycle.amountPaid) !== receiptMoney_(replay.cycle.amountPaid) ||
+          receiptMoney_(storedCycle.balance) !== receiptMoney_(replay.cycle.balance) ||
+          paymentStatus_(storedCycle.status) !== paymentStatus_(replay.cycle.status))) {
+        replay.cycle = rederiveReceiptCycleLocked_(sh, stampUser, replay.receipt.id);
+        logAudit_('payment_report_recovered', 'reportPayment_', String(replay.receipt.patientUid || ''),
+          String(replay.receipt.patientName || ''), {
+            receiptId: String(replay.receipt.id), cycleId: String(replay.cycle.id),
+            amount: receiptReportedAmount_(replay.receipt), cycleAmountPaid: replay.cycle.amountPaid,
+          }, c.actor === undefined ? stampUser : String(c.actor));
+      }
       try { console.log('[payments] reportPayment replayed an idempotent retry'); } catch (_) { /* no-op */ }
       return replay;
     }
@@ -8955,17 +8968,27 @@ function reportPayment_(body, user, ctx) {
     finalCycle.amountPaid = d.amountPaid;
     finalCycle.balance = d.balance;
     finalCycle.status = d.status;
-    const cycleWritten = receiptRestampCycle_(finalCycle, prevCycle, cycleAt >= 0, stampUser);
+    // The first receipt needs a durable cycle identity and legacy baseline,
+    // but its new money must not be stored before the receipt itself exists.
+    // Otherwise an interrupted append is reinterpreted as legacy money on
+    // retry and counted twice. Existing receipt-backed cycles need no prepare.
+    const prepareCycle = cycleAt < 0 || !priorReceipts.length;
+    const cycleWritten = receiptRestampCycle_(finalCycle, prepareCycle ? cycleOut : prevCycle, true, stampUser);
     // A cycle born here keeps the identity minted for it above.
     cycleWritten.paymentUid = cycleOut.paymentUid;
     cycleWritten.patientUid = cycleOut.patientUid;
 
-    // Write: the cycle in place (or appended), then the receipt appended.
+    // Prepare only the OLD money, append the authoritative receipt, then
+    // materialize the derived summary. Reads derive from receipts throughout.
+    // A thrown write may already have committed: the same submission retries
+    // by receipt identity and repairs the summary above, without new money.
     let cycleRowNumber;
     if (cycleAt >= 0) cycleRowNumber = cycleAt + 2;
     else cycleRowNumber = sh.getLastRow() + 1;
-    setPaymentRowTextCols_(sh, cycleRowNumber);
-    sh.getRange(cycleRowNumber, 1, 1, PAYMENT_COLUMNS.length).setValues([objectToRow_(cycleWritten, PAYMENT_COLUMNS)]);
+    if (prepareCycle) {
+      setPaymentRowTextCols_(sh, cycleRowNumber);
+      sh.getRange(cycleRowNumber, 1, 1, PAYMENT_COLUMNS.length).setValues([objectToRow_(cycleOut, PAYMENT_COLUMNS)]);
+    }
     const receiptRowNumber = sh.getLastRow() + 1;
     setPaymentRowTextCols_(sh, receiptRowNumber);
     sh.getRange(receiptRowNumber, 1, 1, PAYMENT_COLUMNS.length).setValues([objectToRow_(receiptOut, PAYMENT_COLUMNS)]);
@@ -8985,6 +9008,9 @@ function reportPayment_(body, user, ctx) {
         by: stampUser, at: String(receiptOut.recordedAt || ''),
       }, c.actor === undefined ? stampUser : String(c.actor));
     }
+
+    setPaymentRowTextCols_(sh, cycleRowNumber);
+    sh.getRange(cycleRowNumber, 1, 1, PAYMENT_COLUMNS.length).setValues([objectToRow_(cycleWritten, PAYMENT_COLUMNS)]);
 
     const echoReceipt = {};
     Object.keys(receiptOut).forEach(function (k) { echoReceipt[k] = receiptOut[k]; });
@@ -12718,8 +12744,204 @@ function activeManagerForHouse_(managers, houseKey, asOf) {
   return best ? best.manager_name : '';
 }
 
+/* ----- Temporary exit and return (CHANGELOG-temporary-exit-return.md) -----
+ *
+ * CEO decision (15 Oct 2026): a patient who leaves temporarily (appointment,
+ * meeting, short leave) and comes back must NOT break the stay. Their days
+ * count toward treatment days and average daily occupancy, with no double
+ * counting and no day-count reset.
+ *
+ * How the sheet stores it: there is no "leave" status. A temporary exit is a
+ * release (status 'released' + exitDate) followed by a NEW Patients row with
+ * a new entry date. Before this change every row counted on its own, so:
+ *   - a same-day return (exit = re-entry day) counted that day TWICE;
+ *   - the days between exit and return were not counted;
+ *   - «יום N» and the admission date restarted from the re-entry row.
+ *
+ * Rule (conservative):
+ *   - TEMPORARY EXIT = the same patient (same house + same name, cleaned and
+ *     spaces collapsed) re-admitted within READMIT_WINDOW_DAYS calendar days
+ *     of the previous row's exit date. Later than that → a new stay.
+ *   - A patient counts AT MOST ONCE per day (no double counting) — also fixes
+ *     overlapping duplicate rows.
+ *   - Gap days (between exit and return) count ONLY if the bed was held. The
+ *     sheet records no bed-held fact, so gap days are NOT counted. Should a
+ *     bed-held flag ever be recorded, count them here.
+ *   - The stay keeps its FIRST admission date; «יום N» runs from it.
+ *   - Month-aware: only months from STAY_CONTINUITY_FROM_MONTH on use this
+ *     rule. Settled months (≤ Sep 2026) keep their original computation
+ *     byte-for-byte, so no settled bonus can change. auditTemporaryExitsNow()
+ *     reports what the rule WOULD change in a past month. */
+const READMIT_WINDOW_DAYS = 7;
+const STAY_CONTINUITY_FROM_MONTH = '2026-10';
+
+function stayContinuityApplies_(ym) {
+  return String(ym) >= STAY_CONTINUITY_FROM_MONTH;
+}
+function stayPatientKey_(p) {
+  return String(p.houseId) + '|' + coordTextClean_(p.name, 80).replace(/\s+/g, ' ');
+}
+
+/* The rows of one house grouped into stays. Returns, per row index (into
+ * `patients`), { stayStart: Date, returnOf: prior row index | -1, gapDays }.
+ * gapDays = whole days absent between exit and return (0 = same / next day). */
+function stayChains_(patients, patientsHouseId) {
+  const byKey = {};
+  patients.forEach(function (p, i) {
+    if (p.houseId !== patientsHouseId || !p.entry) return;
+    if (!coordTextClean_(p.name, 80)) return;
+    (byKey[stayPatientKey_(p)] = byKey[stayPatientKey_(p)] || []).push(i);
+  });
+  const out = {};
+  Object.keys(byKey).forEach(function (k) {
+    const rows = byKey[k].sort(function (a, b) { return patients[a].entry - patients[b].entry || a - b; });
+    let last = -1;   // the row of this patient whose stay ends latest so far
+    rows.forEach(function (i) {
+      const p = patients[i];
+      const q = last >= 0 ? patients[last] : null;
+      let link = false, gap = 0;
+      if (q && !q.exit) {
+        link = true;                               // still open: an overlapping duplicate row
+      } else if (q) {
+        const d = daysBetween_(q.exit, p.entry);   // ≤ 0 = overlapping / same day
+        link = d <= READMIT_WINDOW_DAYS;
+        gap = Math.max(0, d - 1);
+      }
+      out[i] = link
+        ? { stayStart: out[last].stayStart, returnOf: last, gapDays: gap }
+        : { stayStart: p.entry, returnOf: -1, gapDays: 0 };
+      if (!link || !p.exit || (q.exit && p.exit >= q.exit)) last = i;
+    });
+  });
+  return out;
+}
+
+/* Initials only ("ד.ל.") — the audit never prints a full name. */
+function auditInitials_(name) {
+  return coordTextClean_(name, 80).split(/\s+/).filter(Boolean).map(function (w) { return w.charAt(0) + '.'; }).join('');
+}
+
+/* EDITOR-RUN, READ-ONLY audit of temporary exits and returns (CHANGELOG-
+ * temporary-exit-return.md). Writes nothing, creates no sheet, is not an
+ * endpoint. For each month (default: the previous and the current month):
+ *   houses — per Managers house: treatmentDays / avgDaily under the original
+ *            row-by-row computation ("before") and under the stay-continuity
+ *            rule ("after"), and which one that month actually uses;
+ *   cases  — every return within READMIT_WINDOW_DAYS touching the month:
+ *            house, patient INITIALS only, exit / return dates, gap days, and
+ *            whether the original computation counted, dropped or
+ *            double-counted the days.
+ * Run from the Apps Script editor; read the result in the execution log. */
+function auditTemporaryExitsNow(months) {
+  const cur = defaultMonth_();
+  const list = Array.isArray(months) && months.length ? months : [offsetMonth_(cur, 1), cur];
+  const patients = readPatientsForBonus_();
+  const out = { readmitWindowDays: READMIT_WINDOW_DAYS, continuityFrom: STAY_CONTINUITY_FROM_MONTH, months: [] };
+  list.forEach(function (ym) {
+    const start = startOfMonth_(ym), end = endOfMonth_(ym);
+    const m = { month: ym, rule: stayContinuityApplies_(ym) ? 'continuity' : 'original (settled)', houses: [], cases: [] };
+    MANAGER_HOUSES.forEach(function (key) {
+      const pid = MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[key];
+      const before = computeMonthStatsLegacy_(patients, pid, ym);
+      const after = computeMonthStatsContinuous_(patients, pid, ym);
+      m.houses.push({ house: key,
+        before: { treatmentDays: before.treatmentDays, avgDaily: Math.round(before.avgDaily * 100) / 100 },
+        after:  { treatmentDays: after.treatmentDays,  avgDaily: Math.round(after.avgDaily * 100) / 100 },
+        changed: before.treatmentDays !== after.treatmentDays });
+      const chains = stayChains_(patients, pid);
+      Object.keys(chains).forEach(function (i) {
+        const c = chains[i];
+        if (c.returnOf < 0) return;
+        const p = patients[i], q = patients[c.returnOf];
+        const retEnd = p.exit || end;
+        const returnInMonth = p.entry <= end && retEnd >= start;
+        const exitInMonth = !!q.exit && q.exit >= start && q.exit <= end;
+        if (!returnInMonth && !exitInMonth) return;
+        // Days this patient counts in the month: per row (original) vs distinct (rule).
+        const one = patients.filter(function (x) { return x.houseId === pid && x.entry && stayPatientKey_(x) === stayPatientKey_(p); });
+        const b = computeMonthStatsLegacy_(one, pid, ym).treatmentDays;
+        const a = computeMonthStatsContinuous_(one, pid, ym).treatmentDays;
+        let status;
+        if (b > a) status = 'double counted (' + (b - a) + ' day(s)) — fixed by the rule';
+        else if (c.gapDays > 0) status = 'gap of ' + c.gapDays + ' day(s) not counted — bed-held not recorded, stays not counted';
+        else status = 'counted correctly';
+        m.cases.push({ house: key, patient: auditInitials_(p.name), exitDate: q.exit ? ymdOf_(q.exit) : '(open)',
+          returnDate: ymdOf_(p.entry), gapDays: c.gapDays, daysBefore: b, daysAfter: a, status: status });
+      });
+    });
+    out.months.push(m);
+  });
+  Logger.log(JSON.stringify(out, null, 2));
+  return out;
+}
+
 /* ----- Per-day occupancy and patient-day stats for one house/month ----- */
 function computeMonthStats_(patients, patientsHouseId, ym) {
+  return stayContinuityApplies_(ym)
+    ? computeMonthStatsContinuous_(patients, patientsHouseId, ym)
+    : computeMonthStatsLegacy_(patients, patientsHouseId, ym);
+}
+
+/* From STAY_CONTINUITY_FROM_MONTH: a patient counts at most once per day; a
+ * return within READMIT_WINDOW_DAYS is not a new entry / exit pair in the
+ * activity counts (gap days not counted — see the block comment above). */
+function computeMonthStatsContinuous_(patients, patientsHouseId, ym) {
+  const start = startOfMonth_(ym);
+  const end   = endOfMonth_(ym);
+  const nDays = daysInMonth_(ym);
+  const chains = stayChains_(patients, patientsHouseId);
+  const seen = [];
+  for (let k = 0; k < nDays; k++) seen.push({});
+  const dailyCounts = new Array(nDays).fill(0);
+  let treatmentDays = 0, entriesMonth = 0, exitsMonth = 0;
+  const activity = [];
+  const returnedFrom = {};   // row index → true when a later row continues its stay
+  Object.keys(chains).forEach(function (i) { if (chains[i].returnOf >= 0) returnedFrom[chains[i].returnOf] = true; });
+
+  for (let i = 0; i < patients.length; i++) {
+    const p = patients[i];
+    if (p.houseId !== patientsHouseId || !p.entry) continue;
+    const key = coordTextClean_(p.name, 80) ? stayPatientKey_(p) : 'row:' + i;
+    const winStart = p.entry;
+    const winEnd   = p.exit || end;
+    if (!(winEnd < start || winStart > end)) {
+      const overlapStart = winStart > start ? winStart : start;
+      const overlapEnd   = winEnd   < end   ? winEnd   : end;
+      for (let d = new Date(overlapStart); d <= overlapEnd; d.setDate(d.getDate() + 1)) {
+        const idx = d.getDate() - 1;
+        if (seen[idx][key]) continue;            // already counted today
+        seen[idx][key] = true;
+        dailyCounts[idx]++;
+        treatmentDays++;
+      }
+    }
+    const isReturn = !!(chains[i] && chains[i].returnOf >= 0);
+    if (p.entry >= start && p.entry <= end && !isReturn) {
+      entriesMonth++;
+      activity.push({ date: ymdOf_(p.entry), kind: 'entry', name: p.name });
+    }
+    if (p.exit && p.exit >= start && p.exit <= end && !returnedFrom[i]) {
+      exitsMonth++;
+      activity.push({ date: ymdOf_(p.exit), kind: 'exit', name: p.name });
+    }
+  }
+  activity.sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
+  const dailyChart = dailyCounts.map(function (c, i) {
+    return { date: ymdOf_(new Date(start.getFullYear(), start.getMonth(), i + 1)), count: c };
+  });
+  return {
+    treatmentDays: treatmentDays,
+    avgDaily: nDays > 0 ? treatmentDays / nDays : 0,
+    entriesMonth: entriesMonth,
+    exitsMonth: exitsMonth,
+    dailyCounts: dailyCounts,
+    dailyChart: dailyChart,
+    activity: activity,
+  };
+}
+
+/* Up to Sep 2026 (settled): the original row-by-row computation, unchanged. */
+function computeMonthStatsLegacy_(patients, patientsHouseId, ym) {
   const start = startOfMonth_(ym);
   const end   = endOfMonth_(ym);
   const nDays = daysInMonth_(ym);
@@ -13178,9 +13400,12 @@ function mwHouseData_(caller, params) {
     const cur = discharges[mwDischargeKey_(key, p.name, p.entryDate)];
     return Object.assign({}, p, { expectedDischarge: cur ? { date: cur.date, editedAt: cur.editedAt, editedBy: cur.editedBy } : null });
   });
+  // A return from a temporary exit is not a new admission (from Oct 2026).
+  const chains = stayContinuityApplies_(ym) ? stayChains_(patients, pid) : {};
   const admissions = [];
-  patients.forEach(function (p) {
+  patients.forEach(function (p, i) {
     if (p.houseId !== pid || !p.entry) return;
+    if (chains[i] && chains[i].returnOf >= 0) return;
     if (p.entry >= start && p.entry <= end) admissions.push({ name: String(p.name || ''), date: ymdOf_(p.entry) });
   });
   admissions.sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
@@ -13288,13 +13513,25 @@ function mwDischargeKey_(house, name, entryDate) {
   return [String(house), mwPatientNameKey_(name), String(entryDate)].join('|');
 }
 
-/* Patients in the house today: { name, entryDate, days, status }, oldest first. */
+/* Patients in the house today: { name, entryDate, days, status }, oldest first.
+ * From STAY_CONTINUITY_FROM_MONTH a return within READMIT_WINDOW_DAYS keeps
+ * the stay's FIRST admission date and «יום N» runs from it (no reset); one
+ * line per patient even when two rows overlap. */
 function mwInHousePatients_(patients, pid, today) {
   const out = [];
-  patients.forEach(function (p) {
+  const continuous = stayContinuityApplies_(ymOf_(today));
+  const chains = continuous ? stayChains_(patients, pid) : {};
+  const listed = {};
+  patients.forEach(function (p, i) {
     if (p.houseId !== pid || !p.entry) return;
     if (p.entry <= today && (!p.exit || p.exit >= today)) {
-      out.push({ name: String(p.name || ''), entryDate: ymdOf_(p.entry), days: daysBetween_(p.entry, today) + 1, status: String(p.status || '') });
+      const from = continuous && chains[i] ? chains[i].stayStart : p.entry;
+      if (continuous && coordTextClean_(p.name, 80)) {
+        const k = stayPatientKey_(p) + '|' + ymdOf_(from);
+        if (listed[k]) return;
+        listed[k] = true;
+      }
+      out.push({ name: String(p.name || ''), entryDate: ymdOf_(from), days: daysBetween_(from, today) + 1, status: String(p.status || '') });
     }
   });
   out.sort(function (a, b) { return a.entryDate < b.entryDate ? -1 : a.entryDate > b.entryDate ? 1 : 0; });

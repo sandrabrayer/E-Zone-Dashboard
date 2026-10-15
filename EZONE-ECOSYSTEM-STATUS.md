@@ -7,9 +7,26 @@ existing receipt verification work with the debt-aging engine's open cycles.
 Amounts stay separate; original dates, Vered/Ortal responsibility and the existing
 institutional grace period are preserved. No bank imports, notifications, new
 permissions or sheet writes are introduced. See `CHANGELOG-billing-followup-queue.md`.
-The isolated branch includes Managers #230 (`dfce382`) and does not contain or
-replace payment-write recovery draft PR #229. Browser QA and explicit release
+The isolated branch includes the deployed recovery fix #229 and Managers #231.
+The follow-up feature is a separate change. Browser QA and explicit release
 authorization remain outstanding; this note is not evidence of live operation.
+
+## Dashboard payment report recovery — October 15, 2026 (deployed)
+
+Synthetic fault injection reproduced double-counting when a cycle update
+succeeded but the first receipt append failed. The proposed fix persists the
+receipt before the new cycle total and repairs a stale summary on same-key
+retry. Eleven recovery cases pass; the full suite has 2,760 passes, no failures
+and 65 Chromium skips. No live data was inspected or changed. See
+`CHANGELOG-payment-report-write-recovery.md` for evidence and audit limits.
+Sandra explicitly authorized PR #229: merged as `0d9790a51f10ce914cf3bc9d84b41373f504991d`.
+The merged tree passed 2,778 local tests (0 failures, 65 browser skips), GitHub
+Tests #337 and Apps Script deploy #99 succeeded, Railway reported SUCCESS and
+`/api/version` returned the merge SHA. `/healthz` returned ok; three unauthenticated
+home-page requests returned 200 in 6.065 / 5.462 / 5.675 seconds from the test
+environment. These are availability checks, not a live payment-write test.
+This does not resolve
+the CRM numeric-ID blocker or complete the wider finance workflow.
 
 ## Managers protocol 2 — October 15, 2026 (candidate active per operator report)
 
@@ -289,6 +306,19 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
   family calls, staff talks (private to author + admins), unusual events —
   with follow-up dates. New sheets `ManagersFamilyCalls`, `ManagersStaffTalks`,
   `ManagersEvents`. Details: `CHANGELOG-managers-work-tool.md`.
+
+## Dashboard Apps Script: temporary exit and return keeps the stay (October 15, 2026)
+
+- **CEO rule**: a return within `READMIT_WINDOW_DAYS = 7` of the exit (same house + name)
+  continues the stay.
+- **Counting**: one count per patient per day; gap days are not counted (bed-held is not
+  recorded).
+- **«יום N»**: the admission date and «יום N» run from the first admission; a return is not a
+  new admission.
+- **From Oct 2026 only** (`STAY_CONTINUITY_FROM_MONTH`); settled months keep the original
+  computation byte-for-byte.
+- **Audit**: editor-run, read-only `auditTemporaryExitsNow()` (initials only).
+- Details: `CHANGELOG-temporary-exit-return.md`.
 
 ## Dashboard Apps Script: managers expected discharge date (October 15, 2026)
 

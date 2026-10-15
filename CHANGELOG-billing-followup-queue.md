@@ -51,16 +51,24 @@ Recheck the live cache version before eventual deployment if it has moved.
   `test/billing-followup.test.js` cover the example, no-payment cycles, day 30/31,
   pro-bono/future exclusions, failures, missing dates, Israel midnight, voids,
   XSS escaping, filters/navigation, receipt echoes and unchanged authorization.
-- Full suite on the updated base: **2,772 passed, 0 failed, 65 browser tests
-  skipped** (2,837 total). `git diff --check` and JavaScript syntax checks passed.
+- Full local suite on deployed base `0d9790a`: **2,793 passed, 0 failed, 66 browser
+  tests skipped** (2,859 total, including the new browser case).
+  `git diff --check` and JavaScript syntax checks passed.
 - `npm audit`: 0 high/critical; 1 existing moderate `qs` finding. No dependency
   or lockfile changes.
-- Browser execution was blocked by local socket restrictions. An escalated
-  launch was rejected by the approval policy. No visual/mobile QA is claimed;
-  existing browser tests remain skipped. Live patient data was not inspected.
+- Local browser execution was blocked by socket restrictions. An escalated
+  launch was rejected by the approval policy. A dedicated PR-only GitHub Actions
+  check now runs the actual server, UI and Apps Script sandbox in Chromium with
+  synthetic data, captures 360px/desktop screenshots and retains them for seven
+  days. Playwright 1.62.1 is isolated under the runner's temporary directory;
+  production dependencies, deployment workflows and secrets are unchanged.
+  The check exercises filters, navigation, partial-confirmation echoes, neutral
+  funder grace, role boundaries, page errors and horizontal overflow. Its result
+  must be inspected before claiming visual/mobile QA. No live patient data is used.
 
-This is separate from payment-write recovery PR #229. It is based on deployed
-branch commit `dfce382baa3b47b2c8fb489f43a7e89df246cc21`, including Managers #230.
-No merge, deployment, flags, credentials, production data or financial
-permissions were changed. Before release: complete browser QA and obtain the
-separate deployment authorization recorded in the work plan.
+This feature remains separate from payment-write recovery PR #229, which Sandra
+authorized and which is deployed as `0d9790a51f10ce914cf3bc9d84b41373f504991d`.
+The candidate now includes that deployed base and Managers #231. No merge or
+deployment of the follow-up feature is authorized yet. No flags, credentials,
+production data or financial permissions were changed. Before release: complete
+browser QA and obtain the separate deployment authorization in the work plan.

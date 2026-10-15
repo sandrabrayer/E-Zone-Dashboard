@@ -63,7 +63,10 @@ const DATA = {
   billingOverrides: [], houseManagers: {}, managerPhones: {}, currentManagers: [], currentManagersSource: 'x',
 };
 
-async function boot() {
+async function boot(options = {}) {
+  const patient = { ...PATIENT, pay: options.monthlyAmount || PATIENT.pay };
+  const cycle = { ...CYCLE, amount: patient.pay };
+  const data = { ...DATA, patients: { arfoni: [patient] } };
   const hash = await pinHash.hashPin('583920', PEPPER);
   const recs = ['vered', 'sandra', 'shiran', 'yael', 'ortal'].map((id) => JSON.parse(users.recordLine(id, hash, 1)));
   const env = {
@@ -82,12 +85,12 @@ async function boot() {
   const gs = loadGs({ props: { PROXY_SECRET, PROXY_SECRET_MODE: 'enforce' } });
   const pcols = Array.from(gs.run('PATIENT_COLUMNS'));
   gs.sandbox.__sheets.Patients = richSheet('Patients', pcols);
-  gs.sandbox.__sheets.Patients.appendRow(pcols.map((c) => (PATIENT[c] === undefined ? '' : PATIENT[c])));
+  gs.sandbox.__sheets.Patients.appendRow(pcols.map((c) => (patient[c] === undefined ? '' : patient[c])));
   // Vered reports two payments (the real reportPayment, through the gate).
   const vered = { proxySecret: PROXY_SECRET, proxyUser: 'ורד', user: 'ורד', proxyAuth: 'personal', proxyUserId: 'vered',
     proxyRoles: ['staff', 'reporter', 'deleter'], proxyCaps: ['finance', 'billingControl'] };
   for (const [amount, d, payer] of [[18000, daysAgo(2), 'משפחת כהן'], [12000, daysAgo(1), 'ביטוח משלים']]) {
-    const r = gs.post(Object.assign({ action: 'reportPayment', report: { cycle: CYCLE, report: {
+    const r = gs.post(Object.assign({ action: 'reportPayment', report: { cycle, report: {
       receivedDate: d, amount, method: 'העברה בנקאית', payer, reference: 'TRX-' + amount, funder: 'פרטי',
       invoiceWanted: 'no',   // required since CHANGELOG-payment-invoice.md
       coverageStart: MONTH_START, coverageEnd: MONTH_END } } }, vered));
@@ -103,7 +106,7 @@ async function boot() {
       let parsed = {};
       try { parsed = JSON.parse(body); } catch (_) { parsed = {}; }
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
-      const answer = parsed.action === 'getData' ? DATA
+      const answer = parsed.action === 'getData' ? data
         : gs.sandbox.doPost({ parameter: {}, postData: { contents: body } }).json;
       const res = new EventEmitter();
       res.statusCode = 200; res.headers = {}; res.setEncoding = () => {}; res.resume = () => {};
@@ -268,6 +271,73 @@ test("Sandra sees «חריגים פתוחים» read-only and «מאומת» on 
     assert.equal(await sh.page.locator('[data-billing-control]').count(), 0);
     assert.equal(await sh.page.locator('.tabs .tab.active').getAttribute('data-screen'), 'dashboard', 'the deep link falls back');
     await sh.ctx.close();
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+test('FIN-01.2 at 360px and desktop: separate work, owner/house filters, source navigation, confirmation echo and neutral grace', { skip: skip && why, timeout: 120000 }, async () => {
+  const server = await boot({ monthlyAmount: 40000 });
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const ortal = { proxySecret: PROXY_SECRET, proxyUser: 'אורטל', user: 'אורטל', proxyAuth: 'personal', proxyUserId: 'ortal',
+      proxyRoles: ['controller'], proxyCaps: ['billingControl'] };
+    const q = server.gs.post({ action: 'billingControlQueue', ...ortal });
+    const receiptId = q.receipts.find(r => r.amount === 18000).id;
+    assert.equal(server.gs.post({ action: 'confirmPayment', ...ortal,
+      confirm: { ids: [receiptId], status: 'partial', confirmedAmount: 11000 } }).ok, true);
+    const o = await open(browser, server.port, 'ortal', '#billing-control');
+    const page = o.page, list = page.locator('#bc-followup');
+    await page.waitForSelector('#bc-followup .bc-row');
+    assert.equal(await list.locator('.bc-row').count(), 3);
+    const text = await list.textContent();
+    for (const part of ['10,000', '7,000', '12,000', 'ורד', 'אורטל', 'מועד גבייה מקורי']) assert.ok(text.includes(part), part);
+    assert.equal(await page.locator('#bc-followup-warning').isVisible(), false);
+    assert.equal(await list.locator('input, select, textarea, [data-bc-confirm]').count(), 0, 'navigation only');
+    assert.equal(await noSideScroll(page), true);
+    await shot(page, 'followup-360-separate-work.png');
+
+    await page.locator('#bc-followup-owner').selectOption('vered');
+    assert.equal(await list.locator('.bc-row').count(), 1);
+    assert.match(await list.textContent(), /10,000/);
+    await page.locator('#bc-followup-house').selectOption('ramot');
+    assert.equal(await list.locator('.bc-row').count(), 0);
+    assert.match(await list.textContent(), /בסינון שנבחר/);
+    await page.locator('#bc-followup-house').selectOption('all');
+    await page.locator('#bc-followup-owner').selectOption('all');
+
+    await list.locator(`[data-bc-follow-receipt="${receiptId}"]`).click();
+    assert.equal(await page.locator(`#bc-partial [data-bc-id="${receiptId}"]`).evaluate(el => el === document.activeElement), true);
+    await list.locator('[data-bc-follow-debt]').click();
+    assert.equal(await page.locator('#screen-billing').isVisible(), true);
+    assert.equal(await page.locator('#debt-aging-view').getAttribute('open'), '');
+    assert.equal(server.actions.filter(a => a.action === 'confirmPayment').length, 0, 'filters and links do not write');
+    await page.locator('.tab[data-screen="billing-control"]').click();
+    await page.waitForSelector('#bc-partial .bc-row');
+    await page.locator(`#bc-partial [data-bc-status="${receiptId}"]`).selectOption('confirmed');
+    await page.waitForFunction(() => document.querySelectorAll('#bc-followup .bc-row').length === 2);
+    assert.match(await list.textContent(), /10,000/);
+    assert.ok(!(await list.textContent()).includes('7,000'), 'verified gap closes without closing collection remainder');
+
+    // Synthetic funder history: waiting is neutral, and the amount still exists.
+    const fcols = Array.from(server.gs.run('FUNDER_COLUMNS'));
+    server.gs.sandbox.__sheets.Funders = richSheet('Funders', fcols);
+    const funder = { patientId: 'p1', funder: 'ביטוח לאומי', effectiveFrom: MONTH_START };
+    server.gs.sandbox.__sheets.Funders.appendRow(fcols.map(c => funder[c] === undefined ? '' : funder[c]));
+    await page.locator('#bc-refresh').click();
+    await page.waitForSelector('#bc-followup .bc-followup-waiting');
+    const waiting = list.locator('.bc-followup-waiting');
+    assert.match(await waiting.textContent(), /ממתין לגורם מממן/);
+    assert.match(await waiting.textContent(), /10,000/);
+    assert.match(await waiting.textContent(), /באחריות אורטל/);
+    assert.equal(await noSideScroll(page), true);
+    await shot(page, 'followup-360-grace.png');
+    await page.setViewportSize({ width: 1280, height: 900 });
+    assert.equal(await noSideScroll(page), true);
+    await shot(page, 'followup-desktop-grace.png');
+    assert.deepEqual(o.errors, [], 'no page errors');
+    await o.ctx.close();
   } finally {
     await browser.close();
     server.close();
