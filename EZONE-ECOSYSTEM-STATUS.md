@@ -1,5 +1,19 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Managers protocol 2 — October 15, 2026 (candidate active per operator report)
+
+Coordinated Managers/Dashboard hardening requires immutable account IDs,
+authenticated and scoped read feeds, private-note ownership by ID, and a
+protocol/secret readiness gate. Follow `docs/managers-hardening-rollout.md`.
+Sandra reports Managers PR #37 (`7a6ea76`) serving through the separate candidate
+from Dashboard PR #223 (`88635fc`), with signed-in read checks passed. Dashboard
+#223 is still a draft: merge needs her explicit go, then verified Apps Script
+auto-deployment before switching Managers back to the original URL. Final
+activation, historical-deployment coverage and live write persistence are not
+verified here. The rollout document distinguishes operator reports from checks
+independently reproduced in review; account IDs, codes and secrets stay unchanged.
+
+
 Add this file to the knowledge of EVERY E-Zone app Project (all eight), replacing
 the July 22 version, so any future chat/session starts from the true state. This
 Sep 10 revision is the UNION of every repo's copy (the per-repo sections that had

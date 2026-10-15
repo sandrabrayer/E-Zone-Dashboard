@@ -145,17 +145,22 @@ test('OPEN_ACTIONS is pinned to exactly the Managers + Therapists actions and th
   }
 });
 
-test('the open actions are served WITHOUT a secret in log AND enforce mode, GET and POST, logged as class "open"', () => {
+test('non-Managers own-secret actions still pass the generic gate; Managers never bypass their dedicated gate', () => {
+  const managers = ['managersOverview', 'managersHouse', 'occupancySnapshots', 'managersWork'];
+  const otherOpen = EXPECTED_OPEN.filter(a => !managers.includes(a));
   for (const [mode, props] of MODES) {
     const g = loadGs({ props });
-    for (const a of EXPECTED_OPEN) {
+    for (const a of otherOpen) {
       assert.strictEqual(g.post({ action: a }).json.served, a, mode + ' POST ' + a);
       assert.strictEqual(g.get({ action: a }).json.served, a, mode + ' GET ' + a);
-      assert.strictEqual(g.post({ action: a, proxySecret: 'not-it' }).json.served, a, mode + ' wrong secret ' + a);
+      assert.strictEqual(g.post({ action: a, proxySecret: 'not-it' }).json.served, a);
     }
-    assert.strictEqual(g.served.length, EXPECTED_OPEN.length * 3, mode);
-    // one row per open action per hour, whatever the method or secret
-    assert.deepStrictEqual(g.rows().map((r) => [r[1], r[6]]), EXPECTED_OPEN.map((a) => [a, 'open']), mode);
+    for (const action of managers) {
+      assert.deepStrictEqual(g.post({ action, proxySecret: PROXY }).json, {ok:false,error:'unauthorized'});
+      assert.deepStrictEqual(g.get({ action }).json, {ok:false,error:'unauthorized'});
+    }
+    assert.strictEqual(g.served.length, otherOpen.length * 3, mode);
+    assert.deepStrictEqual(g.rows().map(r => [r[1],r[6]]), otherOpen.map(a => [a,'open']), mode);
   }
 });
 
@@ -234,7 +239,7 @@ test('callerClass_: proxy | open | none | wrong', () => {
 
 test('securityCallersReportNow: action × class, and "non-open actions without a valid secret: N"', () => {
   const g = loadGs({ props: { PROXY_SECRET: PROXY } });
-  g.post({ action: 'managersOverview' });           // open
+  g.post({ action: 'managersOverview' });           // refused; no log write
   g.post({ action: 'getAdmittedRoster' });          // open
   g.post({ action: 'getData' });                    // none  → counts
   g.post({ action: 'savePayment', proxySecret: 'x' }); // wrong → counts
@@ -245,7 +250,7 @@ test('securityCallersReportNow: action × class, and "non-open actions without a
   const s = arr(r.summary).map((x) => [x.action, x.callerClass]).sort();
   assert.deepStrictEqual(s, [
     ['getAdmittedRoster', 'open'], ['getData', 'none'], ['getPayments', 'proxy'],
-    ['managersOverview', 'open'], ['saveAll', 'none'], ['savePayment', 'wrong'],
+    ['saveAll', 'none'], ['savePayment', 'wrong'],
   ]);
   assert.strictEqual(r.nonOpenWithoutSecret, 3);
   assert.ok(g.logs.includes('non-open actions without a valid secret: 3'), 'the summary line, exactly');

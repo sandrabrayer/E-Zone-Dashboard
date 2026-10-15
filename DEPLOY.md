@@ -1,9 +1,16 @@
 # Deploy — E-ZONE Dashboard (shared Apps Script backend)
 
+**Managers protocol 2 rollout:** this change closes the old unauthenticated
+Managers feeds. Follow [the coordinated activation order](docs/managers-hardening-rollout.md)
+before merging. The existing auto-deploy updates the original URL immediately;
+first prepare a separate versioned candidate and activate compatible Managers
+code/configuration. Do not run the ordinary deploy workflow on the PR branch.
+
+
 This repo owns the deploy for the **"ezone dashboard" Apps Script**, which serves
 three consumers (per `EZONE-ECOSYSTEM-STATUS.md`): Dashboard (`SHEETS_URL`),
 Managers (`APPS_SCRIPT_URL`), Therapists (`DASHBOARD_SHEETS_URL`). `ezone-managers`
-only reads this backend — it has no deploy workflow, so the two repos never fight
+reads this backend and writes its own authenticated work logs — it has no deploy workflow, so the two repos never fight
 over the same project.
 
 Two independent deploy paths:
