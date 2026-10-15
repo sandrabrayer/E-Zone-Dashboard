@@ -12801,6 +12801,10 @@ function computeContinuityByHouse_(outpatients, ym) {
  *   op 'logAdd'     { house, log, entry } → a new log row (id, stamps).
  *   op 'logUpdate'  { house, log, id, patch } → followUpDone / soft delete
  *                   (only the author or an admin).
+ *   op 'dischargeSet' { house, patientName, entryDate, expectedDate,
+ *                   previousDate } → the patient's expected discharge date,
+ *                   appended to ManagersExpectedDischarge (15 Oct 2026; see
+ *                   mwDischargeSet_). houseData returns it per patient.
  *
  * Logs (append-only sheets, headers append-only):
  *   familyCalls — patient, contact, relation, when, summary, follow-up
@@ -12885,6 +12889,7 @@ function managersWork_(params) {
   if (op === 'logAdd') return mwLogAdd_(caller, params);
   if (op === 'logUpdate') return mwLogUpdate_(caller, params);
   if (op === 'houseCost') return mwHouseCost_(caller, params);
+  if (op === 'dischargeSet') return mwDischargeSet_(caller, params);
   return { ok: false, error: 'unknown_op' };
 }
 
@@ -13129,18 +13134,19 @@ function mwHouseData_(caller, params) {
   const start = startOfMonth_(ym);
   const end = endOfMonth_(ym);
 
-  // Patients in the house today, and admissions this month.
+  // Patients in the house today (each with its expected discharge date), and
+  // admissions this month.
   const patients = readPatientsForBonus_();
-  const inHouse = [];
+  const discharges = mwReadDischarges_(key);
+  const inHouse = mwInHousePatients_(patients, pid, today).map(function (p) {
+    const cur = discharges[mwDischargeKey_(key, p.name, p.entryDate)];
+    return Object.assign({}, p, { expectedDischarge: cur ? { date: cur.date, editedAt: cur.editedAt, editedBy: cur.editedBy } : null });
+  });
   const admissions = [];
   patients.forEach(function (p) {
     if (p.houseId !== pid || !p.entry) return;
-    if (p.entry <= today && (!p.exit || p.exit >= today)) {
-      inHouse.push({ name: String(p.name || ''), entryDate: ymdOf_(p.entry), days: daysBetween_(p.entry, today) + 1, status: String(p.status || '') });
-    }
     if (p.entry >= start && p.entry <= end) admissions.push({ name: String(p.name || ''), date: ymdOf_(p.entry) });
   });
-  inHouse.sort(function (a, b) { return a.entryDate < b.entryDate ? -1 : a.entryDate > b.entryDate ? 1 : 0; });
   admissions.sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
 
   // Outpatients who came from this house, active today.
@@ -13206,11 +13212,120 @@ function mwHouseData_(caller, params) {
 
   return {
     ok: true, house: key, month: ym, today: todayIso,
-    patients: inHouse, outpatients: outpatients,
+    patients: inHouse, expectedDischargeSupported: true, outpatients: outpatients,
     visits: visits, admissions: admissions, expectedAdmissions: expectedAdmissions,
     logs: logs, followUps: followUps,
     team: mwTeam_(key, todayIso),
   };
+}
+
+/* ===== Expected discharge date (CHANGELOG-managers-expected-discharge.md) =====
+ *
+ * Sandra (15 Oct 2026): a house manager sets / changes «שחרור משוער» for each
+ * patient in the house. Stored APPEND-ONLY in its own sheet: every set or
+ * change is a NEW row (who, when, the value it replaced); the current value
+ * of a stay is its LAST row. Nothing is ever overwritten or deleted, so the
+ * sheet is the audit trail. Key = Managers house + patient name + admission
+ * date (yyyy-MM-dd) — a later readmission is a new stay with its own date.
+ *
+ * Writes go through `managersWork` op `dischargeSet` only — the same
+ * fail-closed MANAGERS_WORK_SECRET Script Property gate as every op; the
+ * house / role / actor are decided by the Managers server (a manager is
+ * pinned to their own house, an admin names one) and re-validated here.
+ *
+ * No silent overwrite: the caller sends `previousDate` (the value it saw, ''
+ * when none). If the stored value moved on since, the write is refused with
+ * `conflict` and the current value — the person re-reads before changing it.
+ * Validated: strict yyyy-MM-dd dates, expected ≥ admission date, ≤ 2 years
+ * ahead, and the patient must be in this house today with that admission
+ * date. Display-only: it never feeds a bonus figure. */
+const MW_DISCHARGE_SHEET = 'ManagersExpectedDischarge';
+// APPEND-ONLY header (test/managers-expected-discharge.test.js pins it).
+const MW_DISCHARGE_COLUMNS = ['id', 'house', 'patientName', 'entryDate', 'expectedDate', 'previousDate', 'editedAt', 'editedBy', 'editedById'];
+const MW_DISCHARGE_MAX_AHEAD_DAYS = 730;
+
+/* A patient name in key form: cleaned like every stored text, spaces collapsed. */
+function mwPatientNameKey_(name) {
+  return coordTextClean_(name, 80).replace(/\s+/g, ' ');
+}
+function mwDischargeKey_(house, name, entryDate) {
+  return [String(house), mwPatientNameKey_(name), String(entryDate)].join('|');
+}
+
+/* Patients in the house today: { name, entryDate, days, status }, oldest first. */
+function mwInHousePatients_(patients, pid, today) {
+  const out = [];
+  patients.forEach(function (p) {
+    if (p.houseId !== pid || !p.entry) return;
+    if (p.entry <= today && (!p.exit || p.exit >= today)) {
+      out.push({ name: String(p.name || ''), entryDate: ymdOf_(p.entry), days: daysBetween_(p.entry, today) + 1, status: String(p.status || '') });
+    }
+  });
+  out.sort(function (a, b) { return a.entryDate < b.entryDate ? -1 : a.entryDate > b.entryDate ? 1 : 0; });
+  return out;
+}
+
+/* Current expected discharge per stay of one house: key → { date, editedAt, editedBy }.
+ * Read-only: the sheet is created on the first write, never on a read. */
+function mwReadDischarges_(house) {
+  const out = {};
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(MW_DISCHARGE_SHEET);
+  if (!sh || sh.getLastRow() < 2) return out;
+  readSheet_(sh, MW_DISCHARGE_COLUMNS).forEach(function (r) {
+    if (String(r.house) !== house) return;
+    const date = coordIsoDateClean_(mwCellText_(r.expectedDate, 'date'));
+    const entry = coordIsoDateClean_(mwCellText_(r.entryDate, 'date'));
+    if (!date || !entry) return;
+    // Later rows win: the sheet is in write order.
+    out[mwDischargeKey_(house, r.patientName, entry)] = {
+      date: date, editedAt: String(r.editedAt || ''), editedBy: coordTextClean_(r.editedBy, 40),
+    };
+  });
+  return out;
+}
+
+function mwDischargeSet_(caller, params) {
+  const entryDate = coordIsoDateClean_(params.entryDate);
+  const expectedDate = coordIsoDateClean_(params.expectedDate);
+  const prevRaw = String(params.previousDate == null ? '' : params.previousDate).trim();
+  const previousDate = prevRaw === '' ? '' : coordIsoDateClean_(prevRaw);
+  const nameKey = mwPatientNameKey_(params.patientName);
+  if (!nameKey) return { ok: false, error: 'missing_fields', fields: ['patientName'] };
+  if (!entryDate || !expectedDate || (prevRaw !== '' && !previousDate)) return { ok: false, error: 'bad_date' };
+  if (expectedDate < entryDate) return { ok: false, error: 'before_admission' };
+  const today = parseDate_(todayISODate_());
+  const latest = ymdOf_(new Date(today.getFullYear(), today.getMonth(), today.getDate() + MW_DISCHARGE_MAX_AHEAD_DAYS));
+  if (expectedDate > latest) return { ok: false, error: 'too_far' };
+
+  // Only a patient in THIS house today, with exactly this admission date.
+  const pid = MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[caller.house];
+  const match = mwInHousePatients_(readPatientsForBonus_(), pid, today).filter(function (p) {
+    return p.entryDate === entryDate && mwPatientNameKey_(p.name) === nameKey;
+  })[0];
+  if (!match) return { ok: false, error: 'not_found' };
+
+  const key = mwDischargeKey_(caller.house, match.name, entryDate);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const cur = mwReadDischarges_(caller.house)[key] || null;
+    const curDate = cur ? cur.date : '';
+    if (curDate !== previousDate) return { ok: false, error: 'conflict', current: cur };
+    if (curDate === expectedDate) return { ok: true, unchanged: true, expectedDischarge: cur };
+    const row = {
+      id: Utilities.getUuid(), house: caller.house, patientName: mwPatientNameKey_(match.name),
+      entryDate: entryDate, expectedDate: expectedDate, previousDate: curDate,
+      editedAt: new Date().toISOString(), editedBy: caller.actor, editedById: caller.actorId,
+    };
+    const sh = getOrCreateSheet_(MW_DISCHARGE_SHEET, MW_DISCHARGE_COLUMNS);
+    // Text cells: dates must never be coerced into Date cells, and a name can
+    // never be evaluated as a formula.
+    sh.getRange(sh.getLastRow() + 1, 1, 1, MW_DISCHARGE_COLUMNS.length).setNumberFormat('@')
+      .setValues([MW_DISCHARGE_COLUMNS.map(function (c) { return String(row[c] == null ? '' : row[c]); })]);
+    return { ok: true, expectedDischarge: { date: expectedDate, editedAt: row.editedAt, editedBy: row.editedBy } };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function mwLogAdd_(caller, params) {
