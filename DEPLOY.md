@@ -489,6 +489,15 @@ service:
 | `BOOTSTRAP_TOKEN` | no — delete it | one-time setup of Sandra's own record. Closed for good once her record exists; the log warns while it is set. |
 | ~~`APP_PIN`~~, ~~`APP_PIN_UNTIL`~~ | **removed** | the old shared code and its window. Ignored if still set (one warning in the log). Delete them. |
 
+## Expected discharges on the dashboard — nothing to set (October 15, 2026)
+
+`expectedDischarges` (CHANGELOG-dashboard-expected-discharges.md) is a READ-ONLY Apps Script
+action behind the «שחרורים צפויים» card. It reuses `PROXY_SECRET` and the existing
+`ManagersExpectedDischarge` sheet: **no new Script Property, Railway variable or sheet**. Code.gs
+deploys automatically on merge; until it has, the card shows «לא ניתן לטעון את השחרורים
+הצפויים כרגע» (the old Code.gs does not know the action) and nothing else on the page changes. Access: personal staff sessions (Sandra, Vered, Shiran, Yael); Ortal's controller view is
+refused by server.js and by Code.gs.
+
 ## Security
 
 - Credentials live **only** in GitHub Secrets — never committed, never printed;

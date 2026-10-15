@@ -204,6 +204,13 @@
         <div class="coord-discharges-list" id="coord-discharges-list"></div>
       </div>
 
+      <!-- «שחרורים צפויים» (Task F): READ-ONLY expected discharge dates the
+           house managers set in the Managers app, across all houses —
+           due within 14 days, a red «דורש עדכון» list for passed dates, and
+           one quiet «ללא תאריך» line per house. Filled TEXT-ONLY by
+           lib/discharge-alerts.js (CHANGELOG-dashboard-expected-discharges.md). -->
+      <div class="card xd-card" id="expected-discharges" aria-live="polite"></div>
+
       <h3>מיטות פנויות לפי בית</h3>
       <div class="houses-grid" id="houses-grid"></div>
 
@@ -686,6 +693,8 @@
   <script src="funder-grace.js?v=__BUILD__"></script>
   <!-- The cycle balance (global CycleBalance) — must load before app.js. -->
   <script src="cycle-balance.js?v=__BUILD__"></script>
+  <!-- Expected-discharge alerts (global DischargeAlerts) — must load before app.js. -->
+  <script src="discharge-alerts.js?v=__BUILD__"></script>
   <script src="app.js?v=__BUILD__"></script>
 
   <!-- Service worker registration (guarded). Registered after load so it never

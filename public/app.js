@@ -4699,8 +4699,49 @@ function renderDashboard() {
   });
 
   fitAllStatText(); // scale KPI values down to fit narrow cards (no clipping)
+  renderExpectedDischarges();
   renderRenewalAlert();
   renderOverdueAlert();
+}
+
+/* «שחרורים צפויים» (Task F, CHANGELOG-dashboard-expected-discharges.md) —
+ * READ-ONLY expected discharge dates set by the house managers in the
+ * Managers app. One GET of action=expectedDischarges, kept for
+ * EXPECTED_DISCHARGES_TTL_MS so the many renderDashboard() calls never storm
+ * the backend; every render recomputes the alerts against Israel's "today"
+ * (DischargeAlerts.israelToday), so the card turns at Israel midnight.
+ * Rendering is text-only (lib/discharge-alerts.js renderCard). Nothing here
+ * logs a patient name. */
+const EXPECTED_DISCHARGES_TTL_MS = 60 * 1000;
+const expectedDischarges = { data: null, at: 0, error: false, inflight: null };
+
+function loadExpectedDischarges(force) {
+  const fresh = expectedDischarges.data && (Date.now() - expectedDischarges.at) < EXPECTED_DISCHARGES_TTL_MS;
+  if ((fresh && !force) || expectedDischarges.inflight) return expectedDischarges.inflight || Promise.resolve();
+  expectedDischarges.inflight = apiGet({ action: 'expectedDischarges' })
+    .then((data) => { expectedDischarges.data = data; expectedDischarges.error = false; })
+    .catch(() => { expectedDischarges.error = true; })
+    .then(() => { expectedDischarges.at = Date.now(); expectedDischarges.inflight = null; paintExpectedDischarges(); });
+  return expectedDischarges.inflight;
+}
+
+function paintExpectedDischarges() {
+  const card = document.getElementById('expected-discharges');
+  const DA = typeof DischargeAlerts !== 'undefined' ? DischargeAlerts : null;
+  if (!card || !DA) return;
+  if (!expectedDischarges.data) {
+    DA.renderCard(document, card, null, { state: expectedDischarges.error ? 'error' : 'loading' });
+  } else {
+    DA.renderCard(document, card, DA.dashboardModel(expectedDischarges.data, DA.israelToday()));
+  }
+  const retry = card.querySelector('[data-xd-retry]');
+  if (retry) retry.onclick = () => busyButton(retry, 'load', () => loadExpectedDischarges(true));
+}
+
+function renderExpectedDischarges() {
+  if (typeof controllerView === 'function' && controllerView()) return;
+  paintExpectedDischarges();
+  loadExpectedDischarges(false);
 }
 
 /* Dashboard renewal alert — active patients due to renew within 7 days whose

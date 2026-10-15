@@ -1,0 +1,29 @@
+{
+  "about": "Shared boundary cases for the expected-discharge alert rule. IDENTICAL file in ezone-managers and E-Zone-Dashboard; each repo runs it against its own implementation (Managers public/discharge-alerts.js, Dashboard lib/discharge-alerts.js). Change both repos together.",
+  "ALERT_LEAD_DAYS": 14,
+  "TIME_ZONE": "Asia/Jerusalem",
+  "alerts": [
+    { "today": "2026-10-15", "date": "2026-10-29", "expect": { "days": 14, "kind": "soon", "whenText": "בעוד 14 ימים" } },
+    { "today": "2026-10-15", "date": "2026-10-30", "expect": null },
+    { "today": "2026-10-15", "date": "2026-10-15", "expect": { "days": 0, "kind": "soon", "whenText": "היום" } },
+    { "today": "2026-10-15", "date": "2026-10-16", "expect": { "days": 1, "kind": "soon", "whenText": "מחר" } },
+    { "today": "2026-10-15", "date": "2026-10-17", "expect": { "days": 2, "kind": "soon", "whenText": "בעוד 2 ימים" } },
+    { "today": "2026-10-15", "date": "2026-10-14", "expect": { "days": -1, "kind": "overdue", "whenText": "התאריך עבר אתמול" } },
+    { "today": "2026-10-15", "date": "2026-10-12", "expect": { "days": -3, "kind": "overdue", "whenText": "התאריך עבר לפני 3 ימים" } },
+    { "today": "2026-12-25", "date": "2027-01-08", "expect": { "days": 14, "kind": "soon", "whenText": "בעוד 14 ימים" } },
+    { "today": "2026-12-25", "date": "2027-01-09", "expect": null },
+    { "today": "2027-03-01", "date": "2027-02-28", "expect": { "days": -1, "kind": "overdue", "whenText": "התאריך עבר אתמול" } },
+    { "today": "2026-10-15", "date": "2026-02-30", "expect": null },
+    { "today": "2026-10-15", "date": "15/10/26", "expect": null }
+  ],
+  "israelToday": [
+    { "utc": "2026-10-15T20:59:00Z", "today": "2026-10-15" },
+    { "utc": "2026-10-15T21:00:00Z", "today": "2026-10-16" },
+    { "utc": "2026-12-01T21:59:00Z", "today": "2026-12-01" },
+    { "utc": "2026-12-01T22:00:00Z", "today": "2026-12-02" }
+  ],
+  "noDateText": [
+    { "n": 1, "text": "מטופל/ת אחד/ת ללא תאריך שחרור משוער" },
+    { "n": 3, "text": "3 מטופלים ללא תאריך שחרור משוער" }
+  ]
+}
