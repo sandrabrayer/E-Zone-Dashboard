@@ -13515,6 +13515,12 @@ const MW_DISCHARGE_SHEET = 'ManagersExpectedDischarge';
 // APPEND-ONLY header (test/managers-expected-discharge.test.js pins it).
 const MW_DISCHARGE_COLUMNS = ['id', 'house', 'patientName', 'entryDate', 'expectedDate', 'previousDate', 'editedAt', 'editedBy', 'editedById'];
 const MW_DISCHARGE_MAX_AHEAD_DAYS = 730;
+/* Managers writes (dischargeSet / logAdd / logUpdate) wait at most 5 s for the
+ * script lock. They used to call waitLock(10000) — which THROWS on timeout
+ * and, added to the Patients read before it, could outlast the Managers
+ * proxy's 15 s fetch timeout, so the manager saw «upstream_error» while the
+ * write was still pending. A busy lock now answers {ok:false,error:'lock_busy'}
+ * (CHANGELOG-managers-discharge-save-fix.md). */
 
 /* A patient name in key form: cleaned like every stored text, spaces collapsed. */
 function mwPatientNameKey_(name) {
@@ -13590,7 +13596,9 @@ function mwDischargeSet_(caller, params) {
 
   const key = mwDischargeKey_(caller.house, match.name, entryDate);
   const lock = LockService.getScriptLock();
-  lock.waitLock(10000);
+  // Bounded and never thrown: a busy lock answers lock_busy (JSON) well inside
+  // the Managers proxy's timeout (CHANGELOG-managers-discharge-save-fix.md).
+  if (lock.tryLock(5000) !== true) return lockBusy_('mwDischargeSet_');
   try {
     const cur = mwReadDischarges_(caller.house)[key] || null;
     const curDate = cur ? cur.date : '';
@@ -13610,6 +13618,46 @@ function mwDischargeSet_(caller, params) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/* ===== authorizeSheetsWriteNow — editor-run (CHANGELOG-managers-discharge-save-fix.md) =====
+ *
+ * Run ONCE from the Apps Script editor (Run ▸ authorizeSheetsWriteNow) as the
+ * account that owns the Web App deployment. Never reachable over HTTP: no
+ * action dispatches it (it is not in PROXY_KNOWN_ACTIONS / OPEN_ACTIONS).
+ *
+ *  1. The FIRST statement — uncaught on purpose — requires every scope in
+ *     appsscript.json, so Google's consent dialog appears and a PARTIAL grant
+ *     (an unticked box) fails loudly HERE instead of as a failed save later
+ *     (writes fail while reads pass).
+ *  2. A real write-and-delete test on a temporary sheet: insertSheet, write a
+ *     cell, flush, read it back, deleteSheet. No live sheet is touched.
+ *  3. The script lock can be taken (and is released at once).
+ *  4. The ManagersExpectedDischarge sheet exists with its append-only header,
+ *     so the first manager save no longer has to create a sheet.
+ * Logs a one-line summary only (no patient data). Throws on any failure. */
+function authorizeSheetsWriteNow() {
+  ScriptApp.requireAllScopes(ScriptApp.AuthMode.FULL);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const tmp = ss.insertSheet('_authz_write_test_' + Utilities.getUuid().slice(0, 8));
+  try {
+    tmp.getRange(1, 1).setValue('write-ok');
+    SpreadsheetApp.flush();
+    if (String(tmp.getRange(1, 1).getValue()) !== 'write-ok') throw new Error('authorizeSheetsWriteNow: the test write did not read back');
+  } finally {
+    ss.deleteSheet(tmp);
+  }
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) throw new Error('authorizeSheetsWriteNow: ' + LOCK_BUSY_MESSAGE);
+  lock.releaseLock();
+  const sh = getOrCreateSheet_(MW_DISCHARGE_SHEET, MW_DISCHARGE_COLUMNS);
+  const header = sh.getRange(1, 1, 1, MW_DISCHARGE_COLUMNS.length).getValues()[0].map(String);
+  if (header.join('|') !== MW_DISCHARGE_COLUMNS.join('|')) {
+    throw new Error('authorizeSheetsWriteNow: ' + MW_DISCHARGE_SHEET + ' header differs from MW_DISCHARGE_COLUMNS — fix the sheet by hand (append-only)');
+  }
+  Logger.log('authorizeSheetsWriteNow: OK — all scopes granted; temp-sheet write/read/delete passed; ' +
+    MW_DISCHARGE_SHEET + ' ready (' + Math.max(0, sh.getLastRow() - 1) + ' rows).');
+  return { ok: true };
 }
 
 /* ===== Expected discharges — Dashboard read (CHANGELOG-dashboard-expected-discharges.md) =====
@@ -13699,7 +13747,7 @@ function mwLogAdd_(caller, params) {
   row.deletedBy = '';
   const cols = mwColumns_(logKey);
   const lock = LockService.getScriptLock();
-  lock.waitLock(10000);
+  if (lock.tryLock(5000) !== true) return lockBusy_('mwLogAdd_');
   try {
     const sh = getOrCreateSheet_(def.sheet, cols);
     // Text cells: dates / times must never be coerced into Date cells.
@@ -13720,7 +13768,7 @@ function mwLogUpdate_(caller, params) {
   if (!id) return { ok: false, error: 'missing_id' };
   const cols = mwColumns_(logKey);
   const lock = LockService.getScriptLock();
-  lock.waitLock(10000);
+  if (lock.tryLock(5000) !== true) return lockBusy_('mwLogUpdate_');
   try {
     const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(def.sheet);
     if (!sh || sh.getLastRow() < 2) return { ok: false, error: 'not_found' };

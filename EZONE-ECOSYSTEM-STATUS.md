@@ -354,6 +354,18 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
   both repos run the identical fixture `test/fixtures/discharge-alert-cases.json` (sha256 pinned).
 - Israel time; text-only rendering; SW v65. Details: `CHANGELOG-dashboard-expected-discharges.md`.
 
+## Dashboard Apps Script: managers expected-discharge save fix (October 15, 2026)
+
+- Managers writes (`dischargeSet`, `logAdd`, `logUpdate`) take the script lock with a checked
+  `tryLock(5000)` → JSON `lock_busy`, instead of `waitLock(10000)` that threw and could outlast the
+  Managers proxy's 15 s timeout («upstream_error»).
+- Editor-run `authorizeSheetsWriteNow()`:
+  - `requireAllScopes(FULL)` first;
+  - a real temp-sheet write/read/delete;
+  - `ManagersExpectedDischarge` ensured.
+
+  Run once after deploy (DEPLOY.md). Details: `CHANGELOG-managers-discharge-save-fix.md`.
+
 ## Dashboard Apps Script: managers expected discharge date (October 15, 2026)
 
 - `managersWork` op `dischargeSet` sets / changes a patient's «שחרור משוער»; `houseData`
