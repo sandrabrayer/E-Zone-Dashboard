@@ -354,6 +354,19 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
 - **Audit**: editor-run, read-only `auditTemporaryExitsNow()` (initials only).
 - Details: `CHANGELOG-temporary-exit-return.md`.
 
+## Dashboard: «ועדות קרובות» — committees, read-only (October 15, 2026)
+
+- «דשבורד» card, all houses: «היום» first, then the next 7 days. Each row shows house, patient,
+  date, label and «נקבע ע״י <manager> ב-<date>».
+- Empty and error states are always visible. Ortal sees it on «בקרת גבייה».
+- Apps Script action `upcomingCommittees` (READ-ONLY, only today … +7):
+  - same `ManagersCommittee` sheet and readers as Managers;
+  - same gate as `expectedDischarges` (`PROXY_SECRET` + a personal session, every logged-in
+    user).
+- The shared rule lives in `lib/committee-alerts.js`; the fixture `committee-alert-cases.json` is
+  pinned in both repos.
+- SW v70. No new secret or variable. Details: `CHANGELOG-dashboard-committees.md`.
+
 ## Dashboard Apps Script: committee date per patient «ועדה» (October 15, 2026)
 
 - `managersWork` op `committeeSet` (`set` / `clear`) writes the new APPEND-ONLY sheet

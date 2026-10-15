@@ -499,6 +499,12 @@ deploys automatically on merge; until it has, the card shows «לא ניתן ל�
 in — any personal session, Ortal's controller view included (the card sits on «בקרת גבייה»
 there). No session → 401; nothing else changes. Still nothing to set.
 
+## «ועדות קרובות» card — nothing to set (October 15, 2026)
+
+`CHANGELOG-dashboard-committees.md`. A read-only action `upcomingCommittees` reuses
+`PROXY_SECRET` and the `ManagersCommittee` sheet. No Script Property, Railway variable or sheet.
+Code.gs deploys automatically on merge.
+
 ## Committee date «ועדה» — nothing to set (October 15, 2026)
 
 `CHANGELOG-managers-committee.md`. Code.gs deploys automatically on merge. The first save creates
