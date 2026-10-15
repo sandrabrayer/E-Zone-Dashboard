@@ -40,7 +40,7 @@ const set = (call, who, extra) => call({ op: 'dischargeSet', patientName: 'דנ�
 test('APPEND-ONLY header: the ManagersExpectedDischarge columns are pinned in order', () => {
   const { g } = boot();
   assert.deepStrictEqual(Array.from(g.run('MW_DISCHARGE_COLUMNS')),
-    ['id', 'house', 'patientName', 'entryDate', 'expectedDate', 'previousDate', 'editedAt', 'editedBy', 'editedById']);
+    ['id', 'house', 'patientName', 'entryDate', 'expectedDate', 'previousDate', 'editedAt', 'editedBy', 'editedById', 'state']);
   assert.strictEqual(g.run('MW_DISCHARGE_SHEET'), 'ManagersExpectedDischarge');
 });
 

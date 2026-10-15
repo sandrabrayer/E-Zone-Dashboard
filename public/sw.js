@@ -260,7 +260,9 @@
 // /sw.js, 15/10/2026); activate evicts v66 (v17 never reused).
 // v67 → v68: aggregate-only reminder preview, no delivery.
 // Live v67 verified 2026-10-15; changed app shell and billing rules.
-var CACHE_VERSION = 'v68';
+// v68 → v69: expected discharge clear / «אין צפי» on the «שחרורים צפויים» card
+// (/discharge-alerts.js changed). Live v68 verified 2026-10-15.
+var CACHE_VERSION = 'v69';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
