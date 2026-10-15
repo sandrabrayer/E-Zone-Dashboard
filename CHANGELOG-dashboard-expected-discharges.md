@@ -61,17 +61,17 @@ Dashboard showed nothing.
 
 ## UI
 RTL, 16px text throughout the card, 44px rows / retry button, wraps at 360px (checked in Chromium
-at 360×740: no horizontal scroll). SW `CACHE_VERSION` **v63 → v64** (production `/sw.js` served
-v63 on 15/10/2026); `/discharge-alerts.js` added to the hashed bundle.
+at 360×740: no horizontal scroll). SW `CACHE_VERSION` **v64 → v65** (production `/sw.js` served
+v64 on 15/10/2026, after PR #232); `/discharge-alerts.js` added to the hashed bundle.
 
 ## Display-only
 No bonus, occupancy or billing figure reads it; the existing Dashboard snapshots and suites are
 unchanged.
 
 ## Tests
-2843 → 2868 (+25): `test/dashboard-expected-discharges.test.js` (24 new) and
+2859 → 2884 (+25; base = the deployed branch after PR #232): `test/dashboard-expected-discharges.test.js` (24 new) and
 `test/fixtures/discharge-alert-cases.json`; `test/dashboard-perf-assets.test.js` asset table (+1 per-file case) and SW
-version (v64) updated.
+version (v65) updated.
 
 ## Deploy
 Apps Script: automatic on merge (Code.gs changed). Railway: automatic. No manual step.

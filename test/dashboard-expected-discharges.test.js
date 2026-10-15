@@ -424,7 +424,7 @@ test('D: the gate runs on BOTH /api/sheets routes, before the proxy secret is at
 /* E. wiring                                                              */
 /* ===================================================================== */
 
-test('E: served like the other lib rules, loaded before app.js, hashed by the SW; SW v64', () => {
+test('E: served like the other lib rules, loaded before app.js, hashed by the SW; SW v65', () => {
   const server = read('server.js'); const index = read('public', 'index.html'); const sw = read('public', 'sw.js');
   assert.match(server, /'\/discharge-alerts\.js': \{ file: path\.join\(__dirname, 'lib', 'discharge-alerts\.js'\)/);
   assert.match(server, /app\.get\('\/discharge-alerts\.js', sendLibAsset\('\/discharge-alerts\.js'\)\);/);
@@ -433,7 +433,7 @@ test('E: served like the other lib rules, loaded before app.js, hashed by the SW
   assert.match(index, /<div class="card xd-card" id="expected-discharges"/);
   assert.doesNotMatch(index.match(/<div class="card xd-card"[^>]*>/)[0], /data-finance/, 'not a money widget');
   assert.match(sw, /var BUNDLE_PATHS = \[[^\]]*'\/discharge-alerts\.js'[^\]]*\]/);
-  assert.match(sw, /var CACHE_VERSION = 'v64';/);
+  assert.match(sw, /var CACHE_VERSION = 'v65';/);
 });
 
 test('E: app.js — one cached GET, rendered via DischargeAlerts only, no innerHTML / no logging in the block', () => {

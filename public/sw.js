@@ -245,11 +245,14 @@
 // v62 → v63: global patient/lead search (CHANGELOG-global-patient-search.md) —
 // app.js, index.html and style.css changed; v62 was the LIVE version
 // (production /sw.js, 15/10/2026); activate evicts v62 (v17 never reused).
-// v63 → v64: expected discharges on the dashboard (CHANGELOG-dashboard-expected-discharges.md)
+// v63 → v64: read-only billing follow-up queue (CHANGELOG-billing-followup-queue.md).
+// app.js, index.html, style.css and billing-control-rules.js changed;
+// production /sw.js read v63 on 15/10/2026. Activate evicts v63.
+// v64 → v65: expected discharges on the dashboard (CHANGELOG-dashboard-expected-discharges.md)
 // — app.js, index.html and style.css changed and the page loads a new
-// /discharge-alerts.js; v63 was the LIVE version (production /sw.js,
-// 15/10/2026); activate evicts v63 (v17 never reused).
-var CACHE_VERSION = 'v64';
+// /discharge-alerts.js; v64 was the LIVE version (production /sw.js,
+// 15/10/2026); activate evicts v64 (v17 never reused).
+var CACHE_VERSION = 'v65';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

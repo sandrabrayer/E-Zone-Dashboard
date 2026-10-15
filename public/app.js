@@ -15212,7 +15212,7 @@ function billingControlState() {
   if (!state.bc) {
     state.bc = {
       data: null, loading: false, error: '', selected: {}, flagOpen: '', flagDraft: '',
-      month: '', house: 'all',
+      month: '', house: 'all', followupHouse: 'all', followupOwner: 'all',
       // «שולם חלקית» amount form and the note editor (one row at a time each).
       partialOpen: '', partialDraft: '', noteOpen: '', noteDraft: '',
       // «כפילות» reason form (one row at a time).
@@ -15321,6 +15321,13 @@ async function confirmReceipts(ids, status, extra) {
   if (s.data && Array.isArray(s.data.receipts)) {
     s.data.receipts = s.data.receipts.filter(r => !voided[r.id])
       .map(r => (changed[r.id] ? Object.assign({}, r, changed[r.id]) : r));
+  }
+  // Voiding changes the cycle balance too. Do not present the old cycle
+  // projection as complete while the existing read endpoint refreshes it.
+  if ((res.voided || []).length && s.data && s.data.followup) {
+    s.data.followup.complete = false;
+    s.data.followup.cycles = [];
+    Promise.resolve().then(loadBillingControl).catch(() => {});
   }
   if (s.dupOpen && ids.indexOf(s.dupOpen) >= 0 && status) { s.dupOpen = ''; s.dupDraft = ''; }
   ids.forEach(id => { delete s.selected[id]; });
@@ -15550,6 +15557,31 @@ function bcExceptionsHtml(ex) {
     ${bcUnderStampedHtml(e.underStamped)}`;
 }
 
+function bcFollowupHtml(rows) {
+  const labels = {
+    reported: ['ממתין לאימות', 'לבדוק בבנק ולאמת או לסמן בעיה'],
+    partial: ['הפרש באימות חלקי', 'לברר את ההפרש לפני פנייה נוספת למשפחה'],
+    flagged: ['בעיה בדיווח', 'לברר ולטפל לפי ההערה של אורטל'],
+    recorded: ['יתרת מחזור רשום', 'לברר את יתרת הגבייה והדיווח'],
+    unrecorded: ['מחזור ללא דיווח', 'לבדוק אם התשלום התקבל ולדווח בהתאם'],
+  };
+  return rows.map(r => {
+    const info = labels[r.kind] || ['פריט לבדיקה', 'לבדוק את המקור'];
+    const next = r.funderGrace ? 'לעקוב אחר התשלום מהגורם המממן' : info[1];
+    const age = r.ageDays === null ? 'מועד תחילת המעקב חסר' : `${r.ageDays} ימים`;
+    const source = r.receiptId
+      ? `<button type="button" class="btn small" data-bc-follow-receipt="${escapeHtml(r.receiptId)}">פתיחת הקבלה</button>`
+      : '<button type="button" class="btn small" data-bc-follow-debt="true">פתיחת חובות פתוחים</button>';
+    return `<div class="bc-row bc-followup-row${r.funderGrace ? ' bc-followup-waiting' : ''}">
+      <div class="bc-head"><b class="bc-name">${escapeHtml(r.patientName || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(r.houseId))}</span> <span class="bc-amount">${escapeHtml(fmtShekel(r.amount))}</span></div>
+      <div class="bc-sub">${escapeHtml(info[0])} · באחריות ${r.owner === 'vered' ? 'ורד' : 'אורטל'} · ${escapeHtml(age)}</div>
+      <div class="bc-sub">מועד גבייה מקורי: ${r.originalDueDate ? escapeHtml(formatDateHe(r.originalDueDate)) : 'לא זמין'}${r.receiptId ? ` · דווח: ${r.openedDate ? escapeHtml(formatDateHe(r.openedDate)) : 'לא זמין'}` : ''}</div>
+      ${r.funderGrace ? `<div class="bc-followup-grace">ממתין לגורם מממן עד ${escapeHtml(formatDateHe(r.funderGraceUntil) || '—')}</div>` : ''}
+      <p class="bc-followup-next">${escapeHtml(next)}</p>${source}
+    </div>`;
+  }).join('');
+}
+
 function renderBillingControl() {
   const screen = document.getElementById('screen-billing-control');
   if (!screen || state.billingControl === false) return;
@@ -15565,11 +15597,30 @@ function renderBillingControl() {
     set('bc-partial', '');
     set('bc-confirmed', '');
     set('bc-understamped', '');
+    set('bc-followup', `<p class="billing-date-label">${s.loading ? busyLabelFor('load') : 'נתוני המעקב טרם נטענו'}</p>`);
+    set('bc-followup-count', '—');
+    const warning = document.getElementById('bc-followup-warning');
+    if (warning) { warning.textContent = ''; warning.classList.add('hidden'); }
     return;
   }
   const receipts = Array.isArray(s.data.receipts) ? s.data.receipts : [];
   if (!s.month) s.month = bcThisMonth();
   set('bc-cards', bcCardsHtml(R.summaryCards(s.data, bcThisMonth())));
+  const followupReady = typeof R.followupRows === 'function';
+  const work = followupReady ? R.followupRows(s.data, { house: s.followupHouse, owner: s.followupOwner }) : [];
+  const incomplete = !followupReady || !s.data.followup || s.data.followup.complete !== true;
+  const warning = document.getElementById('bc-followup-warning');
+  if (warning) {
+    warning.textContent = incomplete ? 'הנתונים חלקיים: יתרות המחזורים לא נטענו במלואן. יש לרענן; אין להסיק שאין יתרות פתוחות.' : s.error ? 'מוצגים נתונים מהטעינה הקודמת; הרענון האחרון נכשל.' : '';
+    warning.classList.toggle('hidden', !incomplete && !s.error);
+  }
+  set('bc-followup-count', `${work.length}${incomplete ? '+' : ''}`);
+  set('bc-followup', work.length ? bcFollowupHtml(work) : `<p class="billing-date-label">${incomplete ? 'לא ניתן להשלים את רשימת המעקב כרגע' : 'אין פריטים להמשך טיפול בסינון שנבחר'}</p>`);
+  const followHouse = document.getElementById('bc-followup-house');
+  if (followHouse && followHouse.options && followHouse.options.length <= 1) followHouse.innerHTML = '<option value="all">כל הבתים</option>' + HOUSES.map(h => `<option value="${escapeHtml(h.id)}">${escapeHtml(h.name)}</option>`).join('');
+  if (followHouse) followHouse.value = s.followupHouse || 'all';
+  const followOwner = document.getElementById('bc-followup-owner');
+  if (followOwner) followOwner.value = s.followupOwner || 'all';
 
   const queue = R.receiptsByStatus(receipts, 'reported');
   const flagged = R.receiptsByStatus(receipts, 'flagged');
@@ -15664,6 +15715,10 @@ function initBillingControlControls() {
   screen._bcWired = true;
   const s = billingControlState();
   const refresh = document.getElementById('bc-refresh');
+  const followOwner = document.getElementById('bc-followup-owner');
+  const followHouse = document.getElementById('bc-followup-house');
+  if (followOwner) followOwner.onchange = () => { s.followupOwner = followOwner.value; renderBillingControl(); };
+  if (followHouse) followHouse.onchange = () => { s.followupHouse = followHouse.value; renderBillingControl(); };
   if (refresh) refresh.onclick = () => busyButton(refresh, 'load', loadBillingControl);
   const exp = document.getElementById('bc-export');
   if (exp) exp.onclick = () => busyButton(exp, 'load', exportBillingControlXlsx)
@@ -15725,7 +15780,13 @@ function initBillingControlControls() {
     const t = e.target && e.target.closest ? e.target.closest('button') : null;
     if (!t) return;
     const attr = n => t.getAttribute(n);
-    if (attr('id') === 'bc-debt-export') {
+    if (attr('data-bc-follow-receipt')) {
+      const row = Array.from(screen.querySelectorAll('[data-bc-id]')).find(el => el.getAttribute('data-bc-id') === attr('data-bc-follow-receipt'));
+      if (row) { row.setAttribute('tabindex', '-1'); row.focus({ preventScroll: true }); row.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    } else if (attr('data-bc-follow-debt')) {
+      const tab = document.querySelector('.tab[data-screen="billing"]');
+      if (tab) { tab.click(); openDebtAgingSection(); }
+    } else if (attr('id') === 'bc-debt-export') {
       busyButton(t, 'load', exportBillingControlDebtXlsx).catch(err => showError('הייצוא נכשל — ' + ((err && err.message) || 'שגיאה')));
     } else if (attr('data-bc-confirm')) {
       busyButton(t, 'save', () => confirmReceipts([attr('data-bc-confirm')], 'confirmed'));
