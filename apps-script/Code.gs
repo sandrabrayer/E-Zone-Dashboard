@@ -1217,7 +1217,10 @@ const CONTROLLER_ACTIONS = ['billingControlQueue', 'confirmPayment', 'debtAging'
   'getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'cleanupReport',
   /* Appended (CHANGELOG-refunds-auto-policy.md): Ortal pays the refunds, so
    * «סמן כשולם» is the one write of «גבייה» her view reaches. */
-  'settleRefund'];
+  'settleRefund',
+  /* Appended (CHANGELOG-expected-discharges-all-users.md): «שחרורים צפויים»,
+   * read-only — every logged-in user may see it, Ortal included. */
+  'expectedDischarges'];
 const CONTROLLER_GETDATA_KEYS = ['ok', 'patients', 'billingOverrides'];
 const CONTROLLER_USER_IDS = ['ortal'];
 
@@ -1689,7 +1692,7 @@ function handle_(params) {
       return jsonOut_(managersWork_(params));
     }
     // Expected discharges (Task F): READ-ONLY, PROXY_SECRET-gated, and refused
-    // unless a verified personal staff session — even in 'log' mode.
+    // unless a verified personal session (any logged-in user) — even in 'log' mode.
     if (action === 'expectedDischarges') {
       const no = expectedDischargesRefused_(params);
       if (no) return jsonOut_(no);
@@ -13629,16 +13632,19 @@ function mwDischargeSet_(caller, params) {
  * Gate: PROXY_SECRET (Script Property) like every Dashboard read — it is NOT
  * in OPEN_ACTIONS. On top of that, and in BOTH proxy-secret modes
  * (fail-closed even in 'log'), handle_ refuses it unless the caller is a
- * VERIFIED personal Dashboard session holding the `staff` role and not the
- * controller view: exactly the sessions that already see the patient list.
- * Without a valid PROXY_SECRET there is no verified actor → unauthorized. */
+ * VERIFIED personal Dashboard session. CEO decision (15 Oct 2026,
+ * CHANGELOG-expected-discharges-all-users.md): EVERY user who can log in
+ * may read it — no per-person allow-list and no role check (the controller
+ * view reaches it through CONTROLLER_ACTIONS). Without a valid PROXY_SECRET
+ * there is no verified actor → unauthorized; a verified call that is not a
+ * personal session (e.g. the meeting-report proxy) → forbidden. */
 const EXPECTED_DISCHARGES_TZ = 'Asia/Jerusalem';
 
 /* null when allowed, else the refusal body. Pure over the verified actor. */
 function expectedDischargesRefused_(params) {
   const a = actingUser_(params);
   if (!a.verified) return { ok: false, error: 'unauthorized' };
-  if (a.auth !== 'personal' || isControllerActor_(a) || a.roles.indexOf('staff') < 0) {
+  if (a.auth !== 'personal' || a.id === '') {
     return { ok: false, error: 'forbidden', message: ROLE_FORBIDDEN_MESSAGE };
   }
   return null;
