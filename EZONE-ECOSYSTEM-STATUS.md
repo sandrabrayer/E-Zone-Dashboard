@@ -279,6 +279,19 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
   with follow-up dates. New sheets `ManagersFamilyCalls`, `ManagersStaffTalks`,
   `ManagersEvents`. Details: `CHANGELOG-managers-work-tool.md`.
 
+## Dashboard Apps Script: temporary exit and return keeps the stay (October 15, 2026)
+
+- **CEO rule**: a return within `READMIT_WINDOW_DAYS = 7` of the exit (same house + name)
+  continues the stay.
+- **Counting**: one count per patient per day; gap days are not counted (bed-held is not
+  recorded).
+- **«יום N»**: the admission date and «יום N» run from the first admission; a return is not a
+  new admission.
+- **From Oct 2026 only** (`STAY_CONTINUITY_FROM_MONTH`); settled months keep the original
+  computation byte-for-byte.
+- **Audit**: editor-run, read-only `auditTemporaryExitsNow()` (initials only).
+- Details: `CHANGELOG-temporary-exit-return.md`.
+
 ## Dashboard Apps Script: managers expected discharge date (October 15, 2026)
 
 - `managersWork` op `dischargeSet` sets / changes a patient's «שחרור משוער»; `houseData`
