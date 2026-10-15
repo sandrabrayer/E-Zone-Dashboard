@@ -279,6 +279,15 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
   with follow-up dates. New sheets `ManagersFamilyCalls`, `ManagersStaffTalks`,
   `ManagersEvents`. Details: `CHANGELOG-managers-work-tool.md`.
 
+## Dashboard Apps Script: managers expected discharge date (October 15, 2026)
+
+- `managersWork` op `dischargeSet` sets / changes a patient's «שחרור משוער»; `houseData`
+  returns `expectedDischarge` per patient and `expectedDischargeSupported: true`.
+- New APPEND-ONLY sheet `ManagersExpectedDischarge` (every edit a new row: who, when, the
+  previous value); a stale `previousDate` → `conflict`, never a silent overwrite.
+- Same fail-closed `MANAGERS_WORK_SECRET`; no new Script Property. Details:
+  `CHANGELOG-managers-expected-discharge.md`.
+
 ## Dashboard Apps Script: managers house manpower cost (October 14, 2026)
 
 - `managersWork` op `houseCost` returns the caller's house cost totals for a month, from the
