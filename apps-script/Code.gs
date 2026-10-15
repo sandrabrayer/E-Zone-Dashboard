@@ -17381,6 +17381,15 @@ function paymentsDigestRun_(mode, nowArg) {
   const now = (nowArg instanceof Date) ? nowArg : new Date();
   const props = PropertiesService.getScriptProperties();
 
+  // Explicit opt-in transition: a surviving old trigger uses the same daily
+  // reminder ledger, never a second mail stream. Preview/test stay unchanged.
+  if (mode === 'scheduled' && props.getProperty('BILLING_REMINDER_ENABLED') === 'true') {
+    if (typeof billingReminderRun_ !== 'function') return { ok: false, sent: false, error: 'reminder_unavailable' };
+    const reminder = billingReminderRun_(now);
+    if (!reminder.ok) throw new Error('Billing reminder failed; inspect the bounded sender state.');
+    return reminder;
+  }
+
   if (mode === 'preview') {
     const b = digestBuild_(props, now, false);
     const to = digestRecipients_(props.getProperty(DIGEST_PROP_TO));

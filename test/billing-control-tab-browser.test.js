@@ -444,3 +444,29 @@ test('reminder preview: private aggregate audiences, source navigation, confirma
     await o.ctx.close();
   } finally { await browser.close(); server.close(); }
 });
+
+
+test('reminder email: Hebrew RTL, readable text, working destination and no overflow at 360px/1280px', { skip: skip && why, timeout: 30000 }, async () => {
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const page = await browser.newPage();
+    const group = owner => ({ owner, count: 7, byKind: { reported: 2, partial: 1, flagged: 1, recorded: 2, unrecorded: 1 }, oldestWorkAge: 5, unknownAgeCount: 1, waitingCount: 3 });
+    const mail = require('../lib/billing-reminder-mail').render({ owner: 'ortal', groups: [group('ortal'), group('vered')] }, '2026-10-14');
+    const requests = [];
+    await page.route('**/*', route => { requests.push(route.request().url()); return route.abort(); });
+    await page.setContent(mail.htmlBody);
+    assert.equal(await page.locator('html').getAttribute('lang'), 'he');
+    assert.equal(await page.locator('body').evaluate(el => getComputedStyle(el).direction), 'rtl');
+    assert.match(await page.locator('h1').textContent(), /תזכורת משימות — אורטל/);
+    assert.equal(await page.locator('a').getAttribute('href'), 'https://ezone-dashboard.up.railway.app/#billing-control');
+    assert.equal(await page.locator('body').evaluate(el => getComputedStyle(el).fontSize), '16px');
+    for (const width of [360, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      assert.equal(await noSideScroll(page), true);
+      const bounds = await page.locator('p, h1, h2, a').evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; }));
+      assert.ok(bounds.every(Boolean));
+      await shot(page, 'reminder-mail-' + width + '.png');
+    }
+    assert.deepEqual(requests, [], 'no tracking images, fonts or remote loads');
+  } finally { await browser.close(); }
+});
