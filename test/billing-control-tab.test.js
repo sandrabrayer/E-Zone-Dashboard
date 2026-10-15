@@ -140,7 +140,8 @@ test('lists: Code.gs and lib/ hold the same billing-control lists; nothing new i
   for (const a of scope.BILLING_CONTROL_ACTIONS) assert.ok(!open.includes(a), a + ' is NOT open — PROXY_SECRET-gated');
   // + the two own-secret coordinators-roster actions (PR #177); nothing billing.
   assert.deepEqual(open, ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster',
-    'getPatientsForCoordinators', 'recordDischargeFromCoordinators', 'managersWork']); // + managersWork (own MANAGERS_WORK_SECRET, 2026-10-13)
+    'getPatientsForCoordinators', 'recordDischargeFromCoordinators', 'managersWork', // + managersWork (own MANAGERS_WORK_SECRET, 2026-10-13)
+    'getCommitteesForCoordinators']); // + own COORDINATORS_COMMITTEES_SECRET, read-only (2026-10-15)
   assert.ok(!arr(g.run('DELETE_ACTIONS')).includes('confirmPayment'));
   assert.ok(!arr(g.run('APPROVER_ACTIONS')).includes('confirmPayment'));
   assert.deepEqual([...roleScope.CONFIRM_ACTIONS], ['confirmPayment']);
