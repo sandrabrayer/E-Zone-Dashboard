@@ -408,6 +408,7 @@ test('reminder preview: private aggregate audiences, source navigation, confirma
 
     await page.locator('#bc-queue [data-bc-status]').first().selectOption('confirmed');
     await page.waitForFunction(() => document.querySelector('[data-reminder-audience="ortal"] [data-reminder-count="ortal"]').textContent === '1');
+    await page.locator('#toast-banner').waitFor({ state: 'hidden' });
     assert.equal(await vered.locator('[data-reminder-count="vered"]').textContent(), '1');
     const fcols = Array.from(server.gs.run('FUNDER_COLUMNS'));
     server.gs.sandbox.__sheets.Funders = richSheet('Funders', fcols);

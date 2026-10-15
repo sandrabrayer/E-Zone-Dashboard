@@ -499,6 +499,15 @@ deploys automatically on merge; until it has, the card shows «לא ניתן ל�
 in — any personal session, Ortal's controller view included (the card sits on «בקרת גבייה»
 there). No session → 401; nothing else changes. Still nothing to set.
 
+## Managers expected-discharge save — one editor run (October 15, 2026)
+
+`CHANGELOG-managers-discharge-save-fix.md`. Once, after the deploy, as the account that owns the
+Web App deployment: Apps Script editor → function **`authorizeSheetsWriteNow`** → **Run** → in the
+consent dialog tick **every** box (a partial grant makes writes fail while reads pass) → the
+execution log must read `authorizeSheetsWriteNow: OK — all scopes granted; temp-sheet
+write/read/delete passed; ManagersExpectedDischarge ready`. It touches only a temporary sheet
+(deleted) and the existing append-only header. No Script Property or Railway variable changes.
+
 ## Security
 
 - Credentials live **only** in GitHub Secrets — never committed, never printed;

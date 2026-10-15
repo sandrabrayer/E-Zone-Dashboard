@@ -33,15 +33,16 @@ and idempotency/retry/failure recording; none is claimed implemented here.
 
 ## Validation
 
-- Full local suite: **2,836 passes, 0 failures, 67 browser skips**.
+- Full local suite on the integrated base: **2,845 passes, 0 failures, 67 browser skips**.
 - Six new synthetic regressions cover audiences, privacy, missing dates/grace,
   unavailable/partial/stale sources, immediate confirmation and safe navigation.
 - Real Chromium regression covers 360px/1280px, labels, privacy, independent
   filters, keyboard focus, immediate confirmation, funder grace, stale refresh,
   text contrast and RTL bounds. Results/screenshots are recorded in the PR.
 - `npm audit`: 0 high/critical, one existing moderate; dependencies unchanged.
-- Live cache v67 verified; candidate v68. Built on deployed PR #235,
-  `f1a1262cd17a616d5888c97c1a6d94a736247dc4`, including #234's calendar.
+- Live cache v67 verified; candidate v68. Built on the current merged base,
+  `7f10b574d4cca7da94626b538e21680f607792b3` (#236), including #234's calendar
+  and #235. The parallel backend fix is retained without further modification.
 
 Sandra also clarified that Vered uses the app on Fridays and Saturday nights.
 The calendar never gates access/actions on any day; the on-screen explanation
