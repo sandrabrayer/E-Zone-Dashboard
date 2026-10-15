@@ -2749,3 +2749,40 @@ input[type="date"].date-invalid {
 }
 button.mtg-bad-date-lead { cursor: pointer; }
 button.mtg-bad-date-lead:hover { background: rgba(255, 176, 32, 0.18); }
+
+/* ===== Global search («🔍 חיפוש») — CHANGELOG-global-patient-search.md ===== */
+/* Floating, below the sticky top bar (50) and every modal; never part of the
+ * top-bar row, which has no spare width at laptop sizes. */
+.gs-fab {
+  position: fixed; left: 16px; bottom: 16px; z-index: 40;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-width: 48px; height: 48px; padding: 0 16px; border: none; border-radius: 999px;
+  background: var(--primary-strong); color: #fff; font: inherit; font-size: 14px; font-weight: 700;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45); cursor: pointer;
+}
+.gs-fab:hover { background: var(--primary); }
+.gs-fab span[aria-hidden] { font-size: 18px; line-height: 1; }
+@media print { .gs-fab, .gs-panel { display: none !important; } }
+.gs-panel {
+  position: fixed; top: 60px; inset-inline: 0; margin-inline: auto; z-index: 60;
+  width: min(560px, calc(100vw - 24px));
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  padding: 10px;
+}
+.gs-panel input[type="search"] { width: 100%; box-sizing: border-box; font-size: 16px; /* 16px: no iOS zoom */ }
+.gs-results { margin-top: 8px; max-height: min(60vh, 440px); overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.gs-note { padding: 10px 6px; font-size: 13px; color: var(--text-muted); }
+.gs-item {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  width: 100%; text-align: start; min-height: 44px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; color: var(--text); font: inherit; cursor: pointer;
+}
+.gs-item:hover, .gs-item.active { border-color: var(--primary); background: var(--surface-3); }
+.gs-name { font-weight: 700; }
+.gs-tag { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: rgba(91, 139, 255, 0.18); color: var(--text); }
+.gs-tag-lead { background: rgba(255, 176, 32, 0.22); }
+.gs-tag-discharged, .gs-tag-closedLead { background: rgba(152, 163, 199, 0.22); }
+.gs-meta, .gs-phone { font-size: 12px; color: var(--text-muted); }
+.gs-hit { outline: 2px solid var(--primary); outline-offset: 2px; transition: outline-color 0.3s; }

@@ -1381,6 +1381,18 @@ Detail: `CHANGELOG-refunds-auto-policy.md`, plan §8.7. **Nothing to set.**
   note never reaches her.
 - SW `CACHE_VERSION` v61 (live) → **v62**. Code.gs → clasp CI on merge.
 
+## Dashboard: global search «🔍 חיפוש» (October 15, 2026)
+
+Detail: `CHANGELOG-global-patient-search.md`. **Railway only; nothing to set.**
+
+- A floating button (and the `/` key) opens one search over patients, leads,
+  closed leads and discharged rows, by name or phone (any phone format; a
+  patient is reached through its linked lead). A pick opens the record's own tab
+  with that tab's filter pre-filled. Read-only, text-only rendering, removed
+  from the DOM for the controller view (Ortal).
+- It is NOT in the top bar: that bar already overflows below ~1440 px.
+- SW `CACHE_VERSION` v62 (live) → **v63**.
+
 ## Dashboard: refund rule v2 — stay day 14, every house (October 7, 2026)
 
 Detail: `CHANGELOG-refund-rule-v2.md`, plan §8.6. **Nothing to set.**

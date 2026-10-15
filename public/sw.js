@@ -242,7 +242,10 @@
 // one «זיכויים לתשלום» list, no «ממתין להחלטה». app.js, index.html,
 // style.css and /refund-rules.js changed; v61 was the LIVE version
 // (production /sw.js, 14/10/2026); activate evicts v61 (v17 never reused).
-var CACHE_VERSION = 'v62';
+// v62 → v63: global patient/lead search (CHANGELOG-global-patient-search.md) —
+// app.js, index.html and style.css changed; v62 was the LIVE version
+// (production /sw.js, 15/10/2026); activate evicts v62 (v17 never reused).
+var CACHE_VERSION = 'v63';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

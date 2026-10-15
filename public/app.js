@@ -1405,6 +1405,7 @@ function initPin() {
   });
 
   initTabs();
+  initGlobalSearch();
   initPayoutForecastControls();
   initDebtAgingControls();
   initFunderControls();
@@ -1684,6 +1685,12 @@ function applyControllerView() {
   // «השלמת גורם מממן» is data entry — never in the read-only view.
   const ff = document.getElementById('funder-fill');
   if (ff && ff.remove) ff.remove();
+  // «🔍 חיפוש» searches patients, leads and discharged rows — none of which
+  // this view holds; the control is removed, not hidden.
+  ['global-search-open', 'global-search-panel'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && el.remove) el.remove();
+  });
   _controllerApplied = true;
   _financeRemoved = true;
   if (first) {
@@ -3134,6 +3141,317 @@ function findDuplicateLeadByPhone(normalizedPhone) {
     }
   }
   return null;
+}
+
+/* ====================================================
+   GLOBAL SEARCH (חיפוש כללי) — one box over every record
+   (CHANGELOG-global-patient-search.md)
+   ====================================================
+   «🔍 חיפוש» in the top bar opens a panel that searches, by name or phone:
+   patients (every status), leads, closed leads (שימור לידים) and discharged
+   audit rows. Picking a result opens the tab that holds the record with that
+   tab's OWN filter pre-filled with the name — no new card rendering, so the
+   record looks and behaves exactly as it does in its tab. Read-only and
+   client-side (state only): no request, no Code.gs, no sheet, no secret.
+   The controller view (Ortal) has the control REMOVED from the DOM, and a
+   result whose tab the session may not open is never navigated to. */
+const GLOBAL_SEARCH_LIMIT = 12;
+const GLOBAL_SEARCH_MIN_DIGITS = 3;
+const GLOBAL_SEARCH_SCREENS = Object.freeze({
+  patient: 'patients', lead: 'leads', closedLead: 'retention', discharged: 'discharged-patients',
+});
+
+/* A phone as comparable national digits: digits only, the international prefix
+ * (00 / 972) or the trunk 0 dropped — so 050-200 1003, 0502001003, 502001003
+ * and +972 50 200 1003 are one string. Pure. */
+function searchPhoneDigits(raw) {
+  let d = String(raw == null ? '' : raw).replace(/\D/g, '');
+  d = d.replace(/^00/, '');
+  if (d.indexOf('972') === 0) d = d.slice(3);
+  else if (d.charAt(0) === '0') d = d.slice(1);
+  return d;
+}
+
+/* The typed query → { kind:'name', tokens } | { kind:'phone', digits } | null.
+ * Any letter → a NAME search (every typed word must be inside the name, in any
+ * order; invisibles/niqqud-free matching via normalizeNameForMatch). Only
+ * digits and phone punctuation → a PHONE search, from GLOBAL_SEARCH_MIN_DIGITS
+ * digits. Anything shorter is null (no results, a hint is shown). Pure. */
+function parseGlobalQuery(raw) {
+  const text = normalizeNameForMatch(raw);
+  if (!text) return null;
+  if (/[^\d\s+\-()]/.test(text)) return { kind: 'name', tokens: text.split(' ') };
+  const digits = String(raw).replace(/\D/g, '');
+  if (digits.length < GLOBAL_SEARCH_MIN_DIGITS) return null;
+  const national = searchPhoneDigits(digits);
+  return national ? { kind: 'phone', digits: national } : null;
+}
+
+/* Every phone a lead carries (patient, referrer, billing), blanks dropped. */
+function leadSearchPhones(lead) {
+  if (!lead) return [];
+  return [lead.phone, lead.contactPhone, lead.billingPhone]
+    .map(v => String(v == null ? '' : v).trim()).filter(Boolean);
+}
+
+function globalSearchNameHit(name, parsed) {
+  const n = normalizeNameForMatch(name);
+  return !!n && parsed.tokens.every(t => n.indexOf(t) >= 0);
+}
+
+/* The first of `phones` containing the typed digits, or ''. */
+function globalSearchPhoneHit(phones, parsed) {
+  const hit = (phones || []).find(p => {
+    const d = searchPhoneDigits(p);
+    return !!d && d.indexOf(parsed.digits) >= 0;
+  });
+  return hit || '';
+}
+
+/* The records matching `raw`, best first → { items, total, parsed }.
+ * `s` = a state-like object (patients, leads, irrelevantLeads,
+ * dischargedPatients); `items` is cut to `limit`, `total` is the full count.
+ * A patient row carries no phone of its own, so a PHONE search reaches a
+ * patient through its linked lead (patientLeadInfo). The lead a listed patient
+ * was admitted from is not repeated (the patient IS that record now), nor is a
+ * discharged audit row already shown as the released patient (same house +
+ * name). A lead whose patient does NOT match the query stays listed.
+ * Pure — no DOM, no I/O. */
+function globalSearchResults(s, raw, limit) {
+  const src = s || state;
+  const parsed = parseGlobalQuery(raw);
+  if (!parsed) return { items: [], total: 0, parsed: null };
+  const patients = Array.isArray(src.patients) ? src.patients : [];
+  const pool = patientLeadPool(src);
+  const items = [];
+  const shown = new Set();
+  const admittedFrom = new Set();   // leads that are already shown as their patient
+  const key = (houseId, name) => unadmittedHouseId(houseId) + '|' + normalizeNameForMatch(name);
+  const add = (item) => {
+    item.houseLabel = item.houseId ? houseLabel(item.houseId) : '';
+    items.push(item);
+  };
+
+  patients.forEach(p => {
+    if (!p) return;
+    let phone = '';
+    let hit;
+    let linkedId = trimName(p.fromLead);
+    if (parsed.kind === 'name') {
+      hit = globalSearchNameHit(p.name, parsed);
+    } else {
+      const lead = patientLeadInfo(p, pool, patients).lead;
+      phone = globalSearchPhoneHit(leadSearchPhones(lead), parsed);
+      hit = !!phone;
+      if (lead) linkedId = trimName(lead.id);
+    }
+    if (!hit) return;
+    if (linkedId) admittedFrom.add(linkedId);
+    const released = p.status === 'released';
+    const st = STATUS_OPTIONS.find(o => o.id === p.status);
+    shown.add(key(p.houseId, p.name));
+    add({ kind: 'patient', id: String(p.id || ''), name: trimName(p.name), phone, houseId: p.houseId || '',
+      tag: 'מטופל · ' + (st ? st.label : 'פעיל'), rank: released ? 2 : 0, patient: p });
+  });
+
+  (Array.isArray(src.leads) ? src.leads : []).forEach(l => {
+    if (!l || l.stage === 'irrelevant' || admittedFrom.has(trimName(l.id))) return;
+    const phone = parsed.kind === 'phone' ? globalSearchPhoneHit(leadSearchPhones(l), parsed) : '';
+    if (parsed.kind === 'name' ? !globalSearchNameHit(l.name, parsed) : !phone) return;
+    const stage = STAGES.find(x => x.id === l.stage);
+    add({ kind: 'lead', id: String(l.id || ''), name: trimName(l.name), phone: phone || trimName(l.phone),
+      houseId: unadmittedHouseId(l.house), tag: 'ליד · ' + (stage ? stage.label : 'חדש'), rank: 1 });
+  });
+
+  (Array.isArray(src.dischargedPatients) ? src.dischargedPatients : []).forEach(d => {
+    if (!d || !dischargeRowOpen(d) || shown.has(key(d.houseId, d.name))) return;
+    const phone = parsed.kind === 'phone' ? globalSearchPhoneHit([d.phone], parsed) : '';
+    if (parsed.kind === 'name' ? !globalSearchNameHit(d.name, parsed) : !phone) return;
+    add({ kind: 'discharged', id: String(d.id || ''), name: trimName(d.name), phone: phone || trimName(d.phone),
+      houseId: d.houseId || '', tag: 'משוחרר', rank: 3 });
+  });
+
+  (Array.isArray(src.irrelevantLeads) ? src.irrelevantLeads : []).forEach(l => {
+    if (!l) return;
+    const phone = parsed.kind === 'phone' ? globalSearchPhoneHit(leadSearchPhones(l), parsed) : '';
+    if (parsed.kind === 'name' ? !globalSearchNameHit(l.name, parsed) : !phone) return;
+    add({ kind: 'closedLead', id: String(l.id || ''), name: trimName(l.name), phone: phone || trimName(l.phone),
+      houseId: unadmittedHouseId(l.house), tag: 'ליד סגור (שימור לידים)', rank: 4 });
+  });
+
+  items.sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name, 'he'));
+  const cap = Math.max(1, Number(limit) || GLOBAL_SEARCH_LIMIT);
+  return { items: items.slice(0, cap), total: items.length, parsed };
+}
+
+/* Name shown with a phone for a PATIENT result on a name search: the linked
+ * lead's phone, read only for the rows actually listed (cheap). */
+function globalSearchPatientPhone(item, s) {
+  const src = s || state;
+  const patients = Array.isArray(src.patients) ? src.patients : [];
+  const lead = patientLeadInfo(item.patient, patientLeadPool(src), patients).lead;
+  return lead ? trimName(lead.phone) : '';
+}
+
+/* Open the tab holding `item`, its own filter pre-filled with the name, and
+ * mark the record. Returns false (nothing changes) when this session may not
+ * open that tab. Never writes anything. */
+function openGlobalSearchResult(item) {
+  const wanted = GLOBAL_SEARCH_SCREENS[item && item.kind];
+  if (!wanted) return false;
+  const screen = resolveScreen(wanted, state.finance, state.view, state.billingRead === true);
+  if (screen !== wanted) return false;
+  const name = String(item.name || '');
+  const setInput = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  if (item.kind === 'patient') {
+    Object.assign(patientsTabFilters(), { q: name, house: '', status: 'all', problemsOnly: false });
+    setInput('plist-search', name);
+    setInput('plist-house', '');
+    setInput('plist-status', 'all');
+    const prob = document.getElementById('plist-problems');
+    if (prob) prob.checked = false;
+  } else if (item.kind === 'lead') {
+    state.leadSearch = name.toLowerCase();
+    setInput('lead-search', name);
+  } else if (item.kind === 'closedLead') {
+    state.retentionSearch = name.toLowerCase();
+    setInput('retention-search', name);
+  } else {
+    state.dischargedSearch = name.toLowerCase();
+    setInput('discharged-search', name);
+  }
+  const tab = document.querySelector('.tabs .tab[data-screen="' + screen + '"]');
+  if (tab && typeof tab.onclick === 'function') tab.onclick();
+  else { showScreen(screen); renderAll(); }
+  markGlobalSearchHit(screen, item.id);
+  return true;
+}
+
+/* Scroll to and briefly outline the record (matched by data-id, never by a
+ * selector built from data). */
+function markGlobalSearchHit(screen, id) {
+  const root = document.getElementById('screen-' + screen);
+  if (!root || !id) return;
+  const nodes = root.querySelectorAll('[data-id]');
+  for (let i = 0; i < nodes.length; i++) {
+    if (nodes[i].dataset.id !== id) continue;
+    nodes[i].classList.add('gs-hit');
+    if (typeof nodes[i].scrollIntoView === 'function') nodes[i].scrollIntoView({ block: 'center', behavior: 'smooth' });
+    setTimeout(() => nodes[i].classList.remove('gs-hit'), 3000);
+    return;
+  }
+}
+
+/* Draw the result list. TEXT ONLY (textContent) — names and phones are sheet
+ * data and never reach innerHTML. */
+function renderGlobalSearchResults(listEl, query, res, onPick, activeIdx) {
+  listEl.textContent = '';
+  const note = (text) => {
+    const d = document.createElement('div');
+    d.className = 'gs-note';
+    d.textContent = text;
+    listEl.appendChild(d);
+  };
+  if (!String(query || '').trim()) { note('הקלידו שם או מספר טלפון'); return; }
+  if (!res.parsed) { note('הקלידו שם, או לפחות ' + GLOBAL_SEARCH_MIN_DIGITS + ' ספרות של טלפון'); return; }
+  if (!res.items.length) { note('לא נמצאו תוצאות'); return; }
+  res.items.forEach((item, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'gs-item' + (i === activeIdx ? ' active' : '');
+    b.setAttribute('role', 'option');
+    b.dataset.index = String(i);
+    const name = document.createElement('span');
+    name.className = 'gs-name';
+    name.textContent = item.name || '—';
+    const tag = document.createElement('span');
+    tag.className = 'gs-tag gs-tag-' + item.kind;
+    tag.textContent = item.tag;
+    const meta = document.createElement('span');
+    meta.className = 'gs-meta';
+    meta.textContent = item.houseLabel || '';
+    b.appendChild(name);
+    b.appendChild(tag);
+    b.appendChild(meta);
+    if (item.phone) {
+      const ph = document.createElement('bdi');
+      ph.className = 'gs-phone';
+      ph.dir = 'ltr';
+      ph.textContent = item.phone;
+      b.appendChild(ph);
+    }
+    b.onclick = () => onPick(item);
+    listEl.appendChild(b);
+  });
+  if (res.total > res.items.length) note('מוצגות ' + res.items.length + ' מתוך ' + res.total + ' — הוסיפו אותיות לצמצום');
+}
+
+/* Wire the top-bar button and the panel. Called once from the app init;
+ * a page without the controls (the controller view removed them) is a no-op. */
+function initGlobalSearch() {
+  const openBtn = document.getElementById('global-search-open');
+  const panel = document.getElementById('global-search-panel');
+  const input = document.getElementById('global-search-input');
+  const listEl = document.getElementById('global-search-results');
+  if (!openBtn || !panel || !input || !listEl) return;
+  let res = { items: [], total: 0, parsed: null };
+  let active = -1;
+  let timer = null;
+  let pending = false;   // typed, results not yet refreshed (the 120 ms debounce)
+
+  const isOpen = () => !panel.classList.contains('hidden');
+  const close = () => { panel.classList.add('hidden'); openBtn.setAttribute('aria-expanded', 'false'); };
+  const draw = () => renderGlobalSearchResults(listEl, input.value, res, pick, active);
+  const run = () => {
+    pending = false;
+    res = globalSearchResults(state, input.value, GLOBAL_SEARCH_LIMIT);
+    res.items.forEach(it => { if (it.kind === 'patient' && !it.phone) it.phone = globalSearchPatientPhone(it); });
+    active = res.items.length ? 0 : -1;
+    draw();
+  };
+  const pick = (item) => {
+    if (openGlobalSearchResult(item)) { close(); input.blur(); }
+  };
+  const open = () => {
+    const bar = document.querySelector('.topbar');
+    panel.style.top = (bar ? Math.round(bar.getBoundingClientRect().bottom) + 6 : 60) + 'px';
+    panel.classList.remove('hidden');
+    openBtn.setAttribute('aria-expanded', 'true');
+    input.focus();
+    input.select();
+    run();
+  };
+
+  openBtn.onclick = () => (isOpen() ? close() : open());
+  input.addEventListener('input', () => { pending = true; clearTimeout(timer); timer = setTimeout(run, 120); });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { close(); openBtn.focus(); return; }
+    if (!res.items.length) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const n = res.items.length;
+      active = (active + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+      draw();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      // Typed and pressed Enter inside the debounce: refresh first. Otherwise
+      // keep the list — and the arrow-key highlight — exactly as drawn.
+      if (pending) { clearTimeout(timer); run(); }
+      if (res.items[Math.max(active, 0)]) pick(res.items[Math.max(active, 0)]);
+    }
+  });
+  // «/» opens it from anywhere that is not a text field or an open dialog.
+  document.addEventListener('keydown', e => {
+    if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey || openBtn.getClientRects().length === 0) return;
+    const t = e.target || {};
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || '') || t.isContentEditable) return;
+    if (document.querySelector('.modal-backdrop:not(.hidden)')) return;
+    e.preventDefault();
+    open();
+  });
+  document.addEventListener('mousedown', e => {
+    if (isOpen() && !panel.contains(e.target) && !openBtn.contains(e.target)) close();
+  });
 }
 
 /* ===== Render router ===== */
