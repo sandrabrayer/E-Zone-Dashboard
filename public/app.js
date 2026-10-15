@@ -15599,6 +15599,37 @@ function bcFollowupHtml(rows) {
   }).join('');
 }
 
+function bcReminderHtml(preview) {
+  if (!preview || !preview.available) return '<p class="bc-followup-warning" role="status">התזכורות אינן זמינות: נתוני המעקב טרם נטענו בהצלחה.</p>';
+  const names = { vered: 'ורד', ortal: 'אורטל' };
+  const labels = { reported: 'דיווחים ממתינים לאימות', partial: 'הפרשים באימות חלקי',
+    flagged: 'בעיות בדיווח', recorded: 'יתרות מחזורים רשומים', unrecorded: 'מחזורים ללא דיווח' };
+  const warnings = [];
+  if (!preview.complete) warnings.push('הנתונים חלקיים; ייתכן שחסרות משימות. אין להסיק שהמעקב הושלם.');
+  if (preview.stale) warnings.push('הרענון האחרון נכשל; מוצגים נתונים מהטעינה הקודמת.');
+  const trusted = preview.complete && !preview.stale;
+  const groupHtml = (g, audience) => {
+    const name = names[g.owner];
+    const title = audience === 'ortal' && g.owner === 'vered' ? 'מעקב אחר משימות ורד' : `בטיפול ${name}`;
+    const counts = Object.keys(labels).filter(k => g.byKind[k] > 0)
+      .map(k => `<li>${labels[k]}: <b>${g.byKind[k]}</b></li>`).join('');
+    const empty = trusted ? 'אין משימות פתוחות לטיפול כרגע.' : 'אין משימות טיפול בנתונים הזמינים; הסיכום אינו מלא או עדכני.';
+    const age = g.oldestWorkAge === null ? '' : `<p>גיל המשימה הוותיקה מבין התאריכים הידועים: <b>${g.oldestWorkAge}</b> ימי עבודה של ${name}.</p>`;
+    return `<section class="bc-reminder-group" data-reminder-group="${g.owner}">
+      <h5>${title}</h5><p>משימות לטיפול: <b data-reminder-count="${g.owner}">${g.count}</b></p>
+      ${counts ? `<ul>${counts}</ul>` : `<p>${empty}</p>`}
+      ${age}${g.unknownAgeCount ? `<p class="bc-reminder-date-warning">גיל לא זמין עבור ${g.unknownAgeCount} משימות; יש לבדוק את המועד המקורי.</p>` : ''}
+      <p class="bc-reminder-waiting">בהמתנה למממן: <b>${g.waitingCount}</b> — בנפרד ממשימות הטיפול.</p>
+      <button type="button" class="btn small" data-bc-reminder-owner="${g.owner}">פתיחת תור ${name}</button>
+    </section>`;
+  };
+  return `${warnings.map(w => `<p class="bc-followup-warning" role="status">${w}</p>`).join('')}
+    <p class="bc-reminder-asof">נכון ל־${preview.asOf ? escapeHtml(formatDateHe(preview.asOf)) : 'מועד לא זמין'}</p>
+    <div class="bc-reminder-cards">${preview.audiences.map(a => `<article class="bc-reminder-card" data-reminder-audience="${a.owner}">
+      <h4>${a.owner === 'vered' ? 'לוורד — המשימות שלה' : 'לאורטל — אימות ומעקב כולל'}</h4>
+      ${a.groups.map(g => groupHtml(g, a.owner)).join('')}</article>`).join('')}</div>`;
+}
+
 function renderBillingControl() {
   const screen = document.getElementById('screen-billing-control');
   if (!screen || state.billingControl === false) return;
@@ -15616,6 +15647,7 @@ function renderBillingControl() {
     set('bc-understamped', '');
     set('bc-followup', `<p class="billing-date-label">${s.loading ? busyLabelFor('load') : 'נתוני המעקב טרם נטענו'}</p>`);
     set('bc-followup-count', '—');
+    set('bc-reminder-content', bcReminderHtml(null));
     const warning = document.getElementById('bc-followup-warning');
     if (warning) { warning.textContent = ''; warning.classList.add('hidden'); }
     return;
@@ -15626,6 +15658,8 @@ function renderBillingControl() {
   const followupReady = typeof R.followupRows === 'function';
   const work = followupReady ? R.followupRows(s.data, { house: s.followupHouse, owner: s.followupOwner }) : [];
   const incomplete = !followupReady || !s.data.followup || s.data.followup.complete !== true;
+  set('bc-reminder-content', bcReminderHtml(typeof R.reminderPreview === 'function'
+    ? R.reminderPreview(s.data, { stale: !!s.error }) : null));
   const warning = document.getElementById('bc-followup-warning');
   if (warning) {
     warning.textContent = incomplete ? 'הנתונים חלקיים: יתרות המחזורים לא נטענו במלואן. יש לרענן; אין להסיק שאין יתרות פתוחות.' : s.error ? 'מוצגים נתונים מהטעינה הקודמת; הרענון האחרון נכשל.' : '';
@@ -15797,7 +15831,14 @@ function initBillingControlControls() {
     const t = e.target && e.target.closest ? e.target.closest('button') : null;
     if (!t) return;
     const attr = n => t.getAttribute(n);
-    if (attr('data-bc-follow-receipt')) {
+    if (attr('data-bc-reminder-owner')) {
+      const owner = attr('data-bc-reminder-owner');
+      if (owner !== 'vered' && owner !== 'ortal') return;
+      s.followupOwner = owner; s.followupHouse = 'all';
+      renderBillingControl();
+      const target = document.getElementById('bc-followup-owner');
+      if (target) { target.focus({ preventScroll: true }); target.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    } else if (attr('data-bc-follow-receipt')) {
       const row = Array.from(screen.querySelectorAll('[data-bc-id]')).find(el => el.getAttribute('data-bc-id') === attr('data-bc-follow-receipt'));
       if (row) { row.setAttribute('tabindex', '-1'); row.focus({ preventScroll: true }); row.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     } else if (attr('data-bc-follow-debt')) {

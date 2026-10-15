@@ -252,3 +252,105 @@ test('UI distinguishes calendar age, owner work age and unsupported dates', () =
   a.s.fixture[0].workAgeDays = null;
   assert.match(a.run('bcFollowupHtml(fixture)'), /ספירת ימי עבודה אינה זמינה/);
 });
+
+function reminderData() {
+  const privateData = { patientName: 'SYNTHETIC PRIVATE NAME', patientId: 'PRIVATE-ID',
+    houseId: 'PRIVATE-HOUSE', payer: 'PRIVATE-PAYER', controlNote: 'PRIVATE-CLINICAL-NOTE' };
+  const r = (id, status) => ({ ...privateData, id, amount: 94123, confirmStatus: status,
+    confirmedAmount: status === 'partial' ? 4000 : '', recordedAt: '2026-10-14' });
+  const c = (kind, grace = false) => ({ ...privateData, kind, amount: 73129,
+    originalDueDate: '2026-10-14', funderGrace: grace, funderGraceUntil: grace ? '2026-11-14' : '' });
+  return { ok: true, today: '2026-10-15', receipts: [r('PRIVATE-REPORTED', 'reported'),
+    r('PRIVATE-PARTIAL', 'partial'), r('PRIVATE-FLAGGED', 'flagged'), r('PRIVATE-CLOSED', 'confirmed'),
+    { ...r('PRIVATE-VOID', 'reported'), status: 'void' }],
+    followup: { complete: true, cycles: [c('recorded'), c('unrecorded'), c('recorded', true)] } };
+}
+
+test('reminder audiences: Vered gets her work, Ortal gets own verification plus Vered oversight', () => {
+  const d = reminderData(), before = JSON.stringify(d), p = rules.reminderPreview(d);
+  assert.equal(p.complete, true);
+  assert.equal(p.previewOnly, true);
+  assert.equal(p.asOf, '2026-10-15');
+  assert.deepEqual(p.audiences.map(a => [a.owner, a.groups.map(g => g.owner)]),
+    [['vered', ['vered']], ['ortal', ['ortal', 'vered']]]);
+  const [v, o] = [p.audiences[0].groups[0], p.audiences[1].groups[0]];
+  assert.deepEqual([v.count, v.waitingCount, v.oldestWorkAge, v.unknownAgeCount], [3, 0, 0, 0]);
+  assert.deepEqual(v.byKind, { reported: 0, partial: 0, flagged: 1, recorded: 1, unrecorded: 1 });
+  assert.deepEqual([o.count, o.waitingCount, o.oldestWorkAge], [2, 1, 1]);
+  assert.deepEqual(o.byKind, { reported: 1, partial: 1, flagged: 0, recorded: 0, unrecorded: 0 });
+  assert.equal(JSON.stringify(d), before, 'no mutation or source writes');
+});
+
+test('reminder model and rendered text contain no patient identity, notes, money or delivery addresses', () => {
+  const a = app(), p = rules.reminderPreview(reminderData());
+  a.s.preview = p;
+  const rendered = a.run('bcReminderHtml(preview)');
+  for (const text of [JSON.stringify(p), rendered]) {
+    for (const forbidden of ['PRIVATE', '94123', '73129', 'patientName', 'patientId', 'receiptId',
+      'houseId', 'controlNote', 'amount', 'mailto:', 'data-bc-confirm']) assert.ok(!text.includes(forbidden), forbidden);
+  }
+  assert.deepEqual(p.audiences.map(a => a.owner), ['vered', 'ortal'], 'no Sandra audience');
+  assert.match(rendered, /פתיחת תור ורד/);
+  assert.match(rendered, /מעקב אחר משימות ורד/);
+});
+
+test('missing dates remain visible as unknown; grace is separate from work and never an age warning', () => {
+  const d = reminderData();
+  d.receipts[0].recordedAt = '';
+  d.followup.cycles[0].originalDueDate = '';
+  d.followup.cycles[2].originalDueDate = '';
+  const p = rules.reminderPreview(d);
+  assert.equal(p.audiences[0].groups[0].unknownAgeCount, 1);
+  assert.equal(p.audiences[1].groups[0].unknownAgeCount, 1);
+  assert.equal(p.audiences[1].groups[0].waitingCount, 1);
+  const a = app(); a.s.preview = p;
+  assert.match(a.run('bcReminderHtml(preview)'), /גיל לא זמין/);
+});
+
+test('unavailable, partial, stale and unknown-kind sources can never claim an empty all-clear', () => {
+  const a = app();
+  const empty = { ok: true, today: '2026-10-15', receipts: [], followup: { complete: true, cycles: [] } };
+  for (const [d, opts] of [[null], [{ ...empty, ok: false }], [{ ...empty, receipts: null }],
+    [{ ...empty, followup: { complete: false, cycles: [] } }], [{ ...empty, today: '' }],
+    [{ ...empty, followup: { complete: true } }], [empty, { stale: true }]]) {
+    a.s.preview = rules.reminderPreview(d, opts);
+    const html = a.run('bcReminderHtml(preview)');
+    assert.ok(!html.includes('אין משימות פתוחות לטיפול כרגע'), html);
+    assert.match(html, /אינן זמינות|הנתונים חלקיים|הרענון האחרון נכשל/);
+  }
+  const unknown = reminderData(); unknown.followup.cycles[0].kind = 'future-kind';
+  assert.equal(rules.reminderPreview(unknown).complete, false);
+  a.s.preview = rules.reminderPreview(empty);
+  assert.match(a.run('bcReminderHtml(preview)'), /אין משימות פתוחות לטיפול כרגע/);
+});
+
+test('real Thursday confirmation echo removes only that reminder, with no extra request', async () => {
+  const a = app(); a.s.fixture = world().queue();
+  a.s.answer = { ok: true, changed: [{ ...a.s.fixture.receipts[0], confirmStatus: 'confirmed', confirmedAmount: 6000 }] };
+  a.run('state.canConfirm = true; billingControlState().data = fixture; showToast = () => {}; apiPost = async () => answer; loadBillingControl = async () => { throw new Error("unexpected read"); };');
+  assert.equal(a.run('bcRules().reminderPreview(fixture).audiences[1].groups[0].count'), 1);
+  await a.run(`confirmReceipts([${JSON.stringify(receipt.id)}], 'confirmed')`);
+  assert.equal(a.run('bcRules().reminderPreview(fixture).audiences[1].groups[0].count'), 0);
+  assert.equal(a.run('bcRules().reminderPreview(fixture).audiences[0].groups[0].count'), 1);
+});
+
+test('reminder navigation resets restrictive filters and never writes; summary covers all houses', () => {
+  const a = app(), handlers = {}, calls = [], cl = { toggle() {} };
+  a.elements['screen-billing-control'] = { addEventListener: (e, fn) => { handlers[e] = fn; }, querySelectorAll: () => [] };
+  for (const id of ['bc-followup', 'bc-followup-count', 'bc-followup-warning', 'bc-followup-house', 'bc-followup-owner', 'bc-reminder-content']) {
+    a.elements[id] = { innerHTML: '', textContent: '', classList: cl, value: 'all',
+      focus: () => calls.push('focus'), scrollIntoView: () => calls.push('scroll') };
+  }
+  a.s.fixture = reminderData();
+  a.run('state.billingControl = true; billingControlState().data = fixture; billingControlState().followupHouse = "absent"; apiPost = () => { throw new Error("unexpected write"); }; initBillingControlControls(); renderBillingControl()');
+  assert.equal(a.elements['bc-followup-count'].innerHTML, '0');
+  assert.match(a.elements['bc-reminder-content'].innerHTML, /data-reminder-count="vered">3/);
+  const click = owner => handlers.click({ target: { closest: () => ({ getAttribute: key => key === 'data-bc-reminder-owner' ? owner : null }) } });
+  click('vered');
+  assert.equal(a.run('billingControlState().followupOwner'), 'vered');
+  assert.equal(a.run('billingControlState().followupHouse'), 'all');
+  assert.equal(a.elements['bc-followup-count'].innerHTML, '3');
+  assert.deepEqual(calls, ['focus', 'scroll']);
+  click('<invalid>');
+  assert.equal(a.run('billingControlState().followupOwner'), 'vered');
+});
