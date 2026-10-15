@@ -2566,6 +2566,7 @@ body.viewer-mode .receipt-edit-btn { display: none !important; }
 .bc-dup-form textarea { width: 100%; box-sizing: border-box; min-width: 0; font-size: 15px; }
 .bc-dup-form textarea[aria-invalid="true"] { border-color: var(--danger); }
 .bc-month-line { font-size: 13.5px; overflow-wrap: anywhere; }
+.bc-row--confirmed .bc-amount { min-width: 0; max-width: 100%; white-space: normal; }
 /* The status dropdown, the partial amount form and the note
  * (CHANGELOG-ortal-verification-status.md). RTL by inheritance; the amount is
  * typed LTR. 44px touch targets; nothing wider than the card at 360px. */
@@ -2578,6 +2579,13 @@ body.viewer-mode .receipt-edit-btn { display: none !important; }
 .bc-cnote-form textarea { width: 100%; box-sizing: border-box; min-width: 0; font-size: 15px; }
 .bc-remaining { color: var(--grp-debt); font-weight: 700; }
 .bc-partial-line { margin-top: 6px; font-size: 13px; overflow-wrap: anywhere; }
+.bc-followup-filters { flex-wrap: wrap; gap: 8px; }
+.bc-followup-filters select { min-height: 44px; max-width: 100%; font-size: 16px; }
+.bc-followup-row { overflow-wrap: anywhere; }
+.bc-followup-waiting { background: #252b36; border-color: #626b79; }
+.bc-followup-grace { color: var(--text); font-weight: 600; margin-top: 6px; }
+.bc-followup-next { margin: 8px 0; }
+.bc-followup-warning { color: #764b00; background: #fff4d6; padding: 10px; border-radius: 8px; }
 .bc-partial-badge { margin-inline-end: 6px; }
 .bc-cnote-line { margin-top: 6px; font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; overflow-wrap: anywhere; }
 .bc-cnote-text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }

@@ -1,14 +1,36 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
-## Dashboard payment report recovery — October 15, 2026 (draft, not deployed)
+## Billing follow-up queue — October 15, 2026 (review candidate, not deployed)
+
+FIN-01.2 adds a read-only chronological work list in Billing Control, combining
+existing receipt verification work with the debt-aging engine's open cycles.
+Amounts stay separate; original dates, Vered/Ortal responsibility and the existing
+institutional grace period are preserved. No bank imports, notifications, new
+permissions or sheet writes are introduced. See `CHANGELOG-billing-followup-queue.md`.
+The isolated branch includes the deployed recovery fix #229 and Managers #231.
+The follow-up feature is a separate change; explicit release authorization
+remains outstanding. This note is not evidence of live operation.
+The first CI screenshots exposed waiting-row contrast and RTL overflow in a
+confirmed partial-payment line. Both are corrected in the review branch with
+browser assertions for text contrast and bounds. Browser run #2 passed all three
+cases with no skips; the corrected 360px and 1280px screenshots were reviewed.
+The same code tree passed 2,793 local tests, Tests #339 and Validate Workflows #36.
+
+## Dashboard payment report recovery — October 15, 2026 (deployed)
 
 Synthetic fault injection reproduced double-counting when a cycle update
 succeeded but the first receipt append failed. The proposed fix persists the
 receipt before the new cycle total and repairs a stale summary on same-key
 retry. Eleven recovery cases pass; the full suite has 2,760 passes, no failures
 and 65 Chromium skips. No live data was inspected or changed. See
-`CHANGELOG-payment-report-write-recovery.md` for evidence, audit limits and the
-separate authorization required before merge/deployment. This does not resolve
+`CHANGELOG-payment-report-write-recovery.md` for evidence and audit limits.
+Sandra explicitly authorized PR #229: merged as `0d9790a51f10ce914cf3bc9d84b41373f504991d`.
+The merged tree passed 2,778 local tests (0 failures, 65 browser skips), GitHub
+Tests #337 and Apps Script deploy #99 succeeded, Railway reported SUCCESS and
+`/api/version` returned the merge SHA. `/healthz` returned ok; three unauthenticated
+home-page requests returned 200 in 6.065 / 5.462 / 5.675 seconds from the test
+environment. These are availability checks, not a live payment-write test.
+This does not resolve
 the CRM numeric-ID blocker or complete the wider finance workflow.
 
 ## Managers protocol 2 — October 15, 2026 (candidate active per operator report)

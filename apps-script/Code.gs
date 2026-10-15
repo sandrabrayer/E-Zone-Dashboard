@@ -9884,6 +9884,41 @@ function billingControlRefundExceptions_(forecast, credits) {
   return out;
 }
 
+/* Read-only work context. Reuse debtAging_'s amounts, exclusions and funder
+ * history; never calculate debt again or expose its patient keys. Receipt
+ * status/amounts remain in the existing receipt projection (including echoes).
+ * No task storage, money mutation or additional sheet read. */
+function billingControlFollowupContext_(cycles, receipts, aging) {
+  const dueByCycle = Object.create(null);
+  (cycles || []).forEach(function (c) { dueByCycle[paymentCell_(c.id)] = billingControlDay_(c.dueDate); });
+  const receiptDueDates = Object.create(null);
+  const receiptRecordedDates = Object.create(null);
+  receipts.forEach(function (r) {
+    receiptDueDates[r.id] = dueByCycle[r.cycleId] || '';
+    receiptRecordedDates[r.id] = billingControlDay_(r.recordedAt);
+  });
+  const complete = !!(aging && aging.ok === true && Array.isArray(aging.byPatient));
+  const out = { complete: complete, cycles: [], receiptDueDates: receiptDueDates, receiptRecordedDates: receiptRecordedDates };
+  if (!complete) return out;
+  const cycleById = Object.create(null);
+  cycles.forEach(function (c) { cycleById[paymentCell_(c.id)] = c; });
+  aging.byPatient.forEach(function (p) {
+    (p.cycles || []).forEach(function (c) {
+      if (!(Number(c.balance) > 0)) return;
+      const kind = c.kind === 'recorded' ? 'recorded' : 'unrecorded';
+      const source = cycleById[paymentCell_(c.paymentId)];
+      out.cycles.push({
+        kind: kind, patientName: String(p.name || ''), houseId: String(p.houseId || ''),
+        amount: receiptMoney_(c.balance),
+        originalDueDate: kind === 'unrecorded' ? billingControlDay_(c.start) : source ? billingControlDay_(source.dueDate) : '',
+        coverageStart: String(c.start || ''), coverageEnd: String(c.end || ''),
+        funderGrace: c.funderGrace === true, funderGraceUntil: String(c.funderGraceUntil || ''),
+      });
+    });
+  });
+  return out;
+}
+
 /* The whole queue answer from already-read rows. PURE apart from the clock
  * passed in.
  *   rows       Payments row objects
@@ -9907,6 +9942,7 @@ function billingControlQueueFor_(rows, flagTimes, opts) {
     flagStaleDays: BILLING_CONTROL_FLAG_STALE_DAYS,
     // Every billing-control session (Ortal included) sees them — read-only.
     underStamped: underStamped,
+    followup: billingControlFollowupContext_(split.cycles, receipts, o.aging),
   };
   if (o.approver === true) {
     out.exceptions = {

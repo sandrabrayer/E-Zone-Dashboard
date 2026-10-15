@@ -245,7 +245,10 @@
 // v62 → v63: global patient/lead search (CHANGELOG-global-patient-search.md) —
 // app.js, index.html and style.css changed; v62 was the LIVE version
 // (production /sw.js, 15/10/2026); activate evicts v62 (v17 never reused).
-var CACHE_VERSION = 'v63';
+// v63 → v64: read-only billing follow-up queue (CHANGELOG-billing-followup-queue.md).
+// app.js, index.html, style.css and billing-control-rules.js changed;
+// production /sw.js read v63 on 15/10/2026. Activate evicts v63.
+var CACHE_VERSION = 'v64';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

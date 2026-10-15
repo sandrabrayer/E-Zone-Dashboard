@@ -1,0 +1,52 @@
+name: Billing follow-up browser
+
+# Synthetic Sheets and a local server only. No production endpoints or secrets.
+on:
+  pull_request:
+    paths:
+      - 'public/**'
+      - 'lib/**'
+      - 'apps-script/**'
+      - 'server.js'
+      - 'test/billing-control-tab-browser.test.js'
+      - 'test/helpers/**'
+      - '.github/workflows/billing-followup-browser.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: billing-followup-browser-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Install isolated browser test tooling
+        run: |
+          npm install --prefix "$RUNNER_TEMP/ezone-browser" --no-package-lock --ignore-scripts playwright@1.62.1
+          node "$RUNNER_TEMP/ezone-browser/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Run synthetic billing browser checks
+        env:
+          SHOT_DIR: test-results/billing-followup
+        run: |
+          export NODE_PATH="$RUNNER_TEMP/ezone-browser/node_modules"
+          export CHROMIUM_PATH="$(node -p "require('playwright').chromium.executablePath()")"
+          mkdir -p test-results/billing-followup
+          node --test --test-concurrency=1 --test-reporter=tap test/billing-control-tab-browser.test.js > test-results/billing-followup/browser.tap 2>&1
+      - name: Retain synthetic screenshots and test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: billing-followup-browser-${{ github.sha }}
+          path: test-results/billing-followup
+          if-no-files-found: error
+          retention-days: 7
