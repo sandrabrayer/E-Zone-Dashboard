@@ -1,5 +1,16 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Dashboard payment report recovery — October 15, 2026 (draft, not deployed)
+
+Synthetic fault injection reproduced double-counting when a cycle update
+succeeded but the first receipt append failed. The proposed fix persists the
+receipt before the new cycle total and repairs a stale summary on same-key
+retry. Eleven recovery cases pass; the full suite has 2,760 passes, no failures
+and 65 Chromium skips. No live data was inspected or changed. See
+`CHANGELOG-payment-report-write-recovery.md` for evidence, audit limits and the
+separate authorization required before merge/deployment. This does not resolve
+the CRM numeric-ID blocker or complete the wider finance workflow.
+
 ## Managers protocol 2 — October 15, 2026 (candidate active per operator report)
 
 Coordinated Managers/Dashboard hardening requires immutable account IDs,

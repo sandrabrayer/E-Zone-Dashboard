@@ -1,5 +1,13 @@
 # «דוח תשלום» persistence: a saved report no longer flips back to «לא שולם»
 
+**October 15, 2026 follow-up:** fault injection disproved the partial-write
+assumption in (e) below. A cycle write followed by a failed receipt append can
+double-count money on retry. See
+[payment report write recovery](CHANGELOG-payment-report-write-recovery.md)
+for the proposed fix, regression evidence and rollout limits. The original
+investigation below describes the earlier UI/persistence work; its assertion
+that all idempotent replays write nothing is superseded for stale cycle summaries.
+
 Branch `fix/payment-report-persistence` off `claude/build-ezone-dashboard-QOg5s`.
 **Railway + Code.gs.** The clasp CI deploys Code.gs on merge. There is no manual
 step: one APPENDED `Payments` column writes its own header.

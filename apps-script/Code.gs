@@ -8865,9 +8865,22 @@ function reportPayment_(body, user, ctx) {
       for (let k = 0; k < PAYMENT_COLUMNS.length; k++) o[PAYMENT_COLUMNS[k]] = g[k];
       return o;
     });
-    // A retry of a report already written: answer from the sheet, write nothing.
+    // A persisted receipt is the idempotency boundary. A failed later cycle
+    // summary write is repaired from receipts; an already-current replay
+    // performs no write. Never append the receipt a second time.
     const replay = receiptReplayFor_(rows, submissionId);
     if (replay) {
+      const storedCycle = replay.cycle && rows.find(function (r) { return paymentCell_(r.id) === paymentCell_(replay.cycle.id); });
+      if (storedCycle && (receiptMoney_(storedCycle.amountPaid) !== receiptMoney_(replay.cycle.amountPaid) ||
+          receiptMoney_(storedCycle.balance) !== receiptMoney_(replay.cycle.balance) ||
+          paymentStatus_(storedCycle.status) !== paymentStatus_(replay.cycle.status))) {
+        replay.cycle = rederiveReceiptCycleLocked_(sh, stampUser, replay.receipt.id);
+        logAudit_('payment_report_recovered', 'reportPayment_', String(replay.receipt.patientUid || ''),
+          String(replay.receipt.patientName || ''), {
+            receiptId: String(replay.receipt.id), cycleId: String(replay.cycle.id),
+            amount: receiptReportedAmount_(replay.receipt), cycleAmountPaid: replay.cycle.amountPaid,
+          }, c.actor === undefined ? stampUser : String(c.actor));
+      }
       try { console.log('[payments] reportPayment replayed an idempotent retry'); } catch (_) { /* no-op */ }
       return replay;
     }
@@ -8955,17 +8968,27 @@ function reportPayment_(body, user, ctx) {
     finalCycle.amountPaid = d.amountPaid;
     finalCycle.balance = d.balance;
     finalCycle.status = d.status;
-    const cycleWritten = receiptRestampCycle_(finalCycle, prevCycle, cycleAt >= 0, stampUser);
+    // The first receipt needs a durable cycle identity and legacy baseline,
+    // but its new money must not be stored before the receipt itself exists.
+    // Otherwise an interrupted append is reinterpreted as legacy money on
+    // retry and counted twice. Existing receipt-backed cycles need no prepare.
+    const prepareCycle = cycleAt < 0 || !priorReceipts.length;
+    const cycleWritten = receiptRestampCycle_(finalCycle, prepareCycle ? cycleOut : prevCycle, true, stampUser);
     // A cycle born here keeps the identity minted for it above.
     cycleWritten.paymentUid = cycleOut.paymentUid;
     cycleWritten.patientUid = cycleOut.patientUid;
 
-    // Write: the cycle in place (or appended), then the receipt appended.
+    // Prepare only the OLD money, append the authoritative receipt, then
+    // materialize the derived summary. Reads derive from receipts throughout.
+    // A thrown write may already have committed: the same submission retries
+    // by receipt identity and repairs the summary above, without new money.
     let cycleRowNumber;
     if (cycleAt >= 0) cycleRowNumber = cycleAt + 2;
     else cycleRowNumber = sh.getLastRow() + 1;
-    setPaymentRowTextCols_(sh, cycleRowNumber);
-    sh.getRange(cycleRowNumber, 1, 1, PAYMENT_COLUMNS.length).setValues([objectToRow_(cycleWritten, PAYMENT_COLUMNS)]);
+    if (prepareCycle) {
+      setPaymentRowTextCols_(sh, cycleRowNumber);
+      sh.getRange(cycleRowNumber, 1, 1, PAYMENT_COLUMNS.length).setValues([objectToRow_(cycleOut, PAYMENT_COLUMNS)]);
+    }
     const receiptRowNumber = sh.getLastRow() + 1;
     setPaymentRowTextCols_(sh, receiptRowNumber);
     sh.getRange(receiptRowNumber, 1, 1, PAYMENT_COLUMNS.length).setValues([objectToRow_(receiptOut, PAYMENT_COLUMNS)]);
@@ -8985,6 +9008,9 @@ function reportPayment_(body, user, ctx) {
         by: stampUser, at: String(receiptOut.recordedAt || ''),
       }, c.actor === undefined ? stampUser : String(c.actor));
     }
+
+    setPaymentRowTextCols_(sh, cycleRowNumber);
+    sh.getRange(cycleRowNumber, 1, 1, PAYMENT_COLUMNS.length).setValues([objectToRow_(cycleWritten, PAYMENT_COLUMNS)]);
 
     const echoReceipt = {};
     Object.keys(receiptOut).forEach(function (k) { echoReceipt[k] = receiptOut[k]; });
