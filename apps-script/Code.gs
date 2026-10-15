@@ -1686,7 +1686,8 @@ function handle_(params) {
      * written unless COORDINATORS_PATIENTS_SECRET is set and matches. */
     /* ===== Coordinators committees — own fail-closed secret (READ-ONLY) ===== */
     if (action === 'getCommitteesForCoordinators') {
-      if (!coordinatorsCommitteesAuthOk_(params)) return jsonOut_({ ok: false, error: 'unauthorized' });
+      const committeesAuth = coordinatorsCommitteesAuth_(params);
+      if (committeesAuth !== 'ok') return jsonOut_(coordinatorsCommitteesRefusal_(committeesAuth));
       return jsonOut_(getCommitteesForCoordinators_());
     }
     if (action === 'getPatientsForCoordinators' || action === 'recordDischargeFromCoordinators') {
@@ -7053,12 +7054,27 @@ const COORDINATORS_COMMITTEES_SECRET_PROP = 'COORDINATORS_COMMITTEES_SECRET';
 const COORD_COMMITTEE_FEED_KEYS = ['id', 'name', 'house', 'date', 'label'];
 const COORD_COMMITTEE_FEED_DAYS = 3;
 
+/* → 'ok' | 'not_configured' (our Script Property is unset / blank) | 'unauthorized'.
+ * Both sides are TRIMMED (CHANGELOG-committee-feed-diagnostics.md): a value pasted
+ * into Script Properties with a trailing space / newline must not read as a
+ * mismatch. Still fail-closed and constant-time. */
+function coordinatorsCommitteesAuth_(params) {
+  const expected = String(PropertiesService.getScriptProperties().getProperty(COORDINATORS_COMMITTEES_SECRET_PROP) || '').trim();
+  if (!expected) return 'not_configured';
+  const got = (params && typeof params.secret === 'string') ? params.secret.trim() : '';
+  if (!got) return 'unauthorized';
+  return constantTimeEquals_(got, expected) ? 'ok' : 'unauthorized';
+}
+
 function coordinatorsCommitteesAuthOk_(params) {
-  const expected = PropertiesService.getScriptProperties().getProperty(COORDINATORS_COMMITTEES_SECRET_PROP);
-  if (!expected) return false;
-  const got = (params && typeof params.secret === 'string') ? params.secret : '';
-  if (!got) return false;
-  return constantTimeEquals_(got, expected);
+  return coordinatorsCommitteesAuth_(params) === 'ok';
+}
+
+/* The refusal body. `reason: 'not_configured'` tells the coordinators «הסוד לא
+ * הוגדר» (in the Dashboard) apart from «הסוד לא תואם». It reveals only that this
+ * gate is closed to everyone — nothing is read either way. */
+function coordinatorsCommitteesRefusal_(auth) {
+  return auth === 'not_configured' ? { ok: false, error: 'unauthorized', reason: 'not_configured' } : { ok: false, error: 'unauthorized' };
 }
 
 function getCommitteesForCoordinators_() {

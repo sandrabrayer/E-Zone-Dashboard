@@ -47,7 +47,8 @@ const cm = (mw, house, patientName, entryDate, committeeDate, label = '', correc
 
 test('fail-closed: no secret configured / missing / wrong → unauthorized, nothing read', () => {
   const unset = boot({ secret: '' });
-  assert.deepStrictEqual(unset.feed(CC_SECRET), { ok: false, error: 'unauthorized' });
+  assert.deepStrictEqual(unset.feed(CC_SECRET), { ok: false, error: 'unauthorized', reason: 'not_configured' });
+  assert.deepStrictEqual(boot({ secret: '   ' }).feed(CC_SECRET), { ok: false, error: 'unauthorized', reason: 'not_configured' }, 'blank = unset');
   const { feed, g } = boot();
   assert.deepStrictEqual(feed(''), { ok: false, error: 'unauthorized' });
   assert.deepStrictEqual(feed('wrong'), { ok: false, error: 'unauthorized' });
@@ -103,5 +104,26 @@ test('gate wiring: open (own secret), known, never a PROXY_SECRET action; the bl
   const block = src.slice(src.indexOf('function getCommitteesForCoordinators_'), src.indexOf('/* Validate the discharge payload'));
   assert.ok(block.length > 200);
   assert.doesNotMatch(block, /appendRow|setValues|setValue\(|insertSheet|LockService|console\.|Logger\./);
-  assert.match(src, /if \(action === 'getCommitteesForCoordinators'\) \{\n\s*if \(!coordinatorsCommitteesAuthOk_\(params\)\) return jsonOut_\(\{ ok: false, error: 'unauthorized' \}\);/);
+  assert.match(src, /if \(action === 'getCommitteesForCoordinators'\) \{\n\s*const committeesAuth = coordinatorsCommitteesAuth_\(params\);\n\s*if \(committeesAuth !== 'ok'\) return jsonOut_\(coordinatorsCommitteesRefusal_\(committeesAuth\)\);/);
+});
+
+/* CHANGELOG-committee-feed-diagnostics.md */
+test('diagnostics: a secret pasted with whitespace (either side) still matches; a mismatch never says not_configured', () => {
+  const padded = boot({ secret: CC_SECRET + '\n' });
+  assert.strictEqual(padded.feed(CC_SECRET).ok, true, 'trailing newline in our Script Property');
+  const { feed } = boot();
+  assert.strictEqual(feed('  ' + CC_SECRET + ' ').ok, true, 'spaces around the value sent');
+  assert.deepStrictEqual(feed(CC_SECRET.slice(0, -1)), { ok: false, error: 'unauthorized' });
+  assert.deepStrictEqual(feed('   '), { ok: false, error: 'unauthorized' }, 'blank sent = missing');
+  assert.deepStrictEqual(feed(CC_SECRET + 'x'), { ok: false, error: 'unauthorized' });
+});
+
+test('diagnostics: a refusal reads nothing and carries no data beyond the reason', () => {
+  const unset = boot({ secret: '' });
+  const r = unset.feed(CC_SECRET);
+  assert.deepStrictEqual(Object.keys(r).sort(), ['error', 'ok', 'reason']);
+  const src = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Code.gs'), 'utf8');
+  const fn = src.slice(src.indexOf('function coordinatorsCommitteesAuth_'), src.indexOf('function getCommitteesForCoordinators_'));
+  assert.match(fn, /constantTimeEquals_\(got, expected\)/, 'constant-time compare kept');
+  assert.doesNotMatch(fn, /console\.|Logger\./, 'the secret is never logged');
 });
