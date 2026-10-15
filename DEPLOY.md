@@ -499,6 +499,12 @@ deploys automatically on merge; until it has, the card shows «לא ניתן ל�
 in — any personal session, Ortal's controller view included (the card sits on «בקרת גבייה»
 there). No session → 401; nothing else changes. Still nothing to set.
 
+## Committee date «ועדה» — nothing to set (October 15, 2026)
+
+`CHANGELOG-managers-committee.md`. Code.gs deploys automatically on merge. The first save creates
+the append-only sheet `ManagersCommittee`. No Script Property, Railway variable or editor run.
+Merge before the paired Managers PR.
+
 ## Expected discharge clear / «אין צפי» — nothing to set (October 15, 2026)
 
 `CHANGELOG-managers-discharge-clear.md`. Code.gs deploys automatically on merge. The

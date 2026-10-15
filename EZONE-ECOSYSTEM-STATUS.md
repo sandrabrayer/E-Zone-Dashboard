@@ -354,6 +354,19 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
 - **Audit**: editor-run, read-only `auditTemporaryExitsNow()` (initials only).
 - Details: `CHANGELOG-temporary-exit-return.md`.
 
+## Dashboard Apps Script: committee date per patient «ועדה» (October 15, 2026)
+
+- `managersWork` op `committeeSet` (`set` / `clear`) writes the new APPEND-ONLY sheet
+  `ManagersCommittee`:
+  - keyed by house + patient + admission date: one current date per stay, the last row wins;
+  - `label` ≤ 60 chars;
+  - who / when / previous date and label on every row.
+- Optimistic concurrency on date + label. Israel "today". A past date only as a correction of an
+  existing date (`warning: 'past_date'`).
+- `houseData` returns `patients[].committee`, `committeeSupported` and `committeeToday`.
+- Same secret, house scope and validation as `dischargeSet`; no new property. Details:
+  `CHANGELOG-managers-committee.md`.
+
 ## Dashboard Apps Script: expected discharge clear + «אין צפי לשחרור» (October 15, 2026)
 
 - `managersWork` `dischargeSet` takes `mode`: `set` (default), `clear`, or `none` («אין צפי

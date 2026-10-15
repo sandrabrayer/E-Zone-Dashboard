@@ -13076,6 +13076,10 @@ function computeContinuityByHouse_(outpatients, ym) {
  *                   see mwDischargeSet_). mode 'clear' / 'none' (15 Oct 2026,
  *                   CHANGELOG-managers-discharge-clear.md) clears the date or
  *                   marks «אין צפי לשחרור». houseData returns it per patient.
+ *   op 'committeeSet' { house, patientName, entryDate, committeeDate, label,
+ *                   previousDate, previousLabel, correction, mode } → the
+ *                   patient's committee («ועדה») date, appended to
+ *                   ManagersCommittee (15 Oct 2026, CHANGELOG-managers-committee.md).
  *
  * Logs (append-only sheets, headers append-only):
  *   familyCalls — patient, contact, relation, when, summary, follow-up
@@ -13161,6 +13165,7 @@ function managersWork_(params) {
   if (op === 'logUpdate') return mwLogUpdate_(caller, params);
   if (op === 'houseCost') return mwHouseCost_(caller, params);
   if (op === 'dischargeSet') return mwDischargeSet_(caller, params);
+  if (op === 'committeeSet') return mwCommitteeSet_(caller, params);
   return { ok: false, error: 'unknown_op' };
 }
 
@@ -13409,9 +13414,10 @@ function mwHouseData_(caller, params) {
   // admissions this month.
   const patients = readPatientsForBonus_();
   const discharges = mwReadDischarges_(key);
+  const committees = mwReadCommittees_(key);
   const inHouse = mwInHousePatients_(patients, pid, today).map(function (p) {
-    const cur = discharges[mwDischargeKey_(key, p.name, p.entryDate)];
-    return Object.assign({}, p, { expectedDischarge: mwDischargePublic_(cur) });
+    const k = mwDischargeKey_(key, p.name, p.entryDate);
+    return Object.assign({}, p, { expectedDischarge: mwDischargePublic_(discharges[k]), committee: mwCommitteePublic_(committees[k]) });
   });
   // A return from a temporary exit is not a new admission (from Oct 2026).
   const chains = stayContinuityApplies_(ym) ? stayChains_(patients, pid) : {};
@@ -13487,6 +13493,7 @@ function mwHouseData_(caller, params) {
   return {
     ok: true, house: key, month: ym, today: todayIso,
     patients: inHouse, expectedDischargeSupported: true, expectedDischargeModes: MW_DISCHARGE_MODES.slice(),
+    committeeSupported: true, committeeToday: committeeToday_(),
     outpatients: outpatients,
     visits: visits, admissions: admissions, expectedAdmissions: expectedAdmissions,
     logs: logs, followUps: followUps,
@@ -13663,6 +13670,133 @@ function mwDischargeSet_(caller, params) {
     if (mode === 'clear') return { ok: true, expectedDischarge: null };
     if (mode === 'none') return { ok: true, expectedDischarge: { date: '', none: true, editedAt: row.editedAt, editedBy: row.editedBy } };
     return { ok: true, expectedDischarge: { date: expectedDate, editedAt: row.editedAt, editedBy: row.editedBy } };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* ===== Committee date per patient — «ועדה» (CHANGELOG-managers-committee.md) =====
+ *
+ * Sandra (15 Oct 2026): house managers record a committee date per patient
+ * (one CURRENT date per stay) with an optional short label (≤ 60 chars, e.g.
+ * the type of committee). Same model as the expected discharge date:
+ *   - APPEND-ONLY sheet ManagersCommittee, key = Managers house + patient name
+ *     + admission date; every set / change / clear is a NEW row (who, when,
+ *     the value and label it replaced); the LAST row of a stay wins; a
+ *     'cleared' row means no current date. Nothing is ever deleted.
+ *   - Writes only through `managersWork` op `committeeSet` — the same
+ *     fail-closed MANAGERS_WORK_SECRET, house / role / actor decided by the
+ *     Managers server (a manager is pinned to their own house) and
+ *     re-validated here; the patient must be in that house today with that
+ *     admission date.
+ *   - Optimistic concurrency: previousDate + previousLabel = what the screen
+ *     showed; anything else → conflict + the current value.
+ *   - Dates: strict yyyy-MM-dd, not before admission, ≤ 2 years ahead. "Today"
+ *     is the calendar day in Asia/Jerusalem. A date before today is refused
+ *     (`past_date`) UNLESS the caller corrects an existing committee date
+ *     (`correction: true` with a current value) — then it is stored and the
+ *     answer carries `warning: 'past_date'` (the row is marked pastCorrection).
+ * Display-only: no bonus or occupancy figure reads it. */
+const MW_COMMITTEE_SHEET = 'ManagersCommittee';
+// APPEND-ONLY header (test/managers-committee.test.js pins it).
+const MW_COMMITTEE_COLUMNS = ['id', 'house', 'patientName', 'entryDate', 'committeeDate', 'label', 'previousDate', 'previousLabel',
+  'editedAt', 'editedBy', 'editedById', 'state', 'pastCorrection'];
+const MW_COMMITTEE_LABEL_MAX = 60;
+const MW_COMMITTEE_MAX_AHEAD_DAYS = 730;
+const COMMITTEE_TZ = 'Asia/Jerusalem';
+
+/* Today in Israel as 'yyyy-MM-dd' — its own function so tests pin the clock. */
+function committeeToday_() {
+  return Utilities.formatDate(new Date(), COMMITTEE_TZ, 'yyyy-MM-dd');
+}
+
+/* Current committee per stay of one house: key → { date, label, editedAt, editedBy }.
+ * Read-only: the sheet is created on the first write, never on a read. */
+function mwReadCommittees_(house) {
+  const out = {};
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(MW_COMMITTEE_SHEET);
+  if (!sh || sh.getLastRow() < 2) return out;
+  readSheet_(sh, MW_COMMITTEE_COLUMNS).forEach(function (r) {
+    if (String(r.house) !== house) return;
+    const entry = coordIsoDateClean_(mwCellText_(r.entryDate, 'date'));
+    if (!entry) return;
+    const key = mwDischargeKey_(house, r.patientName, entry);
+    // Later rows win: the sheet is in write order.
+    if (String(r.state == null ? '' : r.state).trim() === 'cleared') { delete out[key]; return; }
+    const date = coordIsoDateClean_(mwCellText_(r.committeeDate, 'date'));
+    if (!date) return;
+    out[key] = {
+      date: date, label: coordTextClean_(r.label, MW_COMMITTEE_LABEL_MAX),
+      editedAt: String(r.editedAt || ''), editedBy: coordTextClean_(r.editedBy, 40),
+    };
+  });
+  return out;
+}
+
+function mwCommitteePublic_(cur) {
+  return cur ? { date: cur.date, label: cur.label, editedAt: cur.editedAt, editedBy: cur.editedBy } : null;
+}
+
+function mwCommitteeSet_(caller, params) {
+  const modeRaw = String(params.mode == null ? '' : params.mode).trim();
+  const mode = modeRaw === '' ? 'set' : modeRaw;
+  if (mode !== 'set' && mode !== 'clear') return { ok: false, error: 'bad_request' };
+  const entryDate = coordIsoDateClean_(params.entryDate);
+  const dateRaw = String(params.committeeDate == null ? '' : params.committeeDate).trim();
+  if (mode === 'clear' && dateRaw !== '') return { ok: false, error: 'bad_date' };
+  const committeeDate = mode === 'set' ? coordIsoDateClean_(dateRaw) : '';
+  const labelRaw = String(params.label == null ? '' : params.label).trim();
+  if (labelRaw.length > MW_COMMITTEE_LABEL_MAX) return { ok: false, error: 'label_too_long' };
+  const label = mode === 'set' ? coordTextClean_(labelRaw, MW_COMMITTEE_LABEL_MAX) : '';
+  const prevRaw = String(params.previousDate == null ? '' : params.previousDate).trim();
+  const previousDate = prevRaw === '' ? '' : coordIsoDateClean_(prevRaw);
+  const previousLabel = coordTextClean_(params.previousLabel, MW_COMMITTEE_LABEL_MAX);
+  const correction = params.correction === true || params.correction === 'true';
+  const nameKey = mwPatientNameKey_(params.patientName);
+  if (!nameKey) return { ok: false, error: 'missing_fields', fields: ['patientName'] };
+  if (!entryDate || (mode === 'set' && !committeeDate) || (prevRaw !== '' && !previousDate)) return { ok: false, error: 'bad_date' };
+  const todayIso = committeeToday_();
+  if (mode === 'set') {
+    if (committeeDate < entryDate) return { ok: false, error: 'before_admission' };
+    const t = parseDate_(todayIso);
+    const latest = ymdOf_(new Date(t.getFullYear(), t.getMonth(), t.getDate() + MW_COMMITTEE_MAX_AHEAD_DAYS));
+    if (committeeDate > latest) return { ok: false, error: 'too_far' };
+    // A past date only as a deliberate correction of an existing date.
+    if (committeeDate < todayIso && (!correction || previousDate === '')) return { ok: false, error: 'past_date' };
+  }
+
+  const pid = MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[caller.house];
+  const match = mwInHousePatients_(readPatientsForBonus_(), pid, parseDate_(todayISODate_())).filter(function (p) {
+    return p.entryDate === entryDate && mwPatientNameKey_(p.name) === nameKey;
+  })[0];
+  if (!match) return { ok: false, error: 'not_found' };
+
+  const key = mwDischargeKey_(caller.house, match.name, entryDate);
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(5000) !== true) return lockBusy_('mwCommitteeSet_');
+  try {
+    const cur = mwReadCommittees_(caller.house)[key] || null;
+    const curDate = cur ? cur.date : '';
+    const curLabel = cur ? cur.label : '';
+    if (curDate !== previousDate || curLabel !== previousLabel) return { ok: false, error: 'conflict', current: mwCommitteePublic_(cur) };
+    if (mode === 'clear' ? !cur : (curDate === committeeDate && curLabel === label)) {
+      return { ok: true, unchanged: true, committee: mwCommitteePublic_(cur) };
+    }
+    const past = mode === 'set' && committeeDate < todayIso;
+    const row = {
+      id: Utilities.getUuid(), house: caller.house, patientName: mwPatientNameKey_(match.name),
+      entryDate: entryDate, committeeDate: committeeDate, label: label, previousDate: curDate, previousLabel: curLabel,
+      editedAt: new Date().toISOString(), editedBy: caller.actor, editedById: caller.actorId,
+      state: mode === 'set' ? 'set' : 'cleared', pastCorrection: past ? '1' : '',
+    };
+    const sh = getOrCreateSheet_(MW_COMMITTEE_SHEET, MW_COMMITTEE_COLUMNS);
+    // Text cells: dates are never coerced, a label is never a formula.
+    sh.getRange(sh.getLastRow() + 1, 1, 1, MW_COMMITTEE_COLUMNS.length).setNumberFormat('@')
+      .setValues([MW_COMMITTEE_COLUMNS.map(function (c) { return String(row[c] == null ? '' : row[c]); })]);
+    if (mode === 'clear') return { ok: true, committee: null };
+    const out = { ok: true, committee: { date: committeeDate, label: label, editedAt: row.editedAt, editedBy: row.editedBy } };
+    if (past) out.warning = 'past_date';
+    return out;
   } finally {
     lock.releaseLock();
   }
