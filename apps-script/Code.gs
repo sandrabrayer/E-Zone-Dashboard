@@ -1371,6 +1371,7 @@ const PROXY_KNOWN_ACTIONS = [
   'deleteDuplicateDischarge',
   'editReceipt',
   'settleRefund', 'approveRefundException',
+  'expectedDischarges',
 ];
 
 /* SecurityLog — append-only, one row per (event, action, hour) at most.
@@ -1686,6 +1687,13 @@ function handle_(params) {
     if (action === 'managersWork') {
       if (!managersWorkAuthOk_(params)) return jsonOut_({ ok: false, error: 'unauthorized' });
       return jsonOut_(managersWork_(params));
+    }
+    // Expected discharges (Task F): READ-ONLY, PROXY_SECRET-gated, and refused
+    // unless a verified personal staff session — even in 'log' mode.
+    if (action === 'expectedDischarges') {
+      const no = expectedDischargesRefused_(params);
+      if (no) return jsonOut_(no);
+      return jsonOut_(expectedDischargesForDashboard_());
     }
     if (action === 'saveAll') {
       const perf = perfStart_('saveAll');
@@ -13563,6 +13571,64 @@ function mwDischargeSet_(caller, params) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/* ===== Expected discharges — Dashboard read (CHANGELOG-dashboard-expected-discharges.md) =====
+ *
+ * Sandra (15 Oct 2026, Task F): the Dashboard shows, read-only, the expected
+ * discharge dates the house managers set in the Managers app. ONE source of
+ * truth: the same ManagersExpectedDischarge sheet and the same readers
+ * houseData uses (mwInHousePatients_ + mwReadDischarges_ — the LAST row of a
+ * stay wins). This action never writes: no sheet, no cell, no lock.
+ *
+ * action=expectedDischarges (no params) →
+ *   { ok, today, expectedDischargeSupported: true,
+ *     houses: [{ house, label, patients: [{ name, entryDate,
+ *       expectedDischarge: { date, editedAt, editedBy } | null }] }] }
+ * Only patients in the house TODAY (a discharged patient is not listed).
+ * "today" is the calendar day in Asia/Jerusalem. No phone, money or notes.
+ * The list key is `houses` (never a top-level `patients` array), so the
+ * proxy's response summary log never carries a patient name.
+ *
+ * Gate: PROXY_SECRET (Script Property) like every Dashboard read — it is NOT
+ * in OPEN_ACTIONS. On top of that, and in BOTH proxy-secret modes
+ * (fail-closed even in 'log'), handle_ refuses it unless the caller is a
+ * VERIFIED personal Dashboard session holding the `staff` role and not the
+ * controller view: exactly the sessions that already see the patient list.
+ * Without a valid PROXY_SECRET there is no verified actor → unauthorized. */
+const EXPECTED_DISCHARGES_TZ = 'Asia/Jerusalem';
+
+/* null when allowed, else the refusal body. Pure over the verified actor. */
+function expectedDischargesRefused_(params) {
+  const a = actingUser_(params);
+  if (!a.verified) return { ok: false, error: 'unauthorized' };
+  if (a.auth !== 'personal' || isControllerActor_(a) || a.roles.indexOf('staff') < 0) {
+    return { ok: false, error: 'forbidden', message: ROLE_FORBIDDEN_MESSAGE };
+  }
+  return null;
+}
+
+/* Today in Israel as 'yyyy-MM-dd' — its own function so tests pin the clock. */
+function expectedDischargesToday_() {
+  return Utilities.formatDate(new Date(), EXPECTED_DISCHARGES_TZ, 'yyyy-MM-dd');
+}
+
+function expectedDischargesForDashboard_() {
+  const todayIso = expectedDischargesToday_();
+  const today = parseDate_(todayIso);
+  const patients = readPatientsForBonus_();
+  const houses = MANAGER_HOUSES.map(function (key) {
+    const discharges = mwReadDischarges_(key);
+    const list = mwInHousePatients_(patients, MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[key], today).map(function (p) {
+      const cur = discharges[mwDischargeKey_(key, p.name, p.entryDate)];
+      return {
+        name: coordTextClean_(p.name, 80), entryDate: p.entryDate,
+        expectedDischarge: cur ? { date: cur.date, editedAt: cur.editedAt, editedBy: cur.editedBy } : null,
+      };
+    });
+    return { house: key, label: MANAGER_HOUSE_NAMES[key], patients: list };
+  });
+  return { ok: true, today: todayIso, expectedDischargeSupported: true, houses: houses };
 }
 
 function mwLogAdd_(caller, params) {
