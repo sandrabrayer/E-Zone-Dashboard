@@ -409,6 +409,19 @@
 
       <div class="cards-row bc-cards" id="bc-cards"></div>
 
+      <div class="bill-group bill-group--open" data-group="bc-followup">
+        <h3 class="bill-group-title">להמשך טיפול <span class="count-pill" id="bc-followup-count">—</span></h3>
+        <p class="billing-date-label">הוותיק ראשון · אורטל אחראית למעקב. יתרות גבייה והפרשי אימות מוצגים בנפרד; אין לחבר את הסכומים.</p>
+        <div class="debt-controls bc-followup-filters">
+          <label for="bc-followup-owner">באחריות</label>
+          <select id="bc-followup-owner"><option value="all">כולם</option><option value="vered">ורד</option><option value="ortal">אורטל</option></select>
+          <label for="bc-followup-house">בית</label>
+          <select id="bc-followup-house"><option value="all">כל הבתים</option></select>
+        </div>
+        <p id="bc-followup-warning" class="bc-followup-warning hidden" role="status"></p>
+        <div id="bc-followup" class="billing-list bc-list" aria-live="polite"></div>
+      </div>
+
       <div class="bill-group bill-group--open" data-group="bc-queue">
         <h3 class="bill-group-title">ממתין לאימות <span class="count-pill" id="bc-queue-count">0</span></h3>
         <p class="billing-date-label">החדש ראשון. בודקים בבנק ובוחרים סטטוס: «שולם», «שולם חלקית» (מזינים כמה התקבל) או «לא שולם» (חובה לפרט).</p>

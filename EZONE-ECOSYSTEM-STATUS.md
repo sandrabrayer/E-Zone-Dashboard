@@ -1,5 +1,16 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Billing follow-up queue — October 15, 2026 (review candidate, not deployed)
+
+FIN-01.2 adds a read-only chronological work list in Billing Control, combining
+existing receipt verification work with the debt-aging engine's open cycles.
+Amounts stay separate; original dates, Vered/Ortal responsibility and the existing
+institutional grace period are preserved. No bank imports, notifications, new
+permissions or sheet writes are introduced. See `CHANGELOG-billing-followup-queue.md`.
+The isolated branch includes Managers #230 (`dfce382`) and does not contain or
+replace payment-write recovery draft PR #229. Browser QA and explicit release
+authorization remain outstanding; this note is not evidence of live operation.
+
 ## Managers protocol 2 — October 15, 2026 (candidate active per operator report)
 
 Coordinated Managers/Dashboard hardening requires immutable account IDs,
