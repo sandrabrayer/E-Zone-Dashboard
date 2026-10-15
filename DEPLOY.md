@@ -499,6 +499,12 @@ deploys automatically on merge; until it has, the card shows «לא ניתן ל�
 in — any personal session, Ortal's controller view included (the card sits on «בקרת גבייה»
 there). No session → 401; nothing else changes. Still nothing to set.
 
+## Expected discharge clear / «אין צפי» — nothing to set (October 15, 2026)
+
+`CHANGELOG-managers-discharge-clear.md`. Code.gs deploys automatically on merge. The
+`ManagersExpectedDischarge` header gets `state` appended on the first write after deploy (append
+only). No Script Property, Railway variable or editor run. Merge before the paired Managers PR.
+
 ## Managers expected-discharge save — one editor run (October 15, 2026)
 
 `CHANGELOG-managers-discharge-save-fix.md`. Once, after the deploy, as the account that owns the

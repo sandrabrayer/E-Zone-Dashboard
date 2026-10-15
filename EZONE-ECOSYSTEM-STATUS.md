@@ -354,6 +354,19 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
 - **Audit**: editor-run, read-only `auditTemporaryExitsNow()` (initials only).
 - Details: `CHANGELOG-temporary-exit-return.md`.
 
+## Dashboard Apps Script: expected discharge clear + «אין צפי לשחרור» (October 15, 2026)
+
+- `managersWork` `dischargeSet` takes `mode`: `set` (default), `clear`, or `none` («אין צפי
+  לשחרור»).
+- Both new modes APPEND a row with an empty date: nothing is deleted, and the last row wins.
+- `ManagersExpectedDischarge` gets the column `state` appended (`set` / `cleared` / `none`).
+  Older rows have `''`, read as a date.
+- Concurrency token `previousDate`: `''`, a date, or `none`.
+- `houseData` / `expectedDischarges` advertise `expectedDischargeModes`.
+- The «שחרורים צפויים» card leaves «אין צפי» patients out of the alerts and out of the no-date
+  count. The shared fixture gained `states` (new sha256 in both repos).
+- No new secret or property. Details: `CHANGELOG-managers-discharge-clear.md`.
+
 ## Dashboard: «שחרורים צפויים» — expected discharges, read-only (October 15, 2026, Task F)
 
 - «דשבורד» card, all houses: expected discharge within 14 days (inclusive), a red «דורש עדכון»

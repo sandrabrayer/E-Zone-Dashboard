@@ -1,5 +1,5 @@
 {
-  "about": "Shared boundary cases for the expected-discharge alert rule. IDENTICAL file in ezone-managers and E-Zone-Dashboard; each repo runs it against its own implementation (Managers public/discharge-alerts.js, Dashboard lib/discharge-alerts.js). Change both repos together.",
+  "about": "Shared boundary cases for the expected-discharge alert rule. IDENTICAL file in ezone-managers and E-Zone-Dashboard; each repo runs it against its own implementation (Managers public/discharge-alerts.js, Dashboard lib/discharge-alerts.js). Change both repos together. states (15 Oct 2026): an expectedDischarge marked none («אין צפי לשחרור») is never an alert and never counted as no-date.",
   "ALERT_LEAD_DAYS": 14,
   "TIME_ZONE": "Asia/Jerusalem",
   "alerts": [
@@ -21,6 +21,15 @@
     { "utc": "2026-10-15T21:00:00Z", "today": "2026-10-16" },
     { "utc": "2026-12-01T21:59:00Z", "today": "2026-12-01" },
     { "utc": "2026-12-01T22:00:00Z", "today": "2026-12-02" }
+  ],
+  "states": [
+    { "expectedDischarge": null, "expect": "noDate" },
+    { "expectedDischarge": { "date": "" }, "expect": "noDate" },
+    { "expectedDischarge": { "date": "2026-02-30" }, "expect": "noDate" },
+    { "expectedDischarge": { "date": "", "none": true }, "expect": "none" },
+    { "expectedDischarge": { "date": "2026-10-16", "none": true }, "expect": "none" },
+    { "expectedDischarge": { "date": "", "none": "true" }, "expect": "noDate" },
+    { "expectedDischarge": { "date": "2026-10-16" }, "expect": "date" }
   ],
   "noDateText": [
     { "n": 1, "text": "מטופל/ת אחד/ת ללא תאריך שחרור משוער" },

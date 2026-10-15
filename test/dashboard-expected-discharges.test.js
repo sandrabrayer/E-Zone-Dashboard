@@ -31,7 +31,7 @@ const FIXTURE_PATH = path.join(__dirname, 'fixtures', 'discharge-alert-cases.jso
 const FIXTURE = JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf8'));
 /* The SAME hash is pinned in ezone-managers test/discharge-alerts-shared.test.js:
  * editing the fixture in one repo only fails that repo's CI. */
-const SHARED_FIXTURE_SHA256 = 'ccac89c92f7b4f0c31909ecbb2b5f517c3fe41bf4d27579752a494aafce19522';
+const SHARED_FIXTURE_SHA256 = '8f0325ab4d56f32b9e64a8e744fc6b4430618e6b2dafce0d657c251c18e1b5f5';
 
 /* ===================================================================== */
 /* A. the shared rule                                                     */
@@ -112,7 +112,7 @@ test('B: midnight in Israel flips «מחר» to «היום» whatever the device
 });
 
 test('B: unsupported / empty / malformed feeds never throw', () => {
-  assert.deepStrictEqual(DA.dashboardModel(null, TODAY), { supported: false, soon: [], overdue: [], noDate: [], count: 0 });
+  assert.deepStrictEqual(DA.dashboardModel(null, TODAY), { supported: false, soon: [], overdue: [], noDate: [], noExpected: 0, count: 0 });
   assert.strictEqual(DA.dashboardModel({ expectedDischargeSupported: true, houses: [null, { patients: [null, 5] }] }, TODAY).count, 0);
   assert.strictEqual(DA.setByText({ editedBy: '', editedAt: 'garbage' }), '');
   assert.strictEqual(DA.setByText({ editedBy: 'אורן', editedAt: '' }), 'נקבע ע״י אורן');
@@ -320,7 +320,7 @@ test('C: "today" is taken in Asia/Jerusalem', () => {
 test('C: append-only sheet untouched — header pinned, and the action writes / logs no patient name', () => {
   const { g, mw } = bootGs();
   assert.deepStrictEqual(Array.from(g.run('MW_DISCHARGE_COLUMNS')),
-    ['id', 'house', 'patientName', 'entryDate', 'expectedDate', 'previousDate', 'editedAt', 'editedBy', 'editedById']);
+    ['id', 'house', 'patientName', 'entryDate', 'expectedDate', 'previousDate', 'editedAt', 'editedBy', 'editedById', 'state']);
   mw({ op: 'dischargeSet', ...MW_ORAN, patientName: 'דנה לוי', entryDate: '2026-09-01', expectedDate: '2026-10-20', previousDate: '' });
   const before = JSON.stringify(g.sandbox.__sheets);
   g.logs.length = 0;

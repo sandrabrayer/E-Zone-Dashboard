@@ -13071,9 +13071,11 @@ function computeContinuityByHouse_(outpatients, ym) {
  *   op 'logUpdate'  { house, log, id, patch } → followUpDone / soft delete
  *                   (only the author or an admin).
  *   op 'dischargeSet' { house, patientName, entryDate, expectedDate,
- *                   previousDate } → the patient's expected discharge date,
- *                   appended to ManagersExpectedDischarge (15 Oct 2026; see
- *                   mwDischargeSet_). houseData returns it per patient.
+ *                   previousDate, mode } → the patient's expected discharge
+ *                   date, appended to ManagersExpectedDischarge (15 Oct 2026;
+ *                   see mwDischargeSet_). mode 'clear' / 'none' (15 Oct 2026,
+ *                   CHANGELOG-managers-discharge-clear.md) clears the date or
+ *                   marks «אין צפי לשחרור». houseData returns it per patient.
  *
  * Logs (append-only sheets, headers append-only):
  *   familyCalls — patient, contact, relation, when, summary, follow-up
@@ -13409,7 +13411,7 @@ function mwHouseData_(caller, params) {
   const discharges = mwReadDischarges_(key);
   const inHouse = mwInHousePatients_(patients, pid, today).map(function (p) {
     const cur = discharges[mwDischargeKey_(key, p.name, p.entryDate)];
-    return Object.assign({}, p, { expectedDischarge: cur ? { date: cur.date, editedAt: cur.editedAt, editedBy: cur.editedBy } : null });
+    return Object.assign({}, p, { expectedDischarge: mwDischargePublic_(cur) });
   });
   // A return from a temporary exit is not a new admission (from Oct 2026).
   const chains = stayContinuityApplies_(ym) ? stayChains_(patients, pid) : {};
@@ -13484,7 +13486,8 @@ function mwHouseData_(caller, params) {
 
   return {
     ok: true, house: key, month: ym, today: todayIso,
-    patients: inHouse, expectedDischargeSupported: true, outpatients: outpatients,
+    patients: inHouse, expectedDischargeSupported: true, expectedDischargeModes: MW_DISCHARGE_MODES.slice(),
+    outpatients: outpatients,
     visits: visits, admissions: admissions, expectedAdmissions: expectedAdmissions,
     logs: logs, followUps: followUps,
     team: mwTeam_(key, todayIso),
@@ -13510,10 +13513,24 @@ function mwHouseData_(caller, params) {
  * `conflict` and the current value — the person re-reads before changing it.
  * Validated: strict yyyy-MM-dd dates, expected ≥ admission date, ≤ 2 years
  * ahead, and the patient must be in this house today with that admission
- * date. Display-only: it never feeds a bonus figure. */
+ * date. Display-only: it never feeds a bonus figure.
+ *
+ * Clear / «אין צפי לשחרור» (15 Oct 2026, CHANGELOG-managers-discharge-clear.md):
+ * `mode` = 'set' (default, a date) | 'clear' | 'none'. Both new modes APPEND a
+ * row with an empty expectedDate and `state` = 'cleared' / 'none' — history
+ * is never deleted. The current value of a stay is still its LAST row:
+ *   - 'cleared' → no current value (null, counted as «ללא תאריך»);
+ *   - 'none'    → { date: '', none: true, … } («אין צפי לשחרור», excluded
+ *                 from the no-date count and from every alert);
+ *   - a date    → { date, … } (rows written before `state` existed have '').
+ * Optimistic concurrency covers all three: previousDate is the token the
+ * screen showed — '' (nothing), a yyyy-MM-dd date, or 'none'. */
 const MW_DISCHARGE_SHEET = 'ManagersExpectedDischarge';
 // APPEND-ONLY header (test/managers-expected-discharge.test.js pins it).
-const MW_DISCHARGE_COLUMNS = ['id', 'house', 'patientName', 'entryDate', 'expectedDate', 'previousDate', 'editedAt', 'editedBy', 'editedById'];
+// `state` appended 15 Oct 2026: '' / 'set' = a date, 'cleared', 'none'.
+const MW_DISCHARGE_COLUMNS = ['id', 'house', 'patientName', 'entryDate', 'expectedDate', 'previousDate', 'editedAt', 'editedBy', 'editedById', 'state'];
+const MW_DISCHARGE_MODES = ['set', 'clear', 'none'];
+const MW_DISCHARGE_NONE = 'none';
 const MW_DISCHARGE_MAX_AHEAD_DAYS = 730;
 /* Managers writes (dischargeSet / logAdd / logUpdate) wait at most 5 s for the
  * script lock. They used to call waitLock(10000) — which THROWS on timeout
@@ -13555,37 +13572,64 @@ function mwInHousePatients_(patients, pid, today) {
   return out;
 }
 
-/* Current expected discharge per stay of one house: key → { date, editedAt, editedBy }.
- * Read-only: the sheet is created on the first write, never on a read. */
+/* Current expected discharge per stay of one house:
+ * key → { date, editedAt, editedBy } | { date: '', none: true, editedAt, editedBy }.
+ * A stay whose last row is 'cleared' has no key. Read-only: the sheet is
+ * created on the first write, never on a read. */
 function mwReadDischarges_(house) {
   const out = {};
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(MW_DISCHARGE_SHEET);
   if (!sh || sh.getLastRow() < 2) return out;
   readSheet_(sh, MW_DISCHARGE_COLUMNS).forEach(function (r) {
     if (String(r.house) !== house) return;
-    const date = coordIsoDateClean_(mwCellText_(r.expectedDate, 'date'));
     const entry = coordIsoDateClean_(mwCellText_(r.entryDate, 'date'));
-    if (!date || !entry) return;
+    if (!entry) return;
+    const key = mwDischargeKey_(house, r.patientName, entry);
+    const state = String(r.state == null ? '' : r.state).trim();
+    const stamp = { editedAt: String(r.editedAt || ''), editedBy: coordTextClean_(r.editedBy, 40) };
     // Later rows win: the sheet is in write order.
-    out[mwDischargeKey_(house, r.patientName, entry)] = {
-      date: date, editedAt: String(r.editedAt || ''), editedBy: coordTextClean_(r.editedBy, 40),
-    };
+    if (state === 'cleared') { delete out[key]; return; }
+    if (state === MW_DISCHARGE_NONE) { out[key] = { date: '', none: true, editedAt: stamp.editedAt, editedBy: stamp.editedBy }; return; }
+    const date = coordIsoDateClean_(mwCellText_(r.expectedDate, 'date'));
+    if (!date) return;
+    out[key] = { date: date, editedAt: stamp.editedAt, editedBy: stamp.editedBy };
   });
   return out;
 }
 
+/* The concurrency token of a current value: '' | 'yyyy-MM-dd' | 'none'. */
+function mwDischargeToken_(cur) {
+  if (!cur) return '';
+  return cur.none ? MW_DISCHARGE_NONE : cur.date;
+}
+
+/* The value a feed returns for a stay (null when nothing is set). */
+function mwDischargePublic_(cur) {
+  if (!cur) return null;
+  if (cur.none) return { date: '', none: true, editedAt: cur.editedAt, editedBy: cur.editedBy };
+  return { date: cur.date, editedAt: cur.editedAt, editedBy: cur.editedBy };
+}
+
 function mwDischargeSet_(caller, params) {
+  const modeRaw = String(params.mode == null ? '' : params.mode).trim();
+  const mode = modeRaw === '' ? 'set' : modeRaw;
+  if (MW_DISCHARGE_MODES.indexOf(mode) < 0) return { ok: false, error: 'bad_request' };
   const entryDate = coordIsoDateClean_(params.entryDate);
-  const expectedDate = coordIsoDateClean_(params.expectedDate);
+  const expRaw = String(params.expectedDate == null ? '' : params.expectedDate).trim();
+  // 'clear' / 'none' carry no date; a date sent with them is refused, not ignored.
+  if (mode !== 'set' && expRaw !== '') return { ok: false, error: 'bad_date' };
+  const expectedDate = mode === 'set' ? coordIsoDateClean_(expRaw) : '';
   const prevRaw = String(params.previousDate == null ? '' : params.previousDate).trim();
-  const previousDate = prevRaw === '' ? '' : coordIsoDateClean_(prevRaw);
+  const previousDate = prevRaw === '' ? '' : prevRaw === MW_DISCHARGE_NONE ? MW_DISCHARGE_NONE : coordIsoDateClean_(prevRaw);
   const nameKey = mwPatientNameKey_(params.patientName);
   if (!nameKey) return { ok: false, error: 'missing_fields', fields: ['patientName'] };
-  if (!entryDate || !expectedDate || (prevRaw !== '' && !previousDate)) return { ok: false, error: 'bad_date' };
-  if (expectedDate < entryDate) return { ok: false, error: 'before_admission' };
+  if (!entryDate || (mode === 'set' && !expectedDate) || (prevRaw !== '' && !previousDate)) return { ok: false, error: 'bad_date' };
   const today = parseDate_(todayISODate_());
-  const latest = ymdOf_(new Date(today.getFullYear(), today.getMonth(), today.getDate() + MW_DISCHARGE_MAX_AHEAD_DAYS));
-  if (expectedDate > latest) return { ok: false, error: 'too_far' };
+  if (mode === 'set') {
+    if (expectedDate < entryDate) return { ok: false, error: 'before_admission' };
+    const latest = ymdOf_(new Date(today.getFullYear(), today.getMonth(), today.getDate() + MW_DISCHARGE_MAX_AHEAD_DAYS));
+    if (expectedDate > latest) return { ok: false, error: 'too_far' };
+  }
 
   // Only a patient in THIS house today, with exactly this admission date.
   const pid = MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[caller.house];
@@ -13601,19 +13645,23 @@ function mwDischargeSet_(caller, params) {
   if (lock.tryLock(5000) !== true) return lockBusy_('mwDischargeSet_');
   try {
     const cur = mwReadDischarges_(caller.house)[key] || null;
-    const curDate = cur ? cur.date : '';
-    if (curDate !== previousDate) return { ok: false, error: 'conflict', current: cur };
-    if (curDate === expectedDate) return { ok: true, unchanged: true, expectedDischarge: cur };
+    const curToken = mwDischargeToken_(cur);
+    if (curToken !== previousDate) return { ok: false, error: 'conflict', current: mwDischargePublic_(cur) };
+    const target = mode === 'set' ? expectedDate : mode === 'none' ? MW_DISCHARGE_NONE : '';
+    if (curToken === target) return { ok: true, unchanged: true, expectedDischarge: mwDischargePublic_(cur) };
     const row = {
       id: Utilities.getUuid(), house: caller.house, patientName: mwPatientNameKey_(match.name),
-      entryDate: entryDate, expectedDate: expectedDate, previousDate: curDate,
+      entryDate: entryDate, expectedDate: expectedDate, previousDate: curToken,
       editedAt: new Date().toISOString(), editedBy: caller.actor, editedById: caller.actorId,
+      state: mode === 'set' ? 'set' : mode === 'none' ? MW_DISCHARGE_NONE : 'cleared',
     };
     const sh = getOrCreateSheet_(MW_DISCHARGE_SHEET, MW_DISCHARGE_COLUMNS);
     // Text cells: dates must never be coerced into Date cells, and a name can
     // never be evaluated as a formula.
     sh.getRange(sh.getLastRow() + 1, 1, 1, MW_DISCHARGE_COLUMNS.length).setNumberFormat('@')
       .setValues([MW_DISCHARGE_COLUMNS.map(function (c) { return String(row[c] == null ? '' : row[c]); })]);
+    if (mode === 'clear') return { ok: true, expectedDischarge: null };
+    if (mode === 'none') return { ok: true, expectedDischarge: { date: '', none: true, editedAt: row.editedAt, editedBy: row.editedBy } };
     return { ok: true, expectedDischarge: { date: expectedDate, editedAt: row.editedAt, editedBy: row.editedBy } };
   } finally {
     lock.releaseLock();
@@ -13671,7 +13719,9 @@ function authorizeSheetsWriteNow() {
  * action=expectedDischarges (no params) →
  *   { ok, today, expectedDischargeSupported: true,
  *     houses: [{ house, label, patients: [{ name, entryDate,
- *       expectedDischarge: { date, editedAt, editedBy } | null }] }] }
+ *       expectedDischarge: { date, editedAt, editedBy }
+ *         | { date: '', none: true, editedAt, editedBy } («אין צפי»)
+ *         | null }] }] }
  * Only patients in the house TODAY (a discharged patient is not listed).
  * "today" is the calendar day in Asia/Jerusalem. No phone, money or notes.
  * The list key is `houses` (never a top-level `patients` array), so the
@@ -13713,12 +13763,12 @@ function expectedDischargesForDashboard_() {
       const cur = discharges[mwDischargeKey_(key, p.name, p.entryDate)];
       return {
         name: coordTextClean_(p.name, 80), entryDate: p.entryDate,
-        expectedDischarge: cur ? { date: cur.date, editedAt: cur.editedAt, editedBy: cur.editedBy } : null,
+        expectedDischarge: mwDischargePublic_(cur),
       };
     });
     return { house: key, label: MANAGER_HOUSE_NAMES[key], patients: list };
   });
-  return { ok: true, today: todayIso, expectedDischargeSupported: true, houses: houses };
+  return { ok: true, today: todayIso, expectedDischargeSupported: true, expectedDischargeModes: MW_DISCHARGE_MODES.slice(), houses: houses };
 }
 
 function mwLogAdd_(caller, params) {
