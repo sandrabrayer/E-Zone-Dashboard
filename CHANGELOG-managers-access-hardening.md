@@ -21,10 +21,17 @@ Apps Script secret/version before deployment activation.
 - Therapists/Coordinators secrets and Dashboard proxy/finance permissions are
   unchanged. Existing read contract keys and bonus calculations are preserved.
 
-Deployment is intentionally blocked pending verified account configuration and
-coordinated staging: see `docs/managers-hardening-rollout.md`. This is not a
-claim of production activation. Existing anonymous URLs remain exposed until
-all active historical deployments are updated or safely retired.
+Sandra's 15 October checkpoint reports the merged Managers app serving through
+the versioned protocol-2 candidate and successful signed-in read checks. The
+Dashboard merge and return to its original deployment remain pending her go:
+see `docs/managers-hardening-rollout.md`. Historical deployment coverage and
+live write persistence remain unverified; this is not a claim of final activation.
+
+15 October documentation review: preserve the candidate's exact runtime source;
+require the merge-specific Apps Script deploy, explicit Managers-feed refusal
+checks, original-URL capability probe before switching, protocol-2 fallback,
+historical-deployment inventory and a dated completion record. No runtime,
+workflow, credentials or configuration changed; test count delta: 0.
 
 Tests cover missing/wrong/query credentials, both proxy modes, same-name users,
 renaming, legacy rows, house/alias scoping, cross-house patient details and a
