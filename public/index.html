@@ -128,6 +128,18 @@
       </div>
     </header>
 
+    <!-- Global search panel. A sibling of the header (not a child): the
+         header's backdrop-filter would otherwise trap its fixed position. -->
+    <div id="global-search-panel" class="gs-panel hidden" role="dialog" aria-label="חיפוש מטופל">
+      <input id="global-search-input" type="search" inputmode="search" autocomplete="off" placeholder="שם או טלפון — מטופלים, לידים, משוחררים" aria-label="חיפוש מטופל או ליד" />
+      <div id="global-search-results" class="gs-results" role="listbox"></div>
+    </div>
+    <!-- «🔍 חיפוש» — a floating button, NOT a top-bar item: the top bar is already
+         full at laptop widths and one more control pushed «יציאה» off-screen
+         (CHANGELOG-global-patient-search.md). Removed from the DOM for the
+         controller view (Ortal). The «/» key opens the same panel. -->
+    <button id="global-search-open" class="gs-fab" type="button" aria-expanded="false" aria-controls="global-search-panel" aria-label="חיפוש מטופל או ליד" title="חיפוש מטופל / ליד (קיצור: /)"><span aria-hidden="true">🔍</span><span class="gs-fab-label">חיפוש</span></button>
+
     <!-- ====== DASHBOARD ====== -->
     <section id="screen-dashboard" class="screen">
       <div class="screen-head">
