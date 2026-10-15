@@ -354,6 +354,15 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
 - **Audit**: editor-run, read-only `auditTemporaryExitsNow()` (initials only).
 - Details: `CHANGELOG-temporary-exit-return.md`.
 
+## Dashboard Apps Script: committee feed — diagnosable refusals (October 15, 2026)
+
+- `getCommitteesForCoordinators`: the secret is **trimmed on both sides** (a pasted trailing
+  space / newline no longer reads as a mismatch); still constant-time and fail-closed.
+- Our `COORDINATORS_COMMITTEES_SECRET` unset → `{ok:false, error:'unauthorized',
+  reason:'not_configured'}` (the coordinators show «הסוד לא הוגדר»); wrong → plain `unauthorized`
+  («הסוד לא תואם»). Nothing is read either way.
+- Details: `CHANGELOG-committee-feed-diagnostics.md`.
+
 ## Dashboard Apps Script: committee feed for the coordinators (October 15, 2026)
 
 - Read-only `getCommitteesForCoordinators` (open action, own fail-closed Script Property

@@ -506,6 +506,12 @@ Property **`COORDINATORS_COMMITTEES_SECRET`** (a new random value of 32+ charact
 value in the coordinators Apps Script as `DASHBOARD_COMMITTEES_SECRET`. Unset → the feed answers
 `unauthorized` (fail-closed) and the coordinators show «לא סונכרן». No Railway variable.
 
+**Diagnostics (CHANGELOG-committee-feed-diagnostics.md):** both sides are trimmed, so a value
+pasted with a trailing space or newline still matches. An unset value here answers
+`{ok:false, error:'unauthorized', reason:'not_configured'}`; the coordinators card then says
+«הסוד לא הוגדר» instead of «הסוד לא תואם». Check from the coordinators editor:
+`previewCommitteeSyncNow()`.
+
 ## «ועדות קרובות» card — nothing to set (October 15, 2026)
 
 `CHANGELOG-dashboard-committees.md`. A read-only action `upcomingCommittees` reuses
