@@ -37,6 +37,7 @@ const FILES = {
   '/refund-rules.js': path.join(ROOT, 'lib', 'refund-rules.js'),
   '/funder-grace.js': path.join(ROOT, 'lib', 'funder-grace.js'),
   '/cycle-balance.js': path.join(ROOT, 'lib', 'cycle-balance.js'),
+  '/discharge-alerts.js': path.join(ROOT, 'lib', 'discharge-alerts.js'),
 };
 
 /* ===================================================================== */
@@ -105,7 +106,7 @@ test('A: versionAssetRefs pins all five files in the real index.html — and onl
     const h = sha12(fs.readFileSync(f));
     assert.ok(out.includes(name + '?v=' + h + '"'), name + ' carries its own hash');
   }
-  assert.ok(!/(app|funder|payment-report-rules|billing-control-rules|refund-rules|funder-grace|cycle-balance)\.js\?v=__BUILD__/.test(out));
+  assert.ok(!/(app|funder|payment-report-rules|billing-control-rules|refund-rules|funder-grace|cycle-balance|discharge-alerts)\.js\?v=__BUILD__/.test(out));
   assert.ok(!out.includes('href="style.css"'), 'style.css is no longer unversioned');
   // The build markers still carry __BUILD__ for the BUILD_ID substitution.
   assert.match(out, /<meta name="build" content="__BUILD__"/);
@@ -331,7 +332,7 @@ function serve(handlers, url) {
 }
 const settle = () => new Promise((r) => setImmediate(r));
 
-test('D: CACHE_VERSION is v64 (monotonic from the live v63; v17 burned, never reused)', () => {
+test('D: CACHE_VERSION is v65 (monotonic from the live v64; v17 burned, never reused)', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
   // v40: CHANGELOG-ortal-verification-status.md.
   // v41: CHANGELOG-reactivation-fix.md (PR #145's fix, re-landed).
@@ -358,7 +359,8 @@ test('D: CACHE_VERSION is v64 (monotonic from the live v63; v17 burned, never re
   // v62: CHANGELOG-refunds-auto-policy.md (live /sw.js read v61 on 14/10/2026).
   // v63: CHANGELOG-global-patient-search.md (live /sw.js read v62 on 15/10/2026).
   // v64: CHANGELOG-billing-followup-queue.md (live /sw.js read v63 on 15/10/2026).
-  assert.equal(v, 'v64');
+  // v65: CHANGELOG-dashboard-expected-discharges.md (live /sw.js read v64 on 15/10/2026).
+  assert.equal(v, 'v65');
   assert.notEqual(v, 'v17');
 });
 

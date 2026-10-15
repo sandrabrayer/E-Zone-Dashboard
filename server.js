@@ -18,6 +18,7 @@ const { hashPin, verifyPin, pinPolicyError } = require('./lib/pin-hash');
 const { WindowCounter, PinLockout } = require('./lib/rate-limit');
 const {
   ROLE_FORBIDDEN_MESSAGE, roleOperationFor, requiredRoleFor, principalHasRole, roleAllowed,
+  EXPECTED_DISCHARGES_ACTION, canViewExpectedDischarges,
 } = require('./lib/role-scope');
 const { buildXlsxReport, isoDayInIsrael, XLSX_MIME } = require('./lib/xlsx-report');
 const {
@@ -259,6 +260,7 @@ const ASSETS = createAssetStore({
   '/refund-rules.js': { file: path.join(__dirname, 'lib', 'refund-rules.js'), mime: 'application/javascript' },
   '/funder-grace.js': { file: path.join(__dirname, 'lib', 'funder-grace.js'), mime: 'application/javascript' },
   '/cycle-balance.js': { file: path.join(__dirname, 'lib', 'cycle-balance.js'), mime: 'application/javascript' },
+  '/discharge-alerts.js': { file: path.join(__dirname, 'lib', 'discharge-alerts.js'), mime: 'application/javascript' },
 });
 
 /* Serve index.html with every asset reference pinned to that file's content
@@ -349,6 +351,10 @@ app.get('/funder-grace.js', sendLibAsset('/funder-grace.js'));
  * window.CycleBalance — the same rule as Code.gs cycleBalanceState_. Rules
  * only, no data. */
 app.get('/cycle-balance.js', sendLibAsset('/cycle-balance.js'));
+/* Expected-discharge alerts (CHANGELOG-dashboard-expected-discharges.md):
+ * lib/discharge-alerts.js, window.DischargeAlerts — the same date / alert
+ * rule as the Managers app (boundary-pinned by a shared fixture). No data. */
+app.get('/discharge-alerts.js', sendLibAsset('/discharge-alerts.js'));
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 // Patient funder helpers (public/funder.js, global Funder) — loaded before app.js.
 app.get('/funder.js', sendStatic('funder.js', 'application/javascript'));
@@ -942,6 +948,19 @@ function requireRoleForAction(req, res, next) {
   return res.status(403).json({ ok: false, error: 'forbidden_role', message: ROLE_FORBIDDEN_MESSAGE });
 }
 
+/* Expected discharges (Task F): the read-only «שחרורים צפויים» feed needs a
+ * personal staff session that is not the controller view
+ * (lib/role-scope.js canViewExpectedDischarges), refused BEFORE anything is
+ * proxied. Code.gs refuses the same again. Logged with the user id only. */
+function requireExpectedDischargesView(req, res, next) {
+  const action = req.method === 'GET' ? (req.query && req.query.action) : (req.body && req.body.action);
+  if (action !== EXPECTED_DISCHARGES_ACTION) return next();
+  const p = sessionPrincipalFromRequest(req);
+  if (canViewExpectedDischarges(p)) return next();
+  console.warn(`[discharges] 403 user=${p ? (p.id || p.auth) : 'none'}`);
+  return res.status(403).json({ ok: false, error: 'forbidden', message: ROLE_FORBIDDEN_MESSAGE });
+}
+
 /* getData for a session without `finance`: drop the billing-only keys
  * (GETDATA_FINANCE_KEYS — no tab such a session can see reads them). A
  * full-view session gets every key, unchanged (append-only contract). The
@@ -957,7 +976,7 @@ function viewFilteredResponse(action, data, principal) {
 
 /* GET /api/sheets?action=getData — forwarded to Apps Script as a POST whose
  * body carries the params + proxy secret (see sheetsGet). */
-app.get('/api/sheets', requireSession, requireBillingControlForAction, requireFinanceForAction, requireRoleForAction, requireProxySecret, async (req, res) => {
+app.get('/api/sheets', requireSession, requireBillingControlForAction, requireFinanceForAction, requireRoleForAction, requireExpectedDischargesView, requireProxySecret, async (req, res) => {
   const action = req.query && req.query.action;
   // The action name only — never the query values or a response body.
   console.log('[sheets GET] → action=', JSON.stringify(typeof action === 'string' ? action.slice(0, 60) : null));
@@ -997,7 +1016,7 @@ app.get('/api/sheets', requireSession, requireBillingControlForAction, requireFi
 /* POST /api/sheets — body is forwarded as POST application/json to Apps Script.
  * All save operations (saveAll, etc.) use POST so the data never hits the
  * querystring length limit. */
-app.post('/api/sheets', requireSession, requireBillingControlForAction, requireFinanceForAction, requireRoleForAction, requireProxySecret, async (req, res) => {
+app.post('/api/sheets', requireSession, requireBillingControlForAction, requireFinanceForAction, requireRoleForAction, requireExpectedDischargesView, requireProxySecret, async (req, res) => {
   const body = req.body || {};
   // Who/when stamping: the `user` the Apps Script writes into updatedBy
   // comes ONLY from the signed session cookie. ALWAYS overwritten — a

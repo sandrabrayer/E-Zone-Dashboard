@@ -325,6 +325,19 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
 - **Audit**: editor-run, read-only `auditTemporaryExitsNow()` (initials only).
 - Details: `CHANGELOG-temporary-exit-return.md`.
 
+## Dashboard: «שחרורים צפויים» — expected discharges, read-only (October 15, 2026, Task F)
+
+- «דשבורד» card, all houses: expected discharge within 14 days (inclusive), a red «דורש עדכון»
+  list for passed dates (patient still in the house), one «N מטופלים ללא תאריך שחרור משוער» line
+  per house, and «נקבע ע״י <manager> ב-<date>» per row. No editing: dates change in Managers.
+- Apps Script action `expectedDischarges` (READ-ONLY): same `ManagersExpectedDischarge` sheet and
+  readers as Managers `houseData` — one source of truth, append-only sheet untouched.
+- Gate: `PROXY_SECRET` + a verified personal staff session (not Ortal's controller view), refused
+  in both proxy-secret modes; server.js refuses first. No new secret or variable.
+- The alert rule is shared with Managers: `lib/discharge-alerts.js` copies the Managers core and
+  both repos run the identical fixture `test/fixtures/discharge-alert-cases.json` (sha256 pinned).
+- Israel time; text-only rendering; SW v65. Details: `CHANGELOG-dashboard-expected-discharges.md`.
+
 ## Dashboard Apps Script: managers expected discharge date (October 15, 2026)
 
 - `managersWork` op `dischargeSet` sets / changes a patient's «שחרור משוער»; `houseData`

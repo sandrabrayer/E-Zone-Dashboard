@@ -248,7 +248,11 @@
 // v63 → v64: read-only billing follow-up queue (CHANGELOG-billing-followup-queue.md).
 // app.js, index.html, style.css and billing-control-rules.js changed;
 // production /sw.js read v63 on 15/10/2026. Activate evicts v63.
-var CACHE_VERSION = 'v64';
+// v64 → v65: expected discharges on the dashboard (CHANGELOG-dashboard-expected-discharges.md)
+// — app.js, index.html and style.css changed and the page loads a new
+// /discharge-alerts.js; v64 was the LIVE version (production /sw.js,
+// 15/10/2026); activate evicts v64 (v17 never reused).
+var CACHE_VERSION = 'v65';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
@@ -278,7 +282,7 @@ var PRECACHE_URLS = [
  *                     network round trip. Matched by EXACT url.
  *   'network'       — everything else: pass through to the network. */
 /* The JS/CSS files index.html links with a content hash (server.js ASSETS). */
-var BUNDLE_PATHS = ['/app.js', '/style.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/refund-rules.js', '/funder-grace.js', '/cycle-balance.js'];
+var BUNDLE_PATHS = ['/app.js', '/style.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/refund-rules.js', '/funder-grace.js', '/cycle-balance.js', '/discharge-alerts.js'];
 
 /* True for `?v=<exactly 12 lowercase hex>` — the server's content hash. The
  * old `?v=<BUILD_ID>` (digits-dash-base36) never matches. Pure. */
