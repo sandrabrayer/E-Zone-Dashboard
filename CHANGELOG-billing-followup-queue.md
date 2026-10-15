@@ -65,6 +65,13 @@ Recheck the live cache version before eventual deployment if it has moved.
   The check exercises filters, navigation, partial-confirmation echoes, neutral
   funder grace, role boundaries, page errors and horizontal overflow. Its result
   must be inspected before claiming visual/mobile QA. No live patient data is used.
+- The first Chromium run passed all three cases, but screenshot review exposed
+  a light waiting-row background under dark-theme text and a long confirmed
+  partial-payment month line overflowing to the left at 360px. Use a neutral
+  dark waiting background and wrap confirmed amount details. Browser assertions
+  now require 4.5:1 contrast for every waiting-row text role and check visible
+  card/text bounds on both sides, including RTL overflow missed by scrollWidth.
+  The corrected screenshots and CI run must pass review before release.
 
 This feature remains separate from payment-write recovery PR #229, which Sandra
 authorized and which is deployed as `0d9790a51f10ce914cf3bc9d84b41373f504991d`.

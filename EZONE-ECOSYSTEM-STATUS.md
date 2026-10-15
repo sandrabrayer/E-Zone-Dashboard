@@ -10,6 +10,9 @@ permissions or sheet writes are introduced. See `CHANGELOG-billing-followup-queu
 The isolated branch includes the deployed recovery fix #229 and Managers #231.
 The follow-up feature is a separate change. Browser QA and explicit release
 authorization remain outstanding; this note is not evidence of live operation.
+The first CI screenshots exposed waiting-row contrast and RTL overflow in a
+confirmed partial-payment line. Both are corrected in the review branch with
+browser assertions for text contrast and bounds; the new run awaits review.
 
 ## Dashboard payment report recovery — October 15, 2026 (deployed)
 

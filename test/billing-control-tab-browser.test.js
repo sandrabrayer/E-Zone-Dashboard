@@ -140,7 +140,33 @@ async function shot(target, name) {
   await target.screenshot({ path: path.join(process.env.SHOT_DIR, name), fullPage: true });
 }
 
-const noSideScroll = (page) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+const noSideScroll = (page) => page.evaluate(() => {
+  // RTL overflow may extend left without increasing document.scrollWidth.
+  const width = window.innerWidth;
+  return document.documentElement.scrollWidth <= width
+    && Array.from(document.querySelectorAll('.bc-row, .bc-month-line'))
+      .every(el => Array.from(el.getClientRects()).every(r => r.left >= -1 && r.right <= width + 1));
+});
+
+async function assertWaitingContrast(waiting) {
+  const contrasts = await waiting.evaluate(row => {
+    const luminance = color => {
+      const rgb = color.match(/[\d.]+/g).slice(0, 3).map(Number).map(v => {
+        const c = v / 255;
+        return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+      return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+    };
+    const bg = luminance(getComputedStyle(row).backgroundColor);
+    return Array.from(row.querySelectorAll('.bc-name, .bc-house, .bc-amount, .bc-sub, .bc-followup-grace, .bc-followup-next'))
+      .map(el => {
+        const fg = luminance(getComputedStyle(el).color);
+        return { element: el.className, ratio: (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05) };
+      });
+  });
+  assert.ok(contrasts.length >= 6, 'check every waiting-row text role');
+  for (const { element, ratio } of contrasts) assert.ok(ratio >= 4.5, `${element} contrast ${ratio.toFixed(2)} must be at least 4.5`);
+}
 
 test('Ortal at 360px: only «בקרת גבייה»; the queue → ✓ confirm one → ⚑ flag one (empty note refused inline, then with a note); Code.gs holds both decisions', { skip: skip && why, timeout: 120000 }, async () => {
   const server = await boot();
@@ -331,9 +357,11 @@ test('FIN-01.2 at 360px and desktop: separate work, owner/house filters, source 
     assert.match(await waiting.textContent(), /ממתין לגורם מממן/);
     assert.match(await waiting.textContent(), /10,000/);
     assert.match(await waiting.textContent(), /באחריות אורטל/);
+    await assertWaitingContrast(waiting);
     assert.equal(await noSideScroll(page), true);
     await shot(page, 'followup-360-grace.png');
     await page.setViewportSize({ width: 1280, height: 900 });
+    await assertWaitingContrast(waiting);
     assert.equal(await noSideScroll(page), true);
     await shot(page, 'followup-desktop-grace.png');
     assert.deepEqual(o.errors, [], 'no page errors');
