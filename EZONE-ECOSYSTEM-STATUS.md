@@ -1,13 +1,24 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
-## Reminder preview — October 15, 2026 (review candidate, not deployed)
+## Reminder delivery — October 15, 2026 (disabled review candidate)
+
+Prepared an editor/trigger-only sender with aggregate Hebrew mail, owner workdays,
+explicit recipients/hour/policy, source completeness checks, script locking and
+per-owner daily attempt state. No live configuration, send or trigger installation.
+Replacing the old Ortal digest needs separate confirmation. See
+`CHANGELOG-billing-reminder-delivery.md` and `docs/billing-reminder-rollout.md`.
+CRM #220, security/access, broader speed work and FIN-02–04 remain unchanged.
+
+## Reminder preview — October 15, 2026 (deployed)
 
 A collapsed Billing Control section previews aggregate follow-up summaries:
 Vered's own work, Ortal's verification plus oversight, and neutral funder waiting.
 Uses the existing queue and calendar; no names, money, new permissions or sends.
 Partial/stale sources cannot claim all work is done. See
-`CHANGELOG-billing-reminder-preview.md`. This separate candidate needs release
-approval. CRM, security/access, broader speed work and FIN-02–04 are unchanged.
+`CHANGELOG-billing-reminder-preview.md`. Sandra approved #237; merge
+`0efb7dca278dcea3029f8311a319300112d89f29` was verified live (cache v68),
+with 2,845 local tests and four Chromium scenarios passing. No further release
+approval is needed for #237. CRM, security/access and broader speed work are unchanged.
 
 ## Owner workday calendar — October 15, 2026 (deployed)
 

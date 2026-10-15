@@ -1,5 +1,11 @@
 # Deploy — E-ZONE Dashboard (shared Apps Script backend)
 
+**Billing reminder candidate (default off):** deployment and activation are separate.
+No hour or delivery policy defaults; no trigger is installed by deployment.
+Follow [the reminder rollout](docs/billing-reminder-rollout.md) only after separate
+release and delivery approval. This change adds Apps Script source files, so merging
+will invoke the existing shared-backend auto-deploy.
+
 **Managers protocol 2 rollout:** this change closes the old unauthenticated
 Managers feeds. Follow [the coordinated activation order](docs/managers-hardening-rollout.md)
 before merging. The existing auto-deploy updates the original URL immediately;

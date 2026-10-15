@@ -87,10 +87,12 @@ function scanRegions(src) {
       emit('template', s, Math.min(i, n));
       if (i >= n) { errors.push({ kind: 'template', at: s }); break; }
       if (src[i] === '`') {
+        emit('code', i, i + 1);
         i++;
         frames.pop();
         last = { kind: 'literal' };
       } else {
+        emit('code', i, i + 2);
         i += 2;
         frames.push({ type: 'code', depth: 0, inTemplate: true });
         last = { kind: 'punct' };
@@ -127,7 +129,7 @@ function scanRegions(src) {
       continue;
     }
     if (c === '`') {
-      emit('code', codeStart, i);
+      emit('code', codeStart, i + 1);
       i++;
       frames.push({ type: 'template' });
       continue;
@@ -153,7 +155,7 @@ function scanRegions(src) {
       continue;
     }
     if (c === '}' && top.inTemplate && top.depth === 0) {
-      emit('code', codeStart, i);
+      emit('code', codeStart, i + 1);
       i++;
       frames.pop();
       codeStart = i;
@@ -252,6 +254,16 @@ test('scanner: quotes and comment markers inside other constructs do not derail 
   assert.deepStrictEqual(kinds('const re = /[/]' + RLM + '/;'), ['regex']);
   // Nested template expressions with braces.
   assert.deepStrictEqual(kinds('const t = `a ${ {k: `b ${c}`}.k } d`; z();' + RLM), ['code']);
+});
+
+test('scanner: template delimiters and nested expressions leave no unscanned gaps', () => {
+  for (const src of ['const a = ``;', 'const a = `text`;', 'const a = `x ${ {k: `y ${z}`}.k } z`;']) {
+    const { regions, errors } = scanRegions(src);
+    assert.deepStrictEqual(errors, []);
+    let at = 0;
+    for (const r of regions) { assert.strictEqual(r.start, at); at = r.end; }
+    assert.strictEqual(at, src.length);
+  }
 });
 
 test('scanner: unterminated constructs are reported, so a tokenizer slip can never pass silently', () => {
