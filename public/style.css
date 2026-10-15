@@ -2837,3 +2837,33 @@ button.mtg-bad-date-lead:hover { background: rgba(255, 176, 32, 0.18); }
 .xd-error { color: var(--danger); }
 .xd-nodate { color: var(--text-muted); font-size: 16px; margin-top: 10px; }
 .xd-retry { min-height: 44px; min-width: 44px; margin-top: 8px; font-size: 16px; }
+
+/* «ועדות קרובות» (CHANGELOG-dashboard-committees.md) — read-only, RTL, 16px,
+ * 44px targets, wraps at 360px. «היום» rows red, the next 7 days amber. */
+.cmt-card { margin-top: 18px; direction: rtl; font-size: 16px; }
+.cmt-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+.cmt-title { color: var(--text); font-size: 16px; font-weight: 700; }
+.cmt-hint { color: var(--text-muted); font-size: 16px; margin-bottom: 12px; }
+.cmt-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.cmt-row {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-inline-start: 4px solid var(--warning);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  min-height: 44px;
+  overflow-wrap: anywhere;
+}
+.cmt-row.is-today { border-inline-start-color: var(--danger); }
+.cmt-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.cmt-name { color: var(--text); font-weight: 700; font-size: 16px; }
+.cmt-house { color: var(--text-muted); font-size: 16px; }
+.cmt-tag { color: #fff; background: var(--danger); border-radius: 999px; padding: 0 10px; font-size: 16px; font-weight: 700; }
+.cmt-when { color: var(--text); font-size: 16px; margin-top: 2px; }
+.cmt-setby { color: var(--text-muted); font-size: 16px; margin-top: 2px; }
+.cmt-section { margin-bottom: 12px; }
+.cmt-section-title { color: var(--text); font-weight: 700; font-size: 16px; margin-bottom: 6px; }
+.cmt-today .cmt-section-title { color: var(--danger); }
+.cmt-empty { color: var(--text-dim); font-size: 16px; }
+.cmt-error { color: var(--danger); }
+.cmt-retry { min-height: 44px; min-width: 44px; margin-top: 8px; font-size: 16px; }

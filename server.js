@@ -18,7 +18,7 @@ const { hashPin, verifyPin, pinPolicyError } = require('./lib/pin-hash');
 const { WindowCounter, PinLockout } = require('./lib/rate-limit');
 const {
   ROLE_FORBIDDEN_MESSAGE, roleOperationFor, requiredRoleFor, principalHasRole, roleAllowed,
-  EXPECTED_DISCHARGES_ACTION, canViewExpectedDischarges,
+  EXPECTED_DISCHARGES_ACTION, ALL_USERS_READ_ACTIONS, canViewExpectedDischarges,
 } = require('./lib/role-scope');
 const { buildXlsxReport, isoDayInIsrael, XLSX_MIME } = require('./lib/xlsx-report');
 const {
@@ -262,6 +262,7 @@ const ASSETS = createAssetStore({
   '/funder-grace.js': { file: path.join(__dirname, 'lib', 'funder-grace.js'), mime: 'application/javascript' },
   '/cycle-balance.js': { file: path.join(__dirname, 'lib', 'cycle-balance.js'), mime: 'application/javascript' },
   '/discharge-alerts.js': { file: path.join(__dirname, 'lib', 'discharge-alerts.js'), mime: 'application/javascript' },
+  '/committee-alerts.js': { file: path.join(__dirname, 'lib', 'committee-alerts.js'), mime: 'application/javascript' },
 });
 
 /* Serve index.html with every asset reference pinned to that file's content
@@ -357,6 +358,9 @@ app.get('/cycle-balance.js', sendLibAsset('/cycle-balance.js'));
  * lib/discharge-alerts.js, window.DischargeAlerts — the same date / alert
  * rule as the Managers app (boundary-pinned by a shared fixture). No data. */
 app.get('/discharge-alerts.js', sendLibAsset('/discharge-alerts.js'));
+/* Upcoming committees (CHANGELOG-dashboard-committees.md): lib/committee-alerts.js,
+ * window.CommitteeAlerts — the same rule as the Managers app (shared fixture). No data. */
+app.get('/committee-alerts.js', sendLibAsset('/committee-alerts.js'));
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 // Patient funder helpers (public/funder.js, global Funder) — loaded before app.js.
 app.get('/funder.js', sendStatic('funder.js', 'application/javascript'));
@@ -956,10 +960,11 @@ function requireRoleForAction(req, res, next) {
  * proxied. Code.gs refuses the same again. Logged with the user id only. */
 function requireExpectedDischargesView(req, res, next) {
   const action = req.method === 'GET' ? (req.query && req.query.action) : (req.body && req.body.action);
-  if (action !== EXPECTED_DISCHARGES_ACTION) return next();
+  // Also «ועדות קרובות» (upcomingCommittees, CHANGELOG-dashboard-committees.md): same rule.
+  if (ALL_USERS_READ_ACTIONS.indexOf(action) < 0) return next();
   const p = sessionPrincipalFromRequest(req);
   if (canViewExpectedDischarges(p)) return next();
-  console.warn(`[discharges] 403 user=${p ? (p.id || p.auth) : 'none'}`);
+  console.warn(`[${action === EXPECTED_DISCHARGES_ACTION ? 'discharges' : 'committees'}] 403 user=${p ? (p.id || p.auth) : 'none'}`);
   return res.status(403).json({ ok: false, error: 'forbidden', message: ROLE_FORBIDDEN_MESSAGE });
 }
 

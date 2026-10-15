@@ -211,6 +211,12 @@
            lib/discharge-alerts.js (CHANGELOG-dashboard-expected-discharges.md). -->
       <div class="card xd-card" id="expected-discharges" aria-live="polite"></div>
 
+      <!-- «ועדות קרובות» (CHANGELOG-dashboard-committees.md): READ-ONLY committee
+           dates the house managers set in the Managers app — today first, then
+           the next 7 days. Empty / error states always visible. Filled
+           TEXT-ONLY by lib/committee-alerts.js. -->
+      <div class="card cmt-card" id="upcoming-committees" aria-live="polite"></div>
+
       <h3>מיטות פנויות לפי בית</h3>
       <div class="houses-grid" id="houses-grid"></div>
 
@@ -715,6 +721,8 @@
   <script src="cycle-balance.js?v=__BUILD__"></script>
   <!-- Expected-discharge alerts (global DischargeAlerts) — must load before app.js. -->
   <script src="discharge-alerts.js?v=__BUILD__"></script>
+  <!-- Upcoming committees (global CommitteeAlerts) — must load before app.js. -->
+  <script src="committee-alerts.js?v=__BUILD__"></script>
   <script src="app.js?v=__BUILD__"></script>
 
   <!-- Service worker registration (guarded). Registered after load so it never

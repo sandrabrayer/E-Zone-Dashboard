@@ -4570,6 +4570,7 @@ function renderAll() {
   if (controllerView()) {
     renderBillingControl();
     if (billingReadView()) { renderBilling(); renderCreditsPayouts(); }
+    renderUpcomingCommittees();
     renderExpectedDischarges();
     return;
   }
@@ -4702,6 +4703,7 @@ function renderDashboard() {
 
   fitAllStatText(); // scale KPI values down to fit narrow cards (no clipping)
   renderExpectedDischarges();
+  renderUpcomingCommittees();
   renderRenewalAlert();
   renderOverdueAlert();
 }
@@ -4751,11 +4753,51 @@ function moveExpectedDischargesToControllerScreen() {
   if (!card || !screen || !screen.insertBefore || card.parentNode === screen) return;
   const head = screen.querySelector ? screen.querySelector('.screen-head') : null;
   screen.insertBefore(card, head ? head.nextSibling : screen.firstChild);
+  // «ועדות קרובות» (CHANGELOG-dashboard-committees.md) follows it, right after.
+  const cmt = document.getElementById('upcoming-committees');
+  if (cmt && cmt.parentNode !== screen) screen.insertBefore(cmt, card.nextSibling);
 }
 
 function renderExpectedDischarges() {
   paintExpectedDischarges();
   loadExpectedDischarges(false);
+}
+
+/* «ועדות קרובות» (CHANGELOG-dashboard-committees.md) — READ-ONLY committee
+ * dates set by the house managers in the Managers app. Same pattern as
+ * «שחרורים צפויים»: one GET of action=upcomingCommittees per
+ * UPCOMING_COMMITTEES_TTL_MS; every render reclassifies against Israel's
+ * "today" (CommitteeAlerts.israelToday). Empty / error states always shown.
+ * Text-only (lib/committee-alerts.js renderCard). Nothing here logs a name. */
+const UPCOMING_COMMITTEES_TTL_MS = 60 * 1000;
+const upcomingCommittees = { data: null, at: 0, error: false, inflight: null };
+
+function loadUpcomingCommittees(force) {
+  const fresh = upcomingCommittees.data && (Date.now() - upcomingCommittees.at) < UPCOMING_COMMITTEES_TTL_MS;
+  if ((fresh && !force) || upcomingCommittees.inflight) return upcomingCommittees.inflight || Promise.resolve();
+  upcomingCommittees.inflight = apiGet({ action: 'upcomingCommittees' })
+    .then((data) => { upcomingCommittees.data = data; upcomingCommittees.error = false; })
+    .catch(() => { upcomingCommittees.error = true; })
+    .then(() => { upcomingCommittees.at = Date.now(); upcomingCommittees.inflight = null; paintUpcomingCommittees(); });
+  return upcomingCommittees.inflight;
+}
+
+function paintUpcomingCommittees() {
+  const card = document.getElementById('upcoming-committees');
+  const CA = typeof CommitteeAlerts !== 'undefined' ? CommitteeAlerts : null;
+  if (!card || !CA) return;
+  if (!upcomingCommittees.data) {
+    CA.renderCard(document, card, null, { state: upcomingCommittees.error ? 'error' : 'loading' });
+  } else {
+    CA.renderCard(document, card, CA.dashboardModel(upcomingCommittees.data, CA.israelToday()));
+  }
+  const retry = card.querySelector('[data-cmt-retry]');
+  if (retry) retry.onclick = () => busyButton(retry, 'load', () => loadUpcomingCommittees(true));
+}
+
+function renderUpcomingCommittees() {
+  paintUpcomingCommittees();
+  loadUpcomingCommittees(false);
 }
 
 /* Dashboard renewal alert — active patients due to renew within 7 days whose

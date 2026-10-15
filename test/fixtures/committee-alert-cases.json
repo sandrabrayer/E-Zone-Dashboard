@@ -1,0 +1,25 @@
+{
+  "about": "Shared boundary cases for the committee («ועדה») alert rule. IDENTICAL file in ezone-managers (public/committee-alerts.js) and E-Zone-Dashboard (lib/committee-alerts.js); each repo runs it against its own copy and pins this file's sha256. Today → «ועדה היום»; +1..+7 (COMMITTEE_LEAD_DAYS, inclusive) → «ועדה השבוע»; past or > 7 days → nothing. Change both repos together.",
+  "COMMITTEE_LEAD_DAYS": 7,
+  "TIME_ZONE": "Asia/Jerusalem",
+  "alerts": [
+    { "today": "2026-10-15", "date": "2026-10-15", "expect": { "days": 0, "kind": "today", "whenText": "היום" } },
+    { "today": "2026-10-15", "date": "2026-10-16", "expect": { "days": 1, "kind": "week", "whenText": "מחר" } },
+    { "today": "2026-10-15", "date": "2026-10-17", "expect": { "days": 2, "kind": "week", "whenText": "בעוד 2 ימים" } },
+    { "today": "2026-10-15", "date": "2026-10-22", "expect": { "days": 7, "kind": "week", "whenText": "בעוד 7 ימים" } },
+    { "today": "2026-10-15", "date": "2026-10-23", "expect": null },
+    { "today": "2026-10-15", "date": "2026-10-14", "expect": null },
+    { "today": "2026-12-28", "date": "2027-01-04", "expect": { "days": 7, "kind": "week", "whenText": "בעוד 7 ימים" } },
+    { "today": "2026-12-28", "date": "2027-01-05", "expect": null },
+    { "today": "2028-02-28", "date": "2028-02-29", "expect": { "days": 1, "kind": "week", "whenText": "מחר" } },
+    { "today": "2026-10-15", "date": "2026-02-30", "expect": null },
+    { "today": "2026-10-15", "date": "16/10/26", "expect": null },
+    { "today": "2026-10-15", "date": "", "expect": null }
+  ],
+  "israelToday": [
+    { "utc": "2026-10-15T20:59:59Z", "today": "2026-10-15" },
+    { "utc": "2026-10-15T21:00:00Z", "today": "2026-10-16" },
+    { "utc": "2026-03-26T21:59:00Z", "today": "2026-03-26" },
+    { "utc": "2026-03-26T22:00:00Z", "today": "2026-03-27" }
+  ]
+}

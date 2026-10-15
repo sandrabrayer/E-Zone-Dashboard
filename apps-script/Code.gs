@@ -1220,7 +1220,10 @@ const CONTROLLER_ACTIONS = ['billingControlQueue', 'confirmPayment', 'debtAging'
   'settleRefund',
   /* Appended (CHANGELOG-expected-discharges-all-users.md): «שחרורים צפויים»,
    * read-only — every logged-in user may see it, Ortal included. */
-  'expectedDischarges'];
+  'expectedDischarges',
+  /* Appended (CHANGELOG-dashboard-committees.md): «ועדות קרובות», read-only,
+   * every logged-in user, Ortal included. */
+  'upcomingCommittees'];
 const CONTROLLER_GETDATA_KEYS = ['ok', 'patients', 'billingOverrides'];
 const CONTROLLER_USER_IDS = ['ortal'];
 
@@ -1375,6 +1378,7 @@ const PROXY_KNOWN_ACTIONS = [
   'editReceipt',
   'settleRefund', 'approveRefundException',
   'expectedDischarges',
+  'upcomingCommittees',
 ];
 
 /* SecurityLog — append-only, one row per (event, action, hour) at most.
@@ -1697,6 +1701,13 @@ function handle_(params) {
       const no = expectedDischargesRefused_(params);
       if (no) return jsonOut_(no);
       return jsonOut_(expectedDischargesForDashboard_());
+    }
+    // Upcoming committees (CHANGELOG-dashboard-committees.md): READ-ONLY, the
+    // same gate — PROXY_SECRET + a verified personal session, even in 'log' mode.
+    if (action === 'upcomingCommittees') {
+      const no = expectedDischargesRefused_(params);
+      if (no) return jsonOut_(no);
+      return jsonOut_(upcomingCommitteesForDashboard_());
     }
     if (action === 'saveAll') {
       const perf = perfStart_('saveAll');
@@ -13903,6 +13914,45 @@ function expectedDischargesForDashboard_() {
     return { house: key, label: MANAGER_HOUSE_NAMES[key], patients: list };
   });
   return { ok: true, today: todayIso, expectedDischargeSupported: true, expectedDischargeModes: MW_DISCHARGE_MODES.slice(), houses: houses };
+}
+
+/* ===== Upcoming committees — Dashboard read (CHANGELOG-dashboard-committees.md) =====
+ *
+ * Sandra (15 Oct 2026, PR 3): the Dashboard shows, read-only, the committee
+ * («ועדה») dates the house managers set in the Managers app. ONE source of
+ * truth: the ManagersCommittee sheet and the readers houseData uses
+ * (mwInHousePatients_ + mwReadCommittees_ — the LAST row of a stay wins).
+ * Never writes: no sheet, no cell, no lock.
+ *
+ * action=upcomingCommittees (no params) →
+ *   { ok, today, committeeSupported: true, leadDays,
+ *     houses: [{ house, label, patients: [{ name, entryDate,
+ *       committee: { date, label, editedAt, editedBy } }] }] }
+ * Data minimisation: only patients in the house TODAY whose current
+ * committee date is today .. today + COMMITTEE_LEAD_DAYS (Israel time) — the
+ * window the card shows. No phone, money or notes. The list key is `houses`,
+ * so the proxy's response summary log never carries a patient name.
+ * Gate: the same as expectedDischarges (expectedDischargesRefused_):
+ * PROXY_SECRET + a verified personal session, any logged-in user. */
+const COMMITTEE_LEAD_DAYS = 7;
+
+function upcomingCommitteesForDashboard_() {
+  const todayIso = committeeToday_();
+  const t = parseDate_(todayIso);
+  const lastIso = ymdOf_(new Date(t.getFullYear(), t.getMonth(), t.getDate() + COMMITTEE_LEAD_DAYS));
+  const patients = readPatientsForBonus_();
+  const inHouseToday = parseDate_(todayISODate_());
+  const houses = MANAGER_HOUSES.map(function (key) {
+    const committees = mwReadCommittees_(key);
+    const list = [];
+    mwInHousePatients_(patients, MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[key], inHouseToday).forEach(function (p) {
+      const cur = committees[mwDischargeKey_(key, p.name, p.entryDate)];
+      if (!cur || cur.date < todayIso || cur.date > lastIso) return;
+      list.push({ name: coordTextClean_(p.name, 80), entryDate: p.entryDate, committee: mwCommitteePublic_(cur) });
+    });
+    return { house: key, label: MANAGER_HOUSE_NAMES[key], patients: list };
+  });
+  return { ok: true, today: todayIso, committeeSupported: true, leadDays: COMMITTEE_LEAD_DAYS, houses: houses };
 }
 
 function mwLogAdd_(caller, params) {

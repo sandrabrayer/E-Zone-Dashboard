@@ -129,7 +129,9 @@ test('lists: Code.gs and lib/ hold the same billing-control lists; nothing new i
     // Appended: «סמן כשולם» (CHANGELOG-refunds-auto-policy.md) — Ortal's one write on «גבייה».
     'settleRefund',
     // Appended: «שחרורים צפויים», read-only (CHANGELOG-expected-discharges-all-users.md).
-    'expectedDischarges']);
+    'expectedDischarges',
+    // Appended: «ועדות קרובות», read-only (CHANGELOG-dashboard-committees.md).
+    'upcomingCommittees']);
   assert.deepEqual(arr(g.run('CONTROLLER_BILLING_READ_ACTIONS')), [...scope.CONTROLLER_BILLING_READ_ACTIONS]);
   assert.deepEqual(arr(g.run('CONTROLLER_GETDATA_KEYS')), [...scope.CONTROLLER_GETDATA_KEYS]);
   const known = arr(g.run('PROXY_KNOWN_ACTIONS'));
