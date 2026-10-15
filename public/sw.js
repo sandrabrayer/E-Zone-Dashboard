@@ -252,7 +252,11 @@
 // — app.js, index.html and style.css changed and the page loads a new
 // /discharge-alerts.js; v64 was the LIVE version (production /sw.js,
 // 15/10/2026); activate evicts v64 (v17 never reused).
-var CACHE_VERSION = 'v65';
+// v65 → v66: «שחרורים צפויים» for every logged-in user
+// (CHANGELOG-expected-discharges-all-users.md) — app.js changed (the controller
+// view shows the card on «בקרת גבייה»); v65 was the LIVE version (production
+// /sw.js, 15/10/2026); activate evicts v65 (v17 never reused).
+var CACHE_VERSION = 'v66';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

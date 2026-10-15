@@ -332,8 +332,10 @@ Both coordinators properties are set and verified (roster line shows «מנוה�
   per house, and «נקבע ע״י <manager> ב-<date>» per row. No editing: dates change in Managers.
 - Apps Script action `expectedDischarges` (READ-ONLY): same `ManagersExpectedDischarge` sheet and
   readers as Managers `houseData` — one source of truth, append-only sheet untouched.
-- Gate: `PROXY_SECRET` + a verified personal staff session (not Ortal's controller view), refused
-  in both proxy-secret modes; server.js refuses first. No new secret or variable.
+- Gate: `PROXY_SECRET` + a verified personal session — **every user who can log in** (CEO,
+  15 Oct 2026; no per-person allow-list, no role check; Ortal sees the card on «בקרת גבייה»).
+  No / bad session → 401; a non-personal caller → refused, in both proxy-secret modes; server.js
+  refuses first. No new secret or variable. SW v66. `CHANGELOG-expected-discharges-all-users.md`.
 - The alert rule is shared with Managers: `lib/discharge-alerts.js` copies the Managers core and
   both repos run the identical fixture `test/fixtures/discharge-alert-cases.json` (sha256 pinned).
 - Israel time; text-only rendering; SW v65. Details: `CHANGELOG-dashboard-expected-discharges.md`.

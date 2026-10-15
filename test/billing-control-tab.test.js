@@ -127,7 +127,9 @@ test('lists: Code.gs and lib/ hold the same billing-control lists; nothing new i
   assert.deepEqual([...scope.CONTROLLER_ACTIONS], ['billingControlQueue', 'confirmPayment', 'debtAging',
     'getData', 'getPayments', 'getCredits', 'refundPayoutForecast', 'cleanupReport',
     // Appended: «סמן כשולם» (CHANGELOG-refunds-auto-policy.md) — Ortal's one write on «גבייה».
-    'settleRefund']);
+    'settleRefund',
+    // Appended: «שחרורים צפויים», read-only (CHANGELOG-expected-discharges-all-users.md).
+    'expectedDischarges']);
   assert.deepEqual(arr(g.run('CONTROLLER_BILLING_READ_ACTIONS')), [...scope.CONTROLLER_BILLING_READ_ACTIONS]);
   assert.deepEqual(arr(g.run('CONTROLLER_GETDATA_KEYS')), [...scope.CONTROLLER_GETDATA_KEYS]);
   const known = arr(g.run('PROXY_KNOWN_ACTIONS'));

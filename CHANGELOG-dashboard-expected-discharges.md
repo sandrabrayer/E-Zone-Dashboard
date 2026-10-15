@@ -39,6 +39,10 @@ Dashboard showed nothing.
   alerts against today.
 
 ## Security
+
+> **Superseded access rule (15 Oct 2026):** the card is now open to every user who can log in —
+> see `CHANGELOG-expected-discharges-all-users.md`. The gates below describe the original rule.
+
 - **Gate 1, server.js**: `requireExpectedDischargesView` on both `/api/sheets` routes, before the
   proxy secret is attached: a personal session holding `staff` that is not the controller view
   (`lib/role-scope.js canViewExpectedDischarges`). Ortal → 403, no session → 401.
