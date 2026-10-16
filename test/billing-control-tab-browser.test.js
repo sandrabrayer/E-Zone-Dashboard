@@ -446,6 +446,58 @@ test('reminder preview: private aggregate audiences, source navigation, confirma
 });
 
 
+test('invoice request review: confirmation preserves it, legacy choices stay unknown, filters/stale state are safe at 360px/1280px', { skip: skip && why, timeout: 120000 }, async () => {
+  const server = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const cols = Array.from(server.gs.run('PAYMENT_COLUMNS'));
+    const sheet = server.gs.sandbox.__sheets.Payments;
+    const grid = sheet.getDataRange().getValues();
+    const records = grid.map((r, index) => ({ r, index })).filter(x => String(x.r[cols.indexOf('id')]).startsWith('rcpt-'));
+    assert.equal(records.length, 2);
+    const wanted = records[0], legacy = records[1], id = wanted.r[cols.indexOf('id')];
+    sheet.getRange(wanted.index + 1, cols.indexOf('invoiceWanted') + 1).setValue('yes');
+    sheet.getRange(wanted.index + 1, cols.indexOf('invoiceTo') + 1).setValue('משפחת דוגמה — חשבונית עבור תשלום מדווח');
+    sheet.getRange(legacy.index + 1, cols.indexOf('invoiceWanted') + 1).setValue('');
+    const o = await open(browser, server.port, 'ortal', '#billing-control');
+    const page = o.page, panel = page.locator('#bc-document-review');
+    await page.waitForFunction(() => document.querySelector('#bc-document-count').textContent === '1');
+    await panel.locator('summary').click();
+    assert.equal(await panel.locator('.bc-document-row').count(), 1);
+    assert.match(await panel.textContent(), /מצב הנפקה: לא מתועד באפליקציה/);
+    assert.match(await panel.textContent(), /חסר מידע בבקשה: 1/);
+    assert.equal(await panel.locator('input, button, textarea').count(), 0);
+    assert.equal(await noSideScroll(page), true);
+    if (process.env.SHOT_DIR) await panel.screenshot({ path: path.join(process.env.SHOT_DIR, 'documents-360.png') });
+    await page.locator('#bc-document-kind').selectOption('unknown');
+    assert.equal(await panel.locator('.bc-document-row').count(), 1);
+    assert.match(await panel.locator('.bc-document-row').textContent(), /דורש בירור/);
+    await page.locator('#bc-document-house').selectOption('ramot');
+    assert.equal(await panel.locator('.bc-document-row').count(), 0);
+    assert.match(await panel.textContent(), /אין בכך אישור שהמסמכים הונפקו/);
+    await page.locator('#bc-document-kind').selectOption('requested');
+    await page.locator('#bc-document-house').selectOption('all');
+    assert.equal(server.actions.filter(a => a.action === 'confirmPayment').length, 0, 'review/filtering never writes');
+    await page.locator(`#bc-queue [data-bc-status="${id}"]`).selectOption('confirmed');
+    await page.waitForFunction(() => document.querySelector('#bc-document-content').textContent.includes('אימות התשלום: אומת'));
+    assert.equal(await panel.locator('.bc-document-row').count(), 1, 'confirmation does not remove document request');
+    await page.locator('#toast-banner').waitFor({ state: 'hidden' });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    assert.equal(await noSideScroll(page), true);
+    assert.equal(await panel.evaluate(el => getComputedStyle(el).direction), 'rtl');
+    if (process.env.SHOT_DIR) await panel.screenshot({ path: path.join(process.env.SHOT_DIR, 'documents-1280.png') });
+    server.gs.run('billingControlQueue_ = () => ({ ok: false, error: "SYNTHETIC unavailable" })');
+    await page.locator('#bc-refresh').click();
+    await page.waitForFunction(() => document.querySelector('#bc-document-content').textContent.includes('הרענון האחרון נכשל'));
+    assert.equal(await panel.locator('.bc-document-row').count(), 1);
+    await page.setViewportSize({ width: 360, height: 780 });
+    assert.equal(await noSideScroll(page), true);
+    if (process.env.SHOT_DIR) await panel.screenshot({ path: path.join(process.env.SHOT_DIR, 'documents-stale-360.png') });
+    assert.deepEqual(o.errors, []);
+    await o.ctx.close();
+  } finally { await browser.close(); server.close(); }
+});
+
 test('reminder email: Hebrew RTL, readable text, working destination and no overflow at 360px/1280px', { skip: skip && why, timeout: 30000 }, async () => {
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {

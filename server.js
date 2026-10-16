@@ -257,6 +257,7 @@ const ASSETS = createAssetStore({
   '/funder.js': { file: path.join(__dirname, 'public', 'funder.js'), mime: 'application/javascript' },
   '/payment-report-rules.js': { file: path.join(__dirname, 'lib', 'payment-report-rules.js'), mime: 'application/javascript' },
   '/billing-control-rules.js': { file: path.join(__dirname, 'lib', 'billing-control-rules.js'), mime: 'application/javascript' },
+  '/billing-document-review.js': { file: path.join(__dirname, 'lib', 'billing-document-review.js'), mime: 'application/javascript' },
   '/billing-work-calendar.js': { file: path.join(__dirname, 'lib', 'billing-work-calendar.js'), mime: 'application/javascript' },
   '/refund-rules.js': { file: path.join(__dirname, 'lib', 'refund-rules.js'), mime: 'application/javascript' },
   '/funder-grace.js': { file: path.join(__dirname, 'lib', 'funder-grace.js'), mime: 'application/javascript' },
@@ -341,6 +342,7 @@ app.get('/payment-report-rules.js', sendLibAsset('/payment-report-rules.js'));
  * workbook requires (window.BillingControlRules in a browser). Rules only, no
  * data, so it is served like app.js. */
 app.get('/billing-control-rules.js', sendLibAsset('/billing-control-rules.js'));
+app.get('/billing-document-review.js', sendLibAsset('/billing-document-review.js'));
 app.get('/billing-work-calendar.js', sendLibAsset('/billing-work-calendar.js'));
 /* The refund rule picked by the exit date (CHANGELOG-refund-rule-v2.md):
  * lib/refund-rules.js, window.RefundRules — the same rule Code.gs

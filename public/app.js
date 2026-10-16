@@ -15269,6 +15269,7 @@ function billingControlState() {
     state.bc = {
       data: null, loading: false, error: '', selected: {}, flagOpen: '', flagDraft: '',
       month: '', house: 'all', followupHouse: 'all', followupOwner: 'all',
+      documentHouse: 'all', documentKind: 'requested',
       // «שולם חלקית» amount form and the note editor (one row at a time each).
       partialOpen: '', partialDraft: '', noteOpen: '', noteDraft: '',
       // «כפילות» reason form (one row at a time).
@@ -15672,6 +15673,26 @@ function bcReminderHtml(preview) {
       ${a.groups.map(g => groupHtml(g, a.owner)).join('')}</article>`).join('')}</div>`;
 }
 
+function bcDocumentReviewHtml(review) {
+  if (!review || !review.available) return '<p class="bc-followup-warning" role="status">נתוני בקשות החשבונית אינם זמינים כרגע. יש לרענן לפני הבדיקה.</p>';
+  const warnings = [];
+  if (review.stale) warnings.push('מוצגים נתונים מהטעינה הקודמת; הרענון האחרון נכשל.');
+  if (!review.complete) warnings.push('חלק מהדיווחים לא ניתנים להצגה תקינה; אין להסיק שהרשימה מלאה.');
+  if (review.unknownCount) warnings.push(`ב־${review.unknownCount} דיווחים חסרה בחירה תקינה בשאלת החשבונית. הם זמינים בסינון «חסר מידע בבקשה».`);
+  const labels = { reported: 'ממתין לאימות', partial: 'אומת חלקית', flagged: 'סומן כבעיה', confirmed: 'אומת', unknown: 'דורש בירור' };
+  const rows = review.rows.map(r => `<article class="bc-row bc-document-row">
+    <div class="bc-head"><strong class="bc-name">${escapeHtml(r.patientName || 'שם לא זמין')}</strong><span class="bc-house">${escapeHtml(bcHouseName(r.houseId))}</span></div>
+    <p class="bc-sub">תאריך תשלום מדווח: ${escapeHtml(r.receivedDate ? formatDateHe(r.receivedDate) : 'לא זמין')}</p>
+    <p>${r.kind === 'requested' ? 'התבקשה חשבונית · על שם: ' + escapeHtml(r.invoiceTo || 'לא נרשם — דורש בירור') : 'בחירה בחשבונית: חסר מידע — דורש בירור'}</p>
+    <p>אימות התשלום: ${escapeHtml(labels[r.confirmStatus] || labels.unknown)}</p>
+    <p class="bc-document-status">מצב הנפקה: לא מתועד באפליקציה</p>
+  </article>`).join('');
+  const empty = review.stale || !review.complete ? 'אין פריטים להצגה בנתונים הזמינים; יש לרענן להשלמת הבדיקה.' : 'אין בקשות בסינון שנבחר. אין בכך אישור שהמסמכים הונפקו.';
+  return `${warnings.map(w => `<p class="bc-followup-warning" role="status">${escapeHtml(w)}</p>`).join('')}
+    <p class="billing-date-label">התבקשה חשבונית: ${review.requestedCount} · חסר מידע בבקשה: ${review.unknownCount} · מוצגים: ${review.rows.length}</p>
+    <div class="billing-list bc-list">${rows || `<p class="billing-date-label">${empty}</p>`}</div>`;
+}
+
 function renderBillingControl() {
   const screen = document.getElementById('screen-billing-control');
   if (!screen || state.billingControl === false) return;
@@ -15690,6 +15711,8 @@ function renderBillingControl() {
     set('bc-followup', `<p class="billing-date-label">${s.loading ? busyLabelFor('load') : 'נתוני המעקב טרם נטענו'}</p>`);
     set('bc-followup-count', '—');
     set('bc-reminder-content', bcReminderHtml(null));
+    set('bc-document-count', '—');
+    set('bc-document-content', bcDocumentReviewHtml(null));
     const warning = document.getElementById('bc-followup-warning');
     if (warning) { warning.textContent = ''; warning.classList.add('hidden'); }
     return;
@@ -15697,6 +15720,18 @@ function renderBillingControl() {
   const receipts = Array.isArray(s.data.receipts) ? s.data.receipts : [];
   if (!s.month) s.month = bcThisMonth();
   set('bc-cards', bcCardsHtml(R.summaryCards(s.data, bcThisMonth())));
+  const documentRules = typeof globalThis !== 'undefined' && globalThis.BillingDocumentReview;
+  const documentReview = documentRules ? documentRules.review(s.data, {
+    stale: !!s.error, house: s.documentHouse, kind: s.documentKind || 'requested',
+  }) : null;
+  set('bc-document-count', documentReview && documentReview.available
+    ? `${documentReview.requestedCount}${documentReview.complete ? '' : '+'}` : '—');
+  set('bc-document-content', bcDocumentReviewHtml(documentReview));
+  const documentHouse = document.getElementById('bc-document-house');
+  if (documentHouse && documentHouse.options && documentHouse.options.length <= 1) documentHouse.innerHTML = '<option value="all">כל הבתים</option>' + HOUSES.map(h => `<option value="${escapeHtml(h.id)}">${escapeHtml(h.name)}</option>`).join('');
+  if (documentHouse) documentHouse.value = s.documentHouse || 'all';
+  const documentKind = document.getElementById('bc-document-kind');
+  if (documentKind) documentKind.value = s.documentKind || 'requested';
   const followupReady = typeof R.followupRows === 'function';
   const work = followupReady ? R.followupRows(s.data, { house: s.followupHouse, owner: s.followupOwner }) : [];
   const incomplete = !followupReady || !s.data.followup || s.data.followup.complete !== true;
@@ -15812,6 +15847,10 @@ function initBillingControlControls() {
   const followHouse = document.getElementById('bc-followup-house');
   if (followOwner) followOwner.onchange = () => { s.followupOwner = followOwner.value; renderBillingControl(); };
   if (followHouse) followHouse.onchange = () => { s.followupHouse = followHouse.value; renderBillingControl(); };
+  const documentHouse = document.getElementById('bc-document-house');
+  const documentKind = document.getElementById('bc-document-kind');
+  if (documentHouse) documentHouse.onchange = () => { s.documentHouse = documentHouse.value; renderBillingControl(); };
+  if (documentKind) documentKind.onchange = () => { s.documentKind = documentKind.value; renderBillingControl(); };
   if (refresh) refresh.onclick = () => busyButton(refresh, 'load', loadBillingControl);
   const exp = document.getElementById('bc-export');
   if (exp) exp.onclick = () => busyButton(exp, 'load', exportBillingControlXlsx)

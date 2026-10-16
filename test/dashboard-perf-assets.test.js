@@ -35,6 +35,7 @@ const FILES = {
   '/payment-report-rules.js': path.join(ROOT, 'lib', 'payment-report-rules.js'),
   '/billing-work-calendar.js': path.join(ROOT, 'lib', 'billing-work-calendar.js'),
   '/billing-control-rules.js': path.join(ROOT, 'lib', 'billing-control-rules.js'),
+  '/billing-document-review.js': path.join(ROOT, 'lib', 'billing-document-review.js'),
   '/refund-rules.js': path.join(ROOT, 'lib', 'refund-rules.js'),
   '/funder-grace.js': path.join(ROOT, 'lib', 'funder-grace.js'),
   '/cycle-balance.js': path.join(ROOT, 'lib', 'cycle-balance.js'),
@@ -334,7 +335,7 @@ function serve(handlers, url) {
 }
 const settle = () => new Promise((r) => setImmediate(r));
 
-test('D: CACHE_VERSION is v70 (monotonic from the live v69; v17 burned, never reused)', () => {
+test('D: CACHE_VERSION is v71 (monotonic from the live v70; v17 burned, never reused)', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
   // v40: CHANGELOG-ortal-verification-status.md.
   // v41: CHANGELOG-reactivation-fix.md (PR #145's fix, re-landed).
@@ -367,7 +368,8 @@ test('D: CACHE_VERSION is v70 (monotonic from the live v69; v17 burned, never re
   // v68: CHANGELOG-billing-reminder-preview.md (live v67 verified 15/10/2026).
   // v69: CHANGELOG-managers-discharge-clear.md (live /sw.js read v68 on 15/10/2026).
   // v70: CHANGELOG-dashboard-committees.md (live /sw.js read v69 on 15/10/2026).
-  assert.equal(v, 'v70');
+  // v71: CHANGELOG-billing-document-review.md (live v70 verified 16/10/2026).
+  assert.equal(v, 'v71');
   assert.notEqual(v, 'v17');
 });
 
