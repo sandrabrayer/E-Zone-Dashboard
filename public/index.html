@@ -445,11 +445,15 @@
         <summary class="bill-group-title">בדיקת בקשות חשבונית <span class="count-pill" id="bc-document-count">—</span></summary>
         <p class="billing-date-label">באחריות אורטל · הסימון בבקשה אינו מעיד שהחשבונית הונפקה. פרטי ההנפקה נבדקים בחשבשבת; אימות תשלום אינו אישור הנפקה.</p>
         <p class="billing-date-label">כל תקופות הדיווח. בחירה «לא» בשאלת החשבונית אינה קביעה שאין צורך בקבלה או במסמך אחר.</p>
-        <div class="debt-controls bc-followup-filters">
-          <label for="bc-document-kind">להציג</label>
-          <select id="bc-document-kind"><option value="requested">התבקשה חשבונית</option><option value="unknown">חסר מידע בבקשה</option><option value="all">כל הבקשות לבירור</option></select>
-          <label for="bc-document-house">בית</label>
-          <select id="bc-document-house"><option value="all">כל הבתים</option></select>
+        <div class="debt-controls bc-document-filters">
+          <div class="bc-document-filter">
+            <label for="bc-document-kind">להציג</label>
+            <select id="bc-document-kind"><option value="requested">התבקשה חשבונית</option><option value="unknown">חסר מידע בבקשה</option><option value="all">כל הבקשות לבירור</option></select>
+          </div>
+          <div class="bc-document-filter">
+            <label for="bc-document-house">בית</label>
+            <select id="bc-document-house"><option value="all">כל הבתים</option></select>
+          </div>
         </div>
         <div id="bc-document-content" aria-live="polite"></div>
       </details>

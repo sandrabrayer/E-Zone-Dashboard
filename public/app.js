@@ -15689,7 +15689,7 @@ function bcDocumentReviewHtml(review) {
   </article>`).join('');
   const empty = review.stale || !review.complete ? 'אין פריטים להצגה בנתונים הזמינים; יש לרענן להשלמת הבדיקה.' : 'אין בקשות בסינון שנבחר. אין בכך אישור שהמסמכים הונפקו.';
   return `${warnings.map(w => `<p class="bc-followup-warning" role="status">${escapeHtml(w)}</p>`).join('')}
-    <p class="billing-date-label">התבקשה חשבונית: ${review.requestedCount} · חסר מידע בבקשה: ${review.unknownCount} · מוצגים: ${review.rows.length}</p>
+    <p class="billing-date-label">בכל הבתים והתקופות — התבקשה חשבונית: ${review.requestedCount} · חסר מידע בבקשה: ${review.unknownCount}. בסינון הנוכחי מוצגים: ${review.rows.length}</p>
     <div class="billing-list bc-list">${rows || `<p class="billing-date-label">${empty}</p>`}</div>`;
 }
 
