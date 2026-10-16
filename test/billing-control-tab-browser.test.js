@@ -452,7 +452,7 @@ test('invoice request review: confirmation preserves it, legacy choices stay unk
   try {
     const cols = Array.from(server.gs.run('PAYMENT_COLUMNS'));
     const sheet = server.gs.sandbox.__sheets.Payments;
-    const grid = sheet.getDataRange().getValues();
+    const grid = sheet.getRange(1, 1, sheet.getLastRow(), cols.length).getValues();
     const records = grid.map((r, index) => ({ r, index })).filter(x => String(x.r[cols.indexOf('id')]).startsWith('rcpt-'));
     assert.equal(records.length, 2);
     const wanted = records[0], legacy = records[1], id = wanted.r[cols.indexOf('id')];
