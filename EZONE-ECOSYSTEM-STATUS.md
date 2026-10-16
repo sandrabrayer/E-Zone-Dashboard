@@ -1,11 +1,21 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
-## Reminder delivery — October 15, 2026 (disabled review candidate)
+## Invoice-request review — October 16, 2026 (draft candidate)
 
-Prepared an editor/trigger-only sender with aggregate Hebrew mail, owner workdays,
-explicit recipients/hour/policy, source completeness checks, script locking and
-per-owner daily attempt state. No live configuration, send or trigger installation.
-Replacing the old Ortal digest needs separate confirmation. See
+Read-only Billing Control section preserves requested invoices after payment
+verification, exposes unknown legacy choices and distinguishes requests from
+issuance evidence. No extra data fetch, write, access or reminder change.
+See `CHANGELOG-billing-document-review.md` and `docs/billing-document-evidence.md`.
+Issuance evidence capture remains open; this is not completed document tracking.
+
+## Reminder delivery — October 15, 2026 (deployed and activated)
+
+Sandra approved #242 merge/deployment and daily all-open summaries at 08:00–09:00
+Asia/Jerusalem, replacing the old Ortal digest. Merge `1e81cf9`, Apps Script #108,
+Tests #362 and Railway succeeded; version/health were verified. Six settings were
+saved/read back and the owner's new trigger replaced the old one, retaining three
+unrelated triggers. Private recipients are not committed here. First eligible mail
+date: October 18; scheduled execution and inbox arrival remain unverified. See
 `CHANGELOG-billing-reminder-delivery.md` and `docs/billing-reminder-rollout.md`.
 CRM #220, security/access, broader speed work and FIN-02–04 remain unchanged.
 

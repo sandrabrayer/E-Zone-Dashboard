@@ -264,7 +264,8 @@
 // (/discharge-alerts.js changed). Live v68 verified 2026-10-15.
 // v69 → v70: «ועדות קרובות» card (/committee-alerts.js added, app.js changed).
 // Live v69 verified 2026-10-15.
-var CACHE_VERSION = 'v70';
+// v70 → v71: read-only invoice-request review. Live v70 checked 2026-10-16.
+var CACHE_VERSION = 'v71';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
@@ -294,7 +295,7 @@ var PRECACHE_URLS = [
  *                     network round trip. Matched by EXACT url.
  *   'network'       — everything else: pass through to the network. */
 /* The JS/CSS files index.html links with a content hash (server.js ASSETS). */
-var BUNDLE_PATHS = ['/app.js', '/style.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/billing-work-calendar.js', '/refund-rules.js', '/funder-grace.js', '/cycle-balance.js', '/discharge-alerts.js', '/committee-alerts.js'];
+var BUNDLE_PATHS = ['/app.js', '/style.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/billing-document-review.js', '/billing-work-calendar.js', '/refund-rules.js', '/funder-grace.js', '/cycle-balance.js', '/discharge-alerts.js', '/committee-alerts.js'];
 
 /* True for `?v=<exactly 12 lowercase hex>` — the server's content hash. The
  * old `?v=<BUILD_ID>` (digits-dash-base36) never matches. Pure. */

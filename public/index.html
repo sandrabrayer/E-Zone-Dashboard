@@ -441,6 +441,23 @@
         </details>
       </div>
 
+      <details class="bill-group bill-group--open bc-documents" id="bc-document-review" lang="he" dir="rtl">
+        <summary class="bill-group-title">בדיקת בקשות חשבונית <span class="count-pill" id="bc-document-count">—</span></summary>
+        <p class="billing-date-label">באחריות אורטל · הסימון בבקשה אינו מעיד שהחשבונית הונפקה. פרטי ההנפקה נבדקים בחשבשבת; אימות תשלום אינו אישור הנפקה.</p>
+        <p class="billing-date-label">כל תקופות הדיווח. בחירה «לא» בשאלת החשבונית אינה קביעה שאין צורך בקבלה או במסמך אחר.</p>
+        <div class="debt-controls bc-document-filters">
+          <div class="bc-document-filter">
+            <label for="bc-document-kind">להציג</label>
+            <select id="bc-document-kind"><option value="requested">התבקשה חשבונית</option><option value="unknown">חסר מידע בבקשה</option><option value="all">כל הבקשות לבירור</option></select>
+          </div>
+          <div class="bc-document-filter">
+            <label for="bc-document-house">בית</label>
+            <select id="bc-document-house"><option value="all">כל הבתים</option></select>
+          </div>
+        </div>
+        <div id="bc-document-content" aria-live="polite"></div>
+      </details>
+
       <div class="bill-group bill-group--open" data-group="bc-queue">
         <h3 class="bill-group-title">ממתין לאימות <span class="count-pill" id="bc-queue-count">0</span></h3>
         <p class="billing-date-label">החדש ראשון. בודקים בבנק ובוחרים סטטוס: «שולם», «שולם חלקית» (מזינים כמה התקבל) או «לא שולם» (חובה לפרט).</p>
@@ -713,6 +730,7 @@
   <script src="funder.js?v=__BUILD__"></script>
   <script src="billing-work-calendar.js?v=__BUILD__"></script>
   <script src="billing-control-rules.js?v=__BUILD__"></script>
+  <script src="billing-document-review.js?v=__BUILD__"></script>
   <!-- The refund rule given its version (global RefundRules) — must load before app.js. -->
   <script src="refund-rules.js?v=__BUILD__"></script>
   <!-- The institutional-funder grace rule (global FunderGrace) — must load before app.js. -->

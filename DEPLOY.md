@@ -1,10 +1,17 @@
 # Deploy — E-ZONE Dashboard (shared Apps Script backend)
 
-**Billing reminder candidate (default off):** deployment and activation are separate.
-No hour or delivery policy defaults; no trigger is installed by deployment.
-Follow [the reminder rollout](docs/billing-reminder-rollout.md) only after separate
-release and delivery approval. This change adds Apps Script source files, so merging
-will invoke the existing shared-backend auto-deploy.
+**Invoice-request review candidate (October 16):** frontend/static-route change,
+cache v71 from verified live v70. No Apps Script deploy, migration, flag or trigger
+change. After separate release approval, verify the existing deployment, content
+hashes and the collapsed Billing Control section. See
+[scope and completion contract](docs/billing-document-evidence.md).
+
+**Billing reminders #242 (October 15):** separately approved, merged, deployed and
+activated for daily all-open summaries at 08:00–09:00 Asia/Jerusalem. Settings were
+read back and the owner's old digest trigger replaced; scheduled execution and
+inbox arrival remain unverified. No reinstall is needed for the frontend change.
+The code remains default-off on unconfigured projects. Follow
+[the reminder rollout/stop procedure](docs/billing-reminder-rollout.md) for operation.
 
 **Managers protocol 2 rollout:** this change closes the old unauthenticated
 Managers feeds. Follow [the coordinated activation order](docs/managers-hardening-rollout.md)

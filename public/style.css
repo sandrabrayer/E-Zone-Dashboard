@@ -2580,6 +2580,13 @@ body.viewer-mode .receipt-edit-btn { display: none !important; }
 .bc-remaining { color: var(--grp-debt); font-weight: 700; }
 .bc-partial-line { margin-top: 6px; font-size: 13px; overflow-wrap: anywhere; }
 .bc-followup-filters { flex-wrap: wrap; gap: 8px; }
+.bc-documents > summary { cursor: pointer; min-height: 44px; padding-block: 10px; }
+.bc-document-filters { flex-wrap: wrap; gap: 12px; }
+.bc-document-filter { display: flex; align-items: center; gap: 8px; flex: 1 1 260px; min-width: 0; }
+.bc-document-filter select { flex: 1; min-width: 0; max-width: 100%; min-height: 44px; font-size: 16px; }
+.bc-document-row { overflow-wrap: anywhere; }
+.bc-document-row p { margin: 8px 0; line-height: 1.6; }
+.bc-document-status { font-weight: 600; }
 .bc-followup-filters select { min-height: 44px; max-width: 100%; font-size: 16px; }
 .bc-followup-row { overflow-wrap: anywhere; }
 .bc-followup-waiting { background: #252b36; border-color: #626b79; }
