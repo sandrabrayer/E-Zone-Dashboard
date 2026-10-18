@@ -1716,3 +1716,7 @@ Dashboard → Therapists, read-only, own fail-closed Script Property `ALUMNI_SOU
 entryDate, exitDate`; patients released within 730 days; phone via `Patients.fromLead → Leads.phone`
 (`''` when unlinked). Open action (no PROXY_SECRET), gated inside `handle_`. Consumer: the therapists
 app's alumni list (restructure PR 7).
+
+
+## 2026-10-18 — createLeadFromTherapists
+Dashboard action `createLeadFromTherapists` (own fail-closed Script Property `CREATE_LEAD_SECRET`) appends one lead from the Therapists «בוגרים» tab. See `CHANGELOG-create-lead-from-therapists.md`.

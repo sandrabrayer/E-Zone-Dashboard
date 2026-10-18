@@ -579,3 +579,7 @@ npm i -g @google/clasp@3.3.0 && clasp login
 clasp push -f
 clasp deploy -i <DEPLOYMENT_ID> -d "manual deploy"
 ```
+
+
+### CREATE_LEAD_SECRET (Dashboard Script Property)
+Required for `createLeadFromTherapists` (alumnus → lead). Unset = the action refuses everything. Same value goes in the ezone-therapists Railway variable `CREATE_LEAD_SECRET`.

@@ -35,7 +35,7 @@ const ROSTER = 'roster-secret-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
 const EXPECTED_OPEN = ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster',
   'getPatientsForCoordinators', 'recordDischargeFromCoordinators', 'managersWork',
   // + the read-only coordinators committee feed, own COORDINATORS_COMMITTEES_SECRET (2026-10-15).
-  'getCommitteesForCoordinators', 'getDischargedRoster'];
+  'getCommitteesForCoordinators', 'getDischargedRoster', 'createLeadFromTherapists'];
 /* A sample of gated actions: the bulk read and representative writes. */
 const GATED_SAMPLE = ['getData', 'saveAll', 'savePayment'];
 
