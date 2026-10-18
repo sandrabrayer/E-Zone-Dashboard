@@ -222,3 +222,23 @@ test('normalizePhone strips separators and collapses the 972 country code', () =
   assert.strictEqual(api.normalizePhone(null), '');
   assert.strictEqual(api.normalizePhone(undefined), '');
 });
+
+test('retroactive phone fallback: unlinked admitted patient gets the unique same-name lead phone; ambiguous stays blank', () => {
+  api.setFixtures(
+    [
+      { houseId: 'asher', name: 'דני  אבו', fromLead: '', exitDate: '', status: 'active', date: '2026-01-01' },
+      { houseId: 'asher', name: 'רון לוי', fromLead: '', exitDate: '', status: 'active', date: '2026-01-01' },
+      { houseId: 'asher', name: 'ללא ליד', fromLead: '', exitDate: '', status: 'active', date: '2026-01-01' },
+    ],
+    [
+      { id: 'X1', name: 'דני אבו', phone: '054-999-8888' },
+      { id: 'X2', name: 'רון לוי', phone: '0501111111' },
+      { id: 'X3', name: 'רון לוי', phone: '0502222222' },
+    ]
+  );
+  const r = api.roster().patients;
+  const by = (n) => r.find((p) => p.name === n).phone;
+  assert.strictEqual(by('דני  אבו'), '0549998888');
+  assert.strictEqual(by('רון לוי'), '');
+  assert.strictEqual(by('ללא ליד'), '');
+});

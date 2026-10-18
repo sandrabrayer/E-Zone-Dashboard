@@ -82,3 +82,32 @@ test('wiring: open action, known action, dispatched behind its own secret, read-
   const auth = src.slice(src.indexOf('function alumniSourceAuthOk_'), src.indexOf('function getDischargedRoster_'));
   assert.ok(/constantTimeEquals_/.test(auth) && /if \(!expected\) return false/.test(auth));
 });
+
+/* ===== retroactive phone recovery (CHANGELOG-roster-phone-fallback.md) ===== */
+test('phone fallback: no fromLead → the unique same-name lead phone is used (admitted + discharged); read-only', () => {
+  const leads = [{ id: 'L2', name: 'דנה  כהן', phone: '052-111-2222' }, { id: 'L3', name: 'דנה כהן', phone: '+972521112222' }];
+  const patients = [
+    { houseId: 'asher', name: 'דנה כהן', fromLead: '', date: '2026-05-01', exitDate: '2026-10-01', status: 'released' },
+    { houseId: 'asher', name: 'אין התאמה', fromLead: '', date: '2026-05-01', exitDate: '2026-10-02', status: 'released' },
+  ];
+  const { feed, g } = boot({ patients, leads });
+  const r = feed();
+  assert.strictEqual(r.patients.find((p) => p.name === 'דנה כהן').phone, '0521112222');   // duplicates agree → recovered
+  assert.strictEqual(r.patients.find((p) => p.name === 'אין התאמה').phone, '');            // no match → stays blank
+  const rowsAfter = g.sandbox.__sheets.Leads.grid.length;
+  assert.strictEqual(rowsAfter, leads.length + 1, 'nothing written to Leads');
+});
+
+test('phone fallback: ambiguous name (two different phones) stays blank; a fromLead phone always wins', () => {
+  const leads = [
+    { id: 'A', name: 'רון לוי', phone: '0501111111' }, { id: 'B', name: 'רון לוי', phone: '0502222222' },
+    { id: 'C', name: 'שרה בר', phone: '0503333333' }, { id: 'D', name: 'שרה בר', phone: '0504444444' },
+  ];
+  const patients = [
+    { houseId: 'asher', name: 'רון לוי', fromLead: '', date: '2026-05-01', exitDate: '2026-10-01', status: 'released' },
+    { houseId: 'asher', name: 'שרה בר', fromLead: 'C', date: '2026-05-01', exitDate: '2026-10-02', status: 'released' },
+  ];
+  const r = boot({ patients, leads }).feed();
+  assert.strictEqual(r.patients.find((p) => p.name === 'רון לוי').phone, '');
+  assert.strictEqual(r.patients.find((p) => p.name === 'שרה בר').phone, '0503333333');
+});
