@@ -1720,3 +1720,7 @@ app's alumni list (restructure PR 7).
 
 ## 2026-10-18 — createLeadFromTherapists
 Dashboard action `createLeadFromTherapists` (own fail-closed Script Property `CREATE_LEAD_SECRET`) appends one lead from the Therapists «בוגרים» tab. See `CHANGELOG-create-lead-from-therapists.md`.
+
+
+## 2026-10-18 — roster phone recovery
+`getAdmittedRoster` / `getDischargedRoster` fall back to the unique same-name lead phone when `fromLead` gives none (read-only, retroactive). See `CHANGELOG-roster-phone-fallback.md`.

@@ -6876,11 +6876,7 @@ function getDischargedRoster_() {
   const patients   = readSheet_(patientsSh, PATIENT_COLUMNS);
   const leads      = readSheet_(leadsSh, LEAD_COLUMNS);
 
-  const phoneByLeadId = {};
-  for (let i = 0; i < leads.length; i++) {
-    const l = leads[i];
-    if (l && l.id !== undefined && l.id !== null && l.id !== '') phoneByLeadId[String(l.id)] = l.phone || '';
-  }
+  const phoneIdx = buildLeadPhoneIndex_(leads);
 
   const cutoff = new Date(Date.now() - ALUMNI_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
   const out = [];
@@ -6892,11 +6888,10 @@ function getDischargedRoster_() {
     if (!coordStatusReleased_(pt.status) && String(pt.exitDate || '').trim() === '') continue;
     const exit = asISODate_(pt.exitDate);
     if (!exit || exit < cutoff) continue;
-    const rawPhone = pt.fromLead ? (phoneByLeadId[String(pt.fromLead)] || '') : '';
     out.push({
       sourceApp: 'ezone-dashboard',
       name:      pt.name || '',
-      phone:     normalizePhone_(rawPhone),
+      phone:     rosterPhoneFor_(pt, phoneIdx),
       house:     pt.houseId || '',
       entryDate: asISODate_(pt.date),
       exitDate:  exit,
@@ -6979,20 +6974,45 @@ function normalizePhone_(raw) {
   return digits;
 }
 
+/* ===== Roster phone recovery (retroactive, read-only, 2026-10-18) =====
+ *
+ * A patient's phone is recovered through Patients.fromLead → Leads.phone. Patients
+ * with no usable link (entered directly, lead removed/unlinked) used to ship an empty
+ * phone. FALLBACK: when the link yields no valid phone, use the phone of the Leads row
+ * with the SAME NAME — only when that name matches rows carrying exactly ONE distinct
+ * valid phone (duplicates of the same person agree; two different phones = ambiguous →
+ * stays ''). Pure read: nothing is written, no sheet/column changes, so it applies to
+ * every existing patient at once. An existing fromLead phone always wins. */
+function rosterNameKey_(name) {
+  return String(name == null ? '' : name).replace(/\s+/g, ' ').trim().toLowerCase();
+}
+function buildLeadPhoneIndex_(leads) {
+  const byId = {}, namePhones = {};
+  for (let i = 0; i < leads.length; i++) {
+    const l = leads[i];
+    if (!l) continue;
+    if (l.id !== undefined && l.id !== null && l.id !== '') byId[String(l.id)] = l.phone || '';
+    const k = rosterNameKey_(l.name), ph = normalizePhone_(l.phone);
+    if (k && /^0\d{8,9}$/.test(ph)) { (namePhones[k] = namePhones[k] || {})[ph] = true; }
+  }
+  return { byId: byId, namePhones: namePhones };
+}
+function rosterPhoneFor_(pt, idx) {
+  const linked = normalizePhone_(pt.fromLead ? (idx.byId[String(pt.fromLead)] || '') : '');
+  if (/^0\d{8,9}$/.test(linked)) return linked;
+  const set = idx.namePhones[rosterNameKey_(pt.name)];
+  const phones = set ? Object.keys(set) : [];
+  return phones.length === 1 ? phones[0] : linked;
+}
+
 function getAdmittedRoster_() {
   const patientsSh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
   const leadsSh    = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
   const patients   = readSheet_(patientsSh, PATIENT_COLUMNS);
   const leads      = readSheet_(leadsSh, LEAD_COLUMNS);
 
-  // Index lead phones by lead id for the fromLead join.
-  const phoneByLeadId = {};
-  for (let i = 0; i < leads.length; i++) {
-    const l = leads[i];
-    if (l && l.id !== undefined && l.id !== null && l.id !== '') {
-      phoneByLeadId[String(l.id)] = l.phone || '';
-    }
-  }
+  // Lead phone index: by id (the fromLead join) + unique-name fallback.
+  const phoneIdx = buildLeadPhoneIndex_(leads);
 
   const out = [];
   for (let p = 0; p < patients.length; p++) {
@@ -7005,11 +7025,10 @@ function getAdmittedRoster_() {
     if (String(pt.status || '').trim() === 'released') continue;
     if (String(pt.exitDate || '').trim() !== '') continue;
 
-    const rawPhone = pt.fromLead ? (phoneByLeadId[String(pt.fromLead)] || '') : '';
     out.push({
       sourceApp: 'ezone-dashboard',
       name:      pt.name || '',
-      phone:     normalizePhone_(rawPhone),
+      phone:     rosterPhoneFor_(pt, phoneIdx),
       house:     pt.houseId || '',
       // Admission/entry date (PATIENT_COLUMNS 'date' — labelled "תאריך כניסה"
       // in the dashboard UI). Feeds the outpatient app's מסלול המשך tenure
