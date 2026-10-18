@@ -9,3 +9,6 @@ Root cause of the «28 patients without a phone»: «קליטת מטופל חד�
 - Flow: Dashboard (or OUT for people never in a house) → therapists app / alumni / OUT matching. Nothing downstream writes a phone back.
 - Existing patients: PRs #247/#248 (name fallback + `PatientPhones` backfill).
 - Tests: `coordinators-roster-ui.test.js`, `coordinators-roster-browser.test.js`.
+
+## Old patients without a phone — edit form (same day)
+✏️ «עריכת מטופל» now has «טלפון המטופל» (pre-filled from the linked lead). Typing a phone for an old patient: updates the linked lead's phone, or links the patient to the same person's existing board lead, or creates a linked `admitted` lead — all in the same proven `saveAll` (verified against the real Code.gs: the patient row is kept, `fromLead` is set). A house move and a NEW link in one save are refused (the sheet keeps its own link on a move): save the phone first. Rollback undoes the lead change. Backfill alternatives stay: `PatientPhones` tab, same-name fallback.

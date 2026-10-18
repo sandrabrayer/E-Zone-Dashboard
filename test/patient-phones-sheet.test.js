@@ -71,3 +71,15 @@ test('fail-soft + gated: feeds keep working when the book cannot be written; wro
   assert.deepStrictEqual(arr(c.g.post({ action: 'getAdmittedRoster', secret: 'wrong' })), { ok: false, error: 'unauthorized' });
   assert.strictEqual(c.book().length, 0);
 });
+
+test('real saveAll: an EXISTING patient edited to link a new lead keeps its row and the rosters return the phone', () => {
+  const { g, admitted } = boot({ patients: [P('אלף')] });
+  const pc = Array.from(g.run('PATIENT_COLUMNS'));
+  const edited = Object.assign(Object.fromEntries(pc.map((c) => [c, P('אלף')[c] ?? ''])), { fromLead: 'id-newlead' });
+  const lead = { id: 'id-newlead', name: 'אלף', phone: '0541234567', house: 'אשר', source: 'direct_admin', stage: 'admitted', created: '2026-10-18' };
+  const r = arr(g.post({ action: 'saveAll', proxySecret: 'proxy-secret-TEST-patient-phones-0000000', leads: JSON.stringify([lead]), patients: JSON.stringify({ asher: [edited] }) }));
+  assert.strictEqual(r.ok, true);
+  const rows = g.sandbox.__sheets.Patients.grid.slice(1);
+  assert.strictEqual(rows.length, 1, 'same patient row — no duplicate');
+  assert.strictEqual(admitted().patients[0].phone, '0541234567');
+});

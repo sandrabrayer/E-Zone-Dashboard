@@ -7601,6 +7601,33 @@ function buildIntakeLead(id, name, localPhone, house, today) {
   };
 }
 
+/* The phone a patient currently has: the phone of the lead they link to (fromLead), as
+ * 0XXXXXXXXX, or ''. Pure + tested. */
+function patientLinkedPhone(p, leads) {
+  if (!p || !p.fromLead) return '';
+  const l = (leads || []).find(x => x && String(x.id) === String(p.fromLead));
+  return l ? intakeLocalPhone(l.phone) : '';
+}
+
+/* What saving a typed phone on the EDIT form must do (the phone lives on the linked lead):
+ *   none   — blank, or unchanged
+ *   update — the patient's linked board lead gets the new phone
+ *   reuse  — no linked lead, but a board lead of the SAME person exists → link to it
+ *   create — a new 'admitted' lead is created and linked
+ * Pure + tested. */
+function planPatientPhoneChange(p, typedRaw, leads, newLeadId, house, today) {
+  const typed = String(typedRaw || '').trim();
+  if (!typed) return { kind: 'none' };
+  const local = intakeLocalPhone(typed);
+  if (!local) return { kind: 'invalid' };
+  if (local === patientLinkedPhone(p, leads)) return { kind: 'none' };
+  const linked = p.fromLead ? (leads || []).find(x => x && String(x.id) === String(p.fromLead)) : null;
+  if (linked) return { kind: 'update', lead: linked, phone: local };
+  const same = findSamePersonLead(leads, p.name, local);
+  if (same) return { kind: 'reuse', lead: same, phone: local };
+  return { kind: 'create', lead: buildIntakeLead(newLeadId, p.name, local, house, today), phone: local };
+}
+
 /* An existing board lead for the SAME person (same phone AND same name): reused as the
  * patient's link instead of creating a second row. A different name on the same phone
  * (a family member) is a different person → null. Pure + tested. */
@@ -7636,6 +7663,9 @@ function openEditPatientModal(p) {
         value: p.houseId || '',
         options: HOUSES.map(h => ({ value: h.id, label: h.name })) },
       { name: 'date', label: 'תאריך כניסה', type: 'date', required: true, value: p.date || '' },
+      /* טלפון המטופל — kept on the patient's linked lead; typing one for an old patient with
+       * no phone creates / links it, so it flows to every app from here. */
+      { name: 'phone', label: 'טלפון המטופל', type: 'tel', value: patientLinkedPhone(p, state.leads) },
       { name: 'pay', label: 'תשלום חודשי (₪)', type: 'number', required: true, value: String(p.pay || 0) },
       { name: 'status', label: 'סטטוס', type: 'select',
         value: p.status || 'active',
@@ -7648,9 +7678,28 @@ function openEditPatientModal(p) {
         showError('שדות חובה חסרים');
         return false;
       }
+      const phonePlan = planPatientPhoneChange({ ...p, name: v.name.trim() }, v.phone, state.leads, cryptoId(), houseById(v.houseId), todayISO());
+      if (phonePlan.kind === 'invalid') {
+        showError('טלפון לא תקין (נדרשות 10 ספרות, מתחיל ב־0)');
+        return false;
+      }
+      if ((phonePlan.kind === 'create' || phonePlan.kind === 'reuse') && p.houseId !== v.houseId) {
+        // A house move keeps the sheet's own link, so a NEW link would be lost: one change at a time.
+        showError('אי אפשר לשנות בית וגם להוסיף טלפון בשמירה אחת — שמרו את הטלפון קודם, ואז העבירו בית');
+        return false;
+      }
       const prev = { ...p };
       const prevDischarged = state.dischargedPatients;
       const houseChanged = p.houseId !== v.houseId;
+      const prevLeadPhone = phonePlan.kind === 'update' ? phonePlan.lead.phone : undefined;
+      if (phonePlan.kind === 'update') phonePlan.lead.phone = phonePlan.phone;
+      if (phonePlan.kind === 'reuse' || phonePlan.kind === 'create') p.fromLead = phonePlan.lead.id;
+      if (phonePlan.kind === 'create') state.leads.unshift(phonePlan.lead);
+      const undoPhone = () => {
+        if (phonePlan.kind === 'update') phonePlan.lead.phone = prevLeadPhone;
+        if (phonePlan.kind === 'create') state.leads = state.leads.filter(x => x.id !== phonePlan.lead.id);
+      };
+      const leadProve = phonePlan.kind === 'none' ? null : String(phonePlan.lead.id);
       p.name    = v.name.trim();
       p.houseId = v.houseId;
       p.date    = v.date;
@@ -7678,9 +7727,14 @@ function openEditPatientModal(p) {
       let res = null;
       try {
         // R3: proven = the sheet holds this patient's row after the save.
-        res = await saveAll({ prove: { patients: [String(p.id || '')] } });
+        const proveRows = { patients: [String(p.id || '')] };
+        if (leadProve) proveRows.leads = [leadProve];
+        res = await saveAll({ prove: proveRows });
         if (p.id) requireProven(res, 'patients', p.id);
         saved = true;
+        if (leadProve && !((res && res.proven && res.proven.leads) || []).includes(leadProve)) {
+          showError('הטלפון לא נשמר בדשבורד — נסו שוב');
+        }
         // A price change re-derives every OPEN cycle (CHANGELOG-cycle-balance.md):
         // גבייה and «מטופלים» already re-rendered from state above; בקרת
         // גבייה's server-built parts (debt, «שולם מתחת למחיר») are re-read.
@@ -7706,6 +7760,7 @@ function openEditPatientModal(p) {
         }
         Object.assign(p, prev);
         if (prev.movedFrom === undefined) delete p.movedFrom;
+        undoPhone();
         renderAll();
         showError('שמירה נכשלה — ' + e.message);
         return false;
@@ -7715,6 +7770,7 @@ function openEditPatientModal(p) {
        * form stays open with what was typed (R3). */
       if (!houseChanged && saveRefusedEdit(res, p.id)) {
         Object.assign(p, prev);
+        undoPhone();
         state.dischargedPatients = prevDischarged;
         renderAll();
         return false;
