@@ -1724,3 +1724,7 @@ Dashboard action `createLeadFromTherapists` (own fail-closed Script Property `CR
 
 ## 2026-10-18 — roster phone recovery
 `getAdmittedRoster` / `getDischargedRoster` fall back to the unique same-name lead phone when `fromLead` gives none (read-only, retroactive). See `CHANGELOG-roster-phone-fallback.md`.
+
+
+## 2026-10-18 — PatientPhones sheet
+Manual phone book `PatientPhones` for house patients without a lead phone; auto-listed by `getAdmittedRoster`. See `CHANGELOG-patient-phones-sheet.md`.
