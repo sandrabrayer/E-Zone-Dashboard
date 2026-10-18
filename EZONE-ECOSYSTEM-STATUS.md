@@ -1728,3 +1728,7 @@ Dashboard action `createLeadFromTherapists` (own fail-closed Script Property `CR
 
 ## 2026-10-18 — PatientPhones sheet
 Manual phone book `PatientPhones` for house patients without a lead phone; auto-listed by `getAdmittedRoster`. See `CHANGELOG-patient-phones-sheet.md`.
+
+
+## 2026-10-18 — intake captures the phone
+«קליטת מטופל חדש» requires the patient's phone and stores it on a linked lead (`fromLead`), so it flows to every feed. See `CHANGELOG-intake-phone.md`.

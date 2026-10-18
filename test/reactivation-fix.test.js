@@ -537,7 +537,7 @@ test('every deliberate re-activation path closes the stay\'s open discharge rows
     assert.match(body, /reopenedDischargeAudits\(/, fn + ' must look for re-opened discharge rows');
     // R3 (CHANGELOG-write-path-hardening.md): the save is PROVEN first.
     // PR D: the flags close after the PROVEN save, outside its rollback.
-    assert.match(body, /await saveAll\(\{ prove: \{ patients: \[patient\.id\] \} \}\);\s*requireProven\(res, 'patients', patient\.id\);[\s\S]*?await closeReopenedAuditsAfterSave\(reopened, prevDischarged\);/,
+    assert.match(body, /await saveAll\((?:\{ prove: \{ patients: \[patient\.id\] \} \}|\{ prove \})\);\s*requireProven\(res, 'patients', patient\.id\);[\s\S]*?await closeReopenedAuditsAfterSave\(reopened, prevDischarged\);/,
       fn + ' must persist the flags right after its saveAll (the restore modal\'s order)');
   });
   // ✏️: after the save, and only once a house move (if any) has landed.
@@ -561,7 +561,7 @@ test('intake («🟢 קליטת מטופל חדש») with the ORIGINAL entry dat
   const backend = releasedWorld();
   const s1 = await openSession(backend);
   s1.app.openDirectAddPatientModal({ intake: true });
-  const ok = await s1.app.submitModal({ name: NAME, houseId: 'ramot', date: ENTRY, pay: '', notes: '' });
+  const ok = await s1.app.submitModal({ name: NAME, houseId: 'ramot', date: ENTRY, phone: '054-123-4567', pay: '', notes: '' });
   assert.strictEqual(ok, true);
   assert.deepStrictEqual(flagCalls(s1.calls).map((c) => c.patient.id), ['aud-syn-1']);
   const s2 = await openSession(backend);
