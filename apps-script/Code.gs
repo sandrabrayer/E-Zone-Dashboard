@@ -55,6 +55,13 @@
 const LEADS_SHEET    = 'Leads';
 const PATIENTS_SHEET = 'Patients';
 const PAYMENTS_SHEET = 'Payments';
+/* Manual phone book for house patients with no phone via their lead
+ * (2026-10-18, CHANGELOG-patient-phones-sheet.md). Owned by NOBODY but the humans
+ * who type in it: saveAll never reads or writes it, so a typed phone can't be wiped.
+ * getAdmittedRoster / getDischargedRoster read it; getAdmittedRoster also appends a
+ * blank row (name, house) for each admitted patient still lacking a phone. */
+const PATIENT_PHONES_SHEET = 'PatientPhones';
+const PATIENT_PHONES_COLUMNS = ['name', 'house', 'phone', 'note', 'patientId'];
 /* Internal sheet — per-patient, per-month override of the monthly billing
  * amount (סכום חודשי). Not surfaced in the Hebrew UI as its own tab; it backs
  * the inline per-month amount edit in the גבייה tab. */
@@ -2197,6 +2204,10 @@ function getOrCreateSheet_(name, headers) {
   // idempotent, so rows appended later inherit it.
   if (name === BILLING_OVERRIDES_SHEET) {
     forceColumnsText_(sh, BILLING_OVERRIDE_COLUMNS, ['month', 'amount']);
+  }
+  // PatientPhones: the phone column is text so a typed 0541234567 keeps its leading zero.
+  if (name === PATIENT_PHONES_SHEET) {
+    forceColumnsText_(sh, PATIENT_PHONES_COLUMNS, ['phone', 'patientId']);
   }
   // Payments: the two APPENDED coverage columns only. They carry plain
   // 'YYYY-MM-DD' strings that must never coerce into date-typed cells (the
@@ -6876,7 +6887,7 @@ function getDischargedRoster_() {
   const patients   = readSheet_(patientsSh, PATIENT_COLUMNS);
   const leads      = readSheet_(leadsSh, LEAD_COLUMNS);
 
-  const phoneIdx = buildLeadPhoneIndex_(leads);
+  const phoneIdx = buildLeadPhoneIndex_(leads, readManualPhones_());
 
   const cutoff = new Date(Date.now() - ALUMNI_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
   const out = [];
@@ -6986,23 +6997,74 @@ function normalizePhone_(raw) {
 function rosterNameKey_(name) {
   return String(name == null ? '' : name).replace(/\s+/g, ' ').trim().toLowerCase();
 }
-function buildLeadPhoneIndex_(leads) {
-  const byId = {}, namePhones = {};
+/* A valid Israeli local phone: 9-10 digits after normalizing; a 9-digit number
+ * starting with 5 lost its leading zero (Sheets/typing) → restore it. '' otherwise. */
+function rosterValidPhone_(raw) {
+  let ph = normalizePhone_(raw);
+  if (/^5\d{8}$/.test(ph)) ph = '0' + ph;
+  return /^0\d{8,9}$/.test(ph) ? ph : '';
+}
+function buildLeadPhoneIndex_(leads, manual) {
+  const byId = {}, namePhones = {}, manualById = {}, manualByName = {};
   for (let i = 0; i < leads.length; i++) {
     const l = leads[i];
     if (!l) continue;
     if (l.id !== undefined && l.id !== null && l.id !== '') byId[String(l.id)] = l.phone || '';
-    const k = rosterNameKey_(l.name), ph = normalizePhone_(l.phone);
-    if (k && /^0\d{8,9}$/.test(ph)) { (namePhones[k] = namePhones[k] || {})[ph] = true; }
+    const k = rosterNameKey_(l.name), ph = rosterValidPhone_(l.phone);
+    if (k && ph) { (namePhones[k] = namePhones[k] || {})[ph] = true; }
   }
-  return { byId: byId, namePhones: namePhones };
+  (manual || []).forEach(function (m) {
+    if (!m) return;
+    const ph = rosterValidPhone_(m.phone);
+    if (!ph) return;
+    const id = String(m.patientId == null ? '' : m.patientId).trim();
+    if (id) manualById[id] = ph;
+    const k = rosterNameKey_(m.name);
+    if (k) (manualByName[k] = manualByName[k] || {})[ph] = true;
+  });
+  return { byId: byId, namePhones: namePhones, manualById: manualById, manualByName: manualByName };
 }
 function rosterPhoneFor_(pt, idx) {
-  const linked = normalizePhone_(pt.fromLead ? (idx.byId[String(pt.fromLead)] || '') : '');
-  if (/^0\d{8,9}$/.test(linked)) return linked;
-  const set = idx.namePhones[rosterNameKey_(pt.name)];
+  const linked = rosterValidPhone_(pt.fromLead ? (idx.byId[String(pt.fromLead)] || '') : '');
+  if (linked) return linked;
+  const pid = String(pt.id == null ? '' : pt.id).trim();
+  if (pid && idx.manualById[pid]) return idx.manualById[pid];
+  const key = rosterNameKey_(pt.name);
+  const man = idx.manualByName[key] ? Object.keys(idx.manualByName[key]) : [];
+  if (man.length === 1) return man[0];
+  const set = idx.namePhones[key];
   const phones = set ? Object.keys(set) : [];
-  return phones.length === 1 ? phones[0] : linked;
+  return phones.length === 1 ? phones[0] : '';
+}
+function readManualPhones_() {
+  try { return readSheet_(getOrCreateSheet_(PATIENT_PHONES_SHEET, PATIENT_PHONES_COLUMNS), PATIENT_PHONES_COLUMNS); }
+  catch (_) { return []; }   // fail-soft: the manual book never breaks the feed
+}
+/* Append a blank (name, house) row for each given patient not already listed — idempotent,
+ * under a short try-lock, fail-soft (a busy lock or any error just skips this round). */
+function ensurePhoneRows_(missing) {
+  if (!missing.length) return;
+  let lock = null;
+  try {
+    lock = LockService.getScriptLock();
+    if (lock.tryLock(2000) !== true) return;
+    const sh = getOrCreateSheet_(PATIENT_PHONES_SHEET, PATIENT_PHONES_COLUMNS);
+    const have = {};
+    readSheet_(sh, PATIENT_PHONES_COLUMNS).forEach(function (r) {
+      if (r) { have[rosterNameKey_(r.name)] = true; if (r.patientId) have['id:' + String(r.patientId).trim()] = true; }
+    });
+    const rows = [];
+    missing.forEach(function (m) {
+      const k = rosterNameKey_(m.name);
+      if (!k || have[k] || (m.id && have['id:' + m.id])) return;
+      have[k] = true;
+      rows.push(objectToRow_({ name: m.name, house: m.house, phone: '', note: '', patientId: m.id || '' }, PATIENT_PHONES_COLUMNS));
+    });
+    if (!rows.length) return;
+    const start = sh.getLastRow() + 1;
+    sh.getRange(start, 1, rows.length, PATIENT_PHONES_COLUMNS.length).setValues(rows);
+  } catch (_) { /* fail-soft */ }
+  finally { try { if (lock) lock.releaseLock(); } catch (_) { /* no-op */ } }
 }
 
 function getAdmittedRoster_() {
@@ -7012,7 +7074,8 @@ function getAdmittedRoster_() {
   const leads      = readSheet_(leadsSh, LEAD_COLUMNS);
 
   // Lead phone index: by id (the fromLead join) + unique-name fallback.
-  const phoneIdx = buildLeadPhoneIndex_(leads);
+  const phoneIdx = buildLeadPhoneIndex_(leads, readManualPhones_());
+  const missingPhone = [];
 
   const out = [];
   for (let p = 0; p < patients.length; p++) {
@@ -7025,10 +7088,12 @@ function getAdmittedRoster_() {
     if (String(pt.status || '').trim() === 'released') continue;
     if (String(pt.exitDate || '').trim() !== '') continue;
 
+    const rosterPhone = rosterPhoneFor_(pt, phoneIdx);
+    if (!rosterPhone) missingPhone.push({ name: String(pt.name), house: String(pt.houseId || ''), id: String(pt.id || '') });
     out.push({
       sourceApp: 'ezone-dashboard',
       name:      pt.name || '',
-      phone:     rosterPhoneFor_(pt, phoneIdx),
+      phone:     rosterPhone,
       house:     pt.houseId || '',
       // Admission/entry date (PATIENT_COLUMNS 'date' — labelled "תאריך כניסה"
       // in the dashboard UI). Feeds the outpatient app's מסלול המשך tenure
@@ -7037,6 +7102,7 @@ function getAdmittedRoster_() {
       entryDate: asISODate_(pt.date),
     });
   }
+  ensurePhoneRows_(missingPhone);   // the to-do list for whoever fills phones in (fail-soft)
   return { ok: true, patients: out };
 }
 
