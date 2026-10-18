@@ -1708,3 +1708,11 @@ check against pre-June-17 branches.
    July 4.
 7. **Dashboard Apps Script cleanup**: strip dead bonus logic (frontend now
    ignores it); keep raw-data endpoints only.
+
+## Alumni feed — `getDischargedRoster` (October 18, 2026)
+
+Dashboard → Therapists, read-only, own fail-closed Script Property `ALUMNI_SOURCE_SECRET`
+(`CHANGELOG-discharged-roster-endpoint.md`). Frozen row contract: `sourceApp, name, phone, house,
+entryDate, exitDate`; patients released within 730 days; phone via `Patients.fromLead → Leads.phone`
+(`''` when unlinked). Open action (no PROXY_SECRET), gated inside `handle_`. Consumer: the therapists
+app's alumni list (restructure PR 7).

@@ -17,6 +17,7 @@
  *                                                  minted server-side on create,
  *                                                  stale edits refused)
  *   GET  ?action=getAdmittedRoster&secret=...    → {ok, patients:[{sourceApp,name,phone,house}]}
+ *   GET  ?action=getDischargedRoster&secret=...  → {ok, patients:[{sourceApp,name,phone,house,entryDate,exitDate}]} (own ALUMNI_SOURCE_SECRET)
  *                                                 (cross-app, read-only: currently-admitted
  *                                                  patients with phone recovered via fromLead)
  *   POST action=deletePatientRow&patient=...     → {ok, deleted, key, id, matchedBy}
@@ -1361,7 +1362,7 @@ const APPROVER_ACTIONS = [
  * COORDINATORS_COMMITTEES_SECRET (the getPatientsForCoordinators model). */
 const OPEN_ACTIONS = ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster',
   'getPatientsForCoordinators', 'recordDischargeFromCoordinators', 'managersWork',
-  'getCommitteesForCoordinators'];
+  'getCommitteesForCoordinators', 'getDischargedRoster'];
 const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
 /* Every action handle_ dispatches. An action name is caller-controlled, so
  * SecurityLog records only these; anything else is logged as '(unknown)' —
@@ -1369,7 +1370,7 @@ const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
  * test/proxy-secret-transition.test.js checks this list against handle_. */
 const PROXY_KNOWN_ACTIONS = [
   'managersWork',
-  'getData', 'getAdmittedRoster', 'saveAll', 'getPayments', 'savePayment',
+  'getData', 'getAdmittedRoster', 'getDischargedRoster', 'saveAll', 'getPayments', 'savePayment',
   'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
   'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'debtAging', 'cleanupReport',
   'reportPayment', 'appendFunder', 'billingControlQueue', 'confirmPayment',
@@ -1680,6 +1681,11 @@ function handle_(params) {
         return jsonOut_({ ok: false, error: 'unauthorized' });
       }
       return jsonOut_(getAdmittedRoster_());
+    }
+    if (action === 'getDischargedRoster') {
+      // Own fail-closed ALUMNI_SOURCE_SECRET — refused with NOTHING read.
+      if (!alumniSourceAuthOk_(params)) return jsonOut_({ ok: false, error: 'unauthorized' });
+      return jsonOut_(getDischargedRoster_());
     }
     /* ===== Coordinators roster — own fail-closed secret =====
      * Read feed + the one write (a discharge). Refused with NOTHING read or
@@ -6826,6 +6832,72 @@ function admittedRosterAuthOk_(params) {
   if (!expected) return false;
   const got = (params && params.secret) ? String(params.secret) : '';
   return constantTimeEquals_(got, expected);   // constant-time (0b-2)
+}
+
+/* ===== Cross-app: discharged roster / alumni feed (read-only, 2026-10-18) =====
+ *
+ * getDischargedRoster feeds the E-Zone Therapists app's read-only «בוגרים»
+ * (alumni) follow-up list: patients RELEASED from a house in the last
+ * ALUMNI_WINDOW_DAYS days, each with the same recovered, normalized phone as
+ * getAdmittedRoster (Patients.fromLead → Leads.id → phone; '' when there is no
+ * lead link — the therapists side flags it, never guesses a match).
+ *
+ * Projection is an explicit allow-list, EXACTLY:
+ *   { sourceApp, name, phone, house, entryDate, exitDate }
+ * No id, lead, stage, note, payment, advance, refund, discharge reason or any
+ * other Leads/Patients/billing field. Data minimization: only patients whose
+ * exitDate falls inside the window; older history is not shared.
+ *
+ * Auth: its OWN Script Property ALUMNI_SOURCE_SECRET, constant-time compared,
+ * FAIL-CLOSED (unset / empty / missing / wrong → { ok:false, error:
+ * 'unauthorized' } and NOTHING is read). It is a separate secret from every
+ * other feed, so it unlocks nothing else and can be rotated alone. The action is
+ * in OPEN_ACTIONS (the therapists server calls Apps Script directly, like
+ * getAdmittedRoster) and gated INSIDE handle_. Adds no write surface. */
+const ALUMNI_SOURCE_SECRET_PROP = 'ALUMNI_SOURCE_SECRET';
+const ALUMNI_WINDOW_DAYS = 730;
+
+function alumniSourceAuthOk_(params) {
+  const expected = PropertiesService.getScriptProperties().getProperty(ALUMNI_SOURCE_SECRET_PROP);
+  if (!expected) return false;                       // fail closed: never serve patient PII open
+  const got = (params && typeof params.secret === 'string') ? params.secret : '';
+  if (!got) return false;
+  return constantTimeEquals_(got, expected);
+}
+
+function getDischargedRoster_() {
+  const patientsSh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+  const leadsSh    = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+  const patients   = readSheet_(patientsSh, PATIENT_COLUMNS);
+  const leads      = readSheet_(leadsSh, LEAD_COLUMNS);
+
+  const phoneByLeadId = {};
+  for (let i = 0; i < leads.length; i++) {
+    const l = leads[i];
+    if (l && l.id !== undefined && l.id !== null && l.id !== '') phoneByLeadId[String(l.id)] = l.phone || '';
+  }
+
+  const cutoff = new Date(Date.now() - ALUMNI_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
+  const out = [];
+  for (let p = 0; p < patients.length; p++) {
+    const pt = patients[p];
+    if (!pt || !pt.name) continue;
+    // Released = status 'released' (or the Hebrew synonyms) — and it MUST carry a
+    // valid exitDate inside the window; a status-only row has no discharge date to show.
+    if (!coordStatusReleased_(pt.status) && String(pt.exitDate || '').trim() === '') continue;
+    const exit = asISODate_(pt.exitDate);
+    if (!exit || exit < cutoff) continue;
+    const rawPhone = pt.fromLead ? (phoneByLeadId[String(pt.fromLead)] || '') : '';
+    out.push({
+      sourceApp: 'ezone-dashboard',
+      name:      pt.name || '',
+      phone:     normalizePhone_(rawPhone),
+      house:     pt.houseId || '',
+      entryDate: asISODate_(pt.date),
+      exitDate:  exit,
+    });
+  }
+  return { ok: true, patients: out };
 }
 
 /* Normalize a phone to canonical Israeli local form: strip every non-digit,

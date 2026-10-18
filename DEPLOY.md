@@ -525,6 +525,15 @@ pasted with a trailing space or newline still matches. An unset value here answe
 «הסוד לא הוגדר» instead of «הסוד לא תואם». Check from the coordinators editor:
 `previewCommitteeSyncNow()`.
 
+## Alumni feed `getDischargedRoster` — ONE Script Property (October 18, 2026)
+
+`CHANGELOG-discharged-roster-endpoint.md`. READ-ONLY feed for the E-Zone Therapists app's alumni
+(בוגרים) list. After the automatic Code.gs deploy, set the Script Property **`ALUMNI_SOURCE_SECRET`**
+(a new random value of 32+ characters) — Apps Script editor → Project Settings → Script Properties.
+Put the same value in the therapists Apps Script / server as `ALUMNI_SOURCE_SECRET`. Unset →
+`{ok:false, error:'unauthorized'}` (fail-closed). No Railway variable. Returns
+`{ sourceApp, name, phone, house, entryDate, exitDate }` only, for patients released in the last 730 days.
+
 ## «ועדות קרובות» card — nothing to set (October 15, 2026)
 
 `CHANGELOG-dashboard-committees.md`. A read-only action `upcomingCommittees` reuses
