@@ -15,7 +15,7 @@ const HTML_SRC = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.htm
 
 function loadApp() {
   const epilogue = `
-    globalThis.__test = { coordinatorDischarges, intakeFormFields, intakeMissingFields, normalizeDischargedPatient };
+    globalThis.__test = { coordinatorDischarges, intakeFormFields, intakeMissingFields, normalizeDischargedPatient, intakeLocalPhone, buildIntakeLead, findSamePersonLead };
   `;
   const noop = () => {};
   const sandbox = {
@@ -59,23 +59,25 @@ test('coordinatorDischarges: tolerates a missing list', () => {
   assert.deepStrictEqual(arr(app.coordinatorDischarges(undefined, TODAY)), []);
 });
 
-test('intake form: required fields are EXACTLY name, house, admission date; no status field; pay optional', () => {
+test('intake form: required fields are EXACTLY name, phone, house, admission date; no status field; pay optional', () => {
   const f = arr(app.intakeFormFields(true, 'ramot', TODAY));
-  assert.deepStrictEqual(f.filter((x) => x.required).map((x) => x.name), ['name', 'houseId', 'date']);
+  assert.deepStrictEqual(f.filter((x) => x.required).map((x) => x.name), ['name', 'phone', 'houseId', 'date']);
   assert.ok(!f.some((x) => x.name === 'status'), 'a new inpatient is always active');
   assert.strictEqual(f.find((x) => x.name === 'date').value, TODAY);
   assert.strictEqual(f.find((x) => x.name === 'houseId').value, 'ramot');
   // The legacy direct-add form keeps its status picker and required amount.
   const legacy = arr(app.intakeFormFields(false, 'ramot', TODAY));
   assert.deepStrictEqual(legacy.filter((x) => x.required).map((x) => x.name), ['name', 'houseId', 'date', 'pay']);
+  assert.ok(legacy.some((x) => x.name === 'phone' && !x.required), 'historical direct-add: phone optional');
   assert.ok(legacy.some((x) => x.name === 'status'));
 });
 
 test('intakeMissingFields: names what is missing; intake does not require the amount', () => {
-  assert.deepStrictEqual(arr(app.intakeMissingFields({ name: 'א', houseId: 'ramot', date: TODAY, pay: '' }, true)), []);
+  assert.deepStrictEqual(arr(app.intakeMissingFields({ name: 'א', phone: '054-123-4567', houseId: 'ramot', date: TODAY, pay: '' }, true)), []);
   assert.deepStrictEqual(arr(app.intakeMissingFields({ name: ' ', houseId: 'nope', date: '04/10/2026' }, true)),
-    ['שם מטופל', 'בית', 'תאריך כניסה']);
+    ['שם מטופל', 'בית', 'תאריך כניסה', 'טלפון תקין']);
   assert.deepStrictEqual(arr(app.intakeMissingFields({ name: 'א', houseId: 'ramot', date: TODAY, pay: '' }, false)), ['סכום חודשי']);
+  assert.deepStrictEqual(arr(app.intakeMissingFields({ name: 'א', houseId: 'ramot', date: TODAY, pay: '5', phone: '12' }, false)), ['טלפון תקין'], 'direct-add: optional but must be valid when typed');
 });
 
 test('normalizeDischargedPatient carries the coordinators audit columns (a restore must not blank them)', () => {
@@ -102,4 +104,16 @@ test('the panel renders with textContent only (values come from another app)', (
   const fn = APP_SRC.slice(APP_SRC.indexOf('function renderCoordinatorDischarges'), APP_SRC.indexOf('function renderDischargedPatients'));
   assert.ok(fn.length > 0);
   assert.doesNotMatch(fn.replace("list.innerHTML = '';", ''), /innerHTML/);
+});
+
+test('intake phone: normalised to 0XXXXXXXXX; a lead row carries it; the same person reuses their lead', () => {
+  assert.strictEqual(app.intakeLocalPhone('+972-54-123-4567'), '0541234567');
+  assert.strictEqual(app.intakeLocalPhone('541234567'), '', '9 digits without a zero is not accepted by normalizePhone alone');
+  assert.strictEqual(app.intakeLocalPhone('0541234567'), '0541234567');
+  assert.strictEqual(app.intakeLocalPhone('123'), '');
+  const lead = arr(app.buildIntakeLead('id-1', ' דנה כהן ', '0541234567', { id: 'ramot', name: 'רמות השבים' }, TODAY));
+  assert.deepStrictEqual([lead.stage, lead.source, lead.phone, lead.house, lead.name], ['admitted', 'direct_admin', '0541234567', 'רמות השבים', 'דנה כהן']);
+  const leads = [{ id: 'L1', name: 'דנה  כהן', phone: '054-123-4567' }, { id: 'L2', name: 'אמא של דנה', phone: '0549999999' }];
+  assert.strictEqual(app.findSamePersonLead(leads, 'דנה כהן', '0541234567').id, 'L1');
+  assert.strictEqual(app.findSamePersonLead(leads, 'אחות', '0549999999'), null, 'same phone, different person → no reuse');
 });

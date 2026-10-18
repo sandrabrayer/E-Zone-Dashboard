@@ -7474,6 +7474,10 @@ function openDirectAddPatientModal(opts) {
   const fields = intakeFormFields(intake, state.currentHouseTab || HOUSES[0].id, todayISO());
   // R3: ONE patient id per form (see openEntryModal).
   const patientId = cryptoId();
+  // The patient's phone starts HERE and follows them downstream (therapists app,
+  // alumni list, OUT matching): a patient has no phone column, so it is kept on a
+  // linked lead row (fromLead → Leads.phone) — the model every feed already reads.
+  const intakeLeadId = cryptoId();
   showModal({
     title: intake ? 'קליטת מטופל חדש' : 'הוספת מטופל ישירות',
     // The funder picker (finance sessions only, required there — PR #178)
@@ -7488,6 +7492,11 @@ function openDirectAddPatientModal(opts) {
       }
       const funderErr = admissionFunderError(state.finance, v.funder);
       if (funderErr) { showError(funderErr); return false; }
+      const localPhone = intakeLocalPhone(v.phone);
+      const sameLead = localPhone ? findSamePersonLead(state.leads, v.name, localPhone) : null;
+      const newLead = localPhone && !sameLead
+        ? normalizeLead(buildIntakeLead(intakeLeadId, v.name, localPhone, houseById(v.houseId), todayISO()))
+        : null;
       const patient = normalizePatient({
         id: patientId,
         houseId: v.houseId,
@@ -7496,7 +7505,7 @@ function openDirectAddPatientModal(opts) {
         pay: Number(v.pay) || 0,
         adv: 0,
         status: intake ? 'active' : (v.status || 'active'),
-        fromLead: '',
+        fromLead: sameLead ? sameLead.id : (newLead ? newLead.id : ''),
         source: 'direct_admin',
         notes: (v.notes || '').trim(),
       });
@@ -7506,15 +7515,20 @@ function openDirectAddPatientModal(opts) {
       const reopened = reopenedDischargeAudits(null, patient, state.dischargedPatients);
       if (reopened.length) state.dischargedPatients = withAuditsRestored(state.dischargedPatients, reopened);
       state.patients.unshift(patient);
+      if (newLead) state.leads.unshift(newLead);
       // Jump to the house the new patient landed in so the admin can
       // immediately verify the record appeared.
       state.currentHouseTab = patient.houseId;
       renderAll();
       try {
-        const res = await saveAll({ prove: { patients: [patient.id] } });
+        const prove = { patients: [patient.id] };
+        if (newLead) prove.leads = [newLead.id];
+        const res = await saveAll({ prove });
         requireProven(res, 'patients', patient.id);
+        if (newLead) requireProven(res, 'leads', newLead.id);
       } catch (e) {
         state.patients = state.patients.filter(x => x.id !== patient.id);
+        if (newLead) state.leads = state.leads.filter(x => x.id !== newLead.id);
         state.dischargedPatients = prevDischarged;
         renderAll();
         showError('שמירה נכשלה — ' + e.message);
@@ -7533,6 +7547,9 @@ function openDirectAddPatientModal(opts) {
 function intakeFormFields(intake, houseId, today) {
   const fields = [
     { name: 'name', label: 'שם מטופל', type: 'text', required: true },
+    /* טלפון המטופל — required on intake (the phone starts here and follows the
+     * patient everywhere); optional on the historical direct-add form. */
+    { name: 'phone', label: 'טלפון המטופל', type: 'tel', required: intake },
     { name: 'houseId', label: 'בית', type: 'select', required: true,
       value: houseId,
       options: HOUSES.map(h => ({ value: h.id, label: h.name })) },
@@ -7560,7 +7577,39 @@ function intakeMissingFields(v, intake) {
   if (!v || !v.houseId || !houseById(v.houseId)) missing.push('בית');
   if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(String(v.date || ''))) missing.push('תאריך כניסה');
   if (!intake && (!v || !v.pay)) missing.push('סכום חודשי');
+  // Intake: a valid phone is required. Direct-add: optional, but if typed it must be valid.
+  if (v && (intake || String(v.phone || '').trim()) && !intakeLocalPhone(v.phone)) missing.push('טלפון תקין');
   return missing;
+}
+
+/* '0XXXXXXXXX' for a valid Israeli phone (9–10 digits; a 9-digit mobile that lost its
+ * leading zero is restored), '' otherwise. Pure + tested. */
+function intakeLocalPhone(raw) {
+  const n = normalizePhone(raw);                        // 972… form
+  if (!/^972\d{8,9}$/.test(n)) return '';
+  return '0' + n.slice(3);
+}
+
+/* The lead row that carries an intake patient's phone (stage 'admitted': it is a record of
+ * the person, never a sales lead on the board). Pure + tested. */
+function buildIntakeLead(id, name, localPhone, house, today) {
+  return {
+    id: id, name: String(name || '').trim(), phone: localPhone,
+    house: house ? house.name : '', source: 'direct_admin',
+    note: 'נקלט ישירות (ללא ליד) — טלפון נשמר לצורך המשך מעקב',
+    stage: 'admitted', created: today,
+  };
+}
+
+/* An existing board lead for the SAME person (same phone AND same name): reused as the
+ * patient's link instead of creating a second row. A different name on the same phone
+ * (a family member) is a different person → null. Pure + tested. */
+function findSamePersonLead(leads, name, localPhone) {
+  const key = String(name || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const want = normalizePhone(localPhone);
+  const hit = (leads || []).find(l => l && normalizePhone(l.phone) === want
+    && String(l.name || '').replace(/\s+/g, ' ').trim().toLowerCase() === key);
+  return hit || null;
 }
 
 /* ===== Edit existing patient =====

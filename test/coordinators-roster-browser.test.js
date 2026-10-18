@@ -167,10 +167,11 @@ test('dashboard at 360px: the intake entry is top level and saves a new active p
     const required = await page.locator('#modal-root .form-row').evaluateAll((rows) => rows
       .filter((r) => /\*\s*$/.test(r.querySelector('label').textContent))
       .map((r) => r.querySelector('[name]').getAttribute('name')).sort());
-    assert.deepEqual(required, ['date', 'funder', 'houseId', 'name'],
-      'name, house, admission date — and the funder, required at every admission for a finance session');
+    assert.deepEqual(required, ['date', 'funder', 'houseId', 'name', 'phone'],
+      'name, phone, house, admission date — and the funder, required at every admission for a finance session');
     assert.equal(await page.locator('form [name="status"]').count(), 0, 'a new inpatient is always active');
     await page.fill('form [name="name"]', 'נועה חדשה');
+    await page.fill('form [name="phone"]', '054-123-4567');
     await page.selectOption('form [name="houseId"]', 'pardes');
     await page.fill('form [name="date"]', daysAgo(0));
     await page.fill('form [name="pay"]', '');
@@ -192,6 +193,12 @@ test('dashboard at 360px: the intake entry is top level and saves a new active p
     assert.equal(added.status, 'active');
     assert.equal(added.source, 'direct_admin');
     assert.equal(added.pay, 0, 'optional monthly amount left blank → 0');
+    // The phone starts at intake and follows the patient: a linked lead row carries it.
+    const savedLeads = typeof save.leads === 'string' ? JSON.parse(save.leads) : save.leads;
+    const link = (savedLeads || []).find((l) => l.id === added.fromLead);
+    assert.ok(added.fromLead && link, 'the patient is linked to a lead (fromLead)');
+    assert.equal(link.phone, '0541234567');
+    assert.equal(link.stage, 'admitted');
     assert.ok(added.id, 'carries a client id');
     // The funder lands after the save, from the admission date (PR #178 flow).
     for (let i = 0; i < 50 && !server.bodies.some((b) => b.action === 'appendFunder'); i++) await page.waitForTimeout(100);
