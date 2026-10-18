@@ -685,7 +685,7 @@ test('scope: the two new actions are proxied through the finance gate, nothing n
   // are the only additions since; nothing billing-related is open.
   assert.deepEqual(arr(g.run('OPEN_ACTIONS')), ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster',
     'getPatientsForCoordinators', 'recordDischargeFromCoordinators', 'managersWork', // + managersWork (own MANAGERS_WORK_SECRET, 2026-10-13)
-    'getCommitteesForCoordinators']); // + own COORDINATORS_COMMITTEES_SECRET, read-only (2026-10-15)
+    'getCommitteesForCoordinators', 'getDischargedRoster']); // + own COORDINATORS_COMMITTEES_SECRET, read-only (2026-10-15); + own ALUMNI_SOURCE_SECRET, read-only (2026-10-18)
   assert.deepEqual(arr(g.run('FINANCE_ACTIONS')), [...scope.FINANCE_ACTIONS]);
   assert.ok(arr(g.run('PROXY_KNOWN_ACTIONS')).includes('reportPayment'));
   // server.js knows no action name of its own for them: the finance list is the gate.
