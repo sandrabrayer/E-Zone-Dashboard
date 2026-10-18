@@ -15,7 +15,7 @@ const HTML_SRC = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.htm
 
 function loadApp() {
   const epilogue = `
-    globalThis.__test = { coordinatorDischarges, intakeFormFields, intakeMissingFields, normalizeDischargedPatient, intakeLocalPhone, buildIntakeLead, findSamePersonLead };
+    globalThis.__test = { coordinatorDischarges, intakeFormFields, intakeMissingFields, normalizeDischargedPatient, intakeLocalPhone, buildIntakeLead, findSamePersonLead, patientLinkedPhone, planPatientPhoneChange };
   `;
   const noop = () => {};
   const sandbox = {
@@ -116,4 +116,20 @@ test('intake phone: normalised to 0XXXXXXXXX; a lead row carries it; the same pe
   const leads = [{ id: 'L1', name: 'דנה  כהן', phone: '054-123-4567' }, { id: 'L2', name: 'אמא של דנה', phone: '0549999999' }];
   assert.strictEqual(app.findSamePersonLead(leads, 'דנה כהן', '0541234567').id, 'L1');
   assert.strictEqual(app.findSamePersonLead(leads, 'אחות', '0549999999'), null, 'same phone, different person → no reuse');
+});
+
+test('edit form phone: planPatientPhoneChange decides none / update / reuse / create / invalid', () => {
+  const house = { id: 'asher', name: 'רעננה אשר' };
+  const leads = [{ id: 'L1', name: 'דנה כהן', phone: '0541111111' }, { id: 'L2', name: 'רון', phone: '' }, { id: 'L3', name: 'שרה בר', phone: '0543333333' }];
+  const plan = (p, typed) => arr(app.planPatientPhoneChange(p, typed, leads, 'id-new', house, TODAY));
+  assert.strictEqual(app.patientLinkedPhone({ fromLead: 'L1' }, leads), '0541111111');
+  assert.strictEqual(app.patientLinkedPhone({ fromLead: '' }, leads), '');
+  assert.strictEqual(plan({ name: 'דנה כהן', fromLead: 'L1' }, '').kind, 'none', 'blank = no change');
+  assert.strictEqual(plan({ name: 'דנה כהן', fromLead: 'L1' }, '054-111-1111').kind, 'none', 'unchanged');
+  assert.strictEqual(plan({ name: 'דנה כהן', fromLead: 'L1' }, '0549999999').kind, 'update');
+  assert.strictEqual(plan({ name: 'רון', fromLead: 'L2' }, '0542222222').kind, 'update', 'linked lead without a phone is filled in');
+  assert.strictEqual(plan({ name: 'שרה בר', fromLead: '' }, '0543333333').kind, 'reuse', 'same person already on the board');
+  const c = plan({ name: 'חדש', fromLead: '' }, '0544444444');
+  assert.deepStrictEqual([c.kind, c.lead.id, c.lead.phone, c.lead.stage], ['create', 'id-new', '0544444444', 'admitted']);
+  assert.strictEqual(plan({ name: 'חדש', fromLead: '' }, '12').kind, 'invalid');
 });
