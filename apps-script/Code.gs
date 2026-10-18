@@ -1362,7 +1362,7 @@ const APPROVER_ACTIONS = [
  * COORDINATORS_COMMITTEES_SECRET (the getPatientsForCoordinators model). */
 const OPEN_ACTIONS = ['managersOverview', 'managersHouse', 'occupancySnapshots', 'getAdmittedRoster',
   'getPatientsForCoordinators', 'recordDischargeFromCoordinators', 'managersWork',
-  'getCommitteesForCoordinators', 'getDischargedRoster'];
+  'getCommitteesForCoordinators', 'getDischargedRoster', 'createLeadFromTherapists'];
 const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
 /* Every action handle_ dispatches. An action name is caller-controlled, so
  * SecurityLog records only these; anything else is logged as '(unknown)' —
@@ -1370,7 +1370,7 @@ const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
  * test/proxy-secret-transition.test.js checks this list against handle_. */
 const PROXY_KNOWN_ACTIONS = [
   'managersWork',
-  'getData', 'getAdmittedRoster', 'getDischargedRoster', 'saveAll', 'getPayments', 'savePayment',
+  'getData', 'getAdmittedRoster', 'getDischargedRoster', 'createLeadFromTherapists', 'saveAll', 'getPayments', 'savePayment',
   'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
   'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'debtAging', 'cleanupReport',
   'reportPayment', 'appendFunder', 'billingControlQueue', 'confirmPayment',
@@ -1686,6 +1686,11 @@ function handle_(params) {
       // Own fail-closed ALUMNI_SOURCE_SECRET — refused with NOTHING read.
       if (!alumniSourceAuthOk_(params)) return jsonOut_({ ok: false, error: 'unauthorized' });
       return jsonOut_(getDischargedRoster_());
+    }
+    if (action === 'createLeadFromTherapists') {
+      // Own fail-closed CREATE_LEAD_SECRET — refused with NOTHING read or written.
+      if (!createLeadAuthOk_(params)) return jsonOut_({ ok: false, error: 'unauthorized' });
+      return jsonOut_(createLeadFromTherapists_(params));
     }
     /* ===== Coordinators roster — own fail-closed secret =====
      * Read feed + the one write (a discharge). Refused with NOTHING read or
@@ -6898,6 +6903,69 @@ function getDischargedRoster_() {
     });
   }
   return { ok: true, patients: out };
+}
+
+/* ===== Cross-app: alumnus → new lead (write, 2026-10-18) =====
+ *
+ * createLeadFromTherapists appends ONE lead row (stage 'new', source
+ * 'alumni_therapists') when the E-Zone Therapists coordinator converts an alumnus
+ * who wants to return. Own Script Property CREATE_LEAD_SECRET, constant-time,
+ * FAIL-CLOSED (unset / empty / wrong → {ok:false,error:'unauthorized'}, nothing
+ * read or written). Allow-listed input only; stage / source / created / id are
+ * set HERE, never taken from the caller. Idempotent: a lead with the same
+ * normalized phone already on the Leads sheet → {ok:true,alreadyExists:true}
+ * and NO second row. Cells are neutralised against spreadsheet-formula injection.
+ * Appended under the script lock via upsertRowById_ (text-forced date cols). */
+const CREATE_LEAD_SECRET_PROP = 'CREATE_LEAD_SECRET';
+const ALUMNI_LEAD_SOURCE = 'alumni_therapists';
+const CREATE_LEAD_ASSIGNEES = ['ורד', 'שירן', 'יעל'];
+
+function createLeadAuthOk_(params) {
+  const expected = PropertiesService.getScriptProperties().getProperty(CREATE_LEAD_SECRET_PROP);
+  if (!expected) return false;
+  const got = (params && typeof params.secret === 'string') ? params.secret : '';
+  if (!got) return false;
+  return constantTimeEquals_(got, expected);
+}
+
+function leadCellText_(v, max) {
+  let t = String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+  t = t.replace(/^[=+\-@\s]+/, '');          // never let a cell start as a formula
+  return t.slice(0, max);
+}
+
+function createLeadFromTherapists_(params) {
+  const name = leadCellText_(params.name, 100);
+  if (name.length < 2) return { ok: false, error: 'invalid_name' };
+  const phone = normalizePhone_(params.phone);
+  if (!/^0\d{8,9}$/.test(phone)) return { ok: false, error: 'invalid_phone' };
+  const house = leadCellText_(params.house, 40);
+  const program = leadCellText_(params.program, 60);
+  const by = leadCellText_(params.by, 60);
+  const extra = leadCellText_(params.note, 400);
+  const assignedTo = CREATE_LEAD_ASSIGNEES.indexOf(String(params.assignedTo || '')) >= 0 ? String(params.assignedTo) : '';
+  const note = ['בוגר/ת – חזרה לטיפול', program ? 'תוכנית מוצעת: ' + program : '', by ? 'הועבר ע"י ' + by : '', extra]
+    .filter(Boolean).join(' | ');
+
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('createLeadFromTherapists_');
+  try {
+    const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+    const existing = readSheet_(sh, LEAD_COLUMNS);
+    for (let i = 0; i < existing.length; i++) {
+      if (existing[i] && normalizePhone_(existing[i].phone) === phone) {
+        return { ok: true, alreadyExists: true, leadId: String(existing[i].id || '') };
+      }
+    }
+    const id = 'id-' + Utilities.getUuid().replace(/-/g, '').slice(0, 16);
+    const lead = { id: id, name: name, phone: phone, house: house, source: ALUMNI_LEAD_SOURCE, note: note,
+      stage: 'new', created: todayISODate_(), assignedTo: assignedTo };
+    upsertRowById_(sh, LEAD_COLUMNS, lead);
+    logAudit_('lead_created_from_therapists', 'createLeadFromTherapists_', id, name, { source: ALUMNI_LEAD_SOURCE }, by || 'ezone-therapists');
+    return { ok: true, created: true, leadId: id };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
 }
 
 /* Normalize a phone to canonical Israeli local form: strip every non-digit,
