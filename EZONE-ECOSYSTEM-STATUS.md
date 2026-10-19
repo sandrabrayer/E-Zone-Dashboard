@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## «מטופל חוזר» — returning patient — October 19, 2026 (PR open)
+
+Occupancy «מטופל חוזר»: search discharged + closed leads by phone/name; a unique match pre-fills
+the add form with history; confirm = one new stay linked by `personId` (Patients column appended
+LAST, immutable once set) and the old discharge rows flagged restored. No / several matches →
+manual pick only. Card «היסטוריית שהיות»; «ללא ליד · נוסף ישירות / מטופל חוזר». Code.gs changed;
+SW v76. See `CHANGELOG-returning-patient.md`, `docs/returning-patient.md`.
+
 ## «לא נכנס» on «ממתינים לקליטה» — October 19, 2026 (PR open)
 
 Waiting cards get «לא נכנס»: the existing soft close (closeLead → moveLeadIrrelevant, to

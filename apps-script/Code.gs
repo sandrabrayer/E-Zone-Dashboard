@@ -339,8 +339,29 @@ const REMOVED_LEAD_COLUMNS = LEAD_COLUMNS.concat(['removedAt', 'originSheet']);
 const PATIENT_COLUMNS = [
   'houseId', 'name', 'date', 'pay', 'adv',
   'status', 'fromLead', 'exitDate', 'source', 'notes',
-  'id', 'updatedAt', 'updatedBy'
+  'id', 'updatedAt', 'updatedBy',
+  // «מטופל חוזר» (APPENDED LAST, append-only — CHANGELOG-returning-patient.md):
+  // the root patient id of the FIRST stay of the person, set on a returning stay
+  // so every stay of one person is linked by id. Blank on every other row.
+  // Immutable once set (keepPersonId_). DISCHARGED_PATIENT_COLUMNS and the
+  // tombstone list are literal lists, so their layouts do not move.
+  'personId'
 ];
+
+/* A personId as stored: an opaque id ('id-…' / legacy keys), else ''. */
+function patientPersonId_(v) {
+  const t = String(v == null ? '' : v).trim();
+  return /^[A-Za-z0-9_-]{1,80}$/.test(t) ? t : '';
+}
+/* personId is IMMUTABLE once on the sheet: a matched/moved/renamed row keeps
+ * the sheet's value whatever the payload says (an old tab that does not know
+ * the column sends nothing); a blank sheet cell takes the payload's
+ * (sanitized) value. Mutates `withHouse`. */
+function keepPersonId_(withHouse, sheetRow) {
+  const idx = PATIENT_COLUMNS.indexOf('personId');
+  const onSheet = sheetRow && idx >= 0 ? patientPersonId_(sheetRow[idx]) : '';
+  withHouse.personId = onSheet || patientPersonId_(withHouse.personId);
+}
 
 /* The SERVER-OWNED meta columns of PATIENT_COLUMNS — identity + stamps, not
  * content. patientRowDiffCols_ ignores them (an echo of stale stamps or an
@@ -3729,6 +3750,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   const carryStamps = function (withHouse, sheetRow) {
     withHouse.updatedAt = sheetRow[updatedAtIdx];
     withHouse.updatedBy = sheetRow[updatedByIdx];
+    keepPersonId_(withHouse, sheetRow);
   };
   const stampNow = function (withHouse) {
     withHouse.updatedAt = new Date().toISOString();
@@ -3897,6 +3919,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
      * about. Only leading/trailing whitespace; nothing inside a name. */
     const withHouse = Object.assign({}, patientsArr[i], { houseId: houseId });
     withHouse.name = String(withHouse.name == null ? '' : withHouse.name).trim();
+    keepPersonId_(withHouse, null);   // sanitized; a matched sheet row's value wins below
     const key = patientKey_(houseId, withHouse.name, withHouse.date);
     const incomingId = String(withHouse.id == null ? '' : withHouse.id).trim();
     // The stamp this tab LOADED, as echoed by the round-trip — captured
@@ -3938,6 +3961,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
       // lands here with the SAME id and the sheet's own lead link.
       movedOutOfKept[srcIdx] = true;
       if (fromLeadIdx >= 0) withHouse.fromLead = src[fromLeadIdx];
+      keepPersonId_(withHouse, src);
       assignId(withHouse, incomingId, { via: 'move' });
       stampNow(withHouse); // a house move is always a real edit
       const movedRow = objectToRow_(withHouse, PATIENT_COLUMNS);
@@ -4051,6 +4075,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
         recordConsumed(idx);
         assignId(withHouse, rowId(houseRows[idx]), { via: 'fromLead' });
         stampNow(withHouse); // a rename/entry-date edit is always a real edit
+        keepPersonId_(withHouse, houseRows[idx]);
         const oldName = String(houseRows[idx][nameColIdx] == null ? '' : houseRows[idx][nameColIdx]);
         const oldKey = patientKey_(houseId, houseRows[idx][nameColIdx], houseRows[idx][dateColIdx]);
         logAudit_('patient_renamed_via_fromLead', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, id: withHouse.id, oldName: oldName, newName: String(withHouse.name || ''), oldKey: oldKey, newKey: key, matches: matches.length, ambiguous: matches.length > 1, updatedBy: stampUser });
@@ -4070,6 +4095,12 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
       continue;
     }
     if (fl) fromLeadOnSheet[fl] = String(withHouse.name || '');
+    // A returning stay's personId must name a patient that EXISTS (fail
+    // closed: an unknown id is dropped, never invented — CHANGELOG-returning-patient.md).
+    if (withHouse.personId && !idsInUse[withHouse.personId]) {
+      logAudit_('patient_personid_dropped', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, personId: withHouse.personId });
+      withHouse.personId = '';
+    }
     assignId(withHouse, '', { via: 'append' });
     stampNow(withHouse); // a new row's first write is its first edit
     logAudit_(fl ? 'promote_created' : 'patient_added', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, key: key, id: withHouse.id, status: String(withHouse.status || ''), source: String(withHouse.source || ''), updatedBy: stampUser });

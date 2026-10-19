@@ -2905,3 +2905,13 @@ button.mtg-bad-date-lead:hover { background: rgba(255, 176, 32, 0.18); }
 .plist-phone-add .field-error { color: var(--danger); font-size: 16px; width: 100%; }
 .plist-phone-add .field-error:empty { display: none; }
 .plist-funder .plist-funder-edit { margin-inline-start: 6px; }
+
+/* «מטופל חוזר» + «היסטוריית שהיות» (CHANGELOG-returning-patient.md). */
+.returning-modal .rp-help, .returning-modal .rp-msg { font-size: 16px; margin: 8px 0; }
+.returning-modal .rp-card { border: 1px solid var(--border, #ddd); border-radius: 10px; padding: 10px; margin: 8px 0; }
+.returning-modal .rp-card .btn, .returning-modal [data-rp-new] { min-height: 44px; font-size: 16px; }
+.returning-modal input { min-height: 44px; font-size: 16px; }
+.rp-history { margin: 6px 0; padding-inline-start: 18px; font-size: 16px; }
+.rp-history .rp-note { color: var(--text-dim, #666); font-size: 16px; }
+.plist-stays { margin-top: 6px; }
+.plist-stays summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }

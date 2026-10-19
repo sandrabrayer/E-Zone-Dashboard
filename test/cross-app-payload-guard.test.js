@@ -42,6 +42,8 @@ test('Patients header: pinned in full — append-only, never reordered or remove
     'houseId', 'name', 'date', 'pay', 'adv',
     'status', 'fromLead', 'exitDate', 'source', 'notes',
     'id', 'updatedAt', 'updatedBy',
+    // «מטופל חוזר» (CHANGELOG-returning-patient.md), appended LAST.
+    'personId',
   ]);
 });
 

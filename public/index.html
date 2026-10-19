@@ -286,6 +286,7 @@
             <input type="checkbox" id="show-released-toggle" />
             <span>הצג משוחררים</span>
           </label>
+          <button id="returning-patient-btn" class="btn edit-only" type="button" title="חיפוש מטופל שהיה כבר בבית — פרטים והיסטוריה">מטופל חוזר</button>
           <button id="add-patient-btn" class="btn primary edit-only">+ הוסף מטופל ישירות</button>
         </div>
       </div>
@@ -748,6 +749,8 @@
   <script src="committee-alerts.js?v=__BUILD__"></script>
   <!-- Leads funnel report (global LeadsFunnel) — must load before app.js. -->
   <script src="leads-funnel.js?v=__BUILD__"></script>
+  <!-- Returning-patient matching (global ReturningPatient) — must load before app.js. -->
+  <script src="returning-patient.js?v=__BUILD__"></script>
   <script src="app.js?v=__BUILD__"></script>
 
   <!-- Service worker registration (guarded). Registered after load so it never

@@ -573,6 +573,7 @@ function serializePatients() {
        * dropping them here would look like data loss to the diff). */
       updatedAt: p.updatedAt ? String(p.updatedAt) : '',
       updatedBy: p.updatedBy ? String(p.updatedBy) : '',
+      personId: p.personId ? String(p.personId) : '',
     };
     /* A deliberate house move from the ✏ modal: the house this patient is
      * LEAVING, sent only while the move is pending. It is what lets the
@@ -1819,6 +1820,8 @@ function initTabs() {
   const funnelBtn = document.getElementById('leads-funnel-btn');
   if (funnelBtn) funnelBtn.onclick = toggleLeadsFunnel;
   document.getElementById('add-patient-btn').onclick = () => openDirectAddPatientModal();
+  const returningBtn = document.getElementById('returning-patient-btn');
+  if (returningBtn) returningBtn.onclick = () => openReturningPatientSearch();
   /* «🟢 קליטת מטופל חדש» — the top-level intake entry on the dashboard. Same
    * direct-add flow, intake mode (see openDirectAddPatientModal). */
   const intakeBtn = document.getElementById('intake-patient-btn');
@@ -3036,6 +3039,10 @@ function normalizePatient(p) {
      * overwrites on a real change; blanks are legacy rows. */
     updatedAt: pickField(p, ['updatedAt', 'updated_at']) || '',
     updatedBy: pickField(p, ['updatedBy', 'updated_by']) || '',
+    /* «מטופל חוזר» (CHANGELOG-returning-patient.md): the root patient id of
+     * the person's first stay — set on a returning stay, blank otherwise.
+     * Echoed on every save (the server keeps the sheet's value once set). */
+    personId: pickField(p, ['personId', 'person_id']) || '',
   };
 }
 
@@ -5474,7 +5481,8 @@ function patientProblems(patient, leadInfo, payments, funders, todayIso, patient
   // with no valid phone → missing. An ambiguous lead match is never flagged
   // (same rule as no_lead: we cannot tell which lead is theirs).
   if (!info.ambiguous && !intakeLocalPhone(lead ? lead.phone : '')) out.add('no_phone');
-  return PATIENT_PROBLEMS.filter(p => out.has(p.code)).map(p => ({ code: p.code, label: p.label }));
+  return PATIENT_PROBLEMS.filter(p => out.has(p.code))
+    .map(p => ({ code: p.code, label: p.code === 'no_lead' ? patientNoLeadLabel(patient) : p.label }));
 }
 
 /* The current cycle's payment state, from the same helpers as גבייה:
@@ -5535,6 +5543,7 @@ function patientListRows(s, filters, todayIso) {
   const funders = finance && Array.isArray(src.funders) ? src.funders : null;
   const patients = Array.isArray(src.patients) ? src.patients : [];
   const leads = patientLeadPool(src);
+  const persons = returningPersons(src);
   const q = normalizeNameForMatch(f.q);
   const rows = [];
   patients.forEach(p => {
@@ -5549,6 +5558,8 @@ function patientListRows(s, filters, todayIso) {
     if (f.problemsOnly && !problems.length) return;
     rows.push({
       patient: p,
+      // «היסטוריית שהיות» (CHANGELOG-returning-patient.md): '' without history.
+      stays: patientStayHistoryHtml(p, persons, finance, payments),
       leadInfo,
       lead: patientLeadDetails(leadInfo.lead),
       problems,
@@ -7656,6 +7667,168 @@ function openEntryModal(lead) {
   });
 }
 
+/* ===== «מטופל חוזר» — returning patient (CHANGELOG-returning-patient.md) =====
+ * The rule (persons, matching, history) is lib/returning-patient.js
+ * (window.ReturningPatient). Here: the search modal, the pre-filled add form
+ * (openDirectAddPatientModal({ returning })), closing the old discharge rows
+ * and the card's «היסטוריית שהיות». Matching FAILS CLOSED: only a unique
+ * match is offered for linking at once; none / several / a phone whose name
+ * differs → a manual pick from candidates. Every value is escaped. */
+
+/* The module, or null when returning-patient.js did not load. */
+function returningLib() {
+  return (typeof ReturningPatient !== 'undefined' && ReturningPatient && typeof ReturningPatient.findMatches === 'function') ? ReturningPatient : null;
+}
+
+/* Every person from the page's lists. Pure apart from reading `s`. */
+function returningPersons(s) {
+  const R = returningLib();
+  if (!R) return [];
+  const src = s || state;
+  return R.buildPersons({ patients: src.patients, dischargedPatients: src.dischargedPatients,
+    irrelevantLeads: src.irrelevantLeads, leads: src.leads, removedLeads: src.removedLeads });
+}
+
+/* The search answer for a typed { name, phone }. Pure apart from `s`. */
+function returningSearch(s, query) {
+  const R = returningLib();
+  if (!R) return { status: 'none', via: '', persons: [], suggestions: [] };
+  return R.findMatches(returningPersons(s), query);
+}
+
+/* Payments linked to a stay BY ID (patientUid), finance only →
+ * { count, paid }. Pure. */
+function stayPaymentsById(patientId, payments) {
+  const id = String(patientId || '');
+  if (!id) return { count: 0, paid: 0 };
+  const rows = (Array.isArray(payments) ? payments : []).filter(p => p && !isVoidPayment(p) && paymentPatientUid(p) === id);
+  return { count: rows.length, paid: roundMoney(rows.reduce((n, p) => n + (Number(p.amountPaid) || 0), 0)) };
+}
+
+/* A person's history as HTML (stays newest first, then closed leads).
+ * `finance` adds the payments linked by id. `skipPatientId` leaves out the
+ * stay the card itself is. Pure. */
+function returningHistoryHtml(person, finance, payments, skipPatientId) {
+  const R = returningLib();
+  if (!R || !person) return '';
+  const h = R.history(person);
+  const stays = h.stays.filter(s => !skipPatientId || s.patientId !== skipPatientId);
+  if (!stays.length && !h.closedLeads.length) return '';
+  const houseName = id => { const x = HOUSES.find(hh => hh.id === id); return x ? x.name : id; };
+  const items = stays.map(s => {
+    const parts = [houseName(s.houseId), (s.date ? formatDate(s.date) : '?') + ' – ' + (s.exitDate ? formatDate(s.exitDate) : (s.status === 'released' ? '?' : 'פעיל'))];
+    if (s.disposition) parts.push(DISPOSITION_LABELS[s.disposition] || s.disposition);
+    if (finance) { const pm = stayPaymentsById(s.patientId, payments); if (pm.count) parts.push(`${pm.count} תשלומים · ₪ ${pm.paid.toLocaleString('he-IL')}`); }
+    const notes = [s.dischargeNote, s.notes].filter(Boolean).join(' · ');
+    return `<li>${escapeHtml(parts.join(' · '))}${notes ? `<div class="rp-note">${escapeHtml(notes)}</div>` : ''}</li>`;
+  });
+  h.closedLeads.forEach(l => {
+    const parts = ['ליד סגור', l.movedAt ? formatDate(String(l.movedAt).slice(0, 10)) : '', DISPOSITION_LABELS[l.disposition] || l.disposition].filter(Boolean);
+    items.push(`<li>${escapeHtml(parts.join(' · '))}${l.note ? `<div class="rp-note">${escapeHtml(l.note)}</div>` : ''}</li>`);
+  });
+  return `<ul class="rp-history">${items.join('')}</ul>`;
+}
+
+/* The card's «היסטוריית שהיות» (a closed <details>), '' when the patient has
+ * no other stay / closed lead. Pure. */
+function patientStayHistoryHtml(patient, persons, finance, payments) {
+  if (!patient || !Array.isArray(persons)) return '';
+  const id = String(patient.id || '');
+  const person = persons.find(P => P.patientIds.indexOf(id) >= 0);
+  const body = person ? returningHistoryHtml(person, finance, payments, id) : '';
+  return body ? `<details class="plist-stays"><summary>היסטוריית שהיות</summary>${body}</details>` : '';
+}
+
+/* The search modal: name and/or phone → the match. A unique match shows the
+ * history and «המשך» (pre-filled add form); otherwise candidates to pick. */
+function openReturningPatientSearch() {
+  if (state.mode !== 'edit') return;
+  const root = document.getElementById('modal-root');
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  back.innerHTML = `
+    <div class="modal returning-modal">
+      <h3>מטופל חוזר</h3>
+      <p class="rp-help">חיפוש בין המשוחררים והלידים הסגורים — לפי טלפון ו/או שם מלא.</p>
+      <form novalidate>
+        <div class="form-row"><label for="rp-phone">טלפון</label><input id="rp-phone" name="phone" type="tel" dir="ltr" inputmode="tel" maxlength="20" /></div>
+        <div class="form-row"><label for="rp-name">שם מלא</label><input id="rp-name" name="name" type="text" maxlength="100" /></div>
+        <div class="form-actions"><button type="button" class="btn" data-action="cancel">ביטול</button><button type="submit" class="btn primary">חיפוש</button></div>
+      </form>
+      <div class="rp-results" aria-live="polite"></div>
+    </div>`;
+  root.appendChild(back);
+  const close = () => back.remove();
+  back.querySelector('[data-action="cancel"]').onclick = close;
+  back.addEventListener('click', e => { if (e.target === back) close(); });
+  const results = back.querySelector('.rp-results');
+  back.querySelector('form').onsubmit = e => {
+    e.preventDefault();
+    const q = { name: back.querySelector('[name="name"]').value, phone: back.querySelector('[name="phone"]').value };
+    const ans = returningSearch(state, q);
+    results.innerHTML = returningResultsHtml(ans, state.finance === true, state.payments);
+    results.querySelectorAll('[data-rp-pick]').forEach(btn => {
+      btn.onclick = () => {
+        const list = ans.status === 'unique' ? ans.persons : ans.suggestions;
+        const person = list[Number(btn.dataset.rpPick)];
+        if (!person) return;
+        close();
+        openReturningAdd(person);
+      };
+    });
+    const fresh = results.querySelector('[data-rp-new]');
+    if (fresh) fresh.onclick = () => { close(); openDirectAddPatientModal(); };
+  };
+}
+
+/* The picked person → the pre-filled direct-add form. */
+function openReturningAdd(person) {
+  const R = returningLib();
+  if (!R || !person) return;
+  openDirectAddPatientModal({ returning: { person, prefill: R.prefill(person) } });
+}
+
+/* The search answer as HTML. Pure. */
+function returningResultsHtml(ans, finance, payments) {
+  const a = ans || { status: 'none', persons: [], suggestions: [] };
+  const R = returningLib();
+  const card = (P, i, label) => {
+    const pre = R ? R.prefill(P) : { name: '', phone: '' };
+    return `<div class="rp-card"><div class="rp-who"><b>${escapeHtml(pre.name)}</b>${pre.phone ? ` · <span dir="ltr">${escapeHtml(pre.phone)}</span>` : ''}</div>`
+      + returningHistoryHtml(P, finance, payments, '')
+      + `<button type="button" class="btn small primary" data-rp-pick="${i}">${escapeHtml(label)}</button></div>`;
+  };
+  if (a.status === 'unique') {
+    return `<div class="rp-msg">${escapeHtml('נמצאה התאמה אחת')}</div>` + card(a.persons[0], 0, 'המשך — טען פרטים');
+  }
+  const msg = a.status === 'multiple' ? 'נמצאו כמה התאמות — לא קושר אוטומטית. בחרו ידנית:'
+    : a.status === 'conflict' ? 'הטלפון שייך לשם אחר — לא קושר אוטומטית. בדקו ובחרו ידנית:'
+      : 'לא נמצאה התאמה מדויקת — לא קושר.' + ((a.suggestions || []).length ? ' אולי אחד מאלה:' : '');
+  return `<div class="rp-msg">${escapeHtml(msg)}</div>`
+    + (a.suggestions || []).map((P, i) => card(P, i, 'זה המטופל — בחר')).join('')
+    + '<button type="button" class="btn small" data-rp-new>הוסף כמטופל חדש</button>';
+}
+
+/* Flag the person's OPEN discharge rows restored='TRUE' after the new stay
+ * is proven (the same restorePatientToActive write as every restore). A
+ * failure keeps the new stay (it is on the sheet) and says what did not save. */
+async function closeReturningDischarges(ids) {
+  const want = new Set((ids || []).map(String));
+  if (!want.size) return;
+  const rows = (state.dischargedPatients || []).filter(d => d && want.has(String(d.id)) && dischargeRowOpen(d));
+  if (!rows.length) return;
+  const prev = state.dischargedPatients;
+  state.dischargedPatients = withAuditsRestored(state.dischargedPatients, rows);
+  renderAll();
+  try {
+    await persistAuditsRestored(rows);
+  } catch (e) {
+    state.dischargedPatients = prev;
+    renderAll();
+    showError('השהייה החדשה נשמרה, אבל רישום השחרור הקודם לא סומן כמשוחזר — ' + ((e && e.message) || ''), REFUSAL_BANNER_MS);
+  }
+}
+
 /* ===== Direct-add patient (admin bypass of the Lead → Patient flow) =====
  * Used for historical patients who pre-date the app, cross-house transfers,
  * corrections, and non-lead referrals. Button is hidden in viewer mode via
@@ -7673,7 +7846,15 @@ function openDirectAddPatientModal(opts) {
    * the admission funder rule (CHANGELOG-patient-funder-on-funders.md)
    * applies to intake exactly as to the direct-add form. */
   const intake = !!(opts && opts.intake);
-  const fields = intakeFormFields(intake, state.currentHouseTab || HOUSES[0].id, todayISO());
+  /* «מטופל חוזר» (CHANGELOG-returning-patient.md): { person, prefill } of the
+   * person picked in openReturningPatientSearch. The form opens pre-filled;
+   * the new stay is linked by personId, never a second person. */
+  const returning = !intake && opts && opts.returning && opts.returning.prefill ? opts.returning : null;
+  const pre = returning ? returning.prefill : null;
+  const fields = intakeFormFields(intake, (pre && houseById(pre.houseId) && pre.houseId) || state.currentHouseTab || HOUSES[0].id, todayISO())
+    .map(f => (pre && f.name === 'name' ? Object.assign({}, f, { value: pre.name })
+      : pre && f.name === 'phone' ? Object.assign({}, f, { value: pre.phone })
+        : pre && f.name === 'pay' && pre.pay ? Object.assign({}, f, { value: String(pre.pay) }) : f));
   // R3: ONE patient id per form (see openEntryModal).
   const patientId = cryptoId();
   // The patient's phone starts HERE and follows them downstream (therapists app,
@@ -7681,7 +7862,7 @@ function openDirectAddPatientModal(opts) {
   // linked lead row (fromLead → Leads.phone) — the model every feed already reads.
   const intakeLeadId = cryptoId();
   showModal({
-    title: intake ? 'קליטת מטופל חדש' : 'הוספת מטופל ישירות',
+    title: intake ? 'קליטת מטופל חדש' : (pre ? 'מטופל חוזר — ' + pre.name : 'הוספת מטופל ישירות'),
     // The funder picker (finance sessions only, required there — PR #178)
     // rides along in BOTH modes.
     fields: fields.concat(admissionFunderFields()),
@@ -7695,8 +7876,11 @@ function openDirectAddPatientModal(opts) {
       const funderErr = admissionFunderError(state.finance, v.funder);
       if (funderErr) { showError(funderErr); return false; }
       const localPhone = intakeLocalPhone(v.phone);
-      const sameLead = localPhone ? findSamePersonLead(state.leads, v.name, localPhone) : null;
-      const newLead = localPhone && !sameLead
+      // A returning person whose known phone is typed again needs no new phone
+      // record (the rosters already find it); a NEW phone still gets one.
+      const knownPhone = !!(returning && localPhone && returning.person && (returning.person.phones || []).indexOf(localPhone) >= 0);
+      const sameLead = localPhone && !returning ? findSamePersonLead(state.leads, v.name, localPhone) : null;
+      const newLead = localPhone && !sameLead && !knownPhone
         ? normalizeLead(buildIntakeLead(intakeLeadId, v.name, localPhone, houseById(v.houseId), todayISO()))
         : null;
       const patient = normalizePatient({
@@ -7707,9 +7891,10 @@ function openDirectAddPatientModal(opts) {
         pay: Number(v.pay) || 0,
         adv: 0,
         status: intake ? 'active' : (v.status || 'active'),
-        fromLead: sameLead ? sameLead.id : (newLead ? newLead.id : ''),
+        fromLead: sameLead ? sameLead.id : (newLead ? newLead.id : (pre && pre.fromLead) || ''),
         source: 'direct_admin',
         notes: (v.notes || '').trim(),
+        personId: pre ? pre.personId : '',
       });
       // Re-adding a discharged patient with the ORIGINAL entry date recreates
       // a stay whose discharge rows are still open (see reopenedDischargeAudits).
@@ -7737,8 +7922,10 @@ function openDirectAddPatientModal(opts) {
         return false;
       }
       await closeReopenedAuditsAfterSave(reopened, prevDischarged);
+      if (returning) await closeReturningDischarges(pre.openDischargeIds);
       await saveAdmissionFunder(patient, v.funder);
       if (intake) showToast('המטופל נקלט — ' + patient.name);
+      if (returning) showToast('מטופל חוזר נוסף — ' + patient.name);
       return true;
     }
   });
@@ -8213,6 +8400,15 @@ function patientProblemChipsHtml(problems) {
     `<span class="plist-chip" data-problem="${escapeHtml(p.code)}">${escapeHtml(p.label)}</span>`).join('');
 }
 
+/* What «ללא ליד» says for a patient with no lead (CHANGELOG-returning-patient.md):
+ * «ללא ליד · מטופל חוזר» for a returning stay (personId), «ללא ליד · נוסף
+ * ישירות» for a direct add, plain «ללא ליד» otherwise. Pure. */
+function patientNoLeadLabel(p) {
+  if (p && String(p.personId || '').trim()) return 'ללא ליד · מטופל חוזר';
+  if (p && String(p.source || '') === 'direct_admin') return 'ללא ליד · נוסף ישירות';
+  return 'ללא ליד';
+}
+
 /* The «פרטי הליד» section (a closed <details>). Pure. */
 function patientLeadDetailsHtml(row) {
   const L = row.lead;
@@ -8237,9 +8433,9 @@ function patientLeadDetailsHtml(row) {
   } else if (via === 'ambiguous') {
     body = '<div class="plist-lead-none">ללא ליד · נמצאו כמה לידים תואמים, לא קושר</div>';
   } else {
-    body = '<div class="plist-lead-none">ללא ליד</div>';
+    body = `<div class="plist-lead-none">${escapeHtml(patientNoLeadLabel(row.patient))}</div>`;
   }
-  return `<details class="plist-lead"><summary>פרטי הליד${L ? '' : ' · ללא ליד'}</summary>${body}</details>`;
+  return `<details class="plist-lead"><summary>פרטי הליד${L ? '' : escapeHtml(' · ' + patientNoLeadLabel(row.patient))}</summary>${body}</details>`;
 }
 
 /* One patient row's HTML. `finance` = the session may see money data; `edit`
@@ -8286,6 +8482,7 @@ function patientListRowHtml(row, finance, edit) {
     ${noPhone ? phoneAddActionHtml() : ''}
     <div class="plist-foot">
       ${patientLeadDetailsHtml(row)}
+      ${row.stays || ''}
       <div class="row-actions edit-only">
         ${released ? '<button type="button" class="btn small primary plist-restore-btn">שחזר</button>' : ''}
         <button type="button" class="btn small plist-edit-btn" title="ערוך מטופל">✏️</button>

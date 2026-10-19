@@ -76,6 +76,8 @@ const PATIENT_COLUMNS = [
   'houseId', 'name', 'date', 'pay', 'adv',
   'status', 'fromLead', 'exitDate', 'source', 'notes',
   'id', 'updatedAt', 'updatedBy',
+  // «מטופל חוזר» — appended LAST (CHANGELOG-returning-patient.md).
+  'personId',
 ];
 
 /* Anchored plain-date shape. A non-empty date field that fails this leaked
