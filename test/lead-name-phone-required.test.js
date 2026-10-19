@@ -175,10 +175,11 @@ test('server: one invalid new lead refuses the whole save (other leads untouched
   assert.equal(rows()[0].stage, 'new', 'nothing written');
 });
 
-test('server: createLeadFromTherapists_ uses the same rule (2 words, 10 digits)', () => {
+test('server: createLeadFromTherapists_ uses the same name rule; phone allows landlines (CHANGELOG-landline-handoff.md)', () => {
   const { g } = boot([]);
   const call = (o) => arr(g.post(Object.assign({ action: 'createLeadFromTherapists', secret: 'create-lead-secret-TEST-000000000000', name: 'דנה כהן', phone: '052-765-4321' }, o)));
   assert.equal(call({ name: 'דנה' }).error, 'invalid_name');
-  assert.equal(call({ phone: '02-6543210' }).error, 'invalid_phone');
+  assert.equal(call({ phone: '123' }).error, 'invalid_phone');
+  assert.equal(call({ phone: '02-6543210' }).ok, true, '9-digit landline accepted on the handoff path');
   assert.equal(call({}).ok, true);
 });

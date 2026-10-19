@@ -582,4 +582,4 @@ clasp deploy -i <DEPLOYMENT_ID> -d "manual deploy"
 
 
 ### CREATE_LEAD_SECRET (Dashboard Script Property)
-Required for `createLeadFromTherapists` (alumnus → lead). Unset = the action refuses everything. Same value goes in the ezone-therapists Railway variable `CREATE_LEAD_SECRET`.
+Required for `createLeadFromTherapists` (alumnus → lead). Unset = the action refuses everything. Same value goes in the ezone-therapists Railway variable `CREATE_LEAD_SECRET`. Phone rule on this path: 10-digit mobile or 9-digit landline (`/^0[2-9]\d{7}$/`); refusals return `invalid_phone` / `invalid_name` and are logged as AuditLog `lead_handoff_refused` (see `CHANGELOG-landline-handoff.md`).

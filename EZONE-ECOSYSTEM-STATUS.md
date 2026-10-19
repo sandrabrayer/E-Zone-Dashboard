@@ -1,5 +1,14 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Landlines on the lead handoff — October 19, 2026 (PR open)
+
+`createLeadFromTherapists_` (server-to-server only) accepts a 9-digit landline
+`/^0[2-9]\d{7}$/` besides the 10-digit mobile, after `normalizePhone_`. The Dashboard UI
+form and `saveAll` stay mobile-only. A refused handoff returns `invalid_phone` /
+`invalid_name` and is logged (console + AuditLog `lead_handoff_refused`, no name/phone).
+Code.gs changed (clasp CI on merge); no public/ change, no SW bump.
+See `CHANGELOG-landline-handoff.md`.
+
 ## «מטופל חוזר» — returning patient — October 19, 2026 (PR open)
 
 Occupancy «מטופל חוזר»: search discharged + closed leads by phone/name; a unique match pre-fills
