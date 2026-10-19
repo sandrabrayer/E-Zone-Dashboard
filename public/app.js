@@ -5310,6 +5310,9 @@ const PATIENT_PROBLEMS = Object.freeze([
   { code: 'no_payment',     label: 'לא דווח תשלום',         finance: true },
   { code: 'house_mismatch', label: 'בית שונה מהליד',        finance: false },
   { code: 'no_lead',        label: 'ללא ליד',               finance: false },
+  /* No usable phone on the patient's lead (CHANGELOG-patients-phone-funder-fix.md).
+   * Appended LAST — the list order is the chip order. */
+  { code: 'no_phone',       label: 'חסר טלפון',             finance: false },
 ]);
 
 /* Every lead the app holds (board incl. admitted, closed, removed), first
@@ -5467,6 +5470,10 @@ function patientProblems(patient, leadInfo, payments, funders, todayIso, patient
     if (leadHouse && leadHouse !== unadmittedHouseId(patient.houseId)) out.add('house_mismatch');
   }
   if (!String(patient.fromLead || '').trim() && !lead && !info.ambiguous) out.add('no_lead');
+  // «חסר טלפון»: the phone lives on the patient's lead. No lead, or a lead
+  // with no valid phone → missing. An ambiguous lead match is never flagged
+  // (same rule as no_lead: we cannot tell which lead is theirs).
+  if (!info.ambiguous && !intakeLocalPhone(lead ? lead.phone : '')) out.add('no_phone');
   return PATIENT_PROBLEMS.filter(p => out.has(p.code)).map(p => ({ code: p.code, label: p.label }));
 }
 
@@ -7807,6 +7814,61 @@ function planPatientPhoneChange(p, typedRaw, leads, newLeadId, house, today) {
   return { kind: 'create', lead: buildIntakeLead(newLeadId, p.name, local, house, today), phone: local };
 }
 
+/* A typed phone → '0XXXXXXXXX' (10 digits), or '' — the same bar as a lead
+ * (CHANGELOG-lead-name-phone-required.md). Pure. */
+function patientPhoneInput(raw) {
+  const local = intakeLocalPhone(raw);
+  return /^0\d{9}$/.test(local) ? local : '';
+}
+const PATIENT_PHONE_INVALID_HE = 'טלפון לא תקין — 10 ספרות שמתחילות ב-0';
+
+/* Save a phone for a patient with none (the «חסר טלפון» chip). The phone
+ * lives on the patient's lead (planPatientPhoneChange — the SAME plan the ✏️
+ * form uses): update the linked lead, reuse the same person's lead, or create
+ * an 'admitted' phone-record lead linked by fromLead. Optimistic: the chip
+ * goes at once; a save the server does not prove is rolled back. → true/false. */
+async function addPatientPhone(p, typedRaw) {
+  if (state.mode !== 'edit' || !p) return false;
+  const local = patientPhoneInput(typedRaw);
+  if (!local) { showError(PATIENT_PHONE_INVALID_HE); return false; }
+  const plan = planPatientPhoneChange(p, local, state.leads, cryptoId(), houseById(p.houseId), todayISO());
+  if (plan.kind === 'invalid') { showError(PATIENT_PHONE_INVALID_HE); return false; }
+  if (plan.kind === 'none') return true;
+  const prevFromLead = p.fromLead;
+  const prevLeadPhone = plan.lead.phone;
+  if (plan.kind === 'update') plan.lead.phone = plan.phone;
+  if (plan.kind === 'reuse' || plan.kind === 'create') p.fromLead = plan.lead.id;
+  if (plan.kind === 'create') state.leads.unshift(plan.lead);
+  renderAll();
+  try {
+    const res = await saveAll({ prove: { patients: [String(p.id || '')], leads: [String(plan.lead.id)] } });
+    if (state.mode === 'edit') {
+      requireProven(res, 'leads', plan.lead.id);
+      if (p.id) requireProven(res, 'patients', p.id);
+    }
+    showToast('הטלפון נשמר');
+    return true;
+  } catch (e) {
+    if (plan.kind === 'update') plan.lead.phone = prevLeadPhone;
+    if (plan.kind === 'create') state.leads = state.leads.filter(x => x.id !== plan.lead.id);
+    p.fromLead = prevFromLead;
+    renderAll();
+    showError('שמירת הטלפון נכשלה — ' + e.message);
+    return false;
+  }
+}
+
+/* Save a phone for a waiting lead («ממתינים לקליטה») — updateLead is already
+ * optimistic with rollback. → true/false. */
+async function addLeadPhone(lead, typedRaw) {
+  if (state.mode !== 'edit' || !lead) return false;
+  const local = patientPhoneInput(typedRaw);
+  if (!local) { showError(PATIENT_PHONE_INVALID_HE); return false; }
+  const ok = await updateLead(lead.id, { phone: local });
+  if (ok === true) { renderAll(); showToast('הטלפון נשמר'); }
+  return ok === true;
+}
+
 /* An existing board lead for the SAME person (same phone AND same name): reused as the
  * patient's link instead of creating a second row. A different name on the same phone
  * (a family member) is a different person → null. Pure + tested. */
@@ -8180,13 +8242,17 @@ function patientListRowHtml(row, finance, edit) {
   cells.push(`<div><span class="p-label">תאריך כניסה</span><span class="p-val">${escapeHtml(p.date ? formatDate(p.date) : '—')}</span></div>`);
   cells.push(`<div><span class="p-label">ימים בבית</span><span class="p-val">${row.days == null ? '—' : escapeHtml(String(row.days))}</span></div>`);
   if (finance && funderView()) {
-    const uid = patientUid(p);
-    const cur = uid ? currentFunderFor(uid, patientFunderDay(p, todayISO())) : { unset: true };
-    const value = cur.unset
+    /* ONE answer for the cell, its button and the «ללא גורם מממן» chip:
+     * patientFunderState (CHANGELOG-patients-phone-funder-fix.md). The button
+     * used to render whenever edit mode was on, whatever the funder was. */
+    const fs = patientFunderState(p, state.funders, todayISO());
+    const value = fs.unset
       ? `<span class="funder-chip funder-unset" data-funder="unset">${escapeHtml(FUNDER_UNSET_LABEL)}</span>`
-      : escapeHtml(cur.funder);
-    cells.push(`<div class="plist-funder" data-finance><span class="p-label">גורם מממן</span><span class="p-val">${value}</span>`
-      + (edit ? '<button type="button" class="btn small plist-funder-btn">הגדר גורם מממן</button>' : '') + `</div>`);
+      : `<span class="plist-funder-name" data-funder="${escapeHtml(fs.key)}">${escapeHtml(fs.label)}</span>`;
+    const btn = !edit ? ''
+      : fs.unset ? '<button type="button" class="btn small plist-funder-btn">הגדר גורם מממן</button>'
+        : '<button type="button" class="btn small plist-funder-btn plist-funder-edit" title="שינוי גורם מממן" aria-label="שינוי גורם מממן">✏️ שינוי</button>';
+    cells.push(`<div class="plist-funder" data-finance><span class="p-label">גורם מממן</span><span class="p-val">${value}</span>${btn}</div>`);
   }
   if (finance && row.payment) {
     const pay = row.payment;
@@ -8197,9 +8263,11 @@ function patientListRowHtml(row, finance, edit) {
       + (canReport ? '<button type="button" class="btn small primary plist-report-btn">דווח תשלום</button>' : '') + `</div>`);
   }
   const chips = patientProblemChipsHtml(row.problems);
+  const noPhone = edit && (row.problems || []).some(x => x.code === 'no_phone');
   return `
     <div class="plist-main">${cells.join('')}</div>
     ${chips ? `<div class="plist-chips">${chips}</div>` : ''}
+    ${noPhone ? phoneAddActionHtml() : ''}
     <div class="plist-foot">
       ${patientLeadDetailsHtml(row)}
       <div class="row-actions edit-only">
@@ -8215,6 +8283,9 @@ function pendingAdmissionRowHtml(r, edit) {
   const house = unadmittedHouseId(L.house);
   const h = HOUSES.find(x => x.id === house);
   const item = (label, value) => `<div><span class="p-label">${escapeHtml(label)}</span><span class="p-val">${value ? escapeHtml(value) : '—'}</span></div>`;
+  const noPhone = !intakeLocalPhone(L.phone);
+  const chips = (r.chipDays != null ? `<span class="plist-chip">${escapeHtml(`לא נקלט כמטופל · ${r.chipDays} ימים`)}</span>` : '')
+    + (noPhone ? `<span class="plist-chip" data-problem="no_phone">${escapeHtml('חסר טלפון')}</span>` : '');
   return `
     <div class="plist-main">
       <div class="plist-name-cell"><span class="p-label">ליד</span><span class="p-name">${escapeHtml(L.name)}</span></div>
@@ -8225,8 +8296,40 @@ function pendingAdmissionRowHtml(r, edit) {
       ${item('מקור', L.source)}
       ${item('מקדמה', L.advance ? '₪ ' + Number(L.advance).toLocaleString('he-IL') : '')}
     </div>
-    ${r.chipDays != null ? `<div class="plist-chips"><span class="plist-chip">${escapeHtml(`לא נקלט כמטופל · ${r.chipDays} ימים`)}</span></div>` : ''}
+    ${chips ? `<div class="plist-chips">${chips}</div>` : ''}
+    ${edit && noPhone ? phoneAddActionHtml() : ''}
     ${edit ? '<div class="row-actions"><button type="button" class="btn small primary plist-admit-btn">קלוט כמטופל</button></div>' : ''}`;
+}
+
+/* «הוסף טלפון» — the inline action under a «חסר טלפון» chip (edit mode).
+ * Starts as one button; renderPatientsTab's wiring opens the input. Pure. */
+function phoneAddActionHtml() {
+  return `<div class="plist-phone-add">`
+    + `<button type="button" class="btn small plist-phone-btn">הוסף טלפון</button>`
+    + `<span class="plist-phone-form hidden"><input type="tel" class="plist-phone-input" inputmode="tel" dir="ltr" maxlength="20" placeholder="05X-XXXXXXX" aria-label="טלפון" />`
+    + `<button type="button" class="btn small primary plist-phone-save">שמור</button>`
+    + `<button type="button" class="btn small plist-phone-cancel">ביטול</button></span>`
+    + `<div class="field-error plist-phone-error" role="alert"></div></div>`;
+}
+
+/* Wire one row's «הוסף טלפון» control to `save(typed)` → Promise<bool>. */
+function wirePhoneAdd(el, save) {
+  const box = el.querySelector('.plist-phone-add');
+  if (!box) return;
+  const btn = box.querySelector('.plist-phone-btn');
+  const form = box.querySelector('.plist-phone-form');
+  const input = box.querySelector('.plist-phone-input');
+  const err = box.querySelector('.plist-phone-error');
+  const saveBtn = box.querySelector('.plist-phone-save');
+  const cancel = box.querySelector('.plist-phone-cancel');
+  if (!btn || !form || !input || !saveBtn) return;
+  btn.onclick = () => { btn.classList.add('hidden'); form.classList.remove('hidden'); input.focus(); };
+  if (cancel) cancel.onclick = () => { form.classList.add('hidden'); btn.classList.remove('hidden'); if (err) err.textContent = ''; };
+  saveBtn.onclick = () => {
+    if (err) err.textContent = '';
+    if (!patientPhoneInput(input.value)) { if (err) err.textContent = PATIENT_PHONE_INVALID_HE; return; }
+    return busyButton(saveBtn, 'save', () => save(input.value));
+  };
 }
 
 /* The count on the «מטופלים» tab: active patients with at least one open
@@ -8289,6 +8392,7 @@ function renderPatientsTab() {
         el.innerHTML = pendingAdmissionRowHtml(r, edit);
         const btn = el.querySelector('.plist-admit-btn');
         if (btn) btn.onclick = () => openEntryModal(r.lead);
+        if (edit) wirePhoneAdd(el, typed => addLeadPhone(r.lead, typed));
         pendEl.appendChild(el);
       });
     }
@@ -8316,6 +8420,7 @@ function renderPatientsTab() {
       if (due) openPaymentReportModal(p, paymentForPatientOnDate(p, due), due);
     });
     on('.plist-restore-btn', () => showRestorePatientChoiceModal(auditRowForReleasedPatient(p, state.dischargedPatients)));
+    if (edit) wirePhoneAdd(el, typed => addPatientPhone(p, typed));
     list.appendChild(el);
   });
 }
@@ -10279,6 +10384,16 @@ function patientFunderKey(p, funders, today, day) {
   const F = funderLib();
   if (!F || !p) return FUNDER_UNSET_KEY;
   return F.funderAt(Array.isArray(funders) ? funders : state.funders, patientUid(p), day || patientFunderDay(p, today));
+}
+
+/* A patient's funder for display → { key, label, unset }. The SAME source as
+ * the «ללא גורם מממן» chip (patientFunderKey over funder.js): a patient with
+ * no persisted id, no Funders row, or an unrecognized label is unset. Pure. */
+function patientFunderState(p, funders, today) {
+  const F = funderLib();
+  const key = F && p && patientUid(p) ? patientFunderKey(p, funders, today) : FUNDER_UNSET_KEY;
+  const unset = !key || key === FUNDER_UNSET_KEY;
+  return { key: unset ? FUNDER_UNSET_KEY : key, label: unset ? FUNDER_UNSET_LABEL : F.labelFor(key), unset };
 }
 
 /* The admission rule: a finance session must pick one of the four labels; a

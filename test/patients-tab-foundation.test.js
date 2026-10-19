@@ -207,22 +207,22 @@ test('patientProblems: «ללא ליד» only when fromLead is blank AND nothing
   const F = [funder('P-1', 'פרטי')];
   const p = patient({ fromLead: '' });
   const run = (leads, pats) => codes(app.patientProblems(p, infoOf(p, leads, pats), [pay(p)], F, TODAY));
-  assert.deepEqual(run([]), ['no_lead']);
+  assert.deepEqual(run([]), ['no_lead', 'no_phone'], 'no lead → no phone either');
   assert.deepEqual(run([lead({ id: 'L-x' })]), [], 'matched by name + house');
   assert.deepEqual(run([lead({ id: 'L-a' }), lead({ id: 'L-b' })]), [], 'ambiguous is never flagged');
   const gone = patient({ fromLead: 'L-gone' });
-  assert.deepEqual(codes(app.patientProblems(gone, infoOf(gone, []), [pay(gone)], F, TODAY)), [], 'fromLead set (lead gone) is not «no lead»');
+  assert.deepEqual(codes(app.patientProblems(gone, infoOf(gone, []), [pay(gone)], F, TODAY)), ['no_phone'], 'fromLead set (lead gone) is not «no lead» — but its phone is unknown');
 });
 
 test('patientProblems: no finance data (null) → no finance chips; released → nothing; chip order is fixed', () => {
   const p = patient({ fromLead: '', date: '2026-08-01' });
-  assert.deepEqual(codes(app.patientProblems(p, infoOf(p, []), null, null, TODAY)), ['no_lead']);
-  assert.deepEqual(codes(app.patientProblems(p, infoOf(p, []), [], [], TODAY)), ['no_funder', 'no_payment', 'no_lead']);
+  assert.deepEqual(codes(app.patientProblems(p, infoOf(p, []), null, null, TODAY)), ['no_lead', 'no_phone']);
+  assert.deepEqual(codes(app.patientProblems(p, infoOf(p, []), [], [], TODAY)), ['no_funder', 'no_payment', 'no_lead', 'no_phone']);
   const L = lead({ house: 'רעננה אשר' });
   const q = patient({ date: '2026-08-01' });
   assert.deepEqual(codes(app.patientProblems(q, infoOf(q, [L]), [], [], TODAY)), ['no_funder', 'no_payment', 'house_mismatch']);
   assert.deepEqual(plain(app.patientProblems(patient({ status: 'released', fromLead: '' }), infoOf(p, []), [], [], TODAY)), []);
-  assert.deepEqual(plain(app.PATIENT_PROBLEMS.map((x) => x.code)), ['no_funder', 'no_payment', 'house_mismatch', 'no_lead']);
+  assert.deepEqual(plain(app.PATIENT_PROBLEMS.map((x) => x.code)), ['no_funder', 'no_payment', 'house_mismatch', 'no_lead', 'no_phone']);
 });
 
 /* ---------- 3. patientPaymentState ---------- */
@@ -304,13 +304,13 @@ test('patientListRows: a session without finance never reads payments or funders
       assert.equal(r.payment, null, `finance=${finance}`);
       r.problems.forEach((p) => assert.ok(!['no_funder', 'no_payment'].includes(p.code), `finance=${finance}: ${p.code}`));
     });
-    assert.deepEqual(codes(rows.find((r) => r.patient.id === 'P-B').problems), ['no_lead']);
+    assert.deepEqual(codes(rows.find((r) => r.patient.id === 'P-B').problems), ['no_lead', 'no_phone']);
   }
 });
 
 test('patientProblemSummary: counts the ACTIVE list only, per chip', () => {
   const sum = app.patientProblemSummary(fixtureState(), TODAY);
-  assert.deepEqual(plain(sum), { patients: 1, byCode: { no_funder: 1, no_payment: 1, house_mismatch: 0, no_lead: 1 } });
+  assert.deepEqual(plain(sum), { patients: 1, byCode: { no_funder: 1, no_payment: 1, house_mismatch: 0, no_lead: 1, no_phone: 1 } });
   assert.equal(app.patientProblemSummary(fixtureState({ finance: false }), TODAY).byCode.no_funder, 0);
 });
 

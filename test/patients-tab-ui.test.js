@@ -148,13 +148,14 @@ test('router: SCREENS has «patients» after «meetings»; restricted keeps it, 
 
 function rowsOf(a, filters) { return a.patientListRows(a.state, filters || {}, TODAY); }
 
-test('finance + edit: funder cell with «הגדר גורם מממן», payment cell with «דווח תשלום» on an unpaid cycle', () => {
+test('finance + edit: a SET funder shows its name + ✏️ שינוי (never «הגדר גורם מממן»); payment cell with «דווח תשלום» on an unpaid cycle', () => {
   const { app: a } = loadApp();
   seed(a);
   const rowA = rowsOf(a).find((r) => r.patient.id === 'P-A');
   const html = a.patientListRowHtml(rowA, true, true);
-  assert.match(html, /<div class="plist-funder" data-finance><span class="p-label">גורם מממן<\/span><span class="p-val">פרטי<\/span>/);
-  assert.ok(html.includes('הגדר גורם מממן'));
+  assert.match(html, /<div class="plist-funder" data-finance><span class="p-label">גורם מממן<\/span><span class="p-val"><span class="plist-funder-name" data-funder="private">פרטי<\/span><\/span>/);
+  assert.ok(!html.includes('הגדר גורם מממן'), 'CHANGELOG-patients-phone-funder-fix.md: the set-funder button is gone once set');
+  assert.ok(html.includes('plist-funder-btn plist-funder-edit'));
   assert.match(html, /class="plist-pay" data-finance/);
   assert.match(html, /pay-state-unpaid">לא שולם</);
   assert.ok(html.includes('class="btn small primary plist-report-btn">דווח תשלום</button>'));
@@ -316,7 +317,7 @@ test('scope: every interpolation in the UI block is escaped or a number/fixed la
   const raw = [...block.matchAll(/\$\{([^}]+)\}/g)].map((m) => m[1].trim())
     // an expression that routes its value through escapeHtml (incl. a ternary with a literal fallback) is fine
     .filter((e) => !/escapeHtml\(/.test(e) && !/^(patientLeadDetailsHtml|patientProblemChipsHtml|item|cells\.join|parts\.join|value|chips|body)\b/.test(e)
-      && !/^(released|edit|L \?|r\.chipDays|summary\.byCode|pending\.length|canReport|chips \?)/.test(e));
+      && !/^(released|edit|L \?|r\.chipDays|summary\.byCode|pending\.length|canReport|chips \?|btn$|noPhone \? phoneAddActionHtml\(\)|edit && noPhone \? phoneAddActionHtml\(\))/.test(e));
   assert.deepEqual(raw, [], 'un-escaped interpolations: ' + raw.join(' | '));
 });
 

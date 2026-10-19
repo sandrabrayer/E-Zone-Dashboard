@@ -2896,3 +2896,12 @@ button.mtg-bad-date-lead:hover { background: rgba(255, 176, 32, 0.18); }
 .leads-funnel .lf-table th, .leads-funnel .lf-table td { text-align: right; padding: 6px; border-bottom: 1px solid var(--border, #eee); }
 .leads-funnel .lf-empty { margin-top: 10px; font-size: 16px; }
 @media (max-width: 640px) { .leads-funnel .lf-table { display: block; overflow-x: auto; } }
+
+/* «חסר טלפון» inline add + funder cell (CHANGELOG-patients-phone-funder-fix.md). */
+.plist-phone-add { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.plist-phone-add .btn { min-height: 44px; font-size: 16px; }
+.plist-phone-form { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.plist-phone-input { min-height: 44px; font-size: 16px; max-width: 180px; }
+.plist-phone-add .field-error { color: var(--danger); font-size: 16px; width: 100%; }
+.plist-phone-add .field-error:empty { display: none; }
+.plist-funder .plist-funder-edit { margin-inline-start: 6px; }

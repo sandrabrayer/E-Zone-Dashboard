@@ -268,7 +268,9 @@
 // v71 → v72: lead name + phone required (app.js, style.css) (CHANGELOG-lead-name-phone-required.md). Live v71 verified 2026-10-19 (v17 never reused).
 // v72 → v73: leads funnel report (/leads-funnel.js added, app.js, style.css, index.html) (CHANGELOG-leads-funnel-report.md).
 // Stacked on PR #251; live v71 verified 2026-10-19 (v17 never reused).
-var CACHE_VERSION = 'v73';
+// v73 → v74: «חסר טלפון» + «הוסף טלפון», funder button fix (app.js, style.css) (CHANGELOG-patients-phone-funder-fix.md).
+// Stacked on PR #252; live v71 verified 2026-10-19 (v17 never reused).
+var CACHE_VERSION = 'v74';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

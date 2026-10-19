@@ -121,7 +121,7 @@ test('«מטופלים» at 360px: tab after לידים, badge, pending row, chi
       // Chips: red, inside their row.
       const rowB = '#plist-list .plist-row[data-id="P-B"]';
       const chips = await page.$$eval(`${rowB} .plist-chip`, (els) => els.map((e) => e.textContent));
-      assert.deepStrictEqual(chips, ['ללא גורם מממן', 'לא דווח תשלום', 'ללא ליד']);
+      assert.deepStrictEqual(chips, ['ללא גורם מממן', 'לא דווח תשלום', 'ללא ליד', 'חסר טלפון']);
       const inside = await page.$$eval('#plist-list .plist-row', (rows) => rows.every((row) => {
         const r = row.getBoundingClientRect();
         return [...row.querySelectorAll('.plist-chip, .btn, .p-val')].every((c) => {
@@ -163,7 +163,7 @@ test('«מטופלים» at 360px: tab after לידים, badge, pending row, chi
       await page.evaluate(SEED(false));
       await page.waitForSelector('#plist-list .plist-row', { state: 'visible' });
       assert.strictEqual(await page.$$eval('#screen-patients .plist-pay, #screen-patients .plist-funder, #screen-patients .plist-report-btn, #screen-patients .plist-funder-btn', (els) => els.length), 0);
-      assert.deepStrictEqual(await page.$$eval(`${rowB} .plist-chip`, (els) => els.map((e) => e.textContent)), ['ללא ליד']);
+      assert.deepStrictEqual(await page.$$eval(`${rowB} .plist-chip`, (els) => els.map((e) => e.textContent)), ['ללא ליד', 'חסר טלפון']);
       assert.strictEqual(await page.$eval('#patients-problems-badge', (el) => el.textContent), '2', 'P-A house mismatch + P-B no lead');
       overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       assert.ok(overflow <= 0, 'restricted: no horizontal scroll, got ' + overflow + 'px');
