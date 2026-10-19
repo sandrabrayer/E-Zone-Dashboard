@@ -545,7 +545,7 @@ test('E: a changed lead still gets the full write', () => {
 test('E: a new lead still gets the full write', () => {
   const w = world();
   const snap = clientSnapshot(w);
-  snap.leads.push({ id: 'lead-new', name: 'חדש', stage: 'new', created: '2026-09-29' });
+  snap.leads.push({ id: 'lead-new', name: 'ליד חדש', phone: '0521234567', stage: 'new', created: '2026-09-29' });
   w.reset();
   saveAll(w, snap);
   assert.equal(w.count('write:setValues', w.g.LEADS_SHEET), 1);

@@ -3130,6 +3130,54 @@ function normalizePhone(raw) {
   return s;
 }
 
+/* ===== Lead validation: full name + Israeli phone (CHANGELOG-lead-name-phone-required.md) =====
+ * A lead is created / saved only with a FULL name (at least two words) and a
+ * valid Israeli phone: normalizePhone → local 0XXXXXXXXX matching /^0\d{9}$/.
+ * Mirrored server-side by leadRequiredViolations_ in Code.gs (the authority).
+ * On an EXISTING lead only the fields the edit CHANGES are checked, so an old
+ * incomplete lead never blocks an unrelated edit (stage, notes, dates…). */
+const LEAD_NAME_REQUIRED_HE = 'יש להזין שם מלא — שם פרטי ושם משפחה';
+const LEAD_PHONE_REQUIRED_HE = 'יש להזין טלפון ישראלי תקין — 10 ספרות שמתחילות ב-0';
+
+/* True for a name of at least two words (whitespace-separated). Pure. */
+function leadFullNameOk(name) {
+  return String(name == null ? '' : name).trim().split(/\s+/).filter(Boolean).length >= 2;
+}
+
+/* The phone as local '0XXXXXXXXX' (10 digits), or '' when it is not a valid
+ * Israeli phone. Pure. */
+function leadLocalPhone(raw) {
+  const n = normalizePhone(raw);                       // 972… form
+  const local = /^972\d+$/.test(n) ? '0' + n.slice(3) : n;
+  return /^0\d{9}$/.test(local) ? local : '';
+}
+
+/* The inline errors of a lead form → { name?, phone? } (empty = OK).
+ * `prev` = the lead being edited (null on create): then a field is checked
+ * only when its value changed. Pure. */
+function leadRequiredErrors(values, prev) {
+  const v = values || {};
+  const out = {};
+  const nameNow = String(v.name == null ? '' : v.name).replace(/\s+/g, ' ').trim();
+  const phoneNow = String(v.phone == null ? '' : v.phone).trim();
+  const nameChanged = !prev || nameNow !== String(prev.name == null ? '' : prev.name).replace(/\s+/g, ' ').trim();
+  const phoneChanged = !prev || phoneNow !== String(prev.phone == null ? '' : prev.phone).trim();
+  if (nameChanged && !leadFullNameOk(nameNow)) out.name = LEAD_NAME_REQUIRED_HE;
+  if (phoneChanged && !leadLocalPhone(phoneNow)) out.phone = LEAD_PHONE_REQUIRED_HE;
+  return out;
+}
+
+/* Paint `errors` ({ field: message }) under the matching inputs of a showModal
+ * form; clears every earlier message first. Text only (textContent). */
+function showFieldErrors(form, errors) {
+  if (!form || typeof form.querySelectorAll !== 'function') return;
+  form.querySelectorAll('.field-error[data-err]').forEach(el => { el.textContent = ''; });
+  Object.keys(errors || {}).forEach(k => {
+    const el = form.querySelector(`.field-error[data-err="${k}"]`);
+    if (el) el.textContent = errors[k];
+  });
+}
+
 /* Looks for an existing lead (active or marked-irrelevant) with the same
  * normalized phone. Removed (soft-deleted) leads are intentionally excluded:
  * re-adding a contact after retention removal is a legitimate flow. */
@@ -7192,8 +7240,8 @@ function openAddLeadModal() {
       /* פרטי המטופל — the patient. name/phone are unchanged from the original
        * form, so existing leads and the duplicate-phone check keep working. */
       { type: 'section', label: 'פרטי המטופל' },
-      { name: 'name', label: 'שם מלא', type: 'text', required: true },
-      { name: 'phone', label: 'טלפון', type: 'tel' },
+      { name: 'name', label: 'שם מלא', type: 'text', required: true, inlineError: true },
+      { name: 'phone', label: 'טלפון', type: 'tel', required: true, inlineError: true },
       /* פרטי הפונה — the referrer. All optional; a lead with only patient
        * name+phone stays fully valid. */
       { type: 'section', label: 'פרטי הפונה' },
@@ -7228,8 +7276,13 @@ function openAddLeadModal() {
       { name: 'note', label: 'הערות', type: 'textarea' },
     ],
     submitLabel: 'הוסף ליד',
-    onSubmit: async values => {
-      if (!values.name) { showError('יש להזין שם'); return false; }
+    onSubmit: async (values, form) => {
+      // Full name + valid phone (inline, Hebrew). The server re-checks.
+      const errs = leadRequiredErrors(values, null);
+      showFieldErrors(form, errs);
+      if (Object.keys(errs).length) return false;
+      values.name = values.name.replace(/\s+/g, ' ').trim();
+      values.phone = leadLocalPhone(values.phone);
       if (!values.assignedTo) { showError('יש לבחור משוייך ל'); return false; }
 
       // → true when the server proved the lead; false (rolled back, error
@@ -7302,8 +7355,8 @@ function openEditLeadModal(lead) {
     title: 'עריכת ליד',
     fields: [
       { type: 'section', label: 'פרטי המטופל' },
-      { name: 'name',  label: 'שם',          type: 'text',     required: true, value: lead.name || '' },
-      { name: 'phone', label: 'טלפון',       type: 'tel',      value: lead.phone || '' },
+      { name: 'name',  label: 'שם מלא',      type: 'text',     required: true, inlineError: true, value: lead.name || '' },
+      { name: 'phone', label: 'טלפון',       type: 'tel',      required: true, inlineError: true, value: lead.phone || '' },
       { type: 'section', label: 'פרטי הפונה' },
       { name: 'contactName',     label: 'שם',          type: 'text', value: lead.contactName || '' },
       { name: 'contactPhone',    label: 'טלפון',       type: 'tel',  value: lead.contactPhone || '' },
@@ -7332,8 +7385,13 @@ function openEditLeadModal(lead) {
       { name: 'note',  label: 'הערות',       type: 'textarea', value: lead.note || '' },
     ],
     submitLabel: 'שמור שינויים',
-    onSubmit: async v => {
-      if (!v.name) { showError('יש להזין שם'); return false; }
+    onSubmit: async (v, form) => {
+      // Only a CHANGED name / phone is checked: an old incomplete lead still
+      // saves its other fields. A changed, valid phone is stored normalized.
+      const errs = leadRequiredErrors(v, lead);
+      showFieldErrors(form, errs);
+      if (Object.keys(errs).length) return false;
+      if (String(v.phone || '').trim() !== String(lead.phone || '').trim()) v.phone = leadLocalPhone(v.phone);
       /* Date guard: an out-of-range year is never saved; the modal stays open. */
       if (!leadDateInRange(v.visitDate) || (lead.entryDate && !leadDateInRange(v.entryDate))) {
         showError(LEAD_DATE_REFUSED_HE);
@@ -10511,10 +10569,13 @@ function showModal({ title, fields, submitLabel, onSubmit }) {
           <textarea name="${f.name}" rows="3">${escapeHtml(val)}</textarea>
         </div>`;
     }
+    // f.inlineError: a slot under the input for showFieldErrors (role=alert).
+    const errSlot = f.inlineError ? `<div class="field-error" data-err="${escapeHtml(f.name)}" role="alert"></div>` : '';
     return `
       <div class="form-row"${rowStyle}>
         <label>${f.label}${f.required ? ' *' : ''}</label>
         <input name="${f.name}" type="${f.type}"${f.step ? ` step="${escapeHtml(f.step)}"` : ''} value="${escapeHtml(val)}" />
+        ${errSlot}
       </div>`;
   }).join('');
 
@@ -10568,7 +10629,7 @@ function showModal({ title, fields, submitLabel, onSubmit }) {
           if (!f.name) return;   // section headers carry no value
           values[f.name] = (fd.get(f.name) || '').toString();
         });
-        const ok = await onSubmit(values);
+        const ok = await onSubmit(values, formTarget);
         if (ok !== false) close();
         // ok === false → the caller refused and already showed why; the modal
         // stays open and busyButton hands the button back for a retry.

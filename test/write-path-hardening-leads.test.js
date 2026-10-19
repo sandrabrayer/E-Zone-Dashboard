@@ -30,7 +30,7 @@ function page(answerPost) {
           showConfirm = (o) => { globalThis.__confirmDialog = o; };`);
   return pg;
 }
-const NEW_LEAD = { name: 'נועה ברק', phone: '', contactName: '', contactPhone: '', contactRelation: '', billingMode: 'patient', house: '', source: '', assignedTo: 'ורד', meetingWith: '', note: '' };
+const NEW_LEAD = { name: 'נועה ברק', phone: '0529876543', contactName: '', contactPhone: '', contactRelation: '', billingMode: 'patient', house: '', source: '', assignedTo: 'ורד', meetingWith: '', note: '' };
 
 /* ================================ R1 ================================ */
 

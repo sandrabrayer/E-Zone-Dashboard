@@ -72,7 +72,7 @@ test('validation: bad name/phone refused; formulas neutralised; assignee allow-l
   assert.strictEqual(call({ phone: '123' }).error, 'invalid_phone');
   assert.strictEqual(call({ phone: '' }).error, 'invalid_phone');
   assert.strictEqual(rows().length, 0);
-  assert.strictEqual(call({ name: '=HYPERLINK("x")', assignedTo: 'hacker' }).ok, true);
+  assert.strictEqual(call({ name: '=HYPERLINK("x") כהן', assignedTo: 'hacker' }).ok, true);
   const [row] = rows();
   assert.ok(!/^[=+\-@]/.test(row.name));
   assert.strictEqual(row.assignedTo, '');

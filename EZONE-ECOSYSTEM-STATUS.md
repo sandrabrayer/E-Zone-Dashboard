@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Lead name + phone required — October 19, 2026 (PR open)
+
+New leads need a full name (2+ words) and a valid Israeli phone (`/^0\d{9}$/` after
+normalizing), checked inline in the UI and refused server-side by `mergeLeads_`
+(`invalid_lead`) and `createLeadFromTherapists_`. Existing incomplete leads are only
+checked on a changed field. Code.gs changed (clasp CI on merge); SW v72.
+See `CHANGELOG-lead-name-phone-required.md`.
+
 ## Invoice-request review — October 16, 2026 (draft candidate)
 
 Read-only Billing Control section preserves requested invoices after payment

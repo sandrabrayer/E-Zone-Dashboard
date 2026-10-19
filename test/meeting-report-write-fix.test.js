@@ -276,11 +276,11 @@ test('leads without a sheet report are untouched: saveAll writes the client copy
   const { code, sandbox, cols } = withLeads(BASE_LEADS);
   const payload = [
     clientCopy(cols, { ...BASE_LEADS[0], stage: 'waitlist' }),
-    clientCopy(cols, { id: 'L9', name: 'חדש', house: 'sde', stage: 'new' }),
+    clientCopy(cols, { id: 'L9', name: 'ליד חדש', phone: '0521234567', house: 'sde', stage: 'new' }),
   ];
   assert.strictEqual(code.handle({ action: 'saveAll', leads: payload, patients: {} }).ok, true);
   assert.strictEqual(cell(sandbox, cols, 'L1', 'stage'), 'waitlist');
-  assert.strictEqual(cell(sandbox, cols, 'L9', 'name'), 'חדש');
+  assert.strictEqual(cell(sandbox, cols, 'L9', 'name'), 'ליד חדש');
   assert.strictEqual(cell(sandbox, cols, 'L9', 'meetingReportedAt'), '');
 });
 

@@ -265,7 +265,8 @@
 // v69 → v70: «ועדות קרובות» card (/committee-alerts.js added, app.js changed).
 // Live v69 verified 2026-10-15.
 // v70 → v71: read-only invoice-request review. Live v70 checked 2026-10-16.
-var CACHE_VERSION = 'v71';
+// v71 → v72: lead name + phone required (app.js, style.css) (CHANGELOG-lead-name-phone-required.md). Live v71 verified 2026-10-19 (v17 never reused).
+var CACHE_VERSION = 'v72';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

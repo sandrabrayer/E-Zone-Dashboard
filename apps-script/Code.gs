@@ -2913,6 +2913,14 @@ function saveAll_(leads, patients, user, prove) {
       };
     }
 
+    if (leadOut.invalidLeads && leadOut.invalidLeads.length > 0) {
+      return {
+        ok: false, error: 'invalid_lead',
+        message: leadRequiredRefusalMessage_(leadOut.invalidLeads[0]),
+        invalidLeads: leadOut.invalidLeads,
+      };
+    }
+
     // Patients — only touch houseIds that are present in the payload.
     // `written` echoes, per house, how many patient rows were actually written
     // — backend truth the server-side diagnostics compare against the counts
@@ -3095,6 +3103,52 @@ function leadDateViolations_(leads, existingById, todayIso) {
   return out;
 }
 
+/* ===== Lead validation: full name + Israeli phone (CHANGELOG-lead-name-phone-required.md) =====
+ * The server is the authority behind the dashboard's inline check
+ * (leadRequiredErrors in public/app.js):
+ *   - a NEW lead (id not on Leads) needs a name of at least two words AND a
+ *     phone that normalizePhone_ turns into /^0\d{9}$/;
+ *   - an EXISTING lead is checked only on a field whose value CHANGED, so an
+ *     old incomplete lead still saves its other fields (stage, notes, dates);
+ *   - `source: 'direct_admin'` rows are exempt: they are not sales leads but
+ *     the phone record of a directly-admitted patient, built by the intake
+ *     form, which has its own required-phone check.
+ * Same shape as leadDateViolations_: a violation refuses the WHOLE saveAll
+ * before anything is written. */
+const LEAD_DIRECT_ADMIN_SOURCE = 'direct_admin';
+function leadNameKey_(v) {
+  return String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+}
+function leadFullNameOk_(name) {
+  const t = leadNameKey_(name);
+  return !!t && t.split(' ').length >= 2;
+}
+function leadPhoneOk_(raw) {
+  return /^0\d{9}$/.test(normalizePhone_(raw));
+}
+function leadRequiredViolations_(leads, existingById) {
+  const out = [];
+  const nameIdx = LEAD_COLUMNS.indexOf('name');
+  const phoneIdx = LEAD_COLUMNS.indexOf('phone');
+  (leads || []).forEach(function (l) {
+    if (!l || String(l.source || '') === LEAD_DIRECT_ADMIN_SOURCE) return;
+    const id = String(l.id == null ? '' : l.id);
+    const existing = existingById[id];
+    const nameChanged = !existing || leadNameKey_(l.name) !== leadNameKey_(existing[nameIdx]);
+    const phoneChanged = !existing || String(l.phone == null ? '' : l.phone).trim() !==
+      String(existing[phoneIdx] == null ? '' : existing[phoneIdx]).trim();
+    if (nameChanged && !leadFullNameOk_(l.name)) out.push({ id: id, name: leadNameKey_(l.name), field: 'name' });
+    if (phoneChanged && !leadPhoneOk_(l.phone)) out.push({ id: id, name: leadNameKey_(l.name), field: 'phone' });
+  });
+  return out;
+}
+function leadRequiredRefusalMessage_(v) {
+  const who = v.name || 'הליד';
+  return v.field === 'name'
+    ? 'לא נשמר: יש להזין שם מלא (שם פרטי ושם משפחה) עבור ' + who + '.'
+    : 'לא נשמר: יש להזין טלפון ישראלי תקין (10 ספרות שמתחילות ב-0) עבור ' + who + '.';
+}
+
 /* The Hebrew refusal for a save carrying an out-of-range lead date. */
 function leadDateRefusalMessage_(v, todayIso) {
   const what = v.field === 'entryDate' ? 'תאריך הכניסה' : 'תאריך הביקור';
@@ -3163,6 +3217,14 @@ function mergeLeads_(leadsIn, out) {
   const badDates = leadDateViolations_(leads, existingById, today);
   if (badDates.length > 0) {
     if (out && typeof out === 'object') out.badLeadDates = badDates;
+    return [];
+  }
+
+  // Name + phone guard (CHANGELOG-lead-name-phone-required.md): same refusal
+  // shape — nothing is written, saveAll_ answers ok:false.
+  const invalid = leadRequiredViolations_(leads, existingById);
+  if (invalid.length > 0) {
+    if (out && typeof out === 'object') out.invalidLeads = invalid;
     return [];
   }
 
@@ -6941,10 +7003,12 @@ function leadCellText_(v, max) {
 }
 
 function createLeadFromTherapists_(params) {
-  const name = leadCellText_(params.name, 100);
-  if (name.length < 2) return { ok: false, error: 'invalid_name' };
+  // Full name (2+ words) and a 10-digit Israeli phone — the same rule as
+  // leadRequiredViolations_ (CHANGELOG-lead-name-phone-required.md).
+  const name = leadNameKey_(leadCellText_(params.name, 100));
+  if (!leadFullNameOk_(name)) return { ok: false, error: 'invalid_name' };
   const phone = normalizePhone_(params.phone);
-  if (!/^0\d{8,9}$/.test(phone)) return { ok: false, error: 'invalid_phone' };
+  if (!leadPhoneOk_(phone)) return { ok: false, error: 'invalid_phone' };
   const house = leadCellText_(params.house, 40);
   const program = leadCellText_(params.program, 60);
   const by = leadCellText_(params.by, 60);
