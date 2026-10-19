@@ -1603,6 +1603,9 @@ body.view-controller #screen-billing .irrelevant-actions { display: none !import
 .pay-report-modal .pr-cov { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .pay-report-modal .field-error { color: var(--danger); font-size: 12.5px; font-weight: 600; min-height: 0; margin-top: 4px; }
 .pay-report-modal .field-error:empty { display: none; }
+/* Inline field errors on showModal forms (CHANGELOG-lead-name-phone-required.md). */
+.modal .form-row .field-error { color: var(--danger); font-size: 12.5px; font-weight: 600; margin-top: 4px; }
+.modal .form-row .field-error:empty { display: none; }
 .pay-report-modal [aria-invalid="true"] { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
 .pay-report-modal .pr-form-error { margin-top: 10px; }
 /* «חשבונית?» — two radios, neither pre-selected; 44px tap targets. */

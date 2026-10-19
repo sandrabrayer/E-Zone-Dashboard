@@ -282,7 +282,7 @@ test('empty round-trips as empty through the edit modal', () => {
 test('empty round-trips as empty through the add modal', async () => {
   const app = freshApp();
   const spec = app.captureModal(() => app.openAddLeadModal());
-  await spec.onSubmit(untouchedValues(spec, { name: 'ליד חדש', assignedTo: 'ורד' }));
+  await spec.onSubmit(untouchedValues(spec, { name: 'ליד חדש', phone: '0521234567', assignedTo: 'ורד' }));
   const created = app.getLeads()[0];
   assert.ok(created, 'the lead must have been created');
   assert.strictEqual(created.contactRelation, '');
@@ -422,7 +422,7 @@ test('אחר + typed text stores the typed text through the add modal', async ()
   const app = freshApp();
   const spec = app.captureModal(() => app.openAddLeadModal());
   await spec.onSubmit(untouchedValues(spec, {
-    name: 'ליד חדש', assignedTo: 'ורד',
+    name: 'ליד חדש', phone: '0521234567', assignedTo: 'ורד',
     contactRelation: 'אחר', contactRelationOther: '  שכנה  ',
   }));
   const created = app.getLeads()[0];
@@ -433,7 +433,7 @@ test('the selector-only contactRelationOther never reaches the lead record', asy
   const app = freshApp();
   const spec = app.captureModal(() => app.openAddLeadModal());
   await spec.onSubmit(untouchedValues(spec, {
-    name: 'ליד חדש', assignedTo: 'ורד',
+    name: 'ליד חדש', phone: '0521234567', assignedTo: 'ורד',
     contactRelation: 'אחר', contactRelationOther: 'שכנה',
   }));
   const created = app.getLeads()[0];
