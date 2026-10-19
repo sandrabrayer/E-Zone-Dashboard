@@ -7054,13 +7054,37 @@ function leadCellText_(v, max) {
   return t.slice(0, max);
 }
 
+/* Server-to-server handoff phone rule (CHANGELOG-landline-handoff.md).
+ * The Dashboard UI / saveAll path stays mobile-only (leadPhoneOk_). A handoff
+ * from another E-Zone app (therapists today) may carry a 9-digit Israeli
+ * landline, so this path ALSO accepts /^0[2-9]\d{7}$/ after normalizePhone_.
+ * → the normalized phone, or '' when neither rule matches. */
+const LEAD_HANDOFF_LANDLINE_RE = /^0[2-9]\d{7}$/;
+function leadHandoffPhone_(raw) {
+  const phone = normalizePhone_(raw);
+  return (/^0\d{9}$/.test(phone) || LEAD_HANDOFF_LANDLINE_RE.test(phone)) ? phone : '';
+}
+
+/* A refused handoff is never silent: an explicit error code to the caller AND a
+ * log line (console + hidden AuditLog). The log carries the reason and the
+ * phone's digit COUNT only — never the name or the phone itself (PII). */
+function refuseLeadHandoff_(error, fn, actor, rawPhone) {
+  const digits = normalizePhone_(rawPhone).length;
+  const details = { error: error, phoneDigits: digits };
+  try { console.warn('[lead-handoff] refused ' + error + ' fn=' + fn + ' phoneDigits=' + digits); } catch (_) { /* no-op */ }
+  logAudit_('lead_handoff_refused', fn, '', '', details, actor);
+  return { ok: false, error: error };
+}
+
 function createLeadFromTherapists_(params) {
-  // Full name (2+ words) and a 10-digit Israeli phone — the same rule as
-  // leadRequiredViolations_ (CHANGELOG-lead-name-phone-required.md).
+  // Full name (2+ words) — the same rule as leadRequiredViolations_
+  // (CHANGELOG-lead-name-phone-required.md). Phone: the handoff rule above
+  // (10-digit mobile OR 9-digit landline), stricter UI rule unchanged.
+  const actor = leadCellText_(params.by, 60) || 'ezone-therapists';
   const name = leadNameKey_(leadCellText_(params.name, 100));
-  if (!leadFullNameOk_(name)) return { ok: false, error: 'invalid_name' };
-  const phone = normalizePhone_(params.phone);
-  if (!leadPhoneOk_(phone)) return { ok: false, error: 'invalid_phone' };
+  if (!leadFullNameOk_(name)) return refuseLeadHandoff_('invalid_name', 'createLeadFromTherapists_', actor, params.phone);
+  const phone = leadHandoffPhone_(params.phone);
+  if (!phone) return refuseLeadHandoff_('invalid_phone', 'createLeadFromTherapists_', actor, params.phone);
   const house = leadCellText_(params.house, 40);
   const program = leadCellText_(params.program, 60);
   const by = leadCellText_(params.by, 60);
