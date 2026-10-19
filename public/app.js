@@ -6029,17 +6029,28 @@ function exportLeadsFunnelCsv(report, bucket) {
   setTimeout(() => URL.revokeObjectURL(href), 1000);
 }
 
+/* The dispositions «לא נכנס» offers on a «ממתינים לקליטה» card: the lead
+ * never entered, so it was not relevant or stopped before starting — never
+ * «סיים טיפול» / «משוחרר לטיפול חוץ» (CHANGELOG-waiting-not-entered.md). */
+const WAITING_NOT_ENTERED_DISPOSITIONS = ['not_relevant', 'stopped_early'];
+
 /* Phase 2d-2 — closure flow. Replaces markLeadIrrelevant. Opens the
  * three-disposition closure modal, then on confirm performs the same
  * optimistic-UI-plus-rollback move as the old flow. apiPost still hits
  * action: 'moveLeadIrrelevant' (backend name unchanged for compatibility);
  * the payload now carries disposition explicitly and skips the Phase 2b
  * not_relevant_reason / not_relevant_note fields — those stay blank on
- * new rows ("dead-but-readable" for legacy data). */
-function closeLead(lead) {
+ * new rows ("dead-but-readable" for legacy data).
+ * `opts` (optional): { dispositions, title, requireNote } passed through to
+ * showCloseLeadModal — «לא נכנס» uses it; the board's «סגירת ליד» passes none. */
+function closeLead(lead, opts) {
   if (state.mode !== 'edit') return;
+  const o = opts || {};
 
   showCloseLeadModal({
+    dispositions: o.dispositions,
+    title: o.title,
+    requireNote: o.requireNote === true,
     onConfirm: async ({ disposition, note }) => {
       const moved = {
         ...lead,
@@ -6058,7 +6069,9 @@ function closeLead(lead) {
       try {
         // R1 tracked; R3: the server's copy of THIS lead on the closed sheet.
         // A retry is safe — the server deletes by id and upserts by id.
-        const res = await trackedWrite([_dataGuard], () => apiPost({ action: 'moveLeadIrrelevant', lead: moved }));
+        const body = { action: 'moveLeadIrrelevant', lead: moved };
+        if (o.requireNote === true) body.requireReason = true;   // server re-checks the reason
+        const res = await trackedWrite([_dataGuard], () => apiPost(body));
         requireSavedId(res, r => r.lead && r.lead.id, moved.id);
       } catch (e) {
         // Roll back on failure
@@ -7243,7 +7256,10 @@ function showConfirm({ text, onConfirm, onCancel, confirmLabel = 'אישור', d
  * rendered and its value is added to the onConfirm payload under `name`. Callers
  * that omit dateField (e.g. closeLead) get the unchanged { disposition, note }
  * payload and no date row — fully backward-compatible. */
-function showCloseLeadModal({ onConfirm, dispositions, title, dateField }) {
+/* `requireNote` (opt-in, CHANGELOG-waiting-not-entered.md): the «פירוט» text
+ * becomes a required reason — submit stays disabled until it is filled.
+ * Every existing caller passes nothing and is unchanged. */
+function showCloseLeadModal({ onConfirm, dispositions, title, dateField, requireNote }) {
   const root = document.getElementById('modal-root');
   const back = document.createElement('div');
   back.className = 'modal-backdrop';
@@ -7282,8 +7298,8 @@ function showCloseLeadModal({ onConfirm, dispositions, title, dateField }) {
         </div>
         ${dateRowHtml}
         <div class="form-row">
-          <label>פירוט</label>
-          <textarea name="not_relevant_note" rows="3" maxlength="500"></textarea>
+          <label>${requireNote ? 'סיבה *' : 'פירוט'}</label>
+          <textarea name="not_relevant_note" rows="3" maxlength="500"${requireNote ? ' required' : ''}></textarea>
         </div>
         <div class="form-actions">
           <button type="button" class="btn" data-action="cancel">ביטול</button>
@@ -7305,11 +7321,11 @@ function showCloseLeadModal({ onConfirm, dispositions, title, dateField }) {
 
   /* Enable submit only once a disposition is picked. No default selection
    * per spec — forces explicit choice. */
-  radios.forEach(r => {
-    r.addEventListener('change', () => {
-      submitBtn.disabled = !Array.from(radios).some(x => x.checked);
-    });
-  });
+  const noteEl = back.querySelector('textarea[name="not_relevant_note"]');
+  const noteOk = () => !requireNote || !!String((noteEl && noteEl.value) || '').trim();
+  const refresh = () => { submitBtn.disabled = !Array.from(radios).some(x => x.checked) || !noteOk(); };
+  radios.forEach(r => r.addEventListener('change', refresh));
+  if (requireNote && noteEl) noteEl.addEventListener('input', refresh);
 
   /* closeLead and dischargePatient both run behind this modal, and both are
    * optimistic-with-rollback. NOTHING about that changes here — the worker
@@ -7319,7 +7335,7 @@ function showCloseLeadModal({ onConfirm, dispositions, title, dateField }) {
   form.onsubmit = e => {
     e.preventDefault();
     const picked = Array.from(radios).find(x => x.checked);
-    if (!picked) return;                 // defensive — submit was disabled
+    if (!picked || !noteOk()) return;    // defensive — submit was disabled
     return busyButton(submitBtn, 'save', async () => {
       cancelBtn.disabled = true;
       try {
@@ -8298,7 +8314,20 @@ function pendingAdmissionRowHtml(r, edit) {
     </div>
     ${chips ? `<div class="plist-chips">${chips}</div>` : ''}
     ${edit && noPhone ? phoneAddActionHtml() : ''}
-    ${edit ? '<div class="row-actions"><button type="button" class="btn small primary plist-admit-btn">קלוט כמטופל</button></div>' : ''}`;
+    ${edit ? '<div class="row-actions"><button type="button" class="btn small primary plist-admit-btn">קלוט כמטופל</button>'
+      + '<button type="button" class="btn small plist-not-entered-btn" title="סגירה רכה — עובר לשימור לידים">לא נכנס</button></div>' : ''}`;
+}
+
+/* «לא נכנס» on a «ממתינים לקליטה» card: the EXISTING soft close (closeLead →
+ * moveLeadIrrelevant) — the lead moves to the closed sheet («שימור לידים»),
+ * nothing is deleted. Lead dispositions only, and a required reason.
+ * Optimistic with rollback (closeLead). */
+function closeWaitingNotEntered(lead) {
+  return closeLead(lead, {
+    dispositions: WAITING_NOT_ENTERED_DISPOSITIONS,
+    title: 'לא נכנס — ' + String((lead && lead.name) || ''),
+    requireNote: true,
+  });
 }
 
 /* «הוסף טלפון» — the inline action under a «חסר טלפון» chip (edit mode).
@@ -8392,6 +8421,8 @@ function renderPatientsTab() {
         el.innerHTML = pendingAdmissionRowHtml(r, edit);
         const btn = el.querySelector('.plist-admit-btn');
         if (btn) btn.onclick = () => openEntryModal(r.lead);
+        const notIn = el.querySelector('.plist-not-entered-btn');
+        if (notIn) notIn.onclick = () => closeWaitingNotEntered(r.lead);
         if (edit) wirePhoneAdd(el, typed => addLeadPhone(r.lead, typed));
         pendEl.appendChild(el);
       });
