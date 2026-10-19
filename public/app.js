@@ -1816,6 +1816,8 @@ function initTabs() {
     });
   }
   document.getElementById('add-lead-btn').onclick = openAddLeadModal;
+  const funnelBtn = document.getElementById('leads-funnel-btn');
+  if (funnelBtn) funnelBtn.onclick = toggleLeadsFunnel;
   document.getElementById('add-patient-btn').onclick = () => openDirectAddPatientModal();
   /* «🟢 קליטת מטופל חדש» — the top-level intake entry on the dashboard. Same
    * direct-add flow, intake mode (see openDirectAddPatientModal). */
@@ -4629,6 +4631,7 @@ function renderAll() {
   renderMeetings();
   renderIrrelevantLeads();
   renderRemovedLeads();
+  renderLeadsFunnel();
   renderHouseTabs();
   renderPatients();
   renderDischargedPatients();
@@ -5899,6 +5902,124 @@ async function updateLead(id, fields) {
 function stageLabelById(stageId) {
   const s = STAGES.find(x => x.id === stageId);
   return s ? s.label : '';
+}
+
+/* ===== «חתכים בלידים» — the leads funnel report (CHANGELOG-leads-funnel-report.md) =====
+ * Read-only. The rule lives in lib/leads-funnel.js (window.LeadsFunnel); this
+ * is only its view. Counted by the date the lead was CREATED — the UI label
+ * says so. Every value is escaped; the CSV neutralizes formulas. */
+
+/* The module, or null when leads-funnel.js did not load. */
+function leadsFunnelLib() {
+  return (typeof LeadsFunnel !== 'undefined' && LeadsFunnel && typeof LeadsFunnel.funnel === 'function') ? LeadsFunnel : null;
+}
+
+/* The panel's UI state (never persisted): open, the period, the bucket shown. */
+function leadsFunnelUi() {
+  if (!state.leadsFunnel) {
+    const F = leadsFunnelLib();
+    const r = F ? F.presetRange('this_month', debtAgingTodayIso()) : null;
+    state.leadsFunnel = { open: false, from: r ? r.from : '', to: r ? r.to : '', bucket: 'notRelevant' };
+  }
+  return state.leadsFunnel;
+}
+
+/* The report over the page's state for [from, to]. Pure apart from reading `s`. */
+function leadsFunnelReport(s, from, to) {
+  const F = leadsFunnelLib();
+  if (!F) return { ok: false, error: 'no_module' };
+  const src = s || state;
+  return F.funnel({
+    leads: src.leads, irrelevantLeads: src.irrelevantLeads,
+    patients: src.patients, dischargedPatients: src.dischargedPatients,
+    from, to, disposition: computeDisposition,
+  });
+}
+
+/* The panel's HTML for a report + UI state. Pure. */
+function leadsFunnelHtml(report, ui) {
+  const F = leadsFunnelLib();
+  const u = ui || {};
+  const presets = F ? F.PRESETS : [];
+  const buckets = F ? F.BUCKETS : [];
+  const controls = `
+    <div class="lf-controls">
+      <label>מתאריך <input type="date" class="lf-from" lang="he" dir="rtl" value="${escapeHtml(u.from || '')}" /></label>
+      <label>עד תאריך <input type="date" class="lf-to" lang="he" dir="rtl" value="${escapeHtml(u.to || '')}" /></label>
+      <div class="lf-presets">${presets.map(p =>
+        `<button type="button" class="btn small lf-preset" data-preset="${escapeHtml(p.key)}">${escapeHtml(p.label)}</button>`).join('')}</div>
+    </div>
+    <div class="lf-basis">הספירה לפי תאריך יצירת הליד (כולל שני התאריכים)</div>`;
+  if (!report || !report.ok) {
+    const msg = report && report.error === 'no_module' ? 'הדוח לא נטען — רעננו את הדף' : 'יש לבחור טווח תאריכים תקין';
+    return controls + `<div class="lf-empty">${escapeHtml(msg)}</div>`;
+  }
+  const active = buckets.some(b => b.key === u.bucket) ? u.bucket : 'notRelevant';
+  const stats = buckets.map(b =>
+    `<button type="button" class="lf-stat${b.key === active ? ' active' : ''}" data-bucket="${escapeHtml(b.key)}" aria-pressed="${b.key === active}">`
+    + `<span class="lf-stat-num">${escapeHtml(String(report.counts[b.key]))}</span><span class="lf-stat-label">${escapeHtml(b.label)}</span></button>`).join('');
+  const list = report.rows[active] || [];
+  const body = list.length
+    ? `<table class="lf-table"><thead><tr><th>שם</th><th>טלפון</th><th>נוצר</th><th>בית</th><th>תאריך ביקור</th></tr></thead><tbody>${list.map(r =>
+        `<tr><td>${escapeHtml(r.name)}</td><td dir="ltr">${escapeHtml(r.phone)}</td><td>${escapeHtml(r.created ? formatDate(r.created) : '')}</td>`
+        + `<td>${escapeHtml(r.house)}</td><td>${escapeHtml(r.visitDate ? formatDate(r.visitDate) : '')}</td></tr>`).join('')}</tbody></table>`
+    : '<div class="lf-empty">אין לידים בקטגוריה זו בתקופה</div>';
+  const foot = `${escapeHtml(`${report.population} לידים נוצרו בתקופה`)}`
+    + (report.noCreated ? ` · ${escapeHtml(`${report.noCreated} לידים ללא תאריך יצירה לא נספרו`)}` : '');
+  return controls
+    + `<div class="lf-stats">${stats}</div>`
+    + `<div class="lf-foot">${foot}</div>`
+    + `<div class="lf-list-head"><span>${escapeHtml((buckets.find(b => b.key === active) || {}).label || '')}</span>`
+    + `<button type="button" class="btn small lf-csv"${list.length ? '' : ' disabled'}>ייצוא CSV</button></div>`
+    + body;
+}
+
+function toggleLeadsFunnel() {
+  const ui = leadsFunnelUi();
+  ui.open = !ui.open;
+  renderLeadsFunnel();
+}
+
+function renderLeadsFunnel() {
+  const el = document.getElementById('leads-funnel');
+  const btn = document.getElementById('leads-funnel-btn');
+  if (!el) return;
+  const ui = leadsFunnelUi();
+  if (btn && btn.setAttribute) btn.setAttribute('aria-expanded', ui.open ? 'true' : 'false');
+  el.classList.toggle('hidden', !ui.open);
+  if (!ui.open) { el.innerHTML = ''; return; }
+  const report = leadsFunnelReport(state, ui.from, ui.to);
+  el.innerHTML = leadsFunnelHtml(report, ui);
+  const F = leadsFunnelLib();
+  const onDate = (sel, key) => { const i = el.querySelector(sel); if (i) i.onchange = () => { ui[key] = String(i.value || ''); renderLeadsFunnel(); }; };
+  onDate('.lf-from', 'from');
+  onDate('.lf-to', 'to');
+  el.querySelectorAll('.lf-preset').forEach(b => {
+    b.onclick = () => {
+      const r = F && F.presetRange(b.dataset.preset, debtAgingTodayIso());
+      if (r) { ui.from = r.from; ui.to = r.to; renderLeadsFunnel(); }
+    };
+  });
+  el.querySelectorAll('.lf-stat').forEach(b => { b.onclick = () => { ui.bucket = b.dataset.bucket; renderLeadsFunnel(); }; });
+  const csv = el.querySelector('.lf-csv');
+  if (csv) csv.onclick = () => exportLeadsFunnelCsv(report, ui.bucket);
+}
+
+/* The CSV of the bucket shown, as a download. Built in the page (no server
+ * route); LeadsFunnel.toCsv neutralizes formula-leading cells. */
+function exportLeadsFunnelCsv(report, bucket) {
+  const F = leadsFunnelLib();
+  if (!F || !report || !report.ok) return;
+  const key = report.rows[bucket] ? bucket : 'notRelevant';
+  const blob = new Blob([F.toCsv(report.rows[key])], { type: F.CSV_MIME });
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = F.csvFilename(report.from, report.to, key);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 1000);
 }
 
 /* Phase 2d-2 — closure flow. Replaces markLeadIrrelevant. Opens the

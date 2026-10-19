@@ -264,6 +264,7 @@ const ASSETS = createAssetStore({
   '/cycle-balance.js': { file: path.join(__dirname, 'lib', 'cycle-balance.js'), mime: 'application/javascript' },
   '/discharge-alerts.js': { file: path.join(__dirname, 'lib', 'discharge-alerts.js'), mime: 'application/javascript' },
   '/committee-alerts.js': { file: path.join(__dirname, 'lib', 'committee-alerts.js'), mime: 'application/javascript' },
+  '/leads-funnel.js': { file: path.join(__dirname, 'lib', 'leads-funnel.js'), mime: 'application/javascript' },
 });
 
 /* Serve index.html with every asset reference pinned to that file's content
@@ -363,6 +364,9 @@ app.get('/discharge-alerts.js', sendLibAsset('/discharge-alerts.js'));
 /* Upcoming committees (CHANGELOG-dashboard-committees.md): lib/committee-alerts.js,
  * window.CommitteeAlerts — the same rule as the Managers app (shared fixture). No data. */
 app.get('/committee-alerts.js', sendLibAsset('/committee-alerts.js'));
+/* Leads funnel report «חתכים בלידים» (CHANGELOG-leads-funnel-report.md):
+ * lib/leads-funnel.js, window.LeadsFunnel — pure rules, no data. */
+app.get('/leads-funnel.js', sendLibAsset('/leads-funnel.js'));
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 // Patient funder helpers (public/funder.js, global Funder) — loaded before app.js.
 app.get('/funder.js', sendStatic('funder.js', 'application/javascript'));

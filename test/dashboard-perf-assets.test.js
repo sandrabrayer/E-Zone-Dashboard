@@ -41,6 +41,7 @@ const FILES = {
   '/cycle-balance.js': path.join(ROOT, 'lib', 'cycle-balance.js'),
   '/discharge-alerts.js': path.join(ROOT, 'lib', 'discharge-alerts.js'),
   '/committee-alerts.js': path.join(ROOT, 'lib', 'committee-alerts.js'),
+  '/leads-funnel.js': path.join(ROOT, 'lib', 'leads-funnel.js'),
 };
 
 /* ===================================================================== */
@@ -335,7 +336,7 @@ function serve(handlers, url) {
 }
 const settle = () => new Promise((r) => setImmediate(r));
 
-test('D: CACHE_VERSION is v72 (monotonic from the live v71; v17 burned, never reused)', () => {
+test('D: CACHE_VERSION is v73 (monotonic from the live v71; v17 burned, never reused)', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
   // v40: CHANGELOG-ortal-verification-status.md.
   // v41: CHANGELOG-reactivation-fix.md (PR #145's fix, re-landed).
@@ -370,7 +371,8 @@ test('D: CACHE_VERSION is v72 (monotonic from the live v71; v17 burned, never re
   // v70: CHANGELOG-dashboard-committees.md (live /sw.js read v69 on 15/10/2026).
   // v71: CHANGELOG-billing-document-review.md (live v70 verified 16/10/2026).
   // v72: CHANGELOG-lead-name-phone-required.md (live v71 verified 19/10/2026).
-  assert.equal(v, 'v72');
+  // v73: CHANGELOG-leads-funnel-report.md (stacked on PR #251; live v71 verified 19/10/2026).
+  assert.equal(v, 'v73');
   assert.notEqual(v, 'v17');
 });
 
