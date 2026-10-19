@@ -254,7 +254,7 @@ function loadApp(opts) {
 }
 const app = loadApp();
 const P = (app2, id) => app2.state.patients.find((p) => p.id === id);
-const NOINFO = { lead: { house: '' }, via: 'fromLead', ambiguous: false };   // no lead problems
+const NOINFO = { lead: { house: '', phone: '0521234567' }, via: 'fromLead', ambiguous: false };   // no lead problems
 const codes = (list) => plain(list).map((x) => x.code);
 
 test('מטופלים: «לא דווח תשלום» waits for the grace window (day 29 / 30), returns on day 31; private / unset unaffected; pro-bono never', () => {

@@ -1,5 +1,12 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## «מטופלים»: missing phone + funder button fix — October 19, 2026 (PR open)
+
+New «חסר טלפון» chip (summary + «בעיות בלבד») with inline «הוסף טלפון» (the phone lives on
+the patient's lead; same plan as the ✏️ form; optimistic + rollback). «הגדר גורם מממן» now
+shows only when no funder is set (it was rendered unconditionally in edit mode). No Code.gs
+change; SW v74. See `CHANGELOG-patients-phone-funder-fix.md`.
+
 ## Leads funnel report «חתכים בלידים» — October 19, 2026 (PR open)
 
 Read-only panel on the leads tab: לא רלוונטי / הגיעו לפגישה ולא נכנסו / נכנסו לבית
