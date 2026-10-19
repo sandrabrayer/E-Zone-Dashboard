@@ -491,6 +491,7 @@ test('PATIENT_COLUMNS untouched (legacy prefix; `id` + who/when stamps appended 
     'houseId', 'name', 'date', 'pay', 'adv',
     'status', 'fromLead', 'exitDate', 'source', 'notes',
     'id', 'updatedAt', 'updatedBy',
+    'personId',
   ]);
 });
 

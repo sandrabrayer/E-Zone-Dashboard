@@ -809,6 +809,7 @@ test('column contracts unchanged: PATIENT_COLUMNS, PAYMENT_COLUMNS, PATIENT_TOMB
   const { code } = loadCode();
   assert.deepEqual(arr(code.PATIENT_COLUMNS), [
     'houseId', 'name', 'date', 'pay', 'adv', 'status', 'fromLead', 'exitDate', 'source', 'notes', 'id', 'updatedAt', 'updatedBy',
+    'personId',   // «מטופל חוזר», appended LAST (CHANGELOG-returning-patient.md)
   ]);
   /* APPEND-ONLY: the original ten columns keep their exact positions (readSheet_
    * maps by position, so a shift re-reads every historical row against the wrong

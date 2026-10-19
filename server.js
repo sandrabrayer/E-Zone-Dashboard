@@ -265,6 +265,7 @@ const ASSETS = createAssetStore({
   '/discharge-alerts.js': { file: path.join(__dirname, 'lib', 'discharge-alerts.js'), mime: 'application/javascript' },
   '/committee-alerts.js': { file: path.join(__dirname, 'lib', 'committee-alerts.js'), mime: 'application/javascript' },
   '/leads-funnel.js': { file: path.join(__dirname, 'lib', 'leads-funnel.js'), mime: 'application/javascript' },
+  '/returning-patient.js': { file: path.join(__dirname, 'lib', 'returning-patient.js'), mime: 'application/javascript' },
 });
 
 /* Serve index.html with every asset reference pinned to that file's content
@@ -367,6 +368,9 @@ app.get('/committee-alerts.js', sendLibAsset('/committee-alerts.js'));
 /* Leads funnel report «חתכים בלידים» (CHANGELOG-leads-funnel-report.md):
  * lib/leads-funnel.js, window.LeadsFunnel — pure rules, no data. */
 app.get('/leads-funnel.js', sendLibAsset('/leads-funnel.js'));
+/* «מטופל חוזר» (CHANGELOG-returning-patient.md): lib/returning-patient.js,
+ * window.ReturningPatient — pure matching rules, no data. */
+app.get('/returning-patient.js', sendLibAsset('/returning-patient.js'));
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 // Patient funder helpers (public/funder.js, global Funder) — loaded before app.js.
 app.get('/funder.js', sendStatic('funder.js', 'application/javascript'));

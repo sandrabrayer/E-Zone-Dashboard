@@ -213,7 +213,7 @@ test('CREDIT_COLUMNS order is PINNED — the original 24 unmoved, creditUid appe
   // Patients / Payments structure untouched by this change.
   assert.deepStrictEqual(arr(code.PATIENT_COLUMNS), [
     'houseId', 'name', 'date', 'pay', 'adv', 'status', 'fromLead', 'exitDate', 'source', 'notes',
-    'id', 'updatedAt', 'updatedBy']);
+    'id', 'updatedAt', 'updatedBy', 'personId']);
 });
 
 test('getOrCreateSheet_ auto-creates Credits with the header and text-forces allocationMonth + every date/stamp column', () => {

@@ -188,7 +188,8 @@ const SARA = { houseId: 'ramot', name: 'שרה כהן', date: '2026-07-01',
 
 test('all three column lists end with updatedAt, updatedBy — after `id` where the list carries one', () => {
   const { code } = loadCode();
-  assert.deepStrictEqual(arr(code.PATIENT_COLUMNS).slice(-3), ['id', 'updatedAt', 'updatedBy']);
+  // personId (CHANGELOG-returning-patient.md) is appended after the stamps.
+  assert.deepStrictEqual(arr(code.PATIENT_COLUMNS).slice(-4), ['id', 'updatedAt', 'updatedBy', 'personId']);
   assert.deepStrictEqual(arr(code.PATIENT_TOMBSTONE_COLUMNS).slice(-3), ['id', 'updatedAt', 'updatedBy']);
   // Discharged: the stamps sit right after prior_status; the coordinators
   // audit columns (2026-10-04) were appended after them.

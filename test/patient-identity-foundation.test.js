@@ -200,7 +200,8 @@ test('PATIENT_COLUMNS keeps the legacy prefix byte-for-byte; `id` then the who/w
   const { code } = loadCode();
   const cols = arr(code.PATIENT_COLUMNS);
   assert.deepStrictEqual(cols.slice(0, LEGACY_PATIENT_COLUMNS.length), LEGACY_PATIENT_COLUMNS);
-  assert.deepStrictEqual(cols.slice(LEGACY_PATIENT_COLUMNS.length), ['id', 'updatedAt', 'updatedBy']);
+  // `personId` (CHANGELOG-returning-patient.md) appended after the stamps.
+  assert.deepStrictEqual(cols.slice(LEGACY_PATIENT_COLUMNS.length), ['id', 'updatedAt', 'updatedBy', 'personId']);
   assert.strictEqual(cols.filter((c) => c === 'id').length, 1);
 });
 
@@ -234,8 +235,8 @@ test('a legacy 10-column live Patients sheet gets the id + stamp headers appende
   assert.deepStrictEqual(sh.grid[0], arr(code.PATIENT_COLUMNS), 'header extended');
   assert.deepStrictEqual(sh.grid[1].slice(0, 10), rowOf(LEGACY_PATIENT_COLUMNS, DANA), 'existing row untouched');
   const sets = sh.ops.filter((o) => o.op === 'set');
-  assert.deepStrictEqual(sets.map((o) => [o.r, o.c, o.nr, o.nc]), [[1, 11, 1, 3]],
-    'ONLY the three missing header cells were written, in one write');
+  assert.deepStrictEqual(sets.map((o) => [o.r, o.c, o.nr, o.nc]), [[1, 11, 1, 4]],
+    'ONLY the four missing header cells (id, stamps, personId) were written, in one write');
 });
 
 /* ===== B. getData_ backfill ===== */
@@ -541,7 +542,7 @@ test('client: deletePatient sends the persisted id alongside the identity key (s
 
 test('healthcheck: a blank patient id is a warning by house + position (never a critical); present ids are quiet', () => {
   const hc = require('../scripts/healthcheck');
-  assert.deepStrictEqual(hc.PATIENT_COLUMNS, LEGACY_PATIENT_COLUMNS.concat(['id', 'updatedAt', 'updatedBy']));
+  assert.deepStrictEqual(hc.PATIENT_COLUMNS, LEGACY_PATIENT_COLUMNS.concat(['id', 'updatedAt', 'updatedBy', 'personId']));
   const patient = {};
   for (const c of hc.PATIENT_COLUMNS) patient[c] = '';
   patient.houseId = 'ramot'; patient.date = '2026-08-02';

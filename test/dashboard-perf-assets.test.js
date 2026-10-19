@@ -42,6 +42,7 @@ const FILES = {
   '/discharge-alerts.js': path.join(ROOT, 'lib', 'discharge-alerts.js'),
   '/committee-alerts.js': path.join(ROOT, 'lib', 'committee-alerts.js'),
   '/leads-funnel.js': path.join(ROOT, 'lib', 'leads-funnel.js'),
+  '/returning-patient.js': path.join(ROOT, 'lib', 'returning-patient.js'),
 };
 
 /* ===================================================================== */
@@ -336,7 +337,7 @@ function serve(handlers, url) {
 }
 const settle = () => new Promise((r) => setImmediate(r));
 
-test('D: CACHE_VERSION is v75 (monotonic from the live v71; v17 burned, never reused)', () => {
+test('D: CACHE_VERSION is v76 (monotonic from the live v71; v17 burned, never reused)', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
   // v40: CHANGELOG-ortal-verification-status.md.
   // v41: CHANGELOG-reactivation-fix.md (PR #145's fix, re-landed).
@@ -374,7 +375,8 @@ test('D: CACHE_VERSION is v75 (monotonic from the live v71; v17 burned, never re
   // v73: CHANGELOG-leads-funnel-report.md (stacked on PR #251; live v71 verified 19/10/2026).
   // v74: CHANGELOG-patients-phone-funder-fix.md (stacked on PR #252; live v71 verified 19/10/2026).
   // v75: CHANGELOG-waiting-not-entered.md (stacked on PR #253; live v71 verified 19/10/2026).
-  assert.equal(v, 'v75');
+  // v76: CHANGELOG-returning-patient.md (stacked on PR #254; live v71 verified 19/10/2026).
+  assert.equal(v, 'v76');
   assert.notEqual(v, 'v17');
 });
 
