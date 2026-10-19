@@ -1838,7 +1838,8 @@ function handle_(params) {
     if (action === 'settleRefund') return jsonOut_(settleRefund_(params, requestUser_(params)));
     if (action === 'approveRefundException') return jsonOut_(approveRefundException_(params, requestUser_(params)));
     if (action === 'moveLeadIrrelevant') {
-      const res = moveLeadIrrelevant_(parseJsonParam_(params.lead), actorLabel_(params));
+      const res = moveLeadIrrelevant_(parseJsonParam_(params.lead), actorLabel_(params),
+        { requireReason: params.requireReason === true || params.requireReason === 'true' });
       refreshDigestBestEffort_();
       return jsonOut_(res);
     }
@@ -6367,8 +6368,28 @@ function applyCorruptedRowRepairsNow() {
   }
 }
 
-function moveLeadIrrelevant_(lead, actor) {
+/* The closure dispositions a lead can carry (DISPOSITION_LABELS in app.js).
+ * moveLeadIrrelevant_ refuses anything else (CHANGELOG-waiting-not-entered.md). */
+const LEAD_CLOSE_DISPOSITIONS = ['not_relevant', 'completed', 'stopped_early', 'released_outpatient'];
+const LEAD_CLOSE_NOTE_MAX = 500;
+/* A closure note as stored: control chars (newlines kept) → space, a leading
+ * = + - @ stripped so the cell can never start as a formula, capped. */
+function leadCloseNote_(v) {
+  let t = String(v == null ? '' : v).replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, ' ');
+  t = t.replace(/^[=+\-@\s]+/, '');
+  return t.slice(0, LEAD_CLOSE_NOTE_MAX);
+}
+
+function moveLeadIrrelevant_(lead, actor, opts) {
   if (!lead || !lead.id) return { ok: false, error: 'missing_lead' };
+  const requireReason = !!(opts && opts.requireReason);
+  // Server-side validation: a known disposition (blank keeps the legacy
+  // not_relevant default) and a bounded, formula-safe note.
+  const disp = String(lead.disposition == null ? '' : lead.disposition).trim();
+  if (disp && LEAD_CLOSE_DISPOSITIONS.indexOf(disp) < 0) return { ok: false, error: 'bad_disposition' };
+  lead = Object.assign({}, lead, { disposition: disp, not_relevant_note: leadCloseNote_(lead.not_relevant_note) });
+  // «לא נכנס» (ממתינים לקליטה) asks for a reason: refused without one.
+  if (requireReason && (!disp || !String(lead.not_relevant_note).trim())) return { ok: false, error: 'reason_required', message: 'יש לבחור סטטוס ולכתוב סיבה' };
   const lock = LockService.getScriptLock();
   if (lock.tryLock(10000) !== true) return lockBusy_('moveLeadIrrelevant_');
   try {

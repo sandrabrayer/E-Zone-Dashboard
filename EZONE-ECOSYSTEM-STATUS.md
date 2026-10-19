@@ -1,5 +1,12 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## «לא נכנס» on «ממתינים לקליטה» — October 19, 2026 (PR open)
+
+Waiting cards get «לא נכנס»: the existing soft close (closeLead → moveLeadIrrelevant, to
+«שימור לידים»), lead dispositions only, required reason, optimistic + rollback. Code.gs:
+disposition allowlist, formula-safe note, `requireReason` flag. SW v75.
+See `CHANGELOG-waiting-not-entered.md`.
+
 ## «מטופלים»: missing phone + funder button fix — October 19, 2026 (PR open)
 
 New «חסר טלפון» chip (summary + «בעיות בלבד») with inline «הוסף טלפון» (the phone lives on

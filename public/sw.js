@@ -270,7 +270,9 @@
 // Stacked on PR #251; live v71 verified 2026-10-19 (v17 never reused).
 // v73 → v74: «חסר טלפון» + «הוסף טלפון», funder button fix (app.js, style.css) (CHANGELOG-patients-phone-funder-fix.md).
 // Stacked on PR #252; live v71 verified 2026-10-19 (v17 never reused).
-var CACHE_VERSION = 'v74';
+// v74 → v75: «לא נכנס» on «ממתינים לקליטה» (app.js) (CHANGELOG-waiting-not-entered.md).
+// Stacked on PR #253; live v71 verified 2026-10-19 (v17 never reused).
+var CACHE_VERSION = 'v75';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
