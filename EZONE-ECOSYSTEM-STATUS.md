@@ -1,5 +1,11 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Leads funnel report «חתכים בלידים» — October 19, 2026 (PR open)
+
+Read-only panel on the leads tab: לא רלוונטי / הגיעו לפגישה ולא נכנסו / נכנסו לבית
+by lead creation date, with presets, lists and CSV. Pure `lib/leads-funnel.js`; no
+Code.gs change. SW v73. See `CHANGELOG-leads-funnel-report.md`, `docs/leads-funnel-report.md`.
+
 ## Lead name + phone required — October 19, 2026 (PR open)
 
 New leads need a full name (2+ words) and a valid Israeli phone (`/^0\d{9}$/` after

@@ -2877,3 +2877,22 @@ button.mtg-bad-date-lead:hover { background: rgba(255, 176, 32, 0.18); }
 .cmt-empty { color: var(--text-dim); font-size: 16px; }
 .cmt-error { color: var(--danger); }
 .cmt-retry { min-height: 44px; min-width: 44px; margin-top: 8px; font-size: 16px; }
+
+/* «חתכים בלידים» — the leads funnel report (CHANGELOG-leads-funnel-report.md). */
+.leads-funnel { margin-bottom: 14px; }
+.leads-funnel .lf-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.leads-funnel .lf-controls label { display: flex; flex-direction: column; gap: 4px; font-size: 16px; }
+.leads-funnel .lf-controls input { min-height: 44px; font-size: 16px; }
+.leads-funnel .lf-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.leads-funnel .lf-presets .btn { min-height: 44px; }
+.leads-funnel .lf-basis { margin-top: 8px; font-size: 16px; color: var(--muted, #666); }
+.leads-funnel .lf-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 12px; }
+.leads-funnel .lf-stat { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px; min-height: 44px; border: 1px solid var(--border, #ddd); border-radius: 10px; background: transparent; color: inherit; cursor: pointer; }
+.leads-funnel .lf-stat.active { border-color: var(--primary, #2563eb); box-shadow: 0 0 0 1px var(--primary, #2563eb); }
+.leads-funnel .lf-stat-num { font-size: 26px; font-weight: 700; }
+.leads-funnel .lf-foot { margin-top: 8px; font-size: 16px; }
+.leads-funnel .lf-list-head { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; font-weight: 600; }
+.leads-funnel .lf-table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 16px; }
+.leads-funnel .lf-table th, .leads-funnel .lf-table td { text-align: right; padding: 6px; border-bottom: 1px solid var(--border, #eee); }
+.leads-funnel .lf-empty { margin-top: 10px; font-size: 16px; }
+@media (max-width: 640px) { .leads-funnel .lf-table { display: block; overflow-x: auto; } }
