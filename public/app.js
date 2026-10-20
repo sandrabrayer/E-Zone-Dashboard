@@ -6106,7 +6106,7 @@ function retentionPresetRange(key, todayIso) {
 function patientRetentionUi() {
   if (!state.patientRetention) {
     const r = retentionPresetRange('last_3_months', debtAgingTodayIso());
-    state.patientRetention = { open: false, from: r ? r.from : '', to: r ? r.to : '', threshold: '', sel: { kind: 'bucket', key: 'upTo30' } };
+    state.patientRetention = { open: false, from: r ? r.from : '', to: r ? r.to : '', threshold: '', completionThreshold: '', sel: { kind: 'bucket', key: 'upTo30' } };
   }
   return state.patientRetention;
 }
@@ -6122,6 +6122,60 @@ function patientRetentionReport(s, ui, todayIso) {
     from: u.from, to: u.to, customThreshold: u.threshold === '' ? null : u.threshold,
     today: todayIso || debtAgingTodayIso(),
   });
+}
+
+/* «השלמת תקופת טיפול» (CHANGELOG-completion-view.md): the thresholds shown —
+ * the default 30 / 60 plus the panel's custom one when it is valid. */
+function completionThresholds(ui) {
+  const R = patientRetentionLib();
+  if (!R) return [];
+  const extra = R.normalizeThreshold((ui || {}).completionThreshold);
+  return R.normalizeThresholds(R.COMPLETION_DEFAULT_THRESHOLDS.concat(extra === null ? [] : [extra]));
+}
+
+/* The completion report over the page's state (same cohort as the panel). */
+function patientCompletionReport(s, ui, todayIso) {
+  const R = patientRetentionLib();
+  if (!R) return { ok: false, error: 'no_module' };
+  const src = s || state;
+  const u = ui || {};
+  return R.computeCompletion({
+    patients: src.patients, discharged: src.dischargedPatients,
+    from: u.from, to: u.to, thresholds: completionThresholds(u),
+    today: todayIso || debtAgingTodayIso(),
+  });
+}
+
+/* The rows + heading behind a selection — a completion count or any other. */
+function retentionSelectionList(report, completion, sel) {
+  const R = patientRetentionLib();
+  if (!R) return { rows: [], title: '' };
+  if (sel && sel.kind === 'completion') return { rows: R.completionListFor(completion, sel), title: R.listTitle(sel, report) };
+  return { rows: R.listFor(report, sel), title: R.listTitle(sel, report) };
+}
+
+/* The «השלמת תקופת טיפול» section (HTML). Every value escaped. */
+function completionSectionHtml(completion, ui, sel) {
+  const R = patientRetentionLib();
+  const u = ui || {};
+  const input = `<div class="pr-controls"><label>סף נוסף (ימים) <input type="number" class="pr-comp-threshold" inputmode="numeric" min="1" max="3650" step="1" value="${escapeHtml(String(u.completionThreshold || ''))}" /></label></div>`;
+  const head = `<div class="pr-section-title"><span>${escapeHtml(R.COMPLETION_TITLE)} (מתוך ${escapeHtml(String(completion && completion.ok ? completion.cohortSize : 0))} שנכנסו בתקופה)</span>`
+    + '<span class="pr-list-actions"><button type="button" class="btn small pr-comp-csv">ייצוא CSV</button>'
+    + '<button type="button" class="btn small pr-xlsx" data-section="completion">ייצוא לאקסל</button></span></div>';
+  if (!completion || !completion.ok) return head + input;
+  const cards = completion.results.map(r => {
+    const counts = R.COMPLETION_KEYS.map(k => {
+      const s = { kind: 'completion', threshold: r.threshold, key: k };
+      return `<button type="button" class="btn small pr-link pr-comp-count${sameSel(sel, s) && sel.threshold === r.threshold ? ' active' : ''}" data-sel="${escapeHtml(JSON.stringify(s))}">${escapeHtml(`${R.COMPLETION_LABELS[k]}: ${r.counts[k]}`)}</button>`;
+    }).join('');
+    return `<div class="pr-comp-card" data-threshold="${escapeHtml(String(r.threshold))}">`
+      + `<div class="pr-comp-title">${escapeHtml(`${r.threshold} ימים`)}</div>`
+      + `<div class="pr-comp-rate">${escapeHtml(R.formatRate(r.rate))}</div>`
+      + `<div class="pr-comp-basis">${escapeHtml(`מתוך ${r.evaluable} שניתן להעריך`)}</div>`
+      + `<div class="pr-comp-counts">${counts}</div></div>`;
+  }).join('');
+  return head + `<div class="pr-stats pr-comp-cards">${cards}</div>` + input
+    + `<div class="pr-basis pr-comp-note">${escapeHtml(R.COMPLETION_NOTE)}</div>`;
 }
 
 function retentionHouseName(houseId) {
@@ -6166,7 +6220,10 @@ function patientRetentionHtml(report, ui, opts) {
     const msg = report && report.error === 'no_module' ? 'הדוח לא נטען — רעננו את הדף' : 'יש לבחור טווח תאריכים תקין';
     return controls + `<div class="pr-empty">${escapeHtml(msg)}</div>`;
   }
-  const sel = R.validSelection(u.sel) ? u.sel : { kind: 'bucket', key: 'upTo30' };
+  const completion = o.completion || null;
+  let sel = R.validSelection(u.sel) ? u.sel : { kind: 'bucket', key: 'upTo30' };
+  // A completion count whose threshold is no longer shown falls back.
+  if (sel.kind === 'completion' && !R.completionResult(completion, sel.threshold)) sel = { kind: 'bucket', key: 'upTo30' };
   const pct = (f) => R.formatPercent(f);
   const lengthCards = R.BUCKETS.map(b => retentionStatHtml({ kind: 'bucket', key: b.key }, report.counts[b.key], b.label, pct(report.percents[b.key]), sameSel(sel, { kind: 'bucket', key: b.key })))
     .concat(retentionStatHtml({ kind: 'still' }, report.stillInTreatment.count, R.STILL_IN_TREATMENT_LABEL, pct(report.percents.stillInTreatment), sameSel(sel, { kind: 'still' })))
@@ -6190,7 +6247,8 @@ function patientRetentionHtml(report, ui, opts) {
   const missing = report.missingCount
     ? `<div class="pr-sub"><button type="button" class="btn small pr-link" data-sel="${escapeHtml(JSON.stringify({ kind: 'missing' }))}">${escapeHtml(`${R.MISSING_LABEL}: ${report.missingCount}`)}</button> — לא נספרו בחתכים</div>`
     : '';
-  const list = R.listFor(report, sel);
+  const picked = retentionSelectionList(report, completion, sel);
+  const list = picked.rows;
   const body = list.length
     ? `<div class="pr-table-wrap"><table class="pr-table"><thead><tr><th>שם</th><th>בית</th><th>תאריך כניסה</th><th>תאריך שחרור</th><th>ימים</th><th>המשך טיפול</th>${sel.kind === 'missing' ? '<th>חסר</th>' : ''}</tr></thead><tbody>${list.map(r => {
         let cont = '';
@@ -6213,7 +6271,8 @@ function patientRetentionHtml(report, ui, opts) {
     + `<div class="pr-section-title"><span>המשך טיפול (מתוך ${escapeHtml(String(report.dischargedCount))} ששוחררו)</span>${xlsxBtn('continuity')}</div>`
     + `<div class="pr-stats">${contCards}</div>`
     + `<div class="pr-section-title">משך שהות × המשך טיפול</div>${cross}${missing}`
-    + `<div class="pr-list-head"><span>${escapeHtml(R.listTitle(sel, report))} (${escapeHtml(String(list.length))})</span>`
+    + (completion ? completionSectionHtml(completion, u, sel) : '')
+    + `<div class="pr-list-head"><span>${escapeHtml(picked.title)} (${escapeHtml(String(list.length))})</span>`
     + `<span class="pr-list-actions"><button type="button" class="btn small pr-csv"${list.length ? '' : ' disabled'}>ייצוא CSV</button>`
     + '<button type="button" class="btn small pr-xlsx-list">ייצוא לאקסל</button></span></div>'
     + body;
@@ -6234,12 +6293,15 @@ function renderPatientRetention() {
   el.classList.toggle('hidden', !ui.open);
   if (!ui.open) { el.innerHTML = ''; return; }
   const report = patientRetentionReport(state, ui);
-  el.innerHTML = patientRetentionHtml(report, ui, { edit: state.mode === 'edit' });
+  const completion = patientCompletionReport(state, ui);
+  el.innerHTML = patientRetentionHtml(report, ui, { edit: state.mode === 'edit', completion });
   const onDate = (sel, key) => { const i = el.querySelector(sel); if (i) i.onchange = () => { ui[key] = String(i.value || ''); renderPatientRetention(); }; };
   onDate('.pr-from', 'from');
   onDate('.pr-to', 'to');
   const th = el.querySelector('.pr-threshold');
   if (th) th.onchange = () => { ui.threshold = String(th.value || '').trim(); renderPatientRetention(); };
+  const cth = el.querySelector('.pr-comp-threshold');
+  if (cth) cth.onchange = () => { ui.completionThreshold = String(cth.value || '').trim(); renderPatientRetention(); };
   el.querySelectorAll('.pr-preset').forEach(b => {
     b.onclick = () => {
       const r = retentionPresetRange(b.dataset.preset, debtAgingTodayIso());
@@ -6258,29 +6320,45 @@ function renderPatientRetention() {
     s.onchange = () => { if (s.value) withFieldSaving(s, 'save', () => updateDischargeContinuity(s.dataset.id, s.value)); };
   });
   const csv = el.querySelector('.pr-csv');
-  if (csv) csv.onclick = () => exportPatientRetentionCsv(report, ui.sel);
+  if (csv) csv.onclick = () => exportPatientRetentionCsv(report, ui.sel, completion);
+  const ccsv = el.querySelector('.pr-comp-csv');
+  if (ccsv) ccsv.onclick = () => exportCompletionCsv(completion);
   // «ייצוא לאקסל» (CHANGELOG-report-xlsx-export.md) — from THIS report.
   el.querySelectorAll('.pr-xlsx').forEach(b => {
-    b.onclick = () => exportReportXlsx(b.dataset.section, reportXlsxContext(null, report, ui.from, ui.to));
+    b.onclick = () => exportReportXlsx(b.dataset.section, reportXlsxContext(null, report, ui.from, ui.to, completion));
   });
   const xa = el.querySelector('.pr-xlsx-all');
   if (xa) xa.onclick = () => exportAllReportsXlsx(ui.from, ui.to);
   const xl = el.querySelector('.pr-xlsx-list');
   const R = patientRetentionLib();
-  if (xl && R) xl.onclick = () => exportListXlsx(ui.sel && ui.sel.kind === 'missing' ? 'missing' : 'patients',
-    R.listFor(report, ui.sel), ui.from, ui.to, R.listTitle(ui.sel, report));
+  if (xl && R) xl.onclick = () => {
+    const picked = retentionSelectionList(report, completion, ui.sel);
+    exportListXlsx(ui.sel && ui.sel.kind === 'missing' ? 'missing' : 'patients', picked.rows, ui.from, ui.to, picked.title);
+  };
 }
 
 /* The CSV of the list shown, as a download. Built in the page (no server
  * route). */
-function exportPatientRetentionCsv(report, sel) {
+function exportPatientRetentionCsv(report, sel, completion) {
   const R = patientRetentionLib();
   if (!R || !report || !report.ok) return;
-  const blob = new Blob([R.toCsv(R.listFor(report, sel), { houseName: retentionHouseName })], { type: R.CSV_MIME });
+  const rows = retentionSelectionList(report, completion, sel).rows;
+  downloadCsv(R.toCsv(rows, { houseName: retentionHouseName }), R.CSV_MIME, R.csvFilename(report.from, report.to, sel));
+}
+
+/* «השלמת טיפול» as a CSV section (the same numbers as the cards). */
+function exportCompletionCsv(completion) {
+  const R = patientRetentionLib();
+  if (!R || !completion || !completion.ok) return;
+  downloadCsv(R.completionToCsv(completion, { houseName: retentionHouseName }), R.CSV_MIME, R.completionCsvFilename(completion.from, completion.to));
+}
+
+function downloadCsv(text, mime, filename) {
+  const blob = new Blob([text], { type: mime });
   const href = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = href;
-  a.download = R.csvFilename(report.from, report.to, sel);
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -6298,8 +6376,8 @@ function reportXlsxLib() {
 }
 
 /* The workbook context: either report may be null (a section export). */
-function reportXlsxContext(funnel, retention, from, to) {
-  return { funnel, retention, from, to, exportedAt: new Date(), houseName: retentionHouseName };
+function reportXlsxContext(funnel, retention, from, to, completion) {
+  return { funnel, retention, completion: completion || null, from, to, exportedAt: new Date(), houseName: retentionHouseName };
 }
 
 /* bytes → a download. */
@@ -6316,13 +6394,13 @@ function downloadXlsx(bytes, filename) {
   setTimeout(() => URL.revokeObjectURL(href), 1000);
 }
 
-/* One section's sheets ('leads' | 'retention' | 'continuity'). */
+/* One section's sheets ('leads' | 'retention' | 'continuity' | 'completion'). */
 function exportReportXlsx(section, ctx) {
   const X = reportXlsxLib();
   if (!X) { showError('הייצוא לאקסל לא נטען — רעננו את הדף'); return; }
   const spec = X.sectionWorkbook(section, ctx);
   if (!spec) return;
-  const name = { leads: 'leads-funnel', retention: 'retention', continuity: 'continuity' }[section];
+  const name = { leads: 'leads-funnel', retention: 'retention', continuity: 'continuity', completion: 'completion' }[section];
   downloadXlsx(X.writeXlsx(spec), X.sectionFilename(name, ctx.from, ctx.to));
 }
 
@@ -6332,9 +6410,11 @@ function exportAllReportsXlsx(from, to) {
   const X = reportXlsxLib();
   if (!X) { showError('הייצוא לאקסל לא נטען — רעננו את הדף'); return; }
   const funnel = leadsFunnelReport(state, from, to);
-  const retention = patientRetentionReport(state, { from, to, threshold: patientRetentionUi().threshold });
+  const ui = patientRetentionUi();
+  const retention = patientRetentionReport(state, { from, to, threshold: ui.threshold });
+  const completion = patientCompletionReport(state, { from, to, completionThreshold: ui.completionThreshold });
   if (!funnel.ok && !retention.ok) { showError('יש לבחור טווח תאריכים תקין'); return; }
-  const ctx = reportXlsxContext(funnel, retention, from, to);
+  const ctx = reportXlsxContext(funnel, retention, from, to, completion);
   downloadXlsx(X.writeXlsx(X.fullWorkbook(ctx)), X.fullFilename(from, to));
 }
 
