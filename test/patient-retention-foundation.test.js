@@ -256,10 +256,12 @@ test('normalizeDischargedPatient carries continuity; legacy / unknown values rea
   assert.equal(n({ id: 'a', continuity: 'unknown' }), 'unknown');
 });
 
-test('PR1 is zero user-facing: the discharge payload does not send continuity yet', () => {
-  const app = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
-  const fn = app.slice(app.indexOf('function dischargeAuditRow('), app.indexOf('function dischargeAuditRow(') + 2500);
-  assert.doesNotMatch(fn.slice(0, fn.indexOf('\n}\n')), /continuity/);
+test('dischargeAuditRow sends a real choice, and never junk (PR 2 wires the modal)', () => {
+  const pg = loadPage({});
+  const c = (v) => pg.run(`dischargeAuditRow({ id: 'p', status: 'active' }, { disposition: 'completed', note: '', dischargeDate: '', continuity: ${JSON.stringify(v)} }, '2026-10-20').continuity`);
+  assert.equal(c('none'), 'none');
+  assert.equal(c('continued_outpatient'), 'continued_outpatient');
+  for (const bad of [undefined, '', 'unknown', '=x', 'NONE']) assert.equal(c(bad), 'unknown', String(bad));
 });
 
 /* ---------- 6. service worker ---------- */

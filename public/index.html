@@ -300,8 +300,12 @@
         <h2>מטופלים משוחררים <span class="count-pill" id="discharged-patients-count">0</span></h2>
         <div class="actions">
           <input id="discharged-search" type="search" placeholder="חיפוש מטופל..." />
+          <button id="patient-retention-btn" class="btn" type="button" aria-expanded="false" aria-controls="patient-retention">חתכי מטופלים</button>
         </div>
       </div>
+      <!-- «חתכי מטופלים» — length of stay + «המשך טיפול» (CHANGELOG-patient-retention-ui.md).
+           Rendered by renderPatientRetention from lib/patient-retention.js. -->
+      <div id="patient-retention" class="card patient-retention hidden"></div>
       <div id="discharged-patients-list" class="irrelevant-list"></div>
     </section>
 
@@ -751,6 +755,8 @@
   <script src="leads-funnel.js?v=__BUILD__"></script>
   <!-- Returning-patient matching (global ReturningPatient) — must load before app.js. -->
   <script src="returning-patient.js?v=__BUILD__"></script>
+  <!-- «חתכי מטופלים» (CHANGELOG-patient-retention-ui.md): window.PatientRetention. -->
+  <script src="patient-retention.js?v=__BUILD__"></script>
   <script src="app.js?v=__BUILD__"></script>
 
   <!-- Service worker registration (guarded). Registered after load so it never

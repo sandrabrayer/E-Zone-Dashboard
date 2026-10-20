@@ -38,6 +38,9 @@ function serverEcho(body, payload) {
     case 'deletePatientRow':
       if (out.id === undefined) Object.assign(out, { deleted: 1, id: b.patient && b.patient.id, matchedBy: 'id' });
       break;
+    case 'setDischargeContinuity':
+      if (out.id === undefined) Object.assign(out, { id: b.id, continuity: b.continuity });
+      break;
     case 'deleteDuplicateDischarge':
       if (out.id === undefined) Object.assign(out, { deleted: true, id: b.id });
       break;

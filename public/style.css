@@ -2915,3 +2915,31 @@ button.mtg-bad-date-lead:hover { background: rgba(255, 176, 32, 0.18); }
 .rp-history .rp-note { color: var(--text-dim, #666); font-size: 16px; }
 .plist-stays { margin-top: 6px; }
 .plist-stays summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
+
+/* «חתכי מטופלים» — length of stay + «המשך טיפול» (CHANGELOG-patient-retention-ui.md).
+ * Same layout language as «חתכים בלידים»; every control is ≥ 44px tall. */
+.patient-retention { margin-bottom: 14px; }
+.patient-retention .pr-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.patient-retention .pr-controls label { display: flex; flex-direction: column; gap: 4px; font-size: 16px; }
+.patient-retention .pr-controls input { min-height: 44px; font-size: 16px; }
+.patient-retention .pr-threshold { width: 9em; }
+.patient-retention .pr-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.patient-retention .pr-presets .btn, .patient-retention .pr-link, .patient-retention .pr-csv { min-height: 44px; }
+.patient-retention .pr-basis { margin-top: 8px; font-size: 16px; color: var(--muted, #666); }
+.patient-retention .pr-section-title { margin-top: 14px; font-weight: 600; font-size: 16px; }
+.patient-retention .pr-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 8px; }
+.patient-retention .pr-stat { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px; min-height: 44px; border: 1px solid var(--border, #ddd); border-radius: 10px; background: transparent; color: inherit; cursor: pointer; }
+.patient-retention .pr-stat.active, .patient-retention .pr-cell.active { border-color: var(--primary, #2563eb); box-shadow: 0 0 0 1px var(--primary, #2563eb); }
+.patient-retention .pr-stat-num { font-size: 26px; font-weight: 700; }
+.patient-retention .pr-stat-pct { font-size: 16px; color: var(--muted, #666); }
+.patient-retention .pr-sub { margin-top: 8px; font-size: 16px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.patient-retention .pr-table-wrap { overflow-x: auto; margin-top: 6px; }
+.patient-retention .pr-cross, .patient-retention .pr-table { width: 100%; border-collapse: collapse; font-size: 16px; }
+.patient-retention .pr-cross th, .patient-retention .pr-cross td,
+.patient-retention .pr-table th, .patient-retention .pr-table td { text-align: right; padding: 6px; border-bottom: 1px solid var(--border, #eee); }
+.patient-retention .pr-cell { min-width: 44px; min-height: 44px; border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; cursor: pointer; font-size: 16px; }
+.patient-retention .pr-list-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 14px; font-weight: 600; }
+.patient-retention .pr-empty { margin-top: 10px; font-size: 16px; }
+.patient-retention .pr-tag { font-size: 16px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border, #ddd); }
+.pr-cont-set { min-height: 44px; font-size: 16px; }
+.modal .continuity-fieldset .reason-radio { min-height: 44px; }

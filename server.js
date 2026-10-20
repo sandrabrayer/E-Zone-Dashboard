@@ -266,6 +266,7 @@ const ASSETS = createAssetStore({
   '/committee-alerts.js': { file: path.join(__dirname, 'lib', 'committee-alerts.js'), mime: 'application/javascript' },
   '/leads-funnel.js': { file: path.join(__dirname, 'lib', 'leads-funnel.js'), mime: 'application/javascript' },
   '/returning-patient.js': { file: path.join(__dirname, 'lib', 'returning-patient.js'), mime: 'application/javascript' },
+  '/patient-retention.js': { file: path.join(__dirname, 'lib', 'patient-retention.js'), mime: 'application/javascript' },
 });
 
 /* Serve index.html with every asset reference pinned to that file's content
@@ -371,6 +372,10 @@ app.get('/leads-funnel.js', sendLibAsset('/leads-funnel.js'));
 /* «מטופל חוזר» (CHANGELOG-returning-patient.md): lib/returning-patient.js,
  * window.ReturningPatient — pure matching rules, no data. */
 app.get('/returning-patient.js', sendLibAsset('/returning-patient.js'));
+/* «חתכי מטופלים» (CHANGELOG-patient-retention-ui.md): lib/patient-retention.js,
+ * window.PatientRetention — pure stay-length / continuity rules, no data.
+ * A static code asset like the ones above, not a data route. */
+app.get('/patient-retention.js', sendLibAsset('/patient-retention.js'));
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 // Patient funder helpers (public/funder.js, global Funder) — loaded before app.js.
 app.get('/funder.js', sendStatic('funder.js', 'application/javascript'));

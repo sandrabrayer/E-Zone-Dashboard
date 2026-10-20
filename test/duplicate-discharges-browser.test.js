@@ -215,6 +215,12 @@ test('discharge: a double click writes ONCE; a stale second tab gets «השחר�
       await page.locator('#patients-list .patient-row', { hasText: NAME }).locator('[data-action="release"]').click();
       const modal = page.locator('.modal-backdrop .modal', { hasText: 'שחרור מטופל' });
       await modal.locator('input[name="disposition"][value="completed"]').check();
+      // «המשך טיפול» is required (CHANGELOG-patient-retention-ui.md): the
+      // submit stays disabled until it is picked; «לא ידוע» is never offered.
+      assert.equal(await modal.locator('button[type="submit"]').isDisabled(), true);
+      assert.equal(await modal.locator('input[name="continuity"]').count(), 3);
+      assert.equal(await modal.locator('input[name="continuity"][value="unknown"]').count(), 0);
+      await modal.locator('input[name="continuity"][value="none"]').check();
       await modal.locator('input[name="dischargeDate"]').fill(EXIT);
       await modal.locator('button[type="submit"]').dblclick();
       return modal;
@@ -227,6 +233,7 @@ test('discharge: a double click writes ONCE; a stale second tab gets «השחר�
     }
     assert.equal(await a.page.locator('.credits-modal').count(), 0, 'no credits decision step');
     assert.equal(server.actions.filter((x) => x === 'dischargePatient').length, 1, 'double click → one write');
+    assert.equal(be.rows(DSHEET, 'DISCHARGED_PATIENT_COLUMNS')[0].continuity, 'none', 'the picked «המשך טיפול» reached the sheet');
 
     await discharge(b.page);
     await b.page.waitForFunction(() => document.getElementById('toast-banner').textContent.includes('השחרור כבר נרשם'), null, { timeout: 10000 });
