@@ -224,7 +224,9 @@ test('DISCHARGED_PATIENT_COLUMNS keeps the legacy positional layout (Patients id
   assert.deepStrictEqual(cols.slice(LEGACY_DISCHARGED_COLUMNS.length + 2),
     ['dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId',
       // duplicate-discharge soft delete (2026-10-07), appended LAST
-      'deletedAt', 'deletedBy', 'deleteReason']);
+      'deletedAt', 'deletedBy', 'deleteReason',
+      // «המשך טיפול» (2026-10-20), appended LAST
+      'continuity']);
   assert.strictEqual(cols.filter((c) => c === 'id').length, 1, 'no duplicate id header');
 });
 

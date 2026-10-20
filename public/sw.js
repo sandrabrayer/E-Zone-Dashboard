@@ -274,7 +274,10 @@
 // Stacked on PR #253; live v71 verified 2026-10-19 (v17 never reused).
 // v75 → v76: «מטופל חוזר» (/returning-patient.js added, app.js, style.css, index.html) (CHANGELOG-returning-patient.md).
 // Stacked on PR #254; live v71 verified 2026-10-19 (v17 never reused).
-var CACHE_VERSION = 'v76';
+// v76 → v77: «המשך טיפול» foundation — app.js carries the new `continuity`
+// column of the discharged rows (CHANGELOG-patient-retention-foundation.md).
+// Live v76 verified 2026-10-20 (v17 never reused).
+var CACHE_VERSION = 'v77';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

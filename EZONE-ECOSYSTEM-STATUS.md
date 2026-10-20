@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## «חתכי מטופלים» foundation — `continuity` column — October 20, 2026 (PR open)
+
+Discharged sheet gets `continuity` appended LAST (keys `continued_outpatient` /
+`continued_other` / `none` / `unknown`, default `unknown`). `dischargePatient_` refuses an
+unknown key; new action `setDischargeContinuity` (by id, LockService, single-row cells, AuditLog).
+Pure `lib/patient-retention.js` (stay length, buckets, cohort by entry date). No UI change.
+Code.gs changed (clasp CI on merge); SW v77. See `CHANGELOG-patient-retention-foundation.md`.
+
 ## Landlines on the lead handoff — October 19, 2026 (PR open)
 
 `createLeadFromTherapists_` (server-to-server only) accepts a 9-digit landline

@@ -561,6 +561,13 @@ execution log must read `authorizeSheetsWriteNow: OK — all scopes granted; tem
 write/read/delete passed; ManagersExpectedDischarge ready`. It touches only a temporary sheet
 (deleted) and the existing append-only header. No Script Property or Railway variable changes.
 
+## Discharged sheet `continuity` column — nothing to set (October 20, 2026)
+
+Appended LAST to «מטופלים משוחררים» by `getOrCreateSheet_` on the first discharge
+or `setDischargeContinuity` after the clasp deploy. Blank legacy cells read as
+«לא ידוע». No Script Property, no trigger, no Railway change.
+See `CHANGELOG-patient-retention-foundation.md`.
+
 ## Security
 
 - Credentials live **only** in GitHub Secrets — never committed, never printed;

@@ -72,6 +72,12 @@ const DISPOSITION_LABELS = {
  * source of truth for "which dispositions a discharge can have". */
 const DISCHARGE_DISPOSITIONS = ['completed', 'stopped_early', 'released_outpatient'];
 
+/* «המשך טיפול» — the stable keys of the discharged sheet's `continuity`
+ * column (lib/patient-retention.js CONTINUITY_KEYS and Code.gs
+ * CONTINUITY_KEYS; a guard test pins all three equal). 'unknown' is the
+ * default of every legacy row. */
+const DISCHARGE_CONTINUITY_KEYS = ['continued_outpatient', 'continued_other', 'none', 'unknown'];
+
 /* Meeting-outcome closure model — the outcome recorded after a lead's meeting.
  * Stable keys persist to the sheet (meetingOutcome column via LEAD_COLUMNS);
  * Hebrew labels are render-time only so a UI label rename never invalidates
@@ -3077,6 +3083,12 @@ function normalizeDischargedPatient(p) {
   base.deletedAt       = pickField(p, ['deletedAt']) || '';
   base.deletedBy       = pickField(p, ['deletedBy']) || '';
   base.deleteReason    = pickField(p, ['deleteReason']) || '';
+  /* «המשך טיפול» (appended column, CHANGELOG-patient-retention-foundation.md):
+   * a stable key of DISCHARGE_CONTINUITY_KEYS; blank or anything else (every
+   * legacy row) reads as 'unknown'. Carried so a restore — which upserts this
+   * whole row back — never blanks it (Code.gs also keeps a recorded key). */
+  const continuity     = String(pickField(p, ['continuity', 'המשך טיפול']) || '').trim();
+  base.continuity      = DISCHARGE_CONTINUITY_KEYS.indexOf(continuity) >= 0 ? continuity : 'unknown';
   return base;
 }
 
