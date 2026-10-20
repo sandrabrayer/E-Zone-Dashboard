@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## «ייצוא לאקסל» for every חתך — October 20, 2026 (PR open, stacked on #258)
+
+In-browser .xlsx (`lib/report-xlsx.js`, no library, no server route): «ייצוא הכל לאקסל» = one file,
+7 Hebrew sheets (סיכום, לידים – חתך/רשימה, שהות – חתך, המשך טיפול, מטופלים – רשימה, נתונים חסרים);
+per-section and per-list «ייצוא לאקסל». RTL, frozen bold header, real dates, text phones, % numbers,
+formula-guarded text (the CSV rule). Values read from the on-screen reports. No Code.gs change; SW v79.
+See `CHANGELOG-report-xlsx-export.md`.
+
 ## «חתכי מטופלים» + required «המשך טיפול» — October 20, 2026 (PR open, stacked on #257)
 
 שחרור modal: required «המשך טיפול» (3 real values; submit gated). «מטופלים משוחררים» gets a

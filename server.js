@@ -267,6 +267,7 @@ const ASSETS = createAssetStore({
   '/leads-funnel.js': { file: path.join(__dirname, 'lib', 'leads-funnel.js'), mime: 'application/javascript' },
   '/returning-patient.js': { file: path.join(__dirname, 'lib', 'returning-patient.js'), mime: 'application/javascript' },
   '/patient-retention.js': { file: path.join(__dirname, 'lib', 'patient-retention.js'), mime: 'application/javascript' },
+  '/report-xlsx.js': { file: path.join(__dirname, 'lib', 'report-xlsx.js'), mime: 'application/javascript' },
 });
 
 /* Serve index.html with every asset reference pinned to that file's content
@@ -376,6 +377,10 @@ app.get('/returning-patient.js', sendLibAsset('/returning-patient.js'));
  * window.PatientRetention — pure stay-length / continuity rules, no data.
  * A static code asset like the ones above, not a data route. */
 app.get('/patient-retention.js', sendLibAsset('/patient-retention.js'));
+/* «ייצוא לאקסל» (CHANGELOG-report-xlsx-export.md): lib/report-xlsx.js,
+ * window.ReportXlsx — the in-page .xlsx writer. Code only, no data; the
+ * workbook is built in the browser (no export route). */
+app.get('/report-xlsx.js', sendLibAsset('/report-xlsx.js'));
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 // Patient funder helpers (public/funder.js, global Funder) — loaded before app.js.
 app.get('/funder.js', sendStatic('funder.js', 'application/javascript'));

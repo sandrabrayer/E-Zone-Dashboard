@@ -2943,3 +2943,9 @@ button.mtg-bad-date-lead:hover { background: rgba(255, 176, 32, 0.18); }
 .patient-retention .pr-tag { font-size: 16px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border, #ddd); }
 .pr-cont-set { min-height: 44px; font-size: 16px; }
 .modal .continuity-fieldset .reason-radio { min-height: 44px; }
+
+/* «ייצוא לאקסל» buttons (CHANGELOG-report-xlsx-export.md) — 44px targets. */
+.lf-xlsx-bar, .pr-xlsx-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.lf-list-actions, .pr-list-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.lf-xlsx, .lf-xlsx-all, .lf-xlsx-list, .pr-xlsx, .pr-xlsx-all, .pr-xlsx-list { min-height: 44px; font-size: 16px; }
+.patient-retention .pr-section-title { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }

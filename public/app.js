@@ -6011,10 +6011,13 @@ function leadsFunnelHtml(report, ui) {
   const foot = `${escapeHtml(`${report.population} לידים נוצרו בתקופה`)}`
     + (report.noCreated ? ` · ${escapeHtml(`${report.noCreated} לידים ללא תאריך יצירה לא נספרו`)}` : '');
   return controls
+    + `<div class="lf-xlsx-bar"><button type="button" class="btn small lf-xlsx" data-section="leads">ייצוא לאקסל</button>`
+    + `<button type="button" class="btn small lf-xlsx-all">ייצוא הכל לאקסל</button></div>`
     + `<div class="lf-stats">${stats}</div>`
     + `<div class="lf-foot">${foot}</div>`
     + `<div class="lf-list-head"><span>${escapeHtml((buckets.find(b => b.key === active) || {}).label || '')}</span>`
-    + `<button type="button" class="btn small lf-csv"${list.length ? '' : ' disabled'}>ייצוא CSV</button></div>`
+    + `<span class="lf-list-actions"><button type="button" class="btn small lf-csv"${list.length ? '' : ' disabled'}>ייצוא CSV</button>`
+    + `<button type="button" class="btn small lf-xlsx-list">ייצוא לאקסל</button></span></div>`
     + body;
 }
 
@@ -6047,6 +6050,15 @@ function renderLeadsFunnel() {
   el.querySelectorAll('.lf-stat').forEach(b => { b.onclick = () => { ui.bucket = b.dataset.bucket; renderLeadsFunnel(); }; });
   const csv = el.querySelector('.lf-csv');
   if (csv) csv.onclick = () => exportLeadsFunnelCsv(report, ui.bucket);
+  // «ייצוא לאקסל» (CHANGELOG-report-xlsx-export.md): built in the page from
+  // THIS report — the numbers on the screen, never recomputed differently.
+  const xs = el.querySelector('.lf-xlsx');
+  if (xs) xs.onclick = () => exportReportXlsx('leads', reportXlsxContext(report, null, ui.from, ui.to));
+  const xa = el.querySelector('.lf-xlsx-all');
+  if (xa) xa.onclick = () => exportAllReportsXlsx(ui.from, ui.to);
+  const xl = el.querySelector('.lf-xlsx-list');
+  if (xl) xl.onclick = () => exportListXlsx('leads', (report.ok && report.rows[ui.bucket]) || [], ui.from, ui.to,
+    'לידים · ' + (((F && F.BUCKETS) || []).find(b => b.key === ui.bucket) || {}).label);
 }
 
 /* The CSV of the bucket shown, as a download. Built in the page (no server
@@ -6193,14 +6205,17 @@ function patientRetentionHtml(report, ui, opts) {
           + (sel.kind === 'missing' ? `<td>${escapeHtml(R.MISSING_REASONS[r.reason] || '')}</td>` : '') + '</tr>';
       }).join('')}</tbody></table></div>`
     : '<div class="pr-empty">אין מטופלים ברשימה זו בתקופה</div>';
+  const xlsxBtn = (section) => `<button type="button" class="btn small pr-xlsx" data-section="${escapeHtml(section)}">ייצוא לאקסל</button>`;
   return controls
-    + `<div class="pr-section-title">משך שהות (מתוך ${escapeHtml(String(report.cohortSize))} שנכנסו בתקופה)</div>`
+    + '<div class="pr-xlsx-bar"><button type="button" class="btn small pr-xlsx-all">ייצוא הכל לאקסל</button></div>'
+    + `<div class="pr-section-title"><span>משך שהות (מתוך ${escapeHtml(String(report.cohortSize))} שנכנסו בתקופה)</span>${xlsxBtn('retention')}</div>`
     + `<div class="pr-stats">${lengthCards}</div>${stillBreak}${customCards}`
-    + `<div class="pr-section-title">המשך טיפול (מתוך ${escapeHtml(String(report.dischargedCount))} ששוחררו)</div>`
+    + `<div class="pr-section-title"><span>המשך טיפול (מתוך ${escapeHtml(String(report.dischargedCount))} ששוחררו)</span>${xlsxBtn('continuity')}</div>`
     + `<div class="pr-stats">${contCards}</div>`
     + `<div class="pr-section-title">משך שהות × המשך טיפול</div>${cross}${missing}`
     + `<div class="pr-list-head"><span>${escapeHtml(R.listTitle(sel, report))} (${escapeHtml(String(list.length))})</span>`
-    + `<button type="button" class="btn small pr-csv"${list.length ? '' : ' disabled'}>ייצוא CSV</button></div>`
+    + `<span class="pr-list-actions"><button type="button" class="btn small pr-csv"${list.length ? '' : ' disabled'}>ייצוא CSV</button>`
+    + '<button type="button" class="btn small pr-xlsx-list">ייצוא לאקסל</button></span></div>'
     + body;
 }
 
@@ -6244,6 +6259,16 @@ function renderPatientRetention() {
   });
   const csv = el.querySelector('.pr-csv');
   if (csv) csv.onclick = () => exportPatientRetentionCsv(report, ui.sel);
+  // «ייצוא לאקסל» (CHANGELOG-report-xlsx-export.md) — from THIS report.
+  el.querySelectorAll('.pr-xlsx').forEach(b => {
+    b.onclick = () => exportReportXlsx(b.dataset.section, reportXlsxContext(null, report, ui.from, ui.to));
+  });
+  const xa = el.querySelector('.pr-xlsx-all');
+  if (xa) xa.onclick = () => exportAllReportsXlsx(ui.from, ui.to);
+  const xl = el.querySelector('.pr-xlsx-list');
+  const R = patientRetentionLib();
+  if (xl && R) xl.onclick = () => exportListXlsx(ui.sel && ui.sel.kind === 'missing' ? 'missing' : 'patients',
+    R.listFor(report, ui.sel), ui.from, ui.to, R.listTitle(ui.sel, report));
 }
 
 /* The CSV of the list shown, as a download. Built in the page (no server
@@ -6260,6 +6285,65 @@ function exportPatientRetentionCsv(report, sel) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(href), 1000);
+}
+
+/* ===== «ייצוא לאקסל» — every חתך as .xlsx (CHANGELOG-report-xlsx-export.md) =====
+ * lib/report-xlsx.js (window.ReportXlsx) writes the workbook in the page —
+ * no server route, no third-party library. Every sheet is built from report
+ * objects computed by the SAME functions the panels render with
+ * (leadsFunnelReport / patientRetentionReport), so the file equals the
+ * screen. Text cells are formula-guarded like the CSV. */
+function reportXlsxLib() {
+  return (typeof ReportXlsx !== 'undefined' && ReportXlsx && typeof ReportXlsx.writeXlsx === 'function') ? ReportXlsx : null;
+}
+
+/* The workbook context: either report may be null (a section export). */
+function reportXlsxContext(funnel, retention, from, to) {
+  return { funnel, retention, from, to, exportedAt: new Date(), houseName: retentionHouseName };
+}
+
+/* bytes → a download. */
+function downloadXlsx(bytes, filename) {
+  const X = reportXlsxLib();
+  const blob = new Blob([bytes], { type: X ? X.XLSX_MIME : 'application/octet-stream' });
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 1000);
+}
+
+/* One section's sheets ('leads' | 'retention' | 'continuity'). */
+function exportReportXlsx(section, ctx) {
+  const X = reportXlsxLib();
+  if (!X) { showError('הייצוא לאקסל לא נטען — רעננו את הדף'); return; }
+  const spec = X.sectionWorkbook(section, ctx);
+  if (!spec) return;
+  const name = { leads: 'leads-funnel', retention: 'retention', continuity: 'continuity' }[section];
+  downloadXlsx(X.writeXlsx(spec), X.sectionFilename(name, ctx.from, ctx.to));
+}
+
+/* «ייצוא הכל לאקסל» — ONE file, both reports for the period [from, to]
+ * (the retention custom threshold is the one set on its panel). */
+function exportAllReportsXlsx(from, to) {
+  const X = reportXlsxLib();
+  if (!X) { showError('הייצוא לאקסל לא נטען — רעננו את הדף'); return; }
+  const funnel = leadsFunnelReport(state, from, to);
+  const retention = patientRetentionReport(state, { from, to, threshold: patientRetentionUi().threshold });
+  if (!funnel.ok && !retention.ok) { showError('יש לבחור טווח תאריכים תקין'); return; }
+  const ctx = reportXlsxContext(funnel, retention, from, to);
+  downloadXlsx(X.writeXlsx(X.fullWorkbook(ctx)), X.fullFilename(from, to));
+}
+
+/* A click-a-count list as ONE sheet. kind: 'patients' | 'leads' | 'missing'. */
+function exportListXlsx(kind, rows, from, to, title) {
+  const X = reportXlsxLib();
+  if (!X) { showError('הייצוא לאקסל לא נטען — רעננו את הדף'); return; }
+  const spec = X.listWorkbook(kind, rows, { title, houseName: retentionHouseName });
+  downloadXlsx(X.writeXlsx(spec), X.sectionFilename(kind === 'leads' ? 'leads-list' : 'patients-list', from, to));
 }
 
 /* The «לא ידוע — עדכון» control in a «מטופלים משוחררים» row (DOM, text only). */
