@@ -284,8 +284,8 @@ test('Excel: a formula-looking name is text, never a formula', async () => {
 
 /* ---------- wiring ---------- */
 
-test('wiring: no Code.gs change, SW bumped to v80, 44px targets', () => {
+test('wiring: no Code.gs change, SW bumped to v80+ (monotonic), 44px targets', () => {
   assert.equal(read('apps-script', 'Code.gs').includes('computeCompletion'), false);
-  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(read('public', 'sw.js'))[1], 'v80');
+  assert.ok(Number(/var CACHE_VERSION = 'v(\d+)';/.exec(read('public', 'sw.js'))[1]) >= 80);
   assert.match(read('public', 'style.css'), /\.pr-comp-count, \.patient-retention \.pr-comp-csv, \.patient-retention \.pr-comp-threshold \{ min-height: 44px; font-size: 16px; \}/);
 });
