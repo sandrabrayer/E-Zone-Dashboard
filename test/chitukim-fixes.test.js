@@ -381,7 +381,7 @@ test('showRetryToast writes text only and wires «נסו שוב»', () => {
 
 /* ---------- wiring ---------- */
 
-test('wiring: delegated listener bound once; inputs never re-render from `change` directly; toast markup; CSS 44px; no Code.gs change; SW v81', () => {
+test('wiring: delegated listener bound once; inputs never re-render from `change` directly; toast markup; CSS 44px; no Code.gs change; SW v81+', () => {
   const APP = read('public', 'app.js');
   const block = APP.slice(APP.indexOf('function renderPatientRetention('), APP.indexOf('/* A Hebrew error toast'));
   assert.doesNotMatch(block, /\.onchange\s*=|\.onclick\s*=/, 'no per-render handlers');
@@ -395,5 +395,5 @@ test('wiring: delegated listener bound once; inputs never re-render from `change
   assert.match(CSS, /\.retry-toast \.btn \{ min-height: 44px; min-width: 44px;/);
   assert.equal(read('apps-script', 'Code.gs').includes('stillSubLine'), false, 'no Code.gs change');
   const SW = read('public', 'sw.js');
-  assert.equal(/var CACHE_VERSION = 'v(\d+)';/.exec(SW)[1], '81');
+  assert.ok(Number(/var CACHE_VERSION = 'v(\d+)';/.exec(SW)[1]) >= 81, 'SW v81 or later (monotonic)');
 });

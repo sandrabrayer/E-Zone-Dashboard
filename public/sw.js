@@ -289,7 +289,9 @@
 // bucket sub-lines, spinners + retry toast (app.js, style.css, index.html,
 // patient-retention.js, report-xlsx.js) (CHANGELOG-chitukim-fixes.md).
 // Live v80 verified 2026-10-20 (v17 never reused).
-var CACHE_VERSION = 'v81';
+// v81 → v82: «ועדות קרובות» from the coordinators feed — «לא זמין» state + hint
+// (/committee-alerts.js) (CHANGELOG-committees-from-coordinators.md). Live v81 expected after #262 (monotonic).
+var CACHE_VERSION = 'v82';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

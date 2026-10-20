@@ -1752,7 +1752,7 @@ function handle_(params) {
     if (action === 'getCommitteesForCoordinators') {
       const committeesAuth = coordinatorsCommitteesAuth_(params);
       if (committeesAuth !== 'ok') return jsonOut_(coordinatorsCommitteesRefusal_(committeesAuth));
-      return jsonOut_(getCommitteesForCoordinators_());
+      return jsonOut_(getCommitteesForCoordinators_(params));
     }
     if (action === 'getPatientsForCoordinators' || action === 'recordDischargeFromCoordinators') {
       if (!coordinatorsPatientsAuthOk_(params)) {
@@ -7555,10 +7555,15 @@ function coordinatorsCommitteesRefusal_(auth) {
   return auth === 'not_configured' ? { ok: false, error: 'unauthorized', reason: 'not_configured' } : { ok: false, error: 'unauthorized' };
 }
 
-function getCommitteesForCoordinators_() {
+/* `range: 'future'` (CHANGELOG-committees-from-coordinators.md, 20 Oct 2026):
+ * every CURRENT committee dated today or later (no upper bound) — used ONCE by
+ * the coordinators' editor-run import `importManagersCommitteesNow`, now that
+ * the coordinators own committees. Same keys, same gate; default unchanged. */
+function getCommitteesForCoordinators_(params) {
   const todayIso = committeeToday_();
   const t = parseDate_(todayIso);
-  const lastIso = ymdOf_(new Date(t.getFullYear(), t.getMonth(), t.getDate() + COORD_COMMITTEE_FEED_DAYS));
+  const future = !!params && String(params.range == null ? '' : params.range).trim() === 'future';
+  const lastIso = future ? '9999-12-31' : ymdOf_(new Date(t.getFullYear(), t.getMonth(), t.getDate() + COORD_COMMITTEE_FEED_DAYS));
   const inHouseToday = parseDate_(todayISODate_());
   const patients = readPatientsForBonus_();
   const raw = readSheet_(getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS), PATIENT_COLUMNS);
@@ -13754,7 +13759,10 @@ function managersWork_(params) {
   if (op === 'logUpdate') return mwLogUpdate_(caller, params);
   if (op === 'houseCost') return mwHouseCost_(caller, params);
   if (op === 'dischargeSet') return mwDischargeSet_(caller, params);
-  if (op === 'committeeSet') return mwCommitteeSet_(caller, params);
+  // Committees are set by the coordinators from 20 Oct 2026
+  // (CHANGELOG-committees-from-coordinators.md): refused server-side, nothing
+  // read or written. mwCommitteeSet_ stays only as history of the old path.
+  if (op === 'committeeSet') return { ok: false, error: 'committee_read_only' };
   return { ok: false, error: 'unknown_op' };
 }
 
@@ -13926,6 +13934,128 @@ function mwTeam_(key, todayIso) {
   };
 }
 
+/* ===== Committees from the coordinators (CHANGELOG-committees-from-coordinators.md) =====
+ *
+ * Sandra (20 Oct 2026): the coordinators SET committees (date, time, type,
+ * participants, house) in their app; the managers and this Dashboard only
+ * READ them. One reader for both: the coordinators Apps Script's read-only
+ * action `getCommitteesForManagers`, behind its own Script Property
+ * MANAGERS_READ_SECRET there.
+ *
+ * Script Properties here (never in code, both trimmed):
+ *   COORDINATORS_SHEETS_URL      — the coordinators Apps Script /exec URL;
+ *   COORDINATORS_MANAGERS_SECRET — = the coordinators' MANAGERS_READ_SECRET.
+ *
+ * mwCoordinatorsCommittees_() →
+ *   { available:true, today, items:[{ id, house, date, time, type, participants, patientName, updatedAt }] }
+ *   | { available:false, reason }
+ * reasons: not_configured (our properties unset / not an /exec URL),
+ *   coordinators_not_configured, unauthorized, unknown_action (an older
+ *   coordinators deploy), unreachable, http_error, bad_response, bad_contract.
+ * FAIL-CLOSED contract: ONE entry off the exact key set / types / lengths →
+ * bad_contract, nothing shown (never a partial list that looks complete).
+ * Cache: the all-houses OK answer 5 minutes; a failure 60 seconds (so a slow
+ * or down coordinators script is not called on every page open). One log line
+ * per fetch — reason / status / count / ms; never a name or a secret. */
+const COORD_MANAGERS_URL_PROP = 'COORDINATORS_SHEETS_URL';
+const COORD_MANAGERS_SECRET_PROP = 'COORDINATORS_MANAGERS_SECRET';
+const MW_CM_FEED_ACTION = 'getCommitteesForManagers';
+const MW_CM_FEED_KEYS = ['date', 'house', 'id', 'participants', 'patientName', 'time', 'type', 'updatedAt'];
+const MW_CM_MAX = { type: 120, patientName: 120, participants: 300, updatedAt: 40 };
+const MW_CM_CACHE_KEY = 'mw:coord-committees:v1';
+const MW_CM_CACHE_OK_S = 300;
+const MW_CM_CACHE_FAIL_S = 60;
+
+/* One feed entry exactly on contract? */
+function mwCmEntryOk_(c) {
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return false;
+  if (Object.keys(c).sort().join(',') !== MW_CM_FEED_KEYS.join(',')) return false;
+  for (let i = 0; i < MW_CM_FEED_KEYS.length; i++) if (typeof c[MW_CM_FEED_KEYS[i]] !== 'string') return false;
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(c.id)) return false;
+  if (MANAGER_HOUSES.indexOf(c.house) < 0) return false;
+  if (!coordIsoDateClean_(c.date)) return false;
+  if (c.time !== '' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(c.time)) return false;
+  return Object.keys(MW_CM_MAX).every(function (k) { return c[k].length <= MW_CM_MAX[k]; });
+}
+
+function mwCmLog_(reason, status, count, t0) {
+  console.log('[mw] committeesFeed reason=' + reason + ' status=' + (Number(status) || 0) + ' count=' + (Number(count) || 0) + ' ms=' + (Date.now() - t0));
+}
+
+function mwCoordinatorsCommittees_() {
+  const hit = cacheGetJson_(MW_CM_CACHE_KEY);
+  if (hit && typeof hit.available === 'boolean') return hit;
+  const t0 = Date.now();
+  const fail = function (reason, status) {
+    const out = { available: false, reason: reason };
+    mwCmLog_(reason, status, 0, t0);
+    cachePutJson_(MW_CM_CACHE_KEY, out, MW_CM_CACHE_FAIL_S);
+    return out;
+  };
+  const props = PropertiesService.getScriptProperties();
+  const url = String(props.getProperty(COORD_MANAGERS_URL_PROP) || '').trim();
+  const secret = String(props.getProperty(COORD_MANAGERS_SECRET_PROP) || '').trim();
+  if (!url || !secret || !/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(url)) {
+    const out = { available: false, reason: 'not_configured' };
+    mwCmLog_('not_configured', 0, 0, t0);
+    return out;   // not cached: setting the properties takes effect at once
+  }
+  let resp;
+  try {
+    resp = UrlFetchApp.fetch(url, {
+      method: 'post', contentType: 'application/json',
+      payload: JSON.stringify({ action: MW_CM_FEED_ACTION, secret: secret }),
+      muteHttpExceptions: true, followRedirects: true,
+    });
+  } catch (e) {
+    return fail('unreachable', 0);
+  }
+  const status = resp.getResponseCode();
+  if (status < 200 || status >= 300) return fail('http_error', status);
+  let body = null;
+  try { body = JSON.parse(resp.getContentText()); } catch (e) { body = null; }
+  if (!body || typeof body !== 'object') return fail('bad_response', status);
+  if (body.ok !== true) {
+    const err = String(body.error == null ? '' : body.error);
+    if (err === 'not_configured') return fail('coordinators_not_configured', status);
+    if (err === 'unauthorized') return fail('unauthorized', status);
+    if (/^unknown action/.test(err)) return fail('unknown_action', status);
+    return fail('bad_response', status);
+  }
+  if (!coordIsoDateClean_(body.today) || !Array.isArray(body.committees)) return fail('bad_response', status);
+  for (let i = 0; i < body.committees.length; i++) {
+    if (!mwCmEntryOk_(body.committees[i])) return fail('bad_contract', status);
+  }
+  const items = body.committees.map(function (c) {
+    return {
+      id: c.id, house: c.house, date: c.date, time: c.time,
+      type: coordTextClean_(c.type, MW_CM_MAX.type), participants: coordTextClean_(c.participants, MW_CM_MAX.participants),
+      patientName: coordTextClean_(c.patientName, MW_CM_MAX.patientName), updatedAt: coordTextClean_(c.updatedAt, MW_CM_MAX.updatedAt),
+    };
+  });
+  const out = { available: true, today: body.today, items: items };
+  mwCmLog_('ok', status, items.length, t0);
+  cachePutJson_(MW_CM_CACHE_KEY, out, MW_CM_CACHE_OK_S);
+  return out;
+}
+
+function mwCmSort_(a, b) {
+  const ka = a.date + ' ' + (a.time || '99:99'), kb = b.date + ' ' + (b.time || '99:99');
+  return ka < kb ? -1 : ka > kb ? 1 : 0;
+}
+
+/* houseData `committees`: ONE house (the caller's), today and later (Israel
+ * time — a cached copy across midnight drops yesterday), by date then time. */
+function mwHouseCommittees_(house) {
+  let feed;
+  try { feed = mwCoordinatorsCommittees_(); } catch (e) { feed = { available: false, reason: 'unreachable' }; }
+  if (!feed || !feed.available) return { available: false, reason: (feed && feed.reason) || 'unreachable' };
+  const todayIso = committeeToday_();
+  const items = feed.items.filter(function (c) { return c.house === house && c.date >= todayIso; }).sort(mwCmSort_)
+    .map(function (c) { return { id: c.id, date: c.date, time: c.time, type: c.type, participants: c.participants, patientName: c.patientName }; });
+  return { available: true, today: todayIso, items: items };
+}
+
 /* Stage 3 — the house's manpower cost (14 Oct 2026), from the staffing
  * Apps Script feed getHouseCostsForManagers (house TOTALS only, never a
  * worker). Script Properties: STAFFING_SHEETS_URL (staffing /exec) and
@@ -14003,10 +14133,9 @@ function mwHouseData_(caller, params) {
   // admissions this month.
   const patients = readPatientsForBonus_();
   const discharges = mwReadDischarges_(key);
-  const committees = mwReadCommittees_(key);
   const inHouse = mwInHousePatients_(patients, pid, today).map(function (p) {
     const k = mwDischargeKey_(key, p.name, p.entryDate);
-    return Object.assign({}, p, { expectedDischarge: mwDischargePublic_(discharges[k]), committee: mwCommitteePublic_(committees[k]) });
+    return Object.assign({}, p, { expectedDischarge: mwDischargePublic_(discharges[k]) });
   });
   // A return from a temporary exit is not a new admission (from Oct 2026).
   const chains = stayContinuityApplies_(ym) ? stayChains_(patients, pid) : {};
@@ -14082,7 +14211,11 @@ function mwHouseData_(caller, params) {
   return {
     ok: true, house: key, month: ym, today: todayIso,
     patients: inHouse, expectedDischargeSupported: true, expectedDischargeModes: MW_DISCHARGE_MODES.slice(),
-    committeeSupported: true, committeeToday: committeeToday_(),
+    // Committees come from the coordinators (20 Oct 2026): the per-patient
+    // editor is gone (committeeSupported:false), the house's list is
+    // `committees` — always the CALLER's house, decided above, never the client.
+    committeeSupported: false, committeeToday: committeeToday_(),
+    committees: mwHouseCommittees_(key),
     outpatients: outpatients,
     visits: visits, admissions: admissions, expectedAdmissions: expectedAdmissions,
     logs: logs, followUps: followUps,
@@ -14496,19 +14629,19 @@ function expectedDischargesForDashboard_() {
 
 /* ===== Upcoming committees — Dashboard read (CHANGELOG-dashboard-committees.md) =====
  *
- * Sandra (15 Oct 2026, PR 3): the Dashboard shows, read-only, the committee
- * («ועדה») dates the house managers set in the Managers app. ONE source of
- * truth: the ManagersCommittee sheet and the readers houseData uses
- * (mwInHousePatients_ + mwReadCommittees_ — the LAST row of a stay wins).
- * Never writes: no sheet, no cell, no lock.
+ * Sandra (15 Oct 2026, PR 3): the Dashboard shows, read-only, the upcoming
+ * committees («ועדה»). Since 20 Oct 2026 the coordinators set them: ONE
+ * source of truth, the coordinators feed (mwCoordinatorsCommittees_, the same
+ * reader houseData uses); `name` = the patient name or else the committee
+ * type, `label` = type · time · participants. Feed down → available:false +
+ * reason and NO houses (the card says «לא זמין»). Never writes.
  *
  * action=upcomingCommittees (no params) →
- *   { ok, today, committeeSupported: true, leadDays,
- *     houses: [{ house, label, patients: [{ name, entryDate,
- *       committee: { date, label, editedAt, editedBy } }] }] }
- * Data minimisation: only patients in the house TODAY whose current
- * committee date is today .. today + COMMITTEE_LEAD_DAYS (Israel time) — the
- * window the card shows. No phone, money or notes. The list key is `houses`,
+ *   { ok, today, committeeSupported: true, leadDays, available, [reason],
+ *     houses: [{ house, label, patients: [{ name,
+ *       committee: { date, label, editedAt, editedBy:'' } }] }] }
+ * Data minimisation: committees dated today .. today + COMMITTEE_LEAD_DAYS
+ * (Israel time) — the window the card shows. No phone, money or notes. The list key is `houses`,
  * so the proxy's response summary log never carries a patient name.
  * Gate: the same as expectedDischarges (expectedDischargesRefused_):
  * PROXY_SECRET + a verified personal session, any logged-in user. */
@@ -14518,19 +14651,23 @@ function upcomingCommitteesForDashboard_() {
   const todayIso = committeeToday_();
   const t = parseDate_(todayIso);
   const lastIso = ymdOf_(new Date(t.getFullYear(), t.getMonth(), t.getDate() + COMMITTEE_LEAD_DAYS));
-  const patients = readPatientsForBonus_();
-  const inHouseToday = parseDate_(todayISODate_());
+  let feed;
+  try { feed = mwCoordinatorsCommittees_(); } catch (e) { feed = { available: false, reason: 'unreachable' }; }
+  if (!feed || !feed.available) {
+    // Honest «לא זמין» — never an empty list that looks like "no committees".
+    return { ok: true, today: todayIso, committeeSupported: true, leadDays: COMMITTEE_LEAD_DAYS, available: false, reason: (feed && feed.reason) || 'unreachable', houses: [] };
+  }
   const houses = MANAGER_HOUSES.map(function (key) {
-    const committees = mwReadCommittees_(key);
-    const list = [];
-    mwInHousePatients_(patients, MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[key], inHouseToday).forEach(function (p) {
-      const cur = committees[mwDischargeKey_(key, p.name, p.entryDate)];
-      if (!cur || cur.date < todayIso || cur.date > lastIso) return;
-      list.push({ name: coordTextClean_(p.name, 80), entryDate: p.entryDate, committee: mwCommitteePublic_(cur) });
-    });
+    const list = feed.items.filter(function (c) { return c.house === key && c.date >= todayIso && c.date <= lastIso; }).sort(mwCmSort_)
+      .map(function (c) {
+        return {
+          name: c.patientName || c.type,
+          committee: { date: c.date, label: [c.type, c.time, c.participants].filter(Boolean).join(' · '), editedAt: c.updatedAt, editedBy: '' },
+        };
+      });
     return { house: key, label: MANAGER_HOUSE_NAMES[key], patients: list };
   });
-  return { ok: true, today: todayIso, committeeSupported: true, leadDays: COMMITTEE_LEAD_DAYS, houses: houses };
+  return { ok: true, today: todayIso, committeeSupported: true, leadDays: COMMITTEE_LEAD_DAYS, available: true, houses: houses };
 }
 
 function mwLogAdd_(caller, params) {

@@ -207,35 +207,58 @@ const ORTAL = () => gsActor('ortal', 'אורטל', ['controller']);
 const read_ = (g, who) => arr(g.post({ action: 'upcomingCommittees', ...who }));
 const cmSet = (mw, who, body) => mw({ op: 'committeeSet', previousDate: '', previousLabel: '', ...who, ...body });
 
-test('C: every house; only in-house patients whose committee is today..+7 (data minimisation); last row wins', () => {
-  const { g, mw } = bootGs();
-  cmSet(mw, MW_ORAN, { patientName: 'דנה לוי', entryDate: '2026-09-01', committeeDate: '2026-10-20', label: 'א' });
-  cmSet(mw, MW_ORAN, { patientName: 'דנה לוי', entryDate: '2026-09-01', committeeDate: '2026-10-22', label: 'ועדת השמה', previousDate: '2026-10-20', previousLabel: 'א' });
-  cmSet(mw, MW_ORAN, { patientName: 'רחוק', entryDate: '2026-10-01', committeeDate: '2026-10-23' });
-  cmSet(mw, MW_SANDRA, { patientName: 'יוסי כהן', entryDate: '2026-09-10', committeeDate: '2026-10-15' });
-  const rows = g.sandbox.__sheets.ManagersCommittee.grid.length;
+/* Since 20 Oct 2026 the coordinators set committees; upcomingCommittees reads
+ * their feed (CHANGELOG-committees-from-coordinators.md). Stubbed UrlFetchApp. */
+const COORD_URL = 'https://script.google.com/macros/s/COORD-TEST/exec';
+const COORD_SECRET = 'coord-managers-secret-TEST-0123456789';
+const FE = (o) => ({ id: 'c-' + Math.random().toString(36).slice(2, 10), house: 'ramot', date: TODAY, time: '', type: 'ועדת השמה', participants: '', patientName: '', updatedAt: '2026-10-10T09:00:00.000Z', ...o });
+function withFeed(g, committees, extra) {
+  g.sandbox.__props.COORDINATORS_SHEETS_URL = COORD_URL;
+  g.sandbox.__props.COORDINATORS_MANAGERS_SECRET = COORD_SECRET;
+  const calls = [];
+  g.sandbox.UrlFetchApp = { fetch: (url, opts) => {
+    calls.push({ url, opts });
+    const body = extra && extra.body ? extra.body : { ok: true, today: TODAY, committees };
+    return { getResponseCode: () => (extra && extra.status) || 200, getContentText: () => JSON.stringify(body) };
+  } };
+  return calls;
+}
+
+test('C: from the coordinators feed — every house; only today..+7; name = patient or type; label = type · time · participants', () => {
+  const { g } = bootGs();
+  const calls = withFeed(g, [
+    FE({ house: 'ramot', date: '2026-10-22', time: '10:30', type: 'ועדת השמה', participants: 'אורן, ד"ר כהן', patientName: 'דנה לוי' }),
+    FE({ house: 'ramot', date: '2026-10-23', patientName: 'רחוק' }),
+    FE({ house: 'efroni', date: TODAY, type: 'ועדת המשך', patientName: '' }),
+    FE({ house: 'ramot', date: '2026-10-14', patientName: 'אתמול' }),
+  ]);
   const r = read_(g, VERED());
-  assert.deepStrictEqual([r.ok, r.today, r.committeeSupported, r.leadDays], [true, TODAY, true, 7]);
+  assert.deepStrictEqual([r.ok, r.today, r.committeeSupported, r.leadDays, r.available], [true, TODAY, true, 7, true]);
   assert.deepStrictEqual(r.houses.map((h) => h.house), ['raanana', 'ramot', 'efroni', 'rehab', 'pardes']);
-  assert.ok(!('patients' in r), 'no top-level patients array');
   const ramot = r.houses.find((h) => h.house === 'ramot');
   assert.strictEqual(ramot.label, 'רמות השבים');
-  assert.deepStrictEqual(ramot.patients.map((p) => [p.name, p.committee.date, p.committee.label]), [['דנה לוי', '2026-10-22', 'ועדת השמה']], '+8 is not sent');
-  assert.deepStrictEqual(Object.keys(ramot.patients[0]).sort(), ['committee', 'entryDate', 'name'], 'no phone / money / notes');
-  assert.deepStrictEqual(r.houses.find((h) => h.house === 'efroni').patients.map((p) => p.name), ['יוסי כהן'], 'efroni ↔ arfoni');
-  assert.strictEqual(g.sandbox.__sheets.ManagersCommittee.grid.length, rows, 'read-only');
+  assert.deepStrictEqual(ramot.patients, [{ name: 'דנה לוי', committee: { date: '2026-10-22', label: 'ועדת השמה · 10:30 · אורן, ד"ר כהן', editedAt: '2026-10-10T09:00:00.000Z', editedBy: '' } }], '+8 and yesterday are not sent');
+  assert.deepStrictEqual(r.houses.find((h) => h.house === 'efroni').patients.map((p) => p.name), ['ועדת המשך'], 'no patient → the type');
+  assert.ok(!g.sandbox.__sheets.ManagersCommittee, 'never touches the old sheet');
+  assert.strictEqual(calls.length, 1);
+  assert.deepStrictEqual(JSON.parse(calls[0].opts.payload), { action: 'getCommitteesForManagers', secret: COORD_SECRET });
   const m = CA.dashboardModel(r, r.today);
-  assert.deepStrictEqual([m.today.map((a) => a.name), m.week.map((a) => a.name)], [['יוסי כהן'], ['דנה לוי']]);
+  assert.deepStrictEqual([m.today.map((a) => a.name), m.week.map((a) => a.name)], [['ועדת המשך'], ['דנה לוי']]);
+  assert.strictEqual(m.week[0].setBy, 'נקבע ב-10/10/26');
 });
 
-test('C: a past committee is never sent; a read never creates the sheet', () => {
-  const { g, mw } = bootGs();
-  assert.strictEqual(read_(g, VERED()).ok, true);
-  assert.ok(!g.sandbox.__sheets.ManagersCommittee);
-  cmSet(mw, MW_ORAN, { patientName: 'דנה לוי', entryDate: '2026-09-01', committeeDate: '2026-10-15' });
-  const later = bootGs({ today: '2026-10-16' });
-  later.g.sandbox.__sheets.ManagersCommittee = g.sandbox.__sheets.ManagersCommittee;
-  assert.deepStrictEqual(read_(later.g, VERED()).houses.find((h) => h.house === 'ramot').patients, []);
+test('C: feed down → available:false + reason and NO houses (the card says «לא זמין», never an empty-looking list)', () => {
+  const { g } = bootGs();
+  const r = read_(g, VERED());
+  assert.deepStrictEqual([r.ok, r.committeeSupported, r.available, r.reason, r.houses], [true, true, false, 'not_configured', []]);
+  const m = CA.dashboardModel(r, r.today);
+  assert.deepStrictEqual([m.supported, m.available, m.reason, m.count], [true, false, 'not_configured', 0]);
+  const doc = fakeDoc();
+  const card = doc.createElement('div');
+  CA.renderCard(doc, card, m);
+  assert.match(card.textContent, /הוועדות לא זמינות כרגע — הנתון מאפליקציית הרכזים לא התקבל/);
+  assert.doesNotMatch(card.textContent, /אין ועדות/, 'never "no committees" when the data did not arrive');
+  assert.match(byClass(card, 'cmt-hint')[0].textContent, /נקבעות באפליקציית הרכזים/);
 });
 
 test('C: authorization — every logged-in user (Ortal included); no / wrong secret or a non-personal session → refused, both modes', () => {

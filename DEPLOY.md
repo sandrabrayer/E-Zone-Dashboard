@@ -525,6 +525,36 @@ pasted with a trailing space or newline still matches. An unset value here answe
 «הסוד לא הוגדר» instead of «הסוד לא תואם». Check from the coordinators editor:
 `previewCommitteeSyncNow()`.
 
+## Committees from the coordinators — TWO Script Properties (October 20, 2026)
+
+`CHANGELOG-committees-from-coordinators.md`. From now on the coordinators set committees, and the
+Managers app and the dashboard card «ועדות קרובות» only read them. This Apps Script reads the
+coordinators' read-only action `getCommitteesForManagers`.
+
+1. **Coordinators Apps Script** → Project Settings → Script Properties → add
+   **`MANAGERS_READ_SECRET`** = a new random value of 32+ characters (the coordinators PR adds the
+   action).
+2. **This (Dashboard) Apps Script** → Project Settings → Script Properties → add:
+
+   | Property | Value |
+   |---|---|
+   | `COORDINATORS_SHEETS_URL` | the coordinators Apps Script Web App URL (`https://script.google.com/macros/s/…/exec`, the same one the coordinators' Railway `SHEETS_URL` uses) |
+   | `COORDINATORS_MANAGERS_SECRET` | the SAME value as the coordinators' `MANAGERS_READ_SECRET` |
+
+Both values are trimmed. The `script.external_request` scope is already granted here
+(`appsscript.json`; the dashboard already calls the staffing feed), so no new consent is needed.
+
+Until the properties are set, Managers shows «הוועדות לא זמינות כרגע» and the dashboard card shows
+«הוועדות לא זמינות כרגע — הנתון מאפליקציית הרכזים לא התקבל». Nothing else changes. Results are
+cached for 5 minutes (a failure for 60 s), so a fix shows within a minute.
+
+`managersWork` op `committeeSet` is refused (`committee_read_only`). The append-only
+`ManagersCommittee` sheet is kept as history and is never written again. No Railway variable.
+
+**One-time import** (after the coordinators deploy): the coordinators editor-run
+`importManagersCommitteesNow` reads `getCommitteesForCoordinators` with `range:'future'` (added
+here) to copy the managers' future committee dates into the coordinators' sheet.
+
 ## Alumni feed `getDischargedRoster` — ONE Script Property (October 18, 2026)
 
 `CHANGELOG-discharged-roster-endpoint.md`. READ-ONLY feed for the E-Zone Therapists app's alumni

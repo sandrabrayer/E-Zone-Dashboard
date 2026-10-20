@@ -1,5 +1,19 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Committees come from the coordinators — October 20, 2026 (PR open)
+
+- Committees (date, time, type, participants, house) are set in ezone-coordinators.
+- This Apps Script reads them through the coordinators' read-only `getCommitteesForManagers`.
+  - Script Properties here: `COORDINATORS_SHEETS_URL` and `COORDINATORS_MANAGERS_SECRET` (= the
+    coordinators' `MANAGERS_READ_SECRET`).
+  - It is fail-closed, has a strict contract and is cached 5 min.
+- Consumers:
+  - Managers `houseData.committees` (the caller's house only);
+  - the dashboard «ועדות קרובות» card (an honest «לא זמין» when the feed is down).
+- `committeeSet` is refused (`committee_read_only`). `ManagersCommittee` is kept as history and
+  never written again.
+- `getCommitteesForCoordinators` gains `range:'future'` for the one-time coordinators import.
+- SW v82. Details: `CHANGELOG-committees-from-coordinators.md`, `DEPLOY.md`.
 ## «חתכי מטופלים» fixes — dead buttons, list behind a number, sub-lines — October 20, 2026 (PR open)
 
 Root cause of the dead buttons: the threshold inputs re-rendered the panel from `change`, which fires
