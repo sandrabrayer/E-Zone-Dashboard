@@ -174,7 +174,7 @@ test('committeeSet is refused for every caller and the reader never writes a she
   assert.strictEqual(JSON.stringify(g.sandbox.__sheets), before, 'a fresh committees read writes nothing');
   assert.ok(!g.sandbox.__sheets.ManagersCommittee);
   const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'apps-script', 'Code.gs'), 'utf8');
-  const block = src.slice(src.indexOf('const COORD_MANAGERS_URL_PROP'), src.indexOf('/* Stage 3 — the house\'s manpower cost'));
+  const block = src.slice(src.indexOf('const COORD_MANAGERS_URL_PROP'), src.indexOf('/* ===== «סיכומי ישיבות» from the coordinators'));
   assert.ok(block.length > 500);
   assert.doesNotMatch(block, /appendRow|setValues|setValue\(|getOrCreateSheet_|insertSheet|LockService|Logger\./);
   assert.strictEqual((block.match(/console\.log\(/g) || []).length, 1, 'one log line, in mwCmLog_');
