@@ -285,7 +285,11 @@
 // Stacked on PR #258; live v76 verified 2026-10-20 (v17 never reused).
 // v79 → v80: «השלמת תקופת טיפול» completion view (app.js, style.css)
 // (CHANGELOG-completion-view.md). Live v79 verified 2026-10-20 (v17 never reused).
-var CACHE_VERSION = 'v80';
+// v80 → v81: «חתכי מטופלים» fixes — dead buttons, list behind a number,
+// bucket sub-lines, spinners + retry toast (app.js, style.css, index.html,
+// patient-retention.js, report-xlsx.js) (CHANGELOG-chitukim-fixes.md).
+// Live v80 verified 2026-10-20 (v17 never reused).
+var CACHE_VERSION = 'v81';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
