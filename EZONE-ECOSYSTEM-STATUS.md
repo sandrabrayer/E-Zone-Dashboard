@@ -1,5 +1,12 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Dashboard Apps Script: «סיכומי ישיבות» for Managers (October 20, 2026)
+
+- `managersWork` op `meetingSummaries` `{ month }` → the coordinators' read-only `getMeetingSummariesForManagers` for the
+  caller's house. FINAL meetings only, with their patient rows.
+- Same Script Properties as the committees feed. Fail-closed contract; cached per house + month.
+- Deploys automatically on merge. Details: `CHANGELOG-meeting-summaries-feed.md`.
+
 ## Committees come from the coordinators — October 20, 2026 (PR open)
 
 - Committees (date, time, type, participants, house) are set in ezone-coordinators.
