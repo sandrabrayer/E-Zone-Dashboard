@@ -612,7 +612,8 @@ test('wiring: Code.gs dispatch + registries, server.js role mirror, append-only 
   assert.ok(arr(g.run('DELETE_ACTIONS')).includes('deleteDuplicateDischarge'));
   assert.ok(arr(g.run('PROXY_KNOWN_ACTIONS')).includes('deleteDuplicateDischarge'));
   assert.ok(!arr(g.run('OPEN_ACTIONS')).includes('deleteDuplicateDischarge'), 'never served without PROXY_SECRET');
-  assert.deepEqual(arr(g.run('DISCHARGED_PATIENT_COLUMNS')).slice(-3), ['deletedAt', 'deletedBy', 'deleteReason']);
+  // «המשך טיפול» (CHANGELOG-patient-retention-foundation.md) is appended after them.
+  assert.deepEqual(arr(g.run('DISCHARGED_PATIENT_COLUMNS')).slice(-4), ['deletedAt', 'deletedBy', 'deleteReason', 'continuity']);
   // Every server reader that treats a row as a live discharge skips a soft-deleted one.
   assert.match(GS_SRC, /if \(!d \|\| diagIsRestored_\(d\.restored\) \|\| dischargeRowDeleted_\(d\)\) return null;/, 'refund list (refundStayFromDischarge_)');
   assert.match(GS_SRC, /if \(dischargeRowDeleted_\(rows\[i\]\)\) continue;   \/\/ a soft-deleted duplicate is not a discharge/, 'promotion guard');

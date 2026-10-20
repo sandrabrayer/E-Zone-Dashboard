@@ -187,7 +187,7 @@ test('DISCHARGED_PATIENT_COLUMNS keeps prior_status directly after restored; who
   assert.deepStrictEqual(cols.slice(at, at + 4), ['restored', 'prior_status', 'updatedAt', 'updatedBy']);
   // Then the duplicate-discharge soft-delete stamps (2026-10-07), appended LAST.
   assert.deepStrictEqual(cols.slice(at + 4), ['dischargeSource', 'dischargedBy', 'dischargeReason', 'patientId',
-    'deletedAt', 'deletedBy', 'deleteReason']);
+    'deletedAt', 'deletedBy', 'deleteReason', 'continuity']);
   assert.strictEqual(cols.filter(c => c === 'prior_status').length, 1);
 });
 

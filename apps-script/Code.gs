@@ -454,8 +454,32 @@ const DISCHARGED_PATIENT_COLUMNS = [
   // A row with deletedAt set is not a discharge any more: it leaves the tab,
   // the heal, the duplicate guard and the refund forecast. It stays on the
   // sheet as the audit trail and is never physically removed.
-  'deletedAt', 'deletedBy', 'deleteReason'
+  'deletedAt', 'deletedBy', 'deleteReason',
+  // Continuity of care «המשך טיפול» (APPENDED LAST, append-only —
+  // CHANGELOG-patient-retention-foundation.md). One stable key of
+  // CONTINUITY_KEYS, validated on every write (dischargePatient_,
+  // setDischargeContinuity_). Blank on every legacy row = 'unknown'.
+  'continuity'
 ];
+
+/* «המשך טיפול» — the stable keys of the `continuity` column. Mirrors
+ * lib/patient-retention.js CONTINUITY_KEYS (a guard test pins the two equal);
+ * the Hebrew labels live in the client only. 'unknown' is the default for a
+ * discharge that names none and for every legacy row; it is never a choice
+ * on the update op (CONTINUITY_CHOICES). */
+const CONTINUITY_KEYS = ['continued_outpatient', 'continued_other', 'none', 'unknown'];
+const CONTINUITY_CHOICES = ['continued_outpatient', 'continued_other', 'none'];
+const CONTINUITY_DEFAULT = 'unknown';
+
+/* A client-sent continuity → the stored key: blank / absent → 'unknown';
+ * a known key → itself; anything else → null (the caller refuses). Pure. */
+function continuityForWrite_(v) {
+  if (v === undefined || v === null) return CONTINUITY_DEFAULT;
+  if (typeof v !== 'string') return null;
+  const k = v.trim();
+  if (!k) return CONTINUITY_DEFAULT;
+  return CONTINUITY_KEYS.indexOf(k) >= 0 ? k : null;
+}
 
 /* Payments sheet columns. `id` is a deterministic per-patient-per-due-date
  * string built by the client (see paymentId() in app.js) so the same monthly
@@ -1409,6 +1433,7 @@ const PROXY_KNOWN_ACTIONS = [
   'occupancySnapshots', 'accountingPayments', 'accountingCredits',
   'getPatientsForCoordinators', 'recordDischargeFromCoordinators',
   'deleteDuplicateDischarge',
+  'setDischargeContinuity',
   'editReceipt',
   'settleRefund', 'approveRefundException',
   'expectedDischarges',
@@ -1892,6 +1917,12 @@ function handle_(params) {
       // delete of one duplicate discharged-audit row; Patients and Payments
       // are never touched, so no digest refresh.
       return jsonOut_(deleteDuplicateDischarge_(params, actorLabel_(params)));
+    }
+    if (action === 'setDischargeContinuity') {
+      // «המשך טיפול» on an existing discharged row. Same trust model as
+      // dischargePatient (session-authed proxy). Writes only the discharged
+      // sheet (never Patients / Payments), so no digest refresh.
+      return jsonOut_(setDischargeContinuity_(params, actorLabel_(params)));
     }
     if (action === 'restorePatient') {
       const res = restorePatient_(parseJsonParam_(params.patient), requestUser_(params));
@@ -6581,8 +6612,10 @@ function openDischargeRowsForStay_(rows, key, exceptId) {
 function carryDischargeDeleteStamps_(sh, record) {
   if (!sh || !record || !record.id) return record;
   const rows = readSheet_(sh, DISCHARGED_PATIENT_COLUMNS);
+  let stored = null;
   for (let i = 0; i < rows.length; i++) {
     if (String(rows[i].id) !== String(record.id)) continue;
+    stored = rows[i];
     if (dischargeRowDeleted_(rows[i])) {
       record.deletedAt = rows[i].deletedAt;
       record.deletedBy = rows[i].deletedBy;
@@ -6590,11 +6623,21 @@ function carryDischargeDeleteStamps_(sh, record) {
     }
     break;
   }
+  // «המשך טיפול» is never blanked or downgraded by a client copy: a recorded
+  // key wins over a client 'unknown' / blank / unknown key (an older client
+  // that does not carry the column).
+  const sent = continuityForWrite_(record.continuity);
+  const kept = stored ? continuityForWrite_(stored.continuity) : null;
+  if (sent === null || sent === CONTINUITY_DEFAULT) record.continuity = kept || CONTINUITY_DEFAULT;
   return record;
 }
 
 function dischargePatient_(patient, user) {
   if (!patient || !patient.id) return { ok: false, error: 'missing_patient' };
+  // «המשך טיפול»: an unknown key is refused before anything is read or
+  // written; absent / blank → 'unknown' (an older client never sends it).
+  const continuity = continuityForWrite_(patient.continuity);
+  if (continuity === null) return { ok: false, error: 'bad_continuity', message: CONTINUITY_MESSAGES.bad_continuity };
   const lock = LockService.getScriptLock();
   if (lock.tryLock(10000) !== true) return lockBusy_('dischargePatient_');
   try {
@@ -6620,13 +6663,14 @@ function dischargePatient_(patient, user) {
       dischargedAt:   patient.dischargedAt   || new Date().toISOString(),
       disposition:    patient.disposition    || '',
       discharge_note: patient.discharge_note || '',
+      continuity:     continuity,
       // Who/when stamps are SERVER-owned — never taken from the client copy.
       updatedAt:      new Date().toISOString(),
       updatedBy:      String(user == null ? '' : user),
     });
 
     upsertRowById_(dischargedSh, DISCHARGED_PATIENT_COLUMNS, record);
-    logAudit_('patient_discharged', 'dischargePatient_', record.fromLead || record.id || '', record.name || '', { id: record.id, houseId: record.houseId || '', disposition: record.disposition || '', updatedBy: record.updatedBy });
+    logAudit_('patient_discharged', 'dischargePatient_', record.fromLead || record.id || '', record.name || '', { id: record.id, houseId: record.houseId || '', disposition: record.disposition || '', continuity: record.continuity, updatedBy: record.updatedBy });
     // The refund is created by POLICY here — no approval step, fail-soft
     // (CHANGELOG-refunds-auto-policy.md).
     const refund = autoRefundOnDischarge_(record, record.updatedBy);
@@ -6869,6 +6913,75 @@ function deleteDuplicateDischarge_(params, actor) {
       String(target.name == null ? '' : target.name),
       { id: id, at: nowIso, by: by, reason: reason, keptId: String(siblings[0].id), prev: prev }, by);
     return { ok: true, deleted: true, id: id, keptId: String(siblings[0].id), deletedAt: nowIso, deletedBy: by, deleteReason: reason };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* ===== «המשך טיפול» — set continuity on ONE existing discharged row =====
+ * (CHANGELOG-patient-retention-foundation.md)
+ *
+ * action=setDischargeContinuity { id, continuity } — the «לא ידוע — עדכון»
+ * control on a legacy row. Same trust model as dischargePatient (reached only
+ * through the session-authed /api/sheets proxy). Validation BEFORE the lock:
+ *   - id: required, ≤ 200 chars;
+ *   - continuity: one of CONTINUITY_CHOICES ('unknown' is not a choice).
+ * Under the script lock: the row is found by id in the id column ONLY; a
+ * missing or soft-deleted row is refused. The write is that ONE row: the
+ * continuity cell + the updatedAt / updatedBy stamps (three single-cell
+ * writes, never a sheet rewrite), plus one AuditLog row with the previous
+ * value. Setting the value the row already holds writes nothing
+ * (idempotent retry). */
+const CONTINUITY_MESSAGES = {
+  missing_id:     'חסר מזהה שורת שחרור',
+  bad_continuity: 'יש לבחור המשך טיפול מהרשימה',
+  not_found:      'שורת השחרור לא נמצאה',
+  row_deleted:    'שורת השחרור נמחקה — לא עודכנה',
+};
+
+function continuityRefusal_(code) {
+  return { ok: false, error: code, message: CONTINUITY_MESSAGES[code] || code };
+}
+
+function setDischargeContinuity_(params, actor) {
+  const p = params || {};
+  const id = typeof p.id === 'string' || typeof p.id === 'number' ? String(p.id).trim() : '';
+  if (!id || id.length > 200) return continuityRefusal_('missing_id');
+  const continuity = typeof p.continuity === 'string' ? p.continuity.trim() : '';
+  if (CONTINUITY_CHOICES.indexOf(continuity) < 0) return continuityRefusal_('bad_continuity');
+
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('setDischargeContinuity_');
+  try {
+    const sh = getOrCreateSheet_(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
+    const col = function (name) { return DISCHARGED_PATIENT_COLUMNS.indexOf(name) + 1; };
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return continuityRefusal_('not_found');
+    const ids = sh.getRange(2, col('id'), lastRow - 1, 1).getValues();
+    let sheetRow = -1;
+    for (let i = 0; i < ids.length; i++) {
+      if (String(ids[i][0]) === id) { sheetRow = i + 2; break; }
+    }
+    if (sheetRow < 0) return continuityRefusal_('not_found');
+    const deletedAt = sh.getRange(sheetRow, col('deletedAt')).getValue();
+    if (String(deletedAt == null ? '' : deletedAt).trim() !== '') return continuityRefusal_('row_deleted');
+
+    const prevRaw = sh.getRange(sheetRow, col('continuity')).getValue();
+    const prev = continuityForWrite_(typeof prevRaw === 'string' ? prevRaw : '') || CONTINUITY_DEFAULT;
+    if (String(prevRaw == null ? '' : prevRaw).trim() === continuity) {
+      return { ok: true, id: id, continuity: continuity, unchanged: true };
+    }
+    const nowIso = new Date().toISOString();
+    const by = String(actor == null ? '' : actor).slice(0, 60);
+    sh.getRange(sheetRow, col('continuity')).setNumberFormat('@');
+    sh.getRange(sheetRow, col('continuity')).setValue(continuity);
+    sh.getRange(sheetRow, col('updatedAt'), 1, 2).setNumberFormat('@');
+    sh.getRange(sheetRow, col('updatedAt'), 1, 2).setValues([[nowIso, by]]);
+    const name = sh.getRange(sheetRow, col('name')).getValue();
+    const fromLead = sh.getRange(sheetRow, col('fromLead')).getValue();
+    logAudit_('discharge_continuity_set', 'setDischargeContinuity_', String(fromLead || id),
+      String(name == null ? '' : name), { id: id, continuity: continuity, prev: prev, at: nowIso, by: by }, by);
+    return { ok: true, id: id, continuity: continuity, prev: prev, updatedAt: nowIso, updatedBy: by };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
@@ -7574,6 +7687,7 @@ function recordDischargeFromCoordinators_(params) {
     audit.dischargedBy    = v.by;
     audit.dischargeReason = v.reason;
     audit.patientId       = v.id;
+    audit.continuity      = CONTINUITY_DEFAULT;   // the coordinators app does not ask
     upsertRowById_(dischargedSh, DISCHARGED_PATIENT_COLUMNS, audit);
 
     // b. The Patients row: four cells, nothing else touched, never deleted.
