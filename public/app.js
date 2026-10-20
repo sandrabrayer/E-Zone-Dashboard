@@ -6106,7 +6106,7 @@ function retentionPresetRange(key, todayIso) {
 function patientRetentionUi() {
   if (!state.patientRetention) {
     const r = retentionPresetRange('last_3_months', debtAgingTodayIso());
-    state.patientRetention = { open: false, from: r ? r.from : '', to: r ? r.to : '', threshold: '', completionThreshold: '', sel: { kind: 'bucket', key: 'upTo30' } };
+    state.patientRetention = { open: false, from: r ? r.from : '', to: r ? r.to : '', threshold: '', completionThreshold: '', sel: null };
   }
   return state.patientRetention;
 }
@@ -6154,11 +6154,14 @@ function retentionSelectionList(report, completion, sel) {
   return { rows: R.listFor(report, sel), title: R.listTitle(sel, report) };
 }
 
-/* The «השלמת תקופת טיפול» section (HTML). Every value escaped. */
-function completionSectionHtml(completion, ui, sel) {
+/* The «השלמת תקופת טיפול» section (HTML). Every value escaped. `listHtml`
+ * is the open list when its selection is a completion count (it opens right
+ * under the count that was clicked — CHANGELOG-chitukim-fixes.md). */
+function completionSectionHtml(completion, ui, sel, listHtml) {
   const R = patientRetentionLib();
   const u = ui || {};
-  const input = `<div class="pr-controls"><label>סף נוסף (ימים) <input type="number" class="pr-comp-threshold" inputmode="numeric" min="1" max="3650" step="1" value="${escapeHtml(String(u.completionThreshold || ''))}" /></label></div>`;
+  const input = `<div class="pr-controls"><label>סף נוסף (ימים) <input type="number" class="pr-comp-threshold" inputmode="numeric" min="1" max="3650" step="1" value="${escapeHtml(String(u.completionThreshold || ''))}" /></label>`
+    + '<button type="button" class="btn small pr-comp-apply">החל</button></div>';
   const head = `<div class="pr-section-title"><span>${escapeHtml(R.COMPLETION_TITLE)} (מתוך ${escapeHtml(String(completion && completion.ok ? completion.cohortSize : 0))} שנכנסו בתקופה)</span>`
     + '<span class="pr-list-actions"><button type="button" class="btn small pr-comp-csv">ייצוא CSV</button>'
     + '<button type="button" class="btn small pr-xlsx" data-section="completion">ייצוא לאקסל</button></span></div>';
@@ -6166,7 +6169,8 @@ function completionSectionHtml(completion, ui, sel) {
   const cards = completion.results.map(r => {
     const counts = R.COMPLETION_KEYS.map(k => {
       const s = { kind: 'completion', threshold: r.threshold, key: k };
-      return `<button type="button" class="btn small pr-link pr-comp-count${sameSel(sel, s) && sel.threshold === r.threshold ? ' active' : ''}" data-sel="${escapeHtml(JSON.stringify(s))}">${escapeHtml(`${R.COMPLETION_LABELS[k]}: ${r.counts[k]}`)}</button>`;
+      const on = sameSel(sel, s) && sel.threshold === r.threshold;
+      return `<button type="button" class="btn small pr-link pr-comp-count${on ? ' active' : ''}" data-sel="${escapeHtml(JSON.stringify(s))}" aria-pressed="${on ? 'true' : 'false'}">${escapeHtml(`${R.COMPLETION_LABELS[k]}: ${r.counts[k]}`)}</button>`;
     }).join('');
     return `<div class="pr-comp-card" data-threshold="${escapeHtml(String(r.threshold))}">`
       + `<div class="pr-comp-title">${escapeHtml(`${r.threshold} ימים`)}</div>`
@@ -6174,7 +6178,7 @@ function completionSectionHtml(completion, ui, sel) {
       + `<div class="pr-comp-basis">${escapeHtml(`מתוך ${r.evaluable} שניתן להעריך`)}</div>`
       + `<div class="pr-comp-counts">${counts}</div></div>`;
   }).join('');
-  return head + `<div class="pr-stats pr-comp-cards">${cards}</div>` + input
+  return head + `<div class="pr-stats pr-comp-cards">${cards}</div>` + (listHtml || '') + input
     + `<div class="pr-basis pr-comp-note">${escapeHtml(R.COMPLETION_NOTE)}</div>`;
 }
 
@@ -6193,12 +6197,72 @@ function retentionStatHtml(sel, count, label, pct, active) {
 
 const sameSel = (a, b) => !!a && !!b && a.kind === b.kind && (a.key || '') === (b.key || '') && (a.bucket || '') === (b.bucket || '');
 
+/* A small count link (chip / sub-line) that opens `sel`. */
+function retentionLinkHtml(cls, sel, text, active) {
+  return `<button type="button" class="${cls}${active ? ' active' : ''}" data-sel="${escapeHtml(JSON.stringify(sel))}" aria-pressed="${active ? 'true' : 'false'}">${escapeHtml(text)}</button>`;
+}
+
+/* A bucket card (CHANGELOG-chitukim-fixes.md): the DISCHARGED count stays the
+ * big number (it opens the discharged list) and a sub-line «+N עדיין בטיפול»
+ * counts the still-in-treatment stays whose days so far fall in the bucket
+ * (it opens those). Both numbers come from PatientRetention.bucketSummary —
+ * the same table the Excel and the summary CSV use. */
+function retentionBucketCardHtml(row, report, sel, pct) {
+  const R = patientRetentionLib();
+  const main = { kind: 'bucket', key: row.key };
+  const sub = { kind: 'stillBucket', key: row.key };
+  return '<div class="pr-stat-card">'
+    + retentionStatHtml(main, row.discharged, row.label, pct(report.percents[row.key]), sameSel(sel, main))
+    + retentionLinkHtml('pr-stat-sub', sub, R.stillSubLineLabel(row.still), sameSel(sel, sub))
+    + '</div>';
+}
+
 /* The inline «לא ידוע — עדכון» select for a legacy discharged row (HTML). */
 function continuitySelectHtml(auditId) {
   return `<select class="pr-cont-set" data-id="${escapeHtml(String(auditId))}" aria-label="עדכון המשך טיפול">`
     + `<option value="">${escapeHtml('לא ידוע — עדכון')}</option>`
     + DISCHARGE_CONTINUITY_CHOICES.map(k => `<option value="${escapeHtml(k)}">${escapeHtml(DISCHARGE_CONTINUITY_LABELS[k])}</option>`).join('')
     + '</select>';
+}
+
+/* Where the list behind a number opens: right under the section of the
+ * number that was clicked, so the click visibly does something. */
+function retentionListSection(sel) {
+  if (!sel) return '';
+  if (sel.kind === 'continuity') return 'continuity';
+  if (sel.kind === 'cross' || sel.kind === 'missing') return 'cross';
+  if (sel.kind === 'completion') return 'completion';
+  return 'length';
+}
+
+/* The list behind a number (HTML): name, house, phone, entry date, discharge
+ * date, days, continuity — with its own «ייצוא CSV», «ייצוא לאקסל» and a close
+ * button. Every value escaped. */
+function retentionListHtml(picked, sel, o) {
+  const R = patientRetentionLib();
+  const list = picked.rows;
+  const missing = sel.kind === 'missing';
+  const body = list.length
+    ? `<div class="pr-table-wrap"><table class="pr-table"><thead><tr><th>שם</th><th>בית</th><th>טלפון</th><th>תאריך כניסה</th><th>תאריך שחרור</th><th>ימים</th><th>המשך טיפול</th>${missing ? '<th>חסר</th>' : ''}</tr></thead><tbody>${list.map(r => {
+        let cont = '';
+        if (r.status === 'discharged') {
+          cont = r.continuity === 'unknown' && o.edit && r.auditId
+            ? continuitySelectHtml(r.auditId)
+            : escapeHtml(R.CONTINUITY_LABELS[r.continuity] || R.CONTINUITY_LABELS.unknown);
+        }
+        return `<tr><td>${escapeHtml(r.name)}${r.returning ? ' <span class="pr-tag">חוזר</span>' : ''}</td><td>${escapeHtml(retentionHouseName(r.houseId))}</td>`
+          + `<td dir="ltr">${escapeHtml(r.phone || '')}</td>`
+          + `<td>${escapeHtml(r.entryDate ? formatDate(r.entryDate) : '')}</td><td>${escapeHtml(r.dischargeDate ? formatDate(r.dischargeDate) : '')}</td>`
+          + `<td>${escapeHtml(r.days === null || r.days === undefined ? '' : String(r.days))}</td><td>${cont}</td>`
+          + (missing ? `<td>${escapeHtml(R.MISSING_REASONS[r.reason] || '')}</td>` : '') + '</tr>';
+      }).join('')}</tbody></table></div>`
+    : '<div class="pr-empty">אין מטופלים ברשימה זו בתקופה</div>';
+  return `<div class="pr-list" role="region" aria-label="${escapeHtml(picked.title)}">`
+    + `<div class="pr-list-head"><span class="pr-list-title" tabindex="-1">${escapeHtml(picked.title)} (${escapeHtml(String(list.length))})</span>`
+    + `<span class="pr-list-actions"><button type="button" class="btn small pr-csv"${list.length ? '' : ' disabled'}>ייצוא CSV</button>`
+    + '<button type="button" class="btn small pr-xlsx-list">ייצוא לאקסל</button>'
+    + '<button type="button" class="btn small pr-list-close" aria-label="סגירת הרשימה">סגירה ✕</button></span></div>'
+    + body + '</div>';
 }
 
 /* The panel's HTML for a report + UI state. Pure. opts.edit: edit mode. */
@@ -6214,6 +6278,7 @@ function patientRetentionHtml(report, ui, opts) {
       <div class="pr-presets">${presets.map(p =>
         `<button type="button" class="btn small pr-preset" data-preset="${escapeHtml(p.key)}">${escapeHtml(p.label)}</button>`).join('')}</div>
       <label>לתקופה מסוימת (ימים) <input type="number" class="pr-threshold" inputmode="numeric" min="1" max="3650" step="1" value="${escapeHtml(String(u.threshold || ''))}" /></label>
+      <button type="button" class="btn small pr-apply">החל</button>
     </div>
     <div class="pr-basis">${escapeHtml(R ? R.COHORT_RULE_LABEL : 'לפי תאריך כניסה בתקופה')} (כולל שני התאריכים) · ימי שהות: מיום הכניסה עד יום השחרור, לא כולל יום הכניסה</div>`;
   if (!report || !report.ok || !R) {
@@ -6221,16 +6286,21 @@ function patientRetentionHtml(report, ui, opts) {
     return controls + `<div class="pr-empty">${escapeHtml(msg)}</div>`;
   }
   const completion = o.completion || null;
-  let sel = R.validSelection(u.sel) ? u.sel : { kind: 'bucket', key: 'upTo30' };
-  // A completion count whose threshold is no longer shown falls back.
-  if (sel.kind === 'completion' && !R.completionResult(completion, sel.threshold)) sel = { kind: 'bucket', key: 'upTo30' };
+  // No selection = no list open; a click on a number opens its list.
+  let sel = R.validSelection(u.sel) ? u.sel : null;
+  // A completion count whose threshold is no longer shown closes its list.
+  if (sel && sel.kind === 'completion' && !R.completionResult(completion, sel.threshold)) sel = null;
   const pct = (f) => R.formatPercent(f);
-  const lengthCards = R.BUCKETS.map(b => retentionStatHtml({ kind: 'bucket', key: b.key }, report.counts[b.key], b.label, pct(report.percents[b.key]), sameSel(sel, { kind: 'bucket', key: b.key })))
+  const listAt = retentionListSection(sel);
+  const listHtml = sel ? retentionListHtml(retentionSelectionList(report, completion, sel), sel, o) : '';
+  const listIf = (section) => (listAt === section ? listHtml : '');
+  const summary = R.bucketSummary(report);
+  const lengthCards = summary.rows.map(row => retentionBucketCardHtml(row, report, sel, pct))
     .concat(retentionStatHtml({ kind: 'still' }, report.stillInTreatment.count, R.STILL_IN_TREATMENT_LABEL, pct(report.percents.stillInTreatment), sameSel(sel, { kind: 'still' })))
     .join('');
   const stillBreak = report.stillInTreatment.count
     ? `<div class="pr-sub">${escapeHtml(R.STILL_IN_TREATMENT_LABEL)} — ימים עד היום: ${R.BUCKETS.map(b =>
-      `<button type="button" class="btn small pr-link" data-sel="${escapeHtml(JSON.stringify({ kind: 'stillBucket', key: b.key }))}">${escapeHtml(b.label)}: ${escapeHtml(String(report.stillInTreatment.buckets[b.key]))}</button>`).join(' ')}</div>`
+      retentionLinkHtml('btn small pr-link', { kind: 'stillBucket', key: b.key }, `${b.label}: ${report.stillInTreatment.buckets[b.key]}`, sameSel(sel, { kind: 'stillBucket', key: b.key }))).join(' ')}</div>`
     : '';
   const customCards = report.custom
     ? `<div class="pr-section-title">לתקופה מסוימת — ${escapeHtml(String(report.custom.threshold))} ימים (מתוך המשוחררים)</div><div class="pr-stats">`
@@ -6240,42 +6310,25 @@ function patientRetentionHtml(report, ui, opts) {
   const contCards = R.CONTINUITY_KEYS.map(k => retentionStatHtml({ kind: 'continuity', key: k }, report.continuity[k], R.CONTINUITY_LABELS[k],
     pct(report.percents.continuity[k]), sameSel(sel, { kind: 'continuity', key: k }))).join('');
   const cross = `<div class="pr-table-wrap"><table class="pr-cross"><thead><tr><th>משך שהות</th>${R.CONTINUITY_KEYS.map(k => `<th>${escapeHtml(R.CONTINUITY_LABELS[k])}</th>`).join('')}<th>סה״כ</th></tr></thead><tbody>`
-    + R.BUCKETS.map(b => `<tr><th>${escapeHtml(b.label)}</th>${R.CONTINUITY_KEYS.map(k =>
-      `<td><button type="button" class="pr-cell${sameSel(sel, { kind: 'cross', bucket: b.key, key: k }) ? ' active' : ''}" data-sel="${escapeHtml(JSON.stringify({ kind: 'cross', bucket: b.key, key: k }))}">${escapeHtml(String(report.cross[b.key][k]))}</button></td>`).join('')}`
+    + R.BUCKETS.map(b => `<tr><th>${escapeHtml(b.label)}</th>${R.CONTINUITY_KEYS.map(k => {
+      const on = sameSel(sel, { kind: 'cross', bucket: b.key, key: k });
+      return `<td><button type="button" class="pr-cell${on ? ' active' : ''}" data-sel="${escapeHtml(JSON.stringify({ kind: 'cross', bucket: b.key, key: k }))}" aria-pressed="${on ? 'true' : 'false'}">${escapeHtml(String(report.cross[b.key][k]))}</button></td>`;
+    }).join('')}`
       + `<td>${escapeHtml(String(report.counts[b.key]))}</td></tr>`).join('')
     + '</tbody></table></div>';
   const missing = report.missingCount
-    ? `<div class="pr-sub"><button type="button" class="btn small pr-link" data-sel="${escapeHtml(JSON.stringify({ kind: 'missing' }))}">${escapeHtml(`${R.MISSING_LABEL}: ${report.missingCount}`)}</button> — לא נספרו בחתכים</div>`
+    ? `<div class="pr-sub">${retentionLinkHtml('btn small pr-link', { kind: 'missing' }, `${R.MISSING_LABEL}: ${report.missingCount}`, sameSel(sel, { kind: 'missing' }))} — לא נספרו בחתכים</div>`
     : '';
-  const picked = retentionSelectionList(report, completion, sel);
-  const list = picked.rows;
-  const body = list.length
-    ? `<div class="pr-table-wrap"><table class="pr-table"><thead><tr><th>שם</th><th>בית</th><th>תאריך כניסה</th><th>תאריך שחרור</th><th>ימים</th><th>המשך טיפול</th>${sel.kind === 'missing' ? '<th>חסר</th>' : ''}</tr></thead><tbody>${list.map(r => {
-        let cont = '';
-        if (r.status === 'discharged') {
-          cont = r.continuity === 'unknown' && o.edit && r.auditId
-            ? continuitySelectHtml(r.auditId)
-            : escapeHtml(R.CONTINUITY_LABELS[r.continuity] || R.CONTINUITY_LABELS.unknown);
-        }
-        return `<tr><td>${escapeHtml(r.name)}${r.returning ? ' <span class="pr-tag">חוזר</span>' : ''}</td><td>${escapeHtml(retentionHouseName(r.houseId))}</td>`
-          + `<td>${escapeHtml(r.entryDate ? formatDate(r.entryDate) : '')}</td><td>${escapeHtml(r.dischargeDate ? formatDate(r.dischargeDate) : '')}</td>`
-          + `<td>${escapeHtml(r.days === null || r.days === undefined ? '' : String(r.days))}</td><td>${cont}</td>`
-          + (sel.kind === 'missing' ? `<td>${escapeHtml(R.MISSING_REASONS[r.reason] || '')}</td>` : '') + '</tr>';
-      }).join('')}</tbody></table></div>`
-    : '<div class="pr-empty">אין מטופלים ברשימה זו בתקופה</div>';
   const xlsxBtn = (section) => `<button type="button" class="btn small pr-xlsx" data-section="${escapeHtml(section)}">ייצוא לאקסל</button>`;
   return controls
     + '<div class="pr-xlsx-bar"><button type="button" class="btn small pr-xlsx-all">ייצוא הכל לאקסל</button></div>'
-    + `<div class="pr-section-title"><span>משך שהות (מתוך ${escapeHtml(String(report.cohortSize))} שנכנסו בתקופה)</span>${xlsxBtn('retention')}</div>`
-    + `<div class="pr-stats">${lengthCards}</div>${stillBreak}${customCards}`
+    + `<div class="pr-section-title"><span>משך שהות (מתוך ${escapeHtml(String(report.cohortSize))} שנכנסו בתקופה)</span>`
+    + `<span class="pr-list-actions"><button type="button" class="btn small pr-sum-csv">ייצוא CSV</button>${xlsxBtn('retention')}</span></div>`
+    + `<div class="pr-stats">${lengthCards}</div>${stillBreak}${customCards}${listIf('length')}`
     + `<div class="pr-section-title"><span>המשך טיפול (מתוך ${escapeHtml(String(report.dischargedCount))} ששוחררו)</span>${xlsxBtn('continuity')}</div>`
-    + `<div class="pr-stats">${contCards}</div>`
-    + `<div class="pr-section-title">משך שהות × המשך טיפול</div>${cross}${missing}`
-    + (completion ? completionSectionHtml(completion, u, sel) : '')
-    + `<div class="pr-list-head"><span>${escapeHtml(picked.title)} (${escapeHtml(String(list.length))})</span>`
-    + `<span class="pr-list-actions"><button type="button" class="btn small pr-csv"${list.length ? '' : ' disabled'}>ייצוא CSV</button>`
-    + '<button type="button" class="btn small pr-xlsx-list">ייצוא לאקסל</button></span></div>'
-    + body;
+    + `<div class="pr-stats">${contCards}</div>${listIf('continuity')}`
+    + `<div class="pr-section-title">משך שהות × המשך טיפול</div>${cross}${missing}${listIf('cross')}`
+    + (completion ? completionSectionHtml(completion, u, sel, listIf('completion')) : '');
 }
 
 function togglePatientRetention() {
@@ -6284,7 +6337,217 @@ function togglePatientRetention() {
   renderPatientRetention();
 }
 
-function renderPatientRetention() {
+/* ===== «חתכי מטופלים» — the controls (CHANGELOG-chitukim-fixes.md) =====
+ *
+ * ROOT CAUSE of the «dead buttons»: the period / threshold inputs re-rendered
+ * the whole panel (innerHTML) from their `change` handler. A number input
+ * fires `change` on BLUR — i.e. on the mousedown/touch of the very control
+ * the user is tapping next — so the panel was replaced between mousedown and
+ * mouseup, the press and the release landed on different nodes, and the
+ * browser fired NO click: after typing a threshold, every card, chip, cell,
+ * count and export was dead on its first tap. (A tap that did fire only
+ * redrew a list at the far bottom of the panel, off screen.)
+ *
+ * Now: ONE delegated listener per panel element (bound once — it survives
+ * every re-render); an input only STORES its value and never re-renders
+ * under a press (a blur-change waits until no pointer is down — the tap's
+ * own action renders with the stored value); every action runs through
+ * patientRetentionAction: inline spinner + disabled on the clicked control
+ * (busyButton, aria-busy; a double click is ignored), one paint before the
+ * work, and a Hebrew error toast with «נסו שוב» when it fails. */
+const PR_CONTROLS = '[data-sel], .pr-preset, .pr-apply, .pr-comp-apply, .pr-xlsx, .pr-xlsx-all, .pr-xlsx-list, .pr-csv, .pr-comp-csv, .pr-sum-csv, .pr-list-close';
+const PR_INPUTS = { 'pr-from': 'from', 'pr-to': 'to', 'pr-threshold': 'threshold', 'pr-comp-threshold': 'completionThreshold' };
+/* A blur-change is applied once nothing is pressed (ms; re-checked). */
+const PR_FLUSH_MS = 350;
+const prPointer = { down: false, bound: false };
+
+/* A stable key for a control across re-renders: its pr-* class + what it opens. */
+function prControlKey(c) {
+  if (!c || !c.getAttribute) return '';
+  const cls = String(c.className || '').split(/\s+/).find(x => /^pr-/.test(x)) || '';
+  return cls + '|' + (c.getAttribute('data-sel') || c.getAttribute('data-section') || c.getAttribute('data-preset') || '');
+}
+function findPrControl(el, key) {
+  if (!el || !key || !el.querySelectorAll) return null;
+  return Array.from(el.querySelectorAll(PR_CONTROLS + ', .pr-from, .pr-to, .pr-threshold, .pr-comp-threshold')).find(c => prControlKey(c) === key) || null;
+}
+
+/* The ui key an input stores to ('' when it is not a panel input). */
+function prInputKey(t) {
+  if (!t || !t.classList) return '';
+  const cls = Object.keys(PR_INPUTS).find(k => t.classList.contains(k));
+  return cls ? PR_INPUTS[cls] : '';
+}
+/* Store an input's value (no render). true when `t` is a panel input. */
+function prStoreInput(t) {
+  const key = prInputKey(t);
+  if (!key) return false;
+  const ui = patientRetentionUi();
+  const v = String(t.value || '').trim();
+  if (ui[key] !== v) { ui[key] = v; ui.dirty = true; }
+  return true;
+}
+/* The «החל» button that applies an input. */
+function prApplyButton(el, input) {
+  if (!el || !el.querySelector) return null;
+  return el.querySelector(prInputKey(input) === 'completionThreshold' ? '.pr-comp-apply' : '.pr-apply');
+}
+
+/* One paint before the work, so the spinner is on screen even when the work
+ * re-renders the panel in the same task. */
+function prNextPaint() {
+  return new Promise(resolve => {
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => setTimeout(resolve, 0));
+    else setTimeout(resolve, 0);
+  });
+}
+
+/* Re-render first when an input holds a value the screen does not show yet,
+ * so an export always equals the screen. */
+function prSyncScreen(key) {
+  if (patientRetentionUi().dirty) renderPatientRetention({ focusKey: key });
+}
+
+/* The work behind a control → { run, fail } (fail: the Hebrew error), or null. */
+function prActionPlan(btn) {
+  const R = patientRetentionLib();
+  const ui = patientRetentionUi();
+  const key = prControlKey(btn);
+  const has = (c) => btn.classList && btn.classList.contains(c);
+  const reports = () => {
+    prSyncScreen(key);
+    const report = patientRetentionReport(state, ui);
+    if (!report.ok) throw new Error(report.error || 'bad_range');
+    return { report, completion: patientCompletionReport(state, ui) };
+  };
+  const needXlsx = () => { if (!reportXlsxLib()) throw new Error('no_xlsx_module'); };
+  if (btn.getAttribute && btn.getAttribute('data-sel')) {
+    let sel = null;
+    try { sel = JSON.parse(btn.getAttribute('data-sel')); } catch (_) { sel = null; }
+    if (!R || !R.validSelection(sel)) return null;
+    return { fail: 'פתיחת הרשימה נכשלה', run: () => { ui.sel = sel; ui.openerKey = key; renderPatientRetention({ focusList: true }); } };
+  }
+  if (has('pr-list-close')) return { fail: 'סגירת הרשימה נכשלה', run: () => { ui.sel = null; renderPatientRetention({ focusKey: ui.openerKey }); } };
+  if (has('pr-preset')) {
+    return { fail: 'עדכון התקופה נכשל', run: () => {
+      const r = retentionPresetRange(btn.getAttribute('data-preset'), debtAgingTodayIso());
+      if (!r) throw new Error('bad_preset');
+      ui.from = r.from; ui.to = r.to;
+      renderPatientRetention({ focusKey: key });
+    } };
+  }
+  if (has('pr-apply') || has('pr-comp-apply')) {
+    return { fail: 'עדכון החתכים נכשל', run: () => {
+      const el = document.getElementById('patient-retention');
+      if (el && el.querySelectorAll) Object.keys(PR_INPUTS).forEach(c => el.querySelectorAll('.' + c).forEach(prStoreInput));
+      renderPatientRetention({ focusKey: key });
+    } };
+  }
+  if (has('pr-xlsx-all')) return { fail: 'הייצוא לאקסל נכשל', run: () => { needXlsx(); reports(); exportAllReportsXlsx(ui.from, ui.to); } };
+  if (has('pr-xlsx')) {
+    return { fail: 'הייצוא לאקסל נכשל', run: () => {
+      needXlsx();
+      const x = reports();
+      exportReportXlsx(btn.getAttribute('data-section'), reportXlsxContext(null, x.report, ui.from, ui.to, x.completion));
+    } };
+  }
+  if (has('pr-xlsx-list')) {
+    return { fail: 'הייצוא לאקסל נכשל', run: () => {
+      needXlsx();
+      const x = reports();
+      const picked = retentionSelectionList(x.report, x.completion, ui.sel);
+      exportListXlsx(ui.sel && ui.sel.kind === 'missing' ? 'missing' : 'patients', picked.rows, ui.from, ui.to, picked.title);
+    } };
+  }
+  if (has('pr-csv')) return { fail: 'ייצוא ה־CSV נכשל', run: () => { const x = reports(); exportPatientRetentionCsv(x.report, ui.sel, x.completion); } };
+  if (has('pr-comp-csv')) return { fail: 'ייצוא ה־CSV נכשל', run: () => { const x = reports(); if (!x.completion.ok) throw new Error('bad_range'); exportCompletionCsv(x.completion); } };
+  if (has('pr-sum-csv')) return { fail: 'ייצוא ה־CSV נכשל', run: () => exportRetentionSummaryCsv(reports().report) };
+  return null;
+}
+
+/* Run a control's action: spinner + disabled on it for the duration (a
+ * second click is ignored — busyButton's aria-busy guard, plus one action at
+ * a time per panel), and a retry toast on failure. Resolves true / false. */
+function patientRetentionAction(btn) {
+  const ui = patientRetentionUi();
+  if (!btn || ui.busy || btn.disabled || busyButtonActive(btn)) return Promise.resolve(false);
+  const plan = prActionPlan(btn);
+  if (!plan) return Promise.resolve(false);
+  const key = prControlKey(btn);
+  // busyButton hands back a plain-text label; a card keeps its markup.
+  const markup = typeof btn.innerHTML === 'string' ? btn.innerHTML : null;
+  ui.busy = true;
+  return busyButton(btn, 'load', () => prNextPaint().then(plan.run))
+    .then(() => true, (err) => {
+      console.warn('[E-ZONE] «חתכי מטופלים»:', plan.fail, err && err.message);
+      showRetryToast(plan.fail, () => {
+        const again = findPrControl(document.getElementById('patient-retention'), key);
+        if (again) patientRetentionAction(again); else showError(plan.fail);
+      });
+      return false;
+    })
+    .finally(() => {
+      ui.busy = false;
+      if (markup !== null && btn.isConnected && btn.innerHTML !== markup) btn.innerHTML = markup;
+    });
+}
+
+/* An input's `change`. A committed value (picker / Enter — the input still
+ * has focus) applies now; a blur-change never re-renders under a press: the
+ * pressed control's own action renders with the stored value, and if nothing
+ * was pressed the value is applied once the pointer is up. */
+function patientRetentionInputChange(t) {
+  if (t && t.classList && t.classList.contains('pr-cont-set')) {
+    if (t.value) withFieldSaving(t, 'save', () => updateDischargeContinuity(t.dataset.id, t.value));
+    return;
+  }
+  if (!prStoreInput(t)) return;
+  const el = document.getElementById('patient-retention');
+  if (document.activeElement === t) { patientRetentionAction(prApplyButton(el, t)); return; }
+  schedulePatientRetentionFlush(prInputKey(t) === 'completionThreshold' ? '.pr-comp-apply' : '.pr-apply');
+}
+function schedulePatientRetentionFlush(applySel) {
+  const ui = patientRetentionUi();
+  clearTimeout(ui.flushTimer);
+  ui.flushTimer = setTimeout(() => {
+    if (!ui.dirty || !ui.open) return;
+    if (prPointer.down || ui.busy) { schedulePatientRetentionFlush(applySel); return; }
+    const el = document.getElementById('patient-retention');
+    const btn = el && el.querySelector && applySel ? el.querySelector(applySel) : null;
+    if (btn) patientRetentionAction(btn);
+  }, PR_FLUSH_MS);
+}
+
+/* Bind the panel ONCE (delegated — survives every innerHTML re-render). */
+function bindPatientRetentionPanel(el) {
+  if (!el || el._prBound || typeof el.addEventListener !== 'function') return;
+  el._prBound = true;
+  el.addEventListener('click', e => {
+    const t = e.target && e.target.closest ? e.target.closest(PR_CONTROLS) : null;
+    if (t && el.contains(t)) patientRetentionAction(t);
+  });
+  el.addEventListener('input', e => { prStoreInput(e.target); });
+  el.addEventListener('change', e => patientRetentionInputChange(e.target));
+  el.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' || !prInputKey(e.target)) return;
+    e.preventDefault();
+    prStoreInput(e.target);
+    patientRetentionAction(prApplyButton(el, e.target));
+  });
+  if (!prPointer.bound && typeof document !== 'undefined' && document.addEventListener) {
+    prPointer.bound = true;
+    document.addEventListener('pointerdown', () => { prPointer.down = true; }, true);
+    const up = () => { prPointer.down = false; };
+    document.addEventListener('pointerup', up, true);
+    document.addEventListener('pointercancel', up, true);
+  }
+}
+
+/* opts.focusList: move focus to the list just opened (and scroll it into
+ * view); opts.focusKey: the control to focus after the re-render (default:
+ * the control that had focus). */
+function renderPatientRetention(opts) {
+  const o = opts || {};
   const el = document.getElementById('patient-retention');
   const btn = document.getElementById('patient-retention-btn');
   if (!el) return;
@@ -6292,49 +6555,33 @@ function renderPatientRetention() {
   if (btn && btn.setAttribute) btn.setAttribute('aria-expanded', ui.open ? 'true' : 'false');
   el.classList.toggle('hidden', !ui.open);
   if (!ui.open) { el.innerHTML = ''; return; }
+  const active = document.activeElement;
+  const focusKey = o.focusKey || (active && el.contains && el.contains(active) ? prControlKey(active) : '');
   const report = patientRetentionReport(state, ui);
   const completion = patientCompletionReport(state, ui);
   el.innerHTML = patientRetentionHtml(report, ui, { edit: state.mode === 'edit', completion });
-  const onDate = (sel, key) => { const i = el.querySelector(sel); if (i) i.onchange = () => { ui[key] = String(i.value || ''); renderPatientRetention(); }; };
-  onDate('.pr-from', 'from');
-  onDate('.pr-to', 'to');
-  const th = el.querySelector('.pr-threshold');
-  if (th) th.onchange = () => { ui.threshold = String(th.value || '').trim(); renderPatientRetention(); };
-  const cth = el.querySelector('.pr-comp-threshold');
-  if (cth) cth.onchange = () => { ui.completionThreshold = String(cth.value || '').trim(); renderPatientRetention(); };
-  el.querySelectorAll('.pr-preset').forEach(b => {
-    b.onclick = () => {
-      const r = retentionPresetRange(b.dataset.preset, debtAgingTodayIso());
-      if (r) { ui.from = r.from; ui.to = r.to; renderPatientRetention(); }
-    };
-  });
-  el.querySelectorAll('[data-sel]').forEach(b => {
-    b.onclick = () => {
-      let sel = null;
-      try { sel = JSON.parse(b.dataset.sel); } catch (_) { sel = null; }
-      const R = patientRetentionLib();
-      if (R && R.validSelection(sel)) { ui.sel = sel; renderPatientRetention(); }
-    };
-  });
-  el.querySelectorAll('.pr-cont-set').forEach(s => {
-    s.onchange = () => { if (s.value) withFieldSaving(s, 'save', () => updateDischargeContinuity(s.dataset.id, s.value)); };
-  });
-  const csv = el.querySelector('.pr-csv');
-  if (csv) csv.onclick = () => exportPatientRetentionCsv(report, ui.sel, completion);
-  const ccsv = el.querySelector('.pr-comp-csv');
-  if (ccsv) ccsv.onclick = () => exportCompletionCsv(completion);
-  // «ייצוא לאקסל» (CHANGELOG-report-xlsx-export.md) — from THIS report.
-  el.querySelectorAll('.pr-xlsx').forEach(b => {
-    b.onclick = () => exportReportXlsx(b.dataset.section, reportXlsxContext(null, report, ui.from, ui.to, completion));
-  });
-  const xa = el.querySelector('.pr-xlsx-all');
-  if (xa) xa.onclick = () => exportAllReportsXlsx(ui.from, ui.to);
-  const xl = el.querySelector('.pr-xlsx-list');
-  const R = patientRetentionLib();
-  if (xl && R) xl.onclick = () => {
-    const picked = retentionSelectionList(report, completion, ui.sel);
-    exportListXlsx(ui.sel && ui.sel.kind === 'missing' ? 'missing' : 'patients', picked.rows, ui.from, ui.to, picked.title);
-  };
+  ui.dirty = false;
+  bindPatientRetentionPanel(el);
+  const target = o.focusList ? el.querySelector('.pr-list-title') : findPrControl(el, focusKey);
+  if (target && target.focus) target.focus({ preventScroll: true });
+  if (o.focusList && target && target.scrollIntoView) target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+/* A Hebrew error toast with «נסו שוב» (#retry-toast; text only). */
+const RETRY_TOAST_MS = 12000;
+function showRetryToast(msg, onRetry) {
+  const el = document.getElementById('retry-toast');
+  const text = el && el.querySelector ? el.querySelector('.retry-toast-msg') : null;
+  if (!text) { showError(msg); return; }
+  const retry = el.querySelector('.retry-toast-retry');
+  const close = el.querySelector('.retry-toast-close');
+  const hide = () => { el.classList.add('hidden'); clearTimeout(showRetryToast._t); };
+  text.textContent = msg;
+  el.classList.remove('hidden');
+  if (retry) retry.onclick = () => { hide(); if (typeof onRetry === 'function') onRetry(); };
+  if (close) close.onclick = hide;
+  clearTimeout(showRetryToast._t);
+  showRetryToast._t = setTimeout(hide, RETRY_TOAST_MS);
 }
 
 /* The CSV of the list shown, as a download. Built in the page (no server
@@ -6351,6 +6598,14 @@ function exportCompletionCsv(completion) {
   const R = patientRetentionLib();
   if (!R || !completion || !completion.ok) return;
   downloadCsv(R.completionToCsv(completion, { houseName: retentionHouseName }), R.CSV_MIME, R.completionCsvFilename(completion.from, completion.to));
+}
+
+/* The bucket table (discharged + «עדיין בטיפול» per bucket = the cohort) as a
+ * CSV — the same numbers as the cards and their sub-lines. */
+function exportRetentionSummaryCsv(report) {
+  const R = patientRetentionLib();
+  if (!R || !report || !report.ok) throw new Error('bad_range');
+  downloadCsv(R.summaryToCsv(report), R.CSV_MIME, R.summaryCsvFilename(report.from, report.to));
 }
 
 function downloadCsv(text, mime, filename) {

@@ -13,7 +13,15 @@
 - `committeeSet` is refused (`committee_read_only`). `ManagersCommittee` is kept as history and
   never written again.
 - `getCommitteesForCoordinators` gains `range:'future'` for the one-time coordinators import.
-- SW v81. Details: `CHANGELOG-committees-from-coordinators.md`, `DEPLOY.md`.
+- SW v82. Details: `CHANGELOG-committees-from-coordinators.md`, `DEPLOY.md`.
+## «חתכי מטופלים» fixes — dead buttons, list behind a number, sub-lines — October 20, 2026 (PR open)
+
+Root cause of the dead buttons: the threshold inputs re-rendered the panel from `change`, which fires
+on blur = the mousedown of the next control, so that click never fired. Now one delegated listener,
+inputs only store, «החל» applies. Click-a-count opens its list under its section (phone, close, own
+exports). Bucket cards add «+N עדיין בטיפול» (same numbers in «סיכום», «שהות – חתך», summary CSV).
+Spinner + aria-busy + retry toast on every action; 44px. No Code.gs change; SW v81.
+See `CHANGELOG-chitukim-fixes.md`.
 
 ## «השלמת תקופת טיפול» — completion view — October 20, 2026 (PR open)
 

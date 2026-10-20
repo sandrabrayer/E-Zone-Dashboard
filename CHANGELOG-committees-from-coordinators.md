@@ -51,7 +51,7 @@ to the coordinators app.
 - The card shows «הוועדות לא זמינות כרגע — הנתון מאפליקציית הרכזים לא התקבל» when the feed is
   down, never «אין ועדות».
 - New hint «לקריאה בלבד · הוועדות נקבעות באפליקציית הרכזים». The shared fixture is unchanged.
-- SW v80 → v81 (live v80).
+- SW v81 → v82 (live v81).
 
 ## Setup
 See `DEPLOY.md` → «Committees from the coordinators»:

@@ -225,7 +225,8 @@ test('page: click-a-count opens that list (escaped); a stale threshold falls bac
   assert.ok(html.includes(`data-sel="${JSON.stringify(sel).replace(/"/g, '&quot;')}"`), 'selection JSON escaped');
   pg.sandbox.__ui2 = UI({ sel: { kind: 'completion', threshold: 77, key: 'reached' } });
   const stale = pg.run('patientRetentionHtml(globalThis.__rep, globalThis.__ui2, { completion: globalThis.__comp })');
-  assert.ok(stale.includes('שוחררו · עד 30 יום ('), 'falls back to the default list');
+  // CHANGELOG-chitukim-fixes.md: a stale selection closes the list (no list until a number is clicked).
+  assert.ok(!stale.includes('class="pr-list"'), 'a stale threshold closes its list');
   const list = pg.run('retentionSelectionList(globalThis.__rep, globalThis.__comp, globalThis.__ui.sel)');
   assert.equal(list.rows, R.completionResult(pg.sandbox.__comp, 30).rows.reached);
 });
@@ -284,8 +285,9 @@ test('Excel: a formula-looking name is text, never a formula', async () => {
 
 /* ---------- wiring ---------- */
 
-test('wiring: no Code.gs change, SW bumped to v80+ (monotonic), 44px targets', () => {
+test('wiring: no Code.gs change, SW bumped to v80 or later, 44px targets', () => {
   assert.equal(read('apps-script', 'Code.gs').includes('computeCompletion'), false);
+  // v81: CHANGELOG-chitukim-fixes.md (monotonic).
   assert.ok(Number(/var CACHE_VERSION = 'v(\d+)';/.exec(read('public', 'sw.js'))[1]) >= 80);
   assert.match(read('public', 'style.css'), /\.pr-comp-count, \.patient-retention \.pr-comp-csv, \.patient-retention \.pr-comp-threshold \{ min-height: 44px; font-size: 16px; \}/);
 });
