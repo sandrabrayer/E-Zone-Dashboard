@@ -108,6 +108,7 @@ function loadApp(script) {
       deletePatient: (p) => deletePatient(p),
       deleteMeetingReport: (id) => deleteMeetingReport(id),
       deleteDuplicateDischarge: (d, r) => deleteDuplicateDischarge(d, r),
+      updateDischargeContinuity: (id, k) => updateDischargeContinuity(id, k),
       removeLead: (l) => removeLead(l),
       closeLead: (l) => closeLead(l),
       saveBillingOverride: (p, a) => saveBillingOverride(p, a),
@@ -254,6 +255,14 @@ const PATHS = [
     okResponse: { ok: true, deleted: true, id: 'aud-2', deletedAt: '2026-10-07T08:00:00.000Z', deletedBy: 'ורד', deleteReason: 'כפילות' },
     run: (app) => app.deleteDuplicateDischarge(app.state.dischargedPatients[1], 'כפילות'),
     landed: (app) => { assert.strictEqual(app.state.dischargedPatients[1].deletedAt, '2026-10-07T08:00:00.000Z'); },
+  },
+  {
+    name: 'setDischargeContinuity («לא ידוע — עדכון», CHANGELOG-patient-retention-ui.md)',
+    action: 'setDischargeContinuity',
+    setup: (app) => { app.state.dischargedPatients = [{ ...AUDIT, continuity: 'unknown' }]; },
+    okResponse: { ok: true, id: 'aud-1', continuity: 'none' },
+    run: (app) => app.updateDischargeContinuity('aud-1', 'none'),
+    landed: (app) => { assert.strictEqual(app.state.dischargedPatients[0].continuity, 'none'); },
   },
   {
     name: 'deleteMeetingReport',

@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## «חתכי מטופלים» + required «המשך טיפול» — October 20, 2026 (PR open, stacked on #257)
+
+שחרור modal: required «המשך טיפול» (3 real values; submit gated). «מטופלים משוחררים» gets a
+«חתכי מטופלים» sub-view: period + presets + custom days, length cards (% of cohort), continuity
+cards (% of discharged), bucket × continuity table, clickable lists, CSV (BOM, formula-guarded),
+«נתונים חסרים». Legacy rows: «לא ידוע — עדכון» (optimistic + rollback). No Code.gs change; SW v78.
+See `CHANGELOG-patient-retention-ui.md`.
+
 ## «חתכי מטופלים» foundation — `continuity` column — October 20, 2026 (PR open)
 
 Discharged sheet gets `continuity` appended LAST (keys `continued_outpatient` /

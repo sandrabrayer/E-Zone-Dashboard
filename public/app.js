@@ -77,6 +77,17 @@ const DISCHARGE_DISPOSITIONS = ['completed', 'stopped_early', 'released_outpatie
  * CONTINUITY_KEYS; a guard test pins all three equal). 'unknown' is the
  * default of every legacy row. */
 const DISCHARGE_CONTINUITY_KEYS = ['continued_outpatient', 'continued_other', 'none', 'unknown'];
+/* Their Hebrew labels (lib/patient-retention.js CONTINUITY_LABELS — pinned
+ * equal by a test) and the three a person may pick: the שחרור modal's
+ * required «המשך טיפול» group and the «לא ידוע — עדכון» control. 'unknown'
+ * is never offered. */
+const DISCHARGE_CONTINUITY_LABELS = {
+  continued_outpatient: 'המשיך באמבולטורי (E-ZONE)',
+  continued_other:      'המשיך במסגרת טיפולית אחרת',
+  none:                 'לא המשיך',
+  unknown:              'לא ידוע',
+};
+const DISCHARGE_CONTINUITY_CHOICES = ['continued_outpatient', 'continued_other', 'none'];
 
 /* Meeting-outcome closure model — the outcome recorded after a lead's meeting.
  * Stable keys persist to the sheet (meetingOutcome column via LEAD_COLUMNS);
@@ -1825,6 +1836,8 @@ function initTabs() {
   document.getElementById('add-lead-btn').onclick = openAddLeadModal;
   const funnelBtn = document.getElementById('leads-funnel-btn');
   if (funnelBtn) funnelBtn.onclick = toggleLeadsFunnel;
+  const retentionBtn = document.getElementById('patient-retention-btn');
+  if (retentionBtn) retentionBtn.onclick = togglePatientRetention;
   document.getElementById('add-patient-btn').onclick = () => openDirectAddPatientModal();
   const returningBtn = document.getElementById('returning-patient-btn');
   if (returningBtn) returningBtn.onclick = () => openReturningPatientSearch();
@@ -4654,6 +4667,7 @@ function renderAll() {
   renderHouseTabs();
   renderPatients();
   renderDischargedPatients();
+  renderPatientRetention();
   renderBilling();
   renderCreditsPayouts();
   renderMonthlyRevenue();
@@ -6052,6 +6066,252 @@ function exportLeadsFunnelCsv(report, bucket) {
   setTimeout(() => URL.revokeObjectURL(href), 1000);
 }
 
+/* ===== «חתכי מטופלים» — length of stay + «המשך טיפול» (CHANGELOG-patient-retention-ui.md) =====
+ * A sub-view of «מטופלים משוחררים». The rules live in
+ * lib/patient-retention.js (window.PatientRetention); this is only its view.
+ * The cohort is every stay whose ENTRY date is in the period — the label
+ * says so. The period picker and presets are the leads funnel's
+ * (LeadsFunnel.PRESETS / presetRange, Israel today). Every value is escaped;
+ * the CSV neutralizes formulas (PatientRetention.toCsv — the same cell rule
+ * as the leads funnel's CSV, pinned by a test). */
+
+/* The module, or null when patient-retention.js did not load. */
+function patientRetentionLib() {
+  return (typeof PatientRetention !== 'undefined' && PatientRetention && typeof PatientRetention.computeRetention === 'function') ? PatientRetention : null;
+}
+
+/* The presets (shared with «חתכים בלידים») and their range. */
+function retentionPresets() {
+  const F = leadsFunnelLib();
+  return F ? F.PRESETS : [];
+}
+function retentionPresetRange(key, todayIso) {
+  const F = leadsFunnelLib();
+  return F ? F.presetRange(key, todayIso) : null;
+}
+
+/* The panel's UI state (never persisted). */
+function patientRetentionUi() {
+  if (!state.patientRetention) {
+    const r = retentionPresetRange('last_3_months', debtAgingTodayIso());
+    state.patientRetention = { open: false, from: r ? r.from : '', to: r ? r.to : '', threshold: '', sel: { kind: 'bucket', key: 'upTo30' } };
+  }
+  return state.patientRetention;
+}
+
+/* The report over the page's state. Pure apart from reading `s`. */
+function patientRetentionReport(s, ui, todayIso) {
+  const R = patientRetentionLib();
+  if (!R) return { ok: false, error: 'no_module' };
+  const src = s || state;
+  const u = ui || {};
+  return R.computeRetention({
+    patients: src.patients, discharged: src.dischargedPatients,
+    from: u.from, to: u.to, customThreshold: u.threshold === '' ? null : u.threshold,
+    today: todayIso || debtAgingTodayIso(),
+  });
+}
+
+function retentionHouseName(houseId) {
+  const h = houseById(houseId);
+  return (h && h.name) || houseId || '';
+}
+
+/* A count button: the number, its label, an optional percentage. `sel` is the
+ * selection it opens (JSON in data-sel; escaped). */
+function retentionStatHtml(sel, count, label, pct, active) {
+  const pctHtml = pct === undefined ? '' : `<span class="pr-stat-pct">${escapeHtml(pct)}</span>`;
+  return `<button type="button" class="pr-stat${active ? ' active' : ''}" data-sel="${escapeHtml(JSON.stringify(sel))}" aria-pressed="${active ? 'true' : 'false'}">`
+    + `<span class="pr-stat-num">${escapeHtml(String(count))}</span>${pctHtml}<span class="pr-stat-label">${escapeHtml(label)}</span></button>`;
+}
+
+const sameSel = (a, b) => !!a && !!b && a.kind === b.kind && (a.key || '') === (b.key || '') && (a.bucket || '') === (b.bucket || '');
+
+/* The inline «לא ידוע — עדכון» select for a legacy discharged row (HTML). */
+function continuitySelectHtml(auditId) {
+  return `<select class="pr-cont-set" data-id="${escapeHtml(String(auditId))}" aria-label="עדכון המשך טיפול">`
+    + `<option value="">${escapeHtml('לא ידוע — עדכון')}</option>`
+    + DISCHARGE_CONTINUITY_CHOICES.map(k => `<option value="${escapeHtml(k)}">${escapeHtml(DISCHARGE_CONTINUITY_LABELS[k])}</option>`).join('')
+    + '</select>';
+}
+
+/* The panel's HTML for a report + UI state. Pure. opts.edit: edit mode. */
+function patientRetentionHtml(report, ui, opts) {
+  const R = patientRetentionLib();
+  const u = ui || {};
+  const o = opts || {};
+  const presets = retentionPresets();
+  const controls = `
+    <div class="pr-controls">
+      <label>מתאריך <input type="date" class="pr-from" lang="he" dir="rtl" value="${escapeHtml(u.from || '')}" /></label>
+      <label>עד תאריך <input type="date" class="pr-to" lang="he" dir="rtl" value="${escapeHtml(u.to || '')}" /></label>
+      <div class="pr-presets">${presets.map(p =>
+        `<button type="button" class="btn small pr-preset" data-preset="${escapeHtml(p.key)}">${escapeHtml(p.label)}</button>`).join('')}</div>
+      <label>לתקופה מסוימת (ימים) <input type="number" class="pr-threshold" inputmode="numeric" min="1" max="3650" step="1" value="${escapeHtml(String(u.threshold || ''))}" /></label>
+    </div>
+    <div class="pr-basis">${escapeHtml(R ? R.COHORT_RULE_LABEL : 'לפי תאריך כניסה בתקופה')} (כולל שני התאריכים) · ימי שהות: מיום הכניסה עד יום השחרור, לא כולל יום הכניסה</div>`;
+  if (!report || !report.ok || !R) {
+    const msg = report && report.error === 'no_module' ? 'הדוח לא נטען — רעננו את הדף' : 'יש לבחור טווח תאריכים תקין';
+    return controls + `<div class="pr-empty">${escapeHtml(msg)}</div>`;
+  }
+  const sel = R.validSelection(u.sel) ? u.sel : { kind: 'bucket', key: 'upTo30' };
+  const pct = (f) => R.formatPercent(f);
+  const lengthCards = R.BUCKETS.map(b => retentionStatHtml({ kind: 'bucket', key: b.key }, report.counts[b.key], b.label, pct(report.percents[b.key]), sameSel(sel, { kind: 'bucket', key: b.key })))
+    .concat(retentionStatHtml({ kind: 'still' }, report.stillInTreatment.count, R.STILL_IN_TREATMENT_LABEL, pct(report.percents.stillInTreatment), sameSel(sel, { kind: 'still' })))
+    .join('');
+  const stillBreak = report.stillInTreatment.count
+    ? `<div class="pr-sub">${escapeHtml(R.STILL_IN_TREATMENT_LABEL)} — ימים עד היום: ${R.BUCKETS.map(b =>
+      `<button type="button" class="btn small pr-link" data-sel="${escapeHtml(JSON.stringify({ kind: 'stillBucket', key: b.key }))}">${escapeHtml(b.label)}: ${escapeHtml(String(report.stillInTreatment.buckets[b.key]))}</button>`).join(' ')}</div>`
+    : '';
+  const customCards = report.custom
+    ? `<div class="pr-section-title">לתקופה מסוימת — ${escapeHtml(String(report.custom.threshold))} ימים (מתוך המשוחררים)</div><div class="pr-stats">`
+      + ['atOrBelow', 'above'].map(k => retentionStatHtml({ kind: 'custom', key: k }, report.custom[k], R.customLabel(k, report.custom.threshold),
+        pct(R.percentOf(report.custom[k], report.dischargedCount)), sameSel(sel, { kind: 'custom', key: k }))).join('') + '</div>'
+    : '';
+  const contCards = R.CONTINUITY_KEYS.map(k => retentionStatHtml({ kind: 'continuity', key: k }, report.continuity[k], R.CONTINUITY_LABELS[k],
+    pct(report.percents.continuity[k]), sameSel(sel, { kind: 'continuity', key: k }))).join('');
+  const cross = `<div class="pr-table-wrap"><table class="pr-cross"><thead><tr><th>משך שהות</th>${R.CONTINUITY_KEYS.map(k => `<th>${escapeHtml(R.CONTINUITY_LABELS[k])}</th>`).join('')}<th>סה״כ</th></tr></thead><tbody>`
+    + R.BUCKETS.map(b => `<tr><th>${escapeHtml(b.label)}</th>${R.CONTINUITY_KEYS.map(k =>
+      `<td><button type="button" class="pr-cell${sameSel(sel, { kind: 'cross', bucket: b.key, key: k }) ? ' active' : ''}" data-sel="${escapeHtml(JSON.stringify({ kind: 'cross', bucket: b.key, key: k }))}">${escapeHtml(String(report.cross[b.key][k]))}</button></td>`).join('')}`
+      + `<td>${escapeHtml(String(report.counts[b.key]))}</td></tr>`).join('')
+    + '</tbody></table></div>';
+  const missing = report.missingCount
+    ? `<div class="pr-sub"><button type="button" class="btn small pr-link" data-sel="${escapeHtml(JSON.stringify({ kind: 'missing' }))}">${escapeHtml(`${R.MISSING_LABEL}: ${report.missingCount}`)}</button> — לא נספרו בחתכים</div>`
+    : '';
+  const list = R.listFor(report, sel);
+  const body = list.length
+    ? `<div class="pr-table-wrap"><table class="pr-table"><thead><tr><th>שם</th><th>בית</th><th>תאריך כניסה</th><th>תאריך שחרור</th><th>ימים</th><th>המשך טיפול</th>${sel.kind === 'missing' ? '<th>חסר</th>' : ''}</tr></thead><tbody>${list.map(r => {
+        let cont = '';
+        if (r.status === 'discharged') {
+          cont = r.continuity === 'unknown' && o.edit && r.auditId
+            ? continuitySelectHtml(r.auditId)
+            : escapeHtml(R.CONTINUITY_LABELS[r.continuity] || R.CONTINUITY_LABELS.unknown);
+        }
+        return `<tr><td>${escapeHtml(r.name)}${r.returning ? ' <span class="pr-tag">חוזר</span>' : ''}</td><td>${escapeHtml(retentionHouseName(r.houseId))}</td>`
+          + `<td>${escapeHtml(r.entryDate ? formatDate(r.entryDate) : '')}</td><td>${escapeHtml(r.dischargeDate ? formatDate(r.dischargeDate) : '')}</td>`
+          + `<td>${escapeHtml(r.days === null || r.days === undefined ? '' : String(r.days))}</td><td>${cont}</td>`
+          + (sel.kind === 'missing' ? `<td>${escapeHtml(R.MISSING_REASONS[r.reason] || '')}</td>` : '') + '</tr>';
+      }).join('')}</tbody></table></div>`
+    : '<div class="pr-empty">אין מטופלים ברשימה זו בתקופה</div>';
+  return controls
+    + `<div class="pr-section-title">משך שהות (מתוך ${escapeHtml(String(report.cohortSize))} שנכנסו בתקופה)</div>`
+    + `<div class="pr-stats">${lengthCards}</div>${stillBreak}${customCards}`
+    + `<div class="pr-section-title">המשך טיפול (מתוך ${escapeHtml(String(report.dischargedCount))} ששוחררו)</div>`
+    + `<div class="pr-stats">${contCards}</div>`
+    + `<div class="pr-section-title">משך שהות × המשך טיפול</div>${cross}${missing}`
+    + `<div class="pr-list-head"><span>${escapeHtml(R.listTitle(sel, report))} (${escapeHtml(String(list.length))})</span>`
+    + `<button type="button" class="btn small pr-csv"${list.length ? '' : ' disabled'}>ייצוא CSV</button></div>`
+    + body;
+}
+
+function togglePatientRetention() {
+  const ui = patientRetentionUi();
+  ui.open = !ui.open;
+  renderPatientRetention();
+}
+
+function renderPatientRetention() {
+  const el = document.getElementById('patient-retention');
+  const btn = document.getElementById('patient-retention-btn');
+  if (!el) return;
+  const ui = patientRetentionUi();
+  if (btn && btn.setAttribute) btn.setAttribute('aria-expanded', ui.open ? 'true' : 'false');
+  el.classList.toggle('hidden', !ui.open);
+  if (!ui.open) { el.innerHTML = ''; return; }
+  const report = patientRetentionReport(state, ui);
+  el.innerHTML = patientRetentionHtml(report, ui, { edit: state.mode === 'edit' });
+  const onDate = (sel, key) => { const i = el.querySelector(sel); if (i) i.onchange = () => { ui[key] = String(i.value || ''); renderPatientRetention(); }; };
+  onDate('.pr-from', 'from');
+  onDate('.pr-to', 'to');
+  const th = el.querySelector('.pr-threshold');
+  if (th) th.onchange = () => { ui.threshold = String(th.value || '').trim(); renderPatientRetention(); };
+  el.querySelectorAll('.pr-preset').forEach(b => {
+    b.onclick = () => {
+      const r = retentionPresetRange(b.dataset.preset, debtAgingTodayIso());
+      if (r) { ui.from = r.from; ui.to = r.to; renderPatientRetention(); }
+    };
+  });
+  el.querySelectorAll('[data-sel]').forEach(b => {
+    b.onclick = () => {
+      let sel = null;
+      try { sel = JSON.parse(b.dataset.sel); } catch (_) { sel = null; }
+      const R = patientRetentionLib();
+      if (R && R.validSelection(sel)) { ui.sel = sel; renderPatientRetention(); }
+    };
+  });
+  el.querySelectorAll('.pr-cont-set').forEach(s => {
+    s.onchange = () => { if (s.value) withFieldSaving(s, 'save', () => updateDischargeContinuity(s.dataset.id, s.value)); };
+  });
+  const csv = el.querySelector('.pr-csv');
+  if (csv) csv.onclick = () => exportPatientRetentionCsv(report, ui.sel);
+}
+
+/* The CSV of the list shown, as a download. Built in the page (no server
+ * route). */
+function exportPatientRetentionCsv(report, sel) {
+  const R = patientRetentionLib();
+  if (!R || !report || !report.ok) return;
+  const blob = new Blob([R.toCsv(R.listFor(report, sel), { houseName: retentionHouseName })], { type: R.CSV_MIME });
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = R.csvFilename(report.from, report.to, sel);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 1000);
+}
+
+/* The «לא ידוע — עדכון» control in a «מטופלים משוחררים» row (DOM, text only). */
+function continuityUpdateCell(d) {
+  const cell = document.createElement('div');
+  const label = document.createElement('span');
+  label.className = 'p-label';
+  label.textContent = 'המשך טיפול';
+  cell.appendChild(label);
+  const sel = document.createElement('select');
+  sel.className = 'pr-cont-set';
+  sel.dataset.id = String(d.id);
+  sel.setAttribute('aria-label', 'עדכון המשך טיפול');
+  const first = document.createElement('option');
+  first.value = '';
+  first.textContent = 'לא ידוע — עדכון';
+  sel.appendChild(first);
+  DISCHARGE_CONTINUITY_CHOICES.forEach(k => {
+    const opt = document.createElement('option');
+    opt.value = k;
+    opt.textContent = DISCHARGE_CONTINUITY_LABELS[k];
+    sel.appendChild(opt);
+  });
+  sel.onchange = () => { if (sel.value) withFieldSaving(sel, 'save', () => updateDischargeContinuity(d.id, sel.value)); };
+  cell.appendChild(sel);
+  return cell;
+}
+
+/* Set «המשך טיפול» on one discharged row: optimistic, then
+ * setDischargeContinuity (Code.gs validates again, per row, under the lock);
+ * a refusal or a failed write rolls the row back. */
+async function updateDischargeContinuity(auditId, key) {
+  if (state.mode !== 'edit') return;
+  if (DISCHARGE_CONTINUITY_CHOICES.indexOf(key) < 0) { showError('יש לבחור המשך טיפול מהרשימה'); return; }
+  const row = (state.dischargedPatients || []).find(d => d && String(d.id) === String(auditId));
+  if (!row) { showError('שורת השחרור לא נמצאה'); return; }
+  const prev = row.continuity;
+  row.continuity = key;
+  renderAll();
+  try {
+    const res = await trackedWrite([_dataGuard], () =>
+      apiPost({ action: 'setDischargeContinuity', id: String(row.id), continuity: key }));
+    // R3: the server names the row it updated.
+    requireSavedId(res, r => r.id, row.id);
+    showToast('המשך הטיפול עודכן');
+  } catch (e) {
+    row.continuity = prev;
+    renderAll();
+    showError('עדכון המשך הטיפול נכשל — ' + ((e && e.message) || ''));
+  }
+}
+
 /* The dispositions «לא נכנס» offers on a «ממתינים לקליטה» card: the lead
  * never entered, so it was not relevant or stopped before starting — never
  * «סיים טיפול» / «משוחרר לטיפול חוץ» (CHANGELOG-waiting-not-entered.md). */
@@ -6550,6 +6810,11 @@ function renderDischargedPatients() {
     if (p.discharge_note) {
       cells.push({ label: 'הערה', value: p.discharge_note });
     }
+    const contKey = DISCHARGE_CONTINUITY_KEYS.indexOf(p.continuity) >= 0 ? p.continuity : 'unknown';
+    // «המשך טיפול»: a legacy («לא ידוע») row gets the inline update control
+    // below (edit mode); every other row shows its label.
+    const contEditable = contKey === 'unknown' && state.mode === 'edit';
+    if (!contEditable) cells.push({ label: 'המשך טיפול', value: DISCHARGE_CONTINUITY_LABELS[contKey] });
 
     cells.forEach(c => {
       const cell = document.createElement('div');
@@ -6563,6 +6828,7 @@ function renderDischargedPatients() {
       cell.appendChild(val);
       row.appendChild(cell);
     });
+    if (contEditable) row.appendChild(continuityUpdateCell(p));
 
     if (state.mode === 'edit') {
       const actions = document.createElement('div');
@@ -7282,7 +7548,11 @@ function showConfirm({ text, onConfirm, onCancel, confirmLabel = 'אישור', d
 /* `requireNote` (opt-in, CHANGELOG-waiting-not-entered.md): the «פירוט» text
  * becomes a required reason — submit stays disabled until it is filled.
  * Every existing caller passes nothing and is unchanged. */
-function showCloseLeadModal({ onConfirm, dispositions, title, dateField, requireNote }) {
+/* `continuityField` (opt-in, CHANGELOG-patient-retention-ui.md): a REQUIRED
+ * «המשך טיפול» radio group with DISCHARGE_CONTINUITY_CHOICES (no «לא ידוע»);
+ * submit stays disabled until one is picked, and the payload gains
+ * `continuity`. Only the שחרור modal passes it; Code.gs re-validates. */
+function showCloseLeadModal({ onConfirm, dispositions, title, dateField, requireNote, continuityField }) {
   const root = document.getElementById('modal-root');
   const back = document.createElement('div');
   back.className = 'modal-backdrop';
@@ -7303,6 +7573,18 @@ function showCloseLeadModal({ onConfirm, dispositions, title, dateField, require
   // so the native picker honors the Hebrew locale, matching the lead "נוצר"
   // input. Starts empty and carries no `required`, so any disposition can be
   // confirmed without it.
+  const continuityHtml = continuityField ? `
+        <div class="form-row">
+          <fieldset class="reason-fieldset continuity-fieldset">
+            <legend>המשך טיפול *</legend>
+            ${DISCHARGE_CONTINUITY_CHOICES.map(key => `
+            <label class="reason-radio">
+              <input type="radio" name="continuity" value="${escapeHtml(key)}" required />
+              <span>${escapeHtml(DISCHARGE_CONTINUITY_LABELS[key])}</span>
+            </label>`).join('')}
+          </fieldset>
+        </div>` : '';
+
   const dateRowHtml = dateField ? `
         <div class="form-row">
           <label>${escapeHtml(dateField.label || 'תאריך')}</label>
@@ -7319,6 +7601,7 @@ function showCloseLeadModal({ onConfirm, dispositions, title, dateField, require
             ${radiosHtml}
           </fieldset>
         </div>
+        ${continuityHtml}
         ${dateRowHtml}
         <div class="form-row">
           <label>${requireNote ? 'סיבה *' : 'פירוט'}</label>
@@ -7346,8 +7629,14 @@ function showCloseLeadModal({ onConfirm, dispositions, title, dateField, require
    * per spec — forces explicit choice. */
   const noteEl = back.querySelector('textarea[name="not_relevant_note"]');
   const noteOk = () => !requireNote || !!String((noteEl && noteEl.value) || '').trim();
-  const refresh = () => { submitBtn.disabled = !Array.from(radios).some(x => x.checked) || !noteOk(); };
+  const contRadios = continuityField ? back.querySelectorAll('input[name="continuity"]') : [];
+  const continuityOk = () => !continuityField || Array.from(contRadios).some(x => x.checked && DISCHARGE_CONTINUITY_CHOICES.indexOf(x.value) >= 0);
+  const refresh = () => {
+    submitBtn.disabled = !Array.from(radios).some(x => x.checked) || !noteOk();
+    if (!continuityOk()) submitBtn.disabled = true;
+  };
   radios.forEach(r => r.addEventListener('change', refresh));
+  Array.from(contRadios).forEach(r => r.addEventListener('change', refresh));
   if (requireNote && noteEl) noteEl.addEventListener('input', refresh);
 
   /* closeLead and dischargePatient both run behind this modal, and both are
@@ -7359,6 +7648,7 @@ function showCloseLeadModal({ onConfirm, dispositions, title, dateField, require
     e.preventDefault();
     const picked = Array.from(radios).find(x => x.checked);
     if (!picked || !noteOk()) return;    // defensive — submit was disabled
+    if (!continuityOk()) return;
     return busyButton(submitBtn, 'save', async () => {
       cancelBtn.disabled = true;
       try {
@@ -7369,6 +7659,7 @@ function showCloseLeadModal({ onConfirm, dispositions, title, dateField, require
         if (dateField) {
           payload[dateField.name] = (fd.get(dateField.name) || '').toString();
         }
+        if (continuityField) payload.continuity = (fd.get('continuity') || '').toString();
         await onConfirm(payload);
         close();
       } catch (err) {
@@ -8688,7 +8979,7 @@ function initPatientsTabFilters() {
  * back to today. The resolved date lands in the existing `exitDate` column —
  * no new sheet column, so this stays frontend-only. `dischargedAt` remains the
  * true action timestamp, independent of the user-chosen date. */
-function dischargeAuditRow(patient, { disposition, note, dischargeDate }, today) {
+function dischargeAuditRow(patient, { disposition, note, dischargeDate, continuity }, today) {
   const picked   = dischargeDate ? isoDate(dischargeDate) : '';
   const exitDate = picked || today || todayISO();
   return {
@@ -8710,6 +9001,8 @@ function dischargeAuditRow(patient, { disposition, note, dischargeDate }, today)
     dischargedAt:   new Date().toISOString(),
     disposition:    disposition,
     discharge_note: note,
+    // «המשך טיפול»: one of the three choices, else 'unknown' (never junk).
+    continuity:     DISCHARGE_CONTINUITY_CHOICES.indexOf(continuity) >= 0 ? continuity : 'unknown',
   };
 }
 
@@ -8748,6 +9041,7 @@ function dischargePatient(p) {
     title: 'שחרור מטופל',
     dispositions: DISCHARGE_DISPOSITIONS,
     dateField: { name: 'dischargeDate', label: 'תאריך שחרור' },
+    continuityField: true,
     onConfirm: async (fields) => {
       const stay = dischargeStayKey(p) || ('id:' + String(p.id || ''));
       if (dischargesInFlight.has(stay)) {
@@ -8766,7 +9060,7 @@ function dischargePatient(p) {
 
 /* The discharge itself (both writes + the follow-ups). Split out of
  * dischargePatient only so the in-flight guard can wrap it. */
-async function runDischarge(p, auditId, { disposition, note, dischargeDate }) {
+async function runDischarge(p, auditId, { disposition, note, dischargeDate, continuity }) {
   // Guard 2 (discharge re-promotion fix, insurance): retire the source lead
   // to the terminal 'admitted' stage (the same value retireAdmittedLeads
   // uses) so a later loadAll's promoteEnteredLeads can't re-create this
@@ -8785,7 +9079,7 @@ async function runDischarge(p, auditId, { disposition, note, dischargeDate }) {
     leadStage: sourceLead ? sourceLead.stage : undefined,
   };
 
-  const auditRow = Object.assign(dischargeAuditRow(p, { disposition, note, dischargeDate }), { id: auditId });
+  const auditRow = Object.assign(dischargeAuditRow(p, { disposition, note, dischargeDate, continuity }), { id: auditId });
   let exitDate = auditRow.exitDate;
   const rollback = () => {
     p.status = prev.status;
