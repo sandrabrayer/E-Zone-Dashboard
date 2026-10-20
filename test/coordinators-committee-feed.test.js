@@ -38,12 +38,17 @@ function boot({ today = '2026-10-15', secret = CC_SECRET } = {}) {
   ].forEach((r) => sh.grid.push(cols.map((c) => r[c] ?? '')));
   g.sandbox.__sheets.Patients = sh;
   const mw = (body) => arr(g.post({ action: 'managersWork', secret: MW_SECRET, ...body }));
-  const feed = (secretSent = CC_SECRET) => arr(g.post({ action: 'getCommitteesForCoordinators', secret: secretSent }));
+  const feed = (secretSent = CC_SECRET, extra) => arr(g.post({ action: 'getCommitteesForCoordinators', secret: secretSent, ...(extra || {}) }));
+  G = g;
   return { g, mw, feed };
 }
 const who = (house, role = 'manager') => ({ house, role, actor: 'מנהל', actorId: 'person-' + house });
+/* Seeds ManagersCommittee through the retained write function — the HTTP op
+ * `committeeSet` is refused since 20 Oct 2026 (CHANGELOG-committees-from-coordinators.md). */
+let G = null;
+const cmDirect = (body) => arr(G.sandbox.mwCommitteeSet_(G.sandbox.mwCaller_(body), body));
 const cm = (mw, house, patientName, entryDate, committeeDate, label = '', correction) =>
-  mw({ op: 'committeeSet', ...who(house, correction ? 'admin' : 'manager'), patientName, entryDate, committeeDate, label, previousDate: '', previousLabel: '' });
+  cmDirect({ ...who(house, correction ? 'admin' : 'manager'), patientName, entryDate, committeeDate, label, previousDate: '', previousLabel: '' });
 
 test('fail-closed: no secret configured / missing / wrong → unauthorized, nothing read', () => {
   const unset = boot({ secret: '' });
@@ -78,8 +83,9 @@ test('contract: exactly id, name, house, date, label; canonical houses; window t
 test('a past committee and a cleared one are never sent', () => {
   const { mw, feed, g } = boot();
   cm(mw, 'raanana', 'אתמול', '2026-09-10', '2026-10-16');
-  mw({ op: 'committeeSet', ...who('raanana'), mode: 'clear', patientName: 'אתמול', entryDate: '2026-09-10', committeeDate: '', previousDate: '2026-10-16', previousLabel: '' });
+  cmDirect({ ...who('raanana'), mode: 'clear', patientName: 'אתמול', entryDate: '2026-09-10', committeeDate: '', previousDate: '2026-10-16', previousLabel: '' });
   assert.deepStrictEqual(feed().committees, []);
+  G = g;
   cm(mw, 'raanana', 'אתמול', '2026-09-10', '2026-10-16');
   const later = boot({ today: '2026-10-17' });
   later.g.sandbox.__sheets.ManagersCommittee = g.sandbox.__sheets.ManagersCommittee;
@@ -126,4 +132,22 @@ test('diagnostics: a refusal reads nothing and carries no data beyond the reason
   const fn = src.slice(src.indexOf('function coordinatorsCommitteesAuth_'), src.indexOf('function getCommitteesForCoordinators_'));
   assert.match(fn, /constantTimeEquals_\(got, expected\)/, 'constant-time compare kept');
   assert.doesNotMatch(fn, /console\.|Logger\./, 'the secret is never logged');
+});
+
+/* CHANGELOG-committees-from-coordinators.md — the one-time import */
+test('range=future: every current committee dated today or later (no +3 cap), same keys; default unchanged', () => {
+  const { mw, feed } = boot();
+  cm(mw, 'ramot', 'דנה לוי', '2026-09-01', '2026-10-17', 'ועדת השמה');
+  cm(mw, 'ramot', 'ארבעה ימים', '2026-09-03', '2027-03-01');
+  cm(mw, 'efroni', 'יוסי כהן', '2026-09-10', '2026-10-15');
+  assert.deepStrictEqual(feed().committees.map((c) => c.date), ['2026-10-15', '2026-10-17'], 'default: today..+3');
+  const all = feed(CC_SECRET, { range: 'future' });
+  assert.deepStrictEqual(all.committees.map((c) => [c.name, c.date]), [['יוסי כהן', '2026-10-15'], ['דנה לוי', '2026-10-17'], ['ארבעה ימים', '2027-03-01']]);
+  for (const c of all.committees) assert.deepStrictEqual(Object.keys(c).sort(), ['date', 'house', 'id', 'label', 'name']);
+  assert.deepStrictEqual(feed(CC_SECRET, { range: 'all' }).committees.length, 2, 'any other value = default');
+  assert.deepStrictEqual(feed('wrong', { range: 'future' }), { ok: false, error: 'unauthorized' }, 'same gate');
+  const sheet = G.sandbox.__sheets.ManagersCommittee;
+  const later = boot({ today: '2026-10-16' });
+  later.g.sandbox.__sheets.ManagersCommittee = sheet;
+  assert.deepStrictEqual(later.feed(CC_SECRET, { range: 'future' }).committees.map((c) => c.date), ['2026-10-17', '2027-03-01'], 'yesterday is never sent');
 });

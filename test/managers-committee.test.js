@@ -1,8 +1,12 @@
 'use strict';
 
-/* Committee date per patient — «ועדה» (CHANGELOG-managers-committee.md):
- * `managersWork` op `committeeSet` + the per-patient `committee` in houseData.
- * Real apps-script/Code.gs in the shared vm sandbox. */
+/* Committee date per patient — «ועדה» (CHANGELOG-managers-committee.md).
+ * Since 20 Oct 2026 (CHANGELOG-committees-from-coordinators.md) the coordinators
+ * set committees: `managersWork` op `committeeSet` is REFUSED
+ * (committee_read_only) and houseData no longer carries `patients[].committee`.
+ * The old write function mwCommitteeSet_ is kept (history of ManagersCommittee,
+ * which the legacy coordinators feed still reads), so its rules are still
+ * pinned here by calling it DIRECTLY. Real apps-script/Code.gs, vm sandbox. */
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -34,14 +38,25 @@ function boot({ secret = SECRET, today = '2026-10-15' } = {}) {
     { houseId: 'arfoni', name: 'בבית אחר', date: '2026-09-01', status: 'active', id: 'p4' }
   ].forEach((r) => sh.grid.push(cols.map((c) => r[c] ?? '')));
   g.sandbox.__sheets.Patients = sh;
-  const call = (body) => arr(g.post({ action: 'managersWork', secret: SECRET, ...body }));
-  return { g, call, tzSeen };
+  const http = (body) => arr(g.post({ action: 'managersWork', secret: SECRET, ...body }));
+  // committeeSet straight into the retained function (the HTTP op is refused);
+  // every other op over HTTP. `cur` reads the stored current value.
+  const call = (body) => {
+    if (body.op !== 'committeeSet') return http(body);
+    const caller = g.sandbox.mwCaller_(body);
+    return caller ? arr(g.sandbox.mwCommitteeSet_(caller, body)) : { ok: false, error: 'bad_request' };
+  };
+  return { g, call, http, tzSeen };
 }
 const ORAN = { house: 'ramot', role: 'manager', actor: 'אורן', actorId: 'person-oran' };
 const HANAN = { house: 'efroni', role: 'manager', actor: 'חנן', actorId: 'person-hanan' };
 const SANDRA = { house: 'ramot', role: 'admin', actor: 'סנדרה', actorId: 'person-sandra' };
 const set = (call, who, extra) => call({ op: 'committeeSet', patientName: 'דנה לוי', entryDate: '2026-09-01', previousDate: '', previousLabel: '', ...who, ...extra });
-const cur = (call, who = ORAN) => call({ op: 'houseData', ...who }).patients[0].committee;
+const curOf = (g, house = 'ramot') => {
+  const v = g.sandbox.mwReadCommittees_(house);
+  const k = Object.keys(v)[0];
+  return k ? arr(v[k]) : null;
+};
 const grid = (g) => g.sandbox.__sheets.ManagersCommittee.grid;
 const cell = (g, row, c) => grid(g)[row][grid(g)[0].indexOf(c)];
 
@@ -63,12 +78,25 @@ test('fail-closed: no secret configured, or a wrong secret → refused, nothing 
   assert.ok(!g.sandbox.__sheets.ManagersCommittee);
 });
 
-test('houseData: committee null until set, support flag + Israel today; a read never creates the sheet', () => {
+test('20 Oct 2026: committeeSet over HTTP is REFUSED (committee_read_only) — nothing read, locked or written', () => {
+  const { g, http } = boot();
+  let locked = false;
+  g.sandbox.LockService.getScriptLock = () => ({ tryLock: () => { locked = true; return true; }, waitLock() { locked = true; }, releaseLock() {} });
+  for (const who of [ORAN, SANDRA]) {
+    assert.deepStrictEqual(http({ op: 'committeeSet', ...who, patientName: 'דנה לוי', entryDate: '2026-09-01', committeeDate: '2026-10-20', previousDate: '', previousLabel: '' }),
+      { ok: false, error: 'committee_read_only' });
+  }
+  assert.strictEqual(locked, false);
+  assert.ok(!g.sandbox.__sheets.ManagersCommittee);
+});
+
+test('houseData: no per-patient committee any more; committeeSupported:false + Israel today; a read never creates the sheet', () => {
   const { g, call } = boot();
   const d = call({ op: 'houseData', ...ORAN });
-  assert.strictEqual(d.committeeSupported, true);
+  assert.strictEqual(d.committeeSupported, false);
   assert.strictEqual(d.committeeToday, '2026-10-15');
-  assert.strictEqual(d.patients[0].committee, null);
+  assert.ok(!('committee' in d.patients[0]));
+  assert.deepStrictEqual(d.committees, { available: false, reason: 'not_configured' }, 'the coordinators feed is not configured in this sandbox');
   assert.ok(!g.sandbox.__sheets.ManagersCommittee);
 });
 
@@ -76,21 +104,21 @@ test('set, change, clear: one current value; every step a NEW row with who/when/
   const { g, call } = boot();
   const r1 = set(call, ORAN, { committeeDate: '2026-10-15', label: 'ועדת השמה' });
   assert.deepStrictEqual([r1.ok, r1.committee.date, r1.committee.label, r1.warning], [true, '2026-10-15', 'ועדת השמה', undefined], 'today is allowed');
-  let c = cur(call);
+  let c = curOf(g);
   assert.deepStrictEqual([c.date, c.label, c.editedBy], ['2026-10-15', 'ועדת השמה', 'אורן']);
   assert.strictEqual(set(call, SANDRA, { committeeDate: '2026-10-22', label: '', previousDate: '2026-10-15', previousLabel: 'ועדת השמה' }).ok, true);
-  c = cur(call);
+  c = curOf(g);
   assert.deepStrictEqual([c.date, c.label, c.editedBy], ['2026-10-22', '', 'סנדרה']);
   const cl = set(call, ORAN, { mode: 'clear', previousDate: '2026-10-22', previousLabel: '' });
   assert.deepStrictEqual([cl.ok, cl.committee], [true, null]);
-  assert.strictEqual(cur(call), null);
+  assert.strictEqual(curOf(g), null);
   assert.strictEqual(grid(g).length, 4, 'header + 3 rows, none overwritten');
   assert.deepStrictEqual([cell(g, 1, 'committeeDate'), cell(g, 1, 'label'), cell(g, 1, 'state'), cell(g, 1, 'editedById')], ['2026-10-15', 'ועדת השמה', 'set', 'person-oran']);
   assert.deepStrictEqual([cell(g, 2, 'previousDate'), cell(g, 2, 'previousLabel')], ['2026-10-15', 'ועדת השמה']);
   assert.deepStrictEqual([cell(g, 3, 'committeeDate'), cell(g, 3, 'state'), cell(g, 3, 'previousDate')], ['', 'cleared', '2026-10-22']);
   // Re-set after a clear.
   assert.strictEqual(set(call, ORAN, { committeeDate: '2026-11-02' }).ok, true);
-  assert.strictEqual(cur(call).date, '2026-11-02');
+  assert.strictEqual(curOf(g).date, '2026-11-02');
 });
 
 test('optimistic concurrency: a stale date OR label → conflict + current value; same value → unchanged, no row', () => {
@@ -146,7 +174,7 @@ test('authorization: only a patient in the caller\'s house today; admin any hous
   assert.strictEqual(set(call, { ...ORAN, actorId: '' }, { committeeDate: '2026-10-20' }).error, 'bad_request');
   assert.ok(!g.sandbox.__sheets.ManagersCommittee);
   assert.strictEqual(set(call, { ...SANDRA, house: 'efroni' }, { patientName: 'בבית אחר', committeeDate: '2026-10-30' }).ok, true);
-  assert.strictEqual(cur(call), null, 'ramot does not see efroni');
+  assert.strictEqual(curOf(g), null, 'ramot does not see efroni');
 });
 
 test('"today" is the calendar day in Asia/Jerusalem', () => {

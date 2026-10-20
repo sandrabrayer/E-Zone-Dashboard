@@ -71,7 +71,7 @@ test('houseData: patients in the house today, outpatients from the house, visits
   const d = call({ op: 'houseData', month: '2026-10', ...ORAN });
   assert.strictEqual(d.ok, true);
   assert.deepStrictEqual(d.patients.map((p) => p.name), ['דנה', 'יוסי']);
-  assert.deepStrictEqual(d.patients[0], { name: 'דנה', entryDate: '2026-09-01', days: 43, status: 'active', expectedDischarge: null, committee: null });
+  assert.deepStrictEqual(d.patients[0], { name: 'דנה', entryDate: '2026-09-01', days: 43, status: 'active', expectedDischarge: null });
   assert.deepStrictEqual(d.outpatients, [{ name: 'מיכל', therapy: 'טיפול יום — פעמיים בשבוע', startDate: '2026-09-15' }]);
   assert.deepStrictEqual(d.visits.map((v) => [v.name, v.date, v.time, v.outcome]), [['ביקור ב', '2026-10-11', '', 'thinking'], ['ביקור א', '2026-10-08', '10:30', 'entered']]);
   assert.deepStrictEqual(d.admissions, [{ name: 'יוסי', date: '2026-10-05' }]);
