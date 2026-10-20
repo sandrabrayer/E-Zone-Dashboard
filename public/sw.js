@@ -280,7 +280,10 @@
 // v77 → v78: «חתכי מטופלים» + required «המשך טיפול» in the שחרור modal
 // (/patient-retention.js added, app.js, style.css, index.html) (CHANGELOG-patient-retention-ui.md).
 // Stacked on PR #257; live v76 verified 2026-10-20 (v17 never reused).
-var CACHE_VERSION = 'v78';
+// v78 → v79: «ייצוא לאקסל» for every חתך (/report-xlsx.js added, app.js, style.css,
+// index.html) (CHANGELOG-report-xlsx-export.md).
+// Stacked on PR #258; live v76 verified 2026-10-20 (v17 never reused).
+var CACHE_VERSION = 'v79';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
@@ -310,7 +313,7 @@ var PRECACHE_URLS = [
  *                     network round trip. Matched by EXACT url.
  *   'network'       — everything else: pass through to the network. */
 /* The JS/CSS files index.html links with a content hash (server.js ASSETS). */
-var BUNDLE_PATHS = ['/app.js', '/style.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/billing-document-review.js', '/billing-work-calendar.js', '/refund-rules.js', '/funder-grace.js', '/cycle-balance.js', '/discharge-alerts.js', '/committee-alerts.js', '/leads-funnel.js', '/returning-patient.js', '/patient-retention.js'];
+var BUNDLE_PATHS = ['/app.js', '/style.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/billing-document-review.js', '/billing-work-calendar.js', '/refund-rules.js', '/funder-grace.js', '/cycle-balance.js', '/discharge-alerts.js', '/committee-alerts.js', '/leads-funnel.js', '/returning-patient.js', '/patient-retention.js', '/report-xlsx.js'];
 
 /* True for `?v=<exactly 12 lowercase hex>` — the server's content hash. The
  * old `?v=<BUILD_ID>` (digits-dash-base36) never matches. Pure. */

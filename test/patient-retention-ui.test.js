@@ -279,7 +279,7 @@ test('wiring: the sub-view lives in «מטופלים משוחררים»; the lib
   assert.ok(HTML.indexOf('patient-retention.js?v=__BUILD__') < HTML.indexOf('app.js?v=__BUILD__'));
   assert.match(SERVER, /'\/patient-retention\.js': \{ file: path\.join\(__dirname, 'lib', 'patient-retention\.js'\)/);
   assert.match(SERVER, /app\.get\('\/patient-retention\.js', sendLibAsset\('\/patient-retention\.js'\)\);/);
-  assert.match(SW, /var BUNDLE_PATHS = \[[^\]]*'\/patient-retention\.js'\]/);
+  assert.match(SW, /var BUNDLE_PATHS = \[[^\]]*'\/patient-retention\.js'[^\]]*\]/);
   assert.match(APP, /renderDischargedPatients\(\);\n  renderPatientRetention\(\);/);
 });
 
