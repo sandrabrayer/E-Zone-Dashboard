@@ -13759,6 +13759,7 @@ function managersWork_(params) {
   if (op === 'logUpdate') return mwLogUpdate_(caller, params);
   if (op === 'houseCost') return mwHouseCost_(caller, params);
   if (op === 'dischargeSet') return mwDischargeSet_(caller, params);
+  if (op === 'meetingSummaries') return mwMeetingSummaries_(caller, params);
   // Committees are set by the coordinators from 20 Oct 2026
   // (CHANGELOG-committees-from-coordinators.md): refused server-side, nothing
   // read or written. mwCommitteeSet_ stays only as history of the old path.
@@ -14054,6 +14055,108 @@ function mwHouseCommittees_(house) {
   const items = feed.items.filter(function (c) { return c.house === house && c.date >= todayIso; }).sort(mwCmSort_)
     .map(function (c) { return { id: c.id, date: c.date, time: c.time, type: c.type, participants: c.participants, patientName: c.patientName }; });
   return { available: true, today: todayIso, items: items };
+}
+
+/* ===== «סיכומי ישיבות» from the coordinators (CHANGELOG-meeting-summaries-feed.md) =====
+ *
+ * Sandra (20 Oct 2026): the house manager reads the coordinators' team-meeting
+ * summaries, read-only, OWN house only, by month. managersWork op
+ * `meetingSummaries` { month: 'YYYY-MM' } → the coordinators Apps Script's
+ * read-only `getMeetingSummariesForManagers` (same Script Properties as the
+ * committees feed: COORDINATORS_SHEETS_URL + COORDINATORS_MANAGERS_SECRET).
+ * The house sent upstream is the CALLER's (mwCaller_, decided by the Managers
+ * server from the session) — never a client value. FINAL meetings only (the
+ * coordinators' rule). Fail-closed contract: one off-contract meeting or row →
+ * bad_contract, nothing shown. Cache per house+month: OK 5 min, failure 60 s.
+ * One log line: reason / status / count / ms — never a name, text or secret. */
+const MW_MS_FEED_ACTION = 'getMeetingSummariesForManagers';
+const MW_MS_MEETING_KEYS = ['attendees', 'date', 'finalizedAt', 'generalNotes', 'id', 'rows', 'title'];
+const MW_MS_ROW_KEYS = ['goals', 'patientName', 'weeklyUpdate'];
+const MW_MS_MAX = { title: 120, attendees: 600, generalNotes: 8000, finalizedAt: 40, patientName: 120, weeklyUpdate: 6000, goals: 6000 };
+const MW_MS_MAX_MEETINGS = 40;
+const MW_MS_MAX_ROWS = 60;
+
+function mwMsKeysOk_(o, keys) {
+  return !!o && typeof o === 'object' && !Array.isArray(o) && Object.keys(o).sort().join(',') === keys.join(',');
+}
+function mwMsMeetingOk_(m) {
+  if (!mwMsKeysOk_(m, MW_MS_MEETING_KEYS)) return false;
+  if (typeof m.id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(m.id)) return false;
+  if (!coordIsoDateClean_(m.date)) return false;
+  if (['title', 'attendees', 'generalNotes', 'finalizedAt'].some(function (k) { return typeof m[k] !== 'string' || m[k].length > MW_MS_MAX[k]; })) return false;
+  if (!Array.isArray(m.rows) || m.rows.length > MW_MS_MAX_ROWS) return false;
+  return m.rows.every(function (r) {
+    return mwMsKeysOk_(r, MW_MS_ROW_KEYS) && MW_MS_ROW_KEYS.every(function (k) { return typeof r[k] === 'string' && r[k].length <= MW_MS_MAX[k]; });
+  });
+}
+/* Long free text: keep line breaks, drop control characters, cap the length. */
+function mwMsText_(v, max) {
+  return String(v == null ? '' : v).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').replace(/\r\n?/g, '\n').slice(0, max);
+}
+
+function mwMeetingSummaries_(caller, params) {
+  const ym = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(params.month || '')) ? String(params.month) : defaultMonth_();
+  const house = caller.house;
+  const out = function (summaries) { return { ok: true, house: house, month: ym, summaries: summaries }; };
+  const cacheKey = 'mw:coord-meetings:v1:' + house + ':' + ym;
+  const hit = cacheGetJson_(cacheKey);
+  if (hit && typeof hit.available === 'boolean') return out(hit);
+  const t0 = Date.now();
+  const log = function (reason, status, count) {
+    console.log('[mw] meetingsFeed reason=' + reason + ' status=' + (Number(status) || 0) + ' count=' + (Number(count) || 0) + ' ms=' + (Date.now() - t0));
+  };
+  const fail = function (reason, status) {
+    const r = { available: false, reason: reason };
+    log(reason, status, 0);
+    cachePutJson_(cacheKey, r, MW_CM_CACHE_FAIL_S);
+    return out(r);
+  };
+  const props = PropertiesService.getScriptProperties();
+  const url = String(props.getProperty(COORD_MANAGERS_URL_PROP) || '').trim();
+  const secret = String(props.getProperty(COORD_MANAGERS_SECRET_PROP) || '').trim();
+  if (!url || !secret || !/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(url)) {
+    log('not_configured', 0, 0);
+    return out({ available: false, reason: 'not_configured' });   // not cached: setting the properties takes effect at once
+  }
+  let resp;
+  try {
+    resp = UrlFetchApp.fetch(url, {
+      method: 'post', contentType: 'application/json',
+      payload: JSON.stringify({ action: MW_MS_FEED_ACTION, secret: secret, house: house, month: ym }),
+      muteHttpExceptions: true, followRedirects: true,
+    });
+  } catch (e) {
+    return fail('unreachable', 0);
+  }
+  const status = resp.getResponseCode();
+  if (status < 200 || status >= 300) return fail('http_error', status);
+  let body = null;
+  try { body = JSON.parse(resp.getContentText()); } catch (e) { body = null; }
+  if (!body || typeof body !== 'object') return fail('bad_response', status);
+  if (body.ok !== true) {
+    const err = String(body.error == null ? '' : body.error);
+    if (err === 'not_configured') return fail('coordinators_not_configured', status);
+    if (err === 'unauthorized') return fail('unauthorized', status);
+    if (/^unknown action/.test(err)) return fail('unknown_action', status);
+    return fail('bad_response', status);
+  }
+  if (body.house !== house || body.month !== ym || !Array.isArray(body.meetings) || body.meetings.length > MW_MS_MAX_MEETINGS) return fail('bad_response', status);
+  for (let i = 0; i < body.meetings.length; i++) {
+    if (!mwMsMeetingOk_(body.meetings[i]) || body.meetings[i].date.slice(0, 7) !== ym) return fail('bad_contract', status);
+  }
+  const meetings = body.meetings.map(function (m) {
+    return {
+      id: m.id, date: m.date, title: coordTextClean_(m.title, MW_MS_MAX.title), attendees: coordTextClean_(m.attendees, MW_MS_MAX.attendees),
+      generalNotes: mwMsText_(m.generalNotes, MW_MS_MAX.generalNotes), finalizedAt: coordTextClean_(m.finalizedAt, MW_MS_MAX.finalizedAt),
+      rows: m.rows.map(function (r) {
+        return { patientName: coordTextClean_(r.patientName, MW_MS_MAX.patientName), weeklyUpdate: mwMsText_(r.weeklyUpdate, MW_MS_MAX.weeklyUpdate), goals: mwMsText_(r.goals, MW_MS_MAX.goals) };
+      }),
+    };
+  }).sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
+  const r = { available: true, items: meetings };
+  log('ok', status, meetings.length);
+  cachePutJson_(cacheKey, r, MW_CM_CACHE_OK_S);
+  return out(r);
 }
 
 /* Stage 3 — the house's manpower cost (14 Oct 2026), from the staffing
