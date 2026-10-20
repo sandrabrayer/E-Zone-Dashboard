@@ -297,8 +297,8 @@ test('team: only the caller\'s house; today\'s shifts, staff, therapist week —
   assert.deepStrictEqual(team.shifts.map((s) => s.guideName), ['אבי', 'evil()', 'גל']);
   assert.strictEqual(team.shifts[2].draft, true);
   assert.deepStrictEqual(team.staff, [
-    { name: 'אבי', kind: 'guide', role: 'מדריך/ה', phone: '0501234567', onLeave: false, workdays: [] },
-    { name: 'ד"ר כהן', kind: 'therapist', role: 'פסיכיאטר/ית', phone: '', onLeave: true, workdays: [0, 2] },
+    { name: 'אבי', kind: 'guide', role: 'מדריך/ה', phone: '0501234567', onLeave: false, workdays: [], startDate: '' },
+    { name: 'ד"ר כהן', kind: 'therapist', role: 'פסיכיאטר/ית', phone: '', onLeave: true, workdays: [0, 2], startDate: '' },
   ]);
   assert.deepStrictEqual(team.therapistWeek, [{ dayOfWeek: 2, time: '10:00', therapistName: 'ד"ר כהן', patientName: 'דנה' }]);
   assert.ok(!JSON.stringify(team).includes('עפרוני'), 'no other house leaks');
@@ -394,4 +394,52 @@ test('houseCost: still behind the managersWork secret', () => {
   const t = withCost(FEED);
   assert.deepStrictEqual(arr(t.g.post({ action: 'managersWork', secret: 'wrong', op: 'houseCost', ...ORAN })), { ok: false, error: 'unauthorized' });
   assert.strictEqual(t.fetches.length, 0);
+});
+
+/* ---- Half-yearly feedback «משוב» (CHANGELOG-feedback-reminders.md) ---- */
+function withStartDates(rows, withCol = true) {
+  const saved = DIGEST_COLS.ManagersStaff;
+  DIGEST_COLS.ManagersStaff = withCol ? saved.concat('startDate') : saved;
+  try { return withDigest(rows); } finally { DIGEST_COLS.ManagersStaff = saved; }
+}
+const SROWS = JSON.parse(JSON.stringify(ROWS));
+SROWS.ManagersStaff[0].startDate = '2025-03-01';
+SROWS.ManagersStaff[1].startDate = '2025-02-30';
+
+test('feedback: the digest startDate is OPTIONAL — read when present (real dates only), "" for an older digest', () => {
+  const staff = withStartDates(SROWS).call({ op: 'houseData', ...ORAN }).team.staff;
+  assert.deepStrictEqual(staff.map((s) => [s.name, s.startDate]), [['אבי', '2025-03-01'], ['ד"ר כהן', '']]);
+  const old = withStartDates(SROWS, false).call({ op: 'houseData', ...ORAN }).team;
+  assert.strictEqual(old.available, true, 'an older digest without the column still reads');
+  assert.deepStrictEqual(old.staff.map((s) => s.startDate), ['', '']);
+});
+
+test('feedback: feedbackDone appends ONE row (house / author from the caller); houseData.feedback shows the house\'s rows only', () => {
+  const t = withStartDates(SROWS);
+  assert.deepStrictEqual(Array.from(t.g.run('MW_FEEDBACK_COLUMNS')), ['id', 'house', 'employee', 'doneAt', 'doneBy', 'doneById', 'createdAt']);
+  const r = t.call({ op: 'feedbackDone', ...ORAN, employee: ' אבי ', doneAt: '2026-10-10', doneBy: 'forged', house: 'ramot' });
+  assert.deepStrictEqual(r, { ok: true, feedback: { employee: 'אבי', doneAt: '2026-10-10' } });
+  const sh = t.g.sandbox.__sheets.ManagersFeedbackLog;
+  assert.strictEqual(sh.grid.length, 2, 'header + one row');
+  const row = sh.grid[1];
+  assert.deepStrictEqual([row[1], row[2], row[3], row[4], row[5]], ['ramot', 'אבי', '2026-10-10', 'אורן', 'person-oran']);
+  t.call({ op: 'feedbackDone', ...ORAN, employee: 'אבי', doneAt: '2026-10-12' });
+  assert.strictEqual(sh.grid.length, 3, 'a second «בוצע» is a NEW row (append-only)');
+  assert.deepStrictEqual(t.call({ op: 'houseData', ...ORAN }).feedback, { supported: true, rows: [{ employee: 'אבי', doneAt: '2026-10-10' }, { employee: 'אבי', doneAt: '2026-10-12' }] });
+  const HANAN = { house: 'efroni', role: 'manager', actor: 'חנן', actorId: 'person-hanan' };
+  assert.deepStrictEqual(t.call({ op: 'houseData', ...HANAN }).feedback.rows, [], 'another house sees nothing');
+});
+
+test('feedback: refused — not on the house staff, another house\'s employee, a future / invalid date, roster unavailable', () => {
+  const t = withStartDates(SROWS);
+  assert.strictEqual(t.call({ op: 'feedbackDone', ...ORAN, employee: 'מישהו', doneAt: '2026-10-10' }).error, 'not_found');
+  assert.strictEqual(t.call({ op: 'feedbackDone', ...ORAN, employee: 'של עפרוני', doneAt: '2026-10-10' }).error, 'not_found', 'efroni\'s guide is not ramot staff');
+  t.g.run(`committeeToday_ = function () { return '2026-10-13'; }`);
+  assert.strictEqual(t.call({ op: 'feedbackDone', ...ORAN, employee: 'אבי', doneAt: '2026-10-14' }).error, 'bad_date', 'future');
+  assert.strictEqual(t.call({ op: 'feedbackDone', ...ORAN, employee: 'אבי', doneAt: '2026-02-30' }).error, 'bad_date');
+  assert.strictEqual(t.call({ op: 'feedbackDone', ...ORAN, employee: 'אבי', doneAt: '1999-12-31' }).error, 'bad_date');
+  assert.strictEqual(t.call({ op: 'feedbackDone', ...ORAN, employee: '', doneAt: '2026-10-10' }).error, 'bad_request');
+  assert.ok(!t.g.sandbox.__sheets.ManagersFeedbackLog, 'nothing written');
+  const none = withDigest(ROWS, { id: '' });
+  assert.strictEqual(none.call({ op: 'feedbackDone', ...ORAN, employee: 'אבי', doneAt: '2026-10-10' }).error, 'roster_unavailable', 'fail-closed without the roster');
 });

@@ -13760,6 +13760,7 @@ function managersWork_(params) {
   if (op === 'houseCost') return mwHouseCost_(caller, params);
   if (op === 'dischargeSet') return mwDischargeSet_(caller, params);
   if (op === 'meetingSummaries') return mwMeetingSummaries_(caller, params);
+  if (op === 'feedbackDone') return mwFeedbackDone_(caller, params);
   // Committees are set by the coordinators from 20 Oct 2026
   // (CHANGELOG-committees-from-coordinators.md): refused server-side, nothing
   // read or written. mwCommitteeSet_ stays only as history of the old path.
@@ -13847,7 +13848,9 @@ const MANAGERS_DIGEST_SHEET_PROP = 'MANAGERS_DIGEST_SHEET_ID';
 const MW_DIGEST_CANON = { raanana: 'raanana-asher', ramot: 'ramot-hashavim', efroni: 'caesarea-ofroni', rehab: 'caesarea-rehab', pardes: 'pardes' };
 const MW_DIGEST_TABS = {
   shifts: { tab: 'ManagersShifts', cols: ['house', 'date', 'shift', 'guideName', 'scheduleStatus', 'updatedAt'] },
-  staff: { tab: 'ManagersStaff', cols: ['house', 'name', 'kind', 'role', 'phone', 'onLeave', 'workdays', 'updatedAt'] },
+  // startDate: APPENDED by the Coordinators on 20 Oct 2026 (feedback reminders) — OPTIONAL here, so an
+  // older Coordinators digest still reads (every start date '').
+  staff: { tab: 'ManagersStaff', cols: ['house', 'name', 'kind', 'role', 'phone', 'onLeave', 'workdays', 'updatedAt'], optional: ['startDate'] },
   therapistWeek: { tab: 'ManagersTherapistWeek', cols: ['house', 'dayOfWeek', 'time', 'therapistName', 'patientName', 'updatedAt'] },
 };
 const MW_DIGEST_CACHE_KEY = 'mw:team-digest:v1';
@@ -13890,9 +13893,11 @@ function mwReadTeamDigest_() {
       if (at < 0) return { available: false, reason: 'contract_mismatch' };
       idx[def.cols[j]] = at;
     }
+    const optional = def.optional || [];
     out[keys[k]] = grid.slice(1).map(function (row) {
       const o = {};
       def.cols.forEach(function (col) { o[col] = mwDigestCell_(row[idx[col]], col); });
+      optional.forEach(function (col) { const at = head.indexOf(col); o[col] = at < 0 ? '' : mwDigestCell_(row[at], col); });
       if (o.updatedAt > out.updatedAt) out.updatedAt = o.updatedAt;
       return o;
     }).filter(function (o) { return o.house; });
@@ -13920,6 +13925,7 @@ function mwTeam_(key, todayIso) {
       name: txt(r.name, 80), kind: r.kind === 'therapist' ? 'therapist' : 'guide', role: txt(r.role, 40),
       phone: /^0\d{8,9}$/.test(phone) ? phone : '', onLeave: String(r.onLeave) === 'true',
       workdays: String(r.workdays || '').split(',').filter(function (x) { return /^[0-6]$/.test(x); }).map(Number),
+      startDate: coordIsoDateClean_(r.startDate) || '',
     };
   });
   const therapistWeek = (d.therapistWeek || []).filter(mine).filter(function (r) {
@@ -14159,6 +14165,61 @@ function mwMeetingSummaries_(caller, params) {
   return out(r);
 }
 
+/* ===== Half-yearly feedback «משוב» (CHANGELOG-feedback-reminders.md) =====
+ *
+ * Sandra (20 Oct 2026): the house manager records that an employee's
+ * half-yearly feedback was done («בוצע» + a date); the Managers app computes
+ * the next one (6 months after the last, or after the start date — its
+ * lib/feedback-due.js). APPEND-ONLY sheet ManagersFeedbackLog (header pinned
+ * by test/feedback-reminders.test.js): every «בוצע» is a new row, never edited
+ * or deleted. Writes only through managersWork op `feedbackDone` — the house,
+ * author and author id come from the verified caller (never the client). The
+ * employee must be on the house's current staff list (the coordinators digest
+ * — fail-closed when it is unavailable); doneAt is a real date, not in the
+ * future (Israel time), not before 2000. */
+const MW_FEEDBACK_SHEET = 'ManagersFeedbackLog';
+const MW_FEEDBACK_COLUMNS = ['id', 'house', 'employee', 'doneAt', 'doneBy', 'doneById', 'createdAt'];
+
+function mwReadFeedback_(house) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(MW_FEEDBACK_SHEET);
+  if (!sh || sh.getLastRow() < 2) return [];
+  const out = [];
+  readSheet_(sh, MW_FEEDBACK_COLUMNS).forEach(function (r) {
+    if (String(r.house) !== house) return;
+    const at = coordIsoDateClean_(mwCellText_(r.doneAt, 'date'));
+    const name = coordTextClean_(r.employee, 80);
+    if (!at || !name) return;
+    out.push({ employee: name, doneAt: at });
+  });
+  return out;
+}
+
+function mwFeedbackDone_(caller, params) {
+  const employee = coordTextClean_(params.employee, 80);
+  const doneAt = coordIsoDateClean_(params.doneAt);
+  if (!employee) return { ok: false, error: 'bad_request' };
+  const todayIso = committeeToday_();
+  if (!doneAt || doneAt > todayIso || doneAt < '2000-01-01') return { ok: false, error: 'bad_date' };
+  let team;
+  try { team = mwTeam_(caller.house, todayISODate_()); } catch (e) { team = { available: false }; }
+  if (!team || !team.available) return { ok: false, error: 'roster_unavailable' };
+  const norm = function (v) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim(); };
+  if (!(team.staff || []).some(function (s) { return norm(s.name) === norm(employee); })) return { ok: false, error: 'not_found' };
+  const row = { id: Utilities.getUuid(), house: caller.house, employee: employee, doneAt: doneAt,
+    doneBy: caller.actor, doneById: caller.actorId, createdAt: new Date().toISOString() };
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(5000) !== true) return lockBusy_('mwFeedbackDone_');
+  try {
+    const sh = getOrCreateSheet_(MW_FEEDBACK_SHEET, MW_FEEDBACK_COLUMNS);
+    // Text cells: a date must never be coerced into a Date cell.
+    sh.getRange(sh.getLastRow() + 1, 1, 1, MW_FEEDBACK_COLUMNS.length).setNumberFormat('@')
+      .setValues([MW_FEEDBACK_COLUMNS.map(function (c) { return String(row[c] == null ? '' : row[c]); })]);
+  } finally {
+    lock.releaseLock();
+  }
+  return { ok: true, feedback: { employee: employee, doneAt: doneAt } };
+}
+
 /* Stage 3 — the house's manpower cost (14 Oct 2026), from the staffing
  * Apps Script feed getHouseCostsForManagers (house TOTALS only, never a
  * worker). Script Properties: STAFFING_SHEETS_URL (staffing /exec) and
@@ -14319,6 +14380,7 @@ function mwHouseData_(caller, params) {
     // `committees` — always the CALLER's house, decided above, never the client.
     committeeSupported: false, committeeToday: committeeToday_(),
     committees: mwHouseCommittees_(key),
+    feedback: { supported: true, rows: mwReadFeedback_(key) },
     outpatients: outpatients,
     visits: visits, admissions: admissions, expectedAdmissions: expectedAdmissions,
     logs: logs, followUps: followUps,

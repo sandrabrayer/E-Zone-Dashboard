@@ -1,5 +1,12 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Dashboard Apps Script: half-yearly feedback «משוב» for Managers (October 20, 2026)
+
+- New APPEND-ONLY sheet `ManagersFeedbackLog`: `id, house, employee, doneAt, doneBy, doneById, createdAt`.
+- `managersWork` op `feedbackDone`: the employee must be on the house staff (fail-closed); the date is real and not in the future.
+- `houseData.feedback.rows` carries the caller's house only. The team digest's `startDate` is optional.
+- Deploys automatically on merge. Details: `CHANGELOG-feedback-reminders.md`.
+
 ## Dashboard Apps Script: «סיכומי ישיבות» for Managers (October 20, 2026)
 
 - `managersWork` op `meetingSummaries` `{ month }` → the coordinators' read-only `getMeetingSummariesForManagers` for the
