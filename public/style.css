@@ -2949,3 +2949,13 @@ button.mtg-bad-date-lead:hover { background: rgba(255, 176, 32, 0.18); }
 .lf-list-actions, .pr-list-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .lf-xlsx, .lf-xlsx-all, .lf-xlsx-list, .pr-xlsx, .pr-xlsx-all, .pr-xlsx-list { min-height: 44px; font-size: 16px; }
 .patient-retention .pr-section-title { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
+
+/* «השלמת תקופת טיפול» cards (CHANGELOG-completion-view.md) — 44px targets. */
+.patient-retention .pr-comp-card { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px; border: 1px solid var(--border, #ddd); border-radius: 10px; }
+.patient-retention .pr-comp-title { font-weight: 600; font-size: 16px; }
+.patient-retention .pr-comp-rate { font-size: 26px; font-weight: 700; }
+.patient-retention .pr-comp-basis { font-size: 16px; color: var(--muted, #666); }
+.patient-retention .pr-comp-counts { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.patient-retention .pr-comp-count, .patient-retention .pr-comp-csv, .patient-retention .pr-comp-threshold { min-height: 44px; font-size: 16px; }
+.patient-retention .pr-comp-count.active { border-color: var(--primary, #2563eb); box-shadow: 0 0 0 1px var(--primary, #2563eb); }
+.patient-retention .pr-comp-threshold { width: 9em; }

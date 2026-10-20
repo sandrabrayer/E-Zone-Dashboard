@@ -283,7 +283,9 @@
 // v78 → v79: «ייצוא לאקסל» for every חתך (/report-xlsx.js added, app.js, style.css,
 // index.html) (CHANGELOG-report-xlsx-export.md).
 // Stacked on PR #258; live v76 verified 2026-10-20 (v17 never reused).
-var CACHE_VERSION = 'v79';
+// v79 → v80: «השלמת תקופת טיפול» completion view (app.js, style.css)
+// (CHANGELOG-completion-view.md). Live v79 verified 2026-10-20 (v17 never reused).
+var CACHE_VERSION = 'v80';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## «השלמת תקופת טיפול» — completion view — October 20, 2026 (PR open)
+
+«חתכי מטופלים» gets a completion section: per threshold (30 / 60 + custom) over the entered-in-period
+cohort — הגיעו לסף (discharged or active ≥ N) / עזבו לפני הסף / מוקדם לקבוע (not in the rate);
+rate = reached / (reached + left early), «אין מספיק נתונים» when 0. Pure `computeCompletion` in
+`lib/patient-retention.js`; clickable lists, CSV section, Excel sheet «השלמת טיפול» (full export = 8
+sheets). Bucket cards unchanged. No Code.gs change; SW v80. See `CHANGELOG-completion-view.md`.
+
 ## «ייצוא לאקסל» for every חתך — October 20, 2026 (PR open, stacked on #258)
 
 In-browser .xlsx (`lib/report-xlsx.js`, no library, no server route): «ייצוא הכל לאקסל» = one file,

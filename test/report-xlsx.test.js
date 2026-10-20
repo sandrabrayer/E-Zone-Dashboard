@@ -64,10 +64,10 @@ function fixture() {
 
 /* ---------- structure ---------- */
 
-test('the full export: 7 sheets, Hebrew names, in order; every name valid', async () => {
+test('the full export: 8 sheets, Hebrew names, in order; every name valid', async () => {
   const { ctx } = fixture();
   const wb = await load(X.writeXlsx(X.fullWorkbook(ctx)));
-  assert.deepEqual(names(wb), ['סיכום', 'לידים – חתך', 'לידים – רשימה', 'שהות – חתך', 'המשך טיפול', 'מטופלים – רשימה', 'נתונים חסרים']);
+  assert.deepEqual(names(wb), ['סיכום', 'לידים – חתך', 'לידים – רשימה', 'שהות – חתך', 'המשך טיפול', 'השלמת טיפול', 'מטופלים – רשימה', 'נתונים חסרים']);
   for (const n of names(wb)) {
     assert.ok([...n].length <= 31, n);
     assert.doesNotMatch(n, /[:\\/?*[\]]/);
@@ -275,7 +275,7 @@ test('an empty period: every sheet exists with its header, no crash', async () =
     from: FROM, to: TO, exportedAt: AT,
   };
   const wb = await load(X.writeXlsx(X.fullWorkbook(empty)));
-  assert.equal(wb.worksheets.length, 7);
+  assert.equal(wb.worksheets.length, 8);
   for (const n of ['לידים – רשימה', 'מטופלים – רשימה', 'נתונים חסרים']) {
     assert.equal(wb.getWorksheet(n).rowCount, 1, n + ': header only');
   }
@@ -287,7 +287,7 @@ test('an empty period: every sheet exists with its header, no crash', async () =
 test('a bad range (reports not ok) still writes headers only, never throws', async () => {
   const bad = { funnel: { ok: false, error: 'bad_range' }, retention: { ok: false, error: 'bad_range' }, from: 'x', to: 'y', exportedAt: AT };
   const wb = await load(X.writeXlsx(X.fullWorkbook(bad)));
-  assert.equal(wb.worksheets.length, 7);
+  assert.equal(wb.worksheets.length, 8);
   assert.equal(X.writeXlsx({}).length > 0, true, 'no sheets → one blank sheet');
 });
 
@@ -355,7 +355,7 @@ test('page: «ייצוא הכל לאקסל» downloads ONE file whose numbers eq
   assert.equal(downloads[0].name, 'ezone-chitukim-2026-09-01_2026-09-30.xlsx');
   assert.equal(downloads[0].blob.type, X.XLSX_MIME);
   const wb = await load(downloads[0].blob.parts[0]);
-  assert.equal(wb.worksheets.length, 7);
+  assert.equal(wb.worksheets.length, 8);
   const screen = pg.run(`patientRetentionReport(state, { from: '${FROM}', to: '${TO}', threshold: '' })`);
   const funnel = pg.run(`leadsFunnelReport(state, '${FROM}', '${TO}')`);
   const g = grid(wb.getWorksheet('סיכום'));

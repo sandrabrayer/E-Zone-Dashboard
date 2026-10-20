@@ -25,7 +25,7 @@ const skip = !playwright || !chromiumPath;
 const why = !playwright ? 'playwright not installed' : (!chromiumPath ? 'no chromium binary' : '');
 const lib = (f) => fs.readFileSync(path.join(__dirname, '..', 'lib', f), 'utf8');
 
-test('browser: the modules load as plain scripts and build a valid 7-sheet workbook', { skip: skip && why, timeout: 60000 }, async () => {
+test('browser: the modules load as plain scripts and build a valid 8-sheet workbook', { skip: skip && why, timeout: 60000 }, async () => {
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
     const page = await browser.newPage();
@@ -46,7 +46,7 @@ test('browser: the modules load as plain scripts and build a valid 7-sheet workb
     assert.deepEqual(errors, []);
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(Buffer.from(bytes));
-    assert.equal(wb.worksheets.length, 7);
+    assert.equal(wb.worksheets.length, 8);
     assert.equal(wb.getWorksheet('מטופלים – רשימה').getRow(2).getCell(4).value, '0501234567');
     assert.equal(wb.getWorksheet('לידים – רשימה').getRow(2).getCell(2).value, "'=x");
   } finally {
