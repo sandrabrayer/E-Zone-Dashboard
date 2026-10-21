@@ -3328,6 +3328,114 @@ function settleDirectLeads_(entries, user) {
   return res;
 }
 
+/* ===== ONE-TIME MANUAL BACKFILL: a lead for every direct patient (CHANGELOG-direct-lead-backfill.md) =====
+ * Run from the Apps Script editor. Intentionally PUBLIC (no trailing
+ * underscore) so it shows in the Run dropdown; handle_ never dispatches it,
+ * so no request can reach it, and no trigger runs it.
+ *
+ * migrateDirectPatientLeadsNow()       → DRY RUN (the default): logs every
+ *   patient without a lead — source 'direct_admin' and no valid fromLead
+ *   (blank, or a lead id on none of Leads / closed / removed) — with its entry
+ *   date, house and the phone that would be used (the same recovered phone the
+ *   rosters use: rosterPhoneFor_). Nothing is written, no sheet is created.
+ * migrateDirectPatientLeadsNow(false)  → writes, under the script lock, one
+ *   row at a time: the lead 'dl-<patient id>' from buildDirectApproachLead_
+ *   (the SAME builder as saveAll_), created = the patient's entry date, then
+ *   that patient's fromLead cell. A missing phone still gets a lead.
+ *   Idempotent by patient id: a 'dl-<id>' lead already on Leads is linked, not
+ *   written again; a second run finds no candidate and writes nothing. A row
+ *   that fails is logged and skipped; the others go on. */
+function migrateDirectPatientLeadsNow(dryRun) {
+  const dry = dryRun !== false;
+  const tag = '[direct-lead-backfill]' + (dry ? ' DRY RUN' : '');
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(30000) !== true) return backfillLockBusy_(tag, dry);
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const patSh = ss.getSheetByName(PATIENTS_SHEET);
+    const values = patSh ? sheetValues_(patSh, PATIENT_COLUMNS) : [];
+    const leadsSh = ss.getSheetByName(LEADS_SHEET);
+    const leads = leadsSh ? readSheet_(leadsSh, LEAD_COLUMNS) : [];
+    const onLeads = {};
+    leads.forEach(function (l) {
+      const id = String(l.id == null ? '' : l.id).trim();
+      if (id) onLeads[id] = true;
+    });
+    const parked = movedOffLeadsIds_();
+    const phonesSh = ss.getSheetByName(PATIENT_PHONES_SHEET);   // read-only: never created here
+    const phoneIdx = buildLeadPhoneIndex_(leads, phonesSh ? readSheet_(phonesSh, PATIENT_PHONES_COLUMNS) : []);
+    const fromLeadIdx = PATIENT_COLUMNS.indexOf('fromLead');
+    const idIdx = PATIENT_COLUMNS.indexOf('id');
+
+    const rows = [];
+    let skippedNoId = 0;
+    values.forEach(function (row, i) {
+      const pt = {};
+      PATIENT_COLUMNS.forEach(function (c, j) { pt[c] = row[j]; });
+      if (String(pt.source == null ? '' : pt.source).trim() !== LEAD_DIRECT_ADMIN_SOURCE) return;
+      if (!String(pt.name == null ? '' : pt.name).trim()) return;
+      const fl = String(pt.fromLead == null ? '' : pt.fromLead).trim();
+      if (fl && (onLeads[fl] || parked[fl])) return;                    // has a valid lead
+      const pid = String(pt.id == null ? '' : pt.id).trim();
+      if (!pid) { skippedNoId++; Logger.log(tag + ' skipped (no patient id — open the dashboard once to mint it): row ' + (i + 2)); return; }
+      const own = directLeadId_(pid);
+      const leadId = parked[own] ? own + '-r' : own;
+      const phone = rosterPhoneFor_(Object.assign({}, pt, { fromLead: '' }), phoneIdx);
+      const entry = asISODate_(pt.date);
+      const lead = buildDirectApproachLead_(leadId, pt, phone, entry || todayISODate_());
+      const plan = { row: i + 2, patientId: pid, name: lead.name, houseId: String(pt.houseId || ''), house: lead.house,
+        entryDate: entry, phone: lead.phone, leadId: leadId, leadExists: !!onLeads[leadId] };
+      rows.push({ plan: plan, lead: lead });
+      Logger.log(tag + ' ' + JSON.stringify(plan));
+    });
+
+    const out = { ok: true, dryRun: dry, candidates: rows.length, skippedNoId: skippedNoId, created: 0, linked: 0, failed: 0,
+      rows: rows.map(function (r) { return r.plan; }) };
+    if (dry) {
+      Logger.log(tag + ' — ' + rows.length + ' patient(s) without a lead; nothing written. Run migrateDirectPatientLeadsApplyNow to write.');
+      return out;
+    }
+
+    const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+    rows.forEach(function (r) {
+      const p = r.plan;
+      try {
+        if (!onLeads[p.leadId]) {
+          upsertRowById_(sh, LEAD_COLUMNS, r.lead);
+          if (countRowsById_(sh, LEAD_COLUMNS, p.leadId) < 1) throw new Error('lead did not land');
+          onLeads[p.leadId] = true;
+          out.created++;
+        }
+        // The fromLead cell of THIS patient only — re-checked by id under the lock.
+        const cellId = String(patSh.getRange(p.row, idIdx + 1).getValue() == null ? '' : patSh.getRange(p.row, idIdx + 1).getValue()).trim();
+        if (cellId !== p.patientId) throw new Error('patient row moved');
+        patSh.getRange(p.row, fromLeadIdx + 1).setValue(p.leadId);
+        out.linked++;
+        logAudit_('direct_lead_backfilled', 'migrateDirectPatientLeadsNow', p.patientId, p.name, { leadId: p.leadId }, 'backfill');
+      } catch (e) {
+        out.failed++;
+        Logger.log(tag + ' FAILED patient ' + p.patientId + ': ' + ((e && e.message) || e));
+        logAudit_('direct_lead_backfill_failed', 'migrateDirectPatientLeadsNow', p.patientId, p.name,
+          { leadId: p.leadId, error: String((e && e.message) || e) }, 'backfill');
+      }
+    });
+    Logger.log(tag + ' — leads created: ' + out.created + ', patients linked: ' + out.linked + ', failed: ' + out.failed + '.');
+    return out;
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* The editor's Run button passes no argument, so the real run gets its own
+ * name in the dropdown: same function, dryRun = false. Run the dry run first. */
+function migrateDirectPatientLeadsApplyNow() {
+  return migrateDirectPatientLeadsNow(false);
+}
+function backfillLockBusy_(tag, dry) {
+  Logger.log(tag + ' lock busy — nothing done, run again.');
+  return { ok: false, error: 'lock_busy', dryRun: dry };
+}
+
 /* ===== saveAll proof (CHANGELOG-write-path-hardening.md, R3) =====
  * A saveAll payload may carry `prove: { leads: [id…], patients: [id…] }` —
  * the rows the caller must see persisted before it says «נשמר». The answer's

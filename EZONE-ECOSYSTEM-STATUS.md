@@ -1,5 +1,16 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Backfill: «פנייה ישירה» lead for direct patients without one — October 21, 2026 (PR open, stacked on PR A)
+
+`migrateDirectPatientLeadsNow(dryRun)` is editor-only, and the dry run is the default: it logs patient,
+entry date, house and phone, and writes nothing. `migrateDirectPatientLeadsApplyNow()` writes, under the
+lock, row by row:
+- the same `dl-<id>` lead as `saveAll_` (same builder, `created` = entry date, phone blank allowed);
+- then the patient's `fromLead`.
+
+It is idempotent by patient id. Code.gs changed (clasp CI on merge); no SW bump.
+See `CHANGELOG-direct-lead-backfill.md`, `DEPLOY.md`.
+
 ## Direct add → a regular ADMITTED lead «פנייה ישירה» — October 21, 2026 (PR open)
 
 A patient added directly in «תפוסה» gets a real lead. That covers a direct add, an intake and a returning
