@@ -1,5 +1,14 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Lead moves write first — October 21, 2026 (PR open)
+
+`moveLeadIrrelevant_` and `restoreLead_` deleted the lead BEFORE writing it to the other sheet, so a
+failed write lost it. All three lead moves (closure, restore, remove) now go through
+`moveRowWriteFirst_`: upsert the destination by id → read-back verify → only then delete the source,
+under the script lock. A failed write returns `move_write_failed` and is logged; a retry adds no
+duplicate. Code.gs changed (clasp CI on merge); no public/ change, no SW bump.
+See `CHANGELOG-lead-move-write-first.md`.
+
 ## Dashboard Apps Script: half-yearly feedback «משוב» for Managers (October 20, 2026)
 
 - New APPEND-ONLY sheet `ManagersFeedbackLog`: `id, house, employee, doneAt, doneBy, doneById, createdAt`.

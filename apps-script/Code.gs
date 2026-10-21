@@ -4405,6 +4405,34 @@ function countRowsById_(sh, columns, idValue) {
   return n;
 }
 
+/* Move a lead between sheets WITHOUT ever losing it (CHANGELOG-lead-move-write-first.md).
+ * Caller holds the script lock. Order:
+ *   1. upsert the row on the DESTINATION sheet (by id → a retry never adds a
+ *      second row);
+ *   2. VERIFY it landed (a read-back by id finds it);
+ *   3. only then delete it from the SOURCE sheet.
+ * A throw in 1, or a write that did not land, leaves the source row intact and
+ * returns { ok: false, error: 'move_write_failed' } (logged). A failure in 3
+ * leaves the lead on BOTH sheets — never on neither — and a retry finishes the
+ * move with no duplicate. → { ok: true, deleted: <source rows removed> }. */
+function moveRowWriteFirst_(fromSh, fromCols, toSh, toCols, record, fn, actor) {
+  const id = String(record && record.id != null ? record.id : '');
+  if (!id) return { ok: false, error: 'missing_lead' };
+  let landed = false;
+  try {
+    upsertRowById_(toSh, toCols, record);
+    landed = countRowsById_(toSh, toCols, id) >= 1;
+  } catch (e) {
+    landed = false;
+    try { console.warn('[lead-move] write failed fn=' + fn + ' id=' + id + ': ' + (e && e.message)); } catch (_) { /* no-op */ }
+  }
+  if (!landed) {
+    logAudit_('lead_move_failed', fn, id, String(record.name || ''), { to: toSh.getName ? toSh.getName() : '' }, actor);
+    return { ok: false, error: 'move_write_failed' };
+  }
+  return { ok: true, deleted: deleteRowsById_(fromSh, fromCols, id) };
+}
+
 /* Delete every row whose id column equals `idValue`. Returns the NUMBER of rows
  * removed (0 when nothing matched) so callers can distinguish a real delete from
  * a no-op — e.g. removeLead_ refuses to append a phantom "removed" row when the
@@ -6467,8 +6495,9 @@ function moveLeadIrrelevant_(lead, actor, opts) {
       disposition:         lead.disposition || 'not_relevant',
     });
 
-    deleteRowsById_(leadsSh, LEAD_COLUMNS, lead.id);
-    upsertRowById_(irrSh, IRRELEVANT_LEAD_COLUMNS, record);
+    // Write the closed row FIRST, verify it, only then delete from Leads.
+    const moved = moveRowWriteFirst_(leadsSh, LEAD_COLUMNS, irrSh, IRRELEVANT_LEAD_COLUMNS, record, 'moveLeadIrrelevant_', actor);
+    if (!moved.ok) return moved;
     logAudit_('lead_moved_irrelevant', 'moveLeadIrrelevant_', String(lead.id), String(lead.name || ''),
       { reason: String(record.not_relevant_reason || ''), disposition: String(record.disposition || '') }, actor);
     return { ok: true, moved: true, lead: record };
@@ -6493,8 +6522,10 @@ function restoreLead_(lead, actor) {
       restored[k] = lead[k] === undefined ? '' : lead[k];
     }
 
-    deleteRowsById_(irrSh, IRRELEVANT_LEAD_COLUMNS, lead.id);
-    upsertRowById_(leadsSh, LEAD_COLUMNS, restored);
+    // Write the row back to Leads FIRST, verify it, only then delete it from
+    // the closed sheet.
+    const moved = moveRowWriteFirst_(irrSh, IRRELEVANT_LEAD_COLUMNS, leadsSh, LEAD_COLUMNS, restored, 'restoreLead_', actor);
+    if (!moved.ok) return moved;
     logAudit_('lead_restored', 'restoreLead_', String(lead.id), String(lead.name || ''), {}, actor);
     return { ok: true, restored: true, lead: restored };
   } finally {
@@ -6543,8 +6574,8 @@ function removeLead_(lead, actor) {
       if (prior) return { ok: true, removed: true, replayed: true, lead: prior };
       return { ok: false, error: 'lead_id_not_found' };
     }
-    upsertRowById_(removedSh, REMOVED_LEAD_COLUMNS, record);
-    deleteRowsById_(leadsSh, LEAD_COLUMNS, lead.id);
+    const moved = moveRowWriteFirst_(leadsSh, LEAD_COLUMNS, removedSh, REMOVED_LEAD_COLUMNS, record, 'removeLead_', actor);
+    if (!moved.ok) return moved;
     logAudit_('lead_removed', 'removeLead_', String(lead.id), String(lead.name || ''), {}, actor);
     return { ok: true, removed: true, lead: record };
   } finally {
