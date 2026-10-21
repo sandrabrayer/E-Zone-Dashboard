@@ -291,7 +291,10 @@
 // Live v80 verified 2026-10-20 (v17 never reused).
 // v81 → v82: «ועדות קרובות» from the coordinators feed — «לא זמין» state + hint
 // (/committee-alerts.js) (CHANGELOG-committees-from-coordinators.md). Live v81 expected after #262 (monotonic).
-var CACHE_VERSION = 'v82';
+// v82 → v83: direct add → a regular ADMITTED «פנייה ישירה» lead + source chip
+// (app.js, style.css, /leads-funnel.js) (CHANGELOG-direct-add-auto-lead.md).
+// Live v82 verified 2026-10-21 (v17 never reused).
+var CACHE_VERSION = 'v83';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

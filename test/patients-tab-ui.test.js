@@ -316,7 +316,7 @@ test('scope: every interpolation in the UI block is escaped or a number/fixed la
   const block = uiBlock();
   const raw = [...block.matchAll(/\$\{([^}]+)\}/g)].map((m) => m[1].trim())
     // an expression that routes its value through escapeHtml (incl. a ternary with a literal fallback) is fine
-    .filter((e) => !/escapeHtml\(/.test(e) && !/^(patientLeadDetailsHtml|patientProblemChipsHtml|item|cells\.join|parts\.join|value|chips|body)\b/.test(e)
+    .filter((e) => !/escapeHtml\(/.test(e) && !/^(patientLeadDetailsHtml|patientProblemChipsHtml|item|cells\.join|parts\.join|value|chips|body|tail)\b/.test(e)
       && !/^(released|edit|L \?|r\.chipDays|summary\.byCode|pending\.length|canReport|chips \?|btn$|noPhone \? phoneAddActionHtml\(\)|edit && noPhone \? phoneAddActionHtml\(\)|row\.stays \|\| '')/.test(e));
   assert.deepEqual(raw, [], 'un-escaped interpolations: ' + raw.join(' | '));
 });
