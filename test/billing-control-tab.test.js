@@ -131,7 +131,9 @@ test('lists: Code.gs and lib/ hold the same billing-control lists; nothing new i
     // Appended: «שחרורים צפויים», read-only (CHANGELOG-expected-discharges-all-users.md).
     'expectedDischarges',
     // Appended: «ועדות קרובות», read-only (CHANGELOG-dashboard-committees.md).
-    'upcomingCommittees']);
+    'upcomingCommittees',
+    // Appended: «הנחה» — also role-gated (CHANGELOG-ortal-billing-discounts.md).
+    'setBillingDiscount']);
   assert.deepEqual(arr(g.run('CONTROLLER_BILLING_READ_ACTIONS')), [...scope.CONTROLLER_BILLING_READ_ACTIONS]);
   assert.deepEqual(arr(g.run('CONTROLLER_GETDATA_KEYS')), [...scope.CONTROLLER_GETDATA_KEYS]);
   const known = arr(g.run('PROXY_KNOWN_ACTIONS'));
@@ -706,7 +708,8 @@ test('page wiring: index.html, the rules route, the SW bump (v33), CSS — and �
   const { app } = loadApp();
   assert.equal(app.pinAdminOptionLabel({ id: 'ortal', name: 'אורטל', hasRecord: false }), 'אורטל (חדש)');
   assert.equal(users.modelById('ortal').status, 'active');
-  assert.deepEqual([...users.modelById('ortal').roles], ['controller']);
+  // + accountant (CHANGELOG-ortal-billing-discounts.md), appended.
+  assert.deepEqual([...users.modelById('ortal').roles], ['controller', 'accountant']);
 });
 
 /* ======================================================================
@@ -816,7 +819,7 @@ test('server: Ortal gets 403 on EVERY /api/sheets action outside CONTROLLER_ACTI
       }
       assert.deepEqual(stub.calls.map((c) => c.action), [...scope.CONTROLLER_ACTIONS]);
       for (const c of stub.calls) {
-        assert.deepEqual([c.proxyUserId, c.proxyAuth, c.proxyCaps, c.proxyRoles], ['ortal', 'personal', ['billingControl'], ['controller']]);
+        assert.deepEqual([c.proxyUserId, c.proxyAuth, c.proxyCaps, c.proxyRoles], ['ortal', 'personal', ['billingControl'], ['controller', 'accountant']]);
       }
     });
   } finally { stub.restore(); }
@@ -846,7 +849,7 @@ test('server: Ortal gets 403 on EVERY Express /api/ route outside CONTROLLER_ROU
       // The allowed ones.
       const me = await request(port, 'GET', '/api/me', { cookie: personal('ortal') });
       assert.deepEqual(me.json, { ok: true, user: 'אורטל', auth: 'personal', approver: false, deleter: false, finance: false,
-        capabilities: ['billingControl'], billingControl: true, view: 'controller', canConfirm: true, billingRead: true });
+        capabilities: ['billingControl'], billingControl: true, view: 'controller', canConfirm: true, canAccount: true, billingRead: true });
       const x = await request(port, 'GET', '/api/export/billing-control.xlsx', { cookie: personal('ortal') });
       assert.equal(x.status, 200);
       assert.equal(x.headers['content-type'], report.XLSX_MIME);

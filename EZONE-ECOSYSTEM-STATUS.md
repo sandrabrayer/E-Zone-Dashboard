@@ -1,5 +1,15 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Ortal billing — accountant role + discount schema (foundation) — October 22, 2026 (PR open)
+
+New `accountant` role (Ortal; extends `USER_PIN_HASHES`, no `ORTAL_PIN`): void ONE unconfirmed
+receipt claim («לא שולם — בטל תביעה», `confirmPayment` status `not_received`, reason 2–120,
+soft delete, Sandra-only undo) and set a cycle discount (`setBillingDiscount`). `BillingOverrides`
+gets 4 APPENDED columns (`discountAmount`, `discountReason`, `discountBy`, `discountAt`).
+Effective expected = base − discount (≥ 0) in the shared cycle rule, debt aging and the forecast;
+revenue unchanged. No UI change; no SW bump. Code.gs changed (clasp CI on merge). Railway: add
+`"accountant"` to Ortal's `USER_PIN_HASHES` roles. See `CHANGELOG-ortal-billing-discounts.md`.
+
 ## Backfill: «פנייה ישירה» lead for direct patients without one — October 21, 2026 (PR open, stacked on PR A)
 
 `migrateDirectPatientLeadsNow(dryRun)` is editor-only, and the dry run is the default: it logs patient,

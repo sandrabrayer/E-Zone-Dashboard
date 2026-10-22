@@ -1692,6 +1692,10 @@ app.get('/api/me', requireSession, (req, res) => {
     billingControl: hasBillingControl(p),
     view: principalView(p),
     canConfirm: roleAllowed(p, 'confirmPayment'),
+    // Ortal's billing fixes (accountant role, or Sandra's approver):
+    // «לא שולם — בטל תביעה» and «הנחה». Display only — the server and
+    // Code.gs refuse the operations themselves (CHANGELOG-ortal-billing-discounts.md).
+    canAccount: roleAllowed(p, 'setBillingDiscount'),
     // Read access to the full «גבייה» tab for the controller view (Ortal):
     // reads only — no write, delete, void or approval control. Display only.
     billingRead: isControllerView(p) && hasBillingControl(p),

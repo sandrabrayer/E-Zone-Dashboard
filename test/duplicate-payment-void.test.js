@@ -635,7 +635,8 @@ test('G: a decided row leaves the worklist but stays on the screen', () => {
   const p = patient();
   assert.deepEqual(plain(app.detachedPayments([original(), voided()], [p])), [],
     'a voided row is decided, not a loose end');
-  assert.deepEqual(plain(arr(app.RECONNECT_DECIDED_STATUSES)), ['not_a_patient', 'duplicate']);
+  // + not_received (CHANGELOG-ortal-billing-discounts.md): a voided never-paid claim is decided too.
+  assert.deepEqual(plain(arr(app.RECONNECT_DECIDED_STATUSES)), ['not_a_patient', 'duplicate', 'not_received']);
   const render = fnSource(APP, 'renderReconnect');
   assert.match(render, /const voided = state\.payments\.filter\(p => p && isVoidPayment\(p\)\);/);
   assert.match(render, /סומנו ככפילות/);

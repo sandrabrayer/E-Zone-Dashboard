@@ -216,7 +216,7 @@ test('personal login: success mints id + pinVersion; /api/me says personal; the 
     const me = await request(port, 'GET', '/api/me', { cookie: cookieOf(ok) });
     assert.deepStrictEqual(me.json, { ok: true, user: 'ורד', auth: 'personal', approver: false, deleter: true, finance: true,
       // Phase 4 («בקרת גבייה»): the capability set, the view and the decision right.
-      capabilities: ['finance', 'billingControl'], billingControl: true, view: 'full', canConfirm: false, billingRead: false });
+      capabilities: ['finance', 'billingControl'], billingControl: true, view: 'full', canConfirm: false, canAccount: false, billingRead: false });
   });
 });
 
@@ -338,7 +338,7 @@ test('PR C: /api/me has no sharedUntil; the client has no banner, no shared fiel
   await withServer(await envWith(), async (port) => {
     const me = await request(port, 'GET', '/api/me', { cookie: cookieOf(await login(port, 'shiran', PINS.shiran)) });
     assert.deepStrictEqual(me.json, { ok: true, user: 'שירן', auth: 'personal', approver: false, deleter: false, finance: false,
-      capabilities: [], billingControl: false, view: 'restricted', canConfirm: false, billingRead: false });
+      capabilities: [], billingControl: false, view: 'restricted', canConfirm: false, canAccount: false, billingRead: false });
   });
   assert.ok(!/id="shared-banner"|id="pin-input"|id="login-shared-link"|id="user-screen"/.test(HTML_SRC));
   assert.ok(!/\.shared-banner \{/.test(fs.readFileSync(path.join(ROOT, 'public', 'style.css'), 'utf8')));
@@ -418,7 +418,7 @@ test('new-code page: returns ONLY a valid record line; new → v1, reset → cur
     const ortal = await request(port, 'POST', '/api/pin-admin/record', { cookie, body: { userId: 'ortal', pin: '264081', pin2: '264081' } });
     assert.strictEqual(ortal.status, 200);
     const oline = JSON.parse(ortal.json.record);
-    assert.deepStrictEqual([oline.id, oline.name, oline.roles, oline.status, oline.pinVersion], ['ortal', 'אורטל', ['controller'], 'active', 1]);
+    assert.deepStrictEqual([oline.id, oline.name, oline.roles, oline.status, oline.pinVersion], ['ortal', 'אורטל', ['controller', 'accountant'], 'active', 1]);
     assert.strictEqual(users.validateUserPinHashes(JSON.stringify(recs.concat([oline]))).byId.ortal.status, 'active');
   });
 });

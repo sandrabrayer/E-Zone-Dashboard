@@ -148,11 +148,13 @@ function seedOverrides(rows) {
 
 /* ===== Code.gs — column contract ===== */
 
-test('BILLING_OVERRIDE_COLUMNS is exactly [id, patientId, month, amount, created, updatedBy]', () => {
-  // updatedBy appended LAST by personal-pins PR A (append-only).
+test('BILLING_OVERRIDE_COLUMNS is exactly [id, patientId, month, amount, created, updatedBy, discount…]', () => {
+  // updatedBy appended LAST by personal-pins PR A; the four discount columns
+  // after it (CHANGELOG-ortal-billing-discounts.md). Append-only.
   assert.deepStrictEqual(
     arr(code.BILLING_OVERRIDE_COLUMNS),
-    ['id', 'patientId', 'month', 'amount', 'created', 'updatedBy']
+    ['id', 'patientId', 'month', 'amount', 'created', 'updatedBy',
+      'discountAmount', 'discountReason', 'discountBy', 'discountAt']
   );
 });
 
@@ -272,12 +274,17 @@ test('normalizeBillingOverride preserves present values', () => {
   // cross-realm object prototype (same reason the array tests use arr()).
   assert.deepStrictEqual({ ...out }, {
     id: 'ovr::p1::2026-08', patientId: 'p1', month: '2026-08', amount: 4200, created: '2026-08-09',
+    // The discount fields (CHANGELOG-ortal-billing-discounts.md): blank = none.
+    discountAmount: '', discountReason: '', discountBy: '', discountAt: '',
   });
 });
 
-test('normalizeBillingOverride coerces amount to a number and defaults to 0', () => {
+test('normalizeBillingOverride coerces amount to a number; a BLANK amount stays blank (a discount-only row, no override)', () => {
   assert.strictEqual(app.normalizeBillingOverride({ patientId: 'p1', month: '2026-08', amount: '3900' }).amount, 3900);
-  assert.strictEqual(app.normalizeBillingOverride({ patientId: 'p1', month: '2026-08' }).amount, 0);
+  assert.strictEqual(app.normalizeBillingOverride({ patientId: 'p1', month: '2026-08', amount: '0' }).amount, 0);
+  // CHANGELOG-ortal-billing-discounts.md: blank must never read as a 0 override.
+  assert.strictEqual(app.normalizeBillingOverride({ patientId: 'p1', month: '2026-08' }).amount, '');
+  assert.strictEqual(app.normalizeBillingOverride({ patientId: 'p1', month: '2026-08', amount: '' }).amount, '');
 });
 
 test('normalizeBillingOverride clamps month to YYYY-MM (no day precision leaks into the key)', () => {

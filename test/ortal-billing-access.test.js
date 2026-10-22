@@ -550,7 +550,7 @@ test('permissions (server.js): Ortal 200 on every «גבייה» read (GET and P
         assert.equal(p.status, 200, 'POST ' + action);
       }
       for (const c of stub.calls) {
-        assert.deepEqual([c.proxyUserId, c.proxyRoles, c.proxyCaps], ['ortal', ['controller'], ['billingControl']], 'never finance');
+        assert.deepEqual([c.proxyUserId, c.proxyRoles, c.proxyCaps], ['ortal', ['controller', 'accountant'], ['billingControl']], 'never finance');
       }
       const d = await request(port, 'GET', '/api/sheets?action=getData', { cookie: personal('ortal') });
       assert.deepEqual(Object.keys(d.json).sort(), ['billingOverrides', 'ok', 'patients']);
@@ -621,7 +621,7 @@ test('lists: lib/finance-scope.js and Code.gs agree; the controller read list ho
     { ok: true, patients: { a: [] }, billingOverrides: [] });
   assert.deepEqual(plain(scope.controllerGetDataView({ ok: false, error: 'x', leads: [1] })), { ok: false, error: 'x' });
   // Ortal's roles are unchanged: controller only — no deleter, no approver.
-  assert.deepEqual([...users.modelById('ortal').roles], ['controller']);
+  assert.deepEqual([...users.modelById('ortal').roles], ['controller', 'accountant']);
 });
 
 /* ======================================================================
