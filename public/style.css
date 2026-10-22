@@ -555,6 +555,16 @@ body.view-controller #screen-billing .irrelevant-actions { display: none !import
   border-color: rgba(91,139,255,.45); font-size: 11px;
 }
 .bill-amount-view { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* «הנחה» chip (CHANGELOG-ortal-billing-ui.md): informational green — a
+ * discount is neither debt nor revenue. */
+.badge.discount {
+  background: rgba(46,204,113,.16); color: #7fe0a6;
+  border-color: rgba(46,204,113,.45); font-size: 11px;
+}
+.bc-pr-item { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 0; border-top: 1px solid rgba(255,255,255,.06); }
+.bc-pr-item .btn { min-height: 44px; }
+.bc-nr-form, .bc-disc-form { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.bc-nr-form textarea, .bc-disc-form textarea, .bc-disc-form input { width: 100%; box-sizing: border-box; }
 .bill-amount-edit-btn, .bill-amount-clear-btn {
   background: none; border: none; cursor: pointer; padding: 0 2px;
   font-size: 13px; line-height: 1; color: var(--text-muted);

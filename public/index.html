@@ -438,6 +438,18 @@
 
       <div class="cards-row bc-cards" id="bc-cards"></div>
 
+      <!-- «בעיות גבייה» (CHANGELOG-ortal-billing-ui.md): accountant (Ortal) /
+           approver (Sandra) only. Every button is re-checked by the server. -->
+      <div id="bc-problems-group" class="bill-group bill-group--debt hidden" data-group="bc-problems" lang="he" dir="rtl">
+        <h3 class="bill-group-title">בעיות גבייה <span class="count-pill" id="bc-problems-count">0</span></h3>
+        <p class="billing-date-label">מטופלים עם תשלום חסר או לא מאושר. «שולם - אשר» — הכסף נמצא בבנק. «לא שולם - בטל תביעה» — הקבלה מבוטלת (נשמרת בהיסטוריה, רק סנדרה יכולה לשחזר). «הנחה» — מקטינה את הסכום לתשלום; הנחה אינה חוב ואינה הכנסה.</p>
+        <div id="bc-problems" class="billing-list bc-list" aria-live="polite"></div>
+        <details class="bc-discounts-given">
+          <summary>הנחות שניתנו</summary>
+          <div id="bc-discounts-given" class="billing-list bc-list"></div>
+        </details>
+      </div>
+
       <div class="bill-group bill-group--open" data-group="bc-followup">
         <h3 class="bill-group-title">להמשך טיפול <span class="count-pill" id="bc-followup-count">—</span></h3>
         <p class="billing-date-label">הוותיק ראשון · אורטל אחראית למעקב. יתרות גבייה והפרשי אימות מוצגים בנפרד; אין לחבר את הסכומים.</p>

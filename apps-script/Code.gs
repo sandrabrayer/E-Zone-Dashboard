@@ -1894,7 +1894,10 @@ function handle_(params) {
     // decision on a receipt. The decision needs the controller or approver
     // ROLE of the verified session (never anything in the body).
     if (action === 'billingControlQueue') {
-      return jsonOut_(billingControlQueue_({ approver: hasRole_(params, 'approver') }));
+      // accountant (Ortal) or approver (Sandra): the «בעיות גבייה» work list
+      // (CHANGELOG-ortal-billing-ui.md). From the verified session only.
+      return jsonOut_(billingControlQueue_({ approver: hasRole_(params, 'approver'),
+        accountant: hasRole_(params, 'accountant') || hasRole_(params, 'approver') }));
     }
     if (action === 'confirmPayment') {
       const privileged = hasRole_(params, 'controller') || hasRole_(params, 'approver');
@@ -11122,9 +11125,73 @@ function billingControlQueueFor_(rows, flagTimes, opts) {
       debtsOver60: debt60 ? debt60.rows : [],
       refundExceptions: billingControlRefundExceptions_(o.forecast, o.credits),
       underStamped: underStamped,
+      // Every void and every discount, with who / why (CHANGELOG-ortal-billing-ui.md).
+      voids: billingControlVoids_(rows),
+      discounts: billingControlDiscounts_(o.overrides),
     };
   }
+  // «בעיות גבייה» (CHANGELOG-ortal-billing-ui.md): the owed cycles with the
+  // key a discount is set on, and the discounts already given. Only for a
+  // session that may act on them (accountant or approver).
+  if (o.accountant === true) {
+    out.problems = { complete: !!(o.aging && o.aging.ok === true), cycles: billingControlProblemCycles_(o.aging), discounts: billingControlDiscounts_(o.overrides) };
+  }
   return out;
+}
+
+/* Every owed cycle (balance > 0) from debtAging_'s own output, with the
+ * BillingOverrides key it can be discounted on (patientKey + month) and the
+ * discount already applied. Oldest first. PURE. */
+function billingControlProblemCycles_(aging) {
+  if (!aging || aging.ok !== true) return [];
+  const out = [];
+  (aging.byPatient || []).forEach(function (p) {
+    (p.cycles || []).forEach(function (c) {
+      if (!(Number(c.balance) > 0)) return;
+      out.push({
+        patientName: String(p.name || ''), houseId: String(p.houseId || ''), patientKey: String(p.patientKey || ''),
+        month: String(c.month || String(c.start || '').slice(0, 7)), start: String(c.start || ''), end: String(c.end || ''),
+        kind: c.kind === 'recorded' ? 'recorded' : 'unrecorded',
+        expected: receiptMoney_(c.expected), balance: receiptMoney_(c.balance), discount: receiptMoney_(c.discount || 0),
+        days: Number(c.days) || 0, funderGrace: c.funderGrace === true,
+      });
+    });
+  });
+  return out.sort(function (a, b) { return b.days - a.days || (a.patientName < b.patientName ? -1 : a.patientName > b.patientName ? 1 : 0); });
+}
+
+/* Every discount on BillingOverrides (discountAmount > 0): the patient's name
+ * and house read from the key, the month, amount, reason, who, when. Newest
+ * first. PURE. */
+function billingControlDiscounts_(overrideRows) {
+  const out = [];
+  (Array.isArray(overrideRows) ? overrideRows : []).forEach(function (r) {
+    const amount = billingDiscountOf_(r);
+    if (!(amount > 0)) return;
+    const key = String(r.patientId == null ? '' : r.patientId);
+    const parts = key.split('::');
+    out.push({
+      patientKey: key, houseId: parts[0] || '', patientName: parts[1] || '', month: String(r.month || '').slice(0, 7),
+      amount: amount, reason: String(r.discountReason || ''), by: String(r.discountBy || ''), at: String(r.discountAt || ''),
+    });
+  });
+  return out.sort(function (a, b) { return a.at < b.at ? 1 : a.at > b.at ? -1 : 0; });
+}
+
+/* Every VOID Payments row (the row is kept): what, how much, the decision
+ * (duplicate / not_received), why, who, when. Newest first. PURE. */
+function billingControlVoids_(rows) {
+  const out = [];
+  (Array.isArray(rows) ? rows : []).forEach(function (r) {
+    if (!r || !isVoidStatus_(r.status)) return;
+    out.push({
+      id: paymentCell_(r.id), receipt: isReceiptRow_(r), patientName: paymentCell_(r.patientName), houseId: paymentCell_(r.houseId),
+      amount: isReceiptRow_(r) ? receiptReportedAmount_(r) : receiptMoney_(r.amount),
+      kind: paymentLinkStatusClean_(r.linkStatus), reason: paymentCell_(r.linkNote),
+      by: paymentCell_(r.linkedBy), at: paymentCell_(r.linkedAt),
+    });
+  });
+  return out.sort(function (a, b) { return a.at < b.at ? 1 : a.at > b.at ? -1 : 0; });
 }
 
 /**
@@ -11149,8 +11216,13 @@ function billingControlQueue_(opts) {
       try { forecast = refundPayoutForecast_(); } catch (_) { forecast = null; }
       try { const csh = ss.getSheetByName(CREDITS_SHEET); credits = csh ? readSheet_(csh, CREDIT_COLUMNS) : []; } catch (_) { credits = []; }
     }
+    let overrides = [];
+    if (o.approver === true || o.accountant === true) {
+      try { const osh = ss.getSheetByName(BILLING_OVERRIDES_SHEET); overrides = osh ? readSheet_(osh, BILLING_OVERRIDE_COLUMNS) : []; } catch (_) { overrides = []; }
+    }
     const out = billingControlQueueFor_(rows, billingControlFlagTimes_(), {
-      todayIso: today, approver: o.approver === true, aging: aging, forecast: forecast, credits: credits,
+      todayIso: today, approver: o.approver === true, accountant: o.accountant === true,
+      aging: aging, forecast: forecast, credits: credits, overrides: overrides,
     });
     out.generatedAt = new Date().toISOString();
     return out;

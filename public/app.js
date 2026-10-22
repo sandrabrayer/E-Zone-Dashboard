@@ -336,10 +336,13 @@ const state = {
    * Code.gs refuse the data and the decision themselves.
    *   view            'full' | 'restricted' | 'controller' | null (unknown)
    *   billingControl  may open the «בקרת גבייה» tab (Vered, Sandra, Ortal)
-   *   canConfirm      may confirm / flag a receipt (Ortal, Sandra) */
+   *   canConfirm      may confirm / flag a receipt (Ortal, Sandra)
+   *   canAccount      «לא שולם — בטל תביעה» and «הנחה» (accountant Ortal,
+   *                   approver Sandra; CHANGELOG-ortal-billing-ui.md) */
   view: null,
   billingControl: null,
   canConfirm: false,
+  canAccount: false,
   payments: [],
   /* Phase 3 PR 2: one row per money received (getPayments `receipts`, each
    * with the cycleId it pays for) and the Funders tab (getPayments
@@ -1296,6 +1299,7 @@ function applySessionInfo(info) {
   state.approver = i.approver === true;
   const confirmChanged = state.canConfirm !== (i.canConfirm === true);
   state.canConfirm = i.canConfirm === true;
+  state.canAccount = i.canAccount === true;
   renderWhoami(i.user || '');
   const adminBtn = document.getElementById('pin-admin-open');
   if (adminBtn) adminBtn.classList.toggle('hidden', i.approver !== true);
@@ -13517,6 +13521,7 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   const amountCellHtml = `
       <span class="p-val bill-amount-view">₪ ${amount.toLocaleString('he-IL')}
         ${hasOverride ? '<span class="badge override" title="סכום מותאם לחודש זה">מותאם</span>' : ''}
+        ${!isVoid && payment.discount > 0 ? bcDiscountChipHtml(payment.discount) : ''}
         ${amountEditable ? '<button class="bill-amount-edit-btn" title="עריכת הסכום לחודש זה בלבד">✏️</button>' : ''}
         ${amountEditable && hasOverride && canDelete() ? '<button class="bill-amount-clear-btn" data-role="deleter" title="ביטול ההתאמה — חזרה לסכום הבסיס">↩</button>' : ''}
       </span>
@@ -16687,6 +16692,16 @@ const BC_ERRORS = {
   duplicate_single: '«כפילות» — קבלה אחת בכל פעם',
   duplicate_note_invalid: 'בסימון «כפילות» חובה לפרט (2 עד 300 תווים)',
   duplicate_last_receipt: 'זו הקבלה היחידה של המחזור — אי אפשר לסמן אותה ככפילות. אם הכסף לא התקבל, סמנו «לא שולם»',
+  /* «בעיות גבייה» (CHANGELOG-ortal-billing-ui.md) — Code.gs sends the same. */
+  not_received_single: '«לא שולם — בטל תביעה» — קבלה אחת בכל פעם',
+  not_received_note_invalid: 'בביטול תביעה חובה לפרט סיבה (2 עד 120 תווים)',
+  not_received_receipt_only: 'ביטול תביעה — רק לקבלה שדווחה',
+  receipt_confirmed: 'התשלום כבר אושר — אי אפשר לבטל אותו. פנו לסנדרה',
+  bad_discount_amount: 'סכום הנחה לא תקין — מספר בין 0 ל-1,000,000, עד שתי ספרות אחרי הנקודה',
+  bad_discount_reason: 'בהנחה חובה לפרט סיבה (2 עד 120 תווים)',
+  bad_discount_patient: 'מטופל לא תקין להנחה',
+  discount_patient_not_found: 'המטופל לא נמצא — רעננו את הדף',
+  bad_month: 'חודש לא תקין',
 };
 const BC_DUP_LABEL = `למה זו כפילות? (${BC_FLAG_MIN} עד ${BC_FLAG_MAX} תווים)`;
 const BC_DUP_EXAMPLE = 'לדוגמה: אותה העברה דווחה פעמיים (אסמכתא 12345)';
@@ -16717,6 +16732,9 @@ function billingControlState() {
       partialOpen: '', partialDraft: '', noteOpen: '', noteDraft: '',
       // «כפילות» reason form (one row at a time).
       dupOpen: '', dupDraft: '',
+      // «בעיות גבייה» (CHANGELOG-ortal-billing-ui.md): the «לא שולם — בטל
+      // תביעה» reason form and the «הנחה» form, one at a time each.
+      nrOpen: '', nrDraft: '', discOpen: '', discAmount: '', discReason: '',
     };
   }
   return state.bc;
@@ -16790,7 +16808,7 @@ async function confirmReceipts(ids, status, extra) {
   const x = typeof extra === 'string' ? { flagNote: extra } : (extra || {});
   const body = { ids: ids.slice() };
   if (status) body.status = status;
-  if (status === 'flagged' || status === 'duplicate') body.flagNote = x.flagNote;
+  if (status === 'flagged' || status === 'duplicate' || status === 'not_received') body.flagNote = x.flagNote;
   if (status === 'partial') body.confirmedAmount = x.confirmedAmount;
   if (x.controlNote !== undefined) body.controlNote = x.controlNote;
   let res;
@@ -16830,6 +16848,7 @@ async function confirmReceipts(ids, status, extra) {
     Promise.resolve().then(loadBillingControl).catch(() => {});
   }
   if (s.dupOpen && ids.indexOf(s.dupOpen) >= 0 && status) { s.dupOpen = ''; s.dupDraft = ''; }
+  if (s.nrOpen && ids.indexOf(s.nrOpen) >= 0 && status) { s.nrOpen = ''; s.nrDraft = ''; }
   ids.forEach(id => { delete s.selected[id]; });
   if (s.flagOpen && ids.indexOf(s.flagOpen) >= 0 && status) { s.flagOpen = ''; s.flagDraft = ''; }
   if (s.partialOpen && ids.indexOf(s.partialOpen) >= 0 && status) { s.partialOpen = ''; s.partialDraft = ''; }
@@ -16841,6 +16860,7 @@ async function confirmReceipts(ids, status, extra) {
     : status === 'partial' ? 'סומן «שולם חלקית» — היתרה נשארת חוב פתוח'
     : status === 'flagged' ? 'סומן «לא שולם» — חוזר לוורד'
     : status === 'duplicate' ? 'סומן «כפילות» — הקבלה בוטלה ואינה נספרת'
+    : status === 'not_received' ? 'התביעה בוטלה — המחזור חזר לחוב פתוח'
     : 'חזר ל«ממתין לאימות»');
   return res;
 }
@@ -17054,7 +17074,11 @@ function bcExceptionsHtml(ex) {
     <h4 class="bc-ex-title">החזרים שממתינים לאישור <span class="count-pill">${refunds.length}</span></h4>
     ${refunds.length ? refunds.map(refundRow).join('') : empty('אין')}
     <h4 class="bc-ex-title">שולם מתחת למחיר <span class="count-pill">${(Array.isArray(e.underStamped) ? e.underStamped : []).length}</span></h4>
-    ${bcUnderStampedHtml(e.underStamped)}`;
+    ${bcUnderStampedHtml(e.underStamped)}
+    <h4 class="bc-ex-title">ביטולים <span class="count-pill">${(Array.isArray(e.voids) ? e.voids : []).length}</span></h4>
+    ${bcVoidRowsHtml(e.voids)}
+    <h4 class="bc-ex-title">הנחות <span class="count-pill">${(Array.isArray(e.discounts) ? e.discounts : []).length}</span></h4>
+    ${bcDiscountRowsHtml(e.discounts)}`;
 }
 
 function bcFollowupHtml(rows) {
@@ -17136,6 +17160,167 @@ function bcDocumentReviewHtml(review) {
     <div class="billing-list bc-list">${rows || `<p class="billing-date-label">${empty}</p>`}</div>`;
 }
 
+/* ===== «בעיות גבייה» — Ortal's billing problems (CHANGELOG-ortal-billing-ui.md) =====
+ * One list per patient: every receipt still waiting or marked «לא שולם»
+ * (unconfirmed) and every cycle that still owes money (the queue's
+ * `problems.cycles`, from debt aging). Buttons — each re-checked by the
+ * server (accountant / approver role):
+ *   «שולם - אשר»            confirmPayment confirmed (receipt)
+ *   «לא שולם - בטל תביעה»   confirmPayment not_received + a reason 2–120
+ *   «הנחה»                  setBillingDiscount amount + a reason 2–120 (cycle)
+ * A discount is not a debt and not revenue: a discounted cycle shows the
+ * «הנחה» chip and the amount after it; one it covers fully is never listed
+ * as owed. Every value reaching HTML is escaped. */
+const BC_REASON_MIN = 2;
+const BC_REASON_MAX = 120;
+const BC_DISCOUNT_MAX = 1000000;
+
+/* A reason as the server stores it: one line, a formula lead-in dropped. A
+ * longer one is REFUSED, never cut. → { note, error }. Pure. */
+function bcReasonCheck(raw, errorText) {
+  const t = String(raw == null ? '' : raw).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().replace(/^[=+@\-\s]+/, '').trim();
+  if (t.length < BC_REASON_MIN || t.length > BC_REASON_MAX) return { note: '', error: errorText };
+  return { note: t, error: '' };
+}
+function bcNotReceivedCheck(raw) {
+  return bcReasonCheck(raw, BC_ERRORS.not_received_note_invalid);
+}
+/* «הנחה» form: amount 0 < x ≤ 1,000,000 (agorot; a thousands comma is fine),
+ * reason 2–120. → { amount, reason, error }. Pure. */
+function bcDiscountCheck(amountRaw, reasonRaw) {
+  const txt = String(amountRaw == null ? '' : amountRaw).replace(/,/g, '').trim();
+  const ok = /^\d{1,7}(\.\d{1,2})?$/.test(txt);
+  const n = ok ? Number(txt) : NaN;
+  if (!ok || !(n > 0) || n > BC_DISCOUNT_MAX) return { amount: null, reason: '', error: BC_ERRORS.bad_discount_amount };
+  const r = bcReasonCheck(reasonRaw, BC_ERRORS.bad_discount_reason);
+  if (r.error) return { amount: null, reason: '', error: r.error };
+  return { amount: Math.round(n * 100) / 100, reason: r.note, error: '' };
+}
+
+/* The «הנחה» chip: the discount and what is left to pay. Pure. */
+function bcDiscountChipHtml(discount, after) {
+  if (!(Number(discount) > 0)) return '';
+  const tail = after === undefined || after === null ? '' : ` · לתשלום ${escapeHtml(fmtShekel(after))}`;
+  return `<span class="badge discount" title="הנחה — לא חוב ולא הכנסה">«הנחה» ${escapeHtml(fmtShekel(discount))}${tail}</span>`;
+}
+
+/* The problems model from the queue answer: patients (house, name) each with
+ * their unconfirmed receipts and owed cycles, the oldest problem first.
+ * Pure. → { complete, patients: [{ key, name, houseId, receipts, cycles }],
+ *           discounts } */
+function bcProblemsModel(data) {
+  const d = data || {};
+  const pr = d.problems && typeof d.problems === 'object' ? d.problems : null;
+  const receipts = (Array.isArray(d.receipts) ? d.receipts : [])
+    .filter(r => r && (r.confirmStatus === 'reported' || r.confirmStatus === 'flagged' || !r.confirmStatus));
+  const cycles = pr && Array.isArray(pr.cycles) ? pr.cycles.filter(c => c && Number(c.balance) > 0) : [];
+  const by = {};
+  const order = [];
+  const group = (houseId, name) => {
+    const k = String(houseId || '') + '::' + String(name || '');
+    if (!by[k]) { by[k] = { key: k, name: String(name || ''), houseId: String(houseId || ''), receipts: [], cycles: [], days: 0 }; order.push(k); }
+    return by[k];
+  };
+  cycles.forEach(c => { const g = group(c.houseId, c.patientName); g.cycles.push(c); g.days = Math.max(g.days, Number(c.days) || 0); });
+  receipts.forEach(r => { group(r.houseId, r.patientName).receipts.push(r); });
+  const patients = order.map(k => by[k]).sort((a, b) => b.days - a.days || a.name.localeCompare(b.name, 'he'));
+  return { complete: !!(pr && pr.complete), patients, discounts: pr && Array.isArray(pr.discounts) ? pr.discounts : [] };
+}
+
+function bcProblemsHtml(model, opts) {
+  const o = opts || {};
+  const s = o.state || {};
+  const canConfirm = o.canConfirm === true;
+  const canAccount = o.canAccount === true;
+  const m = model || { patients: [], discounts: [] };
+  if (!m.patients.length) return '<p class="billing-date-label">אין תשלומים חסרים או לא מאושרים</p>';
+  const receiptLine = r => {
+    const id = escapeHtml(r.id);
+    const st = r.confirmStatus === 'flagged' ? 'סומן «לא שולם»' : 'ממתין לאימות';
+    const open = s.nrOpen === r.id;
+    const buttons = [
+      canConfirm ? `<button type="button" class="btn small primary" data-bc-pr-confirm="${id}">שולם - אשר</button>` : '',
+      canAccount ? `<button type="button" class="btn small danger" data-bc-nr-open="${id}" aria-expanded="${open}">לא שולם - בטל תביעה</button>` : '',
+    ].join('');
+    const form = open && canAccount ? `<div class="bc-nr-form">
+        <label for="bc-nr-${id}">למה לבטל? (${BC_REASON_MIN} עד ${BC_REASON_MAX} תווים)</label>
+        <textarea id="bc-nr-${id}" data-bc-nr-note="${id}" maxlength="${BC_REASON_MAX}" rows="2">${escapeHtml(s.nrDraft || '')}</textarea>
+        <div class="error-msg bc-nr-error hidden" role="alert"></div>
+        <button type="button" class="btn small danger" data-bc-nr-save="${id}">בטל תביעה</button>
+        <button type="button" class="btn small ghost" data-bc-nr-cancel="${id}">ביטול</button></div>` : '';
+    return `<div class="bc-pr-item" data-bc-id="${id}"><span class="bc-k">קבלה</span> <span class="bc-v">${escapeHtml(fmtShekel(r.amount))}</span>
+      <span class="bc-sub">${escapeHtml(st)} · התקבל ${escapeHtml(formatDateHe(r.receivedDate))}</span> ${buttons}${form}</div>`;
+  };
+  const cycleLine = c => {
+    const key = escapeHtml(c.patientKey + '|' + c.month);
+    const open = s.discOpen === c.patientKey + '|' + c.month;
+    const form = open && canAccount ? `<div class="bc-disc-form">
+        <label for="bc-disc-amt-${key}">סכום ההנחה (₪)</label>
+        <input id="bc-disc-amt-${key}" data-bc-disc-amount="${key}" inputmode="decimal" value="${escapeHtml(s.discAmount || '')}" />
+        <label for="bc-disc-why-${key}">סיבה (${BC_REASON_MIN} עד ${BC_REASON_MAX} תווים)</label>
+        <textarea id="bc-disc-why-${key}" data-bc-disc-reason="${key}" maxlength="${BC_REASON_MAX}" rows="2">${escapeHtml(s.discReason || '')}</textarea>
+        <div class="error-msg bc-disc-error hidden" role="alert"></div>
+        <button type="button" class="btn small primary" data-bc-disc-save="${key}">שמור הנחה</button>
+        <button type="button" class="btn small ghost" data-bc-disc-cancel="${key}">ביטול</button></div>` : '';
+    return `<div class="bc-pr-item"><span class="bc-k">${c.kind === 'recorded' ? 'יתרת מחזור' : 'מחזור ללא תשלום'}</span>
+      <span class="bc-v">${escapeHtml(fmtShekel(c.balance))}</span>
+      <span class="bc-sub">${escapeHtml(formatDateHe(c.start))} · ${escapeHtml(String(c.days))} ימים</span>
+      ${bcDiscountChipHtml(c.discount, c.expected)}
+      ${canAccount ? `<button type="button" class="btn small" data-bc-disc-open="${key}" aria-expanded="${open}">הנחה</button>` : ''}${form}</div>`;
+  };
+  return m.patients.map(p => `<div class="bc-row bc-row--problem"><div class="bc-head"><b class="bc-name">${escapeHtml(p.name || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(p.houseId))}</span></div>
+    ${p.receipts.map(receiptLine).join('')}${p.cycles.map(cycleLine).join('')}</div>`).join('');
+}
+
+/* «הנחות שניתנו» / Sandra's exceptions: one read-only line per discount. */
+function bcDiscountRowsHtml(list) {
+  const rows = Array.isArray(list) ? list : [];
+  if (!rows.length) return '<p class="billing-date-label">אין</p>';
+  return rows.map(d => `<div class="bc-row bc-row--exception"><div class="bc-head"><b class="bc-name">${escapeHtml(d.patientName || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(d.houseId))}</span> ${bcDiscountChipHtml(d.amount)}</div>
+    <div class="bc-fields"><span class="bc-f"><span class="bc-k">חודש</span> <span class="bc-v">${escapeHtml(d.month || '—')}</span></span>
+    <span class="bc-f"><span class="bc-k">סיבה</span> <span class="bc-v">${escapeHtml(d.reason || '—')}</span></span>
+    <span class="bc-f"><span class="bc-k">מי</span> <span class="bc-v">${escapeHtml(d.by || '—')}</span></span>
+    <span class="bc-f"><span class="bc-k">מתי</span> <span class="bc-v">${escapeHtml(bcStampHe(d.at) || '—')}</span></span></div></div>`).join('');
+}
+
+const BC_VOID_KINDS = { duplicate: 'כפילות', not_received: 'לא שולם — תביעה בוטלה' };
+function bcVoidRowsHtml(list) {
+  const rows = Array.isArray(list) ? list : [];
+  if (!rows.length) return '<p class="billing-date-label">אין</p>';
+  return rows.map(v => `<div class="bc-row bc-row--exception"><div class="bc-head"><b class="bc-name">${escapeHtml(v.patientName || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(v.houseId))}</span> <span class="bc-amount">${escapeHtml(fmtShekel(v.amount))}</span></div>
+    <div class="bc-fields"><span class="bc-f"><span class="bc-k">סוג</span> <span class="bc-v">${escapeHtml(BC_VOID_KINDS[v.kind] || 'בוטל')}</span></span>
+    <span class="bc-f"><span class="bc-k">סיבה</span> <span class="bc-v">${escapeHtml(v.reason || '—')}</span></span>
+    <span class="bc-f"><span class="bc-k">מי</span> <span class="bc-v">${escapeHtml(v.by || '—')}</span></span>
+    <span class="bc-f"><span class="bc-k">מתי</span> <span class="bc-v">${escapeHtml(bcStampHe(v.at) || '—')}</span></span></div></div>`).join('');
+}
+
+/* «הנחה» save: one cycle (patientKey + month). The server re-checks the role
+ * and every field; the queue is re-read after it (debt aging moves). */
+async function saveBillingDiscount(patientKey, month, amount, reason) {
+  if (!state.canAccount) { showError(ROLE_FORBIDDEN_TEXT); return null; }
+  const s = billingControlState();
+  let res;
+  try {
+    res = await trackedWrite([_billingControlGuard, _dataGuard], () => apiPost({ action: 'setBillingDiscount',
+      discount: { patientId: patientKey, month, discountAmount: amount, discountReason: reason } }));
+  } catch (e) {
+    const code = e && e.data && e.data.error;
+    showError(BC_ERRORS[code] || (e && e.message) || 'השמירה נכשלה');
+    return null;
+  }
+  // R3: the server must name the row it wrote.
+  if (!res || res.ok !== true || !res.override || res.override.patientId !== patientKey || res.override.month !== month) {
+    showError(SAVE_UNPROVEN_HE);
+    return null;
+  }
+  const saved = normalizeBillingOverride(res.override);
+  state.billingOverrides = (state.billingOverrides || []).filter(o => o && o.id !== saved.id).concat([saved]);
+  s.discOpen = ''; s.discAmount = ''; s.discReason = '';
+  showToast('ההנחה נשמרה — אינה חוב ואינה הכנסה');
+  Promise.resolve().then(loadBillingControl).catch(() => {});
+  return res;
+}
+
 function renderBillingControl() {
   const screen = document.getElementById('screen-billing-control');
   if (!screen || state.billingControl === false) return;
@@ -17192,6 +17377,17 @@ function renderBillingControl() {
   if (followHouse) followHouse.value = s.followupHouse || 'all';
   const followOwner = document.getElementById('bc-followup-owner');
   if (followOwner) followOwner.value = s.followupOwner || 'all';
+
+  // «בעיות גבייה» (CHANGELOG-ortal-billing-ui.md): only for a session that may act.
+  const prEl = document.getElementById('bc-problems-group');
+  const showProblems = (state.canAccount === true) && !!s.data.problems;
+  if (prEl) prEl.classList.toggle('hidden', !showProblems);
+  if (showProblems) {
+    const pm = bcProblemsModel(s.data);
+    set('bc-problems-count', `${pm.patients.length}${pm.complete ? '' : '+'}`);
+    set('bc-problems', bcProblemsHtml(pm, { state: s, canConfirm: state.canConfirm === true, canAccount: true }));
+    set('bc-discounts-given', bcDiscountRowsHtml(pm.discounts));
+  }
 
   const queue = R.receiptsByStatus(receipts, 'reported');
   const flagged = R.receiptsByStatus(receipts, 'flagged');
@@ -17332,6 +17528,9 @@ function initBillingControlControls() {
     if (!t || !t.getAttribute) return;
     if (t.getAttribute('data-bc-note')) s.flagDraft = t.value;
     if (t.getAttribute('data-bc-dup-note')) { s.dupDraft = t.value; bcClearInlineError(t, '.bc-dup-error'); }
+    if (t.getAttribute('data-bc-nr-note')) { s.nrDraft = t.value; bcClearInlineError(t, '.bc-nr-error'); }
+    if (t.getAttribute('data-bc-disc-amount')) { s.discAmount = t.value; bcClearInlineError(t, '.bc-disc-error'); }
+    if (t.getAttribute('data-bc-disc-reason')) { s.discReason = t.value; bcClearInlineError(t, '.bc-disc-error'); }
     const pid = t.getAttribute('data-bc-partial-amount');
     if (pid) {
       // Live remaining balance — computed by the shared rule, text only.
@@ -17372,6 +17571,35 @@ function initBillingControlControls() {
       busyButton(t, 'load', exportBillingControlDebtXlsx).catch(err => showError('הייצוא נכשל — ' + ((err && err.message) || 'שגיאה')));
     } else if (attr('data-bc-confirm')) {
       busyButton(t, 'save', () => confirmReceipts([attr('data-bc-confirm')], 'confirmed'));
+    } else if (attr('data-bc-pr-confirm')) {
+      busyButton(t, 'save', () => confirmReceipts([attr('data-bc-pr-confirm')], 'confirmed'));
+    } else if (attr('data-bc-nr-open')) {
+      s.nrOpen = attr('data-bc-nr-open'); s.nrDraft = '';
+      renderBillingControl();
+      const ta = document.getElementById('bc-nr-' + s.nrOpen);
+      if (ta && ta.focus) ta.focus();
+    } else if (attr('data-bc-nr-cancel')) {
+      s.nrOpen = ''; s.nrDraft = '';
+      renderBillingControl();
+    } else if (attr('data-bc-nr-save')) {
+      const id = attr('data-bc-nr-save');
+      const chk = bcNotReceivedCheck(s.nrDraft);
+      if (chk.error) { bcInlineError(t, '.bc-nr-form', '.bc-nr-error', 'textarea', chk.error); return; }
+      busyButton(t, 'save', () => confirmReceipts([id], 'not_received', { flagNote: chk.note }));
+    } else if (attr('data-bc-disc-open')) {
+      s.discOpen = attr('data-bc-disc-open'); s.discAmount = ''; s.discReason = '';
+      renderBillingControl();
+      const inp = document.getElementById('bc-disc-amt-' + s.discOpen);
+      if (inp && inp.focus) inp.focus();
+    } else if (attr('data-bc-disc-cancel')) {
+      s.discOpen = ''; s.discAmount = ''; s.discReason = '';
+      renderBillingControl();
+    } else if (attr('data-bc-disc-save')) {
+      const key = attr('data-bc-disc-save');
+      const cut = key.lastIndexOf('|');
+      const chk = bcDiscountCheck(s.discAmount, s.discReason);
+      if (cut < 0 || chk.error) { bcInlineError(t, '.bc-disc-form', '.bc-disc-error', 'input', chk.error || BC_ERRORS.bad_month); return; }
+      busyButton(t, 'save', () => saveBillingDiscount(key.slice(0, cut), key.slice(cut + 1), chk.amount, chk.reason));
     } else if (attr('data-bc-flag')) {
       s.flagOpen = attr('data-bc-flag');
       s.flagDraft = '';

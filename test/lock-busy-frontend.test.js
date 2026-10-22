@@ -112,6 +112,7 @@ function loadApp(script) {
       removeLead: (l) => removeLead(l),
       closeLead: (l) => closeLead(l),
       saveBillingOverride: (p, a) => saveBillingOverride(p, a),
+      saveBillingDiscount: (k, m, a, r) => saveBillingDiscount(k, m, a, r),
       clearBillingOverride: (p) => clearBillingOverride(p),
       billingOverrideId: (p, m) => billingOverrideId(p, m),
       autosaveMeetingWithDefaults: () => autosaveMeetingWithDefaults(),
@@ -341,6 +342,15 @@ const PATHS = [
     okResponse: { ok: true, changed: [{ id: 'rcpt-1', confirmStatus: 'confirmed', confirmedBy: 'אורטל' }], unchanged: 0 },
     run: (app) => app.confirmReceipts(['rcpt-1'], 'confirmed'),
     landed: (app) => { assert.strictEqual(app.state.bc.data.receipts[0].confirmStatus, 'confirmed'); },
+  },
+  {
+    // «הנחה» on «בעיות גבייה» (CHANGELOG-ortal-billing-ui.md).
+    name: 'setBillingDiscount (Ortal\'s «הנחה»)',
+    action: 'setBillingDiscount',
+    setup: (app) => { app.state.canAccount = true; app.state.billingOverrides = []; },
+    okResponse: { ok: true, changed: true, override: { id: 'ovr::pt-1::2026-09', patientId: 'pt-1', month: '2026-09', amount: '', discountAmount: 500, discountReason: 'הנחה', discountBy: 'אורטל', discountAt: 't' } },
+    run: (app) => app.saveBillingDiscount('pt-1', '2026-09', 500, 'הנחה'),
+    landed: (app) => { assert.strictEqual(app.state.billingOverrides[0].discountAmount, 500); },
   },
   {
     // ✏️ a receipt's non-money fields (CHANGELOG-receipt-duplicates-and-edit.md).
