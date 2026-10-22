@@ -294,7 +294,11 @@
 // v82 → v83: direct add → a regular ADMITTED «פנייה ישירה» lead + source chip
 // (app.js, style.css, /leads-funnel.js) (CHANGELOG-direct-add-auto-lead.md).
 // Live v82 verified 2026-10-21 (v17 never reused).
-var CACHE_VERSION = 'v83';
+// v83 → v84: «בעיות גבייה» for Ortal — confirm / void a never-paid claim /
+// discount, the «הנחה» chip, Sandra's voids + discounts list (app.js,
+// index.html, style.css) (CHANGELOG-ortal-billing-ui.md). Live v83 verified
+// 2026-10-22 (v17 never reused).
+var CACHE_VERSION = 'v84';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

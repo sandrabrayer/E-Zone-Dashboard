@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Ortal billing — «בעיות גבייה» view + «הנחה» chip — October 22, 2026 (PR open, stacked on PR 1)
+
+«בקרת גבייה» gets «בעיות גבייה» (Ortal / Sandra only): per patient, unconfirmed receipts with
+«שולם - אשר» / «לא שולם - בטל תביעה» (reason required) and owed cycles with «הנחה» (amount +
+reason). Discounted cycles show the «הנחה» chip and the amount after it; a full discount is never
+debt. Sandra's «חריגים פתוחים» lists every void and every discount with who / why. Code.gs: the
+queue answer only (read). SW v83 → **v84**. See `CHANGELOG-ortal-billing-ui.md`.
+
 ## Ortal billing — accountant role + discount schema (foundation) — October 22, 2026 (PR open)
 
 New `accountant` role (Ortal; extends `USER_PIN_HASHES`, no `ORTAL_PIN`): void ONE unconfirmed
