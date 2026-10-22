@@ -43,3 +43,9 @@ Sibling E-Zone repos' deployed branches (for cross-repo work): outpatient = `cla
 6. **Never:** change Railway settings or variables, read Railway logs, subscribe to PRs, or schedule check-ins. If a Railway change is needed, give Sandra exact click-steps and values.
 
 7. **Final report to Sandra:** PR link, merge SHA, tests count, Apps Script deploy run (if any), `/api/version` result, timings, and ONLY the manual steps left for her (with links). No step-by-step narration.
+
+8. **Repo footer.** End EVERY reply to Sandra with one footer line naming the repo and branch you are working in, so she always sees where the work is happening:
+
+   `📁 Repo: sandrabrayer/E-Zone-Dashboard · Branch: <current branch>`
+
+   Use the real current branch (`git branch --show-current`); add `(not pushed)` when it does not exist on GitHub yet. In a multi-repo session, list each repo touched in that reply.
