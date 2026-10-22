@@ -132,8 +132,8 @@ test('lists: Code.gs and lib/ hold the same billing-control lists; nothing new i
     'expectedDischarges',
     // Appended: «ועדות קרובות», read-only (CHANGELOG-dashboard-committees.md).
     'upcomingCommittees',
-    // Appended: «הנחה» — also role-gated (CHANGELOG-ortal-billing-discounts.md).
-    'setBillingDiscount']);
+    // «הנחה» (setBillingDiscount) is NOT here: it is Vered's and Sandra's (CHANGELOG-discount-by-vered.md).
+  ]);
   assert.deepEqual(arr(g.run('CONTROLLER_BILLING_READ_ACTIONS')), [...scope.CONTROLLER_BILLING_READ_ACTIONS]);
   assert.deepEqual(arr(g.run('CONTROLLER_GETDATA_KEYS')), [...scope.CONTROLLER_GETDATA_KEYS]);
   const known = arr(g.run('PROXY_KNOWN_ACTIONS'));
@@ -849,7 +849,7 @@ test('server: Ortal gets 403 on EVERY Express /api/ route outside CONTROLLER_ROU
       // The allowed ones.
       const me = await request(port, 'GET', '/api/me', { cookie: personal('ortal') });
       assert.deepEqual(me.json, { ok: true, user: 'אורטל', auth: 'personal', approver: false, deleter: false, finance: false,
-        capabilities: ['billingControl'], billingControl: true, view: 'controller', canConfirm: true, canAccount: true, billingRead: true });
+        capabilities: ['billingControl'], billingControl: true, view: 'controller', canConfirm: true, canAccount: true, canDiscount: false, billingRead: true });
       const x = await request(port, 'GET', '/api/export/billing-control.xlsx', { cookie: personal('ortal') });
       assert.equal(x.status, 200);
       assert.equal(x.headers['content-type'], report.XLSX_MIME);

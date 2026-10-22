@@ -1271,8 +1271,9 @@ const FINANCE_ACTIONS = [
    * לתשלום» — also on CONTROLLER_ACTIONS (Ortal). Sandra's
    * approveRefundException is gated by APPROVER_ACTIONS instead. */
   'settleRefund',
-  /* Appended (CHANGELOG-ortal-billing-discounts.md): a cycle discount — also
-   * on CONTROLLER_ACTIONS, and role-gated by ACCOUNTANT_ACTIONS. */
+  /* Appended (CHANGELOG-ortal-billing-discounts.md): a cycle discount — the
+   * `finance` capability only (Vered, Sandra; DISCOUNT_ACTIONS). NOT on
+   * CONTROLLER_ACTIONS (CHANGELOG-discount-by-vered.md). */
   'setBillingDiscount',
 ];
 const FINANCE_USER_IDS = ['vered', 'sandra'];
@@ -1315,10 +1316,9 @@ const CONTROLLER_ACTIONS = ['billingControlQueue', 'confirmPayment', 'debtAging'
   'expectedDischarges',
   /* Appended (CHANGELOG-dashboard-committees.md): «ועדות קרובות», read-only,
    * every logged-in user, Ortal included. */
-  'upcomingCommittees',
-  /* Appended (CHANGELOG-ortal-billing-discounts.md): «הנחה» — also needs the
-   * accountant ROLE (ACCOUNTANT_ACTIONS). */
-  'setBillingDiscount'];
+  'upcomingCommittees'];
+/* «הנחה» (setBillingDiscount) is deliberately NOT on CONTROLLER_ACTIONS any
+ * more (CHANGELOG-discount-by-vered.md): discounts are Vered's / Sandra's. */
 const CONTROLLER_GETDATA_KEYS = ['ok', 'patients', 'billingOverrides'];
 const CONTROLLER_USER_IDS = ['ortal'];
 
@@ -1434,14 +1434,21 @@ const FINANCE_FORBIDDEN_MESSAGE = 'אין הרשאה לצפות בנתוני ג�
 const APPROVER_ACTIONS = [
   'unvoidPayment', 'approveRefundException', 'writeOffOpeningBalance', 'acceptOpeningBalance',
 ];
-/* Ortal's billing fixes (CHANGELOG-ortal-billing-discounts.md): each needs
- * the verified `accountant` role OR Sandra's `approver`; handle_ refuses
- * anyone else BEFORE anything is read or written. Mirrors lib/role-scope.js
+/* Ortal's billing fix (CHANGELOG-ortal-billing-discounts.md): needs the
+ * verified `accountant` role OR Sandra's `approver`; handle_ refuses anyone
+ * else BEFORE anything is read or written. Mirrors lib/role-scope.js
  * ACCOUNTANT_ACTIONS (a guard test pins the two lists equal).
- *   voidUnpaidClaim    — confirmPayment status 'not_received' («לא שולם —
- *                        בטל תביעה»): soft-voids ONE unconfirmed receipt
- *   setBillingDiscount — a discount on one cycle (setBillingDiscount_) */
-const ACCOUNTANT_ACTIONS = ['voidUnpaidClaim', 'setBillingDiscount'];
+ *   voidUnpaidClaim    — confirmPayment status 'not_received' («הסכום שדווח
+ *                        שגוי - בטל»): soft-voids ONE unconfirmed receipt
+ * Discounts left this list (CHANGELOG-discount-by-vered.md). */
+const ACCOUNTANT_ACTIONS = ['voidUnpaidClaim'];
+/* «הנחה» (CHANGELOG-discount-by-vered.md): a discount on one cycle
+ * (setBillingDiscount_) is Vered's and Sandra's decision — the `finance`
+ * capability, re-derived here by stable id (FINANCE_USER_IDS) and intersected
+ * with the server's proxyCaps, so no USER_PIN_HASHES record can grant it.
+ * Ortal (controller view) is refused. Mirrors lib/role-scope.js
+ * DISCOUNT_ACTIONS (a guard test pins the two lists equal). */
+const DISCOUNT_ACTIONS = ['setBillingDiscount'];
 /* The ONLY actions served without PROXY_SECRET, in log AND enforce mode.
  * From the consumers' deployed code (2026-10-01, see
  * CHANGELOG-open-actions-gate.md):
@@ -1897,7 +1904,7 @@ function handle_(params) {
       // accountant (Ortal) or approver (Sandra): the «בעיות גבייה» work list
       // (CHANGELOG-ortal-billing-ui.md). From the verified session only.
       return jsonOut_(billingControlQueue_({ approver: hasRole_(params, 'approver'),
-        accountant: hasRole_(params, 'accountant') || hasRole_(params, 'approver') }));
+        accountant: hasRole_(params, 'accountant') || hasRole_(params, 'approver') || hasCapability_(params, 'finance') }));
     }
     if (action === 'confirmPayment') {
       const privileged = hasRole_(params, 'controller') || hasRole_(params, 'approver');
@@ -1911,9 +1918,10 @@ function handle_(params) {
     if (action === 'upsertBillingOverride') {
       return jsonOut_(upsertBillingOverride_(parseJsonParam_(params.override), requestUser_(params)));
     }
-    // «הנחה» (CHANGELOG-ortal-billing-discounts.md): role-gated above
-    // (ACCOUNTANT_ACTIONS → accountant or approver). user / actor from the
-    // verified session only.
+    // «הנחה» (CHANGELOG-ortal-billing-discounts.md): gated above
+    // (DISCOUNT_ACTIONS → the `finance` capability: Vered, Sandra; never
+    // Ortal — CHANGELOG-discount-by-vered.md). user / actor from the verified
+    // session only.
     if (action === 'setBillingDiscount') {
       return jsonOut_(setBillingDiscount_(parseJsonParam_(params.discount), requestUser_(params), { actor: actorLabel_(params) }));
     }
@@ -2211,7 +2219,7 @@ function actorLabel_(params) {
 function roleOperationFor_(action, params) {
   const act = String(action == null ? '' : action);
   if (DELETE_ACTIONS.indexOf(act) >= 0 || APPROVER_ACTIONS.indexOf(act) >= 0) return act;
-  if (ACCOUNTANT_ACTIONS.indexOf(act) >= 0) return act;
+  if (ACCOUNTANT_ACTIONS.indexOf(act) >= 0 || DISCOUNT_ACTIONS.indexOf(act) >= 0) return act;
   if (act === 'confirmPayment') {
     const c = parseJsonParam_(params && params.confirm);
     if (c && typeof c === 'object' && String(c.status == null ? '' : c.status).trim() === NOT_RECEIVED_DECISION) return 'voidUnpaidClaim';
@@ -2240,11 +2248,13 @@ function creditCreateNeedsApprover_(credit) {
 }
 
 /* The role an operation needs: 'deleter' | 'approver' |
- * 'accountant|approver' (either one) | ''. */
+ * 'accountant|approver' (either one) | 'finance' (the capability — Vered,
+ * Sandra) | ''. */
 function requiredRoleFor_(operation) {
   if (DELETE_ACTIONS.indexOf(operation) >= 0) return 'deleter';
   if (APPROVER_ACTIONS.indexOf(operation) >= 0) return 'approver';
   if (ACCOUNTANT_ACTIONS.indexOf(operation) >= 0) return 'accountant|approver';
+  if (DISCOUNT_ACTIONS.indexOf(operation) >= 0) return 'finance';
   return '';
 }
 
@@ -2253,7 +2263,9 @@ function requiredRoleFor_(operation) {
  * it can never delete, void, cancel or approve. */
 function roleAllowed_(params, operation) {
   const need = requiredRoleFor_(operation);
-  return need === '' ? true : need.split('|').some(function (r) { return hasRole_(params, r); });
+  return need === '' ? true : need.split('|').some(function (r) {
+    return r === 'finance' ? hasCapability_(params, 'finance') : hasRole_(params, r);
+  });
 }
 
 /* Log a role refusal: the acting user's stable id (or 'none') and the
@@ -14001,8 +14013,9 @@ function billingDiscountHeaderClash_(header) {
 
 /**
  * action=setBillingDiscount — «הנחה» on ONE cycle (CHANGELOG-ortal-billing-
- * discounts.md). ACCOUNTANT_ACTIONS: handle_ has already refused anyone
- * without the accountant role (Ortal) or Sandra's approver. Writes the four
+ * discounts.md; owner changed by CHANGELOG-discount-by-vered.md).
+ * DISCOUNT_ACTIONS: handle_ has already refused anyone without the `finance`
+ * capability (Vered, Sandra) — never Ortal. Writes the four
  * discount cells of the cycle's BillingOverrides row (ovr::<patientId>::
  * <month>) — creating the row with a BLANK amount when none exists, so the
  * base stays the agreed price. Never touches amount, never deletes a row.
