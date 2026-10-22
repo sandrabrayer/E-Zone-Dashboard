@@ -129,7 +129,7 @@ function page(answerPost) {
 }
 const FORM = { name: 'דנה כהן', phone: '0521112222', houseId: 'ramot', date: '2026-10-19', pay: '28000', status: 'active', notes: '' };
 
-test('B: unique match → pre-filled form → ONE new active stay linked by personId; discharge flagged restored; no new lead', async () => {
+test('B: unique match → pre-filled form → ONE new active stay linked by personId; discharge flagged restored; its OWN «פנייה ישירה» lead', async () => {
   const pg = page();
   const ans = pg.run("returningSearch(state, { phone: '052-111-2222' })");
   assert.equal(ans.status, 'unique');
@@ -145,9 +145,15 @@ test('B: unique match → pre-filled form → ONE new active stay linked by pers
   const save = pg.posts.find((b) => b.action === 'saveAll');
   const sent = save.patients.ramot.find((p) => p.date === '2026-10-19');
   assert.equal(sent.personId, 'id-p1');
-  assert.equal(sent.fromLead, '', 'the old stay lead is not re-used');
+  // CHANGELOG-direct-add-auto-lead.md: a returning stay is a new approach → its own lead.
+  assert.equal(sent.fromLead, 'dl-' + sent.id, 'the old stay lead is not re-used; the stay has its own lead');
   assert.equal(sent.status, 'active');
-  assert.equal(save.leads.length, 1, 'no new phone-record lead for a known phone');
+  assert.equal(save.leads.length, 2, 'the old lead untouched + the new stay\'s lead');
+  const own = save.leads.find((l) => l.id === 'dl-' + sent.id);
+  assert.equal(own.source, 'direct_approach');
+  assert.equal(own.stage, 'admitted');
+  assert.equal(own.note, 'פנייה ישירה — מטופל חוזר (נוסף בתפוסה)');
+  assert.deepEqual(plain(save.prove.leads), [own.id]);
   const restore = pg.posts.find((b) => b.action === 'restorePatientToActive');
   assert.equal(restore.patient.id, 'id-d1');
   assert.equal(restore.patient.restored, 'TRUE');
@@ -196,15 +202,16 @@ test('B: the card shows «היסטוריית שהיות» with prior stays; paym
   assert.match(pg.run(`patientListRowHtml(${rowNew}, false, false)`), /plist-stays/);
 });
 
-test('B: «ללא ליד» says «נוסף ישירות» / «מטופל חוזר» instead of just «ללא ליד»', () => {
+test('B: a direct / returning patient shows its source («פנייה ישירה» / «חוזר») instead of «ללא ליד»', () => {
   const pg = page();
   const label = (p) => pg.run(`patientNoLeadLabel(normalizePatient(${JSON.stringify(p)}))`);
-  assert.equal(label({ name: 'א', source: 'direct_admin' }), 'ללא ליד · נוסף ישירות');
-  assert.equal(label({ name: 'א', source: 'direct_admin', personId: 'id-p1' }), 'ללא ליד · מטופל חוזר');
+  // CHANGELOG-direct-add-auto-lead.md replaced «ללא ליד · נוסף ישירות / מטופל חוזר».
+  assert.equal(label({ name: 'א', source: 'direct_admin' }), 'פנייה ישירה');
+  assert.equal(label({ name: 'א', source: 'direct_admin', personId: 'id-p1' }), 'חוזר');
   assert.equal(label({ name: 'א', source: 'lead' }), 'ללא ליד');
   pg.run("state.patients = [normalizePatient({ id: 'id-z', houseId: 'asher', name: 'זיו זך', date: '2026-10-01', status: 'active', source: 'direct_admin' })]");
   const row = pg.run("patientListRows(state, {}, '2026-10-19')[0]");
-  assert.equal(plain(row.problems).find((x) => x.code === 'no_lead').label, 'ללא ליד · נוסף ישירות');
+  assert.equal(plain(row.problems).find((x) => x.code === 'no_lead').label, 'פנייה ישירה');
 });
 
 test('B: personId round-trips through normalizePatient and serializePatients', () => {

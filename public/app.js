@@ -3194,6 +3194,9 @@ function leadRequiredErrors(values, prev) {
   const out = {};
   const nameNow = String(v.name == null ? '' : v.name).replace(/\s+/g, ' ').trim();
   const phoneNow = String(v.phone == null ? '' : v.phone).trim();
+  // A patient's own lead (a «פנייה ישירה» / phone-record lead) is exempt, as on
+  // the server (CHANGELOG-direct-add-auto-lead.md): its phone may be blank.
+  if (prev && Object.prototype.hasOwnProperty.call(LEAD_SOURCE_LABELS, String(prev.source || '').trim())) return out;
   const nameChanged = !prev || nameNow !== String(prev.name == null ? '' : prev.name).replace(/\s+/g, ' ').trim();
   const phoneChanged = !prev || phoneNow !== String(prev.phone == null ? '' : prev.phone).trim();
   if (nameChanged && !leadFullNameOk(nameNow)) out.name = LEAD_NAME_REQUIRED_HE;
@@ -5691,7 +5694,7 @@ function buildLeadCard(lead) {
     <div class="lc-name">${escapeHtml(lead.name)}</div>
     <div class="lc-meta">
       ${escapeHtml(lead.phone)} ${lead.house ? '· ' + escapeHtml(lead.house) : ''}
-      ${lead.source ? '· מקור: ' + escapeHtml(lead.source) : ''}
+      ${lead.source ? '· מקור: ' + escapeHtml(leadSourceLabel(lead.source)) : ''}
     </div>
     ${waitBadge ? `<div class="lc-wait-badge">${waitBadge}</div>` : ''}
     ${unadmittedChipHTML(unadmittedDaysForLead(lead))}
@@ -8579,10 +8582,10 @@ function openDirectAddPatientModal(opts) {
         : pre && f.name === 'pay' && pre.pay ? Object.assign({}, f, { value: String(pre.pay) }) : f));
   // R3: ONE patient id per form (see openEntryModal).
   const patientId = cryptoId();
-  // The patient's phone starts HERE and follows them downstream (therapists app,
-  // alumni list, OUT matching): a patient has no phone column, so it is kept on a
-  // linked lead row (fromLead → Leads.phone) — the model every feed already reads.
-  const intakeLeadId = cryptoId();
+  // A direct add is a real admission with a real lead (CHANGELOG-direct-add-auto-lead.md):
+  // 'dl-<patient id>' — deterministic, so a retry of this form re-sends the SAME lead.
+  // The patient's phone (blank allowed) lives on it (fromLead → Leads.phone).
+  const directLeadId = DIRECT_LEAD_ID_PREFIX + patientId;
   showModal({
     title: intake ? 'קליטת מטופל חדש' : (pre ? 'מטופל חוזר — ' + pre.name : 'הוספת מטופל ישירות'),
     // The funder picker (finance sessions only, required there — PR #178)
@@ -8598,13 +8601,12 @@ function openDirectAddPatientModal(opts) {
       const funderErr = admissionFunderError(state.finance, v.funder);
       if (funderErr) { showError(funderErr); return false; }
       const localPhone = intakeLocalPhone(v.phone);
-      // A returning person whose known phone is typed again needs no new phone
-      // record (the rosters already find it); a NEW phone still gets one.
-      const knownPhone = !!(returning && localPhone && returning.person && (returning.person.phones || []).indexOf(localPhone) >= 0);
+      // A board lead of the SAME person (name + phone) is their lead: linked, no
+      // second one. Otherwise — a returning stay always — the stay gets its own
+      // «פנייה ישירה» lead, phone or not; the previous stay's lead is untouched.
       const sameLead = localPhone && !returning ? findSamePersonLead(state.leads, v.name, localPhone) : null;
-      const newLead = localPhone && !sameLead && !knownPhone
-        ? normalizeLead(buildIntakeLead(intakeLeadId, v.name, localPhone, houseById(v.houseId), todayISO()))
-        : null;
+      const newLead = sameLead ? null
+        : normalizeLead(buildDirectApproachLead(directLeadId, v.name, localPhone, houseById(v.houseId), v.date, todayISO(), !!returning));
       const patient = normalizePatient({
         id: patientId,
         houseId: v.houseId,
@@ -8613,7 +8615,7 @@ function openDirectAddPatientModal(opts) {
         pay: Number(v.pay) || 0,
         adv: 0,
         status: intake ? 'active' : (v.status || 'active'),
-        fromLead: sameLead ? sameLead.id : (newLead ? newLead.id : (pre && pre.fromLead) || ''),
+        fromLead: sameLead ? sameLead.id : newLead.id,
         source: 'direct_admin',
         notes: (v.notes || '').trim(),
         personId: pre ? pre.personId : '',
@@ -8701,8 +8703,34 @@ function intakeLocalPhone(raw) {
   return '0' + n.slice(3);
 }
 
+/* «פנייה ישירה» (CHANGELOG-direct-add-auto-lead.md): the stable source key of the
+ * lead a direct add / intake / returning stay gets, and its Hebrew label. */
+const LEAD_DIRECT_APPROACH_SOURCE = 'direct_approach';
+const DIRECT_LEAD_ID_PREFIX = 'dl-';
+const LEAD_SOURCE_LABELS = Object.freeze({ direct_approach: 'פנייה ישירה', direct_admin: 'פנייה ישירה' });
+
+/* A lead's source as shown on screen: the Hebrew label of a stable key, else
+ * the stored text. Pure. */
+function leadSourceLabel(source) {
+  const s = String(source == null ? '' : source).trim();
+  return Object.prototype.hasOwnProperty.call(LEAD_SOURCE_LABELS, s) ? LEAD_SOURCE_LABELS[s] : s;
+}
+
+/* The regular ADMITTED lead of a patient added in «תפוסה» — the same shape
+ * Code.gs's buildDirectApproachLead_ writes. `localPhone` may be '' (a missing
+ * phone still gets a lead). Never on the board, never «ממתינים לקליטה» (stage
+ * 'admitted'). Pure + tested. */
+function buildDirectApproachLead(id, name, localPhone, house, entryDate, today, returning) {
+  return {
+    id: id, name: String(name || '').trim(), phone: localPhone || '',
+    house: house ? house.name : '', source: LEAD_DIRECT_APPROACH_SOURCE,
+    note: returning ? 'פנייה ישירה — מטופל חוזר (נוסף בתפוסה)' : 'פנייה ישירה (נוסף בתפוסה)',
+    stage: 'admitted', entryDate: entryDate || '', created: today,
+  };
+}
+
 /* The lead row that carries an intake patient's phone (stage 'admitted': it is a record of
- * the person, never a sales lead on the board). Pure + tested. */
+ * the person, never a sales lead on the board). Used by the phone-edit plan only. Pure + tested. */
 function buildIntakeLead(id, name, localPhone, house, today) {
   return {
     id: id, name: String(name || '').trim(), phone: localPhone,
@@ -9122,13 +9150,24 @@ function patientProblemChipsHtml(problems) {
     `<span class="plist-chip" data-problem="${escapeHtml(p.code)}">${escapeHtml(p.label)}</span>`).join('');
 }
 
-/* What «ללא ליד» says for a patient with no lead (CHANGELOG-returning-patient.md):
- * «ללא ליד · מטופל חוזר» for a returning stay (personId), «ללא ליד · נוסף
- * ישירות» for a direct add, plain «ללא ליד» otherwise. Pure. */
+/* The source chip of a patient who came in directly (CHANGELOG-direct-add-auto-lead.md):
+ * «חוזר» for a returning stay (personId), «פנייה ישירה» for a direct add or a
+ * «פנייה ישירה» lead; '' for a patient who came through a regular lead. It
+ * replaced «ללא ליד · …». Pure. */
+function patientSourceChipLabel(p, lead) {
+  const direct = (p && String(p.source || '') === 'direct_admin')
+    || (lead && Object.prototype.hasOwnProperty.call(LEAD_SOURCE_LABELS, String(lead.source || '').trim()));
+  if (!direct) return '';
+  return p && String(p.personId || '').trim() ? 'חוזר' : 'פנייה ישירה';
+}
+function patientSourceChipHtml(p, lead) {
+  const label = patientSourceChipLabel(p, lead);
+  return label ? `<span class="plist-source-chip" data-source="${escapeHtml(label === 'חוזר' ? 'returning' : 'direct_approach')}">${escapeHtml(label)}</span>` : '';
+}
+
+/* What a patient with no lead shows: their source chip's label, else «ללא ליד». Pure. */
 function patientNoLeadLabel(p) {
-  if (p && String(p.personId || '').trim()) return 'ללא ליד · מטופל חוזר';
-  if (p && String(p.source || '') === 'direct_admin') return 'ללא ליד · נוסף ישירות';
-  return 'ללא ליד';
+  return patientSourceChipLabel(p, null) || 'ללא ליד';
 }
 
 /* The «פרטי הליד» section (a closed <details>). Pure. */
@@ -9141,7 +9180,7 @@ function patientLeadDetailsHtml(row) {
       + `<span class="p-val">${value ? escapeHtml(value) : '—'}</span></div>`;
     body = `<div class="plist-lead-grid">
         ${item('טלפון', L.phone)}
-        ${item('מקור', L.source)}
+        ${item('מקור', leadSourceLabel(L.source))}
         ${item('תאריך ביקור', L.visitDate ? formatDate(L.visitDate) : '')}
         ${item('מקדמה', L.advance ? '₪ ' + L.advance.toLocaleString('he-IL') : '')}
         ${item('משוייך ל', L.assignedTo)}
@@ -9157,7 +9196,9 @@ function patientLeadDetailsHtml(row) {
   } else {
     body = `<div class="plist-lead-none">${escapeHtml(patientNoLeadLabel(row.patient))}</div>`;
   }
-  return `<details class="plist-lead"><summary>פרטי הליד${L ? '' : escapeHtml(' · ' + patientNoLeadLabel(row.patient))}</summary>${body}</details>`;
+  const chip = patientSourceChipHtml(row.patient, L);
+  const tail = chip ? ' ' + chip : (L ? '' : escapeHtml(' · ' + patientNoLeadLabel(row.patient)));
+  return `<details class="plist-lead"><summary>פרטי הליד${tail}</summary>${body}</details>`;
 }
 
 /* One patient row's HTML. `finance` = the session may see money data; `edit`
@@ -9228,7 +9269,7 @@ function pendingAdmissionRowHtml(r, edit) {
       ${item('תאריך כניסה', L.entryDate ? formatDate(L.entryDate) : '')}
       ${item('ימים מהכניסה', r.days == null ? '' : String(r.days))}
       ${item('טלפון', L.phone)}
-      ${item('מקור', L.source)}
+      ${item('מקור', leadSourceLabel(L.source))}
       ${item('מקדמה', L.advance ? '₪ ' + Number(L.advance).toLocaleString('he-IL') : '')}
     </div>
     ${chips ? `<div class="plist-chips">${chips}</div>` : ''}

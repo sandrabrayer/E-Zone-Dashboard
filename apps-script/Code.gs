@@ -2954,8 +2954,15 @@ function saveAll_(leads, patients, user, prove) {
     // pretending the edit saved.
     let reportConflicts = [];
     const leadOut = {};
-    if (Array.isArray(leads) && leads.length > 0) {
-      reportConflicts = mergeLeads_(leads, leadOut);
+    // Direct add → a regular ADMITTED lead (CHANGELOG-direct-add-auto-lead.md):
+    // the NEW direct_admin patient rows of this payload, found BEFORE the
+    // lead merge. Their own 'dl-<patient id>' lead is taken out of the lead
+    // payload here (only its phone is read) — the server writes the canonical
+    // one below, after the lead guards passed and before any patient.
+    const direct = directPatientCandidates_(patients, leads);
+    const leadsIn = direct.leads;
+    if (Array.isArray(leadsIn) && leadsIn.length > 0) {
+      reportConflicts = mergeLeads_(leadsIn, leadOut);
     }
     // Date guard: refused BEFORE any patient write — nothing is saved.
     if (leadOut.badLeadDates && leadOut.badLeadDates.length > 0) {
@@ -2973,6 +2980,11 @@ function saveAll_(leads, patients, user, prove) {
         invalidLeads: leadOut.invalidLeads,
       };
     }
+
+    // Every new direct patient gets its lead NOW — still before any patient
+    // row is written. A failed lead write refuses the whole save.
+    const directRes = ensureDirectPatientLeads_(direct.candidates, user);
+    if (!directRes.ok) return directRes.refusal;
 
     // Patients — only touch houseIds that are present in the payload.
     // `written` echoes, per house, how many patient rows were actually written
@@ -3018,19 +3030,28 @@ function saveAll_(leads, patients, user, prove) {
       // house a patient is leaving and the house it is joining both know about
       // the move, whichever of the two passes runs first.
       const moves = houseIds.length > 0 ? collectHouseMoves_(patients) : {};
-      for (let i = 0; i < houseIds.length; i++) {
-        const hid = houseIds[i];
-        const arr = patients[hid];
-        const res = replaceHousePatients_(hid, Array.isArray(arr) ? arr : [], userDeleteKeys, dischargedIds, user, moves);
-        written[hid] = res.written;
-        if (res.preservedKeys.length > 0) preserved[hid] = res.preservedKeys;
-        if (res.suppressedKeys.length > 0) deletedSuppressed[hid] = res.suppressedKeys;
-        if (res.skippedPromotes.length > 0) promoteSkipped[hid] = res.skippedPromotes;
-        for (let c = 0; c < res.conflicts.length; c++) conflicts.push(res.conflicts[c]);
-        for (let m = 0; m < res.moved.length; m++) moved.push(res.moved[m]);
-        Object.keys(res.stamps).forEach(function (id) { stamps[id] = res.stamps[id]; });
+      try {
+        for (let i = 0; i < houseIds.length; i++) {
+          const hid = houseIds[i];
+          const arr = patients[hid];
+          const res = replaceHousePatients_(hid, Array.isArray(arr) ? arr : [], userDeleteKeys, dischargedIds, user, moves);
+          written[hid] = res.written;
+          if (res.preservedKeys.length > 0) preserved[hid] = res.preservedKeys;
+          if (res.suppressedKeys.length > 0) deletedSuppressed[hid] = res.suppressedKeys;
+          if (res.skippedPromotes.length > 0) promoteSkipped[hid] = res.skippedPromotes;
+          for (let c = 0; c < res.conflicts.length; c++) conflicts.push(res.conflicts[c]);
+          for (let m = 0; m < res.moved.length; m++) moved.push(res.moved[m]);
+          Object.keys(res.stamps).forEach(function (id) { stamps[id] = res.stamps[id]; });
+        }
+      } catch (err) {
+        // A patient write that throws takes the leads made for it back out.
+        undoDirectLeads_(directRes.done, 'patient_write_threw', user);
+        throw err;
       }
     }
+    // A lead whose patient did not land (delete tombstone, duplicate refusal)
+    // is removed again — never an orphan lead.
+    const directLanded = settleDirectLeads_(directRes.done, user);
 
     const out = {
       ok: true,
@@ -3046,6 +3067,10 @@ function saveAll_(leads, patients, user, prove) {
     if (leadOut.closedSuppressed && leadOut.closedSuppressed.length > 0) out.closedSuppressed = leadOut.closedSuppressed;
     if (moved.length > 0) out.moved = moved;
     if (Object.keys(stamps).length > 0) out.stamps = stamps;
+    // Additive, absent when empty: [{patientId, leadId}] of the direct
+    // patients that landed with their lead, and of the leads removed again.
+    if (directLanded.landed.length > 0) out.directLeads = directLanded.landed;
+    if (directLanded.dropped.length > 0) out.directLeadsDropped = directLanded.dropped;
     // R3 proof (CHANGELOG-write-path-hardening.md): which of the ids the
     // client asked about are on the sheet NOW, read under the same lock.
     if (want) out.proven = saveProven_(want);
@@ -3053,6 +3078,254 @@ function saveAll_(leads, patients, user, prove) {
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
+}
+
+/* ===== Direct add → a regular ADMITTED lead (CHANGELOG-direct-add-auto-lead.md) =====
+ * A patient added straight into «תפוסה» (by Vered, or because they approached
+ * a manager directly) — a returning patient too — is a real admission and gets
+ * a real lead: stage 'admitted', source 'direct_approach' («פנייה ישירה»).
+ * No patient is left «ללא ליד».
+ *
+ * saveAll_ runs it inside its lock, after the lead guards and BEFORE any
+ * patient row is written, for every NEW patient row (its id and its
+ * houseId::name::entryDate key are not on Patients) whose source is
+ * 'direct_admin'. An already-saved patient is never backfilled here
+ * (migrateDirectPatientLeadsNow does that). Per patient, by its fromLead:
+ *   existing — a free direct_approach lead (a retry: 'dl-<id>' already
+ *              landed) → linked as is, nothing written;
+ *   adopt    — a free 'direct_admin' phone-record lead (an old client's) →
+ *              upgraded IN PLACE to direct_approach, never duplicated;
+ *   linked   — a free REAL board lead → the link stays, no extra lead
+ *              (not for a returning stay: its fromLead is the old stay's);
+ *   create   — anything else (no link, closed / removed / unknown lead, a
+ *              lead another patient row or a discharge already holds, a
+ *              returning stay) → a NEW lead 'dl-<patient id>': deterministic,
+ *              so a retry finds it instead of adding a second one.
+ * "Free" = no other Patients row and no open discharge row links to it.
+ * A returning stay keeps personId on the patient row; Leads gets NO personId
+ * column (IRRELEVANT_LEAD_COLUMNS / REMOVED_LEAD_COLUMNS concat on
+ * LEAD_COLUMNS, so an append would move their metadata columns).
+ * Never silent: a failed lead write refuses the save (direct_lead_failed,
+ * AuditLog); a patient write that throws, or a patient that does not land,
+ * takes its lead back out (directLeadsDropped). */
+const LEAD_DIRECT_APPROACH_SOURCE = 'direct_approach';
+const DIRECT_LEAD_ID_PREFIX = 'dl-';
+const DIRECT_LEAD_NOTE = 'פנייה ישירה (נוסף בתפוסה)';
+const DIRECT_LEAD_NOTE_RETURNING = 'פנייה ישירה — מטופל חוזר (נוסף בתפוסה)';
+const DIRECT_LEAD_FAILED_HE = 'לא נשמר: יצירת הליד למטופל (פנייה ישירה) נכשלה. דבר לא נשמר — נסו שוב.';
+/* Patients-sheet house id → the Hebrew house name a lead carries (the
+ * dashboard's HOUSES list). */
+const PATIENT_HOUSE_NAMES_HE = {
+  arfoni: 'קיסריה עפרוני',
+  rehab:  'קיסריה ריהאב',
+  asher:  'רעננה אשר',
+  pardes: 'רעננה הפרדס',
+  ramot:  'רמות השבים',
+  sde:    'שדה אליעזר',
+};
+
+function directLeadId_(patientId) {
+  return DIRECT_LEAD_ID_PREFIX + String(patientId == null ? '' : patientId).trim();
+}
+
+/* The canonical direct-approach lead of one patient row. PURE — the ONE
+ * builder of saveAll_ and migrateDirectPatientLeadsNow. A phone that is
+ * neither a mobile nor a landline (leadHandoffPhone_) is stored blank: a
+ * patient without a phone still gets a lead. */
+function buildDirectApproachLead_(id, patient, phoneRaw, created) {
+  const p = patient || {};
+  const hid = String(p.houseId == null ? '' : p.houseId).trim();
+  return {
+    id: id,
+    name: leadCellText_(p.name, 100),
+    phone: leadHandoffPhone_(phoneRaw),
+    house: PATIENT_HOUSE_NAMES_HE[hid] || leadCellText_(hid, 40),
+    source: LEAD_DIRECT_APPROACH_SOURCE,
+    note: patientPersonId_(p.personId) ? DIRECT_LEAD_NOTE_RETURNING : DIRECT_LEAD_NOTE,
+    stage: 'admitted',
+    entryDate: asISODate_(p.date),
+    created: asISODate_(created),
+  };
+}
+
+/* The NEW direct_admin rows of a saveAll payload → { leads, candidates }.
+ * `leads` is the lead payload without each candidate's own 'dl-<id>' lead
+ * (the server writes the canonical one); a candidate keeps only that lead's
+ * phone. A new row without an id gets one here, so its lead id is known
+ * before the patient is written (replaceHousePatients_ adopts it). Reads the
+ * Patients sheet only when the payload has a direct_admin row at all. */
+function directPatientCandidates_(patients, leads) {
+  const none = { leads: leads, candidates: [] };
+  if (!patients || typeof patients !== 'object' || Array.isArray(patients)) return none;
+  const rows = [];
+  Object.keys(patients).forEach(function (hid) {
+    const arr = patients[hid];
+    if (!Array.isArray(arr)) return;
+    arr.forEach(function (p) {
+      if (p && typeof p === 'object' && String(p.source == null ? '' : p.source).trim() === LEAD_DIRECT_ADMIN_SOURCE) {
+        rows.push({ houseId: hid, p: p });
+      }
+    });
+  });
+  if (!rows.length) return none;
+
+  const sheetIds = {};
+  const sheetKeys = {};
+  readSheet_(getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS), PATIENT_COLUMNS).forEach(function (r) {
+    const id = String(r.id == null ? '' : r.id).trim();
+    if (id) sheetIds[id] = true;
+    sheetKeys[patientKey_(r.houseId, r.name, r.date)] = true;
+  });
+  const leadById = {};
+  (Array.isArray(leads) ? leads : []).forEach(function (l) {
+    const id = l && l.id != null ? String(l.id).trim() : '';
+    if (id && !leadById[id]) leadById[id] = l;
+  });
+
+  const seen = {};
+  const candidates = [];
+  rows.forEach(function (r) {
+    const p = r.p;
+    if (!String(p.name == null ? '' : p.name).trim()) return;
+    let pid = String(p.id == null ? '' : p.id).trim();
+    if (pid && (sheetIds[pid] || seen[pid])) return;               // saved already (or a duplicated object)
+    if (sheetKeys[patientKey_(r.houseId, p.name, p.date)]) return;  // a legacy key match = an existing row
+    if (!pid) { pid = 'id-' + Utilities.getUuid(); p.id = pid; }
+    seen[pid] = true;
+    const own = leadById[directLeadId_(pid)];
+    const linked = leadById[String(p.fromLead == null ? '' : p.fromLead).trim()];
+    const phone = own ? own.phone
+      : linked && String(linked.source || '') === LEAD_DIRECT_ADMIN_SOURCE ? linked.phone
+        : p.phone;
+    candidates.push({ houseId: r.houseId, patient: p, phone: phone });
+  });
+  if (!candidates.length) return none;
+  const strip = {};
+  candidates.forEach(function (c) { strip[directLeadId_(c.patient.id)] = true; });
+  return {
+    leads: Array.isArray(leads)
+      ? leads.filter(function (l) { return !(l && strip[String(l.id == null ? '' : l.id).trim()]); })
+      : leads,
+    candidates: candidates,
+  };
+}
+
+/* Gives every candidate its lead (see the contract above) and points its
+ * fromLead at it. → { ok: true, done: [{patientId, leadId, mode, owned,
+ * before}] } or { ok: false, refusal } after undoing what this call wrote. */
+function ensureDirectPatientLeads_(candidates, user) {
+  const done = [];
+  if (!candidates || !candidates.length) return { ok: true, done: done };
+  const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+  const onLeads = {};
+  readSheet_(sh, LEAD_COLUMNS).forEach(function (l) {
+    const id = String(l.id == null ? '' : l.id).trim();
+    if (id && !onLeads[id]) onLeads[id] = l;
+  });
+  const parked = movedOffLeadsIds_();
+  const discharged = dischargedFromLeadIds_();
+  const claimed = {};   // lead id → the patient id that links to it
+  readSheet_(getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS), PATIENT_COLUMNS).forEach(function (r) {
+    const fl = String(r.fromLead == null ? '' : r.fromLead).trim();
+    if (fl && !claimed[fl]) claimed[fl] = String(r.id == null ? '' : r.id).trim() || '?';
+  });
+  const today = todayISODate_();
+
+  for (let i = 0; i < candidates.length; i++) {
+    const p = candidates[i].patient;
+    const pid = String(p.id).trim();
+    const own = directLeadId_(pid);
+    const returning = !!patientPersonId_(p.personId);
+    const free = function (id) { return !!id && !discharged[id] && (!claimed[id] || claimed[id] === pid); };
+    const fl = String(p.fromLead == null ? '' : p.fromLead).trim();
+    const target = fl && free(fl) ? onLeads[fl] : null;
+    const src = target ? String(target.source == null ? '' : target.source).trim() : '';
+    let mode, id, lead = null, before = null;
+    if (target && src === LEAD_DIRECT_APPROACH_SOURCE) {
+      mode = 'existing'; id = fl;
+    } else if (target && src === LEAD_DIRECT_ADMIN_SOURCE) {
+      mode = 'adopt'; id = fl; before = target;
+      lead = Object.assign({}, target, {
+        source: LEAD_DIRECT_APPROACH_SOURCE,
+        note: returning ? DIRECT_LEAD_NOTE_RETURNING : DIRECT_LEAD_NOTE,
+        stage: 'admitted',
+        entryDate: asISODate_(target.entryDate) || asISODate_(p.date),
+        house: String(target.house || '').trim() || buildDirectApproachLead_('', p, '', today).house,
+        phone: leadHandoffPhone_(target.phone) || String(target.phone == null ? '' : target.phone),
+      });
+    } else if (target && !returning) {
+      mode = 'linked'; id = fl;
+    } else if (onLeads[own] && free(own) && String(onLeads[own].source || '') === LEAD_DIRECT_APPROACH_SOURCE) {
+      mode = 'existing'; id = own;                                   // a retry of a stay re-linked away
+    } else {
+      mode = 'create';
+      id = parked[own] || onLeads[own] ? own + '-r' : own;          // never two sheets for one id
+      lead = buildDirectApproachLead_(id, p, candidates[i].phone, today);
+    }
+    if (mode === 'linked') { claimed[id] = pid; continue; }
+
+    if (lead) {
+      let landed = false;
+      try {
+        upsertRowById_(sh, LEAD_COLUMNS, lead);
+        landed = countRowsById_(sh, LEAD_COLUMNS, id) >= 1;
+      } catch (e) {
+        try { console.warn('[direct-lead] write failed id=' + id + ': ' + ((e && e.message) || e)); } catch (_) { /* no-op */ }
+      }
+      if (!landed) {
+        undoDirectLeads_(done, 'lead_write_failed', user);
+        logAudit_('direct_lead_failed', 'saveAll_', pid, String(p.name || ''), { leadId: id, mode: mode }, user);
+        return { ok: false, refusal: { ok: false, error: 'direct_lead_failed', message: DIRECT_LEAD_FAILED_HE, patientId: pid } };
+      }
+      logAudit_(mode === 'adopt' ? 'direct_lead_adopted' : 'direct_lead_created', 'saveAll_', pid, String(p.name || ''),
+        { leadId: id, returning: returning }, user);
+    }
+    p.fromLead = id;
+    claimed[id] = pid;
+    done.push({ patientId: pid, leadId: id, mode: mode, owned: id.indexOf(own) === 0, before: before });
+  }
+  return { ok: true, done: done };
+}
+
+/* Takes back what ensureDirectPatientLeads_ wrote for `entries`: a created
+ * lead (or a left-over 'dl-<id>' of this patient) is deleted, an adopted one
+ * gets its old row back. Best effort, each step logged. → [{patientId, leadId}]. */
+function undoDirectLeads_(entries, reason, user) {
+  const out = [];
+  if (!entries || !entries.length) return out;
+  const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e.mode !== 'create' && e.mode !== 'adopt' && !(e.mode === 'existing' && e.owned)) continue;
+    try {
+      if (e.mode === 'adopt') upsertRowById_(sh, LEAD_COLUMNS, e.before);
+      else deleteRowsById_(sh, LEAD_COLUMNS, e.leadId);
+    } catch (err) {
+      try { console.warn('[direct-lead] undo failed id=' + e.leadId + ': ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
+    }
+    logAudit_('direct_lead_undone', 'saveAll_', e.patientId, '', { leadId: e.leadId, mode: e.mode, reason: reason }, user);
+    out.push({ patientId: e.patientId, leadId: e.leadId });
+  }
+  return out;
+}
+
+/* After the patient writes: which candidates landed (their id is on
+ * Patients) → landed; the leads of the others are taken back → dropped. */
+function settleDirectLeads_(entries, user) {
+  const res = { landed: [], dropped: [] };
+  if (!entries || !entries.length) return res;
+  const onSheet = {};
+  readSheet_(getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS), PATIENT_COLUMNS).forEach(function (r) {
+    const id = String(r.id == null ? '' : r.id).trim();
+    if (id) onSheet[id] = true;
+  });
+  const lost = [];
+  entries.forEach(function (e) {
+    if (onSheet[e.patientId]) res.landed.push({ patientId: e.patientId, leadId: e.leadId });
+    else lost.push(e);
+  });
+  res.dropped = undoDirectLeads_(lost, 'patient_not_saved', user);
+  return res;
 }
 
 /* ===== saveAll proof (CHANGELOG-write-path-hardening.md, R3) =====
@@ -3165,7 +3438,9 @@ function leadDateViolations_(leads, existingById, todayIso) {
  *     old incomplete lead still saves its other fields (stage, notes, dates);
  *   - `source: 'direct_admin'` rows are exempt: they are not sales leads but
  *     the phone record of a directly-admitted patient, built by the intake
- *     form, which has its own required-phone check.
+ *     form, which has its own required-phone check. So are
+ *     `source: 'direct_approach'` rows (CHANGELOG-direct-add-auto-lead.md):
+ *     built from the patient row, and a patient without a phone still gets one.
  * Same shape as leadDateViolations_: a violation refuses the WHOLE saveAll
  * before anything is written. */
 const LEAD_DIRECT_ADMIN_SOURCE = 'direct_admin';
@@ -3184,7 +3459,8 @@ function leadRequiredViolations_(leads, existingById) {
   const nameIdx = LEAD_COLUMNS.indexOf('name');
   const phoneIdx = LEAD_COLUMNS.indexOf('phone');
   (leads || []).forEach(function (l) {
-    if (!l || String(l.source || '') === LEAD_DIRECT_ADMIN_SOURCE) return;
+    if (!l || String(l.source || '') === LEAD_DIRECT_ADMIN_SOURCE ||
+        String(l.source || '') === LEAD_DIRECT_APPROACH_SOURCE) return;
     const id = String(l.id == null ? '' : l.id);
     const existing = existingById[id];
     const nameChanged = !existing || leadNameKey_(l.name) !== leadNameKey_(existing[nameIdx]);

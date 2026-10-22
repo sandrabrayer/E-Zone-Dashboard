@@ -5,6 +5,9 @@ Source: `lib/leads-funnel.js` (`funnel`). Data: the existing getData payload, wi
 ## Population
 - The leads on the board (any stage, incl. `admitted`) plus the closed leads (לידים לא רלוונטיים). When the same id appears twice, the first copy wins (board before closed).
 - Out: soft-removed leads (הסרה) and `source: 'direct_admin'` rows (the intake phone records, which are not leads).
+- In: `source: 'direct_approach'` («פנייה ישירה») leads — patients added directly in «תפוסה»
+  (CHANGELOG-direct-add-auto-lead.md). Stage `admitted`, so each counts once under «נכנסו לבית» in the
+  period of its creation date. Rows and CSV show the Hebrew label, not the key.
 - **Period:** `created` (YYYY-MM-DD, or the first 10 chars of a timestamp) is in `[from, to]`, both inclusive. A lead with no valid `created` is never counted; the panel shows how many there are.
 
 ## Buckets (mutually exclusive, first match wins)

@@ -1,5 +1,24 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Direct add → a regular ADMITTED lead «פנייה ישירה» — October 21, 2026 (PR open)
+
+A patient added directly in «תפוסה» gets a real lead. That covers a direct add, an intake and a returning
+stay. The lead: `dl-<patient id>`, stage `admitted`, source `direct_approach`, house in Hebrew, the
+patient's entry date, phone (blank allowed). `saveAll_` writes it inside its lock, before any patient row.
+
+- An old client's `direct_admin` phone-record lead is adopted in place.
+- A real board lead link is kept.
+- A returning stay gets its own lead (`personId` stays on Patients; no Leads column).
+- A failed lead write refuses the save (`direct_lead_failed`, AuditLog).
+- A patient that does not land loses its lead again (`directLeadsDropped`).
+- The response adds `directLeads`.
+
+UI: a «פנייה ישירה» / «חוזר» chip replaces «ללא ליד». The lead card, «פרטי הליד» and the funnel show the
+Hebrew label. The funnel counts these leads once under «נכנסו לבית». The bonus path
+(fromLead → meetingWith) is unchanged.
+
+Code.gs changed (clasp CI on merge); SW v83. See `CHANGELOG-direct-add-auto-lead.md`.
+
 ## Lead moves write first — October 21, 2026 (PR open)
 
 `moveLeadIrrelevant_` and `restoreLead_` deleted the lead BEFORE writing it to the other sheet, so a

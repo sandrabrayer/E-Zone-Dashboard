@@ -27,6 +27,8 @@ Only **unique** offers «המשך» directly. Every other outcome requires a per
 - One new Patients row:
   - `status: active`, `source: direct_admin`;
   - `personId` = the person's root id;
-  - `fromLead` = blank, except a closed-lead-only person (no Patients row), whose closed lead is used.
-- A phone-record lead only when the typed phone is not already known for the person.
+  - `fromLead` = the stay's OWN new lead (below); the previous stay's lead is never re-used.
+- One new lead for the stay (CHANGELOG-direct-add-auto-lead.md): `dl-<patient id>`, stage `admitted`,
+  source `direct_approach` («פנייה ישירה»), note «פנייה ישירה — מטופל חוזר (נוסף בתפוסה)», phone as typed
+  (blank allowed). The previous lead is untouched; the person link stays on the patient row (`personId`).
 - `restored='TRUE'` on each of the person's open discharge rows, after the save is proven.

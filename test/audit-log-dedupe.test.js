@@ -304,7 +304,9 @@ test('normal flows unaffected: key-matched replace, fromLead-less append, NEW-le
   assert.strictEqual(after.find((p) => p.name === 'הדס').status, 'wait', 'replace landed');
 
   const actions = plain(auditOf(code, sandbox).map((a) => a.action).sort());
-  assert.deepStrictEqual(actions, ['patient_added', 'patient_edited', 'promote_created'],
+  // The hand-entered direct_admin append gets its own «פנייה ישירה» lead
+  // (CHANGELOG-direct-add-auto-lead.md): direct_lead_created + a linked append.
+  assert.deepStrictEqual(actions, ['direct_lead_created', 'patient_edited', 'promote_created', 'promote_created'],
     'edit diff + both append kinds logged; untouched rows log nothing');
 });
 

@@ -338,8 +338,10 @@ test('a new admission adopts the client id; a blank one is minted — and every 
   assert.deepStrictEqual(plain(rows.map((r) => r.name)), [DANA.name, SARA.name]);
   assert.strictEqual(rows[0].id, 'id-client-new');
   assert.match(rows[1].id, /^id-uuid-/);
-  const added = auditOf(code, sandbox).filter((e) => e.action === 'patient_added');
-  assert.deepStrictEqual(plain(added.map((e) => e.details.id)), ['id-client-new', rows[1].id], 'patient_added carries the id');
+  // A direct add now links to its own «פנייה ישירה» lead (CHANGELOG-direct-add-auto-lead.md),
+  // so its append is audited as promote_created — still carrying the id.
+  const added = auditOf(code, sandbox).filter((e) => e.action === 'patient_added' || e.action === 'promote_created');
+  assert.deepStrictEqual(plain(added.map((e) => e.details.id)), ['id-client-new', rows[1].id], 'the append audit carries the id');
 });
 
 test('UNIQUENESS: a house move arrives with an id held by the old house\'s row → the incoming row is re-minted and audited; the old row keeps its id', () => {
