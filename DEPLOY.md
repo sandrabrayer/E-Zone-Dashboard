@@ -354,6 +354,25 @@ can show, and every permanent delete (✕) recorded in the last 60 days. What
 each log section means and how to read it:
 `CHANGELOG-ramot-diagnostic-reland.md`.
 
+## Direct patients without a lead — editor backfill (DRY RUN by default)
+
+`migrateDirectPatientLeadsNow()` (CHANGELOG-direct-lead-backfill.md) is editor-only. It has no trigger
+and is not reachable over HTTP.
+
+1. Pick `migrateDirectPatientLeadsNow` → **Run** → **View → Executions log**. This is the dry run: it
+   writes nothing. It lists every `direct_admin` patient without a valid lead, with the entry date, the
+   house and the phone that would be used.
+2. After reading that list, pick `migrateDirectPatientLeadsApplyNow` → **Run**. This is the same
+   function with `dryRun = false`.
+
+The real run:
+- takes the script lock;
+- writes one `dl-<patient id>` «פנייה ישירה» lead per patient (`created` = the patient's entry date)
+  and then that patient's `fromLead` cell;
+- logs one AuditLog entry `direct_lead_backfilled` per patient.
+
+A second run finds nothing to do.
+
 ## Stale cycle amounts — editor repair (DRY RUN by default)
 
 `repairStaleCycleAmountsNow()` (CHANGELOG-cycle-balance.md) is editor-only:
