@@ -595,7 +595,16 @@ const PAYMENT_COLUMNS = [
    * (CHANGELOG-payment-report-persistence.md). Server-owned, text-forced. */
   'submissionId'
 ];
-const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient', 'duplicate'];
+/* 'not_received' APPENDED (CHANGELOG-ortal-billing-discounts.md): a receipt
+ * claim voided because the money never arrived («לא שולם — בטל תביעה»). */
+const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient', 'duplicate', 'not_received'];
+/* The link decisions a void row may carry — each one with a required reason. */
+const PAYMENT_VOID_LINK_STATUSES = ['duplicate', 'not_received'];
+/* «לא שולם — בטל תביעה»: a confirmPayment DECISION (never a stored
+ * confirmStatus). ONE unconfirmed receipt, a reason of 2–120 characters. */
+const NOT_RECEIVED_DECISION = 'not_received';
+const NOT_RECEIVED_NOTE_MIN = 2;
+const NOT_RECEIVED_NOTE_MAX = 120;
 
 /* ===== The invoice on the payment report (CHANGELOG-payment-invoice.md) =====
  * Two columns APPENDED at the very end of PAYMENT_COLUMNS (append-only), both
@@ -919,7 +928,32 @@ const BILLING_OVERRIDE_COLUMNS = ['id', 'patientId', 'month', 'amount', 'created
    * payload. APPENDED LAST (append-only, same rule as AUDIT_LOG_COLUMNS):
    * getOrCreateSheet_ extends the header non-destructively; rows written
    * before it stay blank. */
-  'updatedBy'];
+  'updatedBy',
+  /* The cycle DISCOUNT (CHANGELOG-ortal-billing-discounts.md), APPENDED LAST
+   * (append-only — never rename, reorder or delete). Blank on every row
+   * written before them = no discount.
+   *   discountAmount  agorot, 0 < x ≤ BILLING_DISCOUNT_MAX; '' = none.
+   *                   Effective expected = base − discountAmount, never < 0
+   *                   (cycleBalanceState_, recApplyOverride_). Not a debt,
+   *                   not revenue: no money moves.
+   *   discountReason  2–120 characters, one line, no formula lead-in
+   *   discountBy      SERVER-OWNED: the signed-session user
+   *   discountAt      SERVER-OWNED: israelTimestamp_()
+   * Written ONLY by setBillingDiscount_. A discount-only row has a BLANK
+   * `amount`, which every reader takes as «no override». */
+  'discountAmount', 'discountReason', 'discountBy', 'discountAt'];
+const BILLING_DISCOUNT_COLUMNS = ['discountAmount', 'discountReason', 'discountBy', 'discountAt'];
+const BILLING_DISCOUNT_MAX = 1000000;
+const BILLING_DISCOUNT_REASON_MIN = 2;
+const BILLING_DISCOUNT_REASON_MAX = 120;
+const BILLING_DISCOUNT_MESSAGES = {
+  bad_discount_patient: 'מטופל לא תקין להנחה',
+  discount_patient_not_found: 'המטופל לא נמצא — רעננו את הדף',
+  bad_month: 'חודש לא תקין',
+  bad_discount_amount: 'סכום הנחה לא תקין — מספר בין 0 ל-1,000,000, עד שתי ספרות אחרי הנקודה',
+  bad_discount_reason: 'בהנחה חובה לפרט סיבה (2 עד 120 תווים)',
+  sheet_header_clash: 'מבנה גיליון הסכומים החודשיים השתנה — פנו לסנדרה',
+};
 
 /* ===== Facility types =====
  * Patients-sheet houseId (HOUSES in app.js) → billing-policy family used by
@@ -1188,7 +1222,9 @@ const PROXY_ONLY_FIELDS = [PROXY_SECRET_FIELD, PROXY_USER_FIELD, PROXY_ROLES_FIE
  * error:'forbidden_role', message: ROLE_FORBIDDEN_MESSAGE}, before anything is
  * read or written. lib/role-scope.js (server.js) makes the same decision
  * first; a guard test pins the two lists equal. */
-const KNOWN_ROLES = ['staff', 'reporter', 'deleter', 'approver', 'viewer', 'controller'];
+/* 'accountant' APPENDED (CHANGELOG-ortal-billing-discounts.md): Ortal's
+ * billing fixes — ACCOUNTANT_ACTIONS below. */
+const KNOWN_ROLES = ['staff', 'reporter', 'deleter', 'approver', 'viewer', 'controller', 'accountant'];
 const APPROVER_USER_ID = 'sandra';
 const ROLE_FORBIDDEN_MESSAGE = 'אין הרשאה לפעולה זו';
 
@@ -1235,6 +1271,9 @@ const FINANCE_ACTIONS = [
    * לתשלום» — also on CONTROLLER_ACTIONS (Ortal). Sandra's
    * approveRefundException is gated by APPROVER_ACTIONS instead. */
   'settleRefund',
+  /* Appended (CHANGELOG-ortal-billing-discounts.md): a cycle discount — also
+   * on CONTROLLER_ACTIONS, and role-gated by ACCOUNTANT_ACTIONS. */
+  'setBillingDiscount',
 ];
 const FINANCE_USER_IDS = ['vered', 'sandra'];
 
@@ -1276,7 +1315,10 @@ const CONTROLLER_ACTIONS = ['billingControlQueue', 'confirmPayment', 'debtAging'
   'expectedDischarges',
   /* Appended (CHANGELOG-dashboard-committees.md): «ועדות קרובות», read-only,
    * every logged-in user, Ortal included. */
-  'upcomingCommittees'];
+  'upcomingCommittees',
+  /* Appended (CHANGELOG-ortal-billing-discounts.md): «הנחה» — also needs the
+   * accountant ROLE (ACCOUNTANT_ACTIONS). */
+  'setBillingDiscount'];
 const CONTROLLER_GETDATA_KEYS = ['ok', 'patients', 'billingOverrides'];
 const CONTROLLER_USER_IDS = ['ortal'];
 
@@ -1293,7 +1335,8 @@ const CONTROLLER_USER_IDS = ['ortal'];
  *   { '*': S }    an object map, every value projected by S
  *   { k: S, … }   an object, only these keys */
 const CONTROLLER_PATIENT_FIELDS = ['id', 'houseId', 'name', 'date', 'exitDate', 'status', 'pay', 'adv'];
-const CONTROLLER_OVERRIDE_FIELDS = ['id', 'patientId', 'month', 'amount', 'created', 'updatedBy'];
+const CONTROLLER_OVERRIDE_FIELDS = ['id', 'patientId', 'month', 'amount', 'created', 'updatedBy',
+  'discountAmount', 'discountReason', 'discountBy', 'discountAt'];
 const CONTROLLER_GETDATA_SCHEMA = {
   ok: true, error: true, message: true,
   patients: { '*': CONTROLLER_PATIENT_FIELDS },
@@ -1391,6 +1434,14 @@ const FINANCE_FORBIDDEN_MESSAGE = 'אין הרשאה לצפות בנתוני ג�
 const APPROVER_ACTIONS = [
   'unvoidPayment', 'approveRefundException', 'writeOffOpeningBalance', 'acceptOpeningBalance',
 ];
+/* Ortal's billing fixes (CHANGELOG-ortal-billing-discounts.md): each needs
+ * the verified `accountant` role OR Sandra's `approver`; handle_ refuses
+ * anyone else BEFORE anything is read or written. Mirrors lib/role-scope.js
+ * ACCOUNTANT_ACTIONS (a guard test pins the two lists equal).
+ *   voidUnpaidClaim    — confirmPayment status 'not_received' («לא שולם —
+ *                        בטל תביעה»): soft-voids ONE unconfirmed receipt
+ *   setBillingDiscount — a discount on one cycle (setBillingDiscount_) */
+const ACCOUNTANT_ACTIONS = ['voidUnpaidClaim', 'setBillingDiscount'];
 /* The ONLY actions served without PROXY_SECRET, in log AND enforce mode.
  * From the consumers' deployed code (2026-10-01, see
  * CHANGELOG-open-actions-gate.md):
@@ -1439,6 +1490,7 @@ const PROXY_KNOWN_ACTIONS = [
   'expectedDischarges',
   'upcomingCommittees',
   'getCommitteesForCoordinators',
+  'setBillingDiscount',
 ];
 
 /* SecurityLog — append-only, one row per (event, action, hour) at most.
@@ -1856,6 +1908,12 @@ function handle_(params) {
     if (action === 'upsertBillingOverride') {
       return jsonOut_(upsertBillingOverride_(parseJsonParam_(params.override), requestUser_(params)));
     }
+    // «הנחה» (CHANGELOG-ortal-billing-discounts.md): role-gated above
+    // (ACCOUNTANT_ACTIONS → accountant or approver). user / actor from the
+    // verified session only.
+    if (action === 'setBillingDiscount') {
+      return jsonOut_(setBillingDiscount_(parseJsonParam_(params.discount), requestUser_(params), { actor: actorLabel_(params) }));
+    }
     if (action === 'deleteBillingOverride') {
       return jsonOut_(deleteBillingOverride_(parseJsonParam_(params.override), actorLabel_(params)));
     }
@@ -2150,6 +2208,11 @@ function actorLabel_(params) {
 function roleOperationFor_(action, params) {
   const act = String(action == null ? '' : action);
   if (DELETE_ACTIONS.indexOf(act) >= 0 || APPROVER_ACTIONS.indexOf(act) >= 0) return act;
+  if (ACCOUNTANT_ACTIONS.indexOf(act) >= 0) return act;
+  if (act === 'confirmPayment') {
+    const c = parseJsonParam_(params && params.confirm);
+    if (c && typeof c === 'object' && String(c.status == null ? '' : c.status).trim() === NOT_RECEIVED_DECISION) return 'voidUnpaidClaim';
+  }
   if (act === 'savePayment' || act === 'updatePayment') {
     const pay = parseJsonParam_(params && params.payment);
     if (pay && isVoidStatus_(pay.status)) return 'voidPayment';
@@ -2173,10 +2236,12 @@ function creditCreateNeedsApprover_(credit) {
     String(credit.creditType == null ? '' : credit.creditType).trim() === 'other';
 }
 
-/* The role an operation needs: 'deleter' | 'approver' | ''. */
+/* The role an operation needs: 'deleter' | 'approver' |
+ * 'accountant|approver' (either one) | ''. */
 function requiredRoleFor_(operation) {
   if (DELETE_ACTIONS.indexOf(operation) >= 0) return 'deleter';
   if (APPROVER_ACTIONS.indexOf(operation) >= 0) return 'approver';
+  if (ACCOUNTANT_ACTIONS.indexOf(operation) >= 0) return 'accountant|approver';
   return '';
 }
 
@@ -2185,7 +2250,7 @@ function requiredRoleFor_(operation) {
  * it can never delete, void, cancel or approve. */
 function roleAllowed_(params, operation) {
   const need = requiredRoleFor_(operation);
-  return need === '' ? true : hasRole_(params, need);
+  return need === '' ? true : need.split('|').some(function (r) { return hasRole_(params, r); });
 }
 
 /* Log a role refusal: the acting user's stable id (or 'none') and the
@@ -2256,7 +2321,7 @@ function getOrCreateSheet_(name, headers) {
   // locale number format that a later read could reinterpret. Whole-column,
   // idempotent, so rows appended later inherit it.
   if (name === BILLING_OVERRIDES_SHEET) {
-    forceColumnsText_(sh, BILLING_OVERRIDE_COLUMNS, ['month', 'amount']);
+    forceColumnsText_(sh, BILLING_OVERRIDE_COLUMNS, ['month', 'amount'].concat(BILLING_DISCOUNT_COLUMNS));
   }
   // PatientPhones: the phone column is text so a typed 0541234567 keeps its leading zero.
   if (name === PATIENT_PHONES_SHEET) {
@@ -8595,7 +8660,7 @@ function upsertPayment_(payment, user, ctx) {
    * Refusing the pair here is what stops a status of 'void' ever appearing on
    * the sheet with nothing behind it — which would read, a year from now,
    * exactly like a row somebody mistyped. */
-  if (isVoidStatus_(payment.status) && payment.linkStatus !== 'duplicate') {
+  if (isVoidStatus_(payment.status) && PAYMENT_VOID_LINK_STATUSES.indexOf(payment.linkStatus) < 0) {
     return { ok: false, error: 'ביטול שורה מחייב סימון ככפילות' };
   }
   if (payment.linkStatus === 'duplicate') {
@@ -8604,6 +8669,17 @@ function upsertPayment_(payment, user, ctx) {
     }
     if (!payment.linkNote) {
       return { ok: false, error: 'יש לציין סיבה לסימון ככפילות' };
+    }
+  }
+  /* «לא שולם — בטל תביעה» (CHANGELOG-ortal-billing-discounts.md): a void
+   * with a reason of 2–120 characters, on a receipt only (checked below,
+   * against the stored row). */
+  if (payment.linkStatus === NOT_RECEIVED_DECISION) {
+    if (!isVoidStatus_(payment.status)) {
+      return { ok: false, error: 'not_received_requires_void', message: CONFIRM_ERROR_MESSAGES.not_received_note_invalid };
+    }
+    if (payment.linkNote.length < NOT_RECEIVED_NOTE_MIN || payment.linkNote.length > NOT_RECEIVED_NOTE_MAX) {
+      return { ok: false, error: 'not_received_note_invalid', message: CONFIRM_ERROR_MESSAGES.not_received_note_invalid };
     }
   }
 
@@ -8681,6 +8757,14 @@ function upsertPayment_(payment, user, ctx) {
           && !receiptHasLiveSibling_(existing, targetRow - 2)) {
         return { ok: false, error: 'duplicate_last_receipt', message: DUPLICATE_LAST_RECEIPT_MESSAGE };
       }
+      /* «לא שולם — בטל תביעה» voids only an UNCONFIRMED claim: a receipt
+       * Ortal already confirmed («שולם») or partly confirmed is money the
+       * bank showed — refused for EVERY caller, decided here against the
+       * sheet (CHANGELOG-ortal-billing-discounts.md). */
+      if (voidMove && isVoidStatus_(payment.status) && payment.linkStatus === NOT_RECEIVED_DECISION) {
+        const cs = receiptConfirmStatus_(prev);
+        if (cs === 'confirmed' || cs === 'partial') return confirmError_('receipt_confirmed');
+      }
       /* The one other edit a receipt takes: its invoice choice (validated by
        * paymentInvoiceFields_ below, audited). Every other cell is kept. */
       const invoiceEdit = !voidMove && paymentInvoiceFields_(invoiceIn, prev, {}).change !== null;
@@ -8689,7 +8773,7 @@ function upsertPayment_(payment, user, ctx) {
        * void as a duplicate with this very reason. Answer the stored row and
        * its cycle, write nothing (CHANGELOG-write-path-hardening.md). */
       if (!voidMove && !invoiceEdit && isVoidStatus_(payment.status)) {
-        const replay = receiptVoidReplay_(existing, payment.id, payment.linkNote);
+        const replay = receiptVoidReplay_(existing, payment.id, payment.linkNote, payment.linkStatus);
         if (replay) return replay;
       }
       if (!voidMove && !invoiceEdit && !invoiceBad) return { ok: false, error: 'receipt_immutable', message: 'קבלה אינה ניתנת לעריכה — ניתן רק לבטל אותה' };
@@ -8706,6 +8790,10 @@ function upsertPayment_(payment, user, ctx) {
       keep.linkPatientUid = paymentCell_(prev.linkPatientUid);
       keep.timestamp = payment.timestamp || prev.timestamp;
       payment = keep;
+    } else if (payment.linkStatus === NOT_RECEIVED_DECISION) {
+      // A cycle row is not a payment claim: «לא שולם — בטל תביעה» is for a
+      // receipt only (a cycle's debt changes through a discount, never a void).
+      return { ok: false, error: 'not_received_receipt_only', message: CONFIRM_ERROR_MESSAGES.not_received_receipt_only };
     } else if (hadRow) {
       const rowsNow = existing.map(function (g) {
         const o = {};
@@ -10066,8 +10154,9 @@ function receiptOverrideAmount_(patientId, month) {
     const rows = readSheet_(sh, BILLING_OVERRIDE_COLUMNS);
     for (let i = rows.length - 1; i >= 0; i--) {
       if (paymentCell_(rows[i].patientId) === pid && String(rows[i].month == null ? '' : rows[i].month).slice(0, 7) === month) {
-        const n = Number(rows[i].amount);
-        return isFinite(n) && n >= 0 ? receiptMoney_(n) : null;
+        // A discount-only row (blank amount) is no override.
+        const n = billingOverrideAmountOf_(rows[i]);
+        return n === null ? null : receiptMoney_(n);
       }
     }
   } catch (_) { /* fail-soft */ }
@@ -10126,7 +10215,7 @@ function receiptReplayFor_(rows, submissionId) {
  * receipt `id` in `grid` (raw PAYMENT_COLUMNS rows) is already void as a
  * duplicate with reason `note` → { ok, payment, cycle, replayed:true }, the
  * cycle derived exactly as getPayments_ derives it; otherwise null. PURE. */
-function receiptVoidReplay_(grid, id, note) {
+function receiptVoidReplay_(grid, id, note, linkStatus) {
   const rows = (Array.isArray(grid) ? grid : []).map(function (g) {
     if (!Array.isArray(g)) return g;
     const o = {};
@@ -10136,7 +10225,7 @@ function receiptVoidReplay_(grid, id, note) {
   const want = paymentCell_(id);
   const row = rows.filter(function (r) { return r && paymentCell_(r.id) === want; })[0];
   if (!row || !isReceiptRow_(row) || !isVoidStatus_(row.status)) return null;
-  if (paymentLinkStatusClean_(row.linkStatus) !== 'duplicate') return null;
+  if (paymentLinkStatusClean_(row.linkStatus) !== (linkStatus || 'duplicate')) return null;
   if (paymentLinkNoteClean_(row.linkNote) !== paymentLinkNoteClean_(note)) return null;
   const split = paymentRowsDerived_(rows);
   const receipt = split.receipts.find(function (r) { return paymentCell_(r.id) === want; }) || row;
@@ -10270,6 +10359,50 @@ function confirmDuplicate_(req, user, ctx) {
   return {
     ok: true, changed: [], unchanged: 0,
     voided: [{ id: id, status: PAYMENT_VOID_STATUS, linkStatus: 'duplicate', linkNote: req.note }],
+    cycle: res.cycle || null,
+  };
+}
+
+/* confirmPayment status 'not_received' («לא שולם — בטל תביעה»,
+ * CHANGELOG-ortal-billing-discounts.md) — Ortal (accountant) or Sandra
+ * (approver); handle_ already checked the role (ACCOUNTANT_ACTIONS
+ * voidUnpaidClaim). ONE receipt; req.note is the required reason (2–120).
+ * A SOFT delete through the PR #144 void path: status 'void', linkStatus
+ * 'not_received', linkNote = the reason, linkedBy / linkedAt server-stamped,
+ * the row kept, the cycle's money re-derived (the claim stops counting, the
+ * cycle is owed again), AuditLog 'payment_link_not_received'. Refused when
+ * the receipt is already confirmed / partly confirmed (upsertPayment_).
+ * Unlike «כפילות» it MAY be the cycle's only receipt. Undo: Sandra's
+ * un-void (APPROVER_ACTIONS unvoidPayment). */
+function confirmNotReceived_(req, user, ctx) {
+  const c = ctx || {};
+  const stampUser = String(user == null ? '' : user);
+  const id = req.ids[0];
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PAYMENTS_SHEET);
+  const rows = sh ? readSheet_(sh, PAYMENT_COLUMNS) : [];
+  let row = null;
+  for (let i = 0; i < rows.length; i++) if (paymentCell_(rows[i].id) === id) { row = rows[i]; break; }
+  if (!row || !isReceiptRow_(row)) return Object.assign(confirmError_('not_found'), { id: id });
+  if (isVoidStatus_(row.status)) {
+    // A RETRY of this very decision (same reason): answer what landed.
+    const replay = receiptVoidReplay_(rows, id, req.note, NOT_RECEIVED_DECISION);
+    if (!replay) return Object.assign(confirmError_('receipt_void'), { id: id });
+    return {
+      ok: true, changed: [], unchanged: 0, replayed: true,
+      voided: [{ id: id, status: PAYMENT_VOID_STATUS, linkStatus: NOT_RECEIVED_DECISION, linkNote: paymentCell_(replay.payment.linkNote) }],
+      cycle: replay.cycle,
+    };
+  }
+  const cs = receiptConfirmStatus_(row);
+  if (cs === 'confirmed' || cs === 'partial') return Object.assign(confirmError_('receipt_confirmed'), { id: id });
+  const res = upsertPayment_({
+    id: id, status: PAYMENT_VOID_STATUS, linkPatientUid: '', linkStatus: NOT_RECEIVED_DECISION,
+    linkNote: req.note, timestamp: new Date().toISOString(),
+  }, stampUser, { actor: c.actor === undefined ? stampUser : String(c.actor), refuseLegacyMoney: true });
+  if (!res || res.ok !== true) return Object.assign({}, res || { ok: false, error: 'not_received_failed' }, { id: id });
+  return {
+    ok: true, changed: [], unchanged: 0,
+    voided: [{ id: id, status: PAYMENT_VOID_STATUS, linkStatus: NOT_RECEIVED_DECISION, linkNote: req.note }],
     cycle: res.cycle || null,
   };
 }
@@ -10523,6 +10656,11 @@ const CONFIRM_ERROR_MESSAGES = {
   /* «כפילות» (CHANGELOG-receipt-duplicates-and-edit.md). */
   duplicate_single: '«כפילות» — קבלה אחת בכל פעם',
   duplicate_note_invalid: 'בסימון «כפילות» חובה לפרט (2 עד 300 תווים)',
+  /* «לא שולם — בטל תביעה» (CHANGELOG-ortal-billing-discounts.md). */
+  not_received_single: '«לא שולם — בטל תביעה» — קבלה אחת בכל פעם',
+  not_received_note_invalid: 'בביטול תביעה חובה לפרט סיבה (2 עד 120 תווים)',
+  not_received_receipt_only: 'ביטול תביעה — רק לקבלה שדווחה',
+  receipt_confirmed: 'התשלום כבר אושר — אי אפשר לבטל אותו. פנו לסנדרה',
 };
 
 function confirmError_(code) {
@@ -10611,7 +10749,9 @@ function confirmRequestClean_(body) {
   // «כפילות» is a DECISION, never a stored confirmStatus: it voids the
   // receipt (confirmDuplicate_). CHANGELOG-receipt-duplicates-and-edit.md.
   const isDup = status === DUPLICATE_DECISION;
-  if (status === '' ? !noteSent : (CONTROL_STATUSES.indexOf(status) < 0 && !isDup)) return confirmError_('confirm_status_invalid');
+  // «לא שולם — בטל תביעה» — also a DECISION that voids (confirmNotReceived_).
+  const isNotReceived = status === NOT_RECEIVED_DECISION;
+  if (status === '' ? !noteSent : (CONTROL_STATUSES.indexOf(status) < 0 && !isDup && !isNotReceived)) return confirmError_('confirm_status_invalid');
   const raw = Array.isArray(b.ids) ? b.ids : (b.id !== undefined && b.id !== null ? [b.id] : []);
   if (!raw.length || raw.length > CONFIRM_BATCH_MAX) return confirmError_('bad_ids');
   const ids = [];
@@ -10621,6 +10761,14 @@ function confirmRequestClean_(body) {
     if (ids.indexOf(id) < 0) ids.push(id);
   }
   let note = '';
+  if (isNotReceived) {
+    if (ids.length !== 1) return confirmError_('not_received_single');
+    // A longer reason is REFUSED, never cut; the formula lead-in and control
+    // characters never reach the sheet (the flagNote treatment).
+    const nr = String(b.flagNote == null ? '' : b.flagNote).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().replace(/^[=+@-]+/, '').trim();
+    if (nr.length < NOT_RECEIVED_NOTE_MIN || nr.length > NOT_RECEIVED_NOTE_MAX) return confirmError_('not_received_note_invalid');
+    return { ok: true, ids: ids, status: status, note: nr, amount: null, controlNote: null };
+  }
   if (isDup) {
     if (ids.length !== 1) return confirmError_('duplicate_single');
     const rawDup = String(b.flagNote == null ? '' : b.flagNote);
@@ -11035,6 +11183,7 @@ function confirmPayment_(body, user, ctx) {
   const req = confirmRequestClean_(body);
   if (!req.ok) return req;
   if (req.status === DUPLICATE_DECISION) return confirmDuplicate_(req, user, ctx);
+  if (req.status === NOT_RECEIVED_DECISION) return confirmNotReceived_(req, user, ctx);
   const c = ctx || {};
   const stampUser = String(user == null ? '' : user);
   const auditActor = c.actor === undefined ? stampUser : String(c.actor);
@@ -12200,6 +12349,9 @@ function cycleBalanceMoney_(v) {
 function cycleBalanceState_(o) {
   const x = o || {};
   const isVoid = String(x.status == null ? '' : x.status).trim().toLowerCase() === 'void';
+  // The cycle discount (CHANGELOG-ortal-billing-discounts.md): an OPEN cycle
+  // owes base − discount, never below 0; a settled one is history.
+  const disc = cycleBalanceMoney_(x.discountAmount) || 0;
   const stamped = cycleBalanceMoney_(x.stampedAmount);
   const paid = cycleBalanceMoney_(x.amountPaid) || 0;
   let expected, source;
@@ -12213,12 +12365,20 @@ function cycleBalanceState_(o) {
     else if (agreed !== null && agreed > 0) { expected = agreed; source = 'agreed'; }
     else { expected = stamped || 0; source = 'stamped'; }
   }
+  let applied = 0;
+  if (!isVoid && source !== 'settled' && disc > 0) {
+    applied = Math.min(disc, expected);
+    expected = Math.max(0, Math.round((expected - disc) * 100) / 100);
+  }
   if (isVoid) return { expected: 0, source: source, paid: paid, balance: 0, status: 'void' };
   if (source === 'settled') {
     const out = { expected: expected, source: source, paid: paid, balance: 0, status: 'paid' };
     const ov = cycleBalanceMoney_(x.overrideAmount);
     const ag = cycleBalanceMoney_(x.agreedPrice);
-    const price = ov !== null ? ov : (ag !== null && ag > 0 ? ag : null);
+    const base = ov !== null ? ov : (ag !== null && ag > 0 ? ag : null);
+    // Net of the discount: a cycle stamped at the discounted price is not
+    // under-stamped.
+    const price = base === null ? null : Math.max(0, Math.round((base - disc) * 100) / 100);
     if (price !== null && price > expected) {
       out.underStamped = true;
       out.priceExpected = price;
@@ -12228,8 +12388,12 @@ function cycleBalanceState_(o) {
   }
   const exp = Math.round(expected * 100) / 100;
   const balance = Math.max(0, Math.round((exp - paid) * 100) / 100);
-  const status = paid <= 0 ? 'unpaid' : (paid >= exp ? 'paid' : 'partial');
-  return { expected: exp, source: source, paid: paid, balance: balance, status: status };
+  let status = paid <= 0 ? 'unpaid' : (paid >= exp ? 'paid' : 'partial');
+  // A discount that leaves nothing owed settles the cycle — never debt.
+  if (applied > 0 && balance === 0) status = 'paid';
+  const out = { expected: exp, source: source, paid: paid, balance: balance, status: status };
+  if (applied > 0) out.discount = Math.round(applied * 100) / 100;
+  return out;
 }
 
 /* ===== DATA REPAIR (editor only, DRY RUN by default) — CHANGELOG-cycle-balance.md =====
@@ -12264,6 +12428,7 @@ function cycleRepairScan_(tabs, todayIso) {
     const st = cycleBalanceState_({
       stampedAmount: pay.amount, amountPaid: pay.amountPaid, overrideAmount: ovr ? ovr.amount : null,
       agreedPrice: owner.patient.pay, status: pay.status,
+      discountAmount: recDiscountFor_(m.overrides, pay.patientId, String(pay.dueDate).slice(0, 7)),
     });
     if (st.underStamped) {
       underStamped.push({
@@ -12558,10 +12723,12 @@ function debtAging_(asOfIso, tabs) {
       // agreed price while the cycle is open — the same rule as גבייה. An
       // UNDER-STAMPED settled cycle is listed BEFORE any filter below (asOf,
       // records cutoff, stay window, pro-bono): never hidden, never debt.
-      const ovr = recOverrideFor_(m.overrides, pay.patientId, String(pay.dueDate).slice(0, 7));
+      const ovrMonth = String(pay.dueDate).slice(0, 7);
+      const ovr = recOverrideFor_(m.overrides, pay.patientId, ovrMonth);
       const cbs = cycleBalanceState_({
         stampedAmount: pay.amount, amountPaid: pay.amountPaid, overrideAmount: ovr ? ovr.amount : null,
         agreedPrice: p.pay, status: pay.status,
+        discountAmount: recDiscountFor_(m.overrides, pay.patientId, ovrMonth),
       });
       if (cbs.underStamped) {
         underStampedRows.push({
@@ -12593,6 +12760,9 @@ function debtAging_(asOfIso, tabs) {
         days: days, bucket: bucket, kind: 'recorded', paymentId: pay.id,
         coverageSource: recorded ? 'recorded' : 'derived', receivedDateKnown: got.known,
         receivedDateSource: got.source,
+        // The override / discount key month and the discount applied
+        // (CHANGELOG-ortal-billing-discounts.md).
+        month: ovrMonth, discount: cbs.discount || 0,
       }, graceFlags(p.id, pay.dueDate, balance)));
       debtAgingAdd_(totals.recorded_debt, bucket, balance);
       debtAgingAdd_(house(p.houseId).recorded_debt, bucket, balance);
@@ -12607,9 +12777,12 @@ function debtAging_(asOfIso, tabs) {
         if (recBeforeCutoff_(due, cutoff)) return;
         if (claimed[due] || claimed['m:' + due.slice(0, 7)]) return;
         if (probonoOn(p.id, due)) { probonoCycles++; return; }
-        const expected = refundRound2_(Number(recApplyOverride_({
+        const projected = recApplyOverride_({
           patientId: recPatientKey_(p), dueDate: due, amount: p.pay, status: 'unpaid', amountPaid: 0,
-        }, m.overrides).amount) || 0);
+        }, m.overrides);
+        const expected = refundRound2_(Number(projected.amount) || 0);
+        // Fully discounted: nothing owed, never debt.
+        if (!(expected > 0) && projected.discount > 0) return;
         let end = debtAgingCycleEnd_(entry, due);
         if (exit && end > exit) end = exit;
         const days = asOfN - refundDayNum_(due);
@@ -12617,6 +12790,7 @@ function debtAging_(asOfIso, tabs) {
         cycles.push(Object.assign({
           start: due, end: end, expected: expected, received: 0, balance: expected,
           days: days, bucket: bucket, kind: 'unrecorded', note: DEBT_UNRECORDED_NOTE,
+          month: due.slice(0, 7), discount: projected.discount || 0,
         }, graceFlags(p.id, due, expected)));
         debtAgingAdd_(totals.unrecorded_cycles, bucket, expected);
         debtAgingAdd_(house(p.houseId).unrecorded_cycles, bucket, expected);
@@ -13594,6 +13768,14 @@ function upsertBillingOverride_(override, user) {
       for (let i = 0; i < existingIds.length; i++) {
         if (String(existingIds[i][0]) === String(id)) {
           const r = i + 2;
+          // The discount on this row is NOT the amount editor's to change
+          // (CHANGELOG-ortal-billing-discounts.md): its cells are kept as stored.
+          const stored = sh.getRange(r, 1, 1, BILLING_OVERRIDE_COLUMNS.length).getValues()[0];
+          BILLING_DISCOUNT_COLUMNS.forEach(function (k) {
+            const at = BILLING_OVERRIDE_COLUMNS.indexOf(k);
+            row[at] = stored[at] === undefined || stored[at] === null ? '' : stored[at];
+            record[k] = row[at];
+          });
           sh.getRange(r, monthIdx + 1, 1, 1).setNumberFormat('@');
           sh.getRange(r, amountIdx + 1, 1, 1).setNumberFormat('@');
           sh.getRange(r, 1, 1, BILLING_OVERRIDE_COLUMNS.length).setValues([row]);
@@ -13635,6 +13817,15 @@ function deleteBillingOverride_(override, actor) {
   if (lock.tryLock(10000) !== true) return lockBusy_('deleteBillingOverride_');
   try {
     const sh = getOrCreateSheet_(BILLING_OVERRIDES_SHEET, BILLING_OVERRIDE_COLUMNS);
+    /* A row that carries a DISCOUNT is never hard-deleted
+     * (CHANGELOG-ortal-billing-discounts.md): only its amount is cleared, so
+     * the month goes back to the agreed price and the discount stays. */
+    const kept = billingOverrideClearAmountIfDiscounted_(sh, id);
+    if (kept) {
+      logAudit_('billing_override_deleted', 'deleteBillingOverride_', String(override.patientId || ''), '',
+        { id: id, removed: 0, amountCleared: true, discountKept: kept.discountAmount }, actor);
+      return { ok: true, deleted: true, id: id, kept: kept };
+    }
     const removed = deleteRowsById_(sh, BILLING_OVERRIDE_COLUMNS, id);
     logAudit_('billing_override_deleted', 'deleteBillingOverride_', String(override.patientId || ''), '',
       { id: id, removed: removed }, actor);
@@ -13642,6 +13833,190 @@ function deleteBillingOverride_(override, actor) {
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
+}
+
+/* The row `id` of the BillingOverrides sheet, when it carries a discount:
+ * its amount cell is set to '' (the row stays) and the row object is
+ * returned. No discount (or no row) → null, nothing written. Called inside
+ * the deleteBillingOverride_ lock. */
+function billingOverrideClearAmountIfDiscounted_(sh, id) {
+  const last = sh.getLastRow();
+  if (last < 2) return null;
+  const grid = sh.getRange(2, 1, last - 1, BILLING_OVERRIDE_COLUMNS.length).getValues();
+  const idIdx = BILLING_OVERRIDE_COLUMNS.indexOf('id');
+  const amountIdx = BILLING_OVERRIDE_COLUMNS.indexOf('amount');
+  for (let i = 0; i < grid.length; i++) {
+    if (String(grid[i][idIdx]) !== String(id)) continue;
+    const obj = {};
+    BILLING_OVERRIDE_COLUMNS.forEach(function (k, j) { obj[k] = grid[i][j] === undefined || grid[i][j] === null ? '' : grid[i][j]; });
+    if (billingDiscountOf_(obj) <= 0) return null;
+    sh.getRange(i + 2, amountIdx + 1, 1, 1).setNumberFormat('@');
+    sh.getRange(i + 2, amountIdx + 1, 1, 1).setValue('');
+    obj.amount = '';
+    return obj;
+  }
+  return null;
+}
+
+/* A BillingOverrides row's override amount: a number ≥ 0, or null when the
+ * cell is blank / junk (a discount-only row). PURE. */
+function billingOverrideAmountOf_(o) {
+  const v = o && typeof o === 'object' ? o.amount : o;
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Number(v);
+  return isFinite(n) && n >= 0 ? n : null;
+}
+
+/* A BillingOverrides row's discount, agorot (0 = none / junk). PURE. */
+function billingDiscountOf_(o) {
+  const v = o && typeof o === 'object' ? o.discountAmount : o;
+  if (v === '' || v === null || v === undefined) return 0;
+  const n = Number(v);
+  return isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0;
+}
+
+/* «הנחה» amount as sent: a number 0–BILLING_DISCOUNT_MAX with at most two
+ * decimals (a number, or its plain decimal text). 0 clears the discount.
+ * → the amount | null. PURE. */
+function billingDiscountAmountParse_(v) {
+  if (typeof v === 'number') {
+    if (!isFinite(v)) return null;
+  } else if (typeof v === 'string') {
+    if (!/^\s*\d{1,7}(\.\d{1,2})?\s*$/.test(v)) return null;
+  } else return null;
+  const n = Number(v);
+  if (!isFinite(n) || n < 0 || n > BILLING_DISCOUNT_MAX) return null;
+  if (Math.abs(Math.round(n * 100) - n * 100) > 1e-6) return null;
+  return Math.round(n * 100) / 100;
+}
+
+/* The discount request, validated. PURE.
+ *   { patientId: 'houseId::name::YYYY-MM-DD', month: 'YYYY-MM',
+ *     discountAmount, discountReason }
+ * → { ok:true, patientId, month, amount, reason } | { ok:false, error, message } */
+function billingDiscountRequestClean_(body) {
+  const b = body && typeof body === 'object' ? body : {};
+  const no = function (code) { return { ok: false, error: code, message: BILLING_DISCOUNT_MESSAGES[code] || code }; };
+  const patientId = typeof b.patientId === 'string' ? b.patientId.trim() : '';
+  const parts = patientId.split('::');
+  if (!patientId || patientId.length > 200 || /[\u0000-\u001f\u007f]/.test(patientId) || /^[=+@-]/.test(patientId) ||
+      parts.length !== 3 || !/^[a-z]{2,20}$/.test(parts[0]) || !parts[1].trim() || !/^\d{4}-\d{2}-\d{2}$/.test(parts[2])) {
+    return no('bad_discount_patient');
+  }
+  const month = typeof b.month === 'string' ? b.month.trim() : '';
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return no('bad_month');
+  const amount = billingDiscountAmountParse_(b.discountAmount);
+  if (amount === null) return no('bad_discount_amount');
+  // A longer reason is REFUSED, never cut (the flagNote rule); control
+  // characters → space, a formula lead-in dropped (leadCellText_).
+  const raw = typeof b.discountReason === 'string' ? b.discountReason : '';
+  const reason = leadCellText_(raw, BILLING_DISCOUNT_REASON_MAX + 1);
+  if (reason.length < BILLING_DISCOUNT_REASON_MIN || reason.length > BILLING_DISCOUNT_REASON_MAX) return no('bad_discount_reason');
+  return { ok: true, patientId: patientId, month: month, amount: amount, reason: reason };
+}
+
+/* A hand-added column where a discount column belongs → the clashes. PURE. */
+function billingDiscountHeaderClash_(header) {
+  const h = Array.isArray(header) ? header : [];
+  const out = [];
+  BILLING_DISCOUNT_COLUMNS.forEach(function (name) {
+    const i = BILLING_OVERRIDE_COLUMNS.indexOf(name);
+    const cell = i < h.length ? String(h[i] == null ? '' : h[i]).trim() : '';
+    if (cell !== '' && cell !== name) out.push({ column: i + 1, found: cell, expected: name });
+  });
+  return out;
+}
+
+/**
+ * action=setBillingDiscount — «הנחה» on ONE cycle (CHANGELOG-ortal-billing-
+ * discounts.md). ACCOUNTANT_ACTIONS: handle_ has already refused anyone
+ * without the accountant role (Ortal) or Sandra's approver. Writes the four
+ * discount cells of the cycle's BillingOverrides row (ovr::<patientId>::
+ * <month>) — creating the row with a BLANK amount when none exists, so the
+ * base stays the agreed price. Never touches amount, never deletes a row.
+ * discountAmount 0 clears the discount (the reason is still required and
+ * audited). The patient must exist. LockService; one AuditLog row
+ * 'billing_discount_set' with at / by / prev / next. user / actor from the
+ * verified session only.
+ * → { ok:true, override, changed } | { ok:false, error, message }
+ */
+function setBillingDiscount_(body, user, ctx) {
+  const req = billingDiscountRequestClean_(body);
+  if (!req.ok) return req;
+  const c = ctx || {};
+  const stampUser = String(user == null ? '' : user);
+  const auditActor = c.actor === undefined ? stampUser : String(c.actor);
+  if (!billingDiscountPatientExists_(req.patientId)) {
+    return { ok: false, error: 'discount_patient_not_found', message: BILLING_DISCOUNT_MESSAGES.discount_patient_not_found };
+  }
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('setBillingDiscount_');
+  try {
+    const sh = getOrCreateSheet_(BILLING_OVERRIDES_SHEET, BILLING_OVERRIDE_COLUMNS);
+    const header = sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getValues()[0];
+    if (billingDiscountHeaderClash_(header).length) {
+      return { ok: false, error: 'sheet_header_clash', message: BILLING_DISCOUNT_MESSAGES.sheet_header_clash };
+    }
+    const id = billingOverrideId_(req.patientId, req.month);
+    const idIdx = BILLING_OVERRIDE_COLUMNS.indexOf('id');
+    const last = sh.getLastRow();
+    const grid = last > 1 ? sh.getRange(2, 1, last - 1, BILLING_OVERRIDE_COLUMNS.length).getValues() : [];
+    let at = -1;
+    for (let i = 0; i < grid.length; i++) if (String(grid[i][idIdx]) === id) { at = i; break; }
+    const prevObj = {};
+    BILLING_OVERRIDE_COLUMNS.forEach(function (k, j) {
+      prevObj[k] = at >= 0 && grid[at][j] !== undefined && grid[at][j] !== null ? grid[at][j] : '';
+    });
+    const prevAmount = billingDiscountOf_(prevObj);
+    const prevReason = String(prevObj.discountReason == null ? '' : prevObj.discountReason);
+    if (at >= 0 && prevAmount === req.amount && prevReason === req.reason) {
+      return { ok: true, override: prevObj, changed: false };
+    }
+    const nowStamp = israelTimestamp_();
+    const next = {};
+    Object.keys(prevObj).forEach(function (k) { next[k] = prevObj[k]; });
+    if (at < 0) {
+      next.id = id; next.patientId = req.patientId; next.month = req.month; next.amount = '';
+      next.created = todayISODate_(); next.updatedBy = '';
+    }
+    next.discountAmount = req.amount > 0 ? req.amount : '';
+    next.discountReason = req.reason;
+    next.discountBy = stampUser;
+    next.discountAt = nowStamp;
+    const target = at >= 0 ? at + 2 : sh.getLastRow() + 1;
+    // Text formats BEFORE the values (the upsertRowById_ ordering).
+    ['month', 'amount'].concat(BILLING_DISCOUNT_COLUMNS).forEach(function (k) {
+      sh.getRange(target, BILLING_OVERRIDE_COLUMNS.indexOf(k) + 1, 1, 1).setNumberFormat('@');
+    });
+    sh.getRange(target, 1, 1, BILLING_OVERRIDE_COLUMNS.length).setValues([objectToRow_(next, BILLING_OVERRIDE_COLUMNS)]);
+    logAudit_('billing_discount_set', 'setBillingDiscount_', req.patientId, '', {
+      id: id, month: req.month, by: stampUser, at: nowStamp,
+      prev: { discountAmount: prevAmount, discountReason: prevReason },
+      next: { discountAmount: req.amount, discountReason: req.reason },
+    }, auditActor);
+    return { ok: true, override: next, changed: true };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* Whether a Patients row (or a discharged one) carries the billing key
+ * houseId::name::YYYY-MM-DD. Read-only; fail-closed (an unreadable sheet →
+ * false, so nothing is written). */
+function billingDiscountPatientExists_(patientId) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheets = [[PATIENTS_SHEET, PATIENT_COLUMNS], [DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS]];
+    for (let k = 0; k < sheets.length; k++) {
+      const sh = ss.getSheetByName(sheets[k][0]);
+      if (!sh) continue;
+      const rows = readSheet_(sh, sheets[k][1]);
+      for (let i = 0; i < rows.length; i++) {
+        if (patientKey_(rows[i].houseId, rows[i].name, rows[i].date) === patientId) return true;
+      }
+    }
+  } catch (_) { return false; }
+  return false;
 }
 
 /* ===== Bonuses module ===== */
@@ -19915,19 +20290,35 @@ function recOverrideFor_(overrides, patientId, month) {
   if (!Array.isArray(overrides)) return null;
   for (let i = 0; i < overrides.length; i++) {
     const o = overrides[i];
-    if (o && o.patientId === patientId && o.month === month) return o;
+    // A discount-only row (blank amount) is not an override.
+    if (o && o.patientId === patientId && o.month === month && o.amount !== null && o.amount !== undefined && o.amount !== '') return o;
   }
   return null;
 }
+/* The cycle discount for (patientId, 'YYYY-MM'), agorot (0 = none). PURE. */
+function recDiscountFor_(overrides, patientId, month) {
+  if (!Array.isArray(overrides)) return 0;
+  for (let i = 0; i < overrides.length; i++) {
+    const o = overrides[i];
+    if (o && o.patientId === patientId && o.month === month) return billingDiscountOf_(o.discount !== undefined ? o.discount : o.discountAmount);
+  }
+  return 0;
+}
+/* The override, then the discount (base − discount, never below 0). A
+ * paid / partial / void row is history and returned untouched. */
 function recApplyOverride_(payment, overrides) {
   if (!payment || payment.status === 'paid' || payment.status === 'partial' || payment.status === 'void') return payment;
-  const ovr = recOverrideFor_(overrides, payment.patientId, String(asISODate_(payment.dueDate)).slice(0, 7));
-  if (!ovr) return payment;
-  const amount = Number(ovr.amount) || 0;
+  const month = String(asISODate_(payment.dueDate)).slice(0, 7);
+  const ovr = recOverrideFor_(overrides, payment.patientId, month);
+  const discount = recDiscountFor_(overrides, payment.patientId, month);
+  if (!ovr && !(discount > 0)) return payment;
+  const base = ovr ? (Number(ovr.amount) || 0) : (Number(payment.amount) || 0);
+  const amount = Math.max(0, Math.round((base - discount) * 100) / 100);
   const copy = {};
   Object.keys(payment).forEach(function (k) { copy[k] = payment[k]; });
   copy.amount = amount;
   copy.balance = Math.max(0, amount - (payment.amountPaid || 0));
+  if (discount > 0) copy.discount = Math.min(discount, base);
   return copy;
 }
 
@@ -20027,7 +20418,10 @@ function recCredit_(r) {
 }
 function recOverride_(r) {
   const o = r.obj;
-  return { patientId: String(o.patientId == null ? '' : o.patientId), month: String(o.month == null ? '' : o.month).slice(0, 7), amount: recNum_(o.amount) };
+  // amount null = a discount-only row (no override); discount 0 = none.
+  // CHANGELOG-ortal-billing-discounts.md.
+  return { patientId: String(o.patientId == null ? '' : o.patientId), month: String(o.month == null ? '' : o.month).slice(0, 7),
+    amount: billingOverrideAmountOf_(o), discount: billingDiscountOf_(o) };
 }
 
 /* The whole data set, normalized. Pure over the read tabs. */
@@ -20340,8 +20734,7 @@ function recSectionH_(m) {
         billed = Math.max.apply(null, rows.map(function (x) { return recApplyOverride_(x, m.overrides).amount; }));
         paid = rows.reduce(function (s, x) { return s + x.amountPaid; }, 0);
       } else {
-        const ovr = recOverrideFor_(m.overrides, key, due.slice(0, 7));
-        billed = ovr ? ovr.amount : p.pay;
+        billed = recApplyOverride_({ patientId: key, dueDate: due, amount: p.pay, status: 'unpaid', amountPaid: 0 }, m.overrides).amount;
         paid = 0;
       }
       if (!rows.length && byWindow) { covered++; expected += billed; return; }
@@ -20464,7 +20857,9 @@ function recSectionK_(m) {
     }
     if (!(p.amount > 0)) return;
     const ovr = recOverrideFor_(m.overrides, recPatientKey_(pt), String(p.dueDate).slice(0, 7));
-    const expected = ovr ? ovr.amount : pt.pay;
+    // Net of a cycle discount (CHANGELOG-ortal-billing-discounts.md).
+    const disc = recDiscountFor_(m.overrides, recPatientKey_(pt), String(p.dueDate).slice(0, 7));
+    const expected = disc > 0 ? Math.max(0, (ovr ? ovr.amount : pt.pay) - disc) : (ovr ? ovr.amount : pt.pay);
     let note = '';
     if (!(expected > 0)) note = 'אין תעריף חודשי למטופל';
     else {

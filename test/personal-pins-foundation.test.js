@@ -399,7 +399,7 @@ test('role model: Vered / Sandra / Shiran / Yael / Ortal exactly as decided; sta
   assert.deepStrictEqual([...by.yael.roles], ['staff', 'reporter']);
   assert.ok(!by.shiran.roles.includes('deleter') && !by.yael.roles.includes('deleter'), 'Shiran / Yael: NO deleter');
   assert.strictEqual(by.ortal.status, 'active', 'Phase 4 (2026-10-04): Ortal logs in');
-  assert.deepStrictEqual([...by.ortal.roles], ['controller'], 'Phase 4: controller only, no staff');
+  assert.deepStrictEqual([...by.ortal.roles], ['controller', 'accountant'], 'Phase 4: controller, no staff; + accountant (CHANGELOG-ortal-billing-discounts.md)');
   const approvers = users.USER_MODEL.filter((u) => u.roles.includes('approver')).map((u) => u.id);
   assert.deepStrictEqual(approvers, ['sandra'], 'approver is Sandra only');
   assert.strictEqual(users.APPROVER_ID, 'sandra');
@@ -913,8 +913,10 @@ test('Code.gs: AuditLog gains an APPENDED actor column; BillingOverrides an APPE
   const g = loadGs({});
   assert.deepStrictEqual(Array.from(g.run('AUDIT_LOG_COLUMNS')),
     ['timestamp', 'action', 'fn', 'patientId', 'name', 'details', 'actor']);
+  // + the discount, APPENDED after updatedBy (CHANGELOG-ortal-billing-discounts.md).
   assert.deepStrictEqual(Array.from(g.run('BILLING_OVERRIDE_COLUMNS')),
-    ['id', 'patientId', 'month', 'amount', 'created', 'updatedBy']);
+    ['id', 'patientId', 'month', 'amount', 'created', 'updatedBy',
+      'discountAmount', 'discountReason', 'discountBy', 'discountAt']);
   // An existing AuditLog tab (6 columns) gets the header cell, rows untouched.
   g.sandbox.__sheets.AuditLog = richSheet('AuditLog', ['timestamp', 'action', 'fn', 'patientId', 'name', 'details']);
   g.sandbox.__sheets.AuditLog.appendRow(['t0', 'old', 'f', 'p', 'n', '{}']);

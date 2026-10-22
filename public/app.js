@@ -12056,7 +12056,9 @@ function normalizePayment(r) {
  * this row yet" and is what every historical row carries. */
 /* 'duplicate' is a link decision like the other two — it says what this row
  * IS — and it is the only one that also changes the row's payment status. */
-const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient', 'duplicate'];
+// 'not_received' APPENDED (CHANGELOG-ortal-billing-discounts.md): a receipt
+// claim voided because the money never arrived (Code.gs mirrors).
+const PAYMENT_LINK_STATUSES = ['linked', 'not_a_patient', 'duplicate', 'not_received'];
 /* Longest note the reconnect screen will store. Mirrors the server cap. */
 const PAYMENT_LINK_NOTE_MAX = 300;
 
@@ -12079,12 +12081,21 @@ function normalizeBillingOverride(r) {
   const month     = String(pickField(r, ['month', 'חודש']) || '').slice(0, 7);
   const amountRaw = pickField(r, ['amount', 'סכום']);
   const id        = String(pickField(r, ['id', 'ID', 'מזהה']) || '');
+  /* A BLANK amount stays '' — a discount-only row, no override
+   * (CHANGELOG-ortal-billing-discounts.md); it must never read as 0. */
+  const blank = amountRaw === '' || amountRaw === null || amountRaw === undefined;
+  const discRaw = r.discountAmount;
+  const disc = Number(discRaw);
   return {
     id:        id || (patientId && month ? billingOverrideId(patientId, month) : ''),
     patientId,
     month,
-    amount:    Number(amountRaw) || 0,
+    amount:    blank ? '' : (Number(amountRaw) || 0),
     created:   String(pickField(r, ['created', 'created_at', 'נוצר']) || ''),
+    discountAmount: discRaw === '' || discRaw == null || !Number.isFinite(disc) || disc <= 0 ? '' : Math.round(disc * 100) / 100,
+    discountReason: String(r.discountReason == null ? '' : r.discountReason),
+    discountBy:     String(r.discountBy == null ? '' : r.discountBy),
+    discountAt:     String(r.discountAt == null ? '' : r.discountAt),
   };
 }
 
@@ -12175,10 +12186,24 @@ function dayOfMonth(iso) {
  * nothing moved. monthly-revenue's guard test now pins each shared date
  * primitive to exactly one declaration so the twin cannot come back. */
 
-/* The override record for (patientId, 'YYYY-MM'), or null. Pure. */
+/* The override record for (patientId, 'YYYY-MM'), or null. A row with a
+ * BLANK amount carries only a discount — it is no override
+ * (CHANGELOG-ortal-billing-discounts.md). Pure. */
 function billingOverrideFor(overrides, patientId, month) {
   if (!Array.isArray(overrides)) return null;
-  return overrides.find(o => o && o.patientId === patientId && o.month === month) || null;
+  return overrides.find(o => o && o.patientId === patientId && o.month === month
+    && o.amount !== '' && o.amount !== null && o.amount !== undefined) || null;
+}
+
+/* The cycle discount for (patientId, 'YYYY-MM'): { amount, reason, by, at }
+ * or null (none / 0 / junk). Code.gs recDiscountFor_ is the same rule. Pure. */
+function billingDiscountFor(overrides, patientId, month) {
+  if (!Array.isArray(overrides)) return null;
+  const o = overrides.find(r => r && r.patientId === patientId && r.month === month);
+  const n = o ? Number(o.discountAmount) : NaN;
+  if (!o || o.discountAmount === '' || o.discountAmount === null || !Number.isFinite(n) || n <= 0) return null;
+  return { amount: Math.round(n * 100) / 100, reason: String(o.discountReason || ''),
+    by: String(o.discountBy || ''), at: String(o.discountAt || '') };
 }
 
 /* Overlay a per-month billing override onto a payment record. Pure — returns a
@@ -12192,14 +12217,21 @@ function billingOverrideFor(overrides, patientId, month) {
  *     outstanding figure, and the renewal write. */
 function applyBillingOverride(payment, overrides) {
   if (!payment || payment.status === 'paid' || payment.status === 'partial') return payment;
-  const ovr = billingOverrideFor(overrides, payment.patientId, monthKey(payment.dueDate));
-  if (!ovr) return payment;
-  const amount = Number(ovr.amount) || 0;
-  return {
+  const month = monthKey(payment.dueDate);
+  const ovr = billingOverrideFor(overrides, payment.patientId, month);
+  // The cycle discount (CHANGELOG-ortal-billing-discounts.md): base −
+  // discount, never below 0 — Code.gs recApplyOverride_ is the same rule.
+  const disc = billingDiscountFor(overrides, payment.patientId, month);
+  if (!ovr && !disc) return payment;
+  const base = ovr ? (Number(ovr.amount) || 0) : (Number(payment.amount) || 0);
+  const amount = disc ? Math.max(0, Math.round((base - disc.amount) * 100) / 100) : base;
+  const out = {
     ...payment,
     amount,
     balance: Math.max(0, amount - (payment.amountPaid || 0)),
   };
+  if (disc) out.discount = Math.min(disc.amount, base);
+  return out;
 }
 
 /* ===== The cycle balance (CHANGELOG-cycle-balance.md) =====
@@ -12225,13 +12257,18 @@ function cycleView(pay, patient, overrides) {
   const R = cycleBalanceLib();
   if (!R || !pay || isVoidPayment(pay)) return base;
   const ovr = billingOverrideFor(ovrs, pay.patientId, monthKey(pay.dueDate));
+  const disc = billingDiscountFor(ovrs, pay.patientId, monthKey(pay.dueDate));
   const st = R.cycleState({
     stampedAmount: pay.amount, amountPaid: pay.amountPaid, overrideAmount: ovr ? ovr.amount : null,
     agreedPrice: patient ? patient.pay : null, status: pay.status,
+    discountAmount: disc ? disc.amount : null,
   });
-  if (base.amount === st.expected && base.balance === st.balance && base.status === st.status) return base;
-  return { ...base, amount: st.expected, balance: st.balance, status: st.status,
+  if (base.amount === st.expected && base.balance === st.balance && base.status === st.status
+      && (base.discount || 0) === (st.discount || 0)) return base;
+  const out = { ...base, amount: st.expected, balance: st.balance, status: st.status,
     stampedAmount: pay.amount, expectedSource: st.source };
+  if (st.discount > 0) out.discount = st.discount; else delete out.discount;
+  return out;
 }
 
 /* Build (or reuse) the payment record for a given patient + due date. If
@@ -12636,7 +12673,7 @@ function findPatientForPayment(pay) {
  * recorded. A row marked 'not_a_patient' or voided as a 'duplicate' has been
  * decided and drops out — it is not a loose end, it is a documented one.
  * Both stay visible further down the screen, under their own headings. Pure. */
-const RECONNECT_DECIDED_STATUSES = ['not_a_patient', 'duplicate'];
+const RECONNECT_DECIDED_STATUSES = ['not_a_patient', 'duplicate', 'not_received'];
 function detachedPayments(payments, patients) {
   if (!Array.isArray(payments)) return [];
   const list = Array.isArray(patients) ? patients : [];
@@ -15668,7 +15705,12 @@ async function clearBillingOverride(payment) {
   if (!existing) return;
 
   const prev = state.billingOverrides.slice();
-  state.billingOverrides = state.billingOverrides.filter(o => o !== existing);
+  // A row that also carries a discount keeps its discount: only the amount
+  // is cleared (Code.gs deleteBillingOverride_, CHANGELOG-ortal-billing-discounts.md).
+  const keptLocal = billingDiscountFor([existing], pid, month) ? { ...existing, amount: '' } : null;
+  state.billingOverrides = keptLocal
+    ? state.billingOverrides.map(o => (o === existing ? keptLocal : o))
+    : state.billingOverrides.filter(o => o !== existing);
   renderBilling();
 
   // Same detachment as saveBillingOverride — the ↩ button is gone by here.
@@ -15678,6 +15720,11 @@ async function clearBillingOverride(payment) {
       apiPost({ action: 'deleteBillingOverride', override: { id: existing.id, patientId: pid, month } }));
     // R3: the server names the override it removed (a retry answers the same).
     requireSavedId(res, r => r.deleted === true && r.id, existing.id);
+    if (res && res.kept && typeof res.kept === 'object') {
+      state.billingOverrides = state.billingOverrides
+        .filter(o => o && o.id !== existing.id).concat([res.kept]);
+      renderBilling();
+    }
     showToast('הסכום הוחזר לסכום הבסיס');
   } catch (e) {
     state.billingOverrides = prev;

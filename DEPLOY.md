@@ -249,6 +249,18 @@ clasp CI deploys Code.gs. The two appended `Payments` columns
 decision. If a hand-added column sits where they belong, decisions are
 refused (`sheet_header_clash`) until it is moved.
 
+**22/10/2026 — `CHANGELOG-ortal-billing-discounts.md` (accountant role):**
+no new env var — the existing personal PINs are extended (there is **no
+`ORTAL_PIN`**). One Railway step for Sandra: in `USER_PIN_HASHES`, add
+`"accountant"` to Ortal's record so her roles read
+`["controller","accountant"]` (same `hash`, same `pinVersion`; the server
+restarts on save). Until then «לא שולם — בטל תביעה» and «הנחה» are refused for
+her (fail-closed). The clasp CI deploys Code.gs; the four appended
+`BillingOverrides` columns (`discountAmount`, `discountReason`, `discountBy`,
+`discountAt`) write their header names on the first discount. If a
+hand-added column sits where they belong, discounts are refused
+(`sheet_header_clash`) until it is moved.
+
 ## Accounting source feed — one Script Property to set
 
 The Dashboard Apps Script gained two READ-ONLY actions for the external
