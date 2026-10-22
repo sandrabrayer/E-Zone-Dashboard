@@ -1903,3 +1903,11 @@ Manual phone book `PatientPhones` for house patients without a lead phone; auto-
 
 ## 2026-10-18 — intake captures the phone
 «קליטת מטופל חדש» requires the patient's phone and stores it on a linked lead (`fromLead`), so it flows to every feed. See `CHANGELOG-intake-phone.md`.
+
+## Discounts by Vered, Ortal's tab trimmed (October 22, 2026)
+- `setBillingDiscount` = `finance` capability (Vered, Sandra) — never Ortal.
+  Ortal (`accountant`) only cancels unconfirmed reported amounts
+  (`voidUnpaidClaim`). `/api/me` carries `canAccount` and `canDiscount`.
+- Ortal's «בקרת גבייה»: «בעיות גבייה» first (two subsections), no releases /
+  committees cards. SW v85. See CHANGELOG-discount-by-vered.md.
+- No Railway change; Apps Script deploys via clasp CI on merge.

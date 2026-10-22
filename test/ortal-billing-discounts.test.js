@@ -2,9 +2,12 @@
  * CHANGELOG-ortal-billing-discounts.md.
  *
  * Code.gs (the REAL file in a vm, test/helpers/gs-sandbox.js):
- *   - roles: Ortal WITH `accountant` may void a never-paid claim and set a
- *     discount; Ortal WITHOUT it (her live record before Sandra adds it) is
- *     refused — fail-closed; Vered, Shiran, Yael refused; Sandra allowed
+ *   - roles: Ortal WITH `accountant` may void a never-paid claim; Ortal
+ *     WITHOUT it (her live record before Sandra adds it) is refused —
+ *     fail-closed; Vered, Shiran, Yael refused; Sandra allowed.
+ *     «הנחה» is Vered's and Sandra's (`finance`, by stable id): Ortal — with
+ *     or without `accountant` — Shiran and Yael are refused
+ *     (CHANGELOG-discount-by-vered.md)
  *   - void rules: unconfirmed receipts only (confirmed / partial refused for
  *     every caller), reason 2–120, ONE receipt, row kept, who / when, audit,
  *     the cycle owed again, a retry replays, Sandra-only undo
@@ -15,9 +18,11 @@
  *     discount; floor at 0; settled cycles untouched; debt reduced, revenue
  *     (RECEIVED, «מאומת») unchanged
  *   - append-only column guard
- * server.js (real Express app, https stubbed): 403 before proxying for Vered
- * and for an Ortal record without `accountant`; Ortal with it and Sandra are
- * proxied; the role refusal log holds the id + operation only.
+ * server.js (real Express app, https stubbed): 403 before proxying; the void
+ * for Vered and an Ortal record without `accountant`, the discount for Ortal
+ * and Shiran; the void for Ortal with it and Sandra and the discount for
+ * Vered and Sandra are proxied; the role refusal log holds the id + operation
+ * only.
  * All names are SYNTHETIC. */
 
 const { test } = require('node:test');
@@ -87,7 +92,7 @@ function world() {
   }, COV) } });
   const queue = (who) => call({ action: 'billingControlQueue' }, who || ORTAL);
   const decide = (confirm, who) => call({ action: 'confirmPayment', confirm }, who || ORTAL);
-  const discount = (d, who) => call({ action: 'setBillingDiscount', discount: d }, who || ORTAL);
+  const discount = (d, who) => call({ action: 'setBillingDiscount', discount: d }, who || VERED);
   const payRows = () => g.sheetRows('Payments', 'PAYMENT_COLUMNS');
   const row = (id) => payRows().find((r) => r.id === id);
   const ovrRows = () => g.sheetRows('BillingOverrides', 'BILLING_OVERRIDE_COLUMNS');
@@ -110,14 +115,22 @@ const NOTE = 'הכסף לא הגיע לבנק';
 
 /* =========================== 1. roles =========================== */
 
-test('roles: ACCOUNTANT_ACTIONS are pinned equal in lib/role-scope.js and Code.gs; each needs accountant OR approver', () => {
+test('roles: ACCOUNTANT_ACTIONS and DISCOUNT_ACTIONS are pinned equal in lib/role-scope.js and Code.gs; the void needs accountant OR approver, the discount needs finance', () => {
   const { g } = world();
-  assert.deepEqual([...roleScope.ACCOUNTANT_ACTIONS], ['voidUnpaidClaim', 'setBillingDiscount']);
+  assert.deepEqual([...roleScope.ACCOUNTANT_ACTIONS], ['voidUnpaidClaim']);
   assert.deepEqual(arr(g.run('ACCOUNTANT_ACTIONS')), [...roleScope.ACCOUNTANT_ACTIONS]);
   for (const op of roleScope.ACCOUNTANT_ACTIONS) {
     assert.equal(roleScope.requiredRoleFor(op), 'accountant|approver');
     assert.equal(g.sandbox.requiredRoleFor_(op), 'accountant|approver');
   }
+  assert.deepEqual([...roleScope.DISCOUNT_ACTIONS], ['setBillingDiscount']);
+  assert.deepEqual(arr(g.run('DISCOUNT_ACTIONS')), [...roleScope.DISCOUNT_ACTIONS]);
+  for (const op of roleScope.DISCOUNT_ACTIONS) {
+    assert.equal(roleScope.requiredRoleFor(op), 'finance');
+    assert.equal(g.sandbox.requiredRoleFor_(op), 'finance');
+  }
+  // `finance` is by stable id — the same two ids on both sides.
+  assert.deepEqual(arr(g.run('FINANCE_USER_IDS')), [...users.FINANCE_USER_IDS]);
   assert.equal(g.run('NOT_RECEIVED_DECISION'), roleScope.NOT_RECEIVED_DECISION);
   // Classification is identical on both sides.
   const cases = [
@@ -145,16 +158,23 @@ test('roles: the validator refuses accountant on any record but Ortal\'s, and ac
   const narrowed = users.validateUserPinHashes(JSON.stringify([rec('ortal', ['controller'])]));
   assert.deepEqual([...narrowed.byId.ortal.roles], ['controller']);
   const P = (roles) => users.resolvePrincipal({ id: 'ortal', pinVersion: 1 }, users.validateUserPinHashes(JSON.stringify([rec('ortal', roles)])));
-  assert.equal(roleScope.roleAllowed(P(['controller', 'accountant']), 'setBillingDiscount'), true);
-  assert.equal(roleScope.roleAllowed(P(['controller']), 'setBillingDiscount'), false, 'fail-closed without the role');
-  assert.equal(roleScope.roleAllowed(P(['controller']), 'voidUnpaidClaim'), false);
+  assert.equal(roleScope.roleAllowed(P(['controller', 'accountant']), 'voidUnpaidClaim'), true);
+  assert.equal(roleScope.roleAllowed(P(['controller']), 'voidUnpaidClaim'), false, 'fail-closed without the role');
   assert.equal(roleScope.roleAllowed(null, 'voidUnpaidClaim'), false);
-  assert.equal(roleScope.roleAllowed({ auth: 'personal', id: 'sandra', roles: ['approver'] }, 'setBillingDiscount'), true);
-  assert.equal(roleScope.roleAllowed({ auth: 'personal', id: 'vered', roles: ['staff', 'deleter', 'approver'] }, 'setBillingDiscount'), false,
+  assert.equal(roleScope.roleAllowed({ auth: 'personal', id: 'sandra', roles: ['approver'] }, 'voidUnpaidClaim'), true);
+  assert.equal(roleScope.roleAllowed({ auth: 'personal', id: 'vered', roles: ['staff', 'deleter', 'approver'] }, 'voidUnpaidClaim'), false,
     'approver counts only for Sandra');
+  // «הנחה»: Vered and Sandra (finance, by id) — never Ortal, even WITH accountant; never Shiran / Yael.
+  const who = (id) => ({ auth: 'personal', id, roles: ['staff'] });
+  assert.deepEqual(['vered', 'sandra', 'ortal', 'shiran', 'yael'].map((id) => roleScope.roleAllowed(who(id), 'setBillingDiscount')),
+    [true, true, false, false, false]);
+  assert.equal(roleScope.roleAllowed(P(['controller', 'accountant']), 'setBillingDiscount'), false, 'Ortal with accountant: no discount');
+  assert.equal(roleScope.roleAllowed(P(['controller']), 'setBillingDiscount'), false);
+  assert.equal(roleScope.roleAllowed(null, 'setBillingDiscount'), false);
+  assert.equal(roleScope.roleAllowed({ auth: 'shared', id: 'vered', roles: ['staff'] }, 'setBillingDiscount'), false, 'a non-personal session holds nothing');
 });
 
-test('roles (Code.gs): «לא שולם — בטל תביעה» — Ortal WITH accountant and Sandra allowed; Ortal without it, Vered, Shiran, Yael refused with nothing written', () => {
+test('roles (Code.gs): «הסכום שדווח שגוי - בטל» — Ortal WITH accountant and Sandra allowed; Ortal without it, Vered, Shiran, Yael refused with nothing written', () => {
   for (const [who, expect] of [[ORTAL_NO_ACCT, ROLE_FORBIDDEN], [VERED, ROLE_FORBIDDEN], [SHIRAN, null], [YAEL, null]]) {
     const w = withReceipt();
     const before = w.snapshot();
@@ -169,23 +189,29 @@ test('roles (Code.gs): «לא שולם — בטל תביעה» — Ortal WITH ac
   }
 });
 
-test('roles (Code.gs): «הנחה» — Ortal WITH accountant and Sandra allowed; Ortal without it, Vered, Shiran, Yael refused with nothing written', () => {
+test('roles (Code.gs): «הנחה» — Vered and Sandra allowed; Ortal (with or without accountant, even with a forged finance cap), Shiran, Yael refused with nothing written', () => {
   const d = { patientId: PKEY, month: '2026-09', discountAmount: 5000, discountReason: 'הסדר מיוחד' };
-  for (const [who, expect] of [[ORTAL_NO_ACCT, ROLE_FORBIDDEN], [VERED, ROLE_FORBIDDEN], [SHIRAN, FORBIDDEN], [YAEL, FORBIDDEN]]) {
+  const ORTAL_FORGED = () => gsActor('ortal', 'אורטל', ['controller', 'accountant'], ['finance', 'billingControl']);
+  for (const who of [ORTAL, ORTAL_NO_ACCT, ORTAL_FORGED, SHIRAN, YAEL]) {
     const w = world();
     const before = w.snapshot();
     const r = w.discount(d, who);
-    if (expect === FORBIDDEN) assert.deepEqual([r.ok, r.error], [false, 'forbidden']);
-    else assert.deepEqual(r, expect);
+    assert.deepEqual([r.ok, r.error], [false, 'forbidden'], who().proxyUserId);
     assert.equal(w.snapshot(), before, 'nothing written');
   }
-  for (const who of [ORTAL, SANDRA]) assert.equal(world().discount(d, who).ok, true);
-  // A refusal is logged with the id + operation ONLY — no name, no amount, no reason.
-  const w = world();
-  w.discount(d, VERED);
-  const line = w.g.logs.find((l) => l.includes('forbidden_role'));
-  assert.ok(line && line.includes('user=vered') && line.includes('op=setBillingDiscount'), line);
-  assert.ok(!line.includes('דנה') && !line.includes('5000') && !line.includes('הסדר'), line);
+  for (const who of [VERED, SANDRA]) {
+    const w = world();
+    const r = w.discount(d, who);
+    assert.equal(r.ok, true, who().proxyUserId);
+    assert.equal(w.ovrRows().length, 1);
+  }
+  // Defense in depth: handle_'s own role gate (roleAllowed_) holds the same rule, apart from the view gates.
+  const { g } = world();
+  const params = (a) => ({ [g.run('ACTOR_FIELD')]: a });
+  const actor = (id, caps) => ({ verified: true, user: id, id, auth: 'personal', roles: [], caps });
+  assert.equal(g.sandbox.roleAllowed_(params(actor('vered', ['finance', 'billingControl'])), 'setBillingDiscount'), true);
+  assert.equal(g.sandbox.roleAllowed_(params(actor('ortal', ['billingControl'])), 'setBillingDiscount'), false);
+  assert.equal(g.sandbox.roleAllowed_({}, 'setBillingDiscount'), false, 'no verified actor, no discount');
 });
 
 test('roles (Code.gs): Ortal can never hard-delete a row, void through savePayment, or touch settings — even with a forged deleter / finance', () => {
@@ -305,7 +331,7 @@ test('void: undo is Sandra\'s alone — Vered and Ortal refused, Sandra un-voids
 
 /* =========================== 3. discount =========================== */
 
-test('discount: Ortal sets it — a BLANK-amount row with the four cells, server-stamped who / when, one audit row with prev / next', () => {
+test('discount: Vered sets it — a BLANK-amount row with the four cells, server-stamped who / when, one audit row with prev / next', () => {
   const w = world();
   const r = w.discount({ patientId: PKEY, month: '2026-09', discountAmount: '5000.50', discountReason: '  הנחת משפחה  ' });
   assert.equal(r.ok, true);
@@ -314,12 +340,12 @@ test('discount: Ortal sets it — a BLANK-amount row with the four cells, server
   assert.equal(rows.length, 1);
   const o = rows[0];
   assert.deepEqual([o.id, o.patientId, o.month, o.amount, Number(o.discountAmount), o.discountReason, o.discountBy],
-    ['ovr::' + PKEY + '::2026-09', PKEY, '2026-09', '', 5000.5, 'הנחת משפחה', 'אורטל']);
+    ['ovr::' + PKEY + '::2026-09', PKEY, '2026-09', '', 5000.5, 'הנחת משפחה', 'ורד']);
   assert.ok(String(o.discountAt).length >= 10, 'when (israelTimestamp_)');
   const a = w.audits('billing_discount_set');
   assert.equal(a.length, 1);
   const d = w.details(a[0]);
-  assert.deepEqual([d.prev.discountAmount, d.next.discountAmount, d.next.discountReason, d.by], [0, 5000.5, 'הנחת משפחה', 'אורטל']);
+  assert.deepEqual([d.prev.discountAmount, d.next.discountAmount, d.next.discountReason, d.by], [0, 5000.5, 'הנחת משפחה', 'ורד']);
   // The same value again → no write, no audit.
   const snap = w.snapshot();
   assert.equal(w.discount({ patientId: PKEY, month: '2026-09', discountAmount: 5000.5, discountReason: 'הנחת משפחה' }).changed, false);
@@ -365,7 +391,7 @@ test('discount: the amount editor keeps it, and deleting the amount override kee
   const up = w.call({ action: 'upsertBillingOverride', override: { patientId: PKEY, month: '2026-09', amount: 28000 } }, SANDRA);
   assert.equal(up.ok, true);
   let o = w.ovrRows()[0];
-  assert.deepEqual([Number(o.amount), Number(o.discountAmount), o.discountReason, o.discountBy], [28000, 3000, 'הנחה', 'אורטל']);
+  assert.deepEqual([Number(o.amount), Number(o.discountAmount), o.discountReason, o.discountBy], [28000, 3000, 'הנחה', 'ורד']);
   assert.equal(Number(up.override.discountAmount), 3000, 'the answer carries the kept discount');
   const del = w.call({ action: 'deleteBillingOverride', override: { id: 'ovr::' + PKEY + '::2026-09', patientId: PKEY } }, SANDRA);
   assert.equal(del.ok, true);
@@ -514,7 +540,9 @@ test('append-only: BillingOverrides keeps its first six columns and appends the 
   assert.deepEqual([...users.ROLES], ['staff', 'reporter', 'deleter', 'approver', 'viewer', 'controller', 'accountant']);
   assert.deepEqual([...scope.CONTROLLER_OVERRIDE_FIELDS].slice(-4), cols.slice(6));
   assert.deepEqual(arr(g.run('CONTROLLER_OVERRIDE_FIELDS')), [...scope.CONTROLLER_OVERRIDE_FIELDS]);
-  assert.ok(scope.CONTROLLER_ACTIONS.includes('setBillingDiscount') && scope.FINANCE_ACTIONS.includes('setBillingDiscount'));
+  assert.ok(scope.FINANCE_ACTIONS.includes('setBillingDiscount'));
+  assert.ok(!scope.CONTROLLER_ACTIONS.includes('setBillingDiscount'), 'Ortal\'s view no longer reaches the discount');
+  assert.ok(!arr(g.run('CONTROLLER_ACTIONS')).includes('setBillingDiscount'), 'nor does Code.gs');
   assert.ok(arr(g.run('PROXY_KNOWN_ACTIONS')).includes('setBillingDiscount'));
   // An existing 6-column sheet: the header is extended, existing rows untouched.
   g.sandbox.__sheets.BillingOverrides = richSheet('BillingOverrides', cols.slice(0, 6));
@@ -522,7 +550,7 @@ test('append-only: BillingOverrides keeps its first six columns and appends the 
   const pcols = arr(g.run('PATIENT_COLUMNS'));
   g.sandbox.__sheets.Patients = richSheet('Patients', pcols);
   g.sandbox.__sheets.Patients.appendRow(pcols.map((c) => ({ id: 'p1', houseId: 'arfoni', name: 'דנה כהן', date: '2026-09-15', pay: 30000, status: 'active' }[c] || '')));
-  const r = plain(g.post(Object.assign({ action: 'setBillingDiscount', discount: { patientId: PKEY, month: '2026-09', discountAmount: 10, discountReason: 'בדיקה' } }, ORTAL())));
+  const r = plain(g.post(Object.assign({ action: 'setBillingDiscount', discount: { patientId: PKEY, month: '2026-09', discountAmount: 10, discountReason: 'בדיקה' } }, VERED())));
   assert.equal(r.ok, true);
   const grid = g.sandbox.__sheets.BillingOverrides.grid;
   assert.deepEqual(grid[0], cols);
@@ -530,7 +558,7 @@ test('append-only: BillingOverrides keeps its first six columns and appends the 
   // A hand-added column where a discount column belongs → refused, nothing written.
   grid[0][6] = 'עמודה ידנית';
   const snap = JSON.stringify(grid);
-  assert.equal(plain(g.post(Object.assign({ action: 'setBillingDiscount', discount: { patientId: PKEY, month: '2026-10', discountAmount: 10, discountReason: 'בדיקה' } }, ORTAL()))).error, 'sheet_header_clash');
+  assert.equal(plain(g.post(Object.assign({ action: 'setBillingDiscount', discount: { patientId: PKEY, month: '2026-10', discountAmount: 10, discountReason: 'בדיקה' } }, VERED()))).error, 'sheet_header_clash');
   assert.equal(JSON.stringify(grid), snap);
 });
 
@@ -616,53 +644,56 @@ async function withServer(ortalRoles, fn) {
 const DISCOUNT_BODY = { action: 'setBillingDiscount', discount: { patientId: PKEY, month: '2026-09', discountAmount: 100, discountReason: 'סיבה' } };
 const VOID_BODY = { action: 'confirmPayment', confirm: { ids: ['rcpt-1'], status: 'not_received', flagNote: NOTE } };
 
-test('server: Vered and an Ortal record WITHOUT accountant get 403 forbidden_role before anything is proxied; logged with id + operation only', async () => {
-  for (const [ortalRoles, ids] of [[undefined, ['vered']], [['controller'], ['ortal', 'vered']]]) {
+test('server: the void — Vered and an Ortal record WITHOUT accountant get 403 forbidden_role; the discount — Ortal (with or without accountant) and Shiran get 403; nothing is proxied; logged with id + operation only', async () => {
+  for (const [ortalRoles, voidIds, discountIds] of [[undefined, ['vered'], ['ortal', 'shiran']], [['controller'], ['ortal', 'vered'], ['ortal', 'shiran']]]) {
     const stub = stubHttps();
     try {
       await withServer(ortalRoles, async (port, logs) => {
-        for (const id of ids) {
-          for (const body of [DISCOUNT_BODY, VOID_BODY]) {
-            const r = await request(port, 'POST', '/api/sheets', { cookie: personal(id), body });
-            assert.equal(r.status, 403, id + ' ' + body.action);
-            assert.deepEqual(r.json, ROLE_FORBIDDEN);
-          }
+        for (const id of voidIds) {
+          const r = await request(port, 'POST', '/api/sheets', { cookie: personal(id), body: VOID_BODY });
+          assert.equal(r.status, 403, id + ' void');
+          assert.deepEqual(r.json, ROLE_FORBIDDEN);
+        }
+        for (const id of discountIds) {
+          const r = await request(port, 'POST', '/api/sheets', { cookie: personal(id), body: DISCOUNT_BODY });
+          assert.equal(r.status, 403, id + ' discount');
+          assert.equal(r.json.ok, false);
         }
         assert.equal(stub.calls.length, 0, 'nothing proxied');
         const roleLogs = logs.filter((l) => l.includes('[role] 403'));
-        assert.ok(roleLogs.length >= ids.length * 2);
+        assert.ok(roleLogs.length >= voidIds.length);
         for (const l of roleLogs) {
-          assert.match(l, /op=(setBillingDiscount|voidUnpaidClaim) needs=accountant\|approver/);
+          assert.match(l, /op=voidUnpaidClaim needs=accountant\|approver/);
           assert.ok(!l.includes('סיבה') && !l.includes('דנה') && !l.includes(NOTE), l);
         }
-        // Shiran: refused (her view has no billing at all).
-        const s = await request(port, 'POST', '/api/sheets', { cookie: personal('shiran'), body: DISCOUNT_BODY });
-        assert.equal(s.status, 403);
-        assert.equal(stub.calls.length, 0);
       });
     } finally { stub.restore(); }
   }
 });
 
-test('server: Ortal WITH accountant and Sandra are proxied, roles from the session only; /api/me canAccount', async () => {
+test('server: the void — Ortal WITH accountant and Sandra; the discount — Vered and Sandra — are proxied, roles from the session only; /api/me canAccount / canDiscount', async () => {
   const stub = stubHttps();
   try {
     await withServer(undefined, async (port) => {
-      for (const id of ['ortal', 'sandra']) {
-        for (const body of [DISCOUNT_BODY, VOID_BODY]) {
-          const forged = Object.assign({}, body, { proxyRoles: ['approver'], proxyUserId: 'sandra' });
-          const r = await request(port, 'POST', '/api/sheets', { cookie: personal(id), body: forged });
-          assert.equal(r.status, 200, id + ' ' + body.action);
-        }
+      const plan = [['ortal', VOID_BODY], ['sandra', VOID_BODY], ['vered', DISCOUNT_BODY], ['sandra', DISCOUNT_BODY]];
+      for (const [id, body] of plan) {
+        const forged = Object.assign({}, body, { proxyRoles: ['approver'], proxyUserId: 'sandra' });
+        const r = await request(port, 'POST', '/api/sheets', { cookie: personal(id), body: forged });
+        assert.equal(r.status, 200, id + ' ' + body.action);
       }
       assert.equal(stub.calls.length, 4);
-      assert.deepEqual(stub.calls.map((c) => c.proxyUserId), ['ortal', 'ortal', 'sandra', 'sandra'], 'never the forged id');
+      assert.deepEqual(stub.calls.map((c) => c.proxyUserId), ['ortal', 'sandra', 'vered', 'sandra'], 'never the forged id');
       assert.deepEqual(stub.calls[0].proxyRoles, ['controller', 'accountant']);
-      const me = async (id) => (await request(port, 'GET', '/api/me', { cookie: personal(id) })).json.canAccount;
-      assert.deepEqual([await me('ortal'), await me('sandra'), await me('vered'), await me('shiran')], [true, true, false, false]);
+      const me = async (id) => (await request(port, 'GET', '/api/me', { cookie: personal(id) })).json;
+      const flags = async (id) => { const j = await me(id); return [j.canAccount, j.canDiscount]; };
+      assert.deepEqual(await flags('ortal'), [true, false], 'Ortal: cancel yes, discount no');
+      assert.deepEqual(await flags('sandra'), [true, true]);
+      assert.deepEqual(await flags('vered'), [false, true], 'Vered: discount yes, cancel no');
+      assert.deepEqual(await flags('shiran'), [false, false]);
     });
     await withServer(['controller'], async (port) => {
-      assert.equal((await request(port, 'GET', '/api/me', { cookie: personal('ortal') })).json.canAccount, false, 'fail-closed');
+      const j = (await request(port, 'GET', '/api/me', { cookie: personal('ortal') })).json;
+      assert.deepEqual([j.canAccount, j.canDiscount], [false, false], 'fail-closed');
     });
   } finally { stub.restore(); }
 });

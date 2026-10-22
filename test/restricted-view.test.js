@@ -263,13 +263,6 @@ test('every mapped ACTION is served for Vered and Sandra (unchanged); a shared c
         const cookie = personal(who);
         for (const action of scope.FINANCE_ACTIONS) {
           const before = stub.calls.length;
-          // «הנחה» also needs the accountant ROLE or Sandra's approver
-          // (CHANGELOG-ortal-billing-discounts.md): Vered → 403, nothing proxied.
-          if (action === 'setBillingDiscount' && who === 'vered') {
-            assert.strictEqual((await request(port, 'POST', '/api/sheets', { cookie, body: { action } })).status, 403, action);
-            assert.strictEqual(stub.calls.length, before, 'not proxied: ' + action);
-            continue;
-          }
           assert.strictEqual((await request(port, 'GET', '/api/sheets?action=' + action, { cookie })).status, 200, action);
           assert.strictEqual((await request(port, 'POST', '/api/sheets', { cookie, body: { action } })).status, 200, action);
           assert.strictEqual(stub.calls.length, before + 2, 'proxied: ' + action);

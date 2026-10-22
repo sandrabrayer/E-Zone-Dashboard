@@ -298,7 +298,11 @@
 // discount, the «הנחה» chip, Sandra's voids + discounts list (app.js,
 // index.html, style.css) (CHANGELOG-ortal-billing-ui.md). Live v83 verified
 // 2026-10-22 (v17 never reused).
-var CACHE_VERSION = 'v84';
+// v84 → v85: discounts are Vered's (not Ortal's); Ortal's tab: «בעיות גבייה» first
+// in two subsections, no releases / committees cards, «הסכום שדווח שגוי - בטל»
+// (app.js, index.html) (CHANGELOG-discount-by-vered.md). Live v84 verified
+// 2026-10-22 (v17 never reused).
+var CACHE_VERSION = 'v85';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

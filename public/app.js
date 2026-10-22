@@ -343,6 +343,7 @@ const state = {
   billingControl: null,
   canConfirm: false,
   canAccount: false,
+  canDiscount: false,
   payments: [],
   /* Phase 3 PR 2: one row per money received (getPayments `receipts`, each
    * with the cycleId it pays for) and the Funders tab (getPayments
@@ -1299,7 +1300,11 @@ function applySessionInfo(info) {
   state.approver = i.approver === true;
   const confirmChanged = state.canConfirm !== (i.canConfirm === true);
   state.canConfirm = i.canConfirm === true;
+  // Ortal's cancel and Vered's discount: a change redraws the tab, so a render
+  // that ran before /api/me answered never keeps the wrong layout.
+  const accessChanged = state.canAccount !== (i.canAccount === true) || state.canDiscount !== (i.canDiscount === true);
   state.canAccount = i.canAccount === true;
+  state.canDiscount = i.canDiscount === true;
   renderWhoami(i.user || '');
   const adminBtn = document.getElementById('pin-admin-open');
   if (adminBtn) adminBtn.classList.toggle('hidden', i.approver !== true);
@@ -1312,6 +1317,7 @@ function applySessionInfo(info) {
     state.billingRead = i.billingRead === true;
     applyControllerView();
     if (readChanged && state.billingRead) loadBillingRead().catch(() => { /* shown in the tab */ });
+    if (accessChanged && state.currentScreen === 'billing-control') renderBillingControl();
     return;
   }
   if (_controllerApplied) { location.reload(); return; }
@@ -1320,7 +1326,7 @@ function applySessionInfo(info) {
   // Restricted only on an explicit false (the server always sends a
   // boolean); an /api/me without the field keeps the full view as before.
   applyView(i.finance !== false);
-  if (confirmChanged && state.currentScreen === 'billing-control') renderBillingControl();
+  if ((confirmChanged || accessChanged) && state.currentScreen === 'billing-control') renderBillingControl();
   // A render that ran before /api/me answered drew no role-gated control;
   // redraw once the roles (and the view) are known.
   if (roleChanged && typeof renderAll === 'function') { try { renderAll(); } catch (_) { /* no-op */ } }
@@ -4841,6 +4847,16 @@ function paintExpectedDischarges() {
 function moveExpectedDischargesToControllerScreen() {
   const card = document.getElementById('expected-discharges');
   const screen = document.getElementById('screen-' + BILLING_CONTROL_SCREEN);
+  // The accountant (Ortal) works only on billing: no releases / committees
+  // cards, and «בעיות גבייה» is the first thing on her tab
+  // (CHANGELOG-discount-by-vered.md). Other controller sessions are unchanged.
+  if (typeof state !== 'undefined' && state.canAccount === true) {
+    [card, document.getElementById('upcoming-committees')].forEach(el => { if (el && el.parentNode && el.parentNode.removeChild) el.parentNode.removeChild(el); });
+    const grp = document.getElementById('bc-problems-group');
+    const head0 = screen && screen.querySelector ? screen.querySelector('.screen-head') : null;
+    if (grp && screen && screen.insertBefore && grp.previousElementSibling !== head0) screen.insertBefore(grp, head0 ? head0.nextSibling : screen.firstChild);
+    return;
+  }
   if (!card || !screen || !screen.insertBefore || card.parentNode === screen) return;
   const head = screen.querySelector ? screen.querySelector('.screen-head') : null;
   screen.insertBefore(card, head ? head.nextSibling : screen.firstChild);
@@ -16982,6 +16998,12 @@ function bcReceiptHtml(r, mode, opts) {
     if (s.partialOpen === r.id) actions += bcPartialFormHtml(r);
     if (s.dupOpen === r.id) actions += bcDuplicateFormHtml(r);
   }
+  // «הסכום שדווח שגוי - בטל» on every UNCONFIRMED reported payment (queue and
+  // flagged); confirmed / partial rows never get it.
+  if (state.canAccount === true && (mode === 'queue' || mode === 'flagged')) {
+    actions += `<div class="bc-actions"><button type="button" class="btn small danger" data-bc-nr-open="${id}" aria-expanded="${s.nrOpen === r.id}">הסכום שדווח שגוי - בטל</button></div>`;
+    if (s.nrOpen === r.id) actions += bcNrFormHtml(id, s, 'bc-nrq-');
+  }
   const extra = [];
   if (mode === 'flagged' || (mode === 'exception' && r.flagNote)) {
     extra.push(`<div class="bc-note-text"><b>לא שולם:</b> ${escapeHtml(r.flagNote || '—')}${r.flaggedAt ? ` <span class="bc-sub">(${escapeHtml(bcStampHe(r.flaggedAt))})</span>` : ''}${o.ageDays !== undefined ? ` <span class="bc-sub">· ${escapeHtml(String(o.ageDays))} ימים</span>` : ''}</div>`);
@@ -17232,29 +17254,27 @@ function bcProblemsHtml(model, opts) {
   const s = o.state || {};
   const canConfirm = o.canConfirm === true;
   const canAccount = o.canAccount === true;
+  const canDiscount = o.canDiscount === true;
   const m = model || { patients: [], discounts: [] };
-  if (!m.patients.length) return '<p class="billing-date-label">אין תשלומים חסרים או לא מאושרים</p>';
+  const sub = (title, count, body, empty) => `<div class="bc-sub-group"><h4 class="bc-sub-title">${escapeHtml(title)} <span class="count-pill">${count}</span></h4>${body || `<p class="billing-date-label">${escapeHtml(empty)}</p>`}</div>`;
   const receiptLine = r => {
     const id = escapeHtml(r.id);
     const st = r.confirmStatus === 'flagged' ? 'סומן «לא שולם»' : 'ממתין לאימות';
     const open = s.nrOpen === r.id;
     const buttons = [
       canConfirm ? `<button type="button" class="btn small primary" data-bc-pr-confirm="${id}">שולם - אשר</button>` : '',
-      canAccount ? `<button type="button" class="btn small danger" data-bc-nr-open="${id}" aria-expanded="${open}">לא שולם - בטל תביעה</button>` : '',
+      canAccount ? `<button type="button" class="btn small danger" data-bc-nr-open="${id}" aria-expanded="${open}">הסכום שדווח שגוי - בטל</button>` : '',
     ].join('');
-    const form = open && canAccount ? `<div class="bc-nr-form">
-        <label for="bc-nr-${id}">למה לבטל? (${BC_REASON_MIN} עד ${BC_REASON_MAX} תווים)</label>
-        <textarea id="bc-nr-${id}" data-bc-nr-note="${id}" maxlength="${BC_REASON_MAX}" rows="2">${escapeHtml(s.nrDraft || '')}</textarea>
-        <div class="error-msg bc-nr-error hidden" role="alert"></div>
-        <button type="button" class="btn small danger" data-bc-nr-save="${id}">בטל תביעה</button>
-        <button type="button" class="btn small ghost" data-bc-nr-cancel="${id}">ביטול</button></div>` : '';
+    const form = open && canAccount ? bcNrFormHtml(id, s, 'bc-nr-') : '';
     return `<div class="bc-pr-item" data-bc-id="${id}"><span class="bc-k">קבלה</span> <span class="bc-v">${escapeHtml(fmtShekel(r.amount))}</span>
       <span class="bc-sub">${escapeHtml(st)} · התקבל ${escapeHtml(formatDateHe(r.receivedDate))}</span> ${buttons}${form}</div>`;
   };
+  // An unpaid cycle nobody reported on: informational. Ortal has NO button here;
+  // «הנחה» is Vered's (and Sandra's) — canDiscount.
   const cycleLine = c => {
     const key = escapeHtml(c.patientKey + '|' + c.month);
     const open = s.discOpen === c.patientKey + '|' + c.month;
-    const form = open && canAccount ? `<div class="bc-disc-form">
+    const form = open && canDiscount ? `<div class="bc-disc-form">
         <label for="bc-disc-amt-${key}">סכום ההנחה (₪)</label>
         <input id="bc-disc-amt-${key}" data-bc-disc-amount="${key}" inputmode="decimal" value="${escapeHtml(s.discAmount || '')}" />
         <label for="bc-disc-why-${key}">סיבה (${BC_REASON_MIN} עד ${BC_REASON_MAX} תווים)</label>
@@ -17266,10 +17286,26 @@ function bcProblemsHtml(model, opts) {
       <span class="bc-v">${escapeHtml(fmtShekel(c.balance))}</span>
       <span class="bc-sub">${escapeHtml(formatDateHe(c.start))} · ${escapeHtml(String(c.days))} ימים</span>
       ${bcDiscountChipHtml(c.discount, c.expected)}
-      ${canAccount ? `<button type="button" class="btn small" data-bc-disc-open="${key}" aria-expanded="${open}">הנחה</button>` : ''}${form}</div>`;
+      ${canDiscount ? `<button type="button" class="btn small" data-bc-disc-open="${key}" aria-expanded="${open}">הנחה</button>` : ''}${form}</div>`;
   };
-  return m.patients.map(p => `<div class="bc-row bc-row--problem"><div class="bc-head"><b class="bc-name">${escapeHtml(p.name || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(p.houseId))}</span></div>
-    ${p.receipts.map(receiptLine).join('')}${p.cycles.map(cycleLine).join('')}</div>`).join('');
+  const rowOf = (p, lines) => `<div class="bc-row bc-row--problem"><div class="bc-head"><b class="bc-name">${escapeHtml(p.name || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(p.houseId))}</span></div>${lines}</div>`;
+  const withReceipts = m.patients.filter(p => p.receipts.length);
+  const withCycles = m.patients.filter(p => p.cycles.length);
+  const nReceipts = withReceipts.reduce((n, p) => n + p.receipts.length, 0);
+  const nCycles = withCycles.reduce((n, p) => n + p.cycles.length, 0);
+  const plus = m.complete ? '' : '+';
+  return sub('סכומים שדווחו וממתינים לאימות', nReceipts, withReceipts.map(p => rowOf(p, p.receipts.map(receiptLine).join(''))).join(''), 'אין סכומים שממתינים לאימות')
+    + sub('מחזורים שלא שולמו ולא דווח עליהם תשלום', `${nCycles}${plus}`, withCycles.map(p => rowOf(p, p.cycles.map(cycleLine).join(''))).join(''), 'אין מחזורים פתוחים');
+}
+
+/* The «הסכום שדווח שגוי - בטל» reason form (problems list and receipt rows). */
+function bcNrFormHtml(id, s, idPrefix) {
+  return `<div class="bc-nr-form">
+        <label for="${idPrefix}${id}">למה לבטל? (${BC_REASON_MIN} עד ${BC_REASON_MAX} תווים)</label>
+        <textarea id="${idPrefix}${id}" data-bc-nr-note="${id}" maxlength="${BC_REASON_MAX}" rows="2">${escapeHtml(s.nrDraft || '')}</textarea>
+        <div class="error-msg bc-nr-error hidden" role="alert"></div>
+        <button type="button" class="btn small danger" data-bc-nr-save="${id}">בטל סכום</button>
+        <button type="button" class="btn small ghost" data-bc-nr-cancel="${id}">ביטול</button></div>`;
 }
 
 /* «הנחות שניתנו» / Sandra's exceptions: one read-only line per discount. */
@@ -17297,7 +17333,7 @@ function bcVoidRowsHtml(list) {
 /* «הנחה» save: one cycle (patientKey + month). The server re-checks the role
  * and every field; the queue is re-read after it (debt aging moves). */
 async function saveBillingDiscount(patientKey, month, amount, reason) {
-  if (!state.canAccount) { showError(ROLE_FORBIDDEN_TEXT); return null; }
+  if (!state.canDiscount) { showError(ROLE_FORBIDDEN_TEXT); return null; }
   const s = billingControlState();
   let res;
   try {
@@ -17380,12 +17416,12 @@ function renderBillingControl() {
 
   // «בעיות גבייה» (CHANGELOG-ortal-billing-ui.md): only for a session that may act.
   const prEl = document.getElementById('bc-problems-group');
-  const showProblems = (state.canAccount === true) && !!s.data.problems;
+  const showProblems = (state.canAccount === true || state.canDiscount === true) && !!s.data.problems;
   if (prEl) prEl.classList.toggle('hidden', !showProblems);
   if (showProblems) {
     const pm = bcProblemsModel(s.data);
-    set('bc-problems-count', `${pm.patients.length}${pm.complete ? '' : '+'}`);
-    set('bc-problems', bcProblemsHtml(pm, { state: s, canConfirm: state.canConfirm === true, canAccount: true }));
+    set('bc-problems-count', `${pm.patients.reduce((n, p) => n + p.receipts.length + p.cycles.length, 0)}${pm.complete ? '' : '+'}`);
+    set('bc-problems', bcProblemsHtml(pm, { state: s, canConfirm: state.canConfirm === true, canAccount: state.canAccount === true, canDiscount: state.canDiscount === true }));
     set('bc-discounts-given', bcDiscountRowsHtml(pm.discounts));
   }
 

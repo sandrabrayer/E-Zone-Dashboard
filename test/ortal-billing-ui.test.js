@@ -55,7 +55,8 @@ function world() {
 test('queue: `problems` only for accountant / approver — owed cycles carry the discount key; Vered and Ortal without the role get none', () => {
   const w = world();
   assert.equal(w.reportPay(10000, daysAgo(2)).ok, true);
-  for (const who of [VERED, ORTAL_NO_ACCT]) assert.ok(!('problems' in w.queue(who)), 'no problems list');
+  assert.ok(!('problems' in w.queue(ORTAL_NO_ACCT)), 'no problems list without the role');
+  assert.ok('problems' in w.queue(VERED), 'Vered gets the list so she can give the discount');
   const q = w.queue(ORTAL);
   assert.equal(q.problems.complete, true);
   const sep = q.problems.cycles.find((c) => c.start === '2026-09-15');
@@ -63,14 +64,14 @@ test('queue: `problems` only for accountant / approver — owed cycles carry the
   assert.ok(q.problems.cycles.some((c) => c.start === '2026-10-15' && c.kind === 'unrecorded'));
   assert.ok('problems' in w.queue(SANDRA));
   // After a discount the cycle carries it, and a full discount removes the cycle.
-  assert.equal(w.call({ action: 'setBillingDiscount', discount: { patientId: PKEY, month: '2026-09', discountAmount: 5000, discountReason: 'הנחה' } }, ORTAL).ok, true);
-  assert.equal(w.call({ action: 'setBillingDiscount', discount: { patientId: PKEY, month: '2026-10', discountAmount: 30000, discountReason: 'פטור' } }, ORTAL).ok, true);
+  assert.equal(w.call({ action: 'setBillingDiscount', discount: { patientId: PKEY, month: '2026-09', discountAmount: 5000, discountReason: 'הנחה' } }, VERED).ok, true);
+  assert.equal(w.call({ action: 'setBillingDiscount', discount: { patientId: PKEY, month: '2026-10', discountAmount: 30000, discountReason: 'פטור' } }, VERED).ok, true);
   const q2 = w.queue(ORTAL);
   const sep2 = q2.problems.cycles.find((c) => c.start === '2026-09-15');
   assert.deepEqual([sep2.expected, sep2.balance, sep2.discount], [25000, 15000, 5000]);
   assert.ok(!q2.problems.cycles.some((c) => c.start === '2026-10-15'), 'fully discounted: never debt');
   assert.deepEqual(q2.problems.discounts.map((d) => [d.patientName, d.houseId, d.month, d.amount, d.by]).sort(),
-    [['דנה כהן', 'arfoni', '2026-09', 5000, 'אורטל'], ['דנה כהן', 'arfoni', '2026-10', 30000, 'אורטל']]);
+    [['דנה כהן', 'arfoni', '2026-09', 5000, 'ורד'], ['דנה כהן', 'arfoni', '2026-10', 30000, 'ורד']]);
   // The follow-up queue still never carries a patient key.
   assert.ok(!JSON.stringify(q2.followup).includes(PKEY));
 });
@@ -80,11 +81,12 @@ test('queue: Sandra\'s exceptions list every void and every discount with who / 
   assert.equal(w.reportPay(10000, daysAgo(2)).ok, true);
   const id = w.queue().receipts[0].id;
   assert.equal(w.call({ action: 'confirmPayment', confirm: { ids: [id], status: 'not_received', flagNote: 'לא הגיע לבנק' } }, ORTAL).ok, true);
-  assert.equal(w.call({ action: 'setBillingDiscount', discount: { patientId: PKEY, month: '2026-09', discountAmount: 1500, discountReason: 'הסדר' } }, ORTAL).ok, true);
+  assert.equal(w.call({ action: 'setBillingDiscount', discount: { patientId: PKEY, month: '2026-09', discountAmount: 1500, discountReason: 'הסדר' } }, VERED).ok, true);
   const ex = w.queue(SANDRA).exceptions;
   assert.deepEqual(ex.voids.map((v) => [v.id, v.receipt, v.amount, v.kind, v.reason, v.by]), [[id, true, 10000, 'not_received', 'לא הגיע לבנק', 'אורטל']]);
-  assert.deepEqual(ex.discounts.map((d) => [d.patientName, d.month, d.amount, d.reason, d.by]), [['דנה כהן', '2026-09', 1500, 'הסדר', 'אורטל']]);
+  assert.deepEqual(ex.discounts.map((d) => [d.patientName, d.month, d.amount, d.reason, d.by]), [['דנה כהן', '2026-09', 1500, 'הסדר', 'ורד']]);
   for (const who of [ORTAL, VERED]) assert.ok(!('exceptions' in w.queue(who)));
+  assert.deepEqual(ex.discounts.map((d) => d.by), ['ורד'], 'the discount names Vered');
 });
 
 /* ============================ app.js ============================ */
@@ -119,7 +121,7 @@ function loadApp() {
     globalThis.__test = {
       get state() { return state; },
       bcReasonCheck, bcNotReceivedCheck, bcDiscountCheck, bcDiscountChipHtml, bcProblemsModel, bcProblemsHtml,
-      bcDiscountRowsHtml, bcVoidRowsHtml, bcExceptionsHtml, applySessionInfo, confirmReceipts, saveBillingDiscount,
+      bcDiscountRowsHtml, bcReceiptHtml, bcVoidRowsHtml, bcExceptionsHtml, applySessionInfo, confirmReceipts, saveBillingDiscount,
       set apiPost(f) { apiPost = f; }, set showToast(f) { showToast = f; }, set showError(f) { showError = f; },
       set loadBillingControl(f) { loadBillingControl = f; }, billingControlState,
     };`, sandbox);
@@ -163,13 +165,21 @@ test('model: one entry per patient — unconfirmed receipts (waiting / «לא ש
   assert.equal(app.bcProblemsModel({ receipts: [], problems: { cycles: [{ balance: 0, patientName: 'x' }] } }).patients.length, 0, 'a settled cycle is no problem');
 });
 
-test('html: the three buttons for Ortal; none without the permission; the «הנחה» chip and the amount after it; everything escaped', () => {
+test('html: Ortal gets confirm + cancel on reported amounts and NO discount button; Vered gets the discount button; the chip; everything escaped', () => {
   const app = loadApp();
   const m = app.bcProblemsModel(DATA);
   const html = app.bcProblemsHtml(m, { state: {}, canConfirm: true, canAccount: true });
   assert.match(html, /data-bc-pr-confirm="rcpt-1">שולם - אשר</);
-  assert.match(html, /data-bc-nr-open="rcpt-1"[^>]*>לא שולם - בטל תביעה</);
-  assert.match(html, /data-bc-disc-open="arfoni::דנה כהן::2026-09-15\|2026-09"[^>]*>הנחה</);
+  assert.match(html, /data-bc-nr-open="rcpt-1"[^>]*>הסכום שדווח שגוי - בטל</);
+  assert.ok(!/data-bc-disc-open/.test(html), 'Ortal gives no discount');
+  const vered = app.bcProblemsHtml(m, { state: {}, canConfirm: false, canAccount: false, canDiscount: true });
+  assert.match(vered, /data-bc-disc-open="arfoni::דנה כהן::2026-09-15\|2026-09"[^>]*>הנחה</);
+  assert.ok(!/data-bc-(pr-confirm|nr-open)/.test(vered), 'Vered neither confirms nor cancels here');
+  // Two subsections with counts; the unpaid-cycle subsection has no cancel/confirm buttons.
+  assert.match(html, /סכומים שדווחו וממתינים לאימות <span class="count-pill">2</);
+  assert.match(html, /מחזורים שלא שולמו ולא דווח עליהם תשלום <span class="count-pill">1</);
+  const cyclesPart = html.slice(html.indexOf('מחזורים שלא שולמו'));
+  assert.ok(!/<button/.test(cyclesPart), 'no buttons on unpaid cycles for Ortal');
   assert.match(html, /«הנחה» ₪\s?5,000 · לתשלום ₪\s?25,000/);
   assert.ok(!html.includes('<img'), 'a name is never markup');
   assert.ok(html.includes('&lt;img'));
@@ -180,11 +190,13 @@ test('html: the three buttons for Ortal; none without the permission; the «הנ
   assert.match(nr, /data-bc-nr-save="rcpt-1"/);
   assert.match(nr, /2 עד 120 תווים/);
   assert.ok(nr.includes('&lt;x&gt;') && !nr.includes('<x>'));
-  const disc = app.bcProblemsHtml(m, { state: { discOpen: 'arfoni::דנה כהן::2026-09-15|2026-09' }, canConfirm: true, canAccount: true });
+  const disc = app.bcProblemsHtml(m, { state: { discOpen: 'arfoni::דנה כהן::2026-09-15|2026-09' }, canConfirm: false, canAccount: false, canDiscount: true });
   assert.match(disc, /data-bc-disc-save=/);
   assert.match(disc, /data-bc-disc-amount=/);
   assert.equal(app.bcDiscountChipHtml(0), '');
-  assert.equal(app.bcProblemsHtml(app.bcProblemsModel({ receipts: [] }), {}), '<p class="billing-date-label">אין תשלומים חסרים או לא מאושרים</p>');
+  const empty = app.bcProblemsHtml(app.bcProblemsModel({ receipts: [] }), {});
+  assert.match(empty, /אין סכומים שממתינים לאימות/);
+  assert.match(empty, /אין מחזורים פתוחים/);
 });
 
 test('Sandra\'s read-only list: «ביטולים» and «הנחות» with who / why, escaped, no button', () => {
@@ -203,19 +215,26 @@ test('Sandra\'s read-only list: «ביטולים» and «הנחות» with who /
 
 test('actions: the void sends status not_received + the reason; the discount sends the cycle key and is proven before it is applied', async () => {
   const app = loadApp();
-  app.applySessionInfo({ auth: 'personal', user: 'אורטל', canConfirm: true, canAccount: true, view: 'controller' });
-  assert.equal(app.state.canAccount, true);
-  const posts = [];
+  const posts = []; const posts0 = () => posts.length;
   app.showToast = () => {}; const errors = []; app.showError = (e) => errors.push(e);
+  app.applySessionInfo({ auth: 'personal', user: 'ורד', canConfirm: false, canAccount: false, canDiscount: true, view: 'full' });
+  assert.equal(app.state.canDiscount, true);
+  app.applySessionInfo({ auth: 'personal', user: 'אורטל', canConfirm: true, canAccount: true, canDiscount: false, view: 'controller' });
+  assert.equal(app.state.canAccount, true);
+  assert.equal(app.state.canDiscount, false);
+  assert.equal(await app.saveBillingDiscount('k', '2026-09', 1, 'rr'), null, 'Ortal: nothing sent');
+  assert.equal(posts0(), 0);
+  assert.equal(errors.length, 1, 'refused with the role message'); errors.length = 0;
   app.loadBillingControl = async () => {};
   app.apiPost = async (b) => {
     posts.push(JSON.parse(JSON.stringify(b)));
     if (b.action === 'confirmPayment') return { ok: true, changed: [], voided: [{ id: 'rcpt-1' }] };
-    return { ok: true, changed: true, override: { id: 'ovr::k::2026-09', patientId: 'k', month: '2026-09', amount: '', discountAmount: 5000, discountReason: 'r', discountBy: 'אורטל', discountAt: 't' } };
+    return { ok: true, changed: true, override: { id: 'ovr::k::2026-09', patientId: 'k', month: '2026-09', amount: '', discountAmount: 5000, discountReason: 'r', discountBy: 'ורד', discountAt: 't' } };
   };
   app.billingControlState().data = { receipts: [{ id: 'rcpt-1', confirmStatus: 'reported' }] };
   await app.confirmReceipts(['rcpt-1'], 'not_received', { flagNote: 'לא הגיע' });
   assert.deepEqual(posts[0], { action: 'confirmPayment', confirm: { ids: ['rcpt-1'], status: 'not_received', flagNote: 'לא הגיע' } });
+  app.applySessionInfo({ auth: 'personal', user: 'ורד', canConfirm: false, canAccount: false, canDiscount: true, view: 'full' });
   await app.saveBillingDiscount('k', '2026-09', 5000, 'r');
   assert.deepEqual(posts[1], { action: 'setBillingDiscount', discount: { patientId: 'k', month: '2026-09', discountAmount: 5000, discountReason: 'r' } });
   assert.equal(app.state.billingOverrides.find((o) => o.id === 'ovr::k::2026-09').discountAmount, 5000);
@@ -225,18 +244,37 @@ test('actions: the void sends status not_received + the reason; the discount sen
   assert.equal(await app.saveBillingDiscount('k2', '2026-09', 1, 'rr'), null);
   assert.equal(errors.length, 1);
   // Without the permission nothing is sent.
-  app.applySessionInfo({ auth: 'personal', user: 'ורד', canConfirm: false, canAccount: false, view: 'full' });
+  app.applySessionInfo({ auth: 'personal', user: 'ורד', canConfirm: false, canAccount: false, canDiscount: false, view: 'full' });
   const n = posts.length;
   assert.equal(await app.saveBillingDiscount('k', '2026-09', 1, 'rr'), null);
   assert.equal(posts.length, n);
 });
 
-test('page wiring: the hidden «בעיות גבייה» section, the billing-row chip, the CSS and SW v84', () => {
+test('page wiring: the hidden «בעיות גבייה» section, the billing-row chip, the CSS and SW v85', () => {
   assert.match(HTML, /<div id="bc-problems-group" class="[^"]*hidden"/);
   for (const id of ['bc-problems-count', 'bc-problems', 'bc-discounts-given']) assert.ok(HTML.includes(`id="${id}"`), id);
   assert.match(APP_SRC, /!isVoid && payment\.discount > 0 \? bcDiscountChipHtml\(payment\.discount\)/);
   assert.match(fs.readFileSync(path.join(ROOT, 'public', 'style.css'), 'utf8'), /\.badge\.discount \{/);
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
-  assert.equal(v, 'v84');
+  assert.equal(v, 'v85');
   assert.notEqual(v, 'v17');
+});
+
+test('layout: queue rows get «הסכום שדווח שגוי - בטל» only when unconfirmed and canAccount; confirmed / partial never', () => {
+  const app = loadApp();
+  app.applySessionInfo({ auth: 'personal', user: 'אורטל', canConfirm: true, canAccount: true, canDiscount: false, view: 'controller' });
+  const r = (st) => ({ id: 'rcpt-7', patientName: 'דנה', houseId: 'arfoni', amount: 100, confirmStatus: st, receivedDate: '2026-10-01' });
+  for (const [mode, st, want] of [['queue', 'reported', true], ['flagged', 'flagged', true], ['confirmed', 'confirmed', false], ['partial', 'partial', false]]) {
+    const html = app.bcReceiptHtml(r(st), mode);
+    assert.equal(/data-bc-nr-open="rcpt-7"/.test(html), want, mode);
+  }
+  app.applySessionInfo({ auth: 'personal', user: 'ורד', canConfirm: false, canAccount: false, canDiscount: true, view: 'full' });
+  assert.ok(!/data-bc-nr-open/.test(app.bcReceiptHtml(r('reported'), 'queue')), 'Vered: no cancel');
+});
+
+test('layout: the accountant tab hides releases / committees and puts «בעיות גבייה» first; the race fix redraws on a late /api/me', () => {
+  assert.match(APP_SRC, /if \(typeof state !== 'undefined' && state\.canAccount === true\) \{\n\s+\[card, document\.getElementById\('upcoming-committees'\)\]/);
+  assert.match(APP_SRC, /accessChanged/);
+  assert.match(APP_SRC, /if \(accessChanged && state\.currentScreen === 'billing-control'\) renderBillingControl\(\)/);
+  assert.match(APP_SRC, /\(state\.canAccount === true \|\| state\.canDiscount === true\) && !!s\.data\.problems/);
 });

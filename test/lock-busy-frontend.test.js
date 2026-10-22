@@ -347,7 +347,7 @@ const PATHS = [
     // «הנחה» on «בעיות גבייה» (CHANGELOG-ortal-billing-ui.md).
     name: 'setBillingDiscount (Ortal\'s «הנחה»)',
     action: 'setBillingDiscount',
-    setup: (app) => { app.state.canAccount = true; app.state.billingOverrides = []; },
+    setup: (app) => { app.state.canDiscount = true; app.state.billingOverrides = []; },
     okResponse: { ok: true, changed: true, override: { id: 'ovr::pt-1::2026-09', patientId: 'pt-1', month: '2026-09', amount: '', discountAmount: 500, discountReason: 'הנחה', discountBy: 'אורטל', discountAt: 't' } },
     run: (app) => app.saveBillingDiscount('pt-1', '2026-09', 500, 'הנחה'),
     landed: (app) => { assert.strictEqual(app.state.billingOverrides[0].discountAmount, 500); },
