@@ -398,7 +398,24 @@
           <button type="button" class="btn small" id="debt-refresh">רענון</button>
           <button type="button" class="btn small primary" id="debt-export">ייצוא לאקסל</button>
         </div>
+        <p class="billing-date-label debt-explainer">איך קוראים: <b>חוב רשום</b> — מחזור שיש לו שורת תשלום ועדיין לא שולם במלואו. <b>מחזורים ללא רישום</b> — מחזור שעבר ולא נרשם לו תשלום כלל. פותחים בית ← מטופל ← מחזור, ובכל מחזור: «שולם» (דיווח תשלום) או «שנה סכום».</p>
         <div id="debt-aging" class="debt-aging" aria-live="polite"></div>
+      </details>
+
+      <!-- «הכנסות לפי גורם מממן» (CHANGELOG-open-debts-cleanup.md): a period, by
+           the receipt's funder and house; income = verified money only. -->
+      <details id="revenue-funder-view" class="debt-aging-view bill-group bill-group--debt" data-group="revenue-funder">
+        <summary><h3 class="bill-group-title">הכנסות לפי גורם מממן</h3></summary>
+        <div class="debt-controls">
+          <label for="revf-from" class="billing-date-label">מתאריך</label>
+          <input id="revf-from" type="date" />
+          <label for="revf-to" class="billing-date-label">עד תאריך</label>
+          <input id="revf-to" type="date" />
+          <button type="button" class="btn small" id="revf-this-month">החודש</button>
+          <button type="button" class="btn small" id="revf-last-month">חודש קודם</button>
+          <button type="button" class="btn small" id="revf-year">מתחילת השנה</button>
+        </div>
+        <div id="revenue-funder" class="debt-aging" aria-live="polite"></div>
       </details>
 
       <h3>סיכום חודשי</h3>
@@ -406,6 +423,7 @@
         <div class="card stat">
           <div class="stat-label">נגבה החודש</div>
           <div class="stat-value" id="bill-month-collected">₪ 0</div>
+          <div class="stat-sub">כסף ששולם בפועל על חיובי החודש</div>
           <div class="stat-sub" id="bill-month-label">—</div>
         </div>
         <div class="card stat">
@@ -414,7 +432,7 @@
           <div class="stat-sub">כל התשלומים שלא נסגרו</div>
         </div>
         <div class="card stat">
-          <div class="stat-label">פירוט לפי בית</div>
+          <div class="stat-label">פירוט לפי בית — חיובי החודש</div>
           <div class="stat-breakdown" id="bill-month-breakdown"></div>
         </div>
       </div>

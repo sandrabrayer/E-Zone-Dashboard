@@ -1911,3 +1911,11 @@ Manual phone book `PatientPhones` for house patients without a lead phone; auto-
 - Ortal's «בקרת גבייה»: «בעיות גבייה» first (two subsections), no releases /
   committees cards. SW v85. See CHANGELOG-discount-by-vered.md.
 - No Railway change; Apps Script deploys via clasp CI on merge.
+
+## Open debts fixable in place; income by funder (October 23, 2026)
+- «חובות פתוחים», the «השלמת גורם מממן» rows and Ortal's «בעיות גבייה» list now
+  carry «שולם» / «שנה סכום» per cycle. `upsertBillingOverride` =
+  `finance | accountant | approver` (AMOUNT_ACTIONS); delete stays Sandra-only.
+  `/api/me` has `canAmount`. Ortal's unpaid-cycle list: from 2026-01-01, newest first.
+- New «הכנסות לפי גורם מממן» (period, funder × house, verified money only).
+- SW v86. See CHANGELOG-open-debts-cleanup.md. No Railway change.

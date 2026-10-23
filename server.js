@@ -1699,6 +1699,8 @@ app.get('/api/me', requireSession, (req, res) => {
     // «הנחה» — Vered and Sandra (the `finance` capability), never Ortal
     // (CHANGELOG-discount-by-vered.md). Display only.
     canDiscount: roleAllowed(p, 'setBillingDiscount'),
+    // «שנה סכום» on an open debt — finance, accountant or approver. Display only.
+    canAmount: roleAllowed(p, 'upsertBillingOverride'),
     // Read access to the full «גבייה» tab for the controller view (Ortal):
     // reads only — no write, delete, void or approval control. Display only.
     billingRead: isControllerView(p) && hasBillingControl(p),

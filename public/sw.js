@@ -302,7 +302,11 @@
 // in two subsections, no releases / committees cards, «הסכום שדווח שגוי - בטל»
 // (app.js, index.html) (CHANGELOG-discount-by-vered.md). Live v84 verified
 // 2026-10-22 (v17 never reused).
-var CACHE_VERSION = 'v85';
+// v85 → v86: open debts fixable in place («שולם» / «שנה סכום»), debt on the
+// «השלמת גורם מממן» rows, Ortal's debt list from January, «הכנסות לפי גורם
+// מממן» (app.js, index.html, style.css) (CHANGELOG-open-debts-cleanup.md).
+// Live v85 verified after #271 (v17 never reused).
+var CACHE_VERSION = 'v86';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

@@ -344,6 +344,7 @@ const state = {
   canConfirm: false,
   canAccount: false,
   canDiscount: false,
+  canAmount: false,
   payments: [],
   /* Phase 3 PR 2: one row per money received (getPayments `receipts`, each
    * with the cycleId it pays for) and the Funders tab (getPayments
@@ -1302,9 +1303,10 @@ function applySessionInfo(info) {
   state.canConfirm = i.canConfirm === true;
   // Ortal's cancel and Vered's discount: a change redraws the tab, so a render
   // that ran before /api/me answered never keeps the wrong layout.
-  const accessChanged = state.canAccount !== (i.canAccount === true) || state.canDiscount !== (i.canDiscount === true);
+  const accessChanged = state.canAccount !== (i.canAccount === true) || state.canDiscount !== (i.canDiscount === true) || state.canAmount !== (i.canAmount === true);
   state.canAccount = i.canAccount === true;
   state.canDiscount = i.canDiscount === true;
+  state.canAmount = i.canAmount === true;
   renderWhoami(i.user || '');
   const adminBtn = document.getElementById('pin-admin-open');
   if (adminBtn) adminBtn.classList.toggle('hidden', i.approver !== true);
@@ -1436,6 +1438,8 @@ function initPin() {
   initGlobalSearch();
   initPayoutForecastControls();
   initDebtAgingControls();
+  initDebtActions();
+  initRevenueByFunder();
   initFunderControls();
   initBillingControlControls();
   // «בקרת גבייה» (Phase 4): the server served <body class="view-controller">
@@ -1714,6 +1718,8 @@ function applyControllerView() {
   // «השלמת גורם מממן» is data entry — never in the read-only view.
   const ff = document.getElementById('funder-fill');
   if (ff && ff.remove) ff.remove();
+  const rf = document.getElementById('revenue-funder-view');
+  if (rf && rf.remove) rf.remove();
   // «🔍 חיפוש» searches patients, leads and discharged rows — none of which
   // this view holds; the control is removed, not hidden.
   ['global-search-open', 'global-search-panel'].forEach(id => {
@@ -11121,9 +11127,128 @@ function debtAgingListHtml(id, list, rowHtml, totalText) {
     + `</details>`;
 }
 
-/* Pure: the whole view as HTML. Every value goes through escapeHtml. */
-function debtAgingHtml(data, filters, todayIso) {
+/* ===== «חובות פתוחים» — a debt that can be fixed where it is shown =====
+ * CHANGELOG-open-debts-cleanup.md. Every owed cycle (the debt view, the
+ * «השלמת גורם מממן» rows of a released patient with a debt, Ortal's list) can
+ * carry «שולם» (the existing «דווח תשלום» form — Vered, Sandra, edit mode) and
+ * «שנה סכום» (the per-month amount, upsertBillingOverride — Vered, Sandra and
+ * Ortal-with-accountant; the server refuses everyone else). ctx = { pay,
+ * amount }; without either nothing is drawn. Pure. */
+const DEBT_AMOUNT_MAX = 1000000;
+/* Ortal's / Vered's open-debt list starts here (CHANGELOG-open-debts-cleanup.md). */
+const BC_DEBT_FROM = '2026-01-01';
+function debtCycleActionsHtml(p, c, ctx) {
+  const o = ctx || {};
+  const received = Number(c && c.received) || 0;
+  const canAmount = o.amount === true && !(received > 0);
+  const canPay = o.pay === true;
+  if (!canAmount && !canPay) return '';
   const esc = escapeHtml;
+  const month = String((c && c.month) || String((c && c.start) || '').slice(0, 7));
+  const attrs = `data-debt-pk="${esc(p.patientKey || '')}" data-debt-pid="${esc(p.patientId || '')}" data-debt-month="${esc(month)}" data-debt-start="${esc((c && c.start) || '')}" data-debt-payid="${esc((c && c.paymentId) || '')}"`;
+  return `<span class="debt-act" ${attrs}>`
+    + (canPay ? `<button type="button" class="btn small primary" data-debt-pay>שולם</button>` : '')
+    + (canAmount ? ` <button type="button" class="btn small" data-debt-amt-open>שנה סכום</button>
+      <span class="debt-amt-edit hidden"><input type="number" min="0" max="${DEBT_AMOUNT_MAX}" step="1" inputmode="decimal" value="${esc(Number(c.expected) || 0)}" aria-label="הסכום החדש לתשלום (₪)" />
+      <button type="button" class="btn small primary" data-debt-amt-save>שמור</button>
+      <button type="button" class="btn small ghost" data-debt-amt-cancel>ביטול</button>
+      <span class="error-msg debt-amt-error hidden" role="alert"></span></span>` : '')
+    + `</span>`;
+}
+
+/* One owed cycle as a card (outside the debt table). Pure. */
+function debtCycleCardHtml(p, c, ctx) {
+  const esc = escapeHtml;
+  return `<div class="debt-cycle-card" data-kind="${esc(c.kind)}"><span class="bc-k">${esc(DEBT_AGING_KIND_LABELS[c.kind] || c.kind)}</span> `
+    + `<bdi>${esc(formatDateHe(c.start) || '—')}</bdi>–<bdi>${esc(formatDateHe(c.end) || '—')}</bdi> · צפוי ${esc(fmtShekel(c.expected))} · התקבל ${esc(fmtShekel(c.received))} · `
+    + `<b>חוב ${esc(fmtShekel(c.balance))}</b> ${debtCycleActionsHtml(p, c, ctx)}</div>`;
+}
+
+/* The abilities the current session has on a debt — from what /api/me said. */
+function debtActionCtx() {
+  const edit = state.mode === 'edit';
+  return {
+    pay: state.finance === true && edit,
+    amount: state.canAmount === true && (state.view === 'controller' || edit),
+  };
+}
+
+/* Pure: the amount typed in a debt row → { amount, error }. */
+function debtAmountCheck(raw) {
+  const t = String(raw == null ? '' : raw).trim();
+  if (!/^\d{1,7}(\.\d{1,2})?$/.test(t)) return { amount: null, error: 'יש להזין סכום תקין (מספר, עד שתי ספרות אחרי הנקודה)' };
+  const n = Number(t);
+  if (n > DEBT_AMOUNT_MAX) return { amount: null, error: 'הסכום גדול מדי' };
+  return { amount: Math.round(n * 100) / 100, error: '' };
+}
+
+/* The per-month amount of ONE cycle (patientKey + month). The server checks
+ * the role again and stamps updatedBy from the session. */
+async function saveDebtCycleAmount(patientKey, month, amount) {
+  if (state.canAmount !== true) { showError(ROLE_FORBIDDEN_TEXT); return null; }
+  if (!patientKey || !/^\d{4}-\d{2}$/.test(String(month || ''))) { showError('המחזור לא זוהה'); return null; }
+  const record = { id: billingOverrideId(patientKey, month), patientId: patientKey, month, amount, created: todayISO() };
+  let res;
+  try {
+    res = await trackedWrite([_dataGuard], () => apiPost({ action: 'upsertBillingOverride', override: record }));
+    requireSavedId(res, r => r.override && r.override.id, record.id);
+  } catch (e) {
+    showError('עדכון הסכום נכשל — ' + ((e && e.message) || 'שגיאה'));
+    return null;
+  }
+  const saved = normalizeBillingOverride(Object.assign({}, record, res.override));
+  const at = (state.billingOverrides || []).findIndex(o => o && o.id === saved.id);
+  state.billingOverrides = at >= 0 ? state.billingOverrides.map((o, i) => (i === at ? saved : o)) : (state.billingOverrides || []).concat([saved]);
+  showToast('הסכום עודכן לחודש ' + month);
+  refreshDebtViews();
+  return res;
+}
+
+/* Re-read what a debt change moves: the debt view (when loaded) and the
+ * «בקרת גבייה» queue (when that tab is open). Never throws. */
+function refreshDebtViews() {
+  try {
+    if (debtAgingState().data) loadDebtAging().catch(() => {});
+    if (state.currentScreen === 'billing-control' && typeof loadBillingControl === 'function') Promise.resolve(loadBillingControl()).catch(() => {});
+    if (typeof renderBilling === 'function') renderBilling();
+  } catch (_) { /* no-op */ }
+}
+
+/* «שולם» on a debt: the same «דווח תשלום» form every billing row opens. */
+function debtPayCycle(pid, payId, start) {
+  const patient = (state.patients || []).find(x => x && patientUid(x) === pid);
+  if (!patient || !isoDate(start)) { showError('המטופל או המחזור לא זוהו'); return; }
+  const stored = payId ? (state.payments || []).find(x => x && x.id === payId) : null;
+  const payment = stored ? cycleView(stored, patient) : paymentForPatientOnDate(patient, isoDate(start));
+  openPaymentReportModal(patient, payment, isoDate(start));
+}
+
+function onDebtActionClick(e) {
+  const t = e && e.target && e.target.closest ? e.target.closest('[data-debt-pay],[data-debt-amt-open],[data-debt-amt-save],[data-debt-amt-cancel]') : null;
+  if (!t) return;
+  const box = t.closest('.debt-act');
+  if (!box) return;
+  const attr = n => box.getAttribute(n) || '';
+  const edit = box.querySelector('.debt-amt-edit');
+  const input = edit ? edit.querySelector('input') : null;
+  const err = edit ? edit.querySelector('.debt-amt-error') : null;
+  if (t.hasAttribute('data-debt-pay')) { debtPayCycle(attr('data-debt-pid'), attr('data-debt-payid'), attr('data-debt-start')); return; }
+  if (t.hasAttribute('data-debt-amt-open')) { if (edit) edit.classList.remove('hidden'); if (input && input.focus) input.focus(); return; }
+  if (t.hasAttribute('data-debt-amt-cancel')) { if (edit) edit.classList.add('hidden'); if (err) err.classList.add('hidden'); return; }
+  const chk = debtAmountCheck(input ? input.value : '');
+  if (chk.error) { if (err) { err.textContent = chk.error; err.classList.remove('hidden'); } return; }
+  if (err) err.classList.add('hidden');
+  busyButton(t, 'save', () => saveDebtCycleAmount(attr('data-debt-pk'), attr('data-debt-month'), chk.amount));
+}
+
+function initDebtActions() {
+  if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('click', onDebtActionClick);
+}
+
+/* Pure: the whole view as HTML. Every value goes through escapeHtml. */
+function debtAgingHtml(data, filters, todayIso, ctx) {
+  const esc = escapeHtml;
+  const actCtx = !!(ctx && (ctx.pay === true || ctx.amount === true));
   const v = debtAgingView(data, filters);
   let html = '';
 
@@ -11165,12 +11290,13 @@ function debtAgingHtml(data, filters, todayIso) {
           + `<div><span class="p-label">${esc(DEBT_AGING_BLOCK_LABELS.recorded_debt)}</span><span class="p-val">${esc(fmtShekel(p.recordedBalance))}</span></div>`
           + `<div><span class="p-label">ללא רישום</span><span class="p-val">${esc(fmtShekel(p.unrecordedTotal))}</span></div>`
           + `<div><span class="p-label">הוותיק ביותר</span><span class="p-val"><span dir="ltr">${esc(debtAgingBucketLabel(p.oldestBucket))}</span> ימים</span></div>`
+          + (ctx && ctx.funderOf ? `<div><span class="p-label">גורם מממן</span><span class="p-val">${esc(ctx.funderOf(p.patientId, p.cycles[0] && p.cycles[0].start))}</span></div>` : '')
           + `</summary><div class="debt-table-wrap"><table class="debt-table debt-cycles"><thead><tr>`
-          + `<th>תחילה</th><th>סוף</th><th>צפוי</th><th>התקבל</th><th>יתרה</th><th>תקופת חוב (ימים)</th><th>סוג</th><th>${esc(FUNDER_GRACE_COLUMN_LABEL)}</th></tr></thead><tbody>`
+          + `<th>תחילה</th><th>סוף</th><th>צפוי</th><th>התקבל</th><th>יתרה</th><th>תקופת חוב (ימים)</th><th>סוג</th><th>${esc(FUNDER_GRACE_COLUMN_LABEL)}</th>${actCtx ? '<th>טיפול</th>' : ''}</tr></thead><tbody>`
           + p.cycles.map(c => `<tr class="debt-cycle${c.funderGrace ? ' funder-grace' : ''}" data-kind="${esc(c.kind)}"><td><bdi>${esc(formatDateHe(c.start) || '—')}</bdi></td><td><bdi>${esc(formatDateHe(c.end) || '—')}</bdi></td>`
             + `<td>${esc(fmtShekel(c.expected))}</td><td>${esc(fmtShekel(c.received))}</td><td>${esc(fmtShekel(c.balance))}</td>`
             + `<td><span dir="ltr">${esc(debtAgingBucketLabel(c.bucket))}</span></td><td>${esc(DEBT_AGING_KIND_LABELS[c.kind] || c.kind)}</td>`
-            + `<td>${c.funderGrace ? `<span class="badge pay-state pay-state-funder_grace">${esc(debtAgingGraceText(c))}</span>` : '—'}</td></tr>`).join('')
+            + `<td>${c.funderGrace ? `<span class="badge pay-state pay-state-funder_grace">${esc(debtAgingGraceText(c))}</span>` : '—'}</td>${actCtx ? `<td>${debtCycleActionsHtml(p, c, ctx)}</td>` : ''}</tr>`).join('')
           + `</tbody></table></div></details>`;
       });
       html += `</details>`;
@@ -11266,7 +11392,7 @@ function renderDebtAging() {
   }
   const filters = { house: s.house, status: s.statusFilter };
   if (!funderView()) {
-    box.innerHTML = debtAgingHtml(s.data, filters, debtAgingTodayIso());
+    box.innerHTML = debtAgingHtml(s.data, filters, debtAgingTodayIso(), debtActionCtx());
     renderFunderFill();
     return;
   }
@@ -11274,7 +11400,8 @@ function renderDebtAging() {
   // funders); the blocks and drill-down below follow the funder filter.
   const strip = debtFunderStripHtml(debtFunderStrip(s.data, state.funders, filters));
   const shown = filterDebtReportByFunder(s.data, state.funders, billingFunderFilter());
-  box.innerHTML = strip + debtAgingHtml(shown, filters, debtAgingTodayIso());
+  const ctx = Object.assign(debtActionCtx(), { funderOf: (pid, day) => { const F = funderLib(); return F ? F.labelFor(F.funderAt(state.funders, pid, debtCycleFunderDay({ start: day }, s.data.asOf))) : ''; } });
+  box.innerHTML = strip + debtAgingHtml(shown, filters, debtAgingTodayIso(), ctx);
   // The fill screen counts released patients by the debt this report shows.
   renderFunderFill();
 }
@@ -11488,8 +11615,9 @@ function funderFillRows(patients, funders, today, debtIds) {
 }
 
 /* Pure: the fill screen's HTML ('' when nothing is left). */
-function funderFillHtml(rows) {
+function funderFillHtml(rows, debtByPatient, ctx) {
   if (!rows.length) return '';
+  const debts = debtByPatient || {};
   const esc = escapeHtml;
   const opts = funderSelectOptions().map(o => `<option value="${o.value}">${o.label}</option>`).join('');
   return `<h3 class="funder-fill-title">השלמת גורם מממן — <span class="count-pill" data-funder-fill-count>${esc(rows.length)}</span> נותרו</h3>`
@@ -11499,22 +11627,38 @@ function funderFillHtml(rows) {
       + (released ? ` <span class="funder-chip funder-unset funder-released-tag">${esc(FUNDER_RELEASED_DEBT_TAG)}</span>` : '') + `</div>`
       + `<div><span class="p-label">בית</span><span class="p-val">${esc(houseLabel(p.houseId))}</span></div>`
       + `<div><span class="p-label">כניסה</span><span class="p-val"><bdi>${esc(formatDateHe(p.date) || '—')}</bdi></span></div>`
+      + funderFillDebtHtml(debts[patientUid(p)], ctx)
       + `<label class="funder-field"><span class="p-label">גורם מממן</span><select data-fill-funder aria-label="גורם מממן">${opts}</select></label>`
       + `<label class="funder-field"><span class="p-label">בתוקף מתאריך</span><input type="date" data-fill-from value="${esc(defaultFrom)}" /></label>`
       + `<button type="button" class="btn small primary" data-fill-save>שמירה</button>`
       + `</div>`).join('');
 }
 
+/* The debt of a patient on the fill screen: the amount, and every owed cycle
+ * with «שולם» / «שנה סכום» (CHANGELOG-open-debts-cleanup.md). Pure. */
+function funderFillDebtHtml(d, ctx) {
+  if (!d) return '';
+  const esc = escapeHtml;
+  const cycles = (Array.isArray(d.cycles) ? d.cycles : []).filter(c => c && Number(c.balance) > 0);
+  if (!cycles.length) return '';
+  const total = cycles.reduce((n, c) => n + (Number(c.balance) || 0), 0);
+  return `<div class="funder-fill-debt"><span class="p-label">חוב פתוח</span><b class="p-val debt-total">${esc(fmtShekel(total))}</b>`
+    + `<details class="funder-fill-cycles"><summary>פירוט וטיפול (${esc(cycles.length)})</summary>`
+    + cycles.map(c => debtCycleCardHtml(d, c, ctx)).join('') + `</details></div>`;
+}
+
 function renderFunderFill() {
   const box = document.getElementById('funder-fill');
   if (!box) return;
   let rows = [];
+  const debtMap = {};
   if (funderView()) {
     const today = todayISO();
     const aging = state.debtAging && state.debtAging.status === 'ok' ? state.debtAging.data : null;
     rows = funderFillRows(state.patients, state.funders, today, openDebtPatientIds(aging, state.payments, state.patients, today));
+    ((aging && Array.isArray(aging.byPatient)) ? aging.byPatient : []).forEach(p => { if (p && p.patientId) debtMap[String(p.patientId)] = p; });
   }
-  box.innerHTML = funderFillHtml(rows);
+  box.innerHTML = funderFillHtml(rows, debtMap, debtActionCtx());
   box.classList.toggle('hidden', rows.length === 0);
 }
 
@@ -11658,6 +11802,90 @@ function debtFunderStripHtml(strip) {
     + `<p class="billing-date-label">פילוח לפי גורם מממן — כל מחזור משויך לגורם שהיה בתוקף בתחילתו. שני הגושים אינם מסתכמים יחד.</p>`
     + table('recorded_debt') + table('unrecorded_cycles')
     + `</div>`;
+}
+
+/* ===== «הכנסות לפי גורם מממן» for a period (CHANGELOG-open-debts-cleanup.md) =====
+ * Money by RECEIVED date in [from, to] (inclusive), split by the funder of the
+ * receipt (its own «גורם מממן», else the patient's funder on that day) and by
+ * house. «הכנסה» is only what the controller VERIFIED in the bank
+ * (BillingControlRules.verifiedAmountOf); money reported but not yet verified
+ * is a separate column and is never summed into the income. Void receipts and
+ * «לא שולם» ones count nowhere. Pure. */
+function revenueByFunder(receipts, from, to, funders, rules) {
+  const F = funderLib();
+  const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+  const keys = F ? F.FUNDER_KEYS.concat([F.FUNDER_UNSET]) : [];
+  const houseIds = HOUSES.map(h => h.id);
+  const rows = {};
+  keys.forEach(k => { rows[k] = { funder: k, label: F.labelFor(k), byHouse: {}, total: 0, waiting: 0 }; houseIds.forEach(h => { rows[k].byHouse[h] = 0; }); });
+  const a = isoDate(from), b = isoDate(to);
+  if (!F || !rules || !a || !b || a > b) return { ok: false, houseIds, rows: keys.map(k => rows[k]), totals: { byHouse: {}, total: 0, waiting: 0 } };
+  (Array.isArray(receipts) ? receipts : []).forEach(r => {
+    if (!r || String(r.status || '').toLowerCase() === 'void') return;
+    const day = isoDate(r.receivedDate);
+    if (!day || day < a || day > b) return;
+    const own = F.keyFromLabel(r.funder);
+    const key = own !== F.FUNDER_UNSET ? own : (r.patientId ? F.funderAt(funders, r.patientId, day) : F.FUNDER_UNSET);
+    const row = rows[keys.indexOf(key) >= 0 ? key : F.FUNDER_UNSET];
+    const confirmed = r2(rules.verifiedAmountOf(r));
+    const st = String(r.confirmStatus || '').trim();
+    const waiting = (st === '' || st === 'reported') ? r2(r.amount) : 0;
+    const h = houseIds.indexOf(r.houseId) >= 0 ? r.houseId : '';
+    if (h) row.byHouse[h] = r2(row.byHouse[h] + confirmed);
+    row.total = r2(row.total + confirmed);
+    row.waiting = r2(row.waiting + waiting);
+  });
+  const totals = { byHouse: {}, total: 0, waiting: 0 };
+  houseIds.forEach(h => { totals.byHouse[h] = 0; });
+  keys.forEach(k => { houseIds.forEach(h => { totals.byHouse[h] = r2(totals.byHouse[h] + rows[k].byHouse[h]); }); totals.total = r2(totals.total + rows[k].total); totals.waiting = r2(totals.waiting + rows[k].waiting); });
+  return { ok: true, houseIds, rows: keys.map(k => rows[k]), totals };
+}
+
+function revenueByFunderHtml(model, from, to) {
+  const esc = escapeHtml;
+  if (!model || !model.ok) return `<div class="card billing-empty">${esc('בחרו תקופה תקינה (מתאריך עד תאריך)')}</div>`;
+  return `<p class="billing-date-label">תקופה: <bdi>${esc(formatDateHe(from))}</bdi> – <bdi>${esc(formatDateHe(to))}</bdi> · לפי תאריך קבלת הכסף · «הכנסה» = רק מה שאומת בבנק. «ממתין לאימות» עדיין אינו הכנסה ואינו מחובר לסכום.</p>`
+    + `<div class="debt-table-wrap"><table class="debt-table funder-revenue-table"><thead><tr><th>גורם מממן</th>`
+    + model.houseIds.map(h => `<th>${esc(debtAgingHouseName(h))}</th>`).join('') + `<th>סה"כ הכנסה</th><th>ממתין לאימות</th></tr></thead><tbody>`
+    + model.rows.map(r => `<tr data-funder="${esc(r.funder)}"><th>`
+      + (r.funder === FUNDER_UNSET_KEY ? `<span class="funder-chip funder-unset">${esc(r.label)}</span>` : esc(r.label)) + `</th>`
+      + model.houseIds.map(h => `<td data-house="${esc(h)}">${esc(fmtShekel(r.byHouse[h]))}</td>`).join('')
+      + `<td class="debt-row-total">${esc(fmtShekel(r.total))}</td><td class="rev-waiting">${esc(fmtShekel(r.waiting))}</td></tr>`).join('')
+    + `</tbody><tfoot><tr class="debt-col-totals"><th>סה"כ</th>`
+    + model.houseIds.map(h => `<td data-house="${esc(h)}">${esc(fmtShekel(model.totals.byHouse[h]))}</td>`).join('')
+    + `<td class="debt-row-total">${esc(fmtShekel(model.totals.total))}</td><td class="rev-waiting">${esc(fmtShekel(model.totals.waiting))}</td></tr></tfoot></table></div>`;
+}
+
+function renderRevenueByFunder() {
+  const box = document.getElementById('revenue-funder');
+  const fromEl = document.getElementById('revf-from');
+  const toEl = document.getElementById('revf-to');
+  if (!box || !fromEl || !toEl || !funderView()) return;
+  const rules = bcRules();
+  box.innerHTML = revenueByFunderHtml(revenueByFunder(state.receipts, fromEl.value, toEl.value, state.funders, rules), fromEl.value, toEl.value);
+}
+
+function initRevenueByFunder() {
+  const fromEl = document.getElementById('revf-from');
+  const toEl = document.getElementById('revf-to');
+  if (!fromEl || !toEl) return;
+  const today = todayISO();
+  if (!toEl.value) toEl.value = today;
+  if (!fromEl.value) fromEl.value = today.slice(0, 8) + '01';
+  fromEl.onchange = renderRevenueByFunder;
+  toEl.onchange = renderRevenueByFunder;
+  const setRange = (a, b) => { fromEl.value = a; toEl.value = b; renderRevenueByFunder(); };
+  const thisMonth = document.getElementById('revf-this-month');
+  if (thisMonth) thisMonth.onclick = () => setRange(todayISO().slice(0, 8) + '01', todayISO());
+  const lastMonth = document.getElementById('revf-last-month');
+  if (lastMonth) lastMonth.onclick = () => {
+    const end = debtAgingPrevMonthEnd(todayISO());
+    setRange(end.slice(0, 8) + '01', end);
+  };
+  const ytd = document.getElementById('revf-year');
+  if (ytd) ytd.onclick = () => setRange(todayISO().slice(0, 4) + '-01-01', todayISO());
+  const view = document.getElementById('revenue-funder-view');
+  if (view) view.addEventListener('toggle', () => { if (view.open) renderRevenueByFunder(); });
 }
 
 function initFunderControls() {
@@ -13286,6 +13514,7 @@ function renderBilling() {
   renderBillingOpenList(selected);
   renderBillingMonthlySummary(selected);
   renderFunderFill();
+  renderRevenueByFunder();
 }
 
 /* Says, under the גבייה KPI cards, that N cycles on this date predate the
@@ -13731,8 +13960,8 @@ function renderBillingMonthlySummary(selectedISO) {
     line.innerHTML = `
       <span class="bd-house">${escapeHtml(h.name)}</span>
       <span class="bd-vals">
-        <span class="bd-col">נגבה ₪${col.toLocaleString('he-IL')}</span>
-        <span class="bd-out">יתרה ₪${out.toLocaleString('he-IL')}</span>
+        <span class="bd-col" title="כסף ששולם בפועל על חיובי החודש">שולם ₪${col.toLocaleString('he-IL')}</span>
+        <span class="bd-out" title="חוב פתוח על חיובי החודש שטרם שולמו">חוב פתוח ₪${out.toLocaleString('he-IL')}</span>
       </span>
     `;
     breakdownEl.appendChild(line);
@@ -15568,6 +15797,8 @@ async function submitPaymentReport(cycle, values, confirmDuplicate, submissionId
   if (typeof renderDashboard === 'function') renderDashboard();
   // «דווח תשלום» from the «מטופלים» row: its payment column follows.
   renderPatientsTab();
+  // A payment reported on a debt row: the debt view re-reads (CHANGELOG-open-debts-cleanup.md).
+  if (typeof refreshDebtViews === 'function') refreshDebtViews();
   _paymentsReconcile = reconcilePaymentsAfterWrite(receiptId);
   return res;
 }
@@ -17255,6 +17486,7 @@ function bcProblemsHtml(model, opts) {
   const canConfirm = o.canConfirm === true;
   const canAccount = o.canAccount === true;
   const canDiscount = o.canDiscount === true;
+  const canAmount = o.canAmount === true;
   const m = model || { patients: [], discounts: [] };
   const sub = (title, count, body, empty) => `<div class="bc-sub-group"><h4 class="bc-sub-title">${escapeHtml(title)} <span class="count-pill">${count}</span></h4>${body || `<p class="billing-date-label">${escapeHtml(empty)}</p>`}</div>`;
   const receiptLine = r => {
@@ -17286,16 +17518,20 @@ function bcProblemsHtml(model, opts) {
       <span class="bc-v">${escapeHtml(fmtShekel(c.balance))}</span>
       <span class="bc-sub">${escapeHtml(formatDateHe(c.start))} · ${escapeHtml(String(c.days))} ימים</span>
       ${bcDiscountChipHtml(c.discount, c.expected)}
+      ${canAmount ? debtCycleActionsHtml({ patientKey: c.patientKey }, c, { amount: true }) : ''}
       ${canDiscount ? `<button type="button" class="btn small" data-bc-disc-open="${key}" aria-expanded="${open}">הנחה</button>` : ''}${form}</div>`;
   };
   const rowOf = (p, lines) => `<div class="bc-row bc-row--problem"><div class="bc-head"><b class="bc-name">${escapeHtml(p.name || '—')}</b> <span class="bc-house">${escapeHtml(bcHouseName(p.houseId))}</span></div>${lines}</div>`;
   const withReceipts = m.patients.filter(p => p.receipts.length);
-  const withCycles = m.patients.filter(p => p.cycles.length);
+  // Unpaid cycles: from January 2026 only, newest first (CHANGELOG-open-debts-cleanup.md).
+  const cycleList = [];
+  m.patients.forEach(p => p.cycles.forEach(c => { if (String(c.start || '') >= BC_DEBT_FROM) cycleList.push({ p, c }); }));
+  cycleList.sort((a, b) => String(b.c.start).localeCompare(String(a.c.start)) || String(a.p.name).localeCompare(String(b.p.name), 'he'));
   const nReceipts = withReceipts.reduce((n, p) => n + p.receipts.length, 0);
-  const nCycles = withCycles.reduce((n, p) => n + p.cycles.length, 0);
+  const nCycles = cycleList.length;
   const plus = m.complete ? '' : '+';
   return sub('סכומים שדווחו וממתינים לאימות', nReceipts, withReceipts.map(p => rowOf(p, p.receipts.map(receiptLine).join(''))).join(''), 'אין סכומים שממתינים לאימות')
-    + sub('מחזורים שלא שולמו ולא דווח עליהם תשלום', `${nCycles}${plus}`, withCycles.map(p => rowOf(p, p.cycles.map(cycleLine).join(''))).join(''), 'אין מחזורים פתוחים');
+    + sub('מחזורים שלא שולמו ולא דווח עליהם תשלום — מינואר, מהחדש לישן', `${nCycles}${plus}`, cycleList.map(x => rowOf(x.p, cycleLine(x.c))).join(''), 'אין מחזורים פתוחים');
 }
 
 /* The «הסכום שדווח שגוי - בטל» reason form (problems list and receipt rows). */
@@ -17421,7 +17657,7 @@ function renderBillingControl() {
   if (showProblems) {
     const pm = bcProblemsModel(s.data);
     set('bc-problems-count', `${pm.patients.reduce((n, p) => n + p.receipts.length + p.cycles.length, 0)}${pm.complete ? '' : '+'}`);
-    set('bc-problems', bcProblemsHtml(pm, { state: s, canConfirm: state.canConfirm === true, canAccount: state.canAccount === true, canDiscount: state.canDiscount === true }));
+    set('bc-problems', bcProblemsHtml(pm, { state: s, canConfirm: state.canConfirm === true, canAccount: state.canAccount === true, canDiscount: state.canDiscount === true, canAmount: state.canAmount === true }));
     set('bc-discounts-given', bcDiscountRowsHtml(pm.discounts));
   }
 

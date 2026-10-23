@@ -3001,3 +3001,15 @@ button.mtg-bad-date-lead:hover { background: rgba(255, 176, 32, 0.18); }
   box-shadow: 0 8px 24px rgba(233,49,64,.4); font-weight: 600; font-size: 16px;
 }
 .retry-toast .btn { min-height: 44px; min-width: 44px; font-size: 16px; }
+
+/* CHANGELOG-open-debts-cleanup.md — debt actions, fill-screen debt, revenue by funder */
+.debt-act { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.debt-act .btn { min-height: 40px; }
+.debt-amt-edit { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.debt-amt-edit input { width: 8rem; min-height: 40px; }
+.debt-explainer { line-height: 1.6; }
+.funder-fill-debt { display: flex; flex-direction: column; gap: 6px; }
+.funder-fill-debt .debt-total { font-size: 1.1rem; }
+.funder-fill-cycles { margin-top: 4px; }
+.debt-cycle-card { padding: 8px 0; border-top: 1px solid var(--border, rgba(255,255,255,.12)); line-height: 1.8; }
+.funder-revenue-table .rev-waiting { color: var(--muted, #9aa4c0); }
