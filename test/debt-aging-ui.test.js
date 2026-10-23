@@ -246,28 +246,30 @@ test('bucket tables: each row total = its buckets, each column total = its rows,
   assert.equal(rec.totals.total, 33000);
 });
 
-test('never summed (view): no key holds recorded + unrecorded, at any level', () => {
+test('one headline (view): only tables.open_debt (and each patient\'s openTotal) hold recorded + unrecorded; the two parts stay separate figures', () => {
   const v = plain(debtXlsx.debtAgingView(DATA, {}));
   const sum = DATA.totals.recorded_debt.total + DATA.totals.unrecorded_cycles.total;
+  assert.equal(v.tables.open_debt.totals.total, Math.round(sum * 100) / 100);
+  for (const r of v.patients) assert.equal(r.openTotal, Math.round((r.recordedBalance + r.unrecordedTotal) * 100) / 100);
   const walk = (o, p) => {
-    if (typeof o === 'number') assert.notEqual(o, sum, 'summed figure at ' + p);
+    if (typeof o === 'number' && !/tables\.open_debt\.totals\.total$/.test(p) && !/\.openTotal$/.test(p)) assert.notEqual(o, sum, 'summed figure at ' + p);
     else if (o && typeof o === 'object') Object.keys(o).forEach((k) => walk(o[k], p + '.' + k));
   };
   walk(v, 'view');
   assert.ok(!JSON.stringify(Object.keys(v.tables)).includes('grand'));
-  assert.deepEqual(Object.keys(v.tables).sort(), ['recorded_debt', 'unrecorded_cycles']);
+  assert.deepEqual(Object.keys(v.tables).sort(), ['open_debt', 'recorded_debt', 'unrecorded_cycles']);
 });
 
-test('never summed (DOM): two blocks, each with its own total; the sum appears nowhere', () => {
+test('one headline (DOM): a single «חוב פתוח» block with the summed total; the split is a footnote (CHANGELOG-debt-clarity.md)', () => {
   const h = html(DATA);
   const rec = DATA.totals.recorded_debt.total, unr = DATA.totals.unrecorded_cycles.total;
-  assert.equal((h.match(/class="debt-block /g) || []).length, 2);
-  assert.ok(h.includes(`data-block="recorded_debt"`) && h.includes(`data-block="unrecorded_cycles"`));
-  assert.ok(h.includes(`<span class="count-pill debt-block-total">${shekel(rec)}</span>`));
-  assert.ok(h.includes(`<span class="count-pill debt-block-total">${shekel(unr)}</span>`));
-  assert.ok(!h.includes(shekel(rec + unr)), 'the two figures are never added');
-  assert.ok(h.includes('שני הגושים אינם מסתכמים יחד'));
-  assert.ok(h.includes('לא שולם או שולם ולא נרשם'));
+  assert.equal((h.match(/class="debt-block /g) || []).length, 1);
+  assert.ok(h.includes(`data-block="open_debt"`) && !h.includes(`data-block="recorded_debt"`) && !h.includes(`data-block="unrecorded_cycles"`));
+  const sum = Math.round((rec + unr) * 100) / 100;
+  assert.ok(h.includes(`<span class="count-pill debt-block-total">${shekel(sum)}</span>`), 'the headline is both kinds together');
+  assert.ok(h.includes('מתוך החוב'));
+  assert.ok(h.includes(shekel(rec)) && h.includes(shekel(unr)), 'both parts are named in the footnote');
+  assert.ok(!h.includes('שני הגושים אינם מסתכמים יחד'));
 });
 
 test('filters: house', () => {
@@ -409,7 +411,7 @@ test('fetch only when the section is opened or the as-of date changes — never 
   assert.equal(debtCalls().length, 1);
   assert.deepEqual(debtCalls()[0].body.asOf, '2026-08-31');
   assert.equal(debtCalls()[0].init.method, 'POST');
-  assert.ok(app.els['debt-aging'].innerHTML.includes('data-block="recorded_debt"'));
+  assert.ok(app.els['debt-aging'].innerHTML.includes('data-block="open_debt"'));
   // a filter change re-renders without fetching
   app.els['debt-house'].value = 'rehab';
   app.els['debt-house'].onchange();

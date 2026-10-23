@@ -123,7 +123,7 @@ function loadApp() {
       get state() { return state; },
       bcReasonCheck, bcNotReceivedCheck, bcDiscountCheck, bcDiscountChipHtml, bcProblemsModel, bcProblemsHtml,
       bcDiscountRowsHtml, bcReceiptHtml, bcVoidRowsHtml, debtAmountCheck, debtCycleActionsHtml, debtCycleCardHtml, funderFillDebtHtml, funderFillHtml,
-      revenueByFunder, revenueByFunderHtml, bcRules, bcExceptionsHtml, applySessionInfo, confirmReceipts, saveBillingDiscount,
+      revenueByFunder, revenueByFunderHtml, bcRules, monthlyOpenDebt, debtAgingState, debtAgingTodayIso, bcExceptionsHtml, applySessionInfo, confirmReceipts, saveBillingDiscount,
       set apiPost(f) { apiPost = f; }, set showToast(f) { showToast = f; }, set showError(f) { showError = f; },
       set loadBillingControl(f) { loadBillingControl = f; }, billingControlState,
     };`, sandbox);
@@ -252,13 +252,13 @@ test('actions: the void sends status not_received + the reason; the discount sen
   assert.equal(posts.length, n);
 });
 
-test('page wiring: the hidden «בעיות גבייה» section, the billing-row chip, the CSS and SW v86', () => {
+test('page wiring: the hidden «בעיות גבייה» section, the billing-row chip, the CSS and SW v87', () => {
   assert.match(HTML, /<div id="bc-problems-group" class="[^"]*hidden"/);
   for (const id of ['bc-problems-count', 'bc-problems', 'bc-discounts-given']) assert.ok(HTML.includes(`id="${id}"`), id);
   assert.match(APP_SRC, /!isVoid && payment\.discount > 0 \? bcDiscountChipHtml\(payment\.discount\)/);
   assert.match(fs.readFileSync(path.join(ROOT, 'public', 'style.css'), 'utf8'), /\.badge\.discount \{/);
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
-  assert.equal(v, 'v86');
+  assert.equal(v, 'v87');
   assert.notEqual(v, 'v17');
 });
 
@@ -381,16 +381,47 @@ test('revenue by funder: verified money by received date, per funder and house; 
   assert.match(app.revenueByFunderHtml({ ok: false }, '', ''), /בחרו תקופה תקינה/);
 });
 
-test('page wiring: revenue-by-funder section (no new data-finance node), the explainer, labels, SW v86; refresh hooks; Ortal loses the revenue section', () => {
+test('page wiring: revenue-by-funder section (no new data-finance node), the explainer, labels, SW v87; refresh hooks; Ortal loses the revenue section', () => {
   assert.match(HTML, /<details id="revenue-funder-view"/);
   assert.ok(!/id="revenue-funder-view"[^>]*data-finance/.test(HTML));
   for (const id of ['revf-from', 'revf-to', 'revf-this-month', 'revf-last-month', 'revf-year', 'revenue-funder']) assert.ok(HTML.includes('id="' + id + '"'), id);
-  assert.match(HTML, /איך קוראים: <b>חוב רשום<\/b>/);
+  assert.match(HTML, /איך קוראים: <b>חוב פתוח<\/b>/);
   assert.match(HTML, /פירוט לפי בית — חיובי החודש/);
   assert.match(APP_SRC, /שולם ₪\$\{col\.toLocaleString/);
   assert.match(APP_SRC, /חוב פתוח ₪\$\{out\.toLocaleString/);
   assert.match(APP_SRC, /if \(typeof refreshDebtViews === 'function'\) refreshDebtViews\(\);/);
   assert.match(APP_SRC, /const rf = document\.getElementById\('revenue-funder-view'\);\n\s+if \(rf && rf\.remove\) rf\.remove\(\);/);
   assert.match(APP_SRC, /debtAgingHtml\(s\.data, filters, debtAgingTodayIso\(\), debtActionCtx\(\)\)/);
-  assert.match(SW_SRC, /var CACHE_VERSION = 'v86'/);
+  assert.match(SW_SRC, /var CACHE_VERSION = 'v87'/);
+});
+
+/* ===================== CHANGELOG-debt-clarity.md ===================== */
+
+test('monthly «חוב פתוח»: every owed cycle of the month by house (recorded or not); other months out; not loaded / other as-of → null (row-only fallback)', () => {
+  const app = loadApp();
+  assert.equal(app.monthlyOpenDebt('2026-09'), null, 'idle: nothing loaded, no fetch from here');
+  const today = app.debtAgingTodayIso();
+  const st = app.debtAgingState();
+  const cyc = (month, balance, kind) => ({ month, start: month + '-15', balance, kind });
+  st.status = 'ok';
+  st.data = { asOf: today, byPatient: [
+    { patientId: 'a', houseId: 'arfoni', cycles: [cyc('2026-09', 30000, 'unrecorded'), cyc('2026-08', 5000, 'unrecorded')] },
+    { patientId: 'b', houseId: 'arfoni', cycles: [cyc('2026-09', 7000, 'recorded')] },
+    { patientId: 'c', houseId: 'ramot', cycles: [cyc('2026-09', 0, 'recorded'), cyc('2026-09', 20000, 'unrecorded')] },
+  ] };
+  const m = plain(app.monthlyOpenDebt('2026-09'));
+  assert.deepEqual(m, { total: 57000, byHouse: { arfoni: 37000, ramot: 20000 } });
+  assert.equal(app.monthlyOpenDebt('2026-07').total, 0);
+  st.data = Object.assign({}, st.data, { asOf: '2020-01-01' });
+  assert.equal(app.monthlyOpenDebt('2026-09'), null, 'a past as-of report is not this month\'s figure');
+  st.status = 'error';
+  assert.equal(app.monthlyOpenDebt('2026-09'), null);
+});
+
+test('debt clarity wiring: ONE «חוב פתוח» block + a composition footnote; the load happens when «גבייה» is opened, never at boot', () => {
+  assert.match(APP_SRC, /debtAgingBlockHtml\('open_debt', v\.tables\.open_debt/);
+  assert.match(APP_SRC, /מתוך החוב: <b>/);
+  assert.match(APP_SRC, /if \(name === 'billing' && state\.finance === true && typeof debtAgingState === 'function'\)/);
+  assert.ok(!/s\.status === 'idle' && typeof apiPost === 'function'/.test(APP_SRC), 'no fetch from the summary renderer');
+  assert.match(HTML, /כל המחזורים של החודש שלא שולמו במלואם/);
 });

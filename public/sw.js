@@ -306,7 +306,10 @@
 // «השלמת גורם מממן» rows, Ortal's debt list from January, «הכנסות לפי גורם
 // מממן» (app.js, index.html, style.css) (CHANGELOG-open-debts-cleanup.md).
 // Live v85 verified after #271 (v17 never reused).
-var CACHE_VERSION = 'v86';
+// v86 → v87: ONE «חוב פתוח» figure (debt view, funder strip, monthly summary)
+// instead of «חוב רשום» + «ללא רישום» (app.js, index.html) (CHANGELOG-debt-clarity.md).
+// Live v86 verified after #272 (v17 never reused).
+var CACHE_VERSION = 'v87';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

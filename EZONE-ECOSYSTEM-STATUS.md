@@ -1919,3 +1919,9 @@ Manual phone book `PatientPhones` for house patients without a lead phone; auto-
   `/api/me` has `canAmount`. Ortal's unpaid-cycle list: from 2026-01-01, newest first.
 - New «הכנסות לפי גורם מממן» (period, funder × house, verified money only).
 - SW v86. See CHANGELOG-open-debts-cleanup.md. No Railway change.
+
+## One «חוב פתוח» figure (October 23, 2026)
+- «חובות פתוחים», the funder strip and the monthly summary show ONE open-debt
+  figure (recorded + unrecorded cycles); the split is a footnote. The monthly
+  card reads the debt report loaded when «גבייה» opens. Excel export unchanged.
+  SW v87. See CHANGELOG-debt-clarity.md.

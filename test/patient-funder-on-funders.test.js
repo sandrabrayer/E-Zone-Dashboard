@@ -463,7 +463,9 @@ test('strip: funder × house totals EQUAL the aging totals — per figure, per h
     }
   }
   const html = h.app.debtFunderStripHtml(h.app.debtFunderStrip(realAging(TODAY), h.app.state.funders, {}));
-  assert.equal((html.match(/class="funder-strip-block"/g) || []).length, 2, 'two tables, never one summed figure');
+  assert.equal((html.match(/class="funder-strip-block"/g) || []).length, 1, 'ONE «חוב פתוח» table (CHANGELOG-debt-clarity.md)');
+  const whole = h.app.debtFunderStrip(realAging(TODAY), h.app.state.funders, {});
+  assert.equal(whole.open_debt.totals.total, Math.round((whole.recorded_debt.totals.total + whole.unrecorded_cycles.totals.total) * 100) / 100, 'the headline is both kinds together');
   assert.ok(html.includes('<span class="funder-chip funder-unset">לא הוגדר</span>'));
 });
 

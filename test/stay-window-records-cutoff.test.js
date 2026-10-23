@@ -391,7 +391,7 @@ test('D: the גבייה KPI card, the open balances and the monthly summary all 
   // The old סיכום חודשי: יתרה honours the line, נגבה does not.
   const sum = fnSource(APP, 'renderBillingMonthlySummary');
   assert.match(sum, /const debtRows = liveRows\.filter\(p => !isPreRecordsCycle\(p\.dueDate\)\);/);
-  assert.match(sum, /const outstanding = debtRows/);
+  assert.match(sum, /const outstanding = monthDebt \? monthDebt\.total : debtRows/);
   /* `liveRows` is thisMonth minus VOID rows — a separate rule with a separate
    * reason (see CHANGELOG-duplicate-payment-void.md). What this test still
    * pins is that the CUTOFF touches יתרה and leaves נגבה alone. */
