@@ -107,11 +107,11 @@ test('«חובות פתוחים» renders in Chromium: two blocks, drill-down, f
     await page.waitForSelector('#debt-aging .debt-block');
     assert.strictEqual(asked.length, 1);
 
-    assert.strictEqual(await page.$$eval('#debt-aging .debt-block', (els) => els.length), 2);
+    assert.strictEqual(await page.$$eval('#debt-aging .debt-block', (els) => els.length), 1, 'ONE headline block (CHANGELOG-debt-clarity.md)');
     const totals = await page.$$eval('#debt-aging .debt-block-total', (els) => els.map((e) => e.textContent.trim()));
-    assert.deepStrictEqual(totals, ['₪ 25,000', '₪ 43,000']);
+    assert.deepStrictEqual(totals, ['₪ 68,000']);
     const text = await page.$eval('#debt-aging', (el) => el.textContent);
-    assert.ok(!text.includes('68,000'), 'the two blocks are never summed');
+    assert.ok(text.includes('68,000') && text.includes('מתוך החוב'), 'one summed figure, the split is a footnote');
     assert.ok(text.includes('זיכויים ממתינים — לא מקוזזים מהחוב'));
 
     // drill-down: closed until clicked, then house → patient → cycles
@@ -130,10 +130,10 @@ test('«חובות פתוחים» renders in Chromium: two blocks, drill-down, f
     // filters re-render without a fetch
     await page.selectOption('#debt-status', 'discharged');
     assert.strictEqual(asked.length, 1);
-    assert.deepStrictEqual(await page.$$eval('#debt-aging .debt-block-total', (els) => els.map((e) => e.textContent.trim())), ['₪ 0', '₪ 28,000']);
+    assert.deepStrictEqual(await page.$$eval('#debt-aging .debt-block-total', (els) => els.map((e) => e.textContent.trim())), ['₪ 28,000']);
     await page.selectOption('#debt-status', 'all');
     await page.selectOption('#debt-house', 'ramot');
-    assert.deepStrictEqual(await page.$$eval('#debt-aging .debt-block-total', (els) => els.map((e) => e.textContent.trim())), ['₪ 25,000', '₪ 0']);
+    assert.deepStrictEqual(await page.$$eval('#debt-aging .debt-block-total', (els) => els.map((e) => e.textContent.trim())), ['₪ 25,000']);
 
     // «סוף חודש קודם» refetches with the previous month end
     await page.click('#debt-asof-prev-month');

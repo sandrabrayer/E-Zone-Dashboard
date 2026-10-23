@@ -1751,6 +1751,12 @@ function screenFromHash(hash) {
  * removed finance screen) are skipped. */
 function showScreen(name) {
   state.currentScreen = name;
+  // The monthly summary's «חוב פתוח» reads debtAging: one load when the person
+  // OPENS «גבייה» — never at boot, a filter or a re-render (CHANGELOG-debt-clarity.md).
+  if (name === 'billing' && state.finance === true && typeof debtAgingState === 'function') {
+    const ds = debtAgingState();
+    if (ds.status === 'idle') { ds.asOf = debtAgingTodayIso(); Promise.resolve().then(loadDebtAging).catch(() => {}); }
+  }
   document.querySelectorAll('.tabs .tab').forEach(b => b.classList.toggle('active', b.dataset.screen === name));
   SCREENS.forEach(s => {
     const el = document.getElementById('screen-' + s);
@@ -10935,6 +10941,7 @@ const DEBT_AGING_BUCKETS = [
 const DEBT_AGING_BLOCK_LABELS = {
   recorded_debt:     'חוב רשום',
   unrecorded_cycles: 'מחזורים ללא רישום',
+  open_debt:         'חוב פתוח',   // the on-screen headline (CHANGELOG-debt-clarity.md); the Excel export keeps the two
 };
 const DEBT_AGING_UNRECORDED_NOTE = 'לא שולם או שולם ולא נרשם';
 const DEBT_AGING_CREDITS_LABEL = 'זיכויים ממתינים — לא מקוזזים מהחוב';
@@ -11008,7 +11015,7 @@ function debtAgingView(data, filters) {
     return o;
   };
   const table = () => ({ rows: houseIds.map(emptyRow), totals: emptyRow('') });
-  const tables = { recorded_debt: table(), unrecorded_cycles: table() };
+  const tables = { recorded_debt: table(), unrecorded_cycles: table(), open_debt: table() };
   const addTo = (t, houseId, bucket, amount) => {
     let row = t.rows.find(r => r.houseId === houseId);
     if (!row) { row = emptyRow(houseId); t.rows.push(row); }
@@ -11030,10 +11037,12 @@ function debtAgingView(data, filters) {
       const bal = Number(c.balance) || 0;
       if (c.kind === 'recorded') { recorded = r2(recorded + bal); addTo(tables.recorded_debt, p.houseId, c.bucket, bal); }
       else { unrecorded = r2(unrecorded + bal); addTo(tables.unrecorded_cycles, p.houseId, c.bucket, bal); }
+      // ONE headline: every owed cycle, whether or not a payment row exists for it.
+      addTo(tables.open_debt, p.houseId, c.bucket, bal);
       oldest = Math.max(oldest, DEBT_AGING_BUCKETS.findIndex(b => b.key === c.bucket));
     });
     patients.push(Object.assign(base, {
-      recordedBalance: recorded, unrecordedTotal: unrecorded,
+      recordedBalance: recorded, unrecordedTotal: unrecorded, openTotal: r2(recorded + unrecorded),
       oldestBucket: oldest >= 0 ? DEBT_AGING_BUCKETS[oldest].key : '',
       cycles: owed.slice().sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0)),
     }));
@@ -11102,7 +11111,7 @@ function debtAgingCaveats(data, todayIso) {
 /* Pure: one block's house × bucket table. Every value goes through escapeHtml. */
 function debtAgingBlockHtml(key, table, sub) {
   const esc = escapeHtml;
-  const cls = key === 'recorded_debt' ? 'debt-block-recorded' : 'debt-block-unrecorded';
+  const cls = key === 'recorded_debt' ? 'debt-block-recorded' : key === 'open_debt' ? 'debt-block-open' : 'debt-block-unrecorded';
   const cells = r => DEBT_AGING_BUCKETS.map(b => `<td data-bucket="${esc(b.key)}">${esc(fmtShekel(r[b.key]))}</td>`).join('')
     + `<td class="debt-row-total">${esc(fmtShekel(r.total))}</td>`;
   return `<div class="debt-block ${cls}" data-block="${esc(key)}">`
@@ -11256,11 +11265,14 @@ function debtAgingHtml(data, filters, todayIso, ctx) {
   if (caveats.length) {
     html += `<div class="debt-caveats">` + caveats.map(c => `<p class="debt-caveat">${esc(c)}</p>`).join('') + `</div>`;
   }
-  html += `<p class="billing-date-label">נכון לסוף יום <bdi>${esc(formatDateHe(v.asOf) || '—')}</bdi> · כולל מע"מ · שני הגושים אינם מסתכמים יחד</p>`;
+  html += `<p class="billing-date-label">נכון לסוף יום <bdi>${esc(formatDateHe(v.asOf) || '—')}</bdi> · כולל מע"מ</p>`;
+  // ONE headline figure: every cycle that has passed and is not paid in full —
+  // whether or not a payment row was ever opened for it. The split is only a
+  // footnote (CHANGELOG-debt-clarity.md).
   html += `<div class="debt-blocks">`
-    + debtAgingBlockHtml('recorded_debt', v.tables.recorded_debt, 'שורות תשלום שלא שולמו או שולמו חלקית')
-    + debtAgingBlockHtml('unrecorded_cycles', v.tables.unrecorded_cycles, DEBT_AGING_UNRECORDED_NOTE)
-    + `</div>`;
+    + debtAgingBlockHtml('open_debt', v.tables.open_debt, 'כל מחזור שהגיע מועדו ולא שולם במלואו')
+    + `</div>`
+    + `<p class="billing-date-label debt-composition">מתוך החוב: <b>${esc(fmtShekel(v.tables.unrecorded_cycles.totals.total))}</b> במחזורים שלא נרשם להם תשלום כלל · <b>${esc(fmtShekel(v.tables.recorded_debt.totals.total))}</b> בשורות תשלום שנפתחו ולא שולמו במלואן</p>`;
   const graceLine = debtAgingGraceLine(data);
   if (graceLine) html += `<p class="debt-grace-line">${esc(graceLine)}</p>`;
 
@@ -11281,14 +11293,12 @@ function debtAgingHtml(data, filters, todayIso, ctx) {
       const rec = v.tables.recorded_debt.rows.find(r => r.houseId === h);
       const unr = v.tables.unrecorded_cycles.rows.find(r => r.houseId === h);
       html += `<details class="debt-house" data-house="${esc(h)}"><summary>${esc(debtAgingHouseName(h))} · ${esc(ps.length)} מטופלים`
-        + ` · ${esc(DEBT_AGING_BLOCK_LABELS.recorded_debt)} ${esc(fmtShekel(rec ? rec.total : 0))}`
-        + ` · ${esc(DEBT_AGING_BLOCK_LABELS.unrecorded_cycles)} ${esc(fmtShekel(unr ? unr.total : 0))}</summary>`;
+        + ` · חוב פתוח ${esc(fmtShekel((rec ? rec.total : 0) + (unr ? unr.total : 0)))}</summary>`;
       ps.forEach(p => {
         html += `<details class="debt-patient" data-patient="${esc(p.patientId)}"><summary class="billing-row debt-patient-row">`
           + `<div><span class="p-label">שם</span><span class="p-name">${esc(p.name || '—')}</span></div>`
           + `<div><span class="p-label">סטטוס</span><span class="p-val">${esc(DEBT_AGING_PATIENT_STATUS_LABELS[p.statusGroup])}</span></div>`
-          + `<div><span class="p-label">${esc(DEBT_AGING_BLOCK_LABELS.recorded_debt)}</span><span class="p-val">${esc(fmtShekel(p.recordedBalance))}</span></div>`
-          + `<div><span class="p-label">ללא רישום</span><span class="p-val">${esc(fmtShekel(p.unrecordedTotal))}</span></div>`
+          + `<div><span class="p-label">חוב פתוח</span><b class="p-val debt-total">${esc(fmtShekel(p.openTotal))}</b></div>`
           + `<div><span class="p-label">הוותיק ביותר</span><span class="p-val"><span dir="ltr">${esc(debtAgingBucketLabel(p.oldestBucket))}</span> ימים</span></div>`
           + (ctx && ctx.funderOf ? `<div><span class="p-label">גורם מממן</span><span class="p-val">${esc(ctx.funderOf(p.patientId, p.cycles[0] && p.cycles[0].start))}</span></div>` : '')
           + `</summary><div class="debt-table-wrap"><table class="debt-table debt-cycles"><thead><tr>`
@@ -11371,6 +11381,8 @@ async function loadDebtAging() {
     showError('טעינת החובות הפתוחים נכשלה — ' + s.error);
   }
   renderDebtAging();
+  // The monthly summary reads this report (CHANGELOG-debt-clarity.md).
+  try { if (state.currentScreen === 'billing') renderBillingMonthlySummary(state.billingDate || todayISO()); } catch (_) { /* no-op */ }
   return s;
 }
 
@@ -11778,7 +11790,15 @@ function debtFunderStrip(data, funders, filters) {
     });
     return { rows, totals };
   };
-  return { houseIds, recorded_debt: block('recorded_debt'), unrecorded_cycles: block('unrecorded_cycles') };
+  const rec = block('recorded_debt'), unr = block('unrecorded_cycles');
+  // ONE headline per funder × house: both kinds of owed cycle together.
+  const open = { rows: rec.rows.map((r, i) => {
+    const o = { funder: r.funder, label: r.label, byHouse: {}, total: r2(r.total + unr.rows[i].total) };
+    houseIds.forEach(h => { o.byHouse[h] = r2(r.byHouse[h] + unr.rows[i].byHouse[h]); });
+    return o;
+  }), totals: { byHouse: {}, total: r2(rec.totals.total + unr.totals.total) } };
+  houseIds.forEach(h => { open.totals.byHouse[h] = r2(rec.totals.byHouse[h] + unr.totals.byHouse[h]); });
+  return { houseIds, recorded_debt: rec, unrecorded_cycles: unr, open_debt: open };
 }
 
 /* Pure: the strip's HTML — two tables, never one summed figure. */
@@ -11799,8 +11819,8 @@ function debtFunderStripHtml(strip) {
       + `<td class="debt-row-total">${esc(fmtShekel(b.totals.total))}</td></tr></tfoot></table></div></div>`;
   };
   return `<div class="funder-strip" data-finance>`
-    + `<p class="billing-date-label">פילוח לפי גורם מממן — כל מחזור משויך לגורם שהיה בתוקף בתחילתו. שני הגושים אינם מסתכמים יחד.</p>`
-    + table('recorded_debt') + table('unrecorded_cycles')
+    + `<p class="billing-date-label">פילוח לפי גורם מממן — כל מחזור משויך לגורם שהיה בתוקף בתחילתו.</p>`
+    + table('open_debt')
     + `</div>`;
 }
 
@@ -13915,6 +13935,27 @@ function buildBillingRow(patient, payment, dueDateISO, isCarryForward) {
   return row;
 }
 
+/* The open debt of month `mk` ('YYYY-MM') from the loaded debtAging report
+ * (as of today): { total, byHouse } or null while it is not available. Reads
+ * the report once (status idle → load); never loops on an error. Pure apart
+ * from that one trigger. */
+function monthlyOpenDebt(mk) {
+  const s = debtAgingState();
+  const today = debtAgingTodayIso();
+  if (s.status !== 'ok' || !s.data || s.data.asOf !== today) return null;
+  const data = funderView() ? filterDebtReportByFunder(s.data, state.funders, billingFunderFilter()) : s.data;
+  const out = { total: 0, byHouse: {} };
+  (Array.isArray(data.byPatient) ? data.byPatient : []).forEach(p => {
+    (Array.isArray(p.cycles) ? p.cycles : []).forEach(c => {
+      const bal = Number(c && c.balance) || 0;
+      if (!(bal > 0) || String(c.month || String(c.start || '').slice(0, 7)) !== mk) return;
+      out.byHouse[p.houseId] = Math.round(((out.byHouse[p.houseId] || 0) + bal) * 100) / 100;
+      out.total = Math.round((out.total + bal) * 100) / 100;
+    });
+  });
+  return out;
+}
+
 function renderBillingMonthlySummary(selectedISO) {
   const mk = monthKey(selectedISO);
   document.getElementById('bill-month-label').textContent = formatMonth(selectedISO);
@@ -13940,7 +13981,12 @@ function renderBillingMonthlySummary(selectedISO) {
   const preRecordsRows = liveRows.filter(p => isPreRecordsCycle(p.dueDate));
   const debtRows = liveRows.filter(p => !isPreRecordsCycle(p.dueDate));
   const collected   = liveRows.reduce((s, p) => s + (p.amountPaid || 0), 0);
-  const outstanding = debtRows
+  /* «חוב פתוח» of the month = every owed cycle of that month from debtAging
+   * (as of today): a cycle nobody paid has NO payment row, so counting rows
+   * alone shows ₪0 (CHANGELOG-debt-clarity.md). Not loaded yet → the row-only
+   * figure, said so, and a one-time load that redraws this card. */
+  const monthDebt = monthlyOpenDebt(mk);
+  const outstanding = monthDebt ? monthDebt.total : debtRows
     .filter(p => p.status !== 'paid')
     .reduce((s, p) => s + (p.balance || 0), 0);
 
@@ -13951,10 +13997,10 @@ function renderBillingMonthlySummary(selectedISO) {
   breakdownEl.innerHTML = '';
   HOUSES.forEach(h => {
     const rows = liveRows.filter(p => p.houseId === h.id);
-    if (!rows.length) return;
     const col = rows.reduce((s, p) => s + (p.amountPaid || 0), 0);
-    const out = rows.filter(p => p.status !== 'paid' && !isPreRecordsCycle(p.dueDate))
+    const out = monthDebt ? (monthDebt.byHouse[h.id] || 0) : rows.filter(p => p.status !== 'paid' && !isPreRecordsCycle(p.dueDate))
       .reduce((s, p) => s + (p.balance || 0), 0);
+    if (!rows.length && !(out > 0)) return;
     const line = document.createElement('div');
     line.className = 'bd-line';
     line.innerHTML = `

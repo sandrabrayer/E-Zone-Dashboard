@@ -446,7 +446,7 @@ test('strip: always a פרו-בונו row at ₪0 — even with no pro-bono pati
     assert.equal(strip[k].totals.total, rep.totals[k].total, 'strip totals = aging totals');
   }
   const html = h.app.debtFunderStripHtml(strip);
-  assert.equal((html.match(/data-funder="probono"/g) || []).length, 2, 'one row in each of the two tables');
+  assert.equal((html.match(/data-funder="probono"/g) || []).length, 1, 'one row in the single «חוב פתוח» table');
 });
 
 for (const finance of [false, null]) {

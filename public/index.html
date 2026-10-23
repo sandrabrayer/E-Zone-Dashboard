@@ -398,7 +398,7 @@
           <button type="button" class="btn small" id="debt-refresh">רענון</button>
           <button type="button" class="btn small primary" id="debt-export">ייצוא לאקסל</button>
         </div>
-        <p class="billing-date-label debt-explainer">איך קוראים: <b>חוב רשום</b> — מחזור שיש לו שורת תשלום ועדיין לא שולם במלואו. <b>מחזורים ללא רישום</b> — מחזור שעבר ולא נרשם לו תשלום כלל. פותחים בית ← מטופל ← מחזור, ובכל מחזור: «שולם» (דיווח תשלום) או «שנה סכום».</p>
+        <p class="billing-date-label debt-explainer">איך קוראים: <b>חוב פתוח</b> — כל מחזור שהגיע מועדו ולא שולם במלואו, גם אם אף אחד לא רשם לו תשלום. פותחים בית ← מטופל ← מחזור, ובכל מחזור: «שולם» (דיווח תשלום) או «שנה סכום».</p>
         <div id="debt-aging" class="debt-aging" aria-live="polite"></div>
       </details>
 
@@ -429,7 +429,7 @@
         <div class="card stat">
           <div class="stat-label">יתרה פתוחה</div>
           <div class="stat-value" id="bill-month-outstanding">₪ 0</div>
-          <div class="stat-sub">כל התשלומים שלא נסגרו</div>
+          <div class="stat-sub">כל המחזורים של החודש שלא שולמו במלואם</div>
         </div>
         <div class="card stat">
           <div class="stat-label">פירוט לפי בית — חיובי החודש</div>
