@@ -94,7 +94,8 @@ test('queue: Sandra\'s exceptions list every void and every discount with who / 
 const ROOT = path.join(__dirname, '..');
 const APP_SRC = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
 const LIB_SRCS = ['payment-report-rules.js', 'billing-control-rules.js', 'cycle-balance.js']
-  .map((f) => fs.readFileSync(path.join(ROOT, 'lib', f), 'utf8'));
+  .map((f) => fs.readFileSync(path.join(ROOT, 'lib', f), 'utf8'))
+  .concat([fs.readFileSync(path.join(ROOT, 'public', 'funder.js'), 'utf8')]);
 const HTML = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 const SW_SRC = fs.readFileSync(path.join(ROOT, 'public', 'sw.js'), 'utf8');
 
@@ -121,7 +122,8 @@ function loadApp() {
     globalThis.__test = {
       get state() { return state; },
       bcReasonCheck, bcNotReceivedCheck, bcDiscountCheck, bcDiscountChipHtml, bcProblemsModel, bcProblemsHtml,
-      bcDiscountRowsHtml, bcReceiptHtml, bcVoidRowsHtml, bcExceptionsHtml, applySessionInfo, confirmReceipts, saveBillingDiscount,
+      bcDiscountRowsHtml, bcReceiptHtml, bcVoidRowsHtml, debtAmountCheck, debtCycleActionsHtml, debtCycleCardHtml, funderFillDebtHtml, funderFillHtml,
+      revenueByFunder, revenueByFunderHtml, bcRules, bcExceptionsHtml, applySessionInfo, confirmReceipts, saveBillingDiscount,
       set apiPost(f) { apiPost = f; }, set showToast(f) { showToast = f; }, set showError(f) { showError = f; },
       set loadBillingControl(f) { loadBillingControl = f; }, billingControlState,
     };`, sandbox);
@@ -177,9 +179,9 @@ test('html: Ortal gets confirm + cancel on reported amounts and NO discount butt
   assert.ok(!/data-bc-(pr-confirm|nr-open)/.test(vered), 'Vered neither confirms nor cancels here');
   // Two subsections with counts; the unpaid-cycle subsection has no cancel/confirm buttons.
   assert.match(html, /סכומים שדווחו וממתינים לאימות <span class="count-pill">2</);
-  assert.match(html, /מחזורים שלא שולמו ולא דווח עליהם תשלום <span class="count-pill">1</);
+  assert.match(html, /מחזורים שלא שולמו ולא דווח עליהם תשלום — מינואר, מהחדש לישן <span class="count-pill">1</);
   const cyclesPart = html.slice(html.indexOf('מחזורים שלא שולמו'));
-  assert.ok(!/<button/.test(cyclesPart), 'no buttons on unpaid cycles for Ortal');
+  assert.ok(!/<button/.test(cyclesPart), 'no buttons on unpaid cycles unless she may change the amount');
   assert.match(html, /«הנחה» ₪\s?5,000 · לתשלום ₪\s?25,000/);
   assert.ok(!html.includes('<img'), 'a name is never markup');
   assert.ok(html.includes('&lt;img'));
@@ -250,13 +252,13 @@ test('actions: the void sends status not_received + the reason; the discount sen
   assert.equal(posts.length, n);
 });
 
-test('page wiring: the hidden «בעיות גבייה» section, the billing-row chip, the CSS and SW v85', () => {
+test('page wiring: the hidden «בעיות גבייה» section, the billing-row chip, the CSS and SW v86', () => {
   assert.match(HTML, /<div id="bc-problems-group" class="[^"]*hidden"/);
   for (const id of ['bc-problems-count', 'bc-problems', 'bc-discounts-given']) assert.ok(HTML.includes(`id="${id}"`), id);
   assert.match(APP_SRC, /!isVoid && payment\.discount > 0 \? bcDiscountChipHtml\(payment\.discount\)/);
   assert.match(fs.readFileSync(path.join(ROOT, 'public', 'style.css'), 'utf8'), /\.badge\.discount \{/);
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
-  assert.equal(v, 'v85');
+  assert.equal(v, 'v86');
   assert.notEqual(v, 'v17');
 });
 
@@ -277,4 +279,118 @@ test('layout: the accountant tab hides releases / committees and puts «בעיו
   assert.match(APP_SRC, /accessChanged/);
   assert.match(APP_SRC, /if \(accessChanged && state\.currentScreen === 'billing-control'\) renderBillingControl\(\)/);
   assert.match(APP_SRC, /\(state\.canAccount === true \|\| state\.canDiscount === true\) && !!s\.data\.problems/);
+});
+
+/* ===================== CHANGELOG-open-debts-cleanup.md ===================== */
+
+const DEBT_P = { patientKey: 'arfoni::דנה כהן::2026-07-01', patientId: 'pid-1', name: 'דנה כהן', houseId: 'arfoni' };
+const DEBT_C = { kind: 'recorded', month: '2026-09', start: '2026-09-15', end: '2026-10-14', expected: 30000, received: 0, balance: 30000, paymentId: 'pay-9' };
+
+test('debt amount: a real amount (up to 2 decimals, 1,000,000 max); nothing else', () => {
+  const app = loadApp();
+  assert.deepEqual(plain(app.debtAmountCheck('25000')), { amount: 25000, error: '' });
+  assert.deepEqual(plain(app.debtAmountCheck(' 1500.5 ')), { amount: 1500.5, error: '' });
+  assert.equal(app.debtAmountCheck('0').amount, 0);
+  for (const bad of ['', 'abc', '-5', '1e3', '1.234', '1000000.01', '12345678', null]) assert.ok(app.debtAmountCheck(bad).error, JSON.stringify(bad));
+});
+
+test('debt actions: «שולם» only with pay, «שנה סכום» only with amount and nothing received; none → nothing; every value escaped', () => {
+  const app = loadApp();
+  assert.equal(app.debtCycleActionsHtml(DEBT_P, DEBT_C, {}), '');
+  const both = app.debtCycleActionsHtml(DEBT_P, DEBT_C, { pay: true, amount: true });
+  assert.match(both, /data-debt-pay>שולם</);
+  assert.match(both, /data-debt-amt-open>שנה סכום</);
+  assert.match(both, /data-debt-pk="arfoni::דנה כהן::2026-07-01"/);
+  assert.match(both, /data-debt-month="2026-09"/);
+  assert.match(both, /data-debt-payid="pay-9"/);
+  assert.match(both, /value="30000"/);
+  const payOnly = app.debtCycleActionsHtml(DEBT_P, DEBT_C, { pay: true });
+  assert.ok(payOnly.includes('data-debt-pay>') && !payOnly.includes('data-debt-amt-open'));
+  const amountOnly = app.debtCycleActionsHtml(DEBT_P, DEBT_C, { amount: true });
+  assert.ok(amountOnly.includes('data-debt-amt-open') && !amountOnly.includes('data-debt-pay>'));
+  const partial = app.debtCycleActionsHtml(DEBT_P, Object.assign({}, DEBT_C, { received: 5000 }), { pay: true, amount: true });
+  assert.ok(partial.includes('data-debt-pay>') && !partial.includes('data-debt-amt-open'), 'a part-paid cycle can only be paid, not re-priced');
+  const evil = app.debtCycleActionsHtml(Object.assign({}, DEBT_P, { patientKey: '"><img src=x>' }), DEBT_C, { pay: true });
+  assert.ok(!evil.includes('<img') && evil.includes('&lt;img'));
+});
+
+test('fill screen: a released patient with debt shows the debt, every owed cycle and the actions; a settled one shows nothing', () => {
+  const app = loadApp();
+  const d = Object.assign({}, DEBT_P, { cycles: [DEBT_C, Object.assign({}, DEBT_C, { kind: 'unrecorded', start: '2026-10-15', end: '2026-11-14', month: '2026-10', balance: 30000, expected: 30000, paymentId: '' }), Object.assign({}, DEBT_C, { balance: 0 })] });
+  const html = app.funderFillDebtHtml(d, { pay: true, amount: true });
+  assert.match(html, /חוב פתוח/);
+  assert.match(html, /60,000/, 'the sum of the owed cycles only');
+  assert.match(html, /פירוט וטיפול \(2\)/);
+  assert.equal((html.match(/data-debt-pay>/g) || []).length, 2);
+  assert.equal(app.funderFillDebtHtml(undefined, { pay: true }), '');
+  assert.equal(app.funderFillDebtHtml(Object.assign({}, DEBT_P, { cycles: [Object.assign({}, DEBT_C, { balance: 0 })] }), { pay: true }), '');
+  const row = [{ patient: { id: 'pid-1', name: 'דנה כהן', houseId: 'arfoni', date: '2026-07-01', status: 'released' }, released: true, defaultFrom: '2026-07-01' }];
+  assert.ok(typeof app.funderFillHtml === 'function');
+});
+
+test('Ortal / Vered list: unpaid cycles only from January 2026, newest first; «שנה סכום» only with canAmount', () => {
+  const app = loadApp();
+  const cyc = (start, balance) => ({ patientKey: 'arfoni::דנה::' + start, month: start.slice(0, 7), start, end: start, kind: 'unrecorded', expected: balance, balance, discount: 0, days: 10, houseId: 'arfoni', patientName: 'דנה' });
+  const data = { receipts: [], problems: { complete: true, discounts: [], cycles: [cyc('2025-12-15', 111), cyc('2026-01-15', 222), cyc('2026-09-15', 333), cyc('2026-05-15', 444)] } };
+  const m = app.bcProblemsModel(data);
+  const html = app.bcProblemsHtml(m, { state: {}, canConfirm: false, canAccount: true, canDiscount: false, canAmount: true });
+  const order = ['333', '444', '222'].map((n) => html.indexOf('₪' + n) >= 0 ? html.indexOf('₪' + n) : html.indexOf(n));
+  assert.ok(order[0] < order[1] && order[1] < order[2], 'newest first');
+  assert.ok(!html.includes('111'), 'December 2025 is before January: not listed');
+  assert.match(html, /מחזורים שלא שולמו ולא דווח עליהם תשלום — מינואר, מהחדש לישן <span class="count-pill">3</);
+  assert.equal((html.match(/data-debt-amt-open/g) || []).length, 3);
+  assert.ok(!/data-bc-disc-open/.test(html), 'Ortal: no discount');
+  const noAmount = app.bcProblemsHtml(m, { state: {}, canConfirm: false, canAccount: true, canDiscount: false, canAmount: false });
+  assert.ok(!/data-debt-amt-open/.test(noAmount));
+});
+
+test('revenue by funder: verified money by received date, per funder and house; waiting is a separate column; void / flagged count nowhere', () => {
+  const app = loadApp();
+  const R = app.bcRules();
+  const F = (patientId, funder, effectiveFrom) => ({ patientId, funder, effectiveFrom, setBy: 'x', setAt: effectiveFrom + 'T00:00:00' });
+  const rc = (o) => Object.assign({ id: 'r' + Math.random(), houseId: 'arfoni', status: 'paid', confirmStatus: 'confirmed', receivedDate: '2026-09-10', amount: 1000, funder: '', patientId: 'pid-1' }, o);
+  const receipts = [
+    rc({ amount: 1000, funder: 'ביטוח לאומי' }),
+    rc({ amount: 2000, houseId: 'ramot', funder: 'פרטי' }),
+    rc({ amount: 500, patientId: 'pid-2' }),                                   // no own funder → patient's: מכבי
+    rc({ amount: 700, patientId: 'pid-3' }),                                   // nothing known → unset
+    rc({ amount: 900, confirmStatus: 'reported', funder: 'פרטי' }),            // waiting
+    rc({ amount: 800, confirmStatus: 'flagged', funder: 'פרטי' }),             // «לא שולם»: nowhere
+    rc({ amount: 400, status: 'void', funder: 'פרטי' }),                       // void: nowhere
+    rc({ amount: 600, receivedDate: '2026-08-31', funder: 'פרטי' }),           // before the period
+    rc({ amount: 300, receivedDate: '2026-09-30', funder: 'פרטי' }),           // last day: in
+    rc({ amount: 1500, confirmStatus: 'partial', confirmedAmount: 400, funder: 'פרטי' }), // only 400 verified
+  ];
+  const m = app.revenueByFunder(receipts, '2026-09-01', '2026-09-30', [F('pid-2', 'מכבי', '2026-01-01')], R);
+  assert.equal(m.ok, true);
+  const row = (k) => plain(m.rows.find((r) => r.funder === k));
+  assert.equal(row('btl').total, 1000);
+  assert.equal(row('private').total, 2000 + 300 + 400);
+  assert.equal(row('private').byHouse.ramot, 2000);
+  assert.equal(row('private').waiting, 900);
+  assert.equal(row('maccabi').total, 500);
+  assert.equal(row('unset').total, 700);
+  assert.equal(m.totals.total, 1000 + 2700 + 500 + 700);
+  assert.equal(m.totals.waiting, 900, 'waiting is never in the income');
+  assert.equal(app.revenueByFunder(receipts, '2026-09-30', '2026-09-01', [], R).ok, false, 'a reversed range is refused');
+  assert.equal(app.revenueByFunder(receipts, '', '2026-09-01', [], R).ok, false);
+  const html = app.revenueByFunderHtml(m, '2026-09-01', '2026-09-30');
+  assert.match(html, /סה"כ הכנסה/);
+  assert.match(html, /ממתין לאימות/);
+  assert.match(html, /רק מה שאומת בבנק/);
+  assert.match(app.revenueByFunderHtml({ ok: false }, '', ''), /בחרו תקופה תקינה/);
+});
+
+test('page wiring: revenue-by-funder section (no new data-finance node), the explainer, labels, SW v86; refresh hooks; Ortal loses the revenue section', () => {
+  assert.match(HTML, /<details id="revenue-funder-view"/);
+  assert.ok(!/id="revenue-funder-view"[^>]*data-finance/.test(HTML));
+  for (const id of ['revf-from', 'revf-to', 'revf-this-month', 'revf-last-month', 'revf-year', 'revenue-funder']) assert.ok(HTML.includes('id="' + id + '"'), id);
+  assert.match(HTML, /איך קוראים: <b>חוב רשום<\/b>/);
+  assert.match(HTML, /פירוט לפי בית — חיובי החודש/);
+  assert.match(APP_SRC, /שולם ₪\$\{col\.toLocaleString/);
+  assert.match(APP_SRC, /חוב פתוח ₪\$\{out\.toLocaleString/);
+  assert.match(APP_SRC, /if \(typeof refreshDebtViews === 'function'\) refreshDebtViews\(\);/);
+  assert.match(APP_SRC, /const rf = document\.getElementById\('revenue-funder-view'\);\n\s+if \(rf && rf\.remove\) rf\.remove\(\);/);
+  assert.match(APP_SRC, /debtAgingHtml\(s\.data, filters, debtAgingTodayIso\(\), debtActionCtx\(\)\)/);
+  assert.match(SW_SRC, /var CACHE_VERSION = 'v86'/);
 });

@@ -111,7 +111,7 @@ const BILLING_WRITES = [
   ['savePayment', { payment: { id: 'x', status: 'unpaid' } }],
   ['updatePayment', { payment: { id: 'x' } }],
   ['reportPayment', { report: { cycle: CYCLE, report: {} } }],
-  ['upsertBillingOverride', { override: { patientId: 'p1', month: '2026-09', amount: 1 } }],
+  // upsertBillingOverride is no longer here: «שנה סכום» is Ortal's (accountant) too — test/ortal-billing-discounts.test.js.
   ['deleteBillingOverride', { override: { id: 'o1' } }],
   ['saveCredit', { credit: { id: 'c1', status: 'cancelled' } }],
   ['suggestRefunds', { houseId: 'arfoni' }],

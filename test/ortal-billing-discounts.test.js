@@ -223,7 +223,6 @@ test('roles (Code.gs): Ortal can never hard-delete a row, void through savePayme
   for (const who of [ORTAL, forged]) {
     for (const [action, body] of [
       ['deleteBillingOverride', { override: { id: ovrId } }],
-      ['upsertBillingOverride', { override: { patientId: PKEY, month: '2026-09', amount: 1 } }],
       ['removeLead', { lead: { id: 'L1' } }],
       ['deletePatientRow', { patient: { id: 'p1' } }],
       ['deleteDuplicateDischarge', { id: 'd1', reason: 'x' }],
@@ -694,6 +693,76 @@ test('server: the void — Ortal WITH accountant and Sandra; the discount — Ve
     await withServer(['controller'], async (port) => {
       const j = (await request(port, 'GET', '/api/me', { cookie: personal('ortal') })).json;
       assert.deepEqual([j.canAccount, j.canDiscount], [false, false], 'fail-closed');
+    });
+  } finally { stub.restore(); }
+});
+
+/* ===================== «שנה סכום» (CHANGELOG-open-debts-cleanup.md) ===================== */
+
+const AMOUNT_BODY = { action: 'upsertBillingOverride', override: { patientId: PKEY, month: '2026-09', amount: 12345 } };
+
+test('amount (Code.gs): Vered, Sandra and Ortal WITH accountant may change a cycle amount (stamped updatedBy); Ortal without accountant, Shiran, Yael are refused with nothing written; a discount survives', () => {
+  for (const who of [ORTAL_NO_ACCT, SHIRAN, YAEL]) {
+    const w = world();
+    const before = w.snapshot();
+    const r = w.call(AMOUNT_BODY, who);
+    assert.equal(r.ok, false, who().proxyUserId);
+    assert.match(String(r.error), /^forbidden/);
+    assert.equal(w.snapshot(), before, 'nothing written');
+  }
+  for (const who of [ORTAL, VERED, SANDRA]) {
+    const w = world();
+    const r = w.call(AMOUNT_BODY, who);
+    assert.equal(r.ok, true, who().proxyUserId);
+    assert.equal(r.override.amount, 12345);
+    assert.ok(String(r.override.updatedBy || '').length > 0, 'who changed it is stamped');
+  }
+  const w = world();
+  assert.equal(w.discount({ patientId: PKEY, month: '2026-09', discountAmount: 100, discountReason: 'בדיקה' }).ok, true);
+  assert.equal(w.call(AMOUNT_BODY, ORTAL).ok, true);
+  const row = w.ovrRows().find((r) => String(r.month).slice(0, 7) === '2026-09');
+  assert.equal(Number(row.discountAmount), 100, 'the discount is untouched by an amount change');
+  // Ortal still cannot delete an override.
+  assert.deepEqual(w.call({ action: 'deleteBillingOverride', override: { id: 'ovr::' + PKEY + '::2026-09' } }, ORTAL), FORBIDDEN);
+});
+
+test('amount: AMOUNT_ACTIONS are pinned equal in lib/role-scope.js and Code.gs; the operation needs finance | accountant | approver', () => {
+  const { g } = world();
+  assert.deepEqual([...roleScope.AMOUNT_ACTIONS], ['upsertBillingOverride']);
+  assert.deepEqual(arr(g.run('AMOUNT_ACTIONS')), [...roleScope.AMOUNT_ACTIONS]);
+  assert.equal(roleScope.requiredRoleFor('upsertBillingOverride'), 'finance|accountant|approver');
+  assert.equal(g.sandbox.requiredRoleFor_('upsertBillingOverride'), 'finance|accountant|approver');
+  const who = (id, roles) => ({ auth: 'personal', id, roles });
+  assert.deepEqual([
+    roleScope.roleAllowed(who('vered', ['staff']), 'upsertBillingOverride'),
+    roleScope.roleAllowed(who('sandra', ['approver']), 'upsertBillingOverride'),
+    roleScope.roleAllowed(who('ortal', ['controller', 'accountant']), 'upsertBillingOverride'),
+    roleScope.roleAllowed(who('ortal', ['controller']), 'upsertBillingOverride'),
+    roleScope.roleAllowed(who('shiran', ['staff']), 'upsertBillingOverride'),
+    roleScope.roleAllowed(null, 'upsertBillingOverride'),
+  ], [true, true, true, false, false, false]);
+  assert.ok(scope.CONTROLLER_ACTIONS.includes('upsertBillingOverride'));
+  assert.ok(arr(g.run('CONTROLLER_ACTIONS')).includes('upsertBillingOverride'));
+  assert.ok(!scope.CONTROLLER_ACTIONS.includes('deleteBillingOverride'), 'no delete for the controller view');
+});
+
+test('amount (server.js): Ortal with accountant, Vered and Sandra are proxied; Ortal without it and Shiran get 403; /api/me canAmount', async () => {
+  const stub = stubHttps();
+  try {
+    await withServer(undefined, async (port) => {
+      for (const id of ['ortal', 'vered', 'sandra']) {
+        assert.equal((await request(port, 'POST', '/api/sheets', { cookie: personal(id), body: AMOUNT_BODY })).status, 200, id);
+      }
+      assert.equal((await request(port, 'POST', '/api/sheets', { cookie: personal('shiran'), body: AMOUNT_BODY })).status, 403);
+      assert.equal(stub.calls.length, 3);
+      const can = async (id) => (await request(port, 'GET', '/api/me', { cookie: personal(id) })).json.canAmount;
+      assert.deepEqual([await can('ortal'), await can('vered'), await can('sandra'), await can('shiran')], [true, true, true, false]);
+    });
+    await withServer(['controller'], async (port) => {
+      const n = stub.calls.length;
+      assert.equal((await request(port, 'POST', '/api/sheets', { cookie: personal('ortal'), body: AMOUNT_BODY })).status, 403);
+      assert.equal(stub.calls.length, n, 'nothing proxied');
+      assert.equal((await request(port, 'GET', '/api/me', { cookie: personal('ortal') })).json.canAmount, false);
     });
   } finally { stub.restore(); }
 });

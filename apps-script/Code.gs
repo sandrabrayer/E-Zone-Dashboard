@@ -1316,7 +1316,10 @@ const CONTROLLER_ACTIONS = ['billingControlQueue', 'confirmPayment', 'debtAging'
   'expectedDischarges',
   /* Appended (CHANGELOG-dashboard-committees.md): «ועדות קרובות», read-only,
    * every logged-in user, Ortal included. */
-  'upcomingCommittees'];
+  'upcomingCommittees',
+  /* Appended (CHANGELOG-open-debts-cleanup.md): «שנה סכום» on an open debt —
+   * also role-gated (AMOUNT_ACTIONS: accountant|approver|finance). */
+  'upsertBillingOverride'];
 /* «הנחה» (setBillingDiscount) is deliberately NOT on CONTROLLER_ACTIONS any
  * more (CHANGELOG-discount-by-vered.md): discounts are Vered's / Sandra's. */
 const CONTROLLER_GETDATA_KEYS = ['ok', 'patients', 'billingOverrides'];
@@ -1449,6 +1452,11 @@ const ACCOUNTANT_ACTIONS = ['voidUnpaidClaim'];
  * Ortal (controller view) is refused. Mirrors lib/role-scope.js
  * DISCOUNT_ACTIONS (a guard test pins the two lists equal). */
 const DISCOUNT_ACTIONS = ['setBillingDiscount'];
+/* A cycle's amount («שנה סכום», CHANGELOG-open-debts-cleanup.md): Vered and
+ * Sandra (`finance`) and Ortal WITH `accountant` (or Sandra's approver). The
+ * row is stamped updatedBy from the verified session. Mirrors lib/role-scope.js
+ * AMOUNT_ACTIONS (a guard test pins the two lists equal). */
+const AMOUNT_ACTIONS = ['upsertBillingOverride'];
 /* The ONLY actions served without PROXY_SECRET, in log AND enforce mode.
  * From the consumers' deployed code (2026-10-01, see
  * CHANGELOG-open-actions-gate.md):
@@ -2219,7 +2227,7 @@ function actorLabel_(params) {
 function roleOperationFor_(action, params) {
   const act = String(action == null ? '' : action);
   if (DELETE_ACTIONS.indexOf(act) >= 0 || APPROVER_ACTIONS.indexOf(act) >= 0) return act;
-  if (ACCOUNTANT_ACTIONS.indexOf(act) >= 0 || DISCOUNT_ACTIONS.indexOf(act) >= 0) return act;
+  if (ACCOUNTANT_ACTIONS.indexOf(act) >= 0 || DISCOUNT_ACTIONS.indexOf(act) >= 0 || AMOUNT_ACTIONS.indexOf(act) >= 0) return act;
   if (act === 'confirmPayment') {
     const c = parseJsonParam_(params && params.confirm);
     if (c && typeof c === 'object' && String(c.status == null ? '' : c.status).trim() === NOT_RECEIVED_DECISION) return 'voidUnpaidClaim';
@@ -2255,6 +2263,7 @@ function requiredRoleFor_(operation) {
   if (APPROVER_ACTIONS.indexOf(operation) >= 0) return 'approver';
   if (ACCOUNTANT_ACTIONS.indexOf(operation) >= 0) return 'accountant|approver';
   if (DISCOUNT_ACTIONS.indexOf(operation) >= 0) return 'finance';
+  if (AMOUNT_ACTIONS.indexOf(operation) >= 0) return 'finance|accountant|approver';
   return '';
 }
 
