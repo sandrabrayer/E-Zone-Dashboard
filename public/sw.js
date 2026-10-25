@@ -311,7 +311,8 @@
 // Live v86 verified after #272 (v17 never reused).
 // v87 → v88: dashboard occupancy counts open houses only (שדה אליעזר excluded), % per house, «ועדות קרובות» card removed
 // (CHANGELOG-dashboard-open-houses-occupancy.md). Live v87 = deploy branch (monotonic).
-var CACHE_VERSION = 'v88';
+// v88 → v89: תפוסה tabs show the occupancy % per house; closed house tab hidden (CHANGELOG-occupancy-tabs-open-houses.md). Live v88 = deploy branch.
+var CACHE_VERSION = 'v89';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

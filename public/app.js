@@ -9021,14 +9021,24 @@ function visibleOccupancyRows(patients, houseId, query, showReleased) {
     .filter(p => !query || (p.name || '').toLowerCase().includes(query));
 }
 
+/* «קיסריה ריהאב (6/13 · 46%)» — the tab label with the occupancy % of the house. Pure + tested. */
+function occupancyTabLabel(house, inHouse) {
+  const cap = Number(house.capacity) || 0;
+  const pct = cap > 0 ? Math.round((inHouse / cap) * 100) : 0;
+  return `${house.name} (${inHouse}/${cap} · ${pct}%)`;
+}
+
 function renderHouseTabs() {
   const tabs = document.getElementById('house-tabs');
   tabs.innerHTML = '';
   HOUSES.forEach(h => {
+    const inHouse = houseOccupancyCount(state.patients, h.id);
+    // A closed house (not open yet) gets no tab — unless it somehow holds patients,
+    // which must stay reachable (CHANGELOG-occupancy-tabs-open-houses.md).
+    if (h.closed && inHouse === 0) return;
     const t = document.createElement('button');
     t.className = 'h-tab' + (state.currentHouseTab === h.id ? ' active' : '');
-    const inHouse = houseOccupancyCount(state.patients, h.id);
-    t.textContent = `${h.name} (${inHouse}/${h.capacity})`;
+    t.textContent = occupancyTabLabel(h, inHouse);
     t.onclick = () => {
       state.currentHouseTab = h.id;
       renderHouseTabs();
