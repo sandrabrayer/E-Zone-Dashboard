@@ -1072,6 +1072,7 @@ body.view-controller #screen-billing .irrelevant-actions { display: none !import
   color: var(--text-muted); font-size: 13px; margin-top: 4px;
   font-weight: 500;
 }
+.house-card .h-pct { color: var(--primary); }
 .house-card .progress { margin-top: 12px; }
 .house-card .h-beds {
   display: inline-block; padding: 5px 12px;

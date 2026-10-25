@@ -385,49 +385,15 @@ test('E: served like the other lib rules, loaded before app.js, hashed by the SW
   assert.match(server, /'\/committee-alerts\.js': \{ file: path\.join\(__dirname, 'lib', 'committee-alerts\.js'\)/);
   assert.match(server, /app\.get\('\/committee-alerts\.js', sendLibAsset\('\/committee-alerts\.js'\)\);/);
   assert.ok(index.indexOf('committee-alerts.js?v=__BUILD__') > 0 && index.indexOf('committee-alerts.js?v=__BUILD__') < index.indexOf('app.js?v=__BUILD__'));
-  const div = index.match(/<div class="card cmt-card" id="upcoming-committees"[^>]*>/);
-  assert.ok(div, 'the card is on «דשבורד»');
-  assert.doesNotMatch(div[0], /data-finance|data-billing-control|edit-only/, 'no view removes it');
+  assert.doesNotMatch(index, /id="upcoming-committees"/, 'the card was removed from «דשבורד» (CHANGELOG-dashboard-open-houses-occupancy.md)');
   assert.match(sw, /var BUNDLE_PATHS = \[[^\]]*'\/committee-alerts\.js'[^\]]*\]/);
   assert.ok(Number(sw.match(/var CACHE_VERSION = 'v(\d+)';/)[1]) >= 70);
 });
 
-test('E: app.js — one cached GET, CommitteeAlerts only, no innerHTML / logging / write op; every view paints it', () => {
+test('E: app.js no longer paints, loads or moves the committees card', () => {
   const app = read('public', 'app.js');
-  const block = app.slice(app.indexOf('const UPCOMING_COMMITTEES_TTL_MS'), app.indexOf('function renderUpcomingCommittees'));
-  assert.ok(block.length > 200);
-  assert.match(block, /apiGet\(\{ action: 'upcomingCommittees' \}\)/);
-  assert.match(block, /CA\.renderCard\(document, card, CA\.dashboardModel\(upcomingCommittees\.data, CA\.israelToday\(\)\)\)/);
-  assert.doesNotMatch(block, /innerHTML|insertAdjacentHTML|console\.|\b7\b/);
+  assert.doesNotMatch(app, /upcoming-committees|renderUpcomingCommittees|loadUpcomingCommittees|upcomingCommittees/);
   assert.doesNotMatch(app, /committeeSet/, 'read-only: never the write op');
-  const ra = app.slice(app.indexOf('function renderAll()'), app.indexOf('renderDashboard();', app.indexOf('function renderAll()')));
-  assert.match(ra, /renderUpcomingCommittees\(\);/, 'the controller view paints it');
-  assert.match(app, /renderExpectedDischarges\(\);\n  renderUpcomingCommittees\(\);/, 'the dashboard paints it');
-});
-
-test('E: Ortal\'s «בקרת גבייה» — the card is moved right after «שחרורים צפויים», moved not copied', () => {
-  const app = read('public', 'app.js');
-  const start = app.indexOf('function moveExpectedDischargesToControllerScreen');
-  const fnSrc = app.slice(start, app.indexOf('\nfunction renderExpectedDischarges', start));
-  const node = (id, cls) => ({ id, className: cls || '', children: [], parentNode: null,
-    insertBefore(n, ref) {
-      if (n.parentNode) n.parentNode.children.splice(n.parentNode.children.indexOf(n), 1);
-      const i = ref ? this.children.indexOf(ref) : -1;
-      if (i < 0) this.children.push(n); else this.children.splice(i, 0, n);
-      n.parentNode = this; return n;
-    },
-    get nextSibling() { const p = this.parentNode; return p ? p.children[p.children.indexOf(this) + 1] || null : null; },
-    querySelector(sel) { return sel === '.screen-head' ? this.children.find((c) => c.className === 'screen-head') || null : null; },
-  });
-  const dash = node('screen-dashboard'); const bc = node('screen-billing-control');
-  const xd = node('expected-discharges'); const cmt = node('upcoming-committees');
-  dash.insertBefore(xd, null); dash.insertBefore(cmt, null);
-  bc.insertBefore(node('', 'screen-head'), null); bc.insertBefore(node('bc-error'), null);
-  const doc = { getElementById: (id) => ({ 'expected-discharges': xd, 'upcoming-committees': cmt, 'screen-billing-control': bc })[id] || null };
-  const move = new Function('document', 'BILLING_CONTROL_SCREEN', fnSrc + '\nreturn moveExpectedDischargesToControllerScreen;')(doc, 'billing-control');
-  move(); move();
-  assert.deepStrictEqual(bc.children.map((c) => c.id || c.className), ['screen-head', 'expected-discharges', 'upcoming-committees', 'bc-error']);
-  assert.deepStrictEqual(dash.children, []);
 });
 
 test('E: lib/committee-alerts.js — no I/O, no innerHTML, no logging; CSS 16px / 44px', () => {

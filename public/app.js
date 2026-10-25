@@ -7,7 +7,7 @@ const HOUSES = [
   { id: 'asher',  name: 'רעננה אשר',      capacity: 14 },
   { id: 'pardes', name: 'רעננה הפרדס',    capacity: 13 },
   { id: 'ramot',  name: 'רמות השבים',     capacity: 20 },
-  { id: 'sde',    name: 'שדה אליעזר',     capacity: 16 },
+  { id: 'sde',    name: 'שדה אליעזר',     capacity: 16, closed: true }, // not open yet — excluded from the dashboard occupancy
 ];
 
 /* assignedTo (משוייך ל) options — the three fixed lead owners. Required on the
@@ -4677,7 +4677,6 @@ function renderAll() {
   if (controllerView()) {
     renderBillingControl();
     if (billingReadView()) { renderBilling(); renderCreditsPayouts(); }
-    renderUpcomingCommittees();
     renderExpectedDischarges();
     return;
   }
@@ -4766,8 +4765,11 @@ function dashboardMonthlyRevenueExVat(patients) {
 }
 
 function renderDashboard() {
-  const activePatients = state.patients.filter(p => p.status !== 'released');
-  const totalCap = HOUSES.reduce((s, h) => s + h.capacity, 0);
+  // Occupancy counts OPEN houses only (a house flagged `closed` is excluded).
+  const openHouses = HOUSES.filter(h => !h.closed);
+  const openIds = new Set(openHouses.map(h => h.id));
+  const activePatients = state.patients.filter(p => p.status !== 'released' && openIds.has(p.houseId));
+  const totalCap = openHouses.reduce((s, h) => s + h.capacity, 0);
   const occupied = activePatients.length;
   const pct = totalCap ? Math.round((occupied / totalCap) * 100) : 0;
   document.getElementById('stat-occ-pct').textContent = pct + '%';
@@ -4780,7 +4782,7 @@ function renderDashboard() {
 
   const grid = document.getElementById('houses-grid');
   grid.innerHTML = '';
-  HOUSES.forEach(h => {
+  openHouses.forEach(h => {
     const inHouse = activePatients.filter(p => p.houseId === h.id).length;
     const free = h.capacity - inHouse;
     const housePct = Math.round((inHouse / h.capacity) * 100);
@@ -4788,7 +4790,7 @@ function renderDashboard() {
     card.className = 'house-card';
     card.innerHTML = `
       <div class="h-name">${h.name}</div>
-      <div class="h-stats">${inHouse} / ${h.capacity} מאוכלסים</div>
+      <div class="h-stats">${inHouse} / ${h.capacity} מאוכלסים · <b class="h-pct">${housePct}%</b> תפוסה</div>
       <span class="h-beds ${free === 0 ? 'full' : ''}">${free === 0 ? 'מלא' : free + ' מיטות פנויות'}</span>
       <div class="progress"><div class="progress-bar" style="width:${housePct}%"></div></div>
     `;
@@ -4812,7 +4814,6 @@ function renderDashboard() {
 
   fitAllStatText(); // scale KPI values down to fit narrow cards (no clipping)
   renderExpectedDischarges();
-  renderUpcomingCommittees();
   renderRenewalAlert();
   renderOverdueAlert();
 }
@@ -4863,7 +4864,7 @@ function moveExpectedDischargesToControllerScreen() {
   // cards, and «בעיות גבייה» is the first thing on her tab
   // (CHANGELOG-discount-by-vered.md). Other controller sessions are unchanged.
   if (typeof state !== 'undefined' && state.canAccount === true) {
-    [card, document.getElementById('upcoming-committees')].forEach(el => { if (el && el.parentNode && el.parentNode.removeChild) el.parentNode.removeChild(el); });
+    [card].forEach(el => { if (el && el.parentNode && el.parentNode.removeChild) el.parentNode.removeChild(el); });
     const grp = document.getElementById('bc-problems-group');
     const head0 = screen && screen.querySelector ? screen.querySelector('.screen-head') : null;
     if (grp && screen && screen.insertBefore && grp.previousElementSibling !== head0) screen.insertBefore(grp, head0 ? head0.nextSibling : screen.firstChild);
@@ -4872,51 +4873,11 @@ function moveExpectedDischargesToControllerScreen() {
   if (!card || !screen || !screen.insertBefore || card.parentNode === screen) return;
   const head = screen.querySelector ? screen.querySelector('.screen-head') : null;
   screen.insertBefore(card, head ? head.nextSibling : screen.firstChild);
-  // «ועדות קרובות» (CHANGELOG-dashboard-committees.md) follows it, right after.
-  const cmt = document.getElementById('upcoming-committees');
-  if (cmt && cmt.parentNode !== screen) screen.insertBefore(cmt, card.nextSibling);
 }
 
 function renderExpectedDischarges() {
   paintExpectedDischarges();
   loadExpectedDischarges(false);
-}
-
-/* «ועדות קרובות» (CHANGELOG-dashboard-committees.md) — READ-ONLY committee
- * dates set by the house managers in the Managers app. Same pattern as
- * «שחרורים צפויים»: one GET of action=upcomingCommittees per
- * UPCOMING_COMMITTEES_TTL_MS; every render reclassifies against Israel's
- * "today" (CommitteeAlerts.israelToday). Empty / error states always shown.
- * Text-only (lib/committee-alerts.js renderCard). Nothing here logs a name. */
-const UPCOMING_COMMITTEES_TTL_MS = 60 * 1000;
-const upcomingCommittees = { data: null, at: 0, error: false, inflight: null };
-
-function loadUpcomingCommittees(force) {
-  const fresh = upcomingCommittees.data && (Date.now() - upcomingCommittees.at) < UPCOMING_COMMITTEES_TTL_MS;
-  if ((fresh && !force) || upcomingCommittees.inflight) return upcomingCommittees.inflight || Promise.resolve();
-  upcomingCommittees.inflight = apiGet({ action: 'upcomingCommittees' })
-    .then((data) => { upcomingCommittees.data = data; upcomingCommittees.error = false; })
-    .catch(() => { upcomingCommittees.error = true; })
-    .then(() => { upcomingCommittees.at = Date.now(); upcomingCommittees.inflight = null; paintUpcomingCommittees(); });
-  return upcomingCommittees.inflight;
-}
-
-function paintUpcomingCommittees() {
-  const card = document.getElementById('upcoming-committees');
-  const CA = typeof CommitteeAlerts !== 'undefined' ? CommitteeAlerts : null;
-  if (!card || !CA) return;
-  if (!upcomingCommittees.data) {
-    CA.renderCard(document, card, null, { state: upcomingCommittees.error ? 'error' : 'loading' });
-  } else {
-    CA.renderCard(document, card, CA.dashboardModel(upcomingCommittees.data, CA.israelToday()));
-  }
-  const retry = card.querySelector('[data-cmt-retry]');
-  if (retry) retry.onclick = () => busyButton(retry, 'load', () => loadUpcomingCommittees(true));
-}
-
-function renderUpcomingCommittees() {
-  paintUpcomingCommittees();
-  loadUpcomingCommittees(false);
 }
 
 /* Dashboard renewal alert — active patients due to renew within 7 days whose

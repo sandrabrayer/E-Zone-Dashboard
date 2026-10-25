@@ -309,7 +309,9 @@
 // v86 → v87: ONE «חוב פתוח» figure (debt view, funder strip, monthly summary)
 // instead of «חוב רשום» + «ללא רישום» (app.js, index.html) (CHANGELOG-debt-clarity.md).
 // Live v86 verified after #272 (v17 never reused).
-var CACHE_VERSION = 'v87';
+// v87 → v88: dashboard occupancy counts open houses only (שדה אליעזר excluded), % per house, «ועדות קרובות» card removed
+// (CHANGELOG-dashboard-open-houses-occupancy.md). Live v87 = deploy branch (monotonic).
+var CACHE_VERSION = 'v88';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
