@@ -3,8 +3,8 @@
  *   - meetingReportAuthOk_ / handle_ dispatch: FAIL-CLOSED — no
  *     MEETING_REPORT_SECRET Script Property (or a mismatch) → unauthorized,
  *     for both the read and the write action.
- *   - meetingReportLeads_: only the four whitelisted fields
- *     { id, name, house, visitDate }; admitted-stage leads with an OLD meeting
+ *   - meetingReportLeads_: only the five whitelisted fields
+ *     { id, name, house, visitDate, officeNote }; admitted-stage leads with an OLD meeting
  *     excluded (a recent one is reportable — test/meeting-flow-gaps.test.js).
  *   - submitMeetingReport_: rejects bad leadId / outcome / oversized
  *     companion / note / reporter; happy path writes the five report fields
@@ -168,7 +168,7 @@ test('both actions: WRONG secret → unauthorized; correct secret → served', (
 
 /* ===== meetingReportLeads_ ===== */
 
-test('meetingReportLeads returns ONLY the four whitelisted fields', () => {
+test('meetingReportLeads returns ONLY the five whitelisted fields', () => {
   const { code } = withLeads(OPEN_LEADS);
   const out = code.meetingReportLeads();
   assert.strictEqual(out.ok, true);
@@ -177,12 +177,12 @@ test('meetingReportLeads returns ONLY the four whitelisted fields', () => {
   leads.forEach((l) => {
     assert.deepStrictEqual(
       Object.keys(l).sort(),
-      ['house', 'id', 'name', 'visitDate'],
-      'no phones, no notes, no contact/billing fields — minimal exposure'
+      ['house', 'id', 'name', 'officeNote', 'visitDate'],
+      'no phones, no contact/billing fields — minimal exposure (officeNote = the lead note, CHANGELOG-vered-note-to-managers.md)'
     );
   });
   const l1 = leads.find((l) => l.id === 'L1');
-  assert.deepStrictEqual(l1, { id: 'L1', name: 'דני', house: 'ramot', visitDate: '2026-08-20' });
+  assert.deepStrictEqual(l1, { id: 'L1', name: 'דני', house: 'ramot', visitDate: '2026-08-20', officeNote: 'סודי' });
 });
 
 test('meetingReportLeads excludes an admitted lead whose meeting is older than 14 days', () => {

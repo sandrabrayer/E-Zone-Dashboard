@@ -100,6 +100,32 @@ textarea { min-height: 96px; resize: vertical; }
  * text shown — never clipped. */
 .mr-note-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 
+/* «רקע מהמשרד» — Vered's scheduling note for the picked lead, read-only. */
+.mr-office-note {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-inline-start: 3px solid var(--primary);
+  border-radius: 10px;
+  background: var(--surface-2);
+  direction: rtl;
+  text-align: right;
+}
+.mr-office-note-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.mr-office-note-text {
+  font-size: 15px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
 .mr-toggle {
   background: none; border: none;
   color: var(--primary);

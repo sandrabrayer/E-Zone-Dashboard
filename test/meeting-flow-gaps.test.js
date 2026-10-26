@@ -114,12 +114,12 @@ test('Fix 1: closed (irrelevant) and removed leads stay lead_not_found — nothi
   assert.strictEqual(JSON.stringify(g.sandbox.__sheets), before, 'no sheet changed');
 });
 
-test('Fix 1: the picker lists open leads + admitted leads with a visit in the last 14 days — still the four fields only', () => {
+test('Fix 1: the picker lists open leads + admitted leads with a visit in the last 14 days — still the whitelisted fields only', () => {
   const { reportLeads } = boot({ leads: LEADS, managers: MANAGERS_TAB });
   const out = reportLeads();
   assert.strictEqual(out.ok, true);
   assert.deepStrictEqual(out.leads.map((l) => l.id).sort(), ['ADM_EDGE', 'ADM_HE', 'ADM_RECENT', 'OPEN']);
-  out.leads.forEach((l) => assert.deepStrictEqual(Object.keys(l).sort(), ['house', 'id', 'name', 'visitDate']));
+  out.leads.forEach((l) => assert.deepStrictEqual(Object.keys(l).sort(), ['house', 'id', 'name', 'officeNote', 'visitDate']));
 });
 
 test('Fix 1: the bonus readers are untouched by this PR', () => {
