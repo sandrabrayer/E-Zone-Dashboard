@@ -313,7 +313,8 @@
 // (CHANGELOG-dashboard-open-houses-occupancy.md). Live v87 = deploy branch (monotonic).
 // v88 → v89: תפוסה tabs show the occupancy % per house; closed house tab hidden (CHANGELOG-occupancy-tabs-open-houses.md). Live v88 = deploy branch.
 // v89 → v90: meeting-report page reporter list from the Managers tab (meeting-report.js) (CHANGELOG-meeting-flow-gaps.md). Live v89 verified 2026-10-26 (v17 never reused).
-var CACHE_VERSION = 'v90';
+// v90 → v91: «אמבולטורי» meetingWith option + «נשלח לאמבולטורי» chip (app.js, style.css) (CHANGELOG-meeting-with-ambulatory.md). Live v90 verified 2026-10-26 (v17 never reused).
+var CACHE_VERSION = 'v91';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

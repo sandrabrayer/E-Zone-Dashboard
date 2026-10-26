@@ -49,7 +49,7 @@ const FORBIDDEN = { ok: false, error: 'forbidden', message: 'אין הרשאה �
 
 /* The full getData key list (Code.gs getData_, pinned in the PR A suite). */
 const GETDATA_KEYS = ['ok', 'leads', 'patients', 'irrelevantLeads', 'removedLeads', 'dischargedPatients',
-  'billingOverrides', 'houseManagers', 'managerPhones', 'currentManagers', 'currentManagersSource'];
+  'billingOverrides', 'houseManagers', 'managerPhones', 'currentManagers', 'currentManagersSource', 'outpatientSentLeadIds'];
 
 const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'APP_PIN', 'USER_PIN_HASHES',
   'PIN_PEPPER', 'BOOTSTRAP_TOKEN', 'TRUST_PROXY_HOPS', 'MEETING_REPORT_PIN', 'MEETING_REPORT_SECRET', 'APP_PIN_UNTIL'];

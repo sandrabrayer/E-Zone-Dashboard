@@ -533,6 +533,16 @@ service:
 | `BOOTSTRAP_TOKEN` | no — delete it | one-time setup of Sandra's own record. Closed for good once her record exists; the log warns while it is set. |
 | ~~`APP_PIN`~~, ~~`APP_PIN_UNTIL`~~ | **removed** | the old shared code and its window. Ignored if still set (one warning in the log). Delete them. |
 
+## «אמבולטורי» → Outpatient — nothing new to set (October 26, 2026)
+
+`CHANGELOG-meeting-with-ambulatory.md`. Choosing «אמבולטורי» in «נפגש עם» sends the lead to
+Outpatient through the SAME Railway variables the discharge handoff already uses:
+**`OUTPATIENT_LEAD_URL`** and **`OUTPATIENT_LEAD_SECRET`** (server.js `sendToOutpatient`). No new
+Railway variable, Script Property, sheet or column. The send log is the hidden AuditLog
+(`outpatient_lead_sent` / `outpatient_lead_send_failed`). If either variable is unset, the meeting
+still saves and Vered sees «הפגישה נשמרה, אך שליחת הליד לאמבולטורי נכשלה — לא נשלח»; the next
+save retries. Code.gs deploys automatically on merge.
+
 ## Expected discharges on the dashboard — nothing to set (October 15, 2026)
 
 `expectedDischarges` (CHANGELOG-dashboard-expected-discharges.md) is a READ-ONLY Apps Script

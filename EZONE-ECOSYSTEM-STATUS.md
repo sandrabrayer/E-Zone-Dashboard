@@ -1,4 +1,22 @@
-# E-ZONE Ecosystem Status — updated September 10, 2026
+# E-ZONE Ecosystem Status — updated October 26, 2026
+
+## «אמבולטורי» meeting option → Outpatient — October 26, 2026 (PR open)
+
+- **Dashboard:** «נפגש עם» gets one fixed, LAST option «אמבולטורי» (Shachar with Oren the
+  coordinator). It is not a manager: never in the Managers tab, `currentManagers_`, the summary
+  strip, the meeting-report reporter list, or a house's bonus credit (`managerHouseByName_`).
+  The meeting stays on the board; the lead is never closed or moved.
+- **→ ezone-outpatient:** when a lead's meetingWith BECOMES «אמבולטורי», `saveAll_` lists it and
+  server.js `sendToOutpatient` calls the existing Outpatient `createLead` once (name, phone, note,
+  source — no house; the preferred house is set in Outpatient). Logged in AuditLog
+  (`outpatient_lead_sent`), never sent twice. A failure (Outpatient down, timeout, no phone) →
+  the meeting saves, Vered gets a Hebrew warning, the next save retries.
+- **ezone-outpatient: no change.** It receives an extra `source` field and no `house`
+  (to verify on its side: a lead with an empty house is accepted).
+- **ezone-managers:** visits / expected admissions may now carry `meetingWith: 'אמבולטורי'`
+  (a plain name; no house credit). Its WhatsApp button stays disabled unless a phone is set.
+- Code.gs + server.js + app.js; SW v90 → **v91**; one new getData key
+  `outpatientSentLeadIds` (additive). See `CHANGELOG-meeting-with-ambulatory.md`.
 
 ## Meeting-flow gaps — October 26, 2026 (PR open)
 

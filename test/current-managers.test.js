@@ -377,8 +377,9 @@ test('app.js dropdowns: options are the current managers; a SAVED former manager
   const { app } = loadApp();
   applyCurrent(app, CURRENT);
   assert.deepStrictEqual(arr(app.managerOptions()), ['חנן', 'רנטה', 'עידו', 'דנה']);
-  assert.deepStrictEqual(arr(app.meetingWithOptionNames('אורן')), ['חנן', 'רנטה', 'עידו', 'דנה', 'אורן']);
-  assert.deepStrictEqual(arr(app.meetingWithOptionNames('דנה')), ['חנן', 'רנטה', 'עידו', 'דנה'], 'no duplicate');
+  // «אמבולטורי» is always the last option (CHANGELOG-meeting-with-ambulatory.md).
+  assert.deepStrictEqual(arr(app.meetingWithOptionNames('אורן')), ['חנן', 'רנטה', 'עידו', 'דנה', 'אורן', 'אמבולטורי']);
+  assert.deepStrictEqual(arr(app.meetingWithOptionNames('דנה')), ['חנן', 'רנטה', 'עידו', 'דנה', 'אמבולטורי'], 'no duplicate');
 
   // lead card select
   const card = app.meetingWithSelectHTML({ house: 'רמות השבים', meetingWith: 'אורן' });

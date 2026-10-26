@@ -67,13 +67,13 @@ function optionValues(html) {
 /* ===== The select renders with the roster from state ===== */
 test('select renders the blank option plus every manager in the roster', () => {
   const html = app.meetingWithSelectHTML({ house: '', meetingWith: '' }, ROSTER);
-  assert.deepStrictEqual(optionValues(html), ['', 'חנן', 'רנטה', 'עידו', 'אורן']);
+  assert.deepStrictEqual(optionValues(html), ['', 'חנן', 'רנטה', 'עידו', 'אורן', 'אמבולטורי']);
 });
 
 test('select falls back to state.houseManagers when no roster is passed', () => {
   app.setRoster(ROSTER);
   const html = app.meetingWithSelectHTML({ house: 'arfoni', meetingWith: '' });
-  assert.deepStrictEqual(optionValues(html), ['', 'חנן', 'רנטה', 'עידו', 'אורן']);
+  assert.deepStrictEqual(optionValues(html), ['', 'חנן', 'רנטה', 'עידו', 'אורן', 'אמבולטורי']);
 });
 
 test('select carries data-field="meetingWith" so it rides the single-field save path', () => {

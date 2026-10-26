@@ -154,6 +154,19 @@ const MANAGER_PHONES = {
   'אורן': '972507580152',
 };
 
+/* «אמבולטורי» (CHANGELOG-meeting-with-ambulatory.md): ONE fixed «נפגש עם» value
+ * for the ambulatory unit (Shachar with Oren the coordinator). It is not a
+ * manager: never a Managers-tab row, never in currentManagers_ (so never a
+ * meeting-report reporter), never credited to a house (managerHouseByName_).
+ * Choosing it keeps the meeting on the board AND hands the lead to Outpatient
+ * once (ambulatoryHandoffPending_ → server.js → recordOutpatientLeadSend_). */
+const MEETING_WITH_AMBULATORY = 'אמבולטורי';
+
+/* Whether a meetingWith value is «אמבולטורי». PURE. */
+function isAmbulatoryMeeting_(v) {
+  return String(v == null ? '' : v).trim() === MEETING_WITH_AMBULATORY;
+}
+
 /* Resolve the manager→phone map, letting a Script Property override each default.
  * For every known manager name, a property named 'MANAGER_PHONE_<name>' (if set
  * and non-empty) replaces the constant; otherwise the constant is used. Never
@@ -1488,7 +1501,7 @@ const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
  * test/proxy-secret-transition.test.js checks this list against handle_. */
 const PROXY_KNOWN_ACTIONS = [
   'managersWork',
-  'getData', 'getAdmittedRoster', 'getDischargedRoster', 'createLeadFromTherapists', 'saveAll', 'getPayments', 'savePayment',
+  'getData', 'getAdmittedRoster', 'getDischargedRoster', 'createLeadFromTherapists', 'saveAll', 'recordOutpatientLeadSend', 'getPayments', 'savePayment',
   'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
   'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'debtAging', 'cleanupReport',
   'reportPayment', 'appendFunder', 'billingControlQueue', 'confirmPayment',
@@ -1852,6 +1865,9 @@ function handle_(params) {
       if (no) return jsonOut_(no);
       return jsonOut_(upcomingCommitteesForDashboard_());
     }
+    // «אמבולטורי» → Outpatient: server.js records the outcome of one send
+    // (CHANGELOG-meeting-with-ambulatory.md). Verified proxy callers only.
+    if (action === 'recordOutpatientLeadSend') return jsonOut_(recordOutpatientLeadSend_(params));
     if (action === 'saveAll') {
       const perf = perfStart_('saveAll');
       const leads    = parseJsonParam_(params.leads);
@@ -2867,6 +2883,9 @@ function getData_() {
     // other consumer.
     currentManagers: cm.managers,
     currentManagersSource: cm.source,
+    // Additive: lead ids already handed to Outpatient as «אמבולטורי» (the
+    // card's «נשלח לאמבולטורי» chip). Ids only.
+    outpatientSentLeadIds: Object.keys(outpatientLeadSendLog_().sent),
   };
 }
 
@@ -2902,14 +2921,19 @@ function currentManagers_(todayIso) {
   let ss = null;
   try { ss = SpreadsheetApp.getActiveSpreadsheet(); } catch (_) { ss = null; }
 
+  // «אמבולטורי» is never a manager, even when someone types it into a tab.
+  const notAmbulatory = function (list) {
+    return list.filter(function (m) { return !isAmbulatoryMeeting_(m && m.name); });
+  };
+
   try {
     const fromManagers = managersTabCurrent_(ss, today);
-    if (fromManagers) return { source: 'managers', managers: fromManagers };
+    if (fromManagers) return { source: 'managers', managers: notAmbulatory(fromManagers) };
   } catch (_) { /* fall through */ }
 
   try {
     const fromConfig = bonusConfigManagers_(ss);
-    if (fromConfig && fromConfig.length) return { source: 'bonusconfig', managers: fromConfig };
+    if (fromConfig && fromConfig.length) return { source: 'bonusconfig', managers: notAmbulatory(fromConfig) };
   } catch (_) { /* fall through */ }
 
   return {
@@ -3163,6 +3187,11 @@ function saveAll_(leads, patients, user, prove) {
     // R3 proof (CHANGELOG-write-path-hardening.md): which of the ids the
     // client asked about are on the sheet NOW, read under the same lock.
     if (want) out.proven = saveProven_(want);
+    // «אמבולטורי» → Outpatient (CHANGELOG-meeting-with-ambulatory.md): the
+    // leads server.js must hand off now. Additive, absent when none. server.js
+    // removes it from the answer before the browser sees it.
+    const handoff = ambulatoryHandoffPending_(leadsIn, leadOut.ambulatoryChanged, leadOut.closedSuppressed);
+    if (handoff.length > 0) out.ambulatoryHandoff = handoff;
     return out;
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
@@ -3759,6 +3788,10 @@ function mergeLeads_(leadsIn, out) {
   // from what the client sent). Returned to saveAll_ → the save response, so
   // the dashboard's edit flow can detect a raced manager resubmit/delete.
   const reportConflicts = [];
+  // Leads whose meetingWith BECOMES «אמבולטורי» in this save (new lead, or a
+  // sheet value that was something else) — the Outpatient handoff trigger.
+  const mwIdx = LEAD_COLUMNS.indexOf('meetingWith');
+  const ambulatoryChanged = [];
 
   const newRows = leads.map(function (l) {
     const merged = {};
@@ -3787,8 +3820,13 @@ function mergeLeads_(leadsIn, out) {
       reportConflicts.push(String(merged.id == null ? '' : merged.id));
     }
 
+    if (isAmbulatoryMeeting_(merged.meetingWith) && !(existing && isAmbulatoryMeeting_(existing[mwIdx]))) {
+      ambulatoryChanged.push(String(merged.id == null ? '' : merged.id).trim());
+    }
+
     return objectToRow_(merged, LEAD_COLUMNS);
   });
+  if (out && typeof out === 'object') out.ambulatoryChanged = ambulatoryChanged;
 
   // Canonicalize the date/time columns to clean text for BOTH kept rows (whose
   // cells may already be coerced Date objects from getValues) and new rows, then
@@ -7726,6 +7764,121 @@ function createLeadFromTherapists_(params) {
     upsertRowById_(sh, LEAD_COLUMNS, lead);
     logAudit_('lead_created_from_therapists', 'createLeadFromTherapists_', id, name, { source: ALUMNI_LEAD_SOURCE }, by || 'ezone-therapists');
     return { ok: true, created: true, leadId: id };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* ===== «אמבולטורי» → Outpatient handoff (CHANGELOG-meeting-with-ambulatory.md) =====
+ * When a lead's meetingWith BECOMES «אמבולטורי» the meeting saves here as
+ * usual (it stays on the board; the lead is never closed or moved) AND the
+ * lead is sent once to the Outpatient app. The send itself runs in server.js
+ * (sendToOutpatient — the Railway-env URL + secret the discharge handoff
+ * already uses), after saveAll_ answered and the lock is released:
+ *   1. saveAll_ answers `ambulatoryHandoff` [{ leadId, name, phone, note,
+ *      source }] — the leads to send now (ambulatoryHandoffPending_);
+ *   2. server.js sends each one, then calls recordOutpatientLeadSend with the
+ *      outcome → AuditLog `outpatient_lead_sent` / `outpatient_lead_send_failed`
+ *      (patientId column = the lead id). No LEAD_COLUMNS change.
+ * Pending = meetingWith is «אמבולטורי» AND no `outpatient_lead_sent` row AND
+ * (it changed in this save OR an earlier attempt failed). So a lead is never
+ * sent twice — even when the value goes away and comes back — and a failed
+ * send (Outpatient down, timeout, no phone) is retried by the next save.
+ * The house is NOT sent: the preferred house is set in Outpatient. */
+const OUTPATIENT_LEAD_SENT_ACTION = 'outpatient_lead_sent';
+const OUTPATIENT_LEAD_SEND_FAILED_ACTION = 'outpatient_lead_send_failed';
+const AMBULATORY_HANDOFF_NOTE_MAX = 400;
+
+/* { sent: {leadId: true}, failed: {leadId: true} } from AuditLog. Reads only
+ * the action..patientId columns. Fail-soft: an unreadable log → empty sets. */
+function outpatientLeadSendLog_() {
+  const out = { sent: {}, failed: {} };
+  try {
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AUDIT_LOG_SHEET);
+    if (!sh || sh.getLastRow() < 2) return out;
+    const a = AUDIT_LOG_COLUMNS.indexOf('action');
+    const p = AUDIT_LOG_COLUMNS.indexOf('patientId');
+    sh.getRange(2, a + 1, sh.getLastRow() - 1, p - a + 1).getValues().forEach(function (r) {
+      const action = String(r[0] == null ? '' : r[0]);
+      const id = String(r[p - a] == null ? '' : r[p - a]).trim();
+      if (!id) return;
+      if (action === OUTPATIENT_LEAD_SENT_ACTION) out.sent[id] = true;
+      else if (action === OUTPATIENT_LEAD_SEND_FAILED_ACTION) out.failed[id] = true;
+    });
+  } catch (err) {
+    try { console.warn('[ambulatory] send-log scan skipped: ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
+  }
+  return out;
+}
+
+/* The leads of a saveAll payload to hand to Outpatient now (rule above).
+ * `changed` = mergeLeads_'s ambulatoryChanged ids; `suppressed` = leads the
+ * merge dropped (closed / removed). Every value is cut to a safe cell text;
+ * the phone is the handoff-normalized one ('' when it is not a phone). Reads
+ * AuditLog only when the payload has an «אמבולטורי» lead at all. */
+function ambulatoryHandoffPending_(leads, changed, suppressed) {
+  if (!Array.isArray(leads)) return [];
+  const skip = {};
+  (suppressed || []).forEach(function (id) { skip[String(id)] = true; });
+  const amb = leads.filter(function (l) {
+    const id = l && l.id != null ? String(l.id).trim() : '';
+    return !!id && !skip[id] && isAmbulatoryMeeting_(l.meetingWith);
+  });
+  if (!amb.length) return [];
+  const isChanged = {};
+  (changed || []).forEach(function (id) { isChanged[String(id)] = true; });
+  const log = outpatientLeadSendLog_();
+  const seen = {};
+  const out = [];
+  amb.forEach(function (l) {
+    const id = String(l.id).trim();
+    if (seen[id] || log.sent[id]) return;
+    if (!isChanged[id] && !log.failed[id]) return;
+    seen[id] = true;
+    out.push({
+      leadId: id.slice(0, 100),
+      name: leadCellText_(l.name, 100),
+      phone: leadHandoffPhone_(l.phone),
+      note: leadCellText_(l.note, AMBULATORY_HANDOFF_NOTE_MAX),
+      source: leadCellText_(l.source, 60),
+    });
+  });
+  return out;
+}
+
+/* recordOutpatientLeadSend — server.js reports ONE send outcome:
+ *   { leadId, sent: true, outpatientId }  → `outpatient_lead_sent`
+ *   { leadId, sent: false, error }        → `outpatient_lead_send_failed`
+ * Verified proxy callers only (server.js also refuses it from the browser).
+ * The lead must be on Leads. A second `sent` for the same lead writes nothing
+ * (duplicate: true). The details carry the outcome only — never a phone. */
+function recordOutpatientLeadSend_(params) {
+  if (!actingUser_(params).verified) return { ok: false, error: 'unauthorized' };
+  const leadId = String(params && params.leadId != null ? params.leadId : '').trim().slice(0, 100);
+  if (!leadId) return { ok: false, error: 'bad_lead_id' };
+  const sent = params.sent === true || params.sent === 'true';
+  const rawErr = String(params.error == null ? '' : params.error);
+  const error = sent ? '' : (/^[a-z_]{1,40}$/.test(rawErr) ? rawErr : 'send_failed');
+  const outpatientId = leadCellText_(params.outpatientId, 80);
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('recordOutpatientLeadSend_');
+  try {
+    let lead = null;
+    const rows = readSheet_(getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS), LEAD_COLUMNS);
+    for (let i = 0; i < rows.length; i++) {
+      if (String(rows[i].id == null ? '' : rows[i].id).trim() === leadId) { lead = rows[i]; break; }
+    }
+    if (!lead) return { ok: false, error: 'lead_not_found' };
+    const name = leadCellText_(lead.name, 100);
+    if (sent) {
+      if (outpatientLeadSendLog_().sent[leadId]) return { ok: true, leadId: leadId, sent: true, duplicate: true };
+      logAudit_(OUTPATIENT_LEAD_SENT_ACTION, 'recordOutpatientLeadSend_', leadId, name,
+        { outpatientId: outpatientId, meetingWith: MEETING_WITH_AMBULATORY }, actorLabel_(params));
+    } else {
+      logAudit_(OUTPATIENT_LEAD_SEND_FAILED_ACTION, 'recordOutpatientLeadSend_', leadId, name,
+        { error: error, meetingWith: MEETING_WITH_AMBULATORY }, actorLabel_(params));
+    }
+    return { ok: true, leadId: leadId, sent: sent };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
@@ -16040,6 +16193,8 @@ function readLeadMeetingManagers_() {
 
 /* The Managers key of the house whose manager is `name` on `asOf`, or ''. */
 function managerHouseByName_(managers, name, asOf) {
+  // «אמבולטורי» is never credited to a house (CHANGELOG-meeting-with-ambulatory.md).
+  if (isAmbulatoryMeeting_(name)) return '';
   let best = null;
   for (let i = 0; i < managers.length; i++) {
     const m = managers[i];
