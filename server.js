@@ -1925,8 +1925,27 @@ function meetingReportManagersWhitelist(raw) {
   return out;
 }
 
+/* The picker leads the leads answer carries: { id, name, house, visitDate,
+ * officeNote } ONLY, strings; every other field (phone, contact, billing, the
+ * manager's report…) is dropped. officeNote is Vered's scheduling note, shown
+ * read-only as «רקע מהמשרד» (CHANGELOG-vered-note-to-managers.md), capped at
+ * MEETING_REPORT_OFFICE_NOTE_MAX (= Code.gs). Not an array → []. Pure. */
+const MEETING_REPORT_OFFICE_NOTE_MAX = 5000;
+function meetingReportLeadsWhitelist(raw) {
+  if (!Array.isArray(raw)) return [];
+  const str = (v) => (v != null ? String(v) : '');
+  return raw.map((l) => ({
+    id:         str(l && l.id),
+    name:       str(l && l.name),
+    house:      str(l && l.house),
+    visitDate:  str(l && l.visitDate),
+    officeNote: str(l && l.officeNote).slice(0, MEETING_REPORT_OFFICE_NOTE_MAX),
+  }));
+}
+
 /* GET /api/meeting-report/leads — minimal open-lead list for the picker:
- * { id, name, house, visitDate } ONLY (no phones, no notes, no billing).
+ * { id, name, house, visitDate, officeNote } ONLY (no phones, no billing) —
+ * see meetingReportLeadsWhitelist.
  * The field whitelist is enforced on the Apps Script side (meetingReportLeads_)
  * AND re-applied here, so a backend regression can never widen the exposure.
  * The shared secret rides the POST body (never a URL, never the browser). */
@@ -1941,12 +1960,7 @@ app.get('/api/meeting-report/leads', requireMeetingReportSession, requireProxySe
       console.error('[meeting-report leads] backend refused:', preview);
       return res.status(502).json({ ok: false, error: 'backend_refused' });
     }
-    const leads = data.leads.map((l) => ({
-      id:        l && l.id        != null ? String(l.id)        : '',
-      name:      l && l.name      != null ? String(l.name)      : '',
-      house:     l && l.house     != null ? String(l.house)     : '',
-      visitDate: l && l.visitDate != null ? String(l.visitDate) : '',
-    }));
+    const leads = meetingReportLeadsWhitelist(data.leads);
     res.json({ ok: true, leads, managers: meetingReportManagersWhitelist(data.managers) });
   } catch (err) {
     console.error('[meeting-report leads] error:', safeErrorMessage(err));
@@ -2254,6 +2268,7 @@ module.exports = {
   MANAGER_REPORT_MAX_CHARS,
   meetingReportNoteError,
   meetingReportManagersWhitelist,
+  meetingReportLeadsWhitelist,
   // «אמבולטורי» → Outpatient (see test/meeting-with-ambulatory.test.js).
   sendToOutpatient,
   applyAmbulatoryHandoff,

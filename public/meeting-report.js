@@ -184,7 +184,7 @@ function mrNoteError(note) {
 function mrWhatsAppMessage(saved) {
   var s = saved || {};
   return [
-    'דיווח פגישה — E-Zone',
+    'יומן ביקורים ודיווח סטטוס — E-Zone',
     'ליד: ' + (s.name || '') + ' (' + mrHouseLabel(s.house) + ')',
     'תוצאה: ' + (MR_OUTCOME_LABELS[s.outcome] || s.outcome || ''),
     'הגיע/ה עם: ' + mrCompanionDisplay(s.companion),
@@ -325,6 +325,31 @@ function mrEscapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+/* ===== «רקע מהמשרד» — Vered's scheduling note (CHANGELOG-vered-note-to-managers.md)
+ *
+ * The picked lead's `officeNote` (the lead's `note` on the Dashboard: what
+ * Vered wrote when she scheduled the visit), shown READ-ONLY under the picker.
+ * It is context for the manager only: it is never part of the submit payload
+ * and never part of the WhatsApp message — mrWhatsAppMessage / mrWithNote read
+ * named fields of `saved` only, and `saved` is built from the manager's own
+ * inputs (test/vered-note-to-managers.test.js pins this privacy boundary). */
+
+/* The note to show for `lead` — '' (panel hidden) when there is none or it is
+ * only whitespace. Pure. */
+function mrOfficeNoteText(lead) {
+  var t = lead && lead.officeNote != null ? String(lead.officeNote) : '';
+  return t.trim() ? t.trim() : '';
+}
+
+/* The panel's escaped inner HTML, or '' when there is no note. Line breaks are
+ * kept by CSS (.mr-office-note-text: pre-wrap), never by injected markup. Pure. */
+function mrOfficeNoteHtml(lead) {
+  var t = mrOfficeNoteText(lead);
+  if (!t) return '';
+  return '<div class="mr-office-note-label">רקע מהמשרד</div>' +
+    '<div class="mr-office-note-text" dir="rtl">' + mrEscapeHtml(t) + '</div>';
+}
+
 /* ===== BUSY-BUTTON PATTERN — START (duplicated verbatim; keep in sync) =====
  *
  * ONE loading-spinner pattern for the whole product: every async user action
@@ -422,6 +447,8 @@ if (typeof module !== 'undefined' && module.exports) {
     mrNoteCounterWarn: mrNoteCounterWarn,
     mrNoteError: mrNoteError,
     mrEscapeHtml: mrEscapeHtml,
+    mrOfficeNoteText: mrOfficeNoteText,
+    mrOfficeNoteHtml: mrOfficeNoteHtml,
     MR_SUBMIT_ERROR_TEXTS: MR_SUBMIT_ERROR_TEXTS,
     mrSubmitErrorText: mrSubmitErrorText,
     mrNewSubmissionId: mrNewSubmissionId,
@@ -477,6 +504,18 @@ if (typeof module !== 'undefined' && module.exports) {
     });
     sel.innerHTML = opts.join('');
     el('mr-lead-toggle').textContent = state.showAll ? 'הצג רק לידים שביקרו' : 'לא מוצא את הליד?';
+    renderOfficeNote();
+  }
+
+  /* «רקע מהמשרד» for the lead now picked — hidden when it has no note. Re-run
+   * on every pick and on every re-render of the picker (the «לא מוצא את
+   * הליד?» toggle, a reload, «דיווח נוסף»). */
+  function renderOfficeNote() {
+    var box = el('mr-office-note');
+    if (!box) return;
+    var html = mrOfficeNoteHtml(selectedLead());
+    box.innerHTML = html;
+    box.classList.toggle('hidden', !html);
   }
 
   function renderOutcomes() {
@@ -612,6 +651,7 @@ if (typeof module !== 'undefined' && module.exports) {
     state.companion = '';
     state.submissionId = mrNewSubmissionId();   // a NEW report → a new key
     el('mr-lead').value = '';
+    renderOfficeNote();
     el('mr-note').value = '';
     el('mr-companion-other').value = '';
     syncNote();
@@ -656,6 +696,7 @@ if (typeof module !== 'undefined' && module.exports) {
     state.companion = b.getAttribute('data-companion');
     renderCompanions();
   });
+  el('mr-lead').addEventListener('change', renderOfficeNote);
   el('mr-lead-toggle').addEventListener('click', function () {
     state.showAll = !state.showAll;
     renderLeads();

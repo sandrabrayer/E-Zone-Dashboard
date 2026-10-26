@@ -527,7 +527,7 @@ test('1,300-char and 5,000-char Hebrew reports go out in full, footer intact, un
     const url = mr.mrWhatsAppShareUrl(saved);
 
     assert.strictEqual(noteSegment(text), note, n + '-char note delivered in full');
-    assert.ok(text.startsWith('דיווח פגישה — E-Zone'), n + ': header line 1 intact');
+    assert.ok(text.startsWith('יומן ביקורים ודיווח סטטוס — E-Zone'), n + ': header line 1 intact');
     assert.ok(text.indexOf('ליד: דני כהן (רמות השבים)') !== -1, n + ': header line 2 intact');
     assert.ok(text.indexOf('תוצאה: התקיימה — מתקדם לכניסה') !== -1, n + ': header line 3 intact');
     assert.ok(text.indexOf('הגיע/ה עם: הורים') !== -1, n + ': header line 4 intact');
@@ -547,7 +547,7 @@ test('past the cap: ONLY the note is shortened — headers and דווח ע"י st
   assert.ok(url.length <= mr.MR_WA_URL_MAX, 'the url fits (' + url.length + ')');
   assert.ok(url.length > mr.MR_WA_URL_MAX - 200, 'and uses nearly all of it — not over-trimmed');
 
-  assert.ok(text.startsWith('דיווח פגישה — E-Zone\nליד: דני כהן (רמות השבים)'), 'headers intact');
+  assert.ok(text.startsWith('יומן ביקורים ודיווח סטטוס — E-Zone\nליד: דני כהן (רמות השבים)'), 'headers intact');
   assert.ok(text.indexOf('תוצאה: התקיימה — מתקדם לכניסה') !== -1, 'outcome intact');
   assert.ok(text.indexOf('הגיע/ה עם: הורים') !== -1, 'companion intact');
   assert.ok(text.endsWith('דווח ע"י: אורן'), 'the footer is still the last line — NOT cut off');

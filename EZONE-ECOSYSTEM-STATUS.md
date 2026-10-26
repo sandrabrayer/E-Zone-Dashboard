@@ -16,6 +16,20 @@
 - **Other apps: no change.** No schema change. Code.gs + app.js + style.css; SW v92 →
   **v93**. See `CHANGELOG-patient-missing-from-house.md`.
 
+## Vered's scheduling note on the managers' form — October 26, 2026 (PR open)
+
+- **Dashboard → `/meeting-report`:** `meetingReportLeads` adds ONE additive per-lead key,
+  `officeNote` = the lead's `note` (the «הערות» textarea next to the visit date/time).
+  `server.js` re-applies the whitelist (`meetingReportLeadsWhitelist`: `id, name, house,
+  visitDate, officeNote` only — still no phone, contact or billing fields).
+- The form shows it read-only as «רקע מהמשרד» under the lead picker (hidden when empty).
+  **It never goes into the WhatsApp group message** (it can hold clinical background) nor
+  into the submit payload — test-pinned.
+- **ezone-managers / other apps: no change** (the feed is the meeting-report form's own).
+- Code.gs (clasp CI on merge) + server.js + meeting-report page. No SW bump (the
+  meeting-report page is never cached), no new column, route, action or secret.
+  See `CHANGELOG-vered-note-to-managers.md`.
+
 ## Discharged → Outpatient: reliable send + «העבר לאמבולטורי» — October 26, 2026 (PR open)
 
 - **Root cause 1:** the «משוחרר לטיפול חוץ» → Outpatient lead was a browser-only, one-shot

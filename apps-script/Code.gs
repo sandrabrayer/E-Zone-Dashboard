@@ -8864,10 +8864,26 @@ function meetingReportManagers_(todayIso) {
 }
 const MEETING_REPORTER_MAX_CHARS = 100;
 
+/* Vered's scheduling note (the lead's `note` — the «הערות» textarea next to the
+ * visit date/time in the lead modal) as the read-only «רקע מהמשרד» text on the
+ * reporting form (CHANGELOG-vered-note-to-managers.md). Line breaks are kept
+ * (CRLF/CR → LF); every other control character becomes a space; trimmed and
+ * capped at MEETING_REPORT_OFFICE_NOTE_MAX. Display-only — never written back. */
+const MEETING_REPORT_OFFICE_NOTE_MAX = 5000;
+function meetingReportOfficeNote_(v) {
+  return String(v == null ? '' : v)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, ' ')
+    .trim()
+    .slice(0, MEETING_REPORT_OFFICE_NOTE_MAX);
+}
+
 /* meetingReportLeads — the minimal picker list for the reporting form. ONLY
- * { id, name, house, visitDate } per lead: no phones, no notes, no contact or
+ * { id, name, house, visitDate, officeNote } per lead: no phones, no contact or
  * billing fields, deliberately — the reporting PIN must expose as little as
- * possible. visitDate is normalized to YYYY-MM-DD (asISODate_) so the form's
+ * possible. officeNote is the lead's `note` (Vered's scheduling context for the
+ * manager, meetingReportOfficeNote_) under its own key, so it can never be
+ * mistaken for the manager's own report `note`. visitDate is normalized to YYYY-MM-DD (asISODate_) so the form's
  * "visited already" filter can compare plain strings. Open leads plus admitted
  * leads with a meeting in the last MEETING_REPORT_ADMITTED_DAYS days.
  * Additive: `managers` [{ house, name }] + `managersSource` — the reporter
@@ -8880,6 +8896,7 @@ function meetingReportLeads_(todayIso) {
       name:      l.name || '',
       house:     l.house || '',
       visitDate: asISODate_(l.visitDate),
+      officeNote: meetingReportOfficeNote_(l.note),
     };
   });
   const rm = meetingReportManagers_(today);
