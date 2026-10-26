@@ -395,7 +395,7 @@ test('server: applyAmbulatoryHandoff strips the PII list, records each outcome v
 });
 
 test('server: recordOutpatientLeadSend is server-only — a browser call gets 403, nothing proxied', () => {
-  assert.deepEqual(Array.from(server.SERVER_ONLY_ACTIONS), ['recordOutpatientLeadSend']);
+  assert.ok(Array.from(server.SERVER_ONLY_ACTIONS).includes('recordOutpatientLeadSend'));
   for (const method of ['GET', 'POST']) {
     let status = 0; let body = null; let nexted = false;
     const req = method === 'GET' ? { method, query: { action: 'recordOutpatientLeadSend' } } : { method, body: { action: 'recordOutpatientLeadSend', leadId: 'L1', sent: true } };
@@ -426,7 +426,7 @@ test('chip: «נשלח לאמבולטורי» shows only for a sent lead; getDat
   assert.equal(app.applyAmbulatoryOutcome({ ok: true, ambulatory: { sent: ['L3'], failed: [] } }), '');
   assert.ok(app.getState('outpatientSentLeadIds').has('L3'));
   assert.match(APP_SRC, /\$\{ambulatorySentChipHTML\(lead\)\}/);
-  assert.match(CSS_SRC, /\.lead-card \.lc-amb-chip \{/);
+  assert.match(CSS_SRC, /\.lead-card \.lc-amb-chip[,\s{]/);
 });
 
 test('warning: a failed send shows the Hebrew warning (the meeting is saved); no `ambulatory` key → nothing', () => {
@@ -470,7 +470,7 @@ test('busy pattern: the lead-card select saves through withFieldSaving, the meet
   assert.match(editModal, /return busyButton\(submitBtn, 'save', async \(\) => \{/);
 });
 
-test('SW: CACHE_VERSION bumped from the live v90 to v91 with its comment (v17 never reused)', () => {
-  assert.match(SW_SRC, /var CACHE_VERSION = 'v91';/);
+test('SW: CACHE_VERSION bumped from the live v90 to v91 with its comment (v17 never reused; later bumps stay monotonic)', () => {
+  assert.ok(Number(/var CACHE_VERSION = 'v(\d+)';/.exec(SW_SRC)[1]) >= 91);
   assert.ok(SW_SRC.includes('v90 → v91:'));
 });

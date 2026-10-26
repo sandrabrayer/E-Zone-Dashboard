@@ -7336,6 +7336,23 @@ function renderDischargedPatients() {
       btn.onclick = () => showRestorePatientChoiceModal(p);
       actions.appendChild(btn);
 
+      /* «העבר לאמבולטורי» (CHANGELOG-discharge-outpatient-handoff.md): hand
+       * this discharged patient to Outpatient. Once sent the row shows the
+       * «נשלח לאמבולטורי» chip instead — the server never sends a row twice. */
+      if (dischargeSentToOutpatient(p)) {
+        const chip = document.createElement('span');
+        chip.className = 'lc-amb-chip';
+        chip.textContent = AMBULATORY_SENT_CHIP_HE;
+        actions.appendChild(chip);
+      } else {
+        const ambBtn = document.createElement('button');
+        ambBtn.className = 'btn small';
+        ambBtn.dataset.action = 'discharge-to-outpatient';
+        ambBtn.textContent = 'העבר לאמבולטורי';
+        ambBtn.onclick = () => busyButton(ambBtn, 'send', () => createOutpatientLead(p, p.id, { manual: true }));
+        actions.appendChild(ambBtn);
+      }
+
       /* Credits / refunds — create or edit without touching the discharge
        * record (recovery path for a failed or deferred credit). The count pill
        * shows how many ledger rows already exist for this patient. */
@@ -7515,10 +7532,47 @@ async function doRestorePatientAsNewLead(p, newLeadId) {
  * patient's, and legacy audit rows predate the persisted patient id anyway, so
  * the three-field key is the stable discriminator. Returns -1 when no row
  * matches. Pure + tested. */
-function matchActivePatientIndex(patients, audit) {
+function matchActivePatientIndex(patients, audit, opts) {
   if (!Array.isArray(patients) || !audit) return -1;
-  return patients.findIndex(p =>
-    p && p.houseId === audit.houseId && p.name === audit.name && p.date === audit.date);
+  /* CHANGELOG-discharge-outpatient-handoff.md: the persisted patient id
+   * first, then the triple with the name compared through
+   * normalizeNameForMatch (invisible marks, inner spaces) and the date through
+   * isoDate. An exact-only compare left a stay whose name was cleaned after
+   * the discharge unmatched — restore then rebuilt a second row, which the
+   * server's duplicate-admission guard refuses, every time. */
+  const pid = String(audit.patientId || '').trim();
+  if (pid) {
+    const byId = patients.findIndex(p => p && String(p.id || '').trim() === pid);
+    if (byId >= 0) return byId;
+  }
+  const byKey = patients.findIndex(p => dischargeTripleMatches(audit, p));
+  if (byKey >= 0 || !(opts && opts.byFromLead)) return byKey;
+  // Restore only: the ONE released row of the same house carrying the
+  // discharge's source lead (an entry date or name edited after the discharge).
+  const fl = String(audit.fromLead || '').trim();
+  if (!fl) return -1;
+  const hits = [];
+  patients.forEach((p, i) => {
+    if (p && p.status === 'released' && p.houseId === audit.houseId && String(p.fromLead || '').trim() === fl) hits.push(i);
+  });
+  return hits.length === 1 ? hits[0] : -1;
+}
+
+/* house + name + entry date of a discharge row and a patient, the name
+ * compared as two humans would (normalizeNameForMatch). Pure. */
+function dischargeTripleMatches(d, p) {
+  return !!d && !!p && p.houseId === d.houseId &&
+    normalizeNameForMatch(p.name) === normalizeNameForMatch(d.name) &&
+    isoDate(p.date || '') === isoDate(d.date || '');
+}
+
+/* A discharge row belongs to this patient: by the persisted patient id, else
+ * by the normalized triple. Pure. */
+function dischargeRowMatchesPatient(d, p) {
+  if (!d || !p) return false;
+  const pid = String(d.patientId || '').trim();
+  if (pid && pid === String(p.id || '').trim()) return true;
+  return dischargeTripleMatches(d, p);
 }
 
 /* The status a restore-to-previous-status should give back. The audit row's
@@ -7562,7 +7616,7 @@ function reconstructActivePatientFromAudit(audit) {
  * reference. Pure + tested. */
 function buildRestoredToActivePatients(patients, audit) {
   const src = Array.isArray(patients) ? patients : [];
-  const idx = matchActivePatientIndex(src, audit);
+  const idx = matchActivePatientIndex(src, audit, { byFromLead: true });
   if (idx >= 0) {
     const next = src.slice();
     next[idx] = Object.assign({}, src[idx], { status: priorStatusFromAudit(audit), exitDate: '' });
@@ -7591,8 +7645,7 @@ function restoreNeedsOutpatientCleanup(audit) {
  * filters restored rows) and simply documents the restore. Pure + tested. */
 function auditRowForReleasedPatient(p, dischargedPatients) {
   const match = (Array.isArray(dischargedPatients) ? dischargedPatients : []).find(d =>
-    dischargeRowOpen(d) &&
-    d.houseId === p.houseId && d.name === p.name && d.date === p.date);
+    dischargeRowOpen(d) && dischargeRowMatchesPatient(d, p));
   if (match) return match;
   return {
     id:           p.id || cryptoId(),
@@ -7632,8 +7685,7 @@ function auditRowForReleasedPatient(p, dischargedPatients) {
 function openDischargeAuditsFor(patient, dischargedPatients) {
   if (!patient) return [];
   return (Array.isArray(dischargedPatients) ? dischargedPatients : []).filter(d =>
-    dischargeRowOpen(d) &&
-    d.houseId === patient.houseId && d.name === patient.name && d.date === patient.date);
+    dischargeRowOpen(d) && dischargeRowMatchesPatient(d, patient));
 }
 
 /* The open audit rows a deliberate write re-opens: `after` is the patient as
@@ -9531,6 +9583,11 @@ function dischargeAuditRow(patient, { disposition, note, dischargeDate, continui
      * history. The audit ↔ patient link stays the houseId+name+date key the
      * restore flows already use (matchActivePatientIndex). */
     id:             cryptoId(),
+    /* The persisted Patients id of the stay (an APPENDED column the coordinators
+     * rows already fill): restore and the heal find the patient by it first,
+     * so a later name / date fix no longer cuts the link
+     * (CHANGELOG-discharge-outpatient-handoff.md). */
+    patientId:      String(patient.id || ''),
     status:         'released',
     /* The status at the MOMENT of discharge — dischargePatient builds this row
      * BEFORE flipping p.status to 'released', so patient.status here is the
@@ -9670,6 +9727,13 @@ async function runDischarge(p, auditId, { disposition, note, dischargeDate, cont
    * (on the recorded exit date) so the Patients sheet matches the
    * recorded discharge, and skip the follow-ups the first discharge
    * already owned (outpatient lead, credits). */
+  /* Discharged → Outpatient (CHANGELOG-discharge-outpatient-handoff.md): sent
+   * once the discharge ROW landed — that row is the durable intent — on every
+   * path below (a failed Patients write and a duplicate answer included; the
+   * server sends a row once, logs it, and skips a non-«טיפול חוץ» row). */
+  const sendOutpatient = rowId => (shouldCreateOutpatientLead(disposition)
+    ? createOutpatientLead(p, rowId) : Promise.resolve(''));
+
   if (auditRes && auditRes.duplicate === true) {
     state.dischargedPatients = state.dischargedPatients.filter(d => d.id !== auditRow.id);
     if (auditRes.exitDate) { exitDate = String(auditRes.exitDate).slice(0, 10); p.exitDate = exitDate; }
@@ -9680,8 +9744,10 @@ async function runDischarge(p, auditId, { disposition, note, dischargeDate, cont
     } catch (e) {
       rollback();
       showError(DISCHARGE_ALREADY_RECORDED_HE + ' — הסטטוס יתעדכן בטעינה הבאה. ' + e.message);
+      await sendOutpatient(String(auditRes.id || ''));
       throw e;
     }
+    await sendOutpatient(String(auditRes.id || ''));
     return;
   }
 
@@ -9694,18 +9760,13 @@ async function runDischarge(p, auditId, { disposition, note, dischargeDate, cont
      * the user's intent instead of silently disappearing. */
     rollback();
     showError('שחרור המטופל נשמר חלקית — הסטטוס יתעדכן בטעינה הבאה. ' + e.message);
+    await sendOutpatient(auditRow.id);
     throw e;
   }
 
-  // PR 3 — cross-app effect: a "released to outpatient" discharge also
-  // creates a lead in the Outpatient app. This runs ONLY after the local
-  // discharge has fully persisted, and is deliberately NON-FATAL — a failed
-  // Outpatient write must never roll back the (already saved) discharge.
-  // createOutpatientLead swallows its own errors and warns the user, so we
-  // await it without a try/throw: it cannot break the discharge.
-  if (shouldCreateOutpatientLead(disposition)) {
-    await createOutpatientLead(p);
-  }
+  // Cross-app effect, NON-FATAL: createOutpatientLead never throws and never
+  // touches discharge state, so it cannot roll the discharge back.
+  await sendOutpatient(auditRow.id);
 
   // Credits / refunds — computed by POLICY and created by the SERVER with
   // the discharge row (CHANGELOG-refunds-auto-policy.md). There is no
@@ -11990,52 +12051,52 @@ function shouldCreateOutpatientLead(disposition) {
   return disposition === 'released_outpatient';
 }
 
-/* Build the { name, phone, house, note } payload sent to the Outpatient app.
- * Pure (no DOM, no I/O) so the field mapping is unit-tested directly:
- *   - phone is NOT stored on the patient; it's joined from the originating
- *     lead (patient.fromLead). Hand-entered patients with no lead send ''.
- *   - house is the stable houseId KEY (e.g. 'arfoni'), NOT the Hebrew display
- *     name — the Outpatient side maps the key to its own house.
- *   - note is the patient's source + notes combined (no exit date — the
- *     discharge date lives on the discharge audit row, not the lead). */
-function outpatientLeadPayload(patient, lead) {
-  const phone = lead && lead.phone ? String(lead.phone) : '';
-  const note  = [patient.source, patient.notes]
-    .filter(s => s != null && String(s).trim() !== '')
-    .map(String)
-    .join(' — ');
-  return {
-    name:  patient.name || '',
-    phone: phone,
-    house: patient.houseId || '',
-    note:  note,
-  };
+/* The send-log key of a discharge row (Code.gs dischargeOutpatientKey_):
+ * getData's outpatientSentLeadIds carries 'discharge:<audit id>' for every
+ * row already handed to Outpatient. Pure. */
+function dischargeOutpatientKey(id) {
+  return 'discharge:' + String(id == null ? '' : id).trim();
 }
 
-/* POST the Outpatient lead via the server proxy (/api/outpatient-lead), which
- * injects the shared secret from Railway env — the secret never reaches the
- * client. NON-FATAL by contract: this is called after the discharge already
- * persisted, so it catches every error and only warns; it never throws and
- * never mutates discharge state, guaranteeing it cannot roll back the
- * discharge. The Outpatient createLead endpoint + env config are a separate
- * deploy (see CHANGELOG); until they exist the proxy returns not-configured
- * and the user is told to add the lead manually. */
-async function createOutpatientLead(patient) {
-  const lead    = (state.leads || []).find(l => String(l.id) === String(patient.fromLead)) || null;
-  const payload = outpatientLeadPayload(patient, lead);
+/* Whether this discharge row was already sent to Outpatient. Pure (the id
+ * set injectable). */
+function dischargeSentToOutpatient(d, sentIds) {
+  const ids = sentIds || state.outpatientSentLeadIds;
+  return !!d && !!ids && typeof ids.has === 'function' && ids.has(dischargeOutpatientKey(d.id));
+}
+
+/* Hand ONE discharge row to Outpatient through the server
+ * (/api/outpatient-lead { dischargeId, manual }): the server reads the row,
+ * resolves the phone from the source lead, sends through sendToOutpatient
+ * (Railway URL + secret — never in the browser) and logs it in AuditLog.
+ * A row is sent once; `manual` («העבר לאמבולטורי») allows any disposition,
+ * the automatic שחרור path only «משוחרר לטיפול חוץ». NON-FATAL by contract:
+ * never throws, never touches discharge state. → 'sent' | 'already' |
+ * 'skipped' | 'failed'. CHANGELOG-discharge-outpatient-handoff.md. */
+async function createOutpatientLead(patient, dischargeId, opts) {
+  const id = String(dischargeId == null ? '' : dischargeId).trim();
+  if (!id) return 'skipped';
+  const manual = !!(opts && opts.manual);
   try {
     const res = await fetch('/api/outpatient-lead', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ dischargeId: id, manual }),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data || data.ok !== true) {
-      throw new Error((data && (data.message || data.error)) || ('HTTP ' + res.status));
+    if (res.ok && data && data.ok === true && data.skipped) return 'skipped';
+    if (res.ok && data && data.ok === true && (data.sent || data.alreadySent)) {
+      if (!(state.outpatientSentLeadIds instanceof Set)) state.outpatientSentLeadIds = new Set();
+      state.outpatientSentLeadIds.add(dischargeOutpatientKey(id));
+      // A render problem must never turn a send that happened into «failed».
+      try { renderDischargedPatients(); } catch (re) { console.error('[E-ZONE] discharged render failed:', re && re.message); }
+      showToast(data.alreadySent ? 'המטופל כבר נשלח לאמבולטורי' : 'נוצר ליד טיפול חוץ באפליקציית אאוטפיישנט');
+      return data.alreadySent ? 'already' : 'sent';
     }
-    showToast('נוצר ליד טיפול חוץ באפליקציית אאוטפיישנט');
+    throw new Error((data && (data.message || data.error)) || ('HTTP ' + res.status));
   } catch (e) {
-    showError('יצירת ליד טיפול חוץ נכשלה — יש להוסיף את הליד ידנית באאוטפיישנט. ' + (e.message || ''));
+    showError('יצירת ליד טיפול חוץ נכשלה — ' + ((e && e.message) || '') + ' (אפשר לנסות שוב ב«העבר לאמבולטורי»)', REFUSAL_BANNER_MS);
+    return 'failed';
   }
 }
 

@@ -35,8 +35,8 @@ function loadApp({ fetchImpl } = {}) {
       getPatients() { return state.patients; },
       getDischarged() { return state.dischargedPatients; },
       shouldCreateOutpatientLead,
-      outpatientLeadPayload,
       createOutpatientLead,
+      sentIds() { return state.outpatientSentLeadIds; },
     };
   `;
 
@@ -82,40 +82,26 @@ test('trigger is false for the other dispositions and empties', () => {
   });
 });
 
-/* ===== field mapping ===== */
+/* ===== field mapping =====
+ * The { name, phone, house, note } mapping moved server-side
+ * (CHANGELOG-discharge-outpatient-handoff.md): Code.gs dischargeOutpatientFields_
+ * — tested in test/discharge-outpatient-handoff.test.js. The browser sends the
+ * discharge row id only. */
 
-test('payload maps name/phone/house/note with phone joined from the lead', () => {
-  const lead = { id: 'L1', phone: '052-765-4321', name: 'דנה כהן' };
-  const payload = app.outpatientLeadPayload(PATIENT, lead);
-  assert.strictEqual(payload.name, 'דנה כהן');
-  assert.strictEqual(payload.phone, '052-765-4321');
-  assert.strictEqual(payload.house, 'arfoni');          // stable houseId KEY, not Hebrew name
-  assert.strictEqual(payload.note, 'ליד — הערה כללית');  // source + notes
+test('the browser sends the discharge row id only — never name, phone or house', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => { calls.push({ url, body: JSON.parse(init.body) }); return { ok: true, json: async () => ({ ok: true, sent: true }) }; };
+  const a = loadApp({ fetchImpl });
+  assert.strictEqual(await a.createOutpatientLead(PATIENT, 'aud-1'), 'sent');
+  assert.deepStrictEqual(calls, [{ url: '/api/outpatient-lead', body: { dischargeId: 'aud-1', manual: false } }]);
+  assert.ok(a.sentIds().has('discharge:aud-1'));
 });
 
-test('phone is empty when the patient has no originating lead', () => {
-  const payload = app.outpatientLeadPayload(PATIENT, null);
-  assert.strictEqual(payload.phone, '');
-  assert.strictEqual(payload.name, 'דנה כהן');
-  assert.strictEqual(payload.house, 'arfoni');
-});
-
-test('house is always the raw houseId key (Outpatient maps it), never a Hebrew name', () => {
-  assert.strictEqual(app.outpatientLeadPayload(PATIENT, null).house, 'arfoni');
-  const odd = { ...PATIENT, houseId: 'mystery' };
-  assert.strictEqual(app.outpatientLeadPayload(odd, null).house, 'mystery');
-});
-
-test('note is source + notes combined, and never leaks the exit date', () => {
-  assert.strictEqual(app.outpatientLeadPayload(PATIENT, null).note, 'ליד — הערה כללית');
-  // source only
-  assert.strictEqual(app.outpatientLeadPayload({ ...PATIENT, notes: '' }, null).note, 'ליד');
-  // notes only
-  assert.strictEqual(app.outpatientLeadPayload({ ...PATIENT, source: '' }, null).note, 'הערה כללית');
-  // neither → empty string
-  assert.strictEqual(app.outpatientLeadPayload({ ...PATIENT, source: '', notes: '' }, null).note, '');
-  // the exit date must NOT appear in the note
-  assert.ok(!app.outpatientLeadPayload(PATIENT, null).note.includes('2026-06-28'));
+test('without a discharge row id nothing is sent', async () => {
+  let n = 0;
+  const a = loadApp({ fetchImpl: async () => { n++; return { ok: true, json: async () => ({}) }; } });
+  assert.strictEqual(await a.createOutpatientLead(PATIENT, ''), 'skipped');
+  assert.strictEqual(n, 0);
 });
 
 /* ===== non-fatal: a failed Outpatient write must not throw or roll back ===== */
@@ -130,7 +116,7 @@ test('a failed Outpatient write does not throw and does not mutate discharge sta
   a.setDischarged([{ id: 'P1' }]);
 
   // Must resolve (not reject) even though the underlying fetch throws.
-  await a.createOutpatientLead(patient);
+  assert.strictEqual(await a.createOutpatientLead(patient, 'P1'), 'failed');
 
   // Discharge state is untouched — the function never rolls anything back.
   assert.strictEqual(patient.status, 'released');
@@ -149,6 +135,6 @@ test('an ok:false response is also handled non-fatally', async () => {
   a.setLeads([]);
   a.setPatients([patient]);
   // Resolves without throwing despite the app-level { ok:false }.
-  await a.createOutpatientLead(patient);
+  assert.strictEqual(await a.createOutpatientLead(patient, 'P1'), 'failed');
   assert.strictEqual(patient.status, 'released');
 });

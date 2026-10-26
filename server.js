@@ -26,7 +26,7 @@ const {
 } = require('./lib/static-assets');
 const { buildRefundForecastSpec, isForecastResponse, contentDisposition } = require('./lib/refund-forecast-xlsx');
 const { buildCleanupSpec, isCleanupResponse, cleanupContentDisposition } = require('./lib/cleanup-xlsx');
-const { handOffAmbulatoryLeads } = require('./lib/ambulatory-handoff');
+const { handOffAmbulatoryLeads, handOffDischarge } = require('./lib/ambulatory-handoff');
 const {
   buildBillingControlSpec, isBillingControlResponse, billingControlContentDisposition,
 } = require('./lib/billing-control-xlsx');
@@ -1041,7 +1041,7 @@ function viewFilteredResponse(action, data, principal) {
 /* Apps Script actions only the server itself may call — never forwarded from
  * the browser (CHANGELOG-meeting-with-ambulatory.md: the send log behind the
  * «אמבולטורי» handoff must not be forgeable from a page). */
-const SERVER_ONLY_ACTIONS = Object.freeze(['recordOutpatientLeadSend']);
+const SERVER_ONLY_ACTIONS = Object.freeze(['recordOutpatientLeadSend', 'dischargeOutpatientPayload']);
 function refuseServerOnlyActions(req, res, next) {
   const src = req.method === 'GET' ? (req.query || {}) : (req.body || {});
   if (SERVER_ONLY_ACTIONS.indexOf(src.action) < 0) return next();
@@ -1423,6 +1423,47 @@ app.get('/api/debug/last-load', requireSession, requireFinance, (_req, res) => {
   res.json(lastLoad || { empty: true });
 });
 
+/* Discharged patient → Outpatient (CHANGELOG-discharge-outpatient-handoff.md):
+ * POST /api/outpatient-lead { dischargeId, manual? }. The browser names the
+ * discharge row only; Code.gs (dischargeOutpatientPayload) answers what to
+ * send — or that it was sent already / is not «טיפול חוץ» — and the send
+ * goes through sendToOutpatient, then recordOutpatientLeadSend logs it in
+ * AuditLog. Idempotent: a sent row is never sent again. → { status, body }.
+ * Never throws. Deps injectable for the tests. */
+const DISCHARGE_OUTPATIENT_FAILED_HE = 'יצירת ליד טיפול חוץ נכשלה — לא נשלח. אפשר לנסות שוב ב«העבר לאמבולטורי».';
+const DISCHARGE_OUTPATIENT_NO_PHONE_HE = 'לא נשלח לאמבולטורי: אין טלפון לליד של המטופל. יש להוסיף טלפון לליד ולנסות שוב.';
+async function dischargeOutpatientHandoff(body, user, principal, deps) {
+  const d = deps || {};
+  const post = d.sheetsPost || sheetsPost;
+  const b = body || {};
+  const dischargeId = String(b.dischargeId == null ? '' : b.dischargeId).trim();
+  if (!dischargeId || dischargeId.length > 200 || /[\u0000-\u001f\u007f]/.test(dischargeId)) {
+    return { status: 400, body: { ok: false, error: 'bad_discharge_id' } };
+  }
+  const manual = b.manual === true;
+  let prep;
+  try {
+    prep = await post({ action: 'dischargeOutpatientPayload', dischargeId, manual, user }, principal);
+  } catch (err) {
+    return { status: 502, body: { ok: false, error: 'sheets_unreachable', message: safeErrorMessage(err) } };
+  }
+  if (!prep || prep.ok !== true) {
+    const error = prep && typeof prep.error === 'string' ? prep.error.slice(0, 60) : 'bad_response';
+    return { status: error === 'not_found' || error === 'not_open' ? 404 : 502, body: { ok: false, error } };
+  }
+  if (prep.eligible === false) return { status: 200, body: { ok: true, skipped: 'not_outpatient' } };
+  if (prep.alreadySent === true) return { status: 200, body: { ok: true, alreadySent: true } };
+  const out = await handOffDischarge(dischargeId, prep.payload, {
+    send: d.send || ((fields) => sendToOutpatient(fields)),
+    record: (r) => post(Object.assign({ action: 'recordOutpatientLeadSend', user }, r), principal),
+    log: (line) => console.log(line),
+  }, manual);
+  if (out.ok) return { status: 200, body: { ok: true, sent: true } };
+  if (out.inFlight) return { status: 409, body: { ok: false, error: 'in_flight' } };
+  return { status: 502, body: { ok: false, error: out.error,
+    message: out.error === 'no_phone' ? DISCHARGE_OUTPATIENT_NO_PHONE_HE : DISCHARGE_OUTPATIENT_FAILED_HE } };
+}
+
 /* POST /api/outpatient-lead — browser sends { name, phone, house, note }; we
  * inject the shared secret from Railway env (never exposed to the client) and
  * forward to the Outpatient app's createLead endpoint. Fail-closed: if the URL
@@ -1431,6 +1472,15 @@ app.get('/api/debug/last-load', requireSession, requireFinance, (_req, res) => {
  * already succeeded locally. The secret is never logged. */
 app.post('/api/outpatient-lead', requireSession, async (req, res) => {
   const startedAt = new Date().toISOString();
+  // A discharge row (the שחרור flow and «העבר לאמבולטורי»): server-resolved,
+  // idempotent, logged — see dischargeOutpatientHandoff. The legacy body below
+  // stays for a cached older page.
+  if (req.body && req.body.dischargeId !== undefined) {
+    const r = await dischargeOutpatientHandoff(req.body, sessionUserFromRequest(req), sessionPrincipalFromRequest(req));
+    recordWrite({ at: startedAt, route: '/api/outpatient-lead', action: 'dischargeOutpatient', auth: 'ok',
+      httpStatus: r.status, okFromBackend: r.body.ok === true, error: r.body.ok === true ? undefined : r.body.error });
+    return res.status(r.status).json(r.body);
+  }
   if (!OUTPATIENT_LEAD_URL || !OUTPATIENT_LEAD_SECRET) {
     recordWrite({
       at: startedAt,
@@ -2209,6 +2259,10 @@ module.exports = {
   applyAmbulatoryHandoff,
   refuseServerOnlyActions,
   SERVER_ONLY_ACTIONS,
+  // Discharged patient → Outpatient (see test/discharge-outpatient-handoff.test.js).
+  dischargeOutpatientHandoff,
+  DISCHARGE_OUTPATIENT_FAILED_HE,
+  DISCHARGE_OUTPATIENT_NO_PHONE_HE,
   // Write & handoff diagnostics (in-memory state exposed for the test harness;
   // the running server mutates the same objects the tests inspect).
   recordWrite,
