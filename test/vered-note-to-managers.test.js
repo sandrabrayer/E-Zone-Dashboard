@@ -251,7 +251,7 @@ test('form: the «לא מוצא את הליד?» toggle reveals a lead whose not
   assert.ok(!panel.classList.contains('hidden'));
 });
 
-test('PRIVACY: the submit payload and the shared WhatsApp link carry the manager’s report, never the office note', async () => {
+test('PRIVACY: the submit payload carries the manager’s report, never the office note', async () => {
   const { els, pick, posts } = await bootForm(FORM_LEADS);
   pick('A');
   els['mr-reporter'].value = 'אורן';
