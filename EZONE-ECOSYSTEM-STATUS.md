@@ -1,5 +1,19 @@
 # E-ZONE Ecosystem Status — updated October 26, 2026
 
+## Vered's scheduling note on the managers' form — October 26, 2026 (PR open)
+
+- **Dashboard → `/meeting-report`:** `meetingReportLeads` adds ONE additive per-lead key,
+  `officeNote` = the lead's `note` (the «הערות» textarea next to the visit date/time).
+  `server.js` re-applies the whitelist (`meetingReportLeadsWhitelist`: `id, name, house,
+  visitDate, officeNote` only — still no phone, contact or billing fields).
+- The form shows it read-only as «רקע מהמשרד» under the lead picker (hidden when empty).
+  **It never goes into the WhatsApp group message** (it can hold clinical background) nor
+  into the submit payload — test-pinned.
+- **ezone-managers / other apps: no change** (the feed is the meeting-report form's own).
+- Code.gs (clasp CI on merge) + server.js + meeting-report page. No SW bump (the
+  meeting-report page is never cached), no new column, route, action or secret.
+  See `CHANGELOG-vered-note-to-managers.md`.
+
 ## «אמבולטורי» meeting option → Outpatient — October 26, 2026 (PR open)
 
 - **Dashboard:** «נפגש עם» gets one fixed, LAST option «אמבולטורי» (Shachar with Oren the
