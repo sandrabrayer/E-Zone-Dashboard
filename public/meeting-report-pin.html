@@ -56,6 +56,18 @@
     button:disabled { opacity: .45; cursor: not-allowed; }
     .error-msg { color: #ff4d5e; margin-top: 12px; font-size: 14px; font-weight: 600; }
     .hidden { display: none !important; }
+    /* Busy ring — same vocabulary as .is-busy in style.css. */
+    .pin-box button.is-busy { cursor: progress; opacity: .8; }
+    .pin-box button.is-busy::before {
+      content: ''; display: inline-block; width: 13px; height: 13px;
+      vertical-align: -2px; margin-inline-end: 7px;
+      border: 2px solid currentColor; border-inline-end-color: transparent;
+      border-radius: 50%; animation: pin-spin .7s linear infinite;
+    }
+    @keyframes pin-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      .pin-box button.is-busy::before { animation: none; border-inline-end-color: currentColor; }
+    }
   </style>
 </head>
 <body>
@@ -74,7 +86,20 @@
       function submit() {
         var pin = input.value.trim();
         if (!pin) return;
+        /* Guard on aria-busy (not just disabled): Enter in the input bypasses a
+         * disabled button, so a second Enter would fire a second request. */
+        if (btn.getAttribute('aria-busy') === 'true') return;
+        var label = btn.textContent;
+        var done = function () {
+          btn.removeAttribute('aria-busy');
+          btn.classList.remove('is-busy');
+          btn.disabled = false;
+          btn.textContent = label;
+        };
+        btn.setAttribute('aria-busy', 'true');
+        btn.classList.add('is-busy');
         btn.disabled = true;
+        btn.textContent = 'טוען…';
         err.classList.add('hidden');
         fetch('/api/meeting-report/verify-pin', {
           method: 'POST',
@@ -84,13 +109,13 @@
           if (res.ok) { location.reload(); return; }
           err.textContent = res.status === 429 ? 'יותר מדי ניסיונות — נסו שוב מאוחר יותר' : 'קוד שגוי';
           err.classList.remove('hidden');
-          btn.disabled = false;
+          done();
           input.value = '';
           input.focus();
         }).catch(function () {
           err.textContent = 'שגיאת רשת — נסו שוב';
           err.classList.remove('hidden');
-          btn.disabled = false;
+          done();
         });
       }
       btn.addEventListener('click', submit);
