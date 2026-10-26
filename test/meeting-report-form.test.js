@@ -193,7 +193,7 @@ test('the WhatsApp message follows the agreed Hebrew template', () => {
     companion: 'mother', note: 'שיחה טובה', reporter: 'יעל',
   });
   assert.strictEqual(msg, [
-    'דיווח פגישה — E-Zone',
+    'יומן ביקורים ודיווח סטטוס — E-Zone',
     'ליד: דני (רמות השבים)',
     'תוצאה: התקיימה — מתקדם לכניסה',
     'הגיע/ה עם: אמא',

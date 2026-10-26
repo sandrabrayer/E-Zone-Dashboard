@@ -184,7 +184,7 @@ function mrNoteError(note) {
 function mrWhatsAppMessage(saved) {
   var s = saved || {};
   return [
-    'דיווח פגישה — E-Zone',
+    'יומן ביקורים ודיווח סטטוס — E-Zone',
     'ליד: ' + (s.name || '') + ' (' + mrHouseLabel(s.house) + ')',
     'תוצאה: ' + (MR_OUTCOME_LABELS[s.outcome] || s.outcome || ''),
     'הגיע/ה עם: ' + mrCompanionDisplay(s.companion),

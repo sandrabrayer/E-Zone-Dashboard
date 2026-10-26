@@ -1501,7 +1501,7 @@ const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
  * test/proxy-secret-transition.test.js checks this list against handle_. */
 const PROXY_KNOWN_ACTIONS = [
   'managersWork',
-  'getData', 'getAdmittedRoster', 'getDischargedRoster', 'createLeadFromTherapists', 'saveAll', 'recordOutpatientLeadSend', 'getPayments', 'savePayment',
+  'getData', 'getAdmittedRoster', 'getDischargedRoster', 'createLeadFromTherapists', 'saveAll', 'recordOutpatientLeadSend', 'dischargeOutpatientPayload', 'getPayments', 'savePayment',
   'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
   'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'debtAging', 'cleanupReport',
   'reportPayment', 'appendFunder', 'billingControlQueue', 'confirmPayment',
@@ -1868,6 +1868,9 @@ function handle_(params) {
     // «אמבולטורי» → Outpatient: server.js records the outcome of one send
     // (CHANGELOG-meeting-with-ambulatory.md). Verified proxy callers only.
     if (action === 'recordOutpatientLeadSend') return jsonOut_(recordOutpatientLeadSend_(params));
+    // Discharged patient → Outpatient (CHANGELOG-discharge-outpatient-handoff.md):
+    // server.js asks what to send for one discharge row. Verified proxy callers only.
+    if (action === 'dischargeOutpatientPayload') return jsonOut_(dischargeOutpatientPayload_(params));
     if (action === 'saveAll') {
       const perf = perfStart_('saveAll');
       const leads    = parseJsonParam_(params.leads);
@@ -4092,8 +4095,8 @@ function logAudit_(action, fn, patientId, name, details, actor) {
   }
 }
 
-/* fromLead lead-ids of NON-restored discharged-audit rows, as a {id: true} set
- * for the promotion dedupe guard — the server-side mirror of the client's
+/* fromLead lead-ids of NON-restored discharged-audit rows, as a
+ * {leadId: {auditId: true}} map (truthy per lead id) for the promotion dedupe guard — the server-side mirror of the client's
  * dischargedByFromLead guard (discharge-loop pattern: a released patient's
  * lead must not re-promote; restored==='TRUE' rows are excluded so both
  * restore paths keep re-promoting). Read once per saveAll_, inside its lock.
@@ -4110,7 +4113,9 @@ function dischargedFromLeadIds_() {
       if (String(rows[i].restored) === 'TRUE' || rows[i].restored === true) continue;
       if (dischargeRowDeleted_(rows[i])) continue;   // a soft-deleted duplicate is not a discharge
       const fl = String(rows[i].fromLead == null ? '' : rows[i].fromLead).trim();
-      if (fl) out[fl] = true;
+      // The open audit ids per lead: a restore that rebuilds a hard-deleted
+      // patient row sends the audit row's own id (CHANGELOG-discharge-outpatient-handoff.md).
+      if (fl) (out[fl] = out[fl] || {})[String(rows[i].id == null ? '' : rows[i].id).trim()] = true;
     }
   } catch (err) {
     try { console.warn('[audit] discharged-id scan skipped: ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
@@ -4631,7 +4636,12 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
       logAudit_('promote_skipped_duplicate', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, key: key, existingName: fromLeadOnSheet[fl], reason: 'existing_patient_row' });
       continue;
     }
-    if (fl && discharged[fl]) {
+    // A restore that rebuilds a hard-deleted patient row carries the open
+    // discharge row's own id — that row IS this stay, so it is not a re-promotion.
+    const restoringAudit = !!(fl && discharged[fl] && typeof discharged[fl] === 'object' &&
+      discharged[fl][String(withHouse.id == null ? '' : withHouse.id).trim()] &&
+      String(withHouse.status || '').trim() !== 'released');
+    if (fl && discharged[fl] && !restoringAudit) {
       skippedPromotes.push({ fromLead: fl, name: String(withHouse.name || ''), reason: 'discharged_not_restored' });
       logAudit_('promote_skipped_duplicate', 'replaceHousePatients_', fl, withHouse.name || '', { houseId: houseId, key: key, reason: 'discharged_not_restored' });
       continue;
@@ -7854,6 +7864,11 @@ function ambulatoryHandoffPending_(leads, changed, suppressed) {
  * (duplicate: true). The details carry the outcome only — never a phone. */
 function recordOutpatientLeadSend_(params) {
   if (!actingUser_(params).verified) return { ok: false, error: 'unauthorized' };
+  // A discharged-patient send (CHANGELOG-discharge-outpatient-handoff.md) is
+  // logged under 'discharge:<audit id>' in the same AuditLog column.
+  if (params && params.dischargeId != null && String(params.dischargeId).trim() !== '') {
+    return recordDischargeOutpatientSend_(params);
+  }
   const leadId = String(params && params.leadId != null ? params.leadId : '').trim().slice(0, 100);
   if (!leadId) return { ok: false, error: 'bad_lead_id' };
   const sent = params.sent === true || params.sent === 'true';
@@ -7882,6 +7897,221 @@ function recordOutpatientLeadSend_(params) {
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
+}
+
+/* ===== Discharged patient → Outpatient (CHANGELOG-discharge-outpatient-handoff.md) =====
+ * One Outpatient lead per discharge row, sent by server.js (sendToOutpatient,
+ * the Railway URL + secret of /api/outpatient-lead — Code.gs never calls
+ * Outpatient). Two triggers share one path:
+ *   - automatic: a «משוחרר לטיפול חוץ» (released_outpatient) discharge, sent by
+ *     the שחרור flow as soon as its discharge row landed (also after a failed
+ *     Patients write and on a duplicate answer — the row is the intent);
+ *   - manual: «העבר לאמבולטורי» on any open discharged row.
+ * Idempotent: AuditLog `outpatient_lead_sent` under 'discharge:<audit id>'
+ * (the same column and actions as the «אמבולטורי» lead send). No schema change. */
+const OUTPATIENT_DISCHARGE_KEY_PREFIX = 'discharge:';
+const DISCHARGE_OUTPATIENT_NOTE_MAX = 400;
+
+function dischargeOutpatientKey_(id) {
+  return OUTPATIENT_DISCHARGE_KEY_PREFIX + String(id == null ? '' : id).trim();
+}
+
+/* One discharged-audit row by id (readSheet_ object), or null. */
+function dischargeRowById_(id) {
+  const want = String(id == null ? '' : id).trim();
+  if (!want) return null;
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(DISCHARGED_PATIENTS_SHEET);
+  if (!sh || sh.getLastRow() < 2) return null;
+  const rows = readSheet_(sh, DISCHARGED_PATIENT_COLUMNS);
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i].id == null ? '' : rows[i].id).trim() === want) return rows[i];
+  }
+  return null;
+}
+
+/* The phone of a discharged patient: its source lead's (Leads, then the
+ * closed / removed tabs), handoff-normalized; '' when none. */
+function dischargeLeadPhone_(fromLead) {
+  const fl = String(fromLead == null ? '' : fromLead).trim();
+  if (!fl) return '';
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const tabs = [[LEADS_SHEET, LEAD_COLUMNS], [IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS], [REMOVED_LEADS_SHEET, REMOVED_LEAD_COLUMNS]];
+  for (let t = 0; t < tabs.length; t++) {
+    const sh = ss.getSheetByName(tabs[t][0]);
+    if (!sh || sh.getLastRow() < 2) continue;
+    const rows = readSheet_(sh, tabs[t][1]);
+    for (let i = 0; i < rows.length; i++) {
+      if (String(rows[i].id == null ? '' : rows[i].id).trim() !== fl) continue;
+      const phone = leadHandoffPhone_(rows[i].phone);
+      if (phone) return phone;
+    }
+  }
+  return '';
+}
+
+/* The fields sent for one discharge row — the mapping the browser used
+ * (outpatientLeadPayload): name, phone (from the source lead), house = the
+ * houseId KEY, note = source + notes. Cut to safe cell text. Pure apart from
+ * the phone lookup the caller passes in. */
+function dischargeOutpatientFields_(row, phone) {
+  const note = [row.source, row.notes]
+    .map(function (v) { return String(v == null ? '' : v).trim(); })
+    .filter(Boolean).join(' — ');
+  return {
+    name: leadCellText_(row.name, 100),
+    phone: String(phone || ''),
+    house: leadCellText_(row.houseId, 40),
+    note: leadCellText_(note, DISCHARGE_OUTPATIENT_NOTE_MAX),
+  };
+}
+
+/* dischargeOutpatientPayload { dischargeId, manual } → what server.js sends:
+ *   { ok:false, error }                       — unknown / deleted / restored row
+ *   { ok:true, eligible:false }               — automatic, not «טיפול חוץ»
+ *   { ok:true, alreadySent:true, key }        — sent before: send nothing
+ *   { ok:true, key, payload:{name,phone,house,note} }
+ * Read-only. Verified proxy callers only (server.js also refuses it from the
+ * browser). */
+function dischargeOutpatientPayload_(params) {
+  if (!actingUser_(params).verified) return { ok: false, error: 'unauthorized' };
+  const id = String(params && params.dischargeId != null ? params.dischargeId : '').trim().slice(0, 200);
+  if (!id) return { ok: false, error: 'bad_discharge_id' };
+  const row = dischargeRowById_(id);
+  if (!row) return { ok: false, error: 'not_found' };
+  if (!dischargeRowOpen_(row)) return { ok: false, error: 'not_open' };
+  const manual = params.manual === true || params.manual === 'true';
+  if (!manual && String(row.disposition || '').trim() !== 'released_outpatient') return { ok: true, eligible: false };
+  const key = dischargeOutpatientKey_(id);
+  if (outpatientLeadSendLog_().sent[key]) return { ok: true, alreadySent: true, key: key };
+  return { ok: true, key: key, payload: dischargeOutpatientFields_(row, dischargeLeadPhone_(row.fromLead)) };
+}
+
+/* recordOutpatientLeadSend for a discharge row (see recordOutpatientLeadSend_). */
+function recordDischargeOutpatientSend_(params) {
+  const id = String(params.dischargeId).trim().slice(0, 200);
+  const sent = params.sent === true || params.sent === 'true';
+  const rawErr = String(params.error == null ? '' : params.error);
+  const error = sent ? '' : (/^[a-z_]{1,40}$/.test(rawErr) ? rawErr : 'send_failed');
+  const outpatientId = leadCellText_(params.outpatientId, 80);
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('recordDischargeOutpatientSend_');
+  try {
+    const row = dischargeRowById_(id);
+    if (!row) return { ok: false, error: 'not_found' };
+    const key = dischargeOutpatientKey_(id);
+    const name = leadCellText_(row.name, 100);
+    const manual = params.manual === true || params.manual === 'true';
+    if (sent) {
+      if (outpatientLeadSendLog_().sent[key]) return { ok: true, dischargeId: id, sent: true, duplicate: true };
+      logAudit_(OUTPATIENT_LEAD_SENT_ACTION, 'recordDischargeOutpatientSend_', key, name,
+        { outpatientId: outpatientId, manual: manual, disposition: String(row.disposition || '') }, actorLabel_(params));
+    } else {
+      logAudit_(OUTPATIENT_LEAD_SEND_FAILED_ACTION, 'recordDischargeOutpatientSend_', key, name,
+        { error: error, manual: manual, disposition: String(row.disposition || '') }, actorLabel_(params));
+    }
+    return { ok: true, dischargeId: id, sent: sent };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* ===== Report: who should be in Outpatient but is not =====
+ * Editor-run (Run dropdown), never reachable over HTTP. Read-only on the
+ * spreadsheet; its only write is one new private Google Doc whose URL it
+ * logs (the defaultedFunderPaymentsReportNow pattern). Two sections:
+ *   1. OPEN discharge rows that should be in Outpatient — disposition
+ *      «משוחרר לטיפול חוץ» or continuity «המשיך באמבולטורי» — with no
+ *      recorded send ('discharge:<id>' outpatient_lead_sent) and no
+ *      matching name on the Outpatients tab. A row the old browser-only
+ *      send may have delivered has no record either: it is listed as
+ *      «לא מאומת» for a person to check in Outpatient.
+ *   2. OPEN discharge rows whose patient cannot be found by patientId or
+ *      the exact house + name + entry date — the rows a restore could not
+ *      match before this change.
+ * The log carries counts and the URL only (no names). */
+function outpatientMissingRows_(discharged, sendLog, outpatients) {
+  const log = sendLog || { sent: {}, failed: {} };
+  const inOutpatients = {};
+  (outpatients || []).forEach(function (o) {
+    const n = diagNormText_(o && o.patient_name);
+    if (n) inOutpatients[n] = true;
+  });
+  return (discharged || []).filter(function (d) {
+    if (!dischargeRowOpen_(d)) return false;
+    const due = String(d.disposition || '').trim() === 'released_outpatient' ||
+      String(d.continuity || '').trim() === 'continued_outpatient';
+    if (!due) return false;
+    if (log.sent[dischargeOutpatientKey_(d.id)]) return false;
+    return !inOutpatients[diagNormText_(d.name)];
+  }).map(function (d) {
+    return {
+      id: String(d.id == null ? '' : d.id), name: String(d.name == null ? '' : d.name),
+      houseId: String(d.houseId == null ? '' : d.houseId), date: asISODate_(d.date), exitDate: asISODate_(d.exitDate),
+      disposition: String(d.disposition || ''), continuity: String(d.continuity || ''),
+      attempt: log.failed[dischargeOutpatientKey_(d.id)] ? 'failed' : 'none',
+    };
+  });
+}
+
+function unmatchedDischargeRows_(discharged, patients) {
+  const byId = {}, byKey = {}, byNorm = {};
+  (patients || []).forEach(function (p) {
+    const id = String(p.id == null ? '' : p.id).trim();
+    if (id) byId[id] = true;
+    byKey[String(p.houseId == null ? '' : p.houseId).trim() + '::' + String(p.name == null ? '' : p.name).trim() + '::' + asISODate_(p.date)] = true;
+    byNorm[String(p.houseId == null ? '' : p.houseId).trim() + '::' + diagNormText_(p.name) + '::' + asISODate_(p.date)] = true;
+  });
+  return (discharged || []).filter(function (d) {
+    if (!dischargeRowOpen_(d)) return false;
+    const pid = String(d.patientId == null ? '' : d.patientId).trim();
+    if (pid && byId[pid]) return false;
+    return !byKey[String(d.houseId == null ? '' : d.houseId).trim() + '::' + String(d.name == null ? '' : d.name).trim() + '::' + asISODate_(d.date)];
+  }).map(function (d) {
+    return {
+      id: String(d.id == null ? '' : d.id), name: String(d.name == null ? '' : d.name),
+      houseId: String(d.houseId == null ? '' : d.houseId), date: asISODate_(d.date),
+      normalizedMatch: !!byNorm[String(d.houseId == null ? '' : d.houseId).trim() + '::' + diagNormText_(d.name) + '::' + asISODate_(d.date)],
+    };
+  });
+}
+
+function outpatientMissingReportNow() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const rowsOf = function (name, cols) {
+    const sh = ss.getSheetByName(name);
+    return sh && sh.getLastRow() >= 2 ? readSheet_(sh, cols) : [];
+  };
+  const discharged = rowsOf(DISCHARGED_PATIENTS_SHEET, DISCHARGED_PATIENT_COLUMNS);
+  const missing = outpatientMissingRows_(discharged, outpatientLeadSendLog_(), rowsOf(OUTPATIENTS_SHEET, OUTPATIENT_COLUMNS));
+  const unmatched = unmatchedDischargeRows_(discharged, rowsOf(PATIENTS_SHEET, PATIENT_COLUMNS));
+  const title = 'E-Zone מטופלים שאמורים להיות באמבולטורי ' + Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'yyyy-MM-dd HH:mm');
+  const doc = DocumentApp.create(title);
+  const body = doc.getBody();
+  const paras = body.getParagraphs();
+  for (let i = 0; i < paras.length; i++) paras[i].setLeftToRight(false);
+  const house = function (h) { return PATIENT_HOUSE_NAMES_HE[h] || h || '—'; };
+  recDocPara_(body, title, DocumentApp.ParagraphHeading.TITLE);
+  recDocPara_(body, 'דוח לקריאה בלבד: הגיליון לא שונה.', null);
+  recDocPara_(body, '1. משוחררים לטיפול חוץ / המשיכו באמבולטורי שאין רישום שנשלחו לאמבולטורי (' + missing.length + ')', DocumentApp.ParagraphHeading.HEADING2);
+  recDocPara_(body, 'איך מתקנים: «מטופלים משוחררים» ← «העבר לאמבולטורי» בשורה. «לא מאומת» = אין רישום שליחה (שחרור לפני הרישום הזה); לבדוק באאוטפיישנט לפני ששולחים.', null);
+  if (!missing.length) recDocPara_(body, 'אין פריטים.', null);
+  else recDocTable_(body, [['מטופל', 'בית', 'כניסה', 'שחרור', 'סטטוס סגירה', 'המשך טיפול', 'מצב']].concat(missing.map(function (r) {
+    return [r.name || '—', house(r.houseId), recDateText_(r.date), recDateText_(r.exitDate),
+      r.disposition === 'released_outpatient' ? 'משוחרר לטיפול חוץ' : (r.disposition || '—'),
+      r.continuity === 'continued_outpatient' ? 'המשיך באמבולטורי' : (r.continuity || '—'),
+      r.attempt === 'failed' ? 'שליחה נכשלה' : 'לא מאומת'];
+  })));
+  recDocPara_(body, '2. שורות שחרור פתוחות שלא נמצא להן מטופל תואם (' + unmatched.length + ')', DocumentApp.ParagraphHeading.HEADING2);
+  recDocPara_(body, 'אלה השורות ששחזור נכשל עבורן. «כן» = נמצא מטופל אחרי ניקוי רווחים/תווים בלתי נראים — השחזור עובד עכשיו.', null);
+  if (!unmatched.length) recDocPara_(body, 'אין פריטים.', null);
+  else recDocTable_(body, [['מטופל', 'בית', 'כניסה', 'מזהה שורה', 'נמצא אחרי ניקוי']].concat(unmatched.map(function (r) {
+    return [r.name || '—', house(r.houseId), recDateText_(r.date), r.id, r.normalizedMatch ? 'כן' : 'לא'];
+  })));
+  doc.saveAndClose();
+  const url = doc.getUrl();
+  Logger.log('outpatientMissingReportNow — READ-ONLY on the spreadsheet. Missing: ' + missing.length +
+    ', unmatched discharge rows: ' + unmatched.length + '. Report: ' + title + ' — ' + url);
+  return { missing: missing, unmatched: unmatched, title: title, url: url };
 }
 
 /* Normalize a phone to canonical Israeli local form: strip every non-digit,
