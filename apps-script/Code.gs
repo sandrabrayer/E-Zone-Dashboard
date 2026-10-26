@@ -3139,6 +3139,7 @@ function saveAll_(leads, patients, user, prove) {
     const moved = [];
     const stamps = {};
     if (patients && typeof patients === 'object' && !Array.isArray(patients)) {
+      patients = canonicalPatientHouseKeys_(patients);
       const houseIds = Object.keys(patients);
       const userDeleteKeys = houseIds.length > 0 ? recentUserDeleteKeys_() : {};
       const dischargedIds = houseIds.length > 0 ? dischargedFromLeadIds_() : {};
@@ -4123,6 +4124,23 @@ function dischargedFromLeadIds_() {
   return out;
 }
 
+/* A saveAll payload's patients map with every house KEY through THE house
+ * rule (diagClientHouseId_): an alias / label / invisible-marked key joins its
+ * house's array (payload order kept), so a house is written by ONE
+ * replaceHousePatients_ pass under its id. An unknown key stays as written.
+ * Non-array values are kept as-is for the caller's existing guard. Pure.
+ * (CHANGELOG-patient-missing-from-house.md) */
+function canonicalPatientHouseKeys_(patients) {
+  const out = {};
+  Object.keys(patients || {}).forEach(function (key) {
+    const hid = diagClientHouseId_(key) || key;
+    const arr = patients[key];
+    if (!Array.isArray(arr)) { if (!(hid in out)) out[hid] = arr; return; }
+    out[hid] = Array.isArray(out[hid]) ? out[hid].concat(arr) : arr.slice();
+  });
+  return out;
+}
+
 /* Deliberate house moves in a saveAll payload, as {id: {from, to}}.
  *
  * The ✏ edit modal marks a patient whose house it changed with `movedFrom`
@@ -4144,7 +4162,7 @@ function collectHouseMoves_(patients) {
     for (let i = 0; i < arr.length; i++) {
       const p = arr[i] || {};
       const id = String(p.id == null ? '' : p.id).trim();
-      const from = String(p.movedFrom == null ? '' : p.movedFrom).trim();
+      const from = diagClientHouseId_(String(p.movedFrom == null ? '' : p.movedFrom).trim());
       if (!id || !from || from === hid) continue;
       if (id in out) { ambiguous[id] = true; continue; }
       out[id] = { from: from, to: hid };
@@ -4310,7 +4328,12 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
   if (lastRow > 1) {
     const values = sh.getRange(2, 1, lastRow - 1, PATIENT_COLUMNS.length).getValues();
     for (let i = 0; i < values.length; i++) {
-      if (values[i][houseColIdx] === houseId) houseRows.push(values[i]);
+      // THE house rule (diagClientHouseId_), not a raw compare: a row stored as
+      // 'hapardes', the Hebrew label or with an invisible mark is THIS
+      // house's row — the one the client shows under this house — so its id
+      // matches in place and the write heals its cell to the id
+      // (CHANGELOG-patient-missing-from-house.md).
+      if (diagClientHouseId_(values[i][houseColIdx]) === houseId) houseRows.push(values[i]);
       else kept.push(values[i]);
     }
   }
@@ -4482,7 +4505,7 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
     if (mv && mv.to === houseId && !(incomingId in houseRowByIdIdx)) {
       const srcIdx = keptRowByIdIdx[incomingId];
       const src = srcIdx === undefined ? null : kept[srcIdx];
-      const srcHouse = src ? String(src[houseColIdx] == null ? '' : src[houseColIdx]) : '';
+      const srcHouse = src ? diagClientHouseId_(src[houseColIdx]) : '';
       const srcStamp = src ? String(src[updatedAtIdx] == null ? '' : src[updatedAtIdx]).trim() : '';
       const reason = !src ? 'source_missing'
         : srcHouse !== mv.from ? 'moved_elsewhere'
@@ -4848,7 +4871,8 @@ function deletePatientRow_(patient, user, actor) {
     const idIdx       = PATIENT_COLUMNS.indexOf('id');
     const key = patientKey_(patient.houseId, patient.name, patient.date);
     const wantId = String(patient.id == null ? '' : patient.id).trim();
-    const wantHouse = String(patient.houseId == null ? '' : patient.houseId).trim();
+    const wantHouse = diagClientHouseId_(String(patient.houseId == null ? '' : patient.houseId).trim());
+    const wantKey = patientKey_(wantHouse, patient.name, patient.date);
     const lastRow = sh.getLastRow();
     /* A RETRY of a delete whose answer was lost: this id's row is gone and a
      * fresh 'user-delete' tombstone of the same house holds it. Answer the
@@ -4868,7 +4892,7 @@ function deletePatientRow_(patient, user, actor) {
       for (let i = 0; i < values.length; i++) {
         const row = values[i];
         const rid = String(row[idIdx] == null ? '' : row[idIdx]).trim();
-        if (rid === wantId && String(row[houseColIdx] == null ? '' : row[houseColIdx]).trim() === wantHouse) matched.push(row);
+        if (rid === wantId && diagClientHouseId_(row[houseColIdx]) === wantHouse) matched.push(row);
         else kept.push(row);
       }
       if (matched.length > 0) matchedBy = 'id';
@@ -4877,7 +4901,9 @@ function deletePatientRow_(patient, user, actor) {
     if (matchedBy === 'key') {
       for (let i = 0; i < values.length; i++) {
         const row = values[i];
-        if (patientKey_(row[houseColIdx], row[nameColIdx], row[dateColIdx]) === key) matched.push(row);
+        // The row's house through THE house rule (an alias / label / invisible
+        // mark is the house the client sent — CHANGELOG-patient-missing-from-house.md).
+        if (patientKey_(diagClientHouseId_(row[houseColIdx]), row[nameColIdx], row[dateColIdx]) === wantKey) matched.push(row);
         else kept.push(row);
       }
     }
@@ -8112,6 +8138,100 @@ function outpatientMissingReportNow() {
   Logger.log('outpatientMissingReportNow — READ-ONLY on the spreadsheet. Missing: ' + missing.length +
     ', unmatched discharge rows: ' + unmatched.length + '. Report: ' + title + ' — ' + url);
   return { missing: missing, unmatched: unmatched, title: title, url: url };
+}
+
+/* ===== Report: active patients no house tab shows =====
+ * (CHANGELOG-patient-missing-from-house.md) Editor-run (Run dropdown), never
+ * reachable over HTTP. Read-only on the spreadsheet: the Patients tab is
+ * opened with getSheetByName and read with ONE getValues; its only write is
+ * one new private Google Doc whose URL it logs (the outpatientMissingReportNow
+ * pattern). The log carries counts and the URL only — no names.
+ *
+ * The «מטופלים» list shows every non-released Patients row; a house tab
+ * (תפוסה) shows the rows whose house resolves to that tab. The ONLY thing that
+ * separates the two is the house (the תפוסה list has no status, date or month
+ * filter of its own), so each listed row says what its house cell is:
+ *   no_house      — blank: getData skips the row, no screen shows it;
+ *   unknown_house — resolves to no house: only the «בית לא מזוהה» tab shows it
+ *                   (with a «looks like» hint when exactly one house fits);
+ *   house_variant — resolves to a house only through the rule this change
+ *                   added (alias, invisible mark, NBSP, doubled space): no
+ *                   house tab showed it before; it shows now, and the next
+ *                   save of that house rewrites the cell to the house id.
+ * A row stored as an exact id, an exact label or a case-variant id renders
+ * and is not listed. Pure. */
+function patientsMissingFromHousesRows_(values) {
+  const col = function (name) { return PATIENT_COLUMNS.indexOf(name); };
+  const known = diagKnownHouseIds_();
+  const strictId = function (raw) {
+    // The rule as it was before this change (trim, id, label, case-insensitive id).
+    if (!raw) return '';
+    const s = String(raw).trim();
+    if (known.indexOf(s) >= 0) return s;
+    if (DIGEST_HOUSE_NAME_TO_INTERNAL[s]) return DIGEST_HOUSE_NAME_TO_INTERNAL[s];
+    for (let i = 0; i < known.length; i++) if (known[i].toLowerCase() === s.toLowerCase()) return known[i];
+    return s;
+  };
+  const out = [];
+  (values || []).forEach(function (row, i) {
+    if (!row || !row.some(function (c) { return c !== '' && c !== null && c !== undefined; })) return;
+    const status = diagClientStatus_(row[col('status')]);
+    if (status === 'released') return;
+    const raw = row[col('houseId')];
+    const rawText = String(raw == null ? '' : raw);
+    const resolved = diagClientHouseId_(raw);
+    let reason = '';
+    if (!rawText.trim()) reason = 'no_house';
+    else if (known.indexOf(resolved) < 0) reason = 'unknown_house';
+    else if (known.indexOf(strictId(raw)) < 0) reason = 'house_variant';
+    if (!reason) return;
+    out.push({
+      row: i + 2, reason: reason, status: status,
+      id: String(row[col('id')] == null ? '' : row[col('id')]).trim(),
+      name: String(row[col('name')] == null ? '' : row[col('name')]),
+      house: diagVisible_(raw), resolved: known.indexOf(resolved) >= 0 ? resolved : '',
+      lookalike: reason === 'unknown_house' ? diagHouseLookalike_(raw) : '',
+      date: asISODate_(row[col('date')]),
+    });
+  });
+  return out;
+}
+
+function patientsMissingFromHousesReportNow() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(PATIENTS_SHEET);
+  const rows = patientsMissingFromHousesRows_(sh ? sheetValues_(sh, PATIENT_COLUMNS) : []);
+  const title = 'E-Zone מטופלים פעילים שלא מופיעים בלשונית בית ' + Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'yyyy-MM-dd HH:mm');
+  const doc = DocumentApp.create(title);
+  const body = doc.getBody();
+  const paras = body.getParagraphs();
+  for (let i = 0; i < paras.length; i++) paras[i].setLeftToRight(false);
+  const house = function (h) { return PATIENT_HOUSE_NAMES_HE[h] || h || '—'; };
+  const statusHe = { active: 'פעיל', trial: 'תקופת ניסיון', wait: 'בהמתנה' };
+  const reasonHe = function (r) {
+    if (r.reason === 'no_house') return 'בית ריק — השורה לא נטענת לאף מסך';
+    if (r.reason === 'unknown_house') {
+      return 'בית לא מזוהה — מופיע רק בלשונית «בית לא מזוהה»' + (r.lookalike ? ' (נראה כמו ' + house(r.lookalike) + ')' : '');
+    }
+    return 'הבית שמור בצורה שונה מהמזהה — לא הופיע בלשונית ' + house(r.resolved) + ' עד התיקון; מופיע עכשיו ויתוקן בשמירה הבאה';
+  };
+  recDocPara_(body, title, DocumentApp.ParagraphHeading.TITLE);
+  recDocPara_(body, 'דוח לקריאה בלבד: הגיליון לא שונה.', null);
+  recDocPara_(body, 'כל מטופל לא משוחרר בגיליון Patients מופיע ב«מטופלים». לשונית בית (תפוסה) מציגה רק שורות שהבית שלהן מזוהה. אין בה סינון לפי סטטוס, תאריך או חודש — הבית הוא ההבדל היחיד.', null);
+  recDocPara_(body, 'מטופלים פעילים שלא הופיעו בלשונית בית (' + rows.length + ')', DocumentApp.ParagraphHeading.HEADING2);
+  recDocPara_(body, 'איך מתקנים: «מטופלים» ← ✏️ בשורה ← בחירת הבית הנכון. אפשר גם לשחרר ישירות מ«מטופלים» («שחרר»).', null);
+  if (!rows.length) recDocPara_(body, 'אין פריטים.', null);
+  else recDocTable_(body, [['מטופל', 'בית כפי שנשמר', 'מזוהה כ', 'כניסה', 'סטטוס', 'שורה', 'מזהה', 'סיבה']].concat(rows.map(function (r) {
+    return [r.name || '—', r.house, r.resolved ? house(r.resolved) : '—', recDateText_(r.date),
+      statusHe[r.status] || r.status, String(r.row), r.id || '—', reasonHe(r)];
+  })));
+  doc.saveAndClose();
+  const url = doc.getUrl();
+  const count = function (k) { return rows.filter(function (r) { return r.reason === k; }).length; };
+  Logger.log('patientsMissingFromHousesReportNow — READ-ONLY on the spreadsheet. Rows: ' + rows.length +
+    ' (no_house ' + count('no_house') + ', unknown_house ' + count('unknown_house') +
+    ', house_variant ' + count('house_variant') + '). Report: ' + title + ' — ' + url);
+  return { rows: rows, title: title, url: url };
 }
 
 /* Normalize a phone to canonical Israeli local form: strip every non-digit,
@@ -17282,7 +17402,8 @@ function canonicalDigestHouse_(rawHouse) {
   if (DIGEST_INTERNAL_TO_CANONICAL[s]) return DIGEST_INTERNAL_TO_CANONICAL[s]; // internal id
   const internal = DIGEST_HOUSE_NAME_TO_INTERNAL[s];        // Hebrew display name
   if (internal) return DIGEST_INTERNAL_TO_CANONICAL[internal] || '';
-  return '';                                                // sde / unknown → excluded
+  // An alias / invisible-marked form (CHANGELOG-patient-missing-from-house.md).
+  return DIGEST_INTERNAL_TO_CANONICAL[diagClientHouseId_(s)] || ''; // sde / unknown → excluded
 }
 
 /* Deterministic stable id for an active patient. The Patients sheet has no
@@ -20451,18 +20572,41 @@ function diagRamotHouseMatch_(raw) {
   return '';
 }
 
+/* Another E-Zone app's id for a house the Patients sheet keys differently
+ * (staffing: hapardes / ofroni; bonus + digest: raanana / efroni). Keyed by
+ * the matching form (diagNormText_). public/app.js HOUSE_ID_ALIASES is the
+ * same table, pinned equal by test (CHANGELOG-patient-missing-from-house.md).
+ * A function, not a const: this section declares functions only. */
+function patientHouseIdAliases_() {
+  return { hapardes: 'pardes', raanana: 'asher', efroni: 'arfoni', ofroni: 'arfoni' };
+}
+
 /* The house id public/app.js resolveHouseId() gives a stored value — trim, an
- * exact id, an exact Hebrew label, a case-insensitive id, else the trimmed raw
- * string (which then matches no house tab). The ids/labels are the HOUSES
- * list, mirrored here by DIGEST_HOUSE_NAME_TO_INTERNAL. Pure. */
+ * exact id, an exact Hebrew label, a case-insensitive id, then the same once
+ * invisible marks / NBSP / doubled spaces are reduced (diagNormText_), then
+ * another app's id (patientHouseIdAliases_); else the trimmed raw string
+ * (which then matches no house tab). The ids/labels are the HOUSES list,
+ * mirrored here by DIGEST_HOUSE_NAME_TO_INTERNAL. It is also THE house rule
+ * of the Patients writes (saveAll_ house keys, replaceHousePatients_,
+ * deletePatientRow_) since CHANGELOG-patient-missing-from-house.md. Pure. */
 function diagClientHouseId_(raw) {
   if (!raw) return '';
   const s = String(raw).trim();
   const ids = Object.keys(DIGEST_HOUSE_NAME_TO_INTERNAL).map(function (k) { return DIGEST_HOUSE_NAME_TO_INTERNAL[k]; });
   if (ids.indexOf(s) >= 0) return s;
-  if (DIGEST_HOUSE_NAME_TO_INTERNAL[s]) return DIGEST_HOUSE_NAME_TO_INTERNAL[s];
+  // Own keys only: a value like 'toString' is not a house label.
+  if (Object.prototype.hasOwnProperty.call(DIGEST_HOUSE_NAME_TO_INTERNAL, s)) return DIGEST_HOUSE_NAME_TO_INTERNAL[s];
   const lower = s.toLowerCase();
   for (let i = 0; i < ids.length; i++) if (ids[i].toLowerCase() === lower) return ids[i];
+  const n = diagNormText_(s);
+  if (!n) return s;
+  const labels = Object.keys(DIGEST_HOUSE_NAME_TO_INTERNAL);
+  for (let i = 0; i < labels.length; i++) {
+    const id = DIGEST_HOUSE_NAME_TO_INTERNAL[labels[i]];
+    if (id === n || diagNormText_(labels[i]) === n) return id;
+  }
+  const aliases = patientHouseIdAliases_();
+  if (Object.prototype.hasOwnProperty.call(aliases, n)) return aliases[n];
   return s;
 }
 
