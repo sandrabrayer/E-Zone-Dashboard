@@ -160,7 +160,7 @@ function clientCopy(cols, fields) {
   return obj;
 }
 
-const REPORT = { leadId: 'L1', outcome: 'advancing', companion: 'mother', note: 'שיחה טובה', reporter: 'יעל' };
+const REPORT = { leadId: 'L1', outcome: 'advancing', companion: 'mother', note: 'שיחה טובה', reporter: 'אורן' };
 
 /* ===== THE production bug, end-to-end ===== */
 
@@ -187,7 +187,7 @@ test('REGRESSION: a stale dashboard saveAll no longer wipes a manager report', (
   assert.strictEqual(cell(sandbox, cols, 'L1', 'meetingReportOutcome'), 'advancing');
   assert.strictEqual(cell(sandbox, cols, 'L1', 'meetingCompanion'), 'mother');
   assert.strictEqual(cell(sandbox, cols, 'L1', 'meetingNote'), 'שיחה טובה');
-  assert.strictEqual(cell(sandbox, cols, 'L1', 'meetingReporter'), 'יעל');
+  assert.strictEqual(cell(sandbox, cols, 'L1', 'meetingReporter'), 'אורן');
   assert.strictEqual(cell(sandbox, cols, 'L1', 'meetingReportedAt'), reportedAt);
   assert.strictEqual(cell(sandbox, cols, 'L1', 'meetingSeen'), '', 'still unseen for Vered');
 
@@ -206,7 +206,7 @@ test('a stale client carrying an OLDER report cannot regress a newer one', () =>
     {
       ...BASE_LEADS[0],
       meetingReportOutcome: 'advancing', meetingCompanion: 'parents',
-      meetingNote: 'שני', meetingReporter: 'שירן',
+      meetingNote: 'שני', meetingReporter: 'חנן',
       meetingReportedAt: '2026-08-30T10:00:00.000Z', meetingSeen: '',
     },
     BASE_LEADS[1],
@@ -215,14 +215,14 @@ test('a stale client carrying an OLDER report cannot regress a newer one', () =>
     clientCopy(cols, {
       ...BASE_LEADS[0],
       meetingReportOutcome: 'no_show', meetingCompanion: 'alone',
-      meetingNote: 'ראשון', meetingReporter: 'יעל',
+      meetingNote: 'ראשון', meetingReporter: 'אורן',
       meetingReportedAt: '2026-08-29T08:00:00.000Z', meetingSeen: '1',
     }),
   ];
   assert.strictEqual(code.handle({ action: 'saveAll', leads: stale, patients: {} }).ok, true);
   assert.strictEqual(cell(sandbox, cols, 'L1', 'meetingReportOutcome'), 'advancing');
   assert.strictEqual(cell(sandbox, cols, 'L1', 'meetingNote'), 'שני');
-  assert.strictEqual(cell(sandbox, cols, 'L1', 'meetingReporter'), 'שירן');
+  assert.strictEqual(cell(sandbox, cols, 'L1', 'meetingReporter'), 'חנן');
   assert.strictEqual(cell(sandbox, cols, 'L1', 'meetingReportedAt'), '2026-08-30T10:00:00.000Z');
   assert.strictEqual(cell(sandbox, cols, 'L1', 'meetingSeen'), '', 'the newer report stays unseen');
 });
@@ -232,7 +232,7 @@ test("Vered's mark-seen still persists: same reportedAt, meetingSeen='1' goes th
   const reported = {
     ...BASE_LEADS[0],
     meetingReportOutcome: 'advancing', meetingCompanion: 'mother',
-    meetingNote: 'שיחה', meetingReporter: 'יעל',
+    meetingNote: 'שיחה', meetingReporter: 'אורן',
     meetingReportedAt: at, meetingSeen: '',
   };
   const { code, sandbox, cols } = withLeads([reported, BASE_LEADS[1]]);
@@ -248,7 +248,7 @@ test("meetingSeen is sticky: a peer tab with the SAME report cannot flip '1' bac
   const seen = {
     ...BASE_LEADS[0],
     meetingReportOutcome: 'advancing', meetingCompanion: 'mother',
-    meetingNote: 'שיחה', meetingReporter: 'יעל',
+    meetingNote: 'שיחה', meetingReporter: 'אורן',
     meetingReportedAt: at, meetingSeen: '1',
   };
   const { code, sandbox, cols } = withLeads([seen]);
@@ -262,7 +262,7 @@ test('a manager RESUBMISSION (newer reportedAt) still resets meetingSeen for Ver
     {
       ...BASE_LEADS[0],
       meetingReportOutcome: 'undecided', meetingCompanion: 'father',
-      meetingNote: 'ראשון', meetingReporter: 'יעל',
+      meetingNote: 'ראשון', meetingReporter: 'אורן',
       meetingReportedAt: '2026-08-29T08:00:00.000Z', meetingSeen: '1',
     },
   ]);

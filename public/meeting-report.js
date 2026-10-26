@@ -17,17 +17,39 @@ var MR_HOUSE_LABELS = {
   sde:    'שדה אליעזר',
 };
 
-/* מדווח/ת options — the real house managers, keyed by the house id (a house
- * with no reporting manager — e.g. sde — has no entry and that's fine: the
- * dropdown is a flat list of names, not filtered by house). The SELECTED
- * VALUE (the name) is what gets stored in the lead's meetingReporter column. */
-var MEETING_REPORTERS = Object.freeze({
-  arfoni: 'חנן',
-  rehab:  'רנטה',
-  asher:  'שחר/אורן',
-  pardes: 'חן',
-  ramot:  'אורן',
-});
+/* מדווח/ת options come from the SERVER (CHANGELOG-meeting-flow-gaps.md): the
+ * leads answer carries `managers` [{ house, name }] — the current managers
+ * from the Managers tab, falling back server-side to the houseManagers source.
+ * There is no hardcoded list here any more. The SELECTED VALUE (the name) is
+ * what gets stored in the lead's meetingReporter column, and the backend
+ * refuses a name that is not on that list. */
+
+/* The distinct, trimmed reporter names of a `managers` answer, in order.
+ * [] for a missing / malformed field (an older backend). Pure. */
+function mrReporterNames(managers) {
+  var out = [];
+  (Array.isArray(managers) ? managers : []).forEach(function (m) {
+    var name = m && typeof m.name === 'string' ? m.name.trim() : '';
+    if (name && out.indexOf(name) === -1) out.push(name);
+  });
+  return out;
+}
+
+/* The מדווח/ת <option> markup for `names`, keeping `selected` when it is still
+ * on the list. Every name is escaped. With no names: one disabled option that
+ * says the list did not load — never a stale hardcoded name. Pure. */
+function mrReporterOptionsHtml(names, selected) {
+  var list = Array.isArray(names) ? names : [];
+  if (!list.length) {
+    return '<option value="">רשימת המנהלים לא נטענה — רעננו את הדף</option>';
+  }
+  var opts = ['<option value="">בחר/י מדווח/ת…</option>'];
+  list.forEach(function (name) {
+    var on = name === selected ? ' selected' : '';
+    opts.push('<option value="' + mrEscapeHtml(name) + '"' + on + '>' + mrEscapeHtml(name) + '</option>');
+  });
+  return opts.join('');
+}
 
 /* Outcome keys + Hebrew labels. KEEP IN SYNC with
  * MEETING_REPORT_OUTCOME_LABELS in public/app.js (PR 1). */
@@ -258,7 +280,8 @@ var MR_SUBMIT_ERROR_TEXTS = {
   bad_companion:  'הטקסט בשדה "הגיע/ה עם" ארוך מדי (עד 100 תווים)',
   bad_note:       'הפירוט ארוך מדי (עד ' + MANAGER_REPORT_MAX_CHARS + ' תווים)',
   bad_reporter:   'נא לבחור מדווח/ת',
-  lead_not_found: 'הליד כבר לא ברשימת הלידים הפתוחים — רעננו את הדף ונסו שוב',
+  reporter_not_manager: 'המדווח/ת אינו/ה ברשימת מנהלי הבתים הנוכחיים — רעננו את הדף ובחרו שם מהרשימה',
+  lead_not_found: 'הליד כבר לא ברשימת הלידים לדיווח — רעננו את הדף ונסו שוב',
   unauthorized:   'השרת דחה את הדיווח (בעיית הרשאה) — פנו לסנדרה',
   meeting_report_not_configured: 'השרת אינו מוגדר לדיווחי פגישות — פנו לסנדרה',
   sheets_unreachable:  'אין חיבור לגיליון — נסו שוב בעוד רגע',
@@ -376,7 +399,8 @@ function busyButton(btn, kind, fn) {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     MR_HOUSE_LABELS: MR_HOUSE_LABELS,
-    MEETING_REPORTERS: MEETING_REPORTERS,
+    mrReporterNames: mrReporterNames,
+    mrReporterOptionsHtml: mrReporterOptionsHtml,
     MR_OUTCOME_LABELS: MR_OUTCOME_LABELS,
     MR_COMPANION_LABELS: MR_COMPANION_LABELS,
     mrTodayISO: mrTodayISO,
@@ -419,6 +443,7 @@ if (typeof module !== 'undefined' && module.exports) {
   var state = {
     leads: [],
     showAll: false,
+    reporters: [],
     outcome: '',
     companion: '',
     // This form's idempotency key; a new one for every fresh form (resetForm).
@@ -434,14 +459,11 @@ if (typeof module !== 'undefined' && module.exports) {
   }
   function clearError() { el('mr-error').classList.add('hidden'); }
 
+  /* The מדווח/ת choices from the leads answer's `managers`; a re-render
+   * (after «דיווח נוסף») keeps the picked name when it is still current. */
   function renderReporters() {
     var sel = el('mr-reporter');
-    var opts = ['<option value="">בחר/י מדווח/ת…</option>'];
-    Object.keys(MEETING_REPORTERS).forEach(function (k) {
-      var name = MEETING_REPORTERS[k];
-      opts.push('<option value="' + mrEscapeHtml(name) + '">' + mrEscapeHtml(name) + '</option>');
-    });
-    sel.innerHTML = opts.join('');
+    sel.innerHTML = mrReporterOptionsHtml(state.reporters, sel.value);
   }
 
   function renderLeads() {
@@ -496,10 +518,13 @@ if (typeof module !== 'undefined' && module.exports) {
       .then(function (data) {
         if (!data || data.ok !== true) throw new Error('bad response');
         state.leads = data.leads || [];
+        state.reporters = mrReporterNames(data.managers);
         renderLeads();
+        renderReporters();
       })
       .catch(function () {
         renderLeads();   // clear «טוען…» — never leave the picker looking busy
+        renderReporters();
         showError('טעינת הלידים נכשלה — נסו לרענן את הדף');
       });
   }
@@ -641,7 +666,8 @@ if (typeof module !== 'undefined' && module.exports) {
     return busyButton(el('mr-again'), 'load', resetForm);
   });
 
-  renderReporters();
+  // The reporter list arrives with the leads: «טוען…» until then.
+  el('mr-reporter').innerHTML = '<option value="">' + mrEscapeHtml(busyLabelFor('load')) + '</option>';
   renderOutcomes();
   renderCompanions();
   syncNote();

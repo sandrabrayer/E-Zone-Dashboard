@@ -287,7 +287,7 @@ test('a report submitted through the manager form still lands and reads back (en
   ]);
   const out = code.handle({
     action: 'submitMeetingReport', secret: 's3cret',
-    report: { leadId: 'L9', outcome: 'advancing', companion: 'parents', note: '', reporter: 'יעל' },
+    report: { leadId: 'L9', outcome: 'advancing', companion: 'parents', note: '', reporter: 'אורן' },
   });
   assert.strictEqual(out.ok, true);
   assert.strictEqual(cell(sandbox, cols, 'L9', 'meetingReportOutcome'), 'advancing');
