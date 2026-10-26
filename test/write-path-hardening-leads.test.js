@@ -21,7 +21,7 @@ const plain = (v) => JSON.parse(JSON.stringify(v));
 const arr = (v) => Array.from(v);
 
 const LEAD = { id: 'L-1', name: 'נועה ברק', phone: '050-1234567', house: 'רמות השבים', stage: 'new', assignedTo: 'ורד', meetingWith: '' };
-const REPORTED = Object.assign({}, LEAD, { id: 'L-2', stage: 'visit', meetingReportedAt: '2026-10-01T09:00:00.000Z', meetingReportOutcome: 'undecided', meetingReporter: 'דנה' });
+const REPORTED = Object.assign({}, LEAD, { id: 'L-2', stage: 'visit', meetingReportedAt: '2026-10-01T09:00:00.000Z', meetingReportOutcome: 'undecided', meetingReporter: 'רנטה' });
 
 function page(answerPost) {
   const pg = loadPage({ answerPost: answerPost || ((b) => serverEcho(b, { ok: true })) });
@@ -192,7 +192,7 @@ test('server R3: «הסר» retried after its answer was lost replays the stored
 test('server R3: a meeting report retried with the same key replays — no second stamp, «נצפה» not reset; a bad key is refused', () => {
   const w = gsWorld();
   w.addLead({ id: 'L-2', name: 'נועה', stage: 'visit', house: 'רמות השבים' });
-  const report = { leadId: 'L-2', outcome: 'undecided', companion: '', note: 'סיכום', reporter: 'דנה', submissionId: 'sub-0123456789abcdef0123456789abcdef' };
+  const report = { leadId: 'L-2', outcome: 'undecided', companion: '', note: 'סיכום', reporter: 'רנטה', submissionId: 'sub-0123456789abcdef0123456789abcdef' };
   const first = plain(w.g.sandbox.submitMeetingReport_(report));
   assert.equal(first.ok, true, JSON.stringify(first));
   // Vered marks it seen before the manager's phone retries.
@@ -209,7 +209,7 @@ test('server R1: submitMeetingReport takes the script lock — busy → lock_bus
   w.addLead({ id: 'L-2', name: 'נועה', stage: 'visit' });
   w.g.sandbox.LockService = { getScriptLock: () => ({ tryLock: () => false, releaseLock: () => {} }) };
   const before = w.snapshot();
-  const res = plain(w.g.sandbox.submitMeetingReport_({ leadId: 'L-2', outcome: 'undecided', companion: '', note: '', reporter: 'דנה' }));
+  const res = plain(w.g.sandbox.submitMeetingReport_({ leadId: 'L-2', outcome: 'undecided', companion: '', note: '', reporter: 'רנטה' }));
   assert.equal(res.error, 'lock_busy');
   assert.equal(w.snapshot(), before);
 });

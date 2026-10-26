@@ -4,7 +4,8 @@
  *     MEETING_REPORT_SECRET Script Property (or a mismatch) → unauthorized,
  *     for both the read and the write action.
  *   - meetingReportLeads_: only the four whitelisted fields
- *     { id, name, house, visitDate }; admitted-stage leads excluded.
+ *     { id, name, house, visitDate }; admitted-stage leads with an OLD meeting
+ *     excluded (a recent one is reportable — test/meeting-flow-gaps.test.js).
  *   - submitMeetingReport_: rejects bad leadId / outcome / oversized
  *     companion / note / reporter; happy path writes the five report fields
  *     and RESETS meetingSeen to ''; a resubmission overwrites in place.
@@ -146,7 +147,7 @@ test('submitMeetingReport via handle_: no Script Property secret → unauthorize
   const { code } = withLeads(OPEN_LEADS);
   const out = code.handle({
     action: 'submitMeetingReport', secret: 'anything',
-    report: { leadId: 'L1', outcome: 'advancing', companion: 'mother', note: '', reporter: 'יעל' },
+    report: { leadId: 'L1', outcome: 'advancing', companion: 'mother', note: '', reporter: 'אורן' },
   });
   assert.strictEqual(out.ok, false);
   assert.strictEqual(out.error, 'unauthorized');
@@ -161,7 +162,7 @@ test('both actions: WRONG secret → unauthorized; correct secret → served', (
 
   assert.strictEqual(code.handle({
     action: 'submitMeetingReport', secret: 'nope',
-    report: { leadId: 'L1', outcome: 'advancing', companion: 'mother', note: '', reporter: 'יעל' },
+    report: { leadId: 'L1', outcome: 'advancing', companion: 'mother', note: '', reporter: 'אורן' },
   }).error, 'unauthorized');
 });
 
@@ -184,10 +185,10 @@ test('meetingReportLeads returns ONLY the four whitelisted fields', () => {
   assert.deepStrictEqual(l1, { id: 'L1', name: 'דני', house: 'ramot', visitDate: '2026-08-20' });
 });
 
-test('meetingReportLeads excludes admitted-stage leads (open leads only)', () => {
+test('meetingReportLeads excludes an admitted lead whose meeting is older than 14 days', () => {
   const { code } = withLeads(OPEN_LEADS);
   const ids = arr(code.meetingReportLeads().leads).map((l) => l.id);
-  assert.deepStrictEqual(ids.sort(), ['L1', 'L2'], 'L3 (admitted) must be excluded');
+  assert.deepStrictEqual(ids.sort(), ['L1', 'L2'], 'L3 (admitted, visit 2026-08-01) must be excluded');
 });
 
 test('isOpenLeadStage_ closes admitted/irrelevant in both id and Hebrew-label form', () => {
@@ -200,9 +201,9 @@ test('isOpenLeadStage_ closes admitted/irrelevant in both id and Hebrew-label fo
 
 /* ===== submitMeetingReport_ validation ===== */
 
-const VALID = { leadId: 'L1', outcome: 'advancing', companion: 'mother', note: 'שיחה', reporter: 'יעל' };
+const VALID = { leadId: 'L1', outcome: 'advancing', companion: 'mother', note: 'שיחה', reporter: 'אורן' };
 
-test('rejects an unknown leadId and a CLOSED (admitted) leadId', () => {
+test('rejects an unknown leadId and an admitted leadId with an old meeting', () => {
   const { code } = withLeads(OPEN_LEADS);
   assert.strictEqual(code.submitMeetingReport({ ...VALID, leadId: 'nope' }).error, 'lead_not_found');
   assert.strictEqual(code.submitMeetingReport({ ...VALID, leadId: 'L3' }).error, 'lead_not_found');
@@ -244,7 +245,7 @@ test('happy path writes the five report fields, resets meetingSeen, preserves th
     OPEN_LEADS[1], OPEN_LEADS[2],
   ]);
   const out = code.submitMeetingReport({
-    leadId: 'L1', outcome: 'no_show', companion: 'סבתא', note: 'לא הגיע', reporter: 'יעל',
+    leadId: 'L1', outcome: 'no_show', companion: 'סבתא', note: 'לא הגיע', reporter: 'אורן',
   });
   assert.strictEqual(out.ok, true);
   assert.strictEqual(out.saved.leadId, 'L1');
@@ -254,7 +255,7 @@ test('happy path writes the five report fields, resets meetingSeen, preserves th
   assert.strictEqual(cell(sandbox, cols, 1, 'meetingReportOutcome'), 'no_show');
   assert.strictEqual(cell(sandbox, cols, 1, 'meetingCompanion'), 'סבתא');
   assert.strictEqual(cell(sandbox, cols, 1, 'meetingNote'), 'לא הגיע');
-  assert.strictEqual(cell(sandbox, cols, 1, 'meetingReporter'), 'יעל');
+  assert.strictEqual(cell(sandbox, cols, 1, 'meetingReporter'), 'אורן');
   assert.strictEqual(cell(sandbox, cols, 1, 'meetingReportedAt'), out.saved.reportedAt);
   assert.strictEqual(cell(sandbox, cols, 1, 'meetingSeen'), '', 'meetingSeen must RESET so PR 3 shows it unseen');
 
@@ -268,17 +269,17 @@ test('happy path writes the five report fields, resets meetingSeen, preserves th
 test('a resubmission for the same lead OVERWRITES the previous report (last write wins, no new row)', () => {
   const { code, sandbox, cols } = withLeads(OPEN_LEADS);
   assert.strictEqual(code.submitMeetingReport({
-    leadId: 'L1', outcome: 'undecided', companion: 'mother', note: 'ראשון', reporter: 'יעל',
+    leadId: 'L1', outcome: 'undecided', companion: 'mother', note: 'ראשון', reporter: 'אורן',
   }).ok, true);
   const rowsAfterFirst = sandbox.__sheets['Leads'].grid.length;
 
   assert.strictEqual(code.submitMeetingReport({
-    leadId: 'L1', outcome: 'advancing', companion: 'parents', note: 'שני', reporter: 'שירן',
+    leadId: 'L1', outcome: 'advancing', companion: 'parents', note: 'שני', reporter: 'חנן',
   }).ok, true);
 
   assert.strictEqual(sandbox.__sheets['Leads'].grid.length, rowsAfterFirst, 'no duplicate row appended');
   assert.strictEqual(cell(sandbox, cols, 1, 'meetingReportOutcome'), 'advancing');
   assert.strictEqual(cell(sandbox, cols, 1, 'meetingNote'), 'שני');
-  assert.strictEqual(cell(sandbox, cols, 1, 'meetingReporter'), 'שירן');
+  assert.strictEqual(cell(sandbox, cols, 1, 'meetingReporter'), 'חנן');
   assert.strictEqual(cell(sandbox, cols, 1, 'meetingCompanion'), 'parents');
 });

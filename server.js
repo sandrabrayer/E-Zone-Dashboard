@@ -1782,6 +1782,27 @@ app.post('/api/meeting-report/verify-pin', (req, res) => {
   return res.status(401).json({ ok: false, error: 'invalid_pin' });
 });
 
+/* The reporter choices the leads answer carries (CHANGELOG-meeting-flow-gaps.md):
+ * [{ house, name }] ONLY, strings, each capped, at most
+ * MEETING_REPORT_MANAGERS_MAX entries; anything else is dropped. An older
+ * backend without the field → [] (the form then says the list did not load).
+ * Pure. */
+const MEETING_REPORT_MANAGERS_MAX = 50;
+const MEETING_REPORT_MANAGER_FIELD_MAX = 100;
+function meetingReportManagersWhitelist(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const m of raw) {
+    if (out.length >= MEETING_REPORT_MANAGERS_MAX) break;
+    if (!m || typeof m !== 'object') continue;
+    const name = typeof m.name === 'string' ? m.name.trim() : '';
+    if (!name || name.length > MEETING_REPORT_MANAGER_FIELD_MAX) continue;
+    const house = typeof m.house === 'string' ? m.house.trim().slice(0, MEETING_REPORT_MANAGER_FIELD_MAX) : '';
+    out.push({ house, name });
+  }
+  return out;
+}
+
 /* GET /api/meeting-report/leads — minimal open-lead list for the picker:
  * { id, name, house, visitDate } ONLY (no phones, no notes, no billing).
  * The field whitelist is enforced on the Apps Script side (meetingReportLeads_)
@@ -1804,7 +1825,7 @@ app.get('/api/meeting-report/leads', requireMeetingReportSession, requireProxySe
       house:     l && l.house     != null ? String(l.house)     : '',
       visitDate: l && l.visitDate != null ? String(l.visitDate) : '',
     }));
-    res.json({ ok: true, leads });
+    res.json({ ok: true, leads, managers: meetingReportManagersWhitelist(data.managers) });
   } catch (err) {
     console.error('[meeting-report leads] error:', safeErrorMessage(err));
     res.status(502).json({ ok: false, error: 'sheets_unreachable' });
@@ -2110,6 +2131,7 @@ module.exports = {
   handleMeetingReportPage,
   MANAGER_REPORT_MAX_CHARS,
   meetingReportNoteError,
+  meetingReportManagersWhitelist,
   // Write & handoff diagnostics (in-memory state exposed for the test harness;
   // the running server mutates the same objects the tests inspect).
   recordWrite,

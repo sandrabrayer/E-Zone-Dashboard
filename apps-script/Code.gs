@@ -8281,13 +8281,97 @@ function openLeads_() {
   });
 }
 
+/* ===== Reports on an already-admitted lead (CHANGELOG-meeting-flow-gaps.md) =====
+ * Vered may admit a lead before its manager reports. An admitted lead stays on
+ * the Leads sheet (stage 'admitted' — promoteEnteredLeads / the admit modal
+ * only flip the stage), so its report lands on that same row. Closed
+ * (irrelevant) and removed leads live on their own tabs and stay unreportable.
+ * An admitted lead is reportable only while its meeting is recent: visitDate
+ * set and within the last MEETING_REPORT_ADMITTED_DAYS days — the same rule
+ * serves the picker and the write, so the form never offers what the backend
+ * would refuse (and a direct-add lead with no meeting is never offered). */
+const MEETING_REPORT_ADMITTED_DAYS = 14;
+const ADMITTED_LEAD_STAGES = ['admitted', 'נקלט', 'אושפז'];
+
+function isAdmittedLeadStage_(stage) {
+  return ADMITTED_LEAD_STAGES.indexOf(String(stage == null ? '' : stage).trim()) !== -1;
+}
+
+/* 'YYYY-MM-DD' `days` calendar days before the bare date `iso` (UTC parts of a
+ * date-only string, so no timezone or DST drift). '' for a bad date. */
+function isoDaysBefore_(iso, days) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+  if (!m) return '';
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) - days));
+  return d.toISOString().slice(0, 10);
+}
+
+/* Whether a Leads-sheet row may carry a manager report on `todayIso`: an open
+ * lead always; an admitted one only with a visitDate in
+ * [today − MEETING_REPORT_ADMITTED_DAYS, today]. Pure. */
+function isReportableLead_(lead, todayIso) {
+  if (!lead) return false;
+  if (isOpenLeadStage_(lead.stage)) return true;
+  if (!isAdmittedLeadStage_(lead.stage)) return false;
+  const v = asISODate_(lead.visitDate);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const from = isoDaysBefore_(todayIso, MEETING_REPORT_ADMITTED_DAYS);
+  return !!from && v >= from && v <= todayIso;
+}
+
+/* The Leads-sheet rows a manager may report on today (see isReportableLead_). */
+function reportableLeads_(todayIso) {
+  const today = todayIso || todayISODate_();
+  const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+  return readSheet_(sh, LEAD_COLUMNS).filter(function (l) {
+    return isReportableLead_(l, today);
+  });
+}
+
+/* ===== Reporter list from the Managers tab (CHANGELOG-meeting-flow-gaps.md) =====
+ * The form's מדווח/ת choices and the server-side check of `reporter` both come
+ * from HERE: currentManagers_ (Managers tab → bonusconfig → HOUSE_MANAGERS).
+ * When the Managers tab names nobody CURRENT (currentManagers_ answers []),
+ * the reporter list falls back to HOUSE_MANAGERS — the houseManagers source —
+ * so the form is never left without a name. { house, name } only, names
+ * trimmed, formula lead-in stripped, de-duplicated in order. */
+function meetingReportManagers_(todayIso) {
+  let cm = null;
+  try { cm = currentManagers_(todayIso); } catch (_) { cm = null; }
+  let list = (cm && Array.isArray(cm.managers)) ? cm.managers : [];
+  let source = cm ? cm.source : 'default';
+  const clean = function (rows) {
+    const seen = {};
+    const out = [];
+    rows.forEach(function (m) {
+      const name = leadCellText_(m && m.name, MEETING_REPORTER_MAX_CHARS);
+      const house = leadCellText_(m && m.house, MEETING_REPORTER_MAX_CHARS);
+      if (!name || seen[name]) return;
+      seen[name] = true;
+      out.push({ house: house, name: name });
+    });
+    return out;
+  };
+  let managers = clean(list);
+  if (!managers.length) {
+    source = 'default';
+    managers = clean(Object.keys(HOUSE_MANAGERS).map(function (h) { return { house: h, name: HOUSE_MANAGERS[h] }; }));
+  }
+  return { managers: managers, source: source };
+}
+const MEETING_REPORTER_MAX_CHARS = 100;
+
 /* meetingReportLeads — the minimal picker list for the reporting form. ONLY
  * { id, name, house, visitDate } per lead: no phones, no notes, no contact or
  * billing fields, deliberately — the reporting PIN must expose as little as
  * possible. visitDate is normalized to YYYY-MM-DD (asISODate_) so the form's
- * "visited already" filter can compare plain strings. */
-function meetingReportLeads_() {
-  const leads = openLeads_().map(function (l) {
+ * "visited already" filter can compare plain strings. Open leads plus admitted
+ * leads with a meeting in the last MEETING_REPORT_ADMITTED_DAYS days.
+ * Additive: `managers` [{ house, name }] + `managersSource` — the reporter
+ * choices (meetingReportManagers_). */
+function meetingReportLeads_(todayIso) {
+  const today = todayIso || todayISODate_();
+  const leads = reportableLeads_(today).map(function (l) {
     return {
       id:        l.id == null ? '' : String(l.id),
       name:      l.name || '',
@@ -8295,7 +8379,8 @@ function meetingReportLeads_() {
       visitDate: asISODate_(l.visitDate),
     };
   });
-  return { ok: true, leads: leads };
+  const rm = meetingReportManagers_(today);
+  return { ok: true, leads: leads, managers: rm.managers, managersSource: rm.source };
 }
 
 /* submitMeetingReport — validate and persist one meeting report onto its lead
@@ -8319,6 +8404,9 @@ function submitMeetingReport_(report) {
   const reporter  = report.reporter  == null ? '' : String(report.reporter).trim();
 
   if (!leadId) return { ok: false, error: 'bad_lead', message: 'leadId is required' };
+  if (leadId.length > MEETING_REPORT_LEAD_ID_MAX || /[\u0000-\u001f\u007f]/.test(leadId)) {
+    return { ok: false, error: 'bad_lead', message: 'leadId is malformed' };
+  }
   if (MEETING_REPORT_OUTCOMES.indexOf(outcome) === -1) {
     return { ok: false, error: 'bad_outcome', message: 'outcome must be one of ' + MEETING_REPORT_OUTCOMES.join('|') };
   }
@@ -8336,8 +8424,18 @@ function submitMeetingReport_(report) {
       message: 'הפירוט מוגבל ל-' + MANAGER_REPORT_MAX_CHARS + ' תווים (נשלחו ' + note.length + ')',
     };
   }
-  if (!reporter || reporter.length > 100) {
+  if (!reporter || reporter.length > MEETING_REPORTER_MAX_CHARS) {
     return { ok: false, error: 'bad_reporter', message: 'reporter is required (max 100 chars)' };
+  }
+  // The reporter must be a CURRENT house manager — the same list the form
+  // offers (meetingReportManagers_). The name is never echoed back.
+  const managerNames = meetingReportManagers_(todayISODate_()).managers.map(function (m) { return m.name; });
+  if (managerNames.indexOf(reporter) === -1) {
+    return {
+      ok: false,
+      error: 'reporter_not_manager',
+      message: 'המדווח/ת אינו/ה ברשימת מנהלי הבתים הנוכחיים — נא לבחור שם מהרשימה',
+    };
   }
   // The form's idempotency key (CHANGELOG-write-path-hardening.md): same
   // shape as reportPayment's; malformed → refused, nothing written.
@@ -8378,22 +8476,39 @@ function submitMeetingReport_(report) {
  * — no report text. */
 const MEETING_REPORT_REPLAY_PREFIX = 'mr-sub:';
 const MEETING_REPORT_REPLAY_TTL_S = 6 * 60 * 60;
+const MEETING_REPORT_LEAD_ID_MAX = 100;
 
-/* The write itself, called by submitMeetingReport_ under the script lock. */
+/* Report free text as stored: a leading formula lead-in (= + - @) dropped so a
+ * cell can never start as a formula — the leadCellText_ rule. The companion is
+ * one line (control characters flattened); the note keeps its line breaks and
+ * tabs, other control characters flattened. Never truncated: the length
+ * checks above already refused anything too long. */
+function meetingReportCompanionClean_(v) {
+  return String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
+    .replace(/^[=+\-@\s]+/, '');
+}
+function meetingReportNoteClean_(v) {
+  return String(v == null ? '' : v).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+    .replace(/^[=+\-@\s]+/, '');
+}
+
+/* The write itself, called by submitMeetingReport_ under the script lock.
+ * Target: an open lead, or an admitted one with a recent meeting
+ * (reportableLeads_) — on its own Leads row. Closed / removed leads → not found. */
 function submitMeetingReportLocked_(leadId, outcome, companion, note, reporter) {
-  const leads = openLeads_();
+  const leads = reportableLeads_(todayISODate_());
   let lead = null;
   for (let i = 0; i < leads.length; i++) {
     if (String(leads[i].id) === leadId) { lead = leads[i]; break; }
   }
-  if (!lead) return { ok: false, error: 'lead_not_found', message: 'no open lead with that id' };
+  if (!lead) return { ok: false, error: 'lead_not_found', message: 'no reportable lead with that id' };
 
   // Read-merge-write: upsertRowById_ replaces the ENTIRE row from the object,
   // so start from the lead as read and change only the report fields.
   const reportedAt = new Date().toISOString(); // plain-text column ('@'), read back verbatim
   lead.meetingReportOutcome = outcome;
-  lead.meetingCompanion     = companion;
-  lead.meetingNote          = note;
+  lead.meetingCompanion     = meetingReportCompanionClean_(companion);
+  lead.meetingNote          = meetingReportNoteClean_(note);
   lead.meetingReporter      = reporter;
   lead.meetingReportedAt    = reportedAt;
   lead.meetingSeen          = ''; // new/updated report → unseen for Vered (PR 3)
@@ -14591,6 +14706,8 @@ const MW_LOGS = {
   },
 };
 const MW_THERAPY_LABELS = { maintenance: 'תחזוקתי', day_2x: 'טיפול יום — פעמיים בשבוע', day_daily: 'טיפול יום — יומי' };
+/* houseData visits: the current month's look-ahead past month end, in days. */
+const MW_VISITS_AHEAD_DAYS = 14;
 
 function managersWorkAuthOk_(params) {
   const expected = PropertiesService.getScriptProperties().getProperty(MANAGERS_WORK_SECRET_PROP);
@@ -15208,9 +15325,20 @@ function mwHouseData_(caller, params) {
     return { name: String(o.patient_name).trim(), therapy: MW_THERAPY_LABELS[t] || t, startDate: o.start_date ? asISODate_(o.start_date) : '' };
   });
 
-  // Intake visits (lead meetings) this month for this house.
+  // Intake visits (lead meetings) this month for this house. For the CURRENT
+  // month the window also runs today .. today + MW_VISITS_AHEAD_DAYS, into the
+  // next month (CHANGELOG-meeting-flow-gaps.md), so «ביקורים קרובים» and
+  // «ביקורים השבוע» are not cut at month end. Each item carries the additive
+  // `inSelectedMonth` — false only for those look-ahead rows — so a month
+  // counter can keep counting the selected month alone. One row per lead id
+  // (Leads first, then the irrelevant / removed tabs).
   const houseName = MANAGER_HOUSE_NAMES[key];
   const visits = [];
+  const seenVisit = {};
+  const isCurrentMonth = ymdOf_(today).slice(0, 7) === ym;
+  const ahead = isCurrentMonth
+    ? new Date(today.getFullYear(), today.getMonth(), today.getDate() + MW_VISITS_AHEAD_DAYS)
+    : null;
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   [[LEADS_SHEET, LEAD_COLUMNS], [IRRELEVANT_LEADS_SHEET, IRRELEVANT_LEAD_COLUMNS], [REMOVED_LEADS_SHEET, REMOVED_LEAD_COLUMNS]].forEach(function (t) {
     const sh = ss.getSheetByName(t[0]);
@@ -15219,11 +15347,20 @@ function mwHouseData_(caller, params) {
       const h = String(l.house || '').trim();
       if (h !== houseName && h !== pid) return;
       const vd = parseDate_(asISODate_(l.visitDate));
-      if (!vd || vd < start || vd > end) return;
+      if (!vd) return;
+      const inMonth = vd >= start && vd <= end;
+      const lookAhead = !!ahead && vd > end && vd >= today && vd <= ahead;
+      if (!inMonth && !lookAhead) return;
+      const id = String(l.id == null ? '' : l.id).trim();
+      if (id) {
+        if (seenVisit[id]) return;
+        seenVisit[id] = true;
+      }
       visits.push({
         date: ymdOf_(vd), time: mwCleanTime_(mwCellText_(l.visitTime, 'time')),
         name: String(l.name || ''), meetingWith: String(l.meetingWith || ''),
-        outcome: String(l.meetingOutcome || '')
+        outcome: String(l.meetingOutcome || ''),
+        inSelectedMonth: inMonth
       });
     });
   });

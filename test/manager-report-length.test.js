@@ -169,7 +169,7 @@ function withLead() {
 
 const noteCell = (sandbox, cols) => sandbox.__sheets['Leads'].grid[1][cols.indexOf('meetingNote')];
 const submit = (code, note) =>
-  code.submitMeetingReport({ leadId: 'L1', outcome: 'advancing', companion: 'mother', note, reporter: 'יעל' });
+  code.submitMeetingReport({ leadId: 'L1', outcome: 'advancing', companion: 'mother', note, reporter: 'אורן' });
 
 /* ===== 1. one constant, 5000, in all four layers ===== */
 

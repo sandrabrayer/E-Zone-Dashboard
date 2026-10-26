@@ -90,17 +90,58 @@ test('MR_HOUSE_LABELS covers exactly the HOUSES in app.js', () => {
     assert.strictEqual(mr.MR_HOUSE_LABELS[h.id], h.name, 'label for ' + h.id));
 });
 
-test('MEETING_REPORTERS holds the real managers, keyed by valid house ids', () => {
-  const houseIds = new Set(Array.from(app.HOUSES).map((h) => h.id));
-  assert.deepStrictEqual(mr.MEETING_REPORTERS, {
-    arfoni: 'חנן',
-    rehab:  'רנטה',
-    asher:  'שחר/אורן',
-    pardes: 'חן',
-    ramot:  'אורן',
-  });
-  Object.keys(mr.MEETING_REPORTERS).forEach((k) =>
-    assert.ok(houseIds.has(k), k + ' is a real house id'));
+/* ===== reporter list from the server (CHANGELOG-meeting-flow-gaps.md) ===== */
+
+const MR_SRC = fs.readFileSync(path.join(__dirname, '..', 'public', 'meeting-report.js'), 'utf8');
+
+test('no hardcoded reporter list is left on the page', () => {
+  assert.strictEqual(mr.MEETING_REPORTERS, undefined);
+  assert.ok(!/MEETING_REPORTERS/.test(MR_SRC), 'the old map is gone');
+  assert.ok(!/'שחר\/אורן'/.test(MR_SRC), 'the old asher entry is gone');
+});
+
+test('mrReporterNames: the managers answer → distinct trimmed names, in order', () => {
+  assert.deepStrictEqual(Array.from(mr.mrReporterNames([
+    { house: 'arfoni', name: ' חנן ' }, { house: 'rehab', name: 'רנטה' },
+    { house: 'asher', name: 'חנן' }, { house: 'pardes', name: '' }, null, { house: 'x', name: 7 },
+  ])), ['חנן', 'רנטה']);
+});
+
+test('mrReporterNames: a missing / malformed field (older backend, failed fetch) → []', () => {
+  [undefined, null, 'חנן', {}, 3].forEach((v) =>
+    assert.deepStrictEqual(Array.from(mr.mrReporterNames(v)), [], String(v)));
+});
+
+test('mrReporterOptionsHtml: a placeholder, one escaped option per name, the picked name kept', () => {
+  const html = mr.mrReporterOptionsHtml(['חנן', 'רנטה'], 'רנטה');
+  assert.ok(html.startsWith('<option value="">בחר/י מדווח/ת…</option>'));
+  assert.ok(html.includes('<option value="חנן">חנן</option>'));
+  assert.ok(html.includes('<option value="רנטה" selected>רנטה</option>'));
+  assert.ok(!mr.mrReporterOptionsHtml(['חנן'], 'אורן').includes('selected'), 'a name no longer listed is not kept');
+});
+
+test('mrReporterOptionsHtml escapes every name (no markup injection from a sheet cell)', () => {
+  const html = mr.mrReporterOptionsHtml(['<img src=x onerror=alert(1)>', 'a"b\'c&d']);
+  assert.ok(!html.includes('<img'), 'tag escaped');
+  assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'));
+  assert.ok(html.includes('value="a&quot;b&#39;c&amp;d"'));
+});
+
+test('mrReporterOptionsHtml with no names: one disabled-looking empty option, never a hardcoded name', () => {
+  const html = mr.mrReporterOptionsHtml([], '');
+  assert.strictEqual(html, '<option value="">רשימת המנהלים לא נטענה — רעננו את הדף</option>');
+  assert.strictEqual(mr.mrReporterOptionsHtml(undefined, ''), html);
+});
+
+test('the page renders the reporters from the leads answer, on success and on failure', () => {
+  assert.match(MR_SRC, /state\.reporters = mrReporterNames\(data\.managers\);/);
+  assert.match(MR_SRC, /sel\.innerHTML = mrReporterOptionsHtml\(state\.reporters, sel\.value\);/);
+  const load = MR_SRC.slice(MR_SRC.indexOf('function loadLeads()'), MR_SRC.indexOf('function selectedLead()'));
+  assert.strictEqual((load.match(/renderReporters\(\);/g) || []).length, 2, 'then + catch');
+});
+
+test('MR_SUBMIT_ERROR_TEXTS names the new reporter_not_manager refusal in Hebrew', () => {
+  assert.match(mr.mrSubmitErrorText('reporter_not_manager'), /ברשימת מנהלי הבתים הנוכחיים/);
 });
 
 /* ===== lead picker filter ===== */

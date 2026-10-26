@@ -1,5 +1,23 @@
 # E-ZONE Ecosystem Status — updated September 10, 2026
 
+## Meeting-flow gaps — October 26, 2026 (PR open)
+
+- **Admitted lead reports:** a manager can now report on an ADMITTED lead whose meeting
+  was in the last 14 days. The report goes on its Leads row (same 5 columns, `meetingSeen`
+  cleared), and the `/meeting-report` picker lists those leads. Closed and removed leads
+  are still `lead_not_found`.
+- **Visits past month end:** `managersWork` `houseData.visits`, for the current month,
+  also includes today … today + 14 days, de-duplicated by lead id. Each visit gets the
+  additive `inSelectedMonth`.
+  - **ezone-managers follow-up:** «ביקורים החודש» and the «מטופלים» visits card count
+    `visits.length`, so they over-count until they filter on `inSelectedMonth !== false`.
+- **Reporter names:** the reporter list comes from the Managers tab (`currentManagers_`,
+  falling back to HOUSE_MANAGERS) via the additive `managers` field of
+  `meetingReportLeads`. `submitMeetingReport_` refuses any other name
+  (`reporter_not_manager`).
+- Code.gs changed (clasp CI on merge); SW v89 → **v90**. See
+  `CHANGELOG-meeting-flow-gaps.md`.
+
 ## Ortal billing — «בעיות גבייה» view + «הנחה» chip — October 22, 2026 (PR open, stacked on PR 1)
 
 «בקרת גבייה» gets «בעיות גבייה» (Ortal / Sandra only): per patient, unconfirmed receipts with
