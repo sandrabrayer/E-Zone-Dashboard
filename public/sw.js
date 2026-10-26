@@ -315,7 +315,8 @@
 // v89 → v90: meeting-report page reporter list from the Managers tab (meeting-report.js) (CHANGELOG-meeting-flow-gaps.md). Live v89 verified 2026-10-26 (v17 never reused).
 // v90 → v91: «אמבולטורי» meetingWith option + «נשלח לאמבולטורי» chip (app.js, style.css) (CHANGELOG-meeting-with-ambulatory.md). Live v90 verified 2026-10-26 (v17 never reused).
 // v91 → v92: «העבר לאמבולטורי» on discharged rows, discharge → Outpatient by row id, restore matches by patient id / normalized name (app.js, style.css) (CHANGELOG-discharge-outpatient-handoff.md). Live v91 verified 2026-10-26 (v17 never reused).
-var CACHE_VERSION = 'v92';
+// v92 → v93: one house rule for תפוסה and «מטופלים» (aliases, invisible marks), «בית לא מזוהה» tab, «שחרר» on «מטופלים» rows (app.js, style.css) (CHANGELOG-patient-missing-from-house.md). Live v92 verified 2026-10-26 (v17 never reused).
+var CACHE_VERSION = 'v93';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

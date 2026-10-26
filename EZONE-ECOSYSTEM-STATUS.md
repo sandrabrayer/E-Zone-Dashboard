@@ -1,5 +1,21 @@
 # E-ZONE Ecosystem Status — updated October 26, 2026
 
+## Active patient missing from every house tab — October 26, 2026 (PR open)
+
+- **Root cause:** «מטופלים» lists every non-released Patients row and filters the house
+  leniently. תפוסה compared the stored house to the tab id EXACTLY, and `resolveHouseId`
+  knew neither another app's id (`hapardes`, `raanana`, `efroni`, `ofroni`) nor an
+  invisible mark / NBSP / doubled space. Such a row was in «מטופלים», in no house tab, and
+  could not be discharged. The server matched a house's rows with the same exact compare.
+- **Now:** ONE house rule (`resolveHouseId` = Code.gs `diagClientHouseId_`, parity test) for
+  תפוסה, «מטופלים», the per-house save, moves, delete and the coordinators digest. A row
+  stored under an alias / label / invisible mark is updated in place and its cell healed to
+  the id on the next save. A house no rule resolves shows in a new «בית לא מזוהה» tab.
+  «שחרר» on active «מטופלים» rows (edit mode) opens the same `dischargePatient` flow.
+- New editor report `patientsMissingFromHousesReportNow()` (Google Doc, read-only).
+- **Other apps: no change.** No schema change. Code.gs + app.js + style.css; SW v92 →
+  **v93**. See `CHANGELOG-patient-missing-from-house.md`.
+
 ## Vered's scheduling note on the managers' form — October 26, 2026 (PR open)
 
 - **Dashboard → `/meeting-report`:** `meetingReportLeads` adds ONE additive per-lead key,

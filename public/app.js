@@ -2549,6 +2549,31 @@ function normalizeStatus(raw) {
   return STATUS_ALIASES[s] || STATUS_ALIASES[s.toLowerCase()] || 'active';
 }
 
+/* House ids the OTHER E-Zone apps use for a house this app knows under
+ * another id (staffing: hapardes / ofroni; bonus + digest: raanana / efroni —
+ * Code.gs MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID / MW_STAFFING_HOUSES). Keyed by
+ * the matching form (houseMatchText). Same table in Code.gs
+ * (patientHouseIdAliases_), pinned equal by test
+ * (CHANGELOG-patient-missing-from-house.md). */
+const HOUSE_ID_ALIASES = Object.freeze({ hapardes: 'pardes', raanana: 'asher', efroni: 'arfoni', ofroni: 'arfoni' });
+
+/* A stored house value reduced for MATCHING only: NFC, the invisible bidi /
+ * zero-width marks gone (NAME_INVISIBLES' set — inlined, this runs before that
+ * const is reached in load order), whitespace runs (NBSP included) collapsed,
+ * trimmed, case-folded. Pure. */
+function houseMatchText(v) {
+  let s = String(v == null ? '' : v);
+  try { s = s.normalize('NFC'); } catch (_) { /* runtime without normalize */ }
+  return s.replace(/[\u200b-\u200f\u202a-\u202e\u2060\ufeff]/g, '')
+    .replace(/[\s\u00a0]+/g, ' ').trim().toLowerCase();
+}
+
+/* A stored house value → the HOUSES id: an exact id, an exact Hebrew label, a
+ * case-insensitive id, then (CHANGELOG-patient-missing-from-house.md) the
+ * same once invisible marks / NBSP / doubled spaces are reduced, then another
+ * app's id for the house (HOUSE_ID_ALIASES). Anything else is kept as written
+ * (trimmed) — it then matches no house tab and lands in «בית לא מזוהה».
+ * Code.gs diagClientHouseId_ is the same rule (parity test). Pure. */
 function resolveHouseId(raw) {
   if (!raw) return '';
   const s = String(raw).trim();
@@ -2558,6 +2583,11 @@ function resolveHouseId(raw) {
   const lower = s.toLowerCase();
   const byLowerId = HOUSES.find(h => h.id.toLowerCase() === lower);
   if (byLowerId) return byLowerId.id;
+  const n = houseMatchText(s);
+  if (!n) return s;
+  const byMatch = HOUSES.find(h => h.id === n || houseMatchText(h.name) === n);
+  if (byMatch) return byMatch.id;
+  if (Object.prototype.hasOwnProperty.call(HOUSE_ID_ALIASES, n)) return HOUSE_ID_ALIASES[n];
   return s;
 }
 
@@ -5269,11 +5299,8 @@ function unadmittedPhoneKey(raw) {
 /* Code.gs diagClientHouseId_: an id, a Hebrew house name, or an id in another
  * case → the id; anything else is kept as written (trimmed). */
 function unadmittedHouseId(raw) {
-  const s = String(raw == null ? '' : raw).trim();
-  if (!s) return '';
-  const h = HOUSES.find(x => x.id === s) || HOUSES.find(x => x.name === s)
-    || HOUSES.find(x => x.id.toLowerCase() === s.toLowerCase());
-  return h ? h.id : s;
+  // ONE house rule for every view (CHANGELOG-patient-missing-from-house.md).
+  return resolveHouseId(String(raw == null ? '' : raw).trim());
 }
 
 /* The Patients row a lead already has → { patient, via, ambiguous } or null.
@@ -8698,7 +8725,7 @@ function openDirectAddPatientModal(opts) {
    * the new stay is linked by personId, never a second person. */
   const returning = !intake && opts && opts.returning && opts.returning.prefill ? opts.returning : null;
   const pre = returning ? returning.prefill : null;
-  const fields = intakeFormFields(intake, (pre && houseById(pre.houseId) && pre.houseId) || state.currentHouseTab || HOUSES[0].id, todayISO())
+  const fields = intakeFormFields(intake, (pre && houseById(pre.houseId) && pre.houseId) || (houseById(state.currentHouseTab) ? state.currentHouseTab : HOUSES[0].id), todayISO())
     .map(f => (pre && f.name === 'name' ? Object.assign({}, f, { value: pre.name })
       : pre && f.name === 'phone' ? Object.assign({}, f, { value: pre.phone })
         : pre && f.name === 'pay' && pre.pay ? Object.assign({}, f, { value: String(pre.pay) }) : f));
@@ -9137,17 +9164,35 @@ function houseMoveVerdict(p) {
  * (N/capacity) figures. Pure + tested. */
 function houseOccupancyCount(patients, houseId) {
   return (Array.isArray(patients) ? patients : [])
-    .filter(p => p && p.houseId === houseId && p.status !== 'released').length;
+    .filter(p => p && occupancyHouseMatches(p, houseId) && p.status !== 'released').length;
+}
+
+/* «בית לא מזוהה» (CHANGELOG-patient-missing-from-house.md): the תפוסה tab of
+ * patients whose house resolves to NO house in HOUSES. It exists only while
+ * such a patient is active, so a patient the «מטופלים» list shows can always
+ * be reached — and discharged — from תפוסה too. Never counted in any KPI. */
+const OCCUPANCY_UNKNOWN_HOUSE = '__unknown_house__';
+const OCCUPANCY_UNKNOWN_HOUSE_LABEL = 'בית לא מזוהה';
+
+/* Whether a patient belongs to the תפוסה tab `houseId`: its house through the
+ * ONE rule (resolveHouseId), never a raw string compare — the «מטופלים» list
+ * has always been this lenient, and the gap between the two hid patients. Pure. */
+function occupancyHouseMatches(p, houseId) {
+  const id = resolveHouseId(p && p.houseId);
+  if (houseId === OCCUPANCY_UNKNOWN_HOUSE) return !HOUSES.some(h => h.id === id);
+  return id === houseId;
 }
 
 /* The rows the תפוסה list shows for a house: released patients are excluded
  * unless `showReleased` (the session-only toggle) is on; the search query
- * applies either way. Display-only — counts/KPIs never use this. Pure + tested. */
+ * applies either way, through the «מטופלים» name match (invisible marks,
+ * doubled spaces). Display-only — counts/KPIs never use this. Pure + tested. */
 function visibleOccupancyRows(patients, houseId, query, showReleased) {
+  const q = houseMatchText(query);
   return (Array.isArray(patients) ? patients : [])
     .filter(p => p && (showReleased || p.status !== 'released'))
-    .filter(p => p.houseId === houseId)
-    .filter(p => !query || (p.name || '').toLowerCase().includes(query));
+    .filter(p => occupancyHouseMatches(p, houseId))
+    .filter(p => !q || houseMatchText(p.name).includes(q));
 }
 
 /* «קיסריה ריהאב (6/13 · 46%)» — the tab label with the occupancy % of the house. Pure + tested. */
@@ -9175,6 +9220,19 @@ function renderHouseTabs() {
     };
     tabs.appendChild(t);
   });
+  // Patients no house tab above can show (CHANGELOG-patient-missing-from-house.md).
+  const unknown = houseOccupancyCount(state.patients, OCCUPANCY_UNKNOWN_HOUSE);
+  if (unknown > 0) {
+    const t = document.createElement('button');
+    t.className = 'h-tab h-tab-unknown' + (state.currentHouseTab === OCCUPANCY_UNKNOWN_HOUSE ? ' active' : '');
+    t.textContent = `${OCCUPANCY_UNKNOWN_HOUSE_LABEL} (${unknown})`;
+    t.onclick = () => {
+      state.currentHouseTab = OCCUPANCY_UNKNOWN_HOUSE;
+      renderHouseTabs();
+      renderPatients();
+    };
+    tabs.appendChild(t);
+  }
 }
 
 function renderPatients() {
@@ -9345,7 +9403,8 @@ function patientListRowHtml(row, finance, edit) {
   cells.push(`<div class="plist-name-cell"><span class="p-label">מטופל</span><span class="p-name">${escapeHtml(p.name)}</span>`
     + (released ? ` <span class="badge released">${escapeHtml(statusInfo.label)}${p.exitDate ? ' · ' + escapeHtml(formatDate(p.exitDate)) : ''}</span>` : '')
     + `</div>`);
-  cells.push(`<div><span class="p-label">בית</span><span class="p-val">${escapeHtml(house ? house.name : p.houseId)}</span></div>`);
+  cells.push(`<div><span class="p-label">בית</span><span class="p-val">${escapeHtml(house ? house.name : p.houseId)}</span>`
+    + (house ? '' : ` <span class="plist-chip" data-problem="unknown_house">${escapeHtml(OCCUPANCY_UNKNOWN_HOUSE_LABEL)}</span>`) + `</div>`);
   cells.push(`<div><span class="p-label">תאריך כניסה</span><span class="p-val">${escapeHtml(p.date ? formatDate(p.date) : '—')}</span></div>`);
   cells.push(`<div><span class="p-label">ימים בבית</span><span class="p-val">${row.days == null ? '—' : escapeHtml(String(row.days))}</span></div>`);
   if (finance && funderView()) {
@@ -9380,6 +9439,7 @@ function patientListRowHtml(row, finance, edit) {
       ${row.stays || ''}
       <div class="row-actions edit-only">
         ${released ? '<button type="button" class="btn small primary plist-restore-btn">שחזר</button>' : ''}
+        ${released || !edit ? '' : '<button type="button" class="btn small plist-discharge-btn" title="שחרור מטופל">שחרר</button>'}
         <button type="button" class="btn small plist-edit-btn" title="ערוך מטופל">✏️</button>
       </div>
     </div>`;
@@ -9543,6 +9603,10 @@ function renderPatientsTab() {
       if (due) openPaymentReportModal(p, paymentForPatientOnDate(p, due), due);
     });
     on('.plist-restore-btn', () => showRestorePatientChoiceModal(auditRowForReleasedPatient(p, state.dischargedPatients)));
+    /* «שחרר» — the SAME dischargePatient flow as the תפוסה row (modal, both
+     * writes, «משוחרר לטיפול חוץ» → Outpatient), so a patient a house view
+     * misses can still be discharged (CHANGELOG-patient-missing-from-house.md). */
+    on('.plist-discharge-btn', e => busyButton(e && e.currentTarget, 'save', () => dischargePatient(p)));
     if (edit) wirePhoneAdd(el, typed => addPatientPhone(p, typed));
     list.appendChild(el);
   });

@@ -332,6 +332,6 @@ test('«העבר לאמבולטורי»: on every open discharged row in edit mo
 });
 
 test('SW: v91 (live) → v92 with its comment; v17 never reused', () => {
-  assert.match(SW_SRC, /var CACHE_VERSION = 'v92';/);
+  assert.ok(Number(/var CACHE_VERSION = 'v(\d+)';/.exec(SW_SRC)[1]) >= 92, 'later bumps stay monotonic');
   assert.ok(SW_SRC.includes('v91 → v92:'));
 });

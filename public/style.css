@@ -1368,6 +1368,9 @@ body.view-controller #screen-billing .irrelevant-actions { display: none !import
   border-bottom-color: var(--primary);
   font-weight: 700;
 }
+/* «בית לא מזוהה» — patients whose house matches no tab (CHANGELOG-patient-missing-from-house.md). */
+.house-tabs .h-tab.h-tab-unknown { color: var(--danger); }
+.house-tabs .h-tab.h-tab-unknown.active { border-bottom-color: var(--danger); }
 
 .patients-list { display: grid; gap: 10px; }
 .patient-row {

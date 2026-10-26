@@ -315,9 +315,9 @@ test('(a) every Patients line carries the Dashboard\'s real verdict', () => {
   assert.match(find(report, 'Patients', 2).verdict, /^VISIBLE in the ramot tab \(active\)/);
   assert.match(find(report, 'Patients', 3).verdict, /^VISIBLE/, 'the app resolves the Hebrew label');
   assert.match(find(report, 'Patients', 4).verdict, /^VISIBLE/, 'the app trims');
-  assert.match(find(report, 'Patients', 5).verdict, /^HIDDEN — the app resolves house/, 'the app does NOT strip invisible marks');
-  assert.ok(find(report, 'Patients', 5).verdict.endsWith('to "ramot\\u200f", not the ramot tab'),
-    'the resolved value is printed visibly too: ' + find(report, 'Patients', 5).verdict);
+  // CHANGELOG-patient-missing-from-house.md: the app now strips invisible
+  // marks from a house (resolveHouseId), so this row is shown in its tab.
+  assert.match(find(report, 'Patients', 5).verdict, /^VISIBLE in the ramot tab/, 'the app strips invisible marks from a house');
   assert.match(find(report, 'Patients', 6).verdict, /^HIDDEN — status "released"/);
   assert.match(find(report, 'Patients', 7).verdict, /the next load's heal will mark it released/,
     'an open discharge record on a live row is flagged BEFORE it disappears');
@@ -404,15 +404,16 @@ test('(d) the summary line counts ramot rows per tab and per status, and the Das
   assert.deepStrictEqual(s.counts.Patients, { rows: 9, by: { active: 6, trial: 1, released: 2 } }, 'rows 2,3,5,7,8,11 · 4 · 6,12');
   assert.deepStrictEqual(s.counts['מטופלים משוחררים'], { rows: 3, by: { OPEN: 1, restored: 2 } });
   assert.deepStrictEqual(s.counts.Outpatients, { rows: 1, by: { 'n/a': 1 } }, 'a tab with no status column');
-  assert.strictEqual(s.dashboardVisible, 5, 'rows 2, 3, 4, 7, 8');
+  // Row 5 (an invisible mark) is shown since CHANGELOG-patient-missing-from-house.md.
+  assert.strictEqual(s.dashboardVisible, 6, 'rows 2, 3, 4, 5, 7, 8');
   assert.strictEqual(s.hiddenReleased, 2, 'rows 6, 12');
-  assert.strictEqual(s.hiddenHouse, 2, 'rows 5, 11');
+  assert.strictEqual(s.hiddenHouse, 1, 'row 11');
   assert.strictEqual(s.healPending, 1, 'row 7');
   assert.strictEqual(s.blankHouse, 1);
   assert.strictEqual(s.corruptedNames, 4);
   const line = logs[logs.length - 1];
   assert.match(line, /Patients: 9 \(active 6 · trial 1 · released 2\)/);
-  assert.match(line, /shows 5, hides 2 released, 2 with an unresolvable house; 1 will be released by the next load's heal/);
+  assert.match(line, /shows 6, hides 2 released, 1 with an unresolvable house; 1 will be released by the next load's heal/);
 });
 
 /* ===== 4. the verdicts mirror public/app.js ===== */
@@ -539,28 +540,27 @@ function runE(tabs) {
 test('(e) lists every Patients and PatientsTombstones row, ANY house, whose house resolves to no known id — and nothing that resolves', () => {
   const { report, logs } = runE();
   const where = report.unresolvedHouseRows.map((e) => e.sheet + ':' + e.row);
+  // Rows 7 (a doubled inner space) and 8 (an invisible RTL mark) resolve since
+  // CHANGELOG-patient-missing-from-house.md — the app shows them in their tab.
   assert.deepStrictEqual(where, [
-    'Patients:6', 'Patients:7', 'Patients:8', 'Patients:9', 'Patients:10', 'Patients:11',
+    'Patients:6', 'Patients:9', 'Patients:10', 'Patients:11',
     'PatientsTombstones:8', 'PatientsTombstones:9', 'PatientsTombstones:10', 'PatientsTombstones:12',
-  ], 'id / label / padded / cased houses resolve (rows 2–5, 12, 13) and are NOT listed');
+  ], 'id / label / padded / cased / spaced / invisible-marked houses resolve (rows 2–5, 7, 8, 12, 13) and are NOT listed');
   const look = Object.fromEntries(report.unresolvedHouseRows.map((e) => [e.sheet + ':' + e.row, e.lookalike]));
   assert.strictEqual(look['Patients:6'], '', 'a typo that fits no house gets no guess');
-  assert.strictEqual(look['Patients:7'], 'asher', 'a doubled inner space still reads as רעננה אשר');
-  assert.strictEqual(look['Patients:8'], 'arfoni', 'an invisible RTL mark');
   assert.strictEqual(look['Patients:9'], 'rehab', 'U+FFFD damage the surviving letters pin to one house');
   assert.strictEqual(look['Patients:10'], '', 'a lone U+FFFD fits every house — no guess');
   assert.strictEqual(look['Patients:11'], '', 'a blank house');
   const line = (re) => logs.filter((l) => re.test(l));
-  assert.strictEqual(line(/^\(e\) Patients row 8 /).length, 1);
-  assert.ok(line(/^\(e\) Patients row 8 /)[0].includes('house "arfoni\\u200f" → "arfoni\\u200f" [no such house; looks like arfoni]'),
-    'the invisible mark is printed visibly: ' + line(/^\(e\) Patients row 8 /)[0]);
-  assert.match(line(/^\(e\) Patients row 8 /)[0], /\| fromLead "lead-e8" .*\|\| DASHBOARD: INVISIBLE — no house tab shows house/);
+  assert.strictEqual(line(/^\(e\) Patients row 8 /).length, 0, 'an invisible-marked house resolves now');
+  assert.strictEqual(line(/^\(e\) Patients row 9 /).length, 1);
+  assert.match(line(/^\(e\) Patients row 9 /)[0], /\[no such house; looks like rehab\] .*\|\| DASHBOARD: INVISIBLE — no house tab shows house/);
   assert.match(line(/^\(e\) Patients row 11 /)[0], /house "" \[NO HOUSE\] .*DASHBOARD: DROPPED by getData_ \(blank houseId\)/);
   assert.match(line(/^\(e\) PatientsTombstones row 10 /)[0], /\| reason "dedupe-identical-key" \| droppedAt "[^"]+" \| savedByAction ""/);
   const agg = line(/^\(e\) PatientsTombstones \| saveAll-omitted-preserved/);
   assert.strictEqual(agg.length, 1, 'merge-don\'t-drop audit copies are one line per house + name, every row number on it');
   assert.match(agg[0], /×2 for house "asherr" name "הא" \(rows 8, 9;/);
-  assert.deepStrictEqual(report.summary.unresolvedHouse, { Patients: 6, PatientsTombstones: 4 });
+  assert.deepStrictEqual(report.summary.unresolvedHouse, { Patients: 4, PatientsTombstones: 4 });
 });
 
 test('(e) every user-delete tombstone from the last 60 days: who, when, and whether the patient is back — older ones counted, unreadable dates listed', () => {
@@ -594,7 +594,7 @@ test('(e) is read-only too, and the SUMMARY stays the last line and carries the 
   assert.deepStrictEqual(attempts, [], 'no write / lock / property / uuid attempt of any kind');
   const last = logs[logs.length - 1];
   assert.match(last, /^\(d\) SUMMARY ramot/);
-  assert.match(last, / \|\| \(e\) any house resolving to no known id: Patients 6, PatientsTombstones 4; user-deletes in the last 60 days: 6\. No writes performed\.$/);
+  assert.match(last, / \|\| \(e\) any house resolving to no known id: Patients 4, PatientsTombstones 4; user-deletes in the last 60 days: 6\. No writes performed\.$/);
   const firstE = logs.findIndex((l) => l.startsWith('(e)'));
   const lastC = logs.map((l) => l.startsWith('(c)')).lastIndexOf(true);
   assert.ok(firstE > lastC, '(e) prints after (c)…');

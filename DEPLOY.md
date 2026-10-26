@@ -533,6 +533,15 @@ service:
 | `BOOTSTRAP_TOKEN` | no — delete it | one-time setup of Sandra's own record. Closed for good once her record exists; the log warns while it is set. |
 | ~~`APP_PIN`~~, ~~`APP_PIN_UNTIL`~~ | **removed** | the old shared code and its window. Ignored if still set (one warning in the log). Delete them. |
 
+## Patient missing from a house tab — nothing new to set (October 26, 2026)
+
+`CHANGELOG-patient-missing-from-house.md`. No new Railway variable, Script Property, sheet or
+column. Code.gs deploys automatically on merge (clasp CI). After that, run
+**`patientsMissingFromHousesReportNow`** once from the Apps Script editor. It is read-only on the
+spreadsheet, creates one private Google Doc and logs only counts and the URL. For each listed
+row: «מטופלים» → ✏️ → pick the right house (or «שחרר» straight from «מטופלים»). Rows marked
+«יתוקן בשמירה הבאה» heal on their own with the next save.
+
 ## Discharged → Outpatient + missing report — nothing new to set (October 26, 2026)
 
 `CHANGELOG-discharge-outpatient-handoff.md`. Discharge sends and «העבר לאמבולטורי» go through
