@@ -1,5 +1,20 @@
 # E-ZONE Ecosystem Status — updated October 26, 2026
 
+## Discharged → Outpatient: reliable send + «העבר לאמבולטורי» — October 26, 2026 (PR open)
+
+- **Root cause 1:** the «משוחרר לטיפול חוץ» → Outpatient lead was a browser-only, one-shot
+  call at the end of the discharge. It was lost on a failed Patients write, on a duplicate
+  answer, on any Outpatient error, or with no phone. Coordinators discharges never sent.
+- **Root cause 2:** discharge rows matched their patient by an exact house + name + date
+  compare. A name cleaned after the discharge (invisible marks) made restore rebuild a second
+  row, which the duplicate-admission guard refused.
+- **Now:** `/api/outpatient-lead { dischargeId }` → Code.gs builds the payload → server.js
+  `sendToOutpatient` → AuditLog `discharge:<id>`. Sent once, retried on demand with
+  «העבר לאמבולטורי» on discharged rows. Restore matches by `patientId`, then by normalized
+  name. New editor report `outpatientMissingReportNow()` (Google Doc).
+- **ezone-outpatient: no change** (same `createLead` contract: name, phone, house key, note).
+- Code.gs + server.js + app.js; SW v91 → **v92**. See `CHANGELOG-discharge-outpatient-handoff.md`.
+
 ## «אמבולטורי» meeting option → Outpatient — October 26, 2026 (PR open)
 
 - **Dashboard:** «נפגש עם» gets one fixed, LAST option «אמבולטורי» (Shachar with Oren the

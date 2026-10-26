@@ -533,6 +533,14 @@ service:
 | `BOOTSTRAP_TOKEN` | no — delete it | one-time setup of Sandra's own record. Closed for good once her record exists; the log warns while it is set. |
 | ~~`APP_PIN`~~, ~~`APP_PIN_UNTIL`~~ | **removed** | the old shared code and its window. Ignored if still set (one warning in the log). Delete them. |
 
+## Discharged → Outpatient + missing report — nothing new to set (October 26, 2026)
+
+`CHANGELOG-discharge-outpatient-handoff.md`. Discharge sends and «העבר לאמבולטורי» go through
+`/api/outpatient-lead` with the same Railway `OUTPATIENT_LEAD_URL` / `OUTPATIENT_LEAD_SECRET`.
+No new variable, Script Property, sheet or column. After the automatic Code.gs deploy, run
+**`outpatientMissingReportNow`** once from the Apps Script editor. It creates a private Google
+Doc and logs its URL. Then use «העבר לאמבולטורי» for each row it lists.
+
 ## «אמבולטורי» → Outpatient — nothing new to set (October 26, 2026)
 
 `CHANGELOG-meeting-with-ambulatory.md`. Choosing «אמבולטורי» in «נפגש עם» sends the lead to
