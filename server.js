@@ -26,6 +26,7 @@ const {
 } = require('./lib/static-assets');
 const { buildRefundForecastSpec, isForecastResponse, contentDisposition } = require('./lib/refund-forecast-xlsx');
 const { buildCleanupSpec, isCleanupResponse, cleanupContentDisposition } = require('./lib/cleanup-xlsx');
+const { handOffAmbulatoryLeads } = require('./lib/ambulatory-handoff');
 const {
   buildBillingControlSpec, isBillingControlResponse, billingControlContentDisposition,
 } = require('./lib/billing-control-xlsx');
@@ -497,6 +498,42 @@ function outpatientPost(body) {
       },
     };
     followingRequest(opts, target, payload, resolve, reject, 0);
+  });
+}
+
+/* The ONE Dashboard → Outpatient createLead call (reusable): the discharge
+ * proxy route and the «אמבולטורי» handoff (CHANGELOG-meeting-with-ambulatory.md)
+ * both go through it. `fields` = { name, phone, note, house?, source? } —
+ * `house` / `source` are sent only when the caller passes them (the
+ * ambulatory handoff sends no house: the preferred house is set in
+ * Outpatient). The secret is injected here from Railway env, never logged,
+ * never returned. Never throws; resolves:
+ *   { outcome: 'not_configured' }            — URL or secret unset (no call)
+ *   { outcome: 'answered', data }            — Outpatient's JSON answer
+ *   { outcome: 'timeout' }                   — no answer within timeoutMs
+ *   { outcome: 'unreachable', message }      — network / non-2xx / non-JSON
+ * `deps.post` replaces outpatientPost in tests. */
+const OUTPATIENT_SEND_TIMEOUT_MS = 20000;
+function sendToOutpatient(fields, deps) {
+  const d = deps || {};
+  const url = d.url !== undefined ? d.url : OUTPATIENT_LEAD_URL;
+  const secret = d.secret !== undefined ? d.secret : OUTPATIENT_LEAD_SECRET;
+  if (!url || !secret) return Promise.resolve({ outcome: 'not_configured' });
+  const f = fields || {};
+  const text = (v, max) => String(v == null ? '' : v).slice(0, max);
+  const body = { secret, name: text(f.name, 200), phone: text(f.phone, 40), note: text(f.note, 2000) };
+  if (f.house !== undefined) body.house = text(f.house, 100);
+  if (f.source !== undefined) body.source = text(f.source, 100);
+  const post = d.post || outpatientPost;
+  const timeoutMs = d.timeoutMs || OUTPATIENT_SEND_TIMEOUT_MS;
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (r) => { if (!done) { done = true; clearTimeout(timer); resolve(r); } };
+    const timer = setTimeout(() => finish({ outcome: 'timeout' }), timeoutMs);
+    Promise.resolve()
+      .then(() => post(body))
+      .then((data) => finish({ outcome: 'answered', data }),
+        (err) => finish({ outcome: 'unreachable', message: safeErrorMessage(err) }));
   });
 }
 
@@ -1001,9 +1038,41 @@ function viewFilteredResponse(action, data, principal) {
   return !hasFinance(principal) ? stripFinanceKeys(data) : data;
 }
 
+/* Apps Script actions only the server itself may call — never forwarded from
+ * the browser (CHANGELOG-meeting-with-ambulatory.md: the send log behind the
+ * «אמבולטורי» handoff must not be forgeable from a page). */
+const SERVER_ONLY_ACTIONS = Object.freeze(['recordOutpatientLeadSend']);
+function refuseServerOnlyActions(req, res, next) {
+  const src = req.method === 'GET' ? (req.query || {}) : (req.body || {});
+  if (SERVER_ONLY_ACTIONS.indexOf(src.action) < 0) return next();
+  console.warn('[sheets] 403 server-only action from a client:', src.action);
+  return res.status(403).json({ ok: false, error: 'forbidden', message: ROLE_FORBIDDEN_MESSAGE });
+}
+
+/* saveAll only: hand the «אמבולטורי» leads saveAll_ listed to Outpatient
+ * (lib/ambulatory-handoff.js) and record each outcome in Code.gs. The list
+ * (names, phones) is taken OUT of the answer — the browser and the debug
+ * store never see it; the browser gets `ambulatory` { sent, failed,
+ * warning? } instead. Never throws: the meeting is already saved. Deps are
+ * injectable for the tests. */
+async function applyAmbulatoryHandoff(data, user, principal, deps) {
+  if (!data || typeof data !== 'object' || !('ambulatoryHandoff' in data)) return data;
+  const items = data.ambulatoryHandoff;
+  delete data.ambulatoryHandoff;
+  if (data.ok !== true || !Array.isArray(items) || !items.length) return data;
+  const d = deps || {};
+  const post = d.sheetsPost || sheetsPost;
+  data.ambulatory = await handOffAmbulatoryLeads(items, {
+    send: d.send || ((fields) => sendToOutpatient(fields)),
+    record: (r) => post(Object.assign({ action: 'recordOutpatientLeadSend', user }, r), principal),
+    log: (line) => console.log(line),
+  });
+  return data;
+}
+
 /* GET /api/sheets?action=getData — forwarded to Apps Script as a POST whose
  * body carries the params + proxy secret (see sheetsGet). */
-app.get('/api/sheets', requireSession, requireBillingControlForAction, requireFinanceForAction, requireRoleForAction, requireExpectedDischargesView, requireProxySecret, async (req, res) => {
+app.get('/api/sheets', requireSession, refuseServerOnlyActions, requireBillingControlForAction, requireFinanceForAction, requireRoleForAction, requireExpectedDischargesView, requireProxySecret, async (req, res) => {
   const action = req.query && req.query.action;
   // The action name only — never the query values or a response body.
   console.log('[sheets GET] → action=', JSON.stringify(typeof action === 'string' ? action.slice(0, 60) : null));
@@ -1043,7 +1112,7 @@ app.get('/api/sheets', requireSession, requireBillingControlForAction, requireFi
 /* POST /api/sheets — body is forwarded as POST application/json to Apps Script.
  * All save operations (saveAll, etc.) use POST so the data never hits the
  * querystring length limit. */
-app.post('/api/sheets', requireSession, requireBillingControlForAction, requireFinanceForAction, requireRoleForAction, requireExpectedDischargesView, requireProxySecret, async (req, res) => {
+app.post('/api/sheets', requireSession, refuseServerOnlyActions, requireBillingControlForAction, requireFinanceForAction, requireRoleForAction, requireExpectedDischargesView, requireProxySecret, async (req, res) => {
   const body = req.body || {};
   // Who/when stamping: the `user` the Apps Script writes into updatedBy
   // comes ONLY from the signed session cookie. ALWAYS overwritten — a
@@ -1057,7 +1126,8 @@ app.post('/api/sheets', requireSession, requireBillingControlForAction, requireF
   const summary = summarizeBody(body);
   console.log('[sheets POST] →', summary);
   try {
-    const data = viewFilteredResponse(body.action, await sheetsPost(body, principal), principal);
+    let data = viewFilteredResponse(body.action, await sheetsPost(body, principal), principal);
+    if (summary.action === 'saveAll') data = await applyAmbulatoryHandoff(data, body.user, principal);
     // Outcome only — the response can carry patient / payment data, so it is
     // never written to the log.
     console.log('[sheets POST] ←', data && typeof data === 'object'
@@ -1373,15 +1443,17 @@ app.post('/api/outpatient-lead', requireSession, async (req, res) => {
     return res.status(503).json({ ok: false, error: 'outpatient_not_configured' });
   }
   const b = req.body || {};
-  const body = {
-    secret: OUTPATIENT_LEAD_SECRET,
+  const sent = await sendToOutpatient({
     name:  b.name  == null ? '' : String(b.name),
     phone: b.phone == null ? '' : String(b.phone),
     house: b.house == null ? '' : String(b.house),
     note:  b.note  == null ? '' : String(b.note),
-  };
+  });
   try {
-    const data = await outpatientPost(body);
+    if (sent.outcome !== 'answered') {
+      throw new Error(sent.outcome === 'timeout' ? 'Outpatient did not answer in time' : (sent.message || 'outpatient_unreachable'));
+    }
+    const data = sent.data;
     // Log only the outcome — never the secret or the full forwarded body.
     console.log('[outpatient-lead] ←', data && typeof data === 'object'
       ? { ok: data.ok, id: data.id, error: data.error }
@@ -2132,6 +2204,11 @@ module.exports = {
   MANAGER_REPORT_MAX_CHARS,
   meetingReportNoteError,
   meetingReportManagersWhitelist,
+  // «אמבולטורי» → Outpatient (see test/meeting-with-ambulatory.test.js).
+  sendToOutpatient,
+  applyAmbulatoryHandoff,
+  refuseServerOnlyActions,
+  SERVER_ONLY_ACTIONS,
   // Write & handoff diagnostics (in-memory state exposed for the test harness;
   // the running server mutates the same objects the tests inspect).
   recordWrite,

@@ -49,7 +49,7 @@ const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'APP_PIN', 'AP
 
 /* The full getData key list (Code.gs getData_, pinned since PR A). */
 const GETDATA_KEYS = ['ok', 'leads', 'patients', 'irrelevantLeads', 'removedLeads', 'dischargedPatients',
-  'billingOverrides', 'houseManagers', 'managerPhones', 'currentManagers', 'currentManagersSource'];
+  'billingOverrides', 'houseManagers', 'managerPhones', 'currentManagers', 'currentManagersSource', 'outpatientSentLeadIds'];
 
 /* ============================== harness =============================== */
 

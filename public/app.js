@@ -373,6 +373,10 @@ const state = {
    * Code.gs). Keyed by NAME because meetingWith stores the name. Drives the
    * meetings-board WhatsApp button; '{}' until the first load (button disabled). */
   managerPhones: {},
+  /* Lead ids already handed to Outpatient as «אמבולטורי» (getData's
+   * outpatientSentLeadIds + each saveAll's ambulatory.sent) → the card's
+   * «נשלח לאמבולטורי» chip. */
+  outpatientSentLeadIds: new Set(),
   /* Render mode. Historically 'edit' | 'viewer'; viewer mode was removed with
    * the API-auth change, so 'edit' is now the only reachable value (an
    * authenticated user is an editor). The mode machinery is retained because the
@@ -1054,6 +1058,7 @@ function saveAll(opts) {
     // Fresh stamps, landed moves, refused moves — applied BEFORE any resync
     // so a later queued save never re-sends a refused move without intent.
     applySaveOutcome(sent, res);
+    applyAmbulatoryOutcome(res);
     const skippedMsg = promoteSkippedMessage(res);
     if (skippedMsg) showError(skippedMsg, REFUSAL_BANNER_MS);
     // Stale-save refusal: tell the user whose edit won; the resync below
@@ -1072,6 +1077,59 @@ function saveAll(opts) {
   beginSave([_dataGuard]);
   savePromise = savePromise.then(run, run);
   return savePromise;
+}
+
+/* getData's outpatientSentLeadIds → a Set of non-empty id strings (an older
+ * backend without the key → empty). Pure. */
+function normalizeOutpatientSentIds(raw) {
+  const out = new Set();
+  (Array.isArray(raw) ? raw : []).forEach(id => {
+    const s = String(id == null ? '' : id).trim();
+    if (s) out.add(s);
+  });
+  return out;
+}
+
+/* A saveAll answer's «אמבולטורי» handoff (server.js, after the meeting was
+ * saved): sent ids get the card chip at once; a failed send shows the Hebrew
+ * warning — the meeting itself IS saved, and the next save retries the send.
+ * Returns the warning text shown ('' when none). */
+function applyAmbulatoryOutcome(res) {
+  const a = res && res.ambulatory;
+  if (!a || typeof a !== 'object') return '';
+  if (!(state.outpatientSentLeadIds instanceof Set)) state.outpatientSentLeadIds = new Set();
+  (Array.isArray(a.sent) ? a.sent : []).forEach(id => {
+    const s = String(id == null ? '' : id).trim();
+    if (!s) return;
+    state.outpatientSentLeadIds.add(s);
+    showAmbulatoryChipOnCard(s);
+  });
+  if (Array.isArray(a.failed) && a.failed.length) {
+    const msg = typeof a.warning === 'string' && a.warning ? a.warning : AMBULATORY_SEND_FAILED_HE;
+    showError(msg, REFUSAL_BANNER_MS);
+    return msg;
+  }
+  return '';
+}
+
+/* The lead card's «נשלח לאמבולטורי» chip, or '' when the lead was not sent.
+ * Fixed text only. Pure (the id set injectable). */
+function ambulatorySentChipHTML(lead, sentIds) {
+  const ids = sentIds || state.outpatientSentLeadIds;
+  const id = lead && lead.id != null ? String(lead.id) : '';
+  if (!id || !ids || typeof ids.has !== 'function' || !ids.has(id)) return '';
+  return `<div class="lc-amb-chip" title="${escapeHtml(AMBULATORY_SENT_CHIP_HE)}">${escapeHtml(AMBULATORY_SENT_CHIP_HE)}</div>`;
+}
+
+/* Put the chip on an already-rendered card (a successful inline save does not
+ * rebuild the card under the user). No-op without a DOM or a card. */
+function showAmbulatoryChipOnCard(id) {
+  if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
+  document.querySelectorAll('.lead-card').forEach(card => {
+    if (card.dataset.id !== id || card.querySelector('.lc-amb-chip')) return;
+    const anchor = card.querySelector('.lc-meta');
+    if (anchor) anchor.insertAdjacentHTML('afterend', ambulatorySentChipHTML({ id }));
+  });
 }
 
 /* A refusal (something the user did was NOT saved) stays on screen long
@@ -2088,6 +2146,7 @@ async function loadAll() {
         ? data.managerPhones
         : {};
       console.log('[E-ZONE] managerPhones loaded:', Object.keys(state.managerPhones).length, 'managers');
+      state.outpatientSentLeadIds = normalizeOutpatientSentIds(data.outpatientSentLeadIds);
 
       const rawIrrelevant = Array.isArray(data.irrelevantLeads) ? data.irrelevantLeads : [];
       state.irrelevantLeads = rawIrrelevant.map(normalizeIrrelevantLead);
@@ -2539,6 +2598,21 @@ function rosterFromCurrentManagers(list) {
   return out;
 }
 
+/* «אמבולטורי» (CHANGELOG-meeting-with-ambulatory.md): ONE fixed «נפגש עם»
+ * option for the ambulatory unit — listed LAST, never a manager (not in the
+ * Managers tab, never in currentManagers / the summary strip, never a house
+ * default). The server hands a lead with this value to Outpatient once; the
+ * meeting stays on the board. Same constant in Code.gs. */
+const MEETING_WITH_AMBULATORY = 'אמבולטורי';
+const AMBULATORY_SENT_CHIP_HE = 'נשלח לאמבולטורי';
+/* The fallback text when the server answers a failed send without one. */
+const AMBULATORY_SEND_FAILED_HE = 'הפגישה נשמרה, אך שליחת הליד לאמבולטורי נכשלה — לא נשלח';
+
+/* Whether a meetingWith value is «אמבולטורי». Pure. */
+function isAmbulatoryMeeting(v) {
+  return String(v == null ? '' : v).trim() === MEETING_WITH_AMBULATORY;
+}
+
 /* The distinct manager names offered in the meetingWith dropdown, in a stable
  * order (HOUSES order first, then any roster entry not tied to a known house).
  * Vered can pick any of them regardless of the lead's house. With no explicit
@@ -2557,17 +2631,19 @@ function managerOptions(managers) {
   if (!managers && Array.isArray(state.currentManagers)) {
     state.currentManagers.forEach(m => { if (m.name && seen.indexOf(m.name) === -1) seen.push(m.name); });
   }
-  return seen;
+  return seen.filter(m => !isAmbulatoryMeeting(m));
 }
 
 /* The meetingWith dropdown's names: the current managers, plus the lead's
- * SAVED value pinned at the end when it is not one of them (a former
+ * SAVED value pinned after them when it is not one of them (a former
  * manager). Without the pin the select would fall to "— ללא —" and the next
- * save of that form would silently erase the stored name. Pure. */
+ * save of that form would silently erase the stored name. «אמבולטורי» is
+ * always the LAST option (a saved «אמבולטורי» is that same option). Pure. */
 function meetingWithOptionNames(saved, managers) {
   const names = managerOptions(managers);
   const v = String(saved == null ? '' : saved).trim();
-  if (v && names.indexOf(v) === -1) names.push(v);
+  if (v && !isAmbulatoryMeeting(v) && names.indexOf(v) === -1) names.push(v);
+  names.push(MEETING_WITH_AMBULATORY);
   return names;
 }
 
@@ -5689,6 +5765,7 @@ function buildLeadCard(lead) {
       ${escapeHtml(lead.phone)} ${lead.house ? '· ' + escapeHtml(lead.house) : ''}
       ${lead.source ? '· מקור: ' + escapeHtml(leadSourceLabel(lead.source)) : ''}
     </div>
+    ${ambulatorySentChipHTML(lead)}
     ${waitBadge ? `<div class="lc-wait-badge">${waitBadge}</div>` : ''}
     ${unadmittedChipHTML(unadmittedDaysForLead(lead))}
     ${leadDateChipsHTML(lead)}

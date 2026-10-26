@@ -136,5 +136,5 @@ test('Therapists: getAdmittedRoster payload keys are pinned (and released patien
 test('getData top-level keys are unchanged (the new audit columns ride inside dischargedPatients rows)', () => {
   const d = arr(load().sandbox.getData_());
   assert.deepStrictEqual(Object.keys(d), ['ok', 'leads', 'patients', 'irrelevantLeads', 'removedLeads',
-    'dischargedPatients', 'billingOverrides', 'houseManagers', 'managerPhones', 'currentManagers', 'currentManagersSource']);
+    'dischargedPatients', 'billingOverrides', 'houseManagers', 'managerPhones', 'currentManagers', 'currentManagersSource', 'outpatientSentLeadIds']);
 });
