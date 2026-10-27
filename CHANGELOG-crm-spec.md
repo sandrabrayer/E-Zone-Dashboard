@@ -47,3 +47,9 @@
   - `/meeting-report` is not house-scoped
 
   Each needs its own scoped PR and Sandra's go.
+
+## Update — 2026-10-27: PR #220 decision recorded
+- `docs/crm/ROLLOUT.md` §0.1 and the `EZONE-ECOSYSTEM-STATUS.md` section now record Sandra's
+  decision: PR #220 is **closed as superseded**, with its branch kept. Its archive-aware lead
+  reader (with the numeric-ID fix) and its task-queue rules will be cherry-picked into later CRM
+  PRs. **No PostgreSQL.** Docs only.

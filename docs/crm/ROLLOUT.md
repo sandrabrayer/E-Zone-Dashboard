@@ -22,7 +22,7 @@ Spec §14 separation, applied here:
 
 | # | Decision | Why it blocks |
 | --- | --- | --- |
-| 0.1 | **The fate of PR #220 (CRM-02)**: (a) build on its encrypted PostgreSQL queue, (b) reuse only its Code.gs read projections, or (c) close it as superseded | Spec §2/§14: no parallel mechanism. B's Activity sheet and #220's retained queue overlap in purpose (task retention, closure evidence). #220 also touches Code.gs and server.js, the same files B and C touch. Analysis and recommendation: **§7**. |
+| 0.1 | ✅ **DECIDED 2026-10-27: PR #220 (CRM-02) is closed as superseded** by this CRM restructure. Its branch `codex/crm02-read-projections-20261013` is kept at `a63c477`. Later CRM PRs will cherry-pick two things from it: (1) the archive-aware lead reader, **with** the numeric-ID fix, and (2) the task-queue rules (close only on fresh complete evidence; keep the original deadline). **No PostgreSQL.** | Spec §2/§14: no parallel mechanism. Session B no longer depends on #220. Analysis: **§7**. |
 | 0.2 | **When to turn on `PROXY_SECRET_MODE=enforce`** (Phase 0b-3; needs the Managers / Therapists / accounting-feed checks first) | Until then, any server-side CRM permission can be bypassed through `/exec` (CURRENT-STATE §8.1). Recommendation: before C goes to a pilot with real users, not before B. |
 | 0.3 | Activity scope: which event kinds, whether free-text notes may hold clinical content, who may read which kinds | Shapes B1's columns and B3's filter |
 | 0.4 | The PERMISSIONS-MATRIX §6 open decisions (S/Y scope, coordinators, D3 manager identity) | Needed before C2's area gating. **Not** needed for B. |
