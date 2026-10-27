@@ -1,10 +1,10 @@
 # E-ZONE Ecosystem Status — updated October 27, 2026
 
-## CRM restructure — Session A — October 27, 2026 (PR open, docs only)
+## CRM restructure — Session A — October 27, 2026 (merged as #283, docs only)
 
 - **What:** `docs/crm/` holds SPEC (Hebrew spec + Decisions D1–D4), CURRENT-STATE, PERMISSIONS-MATRIX, LINKED-APPS, GAP-LIST and ROLLOUT. No code, schema or SW change (stays v93).
-- **Decisions:** Ron = ניהול בית only (no Dashboard). «מטופלים משוחררים» stays Vered's. Managers keep their ezone-managers passwords. Ortal = verifier, not הנהלה.
-- **Open before Session B:** the fate of CRM PR #220 (overlaps the planned queue) and when to switch `PROXY_SECRET_MODE` to `enforce` (today any `/exec` caller bypasses server gates).
+- **Decisions:** D1–D4: Ron = ניהול בית only (no Dashboard); «מטופלים משוחררים» stays Vered's; managers keep their passwords; Ortal = verifier, not הנהלה. D5–D16 (Oct 27): Shiran/Yael removed (revoke list in PERMISSIONS-MATRIX §7), Dana read-only, all houses, with no money; coordinators no Dashboard and discharge own-house only (security gap, first Session B PR); discounts and refund exceptions Sandra, rule-based refunds automatic, execution Ortal; managers via ניהול בית, never a client-supplied house. All agreed, not yet implemented.
+- **PR #220 closed as superseded (Oct 27);** branch kept. Its archive-aware lead reader (+ numeric-ID fix) and its task-queue rules will be cherry-picked later; no PostgreSQL. **Still open:** when to switch `PROXY_SECRET_MODE` to `enforce` (today any `/exec` caller bypasses server gates).
 - **Other apps: no change.** OP-03 (Outpatient #125), Outpatient #114 and PR #220 were read, not edited. See `CHANGELOG-crm-spec.md`.
 
 ## Active patient missing from every house tab — October 26, 2026 (PR open)
