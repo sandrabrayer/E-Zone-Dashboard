@@ -699,3 +699,13 @@ Default is OFF: nothing is written until you set the switch.
 
 Nothing to set on Railway. Rows appear in a new `Activity` tab on the next mapped write (a discharge,
 a payment report …). See `CHANGELOG-crm-activity-system-events.md`.
+
+## CRM shell flag (C1, October 27, 2026) — off until you set it
+
+`/?view=crm` serves the new CRM shell only when the Railway variable `CRM_ENABLED` is exactly `true`
+and the user has a personal login. Until then nothing changes anywhere.
+
+1. https://railway.app → project `zucchini-hope` → service `web` → Variables → New Variable.
+2. Name `CRM_ENABLED`, value `true` → Add → Deploy (variables apply to the next deployment).
+3. Open https://ezone-dashboard.up.railway.app/?view=crm with a personal login.
+Rollback: delete the variable and redeploy. See `CHANGELOG-crm-shell-flag.md`.

@@ -149,6 +149,8 @@ A test pins this.
 
 ### C1 · Flag plumbing (server only)
 
+**Status (2026-10-27): built** — `CHANGELOG-crm-shell-flag.md`. Theme decision: the shell is **dark** (matches the live app; the light-theme ask in SPEC §3 is deferred to the «global theme switch» track). `/index.html` never serves the shell.
+
 | Item | Plan |
 | --- | --- |
 | Goal | `CRM_ENABLED` (Railway env, strict `=== 'true'`, default off). When it is on **and** the session is a personal Dashboard user, `/?view=crm` serves the CRM shell page. Otherwise the current page. Names stay distinct from #220's `CRM_READS` / `/crm-work`. |
@@ -158,7 +160,7 @@ A test pins this.
 | Code.gs | **No** |
 | Rollback | Unset `CRM_ENABLED` (Sandra, in Railway), or revert. |
 
-### C2 · Shell: side menu, areas, light theme scoped to the shell, read-only over existing data
+### C2 · Shell: side menu, areas, dark theme (decided 2026-10-27), read-only over existing data
 
 | Item | Plan |
 | --- | --- |
