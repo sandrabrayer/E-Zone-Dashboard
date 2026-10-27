@@ -165,6 +165,34 @@ test('saveRefusal: proven → ok; unproven, refused, suppressed, lock busy → H
   assert.match(core.saveRefusal(null, 'L1'), /נכשלה/);
 });
 
+/* ===== C5 lead lifecycle ===== */
+
+test('localPhone / leadFormErrors / newLeadRow mirror the classic add-lead rules', () => {
+  assert.equal(core.localPhone('052-765-4321'), '0527654321');
+  assert.equal(core.localPhone('+972 52 765 4321'), '0527654321');
+  assert.equal(core.localPhone('12345'), '');
+  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה', phone: '0527654321', assignedTo: 'ורד' })), ['name'], 'two words');
+  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה כהן', phone: '052', assignedTo: 'ורד' })), ['phone']);
+  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה כהן', phone: '0527654321', assignedTo: '', contactPhone: 'x' })), ['assignedTo', 'contactPhone']);
+  const row = core.newLeadRow({ name: ' דנה  כהן ', phone: '052-7654321', assignedTo: 'ורד', house: 'רמות השבים', contactName: 'אמא', contactPhone: '0501112222',
+    contactRelation: 'אחר', contactRelationOther: 'שכנה', billingMode: 'contact', source: 'גוגל', note: 'x' }, 'id-1', '2026-10-27');
+  assert.deepEqual([row.id, row.name, row.phone, row.stage, row.created, row.contactRelation, row.billingPhone, row.meetingOutcome, row.visitDate],
+    ['id-1', 'דנה כהן', '0527654321', 'new', '2026-10-27', 'שכנה', '0501112222', '', '']);
+  assert.equal(core.newLeadRow({ name: 'א ב', phone: '0527654321', assignedTo: 'ורד', billingMode: 'other', billingOther: '03-1234567' }, 'i', 't').billingPhone, '', 'a 9-digit landline is not a valid lead phone (classic rule)');
+  assert.equal(core.newLeadRow({ name: 'א ב', phone: '0527654321', assignedTo: 'ורד', billingMode: 'other', billingOther: '050-999-8888' }, 'i', 't').billingPhone, '0509998888');
+  assert.match(core.randomId(), /^id-[0-9a-f]{16}$/);
+});
+
+test('duplicateByPhone + closeRecord', () => {
+  const leads = [{ id: 'A', name: 'אבי', phone: '0527654321' }];
+  assert.equal(core.duplicateByPhone(leads, '052-765-4321').id, 'A');
+  assert.equal(core.duplicateByPhone(leads, '0500000000'), null);
+  const rec = core.closeRecord({ id: 'A', stage: 'visit', name: 'אבי', phone: '0527654321', meetingReportedAt: 'keep' }, 'completed', 'סיים', '2026-10-27T10:00:00.000Z');
+  assert.deepEqual([rec.stage, rec.originSheet, rec.movedAt, rec.disposition, rec.not_relevant_note, rec.meetingReportedAt], ['irrelevant', 'visit', '2026-10-27T10:00:00.000Z', 'completed', 'סיים', 'keep']);
+  assert.equal(core.closeRecord({ id: 'A' }, '', '', 't').disposition, 'not_relevant');
+  assert.deepEqual(core.DISPOSITIONS.map((d) => d.id), ['not_relevant', 'completed', 'stopped_early', 'released_outpatient'], 'mirrors Code.gs LEAD_CLOSE_DISPOSITIONS');
+});
+
 test('esc escapes every HTML-significant character', () => {
   assert.equal(core.esc('<b>"x" & \'y\'</b>'), '&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;');
 });
@@ -176,8 +204,9 @@ test('wiring: assets hashed via ASSETS, NOT in sw.js; the shell never calls a wr
   const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.js'), 'utf8');
   const actions = [...src.matchAll(/api\('([A-Za-z]+)'/g)].map((m) => m[1]).sort();
   assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'getActivity', 'getData'], 'GET reads');
-  const posts = [...src.matchAll(/method: 'POST'[^\n]*body: JSON\.stringify\(([A-Za-z_]+)\(/g)].map((m) => m[1]);
-  assert.deepEqual(posts, ['leadSaveBody'], 'the ONE write path: saveAll for one lead (C4)');
+  const writes = [...src.matchAll(/\{ action: '([A-Za-z]+)'/g)].map((m) => m[1]).sort();
+  assert.deepEqual([...new Set(writes)], ['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'saveAll'], 'the write actions: one-lead saveAll (C4) + the lead lifecycle (C5)');
+  assert.ok(!/patients: state|patients: list|serializePatients/.test(src), 'patients are never sent');
   assert.ok(!/innerHTML\s*=\s*[^;]*\b(l|lead|p|pat)\.(name|phone|note)\b(?!\))/.test(src.replace(/esc\([^)]*\)/g, 'ESC')), 'every interpolated field goes through esc()');
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.html'), 'utf8');
   assert.match(html, /lang="he" dir="rtl"/);

@@ -65,6 +65,59 @@
     return { action: 'saveAll', leads: [lead], patients: {}, prove: { leads: [s(lead.id)] } };
   }
 
+  /* ===== Lead lifecycle (C5, CHANGELOG-crm-lead-lifecycle.md) ===== */
+  const DISPOSITIONS = [
+    { id: 'not_relevant', label: 'לא רלוונטי' }, { id: 'completed', label: 'סיים טיפול' },
+    { id: 'stopped_early', label: 'הפסיק לפני הזמן' }, { id: 'released_outpatient', label: 'משוחרר לטיפול חוץ' },
+  ];
+  const CONTACT_RELATIONS = ['מטופל', 'אמא', 'אבא', 'אח/אחות', 'בן/בת', 'בן/בת זוג', 'סבא/סבתא', 'קרוב משפחה', 'חבר/חברה', 'עו"ס', 'אחר'];
+  const SOURCES = ['פייסבוק', 'גוגל', 'אינסטגרם', 'המלצה', 'עו"ס', 'קופת חולים', 'בית חולים', 'אחר'];
+
+  /* The classic rules (app.js leadFullNameOk / leadLocalPhone): two words, a
+   * 10-digit local phone. Pure. */
+  function localPhone(raw) {
+    let t = s(raw).replace(/[\s\-()]/g, '').replace(/^\+/, '').replace(/^00/, '');
+    if (/^972\d+$/.test(t)) t = '0' + t.slice(3);
+    return /^0\d{9}$/.test(t) ? t : '';
+  }
+  function leadFormErrors(v) {
+    const out = {};
+    if (s(v && v.name).split(/\s+/).filter(Boolean).length < 2) out.name = 'יש להזין שם מלא (שם פרטי ושם משפחה)';
+    if (!localPhone(v && v.phone)) out.phone = 'יש להזין טלפון ישראלי תקין (10 ספרות)';
+    if (!s(v && v.assignedTo)) out.assignedTo = 'יש לבחור משוייך ל';
+    if (s(v && v.contactPhone) && !localPhone(v.contactPhone)) out.contactPhone = 'טלפון הפונה אינו תקין';
+    return out;
+  }
+  /* A new lead row (every LEAD_COLUMNS key the classic form writes). Pure. */
+  function newLeadRow(v, id, today) {
+    const phone = localPhone(v.phone), contactPhone = localPhone(v.contactPhone);
+    const mode = s(v.billingMode) || 'patient';
+    const billingPhone = mode === 'contact' ? contactPhone : (mode === 'other' ? localPhone(v.billingOther) : phone);
+    const rel = s(v.contactRelation) === 'אחר' ? s(v.contactRelationOther) || 'אחר' : s(v.contactRelation);
+    return { id: id, name: s(v.name).replace(/\s+/g, ' '), phone: phone, house: s(v.house), source: s(v.source), note: s(v.note),
+      stage: 'new', visitDate: '', visitTime: '', entryDate: '', advance: '', created: today, assignedTo: s(v.assignedTo),
+      meetingWith: s(v.meetingWith), meetingOutcome: '', contactName: s(v.contactName), contactPhone: contactPhone,
+      contactRelation: rel, billingPhone: billingPhone };
+  }
+  /* A lead already carrying this phone (the classic duplicate warning). Pure. */
+  function duplicateByPhone(leads, phone) {
+    const p = localPhone(phone);
+    if (!p) return null;
+    return (leads || []).filter(function (l) { return localPhone(l.phone) === p; })[0] || null;
+  }
+  /* The closed record the classic closeLead sends (moveLeadIrrelevant). Pure. */
+  function closeRecord(raw, disposition, note, nowIso) {
+    return Object.assign({}, raw, { stage: 'irrelevant', originSheet: s(raw && raw.stage) || 'new', movedAt: nowIso,
+      disposition: s(disposition) || 'not_relevant', not_relevant_note: s(note) });
+  }
+  function randomId() {
+    const c = typeof crypto !== 'undefined' && crypto && typeof crypto.getRandomValues === 'function' ? crypto : null;
+    let rnd = '';
+    if (c) { const b = new Uint8Array(8); c.getRandomValues(b); rnd = Array.prototype.map.call(b, function (x) { return (x < 16 ? '0' : '') + x.toString(16); }).join(''); }
+    else rnd = Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+    return 'id-' + rnd;
+  }
+
   /* '' when the answer proves the lead landed, else the Hebrew reason (mirrors
    * app.js promoteSkippedMessage / conflictsMessage / requireProven). Pure. */
   function saveRefusal(res, id) {
@@ -343,7 +396,9 @@
       const toolbar = '<div class="toolbar"><div class="seg"><button type="button" data-view="board" aria-pressed="' + (state.view === 'board') + '">לוח</button><button type="button" data-view="table" aria-pressed="' + (state.view === 'table') + '">טבלה</button></div>'
         + '<select id="f-house"><option value="">כל הבתים</option>' + HOUSES.filter(function (h) { return h.id !== 'sde'; }).map(function (h) { return '<option value="' + esc(h.name) + '"' + (f.house === h.name ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select>'
         + '<select id="f-owner"><option value="">כל האחראים</option>' + Object.keys(owners).map(function (o) { return '<option' + (f.owner === o ? ' selected' : '') + '>' + esc(o) + '</option>'; }).join('') + '</select>'
-        + '<a class="btn primary" href="/">+ פנייה חדשה (בדשבורד)</a></div>';
+        + '<button type="button" class="btn primary" id="crm-new-lead">+ פנייה חדשה</button>'
+        + '<button type="button" class="btn" data-view="closed" aria-pressed="' + (state.view === 'closed') + '">לידים סגורים</button></div>';
+      if (state.view === 'closed') return toolbar + renderClosedLeads();
       if (state.view === 'board') {
         return toolbar + '<div class="board">' + board(c.leads, f).map(function (col) {
           return '<div class="col"><h3><span>' + esc(col.stage.label) + '</span><span class="n">' + col.leads.length + '</span></h3>' + col.leads.map(function (l) {
@@ -359,6 +414,104 @@
       return toolbar + '<div class="tbl-wrap"><table class="tbl"><thead><tr>' + cols.map(function (c2) { return '<th data-sort="' + c2[0] + '">' + esc(c2[1]) + (state.sort === c2[0] ? ' ▾' : '') + '</th>'; }).join('') + '<th>פעולה הבאה</th></tr></thead><tbody>'
         + list.map(function (l) { const na = nextActionFor(l, state.today); return '<tr data-open-lead="' + esc(l.id) + '"><td>' + esc(l.name) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(l.source) + '</td><td>' + esc(l.assignedTo) + '</td><td>' + esc(stageLabel(l.stage)) + '</td><td>' + esc(fmtDate(l.visitDate)) + '</td><td>' + esc(fmtDate(l.created)) + '</td><td>' + chip(na.state, na.text) + '</td></tr>'; }).join('')
         + '</tbody></table></div>' + (list.length === 0 ? '<div class="crm-state">אין פניות התואמות לסינון</div>' : '');
+    }
+
+    function renderClosedLeads() {
+      const list = (state.data && Array.isArray(state.data.irrelevantLeads) ? state.data.irrelevantLeads : []).slice()
+        .sort(function (a, b) { return s(b.movedAt).localeCompare(s(a.movedAt)); });
+      const label = function (d) { return (DISPOSITIONS.filter(function (x) { return x.id === s(d); })[0] || { label: s(d) || 'לא רלוונטי' }).label; };
+      if (!list.length) return '<div class="crm-state">אין לידים סגורים</div>';
+      return '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>שם</th><th>בית</th><th>סטטוס סגירה</th><th>סיבה</th><th>נסגר</th><th></th></tr></thead><tbody>'
+        + list.slice(0, 300).map(function (l) {
+          return '<tr><td>' + esc(l.name) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(label(l.disposition)) + '</td><td>' + esc(l.not_relevant_note) + '</td><td>' + esc(fmtDate(s(l.movedAt).slice(0, 10))) + '</td>'
+            + '<td><button type="button" class="btn small" data-restore-lead="' + esc(l.id) + '">שחזור ל«' + esc(stageLabel(s(l.originSheet) || 'new')) + '»</button></td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+    function renderNewLeadForm() {
+      const field = function (name, label, type, extra) { return '<label>' + esc(label) + ' <input name="' + name + '" type="' + (type || 'text') + '"' + (extra || '') + '><span class="err" data-err="' + name + '"></span></label>'; };
+      return '<form data-form="new-lead" class="new-lead" novalidate>'
+        + '<h3>פרטי המטופל</h3>' + field('name', 'שם מלא *', 'text', ' required') + field('phone', 'טלפון *', 'tel', ' required')
+        + '<h3>פרטי הפונה</h3>' + field('contactName', 'שם') + field('contactPhone', 'טלפון', 'tel')
+        + '<label>קשר למטופל <select name="contactRelation"><option value="">— ללא —</option>' + CONTACT_RELATIONS.map(function (r) { return '<option>' + esc(r) + '</option>'; }).join('') + '</select></label>'
+        + field('contactRelationOther', 'קשר אחר')
+        + '<label>טלפון לגבייה ועדכונים <select name="billingMode"><option value="patient">מטופל</option><option value="contact">פונה</option><option value="other">אחר</option></select></label>'
+        + field('billingOther', 'טלפון אחר לגבייה', 'tel')
+        + '<h3>פרטים נוספים</h3>'
+        + '<label>בית מועדף <select name="house"><option value="">— ללא —</option>' + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) { return '<option>' + esc(h.name) + '</option>'; }).join('') + '</select></label>'
+        + '<label>מקור הפנייה <input name="source" list="crm-sources"><datalist id="crm-sources">' + SOURCES.map(function (x) { return '<option value="' + esc(x) + '">'; }).join('') + '</datalist></label>'
+        + '<label>משוייך ל * <select name="assignedTo" required><option value="">— בחר —</option>' + ASSIGNEES.map(function (a) { return '<option>' + esc(a) + '</option>'; }).join('') + '</select><span class="err" data-err="assignedTo"></span></label>'
+        + '<label>נפגש/ת עם <select name="meetingWith"><option value="">—</option>' + managersOf('').concat([MEETING_WITH_AMBULATORY]).map(function (m) { return '<option>' + esc(m) + '</option>'; }).join('') + '</select></label>'
+        + '<label class="wide">הערות <textarea name="note" rows="2"></textarea></label>'
+        + '<div class="wide"><button type="submit" class="btn primary">הוסף ליד</button> <button type="button" class="btn" data-cancel-drawer="1">ביטול</button> <span class="na" id="crm-save-state"></span></div>'
+        + '</form>';
+    }
+    function openNewLeadDrawer() {
+      const dr = $('#crm-drawer');
+      dr.innerHTML = '<div class="drawer-head"><div><h2>פנייה חדשה</h2><div class="meta">ליד חדש נכנס ללוח בשלב «ליד חדש»</div></div><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>' + renderNewLeadForm();
+      dr.setAttribute('aria-hidden', 'false'); $('#crm-scrim').setAttribute('data-open', 'true');
+      state.drawer = { kind: 'new', id: '', tab: 'overview' };
+      const first = dr.querySelector('[name="name"]'); if (first) first.focus();
+    }
+    /* A generic write through /api/sheets for the lifecycle actions; `apply`
+     * mutates state optimistically, `undo` reverts it. */
+    function postAction(body, okCheck, apply, undo, label) {
+      state.saving = true; apply(); renderNav(); renderMain(); setSaveState('שומר…');
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json().catch(function () { return null; }); })
+        .then(function (res) {
+          const why = okCheck(res);
+          if (why) throw new Error(why);
+          state.saving = false; toast(label + ' — בוצע'); return true;
+        })
+        .catch(function (e) { undo(); state.saving = false; renderNav(); renderMain(); setSaveState(String(e && e.message || e), true); toast(String(e && e.message || e), true); return false; });
+    }
+    function genericRefusal(res, idKey) {
+      if (!res || typeof res !== 'object') return 'אין תשובה מהשרת';
+      if (res.ok === false) return res.message || ('הפעולה נדחתה' + (res.error ? ' (' + res.error + ')' : ''));
+      if (idKey && !(res.lead && s(res.lead.id))) return 'הפעולה לא אומתה — רענני ובדקי';
+      return '';
+    }
+    function createLead(values) {
+      const errs = leadFormErrors(values);
+      const f = $('#crm-drawer form[data-form="new-lead"]');
+      if (f) Object.keys(errs).concat(['name', 'phone', 'assignedTo', 'contactPhone']).forEach(function (k) { const el = f.querySelector('[data-err="' + k + '"]'); if (el) el.textContent = errs[k] || ''; });
+      if (Object.keys(errs).length) return Promise.resolve(false);
+      const dup = duplicateByPhone(state.data.leads, values.phone);
+      if (dup && !win.confirm('כבר קיים ליד «' + dup.name + '» עם הטלפון הזה. להוסיף בכל זאת?')) return Promise.resolve(false);
+      const row = newLeadRow(values, randomId(), state.today);
+      const list = state.data.leads;
+      closeDrawer();
+      return postAction(leadSaveBody(row), function (res) { return saveRefusal(res, row.id); },
+        function () { list.unshift(row); }, function () { const i = list.indexOf(row); if (i >= 0) list.splice(i, 1); }, 'הליד «' + row.name + '» נוסף');
+    }
+    function closeLeadAction(id, disposition, note) {
+      const list = state.data.leads, i = list.findIndex(function (l) { return s(l.id) === s(id); });
+      if (i < 0) return Promise.resolve(false);
+      const raw = list[i];
+      const rec = closeRecord(raw, disposition, note, new Date().toISOString());
+      if (!Array.isArray(state.data.irrelevantLeads)) state.data.irrelevantLeads = [];
+      closeDrawer();
+      return postAction({ action: 'moveLeadIrrelevant', lead: rec }, function (res) { return genericRefusal(res, true); },
+        function () { list.splice(i, 1); state.data.irrelevantLeads.unshift(rec); },
+        function () { state.data.irrelevantLeads = state.data.irrelevantLeads.filter(function (l) { return l !== rec; }); list.splice(i, 0, raw); }, 'הליד נסגר');
+    }
+    function removeLeadAction(id) {
+      const list = state.data.leads, i = list.findIndex(function (l) { return s(l.id) === s(id); });
+      if (i < 0) return Promise.resolve(false);
+      const raw = list[i];
+      if (!win.confirm('להסיר את הליד «' + s(raw.name) + '»? הליד יעבור לרשימת הלידים שהוסרו.')) return Promise.resolve(false);
+      closeDrawer();
+      return postAction({ action: 'removeLead', lead: raw }, function (res) { return genericRefusal(res, true); },
+        function () { list.splice(i, 1); }, function () { list.splice(i, 0, raw); }, 'הליד הוסר');
+    }
+    function restoreLeadAction(id) {
+      const closed = state.data.irrelevantLeads || [], i = closed.findIndex(function (l) { return s(l.id) === s(id); });
+      if (i < 0) return Promise.resolve(false);
+      const rec = closed[i];
+      const back = Object.assign({}, rec, { stage: s(rec.originSheet) || 'new' });
+      return postAction({ action: 'restoreLead', lead: rec }, function (res) { return genericRefusal(res, true); },
+        function () { closed.splice(i, 1); state.data.leads.unshift(back); },
+        function () { state.data.leads = state.data.leads.filter(function (l) { return l !== back; }); closed.splice(i, 0, rec); }, 'הליד שוחזר');
     }
 
     function renderClients(c) {
@@ -437,6 +590,9 @@
         + '<button type="submit" class="btn small primary">שמירה</button></form></details>'
         + '<details class="act"><summary>דיווח תוצאת פגישה</summary><form data-form="outcome" data-lead="' + esc(l.id) + '"><label>תוצאה <select name="meetingOutcome"><option value="">—</option>' + MEETING_OUTCOMES.map(function (o) { return '<option value="' + o.id + '"' + (l.meetingOutcome === o.id ? ' selected' : '') + '>' + esc(o.label) + '</option>'; }).join('') + '</select></label>'
         + '<button type="submit" class="btn small primary">שמירה</button></form></details>'
+        + '<details class="act"><summary>סגירת ליד / הסרה</summary><form data-form="close" data-lead="' + esc(l.id) + '"><label>סטטוס סגירה <select name="disposition">' + DISPOSITIONS.map(function (d) { return '<option value="' + d.id + '">' + esc(d.label) + '</option>'; }).join('') + '</select></label>'
+        + '<label>סיבה <input name="note" type="text" maxlength="500"></label>'
+        + '<button type="submit" class="btn small primary">סגירת ליד</button> <button type="button" class="btn small" data-remove-lead="' + esc(l.id) + '">הסר (טעות)</button></form></details>'
         + '<details class="act"><summary>הערה ואחראי</summary><form data-form="note" data-lead="' + esc(l.id) + '"><label>אחראי <select name="assignedTo">' + opts(ASSIGNEES, l.assignedTo, true) + '</select></label>'
         + '<label>הערות <textarea name="note" rows="3">' + esc(l.note) + '</textarea></label>'
         + '<button type="submit" class="btn small primary">שמירה</button></form></details>'
@@ -521,7 +677,7 @@
 
     /* events (delegated; filters, sort and scroll survive opening a card) */
     root.addEventListener('click', function (ev) {
-      const t = ev.target.closest ? ev.target.closest('[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
       if (t.dataset.area) return setArea(t.dataset.area);
@@ -536,9 +692,12 @@
         if (state.drawer) state.drawer.tab = t.dataset.tab;
         return;
       }
+      if (t.id === 'crm-new-lead') return openNewLeadDrawer();
+      if (t.dataset.removeLead) { ev.preventDefault(); if (!state.saving) removeLeadAction(t.dataset.removeLead); return; }
+      if (t.dataset.restoreLead) { ev.preventDefault(); if (!state.saving) restoreLeadAction(t.dataset.restoreLead); return; }
       if (t.dataset.stageNext) { ev.preventDefault(); ev.stopPropagation(); if (!state.saving) moveStage(t.dataset.stageNext, 1); return; }
       if (t.dataset.stagePrev) { ev.preventDefault(); ev.stopPropagation(); if (!state.saving) moveStage(t.dataset.stagePrev, -1); return; }
-      if (t.id === 'crm-drawer-close' || t.id === 'crm-scrim') { closeDrawer(); menuEl.removeAttribute('data-open'); $('#crm-scrim').removeAttribute('data-open'); return; }
+      if (t.id === 'crm-drawer-close' || t.id === 'crm-scrim' || t.dataset.cancelDrawer) { closeDrawer(); menuEl.removeAttribute('data-open'); $('#crm-scrim').removeAttribute('data-open'); return; }
       if (t.id === 'crm-burger') { const open = menuEl.getAttribute('data-open') === 'true'; menuEl.setAttribute('data-open', String(!open)); $('#crm-scrim').setAttribute('data-open', String(!open)); return; }
       if (t.id === 'crm-retry') return load();
     });
@@ -558,6 +717,12 @@
         writeLead(id, { meetingOutcome: v('meetingOutcome') }, 'תוצאת הפגישה');
       } else if (f.dataset.form === 'note') {
         writeLead(id, { assignedTo: v('assignedTo'), note: v('note') }, 'ההערה');
+      } else if (f.dataset.form === 'close') {
+        closeLeadAction(id, v('disposition'), v('note'));
+      } else if (f.dataset.form === 'new-lead') {
+        const vals = {};
+        Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
+        createLead(vals);
       }
     });
     root.addEventListener('change', function (ev) {
@@ -594,5 +759,7 @@
     board: board, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
     occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, esc: esc, boot: boot,
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
-    stageAfter: stageAfter, stageBefore: stageBefore, applyLeadPatch: applyLeadPatch, leadSaveBody: leadSaveBody, saveRefusal: saveRefusal };
+    stageAfter: stageAfter, stageBefore: stageBefore, applyLeadPatch: applyLeadPatch, leadSaveBody: leadSaveBody, saveRefusal: saveRefusal,
+    DISPOSITIONS: DISPOSITIONS, CONTACT_RELATIONS: CONTACT_RELATIONS, localPhone: localPhone, leadFormErrors: leadFormErrors, newLeadRow: newLeadRow,
+    duplicateByPhone: duplicateByPhone, closeRecord: closeRecord, randomId: randomId };
 }));
