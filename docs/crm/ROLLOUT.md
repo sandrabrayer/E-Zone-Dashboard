@@ -162,6 +162,8 @@ A test pins this.
 
 ### C2 · Shell: side menu, areas, dark theme (decided 2026-10-27), read-only over existing data
 
+**Status (2026-10-27): built** — `CHANGELOG-crm-shell-areas.md`. Assets in `ASSETS` (hashed), not in `BUNDLE_PATHS`; browser test at 1366 / 390 px. C3's scope is now: billing follow-up and outpatient sent/failed rows, and the drawer's פגישות / חשבון / מסמכים tabs over real data.
+
 | Item | Plan |
 | --- | --- |
 | Goal | The 220 px right side menu and mobile drawer. Areas היום שלי / פניות / לקוחות / יומן / גבייה / בקרה. Light tokens **scoped to the shell's own stylesheet**. Reads only existing actions (`getData`, `getPayments`, `billingControlQueue`, `expectedDischarges`). Every action button opens the **existing** modal or tab, so no new write path. Synthetic, labelled demo data only in tests (spec §14). |

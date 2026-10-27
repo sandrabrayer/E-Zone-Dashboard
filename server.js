@@ -270,6 +270,10 @@ const ASSETS = createAssetStore({
   '/returning-patient.js': { file: path.join(__dirname, 'lib', 'returning-patient.js'), mime: 'application/javascript' },
   '/patient-retention.js': { file: path.join(__dirname, 'lib', 'patient-retention.js'), mime: 'application/javascript' },
   '/report-xlsx.js': { file: path.join(__dirname, 'lib', 'report-xlsx.js'), mime: 'application/javascript' },
+  /* The CRM shell (C2, CHANGELOG-crm-shell-areas.md): hashed like the others,
+   * loaded only by /?view=crm, NOT in sw.js BUNDLE_PATHS. */
+  '/crm/crm.js': { file: path.join(__dirname, 'public', 'crm', 'crm.js'), mime: 'application/javascript' },
+  '/crm/crm.css': { file: path.join(__dirname, 'public', 'crm', 'crm.css'), mime: 'text/css' },
 });
 
 /* Serve index.html with every asset reference pinned to that file's content
@@ -307,7 +311,7 @@ function sendIndex(req, res) {
 const CRM_ENABLED = process.env[CRM_ENABLED_VAR] || '';
 function sendCrmShell(req, res, principal) {
   const name = String(principal.user || principal.id || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const html = fs.readFileSync(path.join(__dirname, 'public/crm/crm.html'), 'utf8').replace(/__USER__/g, name);
+  const html = versionAssetRefs(fs.readFileSync(path.join(__dirname, 'public/crm/crm.html'), 'utf8'), ASSETS).replace(/__USER__/g, name);
   console.log(`[req] → serving /crm shell (build ${BUILD_ID}, user=${principal.id})`);
   noCache(res);
   res.type('html');
@@ -357,6 +361,8 @@ function sendLibAsset(urlPath) {
 }
 
 app.get('/app.js', sendStatic('app.js', 'application/javascript'));
+app.get('/crm/crm.js', sendStatic('crm/crm.js', 'application/javascript'));
+app.get('/crm/crm.css', sendStatic('crm/crm.css', 'text/css'));
 /* The payment-report rules (Phase 3 PR 2): the SAME file the server tests
  * require (lib/payment-report-rules.js, a pure IIFE that exposes
  * window.PaymentReportRules in a browser), so the «דווח תשלום» form validates

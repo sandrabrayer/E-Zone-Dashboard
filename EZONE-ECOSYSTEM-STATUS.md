@@ -1,5 +1,11 @@
 # E-ZONE Ecosystem Status — updated October 27, 2026
 
+## C2 — CRM shell: side menu + six areas, read-only — October 27, 2026 (PR open, stacked on C1)
+
+- **What:** `public/crm/` — menu, היום שלי (computed work queue + KPIs; Ortal's day from `billingControlQueue`), פניות (board ⇄ table, shared filter), לקוחות, יומן, גבייה (links), בקרה (action metrics), client drawer with the B3 timeline. Areas per role mirror the server gates. Reads only; every button links to the classic dashboard. Dark theme, RTL, 1366/390 verified in Chromium.
+- **Server:** two hashed assets + routes; not in `sw.js` (v93). No Code.gs. Visible only with `CRM_ENABLED=true` + `/?view=crm`.
+- **Next:** C3 — remaining computed lists (billing follow-up, outpatient sent/failed) and drawer tabs over real data; then Sandra flips the flag for Vered. Details: `CHANGELOG-crm-shell-areas.md`.
+
 ## C1 — CRM shell behind `CRM_ENABLED` + `/?view=crm` — October 27, 2026 (PR open)
 
 - **What:** `lib/crm-shell-flag.js` + one guarded branch on `/`: the placeholder shell (`public/crm/crm.html`, dark, RTL) is served only when `CRM_ENABLED === 'true'` (Railway, default off) and the session is a verified personal user. Flag off = every response byte-identical (tested). No Code.gs, no SW bump (v93), no new asset.
