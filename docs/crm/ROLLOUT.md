@@ -25,13 +25,27 @@ Spec §14 separation, applied here:
 | 0.1 | ✅ **DECIDED 2026-10-27: PR #220 (CRM-02) is closed as superseded** by this CRM restructure. Its branch `codex/crm02-read-projections-20261013` is kept at `a63c477`. Later CRM PRs will cherry-pick two things from it: (1) the archive-aware lead reader, **with** the numeric-ID fix, and (2) the task-queue rules (close only on fresh complete evidence; keep the original deadline). **No PostgreSQL.** | Spec §2/§14: no parallel mechanism. Session B no longer depends on #220. Analysis: **§7**. |
 | 0.2 | **When to turn on `PROXY_SECRET_MODE=enforce`** (Phase 0b-3; needs the Managers / Therapists / accounting-feed checks first) | Until then, any server-side CRM permission can be bypassed through `/exec` (CURRENT-STATE §8.1). Recommendation: before C goes to a pilot with real users, not before B. |
 | 0.3 | Activity scope: which event kinds, whether free-text notes may hold clinical content, who may read which kinds | Shapes B1's columns and B3's filter |
-| 0.4 | ✅ **DECIDED 2026-10-27:** the PERMISSIONS-MATRIX §6 questions are answered by SPEC D5–D12 (Shiran and Yael removed, Dana read-only with no money; coordinators no Dashboard; discounts Sandra; refund decision Sandra / execution Ortal; prices Sandra; Therapists 730 days + access log; Ortal's field set; managers via ניהול בית). Four follow-ups remain open (PERMISSIONS-MATRIX §6). | Needed before C2's area gating. **Not** needed for B. |
+| 0.4 | ✅ **DECIDED 2026-10-27:** the PERMISSIONS-MATRIX §6 questions and follow-ups are answered by SPEC D5–D16 (Shiran and Yael removed, Dana read-only with no money; coordinators no Dashboard; discounts Sandra; refund decision Sandra / execution Ortal; prices Sandra; Therapists 730 days + access log; Ortal's field set; managers via ניהול בית, never a client-supplied house; coordinators' discharge own-house only (D13); rule-based refunds automatic, exceptions Sandra (D14); Dana all houses with a no-money חתכי מטופלים export (D16)). Two items remain open (PERMISSIONS-MATRIX §6). | Needed before C2's area gating. **Not** needed for B. |
 
 Nothing in B or C edits OP-03 (Outpatient #125), Outpatient #114 or PR #220.
 
 ---
 
 ## Session B — Activity sheet foundation (append-only, no UI)
+
+### B0 · Security gap first: coordinators' discharge write → own house only (D13)
+
+This is the **first Session B code PR** (SPEC D13). It comes before B1.
+
+| Item | Plan |
+| --- | --- |
+| Goal | `recordDischargeFromCoordinators` refuses a patient whose house is not the caller's **verified session house**: the feed secret plus the asserted user/house pair (D12), never a free client field. Today it accepts any house. |
+| Dependency | The coordinators app sends no user/house pair today. It must start sending it **in the same release**; otherwise every coordinator discharge is refused. That is a cross-app step: confirm with the coordinators repo first (PERMISSIONS-MATRIX §6, open item 2). Phase 4 later moves the write behind the ניהול בית shared-discharge endpoint. |
+| Files | `apps-script/Code.gs` (`recordDischargeFromCoordinators_` house check, resolved through the single house rule `resolveHouseId`). `test/coordinators-discharge-own-house.test.js`. `CHANGELOG-coordinators-discharge-own-house.md`. ESS. `DEPLOY.md`. |
+| Tests | Own house → discharged. Other house → refused (`forbidden_house`), with nothing written. Missing pair → refused. An alias or label house still resolves. Idempotency is unchanged (`alreadyDischarged`). |
+| SW bump | **No** |
+| Code.gs | **Yes**. clasp deploys on merge. |
+| Rollback | Revert. The coordinators app keeps working, because it simply sends an extra field the old code ignores. |
 
 ### B1 · `Activity` sheet + writer helper (not wired)
 
@@ -127,6 +141,7 @@ A test pins this.
 
 | PR | Kind | Files (main) | Tests | SW bump | Code.gs | Rollback |
 | --- | --- | --- | --- | --- | --- | --- |
+| B0 | security fix (D13) | Code.gs | own-house / other-house / missing pair | No | Yes | revert |
 | B1 | infra | Code.gs | header / idempotency guards | No | Yes (inert) | revert |
 | B2 | infra | Code.gs | per-writer events, failure isolation, switch | No | Yes | `ACTIVITY_WRITES` off, or revert |
 | B3 | infra | Code.gs, lib/role-scope, lib/finance-scope | per-role scope matrix | No | Yes | revert |

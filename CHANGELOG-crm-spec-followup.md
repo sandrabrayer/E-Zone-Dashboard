@@ -1,4 +1,4 @@
-# CHANGELOG — CRM restructure, Session A follow-up: #220 decision + permission decisions D5–D12
+# CHANGELOG — CRM restructure, Session A follow-up: #220 decision + permission decisions D5–D16
 
 **Date:** 2026-10-27 · **Type:** docs only (no runtime change)
 
@@ -21,8 +21,15 @@
   - D9: prices are Sandra only (not built).
   - D10: Therapists keeps the 730-day alumni phones, plus a per-read access log.
   - D11: Ortal's seen / not-seen field set.
-  - D12: manager identity via ניהול בית. **The answer was cut off; the rest is pending.**
-- **`docs/crm/PERMISSIONS-MATRIX.md`** rewritten around D5–D12:
+  - D12: manager identity via ניהול בית; full text confirmed (D15): never a client-supplied house, and
+    ezone-managers never gets a Dashboard write path.
+- **D13–D16**, Sandra's answers to the follow-ups:
+  - D13: the coordinators' discharge write becomes own-house only. This is a security gap, fixed in the
+    first Session B code PR: ROLLOUT **B0** added.
+  - D14: rule-based refunds are Sandra's standing decision; only exceptions need her approval; Ortal executes.
+  - D15: D12 completed.
+  - D16: Dana is all houses, read-only, and may export חתכי מטופלים without money columns; no money exports.
+- **`docs/crm/PERMISSIONS-MATRIX.md`** rewritten around D5–D16:
   - Shiran and Yael rows removed; a Dana row added.
   - Each changed permission is marked *today → decided* (🟨).
   - §5 lists the server work each decision needs.
@@ -44,7 +51,7 @@ Railway (PERMISSIONS-MATRIX §7).
 
 ## Tests
 - `test/crm-spec-docs.test.js` now also pins:
-  - D5–D12 in SPEC.md;
+  - D5–D16 in SPEC.md, the full D12 text and the ROLLOUT B0 entry;
   - no Shiran/Yael identity rows in the matrix;
   - the revoke list.
 - Full `npm test` green.

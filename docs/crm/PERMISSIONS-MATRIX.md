@@ -1,6 +1,6 @@
 # CRM restructure — permissions matrix (spec §11)
 
-**Session A, 2026-10-27. Docs only.** Updated the same day with Sandra's decisions D5–D12
+**Session A, 2026-10-27. Docs only.** Updated the same day with Sandra's decisions D5–D16
 ([SPEC.md](SPEC.md) "Decisions").
 
 **Rule for this matrix:** a permission counts as **implemented** only when a server-side check
@@ -24,7 +24,7 @@ Sources:
 | Mark | Meaning |
 | --- | --- |
 | ✅ | **Implemented today**, enforced on the server |
-| 🟨 | **Agreed but not implemented** (a decision exists in D1–D12, the spec or an earlier signed-off rollout doc; code still differs) |
+| 🟨 | **Agreed but not implemented** (a decision exists in D1–D16, the spec or an earlier signed-off rollout doc; code still differs) |
 | ❓ | **Undecided**: needs Sandra's decision |
 | 🟥 | **Hiding is UI-only**: the server would serve or accept it |
 | — | Not applicable / no access |
@@ -62,12 +62,12 @@ see §7 for the revoke list.
 | --- | --- | --- | --- | --- | --- |
 | **Vered** | All 13 tabs (bc: «חריגים פתוחים» hidden) | All leads, patients, discharges, payments, credits, overrides | All | All houses | ✅. 🟥 «חריגים פתוחים» is Sandra-only by Code.gs response shaping (approver flag), and the billing-control export has no server field cut. ✅ D2: «מטופלים משוחררים» stays hers. |
 | **Ortal** | «בקרת גבייה»; read-only «גבייה» when `billingRead` | Only `CONTROLLER_ACTIONS` (server.js:973-981 + Code.gs `viewRefused_`) | **D11 SEES:** patient name, phone, house, entry/exit dates, every payment row, verification state, debt aging, invoice/document status, refund execution. **D11 does NOT see:** lead notes, referrer/contact details, meeting data, clinical notes, bonus data. | All houses | ✅ she gets no lead notes, contacts or meeting data today (controller projection `{id, houseId, name, date, exitDate, status, pay, adv}`). 🟨 **phone is not in her projection yet** (finance-scope.js:129-162) and must be added. 🟨/🟥 the `debtAging` answer and .xlsx have **no controller field cut** (finance-scope.js:238-242); they must be checked against the D11 "does NOT see" list. 🟥 Any other `/api/` route returns 403, **including `/api/version`**. 🟨 her own CRM "היום שלי" (spec §5) is not built. |
-| **Dana** | 🟨 Leads and patients, read-only (D5). **No** גבייה, בקרת גבייה, שיוך תשלומים, client-card «חשבון» or payment rows. | 🟨 leads, patients | 🟨 Must be cut **on the server**: no payment rows and no money fields (`pay`, `adv`, `advance`, `billingOverrides`) | ❓ all houses (not stated) | 🟨 not implemented. The current restricted view would **not** satisfy D5: restricted `getData` still sends `pay` / `adv` / lead `advance`, and its writes are not blocked (§4 #2, #3). |
+| **Dana** | 🟨 Leads and patients, read-only (D5, D16). **No** גבייה, בקרת גבייה, שיוך תשלומים, client-card «חשבון» or payment rows. | 🟨 leads, patients | 🟨 Must be cut **on the server**: no payment rows and no money fields (`pay`, `adv`, `advance`, `billingOverrides`) | 🟨 **All houses** (D16) | 🟨 not implemented. The current restricted view would **not** satisfy D5: restricted `getData` still sends `pay` / `adv` / lead `advance`, and its writes are not blocked (§4 #2, #3). |
 | **House managers** | Managers app: their house (`mwScopeHouse_`, Code.gs:15306). `/meeting-report`: a lead picker. | Their house's patients, visits, logs, expected admissions | Managers feeds carry no billing. `/meeting-report` leads are whitelisted to `id, name, house, visitDate, officeNote` (server.js:1934-1944). | Managers app: own house ✅. 🟥 **`/meeting-report` lists leads of ALL houses**: one shared PIN, no house filter. | 🟨 D12: per-user identity via ניהול בית, house from the verified session only. Not built. |
-| **Coordinators** | **None in the Dashboard (D6).** ניהול בית only. | `getPatientsForCoordinators`: active patients + releases from the last 30 days | `id, name, house, active, admissionDate, dischargeDate` (no phone, no billing) | 🟥 **All houses today**: the secret is not house-scoped. 🟨 D6: own house only. | ✅ field minimisation. 🟨 own-house scope. ❓ see §6.1 on the discharge write. |
+| **Coordinators** | **None in the Dashboard (D6).** ניהול בית only. | `getPatientsForCoordinators`: active patients + releases from the last 30 days | `id, name, house, active, admissionDate, dischargeDate` (no phone, no billing) | 🟥 **All houses today**: the secret is not house-scoped. 🟨 D6: own house only. | ✅ field minimisation. 🟨 own-house scope (read: D6; discharge write: D13). |
 | **Sandra** | All, including «חריגים פתוחים» and PIN admin | All | All | All | ✅ |
 | **Ron** | — | — | — | — (in ezone-managers: all houses as `admin`) | ✅ D1 |
-| **ezone-managers app** | — | Patients, leads, visits, logs, snapshots | Non-billing facts (bonus, occupancy) | All houses for an `admin` caller | ✅. 🟥 Spec §11: "an inter-app secret is not a user permission". Today the house and role are **asserted by the caller**, and Code.gs trusts them. 🟨 D12. |
+| **ezone-managers app** | — | Patients, leads, visits, logs, snapshots | Non-billing facts (bonus, occupancy) | All houses for an `admin` caller | ✅ today. 🟥 Spec §11: "an inter-app secret is not a user permission". Today the house and role are **asserted by the caller**, and Code.gs trusts them. 🟨 D12/D15: **ezone-managers never gets a Dashboard write path**, but today `managersWork` **writes** ManagersFamilyCalls / StaffTalks / Events, ManagersExpectedDischarge and ManagersFeedbackLog (CURRENT-STATE §3). See §6 follow-up 1. |
 | **ezone-therapists app** | — | Admitted roster; discharged roster (730 days) | `name, phone, house, entryDate (, exitDate)` | All houses | ✅ D10 keeps the 730 days. 🟨 **one access-log entry per read**. Today only `SecurityLog` records open-action calls, once per action per hour (`securityLogOnce_`, Code.gs:1659), which is not per read. |
 | **ezone-coordinators / ניהול בית app** | — | as the Coordinators row | as the Coordinators row | 🟨 own house per user (D6, D12) | ✅ secret-gated today |
 | **ezone-outpatient app** | — | Nothing read from the Dashboard (proven) | — | — | ✅ |
@@ -89,7 +89,7 @@ does not check (the UI hides it) · 🟨 decided, the code still differs (shown 
 | **Edit** lead / patient / meeting (`saveAll`) | ✅ | ⛔ | 🟨 must be ⛔ | — | — | ✅ | — | None by role (edit mode is UI-only) |
 | **Edit** patient `pay` / `adv` (price for a stay) | ✅ | ⛔ | 🟨 must be ⛔ | — | — | ✅ | — | 🟥 Not money-gated: rides `saveAll` |
 | Close / restore lead (`moveLeadIrrelevant`, `restoreLead`) | ✅ | ⛔ | 🟨 must be ⛔ | — | — | ✅ | — | None by role |
-| **Discharge** (`dischargePatient`) | ✅ | ⛔ | 🟨 must be ⛔ | — | ✅ via `recordDischargeFromCoordinators` (immediate, Sandra's decision 2026-10-04). ❓ see §6.1. | ✅ | — | None by role on the Dashboard path |
+| **Discharge** (`dischargePatient`) | ✅ | ⛔ | 🟨 must be ⛔ | — | 🟥 via `recordDischargeFromCoordinators`, **any house today** (immediate, Sandra's decision 2026-10-04). 🟨 **D13: own house only**, from the session house; behind ניהול בית in Phase 4. | ✅ | — | None by role on the Dashboard path. Coordinators: secret only, no house check. **Security gap (D13), fixed in Session B's first code PR (ROLLOUT B0).** |
 | Expected discharge date | — | — | — | ✅ (Managers `dischargeSet`) | — | ✅ (admin in Managers) | ✅ (admin in Managers) | `MANAGERS_WORK_SECRET` + body role |
 | **Report** meeting outcome (manager report) | — (edit via `saveAll`) | — | — | ✅ `/meeting-report`, shared PIN | — | ✅ | — | `MEETING_REPORT_PIN` + `reporter_not_manager`. 🟥 any manager can report on any house's lead. 🟨 D12 house scope. |
 | **Report** payment (`reportPayment`) | ✅ | ⛔ | ⛔ | — | — | ✅ (no 90-day limit) | — | FINANCE ✅ |
@@ -100,15 +100,17 @@ does not check (the UI hides it) · 🟨 decided, the code still differs (shown 
 | Change billed amount («שנה סכום», `upsertBillingOverride`) | ✅ | ✅ (accountant) | ⛔ | — | — | ✅ | — | finance\|accountant\|approver ✅ (not addressed by D5–D12) |
 | **Discount** (`setBillingDiscount`) — **D7** | 🟨 today ✅ → decided ⛔ | ⛔ | ⛔ | — | — | ✅ | — | today: the finance cap (Vered + Sandra). 🟨 D7: approver only, like write-offs. |
 | **Price change** — **D9** | — | — | — | — | — | 🟨 decided, not built | — | No feature exists. Price is per stay (`Patients.pay`); BonusConfig is hand-edited. |
-| **Refund decision**: manual / off-policy amount (`saveCredit`, `approveRefundException`) — **D8** | ⛔ (needs approver) | ⛔ | ⛔ | — | — | ✅ | — | approver ✅ (`approveRefundException`, `override_requires_approver`) |
-| **Refund decision**: automatic policy credit created at discharge | rides `dischargePatient` | ⛔ | — | — | rides the coordinator discharge | rides `dischargePatient` | — | Automatic. ❓ §6.2: does the policy count as Sandra's standing decision (D8)? |
-| **Refund execution** («סימון זיכוי כשולם», `settleRefund`: date, reference) — **D8** | 🟨 today ✅ → decided ⛔ | ✅ | ⛔ | — | — | 🟨 today ✅ → decided ⛔ (never the decider) | — | today: FINANCE (controller allowed). 🟨 D8: Ortal only, and the server must refuse the same person who decided. |
+| **Refund decision — EXCEPTION**: outside the rule / manual amount (`saveCredit`, `approveRefundException`) — **D8, D14** | ⛔ (needs approver) | ⛔ | ⛔ | — | — | ✅ | — | approver ✅ (`approveRefundException`, `override_requires_approver`) |
+| **Refund decision — RULE-BASED** (day-14 / prepaid-cycle), created at discharge — **D14** | automatic (rides `dischargePatient`) | ⛔ | — | — | automatic (rides the coordinator discharge) | automatic | — | ✅ D14: the standing rule is Sandra's decision; no per-case confirmation. |
+| **Refund execution** («סימון זיכוי כשולם», `settleRefund`: date, reference) — **D8, D14** | 🟨 today ✅ → decided ⛔ | ✅ | ⛔ | — | — | 🟨 today ✅ → decided ⛔ (never executes) | — | today: FINANCE (controller allowed). 🟨 D8/D14: **Ortal only**, for rule-based and approved-exception refunds alike. |
 | Cancel credit | ✅ | ⛔ | ⛔ | — | — | ✅ | — | deleter ✅ |
 | Funder (`appendFunder`) | ✅ | ⛔ | ⛔ | — | — | ✅ | — | FINANCE ✅ |
 | **Approve** policy exception / write-off | ⛔ | ⛔ | ⛔ | — | — | ✅ | — | approver ✅ |
 | **Export** debt aging / refund forecast / cleanup .xlsx | ✅ | ✅ (🟥 debt aging uncut; 🟨 D11 cut) | ⛔ | — | — | ✅ | — | finance-or-controller ✅ |
 | **Export** billing-control .xlsx | ✅ | ✅ | ⛔ | — | — | ✅ | — | billingControl ✅. 🟥 approver-only rows depend on Code.gs shaping. |
-| **Export** every חתך report (leads funnel, patient retention) | ✅ | ⛔ | ❓ (read-only does not settle export) | — | — | ✅ | — | Client-side only |
+| **Export** חתכי מטופלים (patient-retention) reports | ✅ | ⛔ | 🟨 ✅ **with no money columns** (D16) | — | — | ✅ | — | Client-side today, from `getData`. 🟨 Dana's export must never contain money fields. |
+| **Export** leads funnel («חתכים בלידים») | ✅ | ⛔ | ⛔ (not granted by D16) | — | — | ✅ | — | Client-side today |
+| **Export** any payment / debt / revenue data | ✅ | ✅ (per D11) | ⛔ (D16) | — | — | ✅ | — | finance / controller gates ✅ |
 | Outpatient handoff («העבר לאמבולטורי») | ✅ | ⛔ | 🟨 must be ⛔ | — | — | ✅ | — | `/api/outpatient-lead`: session only. 🟥 The legacy body creates arbitrary Outpatient leads. |
 | PIN admin (incl. revoking Shiran / Yael, §7) | ⛔ | ⛔ | ⛔ | — | — | ✅ | — | approver ✅ |
 
@@ -117,13 +119,14 @@ does not check (the UI hides it) · 🟨 decided, the code still differs (shown 
 | Action | First actor | Second actor | Status |
 | --- | --- | --- | --- |
 | Off-policy refund amount / manual credit | Vered (proposes) | Sandra decides | ✅ enforced |
-| **Refund decision → refund execution (D8)** | Sandra decides | **Ortal** marks it paid (date + reference) | 🟨 Today Vered, Ortal and Sandra can all `settleRefund`, and nothing stops the decider from executing. |
+| **Refund EXCEPTION → execution (D8, D14)** | Sandra approves (outside the rule, write-off, discount) | **Ortal** marks it paid (date + reference) | 🟨 Today Vered, Ortal and Sandra can all `settleRefund`. |
+| **Rule-based refund → execution (D14)** | the standing rule (automatic) | **Ortal** marks it paid | 🟨 same `settleRefund` narrowing |
 | **Discount (D7)** | Sandra only | none: Sandra is the approver | 🟨 Today Vered can also discount. |
 | Un-void a payment | — | Sandra only | ✅ |
 | Payment reported → verified | Vered (reports) | Ortal (verifies) | ✅ two different capabilities. Vered cannot confirm; Ortal cannot report. |
 | Void an unpaid claim | Ortal | Sandra may undo | ✅ |
 | Price change (D9) | Sandra only | — | 🟨 decided, no feature |
-| Coordinator discharge | Coordinator | none (Sandra decided "immediate", 2026-10-04) | ✅ by decision. ❓ §6.1. |
+| Coordinator discharge | Coordinator (own house, D13) | none (Sandra decided "immediate", 2026-10-04) | 🟥 any house today → 🟨 D13 own house |
 | Family request to end treatment → actual exit (spec §9) | Vered (opens follow-up) | the authorised house person | 🟨 agreed in the spec, not implemented |
 
 ---
@@ -146,7 +149,7 @@ does not check (the UI hides it) · 🟨 decided, the code still differs (shown 
 
 ---
 
-## 5. What the CRM must add (spec §11 "Enforcement" + D5–D12)
+## 5. What the CRM must add (spec §11 "Enforcement" + D5–D16)
 
 These are all 🟨 agreed, not implemented. Each is a separate server-side PR; none belongs in
 Session B (Activity) or in the UI-only Session C PRs.
@@ -158,17 +161,22 @@ Session B (Activity) or in the UI-only Session C PRs.
 2. **A real read-only role for Dana** (D5): writes refused on the server, not via UI edit mode.
 3. **D7:** `setBillingDiscount` moves from the finance cap to `approver` (Sandra only), in
    `lib/role-scope.js` **and** Code.gs `requiredRoleFor_`.
-4. **D8:** `settleRefund` is allowed for Ortal only, and refused when the executor is the person
-   recorded as the decider (`approvedBy`).
+4. **D8 + D14:** `settleRefund` is allowed for Ortal only (rule-based and approved-exception
+   refunds alike). Exceptions (outside the rule, write-off, discount) stay approver-only.
 5. **D10:** one access-log row per Therapists roster read: a new append-only log, not the hourly
    SecurityLog.
-6. **D6 + D12:** house scoping on the server for the ניהול בית proxy. The house comes from the
-   verified per-user identity, never from a free request field.
+6. **D6 + D12 + D15:** house scoping on the server for the ניהול בית proxy. The house comes from
+   the verified per-user identity (the feed secret plus the asserted user/house pair), never a
+   client-supplied house.
+6a. **D13 (security gap, first Session B code PR):** `recordDischargeFromCoordinators` refuses a
+   patient outside the caller's verified house.
+6b. **D15:** ezone-managers loses every Dashboard write path. Timing: §6 follow-up 1.
+6c. **D16:** Dana's חתכי מטופלים export carries no money columns.
 7. **No CRM screen widens authority** (§11: "a design change does not widen them").
 8. **Turn on `PROXY_SECRET_MODE=enforce`** (Phase 0b-3) before any CRM read model ships. Otherwise
    the server-side enforcement above can be bypassed through `/exec`.
 
-## 6. Decisions — resolved 2026-10-27
+## 6. Decisions — resolved 2026-10-27 (D5–D16)
 
 The eight open questions are answered by D5–D12 in [SPEC.md](SPEC.md):
 - Q1 → D5 (Shiran and Yael removed; Dana read-only, no money)
@@ -180,17 +188,23 @@ The eight open questions are answered by D5–D12 in [SPEC.md](SPEC.md):
 - Q7 → D11 (Ortal's field set)
 - Q8 → D12 (option (a) via ניהול בית)
 
-### Follow-up questions raised by the answers (❓)
+### Follow-ups — resolved 2026-10-27
 
-1. **Coordinator discharge write.** D6 limits coordinators to a read-only own-house roster, but
-   today `recordDischargeFromCoordinators` lets the coordinators app **write** discharges for any
-   house (effective immediately, by the 2026-10-04 decision). Does that write stay, become
-   own-house only, or move behind ניהול בית?
-2. **Automatic policy refunds.** `dischargePatient` and coordinator discharges create the
-   policy refund credit automatically. Does the policy count as Sandra's standing decision (D8),
-   or must she confirm each credit before Ortal may execute it?
-3. **D12 is cut off** after "never a …". Please complete the sentence.
-4. **Dana's houses and exports.** Is she all-houses? May she export the חתך reports?
+- Coordinator discharge write → **D13** (own house now; behind ניהול בית in Phase 4)
+- Automatic policy refunds → **D14** (the rule is Sandra's standing decision; exceptions need her approval)
+- D12 completion → **D15**
+- Dana's houses and exports → **D16**
+
+### Still open (❓)
+
+1. **When do ezone-managers' Dashboard writes end?** D15 says ezone-managers never gets a
+   Dashboard write path. Today, though, `managersWork` writes five Dashboard sheets: family
+   calls, staff talks, events, expected discharges and feedback. These presumably move to
+   ניהול בית in Phase 3/4, but the phase and the cut-over are not stated.
+2. **What "session house" means for D13 before ניהול בית exists.** The coordinators app calls
+   with a shared secret only and sends no verified user/house pair today. The B0 fix therefore
+   needs the coordinators app to start sending the user/house pair (per D12) in the same release,
+   or the own-house check would refuse every discharge. That is a cross-app step, to be confirmed.
 
 ---
 

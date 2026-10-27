@@ -28,11 +28,20 @@ text below that reads otherwise.
 | D5 | **Shiran no longer works at E-ZONE, and Yael moved roles. Both are removed. Dana (דנה) replaces Yael.** | Dana is **read-only on leads and patients**, with **NO money screens**: no גבייה, no בקרת גבייה, no שיוך תשלומים, no client-card «חשבון», no payment rows. The existing Shiran/Yael user and PIN entries are listed for Sandra to revoke in PERMISSIONS-MATRIX §7. |
 | D6 | **Coordinators get NO Dashboard access.** | Their only view is their **own-house roster inside ניהול בית (Phase 3)**, read-only, through the secret-gated feed. |
 | D7 | **Discounts = Sandra only**, enforced on the server (the same rule as write-offs). | No second approver: Sandra is the approver. |
-| D8 | **Refund DECISION = Sandra. Refund EXECUTION (marking paid, with date and reference) = Ortal.** | Never the same person; enforced on the server. |
+| D8 | **Refund DECISION = Sandra. Refund EXECUTION (marking paid, with date and reference) = Ortal.** | Never the same person; enforced on the server. Clarified by D14: rule-based refunds are automatic (Sandra's standing decision); only exceptions need Sandra's explicit approval. |
 | D9 | **Price changes = Sandra only.** | No feature exists now. Recorded as decided, not built. |
 | D10 | **Therapists keeps the 730-day alumni phone numbers** (needed for winback and המשך טיפול). | Add one access-log entry per read. |
 | D11 | **Ortal SEES:** patient name, phone, house, entry/exit dates, every payment row, verification state, debt aging, invoice/document status, refund execution. **Ortal does NOT see:** lead notes, referrer/contact details, meeting data, clinical notes, bonus data. | Server-side field cut for every Ortal read, including debt aging and exports. |
-| D12 | **Manager identity: option (a), and the proxy is ניהול בית** (the coordinators app after Phase 3), **not ezone-managers.** Per-user identity. The house is taken only from the verified session. The Dashboard trusts the feed secret plus the asserted user/house pair, never a … | ⚠️ **The answer was cut off after "never a".** The rest is pending Sandra's confirmation. D3 still applies: managers' existing passwords carry over into ניהול בית. |
+| D12 | **Manager identity: option (a), but the proxy is ניהול בית** (the coordinators app after Phase 3), **not ezone-managers.** Per-user identity. The house is taken only from the verified session. The Dashboard trusts the feed secret + the asserted user/house pair, **never a client-supplied house. ezone-managers never gets a Dashboard write path.** | Full text confirmed by Sandra 2026-10-27 (see D15). D3 still applies: managers' existing passwords carry over into ניהול בית. |
+
+### Decisions D13–D16: answers to the PERMISSIONS-MATRIX §6 follow-ups (Sandra, 2026-10-27)
+
+| # | Decision | Effect on the CRM |
+| --- | --- | --- |
+| D13 | **The coordinators' discharge write becomes OWN-HOUSE ONLY now.** It is enforced on the server from the session house, not from a client field, and moves behind the ניהול בית shared-discharge endpoint in Phase 4. | Today's "any house" state is a **security gap** to fix in the **first Session B code PR** ([ROLLOUT.md](ROLLOUT.md) B0). |
+| D14 | **Refunds computed by the standing rule (day-14 / prepaid-cycle logic) are Sandra's standing decision**: no per-case confirmation, and Ortal executes them. **Only EXCEPTIONS** (a refund outside the rule, a write-off, a discount) need Sandra's explicit approval, enforced on the server. | D8 reads as: exceptions = Sandra; rule-based = automatic; execution = Ortal. |
+| D15 | **D12 completed:** "…never a client-supplied house. ezone-managers never gets a Dashboard write path." | The D12 row above holds the full text. |
+| D16 | **Dana: all houses, read-only.** She may export the **חתכי מטופלים** reports (no money columns). **No** export of any payment, debt or revenue data. | The export is cut on the server or built only from the fields she may read. |
 
 <div dir="rtl" lang="he">
 
