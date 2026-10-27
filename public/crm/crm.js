@@ -410,6 +410,60 @@
     return { toVerify: by.reported, flagged: by.flagged, confirmed: by.confirmed, total: list.length };
   }
 
+  /* ---- C8: «גבייה» read-only overview (CHANGELOG-crm-billing-readonly.md) ----
+   * Built from TWO existing finance reads — debtAging (open debt as of today,
+   * the same engine as «חובות פתוחים») and getPayments (cycles + receipts).
+   * Pure: no write, no new Code.gs action. A missing / refused answer yields
+   * zeros and an `error`, never a throw, so the area renders for Ortal and
+   * Vered alike. Money is ₪, VAT-inclusive, rounded to whole shekels on screen. */
+  const DEBT_BUCKET_LABELS = { d0_7: 'עד 7 ימים', d8_30: '8–30 ימים', d31_60: '31–60 ימים', d61_plus: '61+ ימים' };
+  const CONFIRM_LABELS = { reported: 'דווח', confirmed: 'אומת', flagged: 'סומן' };
+  function fmtMoney(n) { const v = Math.round(Number(n) || 0); return '₪' + String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  function receiptsOf(payments) {
+    const p = payments && payments.ok !== false ? payments : {};
+    return (Array.isArray(p.receipts) ? p.receipts : []).map(function (r) {
+      const o = r || {};
+      return { id: s(o.id), patientId: s(o.patientId), patientName: s(o.patientName), houseId: s(o.houseId), houseName: houseName(o.houseId),
+        receivedDate: s(o.receivedDate).slice(0, 10), amount: Number(o.amount) || 0, method: s(o.method), payer: s(o.payer), funder: s(o.funder),
+        confirmStatus: s(o.confirmStatus), cycleId: s(o.cycleId) };
+    });
+  }
+  function billingOverview(debt, payments, today) {
+    const d = debt && debt.ok !== false ? debt : null;
+    const empty = { count: 0, total: 0, d0_7: 0, d8_30: 0, d31_60: 0, d61_plus: 0 };
+    const rec = (d && d.totals && d.totals.recorded_debt) || empty;
+    const unrec = (d && d.totals && d.totals.unrecorded_cycles) || empty;
+    const sum = function (k) { return Math.round(((Number(rec[k]) || 0) + (Number(unrec[k]) || 0)) * 100) / 100; };
+    const buckets = ['d0_7', 'd8_30', 'd31_60', 'd61_plus'].map(function (k) { return { key: k, label: DEBT_BUCKET_LABELS[k], amount: sum(k) }; });
+    const patients = (d && Array.isArray(d.byPatient) ? d.byPatient : []).map(function (p) {
+      const cycles = Array.isArray(p.cycles) ? p.cycles : [];
+      let balance = 0, oldest = 0, grace = false, unrecorded = 0;
+      cycles.forEach(function (c) { balance += Number(c.balance) || 0; if ((Number(c.days) || 0) > oldest) oldest = Number(c.days) || 0; if (c.funderGrace) grace = true; if (c.kind === 'unrecorded') unrecorded++; });
+      return { id: s(p.patientId), name: s(p.name), houseId: s(p.houseId), houseName: houseName(p.houseId), status: s(p.status), inHouse: !!p.inHouseAtAsOf,
+        balance: Math.round(balance * 100) / 100, cycles: cycles.length, unrecorded: unrecorded, oldestDays: oldest, grace: grace,
+        bucket: oldest <= 7 ? 'd0_7' : oldest <= 30 ? 'd8_30' : oldest <= 60 ? 'd31_60' : 'd61_plus' };
+    }).sort(function (a, b) { return b.balance - a.balance || a.name.localeCompare(b.name, 'he'); });
+    const houses = (d && Array.isArray(d.byHouse) ? d.byHouse : []).map(function (h) {
+      const r = h.recorded_debt || empty, u = h.unrecorded_cycles || empty;
+      return { houseId: s(h.houseId), name: houseName(h.houseId), total: Math.round(((Number(r.total) || 0) + (Number(u.total) || 0)) * 100) / 100, count: (Number(r.count) || 0) + (Number(u.count) || 0) };
+    }).sort(function (a, b) { return b.total - a.total; });
+    const receipts = receiptsOf(payments).sort(function (a, b) { return a.receivedDate < b.receivedDate ? 1 : a.receivedDate > b.receivedDate ? -1 : 0; });
+    const since = today ? new Date(Date.parse(today + 'T00:00:00Z') - 30 * 86400000).toISOString().slice(0, 10) : '';
+    let received30 = 0, received30Count = 0, toVerify = 0;
+    receipts.forEach(function (r) { if (r.receivedDate && r.receivedDate >= since && r.receivedDate <= (today || r.receivedDate)) { received30 += r.amount; received30Count++; } if (r.confirmStatus === 'reported') toVerify++; });
+    const errors = [];
+    if (!d) errors.push('חובות: ' + s(debt && debt.error || 'לא נטען'));
+    if (!(payments && payments.ok !== false)) errors.push('תשלומים: ' + s(payments && payments.error || 'לא נטען'));
+    return {
+      asOf: s(d && d.asOf) || s(today), openDebt: sum('total'), openCycles: sum('count'), over60: sum('d61_plus'), debtors: patients.length,
+      received30: Math.round(received30 * 100) / 100, received30Count: received30Count, toVerify: toVerify,
+      detached: d && d.detachedPayments ? (Number(d.detachedPayments.count) || 0) : 0,
+      pendingCredits: d && d.pendingCredits ? { count: Number(d.pendingCredits.count) || 0, total: Number(d.pendingCredits.total) || 0 } : { count: 0, total: 0 },
+      funderGrace: d && d.funderGrace ? { count: Number(d.funderGrace.count) || 0, amount: Number(d.funderGrace.amount) || 0 } : { count: 0, amount: 0 },
+      buckets: buckets, patients: patients, houses: houses, receipts: receipts.slice(0, 25), errors: errors,
+    };
+  }
+
   const esc = function (v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
 
   /* ================= DOM ================= */
@@ -791,9 +845,52 @@
       }).join('') + '</div>';
     }
 
+    /* C8: read-only overview over debtAging + getPayments, fetched on first
+     * open (never on boot: the two reads are heavier than getData). Every
+     * ACTION («דווח תשלום», overrides, credits, Ortal's verification) stays in
+     * the classic dashboard — the links at the bottom. */
+    function loadBilling() {
+      if (state.billing || state.billingLoading) return;
+      state.billingLoading = true;
+      Promise.all([api('debtAging'), api('getPayments')]).then(function (res) {
+        state.billing = { debt: res[0], payments: res[1] };
+      }).catch(function (e) {
+        state.billing = { debt: { ok: false, error: String(e && e.message || e) }, payments: { ok: false, error: String(e && e.message || e) } };
+      }).then(function () { state.billingLoading = false; if (state.area === 'billing') renderMain(); });
+    }
     function renderBilling() {
-      return '<p class="na">הגבייה נשארת בדשבורד הרגיל בשלב זה; כאן הקישורים לתתי-המסכים.</p><div class="links">'
-        + '<a href="/">גבייה<small>תשלומים, חובות, זיכויים</small></a><a href="/">בקרת גבייה<small>אימות דיווחים (אורטל)</small></a><a href="/">שיוך תשלומים<small>תשלומים ללא שיוך</small></a><a href="/">מסמכים<small>חשבוניות וקבלות</small></a></div>';
+      if (!state.billing) { loadBilling(); return '<div class="crm-state">טוען נתוני גבייה…</div>'; }
+      const b = billingOverview(state.billing.debt, state.billing.payments, state.today);
+      const isController = !!(state.me && state.me.view === 'controller');
+      const kpi = function (v, l) { return '<div class="kpi"><span class="v">' + esc(v) + '</span><span class="l">' + esc(l) + '</span></div>'; };
+      let html = '';
+      if (b.errors.length) html += '<div class="crm-state bad">' + esc(b.errors.join(' · ')) + ' <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
+      html += '<div class="kpis">' + kpi(fmtMoney(b.openDebt), 'חוב פתוח (' + b.openCycles + ' מחזורים)') + kpi(fmtMoney(b.over60), 'מעל 60 יום')
+        + kpi(b.debtors, 'מטופלים עם חוב') + kpi(fmtMoney(b.received30), 'התקבל ב-30 יום (' + b.received30Count + ')') + kpi(b.toVerify, 'דיווחים לאימות') + '</div>';
+      html += '<div class="group-title">גיול חוב נכון ל-' + esc(fmtDate(b.asOf)) + '</div><div class="kpis">' + b.buckets.map(function (x) { return kpi(fmtMoney(x.amount), x.label); }).join('') + '</div>';
+      if (b.houses.length) {
+        html += '<div class="group-title">חוב לפי בית</div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>בית</th><th>חוב</th><th>מחזורים</th></tr></thead><tbody>'
+          + b.houses.map(function (h) { return '<tr><td>' + esc(h.name) + '</td><td>' + esc(fmtMoney(h.total)) + '</td><td>' + h.count + '</td></tr>'; }).join('') + '</tbody></table></div>';
+      }
+      html += '<div class="group-title">חובות פתוחים לפי מטופל/ת' + (b.funderGrace.count ? ' ' + chip('wait', b.funderGrace.count + ' בחלון גוף מממן') : '') + '</div>';
+      if (!b.patients.length) html += '<p class="na">אין חובות פתוחים.</p>';
+      else html += '<div class="tbl-wrap"><table class="tbl" id="crm-debtors"><thead><tr><th>שם</th><th>בית</th><th>חוב</th><th>מחזורים</th><th>הוותיק ביותר</th><th>סטטוס</th></tr></thead><tbody>'
+        + b.patients.map(function (p) {
+          const st = p.bucket === 'd61_plus' ? 'late' : p.bucket === 'd31_60' ? 'today' : 'ok';
+          return '<tr data-open-patient="' + esc(p.id) + '"><td>' + esc(p.name) + '</td><td>' + esc(p.houseName) + '</td><td>' + esc(fmtMoney(p.balance)) + '</td><td>' + p.cycles + (p.unrecorded ? ' <span class="na">(' + p.unrecorded + ' ללא דיווח)</span>' : '') + '</td><td>'
+            + chip(st, p.oldestDays + ' ימים') + (p.grace ? ' ' + chip('wait', 'גוף מממן') : '') + '</td><td>' + esc(p.inHouse ? 'בבית' : (p.status === 'released' ? 'שוחרר/ה' : p.status)) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+      html += '<div class="group-title">תקבולים אחרונים</div>';
+      if (!b.receipts.length) html += '<p class="na">אין תקבולים.</p>';
+      else html += '<div class="tbl-wrap"><table class="tbl" id="crm-receipts"><thead><tr><th>תאריך</th><th>שם</th><th>בית</th><th>סכום</th><th>אמצעי</th><th>אימות</th></tr></thead><tbody>'
+        + b.receipts.map(function (r) {
+          const cs = r.confirmStatus === 'confirmed' ? 'ok' : r.confirmStatus === 'flagged' ? 'late' : 'today';
+          return '<tr data-receipt="' + esc(r.id) + '"><td>' + esc(fmtDate(r.receivedDate)) + '</td><td>' + esc(r.patientName) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td><td>' + esc(r.method) + '</td><td>' + (r.confirmStatus ? chip(cs, CONFIRM_LABELS[r.confirmStatus] || r.confirmStatus) : '') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+      html += '<div class="group-title">פעולות (בדשבורד הרגיל)</div><div class="links">'
+        + (isController ? '<a href="/">בקרת גבייה<small>אימות דיווחים</small></a>' : '<a href="/">דווח תשלום<small>דיווח תקבול, שיוך, חשבונית</small></a><a href="/">חובות וזיכויים<small>הנחות, זיכויים, החזרים</small></a><a href="/">שיוך תשלומים<small>' + b.detached + ' ללא שיוך</small></a>')
+        + '</div>';
+      return html;
     }
 
     function renderOccupancy(c) {
@@ -1007,6 +1104,11 @@
         createLead(vals);
       }
     });
+    root.addEventListener('click', function (ev) {
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry]') : null;
+      if (!t) return;
+      state.billing = null; renderMain();
+    });
     root.addEventListener('change', function (ev) {
       const t = ev.target;
       if (t.id === 'f-house' || t.id === 'f-house-c') state.filters.house = t.value;
@@ -1047,5 +1149,5 @@
     FUNDERS: FUNDERS, PATIENT_STATUSES: PATIENT_STATUSES, admissionRow: admissionRow, admissionErrors: admissionErrors, directAddRows: directAddRows,
     directAddErrors: directAddErrors, houseSaveBody: houseSaveBody, houseSaveRefusal: houseSaveRefusal, isoDateOk: isoDateOk,
     DISCHARGE_DISPOSITIONS: DISCHARGE_DISPOSITIONS, CONTINUITY_CHOICES: CONTINUITY_CHOICES, dischargeAuditRow: dischargeAuditRow, dischargeErrors: dischargeErrors,
-    movedRow: movedRow, patientEditErrors: patientEditErrors };
+    movedRow: movedRow, patientEditErrors: patientEditErrors, billingOverview: billingOverview, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS };
 }));
