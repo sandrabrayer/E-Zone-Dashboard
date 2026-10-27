@@ -151,16 +151,15 @@ test('activityRow_ is PURE: validates and normalises without touching any sheet'
 
 /* ===== NOT wired ===== */
 
-test('NOT WIRED: no action dispatches to the Activity sheet, no writer calls appendActivity_, getData unchanged', () => {
+test('ONLY the logAudit_ hook calls the Activity writer (B2); no action exposes the sheet; getData unchanged', () => {
   const g = load();
   const known = Array.from(g.run('PROXY_KNOWN_ACTIONS'));
-  assert.ok(!known.some((a) => /activity/i.test(a)), 'no Activity action in the registry');
+  assert.ok(!known.some((a) => /activity/i.test(a)), 'no Activity action in the registry (B3 adds the read)');
   const calls = GS_SRC.match(/appendActivity_\(/g) || [];
-  assert.equal(calls.length, 1, 'declared once, called nowhere (B2 wires it behind ACTIVITY_WRITES)');
-  assert.doesNotMatch(GS_SRC, /ACTIVITY_WRITES/, 'the B2 switch does not exist yet');
-  const keysBefore = Object.keys(g.sandbox.__sheets).sort();
+  assert.equal(calls.length, 1, 'the locked writer is declared once and has no direct caller');
+  const hook = GS_SRC.match(/activityFromAuditBestEffort_\(/g) || [];
+  assert.equal(hook.length, 2, 'the B2 hook: declared once, called once (from logAudit_)');
   const r = g.post({ action: 'getData' });
   assert.ok(!('activity' in (r || {})), 'getData does not expose activity');
   assert.ok(!Object.keys(g.sandbox.__sheets).includes('Activity'), 'a read never creates the sheet');
-  assert.ok(keysBefore.every((k) => k in g.sandbox.__sheets));
 });

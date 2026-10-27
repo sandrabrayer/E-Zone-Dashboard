@@ -688,3 +688,14 @@ Required for `createLeadFromTherapists` (alumnus → lead). Unset = the action r
 `appendActivity_` and the `Activity` sheet definition ship inert (no caller). No Script Property,
 no Railway variable. The sheet appears in the spreadsheet only once B2's first write runs. See
 `CHANGELOG-crm-activity-foundation.md`.
+
+## Activity events — turning the timeline on (B2, October 27, 2026)
+
+Default is OFF: nothing is written until you set the switch.
+
+1. Dashboard Sheet → Extensions → Apps Script → ⚙️ Project settings → Script properties → Add.
+2. Property `ACTIVITY_WRITES`, value `on` (exactly, lower-case) → Save.
+3. Takes effect on the next request. To stop instantly: delete the property.
+
+Nothing to set on Railway. Rows appear in a new `Activity` tab on the next mapped write (a discharge,
+a payment report …). See `CHANGELOG-crm-activity-system-events.md`.

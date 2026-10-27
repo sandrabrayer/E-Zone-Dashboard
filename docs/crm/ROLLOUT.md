@@ -110,6 +110,8 @@ the wire contract above. Coordinators PR #337 details:
 
 ### B2 · System events dual-written from existing writers (behind a kill switch)
 
+**Status (2026-10-27): built** — `CHANGELOG-crm-activity-system-events.md`. Implemented as ONE hook in `logAudit_` + an allow-list map (`ACTIVITY_AUDIT_MAP`), not per-call-site edits; switch `ACTIVITY_WRITES=on`, default off.
+
 | Item | Plan |
 | --- | --- |
 | Goal | Each existing state change also appends one Activity event, **best-effort**, after its primary write succeeds. Same pattern as `refreshDigestBestEffort_`: a failure is logged and never fails or reverts the primary write. Covers lead stage move, close and restore; meeting outcome and manager report; admission; discharge (Dashboard + coordinators); payment report, verify, flag and void; refund decide and paid; outpatient handoff sent / failed. |
