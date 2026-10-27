@@ -73,9 +73,10 @@ async function boot() {
       try { parsed = JSON.parse(body); } catch (_) { parsed = {}; }
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
-      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead'].indexOf(parsed.action) >= 0) saves.push(parsed);
+      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
-        : parsed.action === 'saveAll' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, proven: { leads: (parsed.leads || []).map((l) => String(l.id)) } })
+        : parsed.action === 'saveAll' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, proven: { leads: (parsed.leads || []).map((l) => String(l.id)), patients: Object.values(parsed.patients || {}).flat().map((p) => String(p.id)) } })
+        : parsed.action === 'appendFunder' ? { ok: true, row: { submissionId: parsed.funder && parsed.funder.submissionId } }
         : ['moveLeadIrrelevant', 'removeLead', 'restoreLead'].indexOf(parsed.action) >= 0 ? (saveAnswer ? saveAnswer(parsed) : { ok: true, lead: { id: String(parsed.lead && parsed.lead.id) } })
         : { ok: false, error: 'unexpected_' + parsed.action };
       const res = new EventEmitter();
@@ -266,7 +267,7 @@ test('C5 lead lifecycle (Vered): new lead form validates and posts one new row; 
     // close from the drawer
     await page.click('.card[data-open-lead="L1"] .name');
     await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
-    await page.click('#crm-drawer details.act:nth-of-type(3) summary');
+    await page.click('#crm-drawer details.act summary:has-text("סגירת ליד")');
     await page.selectOption('form[data-form="close"] [name="disposition"]', 'completed');
     await page.fill('form[data-form="close"] [name="note"]', 'סיים');
     await page.click('form[data-form="close"] button[type="submit"]');
@@ -288,10 +289,61 @@ test('C5 lead lifecycle (Vered): new lead form validates and posts one new row; 
     page.once('dialog', (d) => d.accept());
     await page.click('.card[data-open-lead="L4"] .name');
     await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
-    await page.click('#crm-drawer details.act:nth-of-type(3) summary');
+    await page.click('#crm-drawer details.act summary:has-text("סגירת ליד")');
     await page.click('[data-remove-lead="L4"]');
     await page.waitForFunction(() => /הוסר/.test(document.querySelector('#crm-toast').textContent), null, { timeout: 5000 });
     assert.equal(srv.saves[3].action, 'removeLead'); assert.equal(srv.saves[3].lead.id, 'L4');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('C6 admission + direct add (Vered, finance): «קליטה לבית» posts the house as read + the new patient + the admitted lead, then the funder; direct add posts patient + dl- lead', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="leads"]');
+    await page.click('.card[data-open-lead="L4"] .name');          // L4 is in «בטיפול פעיל»
+    await page.waitForSelector('#crm-drawer form[data-form="admit"]');
+    await page.click('form[data-form="admit"] button[type="submit"]');
+    assert.match(await page.textContent('[data-err="pay"]'), /סכום/);
+    assert.match(await page.textContent('[data-err="funder"]'), /מממן/);
+    assert.equal(srv.saves.length, 0);
+    await page.fill('form[data-form="admit"] [name="pay"]', '28000');
+    await page.selectOption('form[data-form="admit"] [name="status"]', 'active');
+    await page.selectOption('form[data-form="admit"] [name="funder"]', 'פרטי');
+    await page.click('form[data-form="admit"] button[type="submit"]');
+    await page.waitForFunction(() => /הקליטה/.test(document.querySelector('#crm-toast') ? document.querySelector('#crm-toast').textContent : ''), null, { timeout: 5000 });
+    await page.waitForFunction(() => window.__ok = true, null, { timeout: 2000 }).catch(() => {});
+    const admit = srv.saves.find((b) => b.action === 'saveAll');
+    assert.deepEqual(Object.keys(admit.patients), ['ramot'], 'one house only');
+    assert.deepEqual(admit.patients.ramot.map((p) => p.id).slice(0, 1), ['p1'], 'the house as read comes first');
+    const np = admit.patients.ramot[admit.patients.ramot.length - 1];
+    assert.deepEqual([np.name, np.fromLead, np.source, np.pay, np.status, np.date], ['טל ברק', 'L4', 'lead', 28000, 'active', TODAY]);
+    assert.deepEqual([admit.leads[0].id, admit.leads[0].stage, admit.leads[0].entryDate], ['L4', 'admitted', TODAY]);
+    assert.deepEqual(admit.prove, { patients: [np.id], leads: ['L4'] });
+    await page.waitForFunction(() => true, null, { timeout: 500 }).catch(() => {});
+    const funder = srv.saves.find((b) => b.action === 'appendFunder');
+    assert.deepEqual([funder.funder.patientId, funder.funder.funder, funder.funder.effectiveFrom], [np.id, 'פרטי', TODAY]);
+    assert.equal(await page.$('.card[data-open-lead="L4"]'), null, 'the admitted lead leaves the board');
+    await page.click('#crm-nav button[data-area="clients"]');
+    assert.match(await page.textContent('#crm-main'), /טל ברק/, 'and the patient is in «מטופלים»');
+    // direct add
+    await page.click('#crm-direct-add');
+    await page.waitForSelector('form[data-form="direct-add"]');
+    await page.fill('form[data-form="direct-add"] [name="name"]', 'רונית פרץ');
+    await page.fill('form[data-form="direct-add"] [name="phone"]', '050-333-4444');
+    await page.selectOption('form[data-form="direct-add"] [name="houseId"]', 'rehab');
+    await page.fill('form[data-form="direct-add"] [name="pay"]', '21000');
+    await page.selectOption('form[data-form="direct-add"] [name="funder"]', 'מכבי');
+    await page.click('form[data-form="direct-add"] button[type="submit"]');
+    await page.waitForFunction(() => /הוספת/.test(document.querySelector('#crm-toast').textContent), null, { timeout: 5000 });
+    const da = srv.saves.filter((b) => b.action === 'saveAll')[1];
+    assert.deepEqual(Object.keys(da.patients), ['rehab']);
+    const dp = da.patients.rehab[da.patients.rehab.length - 1];
+    assert.deepEqual([dp.name, dp.source, dp.fromLead, dp.pay], ['רונית פרץ', 'direct_admin', 'dl-' + dp.id, 21000]);
+    assert.deepEqual([da.leads[0].id, da.leads[0].source, da.leads[0].stage, da.leads[0].phone], ['dl-' + dp.id, 'direct_approach', 'admitted', '0503334444']);
+    assert.match(await page.textContent('#crm-main'), /רונית פרץ/);
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });
