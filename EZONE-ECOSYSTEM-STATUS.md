@@ -1,5 +1,9 @@
 # E-ZONE Ecosystem Status — updated October 27, 2026
 
+## C6 — CRM admission from a lead + direct add — October 27, 2026 (PR open)
+
+- `saveAll` with ONE house as read + the new patient (+ the lead), `prove` for both; refusals for duplicates / conflicts / unproven. «קליטה לבית» in a paid lead's drawer (funder via `appendFunder` for finance), «הוספת מטופל/ת ישירות» in מטופלים (patient + `dl-` lead pair). Remaining writes: discharge, house move, returning patient, patient edit. Flag-gated. Details: `CHANGELOG-crm-admission.md`.
+
 ## C5 — CRM lead lifecycle: new lead, close, remove, restore, «לידים סגורים» — October 27, 2026 (PR open)
 
 - New-lead drawer form (classic rules + duplicate warning) via the one-lead `saveAll`; close (`moveLeadIrrelevant`, four dispositions + reason), remove (`removeLead`), closed-leads view with restore (`restoreLead`). Flag-gated. Remaining writes: admission, direct add, discharge, house move. Details: `CHANGELOG-crm-lead-lifecycle.md`.

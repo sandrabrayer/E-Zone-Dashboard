@@ -193,6 +193,42 @@ test('duplicateByPhone + closeRecord', () => {
   assert.deepEqual(core.DISPOSITIONS.map((d) => d.id), ['not_relevant', 'completed', 'stopped_early', 'released_outpatient'], 'mirrors Code.gs LEAD_CLOSE_DISPOSITIONS');
 });
 
+/* ===== C6 admission + direct add ===== */
+
+test('admissionRow / admissionErrors mirror the classic entry modal; funder required only for finance', () => {
+  const lead = { id: 'L1', name: 'דנה כהן', phone: '0527654321', visitDate: '2026-10-20' };
+  const row = core.admissionRow(lead, { houseId: 'ramot', date: '2026-10-27', pay: '28000', adv: '5000', status: 'trial' }, 'id-p');
+  assert.deepEqual(row, { id: 'id-p', houseId: 'ramot', name: 'דנה כהן', date: '2026-10-27', pay: 28000, adv: 5000, status: 'trial', fromLead: 'L1', exitDate: '', source: 'lead', notes: '', updatedAt: '', updatedBy: '', personId: '' });
+  assert.deepEqual(Object.keys(core.admissionErrors({ houseId: 'ramot', date: '2026-10-27', pay: '1' }, false)), []);
+  assert.deepEqual(Object.keys(core.admissionErrors({ houseId: 'ramot', date: '2026-10-27', pay: '1' }, true)), ['funder']);
+  assert.deepEqual(Object.keys(core.admissionErrors({ houseId: '', date: '2019-01-01', pay: '0' }, false)), ['houseId', 'date', 'pay']);
+  assert.ok(core.isoDateOk('2026-10-27') && !core.isoDateOk('2019-01-01') && !core.isoDateOk('27/10/2026'));
+});
+
+test('directAddRows: patient (direct_admin) + its admitted «פנייה ישירה» lead dl-<id>, as app.js buildDirectApproachLead', () => {
+  const r = core.directAddRows({ name: ' אבי  לוי ', phone: '052-111-2222', houseId: 'rehab', date: '2026-10-27', pay: '20000', status: 'active', notes: 'x' }, 'id-9', '2026-10-27', core.houseName);
+  assert.deepEqual([r.lead.id, r.lead.stage, r.lead.source, r.lead.house, r.lead.phone, r.lead.entryDate, r.lead.created], ['dl-id-9', 'admitted', 'direct_approach', 'קיסריה ריהאב', '0521112222', '2026-10-27', '2026-10-27']);
+  assert.deepEqual([r.patient.id, r.patient.fromLead, r.patient.source, r.patient.name, r.patient.pay, r.patient.adv, r.patient.notes], ['id-9', 'dl-id-9', 'direct_admin', 'אבי לוי', 20000, 0, 'x']);
+  assert.deepEqual(Object.keys(core.directAddErrors({ name: 'אבי', phone: '12', houseId: 'rehab', date: '2026-10-27', pay: '1' }, false)), ['name', 'phone']);
+  assert.equal(core.directAddRows({ name: 'א ב', houseId: 'rehab', date: 't', pay: '1' }, 'i', 't', core.houseName).lead.phone, '', 'a phone-less direct add still gets its lead');
+});
+
+test('houseSaveBody sends the house AS READ plus the new row, never another house; houseSaveRefusal reads proofs, conflicts and duplicates', () => {
+  const rows = [{ id: 'p1', houseId: 'ramot', name: 'x', updatedAt: 'T1', updatedBy: 'ורד' }, { id: 'p2', houseId: 'ramot', name: 'y' }];
+  const b = core.houseSaveBody('ramot', rows, { id: 'p3', houseId: 'ramot', name: 'z' }, { id: 'L1' });
+  assert.deepEqual(Object.keys(b.patients), ['ramot']);
+  assert.deepEqual(b.patients.ramot.map((p) => p.id), ['p1', 'p2', 'p3']);
+  assert.equal(b.patients.ramot[0].updatedAt, 'T1', 'stamps travel unchanged (conflict detection)');
+  assert.deepEqual(b.prove, { patients: ['p3'], leads: ['L1'] });
+  assert.deepEqual(core.houseSaveBody('ramot', rows, { id: 'p1', houseId: 'ramot', name: 'x2' }, null).patients.ramot.map((p) => p.name), ['y', 'x2'], 'a re-sent id replaces, never duplicates');
+  assert.equal(core.houseSaveRefusal({ ok: true, proven: { patients: ['p3'], leads: ['L1'] } }, 'p3', 'L1'), '');
+  assert.match(core.houseSaveRefusal({ ok: true, proven: { patients: [], leads: ['L1'] } }, 'p3', 'L1'), /לא אומתה/);
+  assert.match(core.houseSaveRefusal({ ok: true, proven: { patients: ['p3'], leads: [] } }, 'p3', 'L1'), /הליד לא אומת/);
+  assert.match(core.houseSaveRefusal({ ok: true, skippedPromotes: [{ fromLead: 'L1' }], proven: { patients: ['p3'], leads: ['L1'] } }, 'p3', 'L1'), /כפילות/);
+  assert.match(core.houseSaveRefusal({ ok: true, conflicts: [{ id: 'p1' }], proven: { patients: ['p3'], leads: ['L1'] } }, 'p3', 'L1'), /השתנו/);
+  assert.match(core.houseSaveRefusal({ ok: false, error: 'x' }, 'p3', ''), /נדחתה/);
+});
+
 test('esc escapes every HTML-significant character', () => {
   assert.equal(core.esc('<b>"x" & \'y\'</b>'), '&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;');
 });
@@ -205,8 +241,8 @@ test('wiring: assets hashed via ASSETS, NOT in sw.js; the shell never calls a wr
   const actions = [...src.matchAll(/api\('([A-Za-z]+)'/g)].map((m) => m[1]).sort();
   assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'getActivity', 'getData'], 'GET reads');
   const writes = [...src.matchAll(/\{ action: '([A-Za-z]+)'/g)].map((m) => m[1]).sort();
-  assert.deepEqual([...new Set(writes)], ['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'saveAll'], 'the write actions: one-lead saveAll (C4) + the lead lifecycle (C5)');
-  assert.ok(!/patients: state|patients: list|serializePatients/.test(src), 'patients are never sent');
+  assert.deepEqual([...new Set(writes)], ['appendFunder', 'moveLeadIrrelevant', 'removeLead', 'restoreLead', 'saveAll'], 'the write actions: one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6)');
+  assert.ok(!/serializePatients|patients: state\.data\.patients\b/.test(src), 'patients travel only through houseSaveBody (one house as read)');
   assert.ok(!/innerHTML\s*=\s*[^;]*\b(l|lead|p|pat)\.(name|phone|note)\b(?!\))/.test(src.replace(/esc\([^)]*\)/g, 'ESC')), 'every interpolated field goes through esc()');
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.html'), 'utf8');
   assert.match(html, /lang="he" dir="rtl"/);

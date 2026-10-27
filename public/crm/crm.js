@@ -118,6 +118,68 @@
     return 'id-' + rnd;
   }
 
+  /* ===== Admission + direct add (C6, CHANGELOG-crm-admission.md) =====
+   * Patients save through saveAll's house payload. replaceHousePatients_ matches
+   * by id / identity key and KEEPS sheet rows absent from the payload, yet it
+   * copies every kept row to the tombstone audit — so the CRM sends the
+   * WHOLE house as read (the raw getData rows, stamps included) plus the new
+   * row, exactly what the classic tab sends for that house. */
+  const PATIENT_STATUSES = [{ id: 'trial', label: 'תקופת ניסיון' }, { id: 'active', label: 'פעיל' }, { id: 'wait', label: 'בהמתנה' }];
+  const FUNDERS = ['פרטי', 'ביטוח לאומי', 'משרד הביטחון', 'מכבי', 'פרו-בונו'];   // lib/payment-report-rules.js PAYMENT_FUNDERS
+  function isoDateOk(v) { const t = s(v); if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return false; const y = +t.slice(0, 4); return y >= 2024 && y <= new Date().getFullYear() + 2; }
+  /* The patient row of an admission from a lead (classic openEntryModal). Pure. */
+  function admissionRow(lead, v, id) {
+    return { id: id, houseId: s(v.houseId), name: s(lead.name), date: s(v.date), pay: Number(v.pay) || 0, adv: Number(v.adv) || 0,
+      status: s(v.status) || 'trial', fromLead: s(lead.id), exitDate: '', source: 'lead', notes: '', updatedAt: '', updatedBy: '', personId: '' };
+  }
+  function admissionErrors(v, finance) {
+    const out = {};
+    if (!s(v.houseId)) out.houseId = 'יש לבחור בית';
+    if (!isoDateOk(v.date)) out.date = 'תאריך כניסה חסר או מחוץ לטווח';
+    if (!(Number(v.pay) > 0)) out.pay = 'יש להזין סכום חודשי';
+    if (finance && FUNDERS.indexOf(s(v.funder)) < 0) out.funder = 'יש לבחור גורם מממן';
+    return out;
+  }
+  /* The direct-add pair (classic openDirectAddPatientModal + buildDirectApproachLead):
+   * the patient (source direct_admin) and its admitted «פנייה ישירה» lead. Pure. */
+  function directAddRows(v, pid, today, houseNameOf) {
+    const leadId = 'dl-' + pid;
+    const lead = { id: leadId, name: s(v.name).replace(/\s+/g, ' '), phone: localPhone(v.phone), house: houseNameOf(v.houseId), source: 'direct_approach',
+      note: 'פנייה ישירה (נוסף בתפוסה)', stage: 'admitted', visitDate: '', visitTime: '', entryDate: s(v.date), advance: '', created: today,
+      assignedTo: '', meetingWith: '', meetingOutcome: '', contactName: '', contactPhone: '', contactRelation: '', billingPhone: '' };
+    const patient = { id: pid, houseId: s(v.houseId), name: lead.name, date: s(v.date), pay: Number(v.pay) || 0, adv: 0, status: s(v.status) || 'active',
+      fromLead: leadId, exitDate: '', source: 'direct_admin', notes: s(v.notes), updatedAt: '', updatedBy: '', personId: '' };
+    return { lead: lead, patient: patient };
+  }
+  function directAddErrors(v, finance) {
+    const out = admissionErrors(v, finance);
+    if (s(v.name).split(/\s+/).filter(Boolean).length < 2) out.name = 'יש להזין שם מלא';
+    if (s(v.phone) && !localPhone(v.phone)) out.phone = 'טלפון אינו תקין';
+    return out;
+  }
+  /* The saveAll body for one house: the house as read + the new row (+ the lead). Pure. */
+  function houseSaveBody(houseId, houseRows, patient, lead) {
+    const rows = (Array.isArray(houseRows) ? houseRows : []).filter(function (p) { return s(p && p.id) !== s(patient.id); }).concat([patient]);
+    const patients = {}; patients[houseId] = rows;
+    const body = { action: 'saveAll', leads: lead ? [lead] : [], patients: patients, prove: { patients: [s(patient.id)] } };
+    if (lead) body.prove.leads = [s(lead.id)];
+    return body;
+  }
+  /* '' when the patient (and lead) are proven, else the reason. Pure. */
+  function houseSaveRefusal(res, pid, leadId) {
+    if (!res || typeof res !== 'object') return 'אין תשובה מהשרת';
+    if (res.ok === false) {
+      if (Array.isArray(res.invalidLeads) && res.invalidLeads.length) return 'לא נשמר: הליד חייב שם וטלפון תקין';
+      return res.message || ('השמירה נדחתה' + (res.error ? ' (' + res.error + ')' : ''));
+    }
+    if (Array.isArray(res.skippedPromotes) && res.skippedPromotes.some(function (x) { return s(x && x.fromLead) === s(leadId) || s(x && x.id) === s(pid); })) return 'לא נשמר: למטופל/ת כבר קיימת רשומה (כפילות)';
+    if (Array.isArray(res.conflicts) && res.conflicts.length) return 'לא נשמר: הנתונים השתנו בינתיים — רענני ונסי שוב';
+    const pp = res.proven && Array.isArray(res.proven.patients) ? res.proven.patients.map(s) : [];
+    if (pp.indexOf(s(pid)) < 0) return 'הקליטה לא אומתה — רענני ובדקי';
+    if (leadId) { const pl = res.proven && Array.isArray(res.proven.leads) ? res.proven.leads.map(s) : []; if (pl.indexOf(s(leadId)) < 0) return 'הליד לא אומת — רענני ובדקי'; }
+    return '';
+  }
+
   /* '' when the answer proves the lead landed, else the Hebrew reason (mirrors
    * app.js promoteSkippedMessage / conflictsMessage / requireProven). Pure. */
   function saveRefusal(res, id) {
@@ -514,9 +576,73 @@
         function () { state.data.leads = state.data.leads.filter(function (l) { return l !== back; }); closed.splice(i, 0, rec); }, 'הליד שוחזר');
     }
 
+    function patientsOfHouse(hid) {
+      const p = state.data && state.data.patients;
+      if (!p || typeof p !== 'object' || Array.isArray(p)) return [];
+      if (!Array.isArray(p[hid])) p[hid] = [];
+      return p[hid];
+    }
+    function showErrs(f, errs, keys) {
+      keys.forEach(function (k) { const el = f.querySelector('[data-err="' + k + '"]'); if (el) el.textContent = errs[k] || ''; });
+    }
+    function saveFunderBestEffort(pid, funder, effectiveFrom) {
+      if (!(state.me && state.me.finance) || FUNDERS.indexOf(s(funder)) < 0) return Promise.resolve();
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'appendFunder', funder: { patientId: pid, funder: s(funder), effectiveFrom: effectiveFrom, submissionId: randomId().slice(3) + randomId().slice(3) } }) })
+        .then(function (r) { return r.json().catch(function () { return null; }); })
+        .then(function (res) { if (!res || res.ok === false || !(res.row && res.row.submissionId)) toast('המטופל נשמר, אך שמירת הגורם המממן נכשלה — יש להשלים בדשבורד', true); })
+        .catch(function () { toast('המטופל נשמר, אך שמירת הגורם המממן נכשלה — יש להשלים בדשבורד', true); });
+    }
+    function admitLead(id, v, f) {
+      const errs = admissionErrors(v, !!(state.me && state.me.finance));
+      if (f) showErrs(f, errs, ['houseId', 'date', 'pay', 'funder']);
+      if (Object.keys(errs).length) return Promise.resolve(false);
+      const leads = state.data.leads, i = leads.findIndex(function (l) { return s(l.id) === s(id); });
+      if (i < 0) return Promise.resolve(false);
+      const raw = leads[i];
+      const patient = admissionRow(raw, v, randomId());
+      const leadNext = Object.assign({}, raw, { stage: 'admitted', entryDate: s(v.date) }, s(raw.visitDate) ? { meetingOutcome: 'entered' } : {});
+      const rows = patientsOfHouse(patient.houseId);
+      closeDrawer();
+      return postAction(houseSaveBody(patient.houseId, rows, patient, leadNext), function (res) { return houseSaveRefusal(res, patient.id, leadNext.id); },
+        function () { leads[i] = leadNext; rows.push(patient); },
+        function () { leads[i] = raw; const k = rows.indexOf(patient); if (k >= 0) rows.splice(k, 1); }, 'הקליטה של «' + s(raw.name) + '»')
+        .then(function (ok) { if (ok) return saveFunderBestEffort(patient.id, v.funder, patient.date).then(function () { return true; }); return ok; });
+    }
+    function directAdd(v, f) {
+      const errs = directAddErrors(v, !!(state.me && state.me.finance));
+      if (f) showErrs(f, errs, ['name', 'phone', 'houseId', 'date', 'pay', 'funder']);
+      if (Object.keys(errs).length) return Promise.resolve(false);
+      const pair = directAddRows(v, randomId(), state.today, houseName);
+      const rows = patientsOfHouse(pair.patient.houseId);
+      const leads = state.data.leads;
+      closeDrawer();
+      return postAction(houseSaveBody(pair.patient.houseId, rows, pair.patient, pair.lead), function (res) { return houseSaveRefusal(res, pair.patient.id, pair.lead.id); },
+        function () { rows.push(pair.patient); leads.unshift(pair.lead); },
+        function () { const k = rows.indexOf(pair.patient); if (k >= 0) rows.splice(k, 1); const j = leads.indexOf(pair.lead); if (j >= 0) leads.splice(j, 1); }, 'הוספת «' + pair.patient.name + '»')
+        .then(function (ok) { if (ok) return saveFunderBestEffort(pair.patient.id, v.funder, pair.patient.date).then(function () { return true; }); return ok; });
+    }
+    function openDirectAddDrawer() {
+      const dr = $('#crm-drawer');
+      const hid = houseId(state.filters.house) || 'ramot';
+      dr.innerHTML = '<div class="drawer-head"><div><h2>הוספת מטופל/ת ישירות</h2><div class="meta">פנייה ישירה — נוצר ליד «פנייה ישירה» שנקלט</div></div><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>'
+        + '<form data-form="direct-add" class="new-lead" novalidate>'
+        + '<label>שם מלא * <input name="name" type="text"><span class="err" data-err="name"></span></label>'
+        + '<label>טלפון המטופל/ת <input name="phone" type="tel"><span class="err" data-err="phone"></span></label>'
+        + '<label>בית * <select name="houseId">' + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) { return '<option value="' + h.id + '"' + (h.id === hid ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="err" data-err="houseId"></span></label>'
+        + '<label>תאריך כניסה * <input type="date" name="date" value="' + esc(state.today) + '"><span class="err" data-err="date"></span></label>'
+        + '<label>סכום חודשי (₪) * <input type="number" name="pay" min="0" step="1"><span class="err" data-err="pay"></span></label>'
+        + '<label>סטטוס <select name="status">' + [{ id: 'active', label: 'פעיל' }, { id: 'trial', label: 'תקופת ניסיון' }, { id: 'wait', label: 'בהמתנה' }].map(function (st) { return '<option value="' + st.id + '">' + esc(st.label) + '</option>'; }).join('') + '</select></label>'
+        + (state.me && state.me.finance ? '<label>גורם מממן * <select name="funder"><option value="">— בחרו —</option>' + FUNDERS.map(function (x) { return '<option>' + esc(x) + '</option>'; }).join('') + '</select><span class="err" data-err="funder"></span></label>' : '')
+        + '<label class="wide">הערות <textarea name="notes" rows="2"></textarea></label>'
+        + '<div class="wide"><button type="submit" class="btn primary">הוסף מטופל/ת</button> <button type="button" class="btn" data-cancel-drawer="1">ביטול</button> <span class="na" id="crm-save-state"></span></div></form>';
+      dr.setAttribute('aria-hidden', 'false'); $('#crm-scrim').setAttribute('data-open', 'true');
+      state.drawer = { kind: 'direct', id: '', tab: 'overview' };
+    }
+
     function renderClients(c) {
       const list = clients(c.patients, state.today, state.filters);
-      const toolbar = '<div class="toolbar"><select id="f-house-c"><option value="">כל הבתים</option>' + HOUSES.map(function (h) { return '<option value="' + h.id + '"' + (state.filters.house === h.id ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="na">' + list.length + ' בטיפול</span></div>';
+      const toolbar = '<div class="toolbar"><select id="f-house-c"><option value="">כל הבתים</option>' + HOUSES.map(function (h) { return '<option value="' + h.id + '"' + (state.filters.house === h.id ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="na">' + list.length + ' בטיפול</span><button type="button" class="btn primary" id="crm-direct-add">+ הוספת מטופל/ת ישירות</button></div>';
       return toolbar + '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>שם</th><th>בית</th><th>תאריך כניסה</th><th>ימים בבית</th><th>סטטוס</th></tr></thead><tbody>'
         + list.map(function (p) { return '<tr data-open-patient="' + esc(p.id) + '"><td>' + esc(p.name) + '</td><td>' + esc(p.houseName) + '</td><td>' + esc(fmtDate(p.date)) + '</td><td>' + esc(p.days) + '</td><td>' + esc(p.status) + '</td></tr>'; }).join('')
         + '</tbody></table></div>' + (list.length === 0 ? '<div class="crm-state">אין מטופלים</div>' : '');
@@ -579,7 +705,16 @@
     function renderLeadActions(l) {
       const next = stageAfter(l.stage), prev = stageBefore(l.stage);
       const managers = managersOf(l.house).concat([MEETING_WITH_AMBULATORY]);
-      return '<div class="actions" data-lead-actions="' + esc(l.id) + '">'
+      const hid = houseId(l.house);
+      const admit = '<details class="act" open><summary>קליטה לבית</summary><form data-form="admit" data-lead="' + esc(l.id) + '" novalidate>'
+        + '<label>בית <select name="houseId">' + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) { return '<option value="' + h.id + '"' + (h.id === hid ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="err" data-err="houseId"></span></label>'
+        + '<label>תאריך כניסה <input type="date" name="date" value="' + esc(l.entryDate || state.today) + '"><span class="err" data-err="date"></span></label>'
+        + '<label>תשלום חודשי כולל מע"מ (₪) <input type="number" name="pay" min="0" step="1"><span class="err" data-err="pay"></span></label>'
+        + '<label>מקדמה ששולמה (₪) <input type="number" name="adv" min="0" step="1" value="' + esc(l.advance === '' ? 0 : l.advance) + '"></label>'
+        + '<label>סטטוס <select name="status">' + PATIENT_STATUSES.map(function (st) { return '<option value="' + st.id + '">' + esc(st.label) + '</option>'; }).join('') + '</select></label>'
+        + (state.me && state.me.finance ? '<label>גורם מממן <select name="funder"><option value="">— בחרו —</option>' + FUNDERS.map(function (f) { return '<option>' + esc(f) + '</option>'; }).join('') + '</select><span class="err" data-err="funder"></span></label>' : '')
+        + '<button type="submit" class="btn small primary">אשר כניסה</button></form></details>';
+      return '<div class="actions" data-lead-actions="' + esc(l.id) + '">' + (l.stage === 'paid' ? admit : '')
         + '<div class="toolbar">'
         + (prev ? '<button type="button" class="btn small" data-stage-prev="' + esc(l.id) + '">→ ' + esc(stageLabel(prev)) + '</button>' : '')
         + (next ? '<button type="button" class="btn small primary" data-stage-next="' + esc(l.id) + '">' + esc(stageLabel(next)) + ' ←</button>' : '')
@@ -652,7 +787,7 @@
       const na = lead ? nextActionFor(lead, state.today) : null;
       dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(name) + '</h2><div class="meta">' + esc(lead ? stageLabel(lead.stage) + ' · ' + houseName(lead.house) : 'מטופל/ת · ' + houseName(pat.houseId)) + (na ? ' · ' + esc(na.text) : '') + '</div></div><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>'
         + '<div class="tabs" role="tablist">' + [['overview', 'סקירה'], ['activity', 'פעילות'], ['meetings', 'פגישות ושירותים'], ['account', 'חשבון'], ['docs', 'מסמכים']].map(function (t, i) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (i === 0) + '">' + esc(t[1]) + '</button>'; }).join('') + '</div>'
-        + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : '') + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p>' + (lead && lead.stage === 'paid' ? '<a class="btn primary" href="/">קליטה לבית — בדשבורד</a> ' : '') + '<a class="btn" href="/">עריכה מלאה בדשבורד</a></p></section>'
+        + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : '') + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p><a class="btn" href="/">עריכה מלאה בדשבורד</a></p></section>'
         + '<section data-pane="activity" hidden><ul class="tl" id="crm-tl"><li>טוען…</li></ul></section>'
         + '<section data-pane="meetings" hidden><p class="na">' + (lead && lead.visitDate ? 'פגישת קבלה ' + esc(fmtDate(lead.visitDate)) + (lead.meetingOutcome ? ' · ' + esc(lead.meetingOutcome) : ' · ללא תוצאה') : 'אין פגישות רשומות') + '</p></section>'
         + '<section data-pane="account" hidden><p class="na">' + (state.me && state.me.finance ? 'החשבון מנוהל בדשבורד הרגיל (גבייה).' : 'אין הרשאה לנתוני גבייה.') + '</p></section>'
@@ -677,7 +812,7 @@
 
     /* events (delegated; filters, sort and scroll survive opening a card) */
     root.addEventListener('click', function (ev) {
-      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
       if (t.dataset.area) return setArea(t.dataset.area);
@@ -693,6 +828,7 @@
         return;
       }
       if (t.id === 'crm-new-lead') return openNewLeadDrawer();
+      if (t.id === 'crm-direct-add') return openDirectAddDrawer();
       if (t.dataset.removeLead) { ev.preventDefault(); if (!state.saving) removeLeadAction(t.dataset.removeLead); return; }
       if (t.dataset.restoreLead) { ev.preventDefault(); if (!state.saving) restoreLeadAction(t.dataset.restoreLead); return; }
       if (t.dataset.stageNext) { ev.preventDefault(); ev.stopPropagation(); if (!state.saving) moveStage(t.dataset.stageNext, 1); return; }
@@ -719,6 +855,12 @@
         writeLead(id, { assignedTo: v('assignedTo'), note: v('note') }, 'ההערה');
       } else if (f.dataset.form === 'close') {
         closeLeadAction(id, v('disposition'), v('note'));
+      } else if (f.dataset.form === 'admit') {
+        const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
+        admitLead(id, vals, f);
+      } else if (f.dataset.form === 'direct-add') {
+        const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
+        directAdd(vals, f);
       } else if (f.dataset.form === 'new-lead') {
         const vals = {};
         Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
@@ -761,5 +903,7 @@
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
     stageAfter: stageAfter, stageBefore: stageBefore, applyLeadPatch: applyLeadPatch, leadSaveBody: leadSaveBody, saveRefusal: saveRefusal,
     DISPOSITIONS: DISPOSITIONS, CONTACT_RELATIONS: CONTACT_RELATIONS, localPhone: localPhone, leadFormErrors: leadFormErrors, newLeadRow: newLeadRow,
-    duplicateByPhone: duplicateByPhone, closeRecord: closeRecord, randomId: randomId };
+    duplicateByPhone: duplicateByPhone, closeRecord: closeRecord, randomId: randomId,
+    FUNDERS: FUNDERS, PATIENT_STATUSES: PATIENT_STATUSES, admissionRow: admissionRow, admissionErrors: admissionErrors, directAddRows: directAddRows,
+    directAddErrors: directAddErrors, houseSaveBody: houseSaveBody, houseSaveRefusal: houseSaveRefusal, isoDateOk: isoDateOk };
 }));
