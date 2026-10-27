@@ -135,6 +135,36 @@ test('fmtDate: ISO → DD/MM/YYYY (the dashboard format); blanks and non-dates p
   assert.deepEqual(core.nextActionFor(by['L-visit-future'], TODAY), { text: 'פגישה 02/11/2026', state: 'wait' });
 });
 
+/* ===== C4 lead writes ===== */
+
+test('applyLeadPatch: full raw row kept, waitlistedAt stamped on entering רשימת המתנה and cleared on leaving, never mutates', () => {
+  const raw = { id: 'L', name: 'א', phone: '0501111111', stage: 'visit', visitDate: '2026-10-20', waitlistedAt: '', note: 'x', meetingReportedAt: 'keep' };
+  const w = core.applyLeadPatch(raw, { stage: 'waitlist' }, '2026-10-27T10:00:00.000Z');
+  assert.equal(w.waitlistedAt, '2026-10-27T10:00:00.000Z');
+  assert.equal(w.meetingReportedAt, 'keep', 'every other column travels unchanged');
+  assert.equal(raw.stage, 'visit', 'pure');
+  const back = core.applyLeadPatch(w, { stage: 'paid' }, 'T2');
+  assert.equal(back.waitlistedAt, '');
+  const same = core.applyLeadPatch(w, { note: 'y' }, 'T3');
+  assert.equal(same.waitlistedAt, '2026-10-27T10:00:00.000Z', 'a non-stage patch leaves the stamp');
+  assert.deepEqual(core.stageAfter('new'), 'visit'); assert.equal(core.stageAfter('paid'), '', 'paid → admission, not a stage move');
+  assert.equal(core.stageBefore('new'), ''); assert.equal(core.stageBefore('waitlist'), 'visit');
+});
+
+test('leadSaveBody: ONE lead, patients {}, prove for its id', () => {
+  assert.deepEqual(core.leadSaveBody({ id: 'L1', name: 'א' }), { action: 'saveAll', leads: [{ id: 'L1', name: 'א' }], patients: {}, prove: { leads: ['L1'] } });
+});
+
+test('saveRefusal: proven → ok; unproven, refused, suppressed, lock busy → Hebrew reasons', () => {
+  assert.equal(core.saveRefusal({ ok: true, proven: { leads: ['L1'] } }, 'L1'), '');
+  assert.match(core.saveRefusal({ ok: true, proven: { leads: [] } }, 'L1'), /לא אומתה/);
+  assert.match(core.saveRefusal({ ok: true, proven: { leads: ['L1'] }, closedSuppressed: ['L1'] }, 'L1'), /נסגר/);
+  assert.match(core.saveRefusal({ ok: false, invalidLeads: ['L1'] }, 'L1'), /שם וטלפון/);
+  assert.match(core.saveRefusal({ ok: false, badLeadDates: ['L1'] }, 'L1'), /תאריך/);
+  assert.match(core.saveRefusal({ ok: false, error: 'lock_busy', message: 'עסוק' }, 'L1'), /עסוק/);
+  assert.match(core.saveRefusal(null, 'L1'), /נכשלה/);
+});
+
 test('esc escapes every HTML-significant character', () => {
   assert.equal(core.esc('<b>"x" & \'y\'</b>'), '&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;');
 });
@@ -145,8 +175,9 @@ test('wiring: assets hashed via ASSETS, NOT in sw.js; the shell never calls a wr
   assert.doesNotMatch(SW_SRC, /crm\//);
   const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.js'), 'utf8');
   const actions = [...src.matchAll(/api\('([A-Za-z]+)'/g)].map((m) => m[1]).sort();
-  assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'getActivity', 'getData'], 'reads only');
-  assert.doesNotMatch(src, /method:\s*'POST'/);
+  assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'getActivity', 'getData'], 'GET reads');
+  const posts = [...src.matchAll(/method: 'POST'[^\n]*body: JSON\.stringify\(([A-Za-z_]+)\(/g)].map((m) => m[1]);
+  assert.deepEqual(posts, ['leadSaveBody'], 'the ONE write path: saveAll for one lead (C4)');
   assert.ok(!/innerHTML\s*=\s*[^;]*\b(l|lead|p|pat)\.(name|phone|note)\b(?!\))/.test(src.replace(/esc\([^)]*\)/g, 'ESC')), 'every interpolated field goes through esc()');
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.html'), 'utf8');
   assert.match(html, /lang="he" dir="rtl"/);

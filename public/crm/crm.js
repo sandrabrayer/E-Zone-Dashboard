@@ -29,6 +29,57 @@
     { id: 'clients', label: 'מטופלים' }, { id: 'calendar', label: 'יומן' }, { id: 'billing', label: 'גבייה' }, { id: 'control', label: 'בקרה' },
   ];
   const WAIT_DAYS = 3;
+  /* Mirrors app.js MEETING_OUTCOME_LABELS / MEETING_WITH_AMBULATORY (stable keys). */
+  const MEETING_OUTCOMES = [
+    { id: 'entered', label: 'נכנסים לטיפול' }, { id: 'thinking', label: 'חושבים על זה' }, { id: 'postponed', label: 'נדחה' },
+    { id: 'cancelled', label: 'התבטל' }, { id: 'not_relevant', label: 'לא רלוונטי' },
+  ];
+  const MEETING_WITH_AMBULATORY = 'אמבולטורי';
+  const ASSIGNEES = ['ורד', 'דנה', 'סנדרה'];
+
+  /* ===== Lead writes (C4, CHANGELOG-crm-lead-actions.md) =====
+   * The classic app's write is `saveAll` with EVERY lead and every patient.
+   * Code.gs mergeLeads_ upserts by id and KEEPS leads absent from the payload,
+   * and a `patients: {}` payload touches no house — so the CRM sends ONE full
+   * lead row (the raw getData object, patched) and nothing else. The answer's
+   * `proven.leads` must name the id (R3) or the write is treated as failed. */
+  const STAGE_ORDER = STAGES.map(function (st) { return st.id; });
+  function stageAfter(id) { const i = STAGE_ORDER.indexOf(id); return i >= 0 && i < STAGE_ORDER.length - 1 ? STAGE_ORDER[i + 1] : ''; }
+  function stageBefore(id) { const i = STAGE_ORDER.indexOf(id); return i > 0 ? STAGE_ORDER[i - 1] : ''; }
+
+  /* The next raw lead row for one patch — the SAME stamp rules as app.js
+   * moveLead (waitlistedAt set on entering רשימת המתנה, cleared on leaving).
+   * Pure: never mutates `raw`. */
+  function applyLeadPatch(raw, patch, nowIso) {
+    const next = Object.assign({}, raw || {}, patch || {});
+    const prev = s(raw && raw.stage), stage = s(next.stage);
+    if (patch && 'stage' in patch && stage !== prev) {
+      if (stage === 'waitlist') next.waitlistedAt = nowIso || new Date().toISOString();
+      else if (prev === 'waitlist') next.waitlistedAt = '';
+    }
+    return next;
+  }
+
+  /* The saveAll body for one lead. Pure. */
+  function leadSaveBody(lead) {
+    return { action: 'saveAll', leads: [lead], patients: {}, prove: { leads: [s(lead.id)] } };
+  }
+
+  /* '' when the answer proves the lead landed, else the Hebrew reason (mirrors
+   * app.js promoteSkippedMessage / conflictsMessage / requireProven). Pure. */
+  function saveRefusal(res, id) {
+    if (!res || typeof res !== 'object') return 'השמירה נכשלה — אין תשובה מהשרת';
+    if (res.ok === false) {
+      if (res.error === 'lock_busy') return res.message || 'המערכת עסוקה, נסי שוב בעוד רגע';
+      if (Array.isArray(res.invalidLeads) && res.invalidLeads.length) return 'לא נשמר: ליד חייב שם וטלפון תקין';
+      if (Array.isArray(res.badLeadDates) && res.badLeadDates.length) return 'לא נשמר: תאריך מחוץ לטווח המותר';
+      return res.message || ('השמירה נדחתה' + (res.error ? ' (' + res.error + ')' : ''));
+    }
+    if (Array.isArray(res.closedSuppressed) && res.closedSuppressed.indexOf(s(id)) >= 0) return 'הליד נסגר או הוסר בינתיים — רענני את המסך';
+    const proven = res.proven && Array.isArray(res.proven.leads) ? res.proven.leads.map(s) : [];
+    if (proven.indexOf(s(id)) < 0) return 'השמירה לא אומתה — רענני ובדקי';
+    return '';
+  }
 
   /* The areas a session may see — the SERVER's gates, mirrored for display
    * (the server refuses the data itself): the controller view (Ortal) sees
@@ -299,7 +350,7 @@
             const na = nextActionFor(l, state.today);
             return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? '<span>' + esc(l.assignedTo) + '</span>' : '') + '</div>'
               + (l.created ? '<div class="meta"><span>נוצר ' + esc(fmtDate(l.created)) + '</span>' + (l.visitDate ? '<span>פגישה ' + esc(fmtDate(l.visitDate)) + (l.visitTime ? ' ' + esc(l.visitTime) : '') + '</span>' : '') + '</div>' : '')
-              + '<div class="next">' + chip(na.state, na.text) + '</div></div>';
+              + '<div class="next">' + chip(na.state, na.text) + (stageAfter(l.stage) ? ' <button type="button" class="btn small" data-stage-next="' + esc(l.id) + '">שלב הבא ←</button>' : '') + '</div></div>';
           }).join('') + '</div>';
         }).join('') + '</div>';
       }
@@ -358,8 +409,81 @@
       main.innerHTML = r(c);
     }
 
+    /* ---- lead actions (C4): stage move, meeting, outcome, note, owner ---- */
+    function managersOf(houseIdOrName) {
+      const list = state.data && Array.isArray(state.data.currentManagers) ? state.data.currentManagers : [];
+      const hid = houseId(houseIdOrName);
+      const names = [];
+      list.forEach(function (m) { const n = s(m && m.name); if (n && names.indexOf(n) < 0 && (!hid || houseId(m.house) === hid)) names.push(n); });
+      if (!names.length) list.forEach(function (m) { const n = s(m && m.name); if (n && names.indexOf(n) < 0) names.push(n); });
+      return names;
+    }
+    function opts(list, current, withBlank) {
+      const all = list.slice();
+      if (current && all.indexOf(current) < 0) all.unshift(current);
+      return (withBlank ? '<option value="">—</option>' : '') + all.map(function (v) { return '<option value="' + esc(v) + '"' + (v === current ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join('');
+    }
+    function renderLeadActions(l) {
+      const next = stageAfter(l.stage), prev = stageBefore(l.stage);
+      const managers = managersOf(l.house).concat([MEETING_WITH_AMBULATORY]);
+      return '<div class="actions" data-lead-actions="' + esc(l.id) + '">'
+        + '<div class="toolbar">'
+        + (prev ? '<button type="button" class="btn small" data-stage-prev="' + esc(l.id) + '">→ ' + esc(stageLabel(prev)) + '</button>' : '')
+        + (next ? '<button type="button" class="btn small primary" data-stage-next="' + esc(l.id) + '">' + esc(stageLabel(next)) + ' ←</button>' : '')
+        + '<span class="na" id="crm-save-state"></span></div>'
+        + '<details class="act"><summary>תיאום פגישה</summary><form data-form="meeting" data-lead="' + esc(l.id) + '"><label>תאריך <input type="date" name="visitDate" value="' + esc(l.visitDate) + '"></label>'
+        + '<label>שעה <input type="time" name="visitTime" value="' + esc(l.visitTime) + '"></label>'
+        + '<label>נפגש/ת עם <select name="meetingWith">' + opts(managers, l.meetingWith, true) + '</select></label>'
+        + '<button type="submit" class="btn small primary">שמירה</button></form></details>'
+        + '<details class="act"><summary>דיווח תוצאת פגישה</summary><form data-form="outcome" data-lead="' + esc(l.id) + '"><label>תוצאה <select name="meetingOutcome"><option value="">—</option>' + MEETING_OUTCOMES.map(function (o) { return '<option value="' + o.id + '"' + (l.meetingOutcome === o.id ? ' selected' : '') + '>' + esc(o.label) + '</option>'; }).join('') + '</select></label>'
+        + '<button type="submit" class="btn small primary">שמירה</button></form></details>'
+        + '<details class="act"><summary>הערה ואחראי</summary><form data-form="note" data-lead="' + esc(l.id) + '"><label>אחראי <select name="assignedTo">' + opts(ASSIGNEES, l.assignedTo, true) + '</select></label>'
+        + '<label>הערות <textarea name="note" rows="3">' + esc(l.note) + '</textarea></label>'
+        + '<button type="submit" class="btn small primary">שמירה</button></form></details>'
+        + '</div>';
+    }
+    function setSaveState(text, bad) { const el = $('#crm-save-state'); if (el) { el.textContent = text; el.style.color = bad ? 'var(--bad)' : ''; } }
+    function toast(text, bad) {
+      let el = $('#crm-toast');
+      if (!el) { el = doc.createElement('div'); el.id = 'crm-toast'; el.className = 'toast'; root.appendChild(el); }
+      el.textContent = text; el.classList.toggle('bad', !!bad); el.setAttribute('data-show', 'true');
+      win.clearTimeout(el._t); el._t = win.setTimeout(function () { el.removeAttribute('data-show'); }, bad ? 6000 : 2500);
+    }
+    /* Optimistic write of ONE lead; rolled back on refusal. */
+    function writeLead(id, patch, label) {
+      const list = state.data && Array.isArray(state.data.leads) ? state.data.leads : [];
+      const idx = list.findIndex(function (l) { return s(l && l.id) === s(id); });
+      if (idx < 0) return Promise.resolve(false);
+      const before = list[idx];
+      const next = applyLeadPatch(before, patch, new Date().toISOString());
+      list[idx] = next;
+      state.saving = true; renderNav(); renderMain(); if (state.drawer && state.drawer.id === id) openDrawer('lead', id, true);
+      setSaveState('שומר…');
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(leadSaveBody(next)) })
+        .then(function (r) { return r.json().catch(function () { return null; }); })
+        .then(function (res) {
+          const why = saveRefusal(res, id);
+          if (why) throw new Error(why);
+          state.saving = false; setSaveState('נשמר ✓'); toast((label || 'השינוי') + ' נשמר');
+          return true;
+        })
+        .catch(function (e) {
+          list[idx] = before; state.saving = false;
+          renderNav(); renderMain(); if (state.drawer && state.drawer.id === id) openDrawer('lead', id, true);
+          setSaveState(String(e && e.message || e), true); toast(String(e && e.message || e), true);
+          return false;
+        });
+    }
+    function moveStage(id, dir) {
+      const l = compute(state.data, state.today).leads.filter(function (x) { return x.id === id; })[0];
+      if (!l) return;
+      const target = dir > 0 ? stageAfter(l.stage) : stageBefore(l.stage);
+      if (!target) return;
+      writeLead(id, { stage: target }, 'המעבר ל«' + stageLabel(target) + '»');
+    }
+
     /* The client drawer: existing fields + the timeline from getActivity (B3). */
-    function openDrawer(kind, id) {
+    function openDrawer(kind, id, keepTab) {
       const c = compute(state.data, state.today);
       const lead = kind === 'lead' ? c.leads.filter(function (l) { return l.id === id; })[0] : null;
       const pat = kind === 'patient' ? c.patients.filter(function (p) { return p.id === id; })[0] : null;
@@ -372,14 +496,19 @@
       const na = lead ? nextActionFor(lead, state.today) : null;
       dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(name) + '</h2><div class="meta">' + esc(lead ? stageLabel(lead.stage) + ' · ' + houseName(lead.house) : 'מטופל/ת · ' + houseName(pat.houseId)) + (na ? ' · ' + esc(na.text) : '') + '</div></div><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>'
         + '<div class="tabs" role="tablist">' + [['overview', 'סקירה'], ['activity', 'פעילות'], ['meetings', 'פגישות ושירותים'], ['account', 'חשבון'], ['docs', 'מסמכים']].map(function (t, i) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (i === 0) + '">' + esc(t[1]) + '</button>'; }).join('') + '</div>'
-        + '<section data-pane="overview"><dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p><a class="btn primary" href="/">עריכה בדשבורד</a></p></section>'
+        + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : '') + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p>' + (lead && lead.stage === 'paid' ? '<a class="btn primary" href="/">קליטה לבית — בדשבורד</a> ' : '') + '<a class="btn" href="/">עריכה מלאה בדשבורד</a></p></section>'
         + '<section data-pane="activity" hidden><ul class="tl" id="crm-tl"><li>טוען…</li></ul></section>'
         + '<section data-pane="meetings" hidden><p class="na">' + (lead && lead.visitDate ? 'פגישת קבלה ' + esc(fmtDate(lead.visitDate)) + (lead.meetingOutcome ? ' · ' + esc(lead.meetingOutcome) : ' · ללא תוצאה') : 'אין פגישות רשומות') + '</p></section>'
         + '<section data-pane="account" hidden><p class="na">' + (state.me && state.me.finance ? 'החשבון מנוהל בדשבורד הרגיל (גבייה).' : 'אין הרשאה לנתוני גבייה.') + '</p></section>'
         + '<section data-pane="docs" hidden><p class="na">מסמכים — חשבשבת נשארת המקור; עדיין לא מחובר.</p></section>';
+      const prevTab = keepTab && state.drawer && state.drawer.tab ? state.drawer.tab : 'overview';
+      if (prevTab !== 'overview') {
+        doc.querySelectorAll('#crm-drawer [role="tab"]').forEach(function (b) { b.setAttribute('aria-selected', String(b.dataset.tab === prevTab)); });
+        doc.querySelectorAll('#crm-drawer [data-pane]').forEach(function (p) { p.hidden = p.dataset.pane !== prevTab; });
+      }
       dr.setAttribute('aria-hidden', 'false');
       $('#crm-scrim').setAttribute('data-open', 'true');
-      state.drawer = { kind: kind, id: id };
+      state.drawer = { kind: kind, id: id, tab: prevTab };
       api('getActivity', Object.assign({ limit: 50 }, subject)).then(function (r) {
         const tl = $('#crm-tl');
         if (!tl) return;
@@ -392,7 +521,7 @@
 
     /* events (delegated; filters, sort and scroll survive opening a card) */
     root.addEventListener('click', function (ev) {
-      const t = ev.target.closest ? ev.target.closest('[data-area],[data-kpi],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const t = ev.target.closest ? ev.target.closest('[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
       if (t.dataset.area) return setArea(t.dataset.area);
@@ -404,11 +533,32 @@
       if (t.dataset.tab) {
         doc.querySelectorAll('#crm-drawer [role="tab"]').forEach(function (b) { b.setAttribute('aria-selected', String(b === t)); });
         doc.querySelectorAll('#crm-drawer [data-pane]').forEach(function (p) { p.hidden = p.dataset.pane !== t.dataset.tab; });
+        if (state.drawer) state.drawer.tab = t.dataset.tab;
         return;
       }
+      if (t.dataset.stageNext) { ev.preventDefault(); ev.stopPropagation(); if (!state.saving) moveStage(t.dataset.stageNext, 1); return; }
+      if (t.dataset.stagePrev) { ev.preventDefault(); ev.stopPropagation(); if (!state.saving) moveStage(t.dataset.stagePrev, -1); return; }
       if (t.id === 'crm-drawer-close' || t.id === 'crm-scrim') { closeDrawer(); menuEl.removeAttribute('data-open'); $('#crm-scrim').removeAttribute('data-open'); return; }
       if (t.id === 'crm-burger') { const open = menuEl.getAttribute('data-open') === 'true'; menuEl.setAttribute('data-open', String(!open)); $('#crm-scrim').setAttribute('data-open', String(!open)); return; }
       if (t.id === 'crm-retry') return load();
+    });
+    root.addEventListener('submit', function (ev) {
+      const f = ev.target;
+      if (!f || !f.dataset || !f.dataset.form) return;
+      ev.preventDefault();
+      if (state.saving) return;
+      const id = f.dataset.lead;
+      const v = function (n) { const el = f.elements[n]; return el ? s(el.value) : ''; };
+      if (f.dataset.form === 'meeting') {
+        const patch = { visitDate: v('visitDate'), visitTime: v('visitTime'), meetingWith: v('meetingWith') };
+        const cur = compute(state.data, state.today).leads.filter(function (x) { return x.id === id; })[0];
+        if (cur && cur.stage === 'new' && patch.visitDate) patch.stage = 'visit';   // a dated meeting moves a new lead to ביקור נקבע
+        writeLead(id, patch, 'הפגישה');
+      } else if (f.dataset.form === 'outcome') {
+        writeLead(id, { meetingOutcome: v('meetingOutcome') }, 'תוצאת הפגישה');
+      } else if (f.dataset.form === 'note') {
+        writeLead(id, { assignedTo: v('assignedTo'), note: v('note') }, 'ההערה');
+      }
     });
     root.addEventListener('change', function (ev) {
       const t = ev.target;
@@ -442,5 +592,7 @@
 
   return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, normalise: normalise, compute: compute, filterLeads: filterLeads,
     board: board, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
-    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, esc: esc, boot: boot };
+    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, esc: esc, boot: boot,
+    MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
+    stageAfter: stageAfter, stageBefore: stageBefore, applyLeadPatch: applyLeadPatch, leadSaveBody: leadSaveBody, saveRefusal: saveRefusal };
 }));

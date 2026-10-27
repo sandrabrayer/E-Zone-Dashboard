@@ -120,3 +120,17 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
   .board { grid-template-columns: repeat(4, 80vw); }
   .kpis { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ---- lead actions (C4) ---- */
+.actions { margin-bottom: 12px; }
+.actions .toolbar { margin-bottom: 8px; }
+details.act { border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; margin-bottom: 6px; background: var(--panel); }
+details.act summary { cursor: pointer; font-size: 14px; }
+details.act form { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 8px 0 4px; }
+details.act label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); flex: 1 1 120px; }
+details.act input, details.act select, details.act textarea { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; color: var(--text); width: 100%; }
+details.act textarea { flex-basis: 100%; }
+.toast { position: fixed; bottom: 18px; inset-inline-start: 18px; background: var(--ok); color: #06240f; padding: 10px 14px; border-radius: 10px; font-weight: 600;
+  z-index: 60; opacity: 0; transform: translateY(8px); transition: opacity .15s, transform .15s; pointer-events: none; max-width: min(420px, 90vw); }
+.toast.bad { background: var(--bad); color: #fff; }
+.toast[data-show="true"] { opacity: 1; transform: none; }

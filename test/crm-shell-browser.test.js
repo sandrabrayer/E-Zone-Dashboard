@@ -49,7 +49,9 @@ const DATA = {
 const QUEUE = { ok: true, receipts: [{ id: 'r1', status: 'reported' }, { id: 'r2', status: 'flagged' }] };
 const ACTIVITY = { ok: true, scope: 'full', total: 1, events: [{ eventId: 'x', occurredAt: '2026-10-20T09:00:00.000Z', kind: 'lead_created', source: 'system:x', actorName: 'ורד', summary: 'הליד נוצר', details: {} }] };
 
+let saveAnswer = null;
 async function boot() {
+  const saves = [];
   const hash = await pinHash.hashPin('583920', PEPPER);
   const recs = ['vered', 'sandra', 'ortal'].map((id) => JSON.parse(users.recordLine(id, hash, 1)));
   const env = { PROXY_SECRET, SESSION_SECRET, SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', PIN_PEPPER: PEPPER, USER_PIN_HASHES: JSON.stringify(recs), CRM_ENABLED: 'true' };
@@ -70,7 +72,10 @@ async function boot() {
       let parsed = {};
       try { parsed = JSON.parse(body); } catch (_) { parsed = {}; }
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
-      const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY : { ok: false, error: 'unexpected_' + parsed.action };
+      if (parsed.action === 'saveAll') saves.push(parsed);
+      const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
+        : parsed.action === 'saveAll' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, proven: { leads: (parsed.leads || []).map((l) => String(l.id)) } })
+        : { ok: false, error: 'unexpected_' + parsed.action };
       const res = new EventEmitter();
       res.statusCode = 200; res.headers = {}; res.setEncoding = () => {}; res.resume = () => {};
       setImmediate(() => { cb(res); res.emit('data', JSON.stringify(answer)); res.emit('end'); });
@@ -78,7 +83,7 @@ async function boot() {
     return req;
   };
   const srv = await new Promise((resolve) => { const s = mod.app.listen(0, '127.0.0.1', () => resolve(s)); });
-  return { port: srv.address().port, actions, close() { srv.close(); https.request = original; Object.assign(console, quiet); } };
+  return { port: srv.address().port, actions, saves, close() { saveAnswer = null; srv.close(); https.request = original; Object.assign(console, quiet); } };
 }
 
 async function open(browser, port, id, width) {
@@ -184,5 +189,46 @@ test('CRM shell (Ortal, controller): only היום שלי / גבייה / בקר�
     assert.ok(!/אבי לוי/.test(await page.textContent('#crm-main')), 'no lead names in her view');
     assert.deepEqual(errors, []);
     assert.ok(srv.actions.some((a) => a.action === 'billingControlQueue' && a.user === 'ortal'));
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('C4 lead actions (Vered): «שלב הבא» on a card posts ONE lead to saveAll and moves the card; a refusal rolls back; the meeting form schedules', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="leads"]');
+    // 1. stage move from the card: new → visit
+    await page.click('.card[data-open-lead="L1"] [data-stage-next]');
+    await page.waitForFunction(() => document.querySelector('.col:nth-child(2) .card[data-open-lead="L1"]') !== null, null, { timeout: 5000 });
+    assert.equal(srv.saves.length, 1);
+    const body = srv.saves[0];
+    assert.equal(body.leads.length, 1, 'ONE lead, never the board');
+    assert.deepEqual(body.patients, {}, 'no patient is ever sent');
+    assert.equal(body.leads[0].id, 'L1'); assert.equal(body.leads[0].stage, 'visit');
+    assert.equal(body.leads[0].phone, '0501111111', 'the full raw row travels');
+    assert.deepEqual(body.prove, { leads: ['L1'] });
+    await page.waitForSelector('#crm-toast[data-show="true"]');
+    assert.match(await page.textContent('#crm-toast'), /נשמר/);
+    // 2. refusal → rollback to the previous column + error toast
+    saveAnswer = () => ({ ok: false, invalidLeads: ['L1'] });
+    await page.click('.card[data-open-lead="L1"] [data-stage-next]');
+    await page.waitForFunction(() => /שם וטלפון/.test(document.querySelector('#crm-toast').textContent), null, { timeout: 5000 });
+    assert.ok(await page.$('.col:nth-child(2) .card[data-open-lead="L1"]'), 'rolled back to ביקור נקבע');
+    saveAnswer = null;
+    // 3. meeting form in the drawer: date + time + נפגש עם
+    await page.click('.card[data-open-lead="L1"] .name');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer details.act:nth-of-type(1) summary');
+    await page.fill('#crm-drawer form[data-form="meeting"] [name="visitDate"]', TODAY);
+    await page.fill('#crm-drawer form[data-form="meeting"] [name="visitTime"]', '11:30');
+    await page.selectOption('#crm-drawer form[data-form="meeting"] [name="meetingWith"]', 'אמבולטורי');
+    await page.click('#crm-drawer form[data-form="meeting"] button[type="submit"]');
+    await page.waitForFunction((n) => window.__x = document.querySelectorAll('#crm-drawer .kv dd').length > 0 && n, 1, { timeout: 5000 });
+    await page.waitForFunction(() => /הפגישה נשמר/.test(document.querySelector('#crm-toast').textContent), null, { timeout: 5000 });
+    const m = srv.saves[srv.saves.length - 1].leads[0];
+    assert.deepEqual([m.visitDate, m.visitTime, m.meetingWith, m.stage], [TODAY, '11:30', 'אמבולטורי', 'visit']);
+    assert.match(await page.textContent('#crm-drawer'), /11:30/);
+    assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });
