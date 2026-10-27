@@ -22,10 +22,10 @@ Spec §14 separation, applied here:
 
 | # | Decision | Why it blocks |
 | --- | --- | --- |
-| 0.1 | **The fate of PR #220 (CRM-02)**: (a) build on its encrypted PostgreSQL queue, (b) reuse only its Code.gs read projections, or (c) close it as superseded | Spec §2/§14: no parallel mechanism. B's Activity sheet and #220's retained queue overlap in purpose (task retention, closure evidence). #220 also touches Code.gs and server.js, the same files B and C touch. Analysis and recommendation: **§7**. |
+| 0.1 | ✅ **DECIDED 2026-10-27: PR #220 (CRM-02) is closed as superseded** by this CRM restructure. Its branch `codex/crm02-read-projections-20261013` is kept at `a63c477`. Later CRM PRs will cherry-pick two things from it: (1) the archive-aware lead reader, **with** the numeric-ID fix, and (2) the task-queue rules (close only on fresh complete evidence; keep the original deadline). **No PostgreSQL.** | Spec §2/§14: no parallel mechanism. Session B no longer depends on #220. Analysis: **§7**. |
 | 0.2 | **When to turn on `PROXY_SECRET_MODE=enforce`** (Phase 0b-3; needs the Managers / Therapists / accounting-feed checks first) | Until then, any server-side CRM permission can be bypassed through `/exec` (CURRENT-STATE §8.1). Recommendation: before C goes to a pilot with real users, not before B. |
 | 0.3 | Activity scope: which event kinds, whether free-text notes may hold clinical content, who may read which kinds | Shapes B1's columns and B3's filter |
-| 0.4 | The PERMISSIONS-MATRIX §6 open decisions (S/Y scope, coordinators, D3 manager identity) | Needed before C2's area gating. **Not** needed for B. |
+| 0.4 | ✅ **DECIDED 2026-10-27:** the PERMISSIONS-MATRIX §6 questions are answered by SPEC D5–D12 (Shiran and Yael removed, Dana read-only with no money; coordinators no Dashboard; discounts Sandra; refund decision Sandra / execution Ortal; prices Sandra; Therapists 730 days + access log; Ortal's field set; managers via ניהול בית). Four follow-ups remain open (PERMISSIONS-MATRIX §6). | Needed before C2's area gating. **Not** needed for B. |
 
 Nothing in B or C edits OP-03 (Outpatient #125), Outpatient #114 or PR #220.
 
@@ -62,9 +62,9 @@ Nothing in B or C edits OP-03 (Outpatient #125), Outpatient #114 or PR #220.
 
 | Item | Plan |
 | --- | --- |
-| Goal | One read action returning a subject's events. It requires a **verified personal session** and refuses unverified callers **even in `log` mode** (same rule as `expectedDischarges`, Code.gs:16304). The kinds and fields a role may see are filtered **on the server**: money kinds only with `finance`; Ortal limited to the billing kinds; S/Y per decision 0.4. |
+| Goal | One read action returning a subject's events. It requires a **verified personal session** and refuses unverified callers **even in `log` mode** (same rule as `expectedDischarges`, Code.gs:16304). The kinds and fields a role may see are filtered **on the server**: money kinds only with `finance`; Ortal limited to the billing kinds and the D11 field set; Dana per D5 (no money kinds). |
 | Files | `apps-script/Code.gs` (action + filter). `lib/role-scope.js` / `lib/finance-scope.js` (classify the action). `server.js` (only if a new list entry is needed). `test/activity-read-scope.test.js`. CHANGELOG. ESS. |
-| Tests | Per-role matrix (Vered, Sandra, Ortal, S/Y, unverified, NO_PRINCIPAL): fields absent, not just hidden. Ortal's controller lock still holds. Healthcheck path unaffected. |
+| Tests | Per-role matrix (Vered, Sandra, Ortal, Dana, unverified, NO_PRINCIPAL): fields absent, not just hidden. Ortal's controller lock still holds. Healthcheck path unaffected. |
 | SW bump | **No** |
 | Code.gs | **Yes** |
 | Rollback | Revert. The action has no UI consumer. |
@@ -115,7 +115,7 @@ A test pins this.
 ### Later (not B or C; each a separate approved track)
 
 - A task / next-action record with due dates and owner vs assignee (decide against #220 first).
-- Server-side field scoping of `getData` for S/Y; write gates by role; house-scoped manager access (D3).
+- Server-side field scoping (Ortal D11, Dana D5); Dana's read-only role; D7 discount and D8 refund-execution gates; the D10 Therapists access log; house-scoped manager access via ניהול בית (D3, D6, D12). See PERMISSIONS-MATRIX §5.
 - The Outpatient continuation feed (Outpatient #114 lineage), with the createLead contract frozen while OP-03 is open.
 - Hashavshevet issuance evidence.
 - Person, contacts and payer entities.
@@ -192,7 +192,7 @@ This comes from #220's own approved, aggregate-only inspection on 2026-10-14:
 | **(b) Cherry-pick (port selectively onto the current base)** | Keeps the reviewed ideas and code without the unmet infra | Re-review of the ported parts; #220's history is not merged |
 | **(c) Close #220 now** | Simplest | Loses reviewed work (fail-closed archive-aware lead projection, closure-on-evidence rules, the PostgreSQL drills) that the later task-queue track needs |
 
-### Recommendation: (b) cherry-pick, then close #220 as superseded
+### Recommendation: (b) cherry-pick, then close #220 as superseded — ✅ DECIDED 2026-10-27
 
 1. **Session B goes ahead independent of #220.** B1–B3 do not touch `lib/crm/`, `crm-ui/`,
    `test/crm/` or PostgreSQL, so nothing collides and nothing is duplicated.
@@ -202,11 +202,10 @@ This comes from #220's own approved, aggregate-only inspection on 2026-10-14:
    - the fail-closed transport and adapter pattern, for B3 / C reads;
    - the "close only on fresh complete evidence" and "keep original deadline" rules, as tests, for
      the later task-queue track.
-3. **Keep the PostgreSQL queue out of B and C.** Revisit it only in the "Later" task-record track,
-   and only if Sheets-based retention proves insufficient. If revisited, the gates in #220's
-   `docs/crm-pilot-readiness.md` still apply.
-4. **Close #220 as superseded** once the ports it feeds have merged, or earlier if Sandra prefers.
-   The closing comment links this section. **Outpatient #114** stays as is: it is
+3. **No PostgreSQL** (decided). The later task-record track uses Sheets-based retention and
+   ports only #220's rules, not its encrypted PostgreSQL checkpoint.
+4. **#220 was closed as superseded on 2026-10-27**, with branch
+   `codex/crm02-read-projections-20261013` kept at `a63c477` as the cherry-pick source. **Outpatient #114** stays as is: it is
    observation-only, and its fate follows the Outpatient continuation track, not Session B.
-5. **This is Sandra's decision (§0.1).** Nothing above is done in Session A. Neither PR is edited,
-   rebased or closed here.
+5. **Decision: Sandra, 2026-10-27 (§0.1).** Sandra closed #220. These docs never edited, rebased or
+   closed it, and Outpatient #114 is untouched.

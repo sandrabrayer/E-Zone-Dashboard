@@ -39,6 +39,17 @@ test('the CRM docs carry no secret values, /exec URLs or e-mail addresses', () =
   }
 });
 
+test('SPEC.md records decisions D5-D12 and the matrix drops Shiran / Yael with a revoke list', () => {
+  const spec = read('SPEC.md');
+  for (const d of ['D5', 'D6', 'D7', 'D8', 'D9', 'D10', 'D11', 'D12']) assert.match(spec, new RegExp('\\| ' + d + ' \\|'));
+  assert.match(spec, /Dana \(דנה\) replaces Yael/);
+  const matrix = read('PERMISSIONS-MATRIX.md');
+  assert.doesNotMatch(matrix, /^\| \*\*(Shiran|Yael)\b/m, 'no Shiran / Yael identity row');
+  assert.match(matrix, /^\| \*\*Dana\*\* \(דנה\)/m);
+  assert.match(matrix, /^## 7\. Shiran \/ Yael entries to revoke/m);
+  assert.match(matrix, /USER_PIN_HASHES/);
+});
+
 test('EZONE-ECOSYSTEM-STATUS.md records Session A and CHANGELOG-crm-spec.md exists', () => {
   const ess = fs.readFileSync(path.join(ROOT, 'EZONE-ECOSYSTEM-STATUS.md'), 'utf8');
   assert.match(ess, /^## CRM restructure — Session A/m);

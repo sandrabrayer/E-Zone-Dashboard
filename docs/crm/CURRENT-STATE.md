@@ -344,7 +344,7 @@ These are reported only. Nothing in this session touches them.
 
 | Item | Repo / branch | Head | State | What it changes |
 | --- | --- | --- | --- | --- |
-| **Dashboard PR #220** "CRM-02: default-off source reads, retained queue and Dashboard work screen" | E-Zone-Dashboard · `codex/crm02-read-projections-20261013` → base `claude/build-ezone-dashboard-QOg5s` @ `43eba4d` | `a63c477` (last update 2026-10-14) | **Open draft.** CI green at its head. It is not mergeable as-is: its own body records an activation blocker (21 numeric lead IDs refused by the strict reader, plus one active/archive overlap), and the DB, key custody, backup and staging gates are not met. | 45 files, +3416. `apps-script/Code.gs` (+99: `getCrmLeads` v2 and `getCrmAdmittedRoster` projections), `server.js` (+34), new `lib/crm/*`, `crm-ui/*`, `test/crm/*`, `scripts/crm-*`, `docs/crm-*.md`, `CHANGELOG-crm-*.md`, `DEPLOY.md`, `package.json` (pg moved to runtime), `.github/workflows/test.yml`. Gates: `CRM_READS` + `CRM_QUEUE_*`, route `/crm-work`. |
+| **Dashboard PR #220** "CRM-02: default-off source reads, retained queue and Dashboard work screen" | E-Zone-Dashboard · `codex/crm02-read-projections-20261013` → base `claude/build-ezone-dashboard-QOg5s` @ `43eba4d` | `a63c477` (last update 2026-10-14) | **Closed 2026-10-27 as superseded** by the CRM restructure (Sandra's decision; branch kept). At closing it was a draft with CI green at its head, but not mergeable as-is: its own body records an activation blocker (21 numeric lead IDs refused by the strict reader, plus one active/archive overlap), and the DB, key custody, backup and staging gates are not met. | 45 files, +3416. `apps-script/Code.gs` (+99: `getCrmLeads` v2 and `getCrmAdmittedRoster` projections), `server.js` (+34), new `lib/crm/*`, `crm-ui/*`, `test/crm/*`, `scripts/crm-*`, `docs/crm-*.md`, `CHANGELOG-crm-*.md`, `DEPLOY.md`, `package.json` (pg moved to runtime), `.github/workflows/test.yml`. Gates: `CRM_READS` + `CRM_QUEUE_*`, route `/crm-work`. |
 | **Outpatient PR #114** "CRM-02: dormant read-only source projections and authorized adapters" | ezone-outpatient · `codex/crm02-read-projections-20261013` | `4d464d5` (2026-10-13) | **Open draft**, unchanged since 2026-10-13. Its merge base is 46 commits behind the Outpatient deploy branch. | 15 files, +1113: Outpatient `Code.gs` (+67), `server.js`, `lib/crm/*`, `test/crm/*`, docs |
 | **OP-03** = Outpatient PR #125 "OP-03: preserve operational backup state and gate recovery" | ezone-outpatient · `codex/op03-operational-backup-20261019` | `3297311` (2026-10-26) | **Open draft**, active in a separate track and conversation. **Out of scope; do not edit.** | 22 files, +4847: Outpatient `Code.gs` (+442), `EZONE-ECOSYSTEM-STATUS.md`, operational-recovery docs, drill evidence, tests |
 
@@ -352,20 +352,18 @@ These are reported only. Nothing in this session touches them.
 
 1. **Same product, two designs.** #220 already ships a CRM work queue: an encrypted PostgreSQL
    checkpoint, read-only lead projections and an authenticated `/crm-work` screen. The spec forbids
-   parallel mechanisms (§2, §14). **Sandra decides before Session B** whether #220 is:
-   - (a) the queue foundation the new CRM builds on,
-   - (b) partly reused (for example its Code.gs read projections), or
-   - (c) closed and superseded.
-
-   See [ROLLOUT.md](ROLLOUT.md) §0.
+   parallel mechanisms (§2, §14). **Decided 2026-10-27:** #220 is **closed as superseded**, with
+   its branch kept. Later CRM PRs cherry-pick its archive-aware lead reader (with the numeric-ID
+   fix) and its task-queue rules. **No PostgreSQL.** See [ROLLOUT.md](ROLLOUT.md) §0.1 and §7.
 2. **File collisions.** #220 touches `apps-script/Code.gs`, `server.js`, `package.json`,
    `.github/workflows/test.yml` and `DEPLOY.md`, which Sessions B and C will also touch.
-   Its base `43eba4d` (2026-10-13) predates every PR merged since (#221 through #281), so it
-   already needs a base merge. To avoid name
+   Now that #220 is closed, nothing will be merged from it; ported code is re-applied on the
+   current base in separately reviewed PRs. To avoid name
    clashes, Session B/C files must not use `lib/crm/`, `crm-ui/`, `test/crm/` or
    `docs/crm-*.md`. These docs live in `docs/crm/` (a directory), which #220 does not use.
-3. **Flag naming.** #220 uses `CRM_READS` / `CRM_QUEUE_*` and `/crm-work`. Session C's
-   `CRM_ENABLED` and `?view=crm` are distinct names, so the two cannot switch each other on.
+3. **Flag naming.** #220 used `CRM_READS` / `CRM_QUEUE_*` and `/crm-work`. Session C keeps the
+   distinct names `CRM_ENABLED` and `?view=crm`, so a cherry-picked piece can never switch the
+   other on.
 4. **OP-03 has no file overlap with this repo** (it lives in ezone-outpatient). The indirect risk
    is the Outpatient `createLead` contract and its recovery/backup gates: the CRM must not change
    that contract while OP-03 is open.
