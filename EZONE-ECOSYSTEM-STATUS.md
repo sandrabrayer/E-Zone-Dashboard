@@ -1,5 +1,11 @@
 # E-ZONE Ecosystem Status — updated October 27, 2026
 
+## B2 — Activity system events behind `ACTIVITY_WRITES` — October 27, 2026 (PR open)
+
+- **What:** one hook in `logAudit_` maps 17 audit actions (lead close/restore/remove/create, discharge incl. coordinators, restores, house move, payment reported/confirmed/flagged/unconfirmed/void-reversed, refunds) to `Activity` events — idempotent by stable eventId, best-effort, ids only. Unmapped actions write nothing.
+- **DEFAULT OFF.** Script Property `ACTIVITY_WRITES=on` enables (Apps Script editor → Project settings → Script properties); delete it to stop instantly. No Railway variable, no SW bump.
+- **Next:** B3 permission-filtered `getActivity` read. Details: `CHANGELOG-crm-activity-system-events.md`.
+
 ## B1 — `Activity` sheet + writer, not wired — October 27, 2026 (PR open)
 
 - **What:** `ACTIVITY_SHEET` / `ACTIVITY_COLUMNS` (16 cols, append-only) + `appendActivity_` (locked, idempotent by `eventId`, pure validator `activityRow_`). **No caller, no action, no `getData` change** — no row is written in production. Code.gs only, inert; clasp CI on merge.

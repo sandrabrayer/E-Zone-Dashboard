@@ -4193,29 +4193,145 @@ function appendActivity_(event) {
   const lock = LockService.getScriptLock();
   if (lock.tryLock(5000) !== true) return lockBusy_('appendActivity_');
   try {
-    const sh = getOrCreateSheet_(ACTIVITY_SHEET, ACTIVITY_COLUMNS);
-    const lastRow = sh.getLastRow();
-    if (lastRow >= 2) {
-      const ids = sh.getRange(2, 1, lastRow - 1, 1).getValues();
-      for (let i = 0; i < ids.length; i++) {
-        if (String(ids[i][0] == null ? '' : ids[i][0]).trim() === v.row.eventId) {
-          return { ok: true, written: false, duplicate: true, eventId: v.row.eventId };
-        }
-      }
-    }
-    sh.getRange(lastRow + 1, 1, 1, ACTIVITY_COLUMNS.length).setValues([objectToRow_(v.row, ACTIVITY_COLUMNS)]);
-    return { ok: true, written: true, eventId: v.row.eventId, recordedAt: v.row.recordedAt };
+    return activityAppendRow_(v.row);
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
 }
 
+/* The dedupe-scan + append of ONE validated row. The caller holds the script
+ * lock (appendActivity_), or is a writer that already holds it (the B2 hook
+ * below — logAudit_ runs inside every writer's own lock). Never updates. */
+function activityAppendRow_(row) {
+  const sh = getOrCreateSheet_(ACTIVITY_SHEET, ACTIVITY_COLUMNS);
+  const lastRow = sh.getLastRow();
+  if (lastRow >= 2) {
+    const ids = sh.getRange(2, 1, lastRow - 1, 1).getValues();
+    for (let i = 0; i < ids.length; i++) {
+      if (String(ids[i][0] == null ? '' : ids[i][0]).trim() === row.eventId) {
+        return { ok: true, written: false, duplicate: true, eventId: row.eventId };
+      }
+    }
+  }
+  sh.getRange(lastRow + 1, 1, 1, ACTIVITY_COLUMNS.length).setValues([objectToRow_(row, ACTIVITY_COLUMNS)]);
+  return { ok: true, written: true, eventId: row.eventId, recordedAt: row.recordedAt };
+}
+
+/* ===== B2 — system events dual-written from the existing writers =====
+ * (CHANGELOG-crm-activity-system-events.md). ONE hook, in logAudit_: every
+ * state change already audits itself there, after its primary write, inside
+ * its own script lock. The hook maps the audit action to an Activity event
+ * through ACTIVITY_AUDIT_MAP and appends it BEST-EFFORT (the
+ * refreshDigestBestEffort_ pattern): a failure is logged and never fails,
+ * delays or reverts the primary write.
+ *
+ * KILL SWITCH — Script Property ACTIVITY_WRITES: 'on' → events are written;
+ * anything else / unset → ZERO Activity writes (DEFAULT OFF). Sandra turns it
+ * on in the Apps Script editor (Project settings → Script properties).
+ *
+ * IDEMPOTENCY — eventId = '<kind>:<primary id>' + the action's identity fields
+ * (ACTIVITY_AUDIT_MAP[...].idFields, read from the audit details) joined by ':'.
+ * A retry of the same action (same ids) adds no duplicate (spec §14). An
+ * action with no natural identity (a restore, a reversal) appends the audit
+ * second, so only a same-second replay dedupes — documented, accepted.
+ *
+ * Unmapped audit actions write nothing. The map is the allow-list. */
+const ACTIVITY_WRITES_PROP = 'ACTIVITY_WRITES';
+const ACTIVITY_AUDIT_MAP = {
+  /* leads */
+  lead_moved_irrelevant:        { kind: 'lead_closed',             link: 'lead',    idFields: ['disposition', '@sec'], summary: 'הליד נסגר' },
+  lead_restored:                { kind: 'lead_restored',           link: 'lead',    idFields: ['@sec'],                summary: 'הליד הוחזר ללוח' },
+  lead_removed:                 { kind: 'lead_removed',            link: 'lead',    idFields: ['@sec'],                summary: 'הליד הוסר' },
+  lead_created_from_therapists: { kind: 'lead_created',            link: 'lead',    idFields: [],                      summary: 'ליד נוצר מאפליקציית המטפלים', source: 'app:therapists' },
+  /* patients */
+  patient_discharged:           { kind: 'patient_discharged',      link: 'patient', idFields: ['disposition', '@sec'], summary: 'שוחרר/ה מהבית' },
+  patient_discharged_by_coordinators: { kind: 'patient_discharged', link: 'patient', idFields: ['dischargeDate'],      summary: 'שוחרר/ה מהבית (רכזים)', source: 'app:coordinators' },
+  patient_restored_to_lead:     { kind: 'patient_restored_to_lead', link: 'patient', idFields: ['newLeadId'],          summary: 'הוחזר/ה לליד' },
+  patient_restored_active:      { kind: 'patient_restored_active', link: 'patient', idFields: ['@sec'],                summary: 'הוחזר/ה לטיפול פעיל' },
+  patient_moved_house:          { kind: 'patient_moved_house',     link: 'patient', idFields: ['fromHouseId', 'toHouseId'], summary: 'עבר/ה בית' },
+  /* payments */
+  payment_reported:             { kind: 'payment_reported',        link: 'payment', idFields: [],                      summary: 'דווח תשלום' },
+  payment_confirm_confirmed:    { kind: 'payment_confirmed',       link: 'payment', idFields: [],                      summary: 'התשלום אומת' },
+  payment_confirm_flagged:      { kind: 'payment_flagged',         link: 'payment', idFields: ['@sec'],                summary: 'התשלום סומן לבירור' },
+  payment_confirm_reported:     { kind: 'payment_unconfirmed',     link: 'payment', idFields: ['@sec'],                summary: 'האימות בוטל — חזר לדווח' },
+  payment_void_reversed:        { kind: 'payment_void_reversed',   link: 'payment', idFields: ['@sec'],                summary: 'ביטול התשלום הוסר' },
+  /* refunds */
+  credit_auto_created:          { kind: 'refund_auto_created',     link: 'patient', idFields: ['ids'],                 summary: 'זיכוי נוצר לפי הכלל' },
+  credit_paid:                  { kind: 'refund_paid',             link: 'patient', idFields: ['id'],                  summary: 'הזיכוי שולם' },
+  credit_exception_approved:    { kind: 'refund_exception_approved', link: 'patient', idFields: ['id'],                summary: 'אושר זיכוי חריג' },
+};
+
+function activityWritesOn_() {
+  try {
+    return String(PropertiesService.getScriptProperties().getProperty(ACTIVITY_WRITES_PROP) || '').trim() === 'on';
+  } catch (_) { return false; }
+}
+
+/* PURE: the Activity event for one audit call, or null when the action is not
+ * mapped. `nowIso` = the audit timestamp. */
+function activityFromAudit_(action, fn, auditId, name, details, actor, nowIso) {
+  const m = ACTIVITY_AUDIT_MAP[String(action || '')];
+  if (!m) return null;
+  const d = details && typeof details === 'object' ? details : {};
+  const s = function (v) { return String(v == null ? '' : v).trim(); };
+  const primary = s(auditId);
+  const detailId = s(d.id);
+  const ev = {
+    kind: m.kind,
+    source: m.source || ('system:' + s(fn)),
+    occurredAt: nowIso,
+    actorId: s(d.actor),
+    actorName: s(actor) || s(d.updatedBy) || s(d.by),
+    leadId: '', patientId: '', personId: '', paymentUid: '', dischargeId: '',
+    houseId: s(d.toHouseId) || s(d.houseId),
+    summary: m.summary,
+    details: {},
+  };
+  let key = '';
+  if (m.link === 'lead') {
+    ev.leadId = primary; key = primary;
+  } else if (m.link === 'patient') {
+    ev.patientId = detailId || primary; key = ev.patientId;
+    if (detailId && primary && detailId !== primary) ev.leadId = primary;  // audit arg = fromLead || id
+    if (d.auditId) ev.dischargeId = s(d.auditId);
+  } else if (m.link === 'payment') {
+    ev.paymentUid = s(d.paymentUid); ev.patientId = primary; key = s(d.paymentId) || s(d.receiptId) || ev.paymentUid;
+  }
+  if (!key) return null;
+  const parts = [m.kind, key];
+  for (let i = 0; i < m.idFields.length; i++) {
+    const f = m.idFields[i];
+    parts.push(f === '@sec' ? String(nowIso).slice(0, 19) : s(d[f]));
+  }
+  ev.eventId = parts.join(':').replace(/[^A-Za-z0-9:_.\-]/g, '_');
+  // A compact, PII-free detail set: ids and codes only (names / notes / amounts stay in their records).
+  const keep = ['disposition', 'continuity', 'dischargeDate', 'fromHouseId', 'toHouseId', 'newLeadId',
+    'receiptId', 'paymentId', 'cycleId', 'from', 'to', 'ids', 'count', 'override', 'reason'];
+  for (let i = 0; i < keep.length; i++) if (d[keep[i]] !== undefined && d[keep[i]] !== '') ev.details[keep[i]] = d[keep[i]];
+  return ev;
+}
+
+/* The hook. Never throws, never blocks the caller; nothing when the switch is off. */
+function activityFromAuditBestEffort_(action, fn, auditId, name, details, actor, nowIso) {
+  try {
+    if (!activityWritesOn_()) return;
+    const ev = activityFromAudit_(action, fn, auditId, name, details, actor, nowIso);
+    if (!ev) return;
+    const v = activityRow_(ev, nowIso);
+    if (!v.ok) { try { console.warn('[activity] skipped ' + action + ': ' + v.error); } catch (_) { /* no-op */ } return; }
+    activityAppendRow_(v.row);
+  } catch (err) {
+    try { console.warn('[activity] write failed for ' + action + ': ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
+  }
+}
+
 function logAudit_(action, fn, patientId, name, details, actor) {
+  const nowIso = new Date().toISOString();
   try {
     const sh = getOrCreateSheet_(AUDIT_LOG_SHEET, AUDIT_LOG_COLUMNS);
     try { if (!sh.isSheetHidden()) sh.hideSheet(); } catch (_) { /* no-op */ }
     const row = objectToRow_({
-      timestamp: new Date().toISOString(),
+      timestamp: nowIso,
       action:    String(action == null ? '' : action),
       fn:        String(fn == null ? '' : fn),
       patientId: String(patientId == null ? '' : patientId),
@@ -4230,6 +4346,9 @@ function logAudit_(action, fn, patientId, name, details, actor) {
   } catch (err) {
     try { console.warn('[audit] log skipped: ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
   }
+  // B2: the CRM timeline event for this state change — best-effort, behind
+  // ACTIVITY_WRITES, after the audit row; never affects the caller.
+  activityFromAuditBestEffort_(action, fn, patientId, name, details, actor, nowIso);
 }
 
 /* fromLead lead-ids of NON-restored discharged-audit rows, as a
