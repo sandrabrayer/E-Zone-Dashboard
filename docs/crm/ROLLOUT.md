@@ -38,65 +38,59 @@ Nothing in B or C edits OP-03 (Outpatient #125), Outpatient #114 or PR #220.
 This is the **first Session B code PR** (SPEC D13). It comes before B1.
 
 **It ships as a pair, in this order (confirmed by Sandra, 2026-10-27):**
-1. **B0-coord**, in the ezone-coordinators repo (deploy branch `main`), merges and deploys first.
-   The coordinators app starts sending the verified coordinator user + house next to the shared
-   secret on every `recordDischargeFromCoordinators` call. The Dashboard **ignores** the pair at
-   this point (`collectParams_` passes unknown fields through, and no Dashboard code reads them),
-   so nothing changes in behaviour.
-2. **B0**, in this repo, merges only after B0-coord is confirmed live. It enforces the pair.
+1. **B0-coord**, in the ezone-coordinators repo (deploy branch `main`), merges and deploys first:
+   [ezone-coordinators PR #337](https://github.com/sandrabrayer/ezone-coordinators/pull/337).
+   Every call the coordinators app makes to the Dashboard Apps Script sends `actor` + `house` next
+   to the shared secret. The Dashboard **ignores** both at this point. Its handlers for the three
+   coordinator actions read only `secret`, `id`, `dischargeDate`, `by`, `reason` and `range`, so
+   nothing changes in behaviour.
+2. **B0**, in this repo, merges only after B0-coord is confirmed live (Railway **and** the manual
+   coordinators "Deploy Apps Script" run). It enforces the rules below.
+
+**The wire contract (as built in B0-coord):**
+
+| Coordinators call | `actor` | `house` |
+| --- | --- | --- |
+| `recordDischargeFromCoordinators` (a user's «שחרור») | `user:<id>` for a personal login, else the session label `rakaz:<house>` / `admin` | the session house as a Dashboard id (`ramot`, `raanana`, `efroni`, `rehab`, `pardes`; `hapardes` → `pardes`), `*` for an admin session |
+| `getPatientsForCoordinators` (background `patientListSync`) | `system:patientListSync` | `*` |
+| `getCommitteesForCoordinators` (editor runs only) | `system:committeePreview` / `system:committeeImport` | `*` |
+
+On the coordinators side, `house` is derived from the session-built `by`. The personal user id is
+`req.authSession.u`, forwarded internally as `actorUserId`. Neither is ever read from a client field.
+
+**What B0 enforces (Sandra, 2026-10-27):**
+- `actor: 'system:*'` with `house: '*'` is accepted **only** on the two **read-only** feed actions
+  (`getPatientsForCoordinators`, `getCommitteesForCoordinators`).
+- `recordDischargeFromCoordinators` is **refused** when:
+  - the actor is `system:*`, or
+  - the house is `*` and the actor is not an admin (`admin` or an admin personal user), or
+  - the patient's house (through the single house rule `resolveHouseId`) is not the asserted
+    `house`.
+- A missing or malformed `actor` / `house` is refused on the write. The two feeds keep serving
+  during the transition.
+- **Code-login discharges** carry `rakaz:<house>` (no personal id). Accepted for now; **Phase 3a
+  makes personal logins mandatory for discharge**, and from then on B0 accepts only `user:<id>` or
+  `admin` actors on the write.
 
 | Item | Plan |
 | --- | --- |
-| Goal | `recordDischargeFromCoordinators` refuses a patient whose house is not the caller's **verified session house**: the feed secret plus the asserted user/house pair (D12: `coordUserId`, `coordHouse`), never a free client field. Today it accepts any house. |
-| Dependency | **B0-coord must be live first** (see the order above). Otherwise every coordinator discharge is refused. Before merging B0, confirm from the coordinators app that real calls carry `coordUserId` + `coordHouse`; ask Sandra for one test discharge or check its logs. Phase 4 later moves the write behind the ניהול בית shared-discharge endpoint. |
-| Files | `apps-script/Code.gs` (`recordDischargeFromCoordinators_` house check, resolved through the single house rule `resolveHouseId`). `test/coordinators-discharge-own-house.test.js`. `CHANGELOG-coordinators-discharge-own-house.md`. ESS. `DEPLOY.md`. |
-| Tests | Own house → discharged. Other house → refused (`forbidden_house`), with nothing written. Missing pair → refused. An alias or label house still resolves. Idempotency is unchanged (`alreadyDischarged`). |
+| Goal | `recordDischargeFromCoordinators` refuses a patient whose house is not the caller's **verified session house**: the feed secret plus the asserted `actor` / `house` pair (D12), never a free client field. Today it accepts any house. |
+| Dependency | **B0-coord must be live first** (see the order above). Otherwise every coordinator discharge is refused. Before merging B0, confirm that real calls carry `actor` + `house`; ask Sandra for one test discharge or check the coordinators' logs. Phase 4 later moves the write behind the ניהול בית shared-discharge endpoint. |
+| Files | `apps-script/Code.gs`: the `recordDischargeFromCoordinators_` actor/house check, plus the two feeds' `system:*` acceptance. `test/coordinators-discharge-own-house.test.js`. `CHANGELOG-coordinators-discharge-own-house.md`. ESS. `DEPLOY.md`. |
+| Tests | Own house → discharged. Other house → refused (`forbidden_house`), with nothing written. `system:*` actor on the write → refused. `*` from a non-admin → refused. `*` from `admin` → allowed. Missing pair on the write → refused. The feeds accept `system:*` + `*`. An alias house (`hapardes`) still resolves. Idempotency unchanged (`alreadyDischarged`). |
 | SW bump | **No** |
 | Code.gs | **Yes**. clasp deploys on merge. |
-| Rollback | Revert. The coordinators app keeps working, because it simply sends extra fields the old code ignores. |
+| Rollback | Revert. The coordinators app keeps working, because it simply sends fields the old code ignores. |
 
-### B0-coord · the coordinators-side prompt (paste into the coordinators session)
+### B0-coord · coordinators side — built ([ezone-coordinators #337](https://github.com/sandrabrayer/ezone-coordinators/pull/337))
 
-```text
-Repo: sandrabrayer/ezone-coordinators · deployed branch: main · base every PR on main.
-Read CLAUDE.md and EZONE-ECOSYSTEM-STATUS.md first. Docs and tests ship with the change.
-
-Task (B0-coord, Dashboard CRM decision D13): every call this app makes to the
-E-Zone Dashboard Apps Script action `recordDischargeFromCoordinators` must also
-send WHO is discharging and WHICH house they act for, taken from the verified
-session, never from user input.
-
-1. Find every call site of `recordDischargeFromCoordinators` (it sends `secret`
-   = COORDINATORS_PATIENTS_SECRET plus id, dischargeDate, reason, by).
-2. Add two fields to that request body, next to `secret`:
-   - `coordUserId`: the stable id of the logged-in coordinator from this app's
-     verified session (not the display name; not a request/form field).
-   - `coordHouse`: the house that session is authorised for, as the canonical
-     coordinators house id the Dashboard feed already returns in
-     `getPatientsForCoordinators` (`house`), e.g. ramot / raanana / efroni /
-     rehab / pardes.
-   Both are read on the server side of this app from the authenticated session.
-   A value coming from the browser, a query string or a form field is NOT
-   acceptable. If there is no verified session (e.g. a scheduled job), do not
-   send a discharge at all; refuse with a clear error.
-3. If a coordinator is authorised for MORE THAN ONE house, or this app has no
-   per-user house today, STOP and report to Sandra before writing code. Do not
-   send a list, a wildcard or a guess.
-4. Do not change the existing fields, the secret, the endpoint URL or any other
-   Dashboard call. The Dashboard IGNORES the two new fields until its B0 PR
-   ships, so this PR must be behaviour-neutral on the Dashboard side.
-5. Tests (mocked, no real Dashboard call): the outgoing body carries
-   coordUserId + coordHouse from the session; a forged house in the request is
-   ignored; no session means no call; existing discharge tests stay green.
-6. CHANGELOG-<topic>.md, the EZONE-ECOSYSTEM-STATUS.md section, and the
-   CLAUDE.md repo footer rule. npm audit: 0 high/critical. Explicit-path git add.
-7. Open the PR against main and report: PR link, the exact field names and
-   where the session values come from. After merge + deploy, tell Sandra so the
-   Dashboard B0 PR can enforce the pair.
-
-Never put the secret value, any /exec URL or personal data in code, logs, docs
-or the PR. Do not touch OP-03 or any other repo.
-```
+The original paste-in prompt asked for `coordUserId` / `coordHouse`. Sandra's revised prompt chose
+`actor` / `house` (plus `actorUserId` inside the coordinators app), and that is what was built; see
+the wire contract above. Coordinators PR #337 details:
+- an isolated `Code.gs` commit;
+- `server.js` forwards `actorUserId` from the signed session only;
+- tests pin that every Dashboard call carries `actor` + `house`;
+- ⚠️ the coordinators' "Deploy Apps Script" is a manual run after merge.
 
 ### B1 · `Activity` sheet + writer helper (not wired)
 
@@ -192,8 +186,8 @@ A test pins this.
 
 | PR | Kind | Files (main) | Tests | SW bump | Code.gs | Rollback |
 | --- | --- | --- | --- | --- | --- | --- |
-| B0-coord | ezone-coordinators (first) | coordinators app discharge call | the pair is sent from the session | — | — | revert (the Dashboard ignores the pair) |
-| B0 | security fix (D13), after B0-coord is live | Code.gs | own-house / other-house / missing pair | No | Yes | revert |
+| B0-coord | ezone-coordinators #337 (first) | every coordinators → Dashboard call | `actor` + `house` sent from the session | — | — | revert (the Dashboard ignores the pair) |
+| B0 | security fix (D13), after B0-coord is live | Code.gs | own-house / other-house / `system:*` and `*` rules / missing pair | No | Yes | revert |
 | B1 | infra | Code.gs | header / idempotency guards | No | Yes (inert) | revert |
 | B2 | infra | Code.gs | per-writer events, failure isolation, switch | No | Yes | `ACTIVITY_WRITES` off, or revert |
 | B3 | infra | Code.gs, lib/role-scope, lib/finance-scope | per-role scope matrix | No | Yes | revert |

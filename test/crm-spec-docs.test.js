@@ -48,7 +48,12 @@ test('SPEC.md records decisions D5-D17 and the matrix drops Shiran / Yael with a
   assert.match(spec, /never gets a \*\*NEW\*\* write path/);
   const rollout = read('ROLLOUT.md');
   assert.match(rollout, /^### B0 · Security gap first/m);
-  assert.match(rollout, /^### B0-coord · the coordinators-side prompt/m);
+  assert.match(rollout, /^### B0-coord · coordinators side — built/m);
+  // Field names aligned with the coordinators build (#337).
+  assert.match(rollout, /`actor` \+ `house`/);
+  assert.match(rollout, /actorUserId/);
+  assert.match(rollout, /Phase 3a\s+makes personal logins mandatory for discharge/);
+  assert.match(rollout, /accepted \*\*only\*\* on the two \*\*read-only\*\* feed actions/);
   assert.ok(rollout.indexOf('1. **B0-coord**') < rollout.indexOf('2. **B0**'), 'B0-coord ships first');
   const matrix = read('PERMISSIONS-MATRIX.md');
   assert.doesNotMatch(matrix, /^\| \*\*(Shiran|Yael)\b/m, 'no Shiran / Yael identity row');
