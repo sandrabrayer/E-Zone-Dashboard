@@ -1,5 +1,11 @@
 # E-ZONE Ecosystem Status — updated October 27, 2026
 
+## B3 — `getActivity` permission-filtered read — October 27, 2026 (PR open)
+
+- **What:** `action=getActivity` by lead / patient / person / paymentUid. Gate = `expectedDischarges` rule (PROXY_SECRET + verified personal session, even in `log` mode). Server-side scope by caps: finance → all; Ortal → money kinds only, no `leadId`; no caps (Dana) → no money kinds. Fields a scope may not see are absent. Read-only, no UI consumer yet.
+- **Lists:** appended to `PROXY_KNOWN_ACTIONS`, `CONTROLLER_ACTIONS` (Code.gs = lib), `ALL_USERS_READ_ACTIONS`. No SW bump, no secret, no Railway variable.
+- **Session B is complete (B0–B3).** Next: Session C — CRM shell behind `?view=crm` + `CRM_ENABLED` (default off). Details: `CHANGELOG-crm-activity-read.md`.
+
 ## B2 — Activity system events behind `ACTIVITY_WRITES` — October 27, 2026 (PR open)
 
 - **What:** one hook in `logAudit_` maps 17 audit actions (lead close/restore/remove/create, discharge incl. coordinators, restores, house move, payment reported/confirmed/flagged/unconfirmed/void-reversed, refunds) to `Activity` events — idempotent by stable eventId, best-effort, ids only. Unmapped actions write nothing.

@@ -125,6 +125,8 @@ the wire contract above. Coordinators PR #337 details:
 
 ### B3 · Permission-filtered read: `getActivity` (no UI)
 
+**Status (2026-10-27): built** — `CHANGELOG-crm-activity-read.md`. Scopes `full` / `money` / `no_money` by caps; subject id required; `actorId` never served.
+
 | Item | Plan |
 | --- | --- |
 | Goal | One read action returning a subject's events. It requires a **verified personal session** and refuses unverified callers **even in `log` mode** (same rule as `expectedDischarges`, Code.gs:16304). The kinds and fields a role may see are filtered **on the server**: money kinds only with `finance`; Ortal limited to the billing kinds and the D11 field set; Dana per D5 (no money kinds). |

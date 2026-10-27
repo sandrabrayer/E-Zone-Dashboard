@@ -134,7 +134,9 @@ test('lists: Code.gs and lib/ hold the same billing-control lists; nothing new i
     'upcomingCommittees',
     // «הנחה» (setBillingDiscount) is NOT here: it is Vered's and Sandra's (CHANGELOG-discount-by-vered.md).
     // Appended: «שנה סכום» on an open debt — also role-gated (CHANGELOG-open-debts-cleanup.md).
-    'upsertBillingOverride']);
+    'upsertBillingOverride',
+    // Appended: the CRM timeline read, money kinds only for Ortal (CHANGELOG-crm-activity-read.md).
+    'getActivity']);
   assert.deepEqual(arr(g.run('CONTROLLER_BILLING_READ_ACTIONS')), [...scope.CONTROLLER_BILLING_READ_ACTIONS]);
   assert.deepEqual(arr(g.run('CONTROLLER_GETDATA_KEYS')), [...scope.CONTROLLER_GETDATA_KEYS]);
   const known = arr(g.run('PROXY_KNOWN_ACTIONS'));

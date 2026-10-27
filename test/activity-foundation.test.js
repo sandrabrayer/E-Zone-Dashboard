@@ -154,7 +154,7 @@ test('activityRow_ is PURE: validates and normalises without touching any sheet'
 test('ONLY the logAudit_ hook calls the Activity writer (B2); no action exposes the sheet; getData unchanged', () => {
   const g = load();
   const known = Array.from(g.run('PROXY_KNOWN_ACTIONS'));
-  assert.ok(!known.some((a) => /activity/i.test(a)), 'no Activity action in the registry (B3 adds the read)');
+  assert.deepEqual(known.filter((a) => /activity/i.test(a)), ['getActivity'], 'exactly one Activity action: the B3 read (never a write)');
   const calls = GS_SRC.match(/appendActivity_\(/g) || [];
   assert.equal(calls.length, 1, 'the locked writer is declared once and has no direct caller');
   const hook = GS_SRC.match(/activityFromAuditBestEffort_\(/g) || [];

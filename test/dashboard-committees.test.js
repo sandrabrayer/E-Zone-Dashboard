@@ -341,7 +341,7 @@ function get(port, urlPath, ck) {
 
 test('D: the same all-users rule as «שחרורים צפויים»', () => {
   assert.strictEqual(roleScope.UPCOMING_COMMITTEES_ACTION, 'upcomingCommittees');
-  assert.deepStrictEqual([...roleScope.ALL_USERS_READ_ACTIONS], ['expectedDischarges', 'upcomingCommittees']);
+  assert.deepStrictEqual([...roleScope.ALL_USERS_READ_ACTIONS], ['expectedDischarges', 'upcomingCommittees', 'getActivity']);
   assert.ok(Object.isFrozen(roleScope.ALL_USERS_READ_ACTIONS));
 });
 
