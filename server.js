@@ -1021,7 +1021,7 @@ function requireExpectedDischargesView(req, res, next) {
   if (ALL_USERS_READ_ACTIONS.indexOf(action) < 0) return next();
   const p = sessionPrincipalFromRequest(req);
   if (canViewExpectedDischarges(p)) return next();
-  console.warn(`[${action === EXPECTED_DISCHARGES_ACTION ? 'discharges' : 'committees'}] 403 user=${p ? (p.id || p.auth) : 'none'}`);
+  console.warn(`[${action === EXPECTED_DISCHARGES_ACTION ? 'discharges' : (action === 'getActivity' ? 'activity' : 'committees')}] 403 user=${p ? (p.id || p.auth) : 'none'}`);
   return res.status(403).json({ ok: false, error: 'forbidden', message: ROLE_FORBIDDEN_MESSAGE });
 }
 

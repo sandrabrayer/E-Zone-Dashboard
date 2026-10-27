@@ -1377,7 +1377,10 @@ const CONTROLLER_ACTIONS = ['billingControlQueue', 'confirmPayment', 'debtAging'
   'upcomingCommittees',
   /* Appended (CHANGELOG-open-debts-cleanup.md): «שנה סכום» on an open debt —
    * also role-gated (AMOUNT_ACTIONS: accountant|approver|finance). */
-  'upsertBillingOverride'];
+  'upsertBillingOverride',
+  /* Appended (CHANGELOG-crm-activity-read.md): the CRM timeline read — the
+   * controller view gets the money kinds only (server-side filter). */
+  'getActivity'];
 /* «הנחה» (setBillingDiscount) is deliberately NOT on CONTROLLER_ACTIONS any
  * more (CHANGELOG-discount-by-vered.md): discounts are Vered's / Sandra's. */
 const CONTROLLER_GETDATA_KEYS = ['ok', 'patients', 'billingOverrides'];
@@ -1564,6 +1567,7 @@ const PROXY_KNOWN_ACTIONS = [
   'upcomingCommittees',
   'getCommitteesForCoordinators',
   'setBillingDiscount',
+  'getActivity',
 ];
 
 /* SecurityLog — append-only, one row per (event, action, hour) at most.
@@ -1909,6 +1913,14 @@ function handle_(params) {
       const no = expectedDischargesRefused_(params);
       if (no) return jsonOut_(no);
       return jsonOut_(upcomingCommitteesForDashboard_());
+    }
+    // Activity timeline read (B3, CHANGELOG-crm-activity-read.md): READ-ONLY,
+    // the same gate — PROXY_SECRET + a verified personal session, even in
+    // 'log' mode — then the kinds and fields are cut per the actor's caps.
+    if (action === 'getActivity') {
+      const no = expectedDischargesRefused_(params);
+      if (no) return jsonOut_(no);
+      return jsonOut_(getActivity_(params, actingUser_(params)));
     }
     // «אמבולטורי» → Outpatient: server.js records the outcome of one send
     // (CHANGELOG-meeting-with-ambulatory.md). Verified proxy callers only.
@@ -4323,6 +4335,91 @@ function activityFromAuditBestEffort_(action, fn, auditId, name, details, actor,
   } catch (err) {
     try { console.warn('[activity] write failed for ' + action + ': ' + ((err && err.message) || err)); } catch (_) { /* no-op */ }
   }
+}
+
+/* ===== B3 — permission-filtered Activity read (CHANGELOG-crm-activity-read.md) =====
+ * action=getActivity { leadId? | patientId? | personId? | paymentUid?, limit? } →
+ *   { ok, events: [{ eventId, occurredAt, recordedAt, kind, source, actorName,
+ *     leadId, patientId, personId, paymentUid, dischargeId, houseId, summary,
+ *     details (object), supersedesEventId }], total, scope }
+ * At least one subject id is required (never the whole sheet). Newest first,
+ * `limit` 1..ACTIVITY_READ_MAX (default ACTIVITY_READ_DEFAULT).
+ *
+ * The filter is ON THE SERVER, by the verified actor's caps (actorCaps_):
+ *   - `finance` (Vered, Sandra)     → every kind, every field       scope 'full'
+ *   - `billingControl` only (Ortal) → ACTIVITY_MONEY_KINDS only, and
+ *                                     leadId blanked (D11: no lead data) scope 'money'
+ *   - neither (Dana, D5/D16)        → every kind EXCEPT the money kinds scope 'no_money'
+ * Fields a scope may not see are ABSENT from the answer, never just hidden.
+ * actorId is never served (session labels stay server-side); `detailsJson`
+ * is served parsed as `details`. Reads only; never creates the sheet. */
+const ACTIVITY_READ_DEFAULT = 200;
+const ACTIVITY_READ_MAX = 500;
+const ACTIVITY_MONEY_KIND_RE = /^(payment_|refund_)/;
+const ACTIVITY_SUBJECT_FIELDS = ['leadId', 'patientId', 'personId', 'paymentUid'];
+const ACTIVITY_PUBLIC_FIELDS = ['eventId', 'occurredAt', 'recordedAt', 'kind', 'source', 'actorName',
+  'leadId', 'patientId', 'personId', 'paymentUid', 'dischargeId', 'houseId', 'summary', 'supersedesEventId'];
+
+function activityIsMoneyKind_(kind) {
+  return ACTIVITY_MONEY_KIND_RE.test(String(kind == null ? '' : kind));
+}
+
+/* The read scope of a verified actor. Pure. */
+function activityScope_(actor) {
+  const caps = actor && Array.isArray(actor.caps) ? actor.caps : [];
+  if (caps.indexOf('finance') >= 0) return 'full';
+  if (caps.indexOf('billingControl') >= 0) return 'money';
+  return 'no_money';
+}
+
+/* PURE: filter + project Activity rows (readSheet_ objects) for one scope and
+ * subject. Rows a scope may not see are dropped; fields it may not see are absent. */
+function activityProject_(rows, subject, scope, limit) {
+  const keys = Object.keys(subject);
+  const out = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    let match = false;
+    for (let k = 0; k < keys.length; k++) {
+      if (String(r[keys[k]] == null ? '' : r[keys[k]]).trim() === subject[keys[k]]) { match = true; break; }
+    }
+    if (!match) continue;
+    const money = activityIsMoneyKind_(r.kind);
+    if (scope === 'money' && !money) continue;
+    if (scope === 'no_money' && money) continue;
+    const e = {};
+    for (let f = 0; f < ACTIVITY_PUBLIC_FIELDS.length; f++) {
+      const name = ACTIVITY_PUBLIC_FIELDS[f];
+      if (scope === 'money' && name === 'leadId') continue;
+      e[name] = String(r[name] == null ? '' : r[name]);
+    }
+    let details = {};
+    try { details = r.detailsJson ? JSON.parse(String(r.detailsJson)) : {}; } catch (_) { details = {}; }
+    e.details = details && typeof details === 'object' && !Array.isArray(details) ? details : {};
+    out.push(e);
+  }
+  out.sort(function (a, b) { return a.occurredAt < b.occurredAt ? 1 : (a.occurredAt > b.occurredAt ? -1 : 0); });
+  return { total: out.length, events: out.slice(0, limit) };
+}
+
+function getActivity_(params, actor) {
+  const p = params || {};
+  const subject = {};
+  for (let i = 0; i < ACTIVITY_SUBJECT_FIELDS.length; i++) {
+    const v = activityText_(p[ACTIVITY_SUBJECT_FIELDS[i]], ACTIVITY_ID_MAX);
+    if (v) subject[ACTIVITY_SUBJECT_FIELDS[i]] = v;
+  }
+  if (Object.keys(subject).length === 0) return { ok: false, error: 'missing_subject' };
+  let limit = parseInt(p.limit, 10);
+  if (!(limit > 0)) limit = ACTIVITY_READ_DEFAULT;
+  if (limit > ACTIVITY_READ_MAX) limit = ACTIVITY_READ_MAX;
+  const scope = activityScope_(actor);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(ACTIVITY_SHEET);            // a read never creates the sheet
+  const rows = sh ? readSheet_(sh, ACTIVITY_COLUMNS) : [];
+  const res = activityProject_(rows, subject, scope, limit);
+  return { ok: true, scope: scope, total: res.total, events: res.events };
 }
 
 function logAudit_(action, fn, patientId, name, details, actor) {
