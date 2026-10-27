@@ -179,7 +179,9 @@ test('the secret value never appears in a response, the SecurityLog or the Audit
 
 function discharge(g, extra) {
   return g.post(Object.assign({ action: 'recordDischargeFromCoordinators', secret: SECRET,
-    id: 'id-dana', dischargeDate: TODAY, reason: 'סיים טיפול', by: 'רכזת רמות' }, extra || {}));
+    id: 'id-dana', dischargeDate: TODAY, reason: 'סיים טיפול', by: 'רכזת רמות',
+    // B0 (CHANGELOG-coordinators-discharge-own-house.md): the verified session pair.
+    actor: 'rakaz:ramot', house: 'ramot' }, extra || {}));
 }
 
 test('discharge: status released + exitDate + who/when; nothing else on the row changes; never deletes', () => {
@@ -273,7 +275,7 @@ test('discharge: a retry after an interrupted write completes it on the SAME aud
 test('discharge: an already-released patient with a DIFFERENT date is refused, nothing written', () => {
   const g = load();
   const before = snapshot(g);
-  const res = discharge(g, { id: 'id-michal', dischargeDate: TODAY });
+  const res = discharge(g, { id: 'id-michal', dischargeDate: TODAY, actor: 'rakaz:efroni', house: 'efroni' });
   assert.deepStrictEqual(res, { ok: false, error: 'already_discharged', id: 'id-michal', dischargeDate: isoDaysAgo(5) });
   assert.strictEqual(snapshot(g), before);
 });

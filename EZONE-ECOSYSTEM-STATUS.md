@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated October 27, 2026
 
+## B0 — coordinators' discharge → own house only — October 27, 2026 (PR open)
+
+- **What:** `recordDischargeFromCoordinators` now refuses a patient outside the caller's verified session house (`actor` + `house` from ezone-coordinators #337, live). `system:*` actors and `*` from a code login are refused on the write; `admin` / `user:<id>` with `*` reach every house. Refusals: `actor_not_allowed` / `forbidden_house`, Hebrew message, AuditLog row with ids only, nothing written.
+- **Feeds unchanged:** `getPatientsForCoordinators` / `getCommitteesForCoordinators` keep serving regardless of the pair.
+- **Deploy:** Code.gs only, clasp CI on merge (same `/exec` URL). No SW bump, no schema change, no secret, no Railway variable.
+- **Verify live:** one «שחרור» in the coordinators app of an own-house patient succeeds; an admin test on another house's patient from a רכז session answers «השחרור נדחה …».
+- **Next:** B1 (`Activity` sheet). Details: `CHANGELOG-coordinators-discharge-own-house.md`, `docs/crm/ROLLOUT.md` §B0.
+
 ## CRM restructure — Session A — October 27, 2026 (merged as #283, docs only)
 
 - **What:** `docs/crm/` holds SPEC (Hebrew spec + Decisions D1–D4), CURRENT-STATE, PERMISSIONS-MATRIX, LINKED-APPS, GAP-LIST and ROLLOUT. No code, schema or SW change (stays v93).

@@ -272,7 +272,7 @@ test('recordDischargeFromCoordinators_: an open Dashboard row for the stay → d
   });
   s.g.sandbox.__props.COORDINATORS_PATIENTS_SECRET = 'coord-secret-TEST-0123456789';
   const before = [s.snapshot(DSHEET), s.snapshot('Patients')];
-  const r = s.g.post({ action: 'recordDischargeFromCoordinators', secret: 'coord-secret-TEST-0123456789', id: 'pt-1', dischargeDate: '2026-10-06', by: 'רכזת' });
+  const r = s.g.post({ action: 'recordDischargeFromCoordinators', secret: 'coord-secret-TEST-0123456789', id: 'pt-1', dischargeDate: '2026-10-06', by: 'רכזת', actor: 'rakaz:' + HOUSE, house: HOUSE });
   assert.equal(r.ok, true);
   assert.equal(r.duplicate, true);
   assert.equal(r.auditId, 'aud-1');
