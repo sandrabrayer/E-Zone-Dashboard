@@ -278,6 +278,28 @@ test('C8 billingOverview: debtAging + getPayments → KPIs, buckets, debtors (so
   assert.deepEqual(Object.keys(core.DEBT_BUCKET_LABELS), ['d0_7', 'd8_30', 'd31_60', 'd61_plus']);
 });
 
+test('C9 patientAccount: one patient out of debtAging + getPayments — open cycles, stamped cycles (newest first), own receipts only, funder history; refused → zeros + errors', () => {
+  const debt = { ok: true, byPatient: [{ patientId: 'p1', settledCycles: 2, cycles: [
+    { start: '2026-08-01', end: '2026-08-31', expected: 6000, received: 1000, balance: 5000, days: 87, kind: 'recorded', funderGrace: true },
+    { start: '2026-10-01', end: '2026-10-31', expected: 6000, received: 0, balance: 6000, days: 26, kind: 'unrecorded' }] }] };
+  const pay = { ok: true,
+    payments: [{ id: 'c1', patientId: 'p1', dueDate: '2026-08-01', amount: 6000, amountPaid: 1000, balance: 5000, status: 'partial' }, { id: 'c0', patientId: 'p1', dueDate: '2026-07-01T00:00:00.000Z', amount: 6000, amountPaid: 6000, balance: 0, status: 'paid' }, { id: 'cx', patientId: 'p9', dueDate: '2026-07-01', amount: 1, status: 'paid' }],
+    receipts: [{ id: 'r1', patientId: 'p1', receivedDate: '2026-08-05', amount: 1000, method: 'ביט', payer: 'אמא', confirmStatus: 'confirmed' }, { id: 'r2', patientId: 'p9', receivedDate: '2026-08-06', amount: 9, method: 'x' }],
+    funders: [{ patientId: 'p1', funder: 'פרטי', effectiveFrom: '2026-07-01' }, { patientId: 'p1', funder: 'משרד הבריאות', effectiveFrom: '2026-09-01', setBy: 'ורד' }, { patientId: 'p9', funder: 'x', effectiveFrom: '2026-01-01' }] };
+  const a = core.patientAccount('p1', debt, pay);
+  assert.equal(a.openTotal, 11000); assert.equal(a.settledCycles, 2);
+  assert.deepEqual(a.openCycles.map((c) => [c.start, c.balance, c.days, c.kind, c.grace]), [['2026-08-01', 5000, 87, 'recorded', true], ['2026-10-01', 6000, 26, 'unrecorded', false]]);
+  assert.deepEqual(a.cycles.map((c) => [c.id, c.dueDate, c.status]), [['c1', '2026-08-01', 'partial'], ['c0', '2026-07-01', 'paid']]);
+  assert.deepEqual(a.receipts.map((r) => r.id), ['r1']); assert.equal(a.receivedTotal, 1000);
+  assert.equal(a.currentFunder, 'משרד הבריאות'); assert.deepEqual(a.funders.map((f) => f.funder), ['משרד הבריאות', 'פרטי']);
+  assert.deepEqual(a.errors, []);
+  const z = core.patientAccount('p1', { ok: false, error: 'forbidden' }, undefined);
+  assert.equal(z.openTotal, 0); assert.deepEqual(z.cycles, []); assert.deepEqual(z.receipts, []); assert.equal(z.currentFunder, '');
+  assert.deepEqual(z.errors, ['חובות: forbidden', 'תשלומים: לא נטען']);
+  assert.deepEqual(core.patientAccount('nobody', debt, pay).openCycles, []);
+  assert.deepEqual(Object.keys(core.CYCLE_STATUS_LABELS), ['paid', 'partial', 'unpaid', 'void']);
+});
+
 test('esc escapes every HTML-significant character', () => {
   assert.equal(core.esc('<b>"x" & \'y\'</b>'), '&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;');
 });

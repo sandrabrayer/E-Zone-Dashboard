@@ -1,6 +1,10 @@
 # E-ZONE Ecosystem Status — updated October 27, 2026
 
-## C8 — «גבייה» inside the CRM, read-only — October 27, 2026 (PR open)
+## C9 — CRM patient drawer «חשבון» tab over real data — October 27, 2026 (PR open)
+
+- The patient drawer's «חשבון» tab shows open cycles, stamped payment cycles, the patient's receipts and the funder history, from the same `debtAging` + `getPayments` answers the גבייה area loads (fetched once per page, shared). Finance users only; actions still link to the classic dashboard. No write, no Code.gs, flag-gated. Details: `CHANGELOG-crm-account-tab.md`.
+
+## C8 — «גבייה» inside the CRM, read-only — October 27, 2026 (merged, #297)
 
 - The גבייה area now shows real data from `debtAging` + `getPayments` (fetched on first open): open-debt KPIs, aging buckets, debt per house, debtors table (row → patient drawer), latest receipts with verification chips. Every action («דווח תשלום», overrides/credits, linking, Ortal's queue) still links to the classic dashboard — embed-vs-rebuild of the report form is an open decision. No write, no Code.gs, flag-gated. Details: `CHANGELOG-crm-billing-readonly.md`.
 

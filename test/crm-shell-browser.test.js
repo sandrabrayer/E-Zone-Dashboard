@@ -53,7 +53,9 @@ const DEBT = { ok: true, asOf: TODAY,
   byHouse: [{ houseId: 'ramot', recorded_debt: { count: 1, total: 6000 }, unrecorded_cycles: { count: 1, total: 5000 } }],
   byPatient: [{ patientId: 'p1', name: 'דנה כהן', houseId: 'ramot', status: 'active', inHouseAtAsOf: true, cycles: [{ balance: 6000, days: 70, kind: 'recorded' }, { balance: 5000, days: 3, kind: 'unrecorded' }] }],
   detachedPayments: { count: 1 }, pendingCredits: { count: 0, total: 0 }, funderGrace: { count: 0, amount: 0 } };
-const PAYMENTS = { ok: true, payments: [], receipts: [{ id: 'rcpt-1', patientName: 'דנה כהן', houseId: 'ramot', receivedDate: daysAgo(4), amount: 2500, method: 'ביט', confirmStatus: 'reported' }] };
+const PAYMENTS = { ok: true, payments: [{ id: 'cyc-1', patientId: 'p1', dueDate: daysAgo(70), amount: 6000, amountPaid: 2500, balance: 3500, status: 'partial' }],
+  receipts: [{ id: 'rcpt-1', patientId: 'p1', patientName: 'דנה כהן', houseId: 'ramot', receivedDate: daysAgo(4), amount: 2500, method: 'ביט', payer: 'אמא', confirmStatus: 'reported' }],
+  funders: [{ patientId: 'p1', funder: 'משרד הבריאות', effectiveFrom: daysAgo(30), setBy: 'ורד' }] };
 const ACTIVITY = { ok: true, scope: 'full', total: 1, events: [{ eventId: 'x', occurredAt: '2026-10-20T09:00:00.000Z', kind: 'lead_created', source: 'system:x', actorName: 'ורד', summary: 'הליד נוצר', details: {} }] };
 
 let saveAnswer = null;
@@ -241,6 +243,39 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
     const links = await o.page.$$eval('#crm-main .links a', (els) => els.map((e) => e.textContent));
     assert.equal(links.length, 1); assert.match(links[0], /בקרת גבייה/);
     assert.deepEqual(o.errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('C9 «חשבון» tab (Vered): a patient drawer shows open cycles, stamped cycles, own receipts and the funder from the shared billing reads (fetched once); a lead has no account', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="clients"]');
+    await page.click('table.tbl tbody tr[data-open-patient="p1"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer [data-tab="account"]');
+    await page.waitForSelector('#crm-account-open');
+    const acc = await page.textContent('#crm-account');
+    assert.match(acc, /חוב פתוח/); assert.match(acc, /₪11,000/); assert.match(acc, /2 מחזורים/);
+    assert.match(acc, /ללא דיווח/); assert.match(acc, /משרד הבריאות/); assert.match(acc, /₪2,500/); assert.match(acc, /אמא/); assert.match(acc, /חלקי/);
+    assert.match(acc, new RegExp(core.fmtDate(daysAgo(4)).replace(/\//g, '\\/')), 'DD/MM/YYYY');
+    assert.equal(await page.$$eval('#crm-account-receipts tbody tr', (els) => els.length), 1);
+    assert.equal(srv.actions.filter((a) => a.action === 'debtAging').length, 1);
+    // the גבייה area reuses the same answers — no second fetch
+    await page.keyboard.press('Escape');
+    await page.click('#crm-nav button[data-area="billing"]');
+    await page.waitForSelector('#crm-debtors');
+    assert.equal(srv.actions.filter((a) => a.action === 'debtAging').length, 1);
+    assert.equal(srv.actions.filter((a) => a.action === 'getPayments').length, 1);
+    // a lead drawer: no account
+    await page.click('#crm-nav button[data-area="leads"]');
+    await page.click('.card .name');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer [data-tab="account"]');
+    assert.match(await page.textContent('#crm-account'), /נפתח עם הקליטה/);
+    assert.deepEqual(errors, []);
+    assert.deepEqual(srv.saves, [], 'read-only');
   } finally { await browser.close(); srv.close(); }
 });
 
