@@ -5,38 +5,32 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
   <title>E-ZONE · CRM</title>
-  <!-- C1 (CHANGELOG-crm-shell-flag.md): the flag-gated CRM shell page. A
-       placeholder until C2 builds the side menu and areas. Styles are inline
-       on purpose: no new asset in BUNDLE_PATHS, so sw.js is untouched. -->
-  <style>
-    :root {
-      --bg: #0b1020; --bg-2: #0f172e; --panel: rgba(255, 255, 255, 0.04); --border: rgba(255, 255, 255, 0.10);
-      --text: #f1f5ff; --text-muted: #98a3c7; --primary: #5b8bff; --primary-strong: #3a6dff;
-    }
-    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
-      font-family: "Heebo", "Segoe UI", "Arial Hebrew", Arial, sans-serif; font-size: 15px; }
-    .crm-wrap { max-width: 720px; margin: 10vh auto 0; padding: 0 16px; }
-    .crm-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 24px 22px; }
-    h1 { margin: 0 0 6px; font-size: 22px; }
-    .crm-sub { color: var(--text-muted); margin: 0 0 18px; }
-    .crm-user { color: var(--text-muted); font-size: 13px; margin-bottom: 14px; }
-    .crm-areas { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; padding: 0; list-style: none; }
-    .crm-areas li { padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-muted); font-size: 13px; }
-    a.crm-back { display: inline-block; padding: 9px 16px; border-radius: 10px; background: var(--primary); color: #fff; text-decoration: none; }
-    a.crm-back:hover { background: var(--primary-strong); }
-  </style>
+  <!-- C2 (CHANGELOG-crm-shell-areas.md): the flag-gated CRM shell. Served only
+       by /?view=crm (CRM_ENABLED). Assets are hashed like the other bundles
+       (server.js ASSETS) and are NOT in sw.js BUNDLE_PATHS. -->
+  <link rel="stylesheet" href="crm/crm.css?v=__BUILD__">
 </head>
 <body>
-  <main class="crm-wrap">
-    <section class="crm-card" aria-labelledby="crm-title">
-      <h1 id="crm-title">E-ZONE · CRM</h1>
-      <p class="crm-sub">תצוגת ה-CRM החדשה (בבנייה)</p>
-      <p class="crm-user">מחובר/ת: <span id="crm-user">__USER__</span></p>
-      <ul class="crm-areas" aria-label="אזורים">
-        <li>היום שלי</li><li>פניות</li><li>לקוחות</li><li>יומן</li><li>גבייה</li><li>בקרה</li>
-      </ul>
-      <a class="crm-back" href="/">חזרה לדשבורד הרגיל</a>
-    </section>
-  </main>
+  <div id="crm-root" class="crm">
+    <aside id="crm-menu" class="crm-menu" aria-label="תפריט">
+      <div class="crm-brand">E-ZONE <small>CRM</small></div>
+      <nav id="crm-nav" class="crm-nav" aria-label="אזורים"></nav>
+      <div class="crm-menu-foot">
+        <span>מחובר/ת: <span id="crm-user">__USER__</span></span>
+        <a href="/">חזרה לדשבורד הרגיל</a>
+      </div>
+    </aside>
+    <main class="crm-main">
+      <header class="crm-top">
+        <button type="button" id="crm-burger" class="crm-burger" aria-label="תפריט">☰</button>
+        <h1 id="crm-title">היום שלי</h1>
+        <input id="crm-search" class="crm-search" type="search" placeholder="חיפוש לקוח / פנייה" aria-label="חיפוש">
+      </header>
+      <section id="crm-main" aria-live="polite"></section>
+    </main>
+    <div id="crm-scrim" class="scrim"></div>
+    <aside id="crm-drawer" class="drawer" aria-hidden="true" aria-label="כרטיס לקוח"></aside>
+  </div>
+  <script src="crm/crm.js?v=__BUILD__"></script>
 </body>
 </html>

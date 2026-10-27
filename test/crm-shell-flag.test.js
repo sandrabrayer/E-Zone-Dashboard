@@ -67,7 +67,7 @@ async function withServer(crm, fn) {
 }
 /* index.html carries a per-process BUILD_ID; compare bodies with it removed. */
 const stable = (t) => t.replace(/\d{13}-[a-z0-9]{6}/g, 'BUILD');
-const isShell = (t) => /E-ZONE · CRM/.test(t) && /crm-card/.test(t);
+const isShell = (t) => /E-ZONE · CRM/.test(t) && /id="crm-root"/.test(t);
 
 /* ===== pure ===== */
 
