@@ -1,6 +1,6 @@
 # CRM restructure — permissions matrix (spec §11)
 
-**Session A, 2026-10-27. Docs only.** Updated the same day with Sandra's decisions D5–D16
+**Session A, 2026-10-27. Docs only.** Updated the same day with Sandra's decisions D5–D17
 ([SPEC.md](SPEC.md) "Decisions").
 
 **Rule for this matrix:** a permission counts as **implemented** only when a server-side check
@@ -24,7 +24,7 @@ Sources:
 | Mark | Meaning |
 | --- | --- |
 | ✅ | **Implemented today**, enforced on the server |
-| 🟨 | **Agreed but not implemented** (a decision exists in D1–D16, the spec or an earlier signed-off rollout doc; code still differs) |
+| 🟨 | **Agreed but not implemented** (a decision exists in D1–D17, the spec or an earlier signed-off rollout doc; code still differs) |
 | ❓ | **Undecided**: needs Sandra's decision |
 | 🟥 | **Hiding is UI-only**: the server would serve or accept it |
 | — | Not applicable / no access |
@@ -67,7 +67,7 @@ see §7 for the revoke list.
 | **Coordinators** | **None in the Dashboard (D6).** ניהול בית only. | `getPatientsForCoordinators`: active patients + releases from the last 30 days | `id, name, house, active, admissionDate, dischargeDate` (no phone, no billing) | 🟥 **All houses today**: the secret is not house-scoped. 🟨 D6: own house only. | ✅ field minimisation. 🟨 own-house scope (read: D6; discharge write: D13). |
 | **Sandra** | All, including «חריגים פתוחים» and PIN admin | All | All | All | ✅ |
 | **Ron** | — | — | — | — (in ezone-managers: all houses as `admin`) | ✅ D1 |
-| **ezone-managers app** | — | Patients, leads, visits, logs, snapshots | Non-billing facts (bonus, occupancy) | All houses for an `admin` caller | ✅ today. 🟥 Spec §11: "an inter-app secret is not a user permission". Today the house and role are **asserted by the caller**, and Code.gs trusts them. 🟨 D12/D15: **ezone-managers never gets a Dashboard write path**, but today `managersWork` **writes** ManagersFamilyCalls / StaffTalks / Events, ManagersExpectedDischarge and ManagersFeedbackLog (CURRENT-STATE §3). See §6 follow-up 1. |
+| **ezone-managers app** | — | Patients, leads, visits, logs, snapshots | Non-billing facts (bonus, occupancy) | All houses for an `admin` caller | ✅ today. 🟥 Spec §11: "an inter-app secret is not a user permission". Today the house and role are **asserted by the caller**, and Code.gs trusts them. ✅ D17: its five existing writes (ManagersFamilyCalls / StaffTalks / Events, ManagersExpectedDischarge, ManagersFeedbackLog) **keep working until Phase 3c**, then move to ניהול בית with the bonus card, and ezone-managers goes read-only. 🟨 D15: no NEW write path, ever. |
 | **ezone-therapists app** | — | Admitted roster; discharged roster (730 days) | `name, phone, house, entryDate (, exitDate)` | All houses | ✅ D10 keeps the 730 days. 🟨 **one access-log entry per read**. Today only `SecurityLog` records open-action calls, once per action per hour (`securityLogOnce_`, Code.gs:1659), which is not per read. |
 | **ezone-coordinators / ניהול בית app** | — | as the Coordinators row | as the Coordinators row | 🟨 own house per user (D6, D12) | ✅ secret-gated today |
 | **ezone-outpatient app** | — | Nothing read from the Dashboard (proven) | — | — | ✅ |
@@ -149,7 +149,7 @@ does not check (the UI hides it) · 🟨 decided, the code still differs (shown 
 
 ---
 
-## 5. What the CRM must add (spec §11 "Enforcement" + D5–D16)
+## 5. What the CRM must add (spec §11 "Enforcement" + D5–D17)
 
 These are all 🟨 agreed, not implemented. Each is a separate server-side PR; none belongs in
 Session B (Activity) or in the UI-only Session C PRs.
@@ -170,13 +170,14 @@ Session B (Activity) or in the UI-only Session C PRs.
    client-supplied house.
 6a. **D13 (security gap, first Session B code PR):** `recordDischargeFromCoordinators` refuses a
    patient outside the caller's verified house.
-6b. **D15:** ezone-managers loses every Dashboard write path. Timing: §6 follow-up 1.
+6b. **D15 + D17:** ezone-managers gets no new Dashboard write path. Its five existing writes retire
+   in Phase 3c (moved to ניהול בית with the bonus card); it goes read-only then, not before.
 6c. **D16:** Dana's חתכי מטופלים export carries no money columns.
 7. **No CRM screen widens authority** (§11: "a design change does not widen them").
 8. **Turn on `PROXY_SECRET_MODE=enforce`** (Phase 0b-3) before any CRM read model ships. Otherwise
    the server-side enforcement above can be bypassed through `/exec`.
 
-## 6. Decisions — resolved 2026-10-27 (D5–D16)
+## 6. Decisions — resolved 2026-10-27 (D5–D17)
 
 The eight open questions are answered by D5–D12 in [SPEC.md](SPEC.md):
 - Q1 → D5 (Shiran and Yael removed; Dana read-only, no money)
@@ -195,16 +196,17 @@ The eight open questions are answered by D5–D12 in [SPEC.md](SPEC.md):
 - D12 completion → **D15**
 - Dana's houses and exports → **D16**
 
-### Still open (❓)
+### Last two items — resolved 2026-10-27
 
-1. **When do ezone-managers' Dashboard writes end?** D15 says ezone-managers never gets a
-   Dashboard write path. Today, though, `managersWork` writes five Dashboard sheets: family
-   calls, staff talks, events, expected discharges and feedback. These presumably move to
-   ניהול בית in Phase 3/4, but the phase and the cut-over are not stated.
-2. **What "session house" means for D13 before ניהול בית exists.** The coordinators app calls
-   with a shared secret only and sends no verified user/house pair today. The B0 fix therefore
-   needs the coordinators app to start sending the user/house pair (per D12) in the same release,
-   or the own-house check would refuse every discharge. That is a cross-app step, to be confirmed.
+1. **The end of ezone-managers' Dashboard writes → D17.** The five writes keep working until
+   Phase 3c, then move to ניהול בית with the bonus card, and ezone-managers goes read-only.
+   D15 is corrected to "never gets a NEW write path".
+2. **The session house for D13 → confirmed as a pair** ([ROLLOUT.md](ROLLOUT.md) B0):
+   - First, a coordinators PR (**B0-coord**) sends the verified user + house with the shared
+     secret. The Dashboard ignores the pair until B0.
+   - Then the Dashboard B0 PR enforces it.
+
+No permission question is open at the end of Session A.
 
 ---
 

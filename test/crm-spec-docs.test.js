@@ -39,13 +39,17 @@ test('the CRM docs carry no secret values, /exec URLs or e-mail addresses', () =
   }
 });
 
-test('SPEC.md records decisions D5-D16 and the matrix drops Shiran / Yael with a revoke list', () => {
+test('SPEC.md records decisions D5-D17 and the matrix drops Shiran / Yael with a revoke list', () => {
   const spec = read('SPEC.md');
-  for (const d of ['D5', 'D6', 'D7', 'D8', 'D9', 'D10', 'D11', 'D12', 'D13', 'D14', 'D15', 'D16']) assert.match(spec, new RegExp('\\| ' + d + ' \\|'));
+  for (const d of ['D5', 'D6', 'D7', 'D8', 'D9', 'D10', 'D11', 'D12', 'D13', 'D14', 'D15', 'D16', 'D17']) assert.match(spec, new RegExp('\\| ' + d + ' \\|'));
   assert.match(spec, /Dana \(דנה\) replaces Yael/);
   assert.match(spec, /never a client-supplied house/);
   assert.doesNotMatch(spec, /cut off after/, 'D12 is complete');
-  assert.match(read('ROLLOUT.md'), /^### B0 · Security gap first/m);
+  assert.match(spec, /never gets a \*\*NEW\*\* write path/);
+  const rollout = read('ROLLOUT.md');
+  assert.match(rollout, /^### B0 · Security gap first/m);
+  assert.match(rollout, /^### B0-coord · the coordinators-side prompt/m);
+  assert.ok(rollout.indexOf('1. **B0-coord**') < rollout.indexOf('2. **B0**'), 'B0-coord ships first');
   const matrix = read('PERMISSIONS-MATRIX.md');
   assert.doesNotMatch(matrix, /^\| \*\*(Shiran|Yael)\b/m, 'no Shiran / Yael identity row');
   assert.match(matrix, /^\| \*\*Dana\*\* \(דנה\)/m);
