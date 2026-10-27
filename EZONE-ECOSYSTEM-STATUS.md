@@ -1,5 +1,10 @@
 # E-ZONE Ecosystem Status — updated October 27, 2026
 
+## B1 — `Activity` sheet + writer, not wired — October 27, 2026 (PR open)
+
+- **What:** `ACTIVITY_SHEET` / `ACTIVITY_COLUMNS` (16 cols, append-only) + `appendActivity_` (locked, idempotent by `eventId`, pure validator `activityRow_`). **No caller, no action, no `getData` change** — no row is written in production. Code.gs only, inert; clasp CI on merge.
+- **Next:** B2 dual-writes system events from the existing writers behind a Script Property kill switch (default off); B3 the permission-filtered read. Details: `CHANGELOG-crm-activity-foundation.md`, `docs/crm/ROLLOUT.md` §B1.
+
 ## B0 — coordinators' discharge → own house only — October 27, 2026 (PR open)
 
 - **What:** `recordDischargeFromCoordinators` now refuses a patient outside the caller's verified session house (`actor` + `house` from ezone-coordinators #337, live). `system:*` actors and `*` from a code login are refused on the write; `admin` / `user:<id>` with `*` reach every house. Refusals: `actor_not_allowed` / `forbidden_house`, Hebrew message, AuditLog row with ids only, nothing written.

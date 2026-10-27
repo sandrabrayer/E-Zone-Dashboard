@@ -1110,6 +1110,51 @@ const CREDIT_EDITABLE_COLUMNS = ['amount', 'overrideReason', 'approvedBy', 'deci
 const AUDIT_LOG_SHEET = 'AuditLog';
 const AUDIT_LOG_COLUMNS = ['timestamp', 'action', 'fn', 'patientId', 'name', 'details', 'actor'];
 
+/* ===== Activity — the CRM timeline (B1, CHANGELOG-crm-activity-foundation.md) =====
+ * One APPEND-ONLY sheet of events about a person / lead / patient / payment:
+ * the «ציר זמן» the CRM shows per person (docs/crm/SPEC.md §7). B1 ships the
+ * definition and ONE locked, idempotent writer. NO caller in B1 — no row is
+ * written in production until B2 wires the existing writers (behind a
+ * Script Property kill switch, default off).
+ *
+ * Columns (append-only from day one — never insert / rename / reorder; a new
+ * column goes at the END, guard-tested):
+ *   eventId           — caller-supplied stable id, the idempotency key
+ *                       ('discharge:<patientId>', 'rcpt:<uid>:confirmed:<at>' …).
+ *                       The same eventId twice → ONE row, zero writes the 2nd time.
+ *   occurredAt        — ISO timestamp of the business event (the caller's);
+ *                       defaults to recordedAt.
+ *   recordedAt        — ISO timestamp of this write (server clock).
+ *   kind              — stable snake_case event kind ('lead_stage_moved',
+ *                       'patient_discharged', 'payment_verified' …).
+ *   source            — 'manual' (a person typed it) | 'system:<fn>' (a Dashboard
+ *                       writer) | 'app:<sibling>' (coordinators / outpatient /
+ *                       therapists / managers). The spec §7 manual-vs-system split.
+ *   actorId           — the acting identity as the session knows it ('' for jobs).
+ *   actorName         — display name, as the AuditLog `actor` column.
+ *   leadId, patientId, personId, paymentUid, dischargeId, houseId — the record
+ *                       links; '' when not applicable. houseId = internal id.
+ *   summary           — one Hebrew line for the timeline (≤ 200 chars, cleaned).
+ *   detailsJson       — JSON object string (≤ 4000 chars), no PII beyond what
+ *                       the linked record already holds; '' when none.
+ *   supersedesEventId — the eventId this one corrects / replaces ('' normally).
+ * Text-forced columns: every timestamp and id, so Sheets never coerces them. */
+const ACTIVITY_SHEET = 'Activity';
+const ACTIVITY_COLUMNS = ['eventId', 'occurredAt', 'recordedAt', 'kind', 'source', 'actorId', 'actorName',
+  'leadId', 'patientId', 'personId', 'paymentUid', 'dischargeId', 'houseId', 'summary', 'detailsJson',
+  'supersedesEventId'];
+const ACTIVITY_TEXT_COLUMNS = ['eventId', 'occurredAt', 'recordedAt', 'leadId', 'patientId', 'personId',
+  'paymentUid', 'dischargeId', 'houseId', 'supersedesEventId'];
+const ACTIVITY_ID_MAX = 120;
+const ACTIVITY_KIND_MAX = 60;
+const ACTIVITY_SOURCE_MAX = 60;
+const ACTIVITY_ACTOR_MAX = 80;
+const ACTIVITY_SUMMARY_MAX = 200;
+const ACTIVITY_DETAILS_MAX = 4000;
+const ACTIVITY_SOURCE_RE = /^(manual|system:[A-Za-z0-9_.-]+|app:[A-Za-z0-9_.-]+)$/;
+const ACTIVITY_KIND_RE = /^[a-z][a-z0-9_]*$/;
+const ACTIVITY_EVENT_ID_RE = /^[A-Za-z0-9:_.\-]+$/;
+
 /* RepairPlan sheet — the human-approval gate for the corrupted-rows cleanup
  * (U+FFFD Hebrew-name corruption, see CHANGELOG-corrupted-rows-cleanup.md).
  * writeRepairPlanNow fills it from the dry-run scan with approved=FALSE;
@@ -2367,6 +2412,11 @@ function getOrCreateSheet_(name, headers) {
     forceColumnsText_(sh, BILLING_OVERRIDE_COLUMNS, ['month', 'amount'].concat(BILLING_DISCOUNT_COLUMNS));
   }
   // PatientPhones: the phone column is text so a typed 0541234567 keeps its leading zero.
+  // Activity (B1): ids and ISO timestamps stay text so a '2026-10-27T…' or a
+  // numeric-looking id is never re-typed by Sheets.
+  if (name === ACTIVITY_SHEET) {
+    forceColumnsText_(sh, ACTIVITY_COLUMNS, ACTIVITY_TEXT_COLUMNS);
+  }
   if (name === PATIENT_PHONES_SHEET) {
     forceColumnsText_(sh, PATIENT_PHONES_COLUMNS, ['phone', 'patientId']);
   }
@@ -4074,6 +4124,92 @@ function tombstonePreservedPatients_(rows, savedByAction) {
  * operation — every failure is swallowed. `details` may be an object (JSON-
  * stringified compactly) or a ready string. The sheet is ensured on first use
  * and kept hidden — Vered sees nothing new. Callers keep their call ONE line. */
+/* ===== Activity writer (B1) =====
+ * One cleaned line of text for an Activity cell: control chars flattened, a
+ * formula lead-in stripped, angle brackets removed, capped. Pure. */
+function activityText_(v, max) {
+  let t = String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/[<>]/g, '').trim();
+  t = t.replace(/^[=+@-]+/, '').trim();
+  return t.slice(0, max);
+}
+
+/* A strict ISO-8601 instant ('2026-10-27T15:04:05.000Z') or ''. Pure. */
+function activityIso_(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(s)) return '';
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? '' : d.toISOString();
+}
+
+/* PURE validation + normalisation of one event → { ok:true, row:{…} } (an
+ * object keyed by ACTIVITY_COLUMNS) or { ok:false, error }. Never touches a
+ * sheet. `nowIso` is the server clock (injected for tests). */
+function activityRow_(event, nowIso) {
+  const e = event && typeof event === 'object' ? event : {};
+  const eventId = activityText_(e.eventId, ACTIVITY_ID_MAX);
+  if (!eventId) return { ok: false, error: 'missing_event_id' };
+  if (!ACTIVITY_EVENT_ID_RE.test(eventId)) return { ok: false, error: 'invalid_event_id' };
+  const kind = activityText_(e.kind, ACTIVITY_KIND_MAX);
+  if (!ACTIVITY_KIND_RE.test(kind)) return { ok: false, error: 'invalid_kind' };
+  const source = activityText_(e.source, ACTIVITY_SOURCE_MAX);
+  if (!ACTIVITY_SOURCE_RE.test(source)) return { ok: false, error: 'invalid_source' };
+  const recordedAt = activityIso_(nowIso) || new Date().toISOString();
+  const occurredAt = activityIso_(e.occurredAt) || recordedAt;
+  let detailsJson = '';
+  if (e.details !== undefined && e.details !== null && e.details !== '') {
+    if (typeof e.details !== 'object' || Array.isArray(e.details)) return { ok: false, error: 'invalid_details' };
+    try { detailsJson = JSON.stringify(e.details); } catch (_) { return { ok: false, error: 'invalid_details' }; }
+    if (detailsJson.length > ACTIVITY_DETAILS_MAX) return { ok: false, error: 'details_too_long' };
+  }
+  const id = function (k) { return activityText_(e[k], ACTIVITY_ID_MAX); };
+  return { ok: true, row: {
+    eventId: eventId,
+    occurredAt: occurredAt,
+    recordedAt: recordedAt,
+    kind: kind,
+    source: source,
+    actorId: activityText_(e.actorId, ACTIVITY_ACTOR_MAX),
+    actorName: activityText_(e.actorName, ACTIVITY_ACTOR_MAX),
+    leadId: id('leadId'),
+    patientId: id('patientId'),
+    personId: id('personId'),
+    paymentUid: id('paymentUid'),
+    dischargeId: id('dischargeId'),
+    houseId: id('houseId'),
+    summary: activityText_(e.summary, ACTIVITY_SUMMARY_MAX),
+    detailsJson: detailsJson,
+    supersedesEventId: id('supersedesEventId'),
+  } };
+}
+
+/* Append ONE event to the Activity sheet, under the script lock, idempotent by
+ * eventId: an eventId already on the sheet → { ok:true, written:false,
+ * duplicate:true } and ZERO writes. Invalid input → { ok:false, error } and
+ * zero writes. Lock busy → lockBusy_. Never updates or deletes a row.
+ * B1: NO caller. B2 wires the existing writers behind a kill switch. */
+function appendActivity_(event) {
+  const v = activityRow_(event, new Date().toISOString());
+  if (!v.ok) return v;
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(5000) !== true) return lockBusy_('appendActivity_');
+  try {
+    const sh = getOrCreateSheet_(ACTIVITY_SHEET, ACTIVITY_COLUMNS);
+    const lastRow = sh.getLastRow();
+    if (lastRow >= 2) {
+      const ids = sh.getRange(2, 1, lastRow - 1, 1).getValues();
+      for (let i = 0; i < ids.length; i++) {
+        if (String(ids[i][0] == null ? '' : ids[i][0]).trim() === v.row.eventId) {
+          return { ok: true, written: false, duplicate: true, eventId: v.row.eventId };
+        }
+      }
+    }
+    sh.getRange(lastRow + 1, 1, 1, ACTIVITY_COLUMNS.length).setValues([objectToRow_(v.row, ACTIVITY_COLUMNS)]);
+    return { ok: true, written: true, eventId: v.row.eventId, recordedAt: v.row.recordedAt };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
 function logAudit_(action, fn, patientId, name, details, actor) {
   try {
     const sh = getOrCreateSheet_(AUDIT_LOG_SHEET, AUDIT_LOG_COLUMNS);
