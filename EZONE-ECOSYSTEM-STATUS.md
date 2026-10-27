@@ -1,5 +1,9 @@
 # E-ZONE Ecosystem Status — updated October 27, 2026
 
+## C7 — CRM patient actions: edit, house move, discharge — October 27, 2026 (PR open)
+
+- Patient drawer: edit (house as read, id-match replace), move (target house + `movedFrom` intent), discharge (`dischargePatient` audit row → house as read released → `/api/outpatient-lead` for «טיפול חוץ»). With C4–C6 every daily write of the classic leads/תפוסה tabs now exists in the CRM except returning-patient matching, restore and delete. Flag-gated. Details: `CHANGELOG-crm-patient-actions.md`.
+
 ## C6 — CRM admission from a lead + direct add — October 27, 2026 (PR open)
 
 - `saveAll` with ONE house as read + the new patient (+ the lead), `prove` for both; refusals for duplicates / conflicts / unproven. «קליטה לבית» in a paid lead's drawer (funder via `appendFunder` for finance), «הוספת מטופל/ת ישירות» in מטופלים (patient + `dl-` lead pair). Remaining writes: discharge, house move, returning patient, patient edit. Flag-gated. Details: `CHANGELOG-crm-admission.md`.

@@ -73,10 +73,11 @@ async function boot() {
       try { parsed = JSON.parse(body); } catch (_) { parsed = {}; }
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
-      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder'].indexOf(parsed.action) >= 0) saves.push(parsed);
+      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
         : parsed.action === 'saveAll' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, proven: { leads: (parsed.leads || []).map((l) => String(l.id)), patients: Object.values(parsed.patients || {}).flat().map((p) => String(p.id)) } })
         : parsed.action === 'appendFunder' ? { ok: true, row: { submissionId: parsed.funder && parsed.funder.submissionId } }
+        : parsed.action === 'dischargePatient' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, patient: { id: String(parsed.patient && parsed.patient.id) }, refund: { created: 1 } })
         : ['moveLeadIrrelevant', 'removeLead', 'restoreLead'].indexOf(parsed.action) >= 0 ? (saveAnswer ? saveAnswer(parsed) : { ok: true, lead: { id: String(parsed.lead && parsed.lead.id) } })
         : { ok: false, error: 'unexpected_' + parsed.action };
       const res = new EventEmitter();
@@ -344,6 +345,61 @@ test('C6 admission + direct add (Vered, finance): «קליטה לבית» posts 
     assert.deepEqual([dp.name, dp.source, dp.fromLead, dp.pay], ['רונית פרץ', 'direct_admin', 'dl-' + dp.id, 21000]);
     assert.deepEqual([da.leads[0].id, da.leads[0].source, da.leads[0].stage, da.leads[0].phone], ['dl-' + dp.id, 'direct_approach', 'admitted', '0503334444']);
     assert.match(await page.textContent('#crm-main'), /רונית פרץ/);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('C7 patient actions (Vered): edit posts the house as read with the changed row; move posts the TARGET house with movedFrom; discharge posts the audit row then the released row', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="clients"]');
+    // edit
+    await page.click('tr[data-open-patient="p1"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"] form[data-form="patient-edit"]', { state: 'attached' });
+    await page.click('#crm-drawer details.act summary:has-text("עריכה")');
+    await page.fill('form[data-form="patient-edit"] [name="pay"]', '31000');
+    await page.selectOption('form[data-form="patient-edit"] [name="status"]', 'trial');
+    await page.fill('form[data-form="patient-edit"] [name="notes"]', 'הערה חדשה');
+    await page.click('form[data-form="patient-edit"] button[type="submit"]');
+    await page.waitForFunction(() => /העריכה/.test(document.querySelector('#crm-toast') ? document.querySelector('#crm-toast').textContent : ''), null, { timeout: 5000 });
+    const edit = srv.saves[0];
+    assert.equal(edit.action, 'saveAll'); assert.deepEqual(Object.keys(edit.patients), ['ramot']);
+    const e1 = edit.patients.ramot.find((p) => p.id === 'p1');
+    assert.deepEqual([e1.pay, e1.status, e1.notes, e1.name], [31000, 'trial', 'הערה חדשה', 'דנה כהן']);
+    assert.deepEqual(edit.prove, { patients: ['p1'] });
+    // move → asher (confirm accepted)
+    page.once('dialog', (d) => d.accept());
+    await page.click('tr[data-open-patient="p1"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"] form[data-form="patient-move"]', { state: 'attached' });
+    await page.click('#crm-drawer details.act summary:has-text("העברה")');
+    await page.selectOption('form[data-form="patient-move"] [name="toHouseId"]', 'asher');
+    await page.click('form[data-form="patient-move"] button[type="submit"]');
+    await page.waitForFunction(() => /ההעברה/.test(document.querySelector('#crm-toast').textContent), null, { timeout: 5000 });
+    const mv = srv.saves[1];
+    assert.deepEqual(Object.keys(mv.patients), ['asher'], 'only the TARGET house travels');
+    const moved = mv.patients.asher.find((p) => p.id === 'p1');
+    assert.deepEqual([moved.houseId, moved.movedFrom], ['asher', 'ramot']);
+    assert.match(await page.textContent('tr[data-open-patient="p1"]'), /רעננה אשר/);
+    // discharge → released_outpatient: audit row, then the released row, then the handoff
+    await page.click('tr[data-open-patient="p1"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"] form[data-form="discharge"]', { state: 'attached' });
+    await page.click('#crm-drawer details.act summary:has-text("שחרור")');
+    await page.click('form[data-form="discharge"] button[type="submit"]');
+    assert.match(await page.textContent('[data-err="disposition"]'), /סטטוס/);
+    await page.selectOption('form[data-form="discharge"] [name="disposition"]', 'released_outpatient');
+    await page.selectOption('form[data-form="discharge"] [name="continuity"]', 'continued_outpatient');
+    await page.fill('form[data-form="discharge"] [name="note"]', 'עובר לאמבולטורי');
+    await page.click('form[data-form="discharge"] button[type="submit"]');
+    await page.waitForFunction(() => /שוחרר/.test(document.querySelector('#crm-toast').textContent) || /אמבולטורי|נכשלה/.test(document.querySelector('#crm-toast').textContent), null, { timeout: 8000 });
+    const dis = srv.saves.find((b) => b.action === 'dischargePatient');
+    assert.deepEqual([dis.patient.patientId, dis.patient.status, dis.patient.prior_status, dis.patient.disposition, dis.patient.continuity, dis.patient.discharge_note, dis.patient.exitDate], ['p1', 'released', 'trial', 'released_outpatient', 'continued_outpatient', 'עובר לאמבולטורי', TODAY]);
+    assert.match(dis.patient.id, /^id-[0-9a-f]{16}$/, 'its own fresh audit id');
+    const flip = srv.saves.filter((b) => b.action === 'saveAll')[2];
+    const rel = flip.patients.asher.find((p) => p.id === 'p1');
+    assert.deepEqual([rel.status, rel.exitDate], ['released', TODAY]);
+    assert.equal(await page.$('tr[data-open-patient="p1"]'), null, 'left «מטופלים»');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });
