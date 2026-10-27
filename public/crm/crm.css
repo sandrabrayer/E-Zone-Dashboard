@@ -134,3 +134,12 @@ details.act textarea { flex-basis: 100%; }
   z-index: 60; opacity: 0; transform: translateY(8px); transition: opacity .15s, transform .15s; pointer-events: none; max-width: min(420px, 90vw); }
 .toast.bad { background: var(--bad); color: #fff; }
 .toast[data-show="true"] { opacity: 1; transform: none; }
+
+/* ---- new lead form (C5) ---- */
+form.new-lead { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+form.new-lead h3 { grid-column: 1 / -1; margin: 8px 0 0; font-size: 13px; color: var(--text-muted); font-weight: 500; }
+form.new-lead label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
+form.new-lead label.wide, form.new-lead .wide { grid-column: 1 / -1; }
+form.new-lead input, form.new-lead select, form.new-lead textarea { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; color: var(--text); font-size: 14px; }
+form.new-lead .err { color: var(--bad); font-size: 12px; min-height: 0; }
+form.new-lead .err:empty { display: none; }

@@ -73,8 +73,10 @@ async function boot() {
       try { parsed = JSON.parse(body); } catch (_) { parsed = {}; }
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
+      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
         : parsed.action === 'saveAll' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, proven: { leads: (parsed.leads || []).map((l) => String(l.id)) } })
+        : ['moveLeadIrrelevant', 'removeLead', 'restoreLead'].indexOf(parsed.action) >= 0 ? (saveAnswer ? saveAnswer(parsed) : { ok: true, lead: { id: String(parsed.lead && parsed.lead.id) } })
         : { ok: false, error: 'unexpected_' + parsed.action };
       const res = new EventEmitter();
       res.statusCode = 200; res.headers = {}; res.setEncoding = () => {}; res.resume = () => {};
@@ -229,6 +231,67 @@ test('C4 lead actions (Vered): «שלב הבא» on a card posts ONE lead to sav
     const m = srv.saves[srv.saves.length - 1].leads[0];
     assert.deepEqual([m.visitDate, m.visitTime, m.meetingWith, m.stage], [TODAY, '11:30', 'אמבולטורי', 'visit']);
     assert.match(await page.textContent('#crm-drawer'), /11:30/);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('C5 lead lifecycle (Vered): new lead form validates and posts one new row; close moves the lead to «לידים סגורים»; restore brings it back; remove', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="leads"]');
+    // new lead: validation first
+    await page.click('#crm-new-lead');
+    await page.waitForSelector('#crm-drawer form[data-form="new-lead"]');
+    await page.fill('[name="name"]', 'נועה');
+    await page.fill('[name="phone"]', '052');
+    await page.click('form[data-form="new-lead"] button[type="submit"]');
+    assert.match(await page.textContent('[data-err="name"]'), /שם מלא/);
+    assert.match(await page.textContent('[data-err="phone"]'), /טלפון/);
+    assert.equal(srv.saves.length, 0, 'nothing posted while invalid');
+    await page.fill('[name="name"]', 'נועה שמש');
+    await page.fill('[name="phone"]', '052-999-8877');
+    await page.selectOption('[name="assignedTo"]', 'ורד');
+    await page.selectOption('[name="house"]', 'רמות השבים');
+    await page.fill('[name="source"]', 'המלצה');
+    await page.click('form[data-form="new-lead"] button[type="submit"]');
+    await page.waitForFunction(() => /נוסף/.test(document.querySelector('#crm-toast') ? document.querySelector('#crm-toast').textContent : ''), null, { timeout: 5000 });
+    const created = srv.saves[0];
+    assert.equal(created.action, 'saveAll'); assert.equal(created.leads.length, 1); assert.deepEqual(created.patients, {});
+    assert.deepEqual([created.leads[0].name, created.leads[0].phone, created.leads[0].stage, created.leads[0].assignedTo, created.leads[0].house, created.leads[0].created], ['נועה שמש', '0529998877', 'new', 'ורד', 'רמות השבים', TODAY]);
+    assert.match(created.leads[0].id, /^id-[0-9a-f]{16}$/);
+    assert.equal(await page.getAttribute('#crm-drawer', 'aria-hidden'), 'true');
+    assert.ok(await page.$('.col:nth-child(1) .card[data-open-lead="' + created.leads[0].id + '"]'), 'on the board in «ליד חדש»');
+    // close from the drawer
+    await page.click('.card[data-open-lead="L1"] .name');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer details.act:nth-of-type(3) summary');
+    await page.selectOption('form[data-form="close"] [name="disposition"]', 'completed');
+    await page.fill('form[data-form="close"] [name="note"]', 'סיים');
+    await page.click('form[data-form="close"] button[type="submit"]');
+    await page.waitForFunction(() => /נסגר/.test(document.querySelector('#crm-toast').textContent), null, { timeout: 5000 });
+    const closed = srv.saves[1];
+    assert.equal(closed.action, 'moveLeadIrrelevant');
+    assert.deepEqual([closed.lead.id, closed.lead.stage, closed.lead.originSheet, closed.lead.disposition, closed.lead.not_relevant_note], ['L1', 'irrelevant', 'new', 'completed', 'סיים']);
+    assert.equal(await page.$('.card[data-open-lead="L1"]'), null, 'off the board');
+    // closed list + restore
+    await page.click('button[data-view="closed"]');
+    assert.match(await page.textContent('#crm-main'), /אבי לוי/);
+    assert.match(await page.textContent('#crm-main'), /סיים טיפול/);
+    await page.click('[data-restore-lead="L1"]');
+    await page.waitForFunction(() => /שוחזר/.test(document.querySelector('#crm-toast').textContent), null, { timeout: 5000 });
+    assert.equal(srv.saves[2].action, 'restoreLead');
+    await page.click('button[data-view="board"]');
+    assert.ok(await page.$('.col:nth-child(1) .card[data-open-lead="L1"]'), 'back in its origin stage');
+    // remove (confirm dialog accepted)
+    page.once('dialog', (d) => d.accept());
+    await page.click('.card[data-open-lead="L4"] .name');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer details.act:nth-of-type(3) summary');
+    await page.click('[data-remove-lead="L4"]');
+    await page.waitForFunction(() => /הוסר/.test(document.querySelector('#crm-toast').textContent), null, { timeout: 5000 });
+    assert.equal(srv.saves[3].action, 'removeLead'); assert.equal(srv.saves[3].lead.id, 'L4');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });

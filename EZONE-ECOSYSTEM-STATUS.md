@@ -1,5 +1,9 @@
 # E-ZONE Ecosystem Status — updated October 27, 2026
 
+## C5 — CRM lead lifecycle: new lead, close, remove, restore, «לידים סגורים» — October 27, 2026 (PR open)
+
+- New-lead drawer form (classic rules + duplicate warning) via the one-lead `saveAll`; close (`moveLeadIrrelevant`, four dispositions + reason), remove (`removeLead`), closed-leads view with restore (`restoreLead`). Flag-gated. Remaining writes: admission, direct add, discharge, house move. Details: `CHANGELOG-crm-lead-lifecycle.md`.
+
 ## C4 — CRM lead actions (stage move, meeting, outcome, note/owner) — October 27, 2026 (PR open)
 
 - First write path in the CRM: `saveAll` with ONE full lead row + `patients: {}` + `prove` (Code.gs keeps absent leads; nothing else is touched). Optimistic, rolled back on refusal, proven or failed. Stage buttons on cards and in the drawer; meeting / outcome / note forms in the drawer. Remaining writes (new lead, close, admission, discharge, house move) in the next PRs. Flag-gated. Details: `CHANGELOG-crm-lead-actions.md`.
