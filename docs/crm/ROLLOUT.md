@@ -37,6 +37,8 @@ Nothing in B or C edits OP-03 (Outpatient #125), Outpatient #114 or PR #220.
 
 This is the **first Session B code PR** (SPEC D13). It comes before B1.
 
+**Status (2026-10-27): built** — see `CHANGELOG-coordinators-discharge-own-house.md` (B0-coord #337 merged and its Code.gs deployed first). Refusal codes as shipped: `actor_not_allowed`, `forbidden_house`; refusals are audited to `AuditLog` (`coord_discharge_refused`), ids only.
+
 **It ships as a pair, in this order (confirmed by Sandra, 2026-10-27):**
 1. **B0-coord**, in the ezone-coordinators repo (deploy branch `main`), merges and deploys first:
    [ezone-coordinators PR #337](https://github.com/sandrabrayer/ezone-coordinators/pull/337).

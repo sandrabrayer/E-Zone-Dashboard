@@ -318,6 +318,10 @@ Two actions for the **ezone-coordinators** app: `getPatientsForCoordinators`
 (read-only feed) and `recordDischargeFromCoordinators` (a coordinator's
 discharge, written back immediately). Full contract: `CHANGELOG-coordinators-roster.md`.
 
+Since B0 (`CHANGELOG-coordinators-discharge-own-house.md`, October 27, 2026) the discharge
+write also requires the caller's verified `actor` + `house` (sent by ezone-coordinators ≥ #337)
+and refuses a patient outside that house. Nothing new to set — the same secret, no Railway variable.
+
 **Steps:**
 
 1. **Generate a secret** on your own computer: `openssl rand -hex 32`.

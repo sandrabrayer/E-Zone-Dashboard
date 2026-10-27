@@ -8396,7 +8396,10 @@ function getAdmittedRoster_() {
  *
  * 2. recordDischargeFromCoordinators — the ONE write. Payload: id,
  *    dischargeDate ('yyyy-MM-dd', not in the future, not before admission),
- *    reason (optional, ≤ 500 chars), by (required, the coordinator's name).
+ *    reason (optional, ≤ 500 chars), by (required, the coordinator's name),
+ *    actor + house (required since B0 — the caller's verified session
+ *    identity; see coordActorInput_ below: a patient outside the asserted
+ *    house is refused 'forbidden_house').
  *    Only a patient the feed can show (a canonical house) can be discharged;
  *    any other id answers patient_not_found. Under the script lock it:
  *      a. upserts the standard discharged-audit row (DISCHARGED_PATIENTS_SHEET,
@@ -8431,6 +8434,62 @@ const COORD_REASON_MAX = 500;
 const COORD_BY_MAX = 60;
 const COORD_ID_MAX = 100;
 const COORD_RELEASED_STATUSES = ['released', 'שוחרר', 'שחרור'];
+const COORD_ACTOR_MAX = 80;
+const COORD_HOUSE_MAX = 40;
+
+/* ===== B0 · own-house enforcement (CHANGELOG-coordinators-discharge-own-house.md, SPEC D12/D13) =====
+ * Since ezone-coordinators #337 every call carries the caller's VERIFIED
+ * identity next to the secret: `actor` ('user:<id>' for a personal login,
+ * 'rakaz:<house>' for a code login, 'admin', or 'system:<job>' for a run with
+ * no session) and `house` (the session house as a Dashboard id, '*' for an
+ * admin session). The coordinators server builds both from its signed
+ * session — never from a client field — so the secret vouches for the pair.
+ *
+ * The one WRITE (recordDischargeFromCoordinators) is refused when:
+ *   - actor or house is missing / malformed            → actor_not_allowed / forbidden_house
+ *   - actor is 'system:*' (a job never discharges)       → actor_not_allowed
+ *   - house is '*' and the actor is not 'admin' / 'user:' (a code login never
+ *     spans houses)                                     → forbidden_house
+ *   - the patient's house ≠ the asserted house          → forbidden_house
+ * '*' from 'admin' or a personal login reaches every house (an admin session
+ * is the only one the coordinators server marks '*'). Every refusal is
+ * audited with ids only. The two READ feeds keep serving regardless of the
+ * pair (they are allow-listed projections; 'system:*' + '*' is their normal
+ * shape). Pure parsing below; no sheet is touched before the lock. */
+function coordActorInput_(params) {
+  const p = params || {};
+  const actor = coordTextClean_(p.actor, COORD_ACTOR_MAX);
+  const houseRaw = coordTextClean_(p.house, COORD_HOUSE_MAX);
+  const isSystem = /^system:/.test(actor);
+  const isAdmin = actor === 'admin';
+  const isPersonal = /^user:\S+$/.test(actor);
+  const isCodeLogin = /^rakaz:\S+$/.test(actor);
+  const house = houseRaw === '*' ? '*' : canonicalDigestHouse_(houseRaw);
+  return { actor: actor, houseRaw: houseRaw, house: house, isSystem: isSystem, isAdmin: isAdmin,
+    isPersonal: isPersonal, isCodeLogin: isCodeLogin };
+}
+
+/* The pre-lock refusal of a discharge whose caller may not write at all, or
+ * '' when the pair is acceptable (the per-patient house compare happens under
+ * the lock, once the row is known). */
+function coordDischargeActorRefusal_(a) {
+  if (!a.actor || !(a.isAdmin || a.isPersonal || a.isCodeLogin)) return 'actor_not_allowed';
+  if (a.isSystem) return 'actor_not_allowed';
+  if (!a.house) return 'forbidden_house';
+  if (a.house === '*' && !(a.isAdmin || a.isPersonal)) return 'forbidden_house';
+  return '';
+}
+
+const COORD_REFUSAL_MESSAGES = {
+  actor_not_allowed: 'השחרור נדחה: הקריאה לא נושאת זהות משתמש מאומתת. דבר לא נשמר.',
+  forbidden_house: 'השחרור נדחה: המטופל/ת אינו/ה בבית של המשתמש/ת המחובר/ת. דבר לא נשמר.',
+};
+
+function coordRefuse_(error, a, patientId, fn) {
+  logAudit_('coord_discharge_refused', fn || 'recordDischargeFromCoordinators_', String(patientId || ''), '',
+    { error: error, actor: a.actor, house: a.houseRaw }, a.actor);
+  return { ok: false, error: error, message: COORD_REFUSAL_MESSAGES[error] || '' };
+}
 
 function coordinatorsPatientsAuthOk_(params) {
   const expected = PropertiesService.getScriptProperties().getProperty(COORDINATORS_PATIENTS_SECRET_PROP);
@@ -8623,6 +8682,11 @@ function recordDischargeFromCoordinators_(params) {
   const input = coordDischargeInput_(params, coordToday_());
   if (!input.ok) return input;
   const v = input.value;
+  // B0: who is writing, and for which house (verified by the coordinators
+  // server, vouched for by the secret). Refused before the lock, nothing read.
+  const who = coordActorInput_(params);
+  const actorRefusal = coordDischargeActorRefusal_(who);
+  if (actorRefusal) return coordRefuse_(actorRefusal, who, v.id);
 
   const lock = LockService.getScriptLock();
   if (lock.tryLock(10000) !== true) return lockBusy_('recordDischargeFromCoordinators_');
@@ -8648,6 +8712,11 @@ function recordDischargeFromCoordinators_(params) {
     // The write reaches only patients the feed can show: a house outside the
     // coordinators' canonical set (sde / unknown) answers like an unknown id.
     if (!canonicalDigestHouse_(patient.houseId)) return { ok: false, error: 'patient_not_found' };
+    // B0: own house only — the patient's canonical house must be the caller's
+    // session house ('*' = an admin session reaches every house).
+    if (who.house !== '*' && canonicalDigestHouse_(patient.houseId) !== who.house) {
+      return coordRefuse_('forbidden_house', who, v.id);
+    }
     const admissionDate = asISODate_(patient.date);
     const currentExit = asISODate_(patient.exitDate);
 
@@ -8719,6 +8788,7 @@ function recordDischargeFromCoordinators_(params) {
       patient.fromLead || v.id, String(patient.name == null ? '' : patient.name), {
         id: v.id, houseId: String(patient.houseId == null ? '' : patient.houseId),
         dischargeDate: v.dischargeDate, priorStatus: audit.prior_status, by: v.by, auditId: audit.id,
+        actor: who.actor, house: who.houseRaw,
       }, stampBy);
     // The refund is created by POLICY (CHANGELOG-refunds-auto-policy.md);
     // fail-soft, and never part of this feed's answer (no financial data).
