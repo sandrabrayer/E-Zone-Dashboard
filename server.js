@@ -20,6 +20,7 @@ const {
   ROLE_FORBIDDEN_MESSAGE, roleOperationFor, requiredRoleFor, principalHasRole, roleAllowed,
   EXPECTED_DISCHARGES_ACTION, ALL_USERS_READ_ACTIONS, canViewExpectedDischarges,
 } = require('./lib/role-scope');
+const { CRM_ENABLED_VAR, serveCrmShell } = require('./lib/crm-shell-flag');
 const { buildXlsxReport, isoDayInIsrael, XLSX_MIME } = require('./lib/xlsx-report');
 const {
   createAssetStore, versionAssetRefs, isCurrentVersion, immutableHeaders, sendAsset, sendCompressedText,
@@ -296,7 +297,27 @@ function sendIndex(req, res) {
   res.type('html');
   sendCompressedText(req, res, html);
 }
-app.get('/', sendIndex);
+/* CRM shell (C1, CHANGELOG-crm-shell-flag.md): `/?view=crm` serves the
+ * shell page ONLY when CRM_ENABLED === 'true' (Railway; default off) AND the
+ * request carries a verified personal session (lib/crm-shell-flag.js). Every
+ * other case — flag off, no session, shared / sibling session, any other
+ * path — is sendIndex exactly as before. The shell is read from disk per
+ * request, no-store, no new asset (sw.js untouched); the user's name is the
+ * session's, HTML-escaped. `/index.html` never serves the shell. */
+const CRM_ENABLED = process.env[CRM_ENABLED_VAR] || '';
+function sendCrmShell(req, res, principal) {
+  const name = String(principal.user || principal.id || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const html = fs.readFileSync(path.join(__dirname, 'public/crm/crm.html'), 'utf8').replace(/__USER__/g, name);
+  console.log(`[req] → serving /crm shell (build ${BUILD_ID}, user=${principal.id})`);
+  noCache(res);
+  res.type('html');
+  sendCompressedText(req, res, html);
+}
+app.get('/', (req, res) => {
+  const principal = sessionPrincipalFromRequest(req);
+  if (serveCrmShell({ [CRM_ENABLED_VAR]: CRM_ENABLED }, req.query, principal)) return sendCrmShell(req, res, principal);
+  return sendIndex(req, res);
+});
 app.get('/index.html', sendIndex);
 
 /* Serve app.js and style.css by hand so we control the headers. A file in

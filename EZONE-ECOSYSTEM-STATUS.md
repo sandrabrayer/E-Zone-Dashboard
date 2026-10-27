@@ -1,5 +1,11 @@
 # E-ZONE Ecosystem Status — updated October 27, 2026
 
+## C1 — CRM shell behind `CRM_ENABLED` + `/?view=crm` — October 27, 2026 (PR open)
+
+- **What:** `lib/crm-shell-flag.js` + one guarded branch on `/`: the placeholder shell (`public/crm/crm.html`, dark, RTL) is served only when `CRM_ENABLED === 'true'` (Railway, default off) and the session is a verified personal user. Flag off = every response byte-identical (tested). No Code.gs, no SW bump (v93), no new asset.
+- **Sandra sets the flag** when C2/C3 are ready: Railway → `web` → Variables → `CRM_ENABLED` = `true`. Theme: dark.
+- **Next:** C2 (side menu + areas, read-only over existing actions), C3 («היום שלי», board/table, client drawer + timeline). Details: `CHANGELOG-crm-shell-flag.md`.
+
 ## B3 — `getActivity` permission-filtered read — October 27, 2026 (PR open)
 
 - **What:** `action=getActivity` by lead / patient / person / paymentUid. Gate = `expectedDischarges` rule (PROXY_SECRET + verified personal session, even in `log` mode). Server-side scope by caps: finance → all; Ortal → money kinds only, no `leadId`; no caps (Dana) → no money kinds. Fields a scope may not see are absent. Read-only, no UI consumer yet.
