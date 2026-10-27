@@ -34,14 +34,16 @@ const DATA = {
 };
 
 test('areasFor mirrors the server gates: finance → all 6; controller → today/billing/control; no finance → no גבייה', () => {
-  assert.deepEqual(core.areasFor({ view: 'full', finance: true }), ['today', 'leads', 'clients', 'calendar', 'billing', 'control']);
+  assert.deepEqual(core.areasFor({ view: 'full', finance: true }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'billing', 'control']);
   assert.deepEqual(core.areasFor({ view: 'controller', finance: false }), ['today', 'billing', 'control']);
-  assert.deepEqual(core.areasFor({ view: 'restricted', finance: false }), ['today', 'leads', 'clients', 'calendar', 'control']);
-  assert.deepEqual(core.areasFor(null), ['today', 'leads', 'clients', 'calendar', 'control']);
+  assert.deepEqual(core.areasFor({ view: 'restricted', finance: false }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control']);
+  assert.deepEqual(core.areasFor(null), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control']);
 });
 
-test('HOUSES / STAGES mirror app.js (ids and labels)', () => {
-  for (const h of core.HOUSES) assert.ok(APP_SRC.includes(`id: '${h.id}'`) && APP_SRC.includes(h.name), h.id);
+test('HOUSES / STAGES mirror app.js (ids, labels, capacities)', () => {
+  for (const h of core.HOUSES) assert.ok(APP_SRC.includes(`id: '${h.id}'`) && APP_SRC.includes(h.name) && APP_SRC.includes(`capacity: ${h.capacity}`), h.id);
+  assert.equal(core.houseId('hapardes'), 'pardes'); assert.equal(core.houseId('רעננה אשר'), 'asher'); assert.equal(core.houseId('nowhere'), '');
+  assert.equal(core.AREAS.filter((a) => a.id === 'clients')[0].label, 'מטופלים');
   for (const st of core.STAGES) assert.ok(APP_SRC.includes(`id: '${st.id}'`) && APP_SRC.includes(st.label), st.id);
   assert.equal(core.houseName('ramot'), 'רמות השבים');
   assert.equal(core.houseName('רמות השבים'), 'רמות השבים');
@@ -102,11 +104,35 @@ test('clients: in-house only, days in house, house filter; calendar: 14 days ahe
   assert.deepEqual(cal.map((l) => l.id), ['L-visit-today', 'L-visit-future']);
 });
 
+test('occupancy: in-house by the dashboard rule (status only), per-house free beds, closed house hidden when empty, unknown house counted apart', () => {
+  const c = core.compute(DATA, TODAY);
+  const o = core.occupancy(c.patients.concat([{ id: 'x', houseId: 'hapardes', name: 'א', status: 'active' }, { id: 'y', houseId: 'מריח', name: 'ב', status: 'wait' }]));
+  const by = Object.fromEntries(o.houses.map((h) => [h.id, h]));
+  assert.deepEqual([by.ramot.inHouse, by.ramot.capacity, by.ramot.free, by.ramot.pct], [1, 20, 19, 5]);
+  assert.deepEqual([by.rehab.inHouse, by.rehab.free], [1, 12], 'status wait occupies a bed');
+  assert.equal(by.pardes.inHouse, 1, 'alias hapardes → pardes');
+  assert.equal(by.sde, undefined, 'closed and empty → hidden');
+  assert.equal(o.unknown, 1);
+  assert.deepEqual([o.totalIn, o.totalCap, o.totalFree], [3, 73, 70]);
+  assert.equal(core.inHouse({ status: 'released', exitDate: '' }), false);
+  assert.equal(core.inHouse({ status: 'active', exitDate: '2026-01-01' }), true, 'exitDate alone does not free the bed (app.js rule)');
+});
+
 test('control metrics and the controller day counts', () => {
   const c = core.compute(DATA, TODAY);
   assert.deepEqual(core.control(c, TODAY).map((m) => [m.id, m.value]), [['untouched', 1], ['late', 2], ['noOutcome', 1], ['unscheduled', 1], ['admitting', 1]]);
   assert.deepEqual(core.controllerDay({ receipts: [{ status: 'reported' }, { status: 'reported' }, { status: 'flagged' }, { status: 'confirmed' }] }), { toVerify: 2, flagged: 1, confirmed: 1, total: 4 });
   assert.deepEqual(core.controllerDay(null), { toVerify: 0, flagged: 0, confirmed: 0, total: 0 });
+});
+
+test('fmtDate: ISO → DD/MM/YYYY (the dashboard format); blanks and non-dates pass through', () => {
+  assert.equal(core.fmtDate('2026-10-28'), '28/10/2026');
+  assert.equal(core.fmtDate('2026-10-28T09:00:00.000Z'), '28/10/2026');
+  assert.equal(core.fmtDate(''), '');
+  assert.equal(core.fmtDate('28/10/2026'), '28/10/2026');
+  const c = core.compute(DATA, TODAY);
+  const by = Object.fromEntries(c.leads.map((l) => [l.id, l]));
+  assert.deepEqual(core.nextActionFor(by['L-visit-future'], TODAY), { text: 'פגישה 02/11/2026', state: 'wait' });
 });
 
 test('esc escapes every HTML-significant character', () => {

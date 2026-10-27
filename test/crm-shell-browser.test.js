@@ -101,7 +101,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
   try {
     const { page, errors } = await open(browser, srv.port, 'vered', 1366);
     assert.equal(await page.getAttribute('html', 'dir'), 'rtl');
-    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => e.textContent)), ['היום שלי', 'פניות', 'לקוחות', 'יומן', 'גבייה', 'בקרה']);
+    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => e.textContent)), ['היום שלי', 'פניות', 'תפוסה', 'מטופלים', 'יומן', 'גבייה', 'בקרה']);
     assert.ok(await page.isVisible('#crm-menu'));
     assert.ok(!(await page.isVisible('#crm-burger')), 'no burger on desktop');
     assert.equal(await page.$eval('#crm-user', (e) => e.textContent), 'ורד');
@@ -118,6 +118,9 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     await page.selectOption('#f-house', 'רמות השבים');
     const onBoard = await page.$$eval('.card .name', (els) => els.map((e) => e.textContent));
     assert.deepEqual(onBoard.sort(), ['אבי לוי', 'גלי כהן', 'טל ברק']);
+    const dmy = (iso) => iso.split('-').reverse().join('/');
+    assert.match(await page.textContent('.board'), new RegExp('נוצר ' + dmy(daysAgo(5))), 'created date on the card, DD/MM/YYYY');
+    assert.ok(!/\d{4}-\d{2}-\d{2}/.test(await page.textContent('#crm-main')), 'no ISO date is ever shown');
     await page.click('button[data-view="table"]');
     assert.equal(await page.$eval('#f-house', (e) => e.value), 'רמות השבים', 'filter kept across the toggle');
     assert.equal(await page.$$eval('table.tbl tbody tr', (els) => els.length), 3);
@@ -130,7 +133,15 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     await page.keyboard.press('Escape');
     assert.equal(await page.getAttribute('#crm-drawer', 'aria-hidden'), 'true');
     assert.equal(await page.$eval('#f-house', (e) => e.value), 'רמות השבים', 'closing the card keeps the filter');
-    // «לקוחות», «יומן», «גבייה», «בקרה» render
+    // «תפוסה»: house cards; a card opens «מטופלים» filtered to that house
+    await page.click('#crm-nav button[data-area="occupancy"]');
+    assert.match(await page.textContent('#crm-main'), /מיטות פנויות/);
+    assert.match(await page.textContent('#crm-main'), /רמות השבים/);
+    await page.click('[data-house-open="קיסריה ריהאב"]');
+    assert.equal(await page.textContent('#crm-title'), 'מטופלים');
+    assert.equal(await page.$$eval('table.tbl tbody tr', (els) => els.length), 1);
+    await page.selectOption('#f-house-c', '');
+    // «מטופלים», «יומן», «גבייה», «בקרה» render
     await page.click('#crm-nav button[data-area="clients"]');
     assert.match(await page.textContent('#crm-main'), /דנה כהן/);
     await page.click('#crm-nav button[data-area="calendar"]');
