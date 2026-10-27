@@ -14,16 +14,19 @@
 
   /* Mirrors public/app.js HOUSES / STAGES (ids are the stable keys). */
   const HOUSES = [
-    { id: 'arfoni', name: 'קיסריה עפרוני' }, { id: 'rehab', name: 'קיסריה ריהאב' }, { id: 'asher', name: 'רעננה אשר' },
-    { id: 'pardes', name: 'רעננה הפרדס' }, { id: 'ramot', name: 'רמות השבים' }, { id: 'sde', name: 'שדה אליעזר' },
+    { id: 'arfoni', name: 'קיסריה עפרוני', capacity: 13 }, { id: 'rehab', name: 'קיסריה ריהאב', capacity: 13 },
+    { id: 'asher', name: 'רעננה אשר', capacity: 14 }, { id: 'pardes', name: 'רעננה הפרדס', capacity: 13 },
+    { id: 'ramot', name: 'רמות השבים', capacity: 20 }, { id: 'sde', name: 'שדה אליעזר', capacity: 16, closed: true },
   ];
+  /* Sibling-app / legacy house ids (app.js resolveHouseId). */
+  const HOUSE_ALIASES = { hapardes: 'pardes', ofroni: 'arfoni', efroni: 'arfoni', raanana: 'asher' };
   const STAGES = [
     { id: 'new', label: 'ליד חדש' }, { id: 'visit', label: 'ביקור נקבע' },
     { id: 'waitlist', label: 'רשימת המתנה' }, { id: 'paid', label: 'בטיפול פעיל' },
   ];
   const AREAS = [
-    { id: 'today', label: 'היום שלי' }, { id: 'leads', label: 'פניות' }, { id: 'clients', label: 'לקוחות' },
-    { id: 'calendar', label: 'יומן' }, { id: 'billing', label: 'גבייה' }, { id: 'control', label: 'בקרה' },
+    { id: 'today', label: 'היום שלי' }, { id: 'leads', label: 'פניות' }, { id: 'occupancy', label: 'תפוסה' },
+    { id: 'clients', label: 'מטופלים' }, { id: 'calendar', label: 'יומן' }, { id: 'billing', label: 'גבייה' }, { id: 'control', label: 'בקרה' },
   ];
   const WAIT_DAYS = 3;
 
@@ -33,15 +36,44 @@
   function areasFor(me) {
     const m = me || {};
     if (m.view === 'controller') return ['today', 'billing', 'control'];
-    if (!m.finance) return ['today', 'leads', 'clients', 'calendar', 'control'];
+    if (!m.finance) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control'];
     return AREAS.map(function (a) { return a.id; });
   }
 
   const s = function (v) { return String(v == null ? '' : v).trim(); };
+  function houseId(idOrName) {
+    const k = HOUSE_ALIASES[s(idOrName)] || s(idOrName);
+    for (let i = 0; i < HOUSES.length; i++) if (HOUSES[i].id === k || HOUSES[i].name === k) return HOUSES[i].id;
+    return '';
+  }
   function houseName(idOrName) {
-    const k = s(idOrName);
-    for (let i = 0; i < HOUSES.length; i++) if (HOUSES[i].id === k || HOUSES[i].name === k) return HOUSES[i].name;
-    return k;
+    const id = houseId(idOrName);
+    for (let i = 0; i < HOUSES.length; i++) if (HOUSES[i].id === id) return HOUSES[i].name;
+    return s(idOrName);
+  }
+  /* In the house now — the SAME rule as app.js houseOccupancyCount (status only). */
+  function inHouse(p) { return s(p && p.status) !== 'released'; }
+
+  /* «תפוסה»: per house, occupied / capacity / free; closed houses only when occupied;
+   * patients whose house resolves to none are counted apart («בית לא מזוהה»). */
+  function occupancy(patients) {
+    const rows = [];
+    let unknown = 0, totalIn = 0, totalCap = 0;
+    const by = {};
+    (patients || []).forEach(function (p) {
+      if (!inHouse(p)) return;
+      const id = houseId(p.houseId);
+      if (!id) { unknown++; return; }
+      by[id] = (by[id] || 0) + 1;
+    });
+    HOUSES.forEach(function (h) {
+      const n = by[h.id] || 0;
+      if (h.closed && n === 0) return;
+      const cap = h.closed ? 0 : h.capacity;
+      rows.push({ id: h.id, name: h.name, capacity: cap, inHouse: n, free: Math.max(0, cap - n), pct: cap ? Math.round(100 * n / cap) : 0, closed: !!h.closed });
+      totalIn += n; totalCap += cap;
+    });
+    return { houses: rows, unknown: unknown, totalIn: totalIn, totalCap: totalCap, totalFree: Math.max(0, totalCap - totalIn) };
   }
   function isoDay(v) { const t = s(v); return /^\d{4}-\d{2}-\d{2}/.test(t) ? t.slice(0, 10) : ''; }
   function daysBetween(a, b) {
@@ -50,6 +82,8 @@
     return Math.round((db - da) / 86400000);
   }
   function addDays(iso, n) { return new Date(Date.parse(iso + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10); }
+  /* ISO 'YYYY-MM-DD' → the dashboard's DD/MM/YYYY; anything else as is. Pure. */
+  function fmtDate(iso) { const t = s(iso); const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(t); return m ? m[3] + '/' + m[2] + '/' + m[1] : t; }
   function stageLabel(id) { for (let i = 0; i < STAGES.length; i++) if (STAGES[i].id === id) return STAGES[i].label; return s(id); }
 
   /* getData → flat, normalised lists. Patients arrive keyed by house. */
@@ -131,7 +165,7 @@
   function nextActionFor(l, today) {
     if (l.stage === 'visit' && l.visitDate && l.visitDate < today && !l.meetingOutcome) return { text: 'דיווח מהמנהל/ת', state: 'late' };
     if (l.stage === 'visit' && l.visitDate === today) return { text: 'פגישה היום', state: 'today' };
-    if (l.stage === 'visit') return { text: l.visitDate ? 'פגישה ' + l.visitDate : 'לתאם פגישה', state: 'wait' };
+    if (l.stage === 'visit') return { text: l.visitDate ? 'פגישה ' + fmtDate(l.visitDate) : 'לתאם פגישה', state: 'wait' };
     if (l.stage === 'new') return { text: 'ליצור קשר', state: l.created && daysBetween(l.created, today) >= WAIT_DAYS ? 'late' : 'wait' };
     if (l.stage === 'waitlist') return { text: 'ממתין למקום', state: 'wait' };
     return { text: 'קליטה לבית', state: 'wait' };
@@ -141,7 +175,7 @@
   function clients(patients, today, f) {
     const q = s(f && f.q).toLowerCase(), house = s(f && f.house);
     return patients.filter(function (p) {
-      if (p.status === 'released' || p.exitDate) return false;
+      if (!inHouse(p)) return false;                                        // the dashboard's own count rule
       if (house && houseName(p.houseId) !== houseName(house)) return false;   // id or Hebrew name, shared with the leads filter
       if (q && (p.name + ' ' + houseName(p.houseId)).toLowerCase().indexOf(q) < 0) return false;
       return true;
@@ -235,7 +269,7 @@
             + '<div class="row h"><span>לקוח</span><span>הפעולה הנדרשת</span><span>אחראי</span><span>מועד יעד</span><span>מצב</span><span></span></div>'
             + list.map(function (r) {
               return '<div class="row" data-lead="' + esc(r.leadId) + '"><span><span class="name">' + esc(r.client) + '</span><br><span class="sub">' + esc(r.house) + '</span></span>'
-                + '<span>' + esc(r.action) + '</span><span>' + esc(r.owner || '—') + '</span><span>' + esc(r.due || '—') + '</span>'
+                + '<span>' + esc(r.action) + '</span><span>' + esc(r.owner || '—') + '</span><span>' + esc(r.due ? fmtDate(r.due) : '—') + '</span>'
                 + '<span>' + chip(r.state, stateText(r.state)) + (r.reason ? '<br><span class="sub">' + esc(r.reason) + '</span>' : '') + '</span>'
                 + '<span><button type="button" class="btn small" data-open-lead="' + esc(r.leadId) + '">כרטיס</button></span></div>';
             }).join('') + '</div>';
@@ -263,14 +297,16 @@
         return toolbar + '<div class="board">' + board(c.leads, f).map(function (col) {
           return '<div class="col"><h3><span>' + esc(col.stage.label) + '</span><span class="n">' + col.leads.length + '</span></h3>' + col.leads.map(function (l) {
             const na = nextActionFor(l, state.today);
-            return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? '<span>' + esc(l.assignedTo) + '</span>' : '') + '</div><div class="next">' + chip(na.state, na.text) + '</div></div>';
+            return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? '<span>' + esc(l.assignedTo) + '</span>' : '') + '</div>'
+              + (l.created ? '<div class="meta"><span>נוצר ' + esc(fmtDate(l.created)) + '</span>' + (l.visitDate ? '<span>פגישה ' + esc(fmtDate(l.visitDate)) + (l.visitTime ? ' ' + esc(l.visitTime) : '') + '</span>' : '') + '</div>' : '')
+              + '<div class="next">' + chip(na.state, na.text) + '</div></div>';
           }).join('') + '</div>';
         }).join('') + '</div>';
       }
       const list = filterLeads(c.leads, f).slice().sort(function (a, b) { return s(a[state.sort]).localeCompare(s(b[state.sort])); });
       const cols = [['name', 'שם'], ['house', 'בית'], ['source', 'מקור'], ['assignedTo', 'אחראי'], ['stage', 'שלב'], ['visitDate', 'פגישה'], ['created', 'נוצר']];
       return toolbar + '<div class="tbl-wrap"><table class="tbl"><thead><tr>' + cols.map(function (c2) { return '<th data-sort="' + c2[0] + '">' + esc(c2[1]) + (state.sort === c2[0] ? ' ▾' : '') + '</th>'; }).join('') + '<th>פעולה הבאה</th></tr></thead><tbody>'
-        + list.map(function (l) { const na = nextActionFor(l, state.today); return '<tr data-open-lead="' + esc(l.id) + '"><td>' + esc(l.name) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(l.source) + '</td><td>' + esc(l.assignedTo) + '</td><td>' + esc(stageLabel(l.stage)) + '</td><td>' + esc(l.visitDate) + '</td><td>' + esc(l.created) + '</td><td>' + chip(na.state, na.text) + '</td></tr>'; }).join('')
+        + list.map(function (l) { const na = nextActionFor(l, state.today); return '<tr data-open-lead="' + esc(l.id) + '"><td>' + esc(l.name) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(l.source) + '</td><td>' + esc(l.assignedTo) + '</td><td>' + esc(stageLabel(l.stage)) + '</td><td>' + esc(fmtDate(l.visitDate)) + '</td><td>' + esc(fmtDate(l.created)) + '</td><td>' + chip(na.state, na.text) + '</td></tr>'; }).join('')
         + '</tbody></table></div>' + (list.length === 0 ? '<div class="crm-state">אין פניות התואמות לסינון</div>' : '');
     }
 
@@ -278,7 +314,7 @@
       const list = clients(c.patients, state.today, state.filters);
       const toolbar = '<div class="toolbar"><select id="f-house-c"><option value="">כל הבתים</option>' + HOUSES.map(function (h) { return '<option value="' + h.id + '"' + (state.filters.house === h.id ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="na">' + list.length + ' בטיפול</span></div>';
       return toolbar + '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>שם</th><th>בית</th><th>תאריך כניסה</th><th>ימים בבית</th><th>סטטוס</th></tr></thead><tbody>'
-        + list.map(function (p) { return '<tr data-open-patient="' + esc(p.id) + '"><td>' + esc(p.name) + '</td><td>' + esc(p.houseName) + '</td><td>' + esc(p.date) + '</td><td>' + esc(p.days) + '</td><td>' + esc(p.status) + '</td></tr>'; }).join('')
+        + list.map(function (p) { return '<tr data-open-patient="' + esc(p.id) + '"><td>' + esc(p.name) + '</td><td>' + esc(p.houseName) + '</td><td>' + esc(fmtDate(p.date)) + '</td><td>' + esc(p.days) + '</td><td>' + esc(p.status) + '</td></tr>'; }).join('')
         + '</tbody></table></div>' + (list.length === 0 ? '<div class="crm-state">אין מטופלים</div>' : '');
     }
 
@@ -287,15 +323,25 @@
       if (!list.length) return '<div class="crm-state">אין פגישות ב-14 הימים הקרובים</div>';
       let day = '';
       return '<div class="rows">' + list.map(function (l) {
-        const head = l.visitDate !== day ? '<div class="group-title">' + esc(l.visitDate === state.today ? 'היום · ' + l.visitDate : l.visitDate) + '</div>' : '';
+        const head = l.visitDate !== day ? '<div class="group-title">' + esc(l.visitDate === state.today ? 'היום · ' + fmtDate(l.visitDate) : fmtDate(l.visitDate)) + '</div>' : '';
         day = l.visitDate;
-        return head + '<div class="row" data-open-lead="' + esc(l.id) + '"><span><span class="name">' + esc(l.name) + '</span><br><span class="sub">' + esc(houseName(l.house)) + '</span></span><span>פגישת קבלה' + (l.visitTime ? ' · ' + esc(l.visitTime) : '') + '</span><span>' + esc(l.meetingWith || l.assignedTo || '—') + '</span><span>' + esc(l.visitDate) + '</span><span>' + chip(l.visitDate === state.today ? 'today' : 'wait', l.visitDate === state.today ? 'היום' : 'מתוכנן') + '</span><span><button type="button" class="btn small" data-open-lead="' + esc(l.id) + '">כרטיס</button></span></div>';
+        return head + '<div class="row" data-open-lead="' + esc(l.id) + '"><span><span class="name">' + esc(l.name) + '</span><br><span class="sub">' + esc(houseName(l.house)) + '</span></span><span>פגישת קבלה' + (l.visitTime ? ' · ' + esc(l.visitTime) : '') + '</span><span>' + esc(l.meetingWith || l.assignedTo || '—') + '</span><span>' + esc(fmtDate(l.visitDate)) + '</span><span>' + chip(l.visitDate === state.today ? 'today' : 'wait', l.visitDate === state.today ? 'היום' : 'מתוכנן') + '</span><span><button type="button" class="btn small" data-open-lead="' + esc(l.id) + '">כרטיס</button></span></div>';
       }).join('') + '</div>';
     }
 
     function renderBilling() {
       return '<p class="na">הגבייה נשארת בדשבורד הרגיל בשלב זה; כאן הקישורים לתתי-המסכים.</p><div class="links">'
         + '<a href="/">גבייה<small>תשלומים, חובות, זיכויים</small></a><a href="/">בקרת גבייה<small>אימות דיווחים (אורטל)</small></a><a href="/">שיוך תשלומים<small>תשלומים ללא שיוך</small></a><a href="/">מסמכים<small>חשבוניות וקבלות</small></a></div>';
+    }
+
+    function renderOccupancy(c) {
+      const o = occupancy(c.patients);
+      return '<div class="kpis">' + [['בטיפול היום', o.totalIn], ['מיטות פנויות', o.totalFree], ['קיבולת', o.totalCap]].map(function (x) { return '<div class="kpi"><span class="v">' + x[1] + '</span><span class="l">' + esc(x[0]) + '</span></div>'; }).join('') + '</div>'
+        + '<div class="links">' + o.houses.map(function (h) {
+          const state_ = h.closed ? 'wait' : (h.free === 0 ? 'late' : (h.free <= 2 ? 'today' : 'ok'));
+          return '<a href="#" data-house-open="' + esc(h.name) + '"><strong>' + esc(h.name) + '</strong> ' + chip(state_, h.closed ? 'סגור' : h.free + ' פנויות') + '<small>' + h.inHouse + ' / ' + (h.capacity || '—') + (h.capacity ? ' · ' + h.pct + '%' : '') + '</small></a>';
+        }).join('') + (o.unknown ? '<a href="/"><strong>בית לא מזוהה</strong> ' + chip('late', o.unknown + ' מטופלים') + '<small>לתיקון בדשבורד</small></a>' : '') + '</div>'
+        + '<p class="na">קליטה, יציאה והעברה בין בתים נעשות בדשבורד הרגיל (תפוסה).</p>';
     }
 
     function renderControl(c) {
@@ -308,7 +354,7 @@
       if (state.loading) { main.innerHTML = '<div class="crm-state">טוען…</div>'; return; }
       if (state.error) { main.innerHTML = '<div class="crm-state bad">' + esc(state.error) + ' <button type="button" class="btn small" id="crm-retry">נסי שוב</button></div>'; return; }
       const c = compute(state.data, state.today);
-      const r = { today: renderToday, leads: renderLeads, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl }[state.area] || renderToday;
+      const r = { today: renderToday, leads: renderLeads, occupancy: renderOccupancy, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl }[state.area] || renderToday;
       main.innerHTML = r(c);
     }
 
@@ -321,14 +367,14 @@
       const dr = $('#crm-drawer');
       const name = lead ? lead.name : pat.name;
       const subject = lead ? { leadId: lead.id } : { patientId: pat.id };
-      const kv = lead ? [['טלפון', lead.phone], ['בית', houseName(lead.house)], ['מקור', lead.source], ['אחראי', lead.assignedTo], ['שלב', stageLabel(lead.stage)], ['פגישה', lead.visitDate + (lead.visitTime ? ' ' + lead.visitTime : '')], ['נפגש/ת עם', lead.meetingWith], ['תוצאת פגישה', lead.meetingOutcome], ['איש קשר', lead.contactName + (lead.contactRelation ? ' (' + lead.contactRelation + ')' : '')], ['טלפון איש קשר', lead.contactPhone], ['הערות', lead.note]]
-        : [['בית', houseName(pat.houseId)], ['תאריך כניסה', pat.date], ['סטטוס', pat.status], ['ליד', pat.fromLead], ['מקור', pat.source]];
+      const kv = lead ? [['טלפון', lead.phone], ['בית', houseName(lead.house)], ['מקור', lead.source], ['אחראי', lead.assignedTo], ['שלב', stageLabel(lead.stage)], ['פגישה', fmtDate(lead.visitDate) + (lead.visitTime ? ' ' + lead.visitTime : '')], ['נוצר', fmtDate(lead.created)], ['נפגש/ת עם', lead.meetingWith], ['תוצאת פגישה', lead.meetingOutcome], ['איש קשר', lead.contactName + (lead.contactRelation ? ' (' + lead.contactRelation + ')' : '')], ['טלפון איש קשר', lead.contactPhone], ['הערות', lead.note]]
+        : [['בית', houseName(pat.houseId)], ['תאריך כניסה', fmtDate(pat.date)], ['סטטוס', pat.status], ['ליד', pat.fromLead], ['מקור', pat.source]];
       const na = lead ? nextActionFor(lead, state.today) : null;
       dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(name) + '</h2><div class="meta">' + esc(lead ? stageLabel(lead.stage) + ' · ' + houseName(lead.house) : 'מטופל/ת · ' + houseName(pat.houseId)) + (na ? ' · ' + esc(na.text) : '') + '</div></div><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>'
         + '<div class="tabs" role="tablist">' + [['overview', 'סקירה'], ['activity', 'פעילות'], ['meetings', 'פגישות ושירותים'], ['account', 'חשבון'], ['docs', 'מסמכים']].map(function (t, i) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (i === 0) + '">' + esc(t[1]) + '</button>'; }).join('') + '</div>'
         + '<section data-pane="overview"><dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p><a class="btn primary" href="/">עריכה בדשבורד</a></p></section>'
         + '<section data-pane="activity" hidden><ul class="tl" id="crm-tl"><li>טוען…</li></ul></section>'
-        + '<section data-pane="meetings" hidden><p class="na">' + (lead && lead.visitDate ? 'פגישת קבלה ' + esc(lead.visitDate) + (lead.meetingOutcome ? ' · ' + esc(lead.meetingOutcome) : ' · ללא תוצאה') : 'אין פגישות רשומות') + '</p></section>'
+        + '<section data-pane="meetings" hidden><p class="na">' + (lead && lead.visitDate ? 'פגישת קבלה ' + esc(fmtDate(lead.visitDate)) + (lead.meetingOutcome ? ' · ' + esc(lead.meetingOutcome) : ' · ללא תוצאה') : 'אין פגישות רשומות') + '</p></section>'
         + '<section data-pane="account" hidden><p class="na">' + (state.me && state.me.finance ? 'החשבון מנוהל בדשבורד הרגיל (גבייה).' : 'אין הרשאה לנתוני גבייה.') + '</p></section>'
         + '<section data-pane="docs" hidden><p class="na">מסמכים — חשבשבת נשארת המקור; עדיין לא מחובר.</p></section>';
       dr.setAttribute('aria-hidden', 'false');
@@ -339,15 +385,16 @@
         if (!tl) return;
         if (!r || r.ok === false) { tl.innerHTML = '<li class="na">ציר הפעילות לא זמין (' + esc((r && r.error) || 'שגיאה') + ')</li>'; return; }
         if (!r.events || !r.events.length) { tl.innerHTML = '<li class="na">אין אירועים עדיין</li>'; return; }
-        tl.innerHTML = r.events.map(function (e) { return '<li><div class="t">' + esc(String(e.occurredAt || '').replace('T', ' ').slice(0, 16)) + ' · ' + esc(e.actorName || e.source || '') + (String(e.source || '').indexOf('manual') === 0 ? ' · ידני' : ' · מערכת') + '</div><div>' + esc(e.summary || e.kind) + '</div></li>'; }).join('');
+        tl.innerHTML = r.events.map(function (e) { return '<li><div class="t">' + esc(fmtDate(String(e.occurredAt || '').slice(0, 10)) + ' ' + String(e.occurredAt || '').slice(11, 16)) + ' · ' + esc(e.actorName || e.source || '') + (String(e.source || '').indexOf('manual') === 0 ? ' · ידני' : ' · מערכת') + '</div><div>' + esc(e.summary || e.kind) + '</div></li>'; }).join('');
       });
     }
     function closeDrawer() { $('#crm-drawer').setAttribute('aria-hidden', 'true'); $('#crm-scrim').removeAttribute('data-open'); state.drawer = null; }
 
     /* events (delegated; filters, sort and scroll survive opening a card) */
     root.addEventListener('click', function (ev) {
-      const t = ev.target.closest ? ev.target.closest('[data-area],[data-kpi],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const t = ev.target.closest ? ev.target.closest('[data-area],[data-kpi],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
+      if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
       if (t.dataset.area) return setArea(t.dataset.area);
       if (t.dataset.kpi) { state.kpiFilter = state.kpiFilter === t.dataset.kpi ? '' : t.dataset.kpi; return renderMain(); }
       if (t.dataset.view) { state.view = t.dataset.view; return renderMain(); }
@@ -394,5 +441,6 @@
   }
 
   return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, normalise: normalise, compute: compute, filterLeads: filterLeads,
-    board: board, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, esc: esc, boot: boot };
+    board: board, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
+    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, esc: esc, boot: boot };
 }));

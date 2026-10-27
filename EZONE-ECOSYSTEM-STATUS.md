@@ -1,5 +1,9 @@
 # E-ZONE Ecosystem Status — updated October 27, 2026
 
+## C3a — CRM shell: «תפוסה» area, «מטופלים», DD/MM/YYYY — October 27, 2026 (PR open)
+
+- Sandra's review fixes: new תפוסה area (per-house cards, same in-house rule as the classic count), לקוחות renamed מטופלים, every date DD/MM/YYYY, created date on lead cards. גבייה keeps linking to the classic screens until Phases 4–6. Flag-gated; **CRM_ENABLED should stay off in Railway except for review sessions** (Sandra, 2026-10-27). Details: `CHANGELOG-crm-occupancy-area.md`.
+
 ## C2 — CRM shell: side menu + six areas, read-only — October 27, 2026 (PR open, stacked on C1)
 
 - **What:** `public/crm/` — menu, היום שלי (computed work queue + KPIs; Ortal's day from `billingControlQueue`), פניות (board ⇄ table, shared filter), לקוחות, יומן, גבייה (links), בקרה (action metrics), client drawer with the B3 timeline. Areas per role mirror the server gates. Reads only; every button links to the classic dashboard. Dark theme, RTL, 1366/390 verified in Chromium.
