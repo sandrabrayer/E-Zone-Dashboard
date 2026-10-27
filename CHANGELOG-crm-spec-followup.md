@@ -1,4 +1,4 @@
-# CHANGELOG — CRM restructure, Session A follow-up: #220 decision + permission decisions D5–D16
+# CHANGELOG — CRM restructure, Session A follow-up: #220 decision + permission decisions D5–D17
 
 **Date:** 2026-10-27 · **Type:** docs only (no runtime change)
 
@@ -21,15 +21,25 @@
   - D9: prices are Sandra only (not built).
   - D10: Therapists keeps the 730-day alumni phones, plus a per-read access log.
   - D11: Ortal's seen / not-seen field set.
-  - D12: manager identity via ניהול בית; full text confirmed (D15): never a client-supplied house, and
-    ezone-managers never gets a Dashboard write path.
+  - D12: manager identity via ניהול בית; full text confirmed (D15): never a client-supplied house.
+    Corrected: ezone-managers never gets a NEW write path, and its existing five writes retire in
+    Phase 3c.
 - **D13–D16**, Sandra's answers to the follow-ups:
   - D13: the coordinators' discharge write becomes own-house only. This is a security gap, fixed in the
     first Session B code PR: ROLLOUT **B0** added.
   - D14: rule-based refunds are Sandra's standing decision; only exceptions need her approval; Ortal executes.
-  - D15: D12 completed.
+  - D15: D12 completed and corrected (no NEW write path).
+  - D17: ezone-managers' five writes (family calls, staff talks, events, expected discharges,
+    feedback) keep working until Phase 3c. They then move to ניהול בית with the bonus card, and
+    ezone-managers goes read-only.
+- **ROLLOUT B0 ships as a pair:**
+  - first **B0-coord**: the coordinators app sends the verified user + house next to the shared
+    secret, and the Dashboard ignores them;
+  - then the Dashboard **B0** enforces them.
+
+  The coordinators-side prompt is written into ROLLOUT.
   - D16: Dana is all houses, read-only, and may export חתכי מטופלים without money columns; no money exports.
-- **`docs/crm/PERMISSIONS-MATRIX.md`** rewritten around D5–D16:
+- **`docs/crm/PERMISSIONS-MATRIX.md`** rewritten around D5–D17:
   - Shiran and Yael rows removed; a Dana row added.
   - Each changed permission is marked *today → decided* (🟨).
   - §5 lists the server work each decision needs.
