@@ -464,6 +464,37 @@
     };
   }
 
+  /* ---- C9: the «חשבון» tab of a patient (CHANGELOG-crm-account-tab.md) ----
+   * Same two reads as the גבייה area, filtered to ONE patient: open cycles
+   * (debtAging.byPatient), the stamped cycles and receipts (getPayments),
+   * the funder history (getPayments.funders). Pure, read-only. */
+  const CYCLE_STATUS_LABELS = { paid: 'שולם', partial: 'חלקי', unpaid: 'לא שולם', void: 'בוטל' };
+  function patientAccount(patientId, debt, payments) {
+    const id = s(patientId);
+    const d = debt && debt.ok !== false ? debt : null;
+    const p = payments && payments.ok !== false ? payments : null;
+    const mine = (d && Array.isArray(d.byPatient) ? d.byPatient : []).filter(function (x) { return s(x.patientId) === id; })[0] || null;
+    const open = (mine && Array.isArray(mine.cycles) ? mine.cycles : []).map(function (c) {
+      return { start: s(c.start).slice(0, 10), end: s(c.end).slice(0, 10), expected: Number(c.expected) || 0, received: Number(c.received) || 0, balance: Number(c.balance) || 0,
+        days: Number(c.days) || 0, kind: s(c.kind), grace: !!c.funderGrace, discount: Number(c.discount) || 0 };
+    });
+    const openTotal = Math.round(open.reduce(function (t, c) { return t + c.balance; }, 0) * 100) / 100;
+    const cycles = (p && Array.isArray(p.payments) ? p.payments : []).filter(function (x) { return s(x.patientId) === id; }).map(function (x) {
+      return { id: s(x.id), dueDate: s(x.dueDate).slice(0, 10), amount: Number(x.amount) || 0, amountPaid: Number(x.amountPaid) || 0, balance: Number(x.balance) || 0, status: s(x.status),
+        coverageStart: s(x.coverageStart).slice(0, 10), coverageEnd: s(x.coverageEnd).slice(0, 10) };
+    }).sort(function (a, b) { return a.dueDate < b.dueDate ? 1 : a.dueDate > b.dueDate ? -1 : 0; });
+    const receipts = receiptsOf(p).filter(function (r) { return r.patientId === id; }).sort(function (a, b) { return a.receivedDate < b.receivedDate ? 1 : a.receivedDate > b.receivedDate ? -1 : 0; });
+    const receivedTotal = Math.round(receipts.reduce(function (t, r) { return t + r.amount; }, 0) * 100) / 100;
+    const funders = (p && Array.isArray(p.funders) ? p.funders : []).filter(function (f) { return s(f.patientId) === id; }).map(function (f) {
+      return { funder: s(f.funder), effectiveFrom: s(f.effectiveFrom).slice(0, 10), setBy: s(f.setBy) };
+    }).sort(function (a, b) { return a.effectiveFrom < b.effectiveFrom ? 1 : a.effectiveFrom > b.effectiveFrom ? -1 : 0; });
+    const errors = [];
+    if (!d) errors.push('חובות: ' + s(debt && debt.error || 'לא נטען'));
+    if (!p) errors.push('תשלומים: ' + s(payments && payments.error || 'לא נטען'));
+    return { patientId: id, openTotal: openTotal, openCycles: open, settledCycles: mine ? (Number(mine.settledCycles) || 0) : 0, cycles: cycles, receipts: receipts,
+      receivedTotal: receivedTotal, currentFunder: funders.length ? funders[0].funder : '', funders: funders, errors: errors };
+  }
+
   const esc = function (v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
 
   /* ================= DOM ================= */
@@ -849,14 +880,19 @@
      * open (never on boot: the two reads are heavier than getData). Every
      * ACTION («דווח תשלום», overrides, credits, Ortal's verification) stays in
      * the classic dashboard — the links at the bottom. */
-    function loadBilling() {
+    const billingWaiters = [];
+    function loadBilling(then) {
+      if (typeof then === 'function') billingWaiters.push(then);
       if (state.billing || state.billingLoading) return;
       state.billingLoading = true;
       Promise.all([api('debtAging'), api('getPayments')]).then(function (res) {
         state.billing = { debt: res[0], payments: res[1] };
       }).catch(function (e) {
         state.billing = { debt: { ok: false, error: String(e && e.message || e) }, payments: { ok: false, error: String(e && e.message || e) } };
-      }).then(function () { state.billingLoading = false; if (state.area === 'billing') renderMain(); });
+      }).then(function () {
+        state.billingLoading = false; if (state.area === 'billing') renderMain();
+        while (billingWaiters.length) { try { billingWaiters.shift()(); } catch (_) { /* a stale drawer */ } }
+      });
     }
     function renderBilling() {
       if (!state.billing) { loadBilling(); return '<div class="crm-state">טוען נתוני גבייה…</div>'; }
@@ -1019,7 +1055,7 @@
         + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : renderPatientActions(pat)) + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p><a class="btn" href="/">עריכה מלאה בדשבורד</a></p></section>'
         + '<section data-pane="activity" hidden><ul class="tl" id="crm-tl"><li>טוען…</li></ul></section>'
         + '<section data-pane="meetings" hidden><p class="na">' + (lead && lead.visitDate ? 'פגישת קבלה ' + esc(fmtDate(lead.visitDate)) + (lead.meetingOutcome ? ' · ' + esc(lead.meetingOutcome) : ' · ללא תוצאה') : 'אין פגישות רשומות') + '</p></section>'
-        + '<section data-pane="account" hidden><p class="na">' + (state.me && state.me.finance ? 'החשבון מנוהל בדשבורד הרגיל (גבייה).' : 'אין הרשאה לנתוני גבייה.') + '</p></section>'
+        + '<section data-pane="account" hidden id="crm-account">' + (pat && state.me && state.me.finance ? '<p class="na">טוען נתוני חשבון…</p>' : '<p class="na">' + (lead ? 'החשבון נפתח עם הקליטה לבית.' : 'אין הרשאה לנתוני גבייה.') + '</p>') + '</section>'
         + '<section data-pane="docs" hidden><p class="na">מסמכים — חשבשבת נשארת המקור; עדיין לא מחובר.</p></section>';
       const prevTab = keepTab && state.drawer && state.drawer.tab ? state.drawer.tab : 'overview';
       if (prevTab !== 'overview') {
@@ -1029,6 +1065,7 @@
       dr.setAttribute('aria-hidden', 'false');
       $('#crm-scrim').setAttribute('data-open', 'true');
       state.drawer = { kind: kind, id: id, tab: prevTab };
+      if (pat && state.me && state.me.finance) fillAccountPane(pat.id);
       api('getActivity', Object.assign({ limit: 50 }, subject)).then(function (r) {
         const tl = $('#crm-tl');
         if (!tl) return;
@@ -1036,6 +1073,46 @@
         if (!r.events || !r.events.length) { tl.innerHTML = '<li class="na">אין אירועים עדיין</li>'; return; }
         tl.innerHTML = r.events.map(function (e) { return '<li><div class="t">' + esc(fmtDate(String(e.occurredAt || '').slice(0, 10)) + ' ' + String(e.occurredAt || '').slice(11, 16)) + ' · ' + esc(e.actorName || e.source || '') + (String(e.source || '').indexOf('manual') === 0 ? ' · ידני' : ' · מערכת') + '</div><div>' + esc(e.summary || e.kind) + '</div></li>'; }).join('');
       });
+    }
+    /* C9: the «חשבון» pane — the area's two reads (loaded once, shared), one patient. */
+    function fillAccountPane(patientId) {
+      const paint = function () {
+        const el = $('#crm-account');
+        if (!el || !state.drawer || state.drawer.id !== patientId) return;
+        el.innerHTML = renderAccount(patientAccount(patientId, state.billing.debt, state.billing.payments));
+      };
+      if (state.billing) return paint();
+      loadBilling(paint);
+    }
+    function renderAccount(a) {
+      let html = '';
+      if (a.errors.length) html += '<p class="na">' + esc(a.errors.join(' · ')) + '</p>';
+      html += '<dl class="kv"><dt>חוב פתוח</dt><dd>' + esc(fmtMoney(a.openTotal)) + (a.openCycles.length ? ' (' + a.openCycles.length + ' מחזורים)' : '') + '</dd>'
+        + '<dt>התקבל סה"כ</dt><dd>' + esc(fmtMoney(a.receivedTotal)) + (a.receipts.length ? ' (' + a.receipts.length + ' תקבולים)' : '') + '</dd>'
+        + '<dt>גוף מממן</dt><dd>' + esc(a.currentFunder || '—') + (a.funders.length > 1 ? ' <span class="na">(' + a.funders.map(function (f) { return f.funder + ' מ-' + fmtDate(f.effectiveFrom); }).join(', ') + ')</span>' : '') + '</dd></dl>';
+      html += '<div class="group-title">מחזורים פתוחים</div>';
+      if (!a.openCycles.length) html += '<p class="na">אין חוב פתוח' + (a.settledCycles ? ' · ' + a.settledCycles + ' מחזורים סגורים' : '') + '.</p>';
+      else html += '<div class="tbl-wrap"><table class="tbl" id="crm-account-open"><thead><tr><th>מחזור</th><th>צפוי</th><th>התקבל</th><th>יתרה</th><th>ימים</th></tr></thead><tbody>'
+        + a.openCycles.map(function (c) {
+          const st = c.days > 60 ? 'late' : c.days > 30 ? 'today' : 'ok';
+          return '<tr><td>' + esc(fmtDate(c.start)) + (c.end ? '–' + esc(fmtDate(c.end)) : '') + (c.kind === 'unrecorded' ? ' <span class="na">ללא דיווח</span>' : '') + (c.grace ? ' ' + chip('wait', 'גוף מממן') : '') + '</td><td>' + esc(fmtMoney(c.expected)) + '</td><td>' + esc(fmtMoney(c.received)) + '</td><td>' + esc(fmtMoney(c.balance)) + '</td><td>' + chip(st, c.days + '') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+      html += '<div class="group-title">תשלומים</div>';
+      if (!a.cycles.length) html += '<p class="na">אין תשלומים רשומים.</p>';
+      else html += '<div class="tbl-wrap"><table class="tbl" id="crm-account-cycles"><thead><tr><th>לתשלום</th><th>סכום</th><th>שולם</th><th>סטטוס</th></tr></thead><tbody>'
+        + a.cycles.map(function (c) {
+          const st = c.status === 'paid' ? 'ok' : c.status === 'partial' ? 'today' : c.status === 'void' ? 'wait' : 'late';
+          return '<tr><td>' + esc(fmtDate(c.dueDate)) + '</td><td>' + esc(fmtMoney(c.amount)) + '</td><td>' + esc(fmtMoney(c.amountPaid)) + '</td><td>' + chip(st, CYCLE_STATUS_LABELS[c.status] || c.status || '—') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+      html += '<div class="group-title">תקבולים</div>';
+      if (!a.receipts.length) html += '<p class="na">אין תקבולים.</p>';
+      else html += '<div class="tbl-wrap"><table class="tbl" id="crm-account-receipts"><thead><tr><th>תאריך</th><th>סכום</th><th>אמצעי</th><th>משלם</th><th>אימות</th></tr></thead><tbody>'
+        + a.receipts.map(function (r) {
+          const cs = r.confirmStatus === 'confirmed' ? 'ok' : r.confirmStatus === 'flagged' ? 'late' : 'today';
+          return '<tr><td>' + esc(fmtDate(r.receivedDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td><td>' + esc(r.method) + '</td><td>' + esc(r.payer) + '</td><td>' + (r.confirmStatus ? chip(cs, CONFIRM_LABELS[r.confirmStatus] || r.confirmStatus) : '') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+      html += '<p><a class="btn" href="/">דווח תשלום / זיכוי בדשבורד</a></p>';
+      return html;
     }
     function closeDrawer() { $('#crm-drawer').setAttribute('aria-hidden', 'true'); $('#crm-scrim').removeAttribute('data-open'); state.drawer = null; }
 
@@ -1149,5 +1226,5 @@
     FUNDERS: FUNDERS, PATIENT_STATUSES: PATIENT_STATUSES, admissionRow: admissionRow, admissionErrors: admissionErrors, directAddRows: directAddRows,
     directAddErrors: directAddErrors, houseSaveBody: houseSaveBody, houseSaveRefusal: houseSaveRefusal, isoDateOk: isoDateOk,
     DISCHARGE_DISPOSITIONS: DISCHARGE_DISPOSITIONS, CONTINUITY_CHOICES: CONTINUITY_CHOICES, dischargeAuditRow: dischargeAuditRow, dischargeErrors: dischargeErrors,
-    movedRow: movedRow, patientEditErrors: patientEditErrors, billingOverview: billingOverview, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS };
+    movedRow: movedRow, patientEditErrors: patientEditErrors, billingOverview: billingOverview, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS };
 }));
