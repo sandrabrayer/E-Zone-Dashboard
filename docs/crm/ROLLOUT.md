@@ -96,6 +96,8 @@ the wire contract above. Coordinators PR #337 details:
 
 ### B1 · `Activity` sheet + writer helper (not wired)
 
+**Status (2026-10-27): built** — `CHANGELOG-crm-activity-foundation.md`. Columns confirmed as proposed; `eventId` restricted to `[A-Za-z0-9:_.-]`; `details` must be a JSON object.
+
 | Item | Plan |
 | --- | --- |
 | Goal | Add an append-only `Activity` sheet definition and one locked, idempotent writer `appendActivity_(event)`. **No caller yet**, so no row is written in production. |
