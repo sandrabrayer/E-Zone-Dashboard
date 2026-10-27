@@ -229,6 +229,23 @@ test('houseSaveBody sends the house AS READ plus the new row, never another hous
   assert.match(core.houseSaveRefusal({ ok: false, error: 'x' }, 'p3', ''), /נדחתה/);
 });
 
+/* ===== C7 patient actions ===== */
+
+test('dischargeAuditRow mirrors app.js dischargeAuditRow; errors; movedRow carries the ✏ intent; patientEditErrors', () => {
+  const p = { id: 'p1', houseId: 'ramot', name: 'דנה כהן', date: '2026-09-01', pay: 28000, adv: 0, status: 'trial', fromLead: 'L1', updatedAt: 'T', updatedBy: 'ורד' };
+  const a = core.dischargeAuditRow(p, { disposition: 'completed', dischargeDate: '2026-10-27', note: 'x', continuity: 'none' }, 'aud-1', '2026-10-27T10:00:00.000Z');
+  assert.deepEqual([a.id, a.patientId, a.status, a.prior_status, a.exitDate, a.dischargedAt, a.disposition, a.discharge_note, a.continuity, a.fromLead, a.updatedAt], ['aud-1', 'p1', 'released', 'trial', '2026-10-27', '2026-10-27T10:00:00.000Z', 'completed', 'x', 'none', 'L1', 'T']);
+  assert.equal(core.dischargeAuditRow(p, { disposition: 'completed' }, 'a', '2026-10-27T10:00:00.000Z').exitDate, '2026-10-27', 'no date → today');
+  assert.equal(core.dischargeAuditRow(p, { disposition: 'completed', continuity: 'bogus' }, 'a', '2026-10-27T10:00:00.000Z').continuity, 'unknown');
+  assert.deepEqual(Object.keys(core.dischargeErrors({})), ['disposition']);
+  assert.deepEqual(Object.keys(core.dischargeErrors({ disposition: 'completed', dischargeDate: '2019-01-01' })), ['dischargeDate']);
+  assert.deepEqual(core.DISCHARGE_DISPOSITIONS.map((d) => d.id), ['completed', 'stopped_early', 'released_outpatient'], 'mirrors app.js DISCHARGE_DISPOSITIONS');
+  assert.deepEqual(core.CONTINUITY_CHOICES.map((c) => c.id), ['continued_outpatient', 'continued_other', 'none']);
+  assert.deepEqual(core.movedRow(p, 'asher'), Object.assign({}, p, { houseId: 'asher', movedFrom: 'ramot' }));
+  assert.deepEqual(Object.keys(core.patientEditErrors({ date: 'x', pay: '-1', status: 'released' })), ['date', 'pay', 'status']);
+  assert.deepEqual(Object.keys(core.patientEditErrors({ date: '2026-10-27', pay: '0', status: 'active' })), []);
+});
+
 test('esc escapes every HTML-significant character', () => {
   assert.equal(core.esc('<b>"x" & \'y\'</b>'), '&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;');
 });
@@ -241,7 +258,8 @@ test('wiring: assets hashed via ASSETS, NOT in sw.js; the shell never calls a wr
   const actions = [...src.matchAll(/api\('([A-Za-z]+)'/g)].map((m) => m[1]).sort();
   assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'getActivity', 'getData'], 'GET reads');
   const writes = [...src.matchAll(/\{ action: '([A-Za-z]+)'/g)].map((m) => m[1]).sort();
-  assert.deepEqual([...new Set(writes)], ['appendFunder', 'moveLeadIrrelevant', 'removeLead', 'restoreLead', 'saveAll'], 'the write actions: one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6)');
+  assert.deepEqual([...new Set(writes)], ['appendFunder', 'dischargePatient', 'moveLeadIrrelevant', 'removeLead', 'restoreLead', 'saveAll'], 'the write actions: one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7)');
+  assert.equal((src.match(/\/api\/outpatient-lead/g) || []).length, 1, 'the outpatient handoff: one call site, after a released_outpatient discharge');
   assert.ok(!/serializePatients|patients: state\.data\.patients\b/.test(src), 'patients travel only through houseSaveBody (one house as read)');
   assert.ok(!/innerHTML\s*=\s*[^;]*\b(l|lead|p|pat)\.(name|phone|note)\b(?!\))/.test(src.replace(/esc\([^)]*\)/g, 'ESC')), 'every interpolated field goes through esc()');
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.html'), 'utf8');

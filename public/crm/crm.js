@@ -180,6 +180,37 @@
     return '';
   }
 
+  /* ===== Patient actions (C7, CHANGELOG-crm-patient-actions.md): edit, move, discharge ===== */
+  const DISCHARGE_DISPOSITIONS = [{ id: 'completed', label: 'סיים טיפול' }, { id: 'stopped_early', label: 'הפסיק לפני הזמן' }, { id: 'released_outpatient', label: 'משוחרר לטיפול חוץ' }];
+  const CONTINUITY_CHOICES = [{ id: 'continued_outpatient', label: 'המשיך באמבולטורי (E-ZONE)' }, { id: 'continued_other', label: 'המשיך במסגרת טיפולית אחרת' }, { id: 'none', label: 'לא המשיך' }];
+  /* The discharged-audit row the classic dischargePatient sends (app.js
+   * dischargeAuditRow): the patient as read + its own fresh id, patientId,
+   * released, prior_status, exitDate, dischargedAt, disposition, note, continuity. Pure. */
+  function dischargeAuditRow(patient, v, auditId, nowIso) {
+    const exitDate = isoDateOk(v.dischargeDate) ? s(v.dischargeDate) : nowIso.slice(0, 10);
+    return Object.assign({}, patient, { id: auditId, patientId: s(patient.id), status: 'released', prior_status: s(patient.status), exitDate: exitDate,
+      dischargedAt: nowIso, disposition: s(v.disposition), discharge_note: s(v.note),
+      continuity: CONTINUITY_CHOICES.some(function (c) { return c.id === s(v.continuity); }) ? s(v.continuity) : 'unknown' });
+  }
+  function dischargeErrors(v) {
+    const out = {};
+    if (!DISCHARGE_DISPOSITIONS.some(function (d) { return d.id === s(v.disposition); })) out.disposition = 'יש לבחור סטטוס שחרור';
+    if (s(v.dischargeDate) && !isoDateOk(v.dischargeDate)) out.dischargeDate = 'תאריך שחרור מחוץ לטווח';
+    return out;
+  }
+  /* The moved row: the patient as read, in the target house, with the classic
+   * ✏-modal intent (`movedFrom`) that replaceHousePatients_ resolves. Pure. */
+  function movedRow(patient, toHouseId) {
+    return Object.assign({}, patient, { houseId: s(toHouseId), movedFrom: s(patient.houseId) });
+  }
+  function patientEditErrors(v) {
+    const out = {};
+    if (!isoDateOk(v.date)) out.date = 'תאריך כניסה חסר או מחוץ לטווח';
+    if (!(Number(v.pay) >= 0)) out.pay = 'סכום חודשי לא תקין';
+    if (!PATIENT_STATUSES.some(function (st) { return st.id === s(v.status); })) out.status = 'סטטוס לא תקין';
+    return out;
+  }
+
   /* '' when the answer proves the lead landed, else the Hebrew reason (mirrors
    * app.js promoteSkippedMessage / conflictsMessage / requireProven). Pure. */
   function saveRefusal(res, id) {
@@ -517,8 +548,9 @@
     /* A generic write through /api/sheets for the lifecycle actions; `apply`
      * mutates state optimistically, `undo` reverts it. */
     function postAction(body, okCheck, apply, undo, label) {
+      const payload = JSON.stringify(body);          // serialised BEFORE the optimistic apply (which may strip intent fields)
       state.saving = true; apply(); renderNav(); renderMain(); setSaveState('שומר…');
-      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: payload })
         .then(function (r) { return r.json().catch(function () { return null; }); })
         .then(function (res) {
           const why = okCheck(res);
@@ -638,6 +670,106 @@
         + '<div class="wide"><button type="submit" class="btn primary">הוסף מטופל/ת</button> <button type="button" class="btn" data-cancel-drawer="1">ביטול</button> <span class="na" id="crm-save-state"></span></div></form>';
       dr.setAttribute('aria-hidden', 'false'); $('#crm-scrim').setAttribute('data-open', 'true');
       state.drawer = { kind: 'direct', id: '', tab: 'overview' };
+    }
+
+    function renderPatientActions(p) {
+      if (!p || !inHouse(p)) return '';
+      const raw = (patientsOfHouse(p.houseId) || []).filter(function (x) { return s(x.id) === s(p.id); })[0] || p;
+      return '<div class="actions" data-patient-actions="' + esc(p.id) + '"><div class="toolbar"><span class="na" id="crm-save-state"></span></div>'
+        + '<details class="act"><summary>עריכה</summary><form data-form="patient-edit" data-patient="' + esc(p.id) + '" novalidate>'
+        + '<label>תאריך כניסה <input type="date" name="date" value="' + esc(s(raw.date).slice(0, 10)) + '"><span class="err" data-err="date"></span></label>'
+        + '<label>סכום חודשי (₪) <input type="number" name="pay" min="0" step="1" value="' + esc(Number(raw.pay) || 0) + '"><span class="err" data-err="pay"></span></label>'
+        + '<label>מקדמה (₪) <input type="number" name="adv" min="0" step="1" value="' + esc(Number(raw.adv) || 0) + '"></label>'
+        + '<label>סטטוס <select name="status">' + PATIENT_STATUSES.map(function (st) { return '<option value="' + st.id + '"' + (s(raw.status) === st.id ? ' selected' : '') + '>' + esc(st.label) + '</option>'; }).join('') + '</select><span class="err" data-err="status"></span></label>'
+        + '<label>הערות <textarea name="notes" rows="2">' + esc(raw.notes) + '</textarea></label>'
+        + '<button type="submit" class="btn small primary">שמירה</button></form></details>'
+        + '<details class="act"><summary>העברה לבית אחר</summary><form data-form="patient-move" data-patient="' + esc(p.id) + '" novalidate>'
+        + '<label>לבית <select name="toHouseId">' + HOUSES.filter(function (h) { return !h.closed && h.id !== houseId(p.houseId); }).map(function (h) { return '<option value="' + h.id + '">' + esc(h.name) + '</option>'; }).join('') + '</select></label>'
+        + '<button type="submit" class="btn small primary">העברה</button></form></details>'
+        + '<details class="act"><summary>שחרור</summary><form data-form="discharge" data-patient="' + esc(p.id) + '" novalidate>'
+        + '<label>סטטוס שחרור <select name="disposition"><option value="">— בחרו —</option>' + DISCHARGE_DISPOSITIONS.map(function (d) { return '<option value="' + d.id + '">' + esc(d.label) + '</option>'; }).join('') + '</select><span class="err" data-err="disposition"></span></label>'
+        + '<label>תאריך שחרור <input type="date" name="dischargeDate" value="' + esc(state.today) + '"><span class="err" data-err="dischargeDate"></span></label>'
+        + '<label>המשך טיפול <select name="continuity"><option value="">לא ידוע</option>' + CONTINUITY_CHOICES.map(function (c2) { return '<option value="' + c2.id + '">' + esc(c2.label) + '</option>'; }).join('') + '</select></label>'
+        + '<label>הערה <input type="text" name="note" maxlength="500"></label>'
+        + '<button type="submit" class="btn small primary">שחרור</button></form></details></div>';
+    }
+    function findPatientRow(pid) {
+      const p = state.data && state.data.patients;
+      if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
+      const keys = Object.keys(p);
+      for (let i = 0; i < keys.length; i++) {
+        const arr = Array.isArray(p[keys[i]]) ? p[keys[i]] : [];
+        for (let j = 0; j < arr.length; j++) if (s(arr[j] && arr[j].id) === s(pid)) return { hid: keys[i], arr: arr, idx: j, row: arr[j] };
+      }
+      return null;
+    }
+    function editPatient(pid, v, f) {
+      const errs = patientEditErrors(v);
+      if (f) showErrs(f, errs, ['date', 'pay', 'status']);
+      if (Object.keys(errs).length) return Promise.resolve(false);
+      const loc = findPatientRow(pid);
+      if (!loc) return Promise.resolve(false);
+      const before = loc.row;
+      const next = Object.assign({}, before, { date: s(v.date), pay: Number(v.pay) || 0, adv: Number(v.adv) || 0, status: s(v.status), notes: s(v.notes) });
+      closeDrawer();
+      return postAction(houseSaveBody(loc.hid, loc.arr, next, null), function (res) { return houseSaveRefusal(res, pid, ''); },
+        function () { loc.arr[loc.idx] = next; }, function () { loc.arr[loc.idx] = before; }, 'העריכה של «' + s(before.name) + '»');
+    }
+    function movePatient(pid, toHouseId) {
+      const loc = findPatientRow(pid);
+      if (!loc || !toHouseId || houseId(toHouseId) === houseId(loc.hid)) return Promise.resolve(false);
+      const before = loc.row;
+      // getData rows are keyed by house and need not carry houseId themselves: the key is the truth.
+      const next = movedRow(Object.assign({}, before, { houseId: s(before.houseId) || loc.hid }), toHouseId);
+      const target = patientsOfHouse(toHouseId);
+      closeDrawer();
+      return postAction(houseSaveBody(toHouseId, target, next, null), function (res) {
+        if (res && Array.isArray(res.conflicts) && res.conflicts.some(function (c2) { return c2 && c2.move && s(c2.id) === s(pid); })) return 'ההעברה נדחתה — המטופל/ת עודכן/ה בינתיים, רענני ונסי שוב';
+        return houseSaveRefusal(res, pid, '');
+      },
+        function () { loc.arr.splice(loc.idx, 1); delete next.movedFrom; target.push(next); },
+        function () { const k = target.indexOf(next); if (k >= 0) target.splice(k, 1); loc.arr.splice(loc.idx, 0, before); },
+        'ההעברה של «' + s(before.name) + '» ל' + houseName(toHouseId));
+    }
+    function dischargePatient(pid, v, f) {
+      const errs = dischargeErrors(v);
+      if (f) showErrs(f, errs, ['disposition', 'dischargeDate']);
+      if (Object.keys(errs).length) return Promise.resolve(false);
+      const loc = findPatientRow(pid);
+      if (!loc) return Promise.resolve(false);
+      const before = loc.row;
+      const audit = dischargeAuditRow(before, v, randomId(), new Date().toISOString());
+      const released = Object.assign({}, before, { status: 'released', exitDate: audit.exitDate });
+      closeDrawer();
+      state.saving = true; loc.arr[loc.idx] = released; renderNav(); renderMain(); setSaveState('שומר…');
+      const post = function (body) {
+        return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          .then(function (r) { return r.json().catch(function () { return null; }); });
+      };
+      let auditRes = null;
+      return post({ action: 'dischargePatient', patient: audit }).then(function (res) {
+        auditRes = res;
+        if (!res || res.ok === false) throw new Error((res && res.message) || 'שחרור המטופל נכשל — לא נשמר' + (res && res.error ? ' (' + res.error + ')' : ''));
+        if (res.duplicate === true) { if (res.exitDate) released.exitDate = s(res.exitDate).slice(0, 10); toast('השחרור כבר נרשם'); }
+        else if (!(res.patient && s(res.patient.id) === audit.id)) throw new Error('השחרור לא אומת — רענני ובדקי');
+        // b. the Patients row flips in the same way the classic flow does: the house as read, this row released.
+        return post(houseSaveBody(loc.hid, loc.arr, released, null));
+      }).then(function (res) {
+        const why = houseSaveRefusal(res, pid, '');
+        if (why) throw new Error('השחרור נרשם, אך עדכון הסטטוס נכשל — ' + why);
+        state.saving = false; toast('«' + s(before.name) + '» שוחרר/ה');
+        if (auditRes && auditRes.refund && Number(auditRes.refund.created) > 0) toast('נוצר זיכוי לפי הכלל — לטיפול אורטל');
+        if (s(v.disposition) === 'released_outpatient') {
+          return win.fetch('/api/outpatient-lead', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dischargeId: audit.id, manual: false }) })
+            .then(function (r) { return r.json().catch(function () { return {}; }); })
+            .then(function (d) { toast(d && d.ok === true && (d.sent || d.alreadySent) ? (d.alreadySent ? 'המטופל כבר נשלח לאמבולטורי' : 'נוצר ליד טיפול חוץ באאוטפיישנט') : 'יצירת ליד טיפול חוץ נכשלה — אפשר לנסות שוב בדשבורד', !(d && d.ok === true)); return true; })
+            .catch(function () { toast('יצירת ליד טיפול חוץ נכשלה — אפשר לנסות שוב בדשבורד', true); return true; });
+        }
+        return true;
+      }).catch(function (e) {
+        loc.arr[loc.idx] = before; state.saving = false; renderNav(); renderMain();
+        setSaveState(String(e && e.message || e), true); toast(String(e && e.message || e), true); return false;
+      });
     }
 
     function renderClients(c) {
@@ -787,7 +919,7 @@
       const na = lead ? nextActionFor(lead, state.today) : null;
       dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(name) + '</h2><div class="meta">' + esc(lead ? stageLabel(lead.stage) + ' · ' + houseName(lead.house) : 'מטופל/ת · ' + houseName(pat.houseId)) + (na ? ' · ' + esc(na.text) : '') + '</div></div><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>'
         + '<div class="tabs" role="tablist">' + [['overview', 'סקירה'], ['activity', 'פעילות'], ['meetings', 'פגישות ושירותים'], ['account', 'חשבון'], ['docs', 'מסמכים']].map(function (t, i) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (i === 0) + '">' + esc(t[1]) + '</button>'; }).join('') + '</div>'
-        + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : '') + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p><a class="btn" href="/">עריכה מלאה בדשבורד</a></p></section>'
+        + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : renderPatientActions(pat)) + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p><a class="btn" href="/">עריכה מלאה בדשבורד</a></p></section>'
         + '<section data-pane="activity" hidden><ul class="tl" id="crm-tl"><li>טוען…</li></ul></section>'
         + '<section data-pane="meetings" hidden><p class="na">' + (lead && lead.visitDate ? 'פגישת קבלה ' + esc(fmtDate(lead.visitDate)) + (lead.meetingOutcome ? ' · ' + esc(lead.meetingOutcome) : ' · ללא תוצאה') : 'אין פגישות רשומות') + '</p></section>'
         + '<section data-pane="account" hidden><p class="na">' + (state.me && state.me.finance ? 'החשבון מנוהל בדשבורד הרגיל (גבייה).' : 'אין הרשאה לנתוני גבייה.') + '</p></section>'
@@ -861,6 +993,14 @@
       } else if (f.dataset.form === 'direct-add') {
         const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
         directAdd(vals, f);
+      } else if (f.dataset.form === 'patient-edit') {
+        const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
+        editPatient(f.dataset.patient, vals, f);
+      } else if (f.dataset.form === 'patient-move') {
+        if (win.confirm('להעביר את המטופל/ת לבית ' + houseName(v('toHouseId')) + '?')) movePatient(f.dataset.patient, v('toHouseId'));
+      } else if (f.dataset.form === 'discharge') {
+        const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
+        dischargePatient(f.dataset.patient, vals, f);
       } else if (f.dataset.form === 'new-lead') {
         const vals = {};
         Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
@@ -905,5 +1045,7 @@
     DISPOSITIONS: DISPOSITIONS, CONTACT_RELATIONS: CONTACT_RELATIONS, localPhone: localPhone, leadFormErrors: leadFormErrors, newLeadRow: newLeadRow,
     duplicateByPhone: duplicateByPhone, closeRecord: closeRecord, randomId: randomId,
     FUNDERS: FUNDERS, PATIENT_STATUSES: PATIENT_STATUSES, admissionRow: admissionRow, admissionErrors: admissionErrors, directAddRows: directAddRows,
-    directAddErrors: directAddErrors, houseSaveBody: houseSaveBody, houseSaveRefusal: houseSaveRefusal, isoDateOk: isoDateOk };
+    directAddErrors: directAddErrors, houseSaveBody: houseSaveBody, houseSaveRefusal: houseSaveRefusal, isoDateOk: isoDateOk,
+    DISCHARGE_DISPOSITIONS: DISCHARGE_DISPOSITIONS, CONTINUITY_CHOICES: CONTINUITY_CHOICES, dischargeAuditRow: dischargeAuditRow, dischargeErrors: dischargeErrors,
+    movedRow: movedRow, patientEditErrors: patientEditErrors };
 }));
