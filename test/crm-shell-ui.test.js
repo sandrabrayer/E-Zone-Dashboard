@@ -246,6 +246,38 @@ test('dischargeAuditRow mirrors app.js dischargeAuditRow; errors; movedRow carri
   assert.deepEqual(Object.keys(core.patientEditErrors({ date: '2026-10-27', pay: '0', status: 'active' })), []);
 });
 
+test('C8 billingOverview: debtAging + getPayments → KPIs, buckets, debtors (sorted by balance), houses, receipts (newest first); refused answers → zeros + errors', () => {
+  const debt = { ok: true, asOf: '2026-10-27',
+    totals: { recorded_debt: { count: 2, total: 7000, d0_7: 0, d8_30: 3000, d31_60: 0, d61_plus: 4000 }, unrecorded_cycles: { count: 1, total: 5000, d0_7: 5000, d8_30: 0, d31_60: 0, d61_plus: 0 } },
+    byHouse: [{ houseId: 'rehab', recorded_debt: { count: 1, total: 1000 }, unrecorded_cycles: { count: 0, total: 0 } }, { houseId: 'ramot', recorded_debt: { count: 1, total: 6000 }, unrecorded_cycles: { count: 1, total: 5000 } }],
+    byPatient: [
+      { patientId: 'p2', name: 'אבי', houseId: 'rehab', status: 'released', inHouseAtAsOf: false, cycles: [{ balance: 1000, days: 20, kind: 'recorded' }] },
+      { patientId: 'p1', name: 'דנה', houseId: 'ramot', status: 'active', inHouseAtAsOf: true, cycles: [{ balance: 6000, days: 70, kind: 'recorded', funderGrace: true }, { balance: 5000, days: 3, kind: 'unrecorded' }] },
+    ],
+    detachedPayments: { count: 2 }, pendingCredits: { count: 1, total: 500 }, funderGrace: { count: 1, amount: 6000 } };
+  const pay = { ok: true, payments: [], receipts: [
+    { id: 'rcpt-1', patientName: 'אבי', houseId: 'rehab', receivedDate: '2026-08-01', amount: 1000, method: 'מזומן', confirmStatus: 'confirmed' },
+    { id: 'rcpt-2', patientName: 'דנה', houseId: 'hapardes', receivedDate: '2026-10-20T00:00:00.000Z', amount: 3000, method: 'ביט', confirmStatus: 'reported' },
+    { id: 'rcpt-3', patientName: 'דנה', houseId: 'ramot', receivedDate: '2026-10-25', amount: '250.5', method: 'אשראי', confirmStatus: 'flagged' },
+  ] };
+  const b = core.billingOverview(debt, pay, '2026-10-27');
+  assert.equal(b.openDebt, 12000); assert.equal(b.openCycles, 3); assert.equal(b.over60, 4000); assert.equal(b.debtors, 2);
+  assert.deepEqual(b.buckets.map((x) => [x.key, x.amount]), [['d0_7', 5000], ['d8_30', 3000], ['d31_60', 0], ['d61_plus', 4000]]);
+  assert.deepEqual(b.patients.map((p) => [p.name, p.balance, p.cycles, p.unrecorded, p.oldestDays, p.bucket, p.grace, p.inHouse, p.houseName]),
+    [['דנה', 11000, 2, 1, 70, 'd61_plus', true, true, 'רמות השבים'], ['אבי', 1000, 1, 0, 20, 'd8_30', false, false, 'קיסריה ריהאב']]);
+  assert.deepEqual(b.houses.map((h) => [h.name, h.total, h.count]), [['רמות השבים', 11000, 2], ['קיסריה ריהאב', 1000, 1]]);
+  assert.deepEqual(b.receipts.map((r) => [r.id, r.receivedDate, r.amount, r.houseName]), [['rcpt-3', '2026-10-25', 250.5, 'רמות השבים'], ['rcpt-2', '2026-10-20', 3000, 'רעננה הפרדס'], ['rcpt-1', '2026-08-01', 1000, 'קיסריה ריהאב']]);
+  assert.equal(b.received30, 3250.5); assert.equal(b.received30Count, 2); assert.equal(b.toVerify, 1);
+  assert.equal(b.detached, 2); assert.deepEqual(b.pendingCredits, { count: 1, total: 500 }); assert.deepEqual(b.funderGrace, { count: 1, amount: 6000 });
+  assert.deepEqual(b.errors, []);
+  // refused / missing answers never throw
+  const z = core.billingOverview({ ok: false, error: 'forbidden' }, undefined, '2026-10-27');
+  assert.equal(z.openDebt, 0); assert.deepEqual(z.patients, []); assert.deepEqual(z.receipts, []); assert.equal(z.asOf, '2026-10-27');
+  assert.deepEqual(z.errors, ['חובות: forbidden', 'תשלומים: לא נטען']);
+  assert.equal(core.fmtMoney(1234567.49), '₪1,234,567'); assert.equal(core.fmtMoney('x'), '₪0'); assert.equal(core.fmtMoney(-12.5), '₪-12');
+  assert.deepEqual(Object.keys(core.DEBT_BUCKET_LABELS), ['d0_7', 'd8_30', 'd31_60', 'd61_plus']);
+});
+
 test('esc escapes every HTML-significant character', () => {
   assert.equal(core.esc('<b>"x" & \'y\'</b>'), '&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;');
 });
@@ -256,7 +288,7 @@ test('wiring: assets hashed via ASSETS, NOT in sw.js; the shell never calls a wr
   assert.doesNotMatch(SW_SRC, /crm\//);
   const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.js'), 'utf8');
   const actions = [...src.matchAll(/api\('([A-Za-z]+)'/g)].map((m) => m[1]).sort();
-  assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'getActivity', 'getData'], 'GET reads');
+  assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'debtAging', 'getActivity', 'getData', 'getPayments'], 'GET reads (debtAging + getPayments: C8, גבייה read-only)');
   const writes = [...src.matchAll(/\{ action: '([A-Za-z]+)'/g)].map((m) => m[1]).sort();
   assert.deepEqual([...new Set(writes)], ['appendFunder', 'dischargePatient', 'moveLeadIrrelevant', 'removeLead', 'restoreLead', 'saveAll'], 'the write actions: one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7)');
   assert.equal((src.match(/\/api\/outpatient-lead/g) || []).length, 1, 'the outpatient handoff: one call site, after a released_outpatient discharge');

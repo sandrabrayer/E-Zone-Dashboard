@@ -1,6 +1,10 @@
 # E-ZONE Ecosystem Status — updated October 27, 2026
 
-## C7 — CRM patient actions: edit, house move, discharge — October 27, 2026 (PR open)
+## C8 — «גבייה» inside the CRM, read-only — October 27, 2026 (PR open)
+
+- The גבייה area now shows real data from `debtAging` + `getPayments` (fetched on first open): open-debt KPIs, aging buckets, debt per house, debtors table (row → patient drawer), latest receipts with verification chips. Every action («דווח תשלום», overrides/credits, linking, Ortal's queue) still links to the classic dashboard — embed-vs-rebuild of the report form is an open decision. No write, no Code.gs, flag-gated. Details: `CHANGELOG-crm-billing-readonly.md`.
+
+## C7 — CRM patient actions: edit, house move, discharge — October 27, 2026 (merged, #296)
 
 - Patient drawer: edit (house as read, id-match replace), move (target house + `movedFrom` intent), discharge (`dischargePatient` audit row → house as read released → `/api/outpatient-lead` for «טיפול חוץ»). With C4–C6 every daily write of the classic leads/תפוסה tabs now exists in the CRM except returning-patient matching, restore and delete. Flag-gated. Details: `CHANGELOG-crm-patient-actions.md`.
 

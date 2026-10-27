@@ -206,6 +206,8 @@ A test pins this.
 | C1 | UI flag | server.js, lib/crm-shell-flag.js | flag off = byte-identical | No (unless sw.js changes → v94+ from live) | No | `CRM_ENABLED` unset, or revert |
 | C2 | UI | public/crm/*, server.js | role areas, reachability, 1366/390 browser | No if kept out of BUNDLE_PATHS | No | flag off, or revert |
 | C3 | UI | public/crm/* | computed lists, drawer, kept state | No | No | flag off, or revert |
+| C4–C7 (#293–#296, merged) | UI writes | public/crm/crm.js | one-lead `saveAll`, lifecycle, admission, house-as-read edit / move / discharge; browser scenarios | No | No | flag off, or revert |
+| C8 | UI read | public/crm/crm.js | `billingOverview` over `debtAging` + `getPayments`; fetched once; Vered + Ortal browser scenario | No | No | flag off, or revert |
 
 ---
 

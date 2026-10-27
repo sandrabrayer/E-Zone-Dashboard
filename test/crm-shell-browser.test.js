@@ -11,6 +11,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const https = require('node:https');
 const { EventEmitter } = require('node:events');
+const core = require('../public/crm/crm.js');
 let playwright = null;
 try { playwright = require('playwright'); } catch (_) { /* skip */ }
 const CHROMIUM_CANDIDATES = ['/opt/pw-browsers/chromium-1194/chrome-linux/chrome', '/opt/pw-browsers/chromium/chrome-linux/chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
@@ -47,6 +48,12 @@ const DATA = {
   patients: { ramot: [{ id: 'p1', name: 'דנה כהן', date: daysAgo(30), status: 'active' }], rehab: [{ id: 'p2', name: 'אבי', date: daysAgo(7), status: 'active' }] },
 };
 const QUEUE = { ok: true, receipts: [{ id: 'r1', status: 'reported' }, { id: 'r2', status: 'flagged' }] };
+const DEBT = { ok: true, asOf: TODAY,
+  totals: { recorded_debt: { count: 1, total: 6000, d0_7: 0, d8_30: 0, d31_60: 0, d61_plus: 6000 }, unrecorded_cycles: { count: 1, total: 5000, d0_7: 5000, d8_30: 0, d31_60: 0, d61_plus: 0 } },
+  byHouse: [{ houseId: 'ramot', recorded_debt: { count: 1, total: 6000 }, unrecorded_cycles: { count: 1, total: 5000 } }],
+  byPatient: [{ patientId: 'p1', name: 'דנה כהן', houseId: 'ramot', status: 'active', inHouseAtAsOf: true, cycles: [{ balance: 6000, days: 70, kind: 'recorded' }, { balance: 5000, days: 3, kind: 'unrecorded' }] }],
+  detachedPayments: { count: 1 }, pendingCredits: { count: 0, total: 0 }, funderGrace: { count: 0, amount: 0 } };
+const PAYMENTS = { ok: true, payments: [], receipts: [{ id: 'rcpt-1', patientName: 'דנה כהן', houseId: 'ramot', receivedDate: daysAgo(4), amount: 2500, method: 'ביט', confirmStatus: 'reported' }] };
 const ACTIVITY = { ok: true, scope: 'full', total: 1, events: [{ eventId: 'x', occurredAt: '2026-10-20T09:00:00.000Z', kind: 'lead_created', source: 'system:x', actorName: 'ורד', summary: 'הליד נוצר', details: {} }] };
 
 let saveAnswer = null;
@@ -75,6 +82,7 @@ async function boot() {
       if (parsed.action === 'saveAll') saves.push(parsed);
       if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
+        : parsed.action === 'debtAging' ? DEBT : parsed.action === 'getPayments' ? PAYMENTS
         : parsed.action === 'saveAll' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, proven: { leads: (parsed.leads || []).map((l) => String(l.id)), patients: Object.values(parsed.patients || {}).flat().map((p) => String(p.id)) } })
         : parsed.action === 'appendFunder' ? { ok: true, row: { submissionId: parsed.funder && parsed.funder.submissionId } }
         : parsed.action === 'dischargePatient' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, patient: { id: String(parsed.patient && parsed.patient.id) }, refund: { created: 1 } })
@@ -156,12 +164,12 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     await page.click('#crm-nav button[data-area="calendar"]');
     assert.match(await page.textContent('#crm-main'), /גלי כהן/);
     await page.click('#crm-nav button[data-area="billing"]');
-    assert.match(await page.textContent('#crm-main'), /בקרת גבייה/);
+    await page.waitForSelector('#crm-debtors');
     await page.click('#crm-nav button[data-area="control"]');
     assert.match(await page.textContent('#crm-main'), /פגישות ללא תוצאה/);
     assert.ok(await noHScroll(page), 'no horizontal page scroll');
     assert.deepEqual(errors, []);
-    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['getActivity', 'getData'], 'reads only, no queue for Vered');
+    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['debtAging', 'getActivity', 'getData', 'getPayments'], 'reads only, no queue for Vered');
   } finally { await browser.close(); srv.close(); }
 });
 
@@ -193,6 +201,46 @@ test('CRM shell (Ortal, controller): only היום שלי / גבייה / בקר�
     assert.ok(!/אבי לוי/.test(await page.textContent('#crm-main')), 'no lead names in her view');
     assert.deepEqual(errors, []);
     assert.ok(srv.actions.some((a) => a.action === 'billingControlQueue' && a.user === 'ortal'));
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched on first open only; KPIs, debtors, receipts; a debtor row opens the patient drawer; actions stay links to the classic app', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    assert.ok(!srv.actions.some((a) => a.action === 'debtAging' || a.action === 'getPayments'), 'not loaded on boot');
+    await page.click('#crm-nav button[data-area="billing"]');
+    await page.waitForSelector('#crm-debtors');
+    assert.equal(await page.textContent('#crm-title'), 'גבייה');
+    const kpis = await page.$$eval('.kpis .kpi .v', (els) => els.map((e) => e.textContent));
+    assert.deepEqual(kpis.slice(0, 5), ['₪11,000', '₪6,000', '1', '₪2,500', '1']);
+    assert.deepEqual(kpis.slice(5, 9), ['₪5,000', '₪0', '₪0', '₪6,000'], 'the four aging buckets');
+    const main = await page.textContent('#crm-main');
+    assert.match(main, /דנה כהן/); assert.match(main, /רמות השבים/); assert.match(main, /1 ללא דיווח/); assert.match(main, /70 ימים/); assert.match(main, /ביט/); assert.match(main, /דווח תשלום/);
+    assert.match(await page.textContent('#crm-receipts'), new RegExp(core.fmtDate(daysAgo(4)).replace(/\//g, '\\/')), 'receipt dates are DD/MM/YYYY');
+    assert.equal(await page.$$eval('#crm-main .links a', (els) => els.map((e) => e.getAttribute('href')).every((h) => h === '/')), true, 'every action links to the classic dashboard');
+    // the debtor row opens the patient drawer
+    await page.click('#crm-debtors tbody tr');
+    assert.equal(await page.getAttribute('#crm-drawer', 'aria-hidden'), 'false');
+    assert.match(await page.textContent('#crm-drawer'), /דנה כהן/);
+    await page.keyboard.press('Escape');
+    // leaving and coming back does NOT refetch
+    await page.click('#crm-nav button[data-area="today"]');
+    await page.click('#crm-nav button[data-area="billing"]');
+    await page.waitForSelector('#crm-debtors');
+    assert.equal(srv.actions.filter((a) => a.action === 'debtAging').length, 1);
+    assert.equal(srv.actions.filter((a) => a.action === 'getPayments').length, 1);
+    assert.deepEqual(errors, []);
+    assert.deepEqual(srv.saves, [], 'read-only: nothing written');
+    // Ortal: same reads under her own session; her action link is the verification queue only
+    const o = await open(browser, srv.port, 'ortal', 1366);
+    await o.page.click('#crm-nav button[data-area="billing"]');
+    await o.page.waitForSelector('#crm-debtors');
+    assert.ok(srv.actions.some((a) => a.action === 'debtAging' && a.user === 'ortal'));
+    const links = await o.page.$$eval('#crm-main .links a', (els) => els.map((e) => e.textContent));
+    assert.equal(links.length, 1); assert.match(links[0], /בקרת גבייה/);
+    assert.deepEqual(o.errors, []);
   } finally { await browser.close(); srv.close(); }
 });
 
