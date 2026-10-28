@@ -128,6 +128,15 @@
 - **PR #220 closed as superseded (Oct 27);** branch kept. Its archive-aware lead reader (+ numeric-ID fix) and its task-queue rules will be cherry-picked later; no PostgreSQL. **Still open:** when to switch `PROXY_SECRET_MODE` to `enforce` (today any `/exec` caller bypasses server gates).
 - **Other apps: no change.** OP-03 (Outpatient #125), Outpatient #114 and PR #220 were read, not edited. See `CHANGELOG-crm-spec.md`.
 
+## Save-button spinner audit — October 26, 2026 (PR open)
+
+- Every save / send / confirm button in the Dashboard already uses `busyButton` (spinner,
+  disabled, second tap ignored, restored in `finally`). One gap found and fixed: the
+  `/meeting-report` PIN page «כניסה» (no spinner; Enter could double-send).
+- New guard test: every `.onsubmit` in app.js must reach `busyButton`.
+- Meeting-report PIN page only. No SW bump (stays v93), no Code.gs, no other apps.
+  See `CHANGELOG-save-button-spinner.md`.
+
 ## Active patient missing from every house tab — October 26, 2026 (PR open)
 
 - **Root cause:** «מטופלים» lists every non-released Patients row and filters the house
