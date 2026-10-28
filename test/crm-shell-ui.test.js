@@ -389,6 +389,47 @@ test('C11 credits + discount / amount / settle core: ledger rows per patient (ui
   assert.deepEqual(Object.keys(core.CREDIT_TYPE_LABELS), ['days_unused', 'prepaid_return', 'other']);
 });
 
+test('C13 report any cycle: entry-anchored stay cycles (month-end clamp, exit cut), reportable = not already offered, default = first future cycle, window → cycle body', () => {
+  assert.equal(core.addMonthsIso('2026-01-31', 1), '2026-02-28'); assert.equal(core.addMonthsIso('2026-11-30', 3), '2027-02-28'); assert.equal(core.addMonthsIso('2026-10-27', -1), '2026-09-27');
+  const pat = { id: 'p1', houseId: 'arfoni', name: 'תמיר', date: '2026-07-27', pay: 7000 };
+  assert.deepEqual(core.stayCycles(pat, '2026-10-28', 0).map((w) => w.start + '..' + w.end), ['2026-07-27..2026-08-26', '2026-08-27..2026-09-26', '2026-09-27..2026-10-26', '2026-10-27..2026-11-26']);
+  assert.deepEqual(core.stayCycles(Object.assign({}, pat, { exitDate: '2026-09-27' }), '2026-10-28').map((w) => w.start), ['2026-07-27', '2026-08-27'], 'a cycle starting on / after the exit is not a stay cycle');
+  assert.deepEqual(core.stayCycles({ date: '' }, '2026-10-28'), []);
+  assert.deepEqual(core.stayCycles({ date: '2026-01-31' }, '2026-03-01', 0).map((w) => w.start), ['2026-01-31', '2026-02-28'], 'clamped to the month end');
+  const acc = { openCycles: [{ start: '2026-09-27' }], cycles: [{ id: 'x', dueDate: '2026-07-27', status: 'paid', amount: 7000, amountPaid: 7000 }, { id: 'y', dueDate: '2026-08-27', status: 'unpaid', amount: 7000, amountPaid: 0 }] };
+  const list = core.reportableCycles(pat, acc, '2026-10-28');
+  assert.deepEqual(list.map((w) => [w.start, w.expected, w.status, w.paymentId]), [['2026-07-27', 7000, 'paid', 'x'], ['2026-10-27', 7000, '', ''], ['2026-11-27', 7000, '', ''], ['2026-12-27', 7000, '', ''], ['2027-01-27', 7000, '', '']], 'open (09-27) and unpaid (08-27) rows are offered by their own buttons');
+  assert.equal(core.defaultReportable(list, '2026-10-28'), 2, 'the first cycle after today');
+  assert.equal(core.defaultReportable(list.slice(0, 1), '2026-10-28'), 0); assert.equal(core.defaultReportable([], '2026-10-28'), -1);
+  assert.deepEqual(core.reportCycleForWindow(pat, list[1], acc), { id: 'pay::arfoni::תמיר::2026-07-27::2026-10-27', patientId: 'arfoni::תמיר::2026-07-27', patientName: 'תמיר', houseId: 'arfoni', dueDate: '2026-10-27', amount: 7000, coverageStart: '2026-10-27', coverageEnd: '2026-11-26' });
+  assert.equal(core.reportCycleForWindow(pat, list[0], { cycles: [{ id: 'x', patientId: 'k', dueDate: '2026-07-27', amount: 7000, coverageStart: '2026-07-27', coverageEnd: '2026-08-26' }] }).patientId, 'k', 'a stamped row is re-sent as itself');
+  assert.equal(core.normalise({ patients: { ramot: [{ id: 'a', name: 'x', date: '2026-01-01', pay: '6,000' }] } }).patients[0].pay, 0, 'pay is numeric only');
+  assert.equal(core.normalise({ patients: { ramot: [{ id: 'a', name: 'x', date: '2026-01-01', pay: 6000 }] } }).patients[0].pay, 6000);
+});
+
+test('C13 receipt fix: edit = only the changed non-money fields, validated by the shared rules; void = the classic savePayment void row with a reason; acceptance needs the server echo', () => {
+  const r = { id: 'rcpt-1', patientId: 'ramot::דנה::2026-07-29', patientName: 'דנה', houseId: 'ramot', dueDate: '2026-08-29', receivedDate: '2026-09-01', amount: 1000, method: 'ביט', payer: 'אמא', reference: '', funder: 'פרטי', coverageStart: '2026-08-29', coverageEnd: '2026-09-28', invoiceWanted: 'no', invoiceTo: '' };
+  const same = { method: 'ביט', payer: 'אמא', reference: '', coverageStart: '2026-08-29', coverageEnd: '2026-09-28', invoiceWanted: 'no', invoiceTo: '' };
+  assert.deepEqual(core.receiptEditFields(r, same), {});
+  assert.deepEqual(core.receiptEditFields(r, Object.assign({}, same, { payer: 'אבא', reference: ' 77 ' })), { payer: 'אבא', reference: '77' });
+  assert.deepEqual(core.receiptEditIssues(r, same, '2026-10-28').map((i) => i.code), ['nothing_changed']);
+  assert.deepEqual(core.receiptEditIssues(r, Object.assign({}, same, { payer: 'אבא' }), '2026-10-28'), []);
+  assert.deepEqual(core.receiptEditIssues(r, Object.assign({}, same, { method: 'העברה בנקאית' }), '2026-10-28').map((i) => i.field), ['reference'], 'a method change re-checks the reference');
+  assert.deepEqual(core.receiptEditIssues(r, Object.assign({}, same, { invoiceWanted: 'yes' }), '2026-10-28').map((i) => i.field), ['invoiceTo']);
+  assert.deepEqual(core.receiptEditIssues(r, Object.assign({}, same, { payer: 'x' }), '2026-10-28').map((i) => i.field), ['payer']);
+  assert.deepEqual(core.receiptEditIssues(r, Object.assign({}, same, { payer: 'אבא', reason: 'x'.repeat(301) }), '2026-10-28').map((i) => i.field), ['reason']);
+  assert.deepEqual(core.receiptEditBody(r, Object.assign({}, same, { payer: 'אבא', reason: ' תיקון ' })), { action: 'editReceipt', edit: { id: 'rcpt-1', fields: { payer: 'אבא' }, reason: 'תיקון' } });
+  assert.deepEqual(core.receiptEditBody(r, Object.assign({}, same, { payer: 'אבא' })).edit.reason, undefined);
+  assert.deepEqual(core.receiptVoidErrors({ note: 'x' }), { note: 'יש לציין סיבה (2 עד 120 תווים)' }); assert.deepEqual(core.receiptVoidErrors({ note: 'כפול' }), {});
+  assert.deepEqual(core.receiptVoidBody(r, 'נרשם פעמיים', '2026-10-28T05:00:00.000Z'), { action: 'savePayment', payment: { id: 'rcpt-1', patientId: 'ramot::דנה::2026-07-29', patientName: 'דנה', houseId: 'ramot', dueDate: '2026-08-29', status: 'void', linkPatientUid: '', linkStatus: 'duplicate', linkNote: 'נרשם פעמיים', timestamp: '2026-10-28T05:00:00.000Z' } });
+  assert.equal(core.receiptVoidAccepted({ ok: true, payment: { id: 'rcpt-1', status: 'void' } }, 'rcpt-1'), true);
+  assert.equal(core.receiptVoidAccepted({ ok: true, payment: { id: 'rcpt-1', status: 'מבוטל' } }, 'rcpt-1'), true);
+  assert.equal(core.receiptVoidAccepted({ ok: true, payment: { id: 'rcpt-1', status: 'paid' } }, 'rcpt-1'), false); assert.equal(core.receiptVoidAccepted({ ok: true }, 'rcpt-1'), false);
+  const rs = core.billingOverview({ ok: false }, { ok: true, receipts: [{ id: 'a', status: 'מבוטל', receivedDate: '2026-10-01', amount: 5 }, { id: 'b', status: '', receivedDate: '2026-10-02', amount: 6, reference: 'R', coverageStart: '2026-10-01T00:00:00.000Z', invoiceWanted: 'yes' }] }, '2026-10-28').receipts;
+  assert.deepEqual(rs.map((x) => [x.id, x.isVoid, x.reference, x.coverageStart, x.invoiceWanted]), [['b', false, 'R', '2026-10-01', 'yes'], ['a', true, '', '', '']]);
+  assert.deepEqual(core.RECEIPT_EDIT_FIELDS, ['reference', 'method', 'payer', 'invoiceWanted', 'invoiceTo', 'coverageStart', 'coverageEnd']);
+});
+
 test('esc escapes every HTML-significant character', () => {
   assert.equal(core.esc('<b>"x" & \'y\'</b>'), '&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;');
 });
@@ -401,7 +442,7 @@ test('wiring: assets hashed via ASSETS, NOT in sw.js; the shell never calls a wr
   const actions = [...src.matchAll(/api\('([A-Za-z]+)'/g)].map((m) => m[1]).sort();
   assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments'], 'GET reads (debtAging + getPayments: C8; getCredits: C11)');
   const writes = [...src.matchAll(/\{ action: '([A-Za-z]+)'/g)].map((m) => m[1]).sort();
-  assert.deepEqual([...new Set(writes)], ['appendFunder', 'dischargePatient', 'moveLeadIrrelevant', 'removeLead', 'reportPayment', 'restoreLead', 'saveAll', 'setBillingDiscount', 'settleRefund', 'upsertBillingOverride'], 'the write actions: one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7), the strict payment report (C10), discount / amount / settle (C11)');
+  assert.deepEqual([...new Set(writes)], ['appendFunder', 'dischargePatient', 'editReceipt', 'moveLeadIrrelevant', 'removeLead', 'reportPayment', 'restoreLead', 'saveAll', 'savePayment', 'setBillingDiscount', 'settleRefund', 'upsertBillingOverride'], 'the write actions: one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7), the strict payment report (C10), discount / amount / settle (C11)');
   assert.equal((src.match(/\/api\/outpatient-lead/g) || []).length, 1, 'the outpatient handoff: one call site, after a released_outpatient discharge');
   assert.ok(!/serializePatients|patients: state\.data\.patients\b/.test(src), 'patients travel only through houseSaveBody (one house as read)');
   assert.ok(!/innerHTML\s*=\s*[^;]*\b(l|lead|p|pat)\.(name|phone|note)\b(?!\))/.test(src.replace(/esc\([^)]*\)/g, 'ESC')), 'every interpolated field goes through esc()');

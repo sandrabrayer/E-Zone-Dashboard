@@ -299,7 +299,7 @@
     else if (p && typeof p === 'object') Object.keys(p).forEach(function (h) { (Array.isArray(p[h]) ? p[h] : []).forEach(function (x) { patients.push(Object.assign({ houseId: h }, x)); }); });
     const pts = patients.map(function (x) {
       return { id: s(x.id), houseId: s(x.houseId), name: s(x.name), date: isoDay(x.date), status: s(x.status) || 'active',
-        exitDate: isoDay(x.exitDate), fromLead: s(x.fromLead), source: s(x.source), personId: s(x.personId) };
+        exitDate: isoDay(x.exitDate), fromLead: s(x.fromLead), source: s(x.source), personId: s(x.personId), pay: Number(x.pay) || 0 };
     });
     return { leads: leads, patients: pts };
   }
@@ -425,7 +425,9 @@
       const o = r || {};
       return { id: s(o.id), patientId: s(o.patientId), patientUid: s(o.patientUid), patientName: s(o.patientName), houseId: s(o.houseId), houseName: houseName(o.houseId),
         receivedDate: s(o.receivedDate).slice(0, 10), amount: Number(o.amount) || 0, method: s(o.method), payer: s(o.payer), funder: s(o.funder),
-        confirmStatus: s(o.confirmStatus), cycleId: s(o.cycleId) };
+        confirmStatus: s(o.confirmStatus), cycleId: s(o.cycleId), reference: s(o.reference), status: s(o.status), dueDate: s(o.dueDate).slice(0, 10),
+        coverageStart: s(o.coverageStart).slice(0, 10), coverageEnd: s(o.coverageEnd).slice(0, 10), invoiceWanted: s(o.invoiceWanted), invoiceTo: s(o.invoiceTo),
+        isVoid: /^(void|מבוטל)$/i.test(s(o.status)) };
     });
   }
   function billingOverview(debt, payments, today) {
@@ -541,6 +543,108 @@
       dueDate: s(c.start), amount: Number(c.expected) || 0, coverageStart: s(c.start), coverageEnd: s(c.end) };
   }
   /* A stamped Payments row (the «תשלומים» table) as a cycle body. */
+  /* C13 (CHANGELOG-crm-report-any-cycle.md): «דווח תשלום» for ANY cycle of the
+   * stay — an advance for a cycle not yet due, or a cycle the debt view does
+   * not list. Cycles are entry-anchored (Code.gs recCycleDueDates_ /
+   * recOccurrence_: the entry day of each month, clamped to the month's end),
+   * from the entry date up to `ahead` months after today, within the stay. */
+  function addMonthsIso(iso, n) {
+    const p = s(iso).split('-'); const y = Number(p[0]), m0 = Number(p[1]) - 1 + n, d = Number(p[2]);
+    const ty = y + Math.floor(m0 / 12), tm = ((m0 % 12) + 12) % 12;
+    const last = new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate();
+    return ty + '-' + String(tm + 1).padStart(2, '0') + '-' + String(Math.min(d, last)).padStart(2, '0');
+  }
+  function cycleWindow(entryIso, k) {
+    const start = addMonthsIso(entryIso, k);
+    const nextStart = addMonthsIso(entryIso, k + 1);
+    const end = new Date(Date.parse(nextStart + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10);
+    return { start: start, end: end };
+  }
+  function stayCycles(patient, today, ahead) {
+    const entry = s(patient && patient.date).slice(0, 10);
+    if (!isoDateOk(entry)) return [];
+    const exit = s(patient && patient.exitDate).slice(0, 10);
+    const limit = addMonthsIso(s(today), ahead == null ? 3 : ahead);
+    const out = [];
+    for (let k = 0; k < 600; k++) {
+      const w = cycleWindow(entry, k);
+      if (w.start > limit) break;
+      if (exit && w.start >= exit) break;
+      out.push(w);
+    }
+    return out;
+  }
+  /* The cycles she can still report on from the «מחזור אחר» picker: every
+   * stay cycle not already offered by an open / unpaid row, newest first. */
+  function reportableCycles(patient, account, today) {
+    const a = account || {};
+    const taken = {};
+    (a.openCycles || []).forEach(function (c) { taken[c.start] = true; });
+    (a.cycles || []).forEach(function (c) { if (c.status === 'unpaid' || c.status === 'partial') taken[c.dueDate] = true; });
+    const rows = {}; (a.cycles || []).forEach(function (c) { rows[c.dueDate] = c; });
+    return stayCycles(patient, today).filter(function (w) { return !taken[w.start]; }).map(function (w) {
+      const row = rows[w.start] || null;
+      return { start: w.start, end: w.end, paymentId: row ? row.id : '', status: row ? row.status : '', expected: row ? row.amount : (Number(patient.pay) || 0), received: row ? row.amountPaid : 0 };
+    });
+  }
+  /* The picker's default: the first cycle that starts after today (an advance), else the last. */
+  function defaultReportable(list, today) {
+    for (let i = 0; i < list.length; i++) if (list[i].start >= s(today)) return i;
+    return list.length ? list.length - 1 : -1;
+  }
+  function reportCycleForWindow(patient, w, account) {
+    const rows = account && Array.isArray(account.cycles) ? account.cycles : [];
+    const row = w.paymentId ? rows.filter(function (r) { return r.id === w.paymentId; })[0] : null;
+    if (row) return reportCycleForRow(patient, row);
+    const key = patientKeyOf(patient);
+    return { id: 'pay::' + key + '::' + s(w.start), patientId: key, patientName: s(patient.name), houseId: s(houseId(patient.houseId)),
+      dueDate: s(w.start), amount: Number(w.expected) || 0, coverageStart: s(w.start), coverageEnd: s(w.end) };
+  }
+  /* C13: fixing a receipt. The classic rules: the NON-money fields are edited
+   * in place (editReceipt — method, payer, reference, invoice, coverage; the
+   * server re-validates and keeps the receipt on its cycle); amount, received
+   * date and status are NOT editable — a wrong amount is VOIDED (savePayment
+   * with status 'void' + a reason, the `deleter` role) and reported again. */
+  const RECEIPT_EDIT_FIELDS = ['reference', 'method', 'payer', 'invoiceWanted', 'invoiceTo', 'coverageStart', 'coverageEnd'];
+  function receiptEditFields(receipt, values) {
+    const out = {};
+    RECEIPT_EDIT_FIELDS.forEach(function (k) { const v = s(values[k]); if (v !== s(receipt[k])) out[k] = v; });
+    return out;
+  }
+  function receiptEditIssues(receipt, values, today, rules) {
+    const R = rules || reportRules();
+    const fields = receiptEditFields(receipt, values);
+    if (!Object.keys(fields).length) return [{ field: '_form', code: 'nothing_changed', hebrewMessage: 'לא שונה דבר' }];
+    if (!R || typeof R.validatePaymentInvoice !== 'function') return [{ field: '_form', code: 'rules_missing', hebrewMessage: 'טעינת כללי הדיווח נכשלה — רענני את הדף' }];
+    const merged = { receivedDate: receipt.receivedDate, amount: String(receipt.amount), method: values.method, payer: values.payer, reference: values.reference, funder: receipt.funder || R.PAYMENT_FUNDERS[0],
+      coverageStart: values.coverageStart, coverageEnd: values.coverageEnd, invoiceWanted: values.invoiceWanted, invoiceTo: values.invoiceTo };
+    const touched = {}; Object.keys(fields).forEach(function (k) { touched[k] = true; });
+    if (touched.method) touched.reference = true;
+    if (touched.invoiceWanted) touched.invoiceTo = true;
+    const issues = R.validatePaymentReport(merged, { todayIso: today }).concat(R.validatePaymentInvoice(merged)).filter(function (i) { return touched[i.field]; });
+    const reason = s(values.reason);
+    if (reason.length > 300) issues.push({ field: 'reason', code: 'reason_invalid', hebrewMessage: 'סיבה — טקסט עד 300 תווים' });
+    return issues;
+  }
+  function receiptEditBody(receipt, values) {
+    const edit = { id: s(receipt.id), fields: receiptEditFields(receipt, values) };
+    const reason = s(values.reason);
+    if (reason) edit.reason = reason;
+    return { action: 'editReceipt', edit: edit };
+  }
+  function receiptVoidErrors(values) {
+    const e = {}; const n = s(values.note);
+    if (n.length < 2 || n.length > 120) e.note = 'יש לציין סיבה (2 עד 120 תווים)';
+    return e;
+  }
+  function receiptVoidBody(receipt, note, nowIso) {
+    return { action: 'savePayment', payment: { id: s(receipt.id), patientId: s(receipt.patientId), patientName: s(receipt.patientName), houseId: s(receipt.houseId),
+      dueDate: s(receipt.dueDate), status: 'void', linkPatientUid: '', linkStatus: 'duplicate', linkNote: s(note).slice(0, 120), timestamp: s(nowIso) } };
+  }
+  function receiptVoidAccepted(res, id) {
+    const r = res || {};
+    return r.ok === true && !!r.payment && s(r.payment.id) === s(id) && /^(void|מבוטל)$/i.test(s(r.payment.status));
+  }
   function reportCycleForRow(patient, row) {
     const key = patientKeyOf(patient);
     return { id: row.id, patientId: row.patientId || key, patientName: row.patientName || s(patient.name), houseId: row.houseId || s(houseId(patient.houseId)),
@@ -1224,7 +1328,7 @@
       const lead = kind === 'lead' ? c.leads.filter(function (l) { return l.id === id; })[0] : null;
       const pat = kind === 'patient' ? c.patients.filter(function (p) { return p.id === id; })[0] : null;
       if (!lead && !pat) return;
-      if (!(keepTab && state.drawer && state.drawer.id === id)) { state.account = null; state.report = null; state.small = null; }
+      if (!(keepTab && state.drawer && state.drawer.id === id)) { state.account = null; state.report = null; state.small = null; state.receiptForm = null; }
       const dr = $('#crm-drawer');
       const name = lead ? lead.name : pat.name;
       const subject = lead ? { leadId: lead.id } : { patientId: pat.id };
@@ -1285,6 +1389,9 @@
             + (me.canDiscount && c.month ? ' <button type="button" class="btn small" data-discount-open="' + i + '">הנחה</button>' : '')
             + (me.canAmount && c.month ? ' <button type="button" class="btn small" data-amount-open="' + i + '">שנה סכום</button>' : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
+      const others = state.account ? reportableCycles(state.account.patient, a, state.today) : [];
+      const defIdx = defaultReportable(others, state.today);
+      if (others.length) html += '<p><label class="na">דווח תשלום למחזור אחר (מקדמה / מחזור שלא ברשימה) <select id="crm-other-cycle">' + others.map(function (w, i) { return '<option value="' + i + '"' + (i === defIdx ? ' selected' : '') + '>' + esc(fmtDate(w.start) + '–' + fmtDate(w.end) + ' · ' + fmtMoney(w.expected) + (w.status ? ' · ' + (CYCLE_STATUS_LABELS[w.status] || w.status) : '')) + '</option>'; }).join('') + '</select></label> <button type="button" class="btn small" data-report-other>דווח תשלום</button></p>';
       html += '<div id="crm-report"></div>';
       html += '<div class="group-title">זיכויים</div>';
       const credits = state.billing ? patientCredits(state.account ? state.account.patient : a.patientId, state.billing.credits) : [];
@@ -1305,11 +1412,12 @@
         }).join('') + '</tbody></table></div>';
       html += '<div class="group-title">תקבולים</div>';
       if (!a.receipts.length) html += '<p class="na">אין תקבולים.</p>';
-      else html += '<div class="tbl-wrap"><table class="tbl" id="crm-account-receipts"><thead><tr><th>תאריך</th><th>סכום</th><th>אמצעי</th><th>משלם</th><th>אימות</th></tr></thead><tbody>'
+      else html += '<div class="tbl-wrap"><table class="tbl" id="crm-account-receipts"><thead><tr><th>תאריך</th><th>סכום</th><th>אמצעי</th><th>משלם</th><th>אימות</th><th></th></tr></thead><tbody>'
         + a.receipts.map(function (r) {
           const cs = r.confirmStatus === 'confirmed' ? 'ok' : r.confirmStatus === 'flagged' ? 'late' : 'today';
-          return '<tr><td>' + esc(fmtDate(r.receivedDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td><td>' + esc(r.method) + '</td><td>' + esc(r.payer) + '</td><td>' + (r.confirmStatus ? chip(cs, CONFIRM_LABELS[r.confirmStatus] || r.confirmStatus) : '') + '</td></tr>';
-        }).join('') + '</tbody></table></div>';
+          return '<tr><td>' + esc(fmtDate(r.receivedDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td><td>' + esc(r.method) + '</td><td>' + esc(r.payer) + '</td><td>' + (r.isVoid ? chip('wait', 'בוטלה') : (r.confirmStatus ? chip(cs, CONFIRM_LABELS[r.confirmStatus] || r.confirmStatus) : '')) + '</td>'
+            + '<td>' + (r.isVoid ? '' : '<button type="button" class="btn small" data-receipt-edit="' + esc(r.id) + '">עריכה</button>' + (me.deleter ? ' <button type="button" class="btn small" data-receipt-void="' + esc(r.id) + '">ביטול</button>' : '')) + '</td></tr>';
+        }).join('') + '</tbody></table></div><div id="crm-receipt-form"></div>';
       html += '<p><a class="btn" href="/?view=classic">עריכת קבלות, שיוך תשלומים וזיכויים ידניים בדשבורד</a></p>';
       return html;
     }
@@ -1344,7 +1452,7 @@
       Array.prototype.forEach.call(f.querySelectorAll('.err'), function (e) { e.textContent = ''; });
       issues.forEach(function (i) { const e = f.querySelector('.err[data-err="' + i.field + '"]'); if (e) e.textContent = i.hebrewMessage || i.code; });
       const fe = f.querySelector('.err[data-err="_form"]');
-      if (fe) fe.textContent = message || (issues.length ? 'הדיווח לא נשמר — יש להשלים את השדות המסומנים' : '');
+      if (fe && !issues.some(function (i) { return i.field === '_form'; })) fe.textContent = message || (issues.length ? 'הדיווח לא נשמר — יש להשלים את השדות המסומנים' : '');
     }
     function submitReport(f, confirmDuplicate) {
       if (!state.report || state.saving) return Promise.resolve(false);
@@ -1431,6 +1539,66 @@
         })
         .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'השינוי לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
     }
+    /* C13: receipt edit / void forms. */
+    function openReceiptForm(kind, r) {
+      const el = $('#crm-receipt-form');
+      if (!el) return;
+      state.receiptForm = { kind: kind, receipt: r };
+      const R = reportRules(win);
+      const err = function (f) { return '<div class="err" data-err="' + f + '"></div>'; };
+      const opt = function (list, sel) { return '<option value="">בחרי…</option>' + list.map(function (v) { return '<option value="' + esc(v) + '"' + (v === sel ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join(''); };
+      let inner;
+      if (kind === 'edit') {
+        inner = '<h3>עריכת קבלה · ' + esc(fmtDate(r.receivedDate)) + ' · ' + esc(fmtMoney(r.amount)) + '</h3>'
+          + '<p class="wide na">סכום ותאריך קבלה אינם ניתנים לעריכה — אם הם שגויים, בטלי את הקבלה ודווחי מחדש.</p>'
+          + '<label>אמצעי תשלום *<select name="method">' + opt(R ? R.PAYMENT_METHODS : [], r.method) + '</select>' + err('method') + '</label>'
+          + '<label>אסמכתא / מספר עסקה<input type="text" name="reference" value="' + esc(r.reference) + '">' + err('reference') + '</label>'
+          + '<label>שם משלם *<input type="text" name="payer" value="' + esc(r.payer) + '">' + err('payer') + '</label>'
+          + '<label>חשבונית?<select name="invoiceWanted"><option value=""' + (!r.invoiceWanted ? ' selected' : '') + '>—</option><option value="yes"' + (r.invoiceWanted === 'yes' ? ' selected' : '') + '>כן</option><option value="no"' + (r.invoiceWanted === 'no' ? ' selected' : '') + '>לא</option></select>' + err('invoiceWanted') + '</label>'
+          + '<label>על שם<input type="text" name="invoiceTo" value="' + esc(r.invoiceTo) + '">' + err('invoiceTo') + '</label>'
+          + '<label>תחילת תקופת הכיסוי<input type="date" name="coverageStart" value="' + esc(r.coverageStart) + '">' + err('coverageStart') + '</label>'
+          + '<label>סוף תקופת הכיסוי<input type="date" name="coverageEnd" value="' + esc(r.coverageEnd) + '">' + err('coverageEnd') + '</label>'
+          + '<label class="wide">סיבת התיקון (לא חובה)<input type="text" name="reason" maxlength="300" value="">' + err('reason') + '</label>';
+      } else {
+        inner = '<h3>ביטול קבלה · ' + esc(fmtDate(r.receivedDate)) + ' · ' + esc(fmtMoney(r.amount)) + '</h3>'
+          + '<p class="wide na">הקבלה תסומן כמבוטלת (לא נמחקת) והמחזור יחושב מחדש. לאחר מכן דווחי את התשלום הנכון.</p>'
+          + '<label class="wide">סיבה *<input type="text" name="note" maxlength="120" value="">' + err('note') + '</label>';
+      }
+      el.innerHTML = '<form class="new-lead report" data-form="receipt-' + kind + '" novalidate>' + inner + '<div class="wide err" data-err="_form"></div>'
+        + '<div class="wide toolbar"><button type="submit" class="btn ' + (kind === 'void' ? '' : 'primary') + '">' + (kind === 'void' ? 'ביטול הקבלה' : 'שמירה') + '</button><button type="button" class="btn" data-receipt-cancel>סגירה</button><span class="na" id="crm-receipt-state"></span></div></form>';
+      el.scrollIntoView({ block: 'nearest' });
+    }
+    function submitReceiptForm(f) {
+      if (!state.receiptForm || state.saving) return Promise.resolve(false);
+      const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
+      const k = state.receiptForm.kind, r = state.receiptForm.receipt;
+      let issues, body, accepted, label;
+      if (k === 'edit') {
+        issues = receiptEditIssues(r, vals, state.today, reportRules(win)); body = receiptEditBody(r, vals);
+        accepted = function (res) { return res && res.ok === true && res.receipt && s(res.receipt.id) === r.id; }; label = 'הקבלה עודכנה';
+      } else {
+        const e = receiptVoidErrors(vals); issues = Object.keys(e).map(function (x) { return { field: x, hebrewMessage: e[x] }; });
+        body = receiptVoidBody(r, vals.note, new Date().toISOString()); accepted = function (res) { return receiptVoidAccepted(res, r.id); }; label = 'הקבלה בוטלה';
+      }
+      showReportIssues(f, issues, issues.length ? 'יש לתקן את השדות המסומנים' : '');
+      if (issues.length) return Promise.resolve(false);
+      if (k === 'void' && !win.confirm('לבטל את הקבלה על ' + fmtMoney(r.amount) + ' מ-' + fmtDate(r.receivedDate) + '?')) return Promise.resolve(false);
+      const st = $('#crm-receipt-state'); if (st) st.textContent = 'שומר…';
+      state.saving = true;
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (res) { return res.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+        .then(function (res) {
+          state.saving = false;
+          if (!accepted(res)) {
+            const out = res && res.error === 'invalid_report' ? reportOutcome(res) : { message: writeRefusal(res, res && res.ok === true ? 'receipt' : ''), issues: [] };
+            showReportIssues(f, out.issues || [], out.message || 'השינוי לא נשמר'); if (st) st.textContent = ''; toast(out.message || 'השינוי לא נשמר', true); return false;
+          }
+          toast(label + ' ✓'); state.receiptForm = null;
+          const pid = state.drawer && state.drawer.id; state.billing = null; if (pid) fillAccountPane(pid);
+          return true;
+        })
+        .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'השינוי לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
+    }
     function closeDrawer() { $('#crm-drawer').setAttribute('aria-hidden', 'true'); $('#crm-scrim').removeAttribute('data-open'); state.drawer = null; state.account = null; state.report = null; state.small = null; }
 
     /* events (delegated; filters, sort and scroll survive opening a card) */
@@ -1496,6 +1664,8 @@
         submitReport(f, false);
       } else if (f.dataset.form.indexOf('small-') === 0) {
         submitSmall(f);
+      } else if (f.dataset.form.indexOf('receipt-') === 0) {
+        submitReceiptForm(f);
       } else if (f.dataset.form === 'new-lead') {
         const vals = {};
         Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
@@ -1503,7 +1673,7 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-settle-open]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-settle-open],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel]') : null;
       if (!t) return;
       if (t.dataset.billingRetry !== undefined) { state.billing = null; return renderMain(); }
       if (t.dataset.reportCancel !== undefined) { state.report = null; state.small = null; const el = $('#crm-report'); if (el) el.innerHTML = ''; return; }
@@ -1518,6 +1688,19 @@
         return;
       }
       if (!state.account) return;
+      if (t.dataset.receiptCancel !== undefined) { state.receiptForm = null; const el = $('#crm-receipt-form'); if (el) el.innerHTML = ''; return; }
+      if (t.dataset.receiptEdit || t.dataset.receiptVoid) {
+        const id = t.dataset.receiptEdit || t.dataset.receiptVoid;
+        const r = state.account.data.receipts.filter(function (x) { return x.id === id; })[0];
+        if (r) openReceiptForm(t.dataset.receiptEdit ? 'edit' : 'void', r);
+        return;
+      }
+      if (t.dataset.reportOther !== undefined) {
+        const sel = $('#crm-other-cycle'); const list = reportableCycles(state.account.patient, state.account.data, state.today);
+        const w = list[Number(sel && sel.value)];
+        if (w) openReportForm(reportCycleForWindow(state.account.patient, w, state.account.data), Math.max(0, (Number(w.expected) || 0) - (Number(w.received) || 0)));
+        return;
+      }
       if (t.dataset.discountOpen !== undefined) { const c = state.account.data.openCycles[Number(t.dataset.discountOpen)]; if (c) openSmallForm('discount', c); return; }
       if (t.dataset.amountOpen !== undefined) { const c = state.account.data.openCycles[Number(t.dataset.amountOpen)]; if (c) openSmallForm('amount', c); return; }
       if (t.dataset.settleOpen) { const cr = patientCredits(state.account.patient, state.billing.credits).filter(function (c) { return c.id === t.dataset.settleOpen; })[0]; if (cr) openSmallForm('settle', cr); return; }
@@ -1575,5 +1758,7 @@
     patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
     newSubmissionId: newSubmissionId, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
     CREDIT_TYPE_LABELS: CREDIT_TYPE_LABELS, CREDIT_STATUS_LABELS: CREDIT_STATUS_LABELS, SETTLE_METHODS: SETTLE_METHODS, creditsOf: creditsOf, patientCredits: patientCredits, pendingCredits: pendingCredits,
+    RECEIPT_EDIT_FIELDS: RECEIPT_EDIT_FIELDS, receiptEditFields: receiptEditFields, receiptEditIssues: receiptEditIssues, receiptEditBody: receiptEditBody, receiptVoidErrors: receiptVoidErrors, receiptVoidBody: receiptVoidBody, receiptVoidAccepted: receiptVoidAccepted,
+    addMonthsIso: addMonthsIso, stayCycles: stayCycles, reportableCycles: reportableCycles, defaultReportable: defaultReportable, reportCycleForWindow: reportCycleForWindow,
     moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));
