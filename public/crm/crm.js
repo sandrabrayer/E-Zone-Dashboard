@@ -233,7 +233,7 @@
   function areasFor(me) {
     const m = me || {};
     if (m.view === 'controller') return ['today', 'billing', 'control'];
-    if (m.view === 'readonly' || m.readonly === true) return ['today', 'leads', 'occupancy', 'clients', 'calendar'];
+    if (m.view === 'ops' || m.ops === true) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control'];
     if (!m.finance) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control'];
     return AREAS.map(function (a) { return a.id; });
   }
@@ -1359,7 +1359,7 @@
     function renderDischarged(c) {
       const days = state.dischargedDays || 90;
       const list = dischargedList(c, state.today, days, state.filters);
-      const ro = !!(state.me && (state.me.readonly || state.me.view === 'readonly'));
+      const ro = false;
       const toolbar = '<div class="toolbar"><div class="seg"><button type="button" data-clients-view="in" aria-pressed="false">בבית</button><button type="button" data-clients-view="out" aria-pressed="true">משוחררים</button></div>'
         + '<select id="f-house-c"><option value="">כל הבתים</option>' + HOUSES.map(function (h) { return '<option value="' + h.id + '"' + (state.filters.house === h.id ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select>'
         + '<select id="f-dis-days">' + [[30, '30 יום'], [90, '90 יום'], [365, 'שנה'], [0, 'הכול']].map(function (o) { return '<option value="' + o[0] + '"' + (days === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>'
@@ -2028,7 +2028,7 @@
     function markReportSeen() {
       const el = $('#crm-meetings [data-report-lead]');
       const id = el && el.dataset.reportLead;
-      if (!id || state.saving || !state.me || state.me.readonly || state.me.view === 'readonly') return;
+      if (!id || state.saving || !state.me) return;
       const l = compute(state.data, state.today).leads.filter(function (x) { return x.id === id; })[0];
       if (!l || !reportUnseen(l)) return;
       writeLead(id, { meetingSeen: '1' }, 'הדיווח סומן כנקרא');
@@ -2192,8 +2192,6 @@
         if (!me || me.ok === false) throw new Error('אין התחברות');
         state.me = me;
         $('#crm-user').textContent = me.user || '';
-        // Read-only view (Phase 2, Dana): no action draws; the server refuses every write anyway.
-        root.classList.toggle('readonly', me.view === 'readonly' || me.readonly === true);
         if (areasFor(me).indexOf(state.area) < 0) state.area = 'today';
         const reads = [api('getData')];
         if (me.view === 'controller') reads.push(api('billingControlQueue'));

@@ -194,6 +194,15 @@ A test pins this.
 
 ---
 
+## Stage 1 — tasks, contact log, Dana operational (CRM spec §15, 2026-10-28)
+
+| PR | What | Status |
+| --- | --- | --- |
+| 1a+1b | `Tasks` sheet (append-only columns), the seven actions (`getTasks`, `createTask`, `completeTask`, `rescheduleTask`, `reassignTask`, `withdrawTask`, `logContact`), contact events on Activity, Dana `ops` (replaces Phase 2a read-only: `lib/ops-scope.js`, Code.gs `preserveMoneyFields_`), Ortal sees / closes money tasks. No UI. | this PR — `CHANGELOG-crm-tasks-contact-log.md` |
+| 1c | CRM: contact-log side panel with history, «שיחות לביצוע», tasks in the client card, `getTasks` in the loads. | next |
+| 2 | «היום שלי» / «השבוע» / «הושלמו», light theme, nav regroup, per-role summary cards, queues (spec §3–§7). | after 1c |
+| 3 | «רשומות שדורשות בירור» triage (spec §12). | after 2 |
+
 ## Summary table
 
 | PR | Kind | Files (main) | Tests | SW bump | Code.gs | Rollback |

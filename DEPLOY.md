@@ -242,14 +242,15 @@ house-manager labels in slash form. Either order is safe. SW
 page; the usual cache eviction on the next load). The CRM shell links the existing manifest and
 registers `/sw.js`; an installed "Dashboard" app opens `/` — the CRM after the switch.
 
-## Dana's read-only login (Phase 2a, October 28, 2026)
+## Tasks + contact log; Dana operational (CRM Stage 1a+1b, October 28, 2026)
 
-`CHANGELOG-readonly-role-dana.md`. No env var, no Script Property, no column. The clasp CI deploys
-Code.gs. One step for Sandra after the merge: «קוד אישי חדש» → דנה → paste the line into
-`USER_PIN_HASHES` in Railway (same as the other codes). Until then Dana is not on the login screen.
-Her session can only read (leads, patients, no money fields); every write is refused by the server
-and by Code.gs. To retire Shiran / Yael: set `"status": "revoked"` on their records in the same
-variable (the server restarts on save).
+`CHANGELOG-crm-tasks-contact-log.md`. No env var, no Script Property. Code.gs creates the `Tasks`
+sheet on first use (text-formatted columns; append-only). The clasp CI deploys Code.gs on merge.
+Dana's session (`ops`) now does every operational action; the money actions stay refused, the
+money fields never reach her and her saves keep the stored `pay` / `adv` / `advance`. Nothing to
+set — her code is the same «קוד אישי חדש» → דנה → `USER_PIN_HASHES` step as before (Phase 2a,
+`CHANGELOG-readonly-role-dana.md`, superseded). To retire a user: `"status": "revoked"` on the
+record in the same variable (the server restarts on save).
 
 ## «בקרת גבייה» — Ortal's tab (October 4, 2026)
 

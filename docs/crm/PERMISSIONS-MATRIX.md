@@ -44,7 +44,7 @@ see §7 for the revoke list.
 | --- | --- | --- | --- | --- | --- |
 | **Vered** (ורד) | Owns the whole client sequence, family contact, billing, payment reporting, problem resolution | `vered`, personal PIN | staff, reporter, deleter | finance, billingControl | ✅ |
 | **Ortal** (אורטל) | **Verifier** (D4): payment verification, partial and mismatch handling, billing-task control, accounting-document tracking, **refund execution (D8)** | `ortal`, personal PIN, view `controller` | controller, accountant (accountant is active only when present on her `USER_PIN_HASHES` record) | billingControl | ✅ identity. 🟨 refund-execution-only and the D11 field set. |
-| **Dana** (דנה) | Office staff; replaces Yael (D5) | `dana`, personal PIN, view `readonly` (Phase 2a, 2026-10-28) | staff (read-only is decided BY ID: `READONLY_USER_IDS`, enforced by `lib/readonly-scope.js` + Code.gs `viewRefused_`) | none | ✅ implemented (CHANGELOG-readonly-role-dana.md); her code is created by Sandra |
+| **Dana** (דנה) | Office staff; replaces Yael (D5). **Operational across all houses, no money** (CRM spec §2, supersedes the read-only reading of D5) | `dana`, personal PIN, view `ops` (Stage 1b, 2026-10-28) | staff (ops is decided BY ID: `OPS_USER_IDS`; money actions refused by `lib/finance-scope.js` + Code.gs `financeRefused_`; money fields cut by `lib/ops-scope.js`; her saves keep the stored money fields — Code.gs `preserveMoneyFields_`) | none | ✅ implemented (CHANGELOG-crm-tasks-contact-log.md); her code is created by Sandra |
 | **House managers** | Run their house; report intake meetings | **Not Dashboard users.** Today they use (a) ezone-managers (personal code in Railway `MANAGER_ACCESS`; the Managers server calls Code.gs with `MANAGERS_WORK_SECRET`) and (b) `/meeting-report` (one shared `MEETING_REPORT_PIN`). | Managers-app `manager` | — | ✅ as is. 🟨 D3 + D12: per-user identity via ניהול בית, existing passwords carried over. |
 | **Coordinators** (רכזים) | Per-house patients, discharges, committees | **No Dashboard access (D6).** Their only view is their own-house roster inside ניהול בית (Phase 3), read-only, via the secret-gated feed. | — | — | ✅ no Dashboard login today. 🟨 own-house scoping of the feed. |
 | **Sandra** (הנהלה) | Owner / management. Sole approver: write-offs, discounts (D7), refund decisions (D8), prices (D9). | `sandra`, personal PIN | staff, deleter, approver (only Sandra may hold it), viewer | finance, billingControl | ✅ identity. 🟨 the D7/D8 narrowing below. |
@@ -62,7 +62,7 @@ see §7 for the revoke list.
 | --- | --- | --- | --- | --- | --- |
 | **Vered** | All 13 tabs (bc: «חריגים פתוחים» hidden) | All leads, patients, discharges, payments, credits, overrides | All | All houses | ✅. 🟥 «חריגים פתוחים» is Sandra-only by Code.gs response shaping (approver flag), and the billing-control export has no server field cut. ✅ D2: «מטופלים משוחררים» stays hers. |
 | **Ortal** | «בקרת גבייה»; read-only «גבייה» when `billingRead` | Only `CONTROLLER_ACTIONS` (server.js:973-981 + Code.gs `viewRefused_`) | **D11 SEES:** patient name, phone, house, entry/exit dates, every payment row, verification state, debt aging, invoice/document status, refund execution. **D11 does NOT see:** lead notes, referrer/contact details, meeting data, clinical notes, bonus data. | All houses | ✅ she gets no lead notes, contacts or meeting data today (controller projection `{id, houseId, name, date, exitDate, status, pay, adv}`). 🟨 **phone is not in her projection yet** (finance-scope.js:129-162) and must be added. 🟨/🟥 the `debtAging` answer and .xlsx have **no controller field cut** (finance-scope.js:238-242); they must be checked against the D11 "does NOT see" list. 🟥 Any other `/api/` route returns 403, **including `/api/version`**. 🟨 her own CRM "היום שלי" (spec §5) is not built. |
-| **Dana** | 🟨 Leads and patients, read-only (D5, D16). **No** גבייה, בקרת גבייה, שיוך תשלומים, client-card «חשבון» or payment rows. | 🟨 leads, patients | 🟨 Must be cut **on the server**: no payment rows and no money fields (`pay`, `adv`, `advance`, `billingOverrides`) | 🟨 **All houses** (D16) | 🟨 not implemented. The current restricted view would **not** satisfy D5: restricted `getData` still sends `pay` / `adv` / lead `advance`, and its writes are not blocked (§4 #2, #3). |
+| **Dana** | Leads, patients, meetings, calendar, discharges, tasks and the contact log — every operational screen. **No** גבייה, בקרת גבייה, שיוך תשלומים, client-card «חשבון» or payment rows. | leads, patients, discharges, tasks (non-money kinds), activity (non-money kinds) | Cut **on the server**: no payment rows, no `billingOverrides`, no `pay` / `adv` / `advance` / `price` on any lead or patient row (`lib/ops-scope.js`); Activity and Tasks money kinds absent (Code.gs caps). Her `saveAll` never changes a money field (`preserveMoneyFields_`). | **All houses** (D16) | ✅ implemented 2026-10-28 (CHANGELOG-crm-tasks-contact-log.md). 🟨 D16 export (חתכי מטופלים without money columns) builds on the projected `getData` — the client never holds the fields — but no explicit export test yet. |
 | **House managers** | Managers app: their house (`mwScopeHouse_`, Code.gs:15306). `/meeting-report`: a lead picker. | Their house's patients, visits, logs, expected admissions | Managers feeds carry no billing. `/meeting-report` leads are whitelisted to `id, name, house, visitDate, officeNote` (server.js:1934-1944). | Managers app: own house ✅. 🟥 **`/meeting-report` lists leads of ALL houses**: one shared PIN, no house filter. | 🟨 D12: per-user identity via ניהול בית, house from the verified session only. Not built. |
 | **Coordinators** | **None in the Dashboard (D6).** ניהול בית only. | `getPatientsForCoordinators`: active patients + releases from the last 30 days | `id, name, house, active, admissionDate, dischargeDate` (no phone, no billing) | 🟥 **All houses today**: the secret is not house-scoped. 🟨 D6: own house only. | ✅ field minimisation. 🟨 own-house scope (read: D6; discharge write: D13). |
 | **Sandra** | All, including «חריגים פתוחים» and PIN admin | All | All | All | ✅ |
@@ -84,10 +84,10 @@ does not check (the UI hides it) · 🟨 decided, the code still differs (shown 
 
 | Action | Vered | Ortal | Dana | Mgr | Coord | Sandra | Ron | Server check |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| **Create** lead (`saveAll`) | ✅ | ⛔ | 🟨 read-only: must be ⛔ | — | — | ✅ | — | None by role today |
+| **Create** lead (`saveAll`) | ✅ | ⛔ | ✅ (no `advance`: stripped server-side) | — | — | ✅ | — | ops: `preserveMoneyFields_` ✅ |
 | **Create** lead from Therapists | — | — | — | — | — | — | — | therapists app, `CREATE_LEAD_SECRET` ✅. 🟨 `CREATE_LEAD_ASSIGNEES` still lists שירן / יעל (§7). |
-| **Edit** lead / patient / meeting (`saveAll`) | ✅ | ⛔ | 🟨 must be ⛔ | — | — | ✅ | — | None by role (edit mode is UI-only) |
-| **Edit** patient `pay` / `adv` (price for a stay) | ✅ | ⛔ | 🟨 must be ⛔ | — | — | ✅ | — | 🟥 Not money-gated: rides `saveAll` |
+| **Edit** lead / patient / meeting (`saveAll`) | ✅ | ⛔ | ✅ (money fields kept from the sheet) | — | — | ✅ | — | ops: `preserveMoneyFields_` ✅ |
+| **Edit** patient `pay` / `adv` (price for a stay) | ✅ | ⛔ | ⛔ (server: stored value wins) | — | — | ✅ | — | ✅ for every verified actor without `finance` (`preserveMoneyFields_`); Vered / Sandra unchanged |
 | Close / restore lead (`moveLeadIrrelevant`, `restoreLead`) | ✅ | ⛔ | 🟨 must be ⛔ | — | — | ✅ | — | None by role |
 | **Discharge** (`dischargePatient`) | ✅ | ⛔ | 🟨 must be ⛔ | — | 🟥 via `recordDischargeFromCoordinators`, **any house today** (immediate, Sandra's decision 2026-10-04). 🟨 **D13: own house only**, from the session house; behind ניהול בית in Phase 4. | ✅ | — | None by role on the Dashboard path. Coordinators: secret only, no house check. **Security gap (D13), fixed in Session B's first code PR (ROLLOUT B0).** |
 | Expected discharge date | — | — | — | ✅ (Managers `dischargeSet`) | — | ✅ (admin in Managers) | ✅ (admin in Managers) | `MANAGERS_WORK_SECRET` + body role |
@@ -149,6 +149,20 @@ does not check (the UI hides it) · 🟨 decided, the code still differs (shown 
 
 ---
 
+## 4b. Tasks and the contact log (Stage 1a, 2026-10-28)
+
+`Tasks` sheet + Activity events (`CHANGELOG-crm-tasks-contact-log.md`). Every action needs a verified personal session (the `expectedDischarges` rule) and stamps the actor.
+
+| Action | Vered / Sandra | Ortal | Dana | Server check |
+| --- | --- | --- | --- | --- |
+| `getTasks` | all tasks | **money tasks only** (`taskVisible_`: `money='1'`) | **non-money tasks only** | Code.gs caps; Ortal via `CONTROLLER_ACTIONS` |
+| `createTask` | any kind | ⛔ | any kind except `collection` / money (`forbidden`) | `taskClean_` + `taskVisible_` |
+| `completeTask` / `rescheduleTask` | ✅ | ✅ on a money task she can see (closing a verification) | ✅ on a task she can see | `taskMutate_` reads through `taskVisible_` → `not_found` otherwise |
+| `reassignTask` / `withdrawTask` (status `cancelled`, reason required, row kept) | ✅ | ⛔ | ✅ on a task she can see | same |
+| `logContact` (contact event + fulfilled task + follow-up, one transaction, idempotent by `submissionId`) | ✅ | ⛔ | ✅ | `activityScope_` keeps money kinds away from her |
+
+Decided vs implemented vs gap: all rows above are implemented and tested (`test/crm-tasks-contact-log.test.js`, `test/ops-role-dana.test.js`). Gap: no UI consumer yet (Stage 1c), and the D16 export has no dedicated test.
+
 ## 5. What the CRM must add (spec §11 "Enforcement" + D5–D17)
 
 These are all 🟨 agreed, not implemented. Each is a separate server-side PR; none belongs in
@@ -158,7 +172,7 @@ Session B (Activity) or in the UI-only Session C PRs.
    summaries, exports, cache and deep links:
    - Ortal per D11 (add phone; cut debt aging);
    - Dana per D5 (no money fields, no payment rows).
-2. **A real read-only role for Dana** (D5): writes refused on the server, not via UI edit mode.
+2. ~~A real read-only role for Dana (D5)~~ → **done as the operational role** (2026-10-28, CRM spec §2): money actions refused, money fields cut, saves money-preserving — all on the server.
 3. **D7:** `setBillingDiscount` moves from the finance cap to `approver` (Sandra only), in
    `lib/role-scope.js` **and** Code.gs `requiredRoleFor_`.
 4. **D8 + D14:** `settleRefund` is allowed for Ortal only (rule-based and approved-exception

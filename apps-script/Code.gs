@@ -1155,6 +1155,71 @@ const ACTIVITY_SOURCE_RE = /^(manual|system:[A-Za-z0-9_.-]+|app:[A-Za-z0-9_.-]+)
 const ACTIVITY_KIND_RE = /^[a-z][a-z0-9_]*$/;
 const ACTIVITY_EVENT_ID_RE = /^[A-Za-z0-9:_.\-]+$/;
 
+/* ===== Tasks (CRM «היום שלי», Stage 1a — CHANGELOG-crm-tasks-contact-log.md) =====
+ * The ONE task record of the CRM (spec §11): a future action with an owner
+ * and a due date or window, tied to a lead and/or a patient. Contact attempts
+ * are NOT tasks — each is one Activity event (kind contact_logged), never
+ * overwritten; a task may be fulfilled by one. Append-only columns.
+ *   id            'task-<32hex>' (minted from the submissionId, so a retry
+ *                 after a lost answer is the same task)
+ *   kind          TASK_KINDS
+ *   leadId / patientId / personId / houseId   the subject (≥ one of lead / patient)
+ *   title, reason  what to do, and why it appears in the queue («למה עכשיו»)
+ *   assignee      the owner's display name (ASSIGNEE-style, free text ≤ 40)
+ *   dueDate       'YYYY-MM-DD' | '' (then windowStart/windowEnd may hold a window;
+ *                 none of the three = «לקבוע מועד»)
+ *   dueTime       'HH:MM' | ''
+ *   windowStart / windowEnd   'YYYY-MM-DD' — «במהלך השבוע» (spec §8)
+ *   status        open | done | cancelled
+ *   source        manual | contact | system:<fn> | triage
+ *   createdAt/By, updatedAt/By, doneAt/By, outcome, cancelReason
+ *   contactEventId   the Activity eventId of the contact that fulfilled it
+ *   submissionId  the client's idempotency key (a second createTask with it → the same task)
+ *   money         '1' when the task carries money context (a collection call): a
+ *                 session without `finance` never receives it (getTasks scope). */
+const TASKS_SHEET = 'Tasks';
+const TASK_COLUMNS = ['id', 'kind', 'leadId', 'patientId', 'personId', 'houseId', 'title', 'reason', 'assignee',
+  'dueDate', 'dueTime', 'windowStart', 'windowEnd', 'status', 'source', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
+  'doneAt', 'doneBy', 'outcome', 'cancelReason', 'contactEventId', 'submissionId', 'money'];
+const TASK_TEXT_COLUMNS = ['id', 'leadId', 'patientId', 'personId', 'dueDate', 'dueTime', 'windowStart', 'windowEnd',
+  'createdAt', 'updatedAt', 'doneAt', 'contactEventId', 'submissionId', 'money'];
+const TASK_KINDS = ['call', 'meeting', 'collection', 'admission', 'discharge', 'continuity', 'review', 'other'];
+const TASK_STATUSES = ['open', 'done', 'cancelled'];
+const TASK_SOURCES_RE = /^(manual|contact|triage|system:[A-Za-z0-9_.-]+)$/;
+const TASK_TITLE_MAX = 120;
+const TASK_REASON_MAX = 300;
+const TASK_ASSIGNEE_MAX = 40;
+const TASK_OUTCOME_MAX = 300;
+const TASK_SUBMISSION_RE = /^sub-[0-9a-f]{32}$/;
+const TASK_ID_RE = /^task-[0-9a-f]{32}(-[a-z0-9]{1,12})?$/;
+const TASK_READ_MAX = 1000;
+/* Contact outcomes (spec §8) — what happened; the next action is separate. */
+const CONTACT_OUTCOMES = ['spoke_follow_up', 'no_answer', 'call_back_later', 'awaiting_decision', 'meeting_set',
+  'no_interest_now', 'bad_contact_details', 'stop_contact'];
+const CONTACT_CHANNELS = ['phone', 'whatsapp', 'sms', 'email', 'in_person', 'other'];
+const CONTACT_SUMMARY_MAX = 1000;
+const CONTACT_WITH_MAX = 80;
+const CONTACT_REASON_MAX = 200;
+const TASK_MESSAGES = {
+  missing_task: 'חסרה משימה',
+  bad_submission_id: 'מזהה שליחה לא תקין',
+  bad_kind: 'סוג משימה לא מוכר',
+  missing_subject: 'משימה חייבת להיות משויכת לפנייה או למטופל/ת',
+  missing_title: 'חסרה כותרת למשימה',
+  bad_due: 'מועד לא תקין',
+  bad_window: 'חלון זמן לא תקין',
+  not_found: 'המשימה לא נמצאה — רענני',
+  not_open: 'המשימה כבר לא פתוחה',
+  missing_reason: 'כאשר משנים מועד שהובטח — יש לציין סיבה קצרה',
+  bad_assignee: 'אחראי/ת לא תקין/ה',
+  bad_outcome: 'תוצאת שיחה לא מוכרת',
+  bad_channel: 'ערוץ קשר לא מוכר',
+  missing_contact: 'חסר תיעוד שיחה',
+  bad_next: 'הפעולה הבאה לא תקינה',
+  missing_next_explanation: 'ללא משימת המשך — יש להסביר מי ממשיך את הטיפול',
+};
+function taskNo_(code, extra) { return Object.assign({ ok: false, error: code, message: TASK_MESSAGES[code] || code }, extra || {}); }
+
 /* RepairPlan sheet — the human-approval gate for the corrupted-rows cleanup
  * (U+FFFD Hebrew-name corruption, see CHANGELOG-corrupted-rows-cleanup.md).
  * writeRepairPlanNow fills it from the dry-run scan with approved=FALSE;
@@ -1380,19 +1445,26 @@ const CONTROLLER_ACTIONS = ['billingControlQueue', 'confirmPayment', 'debtAging'
   'upsertBillingOverride',
   /* Appended (CHANGELOG-crm-activity-read.md): the CRM timeline read — the
    * controller view gets the money kinds only (server-side filter). */
-  'getActivity'];
+  'getActivity',
+  /* Appended (CHANGELOG-crm-tasks-contact-log.md, CRM spec §2): Ortal sees
+   * and closes the MONEY tasks that wait on her verification (taskVisible_
+   * shows her nothing else); no new power beyond that. */
+  'getTasks', 'completeTask', 'rescheduleTask'];
 /* «הנחה» (setBillingDiscount) is deliberately NOT on CONTROLLER_ACTIONS any
  * more (CHANGELOG-discount-by-vered.md): discounts are Vered's / Sandra's. */
 const CONTROLLER_GETDATA_KEYS = ['ok', 'patients', 'billingOverrides'];
 const CONTROLLER_USER_IDS = ['ortal'];
-/* Read-only view (Phase 2, CHANGELOG-readonly-role-dana.md): Dana's verified
- * personal session may call ONLY these actions; every other action — above
- * all every write — is refused here too (defence in depth: server.js
- * lib/readonly-scope.js refuses first). Mirrors lib/users.js READONLY_USER_IDS
- * and lib/readonly-scope.js READONLY_GET_ACTIONS (guard test). */
-const READONLY_USER_IDS = ['dana'];
-const READONLY_ACTIONS = ['getData', 'expectedDischarges', 'upcomingCommittees', 'getActivity'];
-const READONLY_FORBIDDEN_MESSAGE = 'הרשאת צפייה בלבד — אין אפשרות לשנות';
+/* Operational view (CRM spec §2, CHANGELOG-crm-tasks-contact-log.md): Dana's
+ * verified personal session does every operational action and nothing
+ * financial. The money ACTIONS are refused because she holds no `finance`
+ * cap (financeRefused_); the money FIELDS never reach her (server.js
+ * lib/ops-scope.js projects getData; activityScope_ / taskVisible_ cut the
+ * money kinds); and a saveAll of hers never changes a money field
+ * (preserveMoneyFields_ below — the stored pay / adv / advance win). Mirrors
+ * lib/users.js OPS_USER_IDS and lib/ops-scope.js OPS_*_MONEY_KEYS (guard test). */
+const OPS_USER_IDS = ['dana'];
+const OPS_PATIENT_MONEY_KEYS = ['pay', 'adv', 'advance', 'price'];
+const OPS_LEAD_MONEY_KEYS = ['advance', 'price', 'pay'];
 
 /* ===== Field allow-lists for the controller view (privacy fix, Sandra
  * 2026-10-06; CHANGELOG-ortal-billing-access.md «Field allow-lists») =====
@@ -1576,6 +1648,8 @@ const PROXY_KNOWN_ACTIONS = [
   'getCommitteesForCoordinators',
   'setBillingDiscount',
   'getActivity',
+  // CRM Stage 1a (CHANGELOG-crm-tasks-contact-log.md)
+  'getTasks', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logContact',
 ];
 
 /* SecurityLog — append-only, one row per (event, action, hour) at most.
@@ -1930,6 +2004,18 @@ function handle_(params) {
       if (no) return jsonOut_(no);
       return jsonOut_(getActivity_(params, actingUser_(params)));
     }
+    // Tasks + contact log (CRM Stage 1a): a verified personal session (the
+    // same gate as getActivity); money tasks are cut per the actor's caps.
+    if (action === 'getTasks' || action === 'createTask' || action === 'completeTask' || action === 'rescheduleTask' ||
+        action === 'reassignTask' || action === 'withdrawTask' || action === 'logContact') {
+      const no = expectedDischargesRefused_(params);
+      if (no) return jsonOut_(no);
+      const actor = actingUser_(params);
+      const who = actorLabel_(params) || requestUser_(params);
+      if (action === 'getTasks') return jsonOut_(getTasks_(params, actor));
+      const fn = { createTask: createTask_, completeTask: completeTask_, rescheduleTask: rescheduleTask_, reassignTask: reassignTask_, withdrawTask: cancelTask_, logContact: logContact_ }[action];
+      return jsonOut_(fn(params, who, actor));
+    }
     // «אמבולטורי» → Outpatient: server.js records the outcome of one send
     // (CHANGELOG-meeting-with-ambulatory.md). Verified proxy callers only.
     if (action === 'recordOutpatientLeadSend') return jsonOut_(recordOutpatientLeadSend_(params));
@@ -1940,7 +2026,11 @@ function handle_(params) {
       const perf = perfStart_('saveAll');
       const leads    = parseJsonParam_(params.leads);
       const patients = parseJsonParam_(params.patients);
+      // Operational view (Dana): the stored money fields win over the payload.
+      let moneyPreserved = 0;
+      if (moneyPreservedActor_(actingUser_(params))) moneyPreserved = preserveMoneyFields_(leads, patients);
       const res = saveAll_(leads, patients, requestUser_(params), parseJsonParam_(params.prove));
+      if (res && res.ok === true && moneyPreserved > 0) res.moneyPreserved = moneyPreserved;
       perfLap_(perf, 'save');
       // The digest is the active-resident population, which an admission or a
       // patient status/house change (both ride saveAll's patients payload)
@@ -2256,16 +2346,80 @@ function isControllerActor_(a) {
  *     Yael → refused).
  * → null (allowed) or the refusal body. A call without a valid PROXY_SECRET
  * has no actor: enforce mode refuses it at the gate already. */
-function isReadonlyActor_(a) {
-  return !!a && a.verified === true && a.auth === 'personal' && READONLY_USER_IDS.indexOf(String(a.id)) >= 0;
+function isOpsActor_(a) {
+  return !!a && a.verified === true && a.auth === 'personal' && OPS_USER_IDS.indexOf(String(a.id)) >= 0;
+}
+/* true when a verified actor's saveAll must keep the STORED money fields: any
+ * verified actor without `finance` (today: Dana). A non-proxy caller has no
+ * actor and is left alone (legacy log mode). Pure. */
+function moneyPreservedActor_(a) {
+  return !!a && a.verified === true && a.caps.indexOf('finance') < 0;
+}
+/* saveAll money preservation (CRM spec §2: «הסינון נאכף בשרת»): for a
+ * moneyPreservedActor_, every lead / patient of the payload gets its money
+ * fields from the SHEET row it updates (by id for leads; by id, then by the
+ * legacy key houseId::name::date for patients) — and a row the sheet does not
+ * know gets NONE. The actor never saw those fields (the server projects them
+ * out), so the payload's copies are blanks or stale by construction; carrying
+ * them would wipe or rewrite a price. Mutates `leads` / `patients` in place
+ * and returns the number of rows touched. Reads only; runs before the lock. */
+function preserveMoneyFields_(leads, patients) {
+  let touched = 0;
+  const copy = function (row, stored, keys) {
+    keys.forEach(function (k) {
+      if (stored && stored[k] !== undefined && stored[k] !== '') row[k] = stored[k];
+      else delete row[k];
+    });
+    touched++;
+  };
+  if (Array.isArray(leads) && leads.length > 0) {
+    const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
+    const last = sh.getLastRow();
+    const byId = {};
+    if (last > 1) {
+      const idIdx = LEAD_COLUMNS.indexOf('id');
+      const advIdx = LEAD_COLUMNS.indexOf('advance');
+      sh.getRange(2, 1, last - 1, LEAD_COLUMNS.length).getValues().forEach(function (r) {
+        byId[String(r[idIdx] == null ? '' : r[idIdx])] = { advance: r[advIdx] == null ? '' : r[advIdx] };
+      });
+    }
+    leads.forEach(function (l) {
+      if (!l || typeof l !== 'object') return;
+      copy(l, byId[String(l.id == null ? '' : l.id)] || null, OPS_LEAD_MONEY_KEYS);
+    });
+  }
+  if (patients && typeof patients === 'object' && !Array.isArray(patients) && Object.keys(patients).length > 0) {
+    const sh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
+    const last = sh.getLastRow();
+    const byId = {}; const byKey = {};
+    if (last > 1) {
+      const idIdx = PATIENT_COLUMNS.indexOf('id');
+      const hIdx = PATIENT_COLUMNS.indexOf('houseId'), nIdx = PATIENT_COLUMNS.indexOf('name'), dIdx = PATIENT_COLUMNS.indexOf('date');
+      const payIdx = PATIENT_COLUMNS.indexOf('pay'), advIdx = PATIENT_COLUMNS.indexOf('adv');
+      sh.getRange(2, 1, last - 1, PATIENT_COLUMNS.length).getValues().forEach(function (r) {
+        const m = { pay: r[payIdx] == null ? '' : r[payIdx], adv: r[advIdx] == null ? '' : r[advIdx] };
+        const id = String(r[idIdx] == null ? '' : r[idIdx]);
+        if (id) byId[id] = m;
+        byKey[patientKey_(r[hIdx], r[nIdx], r[dIdx])] = m;
+      });
+    }
+    Object.keys(patients).forEach(function (houseId) {
+      const arr = patients[houseId];
+      if (!Array.isArray(arr)) return;
+      arr.forEach(function (p) {
+        if (!p || typeof p !== 'object') return;
+        const id = String(p.id == null ? '' : p.id);
+        const stored = (id && byId[id]) || byKey[patientKey_(p.houseId || houseId, p.name, p.date)] || null;
+        copy(p, stored, OPS_PATIENT_MONEY_KEYS);
+      });
+    });
+  }
+  return touched;
 }
 function viewRefused_(params, action) {
   const a = actingUser_(params);
   if (!a.verified) return null;
   const act = String(action == null ? '' : action);
-  if (isReadonlyActor_(a) && READONLY_ACTIONS.indexOf(act) < 0) {
-    return { ok: false, error: 'forbidden_readonly', message: READONLY_FORBIDDEN_MESSAGE };
-  }
   if (isControllerActor_(a) && CONTROLLER_ACTIONS.indexOf(act) < 0) {
     return { ok: false, error: 'forbidden', message: BILLING_CONTROL_FORBIDDEN_MESSAGE };
   }
@@ -2442,6 +2596,9 @@ function getOrCreateSheet_(name, headers) {
   // numeric-looking id is never re-typed by Sheets.
   if (name === ACTIVITY_SHEET) {
     forceColumnsText_(sh, ACTIVITY_COLUMNS, ACTIVITY_TEXT_COLUMNS);
+  }
+  if (name === TASKS_SHEET) {
+    forceColumnsText_(sh, TASK_COLUMNS, TASK_TEXT_COLUMNS);
   }
   if (name === PATIENT_PHONES_SHEET) {
     forceColumnsText_(sh, PATIENT_PHONES_COLUMNS, ['phone', 'patientId']);
@@ -4434,6 +4591,303 @@ function getActivity_(params, actor) {
   const rows = sh ? readSheet_(sh, ACTIVITY_COLUMNS) : [];
   const res = activityProject_(rows, subject, scope, limit);
   return { ok: true, scope: scope, total: res.total, events: res.events };
+}
+
+/* ===== Tasks — pure helpers ===== */
+function taskText_(v, max) { return leadCellText_(v, max); }
+function taskIso_(v) {
+  const t = String(v == null ? '' : v).trim();
+  if (v instanceof Date) return localPartsISO_(v);
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(t);
+  if (!m) return '';
+  return isNaN(Date.parse(m[1] + 'T00:00:00Z')) ? '' : m[1];
+}
+function taskTime_(v) { const t = String(v == null ? '' : v).trim(); return /^([01]\d|2[0-3]):[0-5]\d$/.test(t) ? t : ''; }
+function taskSubmissionId_(v) { const t = String(v == null ? '' : v).trim(); return TASK_SUBMISSION_RE.test(t) ? t : null; }
+function taskIdFromSubmission_(sid, suffix) { return 'task-' + sid.slice(4) + (suffix ? '-' + suffix : ''); }
+/* The task as stored → the task as answered (strings, trimmed). */
+function taskOut_(row) {
+  const o = {};
+  TASK_COLUMNS.forEach(function (k) {
+    const v = row[k];
+    o[k] = v instanceof Date ? localPartsISO_(v) : String(v == null ? '' : v).trim();
+  });
+  return o;
+}
+/* Validate + clean a NEW task body. → { ok, task } | refusal. Pure. */
+function taskClean_(input, actorName, nowIso, sid, suffix) {
+  const t = input && typeof input === 'object' ? input : {};
+  const kind = String(t.kind == null ? '' : t.kind).trim();
+  if (TASK_KINDS.indexOf(kind) < 0) return taskNo_('bad_kind');
+  const leadId = taskText_(t.leadId, ACTIVITY_ID_MAX), patientId = taskText_(t.patientId, ACTIVITY_ID_MAX);
+  if (!leadId && !patientId) return taskNo_('missing_subject');
+  const title = taskText_(t.title, TASK_TITLE_MAX);
+  if (!title) return taskNo_('missing_title');
+  const dueDate = t.dueDate === undefined || t.dueDate === null || t.dueDate === '' ? '' : taskIso_(t.dueDate);
+  if (t.dueDate && !dueDate) return taskNo_('bad_due');
+  const windowStart = t.windowStart ? taskIso_(t.windowStart) : '', windowEnd = t.windowEnd ? taskIso_(t.windowEnd) : '';
+  if ((t.windowStart && !windowStart) || (t.windowEnd && !windowEnd) || (!!windowStart !== !!windowEnd) || (windowStart && windowEnd < windowStart)) return taskNo_('bad_window');
+  const assignee = taskText_(t.assignee, TASK_ASSIGNEE_MAX);
+  const source = String(t.source == null ? 'manual' : t.source).trim() || 'manual';
+  if (!TASK_SOURCES_RE.test(source)) return taskNo_('bad_next');
+  return { ok: true, task: {
+    id: taskIdFromSubmission_(sid, suffix), kind: kind, leadId: leadId, patientId: patientId, personId: taskText_(t.personId, ACTIVITY_ID_MAX),
+    houseId: taskText_(t.houseId, 40), title: title, reason: taskText_(t.reason, TASK_REASON_MAX), assignee: assignee,
+    dueDate: dueDate, dueTime: dueDate ? taskTime_(t.dueTime) : '', windowStart: windowStart, windowEnd: windowEnd,
+    status: 'open', source: source, createdAt: nowIso, createdBy: actorName, updatedAt: nowIso, updatedBy: actorName,
+    doneAt: '', doneBy: '', outcome: '', cancelReason: '', contactEventId: '', submissionId: sid, money: t.money === true || t.money === '1' || kind === 'collection' ? '1' : '',
+  } };
+}
+/* Scope: a session without `finance` never receives a money task; the
+ * controller view receives money tasks only. */
+function taskVisible_(task, actor) {
+  const caps = actor && Array.isArray(actor.caps) ? actor.caps : [];
+  const money = String(task.money) === '1';
+  if (caps.indexOf('finance') >= 0) return true;
+  if (caps.indexOf('billingControl') >= 0) return money;
+  return !money;
+}
+function tasksSheetRead_() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TASKS_SHEET);
+  return sh ? readSheet_(sh, TASK_COLUMNS) : [];
+}
+function taskFindRow_(sh, id) {
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return -1;
+  const ids = sh.getRange(2, 1, lastRow - 1, 1).getValues();
+  for (let i = 0; i < ids.length; i++) if (String(ids[i][0] == null ? '' : ids[i][0]).trim() === id) return i + 2;
+  return -1;
+}
+function taskWriteRow_(sh, rowNumber, task) {
+  const row = objectToRow_(task, TASK_COLUMNS);
+  const target = rowNumber > 0 ? rowNumber : sh.getLastRow() + 1;
+  sh.getRange(target, 1, 1, TASK_COLUMNS.length).setValues([row]);
+}
+function taskReadById_(sh, id) {
+  const r = taskFindRow_(sh, id);
+  if (r < 0) return { row: -1, task: null };
+  const vals = sh.getRange(r, 1, 1, TASK_COLUMNS.length).getValues()[0];
+  const obj = {}; TASK_COLUMNS.forEach(function (k, i) { obj[k] = vals[i]; });
+  return { row: r, task: taskOut_(obj) };
+}
+function taskEvent_(kind, task, actorName, nowIso, details, eventId) {
+  return { eventId: eventId || (kind + ':' + task.id + ':' + nowIso.replace(/[^0-9A-Za-z]/g, '').slice(0, 17)), occurredAt: nowIso, kind: kind, source: 'manual',
+    actorId: '', actorName: actorName, leadId: task.leadId || '', patientId: task.patientId || '', personId: task.personId || '', houseId: task.houseId || '',
+    summary: taskText_(details && details.summary ? details.summary : task.title, ACTIVITY_SUMMARY_MAX), details: Object.assign({ taskId: task.id, kind: task.kind }, details || {}) };
+}
+
+/* ===== Tasks — actions ===== */
+
+/* action=getTasks { status?, assignee?, leadId?, patientId?, from?, to?, limit? }
+ * → { ok, tasks } scoped by the actor's caps. A window task is inside [from, to]
+ * when its window overlaps; a task with no date is returned when no range given. */
+function getTasks_(params, actor) {
+  const p = params || {};
+  const status = String(p.status == null ? '' : p.status).trim();
+  const assignee = taskText_(p.assignee, TASK_ASSIGNEE_MAX);
+  const leadId = taskText_(p.leadId, ACTIVITY_ID_MAX), patientId = taskText_(p.patientId, ACTIVITY_ID_MAX);
+  const from = p.from ? taskIso_(p.from) : '', to = p.to ? taskIso_(p.to) : '';
+  let limit = parseInt(p.limit, 10); if (!(limit > 0)) limit = TASK_READ_MAX; if (limit > TASK_READ_MAX) limit = TASK_READ_MAX;
+  const out = [];
+  const rows = tasksSheetRead_();
+  for (let i = 0; i < rows.length; i++) {
+    const t = taskOut_(rows[i]);
+    if (!t.id) continue;
+    if (!taskVisible_(t, actor)) continue;
+    if (status && t.status !== status) continue;
+    if (assignee && t.assignee !== assignee) continue;
+    if (leadId && t.leadId !== leadId) continue;
+    if (patientId && t.patientId !== patientId) continue;
+    if (from || to) {
+      const a = t.dueDate || t.windowStart, b = t.dueDate || t.windowEnd;
+      if (!a) { if (status === 'open' || !status) { /* undated: listed only without a range */ } continue; }
+      if (from && b < from) continue;
+      if (to && a > to) continue;
+    }
+    out.push(t);
+    if (out.length >= limit) break;
+  }
+  return { ok: true, tasks: out, total: out.length };
+}
+
+/* action=createTask { task, submissionId } → { ok, task, created } (idempotent by submissionId). */
+function createTask_(body, actorName, actor) {
+  const b = body && typeof body === 'object' ? body : {};
+  const sid = taskSubmissionId_(b.submissionId);
+  if (sid === null) return taskNo_('bad_submission_id');
+  const nowIso = new Date().toISOString();
+  const v = taskClean_(b.task, actorName, nowIso, sid, '');
+  if (!v.ok) return v;
+  if (!taskVisible_(v.task, actor)) return { ok: false, error: 'forbidden', message: 'אין הרשאה למשימה כספית' };
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('createTask_');
+  try {
+    const sh = getOrCreateSheet_(TASKS_SHEET, TASK_COLUMNS);
+    const prior = taskReadById_(sh, v.task.id);
+    if (prior.task) return { ok: true, task: prior.task, created: false, replayed: true };
+    taskWriteRow_(sh, -1, v.task);
+    activityAppendRow_(activityRow_(taskEvent_('task_created', v.task, actorName, nowIso, { summary: 'משימה נוצרה: ' + v.task.title, dueDate: v.task.dueDate, assignee: v.task.assignee }, 'task_created:' + v.task.id), nowIso).row);
+    logAudit_('task_created', 'createTask_', v.task.patientId || v.task.leadId, v.task.title, { id: v.task.id, kind: v.task.kind, dueDate: v.task.dueDate, assignee: v.task.assignee, updatedBy: actorName });
+    return { ok: true, task: v.task, created: true };
+  } finally { try { lock.releaseLock(); } catch (_) { /* no-op */ } }
+}
+
+/* The shared open-task mutation: read under the lock, refuse unless open, apply, write, log. */
+function taskMutate_(id, actor, actorName, apply, auditAction, eventKind, summary) {
+  const tid = String(id == null ? '' : id).trim();
+  if (!TASK_ID_RE.test(tid)) return taskNo_('not_found');
+  const nowIso = new Date().toISOString();
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_(auditAction);
+  try {
+    const sh = getOrCreateSheet_(TASKS_SHEET, TASK_COLUMNS);
+    const cur = taskReadById_(sh, tid);
+    if (!cur.task) return taskNo_('not_found');
+    if (!taskVisible_(cur.task, actor)) return taskNo_('not_found');
+    if (cur.task.status !== 'open') return taskNo_('not_open', { task: cur.task });
+    const prev = Object.assign({}, cur.task);
+    const res = apply(cur.task, nowIso);
+    if (res && res.ok === false) return res;
+    cur.task.updatedAt = nowIso; cur.task.updatedBy = actorName;
+    taskWriteRow_(sh, cur.row, cur.task);
+    const details = Object.assign({ summary: summary(cur.task, prev) }, res && res.details ? res.details : {});
+    activityAppendRow_(activityRow_(taskEvent_(eventKind, cur.task, actorName, nowIso, details, eventKind + ':' + tid + ':' + nowIso.replace(/[^0-9]/g, '').slice(0, 14)), nowIso).row);
+    logAudit_(auditAction, auditAction + '_', cur.task.patientId || cur.task.leadId, cur.task.title, Object.assign({ id: tid, updatedBy: actorName }, res && res.details ? res.details : {}));
+    return { ok: true, task: cur.task };
+  } finally { try { lock.releaseLock(); } catch (_) { /* no-op */ } }
+}
+
+/* action=completeTask { id, outcome? } */
+function completeTask_(body, actorName, actor) {
+  const b = body && typeof body === 'object' ? body : {};
+  return taskMutate_(b.id, actor, actorName, function (t, nowIso) {
+    t.status = 'done'; t.doneAt = nowIso; t.doneBy = actorName; t.outcome = taskText_(b.outcome, TASK_OUTCOME_MAX);
+    return { ok: true, details: { outcome: t.outcome } };
+  }, 'task_completed', 'task_completed', function (t) { return 'המשימה הושלמה: ' + t.title; });
+}
+/* action=rescheduleTask { id, dueDate?, dueTime?, windowStart?, windowEnd?, reason? } — the
+ * previous date goes to the Activity history; a reason is required when a PROMISED date
+ * (a task born from a contact, source 'contact') moves. Nothing else on the task changes. */
+function rescheduleTask_(body, actorName, actor) {
+  const b = body && typeof body === 'object' ? body : {};
+  return taskMutate_(b.id, actor, actorName, function (t) {
+    const dueDate = b.dueDate ? taskIso_(b.dueDate) : '';
+    if (b.dueDate && !dueDate) return taskNo_('bad_due');
+    const ws = b.windowStart ? taskIso_(b.windowStart) : '', we = b.windowEnd ? taskIso_(b.windowEnd) : '';
+    if ((b.windowStart && !ws) || (b.windowEnd && !we) || (!!ws !== !!we) || (ws && we < ws)) return taskNo_('bad_window');
+    if (!dueDate && !ws) return taskNo_('bad_due');
+    const reason = taskText_(b.reason, TASK_REASON_MAX);
+    if (t.source === 'contact' && !reason) return taskNo_('missing_reason');
+    const prev = { dueDate: t.dueDate, dueTime: t.dueTime, windowStart: t.windowStart, windowEnd: t.windowEnd };
+    t.dueDate = dueDate; t.dueTime = dueDate ? taskTime_(b.dueTime) : ''; t.windowStart = ws; t.windowEnd = we;
+    return { ok: true, details: { prev: prev, next: { dueDate: t.dueDate, dueTime: t.dueTime, windowStart: ws, windowEnd: we }, reason: reason } };
+  }, 'task_rescheduled', 'task_rescheduled', function (t, prev) { return 'המועד שונה: ' + (prev.dueDate || prev.windowStart || '—') + ' ← ' + (t.dueDate || t.windowStart); });
+}
+/* action=reassignTask { id, assignee } */
+function reassignTask_(body, actorName, actor) {
+  const b = body && typeof body === 'object' ? body : {};
+  return taskMutate_(b.id, actor, actorName, function (t) {
+    const a = taskText_(b.assignee, TASK_ASSIGNEE_MAX);
+    if (!a) return taskNo_('bad_assignee');
+    const prev = t.assignee; t.assignee = a;
+    return { ok: true, details: { prev: prev, next: a } };
+  }, 'task_reassigned', 'task_reassigned', function (t, prev) { return 'האחריות הועברה: ' + (prev.assignee || '—') + ' ← ' + t.assignee; });
+}
+/* action=withdrawTask { id, reason } — «ביטול משימה»: a reason is required; the row STAYS (status cancelled, history kept) — not a delete, so no deleter role. */
+function cancelTask_(body, actorName, actor) {
+  const b = body && typeof body === 'object' ? body : {};
+  return taskMutate_(b.id, actor, actorName, function (t, nowIso) {
+    const reason = taskText_(b.reason, TASK_REASON_MAX);
+    if (reason.length < 2) return taskNo_('missing_reason');
+    t.status = 'cancelled'; t.cancelReason = reason; t.doneAt = nowIso; t.doneBy = actorName;
+    return { ok: true, details: { reason: reason } };
+  }, 'task_cancelled', 'task_cancelled', function (t) { return 'המשימה בוטלה: ' + t.title; });
+}
+
+/* action=logContact { contact, next, submissionId } — ONE transaction under the lock:
+ *   1. the contact attempt → Activity event contact_logged (eventId 'contact:<sid>'; a replay
+ *      answers the same event and writes nothing twice);
+ *   2. the task it fulfils (contact.taskId, optional) → done, outcome = the contact's;
+ *   3. the follow-up (next): a new task 'task-<sid>-next' from next.dueDate / next.days /
+ *      next.window, or none with an explanation (next.none + next.explanation).
+ * contact: { leadId?, patientId?, personId?, houseId?, occurredAt?, channel, withWhom, reason?,
+ *            outcome (CONTACT_OUTCOMES), summary, taskId? }
+ * next:    { none?:true, explanation?, dueDate?, dueTime?, days?, windowStart?, windowEnd?,
+ *            kind? (default call), title?, assignee?, reason? }
+ * → { ok, event, completed: task|null, created: task|null, replayed? } */
+function logContact_(body, actorName, actor) {
+  const b = body && typeof body === 'object' ? body : {};
+  const sid = taskSubmissionId_(b.submissionId);
+  if (sid === null) return taskNo_('bad_submission_id');
+  const c = b.contact && typeof b.contact === 'object' ? b.contact : null;
+  if (!c) return taskNo_('missing_contact');
+  const leadId = taskText_(c.leadId, ACTIVITY_ID_MAX), patientId = taskText_(c.patientId, ACTIVITY_ID_MAX);
+  if (!leadId && !patientId) return taskNo_('missing_subject');
+  const outcome = String(c.outcome == null ? '' : c.outcome).trim();
+  if (CONTACT_OUTCOMES.indexOf(outcome) < 0) return taskNo_('bad_outcome');
+  const channel = String(c.channel == null ? 'phone' : c.channel).trim() || 'phone';
+  if (CONTACT_CHANNELS.indexOf(channel) < 0) return taskNo_('bad_channel');
+  const nowIso = new Date().toISOString();
+  const occurredAt = activityIso_(c.occurredAt) || (c.occurredAt && taskIso_(c.occurredAt) ? taskIso_(c.occurredAt) + 'T12:00:00.000Z' : nowIso);
+  const n = b.next && typeof b.next === 'object' ? b.next : { none: true, explanation: '' };
+  let nextTask = null;
+  if (n.none === true) {
+    if (taskText_(n.explanation, TASK_REASON_MAX).length < 2) return taskNo_('missing_next_explanation');
+  } else {
+    let dueDate = n.dueDate ? taskIso_(n.dueDate) : '';
+    if (n.dueDate && !dueDate) return taskNo_('bad_due');
+    if (!dueDate && n.days !== undefined && n.days !== null && n.days !== '') {
+      const d = parseInt(n.days, 10);
+      if (!(d >= 1 && d <= 365)) return taskNo_('bad_due');
+      dueDate = refundIsoFromDayNum_(refundDayNum_(paymentReportToday_()) + d);
+    }
+    const v = taskClean_({ kind: n.kind || 'call', leadId: leadId, patientId: patientId, personId: taskText_(c.personId, ACTIVITY_ID_MAX), houseId: taskText_(c.houseId, 40),
+      title: taskText_(n.title, TASK_TITLE_MAX) || ('שיחה חוזרת' + (taskText_(c.withWhom, CONTACT_WITH_MAX) ? ' עם ' + taskText_(c.withWhom, CONTACT_WITH_MAX) : '')),
+      reason: taskText_(n.reason, TASK_REASON_MAX) || contactOutcomeLabel_(outcome), assignee: taskText_(n.assignee, TASK_ASSIGNEE_MAX) || actorName,
+      dueDate: dueDate, dueTime: n.dueTime, windowStart: n.windowStart, windowEnd: n.windowEnd, source: 'contact', money: n.money === true || n.kind === 'collection' }, actorName, nowIso, sid, 'next');
+    if (!v.ok) return v.error === 'missing_title' ? taskNo_('bad_next') : v;
+    if (!v.task.dueDate && !v.task.windowStart) return taskNo_('bad_due');
+    if (!taskVisible_(v.task, actor)) return { ok: false, error: 'forbidden', message: 'אין הרשאה למשימה כספית' };
+    nextTask = v.task;
+  }
+  const event = { eventId: 'contact:' + sid, occurredAt: occurredAt, kind: 'contact_logged', source: 'manual', actorId: '', actorName: actorName,
+    leadId: leadId, patientId: patientId, personId: taskText_(c.personId, ACTIVITY_ID_MAX), houseId: taskText_(c.houseId, 40),
+    summary: taskText_(contactOutcomeLabel_(outcome) + (taskText_(c.summary, CONTACT_SUMMARY_MAX) ? ' · ' + taskText_(c.summary, 150) : ''), ACTIVITY_SUMMARY_MAX),
+    details: { channel: channel, withWhom: taskText_(c.withWhom, CONTACT_WITH_MAX), reason: taskText_(c.reason, CONTACT_REASON_MAX), outcome: outcome,
+      summary: taskText_(c.summary, CONTACT_SUMMARY_MAX), taskId: taskText_(c.taskId, 80), nextTaskId: nextTask ? nextTask.id : '', noNext: n.none === true ? taskText_(n.explanation, TASK_REASON_MAX) : '' } };
+  const ev = activityRow_(event, nowIso);
+  if (!ev.ok) return ev;
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('logContact_');
+  try {
+    const wrote = activityAppendRow_(ev.row);
+    const sh = getOrCreateSheet_(TASKS_SHEET, TASK_COLUMNS);
+    let completed = null;
+    const tid = taskText_(c.taskId, 80);
+    if (tid && TASK_ID_RE.test(tid)) {
+      const cur = taskReadById_(sh, tid);
+      if (cur.task && taskVisible_(cur.task, actor)) {
+        if (cur.task.status === 'open') {
+          cur.task.status = 'done'; cur.task.doneAt = nowIso; cur.task.doneBy = actorName; cur.task.outcome = contactOutcomeLabel_(outcome);
+          cur.task.contactEventId = ev.row.eventId; cur.task.updatedAt = nowIso; cur.task.updatedBy = actorName;
+          taskWriteRow_(sh, cur.row, cur.task);
+        }
+        completed = cur.task;
+      }
+    }
+    let created = null;
+    if (nextTask) {
+      const prior = taskReadById_(sh, nextTask.id);
+      if (prior.task) created = prior.task;
+      else { taskWriteRow_(sh, -1, nextTask); created = nextTask; }
+    }
+    logAudit_('contact_logged', 'logContact_', patientId || leadId, taskText_(c.withWhom, CONTACT_WITH_MAX), { eventId: ev.row.eventId, outcome: outcome, channel: channel, taskId: tid, nextTaskId: created ? created.id : '', updatedBy: actorName });
+    return { ok: true, event: { eventId: ev.row.eventId, occurredAt: ev.row.occurredAt, kind: 'contact_logged', summary: ev.row.summary }, completed: completed, created: created, replayed: wrote.duplicate === true };
+  } finally { try { lock.releaseLock(); } catch (_) { /* no-op */ } }
+}
+function contactOutcomeLabel_(o) {
+  return { spoke_follow_up: 'התקיימה שיחה ונדרש המשך', no_answer: 'לא היה מענה', call_back_later: 'התבקשנו לחזור במועד', awaiting_decision: 'ממתינים להחלטה או למידע',
+    meeting_set: 'נקבעה פגישה', no_interest_now: 'אין עניין כרגע', bad_contact_details: 'פרטי הקשר אינם תקינים', stop_contact: 'התבקשה הפסקת פניות' }[o] || o;
 }
 
 function logAudit_(action, fn, patientId, name, details, actor) {
