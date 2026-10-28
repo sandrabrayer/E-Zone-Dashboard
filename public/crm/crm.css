@@ -153,3 +153,26 @@ form.report .toolbar { margin: 4px 0 0; }
 
 /* ---- calendar picker (C15) ---- */
 #crm-cal-bar input[type="date"] { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; color: var(--text); }
+
+/* ---- Stage 1c: tasks + the contact log (CHANGELOG-crm-contact-panel.md) ---- */
+.calls { margin-bottom: 14px; }
+.row.task { grid-template-columns: 1.3fr 1.7fr 0.7fr 1fr 0.8fr auto; }
+.row.task .toolbar { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.task-form:empty { display: none; }
+.task-form form.inline { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: flex-end; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; margin: -2px 0 6px; }
+.task-form form.inline label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text-muted); }
+.task-form form.inline label.wide { flex: 1 1 100%; }
+.task-form form.inline input, .task-form form.inline select { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px; color: var(--text); }
+button.link { background: none; border: 0; padding: 0; color: var(--primary); cursor: pointer; text-align: start; font-weight: 600; }
+.drawer-head .toolbar { display: flex; gap: 6px; align-items: center; }
+form.contact fieldset.next { grid-column: 1 / -1; border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; margin: 0; display: flex; flex-wrap: wrap; gap: 6px 12px; }
+form.contact fieldset.next legend { font-size: 12px; color: var(--text-muted); padding: 0 4px; }
+form.contact label.radio { flex-direction: row; align-items: center; gap: 6px; font-size: 14px; color: var(--text); }
+form.contact .next-extra { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 8px 12px; }
+form.contact .next-extra label[hidden] { display: none; }
+
+@media (max-width: 899px) {
+  .row.task { grid-template-columns: 1fr 1fr; }
+  .row.task.h { display: none; }
+  .row.task .toolbar { grid-column: 1 / -1; justify-content: flex-start; }
+}

@@ -65,6 +65,10 @@ const CREDITS = { ok: true, credits: [
   { id: 'cr-2', patientId: 'p2', patientKey: 'rehab::אבי::' + daysAgo(7), patientName: 'אבי', houseId: 'rehab', creditType: 'other', allocationMonth: daysAgo(40).slice(0, 7), amount: 300, status: 'paid', paidDate: daysAgo(2), method: 'ביט' }] };
 const ACTIVITY = { ok: true, scope: 'full', total: 1, events: [{ eventId: 'x', occurredAt: '2026-10-20T09:00:00.000Z', kind: 'lead_created', source: 'system:x', actorName: 'ורד', summary: 'הליד נוצר', details: {} }] };
 
+const TASKS = { ok: true, total: 2, tasks: [
+  { id: 'task-' + '1'.repeat(32), kind: 'call', leadId: 'L1', title: 'לחזור למשפחה', reason: 'ביקשו שנחזור', assignee: 'ורד', dueDate: daysAgo(2), dueTime: '', status: 'open', source: 'contact', createdBy: 'ורד' },
+  { id: 'task-' + '2'.repeat(32), kind: 'review', patientId: 'p1', title: 'לבדוק מסמכים', reason: '', assignee: 'ורד', dueDate: TODAY, dueTime: '10:00', status: 'open', source: 'manual', createdBy: 'ורד' }] };
+let tasksAnswer = null;
 let saveAnswer = null;
 async function boot() {
   const saves = [];
@@ -90,7 +94,11 @@ async function boot() {
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
       if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'settleRefund', 'editReceipt', 'savePayment', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
+      if (['logContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
+        : parsed.action === 'getTasks' ? (tasksAnswer ? tasksAnswer() : TASKS)
+        : parsed.action === 'logContact' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, event: { eventId: 'contact:' + parsed.submissionId }, completed: null, created: parsed.next && !parsed.next.none ? Object.assign({ id: 'task-x' }, parsed.next) : null })
+        : ['createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0 ? (saveAnswer ? saveAnswer(parsed) : { ok: true, task: { id: parsed.id || 'task-new' } })
         : parsed.action === 'debtAging' ? DEBT : parsed.action === 'getPayments' ? PAYMENTS : parsed.action === 'getCredits' ? CREDITS
         : parsed.action === 'restorePatientToActive' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restoredToActive: true, id: parsed.patient && parsed.patient.id })
         : parsed.action === 'restorePatient' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restored: true, lead: { id: parsed.patient && parsed.patient.newLeadId } })
@@ -112,7 +120,7 @@ async function boot() {
     return req;
   };
   const srv = await new Promise((resolve) => { const s = mod.app.listen(0, '127.0.0.1', () => resolve(s)); });
-  return { port: srv.address().port, actions, saves, close() { saveAnswer = null; srv.close(); https.request = original; Object.assign(console, quiet); } };
+  return { port: srv.address().port, actions, saves, close() { saveAnswer = null; tasksAnswer = null; srv.close(); https.request = original; Object.assign(console, quiet); } };
 }
 
 async function open(browser, port, id, width) {
@@ -186,7 +194,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     assert.match(await page.textContent('#crm-main'), /פגישות ללא תוצאה/);
     assert.ok(await noHScroll(page), 'no horizontal page scroll');
     assert.deepEqual(errors, []);
-    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments'], 'reads only, no queue for Vered');
+    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments', 'getTasks'], 'reads only, no queue for Vered');
   } finally { await browser.close(); srv.close(); }
 });
 
@@ -845,4 +853,85 @@ test('C7 patient actions (Vered): edit posts the house as read with the changed 
     assert.equal(await page.$('tr[data-open-patient="p1"]'), null, 'left «מטופלים»');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
+});
+
+test('Stage 1c (Vered): «שיחות לביצוע» on היום שלי from getTasks (overdue call first, no «בוצע»); «תיעוד שיחה» opens the panel with the history; no default next-contact; a relative choice shows the real date; save = ONE logContact with the task id and the follow-up; a refusal keeps the text; the tasks tab creates / reschedules (reason required for a promised date); a failed getTasks shows «המידע אינו זמין», never 0', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.waitForSelector('#crm-calls');
+    const calls = await page.textContent('#crm-calls');
+    assert.match(calls, /שיחות לביצוע/); assert.match(calls, /אבי לוי/); assert.match(calls, /לחזור למשפחה/); assert.match(calls, /1 באיחור/);
+    assert.ok(!/לבדוק מסמכים/.test(calls), 'a review task is not a call');
+    assert.equal(await page.$$eval('#crm-calls button', (els) => els.filter((b) => /בוצע/.test(b.textContent)).length), 0, 'no «בוצע» on a call');
+    assert.match(await page.textContent('#crm-nav button[data-area="today"] .n'), /5/, 'the nav count includes the late call');
+    // the panel
+    await page.click('#crm-calls [data-contact-open]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"] form[data-form="contact"]');
+    const head = await page.textContent('#crm-drawer .drawer-head');
+    assert.match(head, /תיעוד שיחה · אבי לוי/); assert.match(head, /0501111111/); assert.match(head, /קישור חיוג אינו תיעוד/);
+    await page.waitForFunction(() => /הליד נוצר/.test(document.querySelector('#crm-tl').textContent), null, { timeout: 5000 });
+    assert.equal(await page.$$eval('form[data-form="contact"] input[name="next"]:checked', (els) => els.length), 0, 'no default follow-up');
+    assert.equal(await page.inputValue('form[data-form="contact"] input[name="reason"]'), 'לחזור למשפחה');
+    // save without outcome / next → client errors, nothing posted
+    await page.click('form[data-form="contact"] button[type="submit"]');
+    assert.match(await page.textContent('form[data-form="contact"] [data-err="outcome"]'), /בחרי תוצאה/);
+    assert.match(await page.textContent('form[data-form="contact"] [data-err="next"]'), /אין ברירת מחדל/);
+    assert.equal(srv.saves.length, 0);
+    // fill: outcome, summary, next = in 3 days → the real date is shown
+    await page.selectOption('form[data-form="contact"] select[name="outcome"]', 'call_back_later');
+    await page.fill('form[data-form="contact"] textarea[name="summary"]', 'ביקשו שנחזור אחרי החג');
+    await page.check('form[data-form="contact"] input[name="next"][value="d3"]');
+    const dmy = (iso) => iso.split('-').reverse().join('/');
+    assert.match(await page.textContent('#crm-next-preview'), new RegExp('בעוד 3 ימים — ' + dmy(daysAgo(-3))));
+    // a refusal keeps the text
+    saveAnswer = () => ({ ok: false, error: 'lock_busy' });
+    await page.click('form[data-form="contact"] button[type="submit"]');
+    await page.waitForFunction(() => /עסוקה/.test(document.querySelector('form[data-form="contact"] [data-err="_form"]').textContent), null, { timeout: 5000 });
+    assert.equal(await page.inputValue('form[data-form="contact"] textarea[name="summary"]'), 'ביקשו שנחזור אחרי החג', 'the text survives a failed save');
+    assert.equal(srv.saves.length, 1);
+    // retry → accepted, ONE logContact with the same submission id, the task id, the follow-up; back to the card on «משימות»
+    saveAnswer = null;
+    await page.click('form[data-form="contact"] button[type="submit"]');
+    await page.waitForFunction(() => document.querySelector('#crm-drawer [data-tab="tasks"]') && document.querySelector('#crm-drawer [data-tab="tasks"]').getAttribute('aria-selected') === 'true', null, { timeout: 5000 });
+    const posted = srv.saves.filter((x) => x.action === 'logContact');
+    assert.equal(posted.length, 2); assert.equal(posted[0].submissionId, posted[1].submissionId, 'the retry reuses the submission id (idempotent)');
+    const b = posted[1];
+    assert.equal(b.contact.leadId, 'L1'); assert.equal(b.contact.taskId, 'task-' + '1'.repeat(32)); assert.equal(b.contact.outcome, 'call_back_later'); assert.equal(b.contact.channel, 'phone');
+    assert.equal(b.contact.summary, 'ביקשו שנחזור אחרי החג'); assert.equal(b.next.dueDate, daysAgo(-3)); assert.equal(b.next.assignee, 'ורד');
+    assert.ok(srv.actions.filter((a) => a.action === 'getTasks').length >= 2, 'the lists re-read after the save');
+    // the tasks tab: create (validated) and reschedule (reason required for a contact-promised date)
+    assert.match(await page.textContent('#crm-tasks'), /לחזור למשפחה/);
+    await page.click('#crm-tasks details summary');
+    await page.click('#crm-tasks form[data-form="task-new"] button[type="submit"]');
+    assert.match(await page.textContent('#crm-tasks [data-err="title"]'), /כותרת/);
+    await page.fill('#crm-tasks form[data-form="task-new"] input[name="title"]', 'לשלוח טופס');
+    await page.fill('#crm-tasks form[data-form="task-new"] input[name="dueDate"]', daysAgo(-1));
+    await page.click('#crm-tasks form[data-form="task-new"] button[type="submit"]');
+    await page.waitForFunction(() => /המשימה נוצרה/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 5000 });
+    const created = srv.saves.filter((x) => x.action === 'createTask')[0];
+    assert.equal(created.task.leadId, 'L1'); assert.equal(created.task.title, 'לשלוח טופס'); assert.equal(created.task.dueDate, daysAgo(-1)); assert.match(created.submissionId, /^sub-[0-9a-f]{32}$/);
+    await page.click('#crm-tasks [data-task-resched="task-' + '1'.repeat(32) + '"]');
+    await page.fill('#crm-tasks form[data-form="task-resched"] input[name="dueDate"]', daysAgo(-5));
+    await page.click('#crm-tasks form[data-form="task-resched"] button[type="submit"]');
+    assert.match(await page.textContent('#crm-tasks form[data-form="task-resched"] [data-err="reason"]'), /הובטח למשפחה/);
+    await page.fill('#crm-tasks form[data-form="task-resched"] input[name="reason"]', 'ביקשו לדחות');
+    await page.click('#crm-tasks form[data-form="task-resched"] button[type="submit"]');
+    await page.waitForFunction(() => /המועד עודכן/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 5000 });
+    const rs = srv.saves.filter((x) => x.action === 'rescheduleTask')[0];
+    assert.deepEqual(rs, { action: 'rescheduleTask', id: 'task-' + '1'.repeat(32), reason: 'ביקשו לדחות', dueDate: daysAgo(-5), dueTime: '', proxySecret: rs.proxySecret, proxyUser: rs.proxyUser, proxyAuth: rs.proxyAuth, proxyUserId: rs.proxyUserId, proxyRoles: rs.proxyRoles, proxyCaps: rs.proxyCaps, user: rs.user });
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+  // a failed source never shows 0 (390 px, mobile layout)
+  const srv2 = await boot();
+  const browser2 = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    tasksAnswer = () => ({ ok: false, error: 'boom' });
+    const { page } = await open(browser2, srv2.port, 'vered', 390);
+    await page.waitForSelector('#crm-calls');
+    assert.match(await page.textContent('#crm-calls'), /המידע אינו זמין/);
+    assert.ok(!/שיחות לביצוע\s*0/.test(await page.textContent('#crm-calls')));
+    assert.ok(await noHScroll(page), 'no horizontal scroll at 390 px');
+  } finally { await browser2.close(); srv2.close(); }
 });

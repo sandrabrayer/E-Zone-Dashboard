@@ -28,7 +28,11 @@
 
 - Sandra's review request. Day / week toggle, ‹ ›, date input, «היום»; past meetings with their status (outcome, manager report, none). Details: `CHANGELOG-crm-calendar-picker.md`.
 
-## CRM Stage 1a+1b — Tasks, contact log, Dana operational — October 28, 2026 (PR open)
+## CRM Stage 1c — contact panel, «שיחות לביצוע», tasks in the card — October 28, 2026 (PR open)
+
+- «היום שלי» opens with «שיחות לביצוע» (open call tasks, overdue → today → upcoming → undated; no «בוצע» — a call closes through «תיעוד שיחה»); the contact panel (history + form, eight outcomes, nine next-contact choices with no default, actual date shown; one idempotent `logContact`, a failure keeps the text); «משימות» tab in the card (create / reschedule with a reason for promised dates / complete / reassign / withdraw). A failed `getTasks` shows «המידע אינו זמין», never 0. SW v97. Details: `CHANGELOG-crm-contact-panel.md`.
+
+## CRM Stage 1a+1b — Tasks, contact log, Dana operational — October 28, 2026 (merged, #313)
 
 - New `Tasks` sheet + seven Apps Script actions (`getTasks`, `createTask`, `completeTask`, `rescheduleTask`, `reassignTask`, `withdrawTask`, `logContact`): stable ids, idempotent by `submissionId`, actor on every change, reschedule history on Activity, «תיעוד שיחה» = contact event + fulfilled task + follow-up in one transaction (no 7-day default; «ללא משימת המשך» needs an explanation).
 - Dana moves from read-only (Phase 2a) to **operational**: every operational write across the houses; money actions refused (finance gate), money fields cut server-side (`lib/ops-scope.js`), and her `saveAll` keeps the stored money fields (Code.gs `preserveMoneyFields_`). Ortal sees and closes the money tasks only. No UI yet (Stage 1c next). Details: `CHANGELOG-crm-tasks-contact-log.md`, `docs/crm/PERMISSIONS-MATRIX.md §4b`.
