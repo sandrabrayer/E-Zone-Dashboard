@@ -1,6 +1,10 @@
 # E-ZONE Ecosystem Status — updated October 28, 2026
 
-## C11 — credits, discount and amount change inside the CRM — October 28, 2026 (PR open)
+## C12 — the switch: `/` serves the CRM when `CRM_DEFAULT=true` — October 28, 2026 (PR open)
+
+- New Railway variable `CRM_DEFAULT` (needs `CRM_ENABLED` too): `/` → the CRM for full-view personal logins (Vered, Sandra); `/?view=classic` → the old dashboard; Ortal / Dana keep classic by default; `/?view=crm` unchanged. Every classic link in the shell now points at `/?view=classic`. Inert until Sandra sets the variable (DEPLOY.md has the click-steps). Details: `CHANGELOG-crm-default.md`.
+
+## C11 — credits, discount and amount change inside the CRM — October 28, 2026 (merged, #300)
 
 - «חשבון» tab: «הנחה» / «שנה סכום» per open cycle, the patient's credits with «סמן כשולם»; «גבייה» area: «זיכויים לתשלום». Classic contracts (`setBillingDiscount`, `upsertBillingOverride`, `settleRefund`) + `getCredits` read, unchanged. With C10 Vered's daily collections work is now inside the CRM; receipt edit / void, manual credits and linking remain classic links. Details: `CHANGELOG-crm-credits-overrides.md`.
 

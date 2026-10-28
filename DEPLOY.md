@@ -709,3 +709,14 @@ and the user has a personal login. Until then nothing changes anywhere.
 2. Name `CRM_ENABLED`, value `true` → Add → Deploy (variables apply to the next deployment).
 3. Open https://ezone-dashboard.up.railway.app/?view=crm with a personal login.
 Rollback: delete the variable and redeploy. See `CHANGELOG-crm-shell-flag.md`.
+
+## The switch — `/` serves the CRM (C12, October 28, 2026) — off until you set it
+
+With `CRM_ENABLED=true` already set, one more variable flips Vered's (and Sandra's) `/` to the CRM.
+Ortal and Dana keep the classic page; `/?view=classic` is the classic page for everyone.
+
+1. https://railway.app → project `zucchini-hope` → service `web` → Variables → New Variable.
+2. Name `CRM_DEFAULT`, value `true` → Add → Deploy.
+3. Open https://ezone-dashboard.up.railway.app/ with Vered's or your login → the CRM.
+   https://ezone-dashboard.up.railway.app/?view=classic → the old dashboard.
+Rollback: delete `CRM_DEFAULT` and redeploy — nothing else changes. See `CHANGELOG-crm-default.md`.
