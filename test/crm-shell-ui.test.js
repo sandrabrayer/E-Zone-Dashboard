@@ -300,6 +300,57 @@ test('C9 patientAccount: one patient out of debtAging + getPayments — open cyc
   assert.deepEqual(Object.keys(core.CYCLE_STATUS_LABELS), ['paid', 'partial', 'unpaid', 'void']);
 });
 
+test('C10 payment report core: legacy key, uid-or-key row matching, cycle bodies, defaults, the shared rules, body, outcomes', () => {
+  const rules = require('../lib/payment-report-rules');
+  const pat = { id: 'id-abc', houseId: 'ramot', name: 'דנה כהן', date: '2026-07-29' };
+  assert.equal(core.patientKeyOf(pat), 'ramot::דנה כהן::2026-07-29');
+  assert.equal(core.patientKeyOf({ houseId: 'רעננה הפרדס', name: ' דנה ', date: '2026-07-29T00:00:00.000Z' }), 'pardes::דנה::2026-07-29');
+  // rows keyed on the legacy triple (classic app) AND rows carrying the uid both belong to the patient
+  const pay = { ok: true,
+    payments: [{ id: 'pay::ramot::דנה כהן::2026-07-29::2026-08-29', patientId: 'ramot::דנה כהן::2026-07-29', patientName: 'דנה כהן', houseId: 'ramot', dueDate: '2026-08-29', amount: 6000, amountPaid: 1000, status: 'partial', coverageStart: '2026-08-29', coverageEnd: '2026-09-28' },
+      { id: 'pay::x', patientId: 'other', patientUid: 'id-abc', dueDate: '2026-09-29', amount: 6000, amountPaid: 0, status: 'unpaid' },
+      { id: 'pay::y', patientId: 'rehab::אבי::2026-01-01', dueDate: '2026-09-29', amount: 1, status: 'unpaid' }],
+    receipts: [{ id: 'rcpt-1', patientId: 'ramot::דנה כהן::2026-07-29', receivedDate: '2026-09-01', amount: 1000 }, { id: 'rcpt-2', patientUid: 'id-abc', patientId: 'zzz', receivedDate: '2026-09-02', amount: 5 }, { id: 'rcpt-9', patientId: 'nope', amount: 9 }],
+    funders: [{ patientId: 'id-abc', funder: 'משרד הביטחון', effectiveFrom: '2026-08-01' }] };
+  const debt = { ok: true, byPatient: [{ patientId: 'id-abc', patientKey: 'ramot::דנה כהן::2026-07-29', cycles: [
+    { start: '2026-08-29', end: '2026-09-28', expected: 6000, received: 1000, balance: 5000, days: 59, kind: 'recorded', paymentId: 'pay::ramot::דנה כהן::2026-07-29::2026-08-29' },
+    { start: '2026-10-29', end: '2026-11-28', expected: 5500, received: 0, balance: 5500, days: 0, kind: 'unrecorded' }] }] };
+  const a = core.patientAccount(pat, debt, pay);
+  assert.deepEqual(a.cycles.map((c) => c.id), ['pay::x', 'pay::ramot::דנה כהן::2026-07-29::2026-08-29']);
+  assert.deepEqual(a.receipts.map((r) => r.id), ['rcpt-2', 'rcpt-1']); assert.equal(a.receivedTotal, 1005);
+  assert.equal(a.currentFunder, 'משרד הביטחון');
+  assert.equal(core.patientAccount('id-abc', debt, pay).openCycles.length, 2, 'a bare id still works');
+  // cycle bodies: recorded → the Payments row; unrecorded → minted like the classic app
+  assert.deepEqual(core.reportCycleFor(pat, a.openCycles[0], a), { id: 'pay::ramot::דנה כהן::2026-07-29::2026-08-29', patientId: 'ramot::דנה כהן::2026-07-29', patientName: 'דנה כהן', houseId: 'ramot', dueDate: '2026-08-29', amount: 6000, coverageStart: '2026-08-29', coverageEnd: '2026-09-28' });
+  assert.deepEqual(core.reportCycleFor(pat, a.openCycles[1], a), { id: 'pay::ramot::דנה כהן::2026-07-29::2026-10-29', patientId: 'ramot::דנה כהן::2026-07-29', patientName: 'דנה כהן', houseId: 'ramot', dueDate: '2026-10-29', amount: 5500, coverageStart: '2026-10-29', coverageEnd: '2026-11-28' });
+  assert.equal(core.reportCycleForRow(pat, a.cycles[0]).patientId, 'other', 'a stamped row keeps its own key');
+  // defaults: remaining prefilled, funder only when a real reportable one, invoice choice empty
+  const d = core.reportDefaults(core.reportCycleFor(pat, a.openCycles[0], a), 5000, '2026-10-28', 'משרד הביטחון');
+  assert.deepEqual(d, { receivedDate: '2026-10-28', amount: '5000', method: '', payer: '', reference: '', funder: 'משרד הביטחון', coverageStart: '2026-08-29', coverageEnd: '2026-09-28', invoiceWanted: '', invoiceTo: '' });
+  assert.equal(core.reportDefaults({}, 0, '2026-10-28', 'פרו-בונו').funder, ''); assert.equal(core.reportDefaults({}, 0, '2026-10-28', 'unset').funder, ''); assert.equal(core.reportDefaults({}, 0, '2026-10-28', 'x').funder, '');
+  // issues: the shared rules, the 90-day staff limit unless approver
+  assert.ok(core.reportRules() === rules);
+  const good = Object.assign({}, d, { method: 'ביט', payer: 'אמא של דנה', invoiceWanted: 'no' });
+  assert.deepEqual(core.reportIssues(good, '2026-10-28', false), []);
+  assert.deepEqual(core.reportIssues(Object.assign({}, good, { method: 'העברה בנקאית' }), '2026-10-28', false).map((i) => i.field), ['reference']);
+  assert.deepEqual(core.reportIssues(Object.assign({}, good, { receivedDate: '2026-01-01' }), '2026-10-28', false).map((i) => i.code), ['received_date_too_old']);
+  assert.deepEqual(core.reportIssues(Object.assign({}, good, { receivedDate: '2026-01-01' }), '2026-10-28', true), [], 'approver: no age limit');
+  assert.ok(core.reportIssues(Object.assign({}, good, { invoiceWanted: 'yes', invoiceTo: '' }), '2026-10-28', false).some((i) => i.field === 'invoiceTo'));
+  assert.deepEqual(core.reportIssues({}, '2026-10-28', false, {}).map((i) => i.code), ['rules_missing'], 'a page whose rules script failed to load');
+  // body + submission id + outcomes
+  const b = core.reportBody({ id: 'c' }, good, 'sub-1');
+  assert.deepEqual(Object.keys(b.report), ['cycle', 'report', 'submissionId']); assert.equal(b.action, 'reportPayment');
+  assert.equal(core.reportBody({ id: 'c' }, good, 'sub-1', true).report.confirmDuplicate, true);
+  assert.match(core.newSubmissionId(), /^sub-[0-9a-f]{32}$/); assert.notEqual(core.newSubmissionId(), core.newSubmissionId());
+  assert.deepEqual(core.reportOutcome({ ok: true, receipt: { id: 'rcpt-7' }, cycle: { id: 'c' } }), { ok: true, receiptId: 'rcpt-7', cycle: { id: 'c' } });
+  assert.equal(core.reportOutcome({ ok: true }).ok, false, 'no receipt id = not saved');
+  assert.deepEqual(core.reportOutcome({ ok: false, error: 'possible_duplicate', existing: { id: 'r' } }), { ok: false, duplicate: { id: 'r' } });
+  assert.deepEqual(core.reportOutcome({ ok: false, error: 'invalid_report', message: 'm', issues: [{ field: 'amount' }] }), { ok: false, message: 'm', issues: [{ field: 'amount' }] });
+  assert.match(core.reportOutcome({ ok: false, error: 'lock_busy' }).message, /עסוקה/); assert.match(core.reportOutcome({ ok: false, error: 'forbidden' }).message, /הרשאה/);
+  assert.equal(core.duplicateText({ receivedDate: '2026-10-20', reference: '123' }), 'קיימת כבר קבלה דומה (20/10, אסמכתא 123). האם זו קבלה נוספת?');
+  assert.equal(core.duplicateText({}), 'קיימת כבר קבלה דומה (—, ללא אסמכתא). האם זו קבלה נוספת?');
+});
+
 test('esc escapes every HTML-significant character', () => {
   assert.equal(core.esc('<b>"x" & \'y\'</b>'), '&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;');
 });
@@ -312,7 +363,7 @@ test('wiring: assets hashed via ASSETS, NOT in sw.js; the shell never calls a wr
   const actions = [...src.matchAll(/api\('([A-Za-z]+)'/g)].map((m) => m[1]).sort();
   assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'debtAging', 'getActivity', 'getData', 'getPayments'], 'GET reads (debtAging + getPayments: C8, גבייה read-only)');
   const writes = [...src.matchAll(/\{ action: '([A-Za-z]+)'/g)].map((m) => m[1]).sort();
-  assert.deepEqual([...new Set(writes)], ['appendFunder', 'dischargePatient', 'moveLeadIrrelevant', 'removeLead', 'restoreLead', 'saveAll'], 'the write actions: one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7)');
+  assert.deepEqual([...new Set(writes)], ['appendFunder', 'dischargePatient', 'moveLeadIrrelevant', 'removeLead', 'reportPayment', 'restoreLead', 'saveAll'], 'the write actions: one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7), the strict payment report (C10)');
   assert.equal((src.match(/\/api\/outpatient-lead/g) || []).length, 1, 'the outpatient handoff: one call site, after a released_outpatient discharge');
   assert.ok(!/serializePatients|patients: state\.data\.patients\b/.test(src), 'patients travel only through houseSaveBody (one house as read)');
   assert.ok(!/innerHTML\s*=\s*[^;]*\b(l|lead|p|pat)\.(name|phone|note)\b(?!\))/.test(src.replace(/esc\([^)]*\)/g, 'ESC')), 'every interpolated field goes through esc()');

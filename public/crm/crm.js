@@ -423,7 +423,7 @@
     const p = payments && payments.ok !== false ? payments : {};
     return (Array.isArray(p.receipts) ? p.receipts : []).map(function (r) {
       const o = r || {};
-      return { id: s(o.id), patientId: s(o.patientId), patientName: s(o.patientName), houseId: s(o.houseId), houseName: houseName(o.houseId),
+      return { id: s(o.id), patientId: s(o.patientId), patientUid: s(o.patientUid), patientName: s(o.patientName), houseId: s(o.houseId), houseName: houseName(o.houseId),
         receivedDate: s(o.receivedDate).slice(0, 10), amount: Number(o.amount) || 0, method: s(o.method), payer: s(o.payer), funder: s(o.funder),
         confirmStatus: s(o.confirmStatus), cycleId: s(o.cycleId) };
     });
@@ -469,30 +469,122 @@
    * (debtAging.byPatient), the stamped cycles and receipts (getPayments),
    * the funder history (getPayments.funders). Pure, read-only. */
   const CYCLE_STATUS_LABELS = { paid: 'שולם', partial: 'חלקי', unpaid: 'לא שולם', void: 'בוטל' };
-  function patientAccount(patientId, debt, payments) {
-    const id = s(patientId);
+  /* The legacy billing identity of a patient — 'houseId::name::entryDate' (the
+   * classic app's patientKey / Code.gs patientKey_). Every Payments, Funders and
+   * Overrides row is keyed on it; the per-row uid rides ALONGSIDE in
+   * `patientUid` (C10). The name is trimmed, as both sides have always done. */
+  function patientKeyOf(p) {
+    const o = p || {};
+    return s(houseId(o.houseId)) + '::' + s(o.name) + '::' + s(o.date).slice(0, 10);
+  }
+  /* Does a money row belong to this patient? uid first (patientUid, or an id
+   * cell that already holds the uid), else the legacy triple. */
+  function rowIsPatient(row, uid, key) {
+    const r = row || {};
+    const ru = s(r.patientUid), rid = s(r.patientId);
+    if (uid && (ru === uid || rid === uid)) return true;
+    return !!key && rid === key;
+  }
+  function patientAccount(patientOrId, debt, payments) {
+    const pat = patientOrId && typeof patientOrId === 'object' ? patientOrId : { id: patientOrId };
+    const id = s(pat.id);
+    const key = pat.name ? patientKeyOf(pat) : '';
     const d = debt && debt.ok !== false ? debt : null;
     const p = payments && payments.ok !== false ? payments : null;
-    const mine = (d && Array.isArray(d.byPatient) ? d.byPatient : []).filter(function (x) { return s(x.patientId) === id; })[0] || null;
+    const mine = (d && Array.isArray(d.byPatient) ? d.byPatient : []).filter(function (x) { return s(x.patientId) === id || (key && s(x.patientKey) === key); })[0] || null;
     const open = (mine && Array.isArray(mine.cycles) ? mine.cycles : []).map(function (c) {
       return { start: s(c.start).slice(0, 10), end: s(c.end).slice(0, 10), expected: Number(c.expected) || 0, received: Number(c.received) || 0, balance: Number(c.balance) || 0,
-        days: Number(c.days) || 0, kind: s(c.kind), grace: !!c.funderGrace, discount: Number(c.discount) || 0 };
+        days: Number(c.days) || 0, kind: s(c.kind), grace: !!c.funderGrace, discount: Number(c.discount) || 0, paymentId: s(c.paymentId), month: s(c.month) };
     });
     const openTotal = Math.round(open.reduce(function (t, c) { return t + c.balance; }, 0) * 100) / 100;
-    const cycles = (p && Array.isArray(p.payments) ? p.payments : []).filter(function (x) { return s(x.patientId) === id; }).map(function (x) {
+    const cycles = (p && Array.isArray(p.payments) ? p.payments : []).filter(function (x) { return rowIsPatient(x, id, key); }).map(function (x) {
       return { id: s(x.id), dueDate: s(x.dueDate).slice(0, 10), amount: Number(x.amount) || 0, amountPaid: Number(x.amountPaid) || 0, balance: Number(x.balance) || 0, status: s(x.status),
-        coverageStart: s(x.coverageStart).slice(0, 10), coverageEnd: s(x.coverageEnd).slice(0, 10) };
+        coverageStart: s(x.coverageStart).slice(0, 10), coverageEnd: s(x.coverageEnd).slice(0, 10), patientId: s(x.patientId), patientName: s(x.patientName), houseId: s(x.houseId) };
     }).sort(function (a, b) { return a.dueDate < b.dueDate ? 1 : a.dueDate > b.dueDate ? -1 : 0; });
-    const receipts = receiptsOf(p).filter(function (r) { return r.patientId === id; }).sort(function (a, b) { return a.receivedDate < b.receivedDate ? 1 : a.receivedDate > b.receivedDate ? -1 : 0; });
+    const receipts = receiptsOf(p).filter(function (r) { return rowIsPatient(r, id, key); }).sort(function (a, b) { return a.receivedDate < b.receivedDate ? 1 : a.receivedDate > b.receivedDate ? -1 : 0; });
     const receivedTotal = Math.round(receipts.reduce(function (t, r) { return t + r.amount; }, 0) * 100) / 100;
-    const funders = (p && Array.isArray(p.funders) ? p.funders : []).filter(function (f) { return s(f.patientId) === id; }).map(function (f) {
+    const funders = (p && Array.isArray(p.funders) ? p.funders : []).filter(function (f) { return rowIsPatient(f, id, key); }).map(function (f) {
       return { funder: s(f.funder), effectiveFrom: s(f.effectiveFrom).slice(0, 10), setBy: s(f.setBy) };
     }).sort(function (a, b) { return a.effectiveFrom < b.effectiveFrom ? 1 : a.effectiveFrom > b.effectiveFrom ? -1 : 0; });
     const errors = [];
     if (!d) errors.push('חובות: ' + s(debt && debt.error || 'לא נטען'));
     if (!p) errors.push('תשלומים: ' + s(payments && payments.error || 'לא נטען'));
-    return { patientId: id, openTotal: openTotal, openCycles: open, settledCycles: mine ? (Number(mine.settledCycles) || 0) : 0, cycles: cycles, receipts: receipts,
+    return { patientId: id, patientKey: key, openTotal: openTotal, openCycles: open, settledCycles: mine ? (Number(mine.settledCycles) || 0) : 0, cycles: cycles, receipts: receipts,
       receivedTotal: receivedTotal, currentFunder: funders.length ? funders[0].funder : '', funders: funders, errors: errors };
+  }
+
+  /* ---- C10: «דווח תשלום» inside the CRM (CHANGELOG-crm-payment-report.md) ----
+   * The SAME strict report as the classic modal: the rules come from
+   * lib/payment-report-rules.js (served to the page as window.PaymentReportRules,
+   * required here under node), the server contract is reportPayment
+   * { cycle, report, submissionId, confirmDuplicate? } and Code.gs
+   * validatePaymentReport_ stays the authority. */
+  function reportRules(win) {
+    if (typeof module === 'object' && module && module.exports) { try { return require('../../lib/payment-report-rules.js'); } catch (_) { /* browser bundle */ } }
+    const g = win || (typeof window !== 'undefined' ? window : globalThis);
+    return g.PaymentReportRules || null;
+  }
+  /* The cycle body for an account row. A recorded cycle re-sends its Payments
+   * row (id, legacy patientId, name, house, due, stamped amount, coverage); an
+   * unrecorded one is minted the way the classic app does — 'pay::<key>::<due>'
+   * born from debtAging's window and expected amount. */
+  function reportCycleFor(patient, openCycle, account) {
+    const c = openCycle || {};
+    const rows = account && Array.isArray(account.cycles) ? account.cycles : [];
+    const row = c.paymentId ? rows.filter(function (r) { return r.id === c.paymentId; })[0] : null;
+    const key = patientKeyOf(patient);
+    if (row) {
+      return { id: row.id, patientId: row.patientId || key, patientName: row.patientName || s(patient.name), houseId: row.houseId || s(houseId(patient.houseId)),
+        dueDate: row.dueDate, amount: row.amount, coverageStart: row.coverageStart || c.start, coverageEnd: row.coverageEnd || c.end };
+    }
+    return { id: 'pay::' + key + '::' + s(c.start), patientId: key, patientName: s(patient.name), houseId: s(houseId(patient.houseId)),
+      dueDate: s(c.start), amount: Number(c.expected) || 0, coverageStart: s(c.start), coverageEnd: s(c.end) };
+  }
+  /* A stamped Payments row (the «תשלומים» table) as a cycle body. */
+  function reportCycleForRow(patient, row) {
+    const key = patientKeyOf(patient);
+    return { id: row.id, patientId: row.patientId || key, patientName: row.patientName || s(patient.name), houseId: row.houseId || s(houseId(patient.houseId)),
+      dueDate: row.dueDate, amount: row.amount, coverageStart: row.coverageStart, coverageEnd: row.coverageEnd };
+  }
+  function reportDefaults(cycle, remaining, today, currentFunder) {
+    const rules = reportRules();
+    const funder = s(currentFunder);
+    return { receivedDate: s(today), amount: remaining > 0 ? String(Math.round(remaining * 100) / 100) : '', method: '', payer: '', reference: '',
+      funder: rules && funder && funder !== rules.FUNDER_UNSET && funder !== rules.FUNDER_PROBONO && rules.PAYMENT_FUNDERS.indexOf(funder) >= 0 ? funder : '',
+      coverageStart: s(cycle.coverageStart), coverageEnd: s(cycle.coverageEnd), invoiceWanted: '', invoiceTo: '' };
+  }
+  /* The issues for the form's values — the shared rules, staff age limit unless approver. */
+  function reportIssues(values, today, approver, rules) {
+    const R = rules || reportRules();
+    if (!R || typeof R.validatePaymentInvoice !== 'function') return [{ field: 'receivedDate', code: 'rules_missing', hebrewMessage: 'טעינת כללי הדיווח נכשלה — רענני את הדף' }];
+    return R.validatePaymentReport(values, { todayIso: today, maxDaysBack: approver === true ? 0 : R.RECEIVED_DATE_STAFF_MAX_DAYS }).concat(R.validatePaymentInvoice(values));
+  }
+  function reportBody(cycle, values, submissionId, confirmDuplicate) {
+    const report = { cycle: cycle, report: Object.assign({}, values), submissionId: s(submissionId) };
+    if (confirmDuplicate === true) report.confirmDuplicate = true;
+    return { action: 'reportPayment', report: report };
+  }
+  /* 'sub-' + 32 hex: one per opened form; every send of that form carries it. */
+  function newSubmissionId() {
+    const c = typeof crypto !== 'undefined' && crypto && typeof crypto.getRandomValues === 'function' ? crypto : null;
+    const bytes = new Uint8Array(16);
+    if (c) c.getRandomValues(bytes); else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+    return 'sub-' + Array.prototype.map.call(bytes, function (b) { return (b < 16 ? '0' : '') + b.toString(16); }).join('');
+  }
+  /* The server's answer → { ok, receiptId, cycle } | { duplicate: existing } | { message, issues } */
+  function reportOutcome(res) {
+    const r = res || {};
+    if (r.ok === true && r.receipt && s(r.receipt.id)) return { ok: true, receiptId: s(r.receipt.id), cycle: r.cycle || null };
+    if (r.error === 'possible_duplicate') return { ok: false, duplicate: r.existing || {} };
+    if (r.error === 'invalid_report') return { ok: false, message: s(r.message) || 'הדיווח לא נשמר — יש להשלים את השדות המסומנים', issues: Array.isArray(r.issues) ? r.issues : [] };
+    if (r.error === 'lock_busy') return { ok: false, message: 'המערכת עסוקה — נסי שוב בעוד רגע', issues: [] };
+    if (r.error === 'forbidden' || r.error === 'forbidden_role') return { ok: false, message: 'אין הרשאה לדווח תשלום', issues: [] };
+    return { ok: false, message: 'התשלום לא נשמר — נסי שוב' + (r.error ? ' (' + s(r.error) + ')' : ''), issues: [] };
+  }
+  function duplicateText(existing) {
+    const e = existing || {};
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s(e.receivedDate));
+    return 'קיימת כבר קבלה דומה (' + (m ? m[3] + '/' + m[2] : '—') + ', ' + (s(e.reference) ? 'אסמכתא ' + s(e.reference) : 'ללא אסמכתא') + '). האם זו קבלה נוספת?';
   }
 
   const esc = function (v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
@@ -1079,7 +1171,10 @@
       const paint = function () {
         const el = $('#crm-account');
         if (!el || !state.drawer || state.drawer.id !== patientId) return;
-        el.innerHTML = renderAccount(patientAccount(patientId, state.billing.debt, state.billing.payments));
+        const pat = compute(state.data, state.today).patients.filter(function (x) { return x.id === patientId; })[0];
+        if (!pat) return;
+        state.account = { patient: pat, data: patientAccount(pat, state.billing.debt, state.billing.payments) };
+        el.innerHTML = renderAccount(state.account.data);
       };
       if (state.billing) return paint();
       loadBilling(paint);
@@ -1092,17 +1187,20 @@
         + '<dt>גוף מממן</dt><dd>' + esc(a.currentFunder || '—') + (a.funders.length > 1 ? ' <span class="na">(' + a.funders.map(function (f) { return f.funder + ' מ-' + fmtDate(f.effectiveFrom); }).join(', ') + ')</span>' : '') + '</dd></dl>';
       html += '<div class="group-title">מחזורים פתוחים</div>';
       if (!a.openCycles.length) html += '<p class="na">אין חוב פתוח' + (a.settledCycles ? ' · ' + a.settledCycles + ' מחזורים סגורים' : '') + '.</p>';
-      else html += '<div class="tbl-wrap"><table class="tbl" id="crm-account-open"><thead><tr><th>מחזור</th><th>צפוי</th><th>התקבל</th><th>יתרה</th><th>ימים</th></tr></thead><tbody>'
-        + a.openCycles.map(function (c) {
+      else html += '<div class="tbl-wrap"><table class="tbl" id="crm-account-open"><thead><tr><th>מחזור</th><th>צפוי</th><th>התקבל</th><th>יתרה</th><th>ימים</th><th></th></tr></thead><tbody>'
+        + a.openCycles.map(function (c, i) {
           const st = c.days > 60 ? 'late' : c.days > 30 ? 'today' : 'ok';
-          return '<tr><td>' + esc(fmtDate(c.start)) + (c.end ? '–' + esc(fmtDate(c.end)) : '') + (c.kind === 'unrecorded' ? ' <span class="na">ללא דיווח</span>' : '') + (c.grace ? ' ' + chip('wait', 'גוף מממן') : '') + '</td><td>' + esc(fmtMoney(c.expected)) + '</td><td>' + esc(fmtMoney(c.received)) + '</td><td>' + esc(fmtMoney(c.balance)) + '</td><td>' + chip(st, c.days + '') + '</td></tr>';
+          return '<tr><td>' + esc(fmtDate(c.start)) + (c.end ? '–' + esc(fmtDate(c.end)) : '') + (c.kind === 'unrecorded' ? ' <span class="na">ללא דיווח</span>' : '') + (c.grace ? ' ' + chip('wait', 'גוף מממן') : '') + '</td><td>' + esc(fmtMoney(c.expected)) + '</td><td>' + esc(fmtMoney(c.received)) + '</td><td>' + esc(fmtMoney(c.balance)) + '</td><td>' + chip(st, c.days + '') + '</td>'
+            + '<td><button type="button" class="btn small primary" data-report-open="' + i + '">דווח תשלום</button></td></tr>';
         }).join('') + '</tbody></table></div>';
+      html += '<div id="crm-report"></div>';
       html += '<div class="group-title">תשלומים</div>';
       if (!a.cycles.length) html += '<p class="na">אין תשלומים רשומים.</p>';
       else html += '<div class="tbl-wrap"><table class="tbl" id="crm-account-cycles"><thead><tr><th>לתשלום</th><th>סכום</th><th>שולם</th><th>סטטוס</th></tr></thead><tbody>'
         + a.cycles.map(function (c) {
           const st = c.status === 'paid' ? 'ok' : c.status === 'partial' ? 'today' : c.status === 'void' ? 'wait' : 'late';
-          return '<tr><td>' + esc(fmtDate(c.dueDate)) + '</td><td>' + esc(fmtMoney(c.amount)) + '</td><td>' + esc(fmtMoney(c.amountPaid)) + '</td><td>' + chip(st, CYCLE_STATUS_LABELS[c.status] || c.status || '—') + '</td></tr>';
+          const open = (c.status === 'unpaid' || c.status === 'partial') && !a.openCycles.some(function (o) { return o.paymentId === c.id; });
+          return '<tr><td>' + esc(fmtDate(c.dueDate)) + '</td><td>' + esc(fmtMoney(c.amount)) + '</td><td>' + esc(fmtMoney(c.amountPaid)) + '</td><td>' + chip(st, CYCLE_STATUS_LABELS[c.status] || c.status || '—') + (open ? ' <button type="button" class="btn small" data-report-row="' + esc(c.id) + '">דווח</button>' : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
       html += '<div class="group-title">תקבולים</div>';
       if (!a.receipts.length) html += '<p class="na">אין תקבולים.</p>';
@@ -1111,8 +1209,77 @@
           const cs = r.confirmStatus === 'confirmed' ? 'ok' : r.confirmStatus === 'flagged' ? 'late' : 'today';
           return '<tr><td>' + esc(fmtDate(r.receivedDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td><td>' + esc(r.method) + '</td><td>' + esc(r.payer) + '</td><td>' + (r.confirmStatus ? chip(cs, CONFIRM_LABELS[r.confirmStatus] || r.confirmStatus) : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
-      html += '<p><a class="btn" href="/">דווח תשלום / זיכוי בדשבורד</a></p>';
+      html += '<p><a class="btn" href="/">זיכויים, הנחות והחזרים בדשבורד</a></p>';
       return html;
+    }
+    /* C10: the «דווח תשלום» form inside the account pane. */
+    function openReportForm(cycle, remaining) {
+      const el = $('#crm-report');
+      if (!el || !state.account) return;
+      const R = reportRules(win);
+      const today = state.today;
+      const d = reportDefaults(cycle, remaining, today, state.account.data.currentFunder);
+      state.report = { cycle: cycle, submissionId: newSubmissionId(), values: d };
+      const opt = function (list, sel) { return '<option value="">בחרי…</option>' + list.map(function (v) { return '<option value="' + esc(v) + '"' + (v === sel ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join(''); };
+      const err = function (f) { return '<div class="err" data-err="' + f + '"></div>'; };
+      el.innerHTML = '<form class="new-lead report" data-form="payment-report" novalidate>'
+        + '<h3>דווח תשלום · מחזור ' + esc(fmtDate(cycle.coverageStart)) + '–' + esc(fmtDate(cycle.coverageEnd)) + ' · צפוי ' + esc(fmtMoney(cycle.amount)) + (remaining !== Number(cycle.amount) ? ' · יתרה ' + esc(fmtMoney(remaining)) : '') + '</h3>'
+        + '<label>תאריך קבלת התשלום *<input type="date" name="receivedDate" max="' + esc(today) + '" value="' + esc(d.receivedDate) + '">' + err('receivedDate') + '</label>'
+        + '<label>סכום שהתקבל (₪, כולל מע״מ) *<input type="text" inputmode="decimal" name="amount" value="' + esc(d.amount) + '">' + err('amount') + '</label>'
+        + '<label>אמצעי תשלום *<select name="method">' + opt(R ? R.PAYMENT_METHODS : [], d.method) + '</select>' + err('method') + '</label>'
+        + '<label>אסמכתא / מספר עסקה<input type="text" name="reference" value="">' + err('reference') + '</label>'
+        + '<label>שם משלם *<input type="text" name="payer" value="">' + err('payer') + '</label>'
+        + '<label>גוף מממן *<select name="funder">' + opt(R ? R.PAYMENT_FUNDERS : [], d.funder) + '</select>' + err('funder') + '</label>'
+        + '<label>תחילת תקופת הכיסוי *<input type="date" name="coverageStart" value="' + esc(d.coverageStart) + '">' + err('coverageStart') + '</label>'
+        + '<label>סוף תקופת הכיסוי *<input type="date" name="coverageEnd" value="' + esc(d.coverageEnd) + '">' + err('coverageEnd') + '</label>'
+        + '<label>חשבונית? *<select name="invoiceWanted"><option value="">בחרי…</option><option value="yes">כן</option><option value="no">לא</option></select>' + err('invoiceWanted') + '</label>'
+        + '<label>על שם<input type="text" name="invoiceTo" value="">' + err('invoiceTo') + '</label>'
+        + '<div class="wide err" data-err="_form"></div>'
+        + '<div class="wide toolbar"><button type="submit" class="btn primary">שמירת הדיווח</button><button type="button" class="btn" data-report-cancel>ביטול</button><span class="na" id="crm-report-state"></span></div>'
+        + '</form>';
+      el.scrollIntoView({ block: 'nearest' });
+    }
+    function showReportIssues(f, issues, message) {
+      Array.prototype.forEach.call(f.querySelectorAll('.err'), function (e) { e.textContent = ''; });
+      issues.forEach(function (i) { const e = f.querySelector('.err[data-err="' + i.field + '"]'); if (e) e.textContent = i.hebrewMessage || i.code; });
+      const fe = f.querySelector('.err[data-err="_form"]');
+      if (fe) fe.textContent = message || (issues.length ? 'הדיווח לא נשמר — יש להשלים את השדות המסומנים' : '');
+    }
+    function submitReport(f, confirmDuplicate) {
+      if (!state.report || state.saving) return Promise.resolve(false);
+      const vals = {};
+      Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
+      state.report.values = vals;
+      const issues = reportIssues(vals, state.today, !!(state.me && state.me.approver), reportRules(win));
+      if (issues.length) { showReportIssues(f, issues); return Promise.resolve(false); }
+      showReportIssues(f, []);
+      const body = reportBody(state.report.cycle, vals, state.report.submissionId, confirmDuplicate);
+      const st = $('#crm-report-state'); if (st) st.textContent = 'שומר…';
+      state.saving = true;
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+        .then(function (res) {
+          state.saving = false;
+          const out = reportOutcome(res);
+          if (out.ok) {
+            toast('התשלום נשמר ✓');
+            state.report = null;
+            // re-read both answers: the money a row shows is always the server's
+            const pid = state.drawer && state.drawer.id;
+            state.billing = null;
+            if (pid) fillAccountPane(pid);
+            return true;
+          }
+          if (out.duplicate) {
+            if (st) st.textContent = '';
+            if (win.confirm(duplicateText(out.duplicate))) return submitReport(f, true);
+            return false;
+          }
+          showReportIssues(f, out.issues, out.message); if (st) st.textContent = '';
+          toast(out.message, true);
+          return false;
+        })
+        .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'התשלום לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
     }
     function closeDrawer() { $('#crm-drawer').setAttribute('aria-hidden', 'true'); $('#crm-scrim').removeAttribute('data-open'); state.drawer = null; }
 
@@ -1175,6 +1342,8 @@
       } else if (f.dataset.form === 'discharge') {
         const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
         dischargePatient(f.dataset.patient, vals, f);
+      } else if (f.dataset.form === 'payment-report') {
+        submitReport(f, false);
       } else if (f.dataset.form === 'new-lead') {
         const vals = {};
         Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
@@ -1182,9 +1351,20 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-report-open],[data-report-row],[data-report-cancel]') : null;
       if (!t) return;
-      state.billing = null; renderMain();
+      if (t.dataset.billingRetry !== undefined) { state.billing = null; return renderMain(); }
+      if (t.dataset.reportCancel !== undefined) { state.report = null; const el = $('#crm-report'); if (el) el.innerHTML = ''; return; }
+      if (!state.account) return;
+      if (t.dataset.reportOpen !== undefined) {
+        const c = state.account.data.openCycles[Number(t.dataset.reportOpen)];
+        if (c) openReportForm(reportCycleFor(state.account.patient, c, state.account.data), c.balance);
+        return;
+      }
+      if (t.dataset.reportRow) {
+        const row = state.account.data.cycles.filter(function (x) { return x.id === t.dataset.reportRow; })[0];
+        if (row) openReportForm(reportCycleForRow(state.account.patient, row), Math.max(0, row.amount - row.amountPaid));
+      }
     });
     root.addEventListener('change', function (ev) {
       const t = ev.target;
@@ -1226,5 +1406,7 @@
     FUNDERS: FUNDERS, PATIENT_STATUSES: PATIENT_STATUSES, admissionRow: admissionRow, admissionErrors: admissionErrors, directAddRows: directAddRows,
     directAddErrors: directAddErrors, houseSaveBody: houseSaveBody, houseSaveRefusal: houseSaveRefusal, isoDateOk: isoDateOk,
     DISCHARGE_DISPOSITIONS: DISCHARGE_DISPOSITIONS, CONTINUITY_CHOICES: CONTINUITY_CHOICES, dischargeAuditRow: dischargeAuditRow, dischargeErrors: dischargeErrors,
-    movedRow: movedRow, patientEditErrors: patientEditErrors, billingOverview: billingOverview, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS };
+    movedRow: movedRow, patientEditErrors: patientEditErrors, billingOverview: billingOverview, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
+    patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
+    newSubmissionId: newSubmissionId, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules };
 }));
