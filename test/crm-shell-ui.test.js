@@ -515,6 +515,27 @@ test('C17 discharged: open audit rows only, window + filters, sent flag; restore
   assert.match(core.randomId().replace(/^id-/, 'lead-'), /^lead-[0-9a-f]{16}$/);
 });
 
+test('C18 payment linking: detached rows from debtAging (decided ones out), candidates ranked by house / name / entry, the two classic savePayment bodies, errors, acceptance', () => {
+  const debt = { ok: true, detachedPayments: { count: 3, rows: [
+    { paymentId: 'pay::arfoni::שחר חיון ::2026-09-07::2026-09-07', patientName: 'שחר חיון ', houseId: 'arfoni', dueDate: '2026-09-07', amount: 35000, receivedByAsOf: 35000, reason: 'unmatched' },
+    { paymentId: 'pay::rehab::עדי::2026-09-14::2026-09-14', patientName: 'עדי', houseId: 'rehab', dueDate: '2026-09-14T00:00:00.000Z', amount: 35000, receivedByAsOf: 0, reason: 'unmatched' },
+    { paymentId: 'x', patientName: 'ספק', houseId: 'ramot', dueDate: '2026-09-01', amount: 1, reason: 'not_a_patient' }] } };
+  const rows = core.detachedRows(debt);
+  assert.deepEqual(rows.map((r) => [r.patientName, r.houseName, r.dueDate, r.received]), [['עדי', 'קיסריה ריהאב', '2026-09-14', 0], ['שחר חיון', 'קיסריה עפרוני', '2026-09-07', 35000]]);
+  assert.deepEqual(core.detachedRows({ ok: false }), []);
+  assert.equal(core.namesLookAlike('שחר חיון ', 'שחר חיון'), true); assert.equal(core.namesLookAlike('עדי', 'עדי לוי'), true); assert.equal(core.namesLookAlike('ערן כהן', 'דנה כהן'), true); assert.equal(core.namesLookAlike('א', 'ב'), false); assert.equal(core.namesLookAlike('', 'x'), false);
+  const patients = [{ id: 'p1', name: 'דנה', houseId: 'ramot', date: '2026-01-01', status: 'active' }, { id: 'p2', name: 'עדי לוי', houseId: 'rehab', date: '2026-09-10', status: 'active' }, { id: 'p3', name: 'יוסי', houseId: 'rehab', date: '2026-10-01', status: 'released' }];
+  const c = core.linkCandidates(rows[0], patients);
+  assert.deepEqual(c.map((x) => [x.id, x.score, x.reasons]), [['p2', 7, ['אותו בית', 'שם דומה', 'נכנס/ה לפני התשלום']], ['p3', 2, ['אותו בית']], ['p1', 1, ['נכנס/ה לפני התשלום']]]);
+  const raw = { id: rows[0].paymentId, patientId: 'rehab::עדי::2026-09-14', amount: 35000, dueDate: '2026-09-14', status: 'unpaid' };
+  assert.deepEqual(core.linkBody(raw, 'p2'), { action: 'savePayment', payment: Object.assign({}, raw, { linkPatientUid: 'p2', linkStatus: 'linked', linkNote: '' }) });
+  assert.deepEqual(core.notPatientBody(raw, ' החזר לספק '), { action: 'savePayment', payment: Object.assign({}, raw, { linkPatientUid: '', linkStatus: 'not_a_patient', linkNote: 'החזר לספק' }) });
+  assert.deepEqual(core.linkErrors('link', { patientId: '' }), { patientId: 'יש לבחור מטופל/ת' }); assert.deepEqual(core.linkErrors('link', { patientId: 'p2' }), {});
+  assert.deepEqual(core.linkErrors('not', { note: 'x' }), { note: 'יש לציין סיבה (2 עד 120 תווים)' }); assert.deepEqual(core.linkErrors('not', { note: 'ספק' }), {});
+  assert.equal(core.linkAccepted({ ok: true, payment: { id: raw.id, linkStatus: 'linked' } }, raw.id, 'linked'), true);
+  assert.equal(core.linkAccepted({ ok: true, payment: { id: raw.id, linkStatus: '' } }, raw.id, 'linked'), false); assert.equal(core.linkAccepted({ ok: true }, raw.id, 'linked'), false);
+});
+
 test('esc escapes every HTML-significant character', () => {
   assert.equal(core.esc('<b>"x" & \'y\'</b>'), '&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;');
 });
