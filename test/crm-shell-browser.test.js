@@ -43,6 +43,7 @@ const DATA = {
     { id: 'L1', name: 'אבי לוי', house: 'רמות השבים', stage: 'new', created: daysAgo(5), assignedTo: 'ורד', phone: '0501111111', source: 'פייסבוק' },
     { id: 'L2', name: 'גלי כהן', house: 'ramot', stage: 'visit', visitDate: TODAY, visitTime: '13:30', meetingWith: 'אורן', created: daysAgo(2) },
     { id: 'L3', name: 'דנה מזרחי', house: 'רעננה הפרדס', stage: 'visit', visitDate: daysAgo(3), meetingWith: 'חן', created: daysAgo(6) },
+    { id: 'L5', name: 'רון אביב', house: 'קיסריה ריהאב', stage: 'visit', visitDate: daysAgo(4), meetingWith: 'רנטה', created: daysAgo(9), meetingReportOutcome: 'undecided', meetingCompanion: 'father', meetingNote: 'רוצה לחשוב', meetingReporter: 'רנטה', meetingReportedAt: daysAgo(2) + 'T07:00:00.000Z', meetingSeen: '' },
     { id: 'L4', name: 'טל ברק', house: 'רמות השבים', stage: 'paid', created: daysAgo(10), assignedTo: 'ורד' },
   ],
   patients: { ramot: [{ id: 'p1', name: 'דנה כהן', date: daysAgo(30), status: 'active', pay: 6000 }], rehab: [{ id: 'p2', name: 'אבי', date: daysAgo(7), status: 'active' }] },
@@ -137,7 +138,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     assert.equal(await page.$eval('#crm-user', (e) => e.textContent), 'ורד');
     // «היום שלי»: KPIs + the late row for the meeting without an outcome
     const kpis = await page.$$eval('.kpi .v', (els) => els.map((e) => e.textContent));
-    assert.deepEqual(kpis, ['2', '1', '0', '1']);
+    assert.deepEqual(kpis, ['2', '2', '0', '1'], 'late ×2, today ×2 (a meeting today + an unseen manager report)');
     assert.match(await page.textContent('#crm-main'), /דנה מזרחי/);
     assert.match(await page.textContent('#crm-main'), /לקבל דיווח מהמנהל\/ת/);
     await page.click('.kpi[data-kpi="late"]');
@@ -484,6 +485,35 @@ test('C13 receipt fix (Vered): «עריכה» posts editReceipt with ONLY the ch
     const v = srv.saves[1].payment;
     assert.equal(v.id, 'rcpt-1'); assert.equal(v.status, 'void'); assert.equal(v.linkStatus, 'duplicate'); assert.equal(v.linkNote, 'נרשם פעמיים'); assert.equal(v.dueDate, daysAgo(70)); assert.equal(v.patientId, 'ramot::דנה כהן::' + daysAgo(30));
     // (a void receipt → «בוטלה», no buttons: pinned in the core test; the proxy caches getPayments briefly so a fixture flip is not visible here)
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('C14 «פגישות ושירותים» (Vered): the manager report renders with its labels; opening the tab marks it seen through ONE lead saveAll (meetingSeen=1, nothing else changed); the work queue and the card flag it before', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.waitForSelector('.row');
+    assert.match(await page.textContent('#crm-main'), /לקרוא את דיווח המנהל\/ת/);
+    await page.click('#crm-nav button[data-area="leads"]');
+    const card = page.locator('.card', { hasText: 'רון אביב' });
+    assert.match(await card.textContent(), /דיווח מנהל\/ת חדש/);
+    await card.locator('.name').click();
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer [data-tab="meetings"]');
+    const pane = await page.textContent('#crm-meetings');
+    assert.match(pane, /התקיימה — מתלבט/); assert.match(pane, /אבא/); assert.match(pane, /רוצה לחשוב/); assert.match(pane, /רנטה/); assert.match(pane, /Therapists/);
+    await page.waitForTimeout(500);
+    assert.equal(srv.saves.length, 1, 'one save');
+    const body = srv.saves[0];
+    assert.equal(body.action, 'saveAll'); assert.equal(body.leads.length, 1); assert.equal(body.leads[0].id, 'L5'); assert.equal(body.leads[0].meetingSeen, '1');
+    assert.equal(body.leads[0].meetingReportOutcome, 'undecided', 'the report fields travel untouched'); assert.deepEqual(body.patients, {});
+    // opening again does not save twice
+    await page.click('#crm-drawer [data-tab="overview"]'); await page.click('#crm-drawer [data-tab="meetings"]');
+    await page.waitForTimeout(300);
+    assert.equal(srv.saves.length, 1);
+    assert.ok(!/דיווח מנהל\/ת חדש/.test(await page.textContent('#crm-main')), 'the card flag is gone');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });

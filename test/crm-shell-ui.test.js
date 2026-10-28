@@ -54,7 +54,7 @@ test('normalise: patients keyed by house are flattened with houseId; leads get t
   assert.equal(n.patients.length, 3);
   assert.deepEqual(n.patients.map((p) => p.houseId).sort(), ['ramot', 'ramot', 'rehab']);
   assert.equal(n.leads[0].stage, 'new');
-  assert.deepEqual(core.normalise(null), { leads: [], patients: [] });
+  assert.deepEqual(core.normalise(null), { leads: [], patients: [], discharges: [] });
 });
 
 test('compute: the work queue — late first, then today, then waiting; KPIs; admitted leads excluded; rows are derived', () => {
@@ -120,7 +120,7 @@ test('occupancy: in-house by the dashboard rule (status only), per-house free be
 
 test('control metrics and the controller day counts', () => {
   const c = core.compute(DATA, TODAY);
-  assert.deepEqual(core.control(c, TODAY).map((m) => [m.id, m.value]), [['untouched', 1], ['late', 2], ['noOutcome', 1], ['unscheduled', 1], ['admitting', 1]]);
+  assert.deepEqual(core.control(c, TODAY).map((m) => [m.id, m.value]), [['unseenReports', 0], ['untouched', 1], ['late', 2], ['noOutcome', 1], ['unscheduled', 1], ['admitting', 1]]);
   assert.deepEqual(core.controllerDay({ receipts: [{ status: 'reported' }, { status: 'reported' }, { status: 'flagged' }, { status: 'confirmed' }] }), { toVerify: 2, flagged: 1, confirmed: 1, total: 4 });
   assert.deepEqual(core.controllerDay(null), { toVerify: 0, flagged: 0, confirmed: 0, total: 0 });
 });
@@ -428,6 +428,36 @@ test('C13 receipt fix: edit = only the changed non-money fields, validated by th
   const rs = core.billingOverview({ ok: false }, { ok: true, receipts: [{ id: 'a', status: 'מבוטל', receivedDate: '2026-10-01', amount: 5 }, { id: 'b', status: '', receivedDate: '2026-10-02', amount: 6, reference: 'R', coverageStart: '2026-10-01T00:00:00.000Z', invoiceWanted: 'yes' }] }, '2026-10-28').receipts;
   assert.deepEqual(rs.map((x) => [x.id, x.isVoid, x.reference, x.coverageStart, x.invoiceWanted]), [['b', false, 'R', '2026-10-01', 'yes'], ['a', true, '', '', '']]);
   assert.deepEqual(core.RECEIPT_EDIT_FIELDS, ['reference', 'method', 'payer', 'invoiceWanted', 'invoiceTo', 'coverageStart', 'coverageEnd']);
+});
+
+test('C14 meetings: the manager report (labels, local time, unseen), the work-queue row / next action / control metric for an unseen report, the discharge record by patientId or the legacy triple (restored / deleted rows skipped)', () => {
+  const data = { leads: [
+    { id: 'L1', name: 'a', stage: 'visit', visitDate: '2026-10-20', visitTime: '10:00', meetingWith: 'אורן', meetingReportOutcome: 'advancing', meetingCompanion: 'mother', meetingNote: 'טוב', meetingReporter: 'אורן', meetingReportedAt: '2026-10-21T08:30:00.000Z', meetingSeen: '' },
+    { id: 'L2', name: 'b', stage: 'visit', visitDate: '2026-10-20', meetingReportOutcome: 'no_show', meetingCompanion: 'דוד', meetingReportedAt: '2026-10-21T08:30:00.000Z', meetingSeen: '1' },
+    { id: 'L3', name: 'c', stage: 'new', created: '2026-10-27' }],
+    patients: { ramot: [{ id: 'p1', name: 'b', date: '2026-07-01', fromLead: 'L2', status: 'released' }, { id: 'p2', name: 'z', date: '2026-01-01', status: 'active' }] },
+    dischargedPatients: [
+      { id: 'd1', patientId: 'p1', name: 'b', houseId: 'ramot', date: '2026-07-01', exitDate: '2026-10-01', dischargedAt: '2026-10-01T09:00:00.000Z', disposition: 'stopped_early', discharge_note: 'x', continuity: 'שחר' },
+      { id: 'd0', patientId: 'p1', dischargedAt: '2026-09-01', restored: '1' },
+      { id: 'd3', patientId: 'p1', dischargedAt: '2026-11-01', deletedAt: '2026-11-02' },
+      { id: 'd2', name: 'z', houseId: 'רמות השבים', date: '2026-01-01', dischargedAt: '2026-03-01T00:00:00.000Z', disposition: 'completed' }] };
+  const c = core.compute(data, '2026-10-28');
+  const r = core.managerReport(c.leads[0]);
+  assert.deepEqual(r, { outcome: 'התקיימה — מתקדם לכניסה', companion: 'אמא', note: 'טוב', reporter: 'אורן', at: '2026-10-21T08:30:00.000Z', when: '21/10/2026 11:30', unseen: true });
+  assert.equal(core.managerReport(c.leads[1]).unseen, false); assert.equal(core.managerReport(c.leads[1]).companion, 'דוד', 'free text passes through'); assert.equal(core.managerReport(c.leads[2]), null);
+  assert.equal(core.unseenReports(c.leads), 1);
+  assert.deepEqual(c.rows.filter((x) => x.kind === 'report_unseen').map((x) => [x.leadId, x.state, x.due]), [['L1', 'today', '2026-10-21']]);
+  assert.deepEqual(core.nextActionFor(c.leads[0], '2026-10-28'), { text: 'דיווח מנהל/ת חדש', state: 'today' });
+  assert.equal(core.control(c, '2026-10-28')[0].id, 'unseenReports'); assert.equal(core.control(c, '2026-10-28')[0].value, 1);
+  const m1 = core.meetingsFor(c.patients[0], 'patient', c);
+  assert.equal(m1.lead.id, 'L2'); assert.deepEqual(m1.visit, { date: '2026-10-20', time: '', withWhom: '', outcome: '' });
+  assert.equal(m1.discharge.id, 'd1'); assert.equal(m1.discharge.dispositionLabel, 'הפסיק לפני הזמן'); assert.equal(m1.discharge.continuity, 'שחר');
+  const m2 = core.meetingsFor(c.patients[1], 'patient', c);
+  assert.equal(m2.lead, null); assert.equal(m2.visit, null); assert.equal(m2.report, null);
+  assert.equal(m2.discharge.id, 'd2', 'a legacy row without patientId matches the triple (house by name)'); assert.equal(m2.discharge.dispositionLabel, 'סיים טיפול');
+  assert.equal(core.meetingsFor(c.leads[2], 'lead', c).visit, null);
+  assert.equal(core.whenLocal('2026-10-21'), '21/10/2026'); assert.equal(core.whenLocal(''), '');
+  assert.deepEqual(Object.keys(core.DISPOSITION_LABELS), ['completed', 'stopped_early', 'released_outpatient', 'not_relevant']);
 });
 
 test('esc escapes every HTML-significant character', () => {

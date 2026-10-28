@@ -292,7 +292,15 @@
         assignedTo: s(l.assignedTo), created: isoDay(l.created), visitDate: isoDay(l.visitDate), visitTime: s(l.visitTime),
         meetingWith: s(l.meetingWith), meetingOutcome: s(l.meetingOutcome), note: s(l.note),
         contactName: s(l.contactName), contactPhone: s(l.contactPhone), contactRelation: s(l.contactRelation),
-        advance: l.advance === '' || l.advance == null ? '' : Number(l.advance) || 0 };
+        advance: l.advance === '' || l.advance == null ? '' : Number(l.advance) || 0,
+        // the house manager's meeting report (C14; classic MEETING_REPORT_* fields)
+        meetingReportOutcome: s(l.meetingReportOutcome), meetingCompanion: s(l.meetingCompanion), meetingNote: s(l.meetingNote),
+        meetingReporter: s(l.meetingReporter), meetingReportedAt: s(l.meetingReportedAt), meetingSeen: s(l.meetingSeen) };
+    });
+    const discharges = (Array.isArray(d.dischargedPatients) ? d.dischargedPatients : []).map(function (r) {
+      return { id: s(r.id), patientId: s(r.patientId), name: s(r.name), houseId: s(r.houseId), fromLead: s(r.fromLead), date: isoDay(r.date), exitDate: isoDay(r.exitDate),
+        dischargedAt: s(r.dischargedAt), disposition: s(r.disposition), note: s(r.discharge_note), continuity: s(r.continuity), priorStatus: s(r.prior_status), restored: s(r.restored),
+        deletedAt: s(r.deletedAt), source: s(r.dischargeSource), by: s(r.dischargedBy) };
     });
     const patients = [];
     const p = d.patients;
@@ -302,7 +310,48 @@
       return { id: s(x.id), houseId: s(x.houseId), name: s(x.name), date: isoDay(x.date), status: s(x.status) || 'active',
         exitDate: isoDay(x.exitDate), fromLead: s(x.fromLead), source: s(x.source), personId: s(x.personId), pay: Number(x.pay) || 0 };
     });
-    return { leads: leads, patients: pts };
+    return { leads: leads, patients: pts, discharges: discharges };
+  }
+
+  /* ---- C14: «פגישות ושירותים» over real data (CHANGELOG-crm-meetings-tab.md) ----
+   * The lead's intake meeting (Vered's own outcome) + the house manager's
+   * report from /meeting-report (read-only context, as in the classic card;
+   * opening it marks it seen through the one-lead saveAll), and, for a
+   * patient, the discharge record. Services (Therapists) are not connected. */
+  const MEETING_REPORT_OUTCOME_LABELS = { advancing: 'התקיימה — מתקדם לכניסה', undecided: 'התקיימה — מתלבט', not_fit: 'התקיימה — לא מתאים', no_show: 'לא הגיע / בוטל' };
+  const MEETING_COMPANION_LABELS = { mother: 'אמא', father: 'אבא', parents: 'הורים', partner: 'בן/בת זוג', sibling: 'אח/אחות', friend: 'חבר', alone: 'לבד', other: 'אחר' };
+  const DISPOSITION_LABELS = { completed: 'סיים טיפול', stopped_early: 'הפסיק לפני הזמן', released_outpatient: 'משוחרר לטיפול חוץ', not_relevant: 'לא רלוונטי' };
+  /* An ISO timestamp → 'DD/MM/YYYY HH:MM' in Asia/Jerusalem; a bare date → DD/MM/YYYY; junk → as is. */
+  function whenLocal(iso) {
+    const t = s(iso);
+    const ms = Date.parse(t);
+    if (!/T\d{2}:\d{2}/.test(t) || isNaN(ms)) return fmtDate(t.slice(0, 10)) || t;
+    const parts = {};
+    new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date(ms)).forEach(function (x) { parts[x.type] = x.value; });
+    return parts.day + '/' + parts.month + '/' + parts.year + ' ' + parts.hour + ':' + parts.minute;
+  }
+  function reportUnseen(l) { return !!(l && s(l.meetingReportedAt)) && s(l.meetingSeen) !== '1'; }
+  function unseenReports(leads) { return (Array.isArray(leads) ? leads : []).filter(reportUnseen).length; }
+  function managerReport(l) {
+    if (!l || !s(l.meetingReportedAt)) return null;
+    const at = s(l.meetingReportedAt);
+    return { outcome: MEETING_REPORT_OUTCOME_LABELS[l.meetingReportOutcome] || s(l.meetingReportOutcome), companion: MEETING_COMPANION_LABELS[l.meetingCompanion] || s(l.meetingCompanion),
+      note: s(l.meetingNote), reporter: s(l.meetingReporter), at: at, when: whenLocal(at), unseen: reportUnseen(l) };
+  }
+  /* Everything the tab shows for a lead or a patient (via its lead). */
+  function meetingsFor(subject, kind, data) {
+    const d = data || { leads: [], patients: [], discharges: [] };
+    const lead = kind === 'lead' ? subject : (d.leads || []).filter(function (l) { return l.id === s(subject && subject.fromLead); })[0] || null;
+    const visit = lead && (lead.visitDate || lead.meetingOutcome || lead.meetingWith) ? { date: lead.visitDate, time: lead.visitTime, withWhom: lead.meetingWith, outcome: lead.meetingOutcome } : null;
+    // The patient's discharge record: by the audit row's patientId (newer rows), else the
+    // classic identity triple (house, name, entry date); soft-deleted / restored rows are not discharges.
+    const sameStay = function (r) {
+      if (r.deletedAt || r.restored === '1') return false;
+      if (r.patientId && r.patientId === s(subject.id)) return true;
+      return !r.patientId && houseId(r.houseId) === houseId(subject.houseId) && r.name === s(subject.name) && r.date === s(subject.date);
+    };
+    const discharge = kind === 'patient' ? ((d.discharges || []).filter(sameStay).sort(function (a, b) { return a.dischargedAt < b.dischargedAt ? 1 : -1; })[0] || null) : null;
+    return { lead: lead, visit: visit, report: managerReport(lead), discharge: discharge ? Object.assign({}, discharge, { dispositionLabel: DISPOSITION_LABELS[discharge.disposition] || discharge.disposition }) : null };
   }
 
   /* The work queue and the KPIs of «היום שלי» (Vered). Next action / due
@@ -317,8 +366,12 @@
       if (l.created === today) kpi.newLeads++;
       if (l.stage === 'visit' && l.visitDate === today) kpi.meetingsToday++;
       let row = null;
-      if (l.stage === 'visit' && l.visitDate && l.visitDate < today && !l.meetingOutcome) {
-        row = { kind: 'meeting_no_outcome', action: 'לקבל דיווח מהמנהל/ת על הפגישה', owner: l.meetingWith || l.assignedTo,
+      if (reportUnseen(l) && STAGES.some(function (st) { return st.id === l.stage; })) {
+        row = { kind: 'report_unseen', action: 'לקרוא את דיווח המנהל/ת על הפגישה', owner: l.assignedTo, due: s(l.meetingReportedAt).slice(0, 10), state: 'today',
+          reason: 'דיווח מ-' + (l.meetingReporter || 'המנהל/ת') + (l.meetingReportOutcome ? ' · ' + (MEETING_REPORT_OUTCOME_LABELS[l.meetingReportOutcome] || l.meetingReportOutcome) : '') };
+      } else if (l.stage === 'visit' && l.visitDate && l.visitDate < today && !l.meetingOutcome) {
+        const reported = !!s(l.meetingReportedAt);
+        row = { kind: 'meeting_no_outcome', action: reported ? 'לעדכן תוצאת פגישה (יש דיווח מנהל/ת)' : 'לקבל דיווח מהמנהל/ת על הפגישה', owner: reported ? l.assignedTo : (l.meetingWith || l.assignedTo),
           due: l.visitDate, state: 'late', reason: 'הפגישה התקיימה לפני ' + daysBetween(l.visitDate, today) + ' ימים' };
       } else if (l.stage === 'visit' && l.visitDate === today) {
         row = { kind: 'meeting_today', action: 'פגישת קבלה היום' + (l.visitTime ? ' · ' + l.visitTime : ''), owner: l.meetingWith || l.assignedTo, due: today, state: 'today', reason: '' };
@@ -342,7 +395,7 @@
     });
     const order = { late: 0, today: 1, wait: 2 };
     rows.sort(function (a, b) { return (order[a.state] - order[b.state]) || (a.due || '9').localeCompare(b.due || '9'); });
-    return { kpi: kpi, rows: rows, leads: n.leads, patients: n.patients };
+    return { kpi: kpi, rows: rows, leads: n.leads, patients: n.patients, discharges: n.discharges };
   }
 
   /* «פניות»: the board columns and the table rows share one filter. */
@@ -361,6 +414,7 @@
     return STAGES.map(function (st) { return { stage: st, leads: list.filter(function (l) { return l.stage === st.id; }) }; });
   }
   function nextActionFor(l, today) {
+    if (reportUnseen(l)) return { text: 'דיווח מנהל/ת חדש', state: 'today' };
     if (l.stage === 'visit' && l.visitDate && l.visitDate < today && !l.meetingOutcome) return { text: 'דיווח מהמנהל/ת', state: 'late' };
     if (l.stage === 'visit' && l.visitDate === today) return { text: 'פגישה היום', state: 'today' };
     if (l.stage === 'visit') return { text: l.visitDate ? 'פגישה ' + fmtDate(l.visitDate) : 'לתאם פגישה', state: 'wait' };
@@ -395,6 +449,7 @@
     const unscheduled = c.leads.filter(function (l) { return l.stage === 'visit' && !l.visitDate; }).length;
     const admitting = c.leads.filter(function (l) { return l.stage === 'paid'; }).length;
     return [
+      { id: 'unseenReports', label: 'דיווחי מנהל/ת שלא נקראו', value: unseenReports(c.leads) },
       { id: 'untouched', label: 'פניות ללא טיפול (' + WAIT_DAYS + '+ ימים)', value: untouched },
       { id: 'late', label: 'משימות באיחור', value: c.kpi.late },
       { id: 'noOutcome', label: 'פגישות ללא תוצאה', value: noOutcome },
@@ -1340,7 +1395,7 @@
         + '<div class="tabs" role="tablist">' + [['overview', 'סקירה'], ['activity', 'פעילות'], ['meetings', 'פגישות ושירותים'], ['account', 'חשבון'], ['docs', 'מסמכים']].map(function (t, i) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (i === 0) + '">' + esc(t[1]) + '</button>'; }).join('') + '</div>'
         + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : renderPatientActions(pat)) + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p><a class="btn" href="/?view=classic">עריכה מלאה בדשבורד</a></p></section>'
         + '<section data-pane="activity" hidden><ul class="tl" id="crm-tl"><li>טוען…</li></ul></section>'
-        + '<section data-pane="meetings" hidden><p class="na">' + (lead && lead.visitDate ? 'פגישת קבלה ' + esc(fmtDate(lead.visitDate)) + (lead.meetingOutcome ? ' · ' + esc(lead.meetingOutcome) : ' · ללא תוצאה') : 'אין פגישות רשומות') + '</p></section>'
+        + '<section data-pane="meetings" hidden id="crm-meetings">' + renderMeetings(meetingsFor(lead || pat, lead ? 'lead' : 'patient', compute(state.data, state.today))) + '</section>'
         + '<section data-pane="account" hidden id="crm-account">' + (pat && state.me && state.me.finance ? '<p class="na">טוען נתוני חשבון…</p>' : '<p class="na">' + (lead ? 'החשבון נפתח עם הקליטה לבית.' : 'אין הרשאה לנתוני גבייה.') + '</p>') + '</section>'
         + '<section data-pane="docs" hidden><p class="na">מסמכים — חשבשבת נשארת המקור; עדיין לא מחובר.</p></section>';
       const prevTab = keepTab && state.drawer && state.drawer.tab ? state.drawer.tab : 'overview';
@@ -1600,6 +1655,33 @@
         })
         .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'השינוי לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
     }
+    /* C14: the «פגישות ושירותים» pane. */
+    function renderMeetings(m) {
+      let html = '';
+      html += '<div class="group-title">פגישת קבלה</div>';
+      if (!m.visit) html += '<p class="na">אין פגישה רשומה.</p>';
+      else html += '<dl class="kv"><dt>תאריך</dt><dd>' + esc(fmtDate(m.visit.date) || '—') + (m.visit.time ? ' ' + esc(m.visit.time) : '') + '</dd><dt>נפגש/ת עם</dt><dd>' + esc(m.visit.withWhom || '—') + '</dd><dt>תוצאה (ורד)</dt><dd>' + esc(m.visit.outcome || 'ללא תוצאה') + '</dd></dl>';
+      html += '<div class="group-title">דיווח המנהל/ת' + (m.report && m.report.unseen ? ' ' + chip('today', 'חדש') : '') + '</div>';
+      if (!m.report) html += '<p class="na">אין דיווח מהבית עדיין.</p>';
+      else html += '<dl class="kv" data-report-lead="' + esc(m.lead ? m.lead.id : '') + '"><dt>תוצאה</dt><dd>' + esc(m.report.outcome || '—') + '</dd><dt>הגיע/ה עם</dt><dd>' + esc(m.report.companion || '—') + '</dd>'
+        + (m.report.note ? '<dt>הערות</dt><dd>' + esc(m.report.note) + '</dd>' : '') + '<dt>דווח ע"י</dt><dd>' + esc(m.report.reporter || '—') + ' · ' + esc(m.report.when) + '</dd></dl>';
+      if (m.discharge) {
+        const dch = m.discharge;
+        html += '<div class="group-title">שחרור</div><dl class="kv"><dt>תאריך יציאה</dt><dd>' + esc(fmtDate(dch.exitDate) || '—') + '</dd><dt>סיבה</dt><dd>' + esc(dch.dispositionLabel || '—') + '</dd>'
+          + (dch.continuity ? '<dt>המשך טיפול</dt><dd>' + esc(dch.continuity) + '</dd>' : '') + (dch.note ? '<dt>הערה</dt><dd>' + esc(dch.note) + '</dd>' : '') + '</dl>';
+      }
+      html += '<div class="group-title">שירותים</div><p class="na">שירותי המשך טיפול (Therapists) עדיין לא מחוברים לדשבורד.</p>';
+      return html;
+    }
+    /* Opening the pane marks the manager's report seen — the classic rule — through the one-lead save (no other field touched). */
+    function markReportSeen() {
+      const el = $('#crm-meetings [data-report-lead]');
+      const id = el && el.dataset.reportLead;
+      if (!id || state.saving || !state.me || state.me.readonly || state.me.view === 'readonly') return;
+      const l = compute(state.data, state.today).leads.filter(function (x) { return x.id === id; })[0];
+      if (!l || !reportUnseen(l)) return;
+      writeLead(id, { meetingSeen: '1' }, 'הדיווח סומן כנקרא');
+    }
     function closeDrawer() { $('#crm-drawer').setAttribute('aria-hidden', 'true'); $('#crm-scrim').removeAttribute('data-open'); state.drawer = null; state.account = null; state.report = null; state.small = null; }
 
     /* events (delegated; filters, sort and scroll survive opening a card) */
@@ -1617,6 +1699,7 @@
         doc.querySelectorAll('#crm-drawer [role="tab"]').forEach(function (b) { b.setAttribute('aria-selected', String(b === t)); });
         doc.querySelectorAll('#crm-drawer [data-pane]').forEach(function (p) { p.hidden = p.dataset.pane !== t.dataset.tab; });
         if (state.drawer) state.drawer.tab = t.dataset.tab;
+        if (t.dataset.tab === 'meetings') markReportSeen();
         return;
       }
       if (t.id === 'crm-new-lead') return openNewLeadDrawer();
@@ -1757,7 +1840,8 @@
     FUNDERS: FUNDERS, PATIENT_STATUSES: PATIENT_STATUSES, admissionRow: admissionRow, admissionErrors: admissionErrors, directAddRows: directAddRows,
     directAddErrors: directAddErrors, houseSaveBody: houseSaveBody, houseSaveRefusal: houseSaveRefusal, isoDateOk: isoDateOk,
     DISCHARGE_DISPOSITIONS: DISCHARGE_DISPOSITIONS, CONTINUITY_CHOICES: CONTINUITY_CHOICES, dischargeAuditRow: dischargeAuditRow, dischargeErrors: dischargeErrors,
-    movedRow: movedRow, patientEditErrors: patientEditErrors, billingOverview: billingOverview, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
+    movedRow: movedRow, patientEditErrors: patientEditErrors, meetingsFor: meetingsFor, managerReport: managerReport, whenLocal: whenLocal, reportUnseen: reportUnseen, unseenReports: unseenReports,
+    MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
     patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
     newSubmissionId: newSubmissionId, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
     CREDIT_TYPE_LABELS: CREDIT_TYPE_LABELS, CREDIT_STATUS_LABELS: CREDIT_STATUS_LABELS, SETTLE_METHODS: SETTLE_METHODS, creditsOf: creditsOf, patientCredits: patientCredits, pendingCredits: pendingCredits,
