@@ -1,6 +1,10 @@
 # E-ZONE Ecosystem Status — updated October 28, 2026
 
-## Phase 2a — Dana's read-only login — October 28, 2026 (PR open)
+## Phase 2b — lead owners: Dana and Sandra in, Shiran and Yael out — October 28, 2026 (PR open)
+
+- Classic add-lead form and CRM now offer the same owners (`ורד / דנה / סנדרה`); Code.gs `CREATE_LEAD_ASSIGNEES` keeps the legacy names accepted for older Therapists builds. Therapists follow-up: offer דנה / סנדרה there. Details: `CHANGELOG-assignees-dana.md`.
+
+## Phase 2a — Dana's read-only login — October 28, 2026 (merged, #303)
 
 - New user `dana` (staff only), read-only BY ID: the server refuses every write and every non-read action before the proxy (`lib/readonly-scope.js`), projects getData without money fields, Code.gs holds the second lock. Classic page in view mode + restricted layout; CRM: five read areas, no actions. Sandra creates her code with «קוד אישי חדש». Details: `CHANGELOG-readonly-role-dana.md`.
 
