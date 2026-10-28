@@ -1,6 +1,10 @@
 # E-ZONE Ecosystem Status — updated October 28, 2026
 
-## C14 — CRM «פגישות ושירותים» over real data — October 28, 2026 (PR open)
+## C15 — CRM «יומן» with a date picker (day / week, past included) — October 28, 2026 (PR open)
+
+- Sandra's review request. Day / week toggle, ‹ ›, date input, «היום»; past meetings with their status (outcome, manager report, none). Details: `CHANGELOG-crm-calendar-picker.md`.
+
+## C14 — CRM «פגישות ושירותים» over real data — October 28, 2026 (merged, #305)
 
 - Manager meeting reports (from `/meeting-report`) in the drawer tab with seen-marking via the one-lead `saveAll`, an unseen-report row in «היום שלי», a «בקרה» metric; the patient's discharge record in the same tab. Services (Therapists) still not connected. Details: `CHANGELOG-crm-meetings-tab.md`.
 

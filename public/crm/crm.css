@@ -153,3 +153,6 @@ form.report .toolbar { margin: 4px 0 0; }
 /* ---- read-only view (Phase 2, Dana) ---- */
 .crm.readonly .actions, .crm.readonly form, .crm.readonly #crm-new-lead, .crm.readonly #crm-direct-add, .crm.readonly [data-stage-next], .crm.readonly [data-stage-prev],
 .crm.readonly [data-remove-lead], .crm.readonly [data-restore-lead], .crm.readonly details.act { display: none !important; }
+
+/* ---- calendar picker (C15) ---- */
+#crm-cal-bar input[type="date"] { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; color: var(--text); }

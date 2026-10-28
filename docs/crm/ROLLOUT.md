@@ -212,7 +212,8 @@ A test pins this.
 | C11 (#300, merged) | UI write | public/crm/crm.js | discount / amount / settle + credits read; browser scenario | No | No | flag off, or revert |
 | C12 (#301, merged) | the switch | lib/crm-shell-flag.js, server.js | `CRM_DEFAULT` rule per user / view; real-server cases; classic-link guard | No | No | delete `CRM_DEFAULT`, or revert |
 | C13 (#302, merged) | UI write | public/crm/crm.js | any-cycle report, receipt edit / void; browser scenarios | No | No | flag off, or revert |
-| C14 | UI | public/crm/crm.js | meetings tab over manager reports + discharge record; seen-marking; browser scenario | No | No | flag off, or revert |
+| C14 (#305, merged) | UI | public/crm/crm.js | meetings tab over manager reports + discharge record; seen-marking; browser scenario | No | No | flag off, or revert |
+| C15 | UI | public/crm/crm.js | calendar day / week picker, past included; browser scenario | No | No | flag off, or revert |
 | C9 (#298, merged) | UI read | public/crm/crm.js | `patientAccount` — the drawer's «חשבון» tab over the shared C8 reads; browser scenario | No | No | flag off, or revert |
 
 ---

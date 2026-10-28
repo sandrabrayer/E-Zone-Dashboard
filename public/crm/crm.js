@@ -441,6 +441,39 @@
     return leads.filter(function (l) { return l.stage === 'visit' && l.visitDate && l.visitDate >= today && l.visitDate <= last; })
       .sort(function (a, b) { return (a.visitDate + a.visitTime).localeCompare(b.visitDate + b.visitTime); });
   }
+  /* C15 (CHANGELOG-crm-calendar-picker.md): any day or week, past included.
+   * Every lead with a visit date counts — whatever its stage today (an admitted
+   * or closed lead still had its meeting), so a past day shows what happened. */
+  const DAY_NAMES = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+  function weekdayOf(iso) { const ms = Date.parse(s(iso) + 'T00:00:00Z'); return isNaN(ms) ? -1 : new Date(ms).getUTCDay(); }
+  function weekStart(iso) { const d = weekdayOf(iso); return d < 0 ? s(iso) : addDays(iso, -d); }
+  function calendarRange(mode, anchor) {
+    const a = isoDateOk(s(anchor).slice(0, 10)) ? s(anchor).slice(0, 10) : '';
+    if (!a) return null;
+    if (mode === 'week') { const from = weekStart(a); return { mode: 'week', from: from, to: addDays(from, 6) }; }
+    return { mode: 'day', from: a, to: a };
+  }
+  function calendarRows(leads, range, today) {
+    if (!range) return [];
+    return (leads || []).filter(function (l) { return l.visitDate && l.visitDate >= range.from && l.visitDate <= range.to; })
+      .sort(function (a, b) { return (a.visitDate + (a.visitTime || '')).localeCompare(b.visitDate + (b.visitTime || '')); })
+      .map(function (l) {
+        const past = l.visitDate < today, isToday = l.visitDate === today;
+        const reported = !!s(l.meetingReportedAt);
+        let status;
+        if (isToday) status = { state: 'today', text: 'היום' };
+        else if (!past) status = { state: 'wait', text: 'מתוכנן' };
+        else if (l.meetingOutcome) status = { state: 'ok', text: l.meetingOutcome };
+        else if (reported) status = { state: 'today', text: 'יש דיווח מנהל/ת' + (reportUnseen(l) ? ' · חדש' : '') };
+        else status = { state: 'late', text: 'ללא תוצאה' };
+        return { id: l.id, name: l.name, house: houseName(l.house), date: l.visitDate, time: l.visitTime || '', withWhom: l.meetingWith || l.assignedTo || '', stage: l.stage, status: status, reported: reported };
+      });
+  }
+  function calendarTitle(range, today) {
+    if (!range) return '';
+    if (range.mode === 'day') return (range.from === today ? 'היום · ' : 'יום ' + DAY_NAMES[weekdayOf(range.from)] + ' · ') + fmtDate(range.from);
+    return 'שבוע ' + fmtDate(range.from) + ' – ' + fmtDate(range.to);
+  }
 
   /* «בקרה»: the action metrics of spec §10 — counts only. */
   function control(c, today) {
@@ -1198,13 +1231,24 @@
     }
 
     function renderCalendar(c) {
-      const list = calendar(c.leads, state.today, 14);
-      if (!list.length) return '<div class="crm-state">אין פגישות ב-14 הימים הקרובים</div>';
+      if (!state.cal) state.cal = { mode: 'day', anchor: state.today };
+      const range = calendarRange(state.cal.mode, state.cal.anchor) || calendarRange('day', state.today);
+      const step = range.mode === 'week' ? 7 : 1;
+      const rows = calendarRows(c.leads, range, state.today);
+      const upcoming = calendar(c.leads, state.today, 14).length;
+      let html = '<div class="toolbar" id="crm-cal-bar">'
+        + '<div class="seg"><button type="button" data-cal-mode="day" aria-pressed="' + (range.mode === 'day') + '">יום</button><button type="button" data-cal-mode="week" aria-pressed="' + (range.mode === 'week') + '">שבוע</button></div>'
+        + '<button type="button" class="btn small" data-cal-step="-' + step + '" aria-label="אחורה">‹</button>'
+        + '<input type="date" id="crm-cal-date" value="' + esc(state.cal.anchor) + '" aria-label="תאריך">'
+        + '<button type="button" class="btn small" data-cal-step="' + step + '" aria-label="קדימה">›</button>'
+        + '<button type="button" class="btn small" data-cal-today>היום</button>'
+        + '<span class="na">' + esc(calendarTitle(range, state.today)) + ' · ' + rows.length + ' פגישות</span></div>';
+      if (!rows.length) return html + '<div class="crm-state">אין פגישות ב' + (range.mode === 'week' ? 'שבוע זה' : 'יום זה') + (upcoming ? ' · ' + upcoming + ' פגישות ב-14 הימים הקרובים' : '') + '</div>';
       let day = '';
-      return '<div class="rows">' + list.map(function (l) {
-        const head = l.visitDate !== day ? '<div class="group-title">' + esc(l.visitDate === state.today ? 'היום · ' + fmtDate(l.visitDate) : fmtDate(l.visitDate)) + '</div>' : '';
-        day = l.visitDate;
-        return head + '<div class="row" data-open-lead="' + esc(l.id) + '"><span><span class="name">' + esc(l.name) + '</span><br><span class="sub">' + esc(houseName(l.house)) + '</span></span><span>פגישת קבלה' + (l.visitTime ? ' · ' + esc(l.visitTime) : '') + '</span><span>' + esc(l.meetingWith || l.assignedTo || '—') + '</span><span>' + esc(fmtDate(l.visitDate)) + '</span><span>' + chip(l.visitDate === state.today ? 'today' : 'wait', l.visitDate === state.today ? 'היום' : 'מתוכנן') + '</span><span><button type="button" class="btn small" data-open-lead="' + esc(l.id) + '">כרטיס</button></span></div>';
+      return html + '<div class="rows">' + rows.map(function (r) {
+        const head = range.mode === 'week' && r.date !== day ? '<div class="group-title">' + esc('יום ' + DAY_NAMES[weekdayOf(r.date)] + ' · ' + fmtDate(r.date)) + '</div>' : '';
+        day = r.date;
+        return head + '<div class="row" data-open-lead="' + esc(r.id) + '"><span><span class="name">' + esc(r.name) + '</span><br><span class="sub">' + esc(r.house) + (r.stage !== 'visit' ? ' · ' + esc(stageLabel(r.stage)) : '') + '</span></span><span>פגישת קבלה' + (r.time ? ' · ' + esc(r.time) : '') + '</span><span>' + esc(r.withWhom || '—') + '</span><span>' + esc(fmtDate(r.date)) + '</span><span>' + chip(r.status.state, r.status.text) + '</span><span><button type="button" class="btn small" data-open-lead="' + esc(r.id) + '">כרטיס</button></span></div>';
       }).join('') + '</div>';
     }
 
@@ -1798,8 +1842,18 @@
         if (row) openReportForm(reportCycleForRow(state.account.patient, row), Math.max(0, row.amount - row.amountPaid));
       }
     });
+    root.addEventListener('click', function (ev) {
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-cal-mode],[data-cal-step],[data-cal-today]') : null;
+      if (!t) return;
+      if (!state.cal) state.cal = { mode: 'day', anchor: state.today };
+      if (t.dataset.calMode) state.cal.mode = t.dataset.calMode;
+      else if (t.dataset.calStep) state.cal.anchor = addDays(state.cal.anchor, Number(t.dataset.calStep));
+      else state.cal.anchor = state.today;
+      renderMain();
+    });
     root.addEventListener('change', function (ev) {
       const t = ev.target;
+      if (t.id === 'crm-cal-date') { if (!state.cal) state.cal = { mode: 'day', anchor: state.today }; if (isoDateOk(t.value)) state.cal.anchor = t.value; }
       if (t.id === 'f-house' || t.id === 'f-house-c') state.filters.house = t.value;
       if (t.id === 'f-owner') state.filters.owner = t.value;
       renderMain();
@@ -1840,7 +1894,7 @@
     FUNDERS: FUNDERS, PATIENT_STATUSES: PATIENT_STATUSES, admissionRow: admissionRow, admissionErrors: admissionErrors, directAddRows: directAddRows,
     directAddErrors: directAddErrors, houseSaveBody: houseSaveBody, houseSaveRefusal: houseSaveRefusal, isoDateOk: isoDateOk,
     DISCHARGE_DISPOSITIONS: DISCHARGE_DISPOSITIONS, CONTINUITY_CHOICES: CONTINUITY_CHOICES, dischargeAuditRow: dischargeAuditRow, dischargeErrors: dischargeErrors,
-    movedRow: movedRow, patientEditErrors: patientEditErrors, meetingsFor: meetingsFor, managerReport: managerReport, whenLocal: whenLocal, reportUnseen: reportUnseen, unseenReports: unseenReports,
+    movedRow: movedRow, patientEditErrors: patientEditErrors, meetingsFor: meetingsFor, managerReport: managerReport, whenLocal: whenLocal, calendarRange: calendarRange, calendarRows: calendarRows, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
     MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
     patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
     newSubmissionId: newSubmissionId, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
