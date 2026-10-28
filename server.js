@@ -7,8 +7,9 @@ const { createSessionToken, verifySessionToken, readSession } = require('./lib/s
 const {
   APPROVER_ID, USER_MODEL, validateUserPinHashes, hasApprover, resolvePrincipal, recordLine,
   loginUsers, modelById, principalCapabilities, hasFinance,
-  hasBillingControl, isControllerView, principalView,
+  hasBillingControl, isControllerView, isReadonlyView, principalView,
 } = require('./lib/users');
+const { readonlyRequestAllowed, readonlyGetDataView, READONLY_FORBIDDEN_MESSAGE } = require('./lib/readonly-scope');
 const {
   FINANCE_ACTIONS, FINANCE_ROUTES, FINANCE_FORBIDDEN_MESSAGE, isFinanceAction, stripFinanceKeys,
   BILLING_CONTROL_ACTIONS, CONTROLLER_ACTIONS, CONTROLLER_ROUTES, BILLING_CONTROL_FORBIDDEN_MESSAGE,
@@ -215,6 +216,9 @@ const MR_SESSION_SCOPE = 'meeting-report';
 const BUILD_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 app.use(express.json({ limit: '10mb' }));
+// Read-only view (Phase 2): mounted on every /api route, right after the body
+// is parsed; a non-read-only session passes through untouched.
+app.use('/api', (req, res, next) => requireReadonlyScope(req, res, next));
 
 /* Apply no-cache headers to every response before any handler runs. */
 app.use((_req, res, next) => { noCache(res); next(); });
@@ -295,6 +299,10 @@ function sendIndex(req, res) {
   if (isControllerView(principal)) {
     html = html.replace('<body>', hasBillingControl(principal) ? '<body class="view-controller view-billing-read">' : '<body class="view-controller">');
   }
+  // Read-only view (Phase 2, Dana): the restricted page AND every edit control
+  // off (view-readonly → app.js keeps state.mode 'view'); the server refuses
+  // every write regardless (requireReadonlyScope).
+  else if (isReadonlyView(principal)) html = html.replace('<body>', '<body class="view-restricted view-readonly">');
   else if (principal && !hasFinance(principal)) html = html.replace('<body>', '<body class="view-restricted">');
   console.log(`[req] → serving /index.html (build ${BUILD_ID}, ${html.length} chars)`);
   noCache(res);
@@ -870,6 +878,22 @@ function requireSession(req, res, next) {
   return next();
 }
 
+/* Read-only view (Phase 2, CHANGELOG-readonly-role-dana.md): a read-only
+ * session may only GET its read list; every other /api request (any write,
+ * any other action) is refused BEFORE anything is proxied. Mounted on /api
+ * right after the session check; POST /api/logout stays open. Logged with
+ * the user id only. */
+function requireReadonlyScope(req, res, next) {
+  const p = sessionPrincipalFromRequest(req);
+  if (!isReadonlyView(p)) return next();
+  const src = req.method === 'GET' ? (req.query || {}) : (req.body || {});
+  // Mounted on '/api': req.path is relative to the mount, so rebuild the full path.
+  const fullPath = (req.baseUrl || '') + (req.path || '');
+  if (readonlyRequestAllowed(req.method, fullPath, src.action)) return next();
+  console.warn(`[readonly] 403 user=${p.id} ${req.method} ${fullPath} action=${src.action || ''}`);
+  return res.status(403).json({ ok: false, error: 'forbidden_readonly', message: READONLY_FORBIDDEN_MESSAGE });
+}
+
 /* ===== Meeting-report session auth =====
  *
  * Same design as the main-app session above, but a SEPARATE cookie
@@ -1064,6 +1088,7 @@ function requireExpectedDischargesView(req, res, next) {
 function viewFilteredResponse(action, data, principal) {
   if (isControllerView(principal)) return controllerResponseView(action, data);
   if (action !== 'getData') return data;
+  if (isReadonlyView(principal)) return readonlyGetDataView(data);
   return !hasFinance(principal) ? stripFinanceKeys(data) : data;
 }
 
@@ -1855,6 +1880,9 @@ app.get('/api/me', requireSession, (req, res) => {
     // Read access to the full «גבייה» tab for the controller view (Ortal):
     // reads only — no write, delete, void or approval control. Display only.
     billingRead: isControllerView(p) && hasBillingControl(p),
+    // Read-only view (Phase 2, Dana): display only — the server refuses every
+    // write and projects getData itself (requireReadonlyScope).
+    readonly: isReadonlyView(p),
   });
 });
 
@@ -2266,6 +2294,7 @@ module.exports = {
   // Restricted view (see test/restricted-view.test.js).
   requireFinanceForAction,
   requireFinance,
+  requireReadonlyScope,
   // Roles + healthcheck (see test/personal-pins-cleanup.test.js).
   requireRoleForAction,
   bearerToken,

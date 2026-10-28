@@ -1365,6 +1365,12 @@ function applySessionInfo(info) {
   state.canAccount = i.canAccount === true;
   state.canDiscount = i.canDiscount === true;
   state.canAmount = i.canAmount === true;
+  // Read-only view (Phase 2): once the server says so, the page never edits.
+  if (i.readonly === true || i.view === 'readonly') {
+    state.readonly = true;
+    state.mode = 'view';
+    if (document.body && document.body.classList) document.body.classList.add('view-readonly');
+  }
   renderWhoami(i.user || '');
   const adminBtn = document.getElementById('pin-admin-open');
   if (adminBtn) adminBtn.classList.toggle('hidden', i.approver !== true);
@@ -1515,7 +1521,7 @@ function enterApp() {
   // single mode: an authenticated user is an editor — except the controller
   // view (Ortal), which only READS «גבייה» (CHANGELOG-ortal-verification-status.md):
   // 'view' leaves out every edit / report / void control the tab draws.
-  state.mode = controllerView() ? 'view' : 'edit';
+  state.mode = (controllerView() || readonlyView()) ? 'view' : 'edit';
   revealApp();
   loadAll();             // getData rides the cookie; a 401 flips to the PIN screen
   checkSessionUser();    // fire-and-forget: whoami line + the role view
@@ -1712,6 +1718,14 @@ function resolveScreen(requested, finance, view, billingRead) {
 /* true once the session is known to be the controller view (Ortal). */
 function controllerView() {
   return state.view === 'controller';
+}
+
+/* Read-only view (Phase 2, Dana — CHANGELOG-readonly-role-dana.md): the server
+ * served <body class="view-readonly"> and /api/me says readonly. The page
+ * stays in 'view' mode (no edit control draws); the server refuses every
+ * write and strips the money fields itself. */
+function readonlyView() {
+  return state.readonly === true || !!(document.body && document.body.classList && document.body.classList.contains('view-readonly'));
 }
 
 /* true for the controller view with read access to «גבייה». */

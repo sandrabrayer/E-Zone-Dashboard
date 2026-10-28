@@ -1,6 +1,10 @@
 # E-ZONE Ecosystem Status — updated October 28, 2026
 
-## C13 — report for any cycle; fix or void a receipt — October 28, 2026 (PR open)
+## Phase 2a — Dana's read-only login — October 28, 2026 (PR open)
+
+- New user `dana` (staff only), read-only BY ID: the server refuses every write and every non-read action before the proxy (`lib/readonly-scope.js`), projects getData without money fields, Code.gs holds the second lock. Classic page in view mode + restricted layout; CRM: five read areas, no actions. Sandra creates her code with «קוד אישי חדש». Details: `CHANGELOG-readonly-role-dana.md`.
+
+## C13 — report for any cycle; fix or void a receipt — October 28, 2026 (merged, #302)
 
 - «חשבון»: «דווח תשלום למחזור אחר» (entry-anchored stay cycles, advances included, default = the next cycle); per receipt «עריכה» (`editReceipt`, non-money fields, shared rules) and «ביטול» (classic `savePayment` void with a reason, `deleter`). Found by Sandra on the first live review. Details: `CHANGELOG-crm-report-any-cycle.md`.
 

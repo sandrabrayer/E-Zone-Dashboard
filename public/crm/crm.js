@@ -233,6 +233,7 @@
   function areasFor(me) {
     const m = me || {};
     if (m.view === 'controller') return ['today', 'billing', 'control'];
+    if (m.view === 'readonly' || m.readonly === true) return ['today', 'leads', 'occupancy', 'clients', 'calendar'];
     if (!m.finance) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control'];
     return AREAS.map(function (a) { return a.id; });
   }
@@ -1729,6 +1730,8 @@
         if (!me || me.ok === false) throw new Error('אין התחברות');
         state.me = me;
         $('#crm-user').textContent = me.user || '';
+        // Read-only view (Phase 2, Dana): no action draws; the server refuses every write anyway.
+        root.classList.toggle('readonly', me.view === 'readonly' || me.readonly === true);
         if (areasFor(me).indexOf(state.area) < 0) state.area = 'today';
         const reads = [api('getData')];
         if (me.view === 'controller') reads.push(api('billingControlQueue'));

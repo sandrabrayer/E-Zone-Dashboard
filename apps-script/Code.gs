@@ -1385,6 +1385,14 @@ const CONTROLLER_ACTIONS = ['billingControlQueue', 'confirmPayment', 'debtAging'
  * more (CHANGELOG-discount-by-vered.md): discounts are Vered's / Sandra's. */
 const CONTROLLER_GETDATA_KEYS = ['ok', 'patients', 'billingOverrides'];
 const CONTROLLER_USER_IDS = ['ortal'];
+/* Read-only view (Phase 2, CHANGELOG-readonly-role-dana.md): Dana's verified
+ * personal session may call ONLY these actions; every other action — above
+ * all every write — is refused here too (defence in depth: server.js
+ * lib/readonly-scope.js refuses first). Mirrors lib/users.js READONLY_USER_IDS
+ * and lib/readonly-scope.js READONLY_GET_ACTIONS (guard test). */
+const READONLY_USER_IDS = ['dana'];
+const READONLY_ACTIONS = ['getData', 'expectedDischarges', 'upcomingCommittees', 'getActivity'];
+const READONLY_FORBIDDEN_MESSAGE = 'הרשאת צפייה בלבד — אין אפשרות לשנות';
 
 /* ===== Field allow-lists for the controller view (privacy fix, Sandra
  * 2026-10-06; CHANGELOG-ortal-billing-access.md «Field allow-lists») =====
@@ -2248,10 +2256,16 @@ function isControllerActor_(a) {
  *     Yael → refused).
  * → null (allowed) or the refusal body. A call without a valid PROXY_SECRET
  * has no actor: enforce mode refuses it at the gate already. */
+function isReadonlyActor_(a) {
+  return !!a && a.verified === true && a.auth === 'personal' && READONLY_USER_IDS.indexOf(String(a.id)) >= 0;
+}
 function viewRefused_(params, action) {
   const a = actingUser_(params);
   if (!a.verified) return null;
   const act = String(action == null ? '' : action);
+  if (isReadonlyActor_(a) && READONLY_ACTIONS.indexOf(act) < 0) {
+    return { ok: false, error: 'forbidden_readonly', message: READONLY_FORBIDDEN_MESSAGE };
+  }
   if (isControllerActor_(a) && CONTROLLER_ACTIONS.indexOf(act) < 0) {
     return { ok: false, error: 'forbidden', message: BILLING_CONTROL_FORBIDDEN_MESSAGE };
   }

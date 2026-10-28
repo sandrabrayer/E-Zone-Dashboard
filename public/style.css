@@ -314,6 +314,10 @@ body.view-restricted [data-finance] { display: none !important; }
  * view, <body class="view-controller">) the ONLY tab and screen — app.js
  * removes the rest from the DOM, this rule makes sure nothing flashes first. */
 body.view-restricted [data-billing-control] { display: none !important; }
+/* Read-only view (Phase 2, Dana): the page is served in 'view' mode and the
+ * server refuses every write; this only hides the controls a 'view' mode
+ * render still draws (new-patient / new-lead entry points). */
+body.view-readonly .edit-only { display: none !important; }
 body.view-controller .tabs .tab:not([data-screen="billing-control"]),
 body.view-controller section.screen:not(#screen-billing-control),
 body.view-controller [data-finance] { display: none !important; }
