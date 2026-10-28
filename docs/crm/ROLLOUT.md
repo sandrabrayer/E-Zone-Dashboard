@@ -214,7 +214,8 @@ A test pins this.
 | C13 (#302, merged) | UI write | public/crm/crm.js | any-cycle report, receipt edit / void; browser scenarios | No | No | flag off, or revert |
 | C14 (#305, merged) | UI | public/crm/crm.js | meetings tab over manager reports + discharge record; seen-marking; browser scenario | No | No | flag off, or revert |
 | C15 (#306, merged) | UI | public/crm/crm.js | calendar day / week picker, past included; browser scenario | No | No | flag off, or revert |
-| C16 | PWA | public/sw.js, public/crm/crm.html | strategy matrix, shell tags | **v93 → v94** | No | revert (next bump > v94) |
+| C16 (#307, merged) | PWA | public/sw.js, public/crm/crm.html | strategy matrix, shell tags | **v93 → v94** | No | revert (next bump > v94) |
+| C17 | UI write | public/crm/crm.js | discharged list, restore (two ways), manual Outpatient handoff; browser scenario | No | No | flag off, or revert |
 | C9 (#298, merged) | UI read | public/crm/crm.js | `patientAccount` — the drawer's «חשבון» tab over the shared C8 reads; browser scenario | No | No | flag off, or revert |
 
 ---

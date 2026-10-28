@@ -310,8 +310,59 @@
       return { id: s(x.id), houseId: s(x.houseId), name: s(x.name), date: isoDay(x.date), status: s(x.status) || 'active',
         exitDate: isoDay(x.exitDate), fromLead: s(x.fromLead), source: s(x.source), personId: s(x.personId), pay: Number(x.pay) || 0 };
     });
-    return { leads: leads, patients: pts, discharges: discharges };
+    const sent = {};
+    (Array.isArray(d.outpatientSentLeadIds) ? d.outpatientSentLeadIds : []).forEach(function (k) { sent[s(k)] = true; });
+    return { leads: leads, patients: pts, discharges: discharges, outpatientSent: sent };
   }
+
+  /* ---- C17: «משוחררים» in the CRM (CHANGELOG-crm-discharged.md) ----
+   * The discharge audit rows (getData.dischargedPatients) that are still open:
+   * not restored, not soft-deleted. Newest exit first; a days-back window. */
+  function dischargedList(c, today, daysBack, f) {
+    const house = s(f && f.house), q = s(f && f.q).toLowerCase();
+    const since = daysBack ? addDays(today, -daysBack) : '';
+    return (c.discharges || []).filter(function (r) {
+      if (r.restored === '1' || r.restored === 'TRUE' || r.restored === 'true' || r.deletedAt) return false;
+      if (since && r.exitDate && r.exitDate < since) return false;
+      if (house && houseName(r.houseId) !== houseName(house)) return false;
+      if (q && (r.name + ' ' + houseName(r.houseId)).toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    }).map(function (r) {
+      return Object.assign({ houseName: houseName(r.houseId), dispositionLabel: DISPOSITION_LABELS[r.disposition] || r.disposition,
+        sentToOutpatient: !!(c.outpatientSent && c.outpatientSent['discharge:' + r.id]) }, r);
+    }).sort(function (a, b) { return (b.exitDate || b.dischargedAt || '').localeCompare(a.exitDate || a.dischargedAt || '') || a.name.localeCompare(b.name, 'he'); });
+  }
+  function priorStatusOf(audit) { const st = s(audit && audit.priorStatus); return st === 'active' || st === 'trial' || st === 'wait' ? st : 'active'; }
+  /* The released Patients row this audit row restores: by the audit's patientId, then the
+   * classic triple (house, name, entry date), then the one released row of the house with
+   * the same source lead. Null → the row is gone (restore in the classic dashboard). */
+  function restoreTarget(audit, rawPatientsByHouse) {
+    const byHouse = rawPatientsByHouse && typeof rawPatientsByHouse === 'object' && !Array.isArray(rawPatientsByHouse) ? rawPatientsByHouse : {};
+    const hid = houseId(audit.houseId);
+    const rows = Array.isArray(byHouse[hid]) ? byHouse[hid] : (Array.isArray(byHouse[s(audit.houseId)]) ? byHouse[s(audit.houseId)] : []);
+    const key = s(hid) in byHouse ? hid : s(audit.houseId);
+    const pid = s(audit.patientId);
+    let idx = pid ? rows.findIndex(function (p) { return s(p && p.id) === pid; }) : -1;
+    if (idx < 0) idx = rows.findIndex(function (p) { return p && s(p.name) === s(audit.name) && isoDay(p.date) === s(audit.date); });
+    if (idx < 0 && s(audit.fromLead)) {
+      const hits = rows.map(function (p, i) { return p && s(p.status) === 'released' && s(p.fromLead) === s(audit.fromLead) ? i : -1; }).filter(function (i) { return i >= 0; });
+      if (hits.length === 1) idx = hits[0];
+    }
+    if (idx < 0) return null;
+    return { hid: key, arr: rows, idx: idx, row: rows[idx] };
+  }
+  function restoredRow(row, audit) { return Object.assign({}, row, { status: priorStatusOf(audit), exitDate: '' }); }
+  /* Every open audit row of the same stay (a stay discharged twice without a restore). */
+  function openAuditsOf(audit, discharges) {
+    return (discharges || []).filter(function (d) {
+      if (d.restored === '1' || d.restored === 'TRUE' || d.deletedAt) return false;
+      if (d.patientId && audit.patientId) return d.patientId === audit.patientId;
+      return houseId(d.houseId) === houseId(audit.houseId) && d.name === audit.name && d.date === audit.date;
+    });
+  }
+  function restoreFlagBody(raw) { return { action: 'restorePatientToActive', patient: Object.assign({}, raw, { restored: 'TRUE' }) }; }
+  function restoreAsLeadBody(raw, newLeadId) { return { action: 'restorePatient', patient: Object.assign({}, raw, { newLeadId: s(newLeadId) }) }; }
+  function outpatientBody(dischargeId) { return { dischargeId: s(dischargeId), manual: true }; }
 
   /* ---- C14: «פגישות ושירותים» over real data (CHANGELOG-crm-meetings-tab.md) ----
    * The lead's intake meeting (Vered's own outcome) + the house manager's
@@ -395,7 +446,7 @@
     });
     const order = { late: 0, today: 1, wait: 2 };
     rows.sort(function (a, b) { return (order[a.state] - order[b.state]) || (a.due || '9').localeCompare(b.due || '9'); });
-    return { kpi: kpi, rows: rows, leads: n.leads, patients: n.patients, discharges: n.discharges };
+    return { kpi: kpi, rows: rows, leads: n.leads, patients: n.patients, discharges: n.discharges, outpatientSent: n.outpatientSent };
   }
 
   /* «פניות»: the board columns and the table rows share one filter. */
@@ -1222,9 +1273,91 @@
       });
     }
 
+    function renderDischarged(c) {
+      const days = state.dischargedDays || 90;
+      const list = dischargedList(c, state.today, days, state.filters);
+      const ro = !!(state.me && (state.me.readonly || state.me.view === 'readonly'));
+      const toolbar = '<div class="toolbar"><div class="seg"><button type="button" data-clients-view="in" aria-pressed="false">בבית</button><button type="button" data-clients-view="out" aria-pressed="true">משוחררים</button></div>'
+        + '<select id="f-house-c"><option value="">כל הבתים</option>' + HOUSES.map(function (h) { return '<option value="' + h.id + '"' + (state.filters.house === h.id ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select>'
+        + '<select id="f-dis-days">' + [[30, '30 יום'], [90, '90 יום'], [365, 'שנה'], [0, 'הכול']].map(function (o) { return '<option value="' + o[0] + '"' + (days === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>'
+        + '<span class="na">' + list.length + ' שחרורים</span></div>';
+      if (!list.length) return toolbar + '<div class="crm-state">אין שחרורים בטווח</div>';
+      return toolbar + '<div class="tbl-wrap"><table class="tbl" id="crm-discharged"><thead><tr><th>שם</th><th>בית</th><th>כניסה</th><th>יציאה</th><th>סיבה</th><th>המשך טיפול</th><th>אמבולטורי</th><th></th></tr></thead><tbody>'
+        + list.map(function (r) {
+          const op = r.sentToOutpatient ? chip('ok', 'נשלח') : (r.disposition === 'released_outpatient' ? chip('late', 'לא נשלח') : '<span class="na">—</span>');
+          return '<tr data-discharge="' + esc(r.id) + '"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtDate(r.date)) + '</td><td>' + esc(fmtDate(r.exitDate)) + '</td><td>' + esc(r.dispositionLabel || '—') + '</td><td>' + esc(r.continuity || '—') + '</td><td>' + op + '</td>'
+            + '<td>' + (ro ? '' : '<button type="button" class="btn small" data-restore="' + esc(r.id) + '">שחזר</button>' + (!r.sentToOutpatient ? ' <button type="button" class="btn small" data-to-outpatient="' + esc(r.id) + '">העבר לאמבולטורי</button>' : '')) + '</td></tr>';
+        }).join('') + '</tbody></table></div><div id="crm-restore"></div>';
+    }
+    /* C17: restore (to the previous status, or as a new lead) and the manual Outpatient handoff. */
+    function openRestoreChoice(id) {
+      const el = $('#crm-restore'); const c = compute(state.data, state.today);
+      const r = dischargedList(c, state.today, 0, {}).filter(function (x) { return x.id === id; })[0];
+      if (!el || !r) return;
+      const target = restoreTarget(r, state.data.patients);
+      const prior = { active: 'פעיל', trial: 'ניסיון', wait: 'בהמתנה' }[priorStatusOf(r)];
+      el.innerHTML = '<form class="new-lead report" data-form="restore" data-discharge="' + esc(id) + '" novalidate><h3>שחזור · ' + esc(r.name) + ' · ' + esc(r.houseName) + ' · יצא/ה ' + esc(fmtDate(r.exitDate)) + '</h3>'
+        + '<label class="wide"><input type="radio" name="how" value="active"' + (target ? ' checked' : ' disabled') + '> החזרה לבית לסטטוס הקודם (' + esc(prior) + ')' + (target ? '' : ' <span class="na">— השורה המקורית לא נמצאה; אפשר רק כליד חדש</span>') + (r.disposition === 'released_outpatient' ? ' <span class="na">· הליד באאוטפיישנט לא יימחק — להסיר ידנית</span>' : '') + '</label>'
+        + '<label class="wide"><input type="radio" name="how" value="lead"' + (target ? '' : ' checked') + '> פתיחת ליד חדש (חוזר/ת למסלול הפניות)</label>'
+        + '<div class="wide err" data-err="_form"></div><div class="wide toolbar"><button type="submit" class="btn primary">שחזור</button><button type="button" class="btn" data-restore-cancel>ביטול</button><span class="na" id="crm-restore-state"></span></div></form>';
+      el.scrollIntoView({ block: 'nearest' });
+    }
+    function submitRestore(f) {
+      if (state.saving) return Promise.resolve(false);
+      const id = f.dataset.discharge; const how = (f.querySelector('input[name="how"]:checked') || {}).value;
+      const c = compute(state.data, state.today);
+      const r = dischargedList(c, state.today, 0, {}).filter(function (x) { return x.id === id; })[0];
+      const raw = (state.data.dischargedPatients || []).filter(function (x) { return s(x && x.id) === id; })[0];
+      if (!r || !raw || !how) return Promise.resolve(false);
+      const post = function (path, body) {
+        return win.fetch(path, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(function (x) { return x.json().catch(function () { return null; }); });
+      };
+      const st = $('#crm-restore-state'); if (st) st.textContent = 'שומר…';
+      state.saving = true;
+      let chain;
+      if (how === 'lead') {
+        const newId = randomId().replace(/^id-/, 'lead-');
+        chain = post('/api/sheets', restoreAsLeadBody(raw, newId)).then(function (res) {
+          if (!res || res.ok === false || !(res.lead && s(res.lead.id))) throw new Error((res && res.message) || 'השחזור נכשל' + (res && res.error ? ' (' + res.error + ')' : ''));
+          return 'נפתח ליד חדש «' + s(r.name) + '»';
+        });
+      } else {
+        const target = restoreTarget(r, state.data.patients);
+        if (!target) { state.saving = false; return Promise.resolve(false); }
+        const next = restoredRow(target.row, r);
+        const siblings = openAuditsOf(r, c.discharges);
+        chain = post('/api/sheets', houseSaveBody(target.hid, target.arr, next, null)).then(function (res) {
+          const why = houseSaveRefusal(res, s(next.id), '');
+          if (why) throw new Error(why);
+          // then every open audit row of the stay is flagged (sequential, idempotent upserts)
+          return siblings.reduce(function (pr, d) {
+            return pr.then(function () {
+              const rawD = (state.data.dischargedPatients || []).filter(function (x) { return s(x && x.id) === d.id; })[0] || { id: d.id };
+              return post('/api/sheets', restoreFlagBody(rawD)).then(function (res2) { if (!(res2 && res2.restoredToActive === true)) throw new Error('המטופל/ת חזר/ה לבית, אך סימון רשומת השחרור נכשל — רענני'); });
+            });
+          }, Promise.resolve()).then(function () { return '«' + s(r.name) + '» חזר/ה לבית'; });
+        });
+      }
+      return chain.then(function (msg) { state.saving = false; toast(msg); return load().then(function () { state.area = 'clients'; state.clientsView = 'out'; renderNav(); renderMain(); return true; }); })
+        .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], String(e && e.message || e)); toast(String(e && e.message || e), true); return false; });
+    }
+    function sendToOutpatient(id) {
+      if (state.saving) return Promise.resolve(false);
+      state.saving = true;
+      return win.fetch('/api/outpatient-lead', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(outpatientBody(id)) })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (d) {
+          state.saving = false;
+          const ok = d && d.ok === true && (d.sent || d.alreadySent);
+          toast(ok ? (d.alreadySent ? 'המטופל/ת כבר נשלח/ה לאמבולטורי' : 'נוצר ליד טיפול חוץ באאוטפיישנט') : ('יצירת ליד טיפול חוץ נכשלה — ' + s(d && (d.message || d.error) || 'שגיאה')), !ok);
+          if (ok) { if (!state.data.outpatientSentLeadIds) state.data.outpatientSentLeadIds = []; state.data.outpatientSentLeadIds.push('discharge:' + id); renderMain(); }
+          return !!ok;
+        }).catch(function (e) { state.saving = false; toast('יצירת ליד טיפול חוץ נכשלה — ' + String(e && e.message || e), true); return false; });
+    }
     function renderClients(c) {
+      if (state.clientsView === 'out') return renderDischarged(c);
       const list = clients(c.patients, state.today, state.filters);
-      const toolbar = '<div class="toolbar"><select id="f-house-c"><option value="">כל הבתים</option>' + HOUSES.map(function (h) { return '<option value="' + h.id + '"' + (state.filters.house === h.id ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="na">' + list.length + ' בטיפול</span><button type="button" class="btn primary" id="crm-direct-add">+ הוספת מטופל/ת ישירות</button></div>';
+      const toolbar = '<div class="toolbar"><div class="seg"><button type="button" data-clients-view="in" aria-pressed="true">בבית</button><button type="button" data-clients-view="out" aria-pressed="false">משוחררים</button></div><select id="f-house-c"><option value="">כל הבתים</option>' + HOUSES.map(function (h) { return '<option value="' + h.id + '"' + (state.filters.house === h.id ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="na">' + list.length + ' בטיפול</span><button type="button" class="btn primary" id="crm-direct-add">+ הוספת מטופל/ת ישירות</button></div>';
       return toolbar + '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>שם</th><th>בית</th><th>תאריך כניסה</th><th>ימים בבית</th><th>סטטוס</th></tr></thead><tbody>'
         + list.map(function (p) { return '<tr data-open-patient="' + esc(p.id) + '"><td>' + esc(p.name) + '</td><td>' + esc(p.houseName) + '</td><td>' + esc(fmtDate(p.date)) + '</td><td>' + esc(p.days) + '</td><td>' + esc(p.status) + '</td></tr>'; }).join('')
         + '</tbody></table></div>' + (list.length === 0 ? '<div class="crm-state">אין מטופלים</div>' : '');
@@ -1788,6 +1921,8 @@
       } else if (f.dataset.form === 'discharge') {
         const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
         dischargePatient(f.dataset.patient, vals, f);
+      } else if (f.dataset.form === 'restore') {
+        submitRestore(f);
       } else if (f.dataset.form === 'payment-report') {
         submitReport(f, false);
       } else if (f.dataset.form.indexOf('small-') === 0) {
@@ -1843,6 +1978,14 @@
       }
     });
     root.addEventListener('click', function (ev) {
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-clients-view],[data-restore],[data-to-outpatient],[data-restore-cancel]') : null;
+      if (!t) return;
+      if (t.dataset.clientsView) { state.clientsView = t.dataset.clientsView; return renderMain(); }
+      if (t.dataset.restoreCancel !== undefined) { const el = $('#crm-restore'); if (el) el.innerHTML = ''; return; }
+      if (t.dataset.restore) return openRestoreChoice(t.dataset.restore);
+      if (t.dataset.toOutpatient) { if (win.confirm('להעביר לאמבולטורי (ליד טיפול חוץ באאוטפיישנט)?')) sendToOutpatient(t.dataset.toOutpatient); }
+    });
+    root.addEventListener('click', function (ev) {
       const t = ev.target && ev.target.closest ? ev.target.closest('[data-cal-mode],[data-cal-step],[data-cal-today]') : null;
       if (!t) return;
       if (!state.cal) state.cal = { mode: 'day', anchor: state.today };
@@ -1853,6 +1996,9 @@
     });
     root.addEventListener('change', function (ev) {
       const t = ev.target;
+      // a field inside a form (report, restore, …) is the form's business — re-rendering would wipe it
+      if (['f-dis-days', 'crm-cal-date', 'f-house', 'f-house-c', 'f-owner'].indexOf(t.id) < 0) return;
+      if (t.id === 'f-dis-days') state.dischargedDays = Number(t.value) || 0;
       if (t.id === 'crm-cal-date') { if (!state.cal) state.cal = { mode: 'day', anchor: state.today }; if (isoDateOk(t.value)) state.cal.anchor = t.value; }
       if (t.id === 'f-house' || t.id === 'f-house-c') state.filters.house = t.value;
       if (t.id === 'f-owner') state.filters.owner = t.value;
@@ -1894,7 +2040,8 @@
     FUNDERS: FUNDERS, PATIENT_STATUSES: PATIENT_STATUSES, admissionRow: admissionRow, admissionErrors: admissionErrors, directAddRows: directAddRows,
     directAddErrors: directAddErrors, houseSaveBody: houseSaveBody, houseSaveRefusal: houseSaveRefusal, isoDateOk: isoDateOk,
     DISCHARGE_DISPOSITIONS: DISCHARGE_DISPOSITIONS, CONTINUITY_CHOICES: CONTINUITY_CHOICES, dischargeAuditRow: dischargeAuditRow, dischargeErrors: dischargeErrors,
-    movedRow: movedRow, patientEditErrors: patientEditErrors, meetingsFor: meetingsFor, managerReport: managerReport, whenLocal: whenLocal, calendarRange: calendarRange, calendarRows: calendarRows, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
+    movedRow: movedRow, patientEditErrors: patientEditErrors, meetingsFor: meetingsFor, managerReport: managerReport, whenLocal: whenLocal,
+    dischargedList: dischargedList, priorStatusOf: priorStatusOf, restoreTarget: restoreTarget, restoredRow: restoredRow, openAuditsOf: openAuditsOf, restoreFlagBody: restoreFlagBody, restoreAsLeadBody: restoreAsLeadBody, outpatientBody: outpatientBody, calendarRange: calendarRange, calendarRows: calendarRows, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
     MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
     patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
     newSubmissionId: newSubmissionId, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,

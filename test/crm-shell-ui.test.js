@@ -54,7 +54,7 @@ test('normalise: patients keyed by house are flattened with houseId; leads get t
   assert.equal(n.patients.length, 3);
   assert.deepEqual(n.patients.map((p) => p.houseId).sort(), ['ramot', 'ramot', 'rehab']);
   assert.equal(n.leads[0].stage, 'new');
-  assert.deepEqual(core.normalise(null), { leads: [], patients: [], discharges: [] });
+  assert.deepEqual(core.normalise(null), { leads: [], patients: [], discharges: [], outpatientSent: {} });
 });
 
 test('compute: the work queue — late first, then today, then waiting; KPIs; admitted leads excluded; rows are derived', () => {
@@ -484,6 +484,37 @@ test('C15 calendar picker: day / week ranges (week starts Sunday), rows for any 
   assert.deepEqual(core.DAY_NAMES.length, 7);
 });
 
+test('C17 discharged: open audit rows only, window + filters, sent flag; restore target by patientId / triple / fromLead; restored row; sibling audits; the classic bodies', () => {
+  const data = { outpatientSentLeadIds: ['discharge:d1'],
+    patients: { ramot: [{ id: 'p1', name: 'דנה', date: '2026-07-01', status: 'released', exitDate: '2026-10-01', fromLead: 'L1' }, { id: 'p9', name: 'זיו', date: '2026-01-01', status: 'released', fromLead: 'L9' }], rehab: [{ id: 'p2', name: 'אבי', date: '2026-02-01', status: 'active' }] },
+    dischargedPatients: [
+      { id: 'd1', patientId: 'p1', name: 'דנה', houseId: 'ramot', date: '2026-07-01', exitDate: '2026-10-01', dischargedAt: '2026-10-01T09:00:00Z', disposition: 'released_outpatient', continuity: 'שחר', prior_status: 'trial' },
+      { id: 'd1b', patientId: 'p1', name: 'דנה', houseId: 'ramot', date: '2026-07-01', exitDate: '2026-09-20', dischargedAt: '2026-09-20T09:00:00Z', disposition: 'completed' },
+      { id: 'd2', name: 'זיו', houseId: 'רמות השבים', date: '2026-01-01', exitDate: '2026-03-01', dischargedAt: '2026-03-01T00:00:00Z', disposition: 'completed' },
+      { id: 'd3', patientId: 'p1', exitDate: '2026-08-01', restored: 'TRUE' }, { id: 'd4', patientId: 'p1', exitDate: '2026-08-02', deletedAt: '2026-08-03' },
+      { id: 'd5', name: 'גל', houseId: 'rehab', date: '2026-03-01', exitDate: '2026-10-20', dischargedAt: '2026-10-20T00:00:00Z', disposition: 'stopped_early', fromLead: 'L5' }] };
+  const c = core.compute(data, '2026-10-28');
+  assert.deepEqual(core.dischargedList(c, '2026-10-28', 90, {}).map((r) => [r.id, r.sentToOutpatient, r.dispositionLabel]), [['d5', false, 'הפסיק לפני הזמן'], ['d1', true, 'משוחרר לטיפול חוץ'], ['d1b', false, 'סיים טיפול']]);
+  assert.deepEqual(core.dischargedList(c, '2026-10-28', 0, {}).map((r) => r.id), ['d5', 'd1', 'd1b', 'd2'], 'no window = everything open');
+  assert.deepEqual(core.dischargedList(c, '2026-10-28', 0, { house: 'rehab' }).map((r) => r.id), ['d5']);
+  assert.deepEqual(core.dischargedList(c, '2026-10-28', 0, { q: 'זיו' }).map((r) => r.id), ['d2']);
+  const d1 = core.dischargedList(c, '2026-10-28', 0, {}).filter((r) => r.id === 'd1')[0];
+  assert.equal(core.priorStatusOf(d1), 'trial'); assert.equal(core.priorStatusOf({ priorStatus: 'x' }), 'active');
+  const t1 = core.restoreTarget(d1, data.patients);
+  assert.deepEqual([t1.hid, t1.idx, t1.row.id], ['ramot', 0, 'p1'], 'by patientId');
+  assert.deepEqual(core.restoredRow(t1.row, d1), Object.assign({}, t1.row, { status: 'trial', exitDate: '' }));
+  const d2 = core.dischargedList(c, '2026-10-28', 0, {}).filter((r) => r.id === 'd2')[0];
+  assert.equal(core.restoreTarget(d2, data.patients).row.id, 'p9', 'legacy row: the triple, house given by name');
+  const d5 = core.dischargedList(c, '2026-10-28', 0, {}).filter((r) => r.id === 'd5')[0];
+  assert.equal(core.restoreTarget(d5, data.patients), null, 'no row left → only as a new lead');
+  assert.equal(core.restoreTarget(Object.assign({}, d5, { name: 'other' }), { rehab: [{ id: 'q', name: 'x', date: '2026-01-01', status: 'released', fromLead: 'L5' }] }).row.id, 'q', 'one released row with the same source lead');
+  assert.deepEqual(core.openAuditsOf(d1, c.discharges).map((d) => d.id), ['d1', 'd1b'], 'both open rows of the stay');
+  assert.deepEqual(core.restoreFlagBody({ id: 'd1', x: 1 }), { action: 'restorePatientToActive', patient: { id: 'd1', x: 1, restored: 'TRUE' } });
+  assert.deepEqual(core.restoreAsLeadBody({ id: 'd1' }, 'lead-abc'), { action: 'restorePatient', patient: { id: 'd1', newLeadId: 'lead-abc' } });
+  assert.deepEqual(core.outpatientBody('d1'), { dischargeId: 'd1', manual: true });
+  assert.match(core.randomId().replace(/^id-/, 'lead-'), /^lead-[0-9a-f]{16}$/);
+});
+
 test('esc escapes every HTML-significant character', () => {
   assert.equal(core.esc('<b>"x" & \'y\'</b>'), '&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;');
 });
@@ -496,8 +527,8 @@ test('wiring: assets hashed via ASSETS, NOT in sw.js; the shell never calls a wr
   const actions = [...src.matchAll(/api\('([A-Za-z]+)'/g)].map((m) => m[1]).sort();
   assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments'], 'GET reads (debtAging + getPayments: C8; getCredits: C11)');
   const writes = [...src.matchAll(/\{ action: '([A-Za-z]+)'/g)].map((m) => m[1]).sort();
-  assert.deepEqual([...new Set(writes)], ['appendFunder', 'dischargePatient', 'editReceipt', 'moveLeadIrrelevant', 'removeLead', 'reportPayment', 'restoreLead', 'saveAll', 'savePayment', 'setBillingDiscount', 'settleRefund', 'upsertBillingOverride'], 'the write actions: one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7), the strict payment report (C10), discount / amount / settle (C11)');
-  assert.equal((src.match(/\/api\/outpatient-lead/g) || []).length, 1, 'the outpatient handoff: one call site, after a released_outpatient discharge');
+  assert.deepEqual([...new Set(writes)], ['appendFunder', 'dischargePatient', 'editReceipt', 'moveLeadIrrelevant', 'removeLead', 'reportPayment', 'restoreLead', 'restorePatient', 'restorePatientToActive', 'saveAll', 'savePayment', 'setBillingDiscount', 'settleRefund', 'upsertBillingOverride'], 'the write actions (C17: restore to active / as a lead): one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7), the strict payment report (C10), discount / amount / settle (C11)');
+  assert.equal((src.match(/\/api\/outpatient-lead/g) || []).length, 2, 'the outpatient handoff: after a released_outpatient discharge (manual:false) and «העבר לאמבולטורי» (manual:true)');
   assert.ok(!/serializePatients|patients: state\.data\.patients\b/.test(src), 'patients travel only through houseSaveBody (one house as read)');
   assert.ok(!/innerHTML\s*=\s*[^;]*\b(l|lead|p|pat)\.(name|phone|note)\b(?!\))/.test(src.replace(/esc\([^)]*\)/g, 'ESC')), 'every interpolated field goes through esc()');
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.html'), 'utf8');
