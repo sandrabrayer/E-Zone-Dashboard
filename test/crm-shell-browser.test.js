@@ -51,11 +51,13 @@ const QUEUE = { ok: true, receipts: [{ id: 'r1', status: 'reported' }, { id: 'r2
 const DEBT = { ok: true, asOf: TODAY,
   totals: { recorded_debt: { count: 1, total: 6000, d0_7: 0, d8_30: 0, d31_60: 0, d61_plus: 6000 }, unrecorded_cycles: { count: 1, total: 5000, d0_7: 5000, d8_30: 0, d31_60: 0, d61_plus: 0 } },
   byHouse: [{ houseId: 'ramot', recorded_debt: { count: 1, total: 6000 }, unrecorded_cycles: { count: 1, total: 5000 } }],
-  byPatient: [{ patientId: 'p1', name: 'דנה כהן', houseId: 'ramot', status: 'active', inHouseAtAsOf: true, cycles: [{ balance: 6000, days: 70, kind: 'recorded' }, { balance: 5000, days: 3, kind: 'unrecorded' }] }],
+  byPatient: [{ patientId: 'p1', patientKey: 'ramot::דנה כהן::' + daysAgo(30), name: 'דנה כהן', houseId: 'ramot', status: 'active', inHouseAtAsOf: true, cycles: [
+    { start: daysAgo(70), end: daysAgo(41), expected: 6000, received: 2500, balance: 3500, days: 70, kind: 'recorded', paymentId: 'cyc-1' },
+    { start: daysAgo(3), end: daysAgo(-26), expected: 5000, received: 0, balance: 5000, days: 3, kind: 'unrecorded' }] }],
   detachedPayments: { count: 1 }, pendingCredits: { count: 0, total: 0 }, funderGrace: { count: 0, amount: 0 } };
-const PAYMENTS = { ok: true, payments: [{ id: 'cyc-1', patientId: 'p1', dueDate: daysAgo(70), amount: 6000, amountPaid: 2500, balance: 3500, status: 'partial' }],
-  receipts: [{ id: 'rcpt-1', patientId: 'p1', patientName: 'דנה כהן', houseId: 'ramot', receivedDate: daysAgo(4), amount: 2500, method: 'ביט', payer: 'אמא', confirmStatus: 'reported' }],
-  funders: [{ patientId: 'p1', funder: 'משרד הבריאות', effectiveFrom: daysAgo(30), setBy: 'ורד' }] };
+const PAYMENTS = { ok: true, payments: [{ id: 'cyc-1', patientId: 'ramot::דנה כהן::' + daysAgo(30), patientUid: 'p1', patientName: 'דנה כהן', houseId: 'ramot', dueDate: daysAgo(70), amount: 6000, amountPaid: 2500, balance: 3500, status: 'partial', coverageStart: daysAgo(70), coverageEnd: daysAgo(41) }],
+  receipts: [{ id: 'rcpt-1', patientId: 'ramot::דנה כהן::' + daysAgo(30), patientUid: 'p1', patientName: 'דנה כהן', houseId: 'ramot', receivedDate: daysAgo(4), amount: 2500, method: 'ביט', payer: 'אמא', confirmStatus: 'reported' }],
+  funders: [{ patientId: 'p1', funder: 'משרד הביטחון', effectiveFrom: daysAgo(30), setBy: 'ורד' }] };
 const ACTIVITY = { ok: true, scope: 'full', total: 1, events: [{ eventId: 'x', occurredAt: '2026-10-20T09:00:00.000Z', kind: 'lead_created', source: 'system:x', actorName: 'ורד', summary: 'הליד נוצר', details: {} }] };
 
 let saveAnswer = null;
@@ -82,10 +84,11 @@ async function boot() {
       try { parsed = JSON.parse(body); } catch (_) { parsed = {}; }
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
-      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient'].indexOf(parsed.action) >= 0) saves.push(parsed);
+      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
         : parsed.action === 'debtAging' ? DEBT : parsed.action === 'getPayments' ? PAYMENTS
         : parsed.action === 'saveAll' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, proven: { leads: (parsed.leads || []).map((l) => String(l.id)), patients: Object.values(parsed.patients || {}).flat().map((p) => String(p.id)) } })
+        : parsed.action === 'reportPayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, receipt: { id: 'rcpt-new' }, cycle: { id: parsed.report && parsed.report.cycle && parsed.report.cycle.id } })
         : parsed.action === 'appendFunder' ? { ok: true, row: { submissionId: parsed.funder && parsed.funder.submissionId } }
         : parsed.action === 'dischargePatient' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, patient: { id: String(parsed.patient && parsed.patient.id) }, refund: { created: 1 } })
         : ['moveLeadIrrelevant', 'removeLead', 'restoreLead'].indexOf(parsed.action) >= 0 ? (saveAnswer ? saveAnswer(parsed) : { ok: true, lead: { id: String(parsed.lead && parsed.lead.id) } })
@@ -219,7 +222,7 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
     assert.deepEqual(kpis.slice(0, 5), ['₪11,000', '₪6,000', '1', '₪2,500', '1']);
     assert.deepEqual(kpis.slice(5, 9), ['₪5,000', '₪0', '₪0', '₪6,000'], 'the four aging buckets');
     const main = await page.textContent('#crm-main');
-    assert.match(main, /דנה כהן/); assert.match(main, /רמות השבים/); assert.match(main, /1 ללא דיווח/); assert.match(main, /70 ימים/); assert.match(main, /ביט/); assert.match(main, /דווח תשלום/);
+    assert.match(main, /דנה כהן/); assert.match(main, /רמות השבים/); assert.match(main, /1 ללא דיווח/); assert.match(main, /70 ימים/); assert.match(main, /₪8,500/); assert.match(main, /ביט/); assert.match(main, /דווח תשלום/);
     assert.match(await page.textContent('#crm-receipts'), new RegExp(core.fmtDate(daysAgo(4)).replace(/\//g, '\\/')), 'receipt dates are DD/MM/YYYY');
     assert.equal(await page.$$eval('#crm-main .links a', (els) => els.map((e) => e.getAttribute('href')).every((h) => h === '/')), true, 'every action links to the classic dashboard');
     // the debtor row opens the patient drawer
@@ -257,8 +260,8 @@ test('C9 «חשבון» tab (Vered): a patient drawer shows open cycles, stamped
     await page.click('#crm-drawer [data-tab="account"]');
     await page.waitForSelector('#crm-account-open');
     const acc = await page.textContent('#crm-account');
-    assert.match(acc, /חוב פתוח/); assert.match(acc, /₪11,000/); assert.match(acc, /2 מחזורים/);
-    assert.match(acc, /ללא דיווח/); assert.match(acc, /משרד הבריאות/); assert.match(acc, /₪2,500/); assert.match(acc, /אמא/); assert.match(acc, /חלקי/);
+    assert.match(acc, /חוב פתוח/); assert.match(acc, /₪8,500/); assert.match(acc, /2 מחזורים/);
+    assert.match(acc, /ללא דיווח/); assert.match(acc, /משרד הביטחון/); assert.match(acc, /₪2,500/); assert.match(acc, /אמא/); assert.match(acc, /חלקי/);
     assert.match(acc, new RegExp(core.fmtDate(daysAgo(4)).replace(/\//g, '\\/')), 'DD/MM/YYYY');
     assert.equal(await page.$$eval('#crm-account-receipts tbody tr', (els) => els.length), 1);
     assert.equal(srv.actions.filter((a) => a.action === 'debtAging').length, 1);
@@ -276,6 +279,81 @@ test('C9 «חשבון» tab (Vered): a patient drawer shows open cycles, stamped
     assert.match(await page.textContent('#crm-account'), /נפתח עם הקליטה/);
     assert.deepEqual(errors, []);
     assert.deepEqual(srv.saves, [], 'read-only');
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('C10 «דווח תשלום» in the account pane (Vered): rules validate client-side, a valid report posts reportPayment with the cycle + submissionId and re-reads; a duplicate asks and re-sends with confirmDuplicate; the unrecorded cycle is minted pay::<key>::<due>', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    assert.equal(await page.evaluate(() => typeof window.PaymentReportRules), 'object', 'the shared rules are loaded by the shell');
+    await page.click('#crm-nav button[data-area="clients"]');
+    await page.click('table.tbl tbody tr[data-open-patient="p1"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer [data-tab="account"]');
+    await page.waitForSelector('#crm-account-open');
+    assert.equal(await page.$$eval('#crm-account-open [data-report-open]', (els) => els.length), 2);
+    // recorded cycle → the form, remaining prefilled, coverage from the row
+    await page.click('#crm-account-open [data-report-open="0"]');
+    await page.waitForSelector('form[data-form="payment-report"]');
+    assert.equal(await page.inputValue('form.report [name="amount"]'), '3500');
+    assert.equal(await page.inputValue('form.report [name="coverageStart"]'), daysAgo(70));
+    assert.equal(await page.inputValue('form.report [name="funder"]'), 'משרד הביטחון');
+    // empty submit: client-side issues, nothing posted
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => document.querySelector('form.report .err[data-err="method"]').textContent.length > 0);
+    assert.match(await page.textContent('form.report .err[data-err="payer"]'), /משלם/);
+    assert.equal(srv.saves.length, 0);
+    // bank transfer needs a reference
+    await page.selectOption('form.report [name="method"]', 'העברה בנקאית');
+    await page.fill('form.report [name="payer"]', 'אמא של דנה');
+    await page.selectOption('form.report [name="invoiceWanted"]', 'no');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => /אסמכתא/.test(document.querySelector('form.report .err[data-err="reference"]').textContent));
+    assert.equal(srv.saves.length, 0);
+    await page.fill('form.report [name="reference"]', 'TR-123');
+    // the server says duplicate → confirm → re-sent with confirmDuplicate
+    let calls = 0;
+    saveAnswer = (parsed) => { calls++; return calls === 1 ? { ok: false, error: 'possible_duplicate', existing: { id: 'rcpt-1', receivedDate: daysAgo(4), reference: 'TR-123' } } : { ok: true, receipt: { id: 'rcpt-new' }, cycle: { id: parsed.report.cycle.id } }; };
+    page.once('dialog', (d) => { assert.match(d.message(), /קבלה דומה/); d.accept(); });
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
+    assert.equal(srv.saves.length, 2);
+    const first = srv.saves[0].report, second = srv.saves[1].report;
+    assert.equal(srv.saves[0].action, 'reportPayment');
+    assert.deepEqual(first.cycle, { id: 'cyc-1', patientId: 'ramot::דנה כהן::' + daysAgo(30), patientName: 'דנה כהן', houseId: 'ramot', dueDate: daysAgo(70), amount: 6000, coverageStart: daysAgo(70), coverageEnd: daysAgo(41) });
+    assert.equal(first.report.amount, '3500'); assert.equal(first.report.method, 'העברה בנקאית'); assert.equal(first.report.reference, 'TR-123'); assert.equal(first.report.invoiceWanted, 'no');
+    assert.match(first.submissionId, /^sub-[0-9a-f]{32}$/); assert.equal(first.confirmDuplicate, undefined);
+    assert.equal(second.submissionId, first.submissionId, 'same idempotency key on the re-send'); assert.equal(second.confirmDuplicate, true);
+    // saved → both reads again, pane repainted
+    await page.waitForFunction(() => !!document.querySelector('#crm-account-open'));
+    assert.equal(srv.actions.filter((a) => a.action === 'debtAging').length, 2);
+    assert.equal(srv.actions.filter((a) => a.action === 'getPayments').length, 2);
+    // the unrecorded cycle: minted id, debtAging's window and expected amount
+    saveAnswer = null;
+    await page.click('#crm-account-open [data-report-open="1"]');
+    await page.waitForSelector('form[data-form="payment-report"]');
+    assert.equal(await page.inputValue('form.report [name="amount"]'), '5000');
+    await page.selectOption('form.report [name="method"]', 'מזומן');
+    await page.fill('form.report [name="payer"]', 'דנה כהן');
+    await page.selectOption('form.report [name="invoiceWanted"]', 'yes');
+    await page.fill('form.report [name="invoiceTo"]', 'דנה כהן');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
+    const third = srv.saves[2].report;
+    assert.deepEqual(third.cycle, { id: 'pay::ramot::דנה כהן::' + daysAgo(30) + '::' + daysAgo(3), patientId: 'ramot::דנה כהן::' + daysAgo(30), patientName: 'דנה כהן', houseId: 'ramot', dueDate: daysAgo(3), amount: 5000, coverageStart: daysAgo(3), coverageEnd: daysAgo(-26) });
+    assert.equal(third.report.invoiceTo, 'דנה כהן');
+    assert.notEqual(third.submissionId, first.submissionId, 'a new form, a new key');
+    // a refused report keeps the form open with the server's field issues
+    await page.click('#crm-account-open [data-report-open="1"]');
+    await page.waitForSelector('form[data-form="payment-report"]');
+    saveAnswer = () => ({ ok: false, error: 'invalid_report', message: 'הדיווח לא נשמר — יש להשלים את השדות המסומנים', issues: [{ field: 'coverageStart', code: 'coverage_outside_cycle', hebrewMessage: 'תחילת תקופת הכיסוי חייבת להיות בתוך מחזור החיוב' }] });
+    await page.selectOption('form.report [name="method"]', 'ביט'); await page.fill('form.report [name="payer"]', 'דנה כהן'); await page.selectOption('form.report [name="invoiceWanted"]', 'no');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => /בתוך מחזור/.test(document.querySelector('form.report .err[data-err="coverageStart"]').textContent));
+    assert.ok(await page.$('form.report'), 'form stays open');
+    assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });
 

@@ -1,6 +1,10 @@
-# E-ZONE Ecosystem Status — updated October 27, 2026
+# E-ZONE Ecosystem Status — updated October 28, 2026
 
-## C9 — CRM patient drawer «חשבון» tab over real data — October 27, 2026 (PR open)
+## C10 — «דווח תשלום» inside the CRM — October 28, 2026 (PR open)
+
+- The patient «חשבון» tab reports payments natively: the classic strict form rebuilt in the CRM over the shared `lib/payment-report-rules.js` and the unchanged `reportPayment` contract (submissionId idempotency, duplicate confirm, re-read after save). C9 money-row matching fixed (legacy triple + uid). Credits / discounts / refunds next. Decision (Sandra 2026-10-28): rebuild in the CRM, then switch Vered. Details: `CHANGELOG-crm-payment-report.md`.
+
+## C9 — CRM patient drawer «חשבון» tab over real data — October 27, 2026 (merged, #298)
 
 - The patient drawer's «חשבון» tab shows open cycles, stamped payment cycles, the patient's receipts and the funder history, from the same `debtAging` + `getPayments` answers the גבייה area loads (fetched once per page, shared). Finance users only; actions still link to the classic dashboard. No write, no Code.gs, flag-gated. Details: `CHANGELOG-crm-account-tab.md`.
 

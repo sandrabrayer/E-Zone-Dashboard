@@ -208,7 +208,8 @@ A test pins this.
 | C3 | UI | public/crm/* | computed lists, drawer, kept state | No | No | flag off, or revert |
 | C4–C7 (#293–#296, merged) | UI writes | public/crm/crm.js | one-lead `saveAll`, lifecycle, admission, house-as-read edit / move / discharge; browser scenarios | No | No | flag off, or revert |
 | C8 (#297, merged) | UI read | public/crm/crm.js | `billingOverview` over `debtAging` + `getPayments`; fetched once; Vered + Ortal browser scenario | No | No | flag off, or revert |
-| C9 | UI read | public/crm/crm.js | `patientAccount` — the drawer's «חשבון» tab over the shared C8 reads; browser scenario | No | No | flag off, or revert |
+| C10 | UI write | public/crm/crm.js, crm.html | the strict payment report over the shared rules + `reportPayment`; browser scenario | No | No | flag off, or revert |
+| C9 (#298, merged) | UI read | public/crm/crm.js | `patientAccount` — the drawer's «חשבון» tab over the shared C8 reads; browser scenario | No | No | flag off, or revert |
 
 ---
 
