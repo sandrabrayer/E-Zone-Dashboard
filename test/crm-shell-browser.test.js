@@ -52,12 +52,15 @@ const DEBT = { ok: true, asOf: TODAY,
   totals: { recorded_debt: { count: 1, total: 6000, d0_7: 0, d8_30: 0, d31_60: 0, d61_plus: 6000 }, unrecorded_cycles: { count: 1, total: 5000, d0_7: 5000, d8_30: 0, d31_60: 0, d61_plus: 0 } },
   byHouse: [{ houseId: 'ramot', recorded_debt: { count: 1, total: 6000 }, unrecorded_cycles: { count: 1, total: 5000 } }],
   byPatient: [{ patientId: 'p1', patientKey: 'ramot::דנה כהן::' + daysAgo(30), name: 'דנה כהן', houseId: 'ramot', status: 'active', inHouseAtAsOf: true, cycles: [
-    { start: daysAgo(70), end: daysAgo(41), expected: 6000, received: 2500, balance: 3500, days: 70, kind: 'recorded', paymentId: 'cyc-1' },
-    { start: daysAgo(3), end: daysAgo(-26), expected: 5000, received: 0, balance: 5000, days: 3, kind: 'unrecorded' }] }],
+    { start: daysAgo(70), end: daysAgo(41), expected: 6000, received: 2500, balance: 3500, days: 70, kind: 'recorded', paymentId: 'cyc-1', month: daysAgo(70).slice(0, 7) },
+    { start: daysAgo(3), end: daysAgo(-26), expected: 5000, received: 0, balance: 5000, days: 3, kind: 'unrecorded', month: daysAgo(3).slice(0, 7), discount: 0 }] }],
   detachedPayments: { count: 1 }, pendingCredits: { count: 0, total: 0 }, funderGrace: { count: 0, amount: 0 } };
 const PAYMENTS = { ok: true, payments: [{ id: 'cyc-1', patientId: 'ramot::דנה כהן::' + daysAgo(30), patientUid: 'p1', patientName: 'דנה כהן', houseId: 'ramot', dueDate: daysAgo(70), amount: 6000, amountPaid: 2500, balance: 3500, status: 'partial', coverageStart: daysAgo(70), coverageEnd: daysAgo(41) }],
   receipts: [{ id: 'rcpt-1', patientId: 'ramot::דנה כהן::' + daysAgo(30), patientUid: 'p1', patientName: 'דנה כהן', houseId: 'ramot', receivedDate: daysAgo(4), amount: 2500, method: 'ביט', payer: 'אמא', confirmStatus: 'reported' }],
   funders: [{ patientId: 'p1', funder: 'משרד הביטחון', effectiveFrom: daysAgo(30), setBy: 'ורד' }] };
+const CREDITS = { ok: true, credits: [
+  { id: 'cr-1', patientId: 'p1', patientKey: 'ramot::דנה כהן::' + daysAgo(30), patientName: 'דנה כהן', houseId: 'ramot', creditType: 'days_unused', allocationMonth: daysAgo(40).slice(0, 7), amount: 1200, status: 'pending', payoutDate: daysAgo(10) },
+  { id: 'cr-2', patientId: 'p2', patientKey: 'rehab::אבי::' + daysAgo(7), patientName: 'אבי', houseId: 'rehab', creditType: 'other', allocationMonth: daysAgo(40).slice(0, 7), amount: 300, status: 'paid', paidDate: daysAgo(2), method: 'ביט' }] };
 const ACTIVITY = { ok: true, scope: 'full', total: 1, events: [{ eventId: 'x', occurredAt: '2026-10-20T09:00:00.000Z', kind: 'lead_created', source: 'system:x', actorName: 'ורד', summary: 'הליד נוצר', details: {} }] };
 
 let saveAnswer = null;
@@ -84,9 +87,12 @@ async function boot() {
       try { parsed = JSON.parse(body); } catch (_) { parsed = {}; }
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
-      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment'].indexOf(parsed.action) >= 0) saves.push(parsed);
+      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'settleRefund'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
-        : parsed.action === 'debtAging' ? DEBT : parsed.action === 'getPayments' ? PAYMENTS
+        : parsed.action === 'debtAging' ? DEBT : parsed.action === 'getPayments' ? PAYMENTS : parsed.action === 'getCredits' ? CREDITS
+        : parsed.action === 'setBillingDiscount' ? (saveAnswer ? saveAnswer(parsed) : { ok: true })
+        : parsed.action === 'upsertBillingOverride' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, override: { id: parsed.override && parsed.override.id } })
+        : parsed.action === 'settleRefund' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, credit: { id: parsed.creditId } })
         : parsed.action === 'saveAll' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, proven: { leads: (parsed.leads || []).map((l) => String(l.id)), patients: Object.values(parsed.patients || {}).flat().map((p) => String(p.id)) } })
         : parsed.action === 'reportPayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, receipt: { id: 'rcpt-new' }, cycle: { id: parsed.report && parsed.report.cycle && parsed.report.cycle.id } })
         : parsed.action === 'appendFunder' ? { ok: true, row: { submissionId: parsed.funder && parsed.funder.submissionId } }
@@ -174,7 +180,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     assert.match(await page.textContent('#crm-main'), /פגישות ללא תוצאה/);
     assert.ok(await noHScroll(page), 'no horizontal page scroll');
     assert.deepEqual(errors, []);
-    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['debtAging', 'getActivity', 'getData', 'getPayments'], 'reads only, no queue for Vered');
+    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments'], 'reads only, no queue for Vered');
   } finally { await browser.close(); srv.close(); }
 });
 
@@ -222,7 +228,7 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
     assert.deepEqual(kpis.slice(0, 5), ['₪11,000', '₪6,000', '1', '₪2,500', '1']);
     assert.deepEqual(kpis.slice(5, 9), ['₪5,000', '₪0', '₪0', '₪6,000'], 'the four aging buckets');
     const main = await page.textContent('#crm-main');
-    assert.match(main, /דנה כהן/); assert.match(main, /רמות השבים/); assert.match(main, /1 ללא דיווח/); assert.match(main, /70 ימים/); assert.match(main, /₪8,500/); assert.match(main, /ביט/); assert.match(main, /דווח תשלום/);
+    assert.match(main, /דנה כהן/); assert.match(main, /רמות השבים/); assert.match(main, /1 ללא דיווח/); assert.match(main, /70 ימים/); assert.match(main, /₪8,500/); assert.match(main, /ביט/); assert.match(main, /עריכת קבלות/);
     assert.match(await page.textContent('#crm-receipts'), new RegExp(core.fmtDate(daysAgo(4)).replace(/\//g, '\\/')), 'receipt dates are DD/MM/YYYY');
     assert.equal(await page.$$eval('#crm-main .links a', (els) => els.map((e) => e.getAttribute('href')).every((h) => h === '/')), true, 'every action links to the classic dashboard');
     // the debtor row opens the patient drawer
@@ -236,6 +242,8 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
     await page.waitForSelector('#crm-debtors');
     assert.equal(srv.actions.filter((a) => a.action === 'debtAging').length, 1);
     assert.equal(srv.actions.filter((a) => a.action === 'getPayments').length, 1);
+    assert.equal(srv.actions.filter((a) => a.action === 'getCredits').length, 1);
+    assert.match(main, /זיכויים לתשלום/); assert.match(await page.textContent('#crm-pending-credits'), /דנה כהן/);
     assert.deepEqual(errors, []);
     assert.deepEqual(srv.saves, [], 'read-only: nothing written');
     // Ortal: same reads under her own session; her action link is the verification queue only
@@ -353,6 +361,69 @@ test('C10 «דווח תשלום» in the account pane (Vered): rules validate cl
     await page.click('form.report button[type="submit"]');
     await page.waitForFunction(() => /בתוך מחזור/.test(document.querySelector('form.report .err[data-err="coverageStart"]').textContent));
     assert.ok(await page.$('form.report'), 'form stays open');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('C11 discount / amount / settle (Vered): the three classic writes from the account pane with the legacy key; client errors first; a refusal keeps the form; saved → three reads again; «זיכויים לתשלום» in the area opens the drawer form', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="clients"]');
+    await page.click('table.tbl tbody tr[data-open-patient="p1"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer [data-tab="account"]');
+    await page.waitForSelector('#crm-account-open');
+    assert.match(await page.textContent('#crm-account-credits'), /ימים שלא נוצלו/);
+    assert.equal(await page.$$eval('#crm-account-credits [data-settle-open]', (els) => els.length), 1, 'only the pending credit can be settled');
+    // discount: reason required (client), then the classic body
+    await page.click('#crm-account-open [data-discount-open="1"]');
+    await page.waitForSelector('form[data-form="small-discount"]');
+    await page.fill('form.report [name="discountAmount"]', '500');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => /סיבה/.test(document.querySelector('form.report .err[data-err="discountReason"]').textContent));
+    assert.equal(srv.saves.length, 0);
+    await page.fill('form.report [name="discountReason"]', 'הסכמה עם המשפחה');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
+    assert.equal(srv.saves[0].action, 'setBillingDiscount');
+    assert.deepEqual(srv.saves[0].discount, { patientId: 'ramot::דנה כהן::' + daysAgo(30), month: daysAgo(3).slice(0, 7), discountAmount: 500, discountReason: 'הסכמה עם המשפחה' });
+    await page.waitForFunction(() => !!document.querySelector('#crm-account-open'));
+    assert.equal(srv.actions.filter((a) => a.action === 'getCredits').length, 2, 'saved → re-read');
+    // amount override: refused by the server → the form stays with the message
+    await page.click('#crm-account-open [data-amount-open="0"]');
+    await page.waitForSelector('form[data-form="small-amount"]');
+    assert.equal(await page.inputValue('form.report [name="amount"]'), '6000');
+    saveAnswer = () => ({ ok: false, error: 'bad_amount' });
+    await page.fill('form.report [name="amount"]', '5500');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => /bad_amount/.test(document.querySelector('form.report .err[data-err="_form"]').textContent));
+    assert.equal(srv.saves[1].action, 'upsertBillingOverride');
+    assert.deepEqual(srv.saves[1].override, { id: 'ovr::ramot::דנה כהן::' + daysAgo(30) + '::' + daysAgo(70).slice(0, 7), patientId: 'ramot::דנה כהן::' + daysAgo(30), month: daysAgo(70).slice(0, 7), amount: 5500, created: TODAY });
+    saveAnswer = null;
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
+    assert.equal(srv.saves.length, 3);
+    // settle a pending credit from the account pane
+    await page.waitForSelector('#crm-account-credits [data-settle-open="cr-1"]');
+    await page.click('#crm-account-credits [data-settle-open="cr-1"]');
+    await page.waitForSelector('form[data-form="small-settle"]');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => /אמצעי/.test(document.querySelector('form.report .err[data-err="method"]').textContent));
+    await page.selectOption('form.report [name="method"]', 'ביט');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
+    assert.equal(srv.saves[3].action, 'settleRefund');
+    assert.equal(srv.saves[3].creditId, 'cr-1'); assert.equal(srv.saves[3].paidDate, TODAY); assert.equal(srv.saves[3].method, 'ביט');
+    // from the גבייה area: «סמן כשולם» opens the patient drawer on חשבון with the form
+    await page.keyboard.press('Escape');
+    await page.click('#crm-nav button[data-area="billing"]');
+    await page.waitForSelector('#crm-pending-credits [data-settle-open="cr-1"]');
+    await page.click('#crm-pending-credits [data-settle-open="cr-1"]');
+    await page.waitForSelector('form[data-form="small-settle"]');
+    assert.equal(await page.getAttribute('#crm-drawer', 'aria-hidden'), 'false');
+    assert.match(await page.textContent('#crm-drawer h2'), /דנה כהן/);
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });
