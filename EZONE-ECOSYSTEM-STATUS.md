@@ -1,5 +1,9 @@
 # E-ZONE Ecosystem Status — updated October 28, 2026
 
+## «ביקור נקבע» without a date — the strip + the prompt (classic + CRM) — October 28, 2026 (PR open, stacked on #309)
+
+- Sandra's report: אורן's meeting with אורנה (today) was on no board and in no managers' feed. Live row: stage «ביקור נקבע», «נפגש עם» אורן, **visitDate blank** — every surface keys on visitDate; ezone-managers is not at fault. Now: an undated strip on «לוח פגישות» and the CRM «יומן» (chip → meeting modal / drawer «תיאום פגישה»), and a stage move to «ביקור נקבע» without a date opens the date prompt at once. Code.gs untouched. SW v95 → v96. Details: `CHANGELOG-undated-visit-leads.md`.
+
 ## גבייה search finds the patient — any status, every cycle (classic + CRM) — October 28, 2026 (PR open)
 
 - Vered's report: the classic גבייה search box filtered two DATE-scoped lists, so a released patient (or anyone with nothing due that day) was never found. New «תוצאות חיפוש — כל המחזורים» group lists every matching patient (any status, discharged rows, orphan rows) with all their cycles; explicit not-found text. CRM «גבייה» answers the top search box the same way. SW v94 → v95. Details: `CHANGELOG-billing-search-any-patient.md`.

@@ -617,6 +617,14 @@ test('C4 lead actions (Vered): «שלב הבא» on a card posts ONE lead to sav
     assert.deepEqual(body.prove, { leads: ['L1'] });
     await page.waitForSelector('#crm-toast[data-show="true"]');
     assert.match(await page.textContent('#crm-toast'), /נשמר/);
+    // 1b. arriving at «ביקור נקבע» with no date opens the drawer on «תיאום פגישה»
+    //     (CHANGELOG-undated-visit-leads.md); the date field has focus. Closed here.
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    assert.ok(await page.$('#crm-drawer form[data-form="meeting"]'), 'meeting form in the drawer');
+    assert.equal(await page.evaluate(() => document.activeElement && document.activeElement.name), 'visitDate', 'date field focused');
+    assert.match(await page.textContent('#crm-toast'), /תאריך הפגישה/);
+    await page.click('#crm-drawer-close');
+    await page.waitForSelector('#crm-drawer[aria-hidden="true"]');
     // 2. refusal → rollback to the previous column + error toast
     saveAnswer = () => ({ ok: false, invalidLeads: ['L1'] });
     await page.click('.card[data-open-lead="L1"] [data-stage-next]');

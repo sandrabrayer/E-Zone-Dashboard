@@ -520,6 +520,14 @@
         return { id: l.id, name: l.name, house: houseName(l.house), date: l.visitDate, time: l.visitTime || '', withWhom: l.meetingWith || l.assignedTo || '', stage: l.stage, status: status, reported: reported };
       });
   }
+  /* «ביקור נקבע» leads with no date (CHANGELOG-undated-visit-leads.md): on no
+   * calendar, on no board, in no managers' feed — listed by name so the date
+   * gets entered. Pure. */
+  function undatedVisits(leads) {
+    return (leads || []).filter(function (l) { return l && l.stage === 'visit' && !l.visitDate; })
+      .map(function (l) { return { id: l.id, name: l.name, house: houseName(l.house), withWhom: l.meetingWith || l.assignedTo || '', created: l.created }; })
+      .sort(function (a, b) { return (a.created || '').localeCompare(b.created || '') || a.name.localeCompare(b.name, 'he'); });
+  }
   function calendarTitle(range, today) {
     if (!range) return '';
     if (range.mode === 'day') return (range.from === today ? 'היום · ' : 'יום ' + DAY_NAMES[weekdayOf(range.from)] + ' · ') + fmtDate(range.from);
@@ -1399,6 +1407,12 @@
         + '<button type="button" class="btn small" data-cal-step="' + step + '" aria-label="קדימה">›</button>'
         + '<button type="button" class="btn small" data-cal-today>היום</button>'
         + '<span class="na">' + esc(calendarTitle(range, state.today)) + ' · ' + rows.length + ' פגישות</span></div>';
+      const undated = undatedVisits(c.leads);
+      if (undated.length) {
+        html += '<div class="crm-state bad" id="crm-cal-undated"><strong>' + undated.length + (undated.length === 1 ? ' ליד ב«ביקור נקבע» ללא תאריך פגישה' : ' לידים ב«ביקור נקבע» ללא תאריך פגישה') + '</strong> — לא ביומן ולא אצל המנהלים. פתיחה → «תיאום פגישה».<div class="rows">'
+          + undated.map(function (u) { return '<div class="row" data-open-lead="' + esc(u.id) + '" data-focus-meeting="1"><span><span class="name">' + esc(u.name) + '</span><br><span class="sub">' + esc(u.house) + '</span></span><span>' + esc(u.withWhom || '—') + '</span><span>' + chip('late', 'ללא תאריך') + '</span><span><button type="button" class="btn small" data-open-lead="' + esc(u.id) + '" data-focus-meeting="1">קביעת תאריך</button></span></div>'; }).join('')
+          + '</div></div>';
+      }
       if (!rows.length) return html + '<div class="crm-state">אין פגישות ב' + (range.mode === 'week' ? 'שבוע זה' : 'יום זה') + (upcoming ? ' · ' + upcoming + ' פגישות ב-14 הימים הקרובים' : '') + '</div>';
       let day = '';
       return html + '<div class="rows">' + rows.map(function (r) {
@@ -1591,7 +1605,19 @@
       if (!l) return;
       const target = dir > 0 ? stageAfter(l.stage) : stageBefore(l.stage);
       if (!target) return;
-      writeLead(id, { stage: target }, 'המעבר ל«' + stageLabel(target) + '»');
+      const needsDate = target === 'visit' && !l.visitDate;
+      writeLead(id, { stage: target }, 'המעבר ל«' + stageLabel(target) + '»').then(function (ok) {
+        /* «ביקור נקבע» without a date is on no calendar and at no manager —
+         * ask for it right here (CHANGELOG-undated-visit-leads.md). */
+        if (ok && needsDate) { openDrawer('lead', id, true); focusMeetingForm(); toast('השלב נשמר — עכשיו תאריך הפגישה, אחרת היא לא תופיע ביומן ולא אצל המנהל/ת', true); }
+      });
+    }
+    /* Open the drawer's «תיאום פגישה» block and put the caret in its date. */
+    function focusMeetingForm() {
+      const f = $('#crm-drawer form[data-form="meeting"]');
+      if (!f) return;
+      const d = f.closest('details'); if (d) d.open = true;
+      const inp = f.elements.visitDate; if (inp) { try { inp.focus(); } catch (_) { /* no-op */ } }
     }
 
     /* The client drawer: existing fields + the timeline from getActivity (B3). */
@@ -1909,7 +1935,7 @@
       if (t.dataset.kpi) { state.kpiFilter = state.kpiFilter === t.dataset.kpi ? '' : t.dataset.kpi; return renderMain(); }
       if (t.dataset.view) { state.view = t.dataset.view; return renderMain(); }
       if (t.dataset.sort) { state.sort = t.dataset.sort; return renderMain(); }
-      if (t.dataset.openLead) return openDrawer('lead', t.dataset.openLead);
+      if (t.dataset.openLead) { openDrawer('lead', t.dataset.openLead); if (t.dataset.focusMeeting) focusMeetingForm(); return; }
       if (t.dataset.openPatient) return openDrawer('patient', t.dataset.openPatient);
       if (t.dataset.tab) {
         doc.querySelectorAll('#crm-drawer [role="tab"]').forEach(function (b) { b.setAttribute('aria-selected', String(b === t)); });
@@ -2080,7 +2106,7 @@
     directAddErrors: directAddErrors, houseSaveBody: houseSaveBody, houseSaveRefusal: houseSaveRefusal, isoDateOk: isoDateOk,
     DISCHARGE_DISPOSITIONS: DISCHARGE_DISPOSITIONS, CONTINUITY_CHOICES: CONTINUITY_CHOICES, dischargeAuditRow: dischargeAuditRow, dischargeErrors: dischargeErrors,
     movedRow: movedRow, patientEditErrors: patientEditErrors, meetingsFor: meetingsFor, managerReport: managerReport, whenLocal: whenLocal,
-    dischargedList: dischargedList, priorStatusOf: priorStatusOf, restoreTarget: restoreTarget, restoredRow: restoredRow, openAuditsOf: openAuditsOf, restoreFlagBody: restoreFlagBody, restoreAsLeadBody: restoreAsLeadBody, outpatientBody: outpatientBody, calendarRange: calendarRange, calendarRows: calendarRows, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
+    dischargedList: dischargedList, priorStatusOf: priorStatusOf, restoreTarget: restoreTarget, restoredRow: restoredRow, openAuditsOf: openAuditsOf, restoreFlagBody: restoreFlagBody, restoreAsLeadBody: restoreAsLeadBody, outpatientBody: outpatientBody, calendarRange: calendarRange, calendarRows: calendarRows, undatedVisits: undatedVisits, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
     MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, billingSearch: billingSearch, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
     patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
     newSubmissionId: newSubmissionId, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,

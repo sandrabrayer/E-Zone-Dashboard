@@ -2825,6 +2825,10 @@ input[type="date"].date-invalid {
 }
 button.mtg-bad-date-lead { cursor: pointer; }
 button.mtg-bad-date-lead:hover { background: rgba(255, 176, 32, 0.18); }
+/* «N לידים ב«ביקור נקבע» ללא תאריך פגישה» — same strip, told apart by a title
+ * line; the modal's reason line when the strip (or a stage move) opened it. */
+.mtg-undated .mtg-bad-dates-head { color: var(--text); }
+.mtg-modal-reason { margin: -4px 0 10px; color: var(--warning); font-size: 13px; }
 
 /* ===== Global search («🔍 חיפוש») — CHANGELOG-global-patient-search.md ===== */
 /* Floating, below the sticky top bar (50) and every modal; never part of the

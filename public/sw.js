@@ -322,7 +322,10 @@
 // v94 → v95: גבייה search finds the PATIENT, any status, every cycle — «תוצאות חיפוש — כל המחזורים» (index.html,
 // app.js, style.css) + the CRM גבייה area answers the top search box (crm/crm.js) (CHANGELOG-billing-search-any-patient.md).
 // Live v93 verified 2026-10-28 (v94 on the deploy branch, Railway behind); monotonic, v17 never reused.
-var CACHE_VERSION = 'v95';
+// v95 → v96: «ביקור נקבע» without a date — the undated strip on «לוח פגישות» and the CRM «יומן», the meeting
+// modal / drawer form asked for on a stage move (app.js, style.css, crm/crm.js) (CHANGELOG-undated-visit-leads.md).
+// Stacked on v95 (PR #309); monotonic, v17 never reused.
+var CACHE_VERSION = 'v96';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

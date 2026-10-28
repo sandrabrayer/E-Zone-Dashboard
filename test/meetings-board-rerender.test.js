@@ -109,7 +109,10 @@ function visitLead(over) {
   return Object.assign({ id: 'tomer', name: 'תומר', house: 'רעננה הפרדס', stage: 'visit',
     visitDate: '', visitTime: '', meetingWith: '' }, over || {});
 }
-const onBoard = (board, name) => board.innerHTML.includes(name);
+/* The WEEK's rows only: a dateless «ביקור נקבע» lead now sits in the undated
+ * strip above the list (CHANGELOG-undated-visit-leads.md), which is not "on
+ * the board" in this file's sense — these tests are about the week buckets. */
+const onBoard = (board, name) => String(board.innerHTML.split('<div class="mtg-list">')[1] || '').includes(name);
 
 /* ===== A. inline card fields → the board, optimistic and confirmed ===== */
 
