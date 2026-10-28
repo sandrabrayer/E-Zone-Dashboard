@@ -3844,6 +3844,46 @@ function badLeadDatesBannerHTML(leads) {
     </div>`;
 }
 
+/* ===== «ביקור נקבע» without a date (CHANGELOG-undated-visit-leads.md) =====
+ * Every meeting surface — this board, the CRM «יומן», the managers' feed
+ * (Code.gs computeIntakeMeetingsByHouse_ / expectedAdmissions) — keys on
+ * visitDate. A lead moved to «ביקור נקבע» with no date (the שלב-הבא button
+ * never asked for one, and meetingWith was then auto-filled from the house
+ * default so the card LOOKED scheduled) was therefore invisible everywhere.
+ * 28/10/2026: אורנה פרלמן, ramot, «נפגש עם» אורן, visitDate blank — Oren held
+ * the meeting and nobody could see it. Pure. */
+function undatedVisitLeads(leads) {
+  return (Array.isArray(leads) ? leads : []).filter(l => l && l.stage === 'visit'
+    && !leadVisitDateISO(l.visitDate) && !leadsWithBadDates([l]).length);
+}
+
+/* A meeting-shaped stub for openMeetingEditModal from a bare lead. Pure. */
+function meetingStubForLead(lead) {
+  return { id: lead.id || '', date: leadVisitDateISO(lead.visitDate), time: isoTime(lead.visitTime || ''),
+    name: lead.name || '', house: lead.house || '', meetingWith: lead.meetingWith || '' };
+}
+
+/* The strip above the week: the dateless visit-stage leads, each a chip that
+ * opens the meeting modal (edit mode) so the date gets entered where the
+ * omission is seen. Says plainly WHY it matters — they are not on the board
+ * and not at the managers'. */
+function undatedVisitsBannerHTML(leads) {
+  const list = undatedVisitLeads(leads);
+  if (!list.length) return '';
+  const chips = list.map(l => {
+    const h = houseByName(l.house) || houseById(resolveHouseId(l.house));
+    const label = `${l.name || '—'} · ${h ? h.name : (l.house || '')}${l.meetingWith ? ' · ' + l.meetingWith : ''}`;
+    return state.mode === 'edit'
+      ? `<button type="button" class="mtg-bad-date-lead mtg-undated-lead" data-undated-lead="${escapeHtml(l.id || '')}">${escapeHtml(label)}</button>`
+      : `<span class="mtg-bad-date-lead mtg-undated-lead">${escapeHtml(label)}</span>`;
+  }).join('');
+  return `
+    <div class="mtg-bad-dates mtg-undated" role="status">
+      <div class="mtg-bad-dates-head">${list.length} ${list.length === 1 ? 'ליד ב«ביקור נקבע» ללא תאריך פגישה' : 'לידים ב«ביקור נקבע» ללא תאריך פגישה'} — לא מופיעים בלוח ולא אצל המנהלים${state.mode === 'edit' ? '. לחיצה על שם → קביעת תאריך' : ''}</div>
+      <div class="mtg-bad-dates-names">${chips}</div>
+    </div>`;
+}
+
 /* Pure bucketing for the meetings board. Given the lead list and any date in
  * the target week, returns the week's meetings grouped by day.
  *
@@ -4622,6 +4662,7 @@ function renderMeetings() {
       <span class="mtg-range">${escapeHtml(rangeLabel)}</span>
     </div>
     ${badLeadDatesBannerHTML(state.leads)}
+    ${undatedVisitsBannerHTML(state.leads)}
     ${summary}
     <div class="mtg-list">${body}</div>`;
 
@@ -4630,6 +4671,13 @@ function renderMeetings() {
     btn.addEventListener('click', () => {
       const lead = state.leads.find(l => l.id === btn.getAttribute('data-bad-date-lead'));
       if (lead) openEditLeadModal(lead);
+    });
+  });
+  /* Dateless «ביקור נקבע» names → the meeting modal, date field first. */
+  board.querySelectorAll('[data-undated-lead]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const lead = state.leads.find(l => l.id === btn.getAttribute('data-undated-lead'));
+      if (lead) openMeetingEditModal(meetingStubForLead(lead));
     });
   });
 
@@ -4703,11 +4751,13 @@ function renderMeetings() {
  * The modal also carries a "שלח עדכון" WhatsApp button that builds the 'update'
  * message from the modal's CURRENT (live) field values and sends it to the lead.
  * On a successful save the board re-renders so the row reflects the change. */
-function openMeetingEditModal(m) {
+function openMeetingEditModal(m, opts) {
   const lead = state.leads.find(l => l.id === m.id);
   if (!lead) return;
+  const reason = opts && opts.reason ? String(opts.reason) : '';
 
   const root = document.getElementById('modal-root');
+  if (!root) return;   // a page without the modal host (restricted layouts) has nothing to open
   const back = document.createElement('div');
   back.className = 'modal-backdrop';
 
@@ -4722,6 +4772,7 @@ function openMeetingEditModal(m) {
   back.innerHTML = `
     <div class="modal">
       <h3>עריכת פגישה</h3>
+      ${reason ? `<p class="mtg-modal-reason">${escapeHtml(reason)}</p>` : ''}
       <form>
         <div class="form-row">
           <label>תאריך</label>
@@ -4756,6 +4807,7 @@ function openMeetingEditModal(m) {
   const close = () => back.remove();
   cancelBtn.onclick = close;
   back.addEventListener('click', e => { if (e.target === back) close(); });
+  if (reason) { try { dateInp.focus(); } catch (_) { /* no-op */ } }
 
   /* "שלח עדכון" — build the update message from the modal's LIVE values (not the
    * pre-edit meeting), so sending after changing a field reflects the new plan
@@ -6019,8 +6071,16 @@ async function moveLead(lead, newStage) {
     lead.waitlistedAt = prevWaitlistedAt;
     renderAll();
     showError('עדכון שלב נכשל — ' + e.message);
+    return;
   } finally {
     setSaving(false);
+  }
+  /* Arriving at «ביקור נקבע» with no date: the meeting modal opens on the
+   * spot, date field first (CHANGELOG-undated-visit-leads.md). The stage move
+   * itself is already saved — this asks for the one thing a visit stage is
+   * about, instead of leaving a card that looks scheduled and is on no board. */
+  if (newStage === 'visit' && prev !== 'visit' && !leadVisitDateISO(lead.visitDate) && state.mode === 'edit') {
+    openMeetingEditModal(meetingStubForLead(lead), { reason: 'הליד עבר ל«ביקור נקבע» — בלי תאריך הפגישה לא תופיע בלוח ולא אצל המנהל/ת' });
   }
 }
 
