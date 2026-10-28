@@ -359,6 +359,15 @@
         <div id="billing-open-list" class="billing-list"></div>
       </div>
 
+      <!-- «תוצאות חיפוש — כל המחזורים» (CHANGELOG-billing-search-any-patient.md):
+           shown only while the search box has text. The two lists above are
+           date-scoped; this one finds the PATIENT — any status, discharged
+           rows too — and lists every cycle row, whatever its due date. -->
+      <div id="billing-search-group" class="bill-group bill-group--unresolved bill-group--search hidden" data-group="search" aria-live="polite">
+        <h3 class="bill-group-title">תוצאות חיפוש — כל המחזורים <span id="billing-search-count" class="count-pill">0</span></h3>
+        <div id="billing-search-list" class="billing-list"></div>
+      </div>
+
       <!-- «זיכויים לתשלום» (CHANGELOG-refunds-auto-policy.md): ONE list. Refunds
            are computed by policy and created automatically at discharge — no
            decision step. #credits-forecast renders the totals per payment date

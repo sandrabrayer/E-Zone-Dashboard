@@ -319,7 +319,10 @@
 // v93 → v94: the CRM shell (the CRM page, "/" after the switch) joins the PWA: crm/crm.js + crm/crm.css
 // in BUNDLE_PATHS (cache-first at their content hash, network-first otherwise); crm.html registers this
 // worker and links the manifest (CHANGELOG-crm-pwa.md). Live v93 = deploy branch (monotonic).
-var CACHE_VERSION = 'v94';
+// v94 → v95: גבייה search finds the PATIENT, any status, every cycle — «תוצאות חיפוש — כל המחזורים» (index.html,
+// app.js, style.css) + the CRM גבייה area answers the top search box (crm/crm.js) (CHANGELOG-billing-search-any-patient.md).
+// Live v93 verified 2026-10-28 (v94 on the deploy branch, Railway behind); monotonic, v17 never reused.
+var CACHE_VERSION = 'v95';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

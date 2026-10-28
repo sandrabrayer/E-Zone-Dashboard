@@ -1,5 +1,9 @@
 # E-ZONE Ecosystem Status — updated October 28, 2026
 
+## גבייה search finds the patient — any status, every cycle (classic + CRM) — October 28, 2026 (PR open)
+
+- Vered's report: the classic גבייה search box filtered two DATE-scoped lists, so a released patient (or anyone with nothing due that day) was never found. New «תוצאות חיפוש — כל המחזורים» group lists every matching patient (any status, discharged rows, orphan rows) with all their cycles; explicit not-found text. CRM «גבייה» answers the top search box the same way. SW v94 → v95. Details: `CHANGELOG-billing-search-any-patient.md`.
+
 ## C17 — CRM «משוחררים»: list, restore (previous status / new lead), «העבר לאמבולטורי» — October 28, 2026 (PR open)
 
 - The classic «מטופלים משוחררים» tab's daily uses now live in the CRM (house-as-read `saveAll` + `restorePatientToActive`, `restorePatient`, `/api/outpatient-lead manual:true`). Duplicate-discharge delete stays classic. Details: `CHANGELOG-crm-discharged.md`.
