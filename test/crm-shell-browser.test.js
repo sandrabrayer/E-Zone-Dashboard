@@ -38,7 +38,8 @@ const TODAY = israelDay(Date.now());
 const daysAgo = (n) => israelDay(Date.now() - n * 86400000);
 
 const DATA = {
-  ok: true, irrelevantLeads: [], removedLeads: [], dischargedPatients: [], billingOverrides: [], houseManagers: {}, managerPhones: {}, currentManagers: [],
+  ok: true, irrelevantLeads: [], removedLeads: [], billingOverrides: [], houseManagers: {}, managerPhones: {}, currentManagers: [], outpatientSentLeadIds: [],
+  dischargedPatients: [{ id: 'dx1', patientId: 'px', name: 'נועה לוי', houseId: 'ramot', date: daysAgo(60), exitDate: daysAgo(5), dischargedAt: daysAgo(5) + 'T09:00:00.000Z', disposition: 'released_outpatient', continuity: 'שחר', prior_status: 'active', fromLead: 'LX' }],
   leads: [
     { id: 'L1', name: 'אבי לוי', house: 'רמות השבים', stage: 'new', created: daysAgo(5), assignedTo: 'ורד', phone: '0501111111', source: 'פייסבוק' },
     { id: 'L2', name: 'גלי כהן', house: 'ramot', stage: 'visit', visitDate: TODAY, visitTime: '13:30', meetingWith: 'אורן', created: daysAgo(2) },
@@ -46,7 +47,7 @@ const DATA = {
     { id: 'L5', name: 'רון אביב', house: 'קיסריה ריהאב', stage: 'visit', visitDate: daysAgo(4), meetingWith: 'רנטה', created: daysAgo(9), meetingReportOutcome: 'undecided', meetingCompanion: 'father', meetingNote: 'רוצה לחשוב', meetingReporter: 'רנטה', meetingReportedAt: daysAgo(2) + 'T07:00:00.000Z', meetingSeen: '' },
     { id: 'L4', name: 'טל ברק', house: 'רמות השבים', stage: 'paid', created: daysAgo(10), assignedTo: 'ורד' },
   ],
-  patients: { ramot: [{ id: 'p1', name: 'דנה כהן', date: daysAgo(30), status: 'active', pay: 6000 }], rehab: [{ id: 'p2', name: 'אבי', date: daysAgo(7), status: 'active' }] },
+  patients: { ramot: [{ id: 'p1', name: 'דנה כהן', date: daysAgo(30), status: 'active', pay: 6000 }, { id: 'px', name: 'נועה לוי', date: daysAgo(60), status: 'released', exitDate: daysAgo(5), fromLead: 'LX' }], rehab: [{ id: 'p2', name: 'אבי', date: daysAgo(7), status: 'active' }] },
 };
 const QUEUE = { ok: true, receipts: [{ id: 'r1', status: 'reported' }, { id: 'r2', status: 'flagged' }] };
 const DEBT = { ok: true, asOf: TODAY,
@@ -88,9 +89,11 @@ async function boot() {
       try { parsed = JSON.parse(body); } catch (_) { parsed = {}; }
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
-      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'settleRefund', 'editReceipt', 'savePayment'].indexOf(parsed.action) >= 0) saves.push(parsed);
+      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'settleRefund', 'editReceipt', 'savePayment', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
         : parsed.action === 'debtAging' ? DEBT : parsed.action === 'getPayments' ? PAYMENTS : parsed.action === 'getCredits' ? CREDITS
+        : parsed.action === 'restorePatientToActive' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restoredToActive: true, id: parsed.patient && parsed.patient.id })
+        : parsed.action === 'restorePatient' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restored: true, lead: { id: parsed.patient && parsed.patient.newLeadId } })
         : parsed.action === 'editReceipt' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, receipt: { id: parsed.edit && parsed.edit.id } })
         : parsed.action === 'savePayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, payment: { id: parsed.payment && parsed.payment.id, status: parsed.payment && parsed.payment.status } })
         : parsed.action === 'setBillingDiscount' ? (saveAnswer ? saveAnswer(parsed) : { ok: true })
@@ -549,6 +552,50 @@ test('C15 calendar picker (Vered): today by default; ‹ › and the date input 
     void week;
     assert.deepEqual(errors, []);
     assert.deepEqual(srv.saves, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('C17 «משוחררים» (Vered): the discharged list with its flags; restore to the previous status = house-as-read saveAll + audit flag; restore as a new lead = restorePatient with a minted lead id; «העבר לאמבולטורי» posts manual:true', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="clients"]');
+    assert.ok(!/נועה לוי/.test(await page.textContent('table.tbl')), 'released patients are not in «בבית»');
+    await page.click('[data-clients-view="out"]');
+    await page.waitForSelector('#crm-discharged');
+    const txt = await page.textContent('#crm-discharged');
+    assert.match(txt, /נועה לוי/); assert.match(txt, /משוחרר לטיפול חוץ/); assert.match(txt, /שחר/); assert.match(txt, /לא נשלח/);
+    // «העבר לאמבולטורי»
+    const outCalls = [];
+    await page.route('**/api/outpatient-lead', (route) => { outCalls.push(JSON.parse(route.request().postData())); route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, sent: true }) }); });
+    page.once('dialog', (d) => d.accept());
+    await page.click('[data-to-outpatient="dx1"]');
+    await page.waitForFunction(() => /נשלח/.test(document.querySelector('#crm-discharged').textContent) && !/לא נשלח/.test(document.querySelector('#crm-discharged').textContent), null, { timeout: 5000 });
+    assert.deepEqual(outCalls, [{ dischargeId: 'dx1', manual: true }]);
+    assert.ok(!(await page.$('[data-to-outpatient="dx1"]')), 'sent → no second button');
+    // restore to the previous status
+    await page.click('[data-restore="dx1"]');
+    await page.waitForSelector('form[data-form="restore"]');
+    assert.equal(await page.inputValue('form[data-form="restore"] input[name="how"]:checked'), 'active');
+    await page.click('form[data-form="restore"] button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form[data-form="restore"]'), null, { timeout: 8000 });
+    assert.equal(srv.saves.length, 2);
+    const sa = srv.saves[0];
+    assert.equal(sa.action, 'saveAll'); assert.deepEqual(Object.keys(sa.patients), ['ramot']);
+    const restored = sa.patients.ramot.filter((p) => p.id === 'px')[0];
+    assert.equal(restored.status, 'active'); assert.equal(restored.exitDate, ''); assert.equal(sa.patients.ramot.length, 2, 'the house as read');
+    assert.deepEqual(sa.prove, { patients: ['px'] });
+    assert.equal(srv.saves[1].action, 'restorePatientToActive'); assert.equal(srv.saves[1].patient.id, 'dx1'); assert.equal(srv.saves[1].patient.restored, 'TRUE');
+    // restore as a new lead (the data is static, so the row is still listed after the reload)
+    await page.waitForSelector('[data-restore="dx1"]');
+    await page.click('[data-restore="dx1"]');
+    await page.waitForSelector('form[data-form="restore"]');
+    await page.check('form[data-form="restore"] input[value="lead"]');
+    await page.click('form[data-form="restore"] button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form[data-form="restore"]'), null, { timeout: 8000 });
+    assert.equal(srv.saves[2].action, 'restorePatient'); assert.equal(srv.saves[2].patient.id, 'dx1'); assert.match(srv.saves[2].patient.newLeadId, /^lead-[0-9a-f]{16}$/);
+    assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });
 

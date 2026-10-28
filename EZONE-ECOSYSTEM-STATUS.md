@@ -1,6 +1,10 @@
 # E-ZONE Ecosystem Status — updated October 28, 2026
 
-## C16 — the CRM as a PWA — October 28, 2026 (PR open)
+## C17 — CRM «משוחררים»: list, restore (previous status / new lead), «העבר לאמבולטורי» — October 28, 2026 (PR open)
+
+- The classic «מטופלים משוחררים» tab's daily uses now live in the CRM (house-as-read `saveAll` + `restorePatientToActive`, `restorePatient`, `/api/outpatient-lead manual:true`). Duplicate-discharge delete stays classic. Details: `CHANGELOG-crm-discharged.md`.
+
+## C16 — the CRM as a PWA — October 28, 2026 (merged, #307)
 
 - SW v93 → v94: the CRM bundle rides `BUNDLE_PATHS` (cache-first at its hash); crm.html links the manifest and registers the worker. An installed Dashboard app opens the CRM after the switch. Details: `CHANGELOG-crm-pwa.md`.
 
