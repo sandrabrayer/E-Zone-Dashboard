@@ -3,6 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#0b1020">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <meta name="robots" content="noindex">
   <title>E-ZONE · CRM</title>
   <!-- C2 (CHANGELOG-crm-shell-areas.md): the flag-gated CRM shell. Served only
@@ -33,5 +38,13 @@
   </div>
   <script src="payment-report-rules.js?v=__BUILD__"></script>
   <script src="crm/crm.js?v=__BUILD__"></script>
+  <!-- PWA (CHANGELOG-crm-pwa.md): the same worker as the classic page, registered after load; non-fatal. -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('/sw.js').catch(function (err) { console.warn('[pwa] service worker registration failed:', err); });
+      });
+    }
+  </script>
 </body>
 </html>

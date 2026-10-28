@@ -236,6 +236,12 @@ deploys on merge. Railway (`app.js`, `meeting-report.html`, `sw.js`):
 house-manager labels in slash form. Either order is safe. SW
 `CACHE_VERSION` v57 → **v58**.
 
+## The CRM as a PWA (C16, October 28, 2026)
+
+`CHANGELOG-crm-pwa.md`. Nothing to set. SW `CACHE_VERSION` v93 → **v94** (shared with the classic
+page; the usual cache eviction on the next load). The CRM shell links the existing manifest and
+registers `/sw.js`; an installed "Dashboard" app opens `/` — the CRM after the switch.
+
 ## Dana's read-only login (Phase 2a, October 28, 2026)
 
 `CHANGELOG-readonly-role-dana.md`. No env var, no Script Property, no column. The clasp CI deploys

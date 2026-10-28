@@ -299,6 +299,6 @@ test('patientsMissingFromHousesReportNow: read-only, one Doc, no names in the lo
 });
 
 test('SW: v92 (live) → v93 with its comment; v17 never reused', () => {
-  assert.match(SW_SRC, /var CACHE_VERSION = 'v93';/);
+  assert.ok(Number(/var CACHE_VERSION = 'v(\d+)';/.exec(SW_SRC)[1]) >= 93, 'v93 or later (monotonic)');
   assert.ok(SW_SRC.includes('v92 → v93:') && SW_SRC.includes('CHANGELOG-patient-missing-from-house.md'));
 });

@@ -316,7 +316,10 @@
 // v90 → v91: «אמבולטורי» meetingWith option + «נשלח לאמבולטורי» chip (app.js, style.css) (CHANGELOG-meeting-with-ambulatory.md). Live v90 verified 2026-10-26 (v17 never reused).
 // v91 → v92: «העבר לאמבולטורי» on discharged rows, discharge → Outpatient by row id, restore matches by patient id / normalized name (app.js, style.css) (CHANGELOG-discharge-outpatient-handoff.md). Live v91 verified 2026-10-26 (v17 never reused).
 // v92 → v93: one house rule for תפוסה and «מטופלים» (aliases, invisible marks), «בית לא מזוהה» tab, «שחרר» on «מטופלים» rows (app.js, style.css) (CHANGELOG-patient-missing-from-house.md). Live v92 verified 2026-10-26 (v17 never reused).
-var CACHE_VERSION = 'v93';
+// v93 → v94: the CRM shell (the CRM page, "/" after the switch) joins the PWA: crm/crm.js + crm/crm.css
+// in BUNDLE_PATHS (cache-first at their content hash, network-first otherwise); crm.html registers this
+// worker and links the manifest (CHANGELOG-crm-pwa.md). Live v93 = deploy branch (monotonic).
+var CACHE_VERSION = 'v94';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
@@ -346,7 +349,7 @@ var PRECACHE_URLS = [
  *                     network round trip. Matched by EXACT url.
  *   'network'       — everything else: pass through to the network. */
 /* The JS/CSS files index.html links with a content hash (server.js ASSETS). */
-var BUNDLE_PATHS = ['/app.js', '/style.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/billing-document-review.js', '/billing-work-calendar.js', '/refund-rules.js', '/funder-grace.js', '/cycle-balance.js', '/discharge-alerts.js', '/committee-alerts.js', '/leads-funnel.js', '/returning-patient.js', '/patient-retention.js', '/report-xlsx.js'];
+var BUNDLE_PATHS = ['/app.js', '/style.css', '/crm/crm.js', '/crm/crm.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/billing-document-review.js', '/billing-work-calendar.js', '/refund-rules.js', '/funder-grace.js', '/cycle-balance.js', '/discharge-alerts.js', '/committee-alerts.js', '/leads-funnel.js', '/returning-patient.js', '/patient-retention.js', '/report-xlsx.js'];
 
 /* True for `?v=<exactly 12 lowercase hex>` — the server's content hash. The
  * old `?v=<BUILD_ID>` (digits-dash-base36) never matches. Pure. */

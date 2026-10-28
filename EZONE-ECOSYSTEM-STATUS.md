@@ -1,6 +1,10 @@
 # E-ZONE Ecosystem Status — updated October 28, 2026
 
-## C15 — CRM «יומן» with a date picker (day / week, past included) — October 28, 2026 (PR open)
+## C16 — the CRM as a PWA — October 28, 2026 (PR open)
+
+- SW v93 → v94: the CRM bundle rides `BUNDLE_PATHS` (cache-first at its hash); crm.html links the manifest and registers the worker. An installed Dashboard app opens the CRM after the switch. Details: `CHANGELOG-crm-pwa.md`.
+
+## C15 — CRM «יומן» with a date picker (day / week, past included) — October 28, 2026 (merged, #306)
 
 - Sandra's review request. Day / week toggle, ‹ ›, date input, «היום»; past meetings with their status (outcome, manager report, none). Details: `CHANGELOG-crm-calendar-picker.md`.
 
