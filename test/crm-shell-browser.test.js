@@ -518,6 +518,40 @@ test('C14 «פגישות ושירותים» (Vered): the manager report renders 
   } finally { await browser.close(); srv.close(); }
 });
 
+test('C15 calendar picker (Vered): today by default; ‹ › and the date input move the day; week view groups by day; past meetings appear with their status; «היום» returns', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="calendar"]');
+    assert.equal(await page.inputValue('#crm-cal-date'), TODAY);
+    assert.match(await page.textContent('#crm-main'), /גלי כהן/);
+    assert.match(await page.textContent('#crm-cal-bar'), /היום · /);
+    // three days back: דנה מזרחי's past meeting with no outcome
+    await page.fill('#crm-cal-date', daysAgo(3));
+    await page.dispatchEvent('#crm-cal-date', 'change');
+    const past = await page.textContent('#crm-main');
+    assert.match(past, /דנה מזרחי/); assert.match(past, /ללא תוצאה/); assert.ok(!/גלי כהן/.test(past));
+    assert.equal(await page.inputValue('#crm-cal-date'), daysAgo(3));
+    // one day forward with ›
+    await page.click('[data-cal-step="1"]');
+    assert.equal(await page.inputValue('#crm-cal-date'), daysAgo(2));
+    // week view: both the past meeting (4 days ago, with a report) and today's, grouped by day
+    await page.click('[data-cal-mode="week"]');
+    const week = await page.textContent('#crm-main');
+    assert.match(await page.textContent('#crm-cal-bar'), /שבוע/);
+    assert.ok(await page.$$eval('.group-title', (els) => els.length) >= 1, 'day headers in week view');
+    await page.click('[data-cal-today]');
+    assert.equal(await page.inputValue('#crm-cal-date'), TODAY, 'the input shows the chosen day, the title the week');
+    await page.click('[data-cal-mode="day"]');
+    assert.equal(await page.inputValue('#crm-cal-date'), TODAY);
+    assert.match(await page.textContent('#crm-main'), /גלי כהן/);
+    void week;
+    assert.deepEqual(errors, []);
+    assert.deepEqual(srv.saves, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
 test('C4 lead actions (Vered): «שלב הבא» on a card posts ONE lead to saveAll and moves the card; a refusal rolls back; the meeting form schedules', { skip: skip && 'playwright/chromium missing' }, async () => {
   const srv = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });

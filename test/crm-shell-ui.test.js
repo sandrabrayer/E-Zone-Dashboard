@@ -460,6 +460,30 @@ test('C14 meetings: the manager report (labels, local time, unseen), the work-qu
   assert.deepEqual(Object.keys(core.DISPOSITION_LABELS), ['completed', 'stopped_early', 'released_outpatient', 'not_relevant']);
 });
 
+test('C15 calendar picker: day / week ranges (week starts Sunday), rows for any date incl. past and non-visit stages, status per row, titles', () => {
+  assert.equal(core.weekStart('2026-10-28'), '2026-10-25'); assert.equal(core.weekStart('2026-10-25'), '2026-10-25'); assert.equal(core.weekStart('2026-10-31'), '2026-10-25');
+  assert.deepEqual(core.calendarRange('week', '2026-10-28'), { mode: 'week', from: '2026-10-25', to: '2026-10-31' });
+  assert.deepEqual(core.calendarRange('day', '2026-10-28'), { mode: 'day', from: '2026-10-28', to: '2026-10-28' });
+  assert.equal(core.calendarRange('day', 'junk'), null); assert.deepEqual(core.calendarRange('x', '2026-10-28').mode, 'day');
+  const leads = [
+    { id: 'a', name: 'x', house: 'ramot', stage: 'paid', visitDate: '2026-10-20', visitTime: '10:00', meetingOutcome: 'מתקדם' },
+    { id: 'b', name: 'y', house: 'ramot', stage: 'visit', visitDate: '2026-10-27', meetingReportedAt: '2026-10-27T10:00:00Z', meetingSeen: '' },
+    { id: 'c', name: 'z', stage: 'visit', visitDate: '2026-10-28', visitTime: '09:00', meetingWith: 'אורן' },
+    { id: 'd', name: 'w', stage: 'visit', visitDate: '2026-10-21' },
+    { id: 'e', name: 'v', stage: 'visit', visitDate: '2026-11-02' },
+    { id: 'f', name: 'u', stage: 'visit', visitDate: '' }];
+  const today = '2026-10-28';
+  assert.deepEqual(core.calendarRows(leads, core.calendarRange('week', '2026-10-21'), today).map((r) => [r.id, r.status.state, r.status.text]), [['a', 'ok', 'מתקדם'], ['d', 'late', 'ללא תוצאה']], 'past week: an admitted lead still shows its meeting');
+  assert.deepEqual(core.calendarRows(leads, core.calendarRange('day', '2026-10-27'), today).map((r) => [r.status.state, r.status.text, r.reported]), [['today', 'יש דיווח מנהל/ת · חדש', true]]);
+  assert.deepEqual(core.calendarRows(leads, core.calendarRange('day', today), today).map((r) => [r.id, r.status.text, r.withWhom, r.time]), [['c', 'היום', 'אורן', '09:00']]);
+  assert.deepEqual(core.calendarRows(leads, core.calendarRange('week', '2026-11-04'), today).map((r) => [r.id, r.status.text]), [['e', 'מתוכנן']]);
+  assert.deepEqual(core.calendarRows(leads, null, today), []);
+  assert.equal(core.calendarTitle(core.calendarRange('day', today), today), 'היום · 28/10/2026');
+  assert.equal(core.calendarTitle(core.calendarRange('day', '2026-10-27'), today), 'יום שלישי · 27/10/2026');
+  assert.equal(core.calendarTitle(core.calendarRange('week', today), today), 'שבוע 25/10/2026 – 31/10/2026');
+  assert.deepEqual(core.DAY_NAMES.length, 7);
+});
+
 test('esc escapes every HTML-significant character', () => {
   assert.equal(core.esc('<b>"x" & \'y\'</b>'), '&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;');
 });
