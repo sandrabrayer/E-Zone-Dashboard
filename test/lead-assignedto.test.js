@@ -56,8 +56,8 @@ test('normalizeLead carries assignedTo through when present', () => {
   assert.strictEqual(out.assignedTo, 'ורד');
 });
 
-test('normalizeLead accepts each of the three fixed assignees', () => {
-  for (const who of ['ורד', 'שירן', 'יעל']) {
+test('normalizeLead accepts each of the current assignees and the legacy names on old rows', () => {
+  for (const who of ['ורד', 'דנה', 'סנדרה', 'שירן', 'יעל']) {
     const out = app.normalizeLead({ id: 'L', name: 'x', stage: 'new', assignedTo: who });
     assert.strictEqual(out.assignedTo, who);
   }

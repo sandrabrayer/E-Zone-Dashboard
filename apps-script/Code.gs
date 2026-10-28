@@ -8095,7 +8095,10 @@ function getDischargedRoster_() {
  * Appended under the script lock via upsertRowById_ (text-forced date cols). */
 const CREATE_LEAD_SECRET_PROP = 'CREATE_LEAD_SECRET';
 const ALUMNI_LEAD_SOURCE = 'alumni_therapists';
-const CREATE_LEAD_ASSIGNEES = ['ורד', 'שירן', 'יעל'];
+/* Phase 2b (CHANGELOG-assignees-dana.md): the three current owners first; the
+ * two legacy names stay ACCEPTED (append-only) so an older Therapists build
+ * that still sends them is not downgraded to '' — never offered by any UI. */
+const CREATE_LEAD_ASSIGNEES = ['ורד', 'דנה', 'סנדרה', 'שירן', 'יעל'];
 
 function createLeadAuthOk_(params) {
   const expected = PropertiesService.getScriptProperties().getProperty(CREATE_LEAD_SECRET_PROP);

@@ -11,8 +11,11 @@ const HOUSES = [
 ];
 
 /* assignedTo (משוייך ל) options — the three fixed lead owners. Required on the
- * add-lead form; rendered on the kanban card. Fixed list (no free text). */
-const ASSIGNEE_OPTIONS = ['ורד', 'שירן', 'יעל'];
+ * add-lead form; rendered on the kanban card. Fixed list (no free text).
+ * Phase 2b (CHANGELOG-assignees-dana.md): Shiran and Yael left; Dana replaces
+ * Yael; Sandra added — the same list the CRM offers (crm.js ASSIGNEES).
+ * Existing leads keep whatever name they carry (display only). */
+const ASSIGNEE_OPTIONS = ['ורד', 'דנה', 'סנדרה'];
 
 /* רשימת המתנה — a potential patient waiting for a spot; the lead's existing
  * `house` field is the house they are waiting for. Entering the stage stamps

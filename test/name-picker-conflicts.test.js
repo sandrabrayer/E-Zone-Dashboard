@@ -61,7 +61,7 @@ function appConst(name) {
 test('PR C: no SESSION_USERS anywhere — the login name comes from the personal record', () => {
   assert.strictEqual(users.SESSION_USERS, undefined, 'lib/users.js no longer exports a picker list');
   assert.ok(!/const SESSION_USERS = /.test(APP_SRC), 'app.js no longer has a picker list');
-  assert.deepStrictEqual(appConst('ASSIGNEE_OPTIONS'), ['ורד', 'שירן', 'יעל'], 'the assignedTo dropdown is untouched');
+  assert.deepStrictEqual(appConst('ASSIGNEE_OPTIONS'), ['ורד', 'דנה', 'סנדרה'], 'the assignedTo dropdown (Phase 2b: Dana + Sandra; same list as the CRM)');
 });
 
 /* ================= B. server: the re-issue path is gone ================= */
