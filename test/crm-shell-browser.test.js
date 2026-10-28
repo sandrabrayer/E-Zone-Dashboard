@@ -45,7 +45,7 @@ const DATA = {
     { id: 'L3', name: 'דנה מזרחי', house: 'רעננה הפרדס', stage: 'visit', visitDate: daysAgo(3), meetingWith: 'חן', created: daysAgo(6) },
     { id: 'L4', name: 'טל ברק', house: 'רמות השבים', stage: 'paid', created: daysAgo(10), assignedTo: 'ורד' },
   ],
-  patients: { ramot: [{ id: 'p1', name: 'דנה כהן', date: daysAgo(30), status: 'active' }], rehab: [{ id: 'p2', name: 'אבי', date: daysAgo(7), status: 'active' }] },
+  patients: { ramot: [{ id: 'p1', name: 'דנה כהן', date: daysAgo(30), status: 'active', pay: 6000 }], rehab: [{ id: 'p2', name: 'אבי', date: daysAgo(7), status: 'active' }] },
 };
 const QUEUE = { ok: true, receipts: [{ id: 'r1', status: 'reported' }, { id: 'r2', status: 'flagged' }] };
 const DEBT = { ok: true, asOf: TODAY,
@@ -56,7 +56,7 @@ const DEBT = { ok: true, asOf: TODAY,
     { start: daysAgo(3), end: daysAgo(-26), expected: 5000, received: 0, balance: 5000, days: 3, kind: 'unrecorded', month: daysAgo(3).slice(0, 7), discount: 0 }] }],
   detachedPayments: { count: 1 }, pendingCredits: { count: 0, total: 0 }, funderGrace: { count: 0, amount: 0 } };
 const PAYMENTS = { ok: true, payments: [{ id: 'cyc-1', patientId: 'ramot::דנה כהן::' + daysAgo(30), patientUid: 'p1', patientName: 'דנה כהן', houseId: 'ramot', dueDate: daysAgo(70), amount: 6000, amountPaid: 2500, balance: 3500, status: 'partial', coverageStart: daysAgo(70), coverageEnd: daysAgo(41) }],
-  receipts: [{ id: 'rcpt-1', patientId: 'ramot::דנה כהן::' + daysAgo(30), patientUid: 'p1', patientName: 'דנה כהן', houseId: 'ramot', receivedDate: daysAgo(4), amount: 2500, method: 'ביט', payer: 'אמא', confirmStatus: 'reported' }],
+  receipts: [{ id: 'rcpt-1', patientId: 'ramot::דנה כהן::' + daysAgo(30), patientUid: 'p1', patientName: 'דנה כהן', houseId: 'ramot', dueDate: daysAgo(70), receivedDate: daysAgo(4), amount: 2500, method: 'ביט', payer: 'אמא', reference: '', funder: 'פרטי', coverageStart: daysAgo(70), coverageEnd: daysAgo(41), invoiceWanted: 'no', invoiceTo: '', confirmStatus: 'reported' }],
   funders: [{ patientId: 'p1', funder: 'משרד הביטחון', effectiveFrom: daysAgo(30), setBy: 'ורד' }] };
 const CREDITS = { ok: true, credits: [
   { id: 'cr-1', patientId: 'p1', patientKey: 'ramot::דנה כהן::' + daysAgo(30), patientName: 'דנה כהן', houseId: 'ramot', creditType: 'days_unused', allocationMonth: daysAgo(40).slice(0, 7), amount: 1200, status: 'pending', payoutDate: daysAgo(10) },
@@ -87,9 +87,11 @@ async function boot() {
       try { parsed = JSON.parse(body); } catch (_) { parsed = {}; }
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
-      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'settleRefund'].indexOf(parsed.action) >= 0) saves.push(parsed);
+      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'settleRefund', 'editReceipt', 'savePayment'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
         : parsed.action === 'debtAging' ? DEBT : parsed.action === 'getPayments' ? PAYMENTS : parsed.action === 'getCredits' ? CREDITS
+        : parsed.action === 'editReceipt' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, receipt: { id: parsed.edit && parsed.edit.id } })
+        : parsed.action === 'savePayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, payment: { id: parsed.payment && parsed.payment.id, status: parsed.payment && parsed.payment.status } })
         : parsed.action === 'setBillingDiscount' ? (saveAnswer ? saveAnswer(parsed) : { ok: true })
         : parsed.action === 'upsertBillingOverride' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, override: { id: parsed.override && parsed.override.id } })
         : parsed.action === 'settleRefund' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, credit: { id: parsed.creditId } })
@@ -353,6 +355,19 @@ test('C10 «דווח תשלום» in the account pane (Vered): rules validate cl
     assert.deepEqual(third.cycle, { id: 'pay::ramot::דנה כהן::' + daysAgo(30) + '::' + daysAgo(3), patientId: 'ramot::דנה כהן::' + daysAgo(30), patientName: 'דנה כהן', houseId: 'ramot', dueDate: daysAgo(3), amount: 5000, coverageStart: daysAgo(3), coverageEnd: daysAgo(-26) });
     assert.equal(third.report.invoiceTo, 'דנה כהן');
     assert.notEqual(third.submissionId, first.submissionId, 'a new form, a new key');
+    // C13: «מחזור אחר» — an advance for the next entry-anchored cycle, minted from the patient's pay
+    assert.ok(await page.$('#crm-other-cycle'), 'the other-cycle picker');
+    const picked = await page.$eval('#crm-other-cycle', (el) => el.options[el.selectedIndex].textContent);
+    assert.match(picked, new RegExp(core.fmtDate(core.addMonthsIso(daysAgo(30), 1)).replace(/\//g, '\\/')), 'default = the first cycle after today');
+    await page.click('[data-report-other]');
+    await page.waitForSelector('form[data-form="payment-report"]');
+    assert.equal(await page.inputValue('form.report [name="amount"]'), '6000');
+    await page.selectOption('form.report [name="method"]', 'ביט'); await page.fill('form.report [name="payer"]', 'דנה כהן'); await page.selectOption('form.report [name="invoiceWanted"]', 'no');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
+    const adv = srv.saves[3].report;
+    assert.equal(adv.cycle.id, 'pay::ramot::דנה כהן::' + daysAgo(30) + '::' + core.addMonthsIso(daysAgo(30), 1));
+    assert.equal(adv.cycle.amount, 6000); assert.equal(adv.cycle.coverageStart, core.addMonthsIso(daysAgo(30), 1));
     // a refused report keeps the form open with the server's field issues
     await page.click('#crm-account-open [data-report-open="1"]');
     await page.waitForSelector('form[data-form="payment-report"]');
@@ -424,6 +439,51 @@ test('C11 discount / amount / settle (Vered): the three classic writes from the 
     await page.waitForSelector('form[data-form="small-settle"]');
     assert.equal(await page.getAttribute('#crm-drawer', 'aria-hidden'), 'false');
     assert.match(await page.textContent('#crm-drawer h2'), /דנה כהן/);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('C13 receipt fix (Vered): «עריכה» posts editReceipt with ONLY the changed fields (validated), «ביטול» posts the classic void row after a confirm and a reason; a void receipt has no buttons', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="clients"]');
+    await page.click('table.tbl tbody tr[data-open-patient="p1"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer [data-tab="account"]');
+    await page.waitForSelector('#crm-account-receipts [data-receipt-edit="rcpt-1"]');
+    await page.click('#crm-account-receipts [data-receipt-edit="rcpt-1"]');
+    await page.waitForSelector('form[data-form="receipt-edit"]');
+    assert.equal(await page.inputValue('form.report [name="payer"]'), 'אמא');
+    // nothing changed → refused client-side
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => /לא שונה/.test(document.querySelector('form.report .err[data-err="_form"]').textContent));
+    // bank transfer without a reference → the rule fires on the touched field
+    await page.selectOption('form.report [name="method"]', 'העברה בנקאית');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => /אסמכתא/.test(document.querySelector('form.report .err[data-err="reference"]').textContent));
+    assert.equal(srv.saves.length, 0);
+    await page.fill('form.report [name="reference"]', 'TR-9'); await page.fill('form.report [name="payer"]', 'אבא'); await page.fill('form.report [name="reason"]', 'תיקון');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
+    assert.deepEqual(srv.saves[0].action, 'editReceipt');
+    assert.deepEqual(srv.saves[0].edit, { id: 'rcpt-1', fields: { reference: 'TR-9', method: 'העברה בנקאית', payer: 'אבא' }, reason: 'תיקון' });
+    await page.waitForFunction(() => !!document.querySelector('#crm-account-receipts'));
+    assert.equal(srv.actions.filter((a) => a.action === 'getPayments').length, 2, 're-read after the edit');
+    // void: reason required, confirm, the classic savePayment void row
+    await page.click('#crm-account-receipts [data-receipt-void="rcpt-1"]');
+    await page.waitForSelector('form[data-form="receipt-void"]');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => /סיבה/.test(document.querySelector('form.report .err[data-err="note"]').textContent));
+    await page.fill('form.report [name="note"]', 'נרשם פעמיים');
+    page.once('dialog', (d) => { assert.match(d.message(), /לבטל את הקבלה/); d.accept(); });
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
+    assert.equal(srv.saves[1].action, 'savePayment');
+    const v = srv.saves[1].payment;
+    assert.equal(v.id, 'rcpt-1'); assert.equal(v.status, 'void'); assert.equal(v.linkStatus, 'duplicate'); assert.equal(v.linkNote, 'נרשם פעמיים'); assert.equal(v.dueDate, daysAgo(70)); assert.equal(v.patientId, 'ramot::דנה כהן::' + daysAgo(30));
+    // (a void receipt → «בוטלה», no buttons: pinned in the core test; the proxy caches getPayments briefly so a fixture flip is not visible here)
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });

@@ -1,6 +1,10 @@
 # E-ZONE Ecosystem Status — updated October 28, 2026
 
-## C12 — the switch: `/` serves the CRM when `CRM_DEFAULT=true` — October 28, 2026 (PR open)
+## C13 — report for any cycle; fix or void a receipt — October 28, 2026 (PR open)
+
+- «חשבון»: «דווח תשלום למחזור אחר» (entry-anchored stay cycles, advances included, default = the next cycle); per receipt «עריכה» (`editReceipt`, non-money fields, shared rules) and «ביטול» (classic `savePayment` void with a reason, `deleter`). Found by Sandra on the first live review. Details: `CHANGELOG-crm-report-any-cycle.md`.
+
+## C12 — the switch: `/` serves the CRM when `CRM_DEFAULT=true` — October 28, 2026 (merged, #301)
 
 - New Railway variable `CRM_DEFAULT` (needs `CRM_ENABLED` too): `/` → the CRM for full-view personal logins (Vered, Sandra); `/?view=classic` → the old dashboard; Ortal / Dana keep classic by default; `/?view=crm` unchanged. Every classic link in the shell now points at `/?view=classic`. Inert until Sandra sets the variable (DEPLOY.md has the click-steps). Details: `CHANGELOG-crm-default.md`.
 
