@@ -56,8 +56,8 @@ const DEBT = { ok: true, asOf: TODAY,
   byPatient: [{ patientId: 'p1', patientKey: 'ramot::דנה כהן::' + daysAgo(30), name: 'דנה כהן', houseId: 'ramot', status: 'active', inHouseAtAsOf: true, cycles: [
     { start: daysAgo(70), end: daysAgo(41), expected: 6000, received: 2500, balance: 3500, days: 70, kind: 'recorded', paymentId: 'cyc-1', month: daysAgo(70).slice(0, 7) },
     { start: daysAgo(3), end: daysAgo(-26), expected: 5000, received: 0, balance: 5000, days: 3, kind: 'unrecorded', month: daysAgo(3).slice(0, 7), discount: 0 }] }],
-  detachedPayments: { count: 1 }, pendingCredits: { count: 0, total: 0 }, funderGrace: { count: 0, amount: 0 } };
-const PAYMENTS = { ok: true, payments: [{ id: 'cyc-1', patientId: 'ramot::דנה כהן::' + daysAgo(30), patientUid: 'p1', patientName: 'דנה כהן', houseId: 'ramot', dueDate: daysAgo(70), amount: 6000, amountPaid: 2500, balance: 3500, status: 'partial', coverageStart: daysAgo(70), coverageEnd: daysAgo(41) }],
+  detachedPayments: { count: 1, rows: [{ paymentId: 'pay::ramot::דנה כהן ::x::' + daysAgo(40), patientName: 'דנה כהן ', houseId: 'ramot', dueDate: daysAgo(40), amount: 6000, receivedByAsOf: 6000, reason: 'unmatched' }] }, pendingCredits: { count: 0, total: 0 }, funderGrace: { count: 0, amount: 0 } };
+const PAYMENTS = { ok: true, payments: [{ id: 'pay::ramot::דנה כהן ::x::' + daysAgo(40), patientId: 'ramot::דנה כהן ::x', patientName: 'דנה כהן ', houseId: 'ramot', dueDate: daysAgo(40), amount: 6000, amountPaid: 6000, status: 'paid' }, { id: 'cyc-1', patientId: 'ramot::דנה כהן::' + daysAgo(30), patientUid: 'p1', patientName: 'דנה כהן', houseId: 'ramot', dueDate: daysAgo(70), amount: 6000, amountPaid: 2500, balance: 3500, status: 'partial', coverageStart: daysAgo(70), coverageEnd: daysAgo(41) }],
   receipts: [{ id: 'rcpt-1', patientId: 'ramot::דנה כהן::' + daysAgo(30), patientUid: 'p1', patientName: 'דנה כהן', houseId: 'ramot', dueDate: daysAgo(70), receivedDate: daysAgo(4), amount: 2500, method: 'ביט', payer: 'אמא', reference: '', funder: 'פרטי', coverageStart: daysAgo(70), coverageEnd: daysAgo(41), invoiceWanted: 'no', invoiceTo: '', confirmStatus: 'reported' }],
   funders: [{ patientId: 'p1', funder: 'משרד הביטחון', effectiveFrom: daysAgo(30), setBy: 'ורד' }] };
 const CREDITS = { ok: true, credits: [
@@ -95,7 +95,7 @@ async function boot() {
         : parsed.action === 'restorePatientToActive' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restoredToActive: true, id: parsed.patient && parsed.patient.id })
         : parsed.action === 'restorePatient' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restored: true, lead: { id: parsed.patient && parsed.patient.newLeadId } })
         : parsed.action === 'editReceipt' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, receipt: { id: parsed.edit && parsed.edit.id } })
-        : parsed.action === 'savePayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, payment: { id: parsed.payment && parsed.payment.id, status: parsed.payment && parsed.payment.status } })
+        : parsed.action === 'savePayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, payment: { id: parsed.payment && parsed.payment.id, status: parsed.payment && parsed.payment.status, linkStatus: parsed.payment && parsed.payment.linkStatus } })
         : parsed.action === 'setBillingDiscount' ? (saveAnswer ? saveAnswer(parsed) : { ok: true })
         : parsed.action === 'upsertBillingOverride' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, override: { id: parsed.override && parsed.override.id } })
         : parsed.action === 'settleRefund' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, credit: { id: parsed.creditId } })
@@ -595,6 +595,38 @@ test('C17 «משוחררים» (Vered): the discharged list with its flags; rest
     await page.click('form[data-form="restore"] button[type="submit"]');
     await page.waitForFunction(() => !document.querySelector('form[data-form="restore"]'), null, { timeout: 8000 });
     assert.equal(srv.saves[2].action, 'restorePatient'); assert.equal(srv.saves[2].patient.id, 'dx1'); assert.match(srv.saves[2].patient.newLeadId, /^lead-[0-9a-f]{16}$/);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('C18 payment linking (Vered): the detached row in גבייה; «שייך» preselects the look-alike patient and posts the classic savePayment link row; «לא מטופל/ת» needs a reason; the three reads refresh', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="billing"]');
+    await page.waitForSelector('#crm-detached');
+    assert.match(await page.textContent('#crm-detached'), /דנה כהן/);
+    await page.click('[data-link-open]');
+    await page.waitForSelector('form[data-form="link-link"]');
+    assert.equal(await page.inputValue('form.report [name="patientId"]'), 'p1', 'the look-alike patient of the same house is preselected');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
+    assert.equal(srv.saves.length, 1);
+    const b = srv.saves[0];
+    assert.equal(b.action, 'savePayment'); assert.equal(b.payment.id, 'pay::ramot::דנה כהן ::x::' + daysAgo(40)); assert.equal(b.payment.linkPatientUid, 'p1'); assert.equal(b.payment.linkStatus, 'linked'); assert.equal(b.payment.amount, 6000, 'the row as read travels with it');
+    await page.waitForSelector('#crm-detached');
+    assert.equal(srv.actions.filter((a) => a.action === 'debtAging').length, 2, 'the reads refresh after the decision');
+    // not a patient: reason required
+    await page.click('[data-notpatient-open]');
+    await page.waitForSelector('form[data-form="link-not"]');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => /סיבה/.test(document.querySelector('form.report .err[data-err="note"]').textContent));
+    assert.equal(srv.saves.length, 1);
+    await page.fill('form.report [name="note"]', 'החזר לספק');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
+    assert.equal(srv.saves[1].payment.linkStatus, 'not_a_patient'); assert.equal(srv.saves[1].payment.linkNote, 'החזר לספק'); assert.equal(srv.saves[1].payment.linkPatientUid, '');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });

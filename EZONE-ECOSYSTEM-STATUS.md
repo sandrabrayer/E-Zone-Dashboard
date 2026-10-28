@@ -1,5 +1,9 @@
 # E-ZONE Ecosystem Status — updated October 28, 2026
 
+## C18 — CRM «שיוך תשלומים» — October 28, 2026 (PR open)
+
+- Detached payment rows (from `debtAging`) in the גבייה area with «שייך» (ranked candidates; classic `savePayment` link row) and «לא מטופל/ת» (reason). Duplicate voiding stays classic. Details: `CHANGELOG-crm-payment-linking.md`.
+
 ## «ביקור נקבע» without a date — the strip + the prompt (classic + CRM) — October 28, 2026 (PR open, stacked on #309)
 
 - Sandra's report: אורן's meeting with אורנה (today) was on no board and in no managers' feed. Live row: stage «ביקור נקבע», «נפגש עם» אורן, **visitDate blank** — every surface keys on visitDate; ezone-managers is not at fault. Now: an undated strip on «לוח פגישות» and the CRM «יומן» (chip → meeting modal / drawer «תיאום פגישה»), and a stage move to «ביקור נקבע» without a date opens the date prompt at once. Code.gs untouched. SW v95 → v96. Details: `CHANGELOG-undated-visit-leads.md`.
@@ -8,7 +12,7 @@
 
 - Vered's report: the classic גבייה search box filtered two DATE-scoped lists, so a released patient (or anyone with nothing due that day) was never found. New «תוצאות חיפוש — כל המחזורים» group lists every matching patient (any status, discharged rows, orphan rows) with all their cycles; explicit not-found text. CRM «גבייה» answers the top search box the same way. SW v94 → v95. Details: `CHANGELOG-billing-search-any-patient.md`.
 
-## C17 — CRM «משוחררים»: list, restore (previous status / new lead), «העבר לאמבולטורי» — October 28, 2026 (PR open)
+## C17 — CRM «משוחררים»: list, restore (previous status / new lead), «העבר לאמבולטורי» — October 28, 2026 (merged, #308)
 
 - The classic «מטופלים משוחררים» tab's daily uses now live in the CRM (house-as-read `saveAll` + `restorePatientToActive`, `restorePatient`, `/api/outpatient-lead manual:true`). Duplicate-discharge delete stays classic. Details: `CHANGELOG-crm-discharged.md`.
 

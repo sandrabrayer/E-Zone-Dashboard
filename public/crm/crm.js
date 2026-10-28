@@ -942,6 +942,58 @@
     return 'השינוי לא נשמר' + (r.error ? ' (' + s(r.error) + ')' : '');
   }
 
+  /* ---- C18: «שיוך תשלומים» (CHANGELOG-crm-payment-linking.md) ----
+   * The detached rows come from debtAging (detachedPayments.rows, reason
+   * 'unmatched': no current patient, no decision). A decision is the classic
+   * savePayment of the row with its link fields — 'linked' + the patient's uid,
+   * or 'not_a_patient' + a reason. The row itself (money, dates) is re-sent as
+   * read from getPayments; the server stamps linkedBy / linkedAt. */
+  function normName(v) { return s(v).replace(/[‎‏‪-‮﻿ ]/g, ' ').replace(/\s+/g, ' ').trim(); }
+  function namesLookAlike(a, b) {
+    const x = normName(a), y = normName(b);
+    if (!x || !y) return false;
+    if (x === y || x.indexOf(y) === 0 || y.indexOf(x) === 0) return true;
+    const xw = x.split(' ').filter(Boolean), yw = y.split(' ').filter(Boolean);
+    return xw.some(function (w) { return w.length > 1 && yw.indexOf(w) >= 0; });
+  }
+  function detachedRows(debt) {
+    const d = debt && debt.ok !== false ? debt : null;
+    const rows = d && d.detachedPayments && Array.isArray(d.detachedPayments.rows) ? d.detachedPayments.rows : [];
+    return rows.filter(function (r) { return s(r.reason) !== 'not_a_patient'; }).map(function (r) {
+      return { paymentId: s(r.paymentId), patientName: s(r.patientName), houseId: s(r.houseId), houseName: houseName(r.houseId), dueDate: s(r.dueDate).slice(0, 10),
+        amount: Number(r.amount) || 0, received: Number(r.receivedByAsOf) || 0, reason: s(r.reason) };
+    }).sort(function (a, b) { return b.dueDate.localeCompare(a.dueDate) || a.patientName.localeCompare(b.patientName, 'he'); });
+  }
+  /* Candidates for one detached row: the house's patients (released included) first, then
+   * the rest; look-alike names first within each group. Each carries its reasons. */
+  function linkCandidates(row, patients) {
+    const hid = houseId(row.houseId);
+    return (patients || []).map(function (p) {
+      const reasons = [];
+      if (houseId(p.houseId) === hid) reasons.push('אותו בית');
+      if (namesLookAlike(p.name, row.patientName)) reasons.push('שם דומה');
+      if (p.date && row.dueDate && p.date <= row.dueDate) reasons.push('נכנס/ה לפני התשלום');
+      return { id: p.id, name: p.name, houseName: houseName(p.houseId), date: p.date, status: p.status, reasons: reasons,
+        score: (houseId(p.houseId) === hid ? 2 : 0) + (namesLookAlike(p.name, row.patientName) ? 4 : 0) + (p.status !== 'released' ? 1 : 0) };
+    }).sort(function (a, b) { return b.score - a.score || a.name.localeCompare(b.name, 'he'); });
+  }
+  function linkBody(rawRow, patientId) {
+    return { action: 'savePayment', payment: Object.assign({}, rawRow, { linkPatientUid: s(patientId), linkStatus: 'linked', linkNote: '' }) };
+  }
+  function notPatientBody(rawRow, note) {
+    return { action: 'savePayment', payment: Object.assign({}, rawRow, { linkPatientUid: '', linkStatus: 'not_a_patient', linkNote: s(note).slice(0, 120) }) };
+  }
+  function linkErrors(kind, v) {
+    const e = {};
+    if (kind === 'link' && !s(v.patientId)) e.patientId = 'יש לבחור מטופל/ת';
+    if (kind === 'not' && (s(v.note).length < 2 || s(v.note).length > 120)) e.note = 'יש לציין סיבה (2 עד 120 תווים)';
+    return e;
+  }
+  function linkAccepted(res, id, status) {
+    const r = res || {};
+    return r.ok === true && !!r.payment && s(r.payment.id) === s(id) && s(r.payment.linkStatus) === status;
+  }
+
   const esc = function (v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
 
   /* ================= DOM ================= */
@@ -1440,6 +1492,55 @@
         while (billingWaiters.length) { try { billingWaiters.shift()(); } catch (_) { /* a stale drawer */ } }
       });
     }
+    /* C18: link / not-a-patient forms in the גבייה area. */
+    function rawPaymentRow(id) {
+      const p = state.billing && state.billing.payments && Array.isArray(state.billing.payments.payments) ? state.billing.payments.payments : [];
+      return p.filter(function (x) { return s(x && x.id) === s(id); })[0] || null;
+    }
+    function openLinkForm(kind, id) {
+      const el = $('#crm-link');
+      const row = detachedRows(state.billing.debt).filter(function (r) { return r.paymentId === id; })[0];
+      if (!el || !row) return;
+      state.link = { kind: kind, row: row };
+      const err = function (f) { return '<div class="err" data-err="' + f + '"></div>'; };
+      let inner = '<h3>' + (kind === 'link' ? 'שיוך' : 'סימון «לא מטופל/ת»') + ' · ' + esc(row.patientName) + ' · ' + esc(row.houseName) + ' · ' + esc(fmtDate(row.dueDate)) + ' · ' + esc(fmtMoney(row.amount)) + '</h3>';
+      if (kind === 'link') {
+        const cands = linkCandidates(row, compute(state.data, state.today).patients);
+        inner += '<label class="wide">מטופל/ת *<select name="patientId"><option value="">בחרי…</option>' + cands.map(function (c, i) {
+          return '<option value="' + esc(c.id) + '"' + (i === 0 && c.score >= 6 ? ' selected' : '') + '>' + esc(c.name + ' · ' + c.houseName + (c.date ? ' · ' + fmtDate(c.date) : '') + (c.status === 'released' ? ' · שוחרר/ה' : '') + (c.reasons.length ? ' — ' + c.reasons.join(', ') : '')) + '</option>';
+        }).join('') + '</select>' + err('patientId') + '</label>';
+      } else {
+        inner += '<label class="wide">סיבה * (החזר, ספק, שורת בדיקה…)<input type="text" name="note" maxlength="120" value="">' + err('note') + '</label>';
+      }
+      el.innerHTML = '<form class="new-lead report" data-form="link-' + kind + '" novalidate>' + inner + '<div class="wide err" data-err="_form"></div>'
+        + '<div class="wide toolbar"><button type="submit" class="btn primary">שמירה</button><button type="button" class="btn" data-link-cancel>ביטול</button><span class="na" id="crm-link-state"></span></div></form>';
+      el.scrollIntoView({ block: 'nearest' });
+    }
+    function submitLink(f) {
+      if (!state.link || state.saving) return Promise.resolve(false);
+      const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
+      const k = state.link.kind, row = state.link.row;
+      const errs = linkErrors(k, vals);
+      const issues = Object.keys(errs).map(function (x) { return { field: x, hebrewMessage: errs[x] }; });
+      showReportIssues(f, issues, issues.length ? 'יש לתקן את השדות המסומנים' : '');
+      if (issues.length) return Promise.resolve(false);
+      const raw = rawPaymentRow(row.paymentId);
+      if (!raw) { showReportIssues(f, [], 'השורה לא נמצאה בתשלומים — רענני'); return Promise.resolve(false); }
+      const body = k === 'link' ? linkBody(raw, vals.patientId) : notPatientBody(raw, vals.note);
+      const want = k === 'link' ? 'linked' : 'not_a_patient';
+      const st = $('#crm-link-state'); if (st) st.textContent = 'שומר…';
+      state.saving = true;
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+        .then(function (res) {
+          state.saving = false;
+          if (!linkAccepted(res, row.paymentId, want)) { const why = writeRefusal(res, res && res.ok === true ? 'nope' : '') || 'השיוך לא נשמר'; showReportIssues(f, [], why); if (st) st.textContent = ''; toast(why, true); return false; }
+          toast(k === 'link' ? 'התשלום שויך ✓' : 'השורה סומנה «לא מטופל/ת» ✓'); state.link = null;
+          state.billing = null; renderMain();
+          return true;
+        })
+        .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'השיוך לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
+    }
     function renderBilling() {
       if (!state.billing) { loadBilling(); return '<div class="crm-state">טוען נתוני גבייה…</div>'; }
       const b = billingOverview(state.billing.debt, state.billing.payments, state.today);
@@ -1493,6 +1594,14 @@
           return '<tr><td>' + esc(c.patientName) + '</td><td>' + esc(c.houseName) + '</td><td>' + esc(CREDIT_TYPE_LABELS[c.creditType] || c.creditType) + '</td><td>' + esc(c.allocationMonth) + '</td><td>' + esc(fmtDate(c.payoutDate)) + '</td><td>' + esc(fmtMoney(c.amount)) + '</td>'
             + '<td>' + (!isController ? '<button type="button" class="btn small" data-settle-open="' + esc(c.id) + '">סמן כשולם</button>' : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
+      const det = detachedRows(state.billing.debt);
+      html += '<div class="group-title">שיוך תשלומים' + (det.length ? ' ' + chip('late', det.length + ' ללא שיוך') : '') + '</div>';
+      if (!det.length) html += '<p class="na">כל התשלומים משויכים.</p>';
+      else html += '<p class="na">תשלומים שלא נמצא להם מטופל/ת נוכחי/ת (שם שונה, בית אחר, רשומה ישנה). שיוך מזיז את הכסף לחשבון של המטופל/ת.</p><div class="tbl-wrap"><table class="tbl" id="crm-detached"><thead><tr><th>שם בשורה</th><th>בית</th><th>לתשלום</th><th>סכום</th><th>התקבל</th><th></th></tr></thead><tbody>'
+        + det.map(function (r) {
+          return '<tr data-detached="' + esc(r.paymentId) + '"><td>' + esc(r.patientName) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtDate(r.dueDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td><td>' + esc(fmtMoney(r.received)) + '</td>'
+            + '<td>' + (!isController ? '<button type="button" class="btn small primary" data-link-open="' + esc(r.paymentId) + '">שייך</button> <button type="button" class="btn small" data-notpatient-open="' + esc(r.paymentId) + '">לא מטופל/ת</button>' : '') + '</td></tr>';
+        }).join('') + '</tbody></table></div><div id="crm-link"></div>';
       html += '<div class="group-title">פעולות (בדשבורד הרגיל)</div><div class="links">'
         + (isController ? '<a href="/?view=classic">בקרת גבייה<small>אימות דיווחים</small></a>' : '<a href="/?view=classic">עריכת קבלות<small>תיקון / ביטול קבלה</small></a><a href="/?view=classic">זיכויים ידניים<small>יצירה ועריכה של זיכוי</small></a><a href="/?view=classic">שיוך תשלומים<small>' + b.detached + ' ללא שיוך</small></a>')
         + '</div>';
@@ -1988,6 +2097,8 @@
         dischargePatient(f.dataset.patient, vals, f);
       } else if (f.dataset.form === 'restore') {
         submitRestore(f);
+      } else if (f.dataset.form.indexOf('link-') === 0) {
+        submitLink(f);
       } else if (f.dataset.form === 'payment-report') {
         submitReport(f, false);
       } else if (f.dataset.form.indexOf('small-') === 0) {
@@ -2043,9 +2154,12 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-clients-view],[data-restore],[data-to-outpatient],[data-restore-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-clients-view],[data-restore],[data-to-outpatient],[data-restore-cancel],[data-link-open],[data-notpatient-open],[data-link-cancel]') : null;
       if (!t) return;
       if (t.dataset.clientsView) { state.clientsView = t.dataset.clientsView; return renderMain(); }
+      if (t.dataset.linkCancel !== undefined) { state.link = null; const el = $('#crm-link'); if (el) el.innerHTML = ''; return; }
+      if (t.dataset.linkOpen) return openLinkForm('link', t.dataset.linkOpen);
+      if (t.dataset.notpatientOpen) return openLinkForm('not', t.dataset.notpatientOpen);
       if (t.dataset.restoreCancel !== undefined) { const el = $('#crm-restore'); if (el) el.innerHTML = ''; return; }
       if (t.dataset.restore) return openRestoreChoice(t.dataset.restore);
       if (t.dataset.toOutpatient) { if (win.confirm('להעביר לאמבולטורי (ליד טיפול חוץ באאוטפיישנט)?')) sendToOutpatient(t.dataset.toOutpatient); }
@@ -2106,6 +2220,7 @@
     directAddErrors: directAddErrors, houseSaveBody: houseSaveBody, houseSaveRefusal: houseSaveRefusal, isoDateOk: isoDateOk,
     DISCHARGE_DISPOSITIONS: DISCHARGE_DISPOSITIONS, CONTINUITY_CHOICES: CONTINUITY_CHOICES, dischargeAuditRow: dischargeAuditRow, dischargeErrors: dischargeErrors,
     movedRow: movedRow, patientEditErrors: patientEditErrors, meetingsFor: meetingsFor, managerReport: managerReport, whenLocal: whenLocal,
+    detachedRows: detachedRows, linkCandidates: linkCandidates, namesLookAlike: namesLookAlike, linkBody: linkBody, notPatientBody: notPatientBody, linkErrors: linkErrors, linkAccepted: linkAccepted,
     dischargedList: dischargedList, priorStatusOf: priorStatusOf, restoreTarget: restoreTarget, restoredRow: restoredRow, openAuditsOf: openAuditsOf, restoreFlagBody: restoreFlagBody, restoreAsLeadBody: restoreAsLeadBody, outpatientBody: outpatientBody, calendarRange: calendarRange, calendarRows: calendarRows, undatedVisits: undatedVisits, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
     MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, billingSearch: billingSearch, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
     patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
