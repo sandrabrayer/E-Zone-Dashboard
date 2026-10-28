@@ -736,7 +736,7 @@
       const d = controllerDay(state.queue);
       return '<div class="kpis">' + [['toVerify', 'דיווחים לאימות', d.toVerify], ['flagged', 'אימותים חלקיים / לבירור', d.flagged], ['confirmed', 'אומתו', d.confirmed]].map(function (x) {
         return '<div class="kpi"><span class="v">' + x[2] + '</span><span class="l">' + esc(x[1]) + '</span></div>';
-      }).join('') + '</div><div class="links"><a href="/">בקרת גבייה — העבודה המלאה בדשבורד<small>אימות, סימון לבירור, ייצוא</small></a></div>';
+      }).join('') + '</div><div class="links"><a href="/?view=classic">בקרת גבייה — העבודה המלאה בדשבורד<small>אימות, סימון לבירור, ייצוא</small></a></div>';
     }
 
     function renderLeads(c) {
@@ -1104,7 +1104,7 @@
             + '<td>' + (!isController ? '<button type="button" class="btn small" data-settle-open="' + esc(c.id) + '">סמן כשולם</button>' : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
       html += '<div class="group-title">פעולות (בדשבורד הרגיל)</div><div class="links">'
-        + (isController ? '<a href="/">בקרת גבייה<small>אימות דיווחים</small></a>' : '<a href="/">עריכת קבלות<small>תיקון / ביטול קבלה</small></a><a href="/">זיכויים ידניים<small>יצירה ועריכה של זיכוי</small></a><a href="/">שיוך תשלומים<small>' + b.detached + ' ללא שיוך</small></a>')
+        + (isController ? '<a href="/?view=classic">בקרת גבייה<small>אימות דיווחים</small></a>' : '<a href="/?view=classic">עריכת קבלות<small>תיקון / ביטול קבלה</small></a><a href="/?view=classic">זיכויים ידניים<small>יצירה ועריכה של זיכוי</small></a><a href="/?view=classic">שיוך תשלומים<small>' + b.detached + ' ללא שיוך</small></a>')
         + '</div>';
       return html;
     }
@@ -1115,7 +1115,7 @@
         + '<div class="links">' + o.houses.map(function (h) {
           const state_ = h.closed ? 'wait' : (h.free === 0 ? 'late' : (h.free <= 2 ? 'today' : 'ok'));
           return '<a href="#" data-house-open="' + esc(h.name) + '"><strong>' + esc(h.name) + '</strong> ' + chip(state_, h.closed ? 'סגור' : h.free + ' פנויות') + '<small>' + h.inHouse + ' / ' + (h.capacity || '—') + (h.capacity ? ' · ' + h.pct + '%' : '') + '</small></a>';
-        }).join('') + (o.unknown ? '<a href="/"><strong>בית לא מזוהה</strong> ' + chip('late', o.unknown + ' מטופלים') + '<small>לתיקון בדשבורד</small></a>' : '') + '</div>'
+        }).join('') + (o.unknown ? '<a href="/?view=classic"><strong>בית לא מזוהה</strong> ' + chip('late', o.unknown + ' מטופלים') + '<small>לתיקון בדשבורד</small></a>' : '') + '</div>'
         + '<p class="na">קליטה, יציאה והעברה בין בתים נעשות בדשבורד הרגיל (תפוסה).</p>';
     }
 
@@ -1233,7 +1233,7 @@
       const na = lead ? nextActionFor(lead, state.today) : null;
       dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(name) + '</h2><div class="meta">' + esc(lead ? stageLabel(lead.stage) + ' · ' + houseName(lead.house) : 'מטופל/ת · ' + houseName(pat.houseId)) + (na ? ' · ' + esc(na.text) : '') + '</div></div><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>'
         + '<div class="tabs" role="tablist">' + [['overview', 'סקירה'], ['activity', 'פעילות'], ['meetings', 'פגישות ושירותים'], ['account', 'חשבון'], ['docs', 'מסמכים']].map(function (t, i) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (i === 0) + '">' + esc(t[1]) + '</button>'; }).join('') + '</div>'
-        + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : renderPatientActions(pat)) + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p><a class="btn" href="/">עריכה מלאה בדשבורד</a></p></section>'
+        + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : renderPatientActions(pat)) + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p><a class="btn" href="/?view=classic">עריכה מלאה בדשבורד</a></p></section>'
         + '<section data-pane="activity" hidden><ul class="tl" id="crm-tl"><li>טוען…</li></ul></section>'
         + '<section data-pane="meetings" hidden><p class="na">' + (lead && lead.visitDate ? 'פגישת קבלה ' + esc(fmtDate(lead.visitDate)) + (lead.meetingOutcome ? ' · ' + esc(lead.meetingOutcome) : ' · ללא תוצאה') : 'אין פגישות רשומות') + '</p></section>'
         + '<section data-pane="account" hidden id="crm-account">' + (pat && state.me && state.me.finance ? '<p class="na">טוען נתוני חשבון…</p>' : '<p class="na">' + (lead ? 'החשבון נפתח עם הקליטה לבית.' : 'אין הרשאה לנתוני גבייה.') + '</p>') + '</section>'
@@ -1310,7 +1310,7 @@
           const cs = r.confirmStatus === 'confirmed' ? 'ok' : r.confirmStatus === 'flagged' ? 'late' : 'today';
           return '<tr><td>' + esc(fmtDate(r.receivedDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td><td>' + esc(r.method) + '</td><td>' + esc(r.payer) + '</td><td>' + (r.confirmStatus ? chip(cs, CONFIRM_LABELS[r.confirmStatus] || r.confirmStatus) : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
-      html += '<p><a class="btn" href="/">עריכת קבלות, שיוך תשלומים וזיכויים ידניים בדשבורד</a></p>';
+      html += '<p><a class="btn" href="/?view=classic">עריכת קבלות, שיוך תשלומים וזיכויים ידניים בדשבורד</a></p>';
       return html;
     }
     /* C10: the «דווח תשלום» form inside the account pane. */

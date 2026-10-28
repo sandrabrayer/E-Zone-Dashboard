@@ -20,7 +20,7 @@ const {
   ROLE_FORBIDDEN_MESSAGE, roleOperationFor, requiredRoleFor, principalHasRole, roleAllowed,
   EXPECTED_DISCHARGES_ACTION, ALL_USERS_READ_ACTIONS, canViewExpectedDischarges,
 } = require('./lib/role-scope');
-const { CRM_ENABLED_VAR, serveCrmShell } = require('./lib/crm-shell-flag');
+const { CRM_ENABLED_VAR, CRM_DEFAULT_VAR, serveCrmShell } = require('./lib/crm-shell-flag');
 const { buildXlsxReport, isoDayInIsrael, XLSX_MIME } = require('./lib/xlsx-report');
 const {
   createAssetStore, versionAssetRefs, isCurrentVersion, immutableHeaders, sendAsset, sendCompressedText,
@@ -309,6 +309,8 @@ function sendIndex(req, res) {
  * request, no-store, no new asset (sw.js untouched); the user's name is the
  * session's, HTML-escaped. `/index.html` never serves the shell. */
 const CRM_ENABLED = process.env[CRM_ENABLED_VAR] || '';
+/* C12: the switch (CHANGELOG-crm-default.md) — read once at start, like the flag. */
+const CRM_DEFAULT = process.env[CRM_DEFAULT_VAR] || '';
 function sendCrmShell(req, res, principal) {
   const name = String(principal.user || principal.id || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const html = versionAssetRefs(fs.readFileSync(path.join(__dirname, 'public/crm/crm.html'), 'utf8'), ASSETS).replace(/__USER__/g, name);
@@ -319,7 +321,7 @@ function sendCrmShell(req, res, principal) {
 }
 app.get('/', (req, res) => {
   const principal = sessionPrincipalFromRequest(req);
-  if (serveCrmShell({ [CRM_ENABLED_VAR]: CRM_ENABLED }, req.query, principal)) return sendCrmShell(req, res, principal);
+  if (serveCrmShell({ [CRM_ENABLED_VAR]: CRM_ENABLED, [CRM_DEFAULT_VAR]: CRM_DEFAULT }, req.query, principal, principalView(principal))) return sendCrmShell(req, res, principal);
   return sendIndex(req, res);
 });
 app.get('/index.html', sendIndex);

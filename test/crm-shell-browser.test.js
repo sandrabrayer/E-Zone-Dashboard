@@ -230,7 +230,7 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
     const main = await page.textContent('#crm-main');
     assert.match(main, /דנה כהן/); assert.match(main, /רמות השבים/); assert.match(main, /1 ללא דיווח/); assert.match(main, /70 ימים/); assert.match(main, /₪8,500/); assert.match(main, /ביט/); assert.match(main, /עריכת קבלות/);
     assert.match(await page.textContent('#crm-receipts'), new RegExp(core.fmtDate(daysAgo(4)).replace(/\//g, '\\/')), 'receipt dates are DD/MM/YYYY');
-    assert.equal(await page.$$eval('#crm-main .links a', (els) => els.map((e) => e.getAttribute('href')).every((h) => h === '/')), true, 'every action links to the classic dashboard');
+    assert.equal(await page.$$eval('#crm-main .links a', (els) => els.map((e) => e.getAttribute('href')).every((h) => h === '/?view=classic')), true, 'every action links to the classic dashboard (view=classic survives the switch)');
     // the debtor row opens the patient drawer
     await page.click('#crm-debtors tbody tr');
     assert.equal(await page.getAttribute('#crm-drawer', 'aria-hidden'), 'false');

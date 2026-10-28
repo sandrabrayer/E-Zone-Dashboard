@@ -23,15 +23,15 @@ const SESSION_SECRET = 'session-secret-TEST-crm-shell-0123456789abcd';
 const PEPPER = 'pepper-TEST-crm-shell-a1b2c3d4e5f60718293a4b5c';
 const SHEETS_URL = 'https://script.google.com/macros/s/TEST/exec';
 const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'APP_PIN', 'USER_PIN_HASHES', 'PIN_PEPPER',
-  'BOOTSTRAP_TOKEN', 'TRUST_PROXY_HOPS', 'MEETING_REPORT_PIN', 'MEETING_REPORT_SECRET', 'APP_PIN_UNTIL', 'HEALTHCHECK_TOKEN', 'CRM_ENABLED'];
-const NAMES = { vered: 'ורד', sandra: 'סנדרה', ortal: 'אורטל' };
+  'BOOTSTRAP_TOKEN', 'TRUST_PROXY_HOPS', 'MEETING_REPORT_PIN', 'MEETING_REPORT_SECRET', 'APP_PIN_UNTIL', 'HEALTHCHECK_TOKEN', 'CRM_ENABLED', 'CRM_DEFAULT'];
+const NAMES = { vered: 'ורד', sandra: 'סנדרה', ortal: 'אורטל', dana: 'דנה' };
 const personal = (id) => 'ezone_session=' + createSessionToken(SESSION_SECRET, undefined, undefined, NAMES[id], { id, pinVersion: 1 });
 const shared = () => 'ezone_session=' + createSessionToken(SESSION_SECRET, undefined, undefined, 'משותף');
 
 let _hash;
 async function records() {
   if (!_hash) _hash = await pinHash.hashPin('583920', PEPPER);
-  return ['vered', 'sandra', 'ortal'].map((id) => JSON.parse(users.recordLine(id, _hash, 1)));
+  return ['vered', 'sandra', 'ortal', 'dana'].filter((id) => users.modelById(id)).map((id) => JSON.parse(users.recordLine(id, _hash, 1)));
 }
 function freshServer(env) {
   const saved = {};
@@ -58,9 +58,10 @@ function request(port, urlPath, cookie) {
     req.end();
   });
 }
-async function withServer(crm, fn) {
+async function withServer(crm, fn, crmDefault) {
   const env = { PROXY_SECRET, SESSION_SECRET, SHEETS_URL, PIN_PEPPER: PEPPER, USER_PIN_HASHES: JSON.stringify(await records()) };
   if (crm !== undefined) env.CRM_ENABLED = crm;
+  if (crmDefault !== undefined) env.CRM_DEFAULT = crmDefault;
   const mod = freshServer(env);
   const srv = await new Promise((resolve) => { const s = mod.app.listen(0, '127.0.0.1', () => resolve(s)); });
   try { return await fn(srv.address().port, mod); } finally { srv.close(); }
@@ -154,6 +155,64 @@ test('the shell escapes the session name (no HTML injection through a user recor
   const fn = src.slice(src.indexOf('function sendCrmShell('), src.indexOf('app.get(\'/\', (req, res)'));
   assert.match(fn, /replace\(\/\[&<>"'\]\/g/);
   assert.match(fn, /noCache\(res\)/);
+});
+
+/* ===== C12: the switch (CRM_DEFAULT) ===== */
+
+test('C12 lib: crmByDefault needs BOTH flags, a personal session, the full view and no view=classic; serveCrmShell honours view=classic over view=crm', () => {
+  const on = { CRM_ENABLED: 'true', CRM_DEFAULT: 'true' };
+  const vered = { auth: 'personal', id: 'vered' };
+  assert.equal(flag.crmDefaultEnabled(on), true);
+  for (const e of [{ CRM_DEFAULT: 'true' }, { CRM_ENABLED: 'true' }, { CRM_ENABLED: 'true', CRM_DEFAULT: 'TRUE' }, {}]) assert.equal(flag.crmDefaultEnabled(e), false, JSON.stringify(e));
+  assert.equal(flag.crmByDefault(on, {}, vered, 'full'), true);
+  assert.equal(flag.crmByDefault(on, { view: 'classic' }, vered, 'full'), false);
+  for (const v of ['restricted', 'controller', 'none', '', undefined]) assert.equal(flag.crmByDefault(on, {}, vered, v), false, String(v));
+  assert.equal(flag.crmByDefault(on, {}, { auth: 'shared' }, 'full'), false);
+  assert.equal(flag.crmByDefault({ CRM_ENABLED: 'true' }, {}, vered, 'full'), false, 'CRM_ENABLED alone never switches');
+  assert.equal(flag.serveCrmShell(on, {}, vered, 'full'), true);
+  assert.equal(flag.serveCrmShell(on, { view: 'classic' }, vered, 'full'), false);
+  assert.equal(flag.serveCrmShell(on, { view: 'crm' }, vered, 'controller'), true, 'view=crm still opens the shell for Ortal');
+  assert.equal(flag.serveCrmShell(on, {}, vered, 'controller'), false);
+  assert.equal(flag.serveCrmShell({ CRM_ENABLED: 'true' }, {}, vered, 'full'), false, 'before the switch "/" is classic');
+  assert.equal(flag.serveCrmShell({ CRM_ENABLED: 'true' }, { view: 'crm' }, vered), true, 'C1 call shape (no view) unchanged');
+  assert.equal(flag.wantsClassic({ view: 'classic' }), true); assert.equal(flag.wantsClassic({ view: ['classic'] }), true); assert.equal(flag.wantsClassic({}), false);
+  assert.equal(flag.CLASSIC_PATH, '/?view=classic'); assert.deepEqual(flag.CRM_DEFAULT_VIEWS, ['full']); assert.equal(flag.CRM_DEFAULT_VAR, 'CRM_DEFAULT');
+});
+
+test('C12 server: CRM_DEFAULT unset → "/" is classic for everyone (byte-identical to before); set → Vered/Sandra get the shell on "/", "/?view=classic" is the classic page, Ortal stays classic, no session → the PIN page', async () => {
+  await withServer('true', async (port) => {
+    assert.ok(!isShell((await request(port, '/', personal('vered'))).text), 'flag on, default off: classic');
+  });
+  await withServer('true', async (port) => {
+    const plain = await request(port, '/');
+    assert.ok(!isShell(plain.text), 'no session → PIN page');
+    for (const id of ['vered', 'sandra']) {
+      const r = await request(port, '/', personal(id));
+      assert.ok(isShell(r.text), id + ' gets the CRM on /');
+      assert.match(r.headers['cache-control'], /no-store/);
+      const c = await request(port, '/?view=classic', personal(id));
+      assert.ok(!isShell(c.text), id + ': view=classic is the classic page');
+      assert.equal(stable(c.text), stable(plain.text), 'the classic page is the same index.html');
+    }
+    const o = await request(port, '/', personal('ortal'));
+    assert.ok(!isShell(o.text), 'Ortal (controller view) stays on the classic page by default');
+    assert.ok(isShell((await request(port, '/?view=crm', personal('ortal'))).text), '…and can still open the shell');
+    assert.ok(!isShell((await request(port, '/', shared())).text), 'a shared session never gets the shell');
+    assert.ok(!isShell((await request(port, '/index.html', personal('vered'))).text), '/index.html never serves the shell');
+    const h = await request(port, '/healthz'); assert.equal(h.status, 200);
+    const v = await request(port, '/api/version'); assert.equal(v.status, 200);
+  }, 'true');
+  await withServer(undefined, async (port) => {
+    assert.ok(!isShell((await request(port, '/', personal('vered'))).text), 'CRM_DEFAULT without CRM_ENABLED does nothing');
+  }, 'true');
+});
+
+test('C12: every «בדשבורד הרגיל» link of the shell points at /?view=classic (never "/", which would loop back after the switch)', () => {
+  const js = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.html'), 'utf8');
+  assert.doesNotMatch(js, /href="\/"/); assert.doesNotMatch(html, /href="\/"/);
+  assert.ok((js.match(/href="\/\?view=classic"/g) || []).length >= 4);
+  assert.match(html, /href="\/\?view=classic">חזרה לדשבורד הרגיל/);
 });
 
 /* ===== sw.js untouched ===== */

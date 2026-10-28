@@ -209,7 +209,8 @@ A test pins this.
 | C4–C7 (#293–#296, merged) | UI writes | public/crm/crm.js | one-lead `saveAll`, lifecycle, admission, house-as-read edit / move / discharge; browser scenarios | No | No | flag off, or revert |
 | C8 (#297, merged) | UI read | public/crm/crm.js | `billingOverview` over `debtAging` + `getPayments`; fetched once; Vered + Ortal browser scenario | No | No | flag off, or revert |
 | C10 (#299, merged) | UI write | public/crm/crm.js, crm.html | the strict payment report over the shared rules + `reportPayment`; browser scenario | No | No | flag off, or revert |
-| C11 | UI write | public/crm/crm.js | discount / amount / settle + credits read; browser scenario | No | No | flag off, or revert |
+| C11 (#300, merged) | UI write | public/crm/crm.js | discount / amount / settle + credits read; browser scenario | No | No | flag off, or revert |
+| C12 | the switch | lib/crm-shell-flag.js, server.js | `CRM_DEFAULT` rule per user / view; real-server cases; classic-link guard | No | No | delete `CRM_DEFAULT`, or revert |
 | C9 (#298, merged) | UI read | public/crm/crm.js | `patientAccount` — the drawer's «חשבון» tab over the shared C8 reads; browser scenario | No | No | flag off, or revert |
 
 ---
