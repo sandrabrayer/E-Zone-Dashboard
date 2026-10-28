@@ -217,9 +217,9 @@ test('C12: every «בדשבורד הרגיל» link of the shell points at /?vie
 
 /* ===== sw.js untouched ===== */
 
-test('sw.js is untouched by C1: no crm reference, CACHE_VERSION still v93, the shell is not a precached asset', () => {
-  assert.doesNotMatch(SW_SRC, /view=crm|\/crm\//);
-  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v93');
+test('sw.js: the shell HTML is never precached or special-cased (C1); since C16 the CRM bundle rides BUNDLE_PATHS at v94+', () => {
+  assert.doesNotMatch(SW_SRC, /view=crm/);
+  assert.ok(Number(/var CACHE_VERSION = 'v(\d+)';/.exec(SW_SRC)[1]) >= 94);
   const srv = fs.readFileSync(SERVER_PATH, 'utf8');
   assert.doesNotMatch(srv, /'\/crm\/crm\.html':/, 'the shell is not in ASSETS');
 });

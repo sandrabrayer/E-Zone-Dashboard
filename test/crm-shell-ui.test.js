@@ -491,7 +491,7 @@ test('esc escapes every HTML-significant character', () => {
 test('wiring: assets hashed via ASSETS, NOT in sw.js; the shell never calls a write action; links only to the classic dashboard', () => {
   assert.match(SERVER_SRC, /'\/crm\/crm\.js': \{ file:/);
   assert.match(SERVER_SRC, /'\/crm\/crm\.css': \{ file:/);
-  assert.doesNotMatch(SW_SRC, /crm\//);
+  assert.ok(/'\/crm\/crm\.js', '\/crm\/crm\.css'/.test(SW_SRC), 'the CRM bundle is in BUNDLE_PATHS (C16)');
   const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.js'), 'utf8');
   const actions = [...src.matchAll(/api\('([A-Za-z]+)'/g)].map((m) => m[1]).sort();
   assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments'], 'GET reads (debtAging + getPayments: C8; getCredits: C11)');

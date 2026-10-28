@@ -252,13 +252,13 @@ test('actions: the void sends status not_received + the reason; the discount sen
   assert.equal(posts.length, n);
 });
 
-test('page wiring: the hidden «בעיות גבייה» section, the billing-row chip, the CSS and SW v93', () => {
+test('page wiring: the hidden «בעיות גבייה» section, the billing-row chip, the CSS and SW v94+', () => {
   assert.match(HTML, /<div id="bc-problems-group" class="[^"]*hidden"/);
   for (const id of ['bc-problems-count', 'bc-problems', 'bc-discounts-given']) assert.ok(HTML.includes(`id="${id}"`), id);
   assert.match(APP_SRC, /!isVoid && payment\.discount > 0 \? bcDiscountChipHtml\(payment\.discount\)/);
   assert.match(fs.readFileSync(path.join(ROOT, 'public', 'style.css'), 'utf8'), /\.badge\.discount \{/);
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
-  assert.equal(v, 'v93');
+  assert.ok(Number(v.slice(1)) >= 93, v);
   assert.notEqual(v, 'v17');
 });
 
@@ -392,7 +392,7 @@ test('page wiring: revenue-by-funder section (no new data-finance node), the exp
   assert.match(APP_SRC, /if \(typeof refreshDebtViews === 'function'\) refreshDebtViews\(\);/);
   assert.match(APP_SRC, /const rf = document\.getElementById\('revenue-funder-view'\);\n\s+if \(rf && rf\.remove\) rf\.remove\(\);/);
   assert.match(APP_SRC, /debtAgingHtml\(s\.data, filters, debtAgingTodayIso\(\), debtActionCtx\(\)\)/);
-  assert.match(SW_SRC, /var CACHE_VERSION = 'v93'/);
+  assert.ok(Number(/var CACHE_VERSION = 'v(\d+)'/.exec(SW_SRC)[1]) >= 93);
 });
 
 /* ===================== CHANGELOG-debt-clarity.md ===================== */
