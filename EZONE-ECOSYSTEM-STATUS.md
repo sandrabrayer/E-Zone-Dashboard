@@ -28,6 +28,11 @@
 
 - Sandra's review request. Day / week toggle, ‹ ›, date input, «היום»; past meetings with their status (outcome, manager report, none). Details: `CHANGELOG-crm-calendar-picker.md`.
 
+## CRM Stage 1a+1b — Tasks, contact log, Dana operational — October 28, 2026 (PR open)
+
+- New `Tasks` sheet + seven Apps Script actions (`getTasks`, `createTask`, `completeTask`, `rescheduleTask`, `reassignTask`, `withdrawTask`, `logContact`): stable ids, idempotent by `submissionId`, actor on every change, reschedule history on Activity, «תיעוד שיחה» = contact event + fulfilled task + follow-up in one transaction (no 7-day default; «ללא משימת המשך» needs an explanation).
+- Dana moves from read-only (Phase 2a) to **operational**: every operational write across the houses; money actions refused (finance gate), money fields cut server-side (`lib/ops-scope.js`), and her `saveAll` keeps the stored money fields (Code.gs `preserveMoneyFields_`). Ortal sees and closes the money tasks only. No UI yet (Stage 1c next). Details: `CHANGELOG-crm-tasks-contact-log.md`, `docs/crm/PERMISSIONS-MATRIX.md §4b`.
+
 ## C14 — CRM «פגישות ושירותים» over real data — October 28, 2026 (merged, #305)
 
 - Manager meeting reports (from `/meeting-report`) in the drawer tab with seen-marking via the one-lead `saveAll`, an unseen-report row in «היום שלי», a «בקרה» metric; the patient's discharge record in the same tab. Services (Therapists) still not connected. Details: `CHANGELOG-crm-meetings-tab.md`.
@@ -36,7 +41,7 @@
 
 - Classic add-lead form and CRM now offer the same owners (`ורד / דנה / סנדרה`); Code.gs `CREATE_LEAD_ASSIGNEES` keeps the legacy names accepted for older Therapists builds. Therapists follow-up: offer דנה / סנדרה there. Details: `CHANGELOG-assignees-dana.md`.
 
-## Phase 2a — Dana's read-only login — October 28, 2026 (merged, #303)
+## Phase 2a — Dana's read-only login — October 28, 2026 (merged, #303; superseded by Stage 1b: Dana is operational)
 
 - New user `dana` (staff only), read-only BY ID: the server refuses every write and every non-read action before the proxy (`lib/readonly-scope.js`), projects getData without money fields, Code.gs holds the second lock. Classic page in view mode + restricted layout; CRM: five read areas, no actions. Sandra creates her code with «קוד אישי חדש». Details: `CHANGELOG-readonly-role-dana.md`.
 

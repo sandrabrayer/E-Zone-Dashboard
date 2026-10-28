@@ -256,7 +256,7 @@ function openFixture(stateOver) {
     env.tabs[s] = t;
   });
   env.els['screen-patients'] = new FakeEl('section');
-  Object.assign(env.app.state, { finance: true, view: 'full', billingRead: false, readonly: false }, stateOver || {});
+  Object.assign(env.app.state, { finance: true, view: 'full', billingRead: false, ops: false }, stateOver || {});
   return env;
 }
 

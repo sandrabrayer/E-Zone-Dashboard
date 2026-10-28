@@ -136,7 +136,9 @@ test('lists: Code.gs and lib/ hold the same billing-control lists; nothing new i
     // Appended: «שנה סכום» on an open debt — also role-gated (CHANGELOG-open-debts-cleanup.md).
     'upsertBillingOverride',
     // Appended: the CRM timeline read, money kinds only for Ortal (CHANGELOG-crm-activity-read.md).
-    'getActivity']);
+    'getActivity',
+    // Appended: the money tasks that wait on her verification (CHANGELOG-crm-tasks-contact-log.md).
+    'getTasks', 'completeTask', 'rescheduleTask']);
   assert.deepEqual(arr(g.run('CONTROLLER_BILLING_READ_ACTIONS')), [...scope.CONTROLLER_BILLING_READ_ACTIONS]);
   assert.deepEqual(arr(g.run('CONTROLLER_GETDATA_KEYS')), [...scope.CONTROLLER_GETDATA_KEYS]);
   const known = arr(g.run('PROXY_KNOWN_ACTIONS'));
@@ -852,7 +854,7 @@ test('server: Ortal gets 403 on EVERY Express /api/ route outside CONTROLLER_ROU
       // The allowed ones.
       const me = await request(port, 'GET', '/api/me', { cookie: personal('ortal') });
       assert.deepEqual(me.json, { ok: true, user: 'אורטל', auth: 'personal', approver: false, deleter: false, finance: false,
-        capabilities: ['billingControl'], billingControl: true, view: 'controller', canConfirm: true, canAccount: true, canDiscount: false, canAmount: true, billingRead: true, readonly: false });
+        capabilities: ['billingControl'], billingControl: true, view: 'controller', canConfirm: true, canAccount: true, canDiscount: false, canAmount: true, billingRead: true, ops: false });
       const x = await request(port, 'GET', '/api/export/billing-control.xlsx', { cookie: personal('ortal') });
       assert.equal(x.status, 200);
       assert.equal(x.headers['content-type'], report.XLSX_MIME);
