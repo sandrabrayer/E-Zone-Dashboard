@@ -13722,6 +13722,7 @@ function renderBilling() {
 
   renderBillingDueList(due, selected, dueAll.length);
   renderBillingOpenList(selected);
+  renderBillingSearchResults(q);
   renderBillingMonthlySummary(selected);
   renderFunderFill();
   renderRevenueByFunder();
@@ -13820,6 +13821,119 @@ function renderBillingOpenList(selectedISO) {
       list.appendChild(buildBillingRow(patient, pay, pay.dueDate, true));
     });
   }
+}
+
+/* ===== גבייה search — the patient, not the date (CHANGELOG-billing-search-any-patient.md) =====
+ * The two lists above are DATE-scoped (due on the selected date; open
+ * balances before it), so the search box filtering them finds nobody who has
+ * nothing due that day and no open balance — a released patient most of all.
+ * Vered typed a discharged patient's name and the screen did not change.
+ *
+ * billingSearchHits is the lookup the box was always expected to be: every
+ * patient (any status — active, released, and discharged rows that are no
+ * longer on the Patients tab) whose name / house matches, each with ALL their
+ * cycle rows (never receipts) whatever the due date. A cycle row that matches
+ * the query by its own patientName but belongs to no current patient is listed
+ * under a pseudo-patient, exactly as the carry-forward list does. Pure. */
+function billingSearchHits(q, patients, discharged, payments, leads) {
+  const query = String(q == null ? '' : q).trim().toLowerCase();
+  if (!query) return [];
+  const pats = Array.isArray(patients) ? patients.filter(Boolean) : [];
+  const pays = (Array.isArray(payments) ? payments : [])
+    .filter(x => x && String(x.id || '').indexOf('rcpt-') !== 0);
+  const houseLabel = p => {
+    const h = houseById(p && p.houseId);
+    return h ? h.name : ((p && p.houseId) || '');
+  };
+  const byDue = (a, b) => String(b.dueDate || '').localeCompare(String(a.dueDate || ''));
+  const hits = [];
+  const taken = new Set();
+  pats.forEach(p => {
+    if (!dischargedPatientMatchesQuery({ name: p.name, phone: p.phone }, query, houseLabel(p))) return;
+    const cycles = pays.filter(x => paymentBelongsToPatient(x, p, pats, leads)).sort(byDue);
+    cycles.forEach(x => taken.add(x));
+    hits.push({ patient: p, cycles, kind: 'patient' });
+  });
+  /* Discharged rows whose patient is gone from the Patients tab (or renamed):
+   * same house + name as a listed patient → already shown, skip. */
+  const shownKey = new Set(hits.map(h => String(h.patient.houseId || '') + '::' + normalizeNameForMatch(h.patient.name)));
+  (Array.isArray(discharged) ? discharged : []).filter(Boolean).forEach(r => {
+    if (r.deletedAt || r.restored === '1' || r.restored === 'TRUE' || r.restored === 'true') return;
+    if (!dischargedPatientMatchesQuery({ name: r.name, phone: r.phone }, query, houseLabel(r))) return;
+    const key = String(r.houseId || '') + '::' + normalizeNameForMatch(r.name);
+    if (shownKey.has(key)) return;
+    shownKey.add(key);
+    const pseudo = { name: r.name, houseId: r.houseId, date: r.date, exitDate: r.exitDate, status: 'released', pay: r.pay };
+    const cycles = pays.filter(x => !taken.has(x)
+      && String(x.houseId || '') === String(r.houseId || '')
+      && normalizeNameForMatch(x.patientName) === normalizeNameForMatch(r.name)).sort(byDue);
+    cycles.forEach(x => taken.add(x));
+    hits.push({ patient: pseudo, cycles, kind: 'discharged' });
+  });
+  /* Cycle rows nobody above owns, found by their own patientName. */
+  const orphans = pays.filter(x => !taken.has(x)
+    && dischargedPatientMatchesQuery({ name: x.patientName, phone: x.phone }, query, houseLabel(x)));
+  if (orphans.length) {
+    const groups = new Map();
+    orphans.forEach(x => {
+      const k = String(x.houseId || '') + '::' + normalizeNameForMatch(x.patientName);
+      if (!groups.has(k)) groups.set(k, { patient: { name: x.patientName, houseId: x.houseId, pay: x.amount, date: '', status: '' }, cycles: [], kind: 'orphan' });
+      groups.get(k).cycles.push(x);
+    });
+    groups.forEach(g => { g.cycles.sort(byDue); hits.push(g); });
+  }
+  return hits;
+}
+
+/* One line under the search results naming what was matched. Pure. */
+function billingSearchHitMeta(hit) {
+  const p = hit.patient || {};
+  const house = houseById(p.houseId);
+  const parts = [house ? house.name : (p.houseId || '')];
+  if (hit.kind === 'orphan') parts.push('תשלום ללא שיוך למטופל');
+  else {
+    const st = STATUS_OPTIONS.find(s => s.id === p.status);
+    parts.push(st ? st.label : (hit.kind === 'discharged' ? 'שוחרר' : ''));
+    if (p.date) parts.push('כניסה ' + formatDate(p.date));
+    const exit = patientExitISO(p);
+    if (exit) parts.push('יציאה ' + formatDate(exit));
+  }
+  return parts.filter(Boolean).join(' · ');
+}
+
+function renderBillingSearchResults(q) {
+  const group = document.getElementById('billing-search-group');
+  const list  = document.getElementById('billing-search-list');
+  if (!group || !list) return;
+  const query = String(q == null ? '' : q).trim();
+  if (!query) { group.classList.add('hidden'); list.innerHTML = ''; return; }
+  group.classList.remove('hidden');
+  list.innerHTML = '';
+  const hits = billingSearchHits(query, state.patients, state.dischargedPatients, state.payments, state.leads);
+  const pill = document.getElementById('billing-search-count');
+  if (pill) pill.textContent = String(hits.length);
+  if (!hits.length) {
+    list.innerHTML = `<div class="card billing-empty">לא נמצא מטופל בשם «${escapeHtml(query)}» — לא בבתים, לא בין המשוחררים ולא בתשלומים</div>`;
+    return;
+  }
+  hits.forEach(hit => {
+    const head = document.createElement('div');
+    head.className = 'rev-detail-head billing-search-head';
+    head.innerHTML = `<span><b>${escapeHtml(hit.patient.name || '')}</b> · ${escapeHtml(billingSearchHitMeta(hit))}</span>`
+      + `<span>${hit.cycles.length} ${hit.cycles.length === 1 ? 'מחזור' : 'מחזורים'}</span>`;
+    list.appendChild(head);
+    if (!hit.cycles.length) {
+      const none = document.createElement('div');
+      none.className = 'card billing-empty billing-search-none';
+      none.textContent = 'אין מחזורי תשלום רשומים למטופל/ת זה/זו';
+      list.appendChild(none);
+      return;
+    }
+    hit.cycles.forEach(raw => {
+      const pay = hit.kind === 'patient' ? cycleView(raw, hit.patient) : raw;
+      list.appendChild(buildBillingRow(hit.patient, pay, pay.dueDate, true));
+    });
+  });
 }
 
 /* The month split, rendered. THE KEY FACT ON THE ROW: a payment is one number

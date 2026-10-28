@@ -606,6 +606,29 @@
     };
   }
 
+  /* «גבייה» search (CHANGELOG-billing-search-any-patient.md): the overview
+   * narrowed to ONE name — the debtors with that name, the receipts with that
+   * name, and the patients (any status, released included) whose name or house
+   * matches, so a released patient with nothing owed is still FOUND and can be
+   * opened on «חשבון». Name match: every typed word inside the name, order-free,
+   * case-insensitive. Pure. */
+  function billingSearch(b, q, patients) {
+    const words = s(q).toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return null;
+    const hit = function (name, house) {
+      const t = (s(name) + ' ' + s(house)).toLowerCase();
+      return words.every(function (w) { return t.indexOf(w) >= 0; });
+    };
+    const debtors = (b && Array.isArray(b.patients) ? b.patients : []).filter(function (p) { return hit(p.name, p.houseName); });
+    const receipts = (b && Array.isArray(b.receipts) ? b.receipts : []).filter(function (r) { return hit(r.patientName, r.houseName); });
+    const seen = {};
+    debtors.forEach(function (p) { seen[p.id] = true; });
+    const people = (Array.isArray(patients) ? patients : []).filter(function (p) { return p && hit(p.name, houseName(p.houseId)) && !seen[s(p.id)]; })
+      .map(function (p) { return { id: s(p.id), name: s(p.name), houseName: houseName(p.houseId), status: s(p.status), date: s(p.date), exitDate: s(p.exitDate) }; })
+      .sort(function (a, b2) { return a.name.localeCompare(b2.name, 'he'); });
+    return { q: words.join(' '), debtors: debtors, receipts: receipts, people: people, total: debtors.length + receipts.length + people.length };
+  }
+
   /* ---- C9: the «חשבון» tab of a patient (CHANGELOG-crm-account-tab.md) ----
    * Same two reads as the גבייה area, filtered to ONE patient: open cycles
    * (debtAging.byPatient), the stamped cycles and receipts (getPayments),
@@ -1409,6 +1432,22 @@
       const isController = !!(state.me && state.me.view === 'controller');
       const kpi = function (v, l) { return '<div class="kpi"><span class="v">' + esc(v) + '</span><span class="l">' + esc(l) + '</span></div>'; };
       let html = '';
+      /* The top search box, while this area is open, looks the NAME up across
+       * debtors, receipts and every patient (released included) — the date-
+       * scoped overview below stays as it is (CHANGELOG-billing-search-any-patient.md). */
+      const srch = billingSearch(b, state.filters.q, compute(state.data, state.today).patients);
+      if (srch) {
+        const stLabel = function (p) { return p.status === 'released' ? 'שוחרר/ה' : ((PATIENT_STATUSES.filter(function (x) { return x.id === p.status; })[0] || {}).label || p.status); };
+        html += '<div class="group-title">תוצאות חיפוש «' + esc(srch.q) + '» <span class="na">' + srch.total + '</span></div>';
+        if (!srch.total) html += '<div class="crm-state">לא נמצא מטופל/ת בשם «' + esc(srch.q) + '» — לא בבתים, לא בין המשוחררים ולא בתקבולים</div>';
+        if (srch.debtors.length) html += '<div class="tbl-wrap"><table class="tbl" id="crm-search-debtors"><thead><tr><th>שם</th><th>בית</th><th>חוב</th><th>מחזורים</th><th>סטטוס</th></tr></thead><tbody>'
+          + srch.debtors.map(function (p) { return '<tr data-open-patient="' + esc(p.id) + '"><td>' + esc(p.name) + '</td><td>' + esc(p.houseName) + '</td><td>' + esc(fmtMoney(p.balance)) + '</td><td>' + p.cycles + '</td><td>' + esc(p.inHouse ? 'בבית' : (p.status === 'released' ? 'שוחרר/ה' : p.status)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+        if (srch.people.length) html += '<div class="tbl-wrap"><table class="tbl" id="crm-search-people"><thead><tr><th>שם</th><th>בית</th><th>סטטוס</th><th>כניסה</th><th>יציאה</th></tr></thead><tbody>'
+          + srch.people.map(function (p) { return '<tr data-open-patient="' + esc(p.id) + '"><td>' + esc(p.name) + '</td><td>' + esc(p.houseName) + '</td><td>' + esc(stLabel(p)) + '</td><td>' + esc(fmtDate(p.date)) + '</td><td>' + esc(fmtDate(p.exitDate)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+        if (srch.receipts.length) html += '<div class="tbl-wrap"><table class="tbl" id="crm-search-receipts"><thead><tr><th>תאריך</th><th>שם</th><th>בית</th><th>סכום</th><th>אמצעי</th></tr></thead><tbody>'
+          + srch.receipts.map(function (r) { return '<tr data-receipt="' + esc(r.id) + '"><td>' + esc(fmtDate(r.receivedDate)) + '</td><td>' + esc(r.patientName) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td><td>' + esc(r.method) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+        html += '<p class="na">פתיחת שורה → כרטיס המטופל/ת, לשונית «חשבון» — כל המחזורים והתקבולים.</p>';
+      }
       if (b.errors.length) html += '<div class="crm-state bad">' + esc(b.errors.join(' · ')) + ' <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
       html += '<div class="kpis">' + kpi(fmtMoney(b.openDebt), 'חוב פתוח (' + b.openCycles + ' מחזורים)') + kpi(fmtMoney(b.over60), 'מעל 60 יום')
         + kpi(b.debtors, 'מטופלים עם חוב') + kpi(fmtMoney(b.received30), 'התקבל ב-30 יום (' + b.received30Count + ')') + kpi(b.toVerify, 'דיווחים לאימות') + '</div>';
@@ -2004,7 +2043,7 @@
       if (t.id === 'f-owner') state.filters.owner = t.value;
       renderMain();
     });
-    $('#crm-search').addEventListener('input', function (ev) { state.filters.q = ev.target.value; if (state.area !== 'leads' && state.area !== 'clients') state.area = 'leads'; renderNav(); renderMain(); });
+    $('#crm-search').addEventListener('input', function (ev) { state.filters.q = ev.target.value; if (state.area !== 'leads' && state.area !== 'clients' && state.area !== 'billing') state.area = 'leads'; renderNav(); renderMain(); });
     doc.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') closeDrawer(); });
 
     function load() {
@@ -2042,7 +2081,7 @@
     DISCHARGE_DISPOSITIONS: DISCHARGE_DISPOSITIONS, CONTINUITY_CHOICES: CONTINUITY_CHOICES, dischargeAuditRow: dischargeAuditRow, dischargeErrors: dischargeErrors,
     movedRow: movedRow, patientEditErrors: patientEditErrors, meetingsFor: meetingsFor, managerReport: managerReport, whenLocal: whenLocal,
     dischargedList: dischargedList, priorStatusOf: priorStatusOf, restoreTarget: restoreTarget, restoredRow: restoredRow, openAuditsOf: openAuditsOf, restoreFlagBody: restoreFlagBody, restoreAsLeadBody: restoreAsLeadBody, outpatientBody: outpatientBody, calendarRange: calendarRange, calendarRows: calendarRows, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
-    MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
+    MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, billingSearch: billingSearch, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
     patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
     newSubmissionId: newSubmissionId, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
     CREDIT_TYPE_LABELS: CREDIT_TYPE_LABELS, CREDIT_STATUS_LABELS: CREDIT_STATUS_LABELS, SETTLE_METHODS: SETTLE_METHODS, creditsOf: creditsOf, patientCredits: patientCredits, pendingCredits: pendingCredits,
