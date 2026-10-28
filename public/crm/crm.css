@@ -149,3 +149,7 @@ form.report { margin: 10px 0 14px; padding: 10px; border: 1px solid var(--border
 form.report .toolbar { margin: 4px 0 0; }
 #crm-account-open td:last-child { text-align: end; }
 #crm-account-open td:first-child, #crm-account-open th:first-child { white-space: normal; min-width: 120px; }
+
+/* ---- read-only view (Phase 2, Dana) ---- */
+.crm.readonly .actions, .crm.readonly form, .crm.readonly #crm-new-lead, .crm.readonly #crm-direct-add, .crm.readonly [data-stage-next], .crm.readonly [data-stage-prev],
+.crm.readonly [data-remove-lead], .crm.readonly [data-restore-lead], .crm.readonly details.act { display: none !important; }

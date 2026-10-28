@@ -389,9 +389,11 @@ test('startup validator: bad JSON, unknown role, non-Sandra approver and every o
 /* ======================= user / role model ============================ */
 /* ====================================================================== */
 
-test('role model: Vered / Sandra / Shiran / Yael / Ortal exactly as decided; stable ASCII ids', () => {
+test('role model: Vered / Sandra / Shiran / Yael / Ortal / Dana exactly as decided; stable ASCII ids', () => {
   const by = Object.fromEntries(users.USER_MODEL.map((u) => [u.id, u]));
-  assert.deepStrictEqual(Object.keys(by), ['vered', 'sandra', 'shiran', 'yael', 'ortal']);
+  assert.deepStrictEqual(Object.keys(by), ['vered', 'sandra', 'shiran', 'yael', 'ortal', 'dana']);
+  assert.deepStrictEqual([...by.dana.roles], ['staff'], 'Phase 2 (D5): Dana — staff only, read-only by id');
+  assert.strictEqual(by.dana.status, 'active');
   for (const id of Object.keys(by)) assert.match(id, /^[a-z]+$/);
   assert.deepStrictEqual([...by.vered.roles], ['staff', 'reporter', 'deleter']);
   assert.deepStrictEqual([...by.sandra.roles], ['staff', 'deleter', 'approver', 'viewer']);

@@ -236,6 +236,15 @@ deploys on merge. Railway (`app.js`, `meeting-report.html`, `sw.js`):
 house-manager labels in slash form. Either order is safe. SW
 `CACHE_VERSION` v57 → **v58**.
 
+## Dana's read-only login (Phase 2a, October 28, 2026)
+
+`CHANGELOG-readonly-role-dana.md`. No env var, no Script Property, no column. The clasp CI deploys
+Code.gs. One step for Sandra after the merge: «קוד אישי חדש» → דנה → paste the line into
+`USER_PIN_HASHES` in Railway (same as the other codes). Until then Dana is not on the login screen.
+Her session can only read (leads, patients, no money fields); every write is refused by the server
+and by Code.gs. To retire Shiran / Yael: set `"status": "revoked"` on their records in the same
+variable (the server restarts on save).
+
 ## «בקרת גבייה» — Ortal's tab (October 4, 2026)
 
 `CHANGELOG-billing-control-tab.md`. **No env var, no Script Property, no

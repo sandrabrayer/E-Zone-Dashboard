@@ -216,7 +216,7 @@ test('personal login: success mints id + pinVersion; /api/me says personal; the 
     const me = await request(port, 'GET', '/api/me', { cookie: cookieOf(ok) });
     assert.deepStrictEqual(me.json, { ok: true, user: 'ורד', auth: 'personal', approver: false, deleter: true, finance: true,
       // Phase 4 («בקרת גבייה»): the capability set, the view and the decision right.
-      capabilities: ['finance', 'billingControl'], billingControl: true, view: 'full', canConfirm: false, canAccount: false, canDiscount: true, canAmount: true, billingRead: false });
+      capabilities: ['finance', 'billingControl'], billingControl: true, view: 'full', canConfirm: false, canAccount: false, canDiscount: true, canAmount: true, billingRead: false, readonly: false });
   });
 });
 
@@ -338,7 +338,7 @@ test('PR C: /api/me has no sharedUntil; the client has no banner, no shared fiel
   await withServer(await envWith(), async (port) => {
     const me = await request(port, 'GET', '/api/me', { cookie: cookieOf(await login(port, 'shiran', PINS.shiran)) });
     assert.deepStrictEqual(me.json, { ok: true, user: 'שירן', auth: 'personal', approver: false, deleter: false, finance: false,
-      capabilities: [], billingControl: false, view: 'restricted', canConfirm: false, canAccount: false, canDiscount: false, canAmount: false, billingRead: false });
+      capabilities: [], billingControl: false, view: 'restricted', canConfirm: false, canAccount: false, canDiscount: false, canAmount: false, billingRead: false, readonly: false });
   });
   assert.ok(!/id="shared-banner"|id="pin-input"|id="login-shared-link"|id="user-screen"/.test(HTML_SRC));
   assert.ok(!/\.shared-banner \{/.test(fs.readFileSync(path.join(ROOT, 'public', 'style.css'), 'utf8')));
@@ -382,7 +382,9 @@ test('new-code page: 401 without a session or with a shared cookie; 403 for ever
       { id: 'yael', name: 'יעל', hasRecord: true, status: 'revoked' },
       // Phase 4: Sandra creates Ortal's code here (new, no record yet).
       { id: 'ortal', name: 'אורטל', hasRecord: false, status: '' },
-    ], 'Ortal offered as new; no hash, no roles');
+      // Phase 2: Dana's code is created here the same way.
+      { id: 'dana', name: 'דנה', hasRecord: false, status: '' },
+    ], 'Ortal and Dana offered as new; no hash, no roles');
   });
 });
 
