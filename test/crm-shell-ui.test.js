@@ -351,6 +351,44 @@ test('C10 payment report core: legacy key, uid-or-key row matching, cycle bodies
   assert.equal(core.duplicateText({}), 'קיימת כבר קבלה דומה (—, ללא אסמכתא). האם זו קבלה נוספת?');
 });
 
+test('C11 credits + discount / amount / settle core: ledger rows per patient (uid or key), pending list, money parsing, errors, bodies (classic contracts), refusals', () => {
+  const pat = { id: 'id-abc', houseId: 'ramot', name: 'דנה כהן', date: '2026-07-29' };
+  const credits = { ok: true, credits: [
+    { id: 'cr-1', patientId: 'id-abc', patientKey: 'ramot::דנה כהן::2026-07-29', patientName: 'דנה כהן', houseId: 'ramot', creditType: 'days_unused', allocationMonth: '2026-09', amount: 1200, status: 'pending', payoutDate: '2026-10-15' },
+    { id: 'cr-2', patientId: '', patientKey: 'ramot::דנה כהן::2026-07-29', patientName: 'דנה כהן', houseId: 'ramot', creditType: 'other', allocationMonth: '2026-10', amount: 300, status: 'paid', paidDate: '2026-10-20', method: 'ביט' },
+    { id: 'cr-3', patientId: 'id-zzz', patientKey: 'rehab::אבי::2026-01-01', patientName: 'אבי', houseId: 'rehab', creditType: 'prepaid_return', allocationMonth: '2026-08', amount: 900, status: 'pending', payoutDate: '2026-09-15' },
+    { id: 'cr-4', patientId: 'id-zzz', patientKey: 'rehab::אבי::2026-01-01', creditType: 'other', allocationMonth: '2026-08', amount: 0, status: 'pending' },
+    { id: 'cr-5', patientId: 'id-zzz', patientKey: 'rehab::אבי::2026-01-01', creditType: 'other', allocationMonth: '2026-08', amount: 50, status: 'cancelled' }] };
+  assert.deepEqual(core.patientCredits(pat, credits).map((c) => c.id), ['cr-2', 'cr-1'], 'uid or legacy key, newest month first');
+  assert.deepEqual(core.patientCredits('id-zzz', credits).map((c) => c.id), ['cr-3', 'cr-4', 'cr-5']);
+  assert.deepEqual(core.pendingCredits(credits).map((c) => c.id), ['cr-3', 'cr-1'], 'pending with money, oldest payout first');
+  assert.deepEqual(core.pendingCredits({ ok: false }), []);
+  assert.equal(core.creditsOf(credits)[0].houseName, 'רמות השבים');
+  // money parsing: the server's rule (0..1,000,000, ≤ 2 decimals)
+  assert.equal(core.moneyParse('1,200.50'), 1200.5); assert.equal(core.moneyParse(' 0 '), 0); assert.equal(core.moneyParse('₪300'), 300);
+  for (const bad of ['', '-1', '1.234', 'abc', '1000001']) assert.equal(core.moneyParse(bad), null, bad);
+  // discount
+  assert.deepEqual(core.discountErrors({ month: '2026-09', discountAmount: '500', discountReason: 'הסכמה עם המשפחה' }), {});
+  assert.deepEqual(Object.keys(core.discountErrors({ month: '2026-13', discountAmount: 'x', discountReason: 'a' })), ['month', 'discountAmount', 'discountReason']);
+  assert.deepEqual(core.discountBody(pat, '2026-09', '500', ' הסכמה '), { action: 'setBillingDiscount', discount: { patientId: 'ramot::דנה כהן::2026-07-29', month: '2026-09', discountAmount: 500, discountReason: 'הסכמה' } });
+  // amount override
+  assert.deepEqual(core.overrideErrors({ month: '2026-09', amount: '5500' }), {});
+  assert.deepEqual(Object.keys(core.overrideErrors({ month: '', amount: '-3' })), ['month', 'amount']);
+  assert.deepEqual(core.overrideBody(pat, '2026-09', '5,500', '2026-10-28'), { action: 'upsertBillingOverride', override: { id: 'ovr::ramot::דנה כהן::2026-07-29::2026-09', patientId: 'ramot::דנה כהן::2026-07-29', month: '2026-09', amount: 5500, created: '2026-10-28' } });
+  // settle
+  assert.deepEqual(core.settleErrors({ paidDate: '2026-10-28', method: 'ביט' }, '2026-10-28'), {});
+  assert.deepEqual(core.settleErrors({ paidDate: '2026-10-29', method: '' }, '2026-10-28'), { paidDate: 'התאריך לא יכול להיות בעתיד', method: 'חסר: אמצעי תשלום' });
+  assert.deepEqual(core.settleBody('cr-1', '2026-10-28T00:00:00.000Z', 'ביט'), { action: 'settleRefund', creditId: 'cr-1', paidDate: '2026-10-28', method: 'ביט' });
+  assert.ok(core.SETTLE_METHODS.indexOf('העברה בנקאית') >= 0);
+  // refusals
+  assert.equal(core.writeRefusal({ ok: true }, ''), ''); assert.equal(core.writeRefusal({ ok: true, override: { id: 'o' } }, 'override'), '');
+  assert.match(core.writeRefusal({ ok: true }, 'override'), /לא אושר/);
+  assert.equal(core.writeRefusal({ ok: false, error: 'bad_discount_reason', message: 'בהנחה חובה לפרט סיבה (2 עד 120 תווים)' }), 'בהנחה חובה לפרט סיבה (2 עד 120 תווים)');
+  assert.match(core.writeRefusal({ ok: false, error: 'not_pending' }), /רענני/); assert.match(core.writeRefusal({ ok: false, error: 'forbidden' }), /הרשאה/); assert.match(core.writeRefusal({ ok: false, error: 'lock_busy' }), /עסוקה/);
+  assert.equal(core.writeRefusal({ ok: false, error: 'x' }), 'השינוי לא נשמר (x)');
+  assert.deepEqual(Object.keys(core.CREDIT_TYPE_LABELS), ['days_unused', 'prepaid_return', 'other']);
+});
+
 test('esc escapes every HTML-significant character', () => {
   assert.equal(core.esc('<b>"x" & \'y\'</b>'), '&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;');
 });
@@ -361,9 +399,9 @@ test('wiring: assets hashed via ASSETS, NOT in sw.js; the shell never calls a wr
   assert.doesNotMatch(SW_SRC, /crm\//);
   const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.js'), 'utf8');
   const actions = [...src.matchAll(/api\('([A-Za-z]+)'/g)].map((m) => m[1]).sort();
-  assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'debtAging', 'getActivity', 'getData', 'getPayments'], 'GET reads (debtAging + getPayments: C8, גבייה read-only)');
+  assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments'], 'GET reads (debtAging + getPayments: C8; getCredits: C11)');
   const writes = [...src.matchAll(/\{ action: '([A-Za-z]+)'/g)].map((m) => m[1]).sort();
-  assert.deepEqual([...new Set(writes)], ['appendFunder', 'dischargePatient', 'moveLeadIrrelevant', 'removeLead', 'reportPayment', 'restoreLead', 'saveAll'], 'the write actions: one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7), the strict payment report (C10)');
+  assert.deepEqual([...new Set(writes)], ['appendFunder', 'dischargePatient', 'moveLeadIrrelevant', 'removeLead', 'reportPayment', 'restoreLead', 'saveAll', 'setBillingDiscount', 'settleRefund', 'upsertBillingOverride'], 'the write actions: one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7), the strict payment report (C10), discount / amount / settle (C11)');
   assert.equal((src.match(/\/api\/outpatient-lead/g) || []).length, 1, 'the outpatient handoff: one call site, after a released_outpatient discharge');
   assert.ok(!/serializePatients|patients: state\.data\.patients\b/.test(src), 'patients travel only through houseSaveBody (one house as read)');
   assert.ok(!/innerHTML\s*=\s*[^;]*\b(l|lead|p|pat)\.(name|phone|note)\b(?!\))/.test(src.replace(/esc\([^)]*\)/g, 'ESC')), 'every interpolated field goes through esc()');

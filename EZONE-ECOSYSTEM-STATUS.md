@@ -1,6 +1,10 @@
 # E-ZONE Ecosystem Status — updated October 28, 2026
 
-## C10 — «דווח תשלום» inside the CRM — October 28, 2026 (PR open)
+## C11 — credits, discount and amount change inside the CRM — October 28, 2026 (PR open)
+
+- «חשבון» tab: «הנחה» / «שנה סכום» per open cycle, the patient's credits with «סמן כשולם»; «גבייה» area: «זיכויים לתשלום». Classic contracts (`setBillingDiscount`, `upsertBillingOverride`, `settleRefund`) + `getCredits` read, unchanged. With C10 Vered's daily collections work is now inside the CRM; receipt edit / void, manual credits and linking remain classic links. Details: `CHANGELOG-crm-credits-overrides.md`.
+
+## C10 — «דווח תשלום» inside the CRM — October 28, 2026 (merged, #299)
 
 - The patient «חשבון» tab reports payments natively: the classic strict form rebuilt in the CRM over the shared `lib/payment-report-rules.js` and the unchanged `reportPayment` contract (submissionId idempotency, duplicate confirm, re-read after save). C9 money-row matching fixed (legacy triple + uid). Credits / discounts / refunds next. Decision (Sandra 2026-10-28): rebuild in the CRM, then switch Vered. Details: `CHANGELOG-crm-payment-report.md`.
 

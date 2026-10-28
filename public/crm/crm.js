@@ -587,6 +587,86 @@
     return 'קיימת כבר קבלה דומה (' + (m ? m[3] + '/' + m[2] : '—') + ', ' + (s(e.reference) ? 'אסמכתא ' + s(e.reference) : 'ללא אסמכתא') + '). האם זו קבלה נוספת?';
   }
 
+  /* ---- C11: credits, discount, amount override (CHANGELOG-crm-credits-overrides.md) ----
+   * Reads: getCredits (the ledger). Writes (classic contracts, unchanged):
+   *   setBillingDiscount   { discount: { patientId: <legacy key>, month, discountAmount, discountReason } }   finance
+   *   upsertBillingOverride{ override: { id, patientId: <legacy key>, month, amount, created } }             canAmount
+   *   settleRefund         { creditId, paidDate, method }                                                     finance / controller */
+  const CREDIT_TYPE_LABELS = { days_unused: 'ימים שלא נוצלו', prepaid_return: 'החזר תשלום מראש', other: 'זיכוי אחר' };
+  const CREDIT_STATUS_LABELS = { pending: 'ממתין', paid: 'שולם', cancelled: 'בוטל' };
+  const SETTLE_METHODS = ['העברה בנקאית', 'ביט', 'מזומן', "צ'ק", 'קיזוז', 'אחר'];
+  function creditsOf(credits) {
+    const c = credits && credits.ok !== false ? credits : {};
+    return (Array.isArray(c.credits) ? c.credits : []).map(function (r) {
+      const o = r || {};
+      return { id: s(o.id), patientId: s(o.patientId), patientKey: s(o.patientKey), patientName: s(o.patientName), houseId: s(o.houseId), houseName: houseName(o.houseId),
+        creditType: s(o.creditType), allocationMonth: s(o.allocationMonth).slice(0, 7), amount: Number(o.amount) || 0, status: s(o.status), reason: s(o.reason),
+        decidedDate: s(o.decidedDate).slice(0, 10), payoutDate: s(o.payoutDate).slice(0, 10), paidDate: s(o.paidDate).slice(0, 10), method: s(o.method) };
+    });
+  }
+  function creditIsPatient(c, uid, key) { return (uid && c.patientId === uid) || (!!key && (c.patientKey === key || c.patientId === key)); }
+  function patientCredits(patient, credits) {
+    const pat = patient && typeof patient === 'object' ? patient : { id: patient };
+    const uid = s(pat.id), key = pat.name ? patientKeyOf(pat) : '';
+    return creditsOf(credits).filter(function (c) { return creditIsPatient(c, uid, key); })
+      .sort(function (a, b) { return a.allocationMonth < b.allocationMonth ? 1 : a.allocationMonth > b.allocationMonth ? -1 : 0; });
+  }
+  /* «זיכויים לתשלום»: pending credits with money, oldest payout first. */
+  function pendingCredits(credits) {
+    return creditsOf(credits).filter(function (c) { return c.status === 'pending' && c.amount > 0; })
+      .sort(function (a, b) { return (a.payoutDate || a.allocationMonth) < (b.payoutDate || b.allocationMonth) ? -1 : 1; });
+  }
+  function monthOk(m) { return /^\d{4}-(0[1-9]|1[0-2])$/.test(s(m)); }
+  function moneyParse(v) {
+    const t = s(v).replace(/[,₪\s]/g, '');
+    if (!/^\d+(\.\d{1,2})?$/.test(t)) return null;
+    const n = Number(t);
+    return n >= 0 && n <= 1000000 ? n : null;
+  }
+  function discountErrors(v) {
+    const e = {};
+    if (!monthOk(v.month)) e.month = 'חודש לא תקין';
+    if (moneyParse(v.discountAmount) === null) e.discountAmount = 'סכום הנחה לא תקין — מספר בין 0 ל-1,000,000, עד שתי ספרות אחרי הנקודה';
+    const r = s(v.discountReason);
+    if (r.length < 2 || r.length > 120) e.discountReason = 'בהנחה חובה לפרט סיבה (2 עד 120 תווים)';
+    return e;
+  }
+  function discountBody(patient, month, amount, reason) {
+    return { action: 'setBillingDiscount', discount: { patientId: patientKeyOf(patient), month: s(month), discountAmount: moneyParse(amount), discountReason: s(reason) } };
+  }
+  function overrideErrors(v) {
+    const e = {};
+    if (!monthOk(v.month)) e.month = 'חודש לא תקין';
+    if (moneyParse(v.amount) === null) e.amount = 'סכום לא תקין';
+    return e;
+  }
+  function overrideBody(patient, month, amount, today) {
+    const key = patientKeyOf(patient);
+    return { action: 'upsertBillingOverride', override: { id: 'ovr::' + key + '::' + s(month), patientId: key, month: s(month), amount: moneyParse(amount), created: s(today) } };
+  }
+  function settleErrors(v, today) {
+    const e = {};
+    const d = s(v.paidDate).slice(0, 10);
+    if (!isoDateOk(d)) e.paidDate = 'תאריך לא תקין';
+    else if (today && d > today) e.paidDate = 'התאריך לא יכול להיות בעתיד';
+    const m = s(v.method);
+    if (m.length < 1 || m.length > 40) e.method = 'חסר: אמצעי תשלום';
+    return e;
+  }
+  function settleBody(creditId, paidDate, method) { return { action: 'settleRefund', creditId: s(creditId), paidDate: s(paidDate).slice(0, 10), method: s(method) }; }
+  /* A write answer → '' when accepted, else a Hebrew reason. `proof` names the
+   * key the answer must carry (an echo without it is not a save). */
+  function writeRefusal(res, proof) {
+    const r = res || {};
+    if (r.ok === true && (!proof || r[proof])) return '';
+    if (r.ok === true) return 'השינוי לא אושר על ידי השרת — רענני';
+    if (r.message) return s(r.message);
+    if (r.error === 'lock_busy') return 'המערכת עסוקה — נסי שוב בעוד רגע';
+    if (r.error === 'forbidden' || r.error === 'forbidden_role') return 'אין הרשאה לפעולה זו';
+    if (r.error === 'not_pending') return 'הזיכוי כבר לא ממתין — רענני';
+    return 'השינוי לא נשמר' + (r.error ? ' (' + s(r.error) + ')' : '');
+  }
+
   const esc = function (v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
 
   /* ================= DOM ================= */
@@ -977,10 +1057,10 @@
       if (typeof then === 'function') billingWaiters.push(then);
       if (state.billing || state.billingLoading) return;
       state.billingLoading = true;
-      Promise.all([api('debtAging'), api('getPayments')]).then(function (res) {
-        state.billing = { debt: res[0], payments: res[1] };
+      Promise.all([api('debtAging'), api('getPayments'), api('getCredits')]).then(function (res) {
+        state.billing = { debt: res[0], payments: res[1], credits: res[2] };
       }).catch(function (e) {
-        state.billing = { debt: { ok: false, error: String(e && e.message || e) }, payments: { ok: false, error: String(e && e.message || e) } };
+        state.billing = { debt: { ok: false, error: String(e && e.message || e) }, payments: { ok: false, error: String(e && e.message || e) }, credits: { ok: false, error: String(e && e.message || e) } };
       }).then(function () {
         state.billingLoading = false; if (state.area === 'billing') renderMain();
         while (billingWaiters.length) { try { billingWaiters.shift()(); } catch (_) { /* a stale drawer */ } }
@@ -1015,8 +1095,16 @@
           const cs = r.confirmStatus === 'confirmed' ? 'ok' : r.confirmStatus === 'flagged' ? 'late' : 'today';
           return '<tr data-receipt="' + esc(r.id) + '"><td>' + esc(fmtDate(r.receivedDate)) + '</td><td>' + esc(r.patientName) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td><td>' + esc(r.method) + '</td><td>' + (r.confirmStatus ? chip(cs, CONFIRM_LABELS[r.confirmStatus] || r.confirmStatus) : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
+      const pend = pendingCredits(state.billing.credits);
+      html += '<div class="group-title">זיכויים לתשלום' + (pend.length ? ' ' + chip('today', pend.length + ' · ' + fmtMoney(pend.reduce(function (t, c) { return t + c.amount; }, 0))) : '') + '</div>';
+      if (!pend.length) html += '<p class="na">אין זיכויים ממתינים.</p>';
+      else html += '<div class="tbl-wrap"><table class="tbl" id="crm-pending-credits"><thead><tr><th>שם</th><th>בית</th><th>סוג</th><th>חודש</th><th>לתשלום עד</th><th>סכום</th><th></th></tr></thead><tbody>'
+        + pend.map(function (c) {
+          return '<tr><td>' + esc(c.patientName) + '</td><td>' + esc(c.houseName) + '</td><td>' + esc(CREDIT_TYPE_LABELS[c.creditType] || c.creditType) + '</td><td>' + esc(c.allocationMonth) + '</td><td>' + esc(fmtDate(c.payoutDate)) + '</td><td>' + esc(fmtMoney(c.amount)) + '</td>'
+            + '<td>' + (!isController ? '<button type="button" class="btn small" data-settle-open="' + esc(c.id) + '">סמן כשולם</button>' : '') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
       html += '<div class="group-title">פעולות (בדשבורד הרגיל)</div><div class="links">'
-        + (isController ? '<a href="/">בקרת גבייה<small>אימות דיווחים</small></a>' : '<a href="/">דווח תשלום<small>דיווח תקבול, שיוך, חשבונית</small></a><a href="/">חובות וזיכויים<small>הנחות, זיכויים, החזרים</small></a><a href="/">שיוך תשלומים<small>' + b.detached + ' ללא שיוך</small></a>')
+        + (isController ? '<a href="/">בקרת גבייה<small>אימות דיווחים</small></a>' : '<a href="/">עריכת קבלות<small>תיקון / ביטול קבלה</small></a><a href="/">זיכויים ידניים<small>יצירה ועריכה של זיכוי</small></a><a href="/">שיוך תשלומים<small>' + b.detached + ' ללא שיוך</small></a>')
         + '</div>';
       return html;
     }
@@ -1136,6 +1224,7 @@
       const lead = kind === 'lead' ? c.leads.filter(function (l) { return l.id === id; })[0] : null;
       const pat = kind === 'patient' ? c.patients.filter(function (p) { return p.id === id; })[0] : null;
       if (!lead && !pat) return;
+      if (!(keepTab && state.drawer && state.drawer.id === id)) { state.account = null; state.report = null; state.small = null; }
       const dr = $('#crm-drawer');
       const name = lead ? lead.name : pat.name;
       const subject = lead ? { leadId: lead.id } : { patientId: pat.id };
@@ -1180,6 +1269,7 @@
       loadBilling(paint);
     }
     function renderAccount(a) {
+      const me = state.me || {};
       let html = '';
       if (a.errors.length) html += '<p class="na">' + esc(a.errors.join(' · ')) + '</p>';
       html += '<dl class="kv"><dt>חוב פתוח</dt><dd>' + esc(fmtMoney(a.openTotal)) + (a.openCycles.length ? ' (' + a.openCycles.length + ' מחזורים)' : '') + '</dd>'
@@ -1191,9 +1281,20 @@
         + a.openCycles.map(function (c, i) {
           const st = c.days > 60 ? 'late' : c.days > 30 ? 'today' : 'ok';
           return '<tr><td>' + esc(fmtDate(c.start)) + (c.end ? '–' + esc(fmtDate(c.end)) : '') + (c.kind === 'unrecorded' ? ' <span class="na">ללא דיווח</span>' : '') + (c.grace ? ' ' + chip('wait', 'גוף מממן') : '') + '</td><td>' + esc(fmtMoney(c.expected)) + '</td><td>' + esc(fmtMoney(c.received)) + '</td><td>' + esc(fmtMoney(c.balance)) + '</td><td>' + chip(st, c.days + '') + '</td>'
-            + '<td><button type="button" class="btn small primary" data-report-open="' + i + '">דווח תשלום</button></td></tr>';
+            + '<td><button type="button" class="btn small primary" data-report-open="' + i + '">דווח תשלום</button>'
+            + (me.canDiscount && c.month ? ' <button type="button" class="btn small" data-discount-open="' + i + '">הנחה</button>' : '')
+            + (me.canAmount && c.month ? ' <button type="button" class="btn small" data-amount-open="' + i + '">שנה סכום</button>' : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
       html += '<div id="crm-report"></div>';
+      html += '<div class="group-title">זיכויים</div>';
+      const credits = state.billing ? patientCredits(state.account ? state.account.patient : a.patientId, state.billing.credits) : [];
+      if (!credits.length) html += '<p class="na">אין זיכויים.</p>';
+      else html += '<div class="tbl-wrap"><table class="tbl" id="crm-account-credits"><thead><tr><th>סוג</th><th>חודש</th><th>סכום</th><th>סטטוס</th><th></th></tr></thead><tbody>'
+        + credits.map(function (c) {
+          const st = c.status === 'paid' ? 'ok' : c.status === 'cancelled' ? 'wait' : 'today';
+          return '<tr><td>' + esc(CREDIT_TYPE_LABELS[c.creditType] || c.creditType) + (c.reason ? ' <span class="na">' + esc(c.reason) + '</span>' : '') + '</td><td>' + esc(c.allocationMonth) + '</td><td>' + esc(fmtMoney(c.amount)) + '</td><td>' + chip(st, (CREDIT_STATUS_LABELS[c.status] || c.status) + (c.paidDate ? ' ' + fmtDate(c.paidDate) : '')) + '</td>'
+            + '<td>' + (c.status === 'pending' && c.amount > 0 && me.finance ? '<button type="button" class="btn small" data-settle-open="' + esc(c.id) + '">סמן כשולם</button>' : '') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
       html += '<div class="group-title">תשלומים</div>';
       if (!a.cycles.length) html += '<p class="na">אין תשלומים רשומים.</p>';
       else html += '<div class="tbl-wrap"><table class="tbl" id="crm-account-cycles"><thead><tr><th>לתשלום</th><th>סכום</th><th>שולם</th><th>סטטוס</th></tr></thead><tbody>'
@@ -1209,7 +1310,7 @@
           const cs = r.confirmStatus === 'confirmed' ? 'ok' : r.confirmStatus === 'flagged' ? 'late' : 'today';
           return '<tr><td>' + esc(fmtDate(r.receivedDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td><td>' + esc(r.method) + '</td><td>' + esc(r.payer) + '</td><td>' + (r.confirmStatus ? chip(cs, CONFIRM_LABELS[r.confirmStatus] || r.confirmStatus) : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
-      html += '<p><a class="btn" href="/">זיכויים, הנחות והחזרים בדשבורד</a></p>';
+      html += '<p><a class="btn" href="/">עריכת קבלות, שיוך תשלומים וזיכויים ידניים בדשבורד</a></p>';
       return html;
     }
     /* C10: the «דווח תשלום» form inside the account pane. */
@@ -1281,7 +1382,56 @@
         })
         .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'התשלום לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
     }
-    function closeDrawer() { $('#crm-drawer').setAttribute('aria-hidden', 'true'); $('#crm-scrim').removeAttribute('data-open'); state.drawer = null; }
+    /* C11: discount / amount / settle forms share the #crm-report slot. */
+    function openSmallForm(kind, ctx) {
+      const el = $('#crm-report');
+      if (!el) return;
+      state.report = null;
+      state.small = { kind: kind, ctx: ctx };
+      const err = function (f) { return '<div class="err" data-err="' + f + '"></div>'; };
+      let inner = '';
+      if (kind === 'discount') {
+        inner = '<h3>הנחה לחודש ' + esc(ctx.month) + ' · צפוי ' + esc(fmtMoney(ctx.expected)) + (ctx.discount ? ' · הנחה קיימת ' + esc(fmtMoney(ctx.discount)) : '') + '</h3>'
+          + '<label>סכום ההנחה (₪) *<input type="text" inputmode="decimal" name="discountAmount" value="' + esc(ctx.discount || '') + '">' + err('discountAmount') + '</label>'
+          + '<label class="wide">סיבה *<input type="text" name="discountReason" maxlength="120" value="">' + err('discountReason') + '</label>';
+      } else if (kind === 'amount') {
+        inner = '<h3>שינוי סכום לחודש ' + esc(ctx.month) + ' · כרגע ' + esc(fmtMoney(ctx.expected)) + '</h3>'
+          + '<label>הסכום החדש (₪, כולל מע״מ) *<input type="text" inputmode="decimal" name="amount" value="' + esc(ctx.expected) + '">' + err('amount') + '</label>';
+      } else {
+        inner = '<h3>סימון זיכוי כשולם · ' + esc(fmtMoney(ctx.amount)) + ' · ' + esc(CREDIT_TYPE_LABELS[ctx.creditType] || ctx.creditType) + ' ' + esc(ctx.allocationMonth) + '</h3>'
+          + '<label>תאריך התשלום *<input type="date" name="paidDate" max="' + esc(state.today) + '" value="' + esc(state.today) + '">' + err('paidDate') + '</label>'
+          + '<label>אמצעי *<select name="method"><option value="">בחרי…</option>' + SETTLE_METHODS.map(function (m) { return '<option value="' + esc(m) + '">' + esc(m) + '</option>'; }).join('') + '</select>' + err('method') + '</label>';
+      }
+      el.innerHTML = '<form class="new-lead report" data-form="small-' + kind + '" novalidate>' + inner + '<div class="wide err" data-err="_form"></div>'
+        + '<div class="wide toolbar"><button type="submit" class="btn primary">שמירה</button><button type="button" class="btn" data-report-cancel>ביטול</button><span class="na" id="crm-report-state"></span></div></form>';
+      el.scrollIntoView({ block: 'nearest' });
+    }
+    function submitSmall(f) {
+      if (!state.small || !state.account || state.saving) return Promise.resolve(false);
+      const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
+      const k = state.small.kind, ctx = state.small.ctx, pat = state.account.patient;
+      let errs, body, proof, label;
+      if (k === 'discount') { vals.month = ctx.month; errs = discountErrors(vals); body = discountBody(pat, ctx.month, vals.discountAmount, vals.discountReason); proof = ''; label = 'ההנחה'; }
+      else if (k === 'amount') { vals.month = ctx.month; errs = overrideErrors(vals); body = overrideBody(pat, ctx.month, vals.amount, state.today); proof = 'override'; label = 'הסכום'; }
+      else { errs = settleErrors(vals, state.today); body = settleBody(ctx.id, vals.paidDate, vals.method); proof = ''; label = 'הזיכוי'; }
+      const issues = Object.keys(errs).map(function (f_) { return { field: f_, hebrewMessage: errs[f_] }; });
+      showReportIssues(f, issues, issues.length ? 'יש לתקן את השדות המסומנים' : '');
+      if (issues.length) return Promise.resolve(false);
+      const st = $('#crm-report-state'); if (st) st.textContent = 'שומר…';
+      state.saving = true;
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+        .then(function (res) {
+          state.saving = false;
+          const why = writeRefusal(res, proof);
+          if (why) { showReportIssues(f, [], why); if (st) st.textContent = ''; toast(why, true); return false; }
+          toast(label + ' נשמר ✓'); state.small = null;
+          const pid = state.drawer && state.drawer.id; state.billing = null; if (pid) fillAccountPane(pid);
+          return true;
+        })
+        .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'השינוי לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
+    }
+    function closeDrawer() { $('#crm-drawer').setAttribute('aria-hidden', 'true'); $('#crm-scrim').removeAttribute('data-open'); state.drawer = null; state.account = null; state.report = null; state.small = null; }
 
     /* events (delegated; filters, sort and scroll survive opening a card) */
     root.addEventListener('click', function (ev) {
@@ -1344,6 +1494,8 @@
         dischargePatient(f.dataset.patient, vals, f);
       } else if (f.dataset.form === 'payment-report') {
         submitReport(f, false);
+      } else if (f.dataset.form.indexOf('small-') === 0) {
+        submitSmall(f);
       } else if (f.dataset.form === 'new-lead') {
         const vals = {};
         Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
@@ -1351,11 +1503,24 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-report-open],[data-report-row],[data-report-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-settle-open]') : null;
       if (!t) return;
       if (t.dataset.billingRetry !== undefined) { state.billing = null; return renderMain(); }
-      if (t.dataset.reportCancel !== undefined) { state.report = null; const el = $('#crm-report'); if (el) el.innerHTML = ''; return; }
+      if (t.dataset.reportCancel !== undefined) { state.report = null; state.small = null; const el = $('#crm-report'); if (el) el.innerHTML = ''; return; }
+      if (t.dataset.settleOpen && !(state.drawer && state.account)) {
+        // from the גבייה area: open the patient's drawer on «חשבון», then the form
+        const cr = pendingCredits(state.billing && state.billing.credits).filter(function (c) { return c.id === t.dataset.settleOpen; })[0];
+        const pat = cr && compute(state.data, state.today).patients.filter(function (p) { return p.id === cr.patientId || patientKeyOf(p) === cr.patientKey; })[0];
+        if (!pat) return toast('המטופל/ת לא נמצא/ה ברשימה — סימון בדשבורד הרגיל', true);
+        openDrawer('patient', pat.id); const tab = doc.querySelector('#crm-drawer [data-tab="account"]'); if (tab) tab.click();
+        loadBilling(function () { if (state.account) openSmallForm('settle', cr); });
+        if (state.billing) openSmallForm('settle', cr);
+        return;
+      }
       if (!state.account) return;
+      if (t.dataset.discountOpen !== undefined) { const c = state.account.data.openCycles[Number(t.dataset.discountOpen)]; if (c) openSmallForm('discount', c); return; }
+      if (t.dataset.amountOpen !== undefined) { const c = state.account.data.openCycles[Number(t.dataset.amountOpen)]; if (c) openSmallForm('amount', c); return; }
+      if (t.dataset.settleOpen) { const cr = patientCredits(state.account.patient, state.billing.credits).filter(function (c) { return c.id === t.dataset.settleOpen; })[0]; if (cr) openSmallForm('settle', cr); return; }
       if (t.dataset.reportOpen !== undefined) {
         const c = state.account.data.openCycles[Number(t.dataset.reportOpen)];
         if (c) openReportForm(reportCycleFor(state.account.patient, c, state.account.data), c.balance);
@@ -1408,5 +1573,7 @@
     DISCHARGE_DISPOSITIONS: DISCHARGE_DISPOSITIONS, CONTINUITY_CHOICES: CONTINUITY_CHOICES, dischargeAuditRow: dischargeAuditRow, dischargeErrors: dischargeErrors,
     movedRow: movedRow, patientEditErrors: patientEditErrors, billingOverview: billingOverview, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
     patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
-    newSubmissionId: newSubmissionId, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules };
+    newSubmissionId: newSubmissionId, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
+    CREDIT_TYPE_LABELS: CREDIT_TYPE_LABELS, CREDIT_STATUS_LABELS: CREDIT_STATUS_LABELS, SETTLE_METHODS: SETTLE_METHODS, creditsOf: creditsOf, patientCredits: patientCredits, pendingCredits: pendingCredits,
+    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));
