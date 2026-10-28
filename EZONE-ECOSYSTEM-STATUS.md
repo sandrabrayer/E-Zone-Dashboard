@@ -1,5 +1,9 @@
 # E-ZONE Ecosystem Status — updated October 28, 2026
 
+## Railway healthcheck window 30 s → 300 s — October 28, 2026 (PR open)
+
+- Every deploy after #303 failed at «Network › Healthcheck» with Build/Deploy green (Railway's Oct 21 incident recovery); live stuck on `2a2a251`. `/healthz` is synchronous, so the window is Railway's network attach. `railway.json` `healthcheckTimeout` 30 → 300. Details: `CHANGELOG-railway-healthcheck-timeout.md`.
+
 ## C18 — CRM «שיוך תשלומים» — October 28, 2026 (PR open)
 
 - Detached payment rows (from `debtAging`) in the גבייה area with «שייך» (ranked candidates; classic `savePayment` link row) and «לא מטופל/ת» (reason). Duplicate voiding stays classic. Details: `CHANGELOG-crm-payment-linking.md`.
