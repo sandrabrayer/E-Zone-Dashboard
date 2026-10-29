@@ -129,7 +129,7 @@ test('weekPlan: Sun–Sat days, a dated row on its day, a window task on every d
 });
 
 test('light theme + nav groups: the spec tokens, state never by colour alone (words / icons in every chip), nav groups in the spec order, 16px body', () => {
-  assert.match(CRM_CSS, /--bg: #F5F7FA; --bg-2: #FFFFFF/); assert.match(CRM_CSS, /--text: #172B36/); assert.match(CRM_CSS, /--border: #DCE3EA/); assert.match(CRM_CSS, /--primary: #0F766E/);
+  assert.match(CRM_CSS, /--bg: #E6ECF2; --bg-2: #FFFFFF/); assert.match(CRM_CSS, /--text: #0E1B25/); assert.match(CRM_CSS, /--border: #B9C6D2/); assert.match(CRM_CSS, /--primary: #0B6B63/);   // contrast pass 2026-10-29
   assert.match(CRM_CSS, /font-size: 16px; line-height: 1.45/);
   assert.deepEqual(core.NAV_GROUPS.map((g) => g.label), ['', 'פניות ומטופלים', 'פגישות ויומן', 'בתים והמשך טיפול', 'כספים', 'דוחות והגדרות']);
   assert.match(CRM_SRC, /'⚠ חריג'/); assert.match(CRM_SRC, /'⏰ באיחור'/); assert.match(CRM_SRC, /'● להיום'/);

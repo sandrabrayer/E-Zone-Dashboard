@@ -26,8 +26,9 @@ function loadSw() {
 }
 const sw = loadSw();
 
-test('sw.js: v99 (monotonic from the live v93 via v94…v97, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
-  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v99');
+test('sw.js: v100 (monotonic from the live v93 via v94…v97, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
+  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v100');
+  assert.ok(SW_SRC.includes('v99 → v100:') && SW_SRC.includes('CHANGELOG-crm-contrast.md'));
   assert.ok(SW_SRC.includes('v98 → v99:') && SW_SRC.includes('CHANGELOG-crm-triage.md'));
   assert.ok(SW_SRC.includes('v96 → v97:') && SW_SRC.includes('CHANGELOG-crm-contact-panel.md'));
   assert.ok(SW_SRC.includes('v97 → v98:') && SW_SRC.includes('CHANGELOG-crm-my-day.md'));
@@ -46,7 +47,7 @@ test('sw.js: v99 (monotonic from the live v93 via v94…v97, with their comments
 
 test('crm.html: manifest, theme colour, iOS tags, and the same guarded registration as index.html', () => {
   assert.match(CRM_HTML, /<link rel="manifest" href="\/manifest\.json">/);
-  assert.match(CRM_HTML, /<meta name="theme-color" content="#F5F7FA">/, "light theme since Stage 2 (CHANGELOG-crm-my-day.md)");
+  assert.match(CRM_HTML, /<meta name="theme-color" content="#E6ECF2">/, "light theme since Stage 2; contrast pass (CHANGELOG-crm-contrast.md)");
   assert.match(CRM_HTML, /apple-mobile-web-app-capable/);
   assert.match(CRM_HTML, /navigator\.serviceWorker\.register\('\/sw\.js'\)\.catch/);
   assert.match(INDEX, /navigator\.serviceWorker\.register\('\/sw\.js'\)\.catch/);

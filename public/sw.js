@@ -331,7 +331,9 @@
 // (CHANGELOG-crm-my-day.md). Live v97 (07286f8) = the deploy branch; monotonic, v17 never reused.
 // v98 → v99: CRM Stage 3 — the triage round + progressive boot (crm/crm.js, crm/crm.css)
 // (CHANGELOG-crm-triage.md). Stacked on v98 (PR #315); monotonic, v17 never reused.
-var CACHE_VERSION = 'v99';
+// v99 → v100: CRM contrast pass — deeper backgrounds, darker text (crm/crm.css) (CHANGELOG-crm-contrast.md).
+// Stacked on v99 (PR #316); monotonic, v17 never reused.
+var CACHE_VERSION = 'v100';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

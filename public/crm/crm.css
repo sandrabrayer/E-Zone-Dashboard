@@ -5,10 +5,12 @@
  * word or icon, never colour alone. RTL, desktop ≥ 900px: fixed 220px menu on
  * the right; below: a drawer. The classic page keeps its own dark theme. */
 :root {
-  --bg: #F5F7FA; --bg-2: #FFFFFF; --panel: #FFFFFF; --panel-2: #EEF2F6;
-  --border: #DCE3EA; --text: #172B36; --text-muted: #5B6B78; --text-dim: #7E8C97;
-  --primary: #0F766E; --primary-strong: #0B5F59; --ok: #15803D; --warn: #C2410C; --bad: #B91C1C;
-  --menu-w: 220px; --radius: 12px; --shadow: 0 1px 2px rgba(23, 43, 54, 0.06);
+  /* Contrast pass (Sandra, 2026-10-29): deeper page background, darker text and borders than the
+   * spec's starting values — surfaces stay white so the cards read as cards. */
+  --bg: #E6ECF2; --bg-2: #FFFFFF; --panel: #FFFFFF; --panel-2: #DCE4EC;
+  --border: #B9C6D2; --text: #0E1B25; --text-muted: #3C4E5C; --text-dim: #566876;
+  --primary: #0B6B63; --primary-strong: #085048; --ok: #136B33; --warn: #B4380B; --bad: #A31515;
+  --menu-w: 220px; --radius: 12px; --shadow: 0 1px 3px rgba(14, 27, 37, 0.10);
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
@@ -18,7 +20,7 @@ a { color: var(--primary); }
 
 /* ---- layout ---- */
 .crm { display: grid; grid-template-columns: var(--menu-w) 1fr; min-height: 100vh; }
-.crm-menu { position: sticky; top: 0; height: 100vh; border-inline-start: 1px solid var(--border); background: var(--bg-2);
+.crm-menu { position: sticky; top: 0; height: 100vh; border-inline-start: 1px solid var(--border); background: #F3F6F9;
   padding: 16px 12px; display: flex; flex-direction: column; gap: 6px; }
 .crm-brand { font-weight: 700; font-size: 18px; margin: 4px 6px 14px; display: flex; align-items: center; gap: 8px; }
 .crm-brand small { color: var(--text-muted); font-weight: 400; font-size: 12px; }
@@ -50,20 +52,20 @@ a { color: var(--primary); }
 .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; cursor: pointer; text-align: start; box-shadow: var(--shadow); }
 .kpi[aria-pressed="true"] { border-color: var(--primary); }
 .kpi .v { font-size: 22px; font-weight: 700; display: block; }
-.kpi .l { font-size: 12px; color: var(--text-muted); }
+.kpi .l { font-size: 13px; color: var(--text); font-weight: 600; }
 
 /* ---- work list / tables ---- */
 .rows { display: flex; flex-direction: column; gap: 6px; }
 .row { display: grid; grid-template-columns: 1.4fr 1.6fr 0.8fr 0.9fr 1fr auto; gap: 10px; align-items: center; background: var(--panel);
   border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; box-shadow: var(--shadow); }
 .row.h { background: transparent; border-color: transparent; color: var(--text-muted); font-size: 12px; padding-top: 0; padding-bottom: 0; }
-.row .name { font-weight: 600; }
-.row .sub { color: var(--text-muted); font-size: 12px; }
-.chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
+.row .name { font-weight: 700; }
+.row .sub { color: var(--text-muted); font-size: 13px; }
+.chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); color: var(--text); background: var(--panel-2); white-space: nowrap; font-weight: 600; }
 .chip.late { color: var(--bad); border-color: var(--bad); }
 .chip.today { color: var(--warn); border-color: var(--warn); }
 .chip.ok { color: var(--ok); border-color: var(--ok); }
-.chip.wait { color: var(--text-dim); }
+.chip.wait { color: var(--text-muted); }
 .group-title { margin: 16px 0 8px; font-size: 14px; color: var(--text-muted); display: flex; gap: 8px; align-items: center; }
 
 /* ---- board ---- */
@@ -103,7 +105,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .tl .t { font-size: 12px; color: var(--text-muted); }
 .scrim { position: fixed; inset: 0; background: rgba(23,43,54,.35); z-index: 25; display: none; }
 .scrim[data-open="true"] { display: block; }
-.na { color: var(--text-dim); font-size: 12px; }
+.na { color: var(--text-muted); font-size: 13px; }
 
 /* ---- links to the classic dashboard ---- */
 .links { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
@@ -180,16 +182,16 @@ form.contact .next-extra label[hidden] { display: none; }
 }
 
 /* ---- Stage 2: «היום שלי» (CHANGELOG-crm-my-day.md) ---- */
-.crm-date { color: var(--text-muted); font-size: 14px; }
-.crm-who { color: var(--text-muted); font-size: 14px; border-inline-start: 1px solid var(--border); padding-inline-start: 10px; }
-.nav-group { margin: 10px 6px 2px; font-size: 11px; letter-spacing: .02em; color: var(--text-dim); text-transform: uppercase; }
+.crm-date { color: var(--text); font-size: 15px; }
+.crm-who { color: var(--text); font-size: 15px; border-inline-start: 1px solid var(--border); padding-inline-start: 10px; }
+.nav-group { margin: 10px 6px 2px; font-size: 12px; letter-spacing: .02em; color: var(--text-muted); font-weight: 600; }
 .day-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .day-date { font-size: 15px; color: var(--text-muted); }
 .toolbar .grow, .group-title .grow { flex: 1 1 auto; }
 .toolbar.filters { margin-bottom: 10px; }
-.kpis.cards .kpi .l2 { display: block; font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+.kpis.cards .kpi .l2 { display: block; font-size: 12px; color: var(--text-muted); margin-top: 2px; }
 .kpis.cards .kpi .na-v { color: var(--text-dim); }
-.urgent { border: 1px solid #FECACA; background: #FEF2F2; border-radius: var(--radius); padding: 4px 12px 10px; margin-bottom: 14px; }
+.urgent { border: 1px solid #F3B4B4; background: #FBE9E9; border-radius: var(--radius); padding: 4px 12px 10px; margin-bottom: 14px; }
 .urgent .group-title { color: var(--bad); margin-top: 8px; }
 .day-grid { display: grid; grid-template-columns: 7fr 3fr; gap: 16px; align-items: start; }
 .day-side { display: flex; flex-direction: column; gap: 10px; position: sticky; top: 12px; }
