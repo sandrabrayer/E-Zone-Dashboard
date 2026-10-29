@@ -28,7 +28,11 @@
 
 - Sandra's review request. Day / week toggle, ‹ ›, date input, «היום»; past meetings with their status (outcome, manager report, none). Details: `CHANGELOG-crm-calendar-picker.md`.
 
-## CRM Monday-style look — October 29, 2026 (PR open)
+## Server read cache + «מטופלים» in the Monday look — October 29, 2026 (PR open)
+
+- 30 s read-through cache for Apps Script reads keyed by action + params + verified actor (secret excluded), single-flight, busted by every write through the server; `SHEETS_READ_CACHE_MS` optional knob. «מטופלים»: house tags, status words, open tasks, last contact, row actions; card head with labels. SW v103. Details: `CHANGELOG-crm-read-cache.md`.
+
+## CRM Monday-style look — October 29, 2026 (merged, #319)
 
 - Filled colour status labels, colour-coded board columns, owner avatars, icon rail with the active area in Monday blue, underlined tabs, accent-topped summary cards, zebra tables. Board «ליצור קשר» no longer red by lead age. SW v102. Details: `CHANGELOG-crm-monday-look.md`.
 

@@ -242,6 +242,12 @@ house-manager labels in slash form. Either order is safe. SW
 page; the usual cache eviction on the next load). The CRM shell links the existing manifest and
 registers `/sw.js`; an installed "Dashboard" app opens `/` — the CRM after the switch.
 
+## Server read cache (October 29, 2026)
+
+`CHANGELOG-crm-read-cache.md`. Nothing to set. Optional Railway variable `SHEETS_READ_CACHE_MS`
+(default 30000; `0` disables; max 300000) — the TTL of the in-memory cache for Apps Script reads.
+Every write through the server clears it.
+
 ## Apps Script: the 200-versions cap and Railway's «Wait for CI» (October 29, 2026)
 
 Every CI deploy of Code.gs creates one Apps Script **version**; Google caps a script at **200**.

@@ -202,6 +202,15 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     // «מטופלים», «יומן», «גבייה», «בקרה» render
     await page.click('#crm-nav button[data-area="clients"]');
     assert.match(await page.textContent('#crm-main'), /דנה כהן/);
+    if (process.env.CRM_SHOT) await page.screenshot({ path: process.env.CRM_SHOT + '/clients-1366.png', fullPage: false });
+    assert.match(await page.textContent('table.clients'), /פעיל/, 'status as a word, never the raw id');
+    assert.ok(!/\bactive\b/.test(await page.textContent('table.clients')));
+    assert.equal(await page.$$eval('table.clients .chip.house', (els) => els.length) > 0, true, 'house tag');
+    await page.click('table.clients tr[data-open-patient="p1"] td.name');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    assert.match(await page.textContent('#crm-drawer .drawer-head'), /פעיל/); assert.match(await page.textContent('#crm-drawer [data-pane="overview"]'), /ימים בבית/);
+    assert.ok(!/\bactive\b|id-/.test(await page.textContent('#crm-drawer [data-pane="overview"] .kv')), 'no raw ids / statuses in the card');
+    await page.keyboard.press('Escape');
     await page.click('#crm-nav button[data-area="calendar"]');
     assert.match(await page.textContent('#crm-main'), /גלי כהן/);
     await page.click('#crm-nav button[data-area="billing"]');
