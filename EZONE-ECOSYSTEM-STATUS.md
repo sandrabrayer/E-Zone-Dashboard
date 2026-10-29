@@ -28,7 +28,11 @@
 
 - Sandra's review request. Day / week toggle, ‹ ›, date input, «היום»; past meetings with their status (outcome, manager report, none). Details: `CHANGELOG-crm-calendar-picker.md`.
 
-## Server read cache + «מטופלים» in the Monday look — October 29, 2026 (PR open)
+## Clickable KPIs — «בקרה» opens the list, «גבייה» filters — October 29, 2026 (PR open)
+
+- «בקרה» tiles come from the «היום שלי» model and each opens its list (followup / triage / calls / meetings / board); «גבייה» tiles and aging buckets filter the debtors / receipts tables with a clearable chip. SW v104. Details: `CHANGELOG-crm-clickable-kpis.md`.
+
+## Server read cache + «מטופלים» in the Monday look — October 29, 2026 (merged, #320)
 
 - 30 s read-through cache for Apps Script reads keyed by action + params + verified actor (secret excluded), single-flight, busted by every write through the server; `SHEETS_READ_CACHE_MS` optional knob. «מטופלים»: house tags, status words, open tasks, last contact, row actions; card head with labels. SW v103. Details: `CHANGELOG-crm-read-cache.md`.
 

@@ -339,7 +339,9 @@
 // (CHANGELOG-crm-monday-look.md). Stacked on v101 (PR #318); monotonic, v17 never reused.
 // v102 → v103: «מטופלים» + card head in the Monday look (crm/crm.js, crm.css) (CHANGELOG-crm-read-cache.md).
 // Stacked on v102 (PR #319); monotonic, v17 never reused.
-var CACHE_VERSION = 'v103';
+// v103 → v104: clickable KPIs in «בקרה» (open the list) and «גבייה» (filter the tables) (crm/crm.js, crm.css)
+// (CHANGELOG-crm-clickable-kpis.md). Stacked on v103 (PR #320); monotonic, v17 never reused.
+var CACHE_VERSION = 'v104';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
