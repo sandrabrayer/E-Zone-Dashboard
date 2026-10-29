@@ -33,11 +33,12 @@ const DATA = {
   },
 };
 
-test('areasFor mirrors the server gates: finance → all 6; controller → today/billing/control; no finance → no גבייה', () => {
-  assert.deepEqual(core.areasFor({ view: 'full', finance: true }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'billing', 'control']);
+test('areasFor mirrors the server gates: finance → all (+ triage); controller → today/billing/control; no finance → no גבייה; triage never in the menu', () => {
+  assert.deepEqual(core.areasFor({ view: 'full', finance: true }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'billing', 'control', 'triage']);
   assert.deepEqual(core.areasFor({ view: 'controller', finance: false }), ['today', 'billing', 'control']);
-  assert.deepEqual(core.areasFor({ view: 'restricted', finance: false }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control']);
-  assert.deepEqual(core.areasFor(null), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control']);
+  assert.deepEqual(core.areasFor({ view: 'restricted', finance: false }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'triage']);
+  assert.deepEqual(core.areasFor(null), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'triage']);
+  assert.ok(!core.NAV_GROUPS.some((g) => g.items.includes('triage')), 'the triage round is reached from «פניות» / the «ללא מגע» card, not from the menu');
 });
 
 test('HOUSES / STAGES mirror app.js (ids, labels, capacities)', () => {

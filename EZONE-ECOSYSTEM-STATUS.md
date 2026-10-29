@@ -28,7 +28,11 @@
 
 - Sandra's review request. Day / week toggle, ‹ ›, date input, «היום»; past meetings with their status (outcome, manager report, none). Details: `CHANGELOG-crm-calendar-picker.md`.
 
-## CRM Stage 2 — «היום שלי» rebuilt, light theme, grouped nav — October 29, 2026 (PR open)
+## CRM Stage 3 — «רשומות שדורשות בירור» + progressive boot — October 29, 2026 (PR open)
+
+- Triage round from «פניות» / the «ללא מגע» card: computed queue (no contact, no task; oldest first), one record at a time, six one-click decisions (call now / call back on date / waitlist with reason + house + owner + check date / update / close with reason / further check), each leaving a record; no bulk defer. Boot now renders on `getData` and fills tasks / contacts / debt progressively (fixes the slow open after Stage 2). SW v99. `DEPLOY.md`: the Apps Script 200-versions cap + Railway «Wait for CI» trap. Details: `CHANGELOG-crm-triage.md`.
+
+## CRM Stage 2 — «היום שלי» rebuilt, light theme, grouped nav — October 29, 2026 (merged, #315)
 
 - Light theme (spec §4), nav regrouped (פניות ומטופלים / פגישות ויומן / בתים והמשך טיפול / כספים / דוחות והגדרות), header date. «היום שלי»: views היום / השבוע / הושלמו, five per-role summary cards (Dana: «מה דחוף בבתים» instead of money; a failed source shows «—», never 0), urgent band, work list by domain (~70%) with why-now / last documented contact / direct action, side column (~30%). No lateness by lead age. New read `contactIndex` (last contact per subject). SW v98. Details: `CHANGELOG-crm-my-day.md`.
 

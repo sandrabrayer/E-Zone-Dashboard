@@ -308,8 +308,8 @@ test('pages: the classic page edits for Dana (restricted view, no read-only mode
   assert.ok(!/readonlyView|view-readonly|i\.readonly/.test(APP_SRC));
   assert.match(APP_SRC, /state\.mode = controllerView\(\) \? 'view' : 'edit'/);
   assert.ok(!/view-readonly/.test(CSS_SRC));
-  assert.deepStrictEqual(core.areasFor({ view: 'ops', ops: true, finance: false }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control']);
-  assert.deepStrictEqual(core.areasFor({ view: 'restricted', finance: false }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control']);
+  assert.deepStrictEqual(core.areasFor({ view: 'ops', ops: true, finance: false }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'triage']);
+  assert.deepStrictEqual(core.areasFor({ view: 'restricted', finance: false }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'triage']);
   assert.ok(core.areasFor({ view: 'full', finance: true }).indexOf('billing') >= 0, 'Vered keeps «גבייה»');
   assert.ok(!/\.crm\.readonly/.test(CRM_CSS)); assert.ok(!/me\.readonly|'readonly'/.test(CRM_SRC));
 });
