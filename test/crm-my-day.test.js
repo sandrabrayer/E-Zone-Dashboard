@@ -70,7 +70,7 @@ test('houseExceptions: admission due and not done (future entry is NOT an except
 
 test('myDay (Vered): five cards in the spec order; counts and lists come from the same rows; ordering binding → exceptions → overdue → rest; waiting-on-manager shows the owner, not a task of Vered; money rows from debtAging; last contact per row; filters', () => {
   const m = core.myDay(c, TASKS, INDEX, DEBT, TODAY, VERED, {});
-  assert.deepEqual(m.cards.map((k) => k.label), ['גבייה לטיפול', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'פניות חדשות ללא מגע']);
+  assert.deepEqual(m.cards.map((k) => k.label), ['גבייה לביצוע', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'פניות חדשות ללא מגע']);
   const card = (id) => m.cards.filter((k) => k.id === id)[0];
   assert.equal(card('collection').value, 2, 'the collection task today + the recorded debt past its end'); assert.match(card('collection').hint, /2 מחזורים פתוחים/);
   assert.equal(card('calls').value, 3, 'the late call + the timed review today + the window task covering today'); assert.match(card('calls').hint, /1 באיחור · 3 פתוחות/);

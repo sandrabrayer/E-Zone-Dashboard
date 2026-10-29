@@ -155,7 +155,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     assert.equal(await page.$eval('#crm-user', (e) => e.textContent), 'ורד');
     // «היום שלי» (Stage 2): the five cards, the urgent band, the domains, the side column
     await page.waitForSelector('.kpis.cards');
-    assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['גבייה לטיפול', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'פניות חדשות ללא מגע']);
+    assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['גבייה לביצוע', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'פניות חדשות ללא מגע']);
     const main = await page.textContent('#crm-main');
     assert.match(main, /ממתין לדיווח המנהל\/ת/, 'a passed meeting waits for the manager — not «late»');
     assert.match(main, /תאריך שעבר אינו הוכחה/);
