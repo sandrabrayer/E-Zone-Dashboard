@@ -1650,6 +1650,8 @@ const PROXY_KNOWN_ACTIONS = [
   'getActivity',
   // CRM Stage 1a (CHANGELOG-crm-tasks-contact-log.md)
   'getTasks', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logContact',
+  // CRM Stage 2 (CHANGELOG-crm-my-day.md)
+  'contactIndex',
 ];
 
 /* SecurityLog — append-only, one row per (event, action, hour) at most.
@@ -2006,6 +2008,11 @@ function handle_(params) {
     }
     // Tasks + contact log (CRM Stage 1a): a verified personal session (the
     // same gate as getActivity); money tasks are cut per the actor's caps.
+    if (action === 'contactIndex') {
+      const no = expectedDischargesRefused_(params);
+      if (no) return jsonOut_(no);
+      return jsonOut_(contactIndex_(params, actingUser_(params)));
+    }
     if (action === 'getTasks' || action === 'createTask' || action === 'completeTask' || action === 'rescheduleTask' ||
         action === 'reassignTask' || action === 'withdrawTask' || action === 'logContact') {
       const no = expectedDischargesRefused_(params);
@@ -4591,6 +4598,38 @@ function getActivity_(params, actor) {
   const rows = sh ? readSheet_(sh, ACTIVITY_COLUMNS) : [];
   const res = activityProject_(rows, subject, scope, limit);
   return { ok: true, scope: scope, total: res.total, events: res.events };
+}
+
+/* ===== Contact index (CRM Stage 2, CHANGELOG-crm-my-day.md) =====
+ * action=contactIndex → the LAST documented contact per lead / patient, from
+ * the Activity contact_logged events: { leads: {id: last}, patients: {id: last} },
+ * last = { at, outcome, channel, actorName, summary(≤120), noNext }. «היום שלי»
+ * needs it for «פניות חדשות ללא מגע» (a lead with no documented attempt — a
+ * reassign, an import or an edit is not contact) and for the "last contact"
+ * column of every work row. Contact events are never money kinds, so every
+ * verified session (Dana included) reads the same index; the controller view
+ * does not reach it (not on CONTROLLER_ACTIONS). Read-only. */
+function contactIndex_(params, actor) {
+  const scope = activityScope_(actor);
+  if (scope === 'money') return { ok: false, error: 'forbidden', message: 'אין הרשאה לפעולה זו' };
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(ACTIVITY_SHEET);
+  const rows = sh ? readSheet_(sh, ACTIVITY_COLUMNS) : [];
+  const leads = {}, patients = {};
+  let count = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r || String(r.kind == null ? '' : r.kind).trim() !== 'contact_logged') continue;
+    count++;
+    let d = {};
+    try { d = r.detailsJson ? JSON.parse(String(r.detailsJson)) : {}; } catch (_) { d = {}; }
+    const last = { at: String(r.occurredAt == null ? '' : r.occurredAt), outcome: String(d.outcome || ''), channel: String(d.channel || ''),
+      actorName: String(r.actorName == null ? '' : r.actorName), summary: String(d.summary || '').slice(0, 120), noNext: String(d.noNext || '') };
+    const put = function (map, id) { if (!id) return; const cur = map[id]; if (!cur || cur.at < last.at) map[id] = last; };
+    put(leads, String(r.leadId == null ? '' : r.leadId).trim());
+    put(patients, String(r.patientId == null ? '' : r.patientId).trim());
+  }
+  return { ok: true, count: count, leads: leads, patients: patients };
 }
 
 /* ===== Tasks — pure helpers ===== */

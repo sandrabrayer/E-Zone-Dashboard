@@ -295,7 +295,8 @@
         advance: l.advance === '' || l.advance == null ? '' : Number(l.advance) || 0,
         // the house manager's meeting report (C14; classic MEETING_REPORT_* fields)
         meetingReportOutcome: s(l.meetingReportOutcome), meetingCompanion: s(l.meetingCompanion), meetingNote: s(l.meetingNote),
-        meetingReporter: s(l.meetingReporter), meetingReportedAt: s(l.meetingReportedAt), meetingSeen: s(l.meetingSeen) };
+        meetingReporter: s(l.meetingReporter), meetingReportedAt: s(l.meetingReportedAt), meetingSeen: s(l.meetingSeen),
+        entryDate: isoDay(l.entryDate) };
     });
     const discharges = (Array.isArray(d.dischargedPatients) ? d.dischargedPatients : []).map(function (r) {
       return { id: s(r.id), patientId: s(r.patientId), name: s(r.name), houseId: s(r.houseId), fromLead: s(r.fromLead), date: isoDay(r.date), exitDate: isoDay(r.exitDate),
@@ -1134,10 +1135,168 @@
   }
   function taskAccepted(res, id) { const r = res || {}; if (r.ok === true && r.task && s(r.task.id)) return id && s(r.task.id) !== id ? 'השינוי לא אושר על ידי השרת — רענני' : ''; return writeRefusal(r, 'task'); }
 
+
+  /* ---- Stage 2: «היום שלי» (CHANGELOG-crm-my-day.md; spec §3–§7) ----
+   * One pure model over getData (compute), the open tasks (getTasks), the last
+   * contact per subject (contactIndex) and, for finance, debtAging. Every row
+   * says what / why now / when / who / last contact, and opens its record.
+   * Urgency is never the lead's age: a new lead without a DOCUMENTED contact
+   * is «ללא מגע» (information), an overdue dated task is «באיחור». */
+  const NAV_GROUPS = [
+    { label: '', items: ['today'] }, { label: 'פניות ומטופלים', items: ['leads', 'clients'] }, { label: 'פגישות ויומן', items: ['calendar'] },
+    { label: 'בתים והמשך טיפול', items: ['occupancy'] }, { label: 'כספים', items: ['billing'] }, { label: 'דוחות והגדרות', items: ['control'] }];
+  const MY_DAY_VIEWS = [{ id: 'today', label: 'היום' }, { id: 'week', label: 'השבוע' }, { id: 'done', label: 'הושלמו' }];
+  const DOMAINS = [
+    { id: 'collection', label: 'גבייה לטיפול', money: true }, { id: 'calls', label: 'שיחות ומעקבים' }, { id: 'meetings', label: 'פגישות ותיאומים' },
+    { id: 'followup', label: 'המשך טיפול לאחר פגישות' }, { id: 'newleads', label: 'פניות חדשות ללא מגע' }, { id: 'houses', label: 'מה דחוף בבתים' }];
+  const DOMAIN_LABELS = {}; DOMAINS.forEach(function (d) { DOMAIN_LABELS[d.id] = d.label; });
+  const PRIORITY = { binding: 0, exception: 1, late: 2, today: 3, wait: 4, undated: 5 };
+  function lastContactText(lc) {
+    if (!lc || !lc.at) return 'אין מגע מתועד';
+    return whenLocal(lc.at) + ' · ' + contactOutcomeLabel(lc.outcome) + (lc.summary ? ' · ' + lc.summary : '');
+  }
+  /* The meeting buckets of spec §6 «פגישות». A passed date proves nothing: it is «ממתין לדיווח» until the manager reports. */
+  function meetingBuckets(leads, today) {
+    const b = { today: [], toSchedule: [], awaitingReport: [], reportUnseen: [], awaitingDecision: [] };
+    (leads || []).forEach(function (l) {
+      if (STAGES.every(function (st) { return st.id !== l.stage; })) return;
+      if (reportUnseen(l)) { b.reportUnseen.push(l); return; }
+      if (s(l.meetingReportedAt) && !l.meetingOutcome) { b.awaitingDecision.push(l); return; }
+      if (l.stage !== 'visit') return;
+      if (!l.visitDate) b.toSchedule.push(l);
+      else if (l.visitDate === today) b.today.push(l);
+      else if (l.visitDate < today && !l.meetingOutcome) b.awaitingReport.push(l);
+    });
+    b.today.sort(function (a, c) { return (a.visitTime || '99').localeCompare(c.visitTime || '99'); });
+    return b;
+  }
+  /* «פניות חדשות ללא מגע»: stage new, no documented contact, no open call task. Age is shown, never a lateness. */
+  function newLeadsNoContact(leads, tasks, index, today) {
+    const open = {};
+    (tasks || []).forEach(function (t) { if (t && t.status === 'open' && (t.kind === 'call') && s(t.leadId)) open[s(t.leadId)] = true; });
+    const li = index && index.leads ? index.leads : {};
+    return (leads || []).filter(function (l) { return l.stage === 'new' && !li[l.id] && !open[l.id]; })
+      .map(function (l) { return { lead: l, age: l.created ? daysBetween(l.created, today) : null }; })
+      .sort(function (a, c) { return (c.lead.created || '').localeCompare(a.lead.created || ''); });   // newest first — the family is still waiting
+  }
+  function rowOfLead(l, o) {
+    return Object.assign({ subjectKind: 'lead', subjectId: l.id, name: l.name, house: houseName(l.house), owner: l.assignedTo, when: '', time: '', why: '', state: 'wait', priority: 'wait' }, o);
+  }
+  function rowOfTask(t, c, today) {
+    const sub = taskSubject(t, c);
+    const st = taskState(t, today);
+    const binding = st === 'today' && !!s(t.dueTime);
+    return { id: t.id, taskId: t.id, kind: 'task', subjectKind: sub.kind, subjectId: sub.id, name: sub.name, house: sub.house, contact: sub.contact, action: t.title, why: t.reason || (t.source === 'contact' ? 'נקבע בשיחה' : ''),
+      when: taskDue(t), time: s(t.dueTime), whenText: taskWhen(t), owner: t.assignee, state: st, priority: binding ? 'binding' : st, task: t };
+  }
+  /* «מה דחוף בבתים» (spec §6): exceptions with an owner and a reason. "Paid, not admitted" is an exception ONLY when the entry date passed. */
+  function houseExceptions(c, today) {
+    // (the manager-report exceptions live in «המשך טיפול» — one row per item, spec §5: never the same item twice)
+    const rows = [];
+    c.leads.forEach(function (l) {
+      if (l.stage === 'paid' && l.entryDate && l.entryDate <= today) rows.push(rowOfLead(l, { id: 'ex:admit:' + l.id, kind: 'admission_due', action: 'קליטה לבית לא בוצעה', why: 'תאריך הכניסה ' + fmtDate(l.entryDate) + ' עבר', when: l.entryDate, state: 'late', priority: 'exception' }));
+    });
+    (c.discharges || []).forEach(function (d) {
+      if (d.deletedAt || d.restored === '1' || !d.exitDate || daysBetween(d.exitDate, today) > 14 || d.continuity) return;
+      rows.push({ id: 'ex:cont:' + d.id, kind: 'continuity', subjectKind: 'patient', subjectId: d.patientId, name: d.name, house: houseName(d.houseId), action: 'לעדכן המשך טיפול', why: 'שוחרר/ה ' + fmtDate(d.exitDate) + ' ללא המשך טיפול', when: d.exitDate, time: '', owner: '', state: 'wait', priority: 'exception' });
+    });
+    return rows;
+  }
+  function sortRows(rows) {
+    return rows.sort(function (a, b) { return (PRIORITY[a.priority] - PRIORITY[b.priority]) || ((a.when || '9') < (b.when || '9') ? -1 : (a.when || '9') > (b.when || '9') ? 1 : 0) || ((b.time ? 1 : 0) - (a.time ? 1 : 0)) || (a.time < b.time ? -1 : a.time > b.time ? 1 : 0); });
+  }
+  function passes(r, f) {
+    if (!f) return true;
+    if (f.house && r.house !== houseName(f.house)) return false;
+    if (f.owner && (r.owner || '') !== f.owner) return false;
+    return true;
+  }
+  /* The whole page model. me.view: 'full' (finance) | 'ops' | 'restricted'. debt: the debtAging answer, null when not loaded, false when it failed. */
+  function myDay(c, tasks, index, debt, today, me, f) {
+    const finance = !!(me && me.finance);
+    const b = meetingBuckets(c.leads, today);
+    const li = index && index.leads ? index.leads : {}, pi = index && index.patients ? index.patients : {};
+    const lastOf = function (r) { return r.subjectKind === 'lead' ? li[r.subjectId] : pi[r.subjectId]; };
+    const tq = (tasks || []).filter(function (t) { return t && t.status === 'open'; }).map(function (t) { return rowOfTask(t, c, today); });
+    const calls = tq.filter(function (r) { return r.task.kind === 'call'; });
+    const collection = tq.filter(function (r) { return r.task.kind === 'collection'; });
+    const otherTasks = tq.filter(function (r) { return r.task.kind !== 'call' && r.task.kind !== 'collection'; });
+    const meetings = [];
+    b.today.forEach(function (l) { meetings.push(rowOfLead(l, { id: 'm:today:' + l.id, kind: 'meeting_today', action: 'פגישת קבלה' + (l.visitTime ? ' ' + l.visitTime : ''), why: 'עם ' + (l.meetingWith || '—'), when: today, time: l.visitTime, owner: l.meetingWith || l.assignedTo, state: 'today', priority: l.visitTime ? 'binding' : 'today', open: 'meetings' })); });
+    b.toSchedule.forEach(function (l) { meetings.push(rowOfLead(l, { id: 'm:sched:' + l.id, kind: 'meeting_unscheduled', action: 'לתאם פגישה', why: 'ביקור ללא תאריך', state: 'undated', priority: 'undated', focusMeeting: true })); });
+    const followup = [];
+    b.awaitingReport.forEach(function (l) { followup.push(rowOfLead(l, { id: 'f:report:' + l.id, kind: 'awaiting_report', action: 'ממתין לדיווח המנהל/ת', why: 'הפגישה היתה ב-' + fmtDate(l.visitDate) + ' — תאריך שעבר אינו הוכחה שהתקיימה', when: l.visitDate, owner: l.meetingWith || '', waitingOn: l.meetingWith || 'המנהל/ת', state: 'wait', priority: 'wait', open: 'meetings' })); });
+    b.reportUnseen.forEach(function (l) { followup.push(rowOfLead(l, { id: 'f:unseen:' + l.id, kind: 'report_unseen', action: 'לקרוא דיווח מנהל/ת', why: 'דיווח חדש מ-' + (l.meetingReporter || 'הבית'), when: s(l.meetingReportedAt).slice(0, 10), state: 'today', priority: 'exception', open: 'meetings' })); });
+    b.awaitingDecision.forEach(function (l) { followup.push(rowOfLead(l, { id: 'f:decide:' + l.id, kind: 'report_undecided', action: 'להחליט אחרי דיווח המנהל/ת', why: 'הדיווח נקרא, אין החלטה', when: s(l.meetingReportedAt).slice(0, 10), state: 'late', priority: 'exception', open: 'meetings' })); });
+    const fresh = newLeadsNoContact(c.leads, tasks, index, today).map(function (x) { return rowOfLead(x.lead, { id: 'n:' + x.lead.id, kind: 'lead_no_contact', action: 'יצירת קשר ראשון', why: x.age === null ? 'אין מגע מתועד' : 'פנייה מ-' + fmtDate(x.lead.created) + ' · אין מגע מתועד', when: '', state: 'wait', priority: 'wait', contactable: true }); });
+    const houses = houseExceptions(c, today);
+    // money: collection tasks + the recorded / unrecorded open cycles of debtAging (finance only)
+    const money = [];
+    let debtCount = null;
+    if (finance) {
+      collection.forEach(function (r) { money.push(r); });
+      if (debt && debt.ok !== false && Array.isArray(debt.byPatient)) {
+        debtCount = 0;
+        debt.byPatient.forEach(function (p) {
+          (p.cycles || []).forEach(function (cy) {
+            if (!(Number(cy.balance) > 0)) return;
+            debtCount++;
+            if (money.length < 400) money.push({ id: 'd:' + p.patientId + ':' + cy.start, kind: cy.kind === 'recorded' ? 'debt_recorded' : 'cycle_unreported', subjectKind: 'patient', subjectId: p.patientId, name: p.name, house: houseName(p.houseId),
+              action: cy.kind === 'recorded' ? 'חוב רשום — ' + fmtMoney(cy.balance) : 'מחזור ללא דיווח — ' + fmtMoney(cy.balance), why: (cy.kind === 'recorded' ? 'דווח ' + fmtMoney(cy.received) + ' מתוך ' + fmtMoney(cy.expected) : 'לא דווח תשלום למחזור') + ' · ' + fmtDate(cy.start) + ' – ' + fmtDate(cy.end),
+              when: cy.end, time: '', owner: '', state: cy.end < today ? 'late' : 'wait', priority: cy.end < today ? 'late' : 'wait', open: 'account' });
+          });
+        });
+      } else if (debt === null || debt === undefined) debtCount = null; else debtCount = false;
+    }
+    const all = [].concat(money, calls, meetings, followup, fresh, houses, otherTasks).filter(function (r) { return passes(r, f); });
+    all.forEach(function (r) { r.lastContact = lastContactText(lastOf(r)); r.domain = r.domain || (money.indexOf(r) >= 0 ? 'collection' : calls.indexOf(r) >= 0 ? 'calls' : meetings.indexOf(r) >= 0 ? 'meetings' : followup.indexOf(r) >= 0 ? 'followup' : fresh.indexOf(r) >= 0 ? 'newleads' : houses.indexOf(r) >= 0 ? 'houses' : 'calls'); });
+    const byDomain = {}; DOMAINS.forEach(function (d) { byDomain[d.id] = []; });
+    all.forEach(function (r) { byDomain[r.domain].push(r); });
+    Object.keys(byDomain).forEach(function (k) { sortRows(byDomain[k]); });
+    const countOf = function (rows, pred) { return rows.filter(pred || function () { return true; }).length; };
+    const dueNow = function (r) { return r.state === 'late' || r.state === 'today'; };
+    const cards = [];
+    if (finance) cards.push({ id: 'collection', label: 'גבייה לטיפול', value: debtCount === false ? null : countOf(byDomain.collection, dueNow), hint: debtCount === null ? 'טוען…' : (debtCount === false ? 'המידע אינו זמין' : debtCount + ' מחזורים פתוחים') });
+    else cards.push({ id: 'houses', label: 'מה דחוף בבתים', value: all.filter(function (r) { return r.priority === 'exception'; }).length, hint: 'חריגים הממתינים להחלטה' });
+    cards.push({ id: 'calls', label: 'שיחות ומעקבים', value: tasks ? countOf(byDomain.calls, dueNow) : null, hint: tasks ? countOf(byDomain.calls, function (r) { return r.state === 'late'; }) + ' באיחור · ' + byDomain.calls.length + ' פתוחות' : 'המידע אינו זמין' });
+    cards.push({ id: 'meetings', label: 'פגישות היום', value: countOf(byDomain.meetings, function (r) { return r.kind === 'meeting_today'; }), second: { label: 'תיאומים פתוחים', value: countOf(byDomain.meetings, function (r) { return r.kind === 'meeting_unscheduled'; }) } });
+    cards.push({ id: 'followup', label: 'המשך טיפול לאחר פגישות', value: byDomain.followup.length, hint: countOf(byDomain.followup, function (r) { return r.kind === 'awaiting_report'; }) + ' ממתינות לדיווח מנהל/ת' });
+    cards.push({ id: 'newleads', label: 'פניות חדשות ללא מגע', value: index ? byDomain.newleads.length : null, hint: index ? 'ללא ניסיון קשר מתועד' : 'המידע אינו זמין' });
+    const urgent = sortRows(all.filter(function (r) { return r.priority === 'exception' || r.priority === 'binding'; }).slice());
+    const waiting = all.filter(function (r) { return r.waitingOn; });
+    const exceptions = all.filter(function (r) { return r.priority === 'exception'; });
+    return { cards: cards, byDomain: byDomain, urgent: urgent, waiting: waiting, meetingsToday: byDomain.meetings.filter(function (r) { return r.kind === 'meeting_today'; }), exceptions: exceptions, total: all.length, buckets: b };
+  }
+  /* «השבוע»: the dated rows of a Sun–Sat week, grouped by day; a window task sits on every day it covers (one id). */
+  function weekPlan(model, ws) {
+    const days = [];
+    for (let i = 0; i < 7; i++) { const d = addDays(ws, i); days.push({ date: d, name: DAY_NAMES[i], rows: [] }); }
+    const seen = {};
+    Object.keys(model.byDomain).forEach(function (k) {
+      model.byDomain[k].forEach(function (r) {
+        if (seen[r.id]) return; seen[r.id] = true;
+        const t = r.task;
+        if (t && s(t.windowStart)) { days.forEach(function (d) { if (d.date >= s(t.windowStart) && d.date <= s(t.windowEnd)) d.rows.push(r); }); return; }
+        if (!r.when) return;
+        days.forEach(function (d) { if (d.date === r.when) d.rows.push(r); });
+      });
+    });
+    days.forEach(function (d) { sortRows(d.rows); });
+    return { start: ws, end: addDays(ws, 6), days: days, undated: Object.keys(model.byDomain).reduce(function (acc, k) { return acc.concat(model.byDomain[k].filter(function (r) { return r.task && !r.when; })); }, []) };
+  }
+  /* «הושלמו»: done / cancelled tasks whose doneAt (or updatedAt) falls in the week; who / when; opens the record. */
+  function doneInWeek(tasks, ws, c) {
+    const we = addDays(ws, 6);
+    return (tasks || []).filter(function (t) { const d = isoDay(t.doneAt || t.updatedAt); return t && (t.status === 'done' || t.status === 'cancelled') && d >= ws && d <= we; })
+      .map(function (t) { const sub = taskSubject(t, c); return { id: t.id, task: t, subjectKind: sub.kind, subjectId: sub.id, name: sub.name, house: sub.house, action: t.title, who: t.status === 'done' ? t.doneBy : t.updatedBy, at: t.status === 'done' ? t.doneAt : t.updatedAt, outcome: t.status === 'done' ? (t.outcome || 'הושלם') : 'בוטל' + (t.cancelReason ? ' — ' + t.cancelReason : ''), kind: TASK_KIND_LABELS[t.kind] || t.kind }; })
+      .sort(function (a, b) { return a.at < b.at ? 1 : -1; });
+  }
+  function hebDate(iso) { const d = weekdayOf(iso); return (d >= 0 ? 'יום ' + DAY_NAMES[d] + ', ' : '') + fmtDate(iso); }
+
   function boot(win, doc) {
     const state = { me: null, data: null, area: 'today', view: 'board', filters: { q: '', house: '', owner: '' }, kpiFilter: '', queue: null,
       today: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date()), drawer: null, error: '', loading: true, sort: 'name',
-      tasks: null, tasksError: '', contact: null };
+      tasks: null, tasksError: '', contact: null, index: null, debt: null, dayView: 'today', week: '', domain: '', doneTasks: undefined, quick: '' };
     const $ = function (sel) { return doc.querySelector(sel); };
     const root = $('#crm-root');
     const main = $('#crm-main');
@@ -1157,12 +1316,20 @@
     function renderNav() {
       const areas = areasFor(state.me);
       const c = state.data ? compute(state.data, state.today) : null;
-      navEl.innerHTML = AREAS.filter(function (a) { return areas.indexOf(a.id) >= 0; }).map(function (a) {
+      let m = null;
+      try { m = c && state.me && state.me.view !== 'controller' ? model(c) : null; } catch (_) { m = null; }
+      const item = function (a) {
         let n = '';
-        if (c && a.id === 'today') { if (state.me && state.me.view === 'controller') n = state.queue ? controllerDay(state.queue).toVerify : ''; else { const tc = state.tasks ? taskCounts(taskQueue(state.tasks, c, state.today, { kinds: ['call', 'collection'] })) : { late: 0, today: 0 }; n = c.kpi.late + c.kpi.today + tc.late + tc.today; } }
+        if (c && a.id === 'today') n = state.me && state.me.view === 'controller' ? (state.queue ? controllerDay(state.queue).toVerify : '') : (m ? m.urgent.length + m.byDomain.calls.filter(function (r) { return r.state === 'late' || r.state === 'today'; }).length : '');
         if (c && a.id === 'leads') n = filterLeads(c.leads, {}).length;
         return '<button type="button" data-area="' + a.id + '"' + (state.area === a.id ? ' aria-current="page"' : '') + '><span>' + esc(a.label) + '</span>' + (n !== '' ? '<span class="n">' + esc(n) + '</span>' : '') + '</button>';
+      };
+      navEl.innerHTML = NAV_GROUPS.map(function (g) {
+        const list = AREAS.filter(function (a) { return g.items.indexOf(a.id) >= 0 && areas.indexOf(a.id) >= 0; });
+        if (!list.length) return '';
+        return (g.label ? '<div class="nav-group">' + esc(g.label) + '</div>' : '') + list.map(item).join('');
       }).join('');
+      const dateEl = $('#crm-date'); if (dateEl) dateEl.textContent = hebDate(state.today);
     }
 
     function chip(state_, text) { return '<span class="chip ' + esc(state_) + '">' + esc(text) + '</span>'; }
@@ -1170,31 +1337,134 @@
 
     function renderToday(c) {
       if (state.me && state.me.view === 'controller') return renderControllerToday();
-      const k = c.kpi;
-      const kp = [['late', 'משימות באיחור', k.late], ['today', 'לטיפול היום', k.today], ['new', 'פניות חדשות', k.newLeads], ['meetings', 'פגישות היום', k.meetingsToday]];
-      let rows = c.rows;
-      if (state.kpiFilter === 'late') rows = rows.filter(function (r) { return r.state === 'late'; });
-      if (state.kpiFilter === 'today') rows = rows.filter(function (r) { return r.state === 'today'; });
-      if (state.kpiFilter === 'meetings') rows = rows.filter(function (r) { return r.kind === 'meeting_today'; });
-      if (state.kpiFilter === 'new') rows = rows.filter(function (r) { return r.kind === 'lead_new' || r.kind === 'lead_waiting'; });
-      const groups = [['late', 'באיחור'], ['today', 'להיום'], ['wait', 'ממתין לגורם אחר / בתהליך']];
-      return renderCallsQueue(c) + '<div class="kpis">' + kp.map(function (x) { return '<button type="button" class="kpi" data-kpi="' + x[0] + '" aria-pressed="' + (state.kpiFilter === x[0]) + '"><span class="v">' + x[2] + '</span><span class="l">' + esc(x[1]) + '</span></button>'; }).join('') + '</div>'
-        + '<p class="na">הפעולה הבאה ומועד היעד מחושבים מהשדות הקיימים (ליד, פגישה, שלב). רשומת משימה עם תאריך יעד ואחראי — בשלב הבא.</p>'
-        + (rows.length === 0 ? '<div class="crm-state">אין משימות פתוחות</div>' : '')
-        + groups.map(function (g) {
-          const list = rows.filter(function (r) { return r.state === g[0]; });
-          if (!list.length) return '';
-          return '<div class="group-title">' + esc(g[1]) + ' <span class="n chip">' + list.length + '</span></div><div class="rows">'
-            + '<div class="row h"><span>לקוח</span><span>הפעולה הנדרשת</span><span>אחראי</span><span>מועד יעד</span><span>מצב</span><span></span></div>'
-            + list.map(function (r) {
-              return '<div class="row" data-lead="' + esc(r.leadId) + '"><span><span class="name">' + esc(r.client) + '</span><br><span class="sub">' + esc(r.house) + '</span></span>'
-                + '<span>' + esc(r.action) + '</span><span>' + esc(r.owner || '—') + '</span><span>' + esc(r.due ? fmtDate(r.due) : '—') + '</span>'
-                + '<span>' + chip(r.state, stateText(r.state)) + (r.reason ? '<br><span class="sub">' + esc(r.reason) + '</span>' : '') + '</span>'
-                + '<span><button type="button" class="btn small" data-open-lead="' + esc(r.leadId) + '">כרטיס</button></span></div>';
-            }).join('') + '</div>';
-        }).join('');
+      return renderMyDay(c);
     }
-
+    /* ---- Stage 2: «היום שלי» ---- */
+    function model(c) { return myDay(c, state.tasks, state.index, state.debt, state.today, state.me, { house: state.filters.house, owner: state.filters.owner }); }
+    function rowButtons(r) {
+      const b = [];
+      const subj = r.subjectKind + ':' + r.subjectId;
+      const openAttr = ' data-open-' + r.subjectKind + '="' + esc(r.subjectId) + '"' + (r.open ? ' data-open-tab="' + esc(r.open) + '"' : '') + (r.focusMeeting ? ' data-focus-meeting="1"' : '');
+      if (r.task && (r.task.kind === 'call' || r.task.kind === 'collection')) b.push('<button type="button" class="btn small primary" data-contact-open="' + esc(subj) + '" data-task-id="' + esc(r.task.id) + '">תיעוד שיחה</button>');
+      else if (r.task) b.push('<button type="button" class="btn small primary" data-task-done="' + esc(r.task.id) + '">סיום</button>');
+      else if (r.contactable) b.push('<button type="button" class="btn small primary" data-contact-open="' + esc(subj) + '">תיעוד שיחה</button>');
+      else if (r.focusMeeting) b.push('<button type="button" class="btn small primary"' + openAttr + '>קביעת תאריך</button>');
+      else if (r.open) b.push('<button type="button" class="btn small primary"' + openAttr + '>' + (r.open === 'meetings' ? 'לדיווח' : r.open === 'account' ? 'לחשבון' : 'פתיחה') + '</button>');
+      if (r.task) b.push('<button type="button" class="btn small" data-task-resched="' + esc(r.task.id) + '">שינוי מועד</button>');
+      b.push('<button type="button" class="btn small" data-open-' + esc(r.subjectKind) + '="' + esc(r.subjectId) + '">כרטיס</button>');
+      return b.join('');
+    }
+    function stateChip(r) {
+      const st = r.state === 'undated' ? 'wait' : r.state;
+      const txt = r.state === 'undated' ? 'ללא תאריך' : r.priority === 'exception' ? '⚠ חריג' : r.state === 'late' ? '⏰ באיחור' : r.state === 'today' ? '● להיום' : r.waitingOn ? '◷ ממתין ל' + r.waitingOn : '◷ ממתין';
+      return chip(r.priority === 'exception' ? 'late' : st, txt);
+    }
+    function workRow(r) {
+      return '<div class="row work' + (r.task ? ' task' : '') + '" data-row="' + esc(r.id) + '">'
+        + '<span><button type="button" class="link name" data-open-' + esc(r.subjectKind) + '="' + esc(r.subjectId) + '">' + esc(r.name) + '</button><br><span class="sub">' + esc(r.house) + (r.contact ? ' · ' + esc(r.contact) : '') + '</span></span>'
+        + '<span><strong>' + esc(r.action) + '</strong>' + (r.why ? '<br><span class="sub">' + esc(r.why) + '</span>' : '') + '</span>'
+        + '<span>' + esc(r.whenText || (r.when ? fmtDate(r.when) + (r.time ? ' ' + r.time : '') : (r.task ? 'ללא תאריך — קבעי תאריך' : '—'))) + '<br>' + stateChip(r) + '</span>'
+        + '<span>' + esc(r.owner || '—') + '</span>'
+        + '<span class="sub">' + esc(r.lastContact || '') + '</span>'
+        + '<span class="toolbar">' + rowButtons(r) + '</span></div>'
+        + (r.task ? '<div class="task-form" data-task-form="' + esc(r.task.id) + '"></div>' : '');
+    }
+    function rowsBlock(rows, cap) {
+      if (!rows.length) return '<p class="na">אין פריטים.</p>';
+      const list = cap ? rows.slice(0, cap) : rows;
+      return '<div class="rows"><div class="row work h"><span>לקוח</span><span>הפעולה ולמה עכשיו</span><span>מועד ומצב</span><span>אחראי</span><span>מגע אחרון</span><span></span></div>' + list.map(workRow).join('') + '</div>'
+        + (cap && rows.length > cap ? '<p class="na">מוצגים ' + cap + ' מתוך ' + rows.length + ' · <button type="button" class="link" data-domain="' + esc(list[0].domain) + '">לרשימה המלאה</button></p>' : '');
+    }
+    function weekBar(ws, idPrefix) {
+      const we = addDays(ws, 6);
+      return '<div class="toolbar week-bar"><button type="button" class="btn small" data-week-step="-7">‹ שבוע קודם</button><strong>' + esc(fmtDate(ws) + ' – ' + fmtDate(we)) + '</strong><button type="button" class="btn small" data-week-step="7">שבוע הבא ›</button>'
+        + '<input type="date" id="' + idPrefix + '-week" value="' + esc(ws) + '" aria-label="בחירת שבוע"><button type="button" class="btn small" data-week-today>השבוע הנוכחי</button></div>';
+    }
+    function renderMyDay(c) {
+      const m = model(c);
+      const view = state.dayView || 'today';
+      let html = '<div class="day-head"><div class="day-date">' + esc(state.me && state.me.user ? state.me.user : '') + '</div>'
+        + '<div class="seg" role="tablist">' + MY_DAY_VIEWS.map(function (v) { return '<button type="button" data-day-view="' + v.id + '" aria-pressed="' + (view === v.id) + '">' + esc(v.label) + '</button>'; }).join('') + '</div></div>';
+      html += '<div class="toolbar filters">'
+        + '<select id="f-owner" aria-label="אחראי"><option value="">כל האחראים</option>' + ASSIGNEES.map(function (a) { return '<option' + (state.filters.owner === a ? ' selected' : '') + '>' + esc(a) + '</option>'; }).join('') + '</select>'
+        + '<select id="f-house" aria-label="בית"><option value="">כל הבתים</option>' + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) { return '<option value="' + h.id + '"' + (houseName(state.filters.house) === h.name ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select>'
+        + '<span class="grow"></span><button type="button" class="btn primary" data-quick="contact">📞 תיעוד שיחה</button><button type="button" class="btn" data-quick="task">＋ משימה חדשה</button><button type="button" class="btn" data-quick="meeting">📅 פגישה</button></div>'
+        + '<div id="crm-quick"></div>';
+      if (view === 'week') return html + renderWeek(m);
+      if (view === 'done') return html + renderDone(c);
+      // summary strip
+      html += '<div class="kpis cards">' + m.cards.map(function (k) {
+        return '<button type="button" class="kpi" data-domain="' + k.id + '" aria-pressed="' + (state.domain === k.id) + '">'
+          + (k.value === null ? '<span class="v na-v">—</span>' : '<span class="v">' + k.value + '</span>') + '<span class="l">' + esc(k.label) + '</span>'
+          + (k.second ? '<span class="l2"><b>' + k.second.value + '</b> ' + esc(k.second.label) + '</span>' : '') + (k.hint ? '<span class="l2">' + esc(k.hint) + '</span>' : '') + '</button>';
+      }).join('') + '</div>';
+      if (m.urgent.length && !state.domain) html += '<section class="urgent"><div class="group-title">⚠ חריגים דחופים ומחויבויות להיום <span class="n chip">' + m.urgent.length + '</span></div>' + rowsBlock(m.urgent, 6) + '</section>';
+      const domains = DOMAINS.filter(function (d) { return (state.domain ? d.id === state.domain : true) && !(d.money && !(state.me && state.me.finance)) && !(d.id === 'houses' && state.me && state.me.finance && !state.domain && m.byDomain.houses.length === 0); });
+      let main = '';
+      domains.forEach(function (d) {
+        // «מה דחוף בבתים» as a filter = every exception (the card's number), wherever its row lives
+        const rows = d.id === 'houses' && state.domain === 'houses' ? m.exceptions : m.byDomain[d.id];
+        if (!state.domain && d.id === 'houses' && !rows.length) return;
+        main += '<section class="domain" data-domain-section="' + d.id + '"><div class="group-title"><strong>' + esc(d.label) + '</strong> <span class="n chip">' + rows.length + '</span>'
+          + (d.id === 'collection' && state.debt === false ? ' <span class="chip late">המידע אינו זמין</span>' : '') + (d.id === 'calls' && !state.tasks ? ' <span class="chip late">המידע אינו זמין</span>' : '') + (d.id === 'newleads' && !state.index ? ' <span class="chip late">המידע אינו זמין</span>' : '')
+          + '<span class="grow"></span>' + (state.domain ? '<button type="button" class="link" data-domain="' + d.id + '">חזרה לכל התחומים</button>' : '') + '</div>'
+          + rowsBlock(rows, state.domain ? 0 : 8) + '</section>';
+      });
+      if (!main) main = '<div class="crm-state">אין משימות פתוחות היום 🎉</div>';
+      const side = '<aside class="day-side">'
+        + '<div class="side-box"><div class="group-title">פגישות היום <span class="n chip">' + m.meetingsToday.length + '</span></div>' + (m.meetingsToday.length ? '<ul class="mini">' + m.meetingsToday.map(function (r) { return '<li><button type="button" class="link" data-open-lead="' + esc(r.subjectId) + '" data-open-tab="meetings">' + esc((r.time || '—') + ' · ' + r.name) + '</button><span class="sub">' + esc(r.house + ' · ' + r.why) + '</span></li>'; }).join('') + '</ul>' : '<p class="na">אין פגישות היום.</p>') + '</div>'
+        + '<div class="side-box"><div class="group-title">ממתין לגורם אחר <span class="n chip">' + m.waiting.length + '</span></div>' + (m.waiting.length ? '<ul class="mini">' + m.waiting.slice(0, 8).map(function (r) { return '<li><button type="button" class="link" data-open-lead="' + esc(r.subjectId) + '" data-open-tab="meetings">' + esc(r.name) + '</button><span class="sub">' + esc('ממתין ל' + r.waitingOn + ' · מאז ' + fmtDate(r.when)) + '</span></li>'; }).join('') + '</ul>' : '<p class="na">אין המתנות.</p>') + '</div>'
+        + '<div class="side-box"><div class="group-title">חריגים בבתים <span class="n chip">' + m.exceptions.length + '</span></div>' + (m.exceptions.length ? '<ul class="mini">' + m.exceptions.slice(0, 8).map(function (r) { return '<li><button type="button" class="link" data-open-' + esc(r.subjectKind) + '="' + esc(r.subjectId) + '"' + (r.open ? ' data-open-tab="' + esc(r.open) + '"' : '') + '>' + esc(r.name) + '</button><span class="sub">' + esc(r.action + ' · ' + r.why) + '</span></li>'; }).join('') + '</ul>' : '<p class="na">אין חריגים.</p>') + '</div>'
+        + '</aside>';
+      return html + '<div class="day-grid"><div class="day-main">' + main + '</div>' + side + '</div>';
+    }
+    function renderWeek(m) {
+      const ws = weekStart(state.week || state.today);
+      const w = weekPlan(m, ws);
+      let html = weekBar(ws, 'crm-day');
+      html += '<div class="week">' + w.days.map(function (d) {
+        return '<section class="wday' + (d.date === state.today ? ' is-today' : '') + '"><div class="group-title"><strong>' + esc(d.name) + '</strong> ' + esc(fmtDate(d.date)) + ' <span class="n chip">' + d.rows.length + '</span></div>' + (d.rows.length ? rowsBlock(d.rows, 0) : '<p class="na">—</p>') + '</section>';
+      }).join('') + '</div>';
+      if (w.undated.length) html += '<section class="domain"><div class="group-title">משימות ללא תאריך — קבעי תאריך <span class="n chip">' + w.undated.length + '</span></div>' + rowsBlock(w.undated, 0) + '</section>';
+      return html;
+    }
+    function renderDone(c) {
+      const ws = weekStart(state.week || state.today);
+      let html = weekBar(ws, 'crm-day');
+      if (state.doneTasks === undefined) { loadDone(); return html + '<div class="crm-state">טוען…</div>'; }
+      if (state.doneTasks === null) return html + '<div class="crm-state">המידע אינו זמין <button type="button" class="btn small" data-done-retry>נסי שוב</button></div>';
+      const rows = doneInWeek(state.doneTasks, ws, c);
+      if (!rows.length) return html + '<p class="na">לא הושלמו משימות בשבוע זה.</p>';
+      return html + '<div class="rows"><div class="row done h"><span>לקוח</span><span>המשימה</span><span>מי</span><span>מתי</span><span>תוצאה</span><span></span></div>' + rows.map(function (r) {
+        return '<div class="row done"><span><span class="name">' + esc(r.name) + '</span><br><span class="sub">' + esc(r.house) + '</span></span><span>' + esc(r.action) + '<br><span class="sub">' + esc(r.kind) + '</span></span><span>' + esc(r.who || '—') + '</span><span>' + esc(whenLocal(r.at)) + '</span><span>' + chip(r.task.status === 'done' ? 'ok' : 'wait', r.outcome) + '</span><span><button type="button" class="btn small" data-open-' + esc(r.subjectKind) + '="' + esc(r.subjectId) + '">כרטיס</button></span></div>';
+      }).join('') + '</div>';
+    }
+    function loadDone() {
+      api('getTasks', { status: 'done', limit: 500 }).then(function (r) {
+        if (r && r.ok === true && Array.isArray(r.tasks)) state.doneTasks = r.tasks; else state.doneTasks = null;
+        return api('getTasks', { status: 'cancelled', limit: 200 }).then(function (r2) { if (state.doneTasks && r2 && r2.ok === true && Array.isArray(r2.tasks)) state.doneTasks = state.doneTasks.concat(r2.tasks); });
+      }).catch(function () { state.doneTasks = null; }).then(function () { if (state.area === 'today' && state.dayView === 'done') renderMain(); });
+    }
+    /* Quick actions: pick a subject, then the panel / the card. */
+    function renderQuick(kind) {
+      const el = $('#crm-quick'); if (!el) return;
+      state.quick = kind;
+      el.innerHTML = '<div class="quick"><label>' + esc(kind === 'contact' ? 'תיעוד שיחה — עם מי?' : kind === 'task' ? 'משימה חדשה — עבור מי?' : 'פגישה — איזו פנייה?') + ' <input type="search" id="crm-quick-q" placeholder="שם / טלפון" autocomplete="off"></label><div id="crm-quick-list" class="quick-list"></div><button type="button" class="btn small" data-quick-cancel>סגור</button></div>';
+      $('#crm-quick-q').focus();
+      quickList('');
+    }
+    function quickList(q) {
+      const el = $('#crm-quick-list'); if (!el) return;
+      const c = compute(state.data, state.today);
+      const needle = s(q).toLowerCase();
+      const leads = c.leads.filter(function (l) { return STAGES.some(function (st) { return st.id === l.stage; }) && (!needle || (l.name + ' ' + l.phone).toLowerCase().indexOf(needle) >= 0); }).slice(0, 8);
+      const pats = state.quick === 'meeting' ? [] : c.patients.filter(function (p) { return inHouse(p) && (!needle || p.name.toLowerCase().indexOf(needle) >= 0); }).slice(0, 6);
+      if (!needle) { el.innerHTML = '<p class="na">הקלידי שם או טלפון.</p>'; return; }
+      const pick = function (kind, id, name, sub) { return '<button type="button" class="pick" data-quick-pick="' + kind + ':' + esc(id) + '">' + esc(name) + ' <span class="sub">' + esc(sub) + '</span></button>'; };
+      const items = leads.map(function (l) { return pick('lead', l.id, l.name, 'פנייה · ' + houseName(l.house) + (s(l.phone) ? ' · ' + s(l.phone) : '')); })
+        .concat(pats.map(function (p) { return pick('patient', p.id, p.name, 'מטופל/ת · ' + houseName(p.houseId)); }));
+      el.innerHTML = items.length ? items.join('') : '<p class="na">לא נמצא.</p>';
+    }
     function renderControllerToday() {
       if (!state.queue) return '<div class="crm-state">טוען את תור האימות…</div>';
       if (state.queue.ok === false) return '<div class="crm-state bad">תור האימות לא נטען (' + esc(state.queue.error || '') + ')</div>';
@@ -1617,12 +1887,17 @@
      * ACTION («דווח תשלום», overrides, credits, Ortal's verification) stays in
      * the classic dashboard — the links at the bottom. */
     const billingWaiters = [];
+    /* After a billing write (or a retry): both the area reads and the day card re-read. */
+    function resetBilling() { state.billing = null; if (state.me && state.me.finance) state.debt = null; }
     function loadBilling(then) {
       if (typeof then === 'function') billingWaiters.push(then);
       if (state.billing || state.billingLoading) return;
       state.billingLoading = true;
-      Promise.all([api('debtAging'), api('getPayments'), api('getCredits')]).then(function (res) {
+      // debtAging is read once at boot for the «גבייה לטיפול» card (finance); reuse it until a billing write resets it
+      const debtP = state.debt && state.debt.ok === true ? Promise.resolve(state.debt) : api('debtAging');
+      Promise.all([debtP, api('getPayments'), api('getCredits')]).then(function (res) {
         state.billing = { debt: res[0], payments: res[1], credits: res[2] };
+        state.debt = res[0] && res[0].ok === true ? res[0] : false;
       }).catch(function (e) {
         state.billing = { debt: { ok: false, error: String(e && e.message || e) }, payments: { ok: false, error: String(e && e.message || e) }, credits: { ok: false, error: String(e && e.message || e) } };
       }).then(function () {
@@ -1674,7 +1949,7 @@
           state.saving = false;
           if (!linkAccepted(res, row.paymentId, want)) { const why = writeRefusal(res, res && res.ok === true ? 'nope' : '') || 'השיוך לא נשמר'; showReportIssues(f, [], why); if (st) st.textContent = ''; toast(why, true); return false; }
           toast(k === 'link' ? 'התשלום שויך ✓' : 'השורה סומנה «לא מטופל/ת» ✓'); state.link = null;
-          state.billing = null; renderMain();
+          resetBilling(); renderMain();
           return true;
         })
         .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'השיוך לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
@@ -2022,7 +2297,7 @@
             state.report = null;
             // re-read both answers: the money a row shows is always the server's
             const pid = state.drawer && state.drawer.id;
-            state.billing = null;
+            resetBilling();
             if (pid) fillAccountPane(pid);
             return true;
           }
@@ -2081,7 +2356,7 @@
           const why = writeRefusal(res, proof);
           if (why) { showReportIssues(f, [], why); if (st) st.textContent = ''; toast(why, true); return false; }
           toast(label + ' נשמר ✓'); state.small = null;
-          const pid = state.drawer && state.drawer.id; state.billing = null; if (pid) fillAccountPane(pid);
+          const pid = state.drawer && state.drawer.id; resetBilling(); if (pid) fillAccountPane(pid);
           return true;
         })
         .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'השינוי לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
@@ -2141,7 +2416,7 @@
             showReportIssues(f, out.issues || [], out.message || 'השינוי לא נשמר'); if (st) st.textContent = ''; toast(out.message || 'השינוי לא נשמר', true); return false;
           }
           toast(label + ' ✓'); state.receiptForm = null;
-          const pid = state.drawer && state.drawer.id; state.billing = null; if (pid) fillAccountPane(pid);
+          const pid = state.drawer && state.drawer.id; resetBilling(); if (pid) fillAccountPane(pid);
           return true;
         })
         .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'השינוי לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
@@ -2182,7 +2457,8 @@
     }
     function reloadTasks() {
       if (!state.me || state.me.view === 'controller') return Promise.resolve();
-      return api('getTasks', { status: 'open' }).then(applyTasks, function () { applyTasks(null); }).then(function () {
+      state.doneTasks = undefined;
+      return Promise.all([api('getTasks', { status: 'open' }).then(applyTasks, function () { applyTasks(null); }), api('contactIndex').then(function (r) { state.index = r && r.ok === true ? r : state.index; }, function () {})]).then(function () {
         renderNav(); renderMain();
         if (state.drawer && !state.contact) openDrawer(state.drawer.kind, state.drawer.id, true);
       });
@@ -2200,20 +2476,6 @@
         + '<button type="button" class="btn small" data-task-resched="' + esc(t.id) + '">שינוי מועד</button>'
         + (inCard ? '<button type="button" class="btn small" data-task-more="' + esc(t.id) + '">עוד…</button>' : '') + '</span></div>'
         + '<div class="task-form" data-task-form="' + esc(t.id) + '"></div>';
-    }
-    /* «שיחות לביצוע» on «היום שלי» — the open call tasks, overdue → today → upcoming → undated (spec §6). Never a «בוצע» that closes without a record. */
-    function renderCallsQueue(c) {
-      if (!state.me || state.me.view === 'controller') return '';
-      let inner;
-      if (!state.tasks) inner = '<div class="crm-state">המידע אינו זמין' + (state.tasksError ? ' (' + esc(state.tasksError) + ')' : '') + ' <button type="button" class="btn small" data-tasks-retry>נסי שוב</button></div>';
-      else {
-        const rows = taskQueue(state.tasks, c, state.today, { kinds: ['call', 'collection'], house: state.filters.house || '', assignee: state.filters.owner || '' });
-        const n = taskCounts(rows);
-        inner = rows.length === 0 ? '<p class="na">אין שיחות פתוחות.</p>'
-          : '<div class="rows"><div class="row task h"><span>עם מי</span><span>מה ולמה</span><span>אחראי</span><span>מועד</span><span>מצב</span><span></span></div>' + rows.map(function (r) { return taskRowHtml(r, false); }).join('') + '</div>';
-        inner = '<div class="group-title">שיחות לביצוע <span class="n chip">' + rows.length + '</span>' + (n.late ? ' <span class="chip late">' + n.late + ' באיחור</span>' : '') + (n.today ? ' <span class="chip today">' + n.today + ' להיום</span>' : '') + '</div>' + inner;
-      }
-      return '<section class="calls" id="crm-calls">' + inner + '</section>';
     }
     function renderTasksPane(subject) {
       const c = compute(state.data, state.today);
@@ -2356,15 +2618,34 @@
 
     /* events (delegated; filters, sort and scroll survive opening a card) */
     root.addEventListener('click', function (ev) {
-      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
       if (t.dataset.area) return setArea(t.dataset.area);
       if (t.dataset.kpi) { state.kpiFilter = state.kpiFilter === t.dataset.kpi ? '' : t.dataset.kpi; return renderMain(); }
+      if (t.dataset.domain !== undefined) { state.domain = state.domain === t.dataset.domain ? '' : t.dataset.domain; return renderMain(); }
+      if (t.dataset.dayView) { state.dayView = t.dataset.dayView; state.domain = ''; return renderMain(); }
+      if (t.dataset.weekStep) { state.week = addDays(weekStart(state.week || state.today), Number(t.dataset.weekStep)); return renderMain(); }
+      if (t.dataset.weekToday !== undefined) { state.week = ''; return renderMain(); }
+      if (t.dataset.doneRetry !== undefined) { state.doneTasks = undefined; return renderMain(); }
+      if (t.dataset.quick) return renderQuick(t.dataset.quick);
+      if (t.dataset.quickCancel !== undefined) { state.quick = ''; const q = $('#crm-quick'); if (q) q.innerHTML = ''; return; }
+      if (t.dataset.quickPick) {
+        const p = t.dataset.quickPick.split(':'); const kind = state.quick; state.quick = ''; const q = $('#crm-quick'); if (q) q.innerHTML = '';
+        if (kind === 'contact') return openContactPanel(p[0], p.slice(1).join(':'), '');
+        openDrawer(p[0], p.slice(1).join(':'));
+        if (kind === 'task') { const tab = doc.querySelector('#crm-drawer [data-tab="tasks"]'); if (tab) tab.click(); const d = doc.querySelector('#crm-tasks details'); if (d) d.open = true; }
+        else focusMeetingForm();
+        return;
+      }
       if (t.dataset.view) { state.view = t.dataset.view; return renderMain(); }
       if (t.dataset.sort) { state.sort = t.dataset.sort; return renderMain(); }
-      if (t.dataset.openLead) { openDrawer('lead', t.dataset.openLead); if (t.dataset.focusMeeting) focusMeetingForm(); return; }
-      if (t.dataset.openPatient) return openDrawer('patient', t.dataset.openPatient);
+      if (t.dataset.openLead || t.dataset.openPatient) {
+        openDrawer(t.dataset.openLead ? 'lead' : 'patient', t.dataset.openLead || t.dataset.openPatient);
+        if (t.dataset.openTab) { const tab = doc.querySelector('#crm-drawer [data-tab="' + t.dataset.openTab + '"]'); if (tab) tab.click(); }
+        if (t.dataset.focusMeeting) focusMeetingForm();
+        return;
+      }
       if (t.dataset.tab) {
         doc.querySelectorAll('#crm-drawer [role="tab"]').forEach(function (b) { b.setAttribute('aria-selected', String(b === t)); });
         doc.querySelectorAll('#crm-drawer [data-pane]').forEach(function (p) { p.hidden = p.dataset.pane !== t.dataset.tab; });
@@ -2448,7 +2729,7 @@
     root.addEventListener('click', function (ev) {
       const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-settle-open],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel]') : null;
       if (!t) return;
-      if (t.dataset.billingRetry !== undefined) { state.billing = null; return renderMain(); }
+      if (t.dataset.billingRetry !== undefined) { resetBilling(); return renderMain(); }
       if (t.dataset.reportCancel !== undefined) { state.report = null; state.small = null; const el = $('#crm-report'); if (el) el.innerHTML = ''; return; }
       if (t.dataset.settleOpen && !(state.drawer && state.account)) {
         // from the גבייה area: open the patient's drawer on «חשבון», then the form
@@ -2514,6 +2795,7 @@
       if (f) refreshNextPreview(f);
     });
     root.addEventListener('input', function (ev) {
+      if (ev.target && ev.target.id === 'crm-quick-q') return quickList(ev.target.value);
       const f = ev.target && ev.target.closest ? ev.target.closest('form[data-form="contact"]') : null;
       if (f && /^next/.test(ev.target.name || '')) refreshNextPreview(f);
     });
@@ -2529,6 +2811,7 @@
     root.addEventListener('change', function (ev) {
       const t = ev.target;
       // a field inside a form (report, restore, …) is the form's business — re-rendering would wipe it
+      if (t.id === 'crm-day-week') { if (isoDateOk(t.value)) state.week = t.value; return renderMain(); }
       if (['f-dis-days', 'crm-cal-date', 'f-house', 'f-house-c', 'f-owner'].indexOf(t.id) < 0) return;
       if (t.id === 'f-dis-days') state.dischargedDays = Number(t.value) || 0;
       if (t.id === 'crm-cal-date') { if (!state.cal) state.cal = { mode: 'day', anchor: state.today }; if (isoDateOk(t.value)) state.cal.anchor = t.value; }
@@ -2548,13 +2831,17 @@
         if (areasFor(me).indexOf(state.area) < 0) state.area = 'today';
         const reads = [api('getData')];
         if (me.view === 'controller') reads.push(api('billingControlQueue'));
-        else reads.push(api('getTasks', { status: 'open' }).catch(function () { return null; }));
+        else {
+          reads.push(api('getTasks', { status: 'open' }).catch(function () { return null; }));
+          reads.push(api('contactIndex').catch(function () { return null; }));
+          if (me.finance) reads.push(api('debtAging').catch(function () { return null; }));
+        }
         return Promise.all(reads);
       }).then(function (res) {
         if (!res[0] || res[0].ok === false) throw new Error('הנתונים לא נטענו' + (res[0] && res[0].error ? ' (' + res[0].error + ')' : ''));
         state.data = res[0]; state.loading = false;
         if (state.me.view === 'controller') state.queue = res[1] || null;
-        else applyTasks(res[1]);
+        else { applyTasks(res[1]); state.index = res[2] && res[2].ok === true ? res[2] : null; if (state.me.finance) state.debt = res[3] && res[3].ok === true ? res[3] : false; }
         renderNav(); renderMain();
       }).catch(function (e) { state.loading = false; state.error = String(e && e.message || e); renderNav(); renderMain(); });
     }
@@ -2584,5 +2871,6 @@
     addMonthsIso: addMonthsIso, stayCycles: stayCycles, reportableCycles: reportableCycles, defaultReportable: defaultReportable, reportCycleForWindow: reportCycleForWindow,
     CONTACT_OUTCOMES: CONTACT_OUTCOMES, CONTACT_CHANNELS: CONTACT_CHANNELS, NEXT_CHOICES: NEXT_CHOICES, TASK_KINDS: TASK_KINDS, TASK_KIND_LABELS: TASK_KIND_LABELS, contactOutcomeLabel: contactOutcomeLabel, nextPlan: nextPlan, contactErrors: contactErrors, contactBody: contactBody, contactAccepted: contactAccepted,
     taskDue: taskDue, taskState: taskState, taskWhen: taskWhen, taskSubject: taskSubject, taskQueue: taskQueue, tasksFor: tasksFor, taskCounts: taskCounts, taskFormErrors: taskFormErrors, taskCreateBody: taskCreateBody, rescheduleErrors: rescheduleErrors, rescheduleBody: rescheduleBody, taskAccepted: taskAccepted,
+    NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, myDay: myDay, weekPlan: weekPlan, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
     moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));

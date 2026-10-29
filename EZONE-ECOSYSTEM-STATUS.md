@@ -28,7 +28,11 @@
 
 - Sandra's review request. Day / week toggle, ‹ ›, date input, «היום»; past meetings with their status (outcome, manager report, none). Details: `CHANGELOG-crm-calendar-picker.md`.
 
-## CRM Stage 1c — contact panel, «שיחות לביצוע», tasks in the card — October 28, 2026 (PR open)
+## CRM Stage 2 — «היום שלי» rebuilt, light theme, grouped nav — October 29, 2026 (PR open)
+
+- Light theme (spec §4), nav regrouped (פניות ומטופלים / פגישות ויומן / בתים והמשך טיפול / כספים / דוחות והגדרות), header date. «היום שלי»: views היום / השבוע / הושלמו, five per-role summary cards (Dana: «מה דחוף בבתים» instead of money; a failed source shows «—», never 0), urgent band, work list by domain (~70%) with why-now / last documented contact / direct action, side column (~30%). No lateness by lead age. New read `contactIndex` (last contact per subject). SW v98. Details: `CHANGELOG-crm-my-day.md`.
+
+## CRM Stage 1c — contact panel, «שיחות לביצוע», tasks in the card — October 28, 2026 (merged, #314)
 
 - «היום שלי» opens with «שיחות לביצוע» (open call tasks, overdue → today → upcoming → undated; no «בוצע» — a call closes through «תיעוד שיחה»); the contact panel (history + form, eight outcomes, nine next-contact choices with no default, actual date shown; one idempotent `logContact`, a failure keeps the text); «משימות» tab in the card (create / reschedule with a reason for promised dates / complete / reassign / withdraw). A failed `getTasks` shows «המידע אינו זמין», never 0. SW v97. Details: `CHANGELOG-crm-contact-panel.md`.
 

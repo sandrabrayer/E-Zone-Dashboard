@@ -1,16 +1,18 @@
 /* CRM shell (C2, CHANGELOG-crm-shell-areas.md). Scoped: only /?view=crm loads
- * this file. Dark tokens mirror public/style.css so the shell matches the live
- * app (decision 2026-10-27: dark). RTL, desktop ≥ 900px: fixed 220px menu on
- * the right; below: a drawer. */
+ * this file. LIGHT theme since Stage 2 (CHANGELOG-crm-my-day.md, spec §4):
+ * background #F5F7FA, white surfaces, text #172B36, borders #DCE3EA, action
+ * #0F766E; red = exception, orange = waiting, green = done — always with a
+ * word or icon, never colour alone. RTL, desktop ≥ 900px: fixed 220px menu on
+ * the right; below: a drawer. The classic page keeps its own dark theme. */
 :root {
-  --bg: #0b1020; --bg-2: #0f172e; --panel: rgba(255, 255, 255, 0.04); --panel-2: rgba(255, 255, 255, 0.07);
-  --border: rgba(255, 255, 255, 0.10); --text: #f1f5ff; --text-muted: #98a3c7; --text-dim: #6b7aa0;
-  --primary: #5b8bff; --primary-strong: #3a6dff; --ok: #35c47c; --warn: #f5a524; --bad: #ff5c6a;
-  --menu-w: 220px; --radius: 12px;
+  --bg: #F5F7FA; --bg-2: #FFFFFF; --panel: #FFFFFF; --panel-2: #EEF2F6;
+  --border: #DCE3EA; --text: #172B36; --text-muted: #5B6B78; --text-dim: #7E8C97;
+  --primary: #0F766E; --primary-strong: #0B5F59; --ok: #15803D; --warn: #C2410C; --bad: #B91C1C;
+  --menu-w: 220px; --radius: 12px; --shadow: 0 1px 2px rgba(23, 43, 54, 0.06);
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
-  font-family: "Heebo", "Segoe UI", "Arial Hebrew", Arial, sans-serif; font-size: 15px; line-height: 1.45; }
+  font-family: "Heebo", "Segoe UI", "Arial Hebrew", Arial, sans-serif; font-size: 16px; line-height: 1.45; }
 button, input, select { font: inherit; color: inherit; }
 a { color: var(--primary); }
 
@@ -24,7 +26,7 @@ a { color: var(--primary); }
 .crm-nav button { text-align: start; background: transparent; border: 1px solid transparent; border-radius: 10px; padding: 10px 12px;
   cursor: pointer; display: flex; align-items: center; justify-content: space-between; }
 .crm-nav button:hover { background: var(--panel); }
-.crm-nav button[aria-current="page"] { background: var(--panel-2); border-color: var(--border); color: #fff; }
+.crm-nav button[aria-current="page"] { background: var(--panel-2); border-color: var(--border); color: var(--primary); font-weight: 600; }
 .crm-nav .n { min-width: 22px; height: 22px; border-radius: 999px; background: var(--panel-2); font-size: 12px; display: inline-flex;
   align-items: center; justify-content: center; padding: 0 6px; color: var(--text-muted); }
 .crm-menu-foot { margin-top: auto; font-size: 12px; color: var(--text-muted); display: flex; flex-direction: column; gap: 6px; }
@@ -45,7 +47,7 @@ a { color: var(--primary); }
 
 /* ---- KPI strip ---- */
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 14px; }
-.kpi { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; cursor: pointer; text-align: start; }
+.kpi { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; cursor: pointer; text-align: start; box-shadow: var(--shadow); }
 .kpi[aria-pressed="true"] { border-color: var(--primary); }
 .kpi .v { font-size: 22px; font-weight: 700; display: block; }
 .kpi .l { font-size: 12px; color: var(--text-muted); }
@@ -53,7 +55,7 @@ a { color: var(--primary); }
 /* ---- work list / tables ---- */
 .rows { display: flex; flex-direction: column; gap: 6px; }
 .row { display: grid; grid-template-columns: 1.4fr 1.6fr 0.8fr 0.9fr 1fr auto; gap: 10px; align-items: center; background: var(--panel);
-  border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; }
+  border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; box-shadow: var(--shadow); }
 .row.h { background: transparent; border-color: transparent; color: var(--text-muted); font-size: 12px; padding-top: 0; padding-bottom: 0; }
 .row .name { font-weight: 600; }
 .row .sub { color: var(--text-muted); font-size: 12px; }
@@ -93,13 +95,13 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .drawer .meta { color: var(--text-muted); font-size: 13px; }
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 10px 0; flex-wrap: wrap; }
 .tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; padding: 8px 10px; cursor: pointer; color: var(--text-muted); }
-.tabs button[aria-selected="true"] { color: #fff; border-bottom-color: var(--primary); }
+.tabs button[aria-selected="true"] { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
 .kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px 10px; font-size: 14px; }
 .kv dt { color: var(--text-muted); } .kv dd { margin: 0; }
 .tl { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .tl li { border-inline-start: 2px solid var(--border); padding-inline-start: 10px; }
 .tl .t { font-size: 12px; color: var(--text-muted); }
-.scrim { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 25; display: none; }
+.scrim { position: fixed; inset: 0; background: rgba(23,43,54,.35); z-index: 25; display: none; }
 .scrim[data-open="true"] { display: block; }
 .na { color: var(--text-dim); font-size: 12px; }
 
@@ -130,7 +132,7 @@ details.act form { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-e
 details.act label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); flex: 1 1 120px; }
 details.act input, details.act select, details.act textarea { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; color: var(--text); width: 100%; }
 details.act textarea { flex-basis: 100%; }
-.toast { position: fixed; bottom: 18px; inset-inline-start: 18px; background: var(--ok); color: #06240f; padding: 10px 14px; border-radius: 10px; font-weight: 600;
+.toast { position: fixed; bottom: 18px; inset-inline-start: 18px; background: var(--ok); color: #fff; padding: 10px 14px; border-radius: 10px; font-weight: 600;
   z-index: 60; opacity: 0; transform: translateY(8px); transition: opacity .15s, transform .15s; pointer-events: none; max-width: min(420px, 90vw); }
 .toast.bad { background: var(--bad); color: #fff; }
 .toast[data-show="true"] { opacity: 1; transform: none; }
@@ -175,4 +177,50 @@ form.contact .next-extra label[hidden] { display: none; }
   .row.task { grid-template-columns: 1fr 1fr; }
   .row.task.h { display: none; }
   .row.task .toolbar { grid-column: 1 / -1; justify-content: flex-start; }
+}
+
+/* ---- Stage 2: «היום שלי» (CHANGELOG-crm-my-day.md) ---- */
+.crm-date { color: var(--text-muted); font-size: 14px; }
+.crm-who { color: var(--text-muted); font-size: 14px; border-inline-start: 1px solid var(--border); padding-inline-start: 10px; }
+.nav-group { margin: 10px 6px 2px; font-size: 11px; letter-spacing: .02em; color: var(--text-dim); text-transform: uppercase; }
+.day-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.day-date { font-size: 15px; color: var(--text-muted); }
+.toolbar .grow, .group-title .grow { flex: 1 1 auto; }
+.toolbar.filters { margin-bottom: 10px; }
+.kpis.cards .kpi .l2 { display: block; font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+.kpis.cards .kpi .na-v { color: var(--text-dim); }
+.urgent { border: 1px solid #FECACA; background: #FEF2F2; border-radius: var(--radius); padding: 4px 12px 10px; margin-bottom: 14px; }
+.urgent .group-title { color: var(--bad); margin-top: 8px; }
+.day-grid { display: grid; grid-template-columns: 7fr 3fr; gap: 16px; align-items: start; }
+.day-side { display: flex; flex-direction: column; gap: 10px; position: sticky; top: 12px; }
+.side-box { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 12px 10px; box-shadow: var(--shadow); }
+.side-box .group-title { margin-top: 8px; }
+ul.mini { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+ul.mini li { display: flex; flex-direction: column; border-inline-start: 2px solid var(--border); padding-inline-start: 8px; }
+.domain { margin-bottom: 16px; }
+.domain .group-title { font-size: 16px; color: var(--text); }
+.row.work { grid-template-columns: 1.2fr 1.8fr 1fr 0.7fr 1.3fr auto; }
+.row.work .toolbar { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin: 0; }
+.row.done { grid-template-columns: 1.2fr 1.6fr 0.7fr 1fr 1.2fr auto; }
+.week-bar { align-items: center; }
+.week-bar input[type="date"] { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; color: var(--text); }
+.week { display: flex; flex-direction: column; gap: 6px; }
+.wday.is-today { border-inline-start: 3px solid var(--primary); padding-inline-start: 10px; }
+.quick { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 10px; box-shadow: var(--shadow); }
+.quick label { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.quick input { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 7px 10px; min-width: 240px; }
+.quick-list { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+.quick-list .pick { text-align: start; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.quick-list .pick:hover { border-color: var(--primary); }
+.chip.ok { background: #ECFDF3; }
+.chip.late { background: #FEF2F2; }
+.chip.today { background: #FFF7ED; }
+@media (max-width: 899px) {
+  .day-grid { grid-template-columns: 1fr; }
+  .day-side { position: static; }
+  .row.work, .row.done { grid-template-columns: 1fr 1fr; }
+  .row.work.h, .row.done.h { display: none; }
+  .row.work .toolbar { grid-column: 1 / -1; justify-content: flex-start; }
+  .kpis.cards { grid-template-columns: repeat(2, 1fr); }
+  .crm-who { display: none; }
 }

@@ -160,6 +160,7 @@ does not check (the UI hides it) · 🟨 decided, the code still differs (shown 
 | `completeTask` / `rescheduleTask` | ✅ | ✅ on a money task she can see (closing a verification) | ✅ on a task she can see | `taskMutate_` reads through `taskVisible_` → `not_found` otherwise |
 | `reassignTask` / `withdrawTask` (status `cancelled`, reason required, row kept) | ✅ | ⛔ | ✅ on a task she can see | same |
 | `logContact` (contact event + fulfilled task + follow-up, one transaction, idempotent by `submissionId`) | ✅ | ⛔ | ✅ | `activityScope_` keeps money kinds away from her |
+| `contactIndex` (last documented contact per lead / patient — Stage 2) | ✅ | ⛔ (`forbidden`) | ✅ (same index) | contact events are never money kinds; no phone / note / money in the answer |
 
 Decided vs implemented vs gap: all rows above are implemented and tested (`test/crm-tasks-contact-log.test.js`, `test/ops-role-dana.test.js`). Gap: no UI consumer yet (Stage 1c), and the D16 export has no dedicated test.
 

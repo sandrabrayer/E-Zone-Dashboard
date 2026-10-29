@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="manifest" href="/manifest.json">
-  <meta name="theme-color" content="#0b1020">
+  <meta name="theme-color" content="#F5F7FA">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <meta name="robots" content="noindex">
   <title>E-ZONE · CRM</title>
@@ -29,6 +29,8 @@
       <header class="crm-top">
         <button type="button" id="crm-burger" class="crm-burger" aria-label="תפריט">☰</button>
         <h1 id="crm-title">היום שלי</h1>
+        <span id="crm-date" class="crm-date"></span>
+        <span id="crm-who" class="crm-who">__USER__</span>
         <input id="crm-search" class="crm-search" type="search" placeholder="חיפוש לקוח / פנייה" aria-label="חיפוש">
       </header>
       <section id="crm-main" aria-live="polite"></section>
