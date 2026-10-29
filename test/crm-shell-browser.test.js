@@ -147,7 +147,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
   try {
     const { page, errors } = await open(browser, srv.port, 'vered', 1366);
     assert.equal(await page.getAttribute('html', 'dir'), 'rtl');
-    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => e.textContent)), ['היום שלי', 'פניות', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'בקרה'], 'grouped nav (spec §3)');
+    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'פניות', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'בקרה'], 'grouped nav (spec §3)');
     assert.deepEqual(await page.$$eval('#crm-nav .nav-group', (els) => els.map((e) => e.textContent)), ['פניות ומטופלים', 'פגישות ויומן', 'בתים והמשך טיפול', 'כספים', 'דוחות והגדרות']);
     assert.equal(await page.$eval('body', (b) => getComputedStyle(b).backgroundColor), 'rgb(230, 236, 242)', 'light theme (contrast pass)');
     assert.ok(await page.isVisible('#crm-menu'));
@@ -172,6 +172,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     // «פניות»: board, filter, table keeps the filter
     await page.click('#crm-nav button[data-area="leads"]');
     assert.equal(await page.$$eval('.col', (els) => els.length), 4);
+    if (process.env.CRM_SHOT) await page.screenshot({ path: process.env.CRM_SHOT + '/board-1366.png', fullPage: false });
     await page.selectOption('#f-house', 'רמות השבים');
     const onBoard = await page.$$eval('.card .name', (els) => els.map((e) => e.textContent));
     assert.deepEqual(onBoard.sort(), ['אבי לוי', 'גלי כהן', 'טל ברק']);
@@ -235,7 +236,7 @@ test('CRM shell (Ortal, controller): only היום שלי / גבייה / בקר�
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
     const { page, errors } = await open(browser, srv.port, 'ortal', 1366);
-    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => e.textContent)), ['היום שלי', 'גבייה', 'בקרה']);
+    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'גבייה', 'בקרה']);
     await page.waitForFunction(() => /דיווחים לאימות/.test(document.querySelector('#crm-main').textContent) && !/טוען…/.test(document.querySelector('.kpis.cards').textContent), null, { timeout: 8000 });
     assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['דיווחים לאימות', 'אימותים חלקיים / לבירור', 'חשבוניות מבוקשות', 'משימות כספיות שלך', 'זיכויים לתשלום'], 'Ortal: verification / gaps / documents / control (spec §5)');
     assert.deepEqual(await page.$$eval('.kpis.cards .kpi .v', (els) => els.map((e) => e.textContent)), ['1', '1', '0', '0', '1'], 'reported ×1, flagged ×1, no requested invoice, no money task in the fixture, one pending credit');
@@ -1014,7 +1015,7 @@ test('Stage 2 «היום שלי» (Vered + Dana, 1366 + 390 px): header date; vi
     assert.deepEqual(labels, ['מה דחוף בבתים', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'פניות חדשות ללא מגע'], 'no money card — an operational domain in its place');
     assert.ok(!/גבייה|₪/.test(await page.textContent('#crm-main')), 'no money anywhere on her day');
     assert.ok(!srv2.actions.some((a) => a.action === 'debtAging'), 'debtAging never requested for her');
-    assert.ok(!(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => e.textContent))).includes('גבייה'));
+    assert.ok(!(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); }))).includes('גבייה'));
     const cols = await page.$eval('.kpis.cards', (e) => getComputedStyle(e).gridTemplateColumns.split(' ').length);
     assert.equal(cols, 2, 'two-column cards on mobile');
     assert.ok(await noHScroll(page), 'no horizontal scroll at 390 px');

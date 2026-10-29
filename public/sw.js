@@ -335,7 +335,9 @@
 // Stacked on v99 (PR #316); monotonic, v17 never reused.
 // v100 → v101: CRM Stage 2b — verification states on Vered's day, Ortal's day rebuilt (crm/crm.js) (CHANGELOG-crm-ortal-day.md).
 // Stacked on v100 (PR #317); monotonic, v17 never reused.
-var CACHE_VERSION = 'v101';
+// v101 → v102: CRM Monday-style look — filled labels, colour-coded stages, avatars, icon rail (crm/crm.js, crm.css, crm.html)
+// (CHANGELOG-crm-monday-look.md). Stacked on v101 (PR #318); monotonic, v17 never reused.
+var CACHE_VERSION = 'v102';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
