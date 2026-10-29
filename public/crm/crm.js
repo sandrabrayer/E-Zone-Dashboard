@@ -1442,6 +1442,9 @@
       let h = 0; for (let i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) % 360;
       return '<span class="who"><i class="av" style="--h:' + h + '">' + esc(n.charAt(0)) + '</i>' + esc(n) + '</span>';
     }
+    function patientStatusLabel(st) { const x = PATIENT_STATUSES.filter(function (p) { return p.id === s(st); })[0]; return x ? x.label : (s(st) || '—'); }
+    function statusChip(st) { return '<span class="chip pst-' + esc(s(st) || 'active') + '">' + esc(patientStatusLabel(st)) + '</span>'; }
+    function houseTag(idOrName) { const id = houseId(idOrName) || 'x'; return '<span class="chip house h-' + esc(id) + '">' + esc(houseName(idOrName) || '—') + '</span>'; }
     const AREA_ICONS = { today: '☀', leads: '✉', clients: '👤', calendar: '📅', occupancy: '🏠', billing: '₪', control: '✔', triage: '🔎' };
     function stateText(st) { return st === 'late' ? 'באיחור' : st === 'today' ? 'להיום' : 'ממתין'; }
 
@@ -1969,8 +1972,15 @@
       if (state.clientsView === 'out') return renderDischarged(c);
       const list = clients(c.patients, state.today, state.filters);
       const toolbar = '<div class="toolbar"><div class="seg"><button type="button" data-clients-view="in" aria-pressed="true">בבית</button><button type="button" data-clients-view="out" aria-pressed="false">משוחררים</button></div><select id="f-house-c"><option value="">כל הבתים</option>' + HOUSES.map(function (h) { return '<option value="' + h.id + '"' + (state.filters.house === h.id ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="na">' + list.length + ' בטיפול</span><button type="button" class="btn primary" id="crm-direct-add">+ הוספת מטופל/ת ישירות</button></div>';
-      return toolbar + '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>שם</th><th>בית</th><th>תאריך כניסה</th><th>ימים בבית</th><th>סטטוס</th></tr></thead><tbody>'
-        + list.map(function (p) { return '<tr data-open-patient="' + esc(p.id) + '"><td>' + esc(p.name) + '</td><td>' + esc(p.houseName) + '</td><td>' + esc(fmtDate(p.date)) + '</td><td>' + esc(p.days) + '</td><td>' + esc(p.status) + '</td></tr>'; }).join('')
+      const openBy = {}; (state.tasks || []).forEach(function (t) { if (t && t.status === 'open' && s(t.patientId)) openBy[s(t.patientId)] = (openBy[s(t.patientId)] || 0) + 1; });
+      const lastBy = state.index && state.index.patients ? state.index.patients : {};
+      return toolbar + '<div class="tbl-wrap"><table class="tbl clients"><thead><tr><th>שם</th><th>בית</th><th>סטטוס</th><th>תאריך כניסה</th><th>ימים בבית</th><th>משימות פתוחות</th><th>מגע אחרון</th><th></th></tr></thead><tbody>'
+        + list.map(function (p) {
+          const lc = lastBy[p.id];
+          return '<tr data-open-patient="' + esc(p.id) + '"><td class="name">' + esc(p.name) + '</td><td>' + houseTag(p.houseId) + '</td><td>' + statusChip(p.status) + '</td><td>' + esc(fmtDate(p.date)) + '</td><td>' + esc(p.days) + '</td>'
+            + '<td>' + (openBy[p.id] ? '<span class="chip today">' + openBy[p.id] + '</span>' : '<span class="sub">—</span>') + '</td><td class="sub">' + esc(lc ? whenLocal(lc.at) + ' · ' + contactOutcomeLabel(lc.outcome) : 'אין מגע מתועד') + '</td>'
+            + '<td><span class="toolbar"><button type="button" class="btn small primary" data-contact-open="patient:' + esc(p.id) + '">תיעוד שיחה</button><button type="button" class="btn small" data-open-patient="' + esc(p.id) + '">כרטיס</button></span></td></tr>';
+        }).join('')
         + '</tbody></table></div>' + (list.length === 0 ? '<div class="crm-state">אין מטופלים</div>' : '');
     }
 
@@ -2275,9 +2285,9 @@
       const name = lead ? lead.name : pat.name;
       const subject = lead ? { leadId: lead.id } : { patientId: pat.id };
       const kv = lead ? [['טלפון', lead.phone], ['בית', houseName(lead.house)], ['מקור', lead.source], ['אחראי', lead.assignedTo], ['שלב', stageLabel(lead.stage)], ['פגישה', fmtDate(lead.visitDate) + (lead.visitTime ? ' ' + lead.visitTime : '')], ['נוצר', fmtDate(lead.created)], ['נפגש/ת עם', lead.meetingWith], ['תוצאת פגישה', lead.meetingOutcome], ['איש קשר', lead.contactName + (lead.contactRelation ? ' (' + lead.contactRelation + ')' : '')], ['טלפון איש קשר', lead.contactPhone], ['הערות', lead.note]]
-        : [['בית', houseName(pat.houseId)], ['תאריך כניסה', fmtDate(pat.date)], ['סטטוס', pat.status], ['ליד', pat.fromLead], ['מקור', pat.source]];
+        : [['בית', houseName(pat.houseId)], ['תאריך כניסה', fmtDate(pat.date) + (pat.date ? ' · ' + daysBetween(pat.date, state.today) + ' ימים בבית' : '')], ['סטטוס', patientStatusLabel(pat.status)], ['הגיע/ה', pat.source === 'lead' ? 'מפנייה' : pat.source === 'direct_admin' ? 'הוספה ישירה' : pat.source], ['פנייה מקורית', pat.fromLead ? ((compute(state.data, state.today).leads.filter(function (l) { return l.id === pat.fromLead; })[0] || {}).name || 'נסגרה / הועברה') : '']];
       const na = lead ? nextActionFor(lead, state.today) : null;
-      dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(name) + '</h2><div class="meta">' + esc(lead ? stageLabel(lead.stage) + ' · ' + houseName(lead.house) : 'מטופל/ת · ' + houseName(pat.houseId)) + (na ? ' · ' + esc(na.text) : '') + '</div></div>'
+      dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(name) + '</h2><div class="meta tags">' + (lead ? '<span class="chip stage-' + esc(lead.stage) + '">' + esc(stageLabel(lead.stage)) + '</span>' + houseTag(lead.house) + (lead.assignedTo ? avatar(lead.assignedTo) : '') : statusChip(pat.status) + houseTag(pat.houseId)) + (na ? chip(na.state, na.text) : '') + '</div></div>'
         + '<span class="toolbar"><button type="button" class="btn small primary" data-contact-open="' + esc(kind + ':' + id) + '">📞 תיעוד שיחה</button><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></span></div>'
         + '<div class="tabs" role="tablist">' + [['overview', 'סקירה'], ['tasks', 'משימות' + (tasksFor(subject, state.tasks).length ? ' (' + tasksFor(subject, state.tasks).length + ')' : '')], ['activity', 'פעילות'], ['meetings', 'פגישות ושירותים'], ['account', 'חשבון'], ['docs', 'מסמכים']].map(function (t, i) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (i === 0) + '">' + esc(t[1]) + '</button>'; }).join('') + '</div>'
         + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : renderPatientActions(pat)) + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p><a class="btn" href="/?view=classic">עריכה מלאה בדשבורד</a></p></section>'

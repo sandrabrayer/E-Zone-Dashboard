@@ -292,3 +292,15 @@ ul.mini li { display: flex; flex-direction: column; border-inline-start: 2px sol
 .row.work:hover { box-shadow: 0 2px 8px rgba(14,27,37,.10); }
 .urgent { background: #FFF1F3; border-color: #F8C9D1; }
 .drawer { box-shadow: -8px 0 24px rgba(14,27,37,.12); }
+
+/* ---- «מטופלים» + the card head in the Monday look (CHANGELOG-crm-read-cache.md) ---- */
+.chip.pst-active { background: var(--c-paid); color: #0b2e1c; } .chip.pst-trial { background: var(--c-new); } .chip.pst-wait { background: var(--c-wait); color: #1b1b1b; }
+.chip.house { background: #E6E9EF; color: var(--text); font-weight: 600; border-inline-start: 4px solid var(--c-grey); border-radius: 4px; }
+.chip.house.h-ramot { border-color: #0073EA; } .chip.house.h-rehab { border-color: #A25DDC; } .chip.house.h-arfoni { border-color: #00C875; } .chip.house.h-asher { border-color: #FDAB3D; } .chip.house.h-pardes { border-color: #E2445C; } .chip.house.h-sde { border-color: #9AA7B2; }
+.tbl.clients td.name { font-weight: 700; }
+.tbl.clients td .toolbar { display: inline-flex; gap: 6px; margin: 0; }
+.drawer .meta.tags { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+.drawer-head h2 { font-size: 20px; font-weight: 800; }
+.tabs button { font-weight: 500; }
+.kv { font-size: 15px; } .kv dt { font-weight: 500; }
+details.act summary { font-weight: 600; }

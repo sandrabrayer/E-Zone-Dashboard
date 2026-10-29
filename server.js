@@ -10,6 +10,7 @@ const {
   hasBillingControl, isControllerView, isOpsView, principalView,
 } = require('./lib/users');
 const { opsGetDataView } = require('./lib/ops-scope');
+const { createReadCache, ttlFromEnv } = require('./lib/read-cache');
 const {
   FINANCE_ACTIONS, FINANCE_ROUTES, FINANCE_FORBIDDEN_MESSAGE, isFinanceAction, stripFinanceKeys,
   BILLING_CONTROL_ACTIONS, CONTROLLER_ACTIONS, CONTROLLER_ROUTES, BILLING_CONTROL_FORBIDDEN_MESSAGE,
@@ -484,8 +485,14 @@ function buildAppsScriptBody(fields, user, secret, principal) {
  * headers and a querystring would put the secret in a URL. doGet and doPost
  * both route through the same gate + handle_, so the result is identical.
  * Follows Google's 302 → googleusercontent.com. */
+/* Read-through cache for the browser's reads (lib/read-cache.js, CHANGELOG-crm-read-cache.md):
+ * keyed by the whole upstream body (action, params, verified actor) minus the secret;
+ * every write through this server busts it. SHEETS_READ_CACHE_MS=0 disables. */
+const READ_CACHE = createReadCache({ ttlMs: ttlFromEnv(process.env) });
 function sheetsGet(params, user, principal) {
-  return sheetsPost(Object.assign(readParamsToBody(params), { user: typeof user === 'string' ? user : '' }), principal);
+  const body = Object.assign(readParamsToBody(params), { user: typeof user === 'string' ? user : '' });
+  const upstream = buildAppsScriptBody(body, body.user, '', principal || NO_PRINCIPAL);   // the key: no secret
+  return READ_CACHE.get(upstream, () => sheetsPost(body, principal));
 }
 
 /* POST a JSON body to the Apps Script, with the proxy secret attached here —
@@ -1157,6 +1164,7 @@ app.post('/api/sheets', requireSession, refuseServerOnlyActions, requireBillingC
   const principal = sessionPrincipalFromRequest(req);
   const summary = summarizeBody(body);
   console.log('[sheets POST] →', summary);
+  READ_CACHE.bust();   // a write: no reader of this server re-reads a stale answer
   try {
     let data = viewFilteredResponse(body.action, await sheetsPost(body, principal), principal);
     if (summary.action === 'saveAll') data = await applyAmbulatoryHandoff(data, body.user, principal);
@@ -1504,6 +1512,7 @@ async function dischargeOutpatientHandoff(body, user, principal, deps) {
  * already succeeded locally. The secret is never logged. */
 app.post('/api/outpatient-lead', requireSession, async (req, res) => {
   const startedAt = new Date().toISOString();
+  READ_CACHE.bust();
   // A discharge row (the שחרור flow and «העבר לאמבולטורי»): server-resolved,
   // idempotent, logged — see dischargeOutpatientHandoff. The legacy body below
   // stays for a cached older page.
@@ -2025,6 +2034,7 @@ function meetingReportNoteError(note) {
  * shared secret attached server-side. Validation is authoritative on the Apps
  * Script side (submitMeetingReport_); the browser only ever sees ok/error. */
 app.post('/api/meeting-report/submit', requireMeetingReportSession, requireProxySecret, async (req, res) => {
+  READ_CACHE.bust();   // a manager's report changes the leads every reader sees
   if (!MEETING_REPORT_SECRET) {
     return res.status(503).json({ ok: false, error: 'meeting_report_not_configured' });
   }
@@ -2242,6 +2252,7 @@ module.exports = {
   validateDebtAgingExportQuery,
   // «ייצוא רשימת תיקונים» .xlsx (see test/cleanup-workbook.test.js).
   cleanupXlsxHandler,
+  READ_CACHE,
   // Deploy identity on /healthz (see test/healthz-deploy-identity.test.js).
   deployIdentity,
   healthzBody,
