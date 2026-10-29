@@ -50,7 +50,7 @@ const DATA = {
   ],
   patients: { ramot: [{ id: 'p1', name: 'דנה כהן', date: daysAgo(30), status: 'active', pay: 6000 }, { id: 'px', name: 'נועה לוי', date: daysAgo(60), status: 'released', exitDate: daysAgo(5), fromLead: 'LX' }], rehab: [{ id: 'p2', name: 'אבי', date: daysAgo(7), status: 'active' }] },
 };
-const QUEUE = { ok: true, receipts: [{ id: 'r1', status: 'reported' }, { id: 'r2', status: 'flagged' }] };
+const QUEUE = { ok: true, receipts: [{ id: 'r1', confirmStatus: 'reported', patientName: 'דנה כהן', houseId: 'ramot', amount: 2500, receivedDate: daysAgo(1), recordedBy: 'ורד', method: 'העברה' }, { id: 'r2', confirmStatus: 'flagged', patientName: 'אבי', houseId: 'rehab', amount: 900, receivedDate: daysAgo(6), recordedBy: 'ורד', flagNote: 'הסכום לא תואם' }] };
 const DEBT = { ok: true, asOf: TODAY,
   totals: { recorded_debt: { count: 1, total: 6000, d0_7: 0, d8_30: 0, d31_60: 0, d61_plus: 6000 }, unrecorded_cycles: { count: 1, total: 5000, d0_7: 5000, d8_30: 0, d31_60: 0, d61_plus: 0 } },
   byHouse: [{ houseId: 'ramot', recorded_debt: { count: 1, total: 6000 }, unrecorded_cycles: { count: 1, total: 5000 } }],
@@ -99,7 +99,7 @@ async function boot() {
       if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'settleRefund', 'editReceipt', 'savePayment', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
       if (['logContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
-        : parsed.action === 'getTasks' ? (tasksAnswer ? tasksAnswer() : (parsed.status === 'open' ? TASKS : { ok: true, total: 0, tasks: [] }))
+        : parsed.action === 'getTasks' ? (tasksAnswer ? tasksAnswer() : (parsed.status === 'open' && parsed.proxyUserId !== 'ortal' ? TASKS : { ok: true, total: 0, tasks: [] }))   // Code.gs scopes Ortal to money tasks (none in the fixture)
         : parsed.action === 'contactIndex' ? (indexAnswer ? indexAnswer() : INDEX)
         : parsed.action === 'logContact' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, event: { eventId: 'contact:' + parsed.submissionId }, completed: null, created: parsed.next && !parsed.next.none ? Object.assign({ id: 'task-x' }, parsed.next) : null })
         : ['createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0 ? (saveAnswer ? saveAnswer(parsed) : { ok: true, task: { id: parsed.id || 'task-new' } })
@@ -236,11 +236,15 @@ test('CRM shell (Ortal, controller): only היום שלי / גבייה / בקר�
   try {
     const { page, errors } = await open(browser, srv.port, 'ortal', 1366);
     assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => e.textContent)), ['היום שלי', 'גבייה', 'בקרה']);
-    await page.waitForFunction(() => /דיווחים לאימות/.test(document.querySelector('#crm-main').textContent), null, { timeout: 5000 });
-    assert.deepEqual(await page.$$eval('.kpi .v', (els) => els.map((e) => e.textContent)), ['1', '1', '0']);
+    await page.waitForFunction(() => /דיווחים לאימות/.test(document.querySelector('#crm-main').textContent) && !/טוען…/.test(document.querySelector('.kpis.cards').textContent), null, { timeout: 8000 });
+    assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['דיווחים לאימות', 'אימותים חלקיים / לבירור', 'חשבוניות מבוקשות', 'משימות כספיות שלך', 'זיכויים לתשלום'], 'Ortal: verification / gaps / documents / control (spec §5)');
+    assert.deepEqual(await page.$$eval('.kpis.cards .kpi .v', (els) => els.map((e) => e.textContent)), ['1', '1', '0', '0', '1'], 'reported ×1, flagged ×1, no requested invoice, no money task in the fixture, one pending credit');
+    assert.match(await page.textContent('.urgent'), /סומן לבירור/, 'the flagged receipt waits for her decision');
+    assert.match(await page.textContent('#crm-main'), /ההנפקה אינה נרשמת כאן/, 'document issuance is not claimed');
     assert.ok(!/אבי לוי/.test(await page.textContent('#crm-main')), 'no lead names in her view');
     assert.deepEqual(errors, []);
     assert.ok(srv.actions.some((a) => a.action === 'billingControlQueue' && a.user === 'ortal'));
+    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['billingControlQueue', 'getCredits', 'getData', 'getTasks'], 'her reads: the queue, her money tasks, the credits — never debt / payments / leads');
   } finally { await browser.close(); srv.close(); }
 });
 
@@ -249,8 +253,9 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
     const { page, errors } = await open(browser, srv.port, 'vered', 1366);
-    assert.ok(!srv.actions.some((a) => a.action === 'getPayments' || a.action === 'getCredits'), 'the area reads are not loaded on boot (debtAging is — once — for the «גבייה לטיפול» card, Stage 2)');
+    assert.ok(!srv.actions.some((a) => a.action === 'getCredits'), 'credits are not loaded on boot (debtAging + getPayments are — once — for the «גבייה לטיפול» card and the verification states, Stage 2 / 2b)');
     assert.equal(srv.actions.filter((a) => a.action === 'debtAging').length, 1);
+    assert.equal(srv.actions.filter((a) => a.action === 'getPayments').length, 1);
     await page.click('#crm-nav button[data-area="billing"]');
     await page.waitForSelector('#crm-debtors');
     assert.equal(await page.textContent('#crm-title'), 'גבייה');

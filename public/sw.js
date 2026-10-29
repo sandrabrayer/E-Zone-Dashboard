@@ -333,7 +333,9 @@
 // (CHANGELOG-crm-triage.md). Stacked on v98 (PR #315); monotonic, v17 never reused.
 // v99 → v100: CRM contrast pass — deeper backgrounds, darker text (crm/crm.css) (CHANGELOG-crm-contrast.md).
 // Stacked on v99 (PR #316); monotonic, v17 never reused.
-var CACHE_VERSION = 'v100';
+// v100 → v101: CRM Stage 2b — verification states on Vered's day, Ortal's day rebuilt (crm/crm.js) (CHANGELOG-crm-ortal-day.md).
+// Stacked on v100 (PR #317); monotonic, v17 never reused.
+var CACHE_VERSION = 'v101';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
