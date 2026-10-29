@@ -242,6 +242,12 @@ house-manager labels in slash form. Either order is safe. SW
 page; the usual cache eviction on the next load). The CRM shell links the existing manifest and
 registers `/sw.js`; an installed "Dashboard" app opens `/` — the CRM after the switch.
 
+## Who lands where (October 29, 2026)
+
+With `CRM_ENABLED=true` + `CRM_DEFAULT=true` (both set): Vered, Sandra and Dana → the CRM on `/`;
+Ortal → the classic page (CRM at `/?view=crm`); everyone → classic at `/?view=classic`. Login is the
+same screen for all (`CHANGELOG-crm-default-ops.md`).
+
 ## Server read cache (October 29, 2026)
 
 `CHANGELOG-crm-read-cache.md`. Nothing to set. Optional Railway variable `SHEETS_READ_CACHE_MS`

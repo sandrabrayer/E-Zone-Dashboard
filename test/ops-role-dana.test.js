@@ -234,7 +234,8 @@ test('server: Dana — operational writes pass and reach the proxy with her iden
     const r = await request(port, 'GET', '/?view=crm', { cookie: personal('dana') });
     assert.match(r.text, /id="crm-root"/);
     const home = await request(port, 'GET', '/', { cookie: personal('dana') });
-    assert.ok(!/id="crm-root"/.test(home.text), 'CRM_DEFAULT switches only the full view — Dana stays on the classic page by default');
+    assert.ok(/id="crm-root"/.test(home.text), 'CRM_DEFAULT: Dana lands on the CRM like Vered (CHANGELOG-crm-default-ops.md)');
+    assert.ok(!/id="crm-root"/.test((await request(port, 'GET', '/?view=classic', { cookie: personal('dana') })).text), '…and view=classic is still the classic page');
   }, { CRM_ENABLED: 'true', CRM_DEFAULT: 'true' });
 });
 
