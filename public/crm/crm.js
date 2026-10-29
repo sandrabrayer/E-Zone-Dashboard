@@ -27,6 +27,7 @@
   const AREAS = [
     { id: 'today', label: 'היום שלי' }, { id: 'leads', label: 'פניות' }, { id: 'occupancy', label: 'תפוסה' },
     { id: 'clients', label: 'מטופלים' }, { id: 'calendar', label: 'יומן' }, { id: 'billing', label: 'גבייה' }, { id: 'control', label: 'בקרה' },
+    { id: 'triage', label: 'רשומות שדורשות בירור' },   // Stage 3: reached from «פניות» / the «ללא מגע» card, not from the menu
   ];
   const WAIT_DAYS = 3;
   /* Mirrors app.js MEETING_OUTCOME_LABELS / MEETING_WITH_AMBULATORY (stable keys). */
@@ -233,8 +234,8 @@
   function areasFor(me) {
     const m = me || {};
     if (m.view === 'controller') return ['today', 'billing', 'control'];
-    if (m.view === 'ops' || m.ops === true) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control'];
-    if (!m.finance) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control'];
+    if (m.view === 'ops' || m.ops === true) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'triage'];
+    if (!m.finance) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'triage'];
     return AREAS.map(function (a) { return a.id; });
   }
 
@@ -1258,10 +1259,10 @@
     const cards = [];
     if (finance) cards.push({ id: 'collection', label: 'גבייה לטיפול', value: debtCount === false ? null : countOf(byDomain.collection, dueNow), hint: debtCount === null ? 'טוען…' : (debtCount === false ? 'המידע אינו זמין' : debtCount + ' מחזורים פתוחים') });
     else cards.push({ id: 'houses', label: 'מה דחוף בבתים', value: all.filter(function (r) { return r.priority === 'exception'; }).length, hint: 'חריגים הממתינים להחלטה' });
-    cards.push({ id: 'calls', label: 'שיחות ומעקבים', value: tasks ? countOf(byDomain.calls, dueNow) : null, hint: tasks ? countOf(byDomain.calls, function (r) { return r.state === 'late'; }) + ' באיחור · ' + byDomain.calls.length + ' פתוחות' : 'המידע אינו זמין' });
+    cards.push({ id: 'calls', label: 'שיחות ומעקבים', value: tasks ? countOf(byDomain.calls, dueNow) : null, hint: tasks ? countOf(byDomain.calls, function (r) { return r.state === 'late'; }) + ' באיחור · ' + byDomain.calls.length + ' פתוחות' : (tasks === undefined ? 'טוען…' : 'המידע אינו זמין') });
     cards.push({ id: 'meetings', label: 'פגישות היום', value: countOf(byDomain.meetings, function (r) { return r.kind === 'meeting_today'; }), second: { label: 'תיאומים פתוחים', value: countOf(byDomain.meetings, function (r) { return r.kind === 'meeting_unscheduled'; }) } });
     cards.push({ id: 'followup', label: 'המשך טיפול לאחר פגישות', value: byDomain.followup.length, hint: countOf(byDomain.followup, function (r) { return r.kind === 'awaiting_report'; }) + ' ממתינות לדיווח מנהל/ת' });
-    cards.push({ id: 'newleads', label: 'פניות חדשות ללא מגע', value: index ? byDomain.newleads.length : null, hint: index ? 'ללא ניסיון קשר מתועד' : 'המידע אינו זמין' });
+    cards.push({ id: 'newleads', label: 'פניות חדשות ללא מגע', value: index ? byDomain.newleads.length : null, hint: index ? 'ללא ניסיון קשר מתועד' : (index === undefined ? 'טוען…' : 'המידע אינו זמין') });
     const urgent = sortRows(all.filter(function (r) { return r.priority === 'exception' || r.priority === 'binding'; }).slice());
     const waiting = all.filter(function (r) { return r.waitingOn; });
     const exceptions = all.filter(function (r) { return r.priority === 'exception'; });
@@ -1292,6 +1293,50 @@
       .sort(function (a, b) { return a.at < b.at ? 1 : -1; });
   }
   function hebDate(iso) { const d = weekdayOf(iso); return (d >= 0 ? 'יום ' + DAY_NAMES[d] + ', ' : '') + fmtDate(iso); }
+
+
+  /* ---- Stage 3: «רשומות שדורשות בירור» (CHANGELOG-crm-triage.md; spec §12) ----
+   * One record at a time, one decision per click, every decision leaves a
+   * record (a contact event, a task, a stage change, a closed lead) and the
+   * queue is RECOMPUTED from the data — never a hard-coded 75, never a bulk
+   * defer. A record leaves the queue only because something was decided. */
+  const TRIAGE_OPTIONS = [
+    { id: 'call', label: 'שיחה עכשיו', hint: 'פותח את טופס תיעוד השיחה' },
+    { id: 'later', label: 'לחזור בתאריך', hint: 'משימת שיחה עם מועד' },
+    { id: 'waitlist', label: 'רשימת המתנה', hint: 'סיבה, בית, אחראי ותאריך בדיקה' },
+    { id: 'update', label: 'עדכון לפי מידע מאומת', hint: 'פותח את הכרטיס לעריכה' },
+    { id: 'close', label: 'סגירה — לא רלוונטי', hint: 'עם סיבה; ניתן לשחזר מ«לידים סגורים»' },
+    { id: 'check', label: 'לסמן לבדיקה נוספת', hint: 'משימת בירור עם מועד ואחראי' }];
+  /* The queue: open leads with NO documented contact and NO open task, oldest first (the family waited longest). */
+  function triageQueue(c, tasks, index, today) {
+    const open = {};
+    (tasks || []).forEach(function (t) { if (t && t.status === 'open' && s(t.leadId)) open[s(t.leadId)] = t; });
+    const li = index && index.leads ? index.leads : {};
+    return (c.leads || []).filter(function (l) { return (l.stage === 'new' || (l.stage === 'visit' && !l.visitDate)) && !li[l.id] && !open[l.id]; })
+      .map(function (l) { return { lead: l, age: l.created ? daysBetween(l.created, today) : null, reason: l.stage === 'visit' ? 'ביקור ללא תאריך ואין מגע מתועד' : 'אין מגע מתועד' }; })
+      .sort(function (a, b) { return (a.lead.created || '9').localeCompare(b.lead.created || '9'); });
+  }
+  function waitlistErrors(v, today) {
+    const e = {};
+    v = v || {};
+    if (!houseId(v.house) && !HOUSES.some(function (h) { return h.name === s(v.house); })) e.house = 'בחרי בית';
+    if (ASSIGNEES.indexOf(s(v.assignee)) < 0) e.assignee = 'בחרי אחראי';
+    if (s(v.reason).length < 2) e.reason = 'סיבה (2 תווים לפחות)';
+    if (!isoDateOk(v.checkDate) || v.checkDate < today) e.checkDate = 'תאריך בדיקה מהיום והלאה';
+    return e;
+  }
+  /* The lead patch of a waitlist decision (classic one-lead saveAll via applyLeadPatch) — the reason is appended to the note, never overwriting it. */
+  function waitlistPatch(lead, v, today) {
+    const line = '[' + fmtDate(today) + '] רשימת המתנה: ' + s(v.reason);
+    return { stage: 'waitlist', house: houseName(v.house), assignedTo: s(v.assignee), note: s(lead.note) ? s(lead.note) + '\n' + line : line };
+  }
+  function laterErrors(v, today) {
+    const e = {};
+    v = v || {};
+    if (!isoDateOk(v.dueDate) || v.dueDate < today) e.dueDate = 'תאריך מהיום והלאה';
+    if (s(v.dueTime) && !timeOk(v.dueTime)) e.dueTime = 'שעה HH:MM';
+    return e;
+  }
 
   function boot(win, doc) {
     const state = { me: null, data: null, area: 'today', view: 'board', filters: { q: '', house: '', owner: '' }, kpiFilter: '', queue: null,
@@ -1406,8 +1451,8 @@
         const rows = d.id === 'houses' && state.domain === 'houses' ? m.exceptions : m.byDomain[d.id];
         if (!state.domain && d.id === 'houses' && !rows.length) return;
         main += '<section class="domain" data-domain-section="' + d.id + '"><div class="group-title"><strong>' + esc(d.label) + '</strong> <span class="n chip">' + rows.length + '</span>'
-          + (d.id === 'collection' && state.debt === false ? ' <span class="chip late">המידע אינו זמין</span>' : '') + (d.id === 'calls' && !state.tasks ? ' <span class="chip late">המידע אינו זמין</span>' : '') + (d.id === 'newleads' && !state.index ? ' <span class="chip late">המידע אינו זמין</span>' : '')
-          + '<span class="grow"></span>' + (state.domain ? '<button type="button" class="link" data-domain="' + d.id + '">חזרה לכל התחומים</button>' : '') + '</div>'
+          + (d.id === 'collection' && state.debt === false ? ' <span class="chip late">המידע אינו זמין</span>' : '') + (d.id === 'calls' && !state.tasks ? ' <span class="chip ' + (state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '') + (d.id === 'newleads' && !state.index ? ' <span class="chip ' + (state.index === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '')
+          + '<span class="grow"></span>' + (d.id === 'newleads' && rows.length ? '<button type="button" class="btn small" data-area="triage">סבב בירור — אחת אחרי השנייה</button>' : '') + (state.domain ? '<button type="button" class="link" data-domain="' + d.id + '">חזרה לכל התחומים</button>' : '') + '</div>'
           + rowsBlock(rows, state.domain ? 0 : 8) + '</section>';
       });
       if (!main) main = '<div class="crm-state">אין משימות פתוחות היום 🎉</div>';
@@ -1482,7 +1527,8 @@
         + '<select id="f-house"><option value="">כל הבתים</option>' + HOUSES.filter(function (h) { return h.id !== 'sde'; }).map(function (h) { return '<option value="' + esc(h.name) + '"' + (f.house === h.name ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select>'
         + '<select id="f-owner"><option value="">כל האחראים</option>' + Object.keys(owners).map(function (o) { return '<option' + (f.owner === o ? ' selected' : '') + '>' + esc(o) + '</option>'; }).join('') + '</select>'
         + '<button type="button" class="btn primary" id="crm-new-lead">+ פנייה חדשה</button>'
-        + '<button type="button" class="btn" data-view="closed" aria-pressed="' + (state.view === 'closed') + '">לידים סגורים</button></div>';
+        + '<button type="button" class="btn" data-view="closed" aria-pressed="' + (state.view === 'closed') + '">לידים סגורים</button>'
+        + (state.tasks && state.index ? '<button type="button" class="btn" data-area="triage">רשומות שדורשות בירור <span class="n chip">' + triageQueue(c, state.tasks, state.index, state.today).length + '</span></button>' : '') + '</div>';
       if (state.view === 'closed') return toolbar + renderClosedLeads();
       if (state.view === 'board') {
         return toolbar + '<div class="board">' + board(c.leads, f).map(function (col) {
@@ -2041,7 +2087,7 @@
       if (state.loading) { main.innerHTML = '<div class="crm-state">טוען…</div>'; return; }
       if (state.error) { main.innerHTML = '<div class="crm-state bad">' + esc(state.error) + ' <button type="button" class="btn small" id="crm-retry">נסי שוב</button></div>'; return; }
       const c = compute(state.data, state.today);
-      const r = { today: renderToday, leads: renderLeads, occupancy: renderOccupancy, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl }[state.area] || renderToday;
+      const r = { today: renderToday, leads: renderLeads, occupancy: renderOccupancy, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl, triage: renderTriage }[state.area] || renderToday;
       main.innerHTML = r(c);
     }
 
@@ -2448,6 +2494,55 @@
       if (!l || !reportUnseen(l)) return;
       writeLead(id, { meetingSeen: '1' }, 'הדיווח סומן כנקרא');
     }
+    /* ---- Stage 3: the triage round ---- */
+    function renderTriage(c) {
+      if (state.tasks === undefined || state.index === undefined) return '<div class="crm-state">טוען…</div>';
+      if (!state.tasks || !state.index) return '<div class="crm-state">המידע אינו זמין — הרשימה נבנית מהמשימות ומהיסטוריית הקשר <button type="button" class="btn small" data-tasks-retry>נסי שוב</button></div>';
+      const q = triageQueue(c, state.tasks, state.index, state.today);
+      if (!state.triage) state.triage = { decided: 0, skipped: [] };
+      const pending = q.filter(function (x) { return state.triage.skipped.indexOf(x.lead.id) < 0; });
+      const cur = pending[0] || q[0];
+      const total = q.length + state.triage.decided;
+      let html = '<div class="day-head"><div class="day-date">' + esc(state.triage.decided + ' / ' + total + ' הוחלט') + '</div><div class="toolbar"><button type="button" class="btn small" data-area="leads">חזרה ל«פניות»</button></div></div>'
+        + '<p class="na">פנייה אחת בכל פעם — החלטה אחת בלחיצה. כל החלטה נרשמת (שיחה, משימה, שלב או סגירה) והרשימה מחושבת מחדש מהנתונים; אין דחייה גורפת.</p>';
+      if (!cur) return html + '<div class="crm-state">אין רשומות שדורשות בירור 🎉</div>';
+      const l = cur.lead;
+      const nxt = pending[1] || null;
+      const err = function (f) { return '<span class="err" data-err="' + f + '"></span>'; };
+      html += '<section class="triage-card" data-triage="' + esc(l.id) + '">'
+        + '<div class="drawer-head"><div><h2>' + esc(l.name) + '</h2><div class="meta">' + esc(houseName(l.house) || 'ללא בית') + ' · ' + esc(stageLabel(l.stage)) + (l.created ? ' · נוצר ' + esc(fmtDate(l.created)) + (cur.age !== null ? ' · ' + cur.age + ' ימים' : '') : '') + (l.assignedTo ? ' · אחראי/ת ' + esc(l.assignedTo) : '') + (l.source ? ' · מקור ' + esc(l.source) : '') + '</div>'
+        + (l.phone ? '<div class="meta">טלפון <a href="tel:' + esc(l.phone) + '">' + esc(l.phone) + '</a>' + (l.contactName ? ' · איש קשר ' + esc(l.contactName) + (l.contactRelation ? ' (' + esc(l.contactRelation) + ')' : '') : '') + '</div>' : '') + '</div>'
+        + chip('late', cur.reason) + '</div>'
+        + (l.note ? '<p class="note">«' + esc(l.note) + '»</p>' : '<p class="na">אין הערה בפנייה.</p>')
+        + '<div class="triage-options">' + TRIAGE_OPTIONS.map(function (o) { return '<button type="button" class="opt' + (state.triage.open === o.id ? ' on' : '') + '" data-triage-opt="' + o.id + '"><strong>' + esc(o.label) + '</strong><span class="sub">' + esc(o.hint) + '</span></button>'; }).join('') + '</div>'
+        + '<div class="triage-form" id="crm-triage-form">';
+      const op = state.triage.open;
+      if (op === 'later') html += '<form data-form="triage-later" data-lead="' + esc(l.id) + '" novalidate class="inline"><label>תאריך *<input type="date" name="dueDate" min="' + esc(state.today) + '">' + err('dueDate') + '</label><label>שעה <input type="time" name="dueTime">' + err('dueTime') + '</label><label>אחראי <select name="assignee">' + opts(ASSIGNEES, l.assignedTo || (state.me && state.me.user), true) + '</select></label><label class="wide">למה <input type="text" name="reason" maxlength="300"></label><div class="err" data-err="_form"></div><button type="submit" class="btn small primary">קביעת שיחה</button></form>';
+      else if (op === 'waitlist') html += '<form data-form="triage-waitlist" data-lead="' + esc(l.id) + '" novalidate class="inline"><label>בית *<select name="house">' + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) { return '<option value="' + h.id + '"' + (houseName(l.house) === h.name ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select>' + err('house') + '</label><label>אחראי *<select name="assignee">' + opts(ASSIGNEES, l.assignedTo || (state.me && state.me.user), true) + '</select>' + err('assignee') + '</label><label>תאריך בדיקה *<input type="date" name="checkDate" min="' + esc(state.today) + '">' + err('checkDate') + '</label><label class="wide">סיבה *<input type="text" name="reason" maxlength="300">' + err('reason') + '</label><div class="err" data-err="_form"></div><button type="submit" class="btn small primary">לרשימת ההמתנה</button></form>';
+      else if (op === 'close') html += '<form data-form="triage-close" data-lead="' + esc(l.id) + '" novalidate class="inline"><label class="wide">סיבה *<input type="text" name="reason" maxlength="500">' + err('reason') + '</label><div class="err" data-err="_form"></div><button type="submit" class="btn small">סגירה — לא רלוונטי</button></form>';
+      else if (op === 'check') html += '<form data-form="triage-check" data-lead="' + esc(l.id) + '" novalidate class="inline"><label>מה לבדוק *<input type="text" name="title" maxlength="120">' + err('title') + '</label><label>עד תאריך <input type="date" name="dueDate" min="' + esc(state.today) + '">' + err('dueDate') + '</label><label>אחראי <select name="assignee">' + opts(ASSIGNEES, state.me && state.me.user, true) + '</select></label><div class="err" data-err="_form"></div><button type="submit" class="btn small primary">סימון לבדיקה</button></form>';
+      html += '</div><div class="toolbar"><button type="button" class="btn small" data-triage-skip="' + esc(l.id) + '">דלג</button><span class="na">' + (nxt ? 'הבאה: ' + esc(nxt.lead.name) + ' · ' + esc(houseName(nxt.lead.house) || '—') + (nxt.age !== null ? ' · ' + nxt.age + ' ימים' : '') : 'זו האחרונה') + '</span></div></section>';
+      return html;
+    }
+    function triageDecided() { if (state.triage) { state.triage.decided++; state.triage.open = ''; } }
+    /* A triage decision that is a task: POST, then the lists re-read (the record leaves the queue because it now has a task). */
+    function triageTask(f, body, errs) {
+      return postTask(f, body, errs, '', 'נרשם').then(function (ok) { if (ok) { triageDecided(); renderMain(); } return ok; });
+    }
+    function triageWaitlist(f, id, vals) {
+      const errs = waitlistErrors(vals, state.today);
+      const issues = Object.keys(errs).map(function (k) { return { field: k, hebrewMessage: errs[k] }; });
+      showReportIssues(f, issues, issues.length ? 'יש לתקן את השדות המסומנים' : '');
+      if (issues.length) return Promise.resolve(false);
+      const l = compute(state.data, state.today).leads.filter(function (x) { return x.id === id; })[0];
+      if (!l) return Promise.resolve(false);
+      return writeLead(id, waitlistPatch(l, vals, state.today), 'רשימת ההמתנה').then(function (ok) {
+        if (!ok) return false;
+        // the check date = a review task (one record, in «היום שלי» on its day)
+        return postTask(f, taskCreateBody({ leadId: id }, { kind: 'review', title: 'לבדוק מקום פנוי — ' + houseName(vals.house), reason: s(vals.reason), assignee: s(vals.assignee), dueDate: s(vals.checkDate) }, newSubmissionId()), {}, '', 'תאריך הבדיקה נרשם')
+          .then(function (ok2) { triageDecided(); renderMain(); return ok2; });
+      });
+    }
     function closeDrawer() { $('#crm-drawer').setAttribute('aria-hidden', 'true'); $('#crm-scrim').removeAttribute('data-open'); state.drawer = null; state.account = null; state.report = null; state.small = null; state.contact = null; }
 
     /* ---- Stage 1c: tasks + the contact log ---- */
@@ -2481,7 +2576,7 @@
       const c = compute(state.data, state.today);
       const rows = state.tasks ? taskQueue(tasksFor(subject, state.tasks), c, state.today) : [];
       let html = state.tasks ? (rows.length ? '<div class="rows">' + rows.map(function (r) { return taskRowHtml(r, true); }).join('') + '</div>' : '<p class="na">אין משימות פתוחות.</p>')
-        : '<p class="na">המידע אינו זמין <button type="button" class="btn small" data-tasks-retry>נסי שוב</button></p>';
+        : (state.tasks === undefined ? '<p class="na">טוען…</p>' : '<p class="na">המידע אינו זמין <button type="button" class="btn small" data-tasks-retry>נסי שוב</button></p>');
       const err = function (f) { return '<span class="err" data-err="' + f + '"></span>'; };
       html += '<details class="act"><summary>משימה חדשה</summary><form data-form="task-new" novalidate>'
         + '<label>סוג <select name="kind">' + TASK_KINDS.filter(function (k) { return !k.money || (state.me && state.me.finance); }).map(function (k) { return '<option value="' + k.id + '">' + esc(k.label) + '</option>'; }).join('') + '</select>' + err('kind') + '</label>'
@@ -2610,6 +2705,7 @@
           if (why) { showReportIssues(f, [], why); if (st) st.textContent = ''; toast(why, true); return false; }
           const back = state.contact; state.contact = null;
           toast('השיחה נשמרה ✓' + (res.created ? ' · משימת המשך ' + taskWhen(res.created) : ''));
+          if (state.area === 'triage') { triageDecided(); closeDrawer(); return reloadTasks().then(function () { return true; }); }
           state.drawer = { kind: back.kind, id: back.id, tab: 'tasks' };
           return reloadTasks().then(function () { openDrawer(back.kind, back.id, true); return true; });
         })
@@ -2618,7 +2714,7 @@
 
     /* events (delegated; filters, sort and scroll survive opening a card) */
     root.addEventListener('click', function (ev) {
-      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
       if (t.dataset.area) return setArea(t.dataset.area);
@@ -2629,6 +2725,14 @@
       if (t.dataset.weekToday !== undefined) { state.week = ''; return renderMain(); }
       if (t.dataset.doneRetry !== undefined) { state.doneTasks = undefined; return renderMain(); }
       if (t.dataset.quick) return renderQuick(t.dataset.quick);
+      if (t.dataset.triageOpt) {
+        const id = t.closest('[data-triage]').dataset.triage; const o = t.dataset.triageOpt;
+        if (!state.triage) state.triage = { decided: 0, skipped: [] };
+        if (o === 'call') return openContactPanel('lead', id, '');
+        if (o === 'update') return openDrawer('lead', id);
+        state.triage.open = state.triage.open === o ? '' : o; return renderMain();
+      }
+      if (t.dataset.triageSkip) { if (!state.triage) state.triage = { decided: 0, skipped: [] }; state.triage.skipped.push(t.dataset.triageSkip); state.triage.open = ''; return renderMain(); }
       if (t.dataset.quickCancel !== undefined) { state.quick = ''; const q = $('#crm-quick'); if (q) q.innerHTML = ''; return; }
       if (t.dataset.quickPick) {
         const p = t.dataset.quickPick.split(':'); const kind = state.quick; state.quick = ''; const q = $('#crm-quick'); if (q) q.innerHTML = '';
@@ -2720,6 +2824,17 @@
         postTask(f, { action: 'reassignTask', id: f.dataset.task, assignee: v('assignee') }, v('assignee') ? {} : { _form: 'בחרי אחראי' }, f.dataset.task, 'האחראי עודכן');
       } else if (f.dataset.form === 'task-withdraw') {
         postTask(f, { action: 'withdrawTask', id: f.dataset.task, reason: v('reason') }, v('reason').length >= 2 ? {} : { reason: 'סיבה (2 תווים לפחות)' }, f.dataset.task, 'המשימה בוטלה');
+      } else if (f.dataset.form === 'triage-later') {
+        const vals = contactValues(f);
+        triageTask(f, taskCreateBody({ leadId: f.dataset.lead }, { kind: 'call', title: 'לחזור — ' + (vals.reason || 'בירור'), reason: vals.reason, assignee: vals.assignee, dueDate: vals.dueDate, dueTime: vals.dueTime }, newSubmissionId()), laterErrors(vals, state.today));
+      } else if (f.dataset.form === 'triage-check') {
+        const vals = contactValues(f);
+        triageTask(f, taskCreateBody({ leadId: f.dataset.lead }, { kind: 'review', title: vals.title, reason: 'סומן לבדיקה נוספת בסבב הבירור', assignee: vals.assignee, dueDate: vals.dueDate }, newSubmissionId()), taskFormErrors(Object.assign({ kind: 'review' }, vals), state.today));
+      } else if (f.dataset.form === 'triage-waitlist') {
+        triageWaitlist(f, f.dataset.lead, contactValues(f));
+      } else if (f.dataset.form === 'triage-close') {
+        if (v('reason').length < 2) { showReportIssues(f, [{ field: 'reason', hebrewMessage: 'סיבה (2 תווים לפחות)' }], ''); return; }
+        closeLeadAction(f.dataset.lead, 'not_relevant', v('reason')).then(function (ok) { if (ok) { triageDecided(); renderMain(); } });
       } else if (f.dataset.form === 'new-lead') {
         const vals = {};
         Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
@@ -2822,27 +2937,31 @@
     $('#crm-search').addEventListener('input', function (ev) { state.filters.q = ev.target.value; if (state.area !== 'leads' && state.area !== 'clients' && state.area !== 'billing') state.area = 'leads'; renderNav(); renderMain(); });
     doc.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') closeDrawer(); });
 
+    /* Boot (perf, CHANGELOG-crm-triage.md): /api/me and getData are requested AT ONCE (the
+     * classic page fires getData immediately); the page renders as soon as getData is in,
+     * and the other sources (tasks, contact index, debt / the controller queue) fill in as
+     * they arrive — each card says «טוען…» until then and «המידע אינו זמין» if it failed. */
     function load() {
-      state.loading = true; state.error = ''; renderMain();
-      return win.fetch('/api/me', { credentials: 'same-origin' }).then(function (r) { return r.json(); }).then(function (me) {
+      state.loading = true; state.error = ''; state.tasks = undefined; state.index = undefined; state.debt = null; state.tasksError = ''; renderMain();
+      const meP = win.fetch('/api/me', { credentials: 'same-origin' }).then(function (r) { return r.json(); });
+      const dataP = api('getData');
+      return Promise.all([meP, dataP]).then(function (res) {
+        const me = res[0], data = res[1];
         if (!me || me.ok === false) throw new Error('אין התחברות');
         state.me = me;
         $('#crm-user').textContent = me.user || '';
         if (areasFor(me).indexOf(state.area) < 0) state.area = 'today';
-        const reads = [api('getData')];
-        if (me.view === 'controller') reads.push(api('billingControlQueue'));
-        else {
-          reads.push(api('getTasks', { status: 'open' }).catch(function () { return null; }));
-          reads.push(api('contactIndex').catch(function () { return null; }));
-          if (me.finance) reads.push(api('debtAging').catch(function () { return null; }));
-        }
-        return Promise.all(reads);
-      }).then(function (res) {
-        if (!res[0] || res[0].ok === false) throw new Error('הנתונים לא נטענו' + (res[0] && res[0].error ? ' (' + res[0].error + ')' : ''));
-        state.data = res[0]; state.loading = false;
-        if (state.me.view === 'controller') state.queue = res[1] || null;
-        else { applyTasks(res[1]); state.index = res[2] && res[2].ok === true ? res[2] : null; if (state.me.finance) state.debt = res[3] && res[3].ok === true ? res[3] : false; }
+        if (!data || data.ok === false) throw new Error('הנתונים לא נטענו' + (data && data.error ? ' (' + data.error + ')' : ''));
+        state.data = data; state.loading = false;
         renderNav(); renderMain();
+        const later = function (p, apply) { return p.then(apply, function () { apply(null); }).then(function () { renderNav(); renderMain(); }); };
+        if (me.view === 'controller') return later(api('billingControlQueue'), function (q) { state.queue = q || null; });
+        const reads = [
+          later(api('getTasks', { status: 'open' }), applyTasks),
+          later(api('contactIndex'), function (r) { state.index = r && r.ok === true ? r : null; }),
+        ];
+        if (me.finance) reads.push(later(api('debtAging'), function (r) { state.debt = r && r.ok === true ? r : false; }));
+        return Promise.all(reads);
       }).catch(function (e) { state.loading = false; state.error = String(e && e.message || e); renderNav(); renderMain(); });
     }
     renderNav(); renderMain();
@@ -2871,6 +2990,7 @@
     addMonthsIso: addMonthsIso, stayCycles: stayCycles, reportableCycles: reportableCycles, defaultReportable: defaultReportable, reportCycleForWindow: reportCycleForWindow,
     CONTACT_OUTCOMES: CONTACT_OUTCOMES, CONTACT_CHANNELS: CONTACT_CHANNELS, NEXT_CHOICES: NEXT_CHOICES, TASK_KINDS: TASK_KINDS, TASK_KIND_LABELS: TASK_KIND_LABELS, contactOutcomeLabel: contactOutcomeLabel, nextPlan: nextPlan, contactErrors: contactErrors, contactBody: contactBody, contactAccepted: contactAccepted,
     taskDue: taskDue, taskState: taskState, taskWhen: taskWhen, taskSubject: taskSubject, taskQueue: taskQueue, tasksFor: tasksFor, taskCounts: taskCounts, taskFormErrors: taskFormErrors, taskCreateBody: taskCreateBody, rescheduleErrors: rescheduleErrors, rescheduleBody: rescheduleBody, taskAccepted: taskAccepted,
+    TRIAGE_OPTIONS: TRIAGE_OPTIONS, triageQueue: triageQueue, waitlistErrors: waitlistErrors, waitlistPatch: waitlistPatch, laterErrors: laterErrors,
     NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, myDay: myDay, weekPlan: weekPlan, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
     moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));

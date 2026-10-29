@@ -242,6 +242,20 @@ house-manager labels in slash form. Either order is safe. SW
 page; the usual cache eviction on the next load). The CRM shell links the existing manifest and
 registers `/sw.js`; an installed "Dashboard" app opens `/` — the CRM after the switch.
 
+## Apps Script: the 200-versions cap and Railway's «Wait for CI» (October 29, 2026)
+
+Every CI deploy of Code.gs creates one Apps Script **version**; Google caps a script at **200**.
+When the cap is hit the "Deploy Apps Script" run fails at «Redeploy the EXISTING deployment» with
+`Cannot create more versions: Script has reached the limit of 200 versions` — the code push itself
+succeeded, only the new version is missing. Fix (editor only, no API): open the script
+(`.clasp.json` scriptId) → clock icon «Project history» → delete old versions (keep the live one and
+anything a sibling app pins, e.g. 155 for the managers' protocol-2) → GitHub → the failed run →
+«Re-run failed jobs». Done 2026-10-29 (≈60 versions freed).
+
+Side effect to know: Railway's **Wait for CI** treats a failed Apps Script run as a failed check
+suite and **skips** the Railway deploy of that merge; it does not re-check after a re-run. Either
+Deployments → the SKIPPED row → ⋯ → Redeploy, or the next merge deploys it.
+
 ## Tasks + contact log; Dana operational (CRM Stage 1a+1b, October 28, 2026)
 
 `CHANGELOG-crm-tasks-contact-log.md`. No env var, no Script Property. Code.gs creates the `Tasks`

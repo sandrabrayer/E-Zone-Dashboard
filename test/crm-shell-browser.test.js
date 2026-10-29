@@ -1016,3 +1016,80 @@ test('Stage 2 «היום שלי» (Vered + Dana, 1366 + 390 px): header date; vi
     assert.deepEqual(errors, []);
   } finally { await browser2.close(); srv2.close(); }
 });
+
+test('Stage 3 triage (Vered, 1366 px): reached from «פניות» with a computed count; one record at a time, oldest first; «לחזור בתאריך» creates a call task and the record leaves the queue; «רשימת המתנה» validates, posts ONE lead saveAll (stage + appended note) and a review task on the check date; «סגירה» needs a reason and posts moveLeadIrrelevant; skip moves on; «שיחה עכשיו» opens the panel; progress counter', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  // two more old leads with no contact and no task
+  const extra = [{ id: 'T1', name: 'ישן מאוד', house: 'רמות השבים', stage: 'new', created: daysAgo(90), assignedTo: 'ורד', phone: '0507777777', note: 'אבא מטפל' }, { id: 'T2', name: 'ישן', house: 'קיסריה ריהאב', stage: 'new', created: daysAgo(60) }];
+  DATA.leads.push(...extra);
+  let openTasks = TASKS.tasks.slice();
+  tasksAnswer = () => ({ ok: true, total: openTasks.length, tasks: openTasks });
+  saveAnswer = (p) => {
+    if (p.action === 'createTask') { openTasks = openTasks.concat([Object.assign({ id: 'task-new-' + openTasks.length, status: 'open' }, p.task)]); return { ok: true, task: { id: 'task-new' } }; }
+    if (p.action === 'saveAll') return { ok: true, proven: { leads: (p.leads || []).map((l) => String(l.id)), patients: [] } };
+    if (p.action === 'moveLeadIrrelevant') return { ok: true, lead: { id: String(p.lead && p.lead.id) } };
+    return null;
+  };
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.waitForSelector('.kpis.cards');
+    await page.waitForFunction(() => !/טוען/.test(document.querySelector('.kpi[data-domain="newleads"]').textContent), null, { timeout: 5000 });
+    await page.click('#crm-nav button[data-area="leads"]');
+    const btn = page.locator('button[data-area="triage"]');
+    assert.match(await btn.textContent(), /רשומות שדורשות בירור\s*3/, 'T1, T2 and L6 — computed, not 75');
+    await btn.click();
+    assert.equal(await page.textContent('#crm-title'), 'רשומות שדורשות בירור');
+    assert.match(await page.textContent('.day-date'), /0 \/ 3 הוחלט/);
+    let card = await page.textContent('.triage-card');
+    assert.match(card, /ישן מאוד/, 'oldest first'); assert.match(card, /90 ימים/); assert.match(card, /אבא מטפל/); assert.match(card, /אין מגע מתועד/);
+    assert.match(card, /הבאה: ישן/);
+    assert.equal(await page.$$eval('.triage-options .opt', (els) => els.length), 6);
+    // «לחזור בתאריך» → a call task → the record leaves the queue
+    await page.click('[data-triage-opt="later"]');
+    await page.click('form[data-form="triage-later"] button[type="submit"]');
+    assert.match(await page.textContent('form[data-form="triage-later"] [data-err="dueDate"]'), /תאריך/);
+    await page.fill('form[data-form="triage-later"] input[name="dueDate"]', daysAgo(-2));
+    await page.fill('form[data-form="triage-later"] input[name="reason"]', 'לבדוק אם עדיין רלוונטי');
+    await page.click('form[data-form="triage-later"] button[type="submit"]');
+    await page.waitForFunction(() => /1 \/ 3 הוחלט/.test(document.querySelector('#crm-main').textContent), null, { timeout: 5000 });
+    const created = srv.saves.filter((x) => x.action === 'createTask')[0];
+    assert.equal(created.task.leadId, 'T1'); assert.equal(created.task.kind, 'call'); assert.equal(created.task.dueDate, daysAgo(-2)); assert.match(created.task.title, /לבדוק אם עדיין רלוונטי/);
+    card = await page.textContent('.triage-card');
+    assert.match(card, /^(?!.*ישן מאוד)/, 'T1 left the queue'); assert.match(card, /קיסריה ריהאב/);
+    // «רשימת המתנה» → validation → ONE lead saveAll + the review task
+    await page.click('[data-triage-opt="waitlist"]');
+    await page.click('form[data-form="triage-waitlist"] button[type="submit"]');
+    assert.match(await page.textContent('form[data-form="triage-waitlist"] [data-err="reason"]'), /סיבה/);
+    assert.match(await page.textContent('form[data-form="triage-waitlist"] [data-err="checkDate"]'), /תאריך בדיקה/);
+    assert.equal(srv.saves.filter((x) => x.action === 'saveAll').length, 0, 'nothing posted on a client error');
+    await page.selectOption('form[data-form="triage-waitlist"] select[name="assignee"]', 'דנה');
+    await page.fill('form[data-form="triage-waitlist"] input[name="checkDate"]', daysAgo(-14));
+    await page.fill('form[data-form="triage-waitlist"] input[name="reason"]', 'אין מקום בריהאב');
+    await page.click('form[data-form="triage-waitlist"] button[type="submit"]');
+    await page.waitForFunction(() => /2 \/ 3 הוחלט/.test(document.querySelector('#crm-main').textContent), null, { timeout: 5000 });
+    const wl = srv.saves.filter((x) => x.action === 'saveAll')[0];
+    assert.equal(wl.leads.length, 1); assert.equal(wl.leads[0].id, 'T2'); assert.equal(wl.leads[0].stage, 'waitlist'); assert.equal(wl.leads[0].assignedTo, 'דנה'); assert.match(wl.leads[0].note, /רשימת המתנה: אין מקום בריהאב/);
+    assert.deepEqual(wl.patients, {}, 'no house touched');
+    const review = srv.saves.filter((x) => x.action === 'createTask')[1];
+    assert.equal(review.task.kind, 'review'); assert.equal(review.task.leadId, 'T2'); assert.equal(review.task.dueDate, daysAgo(-14)); assert.match(review.task.title, /לבדוק מקום פנוי/);
+    // skip → next; «שיחה עכשיו» opens the panel; «סגירה» needs a reason
+    card = await page.textContent('.triage-card');
+    assert.match(card, /מאיה שגב/); assert.match(card, /זו האחרונה/);
+    await page.click('[data-triage-opt="call"]');
+    await page.waitForSelector('form[data-form="contact"]');
+    assert.match(await page.textContent('#crm-drawer .drawer-head'), /מאיה שגב/);
+    await page.click('[data-contact-cancel]');
+    await page.keyboard.press('Escape');
+    await page.click('[data-triage-opt="close"]');
+    await page.click('form[data-form="triage-close"] button[type="submit"]');
+    assert.match(await page.textContent('form[data-form="triage-close"] [data-err="reason"]'), /סיבה/);
+    await page.fill('form[data-form="triage-close"] input[name="reason"]', 'כפול');
+    await page.click('form[data-form="triage-close"] button[type="submit"]');
+    await page.waitForFunction(() => /3 \/ 3 הוחלט/.test(document.querySelector('#crm-main').textContent), null, { timeout: 5000 });
+    const closed = srv.saves.filter((x) => x.action === 'moveLeadIrrelevant')[0];
+    assert.equal(closed.lead.id, 'L6'); assert.equal(closed.lead.disposition, 'not_relevant'); assert.match(closed.lead.note || closed.lead.closeNote || JSON.stringify(closed.lead), /כפול/);
+    assert.match(await page.textContent('#crm-main'), /אין רשומות שדורשות בירור/);
+    assert.deepEqual(errors, []);
+  } finally { DATA.leads.splice(DATA.leads.length - extra.length, extra.length); await browser.close(); srv.close(); }
+});
