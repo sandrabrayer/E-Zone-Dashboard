@@ -2090,7 +2090,8 @@
       if (!state.billing) { loadBilling(); return '<div class="crm-state">טוען נתוני גבייה…</div>'; }
       const b = billingOverview(state.billing.debt, state.billing.payments, state.today);
       const isController = !!(state.me && state.me.view === 'controller');
-      const kpi = function (v, l) { return '<div class="kpi"><span class="v">' + esc(v) + '</span><span class="l">' + esc(l) + '</span></div>'; };
+      const bf = state.billingFilter || '';
+      const kpi = function (v, l, f) { return f ? '<button type="button" class="kpi' + (bf === f ? ' on' : '') + '" data-billing-filter="' + esc(f) + '" aria-pressed="' + (bf === f) + '"><span class="v">' + esc(v) + '</span><span class="l">' + esc(l) + '</span><span class="l2 go">סינון הרשימה ←</span></button>' : '<div class="kpi"><span class="v">' + esc(v) + '</span><span class="l">' + esc(l) + '</span></div>'; };
       let html = '';
       /* The top search box, while this area is open, looks the NAME up across
        * debtors, receipts and every patient (released included) — the date-
@@ -2109,25 +2110,29 @@
         html += '<p class="na">פתיחת שורה → כרטיס המטופל/ת, לשונית «חשבון» — כל המחזורים והתקבולים.</p>';
       }
       if (b.errors.length) html += '<div class="crm-state bad">' + esc(b.errors.join(' · ')) + ' <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
-      html += '<div class="kpis">' + kpi(fmtMoney(b.openDebt), 'חוב פתוח (' + b.openCycles + ' מחזורים)') + kpi(fmtMoney(b.over60), 'מעל 60 יום')
-        + kpi(b.debtors, 'מטופלים עם חוב') + kpi(fmtMoney(b.received30), 'התקבל ב-30 יום (' + b.received30Count + ')') + kpi(b.toVerify, 'דיווחים לאימות') + '</div>';
-      html += '<div class="group-title">גיול חוב נכון ל-' + esc(fmtDate(b.asOf)) + '</div><div class="kpis">' + b.buckets.map(function (x) { return kpi(fmtMoney(x.amount), x.label); }).join('') + '</div>';
+      html += '<div class="kpis">' + kpi(fmtMoney(b.openDebt), 'חוב פתוח (' + b.openCycles + ' מחזורים)', 'all') + kpi(fmtMoney(b.over60), 'מעל 60 יום', 'd61_plus')
+        + kpi(b.debtors, 'מטופלים עם חוב', 'all') + kpi(fmtMoney(b.received30), 'התקבל ב-30 יום (' + b.received30Count + ')', 'received') + kpi(b.toVerify, 'דיווחים לאימות', 'toVerify') + '</div>';
+      html += '<div class="group-title">גיול חוב נכון ל-' + esc(fmtDate(b.asOf)) + '</div><div class="kpis">' + b.buckets.map(function (x) { return kpi(fmtMoney(x.amount), x.label, x.key); }).join('') + '</div>';
       if (b.houses.length) {
         html += '<div class="group-title">חוב לפי בית</div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>בית</th><th>חוב</th><th>מחזורים</th></tr></thead><tbody>'
           + b.houses.map(function (h) { return '<tr><td>' + esc(h.name) + '</td><td>' + esc(fmtMoney(h.total)) + '</td><td>' + h.count + '</td></tr>'; }).join('') + '</tbody></table></div>';
       }
-      html += '<div class="group-title">חובות פתוחים לפי מטופל/ת' + (b.funderGrace.count ? ' ' + chip('wait', b.funderGrace.count + ' בחלון גוף מממן') : '') + '</div>';
-      if (!b.patients.length) html += '<p class="na">אין חובות פתוחים.</p>';
+      const debtFilter = ['d0_7', 'd8_30', 'd31_60', 'd61_plus'].indexOf(bf) >= 0 ? bf : '';
+      const debtors = debtFilter ? b.patients.filter(function (p) { return p.bucket === debtFilter; }) : b.patients;
+      const filterChip = bf && bf !== 'all' ? ' <button type="button" class="chip today" data-billing-filter="">סינון: ' + esc(bf === 'received' ? 'התקבל ב-30 יום' : bf === 'toVerify' ? 'דיווחים לאימות' : (DEBT_BUCKET_LABELS[bf] || bf)) + ' ✕</button>' : '';
+      html += '<div class="group-title" id="crm-debtors-title">חובות פתוחים לפי מטופל/ת' + (b.funderGrace.count ? ' ' + chip('wait', b.funderGrace.count + ' בחלון גוף מממן') : '') + (debtFilter ? filterChip : '') + '</div>';
+      if (!debtors.length) html += '<p class="na">' + (debtFilter ? 'אין חובות בטווח הזה.' : 'אין חובות פתוחים.') + '</p>';
       else html += '<div class="tbl-wrap"><table class="tbl" id="crm-debtors"><thead><tr><th>שם</th><th>בית</th><th>חוב</th><th>מחזורים</th><th>הוותיק ביותר</th><th>סטטוס</th></tr></thead><tbody>'
-        + b.patients.map(function (p) {
+        + debtors.map(function (p) {
           const st = p.bucket === 'd61_plus' ? 'late' : p.bucket === 'd31_60' ? 'today' : 'ok';
           return '<tr data-open-patient="' + esc(p.id) + '"><td>' + esc(p.name) + '</td><td>' + esc(p.houseName) + '</td><td>' + esc(fmtMoney(p.balance)) + '</td><td>' + p.cycles + (p.unrecorded ? ' <span class="na">(' + p.unrecorded + ' ללא דיווח)</span>' : '') + '</td><td>'
             + chip(st, p.oldestDays + ' ימים') + (p.grace ? ' ' + chip('wait', 'גוף מממן') : '') + '</td><td>' + esc(p.inHouse ? 'בבית' : (p.status === 'released' ? 'שוחרר/ה' : p.status)) + '</td></tr>';
         }).join('') + '</tbody></table></div>';
-      html += '<div class="group-title">תקבולים אחרונים</div>';
-      if (!b.receipts.length) html += '<p class="na">אין תקבולים.</p>';
+      const receipts = bf === 'toVerify' ? b.receipts.filter(function (r) { return r.confirmStatus !== 'confirmed'; }) : b.receipts;
+      html += '<div class="group-title" id="crm-receipts-title">' + (bf === 'toVerify' ? 'תקבולים הממתינים לאימות' : 'תקבולים אחרונים') + ((bf === 'received' || bf === 'toVerify') ? filterChip : '') + '</div>';
+      if (!receipts.length) html += '<p class="na">אין תקבולים.</p>';
       else html += '<div class="tbl-wrap"><table class="tbl" id="crm-receipts"><thead><tr><th>תאריך</th><th>שם</th><th>בית</th><th>סכום</th><th>אמצעי</th><th>אימות</th></tr></thead><tbody>'
-        + b.receipts.map(function (r) {
+        + receipts.map(function (r) {
           const cs = r.confirmStatus === 'confirmed' ? 'ok' : r.confirmStatus === 'flagged' ? 'late' : 'today';
           return '<tr data-receipt="' + esc(r.id) + '"><td>' + esc(fmtDate(r.receivedDate)) + '</td><td>' + esc(r.patientName) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td><td>' + esc(r.method) + '</td><td>' + (r.confirmStatus ? chip(cs, CONFIRM_LABELS[r.confirmStatus] || r.confirmStatus) : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
@@ -2163,8 +2168,23 @@
         + '<p class="na">קליטה, יציאה והעברה בין בתים נעשות בדשבורד הרגיל (תפוסה).</p>';
     }
 
+    /* «בקרה» (Stage 3b): the same rows as «היום שלי» / the triage, so every number opens its list. */
     function renderControl(c) {
-      return '<div class="kpis">' + control(c, state.today).map(function (m) { return '<div class="kpi"><span class="v">' + m.value + '</span><span class="l">' + esc(m.label) + '</span></div>'; }).join('') + '</div><p class="na">מדדים תפעוליים בלבד; מדדים עסקיים ייבנו ממקורות מוגדרים.</p>';
+      const m = model(c);
+      const tq = state.tasks && state.index ? triageQueue(c, state.tasks, state.index, state.today).length : null;
+      const lateTasks = (state.tasks || []).filter(function (t) { return t && t.status === 'open' && taskState(t, state.today) === 'late'; }).length;
+      const cards = [
+        { id: 'unseen', label: 'דיווחי מנהל/ת שלא נקראו', value: m.buckets.reportUnseen.length, go: { area: 'today', domain: 'followup' } },
+        { id: 'undecided', label: 'דיווחים שנקראו ללא החלטה', value: m.buckets.awaitingDecision.length, go: { area: 'today', domain: 'followup' } },
+        { id: 'noContact', label: 'רשומות שדורשות בירור', value: tq, hint: tq === null ? (state.tasks === undefined || state.index === undefined ? 'טוען…' : 'המידע אינו זמין') : 'ללא מגע מתועד וללא משימה', go: { area: 'triage' } },
+        { id: 'late', label: 'משימות באיחור', value: state.tasks ? lateTasks : null, hint: state.tasks ? '' : (state.tasks === undefined ? 'טוען…' : 'המידע אינו זמין'), go: { area: 'today', domain: 'calls' } },
+        { id: 'awaitingReport', label: 'פגישות שעברו ללא דיווח', value: m.buckets.awaitingReport.length, go: { area: 'today', domain: 'followup' } },
+        { id: 'unscheduled', label: 'ביקורים ללא תאריך', value: m.buckets.toSchedule.length, go: { area: 'today', domain: 'meetings' } },
+        { id: 'admitting', label: 'מעברים פתוחים (קליטה)', value: c.leads.filter(function (l) { return l.stage === 'paid'; }).length, hint: m.byDomain.houses.filter(function (r) { return r.kind === 'admission_due'; }).length + ' אחרי תאריך הכניסה', go: { area: 'leads', view: 'board' } },
+      ];
+      return '<div class="kpis cards">' + cards.map(function (k) {
+        return '<button type="button" class="kpi acc-' + esc(k.id) + '" data-go="' + esc(JSON.stringify(k.go)) + '">' + (k.value === null ? '<span class="v na-v">—</span>' : '<span class="v">' + k.value + '</span>') + '<span class="l">' + esc(k.label) + '</span>' + (k.hint ? '<span class="l2">' + esc(k.hint) + '</span>' : '') + '<span class="l2 go">פתיחת הרשימה ←</span></button>';
+      }).join('') + '</div><p class="na">כל מספר נפתח לרשימה שלו — אותם נתונים כמו ב«היום שלי»; מדדים עסקיים ייבנו ממקורות מוגדרים.</p>';
     }
 
     function renderMain() {
@@ -2800,7 +2820,7 @@
 
     /* events (delegated; filters, sort and scroll survive opening a card) */
     root.addEventListener('click', function (ev) {
-      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-billing-filter],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
       if (t.dataset.area) return setArea(t.dataset.area);
@@ -2811,6 +2831,19 @@
       if (t.dataset.weekToday !== undefined) { state.week = ''; return renderMain(); }
       if (t.dataset.doneRetry !== undefined) { state.doneTasks = undefined; return renderMain(); }
       if (t.dataset.quick) return renderQuick(t.dataset.quick);
+      if (t.dataset.go) {
+        let g = {}; try { g = JSON.parse(t.dataset.go); } catch (_) { g = {}; }
+        if (g.view) state.view = g.view;
+        state.domain = g.domain || ''; state.dayView = 'today';
+        return setArea(g.area || 'today');
+      }
+      if (t.dataset.billingFilter !== undefined) {
+        state.billingFilter = state.billingFilter === t.dataset.billingFilter ? '' : t.dataset.billingFilter;
+        renderMain();
+        const target = $(state.billingFilter === 'received' || state.billingFilter === 'toVerify' ? '#crm-receipts-title' : '#crm-debtors-title');
+        if (target && state.billingFilter) target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        return;
+      }
       if (t.dataset.triageOpt) {
         const id = t.closest('[data-triage]').dataset.triage; const o = t.dataset.triageOpt;
         if (!state.triage) state.triage = { decided: 0, skipped: [] };

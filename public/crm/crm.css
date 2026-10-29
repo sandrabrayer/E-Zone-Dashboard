@@ -304,3 +304,10 @@ ul.mini li { display: flex; flex-direction: column; border-inline-start: 2px sol
 .tabs button { font-weight: 500; }
 .kv { font-size: 15px; } .kv dt { font-weight: 500; }
 details.act summary { font-weight: 600; }
+
+/* ---- clickable KPIs (CHANGELOG-crm-clickable-kpis.md) ---- */
+.kpi .go { color: var(--c-info); font-weight: 600; }
+button.kpi { cursor: pointer; } button.kpi:hover { border-color: var(--c-info); box-shadow: 0 2px 8px rgba(0,115,234,.18); }
+button.kpi.on { background: #E5F0FF; border-color: var(--c-info); }
+.group-title button.chip { cursor: pointer; border: 0; }
+.acc-unseen { --acc: #E2445C; } .acc-undecided { --acc: #FDAB3D; } .acc-noContact { --acc: #579BFC; } .acc-late { --acc: #E2445C; } .acc-awaitingReport { --acc: #A25DDC; } .acc-unscheduled { --acc: #FDAB3D; } .acc-admitting { --acc: #00C875; }

@@ -216,7 +216,27 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     await page.click('#crm-nav button[data-area="billing"]');
     await page.waitForSelector('#crm-debtors');
     await page.click('#crm-nav button[data-area="control"]');
-    assert.match(await page.textContent('#crm-main'), /פגישות ללא תוצאה/);
+    assert.match(await page.textContent('#crm-main'), /פגישות שעברו ללא דיווח/);
+    // every control number opens its list (clickable KPIs)
+    await page.click('.kpi.acc-unseen');
+    assert.equal(await page.textContent('#crm-title'), 'היום שלי');
+    assert.match(await page.textContent('[data-domain-section="followup"]'), /רון אביב/, 'the unseen report list');
+    await page.click('#crm-nav button[data-area="control"]');
+    await page.click('.kpi.acc-noContact');
+    assert.equal(await page.textContent('#crm-title'), 'רשומות שדורשות בירור');
+    // גבייה tiles filter the debtors / receipts
+    await page.click('#crm-nav button[data-area="billing"]');
+    await page.waitForSelector('#crm-debtors');
+    await page.click('button.kpi[data-billing-filter="d61_plus"]');
+    assert.match(await page.textContent('#crm-debtors-title'), /סינון: 61\+ ימים/);
+    assert.equal(await page.$$eval('#crm-debtors tbody tr', (els) => els.length), 1);
+    await page.click('button.kpi[data-billing-filter="d0_7"]');
+    assert.match(await page.textContent('#crm-main'), /אין חובות בטווח הזה/);
+    await page.click('#crm-debtors-title button.chip');
+    assert.ok(!/סינון:/.test(await page.textContent('#crm-debtors-title')));
+    await page.click('button.kpi[data-billing-filter="toVerify"]');
+    assert.match(await page.textContent('#crm-receipts-title'), /הממתינים לאימות/);
+    await page.click('#crm-nav button[data-area="control"]');
     assert.ok(await noHScroll(page), 'no horizontal page scroll');
     assert.deepEqual(errors, []);
     assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['contactIndex', 'debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments', 'getTasks'], 'reads only, no queue for Vered');
