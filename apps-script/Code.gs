@@ -18728,7 +18728,12 @@ const INTEGRITY_ALERT_SUBJECT    = '⚠️ E-ZONE Dashboard: אי-התאמה ב�
  * STRICT matcher in sync — the round-trip test locks them together. */
 const INTEGRITY_PATIENTS_SNAPSHOT_PREFIX = 'dashboard-patients-';
 const INTEGRITY_LEADS_SNAPSHOT_PREFIX    = 'dashboard-leads-';
-const INTEGRITY_SNAPSHOT_RE = /^dashboard-(?:patients|leads)-(\d{4})-(\d{2})-(\d{2})$/;
+/* CRM (CHANGELOG-crm-backup-tasks-activity.md): the task record and the contact /
+ * activity history are operational data since Stage 1 — snapshotted nightly like
+ * Patients and Leads, same retention. */
+const INTEGRITY_TASKS_SNAPSHOT_PREFIX    = 'dashboard-tasks-';
+const INTEGRITY_ACTIVITY_SNAPSHOT_PREFIX = 'dashboard-activity-';
+const INTEGRITY_SNAPSHOT_RE = /^dashboard-(?:patients|leads|tasks|activity)-(\d{4})-(\d{2})-(\d{2})$/;
 
 /* ---- pure helpers (no GAS services — exercised directly by node --test) ---- */
 
@@ -19049,6 +19054,16 @@ function nightlyIntegrityJob() {
     patientsReadOk = true;
   } catch (err) { errors.push('קריאת Patients נכשלה: ' + err); }
 
+  // CRM: Tasks + Activity grids (read-only; a missing sheet = nothing to snapshot, never created here)
+  let tasksGrid = null, activityGrid = null;
+  try {
+    const tSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TASKS_SHEET);
+    if (tSh) tasksGrid = tSh.getDataRange().getValues();
+  } catch (err) { errors.push('קריאת Tasks לגיבוי נכשלה: ' + err); }
+  try {
+    const aSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(ACTIVITY_SHEET);
+    if (aSh) activityGrid = aSh.getDataRange().getValues();
+  } catch (err) { errors.push('קריאת Activity לגיבוי נכשלה: ' + err); }
   let leadsGrid = null;
   try {
     const leadsSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LEADS_SHEET);
@@ -19143,6 +19158,12 @@ function nightlyIntegrityJob() {
       }
       if (leadsGrid && leadsGrid.length) {
         integrityWriteSnapshot_(backupSs, integritySnapshotName_(INTEGRITY_LEADS_SNAPSHOT_PREFIX, now), leadsGrid);
+      }
+      if (tasksGrid && tasksGrid.length) {
+        integrityWriteSnapshot_(backupSs, integritySnapshotName_(INTEGRITY_TASKS_SNAPSHOT_PREFIX, now), tasksGrid);
+      }
+      if (activityGrid && activityGrid.length) {
+        integrityWriteSnapshot_(backupSs, integritySnapshotName_(INTEGRITY_ACTIVITY_SNAPSHOT_PREFIX, now), activityGrid);
       }
       const deletedNames = integrityApplyRetention_(backupSs, todayPatientsName, INTEGRITY_RETENTION_DAYS);
       if (deletedNames.length) Logger.log('nightlyIntegrityJob: retention deleted %s', deletedNames.join(', '));

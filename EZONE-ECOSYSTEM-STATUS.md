@@ -28,7 +28,11 @@
 
 - Sandra's review request. Day / week toggle, ‹ ›, date input, «היום»; past meetings with their status (outcome, manager report, none). Details: `CHANGELOG-crm-calendar-picker.md`.
 
-## Read cache: generations + settle-time invalidation (review F1/F2) — October 29, 2026 (PR open)
+## Nightly backup covers Tasks + Activity; acceptance evidence page — October 29, 2026 (PR open)
+
+- `nightlyIntegrityJob` snapshots `Tasks` and `Activity` next to Patients / Leads (same retention, strict matcher). `docs/crm/ACCEPTANCE.md` lists, per area of the 29/10 work package, what is tested, what is verified in use and what is not. Details: `CHANGELOG-crm-backup-tasks-activity.md`.
+
+## Read cache: generations + settle-time invalidation (review F1/F2) — October 29, 2026 (PR #323, draft — awaiting Sandra's merge decision)
 
 - Fixes two races in the PR #320 cache found by Sandra's review package: an in-flight read surviving a bust (F1) and start-only invalidation (F2). Generation counter + bust at write start and settle; regression tests fail on the kept pre-fix fixture. Bounded staleness documented (other apps' direct writes ≤ 30 s; per-process cache). Details: `CHANGELOG-crm-read-cache-generations.md`.
 

@@ -81,6 +81,8 @@ const HELPERS = [
   gsConstDecl('INTEGRITY_ALERT_SUBJECT'),
   gsConstDecl('INTEGRITY_PATIENTS_SNAPSHOT_PREFIX'),
   gsConstDecl('INTEGRITY_LEADS_SNAPSHOT_PREFIX'),
+  gsConstDecl('INTEGRITY_TASKS_SNAPSHOT_PREFIX'),
+  gsConstDecl('INTEGRITY_ACTIVITY_SNAPSHOT_PREFIX'),
   gsConstDecl('INTEGRITY_SNAPSHOT_RE'),
   gsFunction('asISODate_'),
   gsFunction('patientKey_'),
@@ -117,6 +119,8 @@ const api = new Function(HELPERS + `
     loadKeys: integrityLoadKeys_,
     PATIENTS_PREFIX: INTEGRITY_PATIENTS_SNAPSHOT_PREFIX,
     LEADS_PREFIX: INTEGRITY_LEADS_SNAPSHOT_PREFIX,
+    TASKS_PREFIX: INTEGRITY_TASKS_SNAPSHOT_PREFIX,
+    ACTIVITY_PREFIX: INTEGRITY_ACTIVITY_SNAPSHOT_PREFIX,
     SNAPSHOT_RE: INTEGRITY_SNAPSHOT_RE,
     RETENTION_DAYS: INTEGRITY_RETENTION_DAYS,
     ALERT_SUBJECT: INTEGRITY_ALERT_SUBJECT,
@@ -340,6 +344,14 @@ test('retention round-trip: snapshotName output feeds isExpiredSnapshot (prefixe
   const today = api.snapshotName(api.PATIENTS_PREFIX, new Date(2026, 7, 30));
   assert.ok(api.SNAPSHOT_RE.test(old) && api.SNAPSHOT_RE.test(today));
   assert.ok(api.SNAPSHOT_RE.test(api.snapshotName(api.LEADS_PREFIX, new Date(2026, 7, 30))));
+  // CRM (CHANGELOG-crm-backup-tasks-activity.md): Tasks + Activity snapshots share the matcher and the retention
+  assert.ok(api.SNAPSHOT_RE.test(api.snapshotName(api.TASKS_PREFIX, new Date(2026, 7, 30))));
+  assert.ok(api.SNAPSHOT_RE.test(api.snapshotName(api.ACTIVITY_PREFIX, new Date(2026, 7, 30))));
+  assert.equal(api.isExpiredSnapshot('dashboard-tasks-2026-07-01', today, 30), true);
+  assert.equal(api.isExpiredSnapshot('dashboard-activity-2026-08-30', today, 30), false);
+  assert.equal(api.isExpiredSnapshot('outpatient-2026-07-01', today, 30), false, 'the outpatient app\'s snapshots stay untouchable');
+  assert.ok(JOB.includes("getSheetByName(TASKS_SHEET)") && JOB.includes("getSheetByName(ACTIVITY_SHEET)"), 'the job reads both CRM sheets');
+  assert.ok(JOB.includes('INTEGRITY_TASKS_SNAPSHOT_PREFIX, now') && JOB.includes('INTEGRITY_ACTIVITY_SNAPSHOT_PREFIX, now'), 'and snapshots both');
   assert.equal(api.isExpiredSnapshot(old, today, api.RETENTION_DAYS), true);
   assert.equal(api.isExpiredSnapshot(today, today, api.RETENTION_DAYS), false);
 });
