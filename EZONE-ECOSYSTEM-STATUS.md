@@ -28,7 +28,11 @@
 
 - Sandra's review request. Day / week toggle, ‹ ›, date input, «היום»; past meetings with their status (outcome, manager report, none). Details: `CHANGELOG-crm-calendar-picker.md`.
 
-## CRM Stage 3 — «רשומות שדורשות בירור» + progressive boot — October 29, 2026 (PR open)
+## CRM contrast pass — October 29, 2026 (PR open)
+
+- Deeper backgrounds, darker text / borders, heavier labels on the CRM (Sandra's first live look). CSS only, SW v100. Details: `CHANGELOG-crm-contrast.md`.
+
+## CRM Stage 3 — «רשומות שדורשות בירור» + progressive boot — October 29, 2026 (merged, #316)
 
 - Triage round from «פניות» / the «ללא מגע» card: computed queue (no contact, no task; oldest first), one record at a time, six one-click decisions (call now / call back on date / waitlist with reason + house + owner + check date / update / close with reason / further check), each leaving a record; no bulk defer. Boot now renders on `getData` and fills tasks / contacts / debt progressively (fixes the slow open after Stage 2). SW v99. `DEPLOY.md`: the Apps Script 200-versions cap + Railway «Wait for CI» trap. Details: `CHANGELOG-crm-triage.md`.
 

@@ -149,7 +149,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     assert.equal(await page.getAttribute('html', 'dir'), 'rtl');
     assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => e.textContent)), ['היום שלי', 'פניות', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'בקרה'], 'grouped nav (spec §3)');
     assert.deepEqual(await page.$$eval('#crm-nav .nav-group', (els) => els.map((e) => e.textContent)), ['פניות ומטופלים', 'פגישות ויומן', 'בתים והמשך טיפול', 'כספים', 'דוחות והגדרות']);
-    assert.equal(await page.$eval('body', (b) => getComputedStyle(b).backgroundColor), 'rgb(245, 247, 250)', 'light theme');
+    assert.equal(await page.$eval('body', (b) => getComputedStyle(b).backgroundColor), 'rgb(230, 236, 242)', 'light theme (contrast pass)');
     assert.ok(await page.isVisible('#crm-menu'));
     assert.ok(!(await page.isVisible('#crm-burger')), 'no burger on desktop');
     assert.equal(await page.$eval('#crm-user', (e) => e.textContent), 'ורד');
