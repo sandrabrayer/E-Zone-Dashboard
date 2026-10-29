@@ -176,7 +176,7 @@ test('C12 lib: crmByDefault needs BOTH flags, a personal session, the full view 
   assert.equal(flag.serveCrmShell({ CRM_ENABLED: 'true' }, {}, vered, 'full'), false, 'before the switch "/" is classic');
   assert.equal(flag.serveCrmShell({ CRM_ENABLED: 'true' }, { view: 'crm' }, vered), true, 'C1 call shape (no view) unchanged');
   assert.equal(flag.wantsClassic({ view: 'classic' }), true); assert.equal(flag.wantsClassic({ view: ['classic'] }), true); assert.equal(flag.wantsClassic({}), false);
-  assert.equal(flag.CLASSIC_PATH, '/?view=classic'); assert.deepEqual(flag.CRM_DEFAULT_VIEWS, ['full']); assert.equal(flag.CRM_DEFAULT_VAR, 'CRM_DEFAULT');
+  assert.equal(flag.CLASSIC_PATH, '/?view=classic'); assert.deepEqual(flag.CRM_DEFAULT_VIEWS, ['full', 'ops']); assert.equal(flag.CRM_DEFAULT_VAR, 'CRM_DEFAULT');
 });
 
 test('C12 server: CRM_DEFAULT unset → "/" is classic for everyone (byte-identical to before); set → Vered/Sandra get the shell on "/", "/?view=classic" is the classic page, Ortal stays classic, no session → the PIN page', async () => {

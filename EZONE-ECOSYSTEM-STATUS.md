@@ -28,7 +28,11 @@
 
 - Sandra's review request. Day / week toggle, ‹ ›, date input, «היום»; past meetings with their status (outcome, manager report, none). Details: `CHANGELOG-crm-calendar-picker.md`.
 
-## Two KPI counters — «גבייה לביצוע» / «ממתין לאימות אורטל» — October 29, 2026 (PR open)
+## Dana lands on the CRM by default — October 29, 2026 (PR open)
+
+- `CRM_DEFAULT_VIEWS` += `ops`: with `CRM_DEFAULT=true`, Dana's `/` is the CRM like Vered's; classic at `/?view=classic`; Ortal unchanged. Details: `CHANGELOG-crm-default-ops.md`.
+
+## Two KPI counters — «גבייה לביצוע» / «ממתין לאימות אורטל» — October 29, 2026 (merged, #325)
 
 - Decided by Sandra per the work package §8: the first card of the finance day shows what Vered acts on and, separately, what waits on Ortal; reported ≠ collected; no debt figures changed. SW v105. Details: `CHANGELOG-crm-kpi-two-counters.md`.
 
