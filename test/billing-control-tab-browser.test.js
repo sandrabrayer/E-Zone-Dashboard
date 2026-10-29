@@ -47,7 +47,7 @@ const SERVER_PATH = require.resolve('../server');
 const PEPPER = 'pepper-TEST-billing-control-browser-0123456789ab';
 const SESSION_SECRET = 'session-secret-TEST-billing-control-browser-01';
 const PROXY_SECRET = 'proxy-secret-TEST-billing-control-browser-01234';
-const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'USER_PIN_HASHES', 'PIN_PEPPER'];
+const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'USER_PIN_HASHES', 'PIN_PEPPER', 'SHEETS_READ_CACHE_MS'];
 
 const israelDay = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date(ms));
 const TODAY = israelDay(Date.now());
@@ -70,6 +70,9 @@ async function boot(options = {}) {
   const hash = await pinHash.hashPin('583920', PEPPER);
   const recs = ['vered', 'sandra', 'shiran', 'yael', 'ortal'].map((id) => JSON.parse(users.recordLine(id, hash, 1)));
   const env = {
+    // These scenarios seed the Code.gs sandbox DIRECTLY between page reads (an out-of-band write, like
+    // another app's); the server's 30 s read cache (lib/read-cache.js) is off here so each read is live.
+    SHEETS_READ_CACHE_MS: '0',
     PROXY_SECRET, SESSION_SECRET, SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', PIN_PEPPER: PEPPER,
     USER_PIN_HASHES: JSON.stringify(recs),
   };
