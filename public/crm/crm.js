@@ -471,7 +471,7 @@
     if (l.stage === 'visit' && l.visitDate && l.visitDate < today && !l.meetingOutcome) return { text: 'דיווח מהמנהל/ת', state: 'late' };
     if (l.stage === 'visit' && l.visitDate === today) return { text: 'פגישה היום', state: 'today' };
     if (l.stage === 'visit') return { text: l.visitDate ? 'פגישה ' + fmtDate(l.visitDate) : 'לתאם פגישה', state: 'wait' };
-    if (l.stage === 'new') return { text: 'ליצור קשר', state: l.created && daysBetween(l.created, today) >= WAIT_DAYS ? 'late' : 'wait' };
+    if (l.stage === 'new') return { text: 'ליצור קשר', state: 'wait' };   // never «late» by age (spec §1); «ללא מגע» is told by «היום שלי» / the triage
     if (l.stage === 'waitlist') return { text: 'ממתין למקום', state: 'wait' };
     return { text: 'קליטה לבית', state: 'wait' };
   }
@@ -1425,7 +1425,7 @@
         let n = '';
         if (c && a.id === 'today') n = state.me && state.me.view === 'controller' ? (state.queue && state.queue.ok !== false ? ortalDay(state.queue, state.tasks, state.credits, state.today, {}).cards[0].value : '') : (m ? m.urgent.length + m.byDomain.calls.filter(function (r) { return r.state === 'late' || r.state === 'today'; }).length : '');
         if (c && a.id === 'leads') n = filterLeads(c.leads, {}).length;
-        return '<button type="button" data-area="' + a.id + '"' + (state.area === a.id ? ' aria-current="page"' : '') + '><span>' + esc(a.label) + '</span>' + (n !== '' ? '<span class="n">' + esc(n) + '</span>' : '') + '</button>';
+        return '<button type="button" data-area="' + a.id + '"' + (state.area === a.id ? ' aria-current="page"' : '') + '><span><i class="ic">' + (AREA_ICONS[a.id] || '•') + '</i>' + esc(a.label) + '</span>' + (n !== '' ? '<span class="n">' + esc(n) + '</span>' : '') + '</button>';
       };
       navEl.innerHTML = NAV_GROUPS.map(function (g) {
         const list = AREAS.filter(function (a) { return g.items.indexOf(a.id) >= 0 && areas.indexOf(a.id) >= 0; });
@@ -1436,6 +1436,13 @@
     }
 
     function chip(state_, text) { return '<span class="chip ' + esc(state_) + '">' + esc(text) + '</span>'; }
+    /* Monday-style owner avatar: initial in a colour derived from the name (stable per person). */
+    function avatar(name) {
+      const n = s(name); if (!n) return '<span class="who none">—</span>';
+      let h = 0; for (let i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) % 360;
+      return '<span class="who"><i class="av" style="--h:' + h + '">' + esc(n.charAt(0)) + '</i>' + esc(n) + '</span>';
+    }
+    const AREA_ICONS = { today: '☀', leads: '✉', clients: '👤', calendar: '📅', occupancy: '🏠', billing: '₪', control: '✔', triage: '🔎' };
     function stateText(st) { return st === 'late' ? 'באיחור' : st === 'today' ? 'להיום' : 'ממתין'; }
 
     function renderToday(c) {
@@ -1468,7 +1475,7 @@
         + '<span><button type="button" class="link name" data-open-' + esc(r.subjectKind) + '="' + esc(r.subjectId) + '">' + esc(r.name) + '</button><br><span class="sub">' + esc(r.house) + (r.contact ? ' · ' + esc(r.contact) : '') + '</span></span>'
         + '<span><strong>' + esc(r.action) + '</strong>' + (r.why ? '<br><span class="sub">' + esc(r.why) + '</span>' : '') + '</span>'
         + '<span>' + esc(r.whenText || (r.when ? fmtDate(r.when) + (r.time ? ' ' + r.time : '') : (r.task ? 'ללא תאריך — קבעי תאריך' : '—'))) + '<br>' + stateChip(r) + '</span>'
-        + '<span>' + esc(r.owner || '—') + '</span>'
+        + '<span>' + avatar(r.owner) + '</span>'
         + '<span class="sub">' + esc(r.lastContact || '') + '</span>'
         + '<span class="toolbar">' + rowButtons(r) + '</span></div>'
         + (r.task ? '<div class="task-form" data-task-form="' + esc(r.task.id) + '"></div>' : '');
@@ -1498,7 +1505,7 @@
       if (view === 'done') return html + renderDone(c);
       // summary strip
       html += '<div class="kpis cards">' + m.cards.map(function (k) {
-        return '<button type="button" class="kpi" data-domain="' + k.id + '" aria-pressed="' + (state.domain === k.id) + '">'
+        return '<button type="button" class="kpi acc-' + esc(k.id) + '" data-domain="' + k.id + '" aria-pressed="' + (state.domain === k.id) + '">'
           + (k.value === null ? '<span class="v na-v">—</span>' : '<span class="v">' + k.value + '</span>') + '<span class="l">' + esc(k.label) + '</span>'
           + (k.second ? '<span class="l2"><b>' + k.second.value + '</b> ' + esc(k.second.label) + '</span>' : '') + (k.hint ? '<span class="l2">' + esc(k.hint) + '</span>' : '') + '</button>';
       }).join('') + '</div>';
@@ -1509,7 +1516,7 @@
         // «מה דחוף בבתים» as a filter = every exception (the card's number), wherever its row lives
         const rows = d.id === 'houses' && state.domain === 'houses' ? m.exceptions : m.byDomain[d.id];
         if (!state.domain && d.id === 'houses' && !rows.length) return;
-        main += '<section class="domain" data-domain-section="' + d.id + '"><div class="group-title"><strong>' + esc(d.label) + '</strong> <span class="n chip">' + rows.length + '</span>'
+        main += '<section class="domain acc-' + d.id + '" data-domain-section="' + d.id + '"><div class="group-title"><strong>' + esc(d.label) + '</strong> <span class="n chip">' + rows.length + '</span>'
           + (d.id === 'collection' && state.debt === false ? ' <span class="chip late">המידע אינו זמין</span>' : '') + (d.id === 'calls' && !state.tasks ? ' <span class="chip ' + (state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '') + (d.id === 'newleads' && !state.index ? ' <span class="chip ' + (state.index === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '')
           + '<span class="grow"></span>' + (d.id === 'newleads' && rows.length ? '<button type="button" class="btn small" data-area="triage">סבב בירור — אחת אחרי השנייה</button>' : '') + (state.domain ? '<button type="button" class="link" data-domain="' + d.id + '">חזרה לכל התחומים</button>' : '') + '</div>'
           + rowsBlock(rows, state.domain ? 0 : 8) + '</section>';
@@ -1574,7 +1581,7 @@
       const sets = { toVerify: ['דיווחים לאימות', 'אימות בדשבורד הרגיל → בקרת גבייה'], flagged: ['אימותים חלקיים / לבירור', 'החלטה בדשבורד הרגיל'], documents: ['חשבוניות מבוקשות', 'ההנפקה בחשבשבת; כאן רק הבקשה'], tasks: ['משימות כספיות שלך', ''], credits: ['זיכויים לתשלום', '«סמן כשולם» ב«גבייה»'] };
       let html = '<div class="day-head"><div class="day-date">' + esc(state.me && state.me.user ? state.me.user : '') + '</div></div>'
         + '<div class="toolbar filters"><select id="f-house" aria-label="בית"><option value="">כל הבתים</option>' + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) { return '<option value="' + h.id + '"' + (houseName(state.filters.house) === h.name ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="grow"></span><a class="btn primary" href="/?view=classic">בקרת גבייה — העבודה המלאה</a></div>'
-        + '<div class="kpis cards">' + o.cards.map(function (k) { return '<button type="button" class="kpi" data-domain="' + k.id + '" aria-pressed="' + (state.domain === k.id) + '">' + (k.value === null ? '<span class="v na-v">—</span>' : '<span class="v">' + k.value + '</span>') + '<span class="l">' + esc(k.label) + '</span>' + (k.hint ? '<span class="l2">' + esc(k.hint) + '</span>' : '') + '</button>'; }).join('') + '</div>';
+        + '<div class="kpis cards">' + o.cards.map(function (k) { return '<button type="button" class="kpi acc-' + esc(k.id) + '" data-domain="' + k.id + '" aria-pressed="' + (state.domain === k.id) + '">' + (k.value === null ? '<span class="v na-v">—</span>' : '<span class="v">' + k.value + '</span>') + '<span class="l">' + esc(k.label) + '</span>' + (k.hint ? '<span class="l2">' + esc(k.hint) + '</span>' : '') + '</button>'; }).join('') + '</div>';
       if (o.urgent.length && !state.domain) html += '<section class="urgent"><div class="group-title">⚠ דורש החלטה / באיחור <span class="n chip">' + o.urgent.length + '</span></div>' + rowsBlock(o.urgent, 8) + '</section>';
       Object.keys(sets).forEach(function (k) {
         if (state.domain && state.domain !== k) return;
@@ -1599,9 +1606,9 @@
       if (state.view === 'closed') return toolbar + renderClosedLeads();
       if (state.view === 'board') {
         return toolbar + '<div class="board">' + board(c.leads, f).map(function (col) {
-          return '<div class="col"><h3><span>' + esc(col.stage.label) + '</span><span class="n">' + col.leads.length + '</span></h3>' + col.leads.map(function (l) {
+          return '<div class="col" data-stage="' + esc(col.stage.id) + '"><h3><span>' + esc(col.stage.label) + '</span><span class="n">' + col.leads.length + '</span></h3>' + col.leads.map(function (l) {
             const na = nextActionFor(l, state.today);
-            return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? '<span>' + esc(l.assignedTo) + '</span>' : '') + '</div>'
+            return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip src">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? avatar(l.assignedTo) : '') + '</div>'
               + (l.created ? '<div class="meta"><span>נוצר ' + esc(fmtDate(l.created)) + '</span>' + (l.visitDate ? '<span>פגישה ' + esc(fmtDate(l.visitDate)) + (l.visitTime ? ' ' + esc(l.visitTime) : '') + '</span>' : '') + '</div>' : '')
               + '<div class="next">' + chip(na.state, na.text) + (stageAfter(l.stage) ? ' <button type="button" class="btn small" data-stage-next="' + esc(l.id) + '">שלב הבא ←</button>' : '') + '</div></div>';
           }).join('') + '</div>';
@@ -1610,7 +1617,7 @@
       const list = filterLeads(c.leads, f).slice().sort(function (a, b) { return s(a[state.sort]).localeCompare(s(b[state.sort])); });
       const cols = [['name', 'שם'], ['house', 'בית'], ['source', 'מקור'], ['assignedTo', 'אחראי'], ['stage', 'שלב'], ['visitDate', 'פגישה'], ['created', 'נוצר']];
       return toolbar + '<div class="tbl-wrap"><table class="tbl"><thead><tr>' + cols.map(function (c2) { return '<th data-sort="' + c2[0] + '">' + esc(c2[1]) + (state.sort === c2[0] ? ' ▾' : '') + '</th>'; }).join('') + '<th>פעולה הבאה</th></tr></thead><tbody>'
-        + list.map(function (l) { const na = nextActionFor(l, state.today); return '<tr data-open-lead="' + esc(l.id) + '"><td>' + esc(l.name) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(l.source) + '</td><td>' + esc(l.assignedTo) + '</td><td>' + esc(stageLabel(l.stage)) + '</td><td>' + esc(fmtDate(l.visitDate)) + '</td><td>' + esc(fmtDate(l.created)) + '</td><td>' + chip(na.state, na.text) + '</td></tr>'; }).join('')
+        + list.map(function (l) { const na = nextActionFor(l, state.today); return '<tr data-open-lead="' + esc(l.id) + '"><td>' + esc(l.name) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(l.source) + '</td><td>' + avatar(l.assignedTo) + '</td><td><span class="chip stage-' + esc(l.stage) + '">' + esc(stageLabel(l.stage)) + '</span></td><td>' + esc(fmtDate(l.visitDate)) + '</td><td>' + esc(fmtDate(l.created)) + '</td><td>' + chip(na.state, na.text) + '</td></tr>'; }).join('')
         + '</tbody></table></div>' + (list.length === 0 ? '<div class="crm-state">אין פניות התואמות לסינון</div>' : '');
     }
 

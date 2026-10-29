@@ -239,3 +239,56 @@ ul.mini li { display: flex; flex-direction: column; border-inline-start: 2px sol
 .triage-form form.inline input, .triage-form form.inline select { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; color: var(--text); }
 .triage-form .err { color: var(--bad); font-size: 12px; } .triage-form .err:empty { display: none; }
 @media (max-width: 899px) { .triage-options { grid-template-columns: 1fr 1fr; } }
+
+/* ---- Monday-style look (CHANGELOG-crm-monday-look.md, Sandra 2026-10-29) ----
+ * Filled status labels, colour-coded stages and domains, owner avatars, an icon
+ * rail, tab-like view switches, zebra tables. Colours are never alone: every
+ * label carries its word. No remote font: the system Hebrew stack renders Heebo
+ * where installed and falls back cleanly (the PWA stays offline-capable). */
+:root { --c-new: #579BFC; --c-visit: #A25DDC; --c-wait: #FDAB3D; --c-paid: #00C875; --c-done: #00854D; --c-late: #E2445C; --c-today: #FDAB3D; --c-info: #0073EA; --c-grey: #9AA7B2; }
+.crm-brand .logo { display: inline-flex; width: 30px; height: 30px; border-radius: 9px; background: linear-gradient(135deg, #0073EA, #A25DDC 60%, #FDAB3D); color: #fff; align-items: center; justify-content: center; font-weight: 800; margin-inline-end: 8px; }
+.crm-nav button { font-weight: 500; }
+.crm-nav button .ic { display: inline-block; width: 22px; text-align: center; margin-inline-end: 8px; font-style: normal; opacity: .9; }
+.crm-nav button[aria-current="page"] { background: #E5F0FF; border-color: transparent; color: var(--c-info); box-shadow: inset 3px 0 0 var(--c-info); }
+.crm-nav .n { background: var(--c-info); color: #fff; font-weight: 700; }
+/* filled status labels */
+.chip { border: 0; border-radius: 6px; padding: 3px 10px; font-size: 12.5px; font-weight: 600; color: #fff; background: var(--c-grey); }
+.chip.late { background: var(--c-late); color: #fff; } .chip.today { background: var(--c-today); color: #1b1b1b; } .chip.ok { background: var(--c-done); color: #fff; } .chip.wait { background: var(--c-grey); color: #fff; }
+.chip.src { background: #E6E9EF; color: var(--text); font-weight: 500; }
+.chip.stage-new { background: var(--c-new); } .chip.stage-visit { background: var(--c-visit); } .chip.stage-waitlist { background: var(--c-wait); color: #1b1b1b; } .chip.stage-paid { background: var(--c-paid); color: #0b2e1c; }
+.n.chip { background: #E6E9EF; color: var(--text); }
+.urgent .group-title .n.chip { background: #fff; color: var(--bad); }
+/* owner avatar */
+.who { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; white-space: nowrap; }
+.who.none { color: var(--text-dim); }
+.who .av { display: inline-flex; width: 24px; height: 24px; border-radius: 50%; align-items: center; justify-content: center; font-style: normal; font-weight: 700; font-size: 12px; color: #fff; background: hsl(var(--h), 55%, 46%); flex: 0 0 auto; }
+/* board: colour-coded stage columns */
+.col { padding: 0 0 8px; overflow: hidden; }
+.col h3 { margin: 0 0 8px; padding: 8px 12px; color: #fff; font-weight: 700; background: var(--c-grey); }
+.col h3 .n { background: rgba(255,255,255,.3); color: inherit; }
+.col[data-stage="new"] h3 { background: var(--c-new); } .col[data-stage="visit"] h3 { background: var(--c-visit); } .col[data-stage="waitlist"] h3 { background: var(--c-wait); color: #1b1b1b; } .col[data-stage="paid"] h3 { background: var(--c-paid); color: #0b2e1c; }
+.col .card { margin: 0 8px 8px; border-radius: 8px; box-shadow: var(--shadow); }
+.card:hover { box-shadow: 0 4px 12px rgba(14,27,37,.14); transform: translateY(-1px); transition: all .12s; }
+/* tables */
+.tbl th { background: var(--panel-2); position: sticky; top: 0; font-weight: 600; color: var(--text); }
+.tbl tbody tr:nth-child(even) td { background: #F6F8FB; }
+.tbl tr:hover td { background: #E5F0FF; }
+/* tabs */
+.seg { border: 0; border-bottom: 2px solid var(--border); border-radius: 0; gap: 2px; }
+.seg button { padding: 8px 14px; font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -2px; color: var(--text-muted); }
+.seg button[aria-pressed="true"] { background: transparent; color: var(--c-info); border-bottom-color: var(--c-info); font-weight: 700; }
+/* summary cards with a domain accent */
+.kpi { border-top: 4px solid var(--c-grey); border-radius: 10px; }
+.kpi .v { font-size: 28px; font-weight: 800; }
+.acc-collection { --acc: #0073EA; } .acc-calls { --acc: #A25DDC; } .acc-meetings { --acc: #00C875; } .acc-followup { --acc: #FDAB3D; } .acc-newleads { --acc: #579BFC; } .acc-houses { --acc: #E2445C; }
+.acc-toVerify { --acc: #0073EA; } .acc-flagged { --acc: #E2445C; } .acc-documents { --acc: #A25DDC; } .acc-tasks { --acc: #FDAB3D; } .acc-credits { --acc: #00C875; }
+.kpi[class*="acc-"] { border-top-color: var(--acc); }
+.kpi[aria-pressed="true"] { background: #E5F0FF; border-color: var(--acc); }
+.domain[class*="acc-"] .group-title strong { border-inline-start: 4px solid var(--acc); padding-inline-start: 8px; }
+/* buttons, rows, drawer */
+.btn { border-radius: 6px; font-weight: 500; }
+.btn.primary { background: var(--c-info); border-color: var(--c-info); } .btn.primary:hover { background: #0060B9; }
+.row { border-radius: 8px; }
+.row.work:hover { box-shadow: 0 2px 8px rgba(14,27,37,.10); }
+.urgent { background: #FFF1F3; border-color: #F8C9D1; }
+.drawer { box-shadow: -8px 0 24px rgba(14,27,37,.12); }
