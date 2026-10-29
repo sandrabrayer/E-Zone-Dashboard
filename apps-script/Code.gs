@@ -4632,6 +4632,37 @@ function contactIndex_(params, actor) {
   return { ok: true, count: count, leads: leads, patients: patients };
 }
 
+/* ===== Reminder hook (CRM Stage 4a, CHANGELOG-crm-reminder-hook.md; spec §9) =====
+ * The aggregate follow-up counts that ride Vered's existing daily reminder
+ * (BillingReminders.gs → BillingReminderCore.plan(..., extras)). Counts only —
+ * no names, no money: open NON-money tasks assigned to «ורד» (or unassigned),
+ * split by state for `todayIso`, plus today's intake meetings from the Leads
+ * sheet. Read-only; never throws (a failed read → null → the mail is the plain
+ * billing mail, never a fake «אין משימות»). */
+function reminderExtras_(todayIso) {
+  try {
+    const out = { callsLate: 0, callsToday: 0, otherToday: 0, meetingsToday: 0, undated: 0 };
+    tasksSheetRead_().forEach(function (t) {
+      if (!t || String(t.status || '').trim() !== 'open' || String(t.money || '') === '1') return;
+      const who = String(t.assignee || '').trim();
+      if (who && who !== 'ורד') return;
+      const due = taskIso_(t.dueDate), ws = taskIso_(t.windowStart), we = taskIso_(t.windowEnd);
+      const kind = String(t.kind || '').trim();
+      const call = kind === 'call';
+      if (ws) { if (we < todayIso) { if (call) out.callsLate++; else out.otherToday++; } else if (ws <= todayIso) { if (call) out.callsToday++; else out.otherToday++; } return; }
+      if (!due) { out.undated++; return; }
+      if (due < todayIso) { if (call) out.callsLate++; else out.otherToday++; }
+      else if (due === todayIso) { if (call) out.callsToday++; else out.otherToday++; }
+    });
+    // a read never creates a sheet (openLeads_ would): getSheetByName + readSheet_
+    const lsh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LEADS_SHEET);
+    (lsh ? readSheet_(lsh, LEAD_COLUMNS) : []).forEach(function (l) { if (l && String(l.stage || '').trim() === 'visit' && taskIso_(l.visitDate) === todayIso) out.meetingsToday++; });
+    return { vered: out };
+  } catch (e) {
+    return null;
+  }
+}
+
 /* ===== Tasks — pure helpers ===== */
 function taskText_(v, max) { return leadCellText_(v, max); }
 function taskIso_(v) {

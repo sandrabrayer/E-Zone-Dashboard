@@ -36,7 +36,9 @@ function billingReminderRun_(nowArg, previewOnly) {
       if (!parsed.ok) return { ok: false, sent: 0, error: parsed.error };
       if (clock.hour !== parsed.config.hour) return { ok: true, sent: 0, skipped: 'outside_hour' };
     }
-    const plan = BillingReminderCore.plan(billingControlQueue_({ approver: false }), parsed.config, clock);
+    // CRM Stage 4a (spec §9): Vered's follow-ups ride the same mail as aggregate counts (reminderExtras_ in Code.gs).
+    const extras = typeof reminderExtras_ === 'function' ? reminderExtras_(clock.day) : null;
+    const plan = BillingReminderCore.plan(billingControlQueue_({ approver: false }), parsed.config, clock, extras);
     if (!plan.ok) return { ok: false, sent: 0, error: plan.error };
     if (previewOnly) return { ok: true, sent: 0, previewOnly: true, skipped: plan.skipped, messages: plan.messages };
     const results = [];

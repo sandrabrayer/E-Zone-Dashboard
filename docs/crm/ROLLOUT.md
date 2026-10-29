@@ -201,7 +201,8 @@ A test pins this.
 | 1a+1b | `Tasks` sheet (append-only columns), the seven actions (`getTasks`, `createTask`, `completeTask`, `rescheduleTask`, `reassignTask`, `withdrawTask`, `logContact`), contact events on Activity, Dana `ops` (replaces Phase 2a read-only: `lib/ops-scope.js`, Code.gs `preserveMoneyFields_`), Ortal sees / closes money tasks. No UI. | merged #313 — `CHANGELOG-crm-tasks-contact-log.md` |
 | 1c | CRM: contact-log side panel with history, «שיחות לביצוע», tasks in the client card, `getTasks` in the loads. | merged #314 — `CHANGELOG-crm-contact-panel.md` |
 | 2 | «היום שלי» / «השבוע» / «הושלמו», light theme, nav regroup, per-role summary cards, queues (spec §3–§7); new read `contactIndex`. | merged #315 — `CHANGELOG-crm-my-day.md` |
-| 3 | «רשומות שדורשות בירור» triage (spec §12) + progressive boot. | this PR — `CHANGELOG-crm-triage.md` |
+| 3 | «רשומות שדורשות בירור» triage (spec §12) + progressive boot. | merged #316 — `CHANGELOG-crm-triage.md` |
+| 4a | Follow-ups in Vered's existing daily reminder (spec §9). | this PR — `CHANGELOG-crm-reminder-hook.md` |
 
 ## Summary table
 
