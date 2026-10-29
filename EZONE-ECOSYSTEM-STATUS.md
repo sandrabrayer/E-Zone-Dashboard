@@ -28,7 +28,11 @@
 
 - Sandra's review request. Day / week toggle, ‹ ›, date input, «היום»; past meetings with their status (outcome, manager report, none). Details: `CHANGELOG-crm-calendar-picker.md`.
 
-## CRM Stage 4a — follow-ups in Vered's daily reminder (spec §9) — October 29, 2026 (PR open)
+## Read cache: generations + settle-time invalidation (review F1/F2) — October 29, 2026 (PR open)
+
+- Fixes two races in the PR #320 cache found by Sandra's review package: an in-flight read surviving a bust (F1) and start-only invalidation (F2). Generation counter + bust at write start and settle; regression tests fail on the kept pre-fix fixture. Bounded staleness documented (other apps' direct writes ≤ 30 s; per-process cache). Details: `CHANGELOG-crm-read-cache-generations.md`.
+
+## CRM Stage 4a — follow-ups in Vered's daily reminder (spec §9) — October 29, 2026 (merged, #322)
 
 - Vered's existing FIN-01.3 reminder mail gains an aggregate «היום שלי» section (late / today calls, other tasks today, meetings today, undated) with the CRM link; sent also on CRM-only days; no second mechanism; Code.gs `reminderExtras_`. Details: `CHANGELOG-crm-reminder-hook.md`.
 

@@ -1164,9 +1164,11 @@ app.post('/api/sheets', requireSession, refuseServerOnlyActions, requireBillingC
   const principal = sessionPrincipalFromRequest(req);
   const summary = summarizeBody(body);
   console.log('[sheets POST] →', summary);
-  READ_CACHE.bust();   // a write: no reader of this server re-reads a stale answer
+  READ_CACHE.bust();   // a write STARTS: no reader of this server re-reads a stale answer
   try {
-    let data = viewFilteredResponse(body.action, await sheetsPost(body, principal), principal);
+    let data;
+    try { data = viewFilteredResponse(body.action, await sheetsPost(body, principal), principal); }
+    finally { READ_CACHE.bust(); }   // …and SETTLES (success, refusal or an ambiguous failure that may have committed)
     if (summary.action === 'saveAll') data = await applyAmbulatoryHandoff(data, body.user, principal);
     // Outcome only — the response can carry patient / payment data, so it is
     // never written to the log.
@@ -1513,6 +1515,7 @@ async function dischargeOutpatientHandoff(body, user, principal, deps) {
 app.post('/api/outpatient-lead', requireSession, async (req, res) => {
   const startedAt = new Date().toISOString();
   READ_CACHE.bust();
+  res.on('finish', () => READ_CACHE.bust());   // and once the handoff settled, whatever its outcome
   // A discharge row (the שחרור flow and «העבר לאמבולטורי»): server-resolved,
   // idempotent, logged — see dischargeOutpatientHandoff. The legacy body below
   // stays for a cached older page.
@@ -2035,6 +2038,7 @@ function meetingReportNoteError(note) {
  * Script side (submitMeetingReport_); the browser only ever sees ok/error. */
 app.post('/api/meeting-report/submit', requireMeetingReportSession, requireProxySecret, async (req, res) => {
   READ_CACHE.bust();   // a manager's report changes the leads every reader sees
+  res.on('finish', () => READ_CACHE.bust());   // and again once it settled
   if (!MEETING_REPORT_SECRET) {
     return res.status(503).json({ ok: false, error: 'meeting_report_not_configured' });
   }
