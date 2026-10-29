@@ -46,6 +46,7 @@ const DATA = {
     { id: 'L3', name: 'דנה מזרחי', house: 'רעננה הפרדס', stage: 'visit', visitDate: daysAgo(3), meetingWith: 'חן', created: daysAgo(6) },
     { id: 'L5', name: 'רון אביב', house: 'קיסריה ריהאב', stage: 'visit', visitDate: daysAgo(4), meetingWith: 'רנטה', created: daysAgo(9), meetingReportOutcome: 'undecided', meetingCompanion: 'father', meetingNote: 'רוצה לחשוב', meetingReporter: 'רנטה', meetingReportedAt: daysAgo(2) + 'T07:00:00.000Z', meetingSeen: '' },
     { id: 'L4', name: 'טל ברק', house: 'רמות השבים', stage: 'paid', created: daysAgo(10), assignedTo: 'ורד' },
+    { id: 'L6', name: 'מאיה שגב', house: 'קיסריה עפרוני', stage: 'new', created: daysAgo(1), assignedTo: 'דנה', phone: '0506666666' },
   ],
   patients: { ramot: [{ id: 'p1', name: 'דנה כהן', date: daysAgo(30), status: 'active', pay: 6000 }, { id: 'px', name: 'נועה לוי', date: daysAgo(60), status: 'released', exitDate: daysAgo(5), fromLead: 'LX' }], rehab: [{ id: 'p2', name: 'אבי', date: daysAgo(7), status: 'active' }] },
 };
@@ -68,12 +69,14 @@ const ACTIVITY = { ok: true, scope: 'full', total: 1, events: [{ eventId: 'x', o
 const TASKS = { ok: true, total: 2, tasks: [
   { id: 'task-' + '1'.repeat(32), kind: 'call', leadId: 'L1', title: 'לחזור למשפחה', reason: 'ביקשו שנחזור', assignee: 'ורד', dueDate: daysAgo(2), dueTime: '', status: 'open', source: 'contact', createdBy: 'ורד' },
   { id: 'task-' + '2'.repeat(32), kind: 'review', patientId: 'p1', title: 'לבדוק מסמכים', reason: '', assignee: 'ורד', dueDate: TODAY, dueTime: '10:00', status: 'open', source: 'manual', createdBy: 'ורד' }] };
+const INDEX = { ok: true, count: 1, leads: { L3: { at: '2026-10-20T09:00:00.000Z', outcome: 'no_answer', channel: 'phone', actorName: 'ורד', summary: '', noNext: '' } }, patients: {} };
 let tasksAnswer = null;
+let indexAnswer = null;
 let saveAnswer = null;
 async function boot() {
   const saves = [];
   const hash = await pinHash.hashPin('583920', PEPPER);
-  const recs = ['vered', 'sandra', 'ortal'].map((id) => JSON.parse(users.recordLine(id, hash, 1)));
+  const recs = ['vered', 'sandra', 'ortal', 'dana'].map((id) => JSON.parse(users.recordLine(id, hash, 1)));
   const env = { PROXY_SECRET, SESSION_SECRET, SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', PIN_PEPPER: PEPPER, USER_PIN_HASHES: JSON.stringify(recs), CRM_ENABLED: 'true' };
   const saved = {};
   for (const k of ENV_KEYS) { saved[k] = process.env[k]; process.env[k] = env[k]; }
@@ -96,7 +99,8 @@ async function boot() {
       if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'settleRefund', 'editReceipt', 'savePayment', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
       if (['logContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
-        : parsed.action === 'getTasks' ? (tasksAnswer ? tasksAnswer() : TASKS)
+        : parsed.action === 'getTasks' ? (tasksAnswer ? tasksAnswer() : (parsed.status === 'open' ? TASKS : { ok: true, total: 0, tasks: [] }))
+        : parsed.action === 'contactIndex' ? (indexAnswer ? indexAnswer() : INDEX)
         : parsed.action === 'logContact' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, event: { eventId: 'contact:' + parsed.submissionId }, completed: null, created: parsed.next && !parsed.next.none ? Object.assign({ id: 'task-x' }, parsed.next) : null })
         : ['createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0 ? (saveAnswer ? saveAnswer(parsed) : { ok: true, task: { id: parsed.id || 'task-new' } })
         : parsed.action === 'debtAging' ? DEBT : parsed.action === 'getPayments' ? PAYMENTS : parsed.action === 'getCredits' ? CREDITS
@@ -120,7 +124,7 @@ async function boot() {
     return req;
   };
   const srv = await new Promise((resolve) => { const s = mod.app.listen(0, '127.0.0.1', () => resolve(s)); });
-  return { port: srv.address().port, actions, saves, close() { saveAnswer = null; tasksAnswer = null; srv.close(); https.request = original; Object.assign(console, quiet); } };
+  return { port: srv.address().port, actions, saves, close() { saveAnswer = null; tasksAnswer = null; indexAnswer = null; srv.close(); https.request = original; Object.assign(console, quiet); } };
 }
 
 async function open(browser, port, id, width) {
@@ -143,17 +147,28 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
   try {
     const { page, errors } = await open(browser, srv.port, 'vered', 1366);
     assert.equal(await page.getAttribute('html', 'dir'), 'rtl');
-    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => e.textContent)), ['היום שלי', 'פניות', 'תפוסה', 'מטופלים', 'יומן', 'גבייה', 'בקרה']);
+    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => e.textContent)), ['היום שלי', 'פניות', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'בקרה'], 'grouped nav (spec §3)');
+    assert.deepEqual(await page.$$eval('#crm-nav .nav-group', (els) => els.map((e) => e.textContent)), ['פניות ומטופלים', 'פגישות ויומן', 'בתים והמשך טיפול', 'כספים', 'דוחות והגדרות']);
+    assert.equal(await page.$eval('body', (b) => getComputedStyle(b).backgroundColor), 'rgb(245, 247, 250)', 'light theme');
     assert.ok(await page.isVisible('#crm-menu'));
     assert.ok(!(await page.isVisible('#crm-burger')), 'no burger on desktop');
     assert.equal(await page.$eval('#crm-user', (e) => e.textContent), 'ורד');
-    // «היום שלי»: KPIs + the late row for the meeting without an outcome
-    const kpis = await page.$$eval('.kpi .v', (els) => els.map((e) => e.textContent));
-    assert.deepEqual(kpis, ['2', '2', '0', '1'], 'late ×2, today ×2 (a meeting today + an unseen manager report)');
-    assert.match(await page.textContent('#crm-main'), /דנה מזרחי/);
-    assert.match(await page.textContent('#crm-main'), /לקבל דיווח מהמנהל\/ת/);
-    await page.click('.kpi[data-kpi="late"]');
-    assert.ok(!/גלי כהן/.test(await page.textContent('#crm-main .rows')), 'the KPI filters the list');
+    // «היום שלי» (Stage 2): the five cards, the urgent band, the domains, the side column
+    await page.waitForSelector('.kpis.cards');
+    assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['גבייה לטיפול', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'פניות חדשות ללא מגע']);
+    const main = await page.textContent('#crm-main');
+    assert.match(main, /ממתין לדיווח המנהל\/ת/, 'a passed meeting waits for the manager — not «late»');
+    assert.match(main, /תאריך שעבר אינו הוכחה/);
+    assert.match(main, /אין מגע מתועד/); assert.match(main, /מאיה שגב/, 'a new lead with no documented contact and no open call');
+    assert.ok(!/פניות חדשות ללא מגע[\s\S]*אבי לוי[\s\S]*שיחות ומעקבים/.test(main), 'a lead with an open call task is in «שיחות», not in «ללא מגע»');
+    assert.ok(!/ממתין \d+ ימים/.test(main), 'no lateness by lead age');
+    assert.match(await page.textContent('.day-side'), /פגישות היום/); assert.match(await page.textContent('.day-side'), /גלי כהן/);
+    assert.match(await page.textContent('.urgent'), /לקרוא דיווח מנהל/, 'the unseen report is an exception on top');
+    await page.click('.kpi[data-domain="newleads"]');
+    assert.ok(!/גלי כהן/.test(await page.textContent('.day-main')), 'a card filters to its domain');
+    assert.match(await page.textContent('.day-main'), /מאיה שגב/);
+    assert.equal(await page.$eval('.kpi[data-domain="newleads"] .v', (e) => e.textContent), '1');
+    await page.click('.kpi[data-domain="newleads"]');
     // «פניות»: board, filter, table keeps the filter
     await page.click('#crm-nav button[data-area="leads"]');
     assert.equal(await page.$$eval('.col', (els) => els.length), 4);
@@ -194,7 +209,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     assert.match(await page.textContent('#crm-main'), /פגישות ללא תוצאה/);
     assert.ok(await noHScroll(page), 'no horizontal page scroll');
     assert.deepEqual(errors, []);
-    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments', 'getTasks'], 'reads only, no queue for Vered');
+    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['contactIndex', 'debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments', 'getTasks'], 'reads only, no queue for Vered');
   } finally { await browser.close(); srv.close(); }
 });
 
@@ -234,7 +249,8 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
     const { page, errors } = await open(browser, srv.port, 'vered', 1366);
-    assert.ok(!srv.actions.some((a) => a.action === 'debtAging' || a.action === 'getPayments'), 'not loaded on boot');
+    assert.ok(!srv.actions.some((a) => a.action === 'getPayments' || a.action === 'getCredits'), 'the area reads are not loaded on boot (debtAging is — once — for the «גבייה לטיפול» card, Stage 2)');
+    assert.equal(srv.actions.filter((a) => a.action === 'debtAging').length, 1);
     await page.click('#crm-nav button[data-area="billing"]');
     await page.waitForSelector('#crm-debtors');
     assert.equal(await page.textContent('#crm-title'), 'גבייה');
@@ -506,7 +522,7 @@ test('C14 «פגישות ושירותים» (Vered): the manager report renders 
   try {
     const { page, errors } = await open(browser, srv.port, 'vered', 1366);
     await page.waitForSelector('.row');
-    assert.match(await page.textContent('#crm-main'), /לקרוא את דיווח המנהל\/ת/);
+    assert.match(await page.textContent('#crm-main'), /לקרוא דיווח מנהל\/ת/);
     await page.click('#crm-nav button[data-area="leads"]');
     const card = page.locator('.card', { hasText: 'רון אביב' });
     assert.match(await card.textContent(), /דיווח מנהל\/ת חדש/);
@@ -860,14 +876,14 @@ test('Stage 1c (Vered): «שיחות לביצוע» on היום שלי from getT
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
     const { page, errors } = await open(browser, srv.port, 'vered', 1366);
-    await page.waitForSelector('#crm-calls');
-    const calls = await page.textContent('#crm-calls');
-    assert.match(calls, /שיחות לביצוע/); assert.match(calls, /אבי לוי/); assert.match(calls, /לחזור למשפחה/); assert.match(calls, /1 באיחור/);
-    assert.ok(!/לבדוק מסמכים/.test(calls), 'a review task is not a call');
-    assert.equal(await page.$$eval('#crm-calls button', (els) => els.filter((b) => /בוצע/.test(b.textContent)).length), 0, 'no «בוצע» on a call');
-    assert.match(await page.textContent('#crm-nav button[data-area="today"] .n'), /5/, 'the nav count includes the late call');
+    await page.waitForSelector('[data-domain-section="calls"]');
+    const calls = await page.textContent('[data-domain-section="calls"]');
+    assert.match(calls, /שיחות ומעקבים/); assert.match(calls, /אבי לוי/); assert.match(calls, /לחזור למשפחה/); assert.match(calls, /באיחור/);
+    assert.match(await page.textContent('.kpi[data-domain="calls"]'), /1 באיחור/);
+    assert.equal(await page.$$eval('[data-domain-section="calls"] button', (els) => els.filter((b) => /בוצע/.test(b.textContent)).length), 0, 'no «בוצע» on a call');
+    assert.match(await page.textContent('#crm-nav button[data-area="today"] .n'), /^\d+$/, 'the nav count is the urgent + due calls');
     // the panel
-    await page.click('#crm-calls [data-contact-open]');
+    await page.click('[data-domain-section="calls"] [data-contact-open][data-task-id]');
     await page.waitForSelector('#crm-drawer[aria-hidden="false"] form[data-form="contact"]');
     const head = await page.textContent('#crm-drawer .drawer-head');
     assert.match(head, /תיעוד שיחה · אבי לוי/); assert.match(head, /0501111111/); assert.match(head, /קישור חיוג אינו תיעוד/);
@@ -929,9 +945,74 @@ test('Stage 1c (Vered): «שיחות לביצוע» on היום שלי from getT
   try {
     tasksAnswer = () => ({ ok: false, error: 'boom' });
     const { page } = await open(browser2, srv2.port, 'vered', 390);
-    await page.waitForSelector('#crm-calls');
-    assert.match(await page.textContent('#crm-calls'), /המידע אינו זמין/);
-    assert.ok(!/שיחות לביצוע\s*0/.test(await page.textContent('#crm-calls')));
+    await page.waitForSelector('.kpis.cards');
+    assert.match(await page.textContent('.kpi[data-domain="calls"]'), /המידע אינו זמין/);
+    assert.equal(await page.$eval('.kpi[data-domain="calls"] .v', (e) => e.textContent), '—', 'never 0');
+    assert.match(await page.textContent('[data-domain-section="calls"]'), /המידע אינו זמין/);
     assert.ok(await noHScroll(page), 'no horizontal scroll at 390 px');
+  } finally { await browser2.close(); srv2.close(); }
+});
+
+test('Stage 2 «היום שלי» (Vered + Dana, 1366 + 390 px): header date; views היום / השבוע (range, grouped by day, the follow-up on its day) / הושלמו (who / when, opens the record); quick actions pick a subject; Dana has no money card and no «גבייה», gets «מה דחוף בבתים»; mobile: two-column cards, no horizontal scroll', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  const dmy = (iso) => iso.split('-').reverse().join('/');
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.waitForSelector('.kpis.cards');
+    if (process.env.CRM_SHOT) await page.screenshot({ path: process.env.CRM_SHOT + '/today-1366.png', fullPage: true });
+    assert.match(await page.textContent('#crm-date'), /יום .+, \d{2}\/\d{2}\/\d{4}/, 'the header shows the day');
+    assert.match(await page.textContent('#crm-date'), new RegExp(dmy(TODAY)));
+    // the week
+    await page.click('[data-day-view="week"]');
+    await page.waitForSelector('.week');
+    const ws = core.weekStart(TODAY);
+    const we = (() => { const d = new Date(ws + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + 6); return d.toISOString().slice(0, 10); })();
+    assert.match(await page.textContent('.week-bar'), new RegExp(dmy(ws) + ' – ' + dmy(we)), 'the visible range');
+    assert.equal(await page.$$eval('.wday', (els) => els.length), 7);
+    const todayDay = await page.textContent('.wday.is-today');
+    assert.match(todayDay, /לבדוק מסמכים/, 'today\'s timed task sits on today');
+    assert.match(todayDay, /גלי כהן/, 'today\'s meeting too');
+    await page.click('[data-week-step="7"]');
+    assert.equal(await page.$$eval('.wday.is-today', (els) => els.length), 0, 'next week has no today');
+    await page.click('[data-week-today]');
+    assert.equal(await page.$$eval('.wday.is-today', (els) => els.length), 1);
+    // done
+    tasksAnswer = () => ({ ok: true, total: 1, tasks: [{ id: 'task-' + '9'.repeat(32), kind: 'call', leadId: 'L1', title: 'שיחה שבוצעה', status: 'done', doneAt: TODAY + 'T08:00:00.000Z', doneBy: 'דנה', outcome: 'לא היה מענה', source: 'contact' }] });
+    await page.click('[data-day-view="done"]');
+    await page.waitForFunction(() => /שיחה שבוצעה/.test(document.querySelector('#crm-main').textContent), null, { timeout: 5000 });
+    const done = await page.textContent('#crm-main');
+    assert.match(done, /דנה/); assert.match(done, /לא היה מענה/); assert.match(done, /אבי לוי/);
+    await page.click('.row.done [data-open-lead]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    assert.match(await page.textContent('#crm-drawer h2'), /אבי לוי/);
+    await page.keyboard.press('Escape');
+    tasksAnswer = null;
+    // quick action: «תיעוד שיחה» → pick → the panel
+    await page.click('[data-day-view="today"]');
+    await page.click('[data-quick="contact"]');
+    await page.fill('#crm-quick-q', 'מאיה');
+    await page.click('[data-quick-pick="lead:L6"]');
+    await page.waitForSelector('form[data-form="contact"]');
+    assert.match(await page.textContent('#crm-drawer .drawer-head'), /מאיה שגב/);
+    await page.keyboard.press('Escape');
+    assert.ok(await noHScroll(page));
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+  const srv2 = await boot();
+  const browser2 = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser2, srv2.port, 'dana', 390);
+    await page.waitForSelector('.kpis.cards');
+    if (process.env.CRM_SHOT) await page.screenshot({ path: process.env.CRM_SHOT + '/today-390-dana.png', fullPage: true });
+    const labels = await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent));
+    assert.deepEqual(labels, ['מה דחוף בבתים', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'פניות חדשות ללא מגע'], 'no money card — an operational domain in its place');
+    assert.ok(!/גבייה|₪/.test(await page.textContent('#crm-main')), 'no money anywhere on her day');
+    assert.ok(!srv2.actions.some((a) => a.action === 'debtAging'), 'debtAging never requested for her');
+    assert.ok(!(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => e.textContent))).includes('גבייה'));
+    const cols = await page.$eval('.kpis.cards', (e) => getComputedStyle(e).gridTemplateColumns.split(' ').length);
+    assert.equal(cols, 2, 'two-column cards on mobile');
+    assert.ok(await noHScroll(page), 'no horizontal scroll at 390 px');
+    assert.deepEqual(errors, []);
   } finally { await browser2.close(); srv2.close(); }
 });

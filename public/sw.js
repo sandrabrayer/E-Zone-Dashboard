@@ -327,7 +327,9 @@
 // Stacked on v95 (PR #309); monotonic, v17 never reused.
 // v96 → v97: CRM Stage 1c — the contact panel, «שיחות לביצוע», the tasks tab (crm/crm.js, crm/crm.css)
 // (CHANGELOG-crm-contact-panel.md). Live v96 (ba093b5) verified by Sandra 2026-10-28 21:34; monotonic, v17 never reused.
-var CACHE_VERSION = 'v97';
+// v97 → v98: CRM Stage 2 — «היום שלי» rebuilt, light theme, grouped nav (crm/crm.js, crm/crm.css, crm.html)
+// (CHANGELOG-crm-my-day.md). Live v97 (07286f8) = the deploy branch; monotonic, v17 never reused.
+var CACHE_VERSION = 'v98';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
