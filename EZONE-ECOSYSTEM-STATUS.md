@@ -28,7 +28,11 @@
 
 - Sandra's review request. Day / week toggle, ‹ ›, date input, «היום»; past meetings with their status (outcome, manager report, none). Details: `CHANGELOG-crm-calendar-picker.md`.
 
-## Clickable KPIs — «בקרה» opens the list, «גבייה» filters — October 29, 2026 (PR open)
+## CRM Stage 4a — follow-ups in Vered's daily reminder (spec §9) — October 29, 2026 (PR open)
+
+- Vered's existing FIN-01.3 reminder mail gains an aggregate «היום שלי» section (late / today calls, other tasks today, meetings today, undated) with the CRM link; sent also on CRM-only days; no second mechanism; Code.gs `reminderExtras_`. Details: `CHANGELOG-crm-reminder-hook.md`.
+
+## Clickable KPIs — «בקרה» opens the list, «גבייה» filters — October 29, 2026 (merged, #321)
 
 - «בקרה» tiles come from the «היום שלי» model and each opens its list (followup / triage / calls / meetings / board); «גבייה» tiles and aging buckets filter the debtors / receipts tables with a clearable chip. SW v104. Details: `CHANGELOG-crm-clickable-kpis.md`.
 
