@@ -1260,8 +1260,14 @@
     const dueNow = function (r) { return r.state === 'late' || r.state === 'today'; };
     const cards = [];
     if (finance) {
+      // Two distinct counters (Sandra, 29/10, package §8): «גבייה לביצוע» = what Vered acts on (debt rows
+      // due + collection tasks due + flagged receipts awaiting HER decision); «ממתין לאימות אורטל» = reported
+      // receipts — not confirmed cash, not her task, never counted as collection work. Debt figures untouched.
       const waitingOrtal = countOf(byDomain.collection, function (r) { return r.kind === 'receipt_reported'; });
-      cards.push({ id: 'collection', label: 'גבייה לטיפול', value: debtCount === false ? null : countOf(byDomain.collection, dueNow), hint: debtCount === null ? 'טוען…' : (debtCount === false ? 'המידע אינו זמין' : debtCount + ' מחזורים פתוחים' + (payments === undefined ? ' · אימותים: טוען…' : payments && payments.ok !== false ? ' · ' + waitingOrtal + ' ממתינים לאימות אורטל' : ' · אימותים: המידע אינו זמין')) });
+      const toCollect = countOf(byDomain.collection, function (r) { return r.kind !== 'receipt_reported' && dueNow(r); });
+      cards.push({ id: 'collection', label: 'גבייה לביצוע', value: debtCount === false ? null : toCollect,
+        second: payments === undefined ? { label: 'ממתין לאימות אורטל', value: '…' } : (payments && payments.ok !== false ? { label: 'ממתין לאימות אורטל', value: waitingOrtal } : { label: 'ממתין לאימות אורטל', value: '—' }),
+        hint: debtCount === null ? 'טוען…' : (debtCount === false ? 'המידע אינו זמין' : debtCount + ' מחזורים פתוחים · דיווח אינו כסף מאומת') });
     }
     else cards.push({ id: 'houses', label: 'מה דחוף בבתים', value: all.filter(function (r) { return r.priority === 'exception'; }).length, hint: 'חריגים הממתינים להחלטה' });
     cards.push({ id: 'calls', label: 'שיחות ומעקבים', value: tasks ? countOf(byDomain.calls, dueNow) : null, hint: tasks ? countOf(byDomain.calls, function (r) { return r.state === 'late'; }) + ' באיחור · ' + byDomain.calls.length + ' פתוחות' : (tasks === undefined ? 'טוען…' : 'המידע אינו זמין') });

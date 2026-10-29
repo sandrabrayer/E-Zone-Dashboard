@@ -32,10 +32,12 @@ test('verificationRows (Vered): reported → waiting on Ortal (owner shown, neve
   const c = core.compute({ ok: true, leads: [], patients: { ramot: [{ id: 'p1', name: 'דנה כהן', date: '2026-07-01', status: 'active' }] }, irrelevantLeads: [], removedLeads: [], dischargedPatients: [] }, TODAY);
   const m = core.myDay(c, [], { ok: true, leads: {}, patients: {} }, { ok: true, byPatient: [] }, TODAY, { view: 'full', finance: true }, {}, PAYMENTS);
   assert.deepEqual(m.byDomain.collection.map((r) => r.kind), ['receipt_flagged', 'receipt_reported']);
-  assert.match(m.cards[0].hint, /1 ממתינים לאימות אורטל/);
+  assert.deepEqual(m.cards[0].second, { label: 'ממתין לאימות אורטל', value: 1 }, 'the second, distinct counter');
+  assert.equal(m.cards[0].value, 1, '«גבייה לביצוע» = the flagged receipt awaiting Vered; the reported one is NOT collection work');
+  assert.match(m.cards[0].hint, /דיווח אינו כסף מאומת/);
   assert.deepEqual(m.waiting.map((r) => r.waitingOn), ['אורטל']);
-  assert.match(core.myDay(c, [], null, { ok: true, byPatient: [] }, TODAY, { view: 'full', finance: true }, {}, undefined).cards[0].hint, /אימותים: טוען…/);
-  assert.match(core.myDay(c, [], null, { ok: true, byPatient: [] }, TODAY, { view: 'full', finance: true }, {}, null).cards[0].hint, /אימותים: המידע אינו זמין/);
+  assert.equal(core.myDay(c, [], null, { ok: true, byPatient: [] }, TODAY, { view: 'full', finance: true }, {}, undefined).cards[0].second.value, '…', 'payments loading');
+  assert.equal(core.myDay(c, [], null, { ok: true, byPatient: [] }, TODAY, { view: 'full', finance: true }, {}, null).cards[0].second.value, '—', 'payments failed — never 0');
   assert.equal(core.myDay(c, [], null, null, TODAY, { view: 'ops', finance: false }, {}, PAYMENTS).byDomain.collection.length, 0, 'Dana: never');
 });
 

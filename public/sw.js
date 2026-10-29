@@ -341,7 +341,9 @@
 // Stacked on v102 (PR #319); monotonic, v17 never reused.
 // v103 → v104: clickable KPIs in «בקרה» (open the list) and «גבייה» (filter the tables) (crm/crm.js, crm.css)
 // (CHANGELOG-crm-clickable-kpis.md). Stacked on v103 (PR #320); monotonic, v17 never reused.
-var CACHE_VERSION = 'v104';
+// v104 → v105: «גבייה לביצוע» + «ממתין לאימות אורטל» as two distinct counters (crm/crm.js) (CHANGELOG-crm-kpi-two-counters.md).
+// Stacked on v104 (PR #321); monotonic, v17 never reused.
+var CACHE_VERSION = 'v105';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
