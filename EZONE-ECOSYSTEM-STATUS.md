@@ -28,7 +28,11 @@
 
 - Sandra's review request. Day / week toggle, ‹ ›, date input, «היום»; past meetings with their status (outcome, manager report, none). Details: `CHANGELOG-crm-calendar-picker.md`.
 
-## CRM contrast pass — October 29, 2026 (PR open)
+## CRM Stage 2b — verification states on «היום שלי»; Ortal's day — October 29, 2026 (PR open)
+
+- Vered's «גבייה לטיפול» now shows reported receipts as «ממתין לאימות אורטל» (her owner, not Vered's task) and flagged / partial ones as exceptions (`getPayments` at boot, progressive). Ortal's «היום שלי» rebuilt with five cards (דיווחים לאימות / חלקיים–לבירור / חשבוניות מבוקשות — issuance not claimed / משימות כספיות / זיכויים לתשלום), urgent band, lists linking to the classic בקרת גבייה. SW v101. Details: `CHANGELOG-crm-ortal-day.md`.
+
+## CRM contrast pass — October 29, 2026 (merged, #317)
 
 - Deeper backgrounds, darker text / borders, heavier labels on the CRM (Sandra's first live look). CSS only, SW v100. Details: `CHANGELOG-crm-contrast.md`.
 

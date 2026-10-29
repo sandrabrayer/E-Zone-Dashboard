@@ -577,6 +577,7 @@
         receivedDate: s(o.receivedDate).slice(0, 10), amount: Number(o.amount) || 0, method: s(o.method), payer: s(o.payer), funder: s(o.funder),
         confirmStatus: s(o.confirmStatus), cycleId: s(o.cycleId), reference: s(o.reference), status: s(o.status), dueDate: s(o.dueDate).slice(0, 10),
         coverageStart: s(o.coverageStart).slice(0, 10), coverageEnd: s(o.coverageEnd).slice(0, 10), invoiceWanted: s(o.invoiceWanted), invoiceTo: s(o.invoiceTo),
+        flagNote: s(o.flagNote), recordedBy: s(o.recordedBy),
         isVoid: /^(void|מבוטל)$/i.test(s(o.status)) };
     });
   }
@@ -1213,7 +1214,7 @@
     return true;
   }
   /* The whole page model. me.view: 'full' (finance) | 'ops' | 'restricted'. debt: the debtAging answer, null when not loaded, false when it failed. */
-  function myDay(c, tasks, index, debt, today, me, f) {
+  function myDay(c, tasks, index, debt, today, me, f, payments) {
     const finance = !!(me && me.finance);
     const b = meetingBuckets(c.leads, today);
     const li = index && index.leads ? index.leads : {}, pi = index && index.patients ? index.patients : {};
@@ -1248,6 +1249,7 @@
           });
         });
       } else if (debt === null || debt === undefined) debtCount = null; else debtCount = false;
+      if (payments && payments.ok !== false) verificationRows(payments, today).forEach(function (r) { money.push(r); });
     }
     const all = [].concat(money, calls, meetings, followup, fresh, houses, otherTasks).filter(function (r) { return passes(r, f); });
     all.forEach(function (r) { r.lastContact = lastContactText(lastOf(r)); r.domain = r.domain || (money.indexOf(r) >= 0 ? 'collection' : calls.indexOf(r) >= 0 ? 'calls' : meetings.indexOf(r) >= 0 ? 'meetings' : followup.indexOf(r) >= 0 ? 'followup' : fresh.indexOf(r) >= 0 ? 'newleads' : houses.indexOf(r) >= 0 ? 'houses' : 'calls'); });
@@ -1257,7 +1259,10 @@
     const countOf = function (rows, pred) { return rows.filter(pred || function () { return true; }).length; };
     const dueNow = function (r) { return r.state === 'late' || r.state === 'today'; };
     const cards = [];
-    if (finance) cards.push({ id: 'collection', label: 'גבייה לטיפול', value: debtCount === false ? null : countOf(byDomain.collection, dueNow), hint: debtCount === null ? 'טוען…' : (debtCount === false ? 'המידע אינו זמין' : debtCount + ' מחזורים פתוחים') });
+    if (finance) {
+      const waitingOrtal = countOf(byDomain.collection, function (r) { return r.kind === 'receipt_reported'; });
+      cards.push({ id: 'collection', label: 'גבייה לטיפול', value: debtCount === false ? null : countOf(byDomain.collection, dueNow), hint: debtCount === null ? 'טוען…' : (debtCount === false ? 'המידע אינו זמין' : debtCount + ' מחזורים פתוחים' + (payments === undefined ? ' · אימותים: טוען…' : payments && payments.ok !== false ? ' · ' + waitingOrtal + ' ממתינים לאימות אורטל' : ' · אימותים: המידע אינו זמין')) });
+    }
     else cards.push({ id: 'houses', label: 'מה דחוף בבתים', value: all.filter(function (r) { return r.priority === 'exception'; }).length, hint: 'חריגים הממתינים להחלטה' });
     cards.push({ id: 'calls', label: 'שיחות ומעקבים', value: tasks ? countOf(byDomain.calls, dueNow) : null, hint: tasks ? countOf(byDomain.calls, function (r) { return r.state === 'late'; }) + ' באיחור · ' + byDomain.calls.length + ' פתוחות' : (tasks === undefined ? 'טוען…' : 'המידע אינו זמין') });
     cards.push({ id: 'meetings', label: 'פגישות היום', value: countOf(byDomain.meetings, function (r) { return r.kind === 'meeting_today'; }), second: { label: 'תיאומים פתוחים', value: countOf(byDomain.meetings, function (r) { return r.kind === 'meeting_unscheduled'; }) } });
@@ -1338,10 +1343,63 @@
     return e;
   }
 
+
+  /* ---- Stage 2b: verification states on Vered's day + Ortal's day (CHANGELOG-crm-ortal-day.md; spec §5–§6) ----
+   * «דווח» ≠ «אומת» ≠ «מסמך הונפק». A reported receipt waits on Ortal (owner shown,
+   * not Vered's task); a flagged / partial one is an exception waiting for a decision.
+   * Document issuance is not recorded in this system (חשבשבת is the source), so the
+   * document card counts REQUESTED invoices on verified receipts — and says so. */
+  const VERIFY_LABELS = { reported: 'דווח — ממתין לאימות', partial: 'אומת חלקית', flagged: 'סומן לבירור', confirmed: 'אומת' };
+  function verifyStatus(r) { return s(r && (r.confirmStatus || r.status)) || 'reported'; }
+  /* Vered's collection rows from getPayments receipts: reported (waiting on Ortal), flagged / partial (exception). */
+  function verificationRows(payments, today) {
+    const out = [];
+    receiptsOf(payments).forEach(function (r) {
+      if (r.isVoid) return;
+      const st = verifyStatus(r);
+      if (st === 'confirmed') return;
+      const base = { id: 'v:' + r.id, subjectKind: 'patient', subjectId: r.patientUid || r.patientId, name: r.patientName, house: r.houseName, when: r.receivedDate, time: '', owner: 'אורטל', open: 'account', receipt: r,
+        action: VERIFY_LABELS[st] + ' — ' + fmtMoney(r.amount), why: 'התקבל ' + fmtDate(r.receivedDate) + (r.method ? ' · ' + r.method : '') + (r.funder ? ' · ' + r.funder : '') };
+      if (st === 'reported') out.push(Object.assign(base, { kind: 'receipt_reported', waitingOn: 'אורטל', state: 'wait', priority: 'wait' }));
+      else out.push(Object.assign(base, { kind: 'receipt_flagged', state: 'late', priority: 'exception', why: base.why + (r.flagNote ? ' · ' + r.flagNote : '') }));
+    });
+    return out;
+  }
+  /* Ortal's day: the verification queue (billingControlQueue), her money tasks, the pending credits. */
+  function ortalDay(queue, tasks, credits, today, f) {
+    const list = queue && queue.ok !== false && Array.isArray(queue.receipts) ? queue.receipts : null;
+    const rowOf = function (r, kind, state, priority) {
+      const st = verifyStatus(r);
+      return { id: 'o:' + r.id, kind: kind, subjectKind: 'patient', subjectId: s(r.patientUid || r.patientId), name: s(r.patientName), house: houseName(r.houseId), when: s(r.receivedDate).slice(0, 10), time: '', owner: 'אורטל',
+        action: (VERIFY_LABELS[st] || st) + ' — ' + fmtMoney(r.amount), why: 'דווח ע״י ' + (s(r.recordedBy) || '—') + ' · ' + fmtDate(s(r.receivedDate).slice(0, 10)) + (r.method ? ' · ' + s(r.method) : '') + (st === 'flagged' && r.flagNote ? ' · ' + s(r.flagNote) : '') + (r.invoiceWanted === 'yes' ? ' · חשבונית מבוקשת' + (r.invoiceTo ? ' ל' + s(r.invoiceTo) : '') : ''),
+        state: state, priority: priority, classic: true, lastContact: '' };
+    };
+    const toVerify = [], flagged = [], documents = [];
+    (list || []).forEach(function (r) {
+      const st = verifyStatus(r);
+      if (st === 'reported') toVerify.push(rowOf(r, 'to_verify', daysBetween(s(r.receivedDate).slice(0, 10), today) > 3 ? 'late' : 'today', daysBetween(s(r.receivedDate).slice(0, 10), today) > 3 ? 'late' : 'today'));
+      else if (st === 'flagged' || st === 'partial') flagged.push(rowOf(r, 'flagged', 'late', 'exception'));
+      else if (st === 'confirmed' && r.invoiceWanted === 'yes' && daysBetween(s(r.receivedDate).slice(0, 10), today) <= 60) documents.push(rowOf(r, 'document', 'wait', 'wait'));
+    });
+    const moneyTasks = (tasks || []).filter(function (t) { return t && t.status === 'open'; }).map(function (t) { return rowOfTask(t, { leads: [], patients: [] }, today); });
+    const pend = credits ? pendingCredits(credits).map(function (c) { return { id: 'c:' + c.id, kind: 'credit', subjectKind: 'patient', subjectId: c.patientId, name: c.patientName, house: houseName(c.houseId), when: c.payoutDate || '', time: '', owner: 'אורטל', action: 'זיכוי לתשלום — ' + fmtMoney(c.amount), why: (CREDIT_TYPE_LABELS[c.creditType] || c.creditType) + ' · ' + c.allocationMonth, state: c.payoutDate && c.payoutDate < today ? 'late' : 'wait', priority: c.payoutDate && c.payoutDate < today ? 'late' : 'wait', classic: true, lastContact: '' }; }) : null;
+    const sets = { toVerify: sortRows(toVerify), flagged: sortRows(flagged), documents: sortRows(documents), tasks: sortRows(moneyTasks), credits: pend ? sortRows(pend) : [] };
+    Object.keys(sets).forEach(function (k) { sets[k] = sets[k].filter(function (r) { return passes(r, f); }); });
+    const dueNow = function (r) { return r.state === 'late' || r.state === 'today'; };
+    const cards = [
+      { id: 'toVerify', label: 'דיווחים לאימות', value: list ? sets.toVerify.length : null, hint: list ? sets.toVerify.filter(function (r) { return r.state === 'late'; }).length + ' מעל 3 ימים' : (queue === undefined || queue === null ? 'טוען…' : 'המידע אינו זמין') },
+      { id: 'flagged', label: 'אימותים חלקיים / לבירור', value: list ? sets.flagged.length : null, hint: list ? 'ממתינים להחלטה' : (queue === undefined || queue === null ? 'טוען…' : 'המידע אינו זמין') },
+      { id: 'documents', label: 'חשבוניות מבוקשות', value: list ? sets.documents.length : null, hint: list ? 'תקבולים מאומתים עם בקשה לחשבונית (60 יום) — ההנפקה אינה נרשמת כאן' : (queue === undefined || queue === null ? 'טוען…' : 'המידע אינו זמין') },
+      { id: 'tasks', label: 'משימות כספיות שלך', value: tasks ? sets.tasks.filter(dueNow).length : null, hint: tasks ? sets.tasks.length + ' פתוחות' : (tasks === undefined ? 'טוען…' : 'המידע אינו זמין') },
+      { id: 'credits', label: 'זיכויים לתשלום', value: credits ? sets.credits.length : null, hint: credits ? sets.credits.filter(function (r) { return r.state === 'late'; }).length + ' אחרי מועד התשלום' : (credits === undefined ? 'טוען…' : 'המידע אינו זמין') }];
+    const urgent = sortRows([].concat(sets.flagged, sets.toVerify.filter(function (r) { return r.state === 'late'; }), sets.tasks.filter(function (r) { return r.priority === 'binding' || r.state === 'late'; }), sets.credits.filter(function (r) { return r.state === 'late'; })));
+    return { cards: cards, sets: sets, urgent: urgent };
+  }
+
   function boot(win, doc) {
     const state = { me: null, data: null, area: 'today', view: 'board', filters: { q: '', house: '', owner: '' }, kpiFilter: '', queue: null,
       today: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date()), drawer: null, error: '', loading: true, sort: 'name',
-      tasks: null, tasksError: '', contact: null, index: null, debt: null, dayView: 'today', week: '', domain: '', doneTasks: undefined, quick: '' };
+      tasks: null, tasksError: '', contact: null, index: null, debt: null, payments: null, credits: null, dayView: 'today', week: '', domain: '', doneTasks: undefined, quick: '' };
     const $ = function (sel) { return doc.querySelector(sel); };
     const root = $('#crm-root');
     const main = $('#crm-main');
@@ -1365,7 +1423,7 @@
       try { m = c && state.me && state.me.view !== 'controller' ? model(c) : null; } catch (_) { m = null; }
       const item = function (a) {
         let n = '';
-        if (c && a.id === 'today') n = state.me && state.me.view === 'controller' ? (state.queue ? controllerDay(state.queue).toVerify : '') : (m ? m.urgent.length + m.byDomain.calls.filter(function (r) { return r.state === 'late' || r.state === 'today'; }).length : '');
+        if (c && a.id === 'today') n = state.me && state.me.view === 'controller' ? (state.queue && state.queue.ok !== false ? ortalDay(state.queue, state.tasks, state.credits, state.today, {}).cards[0].value : '') : (m ? m.urgent.length + m.byDomain.calls.filter(function (r) { return r.state === 'late' || r.state === 'today'; }).length : '');
         if (c && a.id === 'leads') n = filterLeads(c.leads, {}).length;
         return '<button type="button" data-area="' + a.id + '"' + (state.area === a.id ? ' aria-current="page"' : '') + '><span>' + esc(a.label) + '</span>' + (n !== '' ? '<span class="n">' + esc(n) + '</span>' : '') + '</button>';
       };
@@ -1385,7 +1443,7 @@
       return renderMyDay(c);
     }
     /* ---- Stage 2: «היום שלי» ---- */
-    function model(c) { return myDay(c, state.tasks, state.index, state.debt, state.today, state.me, { house: state.filters.house, owner: state.filters.owner }); }
+    function model(c) { return myDay(c, state.tasks, state.index, state.debt, state.today, state.me, { house: state.filters.house, owner: state.filters.owner }, state.payments); }
     function rowButtons(r) {
       const b = [];
       const subj = r.subjectKind + ':' + r.subjectId;
@@ -1394,9 +1452,10 @@
       else if (r.task) b.push('<button type="button" class="btn small primary" data-task-done="' + esc(r.task.id) + '">סיום</button>');
       else if (r.contactable) b.push('<button type="button" class="btn small primary" data-contact-open="' + esc(subj) + '">תיעוד שיחה</button>');
       else if (r.focusMeeting) b.push('<button type="button" class="btn small primary"' + openAttr + '>קביעת תאריך</button>');
+      else if (r.classic) b.push('<a class="btn small primary" href="/?view=classic">לבקרת גבייה</a>');
       else if (r.open) b.push('<button type="button" class="btn small primary"' + openAttr + '>' + (r.open === 'meetings' ? 'לדיווח' : r.open === 'account' ? 'לחשבון' : 'פתיחה') + '</button>');
       if (r.task) b.push('<button type="button" class="btn small" data-task-resched="' + esc(r.task.id) + '">שינוי מועד</button>');
-      b.push('<button type="button" class="btn small" data-open-' + esc(r.subjectKind) + '="' + esc(r.subjectId) + '">כרטיס</button>');
+      if (!r.classic || (state.me && state.me.view !== 'controller')) b.push('<button type="button" class="btn small" data-open-' + esc(r.subjectKind) + '="' + esc(r.subjectId) + '">כרטיס</button>');
       return b.join('');
     }
     function stateChip(r) {
@@ -1511,12 +1570,20 @@
       el.innerHTML = items.length ? items.join('') : '<p class="na">לא נמצא.</p>';
     }
     function renderControllerToday() {
-      if (!state.queue) return '<div class="crm-state">טוען את תור האימות…</div>';
-      if (state.queue.ok === false) return '<div class="crm-state bad">תור האימות לא נטען (' + esc(state.queue.error || '') + ')</div>';
-      const d = controllerDay(state.queue);
-      return '<div class="kpis">' + [['toVerify', 'דיווחים לאימות', d.toVerify], ['flagged', 'אימותים חלקיים / לבירור', d.flagged], ['confirmed', 'אומתו', d.confirmed]].map(function (x) {
-        return '<div class="kpi"><span class="v">' + x[2] + '</span><span class="l">' + esc(x[1]) + '</span></div>';
-      }).join('') + '</div><div class="links"><a href="/?view=classic">בקרת גבייה — העבודה המלאה בדשבורד<small>אימות, סימון לבירור, ייצוא</small></a></div>';
+      const o = ortalDay(state.queue, state.tasks, state.credits, state.today, { house: state.filters.house });
+      const sets = { toVerify: ['דיווחים לאימות', 'אימות בדשבורד הרגיל → בקרת גבייה'], flagged: ['אימותים חלקיים / לבירור', 'החלטה בדשבורד הרגיל'], documents: ['חשבוניות מבוקשות', 'ההנפקה בחשבשבת; כאן רק הבקשה'], tasks: ['משימות כספיות שלך', ''], credits: ['זיכויים לתשלום', '«סמן כשולם» ב«גבייה»'] };
+      let html = '<div class="day-head"><div class="day-date">' + esc(state.me && state.me.user ? state.me.user : '') + '</div></div>'
+        + '<div class="toolbar filters"><select id="f-house" aria-label="בית"><option value="">כל הבתים</option>' + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) { return '<option value="' + h.id + '"' + (houseName(state.filters.house) === h.name ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="grow"></span><a class="btn primary" href="/?view=classic">בקרת גבייה — העבודה המלאה</a></div>'
+        + '<div class="kpis cards">' + o.cards.map(function (k) { return '<button type="button" class="kpi" data-domain="' + k.id + '" aria-pressed="' + (state.domain === k.id) + '">' + (k.value === null ? '<span class="v na-v">—</span>' : '<span class="v">' + k.value + '</span>') + '<span class="l">' + esc(k.label) + '</span>' + (k.hint ? '<span class="l2">' + esc(k.hint) + '</span>' : '') + '</button>'; }).join('') + '</div>';
+      if (o.urgent.length && !state.domain) html += '<section class="urgent"><div class="group-title">⚠ דורש החלטה / באיחור <span class="n chip">' + o.urgent.length + '</span></div>' + rowsBlock(o.urgent, 8) + '</section>';
+      Object.keys(sets).forEach(function (k) {
+        if (state.domain && state.domain !== k) return;
+        const rows = o.sets[k];
+        if (!state.domain && !rows.length) return;
+        html += '<section class="domain" data-domain-section="' + k + '"><div class="group-title"><strong>' + esc(sets[k][0]) + '</strong> <span class="n chip">' + rows.length + '</span>' + (sets[k][1] ? ' <span class="na">' + esc(sets[k][1]) + '</span>' : '') + '<span class="grow"></span>' + (state.domain ? '<button type="button" class="link" data-domain="' + k + '">חזרה לכל התחומים</button>' : '') + '</div>' + rowsBlock(rows, state.domain ? 0 : 8) + '</section>';
+      });
+      if (state.queue === null) html += '<div class="crm-state bad">תור האימות לא נטען <button type="button" class="btn small" id="crm-retry">נסי שוב</button></div>';
+      return html;
     }
 
     function renderLeads(c) {
@@ -1934,16 +2001,18 @@
      * the classic dashboard — the links at the bottom. */
     const billingWaiters = [];
     /* After a billing write (or a retry): both the area reads and the day card re-read. */
-    function resetBilling() { state.billing = null; if (state.me && state.me.finance) state.debt = null; }
+    function resetBilling() { state.billing = null; if (state.me && state.me.finance) { state.debt = null; state.payments = null; } }
     function loadBilling(then) {
       if (typeof then === 'function') billingWaiters.push(then);
       if (state.billing || state.billingLoading) return;
       state.billingLoading = true;
       // debtAging is read once at boot for the «גבייה לטיפול» card (finance); reuse it until a billing write resets it
       const debtP = state.debt && state.debt.ok === true ? Promise.resolve(state.debt) : api('debtAging');
-      Promise.all([debtP, api('getPayments'), api('getCredits')]).then(function (res) {
+      const payP = state.payments && state.payments.ok === true ? Promise.resolve(state.payments) : api('getPayments');
+      Promise.all([debtP, payP, api('getCredits')]).then(function (res) {
         state.billing = { debt: res[0], payments: res[1], credits: res[2] };
         state.debt = res[0] && res[0].ok === true ? res[0] : false;
+        state.payments = res[1] && res[1].ok === true ? res[1] : null;
       }).catch(function (e) {
         state.billing = { debt: { ok: false, error: String(e && e.message || e) }, payments: { ok: false, error: String(e && e.message || e) }, credits: { ok: false, error: String(e && e.message || e) } };
       }).then(function () {
@@ -2942,7 +3011,7 @@
      * and the other sources (tasks, contact index, debt / the controller queue) fill in as
      * they arrive — each card says «טוען…» until then and «המידע אינו זמין» if it failed. */
     function load() {
-      state.loading = true; state.error = ''; state.tasks = undefined; state.index = undefined; state.debt = null; state.tasksError = ''; renderMain();
+      state.loading = true; state.error = ''; state.tasks = undefined; state.index = undefined; state.debt = null; state.payments = null; state.tasksError = ''; renderMain();
       const meP = win.fetch('/api/me', { credentials: 'same-origin' }).then(function (r) { return r.json(); });
       const dataP = api('getData');
       return Promise.all([meP, dataP]).then(function (res) {
@@ -2955,12 +3024,15 @@
         state.data = data; state.loading = false;
         renderNav(); renderMain();
         const later = function (p, apply) { return p.then(apply, function () { apply(null); }).then(function () { renderNav(); renderMain(); }); };
-        if (me.view === 'controller') return later(api('billingControlQueue'), function (q) { state.queue = q || null; });
+        if (me.view === 'controller') {
+          state.queue = undefined; state.credits = undefined; state.tasks = undefined;
+          return Promise.all([later(api('billingControlQueue'), function (q) { state.queue = q || null; }), later(api('getTasks', { status: 'open' }), applyTasks), later(api('getCredits'), function (r) { state.credits = r && r.ok === true ? r : null; })]);
+        }
         const reads = [
           later(api('getTasks', { status: 'open' }), applyTasks),
           later(api('contactIndex'), function (r) { state.index = r && r.ok === true ? r : null; }),
         ];
-        if (me.finance) reads.push(later(api('debtAging'), function (r) { state.debt = r && r.ok === true ? r : false; }));
+        if (me.finance) { state.payments = undefined; reads.push(later(api('debtAging'), function (r) { state.debt = r && r.ok === true ? r : false; })); reads.push(later(api('getPayments'), function (r) { state.payments = r && r.ok === true ? r : null; })); }
         return Promise.all(reads);
       }).catch(function (e) { state.loading = false; state.error = String(e && e.message || e); renderNav(); renderMain(); });
     }
@@ -2990,6 +3062,7 @@
     addMonthsIso: addMonthsIso, stayCycles: stayCycles, reportableCycles: reportableCycles, defaultReportable: defaultReportable, reportCycleForWindow: reportCycleForWindow,
     CONTACT_OUTCOMES: CONTACT_OUTCOMES, CONTACT_CHANNELS: CONTACT_CHANNELS, NEXT_CHOICES: NEXT_CHOICES, TASK_KINDS: TASK_KINDS, TASK_KIND_LABELS: TASK_KIND_LABELS, contactOutcomeLabel: contactOutcomeLabel, nextPlan: nextPlan, contactErrors: contactErrors, contactBody: contactBody, contactAccepted: contactAccepted,
     taskDue: taskDue, taskState: taskState, taskWhen: taskWhen, taskSubject: taskSubject, taskQueue: taskQueue, tasksFor: tasksFor, taskCounts: taskCounts, taskFormErrors: taskFormErrors, taskCreateBody: taskCreateBody, rescheduleErrors: rescheduleErrors, rescheduleBody: rescheduleBody, taskAccepted: taskAccepted,
+    VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,
     TRIAGE_OPTIONS: TRIAGE_OPTIONS, triageQueue: triageQueue, waitlistErrors: waitlistErrors, waitlistPatch: waitlistPatch, laterErrors: laterErrors,
     NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, myDay: myDay, weekPlan: weekPlan, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
     moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
