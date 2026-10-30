@@ -1,5 +1,9 @@
 # E-ZONE Ecosystem Status — updated October 28, 2026
 
+## Care-continuum identity feed — October 30, 2026 (draft, no release)
+
+- D-ID-1: `getAdmittedRoster` and `getDischargedRoster` add existing Dashboard `Patients.id` (stay) and `Patients.personId` (root person id). Consumers use `personId || id`; no new identifier, no Sheet schema change, no write surface. This is the identity foundation for pre-discharge continuation → Outpatient linking. Details: `CHANGELOG-care-continuum-identity-feed.md`.
+
 ## Railway healthcheck window 30 s → 300 s — October 28, 2026 (PR open)
 
 - Every deploy after #303 failed at «Network › Healthcheck» with Build/Deploy green (Railway's Oct 21 incident recovery); live stuck on `2a2a251`. `/healthz` is synchronous, so the window is Railway's network attach. `railway.json` `healthcheckTimeout` 30 → 300. Details: `CHANGELOG-railway-healthcheck-timeout.md`.
