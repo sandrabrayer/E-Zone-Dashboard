@@ -8554,8 +8554,10 @@ function admittedRosterAuthOk_(params) {
  * lead link — the therapists side flags it, never guesses a match).
  *
  * Projection is an explicit allow-list, EXACTLY:
- *   { sourceApp, name, phone, house, entryDate, exitDate }
- * No id, lead, stage, note, payment, advance, refund, discharge reason or any
+ *   { sourceApp, id, personId, name, phone, house, entryDate, exitDate }
+ * id is the stay/admission id; personId is the root person id for a returning
+ * stay (blank on a first stay). No lead, stage, note, payment, advance, refund,
+ * discharge reason or any
  * other Leads/Patients/billing field. Data minimization: only patients whose
  * exitDate falls inside the window; older history is not shared.
  *
@@ -8596,6 +8598,8 @@ function getDischargedRoster_() {
     if (!exit || exit < cutoff) continue;
     out.push({
       sourceApp: 'ezone-dashboard',
+      id:        String(pt.id || ''),
+      personId:  patientPersonId_(pt.personId),
       name:      pt.name || '',
       phone:     rosterPhoneFor_(pt, phoneIdx),
       house:     pt.houseId || '',
@@ -9245,6 +9249,12 @@ function getAdmittedRoster_() {
     if (!rosterPhone) missingPhone.push({ name: String(pt.name), house: String(pt.houseId || ''), id: String(pt.id || '') });
     out.push({
       sourceApp: 'ezone-dashboard',
+      // Care-continuum identity (D-ID-1): id is this stay/admission;
+      // personId is the root person id when this is a returning stay.
+      // Blank personId is intentional on a first stay — consumers derive
+      // personKey = personId || id. Both are opaque identifiers only.
+      id:        String(pt.id || ''),
+      personId:  patientPersonId_(pt.personId),
       name:      pt.name || '',
       phone:     rosterPhone,
       house:     pt.houseId || '',
