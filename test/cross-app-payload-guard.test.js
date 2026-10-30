@@ -28,7 +28,7 @@ function load() {
   g.sandbox.Session = { getScriptTimeZone: () => 'Asia/Jerusalem' };
   const cols = Array.from(g.run('PATIENT_COLUMNS'));
   const sh = richSheet('Patients', cols);
-  sh.grid.push(['ramot', 'דנה', '2026-09-01', 29000, 0, 'active', 'L1', '', 'lead', 'note', 'id-d', '', '']);
+  sh.grid.push(['ramot', 'דנה', '2026-09-01', 29000, 0, 'active', 'L1', '', 'lead', 'note', 'id-d', '', '', 'id-root-d']);
   sh.grid.push(['asher', 'יוסי', '2026-08-01', 29000, 0, 'released', '', '2026-09-10', 'direct_admin', '', 'id-y', '', '']);
   g.sandbox.__sheets.Patients = sh;
   return g;
@@ -128,7 +128,9 @@ test('Therapists: getAdmittedRoster payload keys are pinned (and released patien
   const r = arr(load().sandbox.getAdmittedRoster_());
   assert.deepStrictEqual(Object.keys(r), ['ok', 'patients']);
   assert.strictEqual(r.patients.length, 1);
-  assert.deepStrictEqual(Object.keys(r.patients[0]), ['sourceApp', 'name', 'phone', 'house', 'entryDate']);
+  assert.deepStrictEqual(Object.keys(r.patients[0]), ['sourceApp', 'id', 'personId', 'name', 'phone', 'house', 'entryDate']);
+  assert.strictEqual(r.patients[0].id, 'id-d');
+  assert.strictEqual(r.patients[0].personId, 'id-root-d');
 });
 
 /* ===== Dashboard's own bulk read: additive only ===== */
