@@ -28,6 +28,11 @@
 
 - Sandra's review request. Day / week toggle, ‹ ›, date input, «היום»; past meetings with their status (outcome, manager report, none). Details: `CHANGELOG-crm-calendar-picker.md`.
 
+## Care-continuum identity feed — October 30, 2026 (D-ID-1 draft)
+
+- Cross-app admitted/alumni projections add only the existing stable Dashboard identifiers: `id` = stay/admission and `personId` = root person id for a returning stay. No new identifier, no sheet migration and no write path. Consumers derive `personKey = personId || id`. This is the first prerequisite for pre-discharge continuity without duplicate Outpatient leads. Details: `CHANGELOG-care-continuum-identity-feed.md`.
+- Draft only: no production merge/deploy authorized. Outpatient PR #125 (OP-03) and PR #135 remain untouched.
+
 ## Dana lands on the CRM by default — October 29, 2026 (PR open)
 
 - `CRM_DEFAULT_VIEWS` += `ops`: with `CRM_DEFAULT=true`, Dana's `/` is the CRM like Vered's; classic at `/?view=classic`; Ortal unchanged. Details: `CHANGELOG-crm-default-ops.md`.
