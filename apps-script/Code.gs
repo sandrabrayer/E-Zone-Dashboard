@@ -8887,6 +8887,35 @@ function dischargeOutpatientFields_(row, phone) {
   };
 }
 
+/* D-ID-2: exact stay id from discharge audit; person root from Patients.id.
+ * Never infer identity using phone/name; older id-less rows require manual review.
+ * Read-only on all source sheets. */
+function dischargeOutpatientCareIdentity_(row) {
+  const rawId = String(row && row.patientId != null ? row.patientId : '').trim();
+  const stayId = patientPersonId_(rawId);
+  if (!stayId || stayId !== rawId) return { ok: false, error: 'handoff_identity_missing' };
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PATIENTS_SHEET);
+  if (!sh || sh.getLastRow() < 2) return { ok: false, error: 'handoff_identity_missing' };
+  const hits = readSheet_(sh, PATIENT_COLUMNS).filter(function (p) {
+    return String(p && p.id != null ? p.id : '').trim() === stayId;
+  });
+  if (hits.length !== 1) return {
+    ok: false, error: hits.length > 1 ? 'handoff_identity_conflict' : 'handoff_identity_missing'
+  };
+  const rootRaw = String(hits[0].personId == null ? '' : hits[0].personId).trim();
+  const personId = patientPersonId_(rootRaw);
+  if (rootRaw && (!personId || rootRaw !== personId)) return { ok: false, error: 'handoff_identity_conflict' };
+  const leadRaw = String(row.fromLead == null ? '' : row.fromLead).trim();
+  const dashboardLeadId = patientPersonId_(leadRaw);
+  if (leadRaw && (!dashboardLeadId || leadRaw !== dashboardLeadId)) {
+    return { ok: false, error: 'handoff_identity_conflict' };
+  }
+  return {
+    ok: true, dashboardPatientId: stayId, dashboardPersonId: personId,
+    dashboardLeadId: dashboardLeadId, source: 'dashboard_discharge'
+  };
+}
+
 /* dischargeOutpatientPayload { dischargeId, manual } → what server.js sends:
  *   { ok:false, error }                       — unknown / deleted / restored row
  *   { ok:true, eligible:false }               — automatic, not «טיפול חוץ»
@@ -8905,7 +8934,15 @@ function dischargeOutpatientPayload_(params) {
   if (!manual && String(row.disposition || '').trim() !== 'released_outpatient') return { ok: true, eligible: false };
   const key = dischargeOutpatientKey_(id);
   if (outpatientLeadSendLog_().sent[key]) return { ok: true, alreadySent: true, key: key };
-  return { ok: true, key: key, payload: dischargeOutpatientFields_(row, dischargeLeadPhone_(row.fromLead)) };
+  const identity = dischargeOutpatientCareIdentity_(row);
+  if (!identity.ok) return identity;
+  const payload = Object.assign(dischargeOutpatientFields_(row, dischargeLeadPhone_(row.fromLead)), {
+    dashboardPatientId: identity.dashboardPatientId,
+    dashboardPersonId: identity.dashboardPersonId,
+    dashboardLeadId: identity.dashboardLeadId,
+    source: identity.source
+  });
+  return { ok: true, key: key, payload: payload };
 }
 
 /* recordOutpatientLeadSend for a discharge row (see recordOutpatientLeadSend_). */

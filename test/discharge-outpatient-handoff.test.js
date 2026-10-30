@@ -52,24 +52,27 @@ const DROW = (over) => Object.assign({
   restored: '', deletedAt: '',
 }, over || {});
 const LEAD = { id: 'L1', name: 'דנה לוי', phone: '052-123-4567', stage: 'admitted' };
+const STAY = { id: 'pid-1', personId: 'pid-root', name: 'דנה לוי', houseId: 'ramot', date: '2026-08-01', status: 'released', exitDate: '2026-10-20' };
+const ID_DROW = () => DROW({ patientId: 'pid-1' });
+const CARE = { dashboardPatientId: 'pid-1', dashboardPersonId: 'pid-root', dashboardLeadId: 'L1', source: 'dashboard_discharge' };
 
 test('payload: «משוחרר לטיפול חוץ» row → name, phone from the source lead, house KEY, note = source + notes', () => {
-  const w = world({ leads: [LEAD], discharged: [DROW()] });
+  const w = world({ leads: [LEAD], discharged: [ID_DROW()], patients: [STAY] });
   assert.deepEqual(w.prep({ dischargeId: 'aud-1' }), {
     ok: true, key: 'discharge:aud-1',
-    payload: { name: 'דנה לוי', phone: '0521234567', house: 'ramot', note: 'ליד — הערה' },
+    payload: { name: 'דנה לוי', phone: '0521234567', house: 'ramot', note: 'ליד — הערה', ...CARE },
   });
 });
 
 test('payload: the phone is found on the closed-leads tab too; none anywhere → \'\'', () => {
-  const w = world({ irrelevant: [Object.assign({}, LEAD, { stage: 'irrelevant' })], discharged: [DROW()] });
+  const w = world({ irrelevant: [Object.assign({}, LEAD, { stage: 'irrelevant' })], discharged: [ID_DROW()], patients: [STAY] });
   assert.equal(w.prep({ dischargeId: 'aud-1' }).payload.phone, '0521234567');
-  const w2 = world({ discharged: [DROW()] });
+  const w2 = world({ discharged: [ID_DROW()], patients: [STAY] });
   assert.equal(w2.prep({ dischargeId: 'aud-1' }).payload.phone, '');
 });
 
 test('payload: automatic send only for «משוחרר לטיפול חוץ»; «העבר לאמבולטורי» (manual) for any open row', () => {
-  const w = world({ leads: [LEAD], discharged: [DROW({ disposition: 'completed' })] });
+  const w = world({ leads: [LEAD], discharged: [DROW({ disposition: 'completed', patientId: 'pid-1' })], patients: [STAY] });
   assert.deepEqual(w.prep({ dischargeId: 'aud-1' }), { ok: true, eligible: false });
   assert.equal(w.prep({ dischargeId: 'aud-1', manual: true }).key, 'discharge:aud-1');
 });
@@ -84,7 +87,7 @@ test('payload: unknown, restored and deleted rows are refused; unverified caller
 });
 
 test('idempotent: a recorded send → alreadySent; a second `sent` writes nothing; a failure leaves it sendable', () => {
-  const w = world({ leads: [LEAD], discharged: [DROW()] });
+  const w = world({ leads: [LEAD], discharged: [ID_DROW()], patients: [STAY] });
   w.record({ dischargeId: 'aud-1', sent: false, error: 'outpatient_timeout' });
   assert.equal(w.prep({ dischargeId: 'aud-1' }).key, 'discharge:aud-1', 'a failure can be retried');
   assert.equal(w.record({ dischargeId: 'aud-1', sent: true, outpatientId: 'op-1' }).sent, true);
@@ -188,13 +191,13 @@ function srv(prep, sendResult) {
     },
   };
 }
-const PREP = { ok: true, key: 'discharge:aud-1', payload: { name: 'דנה לוי', phone: '0521234567', house: 'ramot', note: 'ליד' } };
+const PREP = { ok: true, key: 'discharge:aud-1', payload: { name: 'דנה לוי', phone: '0521234567', house: 'ramot', note: 'ליד', ...CARE } };
 
 test('server: a «טיפול חוץ» row is sent once through sendToOutpatient — house included — and recorded', async () => {
   const t = srv(PREP, { outcome: 'answered', data: { ok: true, id: 'op-7' } });
   const r = await server.dischargeOutpatientHandoff({ dischargeId: 'aud-1' }, 'ורד', null, t.deps);
   assert.deepEqual(r, { status: 200, body: { ok: true, sent: true } });
-  assert.deepEqual(t.sends, [{ name: 'דנה לוי', phone: '0521234567', house: 'ramot', note: 'ליד' }]);
+  assert.deepEqual(t.sends, [{ name: 'דנה לוי', phone: '0521234567', house: 'ramot', note: 'ליד', ...CARE }]);
   assert.deepEqual(t.posts.map((p) => [p.action, p.dischargeId, p.sent, p.manual, p.user]), [
     ['dischargeOutpatientPayload', 'aud-1', undefined, false, 'ורד'],
     ['recordOutpatientLeadSend', 'aud-1', true, false, 'ורד'],
@@ -334,4 +337,26 @@ test('«העבר לאמבולטורי»: on every open discharged row in edit mo
 test('SW: v91 (live) → v92 with its comment; v17 never reused', () => {
   assert.ok(Number(/var CACHE_VERSION = 'v(\d+)';/.exec(SW_SRC)[1]) >= 92, 'later bumps stay monotonic');
   assert.ok(SW_SRC.includes('v91 → v92:'));
+});
+
+test('D-ID-2: legacy, ambiguous or malformed identities fail closed before outbound write', () => {
+  const missing = world({ leads: [LEAD], discharged: [DROW()], patients: [STAY] });
+  assert.equal(missing.prep({ dischargeId: 'aud-1' }).error, 'handoff_identity_missing');
+  const noStay = world({ leads: [LEAD], discharged: [ID_DROW()] });
+  assert.equal(noStay.prep({ dischargeId: 'aud-1' }).error, 'handoff_identity_missing');
+  const ambiguous = world({ leads: [LEAD], discharged: [ID_DROW()], patients: [STAY, STAY] });
+  assert.equal(ambiguous.prep({ dischargeId: 'aud-1' }).error, 'handoff_identity_conflict');
+  const malformed = world({ leads: [LEAD], discharged: [ID_DROW()], patients: [Object.assign({}, STAY, { personId: 'bad id' })] });
+  assert.equal(malformed.prep({ dischargeId: 'aud-1' }).error, 'handoff_identity_conflict');
+});
+
+test('D-ID-2: no stable id means no send; upstream success without an id is not recorded as sent', async () => {
+  const missing = srv({ ok: false, error: 'handoff_identity_missing' }, null);
+  const a = await server.dischargeOutpatientHandoff({ dischargeId: 'aud-1' }, 'ורד', null, missing.deps);
+  assert.equal(a.body.error, 'handoff_identity_missing');
+  assert.equal(missing.sends.length, 0);
+  const invalid = srv(PREP, { outcome: 'answered', data: { ok: true } });
+  const b = await server.dischargeOutpatientHandoff({ dischargeId: 'aud-2' }, 'ורד', null, invalid.deps);
+  assert.equal(b.body.error, 'outpatient_invalid_id');
+  assert.equal(invalid.posts[1].sent, false);
 });
