@@ -36,7 +36,7 @@ function boot({ secret = SECRET, patients, leads } = {}) {
 
 const PATIENTS = [
   { houseId: 'asher', name: 'יוצא לאחרונה', fromLead: 'L1', date: '2026-05-01', exitDate: '2026-10-01', status: 'released',
-    pay: 30000, adv: 5000, notes: 'sensitive note', source: 'lead', id: 'pid-1' },
+    pay: 30000, adv: 5000, notes: 'sensitive note', source: 'lead', id: 'pid-1', personId: 'pid-root' },
   { houseId: 'ramot', name: 'ללא ליד', fromLead: '', date: '2026-06-01', exitDate: '2026-09-01', status: 'released' },
   { houseId: 'ramot', name: 'ישן מדי', fromLead: 'L1', date: '2022-01-01', exitDate: '2023-01-01', status: 'released' },
   { houseId: 'ramot', name: 'עדיין בבית', fromLead: 'L1', date: '2026-09-01', exitDate: '', status: 'active' },
@@ -54,15 +54,18 @@ test('fail-closed: unset / blank / missing / wrong / another secret → unauthor
   assert.deepStrictEqual(arr(g.post({ action: 'getDischargedRoster', secret: 'proxy-secret-TEST-alumni-feed-0000000000' })), { ok: false, error: 'unauthorized' }, 'PROXY_SECRET is not this secret');
 });
 
-test('contract: exactly sourceApp, name, phone, house, entryDate, exitDate — nothing else leaks', () => {
+test('contract: adds opaque stay/person ids and leaks no other patient fields', () => {
   const { feed } = boot({ patients: PATIENTS, leads: LEADS });
   const r = feed();
   assert.strictEqual(r.ok, true);
   const by = (n) => r.patients.find((p) => p.name === n);
   assert.deepStrictEqual(by('יוצא לאחרונה'), {
-    sourceApp: 'ezone-dashboard', name: 'יוצא לאחרונה', phone: '0527654321', house: 'asher', entryDate: '2026-05-01', exitDate: '2026-10-01'
+    sourceApp: 'ezone-dashboard', id: 'pid-1', personId: 'pid-root', name: 'יוצא לאחרונה', phone: '0527654321', house: 'asher', entryDate: '2026-05-01', exitDate: '2026-10-01'
   });
-  r.patients.forEach((p) => assert.deepStrictEqual(Object.keys(p).sort(), ['entryDate', 'exitDate', 'house', 'name', 'phone', 'sourceApp']));
+  r.patients.forEach((p) => assert.deepStrictEqual(Object.keys(p).sort(), ['entryDate', 'exitDate', 'house', 'id', 'name', 'personId', 'phone', 'sourceApp']));
+  const noRoot = by('ללא ליד');
+  assert.strictEqual(noRoot.id, '');
+  assert.strictEqual(noRoot.personId, '');
 });
 
 test('selection: released inside the window only; no phone without a lead link; admitted / dateless / old excluded', () => {
