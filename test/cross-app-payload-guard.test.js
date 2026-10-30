@@ -128,7 +128,9 @@ test('Therapists: getAdmittedRoster payload keys are pinned (and released patien
   const r = arr(load().sandbox.getAdmittedRoster_());
   assert.deepStrictEqual(Object.keys(r), ['ok', 'patients']);
   assert.strictEqual(r.patients.length, 1);
-  assert.deepStrictEqual(Object.keys(r.patients[0]), ['sourceApp', 'name', 'phone', 'house', 'entryDate']);
+  assert.deepStrictEqual(Object.keys(r.patients[0]), ['sourceApp', 'id', 'personId', 'name', 'phone', 'house', 'entryDate']);
+  assert.strictEqual(r.patients[0].id, 'id-d');
+  assert.strictEqual(r.patients[0].personId, '');
 });
 
 /* ===== Dashboard's own bulk read: additive only ===== */
