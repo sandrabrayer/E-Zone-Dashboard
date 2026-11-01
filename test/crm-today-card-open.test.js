@@ -58,6 +58,8 @@ test('A: houseExceptions — a classic discharge (no patientId) gets the resolve
   for (const r of ['TRUE', 'true', '1']) assert.equal(core.houseExceptions({ leads: [], patients: PATIENTS, discharges: [Object.assign({}, base, { restored: r })] }, TODAY).length, 0, 'restored ' + r);
   assert.equal(core.houseExceptions({ leads: [], patients: PATIENTS, discharges: [Object.assign({}, base, { continuity: 'none' })] }, TODAY).length, 0);
   assert.equal(core.houseExceptions({ leads: [], patients: PATIENTS, discharges: [Object.assign({}, base, { continuity: 'unknown' })] }, TODAY).length, 1);
+  assert.equal(core.houseExceptions({ leads: [], patients: PATIENTS, discharges: [Object.assign({}, base, { continuity: 'שחר' })] }, TODAY).length, 0, 'a legacy free-text value was recorded');
+  assert.equal(core.continuityRecorded('שחר'), true); assert.equal(core.continuityRecorded('unknown'), false);
 });
 
 test('A: houseExceptions — a discharge «משוחרר לטיפול חוץ», or one already handed to Outpatient, needs no «לעדכן המשך טיפול»', () => {

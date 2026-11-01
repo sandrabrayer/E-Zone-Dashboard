@@ -31,7 +31,8 @@ Code.gs untouched (no Apps Script deploy). SW `CACHE_VERSION` v107 → **v108** 
    leaves the list after saving.
 5. Consistency:
    - a restored discharge is recognised in every spelling (`TRUE` / `true` / `1`), not only `'1'`;
-   - `continuity: 'unknown'` (the CRM discharge default) counts as "not recorded", the same as blank;
+   - `continuity: 'unknown'` (the CRM discharge default) counts as "not recorded", the same as blank; a legacy
+     free-text value (e.g. a name) still counts as recorded and is shown as typed;
    - the drawer shows the Hebrew label instead of the stored key.
 6. **Outpatient discharges** (follow-up, same PR):
    - a discharge «משוחרר לטיפול חוץ», or one already handed to Outpatient, no longer gets a «לעדכן המשך טיפול»
