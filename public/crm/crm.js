@@ -184,6 +184,13 @@
   /* ===== Patient actions (C7, CHANGELOG-crm-patient-actions.md): edit, move, discharge ===== */
   const DISCHARGE_DISPOSITIONS = [{ id: 'completed', label: 'סיים טיפול' }, { id: 'stopped_early', label: 'הפסיק לפני הזמן' }, { id: 'released_outpatient', label: 'משוחרר לטיפול חוץ' }];
   const CONTINUITY_CHOICES = [{ id: 'continued_outpatient', label: 'המשיך באמבולטורי (E-ZONE)' }, { id: 'continued_other', label: 'המשיך במסגרת טיפולית אחרת' }, { id: 'none', label: 'לא המשיך' }];
+  /* A recorded «המשך טיפול» (one of the three keys; blank / 'unknown' = not recorded). Pure. */
+  function continuityKnown(v) { return CONTINUITY_CHOICES.some(function (c) { return c.id === s(v); }); }
+  /* Something WAS recorded: a key, or a legacy free-text value; only blank / 'unknown' is missing. Pure. */
+  function continuityRecorded(v) { const t = s(v); return !!t && t !== 'unknown'; }
+  function continuityLabel(v) { const c = CONTINUITY_CHOICES.filter(function (x) { return x.id === s(v); })[0]; return c ? c.label : s(v); }
+  /* The POST body of «לעדכן המשך טיפול» — the same action the classic select sends. Pure. */
+  function continuityBody(id, v) { return { action: 'setDischargeContinuity', id: s(id), continuity: s(v) }; }
   /* The discharged-audit row the classic dischargePatient sends (app.js
    * dischargeAuditRow): the patient as read + its own fresh id, patientId,
    * released, prior_status, exitDate, dischargedAt, disposition, note, continuity. Pure. */
@@ -449,7 +456,7 @@
     // The patient's discharge record: by the audit row's patientId (newer rows), else the
     // classic identity triple (house, name, entry date); soft-deleted / restored rows are not discharges.
     const sameStay = function (r) {
-      if (r.deletedAt || r.restored === '1') return false;
+      if (r.deletedAt || isRestoredDischarge(r)) return false;
       if (r.patientId && r.patientId === s(subject.id)) return true;
       return !r.patientId && houseId(r.houseId) === houseId(subject.houseId) && r.name === s(subject.name) && r.date === s(subject.date);
     };
@@ -1241,6 +1248,29 @@
     return { id: t.id, taskId: t.id, kind: 'task', subjectKind: sub.kind, subjectId: sub.id, name: sub.name, house: sub.house, contact: sub.contact, action: t.title, why: t.reason || (t.source === 'contact' ? 'נקבע בשיחה' : ''),
       when: taskDue(t), time: s(t.dueTime), whenText: taskWhen(t), owner: t.assignee, state: st, priority: binding ? 'binding' : st, task: t };
   }
+  /* A discharge audit row is restored when the flag reads true in any of the
+   * spellings the sheet holds ('TRUE' from Sheets, 'true', '1'). Pure. */
+  function isRestoredDischarge(d) { const r = s(d && d.restored).toUpperCase(); return r === 'TRUE' || r === '1'; }
+  /* The Patients id a discharge audit row belongs to (CHANGELOG-crm-today-card-open.md).
+   * Only CRM / coordinator discharges write `patientId`; the classic «שחרר» flow leaves
+   * it blank, so the row is matched like restoreTarget does: patientId (when it is on
+   * Patients), then the stay triple (house, name, entry date), then the ONE released
+   * row of the house with the same source lead. Unresolved → the stored patientId ('' when blank). Pure. */
+  function dischargePatientId(d, patients) {
+    const list = Array.isArray(patients) ? patients : [];
+    const pid = s(d && d.patientId);
+    if (pid && list.some(function (p) { return p.id === pid; })) return pid;
+    const hid = houseId(d && d.houseId);
+    const nm = s(d && d.name).replace(/\s+/g, ' ');
+    const sameHouse = list.filter(function (p) { return p.id && houseId(p.houseId) === hid; });
+    const byTriple = sameHouse.filter(function (p) { return p.name.replace(/\s+/g, ' ') === nm && p.date === s(d && d.date); });
+    if (byTriple.length === 1) return byTriple[0].id;
+    if (s(d && d.fromLead)) {
+      const byLead = sameHouse.filter(function (p) { return p.status === 'released' && p.fromLead === s(d.fromLead); });
+      if (byLead.length === 1) return byLead[0].id;
+    }
+    return pid; // unresolved: the stored id (or ''); openDrawer then says so instead of doing nothing
+  }
   /* «מה דחוף בבתים» (spec §6): exceptions with an owner and a reason. "Paid, not admitted" is an exception ONLY when the entry date passed. */
   function houseExceptions(c, today) {
     // (the manager-report exceptions live in «המשך טיפול» — one row per item, spec §5: never the same item twice)
@@ -1249,8 +1279,11 @@
       if (l.stage === 'paid' && l.entryDate && l.entryDate <= today) rows.push(rowOfLead(l, { id: 'ex:admit:' + l.id, kind: 'admission_due', action: 'קליטה לבית לא בוצעה', why: 'תאריך הכניסה ' + fmtDate(l.entryDate) + ' עבר', when: l.entryDate, state: 'late', priority: 'exception' }));
     });
     (c.discharges || []).forEach(function (d) {
-      if (d.deletedAt || d.restored === '1' || !d.exitDate || daysBetween(d.exitDate, today) > 14 || d.continuity) return;
-      rows.push({ id: 'ex:cont:' + d.id, kind: 'continuity', subjectKind: 'patient', subjectId: d.patientId, name: d.name, house: houseName(d.houseId), action: 'לעדכן המשך טיפול', why: 'שוחרר/ה ' + fmtDate(d.exitDate) + ' ללא המשך טיפול', when: d.exitDate, time: '', owner: '', state: 'wait', priority: 'exception' });
+      if (d.deletedAt || isRestoredDischarge(d) || !d.exitDate || daysBetween(d.exitDate, today) > 14 || continuityRecorded(d.continuity)) return;
+      // «משוחרר לטיפול חוץ» / already handed to Outpatient = the continued treatment IS known (outpatient) — no «ללא המשך טיפול» task.
+      if (d.disposition === 'released_outpatient' || (c.outpatientSent && c.outpatientSent['discharge:' + d.id])) return;
+      // subjectId = the resolved Patients id (classic discharges carry no patientId); open on «פגישות ושירותים», where the discharge and its «המשך טיפול» live.
+      rows.push({ id: 'ex:cont:' + d.id, kind: 'continuity', subjectKind: 'patient', subjectId: dischargePatientId(d, c.patients), dischargeId: d.id, name: d.name, house: houseName(d.houseId), action: 'לעדכן המשך טיפול', why: 'שוחרר/ה ' + fmtDate(d.exitDate) + ' ללא המשך טיפול', when: d.exitDate, time: '', owner: '', state: 'wait', priority: 'exception', open: 'meetings' });
     });
     return rows;
   }
@@ -1519,7 +1552,7 @@
       else if (r.contactable) b.push('<button type="button" class="btn small primary" data-contact-open="' + esc(subj) + '">תיעוד שיחה</button>');
       else if (r.focusMeeting) b.push('<button type="button" class="btn small primary"' + openAttr + '>קביעת תאריך</button>');
       else if (r.classic) b.push('<a class="btn small primary" href="/?view=classic">לבקרת גבייה</a>');
-      else if (r.open) b.push('<button type="button" class="btn small primary"' + openAttr + '>' + (r.open === 'meetings' ? 'לדיווח' : r.open === 'account' ? 'לחשבון' : 'פתיחה') + '</button>');
+      else if (r.open) b.push('<button type="button" class="btn small primary"' + openAttr + '>' + (r.kind === 'continuity' ? 'לעדכון' : r.open === 'meetings' ? 'לדיווח' : r.open === 'account' ? 'לחשבון' : 'פתיחה') + '</button>');
       if (r.task) b.push('<button type="button" class="btn small" data-task-resched="' + esc(r.task.id) + '">שינוי מועד</button>');
       if (!r.classic || (state.me && state.me.view !== 'controller')) b.push('<button type="button" class="btn small" data-open-' + esc(r.subjectKind) + '="' + esc(r.subjectId) + '">כרטיס</button>');
       return b.join('');
@@ -1933,7 +1966,8 @@
         if (s(v.disposition) === 'released_outpatient') {
           return win.fetch('/api/outpatient-lead', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dischargeId: audit.id, manual: false }) })
             .then(function (r) { return r.json().catch(function () { return {}; }); })
-            .then(function (d) { toast(d && d.ok === true && (d.sent || d.alreadySent) ? (d.alreadySent ? 'המטופל כבר נשלח לאמבולטורי' : 'נוצר ליד טיפול חוץ באאוטפיישנט') : 'יצירת ליד טיפול חוץ נכשלה — אפשר לנסות שוב בדשבורד', !(d && d.ok === true)); return true; })
+            .then(function (d) { if (d && d.ok === true && (d.sent || d.alreadySent)) { if (!state.data.outpatientSentLeadIds) state.data.outpatientSentLeadIds = []; state.data.outpatientSentLeadIds.push('discharge:' + audit.id); renderMain(); }
+              toast(d && d.ok === true && (d.sent || d.alreadySent) ? (d.alreadySent ? 'המטופל כבר נשלח לאמבולטורי' : 'נוצר ליד טיפול חוץ באאוטפיישנט') : 'יצירת ליד טיפול חוץ נכשלה — אפשר לנסות שוב בדשבורד', !(d && d.ok === true)); return true; })
             .catch(function () { toast('יצירת ליד טיפול חוץ נכשלה — אפשר לנסות שוב בדשבורד', true); return true; });
         }
         return true;
@@ -1955,7 +1989,7 @@
       return toolbar + '<div class="tbl-wrap"><table class="tbl" id="crm-discharged"><thead><tr><th>שם</th><th>בית</th><th>כניסה</th><th>יציאה</th><th>סיבה</th><th>המשך טיפול</th><th>אמבולטורי</th><th></th></tr></thead><tbody>'
         + list.map(function (r) {
           const op = r.sentToOutpatient ? chip('ok', 'נשלח') : (r.disposition === 'released_outpatient' ? chip('late', 'לא נשלח') : '<span class="na">—</span>');
-          return '<tr data-discharge="' + esc(r.id) + '"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtDate(r.date)) + '</td><td>' + esc(fmtDate(r.exitDate)) + '</td><td>' + esc(r.dispositionLabel || '—') + '</td><td>' + esc(r.continuity || '—') + '</td><td>' + op + '</td>'
+          return '<tr data-discharge="' + esc(r.id) + '"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtDate(r.date)) + '</td><td>' + esc(fmtDate(r.exitDate)) + '</td><td>' + esc(r.dispositionLabel || '—') + '</td><td>' + esc(continuityKnown(r.continuity) ? continuityLabel(r.continuity) : (s(r.continuity) && r.continuity !== 'unknown' ? r.continuity : (r.disposition === 'released_outpatient' || r.sentToOutpatient ? continuityLabel('continued_outpatient') : '—'))) + '</td><td>' + op + '</td>'
             + '<td>' + (ro ? '' : '<button type="button" class="btn small" data-restore="' + esc(r.id) + '">שחזר</button>' + (!r.sentToOutpatient ? ' <button type="button" class="btn small" data-to-outpatient="' + esc(r.id) + '">העבר לאמבולטורי</button>' : '')) + '</td></tr>';
         }).join('') + '</tbody></table></div><div id="crm-restore"></div>';
     }
@@ -2355,7 +2389,7 @@
       const c = compute(state.data, state.today);
       const lead = kind === 'lead' ? c.leads.filter(function (l) { return l.id === id; })[0] : null;
       const pat = kind === 'patient' ? c.patients.filter(function (p) { return p.id === id; })[0] : null;
-      if (!lead && !pat) return;
+      if (!lead && !pat) { toast(kind === 'lead' ? 'הפנייה לא נמצאה — ייתכן שנסגרה או הועברה. רענני את הדף.' : 'כרטיס המטופל/ת לא נמצא ברשימת המטופלים — פתחי דרך «מטופלים» או בדשבורד הקלאסי.', true); return; }
       if (!(keepTab && state.drawer && state.drawer.id === id)) { state.account = null; state.report = null; state.small = null; state.receiptForm = null; }
       const dr = $('#crm-drawer');
       const name = lead ? lead.name : pat.name;
@@ -2630,6 +2664,25 @@
         })
         .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'השינוי לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
     }
+    /* «לעדכן המשך טיפול»: one discharged row, one field (setDischargeContinuity — Code.gs validates the key and the row again under its lock). */
+    function saveContinuity(dischargeId) {
+      const sel = doc.querySelector('#crm-drawer [data-continuity-for="' + (win.CSS && win.CSS.escape ? win.CSS.escape(dischargeId) : dischargeId) + '"]');
+      const v = s(sel && sel.value);
+      if (!continuityKnown(v)) { toast('בחרי המשך טיפול', true); return; }
+      if (state.saving) return;
+      state.saving = true;
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(continuityBody(dischargeId, v)) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+        .then(function (res) {
+          state.saving = false;
+          if (!res || res.ok !== true) { toast((res && (res.hebrewMessage || res.message)) || 'המשך הטיפול לא נשמר — נסי שוב', true); return; }
+          (state.data && Array.isArray(state.data.dischargedPatients) ? state.data.dischargedPatients : []).forEach(function (r) { if (s(r.id) === dischargeId) r.continuity = v; });
+          toast('המשך הטיפול נשמר ✓');
+          renderNav(); renderMain();
+          if (state.drawer) openDrawer(state.drawer.kind, state.drawer.id, true);
+        })
+        .catch(function (e) { state.saving = false; toast(String(e && e.message || e) || 'המשך הטיפול לא נשמר', true); });
+    }
     /* C14: the «פגישות ושירותים» pane. */
     function renderMeetings(m) {
       let html = '';
@@ -2643,7 +2696,11 @@
       if (m.discharge) {
         const dch = m.discharge;
         html += '<div class="group-title">שחרור</div><dl class="kv"><dt>תאריך יציאה</dt><dd>' + esc(fmtDate(dch.exitDate) || '—') + '</dd><dt>סיבה</dt><dd>' + esc(dch.dispositionLabel || '—') + '</dd>'
-          + (dch.continuity ? '<dt>המשך טיפול</dt><dd>' + esc(dch.continuity) + '</dd>' : '') + (dch.note ? '<dt>הערה</dt><dd>' + esc(dch.note) + '</dd>' : '') + '</dl>';
+          + (continuityRecorded(dch.continuity) ? '<dt>המשך טיפול</dt><dd>' + esc(continuityLabel(dch.continuity)) + '</dd>' : '') + (dch.note ? '<dt>הערה</dt><dd>' + esc(dch.note) + '</dd>' : '') + '</dl>';
+        // «לעדכן המשך טיפול» (CHANGELOG-crm-today-card-open.md): the existing setDischargeContinuity action, same as the classic «חתכי מטופלים» select.
+        if (!continuityRecorded(dch.continuity) && dch.id) html += '<div class="continuity-set"><label>המשך טיפול <select data-continuity-for="' + esc(dch.id) + '"><option value="">— בחרי —</option>'
+          + CONTINUITY_CHOICES.map(function (c2) { return '<option value="' + esc(c2.id) + '">' + esc(c2.label) + '</option>'; }).join('') + '</select></label>'
+          + '<button type="button" class="btn small primary" data-continuity-save="' + esc(dch.id) + '">שמירה</button></div>';
       }
       html += '<div class="group-title">שירותים</div><p class="na">שירותי המשך טיפול (Therapists) עדיין לא מחוברים לדשבורד.</p>';
       return html;
@@ -2797,7 +2854,7 @@
       const c = compute(state.data, state.today);
       const lead = kind === 'lead' ? c.leads.filter(function (l) { return l.id === id; })[0] : null;
       const pat = kind === 'patient' ? c.patients.filter(function (p) { return p.id === id; })[0] : null;
-      if (!lead && !pat) return;
+      if (!lead && !pat) { toast('לא נמצא/ה ברשימה — רענני את הדף.', true); return; }
       const subject = lead ? { leadId: lead.id } : { patientId: pat.id };
       const task = taskId ? taskById(taskId) : null;
       state.contact = { kind: kind, id: id, taskId: task ? task.id : '', sid: newSubmissionId() };
@@ -2877,6 +2934,8 @@
 
     /* events (delegated; filters, sort and scroll survive opening a card) */
     root.addEventListener('click', function (ev) {
+      const cs = ev.target.closest ? ev.target.closest('[data-continuity-save]') : null;
+      if (cs) return saveContinuity(cs.dataset.continuitySave);
       const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-billing-filter],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
@@ -2920,8 +2979,10 @@
       }
       if (t.dataset.view) { state.view = t.dataset.view; return renderMain(); }
       if (t.dataset.sort) { state.sort = t.dataset.sort; return renderMain(); }
-      if (t.dataset.openLead || t.dataset.openPatient) {
-        openDrawer(t.dataset.openLead ? 'lead' : 'patient', t.dataset.openLead || t.dataset.openPatient);
+      if (t.hasAttribute('data-open-lead') || t.hasAttribute('data-open-patient')) {
+        const isLead = t.hasAttribute('data-open-lead');
+        openDrawer(isLead ? 'lead' : 'patient', isLead ? t.dataset.openLead : t.dataset.openPatient);
+        if (!state.drawer || state.drawer.id !== (isLead ? t.dataset.openLead : t.dataset.openPatient)) return;
         if (t.dataset.openTab) { const tab = doc.querySelector('#crm-drawer [data-tab="' + t.dataset.openTab + '"]'); if (tab) tab.click(); }
         if (t.dataset.focusMeeting) focusMeetingForm();
         return;
@@ -3193,6 +3254,6 @@
     taskDue: taskDue, taskState: taskState, taskWhen: taskWhen, taskSubject: taskSubject, taskQueue: taskQueue, tasksFor: tasksFor, taskCounts: taskCounts, taskFormErrors: taskFormErrors, taskCreateBody: taskCreateBody, rescheduleErrors: rescheduleErrors, rescheduleBody: rescheduleBody, taskAccepted: taskAccepted,
     VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,
     TRIAGE_OPTIONS: TRIAGE_OPTIONS, triageQueue: triageQueue, waitlistErrors: waitlistErrors, waitlistPatch: waitlistPatch, laterErrors: laterErrors,
-    NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, myDay: myDay, weekPlan: weekPlan, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
+    NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
     moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));

@@ -227,6 +227,23 @@ ul.mini li { display: flex; flex-direction: column; border-inline-start: 2px sol
   .crm-who { display: none; }
 }
 
+/* ---- «היום שלי» at mid widths / split screen (CHANGELOG-crm-today-card-open.md) ----
+ * Grid children may shrink below their content (no squeezed columns, no page-wide horizontal scroll). */
+.day-main, .day-side, .row.work > span, .row.done > span { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 1279px) {
+  /* the side column moves under the work list and lays its boxes out side by side */
+  .day-grid { grid-template-columns: minmax(0, 1fr); }
+  .day-side { position: static; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); align-items: start; }
+}
+@media (min-width: 900px) and (max-width: 1099px) {
+  /* narrow main column: two-line row, actions on their own line */
+  .row.work, .row.done { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr); }
+  .row.work.h, .row.done.h { display: none; }
+  .row.work .toolbar { grid-column: 1 / -1; justify-content: flex-start; }
+}
+.continuity-set { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0 10px; }
+.continuity-set select { background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; min-height: 44px; max-width: 100%; }
+
 /* ---- Stage 3: the triage round (CHANGELOG-crm-triage.md) ---- */
 .triage-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); max-width: 820px; }
 .triage-card .note { margin: 6px 0 12px; color: var(--text-muted); }

@@ -348,7 +348,10 @@
 // v106 → v107: «החלפת משתמש» in the CRM and classic headers; the CRM drawer hides «חשבון» for Dana
 // (crm/crm.js, crm.html, crm.css, app.js, style.css) (CHANGELOG-crm-dana-default-switch-user.md).
 // From the live v106; monotonic, v17 never reused.
-var CACHE_VERSION = 'v107';
+// v107 → v108: «היום שלי» — every task card opens (a discharge resolves to its patient; «לעדכן המשך טיפול»
+// in the drawer), mid-width / split-screen layout (crm/crm.js, crm/crm.css) (CHANGELOG-crm-today-card-open.md).
+// From the live v107; monotonic, v17 never reused.
+var CACHE_VERSION = 'v108';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
