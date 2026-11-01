@@ -356,7 +356,8 @@
 // (CHANGELOG-crm-search-admit-funder.md). Stacked on v108 (PR #337); monotonic, v17 never reused.
 // v109 → v110: CRM-ID-01 safe explicit decision for direct intake and removal of
 // automatic lead-closure action based only on name/family phone matching.
-var CACHE_VERSION = 'v110';
+// v110 → v111: integrated CRM-ID-01 identity guard and handoff follow-up gate.
+var CACHE_VERSION = 'v111';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
