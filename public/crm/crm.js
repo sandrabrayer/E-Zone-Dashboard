@@ -156,10 +156,10 @@
   /* A name as compared: spaces collapsed, lower case. Pure. */
   function nameKey(v) { return s(v).replace(/\s+/g, ' ').toLowerCase(); }
   const OPEN_STAGE_IDS = ['new', 'visit', 'waitlist', 'paid'];
-  /* The OPEN board lead (new / visit / waitlist / paid) of the person a direct add names:
-   * same phone when one is typed, else the same full name. Exactly one → that lead
-   * (the add becomes its admission, so it never stays «בטיפול פעיל» on the board);
-   * two or more → 'ambiguous'; none → null. Pure. */
+  /* Candidate for an OPERATOR review only: a phone may belong to another family
+   * member and a name is not a unique identity. NEVER authorize admission or
+   * mark a lead admitted from this match alone. Prefer selecting the exact
+   * lead in its own card; otherwise confirm an independent direct intake. */
   function openLeadOfPerson(leads, name, phone) {
     const nk = nameKey(name), ph = localPhone(phone);
     const open = (leads || []).filter(function (l) { return l && OPEN_STAGE_IDS.indexOf(s(l.stage)) >= 0; });
@@ -1278,7 +1278,10 @@
   function newLeadsNoContact(leads, tasks, index, today) {
     const open = {};
     (tasks || []).forEach(function (t) { if (t && t.status === 'open' && (t.kind === 'call') && s(t.leadId)) open[s(t.leadId)] = true; });
-    const li = index && index.leads ? index.leads : {};
+    // Without a successful contact-index read, absence of a row is NOT evidence of no contact.
+    // A missing tasks read is equally unsafe: an open callback may already cover this lead.
+    if (!Array.isArray(tasks) || !index || index.ok === false || !index.leads) return [];
+    const li = index.leads;
     return (leads || []).filter(function (l) { return l.stage === 'new' && !li[l.id] && !open[l.id]; })
       .map(function (l) { return { lead: l, age: l.created ? daysBetween(l.created, today) : null }; })
       .sort(function (a, c) { return (c.lead.created || '').localeCompare(a.lead.created || ''); });   // newest first — the family is still waiting
@@ -1324,11 +1327,18 @@
       if (l.stage === 'paid' && l.entryDate && l.entryDate <= today) rows.push(rowOfLead(l, { id: 'ex:admit:' + l.id, kind: 'admission_due', action: 'קליטה לבית לא בוצעה', why: 'תאריך הכניסה ' + fmtDate(l.entryDate) + ' עבר', when: l.entryDate, state: 'late', priority: 'exception' }));
     });
     (c.discharges || []).forEach(function (d) {
-      if (d.deletedAt || isRestoredDischarge(d) || !d.exitDate || daysBetween(d.exitDate, today) > 14 || continuityRecorded(d.continuity)) return;
-      // «משוחרר לטיפול חוץ» / already handed to Outpatient = the continued treatment IS known (outpatient) — no «ללא המשך טיפול» task.
-      if (d.disposition === 'released_outpatient' || (c.outpatientSent && c.outpatientSent['discharge:' + d.id])) return;
-      // subjectId = the resolved Patients id (classic discharges carry no patientId); open on «פגישות ושירותים», where the discharge and its «המשך טיפול» live.
-      rows.push({ id: 'ex:cont:' + d.id, kind: 'continuity', subjectKind: 'patient', subjectId: dischargePatientId(d, c.patients), dischargeId: d.id, name: d.name, house: houseName(d.houseId), action: 'לעדכן המשך טיפול', why: 'שוחרר/ה ' + fmtDate(d.exitDate) + ' ללא המשך טיפול', when: d.exitDate, time: '', owner: '', state: 'wait', priority: 'exception', open: 'meetings' });
+      if (d.deletedAt || isRestoredDischarge(d) || !d.exitDate || continuityRecorded(d.continuity)) return;
+      // Referral/disposition = sent/intended, NOT confirmed treatment start.
+      // The status-return feed is still a draft. A derived exception stays
+      // visible even after day 14 until a documented result is recorded.
+      const sent = !!(c.outpatientSent && c.outpatientSent['discharge:' + d.id]);
+      const expectingOutpatient = sent || d.disposition === 'released_outpatient';
+      const action = expectingOutpatient ? 'לאמת המשך טיפול לאחר הפניה לאמבולטורי' : 'לעדכן המשך טיפול';
+      const reason = expectingOutpatient
+        ? (sent ? 'הפנייה נשלחה, אך לא התקבל אישור שהטיפול התחיל' : 'סומן מעבר לאמבולטורי, אך שליחת הפנייה והתחלת הטיפול לא אומתו')
+        : 'שוחרר/ה ' + fmtDate(d.exitDate) + ' ללא תוצאת המשך טיפול';
+      // One read-only exception per source discharge; no third writable task.
+      rows.push({ id: 'ex:cont:' + d.id, kind: 'continuity', subjectKind: 'patient', subjectId: dischargePatientId(d, c.patients), dischargeId: d.id, name: d.name, house: houseName(d.houseId), action: action, why: reason, when: d.exitDate, time: '', owner: 'ורד', state: 'wait', priority: 'exception', open: 'meetings' });
     });
     return rows;
   }
@@ -1345,7 +1355,9 @@
   function myDay(c, tasks, index, debt, today, me, f, payments) {
     const finance = !!(me && me.finance);
     const b = meetingBuckets(c.leads, today);
-    const li = index && index.leads ? index.leads : {}, pi = index && index.patients ? index.patients : {};
+    const contactAvailable = !!(index && index.ok !== false && index.leads && index.patients);
+    const tasksAvailable = Array.isArray(tasks);
+    const li = contactAvailable ? index.leads : {}, pi = contactAvailable ? index.patients : {};
     const lastOf = function (r) { return r.subjectKind === 'lead' ? li[r.subjectId] : pi[r.subjectId]; };
     const tq = (tasks || []).filter(function (t) { return t && t.status === 'open'; }).map(function (t) { return rowOfTask(t, c, today); });
     const calls = tq.filter(function (r) { return r.task.kind === 'call'; });
@@ -1380,7 +1392,7 @@
       if (payments && payments.ok !== false) verificationRows(payments, today).forEach(function (r) { money.push(r); });
     }
     const all = [].concat(money, calls, meetings, followup, fresh, houses, otherTasks).filter(function (r) { return passes(r, f); });
-    all.forEach(function (r) { r.lastContact = lastContactText(lastOf(r)); r.domain = r.domain || (money.indexOf(r) >= 0 ? 'collection' : calls.indexOf(r) >= 0 ? 'calls' : meetings.indexOf(r) >= 0 ? 'meetings' : followup.indexOf(r) >= 0 ? 'followup' : fresh.indexOf(r) >= 0 ? 'newleads' : houses.indexOf(r) >= 0 ? 'houses' : 'calls'); });
+    all.forEach(function (r) { r.lastContact = contactAvailable ? lastContactText(lastOf(r)) : 'יומן הקשר אינו זמין'; r.domain = r.domain || (money.indexOf(r) >= 0 ? 'collection' : calls.indexOf(r) >= 0 ? 'calls' : meetings.indexOf(r) >= 0 ? 'meetings' : followup.indexOf(r) >= 0 ? 'followup' : fresh.indexOf(r) >= 0 ? 'newleads' : houses.indexOf(r) >= 0 ? 'houses' : 'calls'); });
     const byDomain = {}; DOMAINS.forEach(function (d) { byDomain[d.id] = []; });
     all.forEach(function (r) { byDomain[r.domain].push(r); });
     Object.keys(byDomain).forEach(function (k) { sortRows(byDomain[k]); });
@@ -1393,22 +1405,28 @@
       // receipts — not confirmed cash, not her task, never counted as collection work. Debt figures untouched.
       const waitingOrtal = countOf(byDomain.collection, function (r) { return r.kind === 'receipt_reported'; });
       const toCollect = countOf(byDomain.collection, function (r) { return r.kind !== 'receipt_reported' && dueNow(r); });
-      cards.push({ id: 'collection', label: 'גבייה לביצוע', value: debtCount === false ? null : toCollect,
-        second: payments === undefined ? { label: 'ממתין לאימות אורטל', value: '…' } : (payments && payments.ok !== false ? { label: 'ממתין לאימות אורטל', value: waitingOrtal } : { label: 'ממתין לאימות אורטל', value: '—' }),
-        hint: debtCount === null ? 'טוען…' : (debtCount === false ? 'המידע אינו זמין' : debtCount + ' מחזורים פתוחים · דיווח אינו כסף מאומת') });
+      // A count sourced from THREE independent reads is never a complete zero if even
+      // one of debt, open Tasks or receipts has failed / has not arrived yet.
+      const paymentsAvailable = !!(payments && payments.ok !== false && (Array.isArray(payments.receipts) || Array.isArray(payments.payments)));
+      const collectionComplete = debtCount !== null && debtCount !== false && tasksAvailable && paymentsAvailable;
+      const collectionLoading = debtCount === null || tasks === undefined || payments === undefined;
+      cards.push({ id: 'collection', label: 'גבייה לביצוע', value: collectionComplete ? toCollect : null,
+        second: payments === undefined ? { label: 'ממתין לאימות אורטל', value: '…' } : (paymentsAvailable ? { label: 'ממתין לאימות אורטל', value: waitingOrtal } : { label: 'ממתין לאימות אורטל', value: '—' }),
+        hint: collectionComplete ? debtCount + ' מחזורים פתוחים · דיווח אינו כסף מאומת' : (collectionLoading ? 'טוען… · ספירת הגבייה עדיין אינה מלאה' : 'המידע חלקי — מקור חובות, משימות או תקבולים אינו זמין') });
     }
     else cards.push({ id: 'houses', label: 'מה דחוף בבתים', value: all.filter(function (r) { return r.priority === 'exception'; }).length, hint: 'חריגים הממתינים להחלטה' });
     cards.push({ id: 'calls', label: 'שיחות ומעקבים', value: tasks ? countOf(byDomain.calls, dueNow) : null, hint: tasks ? countOf(byDomain.calls, function (r) { return r.state === 'late'; }) + ' באיחור · ' + byDomain.calls.length + ' פתוחות' : (tasks === undefined ? 'טוען…' : 'המידע אינו זמין') });
     cards.push({ id: 'meetings', label: 'פגישות היום', value: countOf(byDomain.meetings, function (r) { return r.kind === 'meeting_today'; }), second: { label: 'תיאומים פתוחים', value: countOf(byDomain.meetings, function (r) { return r.kind === 'meeting_unscheduled'; }) } });
     cards.push({ id: 'followup', label: 'המשך טיפול לאחר פגישות', value: byDomain.followup.length, hint: countOf(byDomain.followup, function (r) { return r.kind === 'awaiting_report'; }) + ' ממתינות לדיווח מנהל/ת' });
-    cards.push({ id: 'newleads', label: 'פניות חדשות ללא מגע', value: index ? byDomain.newleads.length : null, hint: index ? 'ללא ניסיון קשר מתועד' : (index === undefined ? 'טוען…' : 'המידע אינו זמין') });
+    cards.push({ id: 'newleads', label: 'פניות חדשות ללא מגע', value: contactAvailable && tasksAvailable ? byDomain.newleads.length : null, hint: contactAvailable && tasksAvailable ? 'ללא ניסיון קשר מתועד' : (index === undefined || tasks === undefined ? 'טוען…' : 'לא ניתן לקבוע ללא יומן קשר ומשימות') });
     const urgent = sortRows(all.filter(function (r) { return r.priority === 'exception' || r.priority === 'binding'; }).slice());
     const waiting = all.filter(function (r) { return r.waitingOn; });
     const exceptions = all.filter(function (r) { return r.priority === 'exception'; });
-    return { cards: cards, byDomain: byDomain, urgent: urgent, waiting: waiting, meetingsToday: byDomain.meetings.filter(function (r) { return r.kind === 'meeting_today'; }), exceptions: exceptions, total: all.length, buckets: b };
+    return { cards: cards, byDomain: byDomain, urgent: urgent, waiting: waiting, meetingsToday: byDomain.meetings.filter(function (r) { return r.kind === 'meeting_today'; }), exceptions: exceptions, total: all.length, buckets: b,
+      sourceState: { contact: contactAvailable, tasks: tasksAvailable, collection: !finance ? 'hidden' : (cards[0].value === null ? (debt === null || debt === undefined || tasks === undefined || payments === undefined ? 'loading' : 'partial') : 'complete') } };
   }
   /* «השבוע»: the dated rows of a Sun–Sat week, grouped by day; a window task sits on every day it covers (one id). */
-  function weekPlan(model, ws) {
+  function weekPlan(model, ws, c, filters, today) {
     const days = [];
     for (let i = 0; i < 7; i++) { const d = addDays(ws, i); days.push({ date: d, name: DAY_NAMES[i], rows: [] }); }
     const seen = {};
@@ -1420,6 +1438,18 @@
         if (!r.when) return;
         days.forEach(function (d) { if (d.date === r.when) d.rows.push(r); });
       });
+    });
+    // Reuse the existing calendar projection: My Day intentionally contains only TODAY's
+    // meetings, so a week assembled solely from My Day silently omits future appointments.
+    // This read-only projection does not create a meeting, task or second calendar.
+    if (c && Array.isArray(c.leads)) calendarRows(c.leads, { mode: 'week', from: ws, to: addDays(ws, 6) }, today || ws).forEach(function (v) {
+      const row = { id: 'week:meeting:' + v.id, kind: 'meeting_week', subjectKind: 'lead', subjectId: v.id, name: v.name, house: v.house,
+        action: 'פגישת קבלה' + (v.time ? ' ' + v.time : ''), why: 'עם ' + (v.withWhom || '—') + ' · ' + v.status.text, owner: v.withWhom,
+        when: v.date, time: v.time, state: v.status.state, priority: v.status.state === 'today' && v.time ? 'binding' : v.status.state, open: 'meetings' };
+      if (!passes(row, filters)) return;
+      const day = days.filter(function (d) { return d.date === v.date; })[0];
+      // The same appointment already arrived in My Day as meeting_today.
+      if (day && !day.rows.some(function (r) { return r.subjectKind === 'lead' && r.subjectId === v.id && r.kind === 'meeting_today'; })) day.rows.push(row);
     });
     days.forEach(function (d) { sortRows(d.rows); });
     return { start: ws, end: addDays(ws, 6), days: days, undated: Object.keys(model.byDomain).reduce(function (acc, k) { return acc.concat(model.byDomain[k].filter(function (r) { return r.task && !r.when; })); }, []) };
@@ -1448,9 +1478,10 @@
     { id: 'check', label: 'לסמן לבדיקה נוספת', hint: 'משימת בירור עם מועד ואחראי' }];
   /* The queue: open leads with NO documented contact and NO open task, oldest first (the family waited longest). */
   function triageQueue(c, tasks, index, today) {
+    if (!Array.isArray(tasks) || !index || index.ok === false || !index.leads) return [];
     const open = {};
-    (tasks || []).forEach(function (t) { if (t && t.status === 'open' && s(t.leadId)) open[s(t.leadId)] = t; });
-    const li = index && index.leads ? index.leads : {};
+    tasks.forEach(function (t) { if (t && t.status === 'open' && s(t.leadId)) open[s(t.leadId)] = t; });
+    const li = index.leads;
     return (c.leads || []).filter(function (l) { return (l.stage === 'new' || (l.stage === 'visit' && !l.visitDate)) && !li[l.id] && !open[l.id]; })
       .map(function (l) { return { lead: l, age: l.created ? daysBetween(l.created, today) : null, reason: l.stage === 'visit' ? 'ביקור ללא תאריך ואין מגע מתועד' : 'אין מגע מתועד' }; })
       .sort(function (a, b) { return (a.lead.created || '9').localeCompare(b.lead.created || '9'); });
@@ -1492,7 +1523,7 @@
       if (r.isVoid) return;
       const st = verifyStatus(r);
       if (st === 'confirmed') return;
-      const base = { id: 'v:' + r.id, subjectKind: 'patient', subjectId: r.patientUid || r.patientId, name: r.patientName, house: r.houseName, when: r.receivedDate, time: '', owner: 'אורטל', open: 'account', receipt: r,
+      const base = { id: 'v:' + r.id, subjectKind: 'patient', subjectId: r.patientUid || r.patientId, name: r.patientName, house: r.houseName, when: r.receivedDate, time: '', owner: st === 'reported' ? 'אורטל' : 'ורד', open: 'account', receipt: r,
         action: VERIFY_LABELS[st] + ' — ' + fmtMoney(r.amount), why: 'התקבל ' + fmtDate(r.receivedDate) + (r.method ? ' · ' + r.method : '') + (r.funder ? ' · ' + r.funder : '') };
       if (st === 'reported') out.push(Object.assign(base, { kind: 'receipt_reported', waitingOn: 'אורטל', state: 'wait', priority: 'wait' }));
       else out.push(Object.assign(base, { kind: 'receipt_flagged', state: 'late', priority: 'exception', why: base.why + (r.flagNote ? ' · ' + r.flagNote : '') }));
@@ -1654,21 +1685,21 @@
         const rows = d.id === 'houses' && state.domain === 'houses' ? m.exceptions : m.byDomain[d.id];
         if (!state.domain && d.id === 'houses' && !rows.length) return;
         main += '<section class="domain acc-' + d.id + '" data-domain-section="' + d.id + '"><div class="group-title"><strong>' + esc(d.label) + '</strong> <span class="n chip">' + rows.length + '</span>'
-          + (d.id === 'collection' && state.debt === false ? ' <span class="chip late">המידע אינו זמין</span>' : '') + (d.id === 'calls' && !state.tasks ? ' <span class="chip ' + (state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '') + (d.id === 'newleads' && !state.index ? ' <span class="chip ' + (state.index === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '')
+          + (d.id === 'collection' && m.sourceState.collection !== 'complete' ? ' <span class="chip ' + (m.sourceState.collection === 'loading' ? 'wait">טוען…' : 'late">מידע חלקי') + '</span>' : '') + (d.id === 'calls' && !state.tasks ? ' <span class="chip ' + (state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '') + (d.id === 'newleads' && (!m.sourceState.contact || !m.sourceState.tasks) ? ' <span class="chip ' + (state.index === undefined || state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '')
           + '<span class="grow"></span>' + (d.id === 'newleads' && rows.length ? '<button type="button" class="btn small" data-area="triage">סבב בירור — אחת אחרי השנייה</button>' : '') + (state.domain ? '<button type="button" class="link" data-domain="' + d.id + '">חזרה לכל התחומים</button>' : '') + '</div>'
           + rowsBlock(rows, state.domain ? 0 : 8) + '</section>';
       });
-      if (!main) main = '<div class="crm-state">אין משימות פתוחות היום 🎉</div>';
+      if (!main) main = (m.sourceState.contact && m.sourceState.tasks && m.sourceState.collection !== 'loading' && m.sourceState.collection !== 'partial') ? '<div class="crm-state">אין משימות פתוחות היום 🎉</div>' : '<div class="crm-state">חלק ממקורות המידע חסרים — אין אפשרות לאשר שאין משימות פתוחות.</div>';
       const side = '<aside class="day-side">'
         + '<div class="side-box"><div class="group-title">פגישות היום <span class="n chip">' + m.meetingsToday.length + '</span></div>' + (m.meetingsToday.length ? '<ul class="mini">' + m.meetingsToday.map(function (r) { return '<li><button type="button" class="link" data-open-lead="' + esc(r.subjectId) + '" data-open-tab="meetings">' + esc((r.time || '—') + ' · ' + r.name) + '</button><span class="sub">' + esc(r.house + ' · ' + r.why) + '</span></li>'; }).join('') + '</ul>' : '<p class="na">אין פגישות היום.</p>') + '</div>'
-        + '<div class="side-box"><div class="group-title">ממתין לגורם אחר <span class="n chip">' + m.waiting.length + '</span></div>' + (m.waiting.length ? '<ul class="mini">' + m.waiting.slice(0, 8).map(function (r) { return '<li><button type="button" class="link" data-open-lead="' + esc(r.subjectId) + '" data-open-tab="meetings">' + esc(r.name) + '</button><span class="sub">' + esc('ממתין ל' + r.waitingOn + ' · מאז ' + fmtDate(r.when)) + '</span></li>'; }).join('') + '</ul>' : '<p class="na">אין המתנות.</p>') + '</div>'
+        + '<div class="side-box"><div class="group-title">ממתין לגורם אחר <span class="n chip">' + m.waiting.length + '</span></div>' + (m.waiting.length ? '<ul class="mini">' + m.waiting.slice(0, 8).map(function (r) { return '<li><button type="button" class="link" data-open-' + esc(r.subjectKind) + '="' + esc(r.subjectId) + '"' + (r.open ? ' data-open-tab="' + esc(r.open) + '"' : '') + '>' + esc(r.name) + '</button><span class="sub">' + esc('ממתין ל' + r.waitingOn + ' · מאז ' + fmtDate(r.when)) + '</span></li>'; }).join('') + '</ul>' : '<p class="na">אין המתנות.</p>') + '</div>'
         + '<div class="side-box"><div class="group-title">חריגים בבתים <span class="n chip">' + m.exceptions.length + '</span></div>' + (m.exceptions.length ? '<ul class="mini">' + m.exceptions.slice(0, 8).map(function (r) { return '<li><button type="button" class="link" data-open-' + esc(r.subjectKind) + '="' + esc(r.subjectId) + '"' + (r.open ? ' data-open-tab="' + esc(r.open) + '"' : '') + '>' + esc(r.name) + '</button><span class="sub">' + esc(r.action + ' · ' + r.why) + '</span></li>'; }).join('') + '</ul>' : '<p class="na">אין חריגים.</p>') + '</div>'
         + '</aside>';
       return html + '<div class="day-grid"><div class="day-main">' + main + '</div>' + side + '</div>';
     }
     function renderWeek(m) {
       const ws = weekStart(state.week || state.today);
-      const w = weekPlan(m, ws);
+      const w = weekPlan(m, ws, compute(state.data, state.today), state.filters, state.today);
       let html = weekBar(ws, 'crm-day');
       html += '<div class="week">' + w.days.map(function (d) {
         return '<section class="wday' + (d.date === state.today ? ' is-today' : '') + '"><div class="group-title"><strong>' + esc(d.name) + '</strong> ' + esc(fmtDate(d.date)) + ' <span class="n chip">' + d.rows.length + '</span></div>' + (d.rows.length ? rowsBlock(d.rows, 0) : '<p class="na">—</p>') + '</section>';
@@ -1748,7 +1779,7 @@
           return '<div class="col" data-stage="' + esc(col.stage.id) + '"><h3><span>' + esc(col.stage.label) + '</span><span class="n">' + col.leads.length + '</span></h3>' + col.leads.map(function (l) {
             const na = nextActionFor(l, state.today);
             const inH = leadAlreadyInHouse(l, c.patients, c.leads);
-            return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + (inH ? ' <span class="chip late">כבר בבית ' + esc(houseName(inH.houseId)) + '</span>' : '') + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip src">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? avatar(l.assignedTo) : '') + '</div>'
+            return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + (inH ? ' <span class="chip late">שם/טלפון דומה בבית ' + esc(houseName(inH.houseId)) + '</span>' : '') + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip src">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? avatar(l.assignedTo) : '') + '</div>'
               + (l.created ? '<div class="meta"><span>נוצר ' + esc(fmtDate(l.created)) + '</span>' + (l.visitDate ? '<span>פגישה ' + esc(fmtDate(l.visitDate)) + (l.visitTime ? ' ' + esc(l.visitTime) : '') + '</span>' : '') + '</div>' : '')
               + '<div class="next">' + chip(na.state, na.text) + (stageAfter(l.stage) ? ' <button type="button" class="btn small" data-stage-next="' + esc(l.id) + '">שלב הבא ←</button>' : '') + '</div></div>';
           }).join('') + '</div>';
@@ -1897,10 +1928,22 @@
       const errs = directAddErrors(v, !!(state.me && state.me.finance));
       if (f) showErrs(f, errs, ['name', 'phone', 'houseId', 'date', 'pay', 'funder']);
       if (Object.keys(errs).length) return Promise.resolve(false);
-      // The person already has an OPEN lead on the board → admit THAT lead (else it stays «בטיפול פעיל» next to the patient).
+      // A match by phone/name is a search suggestion, NOT evidence of identity.
+      // Explicit source-lead admission is available only from that lead's card.
+      // A different person with a shared family phone may still be admitted
+      // independently, but only after the operator explicitly confirms this.
       const open = openLeadOfPerson(state.data.leads, v.name, v.phone);
-      if (open === 'ambiguous') { if (f) showErrs(f, { name: 'יש כמה פניות פתוחות בשם/טלפון הזה — קלטו מתוך הפנייה הנכונה ב«פניות»' }, ['name']); return Promise.resolve(false); }
-      if (open) { toast('נמצאה פנייה פתוחה של «' + open.name + '» — נקלטת ממנה'); return admitLead(open.id, v, f); }
+      if (open && s(v.independentCase) !== 'yes') {
+        const message = open === 'ambiguous'
+          ? 'נמצאו כמה פניות עם שם או טלפון דומים. לקליטה מפנייה קיימת פתחי את הפנייה המדויקת. אם זה אדם אחר, סמני אישור לקליטה עצמאית.'
+          : 'נמצאה פנייה של «' + open.name + '» עם שם או טלפון דומים. לקליטה מאותה פנייה פתחי את כרטיס הפנייה ואמתִי זהות. אם זה אדם אחר, סמני אישור לקליטה עצמאית.';
+        if (f) {
+          const warning = f.querySelector('#crm-independent-warning');
+          if (warning) { warning.textContent = message; warning.style.display = ''; }
+          showErrs(f, { name: 'נדרש אימות זהות לפני קליטה — לא בוצע שיוך לפנייה' }, ['name']);
+        } else toast(message, true);
+        return Promise.resolve(false);
+      }
       const pair = directAddRows(v, randomId(), state.today, houseName);
       const rows = patientsOfHouse(pair.patient.houseId);
       const leads = state.data.leads;
@@ -1922,6 +1965,9 @@
         + '<label>סכום חודשי (₪) * <input type="number" name="pay" min="0" step="1"><span class="err" data-err="pay"></span></label>'
         + '<label>סטטוס <select name="status">' + [{ id: 'active', label: 'פעיל' }, { id: 'trial', label: 'תקופת ניסיון' }, { id: 'wait', label: 'בהמתנה' }].map(function (st) { return '<option value="' + st.id + '">' + esc(st.label) + '</option>'; }).join('') + '</select></label>'
         + (state.me && state.me.finance ? '<label>גורם מממן * <select name="funder"><option value="">— בחרו —</option>' + FUNDERS.map(function (x) { return '<option>' + esc(x) + '</option>'; }).join('') + '</select><span class="err" data-err="funder"></span></label>' : '')
+        + '<label class="wide" id="crm-independent-warning" role="alert" style="display:none"></label>'
+        + '<label class="wide">אם קיים שם או טלפון דומה, יש לוודא האם זו אותה פנייה. <span class="na">קליטה מפנייה קיימת תבוצע דרך כרטיס הפנייה שלה בלבד.</span></label>'
+        + '<label class="wide"><input type="checkbox" name="independentCase" value="yes"> בדקתי: מדובר בקליטה עצמאית של אדם אחר, ואין לשייך לפנייה קיימת בעלת שם או טלפון דומים.</label>'
         + '<label class="wide">הערות <textarea name="notes" rows="2"></textarea></label>'
         + '<div class="wide"><button type="submit" class="btn primary">הוסף מטופל/ת</button> <button type="button" class="btn" data-cancel-drawer="1">ביטול</button> <span class="na" id="crm-save-state"></span></div></form>';
       dr.setAttribute('aria-hidden', 'false'); $('#crm-scrim').setAttribute('data-open', 'true');
@@ -2041,7 +2087,7 @@
       return toolbar + '<div class="tbl-wrap"><table class="tbl" id="crm-discharged"><thead><tr><th>שם</th><th>בית</th><th>כניסה</th><th>יציאה</th><th>סיבה</th><th>המשך טיפול</th><th>אמבולטורי</th><th></th></tr></thead><tbody>'
         + list.map(function (r) {
           const op = r.sentToOutpatient ? chip('ok', 'נשלח') : (r.disposition === 'released_outpatient' ? chip('late', 'לא נשלח') : '<span class="na">—</span>');
-          return '<tr data-discharge="' + esc(r.id) + '"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtDate(r.date)) + '</td><td>' + esc(fmtDate(r.exitDate)) + '</td><td>' + esc(r.dispositionLabel || '—') + '</td><td>' + esc(continuityKnown(r.continuity) ? continuityLabel(r.continuity) : (s(r.continuity) && r.continuity !== 'unknown' ? r.continuity : (r.disposition === 'released_outpatient' || r.sentToOutpatient ? continuityLabel('continued_outpatient') : '—'))) + '</td><td>' + op + '</td>'
+          return '<tr data-discharge="' + esc(r.id) + '"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtDate(r.date)) + '</td><td>' + esc(fmtDate(r.exitDate)) + '</td><td>' + esc(r.dispositionLabel || '—') + '</td><td>' + esc(continuityKnown(r.continuity) ? continuityLabel(r.continuity) : (s(r.continuity) && r.continuity !== 'unknown' ? r.continuity : (r.disposition === 'released_outpatient' || r.sentToOutpatient ? 'נשלח/מיועד לאמבולטורי — התחלת טיפול לא אומתה' : 'לא ידוע'))) + '</td><td>' + op + '</td>'
             + '<td>' + (ro ? '' : '<button type="button" class="btn small" data-restore="' + esc(r.id) + '">שחזר</button>' + (!r.sentToOutpatient ? ' <button type="button" class="btn small" data-to-outpatient="' + esc(r.id) + '">העבר לאמבולטורי</button>' : '')) + '</td></tr>';
         }).join('') + '</tbody></table></div><div id="crm-restore"></div>';
     }
@@ -2368,11 +2414,13 @@
       return (withBlank ? '<option value="">—</option>' : '') + all.map(function (v) { return '<option value="' + esc(v) + '"' + (v === current ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join('');
     }
     function renderLeadActions(l) {
-      // The person is already in a house (added there directly) while this lead is still open → close it as admitted.
+      // A matched name/phone is not proof that the stay belongs to this lead.
+      // Show a caution, but never close the lead as admitted without a verified
+      // explicit lead-to-stay link (ARCH-01). Existing source records stay intact.
       const cAll = compute(state.data, state.today);
       const inH = leadAlreadyInHouse(l, cAll.patients, cAll.leads);
-      const already = inH ? '<div class="notice warn">«' + esc(inH.name) + '» כבר בבית ' + esc(houseName(inH.houseId)) + ' מ-' + esc(fmtDate(inH.date))
-        + ' — הפנייה עדיין פתוחה. <button type="button" class="btn small primary" data-close-admitted="' + esc(l.id) + '" data-in-house="' + esc(inH.id) + '">סגירת הפנייה כנקלטה</button></div>' : '';
+      const already = inH ? '<div class="notice warn">קיימת קליטה בשם או בטלפון דומים בבית ' + esc(houseName(inH.houseId))
+        + '. יש לבדוק אם מדובר באותו אדם. הפנייה אינה נסגרת אוטומטית.</div>' : '';
       return already + renderLeadActionsBody(l);
     }
     function renderLeadActionsBody(l) {
@@ -3010,13 +3058,6 @@
     root.addEventListener('click', function (ev) {
       const cs = ev.target.closest ? ev.target.closest('[data-continuity-save]') : null;
       if (cs) return saveContinuity(cs.dataset.continuitySave);
-      const ca = ev.target.closest ? ev.target.closest('[data-close-admitted]') : null;
-      if (ca) {
-        const cc = compute(state.data, state.today);
-        const pt = cc.patients.filter(function (p) { return p.id === ca.dataset.inHouse; })[0];
-        if (!pt || state.saving) return;
-        return writeLead(ca.dataset.closeAdmitted, { stage: 'admitted', entryDate: pt.date, house: houseName(pt.houseId) }, 'סגירת הפנייה כנקלטה');
-      }
       const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-billing-filter],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
@@ -3107,7 +3148,7 @@
         const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
         admitLead(id, vals, f);
       } else if (f.dataset.form === 'direct-add') {
-        const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
+        const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.type === 'checkbox' ? (el.checked ? 'yes' : '') : el.value; });
         directAdd(vals, f);
       } else if (f.dataset.form === 'patient-edit') {
         const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
