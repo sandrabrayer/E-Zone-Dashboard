@@ -186,7 +186,7 @@ test('B: search from «היום שלי» finds a RELEASED patient (not a jump to
   } finally { await browser.close(); srv.close(); }
 });
 
-test('B: an open lead whose person is already in a house shows «כבר בבית» and closes as admitted with one lead save', { skip }, async () => {
+test('B: a possible in-house name/phone match warns but CANNOT close the lead automatically', { skip }, async () => {
   const srv = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
@@ -194,22 +194,16 @@ test('B: an open lead whose person is already in a house shows «כבר בבית
     await page.click('[data-area="leads"]');
     await page.waitForSelector('.card[data-open-lead="L-matan"] .chip.late', { timeout: 3000 });
     await page.click('.card[data-open-lead="L-matan"]');
-    await page.click('#crm-drawer [data-close-admitted="L-matan"]');
-    await page.waitForFunction(() => !document.querySelector('.card[data-open-lead="L-matan"]'), null, { timeout: 3000 });
-    const save = srv.posts.filter((p) => p.action === 'saveAll').pop();
-    const leads = typeof save.leads === 'string' ? JSON.parse(save.leads) : save.leads;
-    assert.equal(leads.length, 1);
-    assert.equal(leads[0].id, 'L-matan');
-    assert.equal(leads[0].stage, 'admitted');
-    assert.equal(leads[0].entryDate, daysAgo(5));
-    const pts = typeof save.patients === 'string' ? JSON.parse(save.patients) : save.patients;
-    assert.deepEqual(pts, {}, 'no patient row touched');
+    const note = await page.textContent('#crm-drawer .notice.warn');
+    assert.match(note, /אינה נסגרת אוטומטית/);
+    assert.equal(await page.locator('[data-close-admitted]').count(), 0);
+    assert.equal(srv.posts.filter(p => p.action === 'saveAll').length, 0);
     assert.deepEqual(errors, []);
     await ctx.close();
   } finally { await browser.close(); srv.close(); }
 });
 
-test('B: a direct add of a person with an open lead ADMITS that lead (no new «פנייה ישירה» lead), and the funder is saved', { skip }, async () => {
+test('B: matching lead NEVER auto-admits; independent patient requires a checked acknowledgment and keeps existing lead open', { skip }, async () => {
   const srv = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
@@ -217,26 +211,32 @@ test('B: a direct add of a person with an open lead ADMITS that lead (no new «�
     await page.click('[data-area="clients"]');
     await page.click('#crm-direct-add');
     const f = '#crm-drawer form[data-form="direct-add"]';
-    await page.fill(f + ' input[name="name"]', 'נועה ברק');
+    // Another person has the SAME shared contact number as an existing open lead.
+    await page.fill(f + ' input[name="name"]', 'מישהי אחרת');
     await page.fill(f + ' input[name="phone"]', '054-765-4321');
     await page.selectOption(f + ' select[name="houseId"]', 'ramot');
     await page.fill(f + ' input[name="pay"]', '9000');
     await page.selectOption(f + ' select[name="funder"]', { index: 1 });
     await page.click(f + ' button[type="submit"]');
-    await page.waitForFunction(() => /נשמר|נקלט/.test(document.body.textContent), null, { timeout: 5000 }).catch(() => {});
-    await page.waitForTimeout(500);
-    const save = srv.posts.filter((p) => p.action === 'saveAll').pop();
+    await page.waitForSelector('#crm-independent-warning:visible', { timeout: 3000 });
+    assert.match(await page.textContent('#crm-independent-warning'), /קליטה עצמאית/);
+    assert.equal(srv.posts.filter(p => p.action === 'saveAll').length, 0, 'no write before explicit decision');
+    await page.check(f + ' input[name="independentCase"]');
+    await page.click(f + ' button[type="submit"]');
+    await page.waitForTimeout(450);
+    const save = srv.posts.filter(p => p.action === 'saveAll').pop();
+    assert.ok(save, 'independent write recorded after confirmation');
     const leads = typeof save.leads === 'string' ? JSON.parse(save.leads) : save.leads;
     assert.equal(leads.length, 1);
-    assert.equal(leads[0].id, 'L-noa', 'the open lead, not a new dl- lead');
+    assert.match(leads[0].id, /^dl-/, 'new verified-direct lead, NOT the different-person open lead');
+    assert.equal(leads[0].name, 'מישהי אחרת');
     assert.equal(leads[0].stage, 'admitted');
     const pts = typeof save.patients === 'string' ? JSON.parse(save.patients) : save.patients;
-    assert.equal(pts.ramot.filter((p) => p.fromLead === 'L-noa').length, 1);
-    const fund = srv.posts.filter((p) => p.action === 'appendFunder');
+    assert.equal(pts.ramot.filter(p => p.fromLead === leads[0].id).length, 1);
+    const fund = srv.posts.filter(p => p.action === 'appendFunder');
     assert.equal(fund.length, 1);
     const fb = typeof fund[0].funder === 'string' ? JSON.parse(fund[0].funder) : fund[0].funder;
     assert.match(fb.submissionId, /^sub-[0-9a-f]{32}$/);
-    assert.ok(!(await page.textContent('body')).includes('שמירת הגורם המממן נכשלה'), 'no funder failure toast');
     assert.deepEqual(errors, []);
     await ctx.close();
   } finally { await browser.close(); srv.close(); }
