@@ -156,10 +156,10 @@
   /* A name as compared: spaces collapsed, lower case. Pure. */
   function nameKey(v) { return s(v).replace(/\s+/g, ' ').toLowerCase(); }
   const OPEN_STAGE_IDS = ['new', 'visit', 'waitlist', 'paid'];
-  /* The OPEN board lead (new / visit / waitlist / paid) of the person a direct add names:
-   * same phone when one is typed, else the same full name. Exactly one → that lead
-   * (the add becomes its admission, so it never stays «בטיפול פעיל» on the board);
-   * two or more → 'ambiguous'; none → null. Pure. */
+  /* Candidate for an OPERATOR review only: a phone may belong to another family
+   * member and a name is not a unique identity. NEVER authorize admission or
+   * mark a lead admitted from this match alone. Prefer selecting the exact
+   * lead in its own card; otherwise confirm an independent direct intake. */
   function openLeadOfPerson(leads, name, phone) {
     const nk = nameKey(name), ph = localPhone(phone);
     const open = (leads || []).filter(function (l) { return l && OPEN_STAGE_IDS.indexOf(s(l.stage)) >= 0; });
@@ -1897,10 +1897,22 @@
       const errs = directAddErrors(v, !!(state.me && state.me.finance));
       if (f) showErrs(f, errs, ['name', 'phone', 'houseId', 'date', 'pay', 'funder']);
       if (Object.keys(errs).length) return Promise.resolve(false);
-      // The person already has an OPEN lead on the board → admit THAT lead (else it stays «בטיפול פעיל» next to the patient).
+      // A match by phone/name is a search suggestion, NOT evidence of identity.
+      // Explicit source-lead admission is available only from that lead's card.
+      // A different person with a shared family phone may still be admitted
+      // independently, but only after the operator explicitly confirms this.
       const open = openLeadOfPerson(state.data.leads, v.name, v.phone);
-      if (open === 'ambiguous') { if (f) showErrs(f, { name: 'יש כמה פניות פתוחות בשם/טלפון הזה — קלטו מתוך הפנייה הנכונה ב«פניות»' }, ['name']); return Promise.resolve(false); }
-      if (open) { toast('נמצאה פנייה פתוחה של «' + open.name + '» — נקלטת ממנה'); return admitLead(open.id, v, f); }
+      if (open && s(v.independentCase) !== 'yes') {
+        const message = open === 'ambiguous'
+          ? 'נמצאו כמה פניות עם שם או טלפון דומים. לקליטה מפנייה קיימת פתחי את הפנייה המדויקת. אם זה אדם אחר, סמני אישור לקליטה עצמאית.'
+          : 'נמצאה פנייה של «' + open.name + '» עם שם או טלפון דומים. לקליטה מאותה פנייה פתחי את כרטיס הפנייה ואמתִי זהות. אם זה אדם אחר, סמני אישור לקליטה עצמאית.';
+        if (f) {
+          const warning = f.querySelector('#crm-independent-warning');
+          if (warning) { warning.textContent = message; warning.style.display = ''; }
+          showErrs(f, { name: 'נדרש אימות זהות לפני קליטה — לא בוצע שיוך לפנייה' }, ['name']);
+        } else toast(message, true);
+        return Promise.resolve(false);
+      }
       const pair = directAddRows(v, randomId(), state.today, houseName);
       const rows = patientsOfHouse(pair.patient.houseId);
       const leads = state.data.leads;
@@ -1922,6 +1934,9 @@
         + '<label>סכום חודשי (₪) * <input type="number" name="pay" min="0" step="1"><span class="err" data-err="pay"></span></label>'
         + '<label>סטטוס <select name="status">' + [{ id: 'active', label: 'פעיל' }, { id: 'trial', label: 'תקופת ניסיון' }, { id: 'wait', label: 'בהמתנה' }].map(function (st) { return '<option value="' + st.id + '">' + esc(st.label) + '</option>'; }).join('') + '</select></label>'
         + (state.me && state.me.finance ? '<label>גורם מממן * <select name="funder"><option value="">— בחרו —</option>' + FUNDERS.map(function (x) { return '<option>' + esc(x) + '</option>'; }).join('') + '</select><span class="err" data-err="funder"></span></label>' : '')
+        + '<label class="wide" id="crm-independent-warning" role="alert" style="display:none"></label>'
+        + '<label class="wide">אם קיים שם או טלפון דומה, יש לוודא האם זו אותה פנייה. <span class="na">קליטה מפנייה קיימת תבוצע דרך כרטיס הפנייה שלה בלבד.</span></label>'
+        + '<label class="wide"><input type="checkbox" name="independentCase" value="yes"> בדקתי: מדובר בקליטה עצמאית של אדם אחר, ואין לשייך לפנייה קיימת בעלת שם או טלפון דומים.</label>'
         + '<label class="wide">הערות <textarea name="notes" rows="2"></textarea></label>'
         + '<div class="wide"><button type="submit" class="btn primary">הוסף מטופל/ת</button> <button type="button" class="btn" data-cancel-drawer="1">ביטול</button> <span class="na" id="crm-save-state"></span></div></form>';
       dr.setAttribute('aria-hidden', 'false'); $('#crm-scrim').setAttribute('data-open', 'true');
@@ -2368,11 +2383,13 @@
       return (withBlank ? '<option value="">—</option>' : '') + all.map(function (v) { return '<option value="' + esc(v) + '"' + (v === current ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join('');
     }
     function renderLeadActions(l) {
-      // The person is already in a house (added there directly) while this lead is still open → close it as admitted.
+      // A matched name/phone is not proof that the stay belongs to this lead.
+      // Show a caution, but never close the lead as admitted without a verified
+      // explicit lead-to-stay link (ARCH-01). Existing source records stay intact.
       const cAll = compute(state.data, state.today);
       const inH = leadAlreadyInHouse(l, cAll.patients, cAll.leads);
-      const already = inH ? '<div class="notice warn">«' + esc(inH.name) + '» כבר בבית ' + esc(houseName(inH.houseId)) + ' מ-' + esc(fmtDate(inH.date))
-        + ' — הפנייה עדיין פתוחה. <button type="button" class="btn small primary" data-close-admitted="' + esc(l.id) + '" data-in-house="' + esc(inH.id) + '">סגירת הפנייה כנקלטה</button></div>' : '';
+      const already = inH ? '<div class="notice warn">קיימת קליטה בשם או בטלפון דומים בבית ' + esc(houseName(inH.houseId))
+        + '. יש לבדוק אם מדובר באותו אדם. הפנייה אינה נסגרת אוטומטית.</div>' : '';
       return already + renderLeadActionsBody(l);
     }
     function renderLeadActionsBody(l) {
@@ -3010,13 +3027,6 @@
     root.addEventListener('click', function (ev) {
       const cs = ev.target.closest ? ev.target.closest('[data-continuity-save]') : null;
       if (cs) return saveContinuity(cs.dataset.continuitySave);
-      const ca = ev.target.closest ? ev.target.closest('[data-close-admitted]') : null;
-      if (ca) {
-        const cc = compute(state.data, state.today);
-        const pt = cc.patients.filter(function (p) { return p.id === ca.dataset.inHouse; })[0];
-        if (!pt || state.saving) return;
-        return writeLead(ca.dataset.closeAdmitted, { stage: 'admitted', entryDate: pt.date, house: houseName(pt.houseId) }, 'סגירת הפנייה כנקלטה');
-      }
       const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-billing-filter],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
@@ -3107,7 +3117,7 @@
         const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
         admitLead(id, vals, f);
       } else if (f.dataset.form === 'direct-add') {
-        const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
+        const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.type === 'checkbox' ? (el.checked ? 'yes' : '') : el.value; });
         directAdd(vals, f);
       } else if (f.dataset.form === 'patient-edit') {
         const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
