@@ -155,6 +155,7 @@ test('CRM: words match in any order, by house too; nobody → total 0', () => {
 
 test('CRM: the search box keeps the גבייה area open, and renderBilling consults billingSearch', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.js'), 'utf8');
-  assert.ok(src.includes("state.area !== 'clients' && state.area !== 'billing') state.area = 'leads'"));
+  // the area-keeping list (CHANGELOG-crm-search-admit-funder.md: other areas open «חיפוש», no longer «פניות»)
+  assert.ok(src.includes("['leads', 'clients', 'billing', 'search'].indexOf(state.area) < 0"));
   assert.ok(src.includes('billingSearch(b, state.filters.q'));
 });

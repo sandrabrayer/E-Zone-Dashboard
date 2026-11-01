@@ -351,7 +351,10 @@
 // v107 → v108: «היום שלי» — every task card opens (a discharge resolves to its patient; «לעדכן המשך טיפול»
 // in the drawer), mid-width / split-screen layout (crm/crm.js, crm/crm.css) (CHANGELOG-crm-today-card-open.md).
 // From the live v107; monotonic, v17 never reused.
-var CACHE_VERSION = 'v108';
+// v108 → v109: the CRM top search from any area (global results, spinner, 🔍 / Enter), a direct add admits the
+// person's open lead, «כבר בבית» on an open lead, the funder save's idempotency key (crm/crm.js, crm.css, crm.html)
+// (CHANGELOG-crm-search-admit-funder.md). Stacked on v108 (PR #337); monotonic, v17 never reused.
+var CACHE_VERSION = 'v109';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

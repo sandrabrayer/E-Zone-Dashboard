@@ -152,6 +152,51 @@
       fromLead: leadId, exitDate: '', source: 'direct_admin', notes: s(v.notes), updatedAt: '', updatedBy: '', personId: '' };
     return { lead: lead, patient: patient };
   }
+  /* ---- CHANGELOG-crm-search-admit-funder.md ---- */
+  /* A name as compared: spaces collapsed, lower case. Pure. */
+  function nameKey(v) { return s(v).replace(/\s+/g, ' ').toLowerCase(); }
+  const OPEN_STAGE_IDS = ['new', 'visit', 'waitlist', 'paid'];
+  /* The OPEN board lead (new / visit / waitlist / paid) of the person a direct add names:
+   * same phone when one is typed, else the same full name. Exactly one → that lead
+   * (the add becomes its admission, so it never stays «בטיפול פעיל» on the board);
+   * two or more → 'ambiguous'; none → null. Pure. */
+  function openLeadOfPerson(leads, name, phone) {
+    const nk = nameKey(name), ph = localPhone(phone);
+    const open = (leads || []).filter(function (l) { return l && OPEN_STAGE_IDS.indexOf(s(l.stage)) >= 0; });
+    let hits = ph ? open.filter(function (l) { return localPhone(l.phone) === ph; }) : [];
+    if (!hits.length && nk.split(' ').length >= 2) hits = open.filter(function (l) { return nameKey(l.name) === nk; });
+    if (hits.length === 1) return hits[0];
+    return hits.length > 1 ? 'ambiguous' : null;
+  }
+  /* An open board lead whose person is ALREADY in a house (added there directly, so the
+   * lead itself was never admitted): the in-house patient with the same full name, or
+   * whose own lead has the same phone. → the patient, or null. Pure. */
+  function leadAlreadyInHouse(lead, patients, leads) {
+    if (!lead || OPEN_STAGE_IDS.indexOf(s(lead.stage)) < 0) return null;
+    const nk = nameKey(lead.name), ph = localPhone(lead.phone);
+    const phoneOf = {};
+    (leads || []).forEach(function (l) { if (l && l.id) phoneOf[s(l.id)] = localPhone(l.phone); });
+    const hits = (patients || []).filter(function (p) {
+      if (!p || !inHouse(p) || s(p.fromLead) === s(lead.id)) return false;
+      return (nk.split(' ').length >= 2 && nameKey(p.name) === nk) || (ph && phoneOf[s(p.fromLead)] === ph);
+    });
+    return hits.length === 1 ? hits[0] : null;
+  }
+  /* The top search box from any area: leads (every stage on Leads), patients (any status)
+   * by name, phone digits (the lead's or the patient's lead's) or house. '' → null. Pure. */
+  function globalSearch(c, q) {
+    const t = nameKey(q);
+    if (!t) return null;
+    const digits = t.replace(/\D/g, '');
+    const phoneHit = function (ph) { return digits.length >= 4 && s(ph).replace(/\D/g, '').indexOf(digits) >= 0; };
+    const phoneOf = {};
+    (c.leads || []).forEach(function (l) { phoneOf[s(l.id)] = s(l.phone); });
+    const leads = (c.leads || []).filter(function (l) { return nameKey(l.name).indexOf(t) >= 0 || phoneHit(l.phone) || nameKey(houseName(l.house)).indexOf(t) >= 0; });
+    const patients = (c.patients || []).filter(function (p) { return nameKey(p.name).indexOf(t) >= 0 || phoneHit(phoneOf[s(p.fromLead)]); })
+      .map(function (p) { return Object.assign({ houseName: houseName(p.houseId) }, p); })
+      .sort(function (a, b) { return (inHouse(a) ? 0 : 1) - (inHouse(b) ? 0 : 1) || a.name.localeCompare(b.name, 'he'); });
+    return { q: s(q), leads: leads.slice(0, 50), patients: patients.slice(0, 50), total: leads.length + patients.length };
+  }
   function directAddErrors(v, finance) {
     const out = admissionErrors(v, finance);
     if (s(v.name).split(/\s+/).filter(Boolean).length < 2) out.name = 'יש להזין שם מלא';
@@ -1696,11 +1741,14 @@
         + '<button type="button" class="btn" data-view="closed" aria-pressed="' + (state.view === 'closed') + '">לידים סגורים</button>'
         + (state.tasks && state.index ? '<button type="button" class="btn" data-area="triage">רשומות שדורשות בירור <span class="n chip">' + triageQueue(c, state.tasks, state.index, state.today).length + '</span></button>' : '') + '</div>';
       if (state.view === 'closed') return toolbar + renderClosedLeads();
+      // a search with no OPEN lead → the global results (admitted / patients / released), never an empty board
+      if (s(f.q) && !filterLeads(c.leads, f).length) return toolbar + renderSearch(c);
       if (state.view === 'board') {
         return toolbar + '<div class="board">' + board(c.leads, f).map(function (col) {
           return '<div class="col" data-stage="' + esc(col.stage.id) + '"><h3><span>' + esc(col.stage.label) + '</span><span class="n">' + col.leads.length + '</span></h3>' + col.leads.map(function (l) {
             const na = nextActionFor(l, state.today);
-            return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip src">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? avatar(l.assignedTo) : '') + '</div>'
+            const inH = leadAlreadyInHouse(l, c.patients, c.leads);
+            return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + (inH ? ' <span class="chip late">כבר בבית ' + esc(houseName(inH.houseId)) + '</span>' : '') + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip src">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? avatar(l.assignedTo) : '') + '</div>'
               + (l.created ? '<div class="meta"><span>נוצר ' + esc(fmtDate(l.created)) + '</span>' + (l.visitDate ? '<span>פגישה ' + esc(fmtDate(l.visitDate)) + (l.visitTime ? ' ' + esc(l.visitTime) : '') + '</span>' : '') + '</div>' : '')
               + '<div class="next">' + chip(na.state, na.text) + (stageAfter(l.stage) ? ' <button type="button" class="btn small" data-stage-next="' + esc(l.id) + '">שלב הבא ←</button>' : '') + '</div></div>';
           }).join('') + '</div>';
@@ -1824,7 +1872,7 @@
     function saveFunderBestEffort(pid, funder, effectiveFrom) {
       if (!(state.me && state.me.finance) || FUNDERS.indexOf(s(funder)) < 0) return Promise.resolve();
       return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'appendFunder', funder: { patientId: pid, funder: s(funder), effectiveFrom: effectiveFrom, submissionId: randomId().slice(3) + randomId().slice(3) } }) })
+        body: JSON.stringify({ action: 'appendFunder', funder: { patientId: pid, funder: s(funder), effectiveFrom: effectiveFrom, submissionId: newSubmissionId() } }) })
         .then(function (r) { return r.json().catch(function () { return null; }); })
         .then(function (res) { if (!res || res.ok === false || !(res.row && res.row.submissionId)) toast('המטופל נשמר, אך שמירת הגורם המממן נכשלה — יש להשלים בדשבורד', true); })
         .catch(function () { toast('המטופל נשמר, אך שמירת הגורם המממן נכשלה — יש להשלים בדשבורד', true); });
@@ -1849,6 +1897,10 @@
       const errs = directAddErrors(v, !!(state.me && state.me.finance));
       if (f) showErrs(f, errs, ['name', 'phone', 'houseId', 'date', 'pay', 'funder']);
       if (Object.keys(errs).length) return Promise.resolve(false);
+      // The person already has an OPEN lead on the board → admit THAT lead (else it stays «בטיפול פעיל» next to the patient).
+      const open = openLeadOfPerson(state.data.leads, v.name, v.phone);
+      if (open === 'ambiguous') { if (f) showErrs(f, { name: 'יש כמה פניות פתוחות בשם/טלפון הזה — קלטו מתוך הפנייה הנכונה ב«פניות»' }, ['name']); return Promise.resolve(false); }
+      if (open) { toast('נמצאה פנייה פתוחה של «' + open.name + '» — נקלטת ממנה'); return admitLead(open.id, v, f); }
       const pair = directAddRows(v, randomId(), state.today, houseName);
       const rows = patientsOfHouse(pair.patient.houseId);
       const leads = state.data.leads;
@@ -2071,7 +2123,7 @@
             + '<td>' + (openBy[p.id] ? '<span class="chip today">' + openBy[p.id] + '</span>' : '<span class="sub">—</span>') + '</td><td class="sub">' + esc(lc ? whenLocal(lc.at) + ' · ' + contactOutcomeLabel(lc.outcome) : 'אין מגע מתועד') + '</td>'
             + '<td><span class="toolbar"><button type="button" class="btn small primary" data-contact-open="patient:' + esc(p.id) + '">תיעוד שיחה</button><button type="button" class="btn small" data-open-patient="' + esc(p.id) + '">כרטיס</button></span></td></tr>';
         }).join('')
-        + '</tbody></table></div>' + (list.length === 0 ? '<div class="crm-state">אין מטופלים</div>' : '');
+        + '</tbody></table></div>' + (list.length === 0 ? (s(state.filters.q) ? renderSearch(c) : '<div class="crm-state">אין מטופלים</div>') : '');
     }
 
     function renderCalendar(c) {
@@ -2283,10 +2335,24 @@
       if (state.loading) { main.innerHTML = '<div class="crm-state">טוען…</div>'; return; }
       if (state.error) { main.innerHTML = '<div class="crm-state bad">' + esc(state.error) + ' <button type="button" class="btn small" id="crm-retry">נסי שוב</button></div>'; return; }
       const c = compute(state.data, state.today);
-      const r = { today: renderToday, leads: renderLeads, occupancy: renderOccupancy, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl, triage: renderTriage }[state.area] || renderToday;
+      if (state.area === 'search') $('#crm-title').textContent = 'חיפוש';
+      const r = { search: renderSearch, today: renderToday, leads: renderLeads, occupancy: renderOccupancy, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl, triage: renderTriage }[state.area] || renderToday;
       main.innerHTML = r(c);
     }
 
+    /* The top search box from any area (CHANGELOG-crm-search-admit-funder.md): every lead and
+     * every patient (released included) whose name / phone / house matches. */
+    function renderSearch(c) {
+      const r = globalSearch(c, state.filters.q);
+      if (!r) return '<div class="crm-state">הקלידו שם, טלפון או בית בתיבת החיפוש</div>';
+      let html = '<div class="group-title">תוצאות חיפוש «' + esc(r.q) + '» <span class="n chip">' + r.total + '</span></div>';
+      if (!r.total) return html + '<div class="crm-state">לא נמצאו פניות או מטופלים עבור «' + esc(r.q) + '»</div>';
+      if (r.patients.length) html += '<div class="group-title">מטופלים</div><div class="tbl-wrap"><table class="tbl" id="crm-search-patients"><thead><tr><th>שם</th><th>בית</th><th>סטטוס</th><th>כניסה</th><th>יציאה</th></tr></thead><tbody>'
+        + r.patients.map(function (p) { return '<tr data-open-patient="' + esc(p.id) + '"><td class="name">' + esc(p.name) + '</td><td>' + esc(p.houseName) + '</td><td>' + statusChip(p.status) + '</td><td>' + esc(fmtDate(p.date)) + '</td><td>' + esc(fmtDate(p.exitDate)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+      if (r.leads.length) html += '<div class="group-title">פניות</div><div class="tbl-wrap"><table class="tbl" id="crm-search-leads"><thead><tr><th>שם</th><th>טלפון</th><th>בית</th><th>שלב</th><th>נוצר</th></tr></thead><tbody>'
+        + r.leads.map(function (l) { return '<tr data-open-lead="' + esc(l.id) + '"><td class="name">' + esc(l.name) + '</td><td>' + esc(l.phone) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(l.stage === 'admitted' ? 'נקלט/ה' : stageLabel(l.stage)) + '</td><td>' + esc(fmtDate(l.created)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+      return html;
+    }
     /* ---- lead actions (C4): stage move, meeting, outcome, note, owner ---- */
     function managersOf(houseIdOrName) {
       const list = state.data && Array.isArray(state.data.currentManagers) ? state.data.currentManagers : [];
@@ -2302,6 +2368,14 @@
       return (withBlank ? '<option value="">—</option>' : '') + all.map(function (v) { return '<option value="' + esc(v) + '"' + (v === current ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join('');
     }
     function renderLeadActions(l) {
+      // The person is already in a house (added there directly) while this lead is still open → close it as admitted.
+      const cAll = compute(state.data, state.today);
+      const inH = leadAlreadyInHouse(l, cAll.patients, cAll.leads);
+      const already = inH ? '<div class="notice warn">«' + esc(inH.name) + '» כבר בבית ' + esc(houseName(inH.houseId)) + ' מ-' + esc(fmtDate(inH.date))
+        + ' — הפנייה עדיין פתוחה. <button type="button" class="btn small primary" data-close-admitted="' + esc(l.id) + '" data-in-house="' + esc(inH.id) + '">סגירת הפנייה כנקלטה</button></div>' : '';
+      return already + renderLeadActionsBody(l);
+    }
+    function renderLeadActionsBody(l) {
       const next = stageAfter(l.stage), prev = stageBefore(l.stage);
       const managers = managersOf(l.house).concat([MEETING_WITH_AMBULATORY]);
       const hid = houseId(l.house);
@@ -2936,6 +3010,13 @@
     root.addEventListener('click', function (ev) {
       const cs = ev.target.closest ? ev.target.closest('[data-continuity-save]') : null;
       if (cs) return saveContinuity(cs.dataset.continuitySave);
+      const ca = ev.target.closest ? ev.target.closest('[data-close-admitted]') : null;
+      if (ca) {
+        const cc = compute(state.data, state.today);
+        const pt = cc.patients.filter(function (p) { return p.id === ca.dataset.inHouse; })[0];
+        if (!pt || state.saving) return;
+        return writeLead(ca.dataset.closeAdmitted, { stage: 'admitted', entryDate: pt.date, house: houseName(pt.houseId) }, 'סגירת הפנייה כנקלטה');
+      }
       const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-billing-filter],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
@@ -3192,7 +3273,30 @@
     }
     const switchBtn = $('#crm-switch-user');
     if (switchBtn) switchBtn.addEventListener('click', function () { switchUser(switchBtn); });
-    $('#crm-search').addEventListener('input', function (ev) { state.filters.q = ev.target.value; if (state.area !== 'leads' && state.area !== 'clients' && state.area !== 'billing') state.area = 'leads'; renderNav(); renderMain(); });
+    /* The top search (CHANGELOG-crm-search-admit-funder.md): «פניות» / «מטופלים» / «גבייה» filter
+     * their own list as before; from any other area the results are a global list (leads +
+     * patients, released included) instead of a jump to «פניות». Debounced, with a spinner
+     * while it runs; Enter or 🔍 searches at once; clearing returns to the previous area. */
+    const searchBox = $('#crm-search'), searchBtn = $('#crm-search-go');
+    let searchTimer = 0;
+    function runSearch() {
+      win.clearTimeout(searchTimer);
+      const q = s(searchBox.value);
+      state.filters.q = q;
+      if (q && ['leads', 'clients', 'billing', 'search'].indexOf(state.area) < 0) { state.searchBack = state.area; state.area = 'search'; }
+      if (!q && state.area === 'search') state.area = state.searchBack || 'today';
+      renderNav(); renderMain();
+      if (searchBtn) { searchBtn.removeAttribute('aria-busy'); searchBtn.disabled = false; }
+    }
+    function searchSoon(delay) {
+      if (searchBtn) { searchBtn.setAttribute('aria-busy', 'true'); searchBtn.disabled = true; }
+      win.clearTimeout(searchTimer);
+      // let the spinner paint before the (synchronous) render
+      searchTimer = win.setTimeout(runSearch, delay);
+    }
+    searchBox.addEventListener('input', function () { searchSoon(300); });
+    searchBox.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); searchSoon(30); } });
+    if (searchBtn) searchBtn.addEventListener('click', function () { searchSoon(30); });
     doc.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') closeDrawer(); });
 
     /* Boot (perf, CHANGELOG-crm-triage.md): /api/me and getData are requested AT ONCE (the
@@ -3254,6 +3358,6 @@
     taskDue: taskDue, taskState: taskState, taskWhen: taskWhen, taskSubject: taskSubject, taskQueue: taskQueue, tasksFor: tasksFor, taskCounts: taskCounts, taskFormErrors: taskFormErrors, taskCreateBody: taskCreateBody, rescheduleErrors: rescheduleErrors, rescheduleBody: rescheduleBody, taskAccepted: taskAccepted,
     VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,
     TRIAGE_OPTIONS: TRIAGE_OPTIONS, triageQueue: triageQueue, waitlistErrors: waitlistErrors, waitlistPatch: waitlistPatch, laterErrors: laterErrors,
-    NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
+    NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, openLeadOfPerson: openLeadOfPerson, leadAlreadyInHouse: leadAlreadyInHouse, globalSearch: globalSearch, nameKey: nameKey, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
     moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));
