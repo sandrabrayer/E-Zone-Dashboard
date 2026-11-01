@@ -1,4 +1,8 @@
-# E-ZONE Ecosystem Status — updated October 28, 2026
+# E-ZONE Ecosystem Status — updated November 1, 2026
+
+## «דווח תשלום» on an old cycle saves again (CRM billing dates) — November 1, 2026 (PR open)
+
+- Bug reported by Vered: on the new screen a payment report on an OLD cycle was refused (`coverage_outside_cycle`). Older Payments rows hold Date cells that reach the browser as UTC timestamps; the CRM sliced them one day early. New `sheetDay()` reads them on the Israel day, like the classic `isoDate()`. Client only, SW v106. Details: `CHANGELOG-crm-old-payment-dates.md`.
 
 ## Railway healthcheck window 30 s → 300 s — October 28, 2026 (PR open)
 

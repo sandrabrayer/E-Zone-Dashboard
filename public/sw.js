@@ -343,7 +343,9 @@
 // (CHANGELOG-crm-clickable-kpis.md). Stacked on v103 (PR #320); monotonic, v17 never reused.
 // v104 → v105: «גבייה לביצוע» + «ממתין לאימות אורטל» as two distinct counters (crm/crm.js) (CHANGELOG-crm-kpi-two-counters.md).
 // Stacked on v104 (PR #321); monotonic, v17 never reused.
-var CACHE_VERSION = 'v105';
+// v105 → v106: billing dates of older Payments rows read on the Israel day, not the UTC day — «דווח תשלום» on an old
+// cycle saves again (crm/crm.js) (CHANGELOG-crm-old-payment-dates.md). From the live v105; monotonic, v17 never reused.
+var CACHE_VERSION = 'v106';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
