@@ -248,6 +248,11 @@ With `CRM_ENABLED=true` + `CRM_DEFAULT=true` (both set): Vered, Sandra and Dana 
 Ortal → the classic page (CRM at `/?view=crm`); everyone → classic at `/?view=classic`. Login is the
 same screen for all (`CHANGELOG-crm-default-ops.md`).
 
+«החלפת משתמש» (November 1, 2026, `CHANGELOG-crm-dana-default-switch-user.md`): both headers. `POST /api/logout`
+revokes the session token in memory (per process — a Railway restart forgets the list; the browser cookie is
+cleared anyway) and needs a same-origin request. After a PIN login the user lands on their own default
+(`/api/me.landing`). Dana never gets «גבייה» or the «חשבון» tab. Nothing to set. SW v107.
+
 ## Server read cache (October 29, 2026)
 
 `CHANGELOG-crm-read-cache.md`. Nothing to set. Optional Railway variable `SHEETS_READ_CACHE_MS`

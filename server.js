@@ -23,6 +23,7 @@ const {
   EXPECTED_DISCHARGES_ACTION, ALL_USERS_READ_ACTIONS, canViewExpectedDischarges,
 } = require('./lib/role-scope');
 const { CRM_ENABLED_VAR, CRM_DEFAULT_VAR, serveCrmShell } = require('./lib/crm-shell-flag');
+const { createRevocationStore } = require('./lib/session-revocation');
 const { buildXlsxReport, isoDayInIsrael, XLSX_MIME } = require('./lib/xlsx-report');
 const {
   createAssetStore, versionAssetRefs, isCurrentVersion, immutableHeaders, sendAsset, sendCompressedText,
@@ -825,10 +826,19 @@ function parseMeetingReportCookie(cookieHeader) {
  *                      personal cookie that was reset or revoked (→ 401)
  * `registry` defaults to the validated USER_PIN_HASHES. A cookie without a
  * personal id (the retired shared APP_PIN format) is always 'unauthorized'. */
+/* «החלפת משתמש» (CHANGELOG-crm-dana-default-switch-user.md): tokens ended by
+ * POST /api/logout. Every session check below goes through readLiveSession, so
+ * a logged-out token is refused (401) even if someone kept a copy of it. */
+const REVOKED_SESSIONS = createRevocationStore();
+function readLiveSession(token, secret) {
+  if (!token || REVOKED_SESSIONS.isRevoked(token)) return null;
+  return readSession(token, secret);
+}
+
 function sessionAuthStatus(cookieHeader, secret, registry) {
   if (typeof secret !== 'string' || secret.length === 0) return 'not_configured';
   const token = parseSessionCookie(cookieHeader);
-  const session = token ? readSession(token, secret) : null;
+  const session = readLiveSession(token, secret);
   if (session && currentPrincipal(session, registry)) return 'ok';
   return 'unauthorized';
 }
@@ -845,7 +855,7 @@ function currentPrincipal(session, registry) {
  * resolvePrincipal), or null. */
 function sessionPrincipalFromRequest(req, registry) {
   if (!SESSION_SECRET) return null;
-  const session = readSession(parseSessionCookie(req.headers.cookie), SESSION_SECRET);
+  const session = readLiveSession(parseSessionCookie(req.headers.cookie), SESSION_SECRET);
   return currentPrincipal(session, registry);
 }
 
@@ -1873,13 +1883,48 @@ app.get('/api/me', requireSession, (req, res) => {
     // Operational view (CRM spec §2, Dana): display only — the money actions
     // are refused by their own gates and getData is projected server-side.
     ops: isOpsView(p),
+    // Where `/` lands this session ('crm' | 'classic') — the same rule the
+    // page route uses (lib/crm-shell-flag.js), so a fresh PIN login (also
+    // after «החלפת משתמש») opens the user's own default view. Display only.
+    landing: serveCrmShell({ [CRM_ENABLED_VAR]: CRM_ENABLED, [CRM_DEFAULT_VAR]: CRM_DEFAULT }, {}, p, principalView(p)) ? 'crm' : 'classic',
   });
 });
 
-/* POST /api/logout — clear the session cookie (expire it immediately). Open
- * route: clearing a credential never needs one. The client reloads afterward,
- * which re-hits getData, gets 401, and shows the PIN screen. */
+/* Same-origin check for a state-changing request (CHANGELOG-crm-dana-default-switch-user.md).
+ * The session cookie is SameSite=Strict; this is the second layer: a browser
+ * request that says it is cross-site (Sec-Fetch-Site) or names another
+ * Origin is refused. A request with neither header (curl, old browsers) is
+ * not a cross-site browser request and passes. Pure apart from the headers. */
+function isSameOriginRequest(req) {
+  const h = req.headers || {};
+  const site = String(h['sec-fetch-site'] || '').toLowerCase();
+  if (site && site !== 'same-origin' && site !== 'none') return false;
+  const origin = h.origin;
+  if (origin === undefined || origin === '') return true;
+  let host;
+  try { host = new URL(String(origin)).host.toLowerCase(); } catch (_) { return false; }
+  const allowed = [h.host, h['x-forwarded-host']]
+    .filter(Boolean)
+    .map((v) => String(v).split(',')[0].trim().toLowerCase());
+  return allowed.indexOf(host) >= 0;
+}
+
+/* POST /api/logout — «החלפת משתמש» / «יציאה». Ends the session on the SERVER:
+ * a verified token is revoked (REVOKED_SESSIONS, until its own expiry), so the
+ * old cookie value gets 401 on every route afterwards; then the cookie is
+ * expired in the browser. Same-origin only (403 otherwise). Open otherwise:
+ * clearing a credential never needs one, and a request without a valid
+ * session still clears the cookie. Logged with the user id only. */
 app.post('/api/logout', (req, res) => {
+  if (!isSameOriginRequest(req)) {
+    console.warn('[logout] 403 cross-origin');
+    return res.status(403).json({ ok: false, error: 'forbidden_origin', message: 'הבקשה נחסמה — מקור לא מורשה' });
+  }
+  const token = parseSessionCookie(req.headers.cookie);
+  const session = SESSION_SECRET && token ? readSession(token, SESSION_SECRET) : null;
+  if (session && REVOKED_SESSIONS.revoke(token, session.expiry)) {
+    console.log(`[logout] session ended user=${session.id || session.auth}`);
+  }
   const parts = [
     `${SESSION_COOKIE}=`,
     'HttpOnly',
@@ -2266,6 +2311,8 @@ module.exports = {
   followingRequest,
   parseSessionCookie,
   sessionAuthStatus,
+  isSameOriginRequest,
+  REVOKED_SESSIONS,
   requireSession,
   buildSessionCookie,
   requestIsHttps,

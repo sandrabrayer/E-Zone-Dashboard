@@ -1,5 +1,9 @@
 # E-ZONE Ecosystem Status — updated November 1, 2026
 
+## Dana on the CRM without collections + «החלפת משתמש» — November 1, 2026 (PR open)
+
+- Dana already lands on the CRM (`CRM_DEFAULT_VIEWS` ops, #327); she stays OPERATIONAL per CRM spec §2 (not the #303 read-only). New: no «חשבון» tab for her; every money route re-verified 403 + Hebrew (new enumerating test). «החלפת משתמש» in the CRM and classic headers: `POST /api/logout` now revokes the token server-side (old cookie → 401) with a same-origin check; client data + offline `/` copies cleared; `/api/me.landing` sends the next login to its own default view. Code.gs untouched. SW v106 → v107. Details: `CHANGELOG-crm-dana-default-switch-user.md`.
+
 ## «דווח תשלום» on an old cycle saves again (CRM billing dates) — November 1, 2026 (PR open)
 
 - Bug reported by Vered: on the new screen a payment report on an OLD cycle was refused (`coverage_outside_cycle`). Older Payments rows hold Date cells that reach the browser as UTC timestamps; the CRM sliced them one day early. New `sheetDay()` reads them on the Israel day, like the classic `isoDate()`. Client only, SW v106. Details: `CHANGELOG-crm-old-payment-dates.md`.
