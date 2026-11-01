@@ -46,6 +46,7 @@ const DEBT = { ok: true, byPatient: [{ patientId: 'p1', name: 'דנה כהן', h
   { start: '2026-07-01', end: '2026-07-30', expected: 6000, received: 6000, balance: 0, kind: 'recorded' }] }] };
 const VERED = { view: 'full', finance: true, user: 'ורד' };
 const DANA = { view: 'ops', finance: false, user: 'דנה' };
+const PAYMENTS_OK = { ok: true, payments: [], receipts: [] };
 const c = core.compute(DATA, TODAY);
 
 test('meetingBuckets: today / to schedule / awaiting the manager report (a passed date proves nothing) / report unseen / report seen but undecided', () => {
@@ -58,7 +59,7 @@ test('newLeadsNoContact: stage new with no documented contact and no open call t
   const n = core.newLeadsNoContact(c.leads, TASKS, INDEX, TODAY);
   assert.deepEqual(n.map((x) => [x.lead.id, x.age]), [['L1', 76]]);
   assert.deepEqual(core.newLeadsNoContact(c.leads, [T({ leadId: 'L1' })], INDEX, TODAY), [], 'an open call task means it is being handled');
-  assert.equal(core.newLeadsNoContact(c.leads, [], null, TODAY).length, 2, 'without the index nobody is known to be contacted');
+  assert.equal(core.newLeadsNoContact(c.leads, [], null, TODAY).length, 0, 'without the contact index, absence of contact cannot be established');
 });
 
 test('houseExceptions: admission due and not done (future entry is NOT an exception); a discharge of the last 14 days without continuity; report exceptions are NOT duplicated here', () => {
@@ -69,7 +70,7 @@ test('houseExceptions: admission due and not done (future entry is NOT an except
 });
 
 test('myDay (Vered): five cards in the spec order; counts and lists come from the same rows; ordering binding → exceptions → overdue → rest; waiting-on-manager shows the owner, not a task of Vered; money rows from debtAging; last contact per row; filters', () => {
-  const m = core.myDay(c, TASKS, INDEX, DEBT, TODAY, VERED, {});
+  const m = core.myDay(c, TASKS, INDEX, DEBT, TODAY, VERED, {}, PAYMENTS_OK);
   assert.deepEqual(m.cards.map((k) => k.label), ['גבייה לביצוע', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'פניות חדשות ללא מגע']);
   const card = (id) => m.cards.filter((k) => k.id === id)[0];
   assert.equal(card('collection').value, 2, 'the collection task today + the recorded debt past its end'); assert.match(card('collection').hint, /2 מחזורים פתוחים/);
@@ -95,9 +96,9 @@ test('myDay (Vered): five cards in the spec order; counts and lists come from th
   // the old lead is «wait», never «late»
   assert.equal(m.byDomain.newleads[0].state, 'wait');
   // filters: by owner and by house (ids or names)
-  const byOwner = core.myDay(c, TASKS, INDEX, DEBT, TODAY, VERED, { owner: 'דנה' });
+  const byOwner = core.myDay(c, TASKS, INDEX, DEBT, TODAY, VERED, { owner: 'דנה' }, PAYMENTS_OK);
   assert.deepEqual(byOwner.byDomain.calls.map((r) => r.subjectId), ['L9']);
-  const byHouse = core.myDay(c, TASKS, INDEX, DEBT, TODAY, VERED, { house: 'rehab' });
+  const byHouse = core.myDay(c, TASKS, INDEX, DEBT, TODAY, VERED, { house: 'rehab' }, PAYMENTS_OK);
   assert.deepEqual(byHouse.urgent.map((r) => r.subjectId), ['L4']);
 });
 
@@ -108,13 +109,13 @@ test('myDay (Dana): no money card and no money row — «מה דחוף בבתי�
   assert.equal(m.byDomain.collection.length, 0); assert.ok(!JSON.stringify(m).includes('₪'));
   const none = core.myDay(c, null, null, null, TODAY, DANA, {});
   assert.equal(none.cards.filter((k) => k.id === 'calls')[0].value, null); assert.equal(none.cards.filter((k) => k.id === 'newleads')[0].value, null);
-  const vNoDebt = core.myDay(c, TASKS, INDEX, false, TODAY, VERED, {});
-  assert.equal(vNoDebt.cards[0].value, null); assert.equal(vNoDebt.cards[0].hint, 'המידע אינו זמין');
-  assert.equal(core.myDay(c, TASKS, INDEX, null, TODAY, VERED, {}).cards[0].hint, 'טוען…');
+  const vNoDebt = core.myDay(c, TASKS, INDEX, false, TODAY, VERED, {}, PAYMENTS_OK);
+  assert.equal(vNoDebt.cards[0].value, null); assert.match(vNoDebt.cards[0].hint, /חלקי/);
+  assert.match(core.myDay(c, TASKS, INDEX, null, TODAY, VERED, {}, PAYMENTS_OK).cards[0].hint, /טוען/);
 });
 
 test('weekPlan: Sun–Sat days, a dated row on its day, a window task on every day it covers (one id), undated listed apart; doneInWeek: done / cancelled by doneAt with who and outcome', () => {
-  const m = core.myDay(c, TASKS, INDEX, DEBT, TODAY, VERED, {});
+  const m = core.myDay(c, TASKS, INDEX, DEBT, TODAY, VERED, {}, PAYMENTS_OK);
   const w = core.weekPlan(m, core.weekStart(TODAY));
   assert.equal(w.start, '2026-10-25'); assert.equal(w.end, '2026-10-31'); assert.equal(w.days.length, 7);
   const day = (d) => w.days.filter((x) => x.date === d)[0].rows.map((r) => r.action);
