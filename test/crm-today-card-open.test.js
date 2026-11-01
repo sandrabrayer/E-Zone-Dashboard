@@ -60,6 +60,13 @@ test('A: houseExceptions — a classic discharge (no patientId) gets the resolve
   assert.equal(core.houseExceptions({ leads: [], patients: PATIENTS, discharges: [Object.assign({}, base, { continuity: 'unknown' })] }, TODAY).length, 1);
 });
 
+test('A: houseExceptions — a discharge «משוחרר לטיפול חוץ», or one already handed to Outpatient, needs no «לעדכן המשך טיפול»', () => {
+  const base = { id: 'd2', houseId: 'ramot', name: 'ברית ונגרטון', date: '2026-08-01', exitDate: daysAgo(3), fromLead: 'L-brit' };
+  assert.equal(core.houseExceptions({ leads: [], patients: PATIENTS, discharges: [Object.assign({}, base, { disposition: 'released_outpatient' })] }, TODAY).length, 0);
+  assert.equal(core.houseExceptions({ leads: [], patients: PATIENTS, discharges: [Object.assign({}, base, { disposition: 'completed' })], outpatientSent: { 'discharge:d2': true } }, TODAY).length, 0);
+  assert.equal(core.houseExceptions({ leads: [], patients: PATIENTS, discharges: [Object.assign({}, base, { disposition: 'completed' })], outpatientSent: {} }, TODAY).length, 1);
+});
+
 test('A: continuity helpers — only the three keys count as recorded; the body is the existing setDischargeContinuity action', () => {
   assert.equal(core.continuityKnown('continued_outpatient'), true);
   assert.equal(core.continuityKnown('unknown'), false);

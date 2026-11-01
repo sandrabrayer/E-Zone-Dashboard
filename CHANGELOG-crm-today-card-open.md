@@ -33,7 +33,12 @@ Code.gs untouched (no Apps Script deploy). SW `CACHE_VERSION` v107 → **v108** 
    - a restored discharge is recognised in every spelling (`TRUE` / `true` / `1`), not only `'1'`;
    - `continuity: 'unknown'` (the CRM discharge default) counts as "not recorded", the same as blank;
    - the drawer shows the Hebrew label instead of the stored key.
-6. Layout («היום שלי»):
+6. **Outpatient discharges** (follow-up, same PR):
+   - a discharge «משוחרר לטיפול חוץ», or one already handed to Outpatient, no longer gets a «לעדכן המשך טיפול»
+     task, because its continued treatment *is* outpatient;
+   - the משוחררים table shows «המשיך באמבולטורי» for it instead of the raw key;
+   - after a CRM discharge to outpatient succeeds, the row shows «נשלח» at once, not «לא נשלח» until a reload.
+7. Layout («היום שלי»):
    - ≤ 1279 px: the side column («פגישות היום / ממתין לגורם אחר / חריגים בבתים») moves under the work list, with
      its boxes side by side;
    - 900–1099 px: work rows switch to a two-line layout, with actions on their own line;
