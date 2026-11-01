@@ -275,6 +275,25 @@
     return { houses: rows, unknown: unknown, totalIn: totalIn, totalCap: totalCap, totalFree: Math.max(0, totalCap - totalIn) };
   }
   function isoDay(v) { const t = s(v); return /^\d{4}-\d{2}-\d{2}/.test(t) ? t.slice(0, 10) : ''; }
+  /* A billing DATE read from a sheet → 'YYYY-MM-DD' (CHANGELOG-crm-old-payment-dates.md).
+   * Older Payments / Funders / Credits rows hold real Date cells, which reach the
+   * browser as UTC timestamps — Israel's 1 April arrives as "2026-03-31T21:00:00.000Z".
+   * Slicing that is the −1-day bug: the CRM pre-filled a coverage start one day
+   * before the cycle and Code.gs refused the report (coverage_outside_cycle).
+   * Same rule as app.js isoDate(): a bare day stays as is; a full timestamp is
+   * read as its calendar day in Asia/Jerusalem; anything else → ''. Pure. */
+  const JERUSALEM_DAY = typeof Intl === 'object' && Intl.DateTimeFormat
+    ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit' }) : null;
+  function sheetDay(v) {
+    if (v instanceof Date) { if (isNaN(v.getTime())) return ''; v = v.toISOString(); }
+    const t = s(v);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(t)) return '';
+    const ms = Date.parse(t);
+    if (isNaN(ms) || !JERUSALEM_DAY) return t.slice(0, 10);
+    const parts = {}; JERUSALEM_DAY.formatToParts(new Date(ms)).forEach(function (x) { parts[x.type] = x.value; });
+    return parts.year + '-' + parts.month + '-' + parts.day;
+  }
   function daysBetween(a, b) {
     const da = Date.parse(a + 'T00:00:00Z'), db = Date.parse(b + 'T00:00:00Z');
     if (isNaN(da) || isNaN(db)) return 0;
@@ -574,9 +593,9 @@
     return (Array.isArray(p.receipts) ? p.receipts : []).map(function (r) {
       const o = r || {};
       return { id: s(o.id), patientId: s(o.patientId), patientUid: s(o.patientUid), patientName: s(o.patientName), houseId: s(o.houseId), houseName: houseName(o.houseId),
-        receivedDate: s(o.receivedDate).slice(0, 10), amount: Number(o.amount) || 0, method: s(o.method), payer: s(o.payer), funder: s(o.funder),
-        confirmStatus: s(o.confirmStatus), cycleId: s(o.cycleId), reference: s(o.reference), status: s(o.status), dueDate: s(o.dueDate).slice(0, 10),
-        coverageStart: s(o.coverageStart).slice(0, 10), coverageEnd: s(o.coverageEnd).slice(0, 10), invoiceWanted: s(o.invoiceWanted), invoiceTo: s(o.invoiceTo),
+        receivedDate: sheetDay(o.receivedDate), amount: Number(o.amount) || 0, method: s(o.method), payer: s(o.payer), funder: s(o.funder),
+        confirmStatus: s(o.confirmStatus), cycleId: s(o.cycleId), reference: s(o.reference), status: s(o.status), dueDate: sheetDay(o.dueDate),
+        coverageStart: sheetDay(o.coverageStart), coverageEnd: sheetDay(o.coverageEnd), invoiceWanted: s(o.invoiceWanted), invoiceTo: s(o.invoiceTo),
         flagNote: s(o.flagNote), recordedBy: s(o.recordedBy),
         isVoid: /^(void|מבוטל)$/i.test(s(o.status)) };
     });
@@ -669,18 +688,18 @@
     const p = payments && payments.ok !== false ? payments : null;
     const mine = (d && Array.isArray(d.byPatient) ? d.byPatient : []).filter(function (x) { return s(x.patientId) === id || (key && s(x.patientKey) === key); })[0] || null;
     const open = (mine && Array.isArray(mine.cycles) ? mine.cycles : []).map(function (c) {
-      return { start: s(c.start).slice(0, 10), end: s(c.end).slice(0, 10), expected: Number(c.expected) || 0, received: Number(c.received) || 0, balance: Number(c.balance) || 0,
+      return { start: sheetDay(c.start), end: sheetDay(c.end), expected: Number(c.expected) || 0, received: Number(c.received) || 0, balance: Number(c.balance) || 0,
         days: Number(c.days) || 0, kind: s(c.kind), grace: !!c.funderGrace, discount: Number(c.discount) || 0, paymentId: s(c.paymentId), month: s(c.month) };
     });
     const openTotal = Math.round(open.reduce(function (t, c) { return t + c.balance; }, 0) * 100) / 100;
     const cycles = (p && Array.isArray(p.payments) ? p.payments : []).filter(function (x) { return rowIsPatient(x, id, key); }).map(function (x) {
-      return { id: s(x.id), dueDate: s(x.dueDate).slice(0, 10), amount: Number(x.amount) || 0, amountPaid: Number(x.amountPaid) || 0, balance: Number(x.balance) || 0, status: s(x.status),
-        coverageStart: s(x.coverageStart).slice(0, 10), coverageEnd: s(x.coverageEnd).slice(0, 10), patientId: s(x.patientId), patientName: s(x.patientName), houseId: s(x.houseId) };
+      return { id: s(x.id), dueDate: sheetDay(x.dueDate), amount: Number(x.amount) || 0, amountPaid: Number(x.amountPaid) || 0, balance: Number(x.balance) || 0, status: s(x.status),
+        coverageStart: sheetDay(x.coverageStart), coverageEnd: sheetDay(x.coverageEnd), patientId: s(x.patientId), patientName: s(x.patientName), houseId: s(x.houseId) };
     }).sort(function (a, b) { return a.dueDate < b.dueDate ? 1 : a.dueDate > b.dueDate ? -1 : 0; });
     const receipts = receiptsOf(p).filter(function (r) { return rowIsPatient(r, id, key); }).sort(function (a, b) { return a.receivedDate < b.receivedDate ? 1 : a.receivedDate > b.receivedDate ? -1 : 0; });
     const receivedTotal = Math.round(receipts.reduce(function (t, r) { return t + r.amount; }, 0) * 100) / 100;
     const funders = (p && Array.isArray(p.funders) ? p.funders : []).filter(function (f) { return rowIsPatient(f, id, key); }).map(function (f) {
-      return { funder: s(f.funder), effectiveFrom: s(f.effectiveFrom).slice(0, 10), setBy: s(f.setBy) };
+      return { funder: s(f.funder), effectiveFrom: sheetDay(f.effectiveFrom), setBy: s(f.setBy) };
     }).sort(function (a, b) { return a.effectiveFrom < b.effectiveFrom ? 1 : a.effectiveFrom > b.effectiveFrom ? -1 : 0; });
     const errors = [];
     if (!d) errors.push('חובות: ' + s(debt && debt.error || 'לא נטען'));
@@ -878,8 +897,8 @@
     return (Array.isArray(c.credits) ? c.credits : []).map(function (r) {
       const o = r || {};
       return { id: s(o.id), patientId: s(o.patientId), patientKey: s(o.patientKey), patientName: s(o.patientName), houseId: s(o.houseId), houseName: houseName(o.houseId),
-        creditType: s(o.creditType), allocationMonth: s(o.allocationMonth).slice(0, 7), amount: Number(o.amount) || 0, status: s(o.status), reason: s(o.reason),
-        decidedDate: s(o.decidedDate).slice(0, 10), payoutDate: s(o.payoutDate).slice(0, 10), paidDate: s(o.paidDate).slice(0, 10), method: s(o.method) };
+        creditType: s(o.creditType), allocationMonth: (sheetDay(o.allocationMonth) || s(o.allocationMonth)).slice(0, 7), amount: Number(o.amount) || 0, status: s(o.status), reason: s(o.reason),
+        decidedDate: sheetDay(o.decidedDate), payoutDate: sheetDay(o.payoutDate), paidDate: sheetDay(o.paidDate), method: s(o.method) };
     });
   }
   function creditIsPatient(c, uid, key) { return (uid && c.patientId === uid) || (!!key && (c.patientKey === key || c.patientId === key)); }
@@ -963,7 +982,7 @@
     const d = debt && debt.ok !== false ? debt : null;
     const rows = d && d.detachedPayments && Array.isArray(d.detachedPayments.rows) ? d.detachedPayments.rows : [];
     return rows.filter(function (r) { return s(r.reason) !== 'not_a_patient'; }).map(function (r) {
-      return { paymentId: s(r.paymentId), patientName: s(r.patientName), houseId: s(r.houseId), houseName: houseName(r.houseId), dueDate: s(r.dueDate).slice(0, 10),
+      return { paymentId: s(r.paymentId), patientName: s(r.patientName), houseId: s(r.houseId), houseName: houseName(r.houseId), dueDate: sheetDay(r.dueDate),
         amount: Number(r.amount) || 0, received: Number(r.receivedByAsOf) || 0, reason: s(r.reason) };
     }).sort(function (a, b) { return b.dueDate.localeCompare(a.dueDate) || a.patientName.localeCompare(b.patientName, 'he'); });
   }
@@ -1376,16 +1395,16 @@
     const list = queue && queue.ok !== false && Array.isArray(queue.receipts) ? queue.receipts : null;
     const rowOf = function (r, kind, state, priority) {
       const st = verifyStatus(r);
-      return { id: 'o:' + r.id, kind: kind, subjectKind: 'patient', subjectId: s(r.patientUid || r.patientId), name: s(r.patientName), house: houseName(r.houseId), when: s(r.receivedDate).slice(0, 10), time: '', owner: 'אורטל',
-        action: (VERIFY_LABELS[st] || st) + ' — ' + fmtMoney(r.amount), why: 'דווח ע״י ' + (s(r.recordedBy) || '—') + ' · ' + fmtDate(s(r.receivedDate).slice(0, 10)) + (r.method ? ' · ' + s(r.method) : '') + (st === 'flagged' && r.flagNote ? ' · ' + s(r.flagNote) : '') + (r.invoiceWanted === 'yes' ? ' · חשבונית מבוקשת' + (r.invoiceTo ? ' ל' + s(r.invoiceTo) : '') : ''),
+      return { id: 'o:' + r.id, kind: kind, subjectKind: 'patient', subjectId: s(r.patientUid || r.patientId), name: s(r.patientName), house: houseName(r.houseId), when: sheetDay(r.receivedDate), time: '', owner: 'אורטל',
+        action: (VERIFY_LABELS[st] || st) + ' — ' + fmtMoney(r.amount), why: 'דווח ע״י ' + (s(r.recordedBy) || '—') + ' · ' + fmtDate(sheetDay(r.receivedDate)) + (r.method ? ' · ' + s(r.method) : '') + (st === 'flagged' && r.flagNote ? ' · ' + s(r.flagNote) : '') + (r.invoiceWanted === 'yes' ? ' · חשבונית מבוקשת' + (r.invoiceTo ? ' ל' + s(r.invoiceTo) : '') : ''),
         state: state, priority: priority, classic: true, lastContact: '' };
     };
     const toVerify = [], flagged = [], documents = [];
     (list || []).forEach(function (r) {
       const st = verifyStatus(r);
-      if (st === 'reported') toVerify.push(rowOf(r, 'to_verify', daysBetween(s(r.receivedDate).slice(0, 10), today) > 3 ? 'late' : 'today', daysBetween(s(r.receivedDate).slice(0, 10), today) > 3 ? 'late' : 'today'));
+      if (st === 'reported') toVerify.push(rowOf(r, 'to_verify', daysBetween(sheetDay(r.receivedDate), today) > 3 ? 'late' : 'today', daysBetween(sheetDay(r.receivedDate), today) > 3 ? 'late' : 'today'));
       else if (st === 'flagged' || st === 'partial') flagged.push(rowOf(r, 'flagged', 'late', 'exception'));
-      else if (st === 'confirmed' && r.invoiceWanted === 'yes' && daysBetween(s(r.receivedDate).slice(0, 10), today) <= 60) documents.push(rowOf(r, 'document', 'wait', 'wait'));
+      else if (st === 'confirmed' && r.invoiceWanted === 'yes' && daysBetween(sheetDay(r.receivedDate), today) <= 60) documents.push(rowOf(r, 'document', 'wait', 'wait'));
     });
     const moneyTasks = (tasks || []).filter(function (t) { return t && t.status === 'open'; }).map(function (t) { return rowOfTask(t, { leads: [], patients: [] }, today); });
     const pend = credits ? pendingCredits(credits).map(function (c) { return { id: 'c:' + c.id, kind: 'credit', subjectKind: 'patient', subjectId: c.patientId, name: c.patientName, house: houseName(c.houseId), when: c.payoutDate || '', time: '', owner: 'אורטל', action: 'זיכוי לתשלום — ' + fmtMoney(c.amount), why: (CREDIT_TYPE_LABELS[c.creditType] || c.creditType) + ' · ' + c.allocationMonth, state: c.payoutDate && c.payoutDate < today ? 'late' : 'wait', priority: c.payoutDate && c.payoutDate < today ? 'late' : 'wait', classic: true, lastContact: '' }; }) : null;
@@ -3110,7 +3129,7 @@
     movedRow: movedRow, patientEditErrors: patientEditErrors, meetingsFor: meetingsFor, managerReport: managerReport, whenLocal: whenLocal,
     detachedRows: detachedRows, linkCandidates: linkCandidates, namesLookAlike: namesLookAlike, linkBody: linkBody, notPatientBody: notPatientBody, linkErrors: linkErrors, linkAccepted: linkAccepted,
     dischargedList: dischargedList, priorStatusOf: priorStatusOf, restoreTarget: restoreTarget, restoredRow: restoredRow, openAuditsOf: openAuditsOf, restoreFlagBody: restoreFlagBody, restoreAsLeadBody: restoreAsLeadBody, outpatientBody: outpatientBody, calendarRange: calendarRange, calendarRows: calendarRows, undatedVisits: undatedVisits, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
-    MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, billingSearch: billingSearch, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
+    MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, billingSearch: billingSearch, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, sheetDay: sheetDay, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
     patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
     newSubmissionId: newSubmissionId, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
     CREDIT_TYPE_LABELS: CREDIT_TYPE_LABELS, CREDIT_STATUS_LABELS: CREDIT_STATUS_LABELS, SETTLE_METHODS: SETTLE_METHODS, creditsOf: creditsOf, patientCredits: patientCredits, pendingCredits: pendingCredits,
