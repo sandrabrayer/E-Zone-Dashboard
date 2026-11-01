@@ -85,7 +85,7 @@ test('A06-A08: collection count is unavailable/partial if any required source is
     model(c, [], INDEX, null, PAYMENTS),
     model(c, [], INDEX, false, PAYMENTS),
     model(c, null, INDEX, DEBT, PAYMENTS),
-    model(c, undefined, INDEX, DEBT, PAYMENTS),
+    CRM.myDay(c, undefined, INDEX, DEBT, TODAY, VERED, {}, PAYMENTS),
     model(c, [], INDEX, DEBT, null),
     model(c, [], INDEX, DEBT, undefined)
   ];
