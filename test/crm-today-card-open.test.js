@@ -62,10 +62,15 @@ test('A: houseExceptions — a classic discharge (no patientId) gets the resolve
   assert.equal(core.continuityRecorded('שחר'), true); assert.equal(core.continuityRecorded('unknown'), false);
 });
 
-test('A: houseExceptions — a discharge «משוחרר לטיפול חוץ», or one already handed to Outpatient, needs no «לעדכן המשך טיפול»', () => {
+test('A: houseExceptions — referral/disposition is NOT verified continuation; unresolved remains one follow-up', () => {
   const base = { id: 'd2', houseId: 'ramot', name: 'ברית ונגרטון', date: '2026-08-01', exitDate: daysAgo(3), fromLead: 'L-brit' };
-  assert.equal(core.houseExceptions({ leads: [], patients: PATIENTS, discharges: [Object.assign({}, base, { disposition: 'released_outpatient' })] }, TODAY).length, 0);
-  assert.equal(core.houseExceptions({ leads: [], patients: PATIENTS, discharges: [Object.assign({}, base, { disposition: 'completed' })], outpatientSent: { 'discharge:d2': true } }, TODAY).length, 0);
+  const intended = core.houseExceptions({ leads: [], patients: PATIENTS, discharges: [Object.assign({}, base, { disposition: 'released_outpatient' })] }, TODAY);
+  assert.equal(intended.length, 1);
+  assert.match(intended[0].why, /לא אומתו/);
+  const sent = core.houseExceptions({ leads: [], patients: PATIENTS, discharges: [Object.assign({}, base, { disposition: 'completed' })], outpatientSent: { 'discharge:d2': true } }, TODAY);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].why, /לא התקבל אישור/);
+  assert.equal(sent[0].id, 'ex:cont:d2');
   assert.equal(core.houseExceptions({ leads: [], patients: PATIENTS, discharges: [Object.assign({}, base, { disposition: 'completed' })], outpatientSent: {} }, TODAY).length, 1);
 });
 
