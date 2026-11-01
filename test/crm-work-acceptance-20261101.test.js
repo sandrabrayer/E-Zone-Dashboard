@@ -87,7 +87,7 @@ test('A06-A08: collection count is unavailable/partial if any required source is
     model(c, null, INDEX, DEBT, PAYMENTS),
     CRM.myDay(c, undefined, INDEX, DEBT, TODAY, VERED, {}, PAYMENTS),
     model(c, [], INDEX, DEBT, null),
-    model(c, [], INDEX, DEBT, undefined)
+    CRM.myDay(c, [], INDEX, DEBT, TODAY, VERED, {}, undefined)
   ];
   for (const m of variants) {
     assert.equal(card(m, 'collection').value, null, 'no fake full count of zero when data missing');
