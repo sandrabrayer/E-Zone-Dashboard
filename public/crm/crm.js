@@ -1755,7 +1755,7 @@
           return '<div class="col" data-stage="' + esc(col.stage.id) + '"><h3><span>' + esc(col.stage.label) + '</span><span class="n">' + col.leads.length + '</span></h3>' + col.leads.map(function (l) {
             const na = nextActionFor(l, state.today);
             const inH = leadAlreadyInHouse(l, c.patients, c.leads);
-            return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + (inH ? ' <span class="chip late">כבר בבית ' + esc(houseName(inH.houseId)) + '</span>' : '') + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip src">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? avatar(l.assignedTo) : '') + '</div>'
+            return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + (inH ? ' <span class="chip late">שם/טלפון דומה בבית ' + esc(houseName(inH.houseId)) + '</span>' : '') + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip src">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? avatar(l.assignedTo) : '') + '</div>'
               + (l.created ? '<div class="meta"><span>נוצר ' + esc(fmtDate(l.created)) + '</span>' + (l.visitDate ? '<span>פגישה ' + esc(fmtDate(l.visitDate)) + (l.visitTime ? ' ' + esc(l.visitTime) : '') + '</span>' : '') + '</div>' : '')
               + '<div class="next">' + chip(na.state, na.text) + (stageAfter(l.stage) ? ' <button type="button" class="btn small" data-stage-next="' + esc(l.id) + '">שלב הבא ←</button>' : '') + '</div></div>';
           }).join('') + '</div>';
