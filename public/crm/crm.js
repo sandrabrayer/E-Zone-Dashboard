@@ -239,6 +239,37 @@
     return AREAS.map(function (a) { return a.id; });
   }
 
+  /* The patient drawer's «חשבון» tab (CHANGELOG-crm-dana-default-switch-user.md):
+   * only a session that may read billing — finance (Vered, Sandra) or the
+   * controller's read access (Ortal). The operational view (Dana) and any
+   * other session never get the tab or its pane. Display only: the server
+   * refuses the money reads themselves (403). Pure. */
+  function accountTabVisible(me) {
+    const m = me || {};
+    if (m.view === 'ops' || m.ops === true) return false;
+    return m.finance === true || m.billingRead === true;
+  }
+
+  /* «החלפת משתמש»: delete the offline copies of `/` (they carry the previous
+   * user's name and page) from the app's service-worker caches. Never throws;
+   * resolves when done. `c` is the CacheStorage (window.caches) or absent. */
+  function clearCachedPages(c) {
+    try {
+      if (!c || typeof c.keys !== 'function') return Promise.resolve();
+      return c.keys().then(function (keys) {
+        return Promise.all(keys.filter(function (k) { return String(k).indexOf('ezone-dashboard-') === 0; }).map(function (k) {
+          return c.open(k).then(function (cache) {
+            return cache.keys().then(function (reqs) {
+              return Promise.all(reqs.filter(function (r) {
+                try { const u = new URL(r.url); return u.pathname === '/' || u.pathname === '/index.html'; } catch (_) { return false; }
+              }).map(function (r) { return cache.delete(r); }));
+            });
+          });
+        }));
+      }).catch(function () {});
+    } catch (_) { return Promise.resolve(); }
+  }
+
   const s = function (v) { return String(v == null ? '' : v).trim(); };
   function houseId(idOrName) {
     const k = HOUSE_ALIASES[s(idOrName)] || s(idOrName);
@@ -2334,14 +2365,15 @@
       const na = lead ? nextActionFor(lead, state.today) : null;
       dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(name) + '</h2><div class="meta tags">' + (lead ? '<span class="chip stage-' + esc(lead.stage) + '">' + esc(stageLabel(lead.stage)) + '</span>' + houseTag(lead.house) + (lead.assignedTo ? avatar(lead.assignedTo) : '') : statusChip(pat.status) + houseTag(pat.houseId)) + (na ? chip(na.state, na.text) : '') + '</div></div>'
         + '<span class="toolbar"><button type="button" class="btn small primary" data-contact-open="' + esc(kind + ':' + id) + '">📞 תיעוד שיחה</button><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></span></div>'
-        + '<div class="tabs" role="tablist">' + [['overview', 'סקירה'], ['tasks', 'משימות' + (tasksFor(subject, state.tasks).length ? ' (' + tasksFor(subject, state.tasks).length + ')' : '')], ['activity', 'פעילות'], ['meetings', 'פגישות ושירותים'], ['account', 'חשבון'], ['docs', 'מסמכים']].map(function (t, i) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (i === 0) + '">' + esc(t[1]) + '</button>'; }).join('') + '</div>'
+        + '<div class="tabs" role="tablist">' + [['overview', 'סקירה'], ['tasks', 'משימות' + (tasksFor(subject, state.tasks).length ? ' (' + tasksFor(subject, state.tasks).length + ')' : '')], ['activity', 'פעילות'], ['meetings', 'פגישות ושירותים'], ['account', 'חשבון'], ['docs', 'מסמכים']].filter(function (t) { return t[0] !== 'account' || accountTabVisible(state.me); }).map(function (t, i) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (i === 0) + '">' + esc(t[1]) + '</button>'; }).join('') + '</div>'
         + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : renderPatientActions(pat)) + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p><a class="btn" href="/?view=classic">עריכה מלאה בדשבורד</a></p></section>'
         + '<section data-pane="tasks" hidden id="crm-tasks">' + renderTasksPane(subject) + '</section>'
         + '<section data-pane="activity" hidden><ul class="tl" id="crm-tl"><li>טוען…</li></ul></section>'
         + '<section data-pane="meetings" hidden id="crm-meetings">' + renderMeetings(meetingsFor(lead || pat, lead ? 'lead' : 'patient', compute(state.data, state.today))) + '</section>'
-        + '<section data-pane="account" hidden id="crm-account">' + (pat && state.me && state.me.finance ? '<p class="na">טוען נתוני חשבון…</p>' : '<p class="na">' + (lead ? 'החשבון נפתח עם הקליטה לבית.' : 'אין הרשאה לנתוני גבייה.') + '</p>') + '</section>'
+        + (accountTabVisible(state.me) ? '<section data-pane="account" hidden id="crm-account">' + (pat && state.me && state.me.finance ? '<p class="na">טוען נתוני חשבון…</p>' : '<p class="na">' + (lead ? 'החשבון נפתח עם הקליטה לבית.' : 'אין הרשאה לנתוני גבייה.') + '</p>') + '</section>' : '')
         + '<section data-pane="docs" hidden><p class="na">מסמכים — חשבשבת נשארת המקור; עדיין לא מחובר.</p></section>';
-      const prevTab = keepTab && state.drawer && state.drawer.tab ? state.drawer.tab : 'overview';
+      let prevTab = keepTab && state.drawer && state.drawer.tab ? state.drawer.tab : 'overview';
+      if (prevTab === 'account' && !accountTabVisible(state.me)) prevTab = 'overview';
       if (prevTab !== 'overview') {
         doc.querySelectorAll('#crm-drawer [role="tab"]').forEach(function (b) { b.setAttribute('aria-selected', String(b.dataset.tab === prevTab)); });
         doc.querySelectorAll('#crm-drawer [data-pane]').forEach(function (p) { p.hidden = p.dataset.pane !== prevTab; });
@@ -3078,6 +3110,27 @@
       if (t.id === 'f-owner') state.filters.owner = t.value;
       renderMain();
     });
+    /* «החלפת משתמש» (CHANGELOG-crm-dana-default-switch-user.md): the server ends the
+     * session (POST /api/logout revokes the token), then nothing of this user stays:
+     * in-memory state, the rendered areas and drawer, the remembered login name and
+     * the offline copies of `/`. Then `/` — the server's PIN screen; the next login
+     * lands on that user's own default view. */
+    function switchUser(btn) {
+      if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); }
+      const done = function () {
+        Object.keys(state).forEach(function (k) { if (['area', 'view', 'filters', 'today', 'loading'].indexOf(k) < 0) state[k] = null; });
+        state.filters = { q: '', house: '', owner: '' };
+        main.innerHTML = '';
+        const dr = $('#crm-drawer'); if (dr) { dr.innerHTML = ''; dr.setAttribute('aria-hidden', 'true'); }
+        ['#crm-user', '#crm-who'].forEach(function (sel) { const el = $(sel); if (el) el.textContent = ''; });
+        const q = $('#crm-search'); if (q) q.value = '';
+        try { win.localStorage.removeItem('ezone.lastLoginUser'); } catch (_) { /* private mode */ }
+        return clearCachedPages(win.caches).then(function () { win.location.replace('/'); });
+      };
+      return win.fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }).then(done, done);
+    }
+    const switchBtn = $('#crm-switch-user');
+    if (switchBtn) switchBtn.addEventListener('click', function () { switchUser(switchBtn); });
     $('#crm-search').addEventListener('input', function (ev) { state.filters.q = ev.target.value; if (state.area !== 'leads' && state.area !== 'clients' && state.area !== 'billing') state.area = 'leads'; renderNav(); renderMain(); });
     doc.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') closeDrawer(); });
 
@@ -3094,6 +3147,7 @@
         if (!me || me.ok === false) throw new Error('אין התחברות');
         state.me = me;
         $('#crm-user').textContent = me.user || '';
+        if ($('#crm-who')) $('#crm-who').textContent = me.user || '';
         if (areasFor(me).indexOf(state.area) < 0) state.area = 'today';
         if (!data || data.ok === false) throw new Error('הנתונים לא נטענו' + (data && data.error ? ' (' + data.error + ')' : ''));
         state.data = data; state.loading = false;
@@ -3113,12 +3167,12 @@
     }
     renderNav(); renderMain();
     load();
-    return { state: state, load: load, setArea: setArea };
+    return { state: state, load: load, setArea: setArea, switchUser: switchUser };
   }
 
   return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, normalise: normalise, compute: compute, filterLeads: filterLeads,
     board: board, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
-    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, esc: esc, boot: boot,
+    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, esc: esc, boot: boot, accountTabVisible: accountTabVisible, clearCachedPages: clearCachedPages,
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
     stageAfter: stageAfter, stageBefore: stageBefore, applyLeadPatch: applyLeadPatch, leadSaveBody: leadSaveBody, saveRefusal: saveRefusal,
     DISPOSITIONS: DISPOSITIONS, CONTACT_RELATIONS: CONTACT_RELATIONS, localPhone: localPhone, leadFormErrors: leadFormErrors, newLeadRow: newLeadRow,

@@ -311,3 +311,15 @@ button.kpi { cursor: pointer; } button.kpi:hover { border-color: var(--c-info); 
 button.kpi.on { background: #E5F0FF; border-color: var(--c-info); }
 .group-title button.chip { cursor: pointer; border: 0; }
 .acc-unseen { --acc: #E2445C; } .acc-undecided { --acc: #FDAB3D; } .acc-noContact { --acc: #579BFC; } .acc-late { --acc: #E2445C; } .acc-awaitingReport { --acc: #A25DDC; } .acc-unscheduled { --acc: #FDAB3D; } .acc-admitting { --acc: #00C875; }
+
+/* ---- «החלפת משתמש» (CHANGELOG-crm-dana-default-switch-user.md): ≥ 44px tap target; at 360px the
+   header wraps (the button keeps its own line end, no horizontal scroll). ---- */
+.crm-switch-user { min-height: 44px; min-width: 44px; padding: 0 14px; white-space: nowrap; flex: 0 0 auto; }
+/* The current user's name stays in the header on phones too (the older 899px rule hid it). */
+@media (max-width: 899px) {
+  .crm-top .crm-who { display: inline; font-size: 14px; font-weight: 700; }
+}
+@media (max-width: 420px) {
+  .crm-top h1 { flex: 1 1 calc(100% - 160px); }
+  .crm-top .crm-search { flex: 1 1 100%; min-width: 0; }
+}

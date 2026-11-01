@@ -345,7 +345,10 @@
 // Stacked on v104 (PR #321); monotonic, v17 never reused.
 // v105 → v106: billing dates of older Payments rows read on the Israel day, not the UTC day — «דווח תשלום» on an old
 // cycle saves again (crm/crm.js) (CHANGELOG-crm-old-payment-dates.md). From the live v105; monotonic, v17 never reused.
-var CACHE_VERSION = 'v106';
+// v106 → v107: «החלפת משתמש» in the CRM and classic headers; the CRM drawer hides «חשבון» for Dana
+// (crm/crm.js, crm.html, crm.css, app.js, style.css) (CHANGELOG-crm-dana-default-switch-user.md).
+// From the live v106; monotonic, v17 never reused.
+var CACHE_VERSION = 'v107';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

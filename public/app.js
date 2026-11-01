@@ -1247,6 +1247,17 @@ function rememberedLoginUser() {
   try { return String(localStorage.getItem(LOGIN_REMEMBER_KEY) || ''); } catch (_) { return ''; }
 }
 
+/* After a PIN login on the classic page: reload so the server serves the
+ * user's default view? True when the server says this session lands on the
+ * CRM (or the URL asks for it) and the URL does not ask for the classic page.
+ * Pure — unit-tested. */
+function loginShouldReload(info, search) {
+  let view = '';
+  try { view = new URLSearchParams(String(search || '')).get('view') || ''; } catch (_) { view = ''; }
+  if (view === 'classic') return false;
+  return !!(info && (info.landing === 'crm' || view === 'crm'));
+}
+
 /* The Hebrew message for a failed login response. Pure. */
 function loginErrorMessage(status, error) {
   if (status === 429 && error === 'locked') return 'נעול ל־15 דקות — יותר מדי ניסיונות שגויים';
@@ -1335,6 +1346,10 @@ async function tryPersonalLoginWorker() {
       // Apply the view BEFORE the app is revealed, so a restricted session
       // never paints a money tab (restricted view).
       const info = await fetchSessionInfo();
+      // The user's own default view (server rule, /api/me.landing): a CRM user
+      // re-requests `/`, which the server now answers with the CRM. Only an
+      // explicit `?view=classic` keeps the classic page.
+      if (info && info.user && loginShouldReload(info, location.search)) { location.reload(); return; }
       if (info && info.user) { applySessionInfo(info); _sessionUserChecked = true; }
       else _sessionUserChecked = false; // re-read /api/me inside enterApp
       enterApp();
@@ -1428,8 +1443,37 @@ async function fetchSessionInfo() {
   }
 }
 
-/* Header line 'מחובר/ת כ: <name> · החלף'. Hidden when the session has no
- * name. החלף goes through logout → the login screen. */
+/* «החלפת משתמש» / «יציאה» (CHANGELOG-crm-dana-default-switch-user.md).
+ *   1. POST /api/logout — the server REVOKES the session token (the old cookie
+ *      value gets 401 everywhere afterwards) and expires the cookie;
+ *   2. the previous user's data leaves the page and the device: the app's DOM
+ *      is emptied, and the offline copies of `/` in the service-worker cache
+ *      (they carry the user's name and page) are deleted;
+ *   3. back to `/` (never `?view=classic`), so the PIN screen is the server's
+ *      and the next login lands on THAT user's own default view.
+ * `forget` (switch user) also drops the remembered name, so the name list is
+ * shown; «יציאה» keeps it (the same person comes back). Never throws. */
+function clearCachedPages() {
+  try {
+    if (typeof caches === 'undefined' || !caches || !caches.keys) return Promise.resolve();
+    return caches.keys().then(keys => Promise.all(keys.filter(k => String(k).indexOf('ezone-dashboard-') === 0).map(k => caches.open(k).then(c => c.keys().then(reqs => Promise.all(reqs.filter(r => {
+      try { const u = new URL(r.url); return u.pathname === '/' || u.pathname === '/index.html'; } catch (_) { return false; }
+    }).map(r => c.delete(r)))))))).catch(() => {});
+  } catch (_) { return Promise.resolve(); }
+}
+async function endSession(forget) {
+  try { await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }); } catch (_) { /* leave anyway */ }
+  if (forget) rememberLoginUser('');
+  state.sessionUser = '';
+  const app = document.getElementById('app');
+  if (app) { app.classList.add('hidden'); Array.prototype.slice.call(app.querySelectorAll('main, .screen')).forEach(n => { n.innerHTML = ''; }); }
+  await clearCachedPages();
+  location.replace('/');
+}
+function switchUser() { return endSession(true); }
+
+/* Header line 'מחובר/ת כ: <name>' + «החלפת משתמש» (44px tap target). Hidden
+ * when the session has no name. The name is a text node (never innerHTML). */
 function renderWhoami(name) {
   /* Remembered so canReverseVoid() can decide whether to OFFER the un-void
    * control. It is never the authority — upsertPayment_() re-checks against
@@ -1448,14 +1492,12 @@ function renderWhoami(name) {
   const b = document.createElement('b');
   b.textContent = name;
   el.appendChild(b);
-  el.appendChild(document.createTextNode(' · '));
   const sw = document.createElement('button');
-  sw.className = 'link-btn';
-  sw.textContent = 'החלף';
-  sw.onclick = () => busyButton(sw, 'load', async () => {
-    try { await fetch('/api/logout', { method: 'POST' }); } catch (_) { /* reload anyway */ }
-    location.reload();
-  });
+  sw.type = 'button';
+  sw.id = 'switch-user';
+  sw.className = 'btn ghost-sm switch-user';
+  sw.textContent = 'החלפת משתמש';
+  sw.onclick = () => busyButton(sw, 'load', switchUser);
   el.appendChild(sw);
   el.classList.remove('hidden');
 }
@@ -1490,10 +1532,7 @@ function initPin() {
   initPinAdmin();
 
   const logoutBtn = document.getElementById('logout');
-  if (logoutBtn) logoutBtn.onclick = () => busyButton(logoutBtn, 'load', async () => {
-    try { await fetch('/api/logout', { method: 'POST' }); } catch (_) { /* reload anyway */ }
-    location.reload();
-  });
+  if (logoutBtn) logoutBtn.onclick = () => busyButton(logoutBtn, 'load', () => endSession(false));
 
   initTabs();
   initGlobalSearch();
