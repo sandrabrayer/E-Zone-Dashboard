@@ -1324,11 +1324,18 @@
       if (l.stage === 'paid' && l.entryDate && l.entryDate <= today) rows.push(rowOfLead(l, { id: 'ex:admit:' + l.id, kind: 'admission_due', action: 'קליטה לבית לא בוצעה', why: 'תאריך הכניסה ' + fmtDate(l.entryDate) + ' עבר', when: l.entryDate, state: 'late', priority: 'exception' }));
     });
     (c.discharges || []).forEach(function (d) {
-      if (d.deletedAt || isRestoredDischarge(d) || !d.exitDate || daysBetween(d.exitDate, today) > 14 || continuityRecorded(d.continuity)) return;
-      // «משוחרר לטיפול חוץ» / already handed to Outpatient = the continued treatment IS known (outpatient) — no «ללא המשך טיפול» task.
-      if (d.disposition === 'released_outpatient' || (c.outpatientSent && c.outpatientSent['discharge:' + d.id])) return;
-      // subjectId = the resolved Patients id (classic discharges carry no patientId); open on «פגישות ושירותים», where the discharge and its «המשך טיפול» live.
-      rows.push({ id: 'ex:cont:' + d.id, kind: 'continuity', subjectKind: 'patient', subjectId: dischargePatientId(d, c.patients), dischargeId: d.id, name: d.name, house: houseName(d.houseId), action: 'לעדכן המשך טיפול', why: 'שוחרר/ה ' + fmtDate(d.exitDate) + ' ללא המשך טיפול', when: d.exitDate, time: '', owner: '', state: 'wait', priority: 'exception', open: 'meetings' });
+      if (d.deletedAt || isRestoredDischarge(d) || !d.exitDate || continuityRecorded(d.continuity)) return;
+      // Referral/disposition = sent/intended, NOT confirmed treatment start.
+      // The status-return feed is still a draft. A derived exception stays
+      // visible even after day 14 until a documented result is recorded.
+      const sent = !!(c.outpatientSent && c.outpatientSent['discharge:' + d.id]);
+      const expectingOutpatient = sent || d.disposition === 'released_outpatient';
+      const action = expectingOutpatient ? 'לאמת המשך טיפול לאחר הפניה לאמבולטורי' : 'לעדכן המשך טיפול';
+      const reason = expectingOutpatient
+        ? (sent ? 'הפנייה נשלחה, אך לא התקבל אישור שהטיפול התחיל' : 'סומן מעבר לאמבולטורי, אך שליחת הפנייה והתחלת הטיפול לא אומתו')
+        : 'שוחרר/ה ' + fmtDate(d.exitDate) + ' ללא תוצאת המשך טיפול';
+      // One read-only exception per source discharge; no third writable task.
+      rows.push({ id: 'ex:cont:' + d.id, kind: 'continuity', subjectKind: 'patient', subjectId: dischargePatientId(d, c.patients), dischargeId: d.id, name: d.name, house: houseName(d.houseId), action: action, why: reason, when: d.exitDate, time: '', owner: 'ורד', state: 'wait', priority: 'exception', open: 'meetings' });
     });
     return rows;
   }
@@ -2056,7 +2063,7 @@
       return toolbar + '<div class="tbl-wrap"><table class="tbl" id="crm-discharged"><thead><tr><th>שם</th><th>בית</th><th>כניסה</th><th>יציאה</th><th>סיבה</th><th>המשך טיפול</th><th>אמבולטורי</th><th></th></tr></thead><tbody>'
         + list.map(function (r) {
           const op = r.sentToOutpatient ? chip('ok', 'נשלח') : (r.disposition === 'released_outpatient' ? chip('late', 'לא נשלח') : '<span class="na">—</span>');
-          return '<tr data-discharge="' + esc(r.id) + '"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtDate(r.date)) + '</td><td>' + esc(fmtDate(r.exitDate)) + '</td><td>' + esc(r.dispositionLabel || '—') + '</td><td>' + esc(continuityKnown(r.continuity) ? continuityLabel(r.continuity) : (s(r.continuity) && r.continuity !== 'unknown' ? r.continuity : (r.disposition === 'released_outpatient' || r.sentToOutpatient ? continuityLabel('continued_outpatient') : '—'))) + '</td><td>' + op + '</td>'
+          return '<tr data-discharge="' + esc(r.id) + '"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtDate(r.date)) + '</td><td>' + esc(fmtDate(r.exitDate)) + '</td><td>' + esc(r.dispositionLabel || '—') + '</td><td>' + esc(continuityKnown(r.continuity) ? continuityLabel(r.continuity) : (s(r.continuity) && r.continuity !== 'unknown' ? r.continuity : (r.disposition === 'released_outpatient' || r.sentToOutpatient ? 'נשלח/מיועד לאמבולטורי — התחלת טיפול לא אומתה' : 'לא ידוע'))) + '</td><td>' + op + '</td>'
             + '<td>' + (ro ? '' : '<button type="button" class="btn small" data-restore="' + esc(r.id) + '">שחזר</button>' + (!r.sentToOutpatient ? ' <button type="button" class="btn small" data-to-outpatient="' + esc(r.id) + '">העבר לאמבולטורי</button>' : '')) + '</td></tr>';
         }).join('') + '</tbody></table></div><div id="crm-restore"></div>';
     }
