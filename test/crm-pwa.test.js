@@ -26,9 +26,10 @@ function loadSw() {
 }
 const sw = loadSw();
 
-test('sw.js: v107 (monotonic from the live v93 via v94…v97, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
-  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v107');
+test('sw.js: v108 (monotonic from the live v93 via v94…v97, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
+  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v108');
   assert.ok(SW_SRC.includes('v106 → v107:') && SW_SRC.includes('CHANGELOG-crm-dana-default-switch-user.md'));
+  assert.ok(SW_SRC.includes('v107 → v108:') && SW_SRC.includes('CHANGELOG-crm-today-card-open.md'));
   assert.ok(SW_SRC.includes('v104 → v105:') && SW_SRC.includes('CHANGELOG-crm-kpi-two-counters.md'));
   assert.ok(SW_SRC.includes('v105 → v106:') && SW_SRC.includes('CHANGELOG-crm-old-payment-dates.md'));
   assert.ok(SW_SRC.includes('v103 → v104:') && SW_SRC.includes('CHANGELOG-crm-clickable-kpis.md'));
