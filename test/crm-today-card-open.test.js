@@ -137,6 +137,8 @@ const DATA = {
 
 async function boot() {
   const posts = [];
+  const contactEvents = [];
+  const followupTasks = [];
   const hash = await pinHash.hashPin('583920', PEPPER);
   const recs = ['vered', 'dana'].map((id) => JSON.parse(users.recordLine(id, hash, 1)));
   const env = { PROXY_SECRET, SESSION_SECRET, SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', PIN_PEPPER: PEPPER, USER_PIN_HASHES: JSON.stringify(recs), CRM_ENABLED: 'true' };
@@ -156,10 +158,30 @@ async function boot() {
       let parsed = {};
       try { parsed = JSON.parse(body); } catch (_) { parsed = {}; }
       posts.push(parsed);
+      let contactResult = null;
+      if (parsed.action === 'logContact') {
+        const prev = contactEvents.find(e => e.submissionId === parsed.submissionId);
+        if (prev) {
+          contactResult = { ok: true, event: prev, created: followupTasks.find(t => t.contactEventId === prev.eventId) || null, replayed: true };
+        } else {
+          const ev = Object.assign({ eventId: 'contact:' + parsed.submissionId, kind: 'contact_logged', submissionId: parsed.submissionId }, parsed.contact || {});
+          contactEvents.push(ev);
+          const next = parsed.next || {};
+          let created = null;
+          if (!next.none) {
+            created = { id: 'task-' + parsed.submissionId.slice(4) + '-next', kind: 'call', leadId: ev.leadId,
+              title: next.title || 'לחזור', reason: next.reason || '', assignee: next.assignee || 'ורד',
+              dueDate: next.dueDate || '', dueTime: next.dueTime || '', status: 'open', source: 'contact', contactEventId: ev.eventId };
+            followupTasks.push(created);
+          }
+          contactResult = { ok: true, event: ev, created };
+        }
+      }
       const answer = parsed.action === 'getData' ? DATA
-        : parsed.action === 'getTasks' ? { ok: true, total: 0, tasks: [] }
-        : parsed.action === 'contactIndex' ? { ok: true, count: 0, leads: {}, patients: {} }
-        : parsed.action === 'getActivity' ? { ok: true, events: [] }
+        : parsed.action === 'getTasks' ? { ok: true, total: followupTasks.length, tasks: followupTasks }
+        : parsed.action === 'contactIndex' ? { ok: true, count: contactEvents.length, leads: {}, patients: {} }
+        : parsed.action === 'getActivity' ? { ok: true, events: contactEvents.filter(e => e.leadId === parsed.leadId || e.patientId === parsed.patientId) }
+        : parsed.action === 'logContact' ? contactResult
         : parsed.action === 'debtAging' ? { ok: true, byPatient: [], totals: {}, byHouse: [] }
         : parsed.action === 'getPayments' ? { ok: true, payments: [], receipts: [], funders: [] }
         : parsed.action === 'getCredits' ? { ok: true, credits: [] }
@@ -173,7 +195,7 @@ async function boot() {
     return req;
   };
   const srv = await new Promise((resolve) => { const s = mod.app.listen(0, '127.0.0.1', () => resolve(s)); });
-  return { port: srv.address().port, posts, close() { srv.close(); https.request = original; Object.assign(console, quiet); } };
+  return { port: srv.address().port, posts, contactEvents, followupTasks, close() { srv.close(); https.request = original; Object.assign(console, quiet); } };
 }
 
 async function openPage(browser, port, id, width) {
@@ -266,5 +288,49 @@ test('B: a read manager no-show produces the real contact form and non-held noti
     }
     assert.equal(srv.posts.filter((p) => p.action === 'saveAll' || p.action === 'logContact').length, 0,
       'navigating and opening the contact form does not mutate records');
+  } finally { await browser.close(); srv.close(); }
+});
+
+
+test('B: Vered saves a no-show callback and scheduled next task; source echoes persist across reload and remain visible', { skip }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { ctx, page, errors } = await openPage(browser, srv.port, 'vered', 1024);
+    const row = page.locator('#crm-main .row.work:not(.h)', { hasText: 'מטופל היעדרות בדיקה' }).first();
+    await row.locator('button:text-is("תיעוד שיחה")').click();
+    const form = '#crm-drawer form[data-form="contact"]';
+    await page.selectOption(form + ' select[name="outcome"]', 'call_back_later');
+    await page.fill(form + ' textarea[name="summary"]', 'שיחת המשך בעקבות ביקור שלא התקיים');
+    await page.check(form + ' input[name="next"][value="d3"]');
+    await page.click(form + ' button[type="submit"]');
+    await page.waitForFunction(() => {
+      const dr = document.querySelector('#crm-drawer');
+      return dr && dr.getAttribute('aria-hidden') === 'false'
+        && dr.querySelector('[data-pane="tasks"]:not([hidden])')
+        && dr.textContent.includes('שיחת המשך בעקבות ביקור שלא התקיים');
+    }, null, { timeout: 7000 });
+
+    const writes = srv.posts.filter(p => p.action === 'logContact');
+    assert.equal(writes.length, 1, 'one contact command; no duplicate business write');
+    assert.equal(writes[0].contact.leadId, 'L-no-show-synthetic', 'same stable source lead');
+    assert.equal(writes[0].contact.outcome, 'call_back_later');
+    assert.match(writes[0].contact.summary, /ביקור שלא התקיים/);
+    assert.equal(writes[0].next.assignee, 'ורד');
+    assert.equal(writes[0].next.dueDate,
+      new Date(Date.parse(TODAY + 'T12:00:00Z') + 3 * 86400000).toISOString().slice(0, 10));
+    assert.match(writes[0].submissionId, /^sub-[0-9a-f]{32}$/, 'stable idempotency key');
+    assert.equal(srv.contactEvents.length, 1, 'synthetic authoritative event persisted');
+    assert.equal(srv.followupTasks.length, 1, 'synthetic authoritative next task persisted');
+    assert.equal(srv.followupTasks[0].leadId, 'L-no-show-synthetic');
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForSelector('#crm-main .row.work:not(.h)', { timeout: 7000 });
+    const task = page.locator('#crm-main .row.work.task', { hasText: 'שיחת המשך בעקבות ביקור שלא התקיים' });
+    await task.waitFor({ timeout: 7000 });
+    assert.match(await task.textContent(), /ורד/, 'new task has an accountable owner after independent reload');
+    assert.equal(srv.followupTasks.length, 1, 'reload never creates a second task');
+    assert.deepEqual(errors, [], 'no page errors during save/reload');
+    await ctx.close();
   } finally { await browser.close(); srv.close(); }
 });
