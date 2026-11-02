@@ -3422,6 +3422,8 @@ function saveAll_(leads, patients, user, prove) {
     // Leads a stale payload tried to put back after they were closed or
     // removed (CHANGELOG-write-path-hardening.md, R1). Absent when none.
     if (leadOut.closedSuppressed && leadOut.closedSuppressed.length > 0) out.closedSuppressed = leadOut.closedSuppressed;
+    // A stale tab tried to reopen an admitted lead; the sheet's stage was kept (additive).
+    if (leadOut.admittedKept && leadOut.admittedKept.length > 0) out.admittedKept = leadOut.admittedKept;
     if (moved.length > 0) out.moved = moved;
     if (Object.keys(stamps).length > 0) out.stamps = stamps;
     // Additive, absent when empty: [{patientId, leadId}] of the direct
@@ -4036,6 +4038,16 @@ function mergeLeads_(leadsIn, out) {
   // sheet value that was something else) — the Outpatient handoff trigger.
   const mwIdx = LEAD_COLUMNS.indexOf('meetingWith');
   const ambulatoryChanged = [];
+
+  // An ADMITTED lead is never reopened by a save (CHANGELOG-admitted-lead-stays-closed.md).
+  // Every classic save sends EVERY lead from the tab's own copy, so a tab
+  // loaded before an admission wrote the lead back to «בטיפול פעיל» (מתן כחלון,
+  // admitted 01/11, back on the board). When the sheet says admitted and a
+  // Patients row that is not released points at this lead (fromLead), the
+  // sheet's stage, entryDate and meetingOutcome are kept. A real reopen
+  // (restore after a discharge) has a released patient, so it is not blocked.
+  const keptAdmitted = keepAdmittedLeadStages_(leads, existingById);
+  if (out && typeof out === 'object' && keptAdmitted.length) out.admittedKept = keptAdmitted;
 
   const newRows = leads.map(function (l) {
     const merged = {};
@@ -9761,6 +9773,49 @@ const ADMITTED_LEAD_STAGES = ['admitted', 'נקלט', 'אושפז'];
 
 function isAdmittedLeadStage_(stage) {
   return ADMITTED_LEAD_STAGES.indexOf(String(stage == null ? '' : stage).trim()) !== -1;
+}
+
+/* The lead ids a NOT-released Patients row points at (fromLead). */
+function inHouseFromLeadIds_() {
+  const out = {};
+  readSheet_(getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS), PATIENT_COLUMNS).forEach(function (p) {
+    const fl = String(p && p.fromLead != null ? p.fromLead : '').trim();
+    if (fl && String(p.status == null ? '' : p.status).trim() !== 'released') out[fl] = true;
+  });
+  return out;
+}
+
+/* mergeLeads_ guard (CHANGELOG-admitted-lead-stays-closed.md): an incoming
+ * lead whose SHEET row is admitted, and whose patient is in a house, keeps the
+ * sheet's stage / entryDate / meetingOutcome — a stale tab cannot reopen it.
+ * Mutates the payload objects. → the lead ids kept. The Patients sheet is read
+ * only when some payload lead would leave an admitted stage. */
+function keepAdmittedLeadStages_(leads, existingById) {
+  const stageIdx = LEAD_COLUMNS.indexOf('stage');
+  const entryIdx = LEAD_COLUMNS.indexOf('entryDate');
+  const outcomeIdx = LEAD_COLUMNS.indexOf('meetingOutcome');
+  const at = [];
+  (leads || []).forEach(function (l) {
+    if (!l || typeof l !== 'object') return;
+    const existing = existingById[String(l.id == null ? '' : l.id)];
+    if (!existing || !isAdmittedLeadStage_(existing[stageIdx]) || isAdmittedLeadStage_(l.stage)) return;
+    at.push({ lead: l, row: existing });
+  });
+  if (!at.length) return [];
+  const linked = inHouseFromLeadIds_();
+  const kept = [];
+  at.forEach(function (x) {
+    const id = String(x.lead.id).trim();
+    if (!linked[id]) return;
+    x.lead.stage = x.row[stageIdx];
+    if (entryIdx >= 0 && x.row[entryIdx] !== '' && x.row[entryIdx] != null) x.lead.entryDate = x.row[entryIdx];
+    if (outcomeIdx >= 0 && x.row[outcomeIdx] !== '' && x.row[outcomeIdx] != null) x.lead.meetingOutcome = x.row[outcomeIdx];
+    kept.push(id);
+  });
+  if (kept.length) {
+    try { logAudit_('lead_admitted_kept', 'mergeLeads_', kept.join(','), '', { count: kept.length }, ''); } catch (_) { /* audit is best effort */ }
+  }
+  return kept;
 }
 
 /* 'YYYY-MM-DD' `days` calendar days before the bare date `iso` (UTC parts of a
