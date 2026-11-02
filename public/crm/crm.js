@@ -2116,16 +2116,19 @@
       }).then(function (res) {
         const why = houseSaveRefusal(res, pid, '');
         if (why) throw new Error('השחרור נרשם, אך עדכון הסטטוס נכשל — ' + why);
-        state.saving = false; toast('«' + s(before.name) + '» שוחרר/ה');
+        const needsOutpatient = s(v.disposition) === 'released_outpatient';
+        if (needsOutpatient) toast('השחרור נשמר — מאמת את ההעברה לאמבולטורי, הפעולה עדיין לא הושלמה');
+        else { state.saving = false; toast('«' + s(before.name) + '» שוחרר/ה'); }
         if (auditRes && auditRes.refund && Number(auditRes.refund.created) > 0) toast('נוצר זיכוי לפי הכלל — לטיפול אורטל');
-        if (s(v.disposition) === 'released_outpatient') {
+        if (needsOutpatient) {
           return win.fetch('/api/outpatient-lead', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dischargeId: audit.id, manual: false }) })
             .then(function (r) { return r.json().catch(function () { return {}; }); })
             .then(function (d) { if (d && d.ok === true && (d.sent || d.alreadySent)) { if (!state.data.outpatientSentLeadIds) state.data.outpatientSentLeadIds = []; state.data.outpatientSentLeadIds.push('discharge:' + audit.id); renderMain(); }
               const accepted = d && d.ok === true && (d.sent || d.alreadySent);
+              state.saving = false;
               toast(accepted ? (d.alreadySent ? 'השחרור נשמר וההפניה כבר קיימת באמבולטורי' : 'השחרור נשמר ונוצרה הפניה לאמבולטורי') : 'השחרור נשמר, אך ההפניה לאמבולטורי לא אומתה — אין לשחרר שוב; יש לנסות העברה מתוך ״משוחררים״', !accepted);
               return !!accepted; })
-            .catch(function () { toast('השחרור נשמר, אך ההפניה לאמבולטורי לא אומתה — אין לשחרר שוב; יש לנסות העברה מתוך ״משוחררים״', true); return false; });
+            .catch(function () { state.saving = false; toast('השחרור נשמר, אך ההפניה לאמבולטורי לא אומתה — אין לשחרר שוב; יש לנסות העברה מתוך ״משוחררים״', true); return false; });
         }
         return true;
       }).catch(function (e) {
