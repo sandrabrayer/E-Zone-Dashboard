@@ -1481,7 +1481,7 @@
       if (linked.length === 1 && s(linked[0].status) !== 'released') {
         rows.push({ id: 'ex:discharge-state:' + d.id, kind: 'discharge_integrity', subjectKind: 'patient',
           subjectId: s(d.patientId), dischargeId: d.id, name: d.name, house: houseName(d.houseId),
-          action: 'בדיקת שלמות שחרור', why: 'רישום שחרור קיים, אך סטטוס המטופל עדיין אינו משוחרר',
+          action: 'בדיקת שלמות שחרור', why: 'רישום שחרור קיים, אך סטטוס המטופל עדיין אינו משוחרר — אין לבצע שחרור נוסף לפני בירור',
           when: d.exitDate, time: '', owner: 'ורד', state: 'wait', priority: 'exception', open: 'overview' });
         return; // do not create a second continuity row for the same incomplete discharge
       }
