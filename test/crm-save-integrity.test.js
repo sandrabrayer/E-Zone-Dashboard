@@ -71,5 +71,7 @@ test('P0: handoff failure cannot return a fully successful discharge+Outpatient 
   const src = fs.readFileSync(require.resolve('../public/crm/crm.js'), 'utf8');
   const fn = src.slice(src.indexOf('function dischargePatient(pid, v, f)'), src.indexOf('function renderDischarged(c)'));
   assert.ok(fn.includes('השחרור נשמר, אך ההפניה לאמבולטורי לא אומתה'), 'partial failure must be visible');
+  assert.match(fn, /if \(needsOutpatient\) toast\('השחרור נשמר — מאמת/, 'outbound handoff is explicitly still pending');
+  assert.match(fn, /const accepted = d && d.ok === true && \(d.sent \|\| d.alreadySent\);\s*state.saving = false;/, 'do not release the action lock until handoff response');
   assert.doesNotMatch(fn, /catch\(function \(\) \{ toast\('יצירת ליד טיפול חוץ נכשלה[^;]*; return true;/);
 });
