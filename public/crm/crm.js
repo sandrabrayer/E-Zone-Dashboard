@@ -575,6 +575,13 @@
   }
   function nextActionFor(l, today) {
     if (reportUnseen(l)) return { text: 'דיווח מנהל/ת חדש', state: 'today' };
+    // The board/table must agree with Vered's Today: an existing manager
+    // no-show report is NOT a missing report and has not proved attendance.
+    if (l.stage === 'visit' && s(l.meetingReportedAt) && !s(l.meetingOutcome)) {
+      return l.meetingReportOutcome === 'no_show'
+        ? { text: 'לברר היעדרות / ביטול', state: 'wait' }
+        : { text: 'להחליט אחרי דיווח מנהל/ת', state: 'wait' };
+    }
     if (l.stage === 'visit' && l.visitDate && l.visitDate < today && !l.meetingOutcome) return { text: 'דיווח מהמנהל/ת', state: 'late' };
     if (l.stage === 'visit' && l.visitDate === today) return { text: 'פגישה היום', state: 'today' };
     if (l.stage === 'visit') return { text: l.visitDate ? 'פגישה ' + fmtDate(l.visitDate) : 'לתאם פגישה', state: 'wait' };
