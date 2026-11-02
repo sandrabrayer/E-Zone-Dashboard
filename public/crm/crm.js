@@ -1403,7 +1403,8 @@
         action: notHeld ? 'לברר היעדרות / ביטול ולתאם מועד חדש' : 'להחליט אחרי דיווח המנהל/ת',
         why: notHeld ? 'דיווח המנהל/ת: לא הגיע / בוטל — הביקור לא התקיים; נדרש ליצור קשר או לתעד סגירה מנומקת' : 'הדיווח נקרא, אין החלטה',
         when: s(l.meetingReportedAt).slice(0, 10),
-        state: 'late', priority: 'exception', open: 'meetings', contactable: notHeld
+        whenText: notHeld ? 'דיווח מ-' + fmtDate(s(l.meetingReportedAt).slice(0, 10)) + ' · מועד המשך טרם נקבע' : '',
+        state: notHeld ? 'wait' : 'late', priority: 'exception', open: 'meetings', contactable: notHeld
       }));
     });
     const fresh = newLeadsNoContact(c.leads, tasks, index, today).map(function (x) { return rowOfLead(x.lead, { id: 'n:' + x.lead.id, kind: 'lead_no_contact', action: 'יצירת קשר ראשון', why: x.age === null ? 'אין מגע מתועד' : 'פנייה מ-' + fmtDate(x.lead.created) + ' · אין מגע מתועד', when: '', state: 'wait', priority: 'wait', contactable: true }); });
