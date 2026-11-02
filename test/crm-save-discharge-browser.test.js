@@ -32,7 +32,7 @@ const PROXY = 'proxy-secret-TEST-crm-save-discharge-0123';
 const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'USER_PIN_HASHES', 'PIN_PEPPER', 'CRM_ENABLED'];
 const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date());
 
-async function boot() {
+async function boot(mode) {
   const hash = await pinHash.hashPin('583920', PEPPER);
   const roster = ['vered', 'dana'].map((id) => JSON.parse(users.recordLine(id, hash, 1)));
   const env = { PROXY_SECRET: PROXY, SESSION_SECRET: SECRET, SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', PIN_PEPPER: PEPPER, USER_PIN_HASHES: JSON.stringify(roster), CRM_ENABLED: 'true' };
@@ -82,8 +82,14 @@ async function boot() {
         answer = { ok: true, byPatient: [], totals: {}, byHouse: [] };
       } else if (p.action === 'dischargePatient') {
         const d = typeof p.patient === 'string' ? JSON.parse(p.patient) : p.patient;
-        if (!base.dischargedPatients.find((x) => x.id === d.id)) base.dischargedPatients.push(d);
-        answer = { ok: true, patient: { id: d.id } };
+        if (mode === 'duplicate') {
+          // Source dedup result exposes an audit ID, but not the stored
+          // patientId. This must NEVER mutate another Patients row.
+          answer = { ok: true, duplicate: true, id: 'd-older-same-stay-key', exitDate: today };
+        } else {
+          if (!base.dischargedPatients.find((x) => x.id === d.id)) base.dischargedPatients.push(d);
+          answer = { ok: true, patient: { id: d.id } };
+        }
       } else if (p.action === 'saveAll') {
         // Fault AFTER the discharge audit was durably recorded.
         answer = { ok: false, error: 'synthetic_status_refused' };
@@ -169,6 +175,32 @@ test('P0 browser: committed audit + rejected status save => durable exception, s
     await other.page.waitForSelector('[data-row^="ex:discharge-state:"]', { timeout: 5000 });
     assert.match(await other.page.textContent('[data-row^="ex:discharge-state:"]'), /בדיקת שלמות שחרור/);
     await other.ctx.close();
+  } finally {
+    await browser.close(); srv.close();
+  }
+});
+
+test('P0 duplicate discharge response without stored patient ID cannot update Patients or trigger refund', { skip }, async () => {
+  const srv = await boot('duplicate');
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { ctx, page } = await login(browser, srv.port, 'vered');
+    await page.click('[data-area="clients"]');
+    await page.click('tr[data-open-patient="p-synthetic"] td.name');
+    const f = '#crm-drawer form[data-form="discharge"]';
+    await page.locator(f).locator('..').locator('summary').click();
+    await page.selectOption(f + ' select[name="disposition"]', 'completed');
+    await page.fill(f + ' input[name="dischargeDate"]', today);
+    await page.click(f + ' button[type="submit"]');
+    await page.waitForFunction(() => {
+      const t = document.querySelector('#crm-toast');
+      return t && t.classList.contains('bad') && /מצב השחרור לא אומת/.test(t.textContent);
+    }, null, { timeout: 5000 });
+    assert.equal(srv.posts.filter((p) => p.action === 'dischargePatient').length, 1);
+    assert.equal(srv.posts.filter((p) => p.action === 'saveAll').length, 0, 'unverified duplicate cannot change another Patients status');
+    assert.equal(srv.base.patients.ramot[0].status, 'active');
+    assert.equal(srv.base.dischargedPatients.length, 0, 'duplicate did not create a new audit');
+    await ctx.close();
   } finally {
     await browser.close(); srv.close();
   }
