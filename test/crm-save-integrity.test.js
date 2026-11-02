@@ -22,6 +22,26 @@ const model = (audit, patient) => ({
   outpatientSent: {}
 });
 
+test('SAVE-02: a lost funder reply is recovered ONLY by the exact source submission ID, patient, funder and day', () => {
+  const key = 'sub-0123456789abcdef0123456789abcdef';
+  const base = { patientId: 'P1', submissionId: key, funder: 'פרטי', effectiveFrom: '2026-11-02' };
+  const proof = (row) => crm.funderSourceConfirmed({ ok: true, funders: [Object.assign({}, base, row)] }, 'P1', key, 'פרטי', '2026-11-02');
+  assert.equal(proof({}), true);
+  assert.equal(proof({ submissionId: 'sub-another' }), false);
+  assert.equal(proof({ patientId: 'P2' }), false);
+  assert.equal(proof({ funder: 'משרד הבריאות' }), false);
+  assert.equal(proof({ effectiveFrom: '2026-11-01' }), false);
+  assert.equal(crm.funderSourceConfirmed({ ok: true, funders: [base, base] }, 'P1', key, 'פרטי', '2026-11-02'), false, 'duplicate key is ambiguous');
+  assert.equal(crm.funderSourceConfirmed({ ok: false, funders: [base] }, 'P1', key, 'פרטי', '2026-11-02'), false);
+  assert.equal(crm.funderSourceConfirmed({ ok: true }, 'P1', key, 'פרטי', '2026-11-02'), false);
+  assert.equal(crm.funderSourceConfirmed(null, 'P1', key, 'פרטי', '2026-11-02'), false);
+  const src = fs.readFileSync(require.resolve('../public/crm/crm.js'), 'utf8');
+  const f = src.slice(src.indexOf('function saveFunderBestEffort('), src.indexOf('function admitLead('));
+  assert.match(f, /return funderSourceConfirmed\(data, pid, submissionId, funder, effectiveFrom\)/);
+  assert.match(f, /return posted\.then/);
+  assert.equal((f.match(/action: 'appendFunder'/g) || []).length, 1, 'source reconciliation never sends a second finance write');
+});
+
 test('P0: a funder response must acknowledge the EXACT submission ID, not an arbitrary ok row', () => {
   const key = 'sub-0123456789abcdef0123456789abcdef';
   assert.equal(crm.funderWriteConfirmed({ ok: true, row: { submissionId: key } }, key), true);
