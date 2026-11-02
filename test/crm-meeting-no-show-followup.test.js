@@ -39,6 +39,7 @@ test('P1: manager-reported no-show / cancellation is an actionable callback, nev
   assert.equal(r.open, 'meetings');
   assert.equal(r.contactable, true, 'open the real existing contact form');
   assert.equal(r.priority, 'exception');
+  assert.deepEqual(core.nextActionFor(baseLead(), TODAY), { text: 'לברר היעדרות / ביטול', state: 'wait' }, 'board/table must match Today');
   assert.equal(r.when, '2026-10-30');
   assert.equal(r.state, 'wait', 'report timestamp is not an overdue followup deadline');
   assert.match(r.whenText, /דיווח מ-30\/10\/2026.*מועד המשך טרם נקבע/);
@@ -53,6 +54,7 @@ test('P1: unread manager no-show report first remains unread and shows the sourc
   assert.equal(rows[0].kind, 'report_unseen');
   assert.match(rows[0].why, /לא הגיע\s*\/\s*בוטל/);
   assert.notEqual(rows[0].contactable, true);
+  assert.deepEqual(core.nextActionFor(baseLead({ meetingSeen: '' }), TODAY), { text: 'דיווח מנהל/ת חדש', state: 'today' });
   assert.equal(rows[0].open, 'meetings');
 });
 
@@ -62,6 +64,7 @@ test('P1: a different manager outcome keeps the original family-decision workflo
   assert.equal(m.byDomain.followup[0].kind, 'report_undecided');
   assert.match(m.byDomain.followup[0].action, /להחליט אחרי דיווח/);
   assert.notEqual(m.byDomain.followup[0].contactable, true);
+  assert.deepEqual(core.nextActionFor(baseLead({ meetingReportOutcome: 'undecided' }), TODAY), { text: 'להחליט אחרי דיווח מנהל/ת', state: 'wait' });
 });
 
 test('P1: a documented family cancellation does not generate a fresh no-show callback', () => {
