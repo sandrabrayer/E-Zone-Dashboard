@@ -27,6 +27,7 @@ test('SAVE-02: a lost funder reply is recovered ONLY by the exact source submiss
   const base = { patientId: 'P1', submissionId: key, funder: 'פרטי', effectiveFrom: '2026-11-02' };
   const proof = (row) => crm.funderSourceConfirmed({ ok: true, funders: [Object.assign({}, base, row)] }, 'P1', key, 'פרטי', '2026-11-02');
   assert.equal(proof({}), true);
+  assert.equal(proof({ effectiveFrom: '2026-11-01T22:00:00.000Z' }), true, 'source date stored as UTC timestamp maps to Israel 02/11');
   assert.equal(proof({ submissionId: 'sub-another' }), false);
   assert.equal(proof({ patientId: 'P2' }), false);
   assert.equal(proof({ funder: 'משרד הבריאות' }), false);
