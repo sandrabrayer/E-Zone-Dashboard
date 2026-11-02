@@ -71,7 +71,7 @@ test('P1: a past planned date alone never proves that a meeting actually took pl
   const rows = core.compute(data([baseLead({ meetingReportedAt: '', meetingSeen: '', meetingReportOutcome: '' })]), TODAY).rows;
   assert.equal(rows.length, 1);
   assert.equal(rows[0].kind, 'meeting_no_outcome');
-  assert.match(rows[0].reason, /תאריך.*חלף.*לא.*אישור/);
+  assert.match(rows[0].reason, /תאריך.*חלף.*לא אומת/);
   assert.doesNotMatch(rows[0].reason, /הפגישה התקיימה/);
 });
 
