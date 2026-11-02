@@ -127,6 +127,7 @@ const DATA = {
     { id: 'L1', name: 'יפעת שנלר', house: 'רמות השבים', stage: 'new', created: daysAgo(7), assignedTo: 'ורד', phone: '0501111111' },
     { id: 'L5', name: 'אלמוג אוחיון', house: 'רמות השבים', stage: 'visit', visitDate: daysAgo(4), meetingWith: 'אורן', created: daysAgo(9), meetingReportOutcome: 'undecided', meetingReporter: 'אורן', meetingReportedAt: daysAgo(2) + 'T07:00:00.000Z', meetingSeen: '' },
     { id: 'L6', name: 'מעיין', house: 'רמות השבים', stage: 'visit', visitDate: daysAgo(10), meetingWith: 'אורן', created: daysAgo(12), meetingReportedAt: daysAgo(8) + 'T07:00:00.000Z', meetingReporter: 'אורן', meetingSeen: '1' },
+    { id: 'L-no-show-synthetic', name: 'מטופל היעדרות בדיקה', house: 'רמות השבים', stage: 'visit', created: daysAgo(9), visitDate: daysAgo(6), meetingWith: 'מנהל בדיקה', meetingReportedAt: daysAgo(5) + 'T09:00:00.000Z', meetingReporter: 'מנהל בדיקה', meetingReportOutcome: 'no_show', meetingSeen: '1', meetingOutcome: '', assignedTo: 'ורד' },
   ],
   patients: {
     ramot: [{ id: 'p1', name: 'דנה כהן', date: daysAgo(30), status: 'active' }, { id: 'p-brit', name: 'ברית ונגרטון', date: daysAgo(80), status: 'released', exitDate: daysAgo(14), fromLead: 'L-brit' }],
@@ -239,5 +240,31 @@ test('B: «לעדכן המשך טיפול» → «לעדכון» opens Brit on �
     assert.equal(sent[0].continuity, 'continued_outpatient');
     assert.deepEqual(errors, []);
     await ctx.close();
+  } finally { await browser.close(); srv.close(); }
+});
+
+
+test('B: a read manager no-show produces the real contact form and non-held notice; Vered and Dana, desktop/mobile, read-only navigation', { skip }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    for (const [who, width] of [['vered', 1024], ['dana', 390]]) {
+      const { ctx, page, errors } = await openPage(browser, srv.port, who, width);
+      const row = page.locator('#crm-main .row.work:not(.h)', { hasText: 'מטופל היעדרות בדיקה' }).first();
+      await row.waitFor({ timeout: 5000 });
+      assert.match(await row.textContent(), /לברר היעדרות.*לתאם מועד חדש/, who + ': actionable no-show follow-up');
+      assert.match(await row.textContent(), /לא הגיע\s*\/\s*בוטל/, who + ': manager report result shown');
+      await row.locator('button:text-is("תיעוד שיחה")').click();
+      await page.waitForSelector('#crm-drawer form[data-form="contact"]', { timeout: 5000 });
+      assert.match(await page.textContent('#crm-drawer h2'), /תיעוד שיחה/, 'uses the EXISTING logContact form');
+      await page.click('#crm-drawer [data-contact-cancel]');
+      await page.click('#crm-drawer [data-tab="meetings"]');
+      await page.waitForSelector('#crm-meetings:not([hidden])', { timeout: 5000 });
+      assert.match(await page.textContent('#crm-meetings'), /לא הגיע\s*\/\s*בוטל.*אין אישור שהביקור התקיים/, 'manager result cannot imply the meeting was held');
+      assert.deepEqual(errors, [], who + ': no browser exceptions');
+      await ctx.close();
+    }
+    assert.equal(srv.posts.filter((p) => p.action === 'saveAll' || p.action === 'logContact').length, 0,
+      'navigating and opening the contact form does not mutate records');
   } finally { await browser.close(); srv.close(); }
 });
