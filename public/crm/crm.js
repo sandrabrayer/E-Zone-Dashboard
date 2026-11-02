@@ -1304,6 +1304,13 @@
   /* A discharge audit row is restored when the flag reads true in any of the
    * spellings the sheet holds ('TRUE' from Sheets, 'true', '1'). Pure. */
   function isRestoredDischarge(d) { const r = s(d && d.restored).toUpperCase(); return r === 'TRUE' || r === '1'; }
+  /* Prevent a second fresh audit while an exact-ID source discharge already
+   * exists and has not been restored or removed. No fuzzy identity match. */
+  function pendingDischargeAudit(audits, patientId) {
+    return !!s(patientId) && (audits || []).some(function (d) {
+      return d && !d.deletedAt && !isRestoredDischarge(d) && s(d.patientId) === s(patientId);
+    });
+  }
   /* The Patients id a discharge audit row belongs to (CHANGELOG-crm-today-card-open.md).
    * Only CRM / coordinator discharges write `patientId`; the classic «שחרר» flow leaves
    * it blank, so the row is matched like restoreTarget does: patientId (when it is on
@@ -2080,6 +2087,10 @@
         'ההעברה של «' + s(before.name) + '» ל' + houseName(toHouseId));
     }
     function dischargePatient(pid, v, f) {
+      if (pendingDischargeAudit(state.data && state.data.dischargedPatients, pid)) {
+        toast('קיים רישום שחרור קודם שטרם הושלם — אין לבצע שוב שחרור; יש לאמת את הסטטוס מול הרשומה המקורית', true);
+        return Promise.resolve(false);
+      }
       const errs = dischargeErrors(v);
       if (f) showErrs(f, errs, ['disposition', 'dischargeDate']);
       if (Object.keys(errs).length) return Promise.resolve(false);
@@ -3451,6 +3462,6 @@
     taskDue: taskDue, taskState: taskState, taskWhen: taskWhen, taskSubject: taskSubject, taskQueue: taskQueue, tasksFor: tasksFor, taskCounts: taskCounts, taskFormErrors: taskFormErrors, taskCreateBody: taskCreateBody, rescheduleErrors: rescheduleErrors, rescheduleBody: rescheduleBody, taskAccepted: taskAccepted,
     VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,
     TRIAGE_OPTIONS: TRIAGE_OPTIONS, triageQueue: triageQueue, waitlistErrors: waitlistErrors, waitlistPatch: waitlistPatch, laterErrors: laterErrors,
-    NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, openLeadOfPerson: openLeadOfPerson, leadAlreadyInHouse: leadAlreadyInHouse, globalSearch: globalSearch, nameKey: nameKey, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
+    NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, openLeadOfPerson: openLeadOfPerson, leadAlreadyInHouse: leadAlreadyInHouse, globalSearch: globalSearch, nameKey: nameKey, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, pendingDischargeAudit: pendingDischargeAudit, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
     moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));
