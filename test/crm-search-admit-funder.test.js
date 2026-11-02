@@ -376,3 +376,41 @@ for (const [mode, reason] of [
     } finally { await browser.close(); srv.close(); }
   });
 }
+
+
+for (const [mode, shouldConfirm] of [
+  ['funder_reply_lost', true],
+  ['funder_no_commit', false],
+  ['funder_unreadable', false]
+]) {
+  test('SAVE-02 Chromium: ' + mode + ' reconciles the SAME funder submission ID, never writes again', { skip }, async () => {
+    const srv = await boot(mode);
+    const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+    try {
+      const { ctx, page, errors } = await openPage(browser, srv.port);
+      await fillSyntheticDirectAdmission(page);
+      await page.waitForFunction((ok) => {
+        const t = document.querySelector('#crm-toast');
+        if (!t) return false;
+        return ok ? /הקליטה והגורם המממן אומתו בקריאה חוזרת/.test(t.textContent)
+          : /שמירת הגורם המממן לא אומתה/.test(t.textContent);
+      }, shouldConfirm, { timeout: 11000 });
+      const saves = srv.posts.filter(x => x.action === 'saveAll');
+      const funders = srv.posts.filter(x => x.action === 'appendFunder');
+      const sourceReads = srv.posts.filter(x => x.action === 'getPayments');
+      assert.equal(saves.length, 1, 'one admission');
+      assert.equal(funders.length, 1, 'one funder POST, never a fresh key after an uncertain reply');
+      assert.ok(sourceReads.length >= 2, 'post-error read of existing funder history');
+      const payload = typeof funders[0].funder === 'string' ? JSON.parse(funders[0].funder) : funders[0].funder;
+      assert.match(payload.submissionId, /^sub-[0-9a-f]{32}$/);
+      if (!shouldConfirm) {
+        assert.match(await page.textContent('#crm-toast'), /אין לקלוט שוב/);
+        assert.equal(await page.getAttribute('#crm-toast', 'data-show'), 'true');
+      } else {
+        assert.doesNotMatch(await page.textContent('#crm-toast'), /לא אומתה/);
+      }
+      assert.deepEqual(errors, []);
+      await ctx.close();
+    } finally { await browser.close(); srv.close(); }
+  });
+}
