@@ -217,6 +217,19 @@
   function funderWriteConfirmed(res, submissionId) {
     return !!(s(submissionId) && res && res.ok === true && res.row && s(res.row.submissionId) === s(submissionId));
   }
+  /* Recovery when appendFunder was committed but its HTTP reply was lost.
+   * Only the exact source submission ID AND original patient/funder/date count
+   * as proof. Never retry the finance write with a new submission ID. */
+  function funderSourceConfirmed(data, patientId, submissionId, funder, effectiveFrom) {
+    if (!data || data.ok !== true || !Array.isArray(data.funders) ||
+        !s(patientId) || !s(submissionId) || !s(funder) || !isoDay(effectiveFrom)) return false;
+    const exact = data.funders.filter(function (row) {
+      return row && s(row.submissionId) === s(submissionId);
+    });
+    return exact.length === 1 && s(exact[0].patientId) === s(patientId) &&
+      s(exact[0].funder) === s(funder) &&
+      isoDay(exact[0].effectiveFrom) === isoDay(effectiveFrom);
+  }
   /* Admission write may have committed even if the browser never saw saveAll's
    * reply. Check only freshly read source IDs — never a name or shared phone.
    * 'confirmed' requires ONE exact patient/stay and the exact admitted lead;
@@ -2153,26 +2166,35 @@
         return Promise.resolve(finish(false, 'הקליטה נשמרה, אך חסר גורם מממן — אין לקלוט את המטופל שוב; יש לבדוק בכרטיס החשבון', true));
       }
       const submissionId = newSubmissionId();
-      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'appendFunder', funder: { patientId: pid, funder: s(funder), effectiveFrom: effectiveFrom, submissionId: submissionId } }) })
-        .then(function (r) { return r.json().catch(function () { return null; }); })
-        .then(function (res) {
-          if (!funderWriteConfirmed(res, submissionId)) {
-            return finish(false, 'הקליטה נשמרה, אך שמירת הגורם המממן לא אומתה — אין לקלוט שוב; יש לבדוק את כרטיס החשבון', true);
-          }
-          // Read-only refresh: a cached pre-write account should not be left on screen.
-          // The source acknowledgement remains distinct from a failed refresh.
-          return api('getPayments').then(function (p) {
-            state.payments = p && p.ok === true ? p : null;
-            return finish(true, state.payments ? 'הקליטה והגורם המממן נשמרו' : 'הגורם המממן אומת, אך החשבון לא נטען — יש לרענן לבדיקה', !state.payments);
-          }, function () {
-            state.payments = null;
-            return finish(true, 'הגורם המממן אומת, אך החשבון לא נטען — יש לרענן לבדיקה', true);
-          });
-        })
-        .catch(function () {
-          return finish(false, 'הקליטה נשמרה, אך לא התקבל אישור לשמירת הגורם המממן — אין לקלוט שוב; יש לבדוק את כרטיס החשבון', true);
+      const unverified = 'הקליטה נשמרה, אך שמירת הגורם המממן לא אומתה — אין לקלוט שוב; יש לבדוק את כרטיס החשבון';
+      // The source may have committed despite a lost reply. Read the same
+      // authorised getPayments projection once; NEVER repeat appendFunder.
+      const reconcile = function () {
+        return api('getPayments').then(function (data) {
+          state.payments = data && data.ok === true ? data : null;
+          return funderSourceConfirmed(data, pid, submissionId, funder, effectiveFrom)
+            ? finish(true, 'הקליטה והגורם המממן אומתו בקריאה חוזרת', false)
+            : finish(false, unverified, true);
+        }, function () {
+          state.payments = null;
+          return finish(false, unverified, true);
         });
+      };
+      const posted = win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'appendFunder', funder: { patientId: pid, funder: s(funder), effectiveFrom: effectiveFrom, submissionId: submissionId } }) })
+        .then(function (r) { return r.json().catch(function () { return null; }); });
+      return posted.then(function (res) {
+        if (!funderWriteConfirmed(res, submissionId)) return reconcile();
+        // Acknowledgment is confirmed, but still refresh the account so a
+        // pre-save payment/funder view is not left on screen.
+        return api('getPayments').then(function (p) {
+          state.payments = p && p.ok === true ? p : null;
+          return finish(true, state.payments ? 'הקליטה והגורם המממן נשמרו' : 'הגורם המממן אומת, אך החשבון לא נטען — יש לרענן לבדיקה', !state.payments);
+        }, function () {
+          state.payments = null;
+          return finish(true, 'הגורם המממן אומת, אך החשבון לא נטען — יש לרענן לבדיקה', true);
+        });
+      }, function () { return reconcile(); });
     }
     function admitLead(id, v, f) {
       const errs = admissionErrors(v, !!(state.me && state.me.finance));
@@ -3715,7 +3737,7 @@
     dischargedList: dischargedList, priorStatusOf: priorStatusOf, restoreTarget: restoreTarget, restoredRow: restoredRow, openAuditsOf: openAuditsOf, restoreFlagBody: restoreFlagBody, restoreAsLeadBody: restoreAsLeadBody, outpatientBody: outpatientBody, calendarRange: calendarRange, calendarRows: calendarRows, undatedVisits: undatedVisits, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
     MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, billingSearch: billingSearch, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, sheetDay: sheetDay, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
     patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
-    newSubmissionId: newSubmissionId, funderWriteConfirmed: funderWriteConfirmed, admissionSourceProof: admissionSourceProof, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
+    newSubmissionId: newSubmissionId, funderWriteConfirmed: funderWriteConfirmed, funderSourceConfirmed: funderSourceConfirmed, admissionSourceProof: admissionSourceProof, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
     CREDIT_TYPE_LABELS: CREDIT_TYPE_LABELS, CREDIT_STATUS_LABELS: CREDIT_STATUS_LABELS, SETTLE_METHODS: SETTLE_METHODS, creditsOf: creditsOf, patientCredits: patientCredits, pendingCredits: pendingCredits,
     RECEIPT_EDIT_FIELDS: RECEIPT_EDIT_FIELDS, receiptEditFields: receiptEditFields, receiptEditIssues: receiptEditIssues, receiptEditBody: receiptEditBody, receiptVoidErrors: receiptVoidErrors, receiptVoidBody: receiptVoidBody, receiptVoidAccepted: receiptVoidAccepted,
     addMonthsIso: addMonthsIso, dueOnDate: dueOnDate, filterDueRows: filterDueRows, monthSplit: monthSplit, cycleBalanceLib: cycleBalanceLib, FUNDER_UNSET_LABEL: FUNDER_UNSET_LABEL, stayCycles: stayCycles, reportableCycles: reportableCycles, defaultReportable: defaultReportable, reportCycleForWindow: reportCycleForWindow,
