@@ -26,7 +26,7 @@ const CREDITS = { ok: true, credits: [{ id: 'cr-1', patientId: 'p1', patientName
 
 test('verificationRows (Vered): reported → waiting on Ortal (owner shown, never her task); flagged / partial → exception; confirmed and void receipts are not rows; «דווח» ≠ «אומת»', () => {
   const rows = core.verificationRows(PAYMENTS, TODAY);
-  assert.deepEqual(rows.map((r) => [r.kind, r.waitingOn || '', r.priority, r.owner]), [['receipt_reported', 'אורטל', 'wait', 'אורטל'], ['receipt_flagged', '', 'exception', 'אורטל']]);
+  assert.deepEqual(rows.map((r) => [r.kind, r.waitingOn || '', r.priority, r.owner]), [['receipt_reported', 'אורטל', 'wait', 'אורטל'], ['receipt_flagged', '', 'exception', 'ורד']]);
   assert.match(rows[0].action, /דווח — ממתין לאימות — ₪2,500/); assert.match(rows[1].why, /לא תואם/);
   assert.equal(rows[0].subjectId, 'p1'); assert.equal(rows[0].open, 'account');
   const c = core.compute({ ok: true, leads: [], patients: { ramot: [{ id: 'p1', name: 'דנה כהן', date: '2026-07-01', status: 'active' }] }, irrelevantLeads: [], removedLeads: [], dischargedPatients: [] }, TODAY);
