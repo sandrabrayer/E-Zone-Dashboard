@@ -23,6 +23,7 @@ const proof = core.admissionSourceProof;
 
 test('SAVE-02: a freshly read exact patient + admitted linked lead proves the original first write, not a second admission', () => {
   assert.equal(proof(sheet(), target), 'confirmed');
+  assert.equal(proof(sheet({ patients: { ramot: [patient({ date: '2026-11-01T22:00:00.000Z' })] } }), target), 'confirmed', 'UTC timestamp for Israel 02/11 must not create a false mismatch');
   assert.equal(proof(sheet({ patients: [patient()] }), target), 'confirmed', 'flat Patients feed also supported');
   assert.equal(proof(sheet({ patients: { ramot: [patient({ houseId: '' })] } }), target), 'confirmed',
     'house key is the source when the row omits houseId');
