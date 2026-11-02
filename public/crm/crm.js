@@ -212,6 +212,11 @@
     return body;
   }
   /* '' when the patient (and lead) are proven, else the reason. Pure. */
+  /* A finance write is accepted only when the source acknowledges this request's
+   * own idempotency key, not any successful-looking or unrelated row. */
+  function funderWriteConfirmed(res, submissionId) {
+    return !!(s(submissionId) && res && res.ok === true && res.row && s(res.row.submissionId) === s(submissionId));
+  }
   function houseSaveRefusal(res, pid, leadId) {
     if (!res || typeof res !== 'object') return 'אין תשובה מהשרת';
     if (res.ok === false) {
@@ -1299,6 +1304,13 @@
   /* A discharge audit row is restored when the flag reads true in any of the
    * spellings the sheet holds ('TRUE' from Sheets, 'true', '1'). Pure. */
   function isRestoredDischarge(d) { const r = s(d && d.restored).toUpperCase(); return r === 'TRUE' || r === '1'; }
+  /* Prevent a second fresh audit while an exact-ID source discharge already
+   * exists and has not been restored or removed. No fuzzy identity match. */
+  function pendingDischargeAudit(audits, patientId) {
+    return !!s(patientId) && (audits || []).some(function (d) {
+      return d && !d.deletedAt && !isRestoredDischarge(d) && s(d.patientId) === s(patientId);
+    });
+  }
   /* The Patients id a discharge audit row belongs to (CHANGELOG-crm-today-card-open.md).
    * Only CRM / coordinator discharges write `patientId`; the classic «שחרר» flow leaves
    * it blank, so the row is matched like restoreTarget does: patientId (when it is on
@@ -1327,7 +1339,18 @@
       if (l.stage === 'paid' && l.entryDate && l.entryDate <= today) rows.push(rowOfLead(l, { id: 'ex:admit:' + l.id, kind: 'admission_due', action: 'קליטה לבית לא בוצעה', why: 'תאריך הכניסה ' + fmtDate(l.entryDate) + ' עבר', when: l.entryDate, state: 'late', priority: 'exception' }));
     });
     (c.discharges || []).forEach(function (d) {
-      if (d.deletedAt || isRestoredDischarge(d) || !d.exitDate || continuityRecorded(d.continuity)) return;
+      if (d.deletedAt || isRestoredDischarge(d) || !d.exitDate) return;
+      // An acknowledged discharge audit is source-owned even if the second
+      // Patients save was refused. Match by exact stay ID only: never name/phone.
+      const linked = s(d.patientId) ? (c.patients || []).filter(function (p) { return s(p.id) === s(d.patientId); }) : [];
+      if (linked.length === 1 && s(linked[0].status) !== 'released') {
+        rows.push({ id: 'ex:discharge-state:' + d.id, kind: 'discharge_integrity', subjectKind: 'patient',
+          subjectId: s(d.patientId), dischargeId: d.id, name: d.name, house: houseName(d.houseId),
+          action: 'בדיקת שלמות שחרור', why: 'רישום שחרור קיים, אך סטטוס המטופל עדיין אינו משוחרר',
+          when: d.exitDate, time: '', owner: 'ורד', state: 'wait', priority: 'exception', open: 'overview' });
+        return; // do not create a second continuity row for the same incomplete discharge
+      }
+      if (continuityRecorded(d.continuity)) return;
       // Referral/disposition = sent/intended, NOT confirmed treatment start.
       // The status-return feed is still a draft. A derived exception stays
       // visible even after day 14 until a documented result is recorded.
@@ -1830,7 +1853,7 @@
     }
     /* A generic write through /api/sheets for the lifecycle actions; `apply`
      * mutates state optimistically, `undo` reverts it. */
-    function postAction(body, okCheck, apply, undo, label) {
+    function postAction(body, okCheck, apply, undo, label, deferSuccess) {
       const payload = JSON.stringify(body);          // serialised BEFORE the optimistic apply (which may strip intent fields)
       state.saving = true; apply(); renderNav(); renderMain(); setSaveState('שומר…');
       return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: payload })
@@ -1838,7 +1861,9 @@
         .then(function (res) {
           const why = okCheck(res);
           if (why) throw new Error(why);
-          state.saving = false; toast(label + ' — בוצע'); return true;
+          if (deferSuccess) setSaveState('הקליטה נשמרה — מאמת גורם מממן…');
+          else { state.saving = false; toast(label + ' — בוצע'); }
+          return true;
         })
         .catch(function (e) { undo(); state.saving = false; renderNav(); renderMain(); setSaveState(String(e && e.message || e), true); toast(String(e && e.message || e), true); return false; });
     }
@@ -1900,13 +1925,41 @@
     function showErrs(f, errs, keys) {
       keys.forEach(function (k) { const el = f.querySelector('[data-err="' + k + '"]'); if (el) el.textContent = errs[k] || ''; });
     }
+    /* The admission already exists once this runs. Never advertise total success
+     * or re-run admission if this second (finance) write is refused/uncertain. */
     function saveFunderBestEffort(pid, funder, effectiveFrom) {
-      if (!(state.me && state.me.finance) || FUNDERS.indexOf(s(funder)) < 0) return Promise.resolve();
+      const finish = function (ok, message, warning) {
+        state.saving = false;
+        renderNav(); renderMain();
+        setSaveState(message, !!warning);
+        toast(message, !!warning);
+        return ok;
+      };
+      if (!(state.me && state.me.finance)) return Promise.resolve(finish(true, 'הקליטה נשמרה', false));
+      if (FUNDERS.indexOf(s(funder)) < 0) {
+        return Promise.resolve(finish(false, 'הקליטה נשמרה, אך חסר גורם מממן — אין לקלוט את המטופל שוב; יש לבדוק בכרטיס החשבון', true));
+      }
+      const submissionId = newSubmissionId();
       return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'appendFunder', funder: { patientId: pid, funder: s(funder), effectiveFrom: effectiveFrom, submissionId: newSubmissionId() } }) })
+        body: JSON.stringify({ action: 'appendFunder', funder: { patientId: pid, funder: s(funder), effectiveFrom: effectiveFrom, submissionId: submissionId } }) })
         .then(function (r) { return r.json().catch(function () { return null; }); })
-        .then(function (res) { if (!res || res.ok === false || !(res.row && res.row.submissionId)) toast('המטופל נשמר, אך שמירת הגורם המממן נכשלה — יש להשלים בדשבורד', true); })
-        .catch(function () { toast('המטופל נשמר, אך שמירת הגורם המממן נכשלה — יש להשלים בדשבורד', true); });
+        .then(function (res) {
+          if (!funderWriteConfirmed(res, submissionId)) {
+            return finish(false, 'הקליטה נשמרה, אך שמירת הגורם המממן לא אומתה — אין לקלוט שוב; יש לבדוק את כרטיס החשבון', true);
+          }
+          // Read-only refresh: a cached pre-write account should not be left on screen.
+          // The source acknowledgement remains distinct from a failed refresh.
+          return api('getPayments').then(function (p) {
+            state.payments = p && p.ok === true ? p : null;
+            return finish(true, state.payments ? 'הקליטה והגורם המממן נשמרו' : 'הגורם המממן אומת, אך החשבון לא נטען — יש לרענן לבדיקה', !state.payments);
+          }, function () {
+            state.payments = null;
+            return finish(true, 'הגורם המממן אומת, אך החשבון לא נטען — יש לרענן לבדיקה', true);
+          });
+        })
+        .catch(function () {
+          return finish(false, 'הקליטה נשמרה, אך לא התקבל אישור לשמירת הגורם המממן — אין לקלוט שוב; יש לבדוק את כרטיס החשבון', true);
+        });
     }
     function admitLead(id, v, f) {
       const errs = admissionErrors(v, !!(state.me && state.me.finance));
@@ -1921,8 +1974,8 @@
       closeDrawer();
       return postAction(houseSaveBody(patient.houseId, rows, patient, leadNext), function (res) { return houseSaveRefusal(res, patient.id, leadNext.id); },
         function () { leads[i] = leadNext; rows.push(patient); },
-        function () { leads[i] = raw; const k = rows.indexOf(patient); if (k >= 0) rows.splice(k, 1); }, 'הקליטה של «' + s(raw.name) + '»')
-        .then(function (ok) { if (ok) return saveFunderBestEffort(patient.id, v.funder, patient.date).then(function () { return true; }); return ok; });
+        function () { leads[i] = raw; const k = rows.indexOf(patient); if (k >= 0) rows.splice(k, 1); }, 'הקליטה של «' + s(raw.name) + '»', true)
+        .then(function (ok) { return ok ? saveFunderBestEffort(patient.id, v.funder, patient.date) : false; });
     }
     function directAdd(v, f) {
       const errs = directAddErrors(v, !!(state.me && state.me.finance));
@@ -1950,8 +2003,8 @@
       closeDrawer();
       return postAction(houseSaveBody(pair.patient.houseId, rows, pair.patient, pair.lead), function (res) { return houseSaveRefusal(res, pair.patient.id, pair.lead.id); },
         function () { rows.push(pair.patient); leads.unshift(pair.lead); },
-        function () { const k = rows.indexOf(pair.patient); if (k >= 0) rows.splice(k, 1); const j = leads.indexOf(pair.lead); if (j >= 0) leads.splice(j, 1); }, 'הוספת «' + pair.patient.name + '»')
-        .then(function (ok) { if (ok) return saveFunderBestEffort(pair.patient.id, v.funder, pair.patient.date).then(function () { return true; }); return ok; });
+        function () { const k = rows.indexOf(pair.patient); if (k >= 0) rows.splice(k, 1); const j = leads.indexOf(pair.lead); if (j >= 0) leads.splice(j, 1); }, 'הוספת «' + pair.patient.name + '»', true)
+        .then(function (ok) { return ok ? saveFunderBestEffort(pair.patient.id, v.funder, pair.patient.date) : false; });
     }
     function openDirectAddDrawer() {
       const dr = $('#crm-drawer');
@@ -2034,6 +2087,10 @@
         'ההעברה של «' + s(before.name) + '» ל' + houseName(toHouseId));
     }
     function dischargePatient(pid, v, f) {
+      if (pendingDischargeAudit(state.data && state.data.dischargedPatients, pid)) {
+        toast('קיים רישום שחרור קודם שטרם הושלם — אין לבצע שוב שחרור; יש לאמת את הסטטוס מול הרשומה המקורית', true);
+        return Promise.resolve(false);
+      }
       const errs = dischargeErrors(v);
       if (f) showErrs(f, errs, ['disposition', 'dischargeDate']);
       if (Object.keys(errs).length) return Promise.resolve(false);
@@ -2059,19 +2116,28 @@
       }).then(function (res) {
         const why = houseSaveRefusal(res, pid, '');
         if (why) throw new Error('השחרור נרשם, אך עדכון הסטטוס נכשל — ' + why);
-        state.saving = false; toast('«' + s(before.name) + '» שוחרר/ה');
+        const needsOutpatient = s(v.disposition) === 'released_outpatient';
+        if (needsOutpatient) toast('השחרור נשמר — מאמת את ההעברה לאמבולטורי, הפעולה עדיין לא הושלמה');
+        else { state.saving = false; toast('«' + s(before.name) + '» שוחרר/ה'); }
         if (auditRes && auditRes.refund && Number(auditRes.refund.created) > 0) toast('נוצר זיכוי לפי הכלל — לטיפול אורטל');
-        if (s(v.disposition) === 'released_outpatient') {
+        if (needsOutpatient) {
           return win.fetch('/api/outpatient-lead', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dischargeId: audit.id, manual: false }) })
             .then(function (r) { return r.json().catch(function () { return {}; }); })
             .then(function (d) { if (d && d.ok === true && (d.sent || d.alreadySent)) { if (!state.data.outpatientSentLeadIds) state.data.outpatientSentLeadIds = []; state.data.outpatientSentLeadIds.push('discharge:' + audit.id); renderMain(); }
-              toast(d && d.ok === true && (d.sent || d.alreadySent) ? (d.alreadySent ? 'המטופל כבר נשלח לאמבולטורי' : 'נוצר ליד טיפול חוץ באאוטפיישנט') : 'יצירת ליד טיפול חוץ נכשלה — אפשר לנסות שוב בדשבורד', !(d && d.ok === true)); return true; })
-            .catch(function () { toast('יצירת ליד טיפול חוץ נכשלה — אפשר לנסות שוב בדשבורד', true); return true; });
+              const accepted = d && d.ok === true && (d.sent || d.alreadySent);
+              state.saving = false;
+              toast(accepted ? (d.alreadySent ? 'השחרור נשמר וההפניה כבר קיימת באמבולטורי' : 'השחרור נשמר ונוצרה הפניה לאמבולטורי') : 'השחרור נשמר, אך ההפניה לאמבולטורי לא אומתה — אין לשחרר שוב; יש לנסות העברה מתוך ״משוחררים״', !accepted);
+              return !!accepted; })
+            .catch(function () { state.saving = false; toast('השחרור נשמר, אך ההפניה לאמבולטורי לא אומתה — אין לשחרר שוב; יש לנסות העברה מתוך ״משוחררים״', true); return false; });
         }
         return true;
       }).catch(function (e) {
-        loc.arr[loc.idx] = before; state.saving = false; renderNav(); renderMain();
-        setSaveState(String(e && e.message || e), true); toast(String(e && e.message || e), true); return false;
+        // A lost reply can follow a committed source write. Do not falsely undo
+        // the source in the UI or invite a second discharge with a fresh audit ID.
+        state.saving = false;
+        const message = 'מצב השחרור לא אומת במלואו — ייתכן שחלק מהפעולות נשמרו. אין לבצע שחרור נוסף עד בדיקה ורענון. ' + String(e && e.message || e);
+        setSaveState(message, true); toast(message, true);
+        return load().then(function () { toast(message, true); return false; });
       });
     }
 
@@ -3391,7 +3457,7 @@
     dischargedList: dischargedList, priorStatusOf: priorStatusOf, restoreTarget: restoreTarget, restoredRow: restoredRow, openAuditsOf: openAuditsOf, restoreFlagBody: restoreFlagBody, restoreAsLeadBody: restoreAsLeadBody, outpatientBody: outpatientBody, calendarRange: calendarRange, calendarRows: calendarRows, undatedVisits: undatedVisits, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
     MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, billingSearch: billingSearch, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, sheetDay: sheetDay, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
     patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
-    newSubmissionId: newSubmissionId, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
+    newSubmissionId: newSubmissionId, funderWriteConfirmed: funderWriteConfirmed, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
     CREDIT_TYPE_LABELS: CREDIT_TYPE_LABELS, CREDIT_STATUS_LABELS: CREDIT_STATUS_LABELS, SETTLE_METHODS: SETTLE_METHODS, creditsOf: creditsOf, patientCredits: patientCredits, pendingCredits: pendingCredits,
     RECEIPT_EDIT_FIELDS: RECEIPT_EDIT_FIELDS, receiptEditFields: receiptEditFields, receiptEditIssues: receiptEditIssues, receiptEditBody: receiptEditBody, receiptVoidErrors: receiptVoidErrors, receiptVoidBody: receiptVoidBody, receiptVoidAccepted: receiptVoidAccepted,
     addMonthsIso: addMonthsIso, stayCycles: stayCycles, reportableCycles: reportableCycles, defaultReportable: defaultReportable, reportCycleForWindow: reportCycleForWindow,
@@ -3399,6 +3465,6 @@
     taskDue: taskDue, taskState: taskState, taskWhen: taskWhen, taskSubject: taskSubject, taskQueue: taskQueue, tasksFor: tasksFor, taskCounts: taskCounts, taskFormErrors: taskFormErrors, taskCreateBody: taskCreateBody, rescheduleErrors: rescheduleErrors, rescheduleBody: rescheduleBody, taskAccepted: taskAccepted,
     VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,
     TRIAGE_OPTIONS: TRIAGE_OPTIONS, triageQueue: triageQueue, waitlistErrors: waitlistErrors, waitlistPatch: waitlistPatch, laterErrors: laterErrors,
-    NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, openLeadOfPerson: openLeadOfPerson, leadAlreadyInHouse: leadAlreadyInHouse, globalSearch: globalSearch, nameKey: nameKey, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
+    NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, openLeadOfPerson: openLeadOfPerson, leadAlreadyInHouse: leadAlreadyInHouse, globalSearch: globalSearch, nameKey: nameKey, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, pendingDischargeAudit: pendingDischargeAudit, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
     moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));
