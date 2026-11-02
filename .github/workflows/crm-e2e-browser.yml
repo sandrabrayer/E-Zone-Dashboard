@@ -10,6 +10,7 @@ on:
       - 'test/crm-search-admit-funder.test.js'
       - 'test/crm-today-card-open.test.js'
       - 'test/crm-continuity-handoff-gate.test.js'
+      - 'test/crm-partial-discharge-browser.test.js'
       - '.github/workflows/crm-e2e-browser.yml'
 permissions:
   contents: read
@@ -42,6 +43,7 @@ jobs:
             test/crm-search-admit-funder.test.js \
             test/crm-today-card-open.test.js \
             test/crm-continuity-handoff-gate.test.js \
+            test/crm-partial-discharge-browser.test.js \
             > test-results/crm-e2e/browser.tap 2>&1
       - name: Retain audit report
         if: always()
