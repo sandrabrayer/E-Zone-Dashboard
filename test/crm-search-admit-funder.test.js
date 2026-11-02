@@ -120,6 +120,8 @@ async function boot(funderMode) {
   const original = https.request;
   const DATA = data();
   const funderRows = [];
+  let admissionAttempted = false;
+  const ADMISSION_FAILURES = ['admission_reply_lost', 'admission_missing', 'admission_partial', 'admission_unavailable'];
   const SUB = /^sub-[A-Za-z0-9-]{8,64}$/;
   https.request = (url, opts, cb) => {
     const req = new EventEmitter();
@@ -129,12 +131,36 @@ async function boot(funderMode) {
       let parsed = {};
       try { parsed = JSON.parse(body); } catch (_) { parsed = {}; }
       posts.push(parsed);
+      if (parsed.action === 'saveAll' && ADMISSION_FAILURES.includes(funderMode)) {
+        admissionAttempted = true;
+        // The upstream source actually persisted the EXACT new IDs before
+        // the proxy saw an error; the other cases model partial or absent rows.
+        if (funderMode !== 'admission_missing') {
+          const admissions = typeof parsed.patients === 'string' ? JSON.parse(parsed.patients) : (parsed.patients || {});
+          Object.keys(admissions).forEach((house) => {
+            const pending = admissions[house] || [];
+            const existing = DATA.patients[house] || [];
+            const known = new Set(existing.map(x => x.id));
+            DATA.patients[house] = existing.concat(pending.filter(x => !known.has(x.id)));
+          });
+          if (funderMode !== 'admission_partial') {
+            const leads = typeof parsed.leads === 'string' ? JSON.parse(parsed.leads) : (parsed.leads || []);
+            const known = new Set(DATA.leads.map(x => x.id));
+            DATA.leads.push(...leads.filter(x => !known.has(x.id)));
+          }
+        }
+        if (funderMode === 'admission_reply_lost') {
+          // HTTP transport failed AFTER the source committed; no fake ok.
+          setImmediate(() => req.emit('error', new Error('synthetic_proxy_reply_lost_after_commit')));
+          return;
+        }
+      }
       let f = parsed.funder;
       if (typeof f === 'string') { try { f = JSON.parse(f); } catch (_) { f = {}; } }
       if (parsed.action === 'appendFunder' && funderMode !== 'reject' && f && SUB.test(String(f.submissionId))) {
         funderRows.push(Object.assign({}, f));
       }
-      const answer = parsed.action === 'getData' ? DATA
+      const answer = parsed.action === 'getData' ? (funderMode === 'admission_unavailable' && admissionAttempted ? { ok: false, error: 'synthetic_read_refused' } : DATA)
         : parsed.action === 'getTasks' ? { ok: true, total: 0, tasks: [] }
         : parsed.action === 'contactIndex' ? { ok: true, count: 0, leads: {}, patients: {} }
         : parsed.action === 'getActivity' ? { ok: true, events: [] }
@@ -143,7 +169,7 @@ async function boot(funderMode) {
         : parsed.action === 'getCredits' ? { ok: true, credits: [] }
         // the REAL rule of Code.gs appendFunder_: a key not shaped sub-… is refused
         : parsed.action === 'appendFunder' ? (funderMode === 'reject' ? { ok: false, error: 'synthetic_funder_rejection' } : (f && SUB.test(String(f.submissionId)) ? { ok: true, row: { submissionId: f.submissionId } } : { ok: false, error: 'bad_submission_id' }))
-        : parsed.action === 'saveAll' ? { ok: true, proven: { leads: (parsed.leads || []).map((l) => String(l.id)), patients: Object.values(parsed.patients || {}).flat().map((p) => String(p.id)) } }
+        : parsed.action === 'saveAll' ? (ADMISSION_FAILURES.includes(funderMode) ? { ok: false, error: 'synthetic_first_stage_reply_missing' } : { ok: true, proven: { leads: (parsed.leads || []).map((l) => String(l.id)), patients: Object.values(parsed.patients || {}).flat().map((p) => String(p.id)) } })
         : { ok: true };
       const res = new EventEmitter();
       res.statusCode = 200; res.headers = {}; res.setEncoding = () => {}; res.resume = () => {};
