@@ -126,7 +126,7 @@ test('PW-04 Chromium: partial discharge remains visible after reload and cannot 
     await page.locator('#crm-drawer form[data-form="discharge"] select[name="disposition"]').selectOption('completed');
     await page.locator('#crm-drawer form[data-form="discharge"] button[type="submit"]').click();
     await page.waitForSelector('#crm-toast.bad[data-show="true"]',{timeout:7000});
-    assert.match(await page.locator('#crm-toast').innerText(),/כבר נרשם שחרור/);
+    assert.match(await page.locator('#crm-toast').innerText(),/קיים רישום שחרור קודם.*אין לבצע שוב שחרור/);
     assert.equal(srv.posts.filter(x => x.action === 'dischargePatient').length,1,'no second audit/credit request');
     await ctx.close();
   } finally {await browser.close();srv.close();}
