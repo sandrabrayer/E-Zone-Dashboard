@@ -1326,6 +1326,23 @@
     c.leads.forEach(function (l) {
       if (l.stage === 'paid' && l.entryDate && l.entryDate <= today) rows.push(rowOfLead(l, { id: 'ex:admit:' + l.id, kind: 'admission_due', action: 'קליטה לבית לא בוצעה', why: 'תאריך הכניסה ' + fmtDate(l.entryDate) + ' עבר', when: l.entryDate, state: 'late', priority: 'exception' }));
     });
+    // A source-confirmed discharge audit with an exact patientId must not be
+    // mistaken for an entirely failed discharge when the Patients save fails.
+    // Keep one read-only reconciliation exception until the authoritative
+    // Patients status is released. Legacy rows without an exact id are not
+    // matched by name/phone and are deliberately left for manual audit.
+    (c.discharges || []).forEach(function (d) {
+      if (!s(d.patientId) || !d.exitDate || d.deletedAt || isRestoredDischarge(d)) return;
+      const exact = (c.patients || []).filter(function (p) { return s(p.id) === s(d.patientId); });
+      if (exact.length !== 1 || exact[0].status === 'released') return;
+      rows.push({ id: 'ex:discharge-sync:' + d.id, kind: 'discharge_sync',
+        subjectKind: 'patient', subjectId: exact[0].id, dischargeId: d.id,
+        name: d.name, house: houseName(d.houseId),
+        action: 'שחרור נרשם — מצב המטופל/ת דורש בדיקה',
+        why: 'רישום שחרור קיים במקור, אך כרטיס המטופל/ת טרם מסומן כמשוחרר. אין לבצע שחרור נוסף לפני בירור.',
+        when: d.exitDate, time: '', owner: 'ורד', state: 'late',
+        priority: 'exception', open: 'overview' });
+    });
     (c.discharges || []).forEach(function (d) {
       if (d.deletedAt || isRestoredDischarge(d) || !d.exitDate || continuityRecorded(d.continuity)) return;
       // Referral/disposition = sent/intended, NOT confirmed treatment start.
@@ -2040,6 +2057,16 @@
       const loc = findPatientRow(pid);
       if (!loc) return Promise.resolve(false);
       const before = loc.row;
+      // A successful first-stage audit may already exist while the Patients
+      // row is still active. Never create another discharge ID/credit merely
+      // because the second stage failed. Only an EXACT stored ID is trusted.
+      const priorAudit = (state.data.dischargedPatients || []).some(function (d) {
+        return s(d.patientId) === s(pid) && !!s(d.exitDate) && !d.deletedAt && !isRestoredDischarge(d);
+      });
+      if (priorAudit && s(before.status) !== 'released') {
+        toast('כבר נרשם שחרור למטופל/ת, אך מצב הכרטיס אינו תואם. יש לבדוק חריג שחרור ולרענן, לא לבצע שוב שחרור.', true);
+        return Promise.resolve(false);
+      }
       const audit = dischargeAuditRow(before, v, randomId(), new Date().toISOString());
       const released = Object.assign({}, before, { status: 'released', exitDate: audit.exitDate });
       closeDrawer();
@@ -2049,11 +2076,13 @@
           .then(function (r) { return r.json().catch(function () { return null; }); });
       };
       let auditRes = null;
+      let auditConfirmed = false;
       return post({ action: 'dischargePatient', patient: audit }).then(function (res) {
         auditRes = res;
         if (!res || res.ok === false) throw new Error((res && res.message) || 'שחרור המטופל נכשל — לא נשמר' + (res && res.error ? ' (' + res.error + ')' : ''));
         if (res.duplicate === true) { if (res.exitDate) released.exitDate = s(res.exitDate).slice(0, 10); toast('השחרור כבר נרשם'); }
         else if (!(res.patient && s(res.patient.id) === audit.id)) throw new Error('השחרור לא אומת — רענני ובדקי');
+        auditConfirmed = true;
         // b. the Patients row flips in the same way the classic flow does: the house as read, this row released.
         return post(houseSaveBody(loc.hid, loc.arr, released, null));
       }).then(function (res) {
@@ -2070,8 +2099,16 @@
         }
         return true;
       }).catch(function (e) {
-        loc.arr[loc.idx] = before; state.saving = false; renderNav(); renderMain();
-        setSaveState(String(e && e.message || e), true); toast(String(e && e.message || e), true); return false;
+        // The first write may have committed even if its response was lost.
+        // A browser-only rollback must not invite a new discharge/credit.
+        // Freeze the CRM work surface until an authoritative reload; a
+        // confirmed partial commit is also exposed as a source-derived exception.
+        loc.arr[loc.idx] = before; state.saving = false;
+        const message = auditConfirmed
+          ? 'רישום השחרור אושר, אך עדכון המטופל/ת לא אומת. אין לבצע שחרור שוב; רענני ובדקי את חריג השחרור.'
+          : 'תוצאת רישום השחרור אינה ודאית. אין לבצע ניסיון נוסף עד לרענון ובדיקת רשומת השחרור.';
+        state.error = message + ' ' + String(e && e.message || e);
+        renderNav(); renderMain(); toast(message, true); return false;
       });
     }
 
