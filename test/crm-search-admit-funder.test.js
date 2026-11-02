@@ -301,3 +301,71 @@ test('B: rejected funder write after verified direct admission shows PARTIAL sav
     await ctx.close();
   } finally { await browser.close(); srv.close(); }
 });
+
+
+/* SAVE-02: real Chromium + local Express, with a dummy upstream whose
+ * first-stage saveAll response can be LOST AFTER THE COMMIT. No Sheets writes. */
+async function fillSyntheticDirectAdmission(page) {
+  await page.click('[data-area="clients"]');
+  await page.click('#crm-direct-add');
+  const f = '#crm-drawer form[data-form="direct-add"]';
+  await page.fill(f + ' input[name="name"]', 'מטופל דמה לאימות');
+  await page.fill(f + ' input[name="phone"]', '050-999-8877');
+  await page.selectOption(f + ' select[name="houseId"]', 'ramot');
+  await page.fill(f + ' input[name="pay"]', '9000');
+  await page.selectOption(f + ' select[name="funder"]', { index: 1 });
+  await page.click(f + ' button[type="submit"]');
+}
+
+test('SAVE-02 Chromium: lost HTTP response AFTER source commit reconciles exact IDs and writes one funder, never re-admits', { skip }, async () => {
+  const srv = await boot('admission_reply_lost');
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { ctx, page, errors } = await openPage(browser, srv.port);
+    await fillSyntheticDirectAdmission(page);
+    await page.waitForFunction(() => {
+      const t = document.querySelector('#crm-toast');
+      return t && /הקליטה והגורם המממן נשמרו/.test(t.textContent);
+    }, null, { timeout: 11000 });
+    const saves = srv.posts.filter(x => x.action === 'saveAll');
+    const reads = srv.posts.filter(x => x.action === 'getData');
+    const funders = srv.posts.filter(x => x.action === 'appendFunder');
+    assert.equal(saves.length, 1, 'source commit happens ONCE; never a new admission ID');
+    assert.ok(reads.length >= 2, 'boot read followed by a post-error source reconciliation');
+    assert.equal(funders.length, 1, 'only after exact source person/stay & lead were proven');
+    const submitted = typeof saves[0].patients === 'string' ? JSON.parse(saves[0].patients) : saves[0].patients;
+    const leadRows = typeof saves[0].leads === 'string' ? JSON.parse(saves[0].leads) : saves[0].leads;
+    const row = submitted.ramot.find(p => p.id && p.fromLead === leadRows[0].id);
+    assert.ok(row, 'one exact new source identity');
+    const funder = typeof funders[0].funder === 'string' ? JSON.parse(funders[0].funder) : funders[0].funder;
+    assert.equal(funder.patientId, row.id, 'recover the ORIGINAL ID, not a newly generated second stay');
+    assert.match(funder.submissionId, /^sub-[0-9a-f]{32}$/);
+    assert.deepEqual(errors, []);
+    await ctx.close();
+  } finally { await browser.close(); srv.close(); }
+});
+
+for (const [mode, reason] of [
+  ['admission_missing', /לא נמצאה קליטה מזהה/],
+  ['admission_partial', /סטטוס הפנייה לא אומת/],
+  ['admission_unavailable', /לא ניתן לאמת את תוצאת השמירה/]
+]) {
+  test('SAVE-02 Chromium: ' + mode + ' blocks blind retry & funder write after uncertain first-stage admission', { skip }, async () => {
+    const srv = await boot(mode);
+    const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+    try {
+      const { ctx, page, errors } = await openPage(browser, srv.port);
+      await fillSyntheticDirectAdmission(page);
+      await page.waitForSelector('#crm-main .crm-state.bad', { timeout: 11000 });
+      const txt = await page.textContent('#crm-main .crm-state.bad');
+      assert.match(txt, reason);
+      assert.match(txt, /אין לבצע קליטה חוזרת/, 'never prompt fresh ID or blind second write');
+      assert.equal(srv.posts.filter(x => x.action === 'saveAll').length, 1);
+      assert.equal(srv.posts.filter(x => x.action === 'appendFunder').length, 0,
+        'do not write finance when exact first-stage source identity is unverified');
+      assert.ok(srv.posts.filter(x => x.action === 'getData').length >= 2, 'read-after-write attempted');
+      assert.deepEqual(errors, []);
+      await ctx.close();
+    } finally { await browser.close(); srv.close(); }
+  });
+}
