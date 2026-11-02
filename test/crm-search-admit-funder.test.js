@@ -121,6 +121,7 @@ async function boot(funderMode) {
   const DATA = data();
   const funderRows = [];
   let admissionAttempted = false;
+  let funderAttempted = false;
   const ADMISSION_FAILURES = ['admission_reply_lost', 'admission_missing', 'admission_partial', 'admission_unavailable'];
   const SUB = /^sub-[A-Za-z0-9-]{8,64}$/;
   https.request = (url, opts, cb) => {
@@ -157,15 +158,21 @@ async function boot(funderMode) {
       }
       let f = parsed.funder;
       if (typeof f === 'string') { try { f = JSON.parse(f); } catch (_) { f = {}; } }
-      if (parsed.action === 'appendFunder' && funderMode !== 'reject' && f && SUB.test(String(f.submissionId))) {
-        funderRows.push(Object.assign({}, f));
+      if (parsed.action === 'appendFunder') funderAttempted = true;
+      if (parsed.action === 'appendFunder' && funderMode !== 'reject' && funderMode !== 'funder_no_commit' &&
+          f && SUB.test(String(f.submissionId))) funderRows.push(Object.assign({}, f));
+      if (parsed.action === 'appendFunder' &&
+          ['funder_reply_lost', 'funder_no_commit', 'funder_unreadable'].includes(funderMode)) {
+        // Backend reply lost after optional source commit, never a second POST.
+        setImmediate(() => req.emit('error', new Error('synthetic_funder_reply_lost')));
+        return;
       }
       const answer = parsed.action === 'getData' ? (funderMode === 'admission_unavailable' && admissionAttempted ? { ok: false, error: 'synthetic_read_refused' } : DATA)
         : parsed.action === 'getTasks' ? { ok: true, total: 0, tasks: [] }
         : parsed.action === 'contactIndex' ? { ok: true, count: 0, leads: {}, patients: {} }
         : parsed.action === 'getActivity' ? { ok: true, events: [] }
         : parsed.action === 'debtAging' ? { ok: true, byPatient: [], totals: {}, byHouse: [] }
-        : parsed.action === 'getPayments' ? { ok: true, payments: [], receipts: [], funders: funderRows }
+        : parsed.action === 'getPayments' ? (funderMode === 'funder_unreadable' && funderAttempted ? {ok:false,error:'synthetic_funder_read_refused'} : { ok: true, payments: [], receipts: [], funders: funderRows })
         : parsed.action === 'getCredits' ? { ok: true, credits: [] }
         // the REAL rule of Code.gs appendFunder_: a key not shaped sub-… is refused
         : parsed.action === 'appendFunder' ? (funderMode === 'reject' ? { ok: false, error: 'synthetic_funder_rejection' } : (f && SUB.test(String(f.submissionId)) ? { ok: true, row: { submissionId: f.submissionId } } : { ok: false, error: 'bad_submission_id' }))
