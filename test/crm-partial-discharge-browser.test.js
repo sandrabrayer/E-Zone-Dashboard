@@ -112,7 +112,7 @@ test('PW-04 Chromium: partial discharge remains visible after reload and cannot 
     await page.locator('#crm-retry').click();
     await page.locator('[data-area="today"]').click();
     await page.waitForSelector('[data-row^="ex:discharge-sync:"]',{timeout:10000});
-    assert.match(await page.locator('[data-row^="ex:discharge-sync:"]').innerText(),/שחרור נרשם/);
+    assert.match(await page.locator('[data-row^="ex:discharge-sync:"]').first().innerText(),/שחרור נרשם/);
     const second = await loginPage(browser,srv.port);
     await second.page.waitForSelector('[data-row^="ex:discharge-sync:"]',{timeout:10000});
     await second.ctx.close();
