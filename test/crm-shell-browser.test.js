@@ -290,8 +290,11 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
     await page.waitForSelector('#crm-debtors');
     assert.equal(await page.textContent('#crm-title'), 'גבייה');
     const kpis = await page.$$eval('.kpis .kpi .v', (els) => els.map((e) => e.textContent));
-    assert.deepEqual(kpis.slice(0, 5), ['₪11,000', '₪6,000', '1', '₪2,500', '1']);
-    assert.deepEqual(kpis.slice(5, 9), ['₪5,000', '₪0', '₪0', '₪6,000'], 'the four aging buckets');
+    // «לגבייה בתאריך» opens the area (CHANGELOG-crm-collect-on-date.md): its three KPIs come first.
+    assert.equal(kpis.length, 12);
+    assert.ok(await page.$('#crm-due-date'), 'the date picker of «לגבייה בתאריך»');
+    assert.deepEqual(kpis.slice(3, 8), ['₪11,000', '₪6,000', '1', '₪2,500', '1']);
+    assert.deepEqual(kpis.slice(8, 12), ['₪5,000', '₪0', '₪0', '₪6,000'], 'the four aging buckets');
     const main = await page.textContent('#crm-main');
     assert.match(main, /דנה כהן/); assert.match(main, /רמות השבים/); assert.match(main, /1 ללא דיווח/); assert.match(main, /70 ימים/); assert.match(main, /₪8,500/); assert.match(main, /ביט/); assert.match(main, /עריכת קבלות/);
     assert.match(await page.textContent('#crm-receipts'), new RegExp(core.fmtDate(daysAgo(4)).replace(/\//g, '\\/')), 'receipt dates are DD/MM/YYYY');
@@ -318,6 +321,52 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
     assert.ok(srv.actions.some((a) => a.action === 'debtAging' && a.user === 'ortal'));
     const links = await o.page.$$eval('#crm-main .links a', (els) => els.map((e) => e.textContent));
     assert.equal(links.length, 1); assert.match(links[0], /בקרת גבייה/);
+    assert.deepEqual(o.errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('«לגבייה בתאריך» (Vered): pick a date → the patient due that day, KPIs, «דווח תשלום» opens «חשבון» with the form on THAT cycle; Ortal has no report button', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="billing"]');
+    await page.waitForSelector('#crm-due-date');
+    await page.fill('#crm-due-date', daysAgo(30));
+    await page.dispatchEvent('#crm-due-date', 'change');
+    await page.waitForSelector('#crm-due tbody tr');
+    // (a released patient whose month-anniversary may also fall on this day can be listed too — by design)
+    const rows = await page.$$eval('#crm-due tbody tr', (els) => els.map((e) => e.textContent));
+    const i = rows.findIndex((t) => /דנה כהן/.test(t));
+    assert.ok(i >= 0, 'דנה כהן is due on her entry date');
+    assert.match(rows[i], /₪6,000/); assert.match(rows[i], /לא שולם/);
+    const kpis = await page.$$eval('.kpis .kpi .v', (els) => els.map((e) => e.textContent));
+    assert.equal(kpis[0], String(rows.length));
+    // the top search narrows the list and its KPIs
+    await page.fill('#crm-search', 'דנה');
+    await page.press('#crm-search', 'Enter');
+    await page.waitForFunction(() => document.querySelectorAll('#crm-due tbody tr').length === 1);
+    assert.deepEqual((await page.$$eval('.kpis .kpi .v', (els) => els.map((e) => e.textContent))).slice(0, 3), ['1', '₪6,000', '₪0']);
+    await page.click('#crm-due [data-due-report="0"]');
+    await page.waitForSelector('#crm-drawer form[data-form="payment-report"]');
+    assert.equal(await page.getAttribute('#crm-drawer', 'aria-hidden'), 'false');
+    assert.equal(await page.inputValue('#crm-drawer input[name="coverageStart"]'), daysAgo(30));
+    assert.equal(await page.inputValue('#crm-drawer input[name="amount"]'), '6000');
+    assert.deepEqual(errors, []);
+    assert.deepEqual(srv.saves, [], 'opening the form writes nothing');
+    // a date nobody is due on → the empty message
+    await page.keyboard.press('Escape');
+    await page.fill('#crm-due-date', daysAgo(31));
+    await page.dispatchEvent('#crm-due-date', 'change');
+    await page.waitForFunction(() => /אין תשלומים לגבייה בתאריך זה/.test(document.querySelector('#crm-main').textContent));
+    // Ortal: the list, no report button
+    const o = await open(browser, srv.port, 'ortal', 1366);
+    await o.page.click('#crm-nav button[data-area="billing"]');
+    await o.page.waitForSelector('#crm-due-date');
+    await o.page.fill('#crm-due-date', daysAgo(30));
+    await o.page.dispatchEvent('#crm-due-date', 'change');
+    await o.page.waitForSelector('#crm-due tbody tr');
+    assert.equal(await o.page.$('#crm-due [data-due-report]'), null);
     assert.deepEqual(o.errors, []);
   } finally { await browser.close(); srv.close(); }
 });

@@ -1,5 +1,9 @@
 # E-ZONE Ecosystem Status — updated November 2, 2026
 
+## CRM «גבייה» → «לגבייה בתאריך» — November 2, 2026 (PR open, stacked on #354)
+
+- Vered collects by the classic «לגבייה בתאריך הנבחר» list; the CRM had only the debt overview. Now the CRM גבייה area opens with the same list: date picker (default today), funder filter, top-search filter, KPIs (מטופלים לתשלום / סך לגבייה / נגבה), coverage period with the month split, and «דווח תשלום» per row (opens the patient's «חשבון» with the C10 form on that cycle; hidden for Ortal). Amounts via `lib/cycle-balance.js` (now loaded by crm.html). No server change, Code.gs untouched. SW v110 → v111. Details: `CHANGELOG-crm-collect-on-date.md`.
+
 ## גבייה: leaving on the billing day opens no new cycle — November 2, 2026 (PR open)
 
 - Reported on טמיר בן מיור (עפרוני, entered 27/07, exit 27/10): the classic «לגבייה בתאריך הנבחר» for 27/10 asked 30,000 ₪ for 27/10–26/11. `patientDueOnDate` treated the exit day as due; the server (`recCycleDueDates_`, `debtAging_`) and `projectedCycleDueDates` already exclude it. Now aligned: a cycle starting on/after the exit date is never due. The exit day stays a stay day. Code.gs untouched. SW v109 → v110. Details: `CHANGELOG-billing-exit-day-not-due.md`.
