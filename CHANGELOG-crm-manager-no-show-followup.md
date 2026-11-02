@@ -14,10 +14,11 @@
 3. The lead card's פגישות ושירותים tab shows a caution when the manager result is no_show and the family decision is still missing. It retains the original report.
    The manager's report timestamp is shown explicitly as 'דיווח מ-… · מועד המשך טרם נקבע', NOT as an overdue callback deadline; a no-show needs a new promised date before it can be late.
 4. The older compute read-only row no longer says a past meeting took place without proof; it says the date passed and occurrence is unverified.
+5. The lead board and table use the same manager outcome as Today. Once an actual report exists, the next-action chip no longer asks for a report again; a seen no-show prompts follow-up, and other read reports prompt a family decision. Before reading the report the chip remains 'דיווח מנהל/ת חדש'. No stage change.
 
 ## Tests — synthetic only
 - test/crm-meeting-no-show-followup.test.js: source outcomes, unread-before-followup, normal meeting outcome unchanged, documented family cancellation, exact lead ID, no duplicated projected row, output escaping.
-- test/crm-today-card-open.test.js: actual local Express and Chromium with dummy data, Vered desktop 1024px and Dana mobile 390px; source-backed work row opens the EXISTING contact form and the manager report; no write when opening or cancelling.
+- test/crm-today-card-open.test.js: actual local Express and Chromium with dummy data, Vered desktop 1024px and Dana mobile 390px; source-backed work row opens the EXISTING contact form and the manager report; no write when opening or cancelling. A second browser scenario performs one synthetic logContact write, checks the exact lead ID and idempotency key, verifies the response-created follow-up Task and its visibility after full page reload; the dummy source owns both records.
 
 ## Explicit non-changes
 No Leads schema, new state machine, stage ID, write action, finance calculation, scheduled messages, role permission, Outpatient data, Apps Script, real patient data or deployment. Do not auto-reschedule, auto-close or add another Tasks ledger; the combined manager outcome is not split into two invented source facts. Separating no-show and cancellation remains PROPOSED, not authorized here.
