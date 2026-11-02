@@ -217,6 +217,33 @@
   function funderWriteConfirmed(res, submissionId) {
     return !!(s(submissionId) && res && res.ok === true && res.row && s(res.row.submissionId) === s(submissionId));
   }
+  /* Admission write may have committed even if the browser never saw saveAll's
+   * reply. Check only freshly read source IDs — never a name or shared phone.
+   * 'confirmed' requires ONE exact patient/stay and the exact admitted lead;
+   * a partial or unavailable read must NOT prompt a new admission with new IDs.
+   * This is read-only proof, not a new transaction/ledger. */
+  function admissionSourceProof(data, expected) {
+    const e = expected || {};
+    if (!data || data.ok !== true || !s(e.patientId) || !s(e.leadId) || !s(e.houseId) || !isoDay(e.date)) return 'unavailable';
+    const all = [];
+    const byHouse = data.patients;
+    if (Array.isArray(byHouse)) byHouse.forEach(function (p) { if (p) all.push({ row: p, sourceHouse: s(p.houseId) }); });
+    else if (byHouse && typeof byHouse === 'object') {
+      Object.keys(byHouse).forEach(function (key) {
+        (Array.isArray(byHouse[key]) ? byHouse[key] : []).forEach(function (p) { if (p) all.push({ row: p, sourceHouse: key }); });
+      });
+    } else return 'unavailable';
+    const exact = all.filter(function (x) { return s(x.row.id) === s(e.patientId); });
+    if (exact.length > 1) return 'ambiguous';
+    if (!exact.length) return 'missing';
+    const x = exact[0], p = x.row;
+    if (s(p.fromLead) !== s(e.leadId) || houseId(s(p.houseId) || x.sourceHouse) !== houseId(e.houseId) ||
+        isoDay(p.date) !== isoDay(e.date) || s(p.status) === 'released') return 'mismatch';
+    if (!Array.isArray(data.leads)) return 'patient_only';
+    const leads = data.leads.filter(function (l) { return l && s(l.id) === s(e.leadId); });
+    return leads.length === 1 && s(leads[0].stage) === 'admitted' ? 'confirmed' : 'patient_only';
+  }
+
   function houseSaveRefusal(res, pid, leadId) {
     if (!res || typeof res !== 'object') return 'אין תשובה מהשרת';
     if (res.ok === false) {
@@ -2004,6 +2031,8 @@
      * mutates state optimistically, `undo` reverts it. */
     function postAction(body, okCheck, apply, undo, label, deferSuccess) {
       const payload = JSON.stringify(body);          // serialised BEFORE the optimistic apply (which may strip intent fields)
+      // Only admissions supply source identity. Other action behavior stays unchanged.
+      const identity = deferSuccess && typeof deferSuccess === 'object' ? deferSuccess : null;
       state.saving = true; apply(); renderNav(); renderMain(); setSaveState('שומר…');
       return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: payload })
         .then(function (r) { return r.json().catch(function () { return null; }); })
@@ -2014,7 +2043,42 @@
           else { state.saving = false; toast(label + ' — בוצע'); }
           return true;
         })
-        .catch(function (e) { undo(); state.saving = false; renderNav(); renderMain(); setSaveState(String(e && e.message || e), true); toast(String(e && e.message || e), true); return false; });
+        .catch(function (e) {
+          if (!identity) {
+            undo(); state.saving = false; renderNav(); renderMain();
+            setSaveState(String(e && e.message || e), true); toast(String(e && e.message || e), true);
+            return false;
+          }
+          // A lost saveAll answer is not proof that its Patients row was absent.
+          // The proxy busts getData's read-cache both before and after writes.
+          // A source read may prove this EXACT admission committed, in which
+          // case continue the original funder write with the original stay ID.
+          const originalError = String(e && e.message || e);
+          const block = function (proof) {
+            state.saving = false;
+            const details = proof === 'patient_only'
+              ? 'המטופל/ת נמצא/ה במקור אך סטטוס הפנייה לא אומת.'
+              : proof === 'mismatch' || proof === 'ambiguous'
+                ? 'נמצאה אי-התאמה ברשומות המקור של הקליטה.'
+                : proof === 'missing'
+                  ? 'לא נמצאה קליטה מזהה בקריאת המקור; עדיין אין לבצע קליטה חדשה לפני בירור.'
+                  : 'לא ניתן לאמת את תוצאת השמירה במקור.';
+            const warning = 'הקליטה לא אומתה במלואה — ' + details +
+              ' אין לבצע קליטה חוזרת; יש לרענן ולבדוק לפני פעולה חדשה.';
+            state.error = warning + ' (' + originalError + ')';
+            renderNav(); renderMain(); setSaveState(warning, true); toast(warning, true);
+            return false;
+          };
+          return api('getData').then(function (fresh) {
+            const proof = admissionSourceProof(fresh, identity);
+            if (fresh && fresh.ok === true) state.data = fresh; // read-only authoritative projection
+            if (proof !== 'confirmed') return block(proof);
+            state.error = ''; // exact patient and lead both exist in source
+            renderNav(); renderMain();
+            setSaveState('הקליטה אומתה בקריאה חוזרת — מאמת גורם מממן…');
+            return true;
+          }, function () { return block('unavailable'); });
+        });
     }
     function genericRefusal(res, idKey) {
       if (!res || typeof res !== 'object') return 'אין תשובה מהשרת';
@@ -2123,7 +2187,7 @@
       closeDrawer();
       return postAction(houseSaveBody(patient.houseId, rows, patient, leadNext), function (res) { return houseSaveRefusal(res, patient.id, leadNext.id); },
         function () { leads[i] = leadNext; rows.push(patient); },
-        function () { leads[i] = raw; const k = rows.indexOf(patient); if (k >= 0) rows.splice(k, 1); }, 'הקליטה של «' + s(raw.name) + '»', true)
+        function () { leads[i] = raw; const k = rows.indexOf(patient); if (k >= 0) rows.splice(k, 1); }, 'הקליטה של «' + s(raw.name) + '»', { patientId: patient.id, leadId: leadNext.id, houseId: patient.houseId, date: patient.date })
         .then(function (ok) { return ok ? saveFunderBestEffort(patient.id, v.funder, patient.date) : false; });
     }
     function directAdd(v, f) {
@@ -2152,7 +2216,7 @@
       closeDrawer();
       return postAction(houseSaveBody(pair.patient.houseId, rows, pair.patient, pair.lead), function (res) { return houseSaveRefusal(res, pair.patient.id, pair.lead.id); },
         function () { rows.push(pair.patient); leads.unshift(pair.lead); },
-        function () { const k = rows.indexOf(pair.patient); if (k >= 0) rows.splice(k, 1); const j = leads.indexOf(pair.lead); if (j >= 0) leads.splice(j, 1); }, 'הוספת «' + pair.patient.name + '»', true)
+        function () { const k = rows.indexOf(pair.patient); if (k >= 0) rows.splice(k, 1); const j = leads.indexOf(pair.lead); if (j >= 0) leads.splice(j, 1); }, 'הוספת «' + pair.patient.name + '»', { patientId: pair.patient.id, leadId: pair.lead.id, houseId: pair.patient.houseId, date: pair.patient.date })
         .then(function (ok) { return ok ? saveFunderBestEffort(pair.patient.id, v.funder, pair.patient.date) : false; });
     }
     function openDirectAddDrawer() {
@@ -3651,7 +3715,7 @@
     dischargedList: dischargedList, priorStatusOf: priorStatusOf, restoreTarget: restoreTarget, restoredRow: restoredRow, openAuditsOf: openAuditsOf, restoreFlagBody: restoreFlagBody, restoreAsLeadBody: restoreAsLeadBody, outpatientBody: outpatientBody, calendarRange: calendarRange, calendarRows: calendarRows, undatedVisits: undatedVisits, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
     MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, billingSearch: billingSearch, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, sheetDay: sheetDay, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
     patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
-    newSubmissionId: newSubmissionId, funderWriteConfirmed: funderWriteConfirmed, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
+    newSubmissionId: newSubmissionId, funderWriteConfirmed: funderWriteConfirmed, admissionSourceProof: admissionSourceProof, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
     CREDIT_TYPE_LABELS: CREDIT_TYPE_LABELS, CREDIT_STATUS_LABELS: CREDIT_STATUS_LABELS, SETTLE_METHODS: SETTLE_METHODS, creditsOf: creditsOf, patientCredits: patientCredits, pendingCredits: pendingCredits,
     RECEIPT_EDIT_FIELDS: RECEIPT_EDIT_FIELDS, receiptEditFields: receiptEditFields, receiptEditIssues: receiptEditIssues, receiptEditBody: receiptEditBody, receiptVoidErrors: receiptVoidErrors, receiptVoidBody: receiptVoidBody, receiptVoidAccepted: receiptVoidAccepted,
     addMonthsIso: addMonthsIso, dueOnDate: dueOnDate, filterDueRows: filterDueRows, monthSplit: monthSplit, cycleBalanceLib: cycleBalanceLib, FUNDER_UNSET_LABEL: FUNDER_UNSET_LABEL, stayCycles: stayCycles, reportableCycles: reportableCycles, defaultReportable: defaultReportable, reportCycleForWindow: reportCycleForWindow,
