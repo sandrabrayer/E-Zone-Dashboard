@@ -53,6 +53,14 @@ test('P0: restored/removed audits and missing stable identity do not manufacture
   assert.equal(crm.houseExceptions(model(discharge(), { id: 'different-patient', status: 'active', name: 'מטופל בדיקה' }), TODAY).length, 0);
 });
 
+test('P0: an existing exact-ID discharge audit blocks another fresh discharge action', () => {
+  assert.equal(crm.pendingDischargeAudit([discharge()], 'p-synthetic'), true);
+  assert.equal(crm.pendingDischargeAudit([discharge()], 'different-patient'), false);
+  assert.equal(crm.pendingDischargeAudit([discharge({ patientId: '' })], 'p-synthetic'), false);
+  assert.equal(crm.pendingDischargeAudit([discharge({ restored: 'TRUE' })], 'p-synthetic'), false);
+  assert.equal(crm.pendingDischargeAudit([discharge({ deletedAt: '2026-11-01T11:00:00Z' })], 'p-synthetic'), false);
+});
+
 test('P0: admissions may not report both steps complete unconditionally after the secondary funder request', () => {
   const src = fs.readFileSync(require.resolve('../public/crm/crm.js'), 'utf8');
   assert.doesNotMatch(src, /saveFunderBestEffort\([^;]*\.then\(function \(\) \{ return true; \}\)/);
