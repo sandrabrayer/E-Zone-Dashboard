@@ -222,13 +222,13 @@
    * as proof. Never retry the finance write with a new submission ID. */
   function funderSourceConfirmed(data, patientId, submissionId, funder, effectiveFrom) {
     if (!data || data.ok !== true || !Array.isArray(data.funders) ||
-        !s(patientId) || !s(submissionId) || !s(funder) || !isoDay(effectiveFrom)) return false;
+        !s(patientId) || !s(submissionId) || !s(funder) || !sheetDay(effectiveFrom)) return false;
     const exact = data.funders.filter(function (row) {
       return row && s(row.submissionId) === s(submissionId);
     });
     return exact.length === 1 && s(exact[0].patientId) === s(patientId) &&
       s(exact[0].funder) === s(funder) &&
-      isoDay(exact[0].effectiveFrom) === isoDay(effectiveFrom);
+      sheetDay(exact[0].effectiveFrom) === sheetDay(effectiveFrom);
   }
   /* Admission write may have committed even if the browser never saw saveAll's
    * reply. Check only freshly read source IDs — never a name or shared phone.
@@ -237,7 +237,7 @@
    * This is read-only proof, not a new transaction/ledger. */
   function admissionSourceProof(data, expected) {
     const e = expected || {};
-    if (!data || data.ok !== true || !s(e.patientId) || !s(e.leadId) || !s(e.houseId) || !isoDay(e.date)) return 'unavailable';
+    if (!data || data.ok !== true || !s(e.patientId) || !s(e.leadId) || !s(e.houseId) || !sheetDay(e.date)) return 'unavailable';
     const all = [];
     const byHouse = data.patients;
     if (Array.isArray(byHouse)) byHouse.forEach(function (p) { if (p) all.push({ row: p, sourceHouse: s(p.houseId) }); });
@@ -251,7 +251,7 @@
     if (!exact.length) return 'missing';
     const x = exact[0], p = x.row;
     if (s(p.fromLead) !== s(e.leadId) || houseId(s(p.houseId) || x.sourceHouse) !== houseId(e.houseId) ||
-        isoDay(p.date) !== isoDay(e.date) || s(p.status) === 'released') return 'mismatch';
+        sheetDay(p.date) !== sheetDay(e.date) || s(p.status) === 'released') return 'mismatch';
     if (!Array.isArray(data.leads)) return 'patient_only';
     const leads = data.leads.filter(function (l) { return l && s(l.id) === s(e.leadId); });
     return leads.length === 1 && s(leads[0].stage) === 'admitted' ? 'confirmed' : 'patient_only';
