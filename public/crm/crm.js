@@ -2060,7 +2060,8 @@
       // A successful first-stage audit may already exist while the Patients
       // row is still active. Never create another discharge ID/credit merely
       // because the second stage failed. Only an EXACT stored ID is trusted.
-      const priorAudit = (state.data.dischargedPatients || []).some(function (d) {
+      const priorAudits = Array.isArray(state.data.dischargedPatients) ? state.data.dischargedPatients : [];
+      const priorAudit = priorAudits.some(function (d) {
         return s(d.patientId) === s(pid) && !!s(d.exitDate) && !d.deletedAt && !isRestoredDischarge(d);
       });
       if (priorAudit && s(before.status) !== 'released') {
