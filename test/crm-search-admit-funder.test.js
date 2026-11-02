@@ -108,7 +108,7 @@ function data() {
 async function boot(funderMode) {
   const posts = [];
   const hash = await pinHash.hashPin('583920', PEPPER);
-  const recs = ['vered'].map((id) => JSON.parse(users.recordLine(id, hash, 1)));
+  const recs = ['vered', 'sandra', 'dana'].map((id) => JSON.parse(users.recordLine(id, hash, 1)));
   const env = { PROXY_SECRET, SESSION_SECRET, SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', PIN_PEPPER: PEPPER, USER_PIN_HASHES: JSON.stringify(recs), CRM_ENABLED: 'true' };
   const saved = {};
   for (const k of ENV_KEYS) { saved[k] = process.env[k]; process.env[k] = env[k]; }
@@ -157,6 +157,14 @@ async function boot(funderMode) {
         }
       }
       let f = parsed.funder;
+      if (parsed.action === 'saveAll' && !ADMISSION_FAILURES.includes(funderMode)) {
+        // Successful source writes survive reload and independent sessions.
+        Object.entries(parsed.patients || {}).forEach(([house, rows]) => { DATA.patients[house] = rows; });
+        (parsed.leads || []).forEach((lead) => {
+          const at = DATA.leads.findIndex((row) => row.id === lead.id);
+          if (at < 0) DATA.leads.push(lead); else DATA.leads[at] = lead;
+        });
+      }
       if (typeof f === 'string') { try { f = JSON.parse(f); } catch (_) { f = {}; } }
       if (parsed.action === 'appendFunder') funderAttempted = true;
       if (parsed.action === 'appendFunder' && funderMode !== 'reject' && funderMode !== 'funder_no_commit' &&
@@ -172,7 +180,8 @@ async function boot(funderMode) {
         : parsed.action === 'contactIndex' ? { ok: true, count: 0, leads: {}, patients: {} }
         : parsed.action === 'getActivity' ? { ok: true, events: [] }
         : parsed.action === 'debtAging' ? { ok: true, byPatient: [], totals: {}, byHouse: [] }
-        : parsed.action === 'getPayments' ? (funderMode === 'funder_unreadable' && funderAttempted ? {ok:false,error:'synthetic_funder_read_refused'} : { ok: true, payments: [], receipts: [], funders: funderRows })
+        // Real fundersForClient_ omits submissionId. Test that production contract.
+        : parsed.action === 'getPayments' ? (funderMode === 'funder_unreadable' && funderAttempted ? {ok:false,error:'synthetic_funder_read_refused'} : { ok: true, payments: [], receipts: [], funders: funderRows.map(({ submissionId, ...row }) => row) })
         : parsed.action === 'getCredits' ? { ok: true, credits: [] }
         // the REAL rule of Code.gs appendFunder_: a key not shaped sub-… is refused
         : parsed.action === 'appendFunder' ? (funderMode === 'reject' ? { ok: false, error: 'synthetic_funder_rejection' } : (f && SUB.test(String(f.submissionId)) ? { ok: true, row: { submissionId: f.submissionId } } : { ok: false, error: 'bad_submission_id' }))
@@ -188,9 +197,9 @@ async function boot(funderMode) {
   return { port: srv.address().port, posts, close() { srv.close(); https.request = original; Object.assign(console, quiet); } };
 }
 
-async function openPage(browser, port, width) {
+async function openPage(browser, port, width, identity = 'vered') {
   const ctx = await browser.newContext({ viewport: { width: width || 1280, height: 800 }, locale: 'he-IL', timezoneId: 'Asia/Jerusalem', serviceWorkers: 'block' });
-  await ctx.addCookies([{ name: 'ezone_session', value: createSessionToken(SESSION_SECRET, undefined, undefined, users.modelById('vered').name, { id: 'vered', pinVersion: 1 }), url: `http://127.0.0.1:${port}` }]);
+  await ctx.addCookies([{ name: 'ezone_session', value: createSessionToken(SESSION_SECRET, undefined, undefined, users.modelById(identity).name, { id: identity, pinVersion: 1 }), url: `http://127.0.0.1:${port}` }]);
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e && e.message)));
@@ -304,6 +313,17 @@ test('B: rejected funder write after verified direct admission shows PARTIAL sav
     assert.doesNotMatch(toast, /בוצע|הקליטה והגורם המממן נשמרו/);
     assert.equal(srv.posts.filter((p) => p.action === 'saveAll').length, 1, 'admission committed exactly once');
     assert.equal(srv.posts.filter((p) => p.action === 'appendFunder').length, 1, 'funder attempted exactly once');
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForSelector('[data-row^="ex:funder:"]', { timeout: 5000 });
+    assert.match(await page.textContent('[data-row^="ex:funder:"]'), /גורם מממן.*לא אומת/);
+    const second = await openPage(browser, srv.port, 1024, 'sandra');
+    await second.page.waitForSelector('[data-row^="ex:funder:"]', { timeout: 5000 });
+    await second.page.click('[data-row^="ex:funder:"] [data-open-tab="account"]');
+    await second.page.waitForSelector('#crm-drawer [data-tab="account"][aria-selected="true"]', { timeout: 5000 });
+    await second.ctx.close();
+    const ops = await openPage(browser, srv.port, 390, 'dana');
+    assert.equal(await ops.page.locator('[data-row^="ex:funder:"]').count(), 0, 'no finance clarification for Dana');
+    await ops.ctx.close();
     assert.deepEqual(errors, []);
     await ctx.close();
   } finally { await browser.close(); srv.close(); }
@@ -383,11 +403,15 @@ for (const [mode, shouldConfirm] of [
   ['funder_no_commit', false],
   ['funder_unreadable', false]
 ]) {
-  test('SAVE-02 Chromium: ' + mode + ' reconciles the SAME funder submission ID, never writes again', { skip }, async () => {
+  test('SAVE-02 Chromium: ' + mode + ' reconciles exact funder source state, never writes again', { skip }, async () => {
     const srv = await boot(mode);
     const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
     try {
       const { ctx, page, errors } = await openPage(browser, srv.port);
+      if (shouldConfirm) {
+        await page.click('[data-area="billing"]');
+        await page.waitForSelector('#crm-debtors-title');
+      }
       await fillSyntheticDirectAdmission(page);
       await page.waitForFunction((ok) => {
         const t = document.querySelector('#crm-toast');
@@ -408,6 +432,15 @@ for (const [mode, shouldConfirm] of [
         assert.equal(await page.getAttribute('#crm-toast', 'data-show'), 'true');
       } else {
         assert.doesNotMatch(await page.textContent('#crm-toast'), /לא אומתה/);
+        const pid = saves[0].prove.patients[0];
+        await page.click('[data-area="clients"]');
+        await page.click('tr[data-open-patient="' + pid + '"] td.name');
+        await page.click('#crm-drawer [data-tab="account"]');
+        await page.waitForFunction(() => /פרטי/.test(document.querySelector('#crm-account')?.textContent || ''), null, { timeout: 5000 });
+        await page.reload({ waitUntil: 'networkidle' });
+        assert.equal(await page.locator('[data-row="ex:funder:' + pid + '"]').count(), 0);
+        await page.click('[data-area="clients"]');
+        assert.equal(await page.locator('tr[data-open-patient="' + pid + '"]').count(), 1);
       }
       assert.deepEqual(errors, []);
       await ctx.close();

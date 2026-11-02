@@ -217,18 +217,18 @@
   function funderWriteConfirmed(res, submissionId) {
     return !!(s(submissionId) && res && res.ok === true && res.row && s(res.row.submissionId) === s(submissionId));
   }
-  /* Recovery when appendFunder was committed but its HTTP reply was lost.
-   * Only the exact source submission ID AND original patient/funder/date count
-   * as proof. Never retry the finance write with a new submission ID. */
+  /* getPayments omits submissionId in the deployed Apps Script projection.
+   * Confirm the requested source STATE by unique stay/date/value, not an
+   * acknowledgement that the read contract cannot supply. If a future source
+   * exposes a submission key, a conflicting key still refuses confirmation. */
   function funderSourceConfirmed(data, patientId, submissionId, funder, effectiveFrom) {
-    if (!data || data.ok !== true || !Array.isArray(data.funders) ||
-        !s(patientId) || !s(submissionId) || !s(funder) || !sheetDay(effectiveFrom)) return false;
+    if (!data || data.ok !== true || !Array.isArray(data.funders) || !s(patientId) ||
+        !s(submissionId) || FUNDERS.indexOf(s(funder)) < 0 || !isoDateOk(s(effectiveFrom))) return false;
     const exact = data.funders.filter(function (row) {
-      return row && s(row.submissionId) === s(submissionId);
+      return row && s(row.patientId) === s(patientId) && sheetDay(row.effectiveFrom) === s(effectiveFrom);
     });
-    return exact.length === 1 && s(exact[0].patientId) === s(patientId) &&
-      s(exact[0].funder) === s(funder) &&
-      sheetDay(exact[0].effectiveFrom) === sheetDay(effectiveFrom);
+    return exact.length === 1 && s(exact[0].funder) === s(funder) &&
+      (!s(exact[0].submissionId) || s(exact[0].submissionId) === s(submissionId));
   }
   /* Admission write may have committed even if the browser never saw saveAll's
    * reply. Check only freshly read source IDs — never a name or shared phone.
@@ -1540,6 +1540,20 @@
     });
     return rows;
   }
+  // Reuse Patients + Funders, never a local-only warning or a new task ledger.
+  // A missing/unreadable funder is UNKNOWN, not proof that a write failed.
+  // Rendered only for finance readers. Existing legacy identity reads are kept.
+  function funderExceptions(c, payments, today) {
+    if (!payments || payments.ok !== true || !Array.isArray(payments.funders)) return [];
+    return (c.patients || []).filter(function (p) {
+      return p.id && inHouse(p) && p.fromLead && p.date && p.date <= today && FUNDERS.indexOf(funderOnDay(payments.funders, p.id, patientKeyOf(p), p.date)) < 0;
+    }).map(function (p) {
+      return { id: 'ex:funder:' + p.id, kind: 'funder_unverified', subjectKind: 'patient', subjectId: p.id,
+        name: p.name, house: houseName(p.houseId), action: 'גורם מממן לקליטה לא אומת',
+        why: 'יש לבדוק את הגורם המממן מתאריך הכניסה בכרטיס החשבון; אין לקלוט שוב',
+        when: p.date, time: '', owner: 'ורד', state: 'today', priority: 'exception', open: 'account' };
+    });
+  }
   function sortRows(rows) {
     return rows.sort(function (a, b) { return (PRIORITY[a.priority] - PRIORITY[b.priority]) || ((a.when || '9') < (b.when || '9') ? -1 : (a.when || '9') > (b.when || '9') ? 1 : 0) || ((b.time ? 1 : 0) - (a.time ? 1 : 0)) || (a.time < b.time ? -1 : a.time > b.time ? 1 : 0); });
   }
@@ -1589,6 +1603,7 @@
     let debtCount = null;
     if (finance) {
       collection.forEach(function (r) { money.push(r); });
+      funderExceptions(c, payments, today).forEach(function (r) { money.push(r); });
       if (debt && debt.ok !== false && Array.isArray(debt.byPatient)) {
         debtCount = 0;
         debt.byPatient.forEach(function (p) {
@@ -2156,6 +2171,8 @@
     function saveFunderBestEffort(pid, funder, effectiveFrom) {
       const finish = function (ok, message, warning) {
         state.saving = false;
+        // Invalidate pre-admission account data before opening the new account.
+        state.billing = null;
         renderNav(); renderMain();
         setSaveState(message, !!warning);
         toast(message, !!warning);
@@ -3737,7 +3754,7 @@
     dischargedList: dischargedList, priorStatusOf: priorStatusOf, restoreTarget: restoreTarget, restoredRow: restoredRow, openAuditsOf: openAuditsOf, restoreFlagBody: restoreFlagBody, restoreAsLeadBody: restoreAsLeadBody, outpatientBody: outpatientBody, calendarRange: calendarRange, calendarRows: calendarRows, undatedVisits: undatedVisits, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
     MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, billingSearch: billingSearch, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, sheetDay: sheetDay, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
     patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
-    newSubmissionId: newSubmissionId, funderWriteConfirmed: funderWriteConfirmed, funderSourceConfirmed: funderSourceConfirmed, admissionSourceProof: admissionSourceProof, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
+    newSubmissionId: newSubmissionId, funderWriteConfirmed: funderWriteConfirmed, funderSourceConfirmed: funderSourceConfirmed, funderExceptions: funderExceptions, admissionSourceProof: admissionSourceProof, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
     CREDIT_TYPE_LABELS: CREDIT_TYPE_LABELS, CREDIT_STATUS_LABELS: CREDIT_STATUS_LABELS, SETTLE_METHODS: SETTLE_METHODS, creditsOf: creditsOf, patientCredits: patientCredits, pendingCredits: pendingCredits,
     RECEIPT_EDIT_FIELDS: RECEIPT_EDIT_FIELDS, receiptEditFields: receiptEditFields, receiptEditIssues: receiptEditIssues, receiptEditBody: receiptEditBody, receiptVoidErrors: receiptVoidErrors, receiptVoidBody: receiptVoidBody, receiptVoidAccepted: receiptVoidAccepted,
     addMonthsIso: addMonthsIso, dueOnDate: dueOnDate, filterDueRows: filterDueRows, monthSplit: monthSplit, cycleBalanceLib: cycleBalanceLib, FUNDER_UNSET_LABEL: FUNDER_UNSET_LABEL, stayCycles: stayCycles, reportableCycles: reportableCycles, defaultReportable: defaultReportable, reportCycleForWindow: reportCycleForWindow,

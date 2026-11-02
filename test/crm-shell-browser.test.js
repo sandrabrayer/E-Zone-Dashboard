@@ -14,7 +14,7 @@ const { EventEmitter } = require('node:events');
 const core = require('../public/crm/crm.js');
 let playwright = null;
 try { playwright = require('playwright'); } catch (_) { /* skip */ }
-const CHROMIUM_CANDIDATES = ['/opt/pw-browsers/chromium-1194/chrome-linux/chrome', '/opt/pw-browsers/chromium/chrome-linux/chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
+const CHROMIUM_CANDIDATES = [process.env.CHROMIUM_PATH, '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', '/opt/pw-browsers/chromium/chrome-linux/chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].filter(Boolean);
 let chromiumPath = CHROMIUM_CANDIDATES.find((p) => { try { return fs.existsSync(p); } catch (_) { return false; } });
 if (!chromiumPath) {
   try {
@@ -889,7 +889,7 @@ test('C6 admission + direct add (Vered, finance): «קליטה לבית» posts 
     await page.fill('form[data-form="direct-add"] [name="pay"]', '21000');
     await page.selectOption('form[data-form="direct-add"] [name="funder"]', 'מכבי');
     await page.click('form[data-form="direct-add"] button[type="submit"]');
-    await page.waitForFunction(() => /הוספת/.test(document.querySelector('#crm-toast').textContent), null, { timeout: 5000 });
+    await page.waitForFunction(() => /הקליטה/.test(document.querySelector('#crm-toast')?.textContent || ''), null, { timeout: 5000 });
     const da = srv.saves.filter((b) => b.action === 'saveAll')[1];
     assert.deepEqual(Object.keys(da.patients), ['rehab']);
     const dp = da.patients.rehab[da.patients.rehab.length - 1];

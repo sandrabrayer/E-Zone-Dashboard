@@ -27,7 +27,7 @@ Existing baseline effects from #354–356 must remain: billing exit day is not a
 
 ## Known hold boundaries — defer unrelated features
 
-1. **Funder durable reconciliation after a lost response:** this candidate prevents false “complete” but does not install a persistent source-owned recovery outbox. Audit/patient/funder records require read/reconciliation without blind repeated write; finish as a *single* independently reviewed P0 small patch if synthetic acceptance reproduces a data-loss scenario.
+1. **Admission/funder reconciliation:** #358 now reuses exact-ID admission-source verification and adds read-only verification of a lost funder reply against the exact patient/date/value. An unverified admission funder remains a finance-only source-derived clarification after reload and another authorized login; no outbox or blind repeated write is added. Native staging proof is still required. See [the acceptance checkpoint](CRM-358-ACCEPTANCE-CHECKPOINT-20261102.md) for evidence and the remaining permission/source/restore gates.
 2. **Outpatient status return and stable IDs:** #137/#138/#145 and Dashboard #329/#330 remain separate drafts; not covered by this residential-only candidate. Resident discharge stays safe while read-only continuation remains pending.
 3. **Outpatient OP-03 native restore:** distinct approval/recovery gate; do not hold Dashboard *code review* for Outpatient feature work, but do hold any cross-app rollout that depends on it.
 4. **P1 onward:** further color/layout/analytics/management dashboard/new engines are out of this release. No new PR per cosmetic defect.

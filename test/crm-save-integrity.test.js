@@ -22,12 +22,13 @@ const model = (audit, patient) => ({
   outpatientSent: {}
 });
 
-test('SAVE-02: a lost funder reply is recovered ONLY by the exact source submission ID, patient, funder and day', () => {
+test('SAVE-02: funder source state is unique by patient/day/value; an exposed conflicting submission ID is refused', () => {
   const key = 'sub-0123456789abcdef0123456789abcdef';
   const base = { patientId: 'P1', submissionId: key, funder: 'פרטי', effectiveFrom: '2026-11-02' };
   const proof = (row) => crm.funderSourceConfirmed({ ok: true, funders: [Object.assign({}, base, row)] }, 'P1', key, 'פרטי', '2026-11-02');
   assert.equal(proof({}), true);
   assert.equal(proof({ effectiveFrom: '2026-11-01T22:00:00.000Z' }), true, 'source date stored as UTC timestamp maps to Israel 02/11');
+  assert.equal(proof({ submissionId: undefined }), true, 'the production projection omits the key');
   assert.equal(proof({ submissionId: 'sub-another' }), false);
   assert.equal(proof({ patientId: 'P2' }), false);
   assert.equal(proof({ funder: 'משרד הבריאות' }), false);
@@ -95,4 +96,36 @@ test('P0: handoff failure cannot return a fully successful discharge+Outpatient 
   assert.match(fn, /if \(needsOutpatient\) toast\('השחרור נשמר — מאמת/, 'outbound handoff is explicitly still pending');
   assert.match(fn, /const accepted = d && d.ok === true && \(d.sent \|\| d.alreadySent\);\s*state.saving = false;/, 'do not release the action lock until handoff response');
   assert.doesNotMatch(fn, /catch\(function \(\) \{ toast\('יצירת ליד טיפול חוץ נכשלה[^;]*; return true;/);
+});
+
+test('P0: lost funder reply uses exact source state, never a namesake, another date or conflicting rows', () => {
+  const expected = { patientId: 'p-synthetic', funder: 'פרטי', effectiveFrom: TODAY };
+  const confirm = (data, expected) => crm.funderSourceConfirmed(data, expected.patientId, 'sub-0123456789abcdef0123456789abcdef', expected.funder, expected.effectiveFrom);
+  const read = (rows) => ({ ok: true, funders: rows });
+  assert.equal(confirm(read([expected]), expected), true);
+  for (const patch of [{ patientId: 'p-other' }, { effectiveFrom: '2026-11-01' }, { funder: 'מכבי' }]) {
+    assert.equal(confirm(read([{ ...expected, ...patch }]), expected), false);
+  }
+  assert.equal(confirm(read([expected, { ...expected, funder: 'מכבי' }]), expected), false);
+  assert.equal(confirm({ ok: false, funders: [expected] }, expected), false);
+  assert.equal(confirm(read([]), expected), false);
+  assert.equal(confirm(read([{ ...expected, effectiveFrom: '' }]), { ...expected, effectiveFrom: '' }), false);
+  // This is the ACTUAL Apps Script projection, which strips the submission key.
+  const gs = require('./helpers/gs-sandbox').loadGs();
+  gs.sandbox.__funderInput = [{ ...expected, submissionId: 'sub-0123456789abcdef0123456789abcdef' }];
+  const projected = JSON.parse(JSON.stringify(gs.run('fundersForClient_(__funderInput)')));
+  assert.equal(projected[0].submissionId, undefined);
+  assert.equal(confirm(read(projected), expected), true);
+});
+
+test('P0: funder clarification survives reload from source and clears only with admission-day coverage', () => {
+  const c = { leads: [], discharges: [], patients: [{ id: 'p-synthetic', name: 'בדיקה בלבד', fromLead: 'L-synthetic', date: TODAY, status: 'active', houseId: 'ramot' }] };
+  const payments = { ok: true, payments: [], receipts: [], funders: [] };
+  assert.equal(crm.funderExceptions(c, payments, TODAY).length, 1);
+  assert.equal(crm.funderExceptions(JSON.parse(JSON.stringify(c)), payments, TODAY)[0].open, 'account');
+  payments.funders = [{ patientId: 'p-synthetic', effectiveFrom: '2026-11-03', funder: 'פרטי' }];
+  assert.equal(crm.funderExceptions(c, payments, TODAY).length, 1, 'future funder does not cover the admission');
+  payments.funders[0].effectiveFrom = TODAY;
+  assert.equal(crm.funderExceptions(c, payments, TODAY).length, 0);
+  assert.equal(crm.funderExceptions(c, { ok: false }, TODAY).length, 0, 'unavailable source is not proof of missing funder');
 });

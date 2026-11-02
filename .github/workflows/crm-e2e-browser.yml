@@ -12,6 +12,8 @@ on:
       - 'test/crm-continuity-handoff-gate.test.js'
       - 'test/crm-save-integrity.test.js'
       - 'test/crm-save-discharge-browser.test.js'
+      - 'test/crm-shell-browser.test.js'
+      - 'test/crm-switch-user-browser.test.js'
       - '.github/workflows/crm-e2e-browser.yml'
 permissions:
   contents: read
@@ -46,7 +48,11 @@ jobs:
             test/crm-continuity-handoff-gate.test.js \
             test/crm-save-integrity.test.js \
             test/crm-save-discharge-browser.test.js \
+            test/crm-shell-browser.test.js \
+            test/crm-switch-user-browser.test.js \
             > test-results/crm-e2e/browser.tap 2>&1
+          # A green job must execute these journeys, never silently skip them.
+          grep -q '^# skipped 0$' test-results/crm-e2e/browser.tap
       - name: Retain audit report
         if: always()
         uses: actions/upload-artifact@v4

@@ -21,13 +21,13 @@ The pure helper `admissionSourceProof(data, { patientId, leadId, houseId, date }
 The general `postAction` flow for lead archive/restore, edits and transfers remains unchanged; this guard is supplied only by the two admission actions.
 
 ## Second stage: funder source proof, no second finance write
-`appendFunder` submits **one** generated `submissionId`. Its acknowledged response must contain that exact key. When this response is refused/invalid/lost, **do not POST again**; call read-only `getPayments` and compare one exact Funders row by all four: `patientId`, `submissionId`, `funder`, and effective date. Success is claimed only if the exact source row is present and unambiguous. If the source cannot be read, does not match, or is duplicate, the UI warns: **admission saved, funder not verified; do not readmit**. This is a status distinction, not a correction or refund.
+`appendFunder` submits **one** generated `submissionId`. Its acknowledged response must contain that exact key. When this response is refused/invalid/lost, **do not POST again**; call read-only `getPayments` and compare one unique Funders row by exact `patientId`, `funder`, and effective date. The deployed `fundersForClient_` projection omits `submissionId`; the read verifies the requested source state, not acknowledgment of the transaction. If a future source exposes a key, a conflicting key is refused. Success requires an unambiguous matching state. If the source cannot be read, does not match, or is duplicate, the UI warns: **admission saved, funder not verified; do not readmit**. This is a status distinction, not a correction or refund.
 
 ## Test coverage — dummy source and real local Chromium only
 1. `test/crm-admission-source-reconcile.test.js`: exact admission source proof and all negative identity cases (same-name/lookalike, wrong house/date/lead, duplicated ID, released, stale/absent lead, failed read), no rePOST from recovery.
-2. `test/crm-save-integrity.test.js`: exact funder reply key + source row independently, refuses missing/wrong/duplicate finance source evidence.
+2. `test/crm-save-integrity.test.js`: exact funder reply key and independent source-state proof, including the actual `fundersForClient_` projection; refuses missing/wrong/duplicate finance source evidence.
 3. `test/crm-search-admit-funder.test.js` now injects a **real transport failure after the dummy source commits**, and tests successful source read recovery, no committed patient, partially committed patient without lead, failed source read. It also tests lost funder reply with committed row, no committed row and unreadable funder history. All include **one** original admission and at most **one** appendFunder write. Browser service uses **local Express + synthetic fake Apps Script** only.
-4. Existing Chromium scenarios for live user roles, conflicting identity, old/new collection and discharge audit guards remain required.
+4. Existing Chromium scenarios for synthetic authenticated roles, conflicting identity, old/new collection and discharge audit guards remain required.
 
 ## What remains intentionally unsolved
 - Reads from another Railway replica can be stale despite this process's bust. A negative or missing read still blocks actions and requires human reconciliation. There is no new durable operation journal or cross-browser lock.
@@ -40,3 +40,5 @@ The general `postAction` flow for lead archive/restore, edits and transfers rema
 No changes were made to `apps-script/Code.gs`, `server.js`, `lib/read-cache.js`, current financial calculations, the live Dashboard, Outpatient, permissions, invoices, existing payments or production data. **No new backend endpoint, financial write, automatic retry, merge or deploy.**
 
 The older duplicate [DRAFT #359](https://github.com/sandrabrayer/E-Zone-Dashboard/pull/359) was closed **without merge**; this work remains on **the one selected DRAFT #358**. Separate explicit Sandra approval is still mandatory for production merge/deploy and data changes.
+
+Persistent finance-only admission-funder clarification, independent-reader coverage and account-cache invalidation are documented in [the #358 acceptance checkpoint](CRM-358-ACCEPTANCE-CHECKPOINT-20261102.md).
