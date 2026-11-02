@@ -742,6 +742,125 @@
     return { q: words.join(' '), debtors: debtors, receipts: receipts, people: people, total: debtors.length + receipts.length + people.length };
   }
 
+  /* ---- «לגבייה בתאריך» in the CRM (CHANGELOG-crm-collect-on-date.md) ----
+   * The classic גבייה daily list, inside the CRM: who starts a cycle on a
+   * chosen date and what that cycle owes. The same rules as the classic list
+   * and the server engine:
+   *   - a cycle starts on the entry date + k months (month-end clamped, the
+   *     Code.gs recCycleDueDates_ / stayCycles anchor);
+   *   - never before entry; never ON or after the exit date (a patient who
+   *     leaves on the billing day opens no new cycle —
+   *     CHANGELOG-billing-exit-day-not-due.md); released with no exit date →
+   *     not listed (the classic conservative reading);
+   *   - pro-bono on the date → not owed, not listed;
+   *   - the amount is lib/cycle-balance.js cycleState (override → agreed price
+   *     → stamp, discount net, settled cycles stay settled) over the cycle's
+   *     Payments row when there is one.
+   * Pure: (getData answer, getPayments answer, 'YYYY-MM-DD', CycleBalance). */
+  function cycleBalanceLib(win) {
+    if (typeof module === 'object' && module && module.exports) { try { return require('../../lib/cycle-balance.js'); } catch (_) { /* browser bundle */ } }
+    const g = win || (typeof window !== 'undefined' ? window : globalThis);
+    return g.CycleBalance || null;
+  }
+  const FUNDER_UNSET_LABEL = 'לא הוגדר';
+  const HEB_MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר'];
+  function monthsBetween(fromIso, toIso) {
+    return (Number(toIso.slice(0, 4)) - Number(fromIso.slice(0, 4))) * 12 + (Number(toIso.slice(5, 7)) - Number(fromIso.slice(5, 7)));
+  }
+  /* A cycle window split by calendar month, the price allotted by days
+   * (display only — the cycle owes ONE price; CHANGELOG-cycle-balance.md). */
+  function monthSplit(start, end, amount) {
+    const total = Math.round((Date.parse(end + 'T00:00:00Z') - Date.parse(start + 'T00:00:00Z')) / 86400000) + 1;
+    if (!(total > 0)) return [];
+    const out = [];
+    let cur = start;
+    while (cur <= end) {
+      const y = Number(cur.slice(0, 4)), m = Number(cur.slice(5, 7));
+      const monthEnd = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+      const to = monthEnd < end ? monthEnd : end;
+      const days = Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(cur + 'T00:00:00Z')) / 86400000) + 1;
+      out.push({ month: cur.slice(0, 7), days: days, amount: 0 });
+      cur = new Date(Date.parse(to + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10);
+    }
+    let given = 0;
+    out.forEach(function (x, i) {
+      x.amount = i === out.length - 1 ? Math.round((amount - given) * 100) / 100 : Math.round(amount * x.days / total);
+      given += x.amount;
+    });
+    return out;
+  }
+  function funderOnDay(funders, uid, key, day) {
+    let best = null;
+    (Array.isArray(funders) ? funders : []).forEach(function (f) {
+      if (!rowIsPatient(f, uid, key)) return;
+      const from = sheetDay(f.effectiveFrom);
+      if (!from || from > day) return;
+      if (!best || from >= best.from) best = { from: from, funder: s(f.funder) };
+    });
+    return best ? best.funder : '';
+  }
+  function dueOnDate(data, payments, dayIso, CB) {
+    const day = s(dayIso);
+    const out = { date: day, rows: [], count: 0, total: 0, collected: 0, error: '' };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) { out.error = 'bad_date'; return out; }
+    const p = payments && payments.ok !== false ? payments : null;
+    if (!p) out.error = s(payments && payments.error) || 'payments_missing';
+    const cyclesAll = p && Array.isArray(p.payments) ? p.payments : [];
+    const funders = p && Array.isArray(p.funders) ? p.funders : [];
+    const overrides = data && Array.isArray(data.billingOverrides) ? data.billingOverrides : [];
+    const rules = reportRules();
+    const PROBONO = rules && rules.FUNDER_PROBONO ? rules.FUNDER_PROBONO : 'פרו-בונו';
+    const lib = CB || cycleBalanceLib();
+    normalise(data).patients.forEach(function (pt) {
+      const entry = pt.date;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(entry) || entry > day) return;
+      const exit = pt.exitDate;
+      if (exit && exit <= day) return;
+      if (pt.status === 'released' && !exit) return;
+      const k = monthsBetween(entry, day);
+      if (k < 0 || addMonthsIso(entry, k) !== day) return;
+      const key = patientKeyOf(pt);
+      const funder = funderOnDay(funders, pt.id, key, day);
+      if (funder === PROBONO) return;
+      const row = cyclesAll.filter(function (r) { return rowIsPatient(r, pt.id, key) && sheetDay(r.dueDate) === day && s(r.status).toLowerCase() !== 'void'; })[0] || null;
+      const month = day.slice(0, 7);
+      const ovr = overrides.filter(function (o) { return o && s(o.patientId) === key && s(o.month) === month; })[0] || null;
+      const ovrAmount = ovr && ovr.amount !== '' && ovr.amount !== null && ovr.amount !== undefined ? Number(ovr.amount) : null;
+      const disc = ovr && Number(ovr.discountAmount) > 0 ? Number(ovr.discountAmount) : null;
+      const stamped = row ? Number(row.amount) || 0 : pt.pay;
+      const paidIn = row ? Number(row.amountPaid) || 0 : 0;
+      const st = lib ? lib.cycleState({ stampedAmount: stamped, amountPaid: paidIn, overrideAmount: ovrAmount, agreedPrice: pt.pay, status: row ? s(row.status) : 'unpaid', discountAmount: disc })
+        : { expected: stamped, paid: paidIn, balance: Math.max(0, stamped - paidIn), status: paidIn <= 0 ? 'unpaid' : (paidIn >= stamped ? 'paid' : 'partial') };
+      const w = cycleWindow(entry, k);
+      const cs = row ? sheetDay(row.coverageStart) : '', ce = row ? sheetDay(row.coverageEnd) : '';
+      const start = cs && ce && ce >= cs ? cs : w.start, end = cs && ce && ce >= cs ? ce : w.end;
+      const cycle = row
+        ? { id: s(row.id), patientId: s(row.patientId) || key, patientName: s(row.patientName) || pt.name, houseId: s(row.houseId) || s(houseId(pt.houseId)),
+          dueDate: day, amount: stamped, coverageStart: start, coverageEnd: end }
+        : { id: 'pay::' + key + '::' + day, patientId: key, patientName: pt.name, houseId: s(houseId(pt.houseId)), dueDate: day, amount: st.expected, coverageStart: start, coverageEnd: end };
+      out.rows.push({ patientId: pt.id, name: pt.name, houseId: pt.houseId, houseName: houseName(pt.houseId), monthly: pt.pay, released: pt.status === 'released',
+        start: start, end: end, split: monthSplit(start, end, st.expected), expected: st.expected, paid: st.paid, balance: st.balance, status: st.status,
+        discount: st.discount || 0, funder: funder || FUNDER_UNSET_LABEL, recorded: !!row, cycle: cycle });
+    });
+    out.rows.sort(function (a, b) { return (a.status === 'paid') - (b.status === 'paid') || a.houseName.localeCompare(b.houseName, 'he') || a.name.localeCompare(b.name, 'he'); });
+    out.count = out.rows.length;
+    out.total = Math.round(out.rows.reduce(function (t, r) { return t + r.expected; }, 0) * 100) / 100;
+    out.collected = Math.round(out.rows.reduce(function (t, r) { return t + r.paid; }, 0) * 100) / 100;
+    return out;
+  }
+  /* The date list after the funder filter ('' = all) and the name search. Pure. */
+  function filterDueRows(due, funder, q) {
+    const words = s(q).toLowerCase().split(/\s+/).filter(Boolean);
+    const rows = (due && due.rows || []).filter(function (r) {
+      if (funder && r.funder !== funder) return false;
+      const hay = (r.name + ' ' + r.houseName).toLowerCase();
+      return words.every(function (w) { return hay.indexOf(w) >= 0; });
+    });
+    return { rows: rows, count: rows.length,
+      total: Math.round(rows.reduce(function (t, r) { return t + r.expected; }, 0) * 100) / 100,
+      collected: Math.round(rows.reduce(function (t, r) { return t + r.paid; }, 0) * 100) / 100 };
+  }
+
   /* ---- C9: the «חשבון» tab of a patient (CHANGELOG-crm-account-tab.md) ----
    * Same two reads as the גבייה area, filtered to ONE patient: open cycles
    * (debtAging.byPatient), the stamped cycles and receipts (getPayments),
@@ -2228,6 +2347,35 @@
         })
         .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'השיוך לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
     }
+    /* «לגבייה בתאריך» (CHANGELOG-crm-collect-on-date.md): the classic daily list —
+     * date picker (default today), funder filter, the top search; «דווח תשלום»
+     * opens the patient's «חשבון» with the report form on that cycle. */
+    function renderDueOnDate(isController) {
+      const day = isoDateOk(state.dueDate) ? state.dueDate : state.today;
+      const due = dueOnDate(state.data, state.billing.payments, day, cycleBalanceLib(win));
+      const fu = state.dueFunder || '';
+      const v = filterDueRows(due, fu, state.filters.q);
+      const funders = FUNDERS.concat([FUNDER_UNSET_LABEL]);
+      let html = '<div class="group-title" id="crm-due-title">לגבייה בתאריך</div>'
+        + '<div class="toolbar filters" id="crm-due-tools"><label>תאריך <input type="date" id="crm-due-date" value="' + esc(day) + '"></label>'
+        + '<select id="crm-due-funder" aria-label="גורם מממן"><option value="">כל הגורמים המממנים</option>' + funders.map(function (f) { return '<option value="' + esc(f) + '"' + (f === fu ? ' selected' : '') + '>' + esc(f) + '</option>'; }).join('') + '</select>'
+        + (day !== state.today ? '<button type="button" class="btn small" data-due-today>היום</button>' : '') + '</div>';
+      html += '<div class="kpis"><div class="kpi"><span class="v">' + v.count + '</span><span class="l">מטופלים לתשלום · ' + esc(fmtDate(day)) + '</span></div>'
+        + '<div class="kpi"><span class="v">' + esc(fmtMoney(v.total)) + '</span><span class="l">סך לגבייה</span></div>'
+        + '<div class="kpi"><span class="v">' + esc(fmtMoney(v.collected)) + '</span><span class="l">נגבה בתאריך הנבחר</span></div></div>';
+      if (due.error && due.error !== 'bad_date') html += '<div class="crm-state bad">תשלומים לא נטענו — הסכומים לפי התעריף בכרטיס בלבד <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
+      if (!v.rows.length) return html + '<p class="na">' + (due.rows.length ? 'לא נמצאו תוצאות' : 'אין תשלומים לגבייה בתאריך זה') + '</p>';
+      state.dueRows = v.rows;
+      return html + '<div class="tbl-wrap"><table class="tbl" id="crm-due"><thead><tr><th>מטופל/ת</th><th>בית</th><th>סכום חודשי</th><th>תקופת כיסוי</th><th>סטטוס</th><th>שולם</th><th>יתרה</th><th></th></tr></thead><tbody>'
+        + v.rows.map(function (r, i) {
+          const st = r.status === 'paid' ? 'ok' : r.status === 'partial' ? 'today' : 'late';
+          const split = r.split.length > 1 ? '<br><small class="na">' + r.split.map(function (x) { return esc(HEB_MONTHS[Number(x.month.slice(5, 7)) - 1] + ' ' + x.month.slice(0, 4)) + ' · ' + x.days + ' ימים · ' + esc(fmtMoney(x.amount)); }).join(' | ') + '</small>' : '';
+          return '<tr><td data-open-patient="' + esc(r.patientId) + '" class="link">' + esc(r.name) + (r.released ? ' ' + chip('wait', 'שוחרר/ה') : '') + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtMoney(r.monthly)) + '</td>'
+            + '<td>' + esc(fmtDate(r.start)) + '–' + esc(fmtDate(r.end)) + split + '</td><td>' + chip(st, CYCLE_STATUS_LABELS[r.status] || r.status) + (r.discount ? ' <span class="na">הנחה ' + esc(fmtMoney(r.discount)) + '</span>' : '') + '</td>'
+            + '<td>' + esc(fmtMoney(r.paid)) + '</td><td>' + esc(fmtMoney(r.balance)) + '</td>'
+            + '<td>' + (!isController && r.balance > 0 ? '<button type="button" class="btn small primary" data-due-report="' + i + '">דווח תשלום</button>' : '') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
     function renderBilling() {
       if (!state.billing) { loadBilling(); return '<div class="crm-state">טוען נתוני גבייה…</div>'; }
       const b = billingOverview(state.billing.debt, state.billing.payments, state.today);
@@ -2252,6 +2400,7 @@
         html += '<p class="na">פתיחת שורה → כרטיס המטופל/ת, לשונית «חשבון» — כל המחזורים והתקבולים.</p>';
       }
       if (b.errors.length) html += '<div class="crm-state bad">' + esc(b.errors.join(' · ')) + ' <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
+      html += renderDueOnDate(isController);
       html += '<div class="kpis">' + kpi(fmtMoney(b.openDebt), 'חוב פתוח (' + b.openCycles + ' מחזורים)', 'all') + kpi(fmtMoney(b.over60), 'מעל 60 יום', 'd61_plus')
         + kpi(b.debtors, 'מטופלים עם חוב', 'all') + kpi(fmtMoney(b.received30), 'התקבל ב-30 יום (' + b.received30Count + ')', 'received') + kpi(b.toVerify, 'דיווחים לאימות', 'toVerify') + '</div>';
       html += '<div class="group-title">גיול חוב נכון ל-' + esc(fmtDate(b.asOf)) + '</div><div class="kpis">' + b.buckets.map(function (x) { return kpi(fmtMoney(x.amount), x.label, x.key); }).join('') + '</div>';
@@ -3160,10 +3309,21 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-settle-open],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-settle-open],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel]') : null;
       if (!t) return;
       if (t.dataset.billingRetry !== undefined) { resetBilling(); return renderMain(); }
       if (t.dataset.reportCancel !== undefined) { state.report = null; state.small = null; const el = $('#crm-report'); if (el) el.innerHTML = ''; return; }
+      if (t.dataset.dueToday !== undefined) { state.dueDate = state.today; return renderMain(); }
+      if (t.dataset.dueReport !== undefined) {
+        // «לגבייה בתאריך» → the patient's «חשבון», then the report form on THAT cycle
+        const r = (state.dueRows || [])[Number(t.dataset.dueReport)];
+        const pat = r && compute(state.data, state.today).patients.filter(function (p) { return p.id === r.patientId; })[0];
+        if (!pat) return toast('המטופל/ת לא נמצא/ה ברשימה — דיווח בדשבורד הרגיל', true);
+        const go = function () { if (state.account && state.drawer && state.drawer.id === pat.id) openReportForm(r.cycle, r.balance); };
+        openDrawer('patient', pat.id); const tab = doc.querySelector('#crm-drawer [data-tab="account"]'); if (tab) tab.click();
+        if (state.billing) go(); else loadBilling(go);
+        return;
+      }
       if (t.dataset.settleOpen && !(state.drawer && state.account)) {
         // from the גבייה area: open the patient's drawer on «חשבון», then the form
         const cr = pendingCredits(state.billing && state.billing.credits).filter(function (c) { return c.id === t.dataset.settleOpen; })[0];
@@ -3245,6 +3405,8 @@
       const t = ev.target;
       // a field inside a form (report, restore, …) is the form's business — re-rendering would wipe it
       if (t.id === 'crm-day-week') { if (isoDateOk(t.value)) state.week = t.value; return renderMain(); }
+      if (t.id === 'crm-due-date') { if (isoDateOk(t.value)) state.dueDate = t.value; return renderMain(); }
+      if (t.id === 'crm-due-funder') { state.dueFunder = t.value; return renderMain(); }
       if (['f-dis-days', 'crm-cal-date', 'f-house', 'f-house-c', 'f-owner'].indexOf(t.id) < 0) return;
       if (t.id === 'f-dis-days') state.dischargedDays = Number(t.value) || 0;
       if (t.id === 'crm-cal-date') { if (!state.cal) state.cal = { mode: 'day', anchor: state.today }; if (isoDateOk(t.value)) state.cal.anchor = t.value; }
@@ -3353,7 +3515,7 @@
     newSubmissionId: newSubmissionId, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
     CREDIT_TYPE_LABELS: CREDIT_TYPE_LABELS, CREDIT_STATUS_LABELS: CREDIT_STATUS_LABELS, SETTLE_METHODS: SETTLE_METHODS, creditsOf: creditsOf, patientCredits: patientCredits, pendingCredits: pendingCredits,
     RECEIPT_EDIT_FIELDS: RECEIPT_EDIT_FIELDS, receiptEditFields: receiptEditFields, receiptEditIssues: receiptEditIssues, receiptEditBody: receiptEditBody, receiptVoidErrors: receiptVoidErrors, receiptVoidBody: receiptVoidBody, receiptVoidAccepted: receiptVoidAccepted,
-    addMonthsIso: addMonthsIso, stayCycles: stayCycles, reportableCycles: reportableCycles, defaultReportable: defaultReportable, reportCycleForWindow: reportCycleForWindow,
+    addMonthsIso: addMonthsIso, dueOnDate: dueOnDate, filterDueRows: filterDueRows, monthSplit: monthSplit, cycleBalanceLib: cycleBalanceLib, FUNDER_UNSET_LABEL: FUNDER_UNSET_LABEL, stayCycles: stayCycles, reportableCycles: reportableCycles, defaultReportable: defaultReportable, reportCycleForWindow: reportCycleForWindow,
     CONTACT_OUTCOMES: CONTACT_OUTCOMES, CONTACT_CHANNELS: CONTACT_CHANNELS, NEXT_CHOICES: NEXT_CHOICES, TASK_KINDS: TASK_KINDS, TASK_KIND_LABELS: TASK_KIND_LABELS, contactOutcomeLabel: contactOutcomeLabel, nextPlan: nextPlan, contactErrors: contactErrors, contactBody: contactBody, contactAccepted: contactAccepted,
     taskDue: taskDue, taskState: taskState, taskWhen: taskWhen, taskSubject: taskSubject, taskQueue: taskQueue, tasksFor: tasksFor, taskCounts: taskCounts, taskFormErrors: taskFormErrors, taskCreateBody: taskCreateBody, rescheduleErrors: rescheduleErrors, rescheduleBody: rescheduleBody, taskAccepted: taskAccepted,
     VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,
