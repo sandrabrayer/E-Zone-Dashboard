@@ -62,6 +62,6 @@ test('P0: admissions may not report both steps complete unconditionally after th
 test('P0: handoff failure cannot return a fully successful discharge+Outpatient result', () => {
   const src = fs.readFileSync(require.resolve('../public/crm/crm.js'), 'utf8');
   const fn = src.slice(src.indexOf('function dischargePatient(pid, v, f)'), src.indexOf('function renderDischarged(c)'));
-  assert.ok(fn.includes("יצירת ליד טיפול חוץ נכשלה"), 'failure must be visible');
+  assert.ok(fn.includes('השחרור נשמר, אך ההפניה לאמבולטורי לא אומתה'), 'partial failure must be visible');
   assert.doesNotMatch(fn, /catch\(function \(\) \{ toast\('יצירת ליד טיפול חוץ נכשלה[^;]*; return true;/);
 });
