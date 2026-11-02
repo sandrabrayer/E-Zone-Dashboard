@@ -12,6 +12,7 @@
 1. The original, source-derived row ID f:decide:leadId becomes kind meeting_no_show_followup when the seen source manager report is no_show and no family decision has been recorded. It displays "לברר היעדרות / ביטול ולתאם מועד חדש" rather than "להחליט אחרי דיווח". It opens the EXISTING תיעוד שיחה form, where Vered/Dana can schedule a callback or explain why none is needed. Opening the form does not close the row.
 2. While the no-show report remains unread, the original report_unseen row takes precedence and names the original "לא הגיע / בוטל" result. It does not imply attendance.
 3. The lead card's פגישות ושירותים tab shows a caution when the manager result is no_show and the family decision is still missing. It retains the original report.
+   The manager's report timestamp is shown explicitly as 'דיווח מ-… · מועד המשך טרם נקבע', NOT as an overdue callback deadline; a no-show needs a new promised date before it can be late.
 4. The older compute read-only row no longer says a past meeting took place without proof; it says the date passed and occurrence is unverified.
 
 ## Tests — synthetic only
