@@ -32,7 +32,7 @@ const PROXY_SECRET = 'proxy-secret-TEST-crm-partial-discharge';
 const ENV = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'USER_PIN_HASHES', 'PIN_PEPPER', 'CRM_ENABLED'];
 const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date());
 
-async function boot() {
+async function boot(mode) {
   const hash = await pinHash.hashPin('583920', PEPPER);
   const recs = ['vered'].map(id => JSON.parse(users.recordLine(id, hash, 1)));
   const variables = { PROXY_SECRET, SESSION_SECRET: SECRET, SHEETS_URL: 'https://script.google.com/macros/s/SYNTHETIC/exec', PIN_PEPPER: PEPPER, USER_PIN_HASHES: JSON.stringify(recs), CRM_ENABLED: 'true' };
@@ -66,8 +66,11 @@ async function boot() {
       else if (payload.action === 'getPayments') answer = {ok:true,payments:[],receipts:[],funders:[]};
       else if (payload.action === 'getCredits') answer = {ok:true,credits:[]};
       else if (payload.action === 'dischargePatient') {
-        DATA.dischargedPatients.push(payload.patient);
-        answer = {ok:true,discharged:true,patient:payload.patient,refund:{created:0}};
+        if (mode === 'duplicate') answer = {ok:true,duplicate:true,id:'old-audit-other-person',exitDate:day};
+        else {
+          DATA.dischargedPatients.push(payload.patient);
+          answer = {ok:true,discharged:true,patient:payload.patient,refund:{created:0}};
+        }
       }
       else if (payload.action === 'saveAll') answer = {ok:false,error:'synthetic_second_stage_rejected'};
       else answer = {ok:true};
@@ -125,6 +128,25 @@ test('PW-04 Chromium: partial discharge remains visible after reload and cannot 
     await page.waitForSelector('#crm-toast.bad[data-show="true"]',{timeout:7000});
     assert.match(await page.locator('#crm-toast').innerText(),/כבר נרשם שחרור/);
     assert.equal(srv.posts.filter(x => x.action === 'dischargePatient').length,1,'no second audit/credit request');
+    await ctx.close();
+  } finally {await browser.close();srv.close();}
+});
+
+test('PW-05 Chromium: unverified duplicate audit never updates a possibly different Patients row', {skip}, async () => {
+  const srv = await boot('duplicate');
+  const browser = await playwright.chromium.launch({executablePath:chromiumPath});
+  try {
+    const {ctx,page} = await loginPage(browser,srv.port);
+    await page.locator('[data-area="clients"]').click();
+    await page.locator('[data-open-patient="P1"]').first().click();
+    await page.waitForSelector('#crm-drawer [data-form="discharge"]',{state:'attached'});
+    await page.locator('#crm-drawer details.act:has(form[data-form="discharge"]) summary').click();
+    await page.locator('#crm-drawer form[data-form="discharge"] select[name="disposition"]').selectOption('completed');
+    await page.locator('#crm-drawer form[data-form="discharge"] button[type="submit"]').click();
+    await page.waitForSelector('#crm-main .crm-state.bad',{timeout:10000});
+    assert.match(await page.locator('#crm-main .crm-state.bad').innerText(),/לא אומתה התאמתו למזהה המטופל/);
+    assert.equal(srv.posts.filter(x => x.action === 'dischargePatient').length,1);
+    assert.equal(srv.posts.filter(x => x.action === 'saveAll').length,0,'no secondary Patients update on an unverified duplicate');
     await ctx.close();
   } finally {await browser.close();srv.close();}
 });
