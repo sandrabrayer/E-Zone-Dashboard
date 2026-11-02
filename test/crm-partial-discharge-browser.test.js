@@ -100,7 +100,7 @@ test('PW-04 Chromium: partial discharge remains visible after reload and cannot 
     const {ctx,page} = await loginPage(browser,srv.port);
     await page.locator('[data-area="clients"]').click();
     await page.locator('[data-open-patient="P1"]').first().click();
-    await page.waitForSelector('#crm-drawer [data-form="discharge"]');
+    await page.waitForSelector('#crm-drawer [data-form="discharge"]', {state:'attached'});
     await page.locator('#crm-drawer details.act:has(form[data-form="discharge"]) summary').click();
     await page.locator('#crm-drawer form[data-form="discharge"] select[name="disposition"]').selectOption('completed');
     await page.locator('#crm-drawer form[data-form="discharge"] select[name="continuity"]').selectOption('none');
@@ -118,7 +118,7 @@ test('PW-04 Chromium: partial discharge remains visible after reload and cannot 
     await second.ctx.close();
     await page.locator('[data-area="clients"]').click();
     await page.locator('[data-open-patient="P1"]').first().click();
-    await page.waitForSelector('#crm-drawer [data-form="discharge"]');
+    await page.waitForSelector('#crm-drawer [data-form="discharge"]', {state:'attached'});
     await page.locator('#crm-drawer details.act:has(form[data-form="discharge"]) summary').click();
     await page.locator('#crm-drawer form[data-form="discharge"] select[name="disposition"]').selectOption('completed');
     await page.locator('#crm-drawer form[data-form="discharge"] button[type="submit"]').click();
