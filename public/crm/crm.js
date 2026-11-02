@@ -2255,11 +2255,15 @@
           .then(function (r) { return r.json().catch(function () { return null; }); });
       };
       let auditRes = null;
+      let auditConfirmed = false; // only our exact new audit ID is verified, not a duplicate stay key
       return post({ action: 'dischargePatient', patient: audit }).then(function (res) {
         auditRes = res;
         if (!res || res.ok === false) throw new Error((res && res.message) || 'שחרור המטופל נכשל — לא נשמר' + (res && res.error ? ' (' + res.error + ')' : ''));
-        if (res.duplicate === true) { if (res.exitDate) released.exitDate = s(res.exitDate).slice(0, 10); toast('השחרור כבר נרשם'); }
-        else if (!(res.patient && s(res.patient.id) === audit.id)) throw new Error('השחרור לא אומת — רענני ובדקי');
+        // Source duplicate keys use house/name/original-date, NOT an immutable
+        // patient ID. Never promote Patients on an unverified older audit.
+        if (res.duplicate === true) throw new Error('קיים רישום שחרור קודם שלא אומתה התאמתו למזהה המטופל/ת — אין לעדכן סטטוס בלי בדיקה');
+        if (!(res.patient && s(res.patient.id) === audit.id)) throw new Error('השחרור לא אומת — רענני ובדקי');
+        auditConfirmed = true;
         // b. the Patients row flips in the same way the classic flow does: the house as read, this row released.
         return post(houseSaveBody(loc.hid, loc.arr, released, null));
       }).then(function (res) {
@@ -2281,12 +2285,17 @@
         }
         return true;
       }).catch(function (e) {
-        // A lost reply can follow a committed source write. Do not falsely undo
-        // the source in the UI or invite a second discharge with a fresh audit ID.
+        // Uncertain status can mean a committed audit and a refused Patients
+        // write. Freeze actions until an explicit authoritative refresh: never
+        // offer a fresh discharge or accidentally repeat an automatic credit.
         state.saving = false;
-        const message = 'מצב השחרור לא אומת במלואו — ייתכן שחלק מהפעולות נשמרו. אין לבצע שחרור נוסף עד בדיקה ורענון. ' + String(e && e.message || e);
-        setSaveState(message, true); toast(message, true);
-        return load().then(function () { toast(message, true); return false; });
+        const message = auditConfirmed
+          ? 'רישום השחרור אושר, אך עדכון המטופל/ת לא אומת. אין לבצע שחרור שוב; רענני ובדקי את חריג השחרור.'
+          : 'תוצאת רישום השחרור אינה ודאית. אין לבצע ניסיון נוסף עד לרענון ובדיקת רשומת השחרור.';
+        state.error = message + ' ' + String(e && e.message || e);
+        setSaveState(message, true);
+        renderNav(); renderMain(); toast(message, true);
+        return false;
       });
     }
 
