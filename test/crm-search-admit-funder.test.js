@@ -63,7 +63,8 @@ test('A: globalSearch — leads of every stage + patients of every status, by na
 test('A: source guards — the funder save sends the server\'s key shape (sub- + hex); search is debounced with a busy state', () => {
   const src = fs.readFileSync(require.resolve('../public/crm/crm.js'), 'utf8');
   assert.doesNotMatch(src, /submissionId: randomId\(\)/, 'randomId() has no "sub-" prefix → Code.gs refused it (bad_submission_id)');
-  assert.match(src, /action: 'appendFunder', funder: \{[^}]*submissionId: newSubmissionId\(\)/);
+  assert.match(src, /const submissionId = newSubmissionId\(\);/);
+  assert.match(src, /action: 'appendFunder', funder: \{[^}]*submissionId: submissionId/);
   const gs = fs.readFileSync(require.resolve('../apps-script/Code.gs'), 'utf8');
   const re = new RegExp(/const SUBMISSION_ID_RE = (\/.*\/);/.exec(gs)[1].slice(1, -1));
   assert.ok(re.test(core.newSubmissionId ? core.newSubmissionId() : 'sub-' + 'a'.repeat(32)));
@@ -104,7 +105,7 @@ function data() {
   };
 }
 
-async function boot() {
+async function boot(funderMode) {
   const posts = [];
   const hash = await pinHash.hashPin('583920', PEPPER);
   const recs = ['vered'].map((id) => JSON.parse(users.recordLine(id, hash, 1)));
@@ -118,6 +119,7 @@ async function boot() {
   try { mod = require('../server'); } finally { for (const k of ENV_KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } }
   const original = https.request;
   const DATA = data();
+  const funderRows = [];
   const SUB = /^sub-[A-Za-z0-9-]{8,64}$/;
   https.request = (url, opts, cb) => {
     const req = new EventEmitter();
@@ -129,15 +131,18 @@ async function boot() {
       posts.push(parsed);
       let f = parsed.funder;
       if (typeof f === 'string') { try { f = JSON.parse(f); } catch (_) { f = {}; } }
+      if (parsed.action === 'appendFunder' && funderMode !== 'reject' && f && SUB.test(String(f.submissionId))) {
+        funderRows.push(Object.assign({}, f));
+      }
       const answer = parsed.action === 'getData' ? DATA
         : parsed.action === 'getTasks' ? { ok: true, total: 0, tasks: [] }
         : parsed.action === 'contactIndex' ? { ok: true, count: 0, leads: {}, patients: {} }
         : parsed.action === 'getActivity' ? { ok: true, events: [] }
         : parsed.action === 'debtAging' ? { ok: true, byPatient: [], totals: {}, byHouse: [] }
-        : parsed.action === 'getPayments' ? { ok: true, payments: [], receipts: [], funders: [] }
+        : parsed.action === 'getPayments' ? { ok: true, payments: [], receipts: [], funders: funderRows }
         : parsed.action === 'getCredits' ? { ok: true, credits: [] }
         // the REAL rule of Code.gs appendFunder_: a key not shaped sub-… is refused
-        : parsed.action === 'appendFunder' ? (f && SUB.test(String(f.submissionId)) ? { ok: true, row: { submissionId: f.submissionId } } : { ok: false, error: 'bad_submission_id' })
+        : parsed.action === 'appendFunder' ? (funderMode === 'reject' ? { ok: false, error: 'synthetic_funder_rejection' } : (f && SUB.test(String(f.submissionId)) ? { ok: true, row: { submissionId: f.submissionId } } : { ok: false, error: 'bad_submission_id' }))
         : parsed.action === 'saveAll' ? { ok: true, proven: { leads: (parsed.leads || []).map((l) => String(l.id)), patients: Object.values(parsed.patients || {}).flat().map((p) => String(p.id)) } }
         : { ok: true };
       const res = new EventEmitter();
@@ -237,6 +242,35 @@ test('B: matching lead NEVER auto-admits; independent patient requires a checked
     assert.equal(fund.length, 1);
     const fb = typeof fund[0].funder === 'string' ? JSON.parse(fund[0].funder) : fund[0].funder;
     assert.match(fb.submissionId, /^sub-[0-9a-f]{32}$/);
+    assert.deepEqual(errors, []);
+    await ctx.close();
+  } finally { await browser.close(); srv.close(); }
+});
+
+
+test('B: rejected funder write after verified direct admission shows PARTIAL save and never full success', { skip }, async () => {
+  const srv = await boot('reject');
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { ctx, page, errors } = await openPage(browser, srv.port);
+    await page.click('[data-area="clients"]');
+    await page.click('#crm-direct-add');
+    const f = '#crm-drawer form[data-form="direct-add"]';
+    await page.fill(f + ' input[name="name"]', 'מטופל בדיקה');
+    await page.fill(f + ' input[name="phone"]', '050-999-8877');
+    await page.selectOption(f + ' select[name="houseId"]', 'ramot');
+    await page.fill(f + ' input[name="pay"]', '9000');
+    await page.selectOption(f + ' select[name="funder"]', { index: 1 });
+    await page.click(f + ' button[type="submit"]');
+    await page.waitForFunction(() => {
+      const t = document.querySelector('#crm-toast');
+      return !!(t && t.classList.contains('bad') && /הקליטה נשמרה.*הגורם המממן.*לא אומתה/.test(t.textContent));
+    }, null, { timeout: 5000 });
+    const toast = await page.textContent('#crm-toast');
+    assert.match(toast, /אין לקלוט שוב/, 'never encourage a second admission with new IDs');
+    assert.doesNotMatch(toast, /בוצע|הקליטה והגורם המממן נשמרו/);
+    assert.equal(srv.posts.filter((p) => p.action === 'saveAll').length, 1, 'admission committed exactly once');
+    assert.equal(srv.posts.filter((p) => p.action === 'appendFunder').length, 1, 'funder attempted exactly once');
     assert.deepEqual(errors, []);
     await ctx.close();
   } finally { await browser.close(); srv.close(); }
