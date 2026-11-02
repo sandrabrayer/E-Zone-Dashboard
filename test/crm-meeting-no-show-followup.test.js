@@ -40,6 +40,8 @@ test('P1: manager-reported no-show / cancellation is an actionable callback, nev
   assert.equal(r.contactable, true, 'open the real existing contact form');
   assert.equal(r.priority, 'exception');
   assert.equal(r.when, '2026-10-30');
+  assert.equal(r.state, 'wait', 'report timestamp is not an overdue followup deadline');
+  assert.match(r.whenText, /דיווח מ-30\/10\/2026.*מועד המשך טרם נקבע/);
   assert.equal(m.urgent.filter(x => x.id === r.id).length, 1, 'no duplicate derived work');
   assert.equal(m.byDomain.meetings.filter(x => x.subjectId === r.subjectId).length, 0);
 });
