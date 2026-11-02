@@ -360,7 +360,11 @@
 // (crm/crm.js, crm.html loads cycle-balance.js) (CHANGELOG-crm-collect-on-date.md). Stacked on v110 (PR #354); monotonic, v17 never reused.
 // v111 → v112: an admitted lead whose patient is in a house is never shown as «בטיפול פעיל» again — classic
 // load-time heal + CRM read (app.js, crm/crm.js) (CHANGELOG-admitted-lead-stays-closed.md). From the live v111; monotonic, v17 never reused.
-var CACHE_VERSION = 'v112';
+// v112 → v113: integrated CRM identity + admission/funder acknowledgement, partial-discharge
+// reconciliation and professional no-show follow-up (crm/crm.js). Baseline also retains
+// deployed billing/day-of-exit #354, CRM daily collection #355 and admitted lead #356.
+// DRAFT only. v17 remains burned; source/data routes stay network-only.
+var CACHE_VERSION = 'v113';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
