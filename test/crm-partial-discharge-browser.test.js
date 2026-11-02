@@ -34,7 +34,7 @@ const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).for
 
 async function boot(mode) {
   const hash = await pinHash.hashPin('583920', PEPPER);
-  const recs = ['vered'].map(id => JSON.parse(users.recordLine(id, hash, 1)));
+  const recs = ['vered', 'sandra'].map(id => JSON.parse(users.recordLine(id, hash, 1)));
   const variables = { PROXY_SECRET, SESSION_SECRET: SECRET, SHEETS_URL: 'https://script.google.com/macros/s/SYNTHETIC/exec', PIN_PEPPER: PEPPER, USER_PIN_HASHES: JSON.stringify(recs), CRM_ENABLED: 'true' };
   const previous = {}, quiet = { log: console.log, warn: console.warn, error: console.error };
   for (const k of ENV) { previous[k] = process.env[k]; process.env[k] = variables[k]; }
@@ -86,9 +86,9 @@ async function boot(mode) {
   return {port:server.address().port,posts,close() {server.close(); https.request=original;Object.assign(console,quiet);}};
 }
 
-async function loginPage(browser, port) {
+async function loginPage(browser, port, principal = 'vered') {
   const ctx = await browser.newContext({viewport:{width:1024,height:850},locale:'he-IL',timezoneId:'Asia/Jerusalem',serviceWorkers:'block'});
-  const token = createSessionToken(SECRET, undefined, undefined, users.modelById('vered').name, {id:'vered',pinVersion:1});
+  const token = createSessionToken(SECRET, undefined, undefined, users.modelById(principal).name, {id:principal,pinVersion:1});
   await ctx.addCookies([{name:'ezone_session',value:token,url:'http://127.0.0.1:'+port}]);
   const page = await ctx.newPage();
   await page.goto('http://127.0.0.1:'+port+'/?view=crm',{waitUntil:'networkidle'});
@@ -116,7 +116,7 @@ test('PW-04 Chromium: partial discharge remains visible after reload and cannot 
     await page.locator('[data-area="today"]').click();
     await page.waitForSelector('[data-row^="ex:discharge-sync:"]',{timeout:10000});
     assert.match(await page.locator('[data-row^="ex:discharge-sync:"]').first().innerText(),/שחרור נרשם/);
-    const second = await loginPage(browser,srv.port);
+    const second = await loginPage(browser,srv.port,'sandra');
     await second.page.waitForSelector('[data-row^="ex:discharge-sync:"]',{timeout:10000});
     await second.ctx.close();
     await page.locator('[data-area="clients"]').click();
