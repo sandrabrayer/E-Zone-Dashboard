@@ -358,7 +358,9 @@
 // (CHANGELOG-billing-exit-day-not-due.md). From the live v109; monotonic, v17 never reused.
 // v110 → v111: «לגבייה בתאריך» in the CRM גבייה area — date picker, funder filter, KPIs, «דווח תשלום» per row
 // (crm/crm.js, crm.html loads cycle-balance.js) (CHANGELOG-crm-collect-on-date.md). Stacked on v110 (PR #354); monotonic, v17 never reused.
-var CACHE_VERSION = 'v111';
+// v111 → v112: an admitted lead whose patient is in a house is never shown as «בטיפול פעיל» again — classic
+// load-time heal + CRM read (app.js, crm/crm.js) (CHANGELOG-admitted-lead-stays-closed.md). From the live v111; monotonic, v17 never reused.
+var CACHE_VERSION = 'v112';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

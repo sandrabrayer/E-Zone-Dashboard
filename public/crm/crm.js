@@ -414,6 +414,15 @@
       return { id: s(x.id), houseId: s(x.houseId), name: s(x.name), date: isoDay(x.date), status: s(x.status) || 'active',
         exitDate: isoDay(x.exitDate), fromLead: s(x.fromLead), source: s(x.source), personId: s(x.personId), pay: Number(x.pay) || 0 };
     });
+    /* A board lead whose patient is in a house by the exact fromLead link was
+     * admitted (and reopened by a stale save) — shown as admitted, never as an
+     * open «בטיפול פעיל» lead (CHANGELOG-admitted-lead-stays-closed.md). */
+    const inHouse = {};
+    pts.forEach(function (x) { if (x.fromLead && x.status !== 'released') inHouse[x.fromLead] = x; });
+    leads.forEach(function (l) {
+      const pt = inHouse[l.id];
+      if (pt && STAGES.some(function (st) { return st.id === l.stage; })) { l.stage = 'admitted'; if (!l.entryDate) l.entryDate = pt.date; }
+    });
     const sent = {};
     (Array.isArray(d.outpatientSentLeadIds) ? d.outpatientSentLeadIds : []).forEach(function (k) { sent[s(k)] = true; });
     return { leads: leads, patients: pts, discharges: discharges, outpatientSent: sent };

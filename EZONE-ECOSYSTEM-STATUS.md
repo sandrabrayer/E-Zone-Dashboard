@@ -1,5 +1,10 @@
 # E-ZONE Ecosystem Status — updated November 2, 2026
 
+
+## An admitted lead stays closed — November 2, 2026 (PR open)
+
+- Reported: מתן כחלון was admitted to ריהאב on 01/11 (patient row, `fromLead` = his lead) yet his lead was back in «בטיפול פעיל». Every classic save sends EVERY lead from the tab's copy, so a tab loaded before the admission wrote the old stage back. Now: `mergeLeads_` keeps the sheet's admitted stage / entryDate / meetingOutcome when a not-released patient points at the lead (`admittedKept` in the answer, AuditLog `lead_admitted_kept`); a real reopen after discharge is not blocked. Classic load-time heal + CRM read retire such a lead (exact `fromLead` link only), which also fixes the rows already reopened. Code.gs changed (clasp CI on merge). SW v111 → v112. Details: `CHANGELOG-admitted-lead-stays-closed.md`.
+
 ## CRM «גבייה» → «לגבייה בתאריך» — November 2, 2026 (PR open, stacked on #354)
 
 - Vered collects by the classic «לגבייה בתאריך הנבחר» list; the CRM had only the debt overview. Now the CRM גבייה area opens with the same list: date picker (default today), funder filter, top-search filter, KPIs (מטופלים לתשלום / סך לגבייה / נגבה), coverage period with the month split, and «דווח תשלום» per row (opens the patient's «חשבון» with the C10 form on that cycle; hidden for Ortal). Amounts via `lib/cycle-balance.js` (now loaded by crm.html). No server change, Code.gs untouched. SW v110 → v111. Details: `CHANGELOG-crm-collect-on-date.md`.

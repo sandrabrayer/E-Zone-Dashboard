@@ -2434,6 +2434,9 @@ function promoteEnteredLeads() {
   return created;
 }
 
+/* Board stages a stale save can reopen an admitted lead into. */
+const ADMITTED_REOPENED_STAGES = ['new', 'visit', 'waitlist', 'paid'];
+
 /**
  * One-time, idempotent self-heal. Any lead still parked at stage 'entry' /
  * 'entered' that ALREADY has a matching patient is retired to the terminal
@@ -2454,13 +2457,28 @@ function retireAdmittedLeads() {
 
   const byFromLead = new Set();
   const byNameHouse = new Set();
+  // A patient in a house (not released) owns the lead it was admitted from.
+  const inHouseFromLead = new Map();
   state.patients.forEach(p => {
     if (p.fromLead) byFromLead.add(String(p.fromLead));
+    if (p.fromLead && p.status !== 'released') inHouseFromLead.set(String(p.fromLead), p);
     if (p.name && p.houseId) byNameHouse.add(`${p.houseId}::${String(p.name).trim()}`);
   });
 
   state.leads.forEach(lead => {
     const stage = String(lead.stage || '').toLowerCase();
+    /* A board lead (new / visit / waitlist / paid) whose patient is in a house
+     * by the EXACT fromLead link was admitted and then reopened by a stale
+     * save (CHANGELOG-admitted-lead-stays-closed.md — מתן כחלון): retire it
+     * again. The link only — never a name match — for these stages. */
+    if (ADMITTED_REOPENED_STAGES.indexOf(stage) >= 0) {
+      if (lead.id && inHouseFromLead.has(String(lead.id))) {
+        lead.stage = 'admitted';
+        if (!lead.entryDate) lead.entryDate = isoDate(inHouseFromLead.get(String(lead.id)).date);
+        retired.push(lead);
+      }
+      return;
+    }
     if (stage !== 'entry' && stage !== 'entered') return;
 
     const matchedByFromLead = lead.id && byFromLead.has(String(lead.id));
