@@ -2081,8 +2081,12 @@
       return post({ action: 'dischargePatient', patient: audit }).then(function (res) {
         auditRes = res;
         if (!res || res.ok === false) throw new Error((res && res.message) || 'שחרור המטופל נכשל — לא נשמר' + (res && res.error ? ' (' + res.error + ')' : ''));
-        if (res.duplicate === true) { if (res.exitDate) released.exitDate = s(res.exitDate).slice(0, 10); toast('השחרור כבר נרשם'); }
-        else if (!(res.patient && s(res.patient.id) === audit.id)) throw new Error('השחרור לא אומת — רענני ובדקי');
+        // A duplicate answer exposes only the older audit ID/date, NOT its
+        // verified patientId. Since the backend stay key includes name, house
+        // and entry date, never complete a different Patients row on that
+        // unverified duplicate. Source inspection/reconciliation is required.
+        if (res.duplicate === true) throw new Error('קיים רישום שחרור קודם שלא אומתה התאמתו למזהה המטופל/ת — אין לעדכן סטטוס בלי בדיקה');
+        if (!(res.patient && s(res.patient.id) === audit.id)) throw new Error('השחרור לא אומת — רענני ובדקי');
         auditConfirmed = true;
         // b. the Patients row flips in the same way the classic flow does: the house as read, this row released.
         return post(houseSaveBody(loc.hid, loc.arr, released, null));
