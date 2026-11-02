@@ -180,7 +180,7 @@ async function boot() {
       const answer = parsed.action === 'getData' ? DATA
         : parsed.action === 'getTasks' ? { ok: true, total: followupTasks.length, tasks: followupTasks }
         : parsed.action === 'contactIndex' ? { ok: true, count: contactEvents.length, leads: {}, patients: {} }
-        : parsed.action === 'getActivity' ? { ok: true, events: contactEvents.filter(e => e.leadId === parsed.leadId || e.patientId === parsed.patientId) }
+        : parsed.action === 'getActivity' ? { ok: true, events: contactEvents.filter(e => (parsed.leadId && e.leadId === parsed.leadId) || (parsed.patientId && e.patientId === parsed.patientId)) }
         : parsed.action === 'logContact' ? contactResult
         : parsed.action === 'debtAging' ? { ok: true, byPatient: [], totals: {}, byHouse: [] }
         : parsed.action === 'getPayments' ? { ok: true, payments: [], receipts: [], funders: [] }
