@@ -354,7 +354,9 @@
 // v108 → v109: the CRM top search from any area (global results, spinner, 🔍 / Enter), a direct add admits the
 // person's open lead, «כבר בבית» on an open lead, the funder save's idempotency key (crm/crm.js, crm.css, crm.html)
 // (CHANGELOG-crm-search-admit-funder.md). Stacked on v108 (PR #337); monotonic, v17 never reused.
-var CACHE_VERSION = 'v109';
+// v109 → v110: a patient leaving ON their billing day is not billed a new cycle in גבייה (app.js)
+// (CHANGELOG-billing-exit-day-not-due.md). From the live v109; monotonic, v17 never reused.
+var CACHE_VERSION = 'v110';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

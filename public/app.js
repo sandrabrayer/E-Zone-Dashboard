@@ -12903,10 +12903,20 @@ function patientStayOverlapsRange(patient, fromISO, toISO) {
 
 /* A patient is due on a date when their billing anchor falls on it AND their
  * stay covered it. Both halves, always — the day-of-month half alone is the
- * bug above. */
+ * bug above.
+ *
+ * THE EXIT DAY OPENS NO CYCLE (CHANGELOG-billing-exit-day-not-due.md). The
+ * exit day is a stay day (patientStayCoversDate keeps it), but a NEW cycle
+ * that would start on it is never billed: טמיר בן מיור entered 27/07, left on
+ * 27/10, and the גבייה list still asked for 30,000 ₪ for 27/10–26/11. The
+ * server already draws the line there (Code.gs recCycleDueDates_ and
+ * debtAging_: none on/after exit; app.js projectedCycleDueDates) — this
+ * aligns the daily list with them. */
 function patientDueOnDate(patient, dateISO) {
   const d = dayOfMonth(dateISO);
   if (!d || !patientStayCoversDate(patient, dateISO)) return false;
+  const exit = patientExitISO(patient);
+  if (exit && exit <= isoDate(dateISO)) return false;
   return dayOfMonth(patient && patient.date) === d;
 }
 

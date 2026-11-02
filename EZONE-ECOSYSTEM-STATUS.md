@@ -1,4 +1,8 @@
-# E-ZONE Ecosystem Status — updated November 1, 2026
+# E-ZONE Ecosystem Status — updated November 2, 2026
+
+## גבייה: leaving on the billing day opens no new cycle — November 2, 2026 (PR open)
+
+- Reported on טמיר בן מיור (עפרוני, entered 27/07, exit 27/10): the classic «לגבייה בתאריך הנבחר» for 27/10 asked 30,000 ₪ for 27/10–26/11. `patientDueOnDate` treated the exit day as due; the server (`recCycleDueDates_`, `debtAging_`) and `projectedCycleDueDates` already exclude it. Now aligned: a cycle starting on/after the exit date is never due. The exit day stays a stay day. Code.gs untouched. SW v109 → v110. Details: `CHANGELOG-billing-exit-day-not-due.md`.
 
 ## Dana on the CRM without collections + «החלפת משתמש» — November 1, 2026 (PR open)
 
