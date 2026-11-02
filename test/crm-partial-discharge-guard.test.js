@@ -57,7 +57,8 @@ test('PW-07: restored/removed audit never creates a stale discrepancy, and unkno
 
 test('PW-04/05: source guards freeze ambiguous discharge result instead of calling it fully failed', () => {
   const src = fs.readFileSync(require.resolve('../public/crm/crm.js'), 'utf8');
-  assert.match(src, /const priorAudit = \(state\.data\.dischargedPatients \|\| \[\]\)\.some/);
+  assert.match(src, /const priorAudits = Array\.isArray\(state\.data\.dischargedPatients\)/);
+  assert.match(src, /const priorAudit = priorAudits\.some/);
   assert.match(src, /if \(priorAudit && s\(before\.status\) !== 'released'\)/);
   assert.match(src, /let auditConfirmed = false/);
   assert.match(src, /auditConfirmed = true/);
