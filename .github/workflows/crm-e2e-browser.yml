@@ -1,0 +1,57 @@
+name: CRM synthetic browser acceptance
+
+# Security: dummy records and local mocked backend ONLY.
+# No production credentials, data imports, remote app URLs or writes.
+on:
+  pull_request:
+    paths:
+      - 'public/crm/**'
+      - 'public/sw.js'
+      - 'test/crm-search-admit-funder.test.js'
+      - 'test/crm-today-card-open.test.js'
+      - 'test/crm-continuity-handoff-gate.test.js'
+      - 'test/crm-save-integrity.test.js'
+      - 'test/crm-save-discharge-browser.test.js'
+      - '.github/workflows/crm-e2e-browser.yml'
+permissions:
+  contents: read
+
+concurrency:
+  group: crm-e2e-browser-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chromium:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Install isolated Chromium tooling
+        run: |
+          npm install --prefix "$RUNNER_TEMP/ezone-crm-browser" --no-package-lock --ignore-scripts playwright@1.62.1
+          node "$RUNNER_TEMP/ezone-crm-browser/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Run real-click synthetic CRM flows (zero live data)
+        run: |
+          export NODE_PATH="$RUNNER_TEMP/ezone-crm-browser/node_modules"
+          export CHROMIUM_PATH="$(node -p "require('playwright').chromium.executablePath()")"
+          mkdir -p test-results/crm-e2e
+          node --test --test-concurrency=1 --test-reporter=tap \
+            test/crm-search-admit-funder.test.js \
+            test/crm-today-card-open.test.js \
+            test/crm-continuity-handoff-gate.test.js \
+            test/crm-save-integrity.test.js \
+            test/crm-save-discharge-browser.test.js \
+            > test-results/crm-e2e/browser.tap 2>&1
+      - name: Retain audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crm-e2e-browser-${{ github.sha }}
+          path: test-results/crm-e2e
+          if-no-files-found: warn
+          retention-days: 7
