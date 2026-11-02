@@ -532,7 +532,7 @@
       } else if (l.stage === 'visit' && l.visitDate && l.visitDate < today && !l.meetingOutcome) {
         const reported = !!s(l.meetingReportedAt);
         row = { kind: 'meeting_no_outcome', action: reported ? 'לעדכן תוצאת פגישה (יש דיווח מנהל/ת)' : 'לקבל דיווח מהמנהל/ת על הפגישה', owner: reported ? l.assignedTo : (l.meetingWith || l.assignedTo),
-          due: l.visitDate, state: 'late', reason: 'תאריך הפגישה חלף לפני ' + daysBetween(l.visitDate, today) + ' ימים — אין אישור שהפגישה התקיימה' };
+          due: l.visitDate, state: 'late', reason: 'תאריך הפגישה חלף לפני ' + daysBetween(l.visitDate, today) + ' ימים — קיום הביקור לא אומת' };
       } else if (l.stage === 'visit' && l.visitDate === today) {
         row = { kind: 'meeting_today', action: 'פגישת קבלה היום' + (l.visitTime ? ' · ' + l.visitTime : ''), owner: l.meetingWith || l.assignedTo, due: today, state: 'today', reason: '' };
       } else if (l.stage === 'visit' && !l.visitDate) {
