@@ -113,3 +113,16 @@
 5. **Gate:** בדיקות ו־CI על ראש טיוטת #334; קבלת ורד/אורטל/דנה בסביבת בדיקה עם סינונים, שבוע הבא, כשל מקור, מחשב ונייד. בלי אישור נפרד אין מיזוג/פריסה.
 
 **חלוקת עבודה:** ChatGPT ביצע מיפוי חפיפות, תיקונים ובדיקות במסגרת Dashboard. אין הפעלת Claude עבור עבודה זו בשלב הנוכחי; אם יתגלה פער מעבר לתיקון ממוקד, יוגדר issue יחיד וברור.
+
+
+---
+
+## עדכון ביצוע 02.11.2026 — EXE-A code evidence and security hold
+
+תוכנית היסוד והחלטות 31.10 נשארו בתוקף. סבב עבודה עצמאי השלים מפת קוד ל־**10 אפליקציות תחומיות + אב־טיפוס Finance Control**: [EXE-A Feed/Security Inventory](EXE-A-FEED-SECURITY-INVENTORY-20261102.md), [EXE-A KPI Dictionary & 22 synthetic acceptance scenarios](EXE-A-KPI-DICTIONARY-AND-ACCEPTANCE-20261102.md). שני המסמכים הם **קוד/אפיון בלבד**, לא ראיית deployment, גישת משתמש או UAT. [Issue #347](https://github.com/sandrabrayer/E-Zone-Dashboard/issues/347) מנהל את שלב EXE-A.
+
+**חסם אבטחה חדש לפני שילוב:** [SEC-ACCESS-01 #349](https://github.com/sandrabrayer/E-Zone-Dashboard/issues/349) — Logistics בקוד passwordless עם session מזוהה כ"רועי" ומאשר תפעולי (קוד נפרד נדרש לאישור/דחייה); Kitchen בקוד פתוח ללא זיהוי משתמש. בשני המקרים **לא אומתה תצורת פרודקשן**; נדרשת בדיקת access, scopes ו־migration לפני הפעלה/שימוש משותף. תיעוד Dashboard על `PROXY_SECRET_MODE=log` הוא סיכון היסטורי המחייב בדיקת תצורה עדכנית, לא הוכחה שההגדרה פעילה כיום. אין לנתק או לשנות חשבונות ללא אישור והסדר המשכיות תפעולית.
+
+**תיקוני רכזים:** ב־[PR #350](https://github.com/sandrabrayer/ezone-coordinators/pull/350) לוג CI ישן 41296200276 הראה 3 כשלי assertion (clock golden 4≠3, ושני mismatch של unfilled 92≠89), לא 12 כשלי הפרודקשן הנטענים קודם; הענף התקדם לראש חדש, ולכן התוצאה הישנה **לא** מאשרת/פוסלת את ה־head החדש. הועלתה תגובת אבחון ל־PR ללא שינוי קוד. G1 #349 ו־G3 #351 נשארו בטיוטה בזמן הסקירה; לא למזג עד בדיקות עכשוויות ו־UAT.
+
+**שחרור:** #346 Dashboard CRM RC עם CI מאומת בעבר עדיין DRAFT; OP-03 #125/#139/#140 ו־Outpatient CRM #142–148 / פיננסים #155 טיוטות. גיבוי/שחזור, סנכרון verified, הרשאות אישיות, code-to-deploy evidence ו־UAT נשארים שערים. לא בוצעו merge, deploy, migration, פעולות כספים או שינוי הרשאות.
