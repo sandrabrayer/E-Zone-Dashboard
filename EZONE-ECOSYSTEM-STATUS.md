@@ -1,5 +1,10 @@
-# E-ZONE Ecosystem Status — updated November 2, 2026
+# E-ZONE Ecosystem Status — updated November 3, 2026
 
+
+## CRM #358 recovery acceptance — November 3, 2026 (DRAFT, not deployed)
+
+- Reused #326 Dana export/Tasks+Activity restore tests and OP-03's verified temporary-sheet publication. Same-day replacement no longer clears the prior good backup first; failed source reads stop publication/retention, and missing families retain older proof.
+- Source correction and synthetic acceptance only. Native Google restore, staff UAT and the #331 permission-policy gaps remain HOLD gates. No merge or deployment. Details: `CHANGELOG-crm-358-backup-recovery.md`, `docs/crm/CRM-358-RECOVERY-CHECKPOINT-20261103.md`.
 
 ## An admitted lead stays closed — November 2, 2026 (PR open)
 

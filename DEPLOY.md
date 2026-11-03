@@ -1,5 +1,12 @@
 # Deploy — E-ZONE Dashboard (shared Apps Script backend)
 
+**CRM #358 recovery candidate (November 3, DRAFT):** Code.gs changes the backup
+replacement protocol. No deployment is authorized. The existing automatic Apps
+Script workflow runs on an approved merge; do not trigger it on the PR branch.
+Before approval, complete native isolated restore/source UAT and record the
+active backend version plus the rollback target. Preserve pending/previous
+backup remnants for inspection. See [the current recovery checkpoint](docs/crm/CRM-358-RECOVERY-CHECKPOINT-20261103.md).
+
 **Invoice-request review candidate (October 16):** frontend/static-route change,
 cache v71 from verified live v70. No Apps Script deploy, migration, flag or trigger
 change. After separate release approval, verify the existing deployment, content

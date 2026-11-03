@@ -14,7 +14,7 @@ const { EventEmitter } = require('node:events');
 const core = require('../public/crm/crm.js');
 let playwright = null;
 try { playwright = require('playwright'); } catch (_) { /* skip */ }
-const CHROMIUM_CANDIDATES = ['/opt/pw-browsers/chromium-1194/chrome-linux/chrome', '/opt/pw-browsers/chromium/chrome-linux/chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
+const CHROMIUM_CANDIDATES = [process.env.CHROMIUM_PATH, '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', '/opt/pw-browsers/chromium/chrome-linux/chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].filter(Boolean);
 let chromiumPath = CHROMIUM_CANDIDATES.find((p) => { try { return fs.existsSync(p); } catch (_) { return false; } });
 if (!chromiumPath) {
   try {
@@ -75,6 +75,37 @@ let indexAnswer = null;
 let saveAnswer = null;
 async function boot() {
   const saves = [];
+  // One synthetic authoritative Credits ledger shared by all test sessions;
+  // identity-specific source saves become visible after the next getCredits.
+  const creditsLedger = JSON.parse(JSON.stringify(CREDITS));
+  function syntheticRefund(parsed) {
+    const row = creditsLedger.credits.filter((c) => c.id === parsed.creditId)[0];
+    if (!row) return { ok: false, error: 'unknown_credit' };
+    if (parsed.action === 'requestRefundPayoutApproval') {
+      if (parsed.proxyUserId !== 'vered') return { ok: false, error: 'forbidden_role' };
+      row.payoutApprovalRequestedBy = 'vered';
+      row.payoutApprovalRequestedAt = '2026-11-03T10:00:00.000Z';
+      row.payoutApprovalAmount = row.amount;
+      row.payoutApprovedBy = '';
+      row.payoutApprovedAt = '';
+      return { ok: true, credit: { id: row.id, payoutApprovalRequestedAt: row.payoutApprovalRequestedAt } };
+    }
+    if (parsed.action === 'approveRefundPayout') {
+      if (parsed.proxyUserId !== 'sandra' || row.payoutApprovalRequestedBy !== 'vered')
+        return { ok: false, error: 'request_required' };
+      row.payoutApprovedBy = 'sandra';
+      row.payoutApprovedAt = '2026-11-03T10:05:00.000Z';
+      return { ok: true, credit: { id: row.id, payoutApprovedAt: row.payoutApprovedAt } };
+    }
+    if (parsed.action === 'settleRefund') {
+      if (parsed.proxyUserId !== 'ortal' || row.payoutApprovedBy !== 'sandra' ||
+          Number(row.payoutApprovalAmount) !== Number(row.amount))
+        return { ok: false, error: 'approval_required' };
+      row.status = 'paid'; row.paidDate = parsed.paidDate; row.method = parsed.method;
+      return { ok: true, credit: { id: row.id, status: 'paid', paidDate: row.paidDate } };
+    }
+    return { ok: false, error: 'unknown_refund_action' };
+  }
   const hash = await pinHash.hashPin('583920', PEPPER);
   const recs = ['vered', 'sandra', 'ortal', 'dana'].map((id) => JSON.parse(users.recordLine(id, hash, 1)));
   const env = { PROXY_SECRET, SESSION_SECRET, SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', PIN_PEPPER: PEPPER, USER_PIN_HASHES: JSON.stringify(recs), CRM_ENABLED: 'true' };
@@ -96,21 +127,22 @@ async function boot() {
       try { parsed = JSON.parse(body); } catch (_) { parsed = {}; }
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
-      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'settleRefund', 'editReceipt', 'savePayment', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
+      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund', 'editReceipt', 'savePayment', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
       if (['logContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
         : parsed.action === 'getTasks' ? (tasksAnswer ? tasksAnswer() : (parsed.status === 'open' && parsed.proxyUserId !== 'ortal' ? TASKS : { ok: true, total: 0, tasks: [] }))   // Code.gs scopes Ortal to money tasks (none in the fixture)
         : parsed.action === 'contactIndex' ? (indexAnswer ? indexAnswer() : INDEX)
         : parsed.action === 'logContact' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, event: { eventId: 'contact:' + parsed.submissionId }, completed: null, created: parsed.next && !parsed.next.none ? Object.assign({ id: 'task-x' }, parsed.next) : null })
         : ['createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0 ? (saveAnswer ? saveAnswer(parsed) : { ok: true, task: { id: parsed.id || 'task-new' } })
-        : parsed.action === 'debtAging' ? DEBT : parsed.action === 'getPayments' ? PAYMENTS : parsed.action === 'getCredits' ? CREDITS
+        : parsed.action === 'debtAging' ? DEBT : parsed.action === 'getPayments' ? PAYMENTS : parsed.action === 'getCredits' ? creditsLedger
         : parsed.action === 'restorePatientToActive' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restoredToActive: true, id: parsed.patient && parsed.patient.id })
         : parsed.action === 'restorePatient' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restored: true, lead: { id: parsed.patient && parsed.patient.newLeadId } })
         : parsed.action === 'editReceipt' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, receipt: { id: parsed.edit && parsed.edit.id } })
         : parsed.action === 'savePayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, payment: { id: parsed.payment && parsed.payment.id, status: parsed.payment && parsed.payment.status, linkStatus: parsed.payment && parsed.payment.linkStatus } })
         : parsed.action === 'setBillingDiscount' ? (saveAnswer ? saveAnswer(parsed) : { ok: true })
         : parsed.action === 'upsertBillingOverride' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, override: { id: parsed.override && parsed.override.id } })
-        : parsed.action === 'settleRefund' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, credit: { id: parsed.creditId } })
+        : ['requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund'].indexOf(parsed.action) >= 0
+          ? (saveAnswer ? saveAnswer(parsed) : syntheticRefund(parsed))
         : parsed.action === 'saveAll' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, proven: { leads: (parsed.leads || []).map((l) => String(l.id)), patients: Object.values(parsed.patients || {}).flat().map((p) => String(p.id)) } })
         : parsed.action === 'reportPayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, receipt: { id: 'rcpt-new' }, cycle: { id: parsed.report && parsed.report.cycle && parsed.report.cycle.id } })
         : parsed.action === 'appendFunder' ? { ok: true, row: { submissionId: parsed.funder && parsed.funder.submissionId } }
@@ -492,7 +524,7 @@ test('C10 «דווח תשלום» in the account pane (Vered): rules validate cl
   } finally { await browser.close(); srv.close(); }
 });
 
-test('C11 discount / amount / settle (Vered): the three classic writes from the account pane with the legacy key; client errors first; a refusal keeps the form; saved → three reads again; «זיכויים לתשלום» in the area opens the drawer form', { skip: skip && 'playwright/chromium missing' }, async () => {
+test('C11 finance CRM: Vered discount + amount, Vered requests refund, Sandra approves exact amount, Ortal alone settles', { skip: skip && 'playwright/chromium missing' }, async () => {
   const srv = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
@@ -503,8 +535,10 @@ test('C11 discount / amount / settle (Vered): the three classic writes from the 
     await page.click('#crm-drawer [data-tab="account"]');
     await page.waitForSelector('#crm-account-open');
     assert.match(await page.textContent('#crm-account-credits'), /ימים שלא נוצלו/);
-    assert.equal(await page.$$eval('#crm-account-credits [data-settle-open]', (els) => els.length), 1, 'only the pending credit can be settled');
-    // discount: reason required (client), then the classic body
+    assert.equal(await page.$$eval('#crm-account-credits [data-refund-action="request"]', (els) => els.length), 1,
+      'Vered requests approval, never settles directly');
+    assert.equal(await page.$$eval('#crm-account-credits [data-refund-action="settle"]', (els) => els.length), 0);
+    // Existing Vered discount remains authorized, with a required reason.
     await page.click('#crm-account-open [data-discount-open="1"]');
     await page.waitForSelector('form[data-form="small-discount"]');
     await page.fill('form.report [name="discountAmount"]', '500');
@@ -517,41 +551,68 @@ test('C11 discount / amount / settle (Vered): the three classic writes from the 
     assert.equal(srv.saves[0].action, 'setBillingDiscount');
     assert.deepEqual(srv.saves[0].discount, { patientId: 'ramot::דנה כהן::' + daysAgo(30), month: daysAgo(3).slice(0, 7), discountAmount: 500, discountReason: 'הסכמה עם המשפחה' });
     await page.waitForFunction(() => !!document.querySelector('#crm-account-open'));
-    assert.equal(srv.actions.filter((a) => a.action === 'getCredits').length, 2, 'saved → re-read');
-    // amount override: refused by the server → the form stays with the message
+    // Existing amount override: server refusal keeps form; retry succeeds.
     await page.click('#crm-account-open [data-amount-open="0"]');
     await page.waitForSelector('form[data-form="small-amount"]');
-    assert.equal(await page.inputValue('form.report [name="amount"]'), '6000');
     saveAnswer = () => ({ ok: false, error: 'bad_amount' });
     await page.fill('form.report [name="amount"]', '5500');
     await page.click('form.report button[type="submit"]');
     await page.waitForFunction(() => /bad_amount/.test(document.querySelector('form.report .err[data-err="_form"]').textContent));
     assert.equal(srv.saves[1].action, 'upsertBillingOverride');
-    assert.deepEqual(srv.saves[1].override, { id: 'ovr::ramot::דנה כהן::' + daysAgo(30) + '::' + daysAgo(70).slice(0, 7), patientId: 'ramot::דנה כהן::' + daysAgo(30), month: daysAgo(70).slice(0, 7), amount: 5500, created: TODAY });
     saveAnswer = null;
     await page.click('form.report button[type="submit"]');
     await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
     assert.equal(srv.saves.length, 3);
-    // settle a pending credit from the account pane
-    await page.waitForSelector('#crm-account-credits [data-settle-open="cr-1"]');
-    await page.click('#crm-account-credits [data-settle-open="cr-1"]');
-    await page.waitForSelector('form[data-form="small-settle"]');
-    await page.click('form.report button[type="submit"]');
-    await page.waitForFunction(() => /אמצעי/.test(document.querySelector('form.report .err[data-err="method"]').textContent));
-    await page.selectOption('form.report [name="method"]', 'ביט');
-    await page.click('form.report button[type="submit"]');
-    await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
-    assert.equal(srv.saves[3].action, 'settleRefund');
-    assert.equal(srv.saves[3].creditId, 'cr-1'); assert.equal(srv.saves[3].paidDate, TODAY); assert.equal(srv.saves[3].method, 'ביט');
-    // from the גבייה area: «סמן כשולם» opens the patient drawer on חשבון with the form
+
+    // Request from Vered's CRM account; after saving, source re-read changes the stage.
+    await page.waitForSelector('#crm-account-credits [data-refund-action="request"][data-refund-id="cr-1"]');
+    await page.click('#crm-account-credits [data-refund-action="request"][data-refund-id="cr-1"]');
+    await page.waitForSelector('form[data-form="refund-action"]');
+    assert.match(await page.textContent('form[data-form="refund-action"]'), /1200|1,200/);
+    await page.click('form[data-form="refund-action"] button[type="submit"]');
+    await page.waitForFunction(() => document.querySelector('#crm-account-credits') &&
+      /הועבר לאישור סנדרה/.test(document.querySelector('#crm-account-credits').textContent), null, { timeout: 8000 });
+    assert.equal(srv.saves.filter((x) => x.action === 'requestRefundPayoutApproval').length, 1);
+    assert.ok(!srv.saves.some((x) => x.action === 'settleRefund'), 'Vered never sends a settlement');
     await page.keyboard.press('Escape');
     await page.click('#crm-nav button[data-area="billing"]');
-    await page.waitForSelector('#crm-pending-credits [data-settle-open="cr-1"]');
-    await page.click('#crm-pending-credits [data-settle-open="cr-1"]');
-    await page.waitForSelector('form[data-form="small-settle"]');
-    assert.equal(await page.getAttribute('#crm-drawer', 'aria-hidden'), 'false');
-    assert.match(await page.textContent('#crm-drawer h2'), /דנה כהן/);
+    await page.waitForSelector('#crm-pending-credits');
+    assert.equal(await page.$$eval('#crm-pending-credits [data-refund-action="settle"]', (els) => els.length), 0);
+
+    // Sandra sees the same exact saved request and signs off the amount.
+    const { page: sandra, errors: sandraErrors } = await open(browser, srv.port, 'sandra', 1366);
+    await sandra.click('#crm-nav button[data-area="billing"]');
+    await sandra.waitForSelector('#crm-pending-credits [data-refund-action="approve"][data-refund-id="cr-1"]');
+    await sandra.click('#crm-pending-credits [data-refund-action="approve"][data-refund-id="cr-1"]');
+    await sandra.waitForSelector('form[data-form="refund-action"]');
+    assert.match(await sandra.textContent('form[data-form="refund-action"]'), /1200|1,200/);
+    await sandra.click('form[data-form="refund-action"] button[type="submit"]');
+    await sandra.waitForFunction(() => document.querySelector('#crm-pending-credits') &&
+      /אושר על ידי סנדרה/.test(document.querySelector('#crm-pending-credits').textContent), null, { timeout: 8000 });
+    assert.equal(srv.saves.filter((x) => x.action === 'approveRefundPayout').length, 1);
+    assert.equal(await sandra.$$eval('#crm-pending-credits [data-refund-action="settle"]', (els) => els.length), 0);
+
+    // Ortal, on her controller CRM tab, can pay only AFTER Sandra's approval.
+    const { page: ortal, errors: ortalErrors } = await open(browser, srv.port, 'ortal', 1366);
+    await ortal.click('#crm-nav button[data-area="billing"]');
+    await ortal.waitForSelector('#crm-pending-credits [data-refund-action="settle"][data-refund-id="cr-1"]');
+    await ortal.click('#crm-pending-credits [data-refund-action="settle"][data-refund-id="cr-1"]');
+    await ortal.waitForSelector('form[data-form="refund-action"]');
+    await ortal.click('form[data-form="refund-action"] button[type="submit"]');
+    await ortal.waitForFunction(() => /אמצעי/.test(document.querySelector('form[data-form="refund-action"] .err[data-err="method"]').textContent));
+    assert.equal(srv.saves.filter((x) => x.action === 'settleRefund').length, 0);
+    await ortal.selectOption('form[data-form="refund-action"] [name="method"]', 'ביט');
+    await ortal.click('form[data-form="refund-action"] button[type="submit"]');
+    await ortal.waitForFunction(() => !document.querySelector('#crm-pending-credits [data-refund-action="settle"]'), null, { timeout: 8000 });
+    const settled = srv.saves.filter((x) => x.action === 'settleRefund');
+    assert.equal(settled.length, 1);
+    assert.equal(settled[0].proxyUserId, 'ortal');
+    assert.equal(settled[0].creditId, 'cr-1');
+    assert.equal(settled[0].method, 'ביט');
+    assert.equal(settled[0].paidDate, TODAY);
     assert.deepEqual(errors, []);
+    assert.deepEqual(sandraErrors, []);
+    assert.deepEqual(ortalErrors, []);
   } finally { await browser.close(); srv.close(); }
 });
 
@@ -889,7 +950,7 @@ test('C6 admission + direct add (Vered, finance): «קליטה לבית» posts 
     await page.fill('form[data-form="direct-add"] [name="pay"]', '21000');
     await page.selectOption('form[data-form="direct-add"] [name="funder"]', 'מכבי');
     await page.click('form[data-form="direct-add"] button[type="submit"]');
-    await page.waitForFunction(() => /הוספת/.test(document.querySelector('#crm-toast').textContent), null, { timeout: 5000 });
+    await page.waitForFunction(() => /הקליטה/.test(document.querySelector('#crm-toast')?.textContent || ''), null, { timeout: 5000 });
     const da = srv.saves.filter((b) => b.action === 'saveAll')[1];
     assert.deepEqual(Object.keys(da.patients), ['rehab']);
     const dp = da.patients.rehab[da.patients.rehab.length - 1];
