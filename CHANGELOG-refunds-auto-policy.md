@@ -1,5 +1,8 @@
 # Refunds computed automatically by policy — one list «זיכויים לתשלום» (Sandra, 14/10/2026)
 
+> **03 Nov 2026, new financial authorization clarification (DRAFT #360, not deployed):** the refund **amount** is still computed by the existing policy at discharge, but this **is not permission to pay**. The payout chain is **Vered requests → Sandra approves the exact stored amount → Ortal alone records payment**. Both servers validate stable personal identities and saved state; no `saveCredit status=paid` bypass; a changed amount invalidates the prior request and approval. Retain all existing Vered discount permissions. Historical notes below describing “no decision step” refer only to **the calculation**, not the later payout approval. No historical payouts are rewritten. Release requires explicit merge/deploy approval and new Credits-schema backup acceptance.
+
+
 **What:** a refund is now computed by policy and **created by the server at
 discharge**. There is no decision step. The «ממתין להחלטה — לא לתשלום» section
 and its flow are gone, and so is the separate «זיכויים ממתינים לתשלום» list.
