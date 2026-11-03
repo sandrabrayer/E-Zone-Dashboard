@@ -288,59 +288,63 @@ test('override on a computed row: Sandra changes the amount — the stay is writ
 
 /* ===================== 6. «סמן כשולם» ===================== */
 
-test('settleRefund: a computed row is written once from the policy and paid; a saved row paid; bad input refused; the answer carries no free text', () => {
+test('settleRefund: a computed policy row first needs Vered request + Sandra signoff, then Ortal records payment once', () => {
   const w = world();
   const entry = '2026-09-01';
   w.payment('sde', entry, entry, 30000);
   w.discharged({ houseId: 'sde', date: entry, exitDate: '2026-09-10' });
   const row = w.call({ action: 'refundPayoutForecast' }).toPay.rows[0];
   const target = { patientKey: row.patientKey, creditType: row.creditType, allocationMonth: row.allocationMonth };
-  assert.equal(w.call(Object.assign({ action: 'settleRefund', paidDate: '01/10/2026', method: 'העברה' }, target)).error, 'bad_paidDate');
-  assert.equal(w.call(Object.assign({ action: 'settleRefund', paidDate: '2026-10-01', method: '' }, target)).error, 'missing_method');
-  assert.equal(w.call(Object.assign({ action: 'settleRefund', paidDate: '2999-01-01', method: 'x' }, target)).error, 'paidDate_in_future');
-  assert.equal(w.S.Credits, undefined, 'refusals write nothing');
-  // A forged amount / calculatedAmount / rule label in the body is ignored: the server recalculates.
-  const ok = w.call(Object.assign({ action: 'settleRefund', paidDate: '2026-10-01', method: '=HYPERLINK("x")',
-    amount: 99999, calculatedAmount: 99999, rule: 'prepaid_return', basis: { rule: 'prepaid_return' } }, target));
-  assert.equal(ok.ok, true, JSON.stringify(ok));
-  assert.deepEqual(Object.keys(ok.credit).sort(), ['id', 'paidDate', 'status', 'updatedAt'], 'no amount, no free text in the answer');
-  const c = w.credits();
-  assert.deepEqual(c.map((x) => [x.status, x.paidDate, x.amount, x.calculatedAmount, x.approvedBy]), [['paid', '2026-10-01', 20000, 20000, 'מדיניות אוטומטית']]);
-  assert.ok(!/^[=+\-@]/.test(c[0].method), 'formula lead-in stripped');
-  assert.equal(w.call({ action: 'refundPayoutForecast' }).toPay.count, 0, 'paid → off the list');
-  assert.equal(w.call({ action: 'settleRefund', creditId: c[0].id, paidDate: '2026-10-01', method: 'x' }).error, 'not_pending');
-  assert.ok(arr(w.g.run('PROXY_KNOWN_ACTIONS')).includes('settleRefund'));
-  assert.ok(arr(w.g.run('PROXY_KNOWN_ACTIONS')).includes('approveRefundException'));
+  assert.equal(w.call(Object.assign({ action: 'settleRefund', paidDate: '2026-10-01', method: 'העברה' }, target), ORTAL).error, 'approval_required');
+  assert.equal(w.S.Credits, undefined, 'a premature settle never creates a credit');
+  const requested = w.call({ action: 'requestRefundPayoutApproval', ...target }, VERED);
+  assert.equal(requested.ok, true, JSON.stringify(requested));
+  const creditId = requested.credit.id;
+  assert.equal(w.call({ action:'settleRefund',creditId,paidDate:'2026-10-01',method:'העברה' },ORTAL).error,'approval_required');
+  assert.equal(w.call({ action:'approveRefundPayout',creditId },SANDRA).ok,true);
+  const paid = w.call({ action:'settleRefund',creditId,paidDate:'2026-10-01',method:'=HYPERLINK("x")',
+    amount:99999,calculatedAmount:99999 },ORTAL);
+  assert.equal(paid.ok,true,JSON.stringify(paid));
+  assert.deepEqual(Object.keys(paid.credit).sort(), ['id','paidDate','status','updatedAt']);
+  const c=w.credits();
+  assert.deepEqual(c.map(x=>[x.status,x.paidDate,x.amount,x.calculatedAmount,x.approvedBy,x.payoutApprovedBy]),
+    [['paid','2026-10-01',20000,20000,'מדיניות אוטומטית','sandra']]);
+  assert.ok(!/^[=+\-@]/.test(c[0].method));
+  assert.equal(w.call({action:'refundPayoutForecast'}).toPay.count,0);
+  assert.equal(w.call({action:'settleRefund',creditId,paidDate:'2026-10-01',method:'x'},ORTAL).error,'not_pending');
+  assert.ok(arr(w.g.run('PROXY_KNOWN_ACTIONS')).includes('requestRefundPayoutApproval'));
+  assert.ok(arr(w.g.run('PROXY_KNOWN_ACTIONS')).includes('approveRefundPayout'));
 });
 
 /* ---- «סמן כשולם» permissions: Vered, Ortal, Sandra yes; Shiran, Yael no ---- */
 
-test('settleRefund permissions (Code.gs): Vered, Ortal and Sandra may mark paid; Shiran and Yael are refused before anything is read or written', () => {
-  for (const [who, fn, allowed] of [['vered', VERED, true], ['ortal', ORTAL, true], ['sandra', SANDRA, true], ['shiran', SHIRAN, false], ['yael', YAEL, false]]) {
-    const w = world();
-    const entry = '2026-09-01';
-    w.payment('rehab', entry, entry, 30000);
-    w.discharged({ houseId: 'rehab', date: entry, exitDate: '2026-09-10' });
-    const row = w.call({ action: 'refundPayoutForecast' }, SANDRA).toPay.rows[0];
-    const r = w.call({ action: 'settleRefund', patientKey: row.patientKey, creditType: row.creditType,
-      allocationMonth: row.allocationMonth, paidDate: '2026-10-01', method: 'העברה' }, fn);
-    if (allowed) {
-      assert.equal(r.ok, true, who + ' ' + JSON.stringify(r));
-      assert.deepEqual(w.credits().map((x) => x.status), ['paid'], who);
-    } else {
-      assert.equal(r.ok, false, who);
-      assert.equal(r.error, 'forbidden', who);
-      assert.equal(w.S.Credits, undefined, who + ': nothing written');
+test('settleRefund permissions (Code.gs): only Ortal may pay an approved credit; Vered and Sandra must not pay', () => {
+  for (const [who, fn, allowed] of [['vered',VERED,false],['ortal',ORTAL,true],['sandra',SANDRA,false],['shiran',SHIRAN,false],['yael',YAEL,false]]) {
+    const w=world(),entry='2026-09-01';
+    w.payment('rehab',entry,entry,30000);
+    w.discharged({houseId:'rehab',date:entry,exitDate:'2026-09-10'});
+    const row=w.call({action:'refundPayoutForecast'},SANDRA).toPay.rows[0];
+    const target={patientKey:row.patientKey,creditType:row.creditType,allocationMonth:row.allocationMonth};
+    const req=w.call({action:'requestRefundPayoutApproval',...target},VERED);
+    assert.equal(req.ok,true);
+    const creditId=req.credit.id;
+    assert.equal(w.call({action:'approveRefundPayout',creditId},SANDRA).ok,true);
+    const before=JSON.stringify(w.credits());
+    const r=w.call({action:'settleRefund',creditId,paidDate:'2026-10-01',method:'העברה'},fn);
+    if(allowed) { assert.equal(r.ok,true,who+' '+JSON.stringify(r));assert.deepEqual(w.credits().map(x=>x.status),['paid']); }
+    else {
+      assert.equal(r.ok,false,who);
+      assert.equal(r.error, who==='shiran'||who==='yael'?'forbidden':'forbidden_role',who);
+      assert.equal(JSON.stringify(w.credits()),before,'denied payout has no side effects');
     }
   }
   assert.ok(financeScope.FINANCE_ACTIONS.includes('settleRefund'));
-  assert.ok(financeScope.CONTROLLER_ACTIONS.includes('settleRefund'), 'Ortal\'s view reaches it');
-  const g = loadGs({});
-  assert.deepEqual(arr(g.run('FINANCE_ACTIONS')), [...financeScope.FINANCE_ACTIONS], 'Code.gs ⇄ lib in step');
-  assert.deepEqual(arr(g.run('CONTROLLER_ACTIONS')), [...financeScope.CONTROLLER_ACTIONS], 'Code.gs ⇄ lib in step');
-  // Ortal reaches «סמן כשולם» only — never the exception, never saveCredit.
+  assert.ok(financeScope.CONTROLLER_ACTIONS.includes('settleRefund'));
+  const g=loadGs({});
+  assert.deepEqual(arr(g.run('FINANCE_ACTIONS')),[...financeScope.FINANCE_ACTIONS]);
+  assert.deepEqual(arr(g.run('CONTROLLER_ACTIONS')),[...financeScope.CONTROLLER_ACTIONS]);
+  assert.ok(!financeScope.CONTROLLER_ACTIONS.includes('approveRefundPayout'));
   assert.ok(!financeScope.CONTROLLER_ACTIONS.includes('approveRefundException'));
-  assert.ok(!financeScope.CONTROLLER_ACTIONS.includes('saveCredit'));
 });
 
 /* server.js (the first lock): the same decision from the signed session cookie. */
@@ -405,16 +409,27 @@ function post(port, body, cookie) {
   });
 }
 
-test('settleRefund permissions (server.js): Vered, Ortal, Sandra proxied; Shiran and Yael 403 with nothing proxied; the exception stays Sandra\'s', async () => {
+test('settleRefund permissions (Express): only Ortal is proxied; Vered can request, Sandra can approve', async () => {
   await withServer(async (port, calls) => {
-    const settle = { action: 'settleRefund', creditId: 'credit::p::2026-09::1', paidDate: '2026-10-01', method: 'העברה' };
-    for (const id of ['shiran', 'yael']) assert.equal((await post(port, settle, cookieFor(id))).status, 403, id);
-    assert.equal(calls.length, 0, 'nothing proxied for Shiran / Yael');
-    for (const id of ['vered', 'ortal', 'sandra']) assert.equal((await post(port, settle, cookieFor(id))).status, 200, id);
-    assert.deepEqual(calls.filter((c) => c.action === 'settleRefund').map((c) => c.proxyUserId), ['vered', 'ortal', 'sandra']);
-    const ex = { action: 'approveRefundException', creditId: 'credit::p::2026-09::1', amount: 0, reason: 'סיבה' };
-    for (const id of ['vered', 'ortal', 'shiran', 'yael']) assert.equal((await post(port, ex, cookieFor(id))).status, 403, id);
-    assert.equal((await post(port, ex, cookieFor('sandra'))).status, 200, 'sandra');
+    const settle={action:'settleRefund',creditId:'credit::p::2026-09::1',paidDate:'2026-10-01',method:'העברה'};
+    for(const id of ['shiran','yael','vered','sandra'])
+      assert.equal((await post(port,settle,cookieFor(id))).status,403,id);
+    assert.equal(calls.length,0);
+    assert.equal((await post(port,settle,cookieFor('ortal'))).status,200);
+    assert.deepEqual(calls.map(c=>c.proxyUserId),['ortal']);
+    const request={action:'requestRefundPayoutApproval',creditId:'credit::p::2026-09::1'};
+    for(const id of ['sandra','ortal','shiran','yael'])
+      assert.equal((await post(port,request,cookieFor(id))).status,403,id+' request');
+    assert.equal((await post(port,request,cookieFor('vered'))).status,200);
+    const approve={action:'approveRefundPayout',creditId:'credit::p::2026-09::1'};
+    for(const id of ['vered','ortal','shiran','yael'])
+      assert.equal((await post(port,approve,cookieFor(id))).status,403,id+' approval');
+    assert.equal((await post(port,approve,cookieFor('sandra'))).status,200);
+    assert.deepEqual(calls.map(c=>c.proxyUserId),['ortal','vered','sandra']);
+    const ex={action:'approveRefundException',creditId:'credit::p::2026-09::1',amount:0,reason:'סיבה'};
+    for(const id of ['vered','ortal','shiran','yael'])
+      assert.equal((await post(port,ex,cookieFor(id))).status,403,id);
+    assert.equal((await post(port,ex,cookieFor('sandra'))).status,200);
   });
 });
 
@@ -519,42 +534,42 @@ test('Ortal sees the whole list: every row column, totals by payment date and th
 
 /* ===================== 7. the screen ===================== */
 
-test('screen: ONE «זיכויים לתשלום» list — totals per payment date + grand total above, every row column, escaped; no «ממתין להחלטה»', () => {
+test('screen: payout list keeps totals and uses role- and approval-specific actions, not implicit automatic approval', () => {
   const page = loadPage({});
-  const data = { ok: true, toPay: { count: 2, total: 21000, byPayoutDate: [{ payoutDate: '2026-11-15', count: 2, total: 21000 }], rows: [
-    { creditId: 'c1', auto: false, patientName: '<img src=x onerror=1>', houseId: 'rehab', totalPaid: 30000, entryDate: '2026-10-08', exitDate: '2026-10-20',
-      disposition: 'stopped_early', dischargeNote: '<b>עזב</b>', daysStayed: 13, refundDays: 18, amount: 18000, calculatedAmount: 18000, overridden: false,
-      ruleVersion: 2, rule: 'stay_prorata', creditType: 'days_unused', allocationMonth: '2026-10', payoutDate: '2026-11-15' },
-    { creditId: '', auto: true, patientName: 'ב', houseId: 'asher', totalPaid: 3000, entryDate: '2026-09-01', exitDate: '2026-09-28',
-      disposition: 'completed', dischargeNote: '', daysStayed: 28, refundDays: 3, amount: 3000, calculatedAmount: 3000, overridden: false,
-      ruleVersion: 1, rule: 'residential_prorata', creditType: 'days_unused', allocationMonth: '2026-09', payoutDate: '2026-11-15' },
-  ] }, missing_payment_data: { count: 0, rows: [] }, unresolved: { count: 0, rows: [] } };
-  page.run('globalThis.__d = ' + JSON.stringify(data));
-  const html = page.run('payoutForecastHtml(__d, { settle: true, exception: false })');
-  assert.ok(!html.includes('ממתין להחלטה'));
-  assert.match(html, /refund-totals-table/);
-  assert.match(html, /<tr class="refund-grand-total"><th>סה"כ<\/th><th>2<\/th>/);
-  for (const label of ['מטופל', 'בית', 'סה"כ שולם', 'כניסה', 'יציאה', 'סיבת עזיבה', 'ימי שהייה', 'ימי זיכוי', 'סכום זיכוי', 'כלל', 'תאריך תשלום']) {
-    assert.ok(html.includes(`<span class="p-label">${label.replace(/"/g, '&quot;')}</span>`), label);
-  }
-  assert.ok(html.includes('הפסיק לפני הזמן — &lt;b&gt;עזב&lt;/b&gt;'), 'disposition label + escaped note');
-  assert.ok(!html.includes('<img src=x') && !html.includes('<b>עזב'), 'escaped');
-  assert.ok(html.includes('חדש (אחיד)') && html.includes('ישן (לפי בית)'), 'new / old rule');
-  assert.equal((html.match(/data-refund-action="settle"/g) || []).length, 2, '«סמן כשולם» on every row');
-  assert.ok(!html.includes('data-refund-action="exception"'), 'no exception button without approver');
-  assert.ok(html.includes('refund-row--auto'));
-  const ro = page.run('payoutForecastHtml(__d, { settle: false, exception: false })');
-  assert.ok(!ro.includes('data-refund-action'), 'read-only (Ortal) view has no write buttons');
-  // The controls follow the session: Ortal never, Vered settle, Sandra settle + exception.
-  page.run("state.mode = 'edit'; state.finance = true; state.view = ''; state.approver = false");
-  assert.deepEqual(plain(page.run('refundRowControls()')), { settle: true, exception: false });
-  page.run('state.approver = true');
-  assert.deepEqual(plain(page.run('refundRowControls()')), { settle: true, exception: true });
-  page.run("state.view = 'controller'; state.billingRead = true; state.mode = 'view'");
-  assert.deepEqual(plain(page.run('refundRowControls()')), { settle: true, exception: false }, 'Ortal marks paid, never the exception');
-  const html2 = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
-  assert.ok(!html2.includes('ממתין להחלטה') && !html2.includes('credits-payout-list'));
-  assert.equal((html2.match(/>זיכויים לתשלום </g) || []).length, 1);
+  const data={ok:true,toPay:{count:2,total:21000,byPayoutDate:[{payoutDate:'2026-11-15',count:2,total:21000}],rows:[
+    {creditId:'c1',auto:false,patientName:'<img src=x onerror=1>',houseId:'rehab',totalPaid:30000,
+      entryDate:'2026-10-08',exitDate:'2026-10-20',disposition:'stopped_early',dischargeNote:'<b>עזב</b>',
+      daysStayed:13,refundDays:18,amount:18000,calculatedAmount:18000,overridden:false,
+      ruleVersion:2,rule:'stay_prorata',creditType:'days_unused',allocationMonth:'2026-10',
+      payoutDate:'2026-11-15',payoutApprovalRequestedBy:'vered',payoutApprovalValid:true},
+    {creditId:'',auto:true,patientName:'ב',houseId:'asher',totalPaid:3000,entryDate:'2026-09-01',
+      exitDate:'2026-09-28',disposition:'completed',dischargeNote:'',daysStayed:28,refundDays:3,
+      amount:3000,calculatedAmount:3000,overridden:false,ruleVersion:1,rule:'residential_prorata',
+      creditType:'days_unused',allocationMonth:'2026-09',payoutDate:'2026-11-15'},
+  ]},missing_payment_data:{count:0,rows:[]},unresolved:{count:0,rows:[]}};
+  page.run('globalThis.__d = '+JSON.stringify(data));
+  const html=page.run('payoutForecastHtml(__d,{request:true,approve:true,settle:true,exception:false})');
+  assert.match(html,/refund-totals-table/);
+  assert.match(html,/<tr class="refund-grand-total"><th>סה"כ<\/th><th>2<\/th>/);
+  for(const label of ['מטופל','בית','סה"כ שולם','כניסה','יציאה','סיבת עזיבה','ימי שהייה','ימי זיכוי','סכום זיכוי','כלל','תאריך תשלום','אישור לתשלום'])
+    assert.ok(html.includes('<span class="p-label">'+label+'</span>'),label);
+  assert.ok(html.includes('הפסיק לפני הזמן — &lt;b&gt;עזב&lt;/b&gt;'));
+  assert.ok(!html.includes('<img src=x')&&!html.includes('<b>עזב'));
+  assert.ok(html.includes('חדש (אחיד)')&&html.includes('ישן (לפי בית)'));
+  assert.equal((html.match(/data-refund-action="settle"/g)||[]).length,1,'only approved row can be paid');
+  assert.equal((html.match(/data-refund-action="request"/g)||[]).length,1,'computed row needs request first');
+  assert.ok(!html.includes('data-refund-action="exception"'));
+  const ro=page.run('payoutForecastHtml(__d,{request:false,approve:false,settle:false,exception:false})');
+  assert.ok(!ro.includes('data-refund-action'),'read-only has no write buttons');
+  page.run("state.mode='edit';state.finance=true;state.view='';state.sessionUser='ורד';state.approver=false");
+  assert.deepEqual(plain(page.run('refundRowControls()')),{request:true,approve:false,settle:false,exception:false});
+  page.run("state.sessionUser='סנדרה';state.approver=true");
+  assert.deepEqual(plain(page.run('refundRowControls()')),{request:false,approve:true,settle:false,exception:true});
+  page.run("state.sessionUser='אורטל';state.view='controller';state.billingRead=true;state.mode='view'");
+  assert.deepEqual(plain(page.run('refundRowControls()')),{request:false,approve:false,settle:true,exception:false});
+  const html2=fs.readFileSync(path.join(ROOT,'public','index.html'),'utf8');
+  assert.ok(!html2.includes('ממתין להחלטה')&&!html2.includes('credits-payout-list'));
+  assert.equal((html2.match(/>זיכויים לתשלום </g)||[]).length,1);
 });
 
 test('discharge on the client: no credits modal, a notice instead — never an amount', () => {

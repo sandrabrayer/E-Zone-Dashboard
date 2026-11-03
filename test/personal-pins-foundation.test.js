@@ -845,7 +845,7 @@ test('Code.gs: DELETE_ACTIONS / APPROVER_ACTIONS are defined — and ENFORCED by
     ['removeLead', 'deletePatientRow', 'deleteBillingOverride', 'deleteMeetingReport', 'voidPayment', 'cancelCredit',
       'deleteDuplicateDischarge']);
   assert.deepStrictEqual(Array.from(g.run('APPROVER_ACTIONS')),
-    ['unvoidPayment', 'approveRefundException', 'writeOffOpeningBalance', 'acceptOpeningBalance']);
+    ['unvoidPayment', 'approveRefundException', 'approveRefundPayout', 'writeOffOpeningBalance', 'acceptOpeningBalance']);
   const s = g.sandbox;
   for (const a of g.run('DELETE_ACTIONS')) assert.strictEqual(s.requiredRoleFor_(a), 'deleter', a);
   for (const a of g.run('APPROVER_ACTIONS')) assert.strictEqual(s.requiredRoleFor_(a), 'approver', a);
