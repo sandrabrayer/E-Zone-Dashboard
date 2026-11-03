@@ -2590,6 +2590,13 @@ function getOrCreateSheet_(name, headers) {
     // is safe on sheets that are already populated.
     const lastCol = sh.getLastColumn();
     if (lastCol < headers.length) {
+      // Add physical columns before an append-only header expansion. Live Credits
+      // has 25 populated headers, 26 grid columns and needs five new approval
+      // fields through column 30; never overwrite or reorder the first 25.
+      if (typeof sh.getMaxColumns === 'function' && typeof sh.insertColumnsAfter === 'function') {
+        const maxCols = sh.getMaxColumns();
+        if (maxCols < headers.length) sh.insertColumnsAfter(maxCols, headers.length - maxCols);
+      }
       const missing = headers.slice(lastCol);
       sh.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]);
     }

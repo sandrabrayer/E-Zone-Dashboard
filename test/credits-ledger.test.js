@@ -229,6 +229,37 @@ test('getOrCreateSheet_ auto-creates Credits with the header and text-forces all
   assert.deepStrictEqual(arr(code.CREDIT_TEXT_COLUMNS).slice().sort(), forced.sort());
 });
 
+test('Credits approval schema expands a 26-column live grid to 30 before appending five headers, never moves historical values', () => {
+  const { code, sandbox } = loadCode();
+  const cols = arr(code.CREDIT_COLUMNS);
+  assert.strictEqual(cols.length, 30, '25 existing + 5 approval fields');
+  const original = cols.slice(0, 25);
+  const preserved = original.map((name, i) => (i === 0 ? 'old-credit-1' : 'dummy-' + i));
+  const sh = fakeSheet(original, [preserved]);
+  let physicalCols = 26;
+  const expanded = [];
+  sh.getMaxColumns = () => physicalCols;
+  sh.insertColumnsAfter = (at, count) => {
+    assert.strictEqual(at, 26, 'append after the original grid, never among existing values');
+    assert.strictEqual(count, 4, 'the existing physical column 26 already exists');
+    physicalCols += count; expanded.push({ at, count });
+  };
+  const realGetRange = sh.getRange.bind(sh);
+  sh.getRange = (row, col, nr, nc) => {
+    if (col + (nc || 1) - 1 > physicalCols) throw new Error('invalid range outside physical grid');
+    return realGetRange(row, col, nr, nc);
+  };
+  sandbox.__sheets.Credits = sh;
+  const got = code.ensure(code.CREDITS_SHEET, cols);
+  assert.strictEqual(got, sh);
+  assert.strictEqual(physicalCols, 30);
+  assert.deepStrictEqual(expanded, [{ at: 26, count: 4 }]);
+  assert.deepStrictEqual(sh.grid[0], cols, 'five named approval headers appended in original position');
+  assert.deepStrictEqual(sh.grid[1], preserved, 'historical row is not rewritten by schema ensure');
+  code.ensure(code.CREDITS_SHEET, cols);
+  assert.strictEqual(expanded.length, 1, 'a second read/ensure never inserts again');
+});
+
 /* ===== B. create via handle_ (dispatch + signed-cookie user) ===== */
 
 test('saveCredit via handle_: server mints credit::<patientId>::<month>::<seq>, stamps from the verified proxy user, both keys round-trip intact via getCredits', () => {
