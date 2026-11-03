@@ -1,5 +1,8 @@
 # CRM restructure — permissions matrix (spec §11)
 
+> **Binding product-policy correction, 03.11.2026 (DRAFT #360 stacked on #358; NOT LIVE):** Vered **may grant discounts**, as already implemented via `setBillingDiscount`. The financial refund amount remains **system-calculated by the pre-approved policy**. Vered must submit **each** proposed refund to Sandra; Sandra must personally approve the **exact amount** before Ortal executes/marks the payout. The existing `approvedBy='מדיניות אוטומטית'` identifies policy computation, **not** Sandra's payout authorization. Any older D7/D8 interpretation restricting Vered's discounts or allowing Vered/Sandra to mark paid is superseded **for this workflow** by this explicit clarification. New source enforcement in [DRAFT #360](https://github.com/sandrabrayer/E-Zone-Dashboard/pull/360), not an authority to merge, deploy or edit production schema/credentials/financial records.
+
+
 **Session A, 2026-10-27. Docs only.** Updated the same day with Sandra's decisions D5–D17
 ([SPEC.md](SPEC.md) "Decisions").
 
