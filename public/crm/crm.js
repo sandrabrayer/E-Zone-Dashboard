@@ -1159,9 +1159,19 @@
     const c = credits && credits.ok !== false ? credits : {};
     return (Array.isArray(c.credits) ? c.credits : []).map(function (r) {
       const o = r || {};
+      const amount = Number(o.amount) || 0;
+      const requestedAt = s(o.payoutApprovalRequestedAt), approvedAt = s(o.payoutApprovedAt);
+      const requestedBy = s(o.payoutApprovalRequestedBy), approvedBy = s(o.payoutApprovedBy);
+      const approvedAmount = o.payoutApprovalAmount === '' || o.payoutApprovalAmount == null ? null : Number(o.payoutApprovalAmount);
+      const requestCurrent = s(o.status) === 'pending' && requestedBy === 'vered' && !!requestedAt
+        && approvedAmount !== null && Number.isFinite(approvedAmount) && approvedAmount === amount;
+      const approvalValid = requestCurrent && approvedBy === 'sandra' && !!approvedAt && approvedAt >= requestedAt;
       return { id: s(o.id), patientId: s(o.patientId), patientKey: s(o.patientKey), patientName: s(o.patientName), houseId: s(o.houseId), houseName: houseName(o.houseId),
-        creditType: s(o.creditType), allocationMonth: (sheetDay(o.allocationMonth) || s(o.allocationMonth)).slice(0, 7), amount: Number(o.amount) || 0, status: s(o.status), reason: s(o.reason),
-        decidedDate: sheetDay(o.decidedDate), payoutDate: sheetDay(o.payoutDate), paidDate: sheetDay(o.paidDate), method: s(o.method) };
+        creditType: s(o.creditType), allocationMonth: (sheetDay(o.allocationMonth) || s(o.allocationMonth)).slice(0, 7), amount: amount, status: s(o.status), reason: s(o.reason),
+        decidedDate: sheetDay(o.decidedDate), payoutDate: sheetDay(o.payoutDate), paidDate: sheetDay(o.paidDate), method: s(o.method),
+        payoutApprovalRequestedAt: requestedAt, payoutApprovalRequestedBy: requestedBy, payoutApprovalAmount: approvedAmount,
+        payoutApprovedAt: approvedAt, payoutApprovedBy: approvedBy, payoutRequestCurrent: !!requestCurrent,
+        payoutApprovalValid: !!approvalValid };
     });
   }
   function creditIsPatient(c, uid, key) { return (uid && c.patientId === uid) || (!!key && (c.patientKey === key || c.patientId === key)); }
@@ -1171,6 +1181,31 @@
     return creditsOf(credits).filter(function (c) { return creditIsPatient(c, uid, key); })
       .sort(function (a, b) { return a.allocationMonth < b.allocationMonth ? 1 : a.allocationMonth > b.allocationMonth ? -1 : 0; });
   }
+  /* Source-backed, three-person payout workflow: UI is a convenience only.
+   * Express and Code.gs independently enforce verified personal IDs and
+   * approve the exact stored amount. A computed policy amount is NOT approval. */
+  function refundActionFor(credit, me) {
+    if (!credit || credit.status !== 'pending' || !(credit.amount > 0) || !credit.id || !me) return '';
+    if (me.user === 'ורד' && me.finance === true)
+      return credit.payoutRequestCurrent ? '' : 'request';
+    if (me.user === 'סנדרה' && me.approver === true)
+      return credit.payoutRequestCurrent && !credit.payoutApprovalValid ? 'approve' : '';
+    if (me.user === 'אורטל' && me.view === 'controller')
+      return credit.payoutApprovalValid ? 'settle' : '';
+    return '';
+  }
+  function refundStageText(credit) {
+    if (credit.payoutApprovalValid) return 'אושר על ידי סנדרה — לביצוע אורטל';
+    if (credit.payoutRequestCurrent) return 'הועבר לאישור סנדרה';
+    return 'נדרשת בקשת אישור של ורד';
+  }
+  const REFUND_ACTION_LABELS = { request: 'בקשי אישור מסנדרה', approve: 'אשרי תשלום לאורטל', settle: 'סמני כשולם' };
+  function refundActionButton(credit, me) {
+    const kind = refundActionFor(credit, me);
+    return kind ? '<button type="button" class="btn small' + (kind === 'settle' ? ' primary' : '') +
+      '" data-refund-action="' + kind + '" data-refund-id="' + esc(credit.id) + '">' + esc(REFUND_ACTION_LABELS[kind]) + '</button>' : '';
+  }
+
   /* «זיכויים לתשלום»: pending credits with money, oldest payout first. */
   function pendingCredits(credits) {
     return creditsOf(credits).filter(function (c) { return c.status === 'pending' && c.amount > 0; })
@@ -2678,8 +2713,9 @@
       else html += '<div class="tbl-wrap"><table class="tbl" id="crm-pending-credits"><thead><tr><th>שם</th><th>בית</th><th>סוג</th><th>חודש</th><th>לתשלום עד</th><th>סכום</th><th></th></tr></thead><tbody>'
         + pend.map(function (c) {
           return '<tr><td>' + esc(c.patientName) + '</td><td>' + esc(c.houseName) + '</td><td>' + esc(CREDIT_TYPE_LABELS[c.creditType] || c.creditType) + '</td><td>' + esc(c.allocationMonth) + '</td><td>' + esc(fmtDate(c.payoutDate)) + '</td><td>' + esc(fmtMoney(c.amount)) + '</td>'
-            + '<td>' + (!isController ? '<button type="button" class="btn small" data-settle-open="' + esc(c.id) + '">סמן כשולם</button>' : '') + '</td></tr>';
+            + '<td><span class="na">' + esc(refundStageText(c)) + '</span> ' + refundActionButton(c, state.me) + '</td></tr>';
         }).join('') + '</tbody></table></div>';
+      html += '<div id="crm-refund-form"></div>';
       const det = detachedRows(state.billing.debt);
       html += '<div class="group-title">שיוך תשלומים' + (det.length ? ' ' + chip('late', det.length + ' ללא שיוך') : '') + '</div>';
       if (!det.length) html += '<p class="na">כל התשלומים משויכים.</p>';
@@ -2935,8 +2971,9 @@
         + credits.map(function (c) {
           const st = c.status === 'paid' ? 'ok' : c.status === 'cancelled' ? 'wait' : 'today';
           return '<tr><td>' + esc(CREDIT_TYPE_LABELS[c.creditType] || c.creditType) + (c.reason ? ' <span class="na">' + esc(c.reason) + '</span>' : '') + '</td><td>' + esc(c.allocationMonth) + '</td><td>' + esc(fmtMoney(c.amount)) + '</td><td>' + chip(st, (CREDIT_STATUS_LABELS[c.status] || c.status) + (c.paidDate ? ' ' + fmtDate(c.paidDate) : '')) + '</td>'
-            + '<td>' + (c.status === 'pending' && c.amount > 0 && me.finance ? '<button type="button" class="btn small" data-settle-open="' + esc(c.id) + '">סמן כשולם</button>' : '') + '</td></tr>';
+            + '<td>' + (c.status === 'pending' && c.amount > 0 ? '<span class="na">' + esc(refundStageText(c)) + '</span> ' + refundActionButton(c, me) : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
+      html += '<div id="crm-refund-form-account"></div>';
       html += '<div class="group-title">תשלומים</div>';
       if (!a.cycles.length) html += '<p class="na">אין תשלומים רשומים.</p>';
       else html += '<div class="tbl-wrap"><table class="tbl" id="crm-account-cycles"><thead><tr><th>לתשלום</th><th>סכום</th><th>שולם</th><th>סטטוס</th></tr></thead><tbody>'
@@ -3073,6 +3110,75 @@
           return true;
         })
         .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'השינוי לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
+    }
+    /* C11: use the same Credits authority as the classic dashboard; never
+     * allow Vered/Sandra to settle or Ortal to approve by a stale CRM button. */
+    function openRefundAction(kind, id) {
+      const list = state.billing && state.billing.credits;
+      const c = creditsOf(list).filter(function (r) { return r.id === id; })[0];
+      if (!c || refundActionFor(c, state.me) !== kind) {
+        return toast('הפעולה אינה זמינה — יש לרענן את נתוני ההחזר וההרשאות', true);
+      }
+      const el = $('#crm-drawer[aria-hidden="false"] #crm-refund-form-account') || $('#crm-refund-form');
+      if (!el) return toast('נא לפתוח את מסך הגבייה ולנסות שוב', true);
+      state.refundAction = { kind: kind, creditId: c.id, amount: c.amount };
+      const err = function (name) { return '<span class="err" data-err="' + name + '"></span>'; };
+      let html = '<h3>' + esc(REFUND_ACTION_LABELS[kind]) + ' · ' + esc(c.patientName) + '</h3>'
+        + '<p class="na">סכום ההחזר המחושב: ' + esc(fmtMoney(c.amount)) + ' · ' + esc(refundStageText(c)) + '</p>';
+      if (kind === 'settle') {
+        html += '<label>תאריך ביצוע התשלום *<input type="date" name="paidDate" max="' + esc(state.today) +
+          '" value="' + esc(state.today) + '">' + err('paidDate') + '</label>'
+          + '<label>אמצעי תשלום *<select name="method"><option value="">בחרי…</option>' +
+          SETTLE_METHODS.map(function (m) { return '<option value="' + esc(m) + '">' + esc(m) + '</option>'; }).join('') +
+          '</select>' + err('method') + '</label>';
+      } else {
+        html += '<p class="na">האישור מתייחס לסכום זה בלבד. שינוי בסכום מחייב בקשה ואישור מחדש.</p>';
+      }
+      el.innerHTML = '<form class="new-lead report" data-form="refund-action" novalidate>' + html +
+        '<div class="wide err" data-err="_form"></div><div class="wide toolbar">' +
+        '<button type="submit" class="btn primary">' + esc(REFUND_ACTION_LABELS[kind]) + '</button>' +
+        '<button type="button" class="btn" data-refund-cancel>ביטול</button><span class="na" id="crm-refund-state"></span></div></form>';
+      el.scrollIntoView({ block: 'nearest' });
+    }
+    function submitRefundAction(form) {
+      const task = state.refundAction;
+      if (!task || state.saving) return Promise.resolve(false);
+      const current = creditsOf(state.billing && state.billing.credits).filter(function (r) { return r.id === task.creditId; })[0];
+      if (!current || current.amount !== task.amount || refundActionFor(current, state.me) !== task.kind) {
+        showReportIssues(form, [], 'ההחזר השתנה — יש לטעון אותו מחדש'); return Promise.resolve(false);
+      }
+      const values = {};
+      Array.prototype.forEach.call(form.elements, function (el) { if (el.name) values[el.name] = el.value; });
+      const issues = task.kind === 'settle' ? settleErrors(values, state.today) : {};
+      showReportIssues(form, Object.keys(issues).map(function (k) { return { field: k, hebrewMessage: issues[k] }; }), '');
+      if (Object.keys(issues).length) return Promise.resolve(false);
+      const body = task.kind === 'request'
+        ? { action: 'requestRefundPayoutApproval', creditId: task.creditId }
+        : task.kind === 'approve' ? { action: 'approveRefundPayout', creditId: task.creditId }
+        : settleBody(task.creditId, values.paidDate, values.method);
+      state.saving = true;
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+        .then(function (res) {
+          state.saving = false;
+          if (!res || res.ok !== true || !res.credit || s(res.credit.id) !== task.creditId) {
+            const why = writeRefusal(res, 'credit') || 'לא התקבל אישור שמירה מזהה מהשרת';
+            showReportIssues(form, [], why); toast(why, true); return false;
+          }
+          state.refundAction = null;
+          toast((task.kind === 'request' ? 'בקשת האישור' : task.kind === 'approve' ? 'האישור לסכום ההחזר' : 'תשלום ההחזר') + ' נשמר ✓');
+          const pid = state.drawer && state.drawer.id;
+          resetBilling();
+          if (pid && state.account) fillAccountPane(pid);
+          if (state.area === 'billing') { renderMain(); loadBilling(); }
+          else loadBilling(function () { if (pid && state.account) fillAccountPane(pid); });
+          return true;
+        })
+        .catch(function (err) {
+          state.saving = false; const why = 'הפעולה לא נשמרה — ' + s(err && err.message || err);
+          showReportIssues(form, [], why); toast(why, true); return false;
+        });
     }
     /* C13: receipt edit / void forms. */
     function openReceiptForm(kind, r) {
@@ -3516,6 +3622,8 @@
         submitReport(f, false);
       } else if (f.dataset.form.indexOf('small-') === 0) {
         submitSmall(f);
+      } else if (f.dataset.form === 'refund-action') {
+        submitRefundAction(f);
       } else if (f.dataset.form.indexOf('receipt-') === 0) {
         submitReceiptForm(f);
       } else if (f.dataset.form === 'contact') {
@@ -3551,7 +3659,7 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-settle-open],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel]') : null;
       if (!t) return;
       if (t.dataset.billingRetry !== undefined) { resetBilling(); return renderMain(); }
       if (t.dataset.reportCancel !== undefined) { state.report = null; state.small = null; const el = $('#crm-report'); if (el) el.innerHTML = ''; return; }
@@ -3566,16 +3674,12 @@
         if (state.billing) go(); else loadBilling(go);
         return;
       }
-      if (t.dataset.settleOpen && !(state.drawer && state.account)) {
-        // from the גבייה area: open the patient's drawer on «חשבון», then the form
-        const cr = pendingCredits(state.billing && state.billing.credits).filter(function (c) { return c.id === t.dataset.settleOpen; })[0];
-        const pat = cr && compute(state.data, state.today).patients.filter(function (p) { return p.id === cr.patientId || patientKeyOf(p) === cr.patientKey; })[0];
-        if (!pat) return toast('המטופל/ת לא נמצא/ה ברשימה — סימון בדשבורד הרגיל', true);
-        openDrawer('patient', pat.id); const tab = doc.querySelector('#crm-drawer [data-tab="account"]'); if (tab) tab.click();
-        loadBilling(function () { if (state.account) openSmallForm('settle', cr); });
-        if (state.billing) openSmallForm('settle', cr);
+      if (t.dataset.refundCancel !== undefined) {
+        state.refundAction = null;
+        const box = t.closest('form'); if (box) box.remove();
         return;
       }
+      if (t.dataset.refundAction) return openRefundAction(t.dataset.refundAction, t.dataset.refundId);
       if (!state.account) return;
       if (t.dataset.receiptCancel !== undefined) { state.receiptForm = null; const el = $('#crm-receipt-form'); if (el) el.innerHTML = ''; return; }
       if (t.dataset.receiptEdit || t.dataset.receiptVoid) {
@@ -3592,7 +3696,6 @@
       }
       if (t.dataset.discountOpen !== undefined) { const c = state.account.data.openCycles[Number(t.dataset.discountOpen)]; if (c) openSmallForm('discount', c); return; }
       if (t.dataset.amountOpen !== undefined) { const c = state.account.data.openCycles[Number(t.dataset.amountOpen)]; if (c) openSmallForm('amount', c); return; }
-      if (t.dataset.settleOpen) { const cr = patientCredits(state.account.patient, state.billing.credits).filter(function (c) { return c.id === t.dataset.settleOpen; })[0]; if (cr) openSmallForm('settle', cr); return; }
       if (t.dataset.reportOpen !== undefined) {
         const c = state.account.data.openCycles[Number(t.dataset.reportOpen)];
         if (c) openReportForm(reportCycleFor(state.account.patient, c, state.account.data), c.balance);
