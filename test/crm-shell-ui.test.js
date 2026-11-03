@@ -537,11 +537,50 @@ test('C18 payment linking: detached rows from debtAging (decided ones out), cand
   assert.equal(core.linkAccepted({ ok: true, payment: { id: raw.id, linkStatus: '' } }, raw.id, 'linked'), false); assert.equal(core.linkAccepted({ ok: true }, raw.id, 'linked'), false);
 });
 
+test('CRM refund authority: raw policy amount is not payout approval; only Vered requests, Sandra approves, Ortal pays', () => {
+  const base = {
+    id: 'credit-test', patientId: 'patient-test', patientKey: 'house::dummy::2026-10-01', patientName: 'בדיקה',
+    amount: 1200, status: 'pending', approvedBy: 'מדיניות אוטומטית', payoutApprovalRequestedAt: '',
+    payoutApprovalRequestedBy: '', payoutApprovalAmount: '', payoutApprovedAt: '', payoutApprovedBy: '',
+  };
+  const actor = {
+    vered: { user: 'ורד', finance: true, view: 'full' },
+    sandra: { user: 'סנדרה', finance: true, approver: true, view: 'full' },
+    ortal: { user: 'אורטל', view: 'controller' },
+    dana: { user: 'דנה', view: 'restricted' },
+  };
+  const raw = core.creditsOf({ ok: true, credits: [base] })[0];
+  assert.equal(raw.payoutApprovalValid, false);
+  assert.equal(core.refundStageText(raw), 'נדרשת בקשת אישור של ורד');
+  assert.deepEqual(Object.fromEntries(Object.entries(actor).map(([name, a]) => [name, core.refundActionFor(raw, a)])),
+    { vered: 'request', sandra: '', ortal: '', dana: '' });
+  const requested = core.creditsOf({ ok: true, credits: [{ ...base,
+    payoutApprovalRequestedAt: '2026-11-03T09:00:00.000Z', payoutApprovalRequestedBy: 'vered', payoutApprovalAmount: 1200 }] })[0];
+  assert.equal(requested.payoutRequestCurrent, true);
+  assert.equal(core.refundActionFor(requested, actor.vered), '');
+  assert.equal(core.refundActionFor(requested, actor.sandra), 'approve');
+  assert.equal(core.refundActionFor(requested, actor.ortal), '');
+  const approved = core.creditsOf({ ok: true, credits: [{ ...base,
+    payoutApprovalRequestedAt: '2026-11-03T09:00:00.000Z', payoutApprovalRequestedBy: 'vered', payoutApprovalAmount: 1200,
+    payoutApprovedAt: '2026-11-03T09:05:00.000Z', payoutApprovedBy: 'sandra' }] })[0];
+  assert.equal(approved.payoutApprovalValid, true);
+  assert.equal(core.refundActionFor(approved, actor.ortal), 'settle');
+  assert.equal(core.refundActionFor(approved, actor.sandra), '');
+  assert.equal(core.refundActionFor(approved, actor.vered), '');
+  const changedAmount = core.creditsOf({ ok: true, credits: [{ ...base,
+    payoutApprovalRequestedAt: '2026-11-03T09:00:00.000Z', payoutApprovalRequestedBy: 'vered', payoutApprovalAmount: 1200,
+    payoutApprovedAt: '2026-11-03T09:05:00.000Z', payoutApprovedBy: 'sandra', amount: 1300 }] })[0];
+  assert.equal(changedAmount.payoutApprovalValid, false);
+  assert.equal(core.refundActionFor(changedAmount, actor.ortal), '');
+  assert.equal(core.refundActionFor(changedAmount, actor.vered), 'request');
+  assert.equal(core.refundActionFor({ ...approved, status: 'paid' }, actor.ortal), '');
+});
+
 test('esc escapes every HTML-significant character', () => {
   assert.equal(core.esc('<b>"x" & \'y\'</b>'), '&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;');
 });
 
-test('wiring: assets hashed via ASSETS, NOT in sw.js; the shell never calls a write action; links only to the classic dashboard', () => {
+test('wiring: hashed CRM assets, explicit source-owned write actions and no second finance ledger', () => {
   assert.match(SERVER_SRC, /'\/crm\/crm\.js': \{ file:/);
   assert.match(SERVER_SRC, /'\/crm\/crm\.css': \{ file:/);
   assert.ok(/'\/crm\/crm\.js', '\/crm\/crm\.css'/.test(SW_SRC), 'the CRM bundle is in BUNDLE_PATHS (C16)');
@@ -549,7 +588,7 @@ test('wiring: assets hashed via ASSETS, NOT in sw.js; the shell never calls a wr
   const actions = [...src.matchAll(/api\('([A-Za-z]+)'/g)].map((m) => m[1]).sort();
   assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'contactIndex', 'debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments', 'getTasks'], 'GET reads (debtAging + getPayments: C8; getCredits: C11; getTasks: Stage 1c; contactIndex: Stage 2)');
   const writes = [...src.matchAll(/\{ action: '([A-Za-z]+)'/g)].map((m) => m[1]).sort();
-  assert.deepEqual([...new Set(writes)], ['appendFunder', 'completeTask', 'createTask', 'dischargePatient', 'editReceipt', 'logContact', 'moveLeadIrrelevant', 'reassignTask', 'removeLead', 'reportPayment', 'rescheduleTask', 'restoreLead', 'restorePatient', 'restorePatientToActive', 'saveAll', 'savePayment', 'setBillingDiscount', 'setDischargeContinuity', 'settleRefund', 'upsertBillingOverride', 'withdrawTask'], 'the write actions («לעדכן המשך טיפול»: setDischargeContinuity, CHANGELOG-crm-today-card-open.md; C17: restore to active / as a lead): one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7), the strict payment report (C10), discount / amount / settle (C11), the task + contact actions (Stage 1c)');
+  assert.deepEqual([...new Set(writes)], ['appendFunder', 'approveRefundPayout', 'completeTask', 'createTask', 'dischargePatient', 'editReceipt', 'logContact', 'moveLeadIrrelevant', 'reassignTask', 'removeLead', 'reportPayment', 'requestRefundPayoutApproval', 'rescheduleTask', 'restoreLead', 'restorePatient', 'restorePatientToActive', 'saveAll', 'savePayment', 'setBillingDiscount', 'setDischargeContinuity', 'settleRefund', 'upsertBillingOverride', 'withdrawTask'], 'the write actions («לעדכן המשך טיפול»: setDischargeContinuity, CHANGELOG-crm-today-card-open.md; C17: restore to active / as a lead): one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7), the strict payment report (C10), discount / amount / settle (C11), the task + contact actions (Stage 1c)');
   assert.equal((src.match(/\/api\/outpatient-lead/g) || []).length, 2, 'the outpatient handoff: after a released_outpatient discharge (manual:false) and «העבר לאמבולטורי» (manual:true)');
   assert.ok(!/serializePatients|patients: state\.data\.patients\b/.test(src), 'patients travel only through houseSaveBody (one house as read)');
   assert.ok(!/innerHTML\s*=\s*[^;]*\b(l|lead|p|pat)\.(name|phone|note)\b(?!\))/.test(src.replace(/esc\([^)]*\)/g, 'ESC')), 'every interpolated field goes through esc()');
