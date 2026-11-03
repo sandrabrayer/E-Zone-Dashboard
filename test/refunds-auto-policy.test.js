@@ -552,7 +552,7 @@ test('screen: payout list keeps totals and uses role- and approval-specific acti
   assert.match(html,/refund-totals-table/);
   assert.match(html,/<tr class="refund-grand-total"><th>סה"כ<\/th><th>2<\/th>/);
   for(const label of ['מטופל','בית','סה"כ שולם','כניסה','יציאה','סיבת עזיבה','ימי שהייה','ימי זיכוי','סכום זיכוי','כלל','תאריך תשלום','אישור לתשלום'])
-    assert.ok(html.includes('<span class="p-label">'+label+'</span>'),label);
+    assert.ok(html.includes('<span class="p-label">'+label.replace(/"/g,'&quot;')+'</span>'),label);
   assert.ok(html.includes('הפסיק לפני הזמן — &lt;b&gt;עזב&lt;/b&gt;'));
   assert.ok(!html.includes('<img src=x')&&!html.includes('<b>עזב'));
   assert.ok(html.includes('חדש (אחיד)')&&html.includes('ישן (לפי בית)'));
