@@ -1,5 +1,8 @@
 # Residential CRM #358 — recovery checkpoint, 03 November 2026
 
+> **Separate post-checkpoint qualification, 03 Nov 2026:** [stacked DRAFT #360](https://github.com/sandrabrayer/E-Zone-Dashboard/pull/360) adds five **append-only** payout approval columns to existing Credits (after creditUid); these five fields now form part of the exact source/backup/restore contract. The original #358 VM recovery result did **not** validate these new fields. A new synthetic and then authorized native recovery drill MUST preserve the request/approval actor stamps and approved amount across capture→restore; old backups without these fields cannot be misrepresented as verified approval evidence. Automatic computed policy credits do not count as personally approved; after an amount change, prior payment approval is invalidated. No production Google header edit or merge/deploy is authorized by this addendum.
+
+
 **Decision: production HOLD; #358 remains the single draft candidate.** This continues the [02 November checkpoint](CRM-358-ACCEPTANCE-CHECKPOINT-20261102.md), after qualifying Outpatient OP-BILL-01 with CRM/OP-03 in its existing #162. It does not authorize a merge, Apps Script deployment, production write or permission change.
 
 ## Existing work reused
