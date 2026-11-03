@@ -19031,24 +19031,70 @@ function integrityOpenBackupSpreadsheet_(props, errors) {
   return null;
 }
 
-/* Write a values-only snapshot into the BACKUP spreadsheet (only — never the
- * live one). Idempotent for a same-day re-run: an existing sheet with the
- * name is cleared and rewritten in place (never deleted first, so this also
- * works when it is the spreadsheet's only sheet). */
-function integrityWriteSnapshot_(backupSs, snapName, grid) {
-  let sh = backupSs.getSheetByName(snapName);
-  if (sh) sh.clear();
-  else sh = backupSs.insertSheet(snapName);
-  if (grid && grid.length) {
-    sh.getRange(1, 1, grid.length, grid[0].length).setValues(grid);
+/* Reuse the existing OP-03 snapshot write/readback/publish protocol.
+ * Dashboard prefixes only; no new restore endpoint or live-sheet writes. */
+function integrityVerifySnapshotGrid_(expected, actual) {
+  if (expected.length !== actual.length) throw new Error('Backup row count mismatch');
+  for (var r = 0; r < expected.length; r++) {
+    if (expected[r].length !== actual[r].length) throw new Error('Backup column count mismatch');
+    for (var c = 0; c < expected[r].length; c++) {
+      var a = expected[r][c], b = actual[r][c];
+      var equal = a instanceof Date ? b instanceof Date && a.getTime() === b.getTime() : a === b;
+      if (!equal) throw new Error('Backup value mismatch at row ' + (r + 1) + ', column ' + (c + 1));
+    }
   }
-  // A just-created backup spreadsheet's default sheet is dead weight once a
-  // snapshot exists; drop it (guarded — never a snapshot, never the last sheet).
-  const def = backupSs.getSheetByName('Sheet1') || backupSs.getSheetByName('גיליון1');
-  if (def && !INTEGRITY_SNAPSHOT_RE.test(def.getName()) && backupSs.getSheets().length > 1) {
-    backupSs.deleteSheet(def);
-  }
-  return sh;
+}
+
+/* The caller must supply the separate backup spreadsheet. Never clear the
+ * previous good snapshot. Build and verify a temporary sheet, then publish
+ * it; on a publish failure restore the old name. UserLock serializes backup
+ * writers without holding the script lock needed by interactive app saves.
+ * An interrupted run can leave a -pending/-previous sheet for manual review;
+ * retention never deletes those recovery remnants. */
+function integrityWriteSnapshot_(backupSs, snapName, grid, formats) {
+  if (!INTEGRITY_SNAPSHOT_RE.test(snapName)) throw new Error('Invalid backup name');
+  if (!grid || !grid.length || !grid[0].length) throw new Error('Empty backup grid');
+  var lock = LockService.getUserLock();
+  if (lock.tryLock(1) !== true) throw new Error('Backup writer already running');
+  var sh = null, old = null, renamedOld = false, published = false;
+  try {
+    var token = Utilities.getUuid();
+    sh = backupSs.insertSheet('dashboard-pending-' + token);
+    if (sh.getMaxRows() < grid.length) sh.insertRowsAfter(sh.getMaxRows(), grid.length - sh.getMaxRows());
+    if (sh.getMaxColumns() < grid[0].length) sh.insertColumnsAfter(sh.getMaxColumns(), grid[0].length - sh.getMaxColumns());
+    var target = sh.getRange(1, 1, grid.length, grid[0].length);
+    var safeFormats = grid.map(function (row, r) {
+      return row.map(function (value, c) {
+        return typeof value === 'string' ? '@' :
+          (formats && formats[r] && formats[r][c]) || (value instanceof Date ? 'yyyy-mm-dd hh:mm:ss.000' : 'General');
+      });
+    });
+    target.setNumberFormats(safeFormats);
+    target.setValues(grid.map(function (row) {
+      return row.map(function (value) { return typeof value === 'string' && value ? "'" + value : value; });
+    }));
+    SpreadsheetApp.flush();
+    integrityVerifySnapshotGrid_(grid, target.getValues());
+    var formulas = target.getFormulas();
+    for (var r = 0; r < formulas.length; r++) {
+      if (formulas[r].some(function (formula) { return !!formula; })) throw new Error('Backup contains a formula');
+    }
+    if (sh.getMaxRows() > grid.length) sh.deleteRows(grid.length + 1, sh.getMaxRows() - grid.length);
+    if (sh.getMaxColumns() > grid[0].length) sh.deleteColumns(grid[0].length + 1, sh.getMaxColumns() - grid[0].length);
+    old = backupSs.getSheetByName(snapName);
+    if (old) { old.setName('dashboard-previous-' + token); renamedOld = true; }
+    sh.setName(snapName);
+    published = true;
+    if (old) backupSs.deleteSheet(old);
+    return sh;
+  } catch (err) {
+    if (renamedOld && !published) {
+      try { old.setName(snapName); } catch (_) { /* Keep both recovery remnants. */ }
+    }
+    // A partial temporary sheet is never a published backup. Leave it visible
+    // for diagnosis; do not risk deleting a good copy after an ambiguous RPC.
+    throw err;
+  } finally { lock.releaseLock(); }
 }
 
 /* Delete OUR expired snapshot sheets from the backup spreadsheet. Strictly
@@ -19100,6 +19146,7 @@ function nightlyIntegrityJob() {
   //      getOrCreateSheet_: this job must not write to Patients / Leads /
   //      Payments / BillingOverrides, not even a header backfill) ----
   let patientRows = [], patientsGrid = null, patientsReadOk = false;
+  let backupReadsOk = true;
   try {
     const patientsSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PATIENTS_SHEET);
     if (patientsSh) {
@@ -19107,23 +19154,23 @@ function nightlyIntegrityJob() {
       patientsGrid = patientsSh.getDataRange().getValues();
     }
     patientsReadOk = true;
-  } catch (err) { errors.push('קריאת Patients נכשלה: ' + err); }
+  } catch (err) { backupReadsOk = false; errors.push('קריאת Patients נכשלה: ' + err); }
 
   // CRM: Tasks + Activity grids (read-only; a missing sheet = nothing to snapshot, never created here)
   let tasksGrid = null, activityGrid = null;
   try {
     const tSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TASKS_SHEET);
     if (tSh) tasksGrid = tSh.getDataRange().getValues();
-  } catch (err) { errors.push('קריאת Tasks לגיבוי נכשלה: ' + err); }
+  } catch (err) { backupReadsOk = false; errors.push('קריאת Tasks לגיבוי נכשלה: ' + err); }
   try {
     const aSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(ACTIVITY_SHEET);
     if (aSh) activityGrid = aSh.getDataRange().getValues();
-  } catch (err) { errors.push('קריאת Activity לגיבוי נכשלה: ' + err); }
+  } catch (err) { backupReadsOk = false; errors.push('קריאת Activity לגיבוי נכשלה: ' + err); }
   let leadsGrid = null;
   try {
     const leadsSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LEADS_SHEET);
     if (leadsSh) leadsGrid = leadsSh.getDataRange().getValues();
-  } catch (err) { errors.push('קריאת Leads נכשלה: ' + err); }
+  } catch (err) { backupReadsOk = false; errors.push('קריאת Leads נכשלה: ' + err); }
 
   let paymentRows = [];
   try {
@@ -19198,6 +19245,7 @@ function nightlyIntegrityJob() {
 
   // ---- CHECK 3: daily snapshot + retention (AFTER check 1) ----
   try {
+    if (!backupReadsOk) throw new Error('Snapshot capture incomplete; previous backups retained');
     if ((patientsGrid && patientsGrid.length) || (leadsGrid && leadsGrid.length)) {
       // Lookup (stored id, then Drive BY NAME) BEFORE any create — the
       // outpatient job already owns EZONE-Backups; never fork a second one.
@@ -19220,8 +19268,12 @@ function nightlyIntegrityJob() {
       if (activityGrid && activityGrid.length) {
         integrityWriteSnapshot_(backupSs, integritySnapshotName_(INTEGRITY_ACTIVITY_SNAPSHOT_PREFIX, now), activityGrid);
       }
-      const deletedNames = integrityApplyRetention_(backupSs, todayPatientsName, INTEGRITY_RETENTION_DAYS);
-      if (deletedNames.length) Logger.log('nightlyIntegrityJob: retention deleted %s', deletedNames.join(', '));
+      // A missing family may be an accidental deletion. Preserve older proof
+      // until all four source families are present and have been read.
+      if (patientsGrid && leadsGrid && tasksGrid && activityGrid) {
+        const deletedNames = integrityApplyRetention_(backupSs, todayPatientsName, INTEGRITY_RETENTION_DAYS);
+        if (deletedNames.length) Logger.log('nightlyIntegrityJob: retention deleted %s', deletedNames.join(', '));
+      }
     }
   } catch (err) { errors.push('הגיבוי היומי נכשל: ' + err); }
 
