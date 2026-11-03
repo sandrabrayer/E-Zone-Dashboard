@@ -1075,19 +1075,23 @@ const CREDIT_COLUMNS = [
   'allocationMonth', 'calculatedAmount', 'amount', 'overrideReason', 'reason',
   'approvedBy', 'decidedDate', 'payoutDate', 'status', 'paidDate', 'method', 'notes',
   'basis', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
-  'creditUid'
+  'creditUid',
+  // Payout gate: Vered requests, Sandra approves the exact amount, Ortal pays.
+  'payoutApprovalRequestedAt', 'payoutApprovalRequestedBy', 'payoutApprovalAmount',
+  'payoutApprovedAt', 'payoutApprovedBy'
 ];
 const CREDIT_TYPES    = ['days_unused', 'prepaid_return', 'other'];
 const CREDIT_STATUSES = ['pending', 'paid', 'cancelled'];
 /* Day of month credits pay out on. */
 const CREDIT_PAYOUT_DAY = 15;
 /* Text-forced columns (whole column at ensure time + the target row per write). */
-const CREDIT_TEXT_COLUMNS = ['allocationMonth', 'decidedDate', 'payoutDate', 'paidDate', 'createdAt', 'updatedAt'];
+const CREDIT_TEXT_COLUMNS = ['allocationMonth', 'decidedDate', 'payoutDate', 'paidDate', 'createdAt', 'updatedAt',
+  'payoutApprovalRequestedAt', 'payoutApprovalRequestedBy', 'payoutApprovedAt', 'payoutApprovedBy'];
 /* Columns a later edit may change. Everything else on an existing row is
  * carried from the SHEET, whatever the payload says (identity, facilityType,
  * the computed figure, the trail, the basis and the creation stamps are
  * immutable; payoutDate is re-derived from decidedDate). */
-const CREDIT_EDITABLE_COLUMNS = ['amount', 'overrideReason', 'approvedBy', 'decidedDate', 'status', 'paidDate', 'method', 'notes'];
+const CREDIT_EDITABLE_COLUMNS = ['amount', 'overrideReason', 'decidedDate', 'status', 'paidDate', 'method', 'notes'];
 
 /* AuditLog sheet — append-only, hidden. One row per Patients-sheet write event
  * (promotion created/skipped, direct add, edit, discharge, delete, restore),
@@ -1394,6 +1398,7 @@ const FINANCE_ACTIONS = [
    * לתשלום» — also on CONTROLLER_ACTIONS (Ortal). Sandra's
    * approveRefundException is gated by APPROVER_ACTIONS instead. */
   'settleRefund',
+  'requestRefundPayoutApproval', 'approveRefundPayout',
   /* Appended (CHANGELOG-ortal-billing-discounts.md): a cycle discount — the
    * `finance` capability only (Vered, Sandra; DISCOUNT_ACTIONS). NOT on
    * CONTROLLER_ACTIONS (CHANGELOG-discount-by-vered.md). */
@@ -1517,7 +1522,9 @@ const CONTROLLER_CLEANUP_SCHEMA = {
  * the fixed missing-data note stay out too. */
 const CONTROLLER_FORECAST_ROW_FIELDS_ = ['creditId', 'auto', 'patientKey', 'patientName', 'houseId', 'totalPaid',
   'entryDate', 'exitDate', 'disposition', 'daysStayed', 'refundDays', 'amount', 'calculatedAmount',
-  'overridden', 'ruleVersion', 'rule', 'creditType', 'allocationMonth', 'payoutDate'];
+  'overridden', 'ruleVersion', 'rule', 'creditType', 'allocationMonth', 'payoutDate',
+  'payoutApprovalRequestedAt', 'payoutApprovalRequestedBy', 'payoutApprovalAmount',
+  'payoutApprovedAt', 'payoutApprovedBy', 'payoutApprovalValid'];
 const CONTROLLER_FORECAST_SCHEMA = {
   ok: true, error: true, message: true,
   today: true, recordsCutoff: true, policyCutover: true, preCutoffExcludedCount: true, zeroByPolicyCount: true,
@@ -1576,7 +1583,7 @@ const FINANCE_FORBIDDEN_MESSAGE = 'אין הרשאה לצפות בנתוני ג�
  * other three are the Phase 1/2 decisions (plan §7.3, §8.5, §9) and are
  * refused by handle_ before dispatch. */
 const APPROVER_ACTIONS = [
-  'unvoidPayment', 'approveRefundException', 'writeOffOpeningBalance', 'acceptOpeningBalance',
+  'unvoidPayment', 'approveRefundException', 'approveRefundPayout', 'writeOffOpeningBalance', 'acceptOpeningBalance',
 ];
 /* Ortal's billing fix (CHANGELOG-ortal-billing-discounts.md): needs the
  * verified `accountant` role OR Sandra's `approver`; handle_ refuses anyone
@@ -1593,6 +1600,8 @@ const ACCOUNTANT_ACTIONS = ['voidUnpaidClaim'];
  * Ortal (controller view) is refused. Mirrors lib/role-scope.js
  * DISCOUNT_ACTIONS (a guard test pins the two lists equal). */
 const DISCOUNT_ACTIONS = ['setBillingDiscount'];
+const VERED_PAYOUT_REQUEST_ACTIONS = ['requestRefundPayoutApproval'];
+const ORTAL_PAYOUT_EXECUTION_ACTIONS = ['settleRefund'];
 /* A cycle's amount («שנה סכום», CHANGELOG-open-debts-cleanup.md): Vered and
  * Sandra (`finance`) and Ortal WITH `accountant` (or Sandra's approver). The
  * row is stamped updatedBy from the verified session. Mirrors lib/role-scope.js
@@ -1642,7 +1651,7 @@ const PROXY_KNOWN_ACTIONS = [
   'deleteDuplicateDischarge',
   'setDischargeContinuity',
   'editReceipt',
-  'settleRefund', 'approveRefundException',
+  'settleRefund', 'approveRefundException', 'requestRefundPayoutApproval', 'approveRefundPayout',
   'expectedDischarges',
   'upcomingCommittees',
   'getCommitteesForCoordinators',
@@ -2137,8 +2146,10 @@ function handle_(params) {
         { approver: hasRole_(params, 'approver') }));
     }
     // «זיכויים לתשלום» (CHANGELOG-refunds-auto-policy.md). settleRefund:
-    // Vered, Sandra and Ortal (gated above; Shiran / Yael refused).
-    // approveRefundException: APPROVER_ACTIONS — role-gated above (Sandra).
+    // Vered requests every payout, Sandra approves the current amount,
+    // Ortal alone records the actual transfer. All gates use verified IDs.
+    if (action === 'requestRefundPayoutApproval') return jsonOut_(requestRefundPayoutApproval_(params, requestUser_(params)));
+    if (action === 'approveRefundPayout') return jsonOut_(approveRefundPayout_(params, requestUser_(params)));
     if (action === 'settleRefund') return jsonOut_(settleRefund_(params, requestUser_(params)));
     if (action === 'approveRefundException') return jsonOut_(approveRefundException_(params, requestUser_(params)));
     if (action === 'moveLeadIrrelevant') {
@@ -2478,7 +2489,8 @@ function actorLabel_(params) {
 function roleOperationFor_(action, params) {
   const act = String(action == null ? '' : action);
   if (DELETE_ACTIONS.indexOf(act) >= 0 || APPROVER_ACTIONS.indexOf(act) >= 0) return act;
-  if (ACCOUNTANT_ACTIONS.indexOf(act) >= 0 || DISCOUNT_ACTIONS.indexOf(act) >= 0 || AMOUNT_ACTIONS.indexOf(act) >= 0) return act;
+  if (ACCOUNTANT_ACTIONS.indexOf(act) >= 0 || DISCOUNT_ACTIONS.indexOf(act) >= 0 || AMOUNT_ACTIONS.indexOf(act) >= 0 ||
+      VERED_PAYOUT_REQUEST_ACTIONS.indexOf(act) >= 0 || ORTAL_PAYOUT_EXECUTION_ACTIONS.indexOf(act) >= 0) return act;
   if (act === 'confirmPayment') {
     const c = parseJsonParam_(params && params.confirm);
     if (c && typeof c === 'object' && String(c.status == null ? '' : c.status).trim() === NOT_RECEIVED_DECISION) return 'voidUnpaidClaim';
@@ -2514,6 +2526,8 @@ function requiredRoleFor_(operation) {
   if (APPROVER_ACTIONS.indexOf(operation) >= 0) return 'approver';
   if (ACCOUNTANT_ACTIONS.indexOf(operation) >= 0) return 'accountant|approver';
   if (DISCOUNT_ACTIONS.indexOf(operation) >= 0) return 'finance';
+  if (VERED_PAYOUT_REQUEST_ACTIONS.indexOf(operation) >= 0) return 'veredOnly';
+  if (ORTAL_PAYOUT_EXECUTION_ACTIONS.indexOf(operation) >= 0) return 'ortalOnly';
   if (AMOUNT_ACTIONS.indexOf(operation) >= 0) return 'finance|accountant|approver';
   return '';
 }
@@ -2524,6 +2538,8 @@ function requiredRoleFor_(operation) {
 function roleAllowed_(params, operation) {
   const need = requiredRoleFor_(operation);
   return need === '' ? true : need.split('|').some(function (r) {
+    if (r === 'veredOnly') { const a = actingUser_(params); return a.verified && a.auth === 'personal' && a.id === 'vered' && a.roles.indexOf('staff') >= 0; }
+    if (r === 'ortalOnly') { const a = actingUser_(params); return a.verified && a.auth === 'personal' && a.id === 'ortal' && a.roles.indexOf('controller') >= 0; }
     return r === 'finance' ? hasCapability_(params, 'finance') : hasRole_(params, r);
   });
 }
@@ -13717,6 +13733,12 @@ function refundListRow_(c, line, stay, totalPaid) {
     rule: c ? refundForecastRule_(c) : String(b.rule || ''),
     creditType: String((c ? c.creditType : line.creditType) || ''),
     allocationMonth: String((c ? c.allocationMonth : line.allocationMonth) || ''),
+    payoutApprovalRequestedAt: c ? String(c.payoutApprovalRequestedAt || '') : '',
+    payoutApprovalRequestedBy: c ? String(c.payoutApprovalRequestedBy || '') : '',
+    payoutApprovalAmount: c && c.payoutApprovalAmount !== '' ? Number(c.payoutApprovalAmount) : '',
+    payoutApprovedAt: c ? String(c.payoutApprovedAt || '') : '',
+    payoutApprovedBy: c ? String(c.payoutApprovedBy || '') : '',
+    payoutApprovalValid: !!c && refundPayoutApprovalValid_(c),
     payoutDate: Object.prototype.toString.call(pd) === '[object Date]' ? refundForecastIso_(pd) : String(pd == null ? '' : pd).trim(),
   };
 }
@@ -13885,6 +13907,8 @@ function autoRefundRecord_(stay, line, patientId, seq, user, nowIso, uid) {
     createdAt: nowIso, createdBy: String(user == null ? '' : user).slice(0, 40),
     updatedAt: nowIso, updatedBy: String(user == null ? '' : user).slice(0, 40),
     creditUid: uid,
+    payoutApprovalRequestedAt: '', payoutApprovalRequestedBy: '', payoutApprovalAmount: '',
+    payoutApprovedAt: '', payoutApprovedBy: '',
   };
 }
 
@@ -13984,6 +14008,82 @@ function refundTargetLocked_(p, user) {
   return { ok: false, error: 'unknown_credit' };
 }
 
+
+/* Separate payout authorization from automatic POLICY computation and
+ * exception amount approval. Only Vered requests, Sandra approves this exact
+ * amount, and only Ortal can record settlement. The five fields are an
+ * append-only extension to Credits; old rows are NEVER implicitly approved. */
+function refundPayoutApprovalValid_(c) {
+  if (!c || String(c.status).trim() !== 'pending') return false;
+  const amount = creditAmount_(c.amount), requested = creditAmount_(c.payoutApprovalAmount);
+  return amount !== null && amount > 0 && amount === requested &&
+    String(c.payoutApprovalRequestedBy || '') === 'vered' &&
+    !!String(c.payoutApprovalRequestedAt || '').trim() &&
+    String(c.payoutApprovedBy || '') === 'sandra' &&
+    !!String(c.payoutApprovedAt || '').trim() &&
+    String(c.payoutApprovedAt) >= String(c.payoutApprovalRequestedAt);
+}
+function refundPayoutClearApproval_(row) {
+  row.payoutApprovalRequestedAt = '';
+  row.payoutApprovalRequestedBy = '';
+  row.payoutApprovalAmount = '';
+  row.payoutApprovedAt = '';
+  row.payoutApprovedBy = '';
+}
+function requestRefundPayoutApproval_(params, user) {
+  const actor = actingUser_(params);
+  if (!actor.verified || actor.auth !== 'personal' || actor.id !== 'vered' || actor.roles.indexOf('staff') < 0) {
+    return { ok: false, error: 'forbidden_role' };
+  }
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('requestRefundPayoutApproval_');
+  try {
+    const t = refundTargetLocked_(params || {}, user);
+    if (!t.ok) return t;
+    const c = t.credit, amount = creditAmount_(c.amount);
+    if (String(c.status).trim() !== 'pending') return { ok: false, error: 'not_pending' };
+    if (amount === null || amount <= 0) return { ok: false, error: 'zero_amount_credit' };
+    if (String(c.payoutApprovalRequestedBy || '') === 'vered' &&
+        creditAmount_(c.payoutApprovalAmount) === amount &&
+        String(c.payoutApprovalRequestedAt || '') && !String(c.payoutApprovedAt || '')) {
+      return { ok: true, credit: { id: String(c.id), payoutApprovalRequestedAt: String(c.payoutApprovalRequestedAt) }, replayed: true };
+    }
+    if (refundPayoutApprovalValid_(c)) return { ok: true, credit: { id: String(c.id), payoutApprovedAt: String(c.payoutApprovedAt) }, replayed: true };
+    const now = new Date().toISOString();
+    const out = Object.assign({}, c, {
+      payoutApprovalRequestedAt: now, payoutApprovalRequestedBy: 'vered', payoutApprovalAmount: amount,
+      payoutApprovedAt: '', payoutApprovedBy: '', updatedAt: now, updatedBy: String(user || '').slice(0, 40),
+    });
+    writeCreditRow_(t.sh, t.row, out);
+    logAudit_('credit_payout_requested', 'requestRefundPayoutApproval_', String(c.patientId || ''), String(c.patientName || ''), { id: String(c.id), by: 'vered' });
+    return { ok: true, credit: { id: String(out.id), payoutApprovalRequestedAt: now } };
+  } finally { try { lock.releaseLock(); } catch (_) {} }
+}
+function approveRefundPayout_(params, user) {
+  const actor = actingUser_(params);
+  if (!actor.verified || actor.auth !== 'personal' || actor.id !== 'sandra' || actor.roles.indexOf('approver') < 0)
+    return { ok: false, error: 'forbidden_role' };
+  const p = params || {};
+  if (!creditStr_(p.creditId, 200)) return { ok: false, error: 'credit_id_required' };
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('approveRefundPayout_');
+  try {
+    const t = refundTargetLocked_({ creditId: p.creditId }, user);
+    if (!t.ok) return t;
+    const c = t.credit;
+    if (String(c.status).trim() !== 'pending') return { ok: false, error: 'not_pending' };
+    if (String(c.payoutApprovalRequestedBy || '') !== 'vered' || !String(c.payoutApprovalRequestedAt || '')) return { ok: false, error: 'request_required' };
+    const amount = creditAmount_(c.amount), requested = creditAmount_(c.payoutApprovalAmount);
+    if (amount === null || amount <= 0 || amount !== requested) return { ok: false, error: 'approval_amount_changed' };
+    if (refundPayoutApprovalValid_(c)) return { ok: true, credit: { id: String(c.id), payoutApprovedAt: String(c.payoutApprovedAt) }, replayed: true };
+    const now = new Date().toISOString();
+    const out = Object.assign({}, c, { payoutApprovedAt: now, payoutApprovedBy: 'sandra', updatedAt: now, updatedBy: String(user || '').slice(0, 40) });
+    writeCreditRow_(t.sh, t.row, out);
+    logAudit_('credit_payout_approved', 'approveRefundPayout_', String(c.patientId || ''), String(c.patientName || ''), { id: String(c.id), by: 'sandra' });
+    return { ok: true, credit: { id: String(out.id), payoutApprovedAt: now } };
+  } finally { try { lock.releaseLock(); } catch (_) {} }
+}
+
 /* action=settleRefund — «סמן כשולם» on a row of «זיכויים לתשלום».
  * Vered, Sandra (finance) and Ortal (the controller view — on
  * CONTROLLER_ACTIONS); Shiran / Yael are refused by financeRefused_. Input: { creditId } or
@@ -13992,6 +14092,9 @@ function refundTargetLocked_(p, user) {
  * must be pending with amount > 0. Writes status/paidDate/method + stamps. */
 function settleRefund_(params, user) {
   const p = params || {};
+  const actor = actingUser_(p);
+  if (!actor.verified || actor.auth !== 'personal' || actor.id !== 'ortal' || actor.roles.indexOf('controller') < 0) return { ok: false, error: 'forbidden_role' };
+  if (!creditStr_(p.creditId, 200)) return { ok: false, error: 'approval_required' };
   const paidDate = creditDate_(p.paidDate);
   if (!paidDate) return { ok: false, error: 'bad_paidDate' };
   if (paidDate > todayISODate_()) return { ok: false, error: 'paidDate_in_future' };
@@ -14005,6 +14108,7 @@ function settleRefund_(params, user) {
     const c = t.credit;
     if (String(c.status).trim() !== 'pending') return { ok: false, error: 'not_pending' };
     if (!(Number(c.amount) > 0)) return { ok: false, error: 'zero_amount_credit' };
+    if (!refundPayoutApprovalValid_(c)) return { ok: false, error: 'approval_required' };
     const out = Object.assign({}, c, {
       status: 'paid', paidDate: paidDate, method: method,
       updatedAt: new Date().toISOString(), updatedBy: String(user == null ? '' : user).slice(0, 40),
@@ -14045,6 +14149,8 @@ function approveRefundException_(params, user) {
       amount: amount, overrideReason: amount !== calculated ? reason : '',
       approvedBy: stamp, updatedAt: new Date().toISOString(), updatedBy: stamp,
     });
+    // An exception amount is a separate decision, never a payout authorization.
+    refundPayoutClearApproval_(out);
     writeCreditRow_(t.sh, t.row, out);
     logAudit_('credit_exception_approved', 'approveRefundException_', String(c.patientId || ''), String(c.patientName || ''),
       { id: String(c.id), override: amount !== calculated, updatedBy: stamp });
@@ -15262,6 +15368,7 @@ function upsertCredit_(credit, user, opts) {
     let existingPayout = null;
     // EDIT only: whether the payload changes the stored amount.
     let amountChanged = false;
+    let priorStatus = '';
 
     if (wantId) {
       // ---- EDIT ----
@@ -15293,6 +15400,7 @@ function upsertCredit_(credit, user, opts) {
       }
 
       record = Object.assign({}, sheetObj);
+      priorStatus = String(sheetObj.status || '').trim();
       existingPayout = { decidedDate: creditDate_(sheetObj.decidedDate), payoutDate: creditDate_(sheetObj.payoutDate) };
       amountChanged = credit.amount !== undefined && creditAmount_(credit.amount) !== creditAmount_(sheetObj.amount);
       for (let k = 0; k < CREDIT_EDITABLE_COLUMNS.length; k++) {
@@ -15322,6 +15430,9 @@ function upsertCredit_(credit, user, opts) {
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return { ok: false, error: 'bad_month' };
     if (CREDIT_TYPES.indexOf(creditType) < 0)    return { ok: false, error: 'bad_creditType', creditType: creditType };
     if (CREDIT_STATUSES.indexOf(status) < 0)     return { ok: false, error: 'bad_status', status: status };
+    // No direct mark-paid via saveCredit: only Ortal's explicitly approved settleRefund is allowed.
+    if (status === 'paid' && (!wantId || priorStatus !== 'paid')) return { ok: false, error: 'use_settleRefund' };
+    if (wantId && priorStatus === 'paid' && status !== 'paid') return { ok: false, error: 'paid_locked' };
     /* The POLICY figure, recalculated HERE from the discharge + Payments rows
      * (CHANGELOG-refunds-auto-policy.md, follow-up). The client's
      * calculatedAmount, basis and creditType label are never trusted: on a
@@ -15397,7 +15508,13 @@ function upsertCredit_(credit, user, opts) {
        * legacy row that pre-dates the column — one is minted. Never re-minted
        * once present, whatever else the edit changes. */
       creditUid:        creditStr_(record.creditUid, 60) || (CREDIT_UID_PREFIX + Utilities.getUuid()),
+      payoutApprovalRequestedAt: creditStr_(record.payoutApprovalRequestedAt, 80),
+      payoutApprovalRequestedBy: creditStr_(record.payoutApprovalRequestedBy, 40),
+      payoutApprovalAmount: record.payoutApprovalAmount === '' || record.payoutApprovalAmount == null ? '' : Number(record.payoutApprovalAmount),
+      payoutApprovedAt: creditStr_(record.payoutApprovedAt, 80),
+      payoutApprovedBy: creditStr_(record.payoutApprovedBy, 40),
     };
+    if (!wantId || amountChanged || status !== priorStatus || decidedDate !== existingPayout.decidedDate) refundPayoutClearApproval_(out);
 
     if (!targetRow) {
       /* Duplicate guard (CHANGELOG-duplicate-discharges.md): never a second

@@ -262,6 +262,8 @@ test('every mapped ACTION is served for Vered and Sandra (unchanged); a shared c
       for (const who of ['vered', 'sandra']) {
         const cookie = personal(who);
         for (const action of scope.FINANCE_ACTIONS) {
+          // Per-actor refund workflow is separately guarded: not a generic finance permission.
+          if (['requestRefundPayoutApproval','approveRefundPayout','settleRefund'].includes(action)) continue;
           const before = stub.calls.length;
           assert.strictEqual((await request(port, 'GET', '/api/sheets?action=' + action, { cookie })).status, 200, action);
           assert.strictEqual((await request(port, 'POST', '/api/sheets', { cookie, body: { action } })).status, 200, action);

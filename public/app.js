@@ -10546,7 +10546,7 @@ async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate
 
   const lineHtml = (l, i) => {
     const typeLabel = CREDIT_TYPE_LABELS[l.creditType] || l.creditType;
-    const statusOpts = creditStatusOptionKeys(l.status, canDelete()).map(s =>
+    const statusOpts = creditStatusOptionKeys(l.status, canDelete()).filter(s => s !== 'paid' || l.status === 'paid').map(s =>
       `<option value="${s}" ${l.status === s ? 'selected' : ''}>${CREDIT_STATUS_LABELS[s]}</option>`).join('');
     const isOther = l.creditType === 'other';
     const b = l.basis;
@@ -10582,8 +10582,8 @@ async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate
           <input type="text" name="${isOther ? 'reason' : 'overrideReason'}" maxlength="300" value="${escapeHtml(isOther ? l.reason : l.overrideReason)}" />
         </div>
         <div class="form-row credit-inline">
-          <label>אושר ע"י</label>
-          <input type="text" name="approvedBy" maxlength="40" value="${escapeHtml(l.approvedBy || '')}" />
+          <label>מקור החישוב / אישור חריגה</label>
+          <span class="p-val">${escapeHtml(l.approvedBy || '—')}</span>
         </div>
         <div class="form-row credit-inline">
           <label>תאריך החלטה</label>
@@ -10640,7 +10640,7 @@ async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate
       const val = (n) => { const el = fs.querySelector(`[name="${n}"]`); return el ? el.value : undefined; };
       const amount = val('amount');
       if (amount !== undefined) l.amount = amount === '' ? '' : Number(amount);
-      ['overrideReason', 'reason', 'status', 'notes', 'allocationMonth', 'approvedBy', 'decidedDate', 'paidDate', 'method'].forEach(n => {
+      ['overrideReason', 'reason', 'status', 'notes', 'allocationMonth', 'decidedDate', 'paidDate', 'method'].forEach(n => {
         if (val(n) !== undefined) l[n] = val(n);
       });
       l.payoutDate = linePayoutDate(l, l.decidedDate);
@@ -10822,6 +10822,12 @@ const REFUND_ACTION_ERRORS = {
   stay_not_found:             'שורת השחרור לא נמצאה',
   unknown_credit:             'הזיכוי לא נמצא — הרשימה רועננה',
   override_requires_approver: 'שינוי סכום זיכוי — באישור סנדרה בלבד',
+  approval_required: 'לא ניתן לשלם לפני בקשת ורד ואישור סנדרה לסכום הזה',
+  request_required: 'ורד עדיין לא שלחה בקשת אישור לסנדרה',
+  approval_amount_changed: 'סכום ההחזר השתנה — נדרש אישור מחדש',
+  credit_id_required: 'צריך לשמור את ההחזר לפני אישור',
+  use_settleRefund: 'סימון החזר כשולם מתבצע על ידי אורטל בלבד לאחר אישור סנדרה',
+  paid_locked: 'לא ניתן להחזיר החזר שכבר שולם למצב ממתין',
 };
 function refundActionErrorText(e) {
   if (isLockBusyError(e)) return LOCK_BUSY_MESSAGE_HE;
@@ -10888,7 +10894,11 @@ function refundRuleVersionText(v) {
  * to her read view directly; Shiran / Yael never see the list at all. */
 function refundRowControls() {
   const edit = state.mode === 'edit' && financeView() && !controllerView();
-  return { settle: edit || billingReadView(), exception: edit && state.approver === true };
+  // Role-specific presentation only. Node + Apps Script recheck stable personal IDs.
+  return { request: edit && state.sessionUser === 'ורד',
+    approve: edit && state.approver === true && state.sessionUser === 'סנדרה',
+    settle: billingReadView() && state.sessionUser === 'אורטל',
+    exception: edit && state.approver === true };
 }
 
 /* Pure: the list as HTML. Every value goes through escapeHtml. */
@@ -10922,12 +10932,15 @@ function payoutForecastHtml(data, controls) {
         + cell('סיבת עזיבה', esc(refundLeaveReasonText(r)))
         + cell('ימי שהייה', esc(r.daysStayed === '' || r.daysStayed == null ? '—' : r.daysStayed))
         + cell('ימי זיכוי', esc(r.refundDays === '' || r.refundDays == null ? '—' : r.refundDays))
-        + cell('סכום זיכוי', esc(fmtShekel(r.amount)) + (r.overridden ? ' <span class="credit-cap">חריגה מאושרת</span>' : ''))
+        + cell('סכום זיכוי', esc(fmtShekel(r.amount)) + (r.overridden ? ' <span class="credit-cap">חריגה מסכום המדיניות</span>' : ''))
+        + cell('אישור לתשלום', esc(r.payoutApprovalValid ? 'אושר על ידי סנדרה' : r.payoutApprovalRequestedBy === 'vered' ? 'ממתין לאישור סנדרה' : 'נדרשת בקשת ורד'))
         + cell('כלל', `${esc(refundRuleVersionText(r.ruleVersion))} · <span class="credit-rule">${esc(payoutForecastRuleText(r.rule))}</span>`)
         + cell('תאריך תשלום', `<bdi>${esc(formatDateHe(r.payoutDate) || '—')}</bdi>`);
-      if (ctl.settle || ctl.exception) {
+      if (ctl.request || ctl.approve || ctl.settle || ctl.exception) {
         html += `<div class="irrelevant-actions">`
-          + (ctl.settle ? `<button type="button" class="btn small primary" data-refund-action="settle" data-refund-row="${i}">סמן כשולם</button>` : '')
+          + (ctl.request && r.payoutApprovalRequestedBy !== 'vered' ? `<button type="button" class="btn small primary" data-refund-action="request" data-refund-row="${i}">שלחי לסנדרה לאישור</button>` : '')
+          + (ctl.approve && r.payoutApprovalRequestedBy === 'vered' && !r.payoutApprovalValid ? `<button type="button" class="btn small primary" data-refund-action="approve" data-refund-row="${i}">אשרי תשלום לאורטל</button>` : '')
+          + (ctl.settle && r.payoutApprovalValid ? `<button type="button" class="btn small primary" data-refund-action="settle" data-refund-row="${i}">סמן כשולם</button>` : '')
           + (ctl.exception ? `<button type="button" class="btn small" data-role="approver" data-refund-action="exception" data-refund-row="${i}">חריגה</button>` : '')
           + `</div>`;
       }
@@ -10994,7 +11007,19 @@ function refundRowTarget(r) {
 /* The two refund writes behind the row buttons. Both throw on a refusal
  * (apiPost: {ok:false}, lock_busy after its one retry) so the modal stays
  * open with the Hebrew reason; the list is refreshed on success. */
+async function requestRefundPayoutRow(r) {
+  const res = await trackedWrite([_creditsGuard], () => apiPost({ action: 'requestRefundPayoutApproval', ...refundRowTarget(r) }));
+  await afterRefundWrite();
+  return res;
+}
+async function approveRefundPayoutRow(r) {
+  if (!r || !r.creditId) throw new Error('בקשה אינה שמורה במקור');
+  const res = await trackedWrite([_creditsGuard], () => apiPost({ action: 'approveRefundPayout', creditId: r.creditId }));
+  await afterRefundWrite();
+  return res;
+}
 async function settleRefundRow(r, paidDate, method) {
+  if (!r || !r.creditId || !r.payoutApprovalValid) throw new Error('לא ניתן לשלם ללא אישור סנדרה');
   const res = await trackedWrite([_creditsGuard], () => apiPost({ action: 'settleRefund', ...refundRowTarget(r), paidDate, method }));
   await afterRefundWrite();
   return res;
@@ -11015,7 +11040,7 @@ async function afterRefundWrite() {
 /* «סמן כשולם» — the EXPLICIT mark-paid action on one row: date + method,
  * then action=settleRefund (the server validates both again). */
 function showSettleRefundModal(r) {
-  if (!refundRowControls().settle || !r) return;
+  if (!refundRowControls().settle || !r || !r.payoutApprovalValid) return;
   const root = document.getElementById('modal-root');
   if (!root) return;
   const back = document.createElement('div');
@@ -11198,8 +11223,17 @@ function initPayoutForecastControls() {
     if (btn) {
       const f = payoutForecastState();
       const row = f.data && f.data.toPay && f.data.toPay.rows ? f.data.toPay.rows[Number(btn.getAttribute('data-refund-row'))] : null;
-      if (btn.getAttribute('data-refund-action') === 'settle') showSettleRefundModal(row);
-      else if (btn.getAttribute('data-refund-action') === 'exception') showRefundExceptionModal(row);
+      const act = btn.getAttribute('data-refund-action');
+      if (act === 'settle') showSettleRefundModal(row);
+      else if (act === 'exception') showRefundExceptionModal(row);
+      else if (act === 'request' && row && refundRowControls().request) {
+        busyButton(btn, 'save', () => requestRefundPayoutRow(row)).then(() => showToast('בקשת האישור נרשמה עבור סנדרה'))
+          .catch(err => showError(refundActionErrorText(err)));
+      } else if (act === 'approve' && row && refundRowControls().approve && row.payoutApprovalRequestedBy === 'vered') {
+        if (typeof confirm === 'function' && !confirm('לאשר לאורטל תשלום החזר בסך ' + fmtShekel(row.amount) + ' עבור ' + row.patientName + '?')) return;
+        busyButton(btn, 'save', () => approveRefundPayoutRow(row)).then(() => showToast('התשלום אושר לאורטל'))
+          .catch(err => showError(refundActionErrorText(err)));
+      }
       return;
     }
     const link = e.target && e.target.closest && e.target.closest('[data-open-debt-aging]');
