@@ -215,3 +215,64 @@ test('C: PURE leadFlagClean_ drops an invalid stored row instead of serving it',
   w.g.sandbox.leadFlagIndexPut_(flags, { leadId: 'L1', occurredAt: '2026-11-04T08:00:00.000Z', detailsJson: 'not json' }, 'meeting_patient_change');
   assert.deepEqual(plain(flags), {});
 });
+
+
+/* ================= D. post-#362 lost-response recovery ================= */
+
+test('D: committed Activity with a lost HTTP reply uses the SAME submissionId and stores one event after retry', () => {
+  const w = world();
+  const flag = { leadId: 'L1', kind: 'meeting_patient_change', change: 'rescheduled',
+    prevDate: '2026-11-04', prevTime: '11:00', newDate: '2026-11-08',
+    newTime: '12:00', withWhom: 'אורן', note: 'שינוי במועד' };
+  let minted = 0;
+  const mint = () => { minted++; return SID(61); };
+  const planned = core.leadFlagPendingPlan(null, flag, mint);
+  assert.equal(planned.ok, true);
+  const first = w.post(planned.pending.body);
+  assert.equal(first.ok, true, 'source committed, pretend the HTTP response was lost');
+  const retry = core.leadFlagPendingPlan(planned.pending, flag, mint);
+  assert.equal(retry.ok, true); assert.equal(retry.retry, true);
+  assert.deepEqual(retry.pending.body, planned.pending.body, 'same ID and data, not a new operation');
+  const second = w.post(retry.pending.body);
+  assert.equal(second.ok, true); assert.equal(second.replayed, true);
+  assert.equal(minted, 1, 'retry did not mint a second operation ID');
+  assert.equal(w.g.sheetRows('Activity', 'ACTIVITY_COLUMNS').length, 1, 'exactly one source event');
+  assert.equal(w.post({ action: 'contactIndex' }).flags.L1.meetingChange.newDate, '2026-11-08');
+});
+
+test('D: uncertain first flag freezes its payload; a changed retry is refused without a new id', () => {
+  const flag = { leadId: 'L1', kind: 'waitlist_reason', reason: 'place' };
+  let minted = 0;
+  const mint = () => SID(++minted);
+  const first = core.leadFlagPendingPlan(null, flag, mint);
+  assert.equal(first.ok, true); assert.equal(minted, 1);
+  const changed = core.leadFlagPendingPlan(first.pending, { ...flag, reason: 'funder' }, mint);
+  assert.deepEqual(changed, { ok: false, error: 'unconfirmed_previous_flag' });
+  assert.equal(minted, 1, 'changed details cannot create a silent duplicate');
+  const same = core.leadFlagPendingPlan(first.pending, flag, mint);
+  assert.equal(same.retry, true);
+  assert.equal(same.pending.body.submissionId, SID(1));
+  assert.equal(minted, 1);
+  const independent = core.leadFlagPendingPlan(null, { ...flag, leadId: 'L2' }, mint);
+  assert.equal(independent.ok, true);
+  assert.equal(independent.pending.body.submissionId, SID(2));
+});
+
+test('D: after meeting first-stage save, an uncertain flag retry does not run saveAll again', () => {
+  const trigger = CRM_SRC.indexOf("} else if (f.dataset.form === 'patient-change') {");
+  const nextBranch = CRM_SRC.indexOf("} else if (f.dataset.form === 'note') {", trigger);
+  assert.ok(trigger > 0 && nextBranch > trigger);
+  const handler = CRM_SRC.slice(trigger, nextBranch);
+  const check = handler.indexOf("const prior = pendingLeadFlags[");
+  const retry = handler.indexOf("postLeadFlag(prior.body.flag");
+  const early = handler.indexOf("return;", retry);
+  const normalWrite = handler.indexOf("writeLead(id, plan.patch", early);
+  assert.ok(check >= 0 && retry > check && early > retry && normalWrite > early,
+    'recovery sends only frozen flag and exits before any second saveAll');
+  assert.match(CRM_SRC, /pendingLeadFlags\[key\] = pending/);
+  assert.match(CRM_SRC, /delete pendingLeadFlags\[key\]/);
+  assert.match(CRM_SRC, /pendingLeadFlags\[key\].*flag/s);
+  assert.match(CRM_SRC, /הפגישה נשמרה, אך רישום השינוי לא אומת/);
+  assert.match(CRM_SRC, /לא התקבל אישור מקור/);
+  assert.match(CRM_SRC, /afterLeadSaved/);
+});
