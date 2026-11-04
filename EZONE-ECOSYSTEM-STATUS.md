@@ -1,8 +1,8 @@
 # E-ZONE Ecosystem Status — updated November 4, 2026
 
-## «העבר לאמבולטורי» without a lead phone — November 4, 2026 (PR open)
+## CRM follow-ups: «העבר לאמבולטורי» without a lead phone · save spinner · waitlist reason — November 4, 2026 (PR open)
 
-- A discharge was never blocked; only the Outpatient lead failed when the source lead had no phone. Now the phone is also resolved from `PatientPhones` (roster rule), and when none exists the CRM «משוחררים» row asks for it; the typed phone is validated (browser, server, Code.gs), kept in `PatientPhones` and sent. Phone stays required for the send (Outpatient's matching key). Code.gs changed (clasp CI). SW v113 → v114. Details: `CHANGELOG-outpatient-handoff-phone.md`.
+- A discharge was never blocked; only the Outpatient lead failed when the source lead had no phone. Now the phone is also resolved from `PatientPhones` (roster rule), and when none exists the CRM «משוחררים» row asks for it; the typed phone is validated (browser, server, Code.gs), kept in `PatientPhones` and sent. Phone stays required for the send (Outpatient's matching key). Same PR: a spinner on every CRM save; «סיבת המתנה» saves on the click and waits for an in-flight save instead of being dropped silently. Code.gs changed (clasp CI). SW v113 → v114. Details: `CHANGELOG-crm-followups-1104.md`.
 
 ## CRM: Vered's feedback round — November 4, 2026 (merged #362)
 

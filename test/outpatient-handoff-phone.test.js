@@ -1,6 +1,6 @@
 'use strict';
 
-/* «העבר לאמבולטורי» without a lead phone (CHANGELOG-outpatient-handoff-phone.md).
+/* «העבר לאמבולטורי» without a lead phone (CHANGELOG-crm-followups-1104.md).
  * The discharge itself is never blocked; the Outpatient lead needs a phone (it is
  * Outpatient's matching key), so the phone is resolved like the rosters, or typed
  * in the «משוחררים» row — kept in PatientPhones — and the send goes through.

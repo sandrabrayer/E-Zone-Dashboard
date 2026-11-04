@@ -411,7 +411,7 @@ test('D: CACHE_VERSION is v114 (monotonic from v113; v17 burned, never reused)',
   // v111: CHANGELOG-crm-collect-on-date.md (stacked on v110, PR #354).
   // v112: CHANGELOG-admitted-lead-stays-closed.md (from the live v111).
   // v113: CHANGELOG-crm-vered-feedback-1104.md (from v112).
-  // v114: CHANGELOG-outpatient-handoff-phone.md (stacked on v113).
+  // v114: CHANGELOG-crm-followups-1104.md (stacked on v113).
   assert.equal(v, 'v114');
   assert.notEqual(v, 'v17');
 });

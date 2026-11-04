@@ -740,7 +740,7 @@ test('C17 «משוחררים» (Vered): the discharged list with its flags; rest
     assert.match(txt, /נועה לוי/); assert.match(txt, /משוחרר לטיפול חוץ/); assert.match(txt, /שחר/); assert.match(txt, /לא נשלח/);
     // «העבר לאמבולטורי»
     const outCalls = [];
-    // first answer: no phone → the row asks for it (CHANGELOG-outpatient-handoff-phone.md); then the send with the phone goes through
+    // first answer: no phone → the row asks for it (CHANGELOG-crm-followups-1104.md); then the send with the phone goes through
     await page.route('**/api/outpatient-lead', (route) => {
       const b = JSON.parse(route.request().postData()); outCalls.push(b);
       route.fulfill({ status: b.phone ? 200 : 502, contentType: 'application/json', body: JSON.stringify(b.phone ? { ok: true, sent: true } : { ok: false, error: 'no_phone', message: 'לא נשלח לאמבולטורי: אין טלפון למטופל/ת.' }) });
@@ -1286,6 +1286,43 @@ test('Vered 04/11/2026: the app icon in the menu; «לידים»; no urgent band
     assert.match(href, /^https:\/\/wa\.me\/\d*\?text=/);
     assert.match(decodeURIComponent(href.split('?text=')[1]), /גלי כהן.*שינה\/תה את מועד הפגישה.*ביקשו לדחות/s);
     assert.match(await page.textContent('#crm-drawer .drawer-head'), /שונתה ע״י המטופל\/ת/, 'the card says who changed it');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('Vered 04/11/2026 (2): every save shows a spinner on its button until the answer; «סיבת המתנה» saves on the click (no hidden «שמירה»), the chip shows the reason next to any other next step (CHANGELOG-crm-followups-1104.md)', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    // slow every write by 700 ms so the busy state is observable
+    await page.route('**/api/sheets', async (route) => {
+      const b = route.request().postData();
+      if (b && /"action":"(saveAll|logLeadFlag)"/.test(b)) await new Promise((r) => setTimeout(r, 700));
+      route.continue();
+    });
+    await page.click('[data-area="leads"]');
+    await page.click('.card[data-open-lead="L2"] .name');
+    const f = '#crm-drawer form[data-form="note"]';
+    await page.locator(f).locator('..').locator('summary').click();
+    await page.fill(f + ' textarea[name="note"]', 'בדיקת ספינר');
+    await page.click(f + ' button[type="submit"]');
+    await page.waitForSelector(f + ' button[type="submit"][aria-busy="true"]', { state: 'attached', timeout: 2000 });
+    assert.equal(await page.$eval(f + ' button[type="submit"]', (b) => b.disabled), true, 'disabled while saving');
+    await page.waitForFunction((sel) => { const b = document.querySelector(sel); return b && b.getAttribute('aria-busy') !== 'true' && !b.disabled; }, f + ' button[type="submit"]', { timeout: 5000 });
+    // → רשימת המתנה, then the reason saves on the click
+    await page.click('#crm-drawer [data-stage-next="L2"]');
+    await page.waitForSelector('#crm-drawer form[data-form="wait-reason"]', { timeout: 5000 });
+    assert.equal(await page.locator('#crm-drawer form[data-form="wait-reason"] button[type="submit"]').count(), 0, 'no separate «שמירה» to forget');
+    // clicked while the stage move is still saving (700 ms) — the choice waits, it is never dropped
+    await page.check('#crm-drawer form[data-form="wait-reason"] input[value="funder"]');
+    await page.waitForFunction(() => /שומר/.test((document.querySelector('#crm-drawer [data-wait-state]') || {}).textContent || ''), null, { timeout: 2000 });
+    await page.waitForFunction(() => /נשמר/.test((document.querySelector('#crm-drawer [data-wait-state]') || {}).textContent || ''), null, { timeout: 5000 });
+    const flag = srv.saves.filter((x) => x.action === 'logLeadFlag').pop();
+    assert.deepEqual([flag.flag.leadId, flag.flag.kind, flag.flag.reason], ['L2', 'waitlist_reason', 'funder']);
+    assert.match(await page.textContent('#crm-drawer .drawer-head'), /ממתין לאישור הקופה/);
+    await page.click('#crm-drawer-close');
+    assert.match(await page.textContent('.card[data-open-lead="L2"]'), /ממתין לאישור הקופה/, 'the board card shows the reason');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });

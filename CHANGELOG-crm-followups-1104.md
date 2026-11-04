@@ -1,6 +1,8 @@
-# CHANGELOG — «העבר לאמבולטורי» asks for the phone instead of failing (04/11/2026)
+# CHANGELOG — CRM follow-ups 04/11/2026: Outpatient handoff without a lead phone · save spinner · waitlist reason that did not save
 
 Branch `claude/outpatient-handoff-phone` → base `claude/build-ezone-dashboard-QOg5s` (after #362).
+
+# Part 1 — «העבר לאמבולטורי» asks for the phone instead of failing
 
 ## Reported
 
@@ -35,9 +37,37 @@ Branch `claude/outpatient-handoff-phone` → base `claude/build-ezone-dashboard-
 4. The server message now reads «אין טלפון למטופל/ת. יש להזין טלפון בשורה של המטופל/ת ב«משוחררים» ולשלוח
    שוב.»
 
+# Part 2 — save spinner; «ממתין לאישור הקופה» that looked selected but did not save
+
+## Reported
+
+Vered marked two waitlist leads «ממתין לאישור הקופה»; the radio showed it, the server never got it.
+
+## Root cause
+
+- The reason needed a separate «שמירה» click — choosing the radio alone sent nothing.
+- When chosen right after another save of the same card (e.g. the move to «רשימת המתנה», still in flight),
+  `postLeadFlag` returned **silently** (`state.saving`). Every other CRM form had the same silent drop.
+- On the board a waitlist lead with an unread manager report showed only «דיווח מנהל/ת חדש», so a saved
+  reason was not visible there.
+
+## Fix
+
+- «סיבת המתנה» **saves on the click** (no «שמירה» button): radios disabled, «⟳ שומר…», then «נשמר <when> ·
+  <who>» from the server echo; a refusal re-enables and says «לא נשמר — נסי שוב». If another save of the card
+  is still running, the choice **waits for it** (up to ~18 s) instead of being dropped.
+- **Spinner on every CRM save:** the submit button of the form being saved shows a spinner and is disabled from
+  the moment the save starts until the answer (hooked on every `state.saving` start / end; 30 s safety stop;
+  a form refused by its own validation never spins). A submit while another save runs → a toast «שמירה קודמת
+  עדיין מתבצעת», never a silent drop.
+- The waitlist reason chip is shown on the board card, the table and the card header **next to** any other
+  next step (e.g. «דיווח מנהל/ת חדש»).
+
 ## Files
 
 `apps-script/Code.gs`, `server.js`, `public/crm/crm.js`, `public/crm/crm.css`, `public/sw.js` (v113 → v114).
+Part 2 tests: `test/crm-shell-browser.test.js` «Vered 04/11/2026 (2)» (spinner during a slowed save; the reason
+chosen while the stage move is still saving is saved; chip on card + board).
 Tests: new `test/outpatient-handoff-phone.test.js` (7: book fallback, typed phone saved / updated / used,
 gates, server validation, CRM rule = server rule); `test/crm-shell-browser.test.js` C17 (no-phone → field →
 invalid refused → valid sent); `crm-pwa`, `dashboard-perf-assets` (v114). Docs: `EZONE-ECOSYSTEM-STATUS.md`.

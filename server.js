@@ -1485,7 +1485,7 @@ app.get('/api/debug/last-load', requireSession, requireFinance, (_req, res) => {
 const DISCHARGE_OUTPATIENT_FAILED_HE = 'יצירת ליד טיפול חוץ נכשלה — לא נשלח. אפשר לנסות שוב ב«העבר לאמבולטורי».';
 const DISCHARGE_OUTPATIENT_NO_PHONE_HE = 'לא נשלח לאמבולטורי: אין טלפון למטופל/ת. יש להזין טלפון בשורה של המטופל/ת ב«משוחררים» ולשלוח שוב.';
 const DISCHARGE_OUTPATIENT_BAD_PHONE_HE = 'מספר הטלפון אינו תקין — 9 או 10 ספרות, מתחיל ב-0.';
-/* A phone typed for this send (CHANGELOG-outpatient-handoff-phone.md): digits only,
+/* A phone typed for this send (CHANGELOG-crm-followups-1104.md): digits only,
  * 9–10 after normalising (a lost leading zero of a mobile is restored). '' = none
  * given; null = given but invalid. Pure. */
 function dischargeTypedPhone(raw) {
