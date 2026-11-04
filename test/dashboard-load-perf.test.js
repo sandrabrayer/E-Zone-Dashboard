@@ -669,6 +669,18 @@ test('E2: stale client missing a saved patient retains source and does not take 
   assert.ok(ids.includes(omitted.id), 'omitted patient remains on sheet');
 });
 
+test('E2: an unchanged source still returns exact-ID save proof under the existing lock', () => {
+  const w = world({ patients: 90 });
+  const snap = clientSnapshot(w);
+  w.reset();
+  const res = w.g.handle({ action: 'saveAll', user: 'ורד', leads: snap.leads, patients: snap.patients,
+    prove: { leads: ['lead-0'], patients: ['id-p0'] } });
+  assert.equal(res.ok, true);
+  assert.deepEqual(Array.from(res.proven.leads), ['lead-0']);
+  assert.deepEqual(Array.from(res.proven.patients), ['id-p0']);
+  assert.equal(w.count('write:setValues', w.g.PATIENTS_SHEET), 0, 'id proof is read-only and does not undo the no-op optimization');
+});
+
 test('E2: patient row equality treats order as irrelevant but counts duplicates and types', () => {
   const w = world();
   const same = w.g.patientRowsSameContent;
