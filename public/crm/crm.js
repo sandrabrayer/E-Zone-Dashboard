@@ -682,6 +682,17 @@
   }
   /* The logLeadFlag body. Pure. */
   function leadFlagBody(sid, flag) { return { action: 'logLeadFlag', submissionId: s(sid), flag: flag }; }
+  /* A lost HTTP reply must not mint a SECOND operation for the same flag.
+   * Keep the exact payload/id until source acknowledgement. Changed content
+   * cannot silently reuse an uncertain id; full reload needs source check. */
+  function leadFlagPendingPlan(previous, flag, mintId) {
+    const signature = JSON.stringify(flag || {});
+    if (previous) return previous.signature === signature
+      ? { ok: true, pending: previous, retry: true }
+      : { ok: false, error: 'unconfirmed_previous_flag' };
+    return { ok: true, retry: false,
+      pending: { signature: signature, body: leadFlagBody(mintId(), flag) } };
+  }
   /* The patient-change form → { errors } or { errors: {}, patch, flag }. v = { change, newDate, newTime, note }. Pure. */
   function patientChangePlan(l, v, today) {
     const e = {};
@@ -1918,6 +1929,9 @@
   }
 
   function boot(win, doc) {
+    // This map is deliberately session-memory only; reload requires a source
+    // read before any new write after an uncertain outcome.
+    const pendingLeadFlags = Object.create(null);
     const state = { me: null, data: null, area: 'today', view: 'board', filters: { q: '', house: '', owner: '' }, kpiFilter: '', queue: null,
       today: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date()), drawer: null, error: '', loading: true, sort: 'name',
       tasks: null, tasksError: '', contact: null, index: null, debt: null, payments: null, credits: null, dayView: 'today', week: '', domain: '', doneTasks: undefined, quick: '' };
@@ -3006,24 +3020,47 @@
     }
     /* logLeadFlag (CHANGELOG-crm-vered-feedback-1104.md): the flag is applied to the
      * in-memory contact index only after the server echoes it; never assumed. */
-    function postLeadFlag(flag, label) {
+    function postLeadFlag(flag, label, afterLeadSaved) {
       if (state.saving) return Promise.resolve(false);
+      const key = s(flag.leadId) + ':' + s(flag.kind);
+      const plan = leadFlagPendingPlan(pendingLeadFlags[key], flag, newSubmissionId);
+      if (!plan.ok) {
+        toast('יש רישום קודם שלא אומת. בדקי את ההיסטוריה ונסי שוב עם אותם פרטים לפני שינוי נוסף.', true);
+        return Promise.resolve(false);
+      }
+      const pending = plan.pending;
+      pendingLeadFlags[key] = pending;
       state.saving = true; setSaveState('שומר…');
-      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(leadFlagBody(newSubmissionId(), flag)) })
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pending.body) })
         .then(function (r) { return r.json().catch(function () { return null; }); })
         .then(function (res) {
+          if (!res || res.ok !== true || !res.flag ||
+              s(res.flag.leadId) !== s(flag.leadId) || s(res.flag.kind) !== s(flag.kind)) {
+            throw new Error((res && res.message) || 'לא התקבל אישור מקור');
+          }
+          delete pendingLeadFlags[key];
           state.saving = false;
-          if (!res || res.ok !== true || !res.flag || s(res.flag.leadId) !== s(flag.leadId)) throw new Error((res && res.message) || (label + ' לא נשמר/ה'));
           if (state.index && state.index.ok !== false) {
             if (!state.index.flags || typeof state.index.flags !== 'object') state.index.flags = {};
             const cur = state.index.flags[res.flag.leadId] || (state.index.flags[res.flag.leadId] = {});
             cur[res.flag.kind === 'waitlist_reason' ? 'waitReason' : 'meetingChange'] = res.flag;
           }
           setSaveState('נשמר ✓'); toast(label + ' נשמר/ה');
-          renderNav(); renderMain(); if (state.drawer && state.drawer.id === flag.leadId) openDrawer('lead', flag.leadId, true);
+          renderNav(); renderMain();
+          if (state.drawer && state.drawer.id === flag.leadId) openDrawer('lead', flag.leadId, true);
           return true;
         })
-        .catch(function (e) { state.saving = false; setSaveState(String(e && e.message || e), true); toast(String(e && e.message || e), true); return false; });
+        .catch(function (_) {
+          // The source may already have appended the event before the reply was
+          // lost. Keep the same ID and payload; do not report the lead as unsaved.
+          state.saving = false;
+          const warning = afterLeadSaved
+            ? 'הפגישה נשמרה, אך רישום השינוי לא אומת. לחצי שוב כדי לאמת בלי לשמור את הפגישה מחדש.'
+            : 'רישום השינוי לא אומת. בדקי את ההיסטוריה; ניסיון חוזר ישתמש באותה אסמכתא.';
+          setSaveState(warning, true); toast(warning, true);
+          return false;
+        });
     }
     /* Open the drawer's «תיאום פגישה» block and put the caret in its date. */
     function focusMeetingForm() {
@@ -3753,6 +3790,17 @@
         const checked = f.querySelector('input[name="reason"]:checked');
         postLeadFlag({ leadId: id, kind: 'waitlist_reason', reason: checked ? checked.value : '' }, 'סיבת ההמתנה');
       } else if (f.dataset.form === 'patient-change') {
+        // A first-stage lead save may have succeeded even when the SECOND
+        // (Activity) acknowledgement was lost. Retry only that frozen second
+        // stage; do not write the lead again or replace the original prior slot.
+        const prior = pendingLeadFlags[s(id) + ':meeting_patient_change'];
+        if (prior) {
+          postLeadFlag(prior.body.flag, 'השינוי ע״י המטופל/ת', true).then(function (flagged) {
+            const a = flagged ? $('#crm-drawer [data-wa-manager]') : null;
+            if (a) { a.focus(); toast('התיעוד אומת — לחצי «הודעה למנהל/ת בוואטסאפ» לעדכון המנהל/ת'); }
+          });
+          return;
+        }
         const lead = compute(state.data, state.today).leads.filter(function (x) { return x.id === id; })[0];
         const checked = f.querySelector('input[name="change"]:checked');
         const plan = lead ? patientChangePlan(lead, { change: checked ? checked.value : '', newDate: v('newDate'), newTime: v('newTime'), note: v('note') }, state.today) : { errors: { change: 'הליד לא נמצא' } };
@@ -3763,7 +3811,7 @@
           if (!ok) return;
           // A popup opened after two awaits is blocked by browsers, so the prefilled link is a
           // button at the top of the card (one tap) — never an automatic navigation away.
-          return postLeadFlag(plan.flag, 'השינוי ע״י המטופל/ת').then(function (flagged) {
+          return postLeadFlag(plan.flag, 'השינוי ע״י המטופל/ת', true).then(function (flagged) {
             const a = flagged ? $('#crm-drawer [data-wa-manager]') : null;
             if (a) { a.focus(); toast('נשמר — לחצי «הודעה למנהל/ת בוואטסאפ» כדי לעדכן את ' + (plan.flag.withWhom || 'המנהל/ת')); }
           });
@@ -4038,6 +4086,6 @@
     taskDue: taskDue, taskState: taskState, taskWhen: taskWhen, taskSubject: taskSubject, taskQueue: taskQueue, tasksFor: tasksFor, taskCounts: taskCounts, taskFormErrors: taskFormErrors, taskCreateBody: taskCreateBody, rescheduleErrors: rescheduleErrors, rescheduleBody: rescheduleBody, taskAccepted: taskAccepted,
     VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,
     TRIAGE_OPTIONS: TRIAGE_OPTIONS, triageQueue: triageQueue, waitlistErrors: waitlistErrors, waitlistPatch: waitlistPatch, laterErrors: laterErrors,
-    NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, openLeadOfPerson: openLeadOfPerson, leadAlreadyInHouse: leadAlreadyInHouse, globalSearch: globalSearch, nameKey: nameKey, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, pendingDischargeAudit: pendingDischargeAudit, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, WAIT_REASONS: WAIT_REASONS, waitReasonLabel: waitReasonLabel, flagsOf: flagsOf, patientMeetingChange: patientMeetingChange, reportOverdue: reportOverdue, meetingOutcomeLabel: meetingOutcomeLabel, managerChangeMessage: managerChangeMessage, managerWaUrl: managerWaUrl, leadFlagBody: leadFlagBody, patientChangePlan: patientChangePlan, MANAGER_REPORT_GRACE_DAYS: MANAGER_REPORT_GRACE_DAYS, EXCEPTION_CUTOFF: EXCEPTION_CUTOFF, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
+    NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, openLeadOfPerson: openLeadOfPerson, leadAlreadyInHouse: leadAlreadyInHouse, globalSearch: globalSearch, nameKey: nameKey, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, pendingDischargeAudit: pendingDischargeAudit, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, WAIT_REASONS: WAIT_REASONS, waitReasonLabel: waitReasonLabel, flagsOf: flagsOf, patientMeetingChange: patientMeetingChange, reportOverdue: reportOverdue, meetingOutcomeLabel: meetingOutcomeLabel, managerChangeMessage: managerChangeMessage, managerWaUrl: managerWaUrl, leadFlagBody: leadFlagBody, leadFlagPendingPlan: leadFlagPendingPlan, patientChangePlan: patientChangePlan, MANAGER_REPORT_GRACE_DAYS: MANAGER_REPORT_GRACE_DAYS, EXCEPTION_CUTOFF: EXCEPTION_CUTOFF, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
     moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));
