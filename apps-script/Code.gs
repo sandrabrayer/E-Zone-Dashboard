@@ -9039,7 +9039,61 @@ function dischargeOutpatientPayload_(params) {
   if (!manual && String(row.disposition || '').trim() !== 'released_outpatient') return { ok: true, eligible: false };
   const key = dischargeOutpatientKey_(id);
   if (outpatientLeadSendLog_().sent[key]) return { ok: true, alreadySent: true, key: key };
-  return { ok: true, key: key, payload: dischargeOutpatientFields_(row, dischargeLeadPhone_(row.fromLead)) };
+  // Phone (CHANGELOG-outpatient-handoff-phone.md): a phone typed for this send is
+  // validated and kept in PatientPhones (so it is never asked again); otherwise the
+  // source lead, then the same resolution as the rosters (PatientPhones by id / by
+  // unique name, a unique same-name lead phone). Ambiguous → '' (never a guess).
+  const typedRaw = String(params.phone == null ? '' : params.phone).trim();
+  let phone = '';
+  if (typedRaw) {
+    phone = rosterValidPhone_(typedRaw);
+    if (!phone) return { ok: false, error: 'bad_phone' };
+    const saved = savePatientPhoneForDischarge_(row, phone, actorLabel_(params));
+    if (!saved.ok) return saved;
+  } else {
+    phone = dischargeLeadPhone_(row.fromLead) || dischargeBookPhone_(row);
+  }
+  return { ok: true, key: key, payload: dischargeOutpatientFields_(row, phone) };
+}
+
+/* The roster rule for a discharge row with no source-lead phone: PatientPhones by
+ * patientId, then by a unique name, then a unique same-name lead phone. '' when
+ * none or ambiguous. Read-only (the book is never created here). */
+function dischargeBookPhone_(row) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const lsh = ss.getSheetByName(LEADS_SHEET), psh = ss.getSheetByName(PATIENT_PHONES_SHEET);
+    const leads = lsh ? readSheet_(lsh, LEAD_COLUMNS) : [];
+    const manual = psh ? readSheet_(psh, PATIENT_PHONES_COLUMNS) : [];
+    const pt = { id: String(row.patientId == null ? '' : row.patientId).trim(), name: row.name, fromLead: row.fromLead };
+    return rosterPhoneFor_(pt, buildLeadPhoneIndex_(leads, manual));
+  } catch (_) { return ''; }
+}
+
+/* Keep a phone typed for an Outpatient handoff in PatientPhones: the row of this
+ * patientId (else this exact name + house) is updated, otherwise one row is
+ * appended. Under the script lock; the phone itself never reaches a log. */
+function savePatientPhoneForDischarge_(row, phone, actor) {
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('savePatientPhoneForDischarge_');
+  try {
+    const sh = getOrCreateSheet_(PATIENT_PHONES_SHEET, PATIENT_PHONES_COLUMNS);
+    const rows = readSheet_(sh, PATIENT_PHONES_COLUMNS);
+    const pid = String(row.patientId == null ? '' : row.patientId).trim();
+    const name = leadCellText_(row.name, 100), house = leadCellText_(row.houseId, 40);
+    const nameKey = rosterNameKey_(name);
+    let at = -1;
+    if (pid) at = rows.findIndex(function (r) { return String(r.patientId == null ? '' : r.patientId).trim() === pid; });
+    if (at < 0) at = rows.findIndex(function (r) { return rosterNameKey_(r.name) === nameKey && String(r.house == null ? '' : r.house).trim() === house; });
+    const next = at >= 0 ? Object.assign({}, rows[at]) : { name: name, house: house, phone: '', note: '', patientId: pid };
+    next.phone = phone;
+    if (pid && !String(next.patientId || '').trim()) next.patientId = pid;
+    next.note = 'הוזן בהעברה לאמבולטורי';
+    if (at >= 0) sh.getRange(at + 2, 1, 1, PATIENT_PHONES_COLUMNS.length).setValues([objectToRow_(next, PATIENT_PHONES_COLUMNS)]);
+    else sh.getRange(sh.getLastRow() + 1, 1, 1, PATIENT_PHONES_COLUMNS.length).setValues([objectToRow_(next, PATIENT_PHONES_COLUMNS)]);
+    logAudit_('patient_phone_set', 'savePatientPhoneForDischarge_', pid || nameKey, name, { house: house, digits: phone.length, updatedBy: actor || '' });
+    return { ok: true };
+  } finally { try { lock.releaseLock(); } catch (_) { /* no-op */ } }
 }
 
 /* recordOutpatientLeadSend for a discharge row (see recordOutpatientLeadSend_). */

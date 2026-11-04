@@ -740,11 +740,24 @@ test('C17 «משוחררים» (Vered): the discharged list with its flags; rest
     assert.match(txt, /נועה לוי/); assert.match(txt, /משוחרר לטיפול חוץ/); assert.match(txt, /שחר/); assert.match(txt, /לא נשלח/);
     // «העבר לאמבולטורי»
     const outCalls = [];
-    await page.route('**/api/outpatient-lead', (route) => { outCalls.push(JSON.parse(route.request().postData())); route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, sent: true }) }); });
+    // first answer: no phone → the row asks for it (CHANGELOG-outpatient-handoff-phone.md); then the send with the phone goes through
+    await page.route('**/api/outpatient-lead', (route) => {
+      const b = JSON.parse(route.request().postData()); outCalls.push(b);
+      route.fulfill({ status: b.phone ? 200 : 502, contentType: 'application/json', body: JSON.stringify(b.phone ? { ok: true, sent: true } : { ok: false, error: 'no_phone', message: 'לא נשלח לאמבולטורי: אין טלפון למטופל/ת.' }) });
+    });
     page.once('dialog', (d) => d.accept());
     await page.click('[data-to-outpatient="dx1"]');
+    await page.waitForSelector('#crm-out-phone input[name="phone"]', { timeout: 5000 });
+    assert.match(await page.textContent('#crm-discharged'), /לא נשלח/, 'still not sent');
+    await page.fill('#crm-out-phone input[name="phone"]', '12');
+    await page.click('#crm-out-phone button[type="submit"]');
+    assert.match(await page.textContent('#crm-out-phone [data-err="phone"]'), /טלפון לא תקין/);
+    assert.equal(outCalls.length, 1, 'an invalid phone is not sent');
+    await page.fill('#crm-out-phone input[name="phone"]', '052-765 4321');
+    await page.click('#crm-out-phone button[type="submit"]');
     await page.waitForFunction(() => /נשלח/.test(document.querySelector('#crm-discharged').textContent) && !/לא נשלח/.test(document.querySelector('#crm-discharged').textContent), null, { timeout: 5000 });
-    assert.deepEqual(outCalls, [{ dischargeId: 'dx1', manual: true }]);
+    assert.deepEqual(outCalls, [{ dischargeId: 'dx1', manual: true }, { dischargeId: 'dx1', manual: true, phone: '0527654321' }]);
+    assert.equal(await page.$('#crm-out-phone'), null, 'the phone row closes once sent');
     assert.ok(!(await page.$('[data-to-outpatient="dx1"]')), 'sent → no second button');
     // restore to the previous status
     await page.click('[data-restore="dx1"]');

@@ -358,3 +358,8 @@ button.kpi.on { background: #E5F0FF; border-color: var(--c-info); }
 .actions .radio-row { display: flex; flex-wrap: wrap; gap: 14px; margin: 4px 0 8px; }
 .actions label.radio { flex-direction: row; align-items: center; gap: 6px; font-size: 15px; color: var(--text); }
 .notice.patient-change { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* Outpatient handoff: the phone asked for in the «משוחררים» row (CHANGELOG-outpatient-handoff-phone.md). */
+.out-phone-row td { background: #FFF8E6; }
+.out-phone-row form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.out-phone-row label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.out-phone-row input[type="tel"] { direction: ltr; width: 14ch; }

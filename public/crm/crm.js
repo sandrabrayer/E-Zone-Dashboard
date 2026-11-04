@@ -520,7 +520,15 @@
   }
   function restoreFlagBody(raw) { return { action: 'restorePatientToActive', patient: Object.assign({}, raw, { restored: 'TRUE' }) }; }
   function restoreAsLeadBody(raw, newLeadId) { return { action: 'restorePatient', patient: Object.assign({}, raw, { newLeadId: s(newLeadId) }) }; }
-  function outpatientBody(dischargeId) { return { dischargeId: s(dischargeId), manual: true }; }
+  function outpatientBody(dischargeId, phone) { const b = { dischargeId: s(dischargeId), manual: true }; if (s(phone)) b.phone = s(phone); return b; }
+  /* A phone typed for the Outpatient handoff (CHANGELOG-outpatient-handoff-phone.md) — the
+   * server rule: 9–10 digits starting with 0 (a mobile's lost leading zero restored). '' when invalid. Pure. */
+  function handoffPhone(raw) {
+    let d = s(raw).replace(/[\s\-().\u200e\u200f]/g, '');
+    if (/^\+972/.test(d)) d = '0' + d.slice(4);
+    if (/^5\d{8}$/.test(d)) d = '0' + d;
+    return /^0\d{8,9}$/.test(d) ? d : '';
+  }
 
   /* ---- C14: «פגישות ושירותים» over real data (CHANGELOG-crm-meetings-tab.md) ----
    * The lead's intake meeting (Vered's own outcome) + the house manager's
@@ -2520,7 +2528,9 @@
             .then(function (d) { if (d && d.ok === true && (d.sent || d.alreadySent)) { if (!state.data.outpatientSentLeadIds) state.data.outpatientSentLeadIds = []; state.data.outpatientSentLeadIds.push('discharge:' + audit.id); renderMain(); }
               const accepted = d && d.ok === true && (d.sent || d.alreadySent);
               state.saving = false;
-              toast(accepted ? (d.alreadySent ? 'השחרור נשמר וההפניה כבר קיימת באמבולטורי' : 'השחרור נשמר ונוצרה הפניה לאמבולטורי') : 'השחרור נשמר, אך ההפניה לאמבולטורי לא אומתה — אין לשחרר שוב; יש לנסות העברה מתוך ״משוחררים״', !accepted);
+              if (!accepted && d && d.error === 'no_phone') state.outPhone = audit.id;   // the row in «משוחררים» opens with the phone field
+              toast(accepted ? (d.alreadySent ? 'השחרור נשמר וההפניה כבר קיימת באמבולטורי' : 'השחרור נשמר ונוצרה הפניה לאמבולטורי')
+                : (d && d.error === 'no_phone' ? 'השחרור נשמר. לא נשלח לאמבולטורי כי אין טלפון — הזיני טלפון ב«מטופלים» ← «משוחררים» ושלחי.' : 'השחרור נשמר, אך ההפניה לאמבולטורי לא אומתה — אין לשחרר שוב; יש לנסות העברה מתוך ״משוחררים״'), !accepted);
               return !!accepted; })
             .catch(function () { state.saving = false; toast('השחרור נשמר, אך ההפניה לאמבולטורי לא אומתה — אין לשחרר שוב; יש לנסות העברה מתוך ״משוחררים״', true); return false; });
         }
@@ -2548,7 +2558,8 @@
         + list.map(function (r) {
           const op = r.sentToOutpatient ? chip('ok', 'נשלח') : (r.disposition === 'released_outpatient' ? chip('late', 'לא נשלח') : '<span class="na">—</span>');
           return '<tr data-discharge="' + esc(r.id) + '"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtDate(r.date)) + '</td><td>' + esc(fmtDate(r.exitDate)) + '</td><td>' + esc(r.dispositionLabel || '—') + '</td><td>' + esc(continuityKnown(r.continuity) ? continuityLabel(r.continuity) : (s(r.continuity) && r.continuity !== 'unknown' ? r.continuity : (r.disposition === 'released_outpatient' || r.sentToOutpatient ? 'נשלח/מיועד לאמבולטורי — התחלת טיפול לא אומתה' : 'לא ידוע'))) + '</td><td>' + op + '</td>'
-            + '<td>' + (ro ? '' : '<button type="button" class="btn small" data-restore="' + esc(r.id) + '">שחזר</button>' + (!r.sentToOutpatient ? ' <button type="button" class="btn small" data-to-outpatient="' + esc(r.id) + '">העבר לאמבולטורי</button>' : '')) + '</td></tr>';
+            + '<td>' + (ro ? '' : '<button type="button" class="btn small" data-restore="' + esc(r.id) + '">שחזר</button>' + (!r.sentToOutpatient ? ' <button type="button" class="btn small" data-to-outpatient="' + esc(r.id) + '">העבר לאמבולטורי</button>' : '')) + '</td></tr>'
+            + (!r.sentToOutpatient && state.outPhone === r.id ? '<tr class="out-phone-row"><td colspan="8"><form id="crm-out-phone" data-form="out-phone" data-discharge="' + esc(r.id) + '" novalidate><label>טלפון של ' + esc(r.name) + ' (או של איש הקשר) <input type="tel" name="phone" inputmode="tel" maxlength="20" autocomplete="off" placeholder="05XXXXXXXX"></label> <button type="submit" class="btn small primary">שמירת הטלפון ושליחה לאמבולטורי</button> <button type="button" class="btn small" data-out-phone-cancel>ביטול</button> <span class="err" data-err="phone"></span><p class="na">הטלפון נשמר ברשימת הטלפונים של המטופלים — לא יידרש שוב. השחרור עצמו כבר נשמר.</p></form></td></tr>' : '');
         }).join('') + '</tbody></table></div><div id="crm-restore"></div>';
     }
     /* C17: restore (to the previous status, or as a new lead) and the manual Outpatient handoff. */
@@ -2603,16 +2614,19 @@
       return chain.then(function (msg) { state.saving = false; toast(msg); return load().then(function () { state.area = 'clients'; state.clientsView = 'out'; renderNav(); renderMain(); return true; }); })
         .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], String(e && e.message || e)); toast(String(e && e.message || e), true); return false; });
     }
-    function sendToOutpatient(id) {
+    function sendToOutpatient(id, phone) {
       if (state.saving) return Promise.resolve(false);
       state.saving = true;
-      return win.fetch('/api/outpatient-lead', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(outpatientBody(id)) })
+      return win.fetch('/api/outpatient-lead', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(outpatientBody(id, phone)) })
         .then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (d) {
           state.saving = false;
           const ok = d && d.ok === true && (d.sent || d.alreadySent);
-          toast(ok ? (d.alreadySent ? 'המטופל/ת כבר נשלח/ה לאמבולטורי' : 'נוצר ליד טיפול חוץ באאוטפיישנט') : ('יצירת ליד טיפול חוץ נכשלה — ' + s(d && (d.message || d.error) || 'שגיאה')), !ok);
-          if (ok) { if (!state.data.outpatientSentLeadIds) state.data.outpatientSentLeadIds = []; state.data.outpatientSentLeadIds.push('discharge:' + id); renderMain(); }
+          // No phone is not a reason to stop: the phone is asked for right in the row (CHANGELOG-outpatient-handoff-phone.md).
+          const needPhone = !ok && d && (d.error === 'no_phone' || d.error === 'bad_phone');
+          toast(ok ? (d.alreadySent ? 'המטופל/ת כבר נשלח/ה לאמבולטורי' : 'נוצר ליד טיפול חוץ באאוטפיישנט') : needPhone ? s(d.message) || 'יש להזין טלפון' : ('יצירת ליד טיפול חוץ נכשלה — ' + s(d && (d.message || d.error) || 'שגיאה')), !ok);
+          if (ok) { state.outPhone = ''; if (!state.data.outpatientSentLeadIds) state.data.outpatientSentLeadIds = []; state.data.outpatientSentLeadIds.push('discharge:' + id); renderMain(); }
+          else if (needPhone) { state.outPhone = id; state.clientsView = 'out'; renderMain(); const inp = $('#crm-out-phone input[name="phone"]'); if (inp) inp.focus(); }
           return !!ok;
         }).catch(function (e) { state.saving = false; toast('יצירת ליד טיפול חוץ נכשלה — ' + String(e && e.message || e), true); return false; });
     }
@@ -3773,6 +3787,19 @@
       if (t.id === 'crm-retry') return load();
     });
     root.addEventListener('submit', function (ev) {
+      const fp = ev.target;
+      if (fp && fp.dataset && fp.dataset.form === 'out-phone') {
+        ev.preventDefault();
+        const raw = fp.elements.phone ? fp.elements.phone.value : '';
+        const err = fp.querySelector('[data-err="phone"]');
+        const ph = handoffPhone(raw);
+        if (!ph) { if (err) err.textContent = 'טלפון לא תקין — 9 או 10 ספרות, מתחיל ב-0'; return; }
+        if (err) err.textContent = '';
+        sendToOutpatient(fp.dataset.discharge, ph);
+        return;
+      }
+    });
+    root.addEventListener('submit', function (ev) {
       const f = ev.target;
       if (!f || !f.dataset || !f.dataset.form) return;
       ev.preventDefault();
@@ -3927,7 +3954,7 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-clients-view],[data-restore],[data-to-outpatient],[data-restore-cancel],[data-link-open],[data-notpatient-open],[data-link-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-clients-view],[data-restore],[data-to-outpatient],[data-out-phone-cancel],[data-restore-cancel],[data-link-open],[data-notpatient-open],[data-link-cancel]') : null;
       if (!t) return;
       if (t.dataset.clientsView) { state.clientsView = t.dataset.clientsView; return renderMain(); }
       if (t.dataset.linkCancel !== undefined) { state.link = null; const el = $('#crm-link'); if (el) el.innerHTML = ''; return; }
@@ -3935,6 +3962,7 @@
       if (t.dataset.notpatientOpen) return openLinkForm('not', t.dataset.notpatientOpen);
       if (t.dataset.restoreCancel !== undefined) { const el = $('#crm-restore'); if (el) el.innerHTML = ''; return; }
       if (t.dataset.restore) return openRestoreChoice(t.dataset.restore);
+      if (t.dataset.outPhoneCancel !== undefined) { state.outPhone = ''; return renderMain(); }
       if (t.dataset.toOutpatient) { if (win.confirm('להעביר לאמבולטורי (ליד טיפול חוץ באאוטפיישנט)?')) sendToOutpatient(t.dataset.toOutpatient); }
     });
     root.addEventListener('click', function (ev) {
@@ -4074,7 +4102,7 @@
     DISCHARGE_DISPOSITIONS: DISCHARGE_DISPOSITIONS, CONTINUITY_CHOICES: CONTINUITY_CHOICES, dischargeAuditRow: dischargeAuditRow, dischargeErrors: dischargeErrors,
     movedRow: movedRow, patientEditErrors: patientEditErrors, meetingsFor: meetingsFor, managerReport: managerReport, whenLocal: whenLocal,
     detachedRows: detachedRows, linkCandidates: linkCandidates, namesLookAlike: namesLookAlike, linkBody: linkBody, notPatientBody: notPatientBody, linkErrors: linkErrors, linkAccepted: linkAccepted,
-    dischargedList: dischargedList, priorStatusOf: priorStatusOf, restoreTarget: restoreTarget, restoredRow: restoredRow, openAuditsOf: openAuditsOf, restoreFlagBody: restoreFlagBody, restoreAsLeadBody: restoreAsLeadBody, outpatientBody: outpatientBody, calendarRange: calendarRange, calendarRows: calendarRows, undatedVisits: undatedVisits, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
+    dischargedList: dischargedList, priorStatusOf: priorStatusOf, restoreTarget: restoreTarget, restoredRow: restoredRow, openAuditsOf: openAuditsOf, restoreFlagBody: restoreFlagBody, restoreAsLeadBody: restoreAsLeadBody, outpatientBody: outpatientBody, handoffPhone: handoffPhone, calendarRange: calendarRange, calendarRows: calendarRows, undatedVisits: undatedVisits, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
     MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, billingSearch: billingSearch, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, sheetDay: sheetDay, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
     patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
     newSubmissionId: newSubmissionId, funderWriteConfirmed: funderWriteConfirmed, funderSourceConfirmed: funderSourceConfirmed, funderExceptions: funderExceptions, admissionSourceProof: admissionSourceProof, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,

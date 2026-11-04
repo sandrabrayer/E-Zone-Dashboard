@@ -363,7 +363,9 @@
 // v112 → v113: CRM — app icon in the tab + menu, «פניות» → «לידים», no urgent band / «מה דחוף בבתים» in «היום שלי»,
 // manager report late only after 3 days, waitlist reason, patient-side meeting cancel / change + manager WhatsApp
 // (crm/crm.js, crm.css, crm.html) (CHANGELOG-crm-vered-feedback-1104.md). From the repo/live v112; monotonic, v17 never reused.
-var CACHE_VERSION = 'v113';
+// v113 → v114: «העבר לאמבולטורי» asks for the phone in the «משוחררים» row instead of failing (crm/crm.js, crm.css)
+// (CHANGELOG-outpatient-handoff-phone.md). Stacked on v113 (PR #362); monotonic, v17 never reused.
+var CACHE_VERSION = 'v114';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
