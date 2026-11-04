@@ -8,6 +8,8 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <!-- App icon in the browser tab (CHANGELOG-crm-vered-feedback-1104.md) — the classic page already had it. -->
+  <link rel="icon" type="image/png" href="/icons/icon-192.png">
   <meta name="robots" content="noindex">
   <title>E-ZONE · CRM</title>
   <!-- C2 (CHANGELOG-crm-shell-areas.md): the flag-gated CRM shell. Served only
@@ -18,7 +20,7 @@
 <body>
   <div id="crm-root" class="crm">
     <aside id="crm-menu" class="crm-menu" aria-label="תפריט">
-      <div class="crm-brand"><span class="logo">E</span>E-ZONE <small>CRM</small></div>
+      <div class="crm-brand"><img class="logo" src="/icons/icon-192.png" alt="" width="30" height="30">E-ZONE <small>CRM</small></div>
       <nav id="crm-nav" class="crm-nav" aria-label="אזורים"></nav>
       <div class="crm-menu-foot">
         <span>מחובר/ת: <span id="crm-user">__USER__</span></span>
@@ -33,7 +35,7 @@
         <span id="crm-who" class="crm-who">__USER__</span>
         <!-- «החלפת משתמש» (CHANGELOG-crm-dana-default-switch-user.md): POST /api/logout, then the PIN screen. -->
         <button type="button" id="crm-switch-user" class="btn crm-switch-user">החלפת משתמש</button>
-        <span class="crm-search-wrap"><input id="crm-search" class="crm-search" type="search" placeholder="חיפוש לקוח / פנייה" aria-label="חיפוש" enterkeyhint="search"><button type="button" id="crm-search-go" class="btn crm-search-go" aria-label="חיפוש">🔍</button></span>
+        <span class="crm-search-wrap"><input id="crm-search" class="crm-search" type="search" placeholder="חיפוש לקוח / ליד" aria-label="חיפוש" enterkeyhint="search"><button type="button" id="crm-search-go" class="btn crm-search-go" aria-label="חיפוש">🔍</button></span>
       </header>
       <section id="crm-main" aria-live="polite"></section>
     </main>

@@ -1661,6 +1661,8 @@ const PROXY_KNOWN_ACTIONS = [
   'getTasks', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logContact',
   // CRM Stage 2 (CHANGELOG-crm-my-day.md)
   'contactIndex',
+  // Lead flags: waitlist reason + patient-side meeting change (CHANGELOG-crm-vered-feedback-1104.md)
+  'logLeadFlag',
 ];
 
 /* SecurityLog — append-only, one row per (event, action, hour) at most.
@@ -2031,6 +2033,12 @@ function handle_(params) {
       if (action === 'getTasks') return jsonOut_(getTasks_(params, actor));
       const fn = { createTask: createTask_, completeTask: completeTask_, rescheduleTask: rescheduleTask_, reassignTask: reassignTask_, withdrawTask: cancelTask_, logContact: logContact_ }[action];
       return jsonOut_(fn(params, who, actor));
+    }
+    // Lead flags (CHANGELOG-crm-vered-feedback-1104.md): the same gate as logContact.
+    if (action === 'logLeadFlag') {
+      const no = expectedDischargesRefused_(params);
+      if (no) return jsonOut_(no);
+      return jsonOut_(logLeadFlag_(params, actorLabel_(params) || requestUser_(params), actingUser_(params)));
     }
     // «אמבולטורי» → Outpatient: server.js records the outcome of one send
     // (CHANGELOG-meeting-with-ambulatory.md). Verified proxy callers only.
@@ -4652,9 +4660,12 @@ function contactIndex_(params, actor) {
   const rows = sh ? readSheet_(sh, ACTIVITY_COLUMNS) : [];
   const leads = {}, patients = {};
   let count = 0;
+  const flags = {};
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    if (!r || String(r.kind == null ? '' : r.kind).trim() !== 'contact_logged') continue;
+    const kind = r ? String(r.kind == null ? '' : r.kind).trim() : '';
+    if (LEAD_FLAG_KINDS.indexOf(kind) >= 0) { leadFlagIndexPut_(flags, r, kind); continue; }
+    if (!r || kind !== 'contact_logged') continue;
     count++;
     let d = {};
     try { d = r.detailsJson ? JSON.parse(String(r.detailsJson)) : {}; } catch (_) { d = {}; }
@@ -4664,7 +4675,7 @@ function contactIndex_(params, actor) {
     put(leads, String(r.leadId == null ? '' : r.leadId).trim());
     put(patients, String(r.patientId == null ? '' : r.patientId).trim());
   }
-  return { ok: true, count: count, leads: leads, patients: patients };
+  return { ok: true, count: count, leads: leads, patients: patients, flags: flags };
 }
 
 /* ===== Reminder hook (CRM Stage 4a, CHANGELOG-crm-reminder-hook.md; spec §9) =====
@@ -4990,6 +5001,97 @@ function logContact_(body, actorName, actor) {
     return { ok: true, event: { eventId: ev.row.eventId, occurredAt: ev.row.occurredAt, kind: 'contact_logged', summary: ev.row.summary }, completed: completed, created: created, replayed: wrote.duplicate === true };
   } finally { try { lock.releaseLock(); } catch (_) { /* no-op */ } }
 }
+/* ===== Lead flags (CHANGELOG-crm-vered-feedback-1104.md) =====
+ * Two small per-lead facts that need NO Leads column. A new LEAD_COLUMNS entry
+ * would shift the position-mapped closed-lead sheets (IRRELEVANT_ / REMOVED_
+ * LEAD_COLUMNS are LEAD_COLUMNS.concat(...) — see CHANGELOG-direct-add-auto-lead.md),
+ * so each flag is an append-only Activity event; the LATEST one per lead wins
+ * and contactIndex_ serves them as `flags[leadId]`.
+ *   waitlist_reason        → details { reason: 'place' | 'funder' }
+ *                            (ממתין למקום / ממתין לאישור הקופה)
+ *   meeting_patient_change → details { change: 'cancelled' | 'rescheduled',
+ *                            prevDate, prevTime, newDate, newTime, withWhom, note }
+ * The lead row itself (meetingOutcome / visitDate / visitTime) is written by the
+ * client through the normal saveAll path; this event only records WHO changed it
+ * (the patient) so the card and the manager's message can say so. Never money. */
+const LEAD_FLAG_KINDS = ['waitlist_reason', 'meeting_patient_change'];
+const LEAD_FLAG_WAITLIST_REASONS = ['place', 'funder'];
+const LEAD_FLAG_MEETING_CHANGES = ['cancelled', 'rescheduled'];
+const LEAD_FLAG_NOTE_MAX = 200;
+const LEAD_FLAG_LEAD_ID_RE = /^[A-Za-z0-9_\-]{1,120}$/;
+
+/* PURE: a validated flag → { ok, kind, details, summary } or { ok:false, error }. */
+function leadFlagClean_(f) {
+  const x = f && typeof f === 'object' && !Array.isArray(f) ? f : null;
+  if (!x) return { ok: false, error: 'missing_flag' };
+  const kind = String(x.kind == null ? '' : x.kind).trim();
+  if (LEAD_FLAG_KINDS.indexOf(kind) < 0) return { ok: false, error: 'bad_kind' };
+  if (kind === 'waitlist_reason') {
+    const reason = String(x.reason == null ? '' : x.reason).trim();
+    if (LEAD_FLAG_WAITLIST_REASONS.indexOf(reason) < 0) return { ok: false, error: 'bad_reason' };
+    return { ok: true, kind: kind, details: { reason: reason }, summary: reason === 'funder' ? 'ממתין לאישור הקופה' : 'ממתין למקום' };
+  }
+  const change = String(x.change == null ? '' : x.change).trim();
+  if (LEAD_FLAG_MEETING_CHANGES.indexOf(change) < 0) return { ok: false, error: 'bad_change' };
+  const day = function (v) { const t = String(v == null ? '' : v).trim(); return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t : ''; };
+  const hm = function (v) { const t = String(v == null ? '' : v).trim(); return /^([01]\d|2[0-3]):[0-5]\d$/.test(t) ? t : ''; };
+  const d = { change: change, prevDate: day(x.prevDate), prevTime: hm(x.prevTime), newDate: '', newTime: '',
+    withWhom: taskText_(x.withWhom, 40), note: taskText_(x.note, LEAD_FLAG_NOTE_MAX) };
+  if (change === 'rescheduled') {
+    d.newDate = day(x.newDate); d.newTime = hm(x.newTime);
+    if (!d.newDate) return { ok: false, error: 'bad_new_date' };
+    if (String(x.newTime == null ? '' : x.newTime).trim() && !d.newTime) return { ok: false, error: 'bad_new_time' };
+  }
+  return { ok: true, kind: kind, details: d, summary: change === 'cancelled' ? 'הפגישה בוטלה ע״י המטופל/ת' : 'מועד הפגישה שונה ע״י המטופל/ת' };
+}
+
+/* PURE: fold one Activity row into flags[leadId][kind] (latest occurredAt wins). */
+function leadFlagIndexPut_(flags, r, kind) {
+  const leadId = String(r.leadId == null ? '' : r.leadId).trim();
+  if (!leadId) return;
+  let d = {};
+  try { d = r.detailsJson ? JSON.parse(String(r.detailsJson)) : {}; } catch (_) { d = {}; }
+  if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};
+  const clean = leadFlagClean_(Object.assign({}, d, { kind: kind }));
+  if (!clean.ok) return;
+  const at = String(r.occurredAt == null ? '' : r.occurredAt);
+  const key = kind === 'waitlist_reason' ? 'waitReason' : 'meetingChange';
+  const cur = flags[leadId] && flags[leadId][key];
+  if (cur && cur.at > at) return;
+  if (!flags[leadId]) flags[leadId] = {};
+  flags[leadId][key] = Object.assign({ at: at, actorName: String(r.actorName == null ? '' : r.actorName) }, clean.details);
+}
+
+/* logLeadFlag — body { submissionId, flag: { leadId, kind, ... } }. Idempotent by
+ * submissionId (eventId = kind + ':' + sid). The lead must be an OPEN lead on the
+ * Leads sheet. The controller (money-only) view is refused, like contactIndex_. */
+function logLeadFlag_(body, actorName, actor) {
+  if (activityScope_(actor) === 'money') return { ok: false, error: 'forbidden', message: 'אין הרשאה לפעולה זו' };
+  const b = body && typeof body === 'object' ? body : {};
+  const sid = taskSubmissionId_(b.submissionId);
+  if (sid === null) return taskNo_('bad_submission_id');
+  let f = b.flag;
+  if (typeof f === 'string') { try { f = JSON.parse(f); } catch (_) { f = null; } }
+  const clean = leadFlagClean_(f);
+  if (!clean.ok) return { ok: false, error: clean.error, message: 'הנתונים אינם תקינים' };
+  const leadId = String(f.leadId == null ? '' : f.leadId).trim();
+  if (!LEAD_FLAG_LEAD_ID_RE.test(leadId)) return { ok: false, error: 'bad_lead', message: 'הליד אינו תקין' };
+  const lsh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LEADS_SHEET);
+  const lead = (lsh ? readSheet_(lsh, LEAD_COLUMNS) : []).filter(function (l) { return String(l.id == null ? '' : l.id).trim() === leadId; })[0];
+  if (!lead) return { ok: false, error: 'unknown_lead', message: 'הליד לא נמצא — ייתכן שנסגר. רענני את הדף.' };
+  const nowIso = new Date().toISOString();
+  const ev = activityRow_({ eventId: clean.kind + ':' + sid, occurredAt: nowIso, kind: clean.kind, source: 'manual', actorId: '',
+    actorName: actorName, leadId: leadId, houseId: taskText_(lead.house, 40), summary: clean.summary, details: clean.details }, nowIso);
+  if (!ev.ok) return ev;
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('logLeadFlag_');
+  try {
+    const wrote = activityAppendRow_(ev.row);
+    logAudit_('lead_flag_logged', 'logLeadFlag_', leadId, String(lead.name || ''), { eventId: ev.row.eventId, kind: clean.kind, updatedBy: actorName });
+    return { ok: true, replayed: wrote.duplicate === true, flag: Object.assign({ leadId: leadId, kind: clean.kind, at: ev.row.occurredAt, actorName: ev.row.actorName }, clean.details) };
+  } finally { try { lock.releaseLock(); } catch (_) { /* no-op */ } }
+}
+
 function contactOutcomeLabel_(o) {
   return { spoke_follow_up: 'התקיימה שיחה ונדרש המשך', no_answer: 'לא היה מענה', call_back_later: 'התבקשנו לחזור במועד', awaiting_decision: 'ממתינים להחלטה או למידע',
     meeting_set: 'נקבעה פגישה', no_interest_now: 'אין עניין כרגע', bad_contact_details: 'פרטי הקשר אינם תקינים', stop_contact: 'התבקשה הפסקת פניות' }[o] || o;

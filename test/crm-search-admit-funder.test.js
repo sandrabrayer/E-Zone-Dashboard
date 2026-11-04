@@ -242,7 +242,7 @@ test('B: a possible in-house name/phone match warns but CANNOT close the lead au
     await page.waitForSelector('.card[data-open-lead="L-matan"] .chip.late', { timeout: 3000 });
     await page.click('.card[data-open-lead="L-matan"]');
     const note = await page.textContent('#crm-drawer .notice.warn');
-    assert.match(note, /אינה נסגרת אוטומטית/);
+    assert.match(note, /אינו נסגר אוטומטית/);   // «פניות» → «לידים» (CHANGELOG-crm-vered-feedback-1104.md)
     assert.equal(await page.locator('[data-close-admitted]').count(), 0);
     assert.equal(srv.posts.filter(p => p.action === 'saveAll').length, 0);
     assert.deepEqual(errors, []);
@@ -374,7 +374,7 @@ test('SAVE-02 Chromium: lost HTTP response AFTER source commit reconciles exact 
 
 for (const [mode, reason] of [
   ['admission_missing', /לא נמצאה קליטה מזהה/],
-  ['admission_partial', /סטטוס הפנייה לא אומת/],
+  ['admission_partial', /סטטוס הליד לא אומת/],
   ['admission_unavailable', /לא ניתן לאמת את תוצאת השמירה/]
 ]) {
   test('SAVE-02 Chromium: ' + mode + ' blocks blind retry & funder write after uncertain first-stage admission', { skip }, async () => {

@@ -220,7 +220,7 @@ test('B: every «כרטיס» on «היום שלי» opens a drawer — Vered an
       for (const width of WIDTHS) {
         const { ctx, page, errors } = await openPage(browser, srv.port, who, width);
         const n = await page.locator('#crm-main .row.work:not(.h) button:text-is("כרטיס")').count();
-        assert.ok(n >= 4, `${who}@${width}: task cards rendered (${n})`);
+        assert.ok(n >= 2, `${who}@${width}: task cards rendered (${n})`);
         const names = [];
         for (let i = 0; i < n; i++) {
           const btn = page.locator('#crm-main .row.work:not(.h) button:text-is("כרטיס")').nth(i);
@@ -235,7 +235,8 @@ test('B: every «כרטיס» on «היום שלי» opens a drawer — Vered an
           await page.click('#crm-drawer-close');
           await page.waitForFunction(() => document.querySelector('#crm-drawer').getAttribute('aria-hidden') !== 'false', null, { timeout: 3000 });
         }
-        assert.ok(names.includes('ברית ונגרטון') && names.includes('עדי עמית'), `${who}@${width}: the discharged patients open (${names.join(', ')})`);
+        // «מה דחוף בבתים» (the continuity rows of discharged patients) left «היום שלי» (CHANGELOG-crm-vered-feedback-1104.md)
+        assert.ok(!names.includes('ברית ונגרטון') && !names.includes('עדי עמית'), `${who}@${width}: no continuity rows on «היום שלי» (${names.join(', ')})`);
         const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
         assert.ok(overflow <= 1, `${who}@${width}: no horizontal page scroll (${overflow}px)`);
         assert.deepEqual(errors, [], `${who}@${width}: no page errors`);
@@ -245,17 +246,20 @@ test('B: every «כרטיס» on «היום שלי» opens a drawer — Vered an
   } finally { await browser.close(); srv.close(); }
 });
 
-test('B: «לעדכן המשך טיפול» → «לעדכון» opens Brit on «פגישות ושירותים» with the continuity select; saving posts setDischargeContinuity and the row leaves the list', { skip }, async () => {
+test('B: «לעדכן המשך טיפול» is no longer a «היום שלי» row (Vered 04/11/2026); the continuity select still works from the patient card (search → «פגישות ושירותים») and posts setDischargeContinuity', { skip }, async () => {
   const srv = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
     const { ctx, page, errors } = await openPage(browser, srv.port, 'vered', 1024);
-    const row = page.locator('#crm-main .row.work:not(.h)', { hasText: 'ברית ונגרטון' }).first();
-    await row.locator('button:text-is("לעדכון")').click();
+    assert.equal(await page.locator('#crm-main .row.work:not(.h)', { hasText: 'לעדכן המשך טיפול' }).count(), 0, 'no continuity rows on «היום שלי»');
+    await page.fill('#crm-search', 'ברית');
+    await page.click('#crm-search-go');
+    await page.locator('[data-open-patient="p-brit"]').first().click();
+    await page.click('#crm-drawer [data-tab="meetings"]');
     await page.waitForSelector('#crm-drawer [data-pane="meetings"]:not([hidden]) select[data-continuity-for="dx-brit"]', { timeout: 3000 });
     await page.selectOption('#crm-drawer select[data-continuity-for="dx-brit"]', 'continued_outpatient');
     await page.click('#crm-drawer [data-continuity-save="dx-brit"]');
-    await page.waitForFunction(() => !/ברית ונגרטון[\s\S]*לעדכן המשך טיפול/.test(Array.from(document.querySelectorAll('#crm-main .row.work:not(.h)')).map((r) => r.textContent).join('|')), null, { timeout: 3000 });
+    await page.waitForFunction(() => /המשך הטיפול נשמר/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 3000 });
     const sent = srv.posts.filter((p) => p.action === 'setDischargeContinuity');
     assert.equal(sent.length, 1);
     assert.equal(sent[0].id, 'dx-brit');

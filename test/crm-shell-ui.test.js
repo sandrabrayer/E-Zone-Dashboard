@@ -89,7 +89,9 @@ test('board + table share one filter; the table honours house aliases and owner;
 test('nextActionFor: stage, next action and alert are three different things', () => {
   const c = core.compute(DATA, TODAY);
   const by = Object.fromEntries(c.leads.map((l) => [l.id, l]));
-  assert.deepEqual(core.nextActionFor(by['L-visit-past'], TODAY), { text: 'דיווח מהמנהל/ת', state: 'late' });
+  // 24/10 → 27/10 = 3 days without the manager's report → late (CHANGELOG-crm-vered-feedback-1104.md: grace 3 days)
+  assert.deepEqual(core.nextActionFor(by['L-visit-past'], TODAY), { text: 'דיווח המנהל/ת באיחור', state: 'late' });
+  assert.deepEqual(core.nextActionFor(by['L-visit-past'], '2026-10-26'), { text: 'ממתין לדיווח מנהל/ת', state: 'wait' }, 'a fresh meeting is not late');
   assert.deepEqual(core.nextActionFor(by['L-visit-today'], TODAY), { text: 'פגישה היום', state: 'today' });
   assert.deepEqual(core.nextActionFor(by['L-waiting'], TODAY), { text: 'ליצור קשר', state: 'wait' }, 'no lateness by lead age (spec §1, since the Monday look PR)');
   assert.deepEqual(core.nextActionFor(by['L-new-today'], TODAY), { text: 'ליצור קשר', state: 'wait' });
@@ -588,7 +590,7 @@ test('wiring: hashed CRM assets, explicit source-owned write actions and no seco
   const actions = [...src.matchAll(/api\('([A-Za-z]+)'/g)].map((m) => m[1]).sort();
   assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'contactIndex', 'debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments', 'getTasks'], 'GET reads (debtAging + getPayments: C8; getCredits: C11; getTasks: Stage 1c; contactIndex: Stage 2)');
   const writes = [...src.matchAll(/\{ action: '([A-Za-z]+)'/g)].map((m) => m[1]).sort();
-  assert.deepEqual([...new Set(writes)], ['appendFunder', 'approveRefundPayout', 'completeTask', 'createTask', 'dischargePatient', 'editReceipt', 'logContact', 'moveLeadIrrelevant', 'reassignTask', 'removeLead', 'reportPayment', 'requestRefundPayoutApproval', 'rescheduleTask', 'restoreLead', 'restorePatient', 'restorePatientToActive', 'saveAll', 'savePayment', 'setBillingDiscount', 'setDischargeContinuity', 'settleRefund', 'upsertBillingOverride', 'withdrawTask'], 'the write actions («לעדכן המשך טיפול»: setDischargeContinuity, CHANGELOG-crm-today-card-open.md; C17: restore to active / as a lead): one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7), the strict payment report (C10), discount / amount / settle (C11), the task + contact actions (Stage 1c)');
+  assert.deepEqual([...new Set(writes)], ['appendFunder', 'approveRefundPayout', 'completeTask', 'createTask', 'dischargePatient', 'editReceipt', 'logContact', 'logLeadFlag', 'moveLeadIrrelevant', 'reassignTask', 'removeLead', 'reportPayment', 'requestRefundPayoutApproval', 'rescheduleTask', 'restoreLead', 'restorePatient', 'restorePatientToActive', 'saveAll', 'savePayment', 'setBillingDiscount', 'setDischargeContinuity', 'settleRefund', 'upsertBillingOverride', 'withdrawTask'], 'the write actions («לעדכן המשך טיפול»: setDischargeContinuity, CHANGELOG-crm-today-card-open.md; C17: restore to active / as a lead): one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7), the strict payment report (C10), discount / amount / settle (C11), the task + contact actions (Stage 1c), the lead flags (waitlist reason / patient-side meeting change, CHANGELOG-crm-vered-feedback-1104.md)');
   assert.equal((src.match(/\/api\/outpatient-lead/g) || []).length, 2, 'the outpatient handoff: after a released_outpatient discharge (manual:false) and «העבר לאמבולטורי» (manual:true)');
   assert.ok(!/serializePatients|patients: state\.data\.patients\b/.test(src), 'patients travel only through houseSaveBody (one house as read)');
   assert.ok(!/innerHTML\s*=\s*[^;]*\b(l|lead|p|pat)\.(name|phone|note)\b(?!\))/.test(src.replace(/esc\([^)]*\)/g, 'ESC')), 'every interpolated field goes through esc()');
