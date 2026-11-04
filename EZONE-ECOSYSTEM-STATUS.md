@@ -1,6 +1,10 @@
 # E-ZONE Ecosystem Status — updated November 4, 2026
 
-## CRM: Vered's feedback round — November 4, 2026 (PR open)
+## CRM follow-ups: «העבר לאמבולטורי» without a lead phone · save spinner · waitlist reason — November 4, 2026 (PR open)
+
+- A discharge was never blocked; only the Outpatient lead failed when the source lead had no phone. Now the phone is also resolved from `PatientPhones` (roster rule), and when none exists the CRM «משוחררים» row asks for it; the typed phone is validated (browser, server, Code.gs), kept in `PatientPhones` and sent. Phone stays required for the send (Outpatient's matching key). Same PR: a spinner on every CRM save; «סיבת המתנה» saves on the click and waits for an in-flight save instead of being dropped silently. Code.gs changed (clasp CI). SW v113 → v114. Details: `CHANGELOG-crm-followups-1104.md`.
+
+## CRM: Vered's feedback round — November 4, 2026 (merged #362)
 
 - App icon in the browser tab + menu header; «פניות» → «לידים» across the CRM; the urgent band and «מה דחוף בבתים» (admission-due / continuity rows, incl. the May ones) left «היום שלי» — the discharge-integrity check stays; a missing manager report is «ממתין» for 3 days, an exception from day 3; follow-up rows before 01/06/2026 are not listed.
 - New Code.gs action **`logLeadFlag`** (gate = `logContact`): waitlist reason («ממתין למקום» / «ממתין לאישור הקופה») and a patient-side meeting cancel / reschedule, stored as append-only **Activity** events (no Leads column — the closed-lead sheets are position-mapped); `contactIndex` now also returns `flags`. The CRM writes the lead through the normal `saveAll`, then the flag, then shows «📲 הודעה למנהל/ת בוואטסאפ» (prefilled wa.me to `managerPhones`). Code.gs changed (clasp CI on merge). SW v112 → v113. Details: `CHANGELOG-crm-vered-feedback-1104.md`.

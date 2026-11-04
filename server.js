@@ -1483,7 +1483,20 @@ app.get('/api/debug/last-load', requireSession, requireFinance, (_req, res) => {
  * AuditLog. Idempotent: a sent row is never sent again. → { status, body }.
  * Never throws. Deps injectable for the tests. */
 const DISCHARGE_OUTPATIENT_FAILED_HE = 'יצירת ליד טיפול חוץ נכשלה — לא נשלח. אפשר לנסות שוב ב«העבר לאמבולטורי».';
-const DISCHARGE_OUTPATIENT_NO_PHONE_HE = 'לא נשלח לאמבולטורי: אין טלפון לליד של המטופל. יש להוסיף טלפון לליד ולנסות שוב.';
+const DISCHARGE_OUTPATIENT_NO_PHONE_HE = 'לא נשלח לאמבולטורי: אין טלפון למטופל/ת. יש להזין טלפון בשורה של המטופל/ת ב«משוחררים» ולשלוח שוב.';
+const DISCHARGE_OUTPATIENT_BAD_PHONE_HE = 'מספר הטלפון אינו תקין — 9 או 10 ספרות, מתחיל ב-0.';
+/* A phone typed for this send (CHANGELOG-crm-followups-1104.md): digits only,
+ * 9–10 after normalising (a lost leading zero of a mobile is restored). '' = none
+ * given; null = given but invalid. Pure. */
+function dischargeTypedPhone(raw) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return '';
+  if (String(raw).length > 30) return null;
+  let d = String(raw).replace(/[\s\-().\u200e\u200f]/g, '');
+  if (/^\+972/.test(d)) d = '0' + d.slice(4);
+  if (!/^\d+$/.test(d)) return null;
+  if (/^5\d{8}$/.test(d)) d = '0' + d;
+  return /^0\d{8,9}$/.test(d) ? d : null;
+}
 async function dischargeOutpatientHandoff(body, user, principal, deps) {
   const d = deps || {};
   const post = d.sheetsPost || sheetsPost;
@@ -1493,14 +1506,17 @@ async function dischargeOutpatientHandoff(body, user, principal, deps) {
     return { status: 400, body: { ok: false, error: 'bad_discharge_id' } };
   }
   const manual = b.manual === true;
+  const phone = dischargeTypedPhone(b.phone);
+  if (phone === null) return { status: 400, body: { ok: false, error: 'bad_phone', message: DISCHARGE_OUTPATIENT_BAD_PHONE_HE } };
   let prep;
   try {
-    prep = await post({ action: 'dischargeOutpatientPayload', dischargeId, manual, user }, principal);
+    prep = await post(Object.assign({ action: 'dischargeOutpatientPayload', dischargeId, manual, user }, phone ? { phone } : {}), principal);
   } catch (err) {
     return { status: 502, body: { ok: false, error: 'sheets_unreachable', message: safeErrorMessage(err) } };
   }
   if (!prep || prep.ok !== true) {
     const error = prep && typeof prep.error === 'string' ? prep.error.slice(0, 60) : 'bad_response';
+    if (error === 'bad_phone') return { status: 400, body: { ok: false, error, message: DISCHARGE_OUTPATIENT_BAD_PHONE_HE } };
     return { status: error === 'not_found' || error === 'not_open' ? 404 : 502, body: { ok: false, error } };
   }
   if (prep.eligible === false) return { status: 200, body: { ok: true, skipped: 'not_outpatient' } };
@@ -2375,6 +2391,8 @@ module.exports = {
   dischargeOutpatientHandoff,
   DISCHARGE_OUTPATIENT_FAILED_HE,
   DISCHARGE_OUTPATIENT_NO_PHONE_HE,
+  DISCHARGE_OUTPATIENT_BAD_PHONE_HE,
+  dischargeTypedPhone,
   // Write & handoff diagnostics (in-memory state exposed for the test harness;
   // the running server mutates the same objects the tests inspect).
   recordWrite,
