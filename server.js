@@ -31,6 +31,7 @@ const {
 const { buildRefundForecastSpec, isForecastResponse, contentDisposition } = require('./lib/refund-forecast-xlsx');
 const { buildCleanupSpec, isCleanupResponse, cleanupContentDisposition } = require('./lib/cleanup-xlsx');
 const { handOffAmbulatoryLeads, handOffDischarge } = require('./lib/ambulatory-handoff');
+const { exactId, createStatusReader } = require('./lib/outpatient-handoff-status');
 const {
   buildBillingControlSpec, isBillingControlResponse, billingControlContentDisposition,
 } = require('./lib/billing-control-xlsx');
@@ -116,6 +117,8 @@ if (!PROXY_SECRET) {
  * mirroring the getAdmittedRoster secret discipline on the Apps Script side). */
 const OUTPATIENT_LEAD_URL    = process.env.OUTPATIENT_LEAD_URL    || '';
 const OUTPATIENT_LEAD_SECRET = process.env.OUTPATIENT_LEAD_SECRET || '';
+// Separate read-only OUT feed secret. Never use CREATE_LEAD_SECRET for reads.
+const HANDOFF_STATUS_SECRET = process.env.HANDOFF_STATUS_SECRET || '';
 
 /* The shared code (APP_PIN) and its dual window (APP_PIN_UNTIL) were removed
  * on 2026-10-04 (personal PINs PR C, CHANGELOG-personal-pins-cleanup.md):
@@ -1090,7 +1093,7 @@ function viewFilteredResponse(action, data, principal) {
 /* Apps Script actions only the server itself may call — never forwarded from
  * the browser (CHANGELOG-meeting-with-ambulatory.md: the send log behind the
  * «אמבולטורי» handoff must not be forgeable from a page). */
-const SERVER_ONLY_ACTIONS = Object.freeze(['recordOutpatientLeadSend', 'dischargeOutpatientPayload']);
+const SERVER_ONLY_ACTIONS = Object.freeze(['recordOutpatientLeadSend', 'dischargeOutpatientPayload', 'getOutpatientHandoffRef']);
 function refuseServerOnlyActions(req, res, next) {
   const src = req.method === 'GET' ? (req.query || {}) : (req.body || {});
   if (SERVER_ONLY_ACTIONS.indexOf(src.action) < 0) return next();
@@ -1531,6 +1534,67 @@ async function dischargeOutpatientHandoff(body, user, principal, deps) {
   return { status: 502, body: { ok: false, error: out.error,
     message: out.error === 'no_phone' ? DISCHARGE_OUTPATIENT_NO_PHONE_HE : DISCHARGE_OUTPATIENT_FAILED_HE } };
 }
+
+
+/* The only authorized Dashboard → OUT status read path. The supplied lead/
+ * discharge ID is resolved against an existing *verified* Dashboard AuditLog
+ * send, never a browser-provided outpatientId, name, phone, or loose match.
+ * No request here writes to either workbook or creates a second task. */
+function outpatientStatusPost(outpatientId) {
+  return new Promise((resolve, reject) => {
+    const target = OUTPATIENT_LEAD_URL + (OUTPATIENT_LEAD_URL.includes('?') ? '&' : '?') + 'action=getHandoffStatus';
+    const payload = JSON.stringify({ action: 'getHandoffStatus', secret: HANDOFF_STATUS_SECRET, outpatientIds: [outpatientId] });
+    followingRequest({
+      method: 'POST', headers: {
+        'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload),
+        'Accept': 'application/json',
+      },
+    }, target, payload, resolve, reject, 0);
+  });
+}
+const readVerifiedOutpatientStatus = createStatusReader(async (id) => {
+  // Bounded user-visible read; underlying request is GET-equivalent, never a
+  // business write. A timeout is UNKNOWN, not 'no contact' or 'not relevant'.
+  let timer;
+  try {
+    return await Promise.race([
+      outpatientStatusPost(id),
+      new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 14000); }),
+    ]);
+  } finally { clearTimeout(timer); }
+});
+
+app.get('/api/outpatient-handoff-status', requireSession, requireProxySecret, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const principal = sessionPrincipalFromRequest(req);
+  if (!principal || isControllerView(principal)) return res.status(403).json({ ok: false, error: 'forbidden' });
+  const input = req.query || {};
+  const leadId = exactId(input.leadId);
+  const dischargeId = exactId(input.dischargeId);
+  if ((!!leadId === !!dischargeId) || (input.leadId && !leadId) || (input.dischargeId && !dischargeId)) {
+    return res.status(400).json({ ok: false, error: 'one_exact_source_id_required' });
+  }
+  let link;
+  try {
+    link = await sheetsPost({ action: 'getOutpatientHandoffRef', user: principal.user, leadId, dischargeId }, principal);
+  } catch (_) {
+    return res.status(503).json({ ok: false, verified: false, reason: 'dashboard_source_unavailable' });
+  }
+  if (!link || link.ok !== true) {
+    return res.status(503).json({ ok: false, verified: false, reason: 'source_link_unverified' });
+  }
+  if (link.linked !== true) {
+    return res.json({ ok: true, verified: false, reason: link.reason || 'no_verified_send' });
+  }
+  const outpatientId = exactId(link.outpatientId);
+  if (!outpatientId) return res.json({ ok: true, verified: false, reason: 'missing_exact_id' });
+  if (!OUTPATIENT_LEAD_URL || !HANDOFF_STATUS_SECRET) {
+    return res.status(503).json({ ok: false, verified: false, reason: 'status_feed_not_configured' });
+  }
+  const status = await readVerifiedOutpatientStatus(outpatientId);
+  if (!status.verified) return res.status(503).json({ ok: false, verified: false, reason: status.reason });
+  return res.json(Object.assign({ ok: true }, status));
+});
 
 /* POST /api/outpatient-lead — browser sends { name, phone, house, note }; we
  * inject the shared secret from Railway env (never exposed to the client) and
