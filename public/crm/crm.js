@@ -1987,7 +1987,7 @@
       let h = 0; for (let i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) % 360;
       return '<span class="who"><i class="av" style="--h:' + h + '">' + esc(n.charAt(0)) + '</i>' + esc(n) + '</span>';
     }
-    function patientStatusLabel(st) { const x = PATIENT_STATUSES.filter(function (p) { return p.id === s(st); })[0]; return x ? x.label : (s(st) || '—'); }
+    function patientStatusLabel(st) { if (s(st) === 'released') return 'שוחרר/ה'; const x = PATIENT_STATUSES.filter(function (p) { return p.id === s(st); })[0]; return x ? x.label : (s(st) || '—'); }
     function statusChip(st) { return '<span class="chip pst-' + esc(s(st) || 'active') + '">' + esc(patientStatusLabel(st)) + '</span>'; }
     function houseTag(idOrName) { const id = houseId(idOrName) || 'x'; return '<span class="chip house h-' + esc(id) + '">' + esc(houseName(idOrName) || '—') + '</span>'; }
     const AREA_ICONS = { today: '☀', leads: '✉', clients: '👤', calendar: '📅', occupancy: '🏠', billing: '₪', control: '✔', triage: '🔎' };
@@ -2431,8 +2431,22 @@
       state.drawer = { kind: 'direct', id: '', tab: 'overview' };
     }
 
+    /* A released patient's card (CHANGELOG-crm-followups-1104.md): the Outpatient handoff right
+     * here — phone optional (found from the lead / the phone book), asked when none is found. */
+    function releasedPatientBlock(p) {
+      const c = compute(state.data, state.today);
+      const d = meetingsFor(p, 'patient', c).discharge;
+      if (!d || !d.id) return '';
+      if (c.outpatientSent && c.outpatientSent['discharge:' + d.id]) return '<div class="notice ok">נשלח לאמבולטורי ✓</div>';
+      return '<div class="actions"><details class="act" open><summary>העברה לאמבולטורי</summary>'
+        + '<form data-form="out-phone" data-discharge="' + esc(d.id) + '" data-optional="1" novalidate>'
+        + '<label>טלפון (אם לא מופיע בליד) <input type="tel" name="phone" inputmode="tel" maxlength="20" autocomplete="off" placeholder="05XXXXXXXX"><span class="err" data-err="phone"></span></label>'
+        + '<button type="submit" class="btn small primary">העבר לאמבולטורי</button>'
+        + '<p class="na">השחרור כבר נשמר. טלפון שיוזן נשמר ברשימת הטלפונים של המטופלים — לא יידרש שוב.</p></form></details></div>';
+    }
     function renderPatientActions(p) {
-      if (!p || !inHouse(p)) return '';
+      if (p && !inHouse(p)) return releasedPatientBlock(p);
+      if (!p) return '';
       const raw = (patientsOfHouse(p.houseId) || []).filter(function (x) { return s(x.id) === s(p.id); })[0] || p;
       return '<div class="actions" data-patient-actions="' + esc(p.id) + '"><div class="toolbar"><span class="na" id="crm-save-state"></span></div>'
         + '<details class="act"><summary>עריכה</summary><form data-form="patient-edit" data-patient="' + esc(p.id) + '" novalidate>'
@@ -2627,8 +2641,14 @@
           // No phone is not a reason to stop: the phone is asked for right in the row (CHANGELOG-crm-followups-1104.md).
           const needPhone = !ok && d && (d.error === 'no_phone' || d.error === 'bad_phone');
           toast(ok ? (d.alreadySent ? 'המטופל/ת כבר נשלח/ה לאמבולטורי' : 'נוצר ליד טיפול חוץ באאוטפיישנט') : needPhone ? s(d.message) || 'יש להזין טלפון' : ('יצירת ליד טיפול חוץ נכשלה — ' + s(d && (d.message || d.error) || 'שגיאה')), !ok);
-          if (ok) { state.outPhone = ''; if (!state.data.outpatientSentLeadIds) state.data.outpatientSentLeadIds = []; state.data.outpatientSentLeadIds.push('discharge:' + id); renderMain(); }
-          else if (needPhone) { state.outPhone = id; state.clientsView = 'out'; renderMain(); const inp = $('#crm-out-phone input[name="phone"]'); if (inp) inp.focus(); }
+          if (ok) { state.outPhone = ''; if (!state.data.outpatientSentLeadIds) state.data.outpatientSentLeadIds = []; state.data.outpatientSentLeadIds.push('discharge:' + id); renderMain(); if (state.drawer) openDrawer(state.drawer.kind, state.drawer.id, true); }
+          else if (needPhone) {
+            const inCard = $('#crm-drawer form[data-form="out-phone"]');
+            if (inCard && state.drawer && $('#crm-drawer').getAttribute('aria-hidden') === 'false') {
+              const e2 = inCard.querySelector('[data-err="phone"]'); if (e2) e2.textContent = 'לא נמצא טלפון — הזיני טלפון ולחצי שוב';
+              const i2 = inCard.querySelector('input[name="phone"]'); if (i2) i2.focus();
+            } else { state.outPhone = id; state.clientsView = 'out'; renderMain(); const inp = $('#crm-out-phone input[name="phone"]'); if (inp) inp.focus(); }
+          }
           return !!ok;
         }).catch(function (e) { state.saving = false; clearBusy(); toast('יצירת ליד טיפול חוץ נכשלה — ' + String(e && e.message || e), true); return false; });
     }
@@ -3117,7 +3137,7 @@
       const name = lead ? lead.name : pat.name;
       const subject = lead ? { leadId: lead.id } : { patientId: pat.id };
       const kv = lead ? [['טלפון', lead.phone], ['בית', houseName(lead.house)], ['מקור', lead.source], ['אחראי', lead.assignedTo], ['שלב', stageLabel(lead.stage)], ['פגישה', fmtDate(lead.visitDate) + (lead.visitTime ? ' ' + lead.visitTime : '')], ['נוצר', fmtDate(lead.created)], ['נפגש/ת עם', lead.meetingWith], ['תוצאת פגישה', meetingOutcomeLabel(lead.meetingOutcome)], ['איש קשר', lead.contactName + (lead.contactRelation ? ' (' + lead.contactRelation + ')' : '')], ['טלפון איש קשר', lead.contactPhone], ['הערות', lead.note]]
-        : [['בית', houseName(pat.houseId)], ['תאריך כניסה', fmtDate(pat.date) + (pat.date ? ' · ' + daysBetween(pat.date, state.today) + ' ימים בבית' : '')], ['סטטוס', patientStatusLabel(pat.status)], ['הגיע/ה', pat.source === 'lead' ? 'מליד' : pat.source === 'direct_admin' ? 'הוספה ישירה' : pat.source], ['ליד מקורי', pat.fromLead ? ((compute(state.data, state.today).leads.filter(function (l) { return l.id === pat.fromLead; })[0] || {}).name || 'נסגרה / הועברה') : '']];
+        : [['בית', houseName(pat.houseId)], ['תאריך כניסה', fmtDate(pat.date) + (pat.date && !s(pat.exitDate) ? ' · ' + daysBetween(pat.date, state.today) + ' ימים בבית' : '')], ['תאריך יציאה', s(pat.exitDate) ? fmtDate(pat.exitDate) + (pat.date ? ' · ' + daysBetween(pat.date, pat.exitDate) + ' ימים בבית' : '') : ''], ['סטטוס', patientStatusLabel(pat.status)], ['הגיע/ה', pat.source === 'lead' ? 'מליד' : pat.source === 'direct_admin' ? 'הוספה ישירה' : pat.source], ['ליד מקורי', pat.fromLead ? ((compute(state.data, state.today).leads.filter(function (l) { return l.id === pat.fromLead; })[0] || {}).name || 'נסגרה / הועברה') : '']];
       const na = lead ? nextActionFor(lead, state.today, flagsOf(state.index, lead.id)) : null;
       dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(name) + '</h2><div class="meta tags">' + (lead ? '<span class="chip stage-' + esc(lead.stage) + '">' + esc(stageLabel(lead.stage)) + '</span>' + houseTag(lead.house) + (lead.assignedTo ? avatar(lead.assignedTo) : '') : statusChip(pat.status) + houseTag(pat.houseId)) + (na ? chip(na.state, na.text) : '') + (lead && waitChipText(lead, flagsOf(state.index, lead.id)) && waitChipText(lead, flagsOf(state.index, lead.id)) !== na.text ? chip('wait', waitChipText(lead, flagsOf(state.index, lead.id))) : '') + '</div></div>'
         + '<span class="toolbar"><button type="button" class="btn small primary" data-contact-open="' + esc(kind + ':' + id) + '">📞 תיעוד שיחה</button><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></span></div>'
@@ -3856,7 +3876,8 @@
         const raw = fp.elements.phone ? fp.elements.phone.value : '';
         const err = fp.querySelector('[data-err="phone"]');
         const ph = handoffPhone(raw);
-        if (!ph) { if (err) err.textContent = 'טלפון לא תקין — 9 או 10 ספרות, מתחיל ב-0'; return; }
+        // in the patient card the phone is optional (the server finds it); in the «משוחררים» row it was asked for
+        if (!ph && !(fp.dataset.optional === '1' && !s(raw))) { if (err) err.textContent = 'טלפון לא תקין — 9 או 10 ספרות, מתחיל ב-0'; return; }
         if (err) err.textContent = '';
         sendToOutpatient(fp.dataset.discharge, ph);
         return;

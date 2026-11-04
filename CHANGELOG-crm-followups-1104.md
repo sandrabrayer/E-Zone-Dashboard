@@ -37,6 +37,13 @@ Branch `claude/outpatient-handoff-phone` → base `claude/build-ezone-dashboard-
 4. The server message now reads «אין טלפון למטופל/ת. יש להזין טלפון בשורה של המטופל/ת ב«משוחררים» ולשלוח
    שוב.»
 
+## Also in the patient card (Vered looked there first)
+
+A released patient's card had no way to send and showed the raw status «released». Now: status «שוחרר/ה»,
+«תאריך יציאה» with the days stayed (no running «ימים בבית»), and an open «העברה לאמבולטורי» block: the phone
+is optional (sent without one, the server finds it from the lead / the book); when none is found the field
+says «לא נמצא טלפון — הזיני טלפון ולחצי שוב». Once sent: «נשלח לאמבולטורי ✓».
+
 # Part 2 — save spinner; «ממתין לאישור הקופה» that looked selected but did not save
 
 ## Reported

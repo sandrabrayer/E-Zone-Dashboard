@@ -370,3 +370,4 @@ button.kpi.on { background: #E5F0FF; border-color: var(--c-info); }
 .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: crm-spin .7s linear infinite; vertical-align: middle; }
 form[data-form="wait-reason"][aria-busy="true"] .radio-row { opacity: .6; }
 @media (prefers-reduced-motion: reduce) { #crm-root form button[aria-busy="true"]::after, .spin { animation-duration: 2s; } }
+.notice.ok { background: #ECFDF3; border: 1px solid #A6E3BE; border-radius: var(--radius); padding: 8px 12px; margin-bottom: 10px; }

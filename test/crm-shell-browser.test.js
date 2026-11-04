@@ -1326,3 +1326,29 @@ test('Vered 04/11/2026 (2): every save shows a spinner on its button until the a
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });
+
+test('Vered 04/11/2026 (3): a released patient\'s card says «שוחרר/ה» with the exit date and offers «העבר לאמבולטורי» — phone optional, asked only when none is found (CHANGELOG-crm-followups-1104.md)', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    const outCalls = [];
+    await page.route('**/api/outpatient-lead', (route) => {
+      const b = JSON.parse(route.request().postData()); outCalls.push(b);
+      route.fulfill({ status: b.phone ? 200 : 502, contentType: 'application/json', body: JSON.stringify(b.phone ? { ok: true, sent: true } : { ok: false, error: 'no_phone', message: 'לא נשלח לאמבולטורי: אין טלפון למטופל/ת.' }) });
+    });
+    await page.fill('#crm-search', 'נועה');
+    await page.click('#crm-search-go');
+    await page.locator('[data-open-patient="px"]').first().click();
+    await page.waitForSelector('#crm-drawer form[data-form="out-phone"]', { timeout: 5000 });
+    const head = await page.textContent('#crm-drawer');
+    assert.match(head, /שוחרר\/ה/); assert.ok(!/\breleased\b/.test(head), 'no raw status key'); assert.match(head, /תאריך יציאה/);
+    await page.click('#crm-drawer form[data-form="out-phone"] button[type="submit"]');   // no phone typed → the server is asked first
+    await page.waitForFunction(() => /לא נמצא טלפון/.test((document.querySelector('#crm-drawer form[data-form="out-phone"] [data-err="phone"]') || {}).textContent || ''), null, { timeout: 5000 });
+    await page.fill('#crm-drawer form[data-form="out-phone"] input[name="phone"]', '0527654321');
+    await page.click('#crm-drawer form[data-form="out-phone"] button[type="submit"]');
+    await page.waitForFunction(() => /נשלח לאמבולטורי ✓/.test(document.querySelector('#crm-drawer').textContent), null, { timeout: 5000 });
+    assert.deepEqual(outCalls, [{ dischargeId: 'dx1', manual: true }, { dischargeId: 'dx1', manual: true, phone: '0527654321' }]);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
