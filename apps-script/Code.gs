@@ -5222,6 +5222,38 @@ function collectHouseMoves_(patients) {
  * longer empty the sheet. Note the merge means the Patients sheet never
  * shrinks through this path, so the trim is a pure safety net here.
  */
+/* Equality of COMPLETE patient row multisets, not merely lead/patient IDs.
+ * It is safe to skip an unchanged rewrite even when the current sheet order
+ * interleaves houses (a full save otherwise pointlessly reshuffles them).
+ * Preserve cell types: a Date requiring text normalization MUST force a write.
+ * Unknown/non-serializable values fail closed to the existing full write path.
+ * Duplicates are counted, not collapsed, so deletion/healing still occurs. */
+function patientRowsSameContent_(before, after) {
+  if (!Array.isArray(before) || !Array.isArray(after) || before.length !== after.length) return false;
+  var counts = Object.create(null);
+  var key = function (row) {
+    return JSON.stringify(row.map(function (v) {
+      if (v instanceof Date) return ['date', v.getTime()];
+      if (v === null) return ['null'];
+      if (v === undefined) return ['undefined'];
+      if (typeof v === 'number' && !isFinite(v)) return ['number', String(v)];
+      return [typeof v, v];
+    }));
+  };
+  try {
+    for (var i = 0; i < before.length; i++) {
+      var k = key(before[i]);
+      counts[k] = (counts[k] || 0) + 1;
+    }
+    for (var j = 0; j < after.length; j++) {
+      var target = key(after[j]);
+      if (!counts[target]) return false;
+      counts[target]--;
+    }
+    return true;
+  } catch (_) { return false; }
+}
+
 function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, dischargedFromLeads, user, moves) {
   const sh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
   const houseColIdx = PATIENT_COLUMNS.indexOf('houseId');
@@ -5247,12 +5279,16 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
     withHouse.updatedBy = stampUser;
   };
   const lastRow = sh.getLastRow();
+  // Keep a byte/type-sensitive image of the grid before any normalization or
+  // matching mutates row arrays. Used only to skip an objectively no-op write.
+  const storedRowsBefore = [];
 
   const kept = [];       // other houses' rows, original order — untouched
   const houseRows = [];  // this house's current sheet rows, sheet order
   if (lastRow > 1) {
     const values = sh.getRange(2, 1, lastRow - 1, PATIENT_COLUMNS.length).getValues();
     for (let i = 0; i < values.length; i++) {
+      storedRowsBefore.push(values[i].slice());
       // THE house rule (diagClientHouseId_), not a raw compare: a row stored as
       // 'hapardes', the Hebrew label or with an invisible mark is THIS
       // house's row — the one the client shows under this house — so its id
@@ -5674,6 +5710,18 @@ function replaceHousePatients_(houseId, patientsArr, suppressedDeleteKeys, disch
     if (exitDateColIdx >= 0) row[exitDateColIdx] = asISODate_(row[exitDateColIdx]);
     return row;
   });
+
+  // In the unchanged case, a whole-grid rewrite + two full-column format
+  // passes is expensive and reorders other houses for no business change.
+  // The exact same-source multiset retains original row order on a no-op.
+  // Legacy Date cells, value/ID/stamp changes, duplicate healing, house moves,
+  // or omitted-row audits never take this fast path.
+  if (!preservedRows.length && !suppressedKeys.length && !skippedPromotes.length &&
+      !conflicts.length && !moved.length && !leavingRows.length &&
+      !Object.keys(stamps).length && patientRowsSameContent_(storedRowsBefore, finalRows)) {
+    return { written: newRows.length, preservedKeys: preservedKeys, suppressedKeys: suppressedKeys,
+      skippedPromotes: skippedPromotes, conflicts: conflicts, moved: moved, stamps: stamps };
+  }
 
   if (finalRows.length > 0) {
     // Force the entry-date and exitDate columns to plain text BEFORE writing
