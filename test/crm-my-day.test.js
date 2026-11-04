@@ -71,7 +71,7 @@ test('houseExceptions: admission due and not done (future entry is NOT an except
 
 test('myDay (Vered): five cards in the spec order; counts and lists come from the same rows; ordering binding → exceptions → overdue → rest; waiting-on-manager shows the owner, not a task of Vered; money rows from debtAging; last contact per row; filters', () => {
   const m = core.myDay(c, TASKS, INDEX, DEBT, TODAY, VERED, {}, PAYMENTS_OK);
-  assert.deepEqual(m.cards.map((k) => k.label), ['גבייה לביצוע', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'פניות חדשות ללא מגע']);
+  assert.deepEqual(m.cards.map((k) => k.label), ['גבייה לביצוע', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'לידים חדשים ללא מגע']);
   const card = (id) => m.cards.filter((k) => k.id === id)[0];
   assert.equal(card('collection').value, 2, 'the collection task today + the recorded debt past its end'); assert.match(card('collection').hint, /2 מחזורים פתוחים/);
   assert.equal(card('calls').value, 3, 'the late call + the timed review today + the window task covering today'); assert.match(card('calls').hint, /1 באיחור · 3 פתוחות/);
@@ -82,12 +82,14 @@ test('myDay (Vered): five cards in the spec order; counts and lists come from th
   assert.equal(m.byDomain.collection.length, 3); assert.equal(m.byDomain.calls.length, 3); assert.equal(m.byDomain.newleads.length, 1);
   assert.deepEqual(m.byDomain.collection.map((r) => r.kind), ['debt_recorded', 'task', 'cycle_unreported'], 'late recorded debt, then the collection task today, then the open cycle');
   assert.ok(!m.byDomain.collection.some((r) => /2026-07-01/.test(r.id)), 'a settled cycle is not a row');
-  // urgent: binding first (timed today), then the exceptions
-  assert.deepEqual(m.urgent.map((r) => [r.kind, r.priority]), [['task', 'binding'], ['meeting_today', 'binding'], ['continuity', 'exception'], ['report_undecided', 'exception'], ['admission_due', 'exception'], ['report_unseen', 'exception']], 'timed commitments first (by time), then the exceptions oldest first');
+  // urgent (the nav badge — the band itself is gone, CHANGELOG-crm-vered-feedback-1104.md): binding first, then the
+  // exceptions; «מה דחוף בבתים» (admission_due / continuity) is no longer part of «היום שלי»; L3's missing report is
+  // 3 days old today → now an exception
+  assert.deepEqual(m.urgent.map((r) => [r.kind, r.priority]), [['task', 'binding'], ['meeting_today', 'binding'], ['report_undecided', 'exception'], ['awaiting_report', 'exception'], ['report_unseen', 'exception']], 'timed commitments first (by time), then the exceptions oldest first');
   const ids = m.urgent.map((r) => r.id); assert.equal(new Set(ids).size, ids.length, 'no row twice');
   // waiting on the manager: owner shown, not Vered's task
   assert.deepEqual(m.waiting.map((r) => [r.subjectId, r.waitingOn]), [['L3', 'חן']]);
-  assert.match(m.waiting[0].why, /תאריך שעבר אינו הוכחה/);
+  assert.match(m.waiting[0].why, /3 ימים ללא דיווח המנהל\/ת/);
   // last contact
   const maya = m.byDomain.calls.filter((r) => r.subjectId === 'L9')[0];
   assert.match(maya.lastContact, /לא היה מענה/); assert.match(maya.lastContact, /27\/10\/2026/);
@@ -102,10 +104,10 @@ test('myDay (Vered): five cards in the spec order; counts and lists come from th
   assert.deepEqual(byHouse.urgent.map((r) => r.subjectId), ['L4']);
 });
 
-test('myDay (Dana): no money card and no money row — «מה דחוף בבתים» takes the slot; debt is never consulted; sources that did not load are null (never 0)', () => {
+test('myDay (Dana): no money card and no money row — and no «מה דחוף בבתים» card any more (Vered 04/11/2026); debt is never consulted; sources that did not load are null (never 0)', () => {
   const m = core.myDay(c, TASKS, INDEX, DEBT, TODAY, DANA, {});
-  assert.deepEqual(m.cards.map((k) => k.label), ['מה דחוף בבתים', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'פניות חדשות ללא מגע']);
-  assert.equal(m.cards[0].value, 4, 'admission due + continuity + the two report exceptions'); assert.equal(m.exceptions.length, 4, 'the card opens exactly these rows');
+  assert.deepEqual(m.cards.map((k) => k.label), ['שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'לידים חדשים ללא מגע']);
+  assert.deepEqual(m.exceptions.map((r) => r.kind).sort(), ['awaiting_report', 'report_undecided', 'report_unseen'], 'only the follow-up exceptions; admission / continuity are out of «היום שלי»');
   assert.equal(m.byDomain.collection.length, 0); assert.ok(!JSON.stringify(m).includes('₪'));
   const none = core.myDay(c, null, null, null, TODAY, DANA, {});
   assert.equal(none.cards.filter((k) => k.id === 'calls')[0].value, null); assert.equal(none.cards.filter((k) => k.id === 'newleads')[0].value, null);
@@ -132,7 +134,7 @@ test('weekPlan: Sun–Sat days, a dated row on its day, a window task on every d
 test('light theme + nav groups: the spec tokens, state never by colour alone (words / icons in every chip), nav groups in the spec order, 16px body', () => {
   assert.match(CRM_CSS, /--bg: #E6ECF2; --bg-2: #FFFFFF/); assert.match(CRM_CSS, /--text: #0E1B25/); assert.match(CRM_CSS, /--border: #B9C6D2/); assert.match(CRM_CSS, /--primary: #0B6B63/);   // contrast pass 2026-10-29
   assert.match(CRM_CSS, /font-size: 16px; line-height: 1.45/);
-  assert.deepEqual(core.NAV_GROUPS.map((g) => g.label), ['', 'פניות ומטופלים', 'פגישות ויומן', 'בתים והמשך טיפול', 'כספים', 'דוחות והגדרות']);
+  assert.deepEqual(core.NAV_GROUPS.map((g) => g.label), ['', 'לידים ומטופלים', 'פגישות ויומן', 'בתים והמשך טיפול', 'כספים', 'דוחות והגדרות']);
   assert.match(CRM_SRC, /'⚠ חריג'/); assert.match(CRM_SRC, /'⏰ באיחור'/); assert.match(CRM_SRC, /'● להיום'/);
   assert.deepEqual(core.MY_DAY_VIEWS.map((v) => v.label), ['היום', 'השבוע', 'הושלמו']);
   assert.ok(!/name="next"[^>]*checked/.test(CRM_SRC));
@@ -144,7 +146,7 @@ test('Code.gs contactIndex: the last contact per lead / patient from the Activit
   const actor = (id, user, roles, caps) => ({ proxySecret: PROXY_SECRET, proxyUser: user, user, proxyAuth: 'personal', proxyUserId: id, proxyRoles: roles, proxyCaps: caps });
   const plain = (x) => JSON.parse(JSON.stringify(x));
   assert.ok(Array.from(g.run('PROXY_KNOWN_ACTIONS')).includes('contactIndex'));
-  assert.deepEqual(plain(g.post(Object.assign({ action: 'contactIndex' }, actor('vered', 'ורד', ['staff'], ['finance', 'billingControl'])))), { ok: true, count: 0, leads: {}, patients: {} }, 'no sheet yet');
+  assert.deepEqual(plain(g.post(Object.assign({ action: 'contactIndex' }, actor('vered', 'ורד', ['staff'], ['finance', 'billingControl'])))), { ok: true, count: 0, leads: {}, patients: {}, flags: {} }, 'no sheet yet');
   const SID = (n) => 'sub-' + String(n).padStart(32, '0');
   const dana = actor('dana', 'דנה', ['staff'], []);
   g.post(Object.assign({ action: 'logContact', submissionId: SID(1), contact: { leadId: 'L1', channel: 'phone', outcome: 'no_answer', occurredAt: '2026-10-20T09:00:00.000Z' }, next: { none: true, explanation: 'xx' } }, dana));

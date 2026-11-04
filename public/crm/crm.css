@@ -351,3 +351,10 @@ button.kpi.on { background: #E5F0FF; border-color: var(--c-info); }
   .crm-top h1 { flex: 1 1 calc(100% - 160px); }
   .crm-top .crm-search { flex: 1 1 100%; min-width: 0; }
 }
+
+/* Vered's feedback 04/11/2026 (CHANGELOG-crm-vered-feedback-1104.md): the real app icon in the
+   menu header; the waitlist-reason / patient-change radios; the manager-message notice. */
+.crm-brand img.logo { display: inline-block; width: 30px; height: 30px; border-radius: 9px; object-fit: cover; background: none; margin-inline-end: 8px; vertical-align: middle; }
+.actions .radio-row { display: flex; flex-wrap: wrap; gap: 14px; margin: 4px 0 8px; }
+.actions label.radio { flex-direction: row; align-items: center; gap: 6px; font-size: 15px; color: var(--text); }
+.notice.patient-change { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

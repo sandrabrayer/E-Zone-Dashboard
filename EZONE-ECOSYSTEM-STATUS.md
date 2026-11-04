@@ -1,4 +1,9 @@
-# E-ZONE Ecosystem Status — updated November 3, 2026
+# E-ZONE Ecosystem Status — updated November 4, 2026
+
+## CRM: Vered's feedback round — November 4, 2026 (PR open)
+
+- App icon in the browser tab + menu header; «פניות» → «לידים» across the CRM; the urgent band and «מה דחוף בבתים» (admission-due / continuity rows, incl. the May ones) left «היום שלי» — the discharge-integrity check stays; a missing manager report is «ממתין» for 3 days, an exception from day 3; follow-up rows before 01/06/2026 are not listed.
+- New Code.gs action **`logLeadFlag`** (gate = `logContact`): waitlist reason («ממתין למקום» / «ממתין לאישור הקופה») and a patient-side meeting cancel / reschedule, stored as append-only **Activity** events (no Leads column — the closed-lead sheets are position-mapped); `contactIndex` now also returns `flags`. The CRM writes the lead through the normal `saveAll`, then the flag, then shows «📲 הודעה למנהל/ת בוואטסאפ» (prefilled wa.me to `managerPhones`). Code.gs changed (clasp CI on merge). SW v112 → v113. Details: `CHANGELOG-crm-vered-feedback-1104.md`.
 
 
 ## CRM #358 recovery acceptance — November 3, 2026 (DRAFT, not deployed)

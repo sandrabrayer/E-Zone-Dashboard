@@ -128,12 +128,13 @@ async function boot() {
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
       if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund', 'editReceipt', 'savePayment', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
-      if (['logContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0) saves.push(parsed);
+      if (['logContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logLeadFlag'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
         : parsed.action === 'getTasks' ? (tasksAnswer ? tasksAnswer() : (parsed.status === 'open' && parsed.proxyUserId !== 'ortal' ? TASKS : { ok: true, total: 0, tasks: [] }))   // Code.gs scopes Ortal to money tasks (none in the fixture)
         : parsed.action === 'contactIndex' ? (indexAnswer ? indexAnswer() : INDEX)
         : parsed.action === 'logContact' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, event: { eventId: 'contact:' + parsed.submissionId }, completed: null, created: parsed.next && !parsed.next.none ? Object.assign({ id: 'task-x' }, parsed.next) : null })
         : ['createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0 ? (saveAnswer ? saveAnswer(parsed) : { ok: true, task: { id: parsed.id || 'task-new' } })
+        : parsed.action === 'logLeadFlag' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, flag: Object.assign({ at: new Date().toISOString(), actorName: 'ורד' }, parsed.flag) })
         : parsed.action === 'debtAging' ? DEBT : parsed.action === 'getPayments' ? PAYMENTS : parsed.action === 'getCredits' ? creditsLedger
         : parsed.action === 'restorePatientToActive' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restoredToActive: true, id: parsed.patient && parsed.patient.id })
         : parsed.action === 'restorePatient' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restored: true, lead: { id: parsed.patient && parsed.patient.newLeadId } })
@@ -179,23 +180,25 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
   try {
     const { page, errors } = await open(browser, srv.port, 'vered', 1366);
     assert.equal(await page.getAttribute('html', 'dir'), 'rtl');
-    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'פניות', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'בקרה'], 'grouped nav (spec §3)');
-    assert.deepEqual(await page.$$eval('#crm-nav .nav-group', (els) => els.map((e) => e.textContent)), ['פניות ומטופלים', 'פגישות ויומן', 'בתים והמשך טיפול', 'כספים', 'דוחות והגדרות']);
+    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'לידים', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'בקרה'], 'grouped nav (spec §3; «פניות» → «לידים» 04/11/2026)');
+    assert.deepEqual(await page.$$eval('#crm-nav .nav-group', (els) => els.map((e) => e.textContent)), ['לידים ומטופלים', 'פגישות ויומן', 'בתים והמשך טיפול', 'כספים', 'דוחות והגדרות']);
     assert.equal(await page.$eval('body', (b) => getComputedStyle(b).backgroundColor), 'rgb(230, 236, 242)', 'light theme (contrast pass)');
     assert.ok(await page.isVisible('#crm-menu'));
     assert.ok(!(await page.isVisible('#crm-burger')), 'no burger on desktop');
     assert.equal(await page.$eval('#crm-user', (e) => e.textContent), 'ורד');
     // «היום שלי» (Stage 2): the five cards, the urgent band, the domains, the side column
     await page.waitForSelector('.kpis.cards');
-    assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['גבייה לביצוע', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'פניות חדשות ללא מגע']);
+    assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['גבייה לביצוע', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'לידים חדשים ללא מגע']);
     const main = await page.textContent('#crm-main');
-    assert.match(main, /ממתין לדיווח המנהל\/ת/, 'a passed meeting waits for the manager — not «late»');
-    assert.match(main, /תאריך שעבר אינו הוכחה/);
+    // a missing manager report is late only 3 days after the meeting (CHANGELOG-crm-vered-feedback-1104.md): L3 met 3 days ago
+    assert.match(main, /דיווח המנהל\/ת באיחור/, 'a meeting 3 days ago without a report is now late');
+    assert.match(main, /3 ימים ללא דיווח המנהל\/ת/);
     assert.match(main, /אין מגע מתועד/); assert.match(main, /מאיה שגב/, 'a new lead with no documented contact and no open call');
-    assert.ok(!/פניות חדשות ללא מגע[\s\S]*אבי לוי[\s\S]*שיחות ומעקבים/.test(main), 'a lead with an open call task is in «שיחות», not in «ללא מגע»');
+    assert.ok(!/לידים חדשים ללא מגע[\s\S]*אבי לוי[\s\S]*שיחות ומעקבים/.test(main), 'a lead with an open call task is in «שיחות», not in «ללא מגע»');
     assert.ok(!/ממתין \d+ ימים/.test(main), 'no lateness by lead age');
     assert.match(await page.textContent('.day-side'), /פגישות היום/); assert.match(await page.textContent('.day-side'), /גלי כהן/);
-    assert.match(await page.textContent('.urgent'), /לקרוא דיווח מנהל/, 'the unseen report is an exception on top');
+    assert.equal(await page.locator('#crm-main section.urgent').count(), 0, 'no «חריגים דחופים» band (Vered 04/11/2026)');
+    assert.match(await page.textContent('.day-main'), /לקרוא דיווח מנהל/, 'the unseen report is in its domain');
     await page.click('.kpi[data-domain="newleads"]');
     assert.ok(!/גלי כהן/.test(await page.textContent('.day-main')), 'a card filters to its domain');
     assert.match(await page.textContent('.day-main'), /מאיה שגב/);
@@ -286,7 +289,7 @@ test('CRM shell at 390 px (Vered): burger opens the drawer menu, areas work, no 
     assert.equal(await page.getAttribute('#crm-menu', 'data-open'), 'true');
     await page.click('#crm-nav button[data-area="leads"]');
     assert.notEqual(await page.getAttribute('#crm-menu', 'data-open'), 'true', 'choosing an area closes the menu');
-    assert.equal(await page.textContent('#crm-title'), 'פניות');
+    assert.equal(await page.textContent('#crm-title'), 'לידים');
     assert.ok(await noHScroll(page), 'no horizontal page scroll at 390');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
@@ -1098,7 +1101,7 @@ test('Stage 1c (Vered): «שיחות לביצוע» on היום שלי from getT
   } finally { await browser2.close(); srv2.close(); }
 });
 
-test('Stage 2 «היום שלי» (Vered + Dana, 1366 + 390 px): header date; views היום / השבוע (range, grouped by day, the follow-up on its day) / הושלמו (who / when, opens the record); quick actions pick a subject; Dana has no money card and no «גבייה», gets «מה דחוף בבתים»; mobile: two-column cards, no horizontal scroll', { skip: skip && 'playwright/chromium missing' }, async () => {
+test('Stage 2 «היום שלי» (Vered + Dana, 1366 + 390 px): header date; views היום / השבוע (range, grouped by day, the follow-up on its day) / הושלמו (who / when, opens the record); quick actions pick a subject; Dana has no money card and no «גבייה» (no «מה דחוף בבתים» since 04/11/2026); mobile: two-column cards, no horizontal scroll', { skip: skip && 'playwright/chromium missing' }, async () => {
   const srv = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   const dmy = (iso) => iso.split('-').reverse().join('/');
@@ -1151,7 +1154,7 @@ test('Stage 2 «היום שלי» (Vered + Dana, 1366 + 390 px): header date; vi
     await page.waitForSelector('.kpis.cards');
     if (process.env.CRM_SHOT) await page.screenshot({ path: process.env.CRM_SHOT + '/today-390-dana.png', fullPage: true });
     const labels = await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent));
-    assert.deepEqual(labels, ['מה דחוף בבתים', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'פניות חדשות ללא מגע'], 'no money card — an operational domain in its place');
+    assert.deepEqual(labels, ['שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'לידים חדשים ללא מגע'], 'no money card; «מה דחוף בבתים» left «היום שלי» (04/11/2026)');
     assert.ok(!/גבייה|₪/.test(await page.textContent('#crm-main')), 'no money anywhere on her day');
     assert.ok(!srv2.actions.some((a) => a.action === 'debtAging'), 'debtAging never requested for her');
     assert.ok(!(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); }))).includes('גבייה'));
@@ -1237,4 +1240,39 @@ test('Stage 3 triage (Vered, 1366 px): reached from «פניות» with a comput
     assert.match(await page.textContent('#crm-main'), /אין רשומות שדורשות בירור/);
     assert.deepEqual(errors, []);
   } finally { DATA.leads.splice(DATA.leads.length - extra.length, extra.length); await browser.close(); srv.close(); }
+});
+
+test('Vered 04/11/2026: the app icon in the menu; «לידים»; no urgent band; a patient-side reschedule saves the lead, records the change and offers the manager WhatsApp (CHANGELOG-crm-vered-feedback-1104.md)', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    assert.equal(await page.getAttribute('.crm-brand img.logo', 'src'), '/icons/icon-192.png');
+    assert.equal(await page.getAttribute('link[rel="icon"]', 'href'), '/icons/icon-192.png');
+    assert.equal(await page.locator('#crm-main section.urgent').count(), 0);
+    await page.click('[data-area="leads"]');
+    assert.equal(await page.textContent('#crm-title'), 'לידים');
+    await page.click('.card[data-open-lead="L2"] .name');
+    const f = '#crm-drawer form[data-form="patient-change"]';
+    await page.locator(f).locator('..').locator('summary').click();
+    await page.click(f + ' button[type="submit"]');
+    assert.match(await page.textContent(f + ' [data-err="change"]'), /בוטלה או שונה מועד/, 'nothing is chosen → refused in the page');
+    const newDay = daysAgo(-3);
+    await page.check(f + ' input[name="change"][value="rescheduled"]');
+    await page.fill(f + ' input[name="newDate"]', newDay);
+    await page.fill(f + ' input[name="newTime"]', '12:15');
+    await page.fill(f + ' input[name="note"]', 'ביקשו לדחות');
+    await page.click(f + ' button[type="submit"]');
+    await page.waitForSelector('#crm-drawer a[data-wa-manager]', { timeout: 5000 });
+    const save = srv.saves.filter((x) => x.action === 'saveAll').pop();
+    assert.deepEqual([save.leads[0].id, save.leads[0].visitDate, save.leads[0].visitTime, save.leads[0].meetingOutcome], ['L2', newDay, '12:15', '']);
+    const flag = srv.saves.filter((x) => x.action === 'logLeadFlag').pop();
+    assert.deepEqual([flag.flag.leadId, flag.flag.kind, flag.flag.change, flag.flag.prevDate, flag.flag.prevTime, flag.flag.newDate, flag.flag.withWhom], ['L2', 'meeting_patient_change', 'rescheduled', TODAY, '13:30', newDay, 'אורן']);
+    assert.match(flag.submissionId, /^sub-[0-9a-f]{32}$/);
+    const href = await page.getAttribute('#crm-drawer a[data-wa-manager]', 'href');
+    assert.match(href, /^https:\/\/wa\.me\/\d*\?text=/);
+    assert.match(decodeURIComponent(href.split('?text=')[1]), /גלי כהן.*שינה\/תה את מועד הפגישה.*ביקשו לדחות/s);
+    assert.match(await page.textContent('#crm-drawer .drawer-head'), /שונתה ע״י המטופל\/ת/, 'the card says who changed it');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
 });

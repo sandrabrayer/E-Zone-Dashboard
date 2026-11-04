@@ -360,7 +360,10 @@
 // (crm/crm.js, crm.html loads cycle-balance.js) (CHANGELOG-crm-collect-on-date.md). Stacked on v110 (PR #354); monotonic, v17 never reused.
 // v111 → v112: an admitted lead whose patient is in a house is never shown as «בטיפול פעיל» again — classic
 // load-time heal + CRM read (app.js, crm/crm.js) (CHANGELOG-admitted-lead-stays-closed.md). From the live v111; monotonic, v17 never reused.
-var CACHE_VERSION = 'v112';
+// v112 → v113: CRM — app icon in the tab + menu, «פניות» → «לידים», no urgent band / «מה דחוף בבתים» in «היום שלי»,
+// manager report late only after 3 days, waitlist reason, patient-side meeting cancel / change + manager WhatsApp
+// (crm/crm.js, crm.css, crm.html) (CHANGELOG-crm-vered-feedback-1104.md). From the repo/live v112; monotonic, v17 never reused.
+var CACHE_VERSION = 'v113';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
