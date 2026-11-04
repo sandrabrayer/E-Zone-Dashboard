@@ -8923,8 +8923,8 @@ function ambulatoryHandoffPending_(leads, changed, suppressed) {
 function getOutpatientHandoffRef_(params) {
   var actor = actingUser_(params);
   if (!actor.verified || isControllerActor_(actor)) return { ok: false, error: 'forbidden' };
-  var leadId = String(params && params.leadId == null ? '' : params.leadId || '').trim();
-  var dischargeId = String(params && params.dischargeId == null ? '' : params.dischargeId || '').trim();
+  var leadId = String(params && params.leadId != null ? params.leadId : '').trim();
+  var dischargeId = String(params && params.dischargeId != null ? params.dischargeId : '').trim();
   if (!!leadId === !!dischargeId) return { ok: false, error: 'choose_one_id' };
   var id = leadId || dischargeId;
   if (!/^[A-Za-z0-9_:-]{1,120}$/.test(id)) return { ok: false, error: 'invalid_id' };
