@@ -2438,7 +2438,7 @@
       const d = meetingsFor(p, 'patient', c).discharge;
       if (!d || !d.id) return '';
       if (c.outpatientSent && c.outpatientSent['discharge:' + d.id])
-        return '<div class="notice ok">נשלח לאמבולטורי — מצב הטיפול טרם אומת</div>' + outpatientStatusButton(d.id, 'discharge');
+        return '<div class="notice ok">נשלח לאמבולטורי ✓ · מצב הטיפול טרם אומת</div>' + outpatientStatusButton(d.id, 'discharge');
       return '<div class="actions"><details class="act" open><summary>העברה לאמבולטורי</summary>'
         + '<form data-form="out-phone" data-discharge="' + esc(d.id) + '" data-optional="1" novalidate>'
         + '<label>טלפון (אם לא מופיע בליד) <input type="tel" name="phone" inputmode="tel" maxlength="20" autocomplete="off" placeholder="05XXXXXXXX"><span class="err" data-err="phone"></span></label>'
