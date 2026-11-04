@@ -1638,7 +1638,7 @@ const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
  * test/proxy-secret-transition.test.js checks this list against handle_. */
 const PROXY_KNOWN_ACTIONS = [
   'managersWork',
-  'getData', 'getAdmittedRoster', 'getDischargedRoster', 'createLeadFromTherapists', 'saveAll', 'recordOutpatientLeadSend', 'dischargeOutpatientPayload', 'getPayments', 'savePayment',
+  'getData', 'getAdmittedRoster', 'getDischargedRoster', 'createLeadFromTherapists', 'saveAll', 'recordOutpatientLeadSend', 'getOutpatientHandoffRef', 'dischargeOutpatientPayload', 'getPayments', 'savePayment',
   'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
   'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'debtAging', 'cleanupReport',
   'reportPayment', 'appendFunder', 'billingControlQueue', 'confirmPayment',
@@ -2043,6 +2043,8 @@ function handle_(params) {
     // «אמבולטורי» → Outpatient: server.js records the outcome of one send
     // (CHANGELOG-meeting-with-ambulatory.md). Verified proxy callers only.
     if (action === 'recordOutpatientLeadSend') return jsonOut_(recordOutpatientLeadSend_(params));
+    // Read-only exact-id cross-app status reference; never a name/phone match.
+    if (action === 'getOutpatientHandoffRef') return jsonOut_(getOutpatientHandoffRef_(params));
     // Discharged patient → Outpatient (CHANGELOG-discharge-outpatient-handoff.md):
     // server.js asks what to send for one discharge row. Verified proxy callers only.
     if (action === 'dischargeOutpatientPayload') return jsonOut_(dischargeOutpatientPayload_(params));
@@ -8910,6 +8912,42 @@ function ambulatoryHandoffPending_(leads, changed, suppressed) {
     });
   });
   return out;
+}
+
+
+/* Source-of-truth link for the existing Outpatient status reader.
+ * Only the existing AuditLog outpatient_lead_sent event is authoritative.
+ * No sheet creation, write, phone/name search, duplicate ID fabrication or
+ * inference from an unverified send. Node guards the browser; this source
+ * also requires a verified, non-controller actor (works in proxy log mode). */
+function getOutpatientHandoffRef_(params) {
+  var actor = actingUser_(params);
+  if (!actor.verified || isControllerActor_(actor)) return { ok: false, error: 'forbidden' };
+  var leadId = String(params && params.leadId == null ? '' : params.leadId || '').trim();
+  var dischargeId = String(params && params.dischargeId == null ? '' : params.dischargeId || '').trim();
+  if (!!leadId === !!dischargeId) return { ok: false, error: 'choose_one_id' };
+  var id = leadId || dischargeId;
+  if (!/^[A-Za-z0-9_:-]{1,120}$/.test(id)) return { ok: false, error: 'invalid_id' };
+  var key = leadId ? id : dischargeOutpatientKey_(id);
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AUDIT_LOG_SHEET);
+  if (!sh || sh.getLastRow() < 2) return { ok: true, linked: false, reason: 'no_verified_send' };
+  // readSheet_ reads existing cells only; no getOrCreateSheet_ or lock.
+  var rows = readSheet_(sh, AUDIT_LOG_COLUMNS);
+  var ids = {}, missing = false, found = false;
+  rows.forEach(function (row) {
+    if (String(row.action || '') !== OUTPATIENT_LEAD_SENT_ACTION ||
+        String(row.patientId || '') !== key) return;
+    found = true;
+    var details;
+    try { details = JSON.parse(String(row.details || '{}')); } catch (_) { details = null; }
+    var outId = details && String(details.outpatientId || '').trim();
+    if (!outId || !/^[A-Za-z0-9_:-]{1,120}$/.test(outId)) missing = true;
+    else ids[outId] = true;
+  });
+  if (!found) return { ok: true, linked: false, reason: 'no_verified_send' };
+  var keys = Object.keys(ids);
+  if (missing || keys.length !== 1) return { ok: true, linked: false, reason: keys.length > 1 ? 'conflicting_ids' : 'missing_exact_id' };
+  return { ok: true, linked: true, outpatientId: keys[0] };
 }
 
 /* recordOutpatientLeadSend — server.js reports ONE send outcome:
