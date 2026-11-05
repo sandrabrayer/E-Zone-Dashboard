@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated November 4, 2026
 
+## CRM «KPI» area · «תפוסה היום» · «בקרת עבודה» · «חריגים לבדיקה» · required fields — November 5, 2026 (PR open)
+
+New CRM area «KPI»: occupancy %, lead → patient conversion (inpatient / outpatient), close rate per
+manager after meetings, length of stay, and break-even per house (finance only; same browser-stored
+expenses as the classic tab). «גבייה» lists impossible states (one person in two overlapping stays,
+debt after exit…). Lead / close / direct add / discharge refuse missing fields. CRM only, no Code.gs;
+SW v115. See `CHANGELOG-crm-kpi-tab.md`.
+
 ## CRM follow-ups: «העבר לאמבולטורי» without a lead phone · save spinner · waitlist reason — November 4, 2026 (PR open)
 
 - A discharge was never blocked; only the Outpatient lead failed when the source lead had no phone. Now the phone is also resolved from `PatientPhones` (roster rule), and when none exists the CRM «משוחררים» row asks for it; the typed phone is validated (browser, server, Code.gs), kept in `PatientPhones` and sent. Phone stays required for the send (Outpatient's matching key). Same PR: a spinner on every CRM save; «סיבת המתנה» saves on the click and waits for an in-flight save instead of being dropped silently. Code.gs changed (clasp CI). SW v113 → v114. Details: `CHANGELOG-crm-followups-1104.md`.

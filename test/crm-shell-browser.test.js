@@ -180,7 +180,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
   try {
     const { page, errors } = await open(browser, srv.port, 'vered', 1366);
     assert.equal(await page.getAttribute('html', 'dir'), 'rtl');
-    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'לידים', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'בקרה'], 'grouped nav (spec §3; «פניות» → «לידים» 04/11/2026)');
+    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'בקרת עבודה', 'לידים', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'KPI'], 'grouped nav (spec §3; «פניות» → «לידים» 04/11/2026; «בקרת עבודה» next to «היום שלי» + «KPI» 05/11/2026)');
     assert.deepEqual(await page.$$eval('#crm-nav .nav-group', (els) => els.map((e) => e.textContent)), ['לידים ומטופלים', 'פגישות ויומן', 'בתים והמשך טיפול', 'כספים', 'דוחות והגדרות']);
     assert.equal(await page.$eval('body', (b) => getComputedStyle(b).backgroundColor), 'rgb(230, 236, 242)', 'light theme (contrast pass)');
     assert.ok(await page.isVisible('#crm-menu'));
@@ -300,7 +300,7 @@ test('CRM shell (Ortal, controller): only היום שלי / גבייה / בקר�
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
     const { page, errors } = await open(browser, srv.port, 'ortal', 1366);
-    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'גבייה', 'בקרה']);
+    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'בקרת עבודה', 'גבייה']);
     await page.waitForFunction(() => /דיווחים לאימות/.test(document.querySelector('#crm-main').textContent) && !/טוען…/.test(document.querySelector('.kpis.cards').textContent), null, { timeout: 8000 });
     assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['דיווחים לאימות', 'אימותים חלקיים / לבירור', 'חשבוניות מבוקשות', 'משימות כספיות שלך', 'זיכויים לתשלום'], 'Ortal: verification / gaps / documents / control (spec §5)');
     assert.deepEqual(await page.$$eval('.kpis.cards .kpi .v', (els) => els.map((e) => e.textContent)), ['1', '1', '0', '0', '1'], 'reported ×1, flagged ×1, no requested invoice, no money task in the fixture, one pending credit');
@@ -1350,5 +1350,51 @@ test('Vered 04/11/2026 (3): a released patient\'s card says «שוחרר/ה» wi
     await page.waitForFunction(() => /נשלח לאמבולטורי ✓/.test(document.querySelector('#crm-drawer').textContent), null, { timeout: 5000 });
     assert.deepEqual(outCalls, [{ dischargeId: 'dx1', manual: true }, { dischargeId: 'dx1', manual: true, phone: '0527654321' }]);
     assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+/* «KPI», «תפוסה היום», «בקרת עבודה», «חריגים לבדיקה» (CHANGELOG-crm-kpi-tab.md) */
+test('CRM «KPI» (Vered + Dana): sections render, break-even is finance-only and its expenses save to the shared browser key; «תפוסה היום»; «חריגים לבדיקה» in «גבייה»', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    for (const width of [1366, 390]) {
+      const { ctx, page, errors } = await open(browser, srv.port, 'vered', width);
+      if (width === 390) await page.click('#crm-burger');
+      await page.click('#crm-nav button[data-area="kpi"]');
+      await page.waitForSelector('#crm-kpi-occ');
+      for (const sel of ['#crm-kpi-periods', '#crm-kpi-occ-houses', '#crm-kpi-conv', '#crm-kpi-network', '#crm-kpi-breakeven', '#crm-kpi-stay']) assert.ok(await page.$(sel), sel + ' at ' + width);
+      assert.match(await page.textContent('#crm-title'), /KPI/);
+      await page.click('[data-kpi-period="this_year"]');
+      assert.equal(await page.getAttribute('[data-kpi-period="this_year"]', 'aria-pressed'), 'true');
+      assert.ok(await noHScroll(page), 'no horizontal scroll at ' + width);
+      if (width === 1366) {
+        await page.click('#crm-be-edit summary');
+        await page.fill('form[data-form="breakeven"] [name="hqCost"]', '250000');
+        await page.click('form[data-form="breakeven"] button[type="submit"]');
+        await page.waitForFunction(() => /עלות מטה/.test(document.querySelector('#crm-kpi-network').textContent) && /250,000/.test(document.querySelector('#crm-kpi-network').textContent));
+        const stored = JSON.parse(await page.evaluate(() => localStorage.getItem('ezone-breakeven-v1')));
+        assert.equal(stored.hqCost, 250000, 'the classic tab\'s key');
+        await page.click('#crm-nav button[data-area="occupancy"]');
+        await page.waitForSelector('#crm-occ-today');
+        assert.match(await page.textContent('#crm-occ-today'), /תפוסה היום/);
+        assert.match(await page.textContent('#crm-occ-today'), /%/);
+        await page.click('#crm-nav button[data-area="control"]');
+        await page.waitForSelector('#crm-control-about');
+        await page.click('#crm-nav button[data-area="billing"]');
+        await page.waitForSelector('#crm-anomalies-title');
+        assert.ok(await page.$('#crm-anomalies tr[data-anomaly="zero_pay_in_house"]'), 'a patient in the house with price 0 is listed');
+        await page.click('#crm-anomalies tr[data-anomaly="zero_pay_in_house"] [data-open-patient]');
+        await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+      }
+      assert.deepEqual(errors, []);
+      await ctx.close();
+    }
+    const { ctx, page, errors } = await open(browser, srv.port, 'dana', 1366);
+    await page.click('#crm-nav button[data-area="kpi"]');
+    await page.waitForSelector('#crm-kpi-occ');
+    assert.equal(await page.$('#crm-kpi-breakeven'), null, 'no break-even for an operational session');
+    assert.deepEqual(errors, []);
+    await ctx.close();
   } finally { await browser.close(); srv.close(); }
 });
