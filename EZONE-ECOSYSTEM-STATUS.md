@@ -1,5 +1,12 @@
 # E-ZONE Ecosystem Status — updated November 4, 2026
 
+## CRM «משימה חדשה»: date + time only, a reminder before it is due — November 5, 2026 (PR open)
+
+The task form asks only what / who / date (today or later) / time — «למה עכשיו», «מועד» and the week
+field are gone (reschedule too). While the CRM is open, each of my tasks due today is announced 30 minutes
+before (toast + a browser notification when allowed); it is on «היום שלי» on its day, and Vered's morning mail
+already counts today's tasks. CRM only; SW v118. See `CHANGELOG-crm-task-date-time.md`.
+
 ## CRM credits: edit a saved credit + Sandra's manual credit in the patient card — November 5, 2026 (PR open)
 
 «חשבון» in the CRM patient card now edits a saved, unpaid credit (amount — Sandra only — with a reason when it
