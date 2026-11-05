@@ -373,7 +373,9 @@
 // From the live v116 (#367); monotonic, v17 never reused.
 // v117 → v118: «משימה חדשה» = date + time only, a reminder 30 min before, on «היום שלי» (crm/crm.js)
 // (CHANGELOG-crm-task-date-time.md). From the live v117 (#368); monotonic, v17 never reused.
-var CACHE_VERSION = 'v118';
+// v118 → v119: KPI — no timestamp / placeholder «manager» rows, no damaged-house rows, aligned headings (crm/crm.js, crm.css)
+// (CHANGELOG-crm-kpi-clean-data.md). From the live v118 (#369); monotonic, v17 never reused.
+var CACHE_VERSION = 'v119';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
