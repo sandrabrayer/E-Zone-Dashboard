@@ -1088,9 +1088,15 @@ test('Stage 1c (Vered): «שיחות לביצוע» on היום שלי from getT
     await page.fill('#crm-tasks form[data-form="task-new"] input[name="title"]', 'לשלוח טופס');
     await page.fill('#crm-tasks form[data-form="task-new"] input[name="dueDate"]', daysAgo(-1));
     await page.click('#crm-tasks form[data-form="task-new"] button[type="submit"]');
+    assert.match(await page.textContent('#crm-tasks form[data-form="task-new"] [data-err="dueTime"]'), /שעה/, 'a time is required (CHANGELOG-crm-task-date-time.md)');
+    assert.equal(srv.saves.filter((x) => x.action === 'createTask').length, 0);
+    assert.equal(await page.$('#crm-tasks form[data-form="task-new"] [name="weekStart"]'), null, 'no week field');
+    assert.equal(await page.$('#crm-tasks form[data-form="task-new"] [name="reason"]'), null, 'no «למה עכשיו»');
+    await page.fill('#crm-tasks form[data-form="task-new"] input[name="dueTime"]', '10:30');
+    await page.click('#crm-tasks form[data-form="task-new"] button[type="submit"]');
     await page.waitForFunction(() => /המשימה נוצרה/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 5000 });
     const created = srv.saves.filter((x) => x.action === 'createTask')[0];
-    assert.equal(created.task.leadId, 'L1'); assert.equal(created.task.title, 'לשלוח טופס'); assert.equal(created.task.dueDate, daysAgo(-1)); assert.match(created.submissionId, /^sub-[0-9a-f]{32}$/);
+    assert.equal(created.task.leadId, 'L1'); assert.equal(created.task.title, 'לשלוח טופס'); assert.equal(created.task.dueDate, daysAgo(-1)); assert.equal(created.task.dueTime, '10:30'); assert.equal(created.task.reason, ''); assert.match(created.submissionId, /^sub-[0-9a-f]{32}$/);
     await page.click('#crm-tasks [data-task-resched="task-' + '1'.repeat(32) + '"]');
     await page.fill('#crm-tasks form[data-form="task-resched"] input[name="dueDate"]', daysAgo(-5));
     await page.click('#crm-tasks form[data-form="task-resched"] button[type="submit"]');
@@ -1442,5 +1448,22 @@ test('CRM credits (Vered edits, Sandra adds a manual credit): saveCredit from th
     assert.deepEqual([made.credit.id, made.credit.creditType, made.credit.amount, made.credit.reason, made.credit.patientId], ['', 'other', 500, 'מחווה למשפחה', 'p1']);
     assert.deepEqual(sa.errors, []);
     await sa.ctx.close();
+  } finally { await browser.close(); srv.close(); }
+});
+
+/* A task reminder before it is due (CHANGELOG-crm-task-date-time.md) */
+test('task reminder: a task of mine due in ~10 minutes is announced once (toast); it is on «היום שלי»', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const hm = (ms) => new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ms));
+  const soon = Date.now() + 10 * 60000;
+  if (israelDay(soon) !== TODAY) return;   // never across midnight
+  const srv = await boot();
+  tasksAnswer = () => ({ ok: true, total: 1, tasks: [{ id: 'task-' + '9'.repeat(32), kind: 'call', leadId: 'L1', title: 'להתקשר לבעלה', assignee: 'ורד', dueDate: TODAY, dueTime: hm(soon), status: 'open', source: 'manual' }] });
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.waitForFunction(() => /להתקשר לבעלה/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 8000 });
+    assert.match(await page.textContent('#crm-toast'), /⏰ בעוד (9|10) דק׳/);
+    assert.match(await page.textContent('#crm-main'), /להתקשר לבעלה/, 'on «היום שלי»');
+    assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });

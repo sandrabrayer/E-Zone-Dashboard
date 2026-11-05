@@ -1586,6 +1586,33 @@
     else if (!isoDateOk(v.weekStart)) e.weekStart = 'בחרי שבוע';
     return e;
   }
+  /* «משימה חדשה» (Vered 05/11/2026, CHANGELOG-crm-task-date-time.md): only what to do, who, a DATE
+   * (today or later) and a TIME — no «למה עכשיו», no «מועד» / week. Pure. */
+  function newTaskErrors(v, today) {
+    const e = {};
+    v = v || {};
+    if (!TASK_KINDS.some(function (k) { return k.id === v.kind; })) e.kind = 'בחרי סוג';
+    if (!s(v.title) || s(v.title).length > 120) e.title = 'כותרת (עד 120 תווים)';
+    if (!isoDateOk(v.dueDate) || s(v.dueDate) < s(today)) e.dueDate = 'בחרי תאריך — היום או אחריו';
+    if (!timeOk(v.dueTime)) e.dueTime = 'בחרי שעה';
+    return e;
+  }
+  /* The in-app reminder before a task is due (CHANGELOG-crm-task-date-time.md): open tasks of
+   * `user` (or unassigned) due TODAY at a time between now and now + `lead` minutes, not yet
+   * announced. `nowHm` = 'HH:MM' Israel time. → [{ task, minutes }]. Pure. */
+  const TASK_REMIND_MINUTES = 30;
+  function hmToMin(hm) { const m = /^(\d{2}):(\d{2})$/.exec(s(hm)); return m ? (+m[1]) * 60 + (+m[2]) : -1; }
+  function dueSoonTasks(tasks, user, today, nowHm, lead, seen) {
+    const now = hmToMin(nowHm), L = lead || TASK_REMIND_MINUTES, done = seen || {};
+    if (now < 0) return [];
+    return (Array.isArray(tasks) ? tasks : []).filter(function (t) {
+      if (!t || s(t.status) !== 'open' || s(t.dueDate) !== s(today) || !timeOk(t.dueTime)) return false;
+      if (s(t.assignee) && s(t.assignee) !== s(user)) return false;
+      const d = hmToMin(t.dueTime) - now;
+      return d >= 0 && d <= L && !done[s(t.id) + '@' + s(t.dueDate) + ' ' + s(t.dueTime)];
+    }).map(function (t) { return { task: t, minutes: hmToMin(t.dueTime) - now, key: s(t.id) + '@' + s(t.dueDate) + ' ' + s(t.dueTime) }; })
+      .sort(function (a, b) { return a.minutes - b.minutes; });
+  }
   function taskCreateBody(subject, v, sid) {
     const t = Object.assign({}, subject, { kind: s(v.kind), title: s(v.title), reason: s(v.reason), assignee: s(v.assignee), source: 'manual' });
     if ((s(v.mode) || 'date') === 'week') { t.windowStart = weekStart(v.weekStart); t.windowEnd = addDays(t.windowStart, 6); }
@@ -2348,6 +2375,7 @@
         return (g.label ? '<div class="nav-group">' + esc(g.label) + '</div>' : '') + list.map(item).join('');
       }).join('');
       const dateEl = $('#crm-date'); if (dateEl) dateEl.textContent = hebDate(state.today);
+      remindTick();   // a task due within the reminder window is announced as soon as the tasks arrive
     }
 
     function chip(state_, text) { return '<span class="chip ' + esc(state_) + '">' + esc(text) + '</span>'; }
@@ -4227,11 +4255,9 @@
       html += '<details class="act"><summary>משימה חדשה</summary><form data-form="task-new" novalidate>'
         + '<label>סוג <select name="kind">' + TASK_KINDS.filter(function (k) { return !k.money || (state.me && state.me.finance); }).map(function (k) { return '<option value="' + k.id + '">' + esc(k.label) + '</option>'; }).join('') + '</select>' + err('kind') + '</label>'
         + '<label>מה לעשות *<input type="text" name="title" maxlength="120">' + err('title') + '</label>'
-        + '<label>למה עכשיו <input type="text" name="reason" maxlength="300">' + err('reason') + '</label>'
         + '<label>אחראי <select name="assignee">' + opts(ASSIGNEES, state.me && state.me.user, true) + '</select></label>'
-        + '<label>מועד <select name="mode"><option value="date">תאריך</option><option value="week">במהלך שבוע</option></select></label>'
-        + '<label>תאריך <input type="date" name="dueDate">' + err('dueDate') + '</label><label>שעה <input type="time" name="dueTime">' + err('dueTime') + '</label>'
-        + '<label>שבוע (יום כלשהו בו) <input type="date" name="weekStart">' + err('weekStart') + '</label>'
+        + '<label>תאריך *<input type="date" name="dueDate" min="' + esc(state.today) + '" value="' + esc(state.today) + '">' + err('dueDate') + '</label><label>שעה *<input type="time" name="dueTime">' + err('dueTime') + '</label>'
+        + '<p class="na wide">התרעה תוצג ' + TASK_REMIND_MINUTES + ' דקות לפני המועד, והמשימה תופיע ב«היום שלי» ביום שלה.</p>'
         + '<div class="err" data-err="_form"></div><button type="submit" class="btn small primary">יצירת משימה</button></form></details>';
       return html;
     }
@@ -4245,9 +4271,7 @@
       const err = function (f) { return '<span class="err" data-err="' + f + '"></span>'; };
       if (kind === 'resched') {
         el.innerHTML = '<form data-form="task-resched" data-task="' + esc(id) + '" novalidate class="inline">'
-          + '<label>מועד <select name="mode"><option value="date">תאריך</option><option value="week">במהלך שבוע</option></select></label>'
           + '<label>תאריך <input type="date" name="dueDate" value="' + esc(s(t.dueDate)) + '">' + err('dueDate') + '</label><label>שעה <input type="time" name="dueTime" value="' + esc(s(t.dueTime)) + '">' + err('dueTime') + '</label>'
-          + '<label>שבוע <input type="date" name="weekStart" value="' + esc(s(t.windowStart)) + '">' + err('weekStart') + '</label>'
           + '<label class="wide">סיבה' + (t.source === 'contact' ? ' * (מועד שהובטח למשפחה)' : '') + ' <input type="text" name="reason" maxlength="300">' + err('reason') + '</label>'
           + '<div class="err" data-err="_form"></div><button type="submit" class="btn small primary">שמירת המועד</button> <button type="button" class="btn small" data-task-cancel-form="' + esc(id) + '">ביטול</button></form>';
       } else if (kind === 'done') {
@@ -4581,7 +4605,11 @@
       } else if (f.dataset.form === 'task-new') {
         const vals = contactValues(f);
         const subj = state.drawer ? (state.drawer.kind === 'lead' ? { leadId: state.drawer.id } : { patientId: state.drawer.id }) : null;
-        if (subj) postTask(f, taskCreateBody(subj, vals, newSubmissionId()), taskFormErrors(vals, state.today), '', 'המשימה נוצרה');
+        if (subj) {
+          const tv = { kind: vals.kind, title: vals.title, assignee: vals.assignee, dueDate: vals.dueDate, dueTime: vals.dueTime };
+          askNotifyPermission();
+          postTask(f, taskCreateBody(subj, tv, newSubmissionId()), newTaskErrors(tv, state.today), '', 'המשימה נוצרה');
+        }
       } else if (f.dataset.form === 'task-resched') {
         const vals = contactValues(f); const tk = taskById(f.dataset.task);
         postTask(f, rescheduleBody(f.dataset.task, vals), rescheduleErrors(vals, tk), f.dataset.task, 'המועד עודכן');
@@ -4791,9 +4819,29 @@
         return Promise.all(reads);
       }).catch(function (e) { state.loading = false; state.error = String(e && e.message || e); renderNav(); renderMain(); });
     }
+    /* Task reminders (CHANGELOG-crm-task-date-time.md): every minute, a toast + a system
+     * notification (when allowed) for each of MY tasks due today within TASK_REMIND_MINUTES.
+     * The page must be open; Vered's morning mail already lists today's tasks. */
+    var announced = {};   // var: renderNav may run first
+    function nowHm() { return new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()); }
+    function askNotifyPermission() {
+      try { if (win.Notification && win.Notification.permission === 'default') win.Notification.requestPermission(); } catch (_) { /* unsupported */ }
+    }
+    function remindTick() {
+      if (!announced || !state.me || !Array.isArray(state.tasks)) return;
+      const c = state.data ? compute(state.data, state.today) : null;
+      dueSoonTasks(state.tasks, state.me.user, state.today, nowHm(), TASK_REMIND_MINUTES, announced).forEach(function (r) {
+        announced[r.key] = true;
+        const who = c ? taskSubject(r.task, c).name : '';
+        const text = '⏰ בעוד ' + r.minutes + ' דק׳ (' + s(r.task.dueTime) + '): ' + s(r.task.title) + (who ? ' — ' + who : '');
+        toast(text);
+        try { if (win.Notification && win.Notification.permission === 'granted') new win.Notification('E-ZONE · משימה', { body: text, tag: r.key }); } catch (_) { /* unsupported */ }
+      });
+    }
+    if (typeof win.setInterval === 'function') win.setInterval(remindTick, 60000);
     renderNav(); renderMain();
     load();
-    return { state: state, load: load, setArea: setArea, switchUser: switchUser };
+    return { state: state, load: load, setArea: setArea, switchUser: switchUser, remindTick: remindTick };
   }
 
   return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, normalise: normalise, compute: compute, filterLeads: filterLeads,
@@ -4825,5 +4873,6 @@
     managerCloseRates: managerCloseRates, BREAKEVEN_STORAGE_KEY: BREAKEVEN_STORAGE_KEY, BREAKEVEN_DEFAULTS: BREAKEVEN_DEFAULTS, VAT_RATE: VAT_RATE, breakevenConfig: breakevenConfig,
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
+    newTaskErrors: newTaskErrors, dueSoonTasks: dueSoonTasks, TASK_REMIND_MINUTES: TASK_REMIND_MINUTES,
     moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));

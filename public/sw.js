@@ -371,7 +371,9 @@
 // (CHANGELOG-crm-manual-credits.md). From the live v115 (#366); monotonic, v17 never reused.
 // v116 → v117: bold section headings on the CRM «KPI» page (crm/crm.js, crm.css) (CHANGELOG-crm-kpi-headings.md).
 // From the live v116 (#367); monotonic, v17 never reused.
-var CACHE_VERSION = 'v117';
+// v117 → v118: «משימה חדשה» = date + time only, a reminder 30 min before, on «היום שלי» (crm/crm.js)
+// (CHANGELOG-crm-task-date-time.md). From the live v117 (#368); monotonic, v17 never reused.
+var CACHE_VERSION = 'v118';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

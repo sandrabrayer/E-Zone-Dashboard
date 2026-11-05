@@ -26,12 +26,13 @@ function loadSw() {
 }
 const sw = loadSw();
 
-test('sw.js: v117 (monotonic from the live v93 via v94…v97, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
-  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v117');
+test('sw.js: v118 (monotonic from the live v93 via v94…v97, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
+  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v118');
   assert.ok(SW_SRC.includes('v113 → v114:') && SW_SRC.includes('CHANGELOG-crm-followups-1104.md'));
   assert.ok(SW_SRC.includes('v114 → v115:') && SW_SRC.includes('CHANGELOG-crm-kpi-tab.md'));
   assert.ok(SW_SRC.includes('v115 → v116:') && SW_SRC.includes('CHANGELOG-crm-manual-credits.md'));
   assert.ok(SW_SRC.includes('v116 → v117:') && SW_SRC.includes('CHANGELOG-crm-kpi-headings.md'));
+  assert.ok(SW_SRC.includes('v117 → v118:') && SW_SRC.includes('CHANGELOG-crm-task-date-time.md'));
   assert.ok(SW_SRC.includes('v110 → v111:') && SW_SRC.includes('CHANGELOG-crm-collect-on-date.md'));
   assert.ok(SW_SRC.includes('v109 → v110:') && SW_SRC.includes('CHANGELOG-billing-exit-day-not-due.md'));
   assert.ok(SW_SRC.includes('v106 → v107:') && SW_SRC.includes('CHANGELOG-crm-dana-default-switch-user.md'));
