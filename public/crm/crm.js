@@ -1300,6 +1300,66 @@
       '" data-refund-action="' + kind + '" data-refund-id="' + esc(credit.id) + '">' + esc(REFUND_ACTION_LABELS[kind]) + '</button>' : '';
   }
 
+
+  /* ===== Manual credits / credit edit in the CRM (CHANGELOG-crm-manual-credits.md) =====
+   * The classic credits modal's two writes, through the SAME `saveCredit` action:
+   *   - edit a saved, unpaid credit: amount (+ reason when it differs from the policy
+   *     figure), decision date, status pending ↔ cancelled, notes;
+   *   - a manual «אחר» credit (Sandra only).
+   * Code.gs upsertCredit_ stays the authority: it recalculates the policy figure,
+   * refuses an amount change / a manual credit without Sandra's approver session
+   * (override_requires_approver), refuses 'paid' (settleRefund only), refuses a
+   * stale edit (updatedAt → conflict); Express gates cancel (deleter) and manual
+   * create (approver) by role. The raw getCredits row is the base of an edit. Pure. */
+  function creditRaw(credits, id) {
+    const c = credits && credits.ok !== false ? credits : {};
+    return (Array.isArray(c.credits) ? c.credits : []).filter(function (r) { return r && s(r.id) === s(id); })[0] || null;
+  }
+  function creditEditErrors(raw, v) {
+    const out = {};
+    const amount = moneyParse(v && v.amount);
+    if (amount === null) out.amount = 'סכום לא תקין';
+    const calc = Number(raw && raw.calculatedAmount);
+    if (amount !== null && isFinite(calc) && Math.round(amount * 100) !== Math.round(calc * 100) && s(v && v.overrideReason).length < 2) out.overrideReason = 'הסכום שונה מהמחושב — יש לנמק';
+    if (s(v && v.decidedDate) && !isoDateOk(v.decidedDate)) out.decidedDate = 'תאריך לא תקין';
+    if (['pending', 'cancelled'].indexOf(s(v && v.status)) < 0) out.status = 'סטטוס לא תקין';
+    if (s(v && v.status) === 'cancelled' && s(v && v.notes).length < 2) out.notes = 'ביטול זיכוי דורש הערה';
+    if (s(raw && raw.status) === 'paid') out._form = 'זיכוי ששולם נעול לעריכה';
+    return out;
+  }
+  function creditEditBody(raw, v) {
+    const r = raw || {};
+    const amount = moneyParse(v.amount);
+    const calc = Number(r.calculatedAmount);
+    return { action: 'saveCredit', credit: { id: s(r.id), updatedAt: s(r.updatedAt), patientId: s(r.patientId), patientKey: s(r.patientKey), patientName: s(r.patientName),
+      houseId: s(r.houseId), creditType: s(r.creditType), allocationMonth: s(r.allocationMonth).slice(0, 7), calculatedAmount: isFinite(calc) ? calc : 0, amount: amount,
+      overrideReason: isFinite(calc) && Math.round(amount * 100) !== Math.round(calc * 100) ? s(v.overrideReason) : '', reason: s(r.reason),
+      decidedDate: s(v.decidedDate), status: s(v.status), notes: s(v.notes) } };
+  }
+  function creditNewErrors(v) {
+    const out = {};
+    if (!monthOk(v && v.allocationMonth)) out.allocationMonth = 'חודש חסר או לא תקין';
+    if (!(moneyParse(v && v.amount) > 0)) out.amount = 'יש להזין סכום גדול מ-0';
+    if (s(v && v.reason).length < 2) out.reason = 'זיכוי ידני דורש סיבה';
+    return out;
+  }
+  function creditNewBody(patient, v, today) {
+    const p = patient || {};
+    return { action: 'saveCredit', credit: { id: '', patientId: s(p.id), patientKey: patientKeyOf(p), patientName: s(p.name), houseId: houseId(p.houseId) || s(p.houseId),
+      creditType: 'other', allocationMonth: s(v.allocationMonth), calculatedAmount: 0, amount: moneyParse(v.amount), overrideReason: s(v.reason), reason: s(v.reason),
+      approvedBy: '', decidedDate: s(today), status: 'pending', paidDate: '', method: '', notes: s(v.notes), basis: {} } };
+  }
+  function creditSaveRefusal(res, wantId) {
+    const r = res || {};
+    if (r.ok === true && r.credit && s(r.credit.id) && (!wantId || s(r.credit.id) === s(wantId))) return '';
+    if (r.ok === true) return 'השינוי לא אושר על ידי השרת — רענני';
+    if (r.error === 'conflict') return 'הזיכוי עודכן בינתיים על ידי משתמש/ת אחר/ת — רענני ונסי שוב';
+    if (r.error === 'override_requires_approver') return 'שינוי סכום / זיכוי ידני — באישור סנדרה בלבד';
+    if (r.error === 'override_reason_required') return 'הסכום שונה מהמחושב — יש לנמק';
+    if (r.error === 'use_settleRefund' || r.error === 'paid_locked') return 'סימון כשולם נעשה רק דרך תהליך ההחזר (אורטל)';
+    if (r.error === 'zero_amount_credit') return 'זיכוי בסכום 0 אינו נשמר';
+    return writeRefusal(r, 'credit');
+  }
   /* «זיכויים לתשלום»: pending credits with money, oldest payout first. */
   function pendingCredits(credits) {
     return creditsOf(credits).filter(function (c) { return c.status === 'pending' && c.amount > 0; })
@@ -2237,7 +2297,6 @@
   /* The actions the CRM still sends to the classic dashboard (CHANGELOG-crm-kpi-tab.md) —
    * the decision list for what moves next. Static and documented. */
   const CLASSIC_ONLY = [
-    { id: 'credits_manual', label: 'זיכויים ידניים — יצירה ועריכה', where: 'גבייה' },
     { id: 'receipt_full_edit', label: 'עריכת קבלות מורחבת (מעבר לתיקון/ביטול בכרטיס)', where: 'גבייה' },
     { id: 'billing_control', label: 'בקרת גבייה — אימות דיווחים (אורטל)', where: 'גבייה' },
     { id: 'override_delete', label: 'מחיקת התאמת חיוב (override)', where: 'גבייה' },
@@ -3181,7 +3240,7 @@
             + '<td>' + (!isController ? '<button type="button" class="btn small primary" data-link-open="' + esc(r.paymentId) + '">שייך</button> <button type="button" class="btn small" data-notpatient-open="' + esc(r.paymentId) + '">לא מטופל/ת</button>' : '') + '</td></tr>';
         }).join('') + '</tbody></table></div><div id="crm-link"></div>';
       html += '<div class="group-title">פעולות (בדשבורד הרגיל)</div><div class="links">'
-        + (isController ? '<a href="/?view=classic">בקרת גבייה<small>אימות דיווחים</small></a>' : '<a href="/?view=classic">עריכת קבלות<small>תיקון / ביטול קבלה</small></a><a href="/?view=classic">זיכויים ידניים<small>יצירה ועריכה של זיכוי</small></a><a href="/?view=classic">שיוך תשלומים<small>' + b.detached + ' ללא שיוך</small></a>')
+        + (isController ? '<a href="/?view=classic">בקרת גבייה<small>אימות דיווחים</small></a>' : '<a href="/?view=classic">דשבורד רגיל<small>גיבוי בלבד — קבלות, זיכויים ושיוך נעשים כאן, בכרטיס המטופל/ת</small></a>')
         + '</div>';
       return html;
     }
@@ -3685,14 +3744,15 @@
       const defIdx = defaultReportable(others, state.today);
       if (others.length) html += '<p><label class="na">דווח תשלום למחזור אחר (מקדמה / מחזור שלא ברשימה) <select id="crm-other-cycle">' + others.map(function (w, i) { return '<option value="' + i + '"' + (i === defIdx ? ' selected' : '') + '>' + esc(fmtDate(w.start) + '–' + fmtDate(w.end) + ' · ' + fmtMoney(w.expected) + (w.status ? ' · ' + (CYCLE_STATUS_LABELS[w.status] || w.status) : '')) + '</option>'; }).join('') + '</select></label> <button type="button" class="btn small" data-report-other>דווח תשלום</button></p>';
       html += '<div id="crm-report"></div>';
-      html += '<div class="group-title">זיכויים</div>';
+      html += '<div class="group-title">זיכויים' + (me.approver ? ' <button type="button" class="btn small" data-credit-new>+ זיכוי ידני</button>' : '') + '</div>';
       const credits = state.billing ? patientCredits(state.account ? state.account.patient : a.patientId, state.billing.credits) : [];
       if (!credits.length) html += '<p class="na">אין זיכויים.</p>';
       else html += '<div class="tbl-wrap"><table class="tbl" id="crm-account-credits"><thead><tr><th>סוג</th><th>חודש</th><th>סכום</th><th>סטטוס</th><th></th></tr></thead><tbody>'
         + credits.map(function (c) {
           const st = c.status === 'paid' ? 'ok' : c.status === 'cancelled' ? 'wait' : 'today';
           return '<tr><td>' + esc(CREDIT_TYPE_LABELS[c.creditType] || c.creditType) + (c.reason ? ' <span class="na">' + esc(c.reason) + '</span>' : '') + '</td><td>' + esc(c.allocationMonth) + '</td><td>' + esc(fmtMoney(c.amount)) + '</td><td>' + chip(st, (CREDIT_STATUS_LABELS[c.status] || c.status) + (c.paidDate ? ' ' + fmtDate(c.paidDate) : '')) + '</td>'
-            + '<td>' + (c.status === 'pending' && c.amount > 0 ? '<span class="na">' + esc(refundStageText(c)) + '</span> ' + refundActionButton(c, me) : '') + '</td></tr>';
+            + '<td>' + (c.status === 'pending' && c.amount > 0 ? '<span class="na">' + esc(refundStageText(c)) + '</span> ' + refundActionButton(c, me) : '')
+            + (me.finance && c.status !== 'paid' ? ' <button type="button" class="btn small" data-credit-edit="' + esc(c.id) + '">עריכה</button>' : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
       html += '<div id="crm-refund-form-account"></div>';
       html += '<div class="group-title">תשלומים</div>';
@@ -3711,7 +3771,7 @@
           return '<tr><td>' + esc(fmtDate(r.receivedDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td><td>' + esc(r.method) + '</td><td>' + esc(r.payer) + '</td><td>' + (r.isVoid ? chip('wait', 'בוטלה') : (r.confirmStatus ? chip(cs, CONFIRM_LABELS[r.confirmStatus] || r.confirmStatus) : '')) + '</td>'
             + '<td>' + (r.isVoid ? '' : '<button type="button" class="btn small" data-receipt-edit="' + esc(r.id) + '">עריכה</button>' + (me.deleter ? ' <button type="button" class="btn small" data-receipt-void="' + esc(r.id) + '">ביטול</button>' : '')) + '</td></tr>';
         }).join('') + '</tbody></table></div><div id="crm-receipt-form"></div>';
-      html += '<p><a class="btn" href="/?view=classic">עריכת קבלות, שיוך תשלומים וזיכויים ידניים בדשבורד</a></p>';
+      html += '<p class="na">כל הפעולות על החשבון זמינות כאן. <a href="/?view=classic">הדשבורד הרגיל</a> נשאר לגיבוי.</p>';
       return html;
     }
     /* C10: the «דווח תשלום» form inside the account pane. */
@@ -3831,6 +3891,67 @@
           return true;
         })
         .catch(function (e) { state.saving = false; clearBusy(); if (st) st.textContent = ''; showReportIssues(f, [], 'השינוי לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
+    }
+    /* Credit edit / manual credit (CHANGELOG-crm-manual-credits.md) — the #crm-refund-form-account slot. */
+    function openCreditForm(kind, id) {
+      const el = $('#crm-drawer[aria-hidden="false"] #crm-refund-form-account');
+      if (!el || !state.billing) return;
+      const me = state.me || {};
+      const err = function (n) { return '<span class="err" data-err="' + n + '"></span>'; };
+      let html;
+      if (kind === 'new') {
+        if (!me.approver) return toast('זיכוי ידני — באישור סנדרה בלבד', true);
+        state.creditForm = { kind: 'new' };
+        html = '<h3>זיכוי ידני (אחר)</h3>'
+          + '<label>חודש *<input type="month" name="allocationMonth" value="' + esc(s(state.today).slice(0, 7)) + '">' + err('allocationMonth') + '</label>'
+          + '<label>סכום (₪, כולל מע״מ) *<input type="text" inputmode="decimal" name="amount">' + err('amount') + '</label>'
+          + '<label class="wide">סיבה *<input type="text" name="reason" maxlength="300">' + err('reason') + '</label>'
+          + '<label class="wide">הערות<input type="text" name="notes" maxlength="500"></label>';
+      } else {
+        const raw = creditRaw(state.billing.credits, id);
+        if (!raw) return toast('הזיכוי לא נמצא — רענני', true);
+        if (s(raw.status) === 'paid') return toast('זיכוי ששולם נעול לעריכה', true);
+        state.creditForm = { kind: 'edit', id: s(raw.id) };
+        const statuses = [['pending', 'ממתין']].concat(me.deleter || s(raw.status) === 'cancelled' ? [['cancelled', 'בוטל']] : []);
+        html = '<h3>עריכת זיכוי · ' + esc(CREDIT_TYPE_LABELS[s(raw.creditType)] || raw.creditType) + ' ' + esc(s(raw.allocationMonth).slice(0, 7)) + '</h3>'
+          + '<p class="na">מחושב לפי המדיניות: ' + esc(fmtMoney(raw.calculatedAmount)) + (me.approver ? '' : ' · שינוי סכום — באישור סנדרה בלבד') + '</p>'
+          + '<label>סכום (₪, כולל מע״מ) *<input type="text" inputmode="decimal" name="amount" value="' + esc(Number(raw.amount) || 0) + '"' + (me.approver ? '' : ' readonly') + '>' + err('amount') + '</label>'
+          + '<label>נימוק לשינוי הסכום<input type="text" name="overrideReason" maxlength="300" value="' + esc(raw.overrideReason) + '">' + err('overrideReason') + '</label>'
+          + '<label>תאריך החלטה<input type="date" name="decidedDate" value="' + esc(sheetDay(raw.decidedDate)) + '">' + err('decidedDate') + '</label>'
+          + '<label>סטטוס<select name="status">' + statuses.map(function (x) { return '<option value="' + x[0] + '"' + (s(raw.status) === x[0] ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select>' + err('status') + '</label>'
+          + '<label class="wide">הערות<input type="text" name="notes" maxlength="500" value="' + esc(raw.notes) + '">' + err('notes') + '</label>';
+      }
+      el.innerHTML = '<form class="new-lead report" data-form="credit-' + kind + '" novalidate>' + html + '<div class="wide err" data-err="_form"></div>'
+        + '<div class="wide toolbar"><button type="submit" class="btn primary">שמירה</button><button type="button" class="btn" data-credit-cancel>ביטול</button><span class="na" id="crm-credit-state"></span></div></form>';
+      el.scrollIntoView({ block: 'nearest' });
+    }
+    function submitCredit(f) {
+      if (!state.creditForm || !state.account || state.saving) return Promise.resolve(false);
+      const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
+      const cf = state.creditForm;
+      let errs, body, wantId = '';
+      if (cf.kind === 'new') { errs = creditNewErrors(vals); body = creditNewBody(state.account.patient, vals, state.today); }
+      else {
+        const raw = creditRaw(state.billing && state.billing.credits, cf.id);
+        if (!raw) { toast('הזיכוי לא נמצא — רענני', true); return Promise.resolve(false); }
+        errs = creditEditErrors(raw, vals); body = creditEditBody(raw, vals); wantId = cf.id;
+      }
+      const issues = Object.keys(errs).map(function (k) { return { field: k, hebrewMessage: errs[k] }; });
+      showReportIssues(f, issues, issues.length ? (errs._form || 'יש לתקן את השדות המסומנים') : '');
+      if (issues.length) return Promise.resolve(false);
+      const st = $('#crm-credit-state'); if (st) st.textContent = 'שומר…';
+      state.saving = true; markBusy();
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+        .then(function (res) {
+          state.saving = false; clearBusy();
+          const why = creditSaveRefusal(res, wantId);
+          if (why) { showReportIssues(f, [], why); if (st) st.textContent = ''; toast(why, true); return false; }
+          toast('הזיכוי נשמר ✓'); state.creditForm = null;
+          const pid = state.drawer && state.drawer.id; resetBilling(); if (pid) fillAccountPane(pid);
+          return true;
+        })
+        .catch(function (e) { state.saving = false; clearBusy(); if (st) st.textContent = ''; showReportIssues(f, [], 'הזיכוי לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
     }
     /* C11: use the same Credits authority as the classic dashboard; never
      * allow Vered/Sandra to settle or Ortal to approve by a stale CRM button. */
@@ -4451,6 +4572,8 @@
         submitSmall(f);
       } else if (f.dataset.form === 'refund-action') {
         submitRefundAction(f);
+      } else if (f.dataset.form === 'credit-new' || f.dataset.form === 'credit-edit') {
+        submitCredit(f);
       } else if (f.dataset.form.indexOf('receipt-') === 0) {
         submitReceiptForm(f);
       } else if (f.dataset.form === 'contact') {
@@ -4486,8 +4609,11 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
       if (!t) return;
+      if (t.dataset.creditCancel !== undefined) { state.creditForm = null; const box = t.closest('form'); if (box) box.remove(); return; }
+      if (t.dataset.creditEdit) return openCreditForm('edit', t.dataset.creditEdit);
+      if (t.dataset.creditNew !== undefined) return openCreditForm('new', '');
       if (t.dataset.billingRetry !== undefined) { resetBilling(); return renderMain(); }
       if (t.dataset.reportCancel !== undefined) { state.report = null; state.small = null; const el = $('#crm-report'); if (el) el.innerHTML = ''; return; }
       if (t.dataset.dueToday !== undefined) { state.dueDate = state.today; return renderMain(); }
@@ -4698,5 +4824,6 @@
     KPI_PERIODS: KPI_PERIODS, kpiPeriod: kpiPeriod, occupancyToday: occupancyToday, closedDisposition: closedDisposition, leadFates: leadFates, FATES: FATES, leadConversion: leadConversion,
     managerCloseRates: managerCloseRates, BREAKEVEN_STORAGE_KEY: BREAKEVEN_STORAGE_KEY, BREAKEVEN_DEFAULTS: BREAKEVEN_DEFAULTS, VAT_RATE: VAT_RATE, breakevenConfig: breakevenConfig,
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
+    creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
     moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));
