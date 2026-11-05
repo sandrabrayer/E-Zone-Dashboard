@@ -1,12 +1,19 @@
 # E-ZONE Ecosystem Status — updated November 4, 2026
 
+## CRM credits: edit a saved credit + Sandra's manual credit in the patient card — November 5, 2026 (PR open)
+
+«חשבון» in the CRM patient card now edits a saved, unpaid credit (amount — Sandra only — with a reason when it
+differs from the policy figure, decision date, cancel with a note, notes) and lets Sandra add a manual «אחר»
+credit. Same `saveCredit` action and Code.gs authority as the classic modal; the classic «זיכויים ידניים»
+link is gone. CRM only; SW v116. See `CHANGELOG-crm-manual-credits.md`.
+
 ## CRM «KPI» area · «תפוסה היום» · «בקרת עבודה» · «חריגים לבדיקה» · required fields — November 5, 2026 (PR open)
 
 New CRM area «KPI»: occupancy %, lead → patient conversion (inpatient / outpatient), close rate per
 manager after meetings, length of stay, and break-even per house (finance only; same browser-stored
 expenses as the classic tab). «גבייה» lists impossible states (one person in two overlapping stays,
 debt after exit…). Lead / close / direct add / discharge refuse missing fields. CRM only, no Code.gs;
-SW v115. See `CHANGELOG-crm-kpi-tab.md`.
+SW v115. See `CHANGELOG-crm-kpi-tab.md`. (merged #366)
 
 ## CRM follow-ups: «העבר לאמבולטורי» without a lead phone · save spinner · waitlist reason — November 4, 2026 (PR open)
 

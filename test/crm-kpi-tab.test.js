@@ -278,7 +278,7 @@ test('required fields: closing a lead needs a status and a reason; a direct add 
 
 test('the classic-only list is documented for the decision (no silent gaps)', () => {
   assert.ok(core.CLASSIC_ONLY.length >= 8);
-  assert.ok(core.CLASSIC_ONLY.some((x) => x.id === 'credits_manual'));
+  assert.ok(!core.CLASSIC_ONLY.some((x) => x.id === 'credits_manual'), 'manual credits moved into the CRM (CHANGELOG-crm-manual-credits.md)');
   assert.ok(core.CLASSIC_ONLY.some((x) => x.id === 'released_edit'));
   core.CLASSIC_ONLY.forEach((x) => { assert.ok(x.label && x.where, x.id); });
 });

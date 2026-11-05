@@ -367,7 +367,9 @@
 // (CHANGELOG-crm-followups-1104.md). Stacked on v113 (PR #362); monotonic, v17 never reused.
 // v114 → v115: CRM «KPI» area, «תפוסה היום», «בקרת עבודה» next to «היום שלי», «חריגים לבדיקה» in «גבייה», required
 // fields on lead / close / direct add / discharge (crm/crm.js, crm.css, crm.html) (CHANGELOG-crm-kpi-tab.md). From the repo v114; monotonic, v17 never reused.
-var CACHE_VERSION = 'v115';
+// v115 → v116: CRM credits — edit a saved credit and Sandra's manual «אחר» credit in the patient card (crm/crm.js)
+// (CHANGELOG-crm-manual-credits.md). From the live v115 (#366); monotonic, v17 never reused.
+var CACHE_VERSION = 'v116';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

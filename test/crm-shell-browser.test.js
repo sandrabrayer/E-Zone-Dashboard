@@ -127,6 +127,7 @@ async function boot() {
       try { parsed = JSON.parse(body); } catch (_) { parsed = {}; }
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
+      if (parsed.action === 'saveCredit') saves.push(parsed);
       if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund', 'editReceipt', 'savePayment', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
       if (['logContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logLeadFlag'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
@@ -140,6 +141,7 @@ async function boot() {
         : parsed.action === 'restorePatient' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restored: true, lead: { id: parsed.patient && parsed.patient.newLeadId } })
         : parsed.action === 'editReceipt' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, receipt: { id: parsed.edit && parsed.edit.id } })
         : parsed.action === 'savePayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, payment: { id: parsed.payment && parsed.payment.id, status: parsed.payment && parsed.payment.status, linkStatus: parsed.payment && parsed.payment.linkStatus } })
+        : parsed.action === 'saveCredit' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, credit: Object.assign({}, parsed.credit, { id: (parsed.credit && parsed.credit.id) || 'cr-new' }) })
         : parsed.action === 'setBillingDiscount' ? (saveAnswer ? saveAnswer(parsed) : { ok: true })
         : parsed.action === 'upsertBillingOverride' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, override: { id: parsed.override && parsed.override.id } })
         : ['requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund'].indexOf(parsed.action) >= 0
@@ -331,7 +333,7 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
     assert.deepEqual(kpis.slice(3, 8), ['₪11,000', '₪6,000', '1', '₪2,500', '1']);
     assert.deepEqual(kpis.slice(8, 12), ['₪5,000', '₪0', '₪0', '₪6,000'], 'the four aging buckets');
     const main = await page.textContent('#crm-main');
-    assert.match(main, /דנה כהן/); assert.match(main, /רמות השבים/); assert.match(main, /1 ללא דיווח/); assert.match(main, /70 ימים/); assert.match(main, /₪8,500/); assert.match(main, /ביט/); assert.match(main, /עריכת קבלות/);
+    assert.match(main, /דנה כהן/); assert.match(main, /רמות השבים/); assert.match(main, /1 ללא דיווח/); assert.match(main, /70 ימים/); assert.match(main, /₪8,500/); assert.match(main, /ביט/); assert.match(main, /דשבורד רגיל/);
     assert.match(await page.textContent('#crm-receipts'), new RegExp(core.fmtDate(daysAgo(4)).replace(/\//g, '\\/')), 'receipt dates are DD/MM/YYYY');
     assert.equal(await page.$$eval('#crm-main .links a', (els) => els.map((e) => e.getAttribute('href')).every((h) => h === '/?view=classic')), true, 'every action links to the classic dashboard (view=classic survives the switch)');
     // the debtor row opens the patient drawer
@@ -1396,5 +1398,49 @@ test('CRM «KPI» (Vered + Dana): sections render, break-even is finance-only an
     assert.equal(await page.$('#crm-kpi-breakeven'), null, 'no break-even for an operational session');
     assert.deepEqual(errors, []);
     await ctx.close();
+  } finally { await browser.close(); srv.close(); }
+});
+
+/* Manual credits + credit edit in the CRM (CHANGELOG-crm-manual-credits.md) */
+test('CRM credits (Vered edits, Sandra adds a manual credit): saveCredit from the patient card; reasons enforced; no classic link', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const openAccount = async (id) => {
+      const o = await open(browser, srv.port, id, 1366);
+      await o.page.click('#crm-nav button[data-area="clients"]');
+      await o.page.click('table.tbl tbody tr[data-open-patient="p1"]');
+      await o.page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+      await o.page.click('#crm-drawer [data-tab="account"]');
+      await o.page.waitForSelector('#crm-account-credits');
+      return o;
+    };
+    const v = await openAccount('vered');
+    assert.equal(await v.page.$('[data-credit-new]'), null, 'Vered has no manual-credit button (Sandra only)');
+    await v.page.click('#crm-account-credits [data-credit-edit="cr-1"]');
+    await v.page.waitForSelector('form[data-form="credit-edit"]');
+    assert.equal(await v.page.getAttribute('form[data-form="credit-edit"] [name="amount"]', 'readonly'), '', 'amount is Sandra\'s');
+    await v.page.fill('form[data-form="credit-edit"] [name="notes"]', 'עודכן מול המשפחה');
+    await v.page.click('form[data-form="credit-edit"] button[type="submit"]');
+    await v.page.waitForFunction(() => /הזיכוי נשמר/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 5000 });
+    const edit = srv.saves.filter((x) => x.action === 'saveCredit')[0];
+    assert.deepEqual([edit.credit.id, edit.credit.amount, edit.credit.status, edit.credit.notes], ['cr-1', 1200, 'pending', 'עודכן מול המשפחה']);
+    assert.ok(!(await v.page.textContent('#crm-drawer')).includes('וזיכויים ידניים בדשבורד'));
+    assert.deepEqual(v.errors, []);
+    await v.ctx.close();
+    const sa = await openAccount('sandra');
+    await sa.page.click('[data-credit-new]');
+    await sa.page.waitForSelector('form[data-form="credit-new"]');
+    await sa.page.fill('form[data-form="credit-new"] [name="amount"]', '500');
+    await sa.page.click('form[data-form="credit-new"] button[type="submit"]');
+    await sa.page.waitForFunction(() => /סיבה/.test((document.querySelector('form[data-form="credit-new"] .err[data-err="reason"]') || {}).textContent || ''));
+    assert.equal(srv.saves.filter((x) => x.action === 'saveCredit').length, 1, 'nothing sent without a reason');
+    await sa.page.fill('form[data-form="credit-new"] [name="reason"]', 'מחווה למשפחה');
+    await sa.page.click('form[data-form="credit-new"] button[type="submit"]');
+    await sa.page.waitForFunction(() => /הזיכוי נשמר/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 5000 });
+    const made = srv.saves.filter((x) => x.action === 'saveCredit')[1];
+    assert.deepEqual([made.credit.id, made.credit.creditType, made.credit.amount, made.credit.reason, made.credit.patientId], ['', 'other', 500, 'מחווה למשפחה', 'p1']);
+    assert.deepEqual(sa.errors, []);
+    await sa.ctx.close();
   } finally { await browser.close(); srv.close(); }
 });
