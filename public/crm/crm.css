@@ -377,3 +377,7 @@ form[data-form="wait-reason"][aria-busy="true"] .radio-row { opacity: .6; }
 .be-house legend { font-weight: 600; padding: 0 4px; }
 .kpi .v bdi { white-space: nowrap; }
 #crm-kpi-network .v { font-size: 22px; }
+/* «KPI» section headings stand out (CHANGELOG-crm-kpi-headings.md): larger, bold, dark, an accent bar and a rule. */
+.kpi-page .group-title { margin: 28px 0 12px; padding: 6px 0 8px; padding-inline-start: 12px; font-size: 20px; font-weight: 800; color: var(--text);
+  border-inline-start: 5px solid var(--primary); border-bottom: 1px solid var(--border); }
+.kpi-page .group-title .na { font-size: 14px; font-weight: 500; color: var(--text-muted); }
