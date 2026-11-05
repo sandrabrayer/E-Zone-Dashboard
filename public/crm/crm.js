@@ -2437,7 +2437,8 @@
       const c = compute(state.data, state.today);
       const d = meetingsFor(p, 'patient', c).discharge;
       if (!d || !d.id) return '';
-      if (c.outpatientSent && c.outpatientSent['discharge:' + d.id]) return '<div class="notice ok">נשלח לאמבולטורי ✓</div>';
+      if (c.outpatientSent && c.outpatientSent['discharge:' + d.id])
+        return '<div class="notice ok">נשלח לאמבולטורי ✓ · מצב הטיפול טרם אומת</div>' + outpatientStatusButton(d.id, 'discharge');
       return '<div class="actions"><details class="act" open><summary>העברה לאמבולטורי</summary>'
         + '<form data-form="out-phone" data-discharge="' + esc(d.id) + '" data-optional="1" novalidate>'
         + '<label>טלפון (אם לא מופיע בליד) <input type="tel" name="phone" inputmode="tel" maxlength="20" autocomplete="off" placeholder="05XXXXXXXX"><span class="err" data-err="phone"></span></label>'
@@ -3126,6 +3127,47 @@
       const inp = f.elements.visitDate; if (inp) { try { inp.focus(); } catch (_) { /* no-op */ } }
     }
 
+    /* A status is read from OUT on demand; never inferred from the send flag. */
+    const OUTPATIENT_STAGE_LABELS = Object.freeze({
+      referred: 'הפניה התקבלה באמבולטורי', contacted: 'נוצר קשר', intro_scheduled: 'נקבעה פגישת היכרות',
+      intro_passed: 'פגישת ההיכרות חלפה — תוצאה לא אומתה', plan: 'שלב תוכנית טיפול',
+      admitted: 'נקלט/ה לטיפול חוץ', active: 'טיפול חוץ פעיל', ended: 'טיפול חוץ הסתיים',
+      not_relevant: 'לא רלוונטי לטיפול חוץ',
+    });
+    function outpatientStatusButton(id, kind) {
+      return '<div class="act"><button type="button" class="btn small" data-check-outpatient-status data-' +
+        (kind === 'discharge' ? 'discharge-id' : 'lead-id') + '="' + esc(id) +
+        '">בדיקת המשך טיפול באמבולטורי</button><span class="na" data-outpatient-status-value>טרם נבדק</span></div>';
+    }
+    root.addEventListener('click', function (ev) {
+      const btn = ev.target && ev.target.closest ? ev.target.closest('[data-check-outpatient-status]') : null;
+      if (!btn) return;
+      ev.preventDefault();
+      const id = btn.dataset.leadId || btn.dataset.dischargeId || '';
+      const q = btn.dataset.leadId ? 'leadId' : 'dischargeId';
+      const value = btn.parentNode && btn.parentNode.querySelector('[data-outpatient-status-value]');
+      if (!id || btn.disabled) return;
+      btn.disabled = true;
+      if (value) value.textContent = 'בודק במערכת האמבולטורית…';
+      win.fetch('/api/outpatient-handoff-status?' + q + '=' + encodeURIComponent(id), { credentials: 'same-origin' })
+        .then(function (response) { return response.json().catch(function () { return null; }); })
+        .then(function (data) {
+          if (!data || data.ok !== true || !data.verified || !OUTPATIENT_STAGE_LABELS[data.state]) {
+            if (value) value.textContent = 'הסטטוס לא אומת — בדקי ישירות באמבולטורי; אין לסגור מעקב.';
+            return;
+          }
+          if (value) value.textContent = OUTPATIENT_STAGE_LABELS[data.state] +
+            (data.assignedTo ? ' · אחראי/ת: ' + data.assignedTo : '') +
+            (data.nextActionDate ? ' · פעולה עד ' + fmtDate(data.nextActionDate) : '') +
+            (data.nextAction ? ' · ' + data.nextAction : '') +
+            ' (מקור: Outpatient)';
+        })
+        .catch(function () {
+          if (value) value.textContent = 'אין אימות מהאמבולטורי כרגע — המעקב נשאר פתוח.';
+        })
+        .finally(function () { btn.disabled = false; });
+    });
+
     /* The client drawer: existing fields + the timeline from getActivity (B3). */
     function openDrawer(kind, id, keepTab) {
       const c = compute(state.data, state.today);
@@ -3142,7 +3184,8 @@
       dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(name) + '</h2><div class="meta tags">' + (lead ? '<span class="chip stage-' + esc(lead.stage) + '">' + esc(stageLabel(lead.stage)) + '</span>' + houseTag(lead.house) + (lead.assignedTo ? avatar(lead.assignedTo) : '') : statusChip(pat.status) + houseTag(pat.houseId)) + (na ? chip(na.state, na.text) : '') + (lead && waitChipText(lead, flagsOf(state.index, lead.id)) && waitChipText(lead, flagsOf(state.index, lead.id)) !== na.text ? chip('wait', waitChipText(lead, flagsOf(state.index, lead.id))) : '') + '</div></div>'
         + '<span class="toolbar"><button type="button" class="btn small primary" data-contact-open="' + esc(kind + ':' + id) + '">📞 תיעוד שיחה</button><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></span></div>'
         + '<div class="tabs" role="tablist">' + [['overview', 'סקירה'], ['tasks', 'משימות' + (tasksFor(subject, state.tasks).length ? ' (' + tasksFor(subject, state.tasks).length + ')' : '')], ['activity', 'פעילות'], ['meetings', 'פגישות ושירותים'], ['account', 'חשבון'], ['docs', 'מסמכים']].filter(function (t) { return t[0] !== 'account' || accountTabVisible(state.me); }).map(function (t, i) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (i === 0) + '">' + esc(t[1]) + '</button>'; }).join('') + '</div>'
-        + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : renderPatientActions(pat)) + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p><a class="btn" href="/?view=classic">עריכה מלאה בדשבורד</a></p></section>'
+        + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : renderPatientActions(pat))
+        + (lead && c.outpatientSent && c.outpatientSent[lead.id] ? outpatientStatusButton(lead.id, 'lead') : '') + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p><a class="btn" href="/?view=classic">עריכה מלאה בדשבורד</a></p></section>'
         + '<section data-pane="tasks" hidden id="crm-tasks">' + renderTasksPane(subject) + '</section>'
         + '<section data-pane="activity" hidden><ul class="tl" id="crm-tl"><li>טוען…</li></ul></section>'
         + '<section data-pane="meetings" hidden id="crm-meetings">' + renderMeetings(meetingsFor(lead || pat, lead ? 'lead' : 'patient', compute(state.data, state.today))) + '</section>'
