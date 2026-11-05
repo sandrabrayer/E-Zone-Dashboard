@@ -195,6 +195,7 @@ function loadCode(opts) {
       getPayments: () => getPayments_(),
       getCredits: () => getCredits_(),
       managerPhones: () => managerPhones_(),
+      patientRowsSameContent: (oldRows, newRows) => patientRowsSameContent_(oldRows, newRows),
       asISOTime: (v) => asISOTime_(v),
       fastHash: (s) => fastHash_(s),
       hourlyDigest: () => rebuildActivePatientsDigest(),
@@ -595,6 +596,98 @@ test('E: the meeting-report guard still keeps the sheet copy (and then nothing c
   assert.deepEqual(Array.from(res.reportConflicts), ['lead-0']);
   assert.equal(w.sheets[g.LEADS_SHEET].grid[1][note], 'דוח מנהל', 'the report survives');
   assert.equal(w.count('write:setValues', g.LEADS_SHEET), 0, 'and there was nothing else to write');
+});
+
+/* ===================================================================== */
+/* ===================================================================== */
+/* E2. Avoid rewriting fully unchanged Patients data in saveAll          */
+/* ===================================================================== */
+
+test('E2: a 90-patient 6-house no-op save does not rewrite or reorder Patients', () => {
+  const w = world({ patients: 90 });
+  const snap = clientSnapshot(w);
+  const before = JSON.stringify(w.sheets[w.g.PATIENTS_SHEET].grid);
+  w.reset();
+  const saved = saveAll(w, snap);
+  assert.equal(saved.ok, true, JSON.stringify(saved));
+  assert.equal(w.count('write:setValues', w.g.PATIENTS_SHEET), 0, 'no whole-grid save when every source cell is unchanged');
+  assert.equal(w.count('write:clearContent', w.g.PATIENTS_SHEET), 0);
+  assert.equal(JSON.stringify(w.sheets[w.g.PATIENTS_SHEET].grid), before, 'original cross-house ordering and values are retained');
+});
+
+test('E2: saving only a changed lead does not rewrite any of the 90 patients', () => {
+  const w = world({ patients: 90 });
+  const snap = clientSnapshot(w);
+  snap.leads[0].note = 'synthetic lead followup';
+  w.reset();
+  const result = saveAll(w, snap);
+  assert.equal(result.ok, true);
+  assert.equal(w.count('write:setValues', w.g.LEADS_SHEET), 1, 'lead itself is written');
+  assert.equal(w.count('write:setValues', w.g.PATIENTS_SHEET), 0, 'no unrelated patient grid rewrite');
+});
+
+test('E2: a changed patient amount still writes and preserves the update', () => {
+  const w = world({ patients: 90 });
+  const snap = clientSnapshot(w);
+  const id = snap.patients.ramot[0].id;
+  snap.patients.ramot[0].pay = 12345;
+  w.reset();
+  const res = saveAll(w, snap);
+  assert.equal(res.ok, true);
+  assert.ok(w.count('write:setValues', w.g.PATIENTS_SHEET) > 0);
+  const grid = w.sheets[w.g.PATIENTS_SHEET].grid;
+  const keys = Array.from(w.g.PATIENT_COLUMNS);
+  const row = grid.find((r) => r[keys.indexOf('id')] === id);
+  assert.ok(row, 'same immutable patient id');
+  assert.equal(Number(row[keys.indexOf('pay')]), 12345);
+});
+
+test('E2: a legacy Date cell is still rewritten as unambiguous local-day text', () => {
+  const w = world({ patients: 90 });
+  const snap = clientSnapshot(w);
+  const grid = w.sheets[w.g.PATIENTS_SHEET].grid;
+  const idx = Array.from(w.g.PATIENT_COLUMNS).indexOf('date');
+  grid[1][idx] = new Date(Date.UTC(2026, 0, 1));
+  w.reset();
+  const res = saveAll(w, snap);
+  assert.equal(res.ok, true);
+  assert.ok(w.count('write:setValues', w.g.PATIENTS_SHEET) > 0, 'typed source Date forces migration to stable string');
+  const after = w.sheets[w.g.PATIENTS_SHEET].grid.find((r) => r[Array.from(w.g.PATIENT_COLUMNS).indexOf('id')] === 'id-p0');
+  assert.equal(after[idx], '2026-01-01');
+});
+
+test('E2: stale client missing a saved patient retains source and does not take the no-op shortcut', () => {
+  const w = world({ patients: 90 });
+  const snap = clientSnapshot(w);
+  const omitted = snap.patients.ramot.pop();
+  w.reset();
+  const result = saveAll(w, snap);
+  assert.equal(result.ok, true);
+  assert.ok(result.preserved.ramot && result.preserved.ramot.length, 'omitted source patient is reported to stale client');
+  assert.ok(w.count('write:setValues', w.g.PATIENTS_SHEET) > 0, 'preserved patient path still uses guarded full write');
+  const ids = w.sheets[w.g.PATIENTS_SHEET].grid.map((r) => r[Array.from(w.g.PATIENT_COLUMNS).indexOf('id')]);
+  assert.ok(ids.includes(omitted.id), 'omitted patient remains on sheet');
+});
+
+test('E2: an unchanged source still returns exact-ID save proof under the existing lock', () => {
+  const w = world({ patients: 90 });
+  const snap = clientSnapshot(w);
+  w.reset();
+  const res = w.g.handle({ action: 'saveAll', user: 'ורד', leads: snap.leads, patients: snap.patients,
+    prove: { leads: ['lead-0'], patients: ['id-p0'] } });
+  assert.equal(res.ok, true);
+  assert.deepEqual(Array.from(res.proven.leads), ['lead-0']);
+  assert.deepEqual(Array.from(res.proven.patients), ['id-p0']);
+  assert.equal(w.count('write:setValues', w.g.PATIENTS_SHEET), 0, 'id proof is read-only and does not undo the no-op optimization');
+});
+
+test('E2: patient row equality treats order as irrelevant but counts duplicates and types', () => {
+  const w = world();
+  const same = w.g.patientRowsSameContent;
+  assert.equal(same([['a', 2], ['b', 3]], [['b', 3], ['a', 2]]), true);
+  assert.equal(same([['a', 2], ['a', 2]], [['a', 2], ['b', 2]]), false, 'duplicates are not accidentally removed');
+  assert.equal(same([['a', 2]], [['a', '2']]), false, 'numeric and text cells are not equivalent');
+  assert.equal(same([[new Date(Date.UTC(2026, 0, 1))]], [['2026-01-01']]), false, 'legacy Date is not a text cell');
 });
 
 /* ===================================================================== */
