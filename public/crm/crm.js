@@ -3358,7 +3358,7 @@
 
       // 5. break-even (finance only — an ops session has no prices)
       if (state.me && state.me.finance) html += renderBreakeven(c);
-      return html;
+      return '<div class="kpi-page">' + html + '</div>';   // bold section headings (CHANGELOG-crm-kpi-headings.md)
     }
     function renderBreakeven(c) {
       const cfg = readBreakevenConfig();

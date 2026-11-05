@@ -282,3 +282,11 @@ test('the classic-only list is documented for the decision (no silent gaps)', ()
   assert.ok(core.CLASSIC_ONLY.some((x) => x.id === 'released_edit'));
   core.CLASSIC_ONLY.forEach((x) => { assert.ok(x.label && x.where, x.id); });
 });
+
+test('KPI section headings stand out: the page is wrapped and its headings are large, bold and dark (CHANGELOG-crm-kpi-headings.md)', () => {
+  const CSS = fs.readFileSync(path.join(ROOT, 'public', 'crm', 'crm.css'), 'utf8');
+  assert.match(CRM_SRC, /return '<div class="kpi-page">' \+ html \+ '<\/div>';/);
+  assert.match(CSS, /\.kpi-page \.group-title \{[^}]*font-size: 20px; font-weight: 800; color: var\(--text\)/);
+  assert.match(CSS, /\.kpi-page \.group-title \{[^}]*border-inline-start: 5px solid var\(--primary\)/);
+  assert.match(CSS, /\.kpi-page \.group-title \.na \{ font-size: 14px;/, 'the count after the heading stays secondary');
+});

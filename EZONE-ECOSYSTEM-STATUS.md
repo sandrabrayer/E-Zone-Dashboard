@@ -5,7 +5,8 @@
 «חשבון» in the CRM patient card now edits a saved, unpaid credit (amount — Sandra only — with a reason when it
 differs from the policy figure, decision date, cancel with a note, notes) and lets Sandra add a manual «אחר»
 credit. Same `saveCredit` action and Code.gs authority as the classic modal; the classic «זיכויים ידניים»
-link is gone. CRM only; SW v116. See `CHANGELOG-crm-manual-credits.md`.
+link is gone. CRM only; SW v116. See `CHANGELOG-crm-manual-credits.md`. (merged #367)
+Follow-up: bold section headings on the KPI page, SW v117 (`CHANGELOG-crm-kpi-headings.md`).
 
 ## CRM «KPI» area · «תפוסה היום» · «בקרת עבודה» · «חריגים לבדיקה» · required fields — November 5, 2026 (PR open)
 
