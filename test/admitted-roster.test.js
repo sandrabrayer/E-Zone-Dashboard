@@ -102,17 +102,17 @@ test('recovers phone via fromLead, normalizes, excludes released, no-leak projec
       // Admitted, from a lead — sensitive fields present to prove they don't leak.
       // date is a plain YYYY-MM-DD string (the canonicalized column form).
       { houseId: 'asher', name: 'דנה', fromLead: 'L1', exitDate: '', status: 'active',
-        date: '2026-01-15', pay: 30000, adv: 5000, notes: 'sensitive note', source: 'lead' },
+        id: 'id-stay-1', personId: 'id-person-root', date: '2026-01-15', pay: 30000, adv: 5000, notes: 'sensitive note', source: 'lead' },
       // Admitted, +972 phone to exercise normalization; date arrives as a
       // Date-typed cell (Sheets sometimes hands back Date objects).
       { houseId: 'ramot', name: 'מאיה', fromLead: 'L2', exitDate: '', status: 'trial',
-        date: new Date(2026, 2, 3) },
+        id: 'id-stay-2', personId: '', date: new Date(2026, 2, 3) },
       // Released by exitDate AND status — excluded.
       { houseId: 'asher', name: 'יוסי', fromLead: 'L1', exitDate: '2026-05-01', status: 'released' },
       // direct_admin, no fromLead — admitted but no recoverable phone; blank
       // date must yield entryDate ''.
       { houseId: 'rehab', name: 'דני', fromLead: '', source: 'direct_admin', exitDate: '', status: 'active',
-        date: '' },
+        id: 'id-stay-3', personId: '', date: '' },
       // Released by status only (blank exitDate) — still excluded.
       { houseId: 'asher', name: 'נועה', fromLead: 'L3', exitDate: '', status: 'released' },
     ],
@@ -137,23 +137,31 @@ test('recovers phone via fromLead, normalizes, excludes released, no-leak projec
   assert.strictEqual(maya.phone, '0527654321');   // 972 country code → leading 0
   assert.strictEqual(dani.phone, '');             // direct_admin → free-text fallback, never fabricated
 
+  // Stable care-continuum identity is additive: id = stay, personId = root person id.
+  assert.strictEqual(dana.id, 'id-stay-1');
+  assert.strictEqual(dana.personId, 'id-person-root');
+  assert.strictEqual(maya.id, 'id-stay-2');
+  assert.strictEqual(maya.personId, '');
+  assert.strictEqual(dani.id, 'id-stay-3');
+  assert.strictEqual(dani.personId, '');
+
   // entryDate (admission date) is surfaced for the outpatient מסלול המשך tab.
   assert.strictEqual(dana.entryDate, '2026-01-15'); // string cell passthrough
   assert.strictEqual(maya.entryDate, '2026-03-03'); // Date cell → YYYY-MM-DD
   assert.strictEqual(dani.entryDate, '');           // blank cell → ''
 
-  // No-leak contract: every row exposes EXACTLY these five keys — the derived
-  // entryDate is additive; the raw sensitive columns still never appear.
+  // No-leak contract: every row exposes EXACTLY these seven keys. id/personId
+  // are the approved opaque care-continuum identity; raw sensitive columns stay out.
   for (const row of r) {
     assert.deepStrictEqual(
       Object.keys(row).sort(),
-      ['entryDate', 'house', 'name', 'phone', 'sourceApp']
+      ['entryDate', 'house', 'id', 'name', 'personId', 'phone', 'sourceApp']
     );
   }
   // Defense in depth: none of the sensitive Leads/Patients fields appear under
   // any name, even though several were present on the source rows.
   const forbidden = ['note', 'notes', 'stage', 'pay', 'adv', 'advance',
-    'price', 'pricing', 'source', 'fromLead', 'exitDate', 'status', 'date', 'id'];
+    'price', 'pricing', 'source', 'fromLead', 'exitDate', 'status', 'date'];
   for (const row of r) {
     for (const f of forbidden) {
       assert.ok(!(f in row), 'leaked field: ' + f);

@@ -43,6 +43,10 @@ SW v115. See `CHANGELOG-crm-kpi-tab.md`.
 
 - Bug reported by Vered: on the new screen a payment report on an OLD cycle was refused (`coverage_outside_cycle`). Older Payments rows hold Date cells that reach the browser as UTC timestamps; the CRM sliced them one day early. New `sheetDay()` reads them on the Israel day, like the classic `isoDate()`. Client only, SW v106. Details: `CHANGELOG-crm-old-payment-dates.md`.
 
+## Care-continuum identity feed — October 30, 2026 (draft, no release)
+
+- D-ID-1: `getAdmittedRoster` and `getDischargedRoster` add existing Dashboard `Patients.id` (stay) and `Patients.personId` (root person id). Consumers use `personId || id`; no new identifier, no Sheet schema change, no write surface. This is the identity foundation for pre-discharge continuation → Outpatient linking. Details: `CHANGELOG-care-continuum-identity-feed.md`.
+
 ## Railway healthcheck window 30 s → 300 s — October 28, 2026 (PR open)
 
 - Every deploy after #303 failed at «Network › Healthcheck» with Build/Deploy green (Railway's Oct 21 incident recovery); live stuck on `2a2a251`. `/healthz` is synchronous, so the window is Railway's network attach. `railway.json` `healthcheckTimeout` 30 → 300. Details: `CHANGELOG-railway-healthcheck-timeout.md`.
