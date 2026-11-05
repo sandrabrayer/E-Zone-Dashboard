@@ -365,7 +365,9 @@
 // (crm/crm.js, crm.css, crm.html) (CHANGELOG-crm-vered-feedback-1104.md). From the repo/live v112; monotonic, v17 never reused.
 // v113 → v114: «העבר לאמבולטורי» asks for the phone in the «משוחררים» row; save spinner; waitlist reason saves on click (crm/crm.js, crm.css)
 // (CHANGELOG-crm-followups-1104.md). Stacked on v113 (PR #362); monotonic, v17 never reused.
-var CACHE_VERSION = 'v114';
+// v114 → v115: CRM «KPI» area, «תפוסה היום», «בקרת עבודה» next to «היום שלי», «חריגים לבדיקה» in «גבייה», required
+// fields on lead / close / direct add / discharge (crm/crm.js, crm.css, crm.html) (CHANGELOG-crm-kpi-tab.md). From the repo v114; monotonic, v17 never reused.
+var CACHE_VERSION = 'v115';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

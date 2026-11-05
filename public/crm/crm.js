@@ -26,7 +26,8 @@
   ];
   const AREAS = [
     { id: 'today', label: 'היום שלי' }, { id: 'leads', label: 'לידים' }, { id: 'occupancy', label: 'תפוסה' },
-    { id: 'clients', label: 'מטופלים' }, { id: 'calendar', label: 'יומן' }, { id: 'billing', label: 'גבייה' }, { id: 'control', label: 'בקרה' },
+    { id: 'clients', label: 'מטופלים' }, { id: 'calendar', label: 'יומן' }, { id: 'billing', label: 'גבייה' }, { id: 'control', label: 'בקרת עבודה' },
+    { id: 'kpi', label: 'KPI' },   // CHANGELOG-crm-kpi-tab.md: slices, occupancy %, conversion, break-even
     { id: 'triage', label: 'רשומות שדורשות בירור' },   // Stage 3: reached from «פניות» / the «ללא מגע» card, not from the menu
   ];
   const WAIT_DAYS = 3;
@@ -87,6 +88,14 @@
     if (!localPhone(v && v.phone)) out.phone = 'יש להזין טלפון ישראלי תקין (10 ספרות)';
     if (!s(v && v.assignedTo)) out.assignedTo = 'יש לבחור משוייך ל';
     if (s(v && v.contactPhone) && !localPhone(v.contactPhone)) out.contactPhone = 'טלפון הפונה אינו תקין';
+    /* Nothing is saved with a field missing (Sandra 05/11/2026): a source, a house (unless the
+     * meeting is with «אמבולטורי»), and the contact / billing details the form says it has. */
+    if (!s(v && v.source)) out.source = 'יש לבחור מקור ליד';
+    if (!s(v && v.house) && s(v && v.meetingWith) !== MEETING_WITH_AMBULATORY) out.house = 'יש לבחור בית (או «נפגש/ת עם: אמבולטורי»)';
+    if (s(v && v.contactName) && !s(v && v.contactRelation)) out.contactRelation = 'יש לבחור קשר למטופל';
+    if (s(v && v.contactRelation) === 'אחר' && !s(v && v.contactRelationOther)) out.contactRelationOther = 'יש לפרט את הקשר';
+    if (s(v && v.billingMode) === 'contact' && !localPhone(v && v.contactPhone)) out.contactPhone = 'גבייה דרך הפונה — חסר טלפון פונה תקין';
+    if (s(v && v.billingMode) === 'other' && !localPhone(v && v.billingOther)) out.billingOther = 'יש להזין טלפון תקין לגבייה';
     return out;
   }
   /* A new lead row (every LEAD_COLUMNS key the classic form writes). Pure. */
@@ -200,7 +209,7 @@
   function directAddErrors(v, finance) {
     const out = admissionErrors(v, finance);
     if (s(v.name).split(/\s+/).filter(Boolean).length < 2) out.name = 'יש להזין שם מלא';
-    if (s(v.phone) && !localPhone(v.phone)) out.phone = 'טלפון אינו תקין';
+    if (!localPhone(v.phone)) out.phone = s(v.phone) ? 'טלפון אינו תקין' : 'יש להזין טלפון (נדרש למעקב ולהעברה לאמבולטורי)';
     return out;
   }
   /* The saveAll body for one house: the house as read + the new row (+ the lead). Pure. */
@@ -293,7 +302,8 @@
   function dischargeErrors(v) {
     const out = {};
     if (!DISCHARGE_DISPOSITIONS.some(function (d) { return d.id === s(v.disposition); })) out.disposition = 'יש לבחור סטטוס שחרור';
-    if (s(v.dischargeDate) && !isoDateOk(v.dischargeDate)) out.dischargeDate = 'תאריך שחרור מחוץ לטווח';
+    if (!s(v.dischargeDate)) out.dischargeDate = 'יש להזין תאריך שחרור';
+    else if (!isoDateOk(v.dischargeDate)) out.dischargeDate = 'תאריך שחרור מחוץ לטווח';
     return out;
   }
   /* The moved row: the patient as read, in the target house, with the classic
@@ -331,8 +341,8 @@
   function areasFor(me) {
     const m = me || {};
     if (m.view === 'controller') return ['today', 'billing', 'control'];
-    if (m.view === 'ops' || m.ops === true) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'triage'];
-    if (!m.finance) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'triage'];
+    if (m.view === 'ops' || m.ops === true) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'triage'];
+    if (!m.finance) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'triage'];
     return AREAS.map(function (a) { return a.id; });
   }
 
@@ -1546,8 +1556,8 @@
    * Urgency is never the lead's age: a new lead without a DOCUMENTED contact
    * is «ללא מגע» (information), an overdue dated task is «באיחור». */
   const NAV_GROUPS = [
-    { label: '', items: ['today'] }, { label: 'לידים ומטופלים', items: ['leads', 'clients'] }, { label: 'פגישות ויומן', items: ['calendar'] },
-    { label: 'בתים והמשך טיפול', items: ['occupancy'] }, { label: 'כספים', items: ['billing'] }, { label: 'דוחות והגדרות', items: ['control'] }];
+    { label: '', items: ['today', 'control'] }, { label: 'לידים ומטופלים', items: ['leads', 'clients'] }, { label: 'פגישות ויומן', items: ['calendar'] },
+    { label: 'בתים והמשך טיפול', items: ['occupancy'] }, { label: 'כספים', items: ['billing'] }, { label: 'דוחות והגדרות', items: ['kpi'] }];
   const MY_DAY_VIEWS = [{ id: 'today', label: 'היום' }, { id: 'week', label: 'השבוע' }, { id: 'done', label: 'הושלמו' }];
   const DOMAINS = [
     { id: 'collection', label: 'גבייה לטיפול', money: true }, { id: 'calls', label: 'שיחות ומעקבים' }, { id: 'meetings', label: 'פגישות ותיאומים' },
@@ -1938,6 +1948,307 @@
     return { cards: cards, sets: sets, urgent: urgent };
   }
 
+  /* ===== «KPI» (CHANGELOG-crm-kpi-tab.md) =====
+   * Read-only slices over getData (and, for finance, debtAging). Pure: no DOM,
+   * no I/O. Every number is computed in the browser from data the session may
+   * already read — no new endpoint, no Code.gs change. */
+  const KPI_PERIODS = [
+    { id: 'this_month', label: 'החודש' }, { id: 'last_month', label: 'החודש הקודם' },
+    { id: 'last_3_months', label: '3 חודשים אחרונים' }, { id: 'this_year', label: 'מתחילת השנה' },
+  ];
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  /* A preset → { from, to } (inclusive 'YYYY-MM-DD') around today. null for an unknown id / a bad today. Pure. */
+  function kpiPeriod(id, today) {
+    const t = s(today);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return null;
+    const y = +t.slice(0, 4), m = +t.slice(5, 7);
+    const back = function (k) { let mm = m - k, yy = y; while (mm < 1) { mm += 12; yy--; } return { y: yy, m: mm }; };
+    if (id === 'this_month') return { from: y + '-' + pad2(m) + '-01', to: t };
+    if (id === 'last_month') { const p = back(1); return { from: p.y + '-' + pad2(p.m) + '-01', to: p.y + '-' + pad2(p.m) + '-' + pad2(new Date(Date.UTC(p.y, p.m, 0)).getUTCDate()) }; }
+    if (id === 'last_3_months') { const p = back(2); return { from: p.y + '-' + pad2(p.m) + '-01', to: t }; }
+    if (id === 'this_year') return { from: y + '-01-01', to: t };
+    return null;
+  }
+  function pctOf(n, base) { return base > 0 ? Math.round(1000 * n / base) / 10 : null; }
+  function fmtPct(p) { return p === null || p === undefined ? '—' : (Math.round(p * 10) / 10) + '%'; }
+  /* «תפוסה היום»: the occupancy totals + the overall percentage. Pure. */
+  function occupancyToday(patients) {
+    const o = occupancy(patients);
+    return Object.assign({}, o, { pct: o.totalCap ? Math.round(100 * o.totalIn / o.totalCap) : 0 });
+  }
+  /* The classic computeDisposition (app.js): explicit → legacy reason → 'not_relevant'. Pure. */
+  function closedDisposition(l) {
+    const d = s(l && l.disposition);
+    if (d === 'not_relevant' || d === 'completed' || d === 'stopped_early' || d === 'released_outpatient') return d;
+    const r = s(l && l.not_relevant_reason);
+    if (r === 'stopped_from_house' || r === 'stopped_new') return 'stopped_early';
+    return 'not_relevant';
+  }
+  const ENTERED_LEAD_STAGES = ['admitted', 'entered', 'entry'];
+  /* Every real lead once (board first, then closed), with its fate.
+   *   inpatient  — a Patients / discharge row links to it (fromLead), or its stage is admitted
+   *   outpatient — handed to Outpatient (AuditLog send), closed «משוחרר לטיפול חוץ», or an
+   *                «אמבולטורי» meeting with outcome «נכנסים לטיפול»
+   *   notRelevant / otherClosed — a closed lead (by disposition)
+   *   open       — still on the board
+   * `source: 'direct_admin'` rows (phone records) are never leads; `direct_approach`
+   * (a patient added directly) is flagged `direct` and kept OUT of the conversion base. Pure. */
+  function leadFates(data, c) {
+    const d = data && typeof data === 'object' ? data : {};
+    const linked = {};
+    (c.patients || []).forEach(function (p) { if (s(p.fromLead)) linked[s(p.fromLead)] = true; });
+    (c.discharges || []).forEach(function (x) { if (s(x.fromLead)) linked[s(x.fromLead)] = true; });
+    const sent = c.outpatientSent || {};
+    const seen = {}, out = [];
+    const add = function (l, closed) {
+      if (!l || typeof l !== 'object') return;
+      const id = s(l.id);
+      if (id && seen[id]) return;
+      if (id) seen[id] = true;
+      if (s(l.source) === 'direct_admin') return;
+      const stage = s(l.stage);
+      const disp = closed ? closedDisposition(l) : '';
+      let fate;
+      if (linked[id] || ENTERED_LEAD_STAGES.indexOf(stage) >= 0) fate = 'inpatient';
+      else if (sent[id] || disp === 'released_outpatient' || (s(l.meetingWith) === MEETING_WITH_AMBULATORY && s(l.meetingOutcome) === 'entered')) fate = 'outpatient';
+      else if (closed) fate = disp === 'not_relevant' ? 'notRelevant' : 'otherClosed';
+      else fate = 'open';
+      out.push({ id: id, name: s(l.name), house: houseName(l.house), source: s(l.source), created: isoDay(l.created), visitDate: isoDay(l.visitDate),
+        reportedAt: isoDay(l.meetingReportedAt), meetingWith: s(l.meetingWith), fate: fate, direct: s(l.source) === 'direct_approach', closed: !!closed });
+    };
+    (c.leads || []).forEach(function (l) { add(l, false); });
+    (Array.isArray(d.irrelevantLeads) ? d.irrelevantLeads : []).forEach(function (l) { add(l, true); });
+    return out;
+  }
+  const FATES = [
+    { id: 'inpatient', label: 'נכנסו לאשפוז (בית)' }, { id: 'outpatient', label: 'עברו לאמבולטורי' },
+    { id: 'open', label: 'עדיין פתוחים' }, { id: 'notRelevant', label: 'נסגרו — לא רלוונטי' }, { id: 'otherClosed', label: 'נסגרו — אחר' },
+  ];
+  /* «המרת לידים»: the leads CREATED in [from, to] → how many became patients. Pure. */
+  function leadConversion(data, c, from, to) {
+    const all = leadFates(data, c);
+    const inRange = all.filter(function (l) { return l.created && l.created >= from && l.created <= to; });
+    const base = inRange.filter(function (l) { return !l.direct; });
+    const counts = {}; FATES.forEach(function (f) { counts[f.id] = 0; });
+    base.forEach(function (l) { counts[l.fate]++; });
+    const converted = counts.inpatient + counts.outpatient;
+    const byHouse = {};
+    base.forEach(function (l) {
+      const k = l.house || 'ללא בית';
+      const r = byHouse[k] || (byHouse[k] = { house: k, total: 0, inpatient: 0, outpatient: 0 });
+      r.total++; if (l.fate === 'inpatient') r.inpatient++; if (l.fate === 'outpatient') r.outpatient++;
+    });
+    const houses = Object.keys(byHouse).map(function (k) { const r = byHouse[k]; return Object.assign(r, { pct: pctOf(r.inpatient + r.outpatient, r.total) }); })
+      .sort(function (a, b) { return b.total - a.total || a.house.localeCompare(b.house, 'he'); });
+    return {
+      total: base.length, converted: converted, pct: pctOf(converted, base.length), counts: counts,
+      pcts: FATES.reduce(function (o, f) { o[f.id] = pctOf(counts[f.id], base.length); return o; }, {}),
+      direct: inRange.filter(function (l) { return l.direct; }).length,
+      noCreated: all.filter(function (l) { return !l.created && !l.direct; }).length,
+      houses: houses, rows: base,
+    };
+  }
+  /* «סגירה לפי מנהל/ת»: the intake meetings held in [from, to] (visit day passed, or a
+   * manager report in the period when there is no visit day), grouped by «נפגש/ת עם».
+   * closed = became a patient (house or outpatient); lost = closed without entering. Pure. */
+  function managerCloseRates(data, c, from, to, today) {
+    const by = {};
+    leadFates(data, c).forEach(function (l) {
+      if (l.direct) return;
+      const day = l.visitDate || l.reportedAt;
+      if (!day || day < from || day > to || day > s(today)) return;
+      const k = l.meetingWith || 'ללא מנהל/ת';
+      const r = by[k] || (by[k] = { manager: k, meetings: 0, entered: 0, lost: 0, open: 0, leads: [] });
+      r.meetings++;
+      if (l.fate === 'inpatient' || l.fate === 'outpatient') r.entered++;
+      else if (l.fate === 'open') r.open++;
+      else r.lost++;
+      r.leads.push(l);
+    });
+    const rows = Object.keys(by).map(function (k) { const r = by[k]; return Object.assign(r, { closePct: pctOf(r.entered, r.meetings), lostPct: pctOf(r.lost, r.meetings) }); })
+      .sort(function (a, b) { return (b.closePct || 0) - (a.closePct || 0) || b.meetings - a.meetings || a.manager.localeCompare(b.manager, 'he'); });
+    const tot = rows.reduce(function (t, r) { t.meetings += r.meetings; t.entered += r.entered; t.lost += r.lost; t.open += r.open; return t; }, { meetings: 0, entered: 0, lost: 0, open: 0 });
+    tot.closePct = pctOf(tot.entered, tot.meetings); tot.lostPct = pctOf(tot.lost, tot.meetings);
+    return { rows: rows, total: tot };
+  }
+
+  /* «נקודת איזון» — the classic tab's model (app.js BREAKEVEN_DEFAULTS /
+   * computeHouseMetrics / computeNetworkMetrics, CHANGELOG-breakeven-ex-vat.md),
+   * mirrored. The expenses are the SAME browser-stored figures the classic tab
+   * edits (localStorage 'ezone-breakeven-v1', same origin), else the defaults of
+   * the financial analysis. Revenue = the real monthly pay of every in-house
+   * patient, ex-VAT. Finance sessions only (an ops session has no pay). */
+  const BREAKEVEN_STORAGE_KEY = 'ezone-breakeven-v1';
+  const VAT_RATE = 1.18;
+  const BREAKEVEN_DEFAULTS = {
+    hqCost: 300000,
+    houses: {
+      arfoni: { active: true, fixed: 147200, variable: 90000 }, rehab: { active: true, fixed: 130000, variable: 80000 },
+      asher: { active: true, fixed: 170000, variable: 140000 }, pardes: { active: false, fixed: 0, variable: 0 },
+      ramot: { active: true, fixed: 239000, variable: 217000 }, sde: { active: false, fixed: 147200, variable: 90000 },
+    },
+  };
+  const PRICE_FALLBACKS = { arfoni: 30000, rehab: 30000, asher: 35000, pardes: 35000, ramot: 36000, sde: 30000 };
+  /* Stored JSON (string or object) → a full config; anything unreadable → the defaults. Pure. */
+  function breakevenConfig(stored) {
+    let parsed = stored;
+    if (typeof stored === 'string') { try { parsed = JSON.parse(stored); } catch (_) { parsed = null; } }
+    const def = BREAKEVEN_DEFAULTS;
+    const p = parsed && typeof parsed === 'object' ? parsed : null;
+    const hq = p && p.hqCost != null && isFinite(Number(p.hqCost)) ? Number(p.hqCost) : def.hqCost;
+    const houses = {};
+    HOUSES.forEach(function (h) {
+      const st = p && p.houses && typeof p.houses === 'object' ? p.houses[h.id] : null;
+      const d0 = def.houses[h.id] || { active: false, fixed: 0, variable: 0 };
+      houses[h.id] = st && typeof st === 'object'
+        ? { active: !!st.active, fixed: Number(st.fixed) || 0, variable: Number(st.variable) || 0 }
+        : { active: d0.active, fixed: d0.fixed, variable: d0.variable };
+    });
+    return { hqCost: hq, houses: houses, fromStorage: !!p };
+  }
+  /* The per-house and network break-even (same formulas as the classic tab). Pure. */
+  function breakevenReport(patients, cfg) {
+    const conf = cfg || breakevenConfig(null);
+    const houses = HOUSES.map(function (h) {
+      const be = conf.houses[h.id] || { active: false, fixed: 0, variable: 0 };
+      const mine = (patients || []).filter(function (p) { return houseId(p.houseId) === h.id && inHouse(p); });
+      const paying = mine.filter(function (p) { return (Number(p.pay) || 0) > 0; });
+      const gross = paying.length ? Math.round(paying.reduce(function (t, p) { return t + (Number(p.pay) || 0); }, 0) / paying.length) : (PRICE_FALLBACKS[h.id] || 30000);
+      const price = gross / VAT_RATE;
+      const fixed = Number(be.fixed) || 0, variable = Number(be.variable) || 0, totalExpenses = fixed + variable;
+      const capacity = h.capacity;
+      const currentPatients = mine.length;
+      const breakevenPoint = price > 0 ? Math.ceil(totalExpenses / price) : 0;
+      const currentRevenue = mine.reduce(function (t, p) { return t + (Number(p.pay) || 0); }, 0) / VAT_RATE;
+      const currentPL = currentRevenue - totalExpenses;
+      return { id: h.id, name: h.name, active: !!be.active, closed: !!h.closed, fixed: fixed, variable: variable, totalExpenses: totalExpenses, price: price,
+        capacity: capacity, currentPatients: currentPatients, breakevenPoint: breakevenPoint, currentRevenue: currentRevenue, currentPL: currentPL,
+        marginPct: currentRevenue > 0 ? (currentPL / currentRevenue) * 100 : null, maxPL: capacity * price - totalExpenses,
+        gap: Math.max(0, breakevenPoint - currentPatients), freeBeds: Math.max(0, capacity - currentPatients) };
+    });
+    const act = houses.filter(function (m) { return m.active; });
+    const sum = function (k) { return act.reduce(function (t, m) { return t + m[k]; }, 0); };
+    const totalHouseExpenses = sum('totalExpenses'), hqCost = Number(conf.hqCost) || 0, totalExpenses = totalHouseExpenses + hqCost;
+    const totalRevenueCurrent = sum('currentRevenue'), totalCapacity = sum('capacity');
+    const totalRevenueMax = act.reduce(function (t, m) { return t + m.capacity * m.price; }, 0);
+    const avgPrice = totalCapacity > 0 ? totalRevenueMax / totalCapacity : 0;
+    return {
+      houses: houses,
+      network: { hqCost: hqCost, totalHouseExpenses: totalHouseExpenses, totalExpenses: totalExpenses, totalRevenueCurrent: totalRevenueCurrent,
+        housesPL: totalRevenueCurrent - totalHouseExpenses, networkPL: totalRevenueCurrent - totalExpenses, totalPatientsCurrent: sum('currentPatients'),
+        totalCapacity: totalCapacity, networkBreakeven: avgPrice > 0 ? Math.ceil(totalExpenses / avgPrice) : 0 },
+    };
+  }
+
+  /* ===== «חריגים לבדיקה» in «גבייה» (CHANGELOG-crm-kpi-tab.md) =====
+   * Open things that cannot both be true. Read-only: every row opens the stays
+   * it names; the fix is made on the record itself. Never a merge, never a write.
+   *   stay_overlap      — two stays of the same person (same personId chain, or the
+   *                       same full name) whose periods overlap: one person cannot be
+   *                       in two houses (or twice in one house) at the same time
+   *   exit_before_entry — a stay that ends before it starts
+   *   released_no_exit  — a released stay with no exit date (the billing end is unknown)
+   *   debt_after_exit   — an open debt cycle that starts after the stay's exit day
+   *   zero_pay_in_house — in the house with a monthly price of 0 (nothing is charged) */
+  const ANOMALY_LABELS = {
+    stay_overlap: 'אותו אדם בשתי שהיות חופפות', exit_before_entry: 'תאריך יציאה לפני תאריך כניסה',
+    released_no_exit: 'שוחרר/ה ללא תאריך יציאה', debt_after_exit: 'חוב על תקופה אחרי היציאה', zero_pay_in_house: 'בבית עם סכום חודשי 0',
+  };
+  function stayEnd(p, exitByPatient, today) {
+    if (inHouse(p)) return s(today);
+    return s(p.exitDate) || s(exitByPatient[s(p.id)]) || '';
+  }
+  function billingAnomalies(c, debt, today) {
+    const pts = (c && c.patients) || [];
+    const exitBy = {};
+    ((c && c.discharges) || []).forEach(function (d) { if (!d.deletedAt && !isRestoredDischarge(d) && d.patientId && d.exitDate) exitBy[d.patientId] = d.exitDate; });
+    const rows = [];
+    const stay = function (p) { return { id: p.id, name: p.name, house: houseName(p.houseId), date: p.date, exitDate: stayEnd(p, exitBy, today), status: p.status }; };
+    /* group by person: union of personId chains and full names (2+ words) */
+    const parent = {};
+    const find = function (x) { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+    const unite = function (a, b) { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb; };
+    const keyOfName = {}, keyOfPerson = {};
+    const placed = pts.filter(function (p) { return s(p.id) && s(p.date); });
+    placed.forEach(function (p) { parent[p.id] = p.id; });
+    placed.forEach(function (p) {
+      const pk = s(p.personId) || '';
+      if (pk) { if (parent[pk] !== undefined) unite(p.id, pk); if (keyOfPerson[pk]) unite(p.id, keyOfPerson[pk]); keyOfPerson[pk] = p.id; }
+      const nk = nameKey(p.name);
+      if (nk.split(' ').length >= 2) { if (keyOfName[nk]) unite(p.id, keyOfName[nk]); keyOfName[nk] = p.id; }
+    });
+    const groups = {};
+    placed.forEach(function (p) { const r = find(p.id); (groups[r] || (groups[r] = [])).push(p); });
+    Object.keys(groups).forEach(function (g) {
+      const list = groups[g].slice().sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const a = list[i], b = list[j];
+          const ae = stayEnd(a, exitBy, today), be = stayEnd(b, exitBy, today);
+          if (!ae || !be) continue;
+          // overlap: each starts before the other ends (a move on the exit day is not an overlap)
+          if (!(a.date < be && b.date < ae)) continue;
+          const from = a.date > b.date ? a.date : b.date, to = ae < be ? ae : be;
+          const sameHouse = houseId(a.houseId) === houseId(b.houseId);
+          const samePerson = !!s(a.personId) && (s(a.personId) === s(b.personId) || s(a.personId) === s(b.id)) || (!!s(b.personId) && s(b.personId) === s(a.id));
+          rows.push({ id: 'an:overlap:' + a.id + ':' + b.id, kind: 'stay_overlap', name: a.name, house: sameHouse ? houseName(a.houseId) : houseName(a.houseId) + ' + ' + houseName(b.houseId),
+            why: (sameHouse ? 'שתי שהיות חופפות באותו בית' : 'רשום/ה בשני בתים באותה תקופה') + ' · ' + fmtDate(from) + '–' + fmtDate(to) + ' (' + daysBetween(from, to) + ' ימים)'
+              + (samePerson ? '' : ' · זוהה לפי שם מלא — לוודא שזה אותו אדם'),
+            when: from, stays: [stay(a), stay(b)], basis: samePerson ? 'person' : 'name' });
+        }
+      }
+    });
+    pts.forEach(function (p) {
+      if (!s(p.id)) return;
+      const end = inHouse(p) ? '' : (s(p.exitDate) || s(exitBy[p.id]));
+      if (!inHouse(p) && p.date && end && end < p.date) rows.push({ id: 'an:order:' + p.id, kind: 'exit_before_entry', name: p.name, house: houseName(p.houseId), why: 'כניסה ' + fmtDate(p.date) + ' · יציאה ' + fmtDate(end), when: p.date, stays: [stay(p)] });
+      if (!inHouse(p) && !end) rows.push({ id: 'an:noexit:' + p.id, kind: 'released_no_exit', name: p.name, house: houseName(p.houseId), why: 'מועד סיום החיוב אינו ידוע', when: p.date, stays: [stay(p)] });
+      if (inHouse(p) && p.pay === 0 && p.date && p.date <= s(today)) rows.push({ id: 'an:zero:' + p.id, kind: 'zero_pay_in_house', name: p.name, house: houseName(p.houseId), why: 'לא נוצר חיוב חודשי — לבדוק סכום / פרו-בונו', when: p.date, stays: [stay(p)] });
+    });
+    const d = debt && debt.ok !== false && Array.isArray(debt.byPatient) ? debt : null;
+    if (d) {
+      const byId = {};
+      pts.forEach(function (p) { if (p.id) byId[p.id] = p; });
+      d.byPatient.forEach(function (x) {
+        const p = byId[s(x.patientId)];
+        if (!p || inHouse(p)) return;
+        const end = s(p.exitDate) || s(exitBy[p.id]);
+        if (!end) return;
+        const late = (Array.isArray(x.cycles) ? x.cycles : []).filter(function (cy) { const st = sheetDay(cy.start); return st && st > end && (Number(cy.balance) || 0) > 0; });
+        if (!late.length) return;
+        const amt = Math.round(late.reduce(function (t, cy) { return t + (Number(cy.balance) || 0); }, 0));
+        rows.push({ id: 'an:afterexit:' + p.id, kind: 'debt_after_exit', name: p.name, house: houseName(p.houseId),
+          why: late.length + ' מחזורים · ' + fmtMoney(amt) + ' אחרי יציאה ב-' + fmtDate(end), when: end, stays: [stay(p)], amount: amt });
+      });
+    }
+    const order = { stay_overlap: 0, debt_after_exit: 1, exit_before_entry: 2, released_no_exit: 3, zero_pay_in_house: 4 };
+    rows.sort(function (a, b) { return (order[a.kind] - order[b.kind]) || (a.when < b.when ? -1 : a.when > b.when ? 1 : 0); });
+    return rows.map(function (r) { return Object.assign(r, { label: ANOMALY_LABELS[r.kind] }); });
+  }
+
+  /* «סגירת ליד»: a status AND a reason (Sandra 05/11/2026 — nothing closes with a field missing). Pure. */
+  function closeLeadErrors(v) {
+    const out = {};
+    if (!DISPOSITIONS.some(function (d) { return d.id === s(v && v.disposition); })) out.disposition = 'יש לבחור סטטוס סגירה';
+    if (s(v && v.note).length < 2) out.note = 'יש לפרט סיבה';
+    return out;
+  }
+
+  /* The actions the CRM still sends to the classic dashboard (CHANGELOG-crm-kpi-tab.md) —
+   * the decision list for what moves next. Static and documented. */
+  const CLASSIC_ONLY = [
+    { id: 'credits_manual', label: 'זיכויים ידניים — יצירה ועריכה', where: 'גבייה' },
+    { id: 'receipt_full_edit', label: 'עריכת קבלות מורחבת (מעבר לתיקון/ביטול בכרטיס)', where: 'גבייה' },
+    { id: 'billing_control', label: 'בקרת גבייה — אימות דיווחים (אורטל)', where: 'גבייה' },
+    { id: 'override_delete', label: 'מחיקת התאמת חיוב (override)', where: 'גבייה' },
+    { id: 'released_edit', label: 'עריכת שהייה של מטופל/ת משוחרר/ת (תאריכים) — נדרש לפתרון חפיפות', where: 'מטופלים' },
+    { id: 'patient_delete', label: 'מחיקת מטופל/ת', where: 'מטופלים' },
+    { id: 'returning_match', label: 'זיהוי מטופל/ת חוזר/ת בקליטה', where: 'תפוסה' },
+    { id: 'unknown_house', label: 'תיקון מטופלים ב«בית לא מזוהה»', where: 'תפוסה' },
+    { id: 'excel_exports', label: 'ייצוא לאקסל (גבייה, חובות, החזרים, חתכים)', where: 'דוחות' },
+    { id: 'revenue_growth', label: 'הכנסות חודשיות וגרף צמיחה', where: 'דוחות' },
+  ];
+
   function boot(win, doc) {
     // This map is deliberately session-memory only; reload requires a source
     // read before any new write after an uncertain outcome.
@@ -1990,7 +2301,7 @@
     function patientStatusLabel(st) { if (s(st) === 'released') return 'שוחרר/ה'; const x = PATIENT_STATUSES.filter(function (p) { return p.id === s(st); })[0]; return x ? x.label : (s(st) || '—'); }
     function statusChip(st) { return '<span class="chip pst-' + esc(s(st) || 'active') + '">' + esc(patientStatusLabel(st)) + '</span>'; }
     function houseTag(idOrName) { const id = houseId(idOrName) || 'x'; return '<span class="chip house h-' + esc(id) + '">' + esc(houseName(idOrName) || '—') + '</span>'; }
-    const AREA_ICONS = { today: '☀', leads: '✉', clients: '👤', calendar: '📅', occupancy: '🏠', billing: '₪', control: '✔', triage: '🔎' };
+    const AREA_ICONS = { today: '☀', leads: '✉', clients: '👤', calendar: '📅', occupancy: '🏠', billing: '₪', control: '✔', kpi: '📊', triage: '🔎' };
     function stateText(st) { return st === 'late' ? 'באיחור' : st === 'today' ? 'להיום' : 'ממתין'; }
 
     function renderToday(c) {
@@ -2187,13 +2498,13 @@
       return '<form data-form="new-lead" class="new-lead" novalidate>'
         + '<h3>פרטי המטופל</h3>' + field('name', 'שם מלא *', 'text', ' required') + field('phone', 'טלפון *', 'tel', ' required')
         + '<h3>פרטי הפונה</h3>' + field('contactName', 'שם') + field('contactPhone', 'טלפון', 'tel')
-        + '<label>קשר למטופל <select name="contactRelation"><option value="">— ללא —</option>' + CONTACT_RELATIONS.map(function (r) { return '<option>' + esc(r) + '</option>'; }).join('') + '</select></label>'
+        + '<label>קשר למטופל <select name="contactRelation"><option value="">— ללא —</option>' + CONTACT_RELATIONS.map(function (r) { return '<option>' + esc(r) + '</option>'; }).join('') + '</select><span class="err" data-err="contactRelation"></span></label>'
         + field('contactRelationOther', 'קשר אחר')
         + '<label>טלפון לגבייה ועדכונים <select name="billingMode"><option value="patient">מטופל</option><option value="contact">פונה</option><option value="other">אחר</option></select></label>'
         + field('billingOther', 'טלפון אחר לגבייה', 'tel')
         + '<h3>פרטים נוספים</h3>'
-        + '<label>בית מועדף <select name="house"><option value="">— ללא —</option>' + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) { return '<option>' + esc(h.name) + '</option>'; }).join('') + '</select></label>'
-        + '<label>מקור הליד <input name="source" list="crm-sources"><datalist id="crm-sources">' + SOURCES.map(function (x) { return '<option value="' + esc(x) + '">'; }).join('') + '</datalist></label>'
+        + '<label>בית מועדף * <select name="house"><option value="">— בחר —</option>' + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) { return '<option>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="err" data-err="house"></span></label>'
+        + '<label>מקור הליד * <input name="source" list="crm-sources"><datalist id="crm-sources">' + SOURCES.map(function (x) { return '<option value="' + esc(x) + '">'; }).join('') + '</datalist><span class="err" data-err="source"></span></label>'
         + '<label>משוייך ל * <select name="assignedTo" required><option value="">— בחר —</option>' + ASSIGNEES.map(function (a) { return '<option>' + esc(a) + '</option>'; }).join('') + '</select><span class="err" data-err="assignedTo"></span></label>'
         + '<label>נפגש/ת עם <select name="meetingWith"><option value="">—</option>' + managersOf('').concat([MEETING_WITH_AMBULATORY]).map(function (m) { return '<option>' + esc(m) + '</option>'; }).join('') + '</select></label>'
         + '<label class="wide">הערות <textarea name="note" rows="2"></textarea></label>'
@@ -2269,7 +2580,7 @@
     function createLead(values) {
       const errs = leadFormErrors(values);
       const f = $('#crm-drawer form[data-form="new-lead"]');
-      if (f) Object.keys(errs).concat(['name', 'phone', 'assignedTo', 'contactPhone']).forEach(function (k) { const el = f.querySelector('[data-err="' + k + '"]'); if (el) el.textContent = errs[k] || ''; });
+      if (f) Object.keys(errs).concat(['name', 'phone', 'assignedTo', 'contactPhone', 'source', 'house', 'contactRelation', 'contactRelationOther', 'billingOther']).forEach(function (k) { const el = f.querySelector('[data-err="' + k + '"]'); if (el) el.textContent = errs[k] || ''; });
       if (Object.keys(errs).length) return Promise.resolve(false);
       const dup = duplicateByPhone(state.data.leads, values.phone);
       if (dup && !win.confirm('כבר קיים ליד «' + dup.name + '» עם הטלפון הזה. להוסיף בכל זאת?')) return Promise.resolve(false);
@@ -2416,7 +2727,7 @@
       dr.innerHTML = '<div class="drawer-head"><div><h2>הוספת מטופל/ת ישירות</h2><div class="meta">פנייה ישירה — נוצר ליד «פנייה ישירה» שנקלט</div></div><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>'
         + '<form data-form="direct-add" class="new-lead" novalidate>'
         + '<label>שם מלא * <input name="name" type="text"><span class="err" data-err="name"></span></label>'
-        + '<label>טלפון המטופל/ת <input name="phone" type="tel"><span class="err" data-err="phone"></span></label>'
+        + '<label>טלפון המטופל/ת * <input name="phone" type="tel"><span class="err" data-err="phone"></span></label>'
         + '<label>בית * <select name="houseId">' + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) { return '<option value="' + h.id + '"' + (h.id === hid ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="err" data-err="houseId"></span></label>'
         + '<label>תאריך כניסה * <input type="date" name="date" value="' + esc(state.today) + '"><span class="err" data-err="date"></span></label>'
         + '<label>סכום חודשי (₪) * <input type="number" name="pay" min="0" step="1"><span class="err" data-err="pay"></span></label>'
@@ -2823,6 +3134,7 @@
         html += '<p class="na">פתיחת שורה → כרטיס המטופל/ת, לשונית «חשבון» — כל המחזורים והתקבולים.</p>';
       }
       if (b.errors.length) html += '<div class="crm-state bad">' + esc(b.errors.join(' · ')) + ' <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
+      html += renderAnomalies(billingAnomalies(compute(state.data, state.today), state.billing.debt, state.today));
       html += renderDueOnDate(isController);
       html += '<div class="kpis">' + kpi(fmtMoney(b.openDebt), 'חוב פתוח (' + b.openCycles + ' מחזורים)', 'all') + kpi(fmtMoney(b.over60), 'מעל 60 יום', 'd61_plus')
         + kpi(b.debtors, 'מטופלים עם חוב', 'all') + kpi(fmtMoney(b.received30), 'התקבל ב-30 יום (' + b.received30Count + ')', 'received') + kpi(b.toVerify, 'דיווחים לאימות', 'toVerify') + '</div>';
@@ -2873,9 +3185,22 @@
       return html;
     }
 
+    /* «חריגים לבדיקה» (CHANGELOG-crm-kpi-tab.md): open things that cannot both be true. Each row
+     * opens the stays it names; the fix is made on the record. Read-only. */
+    function renderAnomalies(rows) {
+      let html = '<div class="group-title" id="crm-anomalies-title">חריגים לבדיקה' + (rows.length ? ' ' + chip('late', rows.length + ' לבדיקה') : '') + '</div>';
+      if (!rows.length) return html + '<p class="na">לא נמצאו חריגים.</p>';
+      return html + '<div class="tbl-wrap"><table class="tbl" id="crm-anomalies"><thead><tr><th>חריג</th><th>שם</th><th>בית</th><th>פירוט</th><th>שהיות</th></tr></thead><tbody>'
+        + rows.map(function (r) {
+          return '<tr data-anomaly="' + esc(r.kind) + '"><td>' + chip('late', r.label) + '</td><td>' + esc(r.name) + '</td><td>' + esc(r.house) + '</td><td>' + esc(r.why) + '</td><td>'
+            + r.stays.map(function (st) { return '<button type="button" class="btn small" data-open-patient="' + esc(st.id) + '" data-open-tab="account">' + esc(st.house + ' · ' + fmtDate(st.date) + '–' + (st.exitDate ? fmtDate(st.exitDate) : '?')) + '</button>'; }).join(' ')
+            + '</td></tr>';
+        }).join('') + '</tbody></table></div><p class="na">כל חריג נשאר כאן עד שהרשומה מתוקנת (תאריכים, שחרור כפול, סכום). שתי שהיות חופפות של אותו אדם = חיוב כפול אפשרי.</p>';
+    }
     function renderOccupancy(c) {
-      const o = occupancy(c.patients);
-      return '<div class="kpis">' + [['בטיפול היום', o.totalIn], ['מיטות פנויות', o.totalFree], ['קיבולת', o.totalCap]].map(function (x) { return '<div class="kpi"><span class="v">' + x[1] + '</span><span class="l">' + esc(x[0]) + '</span></div>'; }).join('') + '</div>'
+      const o = occupancyToday(c.patients);
+      return '<div class="kpis">' + '<div class="kpi" id="crm-occ-today"><span class="v">' + o.pct + '%</span><span class="l">תפוסה היום</span><span class="l2">' + o.totalIn + ' מטופלים מתוך ' + o.totalCap + ' מיטות</span></div>'
+        + [['מיטות פנויות', o.totalFree], ['קיבולת', o.totalCap]].map(function (x) { return '<div class="kpi"><span class="v">' + x[1] + '</span><span class="l">' + esc(x[0]) + '</span></div>'; }).join('') + '</div>'
         + '<div class="links">' + o.houses.map(function (h) {
           const state_ = h.closed ? 'wait' : (h.free === 0 ? 'late' : (h.free <= 2 ? 'today' : 'ok'));
           return '<a href="#" data-house-open="' + esc(h.name) + '"><strong>' + esc(h.name) + '</strong> ' + chip(state_, h.closed ? 'סגור' : h.free + ' פנויות') + '<small>' + h.inHouse + ' / ' + (h.capacity || '—') + (h.capacity ? ' · ' + h.pct + '%' : '') + '</small></a>';
@@ -2897,11 +3222,128 @@
         { id: 'unscheduled', label: 'ביקורים ללא תאריך', value: m.buckets.toSchedule.length, go: { area: 'today', domain: 'meetings' } },
         { id: 'admitting', label: 'מעברים פתוחים (קליטה)', value: c.leads.filter(function (l) { return l.stage === 'paid'; }).length, hint: houseExceptions(c, state.today).filter(function (r) { return r.kind === 'admission_due'; }).length + ' אחרי תאריך הכניסה', go: { area: 'leads', view: 'board' } },
       ];
-      return '<div class="kpis cards">' + cards.map(function (k) {
+      return '<p class="na" id="crm-control-about">«בקרת עבודה» = מה נתקע בעבודה השוטפת: דיווחים שלא נקראו, רשומות בלי מגע, משימות באיחור ופגישות בלי תוצאה. כל מספר נפתח לרשימה לטיפול. מדדים ואחוזים — בלשונית KPI.</p>'
+        + '<div class="kpis cards">' + cards.map(function (k) {
         return '<button type="button" class="kpi acc-' + esc(k.id) + '" data-go="' + esc(JSON.stringify(k.go)) + '">' + (k.value === null ? '<span class="v na-v">—</span>' : '<span class="v">' + k.value + '</span>') + '<span class="l">' + esc(k.label) + '</span>' + (k.hint ? '<span class="l2">' + esc(k.hint) + '</span>' : '') + '<span class="l2 go">פתיחת הרשימה ←</span></button>';
       }).join('') + '</div><p class="na">כל מספר נפתח לרשימה שלו — אותם נתונים כמו ב«היום שלי»; מדדים עסקיים ייבנו ממקורות מוגדרים.</p>';
     }
 
+    /* «KPI» (CHANGELOG-crm-kpi-tab.md): occupancy today, lead conversion, close rate per
+     * manager, length of stay and — finance only — break-even. Read-only except the
+     * break-even expenses, which live in this browser (the classic tab's own storage). */
+    function signedMoney(n) { const v = Math.round(Number(n) || 0); return (v < 0 ? '-' : '') + fmtMoney(Math.abs(v)); }
+    function readBreakevenConfig() {
+      let raw = null;
+      try { raw = win.localStorage ? win.localStorage.getItem(BREAKEVEN_STORAGE_KEY) : null; } catch (_) { raw = null; }
+      return breakevenConfig(raw);
+    }
+    function flatRawPatients() {
+      const p = state.data && state.data.patients, out = [];
+      if (Array.isArray(p)) p.forEach(function (x) { out.push(x); });
+      else if (p && typeof p === 'object') Object.keys(p).forEach(function (h) { (Array.isArray(p[h]) ? p[h] : []).forEach(function (x) { out.push(Object.assign({ houseId: h }, x)); }); });
+      return out;
+    }
+    /* A number / amount / percentage kept left-to-right inside the RTL page (a minus sign stays in front). */
+    function ltr(v) { return '<bdi dir="ltr">' + esc(v) + '</bdi>'; }
+    function kpiCard(v, label, sub, id) {
+      return '<div class="kpi"' + (id ? ' id="' + esc(id) + '"' : '') + '><span class="v">' + ltr(v) + '</span><span class="l">' + esc(label) + '</span>' + (sub ? '<span class="l2">' + esc(sub) + '</span>' : '') + '</div>';
+    }
+    function renderKpi(c) {
+      const pid = KPI_PERIODS.some(function (x) { return x.id === state.kpiPeriod; }) ? state.kpiPeriod : 'last_3_months';
+      const range = kpiPeriod(pid, state.today) || { from: state.today, to: state.today };
+      let html = '<div class="toolbar filters" id="crm-kpi-periods">' + KPI_PERIODS.map(function (x) {
+        return '<button type="button" class="btn small' + (x.id === pid ? ' primary' : '') + '" data-kpi-period="' + esc(x.id) + '" aria-pressed="' + (x.id === pid) + '">' + esc(x.label) + '</button>';
+      }).join('') + '<span class="na">' + esc(fmtDate(range.from)) + ' – ' + esc(fmtDate(range.to)) + '</span></div>';
+
+      // 1. occupancy today
+      const o = occupancyToday(c.patients);
+      html += '<div class="group-title">תפוסה היום</div><div class="kpis">' + kpiCard(o.pct + '%', 'תפוסה היום', o.totalIn + ' מתוך ' + o.totalCap + ' מיטות', 'crm-kpi-occ')
+        + kpiCard(o.totalIn, 'בטיפול היום') + kpiCard(o.totalFree, 'מיטות פנויות') + '</div>'
+        + '<div class="tbl-wrap"><table class="tbl" id="crm-kpi-occ-houses"><thead><tr><th>בית</th><th>בטיפול</th><th>קיבולת</th><th>תפוסה</th><th>פנויות</th></tr></thead><tbody>'
+        + o.houses.map(function (h) { return '<tr><td>' + esc(h.name) + '</td><td>' + h.inHouse + '</td><td>' + (h.capacity || '—') + '</td><td>' + (h.capacity ? h.pct + '%' : '—') + '</td><td>' + h.free + '</td></tr>'; }).join('')
+        + '</tbody></table></div>';
+
+      // 2. lead conversion
+      const lc = leadConversion(state.data, c, range.from, range.to);
+      html += '<div class="group-title">המרת לידים למטופלים <span class="na">לידים שנפתחו בתקופה: ' + lc.total + '</span></div>'
+        + '<div class="kpis">' + kpiCard(fmtPct(lc.pct), 'הפכו למטופלים', lc.converted + ' מתוך ' + lc.total + ' (אשפוז + אמבולטורי)', 'crm-kpi-conv')
+        + FATES.map(function (f) { return kpiCard(lc.counts[f.id], f.label, fmtPct(lc.pcts[f.id])); }).join('') + '</div>';
+      if (lc.houses.length) html += '<div class="tbl-wrap"><table class="tbl" id="crm-kpi-conv-houses"><thead><tr><th>בית (בליד)</th><th>לידים</th><th>אשפוז</th><th>אמבולטורי</th><th>% המרה</th></tr></thead><tbody>'
+        + lc.houses.map(function (h) { return '<tr><td>' + esc(h.house) + '</td><td>' + h.total + '</td><td>' + h.inpatient + '</td><td>' + h.outpatient + '</td><td>' + esc(fmtPct(h.pct)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+      html += '<p class="na">לפי תאריך פתיחת הליד. ' + (lc.direct ? lc.direct + ' מטופלים שנוספו ישירות (פנייה ישירה) אינם נספרים כלידים. ' : '') + (lc.noCreated ? lc.noCreated + ' לידים ללא תאריך פתיחה לא נספרו.' : '') + '</p>';
+
+      // 3. close rate per manager
+      const mc = managerCloseRates(state.data, c, range.from, range.to, state.today);
+      html += '<div class="group-title">סגירה לאחר פגישה — לפי מנהל/ת <span class="na">פגישות בתקופה: ' + mc.total.meetings + '</span></div>';
+      if (!mc.rows.length) html += '<p class="na">אין פגישות שהתקיימו בתקופה.</p>';
+      else html += '<div class="tbl-wrap"><table class="tbl" id="crm-kpi-managers"><thead><tr><th>מנהל/ת</th><th>פגישות</th><th>נכנסו לטיפול</th><th>% סגירה</th><th>נסגרו ללא כניסה</th><th>%</th><th>עדיין פתוחים</th></tr></thead><tbody>'
+        + mc.rows.map(function (r) {
+          return '<tr><td>' + esc(r.manager) + '</td><td>' + r.meetings + '</td><td>' + r.entered + '</td><td><strong>' + esc(fmtPct(r.closePct)) + '</strong></td><td>' + r.lost + '</td><td>' + esc(fmtPct(r.lostPct)) + '</td><td>' + r.open + '</td></tr>';
+        }).join('') + '</tbody><tfoot><tr><td>סה״כ</td><td>' + mc.total.meetings + '</td><td>' + mc.total.entered + '</td><td><strong>' + esc(fmtPct(mc.total.closePct)) + '</strong></td><td>' + mc.total.lost + '</td><td>' + esc(fmtPct(mc.total.lostPct)) + '</td><td>' + mc.total.open + '</td></tr></tfoot></table></div>'
+        + '<p class="na">פגישה = תאריך ביקור שעבר (או דיווח מנהל/ת) בתקופה. «נכנסו» = הפכו למטופלים בבית או באמבולטורי.</p>';
+
+      // 4. length of stay + continuity (lib/patient-retention.js, the classic «חתכי מטופלים»)
+      const R = win.PatientRetention && typeof win.PatientRetention.computeRetention === 'function' ? win.PatientRetention : null;
+      if (R) {
+        const rr = R.computeRetention({ patients: flatRawPatients(), discharged: state.data.dischargedPatients || [], from: range.from, to: range.to, customThreshold: null, today: state.today });
+        if (rr && rr.ok) {
+          const pf = function (f) { return f === null || f === undefined ? '—' : Math.round(f * 1000) / 10 + '%'; };
+          html += '<div class="group-title">משך שהייה והמשך טיפול <span class="na">נכנסו בתקופה: ' + rr.cohortSize + '</span></div><div class="kpis" id="crm-kpi-stay">'
+            + R.BUCKETS.map(function (b) { return kpiCard(rr.counts[b.key], b.label, pf(rr.percents[b.key])); }).join('')
+            + kpiCard(rr.stillInTreatment.count, R.STILL_IN_TREATMENT_LABEL, pf(rr.percents.stillInTreatment))
+            + R.CONTINUITY_KEYS.map(function (k) { return kpiCard(rr.continuity[k], R.CONTINUITY_LABELS[k], pf(rr.percents.continuity[k]) + ' מהמשוחררים'); }).join('') + '</div>'
+            + (rr.missingCount ? '<p class="na">' + rr.missingCount + ' שהיות עם ' + esc(R.MISSING_LABEL) + ' — לא נספרו.</p>' : '');
+        }
+      }
+
+      // 5. break-even (finance only — an ops session has no prices)
+      if (state.me && state.me.finance) html += renderBreakeven(c);
+      return html;
+    }
+    function renderBreakeven(c) {
+      const cfg = readBreakevenConfig();
+      const be = breakevenReport(c.patients, cfg);
+      const n = be.network;
+      const shown = be.houses.filter(function (m) { return m.active || (!m.closed && m.currentPatients > 0); });
+      let html = '<div class="group-title">נקודת איזון לבית <span class="na">הכנסה ללא מע״מ · הוצאות ' + (cfg.fromStorage ? 'כפי שנשמרו בדפדפן זה' : 'לפי הדוח הפיננסי (ברירת מחדל)') + '</span></div>'
+        + '<div class="kpis" id="crm-kpi-network">' + kpiCard(signedMoney(n.housesPL), 'רווח/הפסד בתים (חודשי)') + kpiCard(fmtMoney(n.hqCost), 'עלות מטה')
+        + kpiCard(signedMoney(n.networkPL), 'רווח/הפסד רשת אחרי מטה') + kpiCard(n.totalPatientsCurrent + ' / ' + n.networkBreakeven, 'מטופלים היום / נקודת איזון רשת') + '</div>'
+        + '<div class="tbl-wrap"><table class="tbl" id="crm-kpi-breakeven"><thead><tr><th>בית</th><th>מטופלים</th><th>נקודת איזון</th><th>מצב</th><th>מחיר ממוצע</th><th>הכנסה</th><th>הוצאות</th><th>רווח/הפסד</th><th>רווח גולמי</th></tr></thead><tbody>'
+        + shown.map(function (m) {
+          if (!m.active) return '<tr><td>' + esc(m.name) + '</td><td>' + m.currentPatients + '</td><td colspan="7" class="na">אין נתוני הוצאות לבית — לא נכלל בחישוב (להזין למטה)</td></tr>';
+          const st = m.currentPatients >= m.breakevenPoint ? chip('ok', 'עבר (+' + (m.currentPatients - m.breakevenPoint) + ')') : chip('late', 'חסרים ' + m.gap);
+          return '<tr><td>' + esc(m.name) + '</td><td>' + ltr(m.currentPatients + ' / ' + m.capacity) + '</td><td><strong>' + m.breakevenPoint + '</strong></td><td>' + st + '</td><td>' + ltr(fmtMoney(m.price)) + '</td><td>' + ltr(fmtMoney(m.currentRevenue)) + '</td><td>' + ltr(fmtMoney(m.totalExpenses)) + '</td><td>' + ltr(signedMoney(m.currentPL)) + '</td><td>' + (m.marginPct === null ? '—' : ltr((Math.round(m.marginPct * 10) / 10) + '%')) + '</td></tr>';
+        }).join('') + '</tbody></table></div>'
+        + '<details class="act" id="crm-be-edit"><summary>עדכון הוצאות (נשמר בדפדפן זה, משותף עם הדשבורד הרגיל)</summary><form data-form="breakeven" novalidate>'
+        + '<label>עלות מטה (₪) <input type="number" name="hqCost" min="0" step="1" value="' + esc(cfg.hqCost) + '"><span class="err" data-err="hqCost"></span></label>'
+        + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) {
+          const x = cfg.houses[h.id];
+          return '<fieldset class="be-house"><legend>' + esc(h.name) + '</legend><label><input type="checkbox" name="active_' + h.id + '"' + (x.active ? ' checked' : '') + '> נכלל בחישוב</label>'
+            + '<label>קבועות (₪) <input type="number" name="fixed_' + h.id + '" min="0" step="1" value="' + esc(x.fixed) + '"></label>'
+            + '<label>משתנות (₪) <input type="number" name="variable_' + h.id + '" min="0" step="1" value="' + esc(x.variable) + '"></label>'
+            + '<span class="err" data-err="' + h.id + '"></span></fieldset>';
+        }).join('')
+        + '<button type="submit" class="btn small primary">שמירה</button></form></details>';
+      return html;
+    }
+    /* The break-even expense form → { cfg, errs }. A house counted in the calculation needs expenses > 0. */
+    function breakevenFromForm(f) {
+      const cur = readBreakevenConfig();
+      const num = function (n) { const el = f.elements[n]; const t = el ? s(el.value) : ''; return t === '' ? NaN : Number(t); };
+      const errs = {};
+      const hq = num('hqCost');
+      if (!(hq >= 0)) errs.hqCost = 'סכום לא תקין';
+      const houses = {};
+      HOUSES.forEach(function (h) {
+        if (h.closed) { houses[h.id] = cur.houses[h.id]; return; }
+        const act = !!(f.elements['active_' + h.id] && f.elements['active_' + h.id].checked);
+        const fx = num('fixed_' + h.id), vr = num('variable_' + h.id);
+        if (!(fx >= 0) || !(vr >= 0)) errs[h.id] = 'סכום לא תקין';
+        else if (act && fx + vr <= 0) errs[h.id] = 'בית שנכלל בחישוב צריך הוצאות';
+        houses[h.id] = { active: act, fixed: fx >= 0 ? fx : 0, variable: vr >= 0 ? vr : 0 };
+      });
+      return { cfg: { hqCost: hq >= 0 ? hq : 0, houses: houses }, errs: errs };
+    }
     function renderMain() {
       const title = (AREAS.filter(function (a) { return a.id === state.area; })[0] || AREAS[0]).label;
       $('#crm-title').textContent = title;
@@ -2909,7 +3351,7 @@
       if (state.error) { main.innerHTML = '<div class="crm-state bad">' + esc(state.error) + ' <button type="button" class="btn small" id="crm-retry">נסי שוב</button></div>'; return; }
       const c = compute(state.data, state.today);
       if (state.area === 'search') $('#crm-title').textContent = 'חיפוש';
-      const r = { search: renderSearch, today: renderToday, leads: renderLeads, occupancy: renderOccupancy, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl, triage: renderTriage }[state.area] || renderToday;
+      const r = { search: renderSearch, today: renderToday, leads: renderLeads, occupancy: renderOccupancy, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl, kpi: renderKpi, triage: renderTriage }[state.area] || renderToday;
       main.innerHTML = r(c);
     }
 
@@ -2977,8 +3419,8 @@
         + (l.stage === 'visit' && s(l.visitDate) ? patientChangeBlock(l) : '')
         + '<details class="act"><summary>דיווח תוצאת פגישה</summary><form data-form="outcome" data-lead="' + esc(l.id) + '"><label>תוצאה <select name="meetingOutcome"><option value="">—</option>' + MEETING_OUTCOMES.map(function (o) { return '<option value="' + o.id + '"' + (l.meetingOutcome === o.id ? ' selected' : '') + '>' + esc(o.label) + '</option>'; }).join('') + '</select></label>'
         + '<button type="submit" class="btn small primary">שמירה</button></form></details>'
-        + '<details class="act"><summary>סגירת ליד / הסרה</summary><form data-form="close" data-lead="' + esc(l.id) + '"><label>סטטוס סגירה <select name="disposition">' + DISPOSITIONS.map(function (d) { return '<option value="' + d.id + '">' + esc(d.label) + '</option>'; }).join('') + '</select></label>'
-        + '<label>סיבה <input name="note" type="text" maxlength="500"></label>'
+        + '<details class="act"><summary>סגירת ליד / הסרה</summary><form data-form="close" data-lead="' + esc(l.id) + '" novalidate><label>סטטוס סגירה * <select name="disposition">' + DISPOSITIONS.map(function (d) { return '<option value="' + d.id + '">' + esc(d.label) + '</option>'; }).join('') + '</select><span class="err" data-err="disposition"></span></label>'
+        + '<label>סיבה * <input name="note" type="text" maxlength="500" required><span class="err" data-err="note"></span></label>'
         + '<button type="submit" class="btn small primary">סגירת ליד</button> <button type="button" class="btn small" data-remove-lead="' + esc(l.id) + '">הסר (טעות)</button></form></details>'
         + '<details class="act"><summary>הערה ואחראי</summary><form data-form="note" data-lead="' + esc(l.id) + '"><label>אחראי <select name="assignedTo">' + opts(ASSIGNEES, l.assignedTo, true) + '</select></label>'
         + '<label>הערות <textarea name="note" rows="3">' + esc(l.note) + '</textarea></label>'
@@ -3760,8 +4202,9 @@
       // <a target=_blank> to another origin, so open it from the click (never blocked), else navigate.
       const wa = ev.target.closest ? ev.target.closest('a[data-wa-manager]') : null;
       if (wa) { ev.preventDefault(); const w = win.open ? win.open(wa.href, '_blank', 'noopener') : null; if (!w) win.location.href = wa.href; return; }
-      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-billing-filter],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-billing-filter],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
+      if (t.dataset.kpiPeriod) { state.kpiPeriod = t.dataset.kpiPeriod; return renderMain(); }
       if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
       if (t.dataset.area) return setArea(t.dataset.area);
       if (t.dataset.kpi) { state.kpiFilter = state.kpiFilter === t.dataset.kpi ? '' : t.dataset.kpi; return renderMain(); }
@@ -3890,6 +4333,14 @@
       if (state.saving) return;
       const id = f.dataset.lead;
       const v = function (n) { const el = f.elements[n]; return el ? s(el.value) : ''; };
+      if (f.dataset.form === 'breakeven') {
+        const r = breakevenFromForm(f);
+        showErrs(f, r.errs, ['hqCost'].concat(HOUSES.map(function (h) { return h.id; })));
+        if (Object.keys(r.errs).length) return;
+        try { win.localStorage.setItem(BREAKEVEN_STORAGE_KEY, JSON.stringify(r.cfg)); } catch (_) { toast('השמירה בדפדפן נכשלה', true); return; }
+        toast('ההוצאות עודכנו');
+        return renderMain();
+      }
       if (f.dataset.form === 'meeting') {
         const patch = { visitDate: v('visitDate'), visitTime: v('visitTime'), meetingWith: v('meetingWith') };
         const cur = compute(state.data, state.today).leads.filter(function (x) { return x.id === id; })[0];
@@ -3929,6 +4380,9 @@
       } else if (f.dataset.form === 'note') {
         writeLead(id, { assignedTo: v('assignedTo'), note: v('note') }, 'ההערה');
       } else if (f.dataset.form === 'close') {
+        const ce = closeLeadErrors({ disposition: v('disposition'), note: v('note') });
+        showErrs(f, ce, ['disposition', 'note']);
+        if (Object.keys(ce).length) return;
         closeLeadAction(id, v('disposition'), v('note'));
       } else if (f.dataset.form === 'admit') {
         const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
@@ -4198,5 +4652,8 @@
     VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,
     TRIAGE_OPTIONS: TRIAGE_OPTIONS, triageQueue: triageQueue, waitlistErrors: waitlistErrors, waitlistPatch: waitlistPatch, laterErrors: laterErrors,
     NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, openLeadOfPerson: openLeadOfPerson, leadAlreadyInHouse: leadAlreadyInHouse, globalSearch: globalSearch, nameKey: nameKey, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, pendingDischargeAudit: pendingDischargeAudit, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, WAIT_REASONS: WAIT_REASONS, waitReasonLabel: waitReasonLabel, waitChipText: waitChipText, flagsOf: flagsOf, patientMeetingChange: patientMeetingChange, reportOverdue: reportOverdue, meetingOutcomeLabel: meetingOutcomeLabel, managerChangeMessage: managerChangeMessage, managerWaUrl: managerWaUrl, leadFlagBody: leadFlagBody, leadFlagPendingPlan: leadFlagPendingPlan, patientChangePlan: patientChangePlan, MANAGER_REPORT_GRACE_DAYS: MANAGER_REPORT_GRACE_DAYS, EXCEPTION_CUTOFF: EXCEPTION_CUTOFF, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
+    KPI_PERIODS: KPI_PERIODS, kpiPeriod: kpiPeriod, occupancyToday: occupancyToday, closedDisposition: closedDisposition, leadFates: leadFates, FATES: FATES, leadConversion: leadConversion,
+    managerCloseRates: managerCloseRates, BREAKEVEN_STORAGE_KEY: BREAKEVEN_STORAGE_KEY, BREAKEVEN_DEFAULTS: BREAKEVEN_DEFAULTS, VAT_RATE: VAT_RATE, breakevenConfig: breakevenConfig,
+    breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));

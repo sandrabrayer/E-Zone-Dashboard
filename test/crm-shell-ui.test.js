@@ -34,10 +34,10 @@ const DATA = {
 };
 
 test('areasFor mirrors the server gates: finance → all (+ triage); controller → today/billing/control; no finance → no גבייה; triage never in the menu', () => {
-  assert.deepEqual(core.areasFor({ view: 'full', finance: true }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'billing', 'control', 'triage']);
+  assert.deepEqual(core.areasFor({ view: 'full', finance: true }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'billing', 'control', 'kpi', 'triage']);
   assert.deepEqual(core.areasFor({ view: 'controller', finance: false }), ['today', 'billing', 'control']);
-  assert.deepEqual(core.areasFor({ view: 'restricted', finance: false }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'triage']);
-  assert.deepEqual(core.areasFor(null), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'triage']);
+  assert.deepEqual(core.areasFor({ view: 'restricted', finance: false }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'triage']);
+  assert.deepEqual(core.areasFor(null), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'triage']);
   assert.ok(!core.NAV_GROUPS.some((g) => g.items.includes('triage')), 'the triage round is reached from «פניות» / the «ללא מגע» card, not from the menu');
 });
 
@@ -174,9 +174,9 @@ test('localPhone / leadFormErrors / newLeadRow mirror the classic add-lead rules
   assert.equal(core.localPhone('052-765-4321'), '0527654321');
   assert.equal(core.localPhone('+972 52 765 4321'), '0527654321');
   assert.equal(core.localPhone('12345'), '');
-  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה', phone: '0527654321', assignedTo: 'ורד' })), ['name'], 'two words');
-  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה כהן', phone: '052', assignedTo: 'ורד' })), ['phone']);
-  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה כהן', phone: '0527654321', assignedTo: '', contactPhone: 'x' })), ['assignedTo', 'contactPhone']);
+  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה', phone: '0527654321', assignedTo: 'ורד', source: 'גוגל', house: 'רמות השבים' })), ['name'], 'two words');
+  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה כהן', phone: '052', assignedTo: 'ורד', source: 'גוגל', house: 'רמות השבים' })), ['phone']);
+  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה כהן', phone: '0527654321', assignedTo: '', contactPhone: 'x', source: 'גוגל', house: 'רמות השבים' })), ['assignedTo', 'contactPhone']);
   const row = core.newLeadRow({ name: ' דנה  כהן ', phone: '052-7654321', assignedTo: 'ורד', house: 'רמות השבים', contactName: 'אמא', contactPhone: '0501112222',
     contactRelation: 'אחר', contactRelationOther: 'שכנה', billingMode: 'contact', source: 'גוגל', note: 'x' }, 'id-1', '2026-10-27');
   assert.deepEqual([row.id, row.name, row.phone, row.stage, row.created, row.contactRelation, row.billingPhone, row.meetingOutcome, row.visitDate],
@@ -240,7 +240,7 @@ test('dischargeAuditRow mirrors app.js dischargeAuditRow; errors; movedRow carri
   assert.deepEqual([a.id, a.patientId, a.status, a.prior_status, a.exitDate, a.dischargedAt, a.disposition, a.discharge_note, a.continuity, a.fromLead, a.updatedAt], ['aud-1', 'p1', 'released', 'trial', '2026-10-27', '2026-10-27T10:00:00.000Z', 'completed', 'x', 'none', 'L1', 'T']);
   assert.equal(core.dischargeAuditRow(p, { disposition: 'completed' }, 'a', '2026-10-27T10:00:00.000Z').exitDate, '2026-10-27', 'no date → today');
   assert.equal(core.dischargeAuditRow(p, { disposition: 'completed', continuity: 'bogus' }, 'a', '2026-10-27T10:00:00.000Z').continuity, 'unknown');
-  assert.deepEqual(Object.keys(core.dischargeErrors({})), ['disposition']);
+  assert.deepEqual(Object.keys(core.dischargeErrors({})), ['disposition', 'dischargeDate'], 'a discharge date is required (CHANGELOG-crm-kpi-tab.md)');
   assert.deepEqual(Object.keys(core.dischargeErrors({ disposition: 'completed', dischargeDate: '2019-01-01' })), ['dischargeDate']);
   assert.deepEqual(core.DISCHARGE_DISPOSITIONS.map((d) => d.id), ['completed', 'stopped_early', 'released_outpatient'], 'mirrors app.js DISCHARGE_DISPOSITIONS');
   assert.deepEqual(core.CONTINUITY_CHOICES.map((c) => c.id), ['continued_outpatient', 'continued_other', 'none']);

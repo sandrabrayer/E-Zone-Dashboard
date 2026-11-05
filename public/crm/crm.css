@@ -371,3 +371,9 @@ button.kpi.on { background: #E5F0FF; border-color: var(--c-info); }
 form[data-form="wait-reason"][aria-busy="true"] .radio-row { opacity: .6; }
 @media (prefers-reduced-motion: reduce) { #crm-root form button[aria-busy="true"]::after, .spin { animation-duration: 2s; } }
 .notice.ok { background: #ECFDF3; border: 1px solid #A6E3BE; border-radius: var(--radius); padding: 8px 12px; margin-bottom: 10px; }
+/* «KPI» (CHANGELOG-crm-kpi-tab.md): the sub-line of a card on its own line; a group of expense inputs. */
+.kpi .l2 { display: block; font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.be-house { border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px; margin: 6px 0; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+.be-house legend { font-weight: 600; padding: 0 4px; }
+.kpi .v bdi { white-space: nowrap; }
+#crm-kpi-network .v { font-size: 22px; }
