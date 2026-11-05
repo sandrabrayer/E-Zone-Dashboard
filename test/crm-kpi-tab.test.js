@@ -118,9 +118,10 @@ test('managerCloseRates: meetings HELD in the period, by «נפגש/ת עם»; c
   assert.equal(by['אורן'].closePct, 66.7);
   assert.equal(by['אורן'].lostPct, 33.3);
   assert.deepEqual([by['שחר'].meetings, by['שחר'].entered, by['שחר'].open], [2, 1, 1], 'the future meeting is not counted');
-  assert.equal(by['אמבולטורי'].closePct, 100);
-  assert.equal(r.total.meetings, 6);
-  assert.equal(r.total.entered, 4);
+  assert.equal(by['אמבולטורי'], undefined, '«אמבולטורי» is a service, not a manager\'s name');
+  assert.equal(r.skipped, 1);
+  assert.equal(r.total.meetings, 5);
+  assert.equal(r.total.entered, 3);
   assert.equal(r.rows[r.rows.length - 1].manager, 'שחר', 'sorted by close rate');
 });
 
@@ -289,4 +290,28 @@ test('KPI section headings stand out: the page is wrapped and its headings are l
   assert.match(CSS, /\.kpi-page \.group-title \{[^}]*font-size: 20px; font-weight: 800; color: var\(--text\)/);
   assert.match(CSS, /\.kpi-page \.group-title \{[^}]*border-inline-start: 5px solid var\(--primary\)/);
   assert.match(CSS, /\.kpi-page \.group-title \.na \{ font-size: 14px;/, 'the count after the heading stays secondary');
+});
+
+/* Sandra 05/11/2026: «תתקן את הטעויות … תנטרל מידע שאין לך, אם אין לנו שם של מנהל אל תכניס את זה» */
+test('no data we do not have: timestamps / stage keys / damaged text / placeholders are not manager rows; damaged or blank houses are not table rows', () => {
+  ['אורן', 'רנטה', 'חן', 'ד"ר כהן'].forEach((n) => assert.equal(core.managerNameOk(n), true, n));
+  ['', '2026-06-16T06:55:59.528Z', 'visit', 'קיסר\uFFFD\uFFFDה', 'ממלא מקום', 'אמבולטורי', 'A1', 'ללא מנהל/ת'].forEach((n) => assert.equal(core.managerNameOk(n), false, JSON.stringify(n)));
+  const data = { ok: true, irrelevantLeads: [], outpatientSentLeadIds: [], patients: {}, leads: [
+    { id: 'a', name: 'א א', house: 'רמות השבים', stage: 'visit', created: '2026-10-02', visitDate: '2026-10-03', meetingWith: 'אורן' },
+    { id: 'b', name: 'ב ב', house: 'קיסריה ריהא\uFFFD\uFFFD', stage: 'visit', created: '2026-10-02', visitDate: '2026-10-03', meetingWith: '2026-06-16T06:55:59.528Z' },
+    { id: 'c', name: 'ג ג', house: '', stage: 'visit', created: '2026-10-02', visitDate: '2026-10-03', meetingWith: 'visit' },
+    { id: 'd', name: 'ד ד', house: 'ramot', stage: 'new', created: '2026-10-02' },
+  ] };
+  const c = core.compute(data, TODAY);
+  const m = core.managerCloseRates(data, c, '2026-10-01', '2026-10-31', TODAY);
+  assert.deepEqual(m.rows.map((r) => r.manager), ['אורן']);
+  assert.equal(m.skipped, 2);
+  const lc = core.leadConversion(data, c, '2026-10-01', '2026-10-31');
+  assert.equal(lc.total, 4, 'every lead still counts in the totals');
+  assert.deepEqual(lc.houses.map((h) => h.house), ['רמות השבים'], 'only real houses are rows');
+  assert.equal(lc.noHouse, 2);
+  assert.match(CRM_SRC, /לידים ללא בית מזוהה נספרו בסיכום אך אינם מוצגים בטבלה/);
+  assert.match(CRM_SRC, /פגישות ללא שם מנהל\/ת תקין לא נכללו/);
+  const CSS = fs.readFileSync(path.join(ROOT, 'public', 'crm', 'crm.css'), 'utf8');
+  assert.match(CSS, /\.kpi-page \.group-title \{[^}]*align-items: baseline/, 'the heading and its count sit on one line');
 });

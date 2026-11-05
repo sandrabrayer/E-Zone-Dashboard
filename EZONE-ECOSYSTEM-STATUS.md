@@ -5,7 +5,8 @@
 The task form asks only what / who / date (today or later) / time — «למה עכשיו», «מועד» and the week
 field are gone (reschedule too). While the CRM is open, each of my tasks due today is announced 30 minutes
 before (toast + a browser notification when allowed); it is on «היום שלי» on its day, and Vered's morning mail
-already counts today's tasks. CRM only; SW v118. See `CHANGELOG-crm-task-date-time.md`.
+already counts today's tasks. CRM only; SW v118. See `CHANGELOG-crm-task-date-time.md`. (merged #369)
+Follow-up: KPI shows only real manager names and real houses; aligned headings — SW v119 (`CHANGELOG-crm-kpi-clean-data.md`).
 
 ## CRM credits: edit a saved credit + Sandra's manual credit in the patient card — November 5, 2026 (PR open)
 

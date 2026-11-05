@@ -2100,7 +2100,7 @@
       else if (sent[id] || disp === 'released_outpatient' || (s(l.meetingWith) === MEETING_WITH_AMBULATORY && s(l.meetingOutcome) === 'entered')) fate = 'outpatient';
       else if (closed) fate = disp === 'not_relevant' ? 'notRelevant' : 'otherClosed';
       else fate = 'open';
-      out.push({ id: id, name: s(l.name), house: houseName(l.house), source: s(l.source), created: isoDay(l.created), visitDate: isoDay(l.visitDate),
+      out.push({ id: id, name: s(l.name), house: houseName(l.house), houseKnown: !!houseId(l.house), source: s(l.source), created: isoDay(l.created), visitDate: isoDay(l.visitDate),
         reportedAt: isoDay(l.meetingReportedAt), meetingWith: s(l.meetingWith), fate: fate, direct: s(l.source) === 'direct_approach', closed: !!closed });
     };
     (c.leads || []).forEach(function (l) { add(l, false); });
@@ -2120,8 +2120,9 @@
     base.forEach(function (l) { counts[l.fate]++; });
     const converted = counts.inpatient + counts.outpatient;
     const byHouse = {};
-    base.forEach(function (l) {
-      const k = l.house || 'ללא בית';
+    // only real houses get a row: a blank or damaged house name (U+FFFD) is counted apart, never shown
+    base.filter(function (l) { return l.houseKnown; }).forEach(function (l) {
+      const k = l.house;
       const r = byHouse[k] || (byHouse[k] = { house: k, total: 0, inpatient: 0, outpatient: 0 });
       r.total++; if (l.fate === 'inpatient') r.inpatient++; if (l.fate === 'outpatient') r.outpatient++;
     });
@@ -2132,19 +2133,34 @@
       pcts: FATES.reduce(function (o, f) { o[f.id] = pctOf(counts[f.id], base.length); return o; }, {}),
       direct: inRange.filter(function (l) { return l.direct; }).length,
       noCreated: all.filter(function (l) { return !l.created && !l.direct; }).length,
+      noHouse: base.filter(function (l) { return !l.houseKnown; }).length,
       houses: houses, rows: base,
     };
+  }
+  /* A manager name as recorded in «נפגש/ת עם» is used only when it IS a name: Hebrew letters
+   * (and spaces / quotes / hyphen), no digits, no damaged characters — never a timestamp, a stage
+   * key or a blank (Sandra 05/11/2026: «אם אין לנו שם של מנהל אל תכניס את זה»). Pure. */
+  /* Roles / placeholders that are not a person's name. */
+  const MANAGER_PLACEHOLDERS = ['ממלא מקום', 'ממלא/ת מקום', 'ממלאת מקום', 'אמבולטורי', 'ללא', 'ללא מנהל', 'ללא מנהל/ת', 'אחר', 'לא ידוע'];
+  function managerNameOk(v) {
+    const t = s(v);
+    if (!t || t.length > 40 || /[\uFFFD0-9]/.test(t)) return false;
+    if (!/^[\u05D0-\u05EA\s"'\u05F3\u05F4.\-]+$/.test(t)) return false;
+    if (MANAGER_PLACEHOLDERS.indexOf(t.replace(/\s+/g, ' ')) >= 0) return false;
+    return (t.match(/[\u05D0-\u05EA]/g) || []).length >= 2;
   }
   /* «סגירה לפי מנהל/ת»: the intake meetings held in [from, to] (visit day passed, or a
    * manager report in the period when there is no visit day), grouped by «נפגש/ת עם».
    * closed = became a patient (house or outpatient); lost = closed without entering. Pure. */
   function managerCloseRates(data, c, from, to, today) {
     const by = {};
+    let skipped = 0;
     leadFates(data, c).forEach(function (l) {
       if (l.direct) return;
       const day = l.visitDate || l.reportedAt;
       if (!day || day < from || day > to || day > s(today)) return;
-      const k = l.meetingWith || 'ללא מנהל/ת';
+      if (!managerNameOk(l.meetingWith)) { skipped++; return; }
+      const k = l.meetingWith;
       const r = by[k] || (by[k] = { manager: k, meetings: 0, entered: 0, lost: 0, open: 0, leads: [] });
       r.meetings++;
       if (l.fate === 'inpatient' || l.fate === 'outpatient') r.entered++;
@@ -2156,7 +2172,7 @@
       .sort(function (a, b) { return (b.closePct || 0) - (a.closePct || 0) || b.meetings - a.meetings || a.manager.localeCompare(b.manager, 'he'); });
     const tot = rows.reduce(function (t, r) { t.meetings += r.meetings; t.entered += r.entered; t.lost += r.lost; t.open += r.open; return t; }, { meetings: 0, entered: 0, lost: 0, open: 0 });
     tot.closePct = pctOf(tot.entered, tot.meetings); tot.lostPct = pctOf(tot.lost, tot.meetings);
-    return { rows: rows, total: tot };
+    return { rows: rows, total: tot, skipped: skipped };
   }
 
   /* «נקודת איזון» — the classic tab's model (app.js BREAKEVEN_DEFAULTS /
@@ -3358,17 +3374,17 @@
         + FATES.map(function (f) { return kpiCard(lc.counts[f.id], f.label, fmtPct(lc.pcts[f.id])); }).join('') + '</div>';
       if (lc.houses.length) html += '<div class="tbl-wrap"><table class="tbl" id="crm-kpi-conv-houses"><thead><tr><th>בית (בליד)</th><th>לידים</th><th>אשפוז</th><th>אמבולטורי</th><th>% המרה</th></tr></thead><tbody>'
         + lc.houses.map(function (h) { return '<tr><td>' + esc(h.house) + '</td><td>' + h.total + '</td><td>' + h.inpatient + '</td><td>' + h.outpatient + '</td><td>' + esc(fmtPct(h.pct)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
-      html += '<p class="na">לפי תאריך פתיחת הליד. ' + (lc.direct ? lc.direct + ' מטופלים שנוספו ישירות (פנייה ישירה) אינם נספרים כלידים. ' : '') + (lc.noCreated ? lc.noCreated + ' לידים ללא תאריך פתיחה לא נספרו.' : '') + '</p>';
+      html += '<p class="na">לפי תאריך פתיחת הליד. ' + (lc.direct ? lc.direct + ' מטופלים שנוספו ישירות (פנייה ישירה) אינם נספרים כלידים. ' : '') + (lc.noCreated ? lc.noCreated + ' לידים ללא תאריך פתיחה לא נספרו. ' : '') + (lc.noHouse ? lc.noHouse + ' לידים ללא בית מזוהה נספרו בסיכום אך אינם מוצגים בטבלה.' : '') + '</p>';
 
       // 3. close rate per manager
       const mc = managerCloseRates(state.data, c, range.from, range.to, state.today);
       html += '<div class="group-title">סגירה לאחר פגישה — לפי מנהל/ת <span class="na">פגישות בתקופה: ' + mc.total.meetings + '</span></div>';
-      if (!mc.rows.length) html += '<p class="na">אין פגישות שהתקיימו בתקופה.</p>';
+      if (!mc.rows.length) html += '<p class="na">אין פגישות עם שם מנהל/ת בתקופה' + (mc.skipped ? ' (' + mc.skipped + ' ללא שם תקין)' : '') + '.</p>';
       else html += '<div class="tbl-wrap"><table class="tbl" id="crm-kpi-managers"><thead><tr><th>מנהל/ת</th><th>פגישות</th><th>נכנסו לטיפול</th><th>% סגירה</th><th>נסגרו ללא כניסה</th><th>%</th><th>עדיין פתוחים</th></tr></thead><tbody>'
         + mc.rows.map(function (r) {
           return '<tr><td>' + esc(r.manager) + '</td><td>' + r.meetings + '</td><td>' + r.entered + '</td><td><strong>' + esc(fmtPct(r.closePct)) + '</strong></td><td>' + r.lost + '</td><td>' + esc(fmtPct(r.lostPct)) + '</td><td>' + r.open + '</td></tr>';
         }).join('') + '</tbody><tfoot><tr><td>סה״כ</td><td>' + mc.total.meetings + '</td><td>' + mc.total.entered + '</td><td><strong>' + esc(fmtPct(mc.total.closePct)) + '</strong></td><td>' + mc.total.lost + '</td><td>' + esc(fmtPct(mc.total.lostPct)) + '</td><td>' + mc.total.open + '</td></tr></tfoot></table></div>'
-        + '<p class="na">פגישה = תאריך ביקור שעבר (או דיווח מנהל/ת) בתקופה. «נכנסו» = הפכו למטופלים בבית או באמבולטורי.</p>';
+        + '<p class="na">פגישה = תאריך ביקור שעבר (או דיווח מנהל/ת) בתקופה. «נכנסו» = הפכו למטופלים בבית או באמבולטורי.' + (mc.skipped ? ' ' + mc.skipped + ' פגישות ללא שם מנהל/ת תקין לא נכללו.' : '') + '</p>';
 
       // 4. length of stay + continuity (lib/patient-retention.js, the classic «חתכי מטופלים»)
       const R = win.PatientRetention && typeof win.PatientRetention.computeRetention === 'function' ? win.PatientRetention : null;
@@ -4870,7 +4886,7 @@
     TRIAGE_OPTIONS: TRIAGE_OPTIONS, triageQueue: triageQueue, waitlistErrors: waitlistErrors, waitlistPatch: waitlistPatch, laterErrors: laterErrors,
     NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, openLeadOfPerson: openLeadOfPerson, leadAlreadyInHouse: leadAlreadyInHouse, globalSearch: globalSearch, nameKey: nameKey, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, pendingDischargeAudit: pendingDischargeAudit, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, WAIT_REASONS: WAIT_REASONS, waitReasonLabel: waitReasonLabel, waitChipText: waitChipText, flagsOf: flagsOf, patientMeetingChange: patientMeetingChange, reportOverdue: reportOverdue, meetingOutcomeLabel: meetingOutcomeLabel, managerChangeMessage: managerChangeMessage, managerWaUrl: managerWaUrl, leadFlagBody: leadFlagBody, leadFlagPendingPlan: leadFlagPendingPlan, patientChangePlan: patientChangePlan, MANAGER_REPORT_GRACE_DAYS: MANAGER_REPORT_GRACE_DAYS, EXCEPTION_CUTOFF: EXCEPTION_CUTOFF, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
     KPI_PERIODS: KPI_PERIODS, kpiPeriod: kpiPeriod, occupancyToday: occupancyToday, closedDisposition: closedDisposition, leadFates: leadFates, FATES: FATES, leadConversion: leadConversion,
-    managerCloseRates: managerCloseRates, BREAKEVEN_STORAGE_KEY: BREAKEVEN_STORAGE_KEY, BREAKEVEN_DEFAULTS: BREAKEVEN_DEFAULTS, VAT_RATE: VAT_RATE, breakevenConfig: breakevenConfig,
+    managerCloseRates: managerCloseRates, managerNameOk: managerNameOk, BREAKEVEN_STORAGE_KEY: BREAKEVEN_STORAGE_KEY, BREAKEVEN_DEFAULTS: BREAKEVEN_DEFAULTS, VAT_RATE: VAT_RATE, breakevenConfig: breakevenConfig,
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
     newTaskErrors: newTaskErrors, dueSoonTasks: dueSoonTasks, TASK_REMIND_MINUTES: TASK_REMIND_MINUTES,
