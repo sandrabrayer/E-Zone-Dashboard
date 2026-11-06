@@ -1816,12 +1816,13 @@
         when: l.visitDate, owner: l.meetingWith || '', waitingOn: l.meetingWith || 'המנהל/ת', state: late ? 'late' : 'wait', priority: late ? 'exception' : 'wait', open: 'meetings' }));
     });
     b.cancelled.forEach(function (l) {
-      // Only a cancellation the patient made (recorded through «בוטלה / שונתה ע״י המטופל/ת») opens a row:
-      // an outcome Vered documented herself is settled work, not a fresh callback.
+      // Cancellation still needs a next step regardless of which form recorded it.
+      // Reuse an existing callback/meeting task (including a deferred date), never
+      // create another task just to make the cancelled visit visible.
+      if (tq.some(function (r) { return s(r.task.leadId) === s(l.id) && (r.task.kind === 'call' || r.task.kind === 'meeting'); })) return;
       const ch = patientMeetingChange(l, flagsOf(index, l.id));
-      if (!ch) return;
       followup.push(rowOfLead(l, { id: 'f:cancel:' + l.id, kind: 'meeting_cancelled', action: 'לתאם מועד חדש או לסגור את הליד',
-        why: 'הפגישה בוטלה ע״י המטופל/ת' + (l.visitDate ? ' (נקבעה ל-' + fmtDate(l.visitDate) + ')' : ''),
+        why: (ch ? 'הפגישה בוטלה ע״י המטופל/ת' : 'הפגישה בוטלה — טרם נקבע המשך') + (l.visitDate ? ' (נקבעה ל-' + fmtDate(l.visitDate) + ')' : ''),
         when: ch && ch.at ? s(ch.at).slice(0, 10) : l.visitDate, state: 'today', priority: 'today', open: 'meetings', contactable: true }));
     });
     b.reportUnseen.forEach(function (l) { followup.push(rowOfLead(l, { id: 'f:unseen:' + l.id, kind: 'report_unseen', action: 'לקרוא דיווח מנהל/ת', why: 'דיווח חדש מ-' + (l.meetingReporter || 'הבית') + (l.meetingReportOutcome === 'no_show' ? ' · לא הגיע / בוטל — הביקור לא התקיים' : ''), when: s(l.meetingReportedAt).slice(0, 10), state: 'today', priority: 'exception', open: 'meetings' })); });
@@ -1860,7 +1861,7 @@
             debtCount++;
             if (money.length < 400) money.push({ id: 'd:' + p.patientId + ':' + cy.start, kind: cy.kind === 'recorded' ? 'debt_recorded' : 'cycle_unreported', subjectKind: 'patient', subjectId: p.patientId, name: p.name, house: houseName(p.houseId),
               action: cy.kind === 'recorded' ? 'חוב רשום — ' + fmtMoney(cy.balance) : 'מחזור ללא דיווח — ' + fmtMoney(cy.balance), why: (cy.kind === 'recorded' ? 'דווח ' + fmtMoney(cy.received) + ' מתוך ' + fmtMoney(cy.expected) : 'לא דווח תשלום למחזור') + ' · ' + fmtDate(cy.start) + ' – ' + fmtDate(cy.end),
-              when: cy.end, time: '', owner: '', state: cy.end < today ? 'late' : 'wait', priority: cy.end < today ? 'late' : 'wait', open: 'account' });
+              when: cy.end, time: '', owner: 'ורד', state: cy.end < today ? 'late' : 'wait', priority: cy.end < today ? 'late' : 'wait', open: 'account' });
           });
         });
       } else if (debt === null || debt === undefined) debtCount = null; else debtCount = false;
@@ -1898,6 +1899,23 @@
     const exceptions = all.filter(function (r) { return r.priority === 'exception'; });
     return { cards: cards, byDomain: byDomain, urgent: urgent, waiting: waiting, meetingsToday: byDomain.meetings.filter(function (r) { return r.kind === 'meeting_today'; }), exceptions: exceptions, total: all.length, buckets: b,
       sourceState: { contact: contactAvailable, tasks: tasksAvailable, collection: !finance ? 'hidden' : (cards[0].value === null ? (debt === null || debt === undefined || tasks === undefined || payments === undefined ? 'loading' : 'partial') : 'complete') } };
+  }
+  // Control cards and their drill-down use the SAME filtered work rows, including
+  // the historic cutoff and permission scope already applied by myDay.
+  const WORK_CONTROL = [
+    { id: 'unseen', label: 'דיווחי מנהל/ת שלא נקראו', kinds: ['report_unseen'] },
+    { id: 'undecided', label: 'דיווחים שנקראו ללא החלטה', kinds: ['report_undecided', 'meeting_no_show_followup'] },
+    { id: 'awaitingReport', label: 'פגישות שעברו ללא דיווח', kinds: ['awaiting_report'] },
+    { id: 'unscheduled', label: 'ביקורים ללא תאריך', kinds: ['meeting_unscheduled'] },
+    { id: 'late', label: 'משימות באיחור', kinds: [] }
+  ];
+  function workControlQueues(m) {
+    const all = [].concat.apply([], Object.keys(m.byDomain).map(function (k) { return m.byDomain[k]; }));
+    const queues = {};
+    WORK_CONTROL.forEach(function (q) {
+      queues[q.id] = sortRows(all.filter(function (r) { return q.id === 'late' ? r.kind === 'task' && r.state === 'late' : q.kinds.indexOf(r.kind) >= 0; }));
+    });
+    return queues;
   }
   /* «השבוע»: the dated rows of a Sun–Sat week, grouped by day; a window task sits on every day it covers (one id). */
   function weekPlan(model, ws, c, filters, today) {
@@ -2357,7 +2375,7 @@
     const pendingLeadFlags = Object.create(null);
     const state = { me: null, data: null, area: 'today', view: 'board', filters: { q: '', house: '', owner: '' }, kpiFilter: '', queue: null,
       today: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date()), drawer: null, error: '', loading: true, sort: 'name',
-      tasks: null, tasksError: '', contact: null, index: null, debt: null, payments: null, credits: null, dayView: 'today', week: '', domain: '', doneTasks: undefined, quick: '' };
+      tasks: null, tasksError: '', contact: null, index: null, debt: null, payments: null, credits: null, dayView: 'today', week: '', domain: '', workControl: '', doneTasks: undefined, quick: '' };
     const $ = function (sel) { return doc.querySelector(sel); };
     const root = $('#crm-root');
     const main = $('#crm-main');
@@ -2473,6 +2491,13 @@
       }).join('') + '</div>';
       // The urgent band on top of the day is gone (Vered 04/11/2026): it repeated rows that are
       // already in their domain below and in «פגישות היום» on the side.
+      const drill = WORK_CONTROL.filter(function (q) { return q.id === state.workControl; })[0];
+      if (drill) {
+        const rows = workControlQueues(m)[drill.id];
+        const unavailable = drill.id === 'late' && !m.sourceState.tasks;
+        return html + '<section class="domain" data-control-section="' + drill.id + '"><div class="group-title"><strong>' + esc(drill.label) + '</strong> <span class="n chip">' + (unavailable ? '—' : rows.length) + '</span><span class="grow"></span><button type="button" class="link" data-domain="">חזרה לכל התחומים</button></div>'
+          + (unavailable ? '<p class="na">המידע אינו זמין</p>' : rowsBlock(rows, 0)) + '</section>';
+      }
       const domains = DOMAINS.filter(function (d) { return (state.domain ? d.id === state.domain : true) && !(d.money && !(state.me && state.me.finance)); });
       let main = '';
       domains.forEach(function (d) {
@@ -3315,15 +3340,15 @@
     /* «בקרה» (Stage 3b): the same rows as «היום שלי» / the triage, so every number opens its list. */
     function renderControl(c) {
       const m = model(c);
+      const queues = workControlQueues(m);
       const tq = state.tasks && state.index ? triageQueue(c, state.tasks, state.index, state.today).length : null;
-      const lateTasks = (state.tasks || []).filter(function (t) { return t && t.status === 'open' && taskState(t, state.today) === 'late'; }).length;
       const cards = [
-        { id: 'unseen', label: 'דיווחי מנהל/ת שלא נקראו', value: m.buckets.reportUnseen.length, go: { area: 'today', domain: 'followup' } },
-        { id: 'undecided', label: 'דיווחים שנקראו ללא החלטה', value: m.buckets.awaitingDecision.length, go: { area: 'today', domain: 'followup' } },
+        { id: 'unseen', label: 'דיווחי מנהל/ת שלא נקראו', value: queues.unseen.length, go: { area: 'today', workControl: 'unseen' } },
+        { id: 'undecided', label: 'דיווחים שנקראו ללא החלטה', value: queues.undecided.length, go: { area: 'today', workControl: 'undecided' } },
         { id: 'noContact', label: 'רשומות שדורשות בירור', value: tq, hint: tq === null ? (state.tasks === undefined || state.index === undefined ? 'טוען…' : 'המידע אינו זמין') : 'ללא מגע מתועד וללא משימה', go: { area: 'triage' } },
-        { id: 'late', label: 'משימות באיחור', value: state.tasks ? lateTasks : null, hint: state.tasks ? '' : (state.tasks === undefined ? 'טוען…' : 'המידע אינו זמין'), go: { area: 'today', domain: 'calls' } },
-        { id: 'awaitingReport', label: 'פגישות שעברו ללא דיווח', value: m.buckets.awaitingReport.length, go: { area: 'today', domain: 'followup' } },
-        { id: 'unscheduled', label: 'ביקורים ללא תאריך', value: m.buckets.toSchedule.length, go: { area: 'today', domain: 'meetings' } },
+        { id: 'late', label: 'משימות באיחור', value: state.tasks ? queues.late.length : null, hint: state.tasks ? '' : (state.tasks === undefined ? 'טוען…' : 'המידע אינו זמין'), go: { area: 'today', workControl: 'late' } },
+        { id: 'awaitingReport', label: 'פגישות שעברו ללא דיווח', value: queues.awaitingReport.length, go: { area: 'today', workControl: 'awaitingReport' } },
+        { id: 'unscheduled', label: 'ביקורים ללא תאריך', value: queues.unscheduled.length, go: { area: 'today', workControl: 'unscheduled' } },
         { id: 'admitting', label: 'מעברים פתוחים (קליטה)', value: c.leads.filter(function (l) { return l.stage === 'paid'; }).length, hint: houseExceptions(c, state.today).filter(function (r) { return r.kind === 'admission_due'; }).length + ' אחרי תאריך הכניסה', go: { area: 'leads', view: 'board' } },
       ];
       return '<p class="na" id="crm-control-about">«בקרת עבודה» = מה נתקע בעבודה השוטפת: דיווחים שלא נקראו, רשומות בלי מגע, משימות באיחור ופגישות בלי תוצאה. כל מספר נפתח לרשימה לטיפול. מדדים ואחוזים — בלשונית KPI.</p>'
@@ -4410,10 +4435,10 @@
       if (!t) return;
       if (t.dataset.kpiPeriod) { state.kpiPeriod = t.dataset.kpiPeriod; return renderMain(); }
       if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
-      if (t.dataset.area) return setArea(t.dataset.area);
+      if (t.dataset.area) { state.workControl = ''; return setArea(t.dataset.area); }
       if (t.dataset.kpi) { state.kpiFilter = state.kpiFilter === t.dataset.kpi ? '' : t.dataset.kpi; return renderMain(); }
-      if (t.dataset.domain !== undefined) { state.domain = state.domain === t.dataset.domain ? '' : t.dataset.domain; return renderMain(); }
-      if (t.dataset.dayView) { state.dayView = t.dataset.dayView; state.domain = ''; return renderMain(); }
+      if (t.dataset.domain !== undefined) { state.workControl = ''; state.domain = state.domain === t.dataset.domain ? '' : t.dataset.domain; return renderMain(); }
+      if (t.dataset.dayView) { state.workControl = ''; state.dayView = t.dataset.dayView; state.domain = ''; return renderMain(); }
       if (t.dataset.weekStep) { state.week = addDays(weekStart(state.week || state.today), Number(t.dataset.weekStep)); return renderMain(); }
       if (t.dataset.weekToday !== undefined) { state.week = ''; return renderMain(); }
       if (t.dataset.doneRetry !== undefined) { state.doneTasks = undefined; return renderMain(); }
@@ -4421,6 +4446,7 @@
       if (t.dataset.go) {
         let g = {}; try { g = JSON.parse(t.dataset.go); } catch (_) { g = {}; }
         if (g.view) state.view = g.view;
+        state.workControl = WORK_CONTROL.some(function (q) { return q.id === g.workControl; }) ? g.workControl : '';
         state.domain = g.domain || ''; state.dayView = 'today';
         return setArea(g.area || 'today');
       }
@@ -4889,6 +4915,6 @@
     managerCloseRates: managerCloseRates, managerNameOk: managerNameOk, BREAKEVEN_STORAGE_KEY: BREAKEVEN_STORAGE_KEY, BREAKEVEN_DEFAULTS: BREAKEVEN_DEFAULTS, VAT_RATE: VAT_RATE, breakevenConfig: breakevenConfig,
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
-    newTaskErrors: newTaskErrors, dueSoonTasks: dueSoonTasks, TASK_REMIND_MINUTES: TASK_REMIND_MINUTES,
+    newTaskErrors: newTaskErrors, dueSoonTasks: dueSoonTasks, TASK_REMIND_MINUTES: TASK_REMIND_MINUTES, WORK_CONTROL: WORK_CONTROL, workControlQueues: workControlQueues,
     moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));

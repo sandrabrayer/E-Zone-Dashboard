@@ -103,7 +103,7 @@ test('A: patientChangePlan — validation; cancel → meetingOutcome cancelled; 
   assert.deepEqual(core.leadFlagBody('sub-' + '1'.repeat(32), c.flag), { action: 'logLeadFlag', submissionId: 'sub-' + '1'.repeat(32), flag: c.flag });
 });
 
-test('A: a patient cancellation shows on the card and opens ONE «לתאם מועד חדש» row; a cancellation Vered documented herself stays settled; a stale change is history only', () => {
+test('A: either cancellation entry path opens ONE follow-up row until a next step exists; a stale change is history only', () => {
   const cancelled = lead({ meetingOutcome: 'cancelled', visitDate: '2026-11-05' });
   const ch = { change: 'cancelled', prevDate: '2026-11-05', prevTime: '09:00', withWhom: 'חן', at: '2026-11-04T08:00:00.000Z', actorName: 'ורד' };
   const idx = INDEX({ L1: { meetingChange: ch } });
@@ -113,7 +113,7 @@ test('A: a patient cancellation shows on the card and opens ONE «לתאם מו�
   assert.deepEqual(m.byDomain.followup.map((r) => [r.kind, r.priority]), [['meeting_cancelled', 'today']]);
   assert.match(m.byDomain.followup[0].why, /בוטלה ע״י המטופל\/ת \(נקבעה ל-05\/11\/2026\)/);
   assert.equal(m.byDomain.meetings.length, 0, 'a cancelled meeting is not a meeting');
-  assert.equal(day([cancelled]).byDomain.followup.length, 0, 'documented by Vered, no patient flag → no fresh row');
+  assert.equal(day([cancelled]).byDomain.followup.length, 1, 'audit 06/11: recording a cancellation does not itself arrange the next step');
   // a cancelled meeting dated today is not «פגישה היום»
   assert.equal(day([lead({ visitDate: TODAY, meetingOutcome: 'cancelled' })], idx).meetingsToday.length, 0);
   // reschedule: the marker shows while the lead still has that date

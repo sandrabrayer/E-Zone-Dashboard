@@ -16,11 +16,12 @@ const { createSessionToken } = require('../lib/session');
 let playwright = null;
 try { playwright = require('playwright'); } catch (_) {}
 const chromiumPath = [
+  process.env.CHROMIUM_PATH,
   '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
   '/opt/pw-browsers/chromium/chrome-linux/chrome',
   '/usr/bin/chromium',
   '/usr/bin/chromium-browser'
-].find((p) => fs.existsSync(p)) || (
+].filter(Boolean).find((p) => fs.existsSync(p)) || (
   playwright && fs.existsSync(playwright.chromium.executablePath())
     ? playwright.chromium.executablePath() : ''
 );
