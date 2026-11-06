@@ -77,7 +77,7 @@ test('A: source guards — the funder save sends the server\'s key shape (sub- +
 
 let playwright = null;
 try { playwright = require('playwright'); } catch (_) { /* skip */ }
-let chromiumPath = ['/opt/pw-browsers/chromium-1194/chrome-linux/chrome', '/opt/pw-browsers/chromium/chrome-linux/chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find((p) => { try { return fs.existsSync(p); } catch (_) { return false; } });
+let chromiumPath = [process.env.CHROMIUM_PATH, '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', '/opt/pw-browsers/chromium/chrome-linux/chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].filter(Boolean).find((p) => { try { return fs.existsSync(p); } catch (_) { return false; } });
 if (!chromiumPath && playwright) { try { const p = playwright.chromium.executablePath(); if (p && fs.existsSync(p)) chromiumPath = p; } catch (_) { /* none */ } }
 const skip = !playwright || !chromiumPath;
 

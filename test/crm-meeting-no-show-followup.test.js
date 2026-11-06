@@ -67,9 +67,9 @@ test('P1: a different manager outcome keeps the original family-decision workflo
   assert.deepEqual(core.nextActionFor(baseLead({ meetingReportOutcome: 'undecided' }), TODAY), { text: 'להחליט אחרי דיווח מנהל/ת', state: 'wait' });
 });
 
-test('P1: a documented family cancellation does not generate a fresh no-show callback', () => {
+test('P1: a documented family cancellation remains pending until a next step exists (audit 06/11)', () => {
   const m = day(baseLead({ meetingOutcome: 'cancelled' }));
-  assert.equal(m.byDomain.followup.length, 0);
+  assert.deepEqual(m.byDomain.followup.map(r => r.kind), ['meeting_cancelled']);
 });
 
 test('P1: a past planned date alone never proves that a meeting actually took place', () => {

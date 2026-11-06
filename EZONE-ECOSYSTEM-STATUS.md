@@ -1,5 +1,17 @@
 # E-ZONE Ecosystem Status — updated November 4, 2026
 
+## Acceptance audit candidate — November 6, 2026 (local, not deployed)
+
+Approved focused corrections on base `5349d75c`: collection-cycle owner in the
+CRM view, cancellation follow-up without a duplicate stored task, and exact
+report/task control-card lists. SW v120. No Apps Script change, new issue/PR or
+production write. See `CHANGELOG-crm-audit-workflows.md` and
+`docs/crm/CRM-AUDIT-CANDIDATE-20261106.md` for scope and validation.
+The three corrections now also pass real Chromium checks at 1366px and 390px
+using the existing synthetic fixture; production has not been changed.
+Final complete suite: **3,845 pass, 0 fail, 0 skipped**, including 132 browser
+cases. Remote CI and production release remain separate approval gates.
+
 ## CRM «משימה חדשה»: date + time only, a reminder before it is due — November 5, 2026 (PR open)
 
 The task form asks only what / who / date (today or later) / time — «למה עכשיו», «מועד» and the week

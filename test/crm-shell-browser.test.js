@@ -32,7 +32,7 @@ const SERVER_PATH = require.resolve('../server');
 const PEPPER = 'pepper-TEST-crm-shell-browser-0123456789abcdef';
 const SESSION_SECRET = 'session-secret-TEST-crm-shell-browser-012345';
 const PROXY_SECRET = 'proxy-secret-TEST-crm-shell-browser-0123456789';
-const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'USER_PIN_HASHES', 'PIN_PEPPER', 'CRM_ENABLED'];
+const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'USER_PIN_HASHES', 'PIN_PEPPER', 'CRM_ENABLED', 'SHEETS_READ_CACHE_MS'];
 const israelDay = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date(ms));
 const TODAY = israelDay(Date.now());
 const daysAgo = (n) => israelDay(Date.now() - n * 86400000);
@@ -73,7 +73,7 @@ const INDEX = { ok: true, count: 1, leads: { L3: { at: '2026-10-20T09:00:00.000Z
 let tasksAnswer = null;
 let indexAnswer = null;
 let saveAnswer = null;
-async function boot() {
+async function boot(options = {}) {
   const saves = [];
   // One synthetic authoritative Credits ledger shared by all test sessions;
   // identity-specific source saves become visible after the next getCredits.
@@ -108,7 +108,7 @@ async function boot() {
   }
   const hash = await pinHash.hashPin('583920', PEPPER);
   const recs = ['vered', 'sandra', 'ortal', 'dana'].map((id) => JSON.parse(users.recordLine(id, hash, 1)));
-  const env = { PROXY_SECRET, SESSION_SECRET, SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', PIN_PEPPER: PEPPER, USER_PIN_HASHES: JSON.stringify(recs), CRM_ENABLED: 'true' };
+  const env = { PROXY_SECRET, SESSION_SECRET, SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', PIN_PEPPER: PEPPER, USER_PIN_HASHES: JSON.stringify(recs), CRM_ENABLED: 'true', SHEETS_READ_CACHE_MS: String(options.readCacheMs === undefined ? 30000 : options.readCacheMs) };
   const saved = {};
   for (const k of ENV_KEYS) { saved[k] = process.env[k]; process.env[k] = env[k]; }
   const quiet = { log: console.log, warn: console.warn, error: console.error };
@@ -167,6 +167,8 @@ async function open(browser, port, id, width) {
   const name = users.modelById(id).name;
   await ctx.addCookies([{ name: 'ezone_session', value: createSessionToken(SESSION_SECRET, undefined, undefined, name, { id, pinVersion: 1 }), url: `http://127.0.0.1:${port}` }]);
   const page = await ctx.newPage();
+  // Synthetic acceptance must never send browser traffic outside this fixture.
+  await ctx.route('**/*', route => new URL(route.request().url()).origin === `http://127.0.0.1:${port}` ? route.continue() : route.abort());
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e && e.message)));
   await page.goto(`http://127.0.0.1:${port}/?view=crm`, { waitUntil: 'networkidle' });
@@ -257,7 +259,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     // every control number opens its list (clickable KPIs)
     await page.click('.kpi.acc-unseen');
     assert.equal(await page.textContent('#crm-title'), 'היום שלי');
-    assert.match(await page.textContent('[data-domain-section="followup"]'), /רון אביב/, 'the unseen report list');
+    assert.match(await page.textContent('[data-control-section="unseen"]'), /רון אביב/, 'the exact unread-report list');
     await page.click('#crm-nav button[data-area="control"]');
     await page.click('.kpi.acc-noContact');
     assert.equal(await page.textContent('#crm-title'), 'רשומות שדורשות בירור');
@@ -1467,3 +1469,55 @@ test('task reminder: a task of mine due in ~10 minutes is announced once (toast)
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });
+
+for (const width of [1366, 390]) {
+  test(`audit acceptance ${width}px: collection owner, cancellation and exact report drill-down`, { skip: skip && 'playwright/chromium missing' }, async () => {
+    const savedLeads = DATA.leads;
+    const makeLead = (id, extra = {}) => ({ id, name: 'בדיקת קבלה ' + id, house: 'ramot', stage: 'visit', assignedTo: 'ורד', visitDate: daysAgo(4), created: daysAgo(8), ...extra });
+    DATA.leads = [
+      ...Array.from({ length: 3 }, (_, i) => makeLead('unread-' + i, { meetingReportedAt: daysAgo(2) + 'T09:00:00Z' })),
+      ...Array.from({ length: 14 }, (_, i) => makeLead('decision-' + i, { meetingReportedAt: daysAgo(2) + 'T09:00:00Z', meetingSeen: '1' })),
+      ...Array.from({ length: 8 }, (_, i) => makeLead('missing-' + i)),
+      makeLead('cancelled', { meetingOutcome: 'cancelled' })
+    ];
+    // This fixture changes upstream data directly between reads; disable its
+    // read cache so the case measures queue behavior, not the 30-second TTL.
+    const srv = await boot({ readCacheMs: 0 });
+    let nextTasks = [];
+    tasksAnswer = () => ({ ok: true, total: nextTasks.length, tasks: nextTasks });
+    indexAnswer = () => ({ ok: true, leads: {}, patients: {}, flags: {} });
+    const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+    try {
+      const { page, errors } = await open(browser, srv.port, 'vered', width);
+      await page.waitForSelector('[data-row^="d:"]');
+      await page.selectOption('#f-owner', 'ורד');
+      assert.equal(await page.locator('[data-row^="d:"]').count(), 2, 'both debt cycles survive owner filter');
+      await page.locator('button.kpi[data-domain="followup"]').click();
+      assert.equal(await page.locator('[data-row="f:cancel:cancelled"]').count(), 1);
+      if (width < 600) await page.click('#crm-burger');
+      await page.click('#crm-nav [data-area="control"]');
+      const unread = page.locator('.kpi').filter({ hasText: 'דיווחי מנהל/ת שלא נקראו' });
+      assert.equal(await unread.locator('.v').textContent(), '3');
+      await unread.click();
+      const section = page.locator('[data-control-section="unseen"]');
+      assert.equal(await section.locator('[data-row]').count(), 3);
+      assert.equal(await section.locator('[data-open-lead^="decision-"]').count(), 0);
+      assert.equal(await section.locator('[data-open-lead^="missing-"]').count(), 0);
+      assert.equal(await noHScroll(page), true, 'exact queue fits the viewport');
+      if (process.env.EZONE_AUDIT_SCREENSHOT_DIR) await page.screenshot({ path: pathForAuditScreenshot(width), fullPage: true });
+      await section.getByRole('button', { name: 'חזרה לכל התחומים', exact: true }).click();
+      assert.equal(await page.locator('[data-control-section]').count(), 0);
+      nextTasks = [{ id: 'task-audit-callback', kind: 'call', leadId: 'cancelled', title: 'חזרה אחרי ביטול', assignee: 'ורד', dueDate: daysAgo(-3), status: 'open', source: 'manual' }];
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.locator('button.kpi[data-domain="followup"]').click();
+      assert.equal(await page.locator('[data-row="f:cancel:cancelled"]').count(), 0, 'existing future callback prevents duplicate follow-up');
+      await page.locator('button.kpi[data-domain="calls"]').click();
+      assert.equal(await page.locator('[data-row]').filter({ hasText: 'חזרה אחרי ביטול' }).count(), 1);
+      assert.deepEqual(srv.saves, [], 'all browser actions are fixture reads');
+      assert.deepEqual(errors, []);
+    } finally { await browser.close(); srv.close(); DATA.leads = savedLeads; }
+  });
+}
+function pathForAuditScreenshot(width) {
+  return require('node:path').join(process.env.EZONE_AUDIT_SCREENSHOT_DIR, 'dashboard-control-' + width + '.png');
+}

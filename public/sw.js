@@ -375,7 +375,8 @@
 // (CHANGELOG-crm-task-date-time.md). From the live v117 (#368); monotonic, v17 never reused.
 // v118 → v119: KPI — no timestamp / placeholder «manager» rows, no damaged-house rows, aligned headings (crm/crm.js, crm.css)
 // (CHANGELOG-crm-kpi-clean-data.md). From the live v118 (#369); monotonic, v17 never reused.
-var CACHE_VERSION = 'v119';
+// v119 → v120: CRM audit — collection owner, cancellation follow-up, exact control drill-downs.
+var CACHE_VERSION = 'v120';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
