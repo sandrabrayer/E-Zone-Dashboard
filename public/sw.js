@@ -380,7 +380,9 @@
 // (crm/crm.js, crm.css) (CHANGELOG-paid-with-discount.md). From the live v120; monotonic, v17 never reused.
 // v121 → v122: «צפי תזרים» — the cash-flow forecast in the CRM «גבייה» (crm/crm.js)
 // (CHANGELOG-cashflow-forecast.md). Stacked on v121 (PR #372); monotonic, v17 never reused.
-var CACHE_VERSION = 'v122';
+// v122 → v123: «ניקוי חובות היסטוריים» — close released patients' cycles in bulk in the CRM «גבייה» (crm/crm.js)
+// (CHANGELOG-historical-debt-cleanup.md). Stacked on v122; monotonic, v17 never reused.
+var CACHE_VERSION = 'v123';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

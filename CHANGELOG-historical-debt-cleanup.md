@@ -46,5 +46,5 @@ never raced). No new route, secret or log.
 ## Files
 `public/crm/crm.js` (`cleanupCandidates`, `cleanupPlan`, `cleanupBody`,
 `CLEANUP_REASONS`, `renderCleanup`, `submitCleanup`, handlers),
-`public/sw.js`, `test/historical-debt-cleanup.test.js` (new, 10),
+`public/sw.js` (v122 → v123, stacked on the forecast PR), `EZONE-ECOSYSTEM-STATUS.md`, `test/historical-debt-cleanup.test.js` (new, 10),
 `test/crm-shell-browser.test.js` (+1 Chromium scenario; `boot({ debt })`).
