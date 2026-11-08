@@ -1,8 +1,79 @@
-# E-ZONE Ecosystem Status — updated October 28, 2026
+# E-ZONE Ecosystem Status — updated November 4, 2026
 
-## Care-continuum identity feed — October 30, 2026 (draft, no release)
+## Care-continuum exact IDs — D-ID-1 integration candidate (08 Nov 2026, DRAFT ONLY)
 
-- D-ID-1: `getAdmittedRoster` and `getDischargedRoster` add existing Dashboard `Patients.id` (stay) and `Patients.personId` (root person id). Consumers use `personId || id`; no new identifier, no Sheet schema change, no write surface. This is the identity foundation for pre-discharge continuation → Outpatient linking. Details: `CHANGELOG-care-continuum-identity-feed.md`.
+Existing read-only Dashboard roster feeds getAdmittedRoster/getDischargedRoster now project Patients.id (stay episode) and Patients.personId (returning person root), with `personKey=personId||id` in consuming apps. No new ID, data writes, headers, access or finance. This draft is aligned to the currently deployed Dashboard branch; merge/deploy still require separate Sandra approval. Consumers must not infer identity by name/phone. See `CHANGELOG-care-continuum-identity-feed.md` and PR #329. Downstream Outpatient #137/#138 and Dashboard #330 remain draft and are NOT enabled by this isolated preparation.
+
+## Acceptance audit candidate — November 6, 2026 (local, not deployed)
+
+Approved focused corrections on base `5349d75c`: collection-cycle owner in the
+CRM view, cancellation follow-up without a duplicate stored task, and exact
+report/task control-card lists. SW v120. No Apps Script change, new issue/PR or
+production write. See `CHANGELOG-crm-audit-workflows.md` and
+`docs/crm/CRM-AUDIT-CANDIDATE-20261106.md` for scope and validation.
+The three corrections now also pass real Chromium checks at 1366px and 390px
+using the existing synthetic fixture; production has not been changed.
+Final complete suite: **3,845 pass, 0 fail, 0 skipped**, including 132 browser
+cases. Remote CI and production release remain separate approval gates.
+
+## CRM «משימה חדשה»: date + time only, a reminder before it is due — November 5, 2026 (PR open)
+
+The task form asks only what / who / date (today or later) / time — «למה עכשיו», «מועד» and the week
+field are gone (reschedule too). While the CRM is open, each of my tasks due today is announced 30 minutes
+before (toast + a browser notification when allowed); it is on «היום שלי» on its day, and Vered's morning mail
+already counts today's tasks. CRM only; SW v118. See `CHANGELOG-crm-task-date-time.md`. (merged #369)
+Follow-up: KPI shows only real manager names and real houses; aligned headings — SW v119 (`CHANGELOG-crm-kpi-clean-data.md`).
+
+## CRM credits: edit a saved credit + Sandra's manual credit in the patient card — November 5, 2026 (PR open)
+
+«חשבון» in the CRM patient card now edits a saved, unpaid credit (amount — Sandra only — with a reason when it
+differs from the policy figure, decision date, cancel with a note, notes) and lets Sandra add a manual «אחר»
+credit. Same `saveCredit` action and Code.gs authority as the classic modal; the classic «זיכויים ידניים»
+link is gone. CRM only; SW v116. See `CHANGELOG-crm-manual-credits.md`. (merged #367)
+Follow-up: bold section headings on the KPI page, SW v117 (`CHANGELOG-crm-kpi-headings.md`).
+
+## CRM «KPI» area · «תפוסה היום» · «בקרת עבודה» · «חריגים לבדיקה» · required fields — November 5, 2026 (PR open)
+
+New CRM area «KPI»: occupancy %, lead → patient conversion (inpatient / outpatient), close rate per
+manager after meetings, length of stay, and break-even per house (finance only; same browser-stored
+expenses as the classic tab). «גבייה» lists impossible states (one person in two overlapping stays,
+debt after exit…). Lead / close / direct add / discharge refuse missing fields. CRM only, no Code.gs;
+SW v115. See `CHANGELOG-crm-kpi-tab.md`. (merged #366)
+
+## CRM follow-ups: «העבר לאמבולטורי» without a lead phone · save spinner · waitlist reason — November 4, 2026 (PR open)
+
+- A discharge was never blocked; only the Outpatient lead failed when the source lead had no phone. Now the phone is also resolved from `PatientPhones` (roster rule), and when none exists the CRM «משוחררים» row asks for it; the typed phone is validated (browser, server, Code.gs), kept in `PatientPhones` and sent. Phone stays required for the send (Outpatient's matching key). Same PR: a spinner on every CRM save; «סיבת המתנה» saves on the click and waits for an in-flight save instead of being dropped silently. Code.gs changed (clasp CI). SW v113 → v114. Details: `CHANGELOG-crm-followups-1104.md`.
+
+## CRM: Vered's feedback round — November 4, 2026 (merged #362)
+
+- App icon in the browser tab + menu header; «פניות» → «לידים» across the CRM; the urgent band and «מה דחוף בבתים» (admission-due / continuity rows, incl. the May ones) left «היום שלי» — the discharge-integrity check stays; a missing manager report is «ממתין» for 3 days, an exception from day 3; follow-up rows before 01/06/2026 are not listed.
+- New Code.gs action **`logLeadFlag`** (gate = `logContact`): waitlist reason («ממתין למקום» / «ממתין לאישור הקופה») and a patient-side meeting cancel / reschedule, stored as append-only **Activity** events (no Leads column — the closed-lead sheets are position-mapped); `contactIndex` now also returns `flags`. The CRM writes the lead through the normal `saveAll`, then the flag, then shows «📲 הודעה למנהל/ת בוואטסאפ» (prefilled wa.me to `managerPhones`). Code.gs changed (clasp CI on merge). SW v112 → v113. Details: `CHANGELOG-crm-vered-feedback-1104.md`.
+
+
+## CRM #358 recovery acceptance — November 3, 2026 (DRAFT, not deployed)
+
+- Reused #326 Dana export/Tasks+Activity restore tests and OP-03's verified temporary-sheet publication. Same-day replacement no longer clears the prior good backup first; failed source reads stop publication/retention, and missing families retain older proof.
+- Source correction and synthetic acceptance only. Native Google restore, staff UAT and the #331 permission-policy gaps remain HOLD gates. No merge or deployment. Details: `CHANGELOG-crm-358-backup-recovery.md`, `docs/crm/CRM-358-RECOVERY-CHECKPOINT-20261103.md`.
+
+## An admitted lead stays closed — November 2, 2026 (PR open)
+
+- Reported: מתן כחלון was admitted to ריהאב on 01/11 (patient row, `fromLead` = his lead) yet his lead was back in «בטיפול פעיל». Every classic save sends EVERY lead from the tab's copy, so a tab loaded before the admission wrote the old stage back. Now: `mergeLeads_` keeps the sheet's admitted stage / entryDate / meetingOutcome when a not-released patient points at the lead (`admittedKept` in the answer, AuditLog `lead_admitted_kept`); a real reopen after discharge is not blocked. Classic load-time heal + CRM read retire such a lead (exact `fromLead` link only), which also fixes the rows already reopened. Code.gs changed (clasp CI on merge). SW v111 → v112. Details: `CHANGELOG-admitted-lead-stays-closed.md`.
+
+## CRM «גבייה» → «לגבייה בתאריך» — November 2, 2026 (PR open, stacked on #354)
+
+- Vered collects by the classic «לגבייה בתאריך הנבחר» list; the CRM had only the debt overview. Now the CRM גבייה area opens with the same list: date picker (default today), funder filter, top-search filter, KPIs (מטופלים לתשלום / סך לגבייה / נגבה), coverage period with the month split, and «דווח תשלום» per row (opens the patient's «חשבון» with the C10 form on that cycle; hidden for Ortal). Amounts via `lib/cycle-balance.js` (now loaded by crm.html). No server change, Code.gs untouched. SW v110 → v111. Details: `CHANGELOG-crm-collect-on-date.md`.
+
+## גבייה: leaving on the billing day opens no new cycle — November 2, 2026 (PR open)
+
+- Reported on טמיר בן מיור (עפרוני, entered 27/07, exit 27/10): the classic «לגבייה בתאריך הנבחר» for 27/10 asked 30,000 ₪ for 27/10–26/11. `patientDueOnDate` treated the exit day as due; the server (`recCycleDueDates_`, `debtAging_`) and `projectedCycleDueDates` already exclude it. Now aligned: a cycle starting on/after the exit date is never due. The exit day stays a stay day. Code.gs untouched. SW v109 → v110. Details: `CHANGELOG-billing-exit-day-not-due.md`.
+
+## Dana on the CRM without collections + «החלפת משתמש» — November 1, 2026 (PR open)
+
+- Dana already lands on the CRM (`CRM_DEFAULT_VIEWS` ops, #327); she stays OPERATIONAL per CRM spec §2 (not the #303 read-only). New: no «חשבון» tab for her; every money route re-verified 403 + Hebrew (new enumerating test). «החלפת משתמש» in the CRM and classic headers: `POST /api/logout` now revokes the token server-side (old cookie → 401) with a same-origin check; client data + offline `/` copies cleared; `/api/me.landing` sends the next login to its own default view. Code.gs untouched. SW v106 → v107. Details: `CHANGELOG-crm-dana-default-switch-user.md`.
+
+## «דווח תשלום» on an old cycle saves again (CRM billing dates) — November 1, 2026 (PR open)
+
+- Bug reported by Vered: on the new screen a payment report on an OLD cycle was refused (`coverage_outside_cycle`). Older Payments rows hold Date cells that reach the browser as UTC timestamps; the CRM sliced them one day early. New `sheetDay()` reads them on the Israel day, like the classic `isoDate()`. Client only, SW v106. Details: `CHANGELOG-crm-old-payment-dates.md`.
 
 ## Railway healthcheck window 30 s → 300 s — October 28, 2026 (PR open)
 

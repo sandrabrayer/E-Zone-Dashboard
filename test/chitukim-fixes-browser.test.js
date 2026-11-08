@@ -323,8 +323,18 @@ test('spinner on the clicked control (aria-busy, disabled, painted) for a list, 
     for (const s of ['retention', 'continuity', 'completion']) await busyOn(`${P}.pr-xlsx[data-section="${s}"]`, 'pr-xlsx', true);
     await busyOn(P + '.pr-sum-csv', 'pr-sum-csv', true);
     await busyOn(P + '.pr-comp-csv', 'pr-comp-csv', true);
+    // The preset checks above narrowed the cohort to three calendar months.
+    // Early in a month that excludes D1 (entered 80 days ago), correctly
+    // disabling its empty-list CSV. Restore D1 through the real date control
+    // before testing a populated list's export spinner, independent of today.
+    const firstEntry = await page.evaluate(() => state.patients.find(p => p.id === 'D1').date);
+    await page.fill(P + '.pr-from', firstEntry);
+    await page.click(P + '.pr-apply');
+    await page.waitForFunction(from => state.patientRetention.from === from && !document.querySelector('#patient-retention [aria-busy="true"]'), firstEntry);
     await page.click(`${P}.pr-stat[data-sel*='"upTo30"']`);
-    await page.waitForSelector(P + '.pr-list');
+    await page.waitForSelector(P + '.pr-list tbody tr');
+    assert.equal(await page.locator(P + '.pr-list tbody tr').count(), 1, 'export fixture includes D1');
+    assert.equal(await page.locator(P + '.pr-list .pr-csv').isDisabled(), false);
     await busyOn(P + '.pr-list .pr-csv', 'pr-csv', true);
     await busyOn(P + '.pr-list .pr-xlsx-list', 'pr-xlsx-list', true);
   });

@@ -337,7 +337,7 @@ function serve(handlers, url) {
 }
 const settle = () => new Promise((r) => setImmediate(r));
 
-test('D: CACHE_VERSION is v105 (monotonic from the live v97 via v98…v104; v17 burned, never reused)', () => {
+test('D: CACHE_VERSION is v120 (monotonic from v119; v17 burned, never reused)', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
   // v40: CHANGELOG-ortal-verification-status.md.
   // v41: CHANGELOG-reactivation-fix.md (PR #145's fix, re-landed).
@@ -403,7 +403,22 @@ test('D: CACHE_VERSION is v105 (monotonic from the live v97 via v98…v104; v17 
   // v103: CHANGELOG-crm-read-cache.md (stacked on v102, PR #319).
   // v104: CHANGELOG-crm-clickable-kpis.md (stacked on v103, PR #320).
   // v105: CHANGELOG-crm-kpi-two-counters.md (stacked on v104, PR #321).
-  assert.equal(v, 'v105');
+  // v106: CHANGELOG-crm-old-payment-dates.md (from the live v105).
+  // v107: CHANGELOG-crm-dana-default-switch-user.md (from the live v106).
+  // v108: CHANGELOG-crm-today-card-open.md (from the live v107).
+  // v109: CHANGELOG-crm-search-admit-funder.md (stacked on v108, PR #337).
+  // v110: CHANGELOG-billing-exit-day-not-due.md (from the live v109).
+  // v111: CHANGELOG-crm-collect-on-date.md (stacked on v110, PR #354).
+  // v112: CHANGELOG-admitted-lead-stays-closed.md (from the live v111).
+  // v113: CHANGELOG-crm-vered-feedback-1104.md (from v112).
+  // v114: CHANGELOG-crm-followups-1104.md (stacked on v113).
+  // v115: CHANGELOG-crm-kpi-tab.md (from the repo v114).
+  // v116: CHANGELOG-crm-manual-credits.md (from the live v115).
+  // v117: CHANGELOG-crm-kpi-headings.md (from the live v116).
+  // v118: CHANGELOG-crm-task-date-time.md (from the live v117).
+  // v119: CHANGELOG-crm-kpi-clean-data.md (from the live v118).
+  // v120: CHANGELOG-crm-audit-workflows.md (from the live v119).
+  assert.equal(v, 'v120');
   assert.notEqual(v, 'v17');
 });
 

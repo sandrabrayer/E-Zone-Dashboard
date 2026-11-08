@@ -136,8 +136,7 @@ test('recovers phone via fromLead, normalizes, excludes released, no-leak projec
   assert.strictEqual(dana.phone, '0501234567');   // separators stripped
   assert.strictEqual(maya.phone, '0527654321');   // 972 country code → leading 0
   assert.strictEqual(dani.phone, '');             // direct_admin → free-text fallback, never fabricated
-
-  // Stable care-continuum identity is additive: id = stay, personId = root person id.
+  // New opaque source fields retain the exact stay; root id is empty on first admission.
   assert.strictEqual(dana.id, 'id-stay-1');
   assert.strictEqual(dana.personId, 'id-person-root');
   assert.strictEqual(maya.id, 'id-stay-2');
@@ -150,8 +149,8 @@ test('recovers phone via fromLead, normalizes, excludes released, no-leak projec
   assert.strictEqual(maya.entryDate, '2026-03-03'); // Date cell → YYYY-MM-DD
   assert.strictEqual(dani.entryDate, '');           // blank cell → ''
 
-  // No-leak contract: every row exposes EXACTLY these seven keys. id/personId
-  // are the approved opaque care-continuum identity; raw sensitive columns stay out.
+  // No-leak contract: every row exposes EXACTLY these five keys — the derived
+  // entryDate is additive; the raw sensitive columns still never appear.
   for (const row of r) {
     assert.deepStrictEqual(
       Object.keys(row).sort(),

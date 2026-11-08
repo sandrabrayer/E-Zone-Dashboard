@@ -854,7 +854,7 @@ test('server: Ortal gets 403 on EVERY Express /api/ route outside CONTROLLER_ROU
       // The allowed ones.
       const me = await request(port, 'GET', '/api/me', { cookie: personal('ortal') });
       assert.deepEqual(me.json, { ok: true, user: 'אורטל', auth: 'personal', approver: false, deleter: false, finance: false,
-        capabilities: ['billingControl'], billingControl: true, view: 'controller', canConfirm: true, canAccount: true, canDiscount: false, canAmount: true, billingRead: true, ops: false });
+        capabilities: ['billingControl'], billingControl: true, view: 'controller', canConfirm: true, canAccount: true, canDiscount: false, canAmount: true, billingRead: true, ops: false, landing: 'classic' });
       const x = await request(port, 'GET', '/api/export/billing-control.xlsx', { cookie: personal('ortal') });
       assert.equal(x.status, 200);
       assert.equal(x.headers['content-type'], report.XLSX_MIME);

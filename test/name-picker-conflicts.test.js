@@ -414,12 +414,12 @@ test('PR C: the picker screen and its re-issue are gone from the client', () => 
   assert.ok(!/id="user-screen"|id="user-options"/.test(html));
 });
 
-test('renderWhoami: header shows מחובר/ת כ + the name + a החלף control; blank name hides the line', () => {
+test('renderWhoami: header shows מחובר/ת כ + the name + a «החלפת משתמש» control; blank name hides the line', () => {
   const { app, sandbox } = loadApp();
   app.renderWhoami('ורד');
   const el = sandbox.__els['whoami'];
   assert.strictEqual(el.classList.contains('hidden'), false);
-  assert.ok(el.textContent.includes('מחובר/ת כ') && el.textContent.includes('ורד') && el.textContent.includes('החלף'),
+  assert.ok(el.textContent.includes('מחובר/ת כ') && el.textContent.includes('ורד') && el.textContent.includes('החלפת משתמש'),
     'got: ' + el.textContent);
   app.renderWhoami('');
   assert.strictEqual(el.classList.contains('hidden'), true, 'legacy user-less session shows nothing');

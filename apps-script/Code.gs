@@ -1075,19 +1075,23 @@ const CREDIT_COLUMNS = [
   'allocationMonth', 'calculatedAmount', 'amount', 'overrideReason', 'reason',
   'approvedBy', 'decidedDate', 'payoutDate', 'status', 'paidDate', 'method', 'notes',
   'basis', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
-  'creditUid'
+  'creditUid',
+  // Payout gate: Vered requests, Sandra approves the exact amount, Ortal pays.
+  'payoutApprovalRequestedAt', 'payoutApprovalRequestedBy', 'payoutApprovalAmount',
+  'payoutApprovedAt', 'payoutApprovedBy'
 ];
 const CREDIT_TYPES    = ['days_unused', 'prepaid_return', 'other'];
 const CREDIT_STATUSES = ['pending', 'paid', 'cancelled'];
 /* Day of month credits pay out on. */
 const CREDIT_PAYOUT_DAY = 15;
 /* Text-forced columns (whole column at ensure time + the target row per write). */
-const CREDIT_TEXT_COLUMNS = ['allocationMonth', 'decidedDate', 'payoutDate', 'paidDate', 'createdAt', 'updatedAt'];
+const CREDIT_TEXT_COLUMNS = ['allocationMonth', 'decidedDate', 'payoutDate', 'paidDate', 'createdAt', 'updatedAt',
+  'payoutApprovalRequestedAt', 'payoutApprovalRequestedBy', 'payoutApprovedAt', 'payoutApprovedBy'];
 /* Columns a later edit may change. Everything else on an existing row is
  * carried from the SHEET, whatever the payload says (identity, facilityType,
  * the computed figure, the trail, the basis and the creation stamps are
  * immutable; payoutDate is re-derived from decidedDate). */
-const CREDIT_EDITABLE_COLUMNS = ['amount', 'overrideReason', 'approvedBy', 'decidedDate', 'status', 'paidDate', 'method', 'notes'];
+const CREDIT_EDITABLE_COLUMNS = ['amount', 'overrideReason', 'decidedDate', 'status', 'paidDate', 'method', 'notes'];
 
 /* AuditLog sheet — append-only, hidden. One row per Patients-sheet write event
  * (promotion created/skipped, direct add, edit, discharge, delete, restore),
@@ -1394,6 +1398,7 @@ const FINANCE_ACTIONS = [
    * לתשלום» — also on CONTROLLER_ACTIONS (Ortal). Sandra's
    * approveRefundException is gated by APPROVER_ACTIONS instead. */
   'settleRefund',
+  'requestRefundPayoutApproval', 'approveRefundPayout',
   /* Appended (CHANGELOG-ortal-billing-discounts.md): a cycle discount — the
    * `finance` capability only (Vered, Sandra; DISCOUNT_ACTIONS). NOT on
    * CONTROLLER_ACTIONS (CHANGELOG-discount-by-vered.md). */
@@ -1517,7 +1522,9 @@ const CONTROLLER_CLEANUP_SCHEMA = {
  * the fixed missing-data note stay out too. */
 const CONTROLLER_FORECAST_ROW_FIELDS_ = ['creditId', 'auto', 'patientKey', 'patientName', 'houseId', 'totalPaid',
   'entryDate', 'exitDate', 'disposition', 'daysStayed', 'refundDays', 'amount', 'calculatedAmount',
-  'overridden', 'ruleVersion', 'rule', 'creditType', 'allocationMonth', 'payoutDate'];
+  'overridden', 'ruleVersion', 'rule', 'creditType', 'allocationMonth', 'payoutDate',
+  'payoutApprovalRequestedAt', 'payoutApprovalRequestedBy', 'payoutApprovalAmount',
+  'payoutApprovedAt', 'payoutApprovedBy', 'payoutApprovalValid'];
 const CONTROLLER_FORECAST_SCHEMA = {
   ok: true, error: true, message: true,
   today: true, recordsCutoff: true, policyCutover: true, preCutoffExcludedCount: true, zeroByPolicyCount: true,
@@ -1576,7 +1583,7 @@ const FINANCE_FORBIDDEN_MESSAGE = 'אין הרשאה לצפות בנתוני ג�
  * other three are the Phase 1/2 decisions (plan §7.3, §8.5, §9) and are
  * refused by handle_ before dispatch. */
 const APPROVER_ACTIONS = [
-  'unvoidPayment', 'approveRefundException', 'writeOffOpeningBalance', 'acceptOpeningBalance',
+  'unvoidPayment', 'approveRefundException', 'approveRefundPayout', 'writeOffOpeningBalance', 'acceptOpeningBalance',
 ];
 /* Ortal's billing fix (CHANGELOG-ortal-billing-discounts.md): needs the
  * verified `accountant` role OR Sandra's `approver`; handle_ refuses anyone
@@ -1593,6 +1600,8 @@ const ACCOUNTANT_ACTIONS = ['voidUnpaidClaim'];
  * Ortal (controller view) is refused. Mirrors lib/role-scope.js
  * DISCOUNT_ACTIONS (a guard test pins the two lists equal). */
 const DISCOUNT_ACTIONS = ['setBillingDiscount'];
+const VERED_PAYOUT_REQUEST_ACTIONS = ['requestRefundPayoutApproval'];
+const ORTAL_PAYOUT_EXECUTION_ACTIONS = ['settleRefund'];
 /* A cycle's amount («שנה סכום», CHANGELOG-open-debts-cleanup.md): Vered and
  * Sandra (`finance`) and Ortal WITH `accountant` (or Sandra's approver). The
  * row is stamped updatedBy from the verified session. Mirrors lib/role-scope.js
@@ -1629,7 +1638,7 @@ const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
  * test/proxy-secret-transition.test.js checks this list against handle_. */
 const PROXY_KNOWN_ACTIONS = [
   'managersWork',
-  'getData', 'getAdmittedRoster', 'getDischargedRoster', 'createLeadFromTherapists', 'saveAll', 'recordOutpatientLeadSend', 'dischargeOutpatientPayload', 'getPayments', 'savePayment',
+  'getData', 'getAdmittedRoster', 'getDischargedRoster', 'createLeadFromTherapists', 'saveAll', 'recordOutpatientLeadSend', 'getOutpatientHandoffRef', 'dischargeOutpatientPayload', 'getPayments', 'savePayment',
   'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
   'getCredits', 'saveCredit', 'suggestRefunds', 'refundPayoutForecast', 'debtAging', 'cleanupReport',
   'reportPayment', 'appendFunder', 'billingControlQueue', 'confirmPayment',
@@ -1642,7 +1651,7 @@ const PROXY_KNOWN_ACTIONS = [
   'deleteDuplicateDischarge',
   'setDischargeContinuity',
   'editReceipt',
-  'settleRefund', 'approveRefundException',
+  'settleRefund', 'approveRefundException', 'requestRefundPayoutApproval', 'approveRefundPayout',
   'expectedDischarges',
   'upcomingCommittees',
   'getCommitteesForCoordinators',
@@ -1652,6 +1661,8 @@ const PROXY_KNOWN_ACTIONS = [
   'getTasks', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logContact',
   // CRM Stage 2 (CHANGELOG-crm-my-day.md)
   'contactIndex',
+  // Lead flags: waitlist reason + patient-side meeting change (CHANGELOG-crm-vered-feedback-1104.md)
+  'logLeadFlag',
 ];
 
 /* SecurityLog — append-only, one row per (event, action, hour) at most.
@@ -2023,9 +2034,17 @@ function handle_(params) {
       const fn = { createTask: createTask_, completeTask: completeTask_, rescheduleTask: rescheduleTask_, reassignTask: reassignTask_, withdrawTask: cancelTask_, logContact: logContact_ }[action];
       return jsonOut_(fn(params, who, actor));
     }
+    // Lead flags (CHANGELOG-crm-vered-feedback-1104.md): the same gate as logContact.
+    if (action === 'logLeadFlag') {
+      const no = expectedDischargesRefused_(params);
+      if (no) return jsonOut_(no);
+      return jsonOut_(logLeadFlag_(params, actorLabel_(params) || requestUser_(params), actingUser_(params)));
+    }
     // «אמבולטורי» → Outpatient: server.js records the outcome of one send
     // (CHANGELOG-meeting-with-ambulatory.md). Verified proxy callers only.
     if (action === 'recordOutpatientLeadSend') return jsonOut_(recordOutpatientLeadSend_(params));
+    // Read-only exact-id cross-app status reference; never a name/phone match.
+    if (action === 'getOutpatientHandoffRef') return jsonOut_(getOutpatientHandoffRef_(params));
     // Discharged patient → Outpatient (CHANGELOG-discharge-outpatient-handoff.md):
     // server.js asks what to send for one discharge row. Verified proxy callers only.
     if (action === 'dischargeOutpatientPayload') return jsonOut_(dischargeOutpatientPayload_(params));
@@ -2137,8 +2156,10 @@ function handle_(params) {
         { approver: hasRole_(params, 'approver') }));
     }
     // «זיכויים לתשלום» (CHANGELOG-refunds-auto-policy.md). settleRefund:
-    // Vered, Sandra and Ortal (gated above; Shiran / Yael refused).
-    // approveRefundException: APPROVER_ACTIONS — role-gated above (Sandra).
+    // Vered requests every payout, Sandra approves the current amount,
+    // Ortal alone records the actual transfer. All gates use verified IDs.
+    if (action === 'requestRefundPayoutApproval') return jsonOut_(requestRefundPayoutApproval_(params, requestUser_(params)));
+    if (action === 'approveRefundPayout') return jsonOut_(approveRefundPayout_(params, requestUser_(params)));
     if (action === 'settleRefund') return jsonOut_(settleRefund_(params, requestUser_(params)));
     if (action === 'approveRefundException') return jsonOut_(approveRefundException_(params, requestUser_(params)));
     if (action === 'moveLeadIrrelevant') {
@@ -2478,7 +2499,8 @@ function actorLabel_(params) {
 function roleOperationFor_(action, params) {
   const act = String(action == null ? '' : action);
   if (DELETE_ACTIONS.indexOf(act) >= 0 || APPROVER_ACTIONS.indexOf(act) >= 0) return act;
-  if (ACCOUNTANT_ACTIONS.indexOf(act) >= 0 || DISCOUNT_ACTIONS.indexOf(act) >= 0 || AMOUNT_ACTIONS.indexOf(act) >= 0) return act;
+  if (ACCOUNTANT_ACTIONS.indexOf(act) >= 0 || DISCOUNT_ACTIONS.indexOf(act) >= 0 || AMOUNT_ACTIONS.indexOf(act) >= 0 ||
+      VERED_PAYOUT_REQUEST_ACTIONS.indexOf(act) >= 0 || ORTAL_PAYOUT_EXECUTION_ACTIONS.indexOf(act) >= 0) return act;
   if (act === 'confirmPayment') {
     const c = parseJsonParam_(params && params.confirm);
     if (c && typeof c === 'object' && String(c.status == null ? '' : c.status).trim() === NOT_RECEIVED_DECISION) return 'voidUnpaidClaim';
@@ -2514,6 +2536,8 @@ function requiredRoleFor_(operation) {
   if (APPROVER_ACTIONS.indexOf(operation) >= 0) return 'approver';
   if (ACCOUNTANT_ACTIONS.indexOf(operation) >= 0) return 'accountant|approver';
   if (DISCOUNT_ACTIONS.indexOf(operation) >= 0) return 'finance';
+  if (VERED_PAYOUT_REQUEST_ACTIONS.indexOf(operation) >= 0) return 'veredOnly';
+  if (ORTAL_PAYOUT_EXECUTION_ACTIONS.indexOf(operation) >= 0) return 'ortalOnly';
   if (AMOUNT_ACTIONS.indexOf(operation) >= 0) return 'finance|accountant|approver';
   return '';
 }
@@ -2524,6 +2548,8 @@ function requiredRoleFor_(operation) {
 function roleAllowed_(params, operation) {
   const need = requiredRoleFor_(operation);
   return need === '' ? true : need.split('|').some(function (r) {
+    if (r === 'veredOnly') { const a = actingUser_(params); return a.verified && a.auth === 'personal' && a.id === 'vered' && a.roles.indexOf('staff') >= 0; }
+    if (r === 'ortalOnly') { const a = actingUser_(params); return a.verified && a.auth === 'personal' && a.id === 'ortal' && a.roles.indexOf('controller') >= 0; }
     return r === 'finance' ? hasCapability_(params, 'finance') : hasRole_(params, r);
   });
 }
@@ -2574,6 +2600,13 @@ function getOrCreateSheet_(name, headers) {
     // is safe on sheets that are already populated.
     const lastCol = sh.getLastColumn();
     if (lastCol < headers.length) {
+      // Add physical columns before an append-only header expansion. Live Credits
+      // has 25 populated headers, 26 grid columns and needs five new approval
+      // fields through column 30; never overwrite or reorder the first 25.
+      if (typeof sh.getMaxColumns === 'function' && typeof sh.insertColumnsAfter === 'function') {
+        const maxCols = sh.getMaxColumns();
+        if (maxCols < headers.length) sh.insertColumnsAfter(maxCols, headers.length - maxCols);
+      }
       const missing = headers.slice(lastCol);
       sh.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]);
     }
@@ -3422,6 +3455,8 @@ function saveAll_(leads, patients, user, prove) {
     // Leads a stale payload tried to put back after they were closed or
     // removed (CHANGELOG-write-path-hardening.md, R1). Absent when none.
     if (leadOut.closedSuppressed && leadOut.closedSuppressed.length > 0) out.closedSuppressed = leadOut.closedSuppressed;
+    // A stale tab tried to reopen an admitted lead; the sheet's stage was kept (additive).
+    if (leadOut.admittedKept && leadOut.admittedKept.length > 0) out.admittedKept = leadOut.admittedKept;
     if (moved.length > 0) out.moved = moved;
     if (Object.keys(stamps).length > 0) out.stamps = stamps;
     // Additive, absent when empty: [{patientId, leadId}] of the direct
@@ -4037,6 +4072,16 @@ function mergeLeads_(leadsIn, out) {
   const mwIdx = LEAD_COLUMNS.indexOf('meetingWith');
   const ambulatoryChanged = [];
 
+  // An ADMITTED lead is never reopened by a save (CHANGELOG-admitted-lead-stays-closed.md).
+  // Every classic save sends EVERY lead from the tab's own copy, so a tab
+  // loaded before an admission wrote the lead back to «בטיפול פעיל» (מתן כחלון,
+  // admitted 01/11, back on the board). When the sheet says admitted and a
+  // Patients row that is not released points at this lead (fromLead), the
+  // sheet's stage, entryDate and meetingOutcome are kept. A real reopen
+  // (restore after a discharge) has a released patient, so it is not blocked.
+  const keptAdmitted = keepAdmittedLeadStages_(leads, existingById);
+  if (out && typeof out === 'object' && keptAdmitted.length) out.admittedKept = keptAdmitted;
+
   const newRows = leads.map(function (l) {
     const merged = {};
     for (let k in l) merged[k] = l[k];
@@ -4617,9 +4662,12 @@ function contactIndex_(params, actor) {
   const rows = sh ? readSheet_(sh, ACTIVITY_COLUMNS) : [];
   const leads = {}, patients = {};
   let count = 0;
+  const flags = {};
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    if (!r || String(r.kind == null ? '' : r.kind).trim() !== 'contact_logged') continue;
+    const kind = r ? String(r.kind == null ? '' : r.kind).trim() : '';
+    if (LEAD_FLAG_KINDS.indexOf(kind) >= 0) { leadFlagIndexPut_(flags, r, kind); continue; }
+    if (!r || kind !== 'contact_logged') continue;
     count++;
     let d = {};
     try { d = r.detailsJson ? JSON.parse(String(r.detailsJson)) : {}; } catch (_) { d = {}; }
@@ -4629,7 +4677,7 @@ function contactIndex_(params, actor) {
     put(leads, String(r.leadId == null ? '' : r.leadId).trim());
     put(patients, String(r.patientId == null ? '' : r.patientId).trim());
   }
-  return { ok: true, count: count, leads: leads, patients: patients };
+  return { ok: true, count: count, leads: leads, patients: patients, flags: flags };
 }
 
 /* ===== Reminder hook (CRM Stage 4a, CHANGELOG-crm-reminder-hook.md; spec §9) =====
@@ -4955,6 +5003,97 @@ function logContact_(body, actorName, actor) {
     return { ok: true, event: { eventId: ev.row.eventId, occurredAt: ev.row.occurredAt, kind: 'contact_logged', summary: ev.row.summary }, completed: completed, created: created, replayed: wrote.duplicate === true };
   } finally { try { lock.releaseLock(); } catch (_) { /* no-op */ } }
 }
+/* ===== Lead flags (CHANGELOG-crm-vered-feedback-1104.md) =====
+ * Two small per-lead facts that need NO Leads column. A new LEAD_COLUMNS entry
+ * would shift the position-mapped closed-lead sheets (IRRELEVANT_ / REMOVED_
+ * LEAD_COLUMNS are LEAD_COLUMNS.concat(...) — see CHANGELOG-direct-add-auto-lead.md),
+ * so each flag is an append-only Activity event; the LATEST one per lead wins
+ * and contactIndex_ serves them as `flags[leadId]`.
+ *   waitlist_reason        → details { reason: 'place' | 'funder' }
+ *                            (ממתין למקום / ממתין לאישור הקופה)
+ *   meeting_patient_change → details { change: 'cancelled' | 'rescheduled',
+ *                            prevDate, prevTime, newDate, newTime, withWhom, note }
+ * The lead row itself (meetingOutcome / visitDate / visitTime) is written by the
+ * client through the normal saveAll path; this event only records WHO changed it
+ * (the patient) so the card and the manager's message can say so. Never money. */
+const LEAD_FLAG_KINDS = ['waitlist_reason', 'meeting_patient_change'];
+const LEAD_FLAG_WAITLIST_REASONS = ['place', 'funder'];
+const LEAD_FLAG_MEETING_CHANGES = ['cancelled', 'rescheduled'];
+const LEAD_FLAG_NOTE_MAX = 200;
+const LEAD_FLAG_LEAD_ID_RE = /^[A-Za-z0-9_\-]{1,120}$/;
+
+/* PURE: a validated flag → { ok, kind, details, summary } or { ok:false, error }. */
+function leadFlagClean_(f) {
+  const x = f && typeof f === 'object' && !Array.isArray(f) ? f : null;
+  if (!x) return { ok: false, error: 'missing_flag' };
+  const kind = String(x.kind == null ? '' : x.kind).trim();
+  if (LEAD_FLAG_KINDS.indexOf(kind) < 0) return { ok: false, error: 'bad_kind' };
+  if (kind === 'waitlist_reason') {
+    const reason = String(x.reason == null ? '' : x.reason).trim();
+    if (LEAD_FLAG_WAITLIST_REASONS.indexOf(reason) < 0) return { ok: false, error: 'bad_reason' };
+    return { ok: true, kind: kind, details: { reason: reason }, summary: reason === 'funder' ? 'ממתין לאישור הקופה' : 'ממתין למקום' };
+  }
+  const change = String(x.change == null ? '' : x.change).trim();
+  if (LEAD_FLAG_MEETING_CHANGES.indexOf(change) < 0) return { ok: false, error: 'bad_change' };
+  const day = function (v) { const t = String(v == null ? '' : v).trim(); return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t : ''; };
+  const hm = function (v) { const t = String(v == null ? '' : v).trim(); return /^([01]\d|2[0-3]):[0-5]\d$/.test(t) ? t : ''; };
+  const d = { change: change, prevDate: day(x.prevDate), prevTime: hm(x.prevTime), newDate: '', newTime: '',
+    withWhom: taskText_(x.withWhom, 40), note: taskText_(x.note, LEAD_FLAG_NOTE_MAX) };
+  if (change === 'rescheduled') {
+    d.newDate = day(x.newDate); d.newTime = hm(x.newTime);
+    if (!d.newDate) return { ok: false, error: 'bad_new_date' };
+    if (String(x.newTime == null ? '' : x.newTime).trim() && !d.newTime) return { ok: false, error: 'bad_new_time' };
+  }
+  return { ok: true, kind: kind, details: d, summary: change === 'cancelled' ? 'הפגישה בוטלה ע״י המטופל/ת' : 'מועד הפגישה שונה ע״י המטופל/ת' };
+}
+
+/* PURE: fold one Activity row into flags[leadId][kind] (latest occurredAt wins). */
+function leadFlagIndexPut_(flags, r, kind) {
+  const leadId = String(r.leadId == null ? '' : r.leadId).trim();
+  if (!leadId) return;
+  let d = {};
+  try { d = r.detailsJson ? JSON.parse(String(r.detailsJson)) : {}; } catch (_) { d = {}; }
+  if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};
+  const clean = leadFlagClean_(Object.assign({}, d, { kind: kind }));
+  if (!clean.ok) return;
+  const at = String(r.occurredAt == null ? '' : r.occurredAt);
+  const key = kind === 'waitlist_reason' ? 'waitReason' : 'meetingChange';
+  const cur = flags[leadId] && flags[leadId][key];
+  if (cur && cur.at > at) return;
+  if (!flags[leadId]) flags[leadId] = {};
+  flags[leadId][key] = Object.assign({ at: at, actorName: String(r.actorName == null ? '' : r.actorName) }, clean.details);
+}
+
+/* logLeadFlag — body { submissionId, flag: { leadId, kind, ... } }. Idempotent by
+ * submissionId (eventId = kind + ':' + sid). The lead must be an OPEN lead on the
+ * Leads sheet. The controller (money-only) view is refused, like contactIndex_. */
+function logLeadFlag_(body, actorName, actor) {
+  if (activityScope_(actor) === 'money') return { ok: false, error: 'forbidden', message: 'אין הרשאה לפעולה זו' };
+  const b = body && typeof body === 'object' ? body : {};
+  const sid = taskSubmissionId_(b.submissionId);
+  if (sid === null) return taskNo_('bad_submission_id');
+  let f = b.flag;
+  if (typeof f === 'string') { try { f = JSON.parse(f); } catch (_) { f = null; } }
+  const clean = leadFlagClean_(f);
+  if (!clean.ok) return { ok: false, error: clean.error, message: 'הנתונים אינם תקינים' };
+  const leadId = String(f.leadId == null ? '' : f.leadId).trim();
+  if (!LEAD_FLAG_LEAD_ID_RE.test(leadId)) return { ok: false, error: 'bad_lead', message: 'הליד אינו תקין' };
+  const lsh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LEADS_SHEET);
+  const lead = (lsh ? readSheet_(lsh, LEAD_COLUMNS) : []).filter(function (l) { return String(l.id == null ? '' : l.id).trim() === leadId; })[0];
+  if (!lead) return { ok: false, error: 'unknown_lead', message: 'הליד לא נמצא — ייתכן שנסגר. רענני את הדף.' };
+  const nowIso = new Date().toISOString();
+  const ev = activityRow_({ eventId: clean.kind + ':' + sid, occurredAt: nowIso, kind: clean.kind, source: 'manual', actorId: '',
+    actorName: actorName, leadId: leadId, houseId: taskText_(lead.house, 40), summary: clean.summary, details: clean.details }, nowIso);
+  if (!ev.ok) return ev;
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('logLeadFlag_');
+  try {
+    const wrote = activityAppendRow_(ev.row);
+    logAudit_('lead_flag_logged', 'logLeadFlag_', leadId, String(lead.name || ''), { eventId: ev.row.eventId, kind: clean.kind, updatedBy: actorName });
+    return { ok: true, replayed: wrote.duplicate === true, flag: Object.assign({ leadId: leadId, kind: clean.kind, at: ev.row.occurredAt, actorName: ev.row.actorName }, clean.details) };
+  } finally { try { lock.releaseLock(); } catch (_) { /* no-op */ } }
+}
+
 function contactOutcomeLabel_(o) {
   return { spoke_follow_up: 'התקיימה שיחה ונדרש המשך', no_answer: 'לא היה מענה', call_back_later: 'התבקשנו לחזור במועד', awaiting_decision: 'ממתינים להחלטה או למידע',
     meeting_set: 'נקבעה פגישה', no_interest_now: 'אין עניין כרגע', bad_contact_details: 'פרטי הקשר אינם תקינים', stop_contact: 'התבקשה הפסקת פניות' }[o] || o;
@@ -8596,7 +8735,7 @@ function getDischargedRoster_() {
     if (!exit || exit < cutoff) continue;
     out.push({
       sourceApp: 'ezone-dashboard',
-      // Same care-continuum identity projection as getAdmittedRoster_.
+      // Stable existing stay and root-person IDs, read only; never match across episodes by name/phone.
       id:        String(pt.id || ''),
       personId:  patientPersonId_(pt.personId),
       name:      pt.name || '',
@@ -8778,6 +8917,42 @@ function ambulatoryHandoffPending_(leads, changed, suppressed) {
   return out;
 }
 
+
+/* Source-of-truth link for the existing Outpatient status reader.
+ * Only the existing AuditLog outpatient_lead_sent event is authoritative.
+ * No sheet creation, write, phone/name search, duplicate ID fabrication or
+ * inference from an unverified send. Node guards the browser; this source
+ * also requires a verified, non-controller actor (works in proxy log mode). */
+function getOutpatientHandoffRef_(params) {
+  var actor = actingUser_(params);
+  if (!actor.verified || isControllerActor_(actor)) return { ok: false, error: 'forbidden' };
+  var leadId = String(params && params.leadId != null ? params.leadId : '').trim();
+  var dischargeId = String(params && params.dischargeId != null ? params.dischargeId : '').trim();
+  if (!!leadId === !!dischargeId) return { ok: false, error: 'choose_one_id' };
+  var id = leadId || dischargeId;
+  if (!/^[A-Za-z0-9_:-]{1,120}$/.test(id)) return { ok: false, error: 'invalid_id' };
+  var key = leadId ? id : dischargeOutpatientKey_(id);
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AUDIT_LOG_SHEET);
+  if (!sh || sh.getLastRow() < 2) return { ok: true, linked: false, reason: 'no_verified_send' };
+  // readSheet_ reads existing cells only; no getOrCreateSheet_ or lock.
+  var rows = readSheet_(sh, AUDIT_LOG_COLUMNS);
+  var ids = {}, missing = false, found = false;
+  rows.forEach(function (row) {
+    if (String(row.action || '') !== OUTPATIENT_LEAD_SENT_ACTION ||
+        String(row.patientId || '') !== key) return;
+    found = true;
+    var details;
+    try { details = JSON.parse(String(row.details || '{}')); } catch (_) { details = null; }
+    var outId = details && String(details.outpatientId || '').trim();
+    if (!outId || !/^[A-Za-z0-9_:-]{1,120}$/.test(outId)) missing = true;
+    else ids[outId] = true;
+  });
+  if (!found) return { ok: true, linked: false, reason: 'no_verified_send' };
+  var keys = Object.keys(ids);
+  if (missing || keys.length !== 1) return { ok: true, linked: false, reason: keys.length > 1 ? 'conflicting_ids' : 'missing_exact_id' };
+  return { ok: true, linked: true, outpatientId: keys[0] };
+}
+
 /* recordOutpatientLeadSend — server.js reports ONE send outcome:
  *   { leadId, sent: true, outpatientId }  → `outpatient_lead_sent`
  *   { leadId, sent: false, error }        → `outpatient_lead_send_failed`
@@ -8905,8 +9080,37 @@ function dischargeOutpatientPayload_(params) {
   if (!manual && String(row.disposition || '').trim() !== 'released_outpatient') return { ok: true, eligible: false };
   const key = dischargeOutpatientKey_(id);
   if (outpatientLeadSendLog_().sent[key]) return { ok: true, alreadySent: true, key: key };
-  return { ok: true, key: key, payload: dischargeOutpatientFields_(row, dischargeLeadPhone_(row.fromLead)) };
+  // Phone (CHANGELOG-crm-followups-1104.md): a phone typed for this send is
+  // validated and kept in PatientPhones (so it is never asked again); otherwise the
+  // source lead, then the same resolution as the rosters (PatientPhones by id / by
+  // unique name, a unique same-name lead phone). Ambiguous → '' (never a guess).
+  const typedRaw = String(params.phone == null ? '' : params.phone).trim();
+  let phone = '';
+  if (typedRaw) {
+    phone = rosterValidPhone_(typedRaw);
+    if (!phone) return { ok: false, error: 'bad_phone' };
+    const saved = savePatientPhoneForDischarge_(row, phone, actorLabel_(params));
+    if (!saved.ok) return saved;
+  } else {
+    phone = dischargeLeadPhone_(row.fromLead) || dischargeBookPhone_(row);
+  }
+  return { ok: true, key: key, payload: dischargeOutpatientFields_(row, phone) };
 }
+
+/* The roster rule for a discharge row with no source-lead phone: PatientPhones by
+ * patientId, then by a unique name, then a unique same-name lead phone. '' when
+ * none or ambiguous. Read-only (the book is never created here). */
+function dischargeBookPhone_(row) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const lsh = ss.getSheetByName(LEADS_SHEET), psh = ss.getSheetByName(PATIENT_PHONES_SHEET);
+    const leads = lsh ? readSheet_(lsh, LEAD_COLUMNS) : [];
+    const manual = psh ? readSheet_(psh, PATIENT_PHONES_COLUMNS) : [];
+    const pt = { id: String(row.patientId == null ? '' : row.patientId).trim(), name: row.name, fromLead: row.fromLead };
+    return rosterPhoneFor_(pt, buildLeadPhoneIndex_(leads, manual));
+  } catch (_) { return ''; }
+}
+
 
 /* recordOutpatientLeadSend for a discharge row (see recordOutpatientLeadSend_). */
 function recordDischargeOutpatientSend_(params) {
@@ -9223,6 +9427,33 @@ function ensurePhoneRows_(missing) {
   finally { try { if (lock) lock.releaseLock(); } catch (_) { /* no-op */ } }
 }
 
+/* Keep a phone typed for an Outpatient handoff in PatientPhones: the row of this
+ * patientId (else this exact name + house) is updated, otherwise one row is
+ * appended. Under the script lock; the phone itself never reaches a log. */
+function savePatientPhoneForDischarge_(row, phone, actor) {
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('savePatientPhoneForDischarge_');
+  try {
+    const sh = getOrCreateSheet_(PATIENT_PHONES_SHEET, PATIENT_PHONES_COLUMNS);
+    const rows = readSheet_(sh, PATIENT_PHONES_COLUMNS);
+    const pid = String(row.patientId == null ? '' : row.patientId).trim();
+    const name = leadCellText_(row.name, 100), house = leadCellText_(row.houseId, 40);
+    const nameKey = rosterNameKey_(name);
+    let at = -1;
+    if (pid) at = rows.findIndex(function (r) { return String(r.patientId == null ? '' : r.patientId).trim() === pid; });
+    if (at < 0) at = rows.findIndex(function (r) { return rosterNameKey_(r.name) === nameKey && String(r.house == null ? '' : r.house).trim() === house; });
+    const next = at >= 0 ? Object.assign({}, rows[at]) : { name: name, house: house, phone: '', note: '', patientId: pid };
+    next.phone = phone;
+    if (pid && !String(next.patientId || '').trim()) next.patientId = pid;
+    next.note = 'הוזן בהעברה לאמבולטורי';
+    if (at >= 0) sh.getRange(at + 2, 1, 1, PATIENT_PHONES_COLUMNS.length).setValues([objectToRow_(next, PATIENT_PHONES_COLUMNS)]);
+    else sh.getRange(sh.getLastRow() + 1, 1, 1, PATIENT_PHONES_COLUMNS.length).setValues([objectToRow_(next, PATIENT_PHONES_COLUMNS)]);
+    logAudit_('patient_phone_set', 'savePatientPhoneForDischarge_', pid || nameKey, name, { house: house, digits: phone.length, updatedBy: actor || '' });
+    return { ok: true };
+  } finally { try { lock.releaseLock(); } catch (_) { /* no-op */ } }
+}
+
+
 function getAdmittedRoster_() {
   const patientsSh = getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS);
   const leadsSh    = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
@@ -9248,9 +9479,7 @@ function getAdmittedRoster_() {
     if (!rosterPhone) missingPhone.push({ name: String(pt.name), house: String(pt.houseId || ''), id: String(pt.id || '') });
     out.push({
       sourceApp: 'ezone-dashboard',
-      // Care-continuum identity (D-ID-1): id = this stay/admission; personId =
-      // the root stay id for a returning patient. Blank personId is intentional:
-      // consumers derive personKey as personId || id. Additive read-only fields.
+      // Stable existing stay and root-person IDs, read only; never match across episodes by name/phone.
       id:        String(pt.id || ''),
       personId:  patientPersonId_(pt.personId),
       name:      pt.name || '',
@@ -9769,6 +9998,49 @@ const ADMITTED_LEAD_STAGES = ['admitted', 'נקלט', 'אושפז'];
 
 function isAdmittedLeadStage_(stage) {
   return ADMITTED_LEAD_STAGES.indexOf(String(stage == null ? '' : stage).trim()) !== -1;
+}
+
+/* The lead ids a NOT-released Patients row points at (fromLead). */
+function inHouseFromLeadIds_() {
+  const out = {};
+  readSheet_(getOrCreateSheet_(PATIENTS_SHEET, PATIENT_COLUMNS), PATIENT_COLUMNS).forEach(function (p) {
+    const fl = String(p && p.fromLead != null ? p.fromLead : '').trim();
+    if (fl && String(p.status == null ? '' : p.status).trim() !== 'released') out[fl] = true;
+  });
+  return out;
+}
+
+/* mergeLeads_ guard (CHANGELOG-admitted-lead-stays-closed.md): an incoming
+ * lead whose SHEET row is admitted, and whose patient is in a house, keeps the
+ * sheet's stage / entryDate / meetingOutcome — a stale tab cannot reopen it.
+ * Mutates the payload objects. → the lead ids kept. The Patients sheet is read
+ * only when some payload lead would leave an admitted stage. */
+function keepAdmittedLeadStages_(leads, existingById) {
+  const stageIdx = LEAD_COLUMNS.indexOf('stage');
+  const entryIdx = LEAD_COLUMNS.indexOf('entryDate');
+  const outcomeIdx = LEAD_COLUMNS.indexOf('meetingOutcome');
+  const at = [];
+  (leads || []).forEach(function (l) {
+    if (!l || typeof l !== 'object') return;
+    const existing = existingById[String(l.id == null ? '' : l.id)];
+    if (!existing || !isAdmittedLeadStage_(existing[stageIdx]) || isAdmittedLeadStage_(l.stage)) return;
+    at.push({ lead: l, row: existing });
+  });
+  if (!at.length) return [];
+  const linked = inHouseFromLeadIds_();
+  const kept = [];
+  at.forEach(function (x) {
+    const id = String(x.lead.id).trim();
+    if (!linked[id]) return;
+    x.lead.stage = x.row[stageIdx];
+    if (entryIdx >= 0 && x.row[entryIdx] !== '' && x.row[entryIdx] != null) x.lead.entryDate = x.row[entryIdx];
+    if (outcomeIdx >= 0 && x.row[outcomeIdx] !== '' && x.row[outcomeIdx] != null) x.lead.meetingOutcome = x.row[outcomeIdx];
+    kept.push(id);
+  });
+  if (kept.length) {
+    try { logAudit_('lead_admitted_kept', 'mergeLeads_', kept.join(','), '', { count: kept.length }, ''); } catch (_) { /* audit is best effort */ }
+  }
+  return kept;
 }
 
 /* 'YYYY-MM-DD' `days` calendar days before the bare date `iso` (UTC parts of a
@@ -13670,6 +13942,12 @@ function refundListRow_(c, line, stay, totalPaid) {
     rule: c ? refundForecastRule_(c) : String(b.rule || ''),
     creditType: String((c ? c.creditType : line.creditType) || ''),
     allocationMonth: String((c ? c.allocationMonth : line.allocationMonth) || ''),
+    payoutApprovalRequestedAt: c ? String(c.payoutApprovalRequestedAt || '') : '',
+    payoutApprovalRequestedBy: c ? String(c.payoutApprovalRequestedBy || '') : '',
+    payoutApprovalAmount: c && c.payoutApprovalAmount !== '' ? Number(c.payoutApprovalAmount) : '',
+    payoutApprovedAt: c ? String(c.payoutApprovedAt || '') : '',
+    payoutApprovedBy: c ? String(c.payoutApprovedBy || '') : '',
+    payoutApprovalValid: !!c && refundPayoutApprovalValid_(c),
     payoutDate: Object.prototype.toString.call(pd) === '[object Date]' ? refundForecastIso_(pd) : String(pd == null ? '' : pd).trim(),
   };
 }
@@ -13838,6 +14116,8 @@ function autoRefundRecord_(stay, line, patientId, seq, user, nowIso, uid) {
     createdAt: nowIso, createdBy: String(user == null ? '' : user).slice(0, 40),
     updatedAt: nowIso, updatedBy: String(user == null ? '' : user).slice(0, 40),
     creditUid: uid,
+    payoutApprovalRequestedAt: '', payoutApprovalRequestedBy: '', payoutApprovalAmount: '',
+    payoutApprovedAt: '', payoutApprovedBy: '',
   };
 }
 
@@ -13937,6 +14217,82 @@ function refundTargetLocked_(p, user) {
   return { ok: false, error: 'unknown_credit' };
 }
 
+
+/* Separate payout authorization from automatic POLICY computation and
+ * exception amount approval. Only Vered requests, Sandra approves this exact
+ * amount, and only Ortal can record settlement. The five fields are an
+ * append-only extension to Credits; old rows are NEVER implicitly approved. */
+function refundPayoutApprovalValid_(c) {
+  if (!c || String(c.status).trim() !== 'pending') return false;
+  const amount = creditAmount_(c.amount), requested = creditAmount_(c.payoutApprovalAmount);
+  return amount !== null && amount > 0 && amount === requested &&
+    String(c.payoutApprovalRequestedBy || '') === 'vered' &&
+    !!String(c.payoutApprovalRequestedAt || '').trim() &&
+    String(c.payoutApprovedBy || '') === 'sandra' &&
+    !!String(c.payoutApprovedAt || '').trim() &&
+    String(c.payoutApprovedAt) >= String(c.payoutApprovalRequestedAt);
+}
+function refundPayoutClearApproval_(row) {
+  row.payoutApprovalRequestedAt = '';
+  row.payoutApprovalRequestedBy = '';
+  row.payoutApprovalAmount = '';
+  row.payoutApprovedAt = '';
+  row.payoutApprovedBy = '';
+}
+function requestRefundPayoutApproval_(params, user) {
+  const actor = actingUser_(params);
+  if (!actor.verified || actor.auth !== 'personal' || actor.id !== 'vered' || actor.roles.indexOf('staff') < 0) {
+    return { ok: false, error: 'forbidden_role' };
+  }
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('requestRefundPayoutApproval_');
+  try {
+    const t = refundTargetLocked_(params || {}, user);
+    if (!t.ok) return t;
+    const c = t.credit, amount = creditAmount_(c.amount);
+    if (String(c.status).trim() !== 'pending') return { ok: false, error: 'not_pending' };
+    if (amount === null || amount <= 0) return { ok: false, error: 'zero_amount_credit' };
+    if (String(c.payoutApprovalRequestedBy || '') === 'vered' &&
+        creditAmount_(c.payoutApprovalAmount) === amount &&
+        String(c.payoutApprovalRequestedAt || '') && !String(c.payoutApprovedAt || '')) {
+      return { ok: true, credit: { id: String(c.id), payoutApprovalRequestedAt: String(c.payoutApprovalRequestedAt) }, replayed: true };
+    }
+    if (refundPayoutApprovalValid_(c)) return { ok: true, credit: { id: String(c.id), payoutApprovedAt: String(c.payoutApprovedAt) }, replayed: true };
+    const now = new Date().toISOString();
+    const out = Object.assign({}, c, {
+      payoutApprovalRequestedAt: now, payoutApprovalRequestedBy: 'vered', payoutApprovalAmount: amount,
+      payoutApprovedAt: '', payoutApprovedBy: '', updatedAt: now, updatedBy: String(user || '').slice(0, 40),
+    });
+    writeCreditRow_(t.sh, t.row, out);
+    logAudit_('credit_payout_requested', 'requestRefundPayoutApproval_', String(c.patientId || ''), String(c.patientName || ''), { id: String(c.id), by: 'vered' });
+    return { ok: true, credit: { id: String(out.id), payoutApprovalRequestedAt: now } };
+  } finally { try { lock.releaseLock(); } catch (_) {} }
+}
+function approveRefundPayout_(params, user) {
+  const actor = actingUser_(params);
+  if (!actor.verified || actor.auth !== 'personal' || actor.id !== 'sandra' || actor.roles.indexOf('approver') < 0)
+    return { ok: false, error: 'forbidden_role' };
+  const p = params || {};
+  if (!creditStr_(p.creditId, 200)) return { ok: false, error: 'credit_id_required' };
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('approveRefundPayout_');
+  try {
+    const t = refundTargetLocked_({ creditId: p.creditId }, user);
+    if (!t.ok) return t;
+    const c = t.credit;
+    if (String(c.status).trim() !== 'pending') return { ok: false, error: 'not_pending' };
+    if (String(c.payoutApprovalRequestedBy || '') !== 'vered' || !String(c.payoutApprovalRequestedAt || '')) return { ok: false, error: 'request_required' };
+    const amount = creditAmount_(c.amount), requested = creditAmount_(c.payoutApprovalAmount);
+    if (amount === null || amount <= 0 || amount !== requested) return { ok: false, error: 'approval_amount_changed' };
+    if (refundPayoutApprovalValid_(c)) return { ok: true, credit: { id: String(c.id), payoutApprovedAt: String(c.payoutApprovedAt) }, replayed: true };
+    const now = new Date().toISOString();
+    const out = Object.assign({}, c, { payoutApprovedAt: now, payoutApprovedBy: 'sandra', updatedAt: now, updatedBy: String(user || '').slice(0, 40) });
+    writeCreditRow_(t.sh, t.row, out);
+    logAudit_('credit_payout_approved', 'approveRefundPayout_', String(c.patientId || ''), String(c.patientName || ''), { id: String(c.id), by: 'sandra' });
+    return { ok: true, credit: { id: String(out.id), payoutApprovedAt: now } };
+  } finally { try { lock.releaseLock(); } catch (_) {} }
+}
+
 /* action=settleRefund — «סמן כשולם» on a row of «זיכויים לתשלום».
  * Vered, Sandra (finance) and Ortal (the controller view — on
  * CONTROLLER_ACTIONS); Shiran / Yael are refused by financeRefused_. Input: { creditId } or
@@ -13945,6 +14301,9 @@ function refundTargetLocked_(p, user) {
  * must be pending with amount > 0. Writes status/paidDate/method + stamps. */
 function settleRefund_(params, user) {
   const p = params || {};
+  const actor = actingUser_(p);
+  if (!actor.verified || actor.auth !== 'personal' || actor.id !== 'ortal' || actor.roles.indexOf('controller') < 0) return { ok: false, error: 'forbidden_role' };
+  if (!creditStr_(p.creditId, 200)) return { ok: false, error: 'approval_required' };
   const paidDate = creditDate_(p.paidDate);
   if (!paidDate) return { ok: false, error: 'bad_paidDate' };
   if (paidDate > todayISODate_()) return { ok: false, error: 'paidDate_in_future' };
@@ -13958,6 +14317,7 @@ function settleRefund_(params, user) {
     const c = t.credit;
     if (String(c.status).trim() !== 'pending') return { ok: false, error: 'not_pending' };
     if (!(Number(c.amount) > 0)) return { ok: false, error: 'zero_amount_credit' };
+    if (!refundPayoutApprovalValid_(c)) return { ok: false, error: 'approval_required' };
     const out = Object.assign({}, c, {
       status: 'paid', paidDate: paidDate, method: method,
       updatedAt: new Date().toISOString(), updatedBy: String(user == null ? '' : user).slice(0, 40),
@@ -13998,6 +14358,8 @@ function approveRefundException_(params, user) {
       amount: amount, overrideReason: amount !== calculated ? reason : '',
       approvedBy: stamp, updatedAt: new Date().toISOString(), updatedBy: stamp,
     });
+    // An exception amount is a separate decision, never a payout authorization.
+    refundPayoutClearApproval_(out);
     writeCreditRow_(t.sh, t.row, out);
     logAudit_('credit_exception_approved', 'approveRefundException_', String(c.patientId || ''), String(c.patientName || ''),
       { id: String(c.id), override: amount !== calculated, updatedBy: stamp });
@@ -15215,6 +15577,7 @@ function upsertCredit_(credit, user, opts) {
     let existingPayout = null;
     // EDIT only: whether the payload changes the stored amount.
     let amountChanged = false;
+    let priorStatus = '';
 
     if (wantId) {
       // ---- EDIT ----
@@ -15246,6 +15609,7 @@ function upsertCredit_(credit, user, opts) {
       }
 
       record = Object.assign({}, sheetObj);
+      priorStatus = String(sheetObj.status || '').trim();
       existingPayout = { decidedDate: creditDate_(sheetObj.decidedDate), payoutDate: creditDate_(sheetObj.payoutDate) };
       amountChanged = credit.amount !== undefined && creditAmount_(credit.amount) !== creditAmount_(sheetObj.amount);
       for (let k = 0; k < CREDIT_EDITABLE_COLUMNS.length; k++) {
@@ -15275,6 +15639,9 @@ function upsertCredit_(credit, user, opts) {
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return { ok: false, error: 'bad_month' };
     if (CREDIT_TYPES.indexOf(creditType) < 0)    return { ok: false, error: 'bad_creditType', creditType: creditType };
     if (CREDIT_STATUSES.indexOf(status) < 0)     return { ok: false, error: 'bad_status', status: status };
+    // No direct mark-paid via saveCredit: only Ortal's explicitly approved settleRefund is allowed.
+    if (status === 'paid' && (!wantId || priorStatus !== 'paid')) return { ok: false, error: 'use_settleRefund' };
+    if (wantId && priorStatus === 'paid' && status !== 'paid') return { ok: false, error: 'paid_locked' };
     /* The POLICY figure, recalculated HERE from the discharge + Payments rows
      * (CHANGELOG-refunds-auto-policy.md, follow-up). The client's
      * calculatedAmount, basis and creditType label are never trusted: on a
@@ -15350,7 +15717,13 @@ function upsertCredit_(credit, user, opts) {
        * legacy row that pre-dates the column — one is minted. Never re-minted
        * once present, whatever else the edit changes. */
       creditUid:        creditStr_(record.creditUid, 60) || (CREDIT_UID_PREFIX + Utilities.getUuid()),
+      payoutApprovalRequestedAt: creditStr_(record.payoutApprovalRequestedAt, 80),
+      payoutApprovalRequestedBy: creditStr_(record.payoutApprovalRequestedBy, 40),
+      payoutApprovalAmount: record.payoutApprovalAmount === '' || record.payoutApprovalAmount == null ? '' : Number(record.payoutApprovalAmount),
+      payoutApprovedAt: creditStr_(record.payoutApprovedAt, 80),
+      payoutApprovedBy: creditStr_(record.payoutApprovedBy, 40),
     };
+    if (!wantId || amountChanged || status !== priorStatus || decidedDate !== existingPayout.decidedDate) refundPayoutClearApproval_(out);
 
     if (!targetRow) {
       /* Duplicate guard (CHANGELOG-duplicate-discharges.md): never a second
@@ -18984,24 +19357,70 @@ function integrityOpenBackupSpreadsheet_(props, errors) {
   return null;
 }
 
-/* Write a values-only snapshot into the BACKUP spreadsheet (only — never the
- * live one). Idempotent for a same-day re-run: an existing sheet with the
- * name is cleared and rewritten in place (never deleted first, so this also
- * works when it is the spreadsheet's only sheet). */
-function integrityWriteSnapshot_(backupSs, snapName, grid) {
-  let sh = backupSs.getSheetByName(snapName);
-  if (sh) sh.clear();
-  else sh = backupSs.insertSheet(snapName);
-  if (grid && grid.length) {
-    sh.getRange(1, 1, grid.length, grid[0].length).setValues(grid);
+/* Reuse the existing OP-03 snapshot write/readback/publish protocol.
+ * Dashboard prefixes only; no new restore endpoint or live-sheet writes. */
+function integrityVerifySnapshotGrid_(expected, actual) {
+  if (expected.length !== actual.length) throw new Error('Backup row count mismatch');
+  for (var r = 0; r < expected.length; r++) {
+    if (expected[r].length !== actual[r].length) throw new Error('Backup column count mismatch');
+    for (var c = 0; c < expected[r].length; c++) {
+      var a = expected[r][c], b = actual[r][c];
+      var equal = a instanceof Date ? b instanceof Date && a.getTime() === b.getTime() : a === b;
+      if (!equal) throw new Error('Backup value mismatch at row ' + (r + 1) + ', column ' + (c + 1));
+    }
   }
-  // A just-created backup spreadsheet's default sheet is dead weight once a
-  // snapshot exists; drop it (guarded — never a snapshot, never the last sheet).
-  const def = backupSs.getSheetByName('Sheet1') || backupSs.getSheetByName('גיליון1');
-  if (def && !INTEGRITY_SNAPSHOT_RE.test(def.getName()) && backupSs.getSheets().length > 1) {
-    backupSs.deleteSheet(def);
-  }
-  return sh;
+}
+
+/* The caller must supply the separate backup spreadsheet. Never clear the
+ * previous good snapshot. Build and verify a temporary sheet, then publish
+ * it; on a publish failure restore the old name. UserLock serializes backup
+ * writers without holding the script lock needed by interactive app saves.
+ * An interrupted run can leave a -pending/-previous sheet for manual review;
+ * retention never deletes those recovery remnants. */
+function integrityWriteSnapshot_(backupSs, snapName, grid, formats) {
+  if (!INTEGRITY_SNAPSHOT_RE.test(snapName)) throw new Error('Invalid backup name');
+  if (!grid || !grid.length || !grid[0].length) throw new Error('Empty backup grid');
+  var lock = LockService.getUserLock();
+  if (lock.tryLock(1) !== true) throw new Error('Backup writer already running');
+  var sh = null, old = null, renamedOld = false, published = false;
+  try {
+    var token = Utilities.getUuid();
+    sh = backupSs.insertSheet('dashboard-pending-' + token);
+    if (sh.getMaxRows() < grid.length) sh.insertRowsAfter(sh.getMaxRows(), grid.length - sh.getMaxRows());
+    if (sh.getMaxColumns() < grid[0].length) sh.insertColumnsAfter(sh.getMaxColumns(), grid[0].length - sh.getMaxColumns());
+    var target = sh.getRange(1, 1, grid.length, grid[0].length);
+    var safeFormats = grid.map(function (row, r) {
+      return row.map(function (value, c) {
+        return typeof value === 'string' ? '@' :
+          (formats && formats[r] && formats[r][c]) || (value instanceof Date ? 'yyyy-mm-dd hh:mm:ss.000' : 'General');
+      });
+    });
+    target.setNumberFormats(safeFormats);
+    target.setValues(grid.map(function (row) {
+      return row.map(function (value) { return typeof value === 'string' && value ? "'" + value : value; });
+    }));
+    SpreadsheetApp.flush();
+    integrityVerifySnapshotGrid_(grid, target.getValues());
+    var formulas = target.getFormulas();
+    for (var r = 0; r < formulas.length; r++) {
+      if (formulas[r].some(function (formula) { return !!formula; })) throw new Error('Backup contains a formula');
+    }
+    if (sh.getMaxRows() > grid.length) sh.deleteRows(grid.length + 1, sh.getMaxRows() - grid.length);
+    if (sh.getMaxColumns() > grid[0].length) sh.deleteColumns(grid[0].length + 1, sh.getMaxColumns() - grid[0].length);
+    old = backupSs.getSheetByName(snapName);
+    if (old) { old.setName('dashboard-previous-' + token); renamedOld = true; }
+    sh.setName(snapName);
+    published = true;
+    if (old) backupSs.deleteSheet(old);
+    return sh;
+  } catch (err) {
+    if (renamedOld && !published) {
+      try { old.setName(snapName); } catch (_) { /* Keep both recovery remnants. */ }
+    }
+    // A partial temporary sheet is never a published backup. Leave it visible
+    // for diagnosis; do not risk deleting a good copy after an ambiguous RPC.
+    throw err;
+  } finally { lock.releaseLock(); }
 }
 
 /* Delete OUR expired snapshot sheets from the backup spreadsheet. Strictly
@@ -19053,6 +19472,7 @@ function nightlyIntegrityJob() {
   //      getOrCreateSheet_: this job must not write to Patients / Leads /
   //      Payments / BillingOverrides, not even a header backfill) ----
   let patientRows = [], patientsGrid = null, patientsReadOk = false;
+  let backupReadsOk = true;
   try {
     const patientsSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PATIENTS_SHEET);
     if (patientsSh) {
@@ -19060,23 +19480,23 @@ function nightlyIntegrityJob() {
       patientsGrid = patientsSh.getDataRange().getValues();
     }
     patientsReadOk = true;
-  } catch (err) { errors.push('קריאת Patients נכשלה: ' + err); }
+  } catch (err) { backupReadsOk = false; errors.push('קריאת Patients נכשלה: ' + err); }
 
   // CRM: Tasks + Activity grids (read-only; a missing sheet = nothing to snapshot, never created here)
   let tasksGrid = null, activityGrid = null;
   try {
     const tSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TASKS_SHEET);
     if (tSh) tasksGrid = tSh.getDataRange().getValues();
-  } catch (err) { errors.push('קריאת Tasks לגיבוי נכשלה: ' + err); }
+  } catch (err) { backupReadsOk = false; errors.push('קריאת Tasks לגיבוי נכשלה: ' + err); }
   try {
     const aSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(ACTIVITY_SHEET);
     if (aSh) activityGrid = aSh.getDataRange().getValues();
-  } catch (err) { errors.push('קריאת Activity לגיבוי נכשלה: ' + err); }
+  } catch (err) { backupReadsOk = false; errors.push('קריאת Activity לגיבוי נכשלה: ' + err); }
   let leadsGrid = null;
   try {
     const leadsSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LEADS_SHEET);
     if (leadsSh) leadsGrid = leadsSh.getDataRange().getValues();
-  } catch (err) { errors.push('קריאת Leads נכשלה: ' + err); }
+  } catch (err) { backupReadsOk = false; errors.push('קריאת Leads נכשלה: ' + err); }
 
   let paymentRows = [];
   try {
@@ -19151,6 +19571,7 @@ function nightlyIntegrityJob() {
 
   // ---- CHECK 3: daily snapshot + retention (AFTER check 1) ----
   try {
+    if (!backupReadsOk) throw new Error('Snapshot capture incomplete; previous backups retained');
     if ((patientsGrid && patientsGrid.length) || (leadsGrid && leadsGrid.length)) {
       // Lookup (stored id, then Drive BY NAME) BEFORE any create — the
       // outpatient job already owns EZONE-Backups; never fork a second one.
@@ -19173,8 +19594,12 @@ function nightlyIntegrityJob() {
       if (activityGrid && activityGrid.length) {
         integrityWriteSnapshot_(backupSs, integritySnapshotName_(INTEGRITY_ACTIVITY_SNAPSHOT_PREFIX, now), activityGrid);
       }
-      const deletedNames = integrityApplyRetention_(backupSs, todayPatientsName, INTEGRITY_RETENTION_DAYS);
-      if (deletedNames.length) Logger.log('nightlyIntegrityJob: retention deleted %s', deletedNames.join(', '));
+      // A missing family may be an accidental deletion. Preserve older proof
+      // until all four source families are present and have been read.
+      if (patientsGrid && leadsGrid && tasksGrid && activityGrid) {
+        const deletedNames = integrityApplyRetention_(backupSs, todayPatientsName, INTEGRITY_RETENTION_DAYS);
+        if (deletedNames.length) Logger.log('nightlyIntegrityJob: retention deleted %s', deletedNames.join(', '));
+      }
     }
   } catch (err) { errors.push('הגיבוי היומי נכשל: ' + err); }
 

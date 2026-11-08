@@ -293,7 +293,9 @@ test('server: APPROVER_ACTIONS pass only for Sandra\'s personal session (GET and
       for (const action of roleScope.APPROVER_ACTIONS) {
         for (const id of ['vered', 'shiran', 'yael']) {
           const p = await request(port, 'POST', '/api/sheets', { cookie: me(id), body: { action } });
-          assert.deepStrictEqual([p.status, p.json], [403, ROLE_FORBIDDEN], `${id} POST ${action}`);
+          const expectedDenied = action === 'approveRefundPayout' && ['shiran', 'yael'].includes(id) ?
+            { ok: false, error: 'forbidden', message: scope.FINANCE_FORBIDDEN_MESSAGE } : ROLE_FORBIDDEN;
+          assert.deepStrictEqual([p.status, p.json], [403, expectedDenied], `${id} POST ${action}`);
           const g = await request(port, 'GET', '/api/sheets?action=' + action, { cookie: me(id) });
           assert.strictEqual(g.status, 403, `${id} GET ${action}`);
         }

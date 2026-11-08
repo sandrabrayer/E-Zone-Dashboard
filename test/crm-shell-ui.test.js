@@ -34,10 +34,10 @@ const DATA = {
 };
 
 test('areasFor mirrors the server gates: finance → all (+ triage); controller → today/billing/control; no finance → no גבייה; triage never in the menu', () => {
-  assert.deepEqual(core.areasFor({ view: 'full', finance: true }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'billing', 'control', 'triage']);
+  assert.deepEqual(core.areasFor({ view: 'full', finance: true }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'billing', 'control', 'kpi', 'triage']);
   assert.deepEqual(core.areasFor({ view: 'controller', finance: false }), ['today', 'billing', 'control']);
-  assert.deepEqual(core.areasFor({ view: 'restricted', finance: false }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'triage']);
-  assert.deepEqual(core.areasFor(null), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'triage']);
+  assert.deepEqual(core.areasFor({ view: 'restricted', finance: false }), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'triage']);
+  assert.deepEqual(core.areasFor(null), ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'triage']);
   assert.ok(!core.NAV_GROUPS.some((g) => g.items.includes('triage')), 'the triage round is reached from «פניות» / the «ללא מגע» card, not from the menu');
 });
 
@@ -89,7 +89,9 @@ test('board + table share one filter; the table honours house aliases and owner;
 test('nextActionFor: stage, next action and alert are three different things', () => {
   const c = core.compute(DATA, TODAY);
   const by = Object.fromEntries(c.leads.map((l) => [l.id, l]));
-  assert.deepEqual(core.nextActionFor(by['L-visit-past'], TODAY), { text: 'דיווח מהמנהל/ת', state: 'late' });
+  // 24/10 → 27/10 = 3 days without the manager's report → late (CHANGELOG-crm-vered-feedback-1104.md: grace 3 days)
+  assert.deepEqual(core.nextActionFor(by['L-visit-past'], TODAY), { text: 'דיווח המנהל/ת באיחור', state: 'late' });
+  assert.deepEqual(core.nextActionFor(by['L-visit-past'], '2026-10-26'), { text: 'ממתין לדיווח מנהל/ת', state: 'wait' }, 'a fresh meeting is not late');
   assert.deepEqual(core.nextActionFor(by['L-visit-today'], TODAY), { text: 'פגישה היום', state: 'today' });
   assert.deepEqual(core.nextActionFor(by['L-waiting'], TODAY), { text: 'ליצור קשר', state: 'wait' }, 'no lateness by lead age (spec §1, since the Monday look PR)');
   assert.deepEqual(core.nextActionFor(by['L-new-today'], TODAY), { text: 'ליצור קשר', state: 'wait' });
@@ -172,9 +174,9 @@ test('localPhone / leadFormErrors / newLeadRow mirror the classic add-lead rules
   assert.equal(core.localPhone('052-765-4321'), '0527654321');
   assert.equal(core.localPhone('+972 52 765 4321'), '0527654321');
   assert.equal(core.localPhone('12345'), '');
-  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה', phone: '0527654321', assignedTo: 'ורד' })), ['name'], 'two words');
-  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה כהן', phone: '052', assignedTo: 'ורד' })), ['phone']);
-  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה כהן', phone: '0527654321', assignedTo: '', contactPhone: 'x' })), ['assignedTo', 'contactPhone']);
+  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה', phone: '0527654321', assignedTo: 'ורד', source: 'גוגל', house: 'רמות השבים' })), ['name'], 'two words');
+  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה כהן', phone: '052', assignedTo: 'ורד', source: 'גוגל', house: 'רמות השבים' })), ['phone']);
+  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה כהן', phone: '0527654321', assignedTo: '', contactPhone: 'x', source: 'גוגל', house: 'רמות השבים' })), ['assignedTo', 'contactPhone']);
   const row = core.newLeadRow({ name: ' דנה  כהן ', phone: '052-7654321', assignedTo: 'ורד', house: 'רמות השבים', contactName: 'אמא', contactPhone: '0501112222',
     contactRelation: 'אחר', contactRelationOther: 'שכנה', billingMode: 'contact', source: 'גוגל', note: 'x' }, 'id-1', '2026-10-27');
   assert.deepEqual([row.id, row.name, row.phone, row.stage, row.created, row.contactRelation, row.billingPhone, row.meetingOutcome, row.visitDate],
@@ -238,7 +240,7 @@ test('dischargeAuditRow mirrors app.js dischargeAuditRow; errors; movedRow carri
   assert.deepEqual([a.id, a.patientId, a.status, a.prior_status, a.exitDate, a.dischargedAt, a.disposition, a.discharge_note, a.continuity, a.fromLead, a.updatedAt], ['aud-1', 'p1', 'released', 'trial', '2026-10-27', '2026-10-27T10:00:00.000Z', 'completed', 'x', 'none', 'L1', 'T']);
   assert.equal(core.dischargeAuditRow(p, { disposition: 'completed' }, 'a', '2026-10-27T10:00:00.000Z').exitDate, '2026-10-27', 'no date → today');
   assert.equal(core.dischargeAuditRow(p, { disposition: 'completed', continuity: 'bogus' }, 'a', '2026-10-27T10:00:00.000Z').continuity, 'unknown');
-  assert.deepEqual(Object.keys(core.dischargeErrors({})), ['disposition']);
+  assert.deepEqual(Object.keys(core.dischargeErrors({})), ['disposition', 'dischargeDate'], 'a discharge date is required (CHANGELOG-crm-kpi-tab.md)');
   assert.deepEqual(Object.keys(core.dischargeErrors({ disposition: 'completed', dischargeDate: '2019-01-01' })), ['dischargeDate']);
   assert.deepEqual(core.DISCHARGE_DISPOSITIONS.map((d) => d.id), ['completed', 'stopped_early', 'released_outpatient'], 'mirrors app.js DISCHARGE_DISPOSITIONS');
   assert.deepEqual(core.CONTINUITY_CHOICES.map((c) => c.id), ['continued_outpatient', 'continued_other', 'none']);
@@ -537,11 +539,50 @@ test('C18 payment linking: detached rows from debtAging (decided ones out), cand
   assert.equal(core.linkAccepted({ ok: true, payment: { id: raw.id, linkStatus: '' } }, raw.id, 'linked'), false); assert.equal(core.linkAccepted({ ok: true }, raw.id, 'linked'), false);
 });
 
+test('CRM refund authority: raw policy amount is not payout approval; only Vered requests, Sandra approves, Ortal pays', () => {
+  const base = {
+    id: 'credit-test', patientId: 'patient-test', patientKey: 'house::dummy::2026-10-01', patientName: 'בדיקה',
+    amount: 1200, status: 'pending', approvedBy: 'מדיניות אוטומטית', payoutApprovalRequestedAt: '',
+    payoutApprovalRequestedBy: '', payoutApprovalAmount: '', payoutApprovedAt: '', payoutApprovedBy: '',
+  };
+  const actor = {
+    vered: { user: 'ורד', finance: true, view: 'full' },
+    sandra: { user: 'סנדרה', finance: true, approver: true, view: 'full' },
+    ortal: { user: 'אורטל', view: 'controller' },
+    dana: { user: 'דנה', view: 'restricted' },
+  };
+  const raw = core.creditsOf({ ok: true, credits: [base] })[0];
+  assert.equal(raw.payoutApprovalValid, false);
+  assert.equal(core.refundStageText(raw), 'נדרשת בקשת אישור של ורד');
+  assert.deepEqual(Object.fromEntries(Object.entries(actor).map(([name, a]) => [name, core.refundActionFor(raw, a)])),
+    { vered: 'request', sandra: '', ortal: '', dana: '' });
+  const requested = core.creditsOf({ ok: true, credits: [{ ...base,
+    payoutApprovalRequestedAt: '2026-11-03T09:00:00.000Z', payoutApprovalRequestedBy: 'vered', payoutApprovalAmount: 1200 }] })[0];
+  assert.equal(requested.payoutRequestCurrent, true);
+  assert.equal(core.refundActionFor(requested, actor.vered), '');
+  assert.equal(core.refundActionFor(requested, actor.sandra), 'approve');
+  assert.equal(core.refundActionFor(requested, actor.ortal), '');
+  const approved = core.creditsOf({ ok: true, credits: [{ ...base,
+    payoutApprovalRequestedAt: '2026-11-03T09:00:00.000Z', payoutApprovalRequestedBy: 'vered', payoutApprovalAmount: 1200,
+    payoutApprovedAt: '2026-11-03T09:05:00.000Z', payoutApprovedBy: 'sandra' }] })[0];
+  assert.equal(approved.payoutApprovalValid, true);
+  assert.equal(core.refundActionFor(approved, actor.ortal), 'settle');
+  assert.equal(core.refundActionFor(approved, actor.sandra), '');
+  assert.equal(core.refundActionFor(approved, actor.vered), '');
+  const changedAmount = core.creditsOf({ ok: true, credits: [{ ...base,
+    payoutApprovalRequestedAt: '2026-11-03T09:00:00.000Z', payoutApprovalRequestedBy: 'vered', payoutApprovalAmount: 1200,
+    payoutApprovedAt: '2026-11-03T09:05:00.000Z', payoutApprovedBy: 'sandra', amount: 1300 }] })[0];
+  assert.equal(changedAmount.payoutApprovalValid, false);
+  assert.equal(core.refundActionFor(changedAmount, actor.ortal), '');
+  assert.equal(core.refundActionFor(changedAmount, actor.vered), 'request');
+  assert.equal(core.refundActionFor({ ...approved, status: 'paid' }, actor.ortal), '');
+});
+
 test('esc escapes every HTML-significant character', () => {
   assert.equal(core.esc('<b>"x" & \'y\'</b>'), '&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;');
 });
 
-test('wiring: assets hashed via ASSETS, NOT in sw.js; the shell never calls a write action; links only to the classic dashboard', () => {
+test('wiring: hashed CRM assets, explicit source-owned write actions and no second finance ledger', () => {
   assert.match(SERVER_SRC, /'\/crm\/crm\.js': \{ file:/);
   assert.match(SERVER_SRC, /'\/crm\/crm\.css': \{ file:/);
   assert.ok(/'\/crm\/crm\.js', '\/crm\/crm\.css'/.test(SW_SRC), 'the CRM bundle is in BUNDLE_PATHS (C16)');
@@ -549,7 +590,7 @@ test('wiring: assets hashed via ASSETS, NOT in sw.js; the shell never calls a wr
   const actions = [...src.matchAll(/api\('([A-Za-z]+)'/g)].map((m) => m[1]).sort();
   assert.deepEqual([...new Set(actions)], ['billingControlQueue', 'contactIndex', 'debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments', 'getTasks'], 'GET reads (debtAging + getPayments: C8; getCredits: C11; getTasks: Stage 1c; contactIndex: Stage 2)');
   const writes = [...src.matchAll(/\{ action: '([A-Za-z]+)'/g)].map((m) => m[1]).sort();
-  assert.deepEqual([...new Set(writes)], ['appendFunder', 'completeTask', 'createTask', 'dischargePatient', 'editReceipt', 'logContact', 'moveLeadIrrelevant', 'reassignTask', 'removeLead', 'reportPayment', 'rescheduleTask', 'restoreLead', 'restorePatient', 'restorePatientToActive', 'saveAll', 'savePayment', 'setBillingDiscount', 'settleRefund', 'upsertBillingOverride', 'withdrawTask'], 'the write actions (C17: restore to active / as a lead): one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7), the strict payment report (C10), discount / amount / settle (C11), the task + contact actions (Stage 1c)');
+  assert.deepEqual([...new Set(writes)], ['appendFunder', 'approveRefundPayout', 'completeTask', 'createTask', 'dischargePatient', 'editReceipt', 'logContact', 'logLeadFlag', 'moveLeadIrrelevant', 'reassignTask', 'removeLead', 'reportPayment', 'requestRefundPayoutApproval', 'rescheduleTask', 'restoreLead', 'restorePatient', 'restorePatientToActive', 'saveAll', 'saveCredit', 'savePayment', 'setBillingDiscount', 'setDischargeContinuity', 'settleRefund', 'upsertBillingOverride', 'withdrawTask'], 'the write actions (saveCredit: credit edit + Sandra\'s manual credit, CHANGELOG-crm-manual-credits.md; «לעדכן המשך טיפול»: setDischargeContinuity, CHANGELOG-crm-today-card-open.md; C17: restore to active / as a lead): one-lead saveAll (C4), the lead lifecycle (C5), admission + funder (C6), discharge (C7), the strict payment report (C10), discount / amount / settle (C11), the task + contact actions (Stage 1c), the lead flags (waitlist reason / patient-side meeting change, CHANGELOG-crm-vered-feedback-1104.md)');
   assert.equal((src.match(/\/api\/outpatient-lead/g) || []).length, 2, 'the outpatient handoff: after a released_outpatient discharge (manual:false) and «העבר לאמבולטורי» (manual:true)');
   assert.ok(!/serializePatients|patients: state\.data\.patients\b/.test(src), 'patients travel only through houseSaveBody (one house as read)');
   assert.ok(!/innerHTML\s*=\s*[^;]*\b(l|lead|p|pat)\.(name|phone|note)\b(?!\))/.test(src.replace(/esc\([^)]*\)/g, 'ESC')), 'every interpolated field goes through esc()');

@@ -343,7 +343,40 @@
 // (CHANGELOG-crm-clickable-kpis.md). Stacked on v103 (PR #320); monotonic, v17 never reused.
 // v104 → v105: «גבייה לביצוע» + «ממתין לאימות אורטל» as two distinct counters (crm/crm.js) (CHANGELOG-crm-kpi-two-counters.md).
 // Stacked on v104 (PR #321); monotonic, v17 never reused.
-var CACHE_VERSION = 'v105';
+// v105 → v106: billing dates of older Payments rows read on the Israel day, not the UTC day — «דווח תשלום» on an old
+// cycle saves again (crm/crm.js) (CHANGELOG-crm-old-payment-dates.md). From the live v105; monotonic, v17 never reused.
+// v106 → v107: «החלפת משתמש» in the CRM and classic headers; the CRM drawer hides «חשבון» for Dana
+// (crm/crm.js, crm.html, crm.css, app.js, style.css) (CHANGELOG-crm-dana-default-switch-user.md).
+// From the live v106; monotonic, v17 never reused.
+// v107 → v108: «היום שלי» — every task card opens (a discharge resolves to its patient; «לעדכן המשך טיפול»
+// in the drawer), mid-width / split-screen layout (crm/crm.js, crm/crm.css) (CHANGELOG-crm-today-card-open.md).
+// From the live v107; monotonic, v17 never reused.
+// v108 → v109: the CRM top search from any area (global results, spinner, 🔍 / Enter), a direct add admits the
+// person's open lead, «כבר בבית» on an open lead, the funder save's idempotency key (crm/crm.js, crm.css, crm.html)
+// (CHANGELOG-crm-search-admit-funder.md). Stacked on v108 (PR #337); monotonic, v17 never reused.
+// v109 → v110: a patient leaving ON their billing day is not billed a new cycle in גבייה (app.js)
+// (CHANGELOG-billing-exit-day-not-due.md). From the live v109; monotonic, v17 never reused.
+// v110 → v111: «לגבייה בתאריך» in the CRM גבייה area — date picker, funder filter, KPIs, «דווח תשלום» per row
+// (crm/crm.js, crm.html loads cycle-balance.js) (CHANGELOG-crm-collect-on-date.md). Stacked on v110 (PR #354); monotonic, v17 never reused.
+// v111 → v112: an admitted lead whose patient is in a house is never shown as «בטיפול פעיל» again — classic
+// load-time heal + CRM read (app.js, crm/crm.js) (CHANGELOG-admitted-lead-stays-closed.md). From the live v111; monotonic, v17 never reused.
+// v112 → v113: CRM — app icon in the tab + menu, «פניות» → «לידים», no urgent band / «מה דחוף בבתים» in «היום שלי»,
+// manager report late only after 3 days, waitlist reason, patient-side meeting cancel / change + manager WhatsApp
+// (crm/crm.js, crm.css, crm.html) (CHANGELOG-crm-vered-feedback-1104.md). From the repo/live v112; monotonic, v17 never reused.
+// v113 → v114: «העבר לאמבולטורי» asks for the phone in the «משוחררים» row; save spinner; waitlist reason saves on click (crm/crm.js, crm.css)
+// (CHANGELOG-crm-followups-1104.md). Stacked on v113 (PR #362); monotonic, v17 never reused.
+// v114 → v115: CRM «KPI» area, «תפוסה היום», «בקרת עבודה» next to «היום שלי», «חריגים לבדיקה» in «גבייה», required
+// fields on lead / close / direct add / discharge (crm/crm.js, crm.css, crm.html) (CHANGELOG-crm-kpi-tab.md). From the repo v114; monotonic, v17 never reused.
+// v115 → v116: CRM credits — edit a saved credit and Sandra's manual «אחר» credit in the patient card (crm/crm.js)
+// (CHANGELOG-crm-manual-credits.md). From the live v115 (#366); monotonic, v17 never reused.
+// v116 → v117: bold section headings on the CRM «KPI» page (crm/crm.js, crm.css) (CHANGELOG-crm-kpi-headings.md).
+// From the live v116 (#367); monotonic, v17 never reused.
+// v117 → v118: «משימה חדשה» = date + time only, a reminder 30 min before, on «היום שלי» (crm/crm.js)
+// (CHANGELOG-crm-task-date-time.md). From the live v117 (#368); monotonic, v17 never reused.
+// v118 → v119: KPI — no timestamp / placeholder «manager» rows, no damaged-house rows, aligned headings (crm/crm.js, crm.css)
+// (CHANGELOG-crm-kpi-clean-data.md). From the live v118 (#369); monotonic, v17 never reused.
+// v119 → v120: CRM audit — collection owner, cancellation follow-up, exact control drill-downs.
+var CACHE_VERSION = 'v120';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

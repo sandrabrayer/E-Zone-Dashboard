@@ -1247,6 +1247,17 @@ function rememberedLoginUser() {
   try { return String(localStorage.getItem(LOGIN_REMEMBER_KEY) || ''); } catch (_) { return ''; }
 }
 
+/* After a PIN login on the classic page: reload so the server serves the
+ * user's default view? True when the server says this session lands on the
+ * CRM (or the URL asks for it) and the URL does not ask for the classic page.
+ * Pure — unit-tested. */
+function loginShouldReload(info, search) {
+  let view = '';
+  try { view = new URLSearchParams(String(search || '')).get('view') || ''; } catch (_) { view = ''; }
+  if (view === 'classic') return false;
+  return !!(info && (info.landing === 'crm' || view === 'crm'));
+}
+
 /* The Hebrew message for a failed login response. Pure. */
 function loginErrorMessage(status, error) {
   if (status === 429 && error === 'locked') return 'נעול ל־15 דקות — יותר מדי ניסיונות שגויים';
@@ -1335,6 +1346,10 @@ async function tryPersonalLoginWorker() {
       // Apply the view BEFORE the app is revealed, so a restricted session
       // never paints a money tab (restricted view).
       const info = await fetchSessionInfo();
+      // The user's own default view (server rule, /api/me.landing): a CRM user
+      // re-requests `/`, which the server now answers with the CRM. Only an
+      // explicit `?view=classic` keeps the classic page.
+      if (info && info.user && loginShouldReload(info, location.search)) { location.reload(); return; }
       if (info && info.user) { applySessionInfo(info); _sessionUserChecked = true; }
       else _sessionUserChecked = false; // re-read /api/me inside enterApp
       enterApp();
@@ -1428,8 +1443,37 @@ async function fetchSessionInfo() {
   }
 }
 
-/* Header line 'מחובר/ת כ: <name> · החלף'. Hidden when the session has no
- * name. החלף goes through logout → the login screen. */
+/* «החלפת משתמש» / «יציאה» (CHANGELOG-crm-dana-default-switch-user.md).
+ *   1. POST /api/logout — the server REVOKES the session token (the old cookie
+ *      value gets 401 everywhere afterwards) and expires the cookie;
+ *   2. the previous user's data leaves the page and the device: the app's DOM
+ *      is emptied, and the offline copies of `/` in the service-worker cache
+ *      (they carry the user's name and page) are deleted;
+ *   3. back to `/` (never `?view=classic`), so the PIN screen is the server's
+ *      and the next login lands on THAT user's own default view.
+ * `forget` (switch user) also drops the remembered name, so the name list is
+ * shown; «יציאה» keeps it (the same person comes back). Never throws. */
+function clearCachedPages() {
+  try {
+    if (typeof caches === 'undefined' || !caches || !caches.keys) return Promise.resolve();
+    return caches.keys().then(keys => Promise.all(keys.filter(k => String(k).indexOf('ezone-dashboard-') === 0).map(k => caches.open(k).then(c => c.keys().then(reqs => Promise.all(reqs.filter(r => {
+      try { const u = new URL(r.url); return u.pathname === '/' || u.pathname === '/index.html'; } catch (_) { return false; }
+    }).map(r => c.delete(r)))))))).catch(() => {});
+  } catch (_) { return Promise.resolve(); }
+}
+async function endSession(forget) {
+  try { await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }); } catch (_) { /* leave anyway */ }
+  if (forget) rememberLoginUser('');
+  state.sessionUser = '';
+  const app = document.getElementById('app');
+  if (app) { app.classList.add('hidden'); Array.prototype.slice.call(app.querySelectorAll('main, .screen')).forEach(n => { n.innerHTML = ''; }); }
+  await clearCachedPages();
+  location.replace('/');
+}
+function switchUser() { return endSession(true); }
+
+/* Header line 'מחובר/ת כ: <name>' + «החלפת משתמש» (44px tap target). Hidden
+ * when the session has no name. The name is a text node (never innerHTML). */
 function renderWhoami(name) {
   /* Remembered so canReverseVoid() can decide whether to OFFER the un-void
    * control. It is never the authority — upsertPayment_() re-checks against
@@ -1448,14 +1492,12 @@ function renderWhoami(name) {
   const b = document.createElement('b');
   b.textContent = name;
   el.appendChild(b);
-  el.appendChild(document.createTextNode(' · '));
   const sw = document.createElement('button');
-  sw.className = 'link-btn';
-  sw.textContent = 'החלף';
-  sw.onclick = () => busyButton(sw, 'load', async () => {
-    try { await fetch('/api/logout', { method: 'POST' }); } catch (_) { /* reload anyway */ }
-    location.reload();
-  });
+  sw.type = 'button';
+  sw.id = 'switch-user';
+  sw.className = 'btn ghost-sm switch-user';
+  sw.textContent = 'החלפת משתמש';
+  sw.onclick = () => busyButton(sw, 'load', switchUser);
   el.appendChild(sw);
   el.classList.remove('hidden');
 }
@@ -1490,10 +1532,7 @@ function initPin() {
   initPinAdmin();
 
   const logoutBtn = document.getElementById('logout');
-  if (logoutBtn) logoutBtn.onclick = () => busyButton(logoutBtn, 'load', async () => {
-    try { await fetch('/api/logout', { method: 'POST' }); } catch (_) { /* reload anyway */ }
-    location.reload();
-  });
+  if (logoutBtn) logoutBtn.onclick = () => busyButton(logoutBtn, 'load', () => endSession(false));
 
   initTabs();
   initGlobalSearch();
@@ -2395,6 +2434,9 @@ function promoteEnteredLeads() {
   return created;
 }
 
+/* Board stages a stale save can reopen an admitted lead into. */
+const ADMITTED_REOPENED_STAGES = ['new', 'visit', 'waitlist', 'paid'];
+
 /**
  * One-time, idempotent self-heal. Any lead still parked at stage 'entry' /
  * 'entered' that ALREADY has a matching patient is retired to the terminal
@@ -2415,13 +2457,28 @@ function retireAdmittedLeads() {
 
   const byFromLead = new Set();
   const byNameHouse = new Set();
+  // A patient in a house (not released) owns the lead it was admitted from.
+  const inHouseFromLead = new Map();
   state.patients.forEach(p => {
     if (p.fromLead) byFromLead.add(String(p.fromLead));
+    if (p.fromLead && p.status !== 'released') inHouseFromLead.set(String(p.fromLead), p);
     if (p.name && p.houseId) byNameHouse.add(`${p.houseId}::${String(p.name).trim()}`);
   });
 
   state.leads.forEach(lead => {
     const stage = String(lead.stage || '').toLowerCase();
+    /* A board lead (new / visit / waitlist / paid) whose patient is in a house
+     * by the EXACT fromLead link was admitted and then reopened by a stale
+     * save (CHANGELOG-admitted-lead-stays-closed.md — מתן כחלון): retire it
+     * again. The link only — never a name match — for these stages. */
+    if (ADMITTED_REOPENED_STAGES.indexOf(stage) >= 0) {
+      if (lead.id && inHouseFromLead.has(String(lead.id))) {
+        lead.stage = 'admitted';
+        if (!lead.entryDate) lead.entryDate = isoDate(inHouseFromLead.get(String(lead.id)).date);
+        retired.push(lead);
+      }
+      return;
+    }
     if (stage !== 'entry' && stage !== 'entered') return;
 
     const matchedByFromLead = lead.id && byFromLead.has(String(lead.id));
@@ -10489,7 +10546,7 @@ async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate
 
   const lineHtml = (l, i) => {
     const typeLabel = CREDIT_TYPE_LABELS[l.creditType] || l.creditType;
-    const statusOpts = creditStatusOptionKeys(l.status, canDelete()).map(s =>
+    const statusOpts = creditStatusOptionKeys(l.status, canDelete()).filter(s => s !== 'paid' || l.status === 'paid').map(s =>
       `<option value="${s}" ${l.status === s ? 'selected' : ''}>${CREDIT_STATUS_LABELS[s]}</option>`).join('');
     const isOther = l.creditType === 'other';
     const b = l.basis;
@@ -10525,8 +10582,8 @@ async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate
           <input type="text" name="${isOther ? 'reason' : 'overrideReason'}" maxlength="300" value="${escapeHtml(isOther ? l.reason : l.overrideReason)}" />
         </div>
         <div class="form-row credit-inline">
-          <label>אושר ע"י</label>
-          <input type="text" name="approvedBy" maxlength="40" value="${escapeHtml(l.approvedBy || '')}" />
+          <label>מקור החישוב / אישור חריגה</label>
+          <span class="p-val">${escapeHtml(l.approvedBy || '—')}</span>
         </div>
         <div class="form-row credit-inline">
           <label>תאריך החלטה</label>
@@ -10583,7 +10640,7 @@ async function showCreditsModal({ patient, patientId, patientKey: pKey, exitDate
       const val = (n) => { const el = fs.querySelector(`[name="${n}"]`); return el ? el.value : undefined; };
       const amount = val('amount');
       if (amount !== undefined) l.amount = amount === '' ? '' : Number(amount);
-      ['overrideReason', 'reason', 'status', 'notes', 'allocationMonth', 'approvedBy', 'decidedDate', 'paidDate', 'method'].forEach(n => {
+      ['overrideReason', 'reason', 'status', 'notes', 'allocationMonth', 'decidedDate', 'paidDate', 'method'].forEach(n => {
         if (val(n) !== undefined) l[n] = val(n);
       });
       l.payoutDate = linePayoutDate(l, l.decidedDate);
@@ -10765,6 +10822,12 @@ const REFUND_ACTION_ERRORS = {
   stay_not_found:             'שורת השחרור לא נמצאה',
   unknown_credit:             'הזיכוי לא נמצא — הרשימה רועננה',
   override_requires_approver: 'שינוי סכום זיכוי — באישור סנדרה בלבד',
+  approval_required: 'לא ניתן לשלם לפני בקשת ורד ואישור סנדרה לסכום הזה',
+  request_required: 'ורד עדיין לא שלחה בקשת אישור לסנדרה',
+  approval_amount_changed: 'סכום ההחזר השתנה — נדרש אישור מחדש',
+  credit_id_required: 'צריך לשמור את ההחזר לפני אישור',
+  use_settleRefund: 'סימון החזר כשולם מתבצע על ידי אורטל בלבד לאחר אישור סנדרה',
+  paid_locked: 'לא ניתן להחזיר החזר שכבר שולם למצב ממתין',
 };
 function refundActionErrorText(e) {
   if (isLockBusyError(e)) return LOCK_BUSY_MESSAGE_HE;
@@ -10831,7 +10894,11 @@ function refundRuleVersionText(v) {
  * to her read view directly; Shiran / Yael never see the list at all. */
 function refundRowControls() {
   const edit = state.mode === 'edit' && financeView() && !controllerView();
-  return { settle: edit || billingReadView(), exception: edit && state.approver === true };
+  // Role-specific presentation only. Node + Apps Script recheck stable personal IDs.
+  return { request: edit && state.sessionUser === 'ורד',
+    approve: edit && state.approver === true && state.sessionUser === 'סנדרה',
+    settle: billingReadView() && state.sessionUser === 'אורטל',
+    exception: edit && state.approver === true };
 }
 
 /* Pure: the list as HTML. Every value goes through escapeHtml. */
@@ -10865,12 +10932,15 @@ function payoutForecastHtml(data, controls) {
         + cell('סיבת עזיבה', esc(refundLeaveReasonText(r)))
         + cell('ימי שהייה', esc(r.daysStayed === '' || r.daysStayed == null ? '—' : r.daysStayed))
         + cell('ימי זיכוי', esc(r.refundDays === '' || r.refundDays == null ? '—' : r.refundDays))
-        + cell('סכום זיכוי', esc(fmtShekel(r.amount)) + (r.overridden ? ' <span class="credit-cap">חריגה מאושרת</span>' : ''))
+        + cell('סכום זיכוי', esc(fmtShekel(r.amount)) + (r.overridden ? ' <span class="credit-cap">חריגה מסכום המדיניות</span>' : ''))
+        + cell('אישור לתשלום', esc(r.payoutApprovalValid ? 'אושר על ידי סנדרה' : r.payoutApprovalRequestedBy === 'vered' ? 'ממתין לאישור סנדרה' : 'נדרשת בקשת ורד'))
         + cell('כלל', `${esc(refundRuleVersionText(r.ruleVersion))} · <span class="credit-rule">${esc(payoutForecastRuleText(r.rule))}</span>`)
         + cell('תאריך תשלום', `<bdi>${esc(formatDateHe(r.payoutDate) || '—')}</bdi>`);
-      if (ctl.settle || ctl.exception) {
+      if (ctl.request || ctl.approve || ctl.settle || ctl.exception) {
         html += `<div class="irrelevant-actions">`
-          + (ctl.settle ? `<button type="button" class="btn small primary" data-refund-action="settle" data-refund-row="${i}">סמן כשולם</button>` : '')
+          + (ctl.request && r.payoutApprovalRequestedBy !== 'vered' ? `<button type="button" class="btn small primary" data-refund-action="request" data-refund-row="${i}">שלחי לסנדרה לאישור</button>` : '')
+          + (ctl.approve && r.payoutApprovalRequestedBy === 'vered' && !r.payoutApprovalValid ? `<button type="button" class="btn small primary" data-refund-action="approve" data-refund-row="${i}">אשרי תשלום לאורטל</button>` : '')
+          + (ctl.settle && r.payoutApprovalValid ? `<button type="button" class="btn small primary" data-refund-action="settle" data-refund-row="${i}">סמן כשולם</button>` : '')
           + (ctl.exception ? `<button type="button" class="btn small" data-role="approver" data-refund-action="exception" data-refund-row="${i}">חריגה</button>` : '')
           + `</div>`;
       }
@@ -10937,7 +11007,19 @@ function refundRowTarget(r) {
 /* The two refund writes behind the row buttons. Both throw on a refusal
  * (apiPost: {ok:false}, lock_busy after its one retry) so the modal stays
  * open with the Hebrew reason; the list is refreshed on success. */
+async function requestRefundPayoutRow(r) {
+  const res = await trackedWrite([_creditsGuard], () => apiPost({ action: 'requestRefundPayoutApproval', ...refundRowTarget(r) }));
+  await afterRefundWrite();
+  return res;
+}
+async function approveRefundPayoutRow(r) {
+  if (!r || !r.creditId) throw new Error('בקשה אינה שמורה במקור');
+  const res = await trackedWrite([_creditsGuard], () => apiPost({ action: 'approveRefundPayout', creditId: r.creditId }));
+  await afterRefundWrite();
+  return res;
+}
 async function settleRefundRow(r, paidDate, method) {
+  if (!r || !r.creditId || !r.payoutApprovalValid) throw new Error('לא ניתן לשלם ללא אישור סנדרה');
   const res = await trackedWrite([_creditsGuard], () => apiPost({ action: 'settleRefund', ...refundRowTarget(r), paidDate, method }));
   await afterRefundWrite();
   return res;
@@ -10958,7 +11040,7 @@ async function afterRefundWrite() {
 /* «סמן כשולם» — the EXPLICIT mark-paid action on one row: date + method,
  * then action=settleRefund (the server validates both again). */
 function showSettleRefundModal(r) {
-  if (!refundRowControls().settle || !r) return;
+  if (!refundRowControls().settle || !r || !r.payoutApprovalValid) return;
   const root = document.getElementById('modal-root');
   if (!root) return;
   const back = document.createElement('div');
@@ -11141,8 +11223,17 @@ function initPayoutForecastControls() {
     if (btn) {
       const f = payoutForecastState();
       const row = f.data && f.data.toPay && f.data.toPay.rows ? f.data.toPay.rows[Number(btn.getAttribute('data-refund-row'))] : null;
-      if (btn.getAttribute('data-refund-action') === 'settle') showSettleRefundModal(row);
-      else if (btn.getAttribute('data-refund-action') === 'exception') showRefundExceptionModal(row);
+      const act = btn.getAttribute('data-refund-action');
+      if (act === 'settle') showSettleRefundModal(row);
+      else if (act === 'exception') showRefundExceptionModal(row);
+      else if (act === 'request' && row && refundRowControls().request) {
+        busyButton(btn, 'save', () => requestRefundPayoutRow(row)).then(() => showToast('בקשת האישור נרשמה עבור סנדרה'))
+          .catch(err => showError(refundActionErrorText(err)));
+      } else if (act === 'approve' && row && refundRowControls().approve && row.payoutApprovalRequestedBy === 'vered') {
+        if (typeof confirm === 'function' && !confirm('לאשר לאורטל תשלום החזר בסך ' + fmtShekel(row.amount) + ' עבור ' + row.patientName + '?')) return;
+        busyButton(btn, 'save', () => approveRefundPayoutRow(row)).then(() => showToast('התשלום אושר לאורטל'))
+          .catch(err => showError(refundActionErrorText(err)));
+      }
       return;
     }
     const link = e.target && e.target.closest && e.target.closest('[data-open-debt-aging]');
@@ -12864,10 +12955,20 @@ function patientStayOverlapsRange(patient, fromISO, toISO) {
 
 /* A patient is due on a date when their billing anchor falls on it AND their
  * stay covered it. Both halves, always — the day-of-month half alone is the
- * bug above. */
+ * bug above.
+ *
+ * THE EXIT DAY OPENS NO CYCLE (CHANGELOG-billing-exit-day-not-due.md). The
+ * exit day is a stay day (patientStayCoversDate keeps it), but a NEW cycle
+ * that would start on it is never billed: טמיר בן מיור entered 27/07, left on
+ * 27/10, and the גבייה list still asked for 30,000 ₪ for 27/10–26/11. The
+ * server already draws the line there (Code.gs recCycleDueDates_ and
+ * debtAging_: none on/after exit; app.js projectedCycleDueDates) — this
+ * aligns the daily list with them. */
 function patientDueOnDate(patient, dateISO) {
   const d = dayOfMonth(dateISO);
   if (!d || !patientStayCoversDate(patient, dateISO)) return false;
+  const exit = patientExitISO(patient);
+  if (exit && exit <= isoDate(dateISO)) return false;
   return dayOfMonth(patient && patient.date) === d;
 }
 

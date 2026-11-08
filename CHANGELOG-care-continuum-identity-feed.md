@@ -14,3 +14,7 @@ The pre-discharge continuation flow and the discharge-to-Outpatient handoff curr
 
 ## Release
 This PR changes Apps Script source and therefore would auto-deploy if merged. It must remain draft/unmerged until Sandra separately approves release.
+
+## 8 November 2026 — synchronized draft to current production
+
+This *same existing PR #329* was re-integrated with Dashboard's current production source (after merged #371), preserving all current code and tests while applying only the additive fields and source-backed assertions. No release, Apps Script push, data migration or credentials change is authorized by this draft update. Outpatient #137/#138 and Dashboard #330 still need safe integration and standalone approval.

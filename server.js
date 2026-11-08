@@ -23,6 +23,7 @@ const {
   EXPECTED_DISCHARGES_ACTION, ALL_USERS_READ_ACTIONS, canViewExpectedDischarges,
 } = require('./lib/role-scope');
 const { CRM_ENABLED_VAR, CRM_DEFAULT_VAR, serveCrmShell } = require('./lib/crm-shell-flag');
+const { createRevocationStore } = require('./lib/session-revocation');
 const { buildXlsxReport, isoDayInIsrael, XLSX_MIME } = require('./lib/xlsx-report');
 const {
   createAssetStore, versionAssetRefs, isCurrentVersion, immutableHeaders, sendAsset, sendCompressedText,
@@ -30,6 +31,7 @@ const {
 const { buildRefundForecastSpec, isForecastResponse, contentDisposition } = require('./lib/refund-forecast-xlsx');
 const { buildCleanupSpec, isCleanupResponse, cleanupContentDisposition } = require('./lib/cleanup-xlsx');
 const { handOffAmbulatoryLeads, handOffDischarge } = require('./lib/ambulatory-handoff');
+const { exactId, createStatusReader } = require('./lib/outpatient-handoff-status');
 const {
   buildBillingControlSpec, isBillingControlResponse, billingControlContentDisposition,
 } = require('./lib/billing-control-xlsx');
@@ -115,6 +117,8 @@ if (!PROXY_SECRET) {
  * mirroring the getAdmittedRoster secret discipline on the Apps Script side). */
 const OUTPATIENT_LEAD_URL    = process.env.OUTPATIENT_LEAD_URL    || '';
 const OUTPATIENT_LEAD_SECRET = process.env.OUTPATIENT_LEAD_SECRET || '';
+// Separate read-only OUT feed secret. Never use CREATE_LEAD_SECRET for reads.
+const HANDOFF_STATUS_SECRET = process.env.HANDOFF_STATUS_SECRET || '';
 
 /* The shared code (APP_PIN) and its dual window (APP_PIN_UNTIL) were removed
  * on 2026-10-04 (personal PINs PR C, CHANGELOG-personal-pins-cleanup.md):
@@ -825,10 +829,19 @@ function parseMeetingReportCookie(cookieHeader) {
  *                      personal cookie that was reset or revoked (→ 401)
  * `registry` defaults to the validated USER_PIN_HASHES. A cookie without a
  * personal id (the retired shared APP_PIN format) is always 'unauthorized'. */
+/* «החלפת משתמש» (CHANGELOG-crm-dana-default-switch-user.md): tokens ended by
+ * POST /api/logout. Every session check below goes through readLiveSession, so
+ * a logged-out token is refused (401) even if someone kept a copy of it. */
+const REVOKED_SESSIONS = createRevocationStore();
+function readLiveSession(token, secret) {
+  if (!token || REVOKED_SESSIONS.isRevoked(token)) return null;
+  return readSession(token, secret);
+}
+
 function sessionAuthStatus(cookieHeader, secret, registry) {
   if (typeof secret !== 'string' || secret.length === 0) return 'not_configured';
   const token = parseSessionCookie(cookieHeader);
-  const session = token ? readSession(token, secret) : null;
+  const session = readLiveSession(token, secret);
   if (session && currentPrincipal(session, registry)) return 'ok';
   return 'unauthorized';
 }
@@ -845,7 +858,7 @@ function currentPrincipal(session, registry) {
  * resolvePrincipal), or null. */
 function sessionPrincipalFromRequest(req, registry) {
   if (!SESSION_SECRET) return null;
-  const session = readSession(parseSessionCookie(req.headers.cookie), SESSION_SECRET);
+  const session = readLiveSession(parseSessionCookie(req.headers.cookie), SESSION_SECRET);
   return currentPrincipal(session, registry);
 }
 
@@ -1080,7 +1093,7 @@ function viewFilteredResponse(action, data, principal) {
 /* Apps Script actions only the server itself may call — never forwarded from
  * the browser (CHANGELOG-meeting-with-ambulatory.md: the send log behind the
  * «אמבולטורי» handoff must not be forgeable from a page). */
-const SERVER_ONLY_ACTIONS = Object.freeze(['recordOutpatientLeadSend', 'dischargeOutpatientPayload']);
+const SERVER_ONLY_ACTIONS = Object.freeze(['recordOutpatientLeadSend', 'dischargeOutpatientPayload', 'getOutpatientHandoffRef']);
 function refuseServerOnlyActions(req, res, next) {
   const src = req.method === 'GET' ? (req.query || {}) : (req.body || {});
   if (SERVER_ONLY_ACTIONS.indexOf(src.action) < 0) return next();
@@ -1473,7 +1486,20 @@ app.get('/api/debug/last-load', requireSession, requireFinance, (_req, res) => {
  * AuditLog. Idempotent: a sent row is never sent again. → { status, body }.
  * Never throws. Deps injectable for the tests. */
 const DISCHARGE_OUTPATIENT_FAILED_HE = 'יצירת ליד טיפול חוץ נכשלה — לא נשלח. אפשר לנסות שוב ב«העבר לאמבולטורי».';
-const DISCHARGE_OUTPATIENT_NO_PHONE_HE = 'לא נשלח לאמבולטורי: אין טלפון לליד של המטופל. יש להוסיף טלפון לליד ולנסות שוב.';
+const DISCHARGE_OUTPATIENT_NO_PHONE_HE = 'לא נשלח לאמבולטורי: אין טלפון למטופל/ת. יש להזין טלפון בשורה של המטופל/ת ב«משוחררים» ולשלוח שוב.';
+const DISCHARGE_OUTPATIENT_BAD_PHONE_HE = 'מספר הטלפון אינו תקין — 9 או 10 ספרות, מתחיל ב-0.';
+/* A phone typed for this send (CHANGELOG-crm-followups-1104.md): digits only,
+ * 9–10 after normalising (a lost leading zero of a mobile is restored). '' = none
+ * given; null = given but invalid. Pure. */
+function dischargeTypedPhone(raw) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return '';
+  if (String(raw).length > 30) return null;
+  let d = String(raw).replace(/[\s\-().\u200e\u200f]/g, '');
+  if (/^\+972/.test(d)) d = '0' + d.slice(4);
+  if (!/^\d+$/.test(d)) return null;
+  if (/^5\d{8}$/.test(d)) d = '0' + d;
+  return /^0\d{8,9}$/.test(d) ? d : null;
+}
 async function dischargeOutpatientHandoff(body, user, principal, deps) {
   const d = deps || {};
   const post = d.sheetsPost || sheetsPost;
@@ -1483,14 +1509,17 @@ async function dischargeOutpatientHandoff(body, user, principal, deps) {
     return { status: 400, body: { ok: false, error: 'bad_discharge_id' } };
   }
   const manual = b.manual === true;
+  const phone = dischargeTypedPhone(b.phone);
+  if (phone === null) return { status: 400, body: { ok: false, error: 'bad_phone', message: DISCHARGE_OUTPATIENT_BAD_PHONE_HE } };
   let prep;
   try {
-    prep = await post({ action: 'dischargeOutpatientPayload', dischargeId, manual, user }, principal);
+    prep = await post(Object.assign({ action: 'dischargeOutpatientPayload', dischargeId, manual, user }, phone ? { phone } : {}), principal);
   } catch (err) {
     return { status: 502, body: { ok: false, error: 'sheets_unreachable', message: safeErrorMessage(err) } };
   }
   if (!prep || prep.ok !== true) {
     const error = prep && typeof prep.error === 'string' ? prep.error.slice(0, 60) : 'bad_response';
+    if (error === 'bad_phone') return { status: 400, body: { ok: false, error, message: DISCHARGE_OUTPATIENT_BAD_PHONE_HE } };
     return { status: error === 'not_found' || error === 'not_open' ? 404 : 502, body: { ok: false, error } };
   }
   if (prep.eligible === false) return { status: 200, body: { ok: true, skipped: 'not_outpatient' } };
@@ -1505,6 +1534,67 @@ async function dischargeOutpatientHandoff(body, user, principal, deps) {
   return { status: 502, body: { ok: false, error: out.error,
     message: out.error === 'no_phone' ? DISCHARGE_OUTPATIENT_NO_PHONE_HE : DISCHARGE_OUTPATIENT_FAILED_HE } };
 }
+
+
+/* The only authorized Dashboard → OUT status read path. The supplied lead/
+ * discharge ID is resolved against an existing *verified* Dashboard AuditLog
+ * send, never a browser-provided outpatientId, name, phone, or loose match.
+ * No request here writes to either workbook or creates a second task. */
+function outpatientStatusPost(outpatientId) {
+  return new Promise((resolve, reject) => {
+    const target = OUTPATIENT_LEAD_URL + (OUTPATIENT_LEAD_URL.includes('?') ? '&' : '?') + 'action=getHandoffStatus';
+    const payload = JSON.stringify({ action: 'getHandoffStatus', secret: HANDOFF_STATUS_SECRET, outpatientIds: [outpatientId] });
+    followingRequest({
+      method: 'POST', headers: {
+        'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload),
+        'Accept': 'application/json',
+      },
+    }, target, payload, resolve, reject, 0);
+  });
+}
+const readVerifiedOutpatientStatus = createStatusReader(async (id) => {
+  // Bounded user-visible read; underlying request is GET-equivalent, never a
+  // business write. A timeout is UNKNOWN, not 'no contact' or 'not relevant'.
+  let timer;
+  try {
+    return await Promise.race([
+      outpatientStatusPost(id),
+      new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 14000); }),
+    ]);
+  } finally { clearTimeout(timer); }
+});
+
+app.get('/api/outpatient-handoff-status', requireSession, requireProxySecret, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const principal = sessionPrincipalFromRequest(req);
+  if (!principal || isControllerView(principal)) return res.status(403).json({ ok: false, error: 'forbidden' });
+  const input = req.query || {};
+  const leadId = exactId(input.leadId);
+  const dischargeId = exactId(input.dischargeId);
+  if ((!!leadId === !!dischargeId) || (input.leadId && !leadId) || (input.dischargeId && !dischargeId)) {
+    return res.status(400).json({ ok: false, error: 'one_exact_source_id_required' });
+  }
+  let link;
+  try {
+    link = await sheetsPost({ action: 'getOutpatientHandoffRef', user: principal.user, leadId, dischargeId }, principal);
+  } catch (_) {
+    return res.status(503).json({ ok: false, verified: false, reason: 'dashboard_source_unavailable' });
+  }
+  if (!link || link.ok !== true) {
+    return res.status(503).json({ ok: false, verified: false, reason: 'source_link_unverified' });
+  }
+  if (link.linked !== true) {
+    return res.json({ ok: true, verified: false, reason: link.reason || 'no_verified_send' });
+  }
+  const outpatientId = exactId(link.outpatientId);
+  if (!outpatientId) return res.json({ ok: true, verified: false, reason: 'missing_exact_id' });
+  if (!OUTPATIENT_LEAD_URL || !HANDOFF_STATUS_SECRET) {
+    return res.status(503).json({ ok: false, verified: false, reason: 'status_feed_not_configured' });
+  }
+  const status = await readVerifiedOutpatientStatus(outpatientId);
+  if (!status.verified) return res.status(503).json({ ok: false, verified: false, reason: status.reason });
+  return res.json(Object.assign({ ok: true }, status));
+});
 
 /* POST /api/outpatient-lead — browser sends { name, phone, house, note }; we
  * inject the shared secret from Railway env (never exposed to the client) and
@@ -1873,13 +1963,48 @@ app.get('/api/me', requireSession, (req, res) => {
     // Operational view (CRM spec §2, Dana): display only — the money actions
     // are refused by their own gates and getData is projected server-side.
     ops: isOpsView(p),
+    // Where `/` lands this session ('crm' | 'classic') — the same rule the
+    // page route uses (lib/crm-shell-flag.js), so a fresh PIN login (also
+    // after «החלפת משתמש») opens the user's own default view. Display only.
+    landing: serveCrmShell({ [CRM_ENABLED_VAR]: CRM_ENABLED, [CRM_DEFAULT_VAR]: CRM_DEFAULT }, {}, p, principalView(p)) ? 'crm' : 'classic',
   });
 });
 
-/* POST /api/logout — clear the session cookie (expire it immediately). Open
- * route: clearing a credential never needs one. The client reloads afterward,
- * which re-hits getData, gets 401, and shows the PIN screen. */
+/* Same-origin check for a state-changing request (CHANGELOG-crm-dana-default-switch-user.md).
+ * The session cookie is SameSite=Strict; this is the second layer: a browser
+ * request that says it is cross-site (Sec-Fetch-Site) or names another
+ * Origin is refused. A request with neither header (curl, old browsers) is
+ * not a cross-site browser request and passes. Pure apart from the headers. */
+function isSameOriginRequest(req) {
+  const h = req.headers || {};
+  const site = String(h['sec-fetch-site'] || '').toLowerCase();
+  if (site && site !== 'same-origin' && site !== 'none') return false;
+  const origin = h.origin;
+  if (origin === undefined || origin === '') return true;
+  let host;
+  try { host = new URL(String(origin)).host.toLowerCase(); } catch (_) { return false; }
+  const allowed = [h.host, h['x-forwarded-host']]
+    .filter(Boolean)
+    .map((v) => String(v).split(',')[0].trim().toLowerCase());
+  return allowed.indexOf(host) >= 0;
+}
+
+/* POST /api/logout — «החלפת משתמש» / «יציאה». Ends the session on the SERVER:
+ * a verified token is revoked (REVOKED_SESSIONS, until its own expiry), so the
+ * old cookie value gets 401 on every route afterwards; then the cookie is
+ * expired in the browser. Same-origin only (403 otherwise). Open otherwise:
+ * clearing a credential never needs one, and a request without a valid
+ * session still clears the cookie. Logged with the user id only. */
 app.post('/api/logout', (req, res) => {
+  if (!isSameOriginRequest(req)) {
+    console.warn('[logout] 403 cross-origin');
+    return res.status(403).json({ ok: false, error: 'forbidden_origin', message: 'הבקשה נחסמה — מקור לא מורשה' });
+  }
+  const token = parseSessionCookie(req.headers.cookie);
+  const session = SESSION_SECRET && token ? readSession(token, SESSION_SECRET) : null;
+  if (session && REVOKED_SESSIONS.revoke(token, session.expiry)) {
+    console.log(`[logout] session ended user=${session.id || session.auth}`);
+  }
   const parts = [
     `${SESSION_COOKIE}=`,
     'HttpOnly',
@@ -2266,6 +2391,8 @@ module.exports = {
   followingRequest,
   parseSessionCookie,
   sessionAuthStatus,
+  isSameOriginRequest,
+  REVOKED_SESSIONS,
   requireSession,
   buildSessionCookie,
   requestIsHttps,
@@ -2328,6 +2455,8 @@ module.exports = {
   dischargeOutpatientHandoff,
   DISCHARGE_OUTPATIENT_FAILED_HE,
   DISCHARGE_OUTPATIENT_NO_PHONE_HE,
+  DISCHARGE_OUTPATIENT_BAD_PHONE_HE,
+  dischargeTypedPhone,
   // Write & handoff diagnostics (in-memory state exposed for the test harness;
   // the running server mutates the same objects the tests inspect).
   recordWrite,

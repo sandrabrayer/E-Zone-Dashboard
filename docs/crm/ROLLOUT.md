@@ -227,6 +227,7 @@ A test pins this.
 | C16 (#307, merged) | PWA | public/sw.js, public/crm/crm.html | strategy matrix, shell tags | **v93 → v94** | No | revert (next bump > v94) |
 | C17 (#308, merged) | UI write | public/crm/crm.js | discharged list, restore (two ways), manual Outpatient handoff; browser scenario | No | No | flag off, or revert |
 | C18 | UI write | public/crm/crm.js | payment linking (link / not-a-patient via savePayment); browser scenario | No | No | flag off, or revert |
+| «לגבייה בתאריך» | UI read + existing write | public/crm/crm.js, crm.html | classic daily due list in the CRM גבייה area; «דווח תשלום» reuses the C10 form (CHANGELOG-crm-collect-on-date.md) | No | No | revert |
 | C9 (#298, merged) | UI read | public/crm/crm.js | `patientAccount` — the drawer's «חשבון» tab over the shared C8 reads; browser scenario | No | No | flag off, or revert |
 
 ---

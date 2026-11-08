@@ -25,8 +25,9 @@
     { id: 'waitlist', label: 'רשימת המתנה' }, { id: 'paid', label: 'בטיפול פעיל' },
   ];
   const AREAS = [
-    { id: 'today', label: 'היום שלי' }, { id: 'leads', label: 'פניות' }, { id: 'occupancy', label: 'תפוסה' },
-    { id: 'clients', label: 'מטופלים' }, { id: 'calendar', label: 'יומן' }, { id: 'billing', label: 'גבייה' }, { id: 'control', label: 'בקרה' },
+    { id: 'today', label: 'היום שלי' }, { id: 'leads', label: 'לידים' }, { id: 'occupancy', label: 'תפוסה' },
+    { id: 'clients', label: 'מטופלים' }, { id: 'calendar', label: 'יומן' }, { id: 'billing', label: 'גבייה' }, { id: 'control', label: 'בקרת עבודה' },
+    { id: 'kpi', label: 'KPI' },   // CHANGELOG-crm-kpi-tab.md: slices, occupancy %, conversion, break-even
     { id: 'triage', label: 'רשומות שדורשות בירור' },   // Stage 3: reached from «פניות» / the «ללא מגע» card, not from the menu
   ];
   const WAIT_DAYS = 3;
@@ -87,6 +88,14 @@
     if (!localPhone(v && v.phone)) out.phone = 'יש להזין טלפון ישראלי תקין (10 ספרות)';
     if (!s(v && v.assignedTo)) out.assignedTo = 'יש לבחור משוייך ל';
     if (s(v && v.contactPhone) && !localPhone(v.contactPhone)) out.contactPhone = 'טלפון הפונה אינו תקין';
+    /* Nothing is saved with a field missing (Sandra 05/11/2026): a source, a house (unless the
+     * meeting is with «אמבולטורי»), and the contact / billing details the form says it has. */
+    if (!s(v && v.source)) out.source = 'יש לבחור מקור ליד';
+    if (!s(v && v.house) && s(v && v.meetingWith) !== MEETING_WITH_AMBULATORY) out.house = 'יש לבחור בית (או «נפגש/ת עם: אמבולטורי»)';
+    if (s(v && v.contactName) && !s(v && v.contactRelation)) out.contactRelation = 'יש לבחור קשר למטופל';
+    if (s(v && v.contactRelation) === 'אחר' && !s(v && v.contactRelationOther)) out.contactRelationOther = 'יש לפרט את הקשר';
+    if (s(v && v.billingMode) === 'contact' && !localPhone(v && v.contactPhone)) out.contactPhone = 'גבייה דרך הפונה — חסר טלפון פונה תקין';
+    if (s(v && v.billingMode) === 'other' && !localPhone(v && v.billingOther)) out.billingOther = 'יש להזין טלפון תקין לגבייה';
     return out;
   }
   /* A new lead row (every LEAD_COLUMNS key the classic form writes). Pure. */
@@ -152,10 +161,55 @@
       fromLead: leadId, exitDate: '', source: 'direct_admin', notes: s(v.notes), updatedAt: '', updatedBy: '', personId: '' };
     return { lead: lead, patient: patient };
   }
+  /* ---- CHANGELOG-crm-search-admit-funder.md ---- */
+  /* A name as compared: spaces collapsed, lower case. Pure. */
+  function nameKey(v) { return s(v).replace(/\s+/g, ' ').toLowerCase(); }
+  const OPEN_STAGE_IDS = ['new', 'visit', 'waitlist', 'paid'];
+  /* Candidate for an OPERATOR review only: a phone may belong to another family
+   * member and a name is not a unique identity. NEVER authorize admission or
+   * mark a lead admitted from this match alone. Prefer selecting the exact
+   * lead in its own card; otherwise confirm an independent direct intake. */
+  function openLeadOfPerson(leads, name, phone) {
+    const nk = nameKey(name), ph = localPhone(phone);
+    const open = (leads || []).filter(function (l) { return l && OPEN_STAGE_IDS.indexOf(s(l.stage)) >= 0; });
+    let hits = ph ? open.filter(function (l) { return localPhone(l.phone) === ph; }) : [];
+    if (!hits.length && nk.split(' ').length >= 2) hits = open.filter(function (l) { return nameKey(l.name) === nk; });
+    if (hits.length === 1) return hits[0];
+    return hits.length > 1 ? 'ambiguous' : null;
+  }
+  /* An open board lead whose person is ALREADY in a house (added there directly, so the
+   * lead itself was never admitted): the in-house patient with the same full name, or
+   * whose own lead has the same phone. → the patient, or null. Pure. */
+  function leadAlreadyInHouse(lead, patients, leads) {
+    if (!lead || OPEN_STAGE_IDS.indexOf(s(lead.stage)) < 0) return null;
+    const nk = nameKey(lead.name), ph = localPhone(lead.phone);
+    const phoneOf = {};
+    (leads || []).forEach(function (l) { if (l && l.id) phoneOf[s(l.id)] = localPhone(l.phone); });
+    const hits = (patients || []).filter(function (p) {
+      if (!p || !inHouse(p) || s(p.fromLead) === s(lead.id)) return false;
+      return (nk.split(' ').length >= 2 && nameKey(p.name) === nk) || (ph && phoneOf[s(p.fromLead)] === ph);
+    });
+    return hits.length === 1 ? hits[0] : null;
+  }
+  /* The top search box from any area: leads (every stage on Leads), patients (any status)
+   * by name, phone digits (the lead's or the patient's lead's) or house. '' → null. Pure. */
+  function globalSearch(c, q) {
+    const t = nameKey(q);
+    if (!t) return null;
+    const digits = t.replace(/\D/g, '');
+    const phoneHit = function (ph) { return digits.length >= 4 && s(ph).replace(/\D/g, '').indexOf(digits) >= 0; };
+    const phoneOf = {};
+    (c.leads || []).forEach(function (l) { phoneOf[s(l.id)] = s(l.phone); });
+    const leads = (c.leads || []).filter(function (l) { return nameKey(l.name).indexOf(t) >= 0 || phoneHit(l.phone) || nameKey(houseName(l.house)).indexOf(t) >= 0; });
+    const patients = (c.patients || []).filter(function (p) { return nameKey(p.name).indexOf(t) >= 0 || phoneHit(phoneOf[s(p.fromLead)]); })
+      .map(function (p) { return Object.assign({ houseName: houseName(p.houseId) }, p); })
+      .sort(function (a, b) { return (inHouse(a) ? 0 : 1) - (inHouse(b) ? 0 : 1) || a.name.localeCompare(b.name, 'he'); });
+    return { q: s(q), leads: leads.slice(0, 50), patients: patients.slice(0, 50), total: leads.length + patients.length };
+  }
   function directAddErrors(v, finance) {
     const out = admissionErrors(v, finance);
     if (s(v.name).split(/\s+/).filter(Boolean).length < 2) out.name = 'יש להזין שם מלא';
-    if (s(v.phone) && !localPhone(v.phone)) out.phone = 'טלפון אינו תקין';
+    if (!localPhone(v.phone)) out.phone = s(v.phone) ? 'טלפון אינו תקין' : 'יש להזין טלפון (נדרש למעקב ולהעברה לאמבולטורי)';
     return out;
   }
   /* The saveAll body for one house: the house as read + the new row (+ the lead). Pure. */
@@ -167,6 +221,51 @@
     return body;
   }
   /* '' when the patient (and lead) are proven, else the reason. Pure. */
+  /* A finance write is accepted only when the source acknowledges this request's
+   * own idempotency key, not any successful-looking or unrelated row. */
+  function funderWriteConfirmed(res, submissionId) {
+    return !!(s(submissionId) && res && res.ok === true && res.row && s(res.row.submissionId) === s(submissionId));
+  }
+  /* getPayments omits submissionId in the deployed Apps Script projection.
+   * Confirm the requested source STATE by unique stay/date/value, not an
+   * acknowledgement that the read contract cannot supply. If a future source
+   * exposes a submission key, a conflicting key still refuses confirmation. */
+  function funderSourceConfirmed(data, patientId, submissionId, funder, effectiveFrom) {
+    if (!data || data.ok !== true || !Array.isArray(data.funders) || !s(patientId) ||
+        !s(submissionId) || FUNDERS.indexOf(s(funder)) < 0 || !isoDateOk(s(effectiveFrom))) return false;
+    const exact = data.funders.filter(function (row) {
+      return row && s(row.patientId) === s(patientId) && sheetDay(row.effectiveFrom) === s(effectiveFrom);
+    });
+    return exact.length === 1 && s(exact[0].funder) === s(funder) &&
+      (!s(exact[0].submissionId) || s(exact[0].submissionId) === s(submissionId));
+  }
+  /* Admission write may have committed even if the browser never saw saveAll's
+   * reply. Check only freshly read source IDs — never a name or shared phone.
+   * 'confirmed' requires ONE exact patient/stay and the exact admitted lead;
+   * a partial or unavailable read must NOT prompt a new admission with new IDs.
+   * This is read-only proof, not a new transaction/ledger. */
+  function admissionSourceProof(data, expected) {
+    const e = expected || {};
+    if (!data || data.ok !== true || !s(e.patientId) || !s(e.leadId) || !s(e.houseId) || !sheetDay(e.date)) return 'unavailable';
+    const all = [];
+    const byHouse = data.patients;
+    if (Array.isArray(byHouse)) byHouse.forEach(function (p) { if (p) all.push({ row: p, sourceHouse: s(p.houseId) }); });
+    else if (byHouse && typeof byHouse === 'object') {
+      Object.keys(byHouse).forEach(function (key) {
+        (Array.isArray(byHouse[key]) ? byHouse[key] : []).forEach(function (p) { if (p) all.push({ row: p, sourceHouse: key }); });
+      });
+    } else return 'unavailable';
+    const exact = all.filter(function (x) { return s(x.row.id) === s(e.patientId); });
+    if (exact.length > 1) return 'ambiguous';
+    if (!exact.length) return 'missing';
+    const x = exact[0], p = x.row;
+    if (s(p.fromLead) !== s(e.leadId) || houseId(s(p.houseId) || x.sourceHouse) !== houseId(e.houseId) ||
+        sheetDay(p.date) !== sheetDay(e.date) || s(p.status) === 'released') return 'mismatch';
+    if (!Array.isArray(data.leads)) return 'patient_only';
+    const leads = data.leads.filter(function (l) { return l && s(l.id) === s(e.leadId); });
+    return leads.length === 1 && s(leads[0].stage) === 'admitted' ? 'confirmed' : 'patient_only';
+  }
+
   function houseSaveRefusal(res, pid, leadId) {
     if (!res || typeof res !== 'object') return 'אין תשובה מהשרת';
     if (res.ok === false) {
@@ -184,6 +283,13 @@
   /* ===== Patient actions (C7, CHANGELOG-crm-patient-actions.md): edit, move, discharge ===== */
   const DISCHARGE_DISPOSITIONS = [{ id: 'completed', label: 'סיים טיפול' }, { id: 'stopped_early', label: 'הפסיק לפני הזמן' }, { id: 'released_outpatient', label: 'משוחרר לטיפול חוץ' }];
   const CONTINUITY_CHOICES = [{ id: 'continued_outpatient', label: 'המשיך באמבולטורי (E-ZONE)' }, { id: 'continued_other', label: 'המשיך במסגרת טיפולית אחרת' }, { id: 'none', label: 'לא המשיך' }];
+  /* A recorded «המשך טיפול» (one of the three keys; blank / 'unknown' = not recorded). Pure. */
+  function continuityKnown(v) { return CONTINUITY_CHOICES.some(function (c) { return c.id === s(v); }); }
+  /* Something WAS recorded: a key, or a legacy free-text value; only blank / 'unknown' is missing. Pure. */
+  function continuityRecorded(v) { const t = s(v); return !!t && t !== 'unknown'; }
+  function continuityLabel(v) { const c = CONTINUITY_CHOICES.filter(function (x) { return x.id === s(v); })[0]; return c ? c.label : s(v); }
+  /* The POST body of «לעדכן המשך טיפול» — the same action the classic select sends. Pure. */
+  function continuityBody(id, v) { return { action: 'setDischargeContinuity', id: s(id), continuity: s(v) }; }
   /* The discharged-audit row the classic dischargePatient sends (app.js
    * dischargeAuditRow): the patient as read + its own fresh id, patientId,
    * released, prior_status, exitDate, dischargedAt, disposition, note, continuity. Pure. */
@@ -196,7 +302,8 @@
   function dischargeErrors(v) {
     const out = {};
     if (!DISCHARGE_DISPOSITIONS.some(function (d) { return d.id === s(v.disposition); })) out.disposition = 'יש לבחור סטטוס שחרור';
-    if (s(v.dischargeDate) && !isoDateOk(v.dischargeDate)) out.dischargeDate = 'תאריך שחרור מחוץ לטווח';
+    if (!s(v.dischargeDate)) out.dischargeDate = 'יש להזין תאריך שחרור';
+    else if (!isoDateOk(v.dischargeDate)) out.dischargeDate = 'תאריך שחרור מחוץ לטווח';
     return out;
   }
   /* The moved row: the patient as read, in the target house, with the classic
@@ -234,9 +341,40 @@
   function areasFor(me) {
     const m = me || {};
     if (m.view === 'controller') return ['today', 'billing', 'control'];
-    if (m.view === 'ops' || m.ops === true) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'triage'];
-    if (!m.finance) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'triage'];
+    if (m.view === 'ops' || m.ops === true) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'triage'];
+    if (!m.finance) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'triage'];
     return AREAS.map(function (a) { return a.id; });
+  }
+
+  /* The patient drawer's «חשבון» tab (CHANGELOG-crm-dana-default-switch-user.md):
+   * only a session that may read billing — finance (Vered, Sandra) or the
+   * controller's read access (Ortal). The operational view (Dana) and any
+   * other session never get the tab or its pane. Display only: the server
+   * refuses the money reads themselves (403). Pure. */
+  function accountTabVisible(me) {
+    const m = me || {};
+    if (m.view === 'ops' || m.ops === true) return false;
+    return m.finance === true || m.billingRead === true;
+  }
+
+  /* «החלפת משתמש»: delete the offline copies of `/` (they carry the previous
+   * user's name and page) from the app's service-worker caches. Never throws;
+   * resolves when done. `c` is the CacheStorage (window.caches) or absent. */
+  function clearCachedPages(c) {
+    try {
+      if (!c || typeof c.keys !== 'function') return Promise.resolve();
+      return c.keys().then(function (keys) {
+        return Promise.all(keys.filter(function (k) { return String(k).indexOf('ezone-dashboard-') === 0; }).map(function (k) {
+          return c.open(k).then(function (cache) {
+            return cache.keys().then(function (reqs) {
+              return Promise.all(reqs.filter(function (r) {
+                try { const u = new URL(r.url); return u.pathname === '/' || u.pathname === '/index.html'; } catch (_) { return false; }
+              }).map(function (r) { return cache.delete(r); }));
+            });
+          });
+        }));
+      }).catch(function () {});
+    } catch (_) { return Promise.resolve(); }
   }
 
   const s = function (v) { return String(v == null ? '' : v).trim(); };
@@ -275,6 +413,25 @@
     return { houses: rows, unknown: unknown, totalIn: totalIn, totalCap: totalCap, totalFree: Math.max(0, totalCap - totalIn) };
   }
   function isoDay(v) { const t = s(v); return /^\d{4}-\d{2}-\d{2}/.test(t) ? t.slice(0, 10) : ''; }
+  /* A billing DATE read from a sheet → 'YYYY-MM-DD' (CHANGELOG-crm-old-payment-dates.md).
+   * Older Payments / Funders / Credits rows hold real Date cells, which reach the
+   * browser as UTC timestamps — Israel's 1 April arrives as "2026-03-31T21:00:00.000Z".
+   * Slicing that is the −1-day bug: the CRM pre-filled a coverage start one day
+   * before the cycle and Code.gs refused the report (coverage_outside_cycle).
+   * Same rule as app.js isoDate(): a bare day stays as is; a full timestamp is
+   * read as its calendar day in Asia/Jerusalem; anything else → ''. Pure. */
+  const JERUSALEM_DAY = typeof Intl === 'object' && Intl.DateTimeFormat
+    ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit' }) : null;
+  function sheetDay(v) {
+    if (v instanceof Date) { if (isNaN(v.getTime())) return ''; v = v.toISOString(); }
+    const t = s(v);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(t)) return '';
+    const ms = Date.parse(t);
+    if (isNaN(ms) || !JERUSALEM_DAY) return t.slice(0, 10);
+    const parts = {}; JERUSALEM_DAY.formatToParts(new Date(ms)).forEach(function (x) { parts[x.type] = x.value; });
+    return parts.year + '-' + parts.month + '-' + parts.day;
+  }
   function daysBetween(a, b) {
     const da = Date.parse(a + 'T00:00:00Z'), db = Date.parse(b + 'T00:00:00Z');
     if (isNaN(da) || isNaN(db)) return 0;
@@ -311,6 +468,15 @@
     const pts = patients.map(function (x) {
       return { id: s(x.id), houseId: s(x.houseId), name: s(x.name), date: isoDay(x.date), status: s(x.status) || 'active',
         exitDate: isoDay(x.exitDate), fromLead: s(x.fromLead), source: s(x.source), personId: s(x.personId), pay: Number(x.pay) || 0 };
+    });
+    /* A board lead whose patient is in a house by the exact fromLead link was
+     * admitted (and reopened by a stale save) — shown as admitted, never as an
+     * open «בטיפול פעיל» lead (CHANGELOG-admitted-lead-stays-closed.md). */
+    const inHouse = {};
+    pts.forEach(function (x) { if (x.fromLead && x.status !== 'released') inHouse[x.fromLead] = x; });
+    leads.forEach(function (l) {
+      const pt = inHouse[l.id];
+      if (pt && STAGES.some(function (st) { return st.id === l.stage; })) { l.stage = 'admitted'; if (!l.entryDate) l.entryDate = pt.date; }
     });
     const sent = {};
     (Array.isArray(d.outpatientSentLeadIds) ? d.outpatientSentLeadIds : []).forEach(function (k) { sent[s(k)] = true; });
@@ -364,7 +530,15 @@
   }
   function restoreFlagBody(raw) { return { action: 'restorePatientToActive', patient: Object.assign({}, raw, { restored: 'TRUE' }) }; }
   function restoreAsLeadBody(raw, newLeadId) { return { action: 'restorePatient', patient: Object.assign({}, raw, { newLeadId: s(newLeadId) }) }; }
-  function outpatientBody(dischargeId) { return { dischargeId: s(dischargeId), manual: true }; }
+  function outpatientBody(dischargeId, phone) { const b = { dischargeId: s(dischargeId), manual: true }; if (s(phone)) b.phone = s(phone); return b; }
+  /* A phone typed for the Outpatient handoff (CHANGELOG-crm-followups-1104.md) — the
+   * server rule: 9–10 digits starting with 0 (a mobile's lost leading zero restored). '' when invalid. Pure. */
+  function handoffPhone(raw) {
+    let d = s(raw).replace(/[\s\-().\u200e\u200f]/g, '');
+    if (/^\+972/.test(d)) d = '0' + d.slice(4);
+    if (/^5\d{8}$/.test(d)) d = '0' + d;
+    return /^0\d{8,9}$/.test(d) ? d : '';
+  }
 
   /* ---- C14: «פגישות ושירותים» over real data (CHANGELOG-crm-meetings-tab.md) ----
    * The lead's intake meeting (Vered's own outcome) + the house manager's
@@ -399,7 +573,7 @@
     // The patient's discharge record: by the audit row's patientId (newer rows), else the
     // classic identity triple (house, name, entry date); soft-deleted / restored rows are not discharges.
     const sameStay = function (r) {
-      if (r.deletedAt || r.restored === '1') return false;
+      if (r.deletedAt || isRestoredDischarge(r)) return false;
       if (r.patientId && r.patientId === s(subject.id)) return true;
       return !r.patientId && houseId(r.houseId) === houseId(subject.houseId) && r.name === s(subject.name) && r.date === s(subject.date);
     };
@@ -422,10 +596,12 @@
       if (reportUnseen(l) && STAGES.some(function (st) { return st.id === l.stage; })) {
         row = { kind: 'report_unseen', action: 'לקרוא את דיווח המנהל/ת על הפגישה', owner: l.assignedTo, due: s(l.meetingReportedAt).slice(0, 10), state: 'today',
           reason: 'דיווח מ-' + (l.meetingReporter || 'המנהל/ת') + (l.meetingReportOutcome ? ' · ' + (MEETING_REPORT_OUTCOME_LABELS[l.meetingReportOutcome] || l.meetingReportOutcome) : '') };
+      } else if (l.stage === 'visit' && s(l.meetingOutcome) === 'cancelled') {
+        row = { kind: 'meeting_cancelled', action: 'לתאם מועד חדש או לסגור', owner: l.assignedTo, due: '', state: 'today', reason: 'הפגישה בוטלה' };
       } else if (l.stage === 'visit' && l.visitDate && l.visitDate < today && !l.meetingOutcome) {
         const reported = !!s(l.meetingReportedAt);
         row = { kind: 'meeting_no_outcome', action: reported ? 'לעדכן תוצאת פגישה (יש דיווח מנהל/ת)' : 'לקבל דיווח מהמנהל/ת על הפגישה', owner: reported ? l.assignedTo : (l.meetingWith || l.assignedTo),
-          due: l.visitDate, state: 'late', reason: 'הפגישה התקיימה לפני ' + daysBetween(l.visitDate, today) + ' ימים' };
+          due: l.visitDate, state: reported || reportOverdue(l, today) ? 'late' : 'wait', reason: 'תאריך הפגישה חלף לפני ' + daysBetween(l.visitDate, today) + ' ימים — קיום הביקור לא אומת' };
       } else if (l.stage === 'visit' && l.visitDate === today) {
         row = { kind: 'meeting_today', action: 'פגישת קבלה היום' + (l.visitTime ? ' · ' + l.visitTime : ''), owner: l.meetingWith || l.assignedTo, due: today, state: 'today', reason: '' };
       } else if (l.stage === 'visit' && !l.visitDate) {
@@ -466,14 +642,94 @@
     const list = filterLeads(leads, f);
     return STAGES.map(function (st) { return { stage: st, leads: list.filter(function (l) { return l.stage === st.id; }) }; });
   }
-  function nextActionFor(l, today) {
+  function nextActionFor(l, today, fl) {
     if (reportUnseen(l)) return { text: 'דיווח מנהל/ת חדש', state: 'today' };
-    if (l.stage === 'visit' && l.visitDate && l.visitDate < today && !l.meetingOutcome) return { text: 'דיווח מהמנהל/ת', state: 'late' };
-    if (l.stage === 'visit' && l.visitDate === today) return { text: 'פגישה היום', state: 'today' };
-    if (l.stage === 'visit') return { text: l.visitDate ? 'פגישה ' + fmtDate(l.visitDate) : 'לתאם פגישה', state: 'wait' };
+    const change = patientMeetingChange(l, fl);
+    if (l.stage === 'visit' && s(l.meetingOutcome) === 'cancelled') return { text: change ? 'בוטלה ע״י המטופל/ת — לתאם מחדש' : 'הפגישה בוטלה — לתאם מחדש', state: 'late' };
+    // The board/table must agree with Vered's Today: an existing manager
+    // no-show report is NOT a missing report and has not proved attendance.
+    if (l.stage === 'visit' && s(l.meetingReportedAt) && !s(l.meetingOutcome)) {
+      return l.meetingReportOutcome === 'no_show'
+        ? { text: 'לברר היעדרות / ביטול', state: 'wait' }
+        : { text: 'להחליט אחרי דיווח מנהל/ת', state: 'wait' };
+    }
+    if (l.stage === 'visit' && l.visitDate && l.visitDate < today && !l.meetingOutcome) {
+      return reportOverdue(l, today) ? { text: 'דיווח המנהל/ת באיחור', state: 'late' } : { text: 'ממתין לדיווח מנהל/ת', state: 'wait' };
+    }
+    const moved = change && change.change === 'rescheduled' ? ' · שונתה ע״י המטופל/ת' : '';
+    if (l.stage === 'visit' && l.visitDate === today) return { text: 'פגישה היום' + moved, state: 'today' };
+    if (l.stage === 'visit') return { text: l.visitDate ? 'פגישה ' + fmtDate(l.visitDate) + moved : 'לתאם פגישה', state: 'wait' };
     if (l.stage === 'new') return { text: 'ליצור קשר', state: 'wait' };   // never «late» by age (spec §1); «ללא מגע» is told by «היום שלי» / the triage
-    if (l.stage === 'waitlist') return { text: 'ממתין למקום', state: 'wait' };
+    if (l.stage === 'waitlist') return { text: waitReasonLabel(fl && fl.waitReason ? fl.waitReason.reason : ''), state: 'wait' };
     return { text: 'קליטה לבית', state: 'wait' };
+  }
+
+  /* ===== Vered's feedback 04/11/2026 (CHANGELOG-crm-vered-feedback-1104.md) =====
+   * Lead flags live in Activity (Code.gs logLeadFlag_), served by contactIndex as
+   * flags[leadId] = { waitReason?: { reason, at, actorName },
+   *                   meetingChange?: { change, prevDate, prevTime, newDate, newTime, withWhom, note, at, actorName } }. */
+  const WAIT_REASONS = [{ id: 'place', label: 'ממתין למקום' }, { id: 'funder', label: 'ממתין לאישור הקופה' }];
+  /* The waitlist-reason chip text of a lead, or '' (not on the waitlist). Pure. */
+  function waitChipText(l, fl) { return l && l.stage === 'waitlist' ? waitReasonLabel(fl && fl.waitReason ? fl.waitReason.reason : '') : ''; }
+  /* '' / unknown → «ממתין למקום» (what every waitlist lead meant before this change). Pure. */
+  function waitReasonLabel(id) { return s(id) === 'funder' ? 'ממתין לאישור הקופה' : 'ממתין למקום'; }
+  function flagsOf(index, leadId) { return index && index.flags && typeof index.flags === 'object' && index.flags[s(leadId)] ? index.flags[s(leadId)] : null; }
+  /* The patient-side change that still describes the lead's CURRENT meeting, or null:
+   * a cancellation while meetingOutcome is still 'cancelled'; a reschedule while the
+   * lead still carries that new date. An older event that no longer matches is history only. Pure. */
+  function patientMeetingChange(l, fl) {
+    const ch = fl && fl.meetingChange;
+    if (!l || !ch) return null;
+    if (ch.change === 'cancelled') return s(l.meetingOutcome) === 'cancelled' ? ch : null;
+    if (ch.change === 'rescheduled') return s(ch.newDate) && s(ch.newDate) === s(l.visitDate) && !s(l.meetingOutcome) ? ch : null;
+    return null;
+  }
+  /* A missing manager report is an exception only GRACE days after the meeting. Pure. */
+  function reportOverdue(l, today) { return !!(l && l.visitDate && l.visitDate < today && daysBetween(l.visitDate, today) >= MANAGER_REPORT_GRACE_DAYS); }
+  function meetingOutcomeLabel(id) { const o = MEETING_OUTCOMES.filter(function (x) { return x.id === s(id); })[0]; return o ? o.label : s(id); }
+  /* The Hebrew WhatsApp text to the manager about a patient-side change. Pure. */
+  function managerChangeMessage(l, ch) {
+    const when = function (d, t) { return fmtDate(d) + (s(t) ? ' בשעה ' + s(t) : ''); };
+    const head = 'עדכון פגישה — ' + s(l && l.name) + (houseName(l && l.house) ? ' (' + houseName(l.house) + ')' : '') + ': ';
+    const note = s(ch && ch.note) ? '\nהערה: ' + s(ch.note) : '';
+    if (ch && ch.change === 'cancelled') return head + 'הפגישה שנקבעה ל-' + when(ch.prevDate, ch.prevTime) + ' בוטלה ע״י המטופל/ת.' + note;
+    return head + 'המטופל/ת שינה/תה את מועד הפגישה' + (s(ch && ch.prevDate) ? ' מ-' + when(ch.prevDate, ch.prevTime) : '') + ' ל-' + when(ch && ch.newDate, ch && ch.newTime) + '.' + note;
+  }
+  /* wa.me link to the manager's phone (digits only); no valid phone → the sender picks the chat. Pure. */
+  function managerWaUrl(phone, text) {
+    const digits = s(phone).replace(/\D/g, '');
+    return 'https://wa.me/' + (/^\d{9,15}$/.test(digits) ? digits : '') + '?text=' + encodeURIComponent(s(text));
+  }
+  /* The logLeadFlag body. Pure. */
+  function leadFlagBody(sid, flag) { return { action: 'logLeadFlag', submissionId: s(sid), flag: flag }; }
+  /* A lost HTTP reply must not mint a SECOND operation for the same flag.
+   * Keep the exact payload/id until source acknowledgement. Changed content
+   * cannot silently reuse an uncertain id; full reload needs source check. */
+  function leadFlagPendingPlan(previous, flag, mintId) {
+    const signature = JSON.stringify(flag || {});
+    if (previous) return previous.signature === signature
+      ? { ok: true, pending: previous, retry: true }
+      : { ok: false, error: 'unconfirmed_previous_flag' };
+    return { ok: true, retry: false,
+      pending: { signature: signature, body: leadFlagBody(mintId(), flag) } };
+  }
+  /* The patient-change form → { errors } or { errors: {}, patch, flag }. v = { change, newDate, newTime, note }. Pure. */
+  function patientChangePlan(l, v, today) {
+    const e = {};
+    v = v || {};
+    const change = s(v.change);
+    if (change !== 'cancelled' && change !== 'rescheduled') e.change = 'בחרי: בוטלה או שונה מועד';
+    if (change === 'rescheduled') {
+      if (!isoDateOk(v.newDate) || v.newDate < today) e.newDate = 'תאריך חדש — מהיום והלאה';
+      if (s(v.newTime) && !timeOk(v.newTime)) e.newTime = 'שעה HH:MM';
+    }
+    if (s(v.note).length > 200) e.note = 'עד 200 תווים';
+    if (Object.keys(e).length) return { errors: e };
+    const flag = { leadId: s(l.id), kind: 'meeting_patient_change', change: change, prevDate: s(l.visitDate), prevTime: s(l.visitTime), withWhom: s(l.meetingWith), note: s(v.note) };
+    let patch;
+    if (change === 'cancelled') patch = { meetingOutcome: 'cancelled' };
+    else { patch = { visitDate: s(v.newDate), visitTime: s(v.newTime), meetingOutcome: '' }; flag.newDate = s(v.newDate); flag.newTime = s(v.newTime); }
+    return { errors: {}, patch: patch, flag: flag };
   }
 
   /* «לקוחות»: patients in a house today, days in house. */
@@ -514,9 +770,10 @@
         const past = l.visitDate < today, isToday = l.visitDate === today;
         const reported = !!s(l.meetingReportedAt);
         let status;
-        if (isToday) status = { state: 'today', text: 'היום' };
+        if (s(l.meetingOutcome) === 'cancelled') status = { state: 'late', text: 'בוטלה' };
+        else if (isToday) status = { state: 'today', text: 'היום' };
         else if (!past) status = { state: 'wait', text: 'מתוכנן' };
-        else if (l.meetingOutcome) status = { state: 'ok', text: l.meetingOutcome };
+        else if (l.meetingOutcome) status = { state: 'ok', text: meetingOutcomeLabel(l.meetingOutcome) };
         else if (reported) status = { state: 'today', text: 'יש דיווח מנהל/ת' + (reportUnseen(l) ? ' · חדש' : '') };
         else status = { state: 'late', text: 'ללא תוצאה' };
         return { id: l.id, name: l.name, house: houseName(l.house), date: l.visitDate, time: l.visitTime || '', withWhom: l.meetingWith || l.assignedTo || '', stage: l.stage, status: status, reported: reported };
@@ -544,7 +801,7 @@
     const admitting = c.leads.filter(function (l) { return l.stage === 'paid'; }).length;
     return [
       { id: 'unseenReports', label: 'דיווחי מנהל/ת שלא נקראו', value: unseenReports(c.leads) },
-      { id: 'untouched', label: 'פניות ללא טיפול (' + WAIT_DAYS + '+ ימים)', value: untouched },
+      { id: 'untouched', label: 'לידים ללא טיפול (' + WAIT_DAYS + '+ ימים)', value: untouched },
       { id: 'late', label: 'משימות באיחור', value: c.kpi.late },
       { id: 'noOutcome', label: 'פגישות ללא תוצאה', value: noOutcome },
       { id: 'unscheduled', label: 'ביקורים ללא תאריך', value: unscheduled },
@@ -574,9 +831,9 @@
     return (Array.isArray(p.receipts) ? p.receipts : []).map(function (r) {
       const o = r || {};
       return { id: s(o.id), patientId: s(o.patientId), patientUid: s(o.patientUid), patientName: s(o.patientName), houseId: s(o.houseId), houseName: houseName(o.houseId),
-        receivedDate: s(o.receivedDate).slice(0, 10), amount: Number(o.amount) || 0, method: s(o.method), payer: s(o.payer), funder: s(o.funder),
-        confirmStatus: s(o.confirmStatus), cycleId: s(o.cycleId), reference: s(o.reference), status: s(o.status), dueDate: s(o.dueDate).slice(0, 10),
-        coverageStart: s(o.coverageStart).slice(0, 10), coverageEnd: s(o.coverageEnd).slice(0, 10), invoiceWanted: s(o.invoiceWanted), invoiceTo: s(o.invoiceTo),
+        receivedDate: sheetDay(o.receivedDate), amount: Number(o.amount) || 0, method: s(o.method), payer: s(o.payer), funder: s(o.funder),
+        confirmStatus: s(o.confirmStatus), cycleId: s(o.cycleId), reference: s(o.reference), status: s(o.status), dueDate: sheetDay(o.dueDate),
+        coverageStart: sheetDay(o.coverageStart), coverageEnd: sheetDay(o.coverageEnd), invoiceWanted: s(o.invoiceWanted), invoiceTo: s(o.invoiceTo),
         flagNote: s(o.flagNote), recordedBy: s(o.recordedBy),
         isVoid: /^(void|מבוטל)$/i.test(s(o.status)) };
     });
@@ -640,6 +897,125 @@
     return { q: words.join(' '), debtors: debtors, receipts: receipts, people: people, total: debtors.length + receipts.length + people.length };
   }
 
+  /* ---- «לגבייה בתאריך» in the CRM (CHANGELOG-crm-collect-on-date.md) ----
+   * The classic גבייה daily list, inside the CRM: who starts a cycle on a
+   * chosen date and what that cycle owes. The same rules as the classic list
+   * and the server engine:
+   *   - a cycle starts on the entry date + k months (month-end clamped, the
+   *     Code.gs recCycleDueDates_ / stayCycles anchor);
+   *   - never before entry; never ON or after the exit date (a patient who
+   *     leaves on the billing day opens no new cycle —
+   *     CHANGELOG-billing-exit-day-not-due.md); released with no exit date →
+   *     not listed (the classic conservative reading);
+   *   - pro-bono on the date → not owed, not listed;
+   *   - the amount is lib/cycle-balance.js cycleState (override → agreed price
+   *     → stamp, discount net, settled cycles stay settled) over the cycle's
+   *     Payments row when there is one.
+   * Pure: (getData answer, getPayments answer, 'YYYY-MM-DD', CycleBalance). */
+  function cycleBalanceLib(win) {
+    if (typeof module === 'object' && module && module.exports) { try { return require('../../lib/cycle-balance.js'); } catch (_) { /* browser bundle */ } }
+    const g = win || (typeof window !== 'undefined' ? window : globalThis);
+    return g.CycleBalance || null;
+  }
+  const FUNDER_UNSET_LABEL = 'לא הוגדר';
+  const HEB_MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר'];
+  function monthsBetween(fromIso, toIso) {
+    return (Number(toIso.slice(0, 4)) - Number(fromIso.slice(0, 4))) * 12 + (Number(toIso.slice(5, 7)) - Number(fromIso.slice(5, 7)));
+  }
+  /* A cycle window split by calendar month, the price allotted by days
+   * (display only — the cycle owes ONE price; CHANGELOG-cycle-balance.md). */
+  function monthSplit(start, end, amount) {
+    const total = Math.round((Date.parse(end + 'T00:00:00Z') - Date.parse(start + 'T00:00:00Z')) / 86400000) + 1;
+    if (!(total > 0)) return [];
+    const out = [];
+    let cur = start;
+    while (cur <= end) {
+      const y = Number(cur.slice(0, 4)), m = Number(cur.slice(5, 7));
+      const monthEnd = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+      const to = monthEnd < end ? monthEnd : end;
+      const days = Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(cur + 'T00:00:00Z')) / 86400000) + 1;
+      out.push({ month: cur.slice(0, 7), days: days, amount: 0 });
+      cur = new Date(Date.parse(to + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10);
+    }
+    let given = 0;
+    out.forEach(function (x, i) {
+      x.amount = i === out.length - 1 ? Math.round((amount - given) * 100) / 100 : Math.round(amount * x.days / total);
+      given += x.amount;
+    });
+    return out;
+  }
+  function funderOnDay(funders, uid, key, day) {
+    let best = null;
+    (Array.isArray(funders) ? funders : []).forEach(function (f) {
+      if (!rowIsPatient(f, uid, key)) return;
+      const from = sheetDay(f.effectiveFrom);
+      if (!from || from > day) return;
+      if (!best || from >= best.from) best = { from: from, funder: s(f.funder) };
+    });
+    return best ? best.funder : '';
+  }
+  function dueOnDate(data, payments, dayIso, CB) {
+    const day = s(dayIso);
+    const out = { date: day, rows: [], count: 0, total: 0, collected: 0, error: '' };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) { out.error = 'bad_date'; return out; }
+    const p = payments && payments.ok !== false ? payments : null;
+    if (!p) out.error = s(payments && payments.error) || 'payments_missing';
+    const cyclesAll = p && Array.isArray(p.payments) ? p.payments : [];
+    const funders = p && Array.isArray(p.funders) ? p.funders : [];
+    const overrides = data && Array.isArray(data.billingOverrides) ? data.billingOverrides : [];
+    const rules = reportRules();
+    const PROBONO = rules && rules.FUNDER_PROBONO ? rules.FUNDER_PROBONO : 'פרו-בונו';
+    const lib = CB || cycleBalanceLib();
+    normalise(data).patients.forEach(function (pt) {
+      const entry = pt.date;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(entry) || entry > day) return;
+      const exit = pt.exitDate;
+      if (exit && exit <= day) return;
+      if (pt.status === 'released' && !exit) return;
+      const k = monthsBetween(entry, day);
+      if (k < 0 || addMonthsIso(entry, k) !== day) return;
+      const key = patientKeyOf(pt);
+      const funder = funderOnDay(funders, pt.id, key, day);
+      if (funder === PROBONO) return;
+      const row = cyclesAll.filter(function (r) { return rowIsPatient(r, pt.id, key) && sheetDay(r.dueDate) === day && s(r.status).toLowerCase() !== 'void'; })[0] || null;
+      const month = day.slice(0, 7);
+      const ovr = overrides.filter(function (o) { return o && s(o.patientId) === key && s(o.month) === month; })[0] || null;
+      const ovrAmount = ovr && ovr.amount !== '' && ovr.amount !== null && ovr.amount !== undefined ? Number(ovr.amount) : null;
+      const disc = ovr && Number(ovr.discountAmount) > 0 ? Number(ovr.discountAmount) : null;
+      const stamped = row ? Number(row.amount) || 0 : pt.pay;
+      const paidIn = row ? Number(row.amountPaid) || 0 : 0;
+      const st = lib ? lib.cycleState({ stampedAmount: stamped, amountPaid: paidIn, overrideAmount: ovrAmount, agreedPrice: pt.pay, status: row ? s(row.status) : 'unpaid', discountAmount: disc })
+        : { expected: stamped, paid: paidIn, balance: Math.max(0, stamped - paidIn), status: paidIn <= 0 ? 'unpaid' : (paidIn >= stamped ? 'paid' : 'partial') };
+      const w = cycleWindow(entry, k);
+      const cs = row ? sheetDay(row.coverageStart) : '', ce = row ? sheetDay(row.coverageEnd) : '';
+      const start = cs && ce && ce >= cs ? cs : w.start, end = cs && ce && ce >= cs ? ce : w.end;
+      const cycle = row
+        ? { id: s(row.id), patientId: s(row.patientId) || key, patientName: s(row.patientName) || pt.name, houseId: s(row.houseId) || s(houseId(pt.houseId)),
+          dueDate: day, amount: stamped, coverageStart: start, coverageEnd: end }
+        : { id: 'pay::' + key + '::' + day, patientId: key, patientName: pt.name, houseId: s(houseId(pt.houseId)), dueDate: day, amount: st.expected, coverageStart: start, coverageEnd: end };
+      out.rows.push({ patientId: pt.id, name: pt.name, houseId: pt.houseId, houseName: houseName(pt.houseId), monthly: pt.pay, released: pt.status === 'released',
+        start: start, end: end, split: monthSplit(start, end, st.expected), expected: st.expected, paid: st.paid, balance: st.balance, status: st.status,
+        discount: st.discount || 0, funder: funder || FUNDER_UNSET_LABEL, recorded: !!row, cycle: cycle });
+    });
+    out.rows.sort(function (a, b) { return (a.status === 'paid') - (b.status === 'paid') || a.houseName.localeCompare(b.houseName, 'he') || a.name.localeCompare(b.name, 'he'); });
+    out.count = out.rows.length;
+    out.total = Math.round(out.rows.reduce(function (t, r) { return t + r.expected; }, 0) * 100) / 100;
+    out.collected = Math.round(out.rows.reduce(function (t, r) { return t + r.paid; }, 0) * 100) / 100;
+    return out;
+  }
+  /* The date list after the funder filter ('' = all) and the name search. Pure. */
+  function filterDueRows(due, funder, q) {
+    const words = s(q).toLowerCase().split(/\s+/).filter(Boolean);
+    const rows = (due && due.rows || []).filter(function (r) {
+      if (funder && r.funder !== funder) return false;
+      const hay = (r.name + ' ' + r.houseName).toLowerCase();
+      return words.every(function (w) { return hay.indexOf(w) >= 0; });
+    });
+    return { rows: rows, count: rows.length,
+      total: Math.round(rows.reduce(function (t, r) { return t + r.expected; }, 0) * 100) / 100,
+      collected: Math.round(rows.reduce(function (t, r) { return t + r.paid; }, 0) * 100) / 100 };
+  }
+
   /* ---- C9: the «חשבון» tab of a patient (CHANGELOG-crm-account-tab.md) ----
    * Same two reads as the גבייה area, filtered to ONE patient: open cycles
    * (debtAging.byPatient), the stamped cycles and receipts (getPayments),
@@ -669,18 +1045,18 @@
     const p = payments && payments.ok !== false ? payments : null;
     const mine = (d && Array.isArray(d.byPatient) ? d.byPatient : []).filter(function (x) { return s(x.patientId) === id || (key && s(x.patientKey) === key); })[0] || null;
     const open = (mine && Array.isArray(mine.cycles) ? mine.cycles : []).map(function (c) {
-      return { start: s(c.start).slice(0, 10), end: s(c.end).slice(0, 10), expected: Number(c.expected) || 0, received: Number(c.received) || 0, balance: Number(c.balance) || 0,
+      return { start: sheetDay(c.start), end: sheetDay(c.end), expected: Number(c.expected) || 0, received: Number(c.received) || 0, balance: Number(c.balance) || 0,
         days: Number(c.days) || 0, kind: s(c.kind), grace: !!c.funderGrace, discount: Number(c.discount) || 0, paymentId: s(c.paymentId), month: s(c.month) };
     });
     const openTotal = Math.round(open.reduce(function (t, c) { return t + c.balance; }, 0) * 100) / 100;
     const cycles = (p && Array.isArray(p.payments) ? p.payments : []).filter(function (x) { return rowIsPatient(x, id, key); }).map(function (x) {
-      return { id: s(x.id), dueDate: s(x.dueDate).slice(0, 10), amount: Number(x.amount) || 0, amountPaid: Number(x.amountPaid) || 0, balance: Number(x.balance) || 0, status: s(x.status),
-        coverageStart: s(x.coverageStart).slice(0, 10), coverageEnd: s(x.coverageEnd).slice(0, 10), patientId: s(x.patientId), patientName: s(x.patientName), houseId: s(x.houseId) };
+      return { id: s(x.id), dueDate: sheetDay(x.dueDate), amount: Number(x.amount) || 0, amountPaid: Number(x.amountPaid) || 0, balance: Number(x.balance) || 0, status: s(x.status),
+        coverageStart: sheetDay(x.coverageStart), coverageEnd: sheetDay(x.coverageEnd), patientId: s(x.patientId), patientName: s(x.patientName), houseId: s(x.houseId) };
     }).sort(function (a, b) { return a.dueDate < b.dueDate ? 1 : a.dueDate > b.dueDate ? -1 : 0; });
     const receipts = receiptsOf(p).filter(function (r) { return rowIsPatient(r, id, key); }).sort(function (a, b) { return a.receivedDate < b.receivedDate ? 1 : a.receivedDate > b.receivedDate ? -1 : 0; });
     const receivedTotal = Math.round(receipts.reduce(function (t, r) { return t + r.amount; }, 0) * 100) / 100;
     const funders = (p && Array.isArray(p.funders) ? p.funders : []).filter(function (f) { return rowIsPatient(f, id, key); }).map(function (f) {
-      return { funder: s(f.funder), effectiveFrom: s(f.effectiveFrom).slice(0, 10), setBy: s(f.setBy) };
+      return { funder: s(f.funder), effectiveFrom: sheetDay(f.effectiveFrom), setBy: s(f.setBy) };
     }).sort(function (a, b) { return a.effectiveFrom < b.effectiveFrom ? 1 : a.effectiveFrom > b.effectiveFrom ? -1 : 0; });
     const errors = [];
     if (!d) errors.push('חובות: ' + s(debt && debt.error || 'לא נטען'));
@@ -877,9 +1253,19 @@
     const c = credits && credits.ok !== false ? credits : {};
     return (Array.isArray(c.credits) ? c.credits : []).map(function (r) {
       const o = r || {};
+      const amount = Number(o.amount) || 0;
+      const requestedAt = s(o.payoutApprovalRequestedAt), approvedAt = s(o.payoutApprovedAt);
+      const requestedBy = s(o.payoutApprovalRequestedBy), approvedBy = s(o.payoutApprovedBy);
+      const approvedAmount = o.payoutApprovalAmount === '' || o.payoutApprovalAmount == null ? null : Number(o.payoutApprovalAmount);
+      const requestCurrent = s(o.status) === 'pending' && requestedBy === 'vered' && !!requestedAt
+        && approvedAmount !== null && Number.isFinite(approvedAmount) && approvedAmount === amount;
+      const approvalValid = requestCurrent && approvedBy === 'sandra' && !!approvedAt && approvedAt >= requestedAt;
       return { id: s(o.id), patientId: s(o.patientId), patientKey: s(o.patientKey), patientName: s(o.patientName), houseId: s(o.houseId), houseName: houseName(o.houseId),
-        creditType: s(o.creditType), allocationMonth: s(o.allocationMonth).slice(0, 7), amount: Number(o.amount) || 0, status: s(o.status), reason: s(o.reason),
-        decidedDate: s(o.decidedDate).slice(0, 10), payoutDate: s(o.payoutDate).slice(0, 10), paidDate: s(o.paidDate).slice(0, 10), method: s(o.method) };
+        creditType: s(o.creditType), allocationMonth: (sheetDay(o.allocationMonth) || s(o.allocationMonth)).slice(0, 7), amount: amount, status: s(o.status), reason: s(o.reason),
+        decidedDate: sheetDay(o.decidedDate), payoutDate: sheetDay(o.payoutDate), paidDate: sheetDay(o.paidDate), method: s(o.method),
+        payoutApprovalRequestedAt: requestedAt, payoutApprovalRequestedBy: requestedBy, payoutApprovalAmount: approvedAmount,
+        payoutApprovedAt: approvedAt, payoutApprovedBy: approvedBy, payoutRequestCurrent: !!requestCurrent,
+        payoutApprovalValid: !!approvalValid };
     });
   }
   function creditIsPatient(c, uid, key) { return (uid && c.patientId === uid) || (!!key && (c.patientKey === key || c.patientId === key)); }
@@ -888,6 +1274,91 @@
     const uid = s(pat.id), key = pat.name ? patientKeyOf(pat) : '';
     return creditsOf(credits).filter(function (c) { return creditIsPatient(c, uid, key); })
       .sort(function (a, b) { return a.allocationMonth < b.allocationMonth ? 1 : a.allocationMonth > b.allocationMonth ? -1 : 0; });
+  }
+  /* Source-backed, three-person payout workflow: UI is a convenience only.
+   * Express and Code.gs independently enforce verified personal IDs and
+   * approve the exact stored amount. A computed policy amount is NOT approval. */
+  function refundActionFor(credit, me) {
+    if (!credit || credit.status !== 'pending' || !(credit.amount > 0) || !credit.id || !me) return '';
+    if (me.user === 'ורד' && me.finance === true)
+      return credit.payoutRequestCurrent ? '' : 'request';
+    if (me.user === 'סנדרה' && me.approver === true)
+      return credit.payoutRequestCurrent && !credit.payoutApprovalValid ? 'approve' : '';
+    if (me.user === 'אורטל' && me.view === 'controller')
+      return credit.payoutApprovalValid ? 'settle' : '';
+    return '';
+  }
+  function refundStageText(credit) {
+    if (credit.payoutApprovalValid) return 'אושר על ידי סנדרה — לביצוע אורטל';
+    if (credit.payoutRequestCurrent) return 'הועבר לאישור סנדרה';
+    return 'נדרשת בקשת אישור של ורד';
+  }
+  const REFUND_ACTION_LABELS = { request: 'בקשי אישור מסנדרה', approve: 'אשרי תשלום לאורטל', settle: 'סמני כשולם' };
+  function refundActionButton(credit, me) {
+    const kind = refundActionFor(credit, me);
+    return kind ? '<button type="button" class="btn small' + (kind === 'settle' ? ' primary' : '') +
+      '" data-refund-action="' + kind + '" data-refund-id="' + esc(credit.id) + '">' + esc(REFUND_ACTION_LABELS[kind]) + '</button>' : '';
+  }
+
+
+  /* ===== Manual credits / credit edit in the CRM (CHANGELOG-crm-manual-credits.md) =====
+   * The classic credits modal's two writes, through the SAME `saveCredit` action:
+   *   - edit a saved, unpaid credit: amount (+ reason when it differs from the policy
+   *     figure), decision date, status pending ↔ cancelled, notes;
+   *   - a manual «אחר» credit (Sandra only).
+   * Code.gs upsertCredit_ stays the authority: it recalculates the policy figure,
+   * refuses an amount change / a manual credit without Sandra's approver session
+   * (override_requires_approver), refuses 'paid' (settleRefund only), refuses a
+   * stale edit (updatedAt → conflict); Express gates cancel (deleter) and manual
+   * create (approver) by role. The raw getCredits row is the base of an edit. Pure. */
+  function creditRaw(credits, id) {
+    const c = credits && credits.ok !== false ? credits : {};
+    return (Array.isArray(c.credits) ? c.credits : []).filter(function (r) { return r && s(r.id) === s(id); })[0] || null;
+  }
+  function creditEditErrors(raw, v) {
+    const out = {};
+    const amount = moneyParse(v && v.amount);
+    if (amount === null) out.amount = 'סכום לא תקין';
+    const calc = Number(raw && raw.calculatedAmount);
+    if (amount !== null && isFinite(calc) && Math.round(amount * 100) !== Math.round(calc * 100) && s(v && v.overrideReason).length < 2) out.overrideReason = 'הסכום שונה מהמחושב — יש לנמק';
+    if (s(v && v.decidedDate) && !isoDateOk(v.decidedDate)) out.decidedDate = 'תאריך לא תקין';
+    if (['pending', 'cancelled'].indexOf(s(v && v.status)) < 0) out.status = 'סטטוס לא תקין';
+    if (s(v && v.status) === 'cancelled' && s(v && v.notes).length < 2) out.notes = 'ביטול זיכוי דורש הערה';
+    if (s(raw && raw.status) === 'paid') out._form = 'זיכוי ששולם נעול לעריכה';
+    return out;
+  }
+  function creditEditBody(raw, v) {
+    const r = raw || {};
+    const amount = moneyParse(v.amount);
+    const calc = Number(r.calculatedAmount);
+    return { action: 'saveCredit', credit: { id: s(r.id), updatedAt: s(r.updatedAt), patientId: s(r.patientId), patientKey: s(r.patientKey), patientName: s(r.patientName),
+      houseId: s(r.houseId), creditType: s(r.creditType), allocationMonth: s(r.allocationMonth).slice(0, 7), calculatedAmount: isFinite(calc) ? calc : 0, amount: amount,
+      overrideReason: isFinite(calc) && Math.round(amount * 100) !== Math.round(calc * 100) ? s(v.overrideReason) : '', reason: s(r.reason),
+      decidedDate: s(v.decidedDate), status: s(v.status), notes: s(v.notes) } };
+  }
+  function creditNewErrors(v) {
+    const out = {};
+    if (!monthOk(v && v.allocationMonth)) out.allocationMonth = 'חודש חסר או לא תקין';
+    if (!(moneyParse(v && v.amount) > 0)) out.amount = 'יש להזין סכום גדול מ-0';
+    if (s(v && v.reason).length < 2) out.reason = 'זיכוי ידני דורש סיבה';
+    return out;
+  }
+  function creditNewBody(patient, v, today) {
+    const p = patient || {};
+    return { action: 'saveCredit', credit: { id: '', patientId: s(p.id), patientKey: patientKeyOf(p), patientName: s(p.name), houseId: houseId(p.houseId) || s(p.houseId),
+      creditType: 'other', allocationMonth: s(v.allocationMonth), calculatedAmount: 0, amount: moneyParse(v.amount), overrideReason: s(v.reason), reason: s(v.reason),
+      approvedBy: '', decidedDate: s(today), status: 'pending', paidDate: '', method: '', notes: s(v.notes), basis: {} } };
+  }
+  function creditSaveRefusal(res, wantId) {
+    const r = res || {};
+    if (r.ok === true && r.credit && s(r.credit.id) && (!wantId || s(r.credit.id) === s(wantId))) return '';
+    if (r.ok === true) return 'השינוי לא אושר על ידי השרת — רענני';
+    if (r.error === 'conflict') return 'הזיכוי עודכן בינתיים על ידי משתמש/ת אחר/ת — רענני ונסי שוב';
+    if (r.error === 'override_requires_approver') return 'שינוי סכום / זיכוי ידני — באישור סנדרה בלבד';
+    if (r.error === 'override_reason_required') return 'הסכום שונה מהמחושב — יש לנמק';
+    if (r.error === 'use_settleRefund' || r.error === 'paid_locked') return 'סימון כשולם נעשה רק דרך תהליך ההחזר (אורטל)';
+    if (r.error === 'zero_amount_credit') return 'זיכוי בסכום 0 אינו נשמר';
+    return writeRefusal(r, 'credit');
   }
   /* «זיכויים לתשלום»: pending credits with money, oldest payout first. */
   function pendingCredits(credits) {
@@ -963,7 +1434,7 @@
     const d = debt && debt.ok !== false ? debt : null;
     const rows = d && d.detachedPayments && Array.isArray(d.detachedPayments.rows) ? d.detachedPayments.rows : [];
     return rows.filter(function (r) { return s(r.reason) !== 'not_a_patient'; }).map(function (r) {
-      return { paymentId: s(r.paymentId), patientName: s(r.patientName), houseId: s(r.houseId), houseName: houseName(r.houseId), dueDate: s(r.dueDate).slice(0, 10),
+      return { paymentId: s(r.paymentId), patientName: s(r.patientName), houseId: s(r.houseId), houseName: houseName(r.houseId), dueDate: sheetDay(r.dueDate),
         amount: Number(r.amount) || 0, received: Number(r.receivedByAsOf) || 0, reason: s(r.reason) };
     }).sort(function (a, b) { return b.dueDate.localeCompare(a.dueDate) || a.patientName.localeCompare(b.patientName, 'he'); });
   }
@@ -1115,6 +1586,33 @@
     else if (!isoDateOk(v.weekStart)) e.weekStart = 'בחרי שבוע';
     return e;
   }
+  /* «משימה חדשה» (Vered 05/11/2026, CHANGELOG-crm-task-date-time.md): only what to do, who, a DATE
+   * (today or later) and a TIME — no «למה עכשיו», no «מועד» / week. Pure. */
+  function newTaskErrors(v, today) {
+    const e = {};
+    v = v || {};
+    if (!TASK_KINDS.some(function (k) { return k.id === v.kind; })) e.kind = 'בחרי סוג';
+    if (!s(v.title) || s(v.title).length > 120) e.title = 'כותרת (עד 120 תווים)';
+    if (!isoDateOk(v.dueDate) || s(v.dueDate) < s(today)) e.dueDate = 'בחרי תאריך — היום או אחריו';
+    if (!timeOk(v.dueTime)) e.dueTime = 'בחרי שעה';
+    return e;
+  }
+  /* The in-app reminder before a task is due (CHANGELOG-crm-task-date-time.md): open tasks of
+   * `user` (or unassigned) due TODAY at a time between now and now + `lead` minutes, not yet
+   * announced. `nowHm` = 'HH:MM' Israel time. → [{ task, minutes }]. Pure. */
+  const TASK_REMIND_MINUTES = 30;
+  function hmToMin(hm) { const m = /^(\d{2}):(\d{2})$/.exec(s(hm)); return m ? (+m[1]) * 60 + (+m[2]) : -1; }
+  function dueSoonTasks(tasks, user, today, nowHm, lead, seen) {
+    const now = hmToMin(nowHm), L = lead || TASK_REMIND_MINUTES, done = seen || {};
+    if (now < 0) return [];
+    return (Array.isArray(tasks) ? tasks : []).filter(function (t) {
+      if (!t || s(t.status) !== 'open' || s(t.dueDate) !== s(today) || !timeOk(t.dueTime)) return false;
+      if (s(t.assignee) && s(t.assignee) !== s(user)) return false;
+      const d = hmToMin(t.dueTime) - now;
+      return d >= 0 && d <= L && !done[s(t.id) + '@' + s(t.dueDate) + ' ' + s(t.dueTime)];
+    }).map(function (t) { return { task: t, minutes: hmToMin(t.dueTime) - now, key: s(t.id) + '@' + s(t.dueDate) + ' ' + s(t.dueTime) }; })
+      .sort(function (a, b) { return a.minutes - b.minutes; });
+  }
   function taskCreateBody(subject, v, sid) {
     const t = Object.assign({}, subject, { kind: s(v.kind), title: s(v.title), reason: s(v.reason), assignee: s(v.assignee), source: 'manual' });
     if ((s(v.mode) || 'date') === 'week') { t.windowStart = weekStart(v.weekStart); t.windowEnd = addDays(t.windowStart, 6); }
@@ -1145,12 +1643,23 @@
    * Urgency is never the lead's age: a new lead without a DOCUMENTED contact
    * is «ללא מגע» (information), an overdue dated task is «באיחור». */
   const NAV_GROUPS = [
-    { label: '', items: ['today'] }, { label: 'פניות ומטופלים', items: ['leads', 'clients'] }, { label: 'פגישות ויומן', items: ['calendar'] },
-    { label: 'בתים והמשך טיפול', items: ['occupancy'] }, { label: 'כספים', items: ['billing'] }, { label: 'דוחות והגדרות', items: ['control'] }];
+    { label: '', items: ['today', 'control'] }, { label: 'לידים ומטופלים', items: ['leads', 'clients'] }, { label: 'פגישות ויומן', items: ['calendar'] },
+    { label: 'בתים והמשך טיפול', items: ['occupancy'] }, { label: 'כספים', items: ['billing'] }, { label: 'דוחות והגדרות', items: ['kpi'] }];
   const MY_DAY_VIEWS = [{ id: 'today', label: 'היום' }, { id: 'week', label: 'השבוע' }, { id: 'done', label: 'הושלמו' }];
   const DOMAINS = [
     { id: 'collection', label: 'גבייה לטיפול', money: true }, { id: 'calls', label: 'שיחות ומעקבים' }, { id: 'meetings', label: 'פגישות ותיאומים' },
-    { id: 'followup', label: 'המשך טיפול לאחר פגישות' }, { id: 'newleads', label: 'פניות חדשות ללא מגע' }, { id: 'houses', label: 'מה דחוף בבתים' }];
+    { id: 'followup', label: 'המשך טיפול לאחר פגישות' }, { id: 'newleads', label: 'לידים חדשים ללא מגע' },
+    // Not «מה דחוף בבתים»: a discharge whose audit row exists but whose status save failed is a
+    // data-integrity failure of Vered's own action — listed only while one exists, never a card.
+    { id: 'integrity', label: 'שחרור שלא נשמר במלואו — לבדיקה', onlyIfAny: true }];
+  /* Vered's feedback 04/11/2026 (CHANGELOG-crm-vered-feedback-1104.md):
+   *  - a missing manager report is NOT an exception while the meeting is fresh — it
+   *    becomes one only MANAGER_REPORT_GRACE_DAYS days after the meeting date;
+   *  - follow-up rows dated before EXCEPTION_CUTOFF (May 2026 and earlier) are no
+   *    longer listed in «היום שלי» (the source rows are untouched);
+   *  - «מה דחוף בבתים» is no longer part of «היום שלי» (houseExceptions stays for «תפוסה»). */
+  const MANAGER_REPORT_GRACE_DAYS = 3;
+  const EXCEPTION_CUTOFF = '2026-06-01';
   const DOMAIN_LABELS = {}; DOMAINS.forEach(function (d) { DOMAIN_LABELS[d.id] = d.label; });
   const PRIORITY = { binding: 0, exception: 1, late: 2, today: 3, wait: 4, undated: 5 };
   function lastContactText(lc) {
@@ -1159,10 +1668,12 @@
   }
   /* The meeting buckets of spec §6 «פגישות». A passed date proves nothing: it is «ממתין לדיווח» until the manager reports. */
   function meetingBuckets(leads, today) {
-    const b = { today: [], toSchedule: [], awaitingReport: [], reportUnseen: [], awaitingDecision: [] };
+    const b = { today: [], toSchedule: [], awaitingReport: [], reportUnseen: [], awaitingDecision: [], cancelled: [] };
     (leads || []).forEach(function (l) {
       if (STAGES.every(function (st) { return st.id !== l.stage; })) return;
       if (reportUnseen(l)) { b.reportUnseen.push(l); return; }
+      // A cancelled meeting is neither «today» nor «awaiting a report»: it needs a new date or a closure.
+      if (l.stage === 'visit' && s(l.meetingOutcome) === 'cancelled') { b.cancelled.push(l); return; }
       if (s(l.meetingReportedAt) && !l.meetingOutcome) { b.awaitingDecision.push(l); return; }
       if (l.stage !== 'visit') return;
       if (!l.visitDate) b.toSchedule.push(l);
@@ -1176,7 +1687,10 @@
   function newLeadsNoContact(leads, tasks, index, today) {
     const open = {};
     (tasks || []).forEach(function (t) { if (t && t.status === 'open' && (t.kind === 'call') && s(t.leadId)) open[s(t.leadId)] = true; });
-    const li = index && index.leads ? index.leads : {};
+    // Without a successful contact-index read, absence of a row is NOT evidence of no contact.
+    // A missing tasks read is equally unsafe: an open callback may already cover this lead.
+    if (!Array.isArray(tasks) || !index || index.ok === false || !index.leads) return [];
+    const li = index.leads;
     return (leads || []).filter(function (l) { return l.stage === 'new' && !li[l.id] && !open[l.id]; })
       .map(function (l) { return { lead: l, age: l.created ? daysBetween(l.created, today) : null }; })
       .sort(function (a, c) { return (c.lead.created || '').localeCompare(a.lead.created || ''); });   // newest first — the family is still waiting
@@ -1191,6 +1705,36 @@
     return { id: t.id, taskId: t.id, kind: 'task', subjectKind: sub.kind, subjectId: sub.id, name: sub.name, house: sub.house, contact: sub.contact, action: t.title, why: t.reason || (t.source === 'contact' ? 'נקבע בשיחה' : ''),
       when: taskDue(t), time: s(t.dueTime), whenText: taskWhen(t), owner: t.assignee, state: st, priority: binding ? 'binding' : st, task: t };
   }
+  /* A discharge audit row is restored when the flag reads true in any of the
+   * spellings the sheet holds ('TRUE' from Sheets, 'true', '1'). Pure. */
+  function isRestoredDischarge(d) { const r = s(d && d.restored).toUpperCase(); return r === 'TRUE' || r === '1'; }
+  /* Prevent a second fresh audit while an exact-ID source discharge already
+   * exists and has not been restored or removed. No fuzzy identity match. */
+  function pendingDischargeAudit(audits, patientId) {
+    return !!s(patientId) && (Array.isArray(audits) ? audits : []).some(function (d) {
+      return d && !d.deletedAt && !isRestoredDischarge(d) && s(d.patientId) === s(patientId);
+    });
+  }
+  /* The Patients id a discharge audit row belongs to (CHANGELOG-crm-today-card-open.md).
+   * Only CRM / coordinator discharges write `patientId`; the classic «שחרר» flow leaves
+   * it blank, so the row is matched like restoreTarget does: patientId (when it is on
+   * Patients), then the stay triple (house, name, entry date), then the ONE released
+   * row of the house with the same source lead. Unresolved → the stored patientId ('' when blank). Pure. */
+  function dischargePatientId(d, patients) {
+    const list = Array.isArray(patients) ? patients : [];
+    const pid = s(d && d.patientId);
+    if (pid && list.some(function (p) { return p.id === pid; })) return pid;
+    const hid = houseId(d && d.houseId);
+    const nm = s(d && d.name).replace(/\s+/g, ' ');
+    const sameHouse = list.filter(function (p) { return p.id && houseId(p.houseId) === hid; });
+    const byTriple = sameHouse.filter(function (p) { return p.name.replace(/\s+/g, ' ') === nm && p.date === s(d && d.date); });
+    if (byTriple.length === 1) return byTriple[0].id;
+    if (s(d && d.fromLead)) {
+      const byLead = sameHouse.filter(function (p) { return p.status === 'released' && p.fromLead === s(d.fromLead); });
+      if (byLead.length === 1) return byLead[0].id;
+    }
+    return pid; // unresolved: the stored id (or ''); openDrawer then says so instead of doing nothing
+  }
   /* «מה דחוף בבתים» (spec §6): exceptions with an owner and a reason. "Paid, not admitted" is an exception ONLY when the entry date passed. */
   function houseExceptions(c, today) {
     // (the manager-report exceptions live in «המשך טיפול» — one row per item, spec §5: never the same item twice)
@@ -1199,10 +1743,45 @@
       if (l.stage === 'paid' && l.entryDate && l.entryDate <= today) rows.push(rowOfLead(l, { id: 'ex:admit:' + l.id, kind: 'admission_due', action: 'קליטה לבית לא בוצעה', why: 'תאריך הכניסה ' + fmtDate(l.entryDate) + ' עבר', when: l.entryDate, state: 'late', priority: 'exception' }));
     });
     (c.discharges || []).forEach(function (d) {
-      if (d.deletedAt || d.restored === '1' || !d.exitDate || daysBetween(d.exitDate, today) > 14 || d.continuity) return;
-      rows.push({ id: 'ex:cont:' + d.id, kind: 'continuity', subjectKind: 'patient', subjectId: d.patientId, name: d.name, house: houseName(d.houseId), action: 'לעדכן המשך טיפול', why: 'שוחרר/ה ' + fmtDate(d.exitDate) + ' ללא המשך טיפול', when: d.exitDate, time: '', owner: '', state: 'wait', priority: 'exception' });
+      if (d.deletedAt || isRestoredDischarge(d) || !d.exitDate) return;
+      // An acknowledged discharge audit is source-owned even if the second
+      // Patients save was refused. Match by exact stay ID only: never name/phone.
+      const linked = s(d.patientId) ? (c.patients || []).filter(function (p) { return s(p.id) === s(d.patientId); }) : [];
+      if (linked.length === 1 && s(linked[0].status) !== 'released') {
+        rows.push({ id: 'ex:discharge-state:' + d.id, kind: 'discharge_integrity', subjectKind: 'patient',
+          subjectId: s(d.patientId), dischargeId: d.id, name: d.name, house: houseName(d.houseId),
+          action: 'בדיקת שלמות שחרור', why: 'רישום שחרור קיים, אך סטטוס המטופל עדיין אינו משוחרר',
+          when: d.exitDate, time: '', owner: 'ורד', state: 'wait', priority: 'exception', open: 'overview' });
+        return; // do not create a second continuity row for the same incomplete discharge
+      }
+      if (continuityRecorded(d.continuity)) return;
+      // Referral/disposition = sent/intended, NOT confirmed treatment start.
+      // The status-return feed is still a draft. A derived exception stays
+      // visible even after day 14 until a documented result is recorded.
+      const sent = !!(c.outpatientSent && c.outpatientSent['discharge:' + d.id]);
+      const expectingOutpatient = sent || d.disposition === 'released_outpatient';
+      const action = expectingOutpatient ? 'לאמת המשך טיפול לאחר הפניה לאמבולטורי' : 'לעדכן המשך טיפול';
+      const reason = expectingOutpatient
+        ? (sent ? 'הפנייה נשלחה, אך לא התקבל אישור שהטיפול התחיל' : 'סומן מעבר לאמבולטורי, אך שליחת הפנייה והתחלת הטיפול לא אומתו')
+        : 'שוחרר/ה ' + fmtDate(d.exitDate) + ' ללא תוצאת המשך טיפול';
+      // One read-only exception per source discharge; no third writable task.
+      rows.push({ id: 'ex:cont:' + d.id, kind: 'continuity', subjectKind: 'patient', subjectId: dischargePatientId(d, c.patients), dischargeId: d.id, name: d.name, house: houseName(d.houseId), action: action, why: reason, when: d.exitDate, time: '', owner: 'ורד', state: 'wait', priority: 'exception', open: 'meetings' });
     });
     return rows;
+  }
+  // Reuse Patients + Funders, never a local-only warning or a new task ledger.
+  // A missing/unreadable funder is UNKNOWN, not proof that a write failed.
+  // Rendered only for finance readers. Existing legacy identity reads are kept.
+  function funderExceptions(c, payments, today) {
+    if (!payments || payments.ok !== true || !Array.isArray(payments.funders)) return [];
+    return (c.patients || []).filter(function (p) {
+      return p.id && inHouse(p) && p.fromLead && p.date && p.date <= today && FUNDERS.indexOf(funderOnDay(payments.funders, p.id, patientKeyOf(p), p.date)) < 0;
+    }).map(function (p) {
+      return { id: 'ex:funder:' + p.id, kind: 'funder_unverified', subjectKind: 'patient', subjectId: p.id,
+        name: p.name, house: houseName(p.houseId), action: 'גורם מממן לקליטה לא אומת',
+        why: 'יש לבדוק את הגורם המממן מתאריך הכניסה בכרטיס החשבון; אין לקלוט שוב',
+        when: p.date, time: '', owner: 'ורד', state: 'today', priority: 'exception', open: 'account' };
+    });
   }
   function sortRows(rows) {
     return rows.sort(function (a, b) { return (PRIORITY[a.priority] - PRIORITY[b.priority]) || ((a.when || '9') < (b.when || '9') ? -1 : (a.when || '9') > (b.when || '9') ? 1 : 0) || ((b.time ? 1 : 0) - (a.time ? 1 : 0)) || (a.time < b.time ? -1 : a.time > b.time ? 1 : 0); });
@@ -1217,7 +1796,9 @@
   function myDay(c, tasks, index, debt, today, me, f, payments) {
     const finance = !!(me && me.finance);
     const b = meetingBuckets(c.leads, today);
-    const li = index && index.leads ? index.leads : {}, pi = index && index.patients ? index.patients : {};
+    const contactAvailable = !!(index && index.ok !== false && index.leads && index.patients);
+    const tasksAvailable = Array.isArray(tasks);
+    const li = contactAvailable ? index.leads : {}, pi = contactAvailable ? index.patients : {};
     const lastOf = function (r) { return r.subjectKind === 'lead' ? li[r.subjectId] : pi[r.subjectId]; };
     const tq = (tasks || []).filter(function (t) { return t && t.status === 'open'; }).map(function (t) { return rowOfTask(t, c, today); });
     const calls = tq.filter(function (r) { return r.task.kind === 'call'; });
@@ -1227,16 +1808,51 @@
     b.today.forEach(function (l) { meetings.push(rowOfLead(l, { id: 'm:today:' + l.id, kind: 'meeting_today', action: 'פגישת קבלה' + (l.visitTime ? ' ' + l.visitTime : ''), why: 'עם ' + (l.meetingWith || '—'), when: today, time: l.visitTime, owner: l.meetingWith || l.assignedTo, state: 'today', priority: l.visitTime ? 'binding' : 'today', open: 'meetings' })); });
     b.toSchedule.forEach(function (l) { meetings.push(rowOfLead(l, { id: 'm:sched:' + l.id, kind: 'meeting_unscheduled', action: 'לתאם פגישה', why: 'ביקור ללא תאריך', state: 'undated', priority: 'undated', focusMeeting: true })); });
     const followup = [];
-    b.awaitingReport.forEach(function (l) { followup.push(rowOfLead(l, { id: 'f:report:' + l.id, kind: 'awaiting_report', action: 'ממתין לדיווח המנהל/ת', why: 'הפגישה היתה ב-' + fmtDate(l.visitDate) + ' — תאריך שעבר אינו הוכחה שהתקיימה', when: l.visitDate, owner: l.meetingWith || '', waitingOn: l.meetingWith || 'המנהל/ת', state: 'wait', priority: 'wait', open: 'meetings' })); });
-    b.reportUnseen.forEach(function (l) { followup.push(rowOfLead(l, { id: 'f:unseen:' + l.id, kind: 'report_unseen', action: 'לקרוא דיווח מנהל/ת', why: 'דיווח חדש מ-' + (l.meetingReporter || 'הבית'), when: s(l.meetingReportedAt).slice(0, 10), state: 'today', priority: 'exception', open: 'meetings' })); });
-    b.awaitingDecision.forEach(function (l) { followup.push(rowOfLead(l, { id: 'f:decide:' + l.id, kind: 'report_undecided', action: 'להחליט אחרי דיווח המנהל/ת', why: 'הדיווח נקרא, אין החלטה', when: s(l.meetingReportedAt).slice(0, 10), state: 'late', priority: 'exception', open: 'meetings' })); });
-    const fresh = newLeadsNoContact(c.leads, tasks, index, today).map(function (x) { return rowOfLead(x.lead, { id: 'n:' + x.lead.id, kind: 'lead_no_contact', action: 'יצירת קשר ראשון', why: x.age === null ? 'אין מגע מתועד' : 'פנייה מ-' + fmtDate(x.lead.created) + ' · אין מגע מתועד', when: '', state: 'wait', priority: 'wait', contactable: true }); });
-    const houses = houseExceptions(c, today);
+    b.awaitingReport.forEach(function (l) {
+      // A fresh meeting has no report yet by nature: «ממתין», not «חריג», until GRACE days have passed.
+      const late = reportOverdue(l, today);
+      followup.push(rowOfLead(l, { id: 'f:report:' + l.id, kind: 'awaiting_report', action: late ? 'דיווח המנהל/ת באיחור' : 'ממתין לדיווח המנהל/ת',
+        why: 'הפגישה היתה ב-' + fmtDate(l.visitDate) + (late ? ' — ' + daysBetween(l.visitDate, today) + ' ימים ללא דיווח המנהל/ת' : ' — הדיווח צפוי עד ' + fmtDate(addDays(l.visitDate, MANAGER_REPORT_GRACE_DAYS))),
+        when: l.visitDate, owner: l.meetingWith || '', waitingOn: l.meetingWith || 'המנהל/ת', state: late ? 'late' : 'wait', priority: late ? 'exception' : 'wait', open: 'meetings' }));
+    });
+    b.cancelled.forEach(function (l) {
+      // Cancellation still needs a next step regardless of which form recorded it.
+      // Reuse an existing callback/meeting task (including a deferred date), never
+      // create another task just to make the cancelled visit visible.
+      if (tq.some(function (r) { return s(r.task.leadId) === s(l.id) && (r.task.kind === 'call' || r.task.kind === 'meeting'); })) return;
+      const ch = patientMeetingChange(l, flagsOf(index, l.id));
+      followup.push(rowOfLead(l, { id: 'f:cancel:' + l.id, kind: 'meeting_cancelled', action: 'לתאם מועד חדש או לסגור את הליד',
+        why: (ch ? 'הפגישה בוטלה ע״י המטופל/ת' : 'הפגישה בוטלה — טרם נקבע המשך') + (l.visitDate ? ' (נקבעה ל-' + fmtDate(l.visitDate) + ')' : ''),
+        when: ch && ch.at ? s(ch.at).slice(0, 10) : l.visitDate, state: 'today', priority: 'today', open: 'meetings', contactable: true }));
+    });
+    b.reportUnseen.forEach(function (l) { followup.push(rowOfLead(l, { id: 'f:unseen:' + l.id, kind: 'report_unseen', action: 'לקרוא דיווח מנהל/ת', why: 'דיווח חדש מ-' + (l.meetingReporter || 'הבית') + (l.meetingReportOutcome === 'no_show' ? ' · לא הגיע / בוטל — הביקור לא התקיים' : ''), when: s(l.meetingReportedAt).slice(0, 10), state: 'today', priority: 'exception', open: 'meetings' })); });
+    b.awaitingDecision.forEach(function (l) {
+      // A manager's no_show means "לא הגיע / בוטל" (combined in the source).
+      // Do NOT imply the meeting took place or close the lead automatically.
+      // Keep the same source-derived row ID and real logContact navigation.
+      const notHeld = l.meetingReportOutcome === 'no_show';
+      followup.push(rowOfLead(l, {
+        id: 'f:decide:' + l.id,
+        kind: notHeld ? 'meeting_no_show_followup' : 'report_undecided',
+        action: notHeld ? 'לברר היעדרות / ביטול ולתאם מועד חדש' : 'להחליט אחרי דיווח המנהל/ת',
+        why: notHeld ? 'דיווח המנהל/ת: לא הגיע / בוטל — הביקור לא התקיים; נדרש ליצור קשר או לתעד סגירה מנומקת' : 'הדיווח נקרא, אין החלטה',
+        when: s(l.meetingReportedAt).slice(0, 10),
+        whenText: notHeld ? 'דיווח מ-' + fmtDate(s(l.meetingReportedAt).slice(0, 10)) + ' · מועד המשך טרם נקבע' : '',
+        state: notHeld ? 'wait' : 'late', priority: 'exception', open: 'meetings', contactable: notHeld
+      }));
+    });
+    // Rows from May 2026 and earlier are no longer listed (Vered 04/11/2026) — a cancellation is new work, never cut.
+    for (let i = followup.length - 1; i >= 0; i--) if (followup[i].kind !== 'meeting_cancelled' && followup[i].when && followup[i].when < EXCEPTION_CUTOFF) followup.splice(i, 1);
+    const fresh = newLeadsNoContact(c.leads, tasks, index, today).map(function (x) { return rowOfLead(x.lead, { id: 'n:' + x.lead.id, kind: 'lead_no_contact', action: 'יצירת קשר ראשון', why: x.age === null ? 'אין מגע מתועד' : 'ליד מ-' + fmtDate(x.lead.created) + ' · אין מגע מתועד', when: '', state: 'wait', priority: 'wait', contactable: true }); });
+    // «מה דחוף בבתים» is no longer part of «היום שלי» (Vered 04/11/2026); «תפוסה» still reads houseExceptions.
+    // Kept: the discharge-integrity check (an audit row whose Patients status did not save — P0 safety net).
+    const houses = houseExceptions(c, today).filter(function (r) { return r.kind === 'discharge_integrity'; });
     // money: collection tasks + the recorded / unrecorded open cycles of debtAging (finance only)
     const money = [];
     let debtCount = null;
     if (finance) {
       collection.forEach(function (r) { money.push(r); });
+      funderExceptions(c, payments, today).forEach(function (r) { money.push(r); });
       if (debt && debt.ok !== false && Array.isArray(debt.byPatient)) {
         debtCount = 0;
         debt.byPatient.forEach(function (p) {
@@ -1245,14 +1861,14 @@
             debtCount++;
             if (money.length < 400) money.push({ id: 'd:' + p.patientId + ':' + cy.start, kind: cy.kind === 'recorded' ? 'debt_recorded' : 'cycle_unreported', subjectKind: 'patient', subjectId: p.patientId, name: p.name, house: houseName(p.houseId),
               action: cy.kind === 'recorded' ? 'חוב רשום — ' + fmtMoney(cy.balance) : 'מחזור ללא דיווח — ' + fmtMoney(cy.balance), why: (cy.kind === 'recorded' ? 'דווח ' + fmtMoney(cy.received) + ' מתוך ' + fmtMoney(cy.expected) : 'לא דווח תשלום למחזור') + ' · ' + fmtDate(cy.start) + ' – ' + fmtDate(cy.end),
-              when: cy.end, time: '', owner: '', state: cy.end < today ? 'late' : 'wait', priority: cy.end < today ? 'late' : 'wait', open: 'account' });
+              when: cy.end, time: '', owner: 'ורד', state: cy.end < today ? 'late' : 'wait', priority: cy.end < today ? 'late' : 'wait', open: 'account' });
           });
         });
       } else if (debt === null || debt === undefined) debtCount = null; else debtCount = false;
       if (payments && payments.ok !== false) verificationRows(payments, today).forEach(function (r) { money.push(r); });
     }
     const all = [].concat(money, calls, meetings, followup, fresh, houses, otherTasks).filter(function (r) { return passes(r, f); });
-    all.forEach(function (r) { r.lastContact = lastContactText(lastOf(r)); r.domain = r.domain || (money.indexOf(r) >= 0 ? 'collection' : calls.indexOf(r) >= 0 ? 'calls' : meetings.indexOf(r) >= 0 ? 'meetings' : followup.indexOf(r) >= 0 ? 'followup' : fresh.indexOf(r) >= 0 ? 'newleads' : houses.indexOf(r) >= 0 ? 'houses' : 'calls'); });
+    all.forEach(function (r) { r.lastContact = contactAvailable ? lastContactText(lastOf(r)) : 'יומן הקשר אינו זמין'; r.domain = r.domain || (money.indexOf(r) >= 0 ? 'collection' : calls.indexOf(r) >= 0 ? 'calls' : meetings.indexOf(r) >= 0 ? 'meetings' : followup.indexOf(r) >= 0 ? 'followup' : fresh.indexOf(r) >= 0 ? 'newleads' : houses.indexOf(r) >= 0 ? 'integrity' : 'calls'); });
     const byDomain = {}; DOMAINS.forEach(function (d) { byDomain[d.id] = []; });
     all.forEach(function (r) { byDomain[r.domain].push(r); });
     Object.keys(byDomain).forEach(function (k) { sortRows(byDomain[k]); });
@@ -1265,22 +1881,44 @@
       // receipts — not confirmed cash, not her task, never counted as collection work. Debt figures untouched.
       const waitingOrtal = countOf(byDomain.collection, function (r) { return r.kind === 'receipt_reported'; });
       const toCollect = countOf(byDomain.collection, function (r) { return r.kind !== 'receipt_reported' && dueNow(r); });
-      cards.push({ id: 'collection', label: 'גבייה לביצוע', value: debtCount === false ? null : toCollect,
-        second: payments === undefined ? { label: 'ממתין לאימות אורטל', value: '…' } : (payments && payments.ok !== false ? { label: 'ממתין לאימות אורטל', value: waitingOrtal } : { label: 'ממתין לאימות אורטל', value: '—' }),
-        hint: debtCount === null ? 'טוען…' : (debtCount === false ? 'המידע אינו זמין' : debtCount + ' מחזורים פתוחים · דיווח אינו כסף מאומת') });
+      // A count sourced from THREE independent reads is never a complete zero if even
+      // one of debt, open Tasks or receipts has failed / has not arrived yet.
+      const paymentsAvailable = !!(payments && payments.ok !== false && (Array.isArray(payments.receipts) || Array.isArray(payments.payments)));
+      const collectionComplete = debtCount !== null && debtCount !== false && tasksAvailable && paymentsAvailable;
+      const collectionLoading = debtCount === null || tasks === undefined || payments === undefined;
+      cards.push({ id: 'collection', label: 'גבייה לביצוע', value: collectionComplete ? toCollect : null,
+        second: payments === undefined ? { label: 'ממתין לאימות אורטל', value: '…' } : (paymentsAvailable ? { label: 'ממתין לאימות אורטל', value: waitingOrtal } : { label: 'ממתין לאימות אורטל', value: '—' }),
+        hint: collectionComplete ? debtCount + ' מחזורים פתוחים · דיווח אינו כסף מאומת' : (collectionLoading ? 'טוען… · ספירת הגבייה עדיין אינה מלאה' : 'המידע חלקי — מקור חובות, משימות או תקבולים אינו זמין') });
     }
-    else cards.push({ id: 'houses', label: 'מה דחוף בבתים', value: all.filter(function (r) { return r.priority === 'exception'; }).length, hint: 'חריגים הממתינים להחלטה' });
     cards.push({ id: 'calls', label: 'שיחות ומעקבים', value: tasks ? countOf(byDomain.calls, dueNow) : null, hint: tasks ? countOf(byDomain.calls, function (r) { return r.state === 'late'; }) + ' באיחור · ' + byDomain.calls.length + ' פתוחות' : (tasks === undefined ? 'טוען…' : 'המידע אינו זמין') });
     cards.push({ id: 'meetings', label: 'פגישות היום', value: countOf(byDomain.meetings, function (r) { return r.kind === 'meeting_today'; }), second: { label: 'תיאומים פתוחים', value: countOf(byDomain.meetings, function (r) { return r.kind === 'meeting_unscheduled'; }) } });
     cards.push({ id: 'followup', label: 'המשך טיפול לאחר פגישות', value: byDomain.followup.length, hint: countOf(byDomain.followup, function (r) { return r.kind === 'awaiting_report'; }) + ' ממתינות לדיווח מנהל/ת' });
-    cards.push({ id: 'newleads', label: 'פניות חדשות ללא מגע', value: index ? byDomain.newleads.length : null, hint: index ? 'ללא ניסיון קשר מתועד' : (index === undefined ? 'טוען…' : 'המידע אינו זמין') });
+    cards.push({ id: 'newleads', label: 'לידים חדשים ללא מגע', value: contactAvailable && tasksAvailable ? byDomain.newleads.length : null, hint: contactAvailable && tasksAvailable ? 'ללא ניסיון קשר מתועד' : (index === undefined || tasks === undefined ? 'טוען…' : 'לא ניתן לקבוע ללא יומן קשר ומשימות') });
     const urgent = sortRows(all.filter(function (r) { return r.priority === 'exception' || r.priority === 'binding'; }).slice());
     const waiting = all.filter(function (r) { return r.waitingOn; });
     const exceptions = all.filter(function (r) { return r.priority === 'exception'; });
-    return { cards: cards, byDomain: byDomain, urgent: urgent, waiting: waiting, meetingsToday: byDomain.meetings.filter(function (r) { return r.kind === 'meeting_today'; }), exceptions: exceptions, total: all.length, buckets: b };
+    return { cards: cards, byDomain: byDomain, urgent: urgent, waiting: waiting, meetingsToday: byDomain.meetings.filter(function (r) { return r.kind === 'meeting_today'; }), exceptions: exceptions, total: all.length, buckets: b,
+      sourceState: { contact: contactAvailable, tasks: tasksAvailable, collection: !finance ? 'hidden' : (cards[0].value === null ? (debt === null || debt === undefined || tasks === undefined || payments === undefined ? 'loading' : 'partial') : 'complete') } };
+  }
+  // Control cards and their drill-down use the SAME filtered work rows, including
+  // the historic cutoff and permission scope already applied by myDay.
+  const WORK_CONTROL = [
+    { id: 'unseen', label: 'דיווחי מנהל/ת שלא נקראו', kinds: ['report_unseen'] },
+    { id: 'undecided', label: 'דיווחים שנקראו ללא החלטה', kinds: ['report_undecided', 'meeting_no_show_followup'] },
+    { id: 'awaitingReport', label: 'פגישות שעברו ללא דיווח', kinds: ['awaiting_report'] },
+    { id: 'unscheduled', label: 'ביקורים ללא תאריך', kinds: ['meeting_unscheduled'] },
+    { id: 'late', label: 'משימות באיחור', kinds: [] }
+  ];
+  function workControlQueues(m) {
+    const all = [].concat.apply([], Object.keys(m.byDomain).map(function (k) { return m.byDomain[k]; }));
+    const queues = {};
+    WORK_CONTROL.forEach(function (q) {
+      queues[q.id] = sortRows(all.filter(function (r) { return q.id === 'late' ? r.kind === 'task' && r.state === 'late' : q.kinds.indexOf(r.kind) >= 0; }));
+    });
+    return queues;
   }
   /* «השבוע»: the dated rows of a Sun–Sat week, grouped by day; a window task sits on every day it covers (one id). */
-  function weekPlan(model, ws) {
+  function weekPlan(model, ws, c, filters, today) {
     const days = [];
     for (let i = 0; i < 7; i++) { const d = addDays(ws, i); days.push({ date: d, name: DAY_NAMES[i], rows: [] }); }
     const seen = {};
@@ -1292,6 +1930,18 @@
         if (!r.when) return;
         days.forEach(function (d) { if (d.date === r.when) d.rows.push(r); });
       });
+    });
+    // Reuse the existing calendar projection: My Day intentionally contains only TODAY's
+    // meetings, so a week assembled solely from My Day silently omits future appointments.
+    // This read-only projection does not create a meeting, task or second calendar.
+    if (c && Array.isArray(c.leads)) calendarRows(c.leads, { mode: 'week', from: ws, to: addDays(ws, 6) }, today || ws).forEach(function (v) {
+      const row = { id: 'week:meeting:' + v.id, kind: 'meeting_week', subjectKind: 'lead', subjectId: v.id, name: v.name, house: v.house,
+        action: 'פגישת קבלה' + (v.time ? ' ' + v.time : ''), why: 'עם ' + (v.withWhom || '—') + ' · ' + v.status.text, owner: v.withWhom,
+        when: v.date, time: v.time, state: v.status.state, priority: v.status.state === 'today' && v.time ? 'binding' : v.status.state, open: 'meetings' };
+      if (!passes(row, filters)) return;
+      const day = days.filter(function (d) { return d.date === v.date; })[0];
+      // The same appointment already arrived in My Day as meeting_today.
+      if (day && !day.rows.some(function (r) { return r.subjectKind === 'lead' && r.subjectId === v.id && r.kind === 'meeting_today'; })) day.rows.push(row);
     });
     days.forEach(function (d) { sortRows(d.rows); });
     return { start: ws, end: addDays(ws, 6), days: days, undated: Object.keys(model.byDomain).reduce(function (acc, k) { return acc.concat(model.byDomain[k].filter(function (r) { return r.task && !r.when; })); }, []) };
@@ -1320,9 +1970,10 @@
     { id: 'check', label: 'לסמן לבדיקה נוספת', hint: 'משימת בירור עם מועד ואחראי' }];
   /* The queue: open leads with NO documented contact and NO open task, oldest first (the family waited longest). */
   function triageQueue(c, tasks, index, today) {
+    if (!Array.isArray(tasks) || !index || index.ok === false || !index.leads) return [];
     const open = {};
-    (tasks || []).forEach(function (t) { if (t && t.status === 'open' && s(t.leadId)) open[s(t.leadId)] = t; });
-    const li = index && index.leads ? index.leads : {};
+    tasks.forEach(function (t) { if (t && t.status === 'open' && s(t.leadId)) open[s(t.leadId)] = t; });
+    const li = index.leads;
     return (c.leads || []).filter(function (l) { return (l.stage === 'new' || (l.stage === 'visit' && !l.visitDate)) && !li[l.id] && !open[l.id]; })
       .map(function (l) { return { lead: l, age: l.created ? daysBetween(l.created, today) : null, reason: l.stage === 'visit' ? 'ביקור ללא תאריך ואין מגע מתועד' : 'אין מגע מתועד' }; })
       .sort(function (a, b) { return (a.lead.created || '9').localeCompare(b.lead.created || '9'); });
@@ -1364,7 +2015,7 @@
       if (r.isVoid) return;
       const st = verifyStatus(r);
       if (st === 'confirmed') return;
-      const base = { id: 'v:' + r.id, subjectKind: 'patient', subjectId: r.patientUid || r.patientId, name: r.patientName, house: r.houseName, when: r.receivedDate, time: '', owner: 'אורטל', open: 'account', receipt: r,
+      const base = { id: 'v:' + r.id, subjectKind: 'patient', subjectId: r.patientUid || r.patientId, name: r.patientName, house: r.houseName, when: r.receivedDate, time: '', owner: st === 'reported' ? 'אורטל' : 'ורד', open: 'account', receipt: r,
         action: VERIFY_LABELS[st] + ' — ' + fmtMoney(r.amount), why: 'התקבל ' + fmtDate(r.receivedDate) + (r.method ? ' · ' + r.method : '') + (r.funder ? ' · ' + r.funder : '') };
       if (st === 'reported') out.push(Object.assign(base, { kind: 'receipt_reported', waitingOn: 'אורטל', state: 'wait', priority: 'wait' }));
       else out.push(Object.assign(base, { kind: 'receipt_flagged', state: 'late', priority: 'exception', why: base.why + (r.flagNote ? ' · ' + r.flagNote : '') }));
@@ -1376,16 +2027,16 @@
     const list = queue && queue.ok !== false && Array.isArray(queue.receipts) ? queue.receipts : null;
     const rowOf = function (r, kind, state, priority) {
       const st = verifyStatus(r);
-      return { id: 'o:' + r.id, kind: kind, subjectKind: 'patient', subjectId: s(r.patientUid || r.patientId), name: s(r.patientName), house: houseName(r.houseId), when: s(r.receivedDate).slice(0, 10), time: '', owner: 'אורטל',
-        action: (VERIFY_LABELS[st] || st) + ' — ' + fmtMoney(r.amount), why: 'דווח ע״י ' + (s(r.recordedBy) || '—') + ' · ' + fmtDate(s(r.receivedDate).slice(0, 10)) + (r.method ? ' · ' + s(r.method) : '') + (st === 'flagged' && r.flagNote ? ' · ' + s(r.flagNote) : '') + (r.invoiceWanted === 'yes' ? ' · חשבונית מבוקשת' + (r.invoiceTo ? ' ל' + s(r.invoiceTo) : '') : ''),
+      return { id: 'o:' + r.id, kind: kind, subjectKind: 'patient', subjectId: s(r.patientUid || r.patientId), name: s(r.patientName), house: houseName(r.houseId), when: sheetDay(r.receivedDate), time: '', owner: 'אורטל',
+        action: (VERIFY_LABELS[st] || st) + ' — ' + fmtMoney(r.amount), why: 'דווח ע״י ' + (s(r.recordedBy) || '—') + ' · ' + fmtDate(sheetDay(r.receivedDate)) + (r.method ? ' · ' + s(r.method) : '') + (st === 'flagged' && r.flagNote ? ' · ' + s(r.flagNote) : '') + (r.invoiceWanted === 'yes' ? ' · חשבונית מבוקשת' + (r.invoiceTo ? ' ל' + s(r.invoiceTo) : '') : ''),
         state: state, priority: priority, classic: true, lastContact: '' };
     };
     const toVerify = [], flagged = [], documents = [];
     (list || []).forEach(function (r) {
       const st = verifyStatus(r);
-      if (st === 'reported') toVerify.push(rowOf(r, 'to_verify', daysBetween(s(r.receivedDate).slice(0, 10), today) > 3 ? 'late' : 'today', daysBetween(s(r.receivedDate).slice(0, 10), today) > 3 ? 'late' : 'today'));
+      if (st === 'reported') toVerify.push(rowOf(r, 'to_verify', daysBetween(sheetDay(r.receivedDate), today) > 3 ? 'late' : 'today', daysBetween(sheetDay(r.receivedDate), today) > 3 ? 'late' : 'today'));
       else if (st === 'flagged' || st === 'partial') flagged.push(rowOf(r, 'flagged', 'late', 'exception'));
-      else if (st === 'confirmed' && r.invoiceWanted === 'yes' && daysBetween(s(r.receivedDate).slice(0, 10), today) <= 60) documents.push(rowOf(r, 'document', 'wait', 'wait'));
+      else if (st === 'confirmed' && r.invoiceWanted === 'yes' && daysBetween(sheetDay(r.receivedDate), today) <= 60) documents.push(rowOf(r, 'document', 'wait', 'wait'));
     });
     const moneyTasks = (tasks || []).filter(function (t) { return t && t.status === 'open'; }).map(function (t) { return rowOfTask(t, { leads: [], patients: [] }, today); });
     const pend = credits ? pendingCredits(credits).map(function (c) { return { id: 'c:' + c.id, kind: 'credit', subjectKind: 'patient', subjectId: c.patientId, name: c.patientName, house: houseName(c.houseId), when: c.payoutDate || '', time: '', owner: 'אורטל', action: 'זיכוי לתשלום — ' + fmtMoney(c.amount), why: (CREDIT_TYPE_LABELS[c.creditType] || c.creditType) + ' · ' + c.allocationMonth, state: c.payoutDate && c.payoutDate < today ? 'late' : 'wait', priority: c.payoutDate && c.payoutDate < today ? 'late' : 'wait', classic: true, lastContact: '' }; }) : null;
@@ -1402,10 +2053,329 @@
     return { cards: cards, sets: sets, urgent: urgent };
   }
 
+  /* ===== «KPI» (CHANGELOG-crm-kpi-tab.md) =====
+   * Read-only slices over getData (and, for finance, debtAging). Pure: no DOM,
+   * no I/O. Every number is computed in the browser from data the session may
+   * already read — no new endpoint, no Code.gs change. */
+  const KPI_PERIODS = [
+    { id: 'this_month', label: 'החודש' }, { id: 'last_month', label: 'החודש הקודם' },
+    { id: 'last_3_months', label: '3 חודשים אחרונים' }, { id: 'this_year', label: 'מתחילת השנה' },
+  ];
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  /* A preset → { from, to } (inclusive 'YYYY-MM-DD') around today. null for an unknown id / a bad today. Pure. */
+  function kpiPeriod(id, today) {
+    const t = s(today);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return null;
+    const y = +t.slice(0, 4), m = +t.slice(5, 7);
+    const back = function (k) { let mm = m - k, yy = y; while (mm < 1) { mm += 12; yy--; } return { y: yy, m: mm }; };
+    if (id === 'this_month') return { from: y + '-' + pad2(m) + '-01', to: t };
+    if (id === 'last_month') { const p = back(1); return { from: p.y + '-' + pad2(p.m) + '-01', to: p.y + '-' + pad2(p.m) + '-' + pad2(new Date(Date.UTC(p.y, p.m, 0)).getUTCDate()) }; }
+    if (id === 'last_3_months') { const p = back(2); return { from: p.y + '-' + pad2(p.m) + '-01', to: t }; }
+    if (id === 'this_year') return { from: y + '-01-01', to: t };
+    return null;
+  }
+  function pctOf(n, base) { return base > 0 ? Math.round(1000 * n / base) / 10 : null; }
+  function fmtPct(p) { return p === null || p === undefined ? '—' : (Math.round(p * 10) / 10) + '%'; }
+  /* «תפוסה היום»: the occupancy totals + the overall percentage. Pure. */
+  function occupancyToday(patients) {
+    const o = occupancy(patients);
+    return Object.assign({}, o, { pct: o.totalCap ? Math.round(100 * o.totalIn / o.totalCap) : 0 });
+  }
+  /* The classic computeDisposition (app.js): explicit → legacy reason → 'not_relevant'. Pure. */
+  function closedDisposition(l) {
+    const d = s(l && l.disposition);
+    if (d === 'not_relevant' || d === 'completed' || d === 'stopped_early' || d === 'released_outpatient') return d;
+    const r = s(l && l.not_relevant_reason);
+    if (r === 'stopped_from_house' || r === 'stopped_new') return 'stopped_early';
+    return 'not_relevant';
+  }
+  const ENTERED_LEAD_STAGES = ['admitted', 'entered', 'entry'];
+  /* Every real lead once (board first, then closed), with its fate.
+   *   inpatient  — a Patients / discharge row links to it (fromLead), or its stage is admitted
+   *   outpatient — handed to Outpatient (AuditLog send), closed «משוחרר לטיפול חוץ», or an
+   *                «אמבולטורי» meeting with outcome «נכנסים לטיפול»
+   *   notRelevant / otherClosed — a closed lead (by disposition)
+   *   open       — still on the board
+   * `source: 'direct_admin'` rows (phone records) are never leads; `direct_approach`
+   * (a patient added directly) is flagged `direct` and kept OUT of the conversion base. Pure. */
+  function leadFates(data, c) {
+    const d = data && typeof data === 'object' ? data : {};
+    const linked = {};
+    (c.patients || []).forEach(function (p) { if (s(p.fromLead)) linked[s(p.fromLead)] = true; });
+    (c.discharges || []).forEach(function (x) { if (s(x.fromLead)) linked[s(x.fromLead)] = true; });
+    const sent = c.outpatientSent || {};
+    const seen = {}, out = [];
+    const add = function (l, closed) {
+      if (!l || typeof l !== 'object') return;
+      const id = s(l.id);
+      if (id && seen[id]) return;
+      if (id) seen[id] = true;
+      if (s(l.source) === 'direct_admin') return;
+      const stage = s(l.stage);
+      const disp = closed ? closedDisposition(l) : '';
+      let fate;
+      if (linked[id] || ENTERED_LEAD_STAGES.indexOf(stage) >= 0) fate = 'inpatient';
+      else if (sent[id] || disp === 'released_outpatient' || (s(l.meetingWith) === MEETING_WITH_AMBULATORY && s(l.meetingOutcome) === 'entered')) fate = 'outpatient';
+      else if (closed) fate = disp === 'not_relevant' ? 'notRelevant' : 'otherClosed';
+      else fate = 'open';
+      out.push({ id: id, name: s(l.name), house: houseName(l.house), houseKnown: !!houseId(l.house), source: s(l.source), created: isoDay(l.created), visitDate: isoDay(l.visitDate),
+        reportedAt: isoDay(l.meetingReportedAt), meetingWith: s(l.meetingWith), fate: fate, direct: s(l.source) === 'direct_approach', closed: !!closed });
+    };
+    (c.leads || []).forEach(function (l) { add(l, false); });
+    (Array.isArray(d.irrelevantLeads) ? d.irrelevantLeads : []).forEach(function (l) { add(l, true); });
+    return out;
+  }
+  const FATES = [
+    { id: 'inpatient', label: 'נכנסו לאשפוז (בית)' }, { id: 'outpatient', label: 'עברו לאמבולטורי' },
+    { id: 'open', label: 'עדיין פתוחים' }, { id: 'notRelevant', label: 'נסגרו — לא רלוונטי' }, { id: 'otherClosed', label: 'נסגרו — אחר' },
+  ];
+  /* «המרת לידים»: the leads CREATED in [from, to] → how many became patients. Pure. */
+  function leadConversion(data, c, from, to) {
+    const all = leadFates(data, c);
+    const inRange = all.filter(function (l) { return l.created && l.created >= from && l.created <= to; });
+    const base = inRange.filter(function (l) { return !l.direct; });
+    const counts = {}; FATES.forEach(function (f) { counts[f.id] = 0; });
+    base.forEach(function (l) { counts[l.fate]++; });
+    const converted = counts.inpatient + counts.outpatient;
+    const byHouse = {};
+    // only real houses get a row: a blank or damaged house name (U+FFFD) is counted apart, never shown
+    base.filter(function (l) { return l.houseKnown; }).forEach(function (l) {
+      const k = l.house;
+      const r = byHouse[k] || (byHouse[k] = { house: k, total: 0, inpatient: 0, outpatient: 0 });
+      r.total++; if (l.fate === 'inpatient') r.inpatient++; if (l.fate === 'outpatient') r.outpatient++;
+    });
+    const houses = Object.keys(byHouse).map(function (k) { const r = byHouse[k]; return Object.assign(r, { pct: pctOf(r.inpatient + r.outpatient, r.total) }); })
+      .sort(function (a, b) { return b.total - a.total || a.house.localeCompare(b.house, 'he'); });
+    return {
+      total: base.length, converted: converted, pct: pctOf(converted, base.length), counts: counts,
+      pcts: FATES.reduce(function (o, f) { o[f.id] = pctOf(counts[f.id], base.length); return o; }, {}),
+      direct: inRange.filter(function (l) { return l.direct; }).length,
+      noCreated: all.filter(function (l) { return !l.created && !l.direct; }).length,
+      noHouse: base.filter(function (l) { return !l.houseKnown; }).length,
+      houses: houses, rows: base,
+    };
+  }
+  /* A manager name as recorded in «נפגש/ת עם» is used only when it IS a name: Hebrew letters
+   * (and spaces / quotes / hyphen), no digits, no damaged characters — never a timestamp, a stage
+   * key or a blank (Sandra 05/11/2026: «אם אין לנו שם של מנהל אל תכניס את זה»). Pure. */
+  /* Roles / placeholders that are not a person's name. */
+  const MANAGER_PLACEHOLDERS = ['ממלא מקום', 'ממלא/ת מקום', 'ממלאת מקום', 'אמבולטורי', 'ללא', 'ללא מנהל', 'ללא מנהל/ת', 'אחר', 'לא ידוע'];
+  function managerNameOk(v) {
+    const t = s(v);
+    if (!t || t.length > 40 || /[\uFFFD0-9]/.test(t)) return false;
+    if (!/^[\u05D0-\u05EA\s"'\u05F3\u05F4.\-]+$/.test(t)) return false;
+    if (MANAGER_PLACEHOLDERS.indexOf(t.replace(/\s+/g, ' ')) >= 0) return false;
+    return (t.match(/[\u05D0-\u05EA]/g) || []).length >= 2;
+  }
+  /* «סגירה לפי מנהל/ת»: the intake meetings held in [from, to] (visit day passed, or a
+   * manager report in the period when there is no visit day), grouped by «נפגש/ת עם».
+   * closed = became a patient (house or outpatient); lost = closed without entering. Pure. */
+  function managerCloseRates(data, c, from, to, today) {
+    const by = {};
+    let skipped = 0;
+    leadFates(data, c).forEach(function (l) {
+      if (l.direct) return;
+      const day = l.visitDate || l.reportedAt;
+      if (!day || day < from || day > to || day > s(today)) return;
+      if (!managerNameOk(l.meetingWith)) { skipped++; return; }
+      const k = l.meetingWith;
+      const r = by[k] || (by[k] = { manager: k, meetings: 0, entered: 0, lost: 0, open: 0, leads: [] });
+      r.meetings++;
+      if (l.fate === 'inpatient' || l.fate === 'outpatient') r.entered++;
+      else if (l.fate === 'open') r.open++;
+      else r.lost++;
+      r.leads.push(l);
+    });
+    const rows = Object.keys(by).map(function (k) { const r = by[k]; return Object.assign(r, { closePct: pctOf(r.entered, r.meetings), lostPct: pctOf(r.lost, r.meetings) }); })
+      .sort(function (a, b) { return (b.closePct || 0) - (a.closePct || 0) || b.meetings - a.meetings || a.manager.localeCompare(b.manager, 'he'); });
+    const tot = rows.reduce(function (t, r) { t.meetings += r.meetings; t.entered += r.entered; t.lost += r.lost; t.open += r.open; return t; }, { meetings: 0, entered: 0, lost: 0, open: 0 });
+    tot.closePct = pctOf(tot.entered, tot.meetings); tot.lostPct = pctOf(tot.lost, tot.meetings);
+    return { rows: rows, total: tot, skipped: skipped };
+  }
+
+  /* «נקודת איזון» — the classic tab's model (app.js BREAKEVEN_DEFAULTS /
+   * computeHouseMetrics / computeNetworkMetrics, CHANGELOG-breakeven-ex-vat.md),
+   * mirrored. The expenses are the SAME browser-stored figures the classic tab
+   * edits (localStorage 'ezone-breakeven-v1', same origin), else the defaults of
+   * the financial analysis. Revenue = the real monthly pay of every in-house
+   * patient, ex-VAT. Finance sessions only (an ops session has no pay). */
+  const BREAKEVEN_STORAGE_KEY = 'ezone-breakeven-v1';
+  const VAT_RATE = 1.18;
+  const BREAKEVEN_DEFAULTS = {
+    hqCost: 300000,
+    houses: {
+      arfoni: { active: true, fixed: 147200, variable: 90000 }, rehab: { active: true, fixed: 130000, variable: 80000 },
+      asher: { active: true, fixed: 170000, variable: 140000 }, pardes: { active: false, fixed: 0, variable: 0 },
+      ramot: { active: true, fixed: 239000, variable: 217000 }, sde: { active: false, fixed: 147200, variable: 90000 },
+    },
+  };
+  const PRICE_FALLBACKS = { arfoni: 30000, rehab: 30000, asher: 35000, pardes: 35000, ramot: 36000, sde: 30000 };
+  /* Stored JSON (string or object) → a full config; anything unreadable → the defaults. Pure. */
+  function breakevenConfig(stored) {
+    let parsed = stored;
+    if (typeof stored === 'string') { try { parsed = JSON.parse(stored); } catch (_) { parsed = null; } }
+    const def = BREAKEVEN_DEFAULTS;
+    const p = parsed && typeof parsed === 'object' ? parsed : null;
+    const hq = p && p.hqCost != null && isFinite(Number(p.hqCost)) ? Number(p.hqCost) : def.hqCost;
+    const houses = {};
+    HOUSES.forEach(function (h) {
+      const st = p && p.houses && typeof p.houses === 'object' ? p.houses[h.id] : null;
+      const d0 = def.houses[h.id] || { active: false, fixed: 0, variable: 0 };
+      houses[h.id] = st && typeof st === 'object'
+        ? { active: !!st.active, fixed: Number(st.fixed) || 0, variable: Number(st.variable) || 0 }
+        : { active: d0.active, fixed: d0.fixed, variable: d0.variable };
+    });
+    return { hqCost: hq, houses: houses, fromStorage: !!p };
+  }
+  /* The per-house and network break-even (same formulas as the classic tab). Pure. */
+  function breakevenReport(patients, cfg) {
+    const conf = cfg || breakevenConfig(null);
+    const houses = HOUSES.map(function (h) {
+      const be = conf.houses[h.id] || { active: false, fixed: 0, variable: 0 };
+      const mine = (patients || []).filter(function (p) { return houseId(p.houseId) === h.id && inHouse(p); });
+      const paying = mine.filter(function (p) { return (Number(p.pay) || 0) > 0; });
+      const gross = paying.length ? Math.round(paying.reduce(function (t, p) { return t + (Number(p.pay) || 0); }, 0) / paying.length) : (PRICE_FALLBACKS[h.id] || 30000);
+      const price = gross / VAT_RATE;
+      const fixed = Number(be.fixed) || 0, variable = Number(be.variable) || 0, totalExpenses = fixed + variable;
+      const capacity = h.capacity;
+      const currentPatients = mine.length;
+      const breakevenPoint = price > 0 ? Math.ceil(totalExpenses / price) : 0;
+      const currentRevenue = mine.reduce(function (t, p) { return t + (Number(p.pay) || 0); }, 0) / VAT_RATE;
+      const currentPL = currentRevenue - totalExpenses;
+      return { id: h.id, name: h.name, active: !!be.active, closed: !!h.closed, fixed: fixed, variable: variable, totalExpenses: totalExpenses, price: price,
+        capacity: capacity, currentPatients: currentPatients, breakevenPoint: breakevenPoint, currentRevenue: currentRevenue, currentPL: currentPL,
+        marginPct: currentRevenue > 0 ? (currentPL / currentRevenue) * 100 : null, maxPL: capacity * price - totalExpenses,
+        gap: Math.max(0, breakevenPoint - currentPatients), freeBeds: Math.max(0, capacity - currentPatients) };
+    });
+    const act = houses.filter(function (m) { return m.active; });
+    const sum = function (k) { return act.reduce(function (t, m) { return t + m[k]; }, 0); };
+    const totalHouseExpenses = sum('totalExpenses'), hqCost = Number(conf.hqCost) || 0, totalExpenses = totalHouseExpenses + hqCost;
+    const totalRevenueCurrent = sum('currentRevenue'), totalCapacity = sum('capacity');
+    const totalRevenueMax = act.reduce(function (t, m) { return t + m.capacity * m.price; }, 0);
+    const avgPrice = totalCapacity > 0 ? totalRevenueMax / totalCapacity : 0;
+    return {
+      houses: houses,
+      network: { hqCost: hqCost, totalHouseExpenses: totalHouseExpenses, totalExpenses: totalExpenses, totalRevenueCurrent: totalRevenueCurrent,
+        housesPL: totalRevenueCurrent - totalHouseExpenses, networkPL: totalRevenueCurrent - totalExpenses, totalPatientsCurrent: sum('currentPatients'),
+        totalCapacity: totalCapacity, networkBreakeven: avgPrice > 0 ? Math.ceil(totalExpenses / avgPrice) : 0 },
+    };
+  }
+
+  /* ===== «חריגים לבדיקה» in «גבייה» (CHANGELOG-crm-kpi-tab.md) =====
+   * Open things that cannot both be true. Read-only: every row opens the stays
+   * it names; the fix is made on the record itself. Never a merge, never a write.
+   *   stay_overlap      — two stays of the same person (same personId chain, or the
+   *                       same full name) whose periods overlap: one person cannot be
+   *                       in two houses (or twice in one house) at the same time
+   *   exit_before_entry — a stay that ends before it starts
+   *   released_no_exit  — a released stay with no exit date (the billing end is unknown)
+   *   debt_after_exit   — an open debt cycle that starts after the stay's exit day
+   *   zero_pay_in_house — in the house with a monthly price of 0 (nothing is charged) */
+  const ANOMALY_LABELS = {
+    stay_overlap: 'אותו אדם בשתי שהיות חופפות', exit_before_entry: 'תאריך יציאה לפני תאריך כניסה',
+    released_no_exit: 'שוחרר/ה ללא תאריך יציאה', debt_after_exit: 'חוב על תקופה אחרי היציאה', zero_pay_in_house: 'בבית עם סכום חודשי 0',
+  };
+  function stayEnd(p, exitByPatient, today) {
+    if (inHouse(p)) return s(today);
+    return s(p.exitDate) || s(exitByPatient[s(p.id)]) || '';
+  }
+  function billingAnomalies(c, debt, today) {
+    const pts = (c && c.patients) || [];
+    const exitBy = {};
+    ((c && c.discharges) || []).forEach(function (d) { if (!d.deletedAt && !isRestoredDischarge(d) && d.patientId && d.exitDate) exitBy[d.patientId] = d.exitDate; });
+    const rows = [];
+    const stay = function (p) { return { id: p.id, name: p.name, house: houseName(p.houseId), date: p.date, exitDate: stayEnd(p, exitBy, today), status: p.status }; };
+    /* group by person: union of personId chains and full names (2+ words) */
+    const parent = {};
+    const find = function (x) { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+    const unite = function (a, b) { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb; };
+    const keyOfName = {}, keyOfPerson = {};
+    const placed = pts.filter(function (p) { return s(p.id) && s(p.date); });
+    placed.forEach(function (p) { parent[p.id] = p.id; });
+    placed.forEach(function (p) {
+      const pk = s(p.personId) || '';
+      if (pk) { if (parent[pk] !== undefined) unite(p.id, pk); if (keyOfPerson[pk]) unite(p.id, keyOfPerson[pk]); keyOfPerson[pk] = p.id; }
+      const nk = nameKey(p.name);
+      if (nk.split(' ').length >= 2) { if (keyOfName[nk]) unite(p.id, keyOfName[nk]); keyOfName[nk] = p.id; }
+    });
+    const groups = {};
+    placed.forEach(function (p) { const r = find(p.id); (groups[r] || (groups[r] = [])).push(p); });
+    Object.keys(groups).forEach(function (g) {
+      const list = groups[g].slice().sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const a = list[i], b = list[j];
+          const ae = stayEnd(a, exitBy, today), be = stayEnd(b, exitBy, today);
+          if (!ae || !be) continue;
+          // overlap: each starts before the other ends (a move on the exit day is not an overlap)
+          if (!(a.date < be && b.date < ae)) continue;
+          const from = a.date > b.date ? a.date : b.date, to = ae < be ? ae : be;
+          const sameHouse = houseId(a.houseId) === houseId(b.houseId);
+          const samePerson = !!s(a.personId) && (s(a.personId) === s(b.personId) || s(a.personId) === s(b.id)) || (!!s(b.personId) && s(b.personId) === s(a.id));
+          rows.push({ id: 'an:overlap:' + a.id + ':' + b.id, kind: 'stay_overlap', name: a.name, house: sameHouse ? houseName(a.houseId) : houseName(a.houseId) + ' + ' + houseName(b.houseId),
+            why: (sameHouse ? 'שתי שהיות חופפות באותו בית' : 'רשום/ה בשני בתים באותה תקופה') + ' · ' + fmtDate(from) + '–' + fmtDate(to) + ' (' + daysBetween(from, to) + ' ימים)'
+              + (samePerson ? '' : ' · זוהה לפי שם מלא — לוודא שזה אותו אדם'),
+            when: from, stays: [stay(a), stay(b)], basis: samePerson ? 'person' : 'name' });
+        }
+      }
+    });
+    pts.forEach(function (p) {
+      if (!s(p.id)) return;
+      const end = inHouse(p) ? '' : (s(p.exitDate) || s(exitBy[p.id]));
+      if (!inHouse(p) && p.date && end && end < p.date) rows.push({ id: 'an:order:' + p.id, kind: 'exit_before_entry', name: p.name, house: houseName(p.houseId), why: 'כניסה ' + fmtDate(p.date) + ' · יציאה ' + fmtDate(end), when: p.date, stays: [stay(p)] });
+      if (!inHouse(p) && !end) rows.push({ id: 'an:noexit:' + p.id, kind: 'released_no_exit', name: p.name, house: houseName(p.houseId), why: 'מועד סיום החיוב אינו ידוע', when: p.date, stays: [stay(p)] });
+      if (inHouse(p) && p.pay === 0 && p.date && p.date <= s(today)) rows.push({ id: 'an:zero:' + p.id, kind: 'zero_pay_in_house', name: p.name, house: houseName(p.houseId), why: 'לא נוצר חיוב חודשי — לבדוק סכום / פרו-בונו', when: p.date, stays: [stay(p)] });
+    });
+    const d = debt && debt.ok !== false && Array.isArray(debt.byPatient) ? debt : null;
+    if (d) {
+      const byId = {};
+      pts.forEach(function (p) { if (p.id) byId[p.id] = p; });
+      d.byPatient.forEach(function (x) {
+        const p = byId[s(x.patientId)];
+        if (!p || inHouse(p)) return;
+        const end = s(p.exitDate) || s(exitBy[p.id]);
+        if (!end) return;
+        const late = (Array.isArray(x.cycles) ? x.cycles : []).filter(function (cy) { const st = sheetDay(cy.start); return st && st > end && (Number(cy.balance) || 0) > 0; });
+        if (!late.length) return;
+        const amt = Math.round(late.reduce(function (t, cy) { return t + (Number(cy.balance) || 0); }, 0));
+        rows.push({ id: 'an:afterexit:' + p.id, kind: 'debt_after_exit', name: p.name, house: houseName(p.houseId),
+          why: late.length + ' מחזורים · ' + fmtMoney(amt) + ' אחרי יציאה ב-' + fmtDate(end), when: end, stays: [stay(p)], amount: amt });
+      });
+    }
+    const order = { stay_overlap: 0, debt_after_exit: 1, exit_before_entry: 2, released_no_exit: 3, zero_pay_in_house: 4 };
+    rows.sort(function (a, b) { return (order[a.kind] - order[b.kind]) || (a.when < b.when ? -1 : a.when > b.when ? 1 : 0); });
+    return rows.map(function (r) { return Object.assign(r, { label: ANOMALY_LABELS[r.kind] }); });
+  }
+
+  /* «סגירת ליד»: a status AND a reason (Sandra 05/11/2026 — nothing closes with a field missing). Pure. */
+  function closeLeadErrors(v) {
+    const out = {};
+    if (!DISPOSITIONS.some(function (d) { return d.id === s(v && v.disposition); })) out.disposition = 'יש לבחור סטטוס סגירה';
+    if (s(v && v.note).length < 2) out.note = 'יש לפרט סיבה';
+    return out;
+  }
+
+  /* The actions the CRM still sends to the classic dashboard (CHANGELOG-crm-kpi-tab.md) —
+   * the decision list for what moves next. Static and documented. */
+  const CLASSIC_ONLY = [
+    { id: 'receipt_full_edit', label: 'עריכת קבלות מורחבת (מעבר לתיקון/ביטול בכרטיס)', where: 'גבייה' },
+    { id: 'billing_control', label: 'בקרת גבייה — אימות דיווחים (אורטל)', where: 'גבייה' },
+    { id: 'override_delete', label: 'מחיקת התאמת חיוב (override)', where: 'גבייה' },
+    { id: 'released_edit', label: 'עריכת שהייה של מטופל/ת משוחרר/ת (תאריכים) — נדרש לפתרון חפיפות', where: 'מטופלים' },
+    { id: 'patient_delete', label: 'מחיקת מטופל/ת', where: 'מטופלים' },
+    { id: 'returning_match', label: 'זיהוי מטופל/ת חוזר/ת בקליטה', where: 'תפוסה' },
+    { id: 'unknown_house', label: 'תיקון מטופלים ב«בית לא מזוהה»', where: 'תפוסה' },
+    { id: 'excel_exports', label: 'ייצוא לאקסל (גבייה, חובות, החזרים, חתכים)', where: 'דוחות' },
+    { id: 'revenue_growth', label: 'הכנסות חודשיות וגרף צמיחה', where: 'דוחות' },
+  ];
+
   function boot(win, doc) {
+    // This map is deliberately session-memory only; reload requires a source
+    // read before any new write after an uncertain outcome.
+    const pendingLeadFlags = Object.create(null);
     const state = { me: null, data: null, area: 'today', view: 'board', filters: { q: '', house: '', owner: '' }, kpiFilter: '', queue: null,
       today: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date()), drawer: null, error: '', loading: true, sort: 'name',
-      tasks: null, tasksError: '', contact: null, index: null, debt: null, payments: null, credits: null, dayView: 'today', week: '', domain: '', doneTasks: undefined, quick: '' };
+      tasks: null, tasksError: '', contact: null, index: null, debt: null, payments: null, credits: null, dayView: 'today', week: '', domain: '', workControl: '', doneTasks: undefined, quick: '' };
     const $ = function (sel) { return doc.querySelector(sel); };
     const root = $('#crm-root');
     const main = $('#crm-main');
@@ -1439,6 +2409,7 @@
         return (g.label ? '<div class="nav-group">' + esc(g.label) + '</div>' : '') + list.map(item).join('');
       }).join('');
       const dateEl = $('#crm-date'); if (dateEl) dateEl.textContent = hebDate(state.today);
+      remindTick();   // a task due within the reminder window is announced as soon as the tasks arrive
     }
 
     function chip(state_, text) { return '<span class="chip ' + esc(state_) + '">' + esc(text) + '</span>'; }
@@ -1448,10 +2419,10 @@
       let h = 0; for (let i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) % 360;
       return '<span class="who"><i class="av" style="--h:' + h + '">' + esc(n.charAt(0)) + '</i>' + esc(n) + '</span>';
     }
-    function patientStatusLabel(st) { const x = PATIENT_STATUSES.filter(function (p) { return p.id === s(st); })[0]; return x ? x.label : (s(st) || '—'); }
+    function patientStatusLabel(st) { if (s(st) === 'released') return 'שוחרר/ה'; const x = PATIENT_STATUSES.filter(function (p) { return p.id === s(st); })[0]; return x ? x.label : (s(st) || '—'); }
     function statusChip(st) { return '<span class="chip pst-' + esc(s(st) || 'active') + '">' + esc(patientStatusLabel(st)) + '</span>'; }
     function houseTag(idOrName) { const id = houseId(idOrName) || 'x'; return '<span class="chip house h-' + esc(id) + '">' + esc(houseName(idOrName) || '—') + '</span>'; }
-    const AREA_ICONS = { today: '☀', leads: '✉', clients: '👤', calendar: '📅', occupancy: '🏠', billing: '₪', control: '✔', triage: '🔎' };
+    const AREA_ICONS = { today: '☀', leads: '✉', clients: '👤', calendar: '📅', occupancy: '🏠', billing: '₪', control: '✔', kpi: '📊', triage: '🔎' };
     function stateText(st) { return st === 'late' ? 'באיחור' : st === 'today' ? 'להיום' : 'ממתין'; }
 
     function renderToday(c) {
@@ -1469,7 +2440,7 @@
       else if (r.contactable) b.push('<button type="button" class="btn small primary" data-contact-open="' + esc(subj) + '">תיעוד שיחה</button>');
       else if (r.focusMeeting) b.push('<button type="button" class="btn small primary"' + openAttr + '>קביעת תאריך</button>');
       else if (r.classic) b.push('<a class="btn small primary" href="/?view=classic">לבקרת גבייה</a>');
-      else if (r.open) b.push('<button type="button" class="btn small primary"' + openAttr + '>' + (r.open === 'meetings' ? 'לדיווח' : r.open === 'account' ? 'לחשבון' : 'פתיחה') + '</button>');
+      else if (r.open) b.push('<button type="button" class="btn small primary"' + openAttr + '>' + (r.kind === 'continuity' ? 'לעדכון' : r.kind === 'meeting_today' ? 'פרטי הפגישה' : r.open === 'meetings' ? 'לדיווח' : r.open === 'account' ? 'לחשבון' : 'פתיחה') + '</button>');
       if (r.task) b.push('<button type="button" class="btn small" data-task-resched="' + esc(r.task.id) + '">שינוי מועד</button>');
       if (!r.classic || (state.me && state.me.view !== 'controller')) b.push('<button type="button" class="btn small" data-open-' + esc(r.subjectKind) + '="' + esc(r.subjectId) + '">כרטיס</button>');
       return b.join('');
@@ -1518,29 +2489,35 @@
           + (k.value === null ? '<span class="v na-v">—</span>' : '<span class="v">' + k.value + '</span>') + '<span class="l">' + esc(k.label) + '</span>'
           + (k.second ? '<span class="l2"><b>' + k.second.value + '</b> ' + esc(k.second.label) + '</span>' : '') + (k.hint ? '<span class="l2">' + esc(k.hint) + '</span>' : '') + '</button>';
       }).join('') + '</div>';
-      if (m.urgent.length && !state.domain) html += '<section class="urgent"><div class="group-title">⚠ חריגים דחופים ומחויבויות להיום <span class="n chip">' + m.urgent.length + '</span></div>' + rowsBlock(m.urgent, 6) + '</section>';
-      const domains = DOMAINS.filter(function (d) { return (state.domain ? d.id === state.domain : true) && !(d.money && !(state.me && state.me.finance)) && !(d.id === 'houses' && state.me && state.me.finance && !state.domain && m.byDomain.houses.length === 0); });
+      // The urgent band on top of the day is gone (Vered 04/11/2026): it repeated rows that are
+      // already in their domain below and in «פגישות היום» on the side.
+      const drill = WORK_CONTROL.filter(function (q) { return q.id === state.workControl; })[0];
+      if (drill) {
+        const rows = workControlQueues(m)[drill.id];
+        const unavailable = drill.id === 'late' && !m.sourceState.tasks;
+        return html + '<section class="domain" data-control-section="' + drill.id + '"><div class="group-title"><strong>' + esc(drill.label) + '</strong> <span class="n chip">' + (unavailable ? '—' : rows.length) + '</span><span class="grow"></span><button type="button" class="link" data-domain="">חזרה לכל התחומים</button></div>'
+          + (unavailable ? '<p class="na">המידע אינו זמין</p>' : rowsBlock(rows, 0)) + '</section>';
+      }
+      const domains = DOMAINS.filter(function (d) { return (state.domain ? d.id === state.domain : true) && !(d.money && !(state.me && state.me.finance)); });
       let main = '';
       domains.forEach(function (d) {
-        // «מה דחוף בבתים» as a filter = every exception (the card's number), wherever its row lives
-        const rows = d.id === 'houses' && state.domain === 'houses' ? m.exceptions : m.byDomain[d.id];
-        if (!state.domain && d.id === 'houses' && !rows.length) return;
+        const rows = m.byDomain[d.id] || [];
+        if (d.onlyIfAny && !rows.length && state.domain !== d.id) return;
         main += '<section class="domain acc-' + d.id + '" data-domain-section="' + d.id + '"><div class="group-title"><strong>' + esc(d.label) + '</strong> <span class="n chip">' + rows.length + '</span>'
-          + (d.id === 'collection' && state.debt === false ? ' <span class="chip late">המידע אינו זמין</span>' : '') + (d.id === 'calls' && !state.tasks ? ' <span class="chip ' + (state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '') + (d.id === 'newleads' && !state.index ? ' <span class="chip ' + (state.index === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '')
+          + (d.id === 'collection' && m.sourceState.collection !== 'complete' ? ' <span class="chip ' + (m.sourceState.collection === 'loading' ? 'wait">טוען…' : 'late">מידע חלקי') + '</span>' : '') + (d.id === 'calls' && !state.tasks ? ' <span class="chip ' + (state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '') + (d.id === 'newleads' && (!m.sourceState.contact || !m.sourceState.tasks) ? ' <span class="chip ' + (state.index === undefined || state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '')
           + '<span class="grow"></span>' + (d.id === 'newleads' && rows.length ? '<button type="button" class="btn small" data-area="triage">סבב בירור — אחת אחרי השנייה</button>' : '') + (state.domain ? '<button type="button" class="link" data-domain="' + d.id + '">חזרה לכל התחומים</button>' : '') + '</div>'
           + rowsBlock(rows, state.domain ? 0 : 8) + '</section>';
       });
-      if (!main) main = '<div class="crm-state">אין משימות פתוחות היום 🎉</div>';
+      if (!main) main = (m.sourceState.contact && m.sourceState.tasks && m.sourceState.collection !== 'loading' && m.sourceState.collection !== 'partial') ? '<div class="crm-state">אין משימות פתוחות היום 🎉</div>' : '<div class="crm-state">חלק ממקורות המידע חסרים — אין אפשרות לאשר שאין משימות פתוחות.</div>';
       const side = '<aside class="day-side">'
         + '<div class="side-box"><div class="group-title">פגישות היום <span class="n chip">' + m.meetingsToday.length + '</span></div>' + (m.meetingsToday.length ? '<ul class="mini">' + m.meetingsToday.map(function (r) { return '<li><button type="button" class="link" data-open-lead="' + esc(r.subjectId) + '" data-open-tab="meetings">' + esc((r.time || '—') + ' · ' + r.name) + '</button><span class="sub">' + esc(r.house + ' · ' + r.why) + '</span></li>'; }).join('') + '</ul>' : '<p class="na">אין פגישות היום.</p>') + '</div>'
-        + '<div class="side-box"><div class="group-title">ממתין לגורם אחר <span class="n chip">' + m.waiting.length + '</span></div>' + (m.waiting.length ? '<ul class="mini">' + m.waiting.slice(0, 8).map(function (r) { return '<li><button type="button" class="link" data-open-lead="' + esc(r.subjectId) + '" data-open-tab="meetings">' + esc(r.name) + '</button><span class="sub">' + esc('ממתין ל' + r.waitingOn + ' · מאז ' + fmtDate(r.when)) + '</span></li>'; }).join('') + '</ul>' : '<p class="na">אין המתנות.</p>') + '</div>'
-        + '<div class="side-box"><div class="group-title">חריגים בבתים <span class="n chip">' + m.exceptions.length + '</span></div>' + (m.exceptions.length ? '<ul class="mini">' + m.exceptions.slice(0, 8).map(function (r) { return '<li><button type="button" class="link" data-open-' + esc(r.subjectKind) + '="' + esc(r.subjectId) + '"' + (r.open ? ' data-open-tab="' + esc(r.open) + '"' : '') + '>' + esc(r.name) + '</button><span class="sub">' + esc(r.action + ' · ' + r.why) + '</span></li>'; }).join('') + '</ul>' : '<p class="na">אין חריגים.</p>') + '</div>'
+        + '<div class="side-box"><div class="group-title">ממתין לגורם אחר <span class="n chip">' + m.waiting.length + '</span></div>' + (m.waiting.length ? '<ul class="mini">' + m.waiting.slice(0, 8).map(function (r) { return '<li><button type="button" class="link" data-open-' + esc(r.subjectKind) + '="' + esc(r.subjectId) + '"' + (r.open ? ' data-open-tab="' + esc(r.open) + '"' : '') + '>' + esc(r.name) + '</button><span class="sub">' + esc('ממתין ל' + r.waitingOn + ' · מאז ' + fmtDate(r.when)) + '</span></li>'; }).join('') + '</ul>' : '<p class="na">אין המתנות.</p>') + '</div>'
         + '</aside>';
       return html + '<div class="day-grid"><div class="day-main">' + main + '</div>' + side + '</div>';
     }
     function renderWeek(m) {
       const ws = weekStart(state.week || state.today);
-      const w = weekPlan(m, ws);
+      const w = weekPlan(m, ws, compute(state.data, state.today), state.filters, state.today);
       let html = weekBar(ws, 'crm-day');
       html += '<div class="week">' + w.days.map(function (d) {
         return '<section class="wday' + (d.date === state.today ? ' is-today' : '') + '"><div class="group-title"><strong>' + esc(d.name) + '</strong> ' + esc(fmtDate(d.date)) + ' <span class="n chip">' + d.rows.length + '</span></div>' + (d.rows.length ? rowsBlock(d.rows, 0) : '<p class="na">—</p>') + '</section>';
@@ -1569,7 +2546,7 @@
     function renderQuick(kind) {
       const el = $('#crm-quick'); if (!el) return;
       state.quick = kind;
-      el.innerHTML = '<div class="quick"><label>' + esc(kind === 'contact' ? 'תיעוד שיחה — עם מי?' : kind === 'task' ? 'משימה חדשה — עבור מי?' : 'פגישה — איזו פנייה?') + ' <input type="search" id="crm-quick-q" placeholder="שם / טלפון" autocomplete="off"></label><div id="crm-quick-list" class="quick-list"></div><button type="button" class="btn small" data-quick-cancel>סגור</button></div>';
+      el.innerHTML = '<div class="quick"><label>' + esc(kind === 'contact' ? 'תיעוד שיחה — עם מי?' : kind === 'task' ? 'משימה חדשה — עבור מי?' : 'פגישה — איזה ליד?') + ' <input type="search" id="crm-quick-q" placeholder="שם / טלפון" autocomplete="off"></label><div id="crm-quick-list" class="quick-list"></div><button type="button" class="btn small" data-quick-cancel>סגור</button></div>';
       $('#crm-quick-q').focus();
       quickList('');
     }
@@ -1581,7 +2558,7 @@
       const pats = state.quick === 'meeting' ? [] : c.patients.filter(function (p) { return inHouse(p) && (!needle || p.name.toLowerCase().indexOf(needle) >= 0); }).slice(0, 6);
       if (!needle) { el.innerHTML = '<p class="na">הקלידי שם או טלפון.</p>'; return; }
       const pick = function (kind, id, name, sub) { return '<button type="button" class="pick" data-quick-pick="' + kind + ':' + esc(id) + '">' + esc(name) + ' <span class="sub">' + esc(sub) + '</span></button>'; };
-      const items = leads.map(function (l) { return pick('lead', l.id, l.name, 'פנייה · ' + houseName(l.house) + (s(l.phone) ? ' · ' + s(l.phone) : '')); })
+      const items = leads.map(function (l) { return pick('lead', l.id, l.name, 'ליד · ' + houseName(l.house) + (s(l.phone) ? ' · ' + s(l.phone) : '')); })
         .concat(pats.map(function (p) { return pick('patient', p.id, p.name, 'מטופל/ת · ' + houseName(p.houseId)); }));
       el.innerHTML = items.length ? items.join('') : '<p class="na">לא נמצא.</p>';
     }
@@ -1609,25 +2586,28 @@
       const toolbar = '<div class="toolbar"><div class="seg"><button type="button" data-view="board" aria-pressed="' + (state.view === 'board') + '">לוח</button><button type="button" data-view="table" aria-pressed="' + (state.view === 'table') + '">טבלה</button></div>'
         + '<select id="f-house"><option value="">כל הבתים</option>' + HOUSES.filter(function (h) { return h.id !== 'sde'; }).map(function (h) { return '<option value="' + esc(h.name) + '"' + (f.house === h.name ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select>'
         + '<select id="f-owner"><option value="">כל האחראים</option>' + Object.keys(owners).map(function (o) { return '<option' + (f.owner === o ? ' selected' : '') + '>' + esc(o) + '</option>'; }).join('') + '</select>'
-        + '<button type="button" class="btn primary" id="crm-new-lead">+ פנייה חדשה</button>'
+        + '<button type="button" class="btn primary" id="crm-new-lead">+ ליד חדש</button>'
         + '<button type="button" class="btn" data-view="closed" aria-pressed="' + (state.view === 'closed') + '">לידים סגורים</button>'
         + (state.tasks && state.index ? '<button type="button" class="btn" data-area="triage">רשומות שדורשות בירור <span class="n chip">' + triageQueue(c, state.tasks, state.index, state.today).length + '</span></button>' : '') + '</div>';
       if (state.view === 'closed') return toolbar + renderClosedLeads();
+      // a search with no OPEN lead → the global results (admitted / patients / released), never an empty board
+      if (s(f.q) && !filterLeads(c.leads, f).length) return toolbar + renderSearch(c);
       if (state.view === 'board') {
         return toolbar + '<div class="board">' + board(c.leads, f).map(function (col) {
           return '<div class="col" data-stage="' + esc(col.stage.id) + '"><h3><span>' + esc(col.stage.label) + '</span><span class="n">' + col.leads.length + '</span></h3>' + col.leads.map(function (l) {
-            const na = nextActionFor(l, state.today);
-            return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip src">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? avatar(l.assignedTo) : '') + '</div>'
+            const na = nextActionFor(l, state.today, flagsOf(state.index, l.id));
+            const inH = leadAlreadyInHouse(l, c.patients, c.leads);
+            return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + (inH ? ' <span class="chip late">שם/טלפון דומה בבית ' + esc(houseName(inH.houseId)) + '</span>' : '') + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip src">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? avatar(l.assignedTo) : '') + '</div>'
               + (l.created ? '<div class="meta"><span>נוצר ' + esc(fmtDate(l.created)) + '</span>' + (l.visitDate ? '<span>פגישה ' + esc(fmtDate(l.visitDate)) + (l.visitTime ? ' ' + esc(l.visitTime) : '') + '</span>' : '') + '</div>' : '')
-              + '<div class="next">' + chip(na.state, na.text) + (stageAfter(l.stage) ? ' <button type="button" class="btn small" data-stage-next="' + esc(l.id) + '">שלב הבא ←</button>' : '') + '</div></div>';
+              + '<div class="next">' + chip(na.state, na.text) + (waitChipText(l, flagsOf(state.index, l.id)) && waitChipText(l, flagsOf(state.index, l.id)) !== na.text ? ' ' + chip('wait', waitChipText(l, flagsOf(state.index, l.id))) : '') + (stageAfter(l.stage) ? ' <button type="button" class="btn small" data-stage-next="' + esc(l.id) + '">שלב הבא ←</button>' : '') + '</div></div>';
           }).join('') + '</div>';
         }).join('') + '</div>';
       }
       const list = filterLeads(c.leads, f).slice().sort(function (a, b) { return s(a[state.sort]).localeCompare(s(b[state.sort])); });
       const cols = [['name', 'שם'], ['house', 'בית'], ['source', 'מקור'], ['assignedTo', 'אחראי'], ['stage', 'שלב'], ['visitDate', 'פגישה'], ['created', 'נוצר']];
       return toolbar + '<div class="tbl-wrap"><table class="tbl"><thead><tr>' + cols.map(function (c2) { return '<th data-sort="' + c2[0] + '">' + esc(c2[1]) + (state.sort === c2[0] ? ' ▾' : '') + '</th>'; }).join('') + '<th>פעולה הבאה</th></tr></thead><tbody>'
-        + list.map(function (l) { const na = nextActionFor(l, state.today); return '<tr data-open-lead="' + esc(l.id) + '"><td>' + esc(l.name) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(l.source) + '</td><td>' + avatar(l.assignedTo) + '</td><td><span class="chip stage-' + esc(l.stage) + '">' + esc(stageLabel(l.stage)) + '</span></td><td>' + esc(fmtDate(l.visitDate)) + '</td><td>' + esc(fmtDate(l.created)) + '</td><td>' + chip(na.state, na.text) + '</td></tr>'; }).join('')
-        + '</tbody></table></div>' + (list.length === 0 ? '<div class="crm-state">אין פניות התואמות לסינון</div>' : '');
+        + list.map(function (l) { const na = nextActionFor(l, state.today, flagsOf(state.index, l.id)); return '<tr data-open-lead="' + esc(l.id) + '"><td>' + esc(l.name) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(l.source) + '</td><td>' + avatar(l.assignedTo) + '</td><td><span class="chip stage-' + esc(l.stage) + '">' + esc(stageLabel(l.stage)) + '</span></td><td>' + esc(fmtDate(l.visitDate)) + '</td><td>' + esc(fmtDate(l.created)) + '</td><td>' + chip(na.state, na.text) + (waitChipText(l, flagsOf(state.index, l.id)) && waitChipText(l, flagsOf(state.index, l.id)) !== na.text ? ' ' + chip('wait', waitChipText(l, flagsOf(state.index, l.id))) : '') + '</td></tr>'; }).join('')
+        + '</tbody></table></div>' + (list.length === 0 ? '<div class="crm-state">אין לידים התואמים לסינון</div>' : '');
     }
 
     function renderClosedLeads() {
@@ -1646,13 +2626,13 @@
       return '<form data-form="new-lead" class="new-lead" novalidate>'
         + '<h3>פרטי המטופל</h3>' + field('name', 'שם מלא *', 'text', ' required') + field('phone', 'טלפון *', 'tel', ' required')
         + '<h3>פרטי הפונה</h3>' + field('contactName', 'שם') + field('contactPhone', 'טלפון', 'tel')
-        + '<label>קשר למטופל <select name="contactRelation"><option value="">— ללא —</option>' + CONTACT_RELATIONS.map(function (r) { return '<option>' + esc(r) + '</option>'; }).join('') + '</select></label>'
+        + '<label>קשר למטופל <select name="contactRelation"><option value="">— ללא —</option>' + CONTACT_RELATIONS.map(function (r) { return '<option>' + esc(r) + '</option>'; }).join('') + '</select><span class="err" data-err="contactRelation"></span></label>'
         + field('contactRelationOther', 'קשר אחר')
         + '<label>טלפון לגבייה ועדכונים <select name="billingMode"><option value="patient">מטופל</option><option value="contact">פונה</option><option value="other">אחר</option></select></label>'
         + field('billingOther', 'טלפון אחר לגבייה', 'tel')
         + '<h3>פרטים נוספים</h3>'
-        + '<label>בית מועדף <select name="house"><option value="">— ללא —</option>' + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) { return '<option>' + esc(h.name) + '</option>'; }).join('') + '</select></label>'
-        + '<label>מקור הפנייה <input name="source" list="crm-sources"><datalist id="crm-sources">' + SOURCES.map(function (x) { return '<option value="' + esc(x) + '">'; }).join('') + '</datalist></label>'
+        + '<label>בית מועדף * <select name="house"><option value="">— בחר —</option>' + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) { return '<option>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="err" data-err="house"></span></label>'
+        + '<label>מקור הליד * <input name="source" list="crm-sources"><datalist id="crm-sources">' + SOURCES.map(function (x) { return '<option value="' + esc(x) + '">'; }).join('') + '</datalist><span class="err" data-err="source"></span></label>'
         + '<label>משוייך ל * <select name="assignedTo" required><option value="">— בחר —</option>' + ASSIGNEES.map(function (a) { return '<option>' + esc(a) + '</option>'; }).join('') + '</select><span class="err" data-err="assignedTo"></span></label>'
         + '<label>נפגש/ת עם <select name="meetingWith"><option value="">—</option>' + managersOf('').concat([MEETING_WITH_AMBULATORY]).map(function (m) { return '<option>' + esc(m) + '</option>'; }).join('') + '</select></label>'
         + '<label class="wide">הערות <textarea name="note" rows="2"></textarea></label>'
@@ -1661,24 +2641,63 @@
     }
     function openNewLeadDrawer() {
       const dr = $('#crm-drawer');
-      dr.innerHTML = '<div class="drawer-head"><div><h2>פנייה חדשה</h2><div class="meta">ליד חדש נכנס ללוח בשלב «ליד חדש»</div></div><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>' + renderNewLeadForm();
+      dr.innerHTML = '<div class="drawer-head"><div><h2>ליד חדש</h2><div class="meta">ליד חדש נכנס ללוח בשלב «ליד חדש»</div></div><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>' + renderNewLeadForm();
       dr.setAttribute('aria-hidden', 'false'); $('#crm-scrim').setAttribute('data-open', 'true');
       state.drawer = { kind: 'new', id: '', tab: 'overview' };
       const first = dr.querySelector('[name="name"]'); if (first) first.focus();
     }
     /* A generic write through /api/sheets for the lifecycle actions; `apply`
      * mutates state optimistically, `undo` reverts it. */
-    function postAction(body, okCheck, apply, undo, label) {
+    function postAction(body, okCheck, apply, undo, label, deferSuccess) {
       const payload = JSON.stringify(body);          // serialised BEFORE the optimistic apply (which may strip intent fields)
-      state.saving = true; apply(); renderNav(); renderMain(); setSaveState('שומר…');
+      // Only admissions supply source identity. Other action behavior stays unchanged.
+      const identity = deferSuccess && typeof deferSuccess === 'object' ? deferSuccess : null;
+      state.saving = true; markBusy(); apply(); renderNav(); renderMain(); setSaveState('שומר…');
       return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: payload })
         .then(function (r) { return r.json().catch(function () { return null; }); })
         .then(function (res) {
           const why = okCheck(res);
           if (why) throw new Error(why);
-          state.saving = false; toast(label + ' — בוצע'); return true;
+          if (deferSuccess) setSaveState('הקליטה נשמרה — מאמת גורם מממן…');
+          else { state.saving = false; clearBusy(); toast(label + ' — בוצע'); }
+          return true;
         })
-        .catch(function (e) { undo(); state.saving = false; renderNav(); renderMain(); setSaveState(String(e && e.message || e), true); toast(String(e && e.message || e), true); return false; });
+        .catch(function (e) {
+          if (!identity) {
+            undo(); state.saving = false; clearBusy(); renderNav(); renderMain();
+            setSaveState(String(e && e.message || e), true); toast(String(e && e.message || e), true);
+            return false;
+          }
+          // A lost saveAll answer is not proof that its Patients row was absent.
+          // The proxy busts getData's read-cache both before and after writes.
+          // A source read may prove this EXACT admission committed, in which
+          // case continue the original funder write with the original stay ID.
+          const originalError = String(e && e.message || e);
+          const block = function (proof) {
+            state.saving = false; clearBusy();
+            const details = proof === 'patient_only'
+              ? 'המטופל/ת נמצא/ה במקור אך סטטוס הליד לא אומת.'
+              : proof === 'mismatch' || proof === 'ambiguous'
+                ? 'נמצאה אי-התאמה ברשומות המקור של הקליטה.'
+                : proof === 'missing'
+                  ? 'לא נמצאה קליטה מזהה בקריאת המקור; עדיין אין לבצע קליטה חדשה לפני בירור.'
+                  : 'לא ניתן לאמת את תוצאת השמירה במקור.';
+            const warning = 'הקליטה לא אומתה במלואה — ' + details +
+              ' אין לבצע קליטה חוזרת; יש לרענן ולבדוק לפני פעולה חדשה.';
+            state.error = warning + ' (' + originalError + ')';
+            renderNav(); renderMain(); setSaveState(warning, true); toast(warning, true);
+            return false;
+          };
+          return api('getData').then(function (fresh) {
+            const proof = admissionSourceProof(fresh, identity);
+            if (fresh && fresh.ok === true) state.data = fresh; // read-only authoritative projection
+            if (proof !== 'confirmed') return block(proof);
+            state.error = ''; // exact patient and lead both exist in source
+            renderNav(); renderMain();
+            setSaveState('הקליטה אומתה בקריאה חוזרת — מאמת גורם מממן…');
+            return true;
+          }, function () { return block('unavailable'); });
+        });
     }
     function genericRefusal(res, idKey) {
       if (!res || typeof res !== 'object') return 'אין תשובה מהשרת';
@@ -1689,7 +2708,7 @@
     function createLead(values) {
       const errs = leadFormErrors(values);
       const f = $('#crm-drawer form[data-form="new-lead"]');
-      if (f) Object.keys(errs).concat(['name', 'phone', 'assignedTo', 'contactPhone']).forEach(function (k) { const el = f.querySelector('[data-err="' + k + '"]'); if (el) el.textContent = errs[k] || ''; });
+      if (f) Object.keys(errs).concat(['name', 'phone', 'assignedTo', 'contactPhone', 'source', 'house', 'contactRelation', 'contactRelationOther', 'billingOther']).forEach(function (k) { const el = f.querySelector('[data-err="' + k + '"]'); if (el) el.textContent = errs[k] || ''; });
       if (Object.keys(errs).length) return Promise.resolve(false);
       const dup = duplicateByPhone(state.data.leads, values.phone);
       if (dup && !win.confirm('כבר קיים ליד «' + dup.name + '» עם הטלפון הזה. להוסיף בכל זאת?')) return Promise.resolve(false);
@@ -1738,13 +2757,52 @@
     function showErrs(f, errs, keys) {
       keys.forEach(function (k) { const el = f.querySelector('[data-err="' + k + '"]'); if (el) el.textContent = errs[k] || ''; });
     }
+    /* The admission already exists once this runs. Never advertise total success
+     * or re-run admission if this second (finance) write is refused/uncertain. */
     function saveFunderBestEffort(pid, funder, effectiveFrom) {
-      if (!(state.me && state.me.finance) || FUNDERS.indexOf(s(funder)) < 0) return Promise.resolve();
-      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'appendFunder', funder: { patientId: pid, funder: s(funder), effectiveFrom: effectiveFrom, submissionId: randomId().slice(3) + randomId().slice(3) } }) })
-        .then(function (r) { return r.json().catch(function () { return null; }); })
-        .then(function (res) { if (!res || res.ok === false || !(res.row && res.row.submissionId)) toast('המטופל נשמר, אך שמירת הגורם המממן נכשלה — יש להשלים בדשבורד', true); })
-        .catch(function () { toast('המטופל נשמר, אך שמירת הגורם המממן נכשלה — יש להשלים בדשבורד', true); });
+      const finish = function (ok, message, warning) {
+        state.saving = false; clearBusy();
+        // Invalidate pre-admission account data before opening the new account.
+        state.billing = null;
+        renderNav(); renderMain();
+        setSaveState(message, !!warning);
+        toast(message, !!warning);
+        return ok;
+      };
+      if (!(state.me && state.me.finance)) return Promise.resolve(finish(true, 'הקליטה נשמרה', false));
+      if (FUNDERS.indexOf(s(funder)) < 0) {
+        return Promise.resolve(finish(false, 'הקליטה נשמרה, אך חסר גורם מממן — אין לקלוט את המטופל שוב; יש לבדוק בכרטיס החשבון', true));
+      }
+      const submissionId = newSubmissionId();
+      const unverified = 'הקליטה נשמרה, אך שמירת הגורם המממן לא אומתה — אין לקלוט שוב; יש לבדוק את כרטיס החשבון';
+      // The source may have committed despite a lost reply. Read the same
+      // authorised getPayments projection once; NEVER repeat appendFunder.
+      const reconcile = function () {
+        return api('getPayments').then(function (data) {
+          state.payments = data && data.ok === true ? data : null;
+          return funderSourceConfirmed(data, pid, submissionId, funder, effectiveFrom)
+            ? finish(true, 'הקליטה והגורם המממן אומתו בקריאה חוזרת', false)
+            : finish(false, unverified, true);
+        }, function () {
+          state.payments = null;
+          return finish(false, unverified, true);
+        });
+      };
+      const posted = win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'appendFunder', funder: { patientId: pid, funder: s(funder), effectiveFrom: effectiveFrom, submissionId: submissionId } }) })
+        .then(function (r) { return r.json().catch(function () { return null; }); });
+      return posted.then(function (res) {
+        if (!funderWriteConfirmed(res, submissionId)) return reconcile();
+        // Acknowledgment is confirmed, but still refresh the account so a
+        // pre-save payment/funder view is not left on screen.
+        return api('getPayments').then(function (p) {
+          state.payments = p && p.ok === true ? p : null;
+          return finish(true, state.payments ? 'הקליטה והגורם המממן נשמרו' : 'הגורם המממן אומת, אך החשבון לא נטען — יש לרענן לבדיקה', !state.payments);
+        }, function () {
+          state.payments = null;
+          return finish(true, 'הגורם המממן אומת, אך החשבון לא נטען — יש לרענן לבדיקה', true);
+        });
+      }, function () { return reconcile(); });
     }
     function admitLead(id, v, f) {
       const errs = admissionErrors(v, !!(state.me && state.me.finance));
@@ -1759,21 +2817,37 @@
       closeDrawer();
       return postAction(houseSaveBody(patient.houseId, rows, patient, leadNext), function (res) { return houseSaveRefusal(res, patient.id, leadNext.id); },
         function () { leads[i] = leadNext; rows.push(patient); },
-        function () { leads[i] = raw; const k = rows.indexOf(patient); if (k >= 0) rows.splice(k, 1); }, 'הקליטה של «' + s(raw.name) + '»')
-        .then(function (ok) { if (ok) return saveFunderBestEffort(patient.id, v.funder, patient.date).then(function () { return true; }); return ok; });
+        function () { leads[i] = raw; const k = rows.indexOf(patient); if (k >= 0) rows.splice(k, 1); }, 'הקליטה של «' + s(raw.name) + '»', { patientId: patient.id, leadId: leadNext.id, houseId: patient.houseId, date: patient.date })
+        .then(function (ok) { return ok ? saveFunderBestEffort(patient.id, v.funder, patient.date) : false; });
     }
     function directAdd(v, f) {
       const errs = directAddErrors(v, !!(state.me && state.me.finance));
       if (f) showErrs(f, errs, ['name', 'phone', 'houseId', 'date', 'pay', 'funder']);
       if (Object.keys(errs).length) return Promise.resolve(false);
+      // A match by phone/name is a search suggestion, NOT evidence of identity.
+      // Explicit source-lead admission is available only from that lead's card.
+      // A different person with a shared family phone may still be admitted
+      // independently, but only after the operator explicitly confirms this.
+      const open = openLeadOfPerson(state.data.leads, v.name, v.phone);
+      if (open && s(v.independentCase) !== 'yes') {
+        const message = open === 'ambiguous'
+          ? 'נמצאו כמה לידים עם שם או טלפון דומים. לקליטה מליד קיים פתחי את הליד המדויק. אם זה אדם אחר, סמני אישור לקליטה עצמאית.'
+          : 'נמצא ליד של «' + open.name + '» עם שם או טלפון דומים. לקליטה מאותו ליד פתחי את כרטיס הליד ואמתִי זהות. אם זה אדם אחר, סמני אישור לקליטה עצמאית.';
+        if (f) {
+          const warning = f.querySelector('#crm-independent-warning');
+          if (warning) { warning.textContent = message; warning.style.display = ''; }
+          showErrs(f, { name: 'נדרש אימות זהות לפני קליטה — לא בוצע שיוך לליד' }, ['name']);
+        } else toast(message, true);
+        return Promise.resolve(false);
+      }
       const pair = directAddRows(v, randomId(), state.today, houseName);
       const rows = patientsOfHouse(pair.patient.houseId);
       const leads = state.data.leads;
       closeDrawer();
       return postAction(houseSaveBody(pair.patient.houseId, rows, pair.patient, pair.lead), function (res) { return houseSaveRefusal(res, pair.patient.id, pair.lead.id); },
         function () { rows.push(pair.patient); leads.unshift(pair.lead); },
-        function () { const k = rows.indexOf(pair.patient); if (k >= 0) rows.splice(k, 1); const j = leads.indexOf(pair.lead); if (j >= 0) leads.splice(j, 1); }, 'הוספת «' + pair.patient.name + '»')
-        .then(function (ok) { if (ok) return saveFunderBestEffort(pair.patient.id, v.funder, pair.patient.date).then(function () { return true; }); return ok; });
+        function () { const k = rows.indexOf(pair.patient); if (k >= 0) rows.splice(k, 1); const j = leads.indexOf(pair.lead); if (j >= 0) leads.splice(j, 1); }, 'הוספת «' + pair.patient.name + '»', { patientId: pair.patient.id, leadId: pair.lead.id, houseId: pair.patient.houseId, date: pair.patient.date })
+        .then(function (ok) { return ok ? saveFunderBestEffort(pair.patient.id, v.funder, pair.patient.date) : false; });
     }
     function openDirectAddDrawer() {
       const dr = $('#crm-drawer');
@@ -1781,20 +2855,38 @@
       dr.innerHTML = '<div class="drawer-head"><div><h2>הוספת מטופל/ת ישירות</h2><div class="meta">פנייה ישירה — נוצר ליד «פנייה ישירה» שנקלט</div></div><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>'
         + '<form data-form="direct-add" class="new-lead" novalidate>'
         + '<label>שם מלא * <input name="name" type="text"><span class="err" data-err="name"></span></label>'
-        + '<label>טלפון המטופל/ת <input name="phone" type="tel"><span class="err" data-err="phone"></span></label>'
+        + '<label>טלפון המטופל/ת * <input name="phone" type="tel"><span class="err" data-err="phone"></span></label>'
         + '<label>בית * <select name="houseId">' + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) { return '<option value="' + h.id + '"' + (h.id === hid ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="err" data-err="houseId"></span></label>'
         + '<label>תאריך כניסה * <input type="date" name="date" value="' + esc(state.today) + '"><span class="err" data-err="date"></span></label>'
         + '<label>סכום חודשי (₪) * <input type="number" name="pay" min="0" step="1"><span class="err" data-err="pay"></span></label>'
         + '<label>סטטוס <select name="status">' + [{ id: 'active', label: 'פעיל' }, { id: 'trial', label: 'תקופת ניסיון' }, { id: 'wait', label: 'בהמתנה' }].map(function (st) { return '<option value="' + st.id + '">' + esc(st.label) + '</option>'; }).join('') + '</select></label>'
         + (state.me && state.me.finance ? '<label>גורם מממן * <select name="funder"><option value="">— בחרו —</option>' + FUNDERS.map(function (x) { return '<option>' + esc(x) + '</option>'; }).join('') + '</select><span class="err" data-err="funder"></span></label>' : '')
+        + '<label class="wide" id="crm-independent-warning" role="alert" style="display:none"></label>'
+        + '<label class="wide">אם קיים שם או טלפון דומה, יש לוודא האם זה אותו ליד. <span class="na">קליטה מליד קיים תבוצע דרך כרטיס הליד שלו בלבד.</span></label>'
+        + '<label class="wide"><input type="checkbox" name="independentCase" value="yes"> בדקתי: מדובר בקליטה עצמאית של אדם אחר, ואין לשייך לליד קיים בעל שם או טלפון דומים.</label>'
         + '<label class="wide">הערות <textarea name="notes" rows="2"></textarea></label>'
         + '<div class="wide"><button type="submit" class="btn primary">הוסף מטופל/ת</button> <button type="button" class="btn" data-cancel-drawer="1">ביטול</button> <span class="na" id="crm-save-state"></span></div></form>';
       dr.setAttribute('aria-hidden', 'false'); $('#crm-scrim').setAttribute('data-open', 'true');
       state.drawer = { kind: 'direct', id: '', tab: 'overview' };
     }
 
+    /* A released patient's card (CHANGELOG-crm-followups-1104.md): the Outpatient handoff right
+     * here — phone optional (found from the lead / the phone book), asked when none is found. */
+    function releasedPatientBlock(p) {
+      const c = compute(state.data, state.today);
+      const d = meetingsFor(p, 'patient', c).discharge;
+      if (!d || !d.id) return '';
+      if (c.outpatientSent && c.outpatientSent['discharge:' + d.id])
+        return '<div class="notice ok">נשלח לאמבולטורי ✓ · מצב הטיפול טרם אומת</div>' + outpatientStatusButton(d.id, 'discharge');
+      return '<div class="actions"><details class="act" open><summary>העברה לאמבולטורי</summary>'
+        + '<form data-form="out-phone" data-discharge="' + esc(d.id) + '" data-optional="1" novalidate>'
+        + '<label>טלפון (אם לא מופיע בליד) <input type="tel" name="phone" inputmode="tel" maxlength="20" autocomplete="off" placeholder="05XXXXXXXX"><span class="err" data-err="phone"></span></label>'
+        + '<button type="submit" class="btn small primary">העבר לאמבולטורי</button>'
+        + '<p class="na">השחרור כבר נשמר. טלפון שיוזן נשמר ברשימת הטלפונים של המטופלים — לא יידרש שוב.</p></form></details></div>';
+    }
     function renderPatientActions(p) {
-      if (!p || !inHouse(p)) return '';
+      if (p && !inHouse(p)) return releasedPatientBlock(p);
+      if (!p) return '';
       const raw = (patientsOfHouse(p.houseId) || []).filter(function (x) { return s(x.id) === s(p.id); })[0] || p;
       return '<div class="actions" data-patient-actions="' + esc(p.id) + '"><div class="toolbar"><span class="na" id="crm-save-state"></span></div>'
         + '<details class="act"><summary>עריכה</summary><form data-form="patient-edit" data-patient="' + esc(p.id) + '" novalidate>'
@@ -1853,6 +2945,10 @@
         'ההעברה של «' + s(before.name) + '» ל' + houseName(toHouseId));
     }
     function dischargePatient(pid, v, f) {
+      if (pendingDischargeAudit(state.data && state.data.dischargedPatients, pid)) {
+        toast('קיים רישום שחרור קודם שטרם הושלם — אין לבצע שוב שחרור; יש לאמת את הסטטוס מול הרשומה המקורית', true);
+        return Promise.resolve(false);
+      }
       const errs = dischargeErrors(v);
       if (f) showErrs(f, errs, ['disposition', 'dischargeDate']);
       if (Object.keys(errs).length) return Promise.resolve(false);
@@ -1862,7 +2958,7 @@
       const audit = dischargeAuditRow(before, v, randomId(), new Date().toISOString());
       const released = Object.assign({}, before, { status: 'released', exitDate: audit.exitDate });
       closeDrawer();
-      state.saving = true; loc.arr[loc.idx] = released; renderNav(); renderMain(); setSaveState('שומר…');
+      state.saving = true; markBusy(); loc.arr[loc.idx] = released; renderNav(); renderMain(); setSaveState('שומר…');
       const post = function (body) {
         return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           .then(function (r) { return r.json().catch(function () { return null; }); });
@@ -1871,25 +2967,37 @@
       return post({ action: 'dischargePatient', patient: audit }).then(function (res) {
         auditRes = res;
         if (!res || res.ok === false) throw new Error((res && res.message) || 'שחרור המטופל נכשל — לא נשמר' + (res && res.error ? ' (' + res.error + ')' : ''));
-        if (res.duplicate === true) { if (res.exitDate) released.exitDate = s(res.exitDate).slice(0, 10); toast('השחרור כבר נרשם'); }
+        if (res.duplicate === true) throw new Error('נמצא רישום שחרור קודם ללא אימות patientId של אותו מטופל — אין לעדכן סטטוס לפני בדיקת מקור');
         else if (!(res.patient && s(res.patient.id) === audit.id)) throw new Error('השחרור לא אומת — רענני ובדקי');
         // b. the Patients row flips in the same way the classic flow does: the house as read, this row released.
         return post(houseSaveBody(loc.hid, loc.arr, released, null));
       }).then(function (res) {
         const why = houseSaveRefusal(res, pid, '');
         if (why) throw new Error('השחרור נרשם, אך עדכון הסטטוס נכשל — ' + why);
-        state.saving = false; toast('«' + s(before.name) + '» שוחרר/ה');
+        const needsOutpatient = s(v.disposition) === 'released_outpatient';
+        if (needsOutpatient) toast('השחרור נשמר — מאמת את ההעברה לאמבולטורי, הפעולה עדיין לא הושלמה');
+        else { state.saving = false; clearBusy(); toast('«' + s(before.name) + '» שוחרר/ה'); }
         if (auditRes && auditRes.refund && Number(auditRes.refund.created) > 0) toast('נוצר זיכוי לפי הכלל — לטיפול אורטל');
-        if (s(v.disposition) === 'released_outpatient') {
+        if (needsOutpatient) {
           return win.fetch('/api/outpatient-lead', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dischargeId: audit.id, manual: false }) })
             .then(function (r) { return r.json().catch(function () { return {}; }); })
-            .then(function (d) { toast(d && d.ok === true && (d.sent || d.alreadySent) ? (d.alreadySent ? 'המטופל כבר נשלח לאמבולטורי' : 'נוצר ליד טיפול חוץ באאוטפיישנט') : 'יצירת ליד טיפול חוץ נכשלה — אפשר לנסות שוב בדשבורד', !(d && d.ok === true)); return true; })
-            .catch(function () { toast('יצירת ליד טיפול חוץ נכשלה — אפשר לנסות שוב בדשבורד', true); return true; });
+            .then(function (d) { if (d && d.ok === true && (d.sent || d.alreadySent)) { if (!state.data.outpatientSentLeadIds) state.data.outpatientSentLeadIds = []; state.data.outpatientSentLeadIds.push('discharge:' + audit.id); renderMain(); }
+              const accepted = d && d.ok === true && (d.sent || d.alreadySent);
+              state.saving = false; clearBusy();
+              if (!accepted && d && d.error === 'no_phone') state.outPhone = audit.id;   // the row in «משוחררים» opens with the phone field
+              toast(accepted ? (d.alreadySent ? 'השחרור נשמר וההפניה כבר קיימת באמבולטורי' : 'השחרור נשמר ונוצרה הפניה לאמבולטורי')
+                : (d && d.error === 'no_phone' ? 'השחרור נשמר. לא נשלח לאמבולטורי כי אין טלפון — הזיני טלפון ב«מטופלים» ← «משוחררים» ושלחי.' : 'השחרור נשמר, אך ההפניה לאמבולטורי לא אומתה — אין לשחרר שוב; יש לנסות העברה מתוך ״משוחררים״'), !accepted);
+              return !!accepted; })
+            .catch(function () { state.saving = false; clearBusy(); toast('השחרור נשמר, אך ההפניה לאמבולטורי לא אומתה — אין לשחרר שוב; יש לנסות העברה מתוך ״משוחררים״', true); return false; });
         }
         return true;
       }).catch(function (e) {
-        loc.arr[loc.idx] = before; state.saving = false; renderNav(); renderMain();
-        setSaveState(String(e && e.message || e), true); toast(String(e && e.message || e), true); return false;
+        // A lost reply can follow a committed source write. Do not falsely undo
+        // the source in the UI or invite a second discharge with a fresh audit ID.
+        state.saving = false; clearBusy();
+        const message = 'מצב השחרור לא אומת במלואו — ייתכן שחלק מהפעולות נשמרו. אין לבצע שחרור נוסף עד בדיקה ורענון. ' + String(e && e.message || e);
+        setSaveState(message, true); toast(message, true);
+        return load().then(function () { toast(message, true); return false; });
       });
     }
 
@@ -1905,8 +3013,9 @@
       return toolbar + '<div class="tbl-wrap"><table class="tbl" id="crm-discharged"><thead><tr><th>שם</th><th>בית</th><th>כניסה</th><th>יציאה</th><th>סיבה</th><th>המשך טיפול</th><th>אמבולטורי</th><th></th></tr></thead><tbody>'
         + list.map(function (r) {
           const op = r.sentToOutpatient ? chip('ok', 'נשלח') : (r.disposition === 'released_outpatient' ? chip('late', 'לא נשלח') : '<span class="na">—</span>');
-          return '<tr data-discharge="' + esc(r.id) + '"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtDate(r.date)) + '</td><td>' + esc(fmtDate(r.exitDate)) + '</td><td>' + esc(r.dispositionLabel || '—') + '</td><td>' + esc(r.continuity || '—') + '</td><td>' + op + '</td>'
-            + '<td>' + (ro ? '' : '<button type="button" class="btn small" data-restore="' + esc(r.id) + '">שחזר</button>' + (!r.sentToOutpatient ? ' <button type="button" class="btn small" data-to-outpatient="' + esc(r.id) + '">העבר לאמבולטורי</button>' : '')) + '</td></tr>';
+          return '<tr data-discharge="' + esc(r.id) + '"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtDate(r.date)) + '</td><td>' + esc(fmtDate(r.exitDate)) + '</td><td>' + esc(r.dispositionLabel || '—') + '</td><td>' + esc(continuityKnown(r.continuity) ? continuityLabel(r.continuity) : (s(r.continuity) && r.continuity !== 'unknown' ? r.continuity : (r.disposition === 'released_outpatient' || r.sentToOutpatient ? 'נשלח/מיועד לאמבולטורי — התחלת טיפול לא אומתה' : 'לא ידוע'))) + '</td><td>' + op + '</td>'
+            + '<td>' + (ro ? '' : '<button type="button" class="btn small" data-restore="' + esc(r.id) + '">שחזר</button>' + (!r.sentToOutpatient ? ' <button type="button" class="btn small" data-to-outpatient="' + esc(r.id) + '">העבר לאמבולטורי</button>' : '')) + '</td></tr>'
+            + (!r.sentToOutpatient && state.outPhone === r.id ? '<tr class="out-phone-row"><td colspan="8"><form id="crm-out-phone" data-form="out-phone" data-discharge="' + esc(r.id) + '" novalidate><label>טלפון של ' + esc(r.name) + ' (או של איש הקשר) <input type="tel" name="phone" inputmode="tel" maxlength="20" autocomplete="off" placeholder="05XXXXXXXX"></label> <button type="submit" class="btn small primary">שמירת הטלפון ושליחה לאמבולטורי</button> <button type="button" class="btn small" data-out-phone-cancel>ביטול</button> <span class="err" data-err="phone"></span><p class="na">הטלפון נשמר ברשימת הטלפונים של המטופלים — לא יידרש שוב. השחרור עצמו כבר נשמר.</p></form></td></tr>' : '');
         }).join('') + '</tbody></table></div><div id="crm-restore"></div>';
     }
     /* C17: restore (to the previous status, or as a new lead) and the manual Outpatient handoff. */
@@ -1918,7 +3027,7 @@
       const prior = { active: 'פעיל', trial: 'ניסיון', wait: 'בהמתנה' }[priorStatusOf(r)];
       el.innerHTML = '<form class="new-lead report" data-form="restore" data-discharge="' + esc(id) + '" novalidate><h3>שחזור · ' + esc(r.name) + ' · ' + esc(r.houseName) + ' · יצא/ה ' + esc(fmtDate(r.exitDate)) + '</h3>'
         + '<label class="wide"><input type="radio" name="how" value="active"' + (target ? ' checked' : ' disabled') + '> החזרה לבית לסטטוס הקודם (' + esc(prior) + ')' + (target ? '' : ' <span class="na">— השורה המקורית לא נמצאה; אפשר רק כליד חדש</span>') + (r.disposition === 'released_outpatient' ? ' <span class="na">· הליד באאוטפיישנט לא יימחק — להסיר ידנית</span>' : '') + '</label>'
-        + '<label class="wide"><input type="radio" name="how" value="lead"' + (target ? '' : ' checked') + '> פתיחת ליד חדש (חוזר/ת למסלול הפניות)</label>'
+        + '<label class="wide"><input type="radio" name="how" value="lead"' + (target ? '' : ' checked') + '> פתיחת ליד חדש (חוזר/ת למסלול הלידים)</label>'
         + '<div class="wide err" data-err="_form"></div><div class="wide toolbar"><button type="submit" class="btn primary">שחזור</button><button type="button" class="btn" data-restore-cancel>ביטול</button><span class="na" id="crm-restore-state"></span></div></form>';
       el.scrollIntoView({ block: 'nearest' });
     }
@@ -1933,7 +3042,7 @@
         return win.fetch(path, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(function (x) { return x.json().catch(function () { return null; }); });
       };
       const st = $('#crm-restore-state'); if (st) st.textContent = 'שומר…';
-      state.saving = true;
+      state.saving = true; markBusy();
       let chain;
       if (how === 'lead') {
         const newId = randomId().replace(/^id-/, 'lead-');
@@ -1943,7 +3052,7 @@
         });
       } else {
         const target = restoreTarget(r, state.data.patients);
-        if (!target) { state.saving = false; return Promise.resolve(false); }
+        if (!target) { state.saving = false; clearBusy(); return Promise.resolve(false); }
         const next = restoredRow(target.row, r);
         const siblings = openAuditsOf(r, c.discharges);
         chain = post('/api/sheets', houseSaveBody(target.hid, target.arr, next, null)).then(function (res) {
@@ -1958,21 +3067,30 @@
           }, Promise.resolve()).then(function () { return '«' + s(r.name) + '» חזר/ה לבית'; });
         });
       }
-      return chain.then(function (msg) { state.saving = false; toast(msg); return load().then(function () { state.area = 'clients'; state.clientsView = 'out'; renderNav(); renderMain(); return true; }); })
-        .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], String(e && e.message || e)); toast(String(e && e.message || e), true); return false; });
+      return chain.then(function (msg) { state.saving = false; clearBusy(); toast(msg); return load().then(function () { state.area = 'clients'; state.clientsView = 'out'; renderNav(); renderMain(); return true; }); })
+        .catch(function (e) { state.saving = false; clearBusy(); if (st) st.textContent = ''; showReportIssues(f, [], String(e && e.message || e)); toast(String(e && e.message || e), true); return false; });
     }
-    function sendToOutpatient(id) {
+    function sendToOutpatient(id, phone) {
       if (state.saving) return Promise.resolve(false);
-      state.saving = true;
-      return win.fetch('/api/outpatient-lead', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(outpatientBody(id)) })
+      state.saving = true; markBusy();
+      return win.fetch('/api/outpatient-lead', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(outpatientBody(id, phone)) })
         .then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (d) {
-          state.saving = false;
+          state.saving = false; clearBusy();
           const ok = d && d.ok === true && (d.sent || d.alreadySent);
-          toast(ok ? (d.alreadySent ? 'המטופל/ת כבר נשלח/ה לאמבולטורי' : 'נוצר ליד טיפול חוץ באאוטפיישנט') : ('יצירת ליד טיפול חוץ נכשלה — ' + s(d && (d.message || d.error) || 'שגיאה')), !ok);
-          if (ok) { if (!state.data.outpatientSentLeadIds) state.data.outpatientSentLeadIds = []; state.data.outpatientSentLeadIds.push('discharge:' + id); renderMain(); }
+          // No phone is not a reason to stop: the phone is asked for right in the row (CHANGELOG-crm-followups-1104.md).
+          const needPhone = !ok && d && (d.error === 'no_phone' || d.error === 'bad_phone');
+          toast(ok ? (d.alreadySent ? 'המטופל/ת כבר נשלח/ה לאמבולטורי' : 'נוצר ליד טיפול חוץ באאוטפיישנט') : needPhone ? s(d.message) || 'יש להזין טלפון' : ('יצירת ליד טיפול חוץ נכשלה — ' + s(d && (d.message || d.error) || 'שגיאה')), !ok);
+          if (ok) { state.outPhone = ''; if (!state.data.outpatientSentLeadIds) state.data.outpatientSentLeadIds = []; state.data.outpatientSentLeadIds.push('discharge:' + id); renderMain(); if (state.drawer) openDrawer(state.drawer.kind, state.drawer.id, true); }
+          else if (needPhone) {
+            const inCard = $('#crm-drawer form[data-form="out-phone"]');
+            if (inCard && state.drawer && $('#crm-drawer').getAttribute('aria-hidden') === 'false') {
+              const e2 = inCard.querySelector('[data-err="phone"]'); if (e2) e2.textContent = 'לא נמצא טלפון — הזיני טלפון ולחצי שוב';
+              const i2 = inCard.querySelector('input[name="phone"]'); if (i2) i2.focus();
+            } else { state.outPhone = id; state.clientsView = 'out'; renderMain(); const inp = $('#crm-out-phone input[name="phone"]'); if (inp) inp.focus(); }
+          }
           return !!ok;
-        }).catch(function (e) { state.saving = false; toast('יצירת ליד טיפול חוץ נכשלה — ' + String(e && e.message || e), true); return false; });
+        }).catch(function (e) { state.saving = false; clearBusy(); toast('יצירת ליד טיפול חוץ נכשלה — ' + String(e && e.message || e), true); return false; });
     }
     function renderClients(c) {
       if (state.clientsView === 'out') return renderDischarged(c);
@@ -1987,7 +3105,7 @@
             + '<td>' + (openBy[p.id] ? '<span class="chip today">' + openBy[p.id] + '</span>' : '<span class="sub">—</span>') + '</td><td class="sub">' + esc(lc ? whenLocal(lc.at) + ' · ' + contactOutcomeLabel(lc.outcome) : 'אין מגע מתועד') + '</td>'
             + '<td><span class="toolbar"><button type="button" class="btn small primary" data-contact-open="patient:' + esc(p.id) + '">תיעוד שיחה</button><button type="button" class="btn small" data-open-patient="' + esc(p.id) + '">כרטיס</button></span></td></tr>';
         }).join('')
-        + '</tbody></table></div>' + (list.length === 0 ? '<div class="crm-state">אין מטופלים</div>' : '');
+        + '</tbody></table></div>' + (list.length === 0 ? (s(state.filters.q) ? renderSearch(c) : '<div class="crm-state">אין מטופלים</div>') : '');
     }
 
     function renderCalendar(c) {
@@ -2080,17 +3198,46 @@
       const body = k === 'link' ? linkBody(raw, vals.patientId) : notPatientBody(raw, vals.note);
       const want = k === 'link' ? 'linked' : 'not_a_patient';
       const st = $('#crm-link-state'); if (st) st.textContent = 'שומר…';
-      state.saving = true;
+      state.saving = true; markBusy();
       return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
         .then(function (res) {
-          state.saving = false;
+          state.saving = false; clearBusy();
           if (!linkAccepted(res, row.paymentId, want)) { const why = writeRefusal(res, res && res.ok === true ? 'nope' : '') || 'השיוך לא נשמר'; showReportIssues(f, [], why); if (st) st.textContent = ''; toast(why, true); return false; }
           toast(k === 'link' ? 'התשלום שויך ✓' : 'השורה סומנה «לא מטופל/ת» ✓'); state.link = null;
           resetBilling(); renderMain();
           return true;
         })
-        .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'השיוך לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
+        .catch(function (e) { state.saving = false; clearBusy(); if (st) st.textContent = ''; showReportIssues(f, [], 'השיוך לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
+    }
+    /* «לגבייה בתאריך» (CHANGELOG-crm-collect-on-date.md): the classic daily list —
+     * date picker (default today), funder filter, the top search; «דווח תשלום»
+     * opens the patient's «חשבון» with the report form on that cycle. */
+    function renderDueOnDate(isController) {
+      const day = isoDateOk(state.dueDate) ? state.dueDate : state.today;
+      const due = dueOnDate(state.data, state.billing.payments, day, cycleBalanceLib(win));
+      const fu = state.dueFunder || '';
+      const v = filterDueRows(due, fu, state.filters.q);
+      const funders = FUNDERS.concat([FUNDER_UNSET_LABEL]);
+      let html = '<div class="group-title" id="crm-due-title">לגבייה בתאריך</div>'
+        + '<div class="toolbar filters" id="crm-due-tools"><label>תאריך <input type="date" id="crm-due-date" value="' + esc(day) + '"></label>'
+        + '<select id="crm-due-funder" aria-label="גורם מממן"><option value="">כל הגורמים המממנים</option>' + funders.map(function (f) { return '<option value="' + esc(f) + '"' + (f === fu ? ' selected' : '') + '>' + esc(f) + '</option>'; }).join('') + '</select>'
+        + (day !== state.today ? '<button type="button" class="btn small" data-due-today>היום</button>' : '') + '</div>';
+      html += '<div class="kpis"><div class="kpi"><span class="v">' + v.count + '</span><span class="l">מטופלים לתשלום · ' + esc(fmtDate(day)) + '</span></div>'
+        + '<div class="kpi"><span class="v">' + esc(fmtMoney(v.total)) + '</span><span class="l">סך לגבייה</span></div>'
+        + '<div class="kpi"><span class="v">' + esc(fmtMoney(v.collected)) + '</span><span class="l">נגבה בתאריך הנבחר</span></div></div>';
+      if (due.error && due.error !== 'bad_date') html += '<div class="crm-state bad">תשלומים לא נטענו — הסכומים לפי התעריף בכרטיס בלבד <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
+      if (!v.rows.length) return html + '<p class="na">' + (due.rows.length ? 'לא נמצאו תוצאות' : 'אין תשלומים לגבייה בתאריך זה') + '</p>';
+      state.dueRows = v.rows;
+      return html + '<div class="tbl-wrap"><table class="tbl" id="crm-due"><thead><tr><th>מטופל/ת</th><th>בית</th><th>סכום חודשי</th><th>תקופת כיסוי</th><th>סטטוס</th><th>שולם</th><th>יתרה</th><th></th></tr></thead><tbody>'
+        + v.rows.map(function (r, i) {
+          const st = r.status === 'paid' ? 'ok' : r.status === 'partial' ? 'today' : 'late';
+          const split = r.split.length > 1 ? '<br><small class="na">' + r.split.map(function (x) { return esc(HEB_MONTHS[Number(x.month.slice(5, 7)) - 1] + ' ' + x.month.slice(0, 4)) + ' · ' + x.days + ' ימים · ' + esc(fmtMoney(x.amount)); }).join(' | ') + '</small>' : '';
+          return '<tr><td data-open-patient="' + esc(r.patientId) + '" class="link">' + esc(r.name) + (r.released ? ' ' + chip('wait', 'שוחרר/ה') : '') + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtMoney(r.monthly)) + '</td>'
+            + '<td>' + esc(fmtDate(r.start)) + '–' + esc(fmtDate(r.end)) + split + '</td><td>' + chip(st, CYCLE_STATUS_LABELS[r.status] || r.status) + (r.discount ? ' <span class="na">הנחה ' + esc(fmtMoney(r.discount)) + '</span>' : '') + '</td>'
+            + '<td>' + esc(fmtMoney(r.paid)) + '</td><td>' + esc(fmtMoney(r.balance)) + '</td>'
+            + '<td>' + (!isController && r.balance > 0 ? '<button type="button" class="btn small primary" data-due-report="' + i + '">דווח תשלום</button>' : '') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
     }
     function renderBilling() {
       if (!state.billing) { loadBilling(); return '<div class="crm-state">טוען נתוני גבייה…</div>'; }
@@ -2116,6 +3263,8 @@
         html += '<p class="na">פתיחת שורה → כרטיס המטופל/ת, לשונית «חשבון» — כל המחזורים והתקבולים.</p>';
       }
       if (b.errors.length) html += '<div class="crm-state bad">' + esc(b.errors.join(' · ')) + ' <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
+      html += renderAnomalies(billingAnomalies(compute(state.data, state.today), state.billing.debt, state.today));
+      html += renderDueOnDate(isController);
       html += '<div class="kpis">' + kpi(fmtMoney(b.openDebt), 'חוב פתוח (' + b.openCycles + ' מחזורים)', 'all') + kpi(fmtMoney(b.over60), 'מעל 60 יום', 'd61_plus')
         + kpi(b.debtors, 'מטופלים עם חוב', 'all') + kpi(fmtMoney(b.received30), 'התקבל ב-30 יום (' + b.received30Count + ')', 'received') + kpi(b.toVerify, 'דיווחים לאימות', 'toVerify') + '</div>';
       html += '<div class="group-title">גיול חוב נכון ל-' + esc(fmtDate(b.asOf)) + '</div><div class="kpis">' + b.buckets.map(function (x) { return kpi(fmtMoney(x.amount), x.label, x.key); }).join('') + '</div>';
@@ -2148,8 +3297,9 @@
       else html += '<div class="tbl-wrap"><table class="tbl" id="crm-pending-credits"><thead><tr><th>שם</th><th>בית</th><th>סוג</th><th>חודש</th><th>לתשלום עד</th><th>סכום</th><th></th></tr></thead><tbody>'
         + pend.map(function (c) {
           return '<tr><td>' + esc(c.patientName) + '</td><td>' + esc(c.houseName) + '</td><td>' + esc(CREDIT_TYPE_LABELS[c.creditType] || c.creditType) + '</td><td>' + esc(c.allocationMonth) + '</td><td>' + esc(fmtDate(c.payoutDate)) + '</td><td>' + esc(fmtMoney(c.amount)) + '</td>'
-            + '<td>' + (!isController ? '<button type="button" class="btn small" data-settle-open="' + esc(c.id) + '">סמן כשולם</button>' : '') + '</td></tr>';
+            + '<td><span class="na">' + esc(refundStageText(c)) + '</span> ' + refundActionButton(c, state.me) + '</td></tr>';
         }).join('') + '</tbody></table></div>';
+      html += '<div id="crm-refund-form"></div>';
       const det = detachedRows(state.billing.debt);
       html += '<div class="group-title">שיוך תשלומים' + (det.length ? ' ' + chip('late', det.length + ' ללא שיוך') : '') + '</div>';
       if (!det.length) html += '<p class="na">כל התשלומים משויכים.</p>';
@@ -2159,14 +3309,27 @@
             + '<td>' + (!isController ? '<button type="button" class="btn small primary" data-link-open="' + esc(r.paymentId) + '">שייך</button> <button type="button" class="btn small" data-notpatient-open="' + esc(r.paymentId) + '">לא מטופל/ת</button>' : '') + '</td></tr>';
         }).join('') + '</tbody></table></div><div id="crm-link"></div>';
       html += '<div class="group-title">פעולות (בדשבורד הרגיל)</div><div class="links">'
-        + (isController ? '<a href="/?view=classic">בקרת גבייה<small>אימות דיווחים</small></a>' : '<a href="/?view=classic">עריכת קבלות<small>תיקון / ביטול קבלה</small></a><a href="/?view=classic">זיכויים ידניים<small>יצירה ועריכה של זיכוי</small></a><a href="/?view=classic">שיוך תשלומים<small>' + b.detached + ' ללא שיוך</small></a>')
+        + (isController ? '<a href="/?view=classic">בקרת גבייה<small>אימות דיווחים</small></a>' : '<a href="/?view=classic">דשבורד רגיל<small>גיבוי בלבד — קבלות, זיכויים ושיוך נעשים כאן, בכרטיס המטופל/ת</small></a>')
         + '</div>';
       return html;
     }
 
+    /* «חריגים לבדיקה» (CHANGELOG-crm-kpi-tab.md): open things that cannot both be true. Each row
+     * opens the stays it names; the fix is made on the record. Read-only. */
+    function renderAnomalies(rows) {
+      let html = '<div class="group-title" id="crm-anomalies-title">חריגים לבדיקה' + (rows.length ? ' ' + chip('late', rows.length + ' לבדיקה') : '') + '</div>';
+      if (!rows.length) return html + '<p class="na">לא נמצאו חריגים.</p>';
+      return html + '<div class="tbl-wrap"><table class="tbl" id="crm-anomalies"><thead><tr><th>חריג</th><th>שם</th><th>בית</th><th>פירוט</th><th>שהיות</th></tr></thead><tbody>'
+        + rows.map(function (r) {
+          return '<tr data-anomaly="' + esc(r.kind) + '"><td>' + chip('late', r.label) + '</td><td>' + esc(r.name) + '</td><td>' + esc(r.house) + '</td><td>' + esc(r.why) + '</td><td>'
+            + r.stays.map(function (st) { return '<button type="button" class="btn small" data-open-patient="' + esc(st.id) + '" data-open-tab="account">' + esc(st.house + ' · ' + fmtDate(st.date) + '–' + (st.exitDate ? fmtDate(st.exitDate) : '?')) + '</button>'; }).join(' ')
+            + '</td></tr>';
+        }).join('') + '</tbody></table></div><p class="na">כל חריג נשאר כאן עד שהרשומה מתוקנת (תאריכים, שחרור כפול, סכום). שתי שהיות חופפות של אותו אדם = חיוב כפול אפשרי.</p>';
+    }
     function renderOccupancy(c) {
-      const o = occupancy(c.patients);
-      return '<div class="kpis">' + [['בטיפול היום', o.totalIn], ['מיטות פנויות', o.totalFree], ['קיבולת', o.totalCap]].map(function (x) { return '<div class="kpi"><span class="v">' + x[1] + '</span><span class="l">' + esc(x[0]) + '</span></div>'; }).join('') + '</div>'
+      const o = occupancyToday(c.patients);
+      return '<div class="kpis">' + '<div class="kpi" id="crm-occ-today"><span class="v">' + o.pct + '%</span><span class="l">תפוסה היום</span><span class="l2">' + o.totalIn + ' מטופלים מתוך ' + o.totalCap + ' מיטות</span></div>'
+        + [['מיטות פנויות', o.totalFree], ['קיבולת', o.totalCap]].map(function (x) { return '<div class="kpi"><span class="v">' + x[1] + '</span><span class="l">' + esc(x[0]) + '</span></div>'; }).join('') + '</div>'
         + '<div class="links">' + o.houses.map(function (h) {
           const state_ = h.closed ? 'wait' : (h.free === 0 ? 'late' : (h.free <= 2 ? 'today' : 'ok'));
           return '<a href="#" data-house-open="' + esc(h.name) + '"><strong>' + esc(h.name) + '</strong> ' + chip(state_, h.closed ? 'סגור' : h.free + ' פנויות') + '<small>' + h.inHouse + ' / ' + (h.capacity || '—') + (h.capacity ? ' · ' + h.pct + '%' : '') + '</small></a>';
@@ -2177,32 +3340,163 @@
     /* «בקרה» (Stage 3b): the same rows as «היום שלי» / the triage, so every number opens its list. */
     function renderControl(c) {
       const m = model(c);
+      const queues = workControlQueues(m);
       const tq = state.tasks && state.index ? triageQueue(c, state.tasks, state.index, state.today).length : null;
-      const lateTasks = (state.tasks || []).filter(function (t) { return t && t.status === 'open' && taskState(t, state.today) === 'late'; }).length;
       const cards = [
-        { id: 'unseen', label: 'דיווחי מנהל/ת שלא נקראו', value: m.buckets.reportUnseen.length, go: { area: 'today', domain: 'followup' } },
-        { id: 'undecided', label: 'דיווחים שנקראו ללא החלטה', value: m.buckets.awaitingDecision.length, go: { area: 'today', domain: 'followup' } },
+        { id: 'unseen', label: 'דיווחי מנהל/ת שלא נקראו', value: queues.unseen.length, go: { area: 'today', workControl: 'unseen' } },
+        { id: 'undecided', label: 'דיווחים שנקראו ללא החלטה', value: queues.undecided.length, go: { area: 'today', workControl: 'undecided' } },
         { id: 'noContact', label: 'רשומות שדורשות בירור', value: tq, hint: tq === null ? (state.tasks === undefined || state.index === undefined ? 'טוען…' : 'המידע אינו זמין') : 'ללא מגע מתועד וללא משימה', go: { area: 'triage' } },
-        { id: 'late', label: 'משימות באיחור', value: state.tasks ? lateTasks : null, hint: state.tasks ? '' : (state.tasks === undefined ? 'טוען…' : 'המידע אינו זמין'), go: { area: 'today', domain: 'calls' } },
-        { id: 'awaitingReport', label: 'פגישות שעברו ללא דיווח', value: m.buckets.awaitingReport.length, go: { area: 'today', domain: 'followup' } },
-        { id: 'unscheduled', label: 'ביקורים ללא תאריך', value: m.buckets.toSchedule.length, go: { area: 'today', domain: 'meetings' } },
-        { id: 'admitting', label: 'מעברים פתוחים (קליטה)', value: c.leads.filter(function (l) { return l.stage === 'paid'; }).length, hint: m.byDomain.houses.filter(function (r) { return r.kind === 'admission_due'; }).length + ' אחרי תאריך הכניסה', go: { area: 'leads', view: 'board' } },
+        { id: 'late', label: 'משימות באיחור', value: state.tasks ? queues.late.length : null, hint: state.tasks ? '' : (state.tasks === undefined ? 'טוען…' : 'המידע אינו זמין'), go: { area: 'today', workControl: 'late' } },
+        { id: 'awaitingReport', label: 'פגישות שעברו ללא דיווח', value: queues.awaitingReport.length, go: { area: 'today', workControl: 'awaitingReport' } },
+        { id: 'unscheduled', label: 'ביקורים ללא תאריך', value: queues.unscheduled.length, go: { area: 'today', workControl: 'unscheduled' } },
+        { id: 'admitting', label: 'מעברים פתוחים (קליטה)', value: c.leads.filter(function (l) { return l.stage === 'paid'; }).length, hint: houseExceptions(c, state.today).filter(function (r) { return r.kind === 'admission_due'; }).length + ' אחרי תאריך הכניסה', go: { area: 'leads', view: 'board' } },
       ];
-      return '<div class="kpis cards">' + cards.map(function (k) {
+      return '<p class="na" id="crm-control-about">«בקרת עבודה» = מה נתקע בעבודה השוטפת: דיווחים שלא נקראו, רשומות בלי מגע, משימות באיחור ופגישות בלי תוצאה. כל מספר נפתח לרשימה לטיפול. מדדים ואחוזים — בלשונית KPI.</p>'
+        + '<div class="kpis cards">' + cards.map(function (k) {
         return '<button type="button" class="kpi acc-' + esc(k.id) + '" data-go="' + esc(JSON.stringify(k.go)) + '">' + (k.value === null ? '<span class="v na-v">—</span>' : '<span class="v">' + k.value + '</span>') + '<span class="l">' + esc(k.label) + '</span>' + (k.hint ? '<span class="l2">' + esc(k.hint) + '</span>' : '') + '<span class="l2 go">פתיחת הרשימה ←</span></button>';
       }).join('') + '</div><p class="na">כל מספר נפתח לרשימה שלו — אותם נתונים כמו ב«היום שלי»; מדדים עסקיים ייבנו ממקורות מוגדרים.</p>';
     }
 
+    /* «KPI» (CHANGELOG-crm-kpi-tab.md): occupancy today, lead conversion, close rate per
+     * manager, length of stay and — finance only — break-even. Read-only except the
+     * break-even expenses, which live in this browser (the classic tab's own storage). */
+    function signedMoney(n) { const v = Math.round(Number(n) || 0); return (v < 0 ? '-' : '') + fmtMoney(Math.abs(v)); }
+    function readBreakevenConfig() {
+      let raw = null;
+      try { raw = win.localStorage ? win.localStorage.getItem(BREAKEVEN_STORAGE_KEY) : null; } catch (_) { raw = null; }
+      return breakevenConfig(raw);
+    }
+    function flatRawPatients() {
+      const p = state.data && state.data.patients, out = [];
+      if (Array.isArray(p)) p.forEach(function (x) { out.push(x); });
+      else if (p && typeof p === 'object') Object.keys(p).forEach(function (h) { (Array.isArray(p[h]) ? p[h] : []).forEach(function (x) { out.push(Object.assign({ houseId: h }, x)); }); });
+      return out;
+    }
+    /* A number / amount / percentage kept left-to-right inside the RTL page (a minus sign stays in front). */
+    function ltr(v) { return '<bdi dir="ltr">' + esc(v) + '</bdi>'; }
+    function kpiCard(v, label, sub, id) {
+      return '<div class="kpi"' + (id ? ' id="' + esc(id) + '"' : '') + '><span class="v">' + ltr(v) + '</span><span class="l">' + esc(label) + '</span>' + (sub ? '<span class="l2">' + esc(sub) + '</span>' : '') + '</div>';
+    }
+    function renderKpi(c) {
+      const pid = KPI_PERIODS.some(function (x) { return x.id === state.kpiPeriod; }) ? state.kpiPeriod : 'last_3_months';
+      const range = kpiPeriod(pid, state.today) || { from: state.today, to: state.today };
+      let html = '<div class="toolbar filters" id="crm-kpi-periods">' + KPI_PERIODS.map(function (x) {
+        return '<button type="button" class="btn small' + (x.id === pid ? ' primary' : '') + '" data-kpi-period="' + esc(x.id) + '" aria-pressed="' + (x.id === pid) + '">' + esc(x.label) + '</button>';
+      }).join('') + '<span class="na">' + esc(fmtDate(range.from)) + ' – ' + esc(fmtDate(range.to)) + '</span></div>';
+
+      // 1. occupancy today
+      const o = occupancyToday(c.patients);
+      html += '<div class="group-title">תפוסה היום</div><div class="kpis">' + kpiCard(o.pct + '%', 'תפוסה היום', o.totalIn + ' מתוך ' + o.totalCap + ' מיטות', 'crm-kpi-occ')
+        + kpiCard(o.totalIn, 'בטיפול היום') + kpiCard(o.totalFree, 'מיטות פנויות') + '</div>'
+        + '<div class="tbl-wrap"><table class="tbl" id="crm-kpi-occ-houses"><thead><tr><th>בית</th><th>בטיפול</th><th>קיבולת</th><th>תפוסה</th><th>פנויות</th></tr></thead><tbody>'
+        + o.houses.map(function (h) { return '<tr><td>' + esc(h.name) + '</td><td>' + h.inHouse + '</td><td>' + (h.capacity || '—') + '</td><td>' + (h.capacity ? h.pct + '%' : '—') + '</td><td>' + h.free + '</td></tr>'; }).join('')
+        + '</tbody></table></div>';
+
+      // 2. lead conversion
+      const lc = leadConversion(state.data, c, range.from, range.to);
+      html += '<div class="group-title">המרת לידים למטופלים <span class="na">לידים שנפתחו בתקופה: ' + lc.total + '</span></div>'
+        + '<div class="kpis">' + kpiCard(fmtPct(lc.pct), 'הפכו למטופלים', lc.converted + ' מתוך ' + lc.total + ' (אשפוז + אמבולטורי)', 'crm-kpi-conv')
+        + FATES.map(function (f) { return kpiCard(lc.counts[f.id], f.label, fmtPct(lc.pcts[f.id])); }).join('') + '</div>';
+      if (lc.houses.length) html += '<div class="tbl-wrap"><table class="tbl" id="crm-kpi-conv-houses"><thead><tr><th>בית (בליד)</th><th>לידים</th><th>אשפוז</th><th>אמבולטורי</th><th>% המרה</th></tr></thead><tbody>'
+        + lc.houses.map(function (h) { return '<tr><td>' + esc(h.house) + '</td><td>' + h.total + '</td><td>' + h.inpatient + '</td><td>' + h.outpatient + '</td><td>' + esc(fmtPct(h.pct)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+      html += '<p class="na">לפי תאריך פתיחת הליד. ' + (lc.direct ? lc.direct + ' מטופלים שנוספו ישירות (פנייה ישירה) אינם נספרים כלידים. ' : '') + (lc.noCreated ? lc.noCreated + ' לידים ללא תאריך פתיחה לא נספרו. ' : '') + (lc.noHouse ? lc.noHouse + ' לידים ללא בית מזוהה נספרו בסיכום אך אינם מוצגים בטבלה.' : '') + '</p>';
+
+      // 3. close rate per manager
+      const mc = managerCloseRates(state.data, c, range.from, range.to, state.today);
+      html += '<div class="group-title">סגירה לאחר פגישה — לפי מנהל/ת <span class="na">פגישות בתקופה: ' + mc.total.meetings + '</span></div>';
+      if (!mc.rows.length) html += '<p class="na">אין פגישות עם שם מנהל/ת בתקופה' + (mc.skipped ? ' (' + mc.skipped + ' ללא שם תקין)' : '') + '.</p>';
+      else html += '<div class="tbl-wrap"><table class="tbl" id="crm-kpi-managers"><thead><tr><th>מנהל/ת</th><th>פגישות</th><th>נכנסו לטיפול</th><th>% סגירה</th><th>נסגרו ללא כניסה</th><th>%</th><th>עדיין פתוחים</th></tr></thead><tbody>'
+        + mc.rows.map(function (r) {
+          return '<tr><td>' + esc(r.manager) + '</td><td>' + r.meetings + '</td><td>' + r.entered + '</td><td><strong>' + esc(fmtPct(r.closePct)) + '</strong></td><td>' + r.lost + '</td><td>' + esc(fmtPct(r.lostPct)) + '</td><td>' + r.open + '</td></tr>';
+        }).join('') + '</tbody><tfoot><tr><td>סה״כ</td><td>' + mc.total.meetings + '</td><td>' + mc.total.entered + '</td><td><strong>' + esc(fmtPct(mc.total.closePct)) + '</strong></td><td>' + mc.total.lost + '</td><td>' + esc(fmtPct(mc.total.lostPct)) + '</td><td>' + mc.total.open + '</td></tr></tfoot></table></div>'
+        + '<p class="na">פגישה = תאריך ביקור שעבר (או דיווח מנהל/ת) בתקופה. «נכנסו» = הפכו למטופלים בבית או באמבולטורי.' + (mc.skipped ? ' ' + mc.skipped + ' פגישות ללא שם מנהל/ת תקין לא נכללו.' : '') + '</p>';
+
+      // 4. length of stay + continuity (lib/patient-retention.js, the classic «חתכי מטופלים»)
+      const R = win.PatientRetention && typeof win.PatientRetention.computeRetention === 'function' ? win.PatientRetention : null;
+      if (R) {
+        const rr = R.computeRetention({ patients: flatRawPatients(), discharged: state.data.dischargedPatients || [], from: range.from, to: range.to, customThreshold: null, today: state.today });
+        if (rr && rr.ok) {
+          const pf = function (f) { return f === null || f === undefined ? '—' : Math.round(f * 1000) / 10 + '%'; };
+          html += '<div class="group-title">משך שהייה והמשך טיפול <span class="na">נכנסו בתקופה: ' + rr.cohortSize + '</span></div><div class="kpis" id="crm-kpi-stay">'
+            + R.BUCKETS.map(function (b) { return kpiCard(rr.counts[b.key], b.label, pf(rr.percents[b.key])); }).join('')
+            + kpiCard(rr.stillInTreatment.count, R.STILL_IN_TREATMENT_LABEL, pf(rr.percents.stillInTreatment))
+            + R.CONTINUITY_KEYS.map(function (k) { return kpiCard(rr.continuity[k], R.CONTINUITY_LABELS[k], pf(rr.percents.continuity[k]) + ' מהמשוחררים'); }).join('') + '</div>'
+            + (rr.missingCount ? '<p class="na">' + rr.missingCount + ' שהיות עם ' + esc(R.MISSING_LABEL) + ' — לא נספרו.</p>' : '');
+        }
+      }
+
+      // 5. break-even (finance only — an ops session has no prices)
+      if (state.me && state.me.finance) html += renderBreakeven(c);
+      return '<div class="kpi-page">' + html + '</div>';   // bold section headings (CHANGELOG-crm-kpi-headings.md)
+    }
+    function renderBreakeven(c) {
+      const cfg = readBreakevenConfig();
+      const be = breakevenReport(c.patients, cfg);
+      const n = be.network;
+      const shown = be.houses.filter(function (m) { return m.active || (!m.closed && m.currentPatients > 0); });
+      let html = '<div class="group-title">נקודת איזון לבית <span class="na">הכנסה ללא מע״מ · הוצאות ' + (cfg.fromStorage ? 'כפי שנשמרו בדפדפן זה' : 'לפי הדוח הפיננסי (ברירת מחדל)') + '</span></div>'
+        + '<div class="kpis" id="crm-kpi-network">' + kpiCard(signedMoney(n.housesPL), 'רווח/הפסד בתים (חודשי)') + kpiCard(fmtMoney(n.hqCost), 'עלות מטה')
+        + kpiCard(signedMoney(n.networkPL), 'רווח/הפסד רשת אחרי מטה') + kpiCard(n.totalPatientsCurrent + ' / ' + n.networkBreakeven, 'מטופלים היום / נקודת איזון רשת') + '</div>'
+        + '<div class="tbl-wrap"><table class="tbl" id="crm-kpi-breakeven"><thead><tr><th>בית</th><th>מטופלים</th><th>נקודת איזון</th><th>מצב</th><th>מחיר ממוצע</th><th>הכנסה</th><th>הוצאות</th><th>רווח/הפסד</th><th>רווח גולמי</th></tr></thead><tbody>'
+        + shown.map(function (m) {
+          if (!m.active) return '<tr><td>' + esc(m.name) + '</td><td>' + m.currentPatients + '</td><td colspan="7" class="na">אין נתוני הוצאות לבית — לא נכלל בחישוב (להזין למטה)</td></tr>';
+          const st = m.currentPatients >= m.breakevenPoint ? chip('ok', 'עבר (+' + (m.currentPatients - m.breakevenPoint) + ')') : chip('late', 'חסרים ' + m.gap);
+          return '<tr><td>' + esc(m.name) + '</td><td>' + ltr(m.currentPatients + ' / ' + m.capacity) + '</td><td><strong>' + m.breakevenPoint + '</strong></td><td>' + st + '</td><td>' + ltr(fmtMoney(m.price)) + '</td><td>' + ltr(fmtMoney(m.currentRevenue)) + '</td><td>' + ltr(fmtMoney(m.totalExpenses)) + '</td><td>' + ltr(signedMoney(m.currentPL)) + '</td><td>' + (m.marginPct === null ? '—' : ltr((Math.round(m.marginPct * 10) / 10) + '%')) + '</td></tr>';
+        }).join('') + '</tbody></table></div>'
+        + '<details class="act" id="crm-be-edit"><summary>עדכון הוצאות (נשמר בדפדפן זה, משותף עם הדשבורד הרגיל)</summary><form data-form="breakeven" novalidate>'
+        + '<label>עלות מטה (₪) <input type="number" name="hqCost" min="0" step="1" value="' + esc(cfg.hqCost) + '"><span class="err" data-err="hqCost"></span></label>'
+        + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) {
+          const x = cfg.houses[h.id];
+          return '<fieldset class="be-house"><legend>' + esc(h.name) + '</legend><label><input type="checkbox" name="active_' + h.id + '"' + (x.active ? ' checked' : '') + '> נכלל בחישוב</label>'
+            + '<label>קבועות (₪) <input type="number" name="fixed_' + h.id + '" min="0" step="1" value="' + esc(x.fixed) + '"></label>'
+            + '<label>משתנות (₪) <input type="number" name="variable_' + h.id + '" min="0" step="1" value="' + esc(x.variable) + '"></label>'
+            + '<span class="err" data-err="' + h.id + '"></span></fieldset>';
+        }).join('')
+        + '<button type="submit" class="btn small primary">שמירה</button></form></details>';
+      return html;
+    }
+    /* The break-even expense form → { cfg, errs }. A house counted in the calculation needs expenses > 0. */
+    function breakevenFromForm(f) {
+      const cur = readBreakevenConfig();
+      const num = function (n) { const el = f.elements[n]; const t = el ? s(el.value) : ''; return t === '' ? NaN : Number(t); };
+      const errs = {};
+      const hq = num('hqCost');
+      if (!(hq >= 0)) errs.hqCost = 'סכום לא תקין';
+      const houses = {};
+      HOUSES.forEach(function (h) {
+        if (h.closed) { houses[h.id] = cur.houses[h.id]; return; }
+        const act = !!(f.elements['active_' + h.id] && f.elements['active_' + h.id].checked);
+        const fx = num('fixed_' + h.id), vr = num('variable_' + h.id);
+        if (!(fx >= 0) || !(vr >= 0)) errs[h.id] = 'סכום לא תקין';
+        else if (act && fx + vr <= 0) errs[h.id] = 'בית שנכלל בחישוב צריך הוצאות';
+        houses[h.id] = { active: act, fixed: fx >= 0 ? fx : 0, variable: vr >= 0 ? vr : 0 };
+      });
+      return { cfg: { hqCost: hq >= 0 ? hq : 0, houses: houses }, errs: errs };
+    }
     function renderMain() {
       const title = (AREAS.filter(function (a) { return a.id === state.area; })[0] || AREAS[0]).label;
       $('#crm-title').textContent = title;
       if (state.loading) { main.innerHTML = '<div class="crm-state">טוען…</div>'; return; }
       if (state.error) { main.innerHTML = '<div class="crm-state bad">' + esc(state.error) + ' <button type="button" class="btn small" id="crm-retry">נסי שוב</button></div>'; return; }
       const c = compute(state.data, state.today);
-      const r = { today: renderToday, leads: renderLeads, occupancy: renderOccupancy, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl, triage: renderTriage }[state.area] || renderToday;
+      if (state.area === 'search') $('#crm-title').textContent = 'חיפוש';
+      const r = { search: renderSearch, today: renderToday, leads: renderLeads, occupancy: renderOccupancy, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl, kpi: renderKpi, triage: renderTriage }[state.area] || renderToday;
       main.innerHTML = r(c);
     }
 
+    /* The top search box from any area (CHANGELOG-crm-search-admit-funder.md): every lead and
+     * every patient (released included) whose name / phone / house matches. */
+    function renderSearch(c) {
+      const r = globalSearch(c, state.filters.q);
+      if (!r) return '<div class="crm-state">הקלידו שם, טלפון או בית בתיבת החיפוש</div>';
+      let html = '<div class="group-title">תוצאות חיפוש «' + esc(r.q) + '» <span class="n chip">' + r.total + '</span></div>';
+      if (!r.total) return html + '<div class="crm-state">לא נמצאו לידים או מטופלים עבור «' + esc(r.q) + '»</div>';
+      if (r.patients.length) html += '<div class="group-title">מטופלים</div><div class="tbl-wrap"><table class="tbl" id="crm-search-patients"><thead><tr><th>שם</th><th>בית</th><th>סטטוס</th><th>כניסה</th><th>יציאה</th></tr></thead><tbody>'
+        + r.patients.map(function (p) { return '<tr data-open-patient="' + esc(p.id) + '"><td class="name">' + esc(p.name) + '</td><td>' + esc(p.houseName) + '</td><td>' + statusChip(p.status) + '</td><td>' + esc(fmtDate(p.date)) + '</td><td>' + esc(fmtDate(p.exitDate)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+      if (r.leads.length) html += '<div class="group-title">לידים</div><div class="tbl-wrap"><table class="tbl" id="crm-search-leads"><thead><tr><th>שם</th><th>טלפון</th><th>בית</th><th>שלב</th><th>נוצר</th></tr></thead><tbody>'
+        + r.leads.map(function (l) { return '<tr data-open-lead="' + esc(l.id) + '"><td class="name">' + esc(l.name) + '</td><td>' + esc(l.phone) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(l.stage === 'admitted' ? 'נקלט/ה' : stageLabel(l.stage)) + '</td><td>' + esc(fmtDate(l.created)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+      return html;
+    }
     /* ---- lead actions (C4): stage move, meeting, outcome, note, owner ---- */
     function managersOf(houseIdOrName) {
       const list = state.data && Array.isArray(state.data.currentManagers) ? state.data.currentManagers : [];
@@ -2218,6 +3512,16 @@
       return (withBlank ? '<option value="">—</option>' : '') + all.map(function (v) { return '<option value="' + esc(v) + '"' + (v === current ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join('');
     }
     function renderLeadActions(l) {
+      // A matched name/phone is not proof that the stay belongs to this lead.
+      // Show a caution, but never close the lead as admitted without a verified
+      // explicit lead-to-stay link (ARCH-01). Existing source records stay intact.
+      const cAll = compute(state.data, state.today);
+      const inH = leadAlreadyInHouse(l, cAll.patients, cAll.leads);
+      const already = inH ? '<div class="notice warn">קיימת קליטה בשם או בטלפון דומים בבית ' + esc(houseName(inH.houseId))
+        + '. יש לבדוק אם מדובר באותו אדם. הליד אינו נסגר אוטומטית.</div>' : '';
+      return already + renderLeadActionsBody(l);
+    }
+    function renderLeadActionsBody(l) {
       const next = stageAfter(l.stage), prev = stageBefore(l.stage);
       const managers = managersOf(l.house).concat([MEETING_WITH_AMBULATORY]);
       const hid = houseId(l.house);
@@ -2229,26 +3533,75 @@
         + '<label>סטטוס <select name="status">' + PATIENT_STATUSES.map(function (st) { return '<option value="' + st.id + '">' + esc(st.label) + '</option>'; }).join('') + '</select></label>'
         + (state.me && state.me.finance ? '<label>גורם מממן <select name="funder"><option value="">— בחרו —</option>' + FUNDERS.map(function (f) { return '<option>' + esc(f) + '</option>'; }).join('') + '</select><span class="err" data-err="funder"></span></label>' : '')
         + '<button type="submit" class="btn small primary">אשר כניסה</button></form></details>';
-      return '<div class="actions" data-lead-actions="' + esc(l.id) + '">' + (l.stage === 'paid' ? admit : '')
+      const waUrl = managerChangeLink(l);
+      const waBlock = waUrl ? '<div class="notice warn patient-change">' + esc(nextActionFor(l, state.today, flagsOf(state.index, l.id)).text) + ' <a class="btn small primary" target="_blank" rel="noopener" data-wa-manager href="' + esc(waUrl) + '">📲 הודעה למנהל/ת בוואטסאפ</a></div>' : '';
+      return '<div class="actions" data-lead-actions="' + esc(l.id) + '">' + waBlock + (l.stage === 'paid' ? admit : '')
         + '<div class="toolbar">'
         + (prev ? '<button type="button" class="btn small" data-stage-prev="' + esc(l.id) + '">→ ' + esc(stageLabel(prev)) + '</button>' : '')
         + (next ? '<button type="button" class="btn small primary" data-stage-next="' + esc(l.id) + '">' + esc(stageLabel(next)) + ' ←</button>' : '')
         + '<span class="na" id="crm-save-state"></span></div>'
+        + (l.stage === 'waitlist' ? waitReasonBlock(l) : '')
         + '<details class="act"><summary>תיאום פגישה</summary><form data-form="meeting" data-lead="' + esc(l.id) + '"><label>תאריך <input type="date" name="visitDate" value="' + esc(l.visitDate) + '"></label>'
         + '<label>שעה <input type="time" name="visitTime" value="' + esc(l.visitTime) + '"></label>'
         + '<label>נפגש/ת עם <select name="meetingWith">' + opts(managers, l.meetingWith, true) + '</select></label>'
         + '<button type="submit" class="btn small primary">שמירה</button></form></details>'
+        + (l.stage === 'visit' && s(l.visitDate) ? patientChangeBlock(l) : '')
         + '<details class="act"><summary>דיווח תוצאת פגישה</summary><form data-form="outcome" data-lead="' + esc(l.id) + '"><label>תוצאה <select name="meetingOutcome"><option value="">—</option>' + MEETING_OUTCOMES.map(function (o) { return '<option value="' + o.id + '"' + (l.meetingOutcome === o.id ? ' selected' : '') + '>' + esc(o.label) + '</option>'; }).join('') + '</select></label>'
         + '<button type="submit" class="btn small primary">שמירה</button></form></details>'
-        + '<details class="act"><summary>סגירת ליד / הסרה</summary><form data-form="close" data-lead="' + esc(l.id) + '"><label>סטטוס סגירה <select name="disposition">' + DISPOSITIONS.map(function (d) { return '<option value="' + d.id + '">' + esc(d.label) + '</option>'; }).join('') + '</select></label>'
-        + '<label>סיבה <input name="note" type="text" maxlength="500"></label>'
+        + '<details class="act"><summary>סגירת ליד / הסרה</summary><form data-form="close" data-lead="' + esc(l.id) + '" novalidate><label>סטטוס סגירה * <select name="disposition">' + DISPOSITIONS.map(function (d) { return '<option value="' + d.id + '">' + esc(d.label) + '</option>'; }).join('') + '</select><span class="err" data-err="disposition"></span></label>'
+        + '<label>סיבה * <input name="note" type="text" maxlength="500" required><span class="err" data-err="note"></span></label>'
         + '<button type="submit" class="btn small primary">סגירת ליד</button> <button type="button" class="btn small" data-remove-lead="' + esc(l.id) + '">הסר (טעות)</button></form></details>'
         + '<details class="act"><summary>הערה ואחראי</summary><form data-form="note" data-lead="' + esc(l.id) + '"><label>אחראי <select name="assignedTo">' + opts(ASSIGNEES, l.assignedTo, true) + '</select></label>'
         + '<label>הערות <textarea name="note" rows="3">' + esc(l.note) + '</textarea></label>'
         + '<button type="submit" class="btn small primary">שמירה</button></form></details>'
         + '</div>';
     }
-    function setSaveState(text, bad) { const el = $('#crm-save-state'); if (el) { el.textContent = text; el.style.color = bad ? 'var(--bad)' : ''; } }
+    /* «סיבת המתנה» (Vered 04/11/2026): open by default on a waitlist lead. */
+    function waitReasonBlock(l) {
+      const cur = flagsOf(state.index, l.id), now = cur && cur.waitReason ? cur.waitReason.reason : '';
+      return '<details class="act" open><summary>סיבת המתנה</summary><form data-form="wait-reason" data-lead="' + esc(l.id) + '">'
+        + '<div class="radio-row" role="radiogroup" aria-label="סיבת המתנה">' + WAIT_REASONS.map(function (r) { return '<label class="radio"><input type="radio" name="reason" value="' + r.id + '"' + ((now || 'place') === r.id ? ' checked' : '') + '> ' + esc(r.label) + '</label>'; }).join('') + '</div>'
+        + '<p class="na" data-wait-state>' + (cur && cur.waitReason ? 'נשמר ' + esc(whenLocal(cur.waitReason.at)) + (cur.waitReason.actorName ? ' · ' + esc(cur.waitReason.actorName) : '') : 'לא נבחרה סיבה — מוצג «ממתין למקום». בחירה נשמרת מיד.') + '</p>'
+        + '</form></details>';
+    }
+    /* «שינוי / ביטול ע״י המטופל/ת» (Vered 04/11/2026): writes the lead, records who changed it, then offers the manager's WhatsApp. */
+    function patientChangeBlock(l) {
+      return '<details class="act"><summary>הפגישה בוטלה / שונתה ע״י המטופל/ת</summary><form data-form="patient-change" data-lead="' + esc(l.id) + '" novalidate>'
+        + '<div class="radio-row" role="radiogroup" aria-label="מה השתנה"><label class="radio"><input type="radio" name="change" value="cancelled"> בוטלה</label><label class="radio"><input type="radio" name="change" value="rescheduled"> שונה מועד</label></div><span class="err" data-err="change"></span>'
+        + '<label>תאריך חדש <input type="date" name="newDate" min="' + esc(state.today) + '"><span class="err" data-err="newDate"></span></label>'
+        + '<label>שעה חדשה <input type="time" name="newTime"><span class="err" data-err="newTime"></span></label>'
+        + '<label class="wide">הערה למנהל/ת (לא חובה) <input type="text" name="note" maxlength="200"><span class="err" data-err="note"></span></label>'
+        + '<p class="na">נשלחת הודעת וואטסאפ מוכנה ל' + esc(l.meetingWith || 'מנהל/ת הבית') + ' — יש ללחוץ «שליחה» בוואטסאפ.</p>'
+        + '<button type="submit" class="btn small primary">שמירה והודעה למנהל/ת</button></form></details>';
+    }
+    /* The manager's WhatsApp link for the lead's current patient-side change, or ''. */
+    function managerChangeLink(l) {
+      const ch = patientMeetingChange(l, flagsOf(state.index, l.id));
+      if (!ch) return '';
+      const phones = state.data && state.data.managerPhones && typeof state.data.managerPhones === 'object' ? state.data.managerPhones : {};
+      return managerWaUrl(phones[s(ch.withWhom || l.meetingWith)] || '', managerChangeMessage(l, ch));
+    }
+    function setSaveState(text, bad) {
+      const el = $('#crm-save-state'); if (el) { el.textContent = text; el.style.color = bad ? 'var(--bad)' : ''; }
+      if (text === 'שומר…') markBusy(); else clearBusy();
+    }
+    /* The submit button of the form being saved shows a spinner and is disabled until the
+     * answer (CHANGELOG-crm-followups-1104.md). Re-found after a re-render; 30 s safety stop. */
+    function markBusy() {
+      const b = state.busyForm;
+      if (!b) return;
+      let f = null;
+      doc.querySelectorAll('form[data-form="' + b.form.replace(/[^a-z0-9-]/gi, '') + '"]').forEach(function (x) {
+        if (!f && (!b.key || [x.dataset.lead, x.dataset.discharge, x.dataset.patient].indexOf(b.key) >= 0)) f = x;
+      });
+      const btn = f ? f.querySelector('button[type="submit"]') : null;
+      if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); }
+      win.clearTimeout(state.busyTimer); state.busyTimer = win.setTimeout(clearBusy, 30000);
+    }
+    function clearBusy() {
+      state.busyForm = null; win.clearTimeout(state.busyTimer);
+      doc.querySelectorAll('#crm-root form button[aria-busy="true"]').forEach(function (b) { b.removeAttribute('aria-busy'); b.disabled = false; });
+    }
     function toast(text, bad) {
       let el = $('#crm-toast');
       if (!el) { el = doc.createElement('div'); el.id = 'crm-toast'; el.className = 'toast'; root.appendChild(el); }
@@ -2263,18 +3616,18 @@
       const before = list[idx];
       const next = applyLeadPatch(before, patch, new Date().toISOString());
       list[idx] = next;
-      state.saving = true; renderNav(); renderMain(); if (state.drawer && state.drawer.id === id) openDrawer('lead', id, true);
+      state.saving = true; markBusy(); renderNav(); renderMain(); if (state.drawer && state.drawer.id === id) openDrawer('lead', id, true);
       setSaveState('שומר…');
       return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(leadSaveBody(next)) })
         .then(function (r) { return r.json().catch(function () { return null; }); })
         .then(function (res) {
           const why = saveRefusal(res, id);
           if (why) throw new Error(why);
-          state.saving = false; setSaveState('נשמר ✓'); toast((label || 'השינוי') + ' נשמר');
+          state.saving = false; clearBusy(); setSaveState('נשמר ✓'); toast((label || 'השינוי') + ' נשמר');
           return true;
         })
         .catch(function (e) {
-          list[idx] = before; state.saving = false;
+          list[idx] = before; state.saving = false; clearBusy();
           renderNav(); renderMain(); if (state.drawer && state.drawer.id === id) openDrawer('lead', id, true);
           setSaveState(String(e && e.message || e), true); toast(String(e && e.message || e), true);
           return false;
@@ -2292,6 +3645,50 @@
         if (ok && needsDate) { openDrawer('lead', id, true); focusMeetingForm(); toast('השלב נשמר — עכשיו תאריך הפגישה, אחרת היא לא תופיע ביומן ולא אצל המנהל/ת', true); }
       });
     }
+    /* logLeadFlag (CHANGELOG-crm-vered-feedback-1104.md): the flag is applied to the
+     * in-memory contact index only after the server echoes it; never assumed. */
+    function postLeadFlag(flag, label, afterLeadSaved) {
+      if (state.saving) { toast('שמירה קודמת עדיין מתבצעת — רגע אחד ונסי שוב', true); return Promise.resolve(false); }
+      const key = s(flag.leadId) + ':' + s(flag.kind);
+      const plan = leadFlagPendingPlan(pendingLeadFlags[key], flag, newSubmissionId);
+      if (!plan.ok) {
+        toast('יש רישום קודם שלא אומת. בדקי את ההיסטוריה ונסי שוב עם אותם פרטים לפני שינוי נוסף.', true);
+        return Promise.resolve(false);
+      }
+      const pending = plan.pending;
+      pendingLeadFlags[key] = pending;
+      state.saving = true; markBusy(); setSaveState('שומר…');
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pending.body) })
+        .then(function (r) { return r.json().catch(function () { return null; }); })
+        .then(function (res) {
+          if (!res || res.ok !== true || !res.flag ||
+              s(res.flag.leadId) !== s(flag.leadId) || s(res.flag.kind) !== s(flag.kind)) {
+            throw new Error((res && res.message) || 'לא התקבל אישור מקור');
+          }
+          delete pendingLeadFlags[key];
+          state.saving = false; clearBusy();
+          if (state.index && state.index.ok !== false) {
+            if (!state.index.flags || typeof state.index.flags !== 'object') state.index.flags = {};
+            const cur = state.index.flags[res.flag.leadId] || (state.index.flags[res.flag.leadId] = {});
+            cur[res.flag.kind === 'waitlist_reason' ? 'waitReason' : 'meetingChange'] = res.flag;
+          }
+          setSaveState('נשמר ✓'); toast(label + ' נשמר/ה');
+          renderNav(); renderMain();
+          if (state.drawer && state.drawer.id === flag.leadId) openDrawer('lead', flag.leadId, true);
+          return true;
+        })
+        .catch(function (_) {
+          // The source may already have appended the event before the reply was
+          // lost. Keep the same ID and payload; do not report the lead as unsaved.
+          state.saving = false; clearBusy();
+          const warning = afterLeadSaved
+            ? 'הפגישה נשמרה, אך רישום השינוי לא אומת. לחצי שוב כדי לאמת בלי לשמור את הפגישה מחדש.'
+            : 'רישום השינוי לא אומת. בדקי את ההיסטוריה; ניסיון חוזר ישתמש באותה אסמכתא.';
+          setSaveState(warning, true); toast(warning, true);
+          return false;
+        });
+    }
     /* Open the drawer's «תיאום פגישה» block and put the caret in its date. */
     function focusMeetingForm() {
       const f = $('#crm-drawer form[data-form="meeting"]');
@@ -2300,29 +3697,72 @@
       const inp = f.elements.visitDate; if (inp) { try { inp.focus(); } catch (_) { /* no-op */ } }
     }
 
+    /* A status is read from OUT on demand; never inferred from the send flag. */
+    const OUTPATIENT_STAGE_LABELS = Object.freeze({
+      referred: 'הפניה התקבלה באמבולטורי', contacted: 'נוצר קשר', intro_scheduled: 'נקבעה פגישת היכרות',
+      intro_passed: 'פגישת ההיכרות חלפה — תוצאה לא אומתה', plan: 'שלב תוכנית טיפול',
+      admitted: 'נקלט/ה לטיפול חוץ', active: 'טיפול חוץ פעיל', ended: 'טיפול חוץ הסתיים',
+      not_relevant: 'לא רלוונטי לטיפול חוץ',
+    });
+    function outpatientStatusButton(id, kind) {
+      return '<div class="act"><button type="button" class="btn small" data-check-outpatient-status data-' +
+        (kind === 'discharge' ? 'discharge-id' : 'lead-id') + '="' + esc(id) +
+        '">בדיקת המשך טיפול באמבולטורי</button><span class="na" data-outpatient-status-value>טרם נבדק</span></div>';
+    }
+    root.addEventListener('click', function (ev) {
+      const btn = ev.target && ev.target.closest ? ev.target.closest('[data-check-outpatient-status]') : null;
+      if (!btn) return;
+      ev.preventDefault();
+      const id = btn.dataset.leadId || btn.dataset.dischargeId || '';
+      const q = btn.dataset.leadId ? 'leadId' : 'dischargeId';
+      const value = btn.parentNode && btn.parentNode.querySelector('[data-outpatient-status-value]');
+      if (!id || btn.disabled) return;
+      btn.disabled = true;
+      if (value) value.textContent = 'בודק במערכת האמבולטורית…';
+      win.fetch('/api/outpatient-handoff-status?' + q + '=' + encodeURIComponent(id), { credentials: 'same-origin' })
+        .then(function (response) { return response.json().catch(function () { return null; }); })
+        .then(function (data) {
+          if (!data || data.ok !== true || !data.verified || !OUTPATIENT_STAGE_LABELS[data.state]) {
+            if (value) value.textContent = 'הסטטוס לא אומת — בדקי ישירות באמבולטורי; אין לסגור מעקב.';
+            return;
+          }
+          if (value) value.textContent = OUTPATIENT_STAGE_LABELS[data.state] +
+            (data.assignedTo ? ' · אחראי/ת: ' + data.assignedTo : '') +
+            (data.nextActionDate ? ' · פעולה עד ' + fmtDate(data.nextActionDate) : '') +
+            (data.nextAction ? ' · ' + data.nextAction : '') +
+            ' (מקור: Outpatient)';
+        })
+        .catch(function () {
+          if (value) value.textContent = 'אין אימות מהאמבולטורי כרגע — המעקב נשאר פתוח.';
+        })
+        .finally(function () { btn.disabled = false; });
+    });
+
     /* The client drawer: existing fields + the timeline from getActivity (B3). */
     function openDrawer(kind, id, keepTab) {
       const c = compute(state.data, state.today);
       const lead = kind === 'lead' ? c.leads.filter(function (l) { return l.id === id; })[0] : null;
       const pat = kind === 'patient' ? c.patients.filter(function (p) { return p.id === id; })[0] : null;
-      if (!lead && !pat) return;
+      if (!lead && !pat) { toast(kind === 'lead' ? 'הליד לא נמצא — ייתכן שנסגר או הועבר. רענני את הדף.' : 'כרטיס המטופל/ת לא נמצא ברשימת המטופלים — פתחי דרך «מטופלים» או בדשבורד הקלאסי.', true); return; }
       if (!(keepTab && state.drawer && state.drawer.id === id)) { state.account = null; state.report = null; state.small = null; state.receiptForm = null; }
       const dr = $('#crm-drawer');
       const name = lead ? lead.name : pat.name;
       const subject = lead ? { leadId: lead.id } : { patientId: pat.id };
-      const kv = lead ? [['טלפון', lead.phone], ['בית', houseName(lead.house)], ['מקור', lead.source], ['אחראי', lead.assignedTo], ['שלב', stageLabel(lead.stage)], ['פגישה', fmtDate(lead.visitDate) + (lead.visitTime ? ' ' + lead.visitTime : '')], ['נוצר', fmtDate(lead.created)], ['נפגש/ת עם', lead.meetingWith], ['תוצאת פגישה', lead.meetingOutcome], ['איש קשר', lead.contactName + (lead.contactRelation ? ' (' + lead.contactRelation + ')' : '')], ['טלפון איש קשר', lead.contactPhone], ['הערות', lead.note]]
-        : [['בית', houseName(pat.houseId)], ['תאריך כניסה', fmtDate(pat.date) + (pat.date ? ' · ' + daysBetween(pat.date, state.today) + ' ימים בבית' : '')], ['סטטוס', patientStatusLabel(pat.status)], ['הגיע/ה', pat.source === 'lead' ? 'מפנייה' : pat.source === 'direct_admin' ? 'הוספה ישירה' : pat.source], ['פנייה מקורית', pat.fromLead ? ((compute(state.data, state.today).leads.filter(function (l) { return l.id === pat.fromLead; })[0] || {}).name || 'נסגרה / הועברה') : '']];
-      const na = lead ? nextActionFor(lead, state.today) : null;
-      dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(name) + '</h2><div class="meta tags">' + (lead ? '<span class="chip stage-' + esc(lead.stage) + '">' + esc(stageLabel(lead.stage)) + '</span>' + houseTag(lead.house) + (lead.assignedTo ? avatar(lead.assignedTo) : '') : statusChip(pat.status) + houseTag(pat.houseId)) + (na ? chip(na.state, na.text) : '') + '</div></div>'
+      const kv = lead ? [['טלפון', lead.phone], ['בית', houseName(lead.house)], ['מקור', lead.source], ['אחראי', lead.assignedTo], ['שלב', stageLabel(lead.stage)], ['פגישה', fmtDate(lead.visitDate) + (lead.visitTime ? ' ' + lead.visitTime : '')], ['נוצר', fmtDate(lead.created)], ['נפגש/ת עם', lead.meetingWith], ['תוצאת פגישה', meetingOutcomeLabel(lead.meetingOutcome)], ['איש קשר', lead.contactName + (lead.contactRelation ? ' (' + lead.contactRelation + ')' : '')], ['טלפון איש קשר', lead.contactPhone], ['הערות', lead.note]]
+        : [['בית', houseName(pat.houseId)], ['תאריך כניסה', fmtDate(pat.date) + (pat.date && !s(pat.exitDate) ? ' · ' + daysBetween(pat.date, state.today) + ' ימים בבית' : '')], ['תאריך יציאה', s(pat.exitDate) ? fmtDate(pat.exitDate) + (pat.date ? ' · ' + daysBetween(pat.date, pat.exitDate) + ' ימים בבית' : '') : ''], ['סטטוס', patientStatusLabel(pat.status)], ['הגיע/ה', pat.source === 'lead' ? 'מליד' : pat.source === 'direct_admin' ? 'הוספה ישירה' : pat.source], ['ליד מקורי', pat.fromLead ? ((compute(state.data, state.today).leads.filter(function (l) { return l.id === pat.fromLead; })[0] || {}).name || 'נסגרה / הועברה') : '']];
+      const na = lead ? nextActionFor(lead, state.today, flagsOf(state.index, lead.id)) : null;
+      dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(name) + '</h2><div class="meta tags">' + (lead ? '<span class="chip stage-' + esc(lead.stage) + '">' + esc(stageLabel(lead.stage)) + '</span>' + houseTag(lead.house) + (lead.assignedTo ? avatar(lead.assignedTo) : '') : statusChip(pat.status) + houseTag(pat.houseId)) + (na ? chip(na.state, na.text) : '') + (lead && waitChipText(lead, flagsOf(state.index, lead.id)) && waitChipText(lead, flagsOf(state.index, lead.id)) !== na.text ? chip('wait', waitChipText(lead, flagsOf(state.index, lead.id))) : '') + '</div></div>'
         + '<span class="toolbar"><button type="button" class="btn small primary" data-contact-open="' + esc(kind + ':' + id) + '">📞 תיעוד שיחה</button><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></span></div>'
-        + '<div class="tabs" role="tablist">' + [['overview', 'סקירה'], ['tasks', 'משימות' + (tasksFor(subject, state.tasks).length ? ' (' + tasksFor(subject, state.tasks).length + ')' : '')], ['activity', 'פעילות'], ['meetings', 'פגישות ושירותים'], ['account', 'חשבון'], ['docs', 'מסמכים']].map(function (t, i) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (i === 0) + '">' + esc(t[1]) + '</button>'; }).join('') + '</div>'
-        + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : renderPatientActions(pat)) + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p><a class="btn" href="/?view=classic">עריכה מלאה בדשבורד</a></p></section>'
+        + '<div class="tabs" role="tablist">' + [['overview', 'סקירה'], ['tasks', 'משימות' + (tasksFor(subject, state.tasks).length ? ' (' + tasksFor(subject, state.tasks).length + ')' : '')], ['activity', 'פעילות'], ['meetings', 'פגישות ושירותים'], ['account', 'חשבון'], ['docs', 'מסמכים']].filter(function (t) { return t[0] !== 'account' || accountTabVisible(state.me); }).map(function (t, i) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (i === 0) + '">' + esc(t[1]) + '</button>'; }).join('') + '</div>'
+        + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : renderPatientActions(pat))
+        + (lead && c.outpatientSent && c.outpatientSent[lead.id] ? outpatientStatusButton(lead.id, 'lead') : '') + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl><p><a class="btn" href="/?view=classic">עריכה מלאה בדשבורד</a></p></section>'
         + '<section data-pane="tasks" hidden id="crm-tasks">' + renderTasksPane(subject) + '</section>'
         + '<section data-pane="activity" hidden><ul class="tl" id="crm-tl"><li>טוען…</li></ul></section>'
         + '<section data-pane="meetings" hidden id="crm-meetings">' + renderMeetings(meetingsFor(lead || pat, lead ? 'lead' : 'patient', compute(state.data, state.today))) + '</section>'
-        + '<section data-pane="account" hidden id="crm-account">' + (pat && state.me && state.me.finance ? '<p class="na">טוען נתוני חשבון…</p>' : '<p class="na">' + (lead ? 'החשבון נפתח עם הקליטה לבית.' : 'אין הרשאה לנתוני גבייה.') + '</p>') + '</section>'
+        + (accountTabVisible(state.me) ? '<section data-pane="account" hidden id="crm-account">' + (pat && state.me && state.me.finance ? '<p class="na">טוען נתוני חשבון…</p>' : '<p class="na">' + (lead ? 'החשבון נפתח עם הקליטה לבית.' : 'אין הרשאה לנתוני גבייה.') + '</p>') + '</section>' : '')
         + '<section data-pane="docs" hidden><p class="na">מסמכים — חשבשבת נשארת המקור; עדיין לא מחובר.</p></section>';
-      const prevTab = keepTab && state.drawer && state.drawer.tab ? state.drawer.tab : 'overview';
+      let prevTab = keepTab && state.drawer && state.drawer.tab ? state.drawer.tab : 'overview';
+      if (prevTab === 'account' && !accountTabVisible(state.me)) prevTab = 'overview';
       if (prevTab !== 'overview') {
         doc.querySelectorAll('#crm-drawer [role="tab"]').forEach(function (b) { b.setAttribute('aria-selected', String(b.dataset.tab === prevTab)); });
         doc.querySelectorAll('#crm-drawer [data-pane]').forEach(function (p) { p.hidden = p.dataset.pane !== prevTab; });
@@ -2373,15 +3813,17 @@
       const defIdx = defaultReportable(others, state.today);
       if (others.length) html += '<p><label class="na">דווח תשלום למחזור אחר (מקדמה / מחזור שלא ברשימה) <select id="crm-other-cycle">' + others.map(function (w, i) { return '<option value="' + i + '"' + (i === defIdx ? ' selected' : '') + '>' + esc(fmtDate(w.start) + '–' + fmtDate(w.end) + ' · ' + fmtMoney(w.expected) + (w.status ? ' · ' + (CYCLE_STATUS_LABELS[w.status] || w.status) : '')) + '</option>'; }).join('') + '</select></label> <button type="button" class="btn small" data-report-other>דווח תשלום</button></p>';
       html += '<div id="crm-report"></div>';
-      html += '<div class="group-title">זיכויים</div>';
+      html += '<div class="group-title">זיכויים' + (me.approver ? ' <button type="button" class="btn small" data-credit-new>+ זיכוי ידני</button>' : '') + '</div>';
       const credits = state.billing ? patientCredits(state.account ? state.account.patient : a.patientId, state.billing.credits) : [];
       if (!credits.length) html += '<p class="na">אין זיכויים.</p>';
       else html += '<div class="tbl-wrap"><table class="tbl" id="crm-account-credits"><thead><tr><th>סוג</th><th>חודש</th><th>סכום</th><th>סטטוס</th><th></th></tr></thead><tbody>'
         + credits.map(function (c) {
           const st = c.status === 'paid' ? 'ok' : c.status === 'cancelled' ? 'wait' : 'today';
           return '<tr><td>' + esc(CREDIT_TYPE_LABELS[c.creditType] || c.creditType) + (c.reason ? ' <span class="na">' + esc(c.reason) + '</span>' : '') + '</td><td>' + esc(c.allocationMonth) + '</td><td>' + esc(fmtMoney(c.amount)) + '</td><td>' + chip(st, (CREDIT_STATUS_LABELS[c.status] || c.status) + (c.paidDate ? ' ' + fmtDate(c.paidDate) : '')) + '</td>'
-            + '<td>' + (c.status === 'pending' && c.amount > 0 && me.finance ? '<button type="button" class="btn small" data-settle-open="' + esc(c.id) + '">סמן כשולם</button>' : '') + '</td></tr>';
+            + '<td>' + (c.status === 'pending' && c.amount > 0 ? '<span class="na">' + esc(refundStageText(c)) + '</span> ' + refundActionButton(c, me) : '')
+            + (me.finance && c.status !== 'paid' ? ' <button type="button" class="btn small" data-credit-edit="' + esc(c.id) + '">עריכה</button>' : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
+      html += '<div id="crm-refund-form-account"></div>';
       html += '<div class="group-title">תשלומים</div>';
       if (!a.cycles.length) html += '<p class="na">אין תשלומים רשומים.</p>';
       else html += '<div class="tbl-wrap"><table class="tbl" id="crm-account-cycles"><thead><tr><th>לתשלום</th><th>סכום</th><th>שולם</th><th>סטטוס</th></tr></thead><tbody>'
@@ -2398,7 +3840,7 @@
           return '<tr><td>' + esc(fmtDate(r.receivedDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td><td>' + esc(r.method) + '</td><td>' + esc(r.payer) + '</td><td>' + (r.isVoid ? chip('wait', 'בוטלה') : (r.confirmStatus ? chip(cs, CONFIRM_LABELS[r.confirmStatus] || r.confirmStatus) : '')) + '</td>'
             + '<td>' + (r.isVoid ? '' : '<button type="button" class="btn small" data-receipt-edit="' + esc(r.id) + '">עריכה</button>' + (me.deleter ? ' <button type="button" class="btn small" data-receipt-void="' + esc(r.id) + '">ביטול</button>' : '')) + '</td></tr>';
         }).join('') + '</tbody></table></div><div id="crm-receipt-form"></div>';
-      html += '<p><a class="btn" href="/?view=classic">עריכת קבלות, שיוך תשלומים וזיכויים ידניים בדשבורד</a></p>';
+      html += '<p class="na">כל הפעולות על החשבון זמינות כאן. <a href="/?view=classic">הדשבורד הרגיל</a> נשאר לגיבוי.</p>';
       return html;
     }
     /* C10: the «דווח תשלום» form inside the account pane. */
@@ -2444,11 +3886,11 @@
       showReportIssues(f, []);
       const body = reportBody(state.report.cycle, vals, state.report.submissionId, confirmDuplicate);
       const st = $('#crm-report-state'); if (st) st.textContent = 'שומר…';
-      state.saving = true;
+      state.saving = true; markBusy();
       return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
         .then(function (res) {
-          state.saving = false;
+          state.saving = false; clearBusy();
           const out = reportOutcome(res);
           if (out.ok) {
             toast('התשלום נשמר ✓');
@@ -2468,7 +3910,7 @@
           toast(out.message, true);
           return false;
         })
-        .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'התשלום לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
+        .catch(function (e) { state.saving = false; clearBusy(); if (st) st.textContent = ''; showReportIssues(f, [], 'התשלום לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
     }
     /* C11: discount / amount / settle forms share the #crm-report slot. */
     function openSmallForm(kind, ctx) {
@@ -2506,18 +3948,148 @@
       showReportIssues(f, issues, issues.length ? 'יש לתקן את השדות המסומנים' : '');
       if (issues.length) return Promise.resolve(false);
       const st = $('#crm-report-state'); if (st) st.textContent = 'שומר…';
-      state.saving = true;
+      state.saving = true; markBusy();
       return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
         .then(function (res) {
-          state.saving = false;
+          state.saving = false; clearBusy();
           const why = writeRefusal(res, proof);
           if (why) { showReportIssues(f, [], why); if (st) st.textContent = ''; toast(why, true); return false; }
           toast(label + ' נשמר ✓'); state.small = null;
           const pid = state.drawer && state.drawer.id; resetBilling(); if (pid) fillAccountPane(pid);
           return true;
         })
-        .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'השינוי לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
+        .catch(function (e) { state.saving = false; clearBusy(); if (st) st.textContent = ''; showReportIssues(f, [], 'השינוי לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
+    }
+    /* Credit edit / manual credit (CHANGELOG-crm-manual-credits.md) — the #crm-refund-form-account slot. */
+    function openCreditForm(kind, id) {
+      const el = $('#crm-drawer[aria-hidden="false"] #crm-refund-form-account');
+      if (!el || !state.billing) return;
+      const me = state.me || {};
+      const err = function (n) { return '<span class="err" data-err="' + n + '"></span>'; };
+      let html;
+      if (kind === 'new') {
+        if (!me.approver) return toast('זיכוי ידני — באישור סנדרה בלבד', true);
+        state.creditForm = { kind: 'new' };
+        html = '<h3>זיכוי ידני (אחר)</h3>'
+          + '<label>חודש *<input type="month" name="allocationMonth" value="' + esc(s(state.today).slice(0, 7)) + '">' + err('allocationMonth') + '</label>'
+          + '<label>סכום (₪, כולל מע״מ) *<input type="text" inputmode="decimal" name="amount">' + err('amount') + '</label>'
+          + '<label class="wide">סיבה *<input type="text" name="reason" maxlength="300">' + err('reason') + '</label>'
+          + '<label class="wide">הערות<input type="text" name="notes" maxlength="500"></label>';
+      } else {
+        const raw = creditRaw(state.billing.credits, id);
+        if (!raw) return toast('הזיכוי לא נמצא — רענני', true);
+        if (s(raw.status) === 'paid') return toast('זיכוי ששולם נעול לעריכה', true);
+        state.creditForm = { kind: 'edit', id: s(raw.id) };
+        const statuses = [['pending', 'ממתין']].concat(me.deleter || s(raw.status) === 'cancelled' ? [['cancelled', 'בוטל']] : []);
+        html = '<h3>עריכת זיכוי · ' + esc(CREDIT_TYPE_LABELS[s(raw.creditType)] || raw.creditType) + ' ' + esc(s(raw.allocationMonth).slice(0, 7)) + '</h3>'
+          + '<p class="na">מחושב לפי המדיניות: ' + esc(fmtMoney(raw.calculatedAmount)) + (me.approver ? '' : ' · שינוי סכום — באישור סנדרה בלבד') + '</p>'
+          + '<label>סכום (₪, כולל מע״מ) *<input type="text" inputmode="decimal" name="amount" value="' + esc(Number(raw.amount) || 0) + '"' + (me.approver ? '' : ' readonly') + '>' + err('amount') + '</label>'
+          + '<label>נימוק לשינוי הסכום<input type="text" name="overrideReason" maxlength="300" value="' + esc(raw.overrideReason) + '">' + err('overrideReason') + '</label>'
+          + '<label>תאריך החלטה<input type="date" name="decidedDate" value="' + esc(sheetDay(raw.decidedDate)) + '">' + err('decidedDate') + '</label>'
+          + '<label>סטטוס<select name="status">' + statuses.map(function (x) { return '<option value="' + x[0] + '"' + (s(raw.status) === x[0] ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select>' + err('status') + '</label>'
+          + '<label class="wide">הערות<input type="text" name="notes" maxlength="500" value="' + esc(raw.notes) + '">' + err('notes') + '</label>';
+      }
+      el.innerHTML = '<form class="new-lead report" data-form="credit-' + kind + '" novalidate>' + html + '<div class="wide err" data-err="_form"></div>'
+        + '<div class="wide toolbar"><button type="submit" class="btn primary">שמירה</button><button type="button" class="btn" data-credit-cancel>ביטול</button><span class="na" id="crm-credit-state"></span></div></form>';
+      el.scrollIntoView({ block: 'nearest' });
+    }
+    function submitCredit(f) {
+      if (!state.creditForm || !state.account || state.saving) return Promise.resolve(false);
+      const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
+      const cf = state.creditForm;
+      let errs, body, wantId = '';
+      if (cf.kind === 'new') { errs = creditNewErrors(vals); body = creditNewBody(state.account.patient, vals, state.today); }
+      else {
+        const raw = creditRaw(state.billing && state.billing.credits, cf.id);
+        if (!raw) { toast('הזיכוי לא נמצא — רענני', true); return Promise.resolve(false); }
+        errs = creditEditErrors(raw, vals); body = creditEditBody(raw, vals); wantId = cf.id;
+      }
+      const issues = Object.keys(errs).map(function (k) { return { field: k, hebrewMessage: errs[k] }; });
+      showReportIssues(f, issues, issues.length ? (errs._form || 'יש לתקן את השדות המסומנים') : '');
+      if (issues.length) return Promise.resolve(false);
+      const st = $('#crm-credit-state'); if (st) st.textContent = 'שומר…';
+      state.saving = true; markBusy();
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+        .then(function (res) {
+          state.saving = false; clearBusy();
+          const why = creditSaveRefusal(res, wantId);
+          if (why) { showReportIssues(f, [], why); if (st) st.textContent = ''; toast(why, true); return false; }
+          toast('הזיכוי נשמר ✓'); state.creditForm = null;
+          const pid = state.drawer && state.drawer.id; resetBilling(); if (pid) fillAccountPane(pid);
+          return true;
+        })
+        .catch(function (e) { state.saving = false; clearBusy(); if (st) st.textContent = ''; showReportIssues(f, [], 'הזיכוי לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
+    }
+    /* C11: use the same Credits authority as the classic dashboard; never
+     * allow Vered/Sandra to settle or Ortal to approve by a stale CRM button. */
+    function openRefundAction(kind, id) {
+      const list = state.billing && state.billing.credits;
+      const c = creditsOf(list).filter(function (r) { return r.id === id; })[0];
+      if (!c || refundActionFor(c, state.me) !== kind) {
+        return toast('הפעולה אינה זמינה — יש לרענן את נתוני ההחזר וההרשאות', true);
+      }
+      const el = $('#crm-drawer[aria-hidden="false"] #crm-refund-form-account') || $('#crm-refund-form');
+      if (!el) return toast('נא לפתוח את מסך הגבייה ולנסות שוב', true);
+      state.refundAction = { kind: kind, creditId: c.id, amount: c.amount };
+      const err = function (name) { return '<span class="err" data-err="' + name + '"></span>'; };
+      let html = '<h3>' + esc(REFUND_ACTION_LABELS[kind]) + ' · ' + esc(c.patientName) + '</h3>'
+        + '<p class="na">סכום ההחזר המחושב: ' + esc(fmtMoney(c.amount)) + ' · ' + esc(refundStageText(c)) + '</p>';
+      if (kind === 'settle') {
+        html += '<label>תאריך ביצוע התשלום *<input type="date" name="paidDate" max="' + esc(state.today) +
+          '" value="' + esc(state.today) + '">' + err('paidDate') + '</label>'
+          + '<label>אמצעי תשלום *<select name="method"><option value="">בחרי…</option>' +
+          SETTLE_METHODS.map(function (m) { return '<option value="' + esc(m) + '">' + esc(m) + '</option>'; }).join('') +
+          '</select>' + err('method') + '</label>';
+      } else {
+        html += '<p class="na">האישור מתייחס לסכום זה בלבד. שינוי בסכום מחייב בקשה ואישור מחדש.</p>';
+      }
+      el.innerHTML = '<form class="new-lead report" data-form="refund-action" novalidate>' + html +
+        '<div class="wide err" data-err="_form"></div><div class="wide toolbar">' +
+        '<button type="submit" class="btn primary">' + esc(REFUND_ACTION_LABELS[kind]) + '</button>' +
+        '<button type="button" class="btn" data-refund-cancel>ביטול</button><span class="na" id="crm-refund-state"></span></div></form>';
+      el.scrollIntoView({ block: 'nearest' });
+    }
+    function submitRefundAction(form) {
+      const task = state.refundAction;
+      if (!task || state.saving) return Promise.resolve(false);
+      const current = creditsOf(state.billing && state.billing.credits).filter(function (r) { return r.id === task.creditId; })[0];
+      if (!current || current.amount !== task.amount || refundActionFor(current, state.me) !== task.kind) {
+        showReportIssues(form, [], 'ההחזר השתנה — יש לטעון אותו מחדש'); return Promise.resolve(false);
+      }
+      const values = {};
+      Array.prototype.forEach.call(form.elements, function (el) { if (el.name) values[el.name] = el.value; });
+      const issues = task.kind === 'settle' ? settleErrors(values, state.today) : {};
+      showReportIssues(form, Object.keys(issues).map(function (k) { return { field: k, hebrewMessage: issues[k] }; }), '');
+      if (Object.keys(issues).length) return Promise.resolve(false);
+      const body = task.kind === 'request'
+        ? { action: 'requestRefundPayoutApproval', creditId: task.creditId }
+        : task.kind === 'approve' ? { action: 'approveRefundPayout', creditId: task.creditId }
+        : settleBody(task.creditId, values.paidDate, values.method);
+      state.saving = true; markBusy();
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+        .then(function (res) {
+          state.saving = false; clearBusy();
+          if (!res || res.ok !== true || !res.credit || s(res.credit.id) !== task.creditId) {
+            const why = writeRefusal(res, 'credit') || 'לא התקבל אישור שמירה מזהה מהשרת';
+            showReportIssues(form, [], why); toast(why, true); return false;
+          }
+          state.refundAction = null;
+          toast((task.kind === 'request' ? 'בקשת האישור' : task.kind === 'approve' ? 'האישור לסכום ההחזר' : 'תשלום ההחזר') + ' נשמר ✓');
+          const pid = state.drawer && state.drawer.id;
+          resetBilling();
+          if (pid && state.account) fillAccountPane(pid);
+          if (state.area === 'billing') { renderMain(); loadBilling(); }
+          else loadBilling(function () { if (pid && state.account) fillAccountPane(pid); });
+          return true;
+        })
+        .catch(function (err) {
+          state.saving = false; clearBusy(); const why = 'הפעולה לא נשמרה — ' + s(err && err.message || err);
+          showReportIssues(form, [], why); toast(why, true); return false;
+        });
     }
     /* C13: receipt edit / void forms. */
     function openReceiptForm(kind, r) {
@@ -2564,11 +4136,11 @@
       if (issues.length) return Promise.resolve(false);
       if (k === 'void' && !win.confirm('לבטל את הקבלה על ' + fmtMoney(r.amount) + ' מ-' + fmtDate(r.receivedDate) + '?')) return Promise.resolve(false);
       const st = $('#crm-receipt-state'); if (st) st.textContent = 'שומר…';
-      state.saving = true;
+      state.saving = true; markBusy();
       return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         .then(function (res) { return res.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
         .then(function (res) {
-          state.saving = false;
+          state.saving = false; clearBusy();
           if (!accepted(res)) {
             const out = res && res.error === 'invalid_report' ? reportOutcome(res) : { message: writeRefusal(res, res && res.ok === true ? 'receipt' : ''), issues: [] };
             showReportIssues(f, out.issues || [], out.message || 'השינוי לא נשמר'); if (st) st.textContent = ''; toast(out.message || 'השינוי לא נשמר', true); return false;
@@ -2577,22 +4149,53 @@
           const pid = state.drawer && state.drawer.id; resetBilling(); if (pid) fillAccountPane(pid);
           return true;
         })
-        .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'השינוי לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
+        .catch(function (e) { state.saving = false; clearBusy(); if (st) st.textContent = ''; showReportIssues(f, [], 'השינוי לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
+    }
+    /* «לעדכן המשך טיפול»: one discharged row, one field (setDischargeContinuity — Code.gs validates the key and the row again under its lock). */
+    function saveContinuity(dischargeId) {
+      const sel = doc.querySelector('#crm-drawer [data-continuity-for="' + (win.CSS && win.CSS.escape ? win.CSS.escape(dischargeId) : dischargeId) + '"]');
+      const v = s(sel && sel.value);
+      if (!continuityKnown(v)) { toast('בחרי המשך טיפול', true); return; }
+      if (state.saving) return;
+      state.saving = true; markBusy();
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(continuityBody(dischargeId, v)) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+        .then(function (res) {
+          state.saving = false; clearBusy();
+          if (!res || res.ok !== true) { toast((res && (res.hebrewMessage || res.message)) || 'המשך הטיפול לא נשמר — נסי שוב', true); return; }
+          (state.data && Array.isArray(state.data.dischargedPatients) ? state.data.dischargedPatients : []).forEach(function (r) { if (s(r.id) === dischargeId) r.continuity = v; });
+          toast('המשך הטיפול נשמר ✓');
+          renderNav(); renderMain();
+          if (state.drawer) openDrawer(state.drawer.kind, state.drawer.id, true);
+        })
+        .catch(function (e) { state.saving = false; clearBusy(); toast(String(e && e.message || e) || 'המשך הטיפול לא נשמר', true); });
     }
     /* C14: the «פגישות ושירותים» pane. */
     function renderMeetings(m) {
       let html = '';
       html += '<div class="group-title">פגישת קבלה</div>';
       if (!m.visit) html += '<p class="na">אין פגישה רשומה.</p>';
-      else html += '<dl class="kv"><dt>תאריך</dt><dd>' + esc(fmtDate(m.visit.date) || '—') + (m.visit.time ? ' ' + esc(m.visit.time) : '') + '</dd><dt>נפגש/ת עם</dt><dd>' + esc(m.visit.withWhom || '—') + '</dd><dt>תוצאה (ורד)</dt><dd>' + esc(m.visit.outcome || 'ללא תוצאה') + '</dd></dl>';
+      else html += '<dl class="kv"><dt>תאריך</dt><dd>' + esc(fmtDate(m.visit.date) || '—') + (m.visit.time ? ' ' + esc(m.visit.time) : '') + '</dd><dt>נפגש/ת עם</dt><dd>' + esc(m.visit.withWhom || '—') + '</dd><dt>תוצאה (ורד)</dt><dd>' + esc(m.visit.outcome ? meetingOutcomeLabel(m.visit.outcome) : 'ללא תוצאה') + '</dd></dl>';
+      if (m.lead) {
+        const ch = patientMeetingChange(m.lead, flagsOf(state.index, m.lead.id));
+        if (ch) html += '<p class="notice warn patient-change">' + esc(ch.change === 'cancelled' ? 'הפגישה בוטלה ע״י המטופל/ת' : 'מועד הפגישה שונה ע״י המטופל/ת (היה ' + fmtDate(ch.prevDate) + (ch.prevTime ? ' ' + ch.prevTime : '') + ')')
+          + ' · ' + esc(whenLocal(ch.at)) + (ch.actorName ? ' · ' + esc(ch.actorName) : '') + (ch.note ? '<br>' + esc(ch.note) : '') + '</p>'
+          + '<p><a class="btn small primary" target="_blank" rel="noopener" data-wa-manager href="' + esc(managerChangeLink(m.lead)) + '">📲 הודעה למנהל/ת בוואטסאפ</a></p>';
+      }
       html += '<div class="group-title">דיווח המנהל/ת' + (m.report && m.report.unseen ? ' ' + chip('today', 'חדש') : '') + '</div>';
       if (!m.report) html += '<p class="na">אין דיווח מהבית עדיין.</p>';
       else html += '<dl class="kv" data-report-lead="' + esc(m.lead ? m.lead.id : '') + '"><dt>תוצאה</dt><dd>' + esc(m.report.outcome || '—') + '</dd><dt>הגיע/ה עם</dt><dd>' + esc(m.report.companion || '—') + '</dd>'
-        + (m.report.note ? '<dt>הערות</dt><dd>' + esc(m.report.note) + '</dd>' : '') + '<dt>דווח ע"י</dt><dd>' + esc(m.report.reporter || '—') + ' · ' + esc(m.report.when) + '</dd></dl>';
+        + (m.report.note ? '<dt>הערות</dt><dd>' + esc(m.report.note) + '</dd>' : '') + '<dt>דווח ע"י</dt><dd>' + esc(m.report.reporter || '—') + ' · ' + esc(m.report.when) + '</dd></dl>'
+        + (m.lead && m.lead.meetingReportOutcome === 'no_show' && !s(m.lead.meetingOutcome)
+          ? '<p class="notice warn">לפי דיווח המנהל/ת: לא הגיע / בוטל. אין אישור שהביקור התקיים. יש לברר, לתאם מחדש או לתעד החלטה. הדיווח אינו סוגר את הליד.</p>' : '');
       if (m.discharge) {
         const dch = m.discharge;
         html += '<div class="group-title">שחרור</div><dl class="kv"><dt>תאריך יציאה</dt><dd>' + esc(fmtDate(dch.exitDate) || '—') + '</dd><dt>סיבה</dt><dd>' + esc(dch.dispositionLabel || '—') + '</dd>'
-          + (dch.continuity ? '<dt>המשך טיפול</dt><dd>' + esc(dch.continuity) + '</dd>' : '') + (dch.note ? '<dt>הערה</dt><dd>' + esc(dch.note) + '</dd>' : '') + '</dl>';
+          + (continuityRecorded(dch.continuity) ? '<dt>המשך טיפול</dt><dd>' + esc(continuityLabel(dch.continuity)) + '</dd>' : '') + (dch.note ? '<dt>הערה</dt><dd>' + esc(dch.note) + '</dd>' : '') + '</dl>';
+        // «לעדכן המשך טיפול» (CHANGELOG-crm-today-card-open.md): the existing setDischargeContinuity action, same as the classic «חתכי מטופלים» select.
+        if (!continuityRecorded(dch.continuity) && dch.id) html += '<div class="continuity-set"><label>המשך טיפול <select data-continuity-for="' + esc(dch.id) + '"><option value="">— בחרי —</option>'
+          + CONTINUITY_CHOICES.map(function (c2) { return '<option value="' + esc(c2.id) + '">' + esc(c2.label) + '</option>'; }).join('') + '</select></label>'
+          + '<button type="button" class="btn small primary" data-continuity-save="' + esc(dch.id) + '">שמירה</button></div>';
       }
       html += '<div class="group-title">שירותים</div><p class="na">שירותי המשך טיפול (Therapists) עדיין לא מחוברים לדשבורד.</p>';
       return html;
@@ -2615,8 +4218,8 @@
       const pending = q.filter(function (x) { return state.triage.skipped.indexOf(x.lead.id) < 0; });
       const cur = pending[0] || q[0];
       const total = q.length + state.triage.decided;
-      let html = '<div class="day-head"><div class="day-date">' + esc(state.triage.decided + ' / ' + total + ' הוחלט') + '</div><div class="toolbar"><button type="button" class="btn small" data-area="leads">חזרה ל«פניות»</button></div></div>'
-        + '<p class="na">פנייה אחת בכל פעם — החלטה אחת בלחיצה. כל החלטה נרשמת (שיחה, משימה, שלב או סגירה) והרשימה מחושבת מחדש מהנתונים; אין דחייה גורפת.</p>';
+      let html = '<div class="day-head"><div class="day-date">' + esc(state.triage.decided + ' / ' + total + ' הוחלט') + '</div><div class="toolbar"><button type="button" class="btn small" data-area="leads">חזרה ל«לידים»</button></div></div>'
+        + '<p class="na">ליד אחד בכל פעם — החלטה אחת בלחיצה. כל החלטה נרשמת (שיחה, משימה, שלב או סגירה) והרשימה מחושבת מחדש מהנתונים; אין דחייה גורפת.</p>';
       if (!cur) return html + '<div class="crm-state">אין רשומות שדורשות בירור 🎉</div>';
       const l = cur.lead;
       const nxt = pending[1] || null;
@@ -2625,7 +4228,7 @@
         + '<div class="drawer-head"><div><h2>' + esc(l.name) + '</h2><div class="meta">' + esc(houseName(l.house) || 'ללא בית') + ' · ' + esc(stageLabel(l.stage)) + (l.created ? ' · נוצר ' + esc(fmtDate(l.created)) + (cur.age !== null ? ' · ' + cur.age + ' ימים' : '') : '') + (l.assignedTo ? ' · אחראי/ת ' + esc(l.assignedTo) : '') + (l.source ? ' · מקור ' + esc(l.source) : '') + '</div>'
         + (l.phone ? '<div class="meta">טלפון <a href="tel:' + esc(l.phone) + '">' + esc(l.phone) + '</a>' + (l.contactName ? ' · איש קשר ' + esc(l.contactName) + (l.contactRelation ? ' (' + esc(l.contactRelation) + ')' : '') : '') + '</div>' : '') + '</div>'
         + chip('late', cur.reason) + '</div>'
-        + (l.note ? '<p class="note">«' + esc(l.note) + '»</p>' : '<p class="na">אין הערה בפנייה.</p>')
+        + (l.note ? '<p class="note">«' + esc(l.note) + '»</p>' : '<p class="na">אין הערה בליד.</p>')
         + '<div class="triage-options">' + TRIAGE_OPTIONS.map(function (o) { return '<button type="button" class="opt' + (state.triage.open === o.id ? ' on' : '') + '" data-triage-opt="' + o.id + '"><strong>' + esc(o.label) + '</strong><span class="sub">' + esc(o.hint) + '</span></button>'; }).join('') + '</div>'
         + '<div class="triage-form" id="crm-triage-form">';
       const op = state.triage.open;
@@ -2693,11 +4296,9 @@
       html += '<details class="act"><summary>משימה חדשה</summary><form data-form="task-new" novalidate>'
         + '<label>סוג <select name="kind">' + TASK_KINDS.filter(function (k) { return !k.money || (state.me && state.me.finance); }).map(function (k) { return '<option value="' + k.id + '">' + esc(k.label) + '</option>'; }).join('') + '</select>' + err('kind') + '</label>'
         + '<label>מה לעשות *<input type="text" name="title" maxlength="120">' + err('title') + '</label>'
-        + '<label>למה עכשיו <input type="text" name="reason" maxlength="300">' + err('reason') + '</label>'
         + '<label>אחראי <select name="assignee">' + opts(ASSIGNEES, state.me && state.me.user, true) + '</select></label>'
-        + '<label>מועד <select name="mode"><option value="date">תאריך</option><option value="week">במהלך שבוע</option></select></label>'
-        + '<label>תאריך <input type="date" name="dueDate">' + err('dueDate') + '</label><label>שעה <input type="time" name="dueTime">' + err('dueTime') + '</label>'
-        + '<label>שבוע (יום כלשהו בו) <input type="date" name="weekStart">' + err('weekStart') + '</label>'
+        + '<label>תאריך *<input type="date" name="dueDate" min="' + esc(state.today) + '" value="' + esc(state.today) + '">' + err('dueDate') + '</label><label>שעה *<input type="time" name="dueTime">' + err('dueTime') + '</label>'
+        + '<p class="na wide">התרעה תוצג ' + TASK_REMIND_MINUTES + ' דקות לפני המועד, והמשימה תופיע ב«היום שלי» ביום שלה.</p>'
         + '<div class="err" data-err="_form"></div><button type="submit" class="btn small primary">יצירת משימה</button></form></details>';
       return html;
     }
@@ -2711,9 +4312,7 @@
       const err = function (f) { return '<span class="err" data-err="' + f + '"></span>'; };
       if (kind === 'resched') {
         el.innerHTML = '<form data-form="task-resched" data-task="' + esc(id) + '" novalidate class="inline">'
-          + '<label>מועד <select name="mode"><option value="date">תאריך</option><option value="week">במהלך שבוע</option></select></label>'
           + '<label>תאריך <input type="date" name="dueDate" value="' + esc(s(t.dueDate)) + '">' + err('dueDate') + '</label><label>שעה <input type="time" name="dueTime" value="' + esc(s(t.dueTime)) + '">' + err('dueTime') + '</label>'
-          + '<label>שבוע <input type="date" name="weekStart" value="' + esc(s(t.windowStart)) + '">' + err('weekStart') + '</label>'
           + '<label class="wide">סיבה' + (t.source === 'contact' ? ' * (מועד שהובטח למשפחה)' : '') + ' <input type="text" name="reason" maxlength="300">' + err('reason') + '</label>'
           + '<div class="err" data-err="_form"></div><button type="submit" class="btn small primary">שמירת המועד</button> <button type="button" class="btn small" data-task-cancel-form="' + esc(id) + '">ביטול</button></form>';
       } else if (kind === 'done') {
@@ -2729,24 +4328,24 @@
       const issues = Object.keys(errs).map(function (k) { return { field: k, hebrewMessage: errs[k] }; });
       showReportIssues(f, issues, issues.length ? 'יש לתקן את השדות המסומנים' : '');
       if (issues.length) return Promise.resolve(false);
-      state.saving = true;
+      state.saving = true; markBusy();
       return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
         .then(function (res) {
-          state.saving = false;
+          state.saving = false; clearBusy();
           const why = taskAccepted(res, okId);
           if (why) { showReportIssues(f, [], why); toast(why, true); return false; }
           toast(label + ' ✓');
           return reloadTasks().then(function () { return true; });
         })
-        .catch(function (e) { state.saving = false; showReportIssues(f, [], 'לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
+        .catch(function (e) { state.saving = false; clearBusy(); showReportIssues(f, [], 'לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
     }
     /* The contact panel (spec §8): the subject, the contact person and phone, the history, the form. Rendered in the drawer; «ביטול» returns to the card. */
     function openContactPanel(kind, id, taskId) {
       const c = compute(state.data, state.today);
       const lead = kind === 'lead' ? c.leads.filter(function (l) { return l.id === id; })[0] : null;
       const pat = kind === 'patient' ? c.patients.filter(function (p) { return p.id === id; })[0] : null;
-      if (!lead && !pat) return;
+      if (!lead && !pat) { toast('לא נמצא/ה ברשימה — רענני את הדף.', true); return; }
       const subject = lead ? { leadId: lead.id } : { patientId: pat.id };
       const task = taskId ? taskById(taskId) : null;
       state.contact = { kind: kind, id: id, taskId: task ? task.id : '', sid: newSubmissionId() };
@@ -2808,11 +4407,11 @@
       const subject = state.contact.kind === 'lead' ? { leadId: state.contact.id } : { patientId: state.contact.id };
       const body = contactBody(subject, v, state.contact.sid, state.contact.taskId, state.today, v.nextAssignee);
       const st = $('#crm-report-state'); if (st) st.textContent = 'שומר…';
-      state.saving = true;
+      state.saving = true; markBusy();
       return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
         .then(function (res) {
-          state.saving = false;
+          state.saving = false; clearBusy();
           const why = contactAccepted(res);
           if (why) { showReportIssues(f, [], why); if (st) st.textContent = ''; toast(why, true); return false; }
           const back = state.contact; state.contact = null;
@@ -2821,18 +4420,25 @@
           state.drawer = { kind: back.kind, id: back.id, tab: 'tasks' };
           return reloadTasks().then(function () { openDrawer(back.kind, back.id, true); return true; });
         })
-        .catch(function (e) { state.saving = false; if (st) st.textContent = ''; showReportIssues(f, [], 'השיחה לא נשמרה — הטקסט נשמר, נסי שוב'); toast(String(e && e.message || e), true); return false; });
+        .catch(function (e) { state.saving = false; clearBusy(); if (st) st.textContent = ''; showReportIssues(f, [], 'השיחה לא נשמרה — הטקסט נשמר, נסי שוב'); toast(String(e && e.message || e), true); return false; });
     }
 
     /* events (delegated; filters, sort and scroll survive opening a card) */
     root.addEventListener('click', function (ev) {
-      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-billing-filter],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const cs = ev.target.closest ? ev.target.closest('[data-continuity-save]') : null;
+      if (cs) return saveContinuity(cs.dataset.continuitySave);
+      // The manager's WhatsApp (CHANGELOG-crm-vered-feedback-1104.md): a standalone PWA drops
+      // <a target=_blank> to another origin, so open it from the click (never blocked), else navigate.
+      const wa = ev.target.closest ? ev.target.closest('a[data-wa-manager]') : null;
+      if (wa) { ev.preventDefault(); const w = win.open ? win.open(wa.href, '_blank', 'noopener') : null; if (!w) win.location.href = wa.href; return; }
+      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-billing-filter],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
+      if (t.dataset.kpiPeriod) { state.kpiPeriod = t.dataset.kpiPeriod; return renderMain(); }
       if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
-      if (t.dataset.area) return setArea(t.dataset.area);
+      if (t.dataset.area) { state.workControl = ''; return setArea(t.dataset.area); }
       if (t.dataset.kpi) { state.kpiFilter = state.kpiFilter === t.dataset.kpi ? '' : t.dataset.kpi; return renderMain(); }
-      if (t.dataset.domain !== undefined) { state.domain = state.domain === t.dataset.domain ? '' : t.dataset.domain; return renderMain(); }
-      if (t.dataset.dayView) { state.dayView = t.dataset.dayView; state.domain = ''; return renderMain(); }
+      if (t.dataset.domain !== undefined) { state.workControl = ''; state.domain = state.domain === t.dataset.domain ? '' : t.dataset.domain; return renderMain(); }
+      if (t.dataset.dayView) { state.workControl = ''; state.dayView = t.dataset.dayView; state.domain = ''; return renderMain(); }
       if (t.dataset.weekStep) { state.week = addDays(weekStart(state.week || state.today), Number(t.dataset.weekStep)); return renderMain(); }
       if (t.dataset.weekToday !== undefined) { state.week = ''; return renderMain(); }
       if (t.dataset.doneRetry !== undefined) { state.doneTasks = undefined; return renderMain(); }
@@ -2840,6 +4446,7 @@
       if (t.dataset.go) {
         let g = {}; try { g = JSON.parse(t.dataset.go); } catch (_) { g = {}; }
         if (g.view) state.view = g.view;
+        state.workControl = WORK_CONTROL.some(function (q) { return q.id === g.workControl; }) ? g.workControl : '';
         state.domain = g.domain || ''; state.dayView = 'today';
         return setArea(g.area || 'today');
       }
@@ -2869,8 +4476,10 @@
       }
       if (t.dataset.view) { state.view = t.dataset.view; return renderMain(); }
       if (t.dataset.sort) { state.sort = t.dataset.sort; return renderMain(); }
-      if (t.dataset.openLead || t.dataset.openPatient) {
-        openDrawer(t.dataset.openLead ? 'lead' : 'patient', t.dataset.openLead || t.dataset.openPatient);
+      if (t.hasAttribute('data-open-lead') || t.hasAttribute('data-open-patient')) {
+        const isLead = t.hasAttribute('data-open-lead');
+        openDrawer(isLead ? 'lead' : 'patient', isLead ? t.dataset.openLead : t.dataset.openPatient);
+        if (!state.drawer || state.drawer.id !== (isLead ? t.dataset.openLead : t.dataset.openPatient)) return;
         if (t.dataset.openTab) { const tab = doc.querySelector('#crm-drawer [data-tab="' + t.dataset.openTab + '"]'); if (tab) tab.click(); }
         if (t.dataset.focusMeeting) focusMeetingForm();
         return;
@@ -2892,6 +4501,61 @@
       if (t.id === 'crm-burger') { const open = menuEl.getAttribute('data-open') === 'true'; menuEl.setAttribute('data-open', String(!open)); $('#crm-scrim').setAttribute('data-open', String(!open)); return; }
       if (t.id === 'crm-retry') return load();
     });
+    /* «סיבת המתנה» saves on the radio change (CHANGELOG-crm-followups-1104.md): a choice that only
+     * LOOKED selected was never sent before (the «שמירה» click was easy to miss). */
+    function saveWaitReason(f, tries) {
+      const checked = f.querySelector('input[name="reason"]:checked');
+      if (!checked) return;
+      const st = f.querySelector('[data-wait-state]');
+      f.querySelectorAll('input[name="reason"]').forEach(function (r) { r.disabled = true; });
+      f.setAttribute('aria-busy', 'true');
+      if (st) st.innerHTML = '<span class="spin" aria-hidden="true"></span> שומר…';
+      // Chosen right after another save of this card (e.g. the move to «רשימת המתנה»): wait for it
+      // instead of dropping the choice — that drop was the «סומן אך לא נשמר» of 04/11/2026.
+      if (state.saving) {
+        const lead = f.dataset.lead, reason = checked.value, n = (tries || 0) + 1;
+        if (n > 60) { if (st) { st.textContent = 'לא נשמר — נסי שוב'; st.style.color = 'var(--bad)'; } f.removeAttribute('aria-busy'); f.querySelectorAll('input[name="reason"]').forEach(function (r) { r.disabled = false; }); return; }
+        win.setTimeout(function () {
+          const again = doc.querySelector('#crm-drawer form[data-form="wait-reason"][data-lead="' + lead.replace(/[^A-Za-z0-9_\-]/g, '') + '"]') || f;
+          const pick = again.querySelector('input[name="reason"][value="' + (reason === 'funder' ? 'funder' : 'place') + '"]');
+          if (pick) pick.checked = true;
+          saveWaitReason(again, n);
+        }, 300);
+        return;
+      }
+      postLeadFlag({ leadId: f.dataset.lead, kind: 'waitlist_reason', reason: checked.value }, 'סיבת ההמתנה').then(function (ok) {
+        // success re-renders the card from the server echo; a refusal re-enables the choice and says so
+        if (ok) return;
+        f.removeAttribute('aria-busy');
+        f.querySelectorAll('input[name="reason"]').forEach(function (r) { r.disabled = false; });
+        if (st) { st.textContent = 'לא נשמר — נסי שוב'; st.style.color = 'var(--bad)'; }
+      });
+    }
+    root.addEventListener('change', function (ev) {
+      const r = ev.target;
+      if (r && r.name === 'reason' && r.form && r.form.dataset && r.form.dataset.form === 'wait-reason') saveWaitReason(r.form);
+    });
+    root.addEventListener('submit', function (ev) {
+      const fp = ev.target;
+      // A spinner on the button of every CRM save (CHANGELOG-crm-followups-1104.md).
+      if (fp && fp.dataset && fp.dataset.form) {
+        if (state.saving) { ev.preventDefault(); ev.stopImmediatePropagation(); toast('שמירה קודמת עדיין מתבצעת — רגע אחד ונסי שוב', true); return; }
+        // recorded only; the spinner starts when the save really starts (setSaveState('שומר…') /
+        // the send), so a form refused by its own validation never shows a stuck spinner
+        state.busyForm = { form: fp.dataset.form, key: fp.dataset.lead || fp.dataset.discharge || fp.dataset.patient || '' };
+      }
+      if (fp && fp.dataset && fp.dataset.form === 'out-phone') {
+        ev.preventDefault();
+        const raw = fp.elements.phone ? fp.elements.phone.value : '';
+        const err = fp.querySelector('[data-err="phone"]');
+        const ph = handoffPhone(raw);
+        // in the patient card the phone is optional (the server finds it); in the «משוחררים» row it was asked for
+        if (!ph && !(fp.dataset.optional === '1' && !s(raw))) { if (err) err.textContent = 'טלפון לא תקין — 9 או 10 ספרות, מתחיל ב-0'; return; }
+        if (err) err.textContent = '';
+        sendToOutpatient(fp.dataset.discharge, ph);
+        return;
+      }
+    });
     root.addEventListener('submit', function (ev) {
       const f = ev.target;
       if (!f || !f.dataset || !f.dataset.form) return;
@@ -2899,6 +4563,14 @@
       if (state.saving) return;
       const id = f.dataset.lead;
       const v = function (n) { const el = f.elements[n]; return el ? s(el.value) : ''; };
+      if (f.dataset.form === 'breakeven') {
+        const r = breakevenFromForm(f);
+        showErrs(f, r.errs, ['hqCost'].concat(HOUSES.map(function (h) { return h.id; })));
+        if (Object.keys(r.errs).length) return;
+        try { win.localStorage.setItem(BREAKEVEN_STORAGE_KEY, JSON.stringify(r.cfg)); } catch (_) { toast('השמירה בדפדפן נכשלה', true); return; }
+        toast('ההוצאות עודכנו');
+        return renderMain();
+      }
       if (f.dataset.form === 'meeting') {
         const patch = { visitDate: v('visitDate'), visitTime: v('visitTime'), meetingWith: v('meetingWith') };
         const cur = compute(state.data, state.today).leads.filter(function (x) { return x.id === id; })[0];
@@ -2906,15 +4578,47 @@
         writeLead(id, patch, 'הפגישה');
       } else if (f.dataset.form === 'outcome') {
         writeLead(id, { meetingOutcome: v('meetingOutcome') }, 'תוצאת הפגישה');
+      } else if (f.dataset.form === 'wait-reason') {
+        saveWaitReason(f);
+      } else if (f.dataset.form === 'patient-change') {
+        // A first-stage lead save may have succeeded even when the SECOND
+        // (Activity) acknowledgement was lost. Retry only that frozen second
+        // stage; do not write the lead again or replace the original prior slot.
+        const prior = pendingLeadFlags[s(id) + ':meeting_patient_change'];
+        if (prior) {
+          postLeadFlag(prior.body.flag, 'השינוי ע״י המטופל/ת', true).then(function (flagged) {
+            const a = flagged ? $('#crm-drawer [data-wa-manager]') : null;
+            if (a) { a.focus(); toast('התיעוד אומת — לחצי «הודעה למנהל/ת בוואטסאפ» לעדכון המנהל/ת'); }
+          });
+          return;
+        }
+        const lead = compute(state.data, state.today).leads.filter(function (x) { return x.id === id; })[0];
+        const checked = f.querySelector('input[name="change"]:checked');
+        const plan = lead ? patientChangePlan(lead, { change: checked ? checked.value : '', newDate: v('newDate'), newTime: v('newTime'), note: v('note') }, state.today) : { errors: { change: 'הליד לא נמצא' } };
+        f.querySelectorAll('[data-err]').forEach(function (el) { el.textContent = plan.errors[el.dataset.err] || ''; });
+        if (Object.keys(plan.errors).length) return;
+        // 1) the lead row (normal saveAll path); 2) who changed it (Activity); 3) the manager's WhatsApp, prefilled.
+        writeLead(id, plan.patch, plan.flag.change === 'cancelled' ? 'ביטול הפגישה' : 'המועד החדש').then(function (ok) {
+          if (!ok) return;
+          // A popup opened after two awaits is blocked by browsers, so the prefilled link is a
+          // button at the top of the card (one tap) — never an automatic navigation away.
+          return postLeadFlag(plan.flag, 'השינוי ע״י המטופל/ת', true).then(function (flagged) {
+            const a = flagged ? $('#crm-drawer [data-wa-manager]') : null;
+            if (a) { a.focus(); toast('נשמר — לחצי «הודעה למנהל/ת בוואטסאפ» כדי לעדכן את ' + (plan.flag.withWhom || 'המנהל/ת')); }
+          });
+        });
       } else if (f.dataset.form === 'note') {
         writeLead(id, { assignedTo: v('assignedTo'), note: v('note') }, 'ההערה');
       } else if (f.dataset.form === 'close') {
+        const ce = closeLeadErrors({ disposition: v('disposition'), note: v('note') });
+        showErrs(f, ce, ['disposition', 'note']);
+        if (Object.keys(ce).length) return;
         closeLeadAction(id, v('disposition'), v('note'));
       } else if (f.dataset.form === 'admit') {
         const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
         admitLead(id, vals, f);
       } else if (f.dataset.form === 'direct-add') {
-        const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
+        const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.type === 'checkbox' ? (el.checked ? 'yes' : '') : el.value; });
         directAdd(vals, f);
       } else if (f.dataset.form === 'patient-edit') {
         const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
@@ -2932,6 +4636,10 @@
         submitReport(f, false);
       } else if (f.dataset.form.indexOf('small-') === 0) {
         submitSmall(f);
+      } else if (f.dataset.form === 'refund-action') {
+        submitRefundAction(f);
+      } else if (f.dataset.form === 'credit-new' || f.dataset.form === 'credit-edit') {
+        submitCredit(f);
       } else if (f.dataset.form.indexOf('receipt-') === 0) {
         submitReceiptForm(f);
       } else if (f.dataset.form === 'contact') {
@@ -2939,7 +4647,11 @@
       } else if (f.dataset.form === 'task-new') {
         const vals = contactValues(f);
         const subj = state.drawer ? (state.drawer.kind === 'lead' ? { leadId: state.drawer.id } : { patientId: state.drawer.id }) : null;
-        if (subj) postTask(f, taskCreateBody(subj, vals, newSubmissionId()), taskFormErrors(vals, state.today), '', 'המשימה נוצרה');
+        if (subj) {
+          const tv = { kind: vals.kind, title: vals.title, assignee: vals.assignee, dueDate: vals.dueDate, dueTime: vals.dueTime };
+          askNotifyPermission();
+          postTask(f, taskCreateBody(subj, tv, newSubmissionId()), newTaskErrors(tv, state.today), '', 'המשימה נוצרה');
+        }
       } else if (f.dataset.form === 'task-resched') {
         const vals = contactValues(f); const tk = taskById(f.dataset.task);
         postTask(f, rescheduleBody(f.dataset.task, vals), rescheduleErrors(vals, tk), f.dataset.task, 'המועד עודכן');
@@ -2967,20 +4679,30 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-settle-open],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
       if (!t) return;
+      if (t.dataset.creditCancel !== undefined) { state.creditForm = null; const box = t.closest('form'); if (box) box.remove(); return; }
+      if (t.dataset.creditEdit) return openCreditForm('edit', t.dataset.creditEdit);
+      if (t.dataset.creditNew !== undefined) return openCreditForm('new', '');
       if (t.dataset.billingRetry !== undefined) { resetBilling(); return renderMain(); }
       if (t.dataset.reportCancel !== undefined) { state.report = null; state.small = null; const el = $('#crm-report'); if (el) el.innerHTML = ''; return; }
-      if (t.dataset.settleOpen && !(state.drawer && state.account)) {
-        // from the גבייה area: open the patient's drawer on «חשבון», then the form
-        const cr = pendingCredits(state.billing && state.billing.credits).filter(function (c) { return c.id === t.dataset.settleOpen; })[0];
-        const pat = cr && compute(state.data, state.today).patients.filter(function (p) { return p.id === cr.patientId || patientKeyOf(p) === cr.patientKey; })[0];
-        if (!pat) return toast('המטופל/ת לא נמצא/ה ברשימה — סימון בדשבורד הרגיל', true);
+      if (t.dataset.dueToday !== undefined) { state.dueDate = state.today; return renderMain(); }
+      if (t.dataset.dueReport !== undefined) {
+        // «לגבייה בתאריך» → the patient's «חשבון», then the report form on THAT cycle
+        const r = (state.dueRows || [])[Number(t.dataset.dueReport)];
+        const pat = r && compute(state.data, state.today).patients.filter(function (p) { return p.id === r.patientId; })[0];
+        if (!pat) return toast('המטופל/ת לא נמצא/ה ברשימה — דיווח בדשבורד הרגיל', true);
+        const go = function () { if (state.account && state.drawer && state.drawer.id === pat.id) openReportForm(r.cycle, r.balance); };
         openDrawer('patient', pat.id); const tab = doc.querySelector('#crm-drawer [data-tab="account"]'); if (tab) tab.click();
-        loadBilling(function () { if (state.account) openSmallForm('settle', cr); });
-        if (state.billing) openSmallForm('settle', cr);
+        if (state.billing) go(); else loadBilling(go);
         return;
       }
+      if (t.dataset.refundCancel !== undefined) {
+        state.refundAction = null;
+        const box = t.closest('form'); if (box) box.remove();
+        return;
+      }
+      if (t.dataset.refundAction) return openRefundAction(t.dataset.refundAction, t.dataset.refundId);
       if (!state.account) return;
       if (t.dataset.receiptCancel !== undefined) { state.receiptForm = null; const el = $('#crm-receipt-form'); if (el) el.innerHTML = ''; return; }
       if (t.dataset.receiptEdit || t.dataset.receiptVoid) {
@@ -2997,7 +4719,6 @@
       }
       if (t.dataset.discountOpen !== undefined) { const c = state.account.data.openCycles[Number(t.dataset.discountOpen)]; if (c) openSmallForm('discount', c); return; }
       if (t.dataset.amountOpen !== undefined) { const c = state.account.data.openCycles[Number(t.dataset.amountOpen)]; if (c) openSmallForm('amount', c); return; }
-      if (t.dataset.settleOpen) { const cr = patientCredits(state.account.patient, state.billing.credits).filter(function (c) { return c.id === t.dataset.settleOpen; })[0]; if (cr) openSmallForm('settle', cr); return; }
       if (t.dataset.reportOpen !== undefined) {
         const c = state.account.data.openCycles[Number(t.dataset.reportOpen)];
         if (c) openReportForm(reportCycleFor(state.account.patient, c, state.account.data), c.balance);
@@ -3009,7 +4730,7 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-clients-view],[data-restore],[data-to-outpatient],[data-restore-cancel],[data-link-open],[data-notpatient-open],[data-link-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-clients-view],[data-restore],[data-to-outpatient],[data-out-phone-cancel],[data-restore-cancel],[data-link-open],[data-notpatient-open],[data-link-cancel]') : null;
       if (!t) return;
       if (t.dataset.clientsView) { state.clientsView = t.dataset.clientsView; return renderMain(); }
       if (t.dataset.linkCancel !== undefined) { state.link = null; const el = $('#crm-link'); if (el) el.innerHTML = ''; return; }
@@ -3017,6 +4738,7 @@
       if (t.dataset.notpatientOpen) return openLinkForm('not', t.dataset.notpatientOpen);
       if (t.dataset.restoreCancel !== undefined) { const el = $('#crm-restore'); if (el) el.innerHTML = ''; return; }
       if (t.dataset.restore) return openRestoreChoice(t.dataset.restore);
+      if (t.dataset.outPhoneCancel !== undefined) { state.outPhone = ''; return renderMain(); }
       if (t.dataset.toOutpatient) { if (win.confirm('להעביר לאמבולטורי (ליד טיפול חוץ באאוטפיישנט)?')) sendToOutpatient(t.dataset.toOutpatient); }
     });
     root.addEventListener('click', function (ev) {
@@ -3052,6 +4774,8 @@
       const t = ev.target;
       // a field inside a form (report, restore, …) is the form's business — re-rendering would wipe it
       if (t.id === 'crm-day-week') { if (isoDateOk(t.value)) state.week = t.value; return renderMain(); }
+      if (t.id === 'crm-due-date') { if (isoDateOk(t.value)) state.dueDate = t.value; return renderMain(); }
+      if (t.id === 'crm-due-funder') { state.dueFunder = t.value; return renderMain(); }
       if (['f-dis-days', 'crm-cal-date', 'f-house', 'f-house-c', 'f-owner'].indexOf(t.id) < 0) return;
       if (t.id === 'f-dis-days') state.dischargedDays = Number(t.value) || 0;
       if (t.id === 'crm-cal-date') { if (!state.cal) state.cal = { mode: 'day', anchor: state.today }; if (isoDateOk(t.value)) state.cal.anchor = t.value; }
@@ -3059,7 +4783,51 @@
       if (t.id === 'f-owner') state.filters.owner = t.value;
       renderMain();
     });
-    $('#crm-search').addEventListener('input', function (ev) { state.filters.q = ev.target.value; if (state.area !== 'leads' && state.area !== 'clients' && state.area !== 'billing') state.area = 'leads'; renderNav(); renderMain(); });
+    /* «החלפת משתמש» (CHANGELOG-crm-dana-default-switch-user.md): the server ends the
+     * session (POST /api/logout revokes the token), then nothing of this user stays:
+     * in-memory state, the rendered areas and drawer, the remembered login name and
+     * the offline copies of `/`. Then `/` — the server's PIN screen; the next login
+     * lands on that user's own default view. */
+    function switchUser(btn) {
+      if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); }
+      const done = function () {
+        Object.keys(state).forEach(function (k) { if (['area', 'view', 'filters', 'today', 'loading'].indexOf(k) < 0) state[k] = null; });
+        state.filters = { q: '', house: '', owner: '' };
+        main.innerHTML = '';
+        const dr = $('#crm-drawer'); if (dr) { dr.innerHTML = ''; dr.setAttribute('aria-hidden', 'true'); }
+        ['#crm-user', '#crm-who'].forEach(function (sel) { const el = $(sel); if (el) el.textContent = ''; });
+        const q = $('#crm-search'); if (q) q.value = '';
+        try { win.localStorage.removeItem('ezone.lastLoginUser'); } catch (_) { /* private mode */ }
+        return clearCachedPages(win.caches).then(function () { win.location.replace('/'); });
+      };
+      return win.fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }).then(done, done);
+    }
+    const switchBtn = $('#crm-switch-user');
+    if (switchBtn) switchBtn.addEventListener('click', function () { switchUser(switchBtn); });
+    /* The top search (CHANGELOG-crm-search-admit-funder.md): «פניות» / «מטופלים» / «גבייה» filter
+     * their own list as before; from any other area the results are a global list (leads +
+     * patients, released included) instead of a jump to «פניות». Debounced, with a spinner
+     * while it runs; Enter or 🔍 searches at once; clearing returns to the previous area. */
+    const searchBox = $('#crm-search'), searchBtn = $('#crm-search-go');
+    let searchTimer = 0;
+    function runSearch() {
+      win.clearTimeout(searchTimer);
+      const q = s(searchBox.value);
+      state.filters.q = q;
+      if (q && ['leads', 'clients', 'billing', 'search'].indexOf(state.area) < 0) { state.searchBack = state.area; state.area = 'search'; }
+      if (!q && state.area === 'search') state.area = state.searchBack || 'today';
+      renderNav(); renderMain();
+      if (searchBtn) { searchBtn.removeAttribute('aria-busy'); searchBtn.disabled = false; }
+    }
+    function searchSoon(delay) {
+      if (searchBtn) { searchBtn.setAttribute('aria-busy', 'true'); searchBtn.disabled = true; }
+      win.clearTimeout(searchTimer);
+      // let the spinner paint before the (synchronous) render
+      searchTimer = win.setTimeout(runSearch, delay);
+    }
+    searchBox.addEventListener('input', function () { searchSoon(300); });
+    searchBox.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); searchSoon(30); } });
+    if (searchBtn) searchBtn.addEventListener('click', function () { searchSoon(30); });
     doc.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') closeDrawer(); });
 
     /* Boot (perf, CHANGELOG-crm-triage.md): /api/me and getData are requested AT ONCE (the
@@ -3075,6 +4843,7 @@
         if (!me || me.ok === false) throw new Error('אין התחברות');
         state.me = me;
         $('#crm-user').textContent = me.user || '';
+        if ($('#crm-who')) $('#crm-who').textContent = me.user || '';
         if (areasFor(me).indexOf(state.area) < 0) state.area = 'today';
         if (!data || data.ok === false) throw new Error('הנתונים לא נטענו' + (data && data.error ? ' (' + data.error + ')' : ''));
         state.data = data; state.loading = false;
@@ -3092,14 +4861,34 @@
         return Promise.all(reads);
       }).catch(function (e) { state.loading = false; state.error = String(e && e.message || e); renderNav(); renderMain(); });
     }
+    /* Task reminders (CHANGELOG-crm-task-date-time.md): every minute, a toast + a system
+     * notification (when allowed) for each of MY tasks due today within TASK_REMIND_MINUTES.
+     * The page must be open; Vered's morning mail already lists today's tasks. */
+    var announced = {};   // var: renderNav may run first
+    function nowHm() { return new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()); }
+    function askNotifyPermission() {
+      try { if (win.Notification && win.Notification.permission === 'default') win.Notification.requestPermission(); } catch (_) { /* unsupported */ }
+    }
+    function remindTick() {
+      if (!announced || !state.me || !Array.isArray(state.tasks)) return;
+      const c = state.data ? compute(state.data, state.today) : null;
+      dueSoonTasks(state.tasks, state.me.user, state.today, nowHm(), TASK_REMIND_MINUTES, announced).forEach(function (r) {
+        announced[r.key] = true;
+        const who = c ? taskSubject(r.task, c).name : '';
+        const text = '⏰ בעוד ' + r.minutes + ' דק׳ (' + s(r.task.dueTime) + '): ' + s(r.task.title) + (who ? ' — ' + who : '');
+        toast(text);
+        try { if (win.Notification && win.Notification.permission === 'granted') new win.Notification('E-ZONE · משימה', { body: text, tag: r.key }); } catch (_) { /* unsupported */ }
+      });
+    }
+    if (typeof win.setInterval === 'function') win.setInterval(remindTick, 60000);
     renderNav(); renderMain();
     load();
-    return { state: state, load: load, setArea: setArea };
+    return { state: state, load: load, setArea: setArea, switchUser: switchUser, remindTick: remindTick };
   }
 
   return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, normalise: normalise, compute: compute, filterLeads: filterLeads,
     board: board, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
-    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, esc: esc, boot: boot,
+    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, esc: esc, boot: boot, accountTabVisible: accountTabVisible, clearCachedPages: clearCachedPages,
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
     stageAfter: stageAfter, stageBefore: stageBefore, applyLeadPatch: applyLeadPatch, leadSaveBody: leadSaveBody, saveRefusal: saveRefusal,
     DISPOSITIONS: DISPOSITIONS, CONTACT_RELATIONS: CONTACT_RELATIONS, localPhone: localPhone, leadFormErrors: leadFormErrors, newLeadRow: newLeadRow,
@@ -3109,17 +4898,23 @@
     DISCHARGE_DISPOSITIONS: DISCHARGE_DISPOSITIONS, CONTINUITY_CHOICES: CONTINUITY_CHOICES, dischargeAuditRow: dischargeAuditRow, dischargeErrors: dischargeErrors,
     movedRow: movedRow, patientEditErrors: patientEditErrors, meetingsFor: meetingsFor, managerReport: managerReport, whenLocal: whenLocal,
     detachedRows: detachedRows, linkCandidates: linkCandidates, namesLookAlike: namesLookAlike, linkBody: linkBody, notPatientBody: notPatientBody, linkErrors: linkErrors, linkAccepted: linkAccepted,
-    dischargedList: dischargedList, priorStatusOf: priorStatusOf, restoreTarget: restoreTarget, restoredRow: restoredRow, openAuditsOf: openAuditsOf, restoreFlagBody: restoreFlagBody, restoreAsLeadBody: restoreAsLeadBody, outpatientBody: outpatientBody, calendarRange: calendarRange, calendarRows: calendarRows, undatedVisits: undatedVisits, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
-    MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, billingSearch: billingSearch, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
+    dischargedList: dischargedList, priorStatusOf: priorStatusOf, restoreTarget: restoreTarget, restoredRow: restoredRow, openAuditsOf: openAuditsOf, restoreFlagBody: restoreFlagBody, restoreAsLeadBody: restoreAsLeadBody, outpatientBody: outpatientBody, handoffPhone: handoffPhone, calendarRange: calendarRange, calendarRows: calendarRows, undatedVisits: undatedVisits, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
+    MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, billingSearch: billingSearch, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, sheetDay: sheetDay, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
     patientKeyOf: patientKeyOf, reportCycleFor: reportCycleFor, reportCycleForRow: reportCycleForRow, reportDefaults: reportDefaults, reportIssues: reportIssues, reportBody: reportBody,
-    newSubmissionId: newSubmissionId, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
+    newSubmissionId: newSubmissionId, funderWriteConfirmed: funderWriteConfirmed, funderSourceConfirmed: funderSourceConfirmed, funderExceptions: funderExceptions, admissionSourceProof: admissionSourceProof, reportOutcome: reportOutcome, duplicateText: duplicateText, reportRules: reportRules,
     CREDIT_TYPE_LABELS: CREDIT_TYPE_LABELS, CREDIT_STATUS_LABELS: CREDIT_STATUS_LABELS, SETTLE_METHODS: SETTLE_METHODS, creditsOf: creditsOf, patientCredits: patientCredits, pendingCredits: pendingCredits,
+    refundActionFor: refundActionFor, refundStageText: refundStageText, refundActionButton: refundActionButton,
     RECEIPT_EDIT_FIELDS: RECEIPT_EDIT_FIELDS, receiptEditFields: receiptEditFields, receiptEditIssues: receiptEditIssues, receiptEditBody: receiptEditBody, receiptVoidErrors: receiptVoidErrors, receiptVoidBody: receiptVoidBody, receiptVoidAccepted: receiptVoidAccepted,
-    addMonthsIso: addMonthsIso, stayCycles: stayCycles, reportableCycles: reportableCycles, defaultReportable: defaultReportable, reportCycleForWindow: reportCycleForWindow,
+    addMonthsIso: addMonthsIso, dueOnDate: dueOnDate, filterDueRows: filterDueRows, monthSplit: monthSplit, cycleBalanceLib: cycleBalanceLib, FUNDER_UNSET_LABEL: FUNDER_UNSET_LABEL, stayCycles: stayCycles, reportableCycles: reportableCycles, defaultReportable: defaultReportable, reportCycleForWindow: reportCycleForWindow,
     CONTACT_OUTCOMES: CONTACT_OUTCOMES, CONTACT_CHANNELS: CONTACT_CHANNELS, NEXT_CHOICES: NEXT_CHOICES, TASK_KINDS: TASK_KINDS, TASK_KIND_LABELS: TASK_KIND_LABELS, contactOutcomeLabel: contactOutcomeLabel, nextPlan: nextPlan, contactErrors: contactErrors, contactBody: contactBody, contactAccepted: contactAccepted,
     taskDue: taskDue, taskState: taskState, taskWhen: taskWhen, taskSubject: taskSubject, taskQueue: taskQueue, tasksFor: tasksFor, taskCounts: taskCounts, taskFormErrors: taskFormErrors, taskCreateBody: taskCreateBody, rescheduleErrors: rescheduleErrors, rescheduleBody: rescheduleBody, taskAccepted: taskAccepted,
     VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,
     TRIAGE_OPTIONS: TRIAGE_OPTIONS, triageQueue: triageQueue, waitlistErrors: waitlistErrors, waitlistPatch: waitlistPatch, laterErrors: laterErrors,
-    NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, myDay: myDay, weekPlan: weekPlan, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
+    NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, openLeadOfPerson: openLeadOfPerson, leadAlreadyInHouse: leadAlreadyInHouse, globalSearch: globalSearch, nameKey: nameKey, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, pendingDischargeAudit: pendingDischargeAudit, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, WAIT_REASONS: WAIT_REASONS, waitReasonLabel: waitReasonLabel, waitChipText: waitChipText, flagsOf: flagsOf, patientMeetingChange: patientMeetingChange, reportOverdue: reportOverdue, meetingOutcomeLabel: meetingOutcomeLabel, managerChangeMessage: managerChangeMessage, managerWaUrl: managerWaUrl, leadFlagBody: leadFlagBody, leadFlagPendingPlan: leadFlagPendingPlan, patientChangePlan: patientChangePlan, MANAGER_REPORT_GRACE_DAYS: MANAGER_REPORT_GRACE_DAYS, EXCEPTION_CUTOFF: EXCEPTION_CUTOFF, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
+    KPI_PERIODS: KPI_PERIODS, kpiPeriod: kpiPeriod, occupancyToday: occupancyToday, closedDisposition: closedDisposition, leadFates: leadFates, FATES: FATES, leadConversion: leadConversion,
+    managerCloseRates: managerCloseRates, managerNameOk: managerNameOk, BREAKEVEN_STORAGE_KEY: BREAKEVEN_STORAGE_KEY, BREAKEVEN_DEFAULTS: BREAKEVEN_DEFAULTS, VAT_RATE: VAT_RATE, breakevenConfig: breakevenConfig,
+    breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
+    creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
+    newTaskErrors: newTaskErrors, dueSoonTasks: dueSoonTasks, TASK_REMIND_MINUTES: TASK_REMIND_MINUTES, WORK_CONTROL: WORK_CONTROL, workControlQueues: workControlQueues,
     moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));
