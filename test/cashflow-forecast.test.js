@@ -173,7 +173,10 @@ test('UI wiring: the section sits under «לגבייה בתאריך», dates and
   assert.match(SRC, /html \+= renderDueOnDate\(isController\);\n\s+html \+= renderCashForecast\(\);/);
   assert.match(SRC, /if \(t\.id === 'crm-fc-from'\) \{ if \(isoDateOk\(t\.value\)\) state\.fcFrom = t\.value; return renderMain\(\); \}/);
   assert.match(SRC, /if \(t\.dataset\.fcPreset\) \{ const r = forecastPreset\(t\.dataset\.fcPreset, state\.today\);/);
-  const fn = SRC.slice(SRC.indexOf('function renderCashForecast('), SRC.indexOf('function renderBilling('));
+  // the function body only: up to the next shell function (renderCleanup follows it since CHANGELOG-historical-debt-cleanup.md)
+  const start = SRC.indexOf('function renderCashForecast(');
+  const ends = ['function renderCleanup(', 'function renderBilling('].map((n) => SRC.indexOf(n, start)).filter((i) => i > start);
+  const fn = SRC.slice(start, Math.min(...ends));
   assert.ok(fn.length > 100);
   assert.doesNotMatch(fn, /\+ r\.(name|houseName|funder) \+/, 'row text always through esc()');
   assert.doesNotMatch(fn, /fetch\(|api\(/, 'read-only: no request of its own');

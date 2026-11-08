@@ -47,4 +47,4 @@ never raced). No new route, secret or log.
 `public/crm/crm.js` (`cleanupCandidates`, `cleanupPlan`, `cleanupBody`,
 `CLEANUP_REASONS`, `renderCleanup`, `submitCleanup`, handlers),
 `public/sw.js` (v122 → v123, stacked on the forecast PR), `EZONE-ECOSYSTEM-STATUS.md`, `test/historical-debt-cleanup.test.js` (new, 10),
-`test/crm-shell-browser.test.js` (+1 Chromium scenario; `boot({ debt })`).
+`test/crm-shell-browser.test.js` (+1 Chromium scenario; `boot({ debt })`), `test/cashflow-forecast.test.js` (wiring test bounded to its own function).
