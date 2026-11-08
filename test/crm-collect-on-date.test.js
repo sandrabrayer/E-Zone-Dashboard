@@ -112,8 +112,9 @@ test('monthSplit: the coverage-month split adds up to the cycle price', () => {
 
 test('page wiring: cycle-balance loaded before crm.js; the date list renders above the debt KPIs; escaped; no report for Ortal', () => {
   assert.ok(CRM_HTML.indexOf('cycle-balance.js') > 0 && CRM_HTML.indexOf('cycle-balance.js') < CRM_HTML.indexOf('crm/crm.js'));
-  assert.match(CRM_SRC, /html \+= renderDueOnDate\(isController\);\n\s+html \+= '<div class="kpis">' \+ kpi\(fmtMoney\(b\.openDebt\)/);
-  const fn = CRM_SRC.slice(CRM_SRC.indexOf('function renderDueOnDate('), CRM_SRC.indexOf('function renderBilling('));
+  // the cash-flow forecast sits between the date list and the debt KPIs (CHANGELOG-cashflow-forecast.md)
+  assert.match(CRM_SRC, /html \+= renderDueOnDate\(isController\);\n\s+html \+= renderCashForecast\(\);\n\s+html \+= '<div class="kpis">' \+ kpi\(fmtMoney\(b\.openDebt\)/);
+  const fn = CRM_SRC.slice(CRM_SRC.indexOf('function renderDueOnDate('), CRM_SRC.indexOf('function renderCashForecast('));
   assert.match(fn, /!isController && r\.balance > 0 \? '<button type="button" class="btn small primary" data-due-report=/);
   assert.match(fn, /esc\(r\.name\)/);
   assert.doesNotMatch(fn, /\+ r\.name \+/, 'every name goes through esc()');

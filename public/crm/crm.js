@@ -954,18 +954,53 @@
     });
     return best ? best.funder : '';
   }
+  /* The shared reads of a cycle computation (getPayments + getData overrides). */
+  function cycleCtx(payments, data, CB) {
+    const p = payments && payments.ok !== false ? payments : null;
+    const rules = reportRules();
+    return { error: p ? '' : (s(payments && payments.error) || 'payments_missing'),
+      cyclesAll: p && Array.isArray(p.payments) ? p.payments : [],
+      funders: p && Array.isArray(p.funders) ? p.funders : [],
+      overrides: data && Array.isArray(data.billingOverrides) ? data.billingOverrides : [],
+      PROBONO: rules && rules.FUNDER_PROBONO ? rules.FUNDER_PROBONO : 'פרו-בונו',
+      lib: CB || cycleBalanceLib() };
+  }
+  /* ONE cycle of a patient, the one that starts on `day` (= entry + k months):
+   * its funder on the day, its Payments row, its open balance (cycleState).
+   * → the row, or null when the day is pro-bono. The stay checks (entry,
+   * exit, released) are the caller's. Pure. */
+  function cycleOnDay(pt, day, k, ctx) {
+    const entry = pt.date;
+    const key = patientKeyOf(pt);
+    const funder = funderOnDay(ctx.funders, pt.id, key, day);
+    if (funder === ctx.PROBONO) return null;
+    const row = ctx.cyclesAll.filter(function (r) { return rowIsPatient(r, pt.id, key) && sheetDay(r.dueDate) === day && s(r.status).toLowerCase() !== 'void'; })[0] || null;
+    const month = day.slice(0, 7);
+    const ovr = ctx.overrides.filter(function (o) { return o && s(o.patientId) === key && s(o.month) === month; })[0] || null;
+    const ovrAmount = ovr && ovr.amount !== '' && ovr.amount !== null && ovr.amount !== undefined ? Number(ovr.amount) : null;
+    const disc = ovr && Number(ovr.discountAmount) > 0 ? Number(ovr.discountAmount) : null;
+    const stamped = row ? Number(row.amount) || 0 : pt.pay;
+    const paidIn = row ? Number(row.amountPaid) || 0 : 0;
+    const lib = ctx.lib;
+    const st = lib ? lib.cycleState({ stampedAmount: stamped, amountPaid: paidIn, overrideAmount: ovrAmount, agreedPrice: pt.pay, status: row ? s(row.status) : 'unpaid', discountAmount: disc })
+      : { expected: stamped, paid: paidIn, balance: Math.max(0, stamped - paidIn), status: paidIn <= 0 ? 'unpaid' : (paidIn >= stamped ? 'paid' : 'partial') };
+    const w = cycleWindow(entry, k);
+    const cs = row ? sheetDay(row.coverageStart) : '', ce = row ? sheetDay(row.coverageEnd) : '';
+    const start = cs && ce && ce >= cs ? cs : w.start, end = cs && ce && ce >= cs ? ce : w.end;
+    const cycle = row
+      ? { id: s(row.id), patientId: s(row.patientId) || key, patientName: s(row.patientName) || pt.name, houseId: s(row.houseId) || s(houseId(pt.houseId)),
+        dueDate: day, amount: stamped, coverageStart: start, coverageEnd: end }
+      : { id: 'pay::' + key + '::' + day, patientId: key, patientName: pt.name, houseId: s(houseId(pt.houseId)), dueDate: day, amount: st.expected, coverageStart: start, coverageEnd: end };
+    return { patientId: pt.id, name: pt.name, houseId: pt.houseId, houseName: houseName(pt.houseId), monthly: pt.pay, released: pt.status === 'released',
+      start: start, end: end, split: monthSplit(start, end, st.expected), expected: st.expected, paid: st.paid, balance: st.balance, status: st.status,
+      discount: st.discount || 0, funder: funder || FUNDER_UNSET_LABEL, recorded: !!row, cycle: cycle };
+  }
   function dueOnDate(data, payments, dayIso, CB) {
     const day = s(dayIso);
     const out = { date: day, rows: [], count: 0, total: 0, collected: 0, error: '' };
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) { out.error = 'bad_date'; return out; }
-    const p = payments && payments.ok !== false ? payments : null;
-    if (!p) out.error = s(payments && payments.error) || 'payments_missing';
-    const cyclesAll = p && Array.isArray(p.payments) ? p.payments : [];
-    const funders = p && Array.isArray(p.funders) ? p.funders : [];
-    const overrides = data && Array.isArray(data.billingOverrides) ? data.billingOverrides : [];
-    const rules = reportRules();
-    const PROBONO = rules && rules.FUNDER_PROBONO ? rules.FUNDER_PROBONO : 'פרו-בונו';
-    const lib = CB || cycleBalanceLib();
+    const ctx = cycleCtx(payments, data, CB);
+    if (ctx.error) out.error = ctx.error;
     normalise(data).patients.forEach(function (pt) {
       const entry = pt.date;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(entry) || entry > day) return;
@@ -974,33 +1009,93 @@
       if (pt.status === 'released' && !exit) return;
       const k = monthsBetween(entry, day);
       if (k < 0 || addMonthsIso(entry, k) !== day) return;
-      const key = patientKeyOf(pt);
-      const funder = funderOnDay(funders, pt.id, key, day);
-      if (funder === PROBONO) return;
-      const row = cyclesAll.filter(function (r) { return rowIsPatient(r, pt.id, key) && sheetDay(r.dueDate) === day && s(r.status).toLowerCase() !== 'void'; })[0] || null;
-      const month = day.slice(0, 7);
-      const ovr = overrides.filter(function (o) { return o && s(o.patientId) === key && s(o.month) === month; })[0] || null;
-      const ovrAmount = ovr && ovr.amount !== '' && ovr.amount !== null && ovr.amount !== undefined ? Number(ovr.amount) : null;
-      const disc = ovr && Number(ovr.discountAmount) > 0 ? Number(ovr.discountAmount) : null;
-      const stamped = row ? Number(row.amount) || 0 : pt.pay;
-      const paidIn = row ? Number(row.amountPaid) || 0 : 0;
-      const st = lib ? lib.cycleState({ stampedAmount: stamped, amountPaid: paidIn, overrideAmount: ovrAmount, agreedPrice: pt.pay, status: row ? s(row.status) : 'unpaid', discountAmount: disc })
-        : { expected: stamped, paid: paidIn, balance: Math.max(0, stamped - paidIn), status: paidIn <= 0 ? 'unpaid' : (paidIn >= stamped ? 'paid' : 'partial') };
-      const w = cycleWindow(entry, k);
-      const cs = row ? sheetDay(row.coverageStart) : '', ce = row ? sheetDay(row.coverageEnd) : '';
-      const start = cs && ce && ce >= cs ? cs : w.start, end = cs && ce && ce >= cs ? ce : w.end;
-      const cycle = row
-        ? { id: s(row.id), patientId: s(row.patientId) || key, patientName: s(row.patientName) || pt.name, houseId: s(row.houseId) || s(houseId(pt.houseId)),
-          dueDate: day, amount: stamped, coverageStart: start, coverageEnd: end }
-        : { id: 'pay::' + key + '::' + day, patientId: key, patientName: pt.name, houseId: s(houseId(pt.houseId)), dueDate: day, amount: st.expected, coverageStart: start, coverageEnd: end };
-      out.rows.push({ patientId: pt.id, name: pt.name, houseId: pt.houseId, houseName: houseName(pt.houseId), monthly: pt.pay, released: pt.status === 'released',
-        start: start, end: end, split: monthSplit(start, end, st.expected), expected: st.expected, paid: st.paid, balance: st.balance, status: st.status,
-        discount: st.discount || 0, funder: funder || FUNDER_UNSET_LABEL, recorded: !!row, cycle: cycle });
+      const row = cycleOnDay(pt, day, k, ctx);
+      if (row) out.rows.push(row);
     });
     out.rows.sort(function (a, b) { return (a.status === 'paid') - (b.status === 'paid') || a.houseName.localeCompare(b.houseName, 'he') || a.name.localeCompare(b.name, 'he'); });
     out.count = out.rows.length;
     out.total = Math.round(out.rows.reduce(function (t, r) { return t + r.expected; }, 0) * 100) / 100;
     out.collected = Math.round(out.rows.reduce(function (t, r) { return t + r.paid; }, 0) * 100) / 100;
+    return out;
+  }
+  /* ---- «צפי תזרים» — the cash-flow forecast (CHANGELOG-cashflow-forecast.md) ----
+   * What money the ACTIVE patients are expected to bring in a date range — no
+   * past debt (Sandra, 08/11/2026: most old debts are unrecorded payments).
+   *   - a cycle = the entry-anchored monthly cycle (the «לגבייה בתאריך» rule,
+   *     cycleOnDay below); its amount = the OPEN balance of the cycle
+   *     (cycleState: override → agreed price, minus discount, minus money
+   *     already paid). A prepaid / discounted-to-zero cycle brings nothing.
+   *   - private (and unset) money is expected ON the due date; only cycles due
+   *     on or after today count — an older unpaid cycle is past debt.
+   *   - institutional funders (ביטוח לאומי, מכבי, משרד הביטחון — the funder
+   *     on the due date) pay «שוטף +30»: expected = due + FORECAST_TERMS_DAYS
+   *     (= lib/funder-grace.js FUNDER_GRACE_DAYS, pinned by a test). A cycle
+   *     whose expected date is still ahead counts even when it was due
+   *     before today — it is within terms, not past debt.
+   *   - released patients and pro-bono are never in the forecast; a patient
+   *     with no funder on the due date is a separate «לא הוגדר» line, NOT in
+   *     the total (a funder must be filled).
+   * Pure: (getData answer, getPayments answer, from, to, today, CycleBalance). */
+  const FORECAST_TERMS_DAYS = 30;
+  const FORECAST_INSTITUTIONAL = ['ביטוח לאומי', 'מכבי', 'משרד הביטחון'];
+  function monthEndIso(iso) {
+    const y = Number(s(iso).slice(0, 4)), m = Number(s(iso).slice(5, 7));
+    return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+  }
+  /* The range buttons: 'month' today → month end; 'next' next calendar month; '90' today → +90 days. Pure. */
+  function forecastPreset(id, today) {
+    if (id === 'next') { const first = addDays(monthEndIso(today), 1); return { from: first, to: monthEndIso(first) }; }
+    if (id === '90') return { from: today, to: addDays(today, 90) };
+    return { from: today, to: monthEndIso(today) };
+  }
+  function weekStartIso(iso) { const d = weekdayOf(iso); return d < 0 ? '' : addDays(iso, -d); }
+  function cashForecast(data, payments, fromIso, toIso, todayIso, CB) {
+    const today = s(todayIso);
+    const out = { from: s(fromIso), to: s(toIso), today: today, rows: [], total: 0, count: 0,
+      private: { count: 0, total: 0 }, institutional: { count: 0, total: 0 }, unset: { count: 0, total: 0 },
+      byWeek: [], byHouse: [], error: '' };
+    if (!isoDateOk(today) || !isoDateOk(out.from) || !isoDateOk(out.to)) { out.error = 'bad_date'; return out; }
+    if (out.from < today) out.from = today;          // a forecast starts today
+    if (out.to < out.from) { out.error = 'bad_range'; return out; }
+    const ctx = cycleCtx(payments, data, CB);
+    if (ctx.error) out.error = ctx.error;
+    const earliestDue = addDays(out.from, -FORECAST_TERMS_DAYS);
+    normalise(data).patients.forEach(function (pt) {
+      if (pt.status === 'released') return;
+      const entry = pt.date;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(entry)) return;
+      const exit = pt.exitDate;
+      for (let k = 0; k < 600; k++) {
+        const due = addMonthsIso(entry, k);
+        if (due > out.to) break;
+        if (exit && due >= exit) break;
+        if (due < earliestDue) continue;
+        const row = cycleOnDay(pt, due, k, ctx);
+        if (!row || !(row.balance > 0)) continue;
+        const inst = FORECAST_INSTITUTIONAL.indexOf(row.funder) >= 0;
+        const expectedDate = inst ? addDays(due, FORECAST_TERMS_DAYS) : due;
+        if (expectedDate < out.from || expectedDate > out.to) continue;
+        const kind = inst ? 'institutional' : row.funder === FUNDER_UNSET_LABEL ? 'unset' : 'private';
+        out.rows.push({ patientId: row.patientId, name: row.name, houseId: row.houseId, houseName: row.houseName, funder: row.funder,
+          kind: kind, dueDate: due, expectedDate: expectedDate, start: row.start, end: row.end, amount: row.balance, expected: row.expected, paid: row.paid });
+      }
+    });
+    out.rows.sort(function (a, b) { return a.expectedDate < b.expectedDate ? -1 : a.expectedDate > b.expectedDate ? 1 : a.name.localeCompare(b.name, 'he'); });
+    const r2 = function (n) { return Math.round(n * 100) / 100; };
+    const weeks = {}, houses = {};
+    out.rows.forEach(function (r) {
+      out[r.kind].count++; out[r.kind].total = r2(out[r.kind].total + r.amount);
+      if (r.kind === 'unset') return;
+      const w = weekStartIso(r.expectedDate);
+      const wk = weeks[w] || (weeks[w] = { weekStart: w, private: 0, institutional: 0, total: 0 });
+      wk[r.kind] = r2(wk[r.kind] + r.amount); wk.total = r2(wk.total + r.amount);
+      const h = houses[r.houseName] || (houses[r.houseName] = { name: r.houseName, private: 0, institutional: 0, total: 0 });
+      h[r.kind] = r2(h[r.kind] + r.amount); h.total = r2(h.total + r.amount);
+    });
+    out.total = r2(out.private.total + out.institutional.total);
+    out.count = out.private.count + out.institutional.count;
+    out.byWeek = Object.keys(weeks).sort().map(function (k) { return weeks[k]; });
+    out.byHouse = Object.keys(houses).map(function (k) { return houses[k]; }).sort(function (a, b) { return b.total - a.total; });
     return out;
   }
   /* The date list after the funder filter ('' = all) and the name search. Pure. */
@@ -3274,6 +3369,38 @@
             + '<td>' + (!isController && r.balance > 0 ? '<button type="button" class="btn small primary" data-due-report="' + i + '">דווח תשלום</button>' : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
     }
+    /* «צפי תזרים» (CHANGELOG-cashflow-forecast.md): the money the active
+     * patients are expected to bring between two dates — today → month end by
+     * default; private on the due date, institutional «שוטף +30»; no past debt. */
+    function renderCashForecast() {
+      const from = isoDateOk(state.fcFrom) && state.fcFrom >= state.today ? state.fcFrom : state.today;
+      const to = isoDateOk(state.fcTo) && state.fcTo >= from ? state.fcTo : monthEndIso(state.today);
+      const fc = cashForecast(state.data, state.billing.payments, from, to, state.today, cycleBalanceLib(win));
+      const kpi = function (v, l) { return '<div class="kpi"><span class="v">' + esc(v) + '</span><span class="l">' + esc(l) + '</span></div>'; };
+      let html = '<div class="group-title" id="crm-fc-title">צפי תזרים — מטופלים פעילים</div>'
+        + '<div class="toolbar filters" id="crm-fc-tools"><label>מתאריך <input type="date" id="crm-fc-from" min="' + esc(state.today) + '" value="' + esc(fc.from) + '"></label>'
+        + '<label>עד תאריך <input type="date" id="crm-fc-to" min="' + esc(fc.from) + '" value="' + esc(fc.to) + '"></label>'
+        + '<button type="button" class="btn small" data-fc-preset="month">עד סוף החודש</button><button type="button" class="btn small" data-fc-preset="next">החודש הבא</button><button type="button" class="btn small" data-fc-preset="90">90 יום</button></div>';
+      if (fc.error === 'payments_missing' || (fc.error && fc.error !== 'bad_range')) html += '<div class="crm-state bad">תשלומים לא נטענו — הצפי לפי התעריף בכרטיס בלבד <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
+      html += '<div class="kpis" id="crm-fc-kpis">' + kpi(fmtMoney(fc.total), 'סה"כ צפוי · ' + fmtDate(fc.from) + '–' + fmtDate(fc.to))
+        + kpi(fmtMoney(fc.private.total), 'פרטיים (' + fc.private.count + ') · ביום החיוב')
+        + kpi(fmtMoney(fc.institutional.total), 'מוסדיים — שוטף +30 (' + fc.institutional.count + ')')
+        + (fc.unset.count ? kpi(fmtMoney(fc.unset.total), 'ללא גורם מממן (' + fc.unset.count + ') · לא בסה"כ') : '') + '</div>';
+      html += '<p class="na">רק מחזורים שעוד לא שולמו, של מטופלים בבית. ללא חובות עבר. ביטוח לאומי / מכבי / משרד הביטחון — צפי קבלה 30 יום אחרי יום החיוב.'
+        + (fc.unset.count ? ' מטופלים ללא גורם מממן אינם בסה"כ — יש להשלים גורם מממן.' : '') + '</p>';
+      if (!fc.rows.length) return html + '<p class="na">אין תקבולים צפויים בטווח הזה.</p>';
+      if (fc.byWeek.length) html += '<div class="tbl-wrap"><table class="tbl" id="crm-fc-weeks"><thead><tr><th>שבוע</th><th>פרטיים</th><th>מוסדיים (שוטף +30)</th><th>סה"כ</th></tr></thead><tbody>'
+        + fc.byWeek.map(function (w) { return '<tr><td>' + esc('מ-' + fmtDate(w.weekStart < fc.from ? fc.from : w.weekStart)) + '</td><td>' + esc(fmtMoney(w.private)) + '</td><td>' + esc(fmtMoney(w.institutional)) + '</td><td>' + esc(fmtMoney(w.total)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+      if (fc.byHouse.length) html += '<div class="tbl-wrap"><table class="tbl" id="crm-fc-houses"><thead><tr><th>בית</th><th>פרטיים</th><th>מוסדיים (שוטף +30)</th><th>סה"כ</th></tr></thead><tbody>'
+        + fc.byHouse.map(function (h) { return '<tr><td>' + esc(h.name) + '</td><td>' + esc(fmtMoney(h.private)) + '</td><td>' + esc(fmtMoney(h.institutional)) + '</td><td>' + esc(fmtMoney(h.total)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+      const kindLabel = { private: 'פרטי', institutional: 'שוטף +30', unset: 'לא הוגדר' };
+      html += '<details id="crm-fc-detail"><summary>פירוט לפי מטופל/ת (' + fc.rows.length + ')</summary><div class="tbl-wrap"><table class="tbl" id="crm-fc-rows"><thead><tr><th>מטופל/ת</th><th>בית</th><th>גורם מממן</th><th>מחזור</th><th>יום חיוב</th><th>צפי קבלה</th><th>סכום</th></tr></thead><tbody>'
+        + fc.rows.map(function (r) {
+          const st = r.kind === 'institutional' ? 'wait' : r.kind === 'unset' ? 'late' : 'ok';
+          return '<tr data-open-patient="' + esc(r.patientId) + '" data-open-tab="account"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(r.funder) + ' ' + chip(st, kindLabel[r.kind]) + '</td><td>' + esc(fmtDate(r.start)) + '–' + esc(fmtDate(r.end)) + '</td><td>' + esc(fmtDate(r.dueDate)) + '</td><td>' + esc(fmtDate(r.expectedDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + (r.paid > 0 ? ' <span class="na">(שולם ' + esc(fmtMoney(r.paid)) + ')</span>' : '') + '</td></tr>';
+        }).join('') + '</tbody></table></div></details>';
+      return html;
+    }
     function renderBilling() {
       if (!state.billing) { loadBilling(); return '<div class="crm-state">טוען נתוני גבייה…</div>'; }
       const b = billingOverview(state.billing.debt, state.billing.payments, state.today);
@@ -3300,6 +3427,7 @@
       if (b.errors.length) html += '<div class="crm-state bad">' + esc(b.errors.join(' · ')) + ' <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
       html += renderAnomalies(billingAnomalies(compute(state.data, state.today), state.billing.debt, state.today));
       html += renderDueOnDate(isController);
+      html += renderCashForecast();
       html += '<div class="kpis">' + kpi(fmtMoney(b.openDebt), 'חוב פתוח (' + b.openCycles + ' מחזורים)', 'all') + kpi(fmtMoney(b.over60), 'מעל 60 יום', 'd61_plus')
         + kpi(b.debtors, 'מטופלים עם חוב', 'all') + kpi(fmtMoney(b.received30), 'התקבל ב-30 יום (' + b.received30Count + ')', 'received') + kpi(b.toVerify, 'דיווחים לאימות', 'toVerify') + '</div>';
       html += '<div class="group-title">גיול חוב נכון ל-' + esc(fmtDate(b.asOf)) + '</div><div class="kpis">' + b.buckets.map(function (x) { return kpi(fmtMoney(x.amount), x.label, x.key); }).join('') + '</div>';
@@ -4738,7 +4866,7 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-fc-preset],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
       if (!t) return;
       if (t.dataset.creditCancel !== undefined) { state.creditForm = null; const box = t.closest('form'); if (box) box.remove(); return; }
       if (t.dataset.creditEdit) return openCreditForm('edit', t.dataset.creditEdit);
@@ -4746,6 +4874,7 @@
       if (t.dataset.billingRetry !== undefined) { resetBilling(); return renderMain(); }
       if (t.dataset.reportCancel !== undefined) { state.report = null; state.small = null; const el = $('#crm-report'); if (el) el.innerHTML = ''; return; }
       if (t.dataset.dueToday !== undefined) { state.dueDate = state.today; return renderMain(); }
+      if (t.dataset.fcPreset) { const r = forecastPreset(t.dataset.fcPreset, state.today); state.fcFrom = r.from; state.fcTo = r.to; return renderMain(); }
       if (t.dataset.dueReport !== undefined) {
         // «לגבייה בתאריך» → the patient's «חשבון», then the report form on THAT cycle
         const r = (state.dueRows || [])[Number(t.dataset.dueReport)];
@@ -4853,6 +4982,8 @@
       if (t.id === 'crm-day-week') { if (isoDateOk(t.value)) state.week = t.value; return renderMain(); }
       if (t.id === 'crm-due-date') { if (isoDateOk(t.value)) state.dueDate = t.value; return renderMain(); }
       if (t.id === 'crm-due-funder') { state.dueFunder = t.value; return renderMain(); }
+      if (t.id === 'crm-fc-from') { if (isoDateOk(t.value)) state.fcFrom = t.value; return renderMain(); }
+      if (t.id === 'crm-fc-to') { if (isoDateOk(t.value)) state.fcTo = t.value; return renderMain(); }
       if (['f-dis-days', 'crm-cal-date', 'f-house', 'f-house-c', 'f-owner'].indexOf(t.id) < 0) return;
       if (t.id === 'f-dis-days') state.dischargedDays = Number(t.value) || 0;
       if (t.id === 'crm-cal-date') { if (!state.cal) state.cal = { mode: 'day', anchor: state.today }; if (isoDateOk(t.value)) state.cal.anchor = t.value; }
@@ -4993,5 +5124,5 @@
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
     newTaskErrors: newTaskErrors, dueSoonTasks: dueSoonTasks, TASK_REMIND_MINUTES: TASK_REMIND_MINUTES, WORK_CONTROL: WORK_CONTROL, workControlQueues: workControlQueues,
-    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, paidWithDiscountPlan: paidWithDiscountPlan, paidWithDiscountBody: paidWithDiscountBody, reportValuesOnly: reportValuesOnly, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
+    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, paidWithDiscountPlan: paidWithDiscountPlan, paidWithDiscountBody: paidWithDiscountBody, reportValuesOnly: reportValuesOnly, cashForecast: cashForecast, cycleOnDay: cycleOnDay, cycleCtx: cycleCtx, forecastPreset: forecastPreset, monthEndIso: monthEndIso, FORECAST_TERMS_DAYS: FORECAST_TERMS_DAYS, FORECAST_INSTITUTIONAL: FORECAST_INSTITUTIONAL, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));

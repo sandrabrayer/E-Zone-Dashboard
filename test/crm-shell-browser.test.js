@@ -328,7 +328,8 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
     await page.click('#crm-nav button[data-area="billing"]');
     await page.waitForSelector('#crm-debtors');
     assert.equal(await page.textContent('#crm-title'), 'גבייה');
-    const kpis = await page.$$eval('.kpis .kpi .v', (els) => els.map((e) => e.textContent));
+    // «צפי תזרים» KPIs are its own block (CHANGELOG-cashflow-forecast.md) — covered by its own scenario.
+    const kpis = await page.$$eval('.kpis:not(#crm-fc-kpis) .kpi .v', (els) => els.map((e) => e.textContent));
     // «לגבייה בתאריך» opens the area (CHANGELOG-crm-collect-on-date.md): its three KPIs come first.
     assert.equal(kpis.length, 12);
     assert.ok(await page.$('#crm-due-date'), 'the date picker of «לגבייה בתאריך»');
@@ -696,6 +697,39 @@ test('«שולם עם הנחה» is not offered on «מחזור אחר» (its ba
     await page.waitForSelector('form[data-form="payment-report"]');
     assert.equal(await page.$('form.report [name="withDiscount"]'), null, '«מחזור אחר» never offers it');
     assert.deepEqual(errors, []);
+test('«צפי תזרים» (Vered, CHANGELOG-cashflow-forecast.md): renders under «לגבייה בתאריך» from the loaded reads only, the presets and dates re-render, a row opens the patient; 390 px has no page overflow', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    for (const width of [1366, 390]) {
+      const { page, errors } = await open(browser, srv.port, 'vered', width);
+      if (width === 390) await page.click('#crm-burger');
+      await page.click('#crm-nav button[data-area="billing"]');
+      await page.waitForSelector('#crm-fc-kpis');
+      const order = await page.evaluate(() => {
+        const a = document.querySelector('#crm-due-title'), b = document.querySelector('#crm-fc-title');
+        return !!(a && b && (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING));
+      });
+      assert.ok(order, 'the forecast follows «לגבייה בתאריך»');
+      const reads = srv.actions.length;
+      assert.equal(await page.inputValue('#crm-fc-from'), TODAY);
+      assert.match(await page.textContent('#crm-fc-kpis'), /סה"כ צפוי/);
+      assert.match(await page.textContent('#crm-fc-kpis'), /שוטף \+30/);
+      await page.click('[data-fc-preset="90"]');
+      await page.waitForFunction((t) => document.querySelector('#crm-fc-to') && document.querySelector('#crm-fc-to').value > t, TODAY);
+      assert.equal(srv.actions.length, reads, 'no extra request: computed from the loaded reads');
+      // within 90 days the patient's monthly cycles (משרד הביטחון → שוטף +30) are listed
+      await page.click('#crm-fc-detail summary');
+      const rows = await page.$$eval('#crm-fc-rows tbody tr', (els) => els.length);
+      assert.ok(rows >= 1, 'at least one expected receipt in 90 days');
+      assert.match(await page.textContent('#crm-fc-rows'), /שוטף \+30/);
+      if (width === 390) assert.ok(await noHScroll(page), 'no horizontal page scroll at 390 px');
+      await page.click('#crm-fc-rows tbody tr');
+      await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+    assert.deepEqual(srv.saves, [], 'read-only');
   } finally { await browser.close(); srv.close(); }
 });
 
