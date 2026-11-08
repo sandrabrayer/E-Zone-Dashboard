@@ -26,9 +26,21 @@ function loadSw() {
 }
 const sw = loadSw();
 
-test('sw.js: v105 (monotonic from the live v93 via v94…v97, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
-  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v105');
+test('sw.js: v120 (monotonic from the live v93 via v94…v119, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
+  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v120');
+  assert.ok(SW_SRC.includes('v113 → v114:') && SW_SRC.includes('CHANGELOG-crm-followups-1104.md'));
+  assert.ok(SW_SRC.includes('v114 → v115:') && SW_SRC.includes('CHANGELOG-crm-kpi-tab.md'));
+  assert.ok(SW_SRC.includes('v115 → v116:') && SW_SRC.includes('CHANGELOG-crm-manual-credits.md'));
+  assert.ok(SW_SRC.includes('v116 → v117:') && SW_SRC.includes('CHANGELOG-crm-kpi-headings.md'));
+  assert.ok(SW_SRC.includes('v117 → v118:') && SW_SRC.includes('CHANGELOG-crm-task-date-time.md'));
+  assert.ok(SW_SRC.includes('v118 → v119:') && SW_SRC.includes('CHANGELOG-crm-kpi-clean-data.md'));
+  assert.ok(SW_SRC.includes('v110 → v111:') && SW_SRC.includes('CHANGELOG-crm-collect-on-date.md'));
+  assert.ok(SW_SRC.includes('v109 → v110:') && SW_SRC.includes('CHANGELOG-billing-exit-day-not-due.md'));
+  assert.ok(SW_SRC.includes('v106 → v107:') && SW_SRC.includes('CHANGELOG-crm-dana-default-switch-user.md'));
+  assert.ok(SW_SRC.includes('v107 → v108:') && SW_SRC.includes('CHANGELOG-crm-today-card-open.md'));
+  assert.ok(SW_SRC.includes('v108 → v109:') && SW_SRC.includes('CHANGELOG-crm-search-admit-funder.md'));
   assert.ok(SW_SRC.includes('v104 → v105:') && SW_SRC.includes('CHANGELOG-crm-kpi-two-counters.md'));
+  assert.ok(SW_SRC.includes('v105 → v106:') && SW_SRC.includes('CHANGELOG-crm-old-payment-dates.md'));
   assert.ok(SW_SRC.includes('v103 → v104:') && SW_SRC.includes('CHANGELOG-crm-clickable-kpis.md'));
   assert.ok(SW_SRC.includes('v102 → v103:') && SW_SRC.includes('CHANGELOG-crm-read-cache.md'));
   assert.ok(SW_SRC.includes('v101 → v102:') && SW_SRC.includes('CHANGELOG-crm-monday-look.md'));

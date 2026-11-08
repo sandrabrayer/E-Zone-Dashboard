@@ -31,3 +31,7 @@ and OP-ID-2 PR #138.
 4. Run synthetic end-to-end exact-id/retry/legacy-refusal validation before
    any production handoff. Reconcile real missing legacy identity manually;
    never silently create on PII. No production writes/tests without approval.
+
+## Reconciled with 2026-11-08 deployed Dashboard
+
+Existing draft #330 is based on reviewed D-ID-1 #329 and latest deployed Dashboard UI/source. Manual discharge phone entry remains in-place and identity is validated before any phone-book write. The outbound source identifiers are exact episode/person/lead IDs; failed/ambiguous IDs are refused, without writing or re-sending. This is only a DRAFT. Outpatient receiving PRs #137/#138 must be reviewed and approved independently before any sender activation.

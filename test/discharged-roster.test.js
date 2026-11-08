@@ -54,7 +54,7 @@ test('fail-closed: unset / blank / missing / wrong / another secret → unauthor
   assert.deepStrictEqual(arr(g.post({ action: 'getDischargedRoster', secret: 'proxy-secret-TEST-alumni-feed-0000000000' })), { ok: false, error: 'unauthorized' }, 'PROXY_SECRET is not this secret');
 });
 
-test('contract: adds opaque stay/person ids and leaks no other patient fields', () => {
+test('contract: exactly sourceApp, name, phone, house, entryDate, exitDate — nothing else leaks', () => {
   const { feed } = boot({ patients: PATIENTS, leads: LEADS });
   const r = feed();
   assert.strictEqual(r.ok, true);
@@ -63,9 +63,9 @@ test('contract: adds opaque stay/person ids and leaks no other patient fields', 
     sourceApp: 'ezone-dashboard', id: 'pid-1', personId: 'pid-root', name: 'יוצא לאחרונה', phone: '0527654321', house: 'asher', entryDate: '2026-05-01', exitDate: '2026-10-01'
   });
   r.patients.forEach((p) => assert.deepStrictEqual(Object.keys(p).sort(), ['entryDate', 'exitDate', 'house', 'id', 'name', 'personId', 'phone', 'sourceApp']));
-  const noRoot = by('ללא ליד');
-  assert.strictEqual(noRoot.id, '');
-  assert.strictEqual(noRoot.personId, '');
+  // Legacy discharge without an immutable ID remains blank; never guess one from a name.
+  assert.strictEqual(by('ללא ליד').id, '');
+  assert.strictEqual(by('ללא ליד').personId, '');
 });
 
 test('selection: released inside the window only; no phone without a lead link; admitted / dateless / old excluded', () => {

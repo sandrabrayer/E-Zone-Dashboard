@@ -156,6 +156,8 @@ const EXPECTED_COLUMNS = [
   'approvedBy', 'decidedDate', 'payoutDate', 'status', 'paidDate', 'method', 'notes',
   'basis', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
   'creditUid',
+  'payoutApprovalRequestedAt', 'payoutApprovalRequestedBy', 'payoutApprovalAmount',
+  'payoutApprovedAt', 'payoutApprovedBy',
 ];
 const FACILITY_MAP = { asher: 'residential', ramot: 'residential', rehab: 'detox_dual', pardes: 'detox_dual', arfoni: 'detox_dual', sde: 'detox_dual' };
 /* The server recalculates the POLICY figure on every saveCredit
@@ -201,7 +203,7 @@ test('CREDIT_COLUMNS order is PINNED — the original 24 unmoved, creditUid appe
   assert.deepStrictEqual(arr(code.CREDIT_COLUMNS), EXPECTED_COLUMNS);
   assert.deepStrictEqual(arr(code.CREDIT_COLUMNS).slice(0, 24), EXPECTED_COLUMNS.slice(0, 24),
     'position IS the data contract — the original 24 are untouched');
-  assert.strictEqual(code.CREDIT_COLUMNS.length, 25);
+  assert.strictEqual(code.CREDIT_COLUMNS.length, 30);
   assert.strictEqual(code.CREDIT_COLUMNS[24], 'creditUid');
   assert.deepStrictEqual(plain(code.FACILITY_TYPE_BY_HOUSE), FACILITY_MAP);
   assert.strictEqual(code.facilityTypeFor('asher'), 'residential');
@@ -222,8 +224,40 @@ test('getOrCreateSheet_ auto-creates Credits with the header and text-forces all
   assert.strictEqual(sandbox.__sheets.Credits, sh);
   assert.deepStrictEqual(sh.grid[0], EXPECTED_COLUMNS);
   const forced = sh.ops.filter((o) => o.op === 'fmt' && o.fmt === '@' && o.r === 1 && o.nr >= 1000).map((o) => EXPECTED_COLUMNS[o.c - 1]);
-  assert.deepStrictEqual(forced.sort(), ['allocationMonth', 'createdAt', 'decidedDate', 'paidDate', 'payoutDate', 'updatedAt']);
+  assert.deepStrictEqual(forced.sort(), ['allocationMonth', 'createdAt', 'decidedDate', 'paidDate', 'payoutDate',
+    'payoutApprovalRequestedAt', 'payoutApprovalRequestedBy', 'payoutApprovedAt', 'payoutApprovedBy', 'updatedAt'].sort());
   assert.deepStrictEqual(arr(code.CREDIT_TEXT_COLUMNS).slice().sort(), forced.sort());
+});
+
+test('Credits approval schema expands a 26-column live grid to 30 before appending five headers, never moves historical values', () => {
+  const { code, sandbox } = loadCode();
+  const cols = arr(code.CREDIT_COLUMNS);
+  assert.strictEqual(cols.length, 30, '25 existing + 5 approval fields');
+  const original = cols.slice(0, 25);
+  const preserved = original.map((name, i) => (i === 0 ? 'old-credit-1' : 'dummy-' + i));
+  const sh = fakeSheet(original, [preserved]);
+  let physicalCols = 26;
+  const expanded = [];
+  sh.getMaxColumns = () => physicalCols;
+  sh.insertColumnsAfter = (at, count) => {
+    assert.strictEqual(at, 26, 'append after the original grid, never among existing values');
+    assert.strictEqual(count, 4, 'the existing physical column 26 already exists');
+    physicalCols += count; expanded.push({ at, count });
+  };
+  const realGetRange = sh.getRange.bind(sh);
+  sh.getRange = (row, col, nr, nc) => {
+    if (col + (nc || 1) - 1 > physicalCols) throw new Error('invalid range outside physical grid');
+    return realGetRange(row, col, nr, nc);
+  };
+  sandbox.__sheets.Credits = sh;
+  const got = code.ensure(code.CREDITS_SHEET, cols);
+  assert.strictEqual(got, sh);
+  assert.strictEqual(physicalCols, 30);
+  assert.deepStrictEqual(expanded, [{ at: 26, count: 4 }]);
+  assert.deepStrictEqual(sh.grid[0], cols, 'five named approval headers appended in original position');
+  assert.deepStrictEqual(sh.grid[1], preserved, 'historical row is not rewritten by schema ensure');
+  code.ensure(code.CREDITS_SHEET, cols);
+  assert.strictEqual(expanded.length, 1, 'a second read/ensure never inserts again');
 });
 
 /* ===== B. create via handle_ (dispatch + signed-cookie user) ===== */
@@ -330,9 +364,9 @@ test('server-side validation: creditType outside the allowed list, bad status, b
     [Object.assign({}, BASE, { creditType: 'other', reason: '' }), 'reason_required'],
     [Object.assign({}, BASE, { houseId: 'unknown-house' }), 'bad_houseId'],
     [Object.assign({}, BASE, { decidedDate: 'not-a-date' }), 'bad_decidedDate'],
-    [Object.assign({}, BASE, { status: 'paid' }), 'paid_requires_paidDate_method'],
-    [Object.assign({}, BASE, { status: 'paid', paidDate: '2026-09-15' }), 'paid_requires_paidDate_method'],
-    [Object.assign({}, BASE, { status: 'paid', method: 'העברה' }), 'paid_requires_paidDate_method'],
+    [Object.assign({}, BASE, { status: 'paid' }), 'use_settleRefund'],
+    [Object.assign({}, BASE, { status: 'paid', paidDate: '2026-09-15' }), 'use_settleRefund'],
+    [Object.assign({}, BASE, { status: 'paid', method: 'העברה' }), 'use_settleRefund'],
     [null, 'missing_credit'],
   ];
   // Validated as the approver, so each refusal is the validation's own.
@@ -417,26 +451,21 @@ test('refundPayoutDate_ drives payoutDate: 10th → same-month 15th, 11th / 14th
   assert.strictEqual(detox.credit.payoutDate, '2026-10-15');
 });
 
-test('marking paid is an explicit edit: status paid + paidDate + method persist; payoutDate never flips status by itself', () => {
+test('a credit modal CANNOT mark paid through saveCredit; payoutDate never marks a credit paid automatically', () => {
   const { code, sandbox } = loadCode();
   const created = code.upsert(Object.assign({}, BASE, { decidedDate: '2026-08-20' }), 'סנדרה', APPROVER).credit;
   assert.strictEqual(created.payoutDate, '2026-09-15');
-  // A later read does not change anything — nothing is automatic.
   assert.strictEqual(code.handle({ action: 'getCredits' }).credits[0].status, 'pending');
-  // A status edit that leaves the amount alone needs no approver (finance user).
-  const paid = code.upsert({ id: created.id, updatedAt: created.updatedAt, status: 'paid', paidDate: '2026-09-15', method: 'העברה בנקאית' }, 'ורד');
-  assert.strictEqual(paid.ok, true, JSON.stringify(paid));
-  const row = creditsOf(code, sandbox)[0];
-  assert.strictEqual(row.status, 'paid');
-  assert.strictEqual(row.paidDate, '2026-09-15');
-  assert.strictEqual(row.method, 'העברה בנקאית');
-  assert.strictEqual(row.updatedBy, 'ורד');
-  assert.strictEqual(row.payoutDate, '2026-09-15', 'payoutDate stays derived from decidedDate');
-  // Un-paying clears paidDate; changing decidedDate re-derives payoutDate.
-  const back = code.upsert({ id: created.id, updatedAt: paid.credit.updatedAt, status: 'pending', decidedDate: '2026-09-16' }, 'ורד');
-  assert.strictEqual(back.ok, true, JSON.stringify(back));
-  assert.strictEqual(back.credit.paidDate, '');
-  assert.strictEqual(back.credit.payoutDate, '2026-10-15');
+  const before = JSON.stringify(sandbox.__sheets.Credits.grid[1]);
+  const no = code.upsert({ id: created.id, updatedAt: created.updatedAt, status: 'paid',
+    paidDate: '2026-09-15', method: 'העברה בנקאית' }, 'ורד');
+  assert.strictEqual(no.ok, false);
+  assert.strictEqual(no.error, 'use_settleRefund');
+  assert.strictEqual(JSON.stringify(sandbox.__sheets.Credits.grid[1]), before);
+  const edit = code.upsert({ id: created.id, updatedAt: created.updatedAt, decidedDate: '2026-09-16' }, 'ורד');
+  assert.strictEqual(edit.ok, true, JSON.stringify(edit));
+  assert.strictEqual(edit.credit.status, 'pending');
+  assert.strictEqual(edit.credit.payoutDate, '2026-10-15');
 });
 
 test('policy match: a create whose amount equals the SERVER-recalculated policy line needs no approver — server trail, auto stamp, decided on the exit date; an edit back to the policy figure needs none either', () => {
@@ -487,7 +516,7 @@ test('edit: only the editable columns change; calculatedAmount, identity keys, r
     // attempted tampering:
     calculatedAmount: 1, patientId: 'other', patientKey: 'x::y::z', reason: 'rewritten', basis: '{"forged":true}', facilityType: 'detox_dual', houseId: 'rehab', createdAt: '2000-01-01T00:00:00.000Z', createdBy: 'FORGED', creditType: 'other', allocationMonth: '2027-01', payoutDate: '2030-01-15',
     // legitimate edits:
-    amount: 4000, overrideReason: 'סוכם טלפונית', status: 'paid', paidDate: '2026-09-20', method: 'העברה', notes: 'שולם', approvedBy: 'סנדרה',
+    amount: 4000, overrideReason: 'סוכם טלפונית', status: 'pending', paidDate: '', method: '', notes: 'עודכן', approvedBy: 'סנדרה',
   };
   // An edit that CHANGES the stored amount is approver-only — refused, row unchanged.
   const before = JSON.stringify(sandbox.__sheets.Credits.grid[1]);
@@ -516,13 +545,13 @@ test('edit: only the editable columns change; calculatedAmount, identity keys, r
   assert.strictEqual(r.createdAt, created.createdAt);
   assert.strictEqual(r.createdBy, 'ורד');
   assert.strictEqual(r.updatedBy, 'דנה');
-  assert.strictEqual(r.status, 'paid');
-  assert.strictEqual(r.paidDate, '2026-09-20');
+  assert.strictEqual(r.status, 'pending');
+  assert.strictEqual(r.paidDate, '');
   assert.strictEqual(r.houseId, 'ramot');
   assert.strictEqual(r.facilityType, 'residential');
   assert.strictEqual(r.payoutDate, '2026-10-15', 'derived, the forged payload value is ignored');
   assert.deepStrictEqual(JSON.parse(r.basis), MANUAL_BASIS, 'basis immutable');
-  assert.strictEqual(r.method, 'העברה');
+  assert.strictEqual(r.method, '');
   assert.strictEqual(r.approvedBy, 'דנה', 'an approver-gated save stamps the acting user — the payload\'s approvedBy is ignored');
   assert.ok(auditOf(code, sandbox).some((a) => a.action === 'credit_updated'));
 });

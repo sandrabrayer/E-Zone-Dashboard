@@ -14,7 +14,7 @@ const { EventEmitter } = require('node:events');
 const core = require('../public/crm/crm.js');
 let playwright = null;
 try { playwright = require('playwright'); } catch (_) { /* skip */ }
-const CHROMIUM_CANDIDATES = ['/opt/pw-browsers/chromium-1194/chrome-linux/chrome', '/opt/pw-browsers/chromium/chrome-linux/chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
+const CHROMIUM_CANDIDATES = [process.env.CHROMIUM_PATH, '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', '/opt/pw-browsers/chromium/chrome-linux/chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].filter(Boolean);
 let chromiumPath = CHROMIUM_CANDIDATES.find((p) => { try { return fs.existsSync(p); } catch (_) { return false; } });
 if (!chromiumPath) {
   try {
@@ -32,7 +32,7 @@ const SERVER_PATH = require.resolve('../server');
 const PEPPER = 'pepper-TEST-crm-shell-browser-0123456789abcdef';
 const SESSION_SECRET = 'session-secret-TEST-crm-shell-browser-012345';
 const PROXY_SECRET = 'proxy-secret-TEST-crm-shell-browser-0123456789';
-const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'USER_PIN_HASHES', 'PIN_PEPPER', 'CRM_ENABLED'];
+const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'USER_PIN_HASHES', 'PIN_PEPPER', 'CRM_ENABLED', 'SHEETS_READ_CACHE_MS'];
 const israelDay = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date(ms));
 const TODAY = israelDay(Date.now());
 const daysAgo = (n) => israelDay(Date.now() - n * 86400000);
@@ -73,11 +73,42 @@ const INDEX = { ok: true, count: 1, leads: { L3: { at: '2026-10-20T09:00:00.000Z
 let tasksAnswer = null;
 let indexAnswer = null;
 let saveAnswer = null;
-async function boot() {
+async function boot(options = {}) {
   const saves = [];
+  // One synthetic authoritative Credits ledger shared by all test sessions;
+  // identity-specific source saves become visible after the next getCredits.
+  const creditsLedger = JSON.parse(JSON.stringify(CREDITS));
+  function syntheticRefund(parsed) {
+    const row = creditsLedger.credits.filter((c) => c.id === parsed.creditId)[0];
+    if (!row) return { ok: false, error: 'unknown_credit' };
+    if (parsed.action === 'requestRefundPayoutApproval') {
+      if (parsed.proxyUserId !== 'vered') return { ok: false, error: 'forbidden_role' };
+      row.payoutApprovalRequestedBy = 'vered';
+      row.payoutApprovalRequestedAt = '2026-11-03T10:00:00.000Z';
+      row.payoutApprovalAmount = row.amount;
+      row.payoutApprovedBy = '';
+      row.payoutApprovedAt = '';
+      return { ok: true, credit: { id: row.id, payoutApprovalRequestedAt: row.payoutApprovalRequestedAt } };
+    }
+    if (parsed.action === 'approveRefundPayout') {
+      if (parsed.proxyUserId !== 'sandra' || row.payoutApprovalRequestedBy !== 'vered')
+        return { ok: false, error: 'request_required' };
+      row.payoutApprovedBy = 'sandra';
+      row.payoutApprovedAt = '2026-11-03T10:05:00.000Z';
+      return { ok: true, credit: { id: row.id, payoutApprovedAt: row.payoutApprovedAt } };
+    }
+    if (parsed.action === 'settleRefund') {
+      if (parsed.proxyUserId !== 'ortal' || row.payoutApprovedBy !== 'sandra' ||
+          Number(row.payoutApprovalAmount) !== Number(row.amount))
+        return { ok: false, error: 'approval_required' };
+      row.status = 'paid'; row.paidDate = parsed.paidDate; row.method = parsed.method;
+      return { ok: true, credit: { id: row.id, status: 'paid', paidDate: row.paidDate } };
+    }
+    return { ok: false, error: 'unknown_refund_action' };
+  }
   const hash = await pinHash.hashPin('583920', PEPPER);
   const recs = ['vered', 'sandra', 'ortal', 'dana'].map((id) => JSON.parse(users.recordLine(id, hash, 1)));
-  const env = { PROXY_SECRET, SESSION_SECRET, SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', PIN_PEPPER: PEPPER, USER_PIN_HASHES: JSON.stringify(recs), CRM_ENABLED: 'true' };
+  const env = { PROXY_SECRET, SESSION_SECRET, SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', PIN_PEPPER: PEPPER, USER_PIN_HASHES: JSON.stringify(recs), CRM_ENABLED: 'true', SHEETS_READ_CACHE_MS: String(options.readCacheMs === undefined ? 30000 : options.readCacheMs) };
   const saved = {};
   for (const k of ENV_KEYS) { saved[k] = process.env[k]; process.env[k] = env[k]; }
   const quiet = { log: console.log, warn: console.warn, error: console.error };
@@ -96,21 +127,25 @@ async function boot() {
       try { parsed = JSON.parse(body); } catch (_) { parsed = {}; }
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
-      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'settleRefund', 'editReceipt', 'savePayment', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
-      if (['logContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0) saves.push(parsed);
+      if (parsed.action === 'saveCredit') saves.push(parsed);
+      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund', 'editReceipt', 'savePayment', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
+      if (['logContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logLeadFlag'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
         : parsed.action === 'getTasks' ? (tasksAnswer ? tasksAnswer() : (parsed.status === 'open' && parsed.proxyUserId !== 'ortal' ? TASKS : { ok: true, total: 0, tasks: [] }))   // Code.gs scopes Ortal to money tasks (none in the fixture)
         : parsed.action === 'contactIndex' ? (indexAnswer ? indexAnswer() : INDEX)
         : parsed.action === 'logContact' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, event: { eventId: 'contact:' + parsed.submissionId }, completed: null, created: parsed.next && !parsed.next.none ? Object.assign({ id: 'task-x' }, parsed.next) : null })
         : ['createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0 ? (saveAnswer ? saveAnswer(parsed) : { ok: true, task: { id: parsed.id || 'task-new' } })
-        : parsed.action === 'debtAging' ? DEBT : parsed.action === 'getPayments' ? PAYMENTS : parsed.action === 'getCredits' ? CREDITS
+        : parsed.action === 'logLeadFlag' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, flag: Object.assign({ at: new Date().toISOString(), actorName: 'ורד' }, parsed.flag) })
+        : parsed.action === 'debtAging' ? DEBT : parsed.action === 'getPayments' ? PAYMENTS : parsed.action === 'getCredits' ? creditsLedger
         : parsed.action === 'restorePatientToActive' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restoredToActive: true, id: parsed.patient && parsed.patient.id })
         : parsed.action === 'restorePatient' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restored: true, lead: { id: parsed.patient && parsed.patient.newLeadId } })
         : parsed.action === 'editReceipt' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, receipt: { id: parsed.edit && parsed.edit.id } })
         : parsed.action === 'savePayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, payment: { id: parsed.payment && parsed.payment.id, status: parsed.payment && parsed.payment.status, linkStatus: parsed.payment && parsed.payment.linkStatus } })
+        : parsed.action === 'saveCredit' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, credit: Object.assign({}, parsed.credit, { id: (parsed.credit && parsed.credit.id) || 'cr-new' }) })
         : parsed.action === 'setBillingDiscount' ? (saveAnswer ? saveAnswer(parsed) : { ok: true })
         : parsed.action === 'upsertBillingOverride' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, override: { id: parsed.override && parsed.override.id } })
-        : parsed.action === 'settleRefund' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, credit: { id: parsed.creditId } })
+        : ['requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund'].indexOf(parsed.action) >= 0
+          ? (saveAnswer ? saveAnswer(parsed) : syntheticRefund(parsed))
         : parsed.action === 'saveAll' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, proven: { leads: (parsed.leads || []).map((l) => String(l.id)), patients: Object.values(parsed.patients || {}).flat().map((p) => String(p.id)) } })
         : parsed.action === 'reportPayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, receipt: { id: 'rcpt-new' }, cycle: { id: parsed.report && parsed.report.cycle && parsed.report.cycle.id } })
         : parsed.action === 'appendFunder' ? { ok: true, row: { submissionId: parsed.funder && parsed.funder.submissionId } }
@@ -132,6 +167,8 @@ async function open(browser, port, id, width) {
   const name = users.modelById(id).name;
   await ctx.addCookies([{ name: 'ezone_session', value: createSessionToken(SESSION_SECRET, undefined, undefined, name, { id, pinVersion: 1 }), url: `http://127.0.0.1:${port}` }]);
   const page = await ctx.newPage();
+  // Synthetic acceptance must never send browser traffic outside this fixture.
+  await ctx.route('**/*', route => new URL(route.request().url()).origin === `http://127.0.0.1:${port}` ? route.continue() : route.abort());
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e && e.message)));
   await page.goto(`http://127.0.0.1:${port}/?view=crm`, { waitUntil: 'networkidle' });
@@ -147,23 +184,25 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
   try {
     const { page, errors } = await open(browser, srv.port, 'vered', 1366);
     assert.equal(await page.getAttribute('html', 'dir'), 'rtl');
-    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'פניות', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'בקרה'], 'grouped nav (spec §3)');
-    assert.deepEqual(await page.$$eval('#crm-nav .nav-group', (els) => els.map((e) => e.textContent)), ['פניות ומטופלים', 'פגישות ויומן', 'בתים והמשך טיפול', 'כספים', 'דוחות והגדרות']);
+    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'בקרת עבודה', 'לידים', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'KPI'], 'grouped nav (spec §3; «פניות» → «לידים» 04/11/2026; «בקרת עבודה» next to «היום שלי» + «KPI» 05/11/2026)');
+    assert.deepEqual(await page.$$eval('#crm-nav .nav-group', (els) => els.map((e) => e.textContent)), ['לידים ומטופלים', 'פגישות ויומן', 'בתים והמשך טיפול', 'כספים', 'דוחות והגדרות']);
     assert.equal(await page.$eval('body', (b) => getComputedStyle(b).backgroundColor), 'rgb(230, 236, 242)', 'light theme (contrast pass)');
     assert.ok(await page.isVisible('#crm-menu'));
     assert.ok(!(await page.isVisible('#crm-burger')), 'no burger on desktop');
     assert.equal(await page.$eval('#crm-user', (e) => e.textContent), 'ורד');
     // «היום שלי» (Stage 2): the five cards, the urgent band, the domains, the side column
     await page.waitForSelector('.kpis.cards');
-    assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['גבייה לביצוע', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'פניות חדשות ללא מגע']);
+    assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['גבייה לביצוע', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'לידים חדשים ללא מגע']);
     const main = await page.textContent('#crm-main');
-    assert.match(main, /ממתין לדיווח המנהל\/ת/, 'a passed meeting waits for the manager — not «late»');
-    assert.match(main, /תאריך שעבר אינו הוכחה/);
+    // a missing manager report is late only 3 days after the meeting (CHANGELOG-crm-vered-feedback-1104.md): L3 met 3 days ago
+    assert.match(main, /דיווח המנהל\/ת באיחור/, 'a meeting 3 days ago without a report is now late');
+    assert.match(main, /3 ימים ללא דיווח המנהל\/ת/);
     assert.match(main, /אין מגע מתועד/); assert.match(main, /מאיה שגב/, 'a new lead with no documented contact and no open call');
-    assert.ok(!/פניות חדשות ללא מגע[\s\S]*אבי לוי[\s\S]*שיחות ומעקבים/.test(main), 'a lead with an open call task is in «שיחות», not in «ללא מגע»');
+    assert.ok(!/לידים חדשים ללא מגע[\s\S]*אבי לוי[\s\S]*שיחות ומעקבים/.test(main), 'a lead with an open call task is in «שיחות», not in «ללא מגע»');
     assert.ok(!/ממתין \d+ ימים/.test(main), 'no lateness by lead age');
     assert.match(await page.textContent('.day-side'), /פגישות היום/); assert.match(await page.textContent('.day-side'), /גלי כהן/);
-    assert.match(await page.textContent('.urgent'), /לקרוא דיווח מנהל/, 'the unseen report is an exception on top');
+    assert.equal(await page.locator('#crm-main section.urgent').count(), 0, 'no «חריגים דחופים» band (Vered 04/11/2026)');
+    assert.match(await page.textContent('.day-main'), /לקרוא דיווח מנהל/, 'the unseen report is in its domain');
     await page.click('.kpi[data-domain="newleads"]');
     assert.ok(!/גלי כהן/.test(await page.textContent('.day-main')), 'a card filters to its domain');
     assert.match(await page.textContent('.day-main'), /מאיה שגב/);
@@ -220,7 +259,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     // every control number opens its list (clickable KPIs)
     await page.click('.kpi.acc-unseen');
     assert.equal(await page.textContent('#crm-title'), 'היום שלי');
-    assert.match(await page.textContent('[data-domain-section="followup"]'), /רון אביב/, 'the unseen report list');
+    assert.match(await page.textContent('[data-control-section="unseen"]'), /רון אביב/, 'the exact unread-report list');
     await page.click('#crm-nav button[data-area="control"]');
     await page.click('.kpi.acc-noContact');
     assert.equal(await page.textContent('#crm-title'), 'רשומות שדורשות בירור');
@@ -254,7 +293,7 @@ test('CRM shell at 390 px (Vered): burger opens the drawer menu, areas work, no 
     assert.equal(await page.getAttribute('#crm-menu', 'data-open'), 'true');
     await page.click('#crm-nav button[data-area="leads"]');
     assert.notEqual(await page.getAttribute('#crm-menu', 'data-open'), 'true', 'choosing an area closes the menu');
-    assert.equal(await page.textContent('#crm-title'), 'פניות');
+    assert.equal(await page.textContent('#crm-title'), 'לידים');
     assert.ok(await noHScroll(page), 'no horizontal page scroll at 390');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
@@ -265,7 +304,7 @@ test('CRM shell (Ortal, controller): only היום שלי / גבייה / בקר�
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
     const { page, errors } = await open(browser, srv.port, 'ortal', 1366);
-    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'גבייה', 'בקרה']);
+    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'בקרת עבודה', 'גבייה']);
     await page.waitForFunction(() => /דיווחים לאימות/.test(document.querySelector('#crm-main').textContent) && !/טוען…/.test(document.querySelector('.kpis.cards').textContent), null, { timeout: 8000 });
     assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['דיווחים לאימות', 'אימותים חלקיים / לבירור', 'חשבוניות מבוקשות', 'משימות כספיות שלך', 'זיכויים לתשלום'], 'Ortal: verification / gaps / documents / control (spec §5)');
     assert.deepEqual(await page.$$eval('.kpis.cards .kpi .v', (els) => els.map((e) => e.textContent)), ['1', '1', '0', '0', '1'], 'reported ×1, flagged ×1, no requested invoice, no money task in the fixture, one pending credit');
@@ -290,10 +329,13 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
     await page.waitForSelector('#crm-debtors');
     assert.equal(await page.textContent('#crm-title'), 'גבייה');
     const kpis = await page.$$eval('.kpis .kpi .v', (els) => els.map((e) => e.textContent));
-    assert.deepEqual(kpis.slice(0, 5), ['₪11,000', '₪6,000', '1', '₪2,500', '1']);
-    assert.deepEqual(kpis.slice(5, 9), ['₪5,000', '₪0', '₪0', '₪6,000'], 'the four aging buckets');
+    // «לגבייה בתאריך» opens the area (CHANGELOG-crm-collect-on-date.md): its three KPIs come first.
+    assert.equal(kpis.length, 12);
+    assert.ok(await page.$('#crm-due-date'), 'the date picker of «לגבייה בתאריך»');
+    assert.deepEqual(kpis.slice(3, 8), ['₪11,000', '₪6,000', '1', '₪2,500', '1']);
+    assert.deepEqual(kpis.slice(8, 12), ['₪5,000', '₪0', '₪0', '₪6,000'], 'the four aging buckets');
     const main = await page.textContent('#crm-main');
-    assert.match(main, /דנה כהן/); assert.match(main, /רמות השבים/); assert.match(main, /1 ללא דיווח/); assert.match(main, /70 ימים/); assert.match(main, /₪8,500/); assert.match(main, /ביט/); assert.match(main, /עריכת קבלות/);
+    assert.match(main, /דנה כהן/); assert.match(main, /רמות השבים/); assert.match(main, /1 ללא דיווח/); assert.match(main, /70 ימים/); assert.match(main, /₪8,500/); assert.match(main, /ביט/); assert.match(main, /דשבורד רגיל/);
     assert.match(await page.textContent('#crm-receipts'), new RegExp(core.fmtDate(daysAgo(4)).replace(/\//g, '\\/')), 'receipt dates are DD/MM/YYYY');
     assert.equal(await page.$$eval('#crm-main .links a', (els) => els.map((e) => e.getAttribute('href')).every((h) => h === '/?view=classic')), true, 'every action links to the classic dashboard (view=classic survives the switch)');
     // the debtor row opens the patient drawer
@@ -318,6 +360,52 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
     assert.ok(srv.actions.some((a) => a.action === 'debtAging' && a.user === 'ortal'));
     const links = await o.page.$$eval('#crm-main .links a', (els) => els.map((e) => e.textContent));
     assert.equal(links.length, 1); assert.match(links[0], /בקרת גבייה/);
+    assert.deepEqual(o.errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('«לגבייה בתאריך» (Vered): pick a date → the patient due that day, KPIs, «דווח תשלום» opens «חשבון» with the form on THAT cycle; Ortal has no report button', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="billing"]');
+    await page.waitForSelector('#crm-due-date');
+    await page.fill('#crm-due-date', daysAgo(30));
+    await page.dispatchEvent('#crm-due-date', 'change');
+    await page.waitForSelector('#crm-due tbody tr');
+    // (a released patient whose month-anniversary may also fall on this day can be listed too — by design)
+    const rows = await page.$$eval('#crm-due tbody tr', (els) => els.map((e) => e.textContent));
+    const i = rows.findIndex((t) => /דנה כהן/.test(t));
+    assert.ok(i >= 0, 'דנה כהן is due on her entry date');
+    assert.match(rows[i], /₪6,000/); assert.match(rows[i], /לא שולם/);
+    const kpis = await page.$$eval('.kpis .kpi .v', (els) => els.map((e) => e.textContent));
+    assert.equal(kpis[0], String(rows.length));
+    // the top search narrows the list and its KPIs
+    await page.fill('#crm-search', 'דנה');
+    await page.press('#crm-search', 'Enter');
+    await page.waitForFunction(() => document.querySelectorAll('#crm-due tbody tr').length === 1);
+    assert.deepEqual((await page.$$eval('.kpis .kpi .v', (els) => els.map((e) => e.textContent))).slice(0, 3), ['1', '₪6,000', '₪0']);
+    await page.click('#crm-due [data-due-report="0"]');
+    await page.waitForSelector('#crm-drawer form[data-form="payment-report"]');
+    assert.equal(await page.getAttribute('#crm-drawer', 'aria-hidden'), 'false');
+    assert.equal(await page.inputValue('#crm-drawer input[name="coverageStart"]'), daysAgo(30));
+    assert.equal(await page.inputValue('#crm-drawer input[name="amount"]'), '6000');
+    assert.deepEqual(errors, []);
+    assert.deepEqual(srv.saves, [], 'opening the form writes nothing');
+    // a date nobody is due on → the empty message
+    await page.keyboard.press('Escape');
+    await page.fill('#crm-due-date', daysAgo(31));
+    await page.dispatchEvent('#crm-due-date', 'change');
+    await page.waitForFunction(() => /אין תשלומים לגבייה בתאריך זה/.test(document.querySelector('#crm-main').textContent));
+    // Ortal: the list, no report button
+    const o = await open(browser, srv.port, 'ortal', 1366);
+    await o.page.click('#crm-nav button[data-area="billing"]');
+    await o.page.waitForSelector('#crm-due-date');
+    await o.page.fill('#crm-due-date', daysAgo(30));
+    await o.page.dispatchEvent('#crm-due-date', 'change');
+    await o.page.waitForSelector('#crm-due tbody tr');
+    assert.equal(await o.page.$('#crm-due [data-due-report]'), null);
     assert.deepEqual(o.errors, []);
   } finally { await browser.close(); srv.close(); }
 });
@@ -443,7 +531,7 @@ test('C10 «דווח תשלום» in the account pane (Vered): rules validate cl
   } finally { await browser.close(); srv.close(); }
 });
 
-test('C11 discount / amount / settle (Vered): the three classic writes from the account pane with the legacy key; client errors first; a refusal keeps the form; saved → three reads again; «זיכויים לתשלום» in the area opens the drawer form', { skip: skip && 'playwright/chromium missing' }, async () => {
+test('C11 finance CRM: Vered discount + amount, Vered requests refund, Sandra approves exact amount, Ortal alone settles', { skip: skip && 'playwright/chromium missing' }, async () => {
   const srv = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
@@ -454,8 +542,10 @@ test('C11 discount / amount / settle (Vered): the three classic writes from the 
     await page.click('#crm-drawer [data-tab="account"]');
     await page.waitForSelector('#crm-account-open');
     assert.match(await page.textContent('#crm-account-credits'), /ימים שלא נוצלו/);
-    assert.equal(await page.$$eval('#crm-account-credits [data-settle-open]', (els) => els.length), 1, 'only the pending credit can be settled');
-    // discount: reason required (client), then the classic body
+    assert.equal(await page.$$eval('#crm-account-credits [data-refund-action="request"]', (els) => els.length), 1,
+      'Vered requests approval, never settles directly');
+    assert.equal(await page.$$eval('#crm-account-credits [data-refund-action="settle"]', (els) => els.length), 0);
+    // Existing Vered discount remains authorized, with a required reason.
     await page.click('#crm-account-open [data-discount-open="1"]');
     await page.waitForSelector('form[data-form="small-discount"]');
     await page.fill('form.report [name="discountAmount"]', '500');
@@ -468,41 +558,68 @@ test('C11 discount / amount / settle (Vered): the three classic writes from the 
     assert.equal(srv.saves[0].action, 'setBillingDiscount');
     assert.deepEqual(srv.saves[0].discount, { patientId: 'ramot::דנה כהן::' + daysAgo(30), month: daysAgo(3).slice(0, 7), discountAmount: 500, discountReason: 'הסכמה עם המשפחה' });
     await page.waitForFunction(() => !!document.querySelector('#crm-account-open'));
-    assert.equal(srv.actions.filter((a) => a.action === 'getCredits').length, 2, 'saved → re-read');
-    // amount override: refused by the server → the form stays with the message
+    // Existing amount override: server refusal keeps form; retry succeeds.
     await page.click('#crm-account-open [data-amount-open="0"]');
     await page.waitForSelector('form[data-form="small-amount"]');
-    assert.equal(await page.inputValue('form.report [name="amount"]'), '6000');
     saveAnswer = () => ({ ok: false, error: 'bad_amount' });
     await page.fill('form.report [name="amount"]', '5500');
     await page.click('form.report button[type="submit"]');
     await page.waitForFunction(() => /bad_amount/.test(document.querySelector('form.report .err[data-err="_form"]').textContent));
     assert.equal(srv.saves[1].action, 'upsertBillingOverride');
-    assert.deepEqual(srv.saves[1].override, { id: 'ovr::ramot::דנה כהן::' + daysAgo(30) + '::' + daysAgo(70).slice(0, 7), patientId: 'ramot::דנה כהן::' + daysAgo(30), month: daysAgo(70).slice(0, 7), amount: 5500, created: TODAY });
     saveAnswer = null;
     await page.click('form.report button[type="submit"]');
     await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
     assert.equal(srv.saves.length, 3);
-    // settle a pending credit from the account pane
-    await page.waitForSelector('#crm-account-credits [data-settle-open="cr-1"]');
-    await page.click('#crm-account-credits [data-settle-open="cr-1"]');
-    await page.waitForSelector('form[data-form="small-settle"]');
-    await page.click('form.report button[type="submit"]');
-    await page.waitForFunction(() => /אמצעי/.test(document.querySelector('form.report .err[data-err="method"]').textContent));
-    await page.selectOption('form.report [name="method"]', 'ביט');
-    await page.click('form.report button[type="submit"]');
-    await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
-    assert.equal(srv.saves[3].action, 'settleRefund');
-    assert.equal(srv.saves[3].creditId, 'cr-1'); assert.equal(srv.saves[3].paidDate, TODAY); assert.equal(srv.saves[3].method, 'ביט');
-    // from the גבייה area: «סמן כשולם» opens the patient drawer on חשבון with the form
+
+    // Request from Vered's CRM account; after saving, source re-read changes the stage.
+    await page.waitForSelector('#crm-account-credits [data-refund-action="request"][data-refund-id="cr-1"]');
+    await page.click('#crm-account-credits [data-refund-action="request"][data-refund-id="cr-1"]');
+    await page.waitForSelector('form[data-form="refund-action"]');
+    assert.match(await page.textContent('form[data-form="refund-action"]'), /1200|1,200/);
+    await page.click('form[data-form="refund-action"] button[type="submit"]');
+    await page.waitForFunction(() => document.querySelector('#crm-account-credits') &&
+      /הועבר לאישור סנדרה/.test(document.querySelector('#crm-account-credits').textContent), null, { timeout: 8000 });
+    assert.equal(srv.saves.filter((x) => x.action === 'requestRefundPayoutApproval').length, 1);
+    assert.ok(!srv.saves.some((x) => x.action === 'settleRefund'), 'Vered never sends a settlement');
     await page.keyboard.press('Escape');
     await page.click('#crm-nav button[data-area="billing"]');
-    await page.waitForSelector('#crm-pending-credits [data-settle-open="cr-1"]');
-    await page.click('#crm-pending-credits [data-settle-open="cr-1"]');
-    await page.waitForSelector('form[data-form="small-settle"]');
-    assert.equal(await page.getAttribute('#crm-drawer', 'aria-hidden'), 'false');
-    assert.match(await page.textContent('#crm-drawer h2'), /דנה כהן/);
+    await page.waitForSelector('#crm-pending-credits');
+    assert.equal(await page.$$eval('#crm-pending-credits [data-refund-action="settle"]', (els) => els.length), 0);
+
+    // Sandra sees the same exact saved request and signs off the amount.
+    const { page: sandra, errors: sandraErrors } = await open(browser, srv.port, 'sandra', 1366);
+    await sandra.click('#crm-nav button[data-area="billing"]');
+    await sandra.waitForSelector('#crm-pending-credits [data-refund-action="approve"][data-refund-id="cr-1"]');
+    await sandra.click('#crm-pending-credits [data-refund-action="approve"][data-refund-id="cr-1"]');
+    await sandra.waitForSelector('form[data-form="refund-action"]');
+    assert.match(await sandra.textContent('form[data-form="refund-action"]'), /1200|1,200/);
+    await sandra.click('form[data-form="refund-action"] button[type="submit"]');
+    await sandra.waitForFunction(() => document.querySelector('#crm-pending-credits') &&
+      /אושר על ידי סנדרה/.test(document.querySelector('#crm-pending-credits').textContent), null, { timeout: 8000 });
+    assert.equal(srv.saves.filter((x) => x.action === 'approveRefundPayout').length, 1);
+    assert.equal(await sandra.$$eval('#crm-pending-credits [data-refund-action="settle"]', (els) => els.length), 0);
+
+    // Ortal, on her controller CRM tab, can pay only AFTER Sandra's approval.
+    const { page: ortal, errors: ortalErrors } = await open(browser, srv.port, 'ortal', 1366);
+    await ortal.click('#crm-nav button[data-area="billing"]');
+    await ortal.waitForSelector('#crm-pending-credits [data-refund-action="settle"][data-refund-id="cr-1"]');
+    await ortal.click('#crm-pending-credits [data-refund-action="settle"][data-refund-id="cr-1"]');
+    await ortal.waitForSelector('form[data-form="refund-action"]');
+    await ortal.click('form[data-form="refund-action"] button[type="submit"]');
+    await ortal.waitForFunction(() => /אמצעי/.test(document.querySelector('form[data-form="refund-action"] .err[data-err="method"]').textContent));
+    assert.equal(srv.saves.filter((x) => x.action === 'settleRefund').length, 0);
+    await ortal.selectOption('form[data-form="refund-action"] [name="method"]', 'ביט');
+    await ortal.click('form[data-form="refund-action"] button[type="submit"]');
+    await ortal.waitForFunction(() => !document.querySelector('#crm-pending-credits [data-refund-action="settle"]'), null, { timeout: 8000 });
+    const settled = srv.saves.filter((x) => x.action === 'settleRefund');
+    assert.equal(settled.length, 1);
+    assert.equal(settled[0].proxyUserId, 'ortal');
+    assert.equal(settled[0].creditId, 'cr-1');
+    assert.equal(settled[0].method, 'ביט');
+    assert.equal(settled[0].paidDate, TODAY);
     assert.deepEqual(errors, []);
+    assert.deepEqual(sandraErrors, []);
+    assert.deepEqual(ortalErrors, []);
   } finally { await browser.close(); srv.close(); }
 });
 
@@ -627,11 +744,24 @@ test('C17 «משוחררים» (Vered): the discharged list with its flags; rest
     assert.match(txt, /נועה לוי/); assert.match(txt, /משוחרר לטיפול חוץ/); assert.match(txt, /שחר/); assert.match(txt, /לא נשלח/);
     // «העבר לאמבולטורי»
     const outCalls = [];
-    await page.route('**/api/outpatient-lead', (route) => { outCalls.push(JSON.parse(route.request().postData())); route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, sent: true }) }); });
+    // first answer: no phone → the row asks for it (CHANGELOG-crm-followups-1104.md); then the send with the phone goes through
+    await page.route('**/api/outpatient-lead', (route) => {
+      const b = JSON.parse(route.request().postData()); outCalls.push(b);
+      route.fulfill({ status: b.phone ? 200 : 502, contentType: 'application/json', body: JSON.stringify(b.phone ? { ok: true, sent: true } : { ok: false, error: 'no_phone', message: 'לא נשלח לאמבולטורי: אין טלפון למטופל/ת.' }) });
+    });
     page.once('dialog', (d) => d.accept());
     await page.click('[data-to-outpatient="dx1"]');
+    await page.waitForSelector('#crm-out-phone input[name="phone"]', { timeout: 5000 });
+    assert.match(await page.textContent('#crm-discharged'), /לא נשלח/, 'still not sent');
+    await page.fill('#crm-out-phone input[name="phone"]', '12');
+    await page.click('#crm-out-phone button[type="submit"]');
+    assert.match(await page.textContent('#crm-out-phone [data-err="phone"]'), /טלפון לא תקין/);
+    assert.equal(outCalls.length, 1, 'an invalid phone is not sent');
+    await page.fill('#crm-out-phone input[name="phone"]', '052-765 4321');
+    await page.click('#crm-out-phone button[type="submit"]');
     await page.waitForFunction(() => /נשלח/.test(document.querySelector('#crm-discharged').textContent) && !/לא נשלח/.test(document.querySelector('#crm-discharged').textContent), null, { timeout: 5000 });
-    assert.deepEqual(outCalls, [{ dischargeId: 'dx1', manual: true }]);
+    assert.deepEqual(outCalls, [{ dischargeId: 'dx1', manual: true }, { dischargeId: 'dx1', manual: true, phone: '0527654321' }]);
+    assert.equal(await page.$('#crm-out-phone'), null, 'the phone row closes once sent');
     assert.ok(!(await page.$('[data-to-outpatient="dx1"]')), 'sent → no second button');
     // restore to the previous status
     await page.click('[data-restore="dx1"]');
@@ -840,7 +970,7 @@ test('C6 admission + direct add (Vered, finance): «קליטה לבית» posts 
     await page.fill('form[data-form="direct-add"] [name="pay"]', '21000');
     await page.selectOption('form[data-form="direct-add"] [name="funder"]', 'מכבי');
     await page.click('form[data-form="direct-add"] button[type="submit"]');
-    await page.waitForFunction(() => /הוספת/.test(document.querySelector('#crm-toast').textContent), null, { timeout: 5000 });
+    await page.waitForFunction(() => /הקליטה/.test(document.querySelector('#crm-toast')?.textContent || ''), null, { timeout: 5000 });
     const da = srv.saves.filter((b) => b.action === 'saveAll')[1];
     assert.deepEqual(Object.keys(da.patients), ['rehab']);
     const dp = da.patients.rehab[da.patients.rehab.length - 1];
@@ -960,9 +1090,15 @@ test('Stage 1c (Vered): «שיחות לביצוע» on היום שלי from getT
     await page.fill('#crm-tasks form[data-form="task-new"] input[name="title"]', 'לשלוח טופס');
     await page.fill('#crm-tasks form[data-form="task-new"] input[name="dueDate"]', daysAgo(-1));
     await page.click('#crm-tasks form[data-form="task-new"] button[type="submit"]');
+    assert.match(await page.textContent('#crm-tasks form[data-form="task-new"] [data-err="dueTime"]'), /שעה/, 'a time is required (CHANGELOG-crm-task-date-time.md)');
+    assert.equal(srv.saves.filter((x) => x.action === 'createTask').length, 0);
+    assert.equal(await page.$('#crm-tasks form[data-form="task-new"] [name="weekStart"]'), null, 'no week field');
+    assert.equal(await page.$('#crm-tasks form[data-form="task-new"] [name="reason"]'), null, 'no «למה עכשיו»');
+    await page.fill('#crm-tasks form[data-form="task-new"] input[name="dueTime"]', '10:30');
+    await page.click('#crm-tasks form[data-form="task-new"] button[type="submit"]');
     await page.waitForFunction(() => /המשימה נוצרה/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 5000 });
     const created = srv.saves.filter((x) => x.action === 'createTask')[0];
-    assert.equal(created.task.leadId, 'L1'); assert.equal(created.task.title, 'לשלוח טופס'); assert.equal(created.task.dueDate, daysAgo(-1)); assert.match(created.submissionId, /^sub-[0-9a-f]{32}$/);
+    assert.equal(created.task.leadId, 'L1'); assert.equal(created.task.title, 'לשלוח טופס'); assert.equal(created.task.dueDate, daysAgo(-1)); assert.equal(created.task.dueTime, '10:30'); assert.equal(created.task.reason, ''); assert.match(created.submissionId, /^sub-[0-9a-f]{32}$/);
     await page.click('#crm-tasks [data-task-resched="task-' + '1'.repeat(32) + '"]');
     await page.fill('#crm-tasks form[data-form="task-resched"] input[name="dueDate"]', daysAgo(-5));
     await page.click('#crm-tasks form[data-form="task-resched"] button[type="submit"]');
@@ -988,7 +1124,7 @@ test('Stage 1c (Vered): «שיחות לביצוע» on היום שלי from getT
   } finally { await browser2.close(); srv2.close(); }
 });
 
-test('Stage 2 «היום שלי» (Vered + Dana, 1366 + 390 px): header date; views היום / השבוע (range, grouped by day, the follow-up on its day) / הושלמו (who / when, opens the record); quick actions pick a subject; Dana has no money card and no «גבייה», gets «מה דחוף בבתים»; mobile: two-column cards, no horizontal scroll', { skip: skip && 'playwright/chromium missing' }, async () => {
+test('Stage 2 «היום שלי» (Vered + Dana, 1366 + 390 px): header date; views היום / השבוע (range, grouped by day, the follow-up on its day) / הושלמו (who / when, opens the record); quick actions pick a subject; Dana has no money card and no «גבייה» (no «מה דחוף בבתים» since 04/11/2026); mobile: two-column cards, no horizontal scroll', { skip: skip && 'playwright/chromium missing' }, async () => {
   const srv = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   const dmy = (iso) => iso.split('-').reverse().join('/');
@@ -1041,7 +1177,7 @@ test('Stage 2 «היום שלי» (Vered + Dana, 1366 + 390 px): header date; vi
     await page.waitForSelector('.kpis.cards');
     if (process.env.CRM_SHOT) await page.screenshot({ path: process.env.CRM_SHOT + '/today-390-dana.png', fullPage: true });
     const labels = await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent));
-    assert.deepEqual(labels, ['מה דחוף בבתים', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'פניות חדשות ללא מגע'], 'no money card — an operational domain in its place');
+    assert.deepEqual(labels, ['שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'לידים חדשים ללא מגע'], 'no money card; «מה דחוף בבתים» left «היום שלי» (04/11/2026)');
     assert.ok(!/גבייה|₪/.test(await page.textContent('#crm-main')), 'no money anywhere on her day');
     assert.ok(!srv2.actions.some((a) => a.action === 'debtAging'), 'debtAging never requested for her');
     assert.ok(!(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); }))).includes('גבייה'));
@@ -1128,3 +1264,260 @@ test('Stage 3 triage (Vered, 1366 px): reached from «פניות» with a comput
     assert.deepEqual(errors, []);
   } finally { DATA.leads.splice(DATA.leads.length - extra.length, extra.length); await browser.close(); srv.close(); }
 });
+
+test('Vered 04/11/2026: the app icon in the menu; «לידים»; no urgent band; a patient-side reschedule saves the lead, records the change and offers the manager WhatsApp (CHANGELOG-crm-vered-feedback-1104.md)', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    assert.equal(await page.getAttribute('.crm-brand img.logo', 'src'), '/icons/icon-192.png');
+    assert.equal(await page.getAttribute('link[rel="icon"]', 'href'), '/icons/icon-192.png');
+    assert.equal(await page.locator('#crm-main section.urgent').count(), 0);
+    await page.click('[data-area="leads"]');
+    assert.equal(await page.textContent('#crm-title'), 'לידים');
+    await page.click('.card[data-open-lead="L2"] .name');
+    const f = '#crm-drawer form[data-form="patient-change"]';
+    await page.locator(f).locator('..').locator('summary').click();
+    await page.click(f + ' button[type="submit"]');
+    assert.match(await page.textContent(f + ' [data-err="change"]'), /בוטלה או שונה מועד/, 'nothing is chosen → refused in the page');
+    const newDay = daysAgo(-3);
+    await page.check(f + ' input[name="change"][value="rescheduled"]');
+    await page.fill(f + ' input[name="newDate"]', newDay);
+    await page.fill(f + ' input[name="newTime"]', '12:15');
+    await page.fill(f + ' input[name="note"]', 'ביקשו לדחות');
+    await page.click(f + ' button[type="submit"]');
+    await page.waitForSelector('#crm-drawer a[data-wa-manager]', { timeout: 5000 });
+    const save = srv.saves.filter((x) => x.action === 'saveAll').pop();
+    assert.deepEqual([save.leads[0].id, save.leads[0].visitDate, save.leads[0].visitTime, save.leads[0].meetingOutcome], ['L2', newDay, '12:15', '']);
+    const flag = srv.saves.filter((x) => x.action === 'logLeadFlag').pop();
+    assert.deepEqual([flag.flag.leadId, flag.flag.kind, flag.flag.change, flag.flag.prevDate, flag.flag.prevTime, flag.flag.newDate, flag.flag.withWhom], ['L2', 'meeting_patient_change', 'rescheduled', TODAY, '13:30', newDay, 'אורן']);
+    assert.match(flag.submissionId, /^sub-[0-9a-f]{32}$/);
+    const href = await page.getAttribute('#crm-drawer a[data-wa-manager]', 'href');
+    assert.match(href, /^https:\/\/wa\.me\/\d*\?text=/);
+    assert.match(decodeURIComponent(href.split('?text=')[1]), /גלי כהן.*שינה\/תה את מועד הפגישה.*ביקשו לדחות/s);
+    assert.match(await page.textContent('#crm-drawer .drawer-head'), /שונתה ע״י המטופל\/ת/, 'the card says who changed it');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('Vered 04/11/2026 (2): every save shows a spinner on its button until the answer; «סיבת המתנה» saves on the click (no hidden «שמירה»), the chip shows the reason next to any other next step (CHANGELOG-crm-followups-1104.md)', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    // slow every write by 700 ms so the busy state is observable
+    await page.route('**/api/sheets', async (route) => {
+      const b = route.request().postData();
+      if (b && /"action":"(saveAll|logLeadFlag)"/.test(b)) await new Promise((r) => setTimeout(r, 700));
+      route.continue();
+    });
+    await page.click('[data-area="leads"]');
+    await page.click('.card[data-open-lead="L2"] .name');
+    const f = '#crm-drawer form[data-form="note"]';
+    await page.locator(f).locator('..').locator('summary').click();
+    await page.fill(f + ' textarea[name="note"]', 'בדיקת ספינר');
+    await page.click(f + ' button[type="submit"]');
+    await page.waitForSelector(f + ' button[type="submit"][aria-busy="true"]', { state: 'attached', timeout: 2000 });
+    assert.equal(await page.$eval(f + ' button[type="submit"]', (b) => b.disabled), true, 'disabled while saving');
+    await page.waitForFunction((sel) => { const b = document.querySelector(sel); return b && b.getAttribute('aria-busy') !== 'true' && !b.disabled; }, f + ' button[type="submit"]', { timeout: 5000 });
+    // → רשימת המתנה, then the reason saves on the click
+    await page.click('#crm-drawer [data-stage-next="L2"]');
+    await page.waitForSelector('#crm-drawer form[data-form="wait-reason"]', { timeout: 5000 });
+    assert.equal(await page.locator('#crm-drawer form[data-form="wait-reason"] button[type="submit"]').count(), 0, 'no separate «שמירה» to forget');
+    // clicked while the stage move is still saving (700 ms) — the choice waits, it is never dropped
+    await page.check('#crm-drawer form[data-form="wait-reason"] input[value="funder"]');
+    await page.waitForFunction(() => /שומר/.test((document.querySelector('#crm-drawer [data-wait-state]') || {}).textContent || ''), null, { timeout: 2000 });
+    await page.waitForFunction(() => /נשמר/.test((document.querySelector('#crm-drawer [data-wait-state]') || {}).textContent || ''), null, { timeout: 5000 });
+    const flag = srv.saves.filter((x) => x.action === 'logLeadFlag').pop();
+    assert.deepEqual([flag.flag.leadId, flag.flag.kind, flag.flag.reason], ['L2', 'waitlist_reason', 'funder']);
+    assert.match(await page.textContent('#crm-drawer .drawer-head'), /ממתין לאישור הקופה/);
+    await page.click('#crm-drawer-close');
+    assert.match(await page.textContent('.card[data-open-lead="L2"]'), /ממתין לאישור הקופה/, 'the board card shows the reason');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('Vered 04/11/2026 (3): a released patient\'s card says «שוחרר/ה» with the exit date and offers «העבר לאמבולטורי» — phone optional, asked only when none is found (CHANGELOG-crm-followups-1104.md)', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    const outCalls = [];
+    await page.route('**/api/outpatient-lead', (route) => {
+      const b = JSON.parse(route.request().postData()); outCalls.push(b);
+      route.fulfill({ status: b.phone ? 200 : 502, contentType: 'application/json', body: JSON.stringify(b.phone ? { ok: true, sent: true } : { ok: false, error: 'no_phone', message: 'לא נשלח לאמבולטורי: אין טלפון למטופל/ת.' }) });
+    });
+    await page.fill('#crm-search', 'נועה');
+    await page.click('#crm-search-go');
+    await page.locator('[data-open-patient="px"]').first().click();
+    await page.waitForSelector('#crm-drawer form[data-form="out-phone"]', { timeout: 5000 });
+    const head = await page.textContent('#crm-drawer');
+    assert.match(head, /שוחרר\/ה/); assert.ok(!/\breleased\b/.test(head), 'no raw status key'); assert.match(head, /תאריך יציאה/);
+    await page.click('#crm-drawer form[data-form="out-phone"] button[type="submit"]');   // no phone typed → the server is asked first
+    await page.waitForFunction(() => /לא נמצא טלפון/.test((document.querySelector('#crm-drawer form[data-form="out-phone"] [data-err="phone"]') || {}).textContent || ''), null, { timeout: 5000 });
+    await page.fill('#crm-drawer form[data-form="out-phone"] input[name="phone"]', '0527654321');
+    await page.click('#crm-drawer form[data-form="out-phone"] button[type="submit"]');
+    await page.waitForFunction(() => /נשלח לאמבולטורי ✓/.test(document.querySelector('#crm-drawer').textContent), null, { timeout: 5000 });
+    assert.deepEqual(outCalls, [{ dischargeId: 'dx1', manual: true }, { dischargeId: 'dx1', manual: true, phone: '0527654321' }]);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+/* «KPI», «תפוסה היום», «בקרת עבודה», «חריגים לבדיקה» (CHANGELOG-crm-kpi-tab.md) */
+test('CRM «KPI» (Vered + Dana): sections render, break-even is finance-only and its expenses save to the shared browser key; «תפוסה היום»; «חריגים לבדיקה» in «גבייה»', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    for (const width of [1366, 390]) {
+      const { ctx, page, errors } = await open(browser, srv.port, 'vered', width);
+      if (width === 390) await page.click('#crm-burger');
+      await page.click('#crm-nav button[data-area="kpi"]');
+      await page.waitForSelector('#crm-kpi-occ');
+      for (const sel of ['#crm-kpi-periods', '#crm-kpi-occ-houses', '#crm-kpi-conv', '#crm-kpi-network', '#crm-kpi-breakeven', '#crm-kpi-stay']) assert.ok(await page.$(sel), sel + ' at ' + width);
+      assert.match(await page.textContent('#crm-title'), /KPI/);
+      await page.click('[data-kpi-period="this_year"]');
+      assert.equal(await page.getAttribute('[data-kpi-period="this_year"]', 'aria-pressed'), 'true');
+      assert.ok(await noHScroll(page), 'no horizontal scroll at ' + width);
+      if (width === 1366) {
+        await page.click('#crm-be-edit summary');
+        await page.fill('form[data-form="breakeven"] [name="hqCost"]', '250000');
+        await page.click('form[data-form="breakeven"] button[type="submit"]');
+        await page.waitForFunction(() => /עלות מטה/.test(document.querySelector('#crm-kpi-network').textContent) && /250,000/.test(document.querySelector('#crm-kpi-network').textContent));
+        const stored = JSON.parse(await page.evaluate(() => localStorage.getItem('ezone-breakeven-v1')));
+        assert.equal(stored.hqCost, 250000, 'the classic tab\'s key');
+        await page.click('#crm-nav button[data-area="occupancy"]');
+        await page.waitForSelector('#crm-occ-today');
+        assert.match(await page.textContent('#crm-occ-today'), /תפוסה היום/);
+        assert.match(await page.textContent('#crm-occ-today'), /%/);
+        await page.click('#crm-nav button[data-area="control"]');
+        await page.waitForSelector('#crm-control-about');
+        await page.click('#crm-nav button[data-area="billing"]');
+        await page.waitForSelector('#crm-anomalies-title');
+        assert.ok(await page.$('#crm-anomalies tr[data-anomaly="zero_pay_in_house"]'), 'a patient in the house with price 0 is listed');
+        await page.click('#crm-anomalies tr[data-anomaly="zero_pay_in_house"] [data-open-patient]');
+        await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+      }
+      assert.deepEqual(errors, []);
+      await ctx.close();
+    }
+    const { ctx, page, errors } = await open(browser, srv.port, 'dana', 1366);
+    await page.click('#crm-nav button[data-area="kpi"]');
+    await page.waitForSelector('#crm-kpi-occ');
+    assert.equal(await page.$('#crm-kpi-breakeven'), null, 'no break-even for an operational session');
+    assert.deepEqual(errors, []);
+    await ctx.close();
+  } finally { await browser.close(); srv.close(); }
+});
+
+/* Manual credits + credit edit in the CRM (CHANGELOG-crm-manual-credits.md) */
+test('CRM credits (Vered edits, Sandra adds a manual credit): saveCredit from the patient card; reasons enforced; no classic link', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const openAccount = async (id) => {
+      const o = await open(browser, srv.port, id, 1366);
+      await o.page.click('#crm-nav button[data-area="clients"]');
+      await o.page.click('table.tbl tbody tr[data-open-patient="p1"]');
+      await o.page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+      await o.page.click('#crm-drawer [data-tab="account"]');
+      await o.page.waitForSelector('#crm-account-credits');
+      return o;
+    };
+    const v = await openAccount('vered');
+    assert.equal(await v.page.$('[data-credit-new]'), null, 'Vered has no manual-credit button (Sandra only)');
+    await v.page.click('#crm-account-credits [data-credit-edit="cr-1"]');
+    await v.page.waitForSelector('form[data-form="credit-edit"]');
+    assert.equal(await v.page.getAttribute('form[data-form="credit-edit"] [name="amount"]', 'readonly'), '', 'amount is Sandra\'s');
+    await v.page.fill('form[data-form="credit-edit"] [name="notes"]', 'עודכן מול המשפחה');
+    await v.page.click('form[data-form="credit-edit"] button[type="submit"]');
+    await v.page.waitForFunction(() => /הזיכוי נשמר/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 5000 });
+    const edit = srv.saves.filter((x) => x.action === 'saveCredit')[0];
+    assert.deepEqual([edit.credit.id, edit.credit.amount, edit.credit.status, edit.credit.notes], ['cr-1', 1200, 'pending', 'עודכן מול המשפחה']);
+    assert.ok(!(await v.page.textContent('#crm-drawer')).includes('וזיכויים ידניים בדשבורד'));
+    assert.deepEqual(v.errors, []);
+    await v.ctx.close();
+    const sa = await openAccount('sandra');
+    await sa.page.click('[data-credit-new]');
+    await sa.page.waitForSelector('form[data-form="credit-new"]');
+    await sa.page.fill('form[data-form="credit-new"] [name="amount"]', '500');
+    await sa.page.click('form[data-form="credit-new"] button[type="submit"]');
+    await sa.page.waitForFunction(() => /סיבה/.test((document.querySelector('form[data-form="credit-new"] .err[data-err="reason"]') || {}).textContent || ''));
+    assert.equal(srv.saves.filter((x) => x.action === 'saveCredit').length, 1, 'nothing sent without a reason');
+    await sa.page.fill('form[data-form="credit-new"] [name="reason"]', 'מחווה למשפחה');
+    await sa.page.click('form[data-form="credit-new"] button[type="submit"]');
+    await sa.page.waitForFunction(() => /הזיכוי נשמר/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 5000 });
+    const made = srv.saves.filter((x) => x.action === 'saveCredit')[1];
+    assert.deepEqual([made.credit.id, made.credit.creditType, made.credit.amount, made.credit.reason, made.credit.patientId], ['', 'other', 500, 'מחווה למשפחה', 'p1']);
+    assert.deepEqual(sa.errors, []);
+    await sa.ctx.close();
+  } finally { await browser.close(); srv.close(); }
+});
+
+/* A task reminder before it is due (CHANGELOG-crm-task-date-time.md) */
+test('task reminder: a task of mine due in ~10 minutes is announced once (toast); it is on «היום שלי»', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const hm = (ms) => new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ms));
+  const soon = Date.now() + 10 * 60000;
+  if (israelDay(soon) !== TODAY) return;   // never across midnight
+  const srv = await boot();
+  tasksAnswer = () => ({ ok: true, total: 1, tasks: [{ id: 'task-' + '9'.repeat(32), kind: 'call', leadId: 'L1', title: 'להתקשר לבעלה', assignee: 'ורד', dueDate: TODAY, dueTime: hm(soon), status: 'open', source: 'manual' }] });
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.waitForFunction(() => /להתקשר לבעלה/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 8000 });
+    assert.match(await page.textContent('#crm-toast'), /⏰ בעוד (9|10) דק׳/);
+    assert.match(await page.textContent('#crm-main'), /להתקשר לבעלה/, 'on «היום שלי»');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+for (const width of [1366, 390]) {
+  test(`audit acceptance ${width}px: collection owner, cancellation and exact report drill-down`, { skip: skip && 'playwright/chromium missing' }, async () => {
+    const savedLeads = DATA.leads;
+    const makeLead = (id, extra = {}) => ({ id, name: 'בדיקת קבלה ' + id, house: 'ramot', stage: 'visit', assignedTo: 'ורד', visitDate: daysAgo(4), created: daysAgo(8), ...extra });
+    DATA.leads = [
+      ...Array.from({ length: 3 }, (_, i) => makeLead('unread-' + i, { meetingReportedAt: daysAgo(2) + 'T09:00:00Z' })),
+      ...Array.from({ length: 14 }, (_, i) => makeLead('decision-' + i, { meetingReportedAt: daysAgo(2) + 'T09:00:00Z', meetingSeen: '1' })),
+      ...Array.from({ length: 8 }, (_, i) => makeLead('missing-' + i)),
+      makeLead('cancelled', { meetingOutcome: 'cancelled' })
+    ];
+    // This fixture changes upstream data directly between reads; disable its
+    // read cache so the case measures queue behavior, not the 30-second TTL.
+    const srv = await boot({ readCacheMs: 0 });
+    let nextTasks = [];
+    tasksAnswer = () => ({ ok: true, total: nextTasks.length, tasks: nextTasks });
+    indexAnswer = () => ({ ok: true, leads: {}, patients: {}, flags: {} });
+    const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+    try {
+      const { page, errors } = await open(browser, srv.port, 'vered', width);
+      await page.waitForSelector('[data-row^="d:"]');
+      await page.selectOption('#f-owner', 'ורד');
+      assert.equal(await page.locator('[data-row^="d:"]').count(), 2, 'both debt cycles survive owner filter');
+      await page.locator('button.kpi[data-domain="followup"]').click();
+      assert.equal(await page.locator('[data-row="f:cancel:cancelled"]').count(), 1);
+      if (width < 600) await page.click('#crm-burger');
+      await page.click('#crm-nav [data-area="control"]');
+      const unread = page.locator('.kpi').filter({ hasText: 'דיווחי מנהל/ת שלא נקראו' });
+      assert.equal(await unread.locator('.v').textContent(), '3');
+      await unread.click();
+      const section = page.locator('[data-control-section="unseen"]');
+      assert.equal(await section.locator('[data-row]').count(), 3);
+      assert.equal(await section.locator('[data-open-lead^="decision-"]').count(), 0);
+      assert.equal(await section.locator('[data-open-lead^="missing-"]').count(), 0);
+      assert.equal(await noHScroll(page), true, 'exact queue fits the viewport');
+      if (process.env.EZONE_AUDIT_SCREENSHOT_DIR) await page.screenshot({ path: pathForAuditScreenshot(width), fullPage: true });
+      await section.getByRole('button', { name: 'חזרה לכל התחומים', exact: true }).click();
+      assert.equal(await page.locator('[data-control-section]').count(), 0);
+      nextTasks = [{ id: 'task-audit-callback', kind: 'call', leadId: 'cancelled', title: 'חזרה אחרי ביטול', assignee: 'ורד', dueDate: daysAgo(-3), status: 'open', source: 'manual' }];
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.locator('button.kpi[data-domain="followup"]').click();
+      assert.equal(await page.locator('[data-row="f:cancel:cancelled"]').count(), 0, 'existing future callback prevents duplicate follow-up');
+      await page.locator('button.kpi[data-domain="calls"]').click();
+      assert.equal(await page.locator('[data-row]').filter({ hasText: 'חזרה אחרי ביטול' }).count(), 1);
+      assert.deepEqual(srv.saves, [], 'all browser actions are fixture reads');
+      assert.deepEqual(errors, []);
+    } finally { await browser.close(); srv.close(); DATA.leads = savedLeads; }
+  });
+}
+function pathForAuditScreenshot(width) {
+  return require('node:path').join(process.env.EZONE_AUDIT_SCREENSHOT_DIR, 'dashboard-control-' + width + '.png');
+}

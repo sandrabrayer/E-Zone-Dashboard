@@ -100,6 +100,8 @@ function loadApp(script) {
       loadDebtAging: () => loadDebtAging(),
       dischargePatient: (p) => dischargePatient(p),
       showCreditsModal: (o) => showCreditsModal(o),
+      requestRefundPayoutRow: (r) => requestRefundPayoutRow(r),
+      approveRefundPayoutRow: (r) => approveRefundPayoutRow(r),
       settleRefundRow: (r, d, m) => settleRefundRow(r, d, m),
       approveRefundExceptionRow: (r, a, why) => approveRefundExceptionRow(r, a, why),
       doRestorePatientAsNewLead: (p) => doRestorePatientAsNewLead(p),
@@ -184,9 +186,23 @@ const PATHS = [
     name: 'settleRefund (mark a refund paid)',
     action: 'settleRefund',
     okResponse: { ok: true, credit: { id: 'credit::pt-1::2026-08::1', status: 'paid' } },
-    run: (app) => app.settleRefundRow({ creditId: 'credit::pt-1::2026-08::1' }, '2026-10-14', 'העברה'),
+    run: (app) => app.settleRefundRow({ creditId: 'credit::pt-1::2026-08::1', payoutApprovalValid: true }, '2026-10-14', 'העברה'),
     landed: () => {},
     rejects: true,
+  },
+  {
+    name: 'requestRefundPayoutApproval (Vered requests Sandra signoff)',
+    action: 'requestRefundPayoutApproval',
+    okResponse: { ok: true, credit: { id: 'credit::pt-1::2026-08::1', payoutApprovalRequestedAt: 't' } },
+    run: (app) => app.requestRefundPayoutRow({ creditId: 'credit::pt-1::2026-08::1' }),
+    landed: () => {}, rejects: true,
+  },
+  {
+    name: 'approveRefundPayout (Sandra signs off exact refund amount)',
+    action: 'approveRefundPayout',
+    okResponse: { ok: true, credit: { id: 'credit::pt-1::2026-08::1', payoutApprovedAt: 't' } },
+    run: (app) => app.approveRefundPayoutRow({ creditId: 'credit::pt-1::2026-08::1' }),
+    landed: () => {}, rejects: true,
   },
   {
     // Sandra's exception on a refund (APPROVER_ACTIONS server-side).

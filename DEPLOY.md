@@ -1,5 +1,12 @@
 # Deploy — E-ZONE Dashboard (shared Apps Script backend)
 
+**CRM #358 recovery candidate (November 3, DRAFT):** Code.gs changes the backup
+replacement protocol. No deployment is authorized. The existing automatic Apps
+Script workflow runs on an approved merge; do not trigger it on the PR branch.
+Before approval, complete native isolated restore/source UAT and record the
+active backend version plus the rollback target. Preserve pending/previous
+backup remnants for inspection. See [the current recovery checkpoint](docs/crm/CRM-358-RECOVERY-CHECKPOINT-20261103.md).
+
 **Invoice-request review candidate (October 16):** frontend/static-route change,
 cache v71 from verified live v70. No Apps Script deploy, migration, flag or trigger
 change. After separate release approval, verify the existing deployment, content
@@ -247,6 +254,11 @@ registers `/sw.js`; an installed "Dashboard" app opens `/` — the CRM after the
 With `CRM_ENABLED=true` + `CRM_DEFAULT=true` (both set): Vered, Sandra and Dana → the CRM on `/`;
 Ortal → the classic page (CRM at `/?view=crm`); everyone → classic at `/?view=classic`. Login is the
 same screen for all (`CHANGELOG-crm-default-ops.md`).
+
+«החלפת משתמש» (November 1, 2026, `CHANGELOG-crm-dana-default-switch-user.md`): both headers. `POST /api/logout`
+revokes the session token in memory (per process — a Railway restart forgets the list; the browser cookie is
+cleared anyway) and needs a same-origin request. After a PIN login the user lands on their own default
+(`/api/me.landing`). Dana never gets «גבייה» or the «חשבון» tab. Nothing to set. SW v107.
 
 ## Server read cache (October 29, 2026)
 

@@ -282,11 +282,11 @@ test('A: PAYMENT_COLUMNS appends seven accounting columns and moves nothing', ()
   assert.deepEqual(cols.slice(38), ['confirmedAmount', 'controlNote', 'submissionId']);   // + CHANGELOG-payment-report-persistence.md
 });
 
-test('A: CREDIT_COLUMNS appends creditUid at the END, nothing else moves', () => {
+test('A: CREDIT_COLUMNS retains 24 original slots + creditUid at index 24, then payout gate fields append only', () => {
   const { code } = loadCode();
   const cols = arr(code.CREDIT_COLUMNS);
-  assert.equal(cols[cols.length - 1], 'creditUid');
-  assert.equal(cols.indexOf('creditUid'), cols.length - 1);
+  assert.equal(cols[24], 'creditUid');
+  assert.deepEqual(cols.slice(25), ['payoutApprovalRequestedAt', 'payoutApprovalRequestedBy', 'payoutApprovalAmount', 'payoutApprovedAt', 'payoutApprovedBy']);
   assert.deepEqual(cols.slice(0, 7),
     ['id', 'patientId', 'patientKey', 'patientName', 'houseId', 'facilityType', 'creditType']);
   assert.equal(cols.filter((c) => c === 'creditUid').length, 1);
