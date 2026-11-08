@@ -1,5 +1,12 @@
 # E-ZONE Ecosystem Status — updated November 4, 2026
 
+## CRM «שולם עם הנחה» in the payment report — November 8, 2026
+
+One form reports a payment lower than the open cycle and records the gap as a
+discount (reason required): `reportPayment`, then — only when accepted —
+`setBillingDiscount` with the month's total. Finance only; open cycles only.
+No Apps Script change. SW v121. See `CHANGELOG-paid-with-discount.md`.
+
 ## Acceptance audit candidate — November 6, 2026 (local, not deployed)
 
 Approved focused corrections on base `5349d75c`: collection-cycle owner in the

@@ -623,6 +623,82 @@ test('C11 finance CRM: Vered discount + amount, Vered requests refund, Sandra ap
   } finally { await browser.close(); srv.close(); }
 });
 
+test('«שולם עם הנחה» (Vered, CHANGELOG-paid-with-discount.md): the box opens the reason; a missing reason posts nothing; a save posts reportPayment (no discount fields) THEN setBillingDiscount with the gap; a refused discount keeps the payment and says so', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="clients"]');
+    await page.click('table.tbl tbody tr[data-open-patient="p1"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer [data-tab="account"]');
+    await page.waitForSelector('#crm-account-open');
+    // the unrecorded open cycle: 5,000, month = its start month
+    await page.click('#crm-account-open [data-report-open="1"]');
+    await page.waitForSelector('form[data-form="payment-report"]');
+    assert.ok(await page.$('form.report [name="withDiscount"]'), 'offered on an open cycle');
+    assert.equal(await page.isVisible('form.report [name="discountReason"]'), false, 'reason hidden until checked');
+    await page.fill('form.report [name="amount"]', '4000');
+    await page.selectOption('form.report [name="method"]', 'מזומן');
+    await page.fill('form.report [name="payer"]', 'דנה כהן');
+    await page.selectOption('form.report [name="invoiceWanted"]', 'no');
+    await page.check('form.report [name="withDiscount"]');
+    assert.equal(await page.isVisible('form.report [name="discountReason"]'), true);
+    assert.match(await page.textContent('form.report [data-pwd-preview]'), /הנחה ₪1,000|הנחה ₪?1,000/);
+    // no reason → nothing posted
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => /סיבה/.test(document.querySelector('form.report .err[data-err="discountReason"]').textContent));
+    assert.equal(srv.saves.length, 0);
+    await page.fill('form.report [name="discountReason"]', 'סוכם עם המשפחה');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
+    assert.deepEqual(srv.saves.map((x) => x.action), ['reportPayment', 'setBillingDiscount'], 'payment first, then the discount');
+    const rep = srv.saves[0].report.report;
+    assert.equal(rep.amount, '4000');
+    assert.equal('withDiscount' in rep, false); assert.equal('discountReason' in rep, false);
+    assert.deepEqual(srv.saves[1].discount, { patientId: 'ramot::דנה כהן::' + daysAgo(30), month: daysAgo(3).slice(0, 7), discountAmount: 1000, discountReason: 'סוכם עם המשפחה' });
+    // unchecked → a normal report, no discount
+    await page.waitForSelector('#crm-account-open');
+    await page.click('#crm-account-open [data-report-open="1"]');
+    await page.waitForSelector('form[data-form="payment-report"]');
+    await page.fill('form.report [name="amount"]', '4000');
+    await page.selectOption('form.report [name="method"]', 'מזומן'); await page.fill('form.report [name="payer"]', 'דנה כהן'); await page.selectOption('form.report [name="invoiceWanted"]', 'no');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
+    assert.deepEqual(srv.saves.slice(2).map((x) => x.action), ['reportPayment']);
+    // the discount refused by the server: the payment stays saved, the message says what to do
+    await page.waitForSelector('#crm-account-open');
+    await page.click('#crm-account-open [data-report-open="1"]');
+    await page.waitForSelector('form[data-form="payment-report"]');
+    saveAnswer = (parsed) => parsed.action === 'setBillingDiscount' ? { ok: false, error: 'forbidden_role' } : { ok: true, receipt: { id: 'rcpt-z' }, cycle: { id: parsed.report.cycle.id } };
+    await page.fill('form.report [name="amount"]', '4500');
+    await page.selectOption('form.report [name="method"]', 'מזומן'); await page.fill('form.report [name="payer"]', 'דנה כהן'); await page.selectOption('form.report [name="invoiceWanted"]', 'no');
+    await page.check('form.report [name="withDiscount"]');
+    await page.fill('form.report [name="discountReason"]', 'עיגול');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => /ההנחה לא נשמרה/.test(document.body.textContent), null, { timeout: 5000 });
+    assert.deepEqual(srv.saves.slice(3).map((x) => x.action), ['reportPayment', 'setBillingDiscount']);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('«שולם עם הנחה» is not offered on «מחזור אחר» (its balance is not net of a discount)', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="clients"]');
+    await page.click('table.tbl tbody tr[data-open-patient="p1"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer [data-tab="account"]');
+    await page.waitForSelector('#crm-account-open');
+    await page.click('[data-report-other]');
+    await page.waitForSelector('form[data-form="payment-report"]');
+    assert.equal(await page.$('form.report [name="withDiscount"]'), null, '«מחזור אחר» never offers it');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
 test('C13 receipt fix (Vered): «עריכה» posts editReceipt with ONLY the changed fields (validated), «ביטול» posts the classic void row after a confirm and a reason; a void receipt has no buttons', { skip: skip && 'playwright/chromium missing' }, async () => {
   const srv = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
