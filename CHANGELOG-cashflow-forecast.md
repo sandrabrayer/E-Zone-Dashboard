@@ -50,7 +50,7 @@ change. Every rendered value through `esc()`.
 ## Files
 `public/crm/crm.js` (`cycleCtx`, `cycleOnDay` — extracted from `dueOnDate`,
 behaviour unchanged — `cashForecast`, `forecastPreset`, `monthEndIso`,
-`renderCashForecast`, handlers), `public/sw.js`,
+`renderCashForecast`, handlers), `public/sw.js` (v121 → v122, stacked on PR 372), `EZONE-ECOSYSTEM-STATUS.md`,
 `test/cashflow-forecast.test.js` (new, 18), `test/crm-collect-on-date.test.js`
 (wiring pin), `test/crm-shell-browser.test.js` (+1 Chromium scenario at 1366
 and 390 px; C8 KPI selector excludes the forecast block),

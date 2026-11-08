@@ -1,5 +1,14 @@
 # E-ZONE Ecosystem Status — updated November 4, 2026
 
+## CRM «צפי תזרים» — cash-flow forecast in «גבייה» — November 8, 2026
+
+Expected receipts of patients in a house for a date range (default today →
+month end): private on the billing day, ביטוח לאומי / מכבי / משרד הביטחון
+«שוטף +30»; no past debt, no released, pro-bono excluded, «לא הוגדר» shown
+apart. Read-only, computed from getData + getPayments; dueOnDate's per-cycle
+code is now the shared `cycleOnDay`. No Apps Script change. SW v122. See
+`CHANGELOG-cashflow-forecast.md`.
+
 ## CRM «שולם עם הנחה» in the payment report — November 8, 2026
 
 One form reports a payment lower than the open cycle and records the gap as a

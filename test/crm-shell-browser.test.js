@@ -697,6 +697,9 @@ test('«שולם עם הנחה» is not offered on «מחזור אחר» (its ba
     await page.waitForSelector('form[data-form="payment-report"]');
     assert.equal(await page.$('form.report [name="withDiscount"]'), null, '«מחזור אחר» never offers it');
     assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
 test('«צפי תזרים» (Vered, CHANGELOG-cashflow-forecast.md): renders under «לגבייה בתאריך» from the loaded reads only, the presets and dates re-render, a row opens the patient; 390 px has no page overflow', { skip: skip && 'playwright/chromium missing' }, async () => {
   const srv = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
