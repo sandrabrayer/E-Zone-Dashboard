@@ -565,6 +565,9 @@ function sendToOutpatient(fields, deps) {
   const body = { secret, name: text(f.name, 200), phone: text(f.phone, 40), note: text(f.note, 2000) };
   if (f.house !== undefined) body.house = text(f.house, 100);
   if (f.source !== undefined) body.source = text(f.source, 100);
+  for (const field of ['dashboardPatientId', 'dashboardPersonId', 'dashboardLeadId']) {
+    if (f[field] !== undefined) body[field] = text(f[field], 100);
+  }
   const post = d.post || outpatientPost;
   const timeoutMs = d.timeoutMs || OUTPATIENT_SEND_TIMEOUT_MS;
   return new Promise((resolve) => {

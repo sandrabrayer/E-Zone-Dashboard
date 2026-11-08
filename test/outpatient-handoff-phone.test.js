@@ -2,7 +2,7 @@
 
 /* «העבר לאמבולטורי» without a lead phone (CHANGELOG-crm-followups-1104.md).
  * The discharge itself is never blocked; the Outpatient lead needs a phone (it is
- * Outpatient's matching key), so the phone is resolved like the rosters, or typed
+ * a contact field, not an identity key), so it is resolved from sources or typed
  * in the «משוחררים» row — kept in PatientPhones — and the send goes through.
  * A. the REAL Code.gs; B. server.js with injected sends; C. the CRM pure helpers.
  * Names / phones are SYNTHETIC. */
@@ -17,7 +17,7 @@ const core = require('../public/crm/crm.js');
 const plain = (v) => JSON.parse(JSON.stringify(v));
 const CRM_SRC = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.js'), 'utf8');
 
-function world({ leads = [], phones = [], discharged = [] } = {}) {
+function world({ leads = [], phones = [], discharged = [], patients = [STAY] } = {}) {
   const g = loadGs();
   const s = g.sandbox;
   const put = (name, colsExpr, rows) => {
@@ -27,6 +27,7 @@ function world({ leads = [], phones = [], discharged = [] } = {}) {
     s.__sheets[name] = sh;
   };
   put('Leads', 'LEAD_COLUMNS', leads);
+  put(g.run('PATIENTS_SHEET'), 'PATIENT_COLUMNS', patients);
   if (phones.length) put(g.run('PATIENT_PHONES_SHEET'), 'PATIENT_PHONES_COLUMNS', phones);
   put(g.run('DISCHARGED_PATIENTS_SHEET'), 'DISCHARGED_PATIENT_COLUMNS', discharged);
   const verified = { verified: true, user: 'ורד', id: 'vered', auth: 'personal', roles: ['editor'], caps: [] };
@@ -40,16 +41,23 @@ function world({ leads = [], phones = [], discharged = [] } = {}) {
 const ROW = (o) => Object.assign({ id: 'aud-r', houseId: 'ramot', name: 'רוני לוי', date: '2026-10-04', status: 'released', exitDate: '2026-11-04',
   fromLead: '', patientId: 'p-roni', source: '', notes: '', disposition: 'released_outpatient', restored: '', deletedAt: '' }, o);
 
+// Stable source identity is required BEFORE phone-book writes or Outpatient send.
+const STAY = { id: 'p-roni', personId: '', name: 'רוני לוי', houseId: 'ramot', date: '2026-10-04', status: 'released', exitDate: '2026-11-04' };
+const CARE = { dashboardPatientId: 'p-roni', dashboardPersonId: '', dashboardLeadId: '', source: 'dashboard_discharge' };
+
 /* ================= A. Code.gs ================= */
 
 test('A: no lead phone → PatientPhones by patientId, then by unique name; ambiguous → \'\' (never a guess)', () => {
   assert.equal(world({ discharged: [ROW()] }).prep({ dischargeId: 'aud-r', manual: true }).payload.phone, '', 'nothing anywhere');
   const byId = world({ discharged: [ROW()], phones: [{ name: 'אחר', house: 'ramot', phone: '0527654321', patientId: 'p-roni' }] });
   assert.equal(byId.prep({ dischargeId: 'aud-r', manual: true }).payload.phone, '0527654321');
-  const byName = world({ discharged: [ROW({ patientId: '' })], phones: [{ name: 'רוני  לוי', house: 'ramot', phone: '527654321' }] });
+  const byName = world({ discharged: [ROW()], phones: [{ name: 'רוני  לוי', house: 'ramot', phone: '527654321' }] });
   assert.equal(byName.prep({ dischargeId: 'aud-r', manual: true }).payload.phone, '0527654321', 'lost leading zero restored');
-  const twice = world({ discharged: [ROW({ patientId: '' })], phones: [{ name: 'רוני לוי', phone: '0521111111' }, { name: 'רוני לוי', phone: '0522222222' }] });
+  const twice = world({ discharged: [ROW()], phones: [{ name: 'רוני לוי', phone: '0521111111' }, { name: 'רוני לוי', phone: '0522222222' }] });
   assert.equal(twice.prep({ dischargeId: 'aud-r', manual: true }).payload.phone, '');
+  // A legacy discharge with no stable stay ID must fail closed, even with a phone-book match.
+  const legacy = world({ discharged: [ROW({ patientId: '' })], phones: [{ name: 'רוני לוי', phone: '0527654321' }] });
+  assert.equal(legacy.prep({ dischargeId: 'aud-r', manual: true }).error, 'handoff_identity_missing');
   // the source lead still wins
   const lead = world({ discharged: [ROW({ fromLead: 'L1' })], leads: [{ id: 'L1', name: 'רוני לוי', phone: '050-1234567', stage: 'admitted' }], phones: [{ name: 'רוני לוי', phone: '0527654321', patientId: 'p-roni' }] });
   assert.equal(lead.prep({ dischargeId: 'aud-r', manual: true }).payload.phone, '0501234567');
@@ -99,7 +107,7 @@ test('B: dischargeTypedPhone — digits only, 9–10 starting with 0; +972 / los
 });
 
 test('B: the typed phone travels to Code.gs and the send goes out; an invalid one is a 400 with a Hebrew message and nothing is called', async () => {
-  const t = srv((b) => ({ ok: true, key: 'discharge:aud-r', payload: { name: 'רוני לוי', phone: b.phone || '', house: 'ramot', note: '' } }), { outcome: 'answered', data: { ok: true, id: 'op-1' } });
+  const t = srv((b) => ({ ok: true, key: 'discharge:aud-r', payload: { name: 'רוני לוי', phone: b.phone || '', house: 'ramot', note: '', ...CARE } }), { outcome: 'answered', data: { ok: true, id: 'op-1' } });
   const r = await server.dischargeOutpatientHandoff({ dischargeId: 'aud-r', manual: true, phone: '052-765-4321' }, 'ורד', null, t.deps);
   assert.deepEqual(r, { status: 200, body: { ok: true, sent: true } });
   assert.equal(t.posts[0].phone, '0527654321');
