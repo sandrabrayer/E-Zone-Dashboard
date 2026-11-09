@@ -147,6 +147,10 @@ form.new-lead label.wide, form.new-lead .wide { grid-column: 1 / -1; }
 form.new-lead input, form.new-lead select, form.new-lead textarea { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; color: var(--text); font-size: 14px; }
 form.new-lead .err { color: var(--bad); font-size: 12px; min-height: 0; }
 form.new-lead .err:empty { display: none; }
+/* «שולם עם הנחה» checkbox row (CHANGELOG-paid-with-discount.md) */
+form.new-lead label.check { flex-direction: row; align-items: center; gap: 8px; font-size: 13px; color: var(--text); }
+form.new-lead label.check input { width: 18px; height: 18px; padding: 0; }
+form.new-lead [data-pwd-box][hidden] { display: none; }
 
 /* ---- payment report inside the account pane (C10) ---- */
 form.report { margin: 10px 0 14px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }

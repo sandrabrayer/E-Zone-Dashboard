@@ -1383,6 +1383,41 @@
   function discountBody(patient, month, amount, reason) {
     return { action: 'setBillingDiscount', discount: { patientId: patientKeyOf(patient), month: s(month), discountAmount: moneyParse(amount), discountReason: s(reason) } };
   }
+  /* «שולם עם הנחה» (CHANGELOG-paid-with-discount.md): the payment report and
+   * the discount for the rest of the cycle, in ONE form. Offered only on an
+   * OPEN cycle (the debt list / «לגבייה בתאריך»), whose `remaining` is already
+   * net of the month's existing discount (cycleState). The discount written is
+   * the month's TOTAL — existing + the new gap — because setBillingDiscount
+   * replaces the month's value. Pure.
+   * → { ok:true, amount, gap, month, discountTotal } | { ok:false, errors:{field: message} } */
+  function paidWithDiscountPlan(amountText, remaining, ctx, reason) {
+    const errors = {};
+    const amount = moneyParse(amountText);
+    const rem = Math.round((Number(remaining) || 0) * 100) / 100;
+    const c = ctx || {};
+    const month = s(c.month);
+    const existing = Math.round((Number(c.discount) || 0) * 100) / 100;
+    if (!monthOk(month)) errors._form = 'לא ניתן לתת הנחה למחזור הזה — דווחי את התשלום ואז «הנחה»';
+    if (amount === null || !(amount > 0)) errors.amount = 'בתשלום עם הנחה יש להזין את הסכום שהתקבל בפועל';
+    else if (!(amount < rem)) errors.amount = 'הסכום שהתקבל אינו נמוך מהיתרה (' + rem + ') — אין יתרה להנחה';
+    const r = s(reason);
+    if (r.length < 2 || r.length > 120) errors.discountReason = 'בהנחה חובה לפרט סיבה (2 עד 120 תווים)';
+    if (Object.keys(errors).length) return { ok: false, errors: errors };
+    const gap = Math.round((rem - amount) * 100) / 100;
+    const discountTotal = Math.round((existing + gap) * 100) / 100;
+    if (discountTotal > 1000000) return { ok: false, errors: { amount: 'סכום ההנחה גבוה מדי' } };
+    return { ok: true, amount: amount, gap: gap, month: month, discountTotal: discountTotal };
+  }
+  /* The setBillingDiscount body of a plan: the month's total, the reason as typed. */
+  function paidWithDiscountBody(patient, plan, reason) {
+    return discountBody(patient, plan.month, String(plan.discountTotal), reason);
+  }
+  /* The report fields only — the discount fields never reach reportPayment. */
+  function reportValuesOnly(vals) {
+    const out = {};
+    Object.keys(vals || {}).forEach(function (k) { if (k !== 'withDiscount' && k !== 'discountReason') out[k] = vals[k]; });
+    return out;
+  }
   function overrideErrors(v) {
     const e = {};
     if (!monthOk(v.month)) e.month = 'חודש לא תקין';
@@ -3844,13 +3879,15 @@
       return html;
     }
     /* C10: the «דווח תשלום» form inside the account pane. */
-    function openReportForm(cycle, remaining) {
+    function openReportForm(cycle, remaining, discountCtx) {
       const el = $('#crm-report');
       if (!el || !state.account) return;
       const R = reportRules(win);
       const today = state.today;
       const d = reportDefaults(cycle, remaining, today, state.account.data.currentFunder);
-      state.report = { cycle: cycle, submissionId: newSubmissionId(), values: d };
+      // «שולם עם הנחה» (CHANGELOG-paid-with-discount.md): an OPEN cycle, a user who may give a discount.
+      const canPwd = !!(state.me && state.me.canDiscount && discountCtx && monthOk(discountCtx.month) && Number(remaining) > 0);
+      state.report = { cycle: cycle, submissionId: newSubmissionId(), values: d, remaining: Number(remaining) || 0, discountCtx: canPwd ? { month: s(discountCtx.month), discount: Number(discountCtx.discount) || 0 } : null };
       const opt = function (list, sel) { return '<option value="">בחרי…</option>' + list.map(function (v) { return '<option value="' + esc(v) + '"' + (v === sel ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join(''); };
       const err = function (f) { return '<div class="err" data-err="' + f + '"></div>'; };
       el.innerHTML = '<form class="new-lead report" data-form="payment-report" novalidate>'
@@ -3865,6 +3902,9 @@
         + '<label>סוף תקופת הכיסוי *<input type="date" name="coverageEnd" value="' + esc(d.coverageEnd) + '">' + err('coverageEnd') + '</label>'
         + '<label>חשבונית? *<select name="invoiceWanted"><option value="">בחרי…</option><option value="yes">כן</option><option value="no">לא</option></select>' + err('invoiceWanted') + '</label>'
         + '<label>על שם<input type="text" name="invoiceTo" value="">' + err('invoiceTo') + '</label>'
+        + (canPwd ? '<label class="wide check"><input type="checkbox" name="withDiscount" value="yes" data-pwd-toggle> שולם עם הנחה — ההפרש בין היתרה לסכום שהתקבל יירשם כהנחה</label>'
+          + '<div class="wide" data-pwd-box hidden><label>סיבת ההנחה *<input type="text" name="discountReason" maxlength="120" value="">' + err('discountReason') + '</label>'
+          + '<p class="na" data-pwd-preview></p></div>' : '')
         + '<div class="wide err" data-err="_form"></div>'
         + '<div class="wide toolbar"><button type="submit" class="btn primary">שמירת הדיווח</button><button type="button" class="btn" data-report-cancel>ביטול</button><span class="na" id="crm-report-state"></span></div>'
         + '</form>';
@@ -3878,12 +3918,18 @@
     }
     function submitReport(f, confirmDuplicate) {
       if (!state.report || state.saving) return Promise.resolve(false);
-      const vals = {};
-      Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
+      const all = {};
+      Array.prototype.forEach.call(f.elements, function (el) { if (el.name && el.type !== 'checkbox') all[el.name] = el.value; });
+      const withDiscount = !!(state.report.discountCtx && f.elements.withDiscount && f.elements.withDiscount.checked);
+      const vals = reportValuesOnly(all);
       state.report.values = vals;
       const issues = reportIssues(vals, state.today, !!(state.me && state.me.approver), reportRules(win));
+      // «שולם עם הנחה»: the plan is checked BEFORE anything is written.
+      const plan = withDiscount ? paidWithDiscountPlan(vals.amount, state.report.remaining, state.report.discountCtx, all.discountReason) : null;
+      if (plan && !plan.ok) Object.keys(plan.errors).forEach(function (k) { issues.push({ field: k, hebrewMessage: plan.errors[k] }); });
       if (issues.length) { showReportIssues(f, issues); return Promise.resolve(false); }
       showReportIssues(f, []);
+      const discountReason = s(all.discountReason);
       const body = reportBody(state.report.cycle, vals, state.report.submissionId, confirmDuplicate);
       const st = $('#crm-report-state'); if (st) st.textContent = 'שומר…';
       state.saving = true; markBusy();
@@ -3893,13 +3939,26 @@
           state.saving = false; clearBusy();
           const out = reportOutcome(res);
           if (out.ok) {
-            toast('התשלום נשמר ✓');
             state.report = null;
             // re-read both answers: the money a row shows is always the server's
             const pid = state.drawer && state.drawer.id;
-            resetBilling();
-            if (pid) fillAccountPane(pid);
-            return true;
+            const done = function (msg, bad) { toast(msg, bad); resetBilling(); if (pid) fillAccountPane(pid); return true; };
+            if (!plan) return done('התשלום נשמר ✓');
+            // The payment is saved; now the discount for the gap (the payment first —
+            // a discount without its payment would hide money that never arrived).
+            const pat = state.account && state.account.patient;
+            if (!pat) return done('התשלום נשמר. ההנחה לא נשמרה — לחצי «הנחה» במחזור', true);
+            if (st) st.textContent = 'שומר הנחה…';
+            state.saving = true; markBusy();
+            return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(paidWithDiscountBody(pat, plan, discountReason)) })
+              .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+              .then(function (dres) {
+                state.saving = false; clearBusy();
+                const why = writeRefusal(dres, '');
+                return why ? done('התשלום נשמר. ההנחה לא נשמרה (' + why + ') — לחצי «הנחה» במחזור', true)
+                  : done('התשלום נשמר ✓ · הנחה ' + fmtMoney(plan.gap) + ' נשמרה ✓');
+              })
+              .catch(function () { state.saving = false; clearBusy(); return done('התשלום נשמר. ההנחה לא נשמרה — לחצי «הנחה» במחזור', true); });
           }
           if (out.duplicate) {
             if (st) st.textContent = '';
@@ -4692,7 +4751,7 @@
         const r = (state.dueRows || [])[Number(t.dataset.dueReport)];
         const pat = r && compute(state.data, state.today).patients.filter(function (p) { return p.id === r.patientId; })[0];
         if (!pat) return toast('המטופל/ת לא נמצא/ה ברשימה — דיווח בדשבורד הרגיל', true);
-        const go = function () { if (state.account && state.drawer && state.drawer.id === pat.id) openReportForm(r.cycle, r.balance); };
+        const go = function () { if (state.account && state.drawer && state.drawer.id === pat.id) openReportForm(r.cycle, r.balance, { month: s(r.cycle && r.cycle.dueDate).slice(0, 7), discount: r.discount }); };
         openDrawer('patient', pat.id); const tab = doc.querySelector('#crm-drawer [data-tab="account"]'); if (tab) tab.click();
         if (state.billing) go(); else loadBilling(go);
         return;
@@ -4721,7 +4780,7 @@
       if (t.dataset.amountOpen !== undefined) { const c = state.account.data.openCycles[Number(t.dataset.amountOpen)]; if (c) openSmallForm('amount', c); return; }
       if (t.dataset.reportOpen !== undefined) {
         const c = state.account.data.openCycles[Number(t.dataset.reportOpen)];
-        if (c) openReportForm(reportCycleFor(state.account.patient, c, state.account.data), c.balance);
+        if (c) openReportForm(reportCycleFor(state.account.patient, c, state.account.data), c.balance, { month: c.month, discount: c.discount });
         return;
       }
       if (t.dataset.reportRow) {
@@ -4755,9 +4814,27 @@
     root.addEventListener('change', function (ev) {
       const f = ev.target && ev.target.closest ? ev.target.closest('form[data-form="contact"]') : null;
       if (f) refreshNextPreview(f);
+      const rf = ev.target && ev.target.closest ? ev.target.closest('form[data-form="payment-report"]') : null;
+      if (rf) refreshPwdPreview(rf);
     });
+    /* «שולם עם הנחה»: show the reason field and the discount the form will write. */
+    function refreshPwdPreview(f) {
+      const box = f.querySelector('[data-pwd-box]');
+      const on = !!(f.elements.withDiscount && f.elements.withDiscount.checked);
+      if (!box || !state.report) return;
+      box.hidden = !on;
+      const pv = box.querySelector('[data-pwd-preview]');
+      if (!pv) return;
+      const amount = moneyParse(f.elements.amount && f.elements.amount.value);
+      const rem = state.report.remaining;
+      pv.textContent = on && amount !== null && amount > 0 && amount < rem
+        ? 'יירשם: תשלום ' + fmtMoney(amount) + ' + הנחה ' + fmtMoney(Math.round((rem - amount) * 100) / 100) + ' = ' + fmtMoney(rem) + ' · המחזור ייסגר'
+        : (on ? 'הזיני סכום נמוך מהיתרה (' + fmtMoney(rem) + ')' : '');
+    }
     root.addEventListener('input', function (ev) {
       if (ev.target && ev.target.id === 'crm-quick-q') return quickList(ev.target.value);
+      const rf = ev.target && ev.target.closest ? ev.target.closest('form[data-form="payment-report"]') : null;
+      if (rf && ev.target.name === 'amount') refreshPwdPreview(rf);
       const f = ev.target && ev.target.closest ? ev.target.closest('form[data-form="contact"]') : null;
       if (f && /^next/.test(ev.target.name || '')) refreshNextPreview(f);
     });
@@ -4916,5 +4993,5 @@
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
     newTaskErrors: newTaskErrors, dueSoonTasks: dueSoonTasks, TASK_REMIND_MINUTES: TASK_REMIND_MINUTES, WORK_CONTROL: WORK_CONTROL, workControlQueues: workControlQueues,
-    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
+    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, paidWithDiscountPlan: paidWithDiscountPlan, paidWithDiscountBody: paidWithDiscountBody, reportValuesOnly: reportValuesOnly, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));
