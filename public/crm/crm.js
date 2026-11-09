@@ -1098,6 +1098,76 @@
     out.byHouse = Object.keys(houses).map(function (k) { return houses[k]; }).sort(function (a, b) { return b.total - a.total; });
     return out;
   }
+  /* ---- «ניקוי חובות היסטוריים» (CHANGELOG-historical-debt-cleanup.md) ----
+   * Released patients' open cycles that are NOT real debt (Sandra, 08/11/2026:
+   * most of them are payments that were never recorded in the app). A
+   * finance user ticks cycles, picks WHY, types a note, and every ticked
+   * cycle is closed by a discount for its whole open balance — the existing
+   * setBillingDiscount action, one call per patient + month, audited by the
+   * server. A discount is not revenue and not debt: money that DID arrive
+   * and can be identified should be reported with «דווח תשלום» instead.
+   * A real write-off (money that will never come) is NOT offered here: it
+   * stays Sandra's own flow, so this tool cannot be used to dress one up.
+   * Pure helpers; the UI is in the shell below. */
+  const CLEANUP_REASONS = [
+    { id: 'paid_unrecorded', label: 'שולם — לא נרשם באפליקציה' },
+    { id: 'not_charged', label: 'לא חויב בפועל / טעות רישום' },
+  ];
+  const CLEANUP_PREFIX = 'ניקוי חוב היסטורי';
+  /* The candidates: open cycles of patients who are NOT in a house today
+   * (released / discharged), from debtAging.byPatient. → rows sorted by name. */
+  function cleanupCandidates(debt) {
+    const d = debt && debt.ok !== false ? debt : null;
+    const out = [];
+    (d && Array.isArray(d.byPatient) ? d.byPatient : []).forEach(function (p) {
+      if (!p || p.inHouseAtAsOf === true || s(p.status) !== 'released') return;
+      const key = s(p.patientKey);
+      if (!key) return;
+      (Array.isArray(p.cycles) ? p.cycles : []).forEach(function (c) {
+        const bal = Math.round((Number(c.balance) || 0) * 100) / 100;
+        const month = s(c.month) || s(c.start).slice(0, 7);
+        if (!(bal > 0) || !monthOk(month)) return;
+        out.push({ id: key + '|' + s(c.start), patientId: s(p.patientId), patientKey: key, name: s(p.name), houseId: s(p.houseId), houseName: houseName(p.houseId),
+          start: sheetDay(c.start), end: sheetDay(c.end), month: month, balance: bal, expected: Number(c.expected) || 0, received: Number(c.received) || 0,
+          discount: Number(c.discount) || 0, days: Number(c.days) || 0, kind: s(c.kind) });
+      });
+    });
+    out.sort(function (a, b) { return a.name.localeCompare(b.name, 'he') || (a.start < b.start ? -1 : a.start > b.start ? 1 : 0); });
+    return out;
+  }
+  /* The ticked cycles → one discount write per patient + month (setBillingDiscount
+   * keeps ONE value per month: existing discount + every ticked balance in it).
+   * → { ok:true, writes:[{patientKey, month, discountTotal, cycles, amount}], total } | { ok:false, errors }. Pure. */
+  function cleanupPlan(rows, reasonId, note) {
+    const errors = {};
+    const reason = CLEANUP_REASONS.filter(function (r) { return r.id === reasonId; })[0];
+    if (!reason) errors.reason = 'יש לבחור סיבה';
+    const n = s(note);
+    const text = reason ? CLEANUP_PREFIX + ' · ' + reason.label + (n ? ' · ' + n : '') : '';
+    if (n.length > 60) errors.note = 'הערה — עד 60 תווים';
+    if (reason && (text.length < 2 || text.length > 120)) errors.note = 'הסיבה ארוכה מדי';
+    if (!Array.isArray(rows) || !rows.length) errors._form = 'לא נבחרו מחזורים';
+    if (Object.keys(errors).length) return { ok: false, errors: errors };
+    const groups = {};
+    rows.forEach(function (r) {
+      const k = r.patientKey + '|' + r.month;
+      const g = groups[k] || (groups[k] = { patientKey: r.patientKey, name: r.name, month: r.month, existing: 0, amount: 0, cycles: 0 });
+      g.existing = Math.max(g.existing, Math.round((Number(r.discount) || 0) * 100) / 100);
+      g.amount = Math.round((g.amount + r.balance) * 100) / 100;
+      g.cycles++;
+    });
+    const writes = Object.keys(groups).sort().map(function (k) {
+      const g = groups[k];
+      return { patientKey: g.patientKey, name: g.name, month: g.month, cycles: g.cycles, amount: g.amount, discountTotal: Math.round((g.existing + g.amount) * 100) / 100 };
+    });
+    const bad = writes.filter(function (w) { return w.discountTotal > 1000000; });
+    if (bad.length) return { ok: false, errors: { _form: 'סכום גבוה מדי למחזור של ' + bad[0].name } };
+    return { ok: true, writes: writes, reasonText: text, total: Math.round(writes.reduce(function (t, w) { return t + w.amount; }, 0) * 100) / 100,
+      cycles: rows.length };
+  }
+  function cleanupBody(write, reasonText) {
+    return { action: 'setBillingDiscount', discount: { patientId: s(write.patientKey), month: s(write.month), discountAmount: write.discountTotal, discountReason: s(reasonText) } };
+  }
   /* The date list after the funder filter ('' = all) and the name search. Pure. */
   function filterDueRows(due, funder, q) {
     const words = s(q).toLowerCase().split(/\s+/).filter(Boolean);
@@ -3401,6 +3471,72 @@
         }).join('') + '</tbody></table></div></details>';
       return html;
     }
+    /* «ניקוי חובות היסטוריים» (CHANGELOG-historical-debt-cleanup.md) — finance
+     * only: tick released patients' open cycles, pick why, close them with a
+     * discount for the whole balance (setBillingDiscount, one call per patient
+     * + month, in sequence; the first refusal stops the run). */
+    function renderCleanup() {
+      const me = state.me || {};
+      if (!me.canDiscount) return '';
+      const rows = cleanupCandidates(state.billing.debt);
+      state.cleanupRows = rows;
+      const sel = state.cleanupSel || (state.cleanupSel = {});
+      Object.keys(sel).forEach(function (k) { if (!rows.some(function (r) { return r.id === k; })) delete sel[k]; });
+      const total = Math.round(rows.reduce(function (t, r) { return t + r.balance; }, 0) * 100) / 100;
+      let html = '<details id="crm-cleanup"' + (state.cleanupOpen ? ' open' : '') + '><summary class="group-title">ניקוי חובות היסטוריים — מטופלים משוחררים' + (rows.length ? ' ' + chip('late', rows.length + ' מחזורים · ' + fmtMoney(total)) : '') + '</summary>';
+      if (!rows.length) return html + '<p class="na">אין חובות פתוחים של מטופלים משוחררים.</p></details>';
+      html += '<p class="na">למחזורים של מטופלים שכבר יצאו ושאינם חוב אמיתי (למשל שולמו ולא נרשמו). המחזורים שנבחרו נסגרים כהנחה בגובה היתרה, עם הסיבה ביומן. הנחה אינה הכנסה — אם ידוע שהכסף התקבל ומתי, עדיף «דווח תשלום» בכרטיס המטופל/ת.</p>'
+        + '<div class="tbl-wrap"><table class="tbl" id="crm-cleanup-rows"><thead><tr><th><input type="checkbox" data-cleanup-all aria-label="בחירת הכל"' + (rows.every(function (r) { return sel[r.id]; }) ? ' checked' : '') + '></th><th>שם</th><th>בית</th><th>מחזור</th><th>יתרה</th><th>ימים</th></tr></thead><tbody>'
+        + rows.map(function (r, i) {
+          return '<tr><td><input type="checkbox" data-cleanup-row="' + i + '" aria-label="' + esc(r.name + ' ' + fmtDate(r.start)) + '"' + (sel[r.id] ? ' checked' : '') + '></td><td><button type="button" class="link" data-open-patient="' + esc(r.patientId) + '" data-open-tab="account">' + esc(r.name) + '</button></td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtDate(r.start)) + (r.end ? '–' + esc(fmtDate(r.end)) : '') + (r.kind === 'unrecorded' ? ' <span class="na">ללא דיווח</span>' : '') + '</td><td>' + esc(fmtMoney(r.balance)) + '</td><td>' + r.days + '</td></tr>';
+        }).join('') + '</tbody></table></div>'
+        + '<form class="new-lead report" data-form="cleanup" novalidate>'
+        + '<label>סיבה *<select name="reason"><option value="">בחרי…</option>' + CLEANUP_REASONS.map(function (x) { return '<option value="' + esc(x.id) + '">' + esc(x.label) + '</option>'; }).join('') + '</select><div class="err" data-err="reason"></div></label>'
+        + '<label>הערה (לא חובה, עד 60 תווים)<input type="text" name="note" maxlength="60" value=""><div class="err" data-err="note"></div></label>'
+        + '<div class="wide err" data-err="_form"></div>'
+        + '<div class="wide toolbar"><button type="submit" class="btn primary">סגירת המחזורים שנבחרו</button><span class="na" id="crm-cleanup-sum">' + esc(cleanupSumText()) + '</span></div></form></details>';
+      return html;
+    }
+    function cleanupSelected() {
+      const sel = state.cleanupSel || {};
+      return (state.cleanupRows || []).filter(function (r) { return sel[r.id]; });
+    }
+    function cleanupSumText() {
+      const rows = cleanupSelected();
+      if (!rows.length) return 'לא נבחרו מחזורים';
+      const people = {}; rows.forEach(function (r) { people[r.patientKey] = true; });
+      return 'נבחרו ' + rows.length + ' מחזורים של ' + Object.keys(people).length + ' מטופלים · ' + fmtMoney(rows.reduce(function (t, r) { return t + r.balance; }, 0));
+    }
+    function submitCleanup(f) {
+      if (state.saving) return Promise.resolve(false);
+      const plan = cleanupPlan(cleanupSelected(), f.elements.reason.value, f.elements.note.value);
+      if (!plan.ok) { showReportIssues(f, Object.keys(plan.errors).map(function (k) { return { field: k, hebrewMessage: plan.errors[k] }; }), 'יש לתקן את השדות המסומנים'); return Promise.resolve(false); }
+      showReportIssues(f, []);
+      if (!win.confirm('לסגור ' + plan.cycles + ' מחזורים בסך ' + fmtMoney(plan.total) + '?\n' + plan.reasonText + '\nכל סגירה נרשמת ביומן.')) return Promise.resolve(false);
+      const st = $('#crm-cleanup-sum');
+      state.saving = true; markBusy();
+      let done = 0;
+      const step = function (i) {
+        if (i >= plan.writes.length) return Promise.resolve('');
+        if (st) st.textContent = 'סוגר… ' + (i + 1) + '/' + plan.writes.length;
+        return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cleanupBody(plan.writes[i], plan.reasonText)) })
+          .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+          .then(function (res) {
+            const why = writeRefusal(res, '');
+            if (why) return plan.writes[i].name + ' ' + plan.writes[i].month + ': ' + why;
+            done++; return step(i + 1);
+          });
+      };
+      return step(0).catch(function (e) { return String(e && e.message || e); }).then(function (err) {
+        state.saving = false; clearBusy();
+        state.cleanupSel = {};
+        if (err) toast('נסגרו ' + done + ' מתוך ' + plan.writes.length + '. נעצר: ' + err, true);
+        else toast('נסגרו ' + plan.cycles + ' מחזורים ✓');
+        state.cleanupOpen = true;
+        resetBilling(); renderMain();
+        return !err;
+      });
+    }
     function renderBilling() {
       if (!state.billing) { loadBilling(); return '<div class="crm-state">טוען נתוני גבייה…</div>'; }
       const b = billingOverview(state.billing.debt, state.billing.payments, state.today);
@@ -3446,6 +3582,7 @@
           return '<tr data-open-patient="' + esc(p.id) + '"><td>' + esc(p.name) + '</td><td>' + esc(p.houseName) + '</td><td>' + esc(fmtMoney(p.balance)) + '</td><td>' + p.cycles + (p.unrecorded ? ' <span class="na">(' + p.unrecorded + ' ללא דיווח)</span>' : '') + '</td><td>'
             + chip(st, p.oldestDays + ' ימים') + (p.grace ? ' ' + chip('wait', 'גוף מממן') : '') + '</td><td>' + esc(p.inHouse ? 'בבית' : (p.status === 'released' ? 'שוחרר/ה' : p.status)) + '</td></tr>';
         }).join('') + '</tbody></table></div>';
+      if (!isController) html += renderCleanup();
       const receipts = bf === 'toVerify' ? b.receipts.filter(function (r) { return r.confirmStatus !== 'confirmed'; }) : b.receipts;
       html += '<div class="group-title" id="crm-receipts-title">' + (bf === 'toVerify' ? 'תקבולים הממתינים לאימות' : 'תקבולים אחרונים') + ((bf === 'received' || bf === 'toVerify') ? filterChip : '') + '</div>';
       if (!receipts.length) html += '<p class="na">אין תקבולים.</p>';
@@ -4821,6 +4958,8 @@
         submitLink(f);
       } else if (f.dataset.form === 'payment-report') {
         submitReport(f, false);
+      } else if (f.dataset.form === 'cleanup') {
+        submitCleanup(f);
       } else if (f.dataset.form.indexOf('small-') === 0) {
         submitSmall(f);
       } else if (f.dataset.form === 'refund-action') {
@@ -4976,8 +5115,23 @@
       else state.cal.anchor = state.today;
       renderMain();
     });
+    root.addEventListener('toggle', function (ev) { if (ev.target && ev.target.id === 'crm-cleanup') state.cleanupOpen = ev.target.open; }, true);
     root.addEventListener('change', function (ev) {
       const t = ev.target;
+      // «ניקוי חובות היסטוריים»: ticking never re-renders (the reason / note stay typed)
+      if (t.dataset && (t.dataset.cleanupRow !== undefined || t.dataset.cleanupAll !== undefined)) {
+        const rows = state.cleanupRows || [];
+        state.cleanupSel = state.cleanupSel || {};
+        if (t.dataset.cleanupAll !== undefined) {
+          rows.forEach(function (r) { if (t.checked) state.cleanupSel[r.id] = true; else delete state.cleanupSel[r.id]; });
+          Array.prototype.forEach.call(doc.querySelectorAll('[data-cleanup-row]'), function (el) { el.checked = t.checked; });
+        } else {
+          const r = rows[Number(t.dataset.cleanupRow)];
+          if (r) { if (t.checked) state.cleanupSel[r.id] = true; else delete state.cleanupSel[r.id]; }
+        }
+        const sum = $('#crm-cleanup-sum'); if (sum) sum.textContent = cleanupSumText();
+        return;
+      }
       // a field inside a form (report, restore, …) is the form's business — re-rendering would wipe it
       if (t.id === 'crm-day-week') { if (isoDateOk(t.value)) state.week = t.value; return renderMain(); }
       if (t.id === 'crm-due-date') { if (isoDateOk(t.value)) state.dueDate = t.value; return renderMain(); }
@@ -5124,5 +5278,5 @@
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
     newTaskErrors: newTaskErrors, dueSoonTasks: dueSoonTasks, TASK_REMIND_MINUTES: TASK_REMIND_MINUTES, WORK_CONTROL: WORK_CONTROL, workControlQueues: workControlQueues,
-    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, paidWithDiscountPlan: paidWithDiscountPlan, paidWithDiscountBody: paidWithDiscountBody, reportValuesOnly: reportValuesOnly, cashForecast: cashForecast, cycleOnDay: cycleOnDay, cycleCtx: cycleCtx, forecastPreset: forecastPreset, monthEndIso: monthEndIso, FORECAST_TERMS_DAYS: FORECAST_TERMS_DAYS, FORECAST_INSTITUTIONAL: FORECAST_INSTITUTIONAL, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
+    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, cleanupCandidates: cleanupCandidates, cleanupPlan: cleanupPlan, cleanupBody: cleanupBody, CLEANUP_REASONS: CLEANUP_REASONS, paidWithDiscountPlan: paidWithDiscountPlan, paidWithDiscountBody: paidWithDiscountBody, reportValuesOnly: reportValuesOnly, cashForecast: cashForecast, cycleOnDay: cycleOnDay, cycleCtx: cycleCtx, forecastPreset: forecastPreset, monthEndIso: monthEndIso, FORECAST_TERMS_DAYS: FORECAST_TERMS_DAYS, FORECAST_INSTITUTIONAL: FORECAST_INSTITUTIONAL, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));

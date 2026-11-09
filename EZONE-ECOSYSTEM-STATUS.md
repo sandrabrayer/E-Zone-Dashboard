@@ -1,5 +1,14 @@
 # E-ZONE Ecosystem Status — updated November 4, 2026
 
+## CRM «ניקוי חובות היסטוריים» — November 8, 2026
+
+Finance users tick released patients' open cycles in «גבייה», pick a reason
+(«שולם — לא נרשם באפליקציה» / «לא חויב בפועל / טעות רישום»), and each is
+closed by a full-balance discount via the existing `setBillingDiscount` (one
+per patient + month, sequential, audited, reason prefixed «ניקוי חוב
+היסטורי»). Not revenue; no write-off; hidden from Ortal. No Apps Script
+change. SW v123. See `CHANGELOG-historical-debt-cleanup.md`.
+
 ## CRM «צפי תזרים» — cash-flow forecast in «גבייה» — November 8, 2026
 
 Expected receipts of patients in a house for a date range (default today →

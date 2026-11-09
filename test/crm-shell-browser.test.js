@@ -136,7 +136,7 @@ async function boot(options = {}) {
         : parsed.action === 'logContact' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, event: { eventId: 'contact:' + parsed.submissionId }, completed: null, created: parsed.next && !parsed.next.none ? Object.assign({ id: 'task-x' }, parsed.next) : null })
         : ['createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0 ? (saveAnswer ? saveAnswer(parsed) : { ok: true, task: { id: parsed.id || 'task-new' } })
         : parsed.action === 'logLeadFlag' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, flag: Object.assign({ at: new Date().toISOString(), actorName: 'ורד' }, parsed.flag) })
-        : parsed.action === 'debtAging' ? DEBT : parsed.action === 'getPayments' ? PAYMENTS : parsed.action === 'getCredits' ? creditsLedger
+        : parsed.action === 'debtAging' ? (options.debt || DEBT) : parsed.action === 'getPayments' ? PAYMENTS : parsed.action === 'getCredits' ? creditsLedger
         : parsed.action === 'restorePatientToActive' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restoredToActive: true, id: parsed.patient && parsed.patient.id })
         : parsed.action === 'restorePatient' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restored: true, lead: { id: parsed.patient && parsed.patient.newLeadId } })
         : parsed.action === 'editReceipt' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, receipt: { id: parsed.edit && parsed.edit.id } })
@@ -733,6 +733,51 @@ test('«צפי תזרים» (Vered, CHANGELOG-cashflow-forecast.md): renders und
       await page.close();
     }
     assert.deepEqual(srv.saves, [], 'read-only');
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('«ניקוי חובות היסטוריים» (Vered, CHANGELOG-historical-debt-cleanup.md): only released debtors; ticking keeps the typed reason; a confirm; one setBillingDiscount per patient + month with the full balance; Ortal never sees it', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const KEYX = 'ramot::נועה לוי::' + daysAgo(60);
+  const debt = JSON.parse(JSON.stringify(DEBT));
+  debt.byPatient.push({ patientId: 'px', patientKey: KEYX, name: 'נועה לוי', houseId: 'ramot', status: 'released', inHouseAtAsOf: false, cycles: [
+    { start: daysAgo(60), end: daysAgo(31), expected: 6000, received: 1000, balance: 5000, days: 60, kind: 'recorded', paymentId: 'cx', month: daysAgo(60).slice(0, 7), discount: 0 },
+    { start: daysAgo(30), end: daysAgo(5), expected: 6000, received: 0, balance: 6000, days: 30, kind: 'unrecorded', month: daysAgo(30).slice(0, 7), discount: 0 }] });
+  const srv = await boot({ debt });
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="billing"]');
+    await page.waitForSelector('#crm-cleanup');
+    await page.click('#crm-cleanup summary');
+    assert.equal(await page.$$eval('#crm-cleanup-rows [data-cleanup-row]', (els) => els.length), 2, 'only the released patient\'s cycles (p1 is in a house)');
+    await page.selectOption('form[data-form="cleanup"] [name="reason"]', 'paid_unrecorded');
+    await page.fill('form[data-form="cleanup"] [name="note"]', 'בדיקה מול הבנק');
+    // nothing ticked → refused, nothing sent
+    await page.click('form[data-form="cleanup"] button[type="submit"]');
+    await page.waitForFunction(() => /לא נבחרו/.test(document.querySelector('form[data-form="cleanup"] .err[data-err="_form"]').textContent));
+    await page.check('[data-cleanup-all]');
+    assert.match(await page.textContent('#crm-cleanup-sum'), /נבחרו 2 מחזורים של 1 מטופלים · ₪11,000/);
+    assert.equal(await page.inputValue('form[data-form="cleanup"] [name="note"]'), 'בדיקה מול הבנק', 'ticking never wipes the form');
+    // a cancelled confirm sends nothing
+    page.once('dialog', (d) => d.dismiss());
+    await page.click('form[data-form="cleanup"] button[type="submit"]');
+    await page.waitForTimeout(200);
+    assert.equal(srv.saves.length, 0);
+    page.once('dialog', (d) => { assert.match(d.message(), /2 מחזורים/); d.accept(); });
+    await page.click('form[data-form="cleanup"] button[type="submit"]');
+    await page.waitForFunction(() => /נסגרו 2 מחזורים/.test(document.body.textContent), null, { timeout: 5000 });
+    assert.deepEqual(srv.saves.map((x) => x.action), ['setBillingDiscount', 'setBillingDiscount']);
+    const sent = srv.saves.map((x) => x.discount).sort((a, b) => (a.month < b.month ? -1 : 1));
+    assert.ok(sent.every((d) => d.patientId === KEYX && /^ניקוי חוב היסטורי · שולם — לא נרשם באפליקציה · בדיקה מול הבנק$/.test(d.discountReason)));
+    assert.deepEqual(sent.map((d) => d.discountAmount).sort((a, b) => a - b), [5000, 6000]);
+    for (let i = 0; i < 30 && srv.actions.filter((a) => a.action === 'debtAging').length < 2; i++) await page.waitForTimeout(100);
+    assert.ok(srv.actions.filter((a) => a.action === 'debtAging').length >= 2, 're-read after the run');
+    assert.deepEqual(errors, []);
+    // Ortal (controller) never sees the tool
+    const { page: ortal } = await open(browser, srv.port, 'ortal', 1366);
+    await ortal.click('#crm-nav button[data-area="billing"]');
+    await ortal.waitForSelector('#crm-debtors');
+    assert.equal(await ortal.$('#crm-cleanup'), null);
   } finally { await browser.close(); srv.close(); }
 });
 
