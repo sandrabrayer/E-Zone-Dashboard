@@ -378,7 +378,9 @@
 // v119 → v120: CRM audit — collection owner, cancellation follow-up, exact control drill-downs.
 // v120 → v121: «שולם עם הנחה» in the CRM payment report form — the payment + the discount for the gap
 // (crm/crm.js, crm.css) (CHANGELOG-paid-with-discount.md). From the live v120; monotonic, v17 never reused.
-var CACHE_VERSION = 'v121';
+// v121 → v122: «צפי תזרים» — the cash-flow forecast in the CRM «גבייה» (crm/crm.js)
+// (CHANGELOG-cashflow-forecast.md). Stacked on v121 (PR #372); monotonic, v17 never reused.
+var CACHE_VERSION = 'v122';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
