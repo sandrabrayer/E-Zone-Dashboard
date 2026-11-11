@@ -382,7 +382,9 @@
 // (CHANGELOG-cashflow-forecast.md). Stacked on v121 (PR #372); monotonic, v17 never reused.
 // v122 → v123: «ניקוי חובות היסטוריים» — close released patients' cycles in bulk in the CRM «גבייה» (crm/crm.js)
 // (CHANGELOG-historical-debt-cleanup.md). Stacked on v122; monotonic, v17 never reused.
-var CACHE_VERSION = 'v123';
+// v123 → v124: Ortal lands on the CRM «גבייה» — landing area + a top link to her classic «בקרת גבייה» (crm/crm.js)
+// (CHANGELOG-ortal-crm-default.md). From the live v123; monotonic, v17 never reused.
+var CACHE_VERSION = 'v124';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

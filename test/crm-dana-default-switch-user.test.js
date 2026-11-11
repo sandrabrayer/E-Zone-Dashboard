@@ -132,9 +132,10 @@ test('routing: CRM_DEFAULT — Dana and Vered/Sandra land on the CRM at `/`, Ort
       assert.strictEqual((await request(port, 'GET', '/api/me', { cookie: c })).json.landing, 'crm', id);
     }
     const ortal = cookieOf(tokenFor('ortal'));
-    assert.ok(!isCrm(await request(port, 'GET', '/', { cookie: ortal })), 'Ortal → classic at /');
+    // Ortal lands on the CRM too (CHANGELOG-ortal-crm-default.md); her classic page stays one link away
+    assert.ok(isCrm(await request(port, 'GET', '/', { cookie: ortal })), 'Ortal → CRM at /');
     assert.ok(!isCrm(await request(port, 'GET', '/?view=classic', { cookie: ortal })));
-    assert.strictEqual((await request(port, 'GET', '/api/me', { cookie: ortal })).json.landing, 'classic');
+    assert.strictEqual((await request(port, 'GET', '/api/me', { cookie: ortal })).json.landing, 'crm');
     // no session → the PIN page, never the CRM
     assert.ok(!isCrm(await request(port, 'GET', '/')));
   });
@@ -330,7 +331,7 @@ test('login landing: after a PIN login the classic page reloads into the CRM onl
   vm.runInNewContext(m[0] + '; this.f = loginShouldReload;', ctx);
   assert.strictEqual(ctx.f({ landing: 'crm' }, ''), true);
   assert.strictEqual(ctx.f({ landing: 'crm' }, '?view=classic'), false);
-  assert.strictEqual(ctx.f({ landing: 'classic' }, ''), false, 'Ortal stays on the classic page, no reload');
+  assert.strictEqual(ctx.f({ landing: 'classic' }, ''), false, 'a classic-landing session stays on the classic page, no reload');
   assert.strictEqual(ctx.f({ landing: 'classic' }, '?view=crm'), true);
   assert.strictEqual(ctx.f(null, ''), false);
   assert.ok(/if \(info && info\.user && loginShouldReload\(info, location\.search\)\) \{ location\.reload\(\); return; \}/.test(APP_SRC));
