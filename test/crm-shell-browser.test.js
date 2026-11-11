@@ -197,7 +197,8 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     assert.equal(await page.$eval('#crm-user', (e) => e.textContent), 'ורד');
     // «היום שלי» (Stage 2): the five cards, the urgent band, the domains, the side column
     await page.waitForSelector('.kpis.cards');
-    assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['גבייה לביצוע', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'לידים חדשים ללא מגע']);
+    assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['גבייה לביצוע', 'שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'לידים חדשים ללא מגע', 'מטופלים פעילים']);
+    assert.match(await page.textContent('#crm-active-patients'), /^2מטופלים פעילים/, 'two patients in the houses (the released one is not counted)');
     const main = await page.textContent('#crm-main');
     // a missing manager report is late only 3 days after the meeting (CHANGELOG-crm-vered-feedback-1104.md): L3 met 3 days ago
     assert.match(main, /דיווח המנהל\/ת באיחור/, 'a meeting 3 days ago without a report is now late');
@@ -315,8 +316,8 @@ test('CRM shell (Ortal, controller): only היום שלי / גבייה / בקר�
     assert.equal(await page.getAttribute('#crm-controller-classic a', 'href'), '/?view=classic');
     await page.click('#crm-nav button[data-area="today"]');
     await page.waitForFunction(() => document.querySelector('.kpis.cards') && /דיווחים לאימות/.test(document.querySelector('#crm-main').textContent) && !/טוען…/.test(document.querySelector('.kpis.cards').textContent), null, { timeout: 8000 });
-    assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['דיווחים לאימות', 'אימותים חלקיים / לבירור', 'חשבוניות מבוקשות', 'משימות כספיות שלך', 'זיכויים לתשלום'], 'Ortal: verification / gaps / documents / control (spec §5)');
-    assert.deepEqual(await page.$$eval('.kpis.cards .kpi .v', (els) => els.map((e) => e.textContent)), ['1', '1', '0', '0', '1'], 'reported ×1, flagged ×1, no requested invoice, no money task in the fixture, one pending credit');
+    assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['דיווחים לאימות', 'אימותים חלקיים / לבירור', 'חשבוניות מבוקשות', 'משימות כספיות שלך', 'זיכויים לתשלום', 'מטופלים פעילים'], 'Ortal: verification / gaps / documents / control (spec §5)');
+    assert.deepEqual(await page.$$eval('.kpis.cards .kpi .v', (els) => els.map((e) => e.textContent)), ['1', '1', '0', '0', '1', '2'], 'reported ×1, flagged ×1, no requested invoice, no money task in the fixture, one pending credit');
     assert.match(await page.textContent('.urgent'), /סומן לבירור/, 'the flagged receipt waits for her decision');
     assert.match(await page.textContent('#crm-main'), /ההנפקה אינה נרשמת כאן/, 'document issuance is not claimed');
     assert.ok(!/אבי לוי/.test(await page.textContent('#crm-main')), 'no lead names in her view');
@@ -1368,7 +1369,7 @@ test('Stage 2 «היום שלי» (Vered + Dana, 1366 + 390 px): header date; vi
     await page.waitForSelector('.kpis.cards');
     if (process.env.CRM_SHOT) await page.screenshot({ path: process.env.CRM_SHOT + '/today-390-dana.png', fullPage: true });
     const labels = await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent));
-    assert.deepEqual(labels, ['שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'לידים חדשים ללא מגע'], 'no money card; «מה דחוף בבתים» left «היום שלי» (04/11/2026)');
+    assert.deepEqual(labels, ['שיחות ומעקבים', 'פגישות היום', 'המשך טיפול לאחר פגישות', 'לידים חדשים ללא מגע', 'מטופלים פעילים'], 'no money card; «מה דחוף בבתים» left «היום שלי» (04/11/2026)');
     assert.ok(!/גבייה|₪/.test(await page.textContent('#crm-main')), 'no money anywhere on her day');
     assert.ok(!srv2.actions.some((a) => a.action === 'debtAging'), 'debtAging never requested for her');
     assert.ok(!(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); }))).includes('גבייה'));

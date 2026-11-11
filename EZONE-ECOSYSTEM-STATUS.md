@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated November 11, 2026
 
+## CRM «מטופלים פעילים» on «היום שלי» — November 11, 2026
+
+A card at the end of the day strip (all users, Ortal included): patients in
+the houses now, «מתוך N מיטות» — the «תפוסה» count, narrowed by the day's
+house filter; opens «תפוסה» where the session has it. From the loaded
+`getData`; no Apps Script change. SW v127. See
+`CHANGELOG-today-active-patients.md`.
+
 ## CRM «רשימת חייבים לגבייה» under the forecast — November 11, 2026
 
 Past debts (in a house + released), open by default right under the «צפי
