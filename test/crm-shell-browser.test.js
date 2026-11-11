@@ -305,7 +305,11 @@ test('CRM shell (Ortal, controller): only היום שלי / גבייה / בקר�
   try {
     const { page, errors } = await open(browser, srv.port, 'ortal', 1366);
     assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'בקרת עבודה', 'גבייה']);
-    await page.waitForFunction(() => /דיווחים לאימות/.test(document.querySelector('#crm-main').textContent) && !/טוען…/.test(document.querySelector('.kpis.cards').textContent), null, { timeout: 8000 });
+    // she lands on «גבייה» (CHANGELOG-ortal-crm-default.md); «היום שלי» is one tap away
+    await page.waitForSelector('#crm-fc-title', { timeout: 8000 });
+    assert.equal(await page.getAttribute('#crm-controller-classic a', 'href'), '/?view=classic');
+    await page.click('#crm-nav button[data-area="today"]');
+    await page.waitForFunction(() => document.querySelector('.kpis.cards') && /דיווחים לאימות/.test(document.querySelector('#crm-main').textContent) && !/טוען…/.test(document.querySelector('.kpis.cards').textContent), null, { timeout: 8000 });
     assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['דיווחים לאימות', 'אימותים חלקיים / לבירור', 'חשבוניות מבוקשות', 'משימות כספיות שלך', 'זיכויים לתשלום'], 'Ortal: verification / gaps / documents / control (spec §5)');
     assert.deepEqual(await page.$$eval('.kpis.cards .kpi .v', (els) => els.map((e) => e.textContent)), ['1', '1', '0', '0', '1'], 'reported ×1, flagged ×1, no requested invoice, no money task in the fixture, one pending credit');
     assert.match(await page.textContent('.urgent'), /סומן לבירור/, 'the flagged receipt waits for her decision');
@@ -313,7 +317,7 @@ test('CRM shell (Ortal, controller): only היום שלי / גבייה / בקר�
     assert.ok(!/אבי לוי/.test(await page.textContent('#crm-main')), 'no lead names in her view');
     assert.deepEqual(errors, []);
     assert.ok(srv.actions.some((a) => a.action === 'billingControlQueue' && a.user === 'ortal'));
-    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['billingControlQueue', 'getCredits', 'getData', 'getTasks'], 'her reads: the queue, her money tasks, the credits — never debt / payments / leads');
+    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['billingControlQueue', 'debtAging', 'getCredits', 'getData', 'getPayments', 'getTasks'], 'her reads: the queue, her money tasks, the credits and the «גבייה» reads she lands on — never a lead read or a write');
   } finally { await browser.close(); srv.close(); }
 });
 
@@ -360,7 +364,7 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
     await o.page.waitForSelector('#crm-debtors');
     assert.ok(srv.actions.some((a) => a.action === 'debtAging' && a.user === 'ortal'));
     const links = await o.page.$$eval('#crm-main .links a', (els) => els.map((e) => e.textContent));
-    assert.equal(links.length, 1); assert.match(links[0], /בקרת גבייה/);
+    assert.equal(links.length, 2, 'top + bottom'); for (const l of links) assert.match(l, /בקרת גבייה/);
     assert.deepEqual(o.errors, []);
   } finally { await browser.close(); srv.close(); }
 });
