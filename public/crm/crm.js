@@ -1216,6 +1216,20 @@
     return { ok: !!d, error: d ? '' : s(debt && debt.error || 'not_loaded'), asOf: b.asOf, funder: want, rows: rows, count: rows.length, total: total,
       inHouse: rows.filter(function (r) { return r.inHouse; }).length, all: b.patients.length };
   }
+  /* A forecast card opens the list behind its number (CHANGELOG-forecast-cards-open.md):
+   * 'all' / 'private' / 'institutional' / 'unset' → the expected receipts of that kind;
+   * 'refunds' → the refunds; 'net' → both. Unknown key → null. Pure. */
+  const FC_OPEN_TITLES = { all: 'כל התקבולים הצפויים', private: 'פרטיים · ביום החיוב', institutional: 'מוסדיים — שוטף +30', unset: 'ללא גורם מממן', refunds: 'זיכויים לתשלום', net: 'נטו צפוי — תקבולים וזיכויים' };
+  function forecastOpenList(fc, refunds, which) {
+    const k = s(which);
+    if (!FC_OPEN_TITLES[k]) return null;
+    const rows = (fc && Array.isArray(fc.rows)) ? fc.rows : [];
+    const rf = refunds && refunds.ok && Array.isArray(refunds.rows) ? refunds.rows : [];
+    const receipts = k === 'refunds' ? [] : k === 'all' ? rows.filter(function (r) { return r.kind !== 'unset'; }) : k === 'net' ? rows.filter(function (r) { return r.kind !== 'unset'; }) : rows.filter(function (r) { return r.kind === k; });
+    const sum = function (a) { return Math.round(a.reduce(function (t, r) { return t + r.amount; }, 0) * 100) / 100; };
+    const refundRows = k === 'refunds' || k === 'net' ? rf : [];
+    return { key: k, title: FC_OPEN_TITLES[k], receipts: receipts, refunds: refundRows, receiptsTotal: sum(receipts), refundsTotal: sum(refundRows) };
+  }
   /* Money that may be negative: «−₪5,000». Pure. */
   function fmtSigned(n) { const v = Math.round(Number(n) || 0); return v < 0 ? '−' + fmtMoney(-v) : fmtMoney(v); }
   /* …as HTML: kept left-to-right so the minus stays in FRONT of the amount on the RTL page. */
@@ -3579,7 +3593,8 @@
       const from = isoDateOk(state.fcFrom) && state.fcFrom >= state.today ? state.fcFrom : state.today;
       const to = isoDateOk(state.fcTo) && state.fcTo >= from ? state.fcTo : monthEndIso(state.today);
       const fc = cashForecast(state.data, state.billing.payments, from, to, state.today, cycleBalanceLib(win));
-      const kpi = function (v, l) { return '<div class="kpi"><span class="v">' + esc(v) + '</span><span class="l">' + esc(l) + '</span></div>'; };
+      const fo = state.fcOpen || '';
+      const kpi = function (v, l, key, id) { return '<button type="button" class="kpi' + (fo === key ? ' on' : '') + '"' + (id ? ' id="' + id + '"' : '') + ' data-fc-open="' + esc(key) + '" aria-pressed="' + (fo === key) + '"><span class="v">' + v + '</span><span class="l">' + esc(l) + '</span><span class="l2 go">' + (fo === key ? 'סגירת הרשימה ✕' : 'פתיחת הרשימה ←') + '</span></button>'; };
       let html = '<div class="group-title" id="crm-fc-title">צפי תזרים — מטופלים פעילים</div>'
         + '<div class="toolbar filters" id="crm-fc-tools"><label>מתאריך <input type="date" id="crm-fc-from" min="' + esc(state.today) + '" value="' + esc(fc.from) + '"></label>'
         + '<label>עד תאריך <input type="date" id="crm-fc-to" min="' + esc(fc.from) + '" value="' + esc(fc.to) + '"></label>'
@@ -3587,13 +3602,14 @@
       if (fc.error === 'payments_missing' || (fc.error && fc.error !== 'bad_range')) html += '<div class="crm-state bad">תשלומים לא נטענו — הצפי לפי התעריף בכרטיס בלבד <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
       const rf = forecastRefunds(state.billing.refunds, state.billing.credits, fc.from, fc.to, state.today);
       const net = cashForecastNet(fc, rf);
-      html += '<div class="kpis" id="crm-fc-kpis">' + kpi(fmtMoney(fc.total), 'סה"כ צפוי · ' + fmtDate(fc.from) + '–' + fmtDate(fc.to))
-        + kpi(fmtMoney(fc.private.total), 'פרטיים (' + fc.private.count + ') · ביום החיוב')
-        + kpi(fmtMoney(fc.institutional.total), 'מוסדיים — שוטף +30 (' + fc.institutional.count + ')')
-        + (fc.unset.count ? kpi(fmtMoney(fc.unset.total), 'ללא גורם מממן (' + fc.unset.count + ') · לא בסה"כ') : '')
-        + (net.known ? '<div class="kpi" id="crm-fc-refunds"><span class="v">' + signedHtml(-net.refunds) + '</span><span class="l">זיכויים לתשלום (' + net.refundCount + ')' + (rf.late ? ' · ' + rf.late + ' באיחור' : '') + '</span></div>'
-          + '<div class="kpi" id="crm-fc-net"><span class="v">' + signedHtml(net.net) + '</span><span class="l">נטו צפוי · אחרי זיכויים</span></div>'
+      html += '<div class="kpis" id="crm-fc-kpis">' + kpi(esc(fmtMoney(fc.total)), 'סה"כ צפוי · ' + fmtDate(fc.from) + '–' + fmtDate(fc.to), 'all')
+        + kpi(esc(fmtMoney(fc.private.total)), 'פרטיים (' + fc.private.count + ') · ביום החיוב', 'private')
+        + kpi(esc(fmtMoney(fc.institutional.total)), 'מוסדיים — שוטף +30 (' + fc.institutional.count + ')', 'institutional')
+        + (fc.unset.count ? kpi(esc(fmtMoney(fc.unset.total)), 'ללא גורם מממן (' + fc.unset.count + ') · לא בסה"כ', 'unset') : '')
+        + (net.known ? kpi(signedHtml(-net.refunds), 'זיכויים לתשלום (' + net.refundCount + ')' + (rf.late ? ' · ' + rf.late + ' באיחור' : ''), 'refunds', 'crm-fc-refunds')
+          + kpi(signedHtml(net.net), 'נטו צפוי · אחרי זיכויים', 'net', 'crm-fc-net')
           : '<div class="kpi" id="crm-fc-refunds"><span class="v">—</span><span class="l">זיכויים לתשלום · לא נטענו</span></div>') + '</div>';
+      html += renderForecastOpen(fc, rf, fo);
       html += '<p class="na">רק מחזורים שעוד לא שולמו, של מטופלים בבית. ללא חובות עבר. ביטוח לאומי / מכבי / משרד הביטחון — צפי קבלה 30 יום אחרי יום החיוב.'
         + (fc.unset.count ? ' מטופלים ללא גורם מממן אינם בסה"כ — יש להשלים גורם מממן.' : '')
         + (net.known ? ' זיכויים לתשלום מופחתים ביום התשלום שלהם (זיכוי שמועדו עבר — היום).' : '')
@@ -3619,6 +3635,29 @@
         }).join('') + '</tbody></table></div></details>';
       return html;
     }
+    /* The list behind a forecast card, right under the cards (CHANGELOG-forecast-cards-open.md). */
+    function renderForecastOpen(fc, rf, which) {
+      const o = forecastOpenList(fc, rf, which);
+      if (!o) return '';
+      const kindLabel = { private: 'פרטי', institutional: 'שוטף +30', unset: 'לא הוגדר' };
+      let html = '<section id="crm-fc-open" data-fc-key="' + esc(o.key) + '"><div class="group-title"><strong>' + esc(o.title) + '</strong><span class="grow"></span><button type="button" class="btn small" data-fc-open="' + esc(o.key) + '">סגירה ✕</button></div>';
+      if (o.key !== 'refunds') {
+        html += o.receipts.length ? '<div class="tbl-wrap"><table class="tbl" id="crm-fc-open-rows"><thead><tr><th>מטופל/ת</th><th>בית</th><th>גורם מממן</th><th>מחזור</th><th>יום חיוב</th><th>צפי קבלה</th><th>סכום</th></tr></thead><tbody>'
+          + o.receipts.map(function (r) {
+            const st = r.kind === 'institutional' ? 'wait' : r.kind === 'unset' ? 'late' : 'ok';
+            return '<tr data-open-patient="' + esc(r.patientId) + '" data-open-tab="account"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(r.funder) + ' ' + chip(st, kindLabel[r.kind]) + '</td><td>' + esc(fmtDate(r.start)) + '–' + esc(fmtDate(r.end)) + '</td><td>' + esc(fmtDate(r.dueDate)) + '</td><td>' + esc(fmtDate(r.expectedDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td></tr>';
+          }).join('') + '<tr class="sum"><td colspan="6"><strong>סה"כ (' + o.receipts.length + ')</strong></td><td><strong>' + esc(fmtMoney(o.receiptsTotal)) + '</strong></td></tr></tbody></table></div>'
+          : '<p class="na">אין תקבולים צפויים ברשימה הזו.</p>';
+      }
+      if (o.key === 'refunds' || o.key === 'net') {
+        html += o.refunds.length ? '<div class="tbl-wrap"><table class="tbl" id="crm-fc-open-refunds"><thead><tr><th>זיכוי ל־</th><th>בית</th><th>סוג</th><th>מועד תשלום</th><th>צפי תשלום</th><th>סכום</th></tr></thead><tbody>'
+          + o.refunds.map(function (r) {
+            return '<tr><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(CREDIT_TYPE_LABELS[r.creditType] || r.creditType) + (r.auto ? ' ' + chip('wait', 'מחושב — טרם הוחלט') : '') + '</td><td>' + esc(r.payoutDate ? fmtDate(r.payoutDate) : '—') + (r.late ? ' ' + chip('late', 'באיחור') : '') + '</td><td>' + esc(fmtDate(r.expectedDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td></tr>';
+          }).join('') + '<tr class="sum"><td colspan="5"><strong>סה"כ זיכויים (' + o.refunds.length + ')</strong></td><td><strong>' + signedHtml(-o.refundsTotal) + '</strong></td></tr></tbody></table></div>'
+          : '<p class="na">אין זיכויים לתשלום בטווח הזה.</p>';
+      }
+      return html + '</section>';
+    }
     /* «רשימת חייבים לגבייה» (CHANGELOG-billing-debtors-list.md): the past debts the
      * forecast leaves out, right under its cards — open by default; a row opens the
      * patient's «חשבון» (where «דווח תשלום» is). Read-only, from the loaded reads. */
@@ -3629,6 +3668,7 @@
       if (!cd.ok) return html + '<div class="crm-state bad">חובות לא נטענו <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div></details>';
       if (!cd.rows.length) return html + '<p class="na">' + (cd.funder && cd.all ? 'אין חייבים לגורם המממן שנבחר.' : 'אין חובות עבר לגבייה.') + '</p></details>';
       html += '<p class="na">חובות עבר (מחזורים שמועד החיוב שלהם עבר) נכון ל-' + esc(fmtDate(cd.asOf)) + ' — אינם בצפי התזרים. ' + cd.inHouse + ' בבית, ' + (cd.count - cd.inHouse) + ' משוחררים. פתיחת שורה → «חשבון» של המטופל/ת.</p>'
+        + (state.me && state.me.canDiscount && cd.count > cd.inHouse ? '<p class="na" id="crm-fc-cleanup-hint">חוב של מטופל/ת ששוחרר/ה ואינו חוב אמיתי (שולם ולא נרשם / לא חויב)? <button type="button" class="btn small" data-cleanup-jump>ניקוי חובות היסטוריים ↓</button></p>' : '')
         + '<div class="tbl-wrap"><table class="tbl" id="crm-fc-debtor-rows"><thead><tr><th>מטופל/ת</th><th>בית</th><th>גורם מממן</th><th>סכום חוב</th><th>מחזורים</th><th>ימים בפיגור</th><th>תשלום אחרון</th><th>סטטוס</th></tr></thead><tbody>'
         + cd.rows.map(function (r) {
           const st = r.bucket === 'd61_plus' ? 'late' : r.bucket === 'd31_60' ? 'today' : 'ok';
@@ -5171,7 +5211,7 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-fc-preset],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-fc-preset],[data-fc-open],[data-cleanup-jump],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
       if (!t) return;
       if (t.dataset.creditCancel !== undefined) { state.creditForm = null; const box = t.closest('form'); if (box) box.remove(); return; }
       if (t.dataset.creditEdit) return openCreditForm('edit', t.dataset.creditEdit);
@@ -5179,6 +5219,17 @@
       if (t.dataset.billingRetry !== undefined) { resetBilling(); return renderMain(); }
       if (t.dataset.reportCancel !== undefined) { state.report = null; state.small = null; const el = $('#crm-report'); if (el) el.innerHTML = ''; return; }
       if (t.dataset.dueToday !== undefined) { state.dueDate = state.today; return renderMain(); }
+      if (t.dataset.fcOpen !== undefined) {
+        state.fcOpen = state.fcOpen === t.dataset.fcOpen ? '' : t.dataset.fcOpen;
+        renderMain();
+        const el = $('#crm-fc-open'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+        return;
+      }
+      if (t.dataset.cleanupJump !== undefined) {
+        state.cleanupOpen = true; renderMain();
+        const el = $('#crm-cleanup'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start' });
+        return;
+      }
       if (t.dataset.fcPreset) { const r = forecastPreset(t.dataset.fcPreset, state.today); state.fcFrom = r.from; state.fcTo = r.to; return renderMain(); }
       if (t.dataset.dueReport !== undefined) {
         // «לגבייה בתאריך» → the patient's «חשבון», then the report form on THAT cycle
@@ -5446,5 +5497,5 @@
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
     newTaskErrors: newTaskErrors, dueSoonTasks: dueSoonTasks, TASK_REMIND_MINUTES: TASK_REMIND_MINUTES, WORK_CONTROL: WORK_CONTROL, workControlQueues: workControlQueues,
-    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, cleanupCandidates: cleanupCandidates, cleanupPlan: cleanupPlan, cleanupBody: cleanupBody, CLEANUP_REASONS: CLEANUP_REASONS, paidWithDiscountPlan: paidWithDiscountPlan, paidWithDiscountBody: paidWithDiscountBody, reportValuesOnly: reportValuesOnly, cashForecast: cashForecast, forecastRefunds: forecastRefunds, cashForecastNet: cashForecastNet, fmtSigned: fmtSigned, collectionDebtors: collectionDebtors, cycleOnDay: cycleOnDay, cycleCtx: cycleCtx, forecastPreset: forecastPreset, monthEndIso: monthEndIso, FORECAST_TERMS_DAYS: FORECAST_TERMS_DAYS, FORECAST_INSTITUTIONAL: FORECAST_INSTITUTIONAL, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
+    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, cleanupCandidates: cleanupCandidates, cleanupPlan: cleanupPlan, cleanupBody: cleanupBody, CLEANUP_REASONS: CLEANUP_REASONS, paidWithDiscountPlan: paidWithDiscountPlan, paidWithDiscountBody: paidWithDiscountBody, reportValuesOnly: reportValuesOnly, cashForecast: cashForecast, forecastRefunds: forecastRefunds, cashForecastNet: cashForecastNet, fmtSigned: fmtSigned, collectionDebtors: collectionDebtors, forecastOpenList: forecastOpenList, cycleOnDay: cycleOnDay, cycleCtx: cycleCtx, forecastPreset: forecastPreset, monthEndIso: monthEndIso, FORECAST_TERMS_DAYS: FORECAST_TERMS_DAYS, FORECAST_INSTITUTIONAL: FORECAST_INSTITUTIONAL, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));

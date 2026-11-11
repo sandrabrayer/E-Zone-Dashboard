@@ -737,6 +737,20 @@ test('«צפי תזרים» (Vered, CHANGELOG-cashflow-forecast.md): renders und
       assert.match(await page.textContent('#crm-fc-refund-rows'), /דנה כהן/);
       assert.match(await page.textContent('#crm-fc-refund-rows'), /מחושב — טרם הוחלט/);
       assert.equal(srv.actions.filter((a) => a.action === 'refundPayoutForecast').length, 1, 'read once, with the other «גבייה» reads');
+      // a card opens the list behind its number, right under the cards; a second click closes it (CHANGELOG-forecast-cards-open.md)
+      assert.equal(await page.$('#crm-fc-open'), null);
+      await page.click('#crm-fc-refunds');
+      await page.waitForSelector('#crm-fc-open[data-fc-key="refunds"] #crm-fc-open-refunds');
+      assert.match(await page.textContent('#crm-fc-open-refunds'), /דנה כהן[\s\S]*סה"כ זיכויים \(2\)/);
+      assert.equal(await page.getAttribute('#crm-fc-refunds', 'aria-pressed'), 'true');
+      await page.click('#crm-fc-net');
+      await page.waitForSelector('#crm-fc-open[data-fc-key="net"]');
+      assert.ok(await page.$('#crm-fc-open-rows') && await page.$('#crm-fc-open-refunds'), 'net = receipts + refunds');
+      await page.click('#crm-fc-kpis [data-fc-open="all"]');
+      await page.waitForSelector('#crm-fc-open[data-fc-key="all"] #crm-fc-open-rows');
+      assert.equal(srv.actions.length, reads, 'opening a card asks the server nothing');
+      await page.click('#crm-fc-open button[data-fc-open]');
+      await page.waitForFunction(() => !document.querySelector('#crm-fc-open'));
       // «רשימת חייבים לגבייה» (CHANGELOG-billing-debtors-list.md): open, right under the forecast cards, before the weekly table
       assert.equal(await page.$eval('#crm-fc-debtors', (e) => e.open), true, 'open by default');
       assert.match(await page.textContent('#crm-fc-debtors summary'), /רשימת חייבים לגבייה.*1 חייבים · ₪8,500/);

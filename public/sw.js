@@ -390,7 +390,9 @@
 // (CHANGELOG-billing-debtors-list.md). From the live v125; monotonic, v17 never reused.
 // v126 → v127: «מטופלים פעילים» card on «היום שלי» (crm/crm.js)
 // (CHANGELOG-today-active-patients.md). From the live v126; monotonic, v17 never reused.
-var CACHE_VERSION = 'v127';
+// v127 → v128: «צפי תזרים» cards open the list behind their number; shortcut to «ניקוי חובות היסטוריים» (crm/crm.js)
+// (CHANGELOG-forecast-cards-open.md). From the live v127; monotonic, v17 never reused.
+var CACHE_VERSION = 'v128';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

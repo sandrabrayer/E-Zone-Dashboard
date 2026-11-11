@@ -1,5 +1,12 @@
 # E-ZONE Ecosystem Status — updated November 11, 2026
 
+## CRM «צפי תזרים» cards open their lists — November 11, 2026
+
+Each forecast card is a button: the list behind its number opens right under
+the cards (receipts by kind, refunds, net = both). «רשימת חייבים לגבייה»
+gets a shortcut to «ניקוי חובות היסטוריים» for finance users. UI only, no
+request, no Apps Script change. SW v128. See `CHANGELOG-forecast-cards-open.md`.
+
 ## CRM «מטופלים פעילים» on «היום שלי» — November 11, 2026
 
 A card at the end of the day strip (all users, Ortal included): patients in
