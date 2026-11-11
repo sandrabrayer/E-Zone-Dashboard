@@ -189,7 +189,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
   try {
     const { page, errors } = await open(browser, srv.port, 'vered', 1366);
     assert.equal(await page.getAttribute('html', 'dir'), 'rtl');
-    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'בקרת עבודה', 'לידים', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'KPI'], 'grouped nav (spec §3; «פניות» → «לידים» 04/11/2026; «בקרת עבודה» next to «היום שלי» + «KPI» 05/11/2026)');
+    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'בקרת עבודה', 'לידים', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'KPI', 'היסטוריה חודשית'], 'grouped nav (spec §3; «פניות» → «לידים» 04/11/2026; «בקרת עבודה» next to «היום שלי» + «KPI» 05/11/2026)');
     assert.deepEqual(await page.$$eval('#crm-nav .nav-group', (els) => els.map((e) => e.textContent)), ['לידים ומטופלים', 'פגישות ויומן', 'בתים והמשך טיפול', 'כספים', 'דוחות והגדרות']);
     assert.equal(await page.$eval('body', (b) => getComputedStyle(b).backgroundColor), 'rgb(230, 236, 242)', 'light theme (contrast pass)');
     assert.ok(await page.isVisible('#crm-menu'));
@@ -1616,6 +1616,55 @@ test('CRM «KPI» (Vered + Dana): sections render, break-even is finance-only an
 });
 
 /* Manual credits + credit edit in the CRM (CHANGELOG-crm-manual-credits.md) */
+test('«היסטוריה חודשית» (CHANGELOG-crm-month-view.md): Vered sees a month\'s occupancy AND revenue; ‹ › and the picker move the month; Dana sees occupancy only (no money, no money read); Ortal has no such area', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    for (const width of [1366, 390]) {
+      const { page, errors } = await open(browser, srv.port, 'vered', width);
+      if (width === 390) await page.click('#crm-burger');
+      const b0 = srv.actions.length;
+      await page.click('#crm-nav button[data-area="monthly"]');
+      await page.waitForSelector('#crm-month-rev');
+      assert.equal(await page.evaluate(() => typeof window.RevenueEngine.monthModel), 'function', 'the generated engine is on the page');
+      const cur = TODAY.slice(0, 7);
+      const picked = await page.inputValue('#crm-month');
+      assert.ok(picked < cur, 'opens on the previous month');
+      assert.equal(await page.getAttribute('#crm-month', 'max'), cur, 'no future month');
+      for (const sel of ['#crm-month-occ', '#crm-month-pct', '#crm-month-received', '#crm-month-net', '#crm-month-houses', '#crm-month-trend']) assert.ok(await page.$(sel), sel + ' at ' + width);
+      assert.match(await page.textContent('#crm-month-houses thead'), /תפוסה[\s\S]*נגבה[\s\S]*נטו/);
+      assert.match(await page.textContent('#crm-month-rev-title'), /ללא מע"מ/);
+      // › moves to the running month (flagged partial) and stops there
+      await page.click('[data-month-step="1"]');
+      await page.waitForFunction((m) => document.querySelector('#crm-month').value === m, cur);
+      assert.match(await page.textContent('#crm-month-occ-title'), /עד /);
+      assert.equal(await page.isDisabled('[data-month-step="1"]'), true);
+      assert.match(await page.textContent('#crm-month-pct'), /%/);
+      if (process.env.CRM_SHOT_DIR) await page.screenshot({ path: require('node:path').join(process.env.CRM_SHOT_DIR, 'monthly-' + width + '.png'), fullPage: true });
+      // a history row opens that month
+      await page.click('#crm-month-trend tbody tr:last-child');
+      await page.waitForFunction((m) => document.querySelector('#crm-month').value < m, cur);
+      assert.deepEqual([...new Set(srv.actions.slice(b0).map((a) => a.action))].sort(), ['debtAging', 'getCredits', 'getPayments', 'refundPayoutForecast'].filter((x) => srv.actions.slice(b0).some((a) => a.action === x)), 'only the «גבייה» reads, once — nothing is written');
+      assert.ok(srv.actions.slice(b0).filter((a) => a.action === 'getPayments').length <= 1, 'moving between months asks the server nothing more');
+      if (width === 390) assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'no page overflow');
+      assert.deepEqual(errors, []);
+      await page.context().close();
+    }
+    // Dana: occupancy history only
+    const d = await open(browser, srv.port, 'dana', 1366);
+    const before = srv.actions.length;
+    await d.page.click('#crm-nav button[data-area="monthly"]');
+    await d.page.waitForSelector('#crm-month-trend');
+    assert.equal(await d.page.$('#crm-month-rev-title'), null);
+    assert.ok(!/₪|נגבה|הכנסות/.test(await d.page.textContent('#crm-main')), 'no money on her screen');
+    assert.ok(!srv.actions.slice(before).some((a) => ['getPayments', 'getCredits', 'debtAging', 'refundPayoutForecast'].includes(a.action)), 'no money read for her');
+    assert.deepEqual(d.errors, []);
+    // Ortal: not in her menu
+    const o = await open(browser, srv.port, 'ortal', 1366);
+    assert.equal(await o.page.$('#crm-nav button[data-area="monthly"]'), null);
+  } finally { await browser.close(); await srv.close(); }
+});
+
 test('CRM credits (Vered edits, Sandra adds a manual credit): saveCredit from the patient card; reasons enforced; no classic link', { skip: skip && 'playwright/chromium missing' }, async () => {
   const srv = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });

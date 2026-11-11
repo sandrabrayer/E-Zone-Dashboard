@@ -145,6 +145,7 @@ test('self-contained: a browser script that defines only RevenueEngine; a Node m
   for (const bad of [/\bdocument\./, /localStorage/, /\bfetch\(/, /XMLHttpRequest/, /\bwindow\.[A-Za-z_$]/]) assert.ok(!bad.test(ENGINE_SRC), String(bad));
 });
 
-test('PR scope: the classic page and app.js are untouched by this file (no page loads it yet)', () => {
+test('the classic page never loads it (app.js IS the engine there); the CRM page does (CHANGELOG-crm-month-view.md)', () => {
   assert.ok(!fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8').includes('revenue-engine.js'));
+  assert.ok(fs.readFileSync(path.join(ROOT, 'public', 'crm', 'crm.html'), 'utf8').includes('<script src="revenue-engine.js?v=__BUILD__"></script>'));
 });

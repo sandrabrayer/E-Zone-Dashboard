@@ -28,6 +28,7 @@
     { id: 'today', label: 'היום שלי' }, { id: 'leads', label: 'לידים' }, { id: 'occupancy', label: 'תפוסה' },
     { id: 'clients', label: 'מטופלים' }, { id: 'calendar', label: 'יומן' }, { id: 'billing', label: 'גבייה' }, { id: 'control', label: 'בקרת עבודה' },
     { id: 'kpi', label: 'KPI' },   // CHANGELOG-crm-kpi-tab.md: slices, occupancy %, conversion, break-even
+    { id: 'monthly', label: 'היסטוריה חודשית' },   // CHANGELOG-crm-month-view.md: a past month's occupancy + (finance) its revenue
     { id: 'triage', label: 'רשומות שדורשות בירור' },   // Stage 3: reached from «פניות» / the «ללא מגע» card, not from the menu
   ];
   const WAIT_DAYS = 3;
@@ -341,8 +342,8 @@
   function areasFor(me) {
     const m = me || {};
     if (m.view === 'controller') return ['today', 'billing', 'control'];
-    if (m.view === 'ops' || m.ops === true) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'triage'];
-    if (!m.finance) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'triage'];
+    if (m.view === 'ops' || m.ops === true) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'monthly', 'triage'];
+    if (!m.finance) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'monthly', 'triage'];
     return AREAS.map(function (a) { return a.id; });
   }
 
@@ -421,6 +422,105 @@
     });
     return { houses: rows, unknown: unknown, totalIn: totalIn, totalCap: totalCap, totalFree: Math.max(0, totalCap - totalIn) };
   }
+  /* ---- «תפוסה והכנסות לפי חודש» (CHANGELOG-crm-month-view.md) ----
+   * Occupancy of a calendar month, from the patients' entry / exit dates:
+   *   - a patient is in a house on every day of [entry, exit] (both inclusive;
+   *     no exit → still there) — the managers app's patient-day rule
+   *     (Code.gs computeMonthStats_);
+   *   - the same person is counted once a day per house (two rows of one stay);
+   *   - days counted: the whole month, or — for the running month — up to today;
+   *     a future month → ok:false;
+   *   - average = patient-days ÷ days counted; occupancy % = average ÷ capacity;
+   *   - capacity is TODAY's (HOUSES); a closed house has none (shown with its
+   *     patients, «—» for %), and a house enters the network capacity only from
+   *     the month its first patient arrived (a house not yet open is not empty beds).
+   * Pure: (normalised patients, 'YYYY-MM', today). */
+  function monthKeyOk(k) { return /^\d{4}-(0[1-9]|1[0-2])$/.test(s(k)); }
+  function monthShift(k, n) {
+    if (!monthKeyOk(k)) return '';
+    const t = Number(k.slice(0, 4)) * 12 + Number(k.slice(5, 7)) - 1 + (Number(n) || 0);
+    return Math.floor(t / 12) + '-' + pad2(t % 12 + 1);
+  }
+  function monthLabelHe(k) {
+    const names = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר'];
+    return monthKeyOk(k) ? names[Number(k.slice(5, 7)) - 1] + ' ' + k.slice(0, 4) : '';
+  }
+  function monthOccupancy(patients, month, today) {
+    const t = s(today), k = s(month);
+    const out = { ok: false, month: k, label: monthLabelHe(k), from: '', to: '', days: 0, partial: false, houses: [], unknownDays: 0,
+      patientDays: 0, avg: 0, capacity: 0, pct: null, entries: 0, exits: 0 };
+    if (!monthKeyOk(k) || !isoDateOk(t) || k > t.slice(0, 7)) return out;
+    const y = Number(k.slice(0, 4)), m = Number(k.slice(5, 7));
+    const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const from = k + '-01';
+    const monthEnd = k + '-' + pad2(dim);
+    const to = k === t.slice(0, 7) ? t : monthEnd;
+    const days = Number(to.slice(8, 10));
+    out.ok = true; out.from = from; out.to = to; out.days = days; out.partial = to !== monthEnd;
+    const by = {}, first = {};
+    HOUSES.forEach(function (h) { by[h.id] = { seen: {}, patientDays: 0, entries: 0, exits: 0, peak: new Array(days).fill(0) }; });
+    (patients || []).forEach(function (p) {
+      const entry = isoDay(p && p.date);
+      if (!entry) return;
+      const hid = houseId(p.houseId);
+      const exit = isoDay(p.exitDate);
+      const end = exit || '9999-12-31';
+      const a = entry > from ? entry : from, b = end < to ? end : to;
+      if (!hid) { if (a <= b) out.unknownDays += Number(b.slice(8, 10)) - Number(a.slice(8, 10)) + 1; return; }
+      if (!first[hid] || entry < first[hid]) first[hid] = entry;
+      const h = by[hid];
+      if (entry >= from && entry <= to) h.entries++;
+      if (exit && exit >= from && exit <= to) h.exits++;
+      if (a > b) return;
+      const who = s(p.name).replace(/\s+/g, ' ').trim() || ('row:' + s(p.id));
+      for (let d = Number(a.slice(8, 10)); d <= Number(b.slice(8, 10)); d++) {
+        const key = d + '|' + who;
+        if (h.seen[key]) continue;
+        h.seen[key] = true; h.patientDays++; h.peak[d - 1]++;
+      }
+    });
+    const r1 = function (n) { return Math.round(n * 10) / 10; };
+    let capDays = 0;
+    HOUSES.forEach(function (h) {
+      const x = by[h.id];
+      const opened = !!first[h.id] && first[h.id].slice(0, 7) <= k;
+      if (!x.patientDays && (h.closed || !opened)) return;
+      const cap = h.closed ? 0 : h.capacity;
+      const avg = x.patientDays / days;
+      out.houses.push({ id: h.id, name: h.name, closed: !!h.closed, capacity: cap, patientDays: x.patientDays, avg: r1(avg), pct: cap ? r1(100 * avg / cap) : null,
+        peak: Math.max.apply(null, x.peak.concat([0])), entries: x.entries, exits: x.exits });
+      out.patientDays += x.patientDays; out.capacity += cap; out.entries += x.entries; out.exits += x.exits;
+      if (cap) capDays += x.patientDays;
+    });
+    out.avg = r1(out.patientDays / days);
+    // the network % counts only houses that have a capacity (a closed house's patients are in the average, not in the %)
+    out.pct = out.capacity ? r1(100 * (capDays / days) / out.capacity) : null;
+    return out;
+  }
+  /* The last `n` months up to `month` (oldest first), each a monthOccupancy. Pure. */
+  function occupancyTrend(patients, month, today, n) {
+    const out = [];
+    for (let i = (Number(n) || 12) - 1; i >= 0; i--) {
+      const o = monthOccupancy(patients, monthShift(month, -i), today);
+      if (o.ok) out.push(o);
+    }
+    return out;
+  }
+  /* The month's revenue, by the classic «הכנסות חודשיות» engine (window.RevenueEngine —
+   * public/revenue-engine.js, generated from app.js; no figure is computed here).
+   * → null when the engine or the month is unusable. All figures EX-VAT. Pure given the engine. */
+  function monthRevenue(engine, data, payments, credits, month, today) {
+    if (!engine || typeof engine.monthModel !== 'function' || !monthKeyOk(month)) return null;
+    if (!payments || payments.ok !== true || !credits || credits.ok !== true) return null;
+    const m = engine.monthModel({ month: month, data: data, payments: payments, credits: credits, today: today });
+    if (!m) return null;
+    const ex = function (b) { return b && isFinite(b.exVat) ? Number(b.exVat) : 0; };
+    const byHouse = {};
+    (m.byHouse || []).forEach(function (h) { byHouse[s(h.house)] = { received: ex(h.received), expected: ex(h.expected), credits: ex(h.credits), net: ex(h.net) }; });
+    return { month: month, received: ex(m.received), verified: m.verified ? ex(m.verified) : null, expected: ex(m.expected), credits: ex(m.credits), net: ex(m.net),
+      byHouse: byHouse, recordsFrom: s(m.preRecords && m.preRecords.from), preRecords: ex(m.preRecords) };
+  }
+
   /* «מטופלים פעילים» on «היום שלי» (CHANGELOG-today-active-patients.md): how many
    * patients are in the houses now — the SAME count as «תפוסה» (occupancy: every
    * patient who is not released; a patient whose house is unknown is counted and
@@ -1981,7 +2081,7 @@
    * is «ללא מגע» (information), an overdue dated task is «באיחור». */
   const NAV_GROUPS = [
     { label: '', items: ['today', 'control'] }, { label: 'לידים ומטופלים', items: ['leads', 'clients'] }, { label: 'פגישות ויומן', items: ['calendar'] },
-    { label: 'בתים והמשך טיפול', items: ['occupancy'] }, { label: 'כספים', items: ['billing'] }, { label: 'דוחות והגדרות', items: ['kpi'] }];
+    { label: 'בתים והמשך טיפול', items: ['occupancy'] }, { label: 'כספים', items: ['billing'] }, { label: 'דוחות והגדרות', items: ['kpi', 'monthly'] }];
   const MY_DAY_VIEWS = [{ id: 'today', label: 'היום' }, { id: 'week', label: 'השבוע' }, { id: 'done', label: 'הושלמו' }];
   const DOMAINS = [
     { id: 'collection', label: 'גבייה לטיפול', money: true }, { id: 'calls', label: 'שיחות ומעקבים' }, { id: 'meetings', label: 'פגישות ותיאומים' },
@@ -2759,7 +2859,7 @@
     function patientStatusLabel(st) { if (s(st) === 'released') return 'שוחרר/ה'; const x = PATIENT_STATUSES.filter(function (p) { return p.id === s(st); })[0]; return x ? x.label : (s(st) || '—'); }
     function statusChip(st) { return '<span class="chip pst-' + esc(s(st) || 'active') + '">' + esc(patientStatusLabel(st)) + '</span>'; }
     function houseTag(idOrName) { const id = houseId(idOrName) || 'x'; return '<span class="chip house h-' + esc(id) + '">' + esc(houseName(idOrName) || '—') + '</span>'; }
-    const AREA_ICONS = { today: '☀', leads: '✉', clients: '👤', calendar: '📅', occupancy: '🏠', billing: '₪', control: '✔', kpi: '📊', triage: '🔎' };
+    const AREA_ICONS = { today: '☀', leads: '✉', clients: '👤', calendar: '📅', occupancy: '🏠', billing: '₪', control: '✔', kpi: '📊', monthly: '🗓', triage: '🔎' };
     function stateText(st) { return st === 'late' ? 'באיחור' : st === 'today' ? 'להיום' : 'ממתין'; }
 
     function renderToday(c) {
@@ -3880,6 +3980,77 @@
     }
     /* A number / amount / percentage kept left-to-right inside the RTL page (a minus sign stays in front). */
     function ltr(v) { return '<bdi dir="ltr">' + esc(v) + '</bdi>'; }
+    /* «תפוסה והכנסות לפי חודש» (CHANGELOG-crm-month-view.md): pick a month → that month's
+     * occupancy per house, and — for a finance session — its revenue (the classic
+     * «הכנסות חודשיות» figures), side by side; then the last 12 months. Read-only. */
+    function renderMonthly(c) {
+      const cur = s(state.today).slice(0, 7);
+      const month = monthKeyOk(state.month) && state.month <= cur ? state.month : monthShift(cur, -1);
+      const o = monthOccupancy(c.patients, month, state.today);
+      const fin = !!(state.me && state.me.finance) && areasFor(state.me).indexOf('billing') >= 0;
+      let html = '<div class="toolbar filters" id="crm-month-tools"><button type="button" class="btn small" data-month-step="-1">‹ חודש קודם</button>'
+        + '<label>חודש <input type="month" id="crm-month" max="' + esc(cur) + '" value="' + esc(month) + '"></label>'
+        + '<button type="button" class="btn small" data-month-step="1"' + (month >= cur ? ' disabled' : '') + '>חודש הבא ›</button>'
+        + '<strong id="crm-month-label">' + esc(o.label) + '</strong></div>';
+      let rev = null, revState = '';
+      if (fin) {
+        if (!state.billing) { loadBilling(renderMain); revState = 'loading'; }
+        else {
+          rev = monthRevenue(typeof window !== 'undefined' ? window.RevenueEngine : null, state.data, state.billing.payments, state.billing.credits, month, state.today);
+          if (!rev) revState = 'failed';
+        }
+      }
+      const money = function (n) { return esc(fmtMoney(n)); };
+      // occupancy cards
+      html += '<div class="group-title" id="crm-month-occ-title">תפוסה — ' + esc(o.label) + (o.partial ? ' ' + chip('today', 'עד ' + fmtDate(o.to)) : '') + '</div>'
+        + '<div class="kpis" id="crm-month-occ">' + kpiCard(o.pct === null ? '—' : o.pct + '%', 'תפוסה ממוצעת', o.avg + ' מטופלים ביום מתוך ' + o.capacity + ' מיטות', 'crm-month-pct')
+        + kpiCard(o.avg, 'ממוצע מטופלים ביום') + kpiCard(o.patientDays, 'ימי טיפול', o.days + ' ימים בחישוב') + kpiCard(o.entries, 'כניסות') + kpiCard(o.exits, 'יציאות') + '</div>';
+      // revenue cards (finance only)
+      if (fin) {
+        html += '<div class="group-title" id="crm-month-rev-title">הכנסות — ' + esc(o.label) + ' <span class="na">ללא מע"מ · לפי החודש שההכנסה שייכת אליו</span></div>';
+        if (revState === 'loading') html += '<div class="crm-state">טוען הכנסות…</div>';
+        else if (revState === 'failed') html += '<div class="crm-state bad">הכנסות החודש לא נטענו <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
+        else html += '<div class="kpis" id="crm-month-rev">' + kpiCard(fmtMoney(rev.received), 'נגבה בפועל', 'כסף שהתקבל ומשויך לחודש', 'crm-month-received')
+          + kpiCard(rev.verified === null ? '—' : fmtMoney(rev.verified), 'מאומת', 'אושר בבנק — לא מצטרף לסכום אחר')
+          + kpiCard(fmtMoney(rev.expected), 'צפוי', 'טרם נגבה')
+          + '<div class="kpi"><span class="v">' + (rev.credits ? signedHtml(-rev.credits) : esc(fmtMoney(0))) + '</span><span class="l">זיכויים</span></div>'
+          + '<div class="kpi" id="crm-month-net"><span class="v">' + signedHtml(rev.net) + '</span><span class="l">נטו</span><span class="l2">נגבה + צפוי − זיכויים</span></div></div>'
+          + (rev.recordsFrom && month < rev.recordsFrom.slice(0, 7) ? '<p class="na" id="crm-month-prerecords">רישום התשלומים באפליקציה מלא רק מ-' + esc(fmtDate(rev.recordsFrom)) + ' — הכנסות של חודש מוקדם יותר חלקיות.</p>' : '');
+      }
+      // per house: occupancy + revenue side by side
+      const seen = {};
+      html += '<div class="tbl-wrap"><table class="tbl" id="crm-month-houses"><thead><tr><th>בית</th><th>ממוצע מטופלים</th><th>קיבולת</th><th>תפוסה</th><th>שיא</th><th>כניסות</th><th>יציאות</th>'
+        + (rev ? '<th>נגבה</th><th>צפוי</th><th>זיכויים</th><th>נטו</th>' : '') + '</tr></thead><tbody>'
+        + o.houses.map(function (h) {
+          const r = rev && rev.byHouse[h.name]; if (r) seen[h.name] = true;
+          return '<tr><td>' + esc(h.name) + (h.closed ? ' ' + chip('wait', 'סגור') : '') + '</td><td>' + h.avg + '</td><td>' + (h.capacity || '—') + '</td><td>' + (h.pct === null ? '—' : h.pct + '%') + '</td><td>' + h.peak + '</td><td>' + h.entries + '</td><td>' + h.exits + '</td>'
+            + (rev ? '<td>' + money(r ? r.received : 0) + '</td><td>' + money(r ? r.expected : 0) + '</td><td>' + money(r ? r.credits : 0) + '</td><td>' + signedHtml(r ? r.net : 0) + '</td>' : '') + '</tr>';
+        }).join('')
+        + (rev ? Object.keys(rev.byHouse).filter(function (n) { return !seen[n]; }).map(function (n) {
+          const r = rev.byHouse[n];
+          return '<tr><td>' + esc(n) + '</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>' + money(r.received) + '</td><td>' + money(r.expected) + '</td><td>' + money(r.credits) + '</td><td>' + signedHtml(r.net) + '</td></tr>';
+        }).join('') : '')
+        + '<tr class="sum"><td><strong>סה"כ</strong></td><td><strong>' + o.avg + '</strong></td><td><strong>' + o.capacity + '</strong></td><td><strong>' + (o.pct === null ? '—' : o.pct + '%') + '</strong></td><td></td><td><strong>' + o.entries + '</strong></td><td><strong>' + o.exits + '</strong></td>'
+        + (rev ? '<td><strong>' + money(rev.received) + '</strong></td><td><strong>' + money(rev.expected) + '</strong></td><td><strong>' + money(rev.credits) + '</strong></td><td><strong>' + signedHtml(rev.net) + '</strong></td>' : '') + '</tr></tbody></table></div>';
+      if (o.unknownDays) html += '<p class="na">' + o.unknownDays + ' ימי טיפול של מטופלים בבית לא מזוהה אינם בטבלה.</p>';
+      // 12 months of history
+      const trend = occupancyTrend(c.patients, month, state.today, 12);
+      const eng = rev && typeof window !== 'undefined' ? window.RevenueEngine : null;
+      const cols = HOUSES.filter(function (h) { return trend.some(function (t) { return t.houses.some(function (x) { return x.id === h.id; }); }); });
+      html += '<div class="group-title" id="crm-month-trend-title">תפוסה היסטורית — 12 חודשים עד ' + esc(o.label) + '</div>'
+        + '<div class="tbl-wrap"><table class="tbl" id="crm-month-trend"><thead><tr><th>חודש</th><th>ממוצע מטופלים</th><th>קיבולת</th><th>תפוסה</th>'
+        + cols.map(function (h) { return '<th>' + esc(h.name) + '</th>'; }).join('') + (eng ? '<th>נגבה</th><th>נטו</th>' : '') + '</tr></thead><tbody>'
+        + trend.slice().reverse().map(function (t) {
+          const r = eng ? monthRevenue(eng, state.data, state.billing.payments, state.billing.credits, t.month, state.today) : null;
+          return '<tr data-month-pick="' + esc(t.month) + '"' + (t.month === month ? ' class="on"' : '') + '><td>' + esc(t.label) + (t.partial ? ' ' + chip('today', 'חלקי') : '') + '</td><td>' + t.avg + '</td><td>' + t.capacity + '</td><td><strong>' + (t.pct === null ? '—' : t.pct + '%') + '</strong></td>'
+            + cols.map(function (h) { const x = t.houses.filter(function (y) { return y.id === h.id; })[0]; return '<td>' + (x ? (x.pct === null ? x.avg : x.pct + '%') : '—') + '</td>'; }).join('')
+            + (eng ? '<td>' + (r ? money(r.received) : '—') + '</td><td>' + (r ? signedHtml(r.net) : '—') + '</td>' : '') + '</tr>';
+        }).join('') + '</tbody></table></div>'
+        + '<p class="na">תפוסה = ממוצע מטופלים ביום ÷ קיבולת. מחושב מתאריכי הכניסה והיציאה של המטופלים; הקיבולת היא של היום. בית נכנס לקיבולת מהחודש שבו נכנס אליו מטופל ראשון; בית סגור מוצג בלי אחוז.'
+        + (o.partial ? ' החודש הנוכחי מחושב עד היום.' : '') + ' לחיצה על שורה פותחת את החודש.'
+        + (rev && rev.recordsFrom && trend.length && trend[0].month < rev.recordsFrom.slice(0, 7) ? ' הכנסות לפני ' + esc(fmtDate(rev.recordsFrom)) + ' חלקיות (רישום התשלומים באפליקציה מלא רק מאז).' : '') + '</p>';
+      return html;
+    }
     function kpiCard(v, label, sub, id) {
       return '<div class="kpi"' + (id ? ' id="' + esc(id) + '"' : '') + '><span class="v">' + ltr(v) + '</span><span class="l">' + esc(label) + '</span>' + (sub ? '<span class="l2">' + esc(sub) + '</span>' : '') + '</div>';
     }
@@ -3986,7 +4157,7 @@
       if (state.error) { main.innerHTML = '<div class="crm-state bad">' + esc(state.error) + ' <button type="button" class="btn small" id="crm-retry">נסי שוב</button></div>'; return; }
       const c = compute(state.data, state.today);
       if (state.area === 'search') $('#crm-title').textContent = 'חיפוש';
-      const r = { search: renderSearch, today: renderToday, leads: renderLeads, occupancy: renderOccupancy, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl, kpi: renderKpi, triage: renderTriage }[state.area] || renderToday;
+      const r = { search: renderSearch, today: renderToday, leads: renderLeads, occupancy: renderOccupancy, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl, kpi: renderKpi, monthly: renderMonthly, triage: renderTriage }[state.area] || renderToday;
       main.innerHTML = r(c);
     }
 
@@ -4961,9 +5132,16 @@
       // <a target=_blank> to another origin, so open it from the click (never blocked), else navigate.
       const wa = ev.target.closest ? ev.target.closest('a[data-wa-manager]') : null;
       if (wa) { ev.preventDefault(); const w = win.open ? win.open(wa.href, '_blank', 'noopener') : null; if (!w) win.location.href = wa.href; return; }
-      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-billing-filter],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-billing-filter],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],[data-month-step],[data-month-pick],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.kpiPeriod) { state.kpiPeriod = t.dataset.kpiPeriod; return renderMain(); }
+      if (t.dataset.monthStep) {
+        const curM = s(state.today).slice(0, 7);
+        const next = monthShift(monthKeyOk(state.month) ? state.month : monthShift(curM, -1), Number(t.dataset.monthStep) || 0);
+        if (next && next <= curM) state.month = next;
+        return renderMain();
+      }
+      if (t.dataset.monthPick) { if (monthKeyOk(t.dataset.monthPick) && t.dataset.monthPick <= s(state.today).slice(0, 7)) state.month = t.dataset.monthPick; return renderMain(); }
       if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
       if (t.dataset.area) { state.workControl = ''; return setArea(t.dataset.area); }
       if (t.dataset.kpi) { state.kpiFilter = state.kpiFilter === t.dataset.kpi ? '' : t.dataset.kpi; return renderMain(); }
@@ -5353,6 +5531,7 @@
       if (t.id === 'crm-day-week') { if (isoDateOk(t.value)) state.week = t.value; return renderMain(); }
       if (t.id === 'crm-due-date') { if (isoDateOk(t.value)) state.dueDate = t.value; return renderMain(); }
       if (t.id === 'crm-due-funder') { state.dueFunder = t.value; return renderMain(); }
+      if (t.id === 'crm-month') { if (monthKeyOk(t.value) && t.value <= s(state.today).slice(0, 7)) state.month = t.value; return renderMain(); }
       if (t.id === 'crm-fc-from') { if (isoDateOk(t.value)) state.fcFrom = t.value; return renderMain(); }
       if (t.id === 'crm-fc-to') { if (isoDateOk(t.value)) state.fcTo = t.value; return renderMain(); }
       if (['f-dis-days', 'crm-cal-date', 'f-house', 'f-house-c', 'f-owner'].indexOf(t.id) < 0) return;
@@ -5467,7 +5646,7 @@
     return { state: state, load: load, setArea: setArea, switchUser: switchUser, remindTick: remindTick };
   }
 
-  return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, landingArea: landingArea, activePatientsCard: activePatientsCard, normalise: normalise, compute: compute, filterLeads: filterLeads,
+  return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, landingArea: landingArea, activePatientsCard: activePatientsCard, monthOccupancy: monthOccupancy, occupancyTrend: occupancyTrend, monthRevenue: monthRevenue, monthShift: monthShift, monthLabelHe: monthLabelHe, monthKeyOk: monthKeyOk, normalise: normalise, compute: compute, filterLeads: filterLeads,
     board: board, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
     occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, esc: esc, boot: boot, accountTabVisible: accountTabVisible, clearCachedPages: clearCachedPages,
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,

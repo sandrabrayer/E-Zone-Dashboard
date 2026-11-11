@@ -263,6 +263,9 @@ const ASSETS = createAssetStore({
   '/app.js': { file: path.join(__dirname, 'public', 'app.js'), mime: 'application/javascript' },
   '/style.css': { file: path.join(__dirname, 'public', 'style.css'), mime: 'text/css' },
   '/funder.js': { file: path.join(__dirname, 'public', 'funder.js'), mime: 'application/javascript' },
+  /* The «הכנסות חודשיות» engine for the CRM month view (CHANGELOG-crm-month-view.md):
+   * GENERATED from app.js (scripts/build-revenue-engine.js). Code only, no data. */
+  '/revenue-engine.js': { file: path.join(__dirname, 'public', 'revenue-engine.js'), mime: 'application/javascript' },
   '/payment-report-rules.js': { file: path.join(__dirname, 'lib', 'payment-report-rules.js'), mime: 'application/javascript' },
   '/billing-control-rules.js': { file: path.join(__dirname, 'lib', 'billing-control-rules.js'), mime: 'application/javascript' },
   '/billing-document-review.js': { file: path.join(__dirname, 'lib', 'billing-document-review.js'), mime: 'application/javascript' },
@@ -420,6 +423,8 @@ app.get('/report-xlsx.js', sendLibAsset('/report-xlsx.js'));
 app.get('/style.css', sendStatic('style.css', 'text/css'));
 // Patient funder helpers (public/funder.js, global Funder) — loaded before app.js.
 app.get('/funder.js', sendStatic('funder.js', 'application/javascript'));
+// The shared «הכנסות חודשיות» engine (window.RevenueEngine) — loaded by the CRM page only.
+app.get('/revenue-engine.js', sendStatic('revenue-engine.js', 'application/javascript'));
 
 /* PWA assets. Without these explicit routes they hit the 404 fallback, because
  * serving is hand-rolled (no express.static). The no-cache headers set above

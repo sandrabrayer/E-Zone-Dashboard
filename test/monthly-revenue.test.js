@@ -789,7 +789,10 @@ test('I: the new screen is registered in the router and has a matching section',
 /* ================= J. security (PR #124 parity) ================= */
 
 test('J: no new endpoint — server.js and Code.gs are untouched by this screen', () => {
-  assert.ok(!/revenue/i.test(SERVER), 'server.js must stay unchanged by the monthly screen');
+  // The one exception (CHANGELOG-crm-month-view.md): the STATIC file /revenue-engine.js — code only, no data,
+  // served like /funder.js. Still no revenue endpoint, action or computation on the server.
+  assert.ok(!/revenue/i.test(SERVER.replace(/revenue-engine(\.js)?|RevenueEngine/g, '')), 'server.js holds no revenue endpoint or logic');
+  assert.ok(!/app\.(get|post|put|delete)\('\/api\/[^']*revenue/i.test(SERVER), 'no revenue API route');
   assert.ok(!/monthlyRevenue|buildMonthlyRevenue/.test(GS), 'no new Apps Script action');
   // The proxy gate every read still rides is intact.
   assert.match(SERVER, /\/api\/sheets/);
