@@ -421,6 +421,20 @@
     });
     return { houses: rows, unknown: unknown, totalIn: totalIn, totalCap: totalCap, totalFree: Math.max(0, totalCap - totalIn) };
   }
+  /* «מטופלים פעילים» on «היום שלי» (CHANGELOG-today-active-patients.md): how many
+   * patients are in the houses now — the SAME count as «תפוסה» (occupancy: every
+   * patient who is not released; a patient whose house is unknown is counted and
+   * said so). `house` (id or Hebrew name, the day's house filter) narrows it. Pure. */
+  function activePatientsCard(patients, house) {
+    const o = occupancy(patients);
+    const hid = house ? houseId(house) : '';
+    if (hid) {
+      const h = o.houses.filter(function (x) { return x.id === hid; })[0] || { inHouse: 0, capacity: 0, name: houseName(hid) };
+      return { value: h.inHouse, capacity: h.capacity, unknown: 0, hint: (h.capacity ? 'מתוך ' + h.capacity + ' מיטות · ' : '') + h.name };
+    }
+    return { value: o.totalIn + o.unknown, capacity: o.totalCap, unknown: o.unknown,
+      hint: 'מתוך ' + o.totalCap + ' מיטות' + (o.unknown ? ' · ' + o.unknown + ' בבית לא מזוהה' : '') };
+  }
   function isoDay(v) { const t = s(v); return /^\d{4}-\d{2}-\d{2}/.test(t) ? t.slice(0, 10) : ''; }
   /* A billing DATE read from a sheet → 'YYYY-MM-DD' (CHANGELOG-crm-old-payment-dates.md).
    * Older Payments / Funders / Credits rows hold real Date cells, which reach the
@@ -2769,6 +2783,14 @@
         + '<span class="toolbar">' + rowButtons(r) + '</span></div>'
         + (r.task ? '<div class="task-form" data-task-form="' + esc(r.task.id) + '"></div>' : '');
     }
+    /* The «מטופלים פעילים» card of «היום שלי»: opens «תפוסה» for a session that has the area; a plain card otherwise (Ortal). */
+    function activePatientsHtml() {
+      const a = activePatientsCard(state.data ? normalise(state.data).patients : [], state.filters.house);
+      const inner = '<span class="v">' + a.value + '</span><span class="l">מטופלים פעילים</span><span class="l2">' + esc(a.hint) + '</span>';
+      return areasFor(state.me).indexOf('occupancy') >= 0
+        ? '<button type="button" class="kpi acc-patients" id="crm-active-patients" data-go="' + esc(JSON.stringify({ area: 'occupancy' })) + '">' + inner + '</button>'
+        : '<div class="kpi acc-patients" id="crm-active-patients">' + inner + '</div>';
+    }
     function rowsBlock(rows, cap) {
       if (!rows.length) return '<p class="na">אין פריטים.</p>';
       const list = cap ? rows.slice(0, cap) : rows;
@@ -2797,7 +2819,7 @@
         return '<button type="button" class="kpi acc-' + esc(k.id) + '" data-domain="' + k.id + '" aria-pressed="' + (state.domain === k.id) + '">'
           + (k.value === null ? '<span class="v na-v">—</span>' : '<span class="v">' + k.value + '</span>') + '<span class="l">' + esc(k.label) + '</span>'
           + (k.second ? '<span class="l2"><b>' + k.second.value + '</b> ' + esc(k.second.label) + '</span>' : '') + (k.hint ? '<span class="l2">' + esc(k.hint) + '</span>' : '') + '</button>';
-      }).join('') + '</div>';
+      }).join('') + activePatientsHtml() + '</div>';
       // The urgent band on top of the day is gone (Vered 04/11/2026): it repeated rows that are
       // already in their domain below and in «פגישות היום» on the side.
       const drill = WORK_CONTROL.filter(function (q) { return q.id === state.workControl; })[0];
@@ -2876,7 +2898,7 @@
       const sets = { toVerify: ['דיווחים לאימות', 'אימות בדשבורד הרגיל → בקרת גבייה'], flagged: ['אימותים חלקיים / לבירור', 'החלטה בדשבורד הרגיל'], documents: ['חשבוניות מבוקשות', 'ההנפקה בחשבשבת; כאן רק הבקשה'], tasks: ['משימות כספיות שלך', ''], credits: ['זיכויים לתשלום', '«סמן כשולם» ב«גבייה»'] };
       let html = '<div class="day-head"><div class="day-date">' + esc(state.me && state.me.user ? state.me.user : '') + '</div></div>'
         + '<div class="toolbar filters"><select id="f-house" aria-label="בית"><option value="">כל הבתים</option>' + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) { return '<option value="' + h.id + '"' + (houseName(state.filters.house) === h.name ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="grow"></span><a class="btn primary" href="/?view=classic">בקרת גבייה — העבודה המלאה</a></div>'
-        + '<div class="kpis cards">' + o.cards.map(function (k) { return '<button type="button" class="kpi acc-' + esc(k.id) + '" data-domain="' + k.id + '" aria-pressed="' + (state.domain === k.id) + '">' + (k.value === null ? '<span class="v na-v">—</span>' : '<span class="v">' + k.value + '</span>') + '<span class="l">' + esc(k.label) + '</span>' + (k.hint ? '<span class="l2">' + esc(k.hint) + '</span>' : '') + '</button>'; }).join('') + '</div>';
+        + '<div class="kpis cards">' + o.cards.map(function (k) { return '<button type="button" class="kpi acc-' + esc(k.id) + '" data-domain="' + k.id + '" aria-pressed="' + (state.domain === k.id) + '">' + (k.value === null ? '<span class="v na-v">—</span>' : '<span class="v">' + k.value + '</span>') + '<span class="l">' + esc(k.label) + '</span>' + (k.hint ? '<span class="l2">' + esc(k.hint) + '</span>' : '') + '</button>'; }).join('') + activePatientsHtml() + '</div>';
       if (o.urgent.length && !state.domain) html += '<section class="urgent"><div class="group-title">⚠ דורש החלטה / באיחור <span class="n chip">' + o.urgent.length + '</span></div>' + rowsBlock(o.urgent, 8) + '</section>';
       Object.keys(sets).forEach(function (k) {
         if (state.domain && state.domain !== k) return;
@@ -5394,7 +5416,7 @@
     return { state: state, load: load, setArea: setArea, switchUser: switchUser, remindTick: remindTick };
   }
 
-  return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, landingArea: landingArea, normalise: normalise, compute: compute, filterLeads: filterLeads,
+  return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, landingArea: landingArea, activePatientsCard: activePatientsCard, normalise: normalise, compute: compute, filterLeads: filterLeads,
     board: board, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
     occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, esc: esc, boot: boot, accountTabVisible: accountTabVisible, clearCachedPages: clearCachedPages,
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
