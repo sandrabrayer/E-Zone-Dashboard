@@ -386,7 +386,9 @@
 // (CHANGELOG-ortal-crm-default.md). From the live v123; monotonic, v17 never reused.
 // v124 → v125: «צפי תזרים» net of the refunds to pay — «זיכויים לתשלום» + «נטו צפוי», weekly columns, the list (crm/crm.js)
 // (CHANGELOG-cashflow-refunds.md). From the live v124; monotonic, v17 never reused.
-var CACHE_VERSION = 'v125';
+// v125 → v126: «רשימת חייבים לגבייה» — the past debts, open right under «צפי תזרים» (crm/crm.js)
+// (CHANGELOG-billing-debtors-list.md). From the live v125; monotonic, v17 never reused.
+var CACHE_VERSION = 'v126';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

@@ -1169,6 +1169,39 @@
     return { known: !!rf, income: income, refunds: rf ? rf.total : 0, refundCount: rf ? rf.count : 0, net: r2(income - (rf ? rf.total : 0)),
       byWeek: Object.keys(weeks).sort().map(function (k) { return weeks[k]; }) };
   }
+  /* ---- «רשימת חייבים לגבייה» (CHANGELOG-billing-debtors-list.md) ----
+   * The people to collect from, shown right under «צפי תזרים» (which leaves
+   * past debt out on purpose): every patient with an open past-due balance —
+   * in a house or released — from the SAME debtAging answer as «חובות פתוחים
+   * לפי מטופל/ת» (billingOverview; no second debt computation), plus who pays
+   * for them today and when money last arrived.
+   *   - order: the oldest debt first, then the larger balance, then the name;
+   *   - `funder` narrows the list (the «לגבייה בתאריך» funder filter);
+   *   - total = the sum of the listed balances.
+   * Pure: (debtAging answer, getPayments answer, today, funder filter). */
+  function collectionDebtors(debt, payments, today, funder) {
+    const b = billingOverview(debt, payments, today);
+    const d = debt && debt.ok !== false ? debt : null;
+    const p = payments && payments.ok !== false ? payments : null;
+    const keys = {};
+    (d && Array.isArray(d.byPatient) ? d.byPatient : []).forEach(function (x) { if (x) keys[s(x.patientId)] = s(x.patientKey); });
+    const receipts = receiptsOf(p).filter(function (r) { return !r.isVoid && r.amount > 0 && r.receivedDate; });
+    const want = s(funder);
+    const rows = [];
+    b.patients.forEach(function (x) {
+      if (!(x.balance > 0)) return;
+      const f = funderOnDay(p && p.funders, x.id, keys[x.id] || '', s(today)) || FUNDER_UNSET_LABEL;
+      if (want && f !== want) return;
+      let last = '';
+      receipts.forEach(function (r) { if (x.id && (r.patientUid === x.id || r.patientId === x.id) && r.receivedDate > last) last = r.receivedDate; });
+      rows.push({ id: x.id, name: x.name, houseId: x.houseId, houseName: x.houseName, funder: f, balance: x.balance, cycles: x.cycles, unrecorded: x.unrecorded,
+        oldestDays: x.oldestDays, bucket: x.bucket, grace: x.grace, inHouse: x.inHouse, status: x.status, lastPaid: last });
+    });
+    rows.sort(function (a, c) { return c.oldestDays - a.oldestDays || c.balance - a.balance || a.name.localeCompare(c.name, 'he'); });
+    const total = Math.round(rows.reduce(function (t, r) { return t + r.balance; }, 0) * 100) / 100;
+    return { ok: !!d, error: d ? '' : s(debt && debt.error || 'not_loaded'), asOf: b.asOf, funder: want, rows: rows, count: rows.length, total: total,
+      inHouse: rows.filter(function (r) { return r.inHouse; }).length, all: b.patients.length };
+  }
   /* Money that may be negative: «−₪5,000». Pure. */
   function fmtSigned(n) { const v = Math.round(Number(n) || 0); return v < 0 ? '−' + fmtMoney(-v) : fmtMoney(v); }
   /* …as HTML: kept left-to-right so the minus stays in FRONT of the amount on the RTL page. */
@@ -3544,6 +3577,7 @@
         + (net.known ? ' זיכויים לתשלום מופחתים ביום התשלום שלהם (זיכוי שמועדו עבר — היום).' : '')
         + (rf.ok && rf.source === 'credits' ? ' הזיכויים המחושבים (שחרורים ללא החלטה) לא נטענו — מוצגים זיכויים שמורים בלבד.' : '') + '</p>';
       if (!net.known) html += '<div class="crm-state bad">זיכויים לתשלום לא נטענו — הצפי מוצג ללא הפחתת זיכויים <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
+      html += renderCollectionDebtors();
       if (!fc.rows.length) html += '<p class="na">אין תקבולים צפויים בטווח הזה.</p>';
       if (net.byWeek.length) html += '<div class="tbl-wrap"><table class="tbl" id="crm-fc-weeks"><thead><tr><th>שבוע</th><th>פרטיים</th><th>מוסדיים (שוטף +30)</th><th>סה"כ</th>' + (net.known ? '<th>זיכויים</th><th>נטו</th>' : '') + '</tr></thead><tbody>'
         + net.byWeek.map(function (w) { return '<tr><td>' + esc('מ-' + fmtDate(w.weekStart < fc.from ? fc.from : w.weekStart)) + '</td><td>' + esc(fmtMoney(w.private)) + '</td><td>' + esc(fmtMoney(w.institutional)) + '</td><td>' + esc(fmtMoney(w.total)) + '</td>'
@@ -3560,6 +3594,24 @@
         + fc.rows.map(function (r) {
           const st = r.kind === 'institutional' ? 'wait' : r.kind === 'unset' ? 'late' : 'ok';
           return '<tr data-open-patient="' + esc(r.patientId) + '" data-open-tab="account"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(r.funder) + ' ' + chip(st, kindLabel[r.kind]) + '</td><td>' + esc(fmtDate(r.start)) + '–' + esc(fmtDate(r.end)) + '</td><td>' + esc(fmtDate(r.dueDate)) + '</td><td>' + esc(fmtDate(r.expectedDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + (r.paid > 0 ? ' <span class="na">(שולם ' + esc(fmtMoney(r.paid)) + ')</span>' : '') + '</td></tr>';
+        }).join('') + '</tbody></table></div></details>';
+      return html;
+    }
+    /* «רשימת חייבים לגבייה» (CHANGELOG-billing-debtors-list.md): the past debts the
+     * forecast leaves out, right under its cards — open by default; a row opens the
+     * patient's «חשבון» (where «דווח תשלום» is). Read-only, from the loaded reads. */
+    function renderCollectionDebtors() {
+      const cd = collectionDebtors(state.billing.debt, state.billing.payments, state.today, state.dueFunder || '');
+      let html = '<details id="crm-fc-debtors"' + (state.fcDebtorsClosed ? '' : ' open') + '><summary class="group-title">רשימת חייבים לגבייה' + (cd.ok ? ' ' + chip(cd.count ? 'late' : 'ok', cd.count + ' חייבים · ' + fmtMoney(cd.total)) : '')
+        + (cd.funder ? ' ' + chip('today', 'גורם מממן: ' + cd.funder) : '') + '</summary>';
+      if (!cd.ok) return html + '<div class="crm-state bad">חובות לא נטענו <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div></details>';
+      if (!cd.rows.length) return html + '<p class="na">' + (cd.funder && cd.all ? 'אין חייבים לגורם המממן שנבחר.' : 'אין חובות עבר לגבייה.') + '</p></details>';
+      html += '<p class="na">חובות עבר (מחזורים שמועד החיוב שלהם עבר) נכון ל-' + esc(fmtDate(cd.asOf)) + ' — אינם בצפי התזרים. ' + cd.inHouse + ' בבית, ' + (cd.count - cd.inHouse) + ' משוחררים. פתיחת שורה → «חשבון» של המטופל/ת.</p>'
+        + '<div class="tbl-wrap"><table class="tbl" id="crm-fc-debtor-rows"><thead><tr><th>מטופל/ת</th><th>בית</th><th>גורם מממן</th><th>סכום חוב</th><th>מחזורים</th><th>ימים בפיגור</th><th>תשלום אחרון</th><th>סטטוס</th></tr></thead><tbody>'
+        + cd.rows.map(function (r) {
+          const st = r.bucket === 'd61_plus' ? 'late' : r.bucket === 'd31_60' ? 'today' : 'ok';
+          return '<tr data-open-patient="' + esc(r.id) + '" data-open-tab="account"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(r.funder) + '</td><td>' + esc(fmtMoney(r.balance)) + '</td><td>' + r.cycles + (r.unrecorded ? ' <span class="na">(' + r.unrecorded + ' ללא דיווח)</span>' : '') + '</td><td>'
+            + chip(st, r.oldestDays + ' ימים') + (r.grace ? ' ' + chip('wait', 'גוף מממן') : '') + '</td><td>' + esc(r.lastPaid ? fmtDate(r.lastPaid) : '—') + '</td><td>' + esc(r.inHouse ? 'בבית' : (r.status === 'released' ? 'שוחרר/ה' : r.status)) + '</td></tr>';
         }).join('') + '</tbody></table></div></details>';
       return html;
     }
@@ -5207,7 +5259,7 @@
       else state.cal.anchor = state.today;
       renderMain();
     });
-    root.addEventListener('toggle', function (ev) { if (ev.target && ev.target.id === 'crm-cleanup') state.cleanupOpen = ev.target.open; }, true);
+    root.addEventListener('toggle', function (ev) { if (ev.target && ev.target.id === 'crm-cleanup') state.cleanupOpen = ev.target.open; if (ev.target && ev.target.id === 'crm-fc-debtors') state.fcDebtorsClosed = !ev.target.open; }, true);
     root.addEventListener('change', function (ev) {
       const t = ev.target;
       // «ניקוי חובות היסטוריים»: ticking never re-renders (the reason / note stay typed)
@@ -5372,5 +5424,5 @@
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
     newTaskErrors: newTaskErrors, dueSoonTasks: dueSoonTasks, TASK_REMIND_MINUTES: TASK_REMIND_MINUTES, WORK_CONTROL: WORK_CONTROL, workControlQueues: workControlQueues,
-    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, cleanupCandidates: cleanupCandidates, cleanupPlan: cleanupPlan, cleanupBody: cleanupBody, CLEANUP_REASONS: CLEANUP_REASONS, paidWithDiscountPlan: paidWithDiscountPlan, paidWithDiscountBody: paidWithDiscountBody, reportValuesOnly: reportValuesOnly, cashForecast: cashForecast, forecastRefunds: forecastRefunds, cashForecastNet: cashForecastNet, fmtSigned: fmtSigned, cycleOnDay: cycleOnDay, cycleCtx: cycleCtx, forecastPreset: forecastPreset, monthEndIso: monthEndIso, FORECAST_TERMS_DAYS: FORECAST_TERMS_DAYS, FORECAST_INSTITUTIONAL: FORECAST_INSTITUTIONAL, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
+    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, cleanupCandidates: cleanupCandidates, cleanupPlan: cleanupPlan, cleanupBody: cleanupBody, CLEANUP_REASONS: CLEANUP_REASONS, paidWithDiscountPlan: paidWithDiscountPlan, paidWithDiscountBody: paidWithDiscountBody, reportValuesOnly: reportValuesOnly, cashForecast: cashForecast, forecastRefunds: forecastRefunds, cashForecastNet: cashForecastNet, fmtSigned: fmtSigned, collectionDebtors: collectionDebtors, cycleOnDay: cycleOnDay, cycleCtx: cycleCtx, forecastPreset: forecastPreset, monthEndIso: monthEndIso, FORECAST_TERMS_DAYS: FORECAST_TERMS_DAYS, FORECAST_INSTITUTIONAL: FORECAST_INSTITUTIONAL, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));

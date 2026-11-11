@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated November 11, 2026
 
+## CRM «רשימת חייבים לגבייה» under the forecast — November 11, 2026
+
+Past debts (in a house + released), open by default right under the «צפי
+תזרים» cards: patient, house, funder, debt, cycles, days overdue, last
+payment; a row opens «חשבון». Built on `billingOverview` (same `debtAging`
+figures, total pinned by a test); no new request, no Apps Script change.
+SW v126. See `CHANGELOG-billing-debtors-list.md`.
+
 ## CRM «צפי תזרים» net of refunds — November 11, 2026
 
 The forecast now subtracts the refunds still to pay: cards «זיכויים לתשלום» +
