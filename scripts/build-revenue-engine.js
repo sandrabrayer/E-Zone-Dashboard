@@ -1,0 +1,138 @@
+#!/usr/bin/env node
+'use strict';
+
+/* Generates public/revenue-engine.js from public/app.js
+ * (CHANGELOG-revenue-engine-shared.md).
+ *
+ * WHY: «הכנסות חודשיות» is computed by buildMonthlyRevenue() inside the classic
+ * page's app.js — a browser global script the CRM page cannot load. The CRM
+ * needs the SAME figures, so instead of a second implementation this script
+ * copies the engine's declarations VERBATIM out of app.js into a small
+ * standalone file both pages can load. app.js stays the single source of truth:
+ *   - never edit public/revenue-engine.js by hand;
+ *   - after changing any listed declaration in app.js run
+ *       node scripts/build-revenue-engine.js
+ *   - test/revenue-engine-shared.test.js fails when the checked-in file is not
+ *     exactly what this script produces, and when the engine's answer differs
+ *     from app.js's on the same input.
+ *
+ * No parser dependency: app.js keeps every top-level declaration at column 0
+ * (`function name(` … `}` / `const NAME = …;`), which is all this needs. A
+ * declaration it cannot slice is an error, never a guess.
+ *
+ * Usage: node scripts/build-revenue-engine.js          → writes the file
+ *        node scripts/build-revenue-engine.js --check  → exit 1 when stale */
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+const ROOT = path.join(__dirname, '..');
+const APP_PATH = path.join(ROOT, 'public', 'app.js');
+const OUT_PATH = path.join(ROOT, 'public', 'revenue-engine.js');
+
+/* The engine + the normalisers that turn raw getData / getPayments / getCredits
+ * answers into its inputs — the dependency closure of the entry points below,
+ * in app.js order. `state` is deliberately NOT copied (see the template). */
+const NAMES = [
+  'HOUSES', 'PAYMENT_VOID_STATUS', 'PAYMENT_STATUS_ALIASES', 'isVoidPayment', 'houseById', 'VAT_RATE',
+  'RECORDS_COMPLETE_FROM', 'isPreRecordsCycle', 'paymentsStateFrom', 'parsePatients', 'STATUS_ALIASES',
+  'normalizeStatus', 'HOUSE_ID_ALIASES', 'houseMatchText', 'resolveHouseId', 'pickField', 'normalizePatient',
+  'cryptoId', 'unadmittedHouseId', 'patientLeadPool', 'CREDIT_TYPE_LABELS', 'CREDIT_STATUS_LABELS', 'CREDIT_TYPES',
+  'creditId', 'localDateFromISO', 'isoFromLocalDate', 'diffWholeDays', 'addMonthsClamped', 'addDays', 'roundMoney',
+  'COVERAGE_MAX_DAYS', 'coverageDateISO', 'coveragePeriodError', 'inferredCoverage', 'recordedCoverage',
+  'paymentCoverage', 'coverageDiffersFromDefault', 'exVat', 'normalizeCredit', 'trimName', 'NAME_INVISIBLES',
+  'normalizeNameForMatch', 'patientUid', 'paymentPatientUid', 'patientKey', 'patientMatchKey', 'patientMatchKeyOf',
+  'patientMatchKeyFromId', 'paymentId', 'normalizePayment', 'PAYMENT_LINK_STATUSES', 'billingOverrideId',
+  'normalizeBillingOverride', 'isoDate', 'billingOverrideFor', 'billingDiscountFor', 'applyBillingOverride',
+  'patientExitISO', 'patientStayOverlapsRange', 'leadLinkedPatientForPayment', 'matchPatientForPayment',
+  'revenueExVat', 'isBillablePatient', 'REVENUE_NO_HOUSE', 'isMonthKey', 'revenueMonthBounds', 'revenueMonthLabel',
+  'revenueShiftMonth', 'revenueOverlapDays', 'revenueAllocate', 'patientBillingAnchorISO', 'revenueOccurrenceIn',
+  'projectedCycleDueDates', 'creditRefundSpan', 'revenuePaymentHouse', 'buildMonthlyRevenue', 'revenueVerified',
+  'findPatientForPaymentIn', 'revenueBucket', 'revenueSortRows', 'revenueBreakdownByHouse', 'normalizeReceipt',
+  'normalizeFunderRow', 'monthKey',
+];
+
+/* One top-level declaration, verbatim: [startLine, text]. Throws when it is
+ * missing, declared twice, or does not end where a column-0 declaration ends. */
+function slice(lines, name) {
+  const fnRe = new RegExp('^function ' + name + '\\(');
+  const constRe = new RegExp('^const ' + name + ' = ');
+  const starts = [];
+  lines.forEach((l, i) => { if (fnRe.test(l) || constRe.test(l)) starts.push(i); });
+  if (starts.length !== 1) throw new Error('revenue-engine: `' + name + '` is declared ' + starts.length + ' times at the top level of app.js (expected 1)');
+  const start = starts[0];
+  let end = start;
+  if (fnRe.test(lines[start])) {
+    if (!/\}\s*$/.test(lines[start]) || lines[start].indexOf('{') === lines[start].lastIndexOf('{') && !/\{.*\}\s*$/.test(lines[start])) {
+      end = -1;
+      for (let i = start + 1; i < lines.length; i++) { if (lines[i] === '}') { end = i; break; } if (/^\S/.test(lines[i]) && !/^[})\]]/.test(lines[i])) break; }
+    }
+  } else if (!/;\s*$/.test(lines[start])) {
+    end = -1;
+    for (let i = start + 1; i < lines.length; i++) { if (/^[\]})]+;\s*$/.test(lines[i])) { end = i; break; } if (/^\S/.test(lines[i])) break; }
+  }
+  if (end < 0) throw new Error('revenue-engine: cannot find the end of `' + name + '` in app.js (line ' + (start + 1) + ')');
+  return [start, lines.slice(start, end + 1).join('\n')];
+}
+
+function generate(appSrc) {
+  const lines = String(appSrc).split('\n');
+  const parts = NAMES.map((n) => slice(lines, n)).sort((a, b) => a[0] - b[0]).map((p) => p[1]);
+  return [
+    '/* GENERATED by scripts/build-revenue-engine.js from public/app.js — DO NOT EDIT.',
+    ' * The «הכנסות חודשיות» engine (buildMonthlyRevenue + the normalisers of its',
+    ' * inputs), copied VERBATIM so the CRM page computes the same figures as the',
+    ' * classic tab. To change a rule: edit app.js, then re-run the script.',
+    ' * See CHANGELOG-revenue-engine-shared.md. */',
+    '(function (root) {',
+    '/* app.js reads `state.patients` in ONE place of this closure (the lead-linked',
+    ' * patient lookup, behind a typeof guard). monthModel() points it at the same',
+    ' * patients the engine is given — what the classic page holds there. */',
+    'const state = { patients: [] };',
+    '',
+    parts.join('\n\n'),
+    '',
+    '/* Raw getData / getPayments / getCredits answers → the classic normalised lists. */',
+    'function inputsFrom(raw) {',
+    '  const r = raw || {};',
+    '  const d = r.data || {};',
+    '  const ps = paymentsStateFrom(r.payments);',
+    '  return {',
+    '    patients: parsePatients(d.patients),',
+    '    overrides: (Array.isArray(d.billingOverrides) ? d.billingOverrides : []).map(normalizeBillingOverride).filter(o => o.patientId && o.month),',
+    '    payments: ps.payments, receipts: ps.receipts,',
+    '    credits: (Array.isArray(r.credits && r.credits.credits) ? r.credits.credits : []).map(normalizeCredit).filter(c => c.id),',
+    '  };',
+    '}',
+    '/* One month of «הכנסות חודשיות» from raw answers: { month, data, payments,',
+    ' * credits, today } → buildMonthlyRevenue\'s model, or null for a bad month. */',
+    'function monthModel(opts) {',
+    '  const o = opts || {};',
+    '  const inp = inputsFrom(o);',
+    '  state.patients = inp.patients;',
+    '  return buildMonthlyRevenue({ month: o.month, patients: inp.patients, payments: inp.payments, credits: inp.credits,',
+    '    overrides: inp.overrides, receipts: inp.receipts, today: o.today });',
+    '}',
+    '',
+    'const api = { monthModel: monthModel, inputsFrom: inputsFrom, buildMonthlyRevenue: buildMonthlyRevenue,',
+    '  isMonthKey: isMonthKey, revenueMonthLabel: revenueMonthLabel, revenueShiftMonth: revenueShiftMonth, VAT_RATE: VAT_RATE };',
+    "if (typeof module === 'object' && module.exports) module.exports = api;",
+    'else root.RevenueEngine = api;',
+    "})(typeof globalThis !== 'undefined' ? globalThis : this);",
+    '',
+  ].join('\n');
+}
+
+module.exports = { generate, NAMES, slice, APP_PATH, OUT_PATH };
+
+if (require.main === module) {
+  const out = generate(fs.readFileSync(APP_PATH, 'utf8'));
+  if (process.argv.includes('--check')) {
+    const cur = fs.existsSync(OUT_PATH) ? fs.readFileSync(OUT_PATH, 'utf8') : '';
+    if (cur !== out) { console.error('public/revenue-engine.js is stale — run: node scripts/build-revenue-engine.js'); process.exit(1); }
+    console.log('public/revenue-engine.js is up to date');
+  } else {
+    fs.writeFileSync(OUT_PATH, out);
+    console.log('wrote public/revenue-engine.js (' + NAMES.length + ' declarations, ' + out.split('\n').length + ' lines)');
+  }
+}
