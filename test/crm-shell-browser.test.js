@@ -61,6 +61,10 @@ const DEBT = { ok: true, asOf: TODAY,
 const PAYMENTS = { ok: true, payments: [{ id: 'pay::ramot::דנה כהן ::x::' + daysAgo(40), patientId: 'ramot::דנה כהן ::x', patientName: 'דנה כהן ', houseId: 'ramot', dueDate: daysAgo(40), amount: 6000, amountPaid: 6000, status: 'paid' }, { id: 'cyc-1', patientId: 'ramot::דנה כהן::' + daysAgo(30), patientUid: 'p1', patientName: 'דנה כהן', houseId: 'ramot', dueDate: daysAgo(70), amount: 6000, amountPaid: 2500, balance: 3500, status: 'partial', coverageStart: daysAgo(70), coverageEnd: daysAgo(41) }],
   receipts: [{ id: 'rcpt-1', patientId: 'ramot::דנה כהן::' + daysAgo(30), patientUid: 'p1', patientName: 'דנה כהן', houseId: 'ramot', dueDate: daysAgo(70), receivedDate: daysAgo(4), amount: 2500, method: 'ביט', payer: 'אמא', reference: '', funder: 'פרטי', coverageStart: daysAgo(70), coverageEnd: daysAgo(41), invoiceWanted: 'no', invoiceTo: '', confirmStatus: 'reported' }],
   funders: [{ patientId: 'p1', funder: 'משרד הביטחון', effectiveFrom: daysAgo(30), setBy: 'ורד' }] };
+/* «זיכויים לתשלום» as the server lists them (CHANGELOG-cashflow-refunds.md): one saved credit due today, one computed line overdue. */
+const REFUND_FORECAST = { ok: true, today: TODAY, toPay: { count: 2, total: 1734, rows: [
+  { creditId: 'cr-9', auto: false, patientName: 'דנה כהן', houseId: 'ramot', amount: 1234, payoutDate: TODAY, creditType: 'days_unused' },
+  { creditId: '', auto: true, patientName: 'גל רון', houseId: 'asher', amount: 500, payoutDate: '2026-01-15', creditType: 'prepaid_return' }] } };
 const CREDITS = { ok: true, credits: [
   { id: 'cr-1', patientId: 'p1', patientKey: 'ramot::דנה כהן::' + daysAgo(30), patientName: 'דנה כהן', houseId: 'ramot', creditType: 'days_unused', allocationMonth: daysAgo(40).slice(0, 7), amount: 1200, status: 'pending', payoutDate: daysAgo(10) },
   { id: 'cr-2', patientId: 'p2', patientKey: 'rehab::אבי::' + daysAgo(7), patientName: 'אבי', houseId: 'rehab', creditType: 'other', allocationMonth: daysAgo(40).slice(0, 7), amount: 300, status: 'paid', paidDate: daysAgo(2), method: 'ביט' }] };
@@ -137,6 +141,7 @@ async function boot(options = {}) {
         : ['createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0 ? (saveAnswer ? saveAnswer(parsed) : { ok: true, task: { id: parsed.id || 'task-new' } })
         : parsed.action === 'logLeadFlag' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, flag: Object.assign({ at: new Date().toISOString(), actorName: 'ורד' }, parsed.flag) })
         : parsed.action === 'debtAging' ? (options.debt || DEBT) : parsed.action === 'getPayments' ? PAYMENTS : parsed.action === 'getCredits' ? creditsLedger
+        : parsed.action === 'refundPayoutForecast' ? (options.refunds || REFUND_FORECAST)
         : parsed.action === 'restorePatientToActive' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restoredToActive: true, id: parsed.patient && parsed.patient.id })
         : parsed.action === 'restorePatient' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, restored: true, lead: { id: parsed.patient && parsed.patient.newLeadId } })
         : parsed.action === 'editReceipt' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, receipt: { id: parsed.edit && parsed.edit.id } })
@@ -278,7 +283,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     await page.click('#crm-nav button[data-area="control"]');
     assert.ok(await noHScroll(page), 'no horizontal page scroll');
     assert.deepEqual(errors, []);
-    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['contactIndex', 'debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments', 'getTasks'], 'reads only, no queue for Vered');
+    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['contactIndex', 'debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments', 'getTasks', 'refundPayoutForecast'], 'reads only, no queue for Vered');
   } finally { await browser.close(); srv.close(); }
 });
 
@@ -317,7 +322,7 @@ test('CRM shell (Ortal, controller): only היום שלי / גבייה / בקר�
     assert.ok(!/אבי לוי/.test(await page.textContent('#crm-main')), 'no lead names in her view');
     assert.deepEqual(errors, []);
     assert.ok(srv.actions.some((a) => a.action === 'billingControlQueue' && a.user === 'ortal'));
-    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['billingControlQueue', 'debtAging', 'getCredits', 'getData', 'getPayments', 'getTasks'], 'her reads: the queue, her money tasks, the credits and the «גבייה» reads she lands on — never a lead read or a write');
+    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['billingControlQueue', 'debtAging', 'getCredits', 'getData', 'getPayments', 'getTasks', 'refundPayoutForecast'], 'her reads: the queue, her money tasks, the credits and the «גבייה» reads she lands on — never a lead read or a write');
   } finally { await browser.close(); srv.close(); }
 });
 
@@ -722,6 +727,15 @@ test('«צפי תזרים» (Vered, CHANGELOG-cashflow-forecast.md): renders und
       assert.equal(await page.inputValue('#crm-fc-from'), TODAY);
       assert.match(await page.textContent('#crm-fc-kpis'), /סה"כ צפוי/);
       assert.match(await page.textContent('#crm-fc-kpis'), /שוטף \+30/);
+      // refunds to pay are taken off (CHANGELOG-cashflow-refunds.md): the saved credit due today + the overdue computed line
+      assert.match(await page.textContent('#crm-fc-refunds'), /−₪1,734/);
+      assert.match(await page.textContent('#crm-fc-refunds'), /זיכויים לתשלום \(2\) · 1 באיחור/);
+      assert.match(await page.textContent('#crm-fc-net'), /נטו צפוי/);
+      assert.match(await page.textContent('#crm-fc-weeks thead'), /זיכויים.*נטו/);
+      await page.click('#crm-fc-refund-detail summary');
+      assert.match(await page.textContent('#crm-fc-refund-rows'), /דנה כהן/);
+      assert.match(await page.textContent('#crm-fc-refund-rows'), /מחושב — טרם הוחלט/);
+      assert.equal(srv.actions.filter((a) => a.action === 'refundPayoutForecast').length, 1, 'read once, with the other «גבייה» reads');
       await page.click('[data-fc-preset="90"]');
       await page.waitForFunction((t) => document.querySelector('#crm-fc-to') && document.querySelector('#crm-fc-to').value > t, TODAY);
       assert.equal(srv.actions.length, reads, 'no extra request: computed from the loaded reads');

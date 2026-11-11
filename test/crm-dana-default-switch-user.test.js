@@ -152,7 +152,7 @@ test('routing: CRM_DEFAULT — Dana and Vered/Sandra land on the CRM at `/`, Ort
 /* What the CRM's «גבייה» area and «חשבון» pane call — reads of billing data
  * and every money write. Each must be called by crm.js (so the list cannot rot)
  * and refused for Dana. */
-const CRM_MONEY_ACTIONS = ['getPayments', 'debtAging', 'getCredits', 'billingControlQueue',
+const CRM_MONEY_ACTIONS = ['getPayments', 'debtAging', 'getCredits', 'refundPayoutForecast', 'billingControlQueue',
   'reportPayment', 'savePayment', 'setBillingDiscount', 'upsertBillingOverride', 'settleRefund', 'editReceipt', 'appendFunder'];
 
 test('server: Dana gets 403 + a Hebrew message on every billing read and money write (CRM list, every FINANCE action, «בקרת גבייה», the accountant void, exports, debug) — nothing reaches the proxy', async () => {

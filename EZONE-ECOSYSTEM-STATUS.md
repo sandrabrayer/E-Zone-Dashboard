@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated November 11, 2026
 
+## CRM «צפי תזרים» net of refunds — November 11, 2026
+
+The forecast now subtracts the refunds still to pay: cards «זיכויים לתשלום» +
+«נטו צפוי», weekly «זיכויים» / «נטו» columns, a list. Source = the existing
+`refundPayoutForecast` read (saved pending credits + computed policy lines),
+each on its `payoutDate` (overdue → today); fail-soft, never a silent zero.
+Read-only, no Apps Script change. SW v125. See `CHANGELOG-cashflow-refunds.md`.
+
 ## Ortal lands on the CRM «גבייה» — November 11, 2026
 
 `CRM_DEFAULT_VIEWS` += `controller`: Ortal's `/` is now the CRM, opened on
