@@ -88,6 +88,8 @@ test('cashForecastNet with refunds unknown: known:false, net = income, no refund
 
 test('fmtSigned: a negative amount reads «−₪…»', () => {
   assert.equal(core.fmtSigned(-5000), '−₪5,000'); assert.equal(core.fmtSigned(5000), '₪5,000'); assert.equal(core.fmtSigned(0), '₪0'); assert.equal(core.fmtSigned('x'), '₪0');
+  // on the RTL page the minus must stay in front of the amount
+  assert.ok(SRC.includes("function signedHtml(n) { return '<bdi dir=\"ltr\">' + esc(fmtSigned(n)) + '</bdi>'; }"));
 });
 
 test('wiring: «גבייה» reads refundPayoutForecast fail-soft with its other reads; the action is a READ both Vered/Sandra and Ortal may call; every rendered value is escaped', () => {

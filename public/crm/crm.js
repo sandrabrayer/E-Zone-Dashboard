@@ -1171,6 +1171,8 @@
   }
   /* Money that may be negative: «−₪5,000». Pure. */
   function fmtSigned(n) { const v = Math.round(Number(n) || 0); return v < 0 ? '−' + fmtMoney(-v) : fmtMoney(v); }
+  /* …as HTML: kept left-to-right so the minus stays in FRONT of the amount on the RTL page. */
+  function signedHtml(n) { return '<bdi dir="ltr">' + esc(fmtSigned(n)) + '</bdi>'; }
 
   /* ---- «ניקוי חובות היסטוריים» (CHANGELOG-historical-debt-cleanup.md) ----
    * Released patients' open cycles that are NOT real debt (Sandra, 08/11/2026:
@@ -3534,8 +3536,8 @@
         + kpi(fmtMoney(fc.private.total), 'פרטיים (' + fc.private.count + ') · ביום החיוב')
         + kpi(fmtMoney(fc.institutional.total), 'מוסדיים — שוטף +30 (' + fc.institutional.count + ')')
         + (fc.unset.count ? kpi(fmtMoney(fc.unset.total), 'ללא גורם מממן (' + fc.unset.count + ') · לא בסה"כ') : '')
-        + (net.known ? '<div class="kpi" id="crm-fc-refunds"><span class="v">' + esc(fmtSigned(-net.refunds)) + '</span><span class="l">זיכויים לתשלום (' + net.refundCount + ')' + (rf.late ? ' · ' + rf.late + ' באיחור' : '') + '</span></div>'
-          + '<div class="kpi" id="crm-fc-net"><span class="v">' + esc(fmtSigned(net.net)) + '</span><span class="l">נטו צפוי · אחרי זיכויים</span></div>'
+        + (net.known ? '<div class="kpi" id="crm-fc-refunds"><span class="v">' + signedHtml(-net.refunds) + '</span><span class="l">זיכויים לתשלום (' + net.refundCount + ')' + (rf.late ? ' · ' + rf.late + ' באיחור' : '') + '</span></div>'
+          + '<div class="kpi" id="crm-fc-net"><span class="v">' + signedHtml(net.net) + '</span><span class="l">נטו צפוי · אחרי זיכויים</span></div>'
           : '<div class="kpi" id="crm-fc-refunds"><span class="v">—</span><span class="l">זיכויים לתשלום · לא נטענו</span></div>') + '</div>';
       html += '<p class="na">רק מחזורים שעוד לא שולמו, של מטופלים בבית. ללא חובות עבר. ביטוח לאומי / מכבי / משרד הביטחון — צפי קבלה 30 יום אחרי יום החיוב.'
         + (fc.unset.count ? ' מטופלים ללא גורם מממן אינם בסה"כ — יש להשלים גורם מממן.' : '')
@@ -3545,7 +3547,7 @@
       if (!fc.rows.length) html += '<p class="na">אין תקבולים צפויים בטווח הזה.</p>';
       if (net.byWeek.length) html += '<div class="tbl-wrap"><table class="tbl" id="crm-fc-weeks"><thead><tr><th>שבוע</th><th>פרטיים</th><th>מוסדיים (שוטף +30)</th><th>סה"כ</th>' + (net.known ? '<th>זיכויים</th><th>נטו</th>' : '') + '</tr></thead><tbody>'
         + net.byWeek.map(function (w) { return '<tr><td>' + esc('מ-' + fmtDate(w.weekStart < fc.from ? fc.from : w.weekStart)) + '</td><td>' + esc(fmtMoney(w.private)) + '</td><td>' + esc(fmtMoney(w.institutional)) + '</td><td>' + esc(fmtMoney(w.total)) + '</td>'
-          + (net.known ? '<td>' + esc(w.refunds ? fmtSigned(-w.refunds) : fmtMoney(0)) + '</td><td>' + esc(fmtSigned(w.net)) + '</td>' : '') + '</tr>'; }).join('') + '</tbody></table></div>';
+          + (net.known ? '<td>' + (w.refunds ? signedHtml(-w.refunds) : esc(fmtMoney(0))) + '</td><td>' + signedHtml(w.net) + '</td>' : '') + '</tr>'; }).join('') + '</tbody></table></div>';
       if (fc.byHouse.length) html += '<div class="tbl-wrap"><table class="tbl" id="crm-fc-houses"><thead><tr><th>בית</th><th>פרטיים</th><th>מוסדיים (שוטף +30)</th><th>סה"כ</th></tr></thead><tbody>'
         + fc.byHouse.map(function (h) { return '<tr><td>' + esc(h.name) + '</td><td>' + esc(fmtMoney(h.private)) + '</td><td>' + esc(fmtMoney(h.institutional)) + '</td><td>' + esc(fmtMoney(h.total)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
       if (rf.ok && rf.rows.length) html += '<details id="crm-fc-refund-detail"><summary>זיכויים לתשלום בטווח (' + rf.count + ' · ' + esc(fmtMoney(rf.total)) + ')</summary><div class="tbl-wrap"><table class="tbl" id="crm-fc-refund-rows"><thead><tr><th>מטופל/ת</th><th>בית</th><th>סוג</th><th>מועד תשלום</th><th>צפי תשלום</th><th>סכום</th></tr></thead><tbody>'
