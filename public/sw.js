@@ -392,7 +392,9 @@
 // (CHANGELOG-today-active-patients.md). From the live v126; monotonic, v17 never reused.
 // v127 → v128: «צפי תזרים» cards open the list behind their number; shortcut to «ניקוי חובות היסטוריים» (crm/crm.js)
 // (CHANGELOG-forecast-cards-open.md). From the live v127; monotonic, v17 never reused.
-var CACHE_VERSION = 'v128';
+// v128 → v129: «היסטוריה חודשית» in the CRM — a month's occupancy + revenue; /revenue-engine.js joins the bundle (crm/crm.js, crm.css, crm.html)
+// (CHANGELOG-crm-month-view.md). From the live v128; monotonic, v17 never reused.
+var CACHE_VERSION = 'v129';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
@@ -422,7 +424,7 @@ var PRECACHE_URLS = [
  *                     network round trip. Matched by EXACT url.
  *   'network'       — everything else: pass through to the network. */
 /* The JS/CSS files index.html links with a content hash (server.js ASSETS). */
-var BUNDLE_PATHS = ['/app.js', '/style.css', '/crm/crm.js', '/crm/crm.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/billing-document-review.js', '/billing-work-calendar.js', '/refund-rules.js', '/funder-grace.js', '/cycle-balance.js', '/discharge-alerts.js', '/committee-alerts.js', '/leads-funnel.js', '/returning-patient.js', '/patient-retention.js', '/report-xlsx.js'];
+var BUNDLE_PATHS = ['/app.js', '/style.css', '/crm/crm.js', '/crm/crm.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/billing-document-review.js', '/billing-work-calendar.js', '/refund-rules.js', '/funder-grace.js', '/cycle-balance.js', '/discharge-alerts.js', '/committee-alerts.js', '/leads-funnel.js', '/returning-patient.js', '/patient-retention.js', '/report-xlsx.js', '/revenue-engine.js'];
 
 /* True for `?v=<exactly 12 lowercase hex>` — the server's content hash. The
  * old `?v=<BUILD_ID>` (digits-dash-base36) never matches. Pure. */

@@ -23,7 +23,7 @@ test('areas: «KPI» for finance and ops (not the controller); «בקרת עבו
   assert.ok(core.areasFor({ view: 'ops', ops: true, finance: false }).includes('kpi'));
   assert.deepEqual(core.areasFor({ view: 'controller' }), ['today', 'billing', 'control']);
   assert.deepEqual(core.NAV_GROUPS[0], { label: '', items: ['today', 'control'] });
-  assert.deepEqual(core.NAV_GROUPS[core.NAV_GROUPS.length - 1], { label: 'דוחות והגדרות', items: ['kpi'] });
+  assert.deepEqual(core.NAV_GROUPS[core.NAV_GROUPS.length - 1], { label: 'דוחות והגדרות', items: ['kpi', 'monthly'] });   // + «היסטוריה חודשית» (CHANGELOG-crm-month-view.md)
   assert.equal(core.AREAS.filter((a) => a.id === 'kpi')[0].label, 'KPI');
   assert.equal(core.AREAS.filter((a) => a.id === 'control')[0].label, 'בקרת עבודה');
   assert.match(CRM_SRC, /kpi: renderKpi/);

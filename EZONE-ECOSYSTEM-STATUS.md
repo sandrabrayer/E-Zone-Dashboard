@@ -1,5 +1,14 @@
 # E-ZONE Ecosystem Status — updated November 11, 2026
 
+## CRM «היסטוריה חודשית» — November 11, 2026
+
+New CRM area (group «דוחות והגדרות»): pick a month → its occupancy per house
+(patient-days from entry / exit dates ÷ today's capacity) and, for a finance
+session, its revenue (the classic «הכנסות חודשיות» figures via
+`/revenue-engine.js`), plus 12 months of history. Dana sees occupancy only;
+Ortal does not have the area. Read-only, no new action, no Apps Script change.
+SW v129. See `CHANGELOG-crm-month-view.md`.
+
 ## Shared «הכנסות חודשיות» engine — November 11, 2026
 
 `public/revenue-engine.js` is GENERATED verbatim from `public/app.js` by

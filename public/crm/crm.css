@@ -385,3 +385,9 @@ form[data-form="wait-reason"][aria-busy="true"] .radio-row { opacity: .6; }
 .kpi-page .group-title { margin: 28px 0 12px; padding: 6px 0 8px; padding-inline-start: 12px; font-size: 20px; font-weight: 800; color: var(--text);
   border-inline-start: 5px solid var(--primary); border-bottom: 1px solid var(--border); align-items: baseline; flex-wrap: wrap; line-height: 1.3; }
 .kpi-page .group-title .na { font-size: 14px; font-weight: 500; color: var(--text-muted); }
+
+/* «היסטוריה חודשית» (CHANGELOG-crm-month-view.md): the total row, the picked month, clickable history rows. */
+.tbl tr.sum td { border-top: 2px solid var(--border, #d0d4e4); background: #f6f7fb; }
+#crm-month-trend tbody tr { cursor: pointer; }
+#crm-month-trend tbody tr.on td { background: #E5F0FF; }
+#crm-month-tools strong { margin-inline-start: 8px; }
