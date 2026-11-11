@@ -1,4 +1,12 @@
-# E-ZONE Ecosystem Status — updated November 4, 2026
+# E-ZONE Ecosystem Status — updated November 11, 2026
+
+## Ortal lands on the CRM «גבייה» — November 11, 2026
+
+`CRM_DEFAULT_VIEWS` += `controller`: Ortal's `/` is now the CRM, opened on
+«גבייה» (collection list, «צפי תזרים», debts, receipts, refunds); a top link
+goes to her classic «בקרת גבייה» (`/?view=classic`). Page routing only — her
+action allow-list (`CONTROLLER_ACTIONS`) is unchanged. No Apps Script change.
+SW v124. See `CHANGELOG-ortal-crm-default.md`.
 
 ## CRM «ניקוי חובות היסטוריים» — November 8, 2026
 

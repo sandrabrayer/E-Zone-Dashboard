@@ -166,20 +166,23 @@ test('C12 lib: crmByDefault needs BOTH flags, a personal session, the full view 
   for (const e of [{ CRM_DEFAULT: 'true' }, { CRM_ENABLED: 'true' }, { CRM_ENABLED: 'true', CRM_DEFAULT: 'TRUE' }, {}]) assert.equal(flag.crmDefaultEnabled(e), false, JSON.stringify(e));
   assert.equal(flag.crmByDefault(on, {}, vered, 'full'), true);
   assert.equal(flag.crmByDefault(on, { view: 'classic' }, vered, 'full'), false);
-  for (const v of ['restricted', 'controller', 'none', '', undefined]) assert.equal(flag.crmByDefault(on, {}, vered, v), false, String(v));
+  for (const v of ['restricted', 'none', '', undefined]) assert.equal(flag.crmByDefault(on, {}, vered, v), false, String(v));
+  assert.equal(flag.crmByDefault(on, {}, vered, 'controller'), true, 'controller lands on the CRM (CHANGELOG-ortal-crm-default.md)');
   assert.equal(flag.crmByDefault(on, {}, { auth: 'shared' }, 'full'), false);
   assert.equal(flag.crmByDefault({ CRM_ENABLED: 'true' }, {}, vered, 'full'), false, 'CRM_ENABLED alone never switches');
   assert.equal(flag.serveCrmShell(on, {}, vered, 'full'), true);
   assert.equal(flag.serveCrmShell(on, { view: 'classic' }, vered, 'full'), false);
   assert.equal(flag.serveCrmShell(on, { view: 'crm' }, vered, 'controller'), true, 'view=crm still opens the shell for Ortal');
-  assert.equal(flag.serveCrmShell(on, {}, vered, 'controller'), false);
+  assert.equal(flag.serveCrmShell(on, {}, vered, 'controller'), true, 'Ortal lands on the CRM (CHANGELOG-ortal-crm-default.md)');
+  assert.equal(flag.serveCrmShell(on, { view: 'classic' }, vered, 'controller'), false);
+  assert.equal(flag.serveCrmShell(on, {}, vered, 'restricted'), false); assert.equal(flag.serveCrmShell(on, {}, vered, 'none'), false);
   assert.equal(flag.serveCrmShell({ CRM_ENABLED: 'true' }, {}, vered, 'full'), false, 'before the switch "/" is classic');
   assert.equal(flag.serveCrmShell({ CRM_ENABLED: 'true' }, { view: 'crm' }, vered), true, 'C1 call shape (no view) unchanged');
   assert.equal(flag.wantsClassic({ view: 'classic' }), true); assert.equal(flag.wantsClassic({ view: ['classic'] }), true); assert.equal(flag.wantsClassic({}), false);
-  assert.equal(flag.CLASSIC_PATH, '/?view=classic'); assert.deepEqual(flag.CRM_DEFAULT_VIEWS, ['full', 'ops']); assert.equal(flag.CRM_DEFAULT_VAR, 'CRM_DEFAULT');
+  assert.equal(flag.CLASSIC_PATH, '/?view=classic'); assert.deepEqual(flag.CRM_DEFAULT_VIEWS, ['full', 'ops', 'controller']); assert.equal(flag.CRM_DEFAULT_VAR, 'CRM_DEFAULT');
 });
 
-test('C12 server: CRM_DEFAULT unset → "/" is classic for everyone (byte-identical to before); set → Vered/Sandra get the shell on "/", "/?view=classic" is the classic page, Ortal stays classic, no session → the PIN page', async () => {
+test('C12 server: CRM_DEFAULT unset → "/" is classic for everyone (byte-identical to before); set → Vered/Sandra get the shell on "/", "/?view=classic" is the classic page, Ortal gets the shell too (classic on view=classic), no session → the PIN page', async () => {
   await withServer('true', async (port) => {
     assert.ok(!isShell((await request(port, '/', personal('vered'))).text), 'flag on, default off: classic');
   });
@@ -195,8 +198,9 @@ test('C12 server: CRM_DEFAULT unset → "/" is classic for everyone (byte-identi
       assert.equal(stable(c.text), stable(plain.text), 'the classic page is the same index.html');
     }
     const o = await request(port, '/', personal('ortal'));
-    assert.ok(!isShell(o.text), 'Ortal (controller view) stays on the classic page by default');
-    assert.ok(isShell((await request(port, '/?view=crm', personal('ortal'))).text), '…and can still open the shell');
+    assert.ok(isShell(o.text), 'Ortal (controller view) lands on the CRM (CHANGELOG-ortal-crm-default.md)');
+    assert.ok(!isShell((await request(port, '/?view=classic', personal('ortal'))).text), '…and her classic page is still there');
+    assert.ok(isShell((await request(port, '/?view=crm', personal('ortal'))).text));
     assert.ok(!isShell((await request(port, '/', shared())).text), 'a shared session never gets the shell');
     assert.ok(!isShell((await request(port, '/index.html', personal('vered'))).text), '/index.html never serves the shell');
     const h = await request(port, '/healthz'); assert.equal(h.status, 200);

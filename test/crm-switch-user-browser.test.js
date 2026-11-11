@@ -8,7 +8,7 @@
  * Vered (CRM, «גבייה» open) → «החלפת משתמש» → the PIN screen at `/` with none
  * of her data, the old cookie 401 → Dana logs in with her PIN → the CRM, her
  * name, no «גבייה», no «חשבון», no money read, none of Vered's billing on the
- * page → «החלפת משתמש» → Ortal → the classic page (her default) with the same
+ * page → «החלפת משתמש» → Ortal → the CRM «גבייה» (her default since CHANGELOG-ortal-crm-default.md), then her classic page, with the same
  * control → «החלפת משתמש» → the name list. 44px tap target, no horizontal
  * scroll at 360 px on every screen. */
 
@@ -111,7 +111,7 @@ async function pinLogin(page, name) {
   await page.locator('#login-pin-submit').click();
 }
 
-test('«החלפת משתמש» at 360 px: Vered (CRM) → PIN screen, nothing of hers left, old cookie 401 → Dana lands on the CRM without «גבייה» / «חשבון» / money → Ortal lands on classic → name list', { skip: skip && 'playwright/chromium missing', timeout: 120000 }, async () => {
+test('«החלפת משתמש» at 360 px: Vered (CRM) → PIN screen, nothing of hers left, old cookie 401 → Dana lands on the CRM without «גבייה» / «חשבון» / money → Ortal lands on the CRM «גבייה», her classic page still opens → name list', { skip: skip && 'playwright/chromium missing', timeout: 120000 }, async () => {
   const srv = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
@@ -167,12 +167,18 @@ test('«החלפת משתמש» at 360 px: Vered (CRM) → PIN screen, nothing o
     assert.ok(danaActions.includes('getData'));
     assert.ok(await noHScroll(page), 'no horizontal scroll at 360 (Dana)');
 
-    // ---- switch → Ortal: her default is the classic page ----
+    // ---- switch → Ortal: she lands on the CRM too, on «גבייה» (CHANGELOG-ortal-crm-default.md) ----
     await page.keyboard.press('Escape');
     await page.click('#crm-switch-user');
     await pinLogin(page, 'אורטל');
+    await waitCrm(page);
+    assert.equal((await page.textContent('#crm-user')).trim(), 'אורטל');
+    await page.waitForSelector('#crm-nav button[data-area="billing"][aria-current="page"], #crm-fc-title', { timeout: 15000 });
+    assert.ok(await page.$('#crm-controller-classic a[href="/?view=classic"]'), 'the link to her classic «בקרת גבייה»');
+    // her classic page is one link away
+    await page.goto(`http://127.0.0.1:${srv.port}/?view=classic`, { waitUntil: 'networkidle' });
     await page.waitForSelector('#whoami:not(.hidden)', { timeout: 15000 });
-    assert.equal(await page.$('#crm-root'), null, 'Ortal → classic');
+    assert.equal(await page.$('#crm-root'), null, 'Ortal → classic on ?view=classic');
     assert.match(await page.textContent('#whoami'), /אורטל/);
     assert.ok(!/דנה/.test(await page.textContent('#whoami')));
     assert.ok((await height(page, '#switch-user')) >= 44, '44px tap target (classic)');

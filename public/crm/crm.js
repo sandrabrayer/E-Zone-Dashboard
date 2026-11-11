@@ -346,6 +346,15 @@
     return AREAS.map(function (a) { return a.id; });
   }
 
+  /* The area a session opens on (CHANGELOG-ortal-crm-default.md): the controller
+   * view (Ortal) opens on «גבייה» — the collection list, the cash-flow forecast
+   * and the debtors; everyone else keeps the area they are on. Display only. Pure. */
+  function landingArea(me, current) {
+    const m = me || {};
+    if (m.view === 'controller' && areasFor(m).indexOf('billing') >= 0) return 'billing';
+    return current || 'today';
+  }
+
   /* The patient drawer's «חשבון» tab (CHANGELOG-crm-dana-default-switch-user.md):
    * only a session that may read billing — finance (Vered, Sandra) or the
    * controller's read access (Ortal). The operational view (Dana) and any
@@ -3543,7 +3552,7 @@
       const isController = !!(state.me && state.me.view === 'controller');
       const bf = state.billingFilter || '';
       const kpi = function (v, l, f) { return f ? '<button type="button" class="kpi' + (bf === f ? ' on' : '') + '" data-billing-filter="' + esc(f) + '" aria-pressed="' + (bf === f) + '"><span class="v">' + esc(v) + '</span><span class="l">' + esc(l) + '</span><span class="l2 go">סינון הרשימה ←</span></button>' : '<div class="kpi"><span class="v">' + esc(v) + '</span><span class="l">' + esc(l) + '</span></div>'; };
-      let html = '';
+      let html = isController ? '<div class="links" id="crm-controller-classic"><a href="/?view=classic">בקרת גבייה<small>אימות דיווחים — בדשבורד הרגיל</small></a></div>' : '';
       /* The top search box, while this area is open, looks the NAME up across
        * debtors, receipts and every patient (released included) — the date-
        * scoped overview below stays as it is (CHANGELOG-billing-search-any-patient.md). */
@@ -5207,6 +5216,8 @@
         $('#crm-user').textContent = me.user || '';
         if ($('#crm-who')) $('#crm-who').textContent = me.user || '';
         if (areasFor(me).indexOf(state.area) < 0) state.area = 'today';
+        // Ortal lands on «גבייה» (CHANGELOG-ortal-crm-default.md) — once, on the first load only.
+        if (!state.landed) { state.landed = true; state.area = landingArea(me, state.area); }
         if (!data || data.ok === false) throw new Error('הנתונים לא נטענו' + (data && data.error ? ' (' + data.error + ')' : ''));
         state.data = data; state.loading = false;
         renderNav(); renderMain();
@@ -5248,7 +5259,7 @@
     return { state: state, load: load, setArea: setArea, switchUser: switchUser, remindTick: remindTick };
   }
 
-  return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, normalise: normalise, compute: compute, filterLeads: filterLeads,
+  return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, landingArea: landingArea, normalise: normalise, compute: compute, filterLeads: filterLeads,
     board: board, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
     occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, esc: esc, boot: boot, accountTabVisible: accountTabVisible, clearCachedPages: clearCachedPages,
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
