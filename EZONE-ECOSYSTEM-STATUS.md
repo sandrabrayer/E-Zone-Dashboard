@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated November 11, 2026
 
+## Shared «הכנסות חודשיות» engine — November 11, 2026
+
+`public/revenue-engine.js` is GENERATED verbatim from `public/app.js` by
+`scripts/build-revenue-engine.js` (never edit it by hand; after changing a
+revenue rule in app.js re-run the script). It lets the CRM compute the classic
+tab's figures; parity and staleness are pinned by
+`test/revenue-engine-shared.test.js`. See `CHANGELOG-revenue-engine-shared.md`.
+
 ## CRM «צפי תזרים» cards open their lists — November 11, 2026
 
 Each forecast card is a button: the list behind its number opens right under
