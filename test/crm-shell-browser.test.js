@@ -736,6 +736,16 @@ test('«צפי תזרים» (Vered, CHANGELOG-cashflow-forecast.md): renders und
       assert.match(await page.textContent('#crm-fc-refund-rows'), /דנה כהן/);
       assert.match(await page.textContent('#crm-fc-refund-rows'), /מחושב — טרם הוחלט/);
       assert.equal(srv.actions.filter((a) => a.action === 'refundPayoutForecast').length, 1, 'read once, with the other «גבייה» reads');
+      // «רשימת חייבים לגבייה» (CHANGELOG-billing-debtors-list.md): open, right under the forecast cards, before the weekly table
+      assert.equal(await page.$eval('#crm-fc-debtors', (e) => e.open), true, 'open by default');
+      assert.match(await page.textContent('#crm-fc-debtors summary'), /רשימת חייבים לגבייה.*1 חייבים · ₪8,500/);
+      assert.match(await page.textContent('#crm-fc-debtor-rows'), /דנה כהן.*משרד הביטחון.*₪8,500.*70 ימים/);
+      assert.ok(await page.evaluate(() => {
+        const k = document.querySelector('#crm-fc-kpis'), d = document.querySelector('#crm-fc-debtors'), w = document.querySelector('#crm-fc-weeks') || document.querySelector('#crm-debtors-title');
+        return !!(k.compareDocumentPosition(d) & Node.DOCUMENT_POSITION_FOLLOWING) && !!(d.compareDocumentPosition(w) & Node.DOCUMENT_POSITION_FOLLOWING);
+      }), 'under the cards, above the rest');
+      if (process.env.CRM_SHOT_DIR) await page.screenshot({ path: require('node:path').join(process.env.CRM_SHOT_DIR, 'billing-' + width + '.png'), fullPage: true });
+      await page.click('#crm-fc-debtors summary');
       await page.click('[data-fc-preset="90"]');
       await page.waitForFunction((t) => document.querySelector('#crm-fc-to') && document.querySelector('#crm-fc-to').value > t, TODAY);
       assert.equal(srv.actions.length, reads, 'no extra request: computed from the loaded reads');
@@ -745,6 +755,11 @@ test('«צפי תזרים» (Vered, CHANGELOG-cashflow-forecast.md): renders und
       assert.ok(rows >= 1, 'at least one expected receipt in 90 days');
       assert.match(await page.textContent('#crm-fc-rows'), /שוטף \+30/);
       if (width === 390) assert.ok(await noHScroll(page), 'no horizontal page scroll at 390 px');
+      assert.equal(await page.$eval('#crm-fc-debtors', (e) => e.open), false, 'closing it survives the re-render');
+      await page.click('#crm-fc-debtors summary');
+      await page.click('#crm-fc-debtor-rows tbody tr');
+      await page.waitForSelector('#crm-drawer[aria-hidden="false"] [data-tab="account"][aria-selected="true"]');
+      await page.keyboard.press('Escape');
       await page.click('#crm-fc-rows tbody tr');
       await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
       assert.deepEqual(errors, []);
