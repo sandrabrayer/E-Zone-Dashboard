@@ -1107,6 +1107,71 @@
     out.byHouse = Object.keys(houses).map(function (k) { return houses[k]; }).sort(function (a, b) { return b.total - a.total; });
     return out;
   }
+  /* ---- «צפי תזרים» net of refunds (CHANGELOG-cashflow-refunds.md) ----
+   * The refunds E-ZONE still has to pay, placed on the day each is expected to
+   * leave the bank, so the forecast shows money in, money out and the net.
+   *   - source: the server's refundPayoutForecast answer (`toPay.rows`: every
+   *     saved pending credit with money + the policy's computed lines for
+   *     stays nobody decided yet — the «זיכויים לתשלום» list of the classic
+   *     tab, payout dates by the existing 10th → 15th rule). When that read
+   *     failed, the saved pending credits (getCredits) alone — flagged, so the
+   *     screen says the computed ones are missing. Neither → `ok:false`.
+   *   - when: its payoutDate; a payout date that already passed (or none) is
+   *     money still owed → today.
+   *   - only refunds expected inside [from, to] (from never before today).
+   * Pure: no amount is computed here — every figure is the server's. */
+  function forecastRefunds(refundForecast, credits, fromIso, toIso, todayIso) {
+    const today = s(todayIso);
+    const out = { ok: false, source: 'none', from: s(fromIso), to: s(toIso), rows: [], count: 0, total: 0, late: 0, auto: 0 };
+    if (!isoDateOk(today) || !isoDateOk(out.from) || !isoDateOk(out.to)) return out;
+    if (out.from < today) out.from = today;
+    if (out.to < out.from) return out;
+    let src = null;
+    const f = refundForecast && refundForecast.ok === true && refundForecast.toPay && Array.isArray(refundForecast.toPay.rows) ? refundForecast.toPay.rows : null;
+    if (f) {
+      out.source = 'forecast';
+      src = f.map(function (r) { const o = r || {}; return { id: s(o.creditId), name: s(o.patientName), houseId: s(o.houseId), amount: Number(o.amount) || 0, payoutDate: sheetDay(o.payoutDate), creditType: s(o.creditType), auto: o.auto === true }; });
+    } else if (credits && credits.ok === true) {
+      out.source = 'credits';
+      src = pendingCredits(credits).map(function (c) { return { id: c.id, name: c.patientName, houseId: c.houseId, amount: c.amount, payoutDate: c.payoutDate, creditType: c.creditType, auto: false }; });
+    }
+    if (!src) return out;
+    out.ok = true;
+    const r2 = function (n) { return Math.round(n * 100) / 100; };
+    src.forEach(function (r) {
+      if (!(r.amount > 0)) return;
+      const dated = /^\d{4}-\d{2}-\d{2}$/.test(r.payoutDate);
+      const late = dated && r.payoutDate < today;
+      const expectedDate = dated && !late ? r.payoutDate : today;
+      if (expectedDate < out.from || expectedDate > out.to) return;
+      out.rows.push({ id: r.id, name: r.name, houseId: r.houseId, houseName: houseName(r.houseId), amount: r2(r.amount), payoutDate: dated ? r.payoutDate : '', expectedDate: expectedDate,
+        late: late, auto: r.auto, creditType: r.creditType });
+      out.total = r2(out.total + r.amount); out.count++;
+      if (late) out.late++;
+      if (r.auto) out.auto++;
+    });
+    out.rows.sort(function (a, b) { return a.expectedDate < b.expectedDate ? -1 : a.expectedDate > b.expectedDate ? 1 : a.name.localeCompare(b.name, 'he'); });
+    return out;
+  }
+  /* The forecast with the refunds taken off: net = expected receipts − refunds,
+   * in total and per week (a week with refunds only is still a row). Pure. */
+  function cashForecastNet(fc, refunds) {
+    const r2 = function (n) { return Math.round(n * 100) / 100; };
+    const rf = refunds && refunds.ok ? refunds : null;
+    const weeks = {};
+    ((fc && fc.byWeek) || []).forEach(function (w) { weeks[w.weekStart] = { weekStart: w.weekStart, private: w.private, institutional: w.institutional, total: w.total, refunds: 0, net: w.total }; });
+    (rf ? rf.rows : []).forEach(function (r) {
+      const k = weekStartIso(r.expectedDate);
+      const w = weeks[k] || (weeks[k] = { weekStart: k, private: 0, institutional: 0, total: 0, refunds: 0, net: 0 });
+      w.refunds = r2(w.refunds + r.amount); w.net = r2(w.total - w.refunds);
+    });
+    const income = Number(fc && fc.total) || 0;
+    return { known: !!rf, income: income, refunds: rf ? rf.total : 0, refundCount: rf ? rf.count : 0, net: r2(income - (rf ? rf.total : 0)),
+      byWeek: Object.keys(weeks).sort().map(function (k) { return weeks[k]; }) };
+  }
+  /* Money that may be negative: «−₪5,000». Pure. */
+  function fmtSigned(n) { const v = Math.round(Number(n) || 0); return v < 0 ? '−' + fmtMoney(-v) : fmtMoney(v); }
+
   /* ---- «ניקוי חובות היסטוריים» (CHANGELOG-historical-debt-cleanup.md) ----
    * Released patients' open cycles that are NOT real debt (Sandra, 08/11/2026:
    * most of them are payments that were never recorded in the app). A
@@ -3359,12 +3424,14 @@
       // debtAging is read once at boot for the «גבייה לטיפול» card (finance); reuse it until a billing write resets it
       const debtP = state.debt && state.debt.ok === true ? Promise.resolve(state.debt) : api('debtAging');
       const payP = state.payments && state.payments.ok === true ? Promise.resolve(state.payments) : api('getPayments');
-      Promise.all([debtP, payP, api('getCredits')]).then(function (res) {
-        state.billing = { debt: res[0], payments: res[1], credits: res[2] };
+      // refundPayoutForecast feeds «צפי תזרים» (CHANGELOG-cashflow-refunds.md); fail-soft — the page never waits on its failure
+      const refundP = api('refundPayoutForecast').catch(function (e) { return { ok: false, error: String(e && e.message || e) }; });
+      Promise.all([debtP, payP, api('getCredits'), refundP]).then(function (res) {
+        state.billing = { debt: res[0], payments: res[1], credits: res[2], refunds: res[3] };
         state.debt = res[0] && res[0].ok === true ? res[0] : false;
         state.payments = res[1] && res[1].ok === true ? res[1] : null;
       }).catch(function (e) {
-        state.billing = { debt: { ok: false, error: String(e && e.message || e) }, payments: { ok: false, error: String(e && e.message || e) }, credits: { ok: false, error: String(e && e.message || e) } };
+        state.billing = { debt: { ok: false, error: String(e && e.message || e) }, payments: { ok: false, error: String(e && e.message || e) }, credits: { ok: false, error: String(e && e.message || e) }, refunds: { ok: false, error: String(e && e.message || e) } };
       }).then(function () {
         state.billingLoading = false; if (state.area === 'billing') renderMain();
         while (billingWaiters.length) { try { billingWaiters.shift()(); } catch (_) { /* a stale drawer */ } }
@@ -3461,17 +3528,31 @@
         + '<label>עד תאריך <input type="date" id="crm-fc-to" min="' + esc(fc.from) + '" value="' + esc(fc.to) + '"></label>'
         + '<button type="button" class="btn small" data-fc-preset="month">עד סוף החודש</button><button type="button" class="btn small" data-fc-preset="next">החודש הבא</button><button type="button" class="btn small" data-fc-preset="90">90 יום</button></div>';
       if (fc.error === 'payments_missing' || (fc.error && fc.error !== 'bad_range')) html += '<div class="crm-state bad">תשלומים לא נטענו — הצפי לפי התעריף בכרטיס בלבד <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
+      const rf = forecastRefunds(state.billing.refunds, state.billing.credits, fc.from, fc.to, state.today);
+      const net = cashForecastNet(fc, rf);
       html += '<div class="kpis" id="crm-fc-kpis">' + kpi(fmtMoney(fc.total), 'סה"כ צפוי · ' + fmtDate(fc.from) + '–' + fmtDate(fc.to))
         + kpi(fmtMoney(fc.private.total), 'פרטיים (' + fc.private.count + ') · ביום החיוב')
         + kpi(fmtMoney(fc.institutional.total), 'מוסדיים — שוטף +30 (' + fc.institutional.count + ')')
-        + (fc.unset.count ? kpi(fmtMoney(fc.unset.total), 'ללא גורם מממן (' + fc.unset.count + ') · לא בסה"כ') : '') + '</div>';
+        + (fc.unset.count ? kpi(fmtMoney(fc.unset.total), 'ללא גורם מממן (' + fc.unset.count + ') · לא בסה"כ') : '')
+        + (net.known ? '<div class="kpi" id="crm-fc-refunds"><span class="v">' + esc(fmtSigned(-net.refunds)) + '</span><span class="l">זיכויים לתשלום (' + net.refundCount + ')' + (rf.late ? ' · ' + rf.late + ' באיחור' : '') + '</span></div>'
+          + '<div class="kpi" id="crm-fc-net"><span class="v">' + esc(fmtSigned(net.net)) + '</span><span class="l">נטו צפוי · אחרי זיכויים</span></div>'
+          : '<div class="kpi" id="crm-fc-refunds"><span class="v">—</span><span class="l">זיכויים לתשלום · לא נטענו</span></div>') + '</div>';
       html += '<p class="na">רק מחזורים שעוד לא שולמו, של מטופלים בבית. ללא חובות עבר. ביטוח לאומי / מכבי / משרד הביטחון — צפי קבלה 30 יום אחרי יום החיוב.'
-        + (fc.unset.count ? ' מטופלים ללא גורם מממן אינם בסה"כ — יש להשלים גורם מממן.' : '') + '</p>';
-      if (!fc.rows.length) return html + '<p class="na">אין תקבולים צפויים בטווח הזה.</p>';
-      if (fc.byWeek.length) html += '<div class="tbl-wrap"><table class="tbl" id="crm-fc-weeks"><thead><tr><th>שבוע</th><th>פרטיים</th><th>מוסדיים (שוטף +30)</th><th>סה"כ</th></tr></thead><tbody>'
-        + fc.byWeek.map(function (w) { return '<tr><td>' + esc('מ-' + fmtDate(w.weekStart < fc.from ? fc.from : w.weekStart)) + '</td><td>' + esc(fmtMoney(w.private)) + '</td><td>' + esc(fmtMoney(w.institutional)) + '</td><td>' + esc(fmtMoney(w.total)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+        + (fc.unset.count ? ' מטופלים ללא גורם מממן אינם בסה"כ — יש להשלים גורם מממן.' : '')
+        + (net.known ? ' זיכויים לתשלום מופחתים ביום התשלום שלהם (זיכוי שמועדו עבר — היום).' : '')
+        + (rf.ok && rf.source === 'credits' ? ' הזיכויים המחושבים (שחרורים ללא החלטה) לא נטענו — מוצגים זיכויים שמורים בלבד.' : '') + '</p>';
+      if (!net.known) html += '<div class="crm-state bad">זיכויים לתשלום לא נטענו — הצפי מוצג ללא הפחתת זיכויים <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
+      if (!fc.rows.length) html += '<p class="na">אין תקבולים צפויים בטווח הזה.</p>';
+      if (net.byWeek.length) html += '<div class="tbl-wrap"><table class="tbl" id="crm-fc-weeks"><thead><tr><th>שבוע</th><th>פרטיים</th><th>מוסדיים (שוטף +30)</th><th>סה"כ</th>' + (net.known ? '<th>זיכויים</th><th>נטו</th>' : '') + '</tr></thead><tbody>'
+        + net.byWeek.map(function (w) { return '<tr><td>' + esc('מ-' + fmtDate(w.weekStart < fc.from ? fc.from : w.weekStart)) + '</td><td>' + esc(fmtMoney(w.private)) + '</td><td>' + esc(fmtMoney(w.institutional)) + '</td><td>' + esc(fmtMoney(w.total)) + '</td>'
+          + (net.known ? '<td>' + esc(w.refunds ? fmtSigned(-w.refunds) : fmtMoney(0)) + '</td><td>' + esc(fmtSigned(w.net)) + '</td>' : '') + '</tr>'; }).join('') + '</tbody></table></div>';
       if (fc.byHouse.length) html += '<div class="tbl-wrap"><table class="tbl" id="crm-fc-houses"><thead><tr><th>בית</th><th>פרטיים</th><th>מוסדיים (שוטף +30)</th><th>סה"כ</th></tr></thead><tbody>'
         + fc.byHouse.map(function (h) { return '<tr><td>' + esc(h.name) + '</td><td>' + esc(fmtMoney(h.private)) + '</td><td>' + esc(fmtMoney(h.institutional)) + '</td><td>' + esc(fmtMoney(h.total)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+      if (rf.ok && rf.rows.length) html += '<details id="crm-fc-refund-detail"><summary>זיכויים לתשלום בטווח (' + rf.count + ' · ' + esc(fmtMoney(rf.total)) + ')</summary><div class="tbl-wrap"><table class="tbl" id="crm-fc-refund-rows"><thead><tr><th>מטופל/ת</th><th>בית</th><th>סוג</th><th>מועד תשלום</th><th>צפי תשלום</th><th>סכום</th></tr></thead><tbody>'
+        + rf.rows.map(function (r) {
+          return '<tr><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(CREDIT_TYPE_LABELS[r.creditType] || r.creditType) + (r.auto ? ' ' + chip('wait', 'מחושב — טרם הוחלט') : '') + '</td><td>' + esc(r.payoutDate ? fmtDate(r.payoutDate) : '—') + (r.late ? ' ' + chip('late', 'באיחור') : '') + '</td><td>' + esc(fmtDate(r.expectedDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td></tr>';
+        }).join('') + '</tbody></table></div></details>';
+      if (!fc.rows.length) return html;
       const kindLabel = { private: 'פרטי', institutional: 'שוטף +30', unset: 'לא הוגדר' };
       html += '<details id="crm-fc-detail"><summary>פירוט לפי מטופל/ת (' + fc.rows.length + ')</summary><div class="tbl-wrap"><table class="tbl" id="crm-fc-rows"><thead><tr><th>מטופל/ת</th><th>בית</th><th>גורם מממן</th><th>מחזור</th><th>יום חיוב</th><th>צפי קבלה</th><th>סכום</th></tr></thead><tbody>'
         + fc.rows.map(function (r) {
@@ -5289,5 +5370,5 @@
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
     newTaskErrors: newTaskErrors, dueSoonTasks: dueSoonTasks, TASK_REMIND_MINUTES: TASK_REMIND_MINUTES, WORK_CONTROL: WORK_CONTROL, workControlQueues: workControlQueues,
-    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, cleanupCandidates: cleanupCandidates, cleanupPlan: cleanupPlan, cleanupBody: cleanupBody, CLEANUP_REASONS: CLEANUP_REASONS, paidWithDiscountPlan: paidWithDiscountPlan, paidWithDiscountBody: paidWithDiscountBody, reportValuesOnly: reportValuesOnly, cashForecast: cashForecast, cycleOnDay: cycleOnDay, cycleCtx: cycleCtx, forecastPreset: forecastPreset, monthEndIso: monthEndIso, FORECAST_TERMS_DAYS: FORECAST_TERMS_DAYS, FORECAST_INSTITUTIONAL: FORECAST_INSTITUTIONAL, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
+    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, cleanupCandidates: cleanupCandidates, cleanupPlan: cleanupPlan, cleanupBody: cleanupBody, CLEANUP_REASONS: CLEANUP_REASONS, paidWithDiscountPlan: paidWithDiscountPlan, paidWithDiscountBody: paidWithDiscountBody, reportValuesOnly: reportValuesOnly, cashForecast: cashForecast, forecastRefunds: forecastRefunds, cashForecastNet: cashForecastNet, fmtSigned: fmtSigned, cycleOnDay: cycleOnDay, cycleCtx: cycleCtx, forecastPreset: forecastPreset, monthEndIso: monthEndIso, FORECAST_TERMS_DAYS: FORECAST_TERMS_DAYS, FORECAST_INSTITUTIONAL: FORECAST_INSTITUTIONAL, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));
