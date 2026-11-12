@@ -392,11 +392,17 @@ form[data-form="wait-reason"][aria-busy="true"] .radio-row { opacity: .6; }
 #crm-month-trend tbody tr.on td { background: #E5F0FF; }
 #crm-month-tools strong { margin-inline-start: 8px; }
 
-/* The debtors calculator (CHANGELOG-debtors-select-sum.md): tick cells + a bar that stays in view while the list scrolls. */
-.debtor-calc { display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin: 6px 0; border: 1px solid #d0d4e4; border-radius: 10px; background: #fff; color: #676879; position: sticky; top: 0; z-index: 2; }
-.debtor-calc.on { border-color: #0073EA; background: #E5F0FF; color: #1f2a44; }
-.debtor-calc .grow { flex: 1; }
+/* The calculator on every money table (CHANGELOG-table-calculator.md): tick cells + one bar at the bottom of the screen. */
 .tbl th.pick, .tbl td.pick { width: 36px; text-align: center; padding-inline: 4px; }
 .tbl td.pick label { display: block; padding: 6px; cursor: pointer; }
 .tbl td.pick input, .tbl th.pick input { width: 18px; height: 18px; cursor: pointer; }
-#crm-fc-debtor-rows tbody tr.picked td { background: #E5F0FF; }
+.tbl tbody tr.picked td { background: #E5F0FF; }
+#crm-calc-bar { position: fixed; inset-inline: 12px; bottom: 12px; z-index: 60; display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  border: 1px solid #0073EA; border-radius: 12px; background: #E5F0FF; color: #1f2a44; box-shadow: 0 6px 20px rgba(0, 0, 0, .18); max-width: 1100px; margin-inline: auto; }
+#crm-calc-bar[hidden] { display: none; }
+#crm-calc-bar .ic { font-weight: 700; font-size: 18px; color: #0073EA; }
+#crm-calc-bar .grow { flex: 1; }
+#crm-calc-bar strong { font-size: 15px; }
+.crm:has(#crm-calc-bar:not([hidden])) #crm-main { padding-bottom: 76px; }
+/* «חובות של תקופה» (CHANGELOG-table-calculator.md) */
+#crm-debt-range { margin: 6px 0; }

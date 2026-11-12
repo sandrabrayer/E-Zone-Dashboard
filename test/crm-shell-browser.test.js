@@ -759,22 +759,40 @@ test('«צפי תזרים» (Vered, CHANGELOG-cashflow-forecast.md): renders und
         const k = document.querySelector('#crm-fc-kpis'), d = document.querySelector('#crm-fc-debtors'), w = document.querySelector('#crm-fc-weeks') || document.querySelector('#crm-debtors-title');
         return !!(k.compareDocumentPosition(d) & Node.DOCUMENT_POSITION_FOLLOWING) && !!(d.compareDocumentPosition(w) & Node.DOCUMENT_POSITION_FOLLOWING);
       }), 'under the cards, above the rest');
-      // the debtors calculator (CHANGELOG-debtors-select-sum.md): tick → the sum, in place; the tick never opens the patient
-      assert.match(await page.textContent('#crm-debtor-sum'), /מחשבון/);
-      const html0 = await page.$eval('#crm-fc-debtor-rows tbody', (e) => e.dataset.mark = 'same');
+      // the calculator (CHANGELOG-table-calculator.md): every money table has a tick column; one bar at the bottom sums the ticks
+      for (const id of ['crm-fc-debtor-rows', 'crm-debtors', 'crm-receipts', 'crm-fc-rows']) assert.ok(await page.$('#' + id + ' thead th.pick input[data-calc-all]'), id + ' has the tick column');
+      assert.equal(await page.isHidden('#crm-calc-bar'), true, 'no bar until something is ticked');
+      await page.$eval('#crm-fc-debtor-rows tbody', (e) => { e.dataset.mark = 'same'; });
       await page.click('#crm-fc-debtor-rows tbody tr td.pick input');
-      assert.match(await page.textContent('#crm-debtor-sum'), /נבחרו 1 מתוך 1 · סה"כ ₪8,500 \(100% מהחוב ברשימה\)/);
+      assert.equal(await page.textContent('#crm-calc-sum'), 'נבחרו 1 מתוך 1 · חייבים לגבייה · סה"כ ₪8,500');
       assert.equal(await page.getAttribute('#crm-drawer', 'aria-hidden'), 'true', 'ticking does not open the patient');
-      assert.equal(await page.$eval('#crm-fc-debtor-rows tbody', (e) => e.dataset.mark), html0, 'no re-render — the list does not jump');
-      assert.equal(await page.isChecked('[data-debtor-all]'), true, 'all rows ticked → the header box follows');
-      if (process.env.CRM_SHOT_DIR) await page.screenshot({ path: require('node:path').join(process.env.CRM_SHOT_DIR, 'billing-' + width + '.png'), fullPage: true });
-      await page.click('[data-debtor-clear]');
-      assert.match(await page.textContent('#crm-debtor-sum'), /מחשבון/);
+      assert.equal(await page.$eval('#crm-fc-debtor-rows tbody', (e) => e.dataset.mark), 'same', 'no re-render — the list does not jump');
+      assert.equal(await page.isChecked('#crm-fc-debtor-rows [data-calc-all]'), true, 'all rows ticked → the header box follows');
+      // a second table joins the same bar, each with its own line + a grand total
+      await page.check('#crm-receipts [data-calc-all]');
+      assert.match(await page.textContent('#crm-calc-sum'), /חייבים לגבייה: 1 מתוך 1 · ₪8,500 {2}\| {2}תקבולים: \d+ מתוך \d+ · ₪[\d,]+ {2}\| {2}סה"כ ₪[\d,]+/);
+      const shown = await page.$$eval('#crm-receipts tbody tr', (trs) => trs.map((tr) => Number(tr.children[4].textContent.replace(/[^\d.]/g, ''))).reduce((a, b) => a + b, 0));
+      assert.ok((await page.textContent('#crm-calc-sum')).includes('תקבולים: ' + (await page.$$eval('#crm-receipts tbody tr', (t) => t.length))), 'every receipt row is counted');
+      assert.ok(shown > 0);
+      if (process.env.CRM_SHOT_DIR) await page.screenshot({ path: require('node:path').join(process.env.CRM_SHOT_DIR, 'billing-' + width + '.png'), fullPage: false });
+      // the ticks survive a re-render of the page
+      
+      await page.fill('#crm-due-date', TODAY); await page.dispatchEvent('#crm-due-date', 'change');
+      await page.waitForSelector('#crm-fc-debtor-rows thead th.pick');
+      assert.equal(await page.isChecked('#crm-fc-debtor-rows tbody tr td.pick input'), true, 'still ticked after the re-render');
+      await page.click('[data-calc-clear]');
+      assert.equal(await page.isHidden('#crm-calc-bar'), true);
       assert.equal(await page.isChecked('#crm-fc-debtor-rows tbody tr td.pick input'), false);
-      await page.check('[data-debtor-all]');
-      assert.match(await page.textContent('#crm-debtor-sum'), /נבחרו 1 מתוך 1/);
-      await page.uncheck('[data-debtor-all]');
-      assert.equal(srv.actions.length, reads, 'the calculator asks the server nothing');
+      // «חובות של תקופה»: a period with no billing day in it empties the list; «כל התקופות» brings it back
+      await page.fill('#crm-debt-from', '2024-01-01'); await page.dispatchEvent('#crm-debt-from', 'change');
+      await page.waitForSelector('#crm-debt-range [data-debt-preset="all"]');
+      await page.fill('#crm-debt-to', '2024-01-31'); await page.dispatchEvent('#crm-debt-to', 'change');
+      await page.waitForFunction(() => /אין חובות פתוחים שיום החיוב שלהם בתקופה שנבחרה/.test(document.querySelector('#crm-fc-debtors').textContent));
+      assert.match(await page.textContent('#crm-fc-debtors summary'), /0 חייבים · ₪0[\s\S]*תקופה: 01\/01\/2024–31\/01\/2024/);
+      await page.click('[data-debt-preset="all"]');
+      await page.waitForSelector('#crm-fc-debtor-rows');
+      assert.match(await page.textContent('#crm-fc-debtors summary'), /1 חייבים · ₪8,500/);
+      assert.equal(srv.actions.length, reads, 'the calculator and the period ask the server nothing');
       await page.click('#crm-fc-debtors summary');
       await page.click('[data-fc-preset="90"]');
       await page.waitForFunction((t) => document.querySelector('#crm-fc-to') && document.querySelector('#crm-fc-to').value > t, TODAY);

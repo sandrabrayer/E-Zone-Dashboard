@@ -41,7 +41,7 @@ test('the total equals the sum of the SAME per-patient debt figures «חובות
   const sum = b.patients.reduce((t, p) => t + p.balance, 0);
   assert.equal(cd.total, sum);
   for (const r of cd.rows) assert.equal(r.balance, b.patients.find((p) => p.id === r.id).balance, r.name);
-  assert.ok(SRC.includes('const b = billingOverview(debt, payments, today);'), 'built on billingOverview');
+  assert.ok(SRC.includes('const b = billingOverview(scoped, payments, today);'), 'built on billingOverview (the same roll-up, with or without a period)');
 });
 
 test('funder = the one in force today (by patient id or stay key); none → «לא הוגדר»; the grace flag and the unrecorded count ride along', () => {

@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated November 12, 2026
 
+## CRM calculator on every money table + debts by period — November 12, 2026
+
+Every money table in «גבייה», the search and a patient's «חשבון» has tick
+boxes; one bottom bar (Σ) sums the ticks per table (`CALC_TABLES` in crm.js —
+add a table there to include it). «רשימת חייבים לגבייה» has a billing-day
+period filter (from / to). UI only; supersedes the debtors-only calculator
+below. SW v131. See `CHANGELOG-table-calculator.md`.
+
 ## CRM debtors calculator — November 12, 2026
 
 «רשימת חייבים לגבייה» has a tick box per row + header box and a sticky bar
