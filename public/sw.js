@@ -394,7 +394,9 @@
 // (CHANGELOG-forecast-cards-open.md). From the live v127; monotonic, v17 never reused.
 // v128 → v129: «היסטוריה חודשית» in the CRM — a month's occupancy + revenue; /revenue-engine.js joins the bundle (crm/crm.js, crm.css, crm.html)
 // (CHANGELOG-crm-month-view.md). From the live v128; monotonic, v17 never reused.
-var CACHE_VERSION = 'v129';
+// v129 → v130: the debtors calculator — tick debtors in «רשימת חייבים לגבייה», see their sum (crm/crm.js, crm.css)
+// (CHANGELOG-debtors-select-sum.md). From the live v129; monotonic, v17 never reused.
+var CACHE_VERSION = 'v130';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

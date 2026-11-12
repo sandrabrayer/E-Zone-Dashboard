@@ -1,4 +1,11 @@
-# E-ZONE Ecosystem Status — updated November 11, 2026
+# E-ZONE Ecosystem Status — updated November 12, 2026
+
+## CRM debtors calculator — November 12, 2026
+
+«רשימת חייבים לגבייה» has a tick box per row + header box and a sticky bar
+«נבחרו N מתוך M · סה"כ ₪X». The sum is the listed debt figures; the selection
+lives in the page only (nothing saved or sent). UI only. SW v130. See
+`CHANGELOG-debtors-select-sum.md`.
 
 ## CRM «היסטוריה חודשית» — November 11, 2026
 
