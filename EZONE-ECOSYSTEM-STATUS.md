@@ -88,6 +88,10 @@ discount (reason required): `reportPayment`, then — only when accepted —
 `setBillingDiscount` with the month's total. Finance only; open cycles only.
 No Apps Script change. SW v121. See `CHANGELOG-paid-with-discount.md`.
 
+## Care-continuum exact IDs — D-ID-1 integration candidate (08 Nov 2026, DRAFT ONLY)
+
+Existing read-only Dashboard roster feeds getAdmittedRoster/getDischargedRoster now project Patients.id (stay episode) and Patients.personId (returning person root), with `personKey=personId||id` in consuming apps. No new ID, data writes, headers, access or finance. This draft is aligned to the currently deployed Dashboard branch; merge/deploy still require separate Sandra approval. Consumers must not infer identity by name/phone. See `CHANGELOG-care-continuum-identity-feed.md` and PR #329. Downstream Outpatient #137/#138 and Dashboard #330 remain draft and are NOT enabled by this isolated preparation.
+
 ## Acceptance audit candidate — November 6, 2026 (local, not deployed)
 
 Approved focused corrections on base `5349d75c`: collection-cycle owner in the

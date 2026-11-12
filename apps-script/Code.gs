@@ -16,8 +16,8 @@
  *                                                 (credits/refunds ledger; id
  *                                                  minted server-side on create,
  *                                                  stale edits refused)
- *   GET  ?action=getAdmittedRoster&secret=...    → {ok, patients:[{sourceApp,name,phone,house}]}
- *   GET  ?action=getDischargedRoster&secret=...  → {ok, patients:[{sourceApp,name,phone,house,entryDate,exitDate}]} (own ALUMNI_SOURCE_SECRET)
+ *   GET  ?action=getAdmittedRoster&secret=...    → {ok, patients:[{sourceApp,id,personId,name,phone,house,entryDate}]}
+ *   GET  ?action=getDischargedRoster&secret=...  → {ok, patients:[{sourceApp,id,personId,name,phone,house,entryDate,exitDate}]} (own ALUMNI_SOURCE_SECRET)
  *                                                 (cross-app, read-only: currently-admitted
  *                                                  patients with phone recovered via fromLead)
  *   POST action=deletePatientRow&patient=...     → {ok, deleted, key, id, matchedBy}
@@ -8735,6 +8735,9 @@ function getDischargedRoster_() {
     if (!exit || exit < cutoff) continue;
     out.push({
       sourceApp: 'ezone-dashboard',
+      // Stable existing stay and root-person IDs, read only; never match across episodes by name/phone.
+      id:        String(pt.id || ''),
+      personId:  patientPersonId_(pt.personId),
       name:      pt.name || '',
       phone:     rosterPhoneFor_(pt, phoneIdx),
       house:     pt.houseId || '',
@@ -9476,6 +9479,9 @@ function getAdmittedRoster_() {
     if (!rosterPhone) missingPhone.push({ name: String(pt.name), house: String(pt.houseId || ''), id: String(pt.id || '') });
     out.push({
       sourceApp: 'ezone-dashboard',
+      // Stable existing stay and root-person IDs, read only; never match across episodes by name/phone.
+      id:        String(pt.id || ''),
+      personId:  patientPersonId_(pt.personId),
       name:      pt.name || '',
       phone:     rosterPhone,
       house:     pt.houseId || '',

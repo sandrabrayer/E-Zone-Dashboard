@@ -36,7 +36,7 @@ function boot({ secret = SECRET, patients, leads } = {}) {
 
 const PATIENTS = [
   { houseId: 'asher', name: 'יוצא לאחרונה', fromLead: 'L1', date: '2026-05-01', exitDate: '2026-10-01', status: 'released',
-    pay: 30000, adv: 5000, notes: 'sensitive note', source: 'lead', id: 'pid-1' },
+    pay: 30000, adv: 5000, notes: 'sensitive note', source: 'lead', id: 'pid-1', personId: 'pid-root' },
   { houseId: 'ramot', name: 'ללא ליד', fromLead: '', date: '2026-06-01', exitDate: '2026-09-01', status: 'released' },
   { houseId: 'ramot', name: 'ישן מדי', fromLead: 'L1', date: '2022-01-01', exitDate: '2023-01-01', status: 'released' },
   { houseId: 'ramot', name: 'עדיין בבית', fromLead: 'L1', date: '2026-09-01', exitDate: '', status: 'active' },
@@ -60,9 +60,12 @@ test('contract: exactly sourceApp, name, phone, house, entryDate, exitDate — n
   assert.strictEqual(r.ok, true);
   const by = (n) => r.patients.find((p) => p.name === n);
   assert.deepStrictEqual(by('יוצא לאחרונה'), {
-    sourceApp: 'ezone-dashboard', name: 'יוצא לאחרונה', phone: '0527654321', house: 'asher', entryDate: '2026-05-01', exitDate: '2026-10-01'
+    sourceApp: 'ezone-dashboard', id: 'pid-1', personId: 'pid-root', name: 'יוצא לאחרונה', phone: '0527654321', house: 'asher', entryDate: '2026-05-01', exitDate: '2026-10-01'
   });
-  r.patients.forEach((p) => assert.deepStrictEqual(Object.keys(p).sort(), ['entryDate', 'exitDate', 'house', 'name', 'phone', 'sourceApp']));
+  r.patients.forEach((p) => assert.deepStrictEqual(Object.keys(p).sort(), ['entryDate', 'exitDate', 'house', 'id', 'name', 'personId', 'phone', 'sourceApp']));
+  // Legacy discharge without an immutable ID remains blank; never guess one from a name.
+  assert.strictEqual(by('ללא ליד').id, '');
+  assert.strictEqual(by('ללא ליד').personId, '');
 });
 
 test('selection: released inside the window only; no phone without a lead link; admitted / dateless / old excluded', () => {
