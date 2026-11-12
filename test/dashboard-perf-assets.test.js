@@ -337,7 +337,7 @@ function serve(handlers, url) {
 }
 const settle = () => new Promise((r) => setImmediate(r));
 
-test('D: CACHE_VERSION is v130 (monotonic from v129; v17 burned, never reused)', () => {
+test('D: CACHE_VERSION is v131 (monotonic from v130; v17 burned, never reused)', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
   // v40: CHANGELOG-ortal-verification-status.md.
   // v41: CHANGELOG-reactivation-fix.md (PR #145's fix, re-landed).
@@ -428,7 +428,8 @@ test('D: CACHE_VERSION is v130 (monotonic from v129; v17 burned, never reused)',
   // v128: CHANGELOG-forecast-cards-open.md (from v127).
   // v129: CHANGELOG-crm-month-view.md (from v128).
   // v130: CHANGELOG-debtors-select-sum.md (from v129).
-  assert.equal(v, 'v130');
+  // v131: CHANGELOG-table-calculator.md (from v130).
+  assert.equal(v, 'v131');
   assert.notEqual(v, 'v17');
 });
 

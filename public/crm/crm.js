@@ -1293,9 +1293,16 @@
    *   - `funder` narrows the list (the «לגבייה בתאריך» funder filter);
    *   - total = the sum of the listed balances.
    * Pure: (debtAging answer, getPayments answer, today, funder filter). */
-  function collectionDebtors(debt, payments, today, funder) {
-    const b = billingOverview(debt, payments, today);
+  function collectionDebtors(debt, payments, today, funder, range) {
     const d = debt && debt.ok !== false ? debt : null;
+    // «חובות לפי תקופה» (CHANGELOG-table-calculator.md): keep only the open cycles whose billing day (the cycle's
+    // start) is inside [from, to] — either end may be empty. The SAME cycles and balances, fewer of them; then
+    // the same per-patient roll-up (billingOverview). No range → every cycle, exactly as before.
+    const rg = debtRange(range);
+    const scoped = d && rg.on ? Object.assign({}, d, { byPatient: (Array.isArray(d.byPatient) ? d.byPatient : []).map(function (x) {
+      return Object.assign({}, x, { cycles: (Array.isArray(x && x.cycles) ? x.cycles : []).filter(function (c) { const day = sheetDay(c && c.start); return !!day && (!rg.from || day >= rg.from) && (!rg.to || day <= rg.to); }) });
+    }) }) : debt;
+    const b = billingOverview(scoped, payments, today);
     const p = payments && payments.ok !== false ? payments : null;
     const keys = {};
     (d && Array.isArray(d.byPatient) ? d.byPatient : []).forEach(function (x) { if (x) keys[s(x.patientId)] = s(x.patientKey); });
@@ -1314,7 +1321,14 @@
     rows.sort(function (a, c) { return c.oldestDays - a.oldestDays || c.balance - a.balance || a.name.localeCompare(c.name, 'he'); });
     const total = Math.round(rows.reduce(function (t, r) { return t + r.balance; }, 0) * 100) / 100;
     return { ok: !!d, error: d ? '' : s(debt && debt.error || 'not_loaded'), asOf: b.asOf, funder: want, rows: rows, count: rows.length, total: total,
-      inHouse: rows.filter(function (r) { return r.inHouse; }).length, all: b.patients.length };
+      inHouse: rows.filter(function (r) { return r.inHouse; }).length, all: b.patients.length, range: rg };
+  }
+  /* A debt period: { from, to } of ISO days, either may be empty; a reversed pair is swapped; junk → no range. Pure. */
+  function debtRange(range) {
+    const r = range || {};
+    let from = isoDateOk(s(r.from)) ? s(r.from) : '', to = isoDateOk(s(r.to)) ? s(r.to) : '';
+    if (from && to && from > to) { const t = from; from = to; to = t; }
+    return { from: from, to: to, on: !!(from || to) };
   }
   /* A forecast card opens the list behind its number (CHANGELOG-forecast-cards-open.md):
    * 'all' / 'private' / 'institutional' / 'unset' → the expected receipts of that kind;
@@ -1330,19 +1344,57 @@
     const refundRows = k === 'refunds' || k === 'net' ? rf : [];
     return { key: k, title: FC_OPEN_TITLES[k], receipts: receipts, refunds: refundRows, receiptsTotal: sum(receipts), refundsTotal: sum(refundRows) };
   }
-  /* The debtors «calculator» (CHANGELOG-debtors-select-sum.md): the ticked rows of
-   * «רשימת חייבים לגבייה» and their sum. `sel` = { key: true }; a ticked debtor that
-   * is not in the list now (the funder filter hid it) is not counted. Pure. */
-  function debtorPickKey(r) { const x = r || {}; return s(x.id) || (s(x.houseId) + '|' + s(x.name)); }
-  function debtorsPicked(rows, sel) {
-    const picked = (rows || []).filter(function (r) { return sel && sel[debtorPickKey(r)] === true; });
-    const total = Math.round(picked.reduce(function (t, r) { return t + (Number(r.balance) || 0); }, 0) * 100) / 100;
-    const listTotal = Math.round((rows || []).reduce(function (t, r) { return t + (Number(r.balance) || 0); }, 0) * 100) / 100;
-    return { count: picked.length, total: total, of: (rows || []).length, listTotal: listTotal, all: !!picked.length && picked.length === (rows || []).length,
-      pct: listTotal > 0 ? Math.round(1000 * total / listTotal) / 10 : 0 };
+  /* ---- The calculator, on every money table (CHANGELOG-table-calculator.md) ----
+   * Tick rows of any table listed here → one bar at the bottom of the screen with
+   * the count and the sum per table. The amount is the row's cell under the named
+   * header, read as it is DISPLAYED (so the sum is of the figures on the screen;
+   * no balance is computed here). `col` = the header text of the amount column. */
+  const CALC_TABLES = {
+    'crm-due': { col: 'יתרה', label: 'לגבייה בתאריך' },
+    'crm-fc-rows': { col: 'סכום', label: 'תקבולים צפויים' },
+    'crm-fc-open-rows': { col: 'סכום', label: 'תקבולים צפויים' },
+    'crm-fc-open-refunds': { col: 'סכום', label: 'זיכויים לתשלום' },
+    'crm-fc-refund-rows': { col: 'סכום', label: 'זיכויים בטווח' },
+    'crm-fc-debtor-rows': { col: 'סכום חוב', label: 'חייבים לגבייה' },
+    'crm-debtors': { col: 'חוב', label: 'חובות פתוחים' },
+    'crm-receipts': { col: 'סכום', label: 'תקבולים' },
+    'crm-pending-credits': { col: 'סכום', label: 'זיכויים לתשלום' },
+    'crm-detached': { col: 'סכום', label: 'תשלומים לא משויכים' },
+    'crm-search-debtors': { col: 'חוב', label: 'חובות (חיפוש)' },
+    'crm-search-receipts': { col: 'סכום', label: 'תקבולים (חיפוש)' },
+    'crm-account-open': { col: 'יתרה', label: 'מחזורים פתוחים' },
+    'crm-account-credits': { col: 'סכום', label: 'זיכויים' },
+    'crm-account-cycles': { col: 'סכום', label: 'מחזורים' },
+    'crm-account-receipts': { col: 'סכום', label: 'תקבולים של המטופל/ת' },
+  };
+  /* A displayed amount → a number: «₪40,000» → 40000, «−₪1,734» / «-₪1,734» → −1734,
+   * «₪9,333.5» → 9333.5; no digit («—», empty) → null (the row gets no tick box). Pure. */
+  function moneyFromText(t) {
+    const x = s(t).replace(/[‎‏‪-‮⁦-⁩\s]/g, '');
+    const m = /(\d[\d,]*(?:\.\d+)?)/.exec(x);
+    if (!m) return null;
+    const n = Number(m[1].replace(/,/g, ''));
+    if (!isFinite(n)) return null;
+    return /[-−]/.test(x.slice(0, m.index)) ? -n : n;
   }
-  function debtorsPickedText(p) {
-    return p.count ? 'נבחרו ' + p.count + ' מתוך ' + p.of + ' · סה"כ ' + fmtMoney(p.total) + ' (' + p.pct + '% מהחוב ברשימה)' : 'מחשבון: סימון חייבים בתיבות מסכם אותם כאן';
+  /* groups = [{ label, amounts: [numbers of the ticked rows], of }] → the bar's model. Pure. */
+  function calcSummary(groups) {
+    const r2 = function (n) { return Math.round(n * 100) / 100; };
+    const out = { groups: [], count: 0, total: 0 };
+    (groups || []).forEach(function (g) {
+      const a = (g && Array.isArray(g.amounts) ? g.amounts : []).filter(function (n) { return typeof n === 'number' && isFinite(n); });
+      if (!a.length) return;
+      const total = r2(a.reduce(function (t, n) { return t + n; }, 0));
+      out.groups.push({ label: s(g.label), count: a.length, of: Number(g.of) || a.length, total: total });
+      out.count += a.length; out.total = r2(out.total + total);
+    });
+    return out;
+  }
+  function calcBarText(sum) {
+    if (!sum || !sum.count) return '';
+    const one = function (g) { return g.label + ': ' + g.count + ' מתוך ' + g.of + ' · ' + fmtSigned(g.total); };
+    return sum.groups.length === 1 ? 'נבחרו ' + sum.groups[0].count + ' מתוך ' + sum.groups[0].of + ' · ' + sum.groups[0].label + ' · סה"כ ' + fmtSigned(sum.total)
+      : sum.groups.map(one).join('  |  ') + '  |  סה"כ ' + fmtSigned(sum.total);
   }
   /* Money that may be negative: «−₪5,000». Pure. */
   function fmtSigned(n) { const v = Math.round(Number(n) || 0); return v < 0 ? '−' + fmtMoney(-v) : fmtMoney(v); }
@@ -3776,22 +3828,23 @@
      * forecast leaves out, right under its cards — open by default; a row opens the
      * patient's «חשבון» (where «דווח תשלום» is). Read-only, from the loaded reads. */
     function renderCollectionDebtors() {
-      const cd = collectionDebtors(state.billing.debt, state.billing.payments, state.today, state.dueFunder || '');
+      const cd = collectionDebtors(state.billing.debt, state.billing.payments, state.today, state.dueFunder || '', { from: state.debtFrom, to: state.debtTo });
+      const rg = cd.range;
       let html = '<details id="crm-fc-debtors"' + (state.fcDebtorsClosed ? '' : ' open') + '><summary class="group-title">רשימת חייבים לגבייה' + (cd.ok ? ' ' + chip(cd.count ? 'late' : 'ok', cd.count + ' חייבים · ' + fmtMoney(cd.total)) : '')
-        + (cd.funder ? ' ' + chip('today', 'גורם מממן: ' + cd.funder) : '') + '</summary>';
+        + (cd.funder ? ' ' + chip('today', 'גורם מממן: ' + cd.funder) : '')
+        + (rg.on ? ' ' + chip('today', 'תקופה: ' + (rg.from ? fmtDate(rg.from) : '…') + '–' + (rg.to ? fmtDate(rg.to) : '…')) : '') + '</summary>';
+      html += '<div class="toolbar filters" id="crm-debt-range"><label>חובות של תקופה — יום חיוב מתאריך <input type="date" id="crm-debt-from" value="' + esc(rg.from) + '"></label>'
+        + '<label>עד תאריך <input type="date" id="crm-debt-to" value="' + esc(rg.to) + '" max="' + esc(state.today) + '"></label>'
+        + '<button type="button" class="btn small" data-debt-preset="month">החודש</button><button type="button" class="btn small" data-debt-preset="prev">החודש הקודם</button>'
+        + (rg.on ? '<button type="button" class="btn small" data-debt-preset="all">כל התקופות ✕</button>' : '') + '</div>';
       if (!cd.ok) return html + '<div class="crm-state bad">חובות לא נטענו <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div></details>';
-      if (!cd.rows.length) return html + '<p class="na">' + (cd.funder && cd.all ? 'אין חייבים לגורם המממן שנבחר.' : 'אין חובות עבר לגבייה.') + '</p></details>';
-      state.fcDebtorRows = cd.rows;
-      state.debtorSel = state.debtorSel || {};
-      const pk = debtorsPicked(cd.rows, state.debtorSel);
-      html += '<p class="na">חובות עבר (מחזורים שמועד החיוב שלהם עבר) נכון ל-' + esc(fmtDate(cd.asOf)) + ' — אינם בצפי התזרים. ' + cd.inHouse + ' בבית, ' + (cd.count - cd.inHouse) + ' משוחררים. פתיחת שורה → «חשבון» של המטופל/ת.</p>'
+      if (!cd.rows.length) return html + '<p class="na">' + (rg.on ? 'אין חובות פתוחים שיום החיוב שלהם בתקופה שנבחרה.' : cd.funder && cd.all ? 'אין חייבים לגורם המממן שנבחר.' : 'אין חובות עבר לגבייה.') + '</p></details>';
+      html += '<p class="na">חובות עבר (מחזורים שמועד החיוב שלהם עבר) נכון ל-' + esc(fmtDate(cd.asOf)) + ' — אינם בצפי התזרים.' + (rg.on ? ' <strong>מוצגים רק מחזורים שיום החיוב שלהם בתקופה שנבחרה.</strong>' : '') + ' ' + cd.inHouse + ' בבית, ' + (cd.count - cd.inHouse) + ' משוחררים. פתיחת שורה → «חשבון» של המטופל/ת.</p>'
         + (state.me && state.me.canDiscount && cd.count > cd.inHouse ? '<p class="na" id="crm-fc-cleanup-hint">חוב של מטופל/ת ששוחרר/ה ואינו חוב אמיתי (שולם ולא נרשם / לא חויב)? <button type="button" class="btn small" data-cleanup-jump>ניקוי חובות היסטוריים ↓</button></p>' : '')
-        + '<div class="debtor-calc' + (pk.count ? ' on' : '') + '" id="crm-debtor-calc"><strong id="crm-debtor-sum">' + esc(debtorsPickedText(pk)) + '</strong><span class="grow"></span><button type="button" class="btn small" data-debtor-clear' + (pk.count ? '' : ' hidden') + '>ניקוי בחירה</button></div>'
-        + '<div class="tbl-wrap"><table class="tbl" id="crm-fc-debtor-rows"><thead><tr><th class="pick"><input type="checkbox" data-debtor-all aria-label="בחירת כל החייבים"' + (pk.all ? ' checked' : '') + '></th><th>מטופל/ת</th><th>בית</th><th>גורם מממן</th><th>סכום חוב</th><th>מחזורים</th><th>ימים בפיגור</th><th>תשלום אחרון</th><th>סטטוס</th></tr></thead><tbody>'
-        + cd.rows.map(function (r, i) {
+        + '<div class="tbl-wrap"><table class="tbl" id="crm-fc-debtor-rows"><thead><tr><th>מטופל/ת</th><th>בית</th><th>גורם מממן</th><th>סכום חוב</th><th>מחזורים</th><th>ימים בפיגור</th><th>תשלום אחרון</th><th>סטטוס</th></tr></thead><tbody>'
+        + cd.rows.map(function (r) {
           const st = r.bucket === 'd61_plus' ? 'late' : r.bucket === 'd31_60' ? 'today' : 'ok';
-          const on = state.debtorSel[debtorPickKey(r)] === true;
-          return '<tr data-open-patient="' + esc(r.id) + '" data-open-tab="account"' + (on ? ' class="picked"' : '') + '><td class="pick" data-debtor-cell><label><input type="checkbox" data-debtor-row="' + i + '" aria-label="' + esc('בחירת ' + r.name) + '"' + (on ? ' checked' : '') + '></label></td><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(r.funder) + '</td><td>' + esc(fmtMoney(r.balance)) + '</td><td>' + r.cycles + (r.unrecorded ? ' <span class="na">(' + r.unrecorded + ' ללא דיווח)</span>' : '') + '</td><td>'
+          return '<tr data-open-patient="' + esc(r.id) + '" data-open-tab="account"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(r.funder) + '</td><td>' + esc(fmtMoney(r.balance)) + '</td><td>' + r.cycles + (r.unrecorded ? ' <span class="na">(' + r.unrecorded + ' ללא דיווח)</span>' : '') + '</td><td>'
             + chip(st, r.oldestDays + ' ימים') + (r.grace ? ' ' + chip('wait', 'גוף מממן') : '') + '</td><td>' + esc(r.lastPaid ? fmtDate(r.lastPaid) : '—') + '</td><td>' + esc(r.inHouse ? 'בבית' : (r.status === 'released' ? 'שוחרר/ה' : r.status)) + '</td></tr>';
         }).join('') + '</tbody></table></div></details>';
       return html;
@@ -5151,7 +5204,6 @@
       // <a target=_blank> to another origin, so open it from the click (never blocked), else navigate.
       const wa = ev.target.closest ? ev.target.closest('a[data-wa-manager]') : null;
       if (wa) { ev.preventDefault(); const w = win.open ? win.open(wa.href, '_blank', 'noopener') : null; if (!w) win.location.href = wa.href; return; }
-      if (ev.target.closest && ev.target.closest('[data-debtor-cell]')) return;   // the calculator's tick cell never opens the patient
       const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-billing-filter],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],[data-month-step],[data-month-pick],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.kpiPeriod) { state.kpiPeriod = t.dataset.kpiPeriod; return renderMain(); }
@@ -5409,7 +5461,7 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-fc-preset],[data-fc-open],[data-cleanup-jump],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-billing-retry],[data-debt-preset],[data-fc-preset],[data-fc-open],[data-cleanup-jump],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
       if (!t) return;
       if (t.dataset.creditCancel !== undefined) { state.creditForm = null; const box = t.closest('form'); if (box) box.remove(); return; }
       if (t.dataset.creditEdit) return openCreditForm('edit', t.dataset.creditEdit);
@@ -5417,6 +5469,13 @@
       if (t.dataset.billingRetry !== undefined) { resetBilling(); return renderMain(); }
       if (t.dataset.reportCancel !== undefined) { state.report = null; state.small = null; const el = $('#crm-report'); if (el) el.innerHTML = ''; return; }
       if (t.dataset.dueToday !== undefined) { state.dueDate = state.today; return renderMain(); }
+      if (t.dataset.debtPreset) {
+        const cm = s(state.today).slice(0, 7), pm = monthShift(cm, -1);
+        if (t.dataset.debtPreset === 'month') { state.debtFrom = cm + '-01'; state.debtTo = state.today; }
+        else if (t.dataset.debtPreset === 'prev') { state.debtFrom = pm + '-01'; state.debtTo = addDays(cm + '-01', -1); }
+        else { state.debtFrom = ''; state.debtTo = ''; }
+        return renderMain();
+      }
       if (t.dataset.fcOpen !== undefined) {
         state.fcOpen = state.fcOpen === t.dataset.fcOpen ? '' : t.dataset.fcOpen;
         renderMain();
@@ -5530,22 +5589,87 @@
       else state.cal.anchor = state.today;
       renderMain();
     });
-    /* The debtors calculator's bar, updated in place (CHANGELOG-debtors-select-sum.md). */
-    function paintDebtorCalc() {
-      const pk = debtorsPicked(state.fcDebtorRows || [], state.debtorSel || {});
-      const bar = $('#crm-debtor-calc'), sum = $('#crm-debtor-sum'), all = doc.querySelector('[data-debtor-all]'), clear = doc.querySelector('[data-debtor-clear]');
-      if (sum) sum.textContent = debtorsPickedText(pk);
-      if (bar) bar.classList.toggle('on', pk.count > 0);
-      if (all) all.checked = pk.all;
-      if (clear) clear.hidden = !pk.count;
+    /* The calculator (CHANGELOG-table-calculator.md): every table of CALC_TABLES gets a tick column the
+     * moment it is on the page (main area or the drawer), and one bar at the bottom sums the ticks.
+     * Display only — no request, nothing saved; ticks are remembered per table while the page is open. */
+    state.calcSel = {};
+    function calcBar() {
+      let bar = doc.getElementById('crm-calc-bar');
+      if (!bar) {
+        bar = doc.createElement('div'); bar.id = 'crm-calc-bar'; bar.hidden = true; bar.setAttribute('role', 'status');
+        bar.innerHTML = '<span class="ic" aria-hidden="true">Σ</span><strong id="crm-calc-sum"></strong><span class="grow"></span><button type="button" class="btn small" data-calc-clear>ניקוי בחירה</button>';
+        root.appendChild(bar);
+      }
+      return bar;
     }
+    function paintCalc() {
+      const groups = [];
+      Object.keys(CALC_TABLES).forEach(function (id) {
+        const tb = doc.getElementById(id);
+        if (!tb || tb.dataset.calc !== '1') return;
+        const boxes = tb.querySelectorAll('input[data-calc-row]');
+        const amounts = [];
+        let on = 0;
+        Array.prototype.forEach.call(boxes, function (b) { if (b.checked) { amounts.push(Number(b.dataset.amt)); on++; } });
+        const all = tb.querySelector('input[data-calc-all]'); if (all) all.checked = !!boxes.length && on === boxes.length;
+        groups.push({ label: CALC_TABLES[id].label, amounts: amounts, of: boxes.length });
+      });
+      const sum = calcSummary(groups), txt = calcBarText(sum), bar = calcBar(), el = doc.getElementById('crm-calc-sum');
+      if (el && el.textContent !== txt) el.textContent = txt;
+      if (bar.hidden !== !sum.count) bar.hidden = !sum.count;
+    }
+    function decorateCalc() {
+      Object.keys(CALC_TABLES).forEach(function (id) {
+        const tb = doc.getElementById(id);
+        if (!tb || tb.dataset.calc === '1') return;
+        const head = tb.querySelector('thead tr');
+        if (!head) return;
+        let col = -1;
+        Array.prototype.forEach.call(head.children, function (th, i) { if (col < 0 && s(th.textContent).trim() === CALC_TABLES[id].col) col = i; });
+        if (col < 0) return;
+        tb.dataset.calc = '1';
+        const sel = state.calcSel[id] || (state.calcSel[id] = {});
+        const width = head.children.length, seen = {};
+        const th = doc.createElement('th'); th.className = 'pick';
+        const all = doc.createElement('input'); all.type = 'checkbox'; all.setAttribute('data-calc-all', id); all.setAttribute('aria-label', 'בחירת כל השורות — ' + CALC_TABLES[id].label);
+        th.appendChild(all); head.insertBefore(th, head.firstChild);
+        Array.prototype.forEach.call(tb.querySelectorAll('tbody tr'), function (tr) {
+          const td = doc.createElement('td'); td.className = 'pick';
+          const amt = tr.children.length === width && !tr.classList.contains('sum') ? moneyFromText(tr.children[col].textContent) : null;
+          if (amt !== null) {
+            let key = tr.dataset.openPatient || tr.dataset.receipt || s(tr.textContent).replace(/\s+/g, ' ').trim();
+            seen[key] = (seen[key] || 0) + 1; if (seen[key] > 1) key += '#' + seen[key];
+            td.setAttribute('data-calc-cell', '');
+            const lab = doc.createElement('label'), box = doc.createElement('input');
+            box.type = 'checkbox'; box.setAttribute('data-calc-row', id); box.dataset.amt = String(amt); box.dataset.key = key;
+            box.setAttribute('aria-label', 'בחירת שורה לסיכום');
+            if (sel[key] === true) { box.checked = true; tr.classList.add('picked'); }
+            lab.appendChild(box); td.appendChild(lab);
+          }
+          tr.insertBefore(td, tr.firstChild);
+        });
+      });
+      paintCalc();
+    }
+    // a click in a tick cell is the calculator's only — it never opens the row (capture: before every row handler)
+    root.addEventListener('click', function (ev) { if (ev.target.closest && ev.target.closest('[data-calc-cell]')) ev.stopPropagation(); }, true);
     root.addEventListener('click', function (ev) {
-      const t = ev.target.closest ? ev.target.closest('[data-debtor-clear]') : null;
-      if (!t) return;
-      state.debtorSel = {};
-      Array.prototype.forEach.call(doc.querySelectorAll('[data-debtor-row]'), function (el) { el.checked = false; const tr = el.closest && el.closest('tr'); if (tr) tr.classList.remove('picked'); });
-      paintDebtorCalc();
+      if (!(ev.target.closest && ev.target.closest('[data-calc-clear]'))) return;
+      state.calcSel = {};
+      Array.prototype.forEach.call(doc.querySelectorAll('input[data-calc-row]'), function (b) { b.checked = false; const tr = b.closest('tr'); if (tr) tr.classList.remove('picked'); });
+      paintCalc();
     });
+    root.addEventListener('change', function (ev) {
+      const t = ev.target;
+      if (!t || !t.dataset || (t.dataset.calcRow === undefined && t.dataset.calcAll === undefined)) return;
+      const id = t.dataset.calcRow !== undefined ? t.dataset.calcRow : t.dataset.calcAll;
+      const sel = state.calcSel[id] || (state.calcSel[id] = {});
+      const mark = function (b, on) { b.checked = on; if (on) sel[b.dataset.key] = true; else delete sel[b.dataset.key]; const tr = b.closest('tr'); if (tr) tr.classList.toggle('picked', on); };
+      if (t.dataset.calcAll !== undefined) { const tb = doc.getElementById(id); if (tb) Array.prototype.forEach.call(tb.querySelectorAll('input[data-calc-row]'), function (b) { mark(b, t.checked); }); }
+      else mark(t, t.checked);
+      paintCalc();
+    });
+    if (win.MutationObserver) new win.MutationObserver(function () { decorateCalc(); }).observe(root, { childList: true, subtree: true });
     root.addEventListener('toggle', function (ev) { if (ev.target && ev.target.id === 'crm-cleanup') state.cleanupOpen = ev.target.open; if (ev.target && ev.target.id === 'crm-fc-debtors') state.fcDebtorsClosed = !ev.target.open; }, true);
     root.addEventListener('change', function (ev) {
       const t = ev.target;
@@ -5563,26 +5687,13 @@
         const sum = $('#crm-cleanup-sum'); if (sum) sum.textContent = cleanupSumText();
         return;
       }
-      // the debtors calculator: ticking never re-renders (the list does not jump)
-      if (t.dataset && (t.dataset.debtorRow !== undefined || t.dataset.debtorAll !== undefined)) {
-        const rows = state.fcDebtorRows || [];
-        state.debtorSel = state.debtorSel || {};
-        if (t.dataset.debtorAll !== undefined) {
-          rows.forEach(function (r) { if (t.checked) state.debtorSel[debtorPickKey(r)] = true; else delete state.debtorSel[debtorPickKey(r)]; });
-          Array.prototype.forEach.call(doc.querySelectorAll('[data-debtor-row]'), function (el) { el.checked = t.checked; const tr = el.closest && el.closest('tr'); if (tr) tr.classList.toggle('picked', t.checked); });
-        } else {
-          const r = rows[Number(t.dataset.debtorRow)];
-          if (r) { if (t.checked) state.debtorSel[debtorPickKey(r)] = true; else delete state.debtorSel[debtorPickKey(r)]; }
-          const tr = t.closest && t.closest('tr'); if (tr) tr.classList.toggle('picked', t.checked);
-        }
-        paintDebtorCalc();
-        return;
-      }
       // a field inside a form (report, restore, …) is the form's business — re-rendering would wipe it
       if (t.id === 'crm-day-week') { if (isoDateOk(t.value)) state.week = t.value; return renderMain(); }
       if (t.id === 'crm-due-date') { if (isoDateOk(t.value)) state.dueDate = t.value; return renderMain(); }
       if (t.id === 'crm-due-funder') { state.dueFunder = t.value; return renderMain(); }
       if (t.id === 'crm-month') { if (monthKeyOk(t.value) && t.value <= s(state.today).slice(0, 7)) state.month = t.value; return renderMain(); }
+      if (t.id === 'crm-debt-from') { state.debtFrom = isoDateOk(t.value) ? t.value : ''; return renderMain(); }
+      if (t.id === 'crm-debt-to') { state.debtTo = isoDateOk(t.value) ? t.value : ''; return renderMain(); }
       if (t.id === 'crm-fc-from') { if (isoDateOk(t.value)) state.fcFrom = t.value; return renderMain(); }
       if (t.id === 'crm-fc-to') { if (isoDateOk(t.value)) state.fcTo = t.value; return renderMain(); }
       if (['f-dis-days', 'crm-cal-date', 'f-house', 'f-house-c', 'f-owner'].indexOf(t.id) < 0) return;
@@ -5727,5 +5838,5 @@
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
     newTaskErrors: newTaskErrors, dueSoonTasks: dueSoonTasks, TASK_REMIND_MINUTES: TASK_REMIND_MINUTES, WORK_CONTROL: WORK_CONTROL, workControlQueues: workControlQueues,
-    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, cleanupCandidates: cleanupCandidates, cleanupPlan: cleanupPlan, cleanupBody: cleanupBody, CLEANUP_REASONS: CLEANUP_REASONS, paidWithDiscountPlan: paidWithDiscountPlan, paidWithDiscountBody: paidWithDiscountBody, reportValuesOnly: reportValuesOnly, cashForecast: cashForecast, forecastRefunds: forecastRefunds, cashForecastNet: cashForecastNet, fmtSigned: fmtSigned, collectionDebtors: collectionDebtors, debtorsPicked: debtorsPicked, debtorsPickedText: debtorsPickedText, debtorPickKey: debtorPickKey, forecastOpenList: forecastOpenList, cycleOnDay: cycleOnDay, cycleCtx: cycleCtx, forecastPreset: forecastPreset, monthEndIso: monthEndIso, FORECAST_TERMS_DAYS: FORECAST_TERMS_DAYS, FORECAST_INSTITUTIONAL: FORECAST_INSTITUTIONAL, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
+    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, cleanupCandidates: cleanupCandidates, cleanupPlan: cleanupPlan, cleanupBody: cleanupBody, CLEANUP_REASONS: CLEANUP_REASONS, paidWithDiscountPlan: paidWithDiscountPlan, paidWithDiscountBody: paidWithDiscountBody, reportValuesOnly: reportValuesOnly, cashForecast: cashForecast, forecastRefunds: forecastRefunds, cashForecastNet: cashForecastNet, fmtSigned: fmtSigned, collectionDebtors: collectionDebtors, debtRange: debtRange, CALC_TABLES: CALC_TABLES, moneyFromText: moneyFromText, calcSummary: calcSummary, calcBarText: calcBarText, forecastOpenList: forecastOpenList, cycleOnDay: cycleOnDay, cycleCtx: cycleCtx, forecastPreset: forecastPreset, monthEndIso: monthEndIso, FORECAST_TERMS_DAYS: FORECAST_TERMS_DAYS, FORECAST_INSTITUTIONAL: FORECAST_INSTITUTIONAL, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));

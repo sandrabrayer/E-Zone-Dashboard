@@ -396,7 +396,9 @@
 // (CHANGELOG-crm-month-view.md). From the live v128; monotonic, v17 never reused.
 // v129 → v130: the debtors calculator — tick debtors in «רשימת חייבים לגבייה», see their sum (crm/crm.js, crm.css)
 // (CHANGELOG-debtors-select-sum.md). From the live v129; monotonic, v17 never reused.
-var CACHE_VERSION = 'v130';
+// v130 → v131: the calculator on every money table (tick rows → a sum bar) + «חובות של תקופה» in «רשימת חייבים לגבייה» (crm/crm.js, crm.css)
+// (CHANGELOG-table-calculator.md). From the live v130; monotonic, v17 never reused.
+var CACHE_VERSION = 'v131';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

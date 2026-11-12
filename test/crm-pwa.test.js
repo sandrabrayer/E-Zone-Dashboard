@@ -26,8 +26,9 @@ function loadSw() {
 }
 const sw = loadSw();
 
-test('sw.js: v130 (monotonic from the live v93 via v94…v129, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
-  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v130');
+test('sw.js: v131 (monotonic from the live v93 via v94…v130, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
+  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v131');
+  assert.ok(SW_SRC.includes('v130 → v131:') && SW_SRC.includes('CHANGELOG-table-calculator.md'));
   assert.ok(SW_SRC.includes('v129 → v130:') && SW_SRC.includes('CHANGELOG-debtors-select-sum.md'));
   assert.ok(SW_SRC.includes('v128 → v129:') && SW_SRC.includes('CHANGELOG-crm-month-view.md'));
   assert.ok(SW_SRC.includes('v127 → v128:') && SW_SRC.includes('CHANGELOG-forecast-cards-open.md'));
