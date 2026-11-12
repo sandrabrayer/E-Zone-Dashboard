@@ -410,7 +410,7 @@ for (const [mode, shouldConfirm] of [
       const { ctx, page, errors } = await openPage(browser, srv.port);
       if (shouldConfirm) {
         await page.click('[data-area="billing"]');
-        await page.waitForSelector('#crm-debtors-title');
+        await page.waitForSelector('#crm-bill-nav');
       }
       await fillSyntheticDirectAdmission(page);
       await page.waitForFunction((ok) => {

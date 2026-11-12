@@ -157,5 +157,8 @@ test('CRM: the search box keeps the גבייה area open, and renderBilling cons
   const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.js'), 'utf8');
   // the area-keeping list (CHANGELOG-crm-search-admit-funder.md: other areas open «חיפוש», no longer «פניות»)
   assert.ok(src.includes("['leads', 'clients', 'billing', 'search'].indexOf(state.area) < 0"));
-  assert.ok(src.includes('billingSearch(b, state.filters.q'));
+  // since CHANGELOG-billing-sections.md the search narrows every «גבייה» section (one shared slice), and «חובות פתוחים»
+  // still lists a searched patient who has no open debt (billingSearch → people) — one tap from their «חשבון»
+  assert.ok(src.includes('function billSliceNow() { return billSlice({ q: state.filters.q, funder: state.dueFunder, house: state.billHouse }); }'));
+  assert.ok(src.includes('const srch = billingSearch(b, sl.q, patients);') && src.includes('id="crm-search-people"'));
 });
