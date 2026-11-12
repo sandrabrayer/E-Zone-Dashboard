@@ -759,7 +759,22 @@ test('«צפי תזרים» (Vered, CHANGELOG-cashflow-forecast.md): renders und
         const k = document.querySelector('#crm-fc-kpis'), d = document.querySelector('#crm-fc-debtors'), w = document.querySelector('#crm-fc-weeks') || document.querySelector('#crm-debtors-title');
         return !!(k.compareDocumentPosition(d) & Node.DOCUMENT_POSITION_FOLLOWING) && !!(d.compareDocumentPosition(w) & Node.DOCUMENT_POSITION_FOLLOWING);
       }), 'under the cards, above the rest');
+      // the debtors calculator (CHANGELOG-debtors-select-sum.md): tick → the sum, in place; the tick never opens the patient
+      assert.match(await page.textContent('#crm-debtor-sum'), /מחשבון/);
+      const html0 = await page.$eval('#crm-fc-debtor-rows tbody', (e) => e.dataset.mark = 'same');
+      await page.click('#crm-fc-debtor-rows tbody tr td.pick input');
+      assert.match(await page.textContent('#crm-debtor-sum'), /נבחרו 1 מתוך 1 · סה"כ ₪8,500 \(100% מהחוב ברשימה\)/);
+      assert.equal(await page.getAttribute('#crm-drawer', 'aria-hidden'), 'true', 'ticking does not open the patient');
+      assert.equal(await page.$eval('#crm-fc-debtor-rows tbody', (e) => e.dataset.mark), html0, 'no re-render — the list does not jump');
+      assert.equal(await page.isChecked('[data-debtor-all]'), true, 'all rows ticked → the header box follows');
       if (process.env.CRM_SHOT_DIR) await page.screenshot({ path: require('node:path').join(process.env.CRM_SHOT_DIR, 'billing-' + width + '.png'), fullPage: true });
+      await page.click('[data-debtor-clear]');
+      assert.match(await page.textContent('#crm-debtor-sum'), /מחשבון/);
+      assert.equal(await page.isChecked('#crm-fc-debtor-rows tbody tr td.pick input'), false);
+      await page.check('[data-debtor-all]');
+      assert.match(await page.textContent('#crm-debtor-sum'), /נבחרו 1 מתוך 1/);
+      await page.uncheck('[data-debtor-all]');
+      assert.equal(srv.actions.length, reads, 'the calculator asks the server nothing');
       await page.click('#crm-fc-debtors summary');
       await page.click('[data-fc-preset="90"]');
       await page.waitForFunction((t) => document.querySelector('#crm-fc-to') && document.querySelector('#crm-fc-to').value > t, TODAY);
