@@ -674,6 +674,12 @@
   /* An ISO timestamp → 'DD/MM/YYYY HH:MM' in Asia/Jerusalem; a bare date → DD/MM/YYYY; junk → as is. */
   function whenLocal(iso) {
     const t = s(iso);
+    // Activity source events can include either an offset-aware ISO instant
+    // or an unzoned local wall time. Never let a viewer's browser timezone
+    // reinterpret an unzoned wall time as UTC / another local day.
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(t)) {
+      return fmtDate(t.slice(0, 10)) + ' ' + t.slice(11, 16);
+    }
     const ms = Date.parse(t);
     if (!/T\d{2}:\d{2}/.test(t) || isNaN(ms)) return fmtDate(t.slice(0, 10)) || t;
     const parts = {};
@@ -4525,7 +4531,7 @@
         if (!tl) return;
         if (!r || r.ok === false) { tl.innerHTML = '<li class="na">ציר הפעילות לא זמין (' + esc((r && r.error) || 'שגיאה') + ')</li>'; return; }
         if (!r.events || !r.events.length) { tl.innerHTML = '<li class="na">אין אירועים עדיין</li>'; return; }
-        tl.innerHTML = r.events.map(function (e) { return '<li><div class="t">' + esc(fmtDate(String(e.occurredAt || '').slice(0, 10)) + ' ' + String(e.occurredAt || '').slice(11, 16)) + ' · ' + esc(e.actorName || e.source || '') + (String(e.source || '').indexOf('manual') === 0 ? ' · ידני' : ' · מערכת') + '</div><div>' + esc(e.summary || e.kind) + '</div></li>'; }).join('');
+        tl.innerHTML = r.events.map(function (e) { return '<li><div class="t">' + esc(whenLocal(e.occurredAt)) + ' · ' + esc(e.actorName || e.source || '') + (String(e.source || '').indexOf('manual') === 0 ? ' · ידני' : ' · מערכת') + '</div><div>' + esc(e.summary || e.kind) + '</div></li>'; }).join('');
       });
     }
     /* C9: the «חשבון» pane — the area's two reads (loaded once, shared), one patient. */
@@ -5159,7 +5165,7 @@
         if (!tl || !state.contact) return;
         if (!r || r.ok === false) { tl.innerHTML = '<li class="na">ההיסטוריה אינה זמינה (' + esc((r && r.error) || 'שגיאה') + ')</li>'; return; }
         if (!r.events || !r.events.length) { tl.innerHTML = '<li class="na">אין מגע מתועד עדיין</li>'; return; }
-        tl.innerHTML = r.events.map(function (e) { return '<li><div class="t">' + esc(fmtDate(String(e.occurredAt || '').slice(0, 10)) + ' ' + String(e.occurredAt || '').slice(11, 16)) + ' · ' + esc(e.actorName || e.source || '') + '</div><div>' + esc(e.summary || e.kind) + '</div></li>'; }).join('');
+        tl.innerHTML = r.events.map(function (e) { return '<li><div class="t">' + esc(whenLocal(e.occurredAt)) + ' · ' + esc(e.actorName || e.source || '') + '</div><div>' + esc(e.summary || e.kind) + '</div></li>'; }).join('');
       });
     }
     function contactValues(f) { const v = {}; Array.prototype.forEach.call(f.elements, function (el) { if (!el.name) return; if (el.type === 'radio') { if (el.checked) v[el.name] = el.value; else if (!(el.name in v)) v[el.name] = v[el.name] || ''; } else v[el.name] = el.value; }); return v; }
@@ -5810,7 +5816,7 @@
 
   return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, landingArea: landingArea, activePatientsCard: activePatientsCard, monthOccupancy: monthOccupancy, occupancyTrend: occupancyTrend, monthRevenue: monthRevenue, monthShift: monthShift, monthLabelHe: monthLabelHe, monthKeyOk: monthKeyOk, normalise: normalise, compute: compute, filterLeads: filterLeads,
     board: board, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
-    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, esc: esc, boot: boot, accountTabVisible: accountTabVisible, clearCachedPages: clearCachedPages,
+    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, whenLocal: whenLocal, esc: esc, boot: boot, accountTabVisible: accountTabVisible, clearCachedPages: clearCachedPages,
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
     stageAfter: stageAfter, stageBefore: stageBefore, applyLeadPatch: applyLeadPatch, leadSaveBody: leadSaveBody, saveRefusal: saveRefusal,
     DISPOSITIONS: DISPOSITIONS, CONTACT_RELATIONS: CONTACT_RELATIONS, localPhone: localPhone, leadFormErrors: leadFormErrors, newLeadRow: newLeadRow,
