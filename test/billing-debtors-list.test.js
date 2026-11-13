@@ -76,14 +76,14 @@ test('fail-soft: debt not loaded → ok:false + no rows (never «אין חובו
   assert.match(SRC, /חובות לא נטענו <button type="button" class="btn small" data-billing-retry>/);
 });
 
-test('wiring: rendered inside «צפי תזרים», open by default, rows open «חשבון», every text cell escaped, no new request', () => {
-  const fc = SRC.slice(SRC.indexOf('function renderCashForecast()'), SRC.indexOf('function renderCollectionDebtors()'));
-  assert.ok(fc.includes('html += renderCollectionDebtors();'), 'inside the forecast block');
-  assert.ok(fc.indexOf('html += renderCollectionDebtors();') < fc.indexOf('id="crm-fc-weeks"'), 'right under the cards, before the weekly table');
-  const block = SRC.slice(SRC.indexOf('function renderCollectionDebtors()'), SRC.indexOf('function renderCleanup()'));
-  assert.ok(block.includes("'<details id=\"crm-fc-debtors\"' + (state.fcDebtorsClosed ? '' : ' open')"));
+test('wiring: the ONE debts list is its own «גבייה» section (CHANGELOG-billing-sections.md), rows open «חשבון», every text cell escaped, no new request', () => {
+  const fc = SRC.slice(SRC.indexOf('function renderCashForecast()'), SRC.indexOf('function renderDebts('));
+  assert.ok(!fc.includes('renderDebts(') && !fc.includes('crm-debtors'), 'no longer inside the forecast');
+  assert.ok(SRC.includes("else if (tab === 'debts') html += renderDebts(b, c.patients);"), 'the «חובות פתוחים» section');
+  assert.equal(SRC.split('id="crm-debtors"').length - 1, 1, 'one debts table in the whole page');
+  assert.ok(!SRC.includes('crm-fc-debtor-rows') && !SRC.includes('crm-fc-debtors'), 'the second list is gone');
+  const block = SRC.slice(SRC.indexOf('function renderDebts('), SRC.indexOf('function renderReceipts()'));
   assert.ok(block.includes('data-open-patient="\' + esc(r.id) + \'" data-open-tab="account"'));
   for (const cell of ['esc(r.name)', 'esc(r.houseName)', 'esc(r.funder)', 'esc(fmtMoney(r.balance))']) assert.ok(block.includes(cell), cell);
   assert.ok(!/api\(/.test(block), 'computed from the loaded reads');
-  assert.ok(SRC.includes("if (ev.target && ev.target.id === 'crm-fc-debtors') state.fcDebtorsClosed = !ev.target.open;"), 'closing it survives a re-render');
 });

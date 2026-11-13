@@ -95,11 +95,14 @@ test('fmtSigned: a negative amount reads «−₪…»', () => {
 test('wiring: «גבייה» reads refundPayoutForecast fail-soft with its other reads; the action is a READ both Vered/Sandra and Ortal may call; every rendered value is escaped', () => {
   assert.ok(SRC.includes("const refundP = api('refundPayoutForecast').catch("));
   assert.ok(SRC.includes("state.billing = { debt: res[0], payments: res[1], credits: res[2], refunds: res[3] };"));
-  assert.ok(SRC.includes('forecastRefunds(state.billing.refunds, state.billing.credits, fc.from, fc.to, state.today)'));
+  assert.ok(SRC.includes('sliceRefunds(forecastRefunds(state.billing.refunds, state.billing.credits, whole.from, whole.to, state.today), sl)'));
   assert.ok(scope.CONTROLLER_ACTIONS.includes('refundPayoutForecast'), 'Ortal may read it');
   assert.ok(scope.FINANCE_ACTIONS.includes('refundPayoutForecast'), 'finance-gated: Dana never reads it');
   const block = SRC.slice(SRC.indexOf('function renderCashForecast()'), SRC.indexOf('function renderCleanup()'));
-  for (const id of ['crm-fc-refunds', 'crm-fc-net', 'crm-fc-refund-detail', 'crm-fc-refund-rows']) assert.ok(block.includes(id), id);
+  for (const id of ['crm-fc-refunds', 'crm-fc-net']) assert.ok(block.includes(id), id);
+  // the refund rows themselves live in ONE place — «זיכויים לתשלום» (CHANGELOG-billing-sections.md); the card opens it
+  assert.ok(!SRC.includes('crm-fc-refund-rows') && !SRC.includes('crm-fc-refund-detail') && !SRC.includes('crm-fc-open-refunds'));
+  assert.ok(block.includes("data-bill-go=\"' + esc(JSON.stringify({ tab: 'refunds' }))"));
   assert.ok(block.includes("esc(r.name)") && block.includes("esc(r.houseName)") && block.includes("esc(fmtMoney(r.amount))"));
   assert.ok(!/'<td>' \+ r\.(name|houseName)/.test(block), 'no unescaped text cell');
 });

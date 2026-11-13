@@ -39,19 +39,24 @@ test('the bar text: one table → «נבחרו N מתוך M · <table> · סה"�
   assert.equal(core.calcBarText(core.calcSummary([])), '');
 });
 
-test('every money table of «גבייה», the search and the patient\'s «חשבון» is in the calculator, each with the header of its amount column', () => {
+test('every money table of «גבייה» and the patient\'s «חשבון» is in the calculator, each with the header of its amount column', () => {
   const ids = Object.keys(core.CALC_TABLES);
-  for (const id of ['crm-due', 'crm-fc-rows', 'crm-fc-open-rows', 'crm-fc-open-refunds', 'crm-fc-refund-rows', 'crm-fc-debtor-rows', 'crm-debtors', 'crm-receipts', 'crm-pending-credits',
-    'crm-detached', 'crm-search-debtors', 'crm-search-receipts', 'crm-account-open', 'crm-account-credits', 'crm-account-cycles', 'crm-account-receipts']) assert.ok(ids.includes(id), id);
+  for (const id of ['crm-due', 'crm-fc-rows', 'crm-debtors', 'crm-debt-groups', 'crm-receipts', 'crm-rc-groups', 'crm-pending-credits', 'crm-detached',
+    'crm-account-open', 'crm-account-credits', 'crm-account-cycles', 'crm-account-receipts']) assert.ok(ids.includes(id), id);
   // the table exists in the page source and has a header with exactly that text
   for (const id of ids) {
+    if (id === 'crm-debt-groups' || id === 'crm-rc-groups') continue;   // built by groupTable(id, …) — checked below
     const at = SRC.indexOf('id="' + id + '"><thead><tr>');
     assert.ok(at > 0, id + ' is rendered');
     const head = SRC.slice(at, SRC.indexOf('</tr></thead>', at));
     assert.ok(head.includes('<th>' + core.CALC_TABLES[id].col + '</th>'), id + ' has the «' + core.CALC_TABLES[id].col + '» column');
     assert.ok(core.CALC_TABLES[id].label, id + ' has a name for the bar');
   }
+  const grp = SRC.slice(SRC.indexOf('function groupTable('), SRC.indexOf('function renderDueOnDate('));
+  assert.ok(grp.includes('<th>שורות</th><th>סכום</th><th>חלק</th>') && SRC.includes("groupTable('crm-debt-groups'") && SRC.includes("groupTable('crm-rc-groups'"));
   assert.ok(!ids.includes('crm-cleanup-rows'), 'the cleanup tool keeps its own ticks (they select what to close)');
+  // no table that no longer exists (CHANGELOG-billing-sections.md removed the duplicate lists)
+  for (const id of ids) assert.ok(SRC.includes(id === 'crm-debt-groups' || id === 'crm-rc-groups' ? "'" + id + "'" : 'id="' + id + '"'), id);
 });
 
 test('wiring: display only — ticking re-renders nothing and asks nothing; a tick never opens the row; ticks are restored after a re-render', () => {
@@ -109,7 +114,7 @@ test('the periods partition the debt: Aug + Sep + Oct + Nov = everything (nothin
 });
 
 test('period wiring: two date inputs + «החודש» / «החודש הקודם» / «כל התקופות»; the screen says the list is narrowed; no request', () => {
-  const block = SRC.slice(SRC.indexOf('function renderCollectionDebtors()'), SRC.indexOf('function renderCleanup()'));
+  const block = SRC.slice(SRC.indexOf('function renderDebts('), SRC.indexOf('function renderReceipts()'));
   for (const x of ['id="crm-debt-from"', 'id="crm-debt-to"', 'data-debt-preset="month"', 'data-debt-preset="prev"', 'data-debt-preset="all"', 'מוצגים רק מחזורים שיום החיוב שלהם בתקופה שנבחרה', "esc(rg.from)", "esc(rg.to)"]) assert.ok(block.includes(x), x);
   assert.ok(!/api\(/.test(block));
   assert.ok(SRC.includes("if (t.id === 'crm-debt-from') { state.debtFrom = isoDateOk(t.value) ? t.value : ''; return renderMain(); }"));

@@ -1,5 +1,16 @@
 # E-ZONE Ecosystem Status — updated November 12, 2026
 
+## CRM «גבייה» as sections + slices — November 12, 2026
+
+«גבייה» is a secondary menu (`BILLING_TABS`): סקירה, לגבייה בתאריך, צפי תזרים,
+חובות פתוחים, תקבולים, זיכויים לתשלום, שיוך תשלומים, חריגים, ניקוי חובות — one
+section at a time, each piece of information in ONE place (the two debt lists
+and the three refund lists were merged). Shared slices: patient search,
+funder, house; «חתך לפי» summary tables on debts and receipts. To add a
+section: `BILLING_TABS` + a branch in `renderBilling`; a list that needs the
+calculator: `CALC_TABLES`. UI only, same four reads. SW v132. See
+`CHANGELOG-billing-sections.md`.
+
 ## CRM calculator on every money table + debts by period — November 12, 2026
 
 Every money table in «גבייה», the search and a patient's «חשבון» has tick

@@ -406,3 +406,24 @@ form[data-form="wait-reason"][aria-busy="true"] .radio-row { opacity: .6; }
 .crm:has(#crm-calc-bar:not([hidden])) #crm-main { padding-bottom: 76px; }
 /* «חובות של תקופה» (CHANGELOG-table-calculator.md) */
 #crm-debt-range { margin: 6px 0; }
+
+/* «גבייה» as sections (CHANGELOG-billing-sections.md): a secondary menu beside the body (right, in RTL); chips on a phone. */
+.bill-layout { display: flex; gap: 14px; align-items: flex-start; }
+.bill-nav { flex: 0 0 190px; display: flex; flex-direction: column; gap: 4px; position: sticky; top: 8px; background: var(--panel, #fff); border: 1px solid var(--border, #d0d4e4); border-radius: 12px; padding: 8px; }
+.bill-nav button { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; font: inherit; color: inherit; cursor: pointer; text-align: start; }
+.bill-nav button:hover { background: #f1f3f9; }
+.bill-nav button[aria-current="page"] { background: #E5F0FF; color: #0060c4; font-weight: 700; box-shadow: inset -3px 0 0 #0073EA; }
+.bill-nav .badge { font-size: 12px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: #e6e9f2; color: #1f2a44; white-space: nowrap; }
+.bill-nav .badge.late { background: #E2445C; color: #fff; }
+.bill-body { flex: 1 1 auto; min-width: 0; }
+.tbl.grp tbody tr { cursor: pointer; }
+.tbl.grp tbody tr.on td { background: #E5F0FF; font-weight: 700; }
+.tbl.grp { margin-bottom: 10px; }
+@media (max-width: 860px) {
+  .bill-layout { flex-direction: column; align-items: stretch; }
+  .bill-nav { flex: none; flex-direction: row; overflow-x: auto; position: static; max-width: 100%; padding: 6px; }
+  .bill-body { max-width: 100%; }
+  .bill-body .toolbar.filters { flex-wrap: wrap; }
+  .bill-body .toolbar.filters input[type="search"] { max-width: 100%; }
+  .bill-nav button { width: auto; white-space: nowrap; }
+}

@@ -94,7 +94,12 @@ test('B: the body is the classic setBillingDiscount contract and fits the server
 test('C: finance only and never in Ortal\'s (controller) view', () => {
   const fn = SRC.slice(SRC.indexOf('function renderCleanup('), SRC.indexOf('function cleanupSelected('));
   assert.match(fn, /if \(!me\.canDiscount\) return '';/);
-  assert.match(SRC, /if \(!isController\) html \+= renderCleanup\(\);/);
+  // its own «גבייה» section since CHANGELOG-billing-sections.md — offered only to a non-controller session that may discount
+  assert.ok(SRC.includes("return BILLING_TABS.filter(function (t) { return t.id !== 'cleanup' || (m.view !== 'controller' && m.canDiscount === true); })"));
+  const core = require('../public/crm/crm.js');
+  assert.ok(!core.billingTabsFor({ view: 'controller', canDiscount: true }).includes('cleanup'));
+  assert.ok(!core.billingTabsFor({ view: 'full', finance: true }).includes('cleanup'));
+  assert.ok(core.billingTabsFor({ view: 'full', finance: true, canDiscount: true }).includes('cleanup'));
   assert.doesNotMatch(fn, /\+ r\.(name|houseName) \+/, 'every value through esc()');
 });
 

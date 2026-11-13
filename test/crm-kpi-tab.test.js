@@ -237,7 +237,7 @@ test('billingAnomalies: exit before entry, released without exit, debt after exi
   assert.deepEqual(kinds, ['debt_after_exit:d', 'exit_before_entry:e', 'released_no_exit:n', 'zero_pay_in_house:z']);
   assert.match(rows[0].why, /1 מחזורים · ₪35,000 אחרי יציאה ב-15\/07\/2026/);
   assert.equal(rows[0].amount, 35000);
-  assert.match(CRM_SRC, /html \+= renderAnomalies\(billingAnomalies\(/, 'listed in «גבייה»');
+  assert.ok(CRM_SRC.includes('const anomalies = billingAnomalies(c, state.billing.debt, state.today);') && CRM_SRC.includes("else if (tab === 'anomalies') html += renderAnomalies(anomalies);"), 'listed in «גבייה», in its own section (CHANGELOG-billing-sections.md)');
 });
 
 test('billingAnomalies: the discharge audit exit date counts when the Patients row has none', () => {

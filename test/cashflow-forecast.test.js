@@ -169,13 +169,13 @@ test('the shared cycle rule: dueOnDate and the forecast read the same cycle (cyc
   assert.match(SRC, /const row = cycleOnDay\(pt, due, k, ctx\);/);
 });
 
-test('UI wiring: the section sits under «לגבייה בתאריך», dates and presets re-render, every value escaped', () => {
-  assert.match(SRC, /html \+= renderDueOnDate\(isController\);\n\s+html \+= renderCashForecast\(\);/);
+test('UI wiring: «צפי תזרים» is its own «גבייה» section (CHANGELOG-billing-sections.md), dates and presets re-render, every value escaped', () => {
+  assert.ok(SRC.includes("else if (tab === 'forecast') html += renderCashForecast();"));
   assert.match(SRC, /if \(t\.id === 'crm-fc-from'\) \{ if \(isoDateOk\(t\.value\)\) state\.fcFrom = t\.value; return renderMain\(\); \}/);
   assert.match(SRC, /if \(t\.dataset\.fcPreset\) \{ const r = forecastPreset\(t\.dataset\.fcPreset, state\.today\);/);
   // the function body only: up to the next shell function (renderCleanup follows it since CHANGELOG-historical-debt-cleanup.md)
   const start = SRC.indexOf('function renderCashForecast(');
-  const ends = ['function renderCleanup(', 'function renderBilling('].map((n) => SRC.indexOf(n, start)).filter((i) => i > start);
+  const ends = ['function renderDebts(', 'function renderCleanup(', 'function renderBilling('].map((n) => SRC.indexOf(n, start)).filter((i) => i > start);
   const fn = SRC.slice(start, Math.min(...ends));
   assert.ok(fn.length > 100);
   assert.doesNotMatch(fn, /\+ r\.(name|houseName|funder) \+/, 'row text always through esc()');
