@@ -398,8 +398,10 @@
 // (CHANGELOG-debtors-select-sum.md). From the live v129; monotonic, v17 never reused.
 // v130 → v131: the calculator on every money table (tick rows → a sum bar) + «חובות של תקופה» in «רשימת חייבים לגבייה» (crm/crm.js, crm.css)
 // (CHANGELOG-table-calculator.md). From the live v130; monotonic, v17 never reused.
-// v131 → v132: consistent Israel-local CRM activity timestamps across Today and client timelines.
-var CACHE_VERSION = 'v132';
+// v131 → v132: «גבייה» as a secondary menu of single sections + shared slices and «חתך לפי» (crm/crm.js, crm.css)
+// (CHANGELOG-billing-sections.md). From the live v131; monotonic, v17 never reused.
+// v132 → v133: display Israel-local Activity timestamps consistently in CRM Today and history.
+var CACHE_VERSION = 'v133';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
