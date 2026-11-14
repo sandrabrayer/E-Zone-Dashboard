@@ -403,7 +403,9 @@
 // v132 → v133: display Israel-local Activity timestamps consistently in CRM Today and history.
 // v133 → v134: «+ דווח תשלום למחזור אחר» — closed by default, no cycle pre-selected (crm/crm.js)
 // (CHANGELOG-other-cycle-report-collapsed.md). From the live v133; monotonic, v17 never reused.
-var CACHE_VERSION = 'v134';
+// v134 → v135: «חובות פתוחים» — any end date, «עד סוף החודש», «צפוי לגבייה עד …» (crm/crm.js)
+// (CHANGELOG-open-debts-upcoming.md). Stacked on v134; monotonic, v17 never reused.
+var CACHE_VERSION = 'v135';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

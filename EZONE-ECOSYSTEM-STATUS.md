@@ -1,5 +1,15 @@
 # E-ZONE Ecosystem Status — updated November 14, 2026
 
+## CRM «חובות פתוחים» — «צפוי לגבייה עד …» — November 14, 2026
+
+«עד תאריך» accepts any date (no max=today) and there is an «עד סוף החודש»
+preset. When the period ends after today the section shows three totals —
+«חוב עבר» (due ≤ today, unchanged), «צפוי לגבייה עד DD/MM» (cycles due after
+today, active patients, from the SAME rows as «צפי תזרים»: private on the
+billing day, institutional «שוטף +30»; pro-bono never; «לא הוגדר» counts) and
+their sum — plus a list with a «צפוי · DD/MM» chip. The two parts never
+overlap. UI only, no new read. SW v135. See `CHANGELOG-open-debts-upcoming.md`.
+
 ## CRM «חשבון» — «+ דווח תשלום למחזור אחר» closed — November 14, 2026
 
 The C13 any-cycle picker in a patient's «חשבון» is a closed section with no

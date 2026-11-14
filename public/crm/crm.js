@@ -1346,6 +1346,8 @@
     'crm-fc-rows': { col: 'סכום', label: 'תקבולים צפויים' },
     'crm-debtors': { col: 'סכום חוב', label: 'חובות פתוחים' },
     'crm-debt-groups': { col: 'סכום', label: 'חובות — חתך' },
+    'crm-debt-upcoming': { col: 'סכום', label: 'צפוי לגבייה' },
+    'crm-debt-up-groups': { col: 'סכום', label: 'צפוי לגבייה — חתך' },
     'crm-receipts': { col: 'סכום', label: 'תקבולים' },
     'crm-rc-groups': { col: 'סכום', label: 'תקבולים — חתך' },
     'crm-pending-credits': { col: 'סכום', label: 'זיכויים לתשלום' },
@@ -1455,6 +1457,45 @@
     if (dim === 'bucket') return groupRows(rows, function (r) { return r.bucket; }, function (r) { return DEBT_BUCKET_LABELS[r.bucket] || r.bucket; }, function (r) { return r.balance; });
     if (dim === 'status') return groupRows(rows, function (r) { return r.inHouse ? 'in' : 'out'; }, function (r) { return r.inHouse ? 'בבית' : 'משוחררים'; }, function (r) { return r.balance; });
     return [];
+  }
+  /* «חובות פתוחים» → «צפוי לגבייה עד …» (CHANGELOG-open-debts-upcoming.md): when the period's end is
+   * after today, the money still to come in by that day from cycles whose billing day is AFTER today —
+   * the SAME rows as «צפי תזרים» (cashForecast + sliceForecast; no second calculation): active patients
+   * only, pro-bono never, private on the billing day, institutional «שוטף +30». Cycles due today or
+   * earlier are past debt (debtAging) and are never counted here, so the two parts never overlap —
+   * an institutional cycle inside its terms is already in «חוב עבר» with its «גוף מממן» chip.
+   * «לא הוגדר» rows count (past debt counts them too). An aging bucket or «משוחררים» narrows to past
+   * debt only → no upcoming rows. Pure: (getData, getPayments, {from,to}, today, CycleBalance, slice, opts). */
+  function upcomingDebts(data, payments, range, today, CB, slice, opts) {
+    const o = opts || {}, t = s(today), rg = debtRange(range);
+    const out = { on: false, from: '', to: '', rows: [], count: 0, total: 0, unset: 0, error: '', pastOnly: false };
+    if (!isoDateOk(t) || !rg.to || rg.to <= t) return out;
+    const tomorrow = addDays(t, 1);
+    out.on = true; out.to = rg.to; out.from = rg.from && rg.from > tomorrow ? rg.from : tomorrow;
+    if (out.from > out.to) return out;
+    if (o.bucket || o.status === 'out') { out.pastOnly = true; return out; }
+    const fc = cashForecast(data, payments, out.from, out.to, t, CB);
+    if (fc.error) out.error = fc.error;
+    const r2 = function (n) { return Math.round(n * 100) / 100; };
+    out.rows = sliceForecast(fc, slice, '').rows.filter(function (r) { return r.dueDate > t && r.dueDate >= out.from; });
+    out.count = out.rows.length;
+    out.total = r2(out.rows.reduce(function (a, r) { return a + r.amount; }, 0));
+    out.unset = out.rows.filter(function (r) { return r.kind === 'unset'; }).length;
+    return out;
+  }
+  function upcomingGroups(rows, dim) {
+    const amt = function (r) { return r.amount; };
+    if (dim === 'funder') return groupRows(rows, function (r) { return r.funder; }, null, amt);
+    if (dim === 'house') return groupRows(rows, function (r) { return houseId(r.houseId) || r.houseId; }, function (r) { return r.houseName; }, amt);
+    return [];
+  }
+  /* The «עד סוף החודש» preset of «חובות פתוחים»: every past debt + what is due by the month's end. Pure. */
+  function debtPreset(id, today) {
+    const t = s(today), cm = t.slice(0, 7);
+    if (id === 'month') return { from: cm + '-01', to: t };
+    if (id === 'prev') { const pm = addDays(cm + '-01', -1); return { from: pm.slice(0, 7) + '-01', to: pm }; }
+    if (id === 'eom') return { from: '', to: monthEndIso(t) };
+    return { from: '', to: '' };
   }
   /* «תקבולים»: every receipt (newest first) inside a received-date period, the slice and
    * the verification filter. The funder is the receipt's own, else the patient's on that day. Pure. */
@@ -4000,15 +4041,22 @@
       let html = '<div class="group-title" id="crm-debtors-title">חובות פתוחים ' + (cd.ok ? chip(v.count ? 'late' : 'ok', v.count + ' חייבים · ' + fmtMoney(v.total)) : '')
         + (b.funderGrace.count ? ' ' + chip('wait', b.funderGrace.count + ' בחלון גוף מממן') : '') + '</div>' + billSliceBar(true)
         + '<div class="toolbar filters" id="crm-debt-range"><label>יום חיוב מתאריך <input type="date" id="crm-debt-from" value="' + esc(rg.from) + '"></label>'
-        + '<label>עד תאריך <input type="date" id="crm-debt-to" value="' + esc(rg.to) + '" max="' + esc(state.today) + '"></label>'
+        + '<label>עד תאריך <input type="date" id="crm-debt-to" value="' + esc(rg.to) + '"></label>'
         + '<button type="button" class="btn small" data-debt-preset="month">החודש</button><button type="button" class="btn small" data-debt-preset="prev">החודש הקודם</button>'
+        + '<button type="button" class="btn small" data-debt-preset="eom">עד סוף החודש</button>'
         + (rg.on ? '<button type="button" class="btn small" data-debt-preset="all">כל התקופות ✕</button>' : '') + '</div>'
         + '<div class="toolbar filters" id="crm-debt-tools">'
         + sel('crm-debt-bucket', 'גיל החוב', [['', 'כל גילי החוב']].concat(Object.keys(DEBT_BUCKET_LABELS).map(function (k) { return [k, DEBT_BUCKET_LABELS[k]]; })), bucket)
         + sel('crm-debt-status', 'בבית / משוחררים', [['', 'בבית ומשוחררים'], ['in', 'בבית'], ['out', 'משוחררים']], status)
         + '<label>חתך לפי ' + sel('crm-debt-group', 'חתך לפי', [['', 'ללא']].concat(Object.keys(DEBT_GROUPS).map(function (k) { return [k, DEBT_GROUPS[k]]; })), dim) + '</label></div>';
       if (!cd.ok) return html + '<div class="crm-state bad">חובות לא נטענו <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
-      html += '<p class="na">חובות עבר (מחזורים שמועד החיוב שלהם עבר) נכון ל-' + esc(fmtDate(cd.asOf)) + ' — אינם בצפי התזרים.' + (rg.on ? ' <strong>מוצגים רק מחזורים שיום החיוב שלהם בתקופה שנבחרה.</strong>' : '') + ' ' + v.inHouse + ' בבית, ' + (v.count - v.inHouse) + ' משוחררים. פתיחת שורה → «חשבון» של המטופל/ת.</p>';
+      // «צפוי לגבייה עד …» (CHANGELOG-open-debts-upcoming.md): only when the period ends after today
+      const up = upcomingDebts(state.data, state.billing.payments, rg, state.today, cycleBalanceLib(win), sl, { bucket: bucket, status: status });
+      if (up.on) html += '<div class="kpis" id="crm-debt-split"><div class="kpi"><span class="v">' + esc(fmtMoney(v.total)) + '</span><span class="l">חוב עבר · עד היום</span></div>'
+        + '<div class="kpi"><span class="v">' + esc(fmtMoney(up.total)) + '</span><span class="l">צפוי לגבייה עד ' + esc(fmtDate(up.to)) + '</span></div>'
+        + '<div class="kpi"><span class="v">' + esc(fmtMoney(Math.round((v.total + up.total) * 100) / 100)) + '</span><span class="l">סה"כ לגבייה עד ' + esc(fmtDate(up.to)) + '</span></div></div>';
+      html += '<p class="na">חובות עבר (מחזורים שמועד החיוב שלהם עבר) נכון ל-' + esc(fmtDate(cd.asOf)) + ' — אינם בצפי התזרים.' + (rg.on ? ' <strong>מוצגים רק מחזורים שיום החיוב שלהם בתקופה שנבחרה.</strong>' : '') + ' ' + v.inHouse + ' בבית, ' + (v.count - v.inHouse) + ' משוחררים. פתיחת שורה → «חשבון» של המטופל/ת.'
+        + (up.on ? ' מחזורים שיום החיוב שלהם אחרי היום — בנפרד, ב«צפוי לגבייה עד ' + esc(fmtDate(up.to)) + '» (מטופלים בבית; ביטוח לאומי / מכבי / משרד הביטחון — שוטף +30).' : '') + '</p>';
       if (dim) html += groupTable('crm-debt-groups', DEBT_GROUPS[dim], debtGroups(v.rows, dim), dim, dim === 'funder' ? sl.funder : dim === 'house' ? sl.house : dim === 'bucket' ? bucket : status);
       if (!v.rows.length) html += '<p class="na" id="crm-debt-none">' + (rg.on ? 'אין חובות פתוחים שיום החיוב שלהם בתקופה שנבחרה' + (sliceOn(sl) || bucket || status ? ' ובסינון הזה.' : '.') : sliceOn(sl) || bucket || status ? 'אין חובות בסינון הזה.' : 'אין חובות עבר לגבייה.') + '</p>';
       else html += '<div class="tbl-wrap"><table class="tbl" id="crm-debtors"><thead><tr><th>מטופל/ת</th><th>בית</th><th>גורם מממן</th><th>סכום חוב</th><th>מחזורים</th><th>ימים בפיגור</th><th>תשלום אחרון</th><th>סטטוס</th></tr></thead><tbody>'
@@ -4017,6 +4065,18 @@
           return '<tr data-open-patient="' + esc(r.id) + '" data-open-tab="account"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(r.funder) + '</td><td>' + esc(fmtMoney(r.balance)) + '</td><td>' + r.cycles + (r.unrecorded ? ' <span class="na">(' + r.unrecorded + ' ללא דיווח)</span>' : '') + '</td><td>'
             + chip(st, r.oldestDays + ' ימים') + (r.grace ? ' ' + chip('wait', 'גוף מממן') : '') + '</td><td>' + esc(r.lastPaid ? fmtDate(r.lastPaid) : '—') + '</td><td>' + esc(r.inHouse ? 'בבית' : (r.status === 'released' ? 'שוחרר/ה' : r.status)) + '</td></tr>';
         }).join('') + '</tbody></table></div>';
+      if (up.on) {
+        html += '<div class="group-title" id="crm-debt-up-title">צפוי לגבייה עד ' + esc(fmtDate(up.to)) + ' ' + chip('wait', up.count + ' מחזורים · ' + fmtMoney(up.total)) + '</div>';
+        if (up.error && up.error !== 'bad_range') html += '<div class="crm-state bad">תשלומים לא נטענו — הצפי לפי התעריף בכרטיס בלבד <button type="button" class="btn small" data-billing-retry>נסי שוב</button></div>';
+        if (dim === 'funder' || dim === 'house') html += groupTable('crm-debt-up-groups', DEBT_GROUPS[dim], upcomingGroups(up.rows, dim), dim, dim === 'funder' ? sl.funder : sl.house);
+        if (!up.rows.length) html += '<p class="na" id="crm-debt-up-none">' + (up.pastOnly ? 'הסינון (גיל חוב / משוחררים) מציג חובות עבר בלבד.' : 'אין מחזורים צפויים לגבייה עד ' + esc(fmtDate(up.to)) + (sliceOn(sl) ? ' בסינון הזה.' : '.')) + '</p>';
+        else html += '<div class="tbl-wrap"><table class="tbl" id="crm-debt-upcoming"><thead><tr><th>מטופל/ת</th><th>בית</th><th>גורם מממן</th><th>מחזור</th><th>יום חיוב</th><th>סכום</th><th>סטטוס</th></tr></thead><tbody>'
+          + up.rows.map(function (r) {
+            return '<tr data-open-patient="' + esc(r.patientId) + '" data-open-tab="account"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(r.funder) + (r.kind === 'unset' ? ' ' + chip('late', 'להשלים') : '') + '</td>'
+              + '<td>' + esc(fmtDate(r.start)) + '–' + esc(fmtDate(r.end)) + '</td><td>' + esc(fmtDate(r.dueDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + (r.paid > 0 ? ' <span class="na">(שולם ' + esc(fmtMoney(r.paid)) + ' מתוך ' + esc(fmtMoney(r.expected)) + ')</span>' : '') + '</td>'
+              + '<td>' + chip('wait', 'צפוי · ' + fmtDate(r.expectedDate)) + '</td></tr>';
+          }).join('') + '</tbody></table></div>';
+      }
       // a searched patient with no open debt is still one tap from their «חשבון» (CHANGELOG-billing-search-any-patient.md)
       const srch = billingSearch(b, sl.q, patients);
       if (srch && srch.people.length) {
@@ -5668,10 +5728,8 @@
       if (t.dataset.reportCancel !== undefined) { state.report = null; state.small = null; const el = $('#crm-report'); if (el) el.innerHTML = ''; return; }
       if (t.dataset.dueToday !== undefined) { state.dueDate = state.today; return renderMain(); }
       if (t.dataset.debtPreset) {
-        const cm = s(state.today).slice(0, 7), pm = monthShift(cm, -1);
-        if (t.dataset.debtPreset === 'month') { state.debtFrom = cm + '-01'; state.debtTo = state.today; }
-        else if (t.dataset.debtPreset === 'prev') { state.debtFrom = pm + '-01'; state.debtTo = addDays(cm + '-01', -1); }
-        else { state.debtFrom = ''; state.debtTo = ''; }
+        const pr = debtPreset(t.dataset.debtPreset, state.today);
+        state.debtFrom = pr.from; state.debtTo = pr.to;
         return renderMain();
       }
       if (t.dataset.fcOpen !== undefined) { state.fcOpen = state.fcOpen === t.dataset.fcOpen ? '' : t.dataset.fcOpen; return renderMain(); }
@@ -6078,5 +6136,5 @@
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
     newTaskErrors: newTaskErrors, dueSoonTasks: dueSoonTasks, TASK_REMIND_MINUTES: TASK_REMIND_MINUTES, WORK_CONTROL: WORK_CONTROL, workControlQueues: workControlQueues,
-    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, cleanupCandidates: cleanupCandidates, cleanupPlan: cleanupPlan, cleanupBody: cleanupBody, CLEANUP_REASONS: CLEANUP_REASONS, paidWithDiscountPlan: paidWithDiscountPlan, paidWithDiscountBody: paidWithDiscountBody, reportValuesOnly: reportValuesOnly, cashForecast: cashForecast, forecastRefunds: forecastRefunds, cashForecastNet: cashForecastNet, fmtSigned: fmtSigned, collectionDebtors: collectionDebtors, debtRange: debtRange, BILLING_TABS: BILLING_TABS, billingTabsFor: billingTabsFor, billSlice: billSlice, sliceOn: sliceOn, sliceHit: sliceHit, groupRows: groupRows, DEBT_GROUPS: DEBT_GROUPS, RECEIPT_GROUPS: RECEIPT_GROUPS, debtsView: debtsView, debtGroups: debtGroups, receiptsView: receiptsView, receiptGroups: receiptGroups, refundsView: refundsView, sliceForecast: sliceForecast, sliceRefunds: sliceRefunds, CALC_TABLES: CALC_TABLES, moneyFromText: moneyFromText, calcSummary: calcSummary, calcBarText: calcBarText,  cycleOnDay: cycleOnDay, cycleCtx: cycleCtx, forecastPreset: forecastPreset, monthEndIso: monthEndIso, FORECAST_TERMS_DAYS: FORECAST_TERMS_DAYS, FORECAST_INSTITUTIONAL: FORECAST_INSTITUTIONAL, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
+    moneyParse: moneyParse, discountErrors: discountErrors, discountBody: discountBody, cleanupCandidates: cleanupCandidates, cleanupPlan: cleanupPlan, cleanupBody: cleanupBody, CLEANUP_REASONS: CLEANUP_REASONS, paidWithDiscountPlan: paidWithDiscountPlan, paidWithDiscountBody: paidWithDiscountBody, reportValuesOnly: reportValuesOnly, cashForecast: cashForecast, forecastRefunds: forecastRefunds, cashForecastNet: cashForecastNet, fmtSigned: fmtSigned, collectionDebtors: collectionDebtors, debtRange: debtRange, BILLING_TABS: BILLING_TABS, billingTabsFor: billingTabsFor, billSlice: billSlice, sliceOn: sliceOn, sliceHit: sliceHit, groupRows: groupRows, DEBT_GROUPS: DEBT_GROUPS, RECEIPT_GROUPS: RECEIPT_GROUPS, debtsView: debtsView, debtGroups: debtGroups, upcomingDebts: upcomingDebts, upcomingGroups: upcomingGroups, debtPreset: debtPreset, receiptsView: receiptsView, receiptGroups: receiptGroups, refundsView: refundsView, sliceForecast: sliceForecast, sliceRefunds: sliceRefunds, CALC_TABLES: CALC_TABLES, moneyFromText: moneyFromText, calcSummary: calcSummary, calcBarText: calcBarText,  cycleOnDay: cycleOnDay, cycleCtx: cycleCtx, forecastPreset: forecastPreset, monthEndIso: monthEndIso, FORECAST_TERMS_DAYS: FORECAST_TERMS_DAYS, FORECAST_INSTITUTIONAL: FORECAST_INSTITUTIONAL, overrideErrors: overrideErrors, overrideBody: overrideBody, settleErrors: settleErrors, settleBody: settleBody, writeRefusal: writeRefusal };
 }));

@@ -45,7 +45,7 @@ test('every money table of «גבייה» and the patient\'s «חשבון» is i
     'crm-account-open', 'crm-account-credits', 'crm-account-cycles', 'crm-account-receipts']) assert.ok(ids.includes(id), id);
   // the table exists in the page source and has a header with exactly that text
   for (const id of ids) {
-    if (id === 'crm-debt-groups' || id === 'crm-rc-groups') continue;   // built by groupTable(id, …) — checked below
+    if (id === 'crm-debt-groups' || id === 'crm-rc-groups' || id === 'crm-debt-up-groups') continue;   // built by groupTable(id, …) — checked below
     const at = SRC.indexOf('id="' + id + '"><thead><tr>');
     assert.ok(at > 0, id + ' is rendered');
     const head = SRC.slice(at, SRC.indexOf('</tr></thead>', at));
@@ -53,10 +53,10 @@ test('every money table of «גבייה» and the patient\'s «חשבון» is i
     assert.ok(core.CALC_TABLES[id].label, id + ' has a name for the bar');
   }
   const grp = SRC.slice(SRC.indexOf('function groupTable('), SRC.indexOf('function renderDueOnDate('));
-  assert.ok(grp.includes('<th>שורות</th><th>סכום</th><th>חלק</th>') && SRC.includes("groupTable('crm-debt-groups'") && SRC.includes("groupTable('crm-rc-groups'"));
+  assert.ok(grp.includes('<th>שורות</th><th>סכום</th><th>חלק</th>') && SRC.includes("groupTable('crm-debt-groups'") && SRC.includes("groupTable('crm-rc-groups'") && SRC.includes("groupTable('crm-debt-up-groups'"));
   assert.ok(!ids.includes('crm-cleanup-rows'), 'the cleanup tool keeps its own ticks (they select what to close)');
   // no table that no longer exists (CHANGELOG-billing-sections.md removed the duplicate lists)
-  for (const id of ids) assert.ok(SRC.includes(id === 'crm-debt-groups' || id === 'crm-rc-groups' ? "'" + id + "'" : 'id="' + id + '"'), id);
+  for (const id of ids) assert.ok(SRC.includes(id === 'crm-debt-groups' || id === 'crm-rc-groups' || id === 'crm-debt-up-groups' ? "'" + id + "'" : 'id="' + id + '"'), id);
 });
 
 test('wiring: display only — ticking re-renders nothing and asks nothing; a tick never opens the row; ticks are restored after a re-render', () => {
