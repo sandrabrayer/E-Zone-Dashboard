@@ -402,8 +402,9 @@ test('C13 report any cycle: entry-anchored stay cycles (month-end clamp, exit cu
   const acc = { openCycles: [{ start: '2026-09-27' }], cycles: [{ id: 'x', dueDate: '2026-07-27', status: 'paid', amount: 7000, amountPaid: 7000 }, { id: 'y', dueDate: '2026-08-27', status: 'unpaid', amount: 7000, amountPaid: 0 }] };
   const list = core.reportableCycles(pat, acc, '2026-10-28');
   assert.deepEqual(list.map((w) => [w.start, w.expected, w.status, w.paymentId]), [['2026-07-27', 7000, 'paid', 'x'], ['2026-10-27', 7000, '', ''], ['2026-11-27', 7000, '', ''], ['2026-12-27', 7000, '', ''], ['2027-01-27', 7000, '', '']], 'open (09-27) and unpaid (08-27) rows are offered by their own buttons');
-  assert.equal(core.defaultReportable(list, '2026-10-28'), 2, 'the first cycle after today');
-  assert.equal(core.defaultReportable(list.slice(0, 1), '2026-10-28'), 0); assert.equal(core.defaultReportable([], '2026-10-28'), -1);
+  // CHANGELOG-other-cycle-report-collapsed.md: no default any more — future (nearest first) / past (newest first)
+  assert.deepEqual(core.otherCycleGroups(list, '2026-10-28'), { future: [2, 3, 4], past: [1, 0] });
+  assert.deepEqual(core.otherCycleGroups([], '2026-10-28'), { future: [], past: [] });
   assert.deepEqual(core.reportCycleForWindow(pat, list[1], acc), { id: 'pay::arfoni::תמיר::2026-07-27::2026-10-27', patientId: 'arfoni::תמיר::2026-07-27', patientName: 'תמיר', houseId: 'arfoni', dueDate: '2026-10-27', amount: 7000, coverageStart: '2026-10-27', coverageEnd: '2026-11-26' });
   assert.equal(core.reportCycleForWindow(pat, list[0], { cycles: [{ id: 'x', patientId: 'k', dueDate: '2026-07-27', amount: 7000, coverageStart: '2026-07-27', coverageEnd: '2026-08-26' }] }).patientId, 'k', 'a stamped row is re-sent as itself');
   assert.equal(core.normalise({ patients: { ramot: [{ id: 'a', name: 'x', date: '2026-01-01', pay: '6,000' }] } }).patients[0].pay, 0, 'pay is numeric only');
@@ -598,4 +599,42 @@ test('wiring: hashed CRM assets, explicit source-owned write actions and no seco
   assert.match(html, /lang="he" dir="rtl"/);
   assert.match(html, /crm\/crm\.css\?v=__BUILD__/);
   assert.match(html, /crm\/crm\.js\?v=__BUILD__/);
+});
+
+test('«מחזור אחר» picker (CHANGELOG-other-cycle-report-collapsed.md): closed by default, nothing pre-selected, button disabled, grouped future / past', () => {
+  const list = [
+    { start: '2026-09-15', end: '2026-10-14', expected: 32000, status: 'paid' },
+    { start: '2026-10-15', end: '2026-11-14', expected: 32000, status: '' },
+    { start: '2026-11-15', end: '2026-12-14', expected: 32000, status: '' },
+    { start: '2026-12-15', end: '2027-01-14', expected: 32000, status: '' },
+  ];
+  const html = core.otherCyclePickerHtml(list, '2026-11-14', { paid: 'שולם' });
+  assert.match(html, /^<details class="act" id="crm-other-cycle-box"><summary>\+ דווח תשלום למחזור אחר<\/summary>/, 'a closed <details> (no open attribute)');
+  assert.doesNotMatch(html, /<details[^>]*\bopen\b/);
+  assert.doesNotMatch(html, /מחזור שלא ברשימה/, 'the old confusing label is gone');
+  assert.equal((html.match(/ selected/g) || []).length, 1, 'only the placeholder is selected');
+  assert.match(html, /<option value="" selected>בחר מחזור…<\/option>/);
+  assert.match(html, /data-report-other disabled>/, 'the button starts disabled');
+  const fut = html.indexOf('<optgroup label="מחזור עתידי (מקדמה)">'), past = html.indexOf('<optgroup label="מחזור קודם">');
+  assert.ok(fut > 0 && past > fut, 'future group first, then past');
+  assert.ok(html.indexOf('value="2"') < html.indexOf('value="3"'), 'future: nearest first');
+  assert.ok(html.indexOf('value="1"') < html.indexOf('value="0"'), 'past: newest first');
+  assert.match(html, /15\/09\/2026–14\/10\/2026 · ₪32,000 · שולם/);
+  assert.equal(core.otherCyclePickerHtml([], '2026-11-14'), '', 'nothing to offer → nothing rendered');
+  // only the future group when there is no past cycle
+  assert.doesNotMatch(core.otherCyclePickerHtml(list.slice(2), '2026-11-14'), /<optgroup label="מחזור קודם">/);
+  // escaping: a status label is escaped
+  assert.doesNotMatch(core.otherCyclePickerHtml([{ start: '2026-12-15', end: '2027-01-14', expected: 1, status: '<x>' }], '2026-11-14'), /<x>/);
+});
+
+test('«מחזור אחר» pick: the placeholder / junk never picks a cycle (no silent «0»)', () => {
+  const list = [{ start: 'a' }, { start: 'b' }];
+  assert.equal(core.otherCyclePick('', list), -1);
+  assert.equal(core.otherCyclePick(undefined, list), -1);
+  assert.equal(core.otherCyclePick('x', list), -1);
+  assert.equal(core.otherCyclePick('-1', list), -1);
+  assert.equal(core.otherCyclePick('1.5', list), -1);
+  assert.equal(core.otherCyclePick('2', list), -1, 'out of range');
+  assert.equal(core.otherCyclePick('0', list), 0);
+  assert.equal(core.otherCyclePick('1', list), 1);
 });

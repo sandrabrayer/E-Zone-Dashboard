@@ -1,4 +1,11 @@
-# E-ZONE Ecosystem Status — updated November 12, 2026
+# E-ZONE Ecosystem Status — updated November 14, 2026
+
+## CRM «חשבון» — «+ דווח תשלום למחזור אחר» closed — November 14, 2026
+
+The C13 any-cycle picker in a patient's «חשבון» is a closed section with no
+cycle pre-selected (the pre-selected next cycle read as debt). Groups:
+«מחזור עתידי (מקדמה)» / «מחזור קודם»; the button is disabled until a cycle is
+picked. UI only. SW v134. See `CHANGELOG-other-cycle-report-collapsed.md`.
 
 ## CRM «גבייה» as sections + slices — November 12, 2026
 

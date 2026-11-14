@@ -540,9 +540,19 @@ test('C10 «דווח תשלום» in the account pane (Vered): rules validate cl
     assert.equal(third.report.invoiceTo, 'דנה כהן');
     assert.notEqual(third.submissionId, first.submissionId, 'a new form, a new key');
     // C13: «מחזור אחר» — an advance for the next entry-anchored cycle, minted from the patient's pay
+    // CHANGELOG-other-cycle-report-collapsed.md: closed, nothing picked, button disabled until a cycle is chosen
     assert.ok(await page.$('#crm-other-cycle'), 'the other-cycle picker');
-    const picked = await page.$eval('#crm-other-cycle', (el) => el.options[el.selectedIndex].textContent);
-    assert.match(picked, new RegExp(core.fmtDate(core.addMonthsIso(daysAgo(30), 1)).replace(/\//g, '\\/')), 'default = the first cycle after today');
+    assert.equal(await page.$eval('#crm-other-cycle-box', (el) => el.open), false, 'closed by default');
+    assert.equal(await page.isVisible('#crm-other-cycle'), false, 'the select is hidden while closed');
+    assert.equal(await page.$eval('#crm-other-cycle', (el) => el.value), '', 'nothing pre-selected');
+    assert.equal(await page.$eval('[data-report-other]', (el) => el.disabled), true);
+    await page.click('#crm-other-cycle-box > summary');
+    const nextStart = core.fmtDate(core.addMonthsIso(daysAgo(30), 1));
+    const val = await page.$eval('#crm-other-cycle', (el, d) => { const o = Array.from(el.options).find((x) => x.textContent.indexOf(d) === 0); return o ? o.value : null; }, nextStart);
+    assert.ok(val, 'the next cycle is offered');
+    assert.equal(await page.$eval('#crm-other-cycle optgroup[label="מחזור עתידי (מקדמה)"]', (g, v) => !!g.querySelector('option[value="' + v + '"]'), val), true, 'under «מחזור עתידי (מקדמה)»');
+    await page.selectOption('#crm-other-cycle', val);
+    assert.equal(await page.$eval('[data-report-other]', (el) => el.disabled), false, 'enabled once picked');
     await page.click('[data-report-other]');
     await page.waitForSelector('form[data-form="payment-report"]');
     assert.equal(await page.inputValue('form.report [name="amount"]'), '6000');
@@ -728,6 +738,8 @@ test('«שולם עם הנחה» is not offered on «מחזור אחר» (its ba
     await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
     await page.click('#crm-drawer [data-tab="account"]');
     await page.waitForSelector('#crm-account-open');
+    await page.click('#crm-other-cycle-box > summary');
+    await page.selectOption('#crm-other-cycle', { index: 1 });
     await page.click('[data-report-other]');
     await page.waitForSelector('form[data-form="payment-report"]');
     assert.equal(await page.$('form.report [name="withDiscount"]'), null, '«מחזור אחר» never offers it');

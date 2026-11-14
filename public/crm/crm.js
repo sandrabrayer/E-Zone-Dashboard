@@ -1745,10 +1745,37 @@
       return { start: w.start, end: w.end, paymentId: row ? row.id : '', status: row ? row.status : '', expected: row ? row.amount : (Number(patient.pay) || 0), received: row ? row.amountPaid : 0 };
     });
   }
-  /* The picker's default: the first cycle that starts after today (an advance), else the last. */
-  function defaultReportable(list, today) {
-    for (let i = 0; i < list.length; i++) if (list[i].start >= s(today)) return i;
-    return list.length ? list.length - 1 : -1;
+  /* The «מחזור אחר» picker (CHANGELOG-other-cycle-report-collapsed.md): closed by default, NO
+   * cycle pre-selected (a pre-selected next cycle read as money owed). Two groups: «מחזור עתידי
+   * (מקדמה)» — starts after today, nearest first — and «מחזור קודם» — newest first. An option's
+   * value is the cycle's index in `list` (the click handler re-derives the same list). Pure. */
+  function otherCycleGroups(list, today) {
+    const t = s(today), future = [], past = [];
+    (list || []).forEach(function (w, i) { (w.start > t ? future : past).push(i); });
+    past.reverse();
+    return { future: future, past: past };
+  }
+  function otherCyclePickerHtml(list, today, labels) {
+    if (!list || !list.length) return '';
+    const L = labels || {};
+    const g = otherCycleGroups(list, today);
+    const opt = function (i) {
+      const w = list[i];
+      return '<option value="' + i + '">' + esc(fmtDate(w.start) + '–' + fmtDate(w.end) + ' · ' + fmtMoney(w.expected) + (w.status ? ' · ' + (L[w.status] || w.status) : '')) + '</option>';
+    };
+    const grp = function (label, idx) { return idx.length ? '<optgroup label="' + esc(label) + '">' + idx.map(opt).join('') + '</optgroup>' : ''; };
+    return '<details class="act" id="crm-other-cycle-box"><summary>+ דווח תשלום למחזור אחר</summary>'
+      + '<p class="na">למחזור שאינו ברשימת המחזורים הפתוחים — תשלום מראש, או מחזור קודם. אין כאן חוב.</p>'
+      + '<p><label>מחזור <select id="crm-other-cycle"><option value="" selected>בחר מחזור…</option>'
+      + grp('מחזור עתידי (מקדמה)', g.future) + grp('מחזור קודם', g.past) + '</select></label> '
+      + '<button type="button" class="btn small" data-report-other disabled>דווח תשלום</button></p></details>';
+  }
+  /* The picked option → its index in `list`, or -1 (placeholder / junk). Pure. */
+  function otherCyclePick(value, list) {
+    const v = s(value);
+    if (!/^\d+$/.test(v)) return -1;
+    const i = Number(v);
+    return list && i < list.length ? i : -1;
   }
   function reportCycleForWindow(patient, w, account) {
     const rows = account && Array.isArray(account.cycles) ? account.cycles : [];
@@ -4738,8 +4765,7 @@
             + (me.canAmount && c.month ? ' <button type="button" class="btn small" data-amount-open="' + i + '">שנה סכום</button>' : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
       const others = state.account ? reportableCycles(state.account.patient, a, state.today) : [];
-      const defIdx = defaultReportable(others, state.today);
-      if (others.length) html += '<p><label class="na">דווח תשלום למחזור אחר (מקדמה / מחזור שלא ברשימה) <select id="crm-other-cycle">' + others.map(function (w, i) { return '<option value="' + i + '"' + (i === defIdx ? ' selected' : '') + '>' + esc(fmtDate(w.start) + '–' + fmtDate(w.end) + ' · ' + fmtMoney(w.expected) + (w.status ? ' · ' + (CYCLE_STATUS_LABELS[w.status] || w.status) : '')) + '</option>'; }).join('') + '</select></label> <button type="button" class="btn small" data-report-other>דווח תשלום</button></p>';
+      html += otherCyclePickerHtml(others, state.today, CYCLE_STATUS_LABELS);
       html += '<div id="crm-report"></div>';
       html += '<div class="group-title">זיכויים' + (me.approver ? ' <button type="button" class="btn small" data-credit-new>+ זיכוי ידני</button>' : '') + '</div>';
       const credits = state.billing ? patientCredits(state.account ? state.account.patient : a.patientId, state.billing.credits) : [];
@@ -5706,7 +5732,8 @@
       }
       if (t.dataset.reportOther !== undefined) {
         const sel = $('#crm-other-cycle'); const list = reportableCycles(state.account.patient, state.account.data, state.today);
-        const w = list[Number(sel && sel.value)];
+        const idx = otherCyclePick(sel && sel.value, list);
+        const w = idx >= 0 ? list[idx] : null;
         if (w) openReportForm(reportCycleForWindow(state.account.patient, w, state.account.data), Math.max(0, (Number(w.expected) || 0) - (Number(w.received) || 0)));
         return;
       }
@@ -5750,6 +5777,7 @@
       if (f) refreshNextPreview(f);
       const rf = ev.target && ev.target.closest ? ev.target.closest('form[data-form="payment-report"]') : null;
       if (rf) refreshPwdPreview(rf);
+      if (ev.target && ev.target.id === 'crm-other-cycle') { const b = $('[data-report-other]'); if (b) b.disabled = ev.target.value === ''; }
     });
     /* «שולם עם הנחה»: show the reason field and the discount the form will write. */
     function refreshPwdPreview(f) {
@@ -6039,7 +6067,7 @@
     CREDIT_TYPE_LABELS: CREDIT_TYPE_LABELS, CREDIT_STATUS_LABELS: CREDIT_STATUS_LABELS, SETTLE_METHODS: SETTLE_METHODS, creditsOf: creditsOf, patientCredits: patientCredits, pendingCredits: pendingCredits,
     refundActionFor: refundActionFor, refundStageText: refundStageText, refundActionButton: refundActionButton,
     RECEIPT_EDIT_FIELDS: RECEIPT_EDIT_FIELDS, receiptEditFields: receiptEditFields, receiptEditIssues: receiptEditIssues, receiptEditBody: receiptEditBody, receiptVoidErrors: receiptVoidErrors, receiptVoidBody: receiptVoidBody, receiptVoidAccepted: receiptVoidAccepted,
-    addMonthsIso: addMonthsIso, dueOnDate: dueOnDate, filterDueRows: filterDueRows, monthSplit: monthSplit, cycleBalanceLib: cycleBalanceLib, FUNDER_UNSET_LABEL: FUNDER_UNSET_LABEL, stayCycles: stayCycles, reportableCycles: reportableCycles, defaultReportable: defaultReportable, reportCycleForWindow: reportCycleForWindow,
+    addMonthsIso: addMonthsIso, dueOnDate: dueOnDate, filterDueRows: filterDueRows, monthSplit: monthSplit, cycleBalanceLib: cycleBalanceLib, FUNDER_UNSET_LABEL: FUNDER_UNSET_LABEL, stayCycles: stayCycles, reportableCycles: reportableCycles, otherCycleGroups: otherCycleGroups, otherCyclePickerHtml: otherCyclePickerHtml, otherCyclePick: otherCyclePick, reportCycleForWindow: reportCycleForWindow,
     CONTACT_OUTCOMES: CONTACT_OUTCOMES, CONTACT_CHANNELS: CONTACT_CHANNELS, NEXT_CHOICES: NEXT_CHOICES, TASK_KINDS: TASK_KINDS, TASK_KIND_LABELS: TASK_KIND_LABELS, contactOutcomeLabel: contactOutcomeLabel, nextPlan: nextPlan, contactErrors: contactErrors, contactBody: contactBody, contactAccepted: contactAccepted,
     taskDue: taskDue, taskState: taskState, taskWhen: taskWhen, taskSubject: taskSubject, taskQueue: taskQueue, tasksFor: tasksFor, taskCounts: taskCounts, taskFormErrors: taskFormErrors, taskCreateBody: taskCreateBody, rescheduleErrors: rescheduleErrors, rescheduleBody: rescheduleBody, taskAccepted: taskAccepted,
     VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,
