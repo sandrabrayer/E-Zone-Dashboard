@@ -432,7 +432,8 @@ test('D: CACHE_VERSION is v133 (monotonic from v132; v17 burned, never reused)',
   // v132: CHANGELOG-billing-sections.md (from v131).
   // v133: consistent CRM Activity Israel time (from v132).
   // v134: CHANGELOG-other-cycle-report-collapsed.md (from the live v133).
-  assert.equal(v, 'v134');
+  // v135: CHANGELOG-open-debts-upcoming.md (from v134).
+  assert.equal(v, 'v135');
   assert.notEqual(v, 'v17');
 });
 

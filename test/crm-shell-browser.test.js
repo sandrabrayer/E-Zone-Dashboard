@@ -851,6 +851,23 @@ test('«גבייה» sections (Vered; CHANGELOG-cashflow-forecast.md, CHANGELOG-
       await page.click('[data-debt-preset="all"]');
       await page.waitForSelector('#crm-debtors');
       assert.match(await page.textContent('#crm-debtors-title'), /1 חייבים · ₪8,500/);
+      // «עד סוף החודש» (CHANGELOG-open-debts-upcoming.md): any end date; past debt + what is due by then, split
+      assert.equal(await page.getAttribute('#crm-debt-to', 'max'), null, 'no max=today cap');
+      assert.equal(await page.$('#crm-debt-split'), null, 'no split while the period ends today or earlier');
+      await page.click('[data-debt-preset="eom"]');
+      await page.waitForSelector('#crm-debt-split');
+      assert.equal(await page.inputValue('#crm-debt-to'), core.monthEndIso(TODAY));
+      assert.equal(await page.inputValue('#crm-debt-from'), '');
+      const split = await page.$$eval('#crm-debt-split .kpi', (els) => els.map((e) => [e.querySelector('.v').textContent, e.querySelector('.l').textContent]));
+      assert.equal(split.length, 3);
+      assert.deepEqual(split[0], ['₪8,500', 'חוב עבר · עד היום'], 'past debt unchanged');
+      assert.match(split[1][1], /^צפוי לגבייה עד /); assert.match(split[2][1], /^סה"כ לגבייה עד /);
+      const num = (t) => Number(t.replace(/[^\d]/g, ''));
+      assert.equal(num(split[2][0]), num(split[0][0]) + num(split[1][0]), 'total = past + upcoming');
+      assert.match(await page.textContent('#crm-debt-up-title'), /^צפוי לגבייה עד /);
+      assert.match(await page.textContent('#crm-debtors-title'), /1 חייבים · ₪8,500/, 'the past-debt list is the same');
+      await page.click('[data-debt-preset="all"]');
+      await page.waitForFunction(() => !document.querySelector('#crm-debt-split'));
       // a debtor row opens «חשבון»
       await page.click('#crm-debtors tbody tr td:nth-child(2)');
       await page.waitForSelector('#crm-drawer[aria-hidden="false"] [data-tab="account"][aria-selected="true"]');
