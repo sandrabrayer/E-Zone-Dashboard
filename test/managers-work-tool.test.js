@@ -156,8 +156,10 @@ test('same-name accounts cannot read or update each other; display-name changes 
 test('legacy private records without authorId are admin-only and never claimed by matching a name', () => {
   const { g, call } = boot();
   const cols = Array.from(g.run("mwColumns_('staffTalks')"));
-  assert.strictEqual(cols.at(-1), 'authorId', 'schema appends the new field');
-  const oldCols = cols.slice(0, -1);
+  // authorId was appended after the stamps; the talk-thread columns (14 Nov 2026,
+  // CHANGELOG-managers-crm-backend.md) were appended after it.
+  assert.deepStrictEqual(cols.slice(cols.indexOf('authorId')), ['authorId', 'talkKind', 'parentId', 'outcome', 'agreedActions'], 'schema appends the new fields');
+  const oldCols = cols.slice(0, cols.indexOf('authorId'));
   const sh = richSheet('ManagersStaffTalks', oldCols);
   const row = { id: 'legacy', house: 'ramot', author: ORAN.actor, employeeName: 'Test', summary: 'legacy private', talkDate: '2026-10-10', followUpDate: '2026-10-10' };
   sh.grid.push(oldCols.map(c => row[c] || ''));

@@ -1,5 +1,16 @@
 # E-ZONE Ecosystem Status — updated November 14, 2026
 
+## Managers CRM backend — talk threads, committee notes, per-worker house cost — November 14, 2026
+
+`managersWork` only (same fail-closed `MANAGERS_WORK_SECRET`): `staffTalks` gets
+four APPENDED columns (`talkKind` first/followup/outcome, `parentId`, `outcome`,
+`agreedActions`) — a follow-up or an outcome must hang on a visible FIRST talk of
+the same house and employee; a new log `committeeNotes` (sheet
+`ManagersCommitteeNotes`, «מה היה בוועדה», house-visible, decision allowlisted);
+a new op `houseStaffCost` → staffing `getHouseWorkerCostsForManagers` (same
+`STAFFING_SHEETS_URL` + `STAFFING_COST_SECRET`), the caller's house only, every
+value re-cleaned. No new Script Property. See `CHANGELOG-managers-crm-backend.md`.
+
 ## CRM «חובות פתוחים» — «צפוי לגבייה עד …» — November 14, 2026
 
 «עד תאריך» accepts any date (no max=today) and there is an «עד סוף החודש»
