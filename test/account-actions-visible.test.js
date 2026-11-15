@@ -19,7 +19,6 @@ test('an unrecorded open cycle next to a paid payment is explained — finance o
   assert.ok(i > 0);
   const block = SRC.slice(SRC.lastIndexOf('if (me.finance &&', i), SRC.indexOf('const others = state.account', i));
   assert.match(block, /c\.kind === 'unrecorded'/); assert.match(block, /c\.status === 'paid'/);
-  assert.match(block, /אל תדווחי שוב/); assert.match(block, /ניקוי חובות היסטוריים/);
-  assert.match(block, /me\.canDiscount && state\.account && state\.account\.patient && !inHouse\(state\.account\.patient\)/, 'the cleanup tool is named only where it applies: a released patient, a user who may discount');
+  assert.match(block, /אל תדווחי שוב/); assert.match(block, /אל תסגרי כהנחה/); assert.match(block, /רמז, לא הוכחה/); assert.ok(!/ניקוי חובות היסטוריים|שולם ולא נרשם/.test(block), 'no instruction to close as discount / cleanup');
   assert.ok(!/fetch|api\(|action:/.test(block), 'text only');
 });

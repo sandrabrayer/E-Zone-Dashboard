@@ -988,6 +988,44 @@
     return [].concat(Array.isArray(res.changed) ? res.changed : [], Array.isArray(res.unchangedRows) ? res.unchangedRows : [])
       .some(function (r) { return r && s(r.id) === s(id) && s(r.confirmStatus) === 'confirmed'; });
   }
+  /* ---- «אימות חלקי» (CHANGELOG-partial-verify-checkpoint.md) ----
+   * The existing confirmPayment contract: ids:[one receipt], status:'partial', confirmedAmount = TOTAL verified so far
+   * (0 < amount < reported, max 2 decimals). Cumulative total, never an increment, never a new receipt. */
+  function partialVerifyCheck(raw, reported) {
+    const t = s(raw).trim().replace(/,/g, '');
+    const rep = Number(reported) || 0;
+    if (!/^\d{1,9}(\.\d{1,2})?$/.test(t)) return { amount: null, remaining: null, error: 'הזיני סכום שהתקבל בבנק (מספר, עד שתי ספרות אחרי הנקודה)' };
+    const n = Math.round(Number(t) * 100) / 100;
+    if (!(n > 0 && n < rep)) return { amount: null, remaining: null, error: 'הסכום חייב להיות גדול מאפס וקטן מהסכום שדווח (אימות מלא — «אמת»)' };
+    return { amount: n, remaining: Math.round((rep - n) * 100) / 100, error: '' };
+  }
+  function partialVerifyBody(id, amount) {
+    const v = s(id).trim(), n = Number(amount);
+    if (v.indexOf('rcpt-') !== 0 || v.length > 300 || /[\u0000-\u001f\u007f]/.test(v) || !isFinite(n) || !(n > 0) || Math.round(n * 100) / 100 !== n) return null;
+    return { action: 'confirmPayment', confirm: { ids: [v], status: 'partial', confirmedAmount: n } };
+  }
+  /* Proof: ok===true AND this exact receipt, status partial, AND the exact confirmedAmount we sent. */
+  function partialAccepted(res, id, amount) {
+    if (!res || res.ok !== true) return false;
+    const want = Number(amount);
+    if (!isFinite(want) || !(want > 0) || Math.round(want * 100) / 100 !== want) return false;
+    return [].concat(Array.isArray(res.changed) ? res.changed : [], Array.isArray(res.unchangedRows) ? res.unchangedRows : [])
+      .some(function (r) {
+        if (!r || s(r.id) !== s(id) || s(r.confirmStatus) !== 'partial' || r.confirmedAmount === '' || r.confirmedAmount === null || r.confirmedAmount === undefined) return false;
+        const got = Number(r.confirmedAmount);
+        return isFinite(got) && got > 0 && Math.round(got * 100) / 100 === got && got === want;
+      });
+  }
+  function applyPartial(list, id, amount, by, at) {
+    if (!Array.isArray(list)) return list;
+    return list.map(function (r) {
+      if (!r || s(r.id) !== s(id)) return r;
+      const o = Object.assign({}, r, { confirmStatus: 'partial', confirmedAmount: amount, confirmedBy: s(by) || s(r.confirmedBy), confirmedAt: s(at) || s(r.confirmedAt) });
+      if ('verifiedAmount' in r) o.verifiedAmount = amount;
+      if ('openAmount' in r) o.openAmount = Math.round(((Number(r.amount) || 0) - amount) * 100) / 100;
+      return o;
+    });
+  }
   const VERIFY_ERRORS = { forbidden_role: 'אין הרשאה לאמת תשלומים', forbidden: 'אין הרשאה לאמת תשלומים', not_found: 'הקבלה לא נמצאה — רענני', receipt_void: 'הקבלה בוטלה — אין מה לאמת',
     confirm_without_report: 'אין דיווח תשלום לאימות', lock_busy: 'המערכת עסוקה — נסי שוב בעוד רגע', sheet_header_clash: 'מבנה הגיליון השתנה — פני לסנדרה' };
   function verifyRefusal(res) {
@@ -998,7 +1036,14 @@
    * no debt and no amount — only who vouches for the money). Returns new objects; pure. */
   function applyVerified(list, id, by, at) {
     if (!Array.isArray(list)) return list;
-    return list.map(function (r) { return r && s(r.id) === s(id) ? Object.assign({}, r, { confirmStatus: 'confirmed', confirmedBy: s(by) || s(r.confirmedBy), confirmedAt: s(at) || s(r.confirmedAt), flagNote: '' }) : r; });
+    return list.map(function (r) {
+      if (!r || s(r.id) !== s(id)) return r;
+      const o = Object.assign({}, r, { confirmStatus: 'confirmed', confirmedAmount: Number(r.amount) > 0 ? Number(r.amount) : r.confirmedAmount, confirmedBy: s(by) || s(r.confirmedBy), confirmedAt: s(at) || s(r.confirmedAt), flagNote: '' });
+      /* Derived queue fields (when present) must follow, or verifiedAmountOf trusts a stale partial value. Replace, never add. */
+      if ('verifiedAmount' in r) o.verifiedAmount = Number(r.amount) > 0 ? Number(r.amount) : r.verifiedAmount;
+      if ('openAmount' in r) o.openAmount = 0;
+      return o;
+    });
   }
   /* ---- A debt closes when the money is VERIFIED (CHANGELOG-debt-until-verified.md) ----
    * Sandra 15/11/2026: a reported payment is a claim, not money in the bank. Until Ortal
@@ -1457,7 +1502,9 @@
     });
     rows.sort(function (a, c) { return c.oldestDays - a.oldestDays || c.balance - a.balance || a.name.localeCompare(c.name, 'he'); });
     const total = Math.round(rows.reduce(function (t, r) { return t + r.balance; }, 0) * 100) / 100;
-    return { ok: !!d, error: d ? '' : s(debt && debt.error || 'not_loaded'), asOf: b.asOf, funder: want, rows: rows, count: rows.length, total: total,
+    // Stage 3: a verification-based total needs BOTH required sources. Missing / ok:false / malformed → unknown (null), never 0.
+    const known = !!(d && Array.isArray(d.byPatient) && payments && payments.ok === true && Array.isArray(payments.receipts));
+    return { ok: known, known: known, error: known ? '' : s((debt && debt.ok === false && debt.error) || (payments && payments.ok === false && payments.error) || 'not_loaded'), asOf: b.asOf, funder: want, rows: rows, count: rows.length, total: known ? total : null,
       inHouse: rows.filter(function (r) { return r.inHouse; }).length, all: b.patients.length, range: rg,
       unverified: Math.round(rows.reduce(function (t, r) { return t + r.unverified; }, 0) * 100) / 100, unverifiedCount: rows.reduce(function (t, r) { return t + r.unverifiedCount; }, 0) };
   }
@@ -2700,7 +2747,7 @@
     if (finance) {
       collection.forEach(function (r) { money.push(r); });
       funderExceptions(c, payments, today).forEach(function (r) { money.push(r); });
-      if (debt && debt.ok !== false && Array.isArray(debt.byPatient)) {
+      if (debt && debt.ok === true && Array.isArray(debt.byPatient)) {
         debtCount = 0;
         debt.byPatient.forEach(function (p) {
           (p.cycles || []).forEach(function (cy) {
@@ -2712,7 +2759,7 @@
           });
         });
       } else if (debt === null || debt === undefined) debtCount = null; else debtCount = false;
-      if (payments && payments.ok !== false) verificationRows(payments, today).forEach(function (r) { money.push(r); });
+      if (payments && payments.ok === true && Array.isArray(payments.receipts)) verificationRows(payments, today).forEach(function (r) { money.push(r); });
     }
     const all = [].concat(money, calls, meetings, followup, fresh, houses, otherTasks).filter(function (r) { return passes(r, f); });
     all.forEach(function (r) { r.lastContact = contactAvailable ? lastContactText(lastOf(r)) : 'יומן הקשר אינו זמין'; r.domain = r.domain || (money.indexOf(r) >= 0 ? 'collection' : calls.indexOf(r) >= 0 ? 'calls' : meetings.indexOf(r) >= 0 ? 'meetings' : followup.indexOf(r) >= 0 ? 'followup' : fresh.indexOf(r) >= 0 ? 'newleads' : houses.indexOf(r) >= 0 ? 'integrity' : 'calls'); });
@@ -2730,7 +2777,7 @@
       const toCollect = countOf(byDomain.collection, function (r) { return r.kind !== 'receipt_reported' && dueNow(r); });
       // A count sourced from THREE independent reads is never a complete zero if even
       // one of debt, open Tasks or receipts has failed / has not arrived yet.
-      const paymentsAvailable = !!(payments && payments.ok !== false && (Array.isArray(payments.receipts) || Array.isArray(payments.payments)));
+      const paymentsAvailable = !!(payments && payments.ok === true && Array.isArray(payments.receipts));
       const collectionComplete = debtCount !== null && debtCount !== false && tasksAvailable && paymentsAvailable;
       const collectionLoading = debtCount === null || tasks === undefined || payments === undefined;
       cards.push({ id: 'collection', label: 'גבייה לביצוע', value: collectionComplete ? toCollect : null,
@@ -3277,7 +3324,7 @@
       return renderMyDay(c);
     }
     /* ---- Stage 2: «היום שלי» ---- */
-    function model(c) { return myDay(c, state.tasks, state.index, state.debt, state.today, state.me, { house: state.filters.house, owner: state.filters.owner }, state.payments); }
+    function model(c) { const st = state.billingStale === true; return myDay(c, state.tasks, state.index, st ? false : state.debt, state.today, state.me, { house: state.filters.house, owner: state.filters.owner }, st ? null : state.payments); }
     function rowButtons(r) {
       const b = [];
       const subj = r.subjectKind + ':' + r.subjectId;
@@ -3360,7 +3407,7 @@
         const rows = m.byDomain[d.id] || [];
         if (d.onlyIfAny && !rows.length && state.domain !== d.id) return;
         main += '<section class="domain acc-' + d.id + '" data-domain-section="' + d.id + '"><div class="group-title"><strong>' + esc(d.label) + '</strong> <span class="n chip">' + rows.length + '</span>'
-          + (d.id === 'collection' && m.sourceState.collection !== 'complete' ? ' <span class="chip ' + (m.sourceState.collection === 'loading' ? 'wait">טוען…' : 'late">מידע חלקי') + '</span>' : '') + (d.id === 'calls' && !state.tasks ? ' <span class="chip ' + (state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '') + (d.id === 'newleads' && (!m.sourceState.contact || !m.sourceState.tasks) ? ' <span class="chip ' + (state.index === undefined || state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '')
+          + (d.id === 'collection' && m.sourceState.collection !== 'complete' ? ' <span class="chip ' + (m.sourceState.collection === 'loading' ? 'wait">טוען…' : 'late">מידע חלקי') + '</span>' + (m.sourceState.collection === 'partial' ? ' <button type="button" class="btn small" data-billing-read-retry>נסי לטעון נתונים מחדש</button>' : '') : '') + (d.id === 'calls' && !state.tasks ? ' <span class="chip ' + (state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '') + (d.id === 'newleads' && (!m.sourceState.contact || !m.sourceState.tasks) ? ' <span class="chip ' + (state.index === undefined || state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '')
           + '<span class="grow"></span>' + (d.id === 'newleads' && rows.length ? '<button type="button" class="btn small" data-area="triage">סבב בירור — אחת אחרי השנייה</button>' : '') + (state.domain ? '<button type="button" class="link" data-domain="' + d.id + '">חזרה לכל התחומים</button>' : '') + '</div>'
           + rowsBlock(rows, state.domain ? 0 : 8) + '</section>';
       });
@@ -4022,25 +4069,67 @@
       loadBilling();
     }
     function billingRefreshing() { return !!(state.billing && state.billingLoading); }
+    /* Stage 1 (CHANGELOG-billing-read-integrity.md): called ONLY after the exact receipt-specific
+     * source acknowledgement passed. A read still in flight began BEFORE the confirmation, so it is
+     * made obsolete (generation advance) — loadBilling then discards it and asks again. Nothing in
+     * flight = nothing happens (no extra GET for an ordinary verification). */
+    function obsoleteBillingReadAfterProof() {
+      if (!state.billingLoading) return false;
+      state.billingGen = (state.billingGen || 0) + 1;
+      return true;
+    }
+    /* Stage 2A: strict REQUIRED-source shape. Healthy empty arrays are valid; null / ok:false / missing arrays are not. */
+    function billingSourcesValid(b) {
+      return !!(b && b.debt && b.debt.ok === true && Array.isArray(b.debt.byPatient)
+        && b.payments && b.payments.ok === true && Array.isArray(b.payments.receipts) && Array.isArray(b.payments.payments));
+    }
+    /* Stage 2B: a failed/malformed required read leaves the previous bundle in memory but UNVERIFIED —
+     * no balance or finance action is shown from it; the panel offers a READ-ONLY retry. */
+    function billingReadWarning() {
+      return '<div class="crm-state bad" data-billing-stale role="alert">לא ניתן לרענן את נתוני החשבון. היתרות אינן מאומתות ועדכניות; אין לדווח תשלום נוסף כדי לתקן זאת. נסי לטעון נתונים מחדש. <button type="button" class="btn small" data-billing-read-retry>נסי לטעון נתונים מחדש</button></div>';
+    }
+    function requireFreshBilling() {
+      if (state.billingStale !== true) return true;
+      toast('נתוני החשבון אינם מאומתים — לא ניתן לבצע פעולה כספית עד שהרענון יצליח', true);
+      return false;
+    }
+    function retryBillingRead() {
+      const repaint = function () {
+        const pid = state.drawer && state.drawer.kind === 'patient' && state.drawer.id;
+        if (pid && $('#crm-account')) fillAccountPane(pid);
+        if (state.area === 'today') renderMain();   // the Today card consumes state.debt / state.payments
+      };
+      // Today's own reads may have failed without the loader ever running: re-read exactly the sources it consumes (GET only)
+      if (state.billing && state.billingStale !== true && !state.billingWant && !(state.debt && state.debt.ok === true && state.payments && state.payments.ok === true)) state.billingWant = { debt: true, payments: true };
+      loadBilling(repaint);
+      if (state.area === 'billing') renderMain();
+    }
     function loadBilling(then) {
       if (typeof then === 'function') billingWaiters.push(then);
       if (state.billingLoading) return;
-      const prev = state.billing, want = state.billingWant;
+      const prev = state.billing, stale = state.billingStale === true;
+      const want = stale ? { debt: true, payments: true } : state.billingWant;
       if (prev && !want) return;
+      let failed = false;
       state.billingLoading = true; state.billingWant = null;
       const gen = state.billingGen || 0;
       const need = function (k) { return !prev || !!(want && want[k]); };
+      const reuse = !prev && !stale;
       const fail = function (e) { return { ok: false, error: String(e && e.message || e) }; };
       // debtAging / getPayments are read once at boot for the «גבייה לטיפול» card (finance); reused on the FIRST open only
-      const debtP = !need('debt') ? Promise.resolve(prev.debt) : (!prev && state.debt && state.debt.ok === true ? Promise.resolve(state.debt) : api('debtAging'));
-      const payP = !need('payments') ? Promise.resolve(prev.payments) : (!prev && state.payments && state.payments.ok === true ? Promise.resolve(state.payments) : api('getPayments'));
-      const credP = !need('credits') ? Promise.resolve(prev.credits) : api('getCredits');
+      const debtP = !need('debt') ? Promise.resolve(prev.debt) : (reuse && state.debt && state.debt.ok === true ? Promise.resolve(state.debt) : api('debtAging'));
+      const payP = !need('payments') ? Promise.resolve(prev.payments) : (reuse && state.payments && state.payments.ok === true ? Promise.resolve(state.payments) : api('getPayments'));
+      const credP = !need('credits') ? Promise.resolve(prev.credits) : api('getCredits').catch(function () { return { ok: false, error: 'unavailable' }; });
       // refundPayoutForecast feeds «צפי תזרים» (CHANGELOG-cashflow-refunds.md); fail-soft — the page never waits on its failure
       const refundP = !need('refunds') ? Promise.resolve(prev.refunds) : api('refundPayoutForecast').catch(fail);
       Promise.all([debtP, payP, credP, refundP]).then(function (res) {
-        return { debt: res[0], payments: res[1], credits: res[2], refunds: res[3] };
+        const b = { debt: res[0], payments: res[1], credits: res[2], refunds: res[3] };
+        if (billingSourcesValid(b)) return b;
+        failed = true;
+        return prev || b;
       }).catch(function (e) {
         // a refresh that failed keeps what was on screen; a first load shows the error
+        failed = true;
         return prev || { debt: fail(e), payments: fail(e), credits: fail(e), refunds: fail(e) };
       }).then(function (next) {
         state.billingLoading = false;
@@ -4049,11 +4138,13 @@
           if (!state.billing) { state.billingWant = null; } else if (!state.billingWant) { state.billingWant = { debt: true, payments: true, credits: true, refunds: true }; }
           return loadBilling();
         }
+        state.billingStale = failed;
         state.billing = next;
         state.debt = next.debt && next.debt.ok === true ? next.debt : false;
         state.payments = next.payments && next.payments.ok === true ? next.payments : null;
         renderNav();
         if (state.area === 'billing') renderMain();
+        if (failed && !billingWaiters.length) { const pid = state.drawer && state.drawer.kind === 'patient' && state.drawer.id; if (pid && typeof $ === 'function' && $('#crm-account')) fillAccountPane(pid); }
         while (billingWaiters.length) { try { billingWaiters.shift()(); } catch (_) { /* a stale drawer */ } }
       });
     }
@@ -4082,6 +4173,7 @@
       el.scrollIntoView({ block: 'nearest' });
     }
     function submitLink(f) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       if (!state.link || state.saving) return Promise.resolve(false);
       const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
       const k = state.link.kind, row = state.link.row;
@@ -4272,11 +4364,57 @@
       if (r.isVoid) return chip('wait', 'בוטלה');
       const vc = receiptVerifyChip(r.confirmStatus);
       return chip(vc.cls, vc.label + (vc.verified ? ' ✓' : ''))
-        + (canVerifyReceipt(state.me, r) ? ' <button type="button" class="btn small verify" data-verify="' + esc(r.id) + '" title="אימות שהכסף התקבל בבנק">אמת</button>' : '');
+        + (canVerifyReceipt(state.me, r) ? ' <button type="button" class="btn small verify" data-verify="' + esc(r.id) + '" title="אימות שהכסף התקבל בבנק">אמת</button>'
+          + ' <button type="button" class="btn small" data-verify-partial="' + esc(r.id) + '" data-reported="' + esc(String(Number(r.amount) || 0)) + '" data-verified="' + esc(String(r.confirmStatus === 'partial' ? Number(r.confirmedAmount) || 0 : 0)) + '" title="אימות חלקי — סכום שהתקבל בפועל">אימות חלקי</button>' : '');
+    }
+    /* Inline form: total verified so far (cumulative), live preview of the rest. No payment / discount inputs. */
+    function openPartialForm(btn) {
+      const id = btn.dataset.verifyPartial, rep = Number(btn.dataset.reported) || 0, was = Number(btn.dataset.verified) || 0;
+      const old = doc.querySelector('.vp-form'); if (old) old.remove();
+      const f = doc.createElement('span'); f.className = 'vp-form'; f.dataset.vpId = id; f.dataset.vpReported = String(rep);
+      f.innerHTML = '<span class="na">דווח ' + esc(fmtMoney(rep)) + (was ? ' · אומת עד כה ' + esc(fmtMoney(was)) : '') + '</span> '
+        + '<input type="text" inputmode="decimal" class="vp-amt" aria-label="סך הסכום שאומת בבנק" placeholder="סך שאומת בבנק"> '
+        + '<span class="vp-prev na" aria-live="polite"></span> <button type="button" class="btn small primary" data-vp-save>אשרי אימות חלקי</button> <button type="button" class="btn small" data-vp-cancel>ביטול</button>';
+      btn.insertAdjacentElement('afterend', f);
+      const inp = f.querySelector('.vp-amt');
+      inp.addEventListener('input', function () {
+        const c = partialVerifyCheck(inp.value, rep);
+        f.querySelector('.vp-prev').textContent = c.error ? (inp.value ? c.error : '') : 'יאומת ' + fmtMoney(c.amount) + ' · יישאר פתוח ' + fmtMoney(c.remaining);
+      });
+      inp.focus();
+    }
+    function savePartial(form) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
+      const id = form.dataset.vpId, rep = Number(form.dataset.vpReported) || 0, c = partialVerifyCheck(form.querySelector('.vp-amt').value, rep);
+      if (c.error) { toast(c.error, true); return Promise.resolve(false); }
+      const body = partialVerifyBody(id, c.amount);
+      if (!body || state.verifying) return Promise.resolve(false);
+      state.verifying = id;
+      const sv = form.querySelector('[data-vp-save]'); if (sv) { sv.disabled = true; sv.setAttribute('aria-busy', 'true'); }
+      const fail = function (msg) { state.verifying = ''; if (sv) { sv.disabled = false; sv.removeAttribute('aria-busy'); } toast(msg, true); return false; };
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+        .then(function (res) {
+          if (!partialAccepted(res, id, c.amount)) return fail(res && res.ok === true ? 'תוצאת האימות החלקי לא ידועה — רענני ובדקי את הקבלה לפני כל פעולה (אין לדווח תשלום חדש)' : verifyRefusal(res));
+          state.verifying = '';
+          obsoleteBillingReadAfterProof();
+          const row = [].concat(res.changed || [], res.unchangedRows || []).filter(function (x) { return x && s(x.id) === s(id); })[0] || {};
+          const by = s(row.confirmedBy) || s(state.me && state.me.user), at = s(row.confirmedAt);
+          if (state.billing && state.billing.payments && Array.isArray(state.billing.payments.receipts)) state.billing.payments = Object.assign({}, state.billing.payments, { receipts: applyPartial(state.billing.payments.receipts, id, c.amount, by, at) });
+          if (state.payments && Array.isArray(state.payments.receipts)) state.payments = Object.assign({}, state.payments, { receipts: applyPartial(state.payments.receipts, id, c.amount, by, at) });
+          if (state.queue && Array.isArray(state.queue.receipts)) state.queue = Object.assign({}, state.queue, { receipts: applyPartial(state.queue.receipts, id, c.amount, by, at) });
+          toast('אומת חלקית ✓ — ' + fmtMoney(c.amount) + ' אומתו; ' + fmtMoney(c.remaining) + ' עדיין פתוחים');
+          renderNav(); renderMain();
+          const pid = state.drawer && state.drawer.kind === 'patient' && state.drawer.id;
+          if (pid && $('#crm-account')) fillAccountPane(pid);
+          return true;
+        })
+        .catch(function () { return fail('תוצאת האימות החלקי לא ידועה — רענני ובדקי את הקבלה לפני כל פעולה (אין לדווח תשלום חדש)'); });
     }
     /* One click → spinner on the button → confirmPayment → the row turns green. The answers on
      * screen are patched from the server's proof; nothing is re-read (a verification moves no money). */
     function verifyReceipt(btn) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       const id = btn.dataset.verify, body = verifyBody(id);
       if (!body || state.verifying) return Promise.resolve(false);
       state.verifying = id;
@@ -4292,12 +4430,13 @@
         .then(function (res) {
           if (!verifyAccepted(res, id)) return fail(res && res.ok === true ? 'האימות לא אושר על ידי השרת — רענני ובדקי' : verifyRefusal(res));
           state.verifying = '';
+          obsoleteBillingReadAfterProof();
           const row = [].concat(res.changed || [], res.unchangedRows || []).filter(function (x) { return x && s(x.id) === s(id); })[0] || {};
           const by = s(row.confirmedBy) || s(state.me && state.me.user), at = s(row.confirmedAt);
           if (state.billing && state.billing.payments && Array.isArray(state.billing.payments.receipts)) state.billing.payments = Object.assign({}, state.billing.payments, { receipts: applyVerified(state.billing.payments.receipts, id, by, at) });
           if (state.payments && Array.isArray(state.payments.receipts)) state.payments = Object.assign({}, state.payments, { receipts: applyVerified(state.payments.receipts, id, by, at) });
           if (state.queue && Array.isArray(state.queue.receipts)) state.queue = Object.assign({}, state.queue, { receipts: applyVerified(state.queue.receipts, id, by, at) });
-          toast('אומת ✓ — התשלום אושר והחוב נסגר');
+          toast('אומת ✓ — הקבלה אומתה במלואה');
           renderNav(); renderMain();
           const pid = state.drawer && state.drawer.kind === 'patient' && state.drawer.id;
           if (pid && $('#crm-account')) fillAccountPane(pid);
@@ -4399,6 +4538,7 @@
       return 'נבחרו ' + rows.length + ' מחזורים של ' + Object.keys(people).length + ' מטופלים · ' + fmtMoney(rows.reduce(function (t, r) { return t + r.balance; }, 0));
     }
     function submitCleanup(f) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       if (state.saving) return Promise.resolve(false);
       const plan = cleanupPlan(cleanupSelected(), f.elements.reason.value, f.elements.note.value);
       if (!plan.ok) { showReportIssues(f, Object.keys(plan.errors).map(function (k) { return { field: k, hebrewMessage: plan.errors[k] }; }), 'יש לתקן את השדות המסומנים'); return Promise.resolve(false); }
@@ -4431,6 +4571,7 @@
     /* «גבייה» (CHANGELOG-billing-sections.md): a secondary menu, one section at a time. */
     function renderBilling() {
       if (!state.billing) { loadBilling(); return '<div class="crm-state">טוען נתוני גבייה…</div>'; }
+      if (state.billingStale === true) return billingReadWarning();
       const b = billingOverview(state.billing.debt, state.billing.payments, state.today);
       const isController = !!(state.me && state.me.view === 'controller');
       const tabs = billingTabsFor(state.me);
@@ -5060,6 +5201,7 @@
       loadBilling(paint);
     }
     function renderAccount(a) {
+      if (state.billingStale === true) return billingReadWarning();
       const me = state.me || {};
       let html = billingRefreshing() ? '<div class="crm-refresh" id="crm-account-refresh" role="status"><span class="spin" aria-hidden="true"></span>מעדכן נתונים…</div>' : '';
       if (a.errors.length) html += '<p class="na">' + esc(a.errors.join(' · ')) + '</p>';
@@ -5080,9 +5222,7 @@
       // an open cycle «ללא דיווח» next to a PAID payment of another date: usually the same money, stamped on the wrong month
       // (CHANGELOG-account-actions-visible.md) — say so, instead of leaving a debt nobody can explain
       if (me.finance && a.openCycles.some(function (c) { return c.kind === 'unrecorded'; }) && a.cycles.some(function (c) { return c.status === 'paid'; }))
-        html += '<p class="na" id="crm-account-mismatch">יש כאן מחזור פתוח «ללא דיווח» וגם תשלום שסומן «שולם» בתאריך אחר (למטה, ב«תשלומים»). אם זה אותו כסף — אל תדווחי שוב: '
-          + (me.canDiscount && state.account && state.account.patient && !inHouse(state.account.patient) ? 'סגרי את המחזור ב«גבייה» → «ניקוי חובות היסטוריים» עם הסיבה «שולם ולא נרשם».' : 'פני לסנדרה לתיקון תאריך התשלום.')
-          + ' אם לא שולם — «דווח תשלום» בשורת המחזור.</p>';
+        html += '<p class="na" id="crm-account-mismatch">אפשרות לאי-התאמת תקופה: יש כאן מחזור פתוח «ללא דיווח» וגם תשלום שסומן «שולם» בתאריך אחר (למטה, ב«תשלומים»). זה רק רמז, לא הוכחה. אל תדווחי שוב ואל תסגרי כהנחה כדי להסתיר את זה — בדקי מול הקבלה הקיימת ומול כיסוי התקופות; אין תיקון אוטומטי.</p>';
       const others = state.account ? reportableCycles(state.account.patient, a, state.today) : [];
       if (me.finance) html += otherCyclePickerHtml(others, state.today, CYCLE_STATUS_LABELS);
       html += '<div id="crm-report"></div>';
@@ -5158,6 +5298,7 @@
       if (fe && !issues.some(function (i) { return i.field === '_form'; })) fe.textContent = message || (issues.length ? 'הדיווח לא נשמר — יש להשלים את השדות המסומנים' : '');
     }
     function submitReport(f, confirmDuplicate) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       if (!state.report || state.saving) return Promise.resolve(false);
       const all = {};
       Array.prototype.forEach.call(f.elements, function (el) { if (el.name && el.type !== 'checkbox' && el.type !== 'radio') all[el.name] = el.value; });
@@ -5241,6 +5382,7 @@
       el.scrollIntoView({ block: 'nearest' });
     }
     function submitSmall(f) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       if (!state.small || !state.account || state.saving) return Promise.resolve(false);
       const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
       const k = state.small.kind, ctx = state.small.ctx, pat = state.account.patient;
@@ -5299,6 +5441,7 @@
       el.scrollIntoView({ block: 'nearest' });
     }
     function submitCredit(f) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       if (!state.creditForm || !state.account || state.saving) return Promise.resolve(false);
       const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
       const cf = state.creditForm;
@@ -5356,6 +5499,7 @@
       el.scrollIntoView({ block: 'nearest' });
     }
     function submitRefundAction(form) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       const task = state.refundAction;
       if (!task || state.saving) return Promise.resolve(false);
       const current = creditsOf(state.billing && state.billing.credits).filter(function (r) { return r.id === task.creditId; })[0];
@@ -5425,6 +5569,7 @@
       el.scrollIntoView({ block: 'nearest' });
     }
     function submitReceiptForm(f) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       if (!state.receiptForm || state.saving) return Promise.resolve(false);
       const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
       const k = state.receiptForm.kind, r = state.receiptForm.receipt;
@@ -5985,13 +6130,17 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-verify],[data-rc-all-rows],[data-billing-retry],[data-debt-preset],[data-fc-preset],[data-bill-tab],[data-bill-go],[data-bill-clear],[data-rc-preset],[data-slice-dim],[data-fc-open],[data-cleanup-jump],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-verify],[data-verify-partial],[data-vp-save],[data-vp-cancel],[data-rc-all-rows],[data-billing-retry],[data-billing-read-retry],[data-debt-preset],[data-fc-preset],[data-bill-tab],[data-bill-go],[data-bill-clear],[data-rc-preset],[data-slice-dim],[data-fc-open],[data-cleanup-jump],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
       if (!t) return;
       if (t.dataset.creditCancel !== undefined) { state.creditForm = null; const box = t.closest('form'); if (box) box.remove(); return; }
       if (t.dataset.creditEdit) return openCreditForm('edit', t.dataset.creditEdit);
       if (t.dataset.creditNew !== undefined) return openCreditForm('new', '');
+      if (t.dataset.verifyPartial) return openPartialForm(t);
+      if (t.dataset.vpCancel !== undefined) { const f = t.closest('.vp-form'); if (f) f.remove(); return; }
+      if (t.dataset.vpSave !== undefined) return savePartial(t.closest('.vp-form'));
       if (t.dataset.verify) return verifyReceipt(t);
       if (t.dataset.rcAllRows !== undefined) { state.rcShowAll = true; return renderMain(); }
+      if (t.dataset.billingReadRetry !== undefined) return retryBillingRead();
       if (t.dataset.billingRetry !== undefined) { resetBilling(); return renderMain(); }
       if (t.dataset.reportCancel !== undefined) { state.report = null; state.small = null; const el = $('#crm-report'); if (el) el.innerHTML = ''; return; }
       if (t.dataset.dueToday !== undefined) { state.dueDate = state.today; return renderMain(); }
@@ -6395,7 +6544,7 @@
 
   return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, landingArea: landingArea, activePatientsCard: activePatientsCard, monthOccupancy: monthOccupancy, occupancyTrend: occupancyTrend, monthRevenue: monthRevenue, monthShift: monthShift, monthLabelHe: monthLabelHe, monthKeyOk: monthKeyOk, normalise: normalise, compute: compute, filterLeads: filterLeads,
     board: board, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
-    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, whenLocal: whenLocal, esc: esc, boot: boot, accountTabVisible: accountTabVisible, accountReadable: accountReadable, receiptVerifyChip: receiptVerifyChip, canVerifyReceipt: canVerifyReceipt, verifyBody: verifyBody, verifyAccepted: verifyAccepted, verifyRefusal: verifyRefusal, applyVerified: applyVerified, unverifiedReceipts: unverifiedReceipts, unverifiedTotal: unverifiedTotal, billingFind: billingFind, FIND_RECEIPTS_CAP: FIND_RECEIPTS_CAP, PAY_KINDS: PAY_KINDS, payKindCheck: payKindCheck, payKindPreview: payKindPreview, CONFIRM_LABELS: CONFIRM_LABELS, RECEIPT_ROWS_CAP: RECEIPT_ROWS_CAP, clearCachedPages: clearCachedPages,
+    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, whenLocal: whenLocal, esc: esc, boot: boot, accountTabVisible: accountTabVisible, accountReadable: accountReadable, receiptVerifyChip: receiptVerifyChip, canVerifyReceipt: canVerifyReceipt, verifyBody: verifyBody, verifyAccepted: verifyAccepted, verifyRefusal: verifyRefusal, applyVerified: applyVerified, partialVerifyCheck: partialVerifyCheck, partialVerifyBody: partialVerifyBody, partialAccepted: partialAccepted, applyPartial: applyPartial, unverifiedReceipts: unverifiedReceipts, unverifiedTotal: unverifiedTotal, billingFind: billingFind, FIND_RECEIPTS_CAP: FIND_RECEIPTS_CAP, PAY_KINDS: PAY_KINDS, payKindCheck: payKindCheck, payKindPreview: payKindPreview, CONFIRM_LABELS: CONFIRM_LABELS, RECEIPT_ROWS_CAP: RECEIPT_ROWS_CAP, clearCachedPages: clearCachedPages,
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
     stageAfter: stageAfter, stageBefore: stageBefore, applyLeadPatch: applyLeadPatch, leadSaveBody: leadSaveBody, saveRefusal: saveRefusal,
     DISPOSITIONS: DISPOSITIONS, CONTACT_RELATIONS: CONTACT_RELATIONS, localPhone: localPhone, leadFormErrors: leadFormErrors, newLeadRow: newLeadRow,

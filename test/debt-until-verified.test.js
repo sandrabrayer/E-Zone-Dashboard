@@ -68,7 +68,7 @@ test('the patient account shows the waiting part; the engine and the write paths
   assert.equal(a.openTotal, 2000, 'the server figure itself is not rewritten');
   assert.equal(a.unverifiedTotal, 1700); assert.deepEqual(a.unverified.map((u) => u.id), ['rcpt-a', 'rcpt-c', 'rcpt-d']);
   assert.ok(SRC.includes('id="crm-debt-unverified"') && SRC.includes('id="crm-account-unverified"'));
-  assert.ok(SRC.includes("toast('אומת ✓ — התשלום אושר והחוב נסגר');"));
+  assert.ok(SRC.includes("toast('אומת ✓ — הקבלה אומתה במלואה');"));
   assert.ok(SRC.includes("'התשלום נשמר ✓ — החוב ייסגר לאחר אימות'"));
   const fn = SRC.slice(SRC.indexOf('function unverifiedReceipts('), SRC.indexOf('function unverifiedTotal('));
   assert.ok(!/fetch|api\(/.test(fn), 'pure: computed from the answers already read');

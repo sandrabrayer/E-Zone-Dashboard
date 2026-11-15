@@ -71,7 +71,8 @@ test('fail-soft: debt not loaded → ok:false + no rows (never «אין חובו
     assert.equal(cd.ok, false); assert.equal(cd.count, 0);
   }
   const cd = core.collectionDebtors(DEBT, { ok: false }, TODAY, '');
-  assert.equal(cd.ok, true); assert.equal(cd.count, 3);
+  // Stage 3: a missing receipts source makes the verification-based total UNKNOWN (ok:false, total:null); known rows stay.
+  assert.equal(cd.ok, false); assert.equal(cd.total, null); assert.equal(cd.count, 3);
   assert.ok(cd.rows.every((r) => r.funder === 'לא הוגדר' && r.lastPaid === ''));
   assert.match(SRC, /חובות לא נטענו <button type="button" class="btn small" data-billing-retry>/);
 });
