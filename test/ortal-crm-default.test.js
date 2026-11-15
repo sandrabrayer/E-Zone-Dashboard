@@ -37,7 +37,7 @@ test('landingArea: the controller view opens on «גבייה»; everyone else ke
 
 test('the landing is applied once (first load only), and Ortal gets a top link to her classic «בקרת גבייה»', () => {
   assert.ok(SRC.includes("if (!state.landed) { state.landed = true; state.area = landingArea(me, state.area); }"));
-  assert.ok(SRC.includes('id="crm-controller-classic"') && SRC.includes('<a href="/?view=classic">בקרת גבייה<small>אימות דיווחים — בדשבורד הרגיל</small></a>'));
+  assert.ok(SRC.includes('id="crm-controller-classic"') && SRC.includes('<a href="/?view=classic">בקרת גבייה<small>אימות חלקי / לא התקבל / כפילות — בדשבורד הרגיל</small></a>'));
 });
 
 test('no new power: the controller allow-list holds no finance write, and every action the «גבייה» area reads is on it', () => {

@@ -93,8 +93,9 @@ test('fmtSigned: a negative amount reads «−₪…»', () => {
 });
 
 test('wiring: «גבייה» reads refundPayoutForecast fail-soft with its other reads; the action is a READ both Vered/Sandra and Ortal may call; every rendered value is escaped', () => {
-  assert.ok(SRC.includes("const refundP = api('refundPayoutForecast').catch("));
-  assert.ok(SRC.includes("state.billing = { debt: res[0], payments: res[1], credits: res[2], refunds: res[3] };"));
+  // a refresh re-reads only the parts a write changed (CHANGELOG-billing-verify-fixes.md); the forecast stays fail-soft
+  assert.ok(SRC.includes("const refundP = !need('refunds') ? Promise.resolve(prev.refunds) : api('refundPayoutForecast').catch(fail);"));
+  assert.ok(SRC.includes("return { debt: res[0], payments: res[1], credits: res[2], refunds: res[3] };"));
   assert.ok(SRC.includes('sliceRefunds(forecastRefunds(state.billing.refunds, state.billing.credits, whole.from, whole.to, state.today), sl)'));
   assert.ok(scope.CONTROLLER_ACTIONS.includes('refundPayoutForecast'), 'Ortal may read it');
   assert.ok(scope.FINANCE_ACTIONS.includes('refundPayoutForecast'), 'finance-gated: Dana never reads it');
