@@ -407,7 +407,9 @@
 // (CHANGELOG-open-debts-upcoming.md). Stacked on v134; monotonic, v17 never reused.
 // v135 → v136: «גבייה»: one-click verification, payment kind, overview search, Ortal's account, faster saves
 // (CHANGELOG-billing-verify-fixes.md). From the live v135; monotonic, v17 never reused.
-var CACHE_VERSION = 'v136';
+// v136 → v137: «חובות פתוחים»: a reported payment stays a debt until it is verified
+// (CHANGELOG-debt-until-verified.md). From the live v136; monotonic, v17 never reused.
+var CACHE_VERSION = 'v137';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
