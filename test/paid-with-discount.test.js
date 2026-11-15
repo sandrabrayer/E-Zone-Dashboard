@@ -81,7 +81,9 @@ test('B: the report values never carry the discount fields', () => {
 
 test('C: the option is offered only to a user who may discount, on an open cycle with a month and a balance', () => {
   assert.match(SRC, /const canPwd = !!\(state\.me && state\.me\.canDiscount && discountCtx && monthOk\(discountCtx\.month\) && Number\(remaining\) > 0\)/);
-  assert.match(SRC, /\(canPwd \? '<label class="wide check"><input type="checkbox" name="withDiscount"/);
+  // «סוג התשלום» (CHANGELOG-billing-verify-fixes.md): the discount is one of three explicit kinds, offered only when canPwd
+  assert.match(SRC, /PAY_KINDS\.filter\(function \(k\) \{ return k\.id !== 'discount' \|\| canPwd; \}\)/);
+  assert.match(SRC, /const withDiscount = !!\(state\.report\.discountCtx && payKind === 'discount'\);/);
   // the two open-cycle callers pass the cycle month + its existing discount
   assert.match(SRC, /openReportForm\(reportCycleFor\(state\.account\.patient, c, state\.account\.data\), c\.balance, \{ month: c\.month, discount: c\.discount \}\)/);
   assert.match(SRC, /openReportForm\(r\.cycle, r\.balance, \{ month: s\(r\.cycle && r\.cycle\.dueDate\)\.slice\(0, 7\), discount: r\.discount \}\)/);

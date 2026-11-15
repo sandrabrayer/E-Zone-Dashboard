@@ -405,7 +405,9 @@
 // (CHANGELOG-other-cycle-report-collapsed.md). From the live v133; monotonic, v17 never reused.
 // v134 → v135: «חובות פתוחים» — any end date, «עד סוף החודש», «צפוי לגבייה עד …» (crm/crm.js)
 // (CHANGELOG-open-debts-upcoming.md). Stacked on v134; monotonic, v17 never reused.
-var CACHE_VERSION = 'v135';
+// v135 → v136: «גבייה»: one-click verification, payment kind, overview search, Ortal's account, faster saves
+// (CHANGELOG-billing-verify-fixes.md). From the live v135; monotonic, v17 never reused.
+var CACHE_VERSION = 'v136';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

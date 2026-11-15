@@ -111,7 +111,7 @@ test('C: a confirm first; one write at a time; the first refusal stops the run a
   assert.match(fn, /if \(why\) return plan\.writes\[i\]\.name/, 'stops at the first refusal');
   assert.match(fn, /done\+\+; return step\(i \+ 1\);/, 'sequential');
   assert.match(fn, /נסגרו ' \+ done \+ ' מתוך '/);
-  assert.match(fn, /resetBilling\(\); renderMain\(\);/, 'the server answer is re-read');
+  assert.match(fn, /resetBilling\(\['debt', 'payments'\]\); renderMain\(\);/, 'the server answer is re-read (the debt and the payments — CHANGELOG-billing-verify-fixes.md)');
 });
 
 test('C: ticking updates the summary without re-rendering (the typed reason survives)', () => {

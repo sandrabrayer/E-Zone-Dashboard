@@ -50,7 +50,7 @@ const DATA = {
   ],
   patients: { ramot: [{ id: 'p1', name: 'דנה כהן', date: daysAgo(30), status: 'active', pay: 6000 }, { id: 'px', name: 'נועה לוי', date: daysAgo(60), status: 'released', exitDate: daysAgo(5), fromLead: 'LX' }], rehab: [{ id: 'p2', name: 'אבי', date: daysAgo(7), status: 'active' }] },
 };
-const QUEUE = { ok: true, receipts: [{ id: 'r1', confirmStatus: 'reported', patientName: 'דנה כהן', houseId: 'ramot', amount: 2500, receivedDate: daysAgo(1), recordedBy: 'ורד', method: 'העברה' }, { id: 'r2', confirmStatus: 'flagged', patientName: 'אבי', houseId: 'rehab', amount: 900, receivedDate: daysAgo(6), recordedBy: 'ורד', flagNote: 'הסכום לא תואם' }] };
+const QUEUE = { ok: true, receipts: [{ id: 'rcpt-1', confirmStatus: 'reported', patientName: 'דנה כהן', houseId: 'ramot', amount: 2500, receivedDate: daysAgo(1), recordedBy: 'ורד', method: 'העברה' }, { id: 'r2', confirmStatus: 'flagged', patientName: 'אבי', houseId: 'rehab', amount: 900, receivedDate: daysAgo(6), recordedBy: 'ורד', flagNote: 'הסכום לא תואם' }] };
 const DEBT = { ok: true, asOf: TODAY,
   totals: { recorded_debt: { count: 1, total: 6000, d0_7: 0, d8_30: 0, d31_60: 0, d61_plus: 6000 }, unrecorded_cycles: { count: 1, total: 5000, d0_7: 5000, d8_30: 0, d31_60: 0, d61_plus: 0 } },
   byHouse: [{ houseId: 'ramot', recorded_debt: { count: 1, total: 6000 }, unrecorded_cycles: { count: 1, total: 5000 } }],
@@ -132,7 +132,7 @@ async function boot(options = {}) {
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
       if (parsed.action === 'saveCredit') saves.push(parsed);
-      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund', 'editReceipt', 'savePayment', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
+      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund', 'editReceipt', 'savePayment', 'confirmPayment', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
       if (['logContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logLeadFlag'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
         : parsed.action === 'getTasks' ? (tasksAnswer ? tasksAnswer() : (parsed.status === 'open' && parsed.proxyUserId !== 'ortal' ? TASKS : { ok: true, total: 0, tasks: [] }))   // Code.gs scopes Ortal to money tasks (none in the fixture)
@@ -148,6 +148,8 @@ async function boot(options = {}) {
         : parsed.action === 'savePayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, payment: { id: parsed.payment && parsed.payment.id, status: parsed.payment && parsed.payment.status, linkStatus: parsed.payment && parsed.payment.linkStatus } })
         : parsed.action === 'saveCredit' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, credit: Object.assign({}, parsed.credit, { id: (parsed.credit && parsed.credit.id) || 'cr-new' }) })
         : parsed.action === 'setBillingDiscount' ? (saveAnswer ? saveAnswer(parsed) : { ok: true })
+        // Ortal's verification (CHANGELOG-billing-verify-fixes.md): the classic contract — the changed rows prove it
+        : parsed.action === 'confirmPayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, changed: ((parsed.confirm && parsed.confirm.ids) || []).map((id) => ({ id, confirmStatus: parsed.confirm.status, confirmedBy: 'אורטל', confirmedAt: '2026-11-15 10:00:00' })), unchanged: 0, unchangedRows: [] })
         : parsed.action === 'upsertBillingOverride' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, override: { id: parsed.override && parsed.override.id } })
         : ['requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund'].indexOf(parsed.action) >= 0
           ? (saveAnswer ? saveAnswer(parsed) : syntheticRefund(parsed))
@@ -682,15 +684,19 @@ test('«שולם עם הנחה» (Vered, CHANGELOG-paid-with-discount.md): the b
     // the unrecorded open cycle: 5,000, month = its start month
     await page.click('#crm-account-open [data-report-open="1"]');
     await page.waitForSelector('form[data-form="payment-report"]');
-    assert.ok(await page.$('form.report [name="withDiscount"]'), 'offered on an open cycle');
+    assert.deepEqual(await page.$$eval('form.report [name="payKind"]', (els) => els.map((e) => e.value + (e.checked ? '*' : ''))), ['full*', 'partial', 'discount'], '«סוג התשלום»: full by default; partial and discount offered on an open cycle');
     assert.equal(await page.isVisible('form.report [name="discountReason"]'), false, 'reason hidden until checked');
     await page.fill('form.report [name="amount"]', '4000');
     await page.selectOption('form.report [name="method"]', 'מזומן');
     await page.fill('form.report [name="payer"]', 'דנה כהן');
     await page.selectOption('form.report [name="invoiceWanted"]', 'no');
-    await page.check('form.report [name="withDiscount"]');
+    // an amount under the balance is never saved as «מלא»: the kind must be chosen
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => /תשלום חלקי/.test(document.querySelector('form.report .err[data-err="payKind"]').textContent));
+    assert.equal(srv.saves.length, 0, 'nothing posted while the kind is not chosen');
+    await page.check('form.report [name="payKind"][value="discount"]');
     assert.equal(await page.isVisible('form.report [name="discountReason"]'), true);
-    assert.match(await page.textContent('form.report [data-pwd-preview]'), /הנחה ₪1,000|הנחה ₪?1,000/);
+    assert.match(await page.textContent('form.report [data-pay-preview]'), /הנחה ₪1,000 = ₪5,000 · המחזור ייסגר/);
     // no reason → nothing posted
     await page.click('form.report button[type="submit"]');
     await page.waitForFunction(() => /סיבה/.test(document.querySelector('form.report .err[data-err="discountReason"]').textContent));
@@ -703,15 +709,29 @@ test('«שולם עם הנחה» (Vered, CHANGELOG-paid-with-discount.md): the b
     assert.equal(rep.amount, '4000');
     assert.equal('withDiscount' in rep, false); assert.equal('discountReason' in rep, false);
     assert.deepEqual(srv.saves[1].discount, { patientId: 'ramot::דנה כהן::' + daysAgo(30), month: daysAgo(3).slice(0, 7), discountAmount: 1000, discountReason: 'סוכם עם המשפחה' });
-    // unchecked → a normal report, no discount
+    // «תשלום חלקי» → a normal report, no discount: the rest stays an open debt
     await page.waitForSelector('#crm-account-open');
     await page.click('#crm-account-open [data-report-open="1"]');
     await page.waitForSelector('form[data-form="payment-report"]');
     await page.fill('form.report [name="amount"]', '4000');
     await page.selectOption('form.report [name="method"]', 'מזומן'); await page.fill('form.report [name="payer"]', 'דנה כהן'); await page.selectOption('form.report [name="invoiceWanted"]', 'no');
+    await page.check('form.report [name="payKind"][value="partial"]');
+    assert.equal(await page.isVisible('form.report [name="discountReason"]'), false, 'no discount reason on a partial payment');
+    assert.match(await page.textContent('form.report [data-pay-preview]'), /תשלום ₪4,000 · יתרת חוב ₪1,000 נשארת פתוחה/);
     await page.click('form.report button[type="submit"]');
     await page.waitForFunction(() => !document.querySelector('form.report'), null, { timeout: 5000 });
-    assert.deepEqual(srv.saves.slice(2).map((x) => x.action), ['reportPayment']);
+    assert.deepEqual(srv.saves.slice(2).map((x) => x.action), ['reportPayment'], 'a partial payment writes no discount');
+    assert.match(await page.textContent('#crm-toast'), /תשלום חלקי נשמר ✓ · יתרת חוב ₪1,000 נשארת פתוחה/);
+    // «תשלום חלקי» with the whole balance is refused — that is a full payment
+    await page.waitForSelector('#crm-account-open');
+    await page.click('#crm-account-open [data-report-open="1"]');
+    await page.waitForSelector('form[data-form="payment-report"]');
+    await page.selectOption('form.report [name="method"]', 'מזומן'); await page.fill('form.report [name="payer"]', 'דנה כהן'); await page.selectOption('form.report [name="invoiceWanted"]', 'no');
+    await page.check('form.report [name="payKind"][value="partial"]');
+    await page.click('form.report button[type="submit"]');
+    await page.waitForFunction(() => /תשלום מלא/.test(document.querySelector('form.report .err[data-err="payKind"]').textContent));
+    assert.equal(srv.saves.length, 3, 'nothing posted');
+    await page.click('form.report [data-report-cancel]');
     // the discount refused by the server: the payment stays saved, the message says what to do
     await page.waitForSelector('#crm-account-open');
     await page.click('#crm-account-open [data-report-open="1"]');
@@ -719,7 +739,7 @@ test('«שולם עם הנחה» (Vered, CHANGELOG-paid-with-discount.md): the b
     saveAnswer = (parsed) => parsed.action === 'setBillingDiscount' ? { ok: false, error: 'forbidden_role' } : { ok: true, receipt: { id: 'rcpt-z' }, cycle: { id: parsed.report.cycle.id } };
     await page.fill('form.report [name="amount"]', '4500');
     await page.selectOption('form.report [name="method"]', 'מזומן'); await page.fill('form.report [name="payer"]', 'דנה כהן'); await page.selectOption('form.report [name="invoiceWanted"]', 'no');
-    await page.check('form.report [name="withDiscount"]');
+    await page.check('form.report [name="payKind"][value="discount"]');
     await page.fill('form.report [name="discountReason"]', 'עיגול');
     await page.click('form.report button[type="submit"]');
     await page.waitForFunction(() => /ההנחה לא נשמרה/.test(document.body.textContent), null, { timeout: 5000 });
@@ -742,7 +762,7 @@ test('«שולם עם הנחה» is not offered on «מחזור אחר» (its ba
     await page.selectOption('#crm-other-cycle', { index: 1 });
     await page.click('[data-report-other]');
     await page.waitForSelector('form[data-form="payment-report"]');
-    assert.equal(await page.$('form.report [name="withDiscount"]'), null, '«מחזור אחר» never offers it');
+    assert.equal(await page.$('form.report [name="payKind"][value="discount"]'), null, '«מחזור אחר» never offers the discount');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });
@@ -1888,3 +1908,186 @@ for (const width of [1366, 390]) {
 function pathForAuditScreenshot(width) {
   return require('node:path').join(process.env.EZONE_AUDIT_SCREENSHOT_DIR, 'dashboard-control-' + width + '.png');
 }
+
+test('verification in the CRM (Ortal; CHANGELOG-billing-verify-fixes.md): an unverified receipt is amber with «אמת»; the click shows a spinner, posts confirmPayment and the row turns green — nothing re-read; a refusal leaves it waiting; Vered has no button', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'ortal', 1366);
+    await page.waitForSelector('#crm-bill-overview', { timeout: 8000 });
+    // the «דיווחים לאימות» card opens what waits — whatever its date
+    await page.click('#crm-bill-overview [data-bill-go*="toVerify"]');
+    await page.waitForSelector('#crm-receipts tr[data-receipt="rcpt-1"]');
+    const cell = '#crm-receipts tr[data-receipt="rcpt-1"] td:last-child';
+    assert.equal(await page.$eval(cell + ' .chip', (e) => e.className + '|' + e.textContent), 'chip today|ממתין לאימות', 'not verified = not green');
+    assert.equal(await page.textContent(cell + ' [data-verify="rcpt-1"]'), 'אמת');
+    assert.notEqual(await page.$eval(cell + ' [data-verify]', (e) => getComputedStyle(e).backgroundColor), 'rgb(22, 163, 74)', 'the button is not a green «done» pill');
+    // a refusal: the receipt keeps waiting and the reason is shown
+    saveAnswer = () => ({ ok: false, error: 'forbidden_role' });
+    await page.click(cell + ' [data-verify="rcpt-1"]');
+    await page.waitForFunction(() => /אין הרשאה לאמת/.test((document.querySelector('#crm-toast') || {}).textContent || ''));
+    assert.equal(await page.$eval(cell + ' .chip', (e) => e.className), 'chip today');
+    assert.equal(await page.$eval(cell + ' [data-verify]', (e) => e.disabled + '|' + e.textContent), 'false|אמת', 'the button is back');
+    // an «ok» that does not name the receipt is not proof
+    saveAnswer = () => ({ ok: true, changed: [] });
+    await page.click(cell + ' [data-verify="rcpt-1"]');
+    await page.waitForFunction(() => /לא אושר על ידי השרת/.test((document.querySelector('#crm-toast') || {}).textContent || ''));
+    assert.equal(await page.$eval(cell + ' .chip', (e) => e.className), 'chip today');
+    // the real thing — the answer is held so the spinner is seen
+    saveAnswer = null;
+    const readsBefore = srv.actions.filter((a) => ['debtAging', 'getPayments', 'getCredits', 'refundPayoutForecast', 'billingControlQueue'].indexOf(a.action) >= 0).length;
+    let release;
+    const held = new Promise((r) => { release = r; });
+    await page.route('**/api/sheets', async (route) => { if (route.request().method() === 'POST') await held; await route.continue(); });
+    await page.click(cell + ' [data-verify="rcpt-1"]');
+    await page.waitForSelector(cell + ' [data-verify][aria-busy="true"]');
+    assert.equal(await page.$eval(cell + ' [data-verify]', (e) => e.disabled + '|' + e.textContent), 'true|מאמת…', 'a spinner while it verifies');
+    release();
+    await page.waitForFunction(() => !document.querySelector('#crm-receipts tr[data-receipt="rcpt-1"]') || /אומת ✓/.test(document.querySelector('#crm-main').textContent + (document.querySelector('#crm-toast') || {}).textContent), null, { timeout: 8000 });
+    await page.unroute('**/api/sheets');
+    const sent = srv.saves.filter((x) => x.action === 'confirmPayment');
+    assert.equal(sent.length, 3);
+    assert.deepEqual(sent[2].confirm, { ids: ['rcpt-1'], status: 'confirmed' });
+    assert.equal(sent[2].proxyUserId, 'ortal');
+    // it left «ממתינים לאימות»; among all receipts it is green, with no button
+    assert.equal(await page.$('#crm-receipts tr[data-receipt="rcpt-1"]'), null, 'gone from the waiting list');
+    await page.selectOption('#crm-rc-status', '');
+    await page.waitForSelector('#crm-receipts tr[data-receipt="rcpt-1"]');
+    assert.equal(await page.$eval(cell + ' .chip', (e) => e.className + '|' + e.textContent), 'chip ok|אומת ✓');
+    assert.equal(await page.$(cell + ' [data-verify]'), null);
+    assert.equal(await page.$('#crm-bill-nav [data-bill-tab="receipts"] .badge'), null, 'nothing left to verify in the menu badge');
+    assert.equal(srv.actions.filter((a) => ['debtAging', 'getPayments', 'getCredits', 'refundPayoutForecast', 'billingControlQueue'].indexOf(a.action) >= 0).length, readsBefore, 'a verification re-reads nothing');
+    // her day: the same receipt left «דיווחים לאימות» there too
+    await page.click('#crm-nav button[data-area="today"]');
+    await page.waitForSelector('.kpis.cards');
+    assert.equal(await page.$eval('.kpis.cards .kpi .v', (e) => e.textContent), '0');
+    assert.deepEqual(errors, []);
+    // Vered sees the status, never the button
+    const v = await open(browser, srv.port, 'vered', 1366);
+    await v.page.click('#crm-nav button[data-area="billing"]');
+    await billTab(v.page, 'receipts');
+    await v.page.waitForSelector('#crm-receipts tr[data-receipt="rcpt-1"]');
+    assert.equal(await v.page.$eval('#crm-receipts tr[data-receipt="rcpt-1"] td:last-child .chip', (e) => e.className + '|' + e.textContent), 'chip today|ממתין לאימות');
+    assert.equal(await v.page.$('#crm-receipts [data-verify]'), null);
+    assert.equal(await v.page.$('#crm-verify-hint'), null);
+    assert.deepEqual(v.errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('Ortal\'s day and the patient «חשבון» (CHANGELOG-billing-verify-fixes.md): «אמת» on the waiting row of «היום שלי»; a debtor row opens the full account — cycles, receipts, funder — read-only, with «אמת» on the receipt', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'ortal', 1366);
+    await page.waitForSelector('#crm-bill-overview', { timeout: 8000 });
+    await billTab(page, 'debts');
+    await page.click('#crm-debtors tbody tr[data-open-patient="p1"] td:nth-child(2)');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"] #crm-account-open');
+    const acc = await page.textContent('#crm-account');
+    assert.match(acc, /חוב פתוח/); assert.match(acc, /₪8,500/); assert.match(acc, /משרד הביטחון/, 'the funder');
+    assert.ok(await page.$('#crm-account-receipts'), 'the receipts');
+    assert.ok(await page.$('#crm-account-cycles'), 'the stamped cycles');
+    assert.ok(!/אין הרשאה לנתוני גבייה/.test(acc), 'she is no longer told she may not see it');
+    // read-only: none of Vered's writes
+    for (const sel of ['[data-report-open]', '[data-report-row]', '[data-discount-open]', '[data-receipt-edit]', '[data-receipt-void]', '#crm-other-cycle-box', '[data-credit-new]', '[data-credit-edit]'])
+      assert.equal(await page.$('#crm-account ' + sel), null, sel + ' is not offered to Ortal');
+    assert.match(await page.textContent('#crm-account-readonly'), /צפייה מלאה בחשבון/);
+    assert.equal(await page.$('#crm-drawer [data-patient-actions]'), null, 'no patient-record actions');
+    assert.equal(await page.$('#crm-drawer [data-contact-open]'), null, 'no contact log');
+    // …and her one action is there
+    await page.click('#crm-account-receipts [data-verify="rcpt-1"]');
+    await page.waitForFunction(() => { const c = document.querySelector('#crm-account-receipts .chip'); return c && c.className === 'chip ok'; }, null, { timeout: 8000 });
+    assert.equal(await page.$('#crm-account-receipts [data-verify]'), null);
+    assert.equal(srv.saves.filter((x) => x.action === 'confirmPayment').length, 1);
+    assert.ok(!srv.actions.some((a) => ['reportPayment', 'saveAll', 'setBillingDiscount', 'editReceipt'].indexOf(a.action) >= 0), 'no write but the verification');
+    assert.deepEqual(errors, []);
+    // a fresh session: the same button on the waiting row of her day
+    const o = await open(browser, srv.port, 'ortal', 1366);
+    await o.page.click('#crm-nav button[data-area="today"]');
+    await o.page.waitForSelector('[data-domain-section="toVerify"] [data-verify="rcpt-1"]');
+    await o.page.click('[data-domain-section="toVerify"] [data-verify="rcpt-1"]');
+    await o.page.waitForFunction(() => !document.querySelector('[data-verify="rcpt-1"]') && document.querySelector('.kpis.cards .kpi .v').textContent === '0', null, { timeout: 8000 });
+    assert.equal(srv.saves.filter((x) => x.action === 'confirmPayment').length, 2);
+    assert.deepEqual(o.errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('search in «גבייה» (CHANGELOG-billing-verify-fixes.md): a name typed on «סקירה» lists its debts, receipts and refunds; an unknown name says so; the section box searches while typing and keeps the caret', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="billing"]');
+    await page.waitForSelector('#crm-bill-overview');
+    assert.equal(await page.$('#crm-bill-find'), null, 'nothing extra without a search');
+    // the top search box, on the overview
+    await page.fill('#crm-search', 'דנה');
+    await page.waitForSelector('#crm-bill-find #crm-find-debtors', { timeout: 5000 });
+    assert.match(await page.textContent('#crm-find-debtors'), /דנה כהן[\s\S]*₪8,500/);
+    assert.match(await page.textContent('#crm-find-receipts'), /דנה כהן[\s\S]*₪2,500[\s\S]*ממתין לאימות/, 'the receipt from any date, with its verification status');
+    assert.match(await page.textContent('#crm-find-refunds'), /דנה כהן/);
+    assert.ok(await page.$('#crm-bill-overview'), 'the overview itself stays under the results');
+    // a result opens the patient's account
+    await page.click('#crm-find-debtors tbody tr[data-open-patient="p1"] td:nth-child(2)');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"] #crm-account-open');
+    await page.click('#crm-drawer-close');
+    // an unknown name
+    await page.fill('#crm-search', 'זזזזז');
+    await page.waitForSelector('#crm-find-none', { timeout: 5000 });
+    assert.match(await page.textContent('#crm-find-none'), /לא נמצא/);
+    await page.click('#crm-bill-slices [data-bill-clear]');
+    await page.waitForFunction(() => !document.querySelector('#crm-bill-find'));
+    assert.equal(await page.inputValue('#crm-search'), '');
+    // the overview's own box: typing alone searches (no Enter, no leaving the field), the caret stays
+    await page.click('#crm-bill-q');
+    await page.keyboard.type('אבי');
+    await page.waitForSelector('#crm-find-people', { timeout: 5000 });
+    assert.match(await page.textContent('#crm-find-people'), /אבי/);
+    assert.equal(await page.evaluate(() => document.activeElement && document.activeElement.id), 'crm-bill-q', 'still typing in the box');
+    await page.keyboard.type(' כ');
+    assert.equal(await page.inputValue('#crm-bill-q'), 'אבי כ', 'the next keys continue the same text');
+    await page.waitForFunction(() => document.querySelector('#crm-search').value === 'אבי כ', null, { timeout: 5000 });   // the debounce settled; both boxes agree
+    // a section's box: the list narrows while typing
+    await page.fill('#crm-search', '');
+    await billTab(page, 'debts');
+    await page.waitForSelector('#crm-debtors tbody tr[data-open-patient="p1"]');
+    await page.click('#crm-bill-q');
+    await page.keyboard.type('זזז');
+    await page.waitForSelector('#crm-debt-none', { timeout: 5000 });
+    assert.equal(await page.$('#crm-debtors'), null);
+    assert.equal(await page.evaluate(() => document.activeElement && document.activeElement.id), 'crm-bill-q');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('speed (CHANGELOG-billing-verify-fixes.md): after a payment report the account stays on screen with «מעדכן נתונים…» and only the debt + payments are read again', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot({ readCacheMs: 0 });
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="clients"]');
+    await page.click('table.tbl tbody tr[data-open-patient="p1"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer [data-tab="account"]');
+    await page.waitForSelector('#crm-account-open');
+    const count = (a) => srv.actions.filter((x) => x.action === a).length;
+    const before = { debt: count('debtAging'), pay: count('getPayments'), cred: count('getCredits'), ref: count('refundPayoutForecast') };
+    await page.click('#crm-account-open [data-report-open="1"]');
+    await page.waitForSelector('form[data-form="payment-report"]');
+    await page.selectOption('form.report [name="method"]', 'מזומן'); await page.fill('form.report [name="payer"]', 'דנה כהן'); await page.selectOption('form.report [name="invoiceWanted"]', 'no');
+    // hold the refresh reads so the in-between state can be seen
+    let release;
+    const held = new Promise((r) => { release = r; });
+    await page.route('**/api/sheets?*', async (route) => { if (/action=(debtAging|getPayments)/.test(route.request().url())) await held; await route.continue(); });
+    await page.click('form.report button[type="submit"]');
+    await page.waitForSelector('#crm-account-refresh', { timeout: 5000 });
+    assert.ok(await page.$('#crm-account-open'), 'the account is still on screen — no blank «טוען…»');
+    assert.ok(!/טוען נתוני חשבון/.test(await page.textContent('#crm-account')));
+    release();
+    await page.waitForFunction(() => !document.querySelector('#crm-account-refresh') && document.querySelector('#crm-account-open'), null, { timeout: 8000 });
+    await page.unroute('**/api/sheets?*');
+    assert.deepEqual({ debt: count('debtAging'), pay: count('getPayments'), cred: count('getCredits'), ref: count('refundPayoutForecast') },
+      { debt: before.debt + 1, pay: before.pay + 1, cred: before.cred, ref: before.ref }, 'two reads, not four');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});

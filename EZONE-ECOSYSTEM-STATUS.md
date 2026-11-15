@@ -1,4 +1,16 @@
-# E-ZONE Ecosystem Status — updated November 14, 2026
+# E-ZONE Ecosystem Status — updated November 15, 2026
+
+## Dashboard CRM «גבייה» — one-click verification, payment kind, search, Ortal's account, faster saves — November 15, 2026
+
+Browser only (no Code.gs, no new action or permission). Ortal (and Sandra) verify a
+receipt with a real «אמת» button in the CRM — spinner, `confirmPayment`, the row turns
+green only on the server's proof; unverified is amber, never green. «דווח תשלום» asks
+«סוג התשלום»: מלא / חלקי (the rest stays a debt) / בהנחה (no debt stays). A name typed on
+«סקירה» now returns debts, receipts, refunds and patients; the section box searches
+while typing. Ortal reads the patient's «חשבון» like Vered (read-only). After a save
+the screen stays and only the changed reads repeat (2 of 4; a verification: none).
+The debt still drops when a payment is REPORTED — verification confirms it (engine
+unchanged). SW cache v136. See `CHANGELOG-billing-verify-fixes.md`.
 
 ## Managers CRM backend — talk threads, committee notes, per-worker house cost — November 14, 2026
 
