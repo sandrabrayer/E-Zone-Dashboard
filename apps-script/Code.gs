@@ -16575,6 +16575,8 @@ function computeContinuityByHouse_(outpatients, ym) {
  *                   see mwDischargeSet_). mode 'clear' / 'none' (15 Oct 2026,
  *                   CHANGELOG-managers-discharge-clear.md) clears the date or
  *                   marks «אין צפי לשחרור». houseData returns it per patient.
+ *   op 'houseStaffCost' { house, month } → the caller's house per-worker
+ *                   month cost + budget lines (14 Nov 2026, mwHouseStaffCost_).
  *   op 'committeeSet' { house, patientName, entryDate, committeeDate, label,
  *                   previousDate, previousLabel, correction, mode } → the
  *                   patient's committee («ועדה») date, appended to
@@ -16585,9 +16587,16 @@ function computeContinuityByHouse_(outpatients, ym) {
  *   staffTalks  — employee, when, summary, follow-up. PRIVATE: a manager sees
  *                 only the talks they wrote; admins (Sandra, Ron) see all.
  *   events      — when, patient, what happened, what was done, follow-up
+ *   committeeNotes — what happened at a committee (14 Nov 2026): patient,
+ *                 date held, participants, summary, decision, next date
+ *   staffTalks threads (14 Nov 2026): talkKind first / followup / outcome,
+ *                 parentId, outcome, agreedActions — APPENDED columns
  * Free text is cleaned (control characters, formula lead-ins and angle
  * brackets stripped, capped). Rows are never physically deleted. */
 const MANAGERS_WORK_SECRET_PROP = 'MANAGERS_WORK_SECRET';
+/* Allowlists (14 Nov 2026). The Managers app shows the Hebrew labels. */
+const MW_TALK_OUTCOMES = ['improved', 'no_change', 'warning', 'hr', 'termination', 'closed'];
+const MW_COMMITTEE_DECISIONS = ['continue', 'extend', 'discharge', 'outpatient', 'other'];
 const MW_FEED_ACTIONS = ['managersOverview', 'managersHouse', 'occupancySnapshots'];
 const MW_LOG_STAMP_COLS = ['followUpDate', 'followUpDone', 'author', 'createdAt', 'deletedAt', 'deletedBy', 'authorId'];
 const MW_LOGS = {
@@ -16603,12 +16612,29 @@ const MW_LOGS = {
     required: ['employeeName', 'talkDate', 'summary'],
     dateField: 'talkDate',
     private: true,
+    // Talk threads (14 Nov 2026, Sandra: «בשיחות עם עובדים צריך גם אפשרות לשיחה
+    // שניה או תוצאה»). APPENDED after the stamp columns (append-only): a
+    // follow-up talk or an outcome points at the FIRST talk of its thread.
+    // A row without talkKind is a first talk (every row before today).
+    extra: { talkKind: ['first', 'followup', 'outcome'], parentId: 'id', outcome: MW_TALK_OUTCOMES, agreedActions: 1000 },
+    thread: true,
   },
   events: {
     sheet: 'ManagersEvents',
     fields: { eventDate: 'date', eventTime: 'time', patientName: 80, whatHappened: 1500, actionTaken: 1500 },
     required: ['eventDate', 'whatHappened'],
     dateField: 'eventDate',
+  },
+  // «מה היה בוועדה» (14 Nov 2026, Sandra: «בועדות אפשרות לרשום מה היה בועדה»).
+  // The coordinators still SET the committee (date, time, type); the house
+  // manager records what happened at it. Visible to the house (its manager,
+  // the next manager, the admins) — not private. committeeId = the
+  // coordinators' committee id when it was picked from the list, else ''.
+  committeeNotes: {
+    sheet: 'ManagersCommitteeNotes',
+    fields: { committeeId: 'id', patientName: 80, heldDate: 'date', participants: 300, summary: 1500, decision: MW_COMMITTEE_DECISIONS, nextDate: 'date' },
+    required: ['patientName', 'heldDate', 'summary'],
+    dateField: 'heldDate',
   },
 };
 const MW_THERAPY_LABELS = { maintenance: 'תחזוקתי', day_2x: 'טיפול יום — פעמיים בשבוע', day_daily: 'טיפול יום — יומי' };
@@ -16625,7 +16651,23 @@ function managersWorkAuthOk_(params) {
 
 function mwColumns_(logKey) {
   const def = MW_LOGS[logKey];
-  return ['id', 'house'].concat(Object.keys(def.fields), MW_LOG_STAMP_COLS);
+  // `extra` columns are APPENDED after the stamps (headers are append-only).
+  return ['id', 'house'].concat(Object.keys(def.fields), MW_LOG_STAMP_COLS, Object.keys(def.extra || {}));
+}
+
+/* All the value fields of a log, in column order: fields, then extra. */
+function mwValueFields_(def) {
+  return Object.assign({}, def.fields, def.extra || {});
+}
+
+/* One submitted value, cleaned by its kind: 'date' | 'time' | 'id' | a max
+ * length | an allowlist array (anything off the list → ''). */
+function mwCleanValue_(kind, v) {
+  if (kind === 'date') return coordIsoDateClean_(v);
+  if (kind === 'time') return mwCleanTime_(v);
+  if (kind === 'id') { const t = String(v == null ? '' : v).trim(); return /^[A-Za-z0-9_-]{1,64}$/.test(t) ? t : ''; }
+  if (Array.isArray(kind)) { const t = String(v == null ? '' : v).trim(); return kind.indexOf(t) >= 0 ? t : ''; }
+  return coordTextClean_(v, kind);
 }
 
 function mwCleanTime_(v) {
@@ -16665,6 +16707,7 @@ function managersWork_(params) {
   if (op === 'logAdd') return mwLogAdd_(caller, params);
   if (op === 'logUpdate') return mwLogUpdate_(caller, params);
   if (op === 'houseCost') return mwHouseCost_(caller, params);
+  if (op === 'houseStaffCost') return mwHouseStaffCost_(caller, params);
   if (op === 'dischargeSet') return mwDischargeSet_(caller, params);
   if (op === 'meetingSummaries') return mwMeetingSummaries_(caller, params);
   if (op === 'feedbackDone') return mwFeedbackDone_(caller, params);
@@ -16725,8 +16768,9 @@ function mwReadLog_(logKey, caller) {
     return true;
   }).map(function (r) {
     const o = { id: String(r.id) };
-    Object.keys(def.fields).forEach(function (f) {
-      const kind = def.fields[f];
+    const vf = mwValueFields_(def);
+    Object.keys(vf).forEach(function (f) {
+      const kind = vf[f];
       o[f] = mwCellText_(r[f], kind === 'time' ? 'time' : kind === 'date' ? 'date' : 'text');
     });
     o.followUpDate = mwCellText_(r.followUpDate, 'date');
@@ -17188,6 +17232,102 @@ function mwHouseCost_(caller, params) {
       available: true, month: d.month, hasActuals: d.hasActuals, stale: d.stale, generatedAt: d.generatedAt,
       total: sum.projectedTotal, confirmed: sum.actualConfirmed, estimated: sum.estimated,
       missingData: sum.missingDataCost, instructors: sum.instructorsCost, budget: budget,
+    },
+  };
+}
+
+/* «תקציב כוח אדם» per worker (14 Nov 2026, Sandra: «לכל מנהל צריך תקציב כוח
+ * אדם עם רשימה מעודכנת של העובדים שלו ומה עלות השכר שלהם»). From the staffing
+ * feed getHouseWorkerCostsForManagers — the SAME Script Properties as
+ * houseCost (STAFFING_SHEETS_URL + STAFFING_COST_SECRET, no new secret). ONLY
+ * the caller's house leaves (decided by the Managers server, re-validated by
+ * mwCaller_). Every value is re-validated here: names / labels cleaned and
+ * capped, numbers rounded, nothing but the documented keys. Unset /
+ * unreachable / a bad answer → { available:false, reason } — never a 0. */
+const MW_STAFF_COST_MAX_WORKERS = 200;
+
+function mwFetchStaffingWorkerCosts_(ym) {
+  const key = 'mw:staffing-worker-cost:v1:' + ym;
+  const hit = cacheGetJson_(key);
+  if (hit && hit.houses) return hit;
+  const props = PropertiesService.getScriptProperties();
+  const url = String(props.getProperty('STAFFING_SHEETS_URL') || '').trim();
+  const secret = String(props.getProperty('STAFFING_COST_SECRET') || '');
+  if (!url || !secret) return { error: 'not_configured' };
+  if (!/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(url)) return { error: 'not_configured' };
+  let resp;
+  try {
+    resp = UrlFetchApp.fetch(url + '?action=getHouseWorkerCostsForManagers&month=' + encodeURIComponent(ym) +
+      '&secret=' + encodeURIComponent(secret), { muteHttpExceptions: true, followRedirects: true });
+  } catch (e) {
+    return { error: 'unreachable' };
+  }
+  let body = null;
+  try { body = JSON.parse(resp.getContentText()); } catch (e) { body = null; }
+  if (!body || body.error || typeof body.houses !== 'object' || body.houses === null) {
+    const err = body && String(body.error || '');
+    return { error: err === 'unauthorized' ? 'unauthorized' : /^unknown action/.test(err) ? 'not_deployed' : 'unreadable' };
+  }
+  const out = { month: String(body.month || ym), hasActuals: !!body.hasActuals, stale: !!body.stale,
+    generatedAt: String(body.feedGeneratedAt || ''), houses: body.houses };
+  if (!out.stale) cachePutJson_(key, out, MW_COST_CACHE_TTL_S);
+  return out;
+}
+
+function mwMoney_(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n) : 0;
+}
+
+function mwHouseStaffCost_(caller, params) {
+  const ym = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(params.month || '')) ? String(params.month) : defaultMonth_();
+  let d;
+  try { d = mwFetchStaffingWorkerCosts_(ym); } catch (e) { d = { error: 'unreadable' }; }
+  if (!d || d.error) return { ok: true, house: caller.house, month: ym, staff: { available: false, reason: (d && d.error) || 'unreadable' } };
+  const ids = MW_STAFFING_HOUSES[caller.house] || [];
+  const workers = {};
+  const order = [];
+  const lines = {};
+  const lineOrder = [];
+  let total = 0, budget = null, found = false;
+  ids.forEach(function (id) {
+    const h = d.houses[id];
+    if (!h || typeof h !== 'object') return;
+    found = true;
+    total += mwMoney_(h.projectedTotal);
+    if (h.budget !== null && h.budget !== undefined && Number.isFinite(Number(h.budget))) budget = (budget || 0) + mwMoney_(h.budget);
+    (Array.isArray(h.workers) ? h.workers : []).forEach(function (w) {
+      if (!w || typeof w !== 'object') return;
+      const name = coordTextClean_(w.name, 80);
+      const k = name || '__other__';
+      if (!workers[k]) { workers[k] = { name: name, roles: [], cost: 0, estimated: false }; order.push(k); }
+      const t = workers[k];
+      (Array.isArray(w.roles) ? w.roles : []).forEach(function (r) {
+        const role = coordTextClean_(r, 40);
+        if (role && t.roles.indexOf(role) < 0 && t.roles.length < 4) t.roles.push(role);
+      });
+      t.cost += mwMoney_(w.cost);
+      if (w.estimated === true) t.estimated = true;
+    });
+    (Array.isArray(h.budgetLines) ? h.budgetLines : []).forEach(function (l) {
+      if (!l || typeof l !== 'object') return;
+      const k = String(l.key || '').replace(/[^A-Za-z0-9_:-]/g, '').slice(0, 40) || 'line';
+      if (!lines[k]) { lines[k] = { key: k, label: coordTextClean_(l.label, 60), budget: null, cost: 0 }; lineOrder.push(k); }
+      const t = lines[k];
+      if (l.budget !== null && l.budget !== undefined && Number.isFinite(Number(l.budget))) t.budget = (t.budget || 0) + mwMoney_(l.budget);
+      t.cost += mwMoney_(l.cost);
+    });
+  });
+  if (!found) return { ok: true, house: caller.house, month: ym, staff: { available: false, reason: 'no_house' } };
+  const list = order.map(function (k) { return workers[k]; }).filter(function (w) { return w.cost !== 0; })
+    .sort(function (a, b) { return (b.cost - a.cost) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0); })
+    .slice(0, MW_STAFF_COST_MAX_WORKERS);
+  return {
+    ok: true, house: caller.house, month: ym,
+    staff: {
+      available: true, month: d.month, hasActuals: d.hasActuals, stale: d.stale, generatedAt: d.generatedAt,
+      total: total, budget: budget, workers: list,
+      budgetLines: lineOrder.map(function (k) { return lines[k]; }),
     },
   };
 }
@@ -17769,16 +17909,30 @@ function mwLogAdd_(caller, params) {
   const entry = parseJsonParam_(params.entry) || {};
   const row = { id: Utilities.getUuid(), house: caller.house };
   const missing = [];
-  Object.keys(def.fields).forEach(function (f) {
-    const kind = def.fields[f];
-    let v;
-    if (kind === 'date') v = coordIsoDateClean_(entry[f]);
-    else if (kind === 'time') v = mwCleanTime_(entry[f]);
-    else v = coordTextClean_(entry[f], kind);
+  const vf = mwValueFields_(def);
+  Object.keys(vf).forEach(function (f) {
+    const v = mwCleanValue_(vf[f], entry[f]);
     row[f] = v;
     if (def.required.indexOf(f) >= 0 && !v) missing.push(f);
   });
   if (missing.length) return { ok: false, error: 'missing_fields', fields: missing };
+  if (def.thread) {
+    // A follow-up talk / an outcome belongs to a thread the caller can see:
+    // its parent is a FIRST talk of THIS house, not deleted, and the caller
+    // is its author or an admin. Never across houses or authors.
+    const kind = row.talkKind || 'first';
+    row.talkKind = kind;
+    if (kind === 'first') { row.parentId = ''; row.outcome = ''; }
+    else {
+      if (!row.parentId) return { ok: false, error: 'missing_fields', fields: ['parentId'] };
+      const parent = mwReadLog_(logKey, caller).filter(function (r) { return r.id === row.parentId; })[0];
+      if (!parent || (parent.talkKind && parent.talkKind !== 'first')) return { ok: false, error: 'not_found' };
+      if (!parent.canEdit) return { ok: false, error: 'forbidden' };
+      if (String(parent.employeeName).trim() !== String(row.employeeName).trim()) return { ok: false, error: 'bad_request' };
+      if (kind === 'outcome' && !row.outcome) return { ok: false, error: 'missing_fields', fields: ['outcome'] };
+      if (kind !== 'outcome') row.outcome = '';
+    }
+  }
   row.followUpDate = coordIsoDateClean_(entry.followUpDate);
   row.followUpDone = '';
   row.author = caller.actor;
