@@ -1977,6 +1977,84 @@ test('verification in the CRM (Ortal; CHANGELOG-billing-verify-fixes.md): an unv
   } finally { await browser.close(); srv.close(); }
 });
 
+test('«אימות חלקי» real clicks (Ortal; CHANGELOG-partial-verify-checkpoint.md): malformed amount posts nothing; 1000 posts ONE confirmPayment partial; a fresh Vered session reads the partial; full «אמת» then replaces (never adds); no report/discount/duplicate. Synthetic fixture, not real GAS/bank UAT', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const snap = JSON.stringify({ q: QUEUE.receipts, p: PAYMENTS.receipts });
+  const srv = await boot({ readCacheMs: 0 });
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  const both = (id) => [QUEUE.receipts, PAYMENTS.receipts].map((l) => l.find((r) => r.id === id)).filter(Boolean);
+  try {
+    saveAnswer = (parsed) => {
+      if (parsed.action !== 'confirmPayment') return { ok: true };
+      const c = parsed.confirm, id = c.ids[0], rows = both(id);
+      if (!rows.length) return { ok: false, error: 'not_found' };
+      rows.forEach((r) => {
+        r.confirmStatus = c.status;
+        r.confirmedAmount = c.status === 'partial' ? c.confirmedAmount : r.amount;
+        if ('verifiedAmount' in r) { r.verifiedAmount = r.confirmedAmount; r.openAmount = Math.round((r.amount - r.confirmedAmount) * 100) / 100; }
+        r.confirmedBy = 'אורטל'; r.confirmedAt = '2026-11-15 10:00:00';
+      });
+      const r0 = rows[0];
+      return { ok: true, changed: [{ id, confirmStatus: r0.confirmStatus, confirmedAmount: r0.confirmedAmount, verifiedAmount: r0.confirmedAmount, openAmount: Math.round((r0.amount - r0.confirmedAmount) * 100) / 100, confirmedBy: 'אורטל', confirmedAt: r0.confirmedAt }], unchanged: 0, unchangedRows: [] };
+    };
+    const openAccount = async (who) => {
+      const s = await open(browser, srv.port, who, 1366);
+      await s.page.waitForSelector('#crm-bill-overview', { timeout: 8000 });
+      await billTab(s.page, 'debts');
+      await s.page.click('#crm-debtors tbody tr[data-open-patient="p1"] td:nth-child(2)');
+      await s.page.waitForSelector('#crm-drawer[aria-hidden="false"] #crm-account-receipts');
+      return s;
+    };
+    const { page, errors } = await openAccount('ortal');
+    const row = '#crm-account-receipts tr[data-receipt="rcpt-1"]';
+    const chipOf = (pg) => pg.$eval('#crm-account-receipts tr[data-receipt="rcpt-1"] .chip', (e) => e.textContent);
+    const posts = () => srv.saves.filter((x) => x.action === 'confirmPayment');
+    await page.click('[data-verify-partial="rcpt-1"]');
+    // malformed / out-of-range amounts post nothing
+    for (const bad of ['abc', '2500', '3000', '1.234', '0']) {
+      await page.fill('.vp-amt', bad);
+      await page.click('[data-vp-save]');
+      await page.waitForFunction(() => /הזיני|חייב להיות/.test((document.querySelector('#crm-toast') || {}).textContent || ''));
+    }
+    assert.equal(posts().length, 0, 'no post for a malformed amount');
+    // 1000 → one confirmPayment, status partial, cumulative total
+    await page.fill('.vp-amt', '1000');
+    await page.click('[data-vp-save]');
+    await page.waitForFunction(() => /אומת חלקית ✓/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 8000 });
+    assert.equal(posts().length, 1);
+    assert.deepEqual(posts()[0].confirm, { ids: ['rcpt-1'], status: 'partial', confirmedAmount: 1000 });
+    assert.equal(posts()[0].proxyUserId, 'ortal');
+    assert.equal(QUEUE.receipts.find((r) => r.id === 'rcpt-1').confirmStatus, 'partial');
+    assert.equal(await chipOf(page), 'אומת חלקית');
+    // a fresh Vered session reads the partial state from the fixture; no verify buttons for her
+    const v = await openAccount('vered');
+    assert.equal(await chipOf(v.page), 'אומת חלקית');
+    assert.equal(await v.page.$('[data-verify-partial]'), null);
+    assert.equal(await v.page.$('#crm-account-receipts [data-verify]'), null);
+    // repeated verification: 1500 REPLACES 1000 (cumulative total, not +1500)
+    await page.click('[data-verify-partial="rcpt-1"]');
+    await page.fill('.vp-amt', '1500');
+    await page.click('[data-vp-save]');
+    await page.waitForFunction(() => /1,500/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 8000 });
+    assert.equal(posts()[1].confirm.confirmedAmount, 1500);
+    assert.equal(both('rcpt-1')[0].confirmedAmount, 1500);
+    // partial → full: confirmed, full amount, no second payment
+    await page.click('#crm-account-receipts [data-verify="rcpt-1"]');
+    await page.waitForFunction(() => { const c = document.querySelector('#crm-account-receipts .chip'); return c && c.className === 'chip ok'; }, null, { timeout: 8000 });
+    assert.deepEqual(posts()[2].confirm, { ids: ['rcpt-1'], status: 'confirmed' });
+    const fin = both('rcpt-1')[0];
+    assert.equal(fin.confirmStatus, 'confirmed'); assert.equal(fin.confirmedAmount, 2500);
+    const v2 = await openAccount('vered');
+    assert.equal(await chipOf(v2.page), 'אומת');
+    assert.equal(QUEUE.receipts.filter((r) => r.id === 'rcpt-1').length, 1, 'no duplicate receipt');
+    assert.ok(!srv.actions.some((a) => ['reportPayment', 'setBillingDiscount', 'saveAll', 'editReceipt'].indexOf(a.action) >= 0), 'only confirmPayment writes');
+    assert.equal(posts().length, 3);
+    assert.deepEqual(errors, []);
+  } finally {
+    const o = JSON.parse(snap); QUEUE.receipts.splice(0, QUEUE.receipts.length, ...o.q); PAYMENTS.receipts.splice(0, PAYMENTS.receipts.length, ...o.p);
+    await browser.close(); srv.close();
+  }
+});
+
 test('Ortal\'s day and the patient «חשבון» (CHANGELOG-billing-verify-fixes.md): «אמת» on the waiting row of «היום שלי»; a debtor row opens the full account — cycles, receipts, funder — read-only, with «אמת» on the receipt', { skip: skip && 'playwright/chromium missing' }, async () => {
   const srv = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });

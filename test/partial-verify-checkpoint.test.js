@@ -72,3 +72,26 @@ test('mismatch hint is neutral; toast for full verification does not claim the w
   assert.match(block, /רמז, לא הוכחה/); assert.match(block, /אל תדווחי שוב/); assert.match(block, /אל תסגרי כהנחה/);
   assert.ok(!/והחוב נסגר/.test(SRC));
 });
+
+test('applyVerified after a partial: derived queue fields follow the full receipt (replace, never add) — BillingControlRules', () => {
+  const rules = require('../lib/billing-control-rules.js');
+  const q = { id: 'rcpt-q1', amount: 2000, confirmStatus: 'reported', verifiedAmount: 0, openAmount: 0 };
+  const p = core.applyPartial([q], 'rcpt-q1', 1000, 'ortal', 't')[0];
+  assert.equal(rules.verifiedAmountOf(p), 1000); assert.equal(rules.openAmountOf(p), 1000);
+  const f = core.applyVerified([p], 'rcpt-q1', 'ortal', 't')[0];
+  assert.equal(f.confirmStatus, 'confirmed'); assert.equal(f.confirmedAmount, 2000);
+  assert.equal(f.verifiedAmount, 2000); assert.equal(f.openAmount, 0);
+  assert.equal(rules.verifiedAmountOf(f), 2000); assert.equal(rules.openAmountOf(f), 0);
+  // shape without derived fields is preserved
+  const g = core.applyVerified([rc({ confirmStatus: 'partial', confirmedAmount: 1000 })], 'rcpt-t1', 'o', 't')[0];
+  assert.ok(!('verifiedAmount' in g) && !('openAmount' in g));
+});
+
+test('partialVerifyBody / partialAccepted refuse Infinity, NaN and rounded-malformed amounts', () => {
+  for (const bad of [Infinity, NaN, 10.005, 1000.123]) assert.equal(core.partialVerifyBody('rcpt-t1', bad), null, String(bad));
+  const ok = (a) => ({ ok: true, changed: [{ id: 'rcpt-t1', confirmStatus: 'partial', confirmedAmount: a }] });
+  assert.equal(core.partialAccepted(ok(1000), 'rcpt-t1', 1000), true);
+  assert.equal(core.partialAccepted(ok(1000.004), 'rcpt-t1', 1000), false);
+  assert.equal(core.partialAccepted(ok(Infinity), 'rcpt-t1', Infinity), false);
+  assert.equal(core.partialAccepted(ok(1000), 'rcpt-t1', 1000.004), false);
+});

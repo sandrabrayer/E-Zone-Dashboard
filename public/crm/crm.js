@@ -1001,14 +1001,20 @@
   }
   function partialVerifyBody(id, amount) {
     const v = s(id).trim(), n = Number(amount);
-    if (v.indexOf('rcpt-') !== 0 || v.length > 300 || /[\u0000-\u001f\u007f]/.test(v) || !(n > 0) || Math.round(n * 100) / 100 !== n) return null;
+    if (v.indexOf('rcpt-') !== 0 || v.length > 300 || /[\u0000-\u001f\u007f]/.test(v) || !isFinite(n) || !(n > 0) || Math.round(n * 100) / 100 !== n) return null;
     return { action: 'confirmPayment', confirm: { ids: [v], status: 'partial', confirmedAmount: n } };
   }
   /* Proof: ok===true AND this exact receipt, status partial, AND the exact confirmedAmount we sent. */
   function partialAccepted(res, id, amount) {
     if (!res || res.ok !== true) return false;
+    const want = Number(amount);
+    if (!isFinite(want) || !(want > 0) || Math.round(want * 100) / 100 !== want) return false;
     return [].concat(Array.isArray(res.changed) ? res.changed : [], Array.isArray(res.unchangedRows) ? res.unchangedRows : [])
-      .some(function (r) { return r && s(r.id) === s(id) && s(r.confirmStatus) === 'partial' && r.confirmedAmount !== '' && r.confirmedAmount !== null && r.confirmedAmount !== undefined && Math.round(Number(r.confirmedAmount) * 100) === Math.round(Number(amount) * 100); });
+      .some(function (r) {
+        if (!r || s(r.id) !== s(id) || s(r.confirmStatus) !== 'partial' || r.confirmedAmount === '' || r.confirmedAmount === null || r.confirmedAmount === undefined) return false;
+        const got = Number(r.confirmedAmount);
+        return isFinite(got) && got > 0 && Math.round(got * 100) / 100 === got && got === want;
+      });
   }
   function applyPartial(list, id, amount, by, at) {
     if (!Array.isArray(list)) return list;
@@ -1030,7 +1036,14 @@
    * no debt and no amount — only who vouches for the money). Returns new objects; pure. */
   function applyVerified(list, id, by, at) {
     if (!Array.isArray(list)) return list;
-    return list.map(function (r) { return r && s(r.id) === s(id) ? Object.assign({}, r, { confirmStatus: 'confirmed', confirmedAmount: Number(r.amount) > 0 ? Number(r.amount) : r.confirmedAmount, confirmedBy: s(by) || s(r.confirmedBy), confirmedAt: s(at) || s(r.confirmedAt), flagNote: '' }) : r; });
+    return list.map(function (r) {
+      if (!r || s(r.id) !== s(id)) return r;
+      const o = Object.assign({}, r, { confirmStatus: 'confirmed', confirmedAmount: Number(r.amount) > 0 ? Number(r.amount) : r.confirmedAmount, confirmedBy: s(by) || s(r.confirmedBy), confirmedAt: s(at) || s(r.confirmedAt), flagNote: '' });
+      /* Derived queue fields (when present) must follow, or verifiedAmountOf trusts a stale partial value. Replace, never add. */
+      if ('verifiedAmount' in r) o.verifiedAmount = Number(r.amount) > 0 ? Number(r.amount) : r.verifiedAmount;
+      if ('openAmount' in r) o.openAmount = 0;
+      return o;
+    });
   }
   /* ---- A debt closes when the money is VERIFIED (CHANGELOG-debt-until-verified.md) ----
    * Sandra 15/11/2026: a reported payment is a claim, not money in the bank. Until Ortal
@@ -4334,7 +4347,7 @@
       return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
         .then(function (res) {
-          if (!partialAccepted(res, id, c.amount)) return fail(res && res.ok === true ? 'האימות החלקי לא אושר על ידי השרת — רענני ובדקי' : verifyRefusal(res));
+          if (!partialAccepted(res, id, c.amount)) return fail(res && res.ok === true ? 'תוצאת האימות החלקי לא ידועה — רענני ובדקי את הקבלה לפני כל פעולה (אין לדווח תשלום חדש)' : verifyRefusal(res));
           state.verifying = '';
           const row = [].concat(res.changed || [], res.unchangedRows || []).filter(function (x) { return x && s(x.id) === s(id); })[0] || {};
           const by = s(row.confirmedBy) || s(state.me && state.me.user), at = s(row.confirmedAt);
@@ -4347,7 +4360,7 @@
           if (pid && $('#crm-account')) fillAccountPane(pid);
           return true;
         })
-        .catch(function () { return fail('האימות החלקי לא נשמר — בדקי את החיבור ונסי שוב'); });
+        .catch(function () { return fail('תוצאת האימות החלקי לא ידועה — רענני ובדקי את הקבלה לפני כל פעולה (אין לדווח תשלום חדש)'); });
     }
     /* One click → spinner on the button → confirmPayment → the row turns green. The answers on
      * screen are patched from the server's proof; nothing is re-read (a verification moves no money). */

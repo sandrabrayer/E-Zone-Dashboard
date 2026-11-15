@@ -15,3 +15,10 @@ Late-read-vs-verification race, failed-readback stale state, receipt-source miss
 
 ## Evidence
 `node --test test/partial-verify-checkpoint.test.js` plus the directly changed suites. Full suite/Chromium: left to CI.
+
+## Surgical correction
+- `applyVerified` now also sets `verifiedAmount` (full receipt amount) and `openAmount` (0) when those derived fields are present, so `BillingControlRules.verifiedAmountOf` no longer trusts a stale partial value after a partial → full verification. Receipts without them keep their shape. Replace, never add.
+- `partialVerifyBody` / `partialAccepted`: finite, positive, ≤2-decimal amounts only; exact equality, no rounding-based acknowledgement.
+- `savePartial` failure/malformed acknowledgement now says the verification result is UNKNOWN (refresh and check; do not report a new payment). No automatic retry.
+- Tests: unit regressions in `test/partial-verify-checkpoint.test.js`; one real-click browser test in `test/crm-shell-browser.test.js` (synthetic fixture, not real GAS/bank UAT). Chromium was not installed in this worker, so the browser test was NOT run here — CI executes it.
+- #393 (late-read overwrite, silent readback, missing-source false zero, refund navigation) remains open.
