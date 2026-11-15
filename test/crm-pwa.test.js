@@ -26,8 +26,9 @@ function loadSw() {
 }
 const sw = loadSw();
 
-test('sw.js: v141 (monotonic from the live v93 via v94…v131, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
-  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v141');
+test('sw.js: v142 (monotonic from the live v93 via v94…v131, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
+  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v142');
+  assert.ok(SW_SRC.includes('v141 → v142:') && SW_SRC.includes('CHANGELOG-maccabi-leads.md'));
   assert.ok(SW_SRC.includes('v140 → v141:') && SW_SRC.includes('CHANGELOG-stay-length-report.md'));
   assert.ok(SW_SRC.includes('v139 → v140:') && SW_SRC.includes('CHANGELOG-dana-bonus-tab.md'));
   assert.ok(SW_SRC.includes('v138 → v139:') && SW_SRC.includes('CHANGELOG-partial-verify-checkpoint.md'));

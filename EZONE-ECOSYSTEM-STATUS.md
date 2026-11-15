@@ -1,5 +1,14 @@
 # E-ZONE Ecosystem Status — updated November 15, 2026
 
+## Dashboard CRM — «לידים» → «מכבי»: Maccabi leads and their documents — November 15, 2026
+
+CRM only (no Code.gs, no new column). «לידים» → «מכבי» lists the leads whose source / name
+says מכבי, with the five required documents per lead (✗ חסר → ◐ אצל המטופל/ת → ✓ התקבל), the
+fixed message to the family (copy / WhatsApp), `maccabi@ezone-house.co.il`, and «+ ליד מכבי».
+The ticks are one line («מסמכי מכבי: …») in the lead's own note, saved through the existing
+lead write — the Leads header cannot take a column (the closed / removed sheets mirror it).
+SW cache v142. See `CHANGELOG-maccabi-leads.md`.
+
 ## Dashboard CRM — «משך שהייה»: the stay-length report — November 15, 2026
 
 Display only. New «משך שהייה» tab (Vered, Sandra, Dana): one line per stay — patient, house,
