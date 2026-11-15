@@ -2202,3 +2202,6 @@ test('a debt closes on verification (Ortal; CHANGELOG-debt-until-verified.md): t
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });
+
+// Reviewer-authored correctness probes (billing read integrity); mutable synthetic source, not production UAT.
+require('./billing-read-integrity-browser.cjs')({ test, assert, skip, playwright, chromiumPath, boot, open, PAYMENTS, QUEUE, TODAY, setSaveAnswer: (v) => { saveAnswer = v; } });

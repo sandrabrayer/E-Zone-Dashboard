@@ -1502,7 +1502,9 @@
     });
     rows.sort(function (a, c) { return c.oldestDays - a.oldestDays || c.balance - a.balance || a.name.localeCompare(c.name, 'he'); });
     const total = Math.round(rows.reduce(function (t, r) { return t + r.balance; }, 0) * 100) / 100;
-    return { ok: !!d, error: d ? '' : s(debt && debt.error || 'not_loaded'), asOf: b.asOf, funder: want, rows: rows, count: rows.length, total: total,
+    // Stage 3: a verification-based total needs BOTH required sources. Missing / ok:false / malformed → unknown (null), never 0.
+    const known = !!(d && Array.isArray(d.byPatient) && payments && payments.ok === true && Array.isArray(payments.receipts));
+    return { ok: known, known: known, error: known ? '' : s((debt && debt.ok === false && debt.error) || (payments && payments.ok === false && payments.error) || 'not_loaded'), asOf: b.asOf, funder: want, rows: rows, count: rows.length, total: known ? total : null,
       inHouse: rows.filter(function (r) { return r.inHouse; }).length, all: b.patients.length, range: rg,
       unverified: Math.round(rows.reduce(function (t, r) { return t + r.unverified; }, 0) * 100) / 100, unverifiedCount: rows.reduce(function (t, r) { return t + r.unverifiedCount; }, 0) };
   }

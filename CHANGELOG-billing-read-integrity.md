@@ -16,3 +16,9 @@
 - Retry runs `loadBilling` (forced debt/payments GETs) and repaints the open account; it never POSTs. A failed refresh repaints an open account even with no waiters.
 - `requireFreshBilling()` guards the entry of full/partial verify, report, discount/amount (small), link, cleanup, credit, refund action and receipt edit — open forms and Today actions are blocked too.
 - Tests: vm helper + source-wiring tests in `test/billing-read-integrity.test.js` (not browser). Pending: missing-source-is-not-zero (Stage 3) and integrated Chromium tests. SW139 unchanged.
+
+## Stage 3 (partial) — unknown source is not zero
+- `collectionDebtors` now returns `ok:false` and `total:null` unless `debt.ok===true` with `byPatient[]` and `payments.ok===true` with `receipts[]`. Healthy empty arrays remain a valid 0; valid-source arithmetic unchanged. The Debts list already renders its "not loaded" panel on `ok:false`.
+- Reviewer-authored `test/billing-read-integrity-browser.cjs` wired at the end of `test/crm-shell-browser.test.js` (unmodified).
+- Tests: `test/billing-unknown-source.test.js` (actual helper). Chromium probes not run in the worker; CI runs them.
+- NOT done: explicit availability flags in `patientAccount` / `billingOverview`, search debt-free classification from unknown sources, Today stale-total hiding after `billingStale` (Today card already shows partial when payments are unavailable).
