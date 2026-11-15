@@ -2747,7 +2747,7 @@
     if (finance) {
       collection.forEach(function (r) { money.push(r); });
       funderExceptions(c, payments, today).forEach(function (r) { money.push(r); });
-      if (debt && debt.ok !== false && Array.isArray(debt.byPatient)) {
+      if (debt && debt.ok === true && Array.isArray(debt.byPatient)) {
         debtCount = 0;
         debt.byPatient.forEach(function (p) {
           (p.cycles || []).forEach(function (cy) {
@@ -2759,7 +2759,7 @@
           });
         });
       } else if (debt === null || debt === undefined) debtCount = null; else debtCount = false;
-      if (payments && payments.ok !== false) verificationRows(payments, today).forEach(function (r) { money.push(r); });
+      if (payments && payments.ok === true && Array.isArray(payments.receipts)) verificationRows(payments, today).forEach(function (r) { money.push(r); });
     }
     const all = [].concat(money, calls, meetings, followup, fresh, houses, otherTasks).filter(function (r) { return passes(r, f); });
     all.forEach(function (r) { r.lastContact = contactAvailable ? lastContactText(lastOf(r)) : 'יומן הקשר אינו זמין'; r.domain = r.domain || (money.indexOf(r) >= 0 ? 'collection' : calls.indexOf(r) >= 0 ? 'calls' : meetings.indexOf(r) >= 0 ? 'meetings' : followup.indexOf(r) >= 0 ? 'followup' : fresh.indexOf(r) >= 0 ? 'newleads' : houses.indexOf(r) >= 0 ? 'integrity' : 'calls'); });
@@ -2777,7 +2777,7 @@
       const toCollect = countOf(byDomain.collection, function (r) { return r.kind !== 'receipt_reported' && dueNow(r); });
       // A count sourced from THREE independent reads is never a complete zero if even
       // one of debt, open Tasks or receipts has failed / has not arrived yet.
-      const paymentsAvailable = !!(payments && payments.ok !== false && (Array.isArray(payments.receipts) || Array.isArray(payments.payments)));
+      const paymentsAvailable = !!(payments && payments.ok === true && Array.isArray(payments.receipts));
       const collectionComplete = debtCount !== null && debtCount !== false && tasksAvailable && paymentsAvailable;
       const collectionLoading = debtCount === null || tasks === undefined || payments === undefined;
       cards.push({ id: 'collection', label: 'גבייה לביצוע', value: collectionComplete ? toCollect : null,
@@ -3324,7 +3324,7 @@
       return renderMyDay(c);
     }
     /* ---- Stage 2: «היום שלי» ---- */
-    function model(c) { return myDay(c, state.tasks, state.index, state.debt, state.today, state.me, { house: state.filters.house, owner: state.filters.owner }, state.payments); }
+    function model(c) { const st = state.billingStale === true; return myDay(c, state.tasks, state.index, st ? false : state.debt, state.today, state.me, { house: state.filters.house, owner: state.filters.owner }, st ? null : state.payments); }
     function rowButtons(r) {
       const b = [];
       const subj = r.subjectKind + ':' + r.subjectId;
@@ -3407,7 +3407,7 @@
         const rows = m.byDomain[d.id] || [];
         if (d.onlyIfAny && !rows.length && state.domain !== d.id) return;
         main += '<section class="domain acc-' + d.id + '" data-domain-section="' + d.id + '"><div class="group-title"><strong>' + esc(d.label) + '</strong> <span class="n chip">' + rows.length + '</span>'
-          + (d.id === 'collection' && m.sourceState.collection !== 'complete' ? ' <span class="chip ' + (m.sourceState.collection === 'loading' ? 'wait">טוען…' : 'late">מידע חלקי') + '</span>' : '') + (d.id === 'calls' && !state.tasks ? ' <span class="chip ' + (state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '') + (d.id === 'newleads' && (!m.sourceState.contact || !m.sourceState.tasks) ? ' <span class="chip ' + (state.index === undefined || state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '')
+          + (d.id === 'collection' && m.sourceState.collection !== 'complete' ? ' <span class="chip ' + (m.sourceState.collection === 'loading' ? 'wait">טוען…' : 'late">מידע חלקי') + '</span>' + (m.sourceState.collection === 'partial' ? ' <button type="button" class="btn small" data-billing-read-retry>נסי לטעון נתונים מחדש</button>' : '') : '') + (d.id === 'calls' && !state.tasks ? ' <span class="chip ' + (state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '') + (d.id === 'newleads' && (!m.sourceState.contact || !m.sourceState.tasks) ? ' <span class="chip ' + (state.index === undefined || state.tasks === undefined ? 'wait">טוען…' : 'late">המידע אינו זמין') + '</span>' : '')
           + '<span class="grow"></span>' + (d.id === 'newleads' && rows.length ? '<button type="button" class="btn small" data-area="triage">סבב בירור — אחת אחרי השנייה</button>' : '') + (state.domain ? '<button type="button" class="link" data-domain="' + d.id + '">חזרה לכל התחומים</button>' : '') + '</div>'
           + rowsBlock(rows, state.domain ? 0 : 8) + '</section>';
       });
@@ -4097,7 +4097,10 @@
       const repaint = function () {
         const pid = state.drawer && state.drawer.kind === 'patient' && state.drawer.id;
         if (pid && $('#crm-account')) fillAccountPane(pid);
+        if (state.area === 'today') renderMain();   // the Today card consumes state.debt / state.payments
       };
+      // Today's own reads may have failed without the loader ever running: re-read exactly the sources it consumes (GET only)
+      if (state.billing && state.billingStale !== true && !state.billingWant && !(state.debt && state.debt.ok === true && state.payments && state.payments.ok === true)) state.billingWant = { debt: true, payments: true };
       loadBilling(repaint);
       if (state.area === 'billing') renderMain();
     }

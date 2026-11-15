@@ -118,7 +118,7 @@ module.exports = function (h) {
     const srv = await boot({ readCacheMs: 0, debt: { ok: true, asOf: TODAY, byPatient: [], totals: {}, byHouse: [] } });
     const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
     try {
-      const { page, errors } = await open(browser, srv.port, 'ortal', 1366);
+      const { page, errors } = await open(browser, srv.port, 'sandra', 1366);
       await page.click('#crm-nav button[data-area="billing"]');
       await page.waitForSelector('[data-billing-stale]');
       assert.doesNotMatch(await page.textContent('#crm-main'), /אין חובות|ללא חוב פתוח/);

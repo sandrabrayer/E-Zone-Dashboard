@@ -22,3 +22,7 @@
 - Reviewer-authored `test/billing-read-integrity-browser.cjs` wired at the end of `test/crm-shell-browser.test.js` (unmodified).
 - Tests: `test/billing-unknown-source.test.js` (actual helper). Chromium probes not run in the worker; CI runs them.
 - NOT done: explicit availability flags in `patientAccount` / `billingOverview`, search debt-free classification from unknown sources, Today stale-total hiding after `billingStale` (Today card already shows partial when payments are unavailable).
+
+## Final bounded pass
+- Today finance card/rows now require strict sources (`debt.ok===true` + `byPatient[]`; `payments.ok===true` + `receipts[]`) and are quarantined while `billingStale`; otherwise value is unknown (null/dash + «מידע חלקי») with a read-only retry button that re-fetches the sources Today consumes. Healthy empty = valid 0. Non-financial tasks unaffected. Reported-money policy unchanged.
+- Test harness fixes: DOM stubs (`doc`, `$`) for the loader vm; the unavailable-receipts browser probe now runs as Sandra (Ortal has no Clients). No role/UI changes. SW139 kept.

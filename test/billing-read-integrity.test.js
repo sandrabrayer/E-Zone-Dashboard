@@ -14,7 +14,8 @@ const okDebt = (n) => ({ ok: true, byPatient: n ? [{ id: 'p1' }] : [] });
 const okPay = () => ({ ok: true, receipts: [], payments: [] });
 function harness(apiImpl, state) {
   const calls = [];
-  const ctx = { state, billingWaiters: [], calls, renderNav() {}, renderMain() {}, String, Promise,
+  const doc = { querySelector: () => null, querySelectorAll: () => [], createElement: () => ({ dataset: {} }) };
+  const ctx = { state, doc, $: () => null, billingWaiters: [], calls, renderNav() {}, renderMain() {}, String, Promise,
     api: (name) => { calls.push(name); return apiImpl(name); } };
   vm.createContext(ctx);
   vm.runInContext(CODE + ';this.loadBilling=loadBilling;this.valid=billingSourcesValid;', ctx);
@@ -85,4 +86,23 @@ test('2B: every finance write entry guards first; renderers quarantine; retry is
   const body = SRC.slice(rr, SRC.indexOf('function loadBilling(', rr));
   assert.ok(body.includes('loadBilling('));
   assert.doesNotMatch(body, /fetch|reportPayment|confirmPayment|setBillingDiscount/);
+});
+
+/* Final pass — Today consumes state.debt / state.payments (initial reads), strict on the ACTUAL myDay. */
+test('Today collection card: missing/failed/malformed receipts are unknown (not 0); healthy empty is a valid 0', () => {
+  const C = require('../public/crm/crm.js');
+  const me = { view: 'full', user: 'ורד', finance: true };
+  const debtOk = { ok: true, byPatient: [] };
+  const run = (debt, pay) => C.myDay(C.compute({ ok: true, leads: [], patients: {}, dischargedPatients: [], irrelevantLeads: [], removedLeads: [] }, '2026-11-15'), [], { ok: true, leads: {}, patients: {}, flags: {} }, debt, '2026-11-15', me, {}, pay);
+  const val = (m) => m.cards.find((x) => x.id === 'collection');
+  for (const bad of [null, { ok: false }, { ok: true }, { ok: true, payments: [] }]) {
+    const m = run(debtOk, bad);
+    assert.equal(val(m).value, null); assert.equal(m.sourceState.collection, bad === null ? 'partial' : 'partial');
+  }
+  const healthy = run(debtOk, { ok: true, receipts: [], payments: [] });
+  assert.equal(val(healthy).value, 0); assert.equal(healthy.sourceState.collection, 'complete');
+});
+test('Today wiring: stale quarantines the model inputs; retry button exists and re-reads', () => {
+  assert.match(SRC, /const st = state\.billingStale === true; return myDay\(c, state\.tasks, state\.index, st \? false : state\.debt/);
+  assert.match(SRC, /sourceState\.collection === 'partial' \? ' <button[^']*data-billing-read-retry/);
 });
