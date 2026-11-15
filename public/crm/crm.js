@@ -4076,25 +4076,37 @@
       state.billingGen = (state.billingGen || 0) + 1;
       return true;
     }
+    /* Stage 2A: strict REQUIRED-source shape. Healthy empty arrays are valid; null / ok:false / missing arrays are not. */
+    function billingSourcesValid(b) {
+      return !!(b && b.debt && b.debt.ok === true && Array.isArray(b.debt.byPatient)
+        && b.payments && b.payments.ok === true && Array.isArray(b.payments.receipts) && Array.isArray(b.payments.payments));
+    }
     function loadBilling(then) {
       if (typeof then === 'function') billingWaiters.push(then);
       if (state.billingLoading) return;
-      const prev = state.billing, want = state.billingWant;
+      const prev = state.billing, stale = state.billingStale === true;
+      const want = stale ? { debt: true, payments: true } : state.billingWant;
       if (prev && !want) return;
+      let failed = false;
       state.billingLoading = true; state.billingWant = null;
       const gen = state.billingGen || 0;
       const need = function (k) { return !prev || !!(want && want[k]); };
+      const reuse = !prev && !stale;
       const fail = function (e) { return { ok: false, error: String(e && e.message || e) }; };
       // debtAging / getPayments are read once at boot for the «גבייה לטיפול» card (finance); reused on the FIRST open only
-      const debtP = !need('debt') ? Promise.resolve(prev.debt) : (!prev && state.debt && state.debt.ok === true ? Promise.resolve(state.debt) : api('debtAging'));
-      const payP = !need('payments') ? Promise.resolve(prev.payments) : (!prev && state.payments && state.payments.ok === true ? Promise.resolve(state.payments) : api('getPayments'));
-      const credP = !need('credits') ? Promise.resolve(prev.credits) : api('getCredits');
+      const debtP = !need('debt') ? Promise.resolve(prev.debt) : (reuse && state.debt && state.debt.ok === true ? Promise.resolve(state.debt) : api('debtAging'));
+      const payP = !need('payments') ? Promise.resolve(prev.payments) : (reuse && state.payments && state.payments.ok === true ? Promise.resolve(state.payments) : api('getPayments'));
+      const credP = !need('credits') ? Promise.resolve(prev.credits) : api('getCredits').catch(function () { return { ok: false, error: 'unavailable' }; });
       // refundPayoutForecast feeds «צפי תזרים» (CHANGELOG-cashflow-refunds.md); fail-soft — the page never waits on its failure
       const refundP = !need('refunds') ? Promise.resolve(prev.refunds) : api('refundPayoutForecast').catch(fail);
       Promise.all([debtP, payP, credP, refundP]).then(function (res) {
-        return { debt: res[0], payments: res[1], credits: res[2], refunds: res[3] };
+        const b = { debt: res[0], payments: res[1], credits: res[2], refunds: res[3] };
+        if (billingSourcesValid(b)) return b;
+        failed = true;
+        return prev || b;
       }).catch(function (e) {
         // a refresh that failed keeps what was on screen; a first load shows the error
+        failed = true;
         return prev || { debt: fail(e), payments: fail(e), credits: fail(e), refunds: fail(e) };
       }).then(function (next) {
         state.billingLoading = false;
@@ -4103,6 +4115,7 @@
           if (!state.billing) { state.billingWant = null; } else if (!state.billingWant) { state.billingWant = { debt: true, payments: true, credits: true, refunds: true }; }
           return loadBilling();
         }
+        state.billingStale = failed;
         state.billing = next;
         state.debt = next.debt && next.debt.ok === true ? next.debt : false;
         state.payments = next.payments && next.payments.ok === true ? next.payments : null;
