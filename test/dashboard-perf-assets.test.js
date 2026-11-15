@@ -434,7 +434,8 @@ test('D: CACHE_VERSION is v133 (monotonic from v132; v17 burned, never reused)',
   // v134: CHANGELOG-other-cycle-report-collapsed.md (from the live v133).
   // v135: CHANGELOG-open-debts-upcoming.md (from v134).
   // v136: CHANGELOG-billing-verify-fixes.md (from v135).
-  assert.equal(v, 'v136');
+  // v137: CHANGELOG-debt-until-verified.md (from v136).
+  assert.equal(v, 'v137');
   assert.notEqual(v, 'v17');
 });
 

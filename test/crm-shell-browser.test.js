@@ -358,14 +358,14 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
     assert.equal(await page.$('#crm-debtors'), null, 'the overview holds numbers only — no list is shown twice');
     const ov = await page.$$eval('#crm-bill-overview .kpi', (els) => els.map((e) => [e.querySelector('.l').textContent, e.querySelector('.v').textContent]));
     const card = (re) => ov.filter((x) => re.test(x[0]))[0][1];
-    assert.equal(card(/^חוב פתוח/), '₪11,000'); assert.equal(card(/^התקבל ב-30 יום/), '₪2,500'); assert.equal(card(/^דיווחים לאימות/), '1');
+    assert.equal(card(/^חוב פתוח/), '₪13,500', 'the server\'s open debt + the ₪2,500 reported and not verified yet (CHANGELOG-debt-until-verified.md)'); assert.equal(card(/^התקבל ב-30 יום/), '₪2,500'); assert.equal(card(/^דיווחים לאימות/), '1');
     assert.deepEqual(await page.$$eval('#crm-bill-aging .kpi .v', (els) => els.map((e) => e.textContent)), ['₪5,000', '₪0', '₪0', '₪6,000'], 'the four aging buckets');
     assert.match(await page.textContent('#crm-main'), /דשבורד רגיל/);
     assert.equal(await page.$$eval('#crm-main .links a', (els) => els.map((e) => e.getAttribute('href')).every((h) => h === '/?view=classic')), true, 'every action links to the classic dashboard (view=classic survives the switch)');
     await billTab(page, 'debts');
     await page.waitForSelector('#crm-debtors');
     const main = await page.textContent('#crm-main');
-    assert.match(main, /דנה כהן/); assert.match(main, /רמות השבים/); assert.match(main, /1 ללא דיווח/); assert.match(main, /70 ימים/); assert.match(main, /₪8,500/);
+    assert.match(main, /דנה כהן/); assert.match(main, /רמות השבים/); assert.match(main, /1 ללא דיווח/); assert.match(main, /70 ימים/); assert.match(main, /₪11,000/);
     assert.equal(await page.$('#crm-receipts'), null, 'one section at a time');
     // the debtor row opens the patient drawer
     await page.click('#crm-debtors tbody tr td:nth-child(2)');
@@ -456,7 +456,7 @@ test('C9 «חשבון» tab (Vered): a patient drawer shows open cycles, stamped
     await page.click('#crm-drawer [data-tab="account"]');
     await page.waitForSelector('#crm-account-open');
     const acc = await page.textContent('#crm-account');
-    assert.match(acc, /חוב פתוח/); assert.match(acc, /₪8,500/); assert.match(acc, /2 מחזורים/);
+    assert.match(acc, /חוב פתוח/); assert.match(acc, /₪11,000/); assert.match(acc, /2 מחזורים/);
     assert.match(acc, /ללא דיווח/); assert.match(acc, /משרד הביטחון/); assert.match(acc, /₪2,500/); assert.match(acc, /אמא/); assert.match(acc, /חלקי/);
     assert.match(acc, new RegExp(core.fmtDate(daysAgo(4)).replace(/\//g, '\\/')), 'DD/MM/YYYY');
     assert.equal(await page.$$eval('#crm-account-receipts tbody tr', (els) => els.length), 1);
@@ -823,10 +823,10 @@ test('«גבייה» sections (Vered; CHANGELOG-cashflow-forecast.md, CHANGELOG-
       await billTab(page, 'debts');
       await page.waitForSelector('#crm-debtors');
       if (process.env.CRM_SHOT_DIR) await page.screenshot({ path: require('node:path').join(process.env.CRM_SHOT_DIR, 'sections-' + width + '.png'), fullPage: true });
-      assert.match(await page.textContent('#crm-debtors-title'), /1 חייבים · ₪8,500/);
-      assert.match(await page.textContent('#crm-debtors'), /דנה כהן.*משרד הביטחון.*₪8,500.*70 ימים/);
+      assert.match(await page.textContent('#crm-debtors-title'), /1 חייבים · ₪11,000/);
+      assert.match(await page.textContent('#crm-debtors'), /דנה כהן.*משרד הביטחון.*₪11,000.*70 ימים/);
       assert.equal(await page.inputValue('#crm-debt-group'), 'funder');
-      assert.match(await page.textContent('#crm-debt-groups'), /משרד הביטחון.*1.*₪8,500.*100%/);
+      assert.match(await page.textContent('#crm-debt-groups'), /משרד הביטחון.*1.*₪11,000.*100%/);
       // a group row narrows the list to that funder (and the same row widens it back)
       await page.click('#crm-debt-groups tbody tr td:nth-child(2)');
       await page.waitForFunction(() => document.querySelector('#crm-due-funder').value === 'משרד הביטחון');
@@ -851,7 +851,7 @@ test('«גבייה» sections (Vered; CHANGELOG-cashflow-forecast.md, CHANGELOG-
       assert.equal(await page.isHidden('#crm-calc-bar'), true, 'no bar until something is ticked');
       await page.$eval('#crm-debtors tbody', (e) => { e.dataset.mark = 'same'; });
       await page.click('#crm-debtors tbody tr td.pick input');
-      assert.equal(await page.textContent('#crm-calc-sum'), 'נבחרו 1 מתוך 1 · חובות פתוחים · סה"כ ₪8,500');
+      assert.equal(await page.textContent('#crm-calc-sum'), 'נבחרו 1 מתוך 1 · חובות פתוחים · סה"כ ₪11,000');
       assert.equal(await page.getAttribute('#crm-drawer', 'aria-hidden'), 'true', 'ticking does not open the patient');
       assert.equal(await page.$eval('#crm-debtors tbody', (e) => e.dataset.mark), 'same', 'no re-render — the list does not jump');
       assert.equal(await page.isChecked('#crm-debtors [data-calc-all]'), true, 'all rows ticked → the header box follows');
@@ -870,7 +870,7 @@ test('«גבייה» sections (Vered; CHANGELOG-cashflow-forecast.md, CHANGELOG-
       assert.match(await page.textContent('#crm-debtors-title'), /0 חייבים · ₪0/);
       await page.click('[data-debt-preset="all"]');
       await page.waitForSelector('#crm-debtors');
-      assert.match(await page.textContent('#crm-debtors-title'), /1 חייבים · ₪8,500/);
+      assert.match(await page.textContent('#crm-debtors-title'), /1 חייבים · ₪11,000/);
       // «עד סוף החודש» (CHANGELOG-open-debts-upcoming.md): any end date; past debt + what is due by then, split
       assert.equal(await page.getAttribute('#crm-debt-to', 'max'), null, 'no max=today cap');
       assert.equal(await page.$('#crm-debt-split'), null, 'no split while the period ends today or earlier');
@@ -880,12 +880,12 @@ test('«גבייה» sections (Vered; CHANGELOG-cashflow-forecast.md, CHANGELOG-
       assert.equal(await page.inputValue('#crm-debt-from'), '');
       const split = await page.$$eval('#crm-debt-split .kpi', (els) => els.map((e) => [e.querySelector('.v').textContent, e.querySelector('.l').textContent]));
       assert.equal(split.length, 3);
-      assert.deepEqual(split[0], ['₪8,500', 'חוב עבר · עד היום'], 'past debt unchanged');
+      assert.deepEqual(split[0], ['₪11,000', 'חוב עבר · עד היום'], 'past debt unchanged');
       assert.match(split[1][1], /^צפוי לגבייה עד /); assert.match(split[2][1], /^סה"כ לגבייה עד /);
       const num = (t) => Number(t.replace(/[^\d]/g, ''));
       assert.equal(num(split[2][0]), num(split[0][0]) + num(split[1][0]), 'total = past + upcoming');
       assert.match(await page.textContent('#crm-debt-up-title'), /^צפוי לגבייה עד /);
-      assert.match(await page.textContent('#crm-debtors-title'), /1 חייבים · ₪8,500/, 'the past-debt list is the same');
+      assert.match(await page.textContent('#crm-debtors-title'), /1 חייבים · ₪11,000/, 'the past-debt list is the same');
       await page.click('[data-debt-preset="all"]');
       await page.waitForFunction(() => !document.querySelector('#crm-debt-split'));
       // a debtor row opens «חשבון»
@@ -1984,7 +1984,7 @@ test('Ortal\'s day and the patient «חשבון» (CHANGELOG-billing-verify-fixe
     await page.click('#crm-debtors tbody tr[data-open-patient="p1"] td:nth-child(2)');
     await page.waitForSelector('#crm-drawer[aria-hidden="false"] #crm-account-open');
     const acc = await page.textContent('#crm-account');
-    assert.match(acc, /חוב פתוח/); assert.match(acc, /₪8,500/); assert.match(acc, /משרד הביטחון/, 'the funder');
+    assert.match(acc, /חוב פתוח/); assert.match(acc, /₪11,000/); assert.match(acc, /משרד הביטחון/, 'the funder');
     assert.ok(await page.$('#crm-account-receipts'), 'the receipts');
     assert.ok(await page.$('#crm-account-cycles'), 'the stamped cycles');
     assert.ok(!/אין הרשאה לנתוני גבייה/.test(acc), 'she is no longer told she may not see it');
@@ -2023,7 +2023,7 @@ test('search in «גבייה» (CHANGELOG-billing-verify-fixes.md): a name typed
     // the top search box, on the overview
     await page.fill('#crm-search', 'דנה');
     await page.waitForSelector('#crm-bill-find #crm-find-debtors', { timeout: 5000 });
-    assert.match(await page.textContent('#crm-find-debtors'), /דנה כהן[\s\S]*₪8,500/);
+    assert.match(await page.textContent('#crm-find-debtors'), /דנה כהן[\s\S]*₪11,000/);
     assert.match(await page.textContent('#crm-find-receipts'), /דנה כהן[\s\S]*₪2,500[\s\S]*ממתין לאימות/, 'the receipt from any date, with its verification status');
     assert.match(await page.textContent('#crm-find-refunds'), /דנה כהן/);
     assert.ok(await page.$('#crm-bill-overview'), 'the overview itself stays under the results');
@@ -2088,6 +2088,34 @@ test('speed (CHANGELOG-billing-verify-fixes.md): after a payment report the acco
     await page.unroute('**/api/sheets?*');
     assert.deepEqual({ debt: count('debtAging'), pay: count('getPayments'), cred: count('getCredits'), ref: count('refundPayoutForecast') },
       { debt: before.debt + 1, pay: before.pay + 1, cred: before.cred, ref: before.ref }, 'two reads, not four');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('a debt closes on verification (Ortal; CHANGELOG-debt-until-verified.md): the reported ₪2,500 is still in «חובות פתוחים», marked; «אמת» removes it from the list, the overview and the account', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'ortal', 1366);
+    await page.waitForSelector('#crm-bill-overview', { timeout: 8000 });
+    assert.match(await page.textContent('#crm-ov-debt'), /₪13,500[\s\S]*מתוכו ₪2,500 דווח וממתין לאימות/);
+    await billTab(page, 'debts');
+    assert.match(await page.textContent('#crm-debtors-title'), /1 חייבים · ₪11,000/);
+    assert.match(await page.textContent('#crm-debtors'), /₪11,000 מתוכו ₪2,500 ממתין לאימות/);
+    assert.match(await page.textContent('#crm-debt-unverified'), /כולל ₪2,500 שדווחו כשולמו וממתינים לאימות/);
+    // verify it from the patient's account
+    await page.click('#crm-debtors tbody tr[data-open-patient="p1"] td:nth-child(2)');
+    await page.waitForSelector('#crm-account-unverified');
+    assert.match(await page.textContent('#crm-account .kv'), /₪11,000[\s\S]*מתוכו ₪2,500 דווח וממתין לאימות/);
+    await page.click('#crm-account-receipts [data-verify="rcpt-1"]');
+    await page.waitForFunction(() => !document.querySelector('#crm-account-unverified') && /₪8,500/.test(document.querySelector('#crm-account .kv').textContent), null, { timeout: 8000 });
+    assert.match(await page.textContent('#crm-toast'), /אומת ✓ — התשלום אושר והחוב נסגר/);
+    await page.click('#crm-drawer-close');
+    // the list and the overview dropped by the verified amount — with no re-read
+    assert.match(await page.textContent('#crm-debtors-title'), /1 חייבים · ₪8,500/);
+    assert.equal(await page.$('#crm-debt-unverified'), null);
+    await billTab(page, 'overview');
+    assert.match(await page.textContent('#crm-ov-debt'), /₪11,000/); assert.ok(!/ממתין לאימות/.test(await page.textContent('#crm-ov-debt')));
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });

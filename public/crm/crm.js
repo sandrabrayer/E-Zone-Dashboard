@@ -1000,6 +1000,26 @@
     if (!Array.isArray(list)) return list;
     return list.map(function (r) { return r && s(r.id) === s(id) ? Object.assign({}, r, { confirmStatus: 'confirmed', confirmedBy: s(by) || s(r.confirmedBy), confirmedAt: s(at) || s(r.confirmedAt), flagNote: '' }) : r; });
   }
+  /* ---- A debt closes when the money is VERIFIED (CHANGELOG-debt-until-verified.md) ----
+   * Sandra 15/11/2026: a reported payment is a claim, not money in the bank. Until Ortal
+   * verifies it, the CRM keeps the reported amount in «חובות פתוחים», marked «דווח — ממתין
+   * לאימות»; «אמת» removes it. The server engine is NOT changed (it still nets every
+   * live receipt): this is added back here, from getPayments, for the CRM's lists only.
+   *   reported / flagged → the whole amount still waits
+   *   partial            → amount − confirmedAmount still waits
+   *   confirmed / void   → nothing
+   * → [{ id, patientUid, patientKey, name, houseId, amount, receivedDate, dueDate, status }]. Pure. */
+  function unverifiedReceipts(payments) {
+    return receiptsOf(payments).filter(function (r) { return !r.isVoid && r.amount > 0 && s(r.id).indexOf('rcpt-') === 0 && r.confirmStatus !== 'confirmed'; }).map(function (r) {
+      const part = r.confirmStatus === 'partial' && r.confirmedAmount > 0 && r.confirmedAmount < r.amount ? r.amount - r.confirmedAmount : r.amount;
+      return { id: r.id, patientUid: r.patientUid, patientKey: r.patientId, name: r.patientName, houseId: r.houseId, amount: Math.round(part * 100) / 100,
+        receivedDate: r.receivedDate, dueDate: r.dueDate || r.coverageStart, status: r.confirmStatus || 'reported' };
+    }).filter(function (r) { return r.amount > 0; });
+  }
+  function unverifiedTotal(payments) {
+    const rows = unverifiedReceipts(payments);
+    return { count: rows.length, total: Math.round(rows.reduce(function (t, r) { return t + r.amount; }, 0) * 100) / 100 };
+  }
   /* ---- «סוג התשלום» in «דווח תשלום» (CHANGELOG-billing-verify-fixes.md) ----
    * full     the whole balance — the cycle closes
    * partial  less than the balance — the rest STAYS an open debt
@@ -1032,7 +1052,7 @@
         receivedDate: sheetDay(o.receivedDate), amount: Number(o.amount) || 0, method: s(o.method), payer: s(o.payer), funder: s(o.funder),
         confirmStatus: s(o.confirmStatus), cycleId: s(o.cycleId), reference: s(o.reference), status: s(o.status), dueDate: sheetDay(o.dueDate),
         coverageStart: sheetDay(o.coverageStart), coverageEnd: sheetDay(o.coverageEnd), invoiceWanted: s(o.invoiceWanted), invoiceTo: s(o.invoiceTo),
-        flagNote: s(o.flagNote), recordedBy: s(o.recordedBy),
+        flagNote: s(o.flagNote), recordedBy: s(o.recordedBy), confirmedAmount: Number(o.confirmedAmount) || 0,
         isVoid: /^(void|מבוטל)$/i.test(s(o.status)) };
     });
   }
@@ -1100,10 +1120,17 @@
    * to pay, and the patients with nothing owed. `refunds` = refundsView(…) rows. null for an
    * empty search. Pure. */
   const FIND_RECEIPTS_CAP = 20;
-  function billingFind(q, b, payments, refunds, patients, today) {
+  function billingFind(q, b, payments, refunds, patients, today, debtRows) {
     const base = billingSearch(b, q, patients);
     if (!base) return null;
     const slice = billSlice({ q: base.q });
+    // the debtors as «חובות פתוחים» lists them — the money waiting for verification included (CHANGELOG-debt-until-verified.md)
+    if (Array.isArray(debtRows)) {
+      base.debtors = debtRows.filter(function (r) { return sliceHit(slice, r.name, r.houseId); });
+      const owing = {};
+      base.debtors.forEach(function (r) { owing[r.id] = true; });
+      base.people = base.people.filter(function (x) { return !owing[x.id]; });
+    }
     const rc = receiptsView(payments, slice, { from: '', to: '' }, today);
     const rf = (refunds && Array.isArray(refunds.rows) ? refunds.rows : []).filter(function (r) { return sliceHit(slice, r.name, r.houseId); });
     const sum = function (rows, k) { return Math.round(rows.reduce(function (t, r) { return t + (Number(r[k]) || 0); }, 0) * 100) / 100; };
@@ -1384,7 +1411,7 @@
    *   - `funder` narrows the list (the «לגבייה בתאריך» funder filter);
    *   - total = the sum of the listed balances.
    * Pure: (debtAging answer, getPayments answer, today, funder filter). */
-  function collectionDebtors(debt, payments, today, funder, range) {
+  function collectionDebtors(debt, payments, today, funder, range, patients) {
     const d = debt && debt.ok !== false ? debt : null;
     // «חובות לפי תקופה» (CHANGELOG-table-calculator.md): keep only the open cycles whose billing day (the cycle's
     // start) is inside [from, to] — either end may be empty. The SAME cycles and balances, fewer of them; then
@@ -1406,13 +1433,33 @@
       if (want && f !== want) return;
       let last = '';
       receipts.forEach(function (r) { if (x.id && (r.patientUid === x.id || r.patientId === x.id) && r.receivedDate > last) last = r.receivedDate; });
-      rows.push({ id: x.id, name: x.name, houseId: x.houseId, houseName: x.houseName, funder: f, balance: x.balance, cycles: x.cycles, unrecorded: x.unrecorded,
-        oldestDays: x.oldestDays, bucket: x.bucket, grace: x.grace, inHouse: x.inHouse, status: x.status, lastPaid: last });
+      rows.push({ id: x.id, key: keys[x.id] || '', name: x.name, houseId: x.houseId, houseName: x.houseName, funder: f, balance: x.balance, cycles: x.cycles, unrecorded: x.unrecorded,
+        oldestDays: x.oldestDays, bucket: x.bucket, grace: x.grace, inHouse: x.inHouse, status: x.status, lastPaid: last, unverified: 0, unverifiedCount: 0 });
+    });
+    // reported, not yet verified = still a debt here (CHANGELOG-debt-until-verified.md); in a period: by the cycle's billing day
+    if (d) unverifiedReceipts(p).forEach(function (u) {
+      if (rg.on && !(u.dueDate && (!rg.from || u.dueDate >= rg.from) && (!rg.to || u.dueDate <= rg.to))) return;
+      let row = rows.filter(function (r) { return (u.patientUid && r.id === u.patientUid) || (u.patientKey && r.key === u.patientKey); })[0];
+      const days = Math.max(0, daysBetween(u.dueDate || u.receivedDate, s(today)) || 0);
+      if (!row) {
+        const pat = (Array.isArray(patients) ? patients : []).filter(function (x) { return x && u.patientUid && s(x.id) === u.patientUid; })[0] || null;
+        const f = funderOnDay(p && p.funders, u.patientUid, u.patientKey, s(today)) || FUNDER_UNSET_LABEL;
+        if (want && f !== want) return;
+        let last = '';
+        receipts.forEach(function (r) { if ((u.patientUid && r.patientUid === u.patientUid) || (u.patientKey && r.patientId === u.patientKey)) { if (r.receivedDate > last) last = r.receivedDate; } });
+        row = { id: u.patientUid, key: u.patientKey, name: pat ? s(pat.name) : u.name, houseId: pat ? s(pat.houseId) : u.houseId, houseName: houseName(pat ? pat.houseId : u.houseId), funder: f, balance: 0, cycles: 0, unrecorded: 0,
+          oldestDays: 0, bucket: 'd0_7', grace: false, inHouse: pat ? inHouse(pat) : false, status: pat ? s(pat.status) : '', lastPaid: last, unverified: 0, unverifiedCount: 0 };
+        rows.push(row);
+      }
+      row.balance = Math.round((row.balance + u.amount) * 100) / 100;
+      row.unverified = Math.round((row.unverified + u.amount) * 100) / 100; row.unverifiedCount++;
+      if (days > row.oldestDays) { row.oldestDays = days; row.bucket = days <= 7 ? 'd0_7' : days <= 30 ? 'd8_30' : days <= 60 ? 'd31_60' : 'd61_plus'; }
     });
     rows.sort(function (a, c) { return c.oldestDays - a.oldestDays || c.balance - a.balance || a.name.localeCompare(c.name, 'he'); });
     const total = Math.round(rows.reduce(function (t, r) { return t + r.balance; }, 0) * 100) / 100;
     return { ok: !!d, error: d ? '' : s(debt && debt.error || 'not_loaded'), asOf: b.asOf, funder: want, rows: rows, count: rows.length, total: total,
-      inHouse: rows.filter(function (r) { return r.inHouse; }).length, all: b.patients.length, range: rg };
+      inHouse: rows.filter(function (r) { return r.inHouse; }).length, all: b.patients.length, range: rg,
+      unverified: Math.round(rows.reduce(function (t, r) { return t + r.unverified; }, 0) * 100) / 100, unverifiedCount: rows.reduce(function (t, r) { return t + r.unverifiedCount; }, 0) };
   }
   /* A debt period: { from, to } of ISO days, either may be empty; a reversed pair is swapped; junk → no range. Pure. */
   function debtRange(range) {
@@ -1791,6 +1838,8 @@
     }).sort(function (a, b) { return a.dueDate < b.dueDate ? 1 : a.dueDate > b.dueDate ? -1 : 0; });
     const receipts = receiptsOf(p).filter(function (r) { return rowIsPatient(r, id, key); }).sort(function (a, b) { return a.receivedDate < b.receivedDate ? 1 : a.receivedDate > b.receivedDate ? -1 : 0; });
     const receivedTotal = Math.round(receipts.reduce(function (t, r) { return t + r.amount; }, 0) * 100) / 100;
+    const waiting = unverifiedReceipts(p).filter(function (u) { return (u.patientUid && u.patientUid === id) || (key && u.patientKey === key); });
+    const waitingTotal = Math.round(waiting.reduce(function (t, u) { return t + u.amount; }, 0) * 100) / 100;
     const funders = (p && Array.isArray(p.funders) ? p.funders : []).filter(function (f) { return rowIsPatient(f, id, key); }).map(function (f) {
       return { funder: s(f.funder), effectiveFrom: sheetDay(f.effectiveFrom), setBy: s(f.setBy) };
     }).sort(function (a, b) { return a.effectiveFrom < b.effectiveFrom ? 1 : a.effectiveFrom > b.effectiveFrom ? -1 : 0; });
@@ -1798,7 +1847,7 @@
     if (!d) errors.push('חובות: ' + s(debt && debt.error || 'לא נטען'));
     if (!p) errors.push('תשלומים: ' + s(payments && payments.error || 'לא נטען'));
     return { patientId: id, patientKey: key, openTotal: openTotal, openCycles: open, settledCycles: mine ? (Number(mine.settledCycles) || 0) : 0, cycles: cycles, receipts: receipts,
-      receivedTotal: receivedTotal, currentFunder: funders.length ? funders[0].funder : '', funders: funders, errors: errors };
+      receivedTotal: receivedTotal, unverified: waiting, unverifiedTotal: waitingTotal, currentFunder: funders.length ? funders[0].funder : '', funders: funders, errors: errors };
   }
 
   /* ---- C10: «דווח תשלום» inside the CRM (CHANGELOG-crm-payment-report.md) ----
@@ -4157,7 +4206,7 @@
      * aging bucket, in-house / released, and a «חתך לפי» summary. A row opens «חשבון». */
     function renderDebts(b, patients) {
       const sl = billSliceNow();
-      const cd = collectionDebtors(state.billing.debt, state.billing.payments, state.today, '', { from: state.debtFrom, to: state.debtTo });
+      const cd = collectionDebtors(state.billing.debt, state.billing.payments, state.today, '', { from: state.debtFrom, to: state.debtTo }, patients);
       const rg = cd.range;
       const bucket = DEBT_BUCKET_LABELS[state.billingFilter] ? state.billingFilter : '';
       const status = state.debtStatus === 'in' || state.debtStatus === 'out' ? state.debtStatus : '';
@@ -4182,14 +4231,15 @@
         + '<div class="kpi"><span class="v">' + esc(fmtMoney(up.total)) + '</span><span class="l">צפוי לגבייה עד ' + esc(fmtDate(up.to)) + '</span></div>'
         + '<div class="kpi"><span class="v">' + esc(fmtMoney(Math.round((v.total + up.total) * 100) / 100)) + '</span><span class="l">סה"כ לגבייה עד ' + esc(fmtDate(up.to)) + '</span></div></div>';
       html += '<p class="na">חובות עבר (מחזורים שמועד החיוב שלהם עבר) נכון ל-' + esc(fmtDate(cd.asOf)) + ' — אינם בצפי התזרים.' + (rg.on ? ' <strong>מוצגים רק מחזורים שיום החיוב שלהם בתקופה שנבחרה.</strong>' : '') + ' ' + v.inHouse + ' בבית, ' + (v.count - v.inHouse) + ' משוחררים. פתיחת שורה → «חשבון» של המטופל/ת.'
+        + (cd.unverified > 0 ? ' <strong id="crm-debt-unverified">כולל ' + esc(fmtMoney(cd.unverified)) + ' שדווחו כשולמו וממתינים לאימות של אורטל (' + cd.unverifiedCount + ') — החוב נסגר רק כשהתשלום מאומת.</strong>' : '')
         + (up.on ? ' מחזורים שיום החיוב שלהם אחרי היום — בנפרד, ב«צפוי לגבייה עד ' + esc(fmtDate(up.to)) + '» (מטופלים בבית; ביטוח לאומי / מכבי / משרד הביטחון — שוטף +30).' : '') + '</p>';
       if (dim) html += groupTable('crm-debt-groups', DEBT_GROUPS[dim], debtGroups(v.rows, dim), dim, dim === 'funder' ? sl.funder : dim === 'house' ? sl.house : dim === 'bucket' ? bucket : status);
       if (!v.rows.length) html += '<p class="na" id="crm-debt-none">' + (rg.on ? 'אין חובות פתוחים שיום החיוב שלהם בתקופה שנבחרה' + (sliceOn(sl) || bucket || status ? ' ובסינון הזה.' : '.') : sliceOn(sl) || bucket || status ? 'אין חובות בסינון הזה.' : 'אין חובות עבר לגבייה.') + '</p>';
       else html += '<div class="tbl-wrap"><table class="tbl" id="crm-debtors"><thead><tr><th>מטופל/ת</th><th>בית</th><th>גורם מממן</th><th>סכום חוב</th><th>מחזורים</th><th>ימים בפיגור</th><th>תשלום אחרון</th><th>סטטוס</th></tr></thead><tbody>'
         + v.rows.map(function (r) {
           const st = r.bucket === 'd61_plus' ? 'late' : r.bucket === 'd31_60' ? 'today' : 'ok';
-          return '<tr data-open-patient="' + esc(r.id) + '" data-open-tab="account"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(r.funder) + '</td><td>' + esc(fmtMoney(r.balance)) + '</td><td>' + r.cycles + (r.unrecorded ? ' <span class="na">(' + r.unrecorded + ' ללא דיווח)</span>' : '') + '</td><td>'
-            + chip(st, r.oldestDays + ' ימים') + (r.grace ? ' ' + chip('wait', 'גוף מממן') : '') + '</td><td>' + esc(r.lastPaid ? fmtDate(r.lastPaid) : '—') + '</td><td>' + esc(r.inHouse ? 'בבית' : (r.status === 'released' ? 'שוחרר/ה' : r.status)) + '</td></tr>';
+          return '<tr data-open-patient="' + esc(r.id) + '" data-open-tab="account"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(r.funder) + '</td><td>' + esc(fmtMoney(r.balance)) + (r.unverified > 0 ? ' ' + chip('today', (r.unverified < r.balance ? 'מתוכו ' + fmtMoney(r.unverified) + ' ' : '') + 'ממתין לאימות') : '') + '</td><td>' + r.cycles + (r.unrecorded ? ' <span class="na">(' + r.unrecorded + ' ללא דיווח)</span>' : '') + '</td><td>'
+            + chip(st, r.oldestDays + ' ימים') + (r.grace ? ' ' + chip('wait', 'גוף מממן') : '') + '</td><td>' + esc(r.lastPaid ? fmtDate(r.lastPaid) : '—') + '</td><td>' + esc(r.inHouse ? 'בבית' : (r.status === 'released' ? 'שוחרר/ה' : (r.status || '—'))) + '</td></tr>';
         }).join('') + '</tbody></table></div>';
       if (up.on) {
         html += '<div class="group-title" id="crm-debt-up-title">צפוי לגבייה עד ' + esc(fmtDate(up.to)) + ' ' + chip('wait', up.count + ' מחזורים · ' + fmtMoney(up.total)) + '</div>';
@@ -4247,7 +4297,7 @@
           if (state.billing && state.billing.payments && Array.isArray(state.billing.payments.receipts)) state.billing.payments = Object.assign({}, state.billing.payments, { receipts: applyVerified(state.billing.payments.receipts, id, by, at) });
           if (state.payments && Array.isArray(state.payments.receipts)) state.payments = Object.assign({}, state.payments, { receipts: applyVerified(state.payments.receipts, id, by, at) });
           if (state.queue && Array.isArray(state.queue.receipts)) state.queue = Object.assign({}, state.queue, { receipts: applyVerified(state.queue.receipts, id, by, at) });
-          toast('אומת ✓ — התשלום אושר ויצא מרשימת הממתינים לאימות');
+          toast('אומת ✓ — התשלום אושר והחוב נסגר');
           renderNav(); renderMain();
           const pid = state.drawer && state.drawer.kind === 'patient' && state.drawer.id;
           if (pid && $('#crm-account')) fillAccountPane(pid);
@@ -4390,7 +4440,10 @@
       const det = detachedRows(state.billing.debt);
       const refunds = refundsView(state.billing.refunds, state.billing.credits, state.today, null);
       const dueToday = filterDueRows(dueOnDate(state.data, state.billing.payments, state.today, cycleBalanceLib(win)), '', '');
-      const badge = { due: dueToday.count || '', debts: b.debtors || '', receipts: b.toVerify ? b.toVerify + ' לאימות' : '', refunds: refunds.ok ? (refunds.count || '') : '!', unlinked: det.length || '', anomalies: anomalies.length || '' };
+      // reported and not verified is still a debt in the CRM (CHANGELOG-debt-until-verified.md)
+      const pend = unverifiedTotal(state.billing.payments);
+      const debtorCount = pend.count ? collectionDebtors(state.billing.debt, state.billing.payments, state.today, '', null, c.patients).count : b.debtors;
+      const badge = { due: dueToday.count || '', debts: debtorCount || '', receipts: b.toVerify ? b.toVerify + ' לאימות' : '', refunds: refunds.ok ? (refunds.count || '') : '!', unlinked: det.length || '', anomalies: anomalies.length || '' };
       let html = billingRefreshing() ? '<div class="crm-refresh" id="crm-bill-refresh" role="status"><span class="spin" aria-hidden="true"></span>מעדכן נתונים…</div>' : '';
       // the one-click «אמת» lives here; the other decisions (partial / not received / duplicate) stay in the classic tab
       if (isController) html += '<div class="links" id="crm-controller-classic"><a href="/?view=classic">בקרת גבייה<small>אימות חלקי / לא התקבל / כפילות — בדשבורד הרגיל</small></a></div>';
@@ -4409,7 +4462,7 @@
         html += '<div class="group-title" id="crm-bill-overview-title">סקירת גבייה — נכון ל-' + esc(fmtDate(b.asOf)) + '</div><div class="kpis" id="crm-bill-overview">'
           + go(esc(fmtMoney(dueToday.total)), 'לגבייה היום (' + dueToday.count + ')', { tab: 'due' })
           + go(esc(fmtMoney(fc.total)), 'צפי עד סוף החודש', { tab: 'forecast' })
-          + go(esc(fmtMoney(b.openDebt)), 'חוב פתוח (' + b.openCycles + ' מחזורים · ' + b.debtors + ' מטופלים)', { tab: 'debts', bucket: '' }, 'crm-ov-debt')
+          + go(esc(fmtMoney(Math.round((b.openDebt + pend.total) * 100) / 100)), 'חוב פתוח (' + debtorCount + ' מטופלים)' + (pend.total > 0 ? ' · מתוכו ' + fmtMoney(pend.total) + ' דווח וממתין לאימות' : ''), { tab: 'debts', bucket: '' }, 'crm-ov-debt')
           + go(esc(fmtMoney(b.received30)), 'התקבל ב-30 יום (' + b.received30Count + ')', { tab: 'receipts', rcStatus: '' })
           + go(String(b.toVerify), 'דיווחים לאימות', { tab: 'receipts', rcStatus: 'toVerify' })
           + go(refunds.ok ? signedHtml(-refunds.total) : '—', 'זיכויים לתשלום' + (refunds.ok ? ' (' + refunds.count + ')' : ' · לא נטענו'), { tab: 'refunds' })
@@ -4436,14 +4489,15 @@
      * about the typed name — open debts, receipts (all dates), refunds to pay, and the
      * patients with nothing owed — each one tap from the patient's «חשבון» or its section. */
     function renderBillFind(b, patients) {
-      const f = billingFind(state.filters.q, b, state.billing.payments, refundsView(state.billing.refunds, state.billing.credits, state.today, null), patients, state.today);
+      const f = billingFind(state.filters.q, b, state.billing.payments, refundsView(state.billing.refunds, state.billing.credits, state.today, null), patients, state.today,
+        collectionDebtors(state.billing.debt, state.billing.payments, state.today, '', null, patients).rows);
       if (!f) return '';
       let html = '<section id="crm-bill-find"><div class="group-title">תוצאות חיפוש «' + esc(f.q) + '» ' + chip(f.total ? 'today' : 'wait', f.total + ' תוצאות') + '</div>';
       if (!f.total) return html + '<p class="na" id="crm-find-none">לא נמצא/ה מטופל/ת בשם הזה בנתוני הגבייה. בדקי איות, או חפשי לפי שם פרטי בלבד.</p></section>';
       const go = function (label, target) { return ' <button type="button" class="btn small" data-bill-go="' + esc(JSON.stringify(target)) + '">' + esc(label) + '</button>'; };
       if (f.debtors.length) html += '<div class="group-title">חובות פתוחים ' + chip('late', f.debtors.length + ' · ' + fmtMoney(f.debtTotal)) + go('לסעיף «חובות פתוחים» ←', { tab: 'debts', bucket: '' }) + '</div>'
         + '<div class="tbl-wrap"><table class="tbl" id="crm-find-debtors"><thead><tr><th>מטופל/ת</th><th>בית</th><th>חוב פתוח</th><th>מחזורים</th><th>ימים בפיגור</th><th>סטטוס</th></tr></thead><tbody>'
-        + f.debtors.map(function (r) { return '<tr data-open-patient="' + esc(r.id) + '" data-open-tab="account"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtMoney(r.balance)) + '</td><td>' + r.cycles + '</td><td>' + chip(r.bucket === 'd61_plus' ? 'late' : r.bucket === 'd31_60' ? 'today' : 'ok', r.oldestDays + ' ימים') + '</td><td>' + esc(r.inHouse ? 'בבית' : (r.status === 'released' ? 'שוחרר/ה' : r.status)) + '</td></tr>'; }).join('')
+        + f.debtors.map(function (r) { return '<tr data-open-patient="' + esc(r.id) + '" data-open-tab="account"><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(fmtMoney(r.balance)) + (r.unverified > 0 ? ' ' + chip('today', (r.unverified < r.balance ? 'מתוכו ' + fmtMoney(r.unverified) + ' ' : '') + 'ממתין לאימות') : '') + '</td><td>' + r.cycles + '</td><td>' + chip(r.bucket === 'd61_plus' ? 'late' : r.bucket === 'd31_60' ? 'today' : 'ok', r.oldestDays + ' ימים') + '</td><td>' + esc(r.inHouse ? 'בבית' : (r.status === 'released' ? 'שוחרר/ה' : (r.status || '—'))) + '</td></tr>'; }).join('')
         + '</tbody></table></div>';
       if (f.receipts.length) html += '<div class="group-title">תקבולים ' + chip('today', f.receiptCount + ' · ' + fmtMoney(f.receiptTotal)) + go('לסעיף «תקבולים» ←', { tab: 'receipts', rcStatus: '', rcAll: true }) + '</div>'
         + '<div class="tbl-wrap"><table class="tbl" id="crm-find-receipts"><thead><tr><th>תאריך</th><th>שם</th><th>בית</th><th>סכום</th><th>אמצעי</th><th>אימות</th></tr></thead><tbody>'
@@ -5009,11 +5063,12 @@
       const me = state.me || {};
       let html = billingRefreshing() ? '<div class="crm-refresh" id="crm-account-refresh" role="status"><span class="spin" aria-hidden="true"></span>מעדכן נתונים…</div>' : '';
       if (a.errors.length) html += '<p class="na">' + esc(a.errors.join(' · ')) + '</p>';
-      html += '<dl class="kv"><dt>חוב פתוח</dt><dd>' + esc(fmtMoney(a.openTotal)) + (a.openCycles.length ? ' (' + a.openCycles.length + ' מחזורים)' : '') + '</dd>'
+      html += '<dl class="kv"><dt>חוב פתוח</dt><dd>' + esc(fmtMoney(Math.round((a.openTotal + a.unverifiedTotal) * 100) / 100)) + (a.openCycles.length ? ' (' + a.openCycles.length + ' מחזורים)' : '')
+        + (a.unverifiedTotal > 0 ? ' <span id="crm-account-unverified">' + chip('today', 'מתוכו ' + fmtMoney(a.unverifiedTotal) + ' דווח וממתין לאימות') + '</span>' : '') + '</dd>'
         + '<dt>התקבל סה"כ</dt><dd>' + esc(fmtMoney(a.receivedTotal)) + (a.receipts.length ? ' (' + a.receipts.length + ' תקבולים)' : '') + '</dd>'
         + '<dt>גוף מממן</dt><dd>' + esc(a.currentFunder || '—') + (a.funders.length > 1 ? ' <span class="na">(' + a.funders.map(function (f) { return f.funder + ' מ-' + fmtDate(f.effectiveFrom); }).join(', ') + ')</span>' : '') + '</dd></dl>';
       html += '<div class="group-title">מחזורים פתוחים</div>';
-      if (!a.openCycles.length) html += '<p class="na">אין חוב פתוח' + (a.settledCycles ? ' · ' + a.settledCycles + ' מחזורים סגורים' : '') + '.</p>';
+      if (!a.openCycles.length) html += '<p class="na">' + (a.unverifiedTotal > 0 ? 'אין מחזור ללא דיווח — החוב שנשאר ממתין לאימות התקבולים למטה' : 'אין חוב פתוח') + (a.settledCycles ? ' · ' + a.settledCycles + ' מחזורים סגורים' : '') + '.</p>';
       else html += '<div class="tbl-wrap"><table class="tbl" id="crm-account-open"><thead><tr><th>מחזור</th><th>צפוי</th><th>התקבל</th><th>יתרה</th><th>ימים</th><th></th></tr></thead><tbody>'
         + a.openCycles.map(function (c, i) {
           const st = c.days > 60 ? 'late' : c.days > 30 ? 'today' : 'ok';
@@ -5127,7 +5182,7 @@
             // re-read both answers: the money a row shows is always the server's
             const pid = state.drawer && state.drawer.id;
             const done = function (msg, bad) { toast(msg, bad); resetBilling(['debt', 'payments']); if (pid) fillAccountPane(pid); return true; };
-            if (!plan) return done(payKind === 'partial' && kindCheck.left > 0 ? 'תשלום חלקי נשמר ✓ · יתרת חוב ' + fmtMoney(kindCheck.left) + ' נשארת פתוחה' : 'התשלום נשמר ✓');
+            if (!plan) return done(payKind === 'partial' && kindCheck.left > 0 ? 'תשלום חלקי נשמר ✓ · יתרת חוב ' + fmtMoney(kindCheck.left) + ' נשארת פתוחה' : 'התשלום נשמר ✓ — החוב ייסגר לאחר אימות');
             // The payment is saved; now the discount for the gap (the payment first —
             // a discount without its payment would hide money that never arrived).
             const pat = state.account && state.account.patient;
@@ -6334,7 +6389,7 @@
 
   return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, landingArea: landingArea, activePatientsCard: activePatientsCard, monthOccupancy: monthOccupancy, occupancyTrend: occupancyTrend, monthRevenue: monthRevenue, monthShift: monthShift, monthLabelHe: monthLabelHe, monthKeyOk: monthKeyOk, normalise: normalise, compute: compute, filterLeads: filterLeads,
     board: board, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
-    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, whenLocal: whenLocal, esc: esc, boot: boot, accountTabVisible: accountTabVisible, accountReadable: accountReadable, receiptVerifyChip: receiptVerifyChip, canVerifyReceipt: canVerifyReceipt, verifyBody: verifyBody, verifyAccepted: verifyAccepted, verifyRefusal: verifyRefusal, applyVerified: applyVerified, billingFind: billingFind, FIND_RECEIPTS_CAP: FIND_RECEIPTS_CAP, PAY_KINDS: PAY_KINDS, payKindCheck: payKindCheck, payKindPreview: payKindPreview, CONFIRM_LABELS: CONFIRM_LABELS, RECEIPT_ROWS_CAP: RECEIPT_ROWS_CAP, clearCachedPages: clearCachedPages,
+    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, whenLocal: whenLocal, esc: esc, boot: boot, accountTabVisible: accountTabVisible, accountReadable: accountReadable, receiptVerifyChip: receiptVerifyChip, canVerifyReceipt: canVerifyReceipt, verifyBody: verifyBody, verifyAccepted: verifyAccepted, verifyRefusal: verifyRefusal, applyVerified: applyVerified, unverifiedReceipts: unverifiedReceipts, unverifiedTotal: unverifiedTotal, billingFind: billingFind, FIND_RECEIPTS_CAP: FIND_RECEIPTS_CAP, PAY_KINDS: PAY_KINDS, payKindCheck: payKindCheck, payKindPreview: payKindPreview, CONFIRM_LABELS: CONFIRM_LABELS, RECEIPT_ROWS_CAP: RECEIPT_ROWS_CAP, clearCachedPages: clearCachedPages,
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
     stageAfter: stageAfter, stageBefore: stageBefore, applyLeadPatch: applyLeadPatch, leadSaveBody: leadSaveBody, saveRefusal: saveRefusal,
     DISPOSITIONS: DISPOSITIONS, CONTACT_RELATIONS: CONTACT_RELATIONS, localPhone: localPhone, leadFormErrors: leadFormErrors, newLeadRow: newLeadRow,

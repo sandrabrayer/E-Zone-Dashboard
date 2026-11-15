@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated November 15, 2026
 
+## Dashboard CRM — a debt closes when the payment is VERIFIED — November 15, 2026
+
+CRM only (no Code.gs). In «חובות פתוחים», «סקירה» and the patient «חשבון» a payment that
+was reported but not verified stays part of the debt, marked «ממתין לאימות»; Ortal's
+«אמת» removes it at once. The Apps Script engine is unchanged: the classic dashboard,
+exports, «לגבייה בתאריך», «צפי תזרים» and every other reader of the engine still
+treat a reported payment as paid. SW cache v137. See `CHANGELOG-debt-until-verified.md`.
+
 ## Dashboard CRM «גבייה» — one-click verification, payment kind, search, Ortal's account, faster saves — November 15, 2026
 
 Browser only (no Code.gs, no new action or permission). Ortal (and Sandra) verify a
