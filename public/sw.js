@@ -413,7 +413,9 @@
 // (CHANGELOG-account-actions-visible.md). From the live v137; monotonic, v17 never reused.
 // v138 → v139: partial receipt verification «אימות חלקי» + neutral mismatch wording (CHANGELOG-partial-verify-checkpoint.md).
 // From the live v138; monotonic, v17 never reused.
-var CACHE_VERSION = 'v139';
+// v139 → v140: «בונוס»: Dana's lead bonus tab
+// (CHANGELOG-dana-bonus-tab.md). From the live v139; monotonic, v17 never reused.
+var CACHE_VERSION = 'v140';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
