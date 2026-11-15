@@ -29,6 +29,7 @@
     { id: 'clients', label: 'מטופלים' }, { id: 'calendar', label: 'יומן' }, { id: 'billing', label: 'גבייה' }, { id: 'control', label: 'בקרת עבודה' },
     { id: 'kpi', label: 'KPI' },   // CHANGELOG-crm-kpi-tab.md: slices, occupancy %, conversion, break-even
     { id: 'monthly', label: 'היסטוריה חודשית' },   // CHANGELOG-crm-month-view.md: a past month's occupancy + (finance) its revenue
+    { id: 'stays', label: 'משך שהייה' },   // CHANGELOG-stay-length-report.md: every stay with its details, cut by house / referrer / …
     { id: 'bonus', label: 'בונוס' },   // CHANGELOG-dana-bonus-tab.md: Dana's lead bonus — visits that took place + admissions
     { id: 'triage', label: 'רשומות שדורשות בירור' },   // Stage 3: reached from «פניות» / the «ללא מגע» card, not from the menu
   ];
@@ -345,9 +346,104 @@
     if (m.view === 'controller') return ['today', 'billing', 'control'];
     // «בונוס» (CHANGELOG-dana-bonus-tab.md): the person it is paid to, and Sandra who pays it — nobody else
     const bonus = bonusVisible(m) ? ['bonus'] : [];
-    if (m.view === 'ops' || m.ops === true) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'monthly', 'triage'].concat(bonus);
-    if (!m.finance) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'monthly', 'triage'].concat(bonus);
+    if (m.view === 'ops' || m.ops === true) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'monthly', 'stays', 'triage'].concat(bonus);
+    if (!m.finance) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'monthly', 'stays', 'triage'].concat(bonus);
     return AREAS.map(function (a) { return a.id; }).filter(function (id) { return id !== 'bonus' || bonus.length; });
+  }
+  /* ---- «משך שהייה» (CHANGELOG-stay-length-report.md) ----
+   * Sandra 15/11/2026: count how long patients stay, with their details — time, house,
+   * referrer, and so on. One line per STAY (a returning patient has a line per stay), built
+   * by the same rules as the KPI cards (lib/patient-retention.js: the discharge day, the
+   * joins, what is «נתונים חסרים»). Days are NOT inclusive: discharge day − entry day; a stay
+   * still in treatment counts to today.
+   *   referrer — the patient's own «מקור», else the source of the lead it came from, else «לא צוין»
+   * WHO IS LISTED (`mode`, with the period [from, to], both inclusive):
+   *   discharged — discharged in the period          entered — entered in the period
+   *   present    — in a house on any day of it       all     — every stay, no period
+   * Then the cuts: status, house, referrer, length bucket. `group` adds a summary line per
+   * house / referrer / entry month / continuity / status. Pure. */
+  const STAY_MODES = [{ id: 'discharged', label: 'שוחררו בתקופה' }, { id: 'entered', label: 'נכנסו בתקופה' }, { id: 'present', label: 'שהו בתקופה' }, { id: 'all', label: 'כל השהיות' }];
+  const STAY_GROUPS = [{ id: '', label: 'ללא קיבוץ' }, { id: 'house', label: 'בית' }, { id: 'source', label: 'גורם מפנה' }, { id: 'bucket', label: 'משך שהייה' }, { id: 'month', label: 'חודש כניסה' }, { id: 'continuity', label: 'המשך טיפול' }, { id: 'status', label: 'סטטוס' }];
+  const STAY_BUCKETS = [{ id: 'upTo30', label: 'עד 30 יום' }, { id: 'd31to60', label: '31 עד 60 יום' }, { id: 'd61to90', label: '61 עד 90 יום' }, { id: 'over90', label: '91 יום ומעלה' }];
+  const STAY_SOURCE_UNSET = 'לא צוין';
+  function stayBucket(days) { return days <= 30 ? 'upTo30' : days <= 60 ? 'd31to60' : days <= 90 ? 'd61to90' : 'over90'; }
+  /* The retention answer over ALL time → flat stay lines with house name and referrer. */
+  function stayLines(retention, rawPatients, leads, closedLeads, continuityLabels) {
+    const rr = retention && retention.ok === true && retention.rows ? retention.rows : null;
+    if (!rr) return [];
+    const leadSource = {};
+    [].concat(Array.isArray(leads) ? leads : [], Array.isArray(closedLeads) ? closedLeads : []).forEach(function (l) { if (l && s(l.id) && s(l.source) && !leadSource[s(l.id)]) leadSource[s(l.id)] = s(l.source); });
+    const rawById = {};
+    (Array.isArray(rawPatients) ? rawPatients : []).forEach(function (p) { if (p && s(p.id)) rawById[s(p.id)] = p; });
+    const lab = continuityLabels || {};
+    const line = function (st, active) {
+      const raw = rawById[s(st.patientId)] || {};
+      const own = s(raw.source).trim(), viaLead = s(raw.fromLead) ? s(leadSource[s(raw.fromLead)]) : '';
+      // internal source codes (direct_admin / direct_approach) are not a referrer
+      const src = own && !/^direct_/.test(own) ? own : (viaLead && !/^direct_/.test(viaLead) ? viaLead : STAY_SOURCE_UNSET);
+      return { id: s(st.patientId), name: s(st.name), houseId: s(st.houseId), houseName: houseName(st.houseId), source: src, entryDate: s(st.entryDate), exitDate: active ? '' : s(st.dischargeDate),
+        days: Number(st.days) || 0, bucket: stayBucket(Number(st.days) || 0), status: active ? 'active' : 'discharged', continuity: active ? '' : s(st.continuity), continuityLabel: active ? '' : (lab[s(st.continuity)] || s(st.continuity)),
+        returning: st.returning === true };
+    };
+    return [].concat((rr.upTo30 || []).map(function (x) { return line(x, false); }), (rr.d31to60 || []).map(function (x) { return line(x, false); }), (rr.over60 || []).map(function (x) { return line(x, false); }),
+      (rr.stillInTreatment || []).map(function (x) { return line(x, true); }));
+  }
+  function stayStats(rows) {
+    const d = rows.map(function (r) { return r.days; }).sort(function (a, b) { return a - b; }), n = d.length;
+    if (!n) return { count: 0, avg: null, median: null, min: null, max: null, totalDays: 0 };
+    const total = d.reduce(function (t2, x) { return t2 + x; }, 0);
+    return { count: n, avg: Math.round(total / n * 10) / 10, median: n % 2 ? d[(n - 1) / 2] : Math.round((d[n / 2 - 1] + d[n / 2]) / 2 * 10) / 10, min: d[0], max: d[n - 1], totalDays: total };
+  }
+  function stayReport(lines, opts, today) {
+    const o = opts || {}, all = Array.isArray(lines) ? lines : [];
+    const mode = STAY_MODES.some(function (m) { return m.id === o.mode; }) ? o.mode : 'discharged';
+    const from = isoDateOk(o.from) ? o.from : '', to = isoDateOk(o.to) ? o.to : '';
+    const badRange = mode !== 'all' && (!from || !to || from > to);
+    const inP = function (d) { return !!d && d >= from && d <= to; };
+    let rows = badRange ? [] : all.filter(function (r) {
+      if (mode === 'all') return true;
+      if (mode === 'entered') return inP(r.entryDate);
+      if (mode === 'discharged') return r.status === 'discharged' && inP(r.exitDate);
+      return r.entryDate <= to && (r.status === 'active' ? s(today) >= from : r.exitDate >= from);   // present
+    });
+    const houses = {}, sources = {};
+    rows.forEach(function (r) { houses[r.houseId] = r.houseName; sources[r.source] = true; });
+    if (o.status === 'active' || o.status === 'discharged') rows = rows.filter(function (r) { return r.status === o.status; });
+    if (s(o.house)) rows = rows.filter(function (r) { return r.houseId === o.house; });
+    if (s(o.source)) rows = rows.filter(function (r) { return r.source === o.source; });
+    if (STAY_BUCKETS.some(function (b) { return b.id === o.bucket; })) rows = rows.filter(function (r) { return r.bucket === o.bucket; });
+    const q = s(o.q).trim().toLowerCase();
+    if (q) rows = rows.filter(function (r) { return (r.name + ' ' + r.houseName + ' ' + r.source).toLowerCase().indexOf(q) >= 0; });
+    rows = rows.slice().sort(function (a, b) { return (b.exitDate || '9999').localeCompare(a.exitDate || '9999') || b.entryDate.localeCompare(a.entryDate) || a.name.localeCompare(b.name, 'he'); });
+    const group = STAY_GROUPS.some(function (g) { return g.id && g.id === o.group; }) ? o.group : '';
+    const keyOf = function (r) {
+      if (group === 'house') return [r.houseId, r.houseName];
+      if (group === 'source') return [r.source, r.source];
+      if (group === 'bucket') return [r.bucket, (STAY_BUCKETS.filter(function (b) { return b.id === r.bucket; })[0] || {}).label];
+      if (group === 'month') return [r.entryDate.slice(0, 7), r.entryDate.slice(5, 7) + '/' + r.entryDate.slice(0, 4)];
+      if (group === 'continuity') return r.status === 'active' ? ['~active', 'עדיין בטיפול'] : [r.continuity, r.continuityLabel];
+      return [r.status, r.status === 'active' ? 'עדיין בטיפול' : 'שוחררו'];
+    };
+    const groups = [];
+    if (group) {
+      const by = {};
+      rows.forEach(function (r) { const k = keyOf(r); (by[k[0]] || (by[k[0]] = { key: k[0], label: k[1], rows: [] })).rows.push(r); });
+      Object.keys(by).forEach(function (k) { groups.push(Object.assign({ key: k, label: by[k].label }, stayStats(by[k].rows))); });
+      groups.sort(group === 'month' ? function (a, b) { return b.key.localeCompare(a.key); } : group === 'bucket' ? function (a, b) { return STAY_BUCKETS.map(function (x) { return x.id; }).indexOf(a.key) - STAY_BUCKETS.map(function (x) { return x.id; }).indexOf(b.key); }
+        : function (a, b) { return b.count - a.count || s(a.label).localeCompare(s(b.label), 'he'); });
+    }
+    const buckets = {};
+    STAY_BUCKETS.forEach(function (b) { buckets[b.id] = rows.filter(function (r) { return r.bucket === b.id; }).length; });
+    return { ok: !badRange, mode: mode, from: from, to: to, group: group, rows: rows, stats: stayStats(rows), discharged: stayStats(rows.filter(function (r) { return r.status === 'discharged'; })),
+      active: stayStats(rows.filter(function (r) { return r.status === 'active'; })), buckets: buckets, groups: groups,
+      houses: Object.keys(houses).map(function (k) { return { id: k, label: houses[k] }; }).sort(function (a, b) { return a.label.localeCompare(b.label, 'he'); }), sources: Object.keys(sources).sort(function (a, b) { return a.localeCompare(b, 'he'); }) };
+  }
+  /* The same lines as a CSV for Excel. A cell starting with = + - @ is defused (formula injection). Pure. */
+  function stayCsv(rows) {
+    const cell = function (v) { let x = s(v); if (/^[=+\-@\t\r]/.test(x)) x = "'" + x; return '"' + x.replace(/"/g, '""') + '"'; };
+    const head = ['מטופל/ת', 'בית', 'גורם מפנה', 'כניסה', 'יציאה', 'ימי שהייה', 'סטטוס', 'המשך טיפול', 'מטופל/ת חוזר/ת'];
+    return [head].concat((Array.isArray(rows) ? rows : []).map(function (r) { return [r.name, r.houseName, r.source, r.entryDate, r.exitDate, String(r.days), r.status === 'active' ? 'עדיין בטיפול' : 'שוחרר/ה', r.continuityLabel, r.returning ? 'כן' : '']; }))
+      .map(function (line) { return line.map(cell).join(','); }).join('\r\n');
   }
   /* ---- Dana's lead bonus (CHANGELOG-dana-bonus-tab.md) ----
    * Sandra 15/11/2026: for every lead Dana brings to a visit THAT TAKES PLACE she gets ₪50;
@@ -2616,7 +2712,7 @@
    * is «ללא מגע» (information), an overdue dated task is «באיחור». */
   const NAV_GROUPS = [
     { label: '', items: ['today', 'control'] }, { label: 'לידים ומטופלים', items: ['leads', 'clients'] }, { label: 'פגישות ויומן', items: ['calendar'] },
-    { label: 'בתים והמשך טיפול', items: ['occupancy'] }, { label: 'כספים', items: ['billing'] }, { label: 'דוחות והגדרות', items: ['kpi', 'monthly', 'bonus'] }];
+    { label: 'בתים והמשך טיפול', items: ['occupancy'] }, { label: 'כספים', items: ['billing'] }, { label: 'דוחות והגדרות', items: ['kpi', 'monthly', 'stays', 'bonus'] }];
   const MY_DAY_VIEWS = [{ id: 'today', label: 'היום' }, { id: 'week', label: 'השבוע' }, { id: 'done', label: 'הושלמו' }];
   const DOMAINS = [
     { id: 'collection', label: 'גבייה לטיפול', money: true }, { id: 'calls', label: 'שיחות ומעקבים' }, { id: 'meetings', label: 'פגישות ותיאומים' },
@@ -3394,7 +3490,7 @@
     function patientStatusLabel(st) { if (s(st) === 'released') return 'שוחרר/ה'; const x = PATIENT_STATUSES.filter(function (p) { return p.id === s(st); })[0]; return x ? x.label : (s(st) || '—'); }
     function statusChip(st) { return '<span class="chip pst-' + esc(s(st) || 'active') + '">' + esc(patientStatusLabel(st)) + '</span>'; }
     function houseTag(idOrName) { const id = houseId(idOrName) || 'x'; return '<span class="chip house h-' + esc(id) + '">' + esc(houseName(idOrName) || '—') + '</span>'; }
-    const AREA_ICONS = { today: '☀', leads: '✉', clients: '👤', calendar: '📅', occupancy: '🏠', billing: '₪', control: '✔', kpi: '📊', monthly: '🗓', bonus: '🎁', triage: '🔎' };
+    const AREA_ICONS = { today: '☀', leads: '✉', clients: '👤', calendar: '📅', occupancy: '🏠', billing: '₪', control: '✔', kpi: '📊', monthly: '🗓', bonus: '🎁', stays: '⏱', triage: '🔎' };
     function stateText(st) { return st === 'late' ? 'באיחור' : st === 'today' ? 'להיום' : 'ממתין'; }
 
     function renderToday(c) {
@@ -4860,6 +4956,52 @@
         + (rev && rev.recordsFrom && trend.length && trend[0].month < rev.recordsFrom.slice(0, 7) ? ' הכנסות לפני ' + esc(fmtDate(rev.recordsFrom)) + ' חלקיות (רישום התשלומים באפליקציה מלא רק מאז).' : '') + '</p>';
       return html;
     }
+    /* «משך שהייה» (CHANGELOG-stay-length-report.md): every stay with its details, cut any way. */
+    function stayOpts() {
+      const o = state.stay || (state.stay = {});
+      if (!isoDateOk(o.from)) o.from = s(state.today).slice(0, 4) + '-01-01';
+      if (!isoDateOk(o.to)) o.to = s(state.today);
+      return o;
+    }
+    function stayNow() {
+      const R = win.PatientRetention && typeof win.PatientRetention.computeRetention === 'function' ? win.PatientRetention : null;
+      if (!R) return null;
+      const rr = R.computeRetention({ patients: flatRawPatients(), discharged: (state.data && state.data.dischargedPatients) || [], from: '2000-01-01', to: '2999-12-31', customThreshold: null, today: state.today });
+      const lines = stayLines(rr, flatRawPatients(), state.data && state.data.leads, state.data && state.data.irrelevantLeads, R.CONTINUITY_LABELS);
+      return { rep: stayReport(lines, stayOpts(), state.today), missing: rr && rr.ok ? rr.missingCount : 0, missingLabel: R.MISSING_LABEL };
+    }
+    function renderStays() {
+      const now = stayNow(), o = stayOpts();
+      if (!now) return '<div class="crm-state">חישוב משך השהייה לא נטען — רענני את הדף.</div>';
+      const v = now.rep, st = v.stats;
+      const sel = function (key, label, options, cur) { return '<label>' + esc(label) + ' <select data-stay-opt="' + key + '" id="crm-stay-' + key + '">' + options.map(function (x) { return '<option value="' + esc(x.id) + '"' + (x.id === s(cur) ? ' selected' : '') + '>' + esc(x.label) + '</option>'; }).join('') + '</select></label>'; };
+      const num = function (x) { return x === null ? '—' : String(x); };
+      let html = '<div class="group-title" id="crm-stay-title">משך שהייה — ' + esc((STAY_MODES.filter(function (m) { return m.id === v.mode; })[0] || {}).label) + (v.mode !== 'all' ? ' ' + esc(fmtDate(o.from)) + '–' + esc(fmtDate(o.to)) : '') + ' ' + chip('today', st.count + ' שהיות') + '</div>'
+        + '<div class="toolbar filters" id="crm-stay-filters">' + sel('mode', 'מי לכלול', STAY_MODES, v.mode)
+        + (v.mode !== 'all' ? '<label>מ־ <input type="date" data-stay-opt="from" id="crm-stay-from" value="' + esc(o.from) + '"></label><label>עד <input type="date" data-stay-opt="to" id="crm-stay-to" value="' + esc(o.to) + '"></label>' : '')
+        + sel('status', 'סטטוס', [{ id: '', label: 'הכל' }, { id: 'active', label: 'עדיין בטיפול' }, { id: 'discharged', label: 'שוחררו' }], o.status)
+        + sel('house', 'בית', [{ id: '', label: 'כל הבתים' }].concat(v.houses), o.house)
+        + sel('source', 'גורם מפנה', [{ id: '', label: 'כל הגורמים' }].concat(v.sources.map(function (x) { return { id: x, label: x }; })), o.source)
+        + sel('bucket', 'משך', [{ id: '', label: 'כל משך' }].concat(STAY_BUCKETS), o.bucket)
+        + sel('group', 'חתך לפי', STAY_GROUPS, v.group)
+        + '<label>חיפוש <input type="search" data-stay-opt="q" id="crm-stay-q" value="' + esc(s(o.q)) + '" placeholder="שם / בית / גורם מפנה"></label>'
+        + '<button type="button" class="btn small" data-stay-reset>ניקוי סינון</button>'
+        + (v.rows.length ? '<button type="button" class="btn small primary" data-stay-csv>הורדה לאקסל (CSV)</button>' : '') + '</div>';
+      if (!v.ok) return html + '<p class="na" id="crm-stay-bad">יש לבחור טווח תאריכים תקין (מ־ לפני עד).</p>';
+      html += '<div class="kpis" id="crm-stay-kpis">' + kpiCard(st.count, 'שהיות', v.discharged.count + ' שוחררו · ' + v.active.count + ' עדיין בטיפול')
+        + kpiCard(num(st.avg), 'ממוצע ימי שהייה', 'חציון ' + num(st.median))
+        + kpiCard(num(v.discharged.avg), 'ממוצע — משוחררים', v.discharged.count ? 'חציון ' + num(v.discharged.median) + ' · ' + v.discharged.min + '–' + v.discharged.max + ' ימים' : '')
+        + kpiCard(num(v.active.avg), 'ממוצע — עדיין בטיפול', v.active.count ? 'עד היום · ' + v.active.min + '–' + v.active.max + ' ימים' : '')
+        + STAY_BUCKETS.map(function (b) { return kpiCard(v.buckets[b.id], b.label, st.count ? Math.round(v.buckets[b.id] / st.count * 1000) / 10 + '%' : ''); }).join('') + '</div>';
+      if (v.group && v.groups.length) html += '<div class="group-title">חתך לפי ' + esc((STAY_GROUPS.filter(function (g) { return g.id === v.group; })[0] || {}).label) + '</div><div class="tbl-wrap"><table class="tbl" id="crm-stay-groups"><thead><tr><th>' + esc((STAY_GROUPS.filter(function (g) { return g.id === v.group; })[0] || {}).label) + '</th><th>שהיות</th><th>ממוצע ימים</th><th>חציון</th><th>הקצר</th><th>הארוך</th><th>סה״כ ימים</th></tr></thead><tbody>'
+        + v.groups.map(function (g) { return '<tr><td>' + esc(g.label) + '</td><td>' + g.count + '</td><td>' + num(g.avg) + '</td><td>' + num(g.median) + '</td><td>' + num(g.min) + '</td><td>' + num(g.max) + '</td><td>' + g.totalDays + '</td></tr>'; }).join('') + '</tbody></table></div>';
+      if (!v.rows.length) html += '<p class="na" id="crm-stay-none">אין שהיות בסינון הזה.</p>';
+      else html += '<div class="group-title">פירוט <span class="n chip">' + v.rows.length + '</span></div><div class="tbl-wrap"><table class="tbl" id="crm-stay-rows"><thead><tr><th>מטופל/ת</th><th>בית</th><th>גורם מפנה</th><th>כניסה</th><th>יציאה</th><th>ימי שהייה</th><th>סטטוס</th><th>המשך טיפול</th></tr></thead><tbody>'
+        + v.rows.map(function (r) { return '<tr' + (r.id ? ' data-open-patient="' + esc(r.id) + '"' : '') + '><td>' + esc(r.name) + (r.returning ? ' ' + chip('wait', 'חוזר/ת') : '') + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(r.source) + '</td><td>' + esc(fmtDate(r.entryDate)) + '</td><td>' + esc(r.exitDate ? fmtDate(r.exitDate) : '—') + '</td><td><strong>' + r.days + '</strong></td><td>'
+          + chip(r.status === 'active' ? 'ok' : 'wait', r.status === 'active' ? 'עדיין בטיפול' : 'שוחרר/ה') + '</td><td>' + esc(r.continuityLabel || '—') + '</td></tr>'; }).join('') + '</tbody></table></div>';
+      return html + '<p class="na" id="crm-stay-note">ימי שהייה = תאריך יציאה פחות תאריך כניסה (שהייה פעילה — עד היום). שורה לכל שהייה; מטופל/ת חוזר/ת מופיע/ה פעם לכל שהייה. גורם מפנה = «מקור» של המטופל/ת או של הליד שממנו הגיע/ה.'
+        + (now.missing ? ' ' + now.missing + ' שהיות עם ' + esc(now.missingLabel) + ' לא נכללו.' : '') + '</p>';
+    }
     /* «בונוס» (CHANGELOG-dana-bonus-tab.md): where Dana stands — this month, what is still open, every month so far. */
     function renderBonus(c) {
       if (!bonusVisible(state.me)) return '<div class="crm-state">אין הרשאה</div>';
@@ -5002,7 +5144,7 @@
       if (state.error) { main.innerHTML = '<div class="crm-state bad">' + esc(state.error) + ' <button type="button" class="btn small" id="crm-retry">נסי שוב</button></div>'; return; }
       const c = compute(state.data, state.today);
       if (state.area === 'search') $('#crm-title').textContent = 'חיפוש';
-      const r = { search: renderSearch, today: renderToday, leads: renderLeads, occupancy: renderOccupancy, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl, kpi: renderKpi, monthly: renderMonthly, bonus: renderBonus, triage: renderTriage }[state.area] || renderToday;
+      const r = { search: renderSearch, today: renderToday, leads: renderLeads, occupancy: renderOccupancy, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl, kpi: renderKpi, monthly: renderMonthly, bonus: renderBonus, stays: renderStays, triage: renderTriage }[state.area] || renderToday;
       main.innerHTML = r(c);
     }
 
@@ -5994,7 +6136,7 @@
       // <a target=_blank> to another origin, so open it from the click (never blocked), else navigate.
       const wa = ev.target.closest ? ev.target.closest('a[data-wa-manager]') : null;
       if (wa) { ev.preventDefault(); const w = win.open ? win.open(wa.href, '_blank', 'noopener') : null; if (!w) win.location.href = wa.href; return; }
-      const t = ev.target.closest ? ev.target.closest('[data-bonus-month],#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],[data-month-step],[data-month-pick],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const t = ev.target.closest ? ev.target.closest('[data-stay-reset],[data-stay-csv],[data-bonus-month],#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],[data-month-step],[data-month-pick],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.kpiPeriod) { state.kpiPeriod = t.dataset.kpiPeriod; return renderMain(); }
       if (t.dataset.monthStep) {
@@ -6002,6 +6144,18 @@
         const next = monthShift(monthKeyOk(state.month) ? state.month : monthShift(curM, -1), Number(t.dataset.monthStep) || 0);
         if (next && next <= curM) state.month = next;
         return renderMain();
+      }
+      if (t.dataset.stayReset !== undefined) { state.stay = null; return renderMain(); }
+      if (t.dataset.stayCsv !== undefined) {
+        const now = stayNow();
+        if (!now || !now.rep.rows.length) return;
+        try {
+          const blob = new win.Blob(['\ufeff' + stayCsv(now.rep.rows)], { type: 'text/csv;charset=utf-8' });
+          const a = doc.createElement('a'); a.href = win.URL.createObjectURL(blob); a.download = 'ezone-stays-' + s(state.today) + '.csv';
+          doc.body.appendChild(a); a.click(); doc.body.removeChild(a);
+          win.setTimeout(function () { win.URL.revokeObjectURL(a.href); }, 2000);
+        } catch (_) { toast('ההורדה נכשלה בדפדפן הזה', true); }
+        return;
       }
       if (t.dataset.bonusMonth) { if (monthKeyOk(t.dataset.bonusMonth) && t.dataset.bonusMonth <= s(state.today).slice(0, 7)) state.bonusMonth = t.dataset.bonusMonth; return renderMain(); }
       if (t.dataset.monthPick) { if (monthKeyOk(t.dataset.monthPick) && t.dataset.monthPick <= s(state.today).slice(0, 7)) state.month = t.dataset.monthPick; return renderMain(); }
@@ -6540,6 +6694,13 @@
       if (t.id === 'crm-rc-to') { state.rcAll = false; state.rcTo = isoDateOk(t.value) ? t.value : ''; if (state.rcFrom === undefined) state.rcFrom = addDays(state.today, -30); return renderMain(); }
       if (t.id === 'crm-rc-status') { state.rcStatus = t.value === 'toVerify' ? 'toVerify' : ''; return renderMain(); }
       if (t.id === 'crm-rc-group') { state.rcGroup = RECEIPT_GROUPS[t.value] ? t.value : ''; return renderMain(); }
+      if (t.dataset && t.dataset.stayOpt) {
+        const k = t.dataset.stayOpt, o = stayOpts();
+        if (['mode', 'from', 'to', 'status', 'house', 'source', 'bucket', 'group', 'q'].indexOf(k) < 0) return;
+        o[k] = s(t.value).slice(0, 80);
+        if (k === 'mode') { o.house = ''; o.source = ''; }
+        return win.setTimeout(renderMain, 0);   // never re-paint inside the field's own blur
+      }
       if (t.id === 'crm-bonus-month') { if (monthKeyOk(t.value) && t.value <= s(state.today).slice(0, 7)) state.bonusMonth = t.value; return renderMain(); }
       if (t.id === 'crm-month') { if (monthKeyOk(t.value) && t.value <= s(state.today).slice(0, 7)) state.month = t.value; return renderMain(); }
       if (t.id === 'crm-debt-from') { state.debtFrom = isoDateOk(t.value) ? t.value : ''; return renderMain(); }
@@ -6683,7 +6844,7 @@
     VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,
     TRIAGE_OPTIONS: TRIAGE_OPTIONS, triageQueue: triageQueue, waitlistErrors: waitlistErrors, waitlistPatch: waitlistPatch, laterErrors: laterErrors,
     NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, openLeadOfPerson: openLeadOfPerson, leadAlreadyInHouse: leadAlreadyInHouse, globalSearch: globalSearch, nameKey: nameKey, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, pendingDischargeAudit: pendingDischargeAudit, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, WAIT_REASONS: WAIT_REASONS, waitReasonLabel: waitReasonLabel, waitChipText: waitChipText, flagsOf: flagsOf, patientMeetingChange: patientMeetingChange, reportOverdue: reportOverdue, meetingOutcomeLabel: meetingOutcomeLabel, managerChangeMessage: managerChangeMessage, managerWaUrl: managerWaUrl, leadFlagBody: leadFlagBody, leadFlagPendingPlan: leadFlagPendingPlan, patientChangePlan: patientChangePlan, MANAGER_REPORT_GRACE_DAYS: MANAGER_REPORT_GRACE_DAYS, EXCEPTION_CUTOFF: EXCEPTION_CUTOFF, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
-    KPI_PERIODS: KPI_PERIODS, kpiPeriod: kpiPeriod, occupancyToday: occupancyToday, closedDisposition: closedDisposition, leadFates: leadFates, BONUS: BONUS, bonusVisible: bonusVisible, leadBonus: leadBonus, bonusMonth: bonusMonth, FATES: FATES, leadConversion: leadConversion,
+    KPI_PERIODS: KPI_PERIODS, kpiPeriod: kpiPeriod, occupancyToday: occupancyToday, closedDisposition: closedDisposition, leadFates: leadFates, STAY_MODES: STAY_MODES, STAY_GROUPS: STAY_GROUPS, STAY_BUCKETS: STAY_BUCKETS, stayLines: stayLines, stayReport: stayReport, stayStats: stayStats, stayCsv: stayCsv, BONUS: BONUS, bonusVisible: bonusVisible, leadBonus: leadBonus, bonusMonth: bonusMonth, FATES: FATES, leadConversion: leadConversion,
     managerCloseRates: managerCloseRates, managerNameOk: managerNameOk, BREAKEVEN_STORAGE_KEY: BREAKEVEN_STORAGE_KEY, BREAKEVEN_DEFAULTS: BREAKEVEN_DEFAULTS, VAT_RATE: VAT_RATE, breakevenConfig: breakevenConfig,
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
