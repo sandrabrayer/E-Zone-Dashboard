@@ -1743,7 +1743,8 @@ async function personalLogin(req, res, b, ip) {
   // Own properties only: an id such as 'constructor' must never reach the
   // object prototype.
   const rec = Object.prototype.hasOwnProperty.call(USER_REGISTRY.byId, key) ? USER_REGISTRY.byId[key] : null;
-  const loginable = !!(rec && rec.status === 'active' && modelById(key) && modelById(key).status === 'active');
+  // a former employee (model.former) never logs in again, whatever her record says
+  const loginable = !!(rec && rec.status === 'active' && modelById(key) && modelById(key).status === 'active' && modelById(key).former !== true);
   const pin = typeof b.pin === 'string' ? b.pin : '';
   // Always one scrypt derivation (verifyPin is constant-work), even for an
   // unknown / inactive user, so timing does not reveal who has a record.

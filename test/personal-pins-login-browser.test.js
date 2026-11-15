@@ -7,7 +7,7 @@
  *   3. The right PIN enters the app; «קוד אישי חדש» is offered to Sandra and
  *      makes a record line.
  *   4. Logout → the login screen remembers «סנדרה» (straight to step 2).
- *   5. PR C: no shared link, field, picker or banner; Shiran logs in with her
+ *   5. PR C: no shared link, field, picker or banner; Yael logs in with her
  *      own code and gets no delete / approver role in the page.
  *
  * Set SHOT_DIR to also write login-360-step1.png, login-360-step2.png and
@@ -47,7 +47,7 @@ const users = require('../lib/users');
 const SERVER_PATH = require.resolve('../server');
 const PEPPER = 'pepper-TEST-browser-0123456789abcdef0123456789';
 const SANDRA_PIN = '402917';
-const SHIRAN_PIN = '719305';
+const YAEL_PIN = '719305';
 const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'USER_PIN_HASHES', 'PIN_PEPPER'];
 
 async function rec(id, pin, over) {
@@ -58,8 +58,8 @@ async function rec(id, pin, over) {
 /* Boot a fresh server.js with the test env; Apps Script answers a minimal
  * empty dataset for every action. */
 async function boot() {
-  const recs = [await rec('vered', '583920'), await rec('sandra', SANDRA_PIN), await rec('shiran', SHIRAN_PIN),
-    await rec('yael', '264081', { status: 'revoked' })];
+  const recs = [await rec('vered', '583920'), await rec('sandra', SANDRA_PIN), await rec('yael', YAEL_PIN),
+    await rec('shiran', '264081', { status: 'revoked' })];
   const env = {
     PROXY_SECRET: 'proxy-secret-TEST-browser-0123456789abcdef', SESSION_SECRET: 'session-secret-TEST-browser-0123456789abcdef',
     SHEETS_URL: 'https://script.google.com/macros/s/TEST/exec', PIN_PEPPER: PEPPER,
@@ -121,7 +121,7 @@ test('personal-PIN login at 360px: step 1 names → step 2 PIN → app; remember
     await page.goto(base + '/', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#login-names button[data-user-id]', { state: 'visible', timeout: 15000 });
     const names = await page.locator('#login-names button').allTextContents();
-    assert.deepEqual(names.map((s) => s.trim()), ['ורד', 'סנדרה', 'שירן'], 'active records only — no revoked Yael, no Ortal');
+    assert.deepEqual(names.map((s) => s.trim()), ['ורד', 'סנדרה', 'יעל'], 'active records only — no revoked Shiran, no Ortal');
     assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.pin-box')).direction), 'rtl');
     for (const h of await page.locator('#login-names button').evaluateAll((bs) => bs.map((b) => b.getBoundingClientRect().height))) {
       assert.ok(h >= 48, 'big touch target: ' + h);
@@ -160,7 +160,7 @@ test('personal-PIN login at 360px: step 1 names → step 2 PIN → app; remember
     await page.waitForSelector('#pin-admin-screen', { state: 'visible' });
     const opts = await page.locator('#pin-admin-user option').allTextContents();
     assert.ok(opts.includes('סנדרה — איפוס הקוד שלי') && opts.includes('ורד (איפוס)'), opts.join(' | '));
-    await page.selectOption('#pin-admin-user', 'shiran');
+    await page.selectOption('#pin-admin-user', 'yael');
     await page.fill('#pin-admin-pin', '123456');
     await page.fill('#pin-admin-pin2', '123456');
     await page.locator('#pin-admin-make').click();
@@ -171,7 +171,7 @@ test('personal-PIN login at 360px: step 1 names → step 2 PIN → app; remember
     await page.locator('#pin-admin-make').click();
     await page.waitForSelector('#pin-admin-result', { state: 'visible' });
     const line = JSON.parse(await page.locator('#pin-admin-line').inputValue());
-    assert.deepEqual([line.id, line.pinVersion, line.status], ['shiran', 2, 'active']);
+    assert.deepEqual([line.id, line.pinVersion, line.status], ['yael', 2, 'active']);
     assert.equal(await page.locator('#pin-admin-pin').inputValue(), '', 'PIN fields cleared');
     assert.equal(await page.locator('#pin-admin-steps li').count(), 5);
     await shot(page, page.locator('#pin-admin-screen .modal'), 'login-360-new-code.png');
@@ -184,16 +184,16 @@ test('personal-PIN login at 360px: step 1 names → step 2 PIN → app; remember
     await page.locator('#login-back').click();
     await page.waitForSelector('#login-step-name', { state: 'visible' });
 
-    // ---- Shiran: her own code, no delete / approver role in the page ----
-    await page.locator('#login-names button', { hasText: 'שירן' }).click();
+    // ---- Yael: her own code, no delete / approver role in the page ----
+    await page.locator('#login-names button', { hasText: 'יעל' }).click();
     await page.waitForSelector('#login-step-pin', { state: 'visible' });
-    await page.locator('#login-pin-input').fill(SHIRAN_PIN);
+    await page.locator('#login-pin-input').fill(YAEL_PIN);
     await page.locator('#login-pin-submit').click();
     await page.waitForSelector('#whoami', { state: 'visible', timeout: 15000 });
-    assert.match(await page.locator('#whoami').textContent(), /שירן/);
+    assert.match(await page.locator('#whoami').textContent(), /יעל/);
     assert.equal(await page.evaluate(() => document.body.classList.contains('role-deleter')), false);
     assert.equal(await page.evaluate(() => document.body.classList.contains('role-approver')), false);
-    assert.equal(await visible(page, '#pin-admin-open'), false, 'no «קוד אישי חדש» for Shiran');
+    assert.equal(await visible(page, '#pin-admin-open'), false, 'no «קוד אישי חדש» for Yael');
     assert.equal(await visible(page, '#error-banner'), false, 'no leftover «unauthorized» toast from the pre-login 401');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
 

@@ -43,7 +43,7 @@ const PROXY_SECRET = 'proxy-secret-TEST-login-7f3a9c1e5b2d4f6a8c0e2b4d';
 const SHEETS_URL = 'https://script.google.com/macros/s/TEST/exec';
 const APP_PIN = '4711';
 const PEPPER = 'pepper-TEST-login-a1b2c3d4e5f60718293a4b5c6d7e8f90';
-const PINS = { vered: '583920', sandra: '402917', shiran: '719305', yael: '264081' };
+const PINS = { vered: '583920', sandra: '402917', yael: '719305', shiran: '264081' };
 
 
 const ENV_KEYS = ['PROXY_SECRET', 'SESSION_SECRET', 'SHEETS_URL', 'APP_PIN', 'USER_PIN_HASHES',
@@ -151,11 +151,11 @@ async function record(id, over) {
 }
 
 let _team;
-/* Vered v3, Sandra v1, Shiran active, Yael REVOKED. */
+/* Vered v3, Sandra v1, Yael active, Shiran REVOKED (the two swapped 2026-11-15: Shiran is a former employee and can no longer log in). */
 async function team() {
   if (!_team) {
-    _team = [await record('vered', { pinVersion: 3 }), await record('sandra'), await record('shiran'),
-      await record('yael', { status: 'revoked' })];
+    _team = [await record('vered', { pinVersion: 3 }), await record('sandra'), await record('yael'),
+      await record('shiran', { status: 'revoked' })];
   }
   return _team.map((r) => Object.assign({}, r));
 }
@@ -185,8 +185,8 @@ test('login-users: ACTIVE records only, in model order, { id, name } only — re
   await withServer(await envWith({}, recs), async (port) => {
     const r = await request(port, 'GET', '/api/login-users');
     assert.strictEqual(r.status, 200);
-    assert.deepStrictEqual(r.json.users, [{ id: 'vered', name: 'ורד' }, { id: 'sandra', name: 'סנדרה' }, { id: 'shiran', name: 'שירן' }]);
-    assert.ok(!/scrypt|hash|roles|pinVersion|אורטל|יעל/.test(r.text), 'no hash, role, version — and no Ortal / revoked Yael');
+    assert.deepStrictEqual(r.json.users, [{ id: 'vered', name: 'ורד' }, { id: 'sandra', name: 'סנדרה' }, { id: 'yael', name: 'יעל' }]);
+    assert.ok(!/scrypt|hash|roles|pinVersion|אורטל|שירן/.test(r.text), 'no hash, role, version — and no Ortal / revoked Yael');
     assert.ok(!('shared' in r.json), 'PR C: no shared-window field');
     assert.match(String(r.headers['cache-control']), /no-store/);
   });
@@ -225,12 +225,12 @@ test('personal login: a wrong PIN is 401; an unknown, revoked or junk id answers
     const wrong = await login(port, 'vered', '111222');
     assert.deepStrictEqual([wrong.status, wrong.json], [401, { ok: false, error: 'invalid_pin' }]);
     assert.ok(!wrong.headers['set-cookie']);
-    const ids = ['yael', 'ortal', 'nobody', 'constructor', 'hasownproperty', 'Vered', '<b>', 42, null];
+    const ids = ['shiran', 'ortal', 'nobody', 'constructor', 'hasownproperty', 'Vered', '<b>', 42, null];
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i];
       const before = pinHash.stats.derivations;
       // A separate client address per attempt, so the per-IP brake (10) stays out of it.
-      const r = await login(port, id, PINS.yael, { 'X-Forwarded-For': '192.0.2.' + (10 + i) });
+      const r = await login(port, id, PINS.shiran, { 'X-Forwarded-For': '192.0.2.' + (10 + i) });
       assert.deepStrictEqual([r.status, r.json], [401, { ok: false, error: 'invalid_pin' }], String(id));
       assert.strictEqual(pinHash.stats.derivations - before, 1, 'exactly one scrypt derivation for ' + String(id));
     }
@@ -251,7 +251,7 @@ test('per-user lock: 5 failures → 429 «locked» (the 5th already), even with 
     const right = await login(port, 'vered', PINS.vered, { 'X-Forwarded-For': '198.51.100.1' });
     assert.deepStrictEqual([right.status, right.json.error], [429, 'locked'], 'a different IP does not unlock the user');
     assert.strictEqual(pinHash.stats.derivations, before, 'a locked user costs no scrypt');
-    assert.strictEqual((await login(port, 'shiran', PINS.shiran)).status, 200, 'other users unaffected');
+    assert.strictEqual((await login(port, 'yael', PINS.yael)).status, 200, 'other users unaffected');
     elapse(mod.pinLockout.user);
     assert.strictEqual((await login(port, 'vered', PINS.vered)).status, 200, 'unlocked after the window');
     // A success resets the user's count: 4 more failures do not lock.
@@ -266,25 +266,25 @@ test('per-IP (10) and global (30) brakes; X-Forwarded-For spoofing cannot bypass
     const REAL = '203.0.113.7';
     // 10 failures from one real address, spread over users (no user reaches
     // 5), each with a fresh fake leftmost XFF.
-    const plan = ['vered', 'vered', 'vered', 'sandra', 'sandra', 'sandra', 'shiran', 'shiran', 'nobody', 'x'];
+    const plan = ['vered', 'vered', 'vered', 'sandra', 'sandra', 'sandra', 'yael', 'yael', 'nobody', 'x'];
     for (let i = 0; i < plan.length; i++) {
       const headers = { 'X-Forwarded-For': `10.9.${i}.1, ${REAL}` };
       const r = await login(port, plan[i], '111222', headers);
       assert.strictEqual(r.status, 401, 'attempt ' + i);
     }
-    for (const body of [{ userId: 'shiran', pin: PINS.shiran }, { userId: 'vered', pin: PINS.vered }]) {
+    for (const body of [{ userId: 'yael', pin: PINS.yael }, { userId: 'vered', pin: PINS.vered }]) {
       const r = await request(port, 'POST', '/api/verify-pin', { body, headers: { 'X-Forwarded-For': `198.51.100.99, ${REAL}` } });
       assert.deepStrictEqual([r.status, r.json.error], [429, 'rate_limited'], 'spoofed leftmost entry: ' + JSON.stringify(Object.keys(body)));
     }
-    assert.strictEqual((await login(port, 'shiran', PINS.shiran, { 'X-Forwarded-For': `${REAL}, 192.0.2.44` })).status, 200, 'a really different client is fine');
+    assert.strictEqual((await login(port, 'yael', PINS.yael, { 'X-Forwarded-For': `${REAL}, 192.0.2.44` })).status, 200, 'a really different client is fine');
 
     // Global: 30 failures from 30 addresses → everyone waits.
     elapse(mod.pinLockout.ip); elapse(mod.pinLockout.global); elapse(mod.pinLockout.user);
     for (let i = 0; i < 30; i++) {
-      const id = ['vered', 'sandra', 'shiran', 'yael', 'nobody', 'x'][i % 6];
+      const id = ['vered', 'sandra', 'yael', 'shiran', 'nobody', 'x'][i % 6];
       await login(port, id, '111222', { 'X-Forwarded-For': `${REAL}, 100.64.${i}.1` });
     }
-    const g = await login(port, 'shiran', PINS.shiran, { 'X-Forwarded-For': `${REAL}, 100.65.0.1` });
+    const g = await login(port, 'yael', PINS.yael, { 'X-Forwarded-For': `${REAL}, 100.65.0.1` });
     assert.deepStrictEqual([g.status, g.json.error], [429, 'rate_limited']);
   });
 });
@@ -318,7 +318,7 @@ test('PR C: { pin } → 400 user_required (PIN not checked, no cookie); a shared
       }
       assert.ok(!startup.join('\n').includes(APP_PIN) && !startup.join('\n').includes(PEPPER), 'no PIN / pepper in the log');
       assert.deepStrictEqual((await request(port, 'GET', '/api/login-users')).json,
-        { ok: true, users: [{ id: 'vered', name: 'ורד' }, { id: 'sandra', name: 'סנדרה' }, { id: 'shiran', name: 'שירן' }] });
+        { ok: true, users: [{ id: 'vered', name: 'ורד' }, { id: 'sandra', name: 'סנדרה' }, { id: 'yael', name: 'יעל' }] });
       // A shared cookie minted before PR C (named or not) is no session.
       for (const name of ['ורד', '']) {
         const old = 'ezone_session=' + createSessionToken(SESSION_SECRET, undefined, undefined, name);
@@ -336,8 +336,8 @@ test('PR C: { pin } → 400 user_required (PIN not checked, no cookie); a shared
 
 test('PR C: /api/me has no sharedUntil; the client has no banner, no shared field, no picker', async () => {
   await withServer(await envWith(), async (port) => {
-    const me = await request(port, 'GET', '/api/me', { cookie: cookieOf(await login(port, 'shiran', PINS.shiran)) });
-    assert.deepStrictEqual(me.json, { ok: true, user: 'שירן', auth: 'personal', approver: false, deleter: false, finance: false,
+    const me = await request(port, 'GET', '/api/me', { cookie: cookieOf(await login(port, 'yael', PINS.yael)) });
+    assert.deepStrictEqual(me.json, { ok: true, user: 'יעל', auth: 'personal', approver: false, deleter: false, finance: false,
       capabilities: [], billingControl: false, view: 'restricted', canConfirm: false, canAccount: false, canDiscount: false, canAmount: false, billingRead: false, ops: false, landing: 'classic' });
   });
   assert.ok(!/id="shared-banner"|id="pin-input"|id="login-shared-link"|id="user-screen"/.test(HTML_SRC));
@@ -356,15 +356,15 @@ async function sandraCookie(port) {
 test('new-code page: 401 without a session or with a shared cookie; 403 for every non-approver personal session', async () => {
   await withServer(await envWith(), async (port) => {
     for (const [m, p] of [['GET', '/api/pin-admin/users'], ['POST', '/api/pin-admin/record']]) {
-      assert.strictEqual((await request(port, m, p, { body: { userId: 'shiran', pin: '719305', pin2: '719305' } })).status, 401);
+      assert.strictEqual((await request(port, m, p, { body: { userId: 'yael', pin: '719305', pin2: '719305' } })).status, 401);
     }
     const shared = 'ezone_session=' + createSessionToken(SESSION_SECRET, undefined, undefined, 'ורד');
     assert.strictEqual((await request(port, 'GET', '/api/pin-admin/users', { cookie: shared })).status, 401, 'PR C: no session');
     const vered = cookieOf(await login(port, 'vered', PINS.vered));
-    const shiran = cookieOf(await login(port, 'shiran', PINS.shiran));
-    for (const cookie of [vered, shiran]) {
+    const yael = cookieOf(await login(port, 'yael', PINS.yael));
+    for (const cookie of [vered, yael]) {
       const g = await request(port, 'GET', '/api/pin-admin/users', { cookie });
-      const p = await request(port, 'POST', '/api/pin-admin/record', { cookie, body: { userId: 'yael', pin: '264081', pin2: '264081' } });
+      const p = await request(port, 'POST', '/api/pin-admin/record', { cookie, body: { userId: 'shiran', pin: '264081', pin2: '264081' } });
       assert.deepStrictEqual([g.status, g.json], [403, { ok: false, error: 'forbidden' }]);
       assert.deepStrictEqual([p.status, p.json], [403, { ok: false, error: 'forbidden' }]);
     }
@@ -378,8 +378,8 @@ test('new-code page: 401 without a session or with a shared cookie; 403 for ever
     assert.deepStrictEqual(list.json.users, [
       { id: 'vered', name: 'ורד', hasRecord: true, status: 'active' },
       { id: 'sandra', name: 'סנדרה', hasRecord: true, status: 'active' },
-      { id: 'shiran', name: 'שירן', hasRecord: true, status: 'active' },
-      { id: 'yael', name: 'יעל', hasRecord: true, status: 'revoked' },
+      { id: 'shiran', name: 'שירן', hasRecord: true, status: 'revoked' },
+      { id: 'yael', name: 'יעל', hasRecord: true, status: 'active' },
       // Phase 4: Sandra creates Ortal's code here (new, no record yet).
       { id: 'ortal', name: 'אורטל', hasRecord: false, status: '' },
       // Phase 2: Dana's code is created here the same way.
@@ -389,31 +389,31 @@ test('new-code page: 401 without a session or with a shared cookie; 403 for ever
 });
 
 test('new-code page: returns ONLY a valid record line; new → v1, reset → current + 1 (narrowed roles kept); the PIN is never logged or echoed', async () => {
-  const recs = (await team()).filter((r) => r.id !== 'shiran');
+  const recs = (await team()).filter((r) => r.id !== 'yael');
   recs[0].roles = ['staff', 'reporter']; // Vered narrowed (no deleter)
   await withServer(await envWith({}, recs), async (port) => {
     const cookie = await sandraCookie(port);
     const NEW_PIN = '730418';
     let r;
     const lines = await captureConsole(async () => {
-      r = await request(port, 'POST', '/api/pin-admin/record', { cookie, body: { userId: 'shiran', pin: NEW_PIN, pin2: NEW_PIN } });
+      r = await request(port, 'POST', '/api/pin-admin/record', { cookie, body: { userId: 'yael', pin: NEW_PIN, pin2: NEW_PIN } });
     });
     assert.strictEqual(r.status, 200);
     assert.deepStrictEqual(Object.keys(r.json), ['ok', 'record'], 'only the line');
     assert.ok(!r.text.includes(NEW_PIN), 'the PIN is not echoed');
     assert.ok(!lines.join('\n').includes(NEW_PIN), 'the PIN is not logged');
     const line = JSON.parse(r.json.record);
-    assert.deepStrictEqual([line.id, line.name, line.pinVersion, line.status, line.roles], ['shiran', 'שירן', 1, 'active', ['staff', 'reporter']]);
+    assert.deepStrictEqual([line.id, line.name, line.pinVersion, line.status, line.roles], ['yael', 'יעל', 1, 'active', ['staff', 'reporter']]);
     assert.ok(await pinHash.verifyPin(NEW_PIN, line.hash, PEPPER), 'the hash verifies the PIN under the pepper');
     // The line validates when appended to the array, exactly as Sandra pastes it.
     const reg = users.validateUserPinHashes(JSON.stringify(recs.concat([line])));
-    assert.strictEqual(reg.byId.shiran.pinVersion, 1);
+    assert.strictEqual(reg.byId.yael.pinVersion, 1);
 
     const reset = JSON.parse((await request(port, 'POST', '/api/pin-admin/record', { cookie, body: { userId: 'vered', pin: '846203', pin2: '846203' } })).json.record);
     assert.deepStrictEqual([reset.pinVersion, reset.roles, reset.status], [4, ['staff', 'reporter'], 'active'], 'reset: v3 → v4, narrowed roles kept');
     const own = JSON.parse((await request(port, 'POST', '/api/pin-admin/record', { cookie, body: { userId: 'sandra', pin: '951736', pin2: '951736' } })).json.record);
     assert.deepStrictEqual([own.id, own.pinVersion, own.roles], ['sandra', 2, ['staff', 'deleter', 'approver', 'viewer']], 'Sandra: a reset of her own');
-    const revoked = JSON.parse((await request(port, 'POST', '/api/pin-admin/record', { cookie, body: { userId: 'yael', pin: '264081', pin2: '264081' } })).json.record);
+    const revoked = JSON.parse((await request(port, 'POST', '/api/pin-admin/record', { cookie, body: { userId: 'shiran', pin: '264081', pin2: '264081' } })).json.record);
     assert.deepStrictEqual([revoked.pinVersion, revoked.status], [2, 'active'], 'a reset re-activates a revoked user');
     // Phase 4: Ortal's first code — controller ONLY, active, v1; the line
     // validates as Sandra pastes it.
@@ -430,13 +430,13 @@ test('new-code page: weak PIN and mismatch are refused (400); the endpoint is ra
     const cookie = await sandraCookie(port);
     const post = (body) => request(port, 'POST', '/api/pin-admin/record', { cookie, body });
     for (const [pin, reason] of [['000000', 'all_same'], ['123456', 'sequential'], ['654321', 'sequential'], ['12345', 'not_six_digits'], ['abcdef', 'not_six_digits'], ['', 'not_six_digits']]) {
-      const r = await post({ userId: 'shiran', pin, pin2: pin });
+      const r = await post({ userId: 'yael', pin, pin2: pin });
       assert.deepStrictEqual([r.status, r.json], [400, { ok: false, error: 'weak_pin', reason }], pin);
     }
-    const mm = await post({ userId: 'shiran', pin: '730418', pin2: '730419' });
+    const mm = await post({ userId: 'yael', pin: '730418', pin2: '730419' });
     assert.deepStrictEqual([mm.status, mm.json], [400, { ok: false, error: 'pin_mismatch' }]);
-    for (let i = 0; i < 3; i++) await post({ userId: 'shiran', pin: '000000', pin2: '000000' });
-    const limited = await post({ userId: 'shiran', pin: '730418', pin2: '730418' });
+    for (let i = 0; i < 3; i++) await post({ userId: 'yael', pin: '000000', pin2: '000000' });
+    const limited = await post({ userId: 'yael', pin: '730418', pin2: '730418' });
     assert.deepStrictEqual([limited.status, limited.json.error], [429, 'rate_limited'], '10 calls per 15 min, every call counts');
   });
   const route = SERVER_SRC.slice(SERVER_SRC.indexOf("app.post('/api/pin-admin/record'"), SERVER_SRC.indexOf('/* GET /api/me'));
@@ -448,12 +448,12 @@ test('new-code page: weak PIN and mismatch are refused (400); the endpoint is ra
 /* ====================================================================== */
 
 test('a reset (pinVersion++) or revoked user is logged out: the old cookie → 401 everywhere; logout clears the cookie', async () => {
-  let veredCookie, shiranCookie;
+  let veredCookie, yaelCookie;
   const stub = stubHttps(() => ({ body: { ok: true, leads: [], patients: {} } }));
   try {
     await withServer(await envWith(), async (port) => {
       veredCookie = cookieOf(await login(port, 'vered', PINS.vered));
-      shiranCookie = cookieOf(await login(port, 'shiran', PINS.shiran));
+      yaelCookie = cookieOf(await login(port, 'yael', PINS.yael));
       assert.strictEqual((await request(port, 'GET', '/api/sheets?action=getData', { cookie: veredCookie })).status, 200);
       const out = await request(port, 'POST', '/api/logout', { cookie: veredCookie });
       assert.match(String(out.headers['set-cookie']), /^ezone_session=; HttpOnly; SameSite=Strict; Path=\/; Max-Age=0$/);
@@ -463,13 +463,13 @@ test('a reset (pinVersion++) or revoked user is logged out: the old cookie → 4
     recs[0].pinVersion = 4;
     recs[2].status = 'revoked';
     await withServer(await envWith({}, recs), async (port) => {
-      for (const cookie of [veredCookie, shiranCookie]) {
+      for (const cookie of [veredCookie, yaelCookie]) {
         assert.strictEqual((await request(port, 'GET', '/api/me', { cookie })).status, 401);
         assert.strictEqual((await request(port, 'GET', '/api/sheets?action=getData', { cookie })).status, 401);
         assert.strictEqual((await request(port, 'POST', '/api/sheets', { cookie, body: { action: 'saveAll' } })).status, 401);
       }
       assert.deepStrictEqual((await request(port, 'GET', '/api/login-users')).json.users.map((u) => u.id), ['vered', 'sandra'], 'Shiran leaves the name list');
-      assert.strictEqual((await login(port, 'shiran', PINS.shiran)).status, 401, 'a revoked user cannot log in');
+      assert.strictEqual((await login(port, 'yael', PINS.yael)).status, 401, 'a revoked user cannot log in');
     });
   } finally { stub.restore(); }
   // The frontend: any 401 goes back to the login screen.
@@ -802,9 +802,9 @@ test('client: works without localStorage (blocked / private mode) and shows the 
 test('client: «קוד אישי חדש» — labels, Railway steps for new vs reset, Hebrew errors; the button shows for the approver only', () => {
   const { app, els } = loadApp();
   assert.strictEqual(app.pinAdminOptionLabel({ id: 'sandra', name: 'סנדרה', hasRecord: true }), 'סנדרה — איפוס הקוד שלי');
-  assert.strictEqual(app.pinAdminOptionLabel({ id: 'shiran', name: 'שירן', hasRecord: false }), 'שירן (חדש)');
+  assert.strictEqual(app.pinAdminOptionLabel({ id: 'yael', name: 'יעל', hasRecord: false }), 'יעל (חדש)');
   assert.strictEqual(app.pinAdminOptionLabel({ id: 'vered', name: 'ורד', hasRecord: true, status: 'active' }), 'ורד (איפוס)');
-  const fresh = app.pinAdminSteps('שירן', false).join('\n');
+  const fresh = app.pinAdminSteps('יעל', false).join('\n');
   assert.match(fresh, /USER_PIN_HASHES/);
   assert.match(fresh, /מוסיפים פסיק אחרי הרשומה האחרונה/);
   const reset = app.pinAdminSteps('ורד', true).join('\n');
@@ -845,4 +845,14 @@ test('service worker: v26 or later; the login and every API route are never cach
     assert.strictEqual(sw.shouldCache(u), false, u);
   }
   assert.ok(!/'\/api\//.test(SW_SRC.slice(SW_SRC.indexOf('var PRECACHE_URLS'), SW_SRC.indexOf('];', SW_SRC.indexOf('var PRECACHE_URLS')))), 'no API route is precached');
+});
+
+test('a former employee (Shiran, model.former): hidden from the name list and refused a new login even while her record is still ACTIVE', async () => {
+  const users = require('../lib/users');
+  assert.strictEqual(users.modelById('shiran').former, true);
+  const byId = {};
+  for (const id of ['vered', 'sandra', 'shiran', 'yael']) byId[id] = { id, status: 'active' };   // her live record: still active
+  assert.deepStrictEqual(users.loginUsers({ byId }).map((u) => u.id), ['vered', 'sandra', 'yael']);
+  const SRC = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(SRC, /const loginable = !!\(rec && rec\.status === 'active' && modelById\(key\) && modelById\(key\)\.status === 'active' && modelById\(key\)\.former !== true\);/);
 });
