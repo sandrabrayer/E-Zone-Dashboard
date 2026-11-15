@@ -1998,6 +1998,8 @@ test('«אימות חלקי» real clicks (Ortal; CHANGELOG-partial-verify-check
     };
     const openAccount = async (who) => {
       const s = await open(browser, srv.port, who, 1366);
+      await s.page.waitForSelector('#crm-nav button[data-area="billing"]', { timeout: 8000 });
+      await s.page.click('#crm-nav button[data-area="billing"]');
       await s.page.waitForSelector('#crm-bill-overview', { timeout: 8000 });
       await billTab(s.page, 'debts');
       await s.page.click('#crm-debtors tbody tr[data-open-patient="p1"] td:nth-child(2)');
@@ -2005,8 +2007,8 @@ test('«אימות חלקי» real clicks (Ortal; CHANGELOG-partial-verify-check
       return s;
     };
     const { page, errors } = await openAccount('ortal');
-    const row = '#crm-account-receipts tr[data-receipt="rcpt-1"]';
-    const chipOf = (pg) => pg.$eval('#crm-account-receipts tr[data-receipt="rcpt-1"] .chip', (e) => e.textContent);
+    assert.equal((await page.$$('#crm-account-receipts tbody tr')).length, 1, 'fixture has exactly one account receipt');
+    const chipOf = (pg) => pg.$eval('#crm-account-receipts tbody tr .chip', (e) => e.textContent);
     const posts = () => srv.saves.filter((x) => x.action === 'confirmPayment');
     await page.click('[data-verify-partial="rcpt-1"]');
     // malformed / out-of-range amounts post nothing
@@ -2044,7 +2046,7 @@ test('«אימות חלקי» real clicks (Ortal; CHANGELOG-partial-verify-check
     const fin = both('rcpt-1')[0];
     assert.equal(fin.confirmStatus, 'confirmed'); assert.equal(fin.confirmedAmount, 2500);
     const v2 = await openAccount('vered');
-    assert.equal(await chipOf(v2.page), 'אומת');
+    assert.equal(await chipOf(v2.page), 'אומת ✓');
     assert.equal(QUEUE.receipts.filter((r) => r.id === 'rcpt-1').length, 1, 'no duplicate receipt');
     assert.ok(!srv.actions.some((a) => ['reportPayment', 'setBillingDiscount', 'saveAll', 'editReceipt'].indexOf(a.action) >= 0), 'only confirmPayment writes');
     assert.equal(posts().length, 3);
