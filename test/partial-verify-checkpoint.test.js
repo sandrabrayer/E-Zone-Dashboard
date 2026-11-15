@@ -95,3 +95,29 @@ test('partialVerifyBody / partialAccepted refuse Infinity, NaN and rounded-malfo
   assert.equal(core.partialAccepted(ok(Infinity), 'rcpt-t1', Infinity), false);
   assert.equal(core.partialAccepted(ok(1000), 'rcpt-t1', 1000.004), false);
 });
+
+/* Stage 1 (CHANGELOG-billing-read-integrity.md): ACTUAL helper extracted from crm.js source and run in
+ * vm (not a browser). Plus source-order checks of both accepted-proof paths. */
+test('obsoleteBillingReadAfterProof: advances the generation only while a billing read is in flight', () => {
+  const vm = require('node:vm');
+  const m = /function obsoleteBillingReadAfterProof\(\) \{[\s\S]*?\n    \}\n/.exec(SRC);
+  assert.ok(m, 'helper present in source');
+  const run = (state) => { const ctx = { state }; vm.createContext(ctx); return [vm.runInContext('(' + m[0].replace(/^\s*function obsoleteBillingReadAfterProof/, 'function') + ')()', ctx), state]; };
+  let [r, st] = run({ billingLoading: true, billingGen: 3 });
+  assert.equal(r, true); assert.equal(st.billingGen, 4);
+  [r, st] = run({ billingLoading: false, billingGen: 3 });
+  assert.equal(r, false); assert.equal(st.billingGen, 3);
+  [r, st] = run({ billingLoading: true });
+  assert.equal(st.billingGen, 1);
+});
+
+test('both accepted-proof paths advance the generation AFTER proof and BEFORE patching; refusal paths never do', () => {
+  for (const [name, proof, patch] of [['savePartial', 'partialAccepted(res', 'applyPartial('], ['verifyReceipt', 'verifyAccepted(res', 'applyVerified(']]) {
+    const start = SRC.indexOf('function ' + name + '(');
+    const body = SRC.slice(start, SRC.indexOf('\n    }\n', start));
+    const iProof = body.indexOf(proof), iCall = body.indexOf('obsoleteBillingReadAfterProof();'), iPatch = body.indexOf(patch);
+    assert.ok(iProof > 0 && iCall > iProof && iPatch > iCall, name + ' order');
+    assert.equal(body.split('obsoleteBillingReadAfterProof()').length - 1, 1, name + ' exactly one call');
+    assert.ok(body.indexOf('return fail(') < iCall, name + ' refusal returns before the advance');
+  }
+});

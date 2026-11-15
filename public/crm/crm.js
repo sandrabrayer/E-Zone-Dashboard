@@ -4067,6 +4067,15 @@
       loadBilling();
     }
     function billingRefreshing() { return !!(state.billing && state.billingLoading); }
+    /* Stage 1 (CHANGELOG-billing-read-integrity.md): called ONLY after the exact receipt-specific
+     * source acknowledgement passed. A read still in flight began BEFORE the confirmation, so it is
+     * made obsolete (generation advance) — loadBilling then discards it and asks again. Nothing in
+     * flight = nothing happens (no extra GET for an ordinary verification). */
+    function obsoleteBillingReadAfterProof() {
+      if (!state.billingLoading) return false;
+      state.billingGen = (state.billingGen || 0) + 1;
+      return true;
+    }
     function loadBilling(then) {
       if (typeof then === 'function') billingWaiters.push(then);
       if (state.billingLoading) return;
@@ -4349,6 +4358,7 @@
         .then(function (res) {
           if (!partialAccepted(res, id, c.amount)) return fail(res && res.ok === true ? 'תוצאת האימות החלקי לא ידועה — רענני ובדקי את הקבלה לפני כל פעולה (אין לדווח תשלום חדש)' : verifyRefusal(res));
           state.verifying = '';
+          obsoleteBillingReadAfterProof();
           const row = [].concat(res.changed || [], res.unchangedRows || []).filter(function (x) { return x && s(x.id) === s(id); })[0] || {};
           const by = s(row.confirmedBy) || s(state.me && state.me.user), at = s(row.confirmedAt);
           if (state.billing && state.billing.payments && Array.isArray(state.billing.payments.receipts)) state.billing.payments = Object.assign({}, state.billing.payments, { receipts: applyPartial(state.billing.payments.receipts, id, c.amount, by, at) });
@@ -4380,6 +4390,7 @@
         .then(function (res) {
           if (!verifyAccepted(res, id)) return fail(res && res.ok === true ? 'האימות לא אושר על ידי השרת — רענני ובדקי' : verifyRefusal(res));
           state.verifying = '';
+          obsoleteBillingReadAfterProof();
           const row = [].concat(res.changed || [], res.unchangedRows || []).filter(function (x) { return x && s(x.id) === s(id); })[0] || {};
           const by = s(row.confirmedBy) || s(state.me && state.me.user), at = s(row.confirmedAt);
           if (state.billing && state.billing.payments && Array.isArray(state.billing.payments.receipts)) state.billing.payments = Object.assign({}, state.billing.payments, { receipts: applyVerified(state.billing.payments.receipts, id, by, at) });
