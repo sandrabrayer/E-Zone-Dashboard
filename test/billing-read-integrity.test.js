@@ -55,3 +55,34 @@ test('loadBilling: optional credits failure is not a required failure; obsolete 
   h2.loadBilling(); await settle();
   assert.equal(st2.billingStale, false, 'obsolete failure ignored; fresh read won');
 });
+
+/* Stage 2B — stale quarantine, checked against the ACTUAL source text (vm for the helpers; markers for wiring). */
+test('2B: requireFreshBilling blocks only while stale; warning carries markers and no write claim', () => {
+  const a2 = SRC.indexOf('function billingReadWarning()'), b2 = SRC.indexOf('function retryBillingRead()');
+  assert.ok(a2 > 0 && b2 > a2);
+  const toasts = [];
+  const ctx = { state: { billingStale: false }, toast: (t, bad) => toasts.push([t, bad]) };
+  vm.createContext(ctx);
+  vm.runInContext(SRC.slice(a2, b2) + ';this.warn=billingReadWarning;this.req=requireFreshBilling;', ctx);
+  assert.equal(ctx.req(), true); assert.equal(toasts.length, 0);
+  ctx.state.billingStale = true;
+  assert.equal(ctx.req(), false); assert.equal(toasts.length, 1); assert.equal(toasts[0][1], true);
+  const w = ctx.warn();
+  assert.match(w, /data-billing-stale/); assert.match(w, /data-billing-read-retry/);
+  assert.match(w, /אין לדווח תשלום נוסף/);
+  assert.doesNotMatch(w, /נכשל|נשמר/);
+});
+test('2B: every finance write entry guards first; renderers quarantine; retry is read-only', () => {
+  for (const fn of ['submitLink', 'submitCleanup', 'submitReport', 'submitSmall', 'submitCredit', 'submitRefundAction', 'submitReceiptForm', 'savePartial', 'verifyReceipt']) {
+    const i = SRC.indexOf('function ' + fn + '(');
+    assert.ok(i > 0, fn);
+    assert.ok(SRC.slice(i, i + 200).includes('requireFreshBilling()'), fn + ' guard at entry');
+  }
+  const rb = SRC.indexOf('function renderBilling()'), ra = SRC.indexOf('function renderAccount(a)');
+  assert.ok(SRC.slice(rb, rb + 400).includes('billingReadWarning()'));
+  assert.ok(SRC.slice(ra, ra + 200).includes('billingReadWarning()'));
+  const rr = SRC.indexOf('function retryBillingRead()');
+  const body = SRC.slice(rr, SRC.indexOf('function loadBilling(', rr));
+  assert.ok(body.includes('loadBilling('));
+  assert.doesNotMatch(body, /fetch|reportPayment|confirmPayment|setBillingDiscount/);
+});

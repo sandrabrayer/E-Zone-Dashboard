@@ -4081,6 +4081,24 @@
       return !!(b && b.debt && b.debt.ok === true && Array.isArray(b.debt.byPatient)
         && b.payments && b.payments.ok === true && Array.isArray(b.payments.receipts) && Array.isArray(b.payments.payments));
     }
+    /* Stage 2B: a failed/malformed required read leaves the previous bundle in memory but UNVERIFIED —
+     * no balance or finance action is shown from it; the panel offers a READ-ONLY retry. */
+    function billingReadWarning() {
+      return '<div class="crm-state bad" data-billing-stale role="alert">לא ניתן לרענן את נתוני החשבון. היתרות אינן מאומתות ועדכניות; אין לדווח תשלום נוסף כדי לתקן זאת. נסי לטעון נתונים מחדש. <button type="button" class="btn small" data-billing-read-retry>נסי לטעון נתונים מחדש</button></div>';
+    }
+    function requireFreshBilling() {
+      if (state.billingStale !== true) return true;
+      toast('נתוני החשבון אינם מאומתים — לא ניתן לבצע פעולה כספית עד שהרענון יצליח', true);
+      return false;
+    }
+    function retryBillingRead() {
+      const repaint = function () {
+        const pid = state.drawer && state.drawer.kind === 'patient' && state.drawer.id;
+        if (pid && $('#crm-account')) fillAccountPane(pid);
+      };
+      loadBilling(repaint);
+      if (state.area === 'billing') renderMain();
+    }
     function loadBilling(then) {
       if (typeof then === 'function') billingWaiters.push(then);
       if (state.billingLoading) return;
@@ -4121,6 +4139,7 @@
         state.payments = next.payments && next.payments.ok === true ? next.payments : null;
         renderNav();
         if (state.area === 'billing') renderMain();
+        if (failed && !billingWaiters.length) { const pid = state.drawer && state.drawer.kind === 'patient' && state.drawer.id; if (pid && typeof $ === 'function' && $('#crm-account')) fillAccountPane(pid); }
         while (billingWaiters.length) { try { billingWaiters.shift()(); } catch (_) { /* a stale drawer */ } }
       });
     }
@@ -4149,6 +4168,7 @@
       el.scrollIntoView({ block: 'nearest' });
     }
     function submitLink(f) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       if (!state.link || state.saving) return Promise.resolve(false);
       const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
       const k = state.link.kind, row = state.link.row;
@@ -4359,6 +4379,7 @@
       inp.focus();
     }
     function savePartial(form) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       const id = form.dataset.vpId, rep = Number(form.dataset.vpReported) || 0, c = partialVerifyCheck(form.querySelector('.vp-amt').value, rep);
       if (c.error) { toast(c.error, true); return Promise.resolve(false); }
       const body = partialVerifyBody(id, c.amount);
@@ -4388,6 +4409,7 @@
     /* One click → spinner on the button → confirmPayment → the row turns green. The answers on
      * screen are patched from the server's proof; nothing is re-read (a verification moves no money). */
     function verifyReceipt(btn) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       const id = btn.dataset.verify, body = verifyBody(id);
       if (!body || state.verifying) return Promise.resolve(false);
       state.verifying = id;
@@ -4511,6 +4533,7 @@
       return 'נבחרו ' + rows.length + ' מחזורים של ' + Object.keys(people).length + ' מטופלים · ' + fmtMoney(rows.reduce(function (t, r) { return t + r.balance; }, 0));
     }
     function submitCleanup(f) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       if (state.saving) return Promise.resolve(false);
       const plan = cleanupPlan(cleanupSelected(), f.elements.reason.value, f.elements.note.value);
       if (!plan.ok) { showReportIssues(f, Object.keys(plan.errors).map(function (k) { return { field: k, hebrewMessage: plan.errors[k] }; }), 'יש לתקן את השדות המסומנים'); return Promise.resolve(false); }
@@ -4543,6 +4566,7 @@
     /* «גבייה» (CHANGELOG-billing-sections.md): a secondary menu, one section at a time. */
     function renderBilling() {
       if (!state.billing) { loadBilling(); return '<div class="crm-state">טוען נתוני גבייה…</div>'; }
+      if (state.billingStale === true) return billingReadWarning();
       const b = billingOverview(state.billing.debt, state.billing.payments, state.today);
       const isController = !!(state.me && state.me.view === 'controller');
       const tabs = billingTabsFor(state.me);
@@ -5172,6 +5196,7 @@
       loadBilling(paint);
     }
     function renderAccount(a) {
+      if (state.billingStale === true) return billingReadWarning();
       const me = state.me || {};
       let html = billingRefreshing() ? '<div class="crm-refresh" id="crm-account-refresh" role="status"><span class="spin" aria-hidden="true"></span>מעדכן נתונים…</div>' : '';
       if (a.errors.length) html += '<p class="na">' + esc(a.errors.join(' · ')) + '</p>';
@@ -5268,6 +5293,7 @@
       if (fe && !issues.some(function (i) { return i.field === '_form'; })) fe.textContent = message || (issues.length ? 'הדיווח לא נשמר — יש להשלים את השדות המסומנים' : '');
     }
     function submitReport(f, confirmDuplicate) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       if (!state.report || state.saving) return Promise.resolve(false);
       const all = {};
       Array.prototype.forEach.call(f.elements, function (el) { if (el.name && el.type !== 'checkbox' && el.type !== 'radio') all[el.name] = el.value; });
@@ -5351,6 +5377,7 @@
       el.scrollIntoView({ block: 'nearest' });
     }
     function submitSmall(f) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       if (!state.small || !state.account || state.saving) return Promise.resolve(false);
       const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
       const k = state.small.kind, ctx = state.small.ctx, pat = state.account.patient;
@@ -5409,6 +5436,7 @@
       el.scrollIntoView({ block: 'nearest' });
     }
     function submitCredit(f) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       if (!state.creditForm || !state.account || state.saving) return Promise.resolve(false);
       const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
       const cf = state.creditForm;
@@ -5466,6 +5494,7 @@
       el.scrollIntoView({ block: 'nearest' });
     }
     function submitRefundAction(form) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       const task = state.refundAction;
       if (!task || state.saving) return Promise.resolve(false);
       const current = creditsOf(state.billing && state.billing.credits).filter(function (r) { return r.id === task.creditId; })[0];
@@ -5535,6 +5564,7 @@
       el.scrollIntoView({ block: 'nearest' });
     }
     function submitReceiptForm(f) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
       if (!state.receiptForm || state.saving) return Promise.resolve(false);
       const vals = {}; Array.prototype.forEach.call(f.elements, function (el) { if (el.name) vals[el.name] = el.value; });
       const k = state.receiptForm.kind, r = state.receiptForm.receipt;
@@ -6095,7 +6125,7 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-verify],[data-verify-partial],[data-vp-save],[data-vp-cancel],[data-rc-all-rows],[data-billing-retry],[data-debt-preset],[data-fc-preset],[data-bill-tab],[data-bill-go],[data-bill-clear],[data-rc-preset],[data-slice-dim],[data-fc-open],[data-cleanup-jump],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-verify],[data-verify-partial],[data-vp-save],[data-vp-cancel],[data-rc-all-rows],[data-billing-retry],[data-billing-read-retry],[data-debt-preset],[data-fc-preset],[data-bill-tab],[data-bill-go],[data-bill-clear],[data-rc-preset],[data-slice-dim],[data-fc-open],[data-cleanup-jump],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
       if (!t) return;
       if (t.dataset.creditCancel !== undefined) { state.creditForm = null; const box = t.closest('form'); if (box) box.remove(); return; }
       if (t.dataset.creditEdit) return openCreditForm('edit', t.dataset.creditEdit);
@@ -6105,6 +6135,7 @@
       if (t.dataset.vpSave !== undefined) return savePartial(t.closest('.vp-form'));
       if (t.dataset.verify) return verifyReceipt(t);
       if (t.dataset.rcAllRows !== undefined) { state.rcShowAll = true; return renderMain(); }
+      if (t.dataset.billingReadRetry !== undefined) return retryBillingRead();
       if (t.dataset.billingRetry !== undefined) { resetBilling(); return renderMain(); }
       if (t.dataset.reportCancel !== undefined) { state.report = null; state.small = null; const el = $('#crm-report'); if (el) el.innerHTML = ''; return; }
       if (t.dataset.dueToday !== undefined) { state.dueDate = state.today; return renderMain(); }

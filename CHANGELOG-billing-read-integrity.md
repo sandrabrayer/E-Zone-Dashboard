@@ -10,3 +10,9 @@
 - `loadBilling`: new strict `billingSourcesValid` (debt `ok`+`byPatient[]`, payments `ok`+`receipts[]`+`payments[]`; healthy empty arrays valid). An invalid/failed REQUIRED bundle keeps the previous bundle and sets `state.billingStale=true` (only after the generation check, so an obsolete failure cannot mark newer state stale); a valid read clears it. While stale the next `loadBilling` forces debtAging/getPayments GETs (no cache/boot reuse). Optional credits/refunds failures are caught individually and are not required failures. No auto-retry.
 - Tests: `test/billing-read-integrity.test.js` (loader extracted from actual source, vm, stubbed `api`). Not browser, not run against Chromium.
 - NOT done yet: stale warning UI, finance-action guards, missing-source ≠ zero rendering.
+
+## Stage 2B — consume the stale flag (finance quarantine)
+- While `state.billingStale`, `renderBilling` and `renderAccount` show one warning panel (`data-billing-stale`, button `data-billing-read-retry`) instead of balances, debt-free text or finance controls. Page shell, patient drawer and navigation stay open. No write is claimed as failed or succeeded.
+- Retry runs `loadBilling` (forced debt/payments GETs) and repaints the open account; it never POSTs. A failed refresh repaints an open account even with no waiters.
+- `requireFreshBilling()` guards the entry of full/partial verify, report, discount/amount (small), link, cleanup, credit, refund action and receipt edit — open forms and Today actions are blocked too.
+- Tests: vm helper + source-wiring tests in `test/billing-read-integrity.test.js` (not browser). Pending: missing-source-is-not-zero (Stage 3) and integrated Chromium tests. SW139 unchanged.
