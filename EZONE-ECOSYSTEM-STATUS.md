@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated November 15, 2026
 
+## Dashboard CRM — «משך שהייה»: the stay-length report — November 15, 2026
+
+Display only. New «משך שהייה» tab (Vered, Sandra, Dana): one line per stay — patient, house,
+referrer, entry, exit, days, status, continuity — with «מי לכלול» (discharged / entered /
+present in a period / all), filters, a «חתך לפי» summary (house, referrer, length, month,
+continuity, status) and a CSV download. Same stay rules as `lib/patient-retention.js`.
+SW cache v141. See `CHANGELOG-stay-length-report.md`.
+
 ## Dashboard CRM — «בונוס»: Dana's lead bonus tab — November 15, 2026
 
 Display only. Dana (and Sandra) see «בונוס»: ₪50 per lead assigned to Dana whose visit took

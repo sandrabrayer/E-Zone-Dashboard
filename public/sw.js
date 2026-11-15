@@ -415,7 +415,9 @@
 // From the live v138; monotonic, v17 never reused.
 // v139 → v140: «בונוס»: Dana's lead bonus tab
 // (CHANGELOG-dana-bonus-tab.md). From the live v139; monotonic, v17 never reused.
-var CACHE_VERSION = 'v140';
+// v140 → v141: «משך שהייה»: the stay-length report
+// (CHANGELOG-stay-length-report.md). From the live v140; monotonic, v17 never reused.
+var CACHE_VERSION = 'v141';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

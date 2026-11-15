@@ -197,7 +197,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
   try {
     const { page, errors } = await open(browser, srv.port, 'vered', 1366);
     assert.equal(await page.getAttribute('html', 'dir'), 'rtl');
-    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'בקרת עבודה', 'לידים', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'KPI', 'היסטוריה חודשית'], 'grouped nav (spec §3; «פניות» → «לידים» 04/11/2026; «בקרת עבודה» next to «היום שלי» + «KPI» 05/11/2026)');
+    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'בקרת עבודה', 'לידים', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'KPI', 'היסטוריה חודשית', 'משך שהייה'], 'grouped nav (spec §3; «פניות» → «לידים» 04/11/2026; «בקרת עבודה» next to «היום שלי» + «KPI» 05/11/2026)');
     assert.deepEqual(await page.$$eval('#crm-nav .nav-group', (els) => els.map((e) => e.textContent)), ['לידים ומטופלים', 'פגישות ויומן', 'בתים והמשך טיפול', 'כספים', 'דוחות והגדרות']);
     assert.equal(await page.$eval('body', (b) => getComputedStyle(b).backgroundColor), 'rgb(230, 236, 242)', 'light theme (contrast pass)');
     assert.ok(await page.isVisible('#crm-menu'));
@@ -2245,4 +2245,47 @@ test('«בונוס» (CHANGELOG-dana-bonus-tab.md): Dana sees where she stands �
     await m.page.click('#crm-burger'); await m.page.click('#crm-nav button[data-area="bonus"]'); await m.page.waitForSelector('#crm-bonus-kpis');
     assert.equal(await noHScroll(m.page), true, 'no horizontal scroll on a phone');
   } finally { DATA.leads = keep; await browser.close(); srv.close(); }
+});
+
+test('«משך שהייה» (CHANGELOG-stay-length-report.md): every stay with house, referrer, dates and days; who to include, cuts, a group summary, CSV; a row opens the patient; not for Ortal', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="stays"]');
+    await page.waitForSelector('#crm-stay-filters');
+    assert.match(await page.textContent('#crm-stay-title'), /משך שהייה — שוחררו בתקופה/);
+    await page.selectOption('#crm-stay-mode', 'all');
+    await page.waitForSelector('#crm-stay-rows tbody tr');
+    const n = await page.$$eval('#crm-stay-rows tbody tr', (r) => r.length);
+    assert.ok(n >= 3, 'the fixture\'s stays are listed');
+    assert.equal(await page.$eval('#crm-stay-kpis .kpi .v', (e) => e.textContent.trim()), String(n), 'the first card counts the same lines');
+    assert.deepEqual(await page.$$eval('#crm-stay-rows thead th', (t) => t.map((x) => x.textContent)), ['מטופל/ת', 'בית', 'גורם מפנה', 'כניסה', 'יציאה', 'ימי שהייה', 'סטטוס', 'המשך טיפול']);
+    assert.equal(await page.$('#crm-stay-from'), null, '«כל השהיות» has no period');
+    // a cut and a group summary
+    await page.selectOption('#crm-stay-group', 'house');
+    await page.waitForSelector('#crm-stay-groups tbody tr');
+    const sum = await page.$$eval('#crm-stay-groups tbody tr', (r) => r.reduce((t, x) => t + Number(x.children[1].textContent), 0));
+    assert.equal(sum, n, 'the groups add up to the list');
+    await page.selectOption('#crm-stay-status', 'active');
+    await page.waitForFunction(() => Array.from(document.querySelectorAll('#crm-stay-rows tbody tr')).every((r) => /עדיין בטיפול/.test(r.textContent)));
+    assert.ok(await page.$('[data-stay-csv]'), 'the CSV download is offered');
+    const dl = page.waitForEvent('download');
+    await page.click('[data-stay-csv]');
+    assert.match((await dl).suggestedFilename(), /^ezone-stays-\d{4}-\d{2}-\d{2}\.csv$/);
+    assert.equal(await noHScroll(page), true);
+    // a row opens the patient
+    await page.click('#crm-stay-rows tbody tr[data-open-patient] td:first-child');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer-close');
+    await page.click('[data-stay-reset]');
+    await page.waitForFunction(() => document.querySelector('#crm-stay-mode').value === 'discharged');
+    assert.ok(!srv.saves.length, 'display only');
+    assert.deepEqual(errors, []);
+    const d = await open(browser, srv.port, 'dana', 390);
+    await d.page.click('#crm-burger'); await d.page.click('#crm-nav button[data-area="stays"]'); await d.page.waitForSelector('#crm-stay-filters');
+    assert.equal(await noHScroll(d.page), true, 'no horizontal scroll on a phone');
+    const o = await open(browser, srv.port, 'ortal', 1366);
+    assert.equal(await o.page.$('#crm-nav button[data-area="stays"]'), null);
+  } finally { await browser.close(); srv.close(); }
 });
