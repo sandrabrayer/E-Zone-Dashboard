@@ -1,5 +1,12 @@
 # E-ZONE Ecosystem Status — updated November 15, 2026
 
+## Dashboard CRM «חשבון» — the cycle's actions always in view — November 15, 2026
+
+Display only. «דווח תשלום» / «הנחה» / «שנה סכום» of «מחזורים פתוחים» are pinned (sticky) so
+they never scroll out of the drawer; an open «ללא דיווח» cycle next to a payment marked
+«שולם» on another date is explained (same money, wrong month → «ניקוי חובות היסטוריים»).
+SW cache v138. See `CHANGELOG-account-actions-visible.md`.
+
 ## Dashboard CRM — a debt closes when the payment is VERIFIED — November 15, 2026
 
 CRM only (no Code.gs). In «חובות פתוחים», «סקירה» and the patient «חשבון» a payment that

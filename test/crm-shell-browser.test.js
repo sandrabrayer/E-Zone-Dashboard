@@ -681,6 +681,9 @@ test('«שולם עם הנחה» (Vered, CHANGELOG-paid-with-discount.md): the b
     await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
     await page.click('#crm-drawer [data-tab="account"]');
     await page.waitForSelector('#crm-account-open');
+    // «דווח תשלום» is in view without scrolling the table sideways (CHANGELOG-account-actions-visible.md)
+    const geo = await page.evaluate(() => { const b = document.querySelector('#crm-account-open [data-report-open="1"]').getBoundingClientRect(); const d = document.querySelector('#crm-drawer').getBoundingClientRect(); const w = document.querySelector('#crm-account-open').closest('.tbl-wrap'); return { inside: b.left >= d.left && b.right <= d.right && b.width > 40, scrolls: w.scrollWidth > w.clientWidth, at: w.scrollLeft }; });
+    assert.deepEqual(geo, { inside: true, scrolls: true, at: 0 }, 'the table is wider than the drawer, yet the action is visible un-scrolled');
     // the unrecorded open cycle: 5,000, month = its start month
     await page.click('#crm-account-open [data-report-open="1"]');
     await page.waitForSelector('form[data-form="payment-report"]');
