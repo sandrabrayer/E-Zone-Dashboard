@@ -2112,7 +2112,7 @@ test('a debt closes on verification (Ortal; CHANGELOG-debt-until-verified.md): t
     assert.match(await page.textContent('#crm-account .kv'), /₪11,000[\s\S]*מתוכו ₪2,500 דווח וממתין לאימות/);
     await page.click('#crm-account-receipts [data-verify="rcpt-1"]');
     await page.waitForFunction(() => !document.querySelector('#crm-account-unverified') && /₪8,500/.test(document.querySelector('#crm-account .kv').textContent), null, { timeout: 8000 });
-    assert.match(await page.textContent('#crm-toast'), /אומת ✓ — התשלום אושר והחוב נסגר/);
+    assert.match(await page.textContent('#crm-toast'), /אומת ✓ — הקבלה אומתה במלואה/);
     await page.click('#crm-drawer-close');
     // the list and the overview dropped by the verified amount — with no re-read
     assert.match(await page.textContent('#crm-debtors-title'), /1 חייבים · ₪8,500/);

@@ -988,6 +988,38 @@
     return [].concat(Array.isArray(res.changed) ? res.changed : [], Array.isArray(res.unchangedRows) ? res.unchangedRows : [])
       .some(function (r) { return r && s(r.id) === s(id) && s(r.confirmStatus) === 'confirmed'; });
   }
+  /* ---- «אימות חלקי» (CHANGELOG-partial-verify-checkpoint.md) ----
+   * The existing confirmPayment contract: ids:[one receipt], status:'partial', confirmedAmount = TOTAL verified so far
+   * (0 < amount < reported, max 2 decimals). Cumulative total, never an increment, never a new receipt. */
+  function partialVerifyCheck(raw, reported) {
+    const t = s(raw).trim().replace(/,/g, '');
+    const rep = Number(reported) || 0;
+    if (!/^\d{1,9}(\.\d{1,2})?$/.test(t)) return { amount: null, remaining: null, error: 'הזיני סכום שהתקבל בבנק (מספר, עד שתי ספרות אחרי הנקודה)' };
+    const n = Math.round(Number(t) * 100) / 100;
+    if (!(n > 0 && n < rep)) return { amount: null, remaining: null, error: 'הסכום חייב להיות גדול מאפס וקטן מהסכום שדווח (אימות מלא — «אמת»)' };
+    return { amount: n, remaining: Math.round((rep - n) * 100) / 100, error: '' };
+  }
+  function partialVerifyBody(id, amount) {
+    const v = s(id).trim(), n = Number(amount);
+    if (v.indexOf('rcpt-') !== 0 || v.length > 300 || /[\u0000-\u001f\u007f]/.test(v) || !(n > 0) || Math.round(n * 100) / 100 !== n) return null;
+    return { action: 'confirmPayment', confirm: { ids: [v], status: 'partial', confirmedAmount: n } };
+  }
+  /* Proof: ok===true AND this exact receipt, status partial, AND the exact confirmedAmount we sent. */
+  function partialAccepted(res, id, amount) {
+    if (!res || res.ok !== true) return false;
+    return [].concat(Array.isArray(res.changed) ? res.changed : [], Array.isArray(res.unchangedRows) ? res.unchangedRows : [])
+      .some(function (r) { return r && s(r.id) === s(id) && s(r.confirmStatus) === 'partial' && r.confirmedAmount !== '' && r.confirmedAmount !== null && r.confirmedAmount !== undefined && Math.round(Number(r.confirmedAmount) * 100) === Math.round(Number(amount) * 100); });
+  }
+  function applyPartial(list, id, amount, by, at) {
+    if (!Array.isArray(list)) return list;
+    return list.map(function (r) {
+      if (!r || s(r.id) !== s(id)) return r;
+      const o = Object.assign({}, r, { confirmStatus: 'partial', confirmedAmount: amount, confirmedBy: s(by) || s(r.confirmedBy), confirmedAt: s(at) || s(r.confirmedAt) });
+      if ('verifiedAmount' in r) o.verifiedAmount = amount;
+      if ('openAmount' in r) o.openAmount = Math.round(((Number(r.amount) || 0) - amount) * 100) / 100;
+      return o;
+    });
+  }
   const VERIFY_ERRORS = { forbidden_role: 'אין הרשאה לאמת תשלומים', forbidden: 'אין הרשאה לאמת תשלומים', not_found: 'הקבלה לא נמצאה — רענני', receipt_void: 'הקבלה בוטלה — אין מה לאמת',
     confirm_without_report: 'אין דיווח תשלום לאימות', lock_busy: 'המערכת עסוקה — נסי שוב בעוד רגע', sheet_header_clash: 'מבנה הגיליון השתנה — פני לסנדרה' };
   function verifyRefusal(res) {
@@ -998,7 +1030,7 @@
    * no debt and no amount — only who vouches for the money). Returns new objects; pure. */
   function applyVerified(list, id, by, at) {
     if (!Array.isArray(list)) return list;
-    return list.map(function (r) { return r && s(r.id) === s(id) ? Object.assign({}, r, { confirmStatus: 'confirmed', confirmedBy: s(by) || s(r.confirmedBy), confirmedAt: s(at) || s(r.confirmedAt), flagNote: '' }) : r; });
+    return list.map(function (r) { return r && s(r.id) === s(id) ? Object.assign({}, r, { confirmStatus: 'confirmed', confirmedAmount: Number(r.amount) > 0 ? Number(r.amount) : r.confirmedAmount, confirmedBy: s(by) || s(r.confirmedBy), confirmedAt: s(at) || s(r.confirmedAt), flagNote: '' }) : r; });
   }
   /* ---- A debt closes when the money is VERIFIED (CHANGELOG-debt-until-verified.md) ----
    * Sandra 15/11/2026: a reported payment is a claim, not money in the bank. Until Ortal
@@ -4272,7 +4304,50 @@
       if (r.isVoid) return chip('wait', 'בוטלה');
       const vc = receiptVerifyChip(r.confirmStatus);
       return chip(vc.cls, vc.label + (vc.verified ? ' ✓' : ''))
-        + (canVerifyReceipt(state.me, r) ? ' <button type="button" class="btn small verify" data-verify="' + esc(r.id) + '" title="אימות שהכסף התקבל בבנק">אמת</button>' : '');
+        + (canVerifyReceipt(state.me, r) ? ' <button type="button" class="btn small verify" data-verify="' + esc(r.id) + '" title="אימות שהכסף התקבל בבנק">אמת</button>'
+          + ' <button type="button" class="btn small" data-verify-partial="' + esc(r.id) + '" data-reported="' + esc(String(Number(r.amount) || 0)) + '" data-verified="' + esc(String(r.confirmStatus === 'partial' ? Number(r.confirmedAmount) || 0 : 0)) + '" title="אימות חלקי — סכום שהתקבל בפועל">אימות חלקי</button>' : '');
+    }
+    /* Inline form: total verified so far (cumulative), live preview of the rest. No payment / discount inputs. */
+    function openPartialForm(btn) {
+      const id = btn.dataset.verifyPartial, rep = Number(btn.dataset.reported) || 0, was = Number(btn.dataset.verified) || 0;
+      const old = doc.querySelector('.vp-form'); if (old) old.remove();
+      const f = doc.createElement('span'); f.className = 'vp-form'; f.dataset.vpId = id; f.dataset.vpReported = String(rep);
+      f.innerHTML = '<span class="na">דווח ' + esc(fmtMoney(rep)) + (was ? ' · אומת עד כה ' + esc(fmtMoney(was)) : '') + '</span> '
+        + '<input type="text" inputmode="decimal" class="vp-amt" aria-label="סך הסכום שאומת בבנק" placeholder="סך שאומת בבנק"> '
+        + '<span class="vp-prev na" aria-live="polite"></span> <button type="button" class="btn small primary" data-vp-save>אשרי אימות חלקי</button> <button type="button" class="btn small" data-vp-cancel>ביטול</button>';
+      btn.insertAdjacentElement('afterend', f);
+      const inp = f.querySelector('.vp-amt');
+      inp.addEventListener('input', function () {
+        const c = partialVerifyCheck(inp.value, rep);
+        f.querySelector('.vp-prev').textContent = c.error ? (inp.value ? c.error : '') : 'יאומת ' + fmtMoney(c.amount) + ' · יישאר פתוח ' + fmtMoney(c.remaining);
+      });
+      inp.focus();
+    }
+    function savePartial(form) {
+      const id = form.dataset.vpId, rep = Number(form.dataset.vpReported) || 0, c = partialVerifyCheck(form.querySelector('.vp-amt').value, rep);
+      if (c.error) { toast(c.error, true); return Promise.resolve(false); }
+      const body = partialVerifyBody(id, c.amount);
+      if (!body || state.verifying) return Promise.resolve(false);
+      state.verifying = id;
+      const sv = form.querySelector('[data-vp-save]'); if (sv) { sv.disabled = true; sv.setAttribute('aria-busy', 'true'); }
+      const fail = function (msg) { state.verifying = ''; if (sv) { sv.disabled = false; sv.removeAttribute('aria-busy'); } toast(msg, true); return false; };
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+        .then(function (res) {
+          if (!partialAccepted(res, id, c.amount)) return fail(res && res.ok === true ? 'האימות החלקי לא אושר על ידי השרת — רענני ובדקי' : verifyRefusal(res));
+          state.verifying = '';
+          const row = [].concat(res.changed || [], res.unchangedRows || []).filter(function (x) { return x && s(x.id) === s(id); })[0] || {};
+          const by = s(row.confirmedBy) || s(state.me && state.me.user), at = s(row.confirmedAt);
+          if (state.billing && state.billing.payments && Array.isArray(state.billing.payments.receipts)) state.billing.payments = Object.assign({}, state.billing.payments, { receipts: applyPartial(state.billing.payments.receipts, id, c.amount, by, at) });
+          if (state.payments && Array.isArray(state.payments.receipts)) state.payments = Object.assign({}, state.payments, { receipts: applyPartial(state.payments.receipts, id, c.amount, by, at) });
+          if (state.queue && Array.isArray(state.queue.receipts)) state.queue = Object.assign({}, state.queue, { receipts: applyPartial(state.queue.receipts, id, c.amount, by, at) });
+          toast('אומת חלקית ✓ — ' + fmtMoney(c.amount) + ' אומתו; ' + fmtMoney(c.remaining) + ' עדיין פתוחים');
+          renderNav(); renderMain();
+          const pid = state.drawer && state.drawer.kind === 'patient' && state.drawer.id;
+          if (pid && $('#crm-account')) fillAccountPane(pid);
+          return true;
+        })
+        .catch(function () { return fail('האימות החלקי לא נשמר — בדקי את החיבור ונסי שוב'); });
     }
     /* One click → spinner on the button → confirmPayment → the row turns green. The answers on
      * screen are patched from the server's proof; nothing is re-read (a verification moves no money). */
@@ -4297,7 +4372,7 @@
           if (state.billing && state.billing.payments && Array.isArray(state.billing.payments.receipts)) state.billing.payments = Object.assign({}, state.billing.payments, { receipts: applyVerified(state.billing.payments.receipts, id, by, at) });
           if (state.payments && Array.isArray(state.payments.receipts)) state.payments = Object.assign({}, state.payments, { receipts: applyVerified(state.payments.receipts, id, by, at) });
           if (state.queue && Array.isArray(state.queue.receipts)) state.queue = Object.assign({}, state.queue, { receipts: applyVerified(state.queue.receipts, id, by, at) });
-          toast('אומת ✓ — התשלום אושר והחוב נסגר');
+          toast('אומת ✓ — הקבלה אומתה במלואה');
           renderNav(); renderMain();
           const pid = state.drawer && state.drawer.kind === 'patient' && state.drawer.id;
           if (pid && $('#crm-account')) fillAccountPane(pid);
@@ -5080,9 +5155,7 @@
       // an open cycle «ללא דיווח» next to a PAID payment of another date: usually the same money, stamped on the wrong month
       // (CHANGELOG-account-actions-visible.md) — say so, instead of leaving a debt nobody can explain
       if (me.finance && a.openCycles.some(function (c) { return c.kind === 'unrecorded'; }) && a.cycles.some(function (c) { return c.status === 'paid'; }))
-        html += '<p class="na" id="crm-account-mismatch">יש כאן מחזור פתוח «ללא דיווח» וגם תשלום שסומן «שולם» בתאריך אחר (למטה, ב«תשלומים»). אם זה אותו כסף — אל תדווחי שוב: '
-          + (me.canDiscount && state.account && state.account.patient && !inHouse(state.account.patient) ? 'סגרי את המחזור ב«גבייה» → «ניקוי חובות היסטוריים» עם הסיבה «שולם ולא נרשם».' : 'פני לסנדרה לתיקון תאריך התשלום.')
-          + ' אם לא שולם — «דווח תשלום» בשורת המחזור.</p>';
+        html += '<p class="na" id="crm-account-mismatch">אפשרות לאי-התאמת תקופה: יש כאן מחזור פתוח «ללא דיווח» וגם תשלום שסומן «שולם» בתאריך אחר (למטה, ב«תשלומים»). זה רק רמז, לא הוכחה. אל תדווחי שוב ואל תסגרי כהנחה כדי להסתיר את זה — בדקי מול הקבלה הקיימת ומול כיסוי התקופות; אין תיקון אוטומטי.</p>';
       const others = state.account ? reportableCycles(state.account.patient, a, state.today) : [];
       if (me.finance) html += otherCyclePickerHtml(others, state.today, CYCLE_STATUS_LABELS);
       html += '<div id="crm-report"></div>';
@@ -5985,11 +6058,14 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-verify],[data-rc-all-rows],[data-billing-retry],[data-debt-preset],[data-fc-preset],[data-bill-tab],[data-bill-go],[data-bill-clear],[data-rc-preset],[data-slice-dim],[data-fc-open],[data-cleanup-jump],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-verify],[data-verify-partial],[data-vp-save],[data-vp-cancel],[data-rc-all-rows],[data-billing-retry],[data-debt-preset],[data-fc-preset],[data-bill-tab],[data-bill-go],[data-bill-clear],[data-rc-preset],[data-slice-dim],[data-fc-open],[data-cleanup-jump],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
       if (!t) return;
       if (t.dataset.creditCancel !== undefined) { state.creditForm = null; const box = t.closest('form'); if (box) box.remove(); return; }
       if (t.dataset.creditEdit) return openCreditForm('edit', t.dataset.creditEdit);
       if (t.dataset.creditNew !== undefined) return openCreditForm('new', '');
+      if (t.dataset.verifyPartial) return openPartialForm(t);
+      if (t.dataset.vpCancel !== undefined) { const f = t.closest('.vp-form'); if (f) f.remove(); return; }
+      if (t.dataset.vpSave !== undefined) return savePartial(t.closest('.vp-form'));
       if (t.dataset.verify) return verifyReceipt(t);
       if (t.dataset.rcAllRows !== undefined) { state.rcShowAll = true; return renderMain(); }
       if (t.dataset.billingRetry !== undefined) { resetBilling(); return renderMain(); }
@@ -6395,7 +6471,7 @@
 
   return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, landingArea: landingArea, activePatientsCard: activePatientsCard, monthOccupancy: monthOccupancy, occupancyTrend: occupancyTrend, monthRevenue: monthRevenue, monthShift: monthShift, monthLabelHe: monthLabelHe, monthKeyOk: monthKeyOk, normalise: normalise, compute: compute, filterLeads: filterLeads,
     board: board, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
-    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, whenLocal: whenLocal, esc: esc, boot: boot, accountTabVisible: accountTabVisible, accountReadable: accountReadable, receiptVerifyChip: receiptVerifyChip, canVerifyReceipt: canVerifyReceipt, verifyBody: verifyBody, verifyAccepted: verifyAccepted, verifyRefusal: verifyRefusal, applyVerified: applyVerified, unverifiedReceipts: unverifiedReceipts, unverifiedTotal: unverifiedTotal, billingFind: billingFind, FIND_RECEIPTS_CAP: FIND_RECEIPTS_CAP, PAY_KINDS: PAY_KINDS, payKindCheck: payKindCheck, payKindPreview: payKindPreview, CONFIRM_LABELS: CONFIRM_LABELS, RECEIPT_ROWS_CAP: RECEIPT_ROWS_CAP, clearCachedPages: clearCachedPages,
+    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, whenLocal: whenLocal, esc: esc, boot: boot, accountTabVisible: accountTabVisible, accountReadable: accountReadable, receiptVerifyChip: receiptVerifyChip, canVerifyReceipt: canVerifyReceipt, verifyBody: verifyBody, verifyAccepted: verifyAccepted, verifyRefusal: verifyRefusal, applyVerified: applyVerified, partialVerifyCheck: partialVerifyCheck, partialVerifyBody: partialVerifyBody, partialAccepted: partialAccepted, applyPartial: applyPartial, unverifiedReceipts: unverifiedReceipts, unverifiedTotal: unverifiedTotal, billingFind: billingFind, FIND_RECEIPTS_CAP: FIND_RECEIPTS_CAP, PAY_KINDS: PAY_KINDS, payKindCheck: payKindCheck, payKindPreview: payKindPreview, CONFIRM_LABELS: CONFIRM_LABELS, RECEIPT_ROWS_CAP: RECEIPT_ROWS_CAP, clearCachedPages: clearCachedPages,
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
     stageAfter: stageAfter, stageBefore: stageBefore, applyLeadPatch: applyLeadPatch, leadSaveBody: leadSaveBody, saveRefusal: saveRefusal,
     DISPOSITIONS: DISPOSITIONS, CONTACT_RELATIONS: CONTACT_RELATIONS, localPhone: localPhone, leadFormErrors: leadFormErrors, newLeadRow: newLeadRow,

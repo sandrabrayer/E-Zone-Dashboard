@@ -68,7 +68,7 @@ test('1. proof: the answer must name THIS receipt as confirmed', () => {
 test('1. a verified receipt is patched in the answers on screen — new objects, the others untouched', () => {
   const list = [{ id: 'rcpt-1', confirmStatus: 'flagged', flagNote: 'x', amount: 5 }, { id: 'rcpt-2', confirmStatus: 'reported' }];
   const out = core.applyVerified(list, 'rcpt-1', 'אורטל', '2026-11-15 10:00:00');
-  assert.deepEqual(out[0], { id: 'rcpt-1', confirmStatus: 'confirmed', flagNote: '', amount: 5, confirmedBy: 'אורטל', confirmedAt: '2026-11-15 10:00:00' });
+  assert.deepEqual(out[0], { id: 'rcpt-1', confirmStatus: 'confirmed', flagNote: '', amount: 5, confirmedAmount: 5, confirmedBy: 'אורטל', confirmedAt: '2026-11-15 10:00:00' });
   assert.equal(out[1], list[1]);
   assert.equal(list[0].confirmStatus, 'flagged', 'the input is not mutated');
   assert.equal(core.applyVerified(null, 'rcpt-1'), null);

@@ -411,7 +411,9 @@
 // (CHANGELOG-debt-until-verified.md). From the live v136; monotonic, v17 never reused.
 // v137 → v138: «חשבון»: the cycle's actions stay in view; paid-on-another-date hint
 // (CHANGELOG-account-actions-visible.md). From the live v137; monotonic, v17 never reused.
-var CACHE_VERSION = 'v138';
+// v138 → v139: partial receipt verification «אימות חלקי» + neutral mismatch wording (CHANGELOG-partial-verify-checkpoint.md).
+// From the live v138; monotonic, v17 never reused.
+var CACHE_VERSION = 'v139';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
