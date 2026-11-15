@@ -1,5 +1,12 @@
 # E-ZONE Ecosystem Status — updated November 15, 2026
 
+## Dashboard CRM — «בונוס»: Dana's lead bonus tab — November 15, 2026
+
+Display only. Dana (and Sandra) see «בונוס»: ₪50 per lead assigned to Dana whose visit took
+place (manager report / outcome), ₪100 more when the lead enters a house; by month, with
+what is still on the way and a running total. Rates in `BONUS` (`public/crm/crm.js`).
+SW cache v140. See `CHANGELOG-dana-bonus-tab.md`.
+
 ## Dashboard — Shiran removed from the name list — November 15, 2026
 
 Shiran no longer works at E-ZONE: `former: true` in `lib/users.js` hides her from the

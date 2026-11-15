@@ -2205,3 +2205,44 @@ test('a debt closes on verification (Ortal; CHANGELOG-debt-until-verified.md): t
 
 // Reviewer-authored correctness probes (billing read integrity); mutable synthetic source, not production UAT.
 require('./billing-read-integrity-browser.cjs')({ test, assert, skip, playwright, chromiumPath, boot, open, PAYMENTS, QUEUE, TODAY, setSaveAnswer: (v) => { saveAnswer = v; } });
+
+test('«בונוס» (CHANGELOG-dana-bonus-tab.md): Dana sees where she stands — ₪50 per visit that took place, ₪100 per admission, this month and so far; Sandra sees it too, Vered and Ortal do not', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const keep = DATA.leads.slice();
+  const L = (o) => Object.assign({ house: 'רמות השבים', stage: 'visit', created: daysAgo(20), assignedTo: 'דנה', phone: '0501111111' }, o);
+  DATA.leads = keep.concat([
+    L({ id: 'B1', name: 'רותם בונוס', visitDate: daysAgo(0), meetingReportOutcome: 'undecided' }),
+    L({ id: 'B2', name: 'עדי בונוס', stage: 'admitted', visitDate: daysAgo(0), meetingOutcome: 'entered', entryDate: daysAgo(0) }),
+    L({ id: 'B3', name: 'שני לא-הגיעה', visitDate: daysAgo(0), meetingReportOutcome: 'no_show' }),
+    L({ id: 'B4', name: 'ליה מתוכננת', visitDate: daysAgo(-3) }),
+  ]);
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'dana', 1366);
+    await page.click('#crm-nav button[data-area="bonus"]');
+    await page.waitForSelector('#crm-bonus-kpis');
+    assert.match(await page.textContent('#crm-bonus-title'), /הבונוס שלי/);
+    assert.match(await page.textContent('#crm-bonus-rule'), /₪50[\s\S]*₪100/);
+    assert.equal(await page.$eval('#crm-bonus-total .v', (e) => e.textContent.trim()), '₪200', '2 visits held (₪100) + 1 admission (₪100)');
+    const kp = await page.$$eval('#crm-bonus-kpis .kpi', (els) => els.map((e) => e.querySelector('.v').textContent.trim() + '|' + e.querySelector('.l').textContent.trim()));
+    assert.deepEqual(kp.slice(1, 5), ['2|ביקורים שהתקיימו', '1|כניסות לאשפוז', '0|ביקורים שעברו — ממתינים לדיווח', '1|ביקורים מתוכננים']);
+    const lines = await page.textContent('#crm-bonus-lines');
+    assert.match(lines, /עדי בונוס[\s\S]*₪150/); assert.match(lines, /רותם בונוס[\s\S]*₪50/); assert.ok(!/שני לא-הגיעה/.test(lines), 'a no-show earns nothing');
+    assert.match(await page.textContent('#crm-bonus-open'), /ליה מתוכננת[\s\S]*מתוכנן/);
+    assert.match(await page.textContent('#crm-bonus-months'), /₪200/);
+    assert.equal(await noHScroll(page), true);
+    // a line opens the lead
+    await page.click('#crm-bonus-lines tbody tr[data-open-lead="B1"] td:first-child');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    assert.ok(!srv.saves.length, 'display only');
+    assert.deepEqual(errors, []);
+    const s2 = await open(browser, srv.port, 'sandra', 1366);
+    await s2.page.click('#crm-nav button[data-area="bonus"]');
+    await s2.page.waitForSelector('#crm-bonus-kpis');
+    assert.match(await s2.page.textContent('#crm-bonus-title'), /הבונוס של דנה/);
+    for (const id of ['vered', 'ortal']) { const o = await open(browser, srv.port, id, 1366); assert.equal(await o.page.$('#crm-nav button[data-area="bonus"]'), null, id + ' has no «בונוס»'); }
+    const m = await open(browser, srv.port, 'dana', 390);
+    await m.page.click('#crm-burger'); await m.page.click('#crm-nav button[data-area="bonus"]'); await m.page.waitForSelector('#crm-bonus-kpis');
+    assert.equal(await noHScroll(m.page), true, 'no horizontal scroll on a phone');
+  } finally { DATA.leads = keep; await browser.close(); srv.close(); }
+});

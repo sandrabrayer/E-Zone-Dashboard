@@ -29,6 +29,7 @@
     { id: 'clients', label: 'מטופלים' }, { id: 'calendar', label: 'יומן' }, { id: 'billing', label: 'גבייה' }, { id: 'control', label: 'בקרת עבודה' },
     { id: 'kpi', label: 'KPI' },   // CHANGELOG-crm-kpi-tab.md: slices, occupancy %, conversion, break-even
     { id: 'monthly', label: 'היסטוריה חודשית' },   // CHANGELOG-crm-month-view.md: a past month's occupancy + (finance) its revenue
+    { id: 'bonus', label: 'בונוס' },   // CHANGELOG-dana-bonus-tab.md: Dana's lead bonus — visits that took place + admissions
     { id: 'triage', label: 'רשומות שדורשות בירור' },   // Stage 3: reached from «פניות» / the «ללא מגע» card, not from the menu
   ];
   const WAIT_DAYS = 3;
@@ -342,9 +343,86 @@
   function areasFor(me) {
     const m = me || {};
     if (m.view === 'controller') return ['today', 'billing', 'control'];
-    if (m.view === 'ops' || m.ops === true) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'monthly', 'triage'];
-    if (!m.finance) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'monthly', 'triage'];
-    return AREAS.map(function (a) { return a.id; });
+    // «בונוס» (CHANGELOG-dana-bonus-tab.md): the person it is paid to, and Sandra who pays it — nobody else
+    const bonus = bonusVisible(m) ? ['bonus'] : [];
+    if (m.view === 'ops' || m.ops === true) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'monthly', 'triage'].concat(bonus);
+    if (!m.finance) return ['today', 'leads', 'occupancy', 'clients', 'calendar', 'control', 'kpi', 'monthly', 'triage'].concat(bonus);
+    return AREAS.map(function (a) { return a.id; }).filter(function (id) { return id !== 'bonus' || bonus.length; });
+  }
+  /* ---- Dana's lead bonus (CHANGELOG-dana-bonus-tab.md) ----
+   * Sandra 15/11/2026: for every lead Dana brings to a visit THAT TAKES PLACE she gets ₪50;
+   * if that lead enters a house (אשפוז) she gets ₪100 more.
+   *   her lead      — assignedTo === BONUS.user
+   *   visit held    — a visit date up to today AND evidence it took place: the manager's
+   *                   report says it was held (advancing / undecided / not_fit), or the
+   *                   recorded outcome is entered / thinking / not_relevant, or the lead
+   *                   was admitted after a visit. «לא הגיע / בוטל», cancelled and postponed
+   *                   earn nothing; a past visit with no report yet is «ממתין לדיווח» — ₪0
+   *                   until someone reports it.
+   *   admitted      — a Patients / discharge row links to the lead (fromLead) or its stage
+   *                   is admitted; dated by the patient's entry date. Outpatient is not אשפוז.
+   * The visit bonus belongs to the month of the visit, the admission bonus to the month of
+   * entry. Closed leads count too (the visit happened). Display only — nothing is paid or
+   * written here. Pure. */
+  const BONUS = { user: 'דנה', visit: 50, admit: 100 };
+  const BONUS_HELD_REPORTS = ['advancing', 'undecided', 'not_fit'], BONUS_HELD_OUTCOMES = ['entered', 'thinking', 'not_relevant'];
+  function bonusVisible(me) {
+    const m = me || {};
+    return s(m.user) === BONUS.user || m.approver === true;
+  }
+  function leadBonus(data, c, today) {
+    const d = data && typeof data === 'object' ? data : {};
+    const entryOf = {};
+    ((c && c.discharges) || []).forEach(function (x) { if (s(x.fromLead)) entryOf[s(x.fromLead)] = isoDay(x.entryDate || x.date) || entryOf[s(x.fromLead)] || ''; });
+    ((c && c.patients) || []).forEach(function (p) { if (s(p.fromLead)) entryOf[s(p.fromLead)] = isoDay(p.date) || entryOf[s(p.fromLead)] || ''; });
+    const seen = {}, rows = [];
+    const add = function (l, closed) {
+      if (!l || typeof l !== 'object' || s(l.assignedTo) !== BONUS.user || s(l.source) === 'direct_admin') return;
+      const id = s(l.id);
+      if (id && seen[id]) return;
+      if (id) seen[id] = true;
+      const visitDate = isoDay(l.visitDate), outcome = s(l.meetingOutcome), report = s(l.meetingReportOutcome), stage = s(l.stage);
+      const linked = Object.prototype.hasOwnProperty.call(entryOf, id);
+      const admitted = linked || ENTERED_LEAD_STAGES.indexOf(stage) >= 0;
+      const entryDate = admitted ? (linked && entryOf[id]) || isoDay(l.entryDate) || '' : '';
+      const due = !!visitDate && visitDate <= s(today);
+      const noShow = report === 'no_show' && outcome !== 'entered' && !admitted;
+      const held = due && !noShow && (BONUS_HELD_REPORTS.indexOf(report) >= 0 || BONUS_HELD_OUTCOMES.indexOf(outcome) >= 0 || admitted);
+      let visit;   // held | waiting (past, nobody reported) | planned (future) | missed | none
+      if (!visitDate) visit = 'none';
+      else if (held) visit = 'held';
+      else if (noShow || outcome === 'cancelled' || outcome === 'postponed') visit = 'missed';
+      else visit = due ? 'waiting' : 'planned';
+      rows.push({ id: id, name: s(l.name), house: houseName(l.house), closed: !!closed, visitDate: visitDate, visit: visit, admitted: admitted, entryDate: entryDate,
+        visitBonus: visit === 'held' ? BONUS.visit : 0, admitBonus: admitted ? BONUS.admit : 0 });
+    };
+    ((c && c.leads) || []).forEach(function (l) { add(l, false); });
+    (Array.isArray(d.irrelevantLeads) ? d.irrelevantLeads : []).forEach(function (l) { add(l, true); });
+    return rows;
+  }
+  const BONUS_VISIT_LABELS = { held: 'התקיים', waiting: 'ממתין לדיווח', planned: 'מתוכנן', missed: 'לא התקיים', none: '—' };
+  /* One month of it ('YYYY-MM'), the months that have any, and the running total. Pure. */
+  function bonusMonth(rows, month, today) {
+    const m = s(month), list = Array.isArray(rows) ? rows : [];
+    const inM = function (iso) { return !!iso && iso.slice(0, 7) === m; };
+    const visits = list.filter(function (r) { return r.visit === 'held' && inM(r.visitDate); });
+    const admits = list.filter(function (r) { return r.admitted && inM(r.entryDate); });
+    const undated = list.filter(function (r) { return r.admitted && !r.entryDate; });
+    const waiting = list.filter(function (r) { return r.visit === 'waiting'; });
+    const planned = list.filter(function (r) { return r.visit === 'planned'; });
+    const byMonth = {};
+    const bump = function (iso, k, amount) { if (!iso) return; const key = iso.slice(0, 7); const b = byMonth[key] || (byMonth[key] = { month: key, visits: 0, admits: 0, total: 0 }); b[k]++; b.total += amount; };
+    list.forEach(function (r) { if (r.visit === 'held') bump(r.visitDate, 'visits', BONUS.visit); if (r.admitted) bump(r.entryDate, 'admits', BONUS.admit); });
+    const months = Object.keys(byMonth).sort().reverse().map(function (k) { return byMonth[k]; });
+    const ids = {};
+    visits.concat(admits).forEach(function (r) { ids[r.id] = r; });
+    const lines = Object.keys(ids).map(function (id) {
+      const r = ids[id], v = r.visit === 'held' && inM(r.visitDate) ? BONUS.visit : 0, a = r.admitted && inM(r.entryDate) ? BONUS.admit : 0;
+      return { id: r.id, name: r.name, house: r.house, visitDate: r.visitDate, visit: r.visit, admitted: r.admitted, entryDate: r.entryDate, visitBonus: v, admitBonus: a, total: v + a };
+    }).sort(function (x, y) { return (y.visitDate || y.entryDate).localeCompare(x.visitDate || x.entryDate) || x.name.localeCompare(y.name, 'he'); });
+    return { month: m, visits: visits.length, visitTotal: visits.length * BONUS.visit, admits: admits.length, admitTotal: admits.length * BONUS.admit,
+      total: visits.length * BONUS.visit + admits.length * BONUS.admit, lines: lines, waiting: waiting, planned: planned, undated: undated, months: months,
+      allTime: months.reduce(function (t2, b) { return t2 + b.total; }, 0), potential: (waiting.length + planned.length) * BONUS.visit };
   }
 
   /* The area a session opens on (CHANGELOG-ortal-crm-default.md): the controller
@@ -2538,7 +2616,7 @@
    * is «ללא מגע» (information), an overdue dated task is «באיחור». */
   const NAV_GROUPS = [
     { label: '', items: ['today', 'control'] }, { label: 'לידים ומטופלים', items: ['leads', 'clients'] }, { label: 'פגישות ויומן', items: ['calendar'] },
-    { label: 'בתים והמשך טיפול', items: ['occupancy'] }, { label: 'כספים', items: ['billing'] }, { label: 'דוחות והגדרות', items: ['kpi', 'monthly'] }];
+    { label: 'בתים והמשך טיפול', items: ['occupancy'] }, { label: 'כספים', items: ['billing'] }, { label: 'דוחות והגדרות', items: ['kpi', 'monthly', 'bonus'] }];
   const MY_DAY_VIEWS = [{ id: 'today', label: 'היום' }, { id: 'week', label: 'השבוע' }, { id: 'done', label: 'הושלמו' }];
   const DOMAINS = [
     { id: 'collection', label: 'גבייה לטיפול', money: true }, { id: 'calls', label: 'שיחות ומעקבים' }, { id: 'meetings', label: 'פגישות ותיאומים' },
@@ -3316,7 +3394,7 @@
     function patientStatusLabel(st) { if (s(st) === 'released') return 'שוחרר/ה'; const x = PATIENT_STATUSES.filter(function (p) { return p.id === s(st); })[0]; return x ? x.label : (s(st) || '—'); }
     function statusChip(st) { return '<span class="chip pst-' + esc(s(st) || 'active') + '">' + esc(patientStatusLabel(st)) + '</span>'; }
     function houseTag(idOrName) { const id = houseId(idOrName) || 'x'; return '<span class="chip house h-' + esc(id) + '">' + esc(houseName(idOrName) || '—') + '</span>'; }
-    const AREA_ICONS = { today: '☀', leads: '✉', clients: '👤', calendar: '📅', occupancy: '🏠', billing: '₪', control: '✔', kpi: '📊', monthly: '🗓', triage: '🔎' };
+    const AREA_ICONS = { today: '☀', leads: '✉', clients: '👤', calendar: '📅', occupancy: '🏠', billing: '₪', control: '✔', kpi: '📊', monthly: '🗓', bonus: '🎁', triage: '🔎' };
     function stateText(st) { return st === 'late' ? 'באיחור' : st === 'today' ? 'להיום' : 'ממתין'; }
 
     function renderToday(c) {
@@ -4782,6 +4860,42 @@
         + (rev && rev.recordsFrom && trend.length && trend[0].month < rev.recordsFrom.slice(0, 7) ? ' הכנסות לפני ' + esc(fmtDate(rev.recordsFrom)) + ' חלקיות (רישום התשלומים באפליקציה מלא רק מאז).' : '') + '</p>';
       return html;
     }
+    /* «בונוס» (CHANGELOG-dana-bonus-tab.md): where Dana stands — this month, what is still open, every month so far. */
+    function renderBonus(c) {
+      if (!bonusVisible(state.me)) return '<div class="crm-state">אין הרשאה</div>';
+      const cur = s(state.today).slice(0, 7);
+      const month = monthKeyOk(state.bonusMonth) && state.bonusMonth <= cur ? state.bonusMonth : cur;
+      const b = bonusMonth(leadBonus(state.data, c, state.today), month, state.today);
+      const mine = s(state.me && state.me.user) === BONUS.user;
+      const row = function (r, cells) { return '<tr' + (r.id && !r.closed ? ' data-open-lead="' + esc(r.id) + '"' : '') + '>' + cells.map(function (x) { return '<td>' + x + '</td>'; }).join('') + '</tr>'; };
+      let html = '<div class="group-title" id="crm-bonus-title">' + esc(mine ? 'הבונוס שלי' : 'הבונוס של ' + BONUS.user) + ' — ' + esc(month.slice(5) + '/' + month.slice(0, 4)) + '</div>'
+        + '<div class="toolbar filters"><label>חודש <input type="month" id="crm-bonus-month" value="' + esc(month) + '" max="' + esc(cur) + '"></label>'
+        + (month !== cur ? '<button type="button" class="btn small" data-bonus-month="' + esc(cur) + '">החודש הנוכחי</button>' : '') + '</div>'
+        + '<p class="na" id="crm-bonus-rule">' + esc(fmtMoney(BONUS.visit)) + ' על כל ליד של ' + esc(BONUS.user) + ' שהגיע לביקור (הביקור התקיים) · עוד ' + esc(fmtMoney(BONUS.admit)) + ' אם הליד נכנס לאשפוז. ביקור נספר בחודש הביקור, כניסה בחודש הכניסה.</p>'
+        + '<div class="kpis" id="crm-bonus-kpis">'
+        + kpiCard(esc(fmtMoney(b.total)), 'סה״כ בונוס החודש', '', 'crm-bonus-total')
+        + kpiCard(b.visits, 'ביקורים שהתקיימו', b.visits + ' × ' + fmtMoney(BONUS.visit) + ' = ' + fmtMoney(b.visitTotal))
+        + kpiCard(b.admits, 'כניסות לאשפוז', b.admits + ' × ' + fmtMoney(BONUS.admit) + ' = ' + fmtMoney(b.admitTotal))
+        + kpiCard(b.waiting.length, 'ביקורים שעברו — ממתינים לדיווח', 'ייספרו כשידווח שהתקיימו')
+        + kpiCard(b.planned.length, 'ביקורים מתוכננים', 'עד ' + fmtMoney(b.planned.length * BONUS.visit) + ' אם יגיעו')
+        + kpiCard(esc(fmtMoney(b.allTime)), 'סה״כ מצטבר', 'כל החודשים') + '</div>';
+      html += '<div class="group-title">פירוט החודש <span class="n chip">' + b.lines.length + '</span></div>';
+      if (!b.lines.length) html += '<p class="na" id="crm-bonus-none">אין עדיין ביקור שהתקיים או כניסה בחודש הזה.</p>';
+      else html += '<div class="tbl-wrap"><table class="tbl" id="crm-bonus-lines"><thead><tr><th>ליד</th><th>בית</th><th>ביקור</th><th>כניסה לאשפוז</th><th>בונוס ביקור</th><th>בונוס כניסה</th><th>סה״כ</th></tr></thead><tbody>'
+        + b.lines.map(function (r) { return row(r, [esc(r.name), esc(r.house), r.visitDate ? esc(fmtDate(r.visitDate)) + ' ' + chip(r.visit === 'held' ? 'ok' : 'wait', BONUS_VISIT_LABELS[r.visit]) : '—',
+          r.admitted ? chip('ok', r.entryDate ? fmtDate(r.entryDate) : 'נכנס/ה') : '—', r.visitBonus ? esc(fmtMoney(r.visitBonus)) : '—', r.admitBonus ? esc(fmtMoney(r.admitBonus)) : '—', '<strong>' + esc(fmtMoney(r.total)) + '</strong>']); }).join('')
+        + '</tbody></table></div>';
+      const open = b.waiting.concat(b.planned);
+      if (open.length) html += '<div class="group-title">בדרך — עוד לא נספר <span class="n chip">' + open.length + '</span></div>'
+        + '<div class="tbl-wrap"><table class="tbl" id="crm-bonus-open"><thead><tr><th>ליד</th><th>בית</th><th>ביקור</th><th>מצב</th></tr></thead><tbody>'
+        + open.sort(function (x, y) { return x.visitDate.localeCompare(y.visitDate); }).map(function (r) { return row(r, [esc(r.name), esc(r.house), esc(fmtDate(r.visitDate)), chip(r.visit === 'waiting' ? 'today' : 'wait', BONUS_VISIT_LABELS[r.visit])]); }).join('')
+        + '</tbody></table></div>';
+      if (b.undated.length) html += '<p class="na" id="crm-bonus-undated">' + b.undated.length + ' כניסות ללא תאריך כניסה רשום — לא שויכו לחודש: ' + esc(b.undated.map(function (r) { return r.name; }).join(', ')) + '.</p>';
+      if (b.months.length) html += '<div class="group-title">לפי חודש</div><div class="tbl-wrap"><table class="tbl" id="crm-bonus-months"><thead><tr><th>חודש</th><th>ביקורים שהתקיימו</th><th>כניסות</th><th>בונוס</th></tr></thead><tbody>'
+        + b.months.map(function (x) { return '<tr data-bonus-month="' + esc(x.month) + '" class="link"><td>' + esc(x.month.slice(5) + '/' + x.month.slice(0, 4)) + '</td><td>' + x.visits + '</td><td>' + x.admits + '</td><td>' + esc(fmtMoney(x.total)) + '</td></tr>'; }).join('')
+        + '</tbody></table></div>';
+      return html + '<p class="na">הנתונים נלקחים מהלידים המשויכים ל' + esc(BONUS.user) + ': תאריך הביקור, דיווח/תוצאת הפגישה והכניסה לבית. תצוגה בלבד — התשלום עצמו לא נרשם כאן.</p>';
+    }
     function kpiCard(v, label, sub, id) {
       return '<div class="kpi"' + (id ? ' id="' + esc(id) + '"' : '') + '><span class="v">' + ltr(v) + '</span><span class="l">' + esc(label) + '</span>' + (sub ? '<span class="l2">' + esc(sub) + '</span>' : '') + '</div>';
     }
@@ -4888,7 +5002,7 @@
       if (state.error) { main.innerHTML = '<div class="crm-state bad">' + esc(state.error) + ' <button type="button" class="btn small" id="crm-retry">נסי שוב</button></div>'; return; }
       const c = compute(state.data, state.today);
       if (state.area === 'search') $('#crm-title').textContent = 'חיפוש';
-      const r = { search: renderSearch, today: renderToday, leads: renderLeads, occupancy: renderOccupancy, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl, kpi: renderKpi, monthly: renderMonthly, triage: renderTriage }[state.area] || renderToday;
+      const r = { search: renderSearch, today: renderToday, leads: renderLeads, occupancy: renderOccupancy, clients: renderClients, calendar: renderCalendar, billing: renderBilling, control: renderControl, kpi: renderKpi, monthly: renderMonthly, bonus: renderBonus, triage: renderTriage }[state.area] || renderToday;
       main.innerHTML = r(c);
     }
 
@@ -5880,7 +5994,7 @@
       // <a target=_blank> to another origin, so open it from the click (never blocked), else navigate.
       const wa = ev.target.closest ? ev.target.closest('a[data-wa-manager]') : null;
       if (wa) { ev.preventDefault(); const w = win.open ? win.open(wa.href, '_blank', 'noopener') : null; if (!w) win.location.href = wa.href; return; }
-      const t = ev.target.closest ? ev.target.closest('#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],[data-month-step],[data-month-pick],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const t = ev.target.closest ? ev.target.closest('[data-bonus-month],#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],[data-month-step],[data-month-pick],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.kpiPeriod) { state.kpiPeriod = t.dataset.kpiPeriod; return renderMain(); }
       if (t.dataset.monthStep) {
@@ -5889,6 +6003,7 @@
         if (next && next <= curM) state.month = next;
         return renderMain();
       }
+      if (t.dataset.bonusMonth) { if (monthKeyOk(t.dataset.bonusMonth) && t.dataset.bonusMonth <= s(state.today).slice(0, 7)) state.bonusMonth = t.dataset.bonusMonth; return renderMain(); }
       if (t.dataset.monthPick) { if (monthKeyOk(t.dataset.monthPick) && t.dataset.monthPick <= s(state.today).slice(0, 7)) state.month = t.dataset.monthPick; return renderMain(); }
       if (t.dataset.houseOpen) { ev.preventDefault(); state.filters.house = t.dataset.houseOpen; return setArea('clients'); }
       if (t.dataset.area) { state.workControl = ''; return setArea(t.dataset.area); }
@@ -6425,6 +6540,7 @@
       if (t.id === 'crm-rc-to') { state.rcAll = false; state.rcTo = isoDateOk(t.value) ? t.value : ''; if (state.rcFrom === undefined) state.rcFrom = addDays(state.today, -30); return renderMain(); }
       if (t.id === 'crm-rc-status') { state.rcStatus = t.value === 'toVerify' ? 'toVerify' : ''; return renderMain(); }
       if (t.id === 'crm-rc-group') { state.rcGroup = RECEIPT_GROUPS[t.value] ? t.value : ''; return renderMain(); }
+      if (t.id === 'crm-bonus-month') { if (monthKeyOk(t.value) && t.value <= s(state.today).slice(0, 7)) state.bonusMonth = t.value; return renderMain(); }
       if (t.id === 'crm-month') { if (monthKeyOk(t.value) && t.value <= s(state.today).slice(0, 7)) state.month = t.value; return renderMain(); }
       if (t.id === 'crm-debt-from') { state.debtFrom = isoDateOk(t.value) ? t.value : ''; return renderMain(); }
       if (t.id === 'crm-debt-to') { state.debtTo = isoDateOk(t.value) ? t.value : ''; return renderMain(); }
@@ -6567,7 +6683,7 @@
     VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,
     TRIAGE_OPTIONS: TRIAGE_OPTIONS, triageQueue: triageQueue, waitlistErrors: waitlistErrors, waitlistPatch: waitlistPatch, laterErrors: laterErrors,
     NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, openLeadOfPerson: openLeadOfPerson, leadAlreadyInHouse: leadAlreadyInHouse, globalSearch: globalSearch, nameKey: nameKey, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, pendingDischargeAudit: pendingDischargeAudit, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, WAIT_REASONS: WAIT_REASONS, waitReasonLabel: waitReasonLabel, waitChipText: waitChipText, flagsOf: flagsOf, patientMeetingChange: patientMeetingChange, reportOverdue: reportOverdue, meetingOutcomeLabel: meetingOutcomeLabel, managerChangeMessage: managerChangeMessage, managerWaUrl: managerWaUrl, leadFlagBody: leadFlagBody, leadFlagPendingPlan: leadFlagPendingPlan, patientChangePlan: patientChangePlan, MANAGER_REPORT_GRACE_DAYS: MANAGER_REPORT_GRACE_DAYS, EXCEPTION_CUTOFF: EXCEPTION_CUTOFF, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
-    KPI_PERIODS: KPI_PERIODS, kpiPeriod: kpiPeriod, occupancyToday: occupancyToday, closedDisposition: closedDisposition, leadFates: leadFates, FATES: FATES, leadConversion: leadConversion,
+    KPI_PERIODS: KPI_PERIODS, kpiPeriod: kpiPeriod, occupancyToday: occupancyToday, closedDisposition: closedDisposition, leadFates: leadFates, BONUS: BONUS, bonusVisible: bonusVisible, leadBonus: leadBonus, bonusMonth: bonusMonth, FATES: FATES, leadConversion: leadConversion,
     managerCloseRates: managerCloseRates, managerNameOk: managerNameOk, BREAKEVEN_STORAGE_KEY: BREAKEVEN_STORAGE_KEY, BREAKEVEN_DEFAULTS: BREAKEVEN_DEFAULTS, VAT_RATE: VAT_RATE, breakevenConfig: breakevenConfig,
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
