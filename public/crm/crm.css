@@ -444,3 +444,12 @@ form.new-lead fieldset.paykind p, form.new-lead fieldset.paykind .err, form.new-
 #crm-account-open td.acts, #crm-account-open th:last-child { position: sticky; inset-inline-end: 0; background: var(--bg-2); box-shadow: 6px 0 8px -6px rgba(14,27,37,.18); }
 #crm-account-open td.acts { display: table-cell; white-space: nowrap; }
 #crm-account-open td.acts .btn { display: block; width: 100%; margin: 2px 0; }
+
+/* ---- CHANGELOG-maccabi-leads.md: the Maccabi document list ---- */
+.btn.mdoc { white-space: nowrap; min-width: 92px; }
+.btn.mdoc.none { color: var(--danger, #B42318); border-color: currentColor; background: #fff; }
+.btn.mdoc.has { color: #92400E; border-color: #F59E0B; background: #FFFBEB; }
+.btn.mdoc.in { color: #fff; border-color: #15803D; background: #15803D; }
+.maccabi-msg { margin: 6px 0 10px; }
+.maccabi-msg summary { cursor: pointer; color: var(--primary); }
+.maccabi-msg pre { white-space: pre-wrap; font: inherit; background: var(--bg-2, #F8FAFC); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 6px 0 0; }

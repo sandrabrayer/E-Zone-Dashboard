@@ -70,6 +70,77 @@
     return { action: 'saveAll', leads: [lead], patients: {}, prove: { leads: [s(lead.id)] } };
   }
 
+  /* ===== Maccabi leads (CHANGELOG-maccabi-leads.md) =====
+   * Sandra 15/11/2026: a lead that comes through קופ״ח מכבי is managed differently — it needs
+   * five documents before treatment can be approved. Vered sends the family one fixed
+   * message and ticks, per lead, what arrived.
+   *   a Maccabi lead — its «מקור» or its name says מכבי, or it already carries the list
+   *   a document     — missing (✗) → with the patient, on its way (◐) → received (✓)
+   * WHERE IT IS KEPT: one line in the lead's own «הערות», e.g.
+   *     מסמכי מכבי: ✓ הפניה מפסיכיאטר | ◐ בדיקות דם | ✗ סיכום פסיכיאטר | …
+   * No new column: the Leads header is mirrored by the closed / removed sheets, where an
+   * append would shift their own columns. The line is readable wherever the note shows
+   * (classic page, managers) and travels with the lead. The rest of the note is kept
+   * as typed. Pure. */
+  const MACCABI_DOCS = [
+    { id: 'referral', short: 'הפניה מפסיכיאטר', label: 'הפניה מפסיכיאטר של מכבי לתחלואה כפולה' },
+    { id: 'blood', short: 'בדיקות דם', label: 'בדיקות דם כלליות' },
+    { id: 'psych', short: 'סיכום פסיכיאטר', label: 'סיכום פסיכיאטר אחרון' },
+    { id: 'gp', short: 'סיכום רופא משפחה', label: 'סיכום מצב בריאותי מרופא המשפחה' },
+    { id: 'ecg', short: 'אק״ג ופענוח', label: 'אק״ג ופענוח' },
+  ];
+  const MACCABI_STATES = [{ id: '', mark: '✗', label: 'חסר' }, { id: 'has', mark: '◐', label: 'אצל המטופל/ת — מעביר/ה' }, { id: 'in', mark: '✓', label: 'התקבל' }];
+  const MACCABI_LINE = 'מסמכי מכבי:';
+  const MACCABI_EMAIL = 'maccabi@ezone-house.co.il';
+  const MACCABI_MESSAGE = 'שלום, לצורך קבלת טיפול דרך קופ״ח מכבי יש לשלוח את המסמכים הבאים:\n'
+    + MACCABI_DOCS.map(function (d, i) { return (i + 1) + '. ' + d.label; }).join('\n')
+    + '\n\nיש לשלוח למייל ' + MACCABI_EMAIL + ' — סרוק וקריא 🙏';
+  function maccabiLineOf(note) {
+    return s(note).split(/\r?\n/).filter(function (ln) { return ln.trim().indexOf(MACCABI_LINE) === 0; })[0] || '';
+  }
+  function isMaccabiLead(l) {
+    const o = l || {};
+    return /מכבי/.test(s(o.source)) || /מכבי/.test(s(o.name)) || !!maccabiLineOf(o.note);
+  }
+  /* { referral: ''|'has'|'in', … } from a note; anything unreadable = missing. */
+  function maccabiDocsOf(note) {
+    const line = maccabiLineOf(note), out = {};
+    const parts = line ? line.trim().slice(MACCABI_LINE.length).split('|').map(function (x) { return x.trim(); }) : [];
+    MACCABI_DOCS.forEach(function (d) {
+      const hit = parts.filter(function (x) { return x.slice(1).trim() === d.short; })[0] || '';
+      const st = MACCABI_STATES.filter(function (m) { return m.id && hit.charAt(0) === m.mark; })[0];
+      out[d.id] = st ? st.id : '';
+    });
+    return out;
+  }
+  /* The note with the list written back: its line replaced in place, or added last. */
+  function maccabiNoteWith(note, docs) {
+    const d = docs || {};
+    const line = MACCABI_LINE + ' ' + MACCABI_DOCS.map(function (x) { return (MACCABI_STATES.filter(function (m) { return m.id === s(d[x.id]); })[0] || MACCABI_STATES[0]).mark + ' ' + x.short; }).join(' | ');
+    const lines = s(note).split(/\r?\n/);
+    const at = lines.findIndex(function (ln) { return ln.trim().indexOf(MACCABI_LINE) === 0; });
+    if (at >= 0) lines[at] = line; else { while (lines.length && !lines[lines.length - 1].trim()) lines.pop(); lines.push(line); }
+    return lines.join('\n');
+  }
+  function maccabiNext(state0) { return state0 === '' ? 'has' : state0 === 'has' ? 'in' : ''; }
+  /* The Maccabi leads with their lists; the incomplete first, most missing on top. */
+  function maccabiView(leads, q) {
+    const needle = s(q).trim().toLowerCase();
+    const rows = (Array.isArray(leads) ? leads : []).filter(isMaccabiLead).filter(function (l) { return !needle || (s(l.name) + ' ' + s(l.phone) + ' ' + houseName(l.house)).toLowerCase().indexOf(needle) >= 0; }).map(function (l) {
+      const docs = maccabiDocsOf(l.note);
+      const got = MACCABI_DOCS.filter(function (d) { return docs[d.id] === 'in'; }).length, onWay = MACCABI_DOCS.filter(function (d) { return docs[d.id] === 'has'; }).length;
+      return { id: s(l.id), name: s(l.name), phone: s(l.phone), house: houseName(l.house), stage: s(l.stage), assignedTo: s(l.assignedTo), created: s(l.created), docs: docs, got: got, onWay: onWay,
+        missing: MACCABI_DOCS.length - got - onWay, complete: got === MACCABI_DOCS.length };
+    }).sort(function (a, b) { return (a.complete - b.complete) || (a.got - b.got) || a.name.localeCompare(b.name, 'he'); });
+    return { rows: rows, count: rows.length, complete: rows.filter(function (r) { return r.complete; }).length, waiting: rows.filter(function (r) { return !r.complete; }).length };
+  }
+  /* wa.me digits for an Israeli number (05x… → 9725x…); '' when it is not a phone. */
+  function waDigits(phone) {
+    const d = s(phone).replace(/\D/g, '');
+    const n = d.indexOf('972') === 0 ? d : d.charAt(0) === '0' ? '972' + d.slice(1) : d;
+    return /^\d{9,15}$/.test(n) ? n : '';
+  }
+
   /* ===== Lead lifecycle (C5, CHANGELOG-crm-lead-lifecycle.md) ===== */
   const DISPOSITIONS = [
     { id: 'not_relevant', label: 'לא רלוונטי' }, { id: 'completed', label: 'סיים טיפול' },
@@ -3664,9 +3735,11 @@
         + '<select id="f-house"><option value="">כל הבתים</option>' + HOUSES.filter(function (h) { return h.id !== 'sde'; }).map(function (h) { return '<option value="' + esc(h.name) + '"' + (f.house === h.name ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select>'
         + '<select id="f-owner"><option value="">כל האחראים</option>' + Object.keys(owners).map(function (o) { return '<option' + (f.owner === o ? ' selected' : '') + '>' + esc(o) + '</option>'; }).join('') + '</select>'
         + '<button type="button" class="btn primary" id="crm-new-lead">+ ליד חדש</button>'
+        + '<button type="button" class="btn" data-view="maccabi" id="crm-maccabi-btn" aria-pressed="' + (state.view === 'maccabi') + '">מכבי <span class="n chip">' + c.leads.filter(isMaccabiLead).length + '</span></button>'
         + '<button type="button" class="btn" data-view="closed" aria-pressed="' + (state.view === 'closed') + '">לידים סגורים</button>'
         + (state.tasks && state.index ? '<button type="button" class="btn" data-area="triage">רשומות שדורשות בירור <span class="n chip">' + triageQueue(c, state.tasks, state.index, state.today).length + '</span></button>' : '') + '</div>';
       if (state.view === 'closed') return toolbar + renderClosedLeads();
+      if (state.view === 'maccabi') return toolbar + renderMaccabi(c);
       // a search with no OPEN lead → the global results (admitted / patients / released), never an empty board
       if (s(f.q) && !filterLeads(c.leads, f).length) return toolbar + renderSearch(c);
       if (state.view === 'board') {
@@ -3697,6 +3770,39 @@
           return '<tr><td>' + esc(l.name) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(label(l.disposition)) + '</td><td>' + esc(l.not_relevant_note) + '</td><td>' + esc(fmtDate(s(l.movedAt).slice(0, 10))) + '</td>'
             + '<td><button type="button" class="btn small" data-restore-lead="' + esc(l.id) + '">שחזור ל«' + esc(stageLabel(s(l.originSheet) || 'new')) + '»</button></td></tr>';
         }).join('') + '</tbody></table></div>';
+    }
+    /* «מכבי» (CHANGELOG-maccabi-leads.md): the Maccabi leads, the message to send, and the five documents per lead. */
+    function renderMaccabi(c) {
+      const v = maccabiView(c.leads, state.filters.q);
+      let html = '<div class="group-title" id="crm-maccabi-title">לידים של מכבי ' + chip(v.waiting ? 'today' : 'ok', v.count + ' לידים · ' + v.complete + ' עם כל המסמכים · ' + v.waiting + ' חסרים') + '</div>'
+        + '<div class="toolbar"><button type="button" class="btn primary" id="crm-new-maccabi">+ ליד מכבי</button><button type="button" class="btn" data-maccabi-copy>העתק את ההודעה למשפחה</button>'
+        + '<a class="btn" href="mailto:' + esc(MACCABI_EMAIL) + '">' + esc(MACCABI_EMAIL) + '</a></div>'
+        + '<details class="maccabi-msg" id="crm-maccabi-msg"><summary>ההודעה שנשלחת — המסמכים הנדרשים</summary><pre>' + esc(MACCABI_MESSAGE) + '</pre></details>'
+        + '<p class="na">לחיצה על מסמך מחליפה מצב: ✗ חסר → ◐ אצל המטופל/ת (מעביר/ה) → ✓ התקבל. נשמר מיד, בשורת «מסמכי מכבי» בהערות של הליד. ליד נכנס לרשימה כשהמקור או השם שלו כולל «מכבי».</p>';
+      if (!v.rows.length) return html + '<p class="na" id="crm-maccabi-none">אין לידים של מכבי' + (s(state.filters.q) ? ' בחיפוש הזה' : '') + '. «+ ליד מכבי» פותח ליד חדש עם המקור «מכבי».</p>';
+      html += '<div class="tbl-wrap"><table class="tbl" id="crm-maccabi"><thead><tr><th>ליד</th><th>הודעה</th><th>מצב</th>' + MACCABI_DOCS.map(function (d) { return '<th title="' + esc(d.label) + '">' + esc(d.short) + '</th>'; }).join('') + '<th>בית</th><th>שלב</th></tr></thead><tbody>'
+        + v.rows.map(function (r) {
+          const wa = waDigits(r.phone);
+          return '<tr data-maccabi-lead="' + esc(r.id) + '"><td class="link" data-open-lead="' + esc(r.id) + '">' + esc(r.name) + '</td>'
+            + '<td>' + (wa ? '<a class="btn small" target="_blank" rel="noopener" href="https://wa.me/' + esc(wa) + '?text=' + encodeURIComponent(MACCABI_MESSAGE) + '">וואטסאפ</a>' : '<span class="na">אין טלפון</span>') + '</td>'
+            + '<td>' + chip(r.complete ? 'ok' : r.got + r.onWay ? 'today' : 'late', r.got + '/' + MACCABI_DOCS.length + (r.onWay ? ' · ' + r.onWay + ' בדרך' : '')) + '</td>'
+            + MACCABI_DOCS.map(function (d) {
+              const st = MACCABI_STATES.filter(function (m) { return m.id === r.docs[d.id]; })[0] || MACCABI_STATES[0];
+              return '<td><button type="button" class="btn small mdoc ' + (st.id || 'none') + '" data-maccabi-doc="' + esc(d.id) + '" data-lead="' + esc(r.id) + '" aria-label="' + esc(d.label + ': ' + st.label) + '" title="' + esc(d.label + ' — ' + st.label) + '">' + st.mark + ' ' + esc(st.label === 'אצל המטופל/ת — מעביר/ה' ? 'אצל המטופל/ת' : st.label) + '</button></td>';
+            }).join('')
+            + '<td>' + esc(r.house || '—') + '</td><td>' + esc(stageLabel(r.stage)) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+      return html;
+    }
+    function maccabiToggle(leadId, docId) {
+      if (state.saving) { toast('שמירה קודמת עדיין מתבצעת — רגע אחד ונסי שוב', true); return; }
+      const raw = (state.data && Array.isArray(state.data.leads) ? state.data.leads : []).filter(function (l) { return s(l && l.id) === s(leadId); })[0];
+      const doc = MACCABI_DOCS.filter(function (d) { return d.id === docId; })[0];
+      if (!raw || !doc) return;
+      const docs = maccabiDocsOf(raw.note);
+      docs[doc.id] = maccabiNext(docs[doc.id]);
+      const st = MACCABI_STATES.filter(function (m) { return m.id === docs[doc.id]; })[0];
+      writeLead(leadId, { note: maccabiNoteWith(raw.note, docs) }, doc.short + ' — ' + st.label);
     }
     function renderNewLeadForm() {
       const field = function (name, label, type, extra) { return '<label>' + esc(label) + ' <input name="' + name + '" type="' + (type || 'text') + '"' + (extra || '') + '><span class="err" data-err="' + name + '"></span></label>'; };
@@ -6136,7 +6242,7 @@
       // <a target=_blank> to another origin, so open it from the click (never blocked), else navigate.
       const wa = ev.target.closest ? ev.target.closest('a[data-wa-manager]') : null;
       if (wa) { ev.preventDefault(); const w = win.open ? win.open(wa.href, '_blank', 'noopener') : null; if (!w) win.location.href = wa.href; return; }
-      const t = ev.target.closest ? ev.target.closest('[data-stay-reset],[data-stay-csv],[data-bonus-month],#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],[data-month-step],[data-month-pick],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const t = ev.target.closest ? ev.target.closest('#crm-new-maccabi,[data-maccabi-doc],[data-maccabi-copy],[data-stay-reset],[data-stay-csv],[data-bonus-month],#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],[data-month-step],[data-month-pick],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.kpiPeriod) { state.kpiPeriod = t.dataset.kpiPeriod; return renderMain(); }
       if (t.dataset.monthStep) {
@@ -6210,6 +6316,18 @@
         return;
       }
       if (t.id === 'crm-new-lead') return openNewLeadDrawer();
+      if (t.id === 'crm-new-maccabi') {
+        openNewLeadDrawer();
+        const src = doc.querySelector('form[data-form="new-lead"] [name="source"]');
+        if (src) src.value = 'מכבי';
+        return;
+      }
+      if (t.dataset.maccabiDoc) return maccabiToggle(t.dataset.lead, t.dataset.maccabiDoc);
+      if (t.dataset.maccabiCopy !== undefined) {
+        const done = function (ok) { toast(ok ? 'ההודעה הועתקה — הדביקי בוואטסאפ' : 'ההעתקה נחסמה — סמני את הטקסט והעתיקי ידנית', !ok); if (!ok) { const d = $('#crm-maccabi-msg'); if (d) d.open = true; } };
+        try { win.navigator.clipboard.writeText(MACCABI_MESSAGE).then(function () { done(true); }, function () { done(false); }); } catch (_) { done(false); }
+        return;
+      }
       if (t.id === 'crm-direct-add') return openDirectAddDrawer();
       if (t.dataset.removeLead) { ev.preventDefault(); if (!state.saving) removeLeadAction(t.dataset.removeLead); return; }
       if (t.dataset.restoreLead) { ev.preventDefault(); if (!state.saving) restoreLeadAction(t.dataset.restoreLead); return; }
@@ -6844,7 +6962,7 @@
     VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,
     TRIAGE_OPTIONS: TRIAGE_OPTIONS, triageQueue: triageQueue, waitlistErrors: waitlistErrors, waitlistPatch: waitlistPatch, laterErrors: laterErrors,
     NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, openLeadOfPerson: openLeadOfPerson, leadAlreadyInHouse: leadAlreadyInHouse, globalSearch: globalSearch, nameKey: nameKey, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, pendingDischargeAudit: pendingDischargeAudit, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, WAIT_REASONS: WAIT_REASONS, waitReasonLabel: waitReasonLabel, waitChipText: waitChipText, flagsOf: flagsOf, patientMeetingChange: patientMeetingChange, reportOverdue: reportOverdue, meetingOutcomeLabel: meetingOutcomeLabel, managerChangeMessage: managerChangeMessage, managerWaUrl: managerWaUrl, leadFlagBody: leadFlagBody, leadFlagPendingPlan: leadFlagPendingPlan, patientChangePlan: patientChangePlan, MANAGER_REPORT_GRACE_DAYS: MANAGER_REPORT_GRACE_DAYS, EXCEPTION_CUTOFF: EXCEPTION_CUTOFF, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
-    KPI_PERIODS: KPI_PERIODS, kpiPeriod: kpiPeriod, occupancyToday: occupancyToday, closedDisposition: closedDisposition, leadFates: leadFates, STAY_MODES: STAY_MODES, STAY_GROUPS: STAY_GROUPS, STAY_BUCKETS: STAY_BUCKETS, stayLines: stayLines, stayReport: stayReport, stayStats: stayStats, stayCsv: stayCsv, BONUS: BONUS, bonusVisible: bonusVisible, leadBonus: leadBonus, bonusMonth: bonusMonth, FATES: FATES, leadConversion: leadConversion,
+    KPI_PERIODS: KPI_PERIODS, kpiPeriod: kpiPeriod, occupancyToday: occupancyToday, closedDisposition: closedDisposition, leadFates: leadFates, MACCABI_DOCS: MACCABI_DOCS, MACCABI_STATES: MACCABI_STATES, MACCABI_MESSAGE: MACCABI_MESSAGE, MACCABI_EMAIL: MACCABI_EMAIL, isMaccabiLead: isMaccabiLead, maccabiDocsOf: maccabiDocsOf, maccabiNoteWith: maccabiNoteWith, maccabiNext: maccabiNext, maccabiView: maccabiView, waDigits: waDigits, STAY_MODES: STAY_MODES, STAY_GROUPS: STAY_GROUPS, STAY_BUCKETS: STAY_BUCKETS, stayLines: stayLines, stayReport: stayReport, stayStats: stayStats, stayCsv: stayCsv, BONUS: BONUS, bonusVisible: bonusVisible, leadBonus: leadBonus, bonusMonth: bonusMonth, FATES: FATES, leadConversion: leadConversion,
     managerCloseRates: managerCloseRates, managerNameOk: managerNameOk, BREAKEVEN_STORAGE_KEY: BREAKEVEN_STORAGE_KEY, BREAKEVEN_DEFAULTS: BREAKEVEN_DEFAULTS, VAT_RATE: VAT_RATE, breakevenConfig: breakevenConfig,
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,

@@ -2289,3 +2289,47 @@ test('«משך שהייה» (CHANGELOG-stay-length-report.md): every stay with h
     assert.equal(await o.page.$('#crm-nav button[data-area="stays"]'), null);
   } finally { await browser.close(); srv.close(); }
 });
+
+test('«מכבי» in «לידים» (CHANGELOG-maccabi-leads.md): the Maccabi leads with their five documents; a click cycles ✗ → ◐ → ✓ and is saved in the lead\'s note; the message, WhatsApp link, «+ ליד מכבי»', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const keep = DATA.leads.slice();
+  DATA.leads = keep.concat([{ id: 'M1', name: 'משה מכבי-בדיקה', house: 'קיסריה עפרוני', source: 'מכבי', stage: 'new', created: daysAgo(2), assignedTo: 'ורד', phone: '0507654321', note: 'אמא מתקשרת בערב' }]);
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="leads"]');
+    await page.waitForSelector('#crm-maccabi-btn');
+    assert.match(await page.textContent('#crm-maccabi-btn'), /מכבי\s*1/);
+    await page.click('#crm-maccabi-btn');
+    await page.waitForSelector('#crm-maccabi tr[data-maccabi-lead="M1"]');
+    assert.match(await page.textContent('#crm-maccabi-title'), /1 לידים · 0 עם כל המסמכים · 1 חסרים/);
+    assert.match(await page.textContent('#crm-maccabi-msg pre'), /הפניה מפסיכיאטר של מכבי לתחלואה כפולה[\s\S]*maccabi@ezone-house\.co\.il/);
+    assert.equal(await page.$$eval('#crm-maccabi tr[data-maccabi-lead="M1"] [data-maccabi-doc]', (b) => b.map((x) => x.textContent.trim().charAt(0)).join('')), '✗✗✗✗✗');
+    assert.match(await page.getAttribute('#crm-maccabi tr[data-maccabi-lead="M1"] a[href^="https://wa.me/"]', 'href'), /^https:\/\/wa\.me\/972507654321\?text=/);
+    // one click: with the patient; a second: received — each saved through the lead write
+    const btn = '#crm-maccabi tr[data-maccabi-lead="M1"] [data-maccabi-doc="blood"]';
+    await page.click(btn);
+    await page.waitForFunction((s) => document.querySelector(s) && document.querySelector(s).textContent.trim().charAt(0) === '◐' && !document.querySelector(s).disabled, btn, { timeout: 8000 });
+    await page.click(btn);
+    await page.waitForFunction((s) => document.querySelector(s) && document.querySelector(s).textContent.trim().charAt(0) === '✓' && !document.querySelector(s).disabled, btn, { timeout: 8000 });
+    const sent = srv.saves.filter((x) => x.action === 'saveAll');
+    assert.equal(sent.length, 2);
+    assert.deepEqual(sent[1].prove, { leads: ['M1'] });
+    assert.equal(sent[1].leads.length, 1, 'one lead, never the whole board');
+    assert.equal(sent[1].leads[0].note, 'אמא מתקשרת בערב\nמסמכי מכבי: ✗ הפניה מפסיכיאטר | ✓ בדיקות דם | ✗ סיכום פסיכיאטר | ✗ סיכום רופא משפחה | ✗ אק״ג ופענוח', 'the note keeps what was typed; the list is one line');
+    assert.equal(sent[1].leads[0].source, 'מכבי'); assert.equal(sent[1].leads[0].phone, '0507654321', 'the rest of the lead row is sent as it was');
+    assert.match(await page.textContent('#crm-maccabi tr[data-maccabi-lead="M1"]'), /1\/5/);
+    assert.equal(await noHScroll(page), true);
+    // the name opens the lead; «+ ליד מכבי» opens the new-lead form with the source filled
+    await page.click('#crm-maccabi td[data-open-lead="M1"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer-close');
+    await page.click('#crm-new-maccabi');
+    await page.waitForSelector('form[data-form="new-lead"]');
+    assert.equal(await page.inputValue('form[data-form="new-lead"] [name="source"]'), 'מכבי');
+    assert.deepEqual(errors, []);
+    const m = await open(browser, srv.port, 'dana', 390);
+    await m.page.click('#crm-burger'); await m.page.click('#crm-nav button[data-area="leads"]'); await m.page.click('#crm-maccabi-btn'); await m.page.waitForSelector('#crm-maccabi');
+    assert.equal(await noHScroll(m.page), true, 'no horizontal scroll on a phone');
+  } finally { DATA.leads = keep; await browser.close(); srv.close(); }
+});
