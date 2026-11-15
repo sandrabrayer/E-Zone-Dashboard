@@ -1,5 +1,11 @@
 # E-ZONE Ecosystem Status — updated November 15, 2026
 
+## Dashboard — Shiran removed from the name list — November 15, 2026
+
+Shiran no longer works at E-ZONE: `former: true` in `lib/users.js` hides her from the
+login / «החלפת משתמש» name list and refuses a new login. Sandra should also set her
+`USER_PIN_HASHES` record to `revoked` in Railway. See `CHANGELOG-remove-shiran.md`.
+
 ## Dashboard CRM «חשבון» — the cycle's actions always in view — November 15, 2026
 
 Display only. «דווח תשלום» / «הנחה» / «שנה סכום» of «מחזורים פתוחים» are pinned (sticky) so
