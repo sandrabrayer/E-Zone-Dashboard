@@ -5073,10 +5073,16 @@
         + a.openCycles.map(function (c, i) {
           const st = c.days > 60 ? 'late' : c.days > 30 ? 'today' : 'ok';
           return '<tr><td>' + esc(fmtDate(c.start)) + (c.end ? '–' + esc(fmtDate(c.end)) : '') + (c.kind === 'unrecorded' ? ' <span class="na">ללא דיווח</span>' : '') + (c.grace ? ' ' + chip('wait', 'גוף מממן') : '') + '</td><td>' + esc(fmtMoney(c.expected)) + '</td><td>' + esc(fmtMoney(c.received)) + '</td><td>' + esc(fmtMoney(c.balance)) + '</td><td>' + chip(st, c.days + '') + '</td>'
-            + '<td>' + (me.finance ? '<button type="button" class="btn small primary" data-report-open="' + i + '">דווח תשלום</button>' : '')
+            + '<td class="acts">' + (me.finance ? '<button type="button" class="btn small primary" data-report-open="' + i + '">דווח תשלום</button>' : '')
             + (me.canDiscount && c.month ? ' <button type="button" class="btn small" data-discount-open="' + i + '">הנחה</button>' : '')
             + (me.canAmount && c.month ? ' <button type="button" class="btn small" data-amount-open="' + i + '">שנה סכום</button>' : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
+      // an open cycle «ללא דיווח» next to a PAID payment of another date: usually the same money, stamped on the wrong month
+      // (CHANGELOG-account-actions-visible.md) — say so, instead of leaving a debt nobody can explain
+      if (me.finance && a.openCycles.some(function (c) { return c.kind === 'unrecorded'; }) && a.cycles.some(function (c) { return c.status === 'paid'; }))
+        html += '<p class="na" id="crm-account-mismatch">יש כאן מחזור פתוח «ללא דיווח» וגם תשלום שסומן «שולם» בתאריך אחר (למטה, ב«תשלומים»). אם זה אותו כסף — אל תדווחי שוב: '
+          + (me.canDiscount && state.account && state.account.patient && !inHouse(state.account.patient) ? 'סגרי את המחזור ב«גבייה» → «ניקוי חובות היסטוריים» עם הסיבה «שולם ולא נרשם».' : 'פני לסנדרה לתיקון תאריך התשלום.')
+          + ' אם לא שולם — «דווח תשלום» בשורת המחזור.</p>';
       const others = state.account ? reportableCycles(state.account.patient, a, state.today) : [];
       if (me.finance) html += otherCyclePickerHtml(others, state.today, CYCLE_STATUS_LABELS);
       html += '<div id="crm-report"></div>';
