@@ -65,18 +65,26 @@ the screen stays and only the changed reads repeat (2 of 4; a verification: none
 The debt still drops when a payment is REPORTED — verification confirms it (engine
 unchanged). SW cache v136. See `CHANGELOG-billing-verify-fixes.md`.
 
-## Managers feed — patient contact person, worker end date — November 16, 2026
+## Managers — ends of employment in the per-worker house cost — November 16, 2026
+
+`managersWork` op `houseStaffCost` now returns, per worker, `endDate` (`''` while
+employed) and, on `staff`, `ending { count, monthlySaving, savingThisMonth,
+savingNextMonth }` — `null` when staffing does not send it. From the staffing
+feed `getHouseWorkerCostsForManagers` (ezone-staffing PR #135,
+`CostEngine.endingForecast`); re-validated here, the caller's house only. Cache
+key `mw:staffing-worker-cost:v2:<month>`. No new op, secret or sheet column.
+See `CHANGELOG-managers-ending-forecast.md`.
+
+## Managers feed — the patient's contact person in `houseData` — November 16, 2026
 
 `managersWork` only, same fail-closed `MANAGERS_WORK_SECRET`. No new action, property, sheet or column.
 
 - `houseData`: every patient carries `contact` (`{ name, relation, phone, updatesPhone }` or `null`) and the reply
   carries `contactsSupported: true`. Source: the lead the patient came from, by `Patients.fromLead` only — never a
   name match. Only these four cleaned values leave; only the caller's house.
-- `houseStaffCost`: a worker's `endDate` passes through from the staffing feed when it is a real date; for a merged
-  `pardes` + `hapardes` worker only when every entry has one. Needs the ezone-staffing PR of the same day.
-- The Managers app re-enabled the `familyCalls` log («שיחות עם משפחה») and stopped using `committeeNotes`; the
-  backend keeps both, unchanged.
-- Details: `CHANGELOG-managers-contact-end-date.md`. Tests 4078 → 4081.
+- For the Managers app's «שיחות עם משפחה» (ezone-managers #72), which re-enables the `familyCalls` log and stops using
+  `committeeNotes`. The backend keeps both logs, unchanged.
+- Details: `CHANGELOG-managers-patient-contact.md`.
 
 ## Managers CRM backend — talk threads, committee notes, per-worker house cost — November 14, 2026
 

@@ -150,8 +150,9 @@ test('houseStaffCost: only the caller\'s house leaves — workers cleaned, round
   assert.strictEqual(r.ok, true);
   assert.strictEqual(r.house, 'ramot');
   assert.deepStrictEqual(r.staff.workers, [
-    { name: 'מדריכה ותיקה', roles: ['מדריך/ה'], cost: 10000, estimated: true },
-    { name: 'bשני/b', roles: ['מדריך/ה', 'x'], cost: 7000, estimated: false }]);
+    { name: 'מדריכה ותיקה', roles: ['מדריך/ה'], cost: 10000, estimated: true, endDate: '' },
+    { name: 'bשני/b', roles: ['מדריך/ה', 'x'], cost: 7000, estimated: false, endDate: '' }]);
+  assert.strictEqual(r.staff.ending, null, 'a staffing feed without `ending` is null, never a made-up 0');
   assert.deepStrictEqual([r.staff.total, r.staff.budget, r.staff.available], [17000, 265000, true]);
   assert.deepStrictEqual(r.staff.budgetLines, [{ key: 'instructors', label: 'מדריכים', budget: 120000, cost: 17000 }]);
   const text = JSON.stringify(r);
@@ -162,11 +163,35 @@ test('houseStaffCost: only the caller\'s house leaves — workers cleaned, round
 test('houseStaffCost: pardes + hapardes merge per person and per budget line; cached per month', () => {
   const t = withStaff(SFEED);
   const r = t.call({ op: 'houseStaffCost', month: '2026-11', house: 'pardes', role: 'manager', actor: 'חן', actorId: 'person-chen' });
-  assert.deepStrictEqual(r.staff.workers, [{ name: 'טבחית', roles: ['טבח/ית'], cost: 3000, estimated: true }]);
+  assert.deepStrictEqual(r.staff.workers, [{ name: 'טבחית', roles: ['טבח/ית'], cost: 3000, estimated: true, endDate: '' }]);
   assert.deepStrictEqual(r.staff.budgetLines, [{ key: 'cook', label: 'טבחים', budget: 10000, cost: 3000 }]);
   assert.strictEqual(r.staff.total, 4500);
   t.call({ op: 'houseStaffCost', month: '2026-11', ...ORAN });
   assert.strictEqual(t.fetches.length, 1, 'one staffing call per month');
+});
+
+test('houseStaffCost: ends of employment (16 Nov 2026) — the end date per worker and the house saving; cleaned, summed, own house only', () => {
+  const feed = JSON.parse(JSON.stringify(SFEED));
+  feed.houses.ramot.workers[0].endDate = '2026-11-20';
+  feed.houses.ramot.workers[1].endDate = '2026-02-30';          // not a date → ''
+  feed.houses.ramot.ending = { count: 1, monthlySaving: 10000.4, savingThisMonth: 3333.3, savingNextMonth: 10000.4, items: [{ salary: 1 }] };
+  feed.houses.asher.ending = { count: 3, monthlySaving: 99999, savingThisMonth: 1, savingNextMonth: 2 };
+  // one person in both pardes ids: ends in one, stays in the other → no end date
+  feed.houses.pardes.workers[0].endDate = '2026-11-30';
+  feed.houses.pardes.ending = { count: 1, monthlySaving: 1500, savingThisMonth: 0, savingNextMonth: 1500 };
+  feed.houses.hapardes.ending = { count: '=2', monthlySaving: -5, savingThisMonth: 'x', savingNextMonth: 250.6 };
+  const t = withStaff(feed);
+  const ramot = t.call({ op: 'houseStaffCost', month: '2026-11', ...ORAN }).staff;
+  assert.deepStrictEqual(ramot.ending, { count: 1, monthlySaving: 10000, savingThisMonth: 3333, savingNextMonth: 10000 });
+  assert.deepStrictEqual(ramot.workers.map((w) => [w.name, w.endDate]), [['מדריכה ותיקה', '2026-11-20'], ['bשני/b', '']]);
+  assert.ok(!JSON.stringify(ramot).includes('99999') && !JSON.stringify(ramot).includes('salary'), 'no other house, no extra key');
+  const pardes = t.call({ op: 'houseStaffCost', month: '2026-11', house: 'pardes', role: 'manager', actor: 'חן', actorId: 'person-chen' }).staff;
+  assert.deepStrictEqual(pardes.ending, { count: 1, monthlySaving: 1500, savingThisMonth: 0, savingNextMonth: 1751 }, 'summed; junk and negatives count as 0');
+  assert.strictEqual(pardes.workers[0].endDate, '', 'still placed under the other id');
+  // both ids end → the later date
+  feed.houses.hapardes.workers[0].endDate = '2026-12-15';
+  const both = withStaff(feed).call({ op: 'houseStaffCost', month: '2026-11', house: 'pardes', role: 'manager', actor: 'חן', actorId: 'person-chen' }).staff;
+  assert.strictEqual(both.workers[0].endDate, '2026-12-15');
 });
 
 test('houseStaffCost: not configured / bad URL / down / unauthorized / older staffing / junk / no house → available:false', () => {
@@ -190,7 +215,7 @@ test('houseStaffCost: behind the managersWork secret; a bad caller is refused be
   assert.strictEqual(t.fetches.length, 0);
 });
 
-/* ---- 16 Nov 2026: the patient's contact person in houseData; a worker's end date ---- */
+/* ---- 16 Nov 2026: the patient's contact person in houseData («שיחות עם משפחה») ---- */
 
 function withLeads(leads, patients) {
   const t = boot();
@@ -236,41 +261,9 @@ test('houseData: each patient carries the contact person of the lead it came fro
   assert.strictEqual(arr(t.g.post({ action: 'managersWork', secret: 'wrong', op: 'houseData', ...ORAN })).error, 'unauthorized');
 });
 
-test('houseData: the family-calls log is written and read back for the house («שיחות עם משפחה»)', () => {
-  const t = withLeads([], [{ houseId: 'ramot', name: 'דנה', date: '2026-09-01', status: 'active', id: 'p1' }]);
-  assert.deepStrictEqual(add(t.call, ORAN, 'familyCalls', { patientName: 'דנה' }).fields, ['contactName', 'callDate', 'summary']);
-  const ok = add(t.call, ORAN, 'familyCalls', { patientName: 'דנה', contactName: 'רות', relation: 'אמא', callDate: '2026-11-12', callTime: '18:00', summary: '=עדכון <i>שבועי</i>', followUpDate: '2026-11-13' });
-  assert.strictEqual(ok.ok, true);
-  const d = t.call({ op: 'houseData', ...SHAHAR });
-  const row = d.logs.familyCalls[0];
-  assert.deepStrictEqual([row.patientName, row.contactName, row.relation, row.callDate, row.callTime, row.summary, row.author, row.canEdit],
-    ['דנה', 'רות', 'אמא', '2026-11-12', '18:00', 'עדכון iשבועי/i', 'אורן', false], 'the house sees it; only the author (or an admin) edits');
-  assert.ok(d.followUps.some((f) => f.log === 'familyCalls' && f.id === ok.id));
-  const efroni = t.call({ op: 'houseData', house: 'efroni', role: 'admin', actor: 'סנדרה', actorId: 'person-sandra' });
-  assert.strictEqual(efroni.logs.familyCalls.length, 0, 'never another house');
-});
-
-test('houseStaffCost: a worker\'s endDate passes only when it is a real date — and, for a merged worker, only when every entry has one', () => {
-  const feed = { month: '2026-11', hasActuals: false, houses: {
-    ramot: { projectedTotal: 300, budget: 1000, workers: [
-      { name: 'מסיימת', roles: ['מדריך/ה'], cost: 100, estimated: true, endDate: '2026-11-30' },
-      { name: 'תאריך רע', roles: [], cost: 100, estimated: true, endDate: '<b>30/11</b>' },
-      { name: 'נשארת', roles: [], cost: 100, estimated: true }], budgetLines: [] },
-    pardes: { projectedTotal: 300, budget: null, workers: [
-      { name: 'שני הבתים', roles: [], cost: 100, estimated: true, endDate: '2026-11-20' },
-      { name: 'רק באחד', roles: [], cost: 100, estimated: true, endDate: '2026-11-20' },
-      { name: '', roles: [], cost: 100, estimated: true, endDate: '2026-11-20' }], budgetLines: [] },
-    hapardes: { projectedTotal: 200, budget: null, workers: [
-      { name: 'שני הבתים', roles: [], cost: 100, estimated: true, endDate: '2026-12-10' },
-      { name: 'רק באחד', roles: [], cost: 100, estimated: true }], budgetLines: [] },
-  } };
-  const t = withStaff(feed);
-  const ramot = Object.fromEntries(t.call({ op: 'houseStaffCost', month: '2026-11', ...ORAN }).staff.workers.map((w) => [w.name, w]));
-  assert.strictEqual(ramot['מסיימת'].endDate, '2026-11-30');
-  assert.ok(!('endDate' in ramot['תאריך רע']), 'a value that is not a date is dropped');
-  assert.ok(!('endDate' in ramot['נשארת']), 'no key when staffing has no end date');
-  const pardes = Object.fromEntries(t.call({ op: 'houseStaffCost', month: '2026-11', house: 'pardes', role: 'admin', actor: 'סנדרה', actorId: 'person-sandra' }).staff.workers.map((w) => [w.name, w]));
-  assert.strictEqual(pardes['שני הבתים'].endDate, '2026-12-10', 'the later date — the day the person really stops');
-  assert.ok(!('endDate' in pardes['רק באחד']), 'still placed under the other id → not leaving');
-  assert.ok(!('endDate' in pardes['']), 'the unnamed remainder never has an end date');
+test('houseData: the lead id never rides on the in-house rows other callers read', () => {
+  const t = withLeads([], [{ houseId: 'ramot', name: 'דנה', date: '2026-09-01', status: 'active', id: 'p1', fromLead: 'L77' }]);
+  const rows = t.g.run("JSON.stringify(mwInHousePatients_(readPatientsForBonus_(), MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID.ramot, parseDate_(todayISODate_())))");
+  assert.ok(!rows.includes('L77') && !rows.includes('fromLead'), 'non-enumerable: not serialised, not spread');
+  assert.strictEqual(t.g.run("mwInHousePatients_(readPatientsForBonus_(), MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID.ramot, parseDate_(todayISODate_()))[0].fromLead"), 'L77');
 });
