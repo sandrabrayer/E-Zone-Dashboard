@@ -16622,7 +16622,8 @@ function computeContinuityByHouse_(outpatients, ym) {
  * trusts those fields ONLY because the secret matched; it still validates
  * them (house must be a Managers key; role one of the two).
  *
- *   op 'houseData'  { house, month } → patients (in the house today),
+ *   op 'houseData'  { house, month } → patients (in the house today, each with
+ *                   its contact person from the lead — 16 Nov 2026),
  *                   outpatients (from this house, active today), visits
  *                   (lead meetings this month) and admissions (entries this
  *                   month), the three logs, and follow-ups due.
@@ -17430,9 +17431,13 @@ function mwHouseData_(caller, params) {
   // admissions this month.
   const patients = readPatientsForBonus_();
   const discharges = mwReadDischarges_(key);
-  const inHouse = mwInHousePatients_(patients, pid, today).map(function (p) {
+  // Each patient's source lead id, kept aside until the lead sheets are read below
+  // (one pass, shared with the visits — no extra sheet read).
+  const inHouseRaw = mwInHousePatients_(patients, pid, today);
+  const leadById = {};
+  const inHouse = inHouseRaw.map(function (p) {
     const k = mwDischargeKey_(key, p.name, p.entryDate);
-    return Object.assign({}, p, { expectedDischarge: mwDischargePublic_(discharges[k]) });
+    return Object.assign({}, p, { expectedDischarge: mwDischargePublic_(discharges[k]), contact: null });
   });
   // A return from a temporary exit is not a new admission (from Oct 2026).
   const chains = stayContinuityApplies_(ym) ? stayChains_(patients, pid) : {};
@@ -17476,6 +17481,10 @@ function mwHouseData_(caller, params) {
     const sh = ss.getSheetByName(t[0]);
     if (!sh || sh.getLastRow() < 2) return;
     readSheet_(sh, t[1]).forEach(function (l) {
+      // Every lead by id, Leads first (the first sheet that has the id wins) — the
+      // contact person of the patients in the house is read from it below.
+      const lid = String(l.id == null ? '' : l.id).trim();
+      if (lid && !leadById[lid]) leadById[lid] = l;
       const h = String(l.house || '').trim();
       if (h !== houseName && h !== pid) return;
       const vd = parseDate_(asISODate_(l.visitDate));
@@ -17514,6 +17523,12 @@ function mwHouseData_(caller, params) {
   });
   expectedAdmissions.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
 
+  // The contact person of each patient in the house (16 Nov 2026) — by the lead id only.
+  inHouse.forEach(function (p, i) {
+    const lid = inHouseRaw[i].fromLead;
+    p.contact = lid ? mwPatientContact_(leadById[lid]) : null;
+  });
+
   const logs = {};
   Object.keys(MW_LOGS).forEach(function (k) { logs[k] = mwReadLog_(k, caller); });
   const todayIso = ymdOf_(today);
@@ -17528,6 +17543,8 @@ function mwHouseData_(caller, params) {
   return {
     ok: true, house: key, month: ym, today: todayIso,
     patients: inHouse, expectedDischargeSupported: true, expectedDischargeModes: MW_DISCHARGE_MODES.slice(),
+    // «שיחות עם משפחה» (16 Nov 2026): each patient carries `contact` (or null).
+    contactsSupported: true,
     // Committees come from the coordinators (20 Oct 2026): the per-patient
     // editor is gone (committeeSupported:false), the house's list is
     // `committees` — always the CALLER's house, decided above, never the client.
@@ -17612,11 +17629,33 @@ function mwInHousePatients_(patients, pid, today) {
         if (listed[k]) return;
         listed[k] = true;
       }
-      out.push({ name: String(p.name || ''), entryDate: ymdOf_(from), days: daysBetween_(from, today) + 1, status: String(p.status || '') });
+      const row = { name: String(p.name || ''), entryDate: ymdOf_(from), days: daysBetween_(from, today) + 1, status: String(p.status || '') };
+      // The lead this patient came from (16 Nov 2026, mwPatientContact_). NON-enumerable:
+      // it is not copied by Object.assign / JSON, so no caller ships a lead id by accident.
+      Object.defineProperty(row, 'fromLead', { value: String(p.fromLead || ''), enumerable: false });
+      out.push(row);
     }
   });
   out.sort(function (a, b) { return a.entryDate < b.entryDate ? -1 : a.entryDate > b.entryDate ? 1 : 0; });
   return out;
+}
+
+/* The patient's contact person for the house manager («שיחות עם משפחה», 16 Nov 2026 —
+ * Sandra: «תיקח את הנתונים מדשבורד, יש שם את כל המידע של איש הקשר»). From the lead the
+ * patient came from (Patients.fromLead → the lead row), and ONLY by that id — never by a
+ * name match, so one family's phone can never land on another patient. Four values, cleaned:
+ * who approached (contactName / contactRelation / contactPhone) and the updates phone
+ * (billingPhone). Nothing else of the lead leaves: no patient phone, notes, money or id.
+ * → { name, relation, phone, updatesPhone } or null when there is no lead / nothing usable. */
+function mwPatientContact_(lead) {
+  if (!lead) return null;
+  const out = {
+    name: coordTextClean_(lead.contactName, 80),
+    relation: coordTextClean_(lead.contactRelation, 40),
+    phone: rosterValidPhone_(lead.contactPhone),
+    updatesPhone: rosterValidPhone_(lead.billingPhone),
+  };
+  return (out.name || out.relation || out.phone || out.updatesPhone) ? out : null;
 }
 
 /* Current expected discharge per stay of one house:
