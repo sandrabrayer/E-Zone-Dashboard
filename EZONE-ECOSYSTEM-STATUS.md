@@ -72,7 +72,9 @@ employed) and, on `staff`, `ending { count, monthlySaving, savingThisMonth,
 savingNextMonth }` — `null` when staffing does not send it. From the staffing
 feed `getHouseWorkerCostsForManagers` (ezone-staffing PR #135,
 `CostEngine.endingForecast`); re-validated here, the caller's house only. Cache
-key `mw:staffing-worker-cost:v2:<month>`. No new op, secret or sheet column.
+key `mw:staffing-worker-cost:v3:<month>`. No new op, secret or sheet column.
+Later the same day: `ending.people` `[{ name, endDate, monthlySaving }]` names every
+finishing person and `count` is its length (ezone-staffing PR #137).
 See `CHANGELOG-managers-ending-forecast.md`.
 
 ## Managers feed — the patient's contact person in `houseData` — November 16, 2026

@@ -194,6 +194,33 @@ test('houseStaffCost: ends of employment (16 Nov 2026) — the end date per work
   assert.strictEqual(both.workers[0].endDate, '2026-12-15');
 });
 
+test('houseStaffCost: every finishing person is named with the end date — the count is the list (16 Nov 2026)', () => {
+  const feed = JSON.parse(JSON.stringify(SFEED));
+  feed.houses.ramot.ending = { count: 9, monthlySaving: 12000, savingThisMonth: 7500, savingNextMonth: 12000, people: [
+    { name: 'פרילנסרית', endDate: '2026-11-15', monthlySaving: 3000.4, workerId: 'w1', salary: 5 },
+    { name: '<b>מדריכה</b>', endDate: '2026-11-10', monthlySaving: 9000 },
+    { name: 'בלי תאריך', endDate: '2026-02-30', monthlySaving: 1 },
+    { name: '', endDate: '2026-11-10', monthlySaving: 1 }, null, 'x'] };
+  feed.houses.asher.ending = { count: 1, monthlySaving: 1, savingThisMonth: 1, savingNextMonth: 1, people: [{ name: 'סוד של אשר', endDate: '2026-11-01', monthlySaving: 1 }] };
+  feed.houses.pardes.ending = { count: 1, monthlySaving: 1500, savingThisMonth: 0, savingNextMonth: 1500, people: [{ name: 'טבחית', endDate: '2026-11-30', monthlySaving: 1500 }] };
+  feed.houses.hapardes.ending = { count: 1, monthlySaving: 1500, savingThisMonth: 0, savingNextMonth: 1500, people: [{ name: 'טבחית', endDate: '2026-12-15', monthlySaving: 1500 }] };
+  const t = withStaff(feed);
+  const ramot = t.call({ op: 'houseStaffCost', month: '2026-11', ...ORAN }).staff.ending;
+  assert.deepStrictEqual(ramot.people, [
+    { name: 'bמדריכה/b', endDate: '2026-11-10', monthlySaving: 9000 },
+    { name: 'פרילנסרית', endDate: '2026-11-15', monthlySaving: 3000 }], 'cleaned, soonest first; no name or no real date → not listed; no extra key');
+  assert.strictEqual(ramot.count, 2, 'the count is the list, whatever number came');
+  assert.ok(!JSON.stringify(ramot).includes('סוד של אשר'), 'never another house');
+  const pardes = t.call({ op: 'houseStaffCost', month: '2026-11', house: 'pardes', role: 'manager', actor: 'חן', actorId: 'person-chen' }).staff.ending;
+  assert.deepStrictEqual(pardes.people, [{ name: 'טבחית', endDate: '2026-12-15', monthlySaving: 3000 }], 'one person under both ids: once, the later date, the sum');
+  assert.strictEqual(pardes.count, 1);
+  // a staffing feed that sends no list keeps its own count and gets no list
+  const old = JSON.parse(JSON.stringify(SFEED));
+  old.houses.ramot.ending = { count: 2, monthlySaving: 1, savingThisMonth: 1, savingNextMonth: 1 };
+  const o = withStaff(old).call({ op: 'houseStaffCost', month: '2026-11', ...ORAN }).staff.ending;
+  assert.deepStrictEqual(o, { count: 2, monthlySaving: 1, savingThisMonth: 1, savingNextMonth: 1 });
+});
+
 test('houseStaffCost: not configured / bad URL / down / unauthorized / older staffing / junk / no house → available:false', () => {
   const nc = withStaff(SFEED, { STAFFING_COST_SECRET: '' });
   assert.deepStrictEqual(nc.call({ op: 'houseStaffCost', month: '2026-11', ...ORAN }).staff, { available: false, reason: 'not_configured' });
