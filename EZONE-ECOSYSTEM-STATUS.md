@@ -65,6 +65,16 @@ the screen stays and only the changed reads repeat (2 of 4; a verification: none
 The debt still drops when a payment is REPORTED — verification confirms it (engine
 unchanged). SW cache v136. See `CHANGELOG-billing-verify-fixes.md`.
 
+## Managers — ends of employment in the per-worker house cost — November 16, 2026
+
+`managersWork` op `houseStaffCost` now returns, per worker, `endDate` (`''` while
+employed) and, on `staff`, `ending { count, monthlySaving, savingThisMonth,
+savingNextMonth }` — `null` when staffing does not send it. From the staffing
+feed `getHouseWorkerCostsForManagers` (ezone-staffing PR #135,
+`CostEngine.endingForecast`); re-validated here, the caller's house only. Cache
+key `mw:staffing-worker-cost:v2:<month>`. No new op, secret or sheet column.
+See `CHANGELOG-managers-ending-forecast.md`.
+
 ## Managers CRM backend — talk threads, committee notes, per-worker house cost — November 14, 2026
 
 `managersWork` only (same fail-closed `MANAGERS_WORK_SECRET`): `staffTalks` gets
