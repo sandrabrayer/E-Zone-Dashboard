@@ -75,6 +75,17 @@ feed `getHouseWorkerCostsForManagers` (ezone-staffing PR #135,
 key `mw:staffing-worker-cost:v2:<month>`. No new op, secret or sheet column.
 See `CHANGELOG-managers-ending-forecast.md`.
 
+## Managers feed — the patient's contact person in `houseData` — November 16, 2026
+
+`managersWork` only, same fail-closed `MANAGERS_WORK_SECRET`. No new action, property, sheet or column.
+
+- `houseData`: every patient carries `contact` (`{ name, relation, phone, updatesPhone }` or `null`) and the reply
+  carries `contactsSupported: true`. Source: the lead the patient came from, by `Patients.fromLead` only — never a
+  name match. Only these four cleaned values leave; only the caller's house.
+- For the Managers app's «שיחות עם משפחה» (ezone-managers #72), which re-enables the `familyCalls` log and stops using
+  `committeeNotes`. The backend keeps both logs, unchanged.
+- Details: `CHANGELOG-managers-patient-contact.md`.
+
 ## Managers CRM backend — talk threads, committee notes, per-worker house cost — November 14, 2026
 
 `managersWork` only (same fail-closed `MANAGERS_WORK_SECRET`): `staffTalks` gets

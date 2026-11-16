@@ -214,3 +214,56 @@ test('houseStaffCost: behind the managersWork secret; a bad caller is refused be
   assert.strictEqual(t.call({ op: 'houseStaffCost', ...ORAN, house: 'arfoni' }).error, 'bad_request');
   assert.strictEqual(t.fetches.length, 0);
 });
+
+/* ---- 16 Nov 2026: the patient's contact person in houseData («שיחות עם משפחה») ---- */
+
+function withLeads(leads, patients) {
+  const t = boot();
+  const g = t.g;
+  const pcols = Array.from(g.run('PATIENT_COLUMNS'));
+  const psh = richSheet('Patients', pcols);
+  patients.forEach((r) => psh.grid.push(pcols.map((c) => r[c] ?? '')));
+  g.sandbox.__sheets.Patients = psh;
+  const lcols = Array.from(g.run('LEAD_COLUMNS'));
+  const lsh = richSheet(g.run('LEADS_SHEET'), lcols);
+  leads.forEach((r) => lsh.grid.push(lcols.map((c) => r[c] ?? '')));
+  g.sandbox.__sheets[g.run('LEADS_SHEET')] = lsh;
+  return t;
+}
+
+test('houseData: each patient carries the contact person of the lead it came from — four cleaned values, by the lead id only', () => {
+  const t = withLeads([
+    { id: 'L1', name: 'דנה', phone: '0509999999', house: 'ramot', contactName: '=רות <b>כהן</b>', contactRelation: 'אמא', contactPhone: '050-123-4567', billingPhone: '521234567', notes: 'SECRET-NOTE', advance: 5000 },
+    { id: 'L2', name: 'יוסי', phone: '0508888888', house: 'ramot', contactName: 'אבא של יוסי', contactRelation: 'אבא', contactPhone: '0501111111' },
+    { id: 'L3', name: 'נועה', phone: '0507777777', house: 'ramot', contactName: '', contactRelation: '', contactPhone: 'not a phone', billingPhone: '' },
+  ], [
+    { houseId: 'ramot', name: 'דנה', date: '2026-09-01', status: 'active', id: 'p1', fromLead: 'L1' },
+    { houseId: 'ramot', name: 'יוסי', date: '2026-10-01', status: 'active', id: 'p2', fromLead: '' },       // same name as a lead, NOT linked
+    { houseId: 'ramot', name: 'נועה', date: '2026-10-05', status: 'active', id: 'p3', fromLead: 'L3' },   // linked, nothing usable
+    { houseId: 'ramot', name: 'גל', date: '2026-10-07', status: 'active', id: 'p4', fromLead: 'GONE' },   // the lead no longer exists
+    { houseId: 'arfoni', name: 'אחר', date: '2026-10-07', status: 'active', id: 'p5', fromLead: 'L2' },
+  ]);
+  const d = t.call({ op: 'houseData', ...ORAN });
+  assert.strictEqual(d.contactsSupported, true);
+  const by = Object.fromEntries(d.patients.map((p) => [p.name, p]));
+  assert.deepStrictEqual(by['דנה'].contact, { name: 'רות bכהן/b', relation: 'אמא', phone: '0501234567', updatesPhone: '0521234567' }, 'cleaned; phones normalised');
+  assert.strictEqual(by['יוסי'].contact, null, 'never by a name match — only the lead the patient came from');
+  assert.strictEqual(by['נועה'].contact, null, 'a lead with nothing usable is no contact');
+  assert.strictEqual(by['גל'].contact, null);
+  assert.deepStrictEqual(Object.keys(by['דנה']).sort(), ['contact', 'days', 'entryDate', 'expectedDischarge', 'name', 'status'], 'no lead id on the patient');
+  const text = JSON.stringify(d.patients);
+  for (const leak of ['SECRET-NOTE', '0509999999', 'L1', 'fromLead', '5000', 'אבא של יוסי']) assert.ok(!text.includes(leak), 'leaked ' + leak);
+  // Another house's manager never sees this house's patients or contacts.
+  const other = t.call({ op: 'houseData', house: 'efroni', role: 'manager', actor: 'חנן', actorId: 'person-hanan' });
+  assert.deepStrictEqual(other.patients.map((p) => [p.name, p.contact && p.contact.name]), [['אחר', 'אבא של יוסי']]);
+  assert.ok(!JSON.stringify(other).includes('רות'));
+  // Behind the same secret as everything else.
+  assert.strictEqual(arr(t.g.post({ action: 'managersWork', secret: 'wrong', op: 'houseData', ...ORAN })).error, 'unauthorized');
+});
+
+test('houseData: the lead id never rides on the in-house rows other callers read', () => {
+  const t = withLeads([], [{ houseId: 'ramot', name: 'דנה', date: '2026-09-01', status: 'active', id: 'p1', fromLead: 'L77' }]);
+  const rows = t.g.run("JSON.stringify(mwInHousePatients_(readPatientsForBonus_(), MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID.ramot, parseDate_(todayISODate_())))");
+  assert.ok(!rows.includes('L77') && !rows.includes('fromLead'), 'non-enumerable: not serialised, not spread');
+  assert.strictEqual(t.g.run("mwInHousePatients_(readPatientsForBonus_(), MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID.ramot, parseDate_(todayISODate_()))[0].fromLead"), 'L77');
+});
