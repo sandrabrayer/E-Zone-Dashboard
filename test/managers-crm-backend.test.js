@@ -150,8 +150,9 @@ test('houseStaffCost: only the caller\'s house leaves — workers cleaned, round
   assert.strictEqual(r.ok, true);
   assert.strictEqual(r.house, 'ramot');
   assert.deepStrictEqual(r.staff.workers, [
-    { name: 'מדריכה ותיקה', roles: ['מדריך/ה'], cost: 10000, estimated: true },
-    { name: 'bשני/b', roles: ['מדריך/ה', 'x'], cost: 7000, estimated: false }]);
+    { name: 'מדריכה ותיקה', roles: ['מדריך/ה'], cost: 10000, estimated: true, endDate: '' },
+    { name: 'bשני/b', roles: ['מדריך/ה', 'x'], cost: 7000, estimated: false, endDate: '' }]);
+  assert.strictEqual(r.staff.ending, null, 'a staffing feed without `ending` is null, never a made-up 0');
   assert.deepStrictEqual([r.staff.total, r.staff.budget, r.staff.available], [17000, 265000, true]);
   assert.deepStrictEqual(r.staff.budgetLines, [{ key: 'instructors', label: 'מדריכים', budget: 120000, cost: 17000 }]);
   const text = JSON.stringify(r);
@@ -162,11 +163,35 @@ test('houseStaffCost: only the caller\'s house leaves — workers cleaned, round
 test('houseStaffCost: pardes + hapardes merge per person and per budget line; cached per month', () => {
   const t = withStaff(SFEED);
   const r = t.call({ op: 'houseStaffCost', month: '2026-11', house: 'pardes', role: 'manager', actor: 'חן', actorId: 'person-chen' });
-  assert.deepStrictEqual(r.staff.workers, [{ name: 'טבחית', roles: ['טבח/ית'], cost: 3000, estimated: true }]);
+  assert.deepStrictEqual(r.staff.workers, [{ name: 'טבחית', roles: ['טבח/ית'], cost: 3000, estimated: true, endDate: '' }]);
   assert.deepStrictEqual(r.staff.budgetLines, [{ key: 'cook', label: 'טבחים', budget: 10000, cost: 3000 }]);
   assert.strictEqual(r.staff.total, 4500);
   t.call({ op: 'houseStaffCost', month: '2026-11', ...ORAN });
   assert.strictEqual(t.fetches.length, 1, 'one staffing call per month');
+});
+
+test('houseStaffCost: ends of employment (16 Nov 2026) — the end date per worker and the house saving; cleaned, summed, own house only', () => {
+  const feed = JSON.parse(JSON.stringify(SFEED));
+  feed.houses.ramot.workers[0].endDate = '2026-11-20';
+  feed.houses.ramot.workers[1].endDate = '2026-02-30';          // not a date → ''
+  feed.houses.ramot.ending = { count: 1, monthlySaving: 10000.4, savingThisMonth: 3333.3, savingNextMonth: 10000.4, items: [{ salary: 1 }] };
+  feed.houses.asher.ending = { count: 3, monthlySaving: 99999, savingThisMonth: 1, savingNextMonth: 2 };
+  // one person in both pardes ids: ends in one, stays in the other → no end date
+  feed.houses.pardes.workers[0].endDate = '2026-11-30';
+  feed.houses.pardes.ending = { count: 1, monthlySaving: 1500, savingThisMonth: 0, savingNextMonth: 1500 };
+  feed.houses.hapardes.ending = { count: '=2', monthlySaving: -5, savingThisMonth: 'x', savingNextMonth: 250.6 };
+  const t = withStaff(feed);
+  const ramot = t.call({ op: 'houseStaffCost', month: '2026-11', ...ORAN }).staff;
+  assert.deepStrictEqual(ramot.ending, { count: 1, monthlySaving: 10000, savingThisMonth: 3333, savingNextMonth: 10000 });
+  assert.deepStrictEqual(ramot.workers.map((w) => [w.name, w.endDate]), [['מדריכה ותיקה', '2026-11-20'], ['bשני/b', '']]);
+  assert.ok(!JSON.stringify(ramot).includes('99999') && !JSON.stringify(ramot).includes('salary'), 'no other house, no extra key');
+  const pardes = t.call({ op: 'houseStaffCost', month: '2026-11', house: 'pardes', role: 'manager', actor: 'חן', actorId: 'person-chen' }).staff;
+  assert.deepStrictEqual(pardes.ending, { count: 1, monthlySaving: 1500, savingThisMonth: 0, savingNextMonth: 1751 }, 'summed; junk and negatives count as 0');
+  assert.strictEqual(pardes.workers[0].endDate, '', 'still placed under the other id');
+  // both ids end → the later date
+  feed.houses.hapardes.workers[0].endDate = '2026-12-15';
+  const both = withStaff(feed).call({ op: 'houseStaffCost', month: '2026-11', house: 'pardes', role: 'manager', actor: 'חן', actorId: 'person-chen' }).staff;
+  assert.strictEqual(both.workers[0].endDate, '2026-12-15');
 });
 
 test('houseStaffCost: not configured / bad URL / down / unauthorized / older staffing / junk / no house → available:false', () => {

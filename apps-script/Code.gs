@@ -17303,11 +17303,16 @@ function mwHouseCost_(caller, params) {
  * the caller's house leaves (decided by the Managers server, re-validated by
  * mwCaller_). Every value is re-validated here: names / labels cleaned and
  * capped, numbers rounded, nothing but the documented keys. Unset /
- * unreachable / a bad answer → { available:false, reason } — never a 0. */
+ * unreachable / a bad answer → { available:false, reason } — never a 0.
+ * 16 Nov 2026: each worker also carries `endDate` ('' while employed) and the
+ * house `ending` { count, monthlySaving, savingThisMonth, savingNextMonth }
+ * — what the known ends of employment take off the payroll. */
 const MW_STAFF_COST_MAX_WORKERS = 200;
 
 function mwFetchStaffingWorkerCosts_(ym) {
-  const key = 'mw:staffing-worker-cost:v1:' + ym;
+  // v2 (16 Nov 2026): the feed carries `ending` and `endDate` — a copy cached
+  // before that must not be served as if nobody were finishing.
+  const key = 'mw:staffing-worker-cost:v2:' + ym;
   const hit = cacheGetJson_(key);
   if (hit && hit.houses) return hit;
   const props = PropertiesService.getScriptProperties();
@@ -17350,18 +17355,34 @@ function mwHouseStaffCost_(caller, params) {
   const lines = {};
   const lineOrder = [];
   let total = 0, budget = null, found = false;
+  // «חיסכון צפוי מסיומי עבודה» (16 Nov 2026, Sandra: «לגבי עובד שמסיים, לחזות
+  // את קיזוז השכר העתידי שלו מהיום שהוא מסיים … על מנת שכל האפליקציות יהיו
+  // מעודכנות»): the staffing feed's house totals, summed over the house's
+  // ids. null when staffing does not send them (an older staffing) — never
+  // a made-up 0.
+  let ending = null;
   ids.forEach(function (id) {
     const h = d.houses[id];
     if (!h || typeof h !== 'object') return;
     found = true;
     total += mwMoney_(h.projectedTotal);
+    if (h.ending && typeof h.ending === 'object' && !Array.isArray(h.ending)) {
+      if (!ending) ending = { count: 0, monthlySaving: 0, savingThisMonth: 0, savingNextMonth: 0 };
+      ending.count += Math.max(0, Math.min(MW_STAFF_COST_MAX_WORKERS, mwMoney_(h.ending.count)));
+      ending.monthlySaving += Math.max(0, mwMoney_(h.ending.monthlySaving));
+      ending.savingThisMonth += Math.max(0, mwMoney_(h.ending.savingThisMonth));
+      ending.savingNextMonth += Math.max(0, mwMoney_(h.ending.savingNextMonth));
+    }
     if (h.budget !== null && h.budget !== undefined && Number.isFinite(Number(h.budget))) budget = (budget || 0) + mwMoney_(h.budget);
     (Array.isArray(h.workers) ? h.workers : []).forEach(function (w) {
       if (!w || typeof w !== 'object') return;
       const name = coordTextClean_(w.name, 80);
       const k = name || '__other__';
-      if (!workers[k]) { workers[k] = { name: name, roles: [], cost: 0, estimated: false }; order.push(k); }
+      if (!workers[k]) { workers[k] = { name: name, roles: [], cost: 0, estimated: false, endDate: '', ends_: [], open_: false }; order.push(k); }
       const t = workers[k];
+      // The end date in this house: only when EVERY entry of the person ends.
+      const end = coordIsoDateClean_(w.endDate);
+      if (end) t.ends_.push(end); else t.open_ = true;
       (Array.isArray(w.roles) ? w.roles : []).forEach(function (r) {
         const role = coordTextClean_(r, 40);
         if (role && t.roles.indexOf(role) < 0 && t.roles.length < 4) t.roles.push(role);
@@ -17379,7 +17400,11 @@ function mwHouseStaffCost_(caller, params) {
     });
   });
   if (!found) return { ok: true, house: caller.house, month: ym, staff: { available: false, reason: 'no_house' } };
-  const list = order.map(function (k) { return workers[k]; }).filter(function (w) { return w.cost !== 0; })
+  const list = order.map(function (k) {
+    const w = workers[k];
+    return { name: w.name, roles: w.roles, cost: w.cost, estimated: w.estimated,
+      endDate: !w.open_ && w.ends_.length ? w.ends_.slice().sort()[w.ends_.length - 1] : '' };
+  }).filter(function (w) { return w.cost !== 0; })
     .sort(function (a, b) { return (b.cost - a.cost) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0); })
     .slice(0, MW_STAFF_COST_MAX_WORKERS);
   return {
@@ -17387,6 +17412,7 @@ function mwHouseStaffCost_(caller, params) {
     staff: {
       available: true, month: d.month, hasActuals: d.hasActuals, stale: d.stale, generatedAt: d.generatedAt,
       total: total, budget: budget, workers: list,
+      ending: ending,
       budgetLines: lineOrder.map(function (k) { return lines[k]; }),
     },
   };
