@@ -419,7 +419,9 @@
 // (CHANGELOG-stay-length-report.md). From the live v140; monotonic, v17 never reused.
 // v141 → v142: «לידים» → «מכבי»: the Maccabi leads and their documents
 // (CHANGELOG-maccabi-leads.md). From the live v141; monotonic, v17 never reused.
-var CACHE_VERSION = 'v142';
+// v142 → v143: «זיכויים לתשלום»: «בטל זיכוי»
+// (CHANGELOG-cancel-refund.md). From the live v142; monotonic, v17 never reused.
+var CACHE_VERSION = 'v143';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

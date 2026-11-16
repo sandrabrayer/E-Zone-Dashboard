@@ -1371,6 +1371,10 @@ const DELETE_ACTIONS = [
   // Duplicate discharges (CHANGELOG-duplicate-discharges.md): soft-deletes ONE
   // duplicate row of the discharged sheet. Appended — the list is append-only.
   'deleteDuplicateDischarge',
+  // «בטל זיכוי» on a row of «זיכויים לתשלום» (CHANGELOG-cancel-refund.md): a
+  // pending refund — saved, or still only computed by policy — that should
+  // not be paid. Vered and Sandra (deleter); never Ortal. Appended.
+  'cancelRefund',
 ];
 
 /* ===== Restricted view — the `finance` capability (Sandra, 2026-10-03) =====
@@ -1403,6 +1407,9 @@ const FINANCE_ACTIONS = [
    * `finance` capability only (Vered, Sandra; DISCOUNT_ACTIONS). NOT on
    * CONTROLLER_ACTIONS (CHANGELOG-discount-by-vered.md). */
   'setBillingDiscount',
+  /* Appended (CHANGELOG-cancel-refund.md): «בטל זיכוי». Also on DELETE_ACTIONS
+   * (deleter). Not on CONTROLLER_ACTIONS — Ortal pays refunds, she does not cancel them. */
+  'cancelRefund',
 ];
 const FINANCE_USER_IDS = ['vered', 'sandra'];
 
@@ -1652,6 +1659,7 @@ const PROXY_KNOWN_ACTIONS = [
   'setDischargeContinuity',
   'editReceipt',
   'settleRefund', 'approveRefundException', 'requestRefundPayoutApproval', 'approveRefundPayout',
+  'cancelRefund',
   'expectedDischarges',
   'upcomingCommittees',
   'getCommitteesForCoordinators',
@@ -2162,6 +2170,7 @@ function handle_(params) {
     if (action === 'approveRefundPayout') return jsonOut_(approveRefundPayout_(params, requestUser_(params)));
     if (action === 'settleRefund') return jsonOut_(settleRefund_(params, requestUser_(params)));
     if (action === 'approveRefundException') return jsonOut_(approveRefundException_(params, requestUser_(params)));
+    if (action === 'cancelRefund') return jsonOut_(cancelRefund_(params, requestUser_(params)));
     if (action === 'moveLeadIrrelevant') {
       const res = moveLeadIrrelevant_(parseJsonParam_(params.lead), actorLabel_(params),
         { requireReason: params.requireReason === true || params.requireReason === 'true' });
@@ -14369,6 +14378,57 @@ function settleRefund_(params, user) {
       { id: String(c.id), updatedBy: out.updatedBy });
     // No free text and no amount in the answer — the controller view reads it too.
     return { ok: true, credit: { id: String(out.id), status: out.status, paidDate: out.paidDate, updatedAt: out.updatedAt } };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* no-op */ }
+  }
+}
+
+/* action=cancelRefund — «בטל זיכוי» on a row of «זיכויים לתשלום»
+ * (CHANGELOG-cancel-refund.md; Sandra 16/11/2026: «ורד תבטל»). For a refund that
+ * was not paid and should not be. DELETE_ACTIONS: handle_ has already refused
+ * anyone without the `deleter` role (Vered, Sandra); the gate is repeated here.
+ * Never Ortal — she pays refunds, she does not cancel them.
+ * Input: the row ({ creditId }, or a computed row's { patientKey, creditType,
+ * allocationMonth } — refundTargetLocked_ first writes ALL the stay's policy
+ * lines, so cancelling one never hides another) and a required reason
+ * (2–300 chars, cleaned). The row must be PENDING: a paid refund is never
+ * cancelled here. The row is KEPT (status 'cancelled', amount and
+ * calculatedAmount untouched, the reason appended to notes, any payout request /
+ * approval cleared) — a cancelled credit is a decision for its stay, so the
+ * policy does not compute it again. A second call on a cancelled row answers
+ * ok (replayed) and writes nothing. */
+const CANCEL_REFUND_REASON_MIN = 2;
+const CANCEL_REFUND_REASON_MAX = 300;
+function cancelRefund_(params, user) {
+  const p = params || {};
+  const actor = actingUser_(p);
+  if (!actor.verified || actor.auth !== 'personal' || actor.roles.indexOf('deleter') < 0) return { ok: false, error: 'forbidden_role' };
+  const reason = creditStr_(p.reason, 1000).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/^[=+\-@]+/, '').trim();
+  if (reason.length < CANCEL_REFUND_REASON_MIN) return { ok: false, error: 'reason_required' };
+  if (reason.length > CANCEL_REFUND_REASON_MAX) return { ok: false, error: 'reason_too_long' };
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('cancelRefund_');
+  try {
+    const t = refundTargetLocked_(p, user);
+    if (!t.ok) return t;
+    const c = t.credit;
+    const status = String(c.status == null ? '' : c.status).trim();
+    if (status === 'cancelled') return { ok: true, credit: { id: String(c.id), status: 'cancelled' }, replayed: true };
+    if (status !== 'pending') return { ok: false, error: 'not_pending' };
+    const stamp = String(user == null ? '' : user).slice(0, 40);
+    const prior = String(c.notes == null ? '' : c.notes).trim();
+    const out = Object.assign({}, c, {
+      status: 'cancelled',
+      notes: ((prior ? prior + ' · ' : '') + 'בוטל: ' + reason).slice(0, 500),
+      updatedAt: new Date().toISOString(), updatedBy: stamp,
+    });
+    // a cancelled refund carries no live payout request / approval
+    refundPayoutClearApproval_(out);
+    writeCreditRow_(t.sh, t.row, out);
+    logAudit_('credit_cancelled', 'cancelRefund_', String(c.patientId || ''), String(c.patientName || ''),
+      { id: String(c.id), by: stamp });
+    // No free text and no amount in the answer.
+    return { ok: true, credit: { id: String(out.id), status: out.status, updatedAt: out.updatedAt } };
   } finally {
     try { lock.releaseLock(); } catch (_) { /* no-op */ }
   }
