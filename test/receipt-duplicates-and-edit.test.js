@@ -622,7 +622,8 @@ test('Code.gs: editReceipt for the controller view → forbidden even with a for
   assert.deepEqual(arr(w.g.run('FINANCE_ACTIONS')), [...scope.FINANCE_ACTIONS]);
   // Appended; CHANGELOG-refunds-auto-policy.md appended settleRefund after it,
   // CHANGELOG-ortal-billing-discounts.md setBillingDiscount.
-  assert.deepEqual([...scope.FINANCE_ACTIONS].slice(-5), ['editReceipt', 'settleRefund', 'requestRefundPayoutApproval', 'approveRefundPayout', 'setBillingDiscount'], 'appended');
+  // CHANGELOG-cancel-refund.md appended cancelRefund.
+  assert.deepEqual([...scope.FINANCE_ACTIONS].slice(-6), ['editReceipt', 'settleRefund', 'requestRefundPayoutApproval', 'approveRefundPayout', 'setBillingDiscount', 'cancelRefund'], 'appended');
   assert.ok(!scope.CONTROLLER_ACTIONS.includes('editReceipt'));
   assert.ok(arr(w.g.run('PROXY_KNOWN_ACTIONS')).includes('editReceipt'));
   assert.ok(!arr(w.g.run('OPEN_ACTIONS')).includes('editReceipt'));

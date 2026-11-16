@@ -132,7 +132,7 @@ async function boot(options = {}) {
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
       if (parsed.action === 'saveCredit') saves.push(parsed);
-      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund', 'editReceipt', 'savePayment', 'confirmPayment', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
+      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund', 'editReceipt', 'savePayment', 'confirmPayment', 'cancelRefund', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
       if (['logContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logLeadFlag'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
         : parsed.action === 'getTasks' ? (tasksAnswer ? tasksAnswer() : (parsed.status === 'open' && parsed.proxyUserId !== 'ortal' ? TASKS : { ok: true, total: 0, tasks: [] }))   // Code.gs scopes Ortal to money tasks (none in the fixture)
@@ -148,6 +148,8 @@ async function boot(options = {}) {
         : parsed.action === 'savePayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, payment: { id: parsed.payment && parsed.payment.id, status: parsed.payment && parsed.payment.status, linkStatus: parsed.payment && parsed.payment.linkStatus } })
         : parsed.action === 'saveCredit' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, credit: Object.assign({}, parsed.credit, { id: (parsed.credit && parsed.credit.id) || 'cr-new' }) })
         : parsed.action === 'setBillingDiscount' ? (saveAnswer ? saveAnswer(parsed) : { ok: true })
+        // «בטל זיכוי» (CHANGELOG-cancel-refund.md): the answer names the cancelled credit, no money, no text
+        : parsed.action === 'cancelRefund' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, credit: { id: parsed.creditId || 'credit::persisted::1', status: 'cancelled', updatedAt: '2026-11-16T09:00:00Z' } })
         // Ortal's verification (CHANGELOG-billing-verify-fixes.md): the classic contract — the changed rows prove it
         : parsed.action === 'confirmPayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, changed: ((parsed.confirm && parsed.confirm.ids) || []).map((id) => ({ id, confirmStatus: parsed.confirm.status, confirmedBy: 'אורטל', confirmedAt: '2026-11-15 10:00:00' })), unchanged: 0, unchangedRows: [] })
         : parsed.action === 'upsertBillingOverride' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, override: { id: parsed.override && parsed.override.id } })
@@ -2332,4 +2334,69 @@ test('«מכבי» in «לידים» (CHANGELOG-maccabi-leads.md): the Maccabi l
     await m.page.click('#crm-burger'); await m.page.click('#crm-nav button[data-area="leads"]'); await m.page.click('#crm-maccabi-btn'); await m.page.waitForSelector('#crm-maccabi');
     assert.equal(await noHScroll(m.page), true, 'no horizontal scroll on a phone');
   } finally { DATA.leads = keep; await browser.close(); srv.close(); }
+});
+
+test('«בטל זיכוי» (CHANGELOG-cancel-refund.md): Vered cancels a saved refund and one the policy only computed — a reason is required, the answer is proof; a refusal changes nothing; Ortal has no button', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const refunds = { ok: true, today: TODAY, toPay: { count: 2, total: 1700, rows: [
+    { creditId: 'cr-1', auto: false, patientKey: 'ramot::דנה כהן::' + daysAgo(30), patientName: 'דנה כהן', houseId: 'ramot', amount: 1200, payoutDate: daysAgo(10), creditType: 'days_unused', allocationMonth: daysAgo(40).slice(0, 7) },
+    { creditId: '', auto: true, patientKey: 'asher::גל רון::2026-08-01', patientName: 'גל רון', houseId: 'asher', amount: 500, payoutDate: TODAY, creditType: 'days_unused', allocationMonth: '2026-10' }] } };
+  const srv = await boot({ refunds });
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="billing"]');
+    await billTab(page, 'refunds');
+    await page.waitForSelector('#crm-pending-credits [data-refund-void]');
+    assert.equal(await page.$$eval('#crm-pending-credits [data-refund-void]', (b) => b.length), 2, 'a cancel button on the saved row and on the computed row');
+    const rowOf = (name) => page.evaluateHandle((n) => Array.from(document.querySelectorAll('#crm-pending-credits tbody tr')).filter((r) => r.textContent.includes(n))[0], name);
+    // the computed row («מחושב — טרם הוחלט»)
+    await (await (await rowOf('גל רון')).asElement().$('[data-refund-void]')).click();
+    await page.waitForSelector('form[data-form="refund-void"]');
+    assert.match(await page.textContent('form[data-form="refund-void"]'), /ביטול זיכוי · גל רון[\s\S]*₪500[\s\S]*מחושב לפי המדיניות/);
+    // no reason → nothing is sent
+    await page.click('form[data-form="refund-void"] button[type="submit"]');
+    await page.waitForFunction(() => /חובה לכתוב/.test(document.querySelector('form[data-form="refund-void"] .err[data-err="reason"]').textContent));
+    assert.equal(srv.saves.length, 0);
+    // a refusal: the reason is shown, the form stays, nothing re-read as done
+    saveAnswer = () => ({ ok: false, error: 'not_pending' });
+    await page.fill('form[data-form="refund-void"] [name="reason"]', 'סוכם עם המשפחה שאין החזר');
+    await page.click('form[data-form="refund-void"] button[type="submit"]');
+    await page.waitForFunction(() => /כבר שולם או נסגר/.test(document.querySelector('form[data-form="refund-void"] .err[data-err="_form"]').textContent));
+    assert.ok(await page.$('form[data-form="refund-void"]'));
+    // the real thing
+    saveAnswer = null;
+    await page.click('form[data-form="refund-void"] button[type="submit"]');
+    await page.waitForFunction(() => /הזיכוי של גל רון בוטל ✓/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 8000 });
+    const sent = srv.saves.filter((x) => x.action === 'cancelRefund');
+    assert.equal(sent.length, 2);
+    assert.deepEqual({ k: sent[1].patientKey, t: sent[1].creditType, m: sent[1].allocationMonth, r: sent[1].reason, id: sent[1].creditId },
+      { k: 'asher::גל רון::2026-08-01', t: 'days_unused', m: '2026-10', r: 'סוכם עם המשפחה שאין החזר', id: undefined }, 'a computed row is named by its stay, type and month');
+    assert.equal(sent[1].proxyUserId, 'vered');
+    await page.waitForFunction(() => !document.querySelector('form[data-form="refund-void"]'));
+    // the saved row: by its id
+    await page.waitForSelector('#crm-pending-credits [data-refund-void]');
+    await (await (await rowOf('דנה כהן')).asElement().$('[data-refund-void]')).click();
+    await page.waitForSelector('form[data-form="refund-void"]');
+    await page.fill('form[data-form="refund-void"] [name="reason"]', 'נרשם בטעות');
+    await page.click('form[data-form="refund-void"] button[type="submit"]');
+    await page.waitForFunction(() => /הזיכוי של דנה כהן בוטל ✓/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 8000 });
+    const last = srv.saves.filter((x) => x.action === 'cancelRefund').pop();
+    assert.deepEqual([last.creditId, last.reason, last.patientKey], ['cr-1', 'נרשם בטעות', undefined]);
+    // «השאר את הזיכוי» closes without a write
+    const n = srv.saves.length;
+    await page.waitForSelector('#crm-pending-credits [data-refund-void]');
+    await page.click('#crm-pending-credits [data-refund-void]');
+    await page.waitForSelector('form[data-form="refund-void"]');
+    await page.click('[data-refund-void-close]');
+    await page.waitForFunction(() => !document.querySelector('form[data-form="refund-void"]'));
+    assert.equal(srv.saves.length, n);
+    assert.equal(await noHScroll(page), true);
+    assert.deepEqual(errors, []);
+    // Ortal pays refunds; she does not cancel them
+    const o = await open(browser, srv.port, 'ortal', 1366);
+    await o.page.waitForSelector('#crm-bill-overview', { timeout: 8000 });
+    await billTab(o.page, 'refunds');
+    await o.page.waitForSelector('#crm-pending-credits');
+    assert.equal(await o.page.$('[data-refund-void]'), null);
+  } finally { saveAnswer = null; await browser.close(); srv.close(); }
 });

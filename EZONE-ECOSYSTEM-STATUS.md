@@ -1,4 +1,12 @@
-# E-ZONE Ecosystem Status — updated November 15, 2026
+# E-ZONE Ecosystem Status — updated November 16, 2026
+
+## Dashboard — «בטל זיכוי» on «זיכויים לתשלום» — November 16, 2026
+
+Vered and Sandra cancel a pending refund — saved, or only computed by policy — from its row,
+with a required reason. New Code.gs action `cancelRefund` (`DELETE_ACTIONS` + `FINANCE_ACTIONS`;
+not for Ortal): the Credits row is kept as `cancelled` with the reason and stamps; a computed
+row is saved first (all the stay's lines), so the policy does not compute it again. Apps Script
+deploys automatically on merge. SW cache v143. See `CHANGELOG-cancel-refund.md`.
 
 ## Dashboard CRM — «לידים» → «מכבי»: Maccabi leads and their documents — November 15, 2026
 

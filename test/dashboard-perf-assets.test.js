@@ -440,7 +440,8 @@ test('D: CACHE_VERSION is v133 (monotonic from v132; v17 burned, never reused)',
   // v140: CHANGELOG-dana-bonus-tab.md (from v139).
   // v141: CHANGELOG-stay-length-report.md (from v140).
   // v142: CHANGELOG-maccabi-leads.md (from v141).
-  assert.equal(v, 'v142');
+  // v143: CHANGELOG-cancel-refund.md (from v142).
+  assert.equal(v, 'v143');
   assert.notEqual(v, 'v17');
 });
 

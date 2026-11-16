@@ -1652,7 +1652,7 @@
     const f = refundForecast && refundForecast.ok === true && refundForecast.toPay && Array.isArray(refundForecast.toPay.rows) ? refundForecast.toPay.rows : null;
     if (f) {
       out.source = 'forecast';
-      src = f.map(function (r) { const o = r || {}; return { id: s(o.creditId), name: s(o.patientName), houseId: s(o.houseId), amount: Number(o.amount) || 0, payoutDate: sheetDay(o.payoutDate), creditType: s(o.creditType), auto: o.auto === true }; });
+      src = f.map(function (r) { const o = r || {}; return { id: s(o.creditId), name: s(o.patientName), houseId: s(o.houseId), amount: Number(o.amount) || 0, payoutDate: sheetDay(o.payoutDate), creditType: s(o.creditType), auto: o.auto === true, patientKey: s(o.patientKey), allocationMonth: s(o.allocationMonth).slice(0, 7) }; });
     } else if (credits && credits.ok === true) {
       out.source = 'credits';
       src = pendingCredits(credits).map(function (c) { return { id: c.id, name: c.patientName, houseId: c.houseId, amount: c.amount, payoutDate: c.payoutDate, creditType: c.creditType, auto: false }; });
@@ -1667,7 +1667,7 @@
       const expectedDate = dated && !late ? r.payoutDate : today;
       if (expectedDate < out.from || expectedDate > out.to) return;
       out.rows.push({ id: r.id, name: r.name, houseId: r.houseId, houseName: houseName(r.houseId), amount: r2(r.amount), payoutDate: dated ? r.payoutDate : '', expectedDate: expectedDate,
-        late: late, auto: r.auto, creditType: r.creditType });
+        late: late, auto: r.auto, creditType: r.creditType, patientKey: s(r.patientKey), allocationMonth: s(r.allocationMonth) });   // the last two name a computed row to «בטל זיכוי»
       out.total = r2(out.total + r.amount); out.count++;
       if (late) out.late++;
       if (r.auto) out.auto++;
@@ -2404,6 +2404,47 @@
       '" data-refund-action="' + kind + '" data-refund-id="' + esc(credit.id) + '">' + esc(REFUND_ACTION_LABELS[kind]) + '</button>' : '';
   }
 
+
+  /* ===== «בטל זיכוי» (CHANGELOG-cancel-refund.md) =====
+   * Sandra 16/11/2026: a refund that was not paid and should not be — Vered cancels it,
+   * straight from «זיכויים לתשלום». Works for a SAVED pending refund (by its id) and for
+   * one the policy only COMPUTED (by its stay: patientKey + type + month — the server
+   * saves the stay's lines first, then cancels this one). A reason is required. The row
+   * is kept as «בוטל»; nothing is deleted. Who: finance + deleter (Vered, Sandra) — the
+   * server decides, this is display. Pure. */
+  const CANCEL_REFUND_REASON_MIN = 2, CANCEL_REFUND_REASON_MAX = 300;
+  function canCancelRefund(me) { return !!me && me.finance === true && me.deleter === true && me.view !== 'controller'; }
+  /* The server target of a row of refundsView: its saved id, else its computed keys; null when it has neither. */
+  function cancelRefundTarget(row) {
+    const r = row || {};
+    const id = s(r.credit && r.credit.id) || (r.auto === true ? '' : s(r.id));
+    if (id) return { creditId: id };
+    const key = s(r.patientKey), type = s(r.creditType), month = s(r.allocationMonth).slice(0, 7);
+    if (!key || !type || !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return null;
+    return { patientKey: key, creditType: type, allocationMonth: month };
+  }
+  function cancelRefundErrors(values) {
+    const reason = s(values && values.reason).replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+    if (reason.length < CANCEL_REFUND_REASON_MIN) return { reason: 'חובה לכתוב למה הזיכוי מבוטל' };
+    if (reason.length > CANCEL_REFUND_REASON_MAX) return { reason: 'עד ' + CANCEL_REFUND_REASON_MAX + ' תווים' };
+    return {};
+  }
+  function cancelRefundBody(target, reason) {
+    if (!target) return null;
+    return Object.assign({ action: 'cancelRefund' }, target, { reason: s(reason).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, CANCEL_REFUND_REASON_MAX) });
+  }
+  /* Proof: ok AND the answer names a credit that is now cancelled (for a saved row: the same id). */
+  function cancelRefundAccepted(res, target) {
+    if (!res || res.ok !== true || !res.credit || s(res.credit.status) !== 'cancelled' || !s(res.credit.id)) return false;
+    return !(target && target.creditId) || s(res.credit.id) === s(target.creditId);
+  }
+  const CANCEL_REFUND_ERRORS = { forbidden_role: 'אין הרשאה לבטל זיכוי', forbidden: 'אין הרשאה לבטל זיכוי', not_pending: 'הזיכוי כבר שולם או נסגר — אי אפשר לבטל', reason_required: 'חובה לכתוב סיבה',
+    reason_too_long: 'הסיבה ארוכה מדי', stay_not_found: 'השחרור של המטופל/ת לא נמצא — רענני', already_decided: 'כבר נרשמה החלטה לשחרור הזה — רענני את הרשימה', not_found: 'שורת הזיכוי לא נמצאה — רענני',
+    unknown_credit: 'הזיכוי לא נמצא — רענני', lock_busy: 'המערכת עסוקה — נסי שוב בעוד רגע' };
+  function cancelRefundRefusal(res) {
+    const code = s(res && res.error);
+    return CANCEL_REFUND_ERRORS[code] || (res && s(res.message)) || (code ? 'הביטול לא נשמר (' + code + ')' : 'הביטול לא נשמר — נסי שוב');
+  }
 
   /* ===== Manual credits / credit edit in the CRM (CHANGELOG-crm-manual-credits.md) =====
    * The classic credits modal's two writes, through the SAME `saveCredit` action:
@@ -4762,10 +4803,11 @@
       if (v.source === 'credits') html += '<p class="na">הזיכויים המחושבים (שחרורים ללא החלטה) לא נטענו — מוצגים זיכויים שמורים בלבד. <button type="button" class="btn small" data-billing-retry>נסי שוב</button></p>';
       if (!v.rows.length) return html + '<p class="na">' + (v.all ? 'אין זיכויים בסינון הזה.' : 'אין זיכויים ממתינים.') + '</p><div id="crm-refund-form"></div>';
       return html + '<div class="tbl-wrap"><table class="tbl" id="crm-pending-credits"><thead><tr><th>שם</th><th>בית</th><th>סוג</th><th>חודש</th><th>לתשלום עד</th><th>סכום</th><th></th></tr></thead><tbody>'
-        + v.rows.map(function (r) {
+        + v.rows.map(function (r, i) {
           const c = r.credit;
           return '<tr><td>' + esc(r.name) + '</td><td>' + esc(r.houseName) + '</td><td>' + esc(CREDIT_TYPE_LABELS[r.creditType] || r.creditType) + '</td><td>' + esc(c ? c.allocationMonth : '—') + '</td><td>' + esc(r.payoutDate ? fmtDate(r.payoutDate) : '—') + (r.late ? ' ' + chip('late', 'באיחור') : '') + '</td><td>' + esc(fmtMoney(r.amount)) + '</td>'
-            + '<td>' + (c ? '<span class="na">' + esc(refundStageText(c)) + '</span> ' + refundActionButton(c, state.me) : chip('wait', 'מחושב — טרם הוחלט')) + '</td></tr>';
+            + '<td>' + (c ? '<span class="na">' + esc(refundStageText(c)) + '</span> ' + refundActionButton(c, state.me) : chip('wait', 'מחושב — טרם הוחלט'))
+            + (canCancelRefund(state.me) && cancelRefundTarget(r) ? ' <button type="button" class="btn small" data-refund-void="' + i + '">בטל זיכוי</button>' : '') + '</td></tr>';
         }).join('') + '</tbody></table></div><div id="crm-refund-form"></div>'
         + (v.auto ? '<p class="na">«מחושב — טרם הוחלט»: זיכוי שהמדיניות חישבה לשחרור שעוד לא התקבלה בו החלטה. ההחלטה נרשמת בכרטיס המטופל/ת, לשונית «חשבון».</p>' : '');
     }
@@ -5860,6 +5902,52 @@
         '<button type="button" class="btn" data-refund-cancel>ביטול</button><span class="na" id="crm-refund-state"></span></div></form>';
       el.scrollIntoView({ block: 'nearest' });
     }
+    /* «בטל זיכוי» (CHANGELOG-cancel-refund.md): the row, a required reason, one write. */
+    function openCancelRefund(index) {
+      if (!canCancelRefund(state.me) || !state.billing) return toast('אין הרשאה לבטל זיכוי', true);
+      const v = refundsView(state.billing.refunds, state.billing.credits, state.today, billSliceNow());
+      const r = v.rows[Number(index)], target = cancelRefundTarget(r);
+      const el = $('#crm-refund-form');
+      if (!r || !target || !el) return toast('הזיכוי לא נמצא — רענני', true);
+      state.refundAction = null;
+      state.cancelRefund = { target: target, name: r.name, amount: r.amount };
+      el.innerHTML = '<form class="new-lead report" data-form="refund-void" novalidate><h3>ביטול זיכוי · ' + esc(r.name) + '</h3>'
+        + '<p class="na">' + esc(CREDIT_TYPE_LABELS[r.creditType] || r.creditType) + ' · ' + esc(fmtMoney(r.amount)) + (r.auto ? ' · מחושב לפי המדיניות' : '') + '. הזיכוי לא ישולם ויירד מ«זיכויים לתשלום» ומצפי התזרים. השורה נשמרת כ«בוטל» עם הסיבה ומי ביטל/ה.</p>'
+        + '<label class="wide">למה הזיכוי מבוטל? *<input type="text" name="reason" maxlength="' + CANCEL_REFUND_REASON_MAX + '" autocomplete="off"><span class="err" data-err="reason"></span></label>'
+        + '<div class="wide err" data-err="_form"></div><div class="wide toolbar"><button type="submit" class="btn primary">בטל את הזיכוי</button>'
+        + '<button type="button" class="btn" data-refund-void-close>השאר את הזיכוי</button><span class="na" id="crm-refund-void-state"></span></div></form>';
+      el.scrollIntoView({ block: 'nearest' });
+      const inp = el.querySelector('[name="reason"]'); if (inp) inp.focus();
+    }
+    function submitCancelRefund(form) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
+      const task = state.cancelRefund;
+      if (!task || state.saving) return Promise.resolve(false);
+      const values = { reason: form.elements.reason ? form.elements.reason.value : '' };
+      const issues = cancelRefundErrors(values);
+      showReportIssues(form, Object.keys(issues).map(function (k) { return { field: k, hebrewMessage: issues[k] }; }), '');
+      if (Object.keys(issues).length) return Promise.resolve(false);
+      const body = cancelRefundBody(task.target, values.reason);
+      state.saving = true; markBusy();
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+        .then(function (res) {
+          state.saving = false; clearBusy();
+          if (!cancelRefundAccepted(res, task.target)) {
+            const why = res && res.ok === true ? 'הביטול לא אושר על ידי השרת — רענני ובדקי' : cancelRefundRefusal(res);
+            showReportIssues(form, [], why); toast(why, true); return false;
+          }
+          state.cancelRefund = null;
+          toast('הזיכוי של ' + task.name + ' בוטל ✓');
+          resetBilling(['debt', 'credits', 'refunds']);
+          if (state.area === 'billing') renderMain();
+          return true;
+        })
+        .catch(function (err) {
+          state.saving = false; clearBusy(); const why = 'הביטול לא נשמר — ' + s(err && err.message || err);
+          showReportIssues(form, [], why); toast(why, true); return false;
+        });
+    }
     function submitRefundAction(form) {
       if (!requireFreshBilling()) return Promise.resolve(false);
       const task = state.refundAction;
@@ -6474,6 +6562,8 @@
         submitCleanup(f);
       } else if (f.dataset.form.indexOf('small-') === 0) {
         submitSmall(f);
+      } else if (f.dataset.form === 'refund-void') {
+        submitCancelRefund(f);
       } else if (f.dataset.form === 'refund-action') {
         submitRefundAction(f);
       } else if (f.dataset.form === 'credit-new' || f.dataset.form === 'credit-edit') {
@@ -6517,7 +6607,7 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-verify],[data-verify-partial],[data-vp-save],[data-vp-cancel],[data-rc-all-rows],[data-billing-retry],[data-billing-read-retry],[data-debt-preset],[data-fc-preset],[data-bill-tab],[data-bill-go],[data-bill-clear],[data-rc-preset],[data-slice-dim],[data-fc-open],[data-cleanup-jump],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-refund-void],[data-refund-void-close],[data-verify],[data-verify-partial],[data-vp-save],[data-vp-cancel],[data-rc-all-rows],[data-billing-retry],[data-billing-read-retry],[data-debt-preset],[data-fc-preset],[data-bill-tab],[data-bill-go],[data-bill-clear],[data-rc-preset],[data-slice-dim],[data-fc-open],[data-cleanup-jump],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
       if (!t) return;
       if (t.dataset.creditCancel !== undefined) { state.creditForm = null; const box = t.closest('form'); if (box) box.remove(); return; }
       if (t.dataset.creditEdit) return openCreditForm('edit', t.dataset.creditEdit);
@@ -6585,6 +6675,8 @@
         const box = t.closest('form'); if (box) box.remove();
         return;
       }
+      if (t.dataset.refundVoid !== undefined) return openCancelRefund(t.dataset.refundVoid);
+      if (t.dataset.refundVoidClose !== undefined) { state.cancelRefund = null; const el0 = $('#crm-refund-form'); if (el0) el0.innerHTML = ''; return; }
       if (t.dataset.refundAction) return openRefundAction(t.dataset.refundAction, t.dataset.refundId);
       if (!state.account) return;
       if (t.dataset.receiptCancel !== undefined) { state.receiptForm = null; const el = $('#crm-receipt-form'); if (el) el.innerHTML = ''; return; }
@@ -6962,7 +7054,7 @@
     VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,
     TRIAGE_OPTIONS: TRIAGE_OPTIONS, triageQueue: triageQueue, waitlistErrors: waitlistErrors, waitlistPatch: waitlistPatch, laterErrors: laterErrors,
     NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, openLeadOfPerson: openLeadOfPerson, leadAlreadyInHouse: leadAlreadyInHouse, globalSearch: globalSearch, nameKey: nameKey, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, pendingDischargeAudit: pendingDischargeAudit, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, WAIT_REASONS: WAIT_REASONS, waitReasonLabel: waitReasonLabel, waitChipText: waitChipText, flagsOf: flagsOf, patientMeetingChange: patientMeetingChange, reportOverdue: reportOverdue, meetingOutcomeLabel: meetingOutcomeLabel, managerChangeMessage: managerChangeMessage, managerWaUrl: managerWaUrl, leadFlagBody: leadFlagBody, leadFlagPendingPlan: leadFlagPendingPlan, patientChangePlan: patientChangePlan, MANAGER_REPORT_GRACE_DAYS: MANAGER_REPORT_GRACE_DAYS, EXCEPTION_CUTOFF: EXCEPTION_CUTOFF, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
-    KPI_PERIODS: KPI_PERIODS, kpiPeriod: kpiPeriod, occupancyToday: occupancyToday, closedDisposition: closedDisposition, leadFates: leadFates, MACCABI_DOCS: MACCABI_DOCS, MACCABI_STATES: MACCABI_STATES, MACCABI_MESSAGE: MACCABI_MESSAGE, MACCABI_EMAIL: MACCABI_EMAIL, isMaccabiLead: isMaccabiLead, maccabiDocsOf: maccabiDocsOf, maccabiNoteWith: maccabiNoteWith, maccabiNext: maccabiNext, maccabiView: maccabiView, waDigits: waDigits, STAY_MODES: STAY_MODES, STAY_GROUPS: STAY_GROUPS, STAY_BUCKETS: STAY_BUCKETS, stayLines: stayLines, stayReport: stayReport, stayStats: stayStats, stayCsv: stayCsv, BONUS: BONUS, bonusVisible: bonusVisible, leadBonus: leadBonus, bonusMonth: bonusMonth, FATES: FATES, leadConversion: leadConversion,
+    KPI_PERIODS: KPI_PERIODS, kpiPeriod: kpiPeriod, occupancyToday: occupancyToday, closedDisposition: closedDisposition, leadFates: leadFates, canCancelRefund: canCancelRefund, cancelRefundTarget: cancelRefundTarget, cancelRefundErrors: cancelRefundErrors, cancelRefundBody: cancelRefundBody, cancelRefundAccepted: cancelRefundAccepted, cancelRefundRefusal: cancelRefundRefusal, MACCABI_DOCS: MACCABI_DOCS, MACCABI_STATES: MACCABI_STATES, MACCABI_MESSAGE: MACCABI_MESSAGE, MACCABI_EMAIL: MACCABI_EMAIL, isMaccabiLead: isMaccabiLead, maccabiDocsOf: maccabiDocsOf, maccabiNoteWith: maccabiNoteWith, maccabiNext: maccabiNext, maccabiView: maccabiView, waDigits: waDigits, STAY_MODES: STAY_MODES, STAY_GROUPS: STAY_GROUPS, STAY_BUCKETS: STAY_BUCKETS, stayLines: stayLines, stayReport: stayReport, stayStats: stayStats, stayCsv: stayCsv, BONUS: BONUS, bonusVisible: bonusVisible, leadBonus: leadBonus, bonusMonth: bonusMonth, FATES: FATES, leadConversion: leadConversion,
     managerCloseRates: managerCloseRates, managerNameOk: managerNameOk, BREAKEVEN_STORAGE_KEY: BREAKEVEN_STORAGE_KEY, BREAKEVEN_DEFAULTS: BREAKEVEN_DEFAULTS, VAT_RATE: VAT_RATE, breakevenConfig: breakevenConfig,
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,
