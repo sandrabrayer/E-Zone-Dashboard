@@ -22,6 +22,20 @@ payroll (ezone-staffing PR #135). This change passes that to the managers app.
 No new op, no new Script Property, no sheet change. A managers app that ignores the new keys is
 unaffected.
 
+## Later the same day — every finishing person is named
+
+Sandra, on the managers app: «כתוב 2 עובדים אבל יש רק שם של 1 — צריך גם נתון מתי הסיום עבודה של עובד כזה».
+The count was of placements, and a finishing freelancer was counted without a name (ezone-staffing PR #137).
+
+- `staff.ending` gains **`people`**: `[{ name, endDate, monthlySaving }]`, taken from the staffing feed's
+  `ending.people`, cleaned here: a name and a real calendar date are required, numbers rounded and floored at
+  0, any other key dropped. A person under both ids of one house is one entry, with the later date and the sum.
+  Sorted by date.
+- When staffing sends the list, **`count` is the length of the list** — nobody is counted without a name.
+  A staffing feed with no list keeps its own count and gets no `people` key.
+- Cache key `mw:staffing-worker-cost:v3:<month>`.
+- Tests: `test/managers-crm-backend.test.js` 11 → 12. Full suite 4079 → 4080.
+
 ## Tests
 
 `test/managers-crm-backend.test.js` 10 → 11: the new keys cleaned and summed, another house's

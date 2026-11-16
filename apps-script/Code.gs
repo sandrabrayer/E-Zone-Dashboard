@@ -17305,14 +17305,16 @@ function mwHouseCost_(caller, params) {
  * capped, numbers rounded, nothing but the documented keys. Unset /
  * unreachable / a bad answer → { available:false, reason } — never a 0.
  * 16 Nov 2026: each worker also carries `endDate` ('' while employed) and the
- * house `ending` { count, monthlySaving, savingThisMonth, savingNextMonth }
- * — what the known ends of employment take off the payroll. */
+ * house `ending` { count, monthlySaving, savingThisMonth, savingNextMonth,
+ * people: [{ name, endDate, monthlySaving }] } — what the known ends of
+ * employment take off the payroll, and who: count === people.length. */
 const MW_STAFF_COST_MAX_WORKERS = 200;
 
 function mwFetchStaffingWorkerCosts_(ym) {
   // v2 (16 Nov 2026): the feed carries `ending` and `endDate` — a copy cached
   // before that must not be served as if nobody were finishing.
-  const key = 'mw:staffing-worker-cost:v2:' + ym;
+  // v3 (16 Nov 2026, later): `ending.people` names every finishing person.
+  const key = 'mw:staffing-worker-cost:v3:' + ym;
   const hit = cacheGetJson_(key);
   if (hit && hit.houses) return hit;
   const props = PropertiesService.getScriptProperties();
@@ -17361,6 +17363,12 @@ function mwHouseStaffCost_(caller, params) {
   // ids. null when staffing does not send them (an older staffing) — never
   // a made-up 0.
   let ending = null;
+  // Every finishing person by name, with the end date (16 Nov 2026, Sandra:
+  // «כתוב 2 עובדים אבל יש רק שם של 1 — צריך גם נתון מתי הסיום»). When staffing
+  // sends the list, the count IS the list: nobody is counted without a name.
+  const endPeople = {};
+  const endOrder = [];
+  let hasEndPeople = false;
   ids.forEach(function (id) {
     const h = d.houses[id];
     if (!h || typeof h !== 'object') return;
@@ -17372,6 +17380,19 @@ function mwHouseStaffCost_(caller, params) {
       ending.monthlySaving += Math.max(0, mwMoney_(h.ending.monthlySaving));
       ending.savingThisMonth += Math.max(0, mwMoney_(h.ending.savingThisMonth));
       ending.savingNextMonth += Math.max(0, mwMoney_(h.ending.savingNextMonth));
+      if (Array.isArray(h.ending.people)) {
+        hasEndPeople = true;
+        h.ending.people.slice(0, MW_STAFF_COST_MAX_WORKERS).forEach(function (p) {
+          if (!p || typeof p !== 'object') return;
+          const name = coordTextClean_(p.name, 80);
+          const end = coordIsoDateClean_(p.endDate);
+          if (!name || !end) return;
+          if (!endPeople[name]) { endPeople[name] = { name: name, endDate: end, monthlySaving: 0 }; endOrder.push(name); }
+          const t = endPeople[name];
+          if (end > t.endDate) t.endDate = end;
+          t.monthlySaving += Math.max(0, mwMoney_(p.monthlySaving));
+        });
+      }
     }
     if (h.budget !== null && h.budget !== undefined && Number.isFinite(Number(h.budget))) budget = (budget || 0) + mwMoney_(h.budget);
     (Array.isArray(h.workers) ? h.workers : []).forEach(function (w) {
@@ -17400,6 +17421,11 @@ function mwHouseStaffCost_(caller, params) {
     });
   });
   if (!found) return { ok: true, house: caller.house, month: ym, staff: { available: false, reason: 'no_house' } };
+  if (ending && hasEndPeople) {
+    ending.people = endOrder.map(function (k) { return endPeople[k]; })
+      .sort(function (a, b) { return a.endDate < b.endDate ? -1 : a.endDate > b.endDate ? 1 : (a.name < b.name ? -1 : a.name > b.name ? 1 : 0); });
+    ending.count = ending.people.length;
+  }
   const list = order.map(function (k) {
     const w = workers[k];
     return { name: w.name, roles: w.roles, cost: w.cost, estimated: w.estimated,
