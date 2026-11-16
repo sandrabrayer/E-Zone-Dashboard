@@ -65,6 +65,19 @@ the screen stays and only the changed reads repeat (2 of 4; a verification: none
 The debt still drops when a payment is REPORTED — verification confirms it (engine
 unchanged). SW cache v136. See `CHANGELOG-billing-verify-fixes.md`.
 
+## Managers feed — patient contact person, worker end date — November 16, 2026
+
+`managersWork` only, same fail-closed `MANAGERS_WORK_SECRET`. No new action, property, sheet or column.
+
+- `houseData`: every patient carries `contact` (`{ name, relation, phone, updatesPhone }` or `null`) and the reply
+  carries `contactsSupported: true`. Source: the lead the patient came from, by `Patients.fromLead` only — never a
+  name match. Only these four cleaned values leave; only the caller's house.
+- `houseStaffCost`: a worker's `endDate` passes through from the staffing feed when it is a real date; for a merged
+  `pardes` + `hapardes` worker only when every entry has one. Needs the ezone-staffing PR of the same day.
+- The Managers app re-enabled the `familyCalls` log («שיחות עם משפחה») and stopped using `committeeNotes`; the
+  backend keeps both, unchanged.
+- Details: `CHANGELOG-managers-contact-end-date.md`. Tests 4078 → 4081.
+
 ## Managers CRM backend — talk threads, committee notes, per-worker house cost — November 14, 2026
 
 `managersWork` only (same fail-closed `MANAGERS_WORK_SECRET`): `staffTalks` gets
