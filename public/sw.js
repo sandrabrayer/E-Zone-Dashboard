@@ -423,7 +423,9 @@
 // (CHANGELOG-cancel-refund.md). From the live v142; monotonic, v17 never reused.
 // v143 → v144: «עריכת פרטי הליד»: the whole lead edited in its CRM card
 // (CHANGELOG-crm-lead-full-edit.md). From v143 (the deployed branch); monotonic, v17 never reused.
-var CACHE_VERSION = 'v144';
+// v144 → v145: «מסלול» פרטי ⇄ מכבי in «עריכת פרטי הליד»
+// (CHANGELOG-crm-lead-payer-switch.md). From v144 (the deployed branch); monotonic, v17 never reused.
+var CACHE_VERSION = 'v145';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

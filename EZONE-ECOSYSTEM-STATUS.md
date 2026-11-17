@@ -1,5 +1,16 @@
 # E-ZONE Ecosystem Status — updated November 17, 2026
 
+## Dashboard CRM — «מסלול» פרטי ⇄ מכבי: a private lead moves to the «מכבי» list — November 17, 2026
+
+CRM only (no Code.gs, no new column, no new action). «עריכת פרטי הליד» has **«מסלול»**:
+«פרטי» / «מכבי». Private → מכבי writes the documents line (`מסמכי מכבי: ✗ …`) into the lead's
+note, so the existing «מכבי» list shows it at once; the source is **not** rewritten. מכבי →
+private parks the line as `מסמכי מכבי (לא פעיל): …` (ticks kept; a line with nothing ticked
+is removed) and the lead leaves the list; a return to מכבי restores the ticks. A lead whose
+source or name says מכבי stays a Maccabi lead until that text changes. The form's «הערות»
+box no longer shows the documents line (it is written back on save). The card's details show
+«מסלול: מכבי · מסמכים n/5». SW cache v145. See `CHANGELOG-crm-lead-payer-switch.md`.
+
 ## Dashboard CRM — «עריכת פרטי הליד»: the whole lead is edited in its card — November 17, 2026
 
 CRM only (no Code.gs, no new column, no new action). The lead card's «עריכה מלאה בדשבורד»
