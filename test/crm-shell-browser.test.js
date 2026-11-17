@@ -2400,3 +2400,113 @@ test('«בטל זיכוי» (CHANGELOG-cancel-refund.md): Vered cancels a saved 
     assert.equal(await o.page.$('[data-refund-void]'), null);
   } finally { saveAnswer = null; await browser.close(); srv.close(); }
 });
+
+test('«עריכת פרטי הליד» (CHANGELOG-crm-lead-full-edit.md): the whole lead is edited in its card — no link to the classic page; only changed fields are sent through the one-lead save; a bad field or a refused save keeps what was typed; unsaved edits are asked about before the card closes', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    const dialogs = [];
+    let answer = false;
+    page.on('dialog', (d) => { dialogs.push(d.message()); if (answer) d.accept(); else d.dismiss(); });
+    await page.click('#crm-nav button[data-area="leads"]');
+    await page.click('.card[data-open-lead="L1"] .name');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    // the lead card has its own edit — the classic page is no longer where a lead is edited
+    assert.equal(await page.locator('#crm-drawer [data-pane="overview"] a[href="/?view=classic"]').count(), 0);
+    assert.equal(await page.$eval('#crm-lead-edit', (d) => d.open), false);
+    await page.click('#crm-drawer [data-lead-edit-open="L1"]');
+    assert.equal(await page.$eval('#crm-lead-edit', (d) => d.open), true);
+    const f = '#crm-drawer form[data-form="lead-edit"]';
+    assert.equal(await page.evaluate(() => document.activeElement && document.activeElement.name), 'name');
+    assert.deepEqual(await page.$eval(f, (x) => ['name', 'phone', 'house', 'source', 'assignedTo', 'created', 'billingMode'].map((n) => x.elements[n].value)),
+      ['אבי לוי', '0501111111', 'רמות השבים', 'פייסבוק', 'ורד', daysAgo(5), 'patient']);
+    assert.equal(await page.locator(f + ' [name="entryDate"]').count(), 0, 'no entry date on a lead that has none');
+    // nothing changed → nothing sent
+    await page.click(f + ' button[type="submit"]');
+    await page.waitForFunction(() => /אין שינויים לשמירה/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 5000 });
+    // a bad field: the message under it, nothing sent, the form keeps the text
+    await page.fill(f + ' [name="name"]', 'אבי');
+    await page.fill(f + ' [name="phone"]', '123');
+    await page.click(f + ' button[type="submit"]');
+    assert.equal(await page.textContent(f + ' [data-err="name"]'), 'יש להזין שם מלא (שם פרטי ושם משפחה)');
+    assert.equal(await page.textContent(f + ' [data-err="phone"]'), 'יש להזין טלפון ישראלי תקין (10 ספרות)');
+    assert.equal(srv.saves.filter((x) => x.action === 'saveAll').length, 0);
+    assert.equal(await page.inputValue(f + ' [name="name"]'), 'אבי');
+    // the whole lead in one save
+    await page.fill(f + ' [name="name"]', 'אבי לוי-כהן');
+    await page.fill(f + ' [name="phone"]', '052-333 4444');
+    await page.fill(f + ' [name="contactName"]', 'רות לוי');
+    await page.fill(f + ' [name="contactPhone"]', '0502222222');
+    await page.selectOption(f + ' [name="contactRelation"]', 'אמא');
+    await page.selectOption(f + ' [name="billingMode"]', 'contact');
+    await page.selectOption(f + ' [name="house"]', 'קיסריה עפרוני');
+    await page.fill(f + ' [name="source"]', 'בית חולים');
+    await page.selectOption(f + ' [name="assignedTo"]', 'דנה');
+    await page.fill(f + ' [name="note"]', '<b>הערה</b> חדשה');
+    assert.equal(await page.getAttribute(f, 'data-dirty'), '1');
+    await page.click(f + ' button[type="submit"]');
+    await page.waitForFunction(() => /פרטי הליד נשמר/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 8000 });
+    const sent = srv.saves.filter((x) => x.action === 'saveAll');
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].leads.length, 1, 'one lead, never the whole board');
+    assert.deepEqual(sent[0].prove, { leads: ['L1'] });
+    assert.deepEqual(sent[0].patients, {});
+    const row = sent[0].leads[0];
+    assert.deepEqual([row.id, row.name, row.phone, row.contactName, row.contactPhone, row.contactRelation, row.billingPhone, row.house, row.source, row.assignedTo, row.note],
+      ['L1', 'אבי לוי-כהן', '0523334444', 'רות לוי', '0502222222', 'אמא', '0502222222', 'קיסריה עפרוני', 'בית חולים', 'דנה', '<b>הערה</b> חדשה']);
+    assert.deepEqual([row.stage, row.created], ['new', daysAgo(5)], 'what was not edited is sent as it was');
+    // the card shows the saved lead; the form is closed again; the note is text, never markup
+    await page.waitForFunction(() => document.querySelector('#crm-lead-edit') && !document.querySelector('#crm-lead-edit').open, null, { timeout: 5000 });
+    assert.equal(await page.textContent('#crm-drawer .drawer-head h2'), 'אבי לוי-כהן');
+    assert.match(await page.textContent('#crm-drawer .kv'), /0523334444[\s\S]*קיסריה עפרוני[\s\S]*בית חולים[\s\S]*<b>הערה<\/b> חדשה/);
+    assert.equal(await page.locator('#crm-drawer .kv b').count(), 0);
+    // a refused save: the lead goes back, the form stays open with what was typed
+    saveAnswer = () => ({ ok: false, error: 'lock_busy', message: 'המערכת עסוקה, נסי שוב בעוד רגע' });
+    await page.click('#crm-drawer [data-lead-edit-open="L1"]');
+    await page.fill(f + ' [name="note"]', 'שינוי שלא נשמר');
+    await page.click(f + ' button[type="submit"]');
+    await page.waitForFunction(() => /המערכת עסוקה/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 8000 });
+    assert.equal(await page.$eval('#crm-lead-edit', (d) => d.open), true);
+    assert.equal(await page.inputValue(f + ' [name="note"]'), 'שינוי שלא נשמר');
+    assert.match(await page.textContent('#crm-drawer .kv'), /<b>הערה<\/b> חדשה/, 'the stored note is still the saved one');
+    assert.equal(await page.$eval(f + ' button[type="submit"]', (b) => b.disabled), false, 'ready for another try');
+    // unsaved edits: ✕ asks first; «ביטול» in the form drops them
+    await page.click('#crm-drawer-close');
+    assert.match(dialogs[dialogs.length - 1], /יש שינויים שלא נשמרו בפרטי הליד/);
+    assert.equal(await page.getAttribute('#crm-drawer', 'aria-hidden'), 'false', 'stayed open');
+    saveAnswer = null;
+    await page.click(f + ' button[type="submit"]');
+    await page.waitForFunction(() => /פרטי הליד נשמר/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 8000 });
+    assert.equal(srv.saves.filter((x) => x.action === 'saveAll').pop().leads[0].note, 'שינוי שלא נשמר', 'the retry sends what was typed');
+    await page.click('#crm-drawer [data-lead-edit-open="L1"]');
+    await page.fill(f + ' [name="note"]', 'טיוטה');
+    await page.click(f + ' [data-lead-edit-cancel]');
+    await page.waitForFunction(() => document.querySelector('#crm-lead-edit') && !document.querySelector('#crm-lead-edit').open, null, { timeout: 5000 });
+    const before = dialogs.length;
+    await page.click('#crm-drawer-close');
+    assert.equal(dialogs.length, before, 'nothing unsaved → no question');
+    assert.equal(await page.getAttribute('#crm-drawer', 'aria-hidden'), 'true');
+    assert.deepEqual(errors, []);
+    // a phone another lead already has: asked, as on a new lead
+    await page.click('.card[data-open-lead="L6"] .name');
+    await page.click('#crm-drawer [data-lead-edit-open="L6"]');
+    await page.fill(f + ' [name="phone"]', '0523334444');
+    const n = srv.saves.length;
+    await page.click(f + ' button[type="submit"]');
+    assert.match(dialogs[dialogs.length - 1], /כבר קיים ליד «אבי לוי-כהן» עם הטלפון הזה/);
+    assert.equal(srv.saves.length, n, 'declined → not sent');
+    // a phone: Dana (operations) edits a lead; no horizontal scroll
+    const m = await open(browser, srv.port, 'dana', 390);
+    await m.page.click('#crm-burger'); await m.page.click('#crm-nav button[data-area="leads"]');
+    await m.page.click('.card[data-open-lead="L6"] .name');
+    await m.page.click('#crm-drawer [data-lead-edit-open="L6"]');
+    await m.page.fill(f + ' [name="note"]', 'מהנייד');
+    await m.page.click(f + ' button[type="submit"]');
+    await m.page.waitForFunction(() => /פרטי הליד נשמר/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 8000 });
+    const last = srv.saves.filter((x) => x.action === 'saveAll').pop();
+    assert.deepEqual([last.proxyUserId, last.leads[0].id, last.leads[0].note], ['dana', 'L6', 'מהנייד']);
+    assert.equal(await noHScroll(m.page), true, 'no horizontal scroll on a phone');
+    assert.deepEqual(m.errors, []);
+  } finally { saveAnswer = null; await browser.close(); srv.close(); }
+});

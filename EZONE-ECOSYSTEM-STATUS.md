@@ -1,4 +1,16 @@
-# E-ZONE Ecosystem Status — updated November 16, 2026
+# E-ZONE Ecosystem Status — updated November 17, 2026
+
+## Dashboard CRM — «עריכת פרטי הליד»: the whole lead is edited in its card — November 17, 2026
+
+CRM only (no Code.gs, no new column, no new action). The lead card's «עריכה מלאה בדשבורד»
+link to the classic page is replaced by **«עריכת פרטי הליד»**: name, phone, the contact
+(name / phone / relation), the billing phone, house, source, owner, «נוצר», «תאריך כניסה»
+(only on a lead that has one) and the note. Only the changed fields are sent, through the
+existing one-lead save (`saveAll` + `prove.leads`); a field is checked only when it changed,
+as in the classic modal and `leadRequiredViolations_`. Stage, meeting and outcome keep their
+own buttons. A refused save keeps what was typed; unsaved edits are asked about before the
+card closes. The patient card still links to the classic page. SW cache v144. See
+`CHANGELOG-crm-lead-full-edit.md`.
 
 ## Dashboard — «בטל זיכוי» on «זיכויים לתשלום» — November 16, 2026
 
