@@ -77,6 +77,12 @@ Later the same day: `ending.people` `[{ name, endDate, monthlySaving }]` names e
 finishing person and `count` is its length (ezone-staffing PR #137).
 See `CHANGELOG-managers-ending-forecast.md`.
 
+## Managers feed — a worker's birth date in `houseStaffCost` — November 17, 2026
+
+- `managersWork` `houseStaffCost`: every worker carries `birthDate` (`YYYY-MM-DD` or `''`), from the staffing feed
+  (ezone-staffing #138), for the employee card of the Managers app. A real past date only; the caller's house only.
+- Same `MANAGERS_WORK_SECRET`. No new action, property, sheet or column. Details: `CHANGELOG-managers-birth-date.md`.
+
 ## Managers feed — the patient's contact person in `houseData` — November 16, 2026
 
 `managersWork` only, same fail-closed `MANAGERS_WORK_SECRET`. No new action, property, sheet or column.
