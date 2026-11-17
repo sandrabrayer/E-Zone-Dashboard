@@ -123,6 +123,38 @@
     return lines.join('\n');
   }
   function maccabiNext(state0) { return state0 === '' ? 'has' : state0 === 'has' ? 'in' : ''; }
+  /* ===== פרטי ⇄ מכבי (CHANGELOG-crm-lead-payer-switch.md) =====
+   * Vered 17/11/2026: a lead that started as private and goes through מכבי must be
+   * switchable, and then show in the «מכבי» list. The list's own rule stays as it is
+   * (source / name says מכבי, or the note carries the documents line), so the switch
+   * only writes that line:
+   *   פרטי → מכבי   the line is added (✗ ×5), or a parked one comes back with its ticks
+   *   מכבי → פרטי   the line is parked as «מסמכי מכבי (לא פעיל): …» — out of the list,
+   *                 the ticks kept; a line with nothing ticked is simply removed
+   * The source is NOT rewritten (the funnel and the bonus read it). A lead whose source
+   * or name says מכבי stays a Maccabi lead until that text is changed. Pure. */
+  const MACCABI_PARKED = 'מסמכי מכבי (לא פעיל):';
+  function maccabiByLabel(l) { const o = l || {}; return /מכבי/.test(s(o.source)) || /מכבי/.test(s(o.name)); }
+  function leadTrack(l) { return isMaccabiLead(l) ? 'maccabi' : 'private'; }
+  /* A note → { text: what was typed, line: its documents line (active or parked), parked }. */
+  function maccabiNoteParts(note) {
+    const lines = String(note == null ? '' : note).replace(/\r\n?/g, '\n').split('\n');
+    let at = lines.findIndex(function (ln) { return ln.trim().indexOf(MACCABI_LINE) === 0; });
+    let parked = false;
+    if (at < 0) { at = lines.findIndex(function (ln) { return ln.trim().indexOf(MACCABI_PARKED) === 0; }); parked = at >= 0; }
+    const line = at >= 0 ? lines.splice(at, 1)[0].trim() : '';
+    return { text: lines.join('\n').trim(), line: line, parked: parked };
+  }
+  /* The note of a lead on `track` ('maccabi' | 'private'): `text` + the right form of the line. */
+  function noteForTrack(text, line, track) {
+    const t = String(text == null ? '' : text).replace(/\r\n?/g, '\n').trim(), ln = s(line);
+    const parked = ln.indexOf(MACCABI_PARKED) === 0;
+    const body = ln ? ln.slice(parked ? MACCABI_PARKED.length : MACCABI_LINE.length).trim() : '';
+    let out = '';
+    if (track === 'maccabi') out = maccabiNoteWith('', maccabiDocsOf(body ? MACCABI_LINE + ' ' + body : ''));
+    else if (body && /[✓◐]/.test(body)) out = MACCABI_PARKED + ' ' + body;
+    return t && out ? t + '\n' + out : t || out;
+  }
   /* The Maccabi leads with their lists; the incomplete first, most missing on top. */
   function maccabiView(leads, q) {
     const needle = s(q).trim().toLowerCase();
@@ -215,7 +247,7 @@
     return { name: s(l.name), phone: s(l.phone), contactName: s(l.contactName), contactPhone: s(l.contactPhone),
       contactRelation: s(l.contactRelation), contactRelationOther: '', billingMode: bm.mode, billingOther: bm.other,
       house: houseName(l.house), source: s(l.source), assignedTo: s(l.assignedTo), created: isoDay(l.created),
-      entryDate: isoDay(l.entryDate), note: noteText(l.note) };
+      entryDate: isoDay(l.entryDate), note: maccabiNoteParts(l.note).text, track: leadTrack(l) };
   }
   /* { errors, patch } of an edit: `prev` = the raw lead row, `v` = the form's values.
    * `patch` holds only what changed; nothing is saved while `errors` has a key. Pure. */
@@ -285,10 +317,29 @@
       if (!isoDateOk(f.entryDate)) errors.entryDate = 'תאריך כניסה חסר או מחוץ לטווח';
       else patch.entryDate = s(f.entryDate);
     }
-    if (noteText(f.note) !== was.note) patch.note = noteText(f.note);
+    /* «מסלול» פרטי ⇄ מכבי (CHANGELOG-crm-lead-payer-switch.md): the documents line is kept out
+     * of the textarea and written back here, in the form the chosen track needs. */
+    const track = s(f.track) === 'maccabi' ? 'maccabi' : s(f.track) === 'private' ? 'private' : was.track;
+    const relabelled = 'source' in patch || 'name' in patch;
+    const labelled = maccabiByLabel({ source: 'source' in patch ? patch.source : p.source, name: 'name' in patch ? patch.name : p.name });
+    if (track === 'private' && was.track === 'maccabi' && labelled) errors.track = 'המקור או השם כוללים «מכבי» — הליד נשאר ברשימת מכבי. למעבר לפרטי יש לשנות את מקור הליד.';
+    const parts = maccabiNoteParts(p.note);
+    /* The line is written only when it is needed: a lead that is מכבי by its source
+     * alone gets no line just for being opened and saved; a parked line comes back
+     * (with its ticks) when the lead returns to מכבי; leaving מכבי parks it. */
+    let lineNow = parts.line;
+    if (!errors.track && track === 'maccabi') {
+      if (parts.parked ? (!labelled || track !== was.track || relabelled) : (!parts.line && !labelled)) lineNow = noteForTrack('', parts.line, 'maccabi');
+    } else if (!errors.track && track === 'private' && !labelled && parts.line && !parts.parked) {
+      lineNow = noteForTrack('', parts.line, 'private');
+    }
+    if (noteText(f.note) !== was.note || lineNow !== parts.line) {
+      const text = noteText(f.note);
+      patch.note = text && lineNow ? text + '\n' + lineNow : text || lineNow;
+    }
     return { errors: errors, patch: patch };
   }
-  const LEAD_EDIT_FIELDS = ['name', 'phone', 'contactName', 'contactPhone', 'contactRelation', 'contactRelationOther', 'billingOther', 'house', 'source', 'assignedTo', 'created', 'entryDate', 'note'];
+  const LEAD_EDIT_FIELDS = ['name', 'phone', 'contactName', 'contactPhone', 'contactRelation', 'contactRelationOther', 'billingOther', 'house', 'source', 'track', 'assignedTo', 'created', 'entryDate', 'note'];
 
   /* The closed record the classic closeLead sends (moveLeadIrrelevant). Pure. */
   function closeRecord(raw, disposition, note, nowIso) {
@@ -5496,6 +5547,7 @@
         + '<h3>פרטים נוספים</h3>'
         + '<label>בית מועדף <select name="house">' + opts(houses, s(v.house), true) + '</select>' + err('house') + '</label>'
         + (system ? '' : '<label>מקור הליד <input name="source" list="crm-edit-sources" maxlength="80" value="' + esc(v.source) + '"><datalist id="crm-edit-sources">' + SOURCES.map(function (x) { return '<option value="' + esc(x) + '">'; }).join('') + '</datalist>' + err('source') + '</label>')
+        + '<label>מסלול <select name="track">' + [['private', 'פרטי'], ['maccabi', 'מכבי — ברשימת «מכבי»']].map(function (o) { return '<option value="' + o[0] + '"' + (s(v.track) === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>' + err('track') + '</label>'
         + '<label>אחראי <select name="assignedTo">' + opts(ASSIGNEES, s(v.assignedTo), true) + '</select></label>'
         + inp('created', 'נוצר', 'date', ' max="' + esc(state.today) + '"')
         + (isoDay(raw.entryDate) ? inp('entryDate', 'תאריך כניסה', 'date') : '')
@@ -5533,7 +5585,9 @@
         if (dup && !win.confirm('כבר קיים ליד «' + s(dup.name) + '» עם הטלפון הזה. לשמור בכל זאת?')) return;
       }
       state.leadEdit = { id: id, vals: vals };
-      writeLead(id, plan.patch, 'פרטי הליד').then(function (ok) {
+      const from = leadTrack(raw), to = leadTrack(applyLeadPatch(raw, plan.patch));
+      const label = to === from ? 'פרטי הליד' : to === 'maccabi' ? 'הליד עבר לרשימת «מכבי» — השינוי' : 'הליד יצא מרשימת «מכבי» — השינוי';
+      writeLead(id, plan.patch, label).then(function (ok) {
         if (!ok) return;                       // refused: the form stays open with what was typed
         state.leadEdit = null;
         if (state.drawer && state.drawer.kind === 'lead' && state.drawer.id === id) openDrawer('lead', id, true);
@@ -5746,7 +5800,7 @@
       const dr = $('#crm-drawer');
       const name = lead ? lead.name : pat.name;
       const subject = lead ? { leadId: lead.id } : { patientId: pat.id };
-      const kv = lead ? [['טלפון', lead.phone], ['בית', houseName(lead.house)], ['מקור', lead.source], ['אחראי', lead.assignedTo], ['שלב', stageLabel(lead.stage)], ['פגישה', fmtDate(lead.visitDate) + (lead.visitTime ? ' ' + lead.visitTime : '')], ['נוצר', fmtDate(lead.created)], ['נפגש/ת עם', lead.meetingWith], ['תוצאת פגישה', meetingOutcomeLabel(lead.meetingOutcome)], ['איש קשר', lead.contactName + (lead.contactRelation ? ' (' + lead.contactRelation + ')' : '')], ['טלפון איש קשר', lead.contactPhone], ['הערות', lead.note]]
+      const kv = lead ? [['טלפון', lead.phone], ['בית', houseName(lead.house)], ['מקור', lead.source], ['מסלול', isMaccabiLead(lead) ? 'מכבי · מסמכים ' + MACCABI_DOCS.filter(function (d) { return maccabiDocsOf(lead.note)[d.id] === 'in'; }).length + '/' + MACCABI_DOCS.length : ''], ['אחראי', lead.assignedTo], ['שלב', stageLabel(lead.stage)], ['פגישה', fmtDate(lead.visitDate) + (lead.visitTime ? ' ' + lead.visitTime : '')], ['נוצר', fmtDate(lead.created)], ['נפגש/ת עם', lead.meetingWith], ['תוצאת פגישה', meetingOutcomeLabel(lead.meetingOutcome)], ['איש קשר', lead.contactName + (lead.contactRelation ? ' (' + lead.contactRelation + ')' : '')], ['טלפון איש קשר', lead.contactPhone], ['הערות', lead.note]]
         : [['בית', houseName(pat.houseId)], ['תאריך כניסה', fmtDate(pat.date) + (pat.date && !s(pat.exitDate) ? ' · ' + daysBetween(pat.date, state.today) + ' ימים בבית' : '')], ['תאריך יציאה', s(pat.exitDate) ? fmtDate(pat.exitDate) + (pat.date ? ' · ' + daysBetween(pat.date, pat.exitDate) + ' ימים בבית' : '') : ''], ['סטטוס', patientStatusLabel(pat.status)], ['הגיע/ה', pat.source === 'lead' ? 'מליד' : pat.source === 'direct_admin' ? 'הוספה ישירה' : pat.source], ['ליד מקורי', pat.fromLead ? ((compute(state.data, state.today).leads.filter(function (l) { return l.id === pat.fromLead; })[0] || {}).name || 'נסגרה / הועברה') : '']];
       const na = lead ? nextActionFor(lead, state.today, flagsOf(state.index, lead.id)) : null;
       dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(name) + '</h2><div class="meta tags">' + (lead ? '<span class="chip stage-' + esc(lead.stage) + '">' + esc(stageLabel(lead.stage)) + '</span>' + houseTag(lead.house) + (lead.assignedTo ? avatar(lead.assignedTo) : '') : statusChip(pat.status) + houseTag(pat.houseId)) + (na ? chip(na.state, na.text) : '') + (lead && waitChipText(lead, flagsOf(state.index, lead.id)) && waitChipText(lead, flagsOf(state.index, lead.id)) !== na.text ? chip('wait', waitChipText(lead, flagsOf(state.index, lead.id))) : '') + '</div></div>'
@@ -7242,7 +7296,7 @@
     VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,
     TRIAGE_OPTIONS: TRIAGE_OPTIONS, triageQueue: triageQueue, waitlistErrors: waitlistErrors, waitlistPatch: waitlistPatch, laterErrors: laterErrors,
     NAV_GROUPS: NAV_GROUPS, MY_DAY_VIEWS: MY_DAY_VIEWS, DOMAINS: DOMAINS, DOMAIN_LABELS: DOMAIN_LABELS, meetingBuckets: meetingBuckets, newLeadsNoContact: newLeadsNoContact, houseExceptions: houseExceptions, openLeadOfPerson: openLeadOfPerson, leadAlreadyInHouse: leadAlreadyInHouse, globalSearch: globalSearch, nameKey: nameKey, dischargePatientId: dischargePatientId, isRestoredDischarge: isRestoredDischarge, pendingDischargeAudit: pendingDischargeAudit, continuityKnown: continuityKnown, continuityRecorded: continuityRecorded, continuityBody: continuityBody, myDay: myDay, weekPlan: weekPlan, WAIT_REASONS: WAIT_REASONS, waitReasonLabel: waitReasonLabel, waitChipText: waitChipText, flagsOf: flagsOf, patientMeetingChange: patientMeetingChange, reportOverdue: reportOverdue, meetingOutcomeLabel: meetingOutcomeLabel, managerChangeMessage: managerChangeMessage, managerWaUrl: managerWaUrl, leadFlagBody: leadFlagBody, leadFlagPendingPlan: leadFlagPendingPlan, patientChangePlan: patientChangePlan, MANAGER_REPORT_GRACE_DAYS: MANAGER_REPORT_GRACE_DAYS, EXCEPTION_CUTOFF: EXCEPTION_CUTOFF, doneInWeek: doneInWeek, lastContactText: lastContactText, hebDate: hebDate,
-    KPI_PERIODS: KPI_PERIODS, kpiPeriod: kpiPeriod, occupancyToday: occupancyToday, closedDisposition: closedDisposition, leadFates: leadFates, canCancelRefund: canCancelRefund, cancelRefundTarget: cancelRefundTarget, cancelRefundErrors: cancelRefundErrors, cancelRefundBody: cancelRefundBody, cancelRefundAccepted: cancelRefundAccepted, cancelRefundRefusal: cancelRefundRefusal, MACCABI_DOCS: MACCABI_DOCS, MACCABI_STATES: MACCABI_STATES, MACCABI_MESSAGE: MACCABI_MESSAGE, MACCABI_EMAIL: MACCABI_EMAIL, isMaccabiLead: isMaccabiLead, maccabiDocsOf: maccabiDocsOf, maccabiNoteWith: maccabiNoteWith, maccabiNext: maccabiNext, maccabiView: maccabiView, waDigits: waDigits, STAY_MODES: STAY_MODES, STAY_GROUPS: STAY_GROUPS, STAY_BUCKETS: STAY_BUCKETS, stayLines: stayLines, stayReport: stayReport, stayStats: stayStats, stayCsv: stayCsv, BONUS: BONUS, bonusVisible: bonusVisible, leadBonus: leadBonus, bonusMonth: bonusMonth, FATES: FATES, leadConversion: leadConversion,
+    KPI_PERIODS: KPI_PERIODS, kpiPeriod: kpiPeriod, occupancyToday: occupancyToday, closedDisposition: closedDisposition, leadFates: leadFates, canCancelRefund: canCancelRefund, cancelRefundTarget: cancelRefundTarget, cancelRefundErrors: cancelRefundErrors, cancelRefundBody: cancelRefundBody, cancelRefundAccepted: cancelRefundAccepted, cancelRefundRefusal: cancelRefundRefusal, MACCABI_DOCS: MACCABI_DOCS, MACCABI_STATES: MACCABI_STATES, MACCABI_MESSAGE: MACCABI_MESSAGE, MACCABI_EMAIL: MACCABI_EMAIL, isMaccabiLead: isMaccabiLead, maccabiDocsOf: maccabiDocsOf, maccabiNoteWith: maccabiNoteWith, maccabiNext: maccabiNext, maccabiView: maccabiView, MACCABI_PARKED: MACCABI_PARKED, maccabiByLabel: maccabiByLabel, leadTrack: leadTrack, maccabiNoteParts: maccabiNoteParts, noteForTrack: noteForTrack, waDigits: waDigits, STAY_MODES: STAY_MODES, STAY_GROUPS: STAY_GROUPS, STAY_BUCKETS: STAY_BUCKETS, stayLines: stayLines, stayReport: stayReport, stayStats: stayStats, stayCsv: stayCsv, BONUS: BONUS, bonusVisible: bonusVisible, leadBonus: leadBonus, bonusMonth: bonusMonth, FATES: FATES, leadConversion: leadConversion,
     managerCloseRates: managerCloseRates, managerNameOk: managerNameOk, BREAKEVEN_STORAGE_KEY: BREAKEVEN_STORAGE_KEY, BREAKEVEN_DEFAULTS: BREAKEVEN_DEFAULTS, VAT_RATE: VAT_RATE, breakevenConfig: breakevenConfig,
     breakevenReport: breakevenReport, ANOMALY_LABELS: ANOMALY_LABELS, billingAnomalies: billingAnomalies, closeLeadErrors: closeLeadErrors, CLASSIC_ONLY: CLASSIC_ONLY, fmtPct: fmtPct,
     creditRaw: creditRaw, creditEditErrors: creditEditErrors, creditEditBody: creditEditBody, creditNewErrors: creditNewErrors, creditNewBody: creditNewBody, creditSaveRefusal: creditSaveRefusal,

@@ -21,7 +21,7 @@ const plan = (lead, over) => core.leadEditPlan(lead, Object.assign(core.leadEdit
 test('the form starts from the lead as stored; saving it untouched changes nothing', () => {
   const v = core.leadEditValues(LEAD());
   assert.deepEqual(v, { name: 'דנה כהן', phone: '0501111111', contactName: 'רות כהן', contactPhone: '0502222222', contactRelation: 'אמא', contactRelationOther: '',
-    billingMode: 'patient', billingOther: '', house: 'רמות השבים', source: 'גוגל', assignedTo: 'ורד', created: '2026-11-10', entryDate: '', note: 'אמא מתקשרת בערב' });
+    billingMode: 'patient', billingOther: '', house: 'רמות השבים', source: 'גוגל', assignedTo: 'ורד', created: '2026-11-10', entryDate: '', note: 'אמא מתקשרת בערב', track: 'private' });
   assert.deepEqual(plan(LEAD()), { errors: {}, patch: {} });
   assert.deepEqual(core.leadEditPlan(null, null, TODAY), { errors: {}, patch: {} }, 'never throws on nothing');
 });
@@ -132,7 +132,7 @@ test('the card: «עריכת פרטי הליד» replaces the classic link for a
   assert.match(SRC, /\(lead \? \(rawLead\(lead\.id\) && !\(state\.me && state\.me\.view === 'controller'\) \? '<p><button[^\n]*: ''\) : '<p><a class="btn" href="\/\?view=classic">עריכה מלאה בדשבורד<\/a><\/p>'\)/);
   const form = SRC.slice(SRC.indexOf('function renderLeadEdit(l)'), SRC.indexOf('function leadEditForm()'));
   assert.match(form, /<form data-form="lead-edit" class="lead-edit" data-lead="' \+ esc\(l\.id\)/);
-  for (const name of ['name', 'phone', 'contactName', 'contactPhone', 'contactRelation', 'contactRelationOther', 'billingMode', 'billingOther', 'house', 'source', 'assignedTo', 'created', 'entryDate', 'note'])
+  for (const name of ['name', 'phone', 'contactName', 'contactPhone', 'contactRelation', 'contactRelationOther', 'billingMode', 'billingOther', 'house', 'source', 'track', 'assignedTo', 'created', 'entryDate', 'note'])
     assert.ok(form.includes("'" + name + "'") || form.includes('name="' + name + '"'), 'field ' + name);
   assert.match(form, /value="' \+ esc\(v\[name\]\)/, 'input values escaped');
   assert.match(form, /esc\(v\.note\) \+ '<\/textarea>/, 'the note escaped');
@@ -141,7 +141,7 @@ test('the card: «עריכת פרטי הליד» replaces the classic link for a
   // saved through the existing proven write — no second lead write path, no new action
   const save = SRC.slice(SRC.indexOf('function saveLeadEdit(id, f)'), SRC.indexOf("/* «סיבת המתנה» (Vered 04/11/2026)"));
   assert.match(save, /leadEditPlan\(raw, vals, state\.today\)/);
-  assert.match(save, /writeLead\(id, plan\.patch, 'פרטי הליד'\)/);
+  assert.match(save, /writeLead\(id, plan\.patch, label\)/);   // the label names a move in / out of «מכבי» (CHANGELOG-crm-lead-payer-switch.md)
   assert.ok(!/fetch\(/.test(save), 'no fetch of its own');
   assert.match(save, /אין שינויים לשמירה/);
   assert.match(save, /כבר קיים ליד «/, 'the duplicate-phone question, as on a new lead');

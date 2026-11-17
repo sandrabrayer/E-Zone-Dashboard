@@ -2510,3 +2510,102 @@ test('«עריכת פרטי הליד» (CHANGELOG-crm-lead-full-edit.md): the wh
     assert.deepEqual(m.errors, []);
   } finally { saveAnswer = null; await browser.close(); srv.close(); }
 });
+
+test('«מסלול» פרטי ⇄ מכבי (CHANGELOG-crm-lead-payer-switch.md): a private lead is switched to מכבי in «עריכת פרטי הליד» and shows in the «מכבי» list with its five documents; back to פרטי it leaves the list and its ticks are kept; a lead whose source says מכבי cannot be made private without changing the source', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const keep = DATA.leads.slice();
+  DATA.leads = keep.concat([
+    { id: 'P1', name: 'נועה שגב-בדיקה', house: 'קיסריה עפרוני', source: 'בית חולים', stage: 'new', created: daysAgo(1), assignedTo: 'דנה', phone: '0507654321', note: 'אמא התקשרה' },
+    { id: 'M1', name: 'משה כהן-בדיקה', house: 'רמות השבים', source: 'מכבי', stage: 'new', created: daysAgo(2), assignedTo: 'ורד', phone: '0507654322', note: '' }]);
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  const toastIs = (page, re) => page.waitForFunction((src) => new RegExp(src).test((document.querySelector('#crm-toast') || {}).textContent || ''), re.source, { timeout: 8000 });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    const f = '#crm-drawer form[data-form="lead-edit"]';
+    const EMPTY = 'מסמכי מכבי: ✗ הפניה מפסיכיאטר | ✗ בדיקות דם | ✗ סיכום פסיכיאטר | ✗ סיכום רופא משפחה | ✗ אק״ג ופענוח';
+    await page.click('#crm-nav button[data-area="leads"]');
+    assert.match(await page.textContent('#crm-maccabi-btn'), /מכבי\s*1/, 'only the lead whose source says מכבי');
+    // 1. private → מכבי
+    await page.click('.card[data-open-lead="P1"] .name');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    assert.doesNotMatch(await page.textContent('#crm-drawer .kv'), /מסלול/);
+    await page.click('#crm-drawer [data-lead-edit-open="P1"]');
+    assert.equal(await page.inputValue(f + ' [name="track"]'), 'private');
+    await page.selectOption(f + ' [name="track"]', 'maccabi');
+    await page.click(f + ' button[type="submit"]');
+    await toastIs(page, /הליד עבר לרשימת «מכבי» — השינוי נשמר/);
+    let sent = srv.saves.filter((x) => x.action === 'saveAll');
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0].prove, { leads: ['P1'] });
+    assert.equal(sent[0].leads.length, 1);
+    assert.deepEqual([sent[0].leads[0].note, sent[0].leads[0].source, sent[0].leads[0].phone], ['אמא התקשרה\n' + EMPTY, 'בית חולים', '0507654321'], 'the line is added; the source and the rest are sent as they were');
+    assert.match(await page.textContent('#crm-drawer .kv'), /מסלול\s*מכבי · מסמכים 0\/5/);
+    assert.match(await page.textContent('#crm-maccabi-btn'), /מכבי\s*2/, 'in the list at once, no reload');
+    await page.click('#crm-drawer-close');
+    await page.click('#crm-maccabi-btn');
+    await page.waitForSelector('#crm-maccabi tr[data-maccabi-lead="P1"]');
+    assert.equal(await page.$$eval('#crm-maccabi tr[data-maccabi-lead="P1"] [data-maccabi-doc]', (b) => b.map((x) => x.textContent.trim().charAt(0)).join('')), '✗✗✗✗✗');
+    // 2. a document arrives, then the note is edited: the box never shows the line and the tick survives
+    const btn = '#crm-maccabi tr[data-maccabi-lead="P1"] [data-maccabi-doc="blood"]';
+    for (const mark of ['◐', '✓']) {
+      await page.click(btn);
+      await page.waitForFunction((a) => document.querySelector(a[0]) && document.querySelector(a[0]).textContent.trim().charAt(0) === a[1] && !document.querySelector(a[0]).disabled, [btn, mark], { timeout: 8000 });
+    }
+    await page.click('#crm-maccabi td[data-open-lead="P1"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    assert.match(await page.textContent('#crm-drawer .kv'), /מסלול\s*מכבי · מסמכים 1\/5/);
+    await page.click('#crm-drawer [data-lead-edit-open="P1"]');
+    assert.equal(await page.inputValue(f + ' [name="track"]'), 'maccabi');
+    assert.equal(await page.inputValue(f + ' [name="note"]'), 'אמא התקשרה', 'the documents line is not in the box');
+    await page.fill(f + ' [name="note"]', 'אמא התקשרה שוב');
+    await page.click(f + ' button[type="submit"]');
+    await toastIs(page, /פרטי הליד נשמר/);
+    const TICKED = '✗ הפניה מפסיכיאטר | ✓ בדיקות דם | ✗ סיכום פסיכיאטר | ✗ סיכום רופא משפחה | ✗ אק״ג ופענוח';
+    assert.equal(srv.saves.filter((x) => x.action === 'saveAll').pop().leads[0].note, 'אמא התקשרה שוב\nמסמכי מכבי: ' + TICKED);
+    // 3. מכבי → private: out of the list, the tick parked
+    await page.click('#crm-drawer [data-lead-edit-open="P1"]');
+    await page.selectOption(f + ' [name="track"]', 'private');
+    await page.click(f + ' button[type="submit"]');
+    await toastIs(page, /הליד יצא מרשימת «מכבי» — השינוי נשמר/);
+    assert.equal(srv.saves.filter((x) => x.action === 'saveAll').pop().leads[0].note, 'אמא התקשרה שוב\nמסמכי מכבי (לא פעיל): ' + TICKED);
+    assert.equal(await page.locator('#crm-maccabi tr[data-maccabi-lead="P1"]').count(), 0);
+    assert.match(await page.textContent('#crm-maccabi-btn'), /מכבי\s*1/);
+    assert.doesNotMatch(await page.textContent('#crm-drawer .kv dl, #crm-drawer .kv'), /מסלול\s*מכבי/);
+    // 4. and back: the tick returns
+    await page.click('#crm-drawer [data-lead-edit-open="P1"]');
+    assert.equal(await page.inputValue(f + ' [name="track"]'), 'private');
+    assert.equal(await page.inputValue(f + ' [name="note"]'), 'אמא התקשרה שוב');
+    await page.selectOption(f + ' [name="track"]', 'maccabi');
+    await page.click(f + ' button[type="submit"]');
+    await toastIs(page, /הליד עבר לרשימת «מכבי» — השינוי נשמר/);
+    assert.equal(srv.saves.filter((x) => x.action === 'saveAll').pop().leads[0].note, 'אמא התקשרה שוב\nמסמכי מכבי: ' + TICKED);
+    await page.click('#crm-drawer-close');
+    await page.waitForSelector('#crm-maccabi tr[data-maccabi-lead="P1"]');
+    assert.equal(await page.$eval(btn, (b) => b.textContent.trim().charAt(0)), '✓');
+    // 5. a lead whose source says מכבי: private is refused with the reason; with the source changed it leaves
+    await page.click('#crm-maccabi td[data-open-lead="M1"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer [data-lead-edit-open="M1"]');
+    const n = srv.saves.length;
+    await page.selectOption(f + ' [name="track"]', 'private');
+    await page.click(f + ' button[type="submit"]');
+    assert.match(await page.textContent(f + ' [data-err="track"]'), /המקור או השם כוללים «מכבי» — הליד נשאר ברשימת מכבי/);
+    assert.equal(srv.saves.length, n, 'nothing sent');
+    await page.fill(f + ' [name="source"]', 'גוגל');
+    await page.click(f + ' button[type="submit"]');
+    await toastIs(page, /הליד יצא מרשימת «מכבי» — השינוי נשמר/);
+    const last = srv.saves.filter((x) => x.action === 'saveAll').pop().leads[0];
+    assert.deepEqual([last.id, last.source, last.note], ['M1', 'גוגל', '']);
+    assert.equal(await page.locator('#crm-maccabi tr[data-maccabi-lead="M1"]').count(), 0);
+    assert.equal(await noHScroll(page), true);
+    assert.deepEqual(errors, []);
+    // a phone: the control fits
+    const m = await open(browser, srv.port, 'dana', 390);
+    await m.page.click('#crm-burger'); await m.page.click('#crm-nav button[data-area="leads"]');
+    await m.page.click('.card[data-open-lead="P1"] .name');
+    await m.page.click('#crm-drawer [data-lead-edit-open="P1"]');
+    await m.page.selectOption(f + ' [name="track"]', 'maccabi');
+    assert.equal(await noHScroll(m.page), true, 'no horizontal scroll on a phone');
+    assert.deepEqual(m.errors, []);
+  } finally { DATA.leads = keep; saveAnswer = null; await browser.close(); srv.close(); }
+});
