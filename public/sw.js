@@ -421,7 +421,9 @@
 // (CHANGELOG-maccabi-leads.md). From the live v141; monotonic, v17 never reused.
 // v142 → v143: «זיכויים לתשלום»: «בטל זיכוי»
 // (CHANGELOG-cancel-refund.md). From the live v142; monotonic, v17 never reused.
-var CACHE_VERSION = 'v143';
+// v143 → v144: «עריכת פרטי הליד»: the whole lead edited in its CRM card
+// (CHANGELOG-crm-lead-full-edit.md). From v143 (the deployed branch); monotonic, v17 never reused.
+var CACHE_VERSION = 'v144';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
