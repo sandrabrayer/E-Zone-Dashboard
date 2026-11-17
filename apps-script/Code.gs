@@ -16636,7 +16636,8 @@ function computeContinuityByHouse_(outpatients, ym) {
  *                   see mwDischargeSet_). mode 'clear' / 'none' (15 Oct 2026,
  *                   CHANGELOG-managers-discharge-clear.md) clears the date or
  *                   marks «אין צפי לשחרור». houseData returns it per patient.
- *   op 'houseStaffCost' { house, month } → the caller's house per-worker
+ *   op 'houseStaffCost' { house, month } → the caller's house per-worker (with each
+ *                   worker's birthDate from staffing — 17 Nov 2026) —
  *                   month cost + budget lines (14 Nov 2026, mwHouseStaffCost_).
  *   op 'committeeSet' { house, patientName, entryDate, committeeDate, label,
  *                   previousDate, previousLabel, correction, mode } → the
@@ -17347,6 +17348,14 @@ function mwMoney_(v) {
   return Number.isFinite(n) ? Math.round(n) : 0;
 }
 
+/* A birth date from the staffing feed → 'YYYY-MM-DD' or ''. A real calendar date, not in the
+ * future and not before 1900 — anything else is dropped. */
+function mwBirthDateClean_(v) {
+  const iso = coordIsoDateClean_(v);
+  if (!iso) return '';
+  return (iso >= '1900-01-01' && iso <= todayISODate_()) ? iso : '';
+}
+
 function mwHouseStaffCost_(caller, params) {
   const ym = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(params.month || '')) ? String(params.month) : defaultMonth_();
   let d;
@@ -17400,8 +17409,12 @@ function mwHouseStaffCost_(caller, params) {
       if (!w || typeof w !== 'object') return;
       const name = coordTextClean_(w.name, 80);
       const k = name || '__other__';
-      if (!workers[k]) { workers[k] = { name: name, roles: [], cost: 0, estimated: false, endDate: '', ends_: [], open_: false }; order.push(k); }
+      if (!workers[k]) { workers[k] = { name: name, roles: [], cost: 0, estimated: false, endDate: '', ends_: [], open_: false, births_: [] }; order.push(k); }
       const t = workers[k];
+      // Birth date (17 Nov 2026, Sandra: «תוסיף תאריכי לידה בפרטי העובד … שזה ישאב
+      // מסטאפינג»): a real past date only; kept per entry and settled below.
+      const born = mwBirthDateClean_(w.birthDate);
+      if (born && t.births_.indexOf(born) < 0) t.births_.push(born);
       // The end date in this house: only when EVERY entry of the person ends.
       const end = coordIsoDateClean_(w.endDate);
       if (end) t.ends_.push(end); else t.open_ = true;
@@ -17430,7 +17443,10 @@ function mwHouseStaffCost_(caller, params) {
   const list = order.map(function (k) {
     const w = workers[k];
     return { name: w.name, roles: w.roles, cost: w.cost, estimated: w.estimated,
-      endDate: !w.open_ && w.ends_.length ? w.ends_.slice().sort()[w.ends_.length - 1] : '' };
+      endDate: !w.open_ && w.ends_.length ? w.ends_.slice().sort()[w.ends_.length - 1] : '',
+      // One date for a named person; '' when staffing has none, or when the merged
+      // entries disagree — never a guess, never on the unnamed remainder.
+      birthDate: w.name && w.births_.length === 1 ? w.births_[0] : '' };
   }).filter(function (w) { return w.cost !== 0; })
     .sort(function (a, b) { return (b.cost - a.cost) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0); })
     .slice(0, MW_STAFF_COST_MAX_WORKERS);

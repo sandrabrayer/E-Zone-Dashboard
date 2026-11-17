@@ -150,8 +150,8 @@ test('houseStaffCost: only the caller\'s house leaves — workers cleaned, round
   assert.strictEqual(r.ok, true);
   assert.strictEqual(r.house, 'ramot');
   assert.deepStrictEqual(r.staff.workers, [
-    { name: 'מדריכה ותיקה', roles: ['מדריך/ה'], cost: 10000, estimated: true, endDate: '' },
-    { name: 'bשני/b', roles: ['מדריך/ה', 'x'], cost: 7000, estimated: false, endDate: '' }]);
+    { name: 'מדריכה ותיקה', roles: ['מדריך/ה'], cost: 10000, estimated: true, endDate: '', birthDate: '' },
+    { name: 'bשני/b', roles: ['מדריך/ה', 'x'], cost: 7000, estimated: false, endDate: '', birthDate: '' }]);
   assert.strictEqual(r.staff.ending, null, 'a staffing feed without `ending` is null, never a made-up 0');
   assert.deepStrictEqual([r.staff.total, r.staff.budget, r.staff.available], [17000, 265000, true]);
   assert.deepStrictEqual(r.staff.budgetLines, [{ key: 'instructors', label: 'מדריכים', budget: 120000, cost: 17000 }]);
@@ -163,7 +163,7 @@ test('houseStaffCost: only the caller\'s house leaves — workers cleaned, round
 test('houseStaffCost: pardes + hapardes merge per person and per budget line; cached per month', () => {
   const t = withStaff(SFEED);
   const r = t.call({ op: 'houseStaffCost', month: '2026-11', house: 'pardes', role: 'manager', actor: 'חן', actorId: 'person-chen' });
-  assert.deepStrictEqual(r.staff.workers, [{ name: 'טבחית', roles: ['טבח/ית'], cost: 3000, estimated: true, endDate: '' }]);
+  assert.deepStrictEqual(r.staff.workers, [{ name: 'טבחית', roles: ['טבח/ית'], cost: 3000, estimated: true, endDate: '', birthDate: '' }]);
   assert.deepStrictEqual(r.staff.budgetLines, [{ key: 'cook', label: 'טבחים', budget: 10000, cost: 3000 }]);
   assert.strictEqual(r.staff.total, 4500);
   t.call({ op: 'houseStaffCost', month: '2026-11', ...ORAN });
@@ -293,4 +293,30 @@ test('houseData: the lead id never rides on the in-house rows other callers read
   const rows = t.g.run("JSON.stringify(mwInHousePatients_(readPatientsForBonus_(), MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID.ramot, parseDate_(todayISODate_())))");
   assert.ok(!rows.includes('L77') && !rows.includes('fromLead'), 'non-enumerable: not serialised, not spread');
   assert.strictEqual(t.g.run("mwInHousePatients_(readPatientsForBonus_(), MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID.ramot, parseDate_(todayISODate_()))[0].fromLead"), 'L77');
+});
+
+/* ---- 17 Nov 2026: each worker's birth date from staffing, for the managers' employee card ---- */
+
+test('houseStaffCost: birthDate passes only as a real past date, for a named worker of the caller\'s own house; merged entries must agree', () => {
+  const W = (name, birthDate, extra) => Object.assign({ name, roles: [], cost: 100, estimated: true, endDate: '', birthDate }, extra || {});
+  const feed = { month: '2026-11', hasActuals: false, houses: {
+    ramot: { projectedTotal: 600, budget: null, budgetLines: [], workers: [
+      W('יש תאריך', '1990-05-01'), W('אין תאריך', ''), W('בלי שדה'), W('עתידי', '2090-01-01'), W('עתיק', '1850-01-01'),
+      W('זבל', '<b>1990-05-01</b>', { address: 'SECRET-ADDRESS', pension: 'by_law' }), W('', '1980-01-01')] },
+    asher: { projectedTotal: 100, budget: null, budgetLines: [], workers: [W('בית אחר', '1977-07-07')] },
+    pardes: { projectedTotal: 300, budget: null, budgetLines: [], workers: [W('אותו אדם', '1988-08-08'), W('סותר', '1988-08-08'), W('רק באחד', '')] },
+    hapardes: { projectedTotal: 300, budget: null, budgetLines: [], workers: [W('אותו אדם', '1988-08-08'), W('סותר', '1999-09-09'), W('רק באחד', '1991-01-01')] },
+  } };
+  const t = withStaff(feed);
+  const r = t.call({ op: 'houseStaffCost', month: '2026-11', ...ORAN });
+  const by = Object.fromEntries(r.staff.workers.map((w) => [w.name, w.birthDate]));
+  assert.deepStrictEqual(by, { 'יש תאריך': '1990-05-01', 'אין תאריך': '', 'בלי שדה': '', 'עתידי': '', 'עתיק': '', 'זבל': '', '': '' });
+  r.staff.workers.forEach((w) => assert.deepStrictEqual(Object.keys(w).sort(), ['birthDate', 'cost', 'endDate', 'estimated', 'name', 'roles']));
+  const text = JSON.stringify(r);
+  for (const leak of ['SECRET-ADDRESS', 'by_law', '1977-07-07', '1980-01-01', 'בית אחר']) assert.ok(!text.includes(leak), 'leaked ' + leak);
+  const pardes = t.call({ op: 'houseStaffCost', month: '2026-11', house: 'pardes', role: 'admin', actor: 'סנדרה', actorId: 'person-sandra' });
+  assert.deepStrictEqual(Object.fromEntries(pardes.staff.workers.map((w) => [w.name, w.birthDate])),
+    { 'אותו אדם': '1988-08-08', 'סותר': '', 'רק באחד': '1991-01-01' }, 'the same date once; two different dates → none');
+  // behind the same secret
+  assert.strictEqual(arr(t.g.post({ action: 'managersWork', secret: 'wrong', op: 'houseStaffCost', month: '2026-11', ...ORAN })).error, 'unauthorized');
 });
