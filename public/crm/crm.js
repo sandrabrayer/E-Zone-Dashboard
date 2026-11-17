@@ -3921,12 +3921,10 @@
     }
 
     function renderLeads(c) {
-      const owners = {};
-      c.leads.forEach(function (l) { if (l.assignedTo) owners[l.assignedTo] = true; });
       const f = state.filters;
       const toolbar = '<div class="toolbar"><div class="seg"><button type="button" data-view="board" aria-pressed="' + (state.view === 'board') + '">לוח</button><button type="button" data-view="table" aria-pressed="' + (state.view === 'table') + '">טבלה</button></div>'
         + '<select id="f-house"><option value="">כל הבתים</option>' + HOUSES.filter(function (h) { return h.id !== 'sde'; }).map(function (h) { return '<option value="' + esc(h.name) + '"' + (f.house === h.name ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select>'
-        + '<select id="f-owner"><option value="">כל האחראים</option>' + Object.keys(owners).map(function (o) { return '<option' + (f.owner === o ? ' selected' : '') + '>' + esc(o) + '</option>'; }).join('') + '</select>'
+        + '<select id="f-owner"><option value="">כל האחראים</option>' + ASSIGNEES.map(function (o) { return '<option' + (f.owner === o ? ' selected' : '') + '>' + esc(o) + '</option>'; }).join('') + '</select>'
         + '<button type="button" class="btn primary" id="crm-new-lead">+ ליד חדש</button>'
         + '<button type="button" class="btn" data-view="maccabi" id="crm-maccabi-btn" aria-pressed="' + (state.view === 'maccabi') + '">מכבי <span class="n chip">' + c.leads.filter(isMaccabiLead).length + '</span></button>'
         + '<button type="button" class="btn" data-view="closed" aria-pressed="' + (state.view === 'closed') + '">לידים סגורים</button>'
