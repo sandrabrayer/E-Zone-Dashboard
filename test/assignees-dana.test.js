@@ -28,3 +28,12 @@ test('Code.gs CREATE_LEAD_ASSIGNEES: the current three first, the two legacy nam
   assert.deepStrictEqual(Array.from(g.run('CREATE_LEAD_ASSIGNEES')), ['ורד', 'דנה', 'סנדרה', 'שירן', 'יעל']);
   assert.match(GS_SRC, /const CREATE_LEAD_ASSIGNEES = \['ורד', 'דנה', 'סנדרה', 'שירן', 'יעל'\];/);
 });
+
+test('CRM leads «אחראי» filter lists only the current owners (never derived from lead data) — legacy-owner leads stay visible under «כל האחראים»', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.js'), 'utf8');
+  const start = src.indexOf('function renderLeads(c)');
+  const block = src.slice(start, src.indexOf("'<button type=\"button\" class=\"btn primary\" id=\"crm-new-lead\">", start));
+  assert.ok(block.includes('id="f-owner"') && block.includes('ASSIGNEES.map('), 'filter options come from ASSIGNEES');
+  assert.ok(!/Object\.keys\(owners\)|assignedTo\) owners/.test(block), 'not built from the leads data');
+  assert.ok(!/שירן|יעל/.test(block));
+});
