@@ -1173,6 +1173,30 @@
     const list = filterLeads(leads, f);
     return STAGES.map(function (st) { return { stage: st, leads: list.filter(function (l) { return l.stage === st.id; }) }; });
   }
+  /* «לא רלוונטי» board column (CHANGELOG-crm-not-relevant-column.md): the leads
+   * CLOSED as «לא רלוונטי» in the last NOT_RELEVANT_DAYS days, newest first, under
+   * the board's own house / owner / search filter. Read from getData's
+   * irrelevantLeads only — never from `leads` — so it adds nothing to any count
+   * (funnel, KPI, «היום שלי», the menu badge, «מכבי»). Older ones stay in
+   * «לידים סגורים». Pure. */
+  const NOT_RELEVANT_DAYS = 30;
+  const NOT_RELEVANT_REASONS = ['לא עונה', 'בחר/ה מקום אחר', 'לא מתאים/ה קלינית', 'המחיר', 'רק בירור', 'לא מעוניין/ת'];
+  function notRelevantColumn(closed, f, today, days) {
+    const n = Number(days) > 0 ? Math.floor(Number(days)) : NOT_RELEVANT_DAYS;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s(today))) return [];
+    const from = addDays(s(today), -n);
+    const q = s(f && f.q).toLowerCase(), house = s(f && f.house), owner = s(f && f.owner);
+    return (Array.isArray(closed) ? closed : []).filter(function (l) {
+      if (!l || typeof l !== 'object' || !s(l.id)) return false;
+      if (closedDisposition(l) !== 'not_relevant') return false;
+      const day = s(l.movedAt).slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || day < from) return false;
+      if (house && houseName(l.house) !== houseName(house)) return false;
+      if (owner && s(l.assignedTo) !== owner) return false;
+      if (q && (s(l.name) + ' ' + s(l.phone) + ' ' + houseName(l.house)).toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    }).sort(function (a, b) { return s(b.movedAt).localeCompare(s(a.movedAt)); });
+  }
   function nextActionFor(l, today, fl) {
     if (reportUnseen(l)) return { text: 'דיווח מנהל/ת חדש', state: 'today' };
     const change = patientMeetingChange(l, fl);
@@ -3940,9 +3964,10 @@
             const inH = leadAlreadyInHouse(l, c.patients, c.leads);
             return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + (inH ? ' <span class="chip late">שם/טלפון דומה בבית ' + esc(houseName(inH.houseId)) + '</span>' : '') + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip src">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? avatar(l.assignedTo) : '') + '</div>'
               + (l.created ? '<div class="meta"><span>נוצר ' + esc(fmtDate(l.created)) + '</span>' + (l.visitDate ? '<span>פגישה ' + esc(fmtDate(l.visitDate)) + (l.visitTime ? ' ' + esc(l.visitTime) : '') + '</span>' : '') + '</div>' : '')
-              + '<div class="next">' + chip(na.state, na.text) + (waitChipText(l, flagsOf(state.index, l.id)) && waitChipText(l, flagsOf(state.index, l.id)) !== na.text ? ' ' + chip('wait', waitChipText(l, flagsOf(state.index, l.id))) : '') + (stageAfter(l.stage) ? ' <button type="button" class="btn small" data-stage-next="' + esc(l.id) + '">שלב הבא ←</button>' : '') + '</div></div>';
+              + '<div class="next">' + chip(na.state, na.text) + (waitChipText(l, flagsOf(state.index, l.id)) && waitChipText(l, flagsOf(state.index, l.id)) !== na.text ? ' ' + chip('wait', waitChipText(l, flagsOf(state.index, l.id))) : '') + (stageAfter(l.stage) ? ' <button type="button" class="btn small" data-stage-next="' + esc(l.id) + '">שלב הבא ←</button>' : '')
+              + ' <button type="button" class="btn small quiet" data-quick-close="' + esc(l.id) + '" title="סגירת הליד כלא רלוונטי">לא רלוונטי ✕</button></div></div>';
           }).join('') + '</div>';
-        }).join('') + '</div>';
+        }).join('') + notRelevantColHtml(f) + '</div>';
       }
       const list = filterLeads(c.leads, f).slice().sort(function (a, b) { return s(a[state.sort]).localeCompare(s(b[state.sort])); });
       const cols = [['name', 'שם'], ['house', 'בית'], ['source', 'מקור'], ['assignedTo', 'אחראי'], ['stage', 'שלב'], ['visitDate', 'פגישה'], ['created', 'נוצר']];
@@ -3951,6 +3976,37 @@
         + '</tbody></table></div>' + (list.length === 0 ? '<div class="crm-state">אין לידים התואמים לסינון</div>' : '');
     }
 
+    /* The «לא רלוונטי» column (CHANGELOG-crm-not-relevant-column.md): display-only; «שחזור» = the «לידים סגורים» restore. */
+    function notRelevantColHtml(f) {
+      const list = notRelevantColumn(state.data && state.data.irrelevantLeads, f, state.today);
+      return '<div class="col" data-stage="not_relevant"><h3><span>לא רלוונטי <small>(' + NOT_RELEVANT_DAYS + ' יום)</small></span><span class="n">' + list.length + '</span></h3>'
+        + (list.length ? '' : '<p class="na col-empty">אין לידים שנסגרו כלא רלוונטיים ב-' + NOT_RELEVANT_DAYS + ' הימים האחרונים</p>')
+        + list.map(function (l) {
+          const note = s(l.not_relevant_note);
+          return '<div class="card closed" data-closed-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + '</div>'
+            + '<div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (s(l.assignedTo) ? avatar(s(l.assignedTo)) : '') + '</div>'
+            + '<div class="meta"><span>נסגר ' + esc(fmtDate(s(l.movedAt).slice(0, 10))) + '</span></div>'
+            + (note ? '<div class="meta reason" title="' + esc(note) + '">' + esc(note.length > 80 ? note.slice(0, 80) + '…' : note) + '</div>' : '')
+            + '<div class="next"><button type="button" class="btn small" data-restore-lead="' + esc(l.id) + '">שחזור ל«' + esc(stageLabel(s(l.originSheet) || 'new')) + '»</button></div></div>';
+        }).join('') + '<p class="na col-foot">ישנים יותר — ב«לידים סגורים»</p></div>';
+    }
+    /* «לא רלוונטי ✕» on a board card: a small drawer, the disposition fixed to
+     * not_relevant, a reason required (closeLeadErrors). Submits through the SAME
+     * data-form="close" handler → closeLeadAction (optimistic + rollback). */
+    function openQuickCloseDrawer(id) {
+      const c = compute(state.data, state.today);
+      const l = c.leads.filter(function (x) { return x.id === s(id); })[0];
+      if (!l) { toast('הליד לא נמצא — ייתכן שנסגר או הועבר. רענני את הדף.', true); return; }
+      const dr = $('#crm-drawer');
+      dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(l.name) + '</h2><div class="meta">סגירה כלא רלוונטי · ' + esc(houseName(l.house) || '—') + ' · ' + esc(stageLabel(l.stage)) + '</div></div><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>'
+        + '<form data-form="close" data-lead="' + esc(l.id) + '" class="quick-close" novalidate><input type="hidden" name="disposition" value="not_relevant">'
+        + '<label class="wide">סיבה * <input name="note" type="text" maxlength="500" required list="crm-nr-reasons" autocomplete="off"><datalist id="crm-nr-reasons">' + NOT_RELEVANT_REASONS.map(function (r) { return '<option value="' + esc(r) + '">'; }).join('') + '</datalist><span class="err" data-err="note"></span><span class="err" data-err="disposition"></span></label>'
+        + '<p class="na wide">הליד יעבור לעמודת «לא רלוונטי» ול«לידים סגורים», ואפשר לשחזר אותו משם.</p>'
+        + '<div class="wide"><button type="submit" class="btn primary">סגירה כלא רלוונטי</button> <button type="button" class="btn" data-cancel-drawer="1">ביטול</button></div></form>';
+      dr.setAttribute('aria-hidden', 'false'); $('#crm-scrim').setAttribute('data-open', 'true');
+      state.drawer = { kind: 'lead', id: l.id, tab: 'overview', quickClose: true };
+      const first = dr.querySelector('[name="note"]'); if (first) first.focus();
+    }
     function renderClosedLeads() {
       const list = (state.data && Array.isArray(state.data.irrelevantLeads) ? state.data.irrelevantLeads : []).slice()
         .sort(function (a, b) { return s(b.movedAt).localeCompare(s(a.movedAt)); });
@@ -6568,7 +6624,7 @@
       // <a target=_blank> to another origin, so open it from the click (never blocked), else navigate.
       const wa = ev.target.closest ? ev.target.closest('a[data-wa-manager]') : null;
       if (wa) { ev.preventDefault(); const w = win.open ? win.open(wa.href, '_blank', 'noopener') : null; if (!w) win.location.href = wa.href; return; }
-      const t = ev.target.closest ? ev.target.closest('#crm-new-maccabi,[data-maccabi-doc],[data-maccabi-copy],[data-stay-reset],[data-stay-csv],[data-bonus-month],#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],[data-month-step],[data-month-pick],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const t = ev.target.closest ? ev.target.closest('#crm-new-maccabi,[data-maccabi-doc],[data-maccabi-copy],[data-stay-reset],[data-stay-csv],[data-bonus-month],#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-quick-close],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],[data-month-step],[data-month-pick],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.kpiPeriod) { state.kpiPeriod = t.dataset.kpiPeriod; return renderMain(); }
       if (t.dataset.monthStep) {
@@ -6657,6 +6713,7 @@
       if (t.id === 'crm-direct-add') return openDirectAddDrawer();
       if (t.dataset.removeLead) { ev.preventDefault(); if (!state.saving) removeLeadAction(t.dataset.removeLead); return; }
       if (t.dataset.restoreLead) { ev.preventDefault(); if (!state.saving) restoreLeadAction(t.dataset.restoreLead); return; }
+      if (t.dataset.quickClose) { ev.preventDefault(); ev.stopPropagation(); if (!state.saving) openQuickCloseDrawer(t.dataset.quickClose); return; }
       if (t.dataset.stageNext) { ev.preventDefault(); ev.stopPropagation(); if (!state.saving) moveStage(t.dataset.stageNext, 1); return; }
       if (t.dataset.stagePrev) { ev.preventDefault(); ev.stopPropagation(); if (!state.saving) moveStage(t.dataset.stagePrev, -1); return; }
       if (t.id === 'crm-drawer-close' || t.id === 'crm-scrim' || t.dataset.cancelDrawer) { if (!leaveLeadEdit()) return; closeDrawer(); menuEl.removeAttribute('data-open'); $('#crm-scrim').removeAttribute('data-open'); return; }
@@ -7270,7 +7327,7 @@
   }
 
   return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, landingArea: landingArea, activePatientsCard: activePatientsCard, monthOccupancy: monthOccupancy, occupancyTrend: occupancyTrend, monthRevenue: monthRevenue, monthShift: monthShift, monthLabelHe: monthLabelHe, monthKeyOk: monthKeyOk, normalise: normalise, compute: compute, filterLeads: filterLeads,
-    board: board, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
+    board: board, NOT_RELEVANT_DAYS: NOT_RELEVANT_DAYS, NOT_RELEVANT_REASONS: NOT_RELEVANT_REASONS, notRelevantColumn: notRelevantColumn, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
     occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, whenLocal: whenLocal, esc: esc, boot: boot, accountTabVisible: accountTabVisible, accountReadable: accountReadable, receiptVerifyChip: receiptVerifyChip, canVerifyReceipt: canVerifyReceipt, verifyBody: verifyBody, verifyAccepted: verifyAccepted, verifyRefusal: verifyRefusal, applyVerified: applyVerified, partialVerifyCheck: partialVerifyCheck, partialVerifyBody: partialVerifyBody, partialAccepted: partialAccepted, applyPartial: applyPartial, unverifiedReceipts: unverifiedReceipts, unverifiedTotal: unverifiedTotal, billingFind: billingFind, FIND_RECEIPTS_CAP: FIND_RECEIPTS_CAP, PAY_KINDS: PAY_KINDS, payKindCheck: payKindCheck, payKindPreview: payKindPreview, CONFIRM_LABELS: CONFIRM_LABELS, RECEIPT_ROWS_CAP: RECEIPT_ROWS_CAP, clearCachedPages: clearCachedPages,
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
     stageAfter: stageAfter, stageBefore: stageBefore, applyLeadPatch: applyLeadPatch, leadSaveBody: leadSaveBody, saveRefusal: saveRefusal,

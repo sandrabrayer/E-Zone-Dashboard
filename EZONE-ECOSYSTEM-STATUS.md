@@ -1,4 +1,14 @@
-# E-ZONE Ecosystem Status — updated November 17, 2026
+# E-ZONE Ecosystem Status — updated November 19, 2026
+
+## Dashboard CRM — «לא רלוונטי» column on the leads board — November 19, 2026
+
+CRM only (no Code.gs, no new action, no schema change). Every board card has
+«לא רלוונטי ✕»: a short drawer with the status fixed to «לא רלוונטי» and a required
+reason. It saves through the existing `moveLeadIrrelevant` (optimistic + rollback). A
+new last column «לא רלוונטי (30 יום)» lists the leads closed that way in the last 30 days
+(board filters apply) with «שחזור» (the existing `restoreLead`). It reads
+`irrelevantLeads` only, so no count changes. Older ones stay in «לידים סגורים».
+SW cache v147. See `CHANGELOG-crm-not-relevant-column.md`.
 
 ## Dashboard CRM — «מסלול» פרטי ⇄ מכבי: a private lead moves to the «מכבי» list — November 17, 2026
 

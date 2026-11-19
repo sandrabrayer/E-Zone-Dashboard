@@ -226,7 +226,8 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     await page.click('.kpi[data-domain="newleads"]');
     // «פניות»: board, filter, table keeps the filter
     await page.click('#crm-nav button[data-area="leads"]');
-    assert.equal(await page.$$eval('.col', (els) => els.length), 4);
+    assert.equal(await page.$$eval('.col', (els) => els.length), 5, 'four stages + «לא רלוונטי» (CHANGELOG-crm-not-relevant-column.md)');
+    assert.equal(await page.$$eval('.col:not([data-stage="not_relevant"])', (els) => els.length), 4);
     if (process.env.CRM_SHOT) await page.screenshot({ path: process.env.CRM_SHOT + '/board-1366.png', fullPage: false });
     await page.selectOption('#f-house', 'רמות השבים');
     const onBoard = await page.$$eval('.card .name', (els) => els.map((e) => e.textContent));
@@ -1209,6 +1210,70 @@ test('C4 lead actions (Vered): «שלב הבא» on a card posts ONE lead to sav
     assert.match(await page.textContent('#crm-drawer'), /11:30/);
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
+});
+
+test('«לא רלוונטי» column (Vered, CHANGELOG-crm-not-relevant-column.md): the card button opens a reason-only drawer; no reason posts nothing; a save posts ONE moveLeadIrrelevant and the card lands in the column; a refusal rolls back; «שחזור» restores; old / other closures stay out; 390 px no page overflow', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const seeded = [
+    { id: 'C-recent', name: 'נגה סלע', house: 'רמות השבים', stage: 'irrelevant', originSheet: 'visit', movedAt: daysAgo(3) + 'T08:00:00.000Z', disposition: 'not_relevant', not_relevant_note: '<b>בחר מקום אחר</b>', assignedTo: 'ורד' },
+    { id: 'C-old', name: 'ישנה מאוד', house: 'רמות השבים', stage: 'irrelevant', originSheet: 'new', movedAt: daysAgo(45) + 'T08:00:00.000Z', disposition: 'not_relevant', not_relevant_note: 'x' },
+    { id: 'C-done', name: 'סיימה טיפול', house: 'רמות השבים', stage: 'irrelevant', originSheet: 'paid', movedAt: daysAgo(2) + 'T08:00:00.000Z', disposition: 'completed', not_relevant_note: 'x' },
+  ];
+  DATA.irrelevantLeads.push(...seeded);
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="leads"]');
+    const col = '.board .col[data-stage="not_relevant"]';
+    await page.waitForSelector(col);
+    assert.equal(await page.evaluate(() => [...document.querySelectorAll('.board > .col')].pop().dataset.stage), 'not_relevant', 'the last column');
+    assert.deepEqual(await page.$$eval(col + ' [data-closed-lead]', (els) => els.map((e) => e.dataset.closedLead)), ['C-recent'], '30 days, not_relevant only');
+    assert.equal(await page.textContent(col + ' h3 .n'), '1');
+    assert.equal(await page.$(col + ' [data-closed-lead] b'), null, 'the reason is text, never HTML');
+    const navBadge = await page.textContent('#crm-nav button[data-area="leads"]');
+    // 1. card button → drawer; an empty reason posts nothing
+    await page.click('.card[data-open-lead="L6"] [data-quick-close]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"] form.quick-close');
+    assert.equal(await page.evaluate(() => document.activeElement && document.activeElement.name), 'note');
+    if (process.env.CRM_SHOT) { await page.waitForTimeout(500); await page.screenshot({ path: process.env.CRM_SHOT + '/not-relevant-drawer.png' }); }
+    await page.click('#crm-drawer form.quick-close button[type="submit"]');
+    assert.match(await page.textContent('#crm-drawer [data-err="note"]'), /סיבה/);
+    assert.equal(srv.saves.length, 0);
+    // 2. a refusal rolls the card back
+    saveAnswer = () => ({ ok: false, error: 'lock_timeout', message: 'נכשל לשמור' });
+    await page.fill('#crm-drawer form.quick-close [name="note"]', 'לא עונה');
+    await page.click('#crm-drawer form.quick-close button[type="submit"]');
+    await page.waitForFunction(() => { const t = document.querySelector('#crm-toast'); return !!t && /נכשל לשמור/.test(t.textContent); }, null, { timeout: 5000 });
+    assert.ok(await page.$('.card[data-open-lead="L6"]'), 'rolled back to the board');
+    assert.equal(await page.$(col + ' [data-closed-lead="L6"]'), null);
+    saveAnswer = null;
+    // 3. a save: ONE moveLeadIrrelevant, disposition not_relevant + the reason; the card moves to the column
+    await page.click('.card[data-open-lead="L6"] [data-quick-close]');
+    await page.fill('#crm-drawer form.quick-close [name="note"]', 'בחר/ה מקום אחר');
+    await page.click('#crm-drawer form.quick-close button[type="submit"]');
+    await page.waitForSelector(col + ' [data-closed-lead="L6"]', { timeout: 5000 });
+    const moves = srv.saves.filter((b) => b.action === 'moveLeadIrrelevant');
+    assert.equal(moves.length, 2, 'the refused try + this one');
+    const last = moves[1].lead;
+    assert.deepEqual([last.id, last.disposition, last.not_relevant_note, last.originSheet, last.stage], ['L6', 'not_relevant', 'בחר/ה מקום אחר', 'new', 'irrelevant']);
+    assert.equal(await page.$('.card[data-open-lead="L6"]'), null, 'off the stage columns');
+    assert.deepEqual(await page.$$eval(col + ' [data-closed-lead]', (els) => els.map((e) => e.dataset.closedLead)), ['L6', 'C-recent'], 'newest first');
+    if (process.env.CRM_SHOT) { await page.waitForTimeout(500); await page.evaluate(() => document.querySelector('.col[data-stage="not_relevant"]').scrollIntoView({ inline: 'center' })); await page.screenshot({ path: process.env.CRM_SHOT + '/not-relevant-column.png' }); }
+    assert.equal(await page.textContent('#crm-drawer[aria-hidden="true"]') !== null, true);
+    assert.notEqual(await page.textContent('#crm-nav button[data-area="leads"]'), navBadge, 'the open-lead badge counts one fewer');
+    // 4. «שחזור» from the column → restoreLead, back to its stage
+    await page.click(col + ' [data-closed-lead="C-recent"] [data-restore-lead]');
+    await page.waitForSelector('.col[data-stage="visit"] .card[data-open-lead="C-recent"]', { timeout: 5000 });
+    assert.equal(srv.saves.filter((b) => b.action === 'restoreLead').pop().lead.id, 'C-recent');
+    assert.equal(await page.$(col + ' [data-closed-lead="C-recent"]'), null);
+    assert.deepEqual(errors, []);
+    // 5. 390 px: the board scrolls inside itself, the page does not
+    const narrow = await open(browser, srv.port, 'vered', 390);
+    await narrow.page.click('#crm-burger');
+    await narrow.page.click('#crm-nav button[data-area="leads"]');
+    await narrow.page.waitForSelector(col);
+    assert.ok(await noHScroll(narrow.page), 'no page overflow at 390 px');
+  } finally { DATA.irrelevantLeads.length = 0; await browser.close(); srv.close(); }
 });
 
 test('C5 lead lifecycle (Vered): new lead form validates and posts one new row; close moves the lead to «לידים סגורים»; restore brings it back; remove', { skip: skip && 'playwright/chromium missing' }, async () => {
