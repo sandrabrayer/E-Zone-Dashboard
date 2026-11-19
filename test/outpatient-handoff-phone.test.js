@@ -55,6 +55,43 @@ test('A: no lead phone → PatientPhones by patientId, then by unique name; ambi
   assert.equal(lead.prep({ dischargeId: 'aud-r', manual: true }).payload.phone, '0501234567');
 });
 
+test('A: the source lead has no main phone → billingPhone, then contactPhone (CHANGELOG-outpatient-phone-fallback.md)', () => {
+  // Michal's case: the lead carries the number only in «טלפון לגבייה ועדכונים» / the contact person
+  const billing = world({ discharged: [ROW({ fromLead: 'L1' })],
+    leads: [{ id: 'L1', name: 'מיכל גרנט', phone: '', billingPhone: '0541234567', contactPhone: '0509998888', stage: 'admitted' }] });
+  assert.equal(billing.prep({ dischargeId: 'aud-r', manual: true }).payload.phone, '0541234567', 'billingPhone when no main phone');
+  const contact = world({ discharged: [ROW({ fromLead: 'L1' })],
+    leads: [{ id: 'L1', name: 'מיכל גרנט', phone: '', billingPhone: '', contactPhone: '052-765 4321', stage: 'admitted' }] });
+  assert.equal(contact.prep({ dischargeId: 'aud-r', manual: true }).payload.phone, '0527654321', 'contactPhone when no main and no billing');
+  // the main phone still wins over both
+  const main = world({ discharged: [ROW({ fromLead: 'L1' })],
+    leads: [{ id: 'L1', name: 'מיכל גרנט', phone: '0501234567', billingPhone: '0541111111', contactPhone: '0502222222', stage: 'admitted' }] });
+  assert.equal(main.prep({ dischargeId: 'aud-r', manual: true }).payload.phone, '0501234567');
+  // a landline in the contact field is accepted (handoff rule); junk is not
+  const land = world({ discharged: [ROW({ fromLead: 'L1' })],
+    leads: [{ id: 'L1', name: 'מיכל גרנט', phone: '', billingPhone: 'לא ידוע', contactPhone: '09-7654321', stage: 'admitted' }] });
+  assert.equal(land.prep({ dischargeId: 'aud-r', manual: true }).payload.phone, '097654321');
+  const none = world({ discharged: [ROW({ fromLead: 'L1' })],
+    leads: [{ id: 'L1', name: 'מיכל גרנט', phone: '', billingPhone: '', contactPhone: '', stage: 'admitted' }] });
+  assert.equal(none.prep({ dischargeId: 'aud-r', manual: true }).payload.phone, '', 'truly no number anywhere → still asked');
+});
+
+test('A: the fallback flows through the discharged roster too (buildLeadPhoneIndex_ by fromLead)', () => {
+  const g = loadGs();
+  const put = (name, colsExpr, rows) => {
+    const cols = Array.from(g.run(colsExpr));
+    const sh = richSheet(name, cols);
+    rows.forEach((r) => sh.grid.push(cols.map((c) => r[c] ?? '')));
+    g.sandbox.__sheets[name] = sh;
+  };
+  put('Leads', 'LEAD_COLUMNS', [{ id: 'L1', name: 'מיכל גרנט', phone: '', billingPhone: '0541234567', stage: 'admitted' }]);
+  put('Patients', 'PATIENT_COLUMNS', [{ id: 'p1', name: 'מיכל גרנט', houseId: 'ramot', date: '2026-07-22', status: 'released', exitDate: '2026-11-19', fromLead: 'L1' }]);
+  const r = plain(g.sandbox.getDischargedRoster_());
+  assert.equal(r.ok, true);
+  const row = r.patients.filter((x) => x.name === 'מיכל גרנט')[0];
+  assert.equal(row.phone, '0541234567', 'the roster resolves the billing phone through the fromLead link');
+});
+
 test('A: a typed phone is validated, kept in PatientPhones (update by patientId, else append) and used — the phone never reaches the audit', () => {
   const w = world({ discharged: [ROW()] });
   assert.deepEqual(w.prep({ dischargeId: 'aud-r', manual: true, phone: '12345' }), { ok: false, error: 'bad_phone' });
