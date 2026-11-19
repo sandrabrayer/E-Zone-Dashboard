@@ -427,7 +427,9 @@
 // (CHANGELOG-crm-lead-payer-switch.md). From v144 (the deployed branch); monotonic, v17 never reused.
 // v145 → v146: the CRM leads «אחראי» filter lists only the current owners
 // (CHANGELOG-remove-shiran-owner-filter.md). From v145 (the deployed branch); monotonic, v17 never reused.
-var CACHE_VERSION = 'v146';
+// v146 → v147: the CRM leads board gains the «לא רלוונטי» column and a
+// «לא רלוונטי ✕» card action (CHANGELOG-crm-not-relevant-column.md). From v146; monotonic.
+var CACHE_VERSION = 'v147';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

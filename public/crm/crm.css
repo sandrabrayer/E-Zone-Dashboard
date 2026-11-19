@@ -74,7 +74,7 @@ a { color: var(--primary); }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
 .seg button { background: transparent; border: 0; padding: 7px 12px; cursor: pointer; }
 .seg button[aria-pressed="true"] { background: var(--panel-2); }
-.board { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 10px; overflow-x: auto; }
+.board { display: grid; grid-template-columns: repeat(5, minmax(220px, 1fr)); gap: 10px; overflow-x: auto; }
 .col { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; min-height: 120px; }
 .col h3 { margin: 0 0 8px; font-size: 14px; display: flex; justify-content: space-between; }
 .card { background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; cursor: pointer; }
@@ -121,7 +121,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
   .crm-main { padding: 12px 16px 32px; }
   .row { grid-template-columns: 1fr 1fr; }
   .row.h { display: none; }
-  .board { grid-template-columns: repeat(4, 80vw); }
+  .board { grid-template-columns: repeat(5, 80vw); }
   .kpis { grid-template-columns: repeat(2, 1fr); }
 }
 
@@ -459,3 +459,15 @@ details.act form.lead-edit label { flex: 1 1 160px; min-width: 0; }
 details.act form.lead-edit .wide { flex-basis: 100%; margin: 0; }
 details.act form.lead-edit .err { color: var(--bad); font-size: 12px; }
 details.act form.lead-edit .err:empty { display: none; }
+
+/* ---- «לא רלוונטי» board column + card action (CHANGELOG-crm-not-relevant-column.md) ---- */
+.col[data-stage="not_relevant"] h3 { background: #55636F; color: #fff; }
+.col[data-stage="not_relevant"] h3 small { font-weight: 400; opacity: .85; }
+.col[data-stage="not_relevant"] .card.closed { cursor: default; background: var(--panel); border-style: dashed; }
+.col[data-stage="not_relevant"] .card.closed:hover { transform: none; box-shadow: var(--shadow); border-color: var(--border); }
+.col[data-stage="not_relevant"] .card .reason { font-style: italic; overflow-wrap: anywhere; }
+.col[data-stage="not_relevant"] .col-empty, .col[data-stage="not_relevant"] .col-foot { margin: 4px 10px; font-size: 12px; }
+.btn.small.quiet { background: transparent; color: var(--text-muted); border-color: var(--border); }
+.btn.small.quiet:hover { color: var(--c-late); border-color: var(--c-late); }
+.quick-close { display: grid; gap: 10px; padding: 12px 16px; }
+.quick-close input[name="note"] { width: 100%; }
