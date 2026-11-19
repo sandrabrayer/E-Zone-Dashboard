@@ -26,8 +26,9 @@ function loadSw() {
 }
 const sw = loadSw();
 
-test('sw.js: v148 (monotonic from the live v93 via v94…v131, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
-  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v148');
+test('sw.js: v149 (monotonic from the live v93 via v94…v131, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
+  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v149');
+  assert.ok(SW_SRC.includes('v148 → v149:') && SW_SRC.includes('CHANGELOG-crm-native-patient-edit.md'));
   assert.ok(SW_SRC.includes('v146 → v147:') && SW_SRC.includes('CHANGELOG-crm-not-relevant-column.md'));
   assert.ok(SW_SRC.includes('v147 → v148:') && SW_SRC.includes('CHANGELOG-meeting-report-in-managers.md'));
   assert.ok(SW_SRC.includes('v145 → v146:') && SW_SRC.includes('CHANGELOG-remove-shiran-owner-filter.md'));

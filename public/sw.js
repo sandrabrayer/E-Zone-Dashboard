@@ -431,7 +431,9 @@
 // «לא רלוונטי ✕» card action (CHANGELOG-crm-not-relevant-column.md). From v146; monotonic.
 // v147 → v148: «למה לא התקיימה?» on /meeting-report + the reason in Vered's
 // views (CHANGELOG-meeting-report-in-managers.md). From v147; monotonic.
-var CACHE_VERSION = 'v148';
+// v148 → v149: the patient card is edited in the CRM (name + fields); no link
+// to the classic page (CHANGELOG-crm-native-patient-edit.md). From v148; monotonic.
+var CACHE_VERSION = 'v149';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

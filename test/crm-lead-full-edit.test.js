@@ -129,7 +129,9 @@ test('the patch goes through the existing one-lead save: the full raw row, patch
 test('the card: «עריכת פרטי הליד» replaces the classic link for a lead; the form is escaped, guarded and saved by writeLead', () => {
   // the lead no longer links to the classic page; a patient card still does (its own actions are separate work)
   assert.match(SRC, /data-lead-edit-open="' \+ esc\(lead\.id\) \+ '">עריכת פרטי הליד<\/button>/);
-  assert.match(SRC, /\(lead \? \(rawLead\(lead\.id\) && !\(state\.me && state\.me\.view === 'controller'\) \? '<p><button[^\n]*: ''\) : '<p><a class="btn" href="\/\?view=classic">עריכה מלאה בדשבורד<\/a><\/p>'\)/);
+  // the lead still gets its native edit button; the patient branch no longer links to the classic page (CHANGELOG-crm-native-patient-edit.md)
+  assert.match(SRC, /lead && rawLead\(lead\.id\) && !\(state\.me && state\.me\.view === 'controller'\) \? '<p><button type="button" class="btn" data-lead-edit-open/);
+  assert.ok(!/>עריכה מלאה בדשבורד<\/a>/.test(SRC), 'no classic patient link remains');
   const form = SRC.slice(SRC.indexOf('function renderLeadEdit(l)'), SRC.indexOf('function leadEditForm()'));
   assert.match(form, /<form data-form="lead-edit" class="lead-edit" data-lead="' \+ esc\(l\.id\)/);
   for (const name of ['name', 'phone', 'contactName', 'contactPhone', 'contactRelation', 'contactRelationOther', 'billingMode', 'billingOther', 'house', 'source', 'track', 'assignedTo', 'created', 'entryDate', 'note'])
