@@ -2674,3 +2674,68 @@ test('«מסלול» פרטי ⇄ מכבי (CHANGELOG-crm-lead-payer-switch.md):
     assert.deepEqual(m.errors, []);
   } finally { DATA.leads = keep; saveAnswer = null; await browser.close(); srv.close(); }
 });
+
+test('«עריכת פרטי המטופל/ת» (CHANGELOG-crm-native-patient-edit.md): the patient card edits name natively (in-house and released) with no link to the classic page; טלפון ופרטי קשר open the linked lead\'s own edit', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const keepP = JSON.parse(JSON.stringify(DATA.patients));
+  DATA.patients.ramot.push({ id: 'pL', name: 'רון לינק', date: daysAgo(20), status: 'active', pay: 7000, fromLead: 'L1' });
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  const toastIs = (page, re) => page.waitForFunction((src) => new RegExp(src).test((document.querySelector('#crm-toast') || {}).textContent || ''), re.source, { timeout: 8000 });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="clients"]');
+    // 1. an in-house patient: the edit form now has a name field
+    await page.click('table.clients tr[data-open-patient="p1"] td.name');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    assert.equal(await page.locator('#crm-drawer [data-pane="overview"] a[href="/?view=classic"]').count(), 0, 'no classic link on the patient card');
+    await page.click('#crm-drawer details.act summary:has-text("עריכה")');
+    assert.equal(await page.inputValue('#crm-drawer form[data-form="patient-edit"] [name="name"]'), 'דנה כהן');
+    await page.fill('#crm-drawer form[data-form="patient-edit"] [name="name"]', '  דנה   כהן-לוי ');
+    await page.click('#crm-drawer form[data-form="patient-edit"] button[type="submit"]');
+    await toastIs(page, /בוצע/);
+    let saved = srv.saves.filter((x) => x.action === 'saveAll');
+    assert.equal(saved.length, 1);
+    assert.deepEqual(saved[0].prove, { patients: ['p1'] });
+    const row = saved[0].patients.ramot.filter((p) => p.id === 'p1')[0];
+    assert.equal(row.name, 'דנה כהן-לוי', 'name trimmed and space-collapsed');
+    assert.equal(row.pay, 6000, 'the rest of the row is unchanged');
+    // an empty name is refused, nothing sent
+    await page.click('table.clients tr[data-open-patient="p1"] td.name');
+    await page.click('#crm-drawer details.act summary:has-text("עריכה")');
+    await page.fill('#crm-drawer form[data-form="patient-edit"] [name="name"]', '   ');
+    const n0 = srv.saves.length;
+    await page.click('#crm-drawer form[data-form="patient-edit"] button[type="submit"]');
+    assert.equal(await page.textContent('#crm-drawer form[data-form="patient-edit"] [data-err="name"]'), 'יש להזין שם');
+    assert.equal(srv.saves.length, n0, 'nothing sent');
+    await page.click('#crm-drawer-close');
+    // 2. a patient linked to a board lead → «עריכת טלפון ופרטי קשר» opens that lead\'s own edit
+    await page.click('table.clients tr[data-open-patient="pL"] td.name');
+    await page.click('#crm-drawer [data-open-linked-lead="L1"]');
+    await page.waitForSelector('#crm-drawer form[data-form="lead-edit"][data-lead="L1"]');
+    assert.equal(await page.$eval('#crm-lead-edit', (d) => d.open), true, 'the lead edit is expanded');
+    assert.equal(await page.inputValue('#crm-drawer form[data-form="lead-edit"] [name="phone"]'), '0501111111');
+    await page.click('#crm-drawer-close');
+    // 3. a released patient (opened via search): a native name/notes edit, no stay-date/money, no classic link
+    await page.fill('#crm-search', 'נועה');
+    await page.click('#crm-search-go');
+    await page.locator('[data-open-patient="px"]').first().click();
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    assert.equal(await page.locator('#crm-drawer [data-pane="overview"] a[href="/?view=classic"]').count(), 0);
+    await page.click('#crm-drawer details.act summary:has-text("עריכת פרטי המטופל/ת")');
+    const relForm = '#crm-drawer form[data-form="patient-edit"]';
+    assert.equal(await page.locator(relForm + ' [name="date"]').count(), 0, 'no stay-date editing on a released patient here');
+    assert.equal(await page.locator(relForm + ' [name="pay"]').count(), 0);
+    await page.fill(relForm + ' [name="name"]', 'נועה לוי-כהן');
+    await page.fill(relForm + ' [name="notes"]', 'עודכן בכרטיס');
+    await page.click(relForm + ' button[type="submit"]');
+    await toastIs(page, /בוצע/);
+    const rel = srv.saves.filter((x) => x.action === 'saveAll').pop();
+    const rrow = rel.patients.ramot.filter((p) => p.id === 'px')[0];
+    assert.deepEqual([rrow.name, rrow.notes, rrow.status, rrow.exitDate], ['נועה לוי-כהן', 'עודכן בכרטיס', 'released', daysAgo(5)], 'name + notes change; status / exit date kept');
+    assert.deepEqual(rel.prove, { patients: ['px'] });
+    // px is linked to LX which is not on the board → no linked-lead button
+    assert.equal(await page.locator('#crm-drawer [data-open-linked-lead]').count(), 0);
+    assert.equal(await noHScroll(page), true);
+    assert.deepEqual(errors, []);
+  } finally { DATA.patients = keepP; saveAnswer = null; await browser.close(); srv.close(); }
+});

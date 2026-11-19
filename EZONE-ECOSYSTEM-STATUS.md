@@ -1,5 +1,17 @@
 # E-ZONE Ecosystem Status — updated November 19, 2026
 
+## Dashboard CRM — the patient card is edited in the CRM; no link to the classic page — November 19, 2026
+
+The patient card's «עריכה מלאה בדשבורד» link is replaced by native editing. The in-house
+edit form gains a **name** field; **released** patients now get their own «עריכת פרטי
+המטופל/ת» (name + notes) beside the Outpatient transfer. Only the fields the form carries
+change (a released edit never touches stay dates / money / status — those stay bound to the
+discharge row in the classic flow). טלפון ופרטי קשר live on the linked lead and open its own
+native edit from the patient card. The sidebar «חזרה לדשבורד הרגיל» escape hatch stays for the
+operations still only in classic (a released patient's stay-date edit, patient delete, Ortal's
+billing-control verification, the «בית לא מזוהה» fix). SW cache v149. See
+`CHANGELOG-crm-native-patient-edit.md`.
+
 ## Dashboard + Managers — intake-meeting reports inside the managers app — November 19, 2026
 
 House managers now see their intake meetings and report them in ezone-managers, not

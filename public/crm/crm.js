@@ -539,10 +539,24 @@
   }
   function patientEditErrors(v) {
     const out = {};
-    if (!isoDateOk(v.date)) out.date = 'תאריך כניסה חסר או מחוץ לטווח';
-    if (!(Number(v.pay) >= 0)) out.pay = 'סכום חודשי לא תקין';
-    if (!PATIENT_STATUSES.some(function (st) { return st.id === s(v.status); })) out.status = 'סטטוס לא תקין';
+    // The edit form may carry a subset of fields (a released patient edits name + notes only);
+    // a field is checked only when it is present (CHANGELOG-crm-native-patient-edit.md).
+    if ('name' in v && !s(v.name).replace(/\s+/g, ' ').trim()) out.name = 'יש להזין שם';
+    if ('date' in v && !isoDateOk(v.date)) out.date = 'תאריך כניסה חסר או מחוץ לטווח';
+    if ('pay' in v && !(Number(v.pay) >= 0)) out.pay = 'סכום חודשי לא תקין';
+    if ('status' in v && !PATIENT_STATUSES.some(function (st) { return st.id === s(v.status); })) out.status = 'סטטוס לא תקין';
     return out;
+  }
+  /* The patient row after an edit: only the fields the form carried are changed. Pure. */
+  function patientEditNext(before, v) {
+    const next = Object.assign({}, before);
+    if ('name' in v) next.name = s(v.name).replace(/\s+/g, ' ').trim();
+    if ('date' in v) next.date = s(v.date);
+    if ('pay' in v) next.pay = Number(v.pay) || 0;
+    if ('adv' in v) next.adv = Number(v.adv) || 0;
+    if ('status' in v) next.status = s(v.status);
+    if ('notes' in v) next.notes = s(v.notes);
+    return next;
   }
 
   /* '' when the answer proves the lead landed, else the Hebrew reason (mirrors
@@ -4316,13 +4330,33 @@
 
     /* A released patient's card (CHANGELOG-crm-followups-1104.md): the Outpatient handoff right
      * here — phone optional (found from the lead / the phone book), asked when none is found. */
+    /* The released patient's name + notes, edited in the CRM (CHANGELOG-crm-native-patient-edit.md).
+     * Stay dates and status stay in the classic flow (a discharge row is bound to them). */
+    function releasedEditBlock(p) {
+      const raw = findPatientRow(p.id);
+      const row = raw ? raw.row : p;
+      return '<details class="act"><summary>עריכת פרטי המטופל/ת</summary><form data-form="patient-edit" data-patient="' + esc(p.id) + '" novalidate>'
+        + '<label>שם <input type="text" name="name" maxlength="120" value="' + esc(row.name) + '"><span class="err" data-err="name"></span></label>'
+        + '<label>הערות <textarea name="notes" rows="2">' + esc(row.notes) + '</textarea></label>'
+        + '<button type="submit" class="btn small primary">שמירה</button></form></details>' + linkedLeadEdit(p);
+    }
+    /* A button to the linked lead's own edit, where טלפון ופרטי קשר live
+     * (CHANGELOG-crm-native-patient-edit.md) — only when that lead is open in the board. */
+    function linkedLeadEdit(p) {
+      const fl = s(p && p.fromLead);
+      if (!fl || !rawLead(fl) || (state.me && state.me.view === 'controller')) return '';
+      const c = compute(state.data, state.today);
+      if (!c.leads.some(function (l) { return s(l.id) === fl; })) return '';
+      return '<p class="na">טלפון ופרטי קשר נשמרים בכרטיס הליד. <button type="button" class="btn small" data-open-linked-lead="' + esc(fl) + '">עריכת טלפון ופרטי קשר</button></p>';
+    }
     function releasedPatientBlock(p) {
       const c = compute(state.data, state.today);
       const d = meetingsFor(p, 'patient', c).discharge;
-      if (!d || !d.id) return '';
+      const edit = releasedEditBlock(p);
+      if (!d || !d.id) return edit ? '<div class="actions">' + edit + '</div>' : '';
       if (c.outpatientSent && c.outpatientSent['discharge:' + d.id])
-        return '<div class="notice ok">נשלח לאמבולטורי ✓ · מצב הטיפול טרם אומת</div>' + outpatientStatusButton(d.id, 'discharge');
-      return '<div class="actions"><details class="act" open><summary>העברה לאמבולטורי</summary>'
+        return '<div class="actions">' + edit + '<div class="notice ok">נשלח לאמבולטורי ✓ · מצב הטיפול טרם אומת</div>' + outpatientStatusButton(d.id, 'discharge') + '</div>';
+      return '<div class="actions">' + edit + '<details class="act" open><summary>העברה לאמבולטורי</summary>'
         + '<form data-form="out-phone" data-discharge="' + esc(d.id) + '" data-optional="1" novalidate>'
         + '<label>טלפון (אם לא מופיע בליד) <input type="tel" name="phone" inputmode="tel" maxlength="20" autocomplete="off" placeholder="05XXXXXXXX"><span class="err" data-err="phone"></span></label>'
         + '<button type="submit" class="btn small primary">העבר לאמבולטורי</button>'
@@ -4334,12 +4368,14 @@
       const raw = (patientsOfHouse(p.houseId) || []).filter(function (x) { return s(x.id) === s(p.id); })[0] || p;
       return '<div class="actions" data-patient-actions="' + esc(p.id) + '"><div class="toolbar"><span class="na" id="crm-save-state"></span></div>'
         + '<details class="act"><summary>עריכה</summary><form data-form="patient-edit" data-patient="' + esc(p.id) + '" novalidate>'
+        + '<label>שם <input type="text" name="name" maxlength="120" value="' + esc(raw.name) + '"><span class="err" data-err="name"></span></label>'
         + '<label>תאריך כניסה <input type="date" name="date" value="' + esc(s(raw.date).slice(0, 10)) + '"><span class="err" data-err="date"></span></label>'
         + '<label>סכום חודשי (₪) <input type="number" name="pay" min="0" step="1" value="' + esc(Number(raw.pay) || 0) + '"><span class="err" data-err="pay"></span></label>'
         + '<label>מקדמה (₪) <input type="number" name="adv" min="0" step="1" value="' + esc(Number(raw.adv) || 0) + '"></label>'
         + '<label>סטטוס <select name="status">' + PATIENT_STATUSES.map(function (st) { return '<option value="' + st.id + '"' + (s(raw.status) === st.id ? ' selected' : '') + '>' + esc(st.label) + '</option>'; }).join('') + '</select><span class="err" data-err="status"></span></label>'
         + '<label>הערות <textarea name="notes" rows="2">' + esc(raw.notes) + '</textarea></label>'
         + '<button type="submit" class="btn small primary">שמירה</button></form></details>'
+        + linkedLeadEdit(p)
         + '<details class="act"><summary>העברה לבית אחר</summary><form data-form="patient-move" data-patient="' + esc(p.id) + '" novalidate>'
         + '<label>לבית <select name="toHouseId">' + HOUSES.filter(function (h) { return !h.closed && h.id !== houseId(p.houseId); }).map(function (h) { return '<option value="' + h.id + '">' + esc(h.name) + '</option>'; }).join('') + '</select></label>'
         + '<button type="submit" class="btn small primary">העברה</button></form></details>'
@@ -4362,12 +4398,12 @@
     }
     function editPatient(pid, v, f) {
       const errs = patientEditErrors(v);
-      if (f) showErrs(f, errs, ['date', 'pay', 'status']);
-      if (Object.keys(errs).length) return Promise.resolve(false);
+      if (f) showErrs(f, errs, ['name', 'date', 'pay', 'status']);
+      if (Object.keys(errs).length) { const k = Object.keys(errs)[0]; const el = f && f.querySelector('[name="' + k + '"]'); if (el) el.focus(); return Promise.resolve(false); }
       const loc = findPatientRow(pid);
-      if (!loc) return Promise.resolve(false);
+      if (!loc) { toast('כרטיס המטופל/ת לא נמצא — רענני ונסי שוב.', true); return Promise.resolve(false); }
       const before = loc.row;
-      const next = Object.assign({}, before, { date: s(v.date), pay: Number(v.pay) || 0, adv: Number(v.adv) || 0, status: s(v.status), notes: s(v.notes) });
+      const next = patientEditNext(before, v);
       closeDrawer();
       return postAction(houseSaveBody(loc.hid, loc.arr, next, null), function (res) { return houseSaveRefusal(res, pid, ''); },
         function () { loc.arr[loc.idx] = next; }, function () { loc.arr[loc.idx] = before; }, 'העריכה של «' + s(before.name) + '»');
@@ -5843,6 +5879,15 @@
         .finally(function () { btn.disabled = false; });
     });
 
+    /* «עריכת טלפון ופרטי קשר»: from a patient card to its linked lead's own edit. */
+    root.addEventListener('click', function (ev) {
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-open-linked-lead]') : null;
+      if (!t) return;
+      ev.preventDefault();
+      if (!leaveLeadEdit()) return;
+      openDrawer('lead', s(t.dataset.openLinkedLead));
+      openLeadEdit();
+    });
     /* «עריכת פרטי הליד»: open from the button under the details, cancel, and the unsaved mark. */
     root.addEventListener('click', function (ev) {
       const t = ev.target && ev.target.closest ? ev.target.closest('[data-lead-edit-open],[data-lead-edit-cancel]') : null;
@@ -5875,7 +5920,7 @@
         + '<span class="toolbar">' + (state.me && state.me.view === 'controller' ? '' : '<button type="button" class="btn small primary" data-contact-open="' + esc(kind + ':' + id) + '">📞 תיעוד שיחה</button>') + '<button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></span></div>'
         + '<div class="tabs" role="tablist">' + [['overview', 'סקירה'], ['tasks', 'משימות' + (tasksFor(subject, state.tasks).length ? ' (' + tasksFor(subject, state.tasks).length + ')' : '')], ['activity', 'פעילות'], ['meetings', 'פגישות ושירותים'], ['account', 'חשבון'], ['docs', 'מסמכים']].filter(function (t) { return t[0] !== 'account' || accountTabVisible(state.me); }).map(function (t, i) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (i === 0) + '">' + esc(t[1]) + '</button>'; }).join('') + '</div>'
         + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : (state.me && state.me.view === 'controller' ? '' : renderPatientActions(pat)))
-        + (lead && c.outpatientSent && c.outpatientSent[lead.id] ? outpatientStatusButton(lead.id, 'lead') : '') + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl>' + (lead ? (rawLead(lead.id) && !(state.me && state.me.view === 'controller') ? '<p><button type="button" class="btn" data-lead-edit-open="' + esc(lead.id) + '">עריכת פרטי הליד</button></p>' : '') : '<p><a class="btn" href="/?view=classic">עריכה מלאה בדשבורד</a></p>') + '</section>'
+        + (lead && c.outpatientSent && c.outpatientSent[lead.id] ? outpatientStatusButton(lead.id, 'lead') : '') + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl>' + (lead && rawLead(lead.id) && !(state.me && state.me.view === 'controller') ? '<p><button type="button" class="btn" data-lead-edit-open="' + esc(lead.id) + '">עריכת פרטי הליד</button></p>' : '') + '</section>'
         + '<section data-pane="tasks" hidden id="crm-tasks">' + renderTasksPane(subject) + '</section>'
         + '<section data-pane="activity" hidden><ul class="tl" id="crm-tl"><li>טוען…</li></ul></section>'
         + '<section data-pane="meetings" hidden id="crm-meetings">' + renderMeetings(meetingsFor(lead || pat, lead ? 'lead' : 'patient', compute(state.data, state.today))) + '</section>'
@@ -5964,7 +6009,7 @@
           return '<tr><td>' + esc(fmtDate(r.receivedDate)) + '</td><td>' + esc(fmtMoney(r.amount)) + '</td><td>' + esc(r.method) + '</td><td>' + esc(r.payer) + '</td><td>' + verifyCell(r) + '</td>'
             + '<td>' + (r.isVoid || !me.finance ? '' : '<button type="button" class="btn small" data-receipt-edit="' + esc(r.id) + '">עריכה</button>' + (me.deleter ? ' <button type="button" class="btn small" data-receipt-void="' + esc(r.id) + '">ביטול</button>' : '')) + '</td></tr>';
         }).join('') + '</tbody></table></div><div id="crm-receipt-form"></div>';
-      html += me.finance ? '<p class="na">כל הפעולות על החשבון זמינות כאן. <a href="/?view=classic">הדשבורד הרגיל</a> נשאר לגיבוי.</p>'
+      html += me.finance ? '<p class="na">כל הפעולות על החשבון זמינות כאן.</p>'
         : '<p class="na" id="crm-account-readonly">צפייה מלאה בחשבון. דיווח תשלום, הנחה ועריכת קבלה — אצל ורד; אימות תקבול — בכפתור «אמת».</p>';
       return html;
     }
@@ -7350,7 +7395,7 @@
     FUNDERS: FUNDERS, PATIENT_STATUSES: PATIENT_STATUSES, admissionRow: admissionRow, admissionErrors: admissionErrors, directAddRows: directAddRows,
     directAddErrors: directAddErrors, houseSaveBody: houseSaveBody, houseSaveRefusal: houseSaveRefusal, isoDateOk: isoDateOk,
     DISCHARGE_DISPOSITIONS: DISCHARGE_DISPOSITIONS, CONTINUITY_CHOICES: CONTINUITY_CHOICES, dischargeAuditRow: dischargeAuditRow, dischargeErrors: dischargeErrors,
-    movedRow: movedRow, patientEditErrors: patientEditErrors, meetingsFor: meetingsFor, managerReport: managerReport, whenLocal: whenLocal,
+    movedRow: movedRow, patientEditErrors: patientEditErrors, patientEditNext: patientEditNext, meetingsFor: meetingsFor, managerReport: managerReport, whenLocal: whenLocal,
     detachedRows: detachedRows, linkCandidates: linkCandidates, namesLookAlike: namesLookAlike, linkBody: linkBody, notPatientBody: notPatientBody, linkErrors: linkErrors, linkAccepted: linkAccepted,
     dischargedList: dischargedList, priorStatusOf: priorStatusOf, restoreTarget: restoreTarget, restoredRow: restoredRow, openAuditsOf: openAuditsOf, restoreFlagBody: restoreFlagBody, restoreAsLeadBody: restoreAsLeadBody, outpatientBody: outpatientBody, handoffPhone: handoffPhone, calendarRange: calendarRange, calendarRows: calendarRows, undatedVisits: undatedVisits, calendarTitle: calendarTitle, weekStart: weekStart, DAY_NAMES: DAY_NAMES, reportUnseen: reportUnseen, unseenReports: unseenReports,
     MEETING_REPORT_OUTCOME_LABELS: MEETING_REPORT_OUTCOME_LABELS, MEETING_COMPANION_LABELS: MEETING_COMPANION_LABELS, DISPOSITION_LABELS: DISPOSITION_LABELS, billingOverview: billingOverview, billingSearch: billingSearch, fmtMoney: fmtMoney, DEBT_BUCKET_LABELS: DEBT_BUCKET_LABELS, patientAccount: patientAccount, sheetDay: sheetDay, CYCLE_STATUS_LABELS: CYCLE_STATUS_LABELS,
