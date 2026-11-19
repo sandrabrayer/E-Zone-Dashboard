@@ -61,6 +61,58 @@ var MR_OUTCOME_LABELS = {
 };
 var MR_OUTCOME_ORDER = ['advancing', 'undecided', 'not_fit', 'no_show'];
 
+/* Why the meeting did not happen — only with outcome no_show
+ * (CHANGELOG-meeting-report-in-managers.md). KEEP IN SYNC with
+ * MEETING_NOT_HELD_LABELS in public/app.js, MEETING_NOT_HELD_KEYS in
+ * apps-script/Code.gs and the ezone-managers app. As with the companion, the
+ * אחר chip submits the typed text itself (≤ 100 chars). */
+var MR_NOT_HELD_LABELS = {
+  no_show:          'לא הגיעו',
+  postponed:        'נדחתה',
+  cancelled_family: 'בוטלה ע"י הפונה/המשפחה',
+  cancelled_us:     'בוטלה על ידינו',
+  other:            'אחר',
+};
+var MR_NOT_HELD_ORDER = ['no_show', 'postponed', 'cancelled_family', 'cancelled_us', 'other'];
+
+/* The reason value to SUBMIT: the chip key, except אחר where the free text is
+ * the value (trimmed; empty → the 'other' key itself). Pure. */
+function mrNotHeldValue(selectedKey, freeText) {
+  if (selectedKey !== 'other') return selectedKey || '';
+  var t = String(freeText == null ? '' : freeText).trim();
+  return t || 'other';
+}
+
+/* Display rule: a key → its label; anything else is the אחר free text. Pure. */
+function mrNotHeldDisplay(value) {
+  return MR_NOT_HELD_LABELS[value] || String(value == null ? '' : value);
+}
+
+/* 'YYYY-MM-DD' → 'DD/MM/YYYY' ('' stays ''). Pure. */
+function mrDateDMY(v) {
+  var m = String(v == null ? '' : v).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? m[3] + '/' + m[2] + '/' + m[1] : String(v == null ? '' : v);
+}
+
+/* The WhatsApp «סיבה» line for a saved report, or '' when it has no reason
+ * (every held meeting, and legacy no_show reports). Pure. */
+function mrNotHeldLine(s) {
+  var r = s && s.notHeldReason ? String(s.notHeldReason) : '';
+  if (!r) return '';
+  var d = s.proposedDate ? ' · מועד חדש מוצע: ' + mrDateDMY(s.proposedDate) : '';
+  return 'סיבה: ' + mrNotHeldDisplay(r) + d;
+}
+
+/* '' when the reason part of the form can be submitted, otherwise the Hebrew
+ * refusal (mirrors meetingReportNotHeldCheck_ in Code.gs). Pure. */
+function mrNotHeldError(outcome, reason, proposedDate, todayISO) {
+  if (outcome !== 'no_show') return '';
+  if (!reason) return 'נא לבחור למה הפגישה לא התקיימה';
+  if (proposedDate && reason !== 'postponed') return 'מועד חדש מוצע רק לפגישה שנדחתה';
+  if (proposedDate && String(proposedDate) < String(todayISO)) return 'המועד המוצע עבר — נא לבחור תאריך מהיום והלאה';
+  return '';
+}
+
 /* Companion keys + Hebrew labels. KEEP IN SYNC with
  * MEETING_COMPANION_LABELS in public/app.js (PR 1). */
 var MR_COMPANION_LABELS = {
@@ -183,14 +235,21 @@ function mrNoteError(note) {
  * { name, house, outcome, companion, note, reporter }. */
 function mrWhatsAppMessage(saved) {
   var s = saved || {};
-  return [
+  var lines = [
     'יומן ביקורים ודיווח סטטוס — E-Zone',
     'ליד: ' + (s.name || '') + ' (' + mrHouseLabel(s.house) + ')',
     'תוצאה: ' + (MR_OUTCOME_LABELS[s.outcome] || s.outcome || ''),
+  ];
+  // «סיבה» only when the report carries one — a held meeting's message is
+  // byte-identical to before (CHANGELOG-meeting-report-in-managers.md).
+  var reasonLine = mrNotHeldLine(s);
+  if (reasonLine) lines.push(reasonLine);
+  lines.push(
     'הגיע/ה עם: ' + mrCompanionDisplay(s.companion),
     'פירוט: ' + (s.note || ''),
-    'דווח ע"י: ' + (s.reporter || ''),
-  ].join('\n');
+    'דווח ע"י: ' + (s.reporter || '')
+  );
+  return lines.join('\n');
 }
 
 /* ===== The wa.me share link =====
@@ -233,6 +292,7 @@ function mrWithNote(saved, note) {
   return {
     name: s.name, house: s.house, outcome: s.outcome,
     companion: s.companion, note: note, reporter: s.reporter,
+    notHeldReason: s.notHeldReason, proposedDate: s.proposedDate,
   };
 }
 
@@ -280,6 +340,8 @@ var MR_SUBMIT_ERROR_TEXTS = {
   bad_companion:  'הטקסט בשדה "הגיע/ה עם" ארוך מדי (עד 100 תווים)',
   bad_note:       'הפירוט ארוך מדי (עד ' + MANAGER_REPORT_MAX_CHARS + ' תווים)',
   bad_reporter:   'נא לבחור מדווח/ת',
+  bad_reason:     'נא לבחור למה הפגישה לא התקיימה (טקסט חופשי עד 100 תווים) — אם אין בחירה, רעננו את הדף',
+  bad_proposed_date: 'המועד החדש המוצע אינו תקין — נא לבחור תאריך מהיום והלאה',
   reporter_not_manager: 'המדווח/ת אינו/ה ברשימת מנהלי הבתים הנוכחיים — רעננו את הדף ובחרו שם מהרשימה',
   lead_not_found: 'הליד כבר לא ברשימת הלידים לדיווח — רעננו את הדף ונסו שוב',
   unauthorized:   'השרת דחה את הדיווח (בעיית הרשאה) — פנו לסנדרה',
@@ -428,6 +490,13 @@ if (typeof module !== 'undefined' && module.exports) {
     mrReporterOptionsHtml: mrReporterOptionsHtml,
     MR_OUTCOME_LABELS: MR_OUTCOME_LABELS,
     MR_COMPANION_LABELS: MR_COMPANION_LABELS,
+    MR_NOT_HELD_LABELS: MR_NOT_HELD_LABELS,
+    MR_NOT_HELD_ORDER: MR_NOT_HELD_ORDER,
+    mrNotHeldValue: mrNotHeldValue,
+    mrNotHeldDisplay: mrNotHeldDisplay,
+    mrNotHeldLine: mrNotHeldLine,
+    mrNotHeldError: mrNotHeldError,
+    mrDateDMY: mrDateDMY,
     mrTodayISO: mrTodayISO,
     mrLeadsForPicker: mrLeadsForPicker,
     mrPickerDate: mrPickerDate,
@@ -473,6 +542,7 @@ if (typeof module !== 'undefined' && module.exports) {
     reporters: [],
     outcome: '',
     companion: '',
+    reason: '',
     // This form's idempotency key; a new one for every fresh form (resetForm).
     submissionId: mrNewSubmissionId(),
   };
@@ -537,6 +607,22 @@ if (typeof module !== 'undefined' && module.exports) {
     el('mr-companion-other-wrap').classList.toggle('hidden', state.companion !== 'other');
   }
 
+  /* «למה לא התקיימה?» — shown only for «לא הגיע / בוטל»; the date only for
+   * «נדחתה». Picking another outcome hides it (and the submit sends no reason). */
+  function renderReasons() {
+    var wrap = el('mr-reason-wrap');
+    if (!wrap) return;   // an older cached page without the reason step
+    wrap.classList.toggle('hidden', state.outcome !== 'no_show');
+    el('mr-reasons').innerHTML = MR_NOT_HELD_ORDER.map(function (k) {
+      var on = state.reason === k ? ' selected' : '';
+      return '<button type="button" class="mr-chip' + on + '" data-reason="' + k + '">' +
+        mrEscapeHtml(MR_NOT_HELD_LABELS[k]) + '</button>';
+    }).join('');
+    el('mr-reason-other-wrap').classList.toggle('hidden', state.reason !== 'other');
+    el('mr-proposed-wrap').classList.toggle('hidden', state.reason !== 'postponed');
+    el('mr-proposed').min = mrTodayISO();
+  }
+
   /* The picker used to sit empty and unexplained while this request was in
    * flight — a manager on a slow phone could not tell it apart from "there are
    * no leads". A single disabled «טוען…» option says which it is, using the
@@ -594,6 +680,13 @@ if (typeof module !== 'undefined' && module.exports) {
       // autofilled value hits) — refuse, never trim.
       var noteErr = mrNoteError(note);
       if (noteErr) return showError(noteErr);
+      var notHeld = state.outcome === 'no_show';
+      var reasonOther = el('mr-reason-other');
+      var proposedInput = el('mr-proposed');
+      var reason = notHeld ? mrNotHeldValue(state.reason, reasonOther ? reasonOther.value : '') : '';
+      var proposed = notHeld && state.reason === 'postponed' && proposedInput ? proposedInput.value : '';
+      var reasonErr = mrNotHeldError(state.outcome, reason, proposed, mrTodayISO());
+      if (reasonErr) return showError(reasonErr);
       var companion = mrCompanionValue(state.companion, el('mr-companion-other').value);
       var payload = {
         leadId: lead.id,
@@ -601,6 +694,8 @@ if (typeof module !== 'undefined' && module.exports) {
         companion: companion,
         note: note,
         reporter: reporter,
+        notHeldReason: reason,
+        proposedDate: proposed,
         submissionId: state.submissionId,
       };
       return fetch('/api/meeting-report/submit', {
@@ -623,6 +718,8 @@ if (typeof module !== 'undefined' && module.exports) {
           companion: companion,
           note: note,
           reporter: reporter,
+          notHeldReason: reason,
+          proposedDate: proposed,
         });
       }).catch(function (err) {
         showError(mrSubmitErrorText(err && err.message));
@@ -637,6 +734,8 @@ if (typeof module !== 'undefined' && module.exports) {
     el('mr-summary').innerHTML = [
       '<div><span>ליד:</span> ' + mrEscapeHtml(saved.name) + ' (' + mrEscapeHtml(mrHouseLabel(saved.house)) + ')</div>',
       '<div><span>תוצאה:</span> ' + mrEscapeHtml(MR_OUTCOME_LABELS[saved.outcome] || saved.outcome) + '</div>',
+      saved.notHeldReason ? '<div><span>סיבה:</span> ' + mrEscapeHtml(mrNotHeldDisplay(saved.notHeldReason)) +
+        (saved.proposedDate ? ' · מועד חדש מוצע: ' + mrEscapeHtml(mrDateDMY(saved.proposedDate)) : '') + '</div>' : '',
       '<div><span>הגיע/ה עם:</span> ' + mrEscapeHtml(mrCompanionDisplay(saved.companion)) + '</div>',
       // pre-wrap span (.mr-note-text): the manager's line breaks survive and a
       // 5,000-char summary wraps in full — never clipped, never scrolled away.
@@ -649,13 +748,17 @@ if (typeof module !== 'undefined' && module.exports) {
   function resetForm() {
     state.outcome = '';
     state.companion = '';
+    state.reason = '';
     state.submissionId = mrNewSubmissionId();   // a NEW report → a new key
     el('mr-lead').value = '';
     renderOfficeNote();
     el('mr-note').value = '';
     el('mr-companion-other').value = '';
+    if (el('mr-reason-other')) el('mr-reason-other').value = '';
+    if (el('mr-proposed')) el('mr-proposed').value = '';
     syncNote();
     renderOutcomes();
+    renderReasons();
     renderCompanions();
     el('mr-done').classList.add('hidden');
     form.classList.remove('hidden');
@@ -689,6 +792,13 @@ if (typeof module !== 'undefined' && module.exports) {
     if (!b) return;
     state.outcome = b.getAttribute('data-outcome');
     renderOutcomes();
+    renderReasons();
+  });
+  if (el('mr-reasons')) el('mr-reasons').addEventListener('click', function (ev) {
+    var b = ev.target.closest('[data-reason]');
+    if (!b) return;
+    state.reason = b.getAttribute('data-reason');
+    renderReasons();
   });
   el('mr-companions').addEventListener('click', function (ev) {
     var b = ev.target.closest('[data-companion]');
@@ -710,6 +820,7 @@ if (typeof module !== 'undefined' && module.exports) {
   // The reporter list arrives with the leads: «טוען…» until then.
   el('mr-reporter').innerHTML = '<option value="">' + mrEscapeHtml(busyLabelFor('load')) + '</option>';
   renderOutcomes();
+  renderReasons();
   renderCompanions();
   syncNote();
   loadLeads();

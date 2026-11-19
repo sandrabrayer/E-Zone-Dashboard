@@ -1,5 +1,20 @@
 # E-ZONE Ecosystem Status — updated November 19, 2026
 
+## Dashboard + Managers — intake-meeting reports inside the managers app — November 19, 2026
+
+House managers now see their intake meetings and report them in ezone-managers, not
+only at the `/meeting-report` link. New `managersWork` ops (same `MANAGERS_WORK_SECRET`,
+capability `meetings`): `meetings { from, to }` — the reportable leads of the CALLER's
+house (the lead's house, or a meeting with that house's manager on the visit date),
+whitelisted, no phones; `meetingReport` — the SAME validation and locked write as the
+link (`submitMeetingReportVia_`), reporter = the signed-in caller, out of scope =
+`lead_not_found`. A report that did not happen now needs a reason: `LEAD_COLUMNS`
+appends `meetingNotHeldReason`, `meetingProposedDate` (only with «נדחתה», never moves
+`visitDate`), `meetingReportVia` (`link`|`app`). The link form gets the same step and
+the WhatsApp group text a «סיבה» line; Vered sees the reason in the report block and
+the CRM. SW cache v148. Apps Script deploys on merge. See
+`CHANGELOG-meeting-report-in-managers.md`.
+
 ## Dashboard CRM — «לא רלוונטי» column on the leads board — November 19, 2026
 
 CRM only (no Code.gs, no new action, no schema change). Every board card has

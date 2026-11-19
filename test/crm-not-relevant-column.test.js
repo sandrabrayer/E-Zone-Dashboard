@@ -126,5 +126,6 @@ test('B: CSS has five board columns (desktop + mobile) and a readable column hea
   assert.match(CRM_CSS, /\.board \{ display: grid; grid-template-columns: repeat\(5, minmax\(220px, 1fr\)\)/);
   assert.match(CRM_CSS, /\.board \{ grid-template-columns: repeat\(5, 80vw\); \}/);
   assert.match(CRM_CSS, /\.col\[data-stage="not_relevant"\] h3 \{ background: #55636F; color: #fff; \}/);
-  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v147');
+  // v147 here; later PRs bump on (monotonic) — v148: CHANGELOG-meeting-report-in-managers.md.
+  assert.ok(Number(/var CACHE_VERSION = 'v(\d+)';/.exec(SW_SRC)[1]) >= 147);
 });

@@ -33,6 +33,19 @@
         <div id="mr-outcomes" class="mr-choices"></div>
       </div>
 
+      <!-- «למה לא התקיימה?» — only when «לא הגיע / בוטל» is picked (meeting-report.js renderReasons) -->
+      <div id="mr-reason-wrap" class="mr-field hidden">
+        <label>למה הפגישה לא התקיימה?</label>
+        <div id="mr-reasons" class="mr-chips"></div>
+        <div id="mr-reason-other-wrap" class="hidden">
+          <input type="text" id="mr-reason-other" maxlength="100" placeholder="מה קרה? (טקסט חופשי)" />
+        </div>
+        <div id="mr-proposed-wrap" class="hidden">
+          <label for="mr-proposed">מועד חדש מוצע (לא חובה)</label>
+          <input type="date" id="mr-proposed" />
+        </div>
+      </div>
+
       <div class="mr-field">
         <label>מי הגיע איתו</label>
         <div id="mr-companions" class="mr-chips"></div>

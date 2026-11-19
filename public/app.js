@@ -120,6 +120,29 @@ const MEETING_REPORT_OUTCOME_LABELS = Object.freeze({
   no_show:   'לא הגיע / בוטל',
 });
 
+/* Why the meeting did not happen (with meetingReportOutcome 'no_show' only;
+ * CHANGELOG-meeting-report-in-managers.md). KEEP IN SYNC with
+ * MR_NOT_HELD_LABELS (public/meeting-report.js), MEETING_NOT_HELD_KEYS
+ * (apps-script/Code.gs) and public/crm/crm.js. A value off this list is the
+ * manager's אחר free text and renders verbatim. */
+const MEETING_NOT_HELD_LABELS = Object.freeze({
+  no_show:          'לא הגיעו',
+  postponed:        'נדחתה',
+  cancelled_family: 'בוטלה ע"י הפונה/המשפחה',
+  cancelled_us:     'בוטלה על ידינו',
+  other:            'אחר',
+});
+
+/* «סיבה» text of a report: '' when there is none (held meetings, legacy
+ * no_show reports); the label + « · מועד חדש מוצע: DD/MM/YYYY » otherwise.
+ * Plain text — CALLERS ESCAPE. Pure. */
+function meetingNotHeldText(reason, proposedDate) {
+  const r = reason == null ? '' : String(reason);
+  if (!r) return '';
+  const m = String(proposedDate || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return (MEETING_NOT_HELD_LABELS[r] || r) + (m ? ` · מועד חדש מוצע: ${m[3]}/${m[2]}/${m[1]}` : '');
+}
+
 /* Companion display rule (used in later PRs): if meetingCompanion matches a
  * key in MEETING_COMPANION_LABELS, show the label; otherwise show the raw
  * value — free text entered via אחר is stored as-is in meetingCompanion (no
@@ -3165,6 +3188,11 @@ function normalizeLead(l) {
     meetingReporter:      pickField(l, ['meetingReporter', 'meeting_reporter']),
     meetingReportedAt:    pickField(l, ['meetingReportedAt', 'meeting_reported_at']),
     meetingSeen:          pickField(l, ['meetingSeen', 'meeting_seen']),
+    /* Not-held reason (CHANGELOG-meeting-report-in-managers.md): written by the
+     * manager report paths only; Code.gs keeps the sheet's value on saveAll. */
+    meetingNotHeldReason: pickField(l, ['meetingNotHeldReason']),
+    meetingProposedDate:  isoDate(pickField(l, ['meetingProposedDate'])),
+    meetingReportVia:     pickField(l, ['meetingReportVia']),
     /* Stored as YYYY-MM-DD. Sheets sometimes returns a Date object for date
      * cells (depending on locale + column type); isoDate normalizes both
      * Date objects and full ISO timestamps down to a plain date string so
@@ -3969,6 +3997,8 @@ function meetingsForWeek(leads, weekAnchorISO) {
         meetingReporter:      l.meetingReporter || '',
         meetingReportedAt:    l.meetingReportedAt || '',
         meetingSeen:          l.meetingSeen || '',
+        meetingNotHeldReason: l.meetingNotHeldReason || '',
+        meetingProposedDate:  l.meetingProposedDate || '',
       };
       (byIso[v] || (byIso[v] = [])).push(meeting);
     });
@@ -4112,6 +4142,7 @@ function meetingReportBlockHTML(lead) {
         <span class="mrv-chevron">▾</span>
       </div>
       <div class="mrv-detail">
+        ${meetingNotHeldText(lead.meetingNotHeldReason, lead.meetingProposedDate) ? `<div><span class="mrv-label">סיבה:</span> ${escapeHtml(meetingNotHeldText(lead.meetingNotHeldReason, lead.meetingProposedDate))}</div>` : ''}
         <div><span class="mrv-label">הגיע/ה עם:</span> ${escapeHtml(meetingReportCompanionDisplay(lead.meetingCompanion))}</div>
         ${lead.meetingNote ? `<div><span class="mrv-label">פירוט:</span> <span class="mrv-note">${escapeHtml(lead.meetingNote)}</span></div>` : ''}
         <div class="mrv-byline"><span class="mrv-label">דווח ע"י:</span> ${escapeHtml(lead.meetingReporter || '—')} · ${escapeHtml(meetingReportWhenText(lead.meetingReportedAt))}</div>
