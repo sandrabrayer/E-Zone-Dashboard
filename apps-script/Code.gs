@@ -298,7 +298,25 @@ const LEAD_COLUMNS = [
   'meetingNote',
   'meetingReporter',
   'meetingReportedAt',
-  'meetingSeen'
+  'meetingSeen',
+  /* Not-held reason (CHANGELOG-meeting-report-in-managers.md, 19 Nov 2026).
+   * APPEND ONLY, after meetingSeen, in this exact order:
+   *   meetingNotHeldReason — why the meeting did not happen; required when
+   *                          meetingReportOutcome = 'no_show', '' otherwise.
+   *                          A stable key of MEETING_NOT_HELD_KEYS, or the
+   *                          אחר flow's raw free text (≤ 100 chars), exactly
+   *                          like meetingCompanion
+   *   meetingProposedDate  — 'YYYY-MM-DD' new date the manager suggests, only
+   *                          with the 'postponed' reason. Informational: it
+   *                          NEVER moves visitDate (Vered reschedules).
+   *                          Text-forced like visitDate
+   *   meetingReportVia     — 'link' (/meeting-report) | 'app' (ezone-managers),
+   *                          stamped server-side
+   * All three are written only by the manager report path (see
+   * MEETING_REPORT_MANAGER_ONLY_FIELDS). */
+  'meetingNotHeldReason',
+  'meetingProposedDate',
+  'meetingReportVia'
 ];
 
 /* Irrelevant-leads sheet mirrors LEAD_COLUMNS plus two metadata fields:
@@ -2631,7 +2649,7 @@ function getOrCreateSheet_(name, headers) {
     // guard as waitlistedAt). meetingSeen: '' | '1' flag — text-forced so
     // Sheets never coerces '1' into the number 1.
     forceColumnsText_(sh, LEAD_COLUMNS,
-      ['visitDate', 'visitTime', 'waitlistedAt', 'meetingReportedAt', 'meetingSeen']);
+      ['visitDate', 'visitTime', 'waitlistedAt', 'meetingReportedAt', 'meetingSeen', 'meetingProposedDate']);
   }
   // BillingOverrides: force month + amount to plain text for the same reason —
   // "2026-08" must not coerce into a date and the amount must not pick up a
@@ -4217,6 +4235,19 @@ const MEETING_REPORT_LEAD_FIELDS = [
   'meetingReporter',
   'meetingReportedAt',
   'meetingSeen',
+  'meetingNotHeldReason',
+  'meetingProposedDate',
+  'meetingReportVia',
+];
+
+/* The report fields ONLY the manager report path ever writes — no dashboard
+ * screen edits them. preserveNewerMeetingReport_ always keeps the sheet's
+ * value for these, so a tab whose copy pre-dates the columns (or a peer tab)
+ * can never blank a reason with an otherwise-identical saveAll. */
+const MEETING_REPORT_MANAGER_ONLY_FIELDS = [
+  'meetingNotHeldReason',
+  'meetingProposedDate',
+  'meetingReportVia',
 ];
 
 /* A timestamp cell as a comparable string: '' when empty, ISO for a Date cell
@@ -4266,6 +4297,10 @@ function preserveNewerMeetingReport_(merged, existingRow) {
     if (String(existingRow[seenIdx] == null ? '' : existingRow[seenIdx]) === '1') {
       merged.meetingSeen = '1';
     }
+    MEETING_REPORT_MANAGER_ONLY_FIELDS.forEach(function (f) {
+      const v = existingRow[LEAD_COLUMNS.indexOf(f)];
+      merged[f] = v == null ? '' : v;
+    });
   }
   return merged;
 }
@@ -10008,6 +10043,50 @@ const MEETING_REPORT_OUTCOMES = ['advancing', 'undecided', 'not_fit', 'no_show']
 const MEETING_COMPANION_KEYS =
   ['mother', 'father', 'parents', 'partner', 'sibling', 'friend', 'alone', 'other'];
 
+/* Why a meeting did not happen (CHANGELOG-meeting-report-in-managers.md) —
+ * must match MEETING_NOT_HELD_LABELS in public/app.js, MR_NOT_HELD_LABELS in
+ * public/meeting-report.js and the ezone-managers app. Like the companion, a
+ * value outside this list is the אחר flow: raw free text ≤ 100 chars. */
+const MEETING_NOT_HELD_KEYS = ['no_show', 'postponed', 'cancelled_family', 'cancelled_us', 'other'];
+const MEETING_NOT_HELD_TEXT_MAX = 100;
+const MEETING_REPORT_VIAS = ['link', 'app'];
+
+/* The not-held reason + proposed date of one report, validated together with
+ * its outcome. Pure (todayIso injected). Returns { ok:true, notHeldReason,
+ * proposedDate } or { ok:false, error, message } — never a partial result:
+ *   - outcome 'no_show' REQUIRES a reason (a key, or free text ≤ 100);
+ *   - any other outcome must carry NO reason and NO proposed date;
+ *   - proposedDate only with 'postponed', a real YYYY-MM-DD, not before today. */
+function meetingReportNotHeldCheck_(outcome, reason, proposedDate, todayIso) {
+  const r = meetingReportCompanionClean_(reason == null ? '' : String(reason));
+  const d = proposedDate == null ? '' : String(proposedDate).trim();
+  if (outcome !== 'no_show') {
+    if (r || d) return { ok: false, error: 'bad_reason', message: 'a not-held reason is only valid when the meeting did not happen' };
+    return { ok: true, notHeldReason: '', proposedDate: '' };
+  }
+  if (!r) return { ok: false, error: 'bad_reason', message: 'נא לבחור למה הפגישה לא התקיימה' };
+  if (MEETING_NOT_HELD_KEYS.indexOf(r) === -1 && r.length > MEETING_NOT_HELD_TEXT_MAX) {
+    return { ok: false, error: 'bad_reason', message: 'the reason free text is limited to ' + MEETING_NOT_HELD_TEXT_MAX + ' chars' };
+  }
+  if (d) {
+    if (r !== 'postponed') return { ok: false, error: 'bad_proposed_date', message: 'a proposed date is only valid for a postponed meeting' };
+    if (!meetingReportRealDate_(d)) {
+      return { ok: false, error: 'bad_proposed_date', message: 'proposedDate must be YYYY-MM-DD' };
+    }
+    if (todayIso && d < todayIso) return { ok: false, error: 'bad_proposed_date', message: 'המועד המוצע עבר — נא לבחור תאריך מהיום והלאה' };
+  }
+  return { ok: true, notHeldReason: r, proposedDate: d };
+}
+
+/* true for a real calendar 'YYYY-MM-DD' (no 2026-02-30, no rollover). Pure. */
+function meetingReportRealDate_(v) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v == null ? '' : v));
+  if (!m) return false;
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+}
+
 /* The ONLY cap on the manager report's פירוט (meetingNote) free text. Raised
  * 2000 → 5000 (Sandra, Sep 2026: managers write a full meeting summary there).
  * KEEP IN SYNC with MANAGER_REPORT_MAX_CHARS in public/meeting-report.js,
@@ -10208,6 +10287,21 @@ function meetingReportLeads_(todayIso) {
  * '' so Vered's PR-3 view surfaces the new report as unseen. A resubmission
  * for the same lead overwrites the previous report — last write wins. */
 function submitMeetingReport_(report) {
+  return submitMeetingReportVia_(report, { via: 'link' });
+}
+
+/* The ONE validation + locked write behind BOTH report paths
+ * (CHANGELOG-meeting-report-in-managers.md):
+ *   - opts.via 'link' — /meeting-report: `reporter` is the picked name and
+ *     must be a current house manager (meetingReportManagers_);
+ *   - opts.via 'app'  — ezone-managers through managersWork: `reporter` is the
+ *     signed-in caller decided by the managers SERVER (never the browser), and
+ *     opts.scope(lead) must accept the lead — otherwise lead_not_found, the
+ *     same answer as a missing lead, so a manager learns nothing about another
+ *     house. Same lock, replay, read-back verify and meetingSeen reset. */
+function submitMeetingReportVia_(report, opts) {
+  const o = opts || {};
+  const via = MEETING_REPORT_VIAS.indexOf(o.via) >= 0 ? o.via : 'link';
   if (!report || typeof report !== 'object') {
     return { ok: false, error: 'bad_request', message: 'missing report payload' };
   }
@@ -10241,16 +10335,21 @@ function submitMeetingReport_(report) {
   if (!reporter || reporter.length > MEETING_REPORTER_MAX_CHARS) {
     return { ok: false, error: 'bad_reporter', message: 'reporter is required (max 100 chars)' };
   }
-  // The reporter must be a CURRENT house manager — the same list the form
-  // offers (meetingReportManagers_). The name is never echoed back.
-  const managerNames = meetingReportManagers_(todayISODate_()).managers.map(function (m) { return m.name; });
-  if (managerNames.indexOf(reporter) === -1) {
-    return {
-      ok: false,
-      error: 'reporter_not_manager',
-      message: 'המדווח/ת אינו/ה ברשימת מנהלי הבתים הנוכחיים — נא לבחור שם מהרשימה',
-    };
+  // Link path: the reporter must be a CURRENT house manager — the same list
+  // the form offers (meetingReportManagers_). The name is never echoed back.
+  // App path: the reporter is the authenticated caller (see above).
+  if (via === 'link') {
+    const managerNames = meetingReportManagers_(todayISODate_()).managers.map(function (m) { return m.name; });
+    if (managerNames.indexOf(reporter) === -1) {
+      return {
+        ok: false,
+        error: 'reporter_not_manager',
+        message: 'המדווח/ת אינו/ה ברשימת מנהלי הבתים הנוכחיים — נא לבחור שם מהרשימה',
+      };
+    }
   }
+  const notHeld = meetingReportNotHeldCheck_(outcome, report.notHeldReason, report.proposedDate, todayISODate_());
+  if (!notHeld.ok) return notHeld;
   // The form's idempotency key (CHANGELOG-write-path-hardening.md): same
   // shape as reportPayment's; malformed → refused, nothing written.
   const submissionId = receiptSubmissionIdClean_(report.submissionId);
@@ -10275,7 +10374,10 @@ function submitMeetingReport_(report) {
         } catch (_) { /* a corrupt entry is ignored: the write below runs */ }
       }
     }
-    const res = submitMeetingReportLocked_(leadId, outcome, companion, note, reporter);
+    const res = submitMeetingReportLocked_(leadId, outcome, companion, note, reporter, {
+      via: via, notHeldReason: notHeld.notHeldReason, proposedDate: notHeld.proposedDate,
+      scope: typeof o.scope === 'function' ? o.scope : null,
+    });
     if (cacheKey && res && res.ok === true) {
       try { CacheService.getScriptCache().put(cacheKey, JSON.stringify(res), MEETING_REPORT_REPLAY_TTL_S); } catch (_) { /* best effort */ }
     }
@@ -10309,12 +10411,15 @@ function meetingReportNoteClean_(v) {
 /* The write itself, called by submitMeetingReport_ under the script lock.
  * Target: an open lead, or an admitted one with a recent meeting
  * (reportableLeads_) — on its own Leads row. Closed / removed leads → not found. */
-function submitMeetingReportLocked_(leadId, outcome, companion, note, reporter) {
+function submitMeetingReportLocked_(leadId, outcome, companion, note, reporter, extra) {
+  const x = extra || {};
   const leads = reportableLeads_(todayISODate_());
   let lead = null;
   for (let i = 0; i < leads.length; i++) {
     if (String(leads[i].id) === leadId) { lead = leads[i]; break; }
   }
+  // Out of the caller's scope reads exactly like a missing lead.
+  if (lead && x.scope && x.scope(lead) !== true) lead = null;
   if (!lead) return { ok: false, error: 'lead_not_found', message: 'no reportable lead with that id' };
 
   // Read-merge-write: upsertRowById_ replaces the ENTIRE row from the object,
@@ -10326,6 +10431,9 @@ function submitMeetingReportLocked_(leadId, outcome, companion, note, reporter) 
   lead.meetingReporter      = reporter;
   lead.meetingReportedAt    = reportedAt;
   lead.meetingSeen          = ''; // new/updated report → unseen for Vered (PR 3)
+  lead.meetingNotHeldReason = x.notHeldReason || '';
+  lead.meetingProposedDate  = x.proposedDate || '';
+  lead.meetingReportVia     = MEETING_REPORT_VIAS.indexOf(x.via) >= 0 ? x.via : 'link';
 
   const sh = getOrCreateSheet_(LEADS_SHEET, LEAD_COLUMNS);
   upsertRowById_(sh, LEAD_COLUMNS, lead);
@@ -10355,6 +10463,9 @@ function submitMeetingReportLocked_(leadId, outcome, companion, note, reporter) 
       companion: companion,
       reporter: reporter,
       reportedAt: reportedAt,
+      notHeldReason: lead.meetingNotHeldReason,
+      proposedDate: lead.meetingProposedDate,
+      via: lead.meetingReportVia,
     },
   };
 }
@@ -16760,7 +16871,7 @@ function mwCaller_(params, optionalAdminHouse) {
 
 function managersWork_(params) {
   if (params.op === 'capabilities') {
-    return { ok: true, protocol: 2, capabilities: ['stableActorId', 'scopedReads', 'privateLegacyAdminOnly'] };
+    return { ok: true, protocol: 2, capabilities: ['stableActorId', 'scopedReads', 'privateLegacyAdminOnly', 'meetings'] };
   }
   const caller = mwCaller_(params);
   if (!caller) return { ok: false, error: 'bad_request' };
@@ -16773,11 +16884,139 @@ function managersWork_(params) {
   if (op === 'dischargeSet') return mwDischargeSet_(caller, params);
   if (op === 'meetingSummaries') return mwMeetingSummaries_(caller, params);
   if (op === 'feedbackDone') return mwFeedbackDone_(caller, params);
+  // Intake-meeting reports from the managers app (CHANGELOG-meeting-report-in-managers.md).
+  if (op === 'meetings') return mwMeetings_(caller, params);
+  if (op === 'meetingReport') return mwMeetingReport_(caller, params);
   // Committees are set by the coordinators from 20 Oct 2026
   // (CHANGELOG-committees-from-coordinators.md): refused server-side, nothing
   // read or written. mwCommitteeSet_ stays only as history of the old path.
   if (op === 'committeeSet') return { ok: false, error: 'committee_read_only' };
   return { ok: false, error: 'unknown_op' };
+}
+
+/* ===== Intake-meeting reports in the managers app (19 Nov 2026) =====
+ * CHANGELOG-meeting-report-in-managers.md. Two managersWork ops:
+ *   - 'meetings'      — the reportable leads (reportableLeads_) with a visit in
+ *                       [from, to] that belong to the CALLER's house;
+ *   - 'meetingReport' — one report through submitMeetingReportVia_ ('app'),
+ *                       landing on the same lead row, unseen for Vered, as a
+ *                       /meeting-report link report.
+ * A meeting belongs to a house when the lead's house is that house OR its
+ * meetingWith is that house's manager on the visit date (Managers tab,
+ * managerHouseByName_ — the intake-bonus rule). The house is always the
+ * caller's, decided by the managers server; never a client value. */
+const MW_MEETINGS_BACK_DAYS = 30;
+const MW_MEETINGS_AHEAD_DAYS = 14;
+const MW_MEETINGS_MAX_SPAN_DAYS = 62;
+
+/* A lead's `house` cell (Hebrew name, Patients id or managers key) → the
+ * managers key, or ''. Pure. */
+function mwLeadHouseKey_(houseCell) {
+  const h = String(houseCell == null ? '' : houseCell).trim();
+  if (!h) return '';
+  for (let i = 0; i < MANAGER_HOUSES.length; i++) {
+    const k = MANAGER_HOUSES[i];
+    if (h === k || h === MANAGER_HOUSE_NAMES[k] || h === MANAGER_HOUSE_TO_PATIENTS_HOUSE_ID[k]) return k;
+  }
+  return '';
+}
+
+/* 'YYYY-MM-DD' + n days (n may be negative), '' for a bad date. Pure. */
+function mwIsoAddDays_(iso, n) {
+  if (!meetingReportRealDate_(iso)) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + n)).toISOString().slice(0, 10);
+}
+
+/* Whether `lead` is a meeting of `houseKey` (see the header above). `managers`
+ * is readManagers_() — read once per request. Pure given its inputs. */
+function mwMeetingInHouse_(lead, houseKey, managers) {
+  if (!lead || !houseKey) return false;
+  if (mwLeadHouseKey_(lead.house) === houseKey) return true;
+  const who = String(lead.meetingWith == null ? '' : lead.meetingWith).trim();
+  if (!who) return false;
+  const asOf = parseDate_(asISODate_(lead.visitDate)) || parseDate_(todayISODate_());
+  return managerHouseByName_(managers || [], who, asOf) === houseKey;
+}
+
+/* The whitelisted meeting row the managers app gets. No phone, contact,
+ * billing or ID field ever leaves here. Pure. */
+function mwMeetingItem_(l) {
+  const reported = asTimestampText_(l.meetingReportedAt) !== '';
+  const houseKey = mwLeadHouseKey_(l.house);
+  return {
+    id: String(l.id == null ? '' : l.id),
+    name: coordTextClean_(l.name, 80),
+    house: houseKey,
+    houseLabel: houseKey ? MANAGER_HOUSE_NAMES[houseKey] : coordTextClean_(l.house, 40),
+    visitDate: asISODate_(l.visitDate),
+    visitTime: mwCleanTime_(mwCellText_(l.visitTime, 'time')),
+    meetingWith: coordTextClean_(l.meetingWith, 40),
+    officeNote: meetingReportOfficeNote_(l.note),
+    report: reported ? {
+      outcome: String(l.meetingReportOutcome || ''),
+      notHeldReason: String(l.meetingNotHeldReason || ''),
+      proposedDate: asISODate_(l.meetingProposedDate),
+      companion: String(l.meetingCompanion || ''),
+      note: String(l.meetingNote || ''),
+      reporter: String(l.meetingReporter || ''),
+      reportedAt: asTimestampText_(l.meetingReportedAt),
+      via: String(l.meetingReportVia || ''),
+    } : null,
+  };
+}
+
+function mwMeetings_(caller, params) {
+  const today = todayISODate_();
+  const from = params.from == null || params.from === '' ? mwIsoAddDays_(today, -MW_MEETINGS_BACK_DAYS) : String(params.from);
+  const to = params.to == null || params.to === '' ? mwIsoAddDays_(today, MW_MEETINGS_AHEAD_DAYS) : String(params.to);
+  if (!meetingReportRealDate_(from) || !meetingReportRealDate_(to) || to < from ||
+      mwIsoAddDays_(from, MW_MEETINGS_MAX_SPAN_DAYS) < to) {
+    return { ok: false, error: 'bad_range' };
+  }
+  const managers = readManagers_();
+  const items = [];
+  reportableLeads_(today).forEach(function (l) {
+    const v = asISODate_(l.visitDate);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || v < from || v > to) return;
+    if (!String(l.id == null ? '' : l.id).trim()) return;
+    if (!mwMeetingInHouse_(l, caller.house, managers)) return;
+    items.push(mwMeetingItem_(l));
+  });
+  items.sort(function (a, b) {
+    const ka = a.visitDate + ' ' + (a.visitTime || '99:99'), kb = b.visitDate + ' ' + (b.visitTime || '99:99');
+    return ka < kb ? -1 : ka > kb ? 1 : (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  });
+  return {
+    ok: true, house: caller.house, today: today, from: from, to: to,
+    notHeldReasons: MEETING_NOT_HELD_KEYS.slice(), outcomes: MEETING_REPORT_OUTCOMES.slice(),
+    meetings: items,
+  };
+}
+
+function mwMeetingReport_(caller, params) {
+  const managers = readManagers_();
+  const house = caller.house;
+  const report = {
+    leadId: params.leadId,
+    outcome: params.outcome,
+    notHeldReason: params.notHeldReason,
+    proposedDate: params.proposedDate,
+    companion: params.companion,
+    note: params.note,
+    reporter: caller.actor,          // the signed-in caller, decided by the managers server
+    submissionId: params.submissionId,
+  };
+  const res = submitMeetingReportVia_(report, {
+    via: 'app',
+    scope: function (lead) { return mwMeetingInHouse_(lead, house, managers); },
+  });
+  if (res && res.ok === true) {
+    console.log('[mw] meetingReport ok house=' + house + ' outcome=' + String(res.saved && res.saved.outcome || ''));
+  } else {
+    console.log('[mw] meetingReport refused house=' + house + ' error=' + String(res && res.error || 'unknown'));
+  }
+  return res;
 }
 
 /* Display names never authorize a read or update. Legacy rows without an id
