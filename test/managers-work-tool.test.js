@@ -182,7 +182,7 @@ test('capabilities is authenticated, versioned, and performs no spreadsheet/cach
     g.sandbox[service] = new Proxy({}, { get() { throw Error('unexpected service access: ' + service); } });
   }
   const good = arr(g.post({ action: 'managersWork', op: 'capabilities', secret: SECRET }));
-  assert.deepStrictEqual(good, { ok: true, protocol: 2, capabilities: ['stableActorId', 'scopedReads', 'privateLegacyAdminOnly'] });
+  assert.deepStrictEqual(good, { ok: true, protocol: 2, capabilities: ['stableActorId', 'scopedReads', 'privateLegacyAdminOnly', 'meetings'] });
   assert.strictEqual(g.post({ action: 'managersWork', op: 'capabilities', secret: 'wrong' }).error, 'unauthorized');
 });
 

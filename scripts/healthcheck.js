@@ -66,6 +66,7 @@ const LEAD_COLUMNS = [
   'waitlistedAt',
   'meetingReportOutcome', 'meetingCompanion', 'meetingNote',
   'meetingReporter', 'meetingReportedAt', 'meetingSeen',
+  'meetingNotHeldReason', 'meetingProposedDate', 'meetingReportVia',
 ];
 
 /* Duplicated from PATIENT_COLUMNS in apps-script/Code.gs (keep in sync).

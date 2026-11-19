@@ -101,13 +101,17 @@ const MEETING_REPORT_FIELDS = [
   'meetingSeen',
 ];
 
-test('LEAD_COLUMNS ends with the six meeting-report columns in exact order', () => {
+test('LEAD_COLUMNS carries the six meeting-report columns in exact order, followed only by later appends', () => {
   const cols = Array.from(code.LEAD_COLUMNS);
+  const at = cols.indexOf(MEETING_REPORT_FIELDS[0]);
   assert.deepStrictEqual(
-    cols.slice(-6),
+    cols.slice(at, at + 6),
     MEETING_REPORT_FIELDS,
-    'the six meeting-report columns must be the terminal columns, in order'
+    'the six meeting-report columns stay contiguous, in order'
   );
+  // Append-only: after them come ONLY the later appends, in order
+  // (CHANGELOG-meeting-report-in-managers.md).
+  assert.deepStrictEqual(cols.slice(at + 6), ['meetingNotHeldReason', 'meetingProposedDate', 'meetingReportVia']);
   // Append-only: each appears exactly once, and the pre-existing meetings-board
   // meetingOutcome column is untouched (still present, still exactly once).
   for (const f of MEETING_REPORT_FIELDS.concat(['meetingOutcome'])) {

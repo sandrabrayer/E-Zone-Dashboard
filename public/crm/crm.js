@@ -981,6 +981,8 @@
         // the house manager's meeting report (C14; classic MEETING_REPORT_* fields)
         meetingReportOutcome: s(l.meetingReportOutcome), meetingCompanion: s(l.meetingCompanion), meetingNote: s(l.meetingNote),
         meetingReporter: s(l.meetingReporter), meetingReportedAt: s(l.meetingReportedAt), meetingSeen: s(l.meetingSeen),
+        // why it did not happen (CHANGELOG-meeting-report-in-managers.md)
+        meetingNotHeldReason: s(l.meetingNotHeldReason), meetingProposedDate: isoDay(l.meetingProposedDate),
         entryDate: isoDay(l.entryDate) };
     });
     const discharges = (Array.isArray(d.dischargedPatients) ? d.dischargedPatients : []).map(function (r) {
@@ -1073,6 +1075,15 @@
    * opening it marks it seen through the one-lead saveAll), and, for a
    * patient, the discharge record. Services (Therapists) are not connected. */
   const MEETING_REPORT_OUTCOME_LABELS = { advancing: 'התקיימה — מתקדם לכניסה', undecided: 'התקיימה — מתלבט', not_fit: 'התקיימה — לא מתאים', no_show: 'לא הגיע / בוטל' };
+  // KEEP IN SYNC with MEETING_NOT_HELD_LABELS in public/app.js (CHANGELOG-meeting-report-in-managers.md).
+  const MEETING_NOT_HELD_LABELS = { no_show: 'לא הגיעו', postponed: 'נדחתה', cancelled_family: 'בוטלה ע"י הפונה/המשפחה', cancelled_us: 'בוטלה על ידינו', other: 'אחר' };
+  /* The report's «סיבה» as plain text ('' when none) — callers escape. */
+  function notHeldText(l) {
+    const r = s(l && l.meetingNotHeldReason);
+    if (!r) return '';
+    const d = s(l.meetingProposedDate);
+    return (MEETING_NOT_HELD_LABELS[r] || r) + (d ? ' · מועד חדש מוצע: ' + fmtDate(d) : '');
+  }
   const MEETING_COMPANION_LABELS = { mother: 'אמא', father: 'אבא', parents: 'הורים', partner: 'בן/בת זוג', sibling: 'אח/אחות', friend: 'חבר', alone: 'לבד', other: 'אחר' };
   const DISPOSITION_LABELS = { completed: 'סיים טיפול', stopped_early: 'הפסיק לפני הזמן', released_outpatient: 'משוחרר לטיפול חוץ', not_relevant: 'לא רלוונטי' };
   /* An ISO timestamp → 'DD/MM/YYYY HH:MM' in Asia/Jerusalem; a bare date → DD/MM/YYYY; junk → as is. */
@@ -1093,8 +1104,11 @@
   function managerReport(l) {
     if (!l || !s(l.meetingReportedAt)) return null;
     const at = s(l.meetingReportedAt);
-    return { outcome: MEETING_REPORT_OUTCOME_LABELS[l.meetingReportOutcome] || s(l.meetingReportOutcome), companion: MEETING_COMPANION_LABELS[l.meetingCompanion] || s(l.meetingCompanion),
+    const notHeld = notHeldText(l);
+    const r = { outcome: MEETING_REPORT_OUTCOME_LABELS[l.meetingReportOutcome] || s(l.meetingReportOutcome), companion: MEETING_COMPANION_LABELS[l.meetingCompanion] || s(l.meetingCompanion),
       note: s(l.meetingNote), reporter: s(l.meetingReporter), at: at, when: whenLocal(at), unseen: reportUnseen(l) };
+    if (notHeld) r.notHeld = notHeld;   // only for a not-held report with a reason
+    return r;
   }
   /* Everything the tab shows for a lead or a patient (via its lead). */
   function meetingsFor(subject, kind, data) {
@@ -3181,7 +3195,7 @@
         why: (ch ? 'הפגישה בוטלה ע״י המטופל/ת' : 'הפגישה בוטלה — טרם נקבע המשך') + (l.visitDate ? ' (נקבעה ל-' + fmtDate(l.visitDate) + ')' : ''),
         when: ch && ch.at ? s(ch.at).slice(0, 10) : l.visitDate, state: 'today', priority: 'today', open: 'meetings', contactable: true }));
     });
-    b.reportUnseen.forEach(function (l) { followup.push(rowOfLead(l, { id: 'f:unseen:' + l.id, kind: 'report_unseen', action: 'לקרוא דיווח מנהל/ת', why: 'דיווח חדש מ-' + (l.meetingReporter || 'הבית') + (l.meetingReportOutcome === 'no_show' ? ' · לא הגיע / בוטל — הביקור לא התקיים' : ''), when: s(l.meetingReportedAt).slice(0, 10), state: 'today', priority: 'exception', open: 'meetings' })); });
+    b.reportUnseen.forEach(function (l) { followup.push(rowOfLead(l, { id: 'f:unseen:' + l.id, kind: 'report_unseen', action: 'לקרוא דיווח מנהל/ת', why: 'דיווח חדש מ-' + (l.meetingReporter || 'הבית') + (l.meetingReportOutcome === 'no_show' ? ' · לא הגיע / בוטל' + (notHeldText(l) ? ' (' + notHeldText(l) + ')' : '') + ' — הביקור לא התקיים' : ''), when: s(l.meetingReportedAt).slice(0, 10), state: 'today', priority: 'exception', open: 'meetings' })); });
     b.awaitingDecision.forEach(function (l) {
       // A manager's no_show means "לא הגיע / בוטל" (combined in the source).
       // Do NOT imply the meeting took place or close the lead automatically.
@@ -3191,7 +3205,7 @@
         id: 'f:decide:' + l.id,
         kind: notHeld ? 'meeting_no_show_followup' : 'report_undecided',
         action: notHeld ? 'לברר היעדרות / ביטול ולתאם מועד חדש' : 'להחליט אחרי דיווח המנהל/ת',
-        why: notHeld ? 'דיווח המנהל/ת: לא הגיע / בוטל — הביקור לא התקיים; נדרש ליצור קשר או לתעד סגירה מנומקת' : 'הדיווח נקרא, אין החלטה',
+        why: notHeld ? 'דיווח המנהל/ת: לא הגיע / בוטל' + (notHeldText(l) ? ' (' + notHeldText(l) + ')' : '') + ' — הביקור לא התקיים; נדרש ליצור קשר או לתעד סגירה מנומקת' : 'הדיווח נקרא, אין החלטה',
         when: s(l.meetingReportedAt).slice(0, 10),
         whenText: notHeld ? 'דיווח מ-' + fmtDate(s(l.meetingReportedAt).slice(0, 10)) + ' · מועד המשך טרם נקבע' : '',
         state: notHeld ? 'wait' : 'late', priority: 'exception', open: 'meetings', contactable: notHeld
@@ -6377,7 +6391,7 @@
       }
       html += '<div class="group-title">דיווח המנהל/ת' + (m.report && m.report.unseen ? ' ' + chip('today', 'חדש') : '') + '</div>';
       if (!m.report) html += '<p class="na">אין דיווח מהבית עדיין.</p>';
-      else html += '<dl class="kv" data-report-lead="' + esc(m.lead ? m.lead.id : '') + '"><dt>תוצאה</dt><dd>' + esc(m.report.outcome || '—') + '</dd><dt>הגיע/ה עם</dt><dd>' + esc(m.report.companion || '—') + '</dd>'
+      else html += '<dl class="kv" data-report-lead="' + esc(m.lead ? m.lead.id : '') + '"><dt>תוצאה</dt><dd>' + esc(m.report.outcome || '—') + '</dd>' + (m.report.notHeld ? '<dt>סיבה</dt><dd>' + esc(m.report.notHeld) + '</dd>' : '') + '<dt>הגיע/ה עם</dt><dd>' + esc(m.report.companion || '—') + '</dd>'
         + (m.report.note ? '<dt>הערות</dt><dd>' + esc(m.report.note) + '</dd>' : '') + '<dt>דווח ע"י</dt><dd>' + esc(m.report.reporter || '—') + ' · ' + esc(m.report.when) + '</dd></dl>'
         + (m.lead && m.lead.meetingReportOutcome === 'no_show' && !s(m.lead.meetingOutcome)
           ? '<p class="notice warn">לפי דיווח המנהל/ת: לא הגיע / בוטל. אין אישור שהביקור התקיים. יש לברר, לתאם מחדש או לתעד החלטה. הדיווח אינו סוגר את הליד.</p>' : '');

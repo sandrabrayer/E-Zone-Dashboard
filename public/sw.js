@@ -429,7 +429,9 @@
 // (CHANGELOG-remove-shiran-owner-filter.md). From v145 (the deployed branch); monotonic, v17 never reused.
 // v146 → v147: the CRM leads board gains the «לא רלוונטי» column and a
 // «לא רלוונטי ✕» card action (CHANGELOG-crm-not-relevant-column.md). From v146; monotonic.
-var CACHE_VERSION = 'v147';
+// v147 → v148: «למה לא התקיימה?» on /meeting-report + the reason in Vered's
+// views (CHANGELOG-meeting-report-in-managers.md). From v147; monotonic.
+var CACHE_VERSION = 'v148';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

@@ -445,7 +445,8 @@ test('D: CACHE_VERSION is v133 (monotonic from v132; v17 burned, never reused)',
   // v145: CHANGELOG-crm-lead-payer-switch.md (from v144).
   // v146: CHANGELOG-remove-shiran-owner-filter.md (from v145).
   // v147: CHANGELOG-crm-not-relevant-column.md (from v146).
-  assert.equal(v, 'v147');
+  // v148: CHANGELOG-meeting-report-in-managers.md (from v147).
+  assert.equal(v, 'v148');
   assert.notEqual(v, 'v17');
 });
 

@@ -245,7 +245,7 @@ test('happy path writes the five report fields, resets meetingSeen, preserves th
     OPEN_LEADS[1], OPEN_LEADS[2],
   ]);
   const out = code.submitMeetingReport({
-    leadId: 'L1', outcome: 'no_show', companion: 'סבתא', note: 'לא הגיע', reporter: 'אורן',
+    leadId: 'L1', outcome: 'no_show', notHeldReason: 'no_show', companion: 'סבתא', note: 'לא הגיע', reporter: 'אורן',
   });
   assert.strictEqual(out.ok, true);
   assert.strictEqual(out.saved.leadId, 'L1');

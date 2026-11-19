@@ -169,6 +169,10 @@ textarea { min-height: 96px; resize: vertical; }
   color: #fff;
 }
 #mr-companion-other-wrap { margin-top: 10px; }
+/* «למה לא התקיימה?» (CHANGELOG-meeting-report-in-managers.md) — same chips as
+ * the companion; the אחר text and the optional proposed date sit under them. */
+#mr-reason-other-wrap, #mr-proposed-wrap { margin-top: 10px; }
+#mr-proposed-wrap > label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--text-muted); }
 
 .mr-submit {
   width: 100%;

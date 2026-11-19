@@ -259,7 +259,10 @@ test('PRIVACY: the submit payload carries the manager’s report, never the offi
   els['mr-outcomes'].fire('click', { target: { closest: () => ({ getAttribute: () => 'advancing' }) } });
   await Promise.all(els['mr-submit'].fire('click'));
   assert.equal(posts.length, 1);
-  assert.deepEqual(Object.keys(posts[0]).sort(), ['companion', 'leadId', 'note', 'outcome', 'reporter', 'submissionId']);
+  // notHeldReason / proposedDate (CHANGELOG-meeting-report-in-managers.md): '' for a held meeting.
+  assert.deepEqual(Object.keys(posts[0]).sort(), ['companion', 'leadId', 'notHeldReason', 'note', 'outcome', 'proposedDate', 'reporter', 'submissionId']);
+  assert.equal(posts[0].notHeldReason, '');
+  assert.equal(posts[0].proposedDate, '');
   assert.equal(posts[0].note, 'הדיווח שלי');
   assert.ok(!JSON.stringify(posts[0]).includes('שורה 1'), 'office note not submitted');
 });

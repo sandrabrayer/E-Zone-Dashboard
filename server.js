@@ -2180,6 +2180,10 @@ app.post('/api/meeting-report/submit', requireMeetingReportSession, requireProxy
     companion: b.companion == null ? '' : String(b.companion),
     note:      b.note      == null ? '' : String(b.note),
     reporter:  b.reporter  == null ? '' : String(b.reporter),
+    /* Not-held reason + proposed date (CHANGELOG-meeting-report-in-managers.md);
+     * validated authoritatively by meetingReportNotHeldCheck_ in Code.gs. */
+    notHeldReason: b.notHeldReason == null ? '' : String(b.notHeldReason).slice(0, 200),
+    proposedDate:  b.proposedDate  == null ? '' : String(b.proposedDate).slice(0, 20),
   };
   /* The form's idempotency key (CHANGELOG-write-path-hardening.md): forwarded
    * only in its exact shape — anything else is dropped here, so the old
