@@ -8880,6 +8880,18 @@ function leadHandoffPhone_(raw) {
   return (/^0\d{9}$/.test(phone) || LEAD_HANDOFF_LANDLINE_RE.test(phone)) ? phone : '';
 }
 
+/* The best reachable phone of a lead for an Outpatient handoff / roster, when the
+ * patient's own phone is missing (CHANGELOG-outpatient-phone-fallback.md): the main
+ * phone, else «טלפון לגבייה ועדכונים» (billingPhone), else the contact person's
+ * (contactPhone) — the same three numbers the house-manager family card already
+ * shows (mwPatientContact_). `valid` is the field validator to apply
+ * (leadHandoffPhone_ for the send, rosterValidPhone_ for the rosters). '' when the
+ * lead carries no usable number in any of the three. Pure. */
+function leadBestPhone_(lead, valid) {
+  if (!lead) return '';
+  return valid(lead.phone) || valid(lead.billingPhone) || valid(lead.contactPhone) || '';
+}
+
 /* A refused handoff is never silent: an explicit error code to the caller AND a
  * log line (console + hidden AuditLog). The log carries the reason and the
  * phone's digit COUNT only — never the name or the phone itself (PII). */
@@ -9128,7 +9140,7 @@ function dischargeLeadPhone_(fromLead) {
     const rows = readSheet_(sh, tabs[t][1]);
     for (let i = 0; i < rows.length; i++) {
       if (String(rows[i].id == null ? '' : rows[i].id).trim() !== fl) continue;
-      const phone = leadHandoffPhone_(rows[i].phone);
+      const phone = leadBestPhone_(rows[i], leadHandoffPhone_);
       if (phone) return phone;
     }
   }
@@ -9458,7 +9470,7 @@ function buildLeadPhoneIndex_(leads, manual) {
   for (let i = 0; i < leads.length; i++) {
     const l = leads[i];
     if (!l) continue;
-    if (l.id !== undefined && l.id !== null && l.id !== '') byId[String(l.id)] = l.phone || '';
+    if (l.id !== undefined && l.id !== null && l.id !== '') byId[String(l.id)] = leadBestPhone_(l, rosterValidPhone_) || (l.phone || '');
     const k = rosterNameKey_(l.name), ph = rosterValidPhone_(l.phone);
     if (k && ph) { (namePhones[k] = namePhones[k] || {})[ph] = true; }
   }
