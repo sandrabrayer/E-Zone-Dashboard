@@ -1687,6 +1687,8 @@ const PROXY_KNOWN_ACTIONS = [
   'getTasks', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logContact',
   // CRM Stage 2 (CHANGELOG-crm-my-day.md)
   'contactIndex',
+  // Family visit confirmation source (issue #421): read-only single-lead visit read
+  'getFamilyVisitSource',
   // Lead flags: waitlist reason + patient-side meeting change (CHANGELOG-crm-vered-feedback-1104.md)
   'logLeadFlag',
 ];
@@ -2049,6 +2051,13 @@ function handle_(params) {
       const no = expectedDischargesRefused_(params);
       if (no) return jsonOut_(no);
       return jsonOut_(contactIndex_(params, actingUser_(params)));
+    }
+    // Family visit source (issue #421): READ-ONLY, one lead by exact id; the same
+    // gate as contactIndex (verified personal session, money-only view refused).
+    if (action === 'getFamilyVisitSource') {
+      const no = expectedDischargesRefused_(params);
+      if (no) return jsonOut_(no);
+      return jsonOut_(familyVisitSource_(params && params.leadId, actingUser_(params)));
     }
     if (action === 'getTasks' || action === 'createTask' || action === 'completeTask' || action === 'rescheduleTask' ||
         action === 'reassignTask' || action === 'withdrawTask' || action === 'logContact') {
@@ -4726,6 +4735,35 @@ function contactIndex_(params, actor) {
     put(patients, String(r.patientId == null ? '' : r.patientId).trim());
   }
   return { ok: true, count: count, leads: leads, patients: patients, flags: flags };
+}
+
+/* ===== Family visit source (issue #421) =====
+ * action=getFamilyVisitSource&leadId=… → the saved visit of ONE open lead, read
+ * from the live Leads sheet only (never creates it), by header names. Returns
+ * {ok:true, lead:{id,stage,house,visitDate,visitTime,meetingWith,meetingOutcome,
+ * meetingReportOutcome,phone,name,contactName,contactPhone}} for a unique exact
+ * id, else {ok:false,error:'missing_visit'|'ambiguous_visit'}. billingPhone is
+ * never returned. Fails closed for anyone but a verified personal lead operator
+ * (the money-only controller view is refused). Read-only; no personal data in
+ * errors. */
+function familyVisitSource_(leadId, actor) {
+  if (!actor || actor.verified !== true || actor.auth !== 'personal' || !actor.id) return { ok: false, error: 'forbidden' };
+  if (activityScope_(actor) === 'money') return { ok: false, error: 'forbidden' };
+  const id = String(leadId == null ? '' : leadId).trim();
+  if (!id || id.length > 80) return { ok: false, error: 'missing_visit' };
+  const lsh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LEADS_SHEET);
+  const rows = lsh ? readSheet_(lsh, LEAD_COLUMNS) : [];
+  const hits = rows.filter(function (l) { return l && String(l.id == null ? '' : l.id).trim() === id; });
+  if (hits.length === 0) return { ok: false, error: 'missing_visit' };
+  if (hits.length > 1) return { ok: false, error: 'ambiguous_visit' };
+  const l = hits[0];
+  const t = function (v) { return String(v == null ? '' : v).trim(); };
+  return { ok: true, lead: {
+    id: id, stage: t(l.stage), house: t(l.house),
+    visitDate: asISODate_(l.visitDate), visitTime: asISOTime_(l.visitTime),
+    meetingWith: t(l.meetingWith), meetingOutcome: t(l.meetingOutcome), meetingReportOutcome: t(l.meetingReportOutcome),
+    phone: t(l.phone), name: t(l.name), contactName: t(l.contactName), contactPhone: t(l.contactPhone),
+  } };
 }
 
 /* ===== Reminder hook (CRM Stage 4a, CHANGELOG-crm-reminder-hook.md; spec §9) =====
