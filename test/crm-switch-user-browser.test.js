@@ -174,7 +174,6 @@ test('«החלפת משתמש» at 360 px: Vered (CRM) → PIN screen, nothing o
     await waitCrm(page);
     assert.equal((await page.textContent('#crm-user')).trim(), 'אורטל');
     await page.waitForSelector('#crm-nav button[data-area="billing"][aria-current="page"], #crm-fc-title', { timeout: 15000 });
-    assert.ok(await page.$('#crm-controller-classic a[href="/?view=classic"]'), 'the link to her classic «בקרת גבייה»');
     // her classic page is one link away
     await page.goto(`http://127.0.0.1:${srv.port}/?view=classic`, { waitUntil: 'networkidle' });
     await page.waitForSelector('#whoami:not(.hidden)', { timeout: 15000 });

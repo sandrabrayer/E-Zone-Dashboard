@@ -330,7 +330,7 @@ test('CRM shell (Ortal, controller): only היום שלי / גבייה / בקר�
     // she lands on «גבייה» (CHANGELOG-ortal-crm-default.md); «היום שלי» is one tap away
     await page.waitForSelector('#crm-bill-overview', { timeout: 8000 });
     assert.deepEqual(await page.$$eval('#crm-bill-nav [data-bill-tab]', (els) => els.map((e) => e.dataset.billTab)), ['overview', 'due', 'forecast', 'debts', 'receipts', 'refunds', 'unlinked', 'anomalies'], 'her sections — no cleanup tool');
-    assert.equal(await page.getAttribute('#crm-controller-classic a', 'href'), '/?view=classic');
+    assert.equal(await page.locator('#crm-controller-classic').count(), 0, 'the controller decisions are native now — no classic link (CHANGELOG-crm-billing-control-decisions.md)');
     await page.click('#crm-nav button[data-area="today"]');
     await page.waitForFunction(() => document.querySelector('.kpis.cards') && /דיווחים לאימות/.test(document.querySelector('#crm-main').textContent) && !/טוען…/.test(document.querySelector('.kpis.cards').textContent), null, { timeout: 8000 });
     assert.deepEqual(await page.$$eval('.kpis.cards .kpi .l', (els) => els.map((e) => e.textContent)), ['דיווחים לאימות', 'אימותים חלקיים / לבירור', 'חשבוניות מבוקשות', 'משימות כספיות שלך', 'זיכויים לתשלום', 'מטופלים פעילים'], 'Ortal: verification / gaps / documents / control (spec §5)');
@@ -396,7 +396,9 @@ test('C8 גבייה read-only (Vered + Ortal): debtAging + getPayments fetched o
     await o.page.waitForSelector('#crm-bill-overview');
     assert.ok(srv.actions.some((a) => a.action === 'debtAging' && a.user === 'ortal'));
     const links = await o.page.$$eval('#crm-main .links a', (els) => els.map((e) => e.textContent));
-    assert.equal(links.length, 2, 'top + bottom'); for (const l of links) assert.match(l, /בקרת גבייה/);
+    // the top «אימות חלקי / לא התקבל / כפילות» link is gone (native now); the bottom «בקרת גבייה»
+    // link stays for the control-screen parts not yet migrated (CHANGELOG-crm-billing-control-decisions.md)
+    assert.equal(links.length, 1); assert.match(links[0], /בקרת גבייה/);
     assert.deepEqual(o.errors, []);
   } finally { await browser.close(); srv.close(); }
 });
@@ -2825,4 +2827,54 @@ test('«בית לא מזוהה» (CHANGELOG-crm-unknown-house.md): the occupancy
     assert.deepEqual(mv[0].prove, { patients: ['pUnk'] });
     assert.deepEqual(errors, []);
   } finally { DATA.patients = keepP; saveAnswer = null; await browser.close(); srv.close(); }
+});
+
+test('«בקרת גבייה» decisions in the CRM (CHANGELOG-crm-billing-control-decisions.md): Ortal marks a receipt «כפילות» / «לא התקבל» natively, with a required reason; a void keeps the row as «בוטלה» and triggers a fresh read; no classic page', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  const toastIs = (page, re) => page.waitForFunction((src) => new RegExp(src).test((document.querySelector('#crm-toast') || {}).textContent || ''), re.source, { timeout: 8000 });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'ortal', 1366);
+    page.on('dialog', (d) => d.accept());
+    await page.waitForSelector('#crm-bill-overview', { timeout: 8000 });
+    await billTab(page, 'receipts');
+    await page.waitForSelector('tr[data-receipt="rcpt-1"]');
+    // the three decisions are native on the receipt
+    for (const st of ['flagged', 'duplicate', 'not_received'])
+      assert.equal(await page.locator('tr[data-receipt="rcpt-1"] [data-decide="' + st + '"]').count(), 1, st + ' button present');
+    // an empty reason is refused — nothing posted
+    await page.click('tr[data-receipt="rcpt-1"] [data-decide="duplicate"]');
+    await page.waitForSelector('.dec-form .dec-reason');
+    const n0 = srv.saves.filter((x) => x.action === 'confirmPayment').length;
+    await page.click('.dec-form [data-dec-save]');
+    await toastIs(page, /יש להזין סיבה/);
+    assert.equal(srv.saves.filter((x) => x.action === 'confirmPayment').length, n0, 'no post without a reason');
+    // a real «כפילות»: the server voids it; the row is kept and marked «בוטלה», and the balances are re-read
+    let voidReqLoads = 0;
+    saveAnswer = (parsed) => {
+      if (parsed.action === 'confirmPayment') return { ok: true, voided: (parsed.confirm.ids || []).map((id) => ({ id })) };
+      return undefined; // fall through to the harness defaults for every other action (incl. the re-read)
+    };
+    await page.fill('.dec-form .dec-reason', 'כפולה לדיווח 9/11');
+    await page.click('.dec-form [data-dec-save]');
+    await toastIs(page, /סומן «כפילות» — הקבלה בוטלה/);
+    const dup = srv.saves.filter((x) => x.action === 'confirmPayment');
+    assert.equal(dup.length, n0 + 1, 'exactly one decision posted');
+    assert.deepEqual(dup[dup.length - 1].confirm, { ids: ['rcpt-1'], status: 'duplicate', flagNote: 'כפולה לדיווח 9/11' });
+    // a fresh billing read was triggered after the void (nothing stale) — getPayments re-fetched
+    for (let i = 0; i < 40 && srv.actions.filter((a) => a.action === 'getPayments' && a.user === 'ortal').length < 2; i++) await page.waitForTimeout(100);
+    assert.ok(srv.actions.filter((a) => a.action === 'getPayments' && a.user === 'ortal').length >= 2, 'the balances were re-read after the void');
+    assert.deepEqual(errors, []);
+    // «לא התקבל» uses the same path with its own status
+    saveAnswer = (parsed) => parsed.action === 'confirmPayment' ? { ok: true, voided: (parsed.confirm.ids || []).map((id) => ({ id })) } : undefined;
+    await billTab(page, 'receipts');
+    const row = await page.locator('tr[data-receipt="rcpt-1"] [data-decide="not_received"]');
+    if (await row.count()) {
+      await row.click();
+      await page.fill('.dec-form .dec-reason', 'לא נכנס לבנק');
+      await page.click('.dec-form [data-dec-save]');
+      await toastIs(page, /התביעה בוטלה/);
+      assert.equal(srv.saves.filter((x) => x.action === 'confirmPayment').pop().confirm.status, 'not_received');
+    }
+  } finally { saveAnswer = null; await browser.close(); srv.close(); }
 });

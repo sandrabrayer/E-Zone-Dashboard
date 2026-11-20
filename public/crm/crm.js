@@ -1476,6 +1476,46 @@
       return o;
     });
   }
+  /* ---- Controller decisions «לא שולם» / «כפילות» / «לא התקבל» (CHANGELOG-crm-billing-control-decisions.md) ----
+   * The same confirmPayment contract the classic «בקרת גבייה» used: ids:[one receipt],
+   * status, flagNote (a 2–120-char reason). Nothing is deleted — «כפילות» / «לא התקבל»
+   * VOID the receipt (the row stays, marked «בוטלה», reversible on the server); «לא שולם»
+   * returns it to Vered. After a proven answer the CRM re-reads the authoritative balances. */
+  const BC_DECISIONS = {
+    flagged: { label: 'לא שולם', confirm: 'לסמן «לא שולם» ולהחזיר את הדיווח לוורד?', toast: 'סומן «לא שולם» — חוזר לוורד' },
+    duplicate: { label: 'כפילות', confirm: 'לסמן «כפילות»? הקבלה תבוטל ולא תיספר (ניתן לבטל סימון בדשבורד).', toast: 'סומן «כפילות» — הקבלה בוטלה ואינה נספרת' },
+    not_received: { label: 'לא התקבל', confirm: 'לבטל את התביעה? המחזור יחזור להיות חוב פתוח.', toast: 'התביעה בוטלה — המחזור חזר לחוב פתוח' }
+  };
+  function decisionReasonError(reason) {
+    const r = s(reason).replace(/\s+/g, ' ').trim();
+    return r.length >= 2 && r.length <= 120 ? '' : 'יש להזין סיבה (2–120 תווים)';
+  }
+  function decisionBody(id, status, reason) {
+    const v = s(id).trim();
+    if (v.indexOf('rcpt-') !== 0 || v.length > 300 || /[\u0000-\u001f\u007f]/.test(v) || !BC_DECISIONS[status]) return null;
+    if (decisionReasonError(reason)) return null;
+    return { action: 'confirmPayment', confirm: { ids: [v], status: status, flagNote: s(reason).replace(/\s+/g, ' ').trim() } };
+  }
+  /* R3: the receipt must come back — changed, already in that state (a retry), or voided —
+   * or nothing is cleared and the controller is told the result is unknown. */
+  function decisionAccepted(res, id) {
+    if (!res || res.ok !== true) return false;
+    return [].concat(Array.isArray(res.changed) ? res.changed : [], Array.isArray(res.unchangedRows) ? res.unchangedRows : [], Array.isArray(res.voided) ? res.voided : [])
+      .some(function (r) { return r && s(r.id) === s(id); });
+  }
+  function decisionVoided(res, id) {
+    return !!(res && Array.isArray(res.voided) && res.voided.some(function (r) { return r && s(r.id) === s(id); }));
+  }
+  /* Interim local patch until the fresh read lands: a voided receipt is kept and marked
+   * «בוטלה» (never dropped); a flagged one gets the status + reason. Returns new objects; pure. */
+  function applyDecision(list, id, status, voided, reason) {
+    if (!Array.isArray(list)) return list;
+    return list.map(function (r) {
+      if (!r || s(r.id) !== s(id)) return r;
+      if (voided) return Object.assign({}, r, { isVoid: true, confirmStatus: status, flagNote: s(reason).replace(/\s+/g, ' ').trim() });
+      return Object.assign({}, r, { confirmStatus: status, flagNote: s(reason).replace(/\s+/g, ' ').trim() });
+    });
+  }
   const VERIFY_ERRORS = { forbidden_role: 'אין הרשאה לאמת תשלומים', forbidden: 'אין הרשאה לאמת תשלומים', not_found: 'הקבלה לא נמצאה — רענני', receipt_void: 'הקבלה בוטלה — אין מה לאמת',
     confirm_without_report: 'אין דיווח תשלום לאימות', lock_busy: 'המערכת עסוקה — נסי שוב בעוד רגע', sheet_header_clash: 'מבנה הגיליון השתנה — פני לסנדרה' };
   function verifyRefusal(res) {
@@ -4974,7 +5014,54 @@
       const vc = receiptVerifyChip(r.confirmStatus);
       return chip(vc.cls, vc.label + (vc.verified ? ' ✓' : ''))
         + (canVerifyReceipt(state.me, r) ? ' <button type="button" class="btn small verify" data-verify="' + esc(r.id) + '" title="אימות שהכסף התקבל בבנק">אמת</button>'
-          + ' <button type="button" class="btn small" data-verify-partial="' + esc(r.id) + '" data-reported="' + esc(String(Number(r.amount) || 0)) + '" data-verified="' + esc(String(r.confirmStatus === 'partial' ? Number(r.confirmedAmount) || 0 : 0)) + '" title="אימות חלקי — סכום שהתקבל בפועל">אימות חלקי</button>' : '');
+          + ' <button type="button" class="btn small" data-verify-partial="' + esc(r.id) + '" data-reported="' + esc(String(Number(r.amount) || 0)) + '" data-verified="' + esc(String(r.confirmStatus === 'partial' ? Number(r.confirmedAmount) || 0 : 0)) + '" title="אימות חלקי — סכום שהתקבל בפועל">אימות חלקי</button>'
+          + ' <button type="button" class="btn small" data-decide="flagged" data-receipt="' + esc(r.id) + '" title="מחזיר את הדיווח לוורד">לא שולם</button>'
+          + ' <button type="button" class="btn small" data-decide="duplicate" data-receipt="' + esc(r.id) + '" title="מבטל קבלה כפולה">כפילות</button>'
+          + ' <button type="button" class="btn small" data-decide="not_received" data-receipt="' + esc(r.id) + '" title="מבטל את התביעה — המחזור חוזר לחוב פתוח">לא התקבל</button>' : '');
+    }
+    /* The inline reason form for a «לא שולם» / «כפילות» / «לא התקבל» decision
+     * (CHANGELOG-crm-billing-control-decisions.md) — a required 2–120-char reason. */
+    function openDecisionForm(btn) {
+      const id = btn.dataset.receipt, status = btn.dataset.decide;
+      if (!BC_DECISIONS[status]) return;
+      const old = doc.querySelector('.dec-form'); if (old) old.remove();
+      const f = doc.createElement('span'); f.className = 'dec-form'; f.dataset.decId = id; f.dataset.decStatus = status;
+      f.innerHTML = '<input type="text" class="dec-reason" maxlength="120" placeholder="סיבה (חובה)" aria-label="סיבת ההחלטה"> '
+        + '<button type="button" class="btn small primary" data-dec-save>' + esc(BC_DECISIONS[status].label) + '</button> '
+        + '<button type="button" class="btn small" data-dec-cancel>ביטול</button>';
+      btn.insertAdjacentElement('afterend', f);
+      f.querySelector('.dec-reason').focus();
+    }
+    function saveDecision(form) {
+      if (!requireFreshBilling()) return Promise.resolve(false);
+      const id = form.dataset.decId, status = form.dataset.decStatus, reason = form.querySelector('.dec-reason').value;
+      const rerr = decisionReasonError(reason);
+      if (rerr) { toast(rerr, true); return Promise.resolve(false); }
+      const body = decisionBody(id, status, reason);
+      if (!body || state.verifying) return Promise.resolve(false);
+      if (!win.confirm(BC_DECISIONS[status].confirm)) return Promise.resolve(false);
+      state.verifying = id;
+      const sv = form.querySelector('[data-dec-save]'); if (sv) { sv.disabled = true; sv.setAttribute('aria-busy', 'true'); }
+      const fail = function (msg) { state.verifying = ''; if (sv) { sv.disabled = false; sv.removeAttribute('aria-busy'); } toast(msg, true); return false; };
+      return win.fetch('/api/sheets', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
+        .then(function (res) {
+          if (!decisionAccepted(res, id)) return fail(res && res.ok === true ? 'התוצאה לא ידועה — רענני ובדקי את הקבלה לפני כל פעולה' : verifyRefusal(res));
+          state.verifying = '';
+          obsoleteBillingReadAfterProof();
+          const voided = decisionVoided(res, id);
+          [state.billing && state.billing.payments, state.payments, state.queue].forEach(function (p) {
+            if (p && Array.isArray(p.receipts)) p.receipts = applyDecision(p.receipts, id, status, voided, reason);
+          });
+          toast(BC_DECISIONS[status].toast);
+          // a void / flag changes open debt and the cycle balance — re-read the authoritative data
+          resetBilling(['debt', 'payments']);
+          renderNav(); renderMain();
+          const pid = state.drawer && state.drawer.kind === 'patient' && state.drawer.id;
+          if (pid && $('#crm-account')) fillAccountPane(pid);
+          return true;
+        })
+        .catch(function () { return fail('התוצאה לא ידועה — רענני ובדקי את הקבלה לפני כל פעולה (אין לדווח תשלום חדש)'); });
     }
     /* Inline form: total verified so far (cumulative), live preview of the rest. No payment / discount inputs. */
     function openPartialForm(btn) {
@@ -5197,7 +5284,7 @@
       const badge = { due: dueToday.count || '', debts: debtorCount || '', receipts: b.toVerify ? b.toVerify + ' לאימות' : '', refunds: refunds.ok ? (refunds.count || '') : '!', unlinked: det.length || '', anomalies: anomalies.length || '' };
       let html = billingRefreshing() ? '<div class="crm-refresh" id="crm-bill-refresh" role="status"><span class="spin" aria-hidden="true"></span>מעדכן נתונים…</div>' : '';
       // the one-click «אמת» lives here; the other decisions (partial / not received / duplicate) stay in the classic tab
-      if (isController) html += '<div class="links" id="crm-controller-classic"><a href="/?view=classic">בקרת גבייה<small>אימות חלקי / לא התקבל / כפילות — בדשבורד הרגיל</small></a></div>';
+      // «אימות / אימות חלקי / לא שולם / כפילות / לא התקבל» are all native on each receipt now (CHANGELOG-crm-billing-control-decisions.md).
       html += '<div class="bill-layout"><nav class="bill-nav" id="crm-bill-nav" aria-label="סעיפי גבייה">'
         + BILLING_TABS.filter(function (t) { return tabs.indexOf(t.id) >= 0; }).map(function (t) {
           return '<button type="button" data-bill-tab="' + esc(t.id) + '"' + (t.id === tab ? ' aria-current="page"' : '') + '><span>' + esc(t.label) + '</span>' + (badge[t.id] ? '<span class="badge' + (t.id === 'unlinked' || t.id === 'anomalies' ? ' late' : '') + '">' + esc(badge[t.id]) + '</span>' : '') + '</button>';
@@ -7014,7 +7101,7 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-refund-void],[data-refund-void-close],[data-verify],[data-verify-partial],[data-vp-save],[data-vp-cancel],[data-rc-all-rows],[data-billing-retry],[data-billing-read-retry],[data-debt-preset],[data-fc-preset],[data-bill-tab],[data-bill-go],[data-bill-clear],[data-rc-preset],[data-slice-dim],[data-fc-open],[data-cleanup-jump],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-refund-void],[data-refund-void-close],[data-verify],[data-verify-partial],[data-vp-save],[data-vp-cancel],[data-decide],[data-dec-save],[data-dec-cancel],[data-rc-all-rows],[data-billing-retry],[data-billing-read-retry],[data-debt-preset],[data-fc-preset],[data-bill-tab],[data-bill-go],[data-bill-clear],[data-rc-preset],[data-slice-dim],[data-fc-open],[data-cleanup-jump],[data-due-today],[data-due-report],[data-report-open],[data-report-row],[data-report-cancel],[data-discount-open],[data-amount-open],[data-refund-action],[data-refund-cancel],[data-report-other],[data-receipt-edit],[data-receipt-void],[data-receipt-cancel],[data-credit-edit],[data-credit-new],[data-credit-cancel]') : null;
       if (!t) return;
       if (t.dataset.creditCancel !== undefined) { state.creditForm = null; const box = t.closest('form'); if (box) box.remove(); return; }
       if (t.dataset.creditEdit) return openCreditForm('edit', t.dataset.creditEdit);
@@ -7022,6 +7109,9 @@
       if (t.dataset.verifyPartial) return openPartialForm(t);
       if (t.dataset.vpCancel !== undefined) { const f = t.closest('.vp-form'); if (f) f.remove(); return; }
       if (t.dataset.vpSave !== undefined) return savePartial(t.closest('.vp-form'));
+      if (t.dataset.decide) return openDecisionForm(t);
+      if (t.dataset.decCancel !== undefined) { const f = t.closest('.dec-form'); if (f) f.remove(); return; }
+      if (t.dataset.decSave !== undefined) return saveDecision(t.closest('.dec-form'));
       if (t.dataset.verify) return verifyReceipt(t);
       if (t.dataset.rcAllRows !== undefined) { state.rcShowAll = true; return renderMain(); }
       if (t.dataset.billingReadRetry !== undefined) return retryBillingRead();
@@ -7438,7 +7528,7 @@
 
   return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, landingArea: landingArea, activePatientsCard: activePatientsCard, monthOccupancy: monthOccupancy, occupancyTrend: occupancyTrend, monthRevenue: monthRevenue, monthShift: monthShift, monthLabelHe: monthLabelHe, monthKeyOk: monthKeyOk, normalise: normalise, compute: compute, filterLeads: filterLeads,
     board: board, NOT_RELEVANT_DAYS: NOT_RELEVANT_DAYS, NOT_RELEVANT_REASONS: NOT_RELEVANT_REASONS, notRelevantColumn: notRelevantColumn, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
-    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, whenLocal: whenLocal, esc: esc, boot: boot, accountTabVisible: accountTabVisible, accountReadable: accountReadable, receiptVerifyChip: receiptVerifyChip, canVerifyReceipt: canVerifyReceipt, verifyBody: verifyBody, verifyAccepted: verifyAccepted, verifyRefusal: verifyRefusal, applyVerified: applyVerified, partialVerifyCheck: partialVerifyCheck, partialVerifyBody: partialVerifyBody, partialAccepted: partialAccepted, applyPartial: applyPartial, unverifiedReceipts: unverifiedReceipts, unverifiedTotal: unverifiedTotal, billingFind: billingFind, FIND_RECEIPTS_CAP: FIND_RECEIPTS_CAP, PAY_KINDS: PAY_KINDS, payKindCheck: payKindCheck, payKindPreview: payKindPreview, CONFIRM_LABELS: CONFIRM_LABELS, RECEIPT_ROWS_CAP: RECEIPT_ROWS_CAP, clearCachedPages: clearCachedPages,
+    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, whenLocal: whenLocal, esc: esc, boot: boot, accountTabVisible: accountTabVisible, accountReadable: accountReadable, receiptVerifyChip: receiptVerifyChip, canVerifyReceipt: canVerifyReceipt, verifyBody: verifyBody, verifyAccepted: verifyAccepted, verifyRefusal: verifyRefusal, applyVerified: applyVerified, partialVerifyCheck: partialVerifyCheck, partialVerifyBody: partialVerifyBody, partialAccepted: partialAccepted, applyPartial: applyPartial, decisionReasonError: decisionReasonError, decisionBody: decisionBody, decisionAccepted: decisionAccepted, decisionVoided: decisionVoided, applyDecision: applyDecision, BC_DECISIONS: BC_DECISIONS, unverifiedReceipts: unverifiedReceipts, unverifiedTotal: unverifiedTotal, billingFind: billingFind, FIND_RECEIPTS_CAP: FIND_RECEIPTS_CAP, PAY_KINDS: PAY_KINDS, payKindCheck: payKindCheck, payKindPreview: payKindPreview, CONFIRM_LABELS: CONFIRM_LABELS, RECEIPT_ROWS_CAP: RECEIPT_ROWS_CAP, clearCachedPages: clearCachedPages,
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
     stageAfter: stageAfter, stageBefore: stageBefore, applyLeadPatch: applyLeadPatch, leadSaveBody: leadSaveBody, saveRefusal: saveRefusal,
     DISPOSITIONS: DISPOSITIONS, CONTACT_RELATIONS: CONTACT_RELATIONS, localPhone: localPhone, leadFormErrors: leadFormErrors, newLeadRow: newLeadRow,

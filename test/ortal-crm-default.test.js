@@ -35,9 +35,11 @@ test('landingArea: the controller view opens on «גבייה»; everyone else ke
   assert.deepEqual(core.areasFor({ view: 'controller' }), ['today', 'billing', 'control'], 'her areas are unchanged');
 });
 
-test('the landing is applied once (first load only), and Ortal gets a top link to her classic «בקרת גבייה»', () => {
+test('the landing is applied once (first load only); Ortal\'s billing-control decisions are native (no classic link)', () => {
   assert.ok(SRC.includes("if (!state.landed) { state.landed = true; state.area = landingArea(me, state.area); }"));
-  assert.ok(SRC.includes('id="crm-controller-classic"') && SRC.includes('<a href="/?view=classic">בקרת גבייה<small>אימות חלקי / לא התקבל / כפילות — בדשבורד הרגיל</small></a>'));
+  // CHANGELOG-crm-billing-control-decisions.md: «אימות חלקי / לא שולם / כפילות / לא התקבל» are native on each receipt now
+  assert.ok(!SRC.includes('id="crm-controller-classic"'));
+  assert.ok(SRC.includes('data-decide="duplicate"') && SRC.includes('data-decide="not_received"'));
 });
 
 test('no new power: the controller allow-list holds no finance write, and every action the «גבייה» area reads is on it', () => {
