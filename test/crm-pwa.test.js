@@ -26,9 +26,10 @@ function loadSw() {
 }
 const sw = loadSw();
 
-test('sw.js: v157 (monotonic from the live v93 via v94…v131, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
-  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v157');
-  assert.ok(SW_SRC.includes('v156 → v157:') && SW_SRC.includes('CHANGELOG-family-visit-draft.md'));
+test('sw.js: v158 (monotonic from the live v93 via v94…v131, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
+  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v158');
+  assert.ok(SW_SRC.includes('v157 → v158:') && SW_SRC.includes('CHANGELOG-family-visit-draft.md'));
+  assert.ok(SW_SRC.includes('v156 → v157:') && SW_SRC.includes('CHANGELOG-crm-leads-view-fixes.md'));
   assert.ok(SW_SRC.includes('v155 → v156:') && SW_SRC.includes('CHANGELOG-crm-reactivate-card.md'));
   assert.ok(SW_SRC.includes('v154 → v155:') && SW_SRC.includes('CHANGELOG-optional-lead-fields.md'));
   assert.ok(SW_SRC.includes('v153 → v154:') && SW_SRC.includes('CHANGELOG-crm-meeting-notify.md'));

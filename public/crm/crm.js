@@ -188,6 +188,15 @@
     if (/^972\d+$/.test(t)) t = '0' + t.slice(3);
     return /^0\d{9}$/.test(t) ? t : '';
   }
+  /* Restore a mobile's lost leading 0 (Sandra 20/11/2026). Google Sheets coerces a phone written
+   * as a number and drops it (0525264094 → 525264094); the lead-edit inputs then showed it without
+   * the 0, and billingModeOf could no longer match it to the patient / contact phone (so it fell to
+   * «אחר»). A bare 9-digit mobile (5XXXXXXXX) regains its 0; anything already valid or not a bare
+   * mobile is returned unchanged. Pure. */
+  function ilPhoneDisplay(v) {
+    const t = s(v).replace(/[\s\-()]/g, '');
+    return /^5\d{8}$/.test(t) ? '0' + t : s(v);
+  }
   function leadFormErrors(v) {
     const out = {};
     /* First-call reality (Sandra 20/11/2026): the caller is often ringing on behalf of
@@ -242,9 +251,9 @@
   const LEAD_SYSTEM_SOURCES = ['direct_admin', 'direct_approach'];   // a patient's own lead: name / phone exempt, the source is a key
   /* Which «טלפון לגבייה ועדכונים» choice a stored billingPhone is (app.js billingModeForLead). Pure. */
   function billingModeOf(lead) {
-    const l = lead || {}, bill = s(l.billingPhone);
-    if (!bill) return { mode: 'patient', other: '' };
-    const b = localPhone(bill), p = localPhone(l.phone), c = localPhone(l.contactPhone);
+    const l = lead || {}, bill = ilPhoneDisplay(l.billingPhone);
+    if (!s(bill)) return { mode: 'patient', other: '' };
+    const b = localPhone(bill), p = localPhone(ilPhoneDisplay(l.phone)), c = localPhone(ilPhoneDisplay(l.contactPhone));
     if (b && p && b === p) return { mode: 'patient', other: '' };
     if (b && c && b === c) return { mode: 'contact', other: '' };
     return { mode: 'other', other: bill };
@@ -253,7 +262,7 @@
   /* The form's starting values for one raw lead row. Pure. */
   function leadEditValues(lead) {
     const l = lead || {}, bm = billingModeOf(l);
-    return { name: s(l.name), phone: s(l.phone), contactName: s(l.contactName), contactPhone: s(l.contactPhone),
+    return { name: s(l.name), phone: ilPhoneDisplay(l.phone), contactName: s(l.contactName), contactPhone: ilPhoneDisplay(l.contactPhone),
       contactRelation: s(l.contactRelation), contactRelationOther: '', billingMode: bm.mode, billingOther: bm.other,
       house: houseName(l.house), source: s(l.source), assignedTo: s(l.assignedTo), created: isoDay(l.created),
       entryDate: isoDay(l.entryDate), note: maccabiNoteParts(l.note).text, track: leadTrack(l) };
@@ -1210,7 +1219,11 @@
     });
   }
   function board(leads, f) {
-    const list = filterLeads(leads, f);
+    // Newest leads first in every column (Sandra 20/11/2026): the raw feed is append order
+    // (oldest first), so reverse it, then a STABLE sort by «נוצר» (desc) keeps same-day leads
+    // newest-first too.
+    const list = filterLeads(leads, f).slice().reverse();
+    list.sort(function (a, b) { return s(b.created).localeCompare(s(a.created)); });
     return STAGES.map(function (st) { return { stage: st, leads: list.filter(function (l) { return l.stage === st.id; }) }; });
   }
   /* «לא רלוונטי» board column (CHANGELOG-crm-not-relevant-column.md): the leads
@@ -7621,7 +7634,7 @@
     occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, whenLocal: whenLocal, esc: esc, boot: boot, accountTabVisible: accountTabVisible, accountReadable: accountReadable, receiptVerifyChip: receiptVerifyChip, canVerifyReceipt: canVerifyReceipt, verifyBody: verifyBody, verifyAccepted: verifyAccepted, verifyRefusal: verifyRefusal, applyVerified: applyVerified, partialVerifyCheck: partialVerifyCheck, partialVerifyBody: partialVerifyBody, partialAccepted: partialAccepted, applyPartial: applyPartial, managerScheduledMessage: managerScheduledMessage, managerWaUrl: managerWaUrl, decisionReasonError: decisionReasonError, decisionBody: decisionBody, decisionAccepted: decisionAccepted, decisionVoided: decisionVoided, applyDecision: applyDecision, BC_DECISIONS: BC_DECISIONS, unverifiedReceipts: unverifiedReceipts, unverifiedTotal: unverifiedTotal, billingFind: billingFind, FIND_RECEIPTS_CAP: FIND_RECEIPTS_CAP, PAY_KINDS: PAY_KINDS, payKindCheck: payKindCheck, payKindPreview: payKindPreview, CONFIRM_LABELS: CONFIRM_LABELS, RECEIPT_ROWS_CAP: RECEIPT_ROWS_CAP, clearCachedPages: clearCachedPages,
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
     stageAfter: stageAfter, stageBefore: stageBefore, applyLeadPatch: applyLeadPatch, leadSaveBody: leadSaveBody, saveRefusal: saveRefusal,
-    DISPOSITIONS: DISPOSITIONS, CONTACT_RELATIONS: CONTACT_RELATIONS, localPhone: localPhone, leadFormErrors: leadFormErrors, leadLabel: leadLabel, newLeadRow: newLeadRow,
+    DISPOSITIONS: DISPOSITIONS, CONTACT_RELATIONS: CONTACT_RELATIONS, localPhone: localPhone, ilPhoneDisplay: ilPhoneDisplay, leadFormErrors: leadFormErrors, leadLabel: leadLabel, newLeadRow: newLeadRow,
     duplicateByPhone: duplicateByPhone, billingModeOf: billingModeOf, leadEditValues: leadEditValues, leadEditPlan: leadEditPlan, LEAD_EDIT_FIELDS: LEAD_EDIT_FIELDS, closeRecord: closeRecord, randomId: randomId,
     FUNDERS: FUNDERS, PATIENT_STATUSES: PATIENT_STATUSES, admissionRow: admissionRow, admissionErrors: admissionErrors, directAddRows: directAddRows,
     directAddErrors: directAddErrors, houseSaveBody: houseSaveBody, houseSaveRefusal: houseSaveRefusal, isoDateOk: isoDateOk,

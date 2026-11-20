@@ -1,5 +1,14 @@
 # E-ZONE Ecosystem Status — updated November 20, 2026
 
+## Dashboard CRM — leads view: restore a mobile's lost 0 in edit + newest-first board — November 20, 2026
+
+Two fixes. (1) Google Sheets coerces a phone written as a number and drops its leading 0
+(0525264094 → 525264094); the lead-edit card showed the «טלפון אחר לגבייה» without its 0 and the
+billing selector fell to «אחר» instead of «פונה». A new `ilPhoneDisplay` helper restores a bare
+9-digit mobile's 0 before `billingModeOf`/`leadEditValues` use it, and the coerced value self-heals
+on save. (2) Board columns now list leads newest-first (reverse + stable sort by «נוצר» desc), so a
+new lead appears at the top. SW cache v157. See `CHANGELOG-crm-leads-view-fixes.md`.
+
 ## Dashboard CRM — «החזרה לפעיל» on the released-patient card — November 20, 2026
 
 Re-activating a released patient already worked from the «משוחררים» tab; the released-patient
