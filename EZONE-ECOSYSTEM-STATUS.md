@@ -1,5 +1,12 @@
 # E-ZONE Ecosystem Status — updated November 20, 2026
 
+## Dashboard CRM — «בית לא מזוהה» fixed inside the CRM — November 20, 2026
+
+The occupancy tab's «בית לא מזוהה» card no longer links to the classic page. It opens a
+native list of the affected patients; each opens its own card, where the existing
+«העברה לבית אחר» form assigns a real house (the backend move intent names the unknown
+origin so the move is accepted). SW cache v151. See `CHANGELOG-crm-unknown-house.md`.
+
 ## Dashboard CRM — permanent patient delete inside the CRM — November 20, 2026
 
 The patient card (in-house and released) gains **«מחיקת המטופל/ת»** for finance + deleter

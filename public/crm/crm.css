@@ -475,3 +475,5 @@ details.act form.lead-edit .err:empty { display: none; }
 details.act.danger > summary { color: var(--bad); }
 .btn.small.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
 .btn.small.danger:hover { filter: brightness(0.95); }
+/* «בית לא מזוהה» fix list (CHANGELOG-crm-unknown-house.md). */
+#crm-unknown-house .unknown-list { display: flex; flex-wrap: wrap; gap: 6px; }

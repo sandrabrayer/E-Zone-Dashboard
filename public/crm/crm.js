@@ -823,12 +823,13 @@
    * patients whose house resolves to none are counted apart («בית לא מזוהה»). */
   function occupancy(patients) {
     const rows = [];
-    let unknown = 0, totalIn = 0, totalCap = 0;
+    let totalIn = 0, totalCap = 0;
     const by = {};
+    const unknownStays = [];
     (patients || []).forEach(function (p) {
       if (!inHouse(p)) return;
       const id = houseId(p.houseId);
-      if (!id) { unknown++; return; }
+      if (!id) { unknownStays.push({ id: s(p.id), name: s(p.name) }); return; }
       by[id] = (by[id] || 0) + 1;
     });
     HOUSES.forEach(function (h) {
@@ -838,7 +839,7 @@
       rows.push({ id: h.id, name: h.name, capacity: cap, inHouse: n, free: Math.max(0, cap - n), pct: cap ? Math.round(100 * n / cap) : 0, closed: !!h.closed });
       totalIn += n; totalCap += cap;
     });
-    return { houses: rows, unknown: unknown, totalIn: totalIn, totalCap: totalCap, totalFree: Math.max(0, totalCap - totalIn) };
+    return { houses: rows, unknown: unknownStays.length, unknownStays: unknownStays, totalIn: totalIn, totalCap: totalCap, totalFree: Math.max(0, totalCap - totalIn) };
   }
   /* ---- «תפוסה והכנסות לפי חודש» (CHANGELOG-crm-month-view.md) ----
    * Occupancy of a calendar month, from the patients' entry / exit dates:
@@ -5279,8 +5280,11 @@
         + '<div class="links">' + o.houses.map(function (h) {
           const state_ = h.closed ? 'wait' : (h.free === 0 ? 'late' : (h.free <= 2 ? 'today' : 'ok'));
           return '<a href="#" data-house-open="' + esc(h.name) + '"><strong>' + esc(h.name) + '</strong> ' + chip(state_, h.closed ? 'סגור' : h.free + ' פנויות') + '<small>' + h.inHouse + ' / ' + (h.capacity || '—') + (h.capacity ? ' · ' + h.pct + '%' : '') + '</small></a>';
-        }).join('') + (o.unknown ? '<a href="/?view=classic"><strong>בית לא מזוהה</strong> ' + chip('late', o.unknown + ' מטופלים') + '<small>לתיקון בדשבורד</small></a>' : '') + '</div>'
-        + '<p class="na">קליטה, יציאה והעברה בין בתים נעשות בדשבורד הרגיל (תפוסה).</p>';
+        }).join('') + (o.unknown ? '<a href="#" data-occ-unknown="1"><strong>בית לא מזוהה</strong> ' + chip('late', o.unknown + ' מטופלים') + '<small>לתיקון — לחצי</small></a>' : '') + '</div>'
+        + (o.unknown ? '<details class="act" id="crm-unknown-house"' + (state.occUnknownOpen ? ' open' : '') + '><summary>בית לא מזוהה — ' + o.unknown + ' מטופלים לתיקון</summary>'
+          + '<p class="na">לכל מטופל/ת פתחי את הכרטיס ושייכי לבית ב«העברה לבית אחר».</p><div class="unknown-list">'
+          + o.unknownStays.map(function (u) { return '<button type="button" class="btn small" data-open-patient="' + esc(u.id) + '">' + esc(u.name || '—') + '</button>'; }).join(' ')
+          + '</div></details>' : '');
     }
 
     /* «בקרה» (Stage 3b): the same rows as «היום שלי» / the triage, so every number opens its list. */
@@ -5917,6 +5921,14 @@
       ev.preventDefault();
       if (state.saving) return;
       deletePatient(s(t.dataset.delPatient));
+    });
+    /* «בית לא מזוהה» (CHANGELOG-crm-unknown-house.md): remember the list is open across re-renders. */
+    root.addEventListener('click', function (ev) {
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-occ-unknown]') : null;
+      if (!t) return;
+      ev.preventDefault();
+      state.occUnknownOpen = true;
+      const d = $('#crm-unknown-house'); if (d) { d.open = true; if (typeof d.scrollIntoView === 'function') d.scrollIntoView({ block: 'nearest' }); }
     });
     /* «עריכת טלפון ופרטי קשר»: from a patient card to its linked lead's own edit. */
     root.addEventListener('click', function (ev) {
