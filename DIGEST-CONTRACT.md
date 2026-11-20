@@ -143,3 +143,17 @@ identical.
 | `ManagersShifts` | `house`, `date`, `shift` (`בוקר` / `אחר צהריים` / `לילה`), `guideName`, `scheduleStatus` (`published` / `draft`), `updatedAt` |
 | `ManagersStaff` | `house`, `name`, `kind` (`guide` / `therapist`), `role`, `phone`, `onLeave` (`true` / empty), `workdays` (CSV `0`–`6`), `updatedAt` |
 | `ManagersTherapistWeek` | `house`, `dayOfWeek` (`0`–`6`), `time` (`HH:MM` / empty), `therapistName`, `patientName`, `updatedAt` |
+
+### Pending opt-in: complete publication validation
+
+The reader supports `MANAGERS_DIGEST_REQUIRE_MANIFEST=true` (default off) and the
+paired [ManagersHouse publication v1 contract](docs/architecture/MANAGERS-PUBLICATION-v1.md).
+Strict reads require a ready `ManagersPublication!A1` manifest, all three tables'
+dimensions/hashes and an unchanged manifest after reading. A cache hit still
+checks the live manifest twice; the legacy cache is never accepted in strict mode.
+The existing house projection is unchanged; no token/hash/finance field is exposed.
+`ManagersStaff.startDate` remains an optional appended column.
+
+This is the Dashboard consumer companion to Coordinators #360 / draft #362.
+The producer and real cross-repository failure tests are still required before
+activation. Do not enable the property against the old three-table publisher.

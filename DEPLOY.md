@@ -774,3 +774,18 @@ Ortal and Dana keep the classic page; `/?view=classic` is the classic page for e
 3. Open https://ezone-dashboard.up.railway.app/ with Vered's or your login → the CRM.
    https://ezone-dashboard.up.railway.app/?view=classic → the old dashboard.
 Rollback: delete `CRM_DEFAULT` and redeploy — nothing else changes. See `CHANGELOG-crm-default.md`.
+# Pending: ManagersHouse strict reader (shared-roster package)
+
+Draft consumer support only; no production activation is included.
+`MANAGERS_DIGEST_REQUIRE_MANIFEST` defaults off. Setting its trimmed value to
+`true` requires the paired publisher and a verified `ManagersPublication!A1`
+ready manifest in the existing `MANAGERS_DIGEST_SHEET_ID` workbook. Missing,
+pending, corrupt or changing publication makes the team unavailable rather than
+showing mixed/partial rows. Unset retains the current legacy behavior.
+
+Follow [the paired contract and acceptance boundary](docs/architecture/MANAGERS-PUBLICATION-v1.md).
+The compatible reader must be deployed before strict publication is activated;
+real producer/reader isolated tests and separate user approval are still required.
+Do not use flag removal as a rollback while identity-changing publication runs.
+Merging changes under `apps-script/` automatically triggers the existing Apps
+Script deploy workflow, so this draft must not be merged as a deployment-free step.
