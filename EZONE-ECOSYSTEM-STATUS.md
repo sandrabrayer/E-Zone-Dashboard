@@ -1,5 +1,17 @@
 # E-ZONE Ecosystem Status — updated November 20, 2026
 
+## Dashboard CRM — optional patient name / phone on first-call intake — November 20, 2026
+
+On the first call the caller is usually ringing for someone else and won't give their full
+name, the patient's name, or the patient's phone. Those three are now **optional** when a
+lead is created or edited (the two-word "full name" rule is dropped; a typed phone is still
+format-checked). **מקור**, **בית** (unless «אמבולטורי») and **משוייך ל** stay required, so a
+lead is never empty. The name becomes required **at admission** instead — the admit form
+carries a pre-filled «שם מלא» and writes it back to the lead, so **no nameless patient row is
+ever created**. A blank-name lead shows as «(ליד ללא שם)» everywhere it is listed. The server
+intake guard (`leadRequiredViolations_`, Code.gs) was relaxed to match; the therapists
+handoff path is unchanged. SW cache v155. See `CHANGELOG-optional-lead-fields.md`.
+
 ## Dashboard CRM — «זימון» to the manager when a meeting is scheduled (Part A: WhatsApp) — November 20, 2026
 
 When a meeting is scheduled with a lead («תיאום פגישה» with a real manager, not «אמבולטורי»),

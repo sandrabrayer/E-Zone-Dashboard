@@ -190,20 +190,29 @@
   }
   function leadFormErrors(v) {
     const out = {};
-    if (s(v && v.name).split(/\s+/).filter(Boolean).length < 2) out.name = 'יש להזין שם מלא (שם פרטי ושם משפחה)';
-    if (!localPhone(v && v.phone)) out.phone = 'יש להזין טלפון ישראלי תקין (10 ספרות)';
+    /* First-call reality (Sandra 20/11/2026): the caller is often ringing on behalf of
+     * someone else and will not give the patient's full name, any name, or a phone. Name
+     * and phone are OPTIONAL on intake; a phone, when typed, must still be a valid Israeli
+     * number. The name is required later, at admission (admissionErrors), so no nameless
+     * patient is ever created. House + source + «משוייך ל» stay required — Vered's own
+     * fields, always known — so a lead is never a fully empty row. */
+    if (s(v && v.phone) && !localPhone(v.phone)) out.phone = 'טלפון ישראלי תקין (10 ספרות) או השאירי ריק';
     if (!s(v && v.assignedTo)) out.assignedTo = 'יש לבחור משוייך ל';
     if (s(v && v.contactPhone) && !localPhone(v.contactPhone)) out.contactPhone = 'טלפון הפונה אינו תקין';
     /* Nothing is saved with a field missing (Sandra 05/11/2026): a source, a house (unless the
      * meeting is with «אמבולטורי»), and the contact / billing details the form says it has. */
     if (!s(v && v.source)) out.source = 'יש לבחור מקור ליד';
     if (!s(v && v.house) && s(v && v.meetingWith) !== MEETING_WITH_AMBULATORY) out.house = 'יש לבחור בית (או «נפגש/ת עם: אמבולטורי»)';
-    if (s(v && v.contactName) && !s(v && v.contactRelation)) out.contactRelation = 'יש לבחור קשר למטופל';
+    /* קשר למטופל is optional even when a contact name is given — on the first call the
+     * caller often won't say who they are to the patient. Kept available, never required. */
     if (s(v && v.contactRelation) === 'אחר' && !s(v && v.contactRelationOther)) out.contactRelationOther = 'יש לפרט את הקשר';
     if (s(v && v.billingMode) === 'contact' && !localPhone(v && v.contactPhone)) out.contactPhone = 'גבייה דרך הפונה — חסר טלפון פונה תקין';
     if (s(v && v.billingMode) === 'other' && !localPhone(v && v.billingOther)) out.billingOther = 'יש להזין טלפון תקין לגבייה';
     return out;
   }
+  /* Display label for a lead whose name may be blank — names are optional on intake
+   * (20/11/2026), so the board / drawer still show something clickable. Pure. */
+  function leadLabel(l) { return s(l && l.name) || '(ליד ללא שם)'; }
   /* A new lead row (every LEAD_COLUMNS key the classic form writes). Pure. */
   function newLeadRow(v, id, today) {
     const phone = localPhone(v.phone), contactPhone = localPhone(v.contactPhone);
@@ -257,15 +266,14 @@
     const system = LEAD_SYSTEM_SOURCES.indexOf(s(p.source)) >= 0;
     const today = isoDay(todayIso) || new Date().toISOString().slice(0, 10);
     const name = s(f.name).replace(/\s+/g, ' ');
-    if (name !== was.name.replace(/\s+/g, ' ')) {
-      if (!name || (!system && name.split(' ').length < 2)) errors.name = 'יש להזין שם מלא (שם פרטי ושם משפחה)';
-      else patch.name = name;
-    }
+    /* Name is optional on edit too (relaxed 20/11/2026): fill a partial/first name or clear
+     * it. The full name is captured at admission, never lost. */
+    if (name !== was.name.replace(/\s+/g, ' ')) patch.name = name;
     if (s(f.phone) !== was.phone) {
       const ph = localPhone(f.phone);
       if (ph) { if (ph !== was.phone) patch.phone = ph; }
-      else if (system && !s(f.phone)) patch.phone = '';
-      else errors.phone = 'יש להזין טלפון ישראלי תקין (10 ספרות)';
+      else if (!s(f.phone)) patch.phone = '';
+      else errors.phone = 'טלפון ישראלי תקין (10 ספרות) או השאירי ריק';
     }
     if (s(f.contactName) !== was.contactName) patch.contactName = s(f.contactName);
     if (s(f.contactPhone) !== was.contactPhone) {
@@ -280,8 +288,7 @@
       if (picked === 'אחר' && !s(f.contactRelationOther)) errors.contactRelationOther = 'יש לפרט את הקשר';
       else patch.contactRelation = rel;
     }
-    const contactNow = 'contactName' in patch ? patch.contactName : was.contactName;
-    if (contactNow && !rel && ('contactName' in patch || rel !== was.contactRelation)) errors.contactRelation = 'יש לבחור קשר למטופל';
+    /* קשר למטופל stays optional even with a contact name (relaxed 20/11/2026). */
     /* טלפון לגבייה ועדכונים: follows the patient / the contact, or is its own number. A
      * blank stored value already means «מטופל» and stays blank. */
     const phoneNow = 'phone' in patch ? patch.phone : was.phone;
@@ -365,11 +372,15 @@
   function isoDateOk(v) { const t = s(v); if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return false; const y = +t.slice(0, 4); return y >= 2024 && y <= new Date().getFullYear() + 2; }
   /* The patient row of an admission from a lead (classic openEntryModal). Pure. */
   function admissionRow(lead, v, id) {
-    return { id: id, houseId: s(v.houseId), name: s(lead.name), date: s(v.date), pay: Number(v.pay) || 0, adv: Number(v.adv) || 0,
+    return { id: id, houseId: s(v.houseId), name: s(v.name) || s(lead.name), date: s(v.date), pay: Number(v.pay) || 0, adv: Number(v.adv) || 0,
       status: s(v.status) || 'trial', fromLead: s(lead.id), exitDate: '', source: 'lead', notes: '', updatedAt: '', updatedBy: '', personId: '' };
   }
   function admissionErrors(v, finance) {
     const out = {};
+    /* Name becomes required HERE, at admission (relaxed on intake 20/11/2026): a patient row
+     * must always carry a name, so a lead created without one must get one before it is
+     * admitted. The admit form pre-fills it from the lead when present. */
+    if (!s(v.name)) out.name = 'יש להזין שם מטופל/ת לפני קליטה';
     if (!s(v.houseId)) out.houseId = 'יש לבחור בית';
     if (!isoDateOk(v.date)) out.date = 'תאריך כניסה חסר או מחוץ לטווח';
     if (!(Number(v.pay) > 0)) out.pay = 'יש להזין סכום חודשי';
@@ -4040,7 +4051,7 @@
           return '<div class="col" data-stage="' + esc(col.stage.id) + '"><h3><span>' + esc(col.stage.label) + '</span><span class="n">' + col.leads.length + '</span></h3>' + col.leads.map(function (l) {
             const na = nextActionFor(l, state.today, flagsOf(state.index, l.id));
             const inH = leadAlreadyInHouse(l, c.patients, c.leads);
-            return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + (inH ? ' <span class="chip late">שם/טלפון דומה בבית ' + esc(houseName(inH.houseId)) + '</span>' : '') + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip src">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? avatar(l.assignedTo) : '') + '</div>'
+            return '<div class="card" data-open-lead="' + esc(l.id) + '"><div class="name">' + esc(leadLabel(l)) + (inH ? ' <span class="chip late">שם/טלפון דומה בבית ' + esc(houseName(inH.houseId)) + '</span>' : '') + '</div><div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (l.source ? '<span class="chip src">' + esc(l.source) + '</span>' : '') + (l.assignedTo ? avatar(l.assignedTo) : '') + '</div>'
               + (l.created ? '<div class="meta"><span>נוצר ' + esc(fmtDate(l.created)) + '</span>' + (l.visitDate ? '<span>פגישה ' + esc(fmtDate(l.visitDate)) + (l.visitTime ? ' ' + esc(l.visitTime) : '') + '</span>' : '') + '</div>' : '')
               + '<div class="next">' + chip(na.state, na.text) + (waitChipText(l, flagsOf(state.index, l.id)) && waitChipText(l, flagsOf(state.index, l.id)) !== na.text ? ' ' + chip('wait', waitChipText(l, flagsOf(state.index, l.id))) : '') + (stageAfter(l.stage) ? ' <button type="button" class="btn small" data-stage-next="' + esc(l.id) + '">שלב הבא ←</button>' : '')
               + ' <button type="button" class="btn small quiet" data-quick-close="' + esc(l.id) + '" title="סגירת הליד כלא רלוונטי">לא רלוונטי ✕</button></div></div>';
@@ -4050,7 +4061,7 @@
       const list = filterLeads(c.leads, f).slice().sort(function (a, b) { return s(a[state.sort]).localeCompare(s(b[state.sort])); });
       const cols = [['name', 'שם'], ['house', 'בית'], ['source', 'מקור'], ['assignedTo', 'אחראי'], ['stage', 'שלב'], ['visitDate', 'פגישה'], ['created', 'נוצר']];
       return toolbar + '<div class="tbl-wrap"><table class="tbl"><thead><tr>' + cols.map(function (c2) { return '<th data-sort="' + c2[0] + '">' + esc(c2[1]) + (state.sort === c2[0] ? ' ▾' : '') + '</th>'; }).join('') + '<th>פעולה הבאה</th></tr></thead><tbody>'
-        + list.map(function (l) { const na = nextActionFor(l, state.today, flagsOf(state.index, l.id)); return '<tr data-open-lead="' + esc(l.id) + '"><td>' + esc(l.name) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(l.source) + '</td><td>' + avatar(l.assignedTo) + '</td><td><span class="chip stage-' + esc(l.stage) + '">' + esc(stageLabel(l.stage)) + '</span></td><td>' + esc(fmtDate(l.visitDate)) + '</td><td>' + esc(fmtDate(l.created)) + '</td><td>' + chip(na.state, na.text) + (waitChipText(l, flagsOf(state.index, l.id)) && waitChipText(l, flagsOf(state.index, l.id)) !== na.text ? ' ' + chip('wait', waitChipText(l, flagsOf(state.index, l.id))) : '') + '</td></tr>'; }).join('')
+        + list.map(function (l) { const na = nextActionFor(l, state.today, flagsOf(state.index, l.id)); return '<tr data-open-lead="' + esc(l.id) + '"><td>' + esc(leadLabel(l)) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(l.source) + '</td><td>' + avatar(l.assignedTo) + '</td><td><span class="chip stage-' + esc(l.stage) + '">' + esc(stageLabel(l.stage)) + '</span></td><td>' + esc(fmtDate(l.visitDate)) + '</td><td>' + esc(fmtDate(l.created)) + '</td><td>' + chip(na.state, na.text) + (waitChipText(l, flagsOf(state.index, l.id)) && waitChipText(l, flagsOf(state.index, l.id)) !== na.text ? ' ' + chip('wait', waitChipText(l, flagsOf(state.index, l.id))) : '') + '</td></tr>'; }).join('')
         + '</tbody></table></div>' + (list.length === 0 ? '<div class="crm-state">אין לידים התואמים לסינון</div>' : '');
     }
 
@@ -4061,7 +4072,7 @@
         + (list.length ? '' : '<p class="na col-empty">אין לידים שנסגרו כלא רלוונטיים ב-' + NOT_RELEVANT_DAYS + ' הימים האחרונים</p>')
         + list.map(function (l) {
           const note = s(l.not_relevant_note);
-          return '<div class="card closed" data-closed-lead="' + esc(l.id) + '"><div class="name">' + esc(l.name) + '</div>'
+          return '<div class="card closed" data-closed-lead="' + esc(l.id) + '"><div class="name">' + esc(leadLabel(l)) + '</div>'
             + '<div class="meta"><span>' + esc(houseName(l.house) || '—') + '</span>' + (s(l.assignedTo) ? avatar(s(l.assignedTo)) : '') + '</div>'
             + '<div class="meta"><span>נסגר ' + esc(fmtDate(s(l.movedAt).slice(0, 10))) + '</span></div>'
             + (note ? '<div class="meta reason" title="' + esc(note) + '">' + esc(note.length > 80 ? note.slice(0, 80) + '…' : note) + '</div>' : '')
@@ -4076,7 +4087,7 @@
       const l = c.leads.filter(function (x) { return x.id === s(id); })[0];
       if (!l) { toast('הליד לא נמצא — ייתכן שנסגר או הועבר. רענני את הדף.', true); return; }
       const dr = $('#crm-drawer');
-      dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(l.name) + '</h2><div class="meta">סגירה כלא רלוונטי · ' + esc(houseName(l.house) || '—') + ' · ' + esc(stageLabel(l.stage)) + '</div></div><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>'
+      dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(leadLabel(l)) + '</h2><div class="meta">סגירה כלא רלוונטי · ' + esc(houseName(l.house) || '—') + ' · ' + esc(stageLabel(l.stage)) + '</div></div><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>'
         + '<form data-form="close" data-lead="' + esc(l.id) + '" class="quick-close" novalidate><input type="hidden" name="disposition" value="not_relevant">'
         + '<label class="wide">סיבה * <input name="note" type="text" maxlength="500" required list="crm-nr-reasons" autocomplete="off"><datalist id="crm-nr-reasons">' + NOT_RELEVANT_REASONS.map(function (r) { return '<option value="' + esc(r) + '">'; }).join('') + '</datalist><span class="err" data-err="note"></span><span class="err" data-err="disposition"></span></label>'
         + '<p class="na wide">הליד יעבור לעמודת «לא רלוונטי» ול«לידים סגורים», ואפשר לשחזר אותו משם.</p>'
@@ -4092,7 +4103,7 @@
       if (!list.length) return '<div class="crm-state">אין לידים סגורים</div>';
       return '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>שם</th><th>בית</th><th>סטטוס סגירה</th><th>סיבה</th><th>נסגר</th><th></th></tr></thead><tbody>'
         + list.slice(0, 300).map(function (l) {
-          return '<tr><td>' + esc(l.name) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(label(l.disposition)) + '</td><td>' + esc(l.not_relevant_note) + '</td><td>' + esc(fmtDate(s(l.movedAt).slice(0, 10))) + '</td>'
+          return '<tr><td>' + esc(leadLabel(l)) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(label(l.disposition)) + '</td><td>' + esc(l.not_relevant_note) + '</td><td>' + esc(fmtDate(s(l.movedAt).slice(0, 10))) + '</td>'
             + '<td><button type="button" class="btn small" data-restore-lead="' + esc(l.id) + '">שחזור ל«' + esc(stageLabel(s(l.originSheet) || 'new')) + '»</button></td></tr>';
         }).join('') + '</tbody></table></div>';
     }
@@ -4132,7 +4143,7 @@
     function renderNewLeadForm() {
       const field = function (name, label, type, extra) { return '<label>' + esc(label) + ' <input name="' + name + '" type="' + (type || 'text') + '"' + (extra || '') + '><span class="err" data-err="' + name + '"></span></label>'; };
       return '<form data-form="new-lead" class="new-lead" novalidate>'
-        + '<h3>פרטי המטופל</h3>' + field('name', 'שם מלא *', 'text', ' required') + field('phone', 'טלפון *', 'tel', ' required')
+        + '<h3>פרטי המטופל</h3>' + field('name', 'שם (לא חובה)', 'text') + field('phone', 'טלפון (לא חובה)', 'tel')
         + '<h3>פרטי הפונה</h3>' + field('contactName', 'שם') + field('contactPhone', 'טלפון', 'tel')
         + '<label>קשר למטופל <select name="contactRelation"><option value="">— ללא —</option>' + CONTACT_RELATIONS.map(function (r) { return '<option>' + esc(r) + '</option>'; }).join('') + '</select><span class="err" data-err="contactRelation"></span></label>'
         + field('contactRelationOther', 'קשר אחר')
@@ -4314,13 +4325,16 @@
     }
     function admitLead(id, v, f) {
       const errs = admissionErrors(v, !!(state.me && state.me.finance));
-      if (f) showErrs(f, errs, ['houseId', 'date', 'pay', 'funder']);
+      if (f) showErrs(f, errs, ['name', 'houseId', 'date', 'pay', 'funder']);
       if (Object.keys(errs).length) return Promise.resolve(false);
       const leads = state.data.leads, i = leads.findIndex(function (l) { return s(l.id) === s(id); });
       if (i < 0) return Promise.resolve(false);
       const raw = leads[i];
       const patient = admissionRow(raw, v, randomId());
-      const leadNext = Object.assign({}, raw, { stage: 'admitted', entryDate: s(v.date) }, s(raw.visitDate) ? { meetingOutcome: 'entered' } : {});
+      /* Carry the admitted name back to the lead too, so a lead admitted with a name typed
+       * here (one created without a name on intake) is no longer nameless. */
+      const nameSet = s(v.name) && s(v.name) !== s(raw.name) ? { name: s(v.name) } : {};
+      const leadNext = Object.assign({}, raw, { stage: 'admitted', entryDate: s(v.date) }, nameSet, s(raw.visitDate) ? { meetingOutcome: 'entered' } : {});
       const rows = patientsOfHouse(patient.houseId);
       closeDrawer();
       return postAction(houseSaveBody(patient.houseId, rows, patient, leadNext), function (res) { return houseSaveRefusal(res, patient.id, leadNext.id); },
@@ -5701,7 +5715,7 @@
       if (r.patients.length) html += '<div class="group-title">מטופלים</div><div class="tbl-wrap"><table class="tbl" id="crm-search-patients"><thead><tr><th>שם</th><th>בית</th><th>סטטוס</th><th>כניסה</th><th>יציאה</th></tr></thead><tbody>'
         + r.patients.map(function (p) { return '<tr data-open-patient="' + esc(p.id) + '"><td class="name">' + esc(p.name) + '</td><td>' + esc(p.houseName) + '</td><td>' + statusChip(p.status) + '</td><td>' + esc(fmtDate(p.date)) + '</td><td>' + esc(fmtDate(p.exitDate)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
       if (r.leads.length) html += '<div class="group-title">לידים</div><div class="tbl-wrap"><table class="tbl" id="crm-search-leads"><thead><tr><th>שם</th><th>טלפון</th><th>בית</th><th>שלב</th><th>נוצר</th></tr></thead><tbody>'
-        + r.leads.map(function (l) { return '<tr data-open-lead="' + esc(l.id) + '"><td class="name">' + esc(l.name) + '</td><td>' + esc(l.phone) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(l.stage === 'admitted' ? 'נקלט/ה' : stageLabel(l.stage)) + '</td><td>' + esc(fmtDate(l.created)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+        + r.leads.map(function (l) { return '<tr data-open-lead="' + esc(l.id) + '"><td class="name">' + esc(leadLabel(l)) + '</td><td>' + esc(l.phone) + '</td><td>' + esc(houseName(l.house)) + '</td><td>' + esc(l.stage === 'admitted' ? 'נקלט/ה' : stageLabel(l.stage)) + '</td><td>' + esc(fmtDate(l.created)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
       return html;
     }
     /* ---- lead actions (C4): stage move, meeting, outcome, note, owner ---- */
@@ -5733,6 +5747,7 @@
       const managers = managersOf(l.house).concat([MEETING_WITH_AMBULATORY]);
       const hid = houseId(l.house);
       const admit = '<details class="act" open><summary>קליטה לבית</summary><form data-form="admit" data-lead="' + esc(l.id) + '" novalidate>'
+        + '<label>שם מלא <input type="text" name="name" value="' + esc(l.name) + '"><span class="err" data-err="name"></span></label>'
         + '<label>בית <select name="houseId">' + HOUSES.filter(function (h) { return !h.closed; }).map(function (h) { return '<option value="' + h.id + '"' + (h.id === hid ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select><span class="err" data-err="houseId"></span></label>'
         + '<label>תאריך כניסה <input type="date" name="date" value="' + esc(l.entryDate || state.today) + '"><span class="err" data-err="date"></span></label>'
         + '<label>תשלום חודשי כולל מע"מ (₪) <input type="number" name="pay" min="0" step="1"><span class="err" data-err="pay"></span></label>'
@@ -6644,7 +6659,7 @@
       const nxt = pending[1] || null;
       const err = function (f) { return '<span class="err" data-err="' + f + '"></span>'; };
       html += '<section class="triage-card" data-triage="' + esc(l.id) + '">'
-        + '<div class="drawer-head"><div><h2>' + esc(l.name) + '</h2><div class="meta">' + esc(houseName(l.house) || 'ללא בית') + ' · ' + esc(stageLabel(l.stage)) + (l.created ? ' · נוצר ' + esc(fmtDate(l.created)) + (cur.age !== null ? ' · ' + cur.age + ' ימים' : '') : '') + (l.assignedTo ? ' · אחראי/ת ' + esc(l.assignedTo) : '') + (l.source ? ' · מקור ' + esc(l.source) : '') + '</div>'
+        + '<div class="drawer-head"><div><h2>' + esc(leadLabel(l)) + '</h2><div class="meta">' + esc(houseName(l.house) || 'ללא בית') + ' · ' + esc(stageLabel(l.stage)) + (l.created ? ' · נוצר ' + esc(fmtDate(l.created)) + (cur.age !== null ? ' · ' + cur.age + ' ימים' : '') : '') + (l.assignedTo ? ' · אחראי/ת ' + esc(l.assignedTo) : '') + (l.source ? ' · מקור ' + esc(l.source) : '') + '</div>'
         + (l.phone ? '<div class="meta">טלפון <a href="tel:' + esc(l.phone) + '">' + esc(l.phone) + '</a>' + (l.contactName ? ' · איש קשר ' + esc(l.contactName) + (l.contactRelation ? ' (' + esc(l.contactRelation) + ')' : '') : '') + '</div>' : '') + '</div>'
         + chip('late', cur.reason) + '</div>'
         + (l.note ? '<p class="note">«' + esc(l.note) + '»</p>' : '<p class="na">אין הערה בליד.</p>')
@@ -7560,7 +7575,7 @@
     occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, whenLocal: whenLocal, esc: esc, boot: boot, accountTabVisible: accountTabVisible, accountReadable: accountReadable, receiptVerifyChip: receiptVerifyChip, canVerifyReceipt: canVerifyReceipt, verifyBody: verifyBody, verifyAccepted: verifyAccepted, verifyRefusal: verifyRefusal, applyVerified: applyVerified, partialVerifyCheck: partialVerifyCheck, partialVerifyBody: partialVerifyBody, partialAccepted: partialAccepted, applyPartial: applyPartial, managerScheduledMessage: managerScheduledMessage, managerWaUrl: managerWaUrl, decisionReasonError: decisionReasonError, decisionBody: decisionBody, decisionAccepted: decisionAccepted, decisionVoided: decisionVoided, applyDecision: applyDecision, BC_DECISIONS: BC_DECISIONS, unverifiedReceipts: unverifiedReceipts, unverifiedTotal: unverifiedTotal, billingFind: billingFind, FIND_RECEIPTS_CAP: FIND_RECEIPTS_CAP, PAY_KINDS: PAY_KINDS, payKindCheck: payKindCheck, payKindPreview: payKindPreview, CONFIRM_LABELS: CONFIRM_LABELS, RECEIPT_ROWS_CAP: RECEIPT_ROWS_CAP, clearCachedPages: clearCachedPages,
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
     stageAfter: stageAfter, stageBefore: stageBefore, applyLeadPatch: applyLeadPatch, leadSaveBody: leadSaveBody, saveRefusal: saveRefusal,
-    DISPOSITIONS: DISPOSITIONS, CONTACT_RELATIONS: CONTACT_RELATIONS, localPhone: localPhone, leadFormErrors: leadFormErrors, newLeadRow: newLeadRow,
+    DISPOSITIONS: DISPOSITIONS, CONTACT_RELATIONS: CONTACT_RELATIONS, localPhone: localPhone, leadFormErrors: leadFormErrors, leadLabel: leadLabel, newLeadRow: newLeadRow,
     duplicateByPhone: duplicateByPhone, billingModeOf: billingModeOf, leadEditValues: leadEditValues, leadEditPlan: leadEditPlan, LEAD_EDIT_FIELDS: LEAD_EDIT_FIELDS, closeRecord: closeRecord, randomId: randomId,
     FUNDERS: FUNDERS, PATIENT_STATUSES: PATIENT_STATUSES, admissionRow: admissionRow, admissionErrors: admissionErrors, directAddRows: directAddRows,
     directAddErrors: directAddErrors, houseSaveBody: houseSaveBody, houseSaveRefusal: houseSaveRefusal, isoDateOk: isoDateOk,

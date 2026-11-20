@@ -1288,11 +1288,12 @@ test('C5 lead lifecycle (Vered): new lead form validates and posts one new row; 
     // new lead: validation first
     await page.click('#crm-new-lead');
     await page.waitForSelector('#crm-drawer form[data-form="new-lead"]');
-    await page.fill('[name="name"]', 'נועה');
+    // name is optional now; a typed junk phone is still refused, and Vered's own fields stay required
     await page.fill('[name="phone"]', '052');
     await page.click('form[data-form="new-lead"] button[type="submit"]');
-    assert.match(await page.textContent('[data-err="name"]'), /שם מלא/);
+    assert.equal((await page.textContent('[data-err="name"]')).trim(), '', 'name is optional — no error even when blank');
     assert.match(await page.textContent('[data-err="phone"]'), /טלפון/);
+    assert.match(await page.textContent('[data-err="source"]'), /מקור/);
     assert.equal(srv.saves.length, 0, 'nothing posted while invalid');
     await page.fill('[name="name"]', 'נועה שמש');
     await page.fill('[name="phone"]', '052-999-8877');
@@ -2494,13 +2495,13 @@ test('«עריכת פרטי הליד» (CHANGELOG-crm-lead-full-edit.md): the wh
     await page.click(f + ' button[type="submit"]');
     await page.waitForFunction(() => /אין שינויים לשמירה/.test((document.querySelector('#crm-toast') || {}).textContent || ''), null, { timeout: 5000 });
     // a bad field: the message under it, nothing sent, the form keeps the text
-    await page.fill(f + ' [name="name"]', 'אבי');
-    await page.fill(f + ' [name="phone"]', '123');
+    await page.fill(f + ' [name="name"]', 'אבי');     // a one-word name is fine now
+    await page.fill(f + ' [name="phone"]', '123');    // a typed junk phone is still refused
     await page.click(f + ' button[type="submit"]');
-    assert.equal(await page.textContent(f + ' [data-err="name"]'), 'יש להזין שם מלא (שם פרטי ושם משפחה)');
-    assert.equal(await page.textContent(f + ' [data-err="phone"]'), 'יש להזין טלפון ישראלי תקין (10 ספרות)');
+    assert.equal((await page.textContent(f + ' [data-err="name"]')).trim(), '', 'a one-word name is accepted now');
+    assert.match(await page.textContent(f + ' [data-err="phone"]'), /טלפון ישראלי תקין/);
     assert.equal(srv.saves.filter((x) => x.action === 'saveAll').length, 0);
-    assert.equal(await page.inputValue(f + ' [name="name"]'), 'אבי');
+    assert.equal(await page.inputValue(f + ' [name="phone"]'), '123');
     // the whole lead in one save
     await page.fill(f + ' [name="name"]', 'אבי לוי-כהן');
     await page.fill(f + ' [name="phone"]', '052-333 4444');

@@ -175,7 +175,7 @@ test('localPhone / leadFormErrors / newLeadRow mirror the classic add-lead rules
   assert.equal(core.localPhone('052-765-4321'), '0527654321');
   assert.equal(core.localPhone('+972 52 765 4321'), '0527654321');
   assert.equal(core.localPhone('12345'), '');
-  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה', phone: '0527654321', assignedTo: 'ורד', source: 'גוגל', house: 'רמות השבים' })), ['name'], 'two words');
+  assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה', phone: '0527654321', assignedTo: 'ורד', source: 'גוגל', house: 'רמות השבים' })), [], 'a one-word name is fine now (relaxed 20/11/2026)');
   assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה כהן', phone: '052', assignedTo: 'ורד', source: 'גוגל', house: 'רמות השבים' })), ['phone']);
   assert.deepEqual(Object.keys(core.leadFormErrors({ name: 'דנה כהן', phone: '0527654321', assignedTo: '', contactPhone: 'x', source: 'גוגל', house: 'רמות השבים' })), ['assignedTo', 'contactPhone']);
   const row = core.newLeadRow({ name: ' דנה  כהן ', phone: '052-7654321', assignedTo: 'ורד', house: 'רמות השבים', contactName: 'אמא', contactPhone: '0501112222',
@@ -203,9 +203,10 @@ test('admissionRow / admissionErrors mirror the classic entry modal; funder requ
   const lead = { id: 'L1', name: 'דנה כהן', phone: '0527654321', visitDate: '2026-10-20' };
   const row = core.admissionRow(lead, { houseId: 'ramot', date: '2026-10-27', pay: '28000', adv: '5000', status: 'trial' }, 'id-p');
   assert.deepEqual(row, { id: 'id-p', houseId: 'ramot', name: 'דנה כהן', date: '2026-10-27', pay: 28000, adv: 5000, status: 'trial', fromLead: 'L1', exitDate: '', source: 'lead', notes: '', updatedAt: '', updatedBy: '', personId: '' });
-  assert.deepEqual(Object.keys(core.admissionErrors({ houseId: 'ramot', date: '2026-10-27', pay: '1' }, false)), []);
-  assert.deepEqual(Object.keys(core.admissionErrors({ houseId: 'ramot', date: '2026-10-27', pay: '1' }, true)), ['funder']);
-  assert.deepEqual(Object.keys(core.admissionErrors({ houseId: '', date: '2019-01-01', pay: '0' }, false)), ['houseId', 'date', 'pay']);
+  assert.deepEqual(Object.keys(core.admissionErrors({ name: 'דנה כהן', houseId: 'ramot', date: '2026-10-27', pay: '1' }, false)), []);
+  assert.deepEqual(Object.keys(core.admissionErrors({ name: 'דנה כהן', houseId: 'ramot', date: '2026-10-27', pay: '1' }, true)), ['funder']);
+  // a name is now required at admission so a lead relaxed on intake never becomes a nameless patient (CHANGELOG-optional-lead-fields.md)
+  assert.deepEqual(Object.keys(core.admissionErrors({ houseId: '', date: '2019-01-01', pay: '0' }, false)), ['name', 'houseId', 'date', 'pay']);
   assert.ok(core.isoDateOk('2026-10-27') && !core.isoDateOk('2019-01-01') && !core.isoDateOk('27/10/2026'));
 });
 
