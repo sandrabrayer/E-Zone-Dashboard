@@ -1,5 +1,16 @@
 # E-ZONE Ecosystem Status — updated November 20, 2026
 
+## Dashboard CRM — «בקרת גבייה» decisions are native — November 20, 2026
+
+Ortal's controller decisions — **«לא שולם»** (back to Vered), **«כפילות»** (void a duplicate)
+and **«לא התקבל»** (cancel the claim; the cycle returns to open debt) — move from the classic
+page onto each receipt in the CRM, beside the existing «אמת» / «אימות חלקי». Each asks a
+required 2–120-char reason and the same confirm as the classic flow, through the existing
+`confirmPayment` contract. **Nothing is deleted:** a void keeps the receipt row, marked
+«בוטלה» and reversible on the server; after a proven answer the CRM re-reads the authoritative
+balances (open debt + cycle). The controller's `#crm-controller-classic` link is removed. SW
+cache v152. See `CHANGELOG-crm-billing-control-decisions.md`.
+
 ## Dashboard CRM — «בית לא מזוהה» fixed inside the CRM — November 20, 2026
 
 The occupancy tab's «בית לא מזוהה» card no longer links to the classic page. It opens a

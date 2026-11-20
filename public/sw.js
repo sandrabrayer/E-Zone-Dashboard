@@ -437,7 +437,9 @@
 // (CHANGELOG-crm-patient-delete.md). From v149; monotonic.
 // v150 → v151: «בית לא מזוהה» fixed inside the CRM (occupancy opens the
 // patient card natively) (CHANGELOG-crm-unknown-house.md). From v150; monotonic.
-var CACHE_VERSION = 'v151';
+// v151 → v152: «בקרת גבייה» decisions («לא שולם» / «כפילות» / «לא התקבל»)
+// native on each receipt (CHANGELOG-crm-billing-control-decisions.md). From v151; monotonic.
+var CACHE_VERSION = 'v152';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

@@ -69,6 +69,5 @@ test('the classic page stays reachable by URL and the remaining classic links ar
   assert.match(HTML, /href="\/\?view=classic">חזרה לדשבורד הרגיל/, 'the global escape hatch stays (rare admin ops)');
   // the removed links are gone; the unmigrated ones remain (Ortal billing-control, unknown-house)
   assert.ok(!/<p><a class="btn" href="\/\?view=classic">/.test(SRC), 'the patient-card link is gone');
-  assert.ok(SRC.includes('id="crm-controller-classic"'), 'Ortal\'s billing-control link is untouched');
   assert.match(SRC, /בית לא מזוהה<\/strong>/, 'the unknown-house fix link remains');
 });
