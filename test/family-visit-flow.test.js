@@ -132,6 +132,7 @@ for (const width of [390, 1366]) {
       throw new Error(JSON.stringify({ state, errors, calls: db.calls.slice(-7) }) + ' ' + err.message);
     });
     assert.match(await body.innerText(), /12:45/);
+    assert.match(await dlg.innerText(), /בחשבון העסקי של איזון/);
     assert.equal(await dlg.locator('[data-confirm]').isDisabled(), true);
     assert.equal(await dlg.locator('select').inputValue(), '');
     await dlg.locator('select').selectOption('contact');
@@ -207,5 +208,14 @@ test('desktop CRM and mobile meetings board share the saved visit; a refused edi
     form = await openCrmForm(pc);
     await form.locator('..').locator('[data-family-visit]').click();
     await pc.locator('#family-visit-preview [data-text]').waitFor();
-    assert.match(await pc.locator('#family-visit-preview [data-text]').innerText(), /13:30/);
+    const draft = pc.locator('#family-visit-preview');
+    assert.match(await draft.locator('[data-text]').innerText(), /13:30/);
+    const handoffs = [];
+    await pc.route('https://wa.me/**', route => { handoffs.push(route.request().url()); return route.abort(); });
+    await draft.locator('select').selectOption('contact');
+    db.lead.meetingOutcome = 'cancelled';
+    await draft.locator('[data-confirm]').click();
+    await draft.locator('[data-body]').waitFor({ state: 'hidden' });
+    assert.match(await draft.locator('[data-status]').innerText(), /אין כרגע ביקור שמור/);
+    assert.deepEqual(handoffs, []);
   });

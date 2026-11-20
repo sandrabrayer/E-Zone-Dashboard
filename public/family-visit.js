@@ -61,6 +61,7 @@
       + '<button type="submit" aria-label="סגירה">✕</button></form>'
       + '<p data-status role="status" aria-live="polite"></p><div data-body hidden>'
       + '<div data-text></div><label>למי אושר לשלוח את פרטי הביקור?<select data-recipient></select></label>'
+      + '<p>לפני השליחה בוואטסאפ, ודאי שאת בחשבון העסקי של איזון.</p>'
       + '<button type="button" data-confirm disabled>אישור הנמען ופתיחת הטיוטה בוואטסאפ</button></div>';
     const status = dialog.querySelector('[data-status]');
     const body = dialog.querySelector('[data-body]');
