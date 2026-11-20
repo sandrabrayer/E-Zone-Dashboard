@@ -4748,18 +4748,31 @@ function contactIndex_(params, actor) {
  * errors. */
 function familyVisitSource_(leadId, actor) {
   if (!actor || actor.verified !== true || actor.auth !== 'personal' || !actor.id) return { ok: false, error: 'forbidden' };
-  if (activityScope_(actor) === 'money') return { ok: false, error: 'forbidden' };
+  if (!Array.isArray(actor.roles) || actor.roles.indexOf('staff') < 0 || activityScope_(actor) === 'money') return { ok: false, error: 'forbidden' };
   const id = String(leadId == null ? '' : leadId).trim();
-  if (!id || id.length > 80) return { ok: false, error: 'missing_visit' };
+  if (!LEAD_FLAG_LEAD_ID_RE.test(id)) return { ok: false, error: 'missing_visit' };
   const lsh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LEADS_SHEET);
-  const rows = lsh ? readSheet_(lsh, LEAD_COLUMNS) : [];
-  const hits = rows.filter(function (l) { return l && String(l.id == null ? '' : l.id).trim() === id; });
-  if (hits.length === 0) return { ok: false, error: 'missing_visit' };
-  if (hits.length > 1) return { ok: false, error: 'ambiguous_visit' };
-  const l = hits[0];
+  if (!lsh || lsh.getLastRow() < 2) return { ok: false, error: 'missing_visit' };
+  const headers = lsh.getRange(1, 1, 1, lsh.getLastColumn()).getValues()[0];
+  const required = ['id', 'stage', 'house', 'visitDate', 'visitTime', 'meetingWith', 'meetingOutcome', 'meetingReportOutcome'];
+  const contact = ['name', 'phone', 'contactName', 'contactPhone'];
+  const columns = {};
+  for (const key of required.concat(contact)) {
+    const index = headers.indexOf(key);
+    if ((index < 0 && required.indexOf(key) >= 0) || headers.lastIndexOf(key) !== index) return { ok: false, error: 'invalid_visit_source' };
+    columns[key] = index;
+  }
+  const ids = lsh.getRange(2, columns.id + 1, lsh.getLastRow() - 1, 1).getValues();
+  const position = ids.findIndex(function (r) { return String(r[0]).trim() === id; });
+  if (position < 0) return { ok: false, error: 'missing_visit' };
+  if (ids.slice(position + 1).some(function (r) { return String(r[0]).trim() === id; })) return { ok: false, error: 'ambiguous_visit' };
+  const values = lsh.getRange(position + 2, 1, 1, headers.length).getValues()[0];
   const t = function (v) { return String(v == null ? '' : v).trim(); };
+  if (t(values[columns.id]) !== id) return { ok: false, error: 'invalid_visit_source' };
+  const l = {};
+  required.concat(contact).forEach(function (key) { l[key] = values[columns[key]]; });
   return { ok: true, lead: {
-    id: id, stage: t(l.stage), house: t(l.house),
+    id: id, stage: t(l.stage), house: diagClientHouseId_(l.house),
     visitDate: asISODate_(l.visitDate), visitTime: asISOTime_(l.visitTime),
     meetingWith: t(l.meetingWith), meetingOutcome: t(l.meetingOutcome), meetingReportOutcome: t(l.meetingReportOutcome),
     phone: t(l.phone), name: t(l.name), contactName: t(l.contactName), contactPhone: t(l.contactPhone),

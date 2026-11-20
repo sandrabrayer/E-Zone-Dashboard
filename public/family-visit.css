@@ -1,0 +1,23 @@
+#family-visit-preview {
+  box-sizing: border-box; width: min(31rem, calc(100vw - 2rem)); max-height: 88vh;
+  overflow: auto; border: 1px solid #c6d3d1; border-radius: 14px; padding: 1.25rem;
+  font: inherit; color: #17332e; background: #fff; text-align: start;
+}
+#family-visit-preview::backdrop { background: rgb(12 31 26 / 48%); }
+#family-visit-preview form { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+#family-visit-preview h2 { font-size: 1.2rem; margin: 0; }
+#family-visit-preview p { margin: .75rem 0; }
+#family-visit-preview [data-text] {
+  white-space: pre-line; overflow-wrap: anywhere; background: #f1f6f4;
+  border-radius: 8px; padding: .75rem; line-height: 1.6;
+}
+#family-visit-preview label { display: grid; gap: .35rem; margin: .85rem 0; font-weight: 600; }
+#family-visit-preview select { width: 100%; min-height: 44px; font: inherit; }
+#family-visit-preview button {
+  min-height: 44px; box-sizing: border-box; display: inline-flex; align-items: center;
+  border: 1px solid #849e97; border-radius: 7px; background: white; color: #21463c;
+  font: inherit; padding: .45rem .8rem; cursor: pointer; text-decoration: none;
+}
+#family-visit-preview [data-confirm] { background: #175840; color: white; }
+#family-visit-preview button:disabled { opacity: .55; cursor: default; }
+#family-visit-preview [hidden] { display: none; }

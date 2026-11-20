@@ -774,3 +774,15 @@ Ortal and Dana keep the classic page; `/?view=classic` is the classic page for e
 3. Open https://ezone-dashboard.up.railway.app/ with Vered's or your login → the CRM.
    https://ezone-dashboard.up.railway.app/?view=classic → the old dashboard.
 Rollback: delete `CRM_DEFAULT` and redeploy — nothing else changes. See `CHANGELOG-crm-default.md`.
+
+## Family visit confirmations
+
+The CRM and classic pages obtain the saved appointment through `GET /api/family-visit/:leadId/preview`. This read requires a personal staff session and the existing server-to-Apps-Script connection. The dashboard and the Apps Script action `getFamilyVisitSource` must both be available.
+
+Set `FAMILY_VISIT_DIRECTIONS_JSON` on the dashboard server to the house addresses that operations has approved for visitors. Each key is a dashboard house ID and each entry contains an address with town and optional arrival instructions. Example with fictitious data:
+
+```json
+{"ramot":{"address":"רחוב לדוגמה 1, עיר לדוגמה","instructions":"הכניסה הראשית"}}
+```
+
+The family sees the approved address and a map link. A missing or malformed address prevents preparation of a draft for that house. The staff member chooses an authorized recipient and taps Send in WhatsApp. Automatic delivery, delivery receipts and PBX call logging require separate provider integrations.

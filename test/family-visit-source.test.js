@@ -6,24 +6,28 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-function load(rows, { noSheet = false } = {}) {
+function load(rows, { noSheet = false, extraHeaders = [], omit = [] } = {}) {
   const src = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Code.gs'), 'utf8');
   const noop = () => {};
+  const headers = Object.keys(lead()).reverse().filter(key => !omit.includes(key)).concat(extraHeaders);
+  const grid = [headers].concat(rows.map(row => headers.map(k => row[k] || '')));
+  const sheet = { getLastRow: () => grid.length, getLastColumn: () => headers.length,
+    getRange: (r, c, h, w) => ({ getValues: () => grid.slice(r - 1, r - 1 + h).map(row => row.slice(c - 1, c - 1 + w)) }) };
   const sandbox = {
     console: { log: noop, warn: noop, error: noop, info: noop },
     JSON, Math, Date, Number, String, Array, Object, RegExp,
     SpreadsheetApp: { getActiveSpreadsheet: () => ({
       getSpreadsheetTimeZone: () => 'Asia/Jerusalem',
-      getSheetByName: () => (noSheet ? null : { __rows: rows }),
+      getSheetByName: () => (noSheet ? null : sheet),
     }) },
     Utilities: { formatDate: () => '09:30' },
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
-  vm.runInContext(src + '\nreadSheet_ = function (sh, cols) { return sh.__rows; };\nglobalThis.__t = { familyVisitSource_: familyVisitSource_, LEAD_COLUMNS: LEAD_COLUMNS };', sandbox);
+  vm.runInContext(src + '\nglobalThis.__t = { familyVisitSource_: familyVisitSource_ };', sandbox);
   return sandbox.__t;
 }
-const op = { verified: true, auth: 'personal', id: 'u1', caps: [] };
+const op = { verified: true, auth: 'personal', id: 'u1', caps: [], roles: ['staff'] };
 const lead = (o) => Object.assign({ id: 'L-1', name: 'Test Patient', phone: '0501234567', house: 'h1', stage: 'visit',
   visitDate: '2026-12-01', visitTime: '10:00', meetingWith: 'Mgr', meetingOutcome: '', meetingReportOutcome: '',
   contactName: 'Test Contact', contactPhone: '0521234567', billingPhone: '0539999999' }, o || {});
@@ -54,4 +58,12 @@ test('dispatch is registered beside contactIndex', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Code.gs'), 'utf8');
   assert.match(src, /'contactIndex',\s*\/\/[^\n]*\n\s*'getFamilyVisitSource'/);
   assert.match(src, /action === 'getFamilyVisitSource'/);
+});
+
+test('uses current headers and a canonical house; ambiguous or missing eligibility fields block the read', () => {
+  assert.equal(load([lead({ house: 'efroni' })]).familyVisitSource_('L-1', op).lead.house, 'arfoni');
+  assert.equal(load([lead()], { extraHeaders: ['phone'] }).familyVisitSource_('L-1', op).error, 'invalid_visit_source');
+  assert.equal(load([lead()], { omit: ['meetingOutcome'] }).familyVisitSource_('L-1', op).error, 'invalid_visit_source');
+  assert.equal(load([lead()], { omit: ['contactPhone'] }).familyVisitSource_('L-1', op).lead.contactPhone, '');
+  assert.equal(load([lead()]).familyVisitSource_('L-1', { ...op, roles: ['viewer'] }).error, 'forbidden');
 });

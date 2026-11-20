@@ -337,7 +337,7 @@ function serve(handlers, url) {
 }
 const settle = () => new Promise((r) => setImmediate(r));
 
-test('D: CACHE_VERSION is v133 (monotonic from v132; v17 burned, never reused)', () => {
+test('D: CACHE_VERSION is v157 (monotonic from v156; v17 burned, never reused)', () => {
   const v = /var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1];
   // v40: CHANGELOG-ortal-verification-status.md.
   // v41: CHANGELOG-reactivation-fix.md (PR #145's fix, re-landed).
@@ -454,7 +454,7 @@ test('D: CACHE_VERSION is v133 (monotonic from v132; v17 burned, never reused)',
   // v154: CHANGELOG-crm-meeting-notify.md (from v153).
   // v155: CHANGELOG-optional-lead-fields.md (from v154).
   // v156: CHANGELOG-crm-reactivate-card.md (from v155).
-  assert.equal(v, 'v156');
+  assert.equal(v, 'v157');
   assert.notEqual(v, 'v17');
 });
 

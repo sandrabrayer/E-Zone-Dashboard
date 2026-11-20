@@ -29,6 +29,7 @@ const {
   createAssetStore, versionAssetRefs, isCurrentVersion, immutableHeaders, sendAsset, sendCompressedText,
 } = require('./lib/static-assets');
 const { buildRefundForecastSpec, isForecastResponse, contentDisposition } = require('./lib/refund-forecast-xlsx');
+const { preview: familyVisitPreview } = require('./lib/family-visit-preview');
 const { buildCleanupSpec, isCleanupResponse, cleanupContentDisposition } = require('./lib/cleanup-xlsx');
 const { handOffAmbulatoryLeads, handOffDischarge } = require('./lib/ambulatory-handoff');
 const { exactId, createStatusReader } = require('./lib/outpatient-handoff-status');
@@ -225,6 +226,11 @@ app.use(express.json({ limit: '10mb' }));
 /* Apply no-cache headers to every response before any handler runs. */
 app.use((_req, res, next) => { noCache(res); next(); });
 
+/* Visit URLs carry a case identifier even when there is no query string. */
+function diagnosticRoute(path) {
+  return path.startsWith('/api/family-visit/') ? '/api/family-visit/:leadId/preview' : path;
+}
+
 /* Catch-all request logger — confirms what URLs the server actually receives,
  * visible in the Railway logs. Registered before any route so every request is
  * logged. (The in-memory hit counters + the /api/debug/routes and /api/debug/env
@@ -232,7 +238,7 @@ app.use((_req, res, next) => { noCache(res); next(); });
  * infra metadata unauthenticated and had no consumer.) */
 app.use((req, _res, next) => {
   // Path only — the querystring can carry request data and is never logged.
-  console.log(`[req] ${req.method} ${req.path} host=${req.headers.host} xfwd=${req.headers['x-forwarded-host'] || '-'}`);
+  console.log(`[req] ${req.method} ${diagnosticRoute(req.path)} host=${req.headers.host} xfwd=${req.headers['x-forwarded-host'] || '-'}`);
   next();
 });
 
@@ -248,7 +254,7 @@ function controllerRouteLock(req, res, next) {
   if (isControllerRoute(req.path)) return next();
   const p = sessionPrincipalFromRequest(req);
   if (!isControllerView(p)) return next();
-  console.warn(`[billing-control] 403 user=${p.id} route=${req.path}`);
+  console.warn(`[billing-control] 403 user=${p.id} route=${diagnosticRoute(req.path)}`);
   return res.status(403).json({ ok: false, error: 'forbidden', message: BILLING_CONTROL_FORBIDDEN_MESSAGE });
 }
 app.use(controllerRouteLock);
@@ -260,6 +266,8 @@ app.use(controllerRouteLock);
  * manifest, the icons and the meeting-report files are NOT here — they are
  * served exactly as before. */
 const ASSETS = createAssetStore({
+  '/family-visit.js': { file: path.join(__dirname, 'public', 'family-visit.js'), mime: 'application/javascript' },
+  '/family-visit.css': { file: path.join(__dirname, 'public', 'family-visit.css'), mime: 'text/css' },
   '/app.js': { file: path.join(__dirname, 'public', 'app.js'), mime: 'application/javascript' },
   '/style.css': { file: path.join(__dirname, 'public', 'style.css'), mime: 'text/css' },
   '/funder.js': { file: path.join(__dirname, 'public', 'funder.js'), mime: 'application/javascript' },
@@ -372,6 +380,8 @@ function sendLibAsset(urlPath) {
 }
 
 app.get('/app.js', sendStatic('app.js', 'application/javascript'));
+app.get('/family-visit.js', sendStatic('family-visit.js', 'application/javascript'));
+app.get('/family-visit.css', sendStatic('family-visit.css', 'text/css'));
 app.get('/crm/crm.js', sendStatic('crm/crm.js', 'application/javascript'));
 app.get('/crm/crm.css', sendStatic('crm/crm.css', 'text/css'));
 /* The payment-report rules (Phase 3 PR 2): the SAME file the server tests
@@ -651,7 +661,7 @@ function recordWrite(entry) {
 function noteAuthFailure(path) {
   authFailures.total += 1;
   authFailures.lastAt = new Date().toISOString();
-  const p = typeof path === 'string' && path ? path : '(unknown)';
+  const p = typeof path === 'string' && path ? diagnosticRoute(path) : '(unknown)';
   authFailures.byPath[p] = (authFailures.byPath[p] || 0) + 1;
   authFailures.recent.unshift({ at: authFailures.lastAt, path: p });
   if (authFailures.recent.length > WRITE_LOG_MAX) authFailures.recent.length = WRITE_LOG_MAX;
@@ -1098,7 +1108,7 @@ function viewFilteredResponse(action, data, principal) {
 /* Apps Script actions only the server itself may call — never forwarded from
  * the browser (CHANGELOG-meeting-with-ambulatory.md: the send log behind the
  * «אמבולטורי» handoff must not be forgeable from a page). */
-const SERVER_ONLY_ACTIONS = Object.freeze(['recordOutpatientLeadSend', 'dischargeOutpatientPayload', 'getOutpatientHandoffRef']);
+const SERVER_ONLY_ACTIONS = Object.freeze(['recordOutpatientLeadSend', 'dischargeOutpatientPayload', 'getFamilyVisitSource', 'getOutpatientHandoffRef']);
 function refuseServerOnlyActions(req, res, next) {
   const src = req.method === 'GET' ? (req.query || {}) : (req.body || {});
   if (SERVER_ONLY_ACTIONS.indexOf(src.action) < 0) return next();
@@ -1126,6 +1136,26 @@ async function applyAmbulatoryHandoff(data, user, principal, deps) {
   });
   return data;
 }
+
+app.get('/api/family-visit/:leadId/preview', requireSession, requireProxySecret, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const p = sessionPrincipalFromRequest(req);
+  if (!principalHasRole(p, 'staff') || isControllerView(p)) return res.status(403).json({ ok: false, error: 'forbidden' });
+  const id = req.params.leadId;
+  if (!/^[a-zA-Z0-9_-]{1,120}$/.test(id)) return res.status(400).json({ ok: false, error: 'invalid_lead' });
+  try {
+    const result = await sheetsPost({ action: 'getFamilyVisitSource', leadId: id, user: p.user }, p);
+    if (result && result.ok === false && result.error === 'forbidden') return res.status(403).json({ ok: false, error: 'forbidden' });
+    if (result && result.ok === false && result.error === 'missing_visit') return res.status(404).json({ ok: false, error: 'missing_visit' });
+    if (result && result.ok === false && result.error === 'ambiguous_visit') return res.status(409).json({ ok: false, error: 'ambiguous_visit' });
+    if (!result || result.ok !== true || !result.lead || result.lead.id !== id) return res.status(502).json({ ok: false, error: 'source_unavailable' });
+    const family = familyVisitPreview(result.lead, process.env.FAMILY_VISIT_DIRECTIONS_JSON, new Date());
+    if (!family) return res.status(409).json({ ok: false, error: 'ineligible_visit' });
+    return res.json(family);
+  } catch (_) {
+    return res.status(502).json({ ok: false, error: 'source_unavailable' });
+  }
+});
 
 /* GET /api/sheets?action=getData — forwarded to Apps Script as a POST whose
  * body carries the params + proxy secret (see sheetsGet). */
@@ -2361,7 +2391,7 @@ app.get('/api/healthcheck', async (req, res) => {
 /* 404 fallback — logs and returns JSON so an unexpected request (e.g.
  * Sandra typing a stray URL) is visible in the logs. */
 app.use((req, res) => {
-  console.log(`[req] 404 for ${req.method} ${req.path}`);
+  console.log(`[req] 404 for ${req.method} ${diagnosticRoute(req.path)}`);
   res.status(404).json({ error: 'not_found', method: req.method, url: req.originalUrl });
 });
 

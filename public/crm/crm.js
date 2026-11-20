@@ -5781,6 +5781,7 @@
         + '<label>שעה <input type="time" name="visitTime" value="' + esc(l.visitTime) + '"></label>'
         + '<label>נפגש/ת עם <select name="meetingWith">' + opts(managers, l.meetingWith, true) + '</select></label>'
         + '<button type="submit" class="btn small primary">שמירה</button></form>'
+        + (familyVisitSlot(l) ? '<button type="button" class="btn small" data-family-visit="' + esc(l.id) + '">פרטי הגעה למשפחה</button>' : '')
         + (managerScheduledLink(l) ? '<p class="na" data-manager-invite="' + esc(l.id) + '">זימון ל' + esc(l.meetingWith) + ' שהפגישה נקבעה איתו/ה — <a class="btn small primary" target="_blank" rel="noopener" href="' + esc(managerScheduledLink(l)) + '">שליחה בוואטסאפ</a></p>' : '')
         + '</details>'
         + (l.stage === 'visit' && s(l.visitDate) ? patientChangeBlock(l) : '')
@@ -5884,6 +5885,19 @@
         + '<label class="wide">הערה למנהל/ת (לא חובה) <input type="text" name="note" maxlength="200"><span class="err" data-err="note"></span></label>'
         + '<p class="na">נשלחת הודעת וואטסאפ מוכנה ל' + esc(l.meetingWith || 'מנהל/ת הבית') + ' — יש ללחוץ «שליחה» בוואטסאפ.</p>'
         + '<button type="submit" class="btn small primary">שמירה והודעה למנהל/ת</button></form></details>';
+    }
+    function familyVisitSlot(l) {
+      if (!l || l.stage !== 'visit' || !l.visitDate || !l.visitTime || l.meetingOutcome || l.meetingReportOutcome ||
+          l.meetingWith === MEETING_WITH_AMBULATORY || !houseId(l.house)) return null;
+      return { id: l.id, houseId: houseId(l.house), date: l.visitDate, time: l.visitTime };
+    }
+    function openSavedFamilyVisit(id) {
+      if (state.saving || !state.drawer || state.drawer.kind !== 'lead' || state.drawer.id !== id) return;
+      const l = compute(state.data, state.today).leads.find(function (lead) { return lead.id === id; });
+      const slot = familyVisitSlot(l);
+      if (!slot) return;
+      if (!win.FamilyVisit) { toast('לא ניתן לפתוח את פרטי הביקור. רענני את הדף.', true); return; }
+      win.FamilyVisit.open(win, slot);
     }
     /* The manager's WhatsApp link for the lead's current patient-side change, or ''. */
     function managerChangeLink(l) {
@@ -6873,6 +6887,18 @@
 
     /* events (delegated; filters, sort and scroll survive opening a card) */
     root.addEventListener('click', function (ev) {
+      const family = ev.target.closest ? ev.target.closest('[data-family-visit]') : null;
+      if (family) {
+        const form = family.parentElement.querySelector('form[data-form="meeting"]');
+        const id = family.dataset.familyVisit;
+        const lead = compute(state.data, state.today).leads.find(function (l) { return l.id === id; });
+        if (!lead || (form && (form.elements.visitDate.value !== lead.visitDate ||
+            form.elements.visitTime.value !== lead.visitTime || form.elements.meetingWith.value !== lead.meetingWith))) {
+          toast('שמרי את השינוי במועד לפני הכנת ההודעה למשפחה.', true);
+          return;
+        }
+        return openSavedFamilyVisit(id);
+      }
       const cs = ev.target.closest ? ev.target.closest('[data-continuity-save]') : null;
       if (cs) return saveContinuity(cs.dataset.continuitySave);
       // The manager's WhatsApp (CHANGELOG-crm-vered-feedback-1104.md): a standalone PWA drops
@@ -7049,7 +7075,11 @@
         const patch = { visitDate: v('visitDate'), visitTime: v('visitTime'), meetingWith: v('meetingWith') };
         const cur = compute(state.data, state.today).leads.filter(function (x) { return x.id === id; })[0];
         if (cur && cur.stage === 'new' && patch.visitDate) patch.stage = 'visit';   // a dated meeting moves a new lead to ביקור נקבע
-        writeLead(id, patch, 'הפגישה');
+        const changed = cur && (cur.stage === 'new' || cur.visitDate !== patch.visitDate ||
+          cur.visitTime !== patch.visitTime || cur.meetingWith !== patch.meetingWith);
+        writeLead(id, patch, 'הפגישה').then(function (ok) {
+          if (ok && changed) openSavedFamilyVisit(id);
+        });
       } else if (f.dataset.form === 'outcome') {
         writeLead(id, { meetingOutcome: v('meetingOutcome') }, 'תוצאת הפגישה');
       } else if (f.dataset.form === 'wait-reason') {
@@ -7077,6 +7107,7 @@
           // A popup opened after two awaits is blocked by browsers, so the prefilled link is a
           // button at the top of the card (one tap) — never an automatic navigation away.
           return postLeadFlag(plan.flag, 'השינוי ע״י המטופל/ת', true).then(function (flagged) {
+            if (flagged && plan.flag.change === 'rescheduled') openSavedFamilyVisit(id);
             const a = flagged ? $('#crm-drawer [data-wa-manager]') : null;
             if (a) { a.focus(); toast('נשמר — לחצי «הודעה למנהל/ת בוואטסאפ» כדי לעדכן את ' + (plan.flag.withWhom || 'המנהל/ת')); }
           });
