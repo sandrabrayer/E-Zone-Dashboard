@@ -450,7 +450,8 @@
 // v156 → v157: restore a mobile's lost leading 0 in the lead-edit form + newest
 // leads first in the board columns. (CHANGELOG-crm-leads-view-fixes.md). From v156; monotonic.
 // v157 → v158: family visit confirmation from a saved appointment (CHANGELOG-family-visit-draft.md).
-var CACHE_VERSION = 'v158';
+// v158 → v159: intake contact review on desktop and mobile (CHANGELOG-contact-events.md).
+var CACHE_VERSION = 'v159';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

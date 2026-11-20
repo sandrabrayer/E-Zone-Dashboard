@@ -480,3 +480,14 @@ details.act.danger > summary { color: var(--bad); }
 .btn.small.danger:hover { filter: brightness(0.95); }
 /* «בית לא מזוהה» fix list (CHANGELOG-crm-unknown-house.md). */
 #crm-unknown-house .unknown-list { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Contact review in the leads drawer. The select holds one set of open leads. */
+.comm-review { padding: 0 1rem 1rem; overflow-wrap: anywhere; min-width: 0; }
+.comm-review article { padding: .8rem 0; border-bottom: 1px solid #d7dfe6; }
+.comm-review article > * { margin-block: .25rem; }
+.comm-form { display: grid; gap: .75rem; min-width: 0; }
+.comm-form label { display: block; }
+.comm-form select { display: block; max-width: 100%; width: 100%; }
+.comm-form input[type=checkbox] { width: auto; }
+.comm-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.comm-review [hidden] { display: none; }

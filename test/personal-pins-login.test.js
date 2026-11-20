@@ -214,7 +214,7 @@ test('personal login: success mints id + pinVersion; /api/me says personal; the 
     assert.deepStrictEqual([s.auth, s.id, s.pinVersion, s.user], ['personal', 'vered', 3, 'ורד']);
     assert.ok(!lines.join('\n').includes(PINS.vered), 'the PIN never reaches a log line');
     const me = await request(port, 'GET', '/api/me', { cookie: cookieOf(ok) });
-    assert.deepStrictEqual(me.json, { ok: true, user: 'ורד', auth: 'personal', approver: false, deleter: true, finance: true,
+    assert.deepStrictEqual(me.json, { ok: true, user: 'ורד', auth: 'personal', contactDesk: true, approver: false, deleter: true, finance: true,
       // Phase 4 («בקרת גבייה»): the capability set, the view and the decision right.
       capabilities: ['finance', 'billingControl'], billingControl: true, view: 'full', canConfirm: false, canAccount: false, canDiscount: true, canAmount: true, billingRead: false, ops: false, landing: 'classic' });
   });
@@ -337,7 +337,7 @@ test('PR C: { pin } → 400 user_required (PIN not checked, no cookie); a shared
 test('PR C: /api/me has no sharedUntil; the client has no banner, no shared field, no picker', async () => {
   await withServer(await envWith(), async (port) => {
     const me = await request(port, 'GET', '/api/me', { cookie: cookieOf(await login(port, 'yael', PINS.yael)) });
-    assert.deepStrictEqual(me.json, { ok: true, user: 'יעל', auth: 'personal', approver: false, deleter: false, finance: false,
+    assert.deepStrictEqual(me.json, { ok: true, user: 'יעל', auth: 'personal', contactDesk: true, approver: false, deleter: false, finance: false,
       capabilities: [], billingControl: false, view: 'restricted', canConfirm: false, canAccount: false, canDiscount: false, canAmount: false, billingRead: false, ops: false, landing: 'classic' });
   });
   assert.ok(!/id="shared-banner"|id="pin-input"|id="login-shared-link"|id="user-screen"/.test(HTML_SRC));

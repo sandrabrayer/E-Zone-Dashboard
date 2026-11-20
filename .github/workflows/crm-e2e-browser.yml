@@ -6,6 +6,9 @@ on:
   pull_request:
     paths:
       - 'public/crm/**'
+      - 'apps-script/CommunicationEvents.gs'
+      - 'test/contact-events-browser.test.js'
+      - 'test/helpers/contact-fixture.js'
       - 'public/sw.js'
       - 'public/family-visit.*'
       - 'lib/family-visit-preview.js'
@@ -46,6 +49,7 @@ jobs:
           export CHROMIUM_PATH="$(node -p "require('playwright').chromium.executablePath()")"
           mkdir -p test-results/crm-e2e
           node --test --test-concurrency=1 --test-reporter=tap \
+            test/contact-events-browser.test.js \
             test/crm-search-admit-funder.test.js \
             test/crm-today-card-open.test.js \
             test/crm-continuity-handoff-gate.test.js \

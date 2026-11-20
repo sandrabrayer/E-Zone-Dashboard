@@ -1662,6 +1662,7 @@ const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
  * an attacker can neither spam distinct rows nor inject a formula.
  * test/proxy-secret-transition.test.js checks this list against handle_. */
 const PROXY_KNOWN_ACTIONS = [
+  'ingestCommunicationEvent', 'getCommunicationReview', 'resolveCommunicationEvent',
   'managersWork',
   'getData', 'getAdmittedRoster', 'getDischargedRoster', 'createLeadFromTherapists', 'saveAll', 'recordOutpatientLeadSend', 'getOutpatientHandoffRef', 'dischargeOutpatientPayload', 'getPayments', 'savePayment',
   'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
@@ -1719,8 +1720,27 @@ function lockBusy_(_fn) {
   return { ok: false, error: 'lock_busy', message: LOCK_BUSY_MESSAGE };
 }
 
+function commIngressAllowed_(body) {
+  const token = PropertiesService.getScriptProperties().getProperty('CONTACT_EVENT_INGEST_TOKEN') || '';
+  return token.length >= 32 && typeof body.ingestToken === 'string' && body.ingestToken.length <= 512 &&
+    constantTimeEquals_(token, body.ingestToken);
+}
+
 function gatedEntry_(e, method) {
   const params = collectParams_(e);
+  // Contact metadata and credentials are body-only. A public probe must never
+  // enter the transitional proxy logger or create a sheet.
+  if (['ingestCommunicationEvent', 'getCommunicationReview', 'resolveCommunicationEvent'].includes(params.action)) {
+    const body = collectParams_({ postData: e && e.postData });
+    if (method !== 'POST' || body.action !== params.action) return jsonOut_({ ok: false, error: 'unauthorized' });
+    if (body.action === 'ingestCommunicationEvent') {
+      if (!commIngressAllowed_(body)) return jsonOut_({ ok: false, error: 'unauthorized' });
+      return handle_({ action: body.action, ingestToken: body.ingestToken, event: body.event });
+    }
+    const secret = PropertiesService.getScriptProperties().getProperty(PROXY_SECRET_PROP);
+    if (!secret || typeof body.proxySecret !== 'string' || !constantTimeEquals_(secret, body.proxySecret)) return jsonOut_({ ok: false, error: 'unauthorized' });
+    return handle_(proxyGate_(body, method).params);
+  }
   // Managers credentials, identity and scope are accepted from JSON POST only.
   // Bypass the transitional proxy logger: probes/refusals must not write sheets.
   if (params.action === 'managersWork' || MW_FEED_ACTIONS.indexOf(params.action) >= 0) {
@@ -2040,6 +2060,15 @@ function handle_(params) {
     // Activity timeline read (B3, CHANGELOG-crm-activity-read.md): READ-ONLY,
     // the same gate — PROXY_SECRET + a verified personal session, even in
     // 'log' mode — then the kinds and fields are cut per the actor's caps.
+    if (action === 'ingestCommunicationEvent') {
+      if (!commIngressAllowed_(params)) return jsonOut_({ ok: false, error: 'unauthorized' });
+      return jsonOut_(ingestCommunicationEvent_(params));
+    }
+    if (action === 'getCommunicationReview' || action === 'resolveCommunicationEvent') {
+      const actor = actingUser_(params);
+      if (!commStaff_(actor)) return jsonOut_({ ok: false, error: 'forbidden' });
+      return jsonOut_(action === 'getCommunicationReview' ? commReview_() : commResolve_(params, actor));
+    }
     if (action === 'getActivity') {
       const no = expectedDischargesRefused_(params);
       if (no) return jsonOut_(no);
@@ -4698,6 +4727,10 @@ function getActivity_(params, actor) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sh = ss.getSheetByName(ACTIVITY_SHEET);            // a read never creates the sheet
   const rows = sh ? readSheet_(sh, ACTIVITY_COLUMNS) : [];
+  if (scope !== 'money' && subject.leadId && ss.getSheetByName('CommunicationEvents') && commStaff_(actor)) {
+    const communications = commActivity_(subject.leadId);
+    for (let j = 0; j < communications.length; j++) rows.push(communications[j]);
+  }
   const res = activityProject_(rows, subject, scope, limit);
   return { ok: true, scope: scope, total: res.total, events: res.events };
 }

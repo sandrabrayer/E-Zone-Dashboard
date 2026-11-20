@@ -1108,13 +1108,46 @@ function viewFilteredResponse(action, data, principal) {
 /* Apps Script actions only the server itself may call — never forwarded from
  * the browser (CHANGELOG-meeting-with-ambulatory.md: the send log behind the
  * «אמבולטורי» handoff must not be forgeable from a page). */
-const SERVER_ONLY_ACTIONS = Object.freeze(['recordOutpatientLeadSend', 'dischargeOutpatientPayload', 'getFamilyVisitSource', 'getOutpatientHandoffRef']);
+const SERVER_ONLY_ACTIONS = Object.freeze(['recordOutpatientLeadSend', 'dischargeOutpatientPayload',
+  'ingestCommunicationEvent', 'getCommunicationReview', 'resolveCommunicationEvent', 'getFamilyVisitSource', 'getOutpatientHandoffRef']);
 function refuseServerOnlyActions(req, res, next) {
   const src = req.method === 'GET' ? (req.query || {}) : (req.body || {});
   if (SERVER_ONLY_ACTIONS.indexOf(src.action) < 0) return next();
   console.warn('[sheets] 403 server-only action from a client:', src.action);
   return res.status(403).json({ ok: false, error: 'forbidden', message: ROLE_FORBIDDEN_MESSAGE });
 }
+
+function contactDeskStaff(principal) {
+  return !!principal && principal.auth === 'personal' && principalHasRole(principal, 'staff') &&
+    USER_MODEL.some((u) => u.id === principal.id && u.status === 'active' && !u.former);
+}
+
+// Dedicated routes avoid copying contact metadata into generic proxy diagnostics.
+function communicationDesk(resolveEvent) {
+  return async (req, res) => {
+    noCache(res);
+    const principal = sessionPrincipalFromRequest(req);
+    if (!contactDeskStaff(principal)) return res.status(403).json({ ok: false, error: 'forbidden' });
+    const body = { action: resolveEvent ? 'resolveCommunicationEvent' : 'getCommunicationReview', user: principal.user };
+    if (resolveEvent) {
+      const p = req.body || {};
+      Object.assign(body, { id: p.id, decision: p.decision, leadId: p.leadId, verifiedContact: p.verifiedContact === true, remember: p.remember === true });
+      READ_CACHE.bust();
+    }
+    try {
+      const result = await sheetsPost(body, principal);
+      if (!result || typeof result.ok !== 'boolean') return res.status(503).json({ ok: false, error: 'unavailable' });
+      if (result.ok) return res.json(result);
+      const known = { forbidden: 403, unauthorized: 403, already_resolved: 409, phone_not_unique: 409, closed_or_unknown_lead: 409, not_found: 404, bad_review: 400, busy: 503 };
+      const status = Object.prototype.hasOwnProperty.call(known, result.error) ? known[result.error] : 503;
+      return res.status(status).json({ ok: false, error: status === 503 ? 'unavailable' : result.error });
+    } catch (_) {
+      return res.status(503).json({ ok: false, error: 'unavailable' });
+    } finally { if (resolveEvent) READ_CACHE.bust(); }
+  };
+}
+app.get('/api/communications/review', requireSession, requireProxySecret, communicationDesk(false));
+app.post('/api/communications/resolve', requireSession, requireProxySecret, communicationDesk(true));
 
 /* saveAll only: hand the «אמבולטורי» leads saveAll_ listed to Outpatient
  * (lib/ambulatory-handoff.js) and record each outcome in Code.gs. The list
@@ -1970,6 +2003,7 @@ app.get('/api/me', requireSession, (req, res) => {
     ok: true,
     user: p ? p.user : '',
     auth: p ? p.auth : '',
+    contactDesk: contactDeskStaff(p),
     // The approver-only «קוד אישי חדש» button, un-void, exceptions, write-off.
     approver: isApproverPrincipal(p),
     // false hides every delete / void / cancel control (Shiran, Yael).

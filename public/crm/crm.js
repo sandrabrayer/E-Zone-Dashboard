@@ -4052,6 +4052,7 @@
         + '<select id="f-house"><option value="">כל הבתים</option>' + HOUSES.filter(function (h) { return h.id !== 'sde'; }).map(function (h) { return '<option value="' + esc(h.name) + '"' + (f.house === h.name ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select>'
         + '<select id="f-owner"><option value="">כל האחראים</option>' + ASSIGNEES.map(function (o) { return '<option' + (f.owner === o ? ' selected' : '') + '>' + esc(o) + '</option>'; }).join('') + '</select>'
         + '<button type="button" class="btn primary" id="crm-new-lead">+ ליד חדש</button>'
+        + (state.me && state.me.contactDesk ? '<button type="button" class="btn" id="crm-communication-review">שיחות והודעות לשיוך</button>' : '')
         + '<button type="button" class="btn" data-view="maccabi" id="crm-maccabi-btn" aria-pressed="' + (state.view === 'maccabi') + '">מכבי <span class="n chip">' + c.leads.filter(isMaccabiLead).length + '</span></button>'
         + '<button type="button" class="btn" data-view="closed" aria-pressed="' + (state.view === 'closed') + '">לידים סגורים</button>'
         + (state.tasks && state.index ? '<button type="button" class="btn" data-area="triage">רשומות שדורשות בירור <span class="n chip">' + triageQueue(c, state.tasks, state.index, state.today).length + '</span></button>' : '') + '</div>';
@@ -6164,7 +6165,7 @@
         if (!tl) return;
         if (!r || r.ok === false) { tl.innerHTML = '<li class="na">ציר הפעילות לא זמין (' + esc((r && r.error) || 'שגיאה') + ')</li>'; return; }
         if (!r.events || !r.events.length) { tl.innerHTML = '<li class="na">אין אירועים עדיין</li>'; return; }
-        tl.innerHTML = r.events.map(function (e) { return '<li><div class="t">' + esc(whenLocal(e.occurredAt)) + ' · ' + esc(e.actorName || e.source || '') + (String(e.source || '').indexOf('manual') === 0 ? ' · ידני' : ' · מערכת') + '</div><div>' + esc(e.summary || e.kind) + '</div></li>'; }).join('');
+        tl.innerHTML = r.events.map(function (e) { return '<li><div class="t">' + esc(whenLocal(e.occurredAt)) + ' · ' + esc(e.actorName || e.source || '') + (String(e.source || '').indexOf('manual') === 0 ? ' · ידני' : ' · מערכת') + '</div><div>' + esc(e.summary || e.kind) + '</div>' + (state.me && state.me.contactDesk && e.details && e.details.canForgetNumber === true && e.leadId ? '<button type="button" class="btn small" data-comm-forget="' + esc(e.eventId) + '" data-lead="' + esc(e.leadId) + '">ביטול השיוך האוטומטי למספר</button>' : '') + '</li>'; }).join('');
       });
     }
     /* C9: the «חשבון» pane — the area's two reads (loaded once, shared), one patient. */
@@ -6733,6 +6734,110 @@
           .then(function (ok2) { triageDecided(); renderMain(); return ok2; });
       });
     }
+    root.addEventListener('click', function (event) {
+      const b = event.target.closest && event.target.closest('[data-comm-forget]');
+      if (!b || !state.me || !state.me.contactDesk || !state.drawer) return;
+      if (!b.dataset.confirm) { b.dataset.confirm = '1'; b.textContent = 'אישור ביטול השיוך לאירועים עתידיים'; return; }
+      const view = state.drawer; b.disabled = true;
+      win.fetch('/api/communications/resolve', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'forget', id: b.dataset.commForget, leadId: b.dataset.lead }) })
+        .then(function (r) { return r.json(); }).then(function (r) {
+          if (!r || !r.ok) throw new Error('forget');
+          if (state.drawer === view) { toast('אירועים עתידיים מהמספר ימתינו לשיוך'); openDrawer(view.kind, view.id, true); }
+        }).catch(function () { if (state.drawer === view) { b.disabled = false; toast('לא התקבל אישור לביטול השיוך. אפשר לנסות שוב.', true); } });
+    });
+    function openCommunicationReview() {
+      if (!state.me || !state.me.contactDesk) return;
+      const dr = $('#crm-drawer'), view = { kind: 'communications' };
+      state.drawer = view;
+      dr.innerHTML = '<div class="drawer-head"><h2>שיחות והודעות לשיוך</h2><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>'
+        + '<section class="comm-review" aria-label="אירועים לשיוך"><p role="status">טוען…</p></section>';
+      dr.setAttribute('aria-hidden', 'false'); $('#crm-scrim').setAttribute('data-open', 'true');
+      dr.querySelector('#crm-drawer-close').focus();
+      const panel = dr.querySelector('.comm-review');
+      function fetchReview() {
+        panel.innerHTML = '<p role="status">טוען…</p>';
+        win.fetch('/api/communications/review', { credentials: 'same-origin', cache: 'no-store' })
+          .then(function (r) { return r.json(); }).then(function (data) {
+            if (state.drawer !== view) return;
+            if (!data || !data.ok || !Array.isArray(data.events) || !Array.isArray(data.leads)) throw new Error('review');
+            if (!data.events.length) { panel.innerHTML = '<p role="status">אין כרגע שיחות או הודעות שממתינות לשיוך.</p>'; return; }
+            panel.innerHTML = '<p role="status">' + esc(data.total) + ' אירועים ממתינים לשיוך' +
+              (data.total > data.events.length ? ' · מוצגים ' + esc(data.events.length) + ' הוותיקים ביותר' : '') + '</p><div data-comm-list></div><div data-comm-edit></div>';
+            const list = panel.querySelector('[data-comm-list]'), edit = panel.querySelector('[data-comm-edit]');
+            data.events.forEach(function (entry) {
+              const article = doc.createElement('article');
+              article.innerHTML = '<strong>' + esc(entry.summary) + '</strong><div>' + esc(whenLocal(entry.occurredAt)) + ' · <bdi>' +
+                esc(entry.phone ? entry.phone.replace(/^\+972/, '0') : 'מספר חסוי או לא זמין') + '</bdi></div><button type="button" class="btn small">בדיקה ושיוך</button>';
+              const selectEvent = article.querySelector('button');
+              selectEvent.addEventListener('click', function () {
+                list.hidden = true;
+                edit.innerHTML = '<h3>' + esc(entry.summary) + '</h3><p>' + esc(whenLocal(entry.occurredAt)) + ' · <bdi>' + esc(entry.phone ? entry.phone.replace(/^\+972/, '0') : 'מספר חסוי או לא זמין') + '</bdi></p>'
+                  + '<form class="comm-form"><label>פנייה לשיוך<select name="lead"><option value="">בחירת פנייה</option></select></label>'
+                  + '<label><input type="checkbox" name="verified"> בדקתי שהאירוע שייך לפנייה שבחרתי</label>'
+                  + '<label><input type="checkbox" name="remember"> לשייך גם אירועים עתידיים מהמספר לפנייה זו, כל עוד המספר ייחודי</label>'
+                  + '<p role="status"></p><div class="comm-actions"><button type="submit" class="btn primary">שמירת השיוך</button>'
+                  + '<button data-comm-dismiss type="button" class="btn">סימון כאירוע שאינו שייך לפנייה</button><button data-comm-back type="button" class="btn">חזרה לרשימה</button></div></form>';
+                const form = edit.querySelector('form'), notice = form.querySelector('[role="status"]');
+                const select = form.elements.lead, remember = form.elements.remember;
+                const leads = data.leads.slice().sort(function (a, b) {
+                  return Number(entry.suggestions.indexOf(b.id) >= 0) - Number(entry.suggestions.indexOf(a.id) >= 0) || a.name.localeCompare(b.name, 'he') || a.id.localeCompare(b.id);
+                });
+                leads.forEach(function (l) {
+                  const opt = doc.createElement('option'); opt.value = l.id;
+                  const card = rawLead(l.id);
+                  const detail = [card && card.house ? houseName(card.house) : '', card && card.created ? fmtDate(card.created) : '', l.id].filter(Boolean).join(' · ');
+                  opt.textContent = (l.name || 'ללא שם') + ' · ' + detail + (entry.suggestions.indexOf(l.id) >= 0 ? ' · מספר תואם' : '');
+                  select.appendChild(opt);
+                });
+                const allowRemember = function () {
+                  const enabled = !!select.value && entry.rememberLead === select.value;
+                  remember.disabled = !enabled; if (!enabled) remember.checked = false;
+                };
+                select.addEventListener('change', function () { form.elements.verified.checked = false; remember.checked = false; allowRemember(); });
+                allowRemember(); select.focus();
+                edit.querySelector('[data-comm-back]').onclick = function () { edit.innerHTML = ''; list.hidden = false; selectEvent.focus(); };
+                let dismissConfirmed = false, busy = false;
+                function save(decision) {
+                  if (busy) return;
+                  if (decision === 'link' && (!select.value || !form.elements.verified.checked)) { notice.textContent = 'יש לבחור פנייה ולסמן שהשיוך נבדק.'; return; }
+                  if (decision === 'dismiss' && !dismissConfirmed) {
+                    dismissConfirmed = true; notice.textContent = 'האירוע יוסר מרשימת הממתינים. לאישור יש ללחוץ שוב.';
+                    edit.querySelector('[data-comm-dismiss]').textContent = 'אישור הסרה מהרשימה'; return;
+                  }
+                  busy = true;
+                  const payload = { id: entry.id, decision: decision, leadId: select.value, verifiedContact: form.elements.verified.checked, remember: remember.checked };
+                  const buttons = Array.from(form.querySelectorAll('button,select,input'));
+                  buttons.forEach(function (el) { el.disabled = true; });
+                  notice.textContent = 'שומר…';
+                  win.fetch('/api/communications/resolve', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+                    .then(function (r) { return r.json(); }).then(function (result) {
+                      if (!result || !result.ok) throw new Error(result && result.error || 'unavailable');
+                      reloadTasks();
+                      if (state.drawer !== view) return;
+                      toast(decision === 'link' ? 'האירוע שויך לכרטיס הפנייה' : 'האירוע הוסר מהרשימה'); fetchReview();
+                    }).catch(function (error) {
+                      if (state.drawer !== view) return;
+                      busy = false; buttons.forEach(function (el) { el.disabled = false; }); allowRemember();
+                      const messages = { already_resolved: 'האירוע טופל בעמדה אחרת. יש לרענן את הרשימה.', phone_not_unique: 'המספר משותף, או שאינו תואם לרשומה יחידה. אפשר לבטל את סימון השיוך העתידי ולשמור רק את האירוע הזה.', closed_or_unknown_lead: 'הפנייה שנבחרה אינה פתוחה. יש לרענן את הרשימה.' };
+                      notice.textContent = messages[error.message] || 'לא התקבל אישור שמירה. אפשר לרענן או לנסות שוב.';
+                      const retry = doc.createElement('button'); retry.type = 'button'; retry.className = 'btn small'; retry.textContent = 'רענון הרשימה'; retry.onclick = fetchReview; notice.appendChild(retry);
+                    });
+                }
+                form.onsubmit = function (event) { event.preventDefault(); save('link'); };
+                edit.querySelector('[data-comm-dismiss]').onclick = function () { save('dismiss'); };
+              });
+              list.appendChild(article);
+            });
+          }).catch(function () {
+            if (state.drawer !== view) return;
+            panel.innerHTML = '<p role="status">לא ניתן לטעון את רשימת האירועים.</p><button type="button" class="btn">ניסיון נוסף</button>';
+            panel.querySelector('button').onclick = fetchReview;
+          });
+      }
+      fetchReview();
+    }
+
     function closeDrawer() { $('#crm-drawer').setAttribute('aria-hidden', 'true'); $('#crm-scrim').removeAttribute('data-open'); state.drawer = null; state.account = null; state.report = null; state.small = null; state.contact = null; state.leadEdit = null; }
 
     /* ---- Stage 1c: tasks + the contact log ---- */
@@ -6762,11 +6867,30 @@
         + (inCard ? '<button type="button" class="btn small" data-task-more="' + esc(t.id) + '">עוד…</button>' : '') + '</span></div>'
         + '<div class="task-form" data-task-form="' + esc(t.id) + '"></div>';
     }
-    function renderTasksPane(subject) {
+    function renderCardTaskRows(subject, tasks) {
       const c = compute(state.data, state.today);
-      const rows = state.tasks ? taskQueue(tasksFor(subject, state.tasks), c, state.today) : [];
-      let html = state.tasks ? (rows.length ? '<div class="rows">' + rows.map(function (r) { return taskRowHtml(r, true); }).join('') + '</div>' : '<p class="na">אין משימות פתוחות.</p>')
-        : (state.tasks === undefined ? '<p class="na">טוען…</p>' : '<p class="na">המידע אינו זמין <button type="button" class="btn small" data-tasks-retry>נסי שוב</button></p>');
+      const rows = tasks ? taskQueue(tasksFor(subject, tasks), c, state.today) : [];
+      return tasks ? (rows.length ? '<div class="rows">' + rows.map(function (r) { return taskRowHtml(r, true); }).join('') + '</div>' : '<p class="na">אין משימות פתוחות.</p>')
+        : (tasks === undefined ? '<p class="na">טוען…</p>' : '<p class="na">המידע אינו זמין <button type="button" class="btn small" data-tasks-retry>נסי שוב</button></p>');
+
+    }
+    function refreshCommunicationTasks(view) {
+      if (!state.me || !state.me.contactDesk || !view || view.kind !== 'lead') return;
+      const subject = { leadId: view.id };
+      api('getTasks', { status: 'open', leadId: view.id }).then(function (r) {
+        if (state.drawer !== view || view.tab !== 'tasks' || !r || !r.ok || !Array.isArray(r.tasks)) return;
+        const target = $('#crm-card-task-rows');
+        if (!target || target.querySelector('.task-form form')) return;
+        if (Array.isArray(state.tasks)) {
+          state.tasks = state.tasks.filter(function (t) { return t.leadId !== view.id; }).concat(r.tasks);
+        }
+        target.innerHTML = renderCardTaskRows(subject, r.tasks);
+        const tab = $('#crm-drawer [data-tab="tasks"]');
+        if (tab) tab.textContent = 'משימות' + (r.tasks.length ? ' (' + r.tasks.length + ')' : '');
+      }).catch(function () {});
+    }
+    function renderTasksPane(subject) {
+      let html = '<div id="crm-card-task-rows">' + renderCardTaskRows(subject, state.tasks) + '</div>';
       const err = function (f) { return '<span class="err" data-err="' + f + '"></span>'; };
       html += '<details class="act"><summary>משימה חדשה</summary><form data-form="task-new" novalidate>'
         + '<label>סוג <select name="kind">' + TASK_KINDS.filter(function (k) { return !k.money || (state.me && state.me.finance); }).map(function (k) { return '<option value="' + k.id + '">' + esc(k.label) + '</option>'; }).join('') + '</select>' + err('kind') + '</label>'
@@ -6918,7 +7042,7 @@
       // <a target=_blank> to another origin, so open it from the click (never blocked), else navigate.
       const wa = ev.target.closest ? ev.target.closest('a[data-wa-manager]') : null;
       if (wa) { ev.preventDefault(); const w = win.open ? win.open(wa.href, '_blank', 'noopener') : null; if (!w) win.location.href = wa.href; return; }
-      const t = ev.target.closest ? ev.target.closest('#crm-new-maccabi,[data-maccabi-doc],[data-maccabi-copy],[data-stay-reset],[data-stay-csv],[data-bonus-month],#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-quick-close],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],[data-month-step],[data-month-pick],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const t = ev.target.closest ? ev.target.closest('#crm-new-maccabi,[data-maccabi-doc],[data-maccabi-copy],[data-stay-reset],[data-stay-csv],[data-bonus-month],#crm-new-lead,#crm-communication-review,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-quick-close],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],[data-month-step],[data-month-pick],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.kpiPeriod) { state.kpiPeriod = t.dataset.kpiPeriod; return renderMain(); }
       if (t.dataset.monthStep) {
@@ -6988,9 +7112,11 @@
         doc.querySelectorAll('#crm-drawer [role="tab"]').forEach(function (b) { b.setAttribute('aria-selected', String(b === t)); });
         doc.querySelectorAll('#crm-drawer [data-pane]').forEach(function (p) { p.hidden = p.dataset.pane !== t.dataset.tab; });
         if (state.drawer) state.drawer.tab = t.dataset.tab;
+        if (t.dataset.tab === 'tasks') refreshCommunicationTasks(state.drawer);
         if (t.dataset.tab === 'meetings') markReportSeen();
         return;
       }
+      if (t.id === 'crm-communication-review') return openCommunicationReview();
       if (t.id === 'crm-new-lead') return openNewLeadDrawer();
       if (t.id === 'crm-new-maccabi') {
         openNewLeadDrawer();
