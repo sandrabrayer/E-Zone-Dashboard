@@ -1,0 +1,44 @@
+'use strict';
+/* CHANGELOG-crm-released-stay-edit.md — a released patient's stay date (entry date) and
+ * monthly pay are editable in the CRM to fix overlaps. The patient STAYS released
+ * (status is not changed here), so no discharge/credit reconciliation is triggered and
+ * nothing is lost — the row, its discharge audit and its credits stay linked by the
+ * stable patient id. Pure rules + wiring here; the page is in crm-shell-browser. */
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const core = require('../public/crm/crm.js');
+const SRC = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.js'), 'utf8');
+
+const REL = () => ({ id: 'px', name: 'נועה לוי', houseId: 'ramot', date: '2026-07-22', pay: 9000, status: 'released', exitDate: '2026-11-14', notes: 'x', fromLead: 'LX' });
+
+test('editing a released patient\'s entry date / pay keeps status, exit date and every other field (nothing lost)', () => {
+  const next = core.patientEditNext(REL(), { name: 'נועה לוי', date: '2026-07-20', pay: '8500', notes: 'x' });
+  assert.equal(next.date, '2026-07-20');
+  assert.equal(next.pay, 8500);
+  assert.equal(next.status, 'released', 'still released — no re-activation here');
+  assert.equal(next.exitDate, '2026-11-14', 'the discharge date is untouched');
+  assert.equal(next.fromLead, 'LX');
+  // a name/notes-only edit does not touch the dates or money
+  const n2 = core.patientEditNext(REL(), { name: 'נועה לוי-כהן', notes: 'עודכן' });
+  assert.deepEqual([n2.date, n2.pay, n2.status], ['2026-07-22', 9000, 'released']);
+});
+
+test('the same validation as the in-house edit (entry date in range, pay ≥ 0); status is never a field here', () => {
+  assert.equal(core.patientEditErrors({ name: 'נ', date: '2026-07-20', pay: '8500' }).date, undefined);
+  assert.equal(core.patientEditErrors({ name: 'נ', date: 'nope', pay: '1' }).date, 'תאריך כניסה חסר או מחוץ לטווח');
+  assert.equal(core.patientEditErrors({ name: 'נ', date: '2026-07-20', pay: '-5' }).pay, 'סכום חודשי לא תקין');
+});
+
+test('the released card exposes entry date + pay (and name/notes), but NOT status', () => {
+  const blk = SRC.slice(SRC.indexOf('function releasedEditBlock'), SRC.indexOf('function linkedLeadEdit'));
+  assert.match(blk, /name="date"/);
+  assert.match(blk, /name="pay"/);
+  assert.match(blk, /name="name"/);
+  assert.match(blk, /name="notes"/);
+  assert.ok(!/name="status"/.test(blk), 're-activation stays in the classic flow (discharge reopen)');
+  assert.match(blk, /תאריך השחרור והחזרה לסטטוס «פעיל» נעשים בדשבורד הרגיל/);
+  // the comment records why it is safe (status unchanged → no reconciliation)
+  assert.match(blk, /no discharge\/credit reconciliation is triggered/);
+});

@@ -4376,9 +4376,17 @@
     function releasedEditBlock(p) {
       const raw = findPatientRow(p.id);
       const row = raw ? raw.row : p;
+      // Stay dates (entry date) + monthly pay are editable to fix overlaps
+      // (CHANGELOG-crm-released-stay-edit.md). The patient stays released — status is
+      // NOT changed here (re-activating a released patient reopens the discharge row and
+      // stays in the classic flow), so no discharge/credit reconciliation is triggered:
+      // the row, its discharge audit and its credits all stay linked by the stable id.
       return '<details class="act"><summary>עריכת פרטי המטופל/ת</summary><form data-form="patient-edit" data-patient="' + esc(p.id) + '" novalidate>'
         + '<label>שם <input type="text" name="name" maxlength="120" value="' + esc(row.name) + '"><span class="err" data-err="name"></span></label>'
+        + '<label>תאריך כניסה <input type="date" name="date" value="' + esc(s(row.date).slice(0, 10)) + '"><span class="err" data-err="date"></span></label>'
+        + '<label>תשלום חודשי (₪) <input type="number" name="pay" min="0" step="1" value="' + esc(String(Number(row.pay) || 0)) + '"><span class="err" data-err="pay"></span></label>'
         + '<label>הערות <textarea name="notes" rows="2">' + esc(row.notes) + '</textarea></label>'
+        + '<p class="na">תאריך השחרור והחזרה לסטטוס «פעיל» נעשים בדשבורד הרגיל.</p>'
         + '<button type="submit" class="btn small primary">שמירה</button></form></details>' + linkedLeadEdit(p) + patientDeleteBlock(p);
     }
     /* A button to the linked lead's own edit, where טלפון ופרטי קשר live

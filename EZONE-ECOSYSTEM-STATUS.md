@@ -1,5 +1,15 @@
 # E-ZONE Ecosystem Status — updated November 20, 2026
 
+## Dashboard CRM — a released patient's stay date + pay are editable in the CRM — November 20, 2026
+
+«עריכת פרטי המטופל/ת» on a released patient's card now also edits the **entry date** and
+**monthly pay** (to fix stay overlaps), beside name + notes. The patient **stays released** —
+status is not changed here, so no discharge/credit reconciliation runs and nothing is lost:
+the patient row, its discharge audit and its credits all stay linked by the stable patient id
+(the discharge/credit records link by `patientId`, not the entry-date key). Re-activating a
+released patient (which reopens the discharge row) stays in the classic flow for now. SW cache
+v153. See `CHANGELOG-crm-released-stay-edit.md`.
+
 ## Dashboard CRM — «בקרת גבייה» decisions are native — November 20, 2026
 
 Ortal's controller decisions — **«לא שולם»** (back to Vered), **«כפילות»** (void a duplicate)
